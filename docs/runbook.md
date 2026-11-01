@@ -76,7 +76,6 @@ linked from rows, never duplicated.
 - JB-117 Hand brake and hold currents sit far below the throw envelope's model (brake -14 to -20 A measured vs 35 to 40 A predicted; hold 1.5 vs 2.6 A): Kt, moving mass or friction is mis-modelled: no ## Sitting section
 - JB-2 Design change: the Hand should be Idle, not Parked Closed-loop, while Active: no ## Sitting section
 - JB-24 10 % jitter-margin class of LIMIT_* refusals: no ## Sitting section
-- JB-25 NOT_SETTLED retry is dead in the field: no ## Sitting section
 - JB-26 Platform Teensy truncates the persisted levelling offset to int16 milliradians: no ## Sitting section
 - JB-28 Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware: no ## Sitting section
 - JB-29 Magazine feed-tuning loop (`magazine` + `reload` patterns, hand-only throw): no ## Sitting section

@@ -999,7 +999,7 @@ class SkillNode(Node):
         # TRACKER-fed columns swap that never asked Ball Butler for
         # anything, so the phantom-catch guard (`_bb_throw_awaited_live`)
         # gates on both. Set by `_fire_reload_throw` under `_reload_lock`
-        # just before its round trip (the NOT_SETTLED re-fire keeps it);
+        # just before its round trip;
         # survives the executor swap (the ctx is retired there, hence
         # node-level); cleared wherever `_reload_throw_inflight` is reset to
         # False -- ctx creation (`_run_columns`, `_start_reload`),
@@ -2019,39 +2019,13 @@ class SkillNode(Node):
         announcement is waiting at the receive attitude for a ball that is
         not coming; the outcome ends it through its rest tail.
 
-        R5 (2026-09-30, `not_settled_report.md` Q4 option (d) — the
-        2026-09-30 sitting's 4/19 plausible false-positive rate on Ball
-        Butler's yaw-settle gate): ONE exception to "any non-``OK`` token
-        ends the attempt" — a bounded, once-per-attempt retry on the
-        literal token ``THROW_ABORTED_NOT_SETTLED``, compared as an exact
-        enum-member-NAME match (never a substring), same as every other
-        token here. This code alone carries the firmware's own guarantee
-        that NO frame was sent: ``aborted_ = true; active = false; return;
-        // send NO frames — hand stays at rest, ball retained``
-        (`~/Desktop/BallButler/ball_butler_main/HandTrajectoryStreamer.h`
-        :117-122, FW 5) — every OTHER refusal keeps ending the attempt exactly as
-        before, unconditionally, because that guarantee is specific to this
-        one code. `ctx.not_settled_retried` (armed `False` by
-        `_start_reload`) makes it fire at most once per attempt: a second
-        ``THROW_ABORTED_NOT_SETTLED`` on the same `ctx` falls straight
-        through to the ordinary end-attempt path below. The retry re-arms
-        ``ctx.phase = 'firing'`` under the same lock (excluding it from
-        `_check_reload_timeout`, exactly why `_maybe_fire_reload_throw`
-        does the same before its own first call) and then calls
-        `_fire_reload_throw` again, outside the lock — that method already
-        re-derives `delay_s` fresh from ``ctx.bridge.skills[-1].t_abs_s``,
-        floors it at `_BB_THROW_DELAY_FLOOR_S` (never asks Ball Butler for
-        an unmeetable delay) and recomputes/extends `ctx.deadline_mono` by
-        its own existing formula — so the retry gets a safe delay and an
-        extended deadline for free by reusing that one path, rather than
-        duplicating its floor/deadline logic here. Works unchanged for both
-        ``kind='reload'`` and ``kind='columns'`` ctxs, since
-        `_fire_reload_throw` itself only branches on `ctx.kind` for the
-        pre-tilt margin. A Stop landing during the retry's own blocking
-        round trip clears `_reload_ctx` (`_stop_attempt`), so
-        `_fire_reload_throw`'s existing `_still_current(ctx)` guard makes
-        the stale retry a no-op, same as it already does for the first
-        fire.
+        ``THROW_ABORTED_NOT_SETTLED`` (Ball Butler's yaw-settle abort) FAILS
+        CLOSED like every other non-``OK`` token: the attempt ends
+        ``REJECTED_BB(THROW_ABORTED_NOT_SETTLED)``. A once-per-attempt retry
+        (R5, 2026-09-30) was retired 2026-11-01 (JB-25): it was dead in the
+        field, because the announcement swap retires the `reload` ctx before
+        Ball Butler's terminal verdict arrives (bb-self-cancel finding F1).
+        A yaw-settle false positive therefore costs one attempt.
 
         ``THROW_ABORTED_BY_HOST`` (2026-10-13, phantom-catch guard): BB
         dropped the throw on a host cancel. It is ignored ONLY when no
@@ -2068,7 +2042,6 @@ class SkillNode(Node):
             return
         by_host = (token
                    == proto.BallButlerCommandOutcome.THROW_ABORTED_BY_HOST.name)
-        retry_ctx = None
         with self._reload_lock:
             ctx = self._reload_ctx
             reloading = ((ctx is not None and ctx.phase == 'await_announcement')
@@ -2084,32 +2057,14 @@ class SkillNode(Node):
             # after every cancelled throw).
             if by_host and not self._bb_throw_awaited_live():
                 return
-            if (ctx is not None and ctx.phase == 'await_announcement'
-                    and token
-                    == proto.BallButlerCommandOutcome.THROW_ABORTED_NOT_SETTLED.name
-                    and not ctx.not_settled_retried):
-                ctx.not_settled_retried = True
-                ctx.phase = 'firing'
-                retry_ctx = ctx
         if not reloading:
             return
         # A NOT-thrown verdict: the dispatched throw is dead (aborted,
         # refused, or dropped on a cancel), so nothing is left for an end
         # path's `_maybe_cancel_bb_throw` to cancel -- drop the record
-        # rather than send BB a cancel for a throw it already discarded. The
-        # NOT_SETTLED retry below records its own fresh release.
+        # rather than send BB a cancel for a throw it already discarded.
         with self._bb_cancel_lock:
             self._bb_pending_release_mono = None
-        if retry_ctx is not None:
-            self.get_logger().debug(
-                'reload: THROW_ABORTED_NOT_SETTLED -- retrying '
-                'bb/throw_at_target once (firmware sent no frame on this '
-                'code: ball retained, hand at rest)')
-            self.get_logger().info(
-                'reload: Ball Butler was not settled -- retrying the throw '
-                'once')
-            self._fire_reload_throw(retry_ctx)
-            return
         end_code = 'REJECTED_BB(%s)' % (token,)
         self._end_attempt(end_code, end_code)
 
@@ -5577,11 +5532,6 @@ class SkillNode(Node):
                 # (harmless for every other kind, which never reads it)
                 # rather than threaded through as a second parameter.
                 lift_s=float(lift_s),
-                # R5 (2026-09-30, `not_settled_report.md` Q4 option (d)):
-                # armed False, flips True the first time
-                # `_on_bb_throw_outcome` retries a `THROW_ABORTED_NOT_SETTLED`
-                # for THIS attempt -- the retry-once gate.
-                not_settled_retried=False,
                 deadline_mono=time.perf_counter() + ready_timeout_s)
 
         def _arm_ctx():

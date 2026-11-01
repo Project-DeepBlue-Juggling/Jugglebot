@@ -2,15 +2,15 @@
 id: JB-25
 kind: bug
 title: NOT_SETTLED retry is dead in the field
-status: inbox
+status: complete
 created: '2026-10-24'
-updated: '2026-10-24T13:05:00Z'
+updated: '2026-11-01T02:40:08Z'
 owners: []
 priority: low
-effort: m
-hardware: robot
+effort: xs
+hardware: none
 owner: decision
-radius: subsystem
+radius: local
 diagnosis: confirmed
 area: ball-butler
 blocked_by: []
@@ -32,3 +32,7 @@ The `NOT_SETTLED` retry never fires in the field; it fails closed as `REJECTED_B
 Recommendation: 1 now (dead code that reads as a live guarantee is the hazard) and 3 when the Ball Butler firmware is next touched; 2 only if the false-positive rate returns.
 
 A question ticket carries this to the owner; the answer under its `## Answer` re-opens this Item.
+
+## Progress
+
+- 2026-11-01: 2026-11-01 retry retired per JB-125 option 1: NOT_SETTLED fails closed; Ball Butler yaw-settle fix filed separately
