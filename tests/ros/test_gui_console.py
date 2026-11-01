@@ -97,7 +97,8 @@ def test_hover_publishes_only_in_replay(r):
     assert {'mouseover', 'mouseout'} <= set(h['registered'])
     assert h['live'] == []                                    # live mode has no trackbar: nothing published
     assert h['replay'] == [7, None, 9]                        # row, leave, row-to-row
-    assert h['after_exit']['calls'] == [7, None, 9, None]     # detach clears once
+    assert h['hidden'] == [7, None, 9, None]                  # hiding the view clears (no mouseout fires)
+    assert h['after_exit']['calls'] == [7, None, 9, None, None]  # detach clears once
     assert h['after_exit']['extra'] == 0                      # and later hovers publish nothing
 
 

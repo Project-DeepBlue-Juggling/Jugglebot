@@ -105,6 +105,8 @@ listEl._l.mouseover({ target: row('7') });
 listEl._l.mouseout({ relatedTarget: null });
 listEl._l.mouseout({ relatedTarget: row('9') });                 // onto another row: that row's time
 out.hover.replay = markCalls.slice();
+cv.setConsoleVisible(false);                                     // hidden by keyboard, mouse still on row 9
+out.hover.hidden = markCalls.slice();
 modeCb({ mode: 'LIVE' });                                        // leaving replay clears once
 const n = markCalls.length;
 listEl._l.mouseover({ target: row('7') });

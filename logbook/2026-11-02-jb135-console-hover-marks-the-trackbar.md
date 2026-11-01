@@ -34,6 +34,13 @@ pattern as the playhead, reusing overview.js `frac`). `console-view.js` never to
 DOM. Pure `hoverTime(target)` in `console-logic.js` maps an event target to a finite row `data-t` or null.
 Nothing is persisted or published to ROS; leaving replay clears the marker once.
 
+**Audit follow-up (owner-approved, 2026-11-02).** The Night Shift held the branch on one audit
+note: hiding the CONSOLE view by keyboard with the mouse resting on a row left the marker drawn,
+because the browser sends no `mouseout` for a node that stops being shown. `setConsoleVisible(false)`
+now clears it (`setMarker(null)`, a no-op outside replay). Pinned in `console_harness.js` /
+`test_hover_publishes_only_in_replay`; with the fix reverted that test fails (2026-11-02,
+`python -m pytest -q tests/ros/test_gui_console.py`: 1 failed, 8 passed; with it, 9 passed).
+
 **Verification.** (2026-11-02,
 `python -m pytest -q -p no:cacheprovider tests/ros/test_gui_console.py tests/ros/test_gui_traffic_reset.py tests/ros/test_gui_replay_ui_trackbar.py tests/ros/test_gui_replay_mode.py tests/ros/test_gui_trails_wiring.py tests/ros/test_gui_replay_chart.py tests/ros/test_gui_replay_rename_live.py`,
 **77 passed in 9.63 s**). With the `ros_ws` changes stashed, the new tests fail (both node harnesses

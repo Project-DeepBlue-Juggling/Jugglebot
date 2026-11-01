@@ -110,6 +110,8 @@ export function setConsoleVisible(on) {
         renderTimer = setInterval(() => { if (dirty) render(); }, RENDER_MS);
         markDirty();
         render();
+    } else {
+        setMarker(null);   // hidden with the mouse resting on a row: the browser sends no mouseout for it
     }
 }
 
