@@ -35,10 +35,13 @@ corrects the command. So the tests pin the knob on the hop (pre-clip expected la
 the bias) and "no clip" on the unbiased self-toss.
 
 **Fails before the change:** reasoned, not run: the knob, `_plant_landing_bias_release` and
-`executor_lines` do not exist, so each new test raises TypeError/AttributeError/KeyError.
+`executor_lines` do not exist, so each new test raises TypeError/AttributeError/KeyError. The
+unbiased self-toss test fails before only on the missing `executor_lines` key: it is a regression
+pin on the "inside" case once the key exists, not a red-then-green pin of the clip itself.
 Spec deviation: the brief's +36.8 mm/s uses the unbiased vz = 4000; the hook runs after the speed
 bias, so the test pins +33.1 mm/s (the physically right figure).
 
 ## Verification
 - 2026-11-02, `python -m pytest -q -p no:cacheprovider tests/sim/test_skills_gate.py tests/motion/test_skills_executor.py -k "forward_clip or biased or landing_bias or small_ or unbiased"`: 21 passed, 1 failed (the 36.8 figure, fixed after) in 460.61 s; the fixed test alone, `-k landing_bias_release`: 1 passed.
 - 2026-11-02, `python -m pytest -q -p no:cacheprovider tests/sim/test_skills_gate.py tests/motion/test_skills_executor.py` (whole files): 322 passed in 526.30 s.
+- The `./run_tests.sh --full` tier that `sim/` changes require pre-commit is the Night Shift 2026-11-02 gate on this branch (`temp/reports/night-shift/gate-JB-32.log` in the clone; verdict in `docs/night-shift/2026-11-02.md`).

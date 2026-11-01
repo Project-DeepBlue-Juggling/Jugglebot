@@ -880,7 +880,10 @@ def _plant_landing_bias_release(bias_mm):
     the aimed one (JB-32). A ball released at height with vertical speed
     ``vz`` lands at the same height after ``2 vz / g``, so the lateral
     velocity to add is ``bias * g / (2 vz)``; ``vz <= 0`` adds nothing. With
-    ``(0, 0)`` this IS :func:`_measured_release_bias`. Pure."""
+    ``(0, 0)`` this IS :func:`_measured_release_bias`. Exact at release
+    height with no drag (the hop's catch plane may sit slightly off it, and
+    the measured 8.5 mrad +y rotation adds its own landing shift on top);
+    ``vz`` is the released speed AFTER the +11 % speed bias. Pure."""
     bx, by = float(bias_mm[0]), float(bias_mm[1])
 
     def _release(vel_mm_s):
