@@ -65,8 +65,8 @@ def test_round_trip_is_byte_identical():
     again = rec.parse(text)
     assert rec.render(again) == text
     assert again == rec.parse(rec.render(again))
-    assert '| 2026-10-22 09:15 | 7 | 5 | compute (LIMIT_JERK) | a / note split |' in text
-    assert '| 2026-10-21 11:30 | 10 | 9 | stopped (STOPPED) |  |' in text
+    assert '| 2026-10-22 09:15 | 7 | 5 | compute (LIMIT_JERK) | a / note split |  |' in text
+    assert '| 2026-10-21 11:30 | 10 | 9 | stopped (STOPPED) |  |  |' in text
 
 
 def test_only_strictly_more_catches_beats_a_record():
@@ -154,11 +154,12 @@ def test_record_attempt_writes_only_when_beaten(tmp_path):
 
 
 @pytest.mark.parametrize('damage', [
-    lambda t: t.replace('<!-- jugglebot-records v1 -->', ''),
+    lambda t: t.replace('<!-- jugglebot-records v2 -->', ''),
     lambda t: t.replace('| 3 | compute', '| x | compute'),
     lambda t: t.replace('compute (SPLICE_TOO_LATE)', 'SPLICE_TOO_LATE'),
     lambda t: t.replace('balls: 2', 'balls: 1'),
-    lambda t: t + '\n| 2026-10-20 10:00 | 1 | 1 | completed (COMPLETED) |  |\n',
+    lambda t: t + '\n| 2026-10-20 10:00 | 1 | 1 | completed (COMPLETED) |  |  |\n',
+    lambda t: t + '\n<!-- pattern: hop balls: 1 -->\n### Hop\n\n' + rec._TABLE_HEAD + '\n' + rec._TABLE_RULE + '\n| 2026-10-20 10:00 | 1 | 1 | completed (COMPLETED) |  | no_equals |\n',
     lambda t: t.replace('| 2026-10-21 10:00 | 9 | 8 |', '| 2026-10-21 10:00 | 9 | 2 |'),
 ])
 def test_a_malformed_file_is_never_overwritten(tmp_path, damage):
@@ -195,7 +196,7 @@ def test_to_json_is_the_guis_view_in_file_order():
     assert col['balls'] == 2 and col['history'] == 1
     assert col['record'] == {'when_local': '2026-10-21 10:00', 'throws': 10,
                              'catches': 8, 'end_code': 'MISSED_CATCH',
-                             'category': 'drop', 'note': ''}
+                             'category': 'drop', 'note': '', 'params': {}}
     assert j['patterns'][0]['record'] is None
 
 
@@ -207,3 +208,77 @@ def test_seed_note_marks_reconstructed_and_fed_rows():
     assert 'approximate' in seed_note('~/.ros/log/x/launch.log [per-throw OUTCOME lines counted; no summary line]')
     assert seed_note('~/.ros/log/x/launch.log [reload]') == 'seed: fed goal'
     assert seed_note('~/.ros/log/x/launch.log') == 'seed: log'
+
+
+# ── Ledger v2: the Parameters column (JB-90) ───────────────────────────────
+
+_PARAMS = (('apex_m', '0.95'), ('separation_mm', '125'), ('dwell_s', '0.27'),
+           ('planner', 'pose'))
+
+
+def test_v2_round_trips_params_in_insertion_order():
+    model, beaten = rec.apply_attempt(rec.empty(), rec.Attempt(
+        '2026-11-01 10:00', 'columns', 9, 8, 'STOPPED', params=_PARAMS))
+    assert beaten
+    text = rec.render(model)
+    assert '<!-- jugglebot-records v2 -->' in text
+    assert ('| 2026-11-01 10:00 | 9 | 8 | stopped (STOPPED) |  | '
+            'apex_m=0.95; separation_mm=125; dwell_s=0.27; planner=pose |' in text)
+    again = rec.parse(text)
+    assert again.table('columns').rows[0].params == _PARAMS
+    assert rec.render(again) == text
+
+
+def test_a_v1_file_parses_with_empty_params_and_rerenders_as_v2():
+    v2 = rec.render(rec.rebuild([
+        _a('2026-10-20 10:00', 'columns', 3, code='MISSED_CATCH'),
+        rec.Attempt('2026-10-21 10:00', 'columns', 9, 8, 'STOPPED', note='keep me')]))
+    v1 = (v2.replace('jugglebot-records v2', 'jugglebot-records v1')
+            .replace(rec._TABLE_HEAD, rec._TABLE_HEAD_V1)
+            .replace(rec._TABLE_RULE, rec._TABLE_RULE_V1)
+            .replace(' |  |\n', ' |\n').replace(' | keep me |  |\n', ' | keep me |\n'))
+    assert '| Parameters |' not in v1
+    model = rec.parse(v1)
+    rows = model.table('columns').rows
+    assert [r.params for r in rows] == [(), ()]
+    assert [r.note for r in rows] == ['', 'keep me']
+    assert rec.render(model) == v2
+
+
+def test_v1_file_is_migrated_by_the_next_write(tmp_path):
+    path = tmp_path / 'records.md'
+    v2 = rec.render(rec.rebuild([_a('2026-10-20 10:00', 'hop', 3)]))
+    path.write_text(v2.replace('v2 -->', 'v1 -->')
+                    .replace(rec._TABLE_HEAD, rec._TABLE_HEAD_V1)
+                    .replace(rec._TABLE_RULE, rec._TABLE_RULE_V1)
+                    .replace(' |  |\n', ' |\n'))
+    assert rec.record_attempt(str(path), rec.Attempt(
+        '2026-10-21 10:00', 'hop', 9, 8, 'COMPLETED', params=_PARAMS)) == (True, 8)
+    text = path.read_text()
+    assert 'jugglebot-records v2' in text and 'v1' not in text
+    rows = rec.load(str(path)).table('hop').rows
+    assert [r.params for r in rows] == [(), _PARAMS]
+
+
+def test_params_with_forbidden_characters_are_sanitised_and_still_parse():
+    model, _ = rec.apply_attempt(rec.empty(), rec.Attempt(
+        '2026-11-01 10:00', 'hop', 5, 4, 'COMPLETED',
+        params=(('a|b', 'x;y=z'), ('k', 'two  words'), ('', 'dropped'))))
+    text = rec.render(model)
+    row = rec.parse(text).table('hop').rows[0]
+    assert row.params == (('a/b', 'x/y/z'), ('k', 'two words'))
+    assert model.table('hop').rows[0].params == row.params
+    assert rec.render(rec.parse(text)) == text
+
+
+def test_a_bad_parameters_cell_is_a_format_error():
+    text = rec.render(rec.rebuild([_a('2026-10-20 10:00', 'hop', 3)]))
+    with pytest.raises(rec.RecordsFormatError):
+        rec.parse(text.replace('COMPLETED) |  |  |', 'COMPLETED) |  | nokey |'))
+
+
+def test_to_json_carries_params_as_an_ordered_dict():
+    model, _ = rec.apply_attempt(rec.empty(), rec.Attempt(
+        '2026-11-01 10:00', 'columns', 9, 8, 'STOPPED', params=_PARAMS))
+    col = next(p for p in rec.to_json(model)['patterns'] if p['pattern'] == 'columns')
+    assert list(col['record']['params'].items()) == list(_PARAMS)

@@ -4281,6 +4281,45 @@ class TestJuggleAction:
         _node, values = self._ended_attempt(tmp_path, 9, 5, records_path=path)
         assert (values['record_beaten'], values['record_catches']) == ('0', '5')
 
+    def test_the_goals_params_are_recorded_from_accept_time(self, tmp_path):
+        """JB-90: the ledger row carries what the goal resolved at accept
+        (goal fields, else node params); self_toss has no separation."""
+        from jugglebot import records as rec
+        path = tmp_path / 'records.md'
+        node, _c = _node_with_client()
+        node._params['records_path'] = str(path)
+        _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+        _prelevel_ready(node)
+        with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)):
+            assert (node._juggle_goal(_self_toss_goal())
+                   == sn.GoalResponse.ACCEPT)
+        keys = [k for k, _v in node._goal_record_params]
+        assert keys == ['apex_m', 'dwell_s', 'planner']
+        node._params['planner_mode'] = 'level'      # changed mid-attempt
+        node._stop_attempt()
+        node._on_tick()
+        gh = MagicMock(is_cancel_requested=False)
+        gh.request.pattern = 'self_toss'
+        with patch.object(sn.rp, 'summarise', return_value=(3, 2)):
+            node._juggle_execute(gh)
+        [row] = rec.load(str(path)).table('self_toss').rows
+        assert row.params == node._goal_record_params
+        assert dict(row.params)['planner'] == 'pose'
+
+    def test_record_params_per_pattern(self):
+        node, _c = _node_with_client()
+        f = node._record_params
+        assert f('hop', 0.95, 125.0, 0.27, 0.0, None) == (
+            ('apex_m', '0.95'), ('separation_mm', '125'), ('dwell_s', '0.27'),
+            ('planner', 'pose'))
+        assert [k for k, _ in f('columns_turned', 0.95, 125.0, 0.27, 12.5, None)
+                ] == ['apex_m', 'separation_mm', 'dwell_s', 'turned_angle_deg',
+                      'planner']
+        assert [k for k, _ in f('columns_highlow', 0.95, 125.0, 0.27, 0.0, 1.1)
+                ] == ['apex_m', 'separation_mm', 'dwell_s', 'apex_m_ball2',
+                      'planner']
+        assert f('hop', 'bad', 125.0, 0.27, 0.0, None) == ()   # never raises
+
     def test_a_feed_is_never_offered_to_the_records(self, tmp_path):
         path = tmp_path / 'records.md'
         _node, values = self._ended_attempt(tmp_path, 1, 1, records_path=path,

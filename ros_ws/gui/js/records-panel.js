@@ -6,6 +6,10 @@
  * rewrites when a record is beaten).  Fetched on init and again on every
  * skills/attempt juggle_end (state-minimap.js minimapOnSkillAttempt forwards
  * it here); a juggle_end with record_beaten '1' flashes that Pattern's row.
+ * A row's hover (title) carries the record's run parameters (JB-90).
+ * Placement (JB-103): hard left under the connection indicator; it moves right
+ * of the collapsed State Machine card only while the card reaches its band
+ * (placePanel, re-run when the panel, the card or the pane resizes).
  * The View menu (#scene-menu-dropdown) gets one "<Pattern>" checkbox under a "Records" heading
  * per Pattern, remembered in localStorage.  Hidden in replay (css/replay.css
  * body.replay), and a replayed juggle_end is ignored (isReplayFenced).
@@ -13,6 +17,7 @@
 import { isReplayFenced } from './replay/fence.js';
 import {
     recordRows, recordSections, menuEntries, loadHidden, saveHidden, attemptEnd, RECORD_FLASH_MS,
+    dodgesMinimap,
 } from './records-model.js';
 
 let data = null;
@@ -42,6 +47,30 @@ function render() {
         for (const r of sec.rows) list.appendChild(buildRow(r, now));
     }
     renderMenu();
+    placePanel();
+}
+
+/** JB-103: dodge the collapsed State Machine card only when they would overlap. */
+function placePanel() {
+    const el = document.getElementById('records-panel');
+    const card = document.getElementById('state-minimap');
+    if (!el) return;
+    if (el.hidden || !card) { el.classList.remove('dodge-minimap'); return; }
+    const gapPx = parseFloat(getComputedStyle(el).getPropertyValue('--gap')) || 8;
+    el.classList.toggle('dodge-minimap', dodgesMinimap(
+        el.getBoundingClientRect(), card.getBoundingClientRect(),
+        card.classList.contains('collapsed'), gapPx));
+}
+
+function watchPlacement() {
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => placePanel());
+    // The card is bottom-anchored: a pane resize moves it without resizing it,
+    // so the pane is observed too. Expand/collapse resizes the card itself.
+    for (const id of ['records-panel', 'state-minimap', 'viewer-pane']) {
+        const node = document.getElementById(id);
+        if (node) ro.observe(node);
+    }
 }
 
 function buildRow(r, now) {
@@ -99,6 +128,7 @@ export async function refreshRecords() {
 
 export function initRecordsPanel() {
     hidden = loadHidden(storage());
+    watchPlacement();
     refreshRecords();
 }
 

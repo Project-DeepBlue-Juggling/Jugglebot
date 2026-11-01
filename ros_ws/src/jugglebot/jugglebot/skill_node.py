@@ -1048,6 +1048,11 @@ class SkillNode(Node):
         #: The goal's catch-bump switch (`_start_pattern`, `sk_bump.bump_enabled_for`).
         self._bump_enabled = False
         self._goal_end_code = ''
+        #: The running goal's records-ledger parameters (JB-90): an ordered
+        #: ((key, value), ...) captured at accept by `_start_pattern`, read by
+        #: `_offer_record` when the attempt ends (never re-read from the node
+        #: params: an operator may change them mid-attempt).
+        self._goal_record_params = ()
         self._goal_outcome_lines = []
         #: The attempt's ThrowReports (the result's counts) and its name on
         #: the operator's lines (`_start_pattern`).
@@ -3803,6 +3808,28 @@ class SkillNode(Node):
                 'columns_1ball_fed', 'columns_turned', 'columns_highlow',
                 'oval_1ball', 'oval_1ball_fed', 'magazine', 'reload')
 
+    def _record_params(self, pattern, apex_m, separation_mm, dwell_s,
+                       turned_angle_deg, apex_m_ball2):
+        """The ordered ((key, value), ...) the records ledger stores for this
+        goal (JB-90): only what shapes the run. Apex, dwell and the planner
+        mode for every Pattern; the Site separation for all but the
+        single-Site ``self_toss``; ``turned_angle_deg`` for columns_turned;
+        ``apex_m_ball2`` for columns_highlow. Never raises (``()`` on any
+        failure): a formatting slip must not fault the goal."""
+        try:
+            out = [('apex_m', '%g' % round(apex_m, 3))]
+            if pattern != 'self_toss':
+                out.append(('separation_mm', '%g' % round(separation_mm, 1)))
+            out.append(('dwell_s', '%g' % round(dwell_s, 3)))
+            if pattern == 'columns_turned':
+                out.append(('turned_angle_deg', '%g' % round(turned_angle_deg, 2)))
+            if pattern == 'columns_highlow' and apex_m_ball2 is not None:
+                out.append(('apex_m_ball2', '%g' % round(apex_m_ball2, 3)))
+            out.append(('planner', self._planner_mode()))
+            return tuple(out)
+        except Exception:  # noqa: BLE001 -- never the goal's fault
+            return ()
+
     def _start_pattern(self, goal) -> SimpleNamespace:
         """The Juggle goal's shared no-motion refusal ladder + schedule
         compile (R4 owner decision D3, U5): merges the R2/R3
@@ -3881,6 +3908,7 @@ class SkillNode(Node):
         self._goal_outcome_lines = []
         self._goal_reports = []
         self._goal_end_code = ''
+        self._goal_record_params = ()
         with self._reload_lock:
             self._goal_armed = False
             self._goal_done_event.clear()
@@ -3941,6 +3969,10 @@ class SkillNode(Node):
                                          else None))
         if apex_m_ball2 is not None:
             result.attempt['apex_m_ball2'] = apex_m_ball2
+        if result.success:
+            self._goal_record_params = self._record_params(
+                pattern, apex_m, separation_mm, dwell_s, turned_angle_deg,
+                apex_m_ball2)
         if result.success and pattern != 'magazine':
             # The attempt is installed now -- from here `_maybe_signal_goal_
             # done` may end the goal (see `_goal_armed`'s `__init__` comment).
@@ -6347,7 +6379,8 @@ class SkillNode(Node):
             beaten, best = rec.record_attempt(path, rec.Attempt(
                 when_local=time.strftime(rec.WHEN_FORMAT, time.localtime()),
                 pattern=pattern, throws=int(throws), catches=int(caught),
-                end_code=str(end_code)))
+                end_code=str(end_code),
+                params=tuple(self._goal_record_params)))
         except Exception as exc:  # noqa: BLE001 -- never the goal's fault
             self.get_logger().warning(
                 'records: %s not updated for %s (%d/%d %s): %s'

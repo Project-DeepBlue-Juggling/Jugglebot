@@ -1,12 +1,13 @@
 /* Records panel (js/records-panel.js, JB-35): top-left of the viewer, under
-   #connection-status and to the right of #state-minimap. The collapsed
-   minimap is 210 px wide at left: var(--gap) (css/state-minimap.css) and
-   grows UP from the command strip, so it can reach the top of the pane --
-   sit past its right edge, and past the expanded panel when it is open. */
+   #connection-status. The collapsed State Machine card is 210 px wide at
+   left: var(--gap) (css/state-minimap.css) and grows UP from the command
+   strip. JB-103: the panel sits hard left, and records-panel.js adds
+   .dodge-minimap (past the card's right edge) only while the card reaches the
+   panel's vertical band; with the card expanded the panel sits past it. */
 #records-panel {
     position: absolute;
     top: calc(var(--gap) + 40px);
-    left: calc(var(--gap) * 2 + 210px);
+    left: var(--gap);
     z-index: 10;
     min-width: 190px;
     max-width: 280px;
@@ -17,6 +18,7 @@
     pointer-events: auto;
 }
 #records-panel[hidden] { display: none; }
+#records-panel.dodge-minimap { left: calc(var(--gap) * 2 + 210px); }
 #viewer-pane.minimap-expanded #records-panel {
     left: calc(var(--minimap-width) + var(--gap));
 }

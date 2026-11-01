@@ -3,7 +3,7 @@
  *
  * Input is GET /api/records (gui_server.py -> records.to_json of the repo's
  * docs/records.md): { rule, patterns: [{ pattern, label, balls, history,
- * record: null | { when_local, throws, catches, end_code, category, note } }] },
+ * record: null | { when_local, throws, catches, end_code, category, note, params } }] },
  * already in file order (balls, then Pattern id).  Imports nothing, so
  * tests/ros/js/records_panel_harness.js runs it under node as-is.
  */
@@ -32,12 +32,58 @@ export function recordRows(json, hidden) {
                 ? (r.catches + ' Catches in ' + r.throws + ' Throws, ' + r.when_local
                    + ', ' + r.category + ' (' + r.end_code + ')'
                    + (r.note ? ' — ' + r.note : '')
-                   + (p.history > 1 ? ' · beaten ' + (p.history - 1) + '× before' : ''))
+                   + (p.history > 1 ? ' · beaten ' + (p.history - 1) + '× before' : '')
+                   + '\n' + paramsText(r.params))
                 : 'No record yet',
             empty: !r,
         });
     }
     return rows;
+}
+
+/** Unit suffix of a ledger params key -> the unit shown after the value (JB-90). */
+const PARAM_UNITS = [['_mm', 'mm'], ['_deg', '°'], ['_m', 'm'], ['_s', 's']];
+/** Keys whose generic "strip the unit, capitalise" label would read badly. */
+const PARAM_LABELS = { apex_m_ball2: ['Ball 2 apex', 'm'] };
+
+/** One ledger params key -> [label, unit]: apex_m -> ['Apex', 'm'], planner -> ['Planner', '']. */
+export function paramLabel(key) {
+    if (Object.prototype.hasOwnProperty.call(PARAM_LABELS, key)) return PARAM_LABELS[key];
+    let base = key, unit = '';
+    for (const [suf, u] of PARAM_UNITS) {
+        if (key.endsWith(suf) && key.length > suf.length) { base = key.slice(0, -suf.length); unit = u; break; }
+    }
+    const words = base.replace(/_/g, ' ');
+    return [words.charAt(0).toUpperCase() + words.slice(1), unit];
+}
+
+/**
+ * The hover line for a record's run parameters (JB-90): the ledger's `params`
+ * ({key: value-string}, insertion order, records.py to_json) as
+ * "Apex 0.95 m · Separation 125 mm · Dwell 0.27 s". A record set before the
+ * ledger kept them (v1 rows, `{}` or absent) says so instead of showing nothing.
+ */
+export function paramsText(params) {
+    const entries = (params && typeof params === 'object' && !Array.isArray(params))
+        ? Object.entries(params) : [];
+    if (entries.length === 0) return 'Parameters not recorded';
+    return entries.map(([k, v]) => {
+        const [label, unit] = paramLabel(k);
+        return label + ' ' + String(v) + (unit ? (unit === '°' ? unit : ' ' + unit) : '');
+    }).join(' · ');
+}
+
+/**
+ * Whether the Records panel must sit right of the collapsed State Machine card
+ * (JB-103). It sits hard left, under the connection indicator, and moves right
+ * only when the card (bottom-anchored, growing up) reaches its vertical band.
+ * Only vertical extents are compared: moving the panel sideways never changes
+ * them, so the decision cannot oscillate. `gapPx` keeps the two from touching.
+ */
+export function dodgesMinimap(recordsRect, minimapRect, collapsed, gapPx) {
+    if (!collapsed || !recordsRect || !minimapRect) return false;
+    if (!(minimapRect.height > 0) || !(recordsRect.height > 0)) return false;
+    return recordsRect.bottom + (Number(gapPx) || 0) > minimapRect.top;
 }
 
 /**

@@ -15,6 +15,13 @@ The rule (owner, 2026-10-28)
   that Pattern's table, so a table is the history of its record, newest last.
 * Every Pattern the skill node accepts except the Feed (``reload`` and
   ``magazine`` move balls, they are not juggling): :data:`PATTERNS`.
+* Ledger format v2 (JB-90, 2026-11-01): a last ``Parameters`` column records
+  what the run used, ``key=value`` pairs joined by ``; `` in insertion order
+  (e.g. ``apex_m=0.95; separation_mm=125; dwell_s=0.27; planner=pose``); an
+  empty cell means not recorded. :func:`parse` still accepts a v1 file (five
+  cells, no Parameters); :func:`render` always writes v2, so the first write
+  after the upgrade migrates the file. Keys and values never contain ``|``,
+  ``;`` or ``=`` (:func:`_param` strips them).
 * Tables are grouped and ordered by number of balls, then Pattern id. Each
   heading carries ``<!-- pattern: <id> balls: <n> -->`` so the parser reads the
   Pattern and its ball count from a marker, never from prose.
@@ -105,10 +112,13 @@ WHEN_FORMAT = '%Y-%m-%d %H:%M'
 _WHEN_RE = re.compile(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$')
 _MARKER_RE = re.compile(r'^<!-- pattern: ([a-z0-9_]+) balls: (\d+) -->$')
 _ENDED_RE = re.compile(r'^([a-z]+) \((.+)\)$')
-_TABLE_HEAD = '| When | Throws | Catches | How it ended | Note |'
-_TABLE_RULE = '|---|---:|---:|---|---|'
+_TABLE_HEAD = '| When | Throws | Catches | How it ended | Note | Parameters |'
+_TABLE_RULE = '|---|---:|---:|---|---|---|'
+_TABLE_HEAD_V1 = '| When | Throws | Catches | How it ended | Note |'
+_TABLE_RULE_V1 = '|---|---:|---:|---|---|'
 _NO_RECORD = '_No record yet._'
-_FILE_MARKER = '<!-- jugglebot-records v1 -->'
+_FILE_MARKER = '<!-- jugglebot-records v2 -->'
+_FILE_MARKER_V1 = '<!-- jugglebot-records v1 -->'
 
 RULE = ('The most Catches in one continuous Attempt on the robot (never the '
         'sim), per Pattern. A record is beaten only by strictly more Catches.')
@@ -142,6 +152,8 @@ class Attempt:
     catches: int
     end_code: str
     note: str = ''
+    #: (key, value) pairs the run used, in insertion order (JB-90).
+    params: Tuple[Tuple[str, str], ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -152,6 +164,7 @@ class Record:
     catches: int
     end_code: str
     note: str = ''
+    params: Tuple[Tuple[str, str], ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -201,6 +214,37 @@ def _cell(text: str) -> str:
     return ' '.join(str(text).replace('|', '/').split())
 
 
+def _param(text) -> str:
+    """One parameter key or value: whitespace collapsed, the cell and pair
+    separators (``|``, ``;``, ``=``) replaced by ``/`` so the cell parses back."""
+    out = str(text)
+    for ch in '|;=':
+        out = out.replace(ch, '/')
+    return ' '.join(out.split())
+
+
+def _params_cell(params) -> str:
+    pairs = []
+    for k, v in params:
+        k, v = _param(k), _param(v)
+        if k:
+            pairs.append('%s=%s' % (k, v))
+    return '; '.join(pairs)
+
+
+def _parse_params(cell: str, where: str) -> Tuple[Tuple[str, str], ...]:
+    if not cell:
+        return ()
+    out = []
+    for part in cell.split(';'):
+        k, eq, v = part.partition('=')
+        k, v = k.strip(), v.strip()
+        if not eq or not k:
+            raise RecordsFormatError('%s: bad Parameters %r' % (where, cell))
+        out.append((k, v))
+    return tuple(out)
+
+
 def render(model: Ledger) -> str:
     """The whole ``docs/records.md`` text (deterministic)."""
     out = [
@@ -216,7 +260,8 @@ def render(model: Ledger) -> str:
         'parameter `records_path`, set by `jugglebot_launch.py`) and the '
         'Sitting\'s close-out commits it. The tables are rendered and parsed '
         'by `ros_ws/src/jugglebot/jugglebot/records.py`; a Note cell may be '
-        'edited by hand, nothing else. "How it ended" is completed, stopped, '
+        'edited by hand, nothing else. "Parameters" is what that run used '
+        '(`key=value` pairs; empty = not recorded). "How it ended" is completed, stopped, '
         'drop (a missed or lost ball), compute (a solve or limit refusal) or '
         'other, with the raw end code in parentheses.',
     ]
@@ -234,16 +279,20 @@ def render(model: Ledger) -> str:
         for r in t.rows:
             ended = '%s (%s)' % (category(r.end_code), _cell(r.end_code))
             note = _cell(r.note)
-            out.append('| %s | %d | %d | %s | %s |'
-                       % (r.when_local, r.throws, r.catches, ended, note))
+            out.append('| %s | %d | %d | %s | %s | %s |'
+                       % (r.when_local, r.throws, r.catches, ended, note,
+                          _params_cell(r.params)))
     return '\n'.join(out) + '\n'
 
 
-def _parse_row(line: str, where: str) -> Record:
+def _parse_row(line: str, where: str, v1: bool = False) -> Record:
     cells = [c.strip() for c in line.strip().split('|')]
-    if len(cells) != 7 or cells[0] or cells[-1]:
-        raise RecordsFormatError('%s: a row needs 5 cells: %r' % (where, line))
+    n = 5 if v1 else 6
+    if len(cells) != n + 2 or cells[0] or cells[-1]:
+        raise RecordsFormatError('%s: a row needs %d cells: %r'
+                                 % (where, n, line))
     when, throws, catches, ended, note = cells[1:6]
+    params = () if v1 else _parse_params(cells[6], where)
     if not _WHEN_RE.match(when):
         raise RecordsFormatError('%s: bad time %r' % (where, when))
     try:
@@ -255,14 +304,20 @@ def _parse_row(line: str, where: str) -> Record:
     m = _ENDED_RE.match(ended)
     if not m or m.group(1) not in CATEGORIES:
         raise RecordsFormatError('%s: bad "How it ended" %r' % (where, ended))
-    return Record(when, n_throws, n_catches, m.group(2), note)
+    return Record(when, n_throws, n_catches, m.group(2), note, params)
 
 
 def parse(text: str) -> Ledger:
     """Parse a rendered file. Raises :class:`RecordsFormatError`."""
     lines = text.splitlines()
-    if _FILE_MARKER not in lines:
+    if _FILE_MARKER in lines:
+        v1 = False
+    elif _FILE_MARKER_V1 in lines:
+        v1 = True
+    else:
         raise RecordsFormatError('not a records file (no %s)' % _FILE_MARKER)
+    head, rule = ((_TABLE_HEAD_V1, _TABLE_RULE_V1) if v1
+                  else (_TABLE_HEAD, _TABLE_RULE))
     tables: Dict[str, Table] = {}
     i = 0
     while i < len(lines):
@@ -290,9 +345,9 @@ def parse(text: str) -> Ledger:
             s = lines[i].strip()
             if _MARKER_RE.match(s) or s.startswith('#'):
                 break
-            if s == _TABLE_HEAD and not seen_head:
+            if s == head and not seen_head:
                 seen_head = True
-                if i + 1 >= len(lines) or lines[i + 1].strip() != _TABLE_RULE:
+                if i + 1 >= len(lines) or lines[i + 1].strip() != rule:
                     raise RecordsFormatError('line %d: table rule missing'
                                              % (i + 2,))
                 i += 2
@@ -301,7 +356,7 @@ def parse(text: str) -> Ledger:
                 if not seen_head:
                     raise RecordsFormatError('line %d: row before the table '
                                              'header' % (i + 1,))
-                rows.append(_parse_row(s, 'line %d' % (i + 1,)))
+                rows.append(_parse_row(s, 'line %d' % (i + 1,), v1))
             i += 1
         for a, b in zip(rows, rows[1:]):
             if b.catches <= a.catches:
@@ -336,7 +391,9 @@ def apply_attempt(model: Ledger, attempt: Attempt) -> Tuple[Ledger, bool]:
         return model, False
     row = Record(str(attempt.when_local), int(attempt.throws),
                  int(attempt.catches), str(attempt.end_code or 'COMPLETED'),
-                 str(attempt.note or ''))
+                 str(attempt.note or ''),
+                 tuple((_param(k), _param(v)) for k, v in attempt.params
+                       if _param(k)))
     return model.replace(dataclasses.replace(table, rows=table.rows + (row,))), True
 
 
@@ -396,7 +453,8 @@ def to_json(model: Ledger) -> dict:
             'record': None if b is None else {
                 'when_local': b.when_local, 'throws': b.throws,
                 'catches': b.catches, 'end_code': b.end_code,
-                'category': category(b.end_code), 'note': b.note},
+                'category': category(b.end_code), 'note': b.note,
+                'params': {k: v for k, v in b.params}},
         })
     return {'rule': RULE, 'patterns': pats}
 
