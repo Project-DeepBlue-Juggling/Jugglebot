@@ -1525,9 +1525,10 @@
 }
 
 /* ---- CONSOLE view (third view of #panel-topics, console-view.js; read-only /rosout) ---- */
-#console-container { position: relative; display: flex; flex-direction: column; min-height: 0; }
-/* In the sidebar the panel sizes to its content (the list is user-resizable) instead of shrinking the list to nothing. */
-#left-sidebar #panel-topics.console-on { flex: 0 0 auto; }
+/* Same stretch rule as the ROS and UDP containers: #panel-topics is the sidebar's flex:1 element, so CONSOLE fills
+   exactly the box the other two views fill (CAN TRAFFIC never moves) and the list takes all the height left under the
+   toolbar. */
+#console-container { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .console-toolbar { display: flex; align-items: center; gap: 3px; padding-bottom: var(--gap-xs); flex-wrap: wrap; }
 .console-chips { display: flex; gap: 2px; flex-wrap: wrap; }
 .console-chip {
@@ -1553,7 +1554,7 @@
 .console-nav:hover { background: var(--bg-card-hover); color: var(--text-primary); }
 .console-count { flex-basis: 100%; color: var(--text-muted); font-family: var(--font-mono); font-size: 10px; }
 .console-list {
-    flex: none; min-height: 120px; height: 220px; max-height: 70vh; resize: vertical;
+    flex: 1; min-height: 0;
     overflow-y: auto; overflow-x: hidden;
     background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--border-radius-sm);
     color: var(--text-primary); font-family: var(--font-mono); font-size: 10px; line-height: 1.3;
