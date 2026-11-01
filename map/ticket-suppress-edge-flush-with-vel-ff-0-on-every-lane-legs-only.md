@@ -2,9 +2,9 @@
 id: JB-124
 kind: ticket
 title: Suppress-edge flush with vel_ff 0 on every lane, legs only, report only, or folded into the next can-bridge firmware revision?
-status: open
+status: complete
 created: '2026-11-01'
-updated: '2026-10-31T19:09:40Z'
+updated: '2026-11-01T00:37:10Z'
 owners: []
 priority: low
 effort: xs
@@ -36,3 +36,7 @@ Recommendation: 1 if the owner wants the suppressed state to be a true hold, flo
 - 1 or 2: a firmware unit (owner's Session, not Night Shift: forbidden path) plus a bench-leg Sitting section on this Item.
 - 3: a Night Shift unit on the analyser side only.
 - 4: this Item is re-scoped as the firmware revision's checklist.
+
+## Answer
+
+Option 1
