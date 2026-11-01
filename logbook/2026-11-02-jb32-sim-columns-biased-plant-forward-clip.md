@@ -46,7 +46,7 @@ findings, all applied: (1) the pre-clip x is read from `on the box edge` lines o
 line carries the post-clip `y_hat` in another format and raised `AttributeError`); (2) the biased
 and unbiased hop runs are compared at the same skill index (`_preclip_x_by_skill`, first index both
 runs clipped), not at each run's first line, which could belong to different Throws; (3) the CLI
-refuses `--plant-bias-xy` unless `--learn --pattern self_toss|hop|oval_1ball` (the columns, reload
+refuses `--plant-bias-xy` unless `--learn --pattern self_toss|hop|oval_1ball` (the columns, `--reload`
 and plain gate runs pass `boxes=None`, so the bias was silently ignored), pinned by
 `test_plant_bias_is_refused_where_nothing_reads_it` (without the check those argv run a whole gate
 instead of exiting 2).
