@@ -136,6 +136,37 @@ static bool     s_have_sp_seq = false;
 
 static volatile uint64_t s_last_setpoint_us = 0;
 static volatile bool     s_output_enabled = false;   // the fault machine owns this gate
+// ── JB-73 suppress-edge HOLD FLUSH (FW 35) ────────────────────────────────────
+// WHY. While output is suppressed the bridge transmits nothing, and the ODrive
+// HOLDS its last Set_Input_Pos INCLUDING vel_ff: in POSITION/PASSTHROUGH it
+// settles at input_pos + vel_ff/pos_gain (bench 2026-10-27: 0.05 rev past the
+// last command at vel_ff -2.0, pos_gain 40; 0.0875 rev at the 3.5 rev/s cap).
+// So the suppressed state was not a hold. On the FIRST suppressed tick of a
+// MOTOR_FB_STALE suppression, re-send each lane's LAST TRANSMITTED frame once
+// with vel_ff = 0: same input_pos (never a new position — the feedback is stale,
+// the bridge does not know where the motor is), same torque_ff on the legs
+// (gravity FF stays; zeroing it would sag the Platform). The Hand's last tau is
+// handled by the FW 22 drain, which then carries vel_ff = 0 too.
+// SCOPE, from the fault task (fault_machine.cpp evaluate_guard): s_hold_flush_ok
+// is true ONLY when fb_stale is the sole reason output is off — never on an
+// E-STOP latch, a fatal / bus-down, a guard DISABLED (disarm, link loss) or the
+// FW 34 no-setpoint-since-arm shut, so nothing is transmitted that those forbid
+// (the pre-existing Hand tau drain is unchanged on them). Never during a
+// cold-start move (those own the ODrives in TRAP_TRAJ), never for the deferred
+// Stow (it forces output ON, and its branch clears the leg record below).
+// ONE EDGE, ONE FRAME per lane: the flush keys off "this lane was on the wire
+// LAST tick" (per leg — a leg that turned present mid-session has no record and
+// is never flushed from a zero), which is true on exactly one suppressed tick; a re-suppress after
+// recovery flushes again, a boot or a disarmed bridge never has a record.
+// The flush ticks REPLACE the burst they follow (output is off), so the bus
+// load is the qualified 7-frame burst, never more. Written by the fault task
+// BEFORE s_output_enabled (interp_set_output_enabled), so an ISR landing
+// between the two stores sees either "still enabled" or the final pair.
+static volatile bool     s_hold_flush_ok = false;
+static uint8_t           s_leg_tx_mask_prev = 0;      // ISR-only: bit i = leg i's frame went out LAST tick
+static float             s_leg_tx_pos[NUM_LEGS] = {0, 0, 0, 0, 0, 0};   // ISR-only: last transmitted
+static float             s_leg_tx_tor[NUM_LEGS] = {0, 0, 0, 0, 0, 0};   //   input_pos / torque_ff per leg
+static volatile uint32_t s_hold_flush_edges = 0;      // census: suppress edges that flushed (any lane)
 // Deferred-stow descent state (set by the fault machine).
 static volatile bool s_stow_active = false;
 static volatile bool s_stow_complete = false;
@@ -439,7 +470,9 @@ static volatile uint32_t s_hand_tau_fade_ticks  = 0;       // on-wire ticks with
 // Drain (the ODrive watchdog is OFF and it keeps its last input_torque): the
 // tick the hand frame stops reaching the wire, re-send the LAST transmitted
 // frame with torque 0 for HAND_TORQUE_DRAIN_TICKS ticks. pos and vel_ff are
-// bit-identical to that last frame, so the only command change is tau → 0.
+// bit-identical to that last frame, so the only command change is tau → 0 —
+// except on a MOTOR_FB_STALE suppress edge (JB-73, FW 35), where the hold flush
+// zeroes the record's vel_ff first and the drain frames carry vel_ff = 0.
 static bool              s_hand_tx_prev = false;
 static float             s_hand_tx_pos = 0.0f, s_hand_tx_vel = 0.0f, s_hand_tx_tau = 0.0f;
 static uint8_t           s_hand_drain_left = 0;
@@ -1039,6 +1072,7 @@ static void interp_isr() {
       if (s_output_enabled && leg_present(i)) can_jugglebot_tx(ODrive::encode_leg_setpoint(i, p, v, 0.0f), TxCls::LEGS);
     }
     s_stow_complete = all_done;
+    s_leg_tx_mask_prev = 0;   // JB-73: the Stow owns the legs; the ladder record is dead
     return;
   }
 
@@ -1591,13 +1625,18 @@ static void interp_isr() {
   // Cold-start interlock: suppress the whole streamed leg TX while a
   // firmware homing/activate/deactivate move is driving the same ODrives (see the
   // interlock note above). The target cache was written for all legs regardless.
+  uint8_t leg_tx_mask = 0;   // JB-73: legs whose frame goes out THIS tick
   if (s_output_enabled && !coldstart) {
     for (uint8_t i = 0; i < NUM_LEGS; ++i) {
       // Present-axis gate: never stream a 500 Hz setpoint to a node
       // that isn't on the bus. No-op on the full robot (all six present); on the
       // single-leg bench rig this drops the 5 phantom frames/tick to absent
       // nodes 1-5. The target cache above is written for all legs regardless.
-      if (leg_present(i)) can_jugglebot_tx(ODrive::encode_leg_setpoint(i, cmd_pos[i], cmd_vel[i], cmd_tor[i]), TxCls::LEGS);   // TxCls::LEGS — latest-wins, deferral counted, never retried
+      if (leg_present(i)) {
+        can_jugglebot_tx(ODrive::encode_leg_setpoint(i, cmd_pos[i], cmd_vel[i], cmd_tor[i]), TxCls::LEGS);   // TxCls::LEGS — latest-wins, deferral counted, never retried
+        s_leg_tx_pos[i] = cmd_pos[i]; s_leg_tx_tor[i] = cmd_tor[i];   // JB-73: the record the hold flush re-sends
+        leg_tx_mask |= (uint8_t)(1u << i);
+      }
     }
     // ── The 7th frame — the hand lane's set_input_pos (FW 17) ─────────────────
     // Inside the SAME `s_output_enabled && !coldstart` gate as the legs, on the
@@ -1640,6 +1679,27 @@ static void interp_isr() {
   // a cold-start move (those own the ODrives in their own input mode; they are
   // refused while mpc_active, so this is belt and braces); a dead bus refuses the
   // frame inside can_jugglebot_tx's presence gate.
+  // ── JB-73 hold flush (FW 35) — see s_hold_flush_ok. Legs: the last frame,
+  // vel_ff 0, torque_ff kept. Hand: the record's vel_ff is zeroed, so the drain
+  // below (tau != 0) carries the hold; on a tau == 0 session one hold frame goes
+  // out here through the single hand encode site.
+  const bool hold_flush = !out_en && s_hold_flush_ok && !coldstart;
+  bool flushed = false;
+  if (hold_flush && s_leg_tx_mask_prev != 0u) {
+    for (uint8_t i = 0; i < NUM_LEGS; ++i)
+      if ((s_leg_tx_mask_prev & (1u << i)) && leg_present(i))
+        can_jugglebot_tx(ODrive::encode_leg_setpoint(i, s_leg_tx_pos[i], 0.0f, s_leg_tx_tor[i]), TxCls::LEGS);
+    flushed = true;
+  }
+  s_leg_tx_mask_prev = leg_tx_mask;
+  if (!hand_wire && s_hand_tx_prev && hold_flush) {
+    s_hand_tx_vel = 0.0f;
+    if (s_hand_tx_tau == 0.0f && leg_present(HAND_AXIS)) {
+      hand_emit = true; hand_emit_pos = s_hand_tx_pos; hand_emit_vel = 0.0f; hand_emit_tau = 0.0f;
+    }
+    flushed = true;
+  }
+  if (flushed) ++s_hold_flush_edges;
   if (hand_wire) {
     s_hand_drain_left = 0;
   } else {
@@ -1712,6 +1772,10 @@ void interp_reset() {
   s_have_sp_seq = false;
   s_last_setpoint_us = 0;
   s_output_enabled = false;
+  s_hold_flush_ok = false;
+  s_leg_tx_mask_prev = 0;
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) s_leg_tx_pos[i] = s_leg_tx_tor[i] = 0.0f;
+  s_hold_flush_edges = 0;
   s_stow_active = false;
   s_stow_complete = false;
   s_stow_speed = 0.0f;
@@ -1790,10 +1854,12 @@ bool  interp_have_latched() { return s_have_latched; }
 // its power-on value, ARMED. So a bench read can never leave the guard off for
 // the next session, and no operator step is needed to restore it. TASK context
 // (fault_machine), single volatile byte, same class as the console writes.
-void interp_set_output_enabled(bool en) {
+void interp_set_output_enabled(bool en, bool hold_flush) {
+  s_hold_flush_ok = !en && hold_flush;   // JB-73: FIRST, so the ISR never pairs a stale flag with the new gate
   if (!en && s_output_enabled) s_hand_dev_guard_armed = true;   // disarm edge re-arms
   s_output_enabled = en;
 }
+uint32_t interp_hold_flush_edges() { return s_hold_flush_edges; }
 bool interp_output_enabled() { return s_output_enabled; }
 uint32_t interp_deadline_misses() { return s_deadline_misses; }
 uint32_t interp_max_jitter_us() { return s_max_jitter_us; }

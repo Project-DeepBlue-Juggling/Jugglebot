@@ -1626,3 +1626,70 @@ TEST_CASE("FW 34 (JB-75): a re-arm does not latch on the previous stream's age")
     CHECK(fault_state() == JbUdp::FaultState::SETPOINT_STALE);
   }
 }
+
+// =============================================================================
+//  JB-73 (FW 35) — the fault machine asks for the suppress-edge hold flush ONLY
+//  for a MOTOR_FB_STALE suppression. End to end through the real interp: a
+//  streaming leg whose feedback goes stale gets ONE vel_ff = 0 frame at its last
+//  input_pos; a SETPOINT_STALE E-STOP from the same streaming state gets none.
+// =============================================================================
+namespace jb73fm {
+static void arm_streaming_leg0() {
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  fault_set_mpc_active(true);
+  axes[0].heartbeat_seen = true;
+  stamp_hb(0);
+  axes[0].pos_rev = 0.0f;
+  axes[0].pos_timestamp_us = fake_mono_us();
+  fake_set_udp_last_rx_us(fake_mono_us());
+  JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp));
+  sp.v0[0] = 1.0f;                                  // a real vel_ff on the wire (Taylor mode)
+  interp_on_setpoint(0, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
+  fault_step();
+  REQUIRE(interp_output_enabled());
+  fake_clear_sent();
+  interp_isr();                                     // one streamed tick: leg0 is on the wire
+  REQUIRE(fake_sent_count_cmd(ODriveCmd::set_input_pos) == 1);
+}
+static int16_t sent_vel(size_t i) { int16_t v; memcpy(&v, &fake_sent_at(i).buf[4], 2); return v; }
+}  // namespace jb73fm
+
+TEST_CASE("JB-73: MOTOR_FB_STALE suppression flushes one vel_ff = 0 hold frame; a guard E-STOP flushes nothing") {
+  using namespace jb73fm;
+  SUBCASE("fb-stale: one hold frame per lane, then silence") {
+    arm_streaming_leg0();
+    uint8_t last[8]; memcpy(last, fake_sent_at(0).buf, 8);
+    REQUIRE(sent_vel(0) != 0);
+    fake_advance(200'000);                           // ONLY the encoder ages (> 150 ms)
+    stamp_hb(0);
+    fake_set_udp_last_rx_us(fake_mono_us());
+    JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp)); sp.v0[0] = 1.0f;
+    interp_on_setpoint(1, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));   // stream still live
+    fault_step();
+    REQUIRE(fault_state() == JbUdp::FaultState::MOTOR_FB_STALE);
+    REQUIRE_FALSE(interp_output_enabled());
+    fake_clear_sent();
+    interp_isr();
+    REQUIRE(fake_sent_count_cmd(ODriveCmd::set_input_pos) == 1);
+    CHECK(memcmp(fake_sent_at(0).buf, last, 4) == 0);   // the LAST transmitted input_pos
+    CHECK(sent_vel(0) == 0);
+    fake_clear_sent();
+    interp_isr();
+    CHECK(fake_sent_count() == 0);
+    CHECK(interp_hold_flush_edges() == 1u);
+  }
+  SUBCASE("SETPOINT_STALE E-STOP: nothing transmitted on the disable edge") {
+    arm_streaming_leg0();
+    fake_advance(SETPOINT_STALENESS_US + 1);         // ONLY the setpoint ages
+    stamp_hb(0);
+    axes[0].pos_timestamp_us = fake_mono_us();
+    fake_set_udp_last_rx_us(fake_mono_us());
+    fault_step();
+    REQUIRE(fault_state() == JbUdp::FaultState::SETPOINT_STALE);
+    fake_clear_sent();
+    interp_isr();
+    CHECK(fake_sent_count() == 0);
+    CHECK(interp_hold_flush_edges() == 0u);
+  }
+}

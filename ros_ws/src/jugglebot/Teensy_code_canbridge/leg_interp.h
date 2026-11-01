@@ -54,7 +54,15 @@ bool  interp_have_latched();
 
 // Enable/disable command output (the fault state machine / guard-mode gate).
 // When false the ISR computes but does not transmit to CAN3.
-void interp_set_output_enabled(bool en);
+// hold_flush (JB-73, FW 35): true ONLY when the disable is a MOTOR_FB_STALE
+// suppression and nothing else (no E-STOP latch, fatal, bus-down, guard
+// DISABLED or FW 34 arm shut). On the first suppressed tick the ISR then
+// re-sends each lane's last transmitted frame once with vel_ff = 0 (same
+// input_pos, legs keep torque_ff) so the ODrive holds AT the last command
+// instead of input_pos + vel_ff/pos_gain. Ignored when en is true.
+void interp_set_output_enabled(bool en, bool hold_flush = false);
+// Census: suppress edges on which the hold flush put a frame out (any lane).
+uint32_t interp_hold_flush_edges();
 bool interp_output_enabled();
 
 // Profiling counters.

@@ -643,14 +643,21 @@ static void evaluate_guard() {
   // s_stowing=false and re-latches s_stow_pending). A guard E-STOP still latches and
   // holds AFTER the stow completes — it simply does not pre-empt the descent.
   bool allow = false;
+  bool hold_flush = false;   // JB-73 (FW 35): the disable is a MOTOR_FB_STALE suppression ONLY
   if (s_stowing) {
     allow = true;   // stow descent integrates its own position; not encoder-gated
   } else {
-    allow = (s_guard_mode == JbUdp::GuardMode::ENABLED) && !s_fatal_can_error
-            && !s_fatal_error && !s_estop_latched && !fb_stale
+    const bool allow_but_fb = (s_guard_mode == JbUdp::GuardMode::ENABLED) && !s_fatal_can_error
+            && !s_fatal_error && !s_estop_latched
             && sp_since_arm;   // FW 34: never drive the previous stream's base after an arm
+    allow = allow_but_fb && !fb_stale;
+    // Every other reason output is off forbids the flush frame: an E-STOP latch
+    // or fatal transmits nothing new, a dead bus is never commanded, a disarm or
+    // link loss is not a suppression. Only "would stream, but feedback is stale"
+    // earns the one vel_ff = 0 hold frame per lane (leg_interp.cpp s_hold_flush_ok).
+    hold_flush = allow_but_fb && fb_stale;
   }
-  interp_set_output_enabled(allow);
+  interp_set_output_enabled(allow, hold_flush);
 }
 
 void fault_hand_dev_prev_reset() {

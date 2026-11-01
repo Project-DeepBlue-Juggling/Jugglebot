@@ -890,7 +890,12 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # when that is newer than the last setpoint, and output stays shut until a
 # setpoint lands after the arm; the Diagnostic pad[0] byte becomes homing_epoch
 # (bumped per accepted HOME). Same payload size, PROTOCOL_VERSION stays 10.
-EXPECTED_BRIDGE_FW_VERSION = 34
+# 34 -> 35 (2026-11-01, JB-73): on the first tick of a MOTOR_FB_STALE
+# suppression the bridge re-sends each lane's last frame once with vel_ff = 0
+# (same input_pos, legs keep torque_ff), so the ODrive holds AT the last command
+# instead of input_pos + vel_ff/pos_gain. Behavioural only: no wire change,
+# PROTOCOL_VERSION stays 10.
+EXPECTED_BRIDGE_FW_VERSION = 35
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

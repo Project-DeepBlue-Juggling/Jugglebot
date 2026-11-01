@@ -2066,3 +2066,210 @@ TEST_CASE("FW 32 lead clamp: a command DISCONTINUITY while the frame is aged is 
   CHECK(axes[0].target_pos_rev == 1.0f + MAX_LEAD_REV);   // re-clamped against the live encoder
   CHECK((interp_lead_clamp_mask() & 0x1u) != 0);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  JB-73 (FW 35) suppress-edge HOLD FLUSH
+//    On the first tick of a MOTOR_FB_STALE suppression (interp_set_output_enabled
+//    (false, /*hold_flush=*/true)) each lane that was on the wire LAST tick gets
+//    its last transmitted frame once more with vel_ff = 0: input_pos bytes
+//    identical, leg torque_ff identical (gravity FF stays), nothing after. Before
+//    FW 35 the suppressed tick sent nothing and the ODrive held the last vel_ff
+//    (settling at input_pos + vel_ff/pos_gain — 0.05 rev on the 2026-10-27 bench).
+// ═══════════════════════════════════════════════════════════════════════════
+namespace jb73 {
+struct LegFrame { bool seen = false; uint8_t buf[8] = {0}; };
+static void capture(LegFrame out[7]) {
+  for (int a = 0; a < 7; ++a) out[a] = LegFrame{};
+  for (size_t i = 0; i < fake_sent_count(); ++i) {
+    const SentFrame& f = fake_sent_at(i);
+    if ((f.id & ODrive::CMD_ID_MASK) != CMD_SETPOS) continue;
+    const uint8_t a = ODrive::axis_of(f.id);
+    out[a].seen = true; memcpy(out[a].buf, f.buf, 8);
+  }
+}
+static int16_t vel_of(const LegFrame& f) { int16_t v; memcpy(&v, &f.buf[4], 2); return v; }
+static int16_t tor_of(const LegFrame& f) { int16_t t; memcpy(&t, &f.buf[6], 2); return t; }
+// Two present legs streaming a live 40 Hz-style stream (a fresh frame every tick
+// on the true ramp, so the ladder never decays) with real vel_ff and torque_ff,
+// the encoder parked under the command (no lead clamp). Runs past the arm-edge
+// recovery slew (which is FF-less) so the LAST streamed frames carry the stream's
+// vel_ff/torque_ff — what the ODrive is holding when output drops.
+static void stream_two_legs(LegFrame last[7]) {
+  reset_interp_test();
+  axes[0].heartbeat_seen = true;
+  axes[1].heartbeat_seen = true;
+  const float vel[2] = {0.6f, -0.8f};               // under RECOVER_SLEW_VEL_RPS so the slew converges
+  float tq[6] = {0.20f, -0.15f, 0, 0, 0, 0};   // inside TORQUE_CLAMP (0.25)
+  float zeros[6] = {0, 0, 0, 0, 0, 0};
+  axes[0].pos_rev = axes[1].pos_rev = 1.9f;         // encoder AT the stream start: the arm-edge slew is short
+  interp_set_output_enabled(true);
+  int after = 0;
+  for (int k = 0; k < 2000 && after < 3; ++k) {
+    const float t = (float)k * INTERP_PERIOD_US * 1e-6f;
+    float u0[6] = {1.9f + vel[0] * t, 1.9f + vel[1] * t, 0.5f, 0.5f, 0.5f, 0.5f};   // mid-stroke: no stroke clamp
+    float v0[6] = {vel[0], vel[1], 0, 0, 0, 0};
+    stage(u0, nullptr, v0, zeros, (uint16_t)(k + 1), tq);
+    fake_clear_sent();
+    interp_isr();
+    capture(last);
+    axes[0].pos_rev = axes[0].target_pos_rev; axes[1].pos_rev = axes[1].target_pos_rev;
+    fake_advance(INTERP_PERIOD_US);
+    if (!s_recover_slewing) ++after;
+  }
+  REQUIRE_FALSE(s_recover_slewing);
+  REQUIRE(last[0].seen); REQUIRE(last[1].seen);
+  REQUIRE(vel_of(last[0]) != 0); REQUIRE(vel_of(last[1]) != 0);   // a real vel_ff is being held
+  REQUIRE(tor_of(last[0]) != 0); REQUIRE(tor_of(last[1]) != 0);   // and the gravity torque_ff
+}
+}  // namespace jb73
+
+TEST_CASE("JB-73 hold flush: the fb-stale suppress edge re-sends each leg's last frame ONCE with vel_ff 0, pos + torque_ff kept") {
+  using namespace jb73;
+  LegFrame last[7], got[7];
+  stream_two_legs(last);
+  interp_set_output_enabled(false, true);          // MOTOR_FB_STALE suppression
+  fake_clear_sent();
+  interp_isr();                                    // the edge tick
+  capture(got);
+  CHECK(fake_sent_count_cmd(CMD_SETPOS) == 2);     // exactly the two present legs, one frame each
+  for (int a = 0; a < 2; ++a) {
+    REQUIRE(got[a].seen);
+    CHECK(memcmp(got[a].buf, last[a].buf, 4) == 0);   // input_pos bit-identical (never a new position)
+    CHECK(vel_of(got[a]) == 0);                       // vel_ff → 0: the ODrive now holds AT input_pos
+    CHECK(tor_of(got[a]) == tor_of(last[a]));         // gravity torque_ff untouched
+  }
+  CHECK(fake_last_tx_class() == (int)TxCls::LEGS);
+  CHECK(interp_hold_flush_edges() == 1u);
+  for (int k = 0; k < 20; ++k) {                   // ONE edge, ONE frame: silence after
+    fake_advance(INTERP_PERIOD_US);
+    fake_clear_sent();
+    interp_isr();
+    CHECK(fake_sent_count() == 0);
+  }
+  CHECK(interp_hold_flush_edges() == 1u);
+}
+
+TEST_CASE("JB-73 hold flush: never on a non-fb-stale disable, never during a cold-start move") {
+  using namespace jb73;
+  LegFrame last[7];
+  SUBCASE("E-STOP / disarm / link-loss disable (hold_flush false) transmits nothing") {
+    stream_two_legs(last);
+    interp_set_output_enabled(false);              // the pre-FW 35 call shape
+    fake_clear_sent();
+    interp_isr();
+    CHECK(fake_sent_count() == 0);
+    CHECK(interp_hold_flush_edges() == 0u);
+  }
+  SUBCASE("hold_flush is ignored while output is ENABLED") {
+    stream_two_legs(last);
+    interp_set_output_enabled(true, true);
+    CHECK_FALSE(s_hold_flush_ok);
+  }
+  SUBCASE("a cold-start move (TRAP_TRAJ-owned ODrives) starting on the edge tick suppresses the flush") {
+    stream_two_legs(last);
+    fake_set_deactivate(true);
+    interp_set_output_enabled(false, true);
+    fake_clear_sent();
+    interp_isr();
+    CHECK(fake_sent_count() == 0);
+    fake_set_deactivate(false);
+    fake_advance(INTERP_PERIOD_US);
+    fake_clear_sent();
+    interp_isr();                                  // the record is dead: no late flush either
+    CHECK(fake_sent_count() == 0);
+    CHECK(interp_hold_flush_edges() == 0u);
+  }
+  SUBCASE("a leg that turned present only at the edge has no record and is never flushed from zero") {
+    stream_two_legs(last);
+    axes[2].heartbeat_seen = true;                 // present now, never transmitted to
+    interp_set_output_enabled(false, true);
+    fake_clear_sent();
+    interp_isr();
+    LegFrame got[7]; capture(got);
+    CHECK(got[0].seen); CHECK(got[1].seen);
+    CHECK_FALSE(got[2].seen);
+  }
+}
+
+TEST_CASE("JB-73 hold flush: recovery then a second suppression flushes again (once per edge)") {
+  using namespace jb73;
+  LegFrame last[7], got[7];
+  stream_two_legs(last);
+  interp_set_output_enabled(false, true);
+  fake_clear_sent(); interp_isr();
+  CHECK(interp_hold_flush_edges() == 1u);
+  // Feedback returns: output re-enables behind the recovery slew.
+  interp_set_output_enabled(true);
+  for (int k = 0; k < 5; ++k) {
+    fake_advance(INTERP_PERIOD_US);
+    fake_clear_sent(); interp_isr(); capture(last);
+  }
+  REQUIRE(last[0].seen);
+  interp_set_output_enabled(false, true);
+  fake_advance(INTERP_PERIOD_US);
+  fake_clear_sent(); interp_isr(); capture(got);
+  CHECK(interp_hold_flush_edges() == 2u);
+  REQUIRE(got[0].seen);
+  CHECK(memcmp(got[0].buf, last[0].buf, 4) == 0);   // the LAST transmitted (slewed) position
+  CHECK(vel_of(got[0]) == 0);
+}
+
+TEST_CASE("JB-73 hold flush: a tau == 0 Hand stream gets ONE hold frame (pos kept, vel_ff 0)") {
+  using namespace jb73;
+  reset_interp_test();
+  seed_hand_encoder();
+  write_pos_vel(hand_axis(), 1.0f, 0.0f, fake_mono_us());
+  interp_set_output_enabled(true);
+  float u0[6] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+  float zeros[6] = {0, 0, 0, 0, 0, 0};
+  HandKnots hk{1.0f, 1.1f, 0.0f, 2.0f, 0.0f, 0.0f};   // a moving hand: v0 = 2 rev/s
+  stage_hand(u0, nullptr, zeros, &hk, 1);
+  LegFrame last[7], got[7];
+  for (int k = 0; k < 3; ++k) {
+    write_pos_vel(hand_axis(), axes[HAND_AXIS].target_pos_rev, 0.0f, fake_mono_us());
+    fake_clear_sent(); interp_isr(); capture(last);
+    fake_advance(INTERP_PERIOD_US);
+  }
+  REQUIRE(last[HAND_AXIS].seen);
+  REQUIRE(vel_of(last[HAND_AXIS]) != 0);
+  REQUIRE(tor_of(last[HAND_AXIS]) == 0);           // legacy: tau ≡ 0, so no FW 22 drain
+  interp_set_output_enabled(false, true);
+  fake_clear_sent(); interp_isr(); capture(got);
+  REQUIRE(got[HAND_AXIS].seen);
+  CHECK(memcmp(got[HAND_AXIS].buf, last[HAND_AXIS].buf, 4) == 0);
+  CHECK(vel_of(got[HAND_AXIS]) == 0);
+  CHECK(tor_of(got[HAND_AXIS]) == 0);
+  for (int k = 0; k < 10; ++k) {
+    fake_advance(INTERP_PERIOD_US);
+    fake_clear_sent(); interp_isr();
+    CHECK(fake_sent_count() == 0);
+  }
+}
+
+TEST_CASE("JB-73 hold flush: a tau != 0 Hand stream's FW 22 drain carries the hold (vel_ff 0, tau 0, pos kept)") {
+  const C2Plan P = make_c2_plan(1500.0, 12, 5.0);
+  ff_setup(P);
+  const uint64_t t0 = 1'100'000;
+  uint64_t off_at = 0;
+  const auto v = ff_run(P, t0, 44, 1.0f, 0.0f, t0 + 30u * 25'000u, nullptr, [&](uint64_t now) {
+    if (off_at == 0 && now > t0 + 400'000u && std::fabs(interp_hand_tau_cmd()) > 0.02f) {
+      off_at = now; interp_set_output_enabled(false, true);
+    }
+  });
+  REQUIRE(off_at != 0);
+  size_t i_off = 0;
+  while (v[i_off].now != off_at) ++i_off;
+  REQUIRE(v[i_off].hand_frame);
+  int16_t v_last; memcpy(&v_last, &v[i_off].buf[4], 2);
+  REQUIRE(v_last != 0);                            // a real vel_ff mid-stroke
+  for (int d = 1; d <= 3; ++d) {
+    REQUIRE(v[i_off + d].hand_frame);
+    int16_t vq; memcpy(&vq, &v[i_off + d].buf[4], 2);
+    CHECK(memcmp(v[i_off + d].buf, v[i_off].buf, 4) == 0);   // input_pos bit-identical
+    CHECK(vq == 0);                                          // vel_ff 0 (the pre-FW 35 drain re-sent v_last)
+    CHECK(v[i_off + d].tq == 0);
+  }
+  for (size_t i = i_off + 4; i < v.size(); ++i) CHECK_FALSE(v[i].hand_frame);
+  CHECK(interp_hand_drain_frames() == 3u);
+  CHECK(interp_hold_flush_edges() == 1u);
+}

@@ -189,6 +189,15 @@ def test_the_bump_history_records_what_this_version_carries():
     assert 'WAVE_CMD' in m33.group(1) and 'WaveCameraCanId::CMD' in m33.group(1), m33.group(1)
     assert 'send_cone_frame' in m33.group(1) and 'ERR_BUS_DOWN' in m33.group(1), m33.group(1)
     assert 'NO WIRE CHANGE' in m33.group(1) and 'ERR_UNKNOWN_METHOD' in m33.group(1), m33.group(1)
+    # FW 35 — JB-73 suppress-edge hold flush.  The substance: a NEW TX on the
+    # MOTOR_FB_STALE suppress edge (one vel_ff = 0 frame per lane at the last
+    # input_pos), scoped to fb-stale only, and the bump is wire-invisible, so
+    # only BRIDGE_FW_CHECK says whether it is aboard.
+    m35 = re.search(r'^// 34→35:(.*)$', text, re.M)
+    assert m35 is not None, "FW 35 history line missing"
+    assert 'JB-73' in m35.group(1) and 'MOTOR_FB_STALE' in m35.group(1), m35.group(1)
+    assert 'vel_ff = 0' in m35.group(1) and 'torque_ff' in m35.group(1), m35.group(1)
+    assert 'NO WIRE CHANGE' in m35.group(1), m35.group(1)
 
 
 def test_the_version_this_release_pins_is_actually_uplinked():
