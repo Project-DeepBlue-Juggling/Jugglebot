@@ -25,7 +25,7 @@ and change nothing).
 
 ## 1. Read the results
 
-1. `python -m mapkit items --open --json` and, for every hardware Item (`hardware` bench-leg or
+1. `python -m mapkit items --open --json` and, for every hardware Item (`hardware` bench-leg, bench-hand or
    robot) plus every Item named by a `branch:` in `docs/runbook.md`, read its body for
    `## Sitting result (<date>)` sections newer than the last wrap-up (the last wrap-up's date
    is the newest `logbook/*-sitting-wrapup.md` entry; none = all of them).

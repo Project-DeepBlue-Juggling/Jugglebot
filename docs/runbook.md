@@ -6,6 +6,8 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
+Rigs: Robot 3 blocks (77 min) · Bench leg 1 block (30 min)
+
 ## Setup 0: before power
 
 - Power-cycle the can-bridge after any re-cabling (sticky presence set trips CAN_BUS_DOWN).
@@ -14,9 +16,11 @@ linked from rows, never duplicated.
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Block 1: armed, bb-fed  (2 rows, 35 min)
+## Robot  (3 blocks, 77 min)
 
-### JB-120 Admissible-box gate passes a cell whose solve exceeds HAND_LIMIT_ACC by ~5%  (15 min, high, two-ball-oval)
+### Block 1: armed, bb-fed  (2 rows, 35 min)
+
+#### JB-120 Admissible-box gate passes a cell whose solve exceeds HAND_LIMIT_ACC by ~5%  (15 min, high, two-ball-oval)
 - why: confirm the Columns Ball 2 catch no longer ends on HAND_LIMIT_ACC after the box edge or fallback change.
 - do:
   - Fly Columns, Sep. 125, Apex 0.95, Throws 50, twice.
@@ -24,25 +28,25 @@ linked from rows, never duplicated.
 - record: per-catch peak Hand acceleration from the install lines and the learner y for Ball 2.
 - branch: `night-shift/2026-11-01-JB-120`
 
-### JB-121 Two-ball Columns hop-start throw lands 25-56 mm inboard, past the 35 mm catch authority  (20 min, high, two-ball-oval)
+#### JB-121 Two-ball Columns hop-start throw lands 25-56 mm inboard, past the 35 mm catch authority  (20 min, high, two-ball-oval)
 - why: read the hop-start landing bias at the new default hold 0.
 - do:
   - Fly Columns, Sep. 125, Apex 0.95, Throws 12, five starts from a cold hand.
 - pass: five of five starts past the first two catches, with no AIM-LATERAL-CLAMPED inward of 35 mm.
 - record: the HOP aim clamp line and the landing x error of each hop throw.
 
-## Block 2: armed  (1 rows, 10 min)
+### Block 2: armed  (1 row, 10 min)
 
-### JB-23 Emitter gap: one 47 ms window over sitting 8 against the 35 ms max target  (10 min, medium, unattached)
+#### JB-23 Emitter gap: one 47 ms window over sitting 8 against the 35 ms max target  (10 min, medium, unattached)
 - why: the 47 ms emitter window has only one sample (sitting 8); a fresh read at today's launch says whether the max is still over the 35 ms target.
 - do:
   - Fly one 50-throw goal of any Pattern and read the emitter p50 / p99 / max from `/trajectory/status` in the launch log.
 - pass: emitter max below 35 ms over the goal.
 - record: the emitter p50, p99 and max lines, and the goal flown.
 
-## Block 3: level, armed, bb-fed  (2 rows, 32 min)
+### Block 3: level, armed, bb-fed  (2 rows, 32 min)
 
-### JB-107 JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m  (12 min, medium, pattern-progression-columns-to-centre-and-orbit)
+#### JB-107 JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m  (12 min, medium, pattern-progression-columns-to-centre-and-orbit)
 - why: P5 of plan pattern-progression.md: two Apexes in one Pattern (JP-9). The Rung flies 1.00 over 0.90 at separation 100; since the 2026-10-31 re-sweep (Hand prime 10.45, box gate_hash 961808ee2d20) 1.05 over 0.95 is admissible at both Sites too, but a 1.05 launch waits for the faster hand current capture (plan D-c).
 - do:
   - Rehearse before arming: cup empty, Ball Butler unpowered, `ros2 param set /skill_node apex_m_ball2 0.90`, send the goal below once. The accept message may name only the cup and Ball Butler refusals (no box, planner or apex2 refusal) and nothing moves.
@@ -52,7 +56,7 @@ linked from rows, never duplicated.
 - pass: 20 consecutive Catches in one Attempt; Tracker mean Apex difference between the two balls within 20 mm of the commanded 100 mm; hand iq under 45 A at every launch.
 - record: caught of thrown, each ball's mean Tracker Apex, peak hand iq per launch, the bag path; commit docs/records.md.
 
-### JB-108 JP-10 Turned columns: the columns pair at fixed angles about +z, under pose  (20 min, medium, pattern-progression-columns-to-centre-and-orbit)
+#### JB-108 JP-10 Turned columns: the columns pair at fixed angles about +z, under pose  (20 min, medium, pattern-progression-columns-to-centre-and-orbit)
 - why: P3 of plan pattern-progression.md: two-ball Columns off the x axis under the pose planner, one plant_id per angle, which answers JB-38 P2(b) (does the lateral bias rotate with the pair).
 - do:
   - Rehearse before arming: cup empty, Ball Butler unpowered, `ros2 param set /skill_node columns_angle_deg 45`, send the goal below once. The accept message may name only the cup and Ball Butler refusals (no box, planner or angle refusal) and nothing moves. Repeat at 90.
@@ -63,9 +67,11 @@ linked from rows, never duplicated.
 - pass: 20 consecutive Catches in one Attempt at each angle; landing scatter within 3 mm of the straight control; no HAND_LIMIT line.
 - record: caught of thrown per angle, each angle's plant_id, landing scatter against the control, the bag path; commit docs/records.md.
 
-## Block 4: bridge-cycled  (1 rows, 30 min)
+## Bench leg  (1 block, 30 min)
 
-### JB-73 Hand ODrive state can silently diverge from what the can-bridge commanded  (30 min, low, unattached)
+### Block 4: bridge-cycled  (1 row, 30 min)
+
+#### JB-73 Hand ODrive state can silently diverge from what the can-bridge commanded  (30 min, low, unattached)
 - why: confirm FW 35's suppress-edge hold flush leaves the bench leg at the last transmitted command instead of input_pos + vel_ff/pos_gain, and measure the current step it costs.
 - do:
   - FW 35 is already flashed (2026-11-01). Power-cycle the bridge after re-cabling to the bench leg and confirm `BRIDGE_IDENTITY` reads FW 35 / PROTOCOL 10.
@@ -76,27 +82,27 @@ linked from rows, never duplicated.
 
 ## Needs a Sitting section
 
-- JB-102 Pre-release hold rung: release from a moving Platform (hold 0.100 → 0): no ## Sitting section
-- JB-106 JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites: no ## Sitting section
-- JB-109 JP-11 Rotating columns: the pair turns a few degrees every Beat: no ## Sitting section
-- JB-110 JP-13 Rising and sinking columns: the whole Pattern rides the Platform in z: no ## Sitting section
-- JB-111 JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm: no ## Sitting section
-- JB-112 JP-15 Over the top: Ball 1 straight up, Ball 2 arcs over it (needs P4): no ## Sitting section
-- JB-113 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them: no ## Sitting section
-- JB-114 Hand end-of-stroke bumper, and first the planner's own brake shape: let the ceiling, not the Hand, cap the Apex: no ## Sitting section
-- JB-117 Hand brake and hold currents sit far below the throw envelope's model (brake -14 to -20 A measured vs 35 to 40 A predicted; hold 1.5 vs 2.6 A): Kt, moving mass or friction is mis-modelled: no ## Sitting section
-- JB-2 Design change: the Hand should be Idle, not Parked Closed-loop, while Active: no ## Sitting section
-- JB-24 10 % jitter-margin class of LIMIT_* refusals: no ## Sitting section
-- JB-26 Platform Teensy truncates the persisted levelling offset to int16 milliradians: no ## Sitting section
-- JB-28 Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware: no ## Sitting section
-- JB-29 Magazine feed-tuning loop (`magazine` + `reload` patterns, hand-only throw): no ## Sitting section
-- JB-52 Wave camera: CLIP_MISSING on the first start after a camera power-cycle: no ## Sitting section
-- JB-53 Wave camera: optical frame calibration maps the START tick to a recorded frame: no ## Sitting section
-- JB-83 can-bridge CAN3 analog drive path has a load-dependent hardware fault (the Jugglebot loom stays on CAN2): no ## Sitting section
-- JB-85 Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z: no ## Sitting section
-- JB-95 Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load): no ## Sitting section
-- JB-97 ABORTED_NO_RELEASE: three goals ended because the throw never left the hand (new 2026-10-28 21:02): no ## Sitting section
-- JB-98 Teensy guard MAX_DEVIATION latched on the hand (+8.4 rev) mid-oval; recover_lane found nothing, re-dispatch rejected WRONG_MODE: no ## Sitting section
+- JB-102 [Robot] Pre-release hold rung: release from a moving Platform (hold 0.100 → 0): no ## Sitting section
+- JB-106 [Robot] JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites: no ## Sitting section
+- JB-109 [Robot] JP-11 Rotating columns: the pair turns a few degrees every Beat: no ## Sitting section
+- JB-110 [Robot] JP-13 Rising and sinking columns: the whole Pattern rides the Platform in z: no ## Sitting section
+- JB-111 [Robot] JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm: no ## Sitting section
+- JB-112 [Robot] JP-15 Over the top: Ball 1 straight up, Ball 2 arcs over it (needs P4): no ## Sitting section
+- JB-113 [Robot] JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them: no ## Sitting section
+- JB-114 [Robot] Hand end-of-stroke bumper, and first the planner's own brake shape: let the ceiling, not the Hand, cap the Apex: no ## Sitting section
+- JB-117 [Bench hand] Hand brake and hold currents sit far below the throw envelope's model (brake -14 to -20 A measured vs 35 to 40 A predicted; hold 1.5 vs 2.6 A): Kt, moving mass or friction is mis-modelled: no ## Sitting section
+- JB-2 [Robot] Design change: the Hand should be Idle, not Parked Closed-loop, while Active: no ## Sitting section
+- JB-24 [Robot] 10 % jitter-margin class of LIMIT_* refusals: no ## Sitting section
+- JB-26 [Robot] Platform Teensy truncates the persisted levelling offset to int16 milliradians: no ## Sitting section
+- JB-28 [Robot] Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware: no ## Sitting section
+- JB-29 [Robot] Magazine feed-tuning loop (`magazine` + `reload` patterns, hand-only throw): no ## Sitting section
+- JB-52 [Robot] Wave camera: CLIP_MISSING on the first start after a camera power-cycle: no ## Sitting section
+- JB-53 [Robot] Wave camera: optical frame calibration maps the START tick to a recorded frame: no ## Sitting section
+- JB-83 [Robot] can-bridge CAN3 analog drive path has a load-dependent hardware fault (the Jugglebot loom stays on CAN2): no ## Sitting section
+- JB-85 [Robot] Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z: no ## Sitting section
+- JB-95 [Robot] Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load): no ## Sitting section
+- JB-97 [Robot] ABORTED_NO_RELEASE: three goals ended because the throw never left the hand (new 2026-10-28 21:02): no ## Sitting section
+- JB-98 [Robot] Teensy guard MAX_DEVIATION latched on the hand (+8.4 rev) mid-oval; recover_lane found nothing, re-dispatch rejected WRONG_MODE: no ## Sitting section
 
 ## Questions a Sitting can answer
 

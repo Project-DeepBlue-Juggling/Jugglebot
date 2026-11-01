@@ -4,11 +4,11 @@ kind: bug
 title: 'Hand brake and hold currents sit far below the throw envelope''s model (brake -14 to -20 A measured vs 35 to 40 A predicted; hold 1.5 vs 2.6 A): Kt, moving mass or friction is mis-modelled'
 status: inbox
 created: '2026-10-30'
-updated: '2026-10-30T11:50:57Z'
+updated: '2026-11-01T06:48:14Z'
 owners: []
 priority: medium
 effort: s
-hardware: bench-leg
+hardware: bench-hand
 owner: hands
 radius: subsystem
 diagnosis: hypothesis

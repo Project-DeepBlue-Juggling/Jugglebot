@@ -53,7 +53,7 @@ TICKET_TYPES = ("research", "prototype", "grilling", "task", "question")
 #: canonical frontmatter order (after ``priority``). ``diagnosis`` is bugs only.
 METRIC_ENUMS: Dict[str, Tuple[str, ...]] = {
     "effort": ("xs", "s", "m", "l", "xl"),
-    "hardware": ("none", "bench-leg", "robot"),
+    "hardware": ("none", "bench-leg", "bench-hand", "robot"),
     "owner": ("none", "decision", "hands"),
     "radius": ("local", "subsystem", "cross-cutting", "normative"),
     "diagnosis": ("unknown", "hypothesis", "confirmed"),

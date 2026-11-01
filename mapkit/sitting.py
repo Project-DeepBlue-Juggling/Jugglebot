@@ -1,12 +1,15 @@
 """``## Sitting`` sections on hardware Items and the Next Sitting Runbook page.
 
-A hardware Item (``hardware: bench-leg | robot``) says what it needs from the
+A hardware Item (``hardware: bench-leg | bench-hand | robot``) says what it needs from the
 next Sitting in a body section headed exactly ``## Sitting``: a bullet list
 with fixed keys (``setup``, ``why``, ``do``, ``pass``, ``record``, ``minutes``,
 optional ``branch``). ``render_runbook`` turns every open hardware Item's
 section into ``docs/runbook.md``, the Next Sitting Runbook. The generator never
 invents a ``do:`` step: an Item without a valid section is listed under
 "Needs a Sitting section" with the parse errors, never as a row.
+
+Rows are grouped by rig first (robot, bench leg, bench hand: a Sitting is on one
+rig), then by setup set within a rig.
 
 The page carries no wall-clock date, so ``python -m mapkit gen --check`` can
 tell a stale committed page from a fresh one.
@@ -23,7 +26,8 @@ from mapkit.items import INBOX_KINDS, Item, load_items, open_questions
 SETUPS = ("level", "tilt", "armed", "bb-fed", "bridge-cycled")
 REQUIRED_KEYS = ("setup", "why", "do", "pass", "record", "minutes")
 OPTIONAL_KEYS = ("branch",)
-HARDWARE = ("bench-leg", "robot")
+HARDWARE = ("robot", "bench-leg", "bench-hand")  # also the rig display order
+RIG_LABELS = {"robot": "Robot", "bench-leg": "Bench leg", "bench-hand": "Bench hand"}
 OPEN_STATUSES = ("inbox", "backlog", "in_progress")
 PRIORITY_WEIGHT = {"high": 3, "medium": 2, "low": 1}
 
@@ -53,6 +57,7 @@ class RunbookRow:
     priority: str
     spec: SittingSpec
     score: float
+    hardware: str = "robot"
 
 
 def has_sitting_section(body: str) -> bool:
@@ -144,27 +149,29 @@ def collect(repo_root: str) -> Dict:
     """Gather the Runbook's content from ``<repo>/map/``.
 
     Keys: ``rows`` (valid hardware Items by score desc, then ID), ``needs_section``
-    ``(id, title, errors)``, ``questions`` ``(ticket id, title, parent id)`` for open
+    ``(id, title, errors, hardware)``, ``questions`` ``(ticket id, title, parent id)`` for open
     question tickets under a hardware Item, and ``blocks``: rows grouped by their
-    exact setup set. The greedy pass walks rows in score order; a row joins the
+    exact setup set within a rig (never mixing rigs), and ``rigs``: ``(hardware,
+    blocks)`` in rig order for rigs with at least one row. The greedy pass walks rows in score order; a row joins the
     block already opened for its setup set (a Sitting sets up once per set, so a
     later row never reopens a set) and opens a new block only for a set not seen
-    yet. Blocks are thus ordered by their best row's score, rows within a block by
-    score.
+    yet. Blocks are thus ordered by rig, then by their best row's score, rows within
+    a block by score.
     """
     items = load_items(os.path.join(repo_root, "map"))
     hw = [i for i in items if i.kind in INBOX_KINDS and i.meta.get("hardware") in HARDWARE
           and i.status in OPEN_STATUSES]
     rows: List[RunbookRow] = []
-    needs: List[Tuple[str, str, List[str]]] = []
+    needs: List[Tuple[str, str, List[str], str]] = []
     for i in hw:
         spec, errs = parse_sitting(i.body)
         if spec is None:
-            needs.append((_bid(i), i.title, errs))
+            needs.append((_bid(i), i.title, errs, str(i.meta.get("hardware"))))
             continue
         pri = str(i.meta.get("priority") or "")
         rows.append(RunbookRow(_bid(i), "%s-%s" % (i.kind, i.slug), i.title,
-                               str(i.meta.get("parent") or ""), pri, spec, _score(pri, spec)))
+                               str(i.meta.get("parent") or ""), pri, spec, _score(pri, spec),
+                               str(i.meta.get("hardware"))))
     rows.sort(key=lambda r: (-r.score, r.item_id))
     needs.sort()
     questions: List[Tuple[str, str, str]] = []
@@ -174,13 +181,22 @@ def collect(repo_root: str) -> Dict:
                 questions.append((_bid(t), t.title, _bid(i)))
     questions = sorted(set(questions))
     blocks: List[List[RunbookRow]] = []
-    by_set: Dict[Tuple[str, ...], List[RunbookRow]] = {}
-    for r in rows:
-        if r.spec.setup not in by_set:
-            by_set[r.spec.setup] = []
-            blocks.append(by_set[r.spec.setup])
-        by_set[r.spec.setup].append(r)
-    return {"rows": rows, "needs_section": needs, "questions": questions, "blocks": blocks}
+    rigs: List[Tuple[str, List[List[RunbookRow]]]] = []
+    for rig in HARDWARE:
+        rig_blocks: List[List[RunbookRow]] = []
+        by_set: Dict[Tuple[str, ...], List[RunbookRow]] = {}
+        for r in rows:
+            if r.hardware != rig:
+                continue
+            if r.spec.setup not in by_set:
+                by_set[r.spec.setup] = []
+                rig_blocks.append(by_set[r.spec.setup])
+            by_set[r.spec.setup].append(r)
+        if rig_blocks:
+            rigs.append((rig, rig_blocks))
+            blocks.extend(rig_blocks)
+    return {"rows": rows, "needs_section": needs, "questions": questions, "blocks": blocks,
+            "rigs": rigs}
 
 
 def render_runbook(repo_root: str) -> str:
@@ -198,21 +214,37 @@ def render_runbook(repo_root: str) -> str:
         "- Run `colcon build --packages-select jugglebot` and re-source before the Sitting (the install tree is stale until then).",
         "- BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).",
         "- Check out the candidate branch in the live checkout only if a row below names a `branch:`.", ""]
-    for n, block in enumerate(data["blocks"], 1):
-        setup = ", ".join(block[0].spec.setup) or "no setup"
-        out += ["## Block %d: %s  (%d rows, %d min)" % (n, setup, len(block),
-                                                      sum(r.spec.minutes for r in block)), ""]
-        for r in block:
-            out += ["### %s %s  (%d min, %s, %s)" % (r.item_id, r.title, r.spec.minutes,
-                                                     r.priority or "unrated", r.pathway or "unattached"),
-                    "- why: %s" % r.spec.why, "- do:"]
-            out += ["  - %s" % s for s in r.spec.do]
-            out += ["- pass: %s" % r.spec.pass_, "- record: %s" % r.spec.record]
-            if r.spec.branch:
-                out.append("- branch: `%s`" % r.spec.branch)
-            out.append("")
+    def _plural(n: int, word: str) -> str:
+        return "%d %s%s" % (n, word, "" if n == 1 else "s")
+
+    def _mins(bs: List[List[RunbookRow]]) -> int:
+        return sum(r.spec.minutes for b in bs for r in b)
+
+    if data["rigs"]:
+        out[out.index("## Setup 0: before power"):out.index("## Setup 0: before power")] = [
+            "Rigs: " + " \u00b7 ".join("%s %s (%d min)" % (RIG_LABELS[rig], _plural(len(bs), "block"),
+                                                        _mins(bs)) for rig, bs in data["rigs"]), ""]
+    n = 0
+    for rig, rig_blocks in data["rigs"]:
+        out += ["## %s  (%s, %d min)" % (RIG_LABELS[rig], _plural(len(rig_blocks), "block"),
+                                         _mins(rig_blocks)), ""]
+        for block in rig_blocks:
+            n += 1
+            setup = ", ".join(block[0].spec.setup) or "no setup"
+            out += ["### Block %d: %s  (%s, %d min)" % (n, setup, _plural(len(block), "row"),
+                                                          sum(r.spec.minutes for r in block)), ""]
+            for r in block:
+                out += ["#### %s %s  (%d min, %s, %s)" % (r.item_id, r.title, r.spec.minutes,
+                                                         r.priority or "unrated", r.pathway or "unattached"),
+                        "- why: %s" % r.spec.why, "- do:"]
+                out += ["  - %s" % s for s in r.spec.do]
+                out += ["- pass: %s" % r.spec.pass_, "- record: %s" % r.spec.record]
+                if r.spec.branch:
+                    out.append("- branch: `%s`" % r.spec.branch)
+                out.append("")
     out += ["## Needs a Sitting section", ""]
-    out += ["- %s %s: %s" % (i, t, "; ".join(e)) for i, t, e in data["needs_section"]] or ["- none"]
+    out += ["- %s [%s] %s: %s" % (i, RIG_LABELS.get(h, h), t, "; ".join(e))
+            for i, t, e, h in data["needs_section"]] or ["- none"]
     out += ["", "## Questions a Sitting can answer", ""]
     out += ["- %s %s (parent %s)" % q for q in data["questions"]] or ["- none"]
     out += ["", "## Close-out", "",

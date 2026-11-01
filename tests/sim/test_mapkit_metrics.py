@@ -36,7 +36,7 @@ _OTHERS = {
 def test_spec_shape():
     assert METRIC_FIELDS == ("effort", "hardware", "owner", "radius", "diagnosis", "area")
     assert METRIC_ENUMS["effort"] == ("xs", "s", "m", "l", "xl")
-    assert METRIC_ENUMS["hardware"] == ("none", "bench-leg", "robot")
+    assert METRIC_ENUMS["hardware"] == ("none", "bench-leg", "bench-hand", "robot")
     assert METRIC_ENUMS["owner"] == ("none", "decision", "hands")
     assert METRIC_ENUMS["radius"] == ("local", "subsystem", "cross-cutting", "normative")
     assert METRIC_ENUMS["diagnosis"] == ("unknown", "hypothesis", "confirmed")

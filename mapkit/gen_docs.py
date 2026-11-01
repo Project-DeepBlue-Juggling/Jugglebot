@@ -139,7 +139,7 @@ def render_project_map(repo_root: str) -> str:
     out.append("")
     # Inbox
     out += ["## Inbox", "",
-            "Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/robot; Owner none/decision/hands; "
+            "Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/bench-hand/robot; Owner none/decision/hands; "
             "Blast radius local/subsystem/cross-cutting/normative; Area = primary area "
             "(`DOCUMENTATION_GUIDE.md` 2.10); a dash is unrated.", "",
             "| ID | Kind | Title | Status | Priority | Effort | HW | Owner | Blast radius | Area "

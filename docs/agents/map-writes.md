@@ -48,7 +48,7 @@ The caps are enforced for every committed Item by `tests/sim/test_map_items.py::
 
 ## The `## Sitting` section
 
-A hardware Item (`hardware: bench-leg | robot`) says what it needs from the next Sitting in a body section headed exactly `## Sitting`, placed before `## Progress`. A Session that files or progresses a hardware Item writes it. It is a bullet list with fixed keys (`- key: value`; `do:` may be one line or a nested `  - ` list):
+A hardware Item (`hardware: bench-leg | bench-hand | robot`) says what it needs from the next Sitting in a body section headed exactly `## Sitting`, placed before `## Progress`. A Session that files or progresses a hardware Item writes it. It is a bullet list with fixed keys (`- key: value`; `do:` may be one line or a nested `  - ` list):
 
 | key | value |
 | --- | --- |

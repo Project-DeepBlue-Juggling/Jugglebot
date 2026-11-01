@@ -4,11 +4,11 @@ kind: bug
 title: Platform Teensy truncates the persisted levelling offset to int16 milliradians
 status: inbox
 created: '2026-10-24'
-updated: '2026-10-24T13:05:00Z'
+updated: '2026-11-01T06:48:15Z'
 owners: []
 priority: medium
 effort: s
-hardware: bench-leg
+hardware: robot
 owner: hands
 radius: normative
 diagnosis: confirmed

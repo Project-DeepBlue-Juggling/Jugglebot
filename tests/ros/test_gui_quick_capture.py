@@ -129,7 +129,7 @@ def test_effort_and_hardware_pills_are_optional_unselected_and_posted_only_when_
     form = HTML[HTML.index('id="quick-capture-form"'):HTML.index('id="map-pane"')]
     for v in ("xs", "s", "m", "l", "xl"):
         assert f'name="qc-effort" value="{v}"' in form
-    for v in ("none", "bench-leg", "robot"):
+    for v in ("none", "bench-leg", "bench-hand", "robot"):
         assert f'name="qc-hardware" value="{v}"' in form
     pills = form[form.index('qc-pills'):form.index('id="qc-title"')]
     assert "checked" not in pills  # none preselected

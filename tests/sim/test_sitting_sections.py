@@ -111,10 +111,50 @@ def test_render_has_no_date_and_is_stable(repo):
     text = sitting.render_runbook(str(repo))
     assert not re.search(r"20\d\d-\d\d-\d\d", text)
     assert text == sitting.render_runbook(str(repo))
-    assert "## Block 1: level  (2 rows, 50 min)" in text
-    assert "### JB-1 Row 1  (10 min, high, pw)" in text
+    assert "### Block 1: level  (2 rows, 50 min)" in text
+    assert "#### JB-1 Row 1  (10 min, high, pw)" in text
     assert "- branch: `night-shift/b`" in text
     assert "`JB-" not in text
+
+
+def _rig_repo(tmp_path):
+    (tmp_path / "map").mkdir()
+    for n, rig, mins, pri in (("1", "bench-hand", "5", "high"), ("2", "bench-leg", "10", "medium"),
+                              ("3", "robot", "40", "low"), ("4", "bench-leg", "10", "low")):
+        _item(tmp_path, "bug", "rig%s" % n, _sec("level", mins), id="JB-%s" % n, title="Rig %s" % n,
+              priority=pri, hardware=rig, parent="pw")
+    _item(tmp_path, "bug", "nosec", id="JB-5", title="No sec", hardware="bench-leg", priority="high")
+    return tmp_path
+
+
+def test_rigs_never_share_a_block_and_follow_rig_order(tmp_path):
+    repo = _rig_repo(tmp_path)
+    data = sitting.collect(str(repo))
+    # same setup everywhere, but one block per rig; robot first despite the lowest score
+    assert [(h, [[r.item_id for r in b] for b in bs]) for h, bs in data["rigs"]] == [
+        ("robot", [["JB-3"]]), ("bench-leg", [["JB-2", "JB-4"]]), ("bench-hand", [["JB-1"]])]
+    assert [[r.item_id for r in b] for b in data["blocks"]] == [["JB-3"], ["JB-2", "JB-4"], ["JB-1"]]
+    assert {r.item_id: r.hardware for r in data["rows"]}["JB-1"] == "bench-hand"
+    assert data["needs_section"][0][0] == "JB-5" and data["needs_section"][0][3] == "bench-leg"
+
+
+def test_rendered_rig_headings_summary_and_needs_label(tmp_path):
+    text = sitting.render_runbook(str(_rig_repo(tmp_path)))
+    lines = text.splitlines()
+    heads = [l for l in lines if l.startswith("#")]
+    assert heads.index("## Robot  (1 block, 40 min)") < heads.index("## Bench leg  (1 block, 20 min)") \
+        < heads.index("## Bench hand  (1 block, 5 min)")
+    assert "### Block 1: level  (1 row, 40 min)" in lines
+    assert "### Block 3: level  (1 row, 5 min)" in lines
+    assert "#### JB-1 Rig 1  (5 min, high, pw)" in lines
+    assert "Rigs: Robot 1 block (40 min) \u00b7 Bench leg 1 block (20 min) \u00b7 Bench hand 1 block (5 min)" in lines
+    assert "- JB-5 [Bench leg] No sec: no ## Sitting section" in lines
+    assert "## Needs a Sitting section" in lines and "## Close-out" in lines
+
+
+def test_bench_hand_is_a_valid_hardware_value():
+    from mapkit.items import METRIC_ENUMS
+    assert "bench-hand" in METRIC_ENUMS["hardware"] and "bench-hand" in sitting.HARDWARE
 
 
 def test_append_result_placement_and_error():
