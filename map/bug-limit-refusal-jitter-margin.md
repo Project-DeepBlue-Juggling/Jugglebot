@@ -48,4 +48,4 @@ A question ticket carries this to the owner; the answer under its `## Answer` re
 
 ## Progress
 
-- 2026-11-01: 2026-11-01 JB-127 option 4 tally: LIMIT_* not dominant (4 of 58 goals, 3 the JB-120 Hand cell); margin stays 10 percent; re-run tools/probes/limit_refusal_tally.py after more hold-0 goals
+- 2026-11-01: JB-127 option 4 tally: LIMIT_* not dominant (4 of 58 goals, 3 the JB-120 Hand cell); margin stays 10 percent; re-run tools/probes/limit_refusal_tally.py after more hold-0 goals

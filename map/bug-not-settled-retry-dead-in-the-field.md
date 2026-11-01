@@ -35,4 +35,4 @@ A question ticket carries this to the owner; the answer under its `## Answer` re
 
 ## Progress
 
-- 2026-11-01: 2026-11-01 retry retired per JB-125 option 1: NOT_SETTLED fails closed; Ball Butler yaw-settle fix filed separately
+- 2026-11-01: retry retired per JB-125 option 1: NOT_SETTLED fails closed; Ball Butler yaw-settle fix filed separately
