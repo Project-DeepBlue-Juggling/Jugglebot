@@ -35,6 +35,7 @@ anchor. The STREAM socket keeps the plain ``recvfrom`` path: it pays nothing.
 
 from __future__ import annotations
 
+import errno
 import logging
 import select
 import socket
@@ -122,20 +123,41 @@ def _seeded_type_counters() -> Dict[int, int]:
     return {int(t): 0 for t in p.MsgType}
 
 
-def _reuse_fixed_port(sock: socket.socket, port: int) -> None:
-    """Set SO_REUSEADDR only when binding a FIXED port.
+class LinkBusyError(OSError):
+    """Another process on this host already holds a can-bridge UDP port (JB-82).
 
-    Production binds the fixed ports 5005/5006, so it is unchanged. On an
-    ephemeral bind (port 0, every loopback test), Linux may hand out a port that
-    another SO_REUSEADDR socket still holds, and the NEWER socket then gets all
-    of that port's datagrams while the older one goes deaf. This was measured on
-    the Jetson on 2026-09-30: 900 ephemeral binds shared 8-15 ports with the
-    option set, and 0 without it. Under the parallel gate, that delivered one
-    test's FakeTeensy RPC reply (``ERR_UNKNOWN_METHOD``) to another test's
-    client. An ephemeral port has no reason to be shared.
+    The link is single-owner: two processes bound to the same port would split the
+    inbound stream (the kernel delivers each datagram to ONE socket) and could both
+    command the robot. The client never sets ``SO_REUSEADDR``, so the kernel refuses
+    the second bind whatever the other program set, and this names the port.
     """
-    if port:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+
+def _bind_exclusive(sock: socket.socket, host: str, port: int, role: str) -> None:
+    """Bind ``sock`` WITHOUT ``SO_REUSEADDR``: one owner per port, enforced by the kernel.
+
+    Production binds the fixed ports 5005/5006. Until 2026-11-01 the client set
+    ``SO_REUSEADDR`` on them (a habit from a June probe tool, no recorded reason),
+    which let a second process bind the same ports silently (the latent hazard in
+    logbook 2026-07-12-cone-sync-udp-link-contention). Probed 2026-11-01 on the
+    Jetson: two UDP sockets share a port only when BOTH set the option; without it
+    the second bind is ``EADDRINUSE`` (whichever binds first), and a relaunch
+    re-binds 0.08 ms after the old owner is SIGKILLed (UDP has no TIME_WAIT). The
+    ephemeral binds the tests use (port 0) never set it either: on 2026-09-30, 900
+    ephemeral binds shared 8-15 ports with the option set, and 0 without it.
+    """
+    try:
+        sock.bind((host, port))
+    except OSError as exc:
+        sock.close()
+        if exc.errno == errno.EADDRINUSE and port:
+            raise LinkBusyError(
+                errno.EADDRINUSE,
+                "can-bridge %s port %s:%d is already bound by another process on this "
+                "host; the link is single-owner (stop the other program; "
+                "`ss -ulpn 'sport = :%d'` names it)" % (role, host, port, port),
+            ) from exc
+        raise
 
 
 @dataclass
@@ -313,14 +335,17 @@ class TeensyLinkClient:
         # first frame per socket, which _track_seq already treats as free.
         self._last_rx_seq.clear()
 
-        self._stream_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        _reuse_fixed_port(self._stream_sock, self._bind_stream)
-        self._stream_sock.bind((self._bind_host, self._bind_stream))
+        stream = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        _bind_exclusive(stream, self._bind_host, self._bind_stream, "stream")
+        rpc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            _bind_exclusive(rpc, self._bind_host, self._bind_rpc, "RPC")
+        except OSError:
+            stream.close()   # never keep half a link
+            raise
+        self._stream_sock = stream
         self._stream_sock.setblocking(False)
-
-        self._rpc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        _reuse_fixed_port(self._rpc_sock, self._bind_rpc)
-        self._rpc_sock.bind((self._bind_host, self._bind_rpc))
+        self._rpc_sock = rpc
         self._rpc_sock.setblocking(False)
         # RPC socket ONLY: ask the kernel to stamp each datagram's receive time.
         # The stream socket does not pay for this (it has no anchor role).

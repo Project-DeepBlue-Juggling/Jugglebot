@@ -59,7 +59,7 @@ from .protocol import (
     RpcResponse,
     hand_axis6_permitted,
 )
-from .client import TeensyLinkClient, LinkStats
+from .client import TeensyLinkClient, LinkStats, LinkBusyError
 from .rpc import RpcClient, RpcServer, RpcError, RpcTimeout
 from .tod_server import TimeOfDayServer
 
@@ -100,6 +100,7 @@ __all__ = [
     # Client + RPC infrastructure
     "TeensyLinkClient",
     "LinkStats",
+    "LinkBusyError",
     "RpcClient",
     "RpcServer",
     "RpcError",

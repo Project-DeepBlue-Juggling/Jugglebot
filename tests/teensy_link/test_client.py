@@ -341,13 +341,23 @@ def test_ephemeral_binds_do_not_set_reuseaddr(fake_teensy_and_client):
         assert _reuseaddr(sock) == 0
 
 
-def test_a_fixed_port_keeps_reuseaddr():
-    """Production binds 5005/5006 and keeps the option, unchanged."""
-    from teensy_link.client import _reuse_fixed_port
-    for port, want in ((p.PORT_STREAM, 1), (p.PORT_RPC, 1), (0, 0)):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            _reuse_fixed_port(sock, port)
-            assert bool(_reuseaddr(sock)) == bool(want), port
-        finally:
-            sock.close()
+def test_a_fixed_port_never_sets_reuseaddr():
+    """JB-82 (2026-11-01): production's fixed ports 5005/5006 no longer carry the
+    option (it let a second process share the link silently); the kernel then
+    refuses any second bind. Bound here on a free fixed loopback pair, never
+    5005/5006. The refusal itself is pinned in test_single_owner.py."""
+    from teensy_link import TeensyLinkClient
+    held = [socket.socket(socket.AF_INET, socket.SOCK_DGRAM) for _ in range(2)]
+    for s in held:
+        s.bind(("127.0.0.1", 0))
+    stream, rpc = (s.getsockname()[1] for s in held)
+    for s in held:
+        s.close()
+    client = TeensyLinkClient(teensy_addr=("127.0.0.1", 1), rpc_port=1, bind_host="127.0.0.1",
+                              local_bind_stream=stream, local_bind_rpc=rpc)
+    client.start()
+    try:
+        for sock in (client.stream_sock, client.rpc_sock):
+            assert _reuseaddr(sock) == 0
+    finally:
+        client.stop()

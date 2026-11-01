@@ -97,5 +97,10 @@ def generate_launch_description():
                 'enable_setpoint_output': enable_setpoint_output,
             }],
             additional_env={'PYTHONPATH': pythonpath},
+            # JB-82 (2026-11-01): the shutdown Stow is bounded at _SHUTDOWN_DEACTIVATE_TIMEOUT_S = 6 s plus a
+            # ~0.2 s settle; launch's default 5 s SIGINT->SIGTERM would kill the node before it
+            # can log the outcome (the descent itself is ODrive/firmware-owned and finishes
+            # anyway). Pinned by tests/ros/test_bridge_launch_sigterm.py.
+            sigterm_timeout='8',
         ),
     ])

@@ -2,9 +2,9 @@
 id: JB-82
 kind: bug
 title: teensy_bridge_node's shutdown Stow can be cut off by the launch's 5 s SIGTERM; teensy_link has no single-owner interlock
-status: inbox
+status: complete
 created: '2026-10-28'
-updated: '2026-10-28T07:26:31Z'
+updated: '2026-11-01T01:57:22Z'
 owners: []
 priority: medium
 effort: s
@@ -36,3 +36,7 @@ Source entries: [logbook/2026-07-12-cone-sync-udp-link-contention.md](logbook/20
 Recommendation: 3, timeout first (one line per launch file; a cut-off Stow leaves the Platform wherever SIGTERM found it, which is the hazard the Stow exists to prevent), interlock as its own unit.
 
 A question ticket carries this to the owner; the answer under its `## Answer` re-opens this Item.
+
+## Progress
+
+- 2026-11-01: Owner chose the split (JB-123): link single-owner (no SO_REUSEADDR, LinkBusyError) and an 8 s SIGTERM window for the bridge node; the post-rejection teardown hang is filed separately.
