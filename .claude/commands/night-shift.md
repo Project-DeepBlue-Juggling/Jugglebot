@@ -196,10 +196,11 @@ python -m mapkit item new ticket "<the question, one sentence ending in ?>" --ty
 
 Rated at filing: a ticket is not `inbox`, so `test_map_items_rated` requires every metric.
 The body: the context in two sentences, the options you drafted, what each answer would
-unblock, each paragraph under the readability cap. No `--commit`: commit it on the Item's
-branch (`map: file ticket JB-m <title>`, no trailer) so it lands with the HOLD push, OR,
-when there is no branch for this Item, on `main` through the map-write check (§ 0 rule 10:
-`--commit --no-push`, the map tests, then push). The owner answers in the app
+unblock, each paragraph under the readability cap. Every question ticket is filed on
+`main` through the map-write check (§ 0 rule 10: `--commit --no-push`, the map tests, then
+push; subject `map: file ticket JB-m <title>`, no trailer), never on an Item's branch: the
+app writes the answer to `main`, and a branch copy would stay open and trip the gate's
+condition (e) at the re-gate (and add/add-conflict when the branch later merges `main`). The owner answers in the app
 under `## Answer`; the next night's preflight sees the ticket's `updated` move and
 re-opens the parent.
 
@@ -207,7 +208,7 @@ re-opens the parent.
 require my input should be written up with a response cell"). That is: every Held row whose
 unblock is the owner's call (audit findings open, a design choice, a scope call), and every
 Skipped or Unfinished row skipped for `owner decision`, unless an open ticket already
-exists for it (the row-118 case: list that one again, file no second). NOT for a Held or
+exists for it (the dispatch table's open-ticket row: list that one again, file no second). NOT for a Held or
 Skipped row whose only unblock is a Sitting (the Runbook's job), `out of reach` or `not
 reached`. A hold ticket is "JB-n held on night-shift/<date>-JB-n: apply the audit's N
 fixes and merge, merge as is, or drop?", the body lists each open finding as an option
@@ -215,9 +216,11 @@ with what it would change, and ends with your recommendation. Every such ticket 
 under `## Questions for the Operator` (so the app's answer box and Your-answer column
 serve it unchanged) and the Held row names it in `Respond in`.
 
-**A hold ticket is filed on `main`, never on the held branch** (`--commit --no-push`, the
-map tests, then push, as in 2j step 2): the app writes the answer to `main`, and a branch
-copy would stay open and trip the gate's condition (e) at the re-gate.
+**Holds carried from an earlier night.** Every `night-shift/*` branch still on the remote
+(`git ls-remote --heads origin 'night-shift/*'`) whose Item is not complete is a row in
+tonight's `## Held`, with its original branch name, `(carried)` before its old reason, and
+its ticket in `Respond in`. A carried hold with no ticket yet (held before 2026-11-02) gets
+one tonight, unless only a Sitting unblocks it (`none`).
 
 ### 2i. MERGE
 
@@ -254,10 +257,16 @@ copy would stay open and trip the gate's condition (e) at the re-gate.
    The last cell, `Respond in`, is the bare ID of the hold ticket, or `none` for a
    Sitting-only hold; the app adds a **Your answer** column beside it from that ticket.
 
+### 2k. After every Item
+
+`git checkout -q main`; `git status --porcelain` empty; `git log origin/main..main` empty.
+If not, fix it now (push what is yours, revert what is not) and say so in the report.
+
 ### 2l. RESUME an answered hold
 
-The ticket is complete and its parent has a held branch. Read the ticket's `## Answer`
-as the order for the night:
+The ticket is complete and its parent has a held branch (find it with
+`git ls-remote --heads origin 'night-shift/*-JB-n'`; the newest date if several). Read the
+ticket's `## Answer` as the order for the night:
 
 1. `git fetch -q && git checkout -q night-shift/<old-date>-JB-n && git merge -q origin/main`
    (the gate needs the base inside the branch; the merge also brings the closed ticket).
@@ -265,19 +274,16 @@ as the order for the night:
 2. **Apply** (the answer names fixes, or accepts the audit's): make the named changes as
    in 2d (a unit, `model: sonnet`), commit, then 2e-2g as for any branch. Merge on 2i.
 3. **Merge as is**: re-run 2e on the merged tip and 2f/2g; merge on `MERGE`.
-4. **Drop**: `git push -q origin --delete night-shift/<old-date>-JB-n`, the Item back to
-   `open` (`set-status`) with a one-line note, report row under `## Skipped` (`dropped by the
-   owner's answer`).
+4. **Drop**: `git push -q origin --delete night-shift/<old-date>-JB-n`; on `main`, in one
+   write, remove the `- branch:` line from the Item's `## Sitting` section (if any) and
+   `night-shift` from its `owners` (a `mapkit.items.load_item` / `write_item` snippet, as in
+   2j step 2), then `set-status JB-n open --note "<one line>" --commit --no-push`, the map
+   tests, push; report row under `## Skipped` (`dropped by the owner's answer`).
 5. An answer that does not decide (a question back, "later"): Held again under a NEW
    ticket (2h) quoting what is still unclear; the report row says so.
 
 A re-held Item keeps its branch name; the Held row's `Branch` cell stays
 `night-shift/<old-date>-JB-n`.
-
-### 2k. After every Item
-
-`git checkout -q main`; `git status --porcelain` empty; `git log origin/main..main` empty.
-If not, fix it now (push what is yours, revert what is not) and say so in the report.
 
 ## 3. The report
 
