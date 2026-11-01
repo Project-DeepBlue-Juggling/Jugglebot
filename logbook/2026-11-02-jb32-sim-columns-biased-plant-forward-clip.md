@@ -41,7 +41,18 @@ pin on the "inside" case once the key exists, not a red-then-green pin of the cl
 Spec deviation: the brief's +36.8 mm/s uses the unbiased vz = 4000; the hook runs after the speed
 bias, so the test pins +33.1 mm/s (the physically right figure).
 
+**Audit follow-up (owner-approved, 2026-11-02).** The Night Shift held the branch on three
+findings, all applied: (1) the pre-clip x is read from `on the box edge` lines only (an `UNMET`
+line carries the post-clip `y_hat` in another format and raised `AttributeError`); (2) the biased
+and unbiased hop runs are compared at the same skill index (`_preclip_x_by_skill`, first index both
+runs clipped), not at each run's first line, which could belong to different Throws; (3) the CLI
+refuses `--plant-bias-xy` unless `--learn --pattern self_toss|hop|oval_1ball` (the columns, reload
+and plain gate runs pass `boxes=None`, so the bias was silently ignored), pinned by
+`test_plant_bias_is_refused_where_nothing_reads_it` (without the check those argv run a whole gate
+instead of exiting 2).
+
 ## Verification
+- 2026-11-02 (audit follow-up), `python -m pytest -q -p no:cacheprovider tests/sim/test_skills_gate.py -k "biased or landing_bias or unbiased or plant_bias"`: 6 passed in 57.95 s.
 - 2026-11-02, `python -m pytest -q -p no:cacheprovider tests/sim/test_skills_gate.py tests/motion/test_skills_executor.py -k "forward_clip or biased or landing_bias or small_ or unbiased"`: 21 passed, 1 failed (the 36.8 figure, fixed after) in 460.61 s; the fixed test alone, `-k landing_bias_release`: 1 passed.
 - 2026-11-02, `python -m pytest -q -p no:cacheprovider tests/sim/test_skills_gate.py tests/motion/test_skills_executor.py` (whole files): 322 passed in 526.30 s.
 - The `./run_tests.sh --full` tier that `sim/` changes require pre-commit is the Night Shift 2026-11-02 gate on this branch (`temp/reports/night-shift/gate-JB-32.log` in the clone; verdict in `docs/night-shift/2026-11-02.md`).

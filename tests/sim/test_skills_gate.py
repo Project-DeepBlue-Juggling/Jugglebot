@@ -473,7 +473,8 @@ def test_a_small_hop_learner_run_catches_every_throw_with_zero_drops():
 # holds on the WIDE self-toss box only; on the hop the knob is pinned by the
 # pre-clip expected landing growing with the bias.
 
-_EDGE = re.compile(r'puts y_hat \(([+-][\d.]+), ([+-][\d.]+)\) -> ')
+_EDGE = re.compile(r'BOX-EXPECTED-LANDING skill (\d+): .* puts y_hat '
+                   r'\(([+-][\d.]+), ([+-][\d.]+)\) -> .* on the box edge')
 
 
 def _box_lines(res):
@@ -485,8 +486,15 @@ def _clip_lines(res):
             if 'on the box edge' in ln or 'BOX-EXPECTED-LANDING-UNMET' in ln]
 
 
-def _first_preclip_x_mm(res):
-    return float(_EDGE.search(_clip_lines(res)[0]).group(1))
+def _preclip_x_by_skill(res):
+    """Pre-clip expected-landing x (mm) per skill index, from the edge lines
+    only: an UNMET line carries the POST-clip y_hat, in another format."""
+    out = {}
+    for ln in _box_lines(res):
+        m = _EDGE.search(ln)
+        if m:
+            out.setdefault(int(m.group(1)), float(m.group(2)))
+    return out
 
 
 def _biased_hop_run(bias):
@@ -518,13 +526,34 @@ def test_plant_landing_bias_release_adds_the_lateral_speed_for_the_bias():
 
 def test_a_biased_plant_fires_the_forward_clip_in_a_small_hop_run():
     """+30 mm x plant bias: the fit's expected landing leaves the hop box,
-    the clip fires (`on the box edge` / `UNMET`), the run completes, and its
-    pre-clip expected landing is further out than at zero bias."""
+    the clip fires (`on the box edge` / `UNMET`), the run completes, and at
+    a skill both runs clipped, its pre-clip expected landing is further out
+    than at zero bias."""
     biased = _biased_hop_run((30.0, 0.0))
     assert biased['n_throws_collected'] == 5
     assert _clip_lines(biased)
     base = _biased_hop_run((0.0, 0.0))
-    assert _first_preclip_x_mm(biased) > _first_preclip_x_mm(base) + 1.0
+    # Compare the SAME skill in both runs (notes are once per skill, and the
+    # learner moves between Throws, so the first line of each run can belong
+    # to different Throws).
+    xb, x0 = _preclip_x_by_skill(biased), _preclip_x_by_skill(base)
+    shared = sorted(set(xb) & set(x0))
+    assert shared, (sorted(xb), sorted(x0))
+    assert xb[shared[0]] > x0[shared[0]] + 1.0
+
+
+@pytest.mark.parametrize('argv', [
+    ['--learn', '--pattern', 'columns', '--plant-bias-xy', '30', '0'],
+    ['--plant-bias-xy', '30', '0'],
+    ['--reload', '--plant-bias-xy', '30', '0'],
+])
+def test_plant_bias_is_refused_where_nothing_reads_it(argv, capsys):
+    """The columns, reload and plain gate runs pass boxes=None: a bias given
+    there would be silently ignored, so the CLI refuses it (JB-32 audit)."""
+    with pytest.raises(SystemExit) as e:
+        sg.main(argv)
+    assert e.value.code == 2
+    assert '--plant-bias-xy only applies' in capsys.readouterr().err
 
 
 def test_an_unbiased_wide_box_self_toss_run_never_needs_the_forward_clip():

@@ -3544,7 +3544,7 @@ def main(argv=None) -> int:
                         '[29.0, 25.0])')
     p.add_argument('--plant-bias-xy', nargs=2, type=float, default=None,
                    metavar=('X', 'Y'),
-                   help='--learn (self-toss/hop) only (JB-32): '
+                   help='--learn --pattern self_toss/hop/oval_1ball only (JB-32): '
                         'SelfTossGateConfig.plant_landing_bias_mm -- every '
                         'release LANDS this (x, y) mm from its aimed '
                         'landing, so the learner fit gains support and the '
@@ -3591,6 +3591,13 @@ def main(argv=None) -> int:
             args.reload or args.learn or args.one_ball or args.one_ball_fed
             or args.feed_angle_deg is not None):
         p.error('--apex-ball2 runs the default two-ball columns gate only')
+
+    if args.plant_bias_xy is not None and (not args.learn
+                                           or args.pattern == 'columns'):
+        # The columns, reload and plain gate runs build their executor with
+        # boxes=None, so the field is never read there (JB-32 audit).
+        p.error('--plant-bias-xy only applies to --learn --pattern '
+                'self_toss, hop or oval_1ball')
 
     if args.reload:
         rcfg = SelfTossGateConfig(report_path=args.report,
