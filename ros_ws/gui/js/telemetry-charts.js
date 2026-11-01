@@ -29,6 +29,7 @@
  */
 
 import * as clock from './clock.js';
+import { TIME_INCRS, timeTickSpace, numTickSpace, timeTickLabels } from './axis-ticks.js';
 import { setStewartHighlight } from './stewart-model.js';
 import { setBallButlerHighlight } from './ball-butler-model.js';
 import {
@@ -1246,14 +1247,12 @@ function buildUPlotOpts(chartIdx, width, height, showXAxis = true, onCursor = nu
             ticks: { stroke: showXAxis ? ticksStroke : 'transparent', width: 1, size: showXAxis ? 6 : 0 },
             font: '11px JetBrains Mono, monospace',
             size: showXAxis ? X_AXIS_SIZE : X_AXIS_STUB_SIZE,
+            // JB-101: >= 2 ticks at every width and zoom (axis-ticks.js), and
+            // fractional seconds once a tick step is below 1 s.
+            incrs: TIME_INCRS,
+            space: timeTickSpace(50),
             values: showXAxis
-                ? (u, splits) => splits.map(v => {
-                    const d = new Date(v * 1000);
-                    const hh = String(d.getHours()).padStart(2, '0');
-                    const mm = String(d.getMinutes()).padStart(2, '0');
-                    const ss = String(d.getSeconds()).padStart(2, '0');
-                    return `${hh}:${mm}:${ss}`;
-                })
+                ? (u, splits) => timeTickLabels(splits)
                 : (u, splits) => splits.map(() => ''),
         },
     ];
@@ -1279,6 +1278,7 @@ function buildUPlotOpts(chartIdx, width, height, showXAxis = true, onCursor = nu
             stroke: meta.color,
             grid: { stroke: gridStrokeMinor, width: 1 },
             ticks: { stroke: meta.color, width: 1 },
+            space: numTickSpace(30),   // JB-101: >= 2 ticks on a short chart or a zoom
             font: '14px JetBrains Mono, monospace',
             labelFont: '14px JetBrains Mono, monospace',
         });

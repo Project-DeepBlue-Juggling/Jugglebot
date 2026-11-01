@@ -32,6 +32,7 @@
 
 import * as clock from './clock.js';
 import { CAN_BITS_PER_FRAME_APPROX } from './geometry-config.js';
+import { TIME_INCRS, timeTickSpace, numTickSpace, timeTickLabels } from './axis-ticks.js';
 import { nanGaps } from './telemetry-charts.js';
 
 // ---- Bus registry ----
@@ -671,12 +672,10 @@ function buildCanChart() {
                 ticks: { stroke: ticksStroke, width: 1, size: 4 },
                 font: '10px JetBrains Mono, monospace',
                 size: 24,
-                values: (u, splits) => splits.map(v => {
-                    const d = new Date(v * 1000);
-                    const mm = String(d.getMinutes()).padStart(2, '0');
-                    const ss = String(d.getSeconds()).padStart(2, '0');
-                    return `${String(d.getHours()).padStart(2, '0')}:${mm}:${ss}`;
-                }),
+                // JB-101: >= 2 ticks at every width and zoom (axis-ticks.js).
+                incrs: TIME_INCRS,
+                space: timeTickSpace(50),
+                values: (u, splits) => timeTickLabels(splits),
             },
             {
                 scale: 'y',
@@ -702,6 +701,7 @@ function buildCanChart() {
                 stroke: axisStroke,
                 grid: { stroke: gridStroke, width: 1 },
                 ticks: { stroke: ticksStroke, width: 1 },
+                space: numTickSpace(30),   // JB-101
                 font: '10px JetBrains Mono, monospace',
                 labelFont: '10px JetBrains Mono, monospace',
             },
