@@ -2,9 +2,9 @@
 id: JB-127
 kind: ticket
 title: 'LIMIT_* jitter margin: widen the time rows'' margin, absorb jitter in the re-send, raise a Sitting limit, or tally the class at hold 0 first?'
-status: open
+status: complete
 created: '2026-11-01'
-updated: '2026-10-31T19:09:41Z'
+updated: '2026-11-01T00:33:40Z'
 owners: []
 priority: medium
 effort: xs
@@ -36,3 +36,7 @@ Recommendation: 4 now (one log read, the Item's own trigger), then 1 if the tall
 - 1 or 3: an offline unit (margin or limit change plus the box re-sweep) and a robot Sitting section on this Item.
 - 2: a design unit on the executor's re-send path for the owner's Session.
 - 4: a Night Shift unit that reads the launch logs and writes `## Findings`.
+
+## Answer
+
+Agreed.
