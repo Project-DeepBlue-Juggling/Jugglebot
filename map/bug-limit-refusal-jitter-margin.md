@@ -4,7 +4,7 @@ kind: bug
 title: 10 % jitter-margin class of LIMIT_* refusals
 status: inbox
 created: '2026-10-24'
-updated: '2026-10-24T13:05:00Z'
+updated: '2026-11-01T02:18:30Z'
 owners: []
 priority: medium
 effort: m
@@ -31,4 +31,21 @@ Landing-time jitter of +-20-30 ms against the 10 % margin, with session acc/jerk
 
 Recommendation: 4 now (one log read, the Item's own trigger), then 1 if the tally confirms the class.
 
+## Findings (2026-11-01, JB-127 option 4)
+
+The owner chose "measure first". `tools/probes/limit_refusal_tally.py` over the launch logs of the 2026-10-28, 10-30 and 10-31 Sittings (7 launches, 58 goals) says the `LIMIT_*` class is NOT the dominant miss class. All but one goal flew at the old hold 0.100.
+
+| Measure | Count |
+|---|---|
+| Goals ending on a `LIMIT`-class code | 4 of 58 (3 are `HAND_LIMIT_ACC` 4049-4112 vs 3900 on the JB-120 cell, 1 `LIMIT_VEL`) |
+| Leg `LIMIT_*` refusals (jerk 28, acc 6, vel 3) | 37: 31 re-sends (old plan stays), 5 aim fallbacks, 1 fatal |
+| Non-clean ends that dominate | `MISSED_CATCH` 18, `LANE_REFUSED` 10 (JB-98), `ABORTED_NO_RELEASE` 3 |
+| Goals at hold 0 | 1 (oval, 30/30, zero refusals) |
+
+Decision per the owner's rule (no code until the class is shown dominant at hold 0): the margin stays at 10 percent (option 1 not taken). Re-run the probe after a Sitting with several hold-0 goals; the trigger stays "`LIMIT_*` returns as the dominant miss". Entry: [logbook/2026-11-01-jb24-limit-refusal-tally.md](logbook/2026-11-01-jb24-limit-refusal-tally.md).
+
 A question ticket carries this to the owner; the answer under its `## Answer` re-opens this Item.
+
+## Progress
+
+- 2026-11-01: 2026-11-01 JB-127 option 4 tally: LIMIT_* not dominant (4 of 58 goals, 3 the JB-120 Hand cell); margin stays 10 percent; re-run tools/probes/limit_refusal_tally.py after more hold-0 goals
