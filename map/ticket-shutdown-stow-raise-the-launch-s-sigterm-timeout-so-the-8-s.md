@@ -2,9 +2,9 @@
 id: JB-123
 kind: ticket
 title: 'Shutdown Stow: raise the launch''s sigterm_timeout so the 8 s Stow completes, or trust the firmware deferred-stow and keep only the UDP single-owner interlock?'
-status: open
+status: complete
 created: '2026-11-01'
-updated: '2026-10-31T19:09:39Z'
+updated: '2026-11-01T00:35:15Z'
 owners: []
 priority: medium
 effort: xs
@@ -33,3 +33,7 @@ Recommendation: 3, timeout first (one line per launch file; a cut-off Stow leave
 
 - 1 or 3: a Night Shift unit on the launch files (hardware none, radius subsystem) that the gate can merge.
 - 2 or 4: the Item is re-rated (radius local, priority low) and the interlock becomes the only slice.
+
+## Answer
+
+I lean Option 1, but partially because I don't full understand Option 3. I'd like to discuss this in more depth
