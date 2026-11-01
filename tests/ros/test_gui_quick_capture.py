@@ -182,3 +182,12 @@ def test_title_screen_409s_are_handled_and_only_similar_can_be_overridden():
     assert "titleEl.addEventListener('input'" in JS and "resetSimilar()" in JS
     # the similar list is multi-line text in the error element
     assert "white-space: pre-line" in CSS
+
+
+def test_description_is_multi_line():
+    """JB-91 (owner): the description assumes multi-line. A textarea never submits the form on a
+    bare Enter, so Enter is a new line; Ctrl+Enter still files (the form-level keydown)."""
+    assert '<textarea id="qc-note" rows="4"' in HTML
+    assert '<input type="text" id="qc-note"' not in HTML
+    assert "#quick-capture-form textarea" in CSS and "resize: vertical" in CSS
+    assert "e.key === 'Enter' && (e.ctrlKey || e.metaKey)" in JS

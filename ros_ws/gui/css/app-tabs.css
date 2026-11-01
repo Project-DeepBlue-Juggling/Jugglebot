@@ -100,7 +100,8 @@ body > #app { height: calc(100vh - var(--app-tabs-height)); }
 }
 #quick-capture-form .qc-pills input:checked + span { background: var(--accent-blue, #4c8dff); color: #fff; border-color: transparent; }
 #quick-capture-form .qc-pills input:focus-visible + span { outline: 2px solid var(--accent-blue, #4c8dff); outline-offset: 1px; }
-#quick-capture-form input[type="text"] {
+#quick-capture-form input[type="text"],
+#quick-capture-form textarea {
     background: var(--bg-primary);
     color: var(--text-primary);
     border: 1px solid var(--border-color);
@@ -108,6 +109,8 @@ body > #app { height: calc(100vh - var(--app-tabs-height)); }
     padding: 4px 6px;
     font: inherit;
 }
+/* JB-91: the description is multi-line; it grows by hand, never sideways. */
+#quick-capture-form textarea { resize: vertical; min-height: 5em; }
 #quick-capture-form .qc-error { color: var(--accent-red, #e5534b); white-space: pre-line; }
 #quick-capture-form .qc-error:empty { display: none; }
 #quick-capture-form button {
