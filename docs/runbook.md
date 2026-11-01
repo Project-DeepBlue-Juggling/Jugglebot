@@ -92,7 +92,6 @@ linked from rows, never duplicated.
 ## Questions a Sitting can answer
 
 - JB-124 Suppress-edge flush with vel_ff 0 on every lane, legs only, report only, or folded into the next can-bridge firmware revision? (parent JB-73)
-- JB-125 NOT_SETTLED retry: delete the dead branch, retry after the announcement swap, fix Ball Butler's yaw-settle gate, or leave it fail-closed? (parent JB-25)
 - JB-127 LIMIT_* jitter margin: widen the time rows' margin, absorb jitter in the re-send, raise a Sitting limit, or tally the class at hold 0 first? (parent JB-24)
 
 ## Close-out
