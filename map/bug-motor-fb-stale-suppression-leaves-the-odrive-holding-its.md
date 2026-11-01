@@ -4,7 +4,7 @@ kind: bug
 title: Hand ODrive state can silently diverge from what the can-bridge commanded
 status: in_progress
 created: '2026-10-27'
-updated: '2026-11-01T04:39:16Z'
+updated: '2026-11-01T05:18:45Z'
 owners:
 - jugglebot-9d
 priority: low
@@ -57,7 +57,7 @@ A question ticket carries this to the owner; the answer under its `## Answer` re
 - setup: bridge-cycled
 - why: confirm FW 35's suppress-edge hold flush leaves the bench leg at the last transmitted command instead of input_pos + vel_ff/pos_gain, and measure the current step it costs.
 - do:
-  - With the launch down, flash FW 35 (`pio run -e teensy41 -t upload` in the firmware dir), power-cycle the bridge and confirm `BRIDGE_IDENTITY` reads FW 35 / PROTOCOL 10.
+  - FW 35 is already flashed (2026-11-01). Power-cycle the bridge after re-cabling to the bench leg and confirm `BRIDGE_IDENTITY` reads FW 35 / PROTOCOL 10.
   - Run `tools/probes/lead_clamp_gap_bench.py` with the 2026-10-27 recipe (2.0 rev/s triangle) and rate-0 gaps (`--gaps start_s:0:0.5`) placed mid-ramp, so vel_ff is non-zero at the suppress edge.
   - Analyse with `--analyse temp/probes/lead_clamp_gap_bench/<run>`.
 - pass: in every rate-0 gap the leg settles within 0.01 rev of the last transmitted command (FW 33: 0.05-0.056 rev), MOTOR_FB_STALE self-clears when frames return, no MAX_DEVIATION latch, and the iq step at the suppress edge stays under about 10 A with no visible jolt (else switch to the pre-registered vel_ff ramp, logbook 2026-11-01-jb73-suppress-edge-hold-flush).
@@ -67,3 +67,4 @@ A question ticket carries this to the owner; the answer under its `## Answer` re
 ## Progress
 
 - 2026-11-01: FW 35 suppress-edge hold flush committed (JB-124 option 1), not flashed; bench-leg Sitting section added
+- 2026-11-01: FW 35 flashed 16:15 (owner asked); BridgeIdentity reads FW 35 / PROTOCOL 10; bench-leg Sitting still to fly

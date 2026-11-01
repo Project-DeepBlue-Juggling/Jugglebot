@@ -1,5 +1,5 @@
 ---
-title: "JB-73: can-bridge FW 35 re-sends each lane's last frame once with vel_ff = 0 on the first tick of a MOTOR_FB_STALE suppression, so the ODrive holds AT the last command (built and native-tested; bench-leg Sitting pending)"
+title: "JB-73: can-bridge FW 35 re-sends each lane's last frame once with vel_ff = 0 on the first tick of a MOTOR_FB_STALE suppression, so the ODrive holds AT the last command (built, native-tested and flashed; bench-leg Sitting pending)"
 type: bugfix
 date: 2026-11-01
 status: in-progress
@@ -25,8 +25,8 @@ files_changed:
 the ODrive keeps its last `Set_Input_Pos` including vel_ff, so in POSITION/PASSTHROUGH a leg
 settles at input_pos + vel_ff/pos_gain: 0.05-0.056 rev (3.5-4 mm) past the last command on the
 bench leg on 2026-10-27, about 6 mm at the 3.5 rev/s vel_ff cap. The owner chose JB-124 option 1:
-one final frame per lane at the suppress edge, vel_ff = 0. FW 35 does that; it is built and
-native-tested, not flashed.
+one final frame per lane at the suppress edge, vel_ff = 0. FW 35 does that; it is built,
+native-tested and flashed (2026-11-01).
 
 **Problem.** The suppressed state is meant to be a hold and was not one. It was bounded (the
 velocity error goes to 0, no wind-up; the recovery slew re-baselines from the encoder), but each
@@ -85,12 +85,13 @@ untouched.
 lane's last transmitted frame (a per-leg bitmask plus the Hand's), sends the one vel_ff = 0 frame
 per lane on the first suppressed tick and counts edges (`interp_hold_flush_edges()`).
 `FW_VERSION` 34 -> 35 with its history line; `PROTOCOL_VERSION` stays 10 (no wire change);
-`EXPECTED_BRIDGE_FW_VERSION = 35`. Until the board is flashed, a launch logs
-`BRIDGE_FW_CHECK: FAIL ... v34 OLDER than` (advisory only, never enforced).
+`EXPECTED_BRIDGE_FW_VERSION = 35`. Flashed the same day, so launches log
+`BRIDGE_FW_CHECK: OK`.
 
 ## Verification
 
-- Build, 2026-11-01: `pio run -e teensy41` -> success, `251200 35520 111488 398208 61380 firmware.elf`. Not flashed.
+- Build, 2026-11-01: `pio run -e teensy41` -> success, `251200 35520 111488 398208 61380 firmware.elf`.
+- Flashed 2026-11-01 (owner asked), launch down: `pio run -e teensy41 -t upload` from the shared checkout at 36e1085b -> SUCCESS; receipt: a read-only BridgeIdentity listen reported `fw_version=35 protocol_version=10`. The robot now runs FW 35; the bench-leg Sitting is still the behaviour check.
 - Firmware tests, 2026-11-01: `pytest tests/firmware/ -q` -> 283 passed, 5 skipped; natives `test_leg_interp` 57/57, `test_fault_machine` 29/29. With `hold_flush` forced false all 6 new cases fail (5 + 1).
 - Gate, 2026-11-01: `./run_tests.sh` -> 7916 passed, 49 skipped in 406.57 s; serial 5 passed; exit 0 (the native firmware binaries are pre-built and run inside it).
 
