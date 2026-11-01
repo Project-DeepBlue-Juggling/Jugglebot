@@ -2,9 +2,9 @@
 id: JB-128
 kind: ticket
 title: 'Sim `--reload` LIMIT_JERK regression: fix the sim gate''s lateral authorities first, bisect the planner, both in order, or retire the scenario?'
-status: open
+status: complete
 created: '2026-11-01'
-updated: '2026-10-31T19:09:42Z'
+updated: '2026-11-01T00:18:10Z'
 owners: []
 priority: medium
 effort: xs
@@ -36,3 +36,7 @@ Recommendation: 3. Option 1 is cheap and offline; its result decides whether 2 i
 - 1 or 3: a Night Shift unit (hardware none, sim) the gate can merge.
 - 2: a design unit for the owner's Session.
 - 4: the Item closes with the scenario removed.
+
+## Answer
+
+Agreed; Option 3. I expect that treating this as a gate-configuration gap should resolve the problem, as no issues have arisen on hardware, but it'd be good to check
