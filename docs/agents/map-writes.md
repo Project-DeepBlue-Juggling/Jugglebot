@@ -22,7 +22,7 @@ Every Item has a short ID `JB-<n>` (frontmatter `id:`, one global sequence; plan
    - **`promoted`, `dropped`, filing**: own `map:` commit, no trailer.
    - If the push races the app: `git pull --rebase`, re-run `python -m mapkit gen`, stage again.
 3. **Announce** a status change in one line (`JB-12 bug-x -> in_progress`). No approval step. The one exception is a **Pathway** going `complete`: always ask the owner.
-4. **Scoped tests** after a write: `pytest -q tests/sim/test_map_items.py tests/sim/test_glossary_avoid_words.py tests/sim/test_mapkit_docs.py` (item bodies are inside the Avoid-word scope).
+4. **Scoped tests** after a write, before its push: `pytest -q tests/sim/test_map_items.py tests/sim/test_map_items_rated.py tests/sim/test_glossary_avoid_words.py tests/sim/test_mapkit_docs.py` (item bodies are inside the Avoid-word scope; an Item that leaves `inbox` must be fully rated). A write that pushes at once (`--commit`) skips this step, so on a shared `main` prefer `--commit --no-push`, run the tests, then push.
 
 ### Question tickets
 

@@ -54,6 +54,17 @@ Arguments: `$ARGUMENTS`
    runner was given `NIGHT_SHIFT_MAX_USD`; the first nights run without one) may end you
    mid-Item; everything you pushed before that is already consistent by construction
    (branches pushed before `main` is touched; `main` pushed before the Item is closed).
+10. **No `map:` push to `main` with the map tests red.** Every `map:` write you make on
+   `main` (a hold note, a question ticket, a rating, a Sitting section) goes through the
+   **map-write check**: write it with `--commit --no-push`, run
+   `pytest -q tests/sim/test_map_items.py tests/sim/test_map_items_rated.py tests/sim/test_glossary_avoid_words.py tests/sim/test_mapkit_docs.py`,
+   fix anything red in a follow-up `map:` commit, then `git push -q origin main` as its own
+   command line (the deny list refuses a push line that runs anything else). An Item that
+   leaves `inbox` on `main` must be fully rated (`effort`, `hardware`, `owner`, `radius`,
+   `area`, and `diagnosis` on a bug), and an Item body has a per-block readability cap. The
+   2026-11-01 night turned `main` red four times on its own `map:` pushes (a 540-character
+   block, a 536-character note, the first question tickets, JB-89 set `in_progress`
+   unrated); every Session's suite gate and your own gate logs fail while it is red.
 
 ## 1. Start
 
@@ -90,8 +101,9 @@ Read the Item file, every `links:` target, and `python -m mapkit show <pathway>`
 a parent. Metrics missing or wrong (the filer guessed; you now know) ->
 `python -m mapkit item rate JB-n --effort .. --hardware .. --owner .. --radius .. [--diagnosis ..] --area ..`
 (no `--commit`; it rides in the branch). The rating you leave on the branch is what the gate
-reads for conditions (c) and (d): rate honestly, a `hardware: robot` Item rated `none` to
-pass the gate is the one thing this protocol cannot survive.
+reads for conditions (c), (d) and (g): rate honestly, a `hardware: robot` Item rated `none` to
+pass the gate is the one thing this protocol cannot survive. Keep the exact flags you used:
+a HOLD writes the same rating on `main` (2j), so base and branch agree at a later re-gate.
 
 ### 2c. Classify and dispatch
 
@@ -177,13 +189,16 @@ branch's `mapkit` it imports are the same code). Exit 0 and `MERGE` -> 2i. Exit 
 
 ```
 python -m mapkit item new ticket "<the question, one sentence ending in ?>" --type question \
-    --parent JB-n --priority <the Item's> --body-file D/briefs/JB-n-question.md
+    --parent JB-n --priority <the Item's> --body-file D/briefs/JB-n-question.md \
+    --effort xs --hardware none --owner decision --radius local --area <the parent's area>
 ```
 
+Rated at filing: a ticket is not `inbox`, so `test_map_items_rated` requires every metric.
 The body: the context in two sentences, the options you drafted, what each answer would
-unblock. No `--commit`: commit it on the Item's branch (`map: file ticket JB-m <title>`,
-no trailer) so it lands with the HOLD push, OR, when there is no branch for this Item, on
-`main` with `--commit` (the CLI pulls, commits and pushes). The owner answers in the app
+unblock, each paragraph under the readability cap. No `--commit`: commit it on the Item's
+branch (`map: file ticket JB-m <title>`, no trailer) so it lands with the HOLD push, OR,
+when there is no branch for this Item, on `main` through the map-write check (§ 0 rule 10:
+`--commit --no-push`, the map tests, then push). The owner answers in the app
 under `## Answer`; the next night's preflight sees the ticket's `updated` move and
 re-opens the parent.
 
@@ -205,9 +220,12 @@ re-opens the parent.
 ### 2j. HOLD
 
 1. `git push -q -u origin night-shift/<date>-JB-n`.
-2. `git checkout -q main && git pull -q --ff-only`, then
-   `python -m mapkit item set-status JB-n in_progress --owner night-shift --note "Night Shift <date>: held on night-shift/<date>-JB-n: <reasons, one line>; unblocked by <what>" --commit`
-   (its own `map:` commit on `main`, pushed by the CLI). An Item already `in_progress`
+2. `git checkout -q main && git pull -q --ff-only`, then, with the SAME flags as 2b,
+   `python -m mapkit item rate JB-n --effort .. --hardware .. --owner .. --radius .. [--diagnosis ..] --area ..`
+   (no `--commit`: it rides in the next write's commit), then
+   `python -m mapkit item set-status JB-n in_progress --owner night-shift --note "Night Shift <date>: held on night-shift/<date>-JB-n: <reasons, one line>; unblocked by <what>" --commit --no-push`,
+   then the map-write check (§ 0 rule 10) and `git push -q origin main`. The note stays one
+   short line (the readability cap); detail goes in the branch's Item body. An Item already `in_progress`
    under another owner is not re-owned: the note only. If the Item is a hardware one with
    a `## Sitting` section (or you wrote one), set its `- branch: night-shift/<date>-JB-n`
    line in that section in the same write (edit the body with `mapkit.items.load_item` /
