@@ -17,7 +17,6 @@ links: []
 filed_by: claude (jugglebot-f5, Opus design study 2026-10-30)
 ---
 
-
 Owner's recurring thought 2026-10-30: the ceiling is about 1.5 m above the catch plane (Apex about 1.45 m, release 5.3 m/s). A shock-absorber bumper at the top of the Hand stroke would replace the post-release motor brake, so the motor could be run hard.
 
 Source: Opus design study 2026-10-30 (scratchpad bumper_study.md, to be promoted).
@@ -113,3 +112,14 @@ R0 done 2026-10-30 (Opus, scratchpad bumper/r0_brake_shape.md, probes r0/p1-p14 
 ## Progress
 
 - 2026-10-30: R0 done 2026-10-30 (Opus, scratchpad bumper/r0_brake_shape.md, probes r0/p1-p14 reproduce the logged peaks within 6 rev/s2). (detail below)
+
+## Options (2026-11-02)
+
+Night Shift 2026-11-02, on the R0 result's open decision (an acceleration step at the release knot is refused by HAND_LIMIT_C2); a question ticket carries these and its `## Answer` re-opens this Item. Context since R0: HAND_LIMIT_ACC is 4500 rev/s^2 and the Hand current limit 60 A since the 2026-11-01 debrief (JB-120).
+
+1. A named, bounded HAND_LIMIT_C2 exception at release knots (one acceleration step up to a stated bound, a new INVARIANTS row and test): the brake flattens toward kappa 1.0 and the Apex ceiling moves to the Hand's current limit. Offline planner unit plus a bench-hand check of the brake current.
+2. Keep continuity and buy headroom with limits only (the 4500 raise covers Apex 1.05 at kappa 1.7; more Apex from more current). No planner change.
+3. Bumper first: the hardware stop replaces the brake; the drop-tower measurement and the cable risk come first.
+4. Both 1 and 2 in order; the bumper only if the current limit still binds the ceiling Apex.
+
+Recommendation: 4.
