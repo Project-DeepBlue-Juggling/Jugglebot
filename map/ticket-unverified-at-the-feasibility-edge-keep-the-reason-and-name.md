@@ -2,9 +2,9 @@
 id: JB-126
 kind: ticket
 title: 'UNVERIFIED at the feasibility edge: keep the reason and name the worst row, add a tightened second pass, reclassify as INFEASIBLE, or leave it?'
-status: open
+status: complete
 created: '2026-11-01'
-updated: '2026-10-31T19:09:41Z'
+updated: '2026-11-01T00:15:44Z'
 owners: []
 priority: low
 effort: xs
@@ -38,3 +38,7 @@ Recommendation: 1 (the operator gets the row name; the contract and its tests st
 - 1: a Night Shift unit (hardware none, radius local) that the gate can merge.
 - 2 or 3: a design unit for the owner's Session (planner math).
 - 4: the Item is closed as won't-fix.
+
+## Answer
+
+I agree with your recommendation. Let's go with Option 1
