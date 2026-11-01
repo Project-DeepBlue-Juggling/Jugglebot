@@ -63,6 +63,17 @@ linked from rows, never duplicated.
 - pass: 20 consecutive Catches in one Attempt at each angle; landing scatter within 3 mm of the straight control; no HAND_LIMIT line.
 - record: caught of thrown per angle, each angle's plant_id, landing scatter against the control, the bag path; commit docs/records.md.
 
+## Block 4: bridge-cycled  (1 rows, 30 min)
+
+### JB-73 Hand ODrive state can silently diverge from what the can-bridge commanded  (30 min, low, unattached)
+- why: confirm FW 35's suppress-edge hold flush leaves the bench leg at the last transmitted command instead of input_pos + vel_ff/pos_gain, and measure the current step it costs.
+- do:
+  - With the launch down, flash FW 35 (`pio run -e teensy41 -t upload` in the firmware dir), power-cycle the bridge and confirm `BRIDGE_IDENTITY` reads FW 35 / PROTOCOL 10.
+  - Run `tools/probes/lead_clamp_gap_bench.py` with the 2026-10-27 recipe (2.0 rev/s triangle) and rate-0 gaps (`--gaps start_s:0:0.5`) placed mid-ramp, so vel_ff is non-zero at the suppress edge.
+  - Analyse with `--analyse temp/probes/lead_clamp_gap_bench/<run>`.
+- pass: in every rate-0 gap the leg settles within 0.01 rev of the last transmitted command (FW 33: 0.05-0.056 rev), MOTOR_FB_STALE self-clears when frames return, no MAX_DEVIATION latch, and the iq step at the suppress edge stays under about 10 A with no visible jolt (else switch to the pre-registered vel_ff ramp, logbook 2026-11-01-jb73-suppress-edge-hold-flush).
+- record: per gap the settle offset (rev), the last vel_ff, the ODrive iq step at the edge, and the run directory.
+
 ## Needs a Sitting section
 
 - JB-102 Pre-release hold rung: release from a moving Platform (hold 0.100 → 0): no ## Sitting section
@@ -81,7 +92,6 @@ linked from rows, never duplicated.
 - JB-29 Magazine feed-tuning loop (`magazine` + `reload` patterns, hand-only throw): no ## Sitting section
 - JB-52 Wave camera: CLIP_MISSING on the first start after a camera power-cycle: no ## Sitting section
 - JB-53 Wave camera: optical frame calibration maps the START tick to a recorded frame: no ## Sitting section
-- JB-73 Hand ODrive state can silently diverge from what the can-bridge commanded: no ## Sitting section
 - JB-83 can-bridge CAN3 analog drive path has a load-dependent hardware fault (the Jugglebot loom stays on CAN2): no ## Sitting section
 - JB-85 Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z: no ## Sitting section
 - JB-95 Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load): no ## Sitting section
