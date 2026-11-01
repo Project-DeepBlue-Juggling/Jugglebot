@@ -4,7 +4,7 @@ kind: ticket
 title: 'Brake shape at the release knot: a bounded HAND_LIMIT_C2 exception so the brake flattens, limits only, the bumper first, or the exception now and the bumper only if current still binds?'
 status: open
 created: '2026-11-02'
-updated: '2026-11-01T18:27:56Z'
+updated: '2026-11-01T21:30:30Z'
 owners: []
 priority: medium
 effort: xs
@@ -38,3 +38,7 @@ Recommendation: 4. The exception is an offline planner change with a bench check
 - 1 or 4: a planner design unit for the owner's Session (safety-bearing: a contract exception) and a bench-hand Sitting section on this Item.
 - 2: the Item is re-rated and parked until the current limit binds.
 - 3: a mechanical Item (drop tower, bumper prototype) and this one waits on it.
+
+## Progress
+
+- 2026-11-02: Owner answer (jugglebot-3d Session): option 4. Bumper pinned as a later safety stop; improve the planner's brake now; current limits fine, bursts up to 80 A. The release step (C-HAND-5) is built and tested offline; it lands after the Sitting-debrief code commit with its own box re-sweep and completes this ticket.
