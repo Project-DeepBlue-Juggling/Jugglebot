@@ -6,7 +6,7 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 3 blocks (77 min) · Bench leg 1 block (30 min)
+Rigs: Robot 3 blocks (87 min) · Bench leg 1 block (30 min)
 
 ## Setup 0: before power
 
@@ -16,9 +16,9 @@ Rigs: Robot 3 blocks (77 min) · Bench leg 1 block (30 min)
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Robot  (3 blocks, 77 min)
+## Robot  (3 blocks, 87 min)
 
-### Block 1: armed, bb-fed  (2 rows, 35 min)
+### Block 1: armed, bb-fed  (3 rows, 45 min)
 
 #### JB-120 A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve  (15 min, high, two-ball-oval)
 - why: confirm the Columns Ball 2 catch no longer ends on HAND_LIMIT_ACC after the box edge or fallback change.
@@ -27,6 +27,14 @@ Rigs: Robot 3 blocks (77 min) · Bench leg 1 block (30 min)
 - pass: no END HAND_LIMIT_ACC and no refused first install in either 50.
 - record: per-catch peak Hand acceleration from the install lines and the learner y for Ball 2.
 - branch: `night-shift/2026-11-01-JB-120`
+
+#### JB-139 Ball 2 learner command pinned at the (-20,-20) mm clamp corner in 37 of 40 straight Columns rows (BOX-EXPECTED-LANDING-UNMET u=(-20,-20))  (10 min, medium, unattached)
+- why: confirm the +26 mm y landing bias at the -62.5 mm (Ball 2) site is in the plant, not the fit, by reading the identity-prior landings of a fresh memory.
+- do:
+  - Fly straight Columns, Sep. 125, Apex 0.95, Throws 10, with a FRESH `plant_id` (a name no memory file has) so the first commands are the identity prior.
+  - Read the Ball 2 landing y per throw from the install lines (or the new memory rows).
+- pass: the first 5 Ball 2 landings average +20 to +32 mm in y (the bias is real and stable); outside that band the fit, not the plant, is the next question.
+- record: per throw the Ball 2 landing (x, y) mm and the command u; the plant_id used.
 
 #### JB-121 Two-ball Columns hop-start throw lands 25-56 mm inboard, past the 35 mm catch authority  (20 min, high, two-ball-oval)
 - why: read the hop-start landing bias at the new default hold 0.
@@ -110,7 +118,7 @@ Rigs: Robot 3 blocks (77 min) · Bench leg 1 block (30 min)
 
 ## Questions a Sitting can answer
 
-- none
+- JB-140 Hand while Active: Idle with an arm rung per Attempt, Idle on a timeout only, an operator toggle, or keep the Closed-loop Park and close JB-2? (parent JB-2)
 
 ## Close-out
 
