@@ -2,9 +2,9 @@
 id: JB-125
 kind: ticket
 title: 'NOT_SETTLED retry: delete the dead branch, retry after the announcement swap, fix Ball Butler''s yaw-settle gate, or leave it fail-closed?'
-status: open
+status: complete
 created: '2026-11-01'
-updated: '2026-10-31T19:09:40Z'
+updated: '2026-11-01T00:23:00Z'
 owners: []
 priority: low
 effort: xs
@@ -37,3 +37,7 @@ Recommendation: 1 now (dead code that reads as a live guarantee is the hazard) a
 - 2: a design unit for the owner's Session and a robot Sitting section on this Item.
 - 3: an Item in the BallButler repo; this one closes as superseded.
 - 4: the Item is re-rated and parked.
+
+## Answer
+
+I agree with your recommendation.
