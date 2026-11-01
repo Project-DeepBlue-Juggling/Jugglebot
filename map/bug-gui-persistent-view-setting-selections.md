@@ -4,12 +4,16 @@ kind: bug
 title: 'GUI: Persistent ''View'' setting selections'
 status: in_progress
 created: '2026-10-28'
-updated: '2026-10-31T20:06:37Z'
+updated: '2026-11-01T00:45:49Z'
 owners:
 - night-shift
 priority: medium
 effort: s
 hardware: none
+owner: none
+radius: local
+diagnosis: confirmed
+area: gui
 blocked_by: []
 links: []
 filed_by: harrison

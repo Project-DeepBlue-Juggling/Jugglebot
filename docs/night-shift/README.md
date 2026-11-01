@@ -63,6 +63,10 @@ wall clock: <start> to <end>
 total API cost: USD <n> (runner, total_cost_usd)
 ```
 
+The map app adds a **Your answer** column to the `## Questions for the Operator` table when it
+serves the report, read live from each ticket's `## Answer` (JB-132); the committed file never
+carries that column, so the orchestrator does not write one.
+
 A dry run writes the same layout to the clone's `temp/reports/night-shift/dry-<date>.md`
 with one classification line per candidate and commits nothing.
 
