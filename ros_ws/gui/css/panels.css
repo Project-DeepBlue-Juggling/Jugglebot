@@ -1523,3 +1523,59 @@
     color: var(--text-muted);
     font-style: italic;
 }
+
+/* ---- CONSOLE view (third view of #panel-topics, console-view.js; read-only /rosout) ---- */
+#console-container { position: relative; display: flex; flex-direction: column; min-height: 0; }
+/* In the sidebar the panel sizes to its content (the list is user-resizable) instead of shrinking the list to nothing. */
+#left-sidebar #panel-topics.console-on { flex: 0 0 auto; }
+.console-toolbar { display: flex; align-items: center; gap: 3px; padding-bottom: var(--gap-xs); flex-wrap: wrap; }
+.console-chips { display: flex; gap: 2px; flex-wrap: wrap; }
+.console-chip {
+    background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--border-radius-sm);
+    color: var(--text-muted); font-family: var(--font-mono); font-size: 9px; padding: 0 3px; cursor: pointer;
+}
+.console-chip.active { color: var(--text-primary); border-color: var(--text-secondary); }
+.console-chip-debug.active { border-color: var(--text-muted); }
+.console-chip-info.active { border-color: var(--accent-blue); }
+.console-chip-warn.active { border-color: var(--accent-amber); }
+.console-chip-error.active, .console-chip-fatal.active { border-color: var(--accent-red); }
+.console-chip-n { margin-left: 3px; color: var(--text-secondary); }
+.console-search {
+    flex: 1; min-width: 60px; background: var(--bg-primary); border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm); color: var(--text-primary); font-family: var(--font-mono);
+    font-size: 11px; padding: 2px 6px; color-scheme: dark;
+}
+[data-theme="light"] .console-search { color-scheme: light; }
+.console-nav {
+    background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--border-radius-sm);
+    color: var(--text-secondary); font-size: 10px; padding: 1px 6px; cursor: pointer;
+}
+.console-nav:hover { background: var(--bg-card-hover); color: var(--text-primary); }
+.console-count { flex-basis: 100%; color: var(--text-muted); font-family: var(--font-mono); font-size: 10px; }
+.console-list {
+    flex: none; min-height: 120px; height: 220px; max-height: 70vh; resize: vertical;
+    overflow-y: auto; overflow-x: hidden;
+    background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--border-radius-sm);
+    color: var(--text-primary); font-family: var(--font-mono); font-size: 10px; line-height: 1.3;
+    scrollbar-width: thin; scrollbar-color: var(--border-color) transparent;
+}
+.console-line {
+    display: grid; grid-template-columns: auto auto 1fr; column-gap: 6px; padding: 2px 4px;
+    border-bottom: 1px solid var(--border-color);
+}
+.console-line:hover { background: var(--bg-card-hover); }
+.console-current { background: rgba(59, 130, 246, 0.25); }
+.console-time { color: var(--text-muted); }
+.console-lvl { font-weight: 600; }
+.console-lvl-debug { color: var(--text-muted); }
+.console-lvl-info { color: var(--accent-blue); }
+.console-lvl-warn { color: var(--accent-amber); }
+.console-lvl-error, .console-lvl-fatal { color: var(--accent-red); }
+.console-lvl-fatal { text-decoration: underline; }
+.console-node { color: var(--accent-cyan); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.console-msg { grid-column: 1 / -1; color: var(--text-primary); min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.console-list mark { background: var(--accent-amber); color: #000; border-radius: 2px; }
+.console-jump {
+    position: absolute; right: 10px; bottom: 6px; background: var(--accent-blue); color: #fff; border: 0;
+    border-radius: var(--border-radius-sm); font-size: 10px; padding: 2px 8px; cursor: pointer;
+}

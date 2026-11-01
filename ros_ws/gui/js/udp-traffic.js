@@ -64,6 +64,7 @@
  */
 
 import * as clock from './clock.js';
+import { setConsoleVisible } from './console-view.js';
 
 // ---- Key contract with teensy_bridge_node._publish_udp_diag ----
 //
@@ -259,6 +260,11 @@ const WINDOW_STORAGE_KEY = 'jugglebot-udp-window';
 const MODE_STORAGE_KEY = 'jugglebot-topics-mode';
 const MODE_ROS = 'ros';
 const MODE_UDP = 'udp';
+const MODE_CONSOLE = 'console';
+/** The three views of #panel-topics, in segmented-control order. */
+export const TOPIC_MODES = Object.freeze([MODE_ROS, MODE_UDP, MODE_CONSOLE]);
+/** Persisted value -> mode; anything unknown falls back to ROS. */
+export function parseMode(raw) { return TOPIC_MODES.includes(raw) ? raw : MODE_ROS; }
 
 // No 'udp_diag' MESSAGE for >3 s ⇒ diagStale.  Same watchdog class as the CAN
 // panel's: it covers bridge-node / rosbridge / subscription death only.  A dead
@@ -369,7 +375,7 @@ export function initUdpTrafficPanel() {
     const savedWin = parseInt(localStorage.getItem(WINDOW_STORAGE_KEY), 10);
     if (WINDOW_PRESETS.includes(savedWin)) windowSec = savedWin;
     const savedMode = localStorage.getItem(MODE_STORAGE_KEY);
-    if (savedMode === MODE_UDP || savedMode === MODE_ROS) mode = savedMode;
+    mode = parseMode(savedMode);
 
     host.innerHTML = `
         <div id="udp-window-btns" role="group" aria-label="Rate window"></div>
@@ -418,7 +424,7 @@ export function initUdpTrafficPanel() {
 // ---- Mode switching ----
 
 function setMode(next) {
-    if (next !== MODE_ROS && next !== MODE_UDP) return;
+    if (!TOPIC_MODES.includes(next)) return;
     if (mode === next) return;
     mode = next;
     localStorage.setItem(MODE_STORAGE_KEY, mode);
@@ -432,17 +438,21 @@ function applyMode() {
     const udpOn = (mode === MODE_UDP);
 
     const topicTable = el('topic-table-container');
-    if (topicTable) topicTable.style.display = udpOn ? 'none' : '';
+    const consoleOn = (mode === MODE_CONSOLE);
+    if (topicTable) topicTable.style.display = (udpOn || consoleOn) ? 'none' : '';
+    const consoleHost = el('console-container');
+    if (consoleHost) consoleHost.style.display = consoleOn ? '' : 'none';
+    setConsoleVisible(consoleOn);
     const udpTable = el('udp-table-container');
     if (udpTable) udpTable.style.display = udpOn ? '' : 'none';
 
     // The ROS window label is the ROS view's own control; the UDP view has its
     // own presets inside the table container.
     const label = el('topic-window-label');
-    if (label) label.style.display = udpOn ? 'none' : '';
+    if (label) label.style.display = (udpOn || consoleOn) ? 'none' : '';
 
     const title = el('topics-panel-title');
-    if (title) title.textContent = udpOn ? 'UDP Messages' : 'ROS2 Topics';
+    if (title) title.textContent = udpOn ? 'UDP Messages' : (consoleOn ? 'Console' : 'ROS2 Topics');
 
     const modeHost = el('topic-mode-btns');
     if (modeHost) {

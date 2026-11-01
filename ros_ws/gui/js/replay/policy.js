@@ -62,6 +62,7 @@ export const TOPIC_POLICY = Object.freeze({
     '/udp_diag':              { cls: H, throttleMs: 0 },
     '/clock_diag':            { cls: H, throttleMs: 0 },
     '/link_status':           { cls: H, throttleMs: 0 },
+    '/rosout':                { cls: V, throttleMs: 0 },   // CONSOLE view; main's consoleOnLog ignores replay dispatches (the view reads the source directly)
     '/skills/attempt':        { cls: V, throttleMs: 0 },
     '/cone/timing_result':    { cls: V, throttleMs: 0 },
     '/cone/catch_event':      { cls: V, throttleMs: 0 },

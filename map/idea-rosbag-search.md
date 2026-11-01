@@ -2,16 +2,16 @@
 id: JB-36
 kind: idea
 title: Rosbag search
-status: inbox
+status: complete
 created: '2026-10-24'
-updated: '2026-10-24T13:05:00Z'
+updated: '2026-11-01T03:06:02Z'
 owners: []
 priority: low
 effort: m
 hardware: none
 owner: decision
-radius: subsystem
-area: tests-tooling
+radius: local
+area: gui
 blocked_by: []
 links: []
 filed_by: harrison
@@ -29,3 +29,7 @@ A mechanism to search through rosbags from recordings to find specific informati
 Recommendation: 1 if the use is from Sessions (Claude reads bags by path), 2 if the use is at the robot; 3 is the cheapest way to make both grep-able.
 
 A question ticket carries this to the owner; the answer under its `## Answer` re-opens this Item.
+
+## Progress
+
+- 2026-11-01: JB-130 option 2 as a CONSOLE view (ROS / UDP / CONSOLE) in the GUI, live and in replay, severity filter and search

@@ -126,11 +126,15 @@
                             <button type="button" class="topic-mode-btn" data-mode="udp"
                                     aria-pressed="false"
                                     title="UDP link — TRUE per-message-type wire rates on the Jetson &#8596; can-bridge link, from teensy_bridge_node's cumulative counters">UDP</button>
+                            <button type="button" class="topic-mode-btn" data-mode="console"
+                                    aria-pressed="false"
+                                    title="Console — read-only ROS log (/rosout) with severity filter and search; in replay it shows the bag's log and clicking a line seeks to it">CONSOLE</button>
                         </span>
                     </span>
                 </div>
                 <div id="topic-table-container"></div>
                 <div id="udp-table-container" style="display:none"></div>
+                <div id="console-container" style="display:none"></div>
             </div>
 
             <!-- CAN Traffic (snapped to bottom of left sidebar).

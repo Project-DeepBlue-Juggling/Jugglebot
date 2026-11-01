@@ -22,6 +22,7 @@ export const ALLOWLIST = Object.freeze([
   '/rigid_body_poses',
   '/robot_frame',
   '/robot_state',
+  '/rosout',
   '/skills/attempt',
   '/udp_diag',
 ]);

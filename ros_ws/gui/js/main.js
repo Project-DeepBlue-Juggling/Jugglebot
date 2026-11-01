@@ -46,6 +46,7 @@ import {
 } from './hardware-versions.js';
 import { onRobotFrame, onMocapStatus } from './robot-frame.js';
 import { initCommands, updateCommandStates } from './commands.js';
+import { initConsoleView, consoleOnLog, attachConsoleReplay } from './console-view.js';
 import { getReplayMode } from './replay/wiring.js';
 import { initReplayUi } from './replay/ui/index.js';
 import { bbAimOnHeartbeat, bbAimOnOrchestratorState } from './bb-aim.js';
@@ -120,6 +121,7 @@ function init() {
     //     the same reason: it owns a second view of a shared panel, and
     //     panels.js is already 1600 lines).  After initAllPanels() so the ROS
     //     topic monitor exists before the mode switch decides which one shows.
+    initConsoleView();   // before the mode switch: applyMode() shows/hides it
     initUdpTrafficPanel();
 
     // 2c. Init the Hardware panel (board model + live firmware per device,
@@ -171,7 +173,9 @@ function init() {
     // 6d. Replay (Phase 3): the mode singleton + lobby/picker/toast UI. Before ros.init() so the
     //     before-connected hook and state suppressor are armed ahead of the first connection edge.
     try {
-        initReplayUi(getReplayMode({ resetForSeek, blankDisconnectedState, getReplayLatches, restoreReplayLatches }));
+        const replayMode = getReplayMode({ resetForSeek, blankDisconnectedState, getReplayLatches, restoreReplayLatches });
+        initReplayUi(replayMode);
+        attachConsoleReplay(replayMode);
     } catch (e) {
         console.error('Replay UI init failed; live GUI unaffected:', e);
     }
@@ -426,6 +430,12 @@ function subscribeAll() {
     // 'anchor rtt', the only live latency in ms this system publishes.  NOT
     // throttled: at ~0.03 Hz a throttle could only ever drop samples.
     ros.subscribe('clock_diag', 'diagnostic_msgs/msg/DiagnosticStatus', onClockDiag, 0);
+
+    // ROS log (/rosout, measured 5-11 msg/s on the 2026-10 bags) -> the topics panel's
+    // CONSOLE view.  Subscribed from page load into a capped ring so history exists when
+    // the operator opens CONSOLE.  NOT throttled (a throttle would drop lines) and read-only.
+    // rosbridge decodes it (JSON), so it MUST be in GUI_SUBSCRIBED_TOPICS below.
+    ros.subscribe('rosout', 'rcl_interfaces/msg/Log', consoleOnLog, 0);
 
     // Hand telemetry (500Hz -> throttle to 10Hz = 100ms)
     ros.subscribe('hand_telemetry', 'jugglebot_interfaces/msg/HandTelemetryMessage', onHandTelemetry, 100);
@@ -1225,7 +1235,7 @@ const GUI_SUBSCRIBED_TOPICS = new Set([
     'robot_frame', 'mocap/status',
     'leg_setpoint_echo', 'control_mode_topic', 'motion/diagnostics',
     'bb/calibration_result', 'bb/calibration_attempt', 'cone/heartbeat', 'cone/timing_result',
-    'skills/attempt', 'camera/heartbeat',
+    'skills/attempt', 'camera/heartbeat', 'rosout',
 ]);
 
 /** Active spy subscriptions: Map<topicName, ROSLIB.Topic> */
