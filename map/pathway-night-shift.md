@@ -40,7 +40,7 @@ The Next Sitting Runbook is the second half: one page listing every hardware che
 
 ## Plan
 
-One plan under this Pathway, `plans/active/night-shift.md`, in six steps: P1 runner skeleton and dry run; P2 work loop, merge gate, report and ticker; P3 Night Shift page with answerable tickets; P4 `## Sitting` sections, Runbook generator and page; P5 Sitting wrap-up command; R6 the first Runbook-driven Sitting. The glossary gains Night Shift and Next Sitting Runbook entries in P1.
+One plan under this Pathway, `plans/active/night-shift.md`, in six steps: P1 runner skeleton and dry run; P2 work loop, merge gate, report and ticker; P3 Night Shift page with answerable tickets; P4 `## Sitting` sections, Runbook generator and page; P5 Sitting debrief command; R6 the first Runbook-driven Sitting. The glossary gains Night Shift and Next Sitting Runbook entries in P1.
 
 ## Open questions
 

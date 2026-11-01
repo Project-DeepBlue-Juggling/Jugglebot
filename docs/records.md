@@ -99,9 +99,17 @@ The most Catches in one continuous Attempt on the robot (never the sim), per Pat
 <!-- pattern: columns_highlow balls: 2 -->
 ### Columns — high-low
 
-_No record yet._
+| When | Throws | Catches | How it ended | Note | Parameters |
+|---|---:|---:|---|---|---|
+| 2026-11-01 22:14 | 8 | 8 | other (GUARD_LATCHED) |  | apex_m=1; separation_mm=100; dwell_s=0.27; apex_m_ball2=0.9; planner=pose |
+| 2026-11-01 22:15 | 13 | 12 | compute (LIMIT_ACC) |  | apex_m=1; separation_mm=100; dwell_s=0.27; apex_m_ball2=0.9; planner=pose |
 
 <!-- pattern: columns_turned balls: 2 -->
 ### Columns — turned
 
-_No record yet._
+| When | Throws | Catches | How it ended | Note | Parameters |
+|---|---:|---:|---|---|---|
+| 2026-11-01 22:15 | 1 | 1 | drop (MISSED_CATCH) |  | apex_m=0.95; separation_mm=125; dwell_s=0.27; turned_angle_deg=45; planner=pose |
+| 2026-11-01 22:16 | 2 | 2 | drop (MISSED_CATCH) |  | apex_m=0.95; separation_mm=125; dwell_s=0.27; turned_angle_deg=45; planner=pose |
+| 2026-11-01 22:17 | 4 | 4 | drop (MISSED_CATCH) |  | apex_m=0.95; separation_mm=125; dwell_s=0.27; turned_angle_deg=90; planner=pose |
+| 2026-11-01 22:18 | 16 | 16 | other (GUARD_LATCHED) |  | apex_m=0.95; separation_mm=125; dwell_s=0.27; turned_angle_deg=90; planner=pose |

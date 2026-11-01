@@ -17,7 +17,7 @@ steps:
   - {id: P2, title: "Work loop, merge gate, report and ticker", kind: phase, status: complete, completed: 2026-10-31, effort: m, hardware: none}
   - {id: P3, title: Night Shift page in the map app, kind: phase, status: complete, completed: 2026-10-31, effort: m, hardware: none}
   - {id: P4, title: Next Sitting Runbook, kind: phase, status: complete, completed: 2026-10-31, effort: m, hardware: none}
-  - {id: P5, title: Sitting wrap-up command, kind: phase, status: complete, completed: 2026-10-31, effort: s, hardware: none}
+  - {id: P5, title: Sitting debrief command, kind: phase, status: complete, completed: 2026-10-31, effort: s, hardware: none}
   - {id: R6, title: First Runbook-driven Sitting, kind: rung, status: not_started, effort: s, hardware: robot}
 related_logbook:
   - 2026-10-30-night-shift-design-and-plan.md
@@ -82,7 +82,7 @@ map app (:8765, own clone ~/map-live/Jugglebot, pulls every 30 s): board, drawer
    auto-pull (2 min) -> live checkout; map-pull (30 s) -> app clone
 map app: /night-shift page (reports, open question tickets with inline answer boxes)
          /next-sitting page (docs/runbook.md rows, result boxes -> Item body)
-Sitting: checkout night-shift/sitting-<date> -> fly rows -> /sitting-wrapup Session merges
+Sitting: checkout night-shift/sitting-<date> -> fly rows -> /sitting-debrief Session merges
 ```
 
 ### New files, conventions and formats
@@ -100,14 +100,14 @@ Sitting: checkout night-shift/sitting-<date> -> fly rows -> /sitting-wrapup Sess
 | `tools/night_shift_candidate.sh` | stacks held hardware branches into `night-shift/sitting-<date>`; run by the owner or the preparing Session before a Sitting, never by Night Shift |
 | `docs/night-shift/<date>.md` | the report (committed) |
 | `mapkit/sitting.py`, `python -m mapkit runbook` | `## Sitting` section parser and `docs/runbook.md` generator (P4) |
-| `.claude/commands/sitting-wrapup.md` | the morning Session's command (P5) |
+| `.claude/commands/sitting-debrief.md` | the morning Session's command (P5) |
 | ticket `type: question` | new enum value; answered under `## Answer` |
 
 Report layout (`docs/night-shift/<date>.md`), eight sections in this order: `# Night Shift <date>`; `## Nightly` (the ticker line and, on RED, the failures from `latest.md`); `## Merged to main` (JB-n, title, commit); `## Held` (JB-n, branch, reason, what unblocks it); `## Questions for the Operator` (ticket JB-m, one line each, answered in the app); `## Unfinished` (branch, Progress headline); `## Skipped` (JB-n, one-line reason); `## Unaddressed Sitting results` (P5); `## Cost` (duration, units run; the runner appends the USD figure after the orchestrator exits, 2026-10-31). Every `JB-n` is bare so the app's drawer links it.
 
 Candidate record (`candidates.json`, written by the preflight, read by the orchestrator and diffed against last night's): `{"date": "2026-10-31", "items": [{"id": "JB-21", "stem": "bug-...", "status": "inbox", "updated": "...", "effort": "s", "hardware": "none", "owner": "none", "radius": "subsystem", "diagnosis": "confirmed"}]}`. "Nothing new" means the same `id` set with the same `updated` stamps and no open question ticket answered since the last run.
 
-Merge gate rule (code, not judgment): MERGE requires all of (a) the full suite gate exit 0 on the branch, logged with the tip it ran on; (b) an audit report for that tip with no behaviour-affecting finding left open; (c) the Item rated `hardware: none` on the branch, and not lowered relative to `main` by the branch itself; (d) `radius` rated and not `normative`, likewise not lowered; (e) no open `question` ticket whose `parent` is the Item; (g) a rated `owner` on `main` not changed by the branch (its own letter since 2026-10-31, owner decision, so `--waive c` can never clear it); (f) the branch touches none of `Teensy_code_canbridge/`, `config/**/*.yaml`, `GLOSSARY.md`, `CLAUDE.md`, `DOCUMENTATION_GUIDE.md`, nor the safety layer itself (`tools/night_shift*`, `tools/lib/`, `tools/systemd/`, `tools/nightly_*`, `.claude/`, `mapkit/`, `run_tests.sh`, `pyproject.toml`, the gate's and guard's tests). Anything else is HOLD with every failing reason listed. The orchestrator runs `origin/main`'s copy of the gate, never the branch's. `/sitting-wrapup` re-runs the gate with `--waive c` before merging a branch the owner passed at a Sitting (audit finding, 2026-10-31).
+Merge gate rule (code, not judgment): MERGE requires all of (a) the full suite gate exit 0 on the branch, logged with the tip it ran on; (b) an audit report for that tip with no behaviour-affecting finding left open; (c) the Item rated `hardware: none` on the branch, and not lowered relative to `main` by the branch itself; (d) `radius` rated and not `normative`, likewise not lowered; (e) no open `question` ticket whose `parent` is the Item; (g) a rated `owner` on `main` not changed by the branch (its own letter since 2026-10-31, owner decision, so `--waive c` can never clear it); (f) the branch touches none of `Teensy_code_canbridge/`, `config/**/*.yaml`, `GLOSSARY.md`, `CLAUDE.md`, `DOCUMENTATION_GUIDE.md`, nor the safety layer itself (`tools/night_shift*`, `tools/lib/`, `tools/systemd/`, `tools/nightly_*`, `.claude/`, `mapkit/`, `run_tests.sh`, `pyproject.toml`, the gate's and guard's tests). Anything else is HOLD with every failing reason listed. The orchestrator runs `origin/main`'s copy of the gate, never the branch's. `/sitting-debrief` re-runs the gate with `--waive c` before merging a branch the owner passed at a Sitting (audit finding, 2026-10-31).
 
 ### What stays the same
 
@@ -121,7 +121,7 @@ The nightly suite and its status line; the ticker mechanism (Night Shift becomes
 | P2 | Work loop, merge gate, report and ticker | COMPLETE | 2026-10-31 | medium | first real night: merges only through the gate |
 | P3 | Night Shift page in the map app | COMPLETE | 2026-10-31 | low | reports render, a question is answered in two clicks |
 | P4 | Next Sitting Runbook | COMPLETE | 2026-10-31 | medium | `## Sitting` rows generate one ordered page; results write back |
-| P5 | Sitting wrap-up command | COMPLETE | 2026-10-31 | low | a Sitting ends with one prompt and no owner git |
+| P5 | Sitting debrief command | COMPLETE | 2026-10-31 | low | a Sitting ends with one prompt and no owner git |
 | R6 | First Runbook-driven Sitting | NOT STARTED | | medium | a held branch is flown, passed and merged by the wrap-up |
 
 ## 4. Implementation Phases
@@ -157,17 +157,18 @@ The nightly suite and its status line; the ticker mechanism (Night Shift becomes
 - **Dependencies**: P2 (held branches), P3 (page scaffolding).
 - **Outcome (2026-10-31, `logbook/2026-10-31-night-shift-p4-sitting-sections-and-runbook.md`)**: complete. `mapkit/sitting.py` (parser, scoring, blocks, `render_runbook`, `append_sitting_result`), `python -m mapkit runbook` and `gen` writing `docs/runbook.md` (currency-tested), `tools/night_shift_candidate.sh` on temporary repos, CLAUDE.md and map-writes rules. Tests +19 (`test_sitting_sections.py` 14, `test_night_shift_candidate.py` 5). On the real board all 23 open hardware Items are listed as needing a section.  Full gate before the commit: GREEN (2026-10-31 00:56-01:04, `./run_tests.sh --full` on the final tree: parallel 7764 passed, 65 skipped in 482.66 s; serial 8 passed in 32.55 s; exit 0)
 
-### P5: Sitting wrap-up command
+### P5: Sitting debrief command
 
-- **Files**: `.claude/commands/sitting-wrapup.md`, `tests/sim/test_sitting_wrapup_protocol.py` (the command file names every step the Runbook's close-out promises).
-- **Scope**: the morning or post-Sitting Session runs `/sitting-wrapup`: reads every `## Sitting result` newer than the last wrap-up, merges the candidate branch's passed Items into `main` (per-Item merge so a failed Item's branch stays held), returns the live checkout to `main`, rebuilds if `ros_ws` changed, commits `docs/records.md`, files follow-up Items from the notes, writes the logbook entry, regenerates the Runbook. Night Shift's protocol gains one step: list unaddressed `## Sitting result` sections in the report.
+- **Files**: `.claude/commands/sitting-debrief.md`, `tests/sim/test_sitting_debrief_protocol.py` (the command file names every step the Runbook's close-out promises).
+- **Scope**: the morning or post-Sitting Session runs `/sitting-debrief`: reads every `## Sitting result` newer than the last wrap-up, merges the candidate branch's passed Items into `main` (per-Item merge so a failed Item's branch stays held), returns the live checkout to `main`, rebuilds if `ros_ws` changed, commits `docs/records.md`, files follow-up Items from the notes, writes the logbook entry, regenerates the Runbook. Night Shift's protocol gains one step: list unaddressed `## Sitting result` sections in the report.
 - **Critical details**: the wrap-up runs in `~/Desktop/Jugglebot` under the single-writer rule, so it checks for a peer Session first. Never a force-push; a failed merge leaves the branch held with the conflict named.
 - **Dependencies**: P4.
-- **Outcome (2026-10-31, `logbook/2026-10-31-night-shift-p5-sitting-wrapup.md`)**: complete. `.claude/commands/sitting-wrapup.md` and `tests/sim/test_sitting_wrapup_protocol.py` (22 tests pinning every close-out promise and the Runbook's pointer); the Night Shift protocol lists unaddressed Sitting results. Full gate before the commit: GREEN (2026-10-31 00:56-01:04, `./run_tests.sh --full` on the final tree: parallel 7764 passed, 65 skipped in 482.66 s; serial 8 passed in 32.55 s; exit 0)
+- **Renamed 2026-11-01**: the command is now `/sitting-debrief` (formerly `/sitting-wrapup`): an analysis phase runs before these paperwork steps unchanged, `logbook/2026-11-01-sitting-debrief-command.md`.
+- **Outcome (2026-10-31, `logbook/2026-10-31-night-shift-p5-sitting-wrapup.md`)**: complete. `.claude/commands/sitting-debrief.md` and `tests/sim/test_sitting_debrief_protocol.py` (22 tests pinning every close-out promise and the Runbook's pointer); the Night Shift protocol lists unaddressed Sitting results. Full gate before the commit: GREEN (2026-10-31 00:56-01:04, `./run_tests.sh --full` on the final tree: parallel 7764 passed, 65 skipped in 482.66 s; serial 8 passed in 32.55 s; exit 0)
 
 ### R6: First Runbook-driven Sitting
 
-- **Rung gate**: one Sitting flown from `docs/runbook.md`, at least one held branch passed and merged by `/sitting-wrapup`, the owner's typed steps limited to hardware actions and result boxes. Logged with the (date, command, result) triple.
+- **Rung gate**: one Sitting flown from `docs/runbook.md`, at least one held branch passed and merged by `/sitting-debrief`, the owner's typed steps limited to hardware actions and result boxes. Logged with the (date, command, result) triple.
 - **Dependencies**: P5, a held hardware branch from a real night.
 
 ## 5. Testing Plan

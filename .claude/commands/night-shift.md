@@ -230,7 +230,7 @@ re-opens the parent.
    a `## Sitting` section (or you wrote one), set its `- branch: night-shift/<date>-JB-n`
    line in that section in the same write (edit the body with `mapkit.items.load_item` /
    `write_item` in a `python -` snippet before the `set-status`), so the Next Sitting
-   Runbook row carries the branch and `/sitting-wrapup` knows what to merge on a pass.
+   Runbook row carries the branch and `/sitting-debrief` knows what to merge on a pass.
 3. Report row under `## Held`: `| JB-n | <title> | night-shift/<date>-JB-n | (<letter>) <reason>. ... | <what unblocks it> |`.
 
 ### 2k. After every Item
@@ -259,8 +259,8 @@ commit on `main` (and records the figure in `last_run.json`).
 
 `## Unaddressed Sitting results`: every `## Sitting result (<date>)` section on an Item
 (`grep -l '## Sitting result' map/*.md`) whose date is newer than the newest
-`logbook/*-sitting-wrapup.md` entry, one table row `| JB-n | <date> | <verdict> |`; none ->
-`none recorded`. The owner closes them with `/sitting-wrapup <date>`; you never merge a Sitting's
+`logbook/*-sitting-debrief.md` (or the older `*-sitting-wrapup.md`) entry, one table row `| JB-n | <date> | <verdict> |`; none ->
+`none recorded`. The owner closes them with `/sitting-debrief <date>`; you never merge a Sitting's
 branches yourself (the gate's hardware condition is exactly what a Sitting result overrides,
 and only the owner's Session does that).
 

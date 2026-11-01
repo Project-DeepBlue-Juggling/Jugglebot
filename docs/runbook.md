@@ -20,7 +20,7 @@ Rigs: Robot 3 blocks (77 min) · Bench leg 1 block (30 min)
 
 ### Block 1: armed, bb-fed  (2 rows, 35 min)
 
-#### JB-120 Admissible-box gate passes a cell whose solve exceeds HAND_LIMIT_ACC by ~5%  (15 min, high, two-ball-oval)
+#### JB-120 A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve  (15 min, high, two-ball-oval)
 - why: confirm the Columns Ball 2 catch no longer ends on HAND_LIMIT_ACC after the box edge or fallback change.
 - do:
   - Fly Columns, Sep. 125, Apex 0.95, Throws 50, twice.
@@ -51,9 +51,9 @@ Rigs: Robot 3 blocks (77 min) · Bench leg 1 block (30 min)
 - do:
   - Rehearse before arming: cup empty, Ball Butler unpowered, `ros2 param set /skill_node apex_m_ball2 0.90`, send the goal below once. The accept message may name only the cup and Ball Butler refusals (no box, planner or apex2 refusal) and nothing moves.
   - GUI: Juggle panel `Columns — high-low`, Apex 1.00, Apex 2 0.90, Sep. 100, Dwell 0.27, Throws 20 (Start writes apex_m_ball2 to the node first). Terminal fallback: `ros2 param set /skill_node apex_m_ball2 0.90` (refused while a goal runs), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_highlow, apex_m: 1.00, separation_mm: 100.0, dwell_s: 0.27, num_cycles: 20}" --feedback`.
-  - Watch the hand current at every launch; cancel the goal if any hand iq sample reaches 50.0 A.
+  - Watch the hand current at every launch; cancel the goal if any hand iq sample reaches 55.0 A (the hand current limit is 60 A since 2026-11-01, was 50 A with a 50.0 A watch).
   - Afterwards `ros2 param set /skill_node apex_m_ball2 0.0`.
-- pass: 20 consecutive Catches in one Attempt; Tracker mean Apex difference between the two balls within 20 mm of the commanded 100 mm; hand iq under 45 A at every launch.
+- pass: 20 consecutive Catches in one Attempt; Tracker mean Apex difference between the two balls within 20 mm of the commanded 100 mm; hand iq under 54 A at every launch (90 % of the 60 A limit).
 - record: caught of thrown, each ball's mean Tracker Apex, peak hand iq per launch, the bag path; commit docs/records.md.
 
 #### JB-108 JP-10 Turned columns: the columns pair at fixed angles about +z, under pose  (20 min, medium, pattern-progression-columns-to-centre-and-orbit)
@@ -91,6 +91,8 @@ Rigs: Robot 3 blocks (77 min) · Bench leg 1 block (30 min)
 - JB-113 [Robot] JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them: no ## Sitting section
 - JB-114 [Robot] Hand end-of-stroke bumper, and first the planner's own brake shape: let the ceiling, not the Hand, cap the Apex: no ## Sitting section
 - JB-117 [Bench hand] Hand brake and hold currents sit far below the throw envelope's model (brake -14 to -20 A measured vs 35 to 40 A predicted; hold 1.5 vs 2.6 A): Kt, moving mass or friction is mis-modelled: no ## Sitting section
+- JB-137 [Robot] Hand ODrive feedback starvation: 701 ms heartbeat dropout left the encoder 100 ms stale, the 2.0 rev lead clamp pinned the throw to stale+2.0, guard MAX_DEVIATION +3.707 fired correctly (turned-90 at 16/16): no ## Sitting section
+- JB-138 [Robot] Hand iq reached 53.3 A on a 45 deg turned hop launch, over the 50 A watch the high-low row names: no ## Sitting section
 - JB-2 [Robot] Design change: the Hand should be Idle, not Parked Closed-loop, while Active: no ## Sitting section
 - JB-24 [Robot] 10 % jitter-margin class of LIMIT_* refusals: no ## Sitting section
 - JB-26 [Robot] Platform Teensy truncates the persisted levelling offset to int16 milliradians: no ## Sitting section
@@ -111,4 +113,4 @@ Rigs: Robot 3 blocks (77 min) · Bench leg 1 block (30 min)
 ## Close-out
 
 - Type each row's result in the map app (pass or fail, notes); it lands on the Item as `## Sitting result (<date>)`.
-- Then, in a Session in the live checkout: `/sitting-wrapup <date>`.
+- Then, in a Session in the live checkout: `/sitting-debrief <date>`.

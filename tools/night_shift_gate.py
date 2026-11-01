@@ -17,7 +17,7 @@ Output: ``MERGE`` (exit 0), or ``HOLD`` then one reason per line, each opening
 with its condition letter in brackets (exit 1). ``--json`` prints
 ``{"verdict", "item", "branch", "tip", "reasons", "checked", "waived"}`` instead.
 
-``--waive c`` is for ``/sitting-wrapup``: it re-runs the gate on a branch the
+``--waive c`` is for ``/sitting-debrief``: it re-runs the gate on a branch the
 owner passed at a Sitting, with the night's gate log and audit (tip unchanged),
 so a hardware pass overrides the hardware condition (c) and nothing else: in
 particular not (g), the owner check, which is its own letter so that no Sitting

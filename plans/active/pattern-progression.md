@@ -68,9 +68,9 @@ The release-step exception to `HAND_LIMIT_C2` is on the Hand thread (JB-114), no
 |------|--------|------|------------|
 | P1 Launch current check | complete 2026-10-30 | bag check: no clipping below release-relative Apex 0.935; the 1.0 to 1.05 regime was never flown | D-c now open |
 | P2 Turned Columns on the compiled path | complete 2026-10-31 | 12 pose cells swept twice identical; 45 deg admits the 0.925 band, 90 deg 0.875 and 0.925 | - |
-| P3 JP-10 turned Columns | not started | 20 Catches at 45 and 90 deg | a Sitting; runbook section; the records label exists |
+| P3 JP-10 turned Columns | flown 2026-11-01, gate NOT met | 20 Catches at 45 and 90 deg | 45 deg best 2/2, 90 deg best 16/16 (GUARD_LATCHED, JB-137); see P3 section |
 | P4 Per-Site Apex | complete 2026-10-31 | 16 pose cells swept twice identical (8 at separation 100 in the box); 1.00/0.90 admissible at 100 only | - |
-| P5 JP-9 high-low Columns | not started | 20 Catches, Apex gap, hand iq | a Sitting at separation 100, pair 1.00/0.90 (GUI entry landed 2026-10-31) |
+| P5 JP-9 high-low Columns | flown 2026-11-01, gate NOT met | 20 Catches, Apex gap, hand iq | 8/8 (GUARD_LATCHED) and 12/13 (leg LIMIT_ACC); apex difference 87 mm; see P5 section |
 | P6 JB-38 dependency | not started | owned by JB-38 | JB-38 P1, P3, P4 |
 | P7 JP-5 polygon walk | not started | 24 Catches, no first-visit miss | P6 |
 | P8 JP-11 rotating Columns | not started | one full turn at 10 deg per Beat | P7 |
@@ -97,6 +97,8 @@ The release-step exception to `HAND_LIMIT_C2` is on the Hand thread (JB-114), no
 
 - Adds: two-ball Columns off the x axis.
 - Rung gate: at 45 and at 90 deg, 20 consecutive Catches in one Attempt, landing scatter within 3 mm of a straight Columns control flown the same Sitting. Each angle has its own `plant_id`, so the rows answer JB-38 P2(b) (does the lateral bias rotate with the Pattern). May share a Sitting with P5.
+- Flown 2026-11-01 (first Sitting at hold 0), gate NOT met: 45 deg best 2/2 (three MISSED_CATCH on an empty cup, two after TRACKER-IDENTITY-REFUSED, one after a half-speed launch 2341 vs 4268 mm/s; one leg LIMIT_VEL 361 > 350 at 0/1); 90 deg best 16/16 ending GUARD_LATCHED (hand feedback starvation, JB-137). No HAND_LIMIT line. Hand iq 53.3 A on a 45 deg hop launch (over the 50 A watch, JB-138). Tracker apex 1.01-1.04 m turned vs 0.93-0.96 straight.
+- The plan's "each angle has its own `plant_id`" was NOT done: one `plant_id` (`jugglebot`) served straight, 45 and 90, all rows in one `memory.csv`. Rows are keyed by the release-site xy (I-LEARN-1), and the turned Sites carry distinct xy, so the angles do not share exact rows, but nothing separates them by angle. JB-38 P2(b) (does the lateral bias rotate with the Pattern) is NOT answered: no 20-run, no tracker landing on any miss. A re-fly sets `plant_id` per angle.
 - Depends on: P2. Items consumed: JB-108. Plus the three standing Rung preconditions (section 2).
 
 ### P4: Per-Site Apex
@@ -111,6 +113,7 @@ The release-step exception to `HAND_LIMIT_C2` is on the Hand thread (JB-114), no
 - Adds: two Apexes in one Pattern.
 - Flies at separation 100 with the 1.00/0.90 pair (1.05/0.95 is admissible since the 2026-10-31 re-sweep but waits for the faster current capture); the GUI Juggle panel's `Columns — high-low` entry (2026-10-31) writes `apex_m_ball2` to the node before each Start; the terminal path (`ros2 param set /skill_node apex_m_ball2 0.90`, then `ros2 action send_goal`) stays as the fallback.
 - Rung gate: 20 consecutive Catches in one Attempt; Tracker mean Apex difference within 20 mm of the commanded difference; hand iq under 45 A at every launch. Stop rule: any hand `iq_setpoint` sample at 50.0 A ends the Attempt (needs the faster iq capture named under D-c, or the Sitting flies the lower pair).
+- Flown 2026-11-01, gate NOT met: 8/8 ended GUARD_LATCHED (teensy_bridge_node stall, JB-98) and 12/13 ended leg LIMIT_ACC 5142.8 > 5000 (a late re-send seed, JB-24 class). Tracker apex difference 87 mm vs 100 commanded (Ball 1 0.997, Ball 2 0.910 m). Hand iq peaks 32.1 / 41.5 A (under the 45 A bar). First high-low records are in `docs/records.md`.
 - Depends on: P4. Items consumed: JB-107. Plus the three standing Rung preconditions.
 
 ### P6: Per-Beat Sites dependency owned by JB-38

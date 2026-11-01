@@ -4,7 +4,7 @@ kind: bug
 title: 10 % jitter-margin class of LIMIT_* refusals
 status: inbox
 created: '2026-10-24'
-updated: '2026-11-01T02:18:30Z'
+updated: '2026-11-01T12:18:37Z'
 owners: []
 priority: medium
 effort: m
@@ -49,3 +49,4 @@ A question ticket carries this to the owner; the answer under its `## Answer` re
 ## Progress
 
 - 2026-11-01: JB-127 option 4 tally: LIMIT_* not dominant (4 of 58 goals, 3 the JB-120 Hand cell); margin stays 10 percent; re-run tools/probes/limit_refusal_tally.py after more hold-0 goals
+- 2026-11-01: 2026-11-01 Sitting (first at hold 0, 23 goals): HAND_STROKE 7, HAND_LIMIT_ACC 6, MISSED_CATCH 5, GUARD_LATCHED 2, leg LIMIT 2. Both leg LIMIT ends (5142.8 +2.9 pct, 361 +3.1 pct) were first installs seeded from a late re-send (+11 / +23 ms): this Item's class, but not dominant so the trigger is not met. Owner keeps the 10 pct margin.

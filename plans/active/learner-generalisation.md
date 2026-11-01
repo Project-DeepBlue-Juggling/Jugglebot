@@ -291,6 +291,8 @@ New: `plant_model.py`, `tools/probes/learner_replay.py` (output under `temp/prob
 
 ### Phase 2: The characterisation sitting — NOT STARTED
 
+> Note 2026-11-01: P2(b) (does the lateral bias rotate with the pair) was NOT answered by the turned-Columns rung flown today. No 20-run at 45 or 90 deg, no tracker landing on any miss, and no per-angle `plant_id` was set, so every row went to the one `jugglebot` memory (keyed by release-site xy, I-LEARN-1). Also seen: Ball 2's learner command sat at the (-20, -20) mm clamp corner in 37 of 40 straight rows (JB-139).
+
 New: `tests/hardware/session_learner_characterisation.md`, dress-rehearsed on the loaded Jetson
 against the LIVE `/robot_state`, every refusal reported at once.
 

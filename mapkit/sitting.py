@@ -250,7 +250,7 @@ def render_runbook(repo_root: str) -> str:
     out += ["", "## Close-out", "",
             "- Type each row's result in the map app (pass or fail, notes); it lands on the Item as "
             "`## Sitting result (<date>)`.",
-            "- Then, in a Session in the live checkout: `/sitting-wrapup <date>`.", ""]
+            "- Then, in a Session in the live checkout: `/sitting-debrief <date>`.", ""]
     return "\n".join(out)
 
 

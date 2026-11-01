@@ -295,6 +295,8 @@ the level program in both modes, and `CycleMeta.planner_mode` names what was sol
 
 ### 2.6 Admissible box, workspace, dwell
 
+> Finding 2026-11-01 (JB-120): the admissible box is swept from unbumped release seeds and has no bump model; the Hand is still certified at 100 % in the sweep. At the 2026-11-01 Sitting 7 of 7 HAND_LIMIT_ACC refusals (3910.6-4096.8 vs 3900) were the first install of a catch seeded from a BUMPED predecessor (0 of about 59 unbumped seeds). Offline, `plan_segment` plus `apply_catch_bump` reproduces the peaks within 3 %: the peak sits on span 1 of the post-release hold and rises with the bump's x shift above about 4 mm. "Inside the box" is therefore true and cannot see this class; the fix is a successor-feasibility check in the bump decision, not a box edge.
+
 `PATTERNS` gains `oval_1ball` and `oval`; `oval_1ball_fed` / `oval_fed` use the sibling box;
 `dwell_s` joins the `select()` key so the ladder's cells (0.50 / 0.40 / 0.30) coexist in one
 YAML (the ladder is now 0.65 / 0.50 / 0.40 / 0.30); `dwell_s` is a required `select` keyword and stays a node parameter, refused on mismatch naming the field. One accept-time
@@ -552,7 +554,7 @@ Where the idea lives now: a note inside P3 (below). Code never started; nothing 
   it. The carry is the first LOADED translation — the first rung's stop rules (ball leaves the cup
   twice in one region, FET > 60 °C, a leg on the current clamp > 50 ms, lane recovery failed) are
   in the runbook. 30 A is the owner's number (~30 A judged safe 2026-10-12); the 0.40 rung's bag
-  is the measurement. The hand cap 3900 is NOT raisable.
+  is the measurement. The hand cap 3900 was NOT raisable at 50 A; raised to 4500 with 60 A on 2026-11-01 (debrief; see JB-120, hand_throw_envelope.md).
 - **Non-obvious choices**: the first rung flies at dwell 0.65 (pre-release hold; the cone moved to 45° since b28b129f so 0.50 passes the planner and cone offline (32.1° < 45°) but is NOT dispatchable until the oval box cells at 0.55 and 0.50 are swept; rung 2 flew it 2026-10-23 once the cells were swept); symmetric sites (every one-sided probe placement produced edge
   artefacts); the catch stays level because the capture span is infeasible at two balls (probe,
   two runs); the mode switch exists so decision 24's as-is column stays producible; dwell is a

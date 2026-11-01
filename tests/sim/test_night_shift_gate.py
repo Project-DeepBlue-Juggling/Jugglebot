@@ -300,7 +300,7 @@ def test_e_unparseable_map_file_holds(repo):
     "tools/nightly_suite.sh", ".claude/commands/night-shift.md", ".claude/settings.json",
     "mapkit/items.py", "tests/sim/test_night_shift_gate.py",
     "tests/sim/test_live_session_guard.py", "tests/sim/test_question_tickets.py",
-    "tests/sim/test_sitting_wrapup.py", "run_tests.sh", "pyproject.toml",
+    "tests/sim/test_sitting_debrief.py", "run_tests.sh", "pyproject.toml",
 ])
 def test_f_forbidden_path_holds(repo, path):
     p = repo / path
@@ -416,7 +416,7 @@ def test_pre_item_not_on_base(repo):
     assert res.reasons[0].startswith("[pre] Item not on base")
 
 
-# --- --waive c (the Sitting wrap-up's hardware pass) ------------------------
+# --- --waive c (the Sitting debrief's hardware pass) ------------------------
 def test_waive_c_merges_where_unwaived_holds(repo):
     write_bug(repo, hardware="robot")
     commit(repo, "map: rate JB-7 Wobble")

@@ -4,7 +4,7 @@ kind: idea
 title: 'JP-10 Turned columns: the columns pair at fixed angles about +z, under pose'
 status: in_progress
 created: '2026-10-30'
-updated: '2026-10-31T00:44:54Z'
+updated: '2026-11-01T12:18:47Z'
 owners:
 - jugglebot-f5
 priority: medium
@@ -50,6 +50,13 @@ It proves the rotational symmetry on hardware that lets the admissible box key o
 - record: caught of thrown per angle, each angle's plant_id, landing scatter against the control, the bag path; commit docs/records.md.
 - minutes: 20
 
+## Sitting 2026-11-01 findings
+
+- 45 deg: three MISSED_CATCH on an empty cup, two after TRACKER-IDENTITY-REFUSED, one after a half-speed launch (2341 vs 4268 mm/s); one leg LIMIT_VEL 361 > 350 at 0/1.
+- Hand iq 53.3 A at L3521 (over the 50 A watch). Tracker apex 1.01-1.04 m turned vs 0.93-0.96 straight.
+- No per-angle `plant_id` was set, and no tracker landing on any miss, so JB-38 P2(b) is not answered.
+
 ## Progress
 
 - 2026-10-31: P2 of plan pattern-progression.md done offline: goal columns_turned, parameter columns_angle_deg, 12 pose box cells at 45 and 90 deg (45 deg admits only Apex 0.925-0.975, 90 deg 0.875-0.975). Next: the JP-10 Rung (P3) at a Sitting. Logbook 2026-10-31-pattern-progression-p2-turned-columns.md.
+- 2026-11-01: Sitting: gate NOT met. 45 deg best 2/2, 90 deg best 16/16 (GUARD_LATCHED, JB-137); hand iq 53.3 A on a 45 deg hop launch (JB-138); JB-38 P2(b) NOT answered (detail below)

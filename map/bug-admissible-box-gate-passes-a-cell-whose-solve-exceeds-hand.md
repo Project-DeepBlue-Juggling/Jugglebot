@@ -1,10 +1,10 @@
 ---
 id: JB-120
 kind: bug
-title: Admissible-box gate passes a cell whose solve exceeds HAND_LIMIT_ACC by ~5%
+title: 'A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve'
 status: in_progress
 created: '2026-10-31'
-updated: '2026-10-31T18:27:12Z'
+updated: '2026-11-01T12:26:53Z'
 owners:
 - night-shift
 priority: high
@@ -59,6 +59,19 @@ Entry: logbook/2026-11-01-jb120-box-gate-vs-hand-limit-acc-replay.md.
 - minutes: 15
 - branch: night-shift/2026-11-01-JB-120
 
+## Sitting 2026-11-01 findings
+
+- 7 of 7 refusals are the first install of a catch seeded from a BUMPED predecessor (0 of about 59 unbumped seeds).
+- Offline `plan_segment` plus `apply_catch_bump` reproduces the peaks within 3 pct: the peak sits on span 1 of the post-release hold.
+- The branch fallback was not flown and could not have helped; the box is blind to bumped seeds.
+- Branch `night-shift/2026-11-01-JB-120` stays held (the limit decision is below).
+
+**Owner decision 2026-11-01 (debrief).** HAND_LIMIT_ACC 3900 -> 4500 rev/s^2 and hand_curr_limit_a 50 -> 60 A (4500 needs ~57 A at the modelled Kt/J; owner open to 70-80 A later, heating manageable; the hand ODrive hard max is 70 A); box re-swept under the new limits.
+
+The structural fix is FILED here as the next step, not built: the bump decision also plans the next catch and declines or shrinks the bump if that solve refuses; late re-sends fall under the same rule. JB-117 bench hold-and-step measures the real authority.
+
 ## Progress
 
 - 2026-11-01: Night Shift 2026-11-01: held on night-shift/2026-11-01-JB-120: hardware robot; audit open on HAND_LIMIT_C2 admitted by the new HAND_LIMIT_ prefix and no both-refused test; unblocked by the Sitting in the section below plus the owner's call on the C2 finding (detail below)
+- 2026-11-01: Sitting: 6 Columns ENDs HAND_LIMIT_ACC 3910.6-4096.8 vs 3900; 7 of 7 refusals follow a BUMPED predecessor (0 of ~59 unbumped); reproduced offline within 3 pct. Branch fallback not flown, could not help. Owner keeps 3900; branch stays held (detail below)
+- 2026-11-01: Owner decision (debrief): HAND_LIMIT_ACC 3900 -> 4500 rev/s^2, hand_curr_limit_a 50 -> 60 A, box re-swept; the structural bump fix (plan the next catch at bump time) stays FILED here, not built (detail in the findings section).

@@ -4,7 +4,7 @@ kind: bug
 title: 'Emitter gap: one 47 ms window over sitting 8 against the 35 ms max target'
 status: inbox
 created: '2026-10-24'
-updated: '2026-10-24T13:05:00Z'
+updated: '2026-11-01T12:18:36Z'
 owners: []
 priority: medium
 effort: m
@@ -30,3 +30,7 @@ Over sitting 8 the emitter showed p50 25.9 / p99 29.9 / max 47.0 ms on `/traject
 - pass: emitter max below 35 ms over the goal.
 - record: the emitter p50, p99 and max lines, and the goal flown.
 - minutes: 10
+
+## Progress
+
+- 2026-11-01: 2026-11-01 Sitting: 28/29 goal emit gap p50 26.2 / p99 30.9 / max 32.8 ms (pass on the goal). Launch-wide max 47.8 ms: one 48 ms emitter wake gap WARN at L1264 in the 16/17 goal.

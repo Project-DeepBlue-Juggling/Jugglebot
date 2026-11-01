@@ -4,7 +4,7 @@ kind: idea
 title: 'JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m'
 status: in_progress
 created: '2026-10-30'
-updated: '2026-10-31T10:56:16Z'
+updated: '2026-11-01T12:18:47Z'
 owners:
 - jugglebot-f5
 priority: medium
@@ -46,12 +46,13 @@ Visually subtle: the two apexes differ by 100 mm.
 - do:
   - Rehearse before arming: cup empty, Ball Butler unpowered, `ros2 param set /skill_node apex_m_ball2 0.90`, send the goal below once. The accept message may name only the cup and Ball Butler refusals (no box, planner or apex2 refusal) and nothing moves.
   - GUI: Juggle panel `Columns — high-low`, Apex 1.00, Apex 2 0.90, Sep. 100, Dwell 0.27, Throws 20 (Start writes apex_m_ball2 to the node first). Terminal fallback: `ros2 param set /skill_node apex_m_ball2 0.90` (refused while a goal runs), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_highlow, apex_m: 1.00, separation_mm: 100.0, dwell_s: 0.27, num_cycles: 20}" --feedback`.
-  - Watch the hand current at every launch; cancel the goal if any hand iq sample reaches 50.0 A.
+  - Watch the hand current at every launch; cancel the goal if any hand iq sample reaches 55.0 A (the hand current limit is 60 A since 2026-11-01, was 50 A with a 50.0 A watch).
   - Afterwards `ros2 param set /skill_node apex_m_ball2 0.0`.
-- pass: 20 consecutive Catches in one Attempt; Tracker mean Apex difference between the two balls within 20 mm of the commanded 100 mm; hand iq under 45 A at every launch.
+- pass: 20 consecutive Catches in one Attempt; Tracker mean Apex difference between the two balls within 20 mm of the commanded 100 mm; hand iq under 54 A at every launch (90 % of the 60 A limit).
 - record: caught of thrown, each ball's mean Tracker Apex, peak hand iq per launch, the bag path; commit docs/records.md.
 - minutes: 12
 
 ## Progress
 
 - 2026-10-31: P4 of plan pattern-progression.md done offline: goal columns_highlow, parameter apex_m_ball2, per-ball Apex and dwell in the compile, 16 pose cells swept. Nothing fits at separation 125; at 100 the pair 1.00/0.90 fits at both Sites, 1.05/0.95 only the high ball. Next: the JP-9 Rung (P5) at 100 with 1.00/0.90. Logbook 2026-10-31-pattern-progression-p4-high-low-columns.md.
+- 2026-11-01: 2026-11-01 Sitting: gate NOT met. 8/8 (GUARD_LATCHED) and 12/13 (leg LIMIT_ACC 5142.8 > 5000, a late re-send seed); apex difference 87 mm vs 100 commanded (Ball 1 0.997, Ball 2 0.910 m); hand iq peaks 32.1 / 41.5 A. First high-low records are in docs/records.md.

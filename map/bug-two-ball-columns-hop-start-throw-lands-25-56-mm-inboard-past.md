@@ -4,7 +4,7 @@ kind: bug
 title: Two-ball Columns hop-start throw lands 25-56 mm inboard, past the 35 mm catch authority
 status: inbox
 created: '2026-10-31'
-updated: '2026-10-31T04:51:57Z'
+updated: '2026-11-01T12:18:35Z'
 owners: []
 priority: high
 effort: m
@@ -49,3 +49,7 @@ The 2026-10-31 hold analysis shows hold 0.100 lands about 10 mm short and shorte
 - pass: five of five starts past the first two catches, with no AIM-LATERAL-CLAMPED inward of 35 mm.
 - record: the HOP aim clamp line and the landing x error of each hop throw.
 - minutes: 20
+
+## Progress
+
+- 2026-11-01: 2026-11-01 Sitting: 7 of 10 straight hop starts passed the first two catches at hold 0. The 3 failures were HAND_STROKE at the first CATCH (hand -0.004/-0.002/-0.001 rev vs a 0.000 floor), not a lateral miss; one AIM-LATERAL-CLAMPED inward of 35 mm (-38.9 mm x, L546). Hop-start failure at hold 0 is the floor dip, not the landing bias.
