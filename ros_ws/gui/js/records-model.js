@@ -28,12 +28,10 @@ export function recordRows(json, hidden) {
             balls: Number(p.balls) || 0,
             score: r ? r.catches + '/' + r.throws : '—',
             date: r ? String(r.when_local).slice(0, 10) : '',
+            // Hover: how the record's Attempt ended, then its run parameters (JB-90).
+            // Score and date are already on the row itself (owner, 2026-11-01).
             title: r
-                ? (r.catches + ' Catches in ' + r.throws + ' Throws, ' + r.when_local
-                   + ', ' + r.category + ' (' + r.end_code + ')'
-                   + (r.note ? ' — ' + r.note : '')
-                   + (p.history > 1 ? ' · beaten ' + (p.history - 1) + '× before' : '')
-                   + '\n' + paramsText(r.params))
+                ? ('Ended: ' + r.category + ' (' + r.end_code + ')\n' + paramsText(r.params))
                 : 'No record yet',
             empty: !r,
         });

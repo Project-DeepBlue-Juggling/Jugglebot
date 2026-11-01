@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-01 | complete | gui | **Records hover trimmed to `Ended: <category> (<END_CODE>)` plus the JB-90 parameters line (score, date, time, Note and "beaten N× before" dropped; owner)** | [2026-11-01-records-hover-trimmed.md](2026-11-01-records-hover-trimmed.md) |
 | 2026-11-01 | complete | gui | **JB-90: records ledger v2 keeps each record's run parameters (resolved apex, separation, dwell, planner, plus turned angle / Ball 2 apex); the GUI records row's hover shows them; v1 still parses, docs/records.md re-rendered; deploy needs a colcon build and a GUI service restart** | [2026-11-01-jb90-records-run-parameters.md](2026-11-01-jb90-records-run-parameters.md) |
 | 2026-11-01 | complete | gui | **JB-101: every chart axis shows at least two ticks at every size and zoom (uPlot `space` scaled to the plot, time ladder gains 2 s and 2 min); sub-second time labels** | [2026-11-01-jb101-chart-axes-two-ticks.md](2026-11-01-jb101-chart-axes-two-ticks.md) |
 | 2026-11-01 | complete | gui | **JB-103: the Records panel sits hard left and dodges the collapsed State Machine card only when they would overlap** | [2026-11-01-jb103-records-panel-snaps-left.md](2026-11-01-jb103-records-panel-snaps-left.md) |

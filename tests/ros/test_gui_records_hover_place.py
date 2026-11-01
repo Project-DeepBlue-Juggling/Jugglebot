@@ -53,7 +53,7 @@ def out(tmp_path_factory):
 
 def test_hover_title_carries_the_run_parameters_on_its_second_line(out):
     first, second = out["titles"]["columns"].split("\n")
-    assert first == "32 Catches in 33 Throws, 2026-10-22 18:40, stopped (STOPPED)"
+    assert first == "Ended: stopped (STOPPED)"
     assert second == "Apex 0.95 m · Separation 125 mm · Dwell 0.27 s · Planner pose"
 
 

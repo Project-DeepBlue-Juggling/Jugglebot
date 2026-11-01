@@ -60,8 +60,10 @@ def test_one_row_per_pattern_in_ledger_order(out):
     hop, st, col = rows
     assert (hop["score"], hop["date"], hop["empty"], hop["title"]) == ("—", "", True, "No record yet")
     assert (st["label"], st["score"], st["date"], st["empty"]) == ("Self-throw", "12/14", "2026-10-21", False)
-    assert st["title"].startswith("12 Catches in 14 Throws, 2026-10-21 10:05, drop (MISSED_CATCH)")
-    assert "warm box" in st["title"] and "beaten 2× before" in st["title"]
+    # Hover is the end reason, then the parameters line; score, date, Note and
+    # history are not repeated there (owner, 2026-11-01)
+    assert st["title"].split("\n")[0] == "Ended: drop (MISSED_CATCH)"
+    assert "warm box" not in st["title"] and "beaten" not in st["title"]
     assert (col["score"], col["balls"]) == ("32/33", 2)
 
 
