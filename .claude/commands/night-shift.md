@@ -114,8 +114,9 @@ a HOLD writes the same rating on `main` (2j), so base and branch agree at a late
 | `owner: decision` (any kind) | research the question; write `## Options (<date>)` into the body (2-4 options, one line each, a recommendation); file one question ticket (2h); no code | Questioned (Held if a branch exists) |
 | `hardware: bench-leg`, `bench-hand` or `robot`, or `owner: hands` | work the software part only if the body names one that is testable offline (then as row 1); always write or complete the Item's `## Sitting` section when the body gives enough to fill `do:` and `pass:` honestly (P4 format; never invent a step) | Held `needs a Sitting` or Skipped |
 | idea | write `## Feasibility (<date>)` (what it would take, effort, hardware, one risk); if rated xs or s with `hardware: none` and `owner: none`, build it as row 1 | Merged, Held or Skipped `feasibility noted` |
-| ticket `type: question` already complete (`## Answer` present) | re-open its parent Item's work: the answer is now an input; proceed by the parent's row | per the parent |
-| ticket `type: question` open | list it again under `## Questions for the Operator`; its parent is Skipped `awaiting answer` | Skipped |
+| ticket `type: question` already complete (`## Answer` present) whose parent has a held branch `night-shift/<old-date>-JB-n` | RESUME (2l): the answer says what to do with the branch | Merged, Held again, or closed out |
+| ticket `type: question` already complete (`## Answer` present), no held branch | re-open its parent Item's work: the answer is now an input; proceed by the parent's row | per the parent |
+| ticket `type: question` open | list it again under `## Questions for the Operator`; its parent is Skipped `awaiting answer` (a held parent stays in `## Held` with the ticket in `Respond in`, not re-worked) | Skipped |
 | other ticket (research, prototype, grilling, task) under a Pathway | research/task: one unit writing `## Findings` or the task's result; grilling/prototype: Skipped `needs the owner` | Held or Skipped |
 | `diagnosis: unknown` or `hypothesis` bug with `hardware: none` | one unit whose brief is "reproduce offline and confirm or refute; fix only if confirmed" | Merged (if confirmed and fixed), Held, or re-rated and Skipped |
 
@@ -195,12 +196,31 @@ python -m mapkit item new ticket "<the question, one sentence ending in ?>" --ty
 
 Rated at filing: a ticket is not `inbox`, so `test_map_items_rated` requires every metric.
 The body: the context in two sentences, the options you drafted, what each answer would
-unblock, each paragraph under the readability cap. No `--commit`: commit it on the Item's
-branch (`map: file ticket JB-m <title>`, no trailer) so it lands with the HOLD push, OR,
-when there is no branch for this Item, on `main` through the map-write check (§ 0 rule 10:
-`--commit --no-push`, the map tests, then push). The owner answers in the app
+unblock, each paragraph under the readability cap. Every question ticket is filed on
+`main` through the map-write check (§ 0 rule 10: `--commit --no-push`, the map tests, then
+push; subject `map: file ticket JB-m <title>`, no trailer), never on an Item's branch: the
+app writes the answer to `main`, and a branch copy would stay open and trip the gate's
+condition (e) at the re-gate (and add/add-conflict when the branch later merges `main`). The owner answers in the app
 under `## Answer`; the next night's preflight sees the ticket's `updated` move and
 re-opens the parent.
+
+**Every Item that waits on the owner gets one** (owner, 2026-11-02: "ALL work items that
+require my input should be written up with a response cell"). That is: every Held row whose
+unblock is the owner's call (audit findings open, a design choice, a scope call), and every
+Skipped or Unfinished row skipped for `owner decision`, unless an open ticket already
+exists for it (the dispatch table's open-ticket row: list that one again, file no second). NOT for a Held or
+Skipped row whose only unblock is a Sitting (the Runbook's job), `out of reach` or `not
+reached`. A hold ticket is "JB-n held on night-shift/<date>-JB-n: apply the audit's N
+fixes and merge, merge as is, or drop?", the body lists each open finding as an option
+with what it would change, and ends with your recommendation. Every such ticket is a row
+under `## Questions for the Operator` (so the app's answer box and Your-answer column
+serve it unchanged) and the Held row names it in `Respond in`.
+
+**Holds carried from an earlier night.** Every `night-shift/*` branch still on the remote
+(`git ls-remote --heads origin 'night-shift/*'`) whose Item is not complete is a row in
+tonight's `## Held`, with its original branch name, `(carried)` before its old reason, and
+its ticket in `Respond in`. A carried hold with no ticket yet (held before 2026-11-02) gets
+one tonight, unless only a Sitting unblocks it (`none`).
 
 ### 2i. MERGE
 
@@ -231,19 +251,46 @@ re-opens the parent.
    line in that section in the same write (edit the body with `mapkit.items.load_item` /
    `write_item` in a `python -` snippet before the `set-status`), so the Next Sitting
    Runbook row carries the branch and `/sitting-debrief` knows what to merge on a pass.
-3. Report row under `## Held`: `| JB-n | <title> | night-shift/<date>-JB-n | (<letter>) <reason>. ... | <what unblocks it> |`.
+3. If the unblock is the owner's call, file the hold question ticket (2h, on `main`, in
+   the same push as the `set-status`); a Sitting-only hold files none.
+4. Report row under `## Held`: `| JB-n | <title> | night-shift/<date>-JB-n | (<letter>) <reason>. ... | <what unblocks it> | <JB-m or none> |`.
+   The last cell, `Respond in`, is the bare ID of the hold ticket, or `none` for a
+   Sitting-only hold; the app adds a **Your answer** column beside it from that ticket.
 
 ### 2k. After every Item
 
 `git checkout -q main`; `git status --porcelain` empty; `git log origin/main..main` empty.
 If not, fix it now (push what is yours, revert what is not) and say so in the report.
 
+### 2l. RESUME an answered hold
+
+The ticket is complete and its parent has a held branch (find it with
+`git ls-remote --heads origin 'night-shift/*-JB-n'`; the newest date if several). Read the
+ticket's `## Answer` as the order for the night:
+
+1. `git fetch -q && git checkout -q night-shift/<old-date>-JB-n && git merge -q origin/main`
+   (the gate needs the base inside the branch; the merge also brings the closed ticket).
+   A conflict you cannot resolve mechanically: Held again, reason `resume merge conflict`.
+2. **Apply** (the answer names fixes, or accepts the audit's): make the named changes as
+   in 2d (a unit, `model: sonnet`), commit, then 2e-2g as for any branch. Merge on 2i.
+3. **Merge as is**: re-run 2e on the merged tip and 2f/2g; merge on `MERGE`.
+4. **Drop**: `git push -q origin --delete night-shift/<old-date>-JB-n`; on `main`, in one
+   write, remove the `- branch:` line from the Item's `## Sitting` section (if any) and
+   `night-shift` from its `owners` (a `mapkit.items.load_item` / `write_item` snippet, as in
+   2j step 2), then `set-status JB-n open --note "<one line>" --commit --no-push`, the map
+   tests, push; report row under `## Skipped` (`dropped by the owner's answer`).
+5. An answer that does not decide (a question back, "later"): Held again under a NEW
+   ticket (2h) quoting what is still unclear; the report row says so.
+
+A re-held Item keeps its branch name; the Held row's `Branch` cell stays
+`night-shift/<old-date>-JB-n`.
+
 ## 3. The report
 
 After the last Item (or at the deadline, or when a unit returns and the budget is nearly
 spent): write `docs/night-shift/<date>.md` in the layout of `docs/night-shift/README.md`
 (the eight sections in order, the Item sections as GFM tables with a header row, every
-`JB-n` bare, a one-line **Summary.** under the title), and `logbook/<date>-night-shift.md`
+`JB-n` bare, the Held table's last column `Respond in` filled, a one-line **Summary.** under the title), and `logbook/<date>-night-shift.md`
 (short form: the counts, the nightly line, the cost, a link to the report) with its
 `logbook/INDEX.md` row. Commit on `main` as `docs(night-shift): report <date>` with the
 trailers (`Logbook-Entry: <date>-night-shift`), `git pull -q --rebase` ONLY if the push is
