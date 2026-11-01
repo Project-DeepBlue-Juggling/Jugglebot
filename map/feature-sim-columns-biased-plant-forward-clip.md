@@ -24,4 +24,4 @@ Run the sim columns pattern against a deliberately biased plant so the forward-c
 
 ## Progress
 
-- 2026-11-02: Night Shift 2026-11-02: plant_landing_bias_mm knob, release hook and executor_lines landed on the self-toss and hop learner runs, where the forward clip is live; the columns gate builds its executor with boxes=None, so wiring the swept columns boxes into run_columns_attempt is the remaining slice (detail in the logbook entry)
+- 2026-11-02: Night Shift 2026-11-02: plant_landing_bias_mm knob, release hook and executor_lines landed on the `self_toss` and hop learner runs, where the forward clip is live; the columns gate builds its executor with boxes=None, so wiring the swept columns boxes into run_columns_attempt is the remaining slice (detail in the logbook entry)

@@ -24,19 +24,19 @@ self-toss/hop path. CLI: `--learn --plant-bias-xy X Y`. `_stream_chain` gained `
 of the `BOX-EXPECTED-LANDING` notes.
 
 **Which run drives the clip.** Not the columns runs: they build the executor with `boxes=None`, so
-`_forward_clip_xy` never runs there. The self-toss / hop learner runs (learner + boxes) do, so the
+`_forward_clip_xy` never runs there. The `self_toss` / hop learner runs (learner + boxes) do, so the
 knob lives there. The columns path would additionally need the swept columns boxes wired into
 `run_columns_attempt` (a behaviour change to the columns gate, left undone).
 
 **Finding (probe, 2026-11-02, seed 0, 5 throws).** The hop's narrow x box (+-2 mm) already clips at
 bias (0, 0), through the measured +11 % speed bias alone (pre-clip y_hat x +8.9 mm); at +30 mm x
-it is +13.9 mm. The wide self-toss box (+-40 mm) stays "inside" even at +100 mm, since the learner
+it is +13.9 mm. The wide `self_toss` box (+-40 mm) stays "inside" even at +100 mm, since the learner
 corrects the command. So the tests pin the knob on the hop (pre-clip expected landing grows with
-the bias) and "no clip" on the unbiased self-toss.
+the bias) and "no clip" on the unbiased `self_toss` run.
 
 **Fails before the change:** reasoned, not run: the knob, `_plant_landing_bias_release` and
 `executor_lines` do not exist, so each new test raises TypeError/AttributeError/KeyError. The
-unbiased self-toss test fails before only on the missing `executor_lines` key: it is a regression
+unbiased `self_toss` test fails before only on the missing `executor_lines` key: it is a regression
 pin on the "inside" case once the key exists, not a red-then-green pin of the clip itself.
 Spec deviation: the brief's +36.8 mm/s uses the unbiased vz = 4000; the hook runs after the speed
 bias, so the test pins +33.1 mm/s (the physically right figure).
