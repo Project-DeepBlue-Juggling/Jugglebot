@@ -994,6 +994,15 @@ class _Program:
     #: state ``(m, m/s, m/s²)`` so :func:`plan_window` can integrate it.
     n_dz: int = 0
     dz0: Optional[np.ndarray] = None
+    #: Row-layout bookkeeping for REFUSAL MESSAGES ONLY (:func:`_row_label`):
+    #: where each equality group starts, the name and width of each inequality
+    #: column block, and the held-knot range that shapes the jerk box.  Plain
+    #: ints / strings recorded as the blocks are assembled; nothing numeric
+    #: reads them, so the program is bit-identical with or without.
+    eq_marks: tuple = ()
+    ineq_names: tuple = ()
+    ineq_widths: tuple = ()
+    held_knots: range = range(0)
 
 
 #: How far off the held axis line a held-axis window's SEED and its settle site
@@ -1636,14 +1645,17 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
 
     # ---- hard equalities ---------------------------------------------------
     rows, rhs = [], []
+    eq_marks = []       # (block, first row[, axes]): refusal labels only, see _row_label
     if throw is not None:
         throw_pos = np.asarray(throw.site, dtype=float)
         v_takeoff = takeoff_velocity(throw_pos, np.asarray(throw.target, float),
                                      float(throw.flight_s))
+        eq_marks.append(('release', len(rows)))
         for a in range(3):                   # throw: pos, vel, acc == g
             rows.append(_axis_row(n, a, Ap[n])); rhs.append(throw_pos[a] - cp[n, a])
             rows.append(_axis_row(n, a, Av[n])); rhs.append(v_takeoff[a] - cv[n, a])
             rows.append(_axis_row(n, a, Aa[n])); rhs.append(GRAVITY[a] - ca[n, a])
+        eq_marks.append(('pre_release_hold', len(rows)))
         if pre_hold_knots > 0:
             # THE LAUNCH LINE, held over the last N knots before the release
             # (the pre-release block above says why and checks the rank).  Two
@@ -1690,12 +1702,14 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
                     % (1e3 * settle[0], 1e3 * settle[1], 1e3 * off[0],
                        1e3 * off[1], 1e3 * want[0], 1e3 * want[1]),
                     reason='CATCH_AXIS')
+        eq_marks.append(('rest', len(rows), tuple(axes)))
         for a in axes:
             rows.append(_axis_row(n, a, Ap[n])); rhs.append(settle[a] - cp[n, a])
             rows.append(_axis_row(n, a, Av[n])); rhs.append(0.0 - cv[n, a])
             rows.append(_axis_row(n, a, Aa[n])); rhs.append(0.0 - ca[n, a])
 
     if hold_kappa is not None:
+        eq_marks.append(('hold_velocity', len(rows)))
         # THE HELD PLATFORM, stated once — and it REPLACES the detach cone below
         # rather than joining it.  The two are competing answers to "don't shove
         # the ball sideways on its way out": the cone keeps the cup's SPECIFIC
@@ -1718,6 +1732,7 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
                 rows.append(row)
                 rhs.append(-(cv[k, a] - hold_kappa[a] * cv[k, 2]))
     elif state0.post_release:
+        eq_marks.append(('post_release_acc', len(rows)))
         if _is_level(state0.detach_axis):
             for i in range(1, n_detach + 1):     # level: acc_xy == 0
                 for a in range(2):
@@ -1739,6 +1754,8 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
         # slaving rows (the whole trajectory lies on the line THROUGH the
         # touch-down, so pinning its height pins its xy), and writing them too
         # would be rank-deficient — the same reason as the terminal block above.
+        eq_marks.append(('catch_position', len(rows),
+                         (2,) if axis is not None else (0, 1, 2)))
         for a in ((2,) if axis is not None else (0, 1, 2)):
             rows.append(_axis_row(n, a, r_ptd))
             rhs.append(catch_pos[a] - c_ptd[a])
@@ -1804,6 +1821,7 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
         #   from here the plan is today's held catch: stationary platform, the
         #   hand stroke along the axis, touch-down and rest tail unchanged.
         if capture_k:
+            eq_marks.append(('capture', len(rows)))
             r_site = np.asarray(catch.site, dtype=float).reshape(3)
             for M, c, site_term in ((Ap, cp, True), (Av, cv, False),
                                     (Aa, ca, False)):
@@ -1815,6 +1833,7 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
                     if site_term:
                         resid -= r_site[a] - kappa[a] * r_site[2]
                     rows.append(row); rhs.append(-resid)
+        eq_marks.append(('axis_slaving', len(rows)))
         for k in held_knots:
             for a in range(2):
                 row = np.zeros(nvar)
@@ -1822,6 +1841,7 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
                 row[2 * n + k] = -kappa[a]
                 rows.append(row); rhs.append(0.0)
 
+    eq_marks.append(('level_end', len(rows)))
     Aeq = np.array(rows)
     beq = np.array(rhs)
     scale = np.linalg.norm(Aeq, axis=1)      # 2-norm row scaling; x unchanged
@@ -1908,6 +1928,7 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
     BHI = np.array(box_hi)
     cols = [-BR.T, BR.T]
     rhss = [BC - BHI, BLO - BC]
+    ineq_names = ['box_upper', 'box_lower']     # parallel to cols; labels only
     # One tag per COLUMN of the final C, in hstack order: (kind, knot, sign of
     # the row's z coefficient) for the z rows the pose planner moves onto the
     # slider, None for every other column.  Upper sides are ``-BR``, lower ``+BR``.
@@ -1946,6 +1967,7 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
             cols.append(_axis_row(n, 2, Ap[k_td])[:, None])
             rhss.append(np.array([floor_m + need_m - cp[k_td, 2]]))
             col_tags.append(('rw', k_td, 1.0))
+            ineq_names.append('runway')
 
     # ---- optional acceleration boxes (default OFF; see CupCycleConfig) ------
     # Appended as their OWN block after every pre-existing column so that with the
@@ -1979,6 +2001,7 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
         cols.extend([-AR.T, AR.T])
         rhss.extend([AC - np.array(ahi), np.array(alo) - AC])
         col_tags.extend([None] * (2 * AR.shape[0]))
+        ineq_names.extend(['acc_upper', 'acc_lower'])
 
     # ---- C-CUP-2: the dive floor over the contact window --------------------
     # Its OWN block, after every pre-existing column (the discipline the runway
@@ -2015,6 +2038,7 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
             CR = np.stack([_axis_row(n, 2, Aa[k]) for k in ks], axis=1)
             cols.append(CR)
             col_tags.extend([None] * CR.shape[1])
+            ineq_names.append('contact_floor')
             # + the slack (see CONTACT_ACC_QP_SLACK_MPS2): the gate re-measures
             # this bound on the REALISED plan, and a row at the bare floor lands
             # the solver exactly on it.
@@ -2027,8 +2051,9 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
             pose, n, dt, H, f, Aeq, beq, cols, rhss, col_tags,
             Ap, Av, Aa, Cp, Cv, Ca, cp, cv, ca, throw, catch, k_td,
             holds_ball_at_start=bool(holds_ball_at_start), axis=axis,
-            capture_k=int(capture_k))
+            capture_k=int(capture_k), ineq_names=ineq_names)
 
+    ineq_widths = tuple(int(c.shape[1]) for c in cols)
     C = np.hstack(cols)
     bc = np.concatenate(rhss)
     cscale = np.linalg.norm(C, axis=0)       # unit columns: violations compare
@@ -2041,7 +2066,9 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
                     capture_site=(None if not capture_k else
                                   np.asarray(catch.site, float).reshape(3)),
                     capture_kappa=(None if not capture_k else kappa),
-                    n_dz=int(n_dz), dz0=dz0)
+                    n_dz=int(n_dz), dz0=dz0,
+                    eq_marks=tuple(eq_marks), ineq_names=tuple(ineq_names),
+                    ineq_widths=ineq_widths, held_knots=held_knots)
 
 
 def _axes_from_tilts(tilts: np.ndarray) -> np.ndarray:
@@ -2089,7 +2116,8 @@ def _rots_from_tilts(tilts: np.ndarray) -> np.ndarray:
 
 def _pose_augment(pose: PoseSpec, n: int, dt: float, H, f, Aeq, beq, cols, rhss,
                   col_tags, Ap, Av, Aa, Cp, Cv, Ca, cp, cv, ca, throw, catch,
-                  k_td: int, *, holds_ball_at_start: bool, axis, capture_k: int):
+                  k_td: int, *, holds_ball_at_start: bool, axis, capture_k: int,
+                  ineq_names=None):
     """Append the pose planner's blocks to an assembled level program.
 
     The level program's pieces arrive UNNORMALISED (``cols`` / ``rhss`` as
@@ -2268,6 +2296,8 @@ def _pose_augment(pose: PoseSpec, n: int, dt: float, H, f, Aeq, beq, cols, rhss,
             D[nv3:, 2 * (k - 1) + 1] = -Ap[k]
             db[2 * (k - 1) + 1] = -band_m + cp_dz[k]
         cols.append(D); rhss.append(db)
+        if ineq_names is not None:
+            ineq_names.append('dz_band')
 
     # ---- 2. C-CUP-4 rows: the cone about the prescribed axis + the floor ----
     ks = np.arange(k_td + 1, n - 1)
@@ -2287,11 +2317,15 @@ def _pose_augment(pose: PoseSpec, n: int, dt: float, H, f, Aeq, beq, cols, rhss,
         rhs_c = -np.einsum('msa,ma->ms', d, q)
         cols.append(rows_c.reshape(-1, nv).T)
         rhss.append(rhs_c.reshape(-1))
+        if ineq_names is not None:
+            ineq_names.append('cone')
         if float(pcfg.floor_g) > 0.0:
             rows_f = np.zeros((ks.size, nv))
             rows_f[:, 2 * n:3 * n] = Aa[ks]
             cols.append(rows_f.T)
             rhss.append(float(pcfg.floor_g) * G - q[:, 2])
+            if ineq_names is not None:
+                ineq_names.append('cone_floor')
 
     # ---- 3. Touch-down skid rows: the cup's lateral velocity at the catch ----
     # The cup velocity at the catch TIME (between knots k_td and k_td + 1, as the
@@ -2324,6 +2358,8 @@ def _pose_augment(pose: PoseSpec, n: int, dt: float, H, f, Aeq, beq, cols, rhss,
             rows_s[:, a_ * n:(a_ + 1) * n] = -n_i[:, a_, None] * r_vtd[None, :]
         cols.append(rows_s.T)
         rhss.append(n_i @ c_vtd - skid_b * np.cos(np.pi / sides))
+        if ineq_names is not None:
+            ineq_names.append('touchdown_skid')
 
     return H, f, Aeq, beq, cols, rhss, (n if use_dz else 0), dz0
 
@@ -2355,6 +2391,147 @@ def catch_runway_requirement(catch_vel, cfg):
 # Goldfarb–Idnani dual active set
 # ---------------------------------------------------------------------------
 
+_EQ_QTY = ('position', 'velocity', 'acceleration')
+_AXIS = 'xyz'
+
+
+def _eq_label(prog: _Program, i: int) -> str:
+    """Name equality row ``i``; ``equality row <i> of <m>`` when unsure."""
+    m = int(prog.Aeq.shape[0])
+    fallback = "equality row %d of %d" % (i, m)
+    marks = prog.eq_marks
+    if not marks or marks[-1][0] != 'level_end':
+        return fallback
+    end = marks[-1][1]
+    if i >= end:
+        # the pose planner's dz-terminal rows: three, appended after the level rows
+        if i - end < 3 and m == end + 3:
+            return ("equality %d: platform-z terminal %s"
+                    % (i, _EQ_QTY[i - end]))
+        return fallback
+    # the group is the LAST mark starting at or before i (zero-width ones skipped)
+    j = max(q for q in range(len(marks) - 1) if marks[q][1] <= i)
+    name, start = marks[j][0], marks[j][1]
+    off = i - start
+    n = prog.n_steps
+    if name in ('release', 'rest'):
+        axes = marks[j][2] if len(marks[j]) > 2 else (0, 1, 2)
+        if off < 3 * len(axes):
+            what = ('release (throw) ' if name == 'release'
+                    else 'terminal rest ')
+            return ("equality %d: %s%s along %s"
+                    % (i, what, _EQ_QTY[off % 3], _AXIS[axes[off // 3]]))
+        return fallback
+    if name == 'catch_position':
+        axes = marks[j][2]
+        if off < len(axes):
+            return ("equality %d: catch-position %s (knot %d)"
+                    % (i, _AXIS[axes[off]], prog.catch_k))
+        return fallback
+    if name == 'axis_slaving' and prog.held_knots:
+        if off < 2 * len(prog.held_knots):
+            k = prog.held_knots[off // 2]
+            return ("equality %d: held-axis slaving %s jerk, knot %d"
+                    % (i, _AXIS[off % 2], k))
+        return fallback
+    if name == 'capture' and prog.capture_k and off < 6:
+        return ("equality %d: capture-move %s %s at knot %d"
+                % (i, _EQ_QTY[off // 2], _AXIS[off % 2], prog.capture_k))
+    # blocks whose inner order is a nested loop: name the block and the row
+    # inside it (still better than a bare index), never guess the knot.
+    nice = {'pre_release_hold': 'pre-release hold velocity',
+            'hold_velocity': 'hold velocity',
+            'post_release_acc': 'post-release acceleration',
+            'axis_slaving': 'held-axis slaving',
+            'capture': 'capture-move'}.get(name)
+    if nice is None:
+        return fallback
+    return "equality %d: %s row %d" % (i, nice, off)
+
+
+def _ineq_label(prog: _Program, i: int) -> str:
+    """Name inequality row ``i`` (a column of ``C``); falls back to the index."""
+    ncol = int(prog.C.shape[1])
+    fallback = "inequality row %d of %d" % (i, ncol)
+    names, widths = prog.ineq_names, prog.ineq_widths
+    if not names or len(names) != len(widths) or sum(widths) != ncol:
+        return fallback
+    start = 0
+    for b, (name, w) in enumerate(zip(names, widths)):
+        if i < start + w:
+            break
+        start += w
+    else:
+        return fallback
+    off = i - start
+    n = prog.n_steps
+    tail = " [row %d]" % i
+    if name in ('box_upper', 'box_lower'):
+        side = 'upper' if name == 'box_upper' else 'lower'
+        held = prog.held_knots
+        jerk = [(a, k) for a in range(3) for k in range(n)
+                if not (a < 2 and k in held)]
+        if w != len(jerk) + 3 * n:
+            return fallback
+        if off < len(jerk):
+            a, k = jerk[off]
+            return "inequality %d: knot %d %s jerk %s bound" % (i, k, _AXIS[a], side)
+        o = off - len(jerk)
+        k, a = 1 + o // 3, o % 3
+        return ("inequality %d: knot %d %s position %s bound"
+                % (i, k, _AXIS[a], side))
+    if name == 'runway':
+        return "inequality %d: catch-runway floor at knot %d" % (i, prog.catch_k)
+    if name == 'contact_floor' and prog.contact_knots is not None:
+        k0, k1 = prog.contact_knots
+        ks = list(range(max(k0, 1), k1 + 1))
+        if len(ks) == w:
+            return ("inequality %d: knot %d contact-window acceleration floor"
+                    % (i, ks[off]))
+    if name == 'dz_band' and w == 2 * n:
+        return ("inequality %d: knot %d platform-z band %s"
+                % (i, 1 + off // 2, 'lower' if off % 2 == 0 else 'upper'))
+    if name == 'touchdown_skid':
+        return ("inequality %d: touch-down skid cone side %d of %d"
+                % (i, off, w))
+    if name in ('acc_upper', 'acc_lower'):
+        return "inequality %d: %s acceleration box (block row %d)" % (
+            i, name.split('_')[1], off)
+    if name in ('cone', 'cone_floor'):
+        ks = [k for k in range(prog.catch_k + 1, n - 1) if k >= 1]
+        if ks and name == 'cone' and w % len(ks) == 0:
+            sides = w // len(ks)
+            return ("inequality %d: knot %d tilt-cone side %d of %d"
+                    % (i, ks[off // sides], off % sides, sides))
+        if ks and name == 'cone_floor' and w == len(ks):
+            return "inequality %d: knot %d tilt-cone floor" % (i, ks[off])
+    return fallback
+
+
+def _worst_rows_text(prog: _Program, x: np.ndarray, feas_tol: float) -> str:
+    """`` — worst rows: …`` for a refused solve, '' when nothing is nameable.
+
+    Runs only inside the refusal branch of :func:`_verify`, so the success
+    path pays nothing.  Names the worst equality row and the worst inequality
+    row, each only when it exceeds the bar (non-finite ``x`` names neither).
+    """
+    try:
+        parts = []
+        if prog.Aeq.size:
+            r = np.abs(prog.Aeq @ x - prog.beq)
+            if np.all(np.isfinite(r)) and float(r.max()) > feas_tol:
+                i = int(r.argmax())
+                parts.append("%s (residual %.3e)" % (_eq_label(prog, i), r[i]))
+        if prog.C.size:
+            v = -(prog.C.T @ x - prog.bc)
+            if np.all(np.isfinite(v)) and float(v.max()) > feas_tol:
+                i = int(v.argmax())
+                parts.append("%s (violation %.3e)" % (_ineq_label(prog, i), v[i]))
+        return (" — worst rows: " + "; ".join(parts)) if parts else ""
+    except Exception:       # a label must never mask the refusal itself
+        return ""
+
+
 def _verify(prog: _Program, x: np.ndarray, feas_tol: float, active, iters: int):
     """Refuse ``x`` unless it actually satisfies the program.
 
@@ -2380,6 +2557,12 @@ def _verify(prog: _Program, x: np.ndarray, feas_tol: float, active, iters: int):
     gate under ``/usr/bin/python3`` — identical Python 3.8.10 and numpy 1.24.4,
     differing only in BLAS. Both are refusals, which is all that is contracted;
     no caller should branch on which one fired.
+
+    The message names the worst equality row and the worst inequality row
+    that exceed the bar (JB-104 / JB-126, 2026-11-01: operator readability
+    only; the reason stays ``'UNVERIFIED'`` and the infeasible-vs-degenerate
+    non-distinction above stands). The labels are derived lazily, here only,
+    by :func:`_worst_rows_text`, so the success path pays nothing.
     """
     eq_res = float(np.abs(prog.Aeq @ x - prog.beq).max()) if prog.Aeq.size else 0.0
     ineq_res = float(-(prog.C.T @ x - prog.bc).min()) if prog.C.size else 0.0
@@ -2387,8 +2570,9 @@ def _verify(prog: _Program, x: np.ndarray, feas_tol: float, active, iters: int):
         raise CupCycleInfeasible(
             "QP solution failed verification (equality residual %.3e, worst "
             "constraint violation %.3e, bar %.1e) after %d iterations with a "
-            "working set of %d — refused rather than returned"
-            % (eq_res, ineq_res, feas_tol, iters, len(active)),
+            "working set of %d — refused rather than returned%s"
+            % (eq_res, ineq_res, feas_tol, iters, len(active),
+               _worst_rows_text(prog, x, feas_tol)),
             reason='UNVERIFIED')
 
 

@@ -602,8 +602,10 @@ def test_p3_resweep_changed_only_the_stamp_and_added_the_pose_cells():
     # Pattern progression P2 (2026-10-31): sites.py (gated) gained the turned pair,
     # so the whole box was re-swept; the 54 cells stayed value-identical then.
     # (Re-swept again 2026-10-31 with hold 0 / hand prime 10.45 / floor 0.06: values moved.)
-    assert new['gate_hash'] == '961808ee2d20'
-    assert new['swept_at'] == '2026-10-31'
+    # (Re-swept 2026-11-01, JB-126: cup_cycle._verify's refusal message names the
+    # worst rows; message text only, every cell value-identical.)
+    assert new['gate_hash'] == 'fe8c52ba88b4'
+    assert new['swept_at'] == '2026-11-01'
     for b in level:
         b.pop('planner_mode')
     old_boxes = [dict(b) for b in old['boxes']]
@@ -1545,7 +1547,8 @@ def test_oval_apex_extension_is_the_12_cell_tail_after_the_50_core_cells():
     # (re-swept 2026-10-31: hold 0, hand prime 10.45, floor 0.06): the core is now 50 cells (oval 0.40 / 0.35
     # added) and the tail 12 (apex 1.10 added: bands 0.975 / 1.025 / 1.075); 62 cells
     # before the 20 P2/P4 Columns cells.  The function name keeps its history.
-    assert new['gate_hash'] == '961808ee2d20' and new['swept_at'] == '2026-10-31'
+    # Re-swept 2026-11-01 (JB-126, refusal message text only): same values.
+    assert new['gate_hash'] == 'fe8c52ba88b4' and new['swept_at'] == '2026-11-01'
     assert len(new['boxes']) == 62 + 20          # + the P2/P4 Columns cells (pose)
     assert sum(b['planner_mode'] == 'level' for b in new['boxes']) == 31
     assert sum(b['planner_mode'] == 'pose' for b in new['boxes']) == 31 + 20

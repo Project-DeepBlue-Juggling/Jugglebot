@@ -2,9 +2,9 @@
 id: JB-104
 kind: bug
 title: Pose planner reports UNVERIFIED instead of a named INFEASIBLE at the feasibility edge
-status: inbox
+status: complete
 created: '2026-10-30'
-updated: '2026-10-31T18:56:11Z'
+updated: '2026-11-01T04:10:44Z'
 owners: []
 priority: low
 effort: s
@@ -54,3 +54,7 @@ When the active-set solve exits unverified on a near-degenerate problem, re-clas
 Recommendation: 1 (the operator gets the row name; the contract and its tests stand), 2 only if the owner wants the degenerate class measured.
 
 A question ticket carries this to the owner; the answer under its `## Answer` re-opens this Item.
+
+## Progress
+
+- 2026-11-01: JB-126 option 1: UNVERIFIED keeps its reason and now names the worst-violated rows; box re-swept value-identical (fe8c52ba88b4)
