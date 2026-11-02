@@ -1,5 +1,5 @@
 ---
-title: "The commanded-position freshness reads an injectable clock; the self-toss load flake closed (JB-141)"
+title: "The commanded-position freshness reads an injectable clock; the `self_toss` load flake closed (JB-141)"
 type: bugfix
 date: 2026-11-03
 status: complete
@@ -22,7 +22,7 @@ tags:
 
 ## What and why
 
-In the Night Shift 2026-11-02 full gate, two `tests/ros/test_skill_node.py` self-toss tests refused with `trajectory/commanded_position is stale` while a MuJoCo unit loaded the box. The diagnosis is confirmed by reading the code, not by inference. `_prelevel_ready` stamped `_commanded_pos_mono` on the real `time.perf_counter()`. `_prelevel` then judged that stamp on the same real clock against `_TRAJ_STATUS_STALE_S` (1.0 s). Any second of load between the fixture and `_start_pattern` refused the goal.
+In the Night Shift 2026-11-02 full gate, two `self_toss` tests in `tests/ros/test_skill_node.py` refused with `trajectory/commanded_position is stale` while a MuJoCo unit loaded the box. The diagnosis is confirmed by reading the code, not by inference. `_prelevel_ready` stamped `_commanded_pos_mono` on the real `time.perf_counter()`. `_prelevel` then judged that stamp on the same real clock against `_TRAJ_STATUS_STALE_S` (1.0 s). Any second of load between the fixture and `_start_pattern` refused the goal.
 
 This is the third member of the class, after the hand-state clock (2026-10-15) and the frame-check clock (JB-64, 2026-10-28), and the fix has the same shape:
 
