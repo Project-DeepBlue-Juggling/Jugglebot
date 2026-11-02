@@ -2,9 +2,9 @@
 id: JB-155
 kind: ticket
 title: 'JB-149 setpoint stream starved past the 70 ms cover: probe first, a CPU partition, a 4-knot frame, or a bridge-side cliff reaction?'
-status: open
+status: complete
 created: '2026-11-03'
-updated: '2026-11-02T18:15:21Z'
+updated: '2026-11-02T22:53:39Z'
 owners: []
 priority: high
 effort: xs
@@ -36,3 +36,7 @@ Recommendation: 1, then 2 or a GC fix on its result.
 - 1: an instrumentation commit in the owner's Session and a robot Sitting row (one long Columns goal).
 - 2: a launch change and a Sitting.
 - 3 or 4: a firmware or bridge design unit, safety-bearing.
+
+## Answer
+
+Agreed. Let's wait on making any changes until we get the results from the probe. If this requires a dedicated Sitting, write it up into the Next Sitting list
