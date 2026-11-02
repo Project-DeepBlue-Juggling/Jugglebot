@@ -1307,7 +1307,8 @@ def test_flight_band_never_gives_up_landing_width_for_apex_band(sweep_mod):
 def test_flight_band_still_grows_where_it_costs_no_width(sweep_mod):
     """A flight that admits the whole centre rectangle still joins the band,
     on either side, so the rule only declines the band that would cost
-    width."""
+    width. A guard against an over-restricting rule: it passes on the old
+    rule too."""
     flights, grid = _jb143_grid(narrow_flights=set())
     band, rect = sweep_mod._flight_band_and_rect(flights, _JB143_XS, grid,
                                                  center_flight=0.75)
@@ -1327,7 +1328,8 @@ def test_flight_band_stops_at_the_first_flight_that_would_cost_width(sweep_mod):
 
 def test_a_narrow_centre_flight_keeps_its_own_rectangle(sweep_mod):
     """The rectangle is the centre flight's own; a band neighbour that admits
-    more never widens it, and one that admits that rectangle joins."""
+    more never widens it, and one that admits that rectangle joins. A guard
+    against an over-restricting rule: it passes on the old rule too."""
     flights, grid = _jb143_grid(narrow_flights={0.75})
     band, rect = sweep_mod._flight_band_and_rect(flights, _JB143_XS, grid,
                                                  center_flight=0.75)

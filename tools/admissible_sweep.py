@@ -645,12 +645,13 @@ def _flight_band_and_rect(flights: Sequence[float], offsets_mm: Sequence[float],
                           pass_grid: Dict, center_flight: float
                           ) -> Tuple[Optional[Tuple[float, float]],
                                     Optional[Tuple[float, float, float, float]]]:
-    """The admitted flight sub-band around ``center_flight``, and the xy
-    rectangle over it.
+    """The centre flight's xy landing rectangle, and the flight sub-band
+    around ``center_flight`` over which that whole rectangle passes.
 
     Grows OUTWARD from the flight closest to ``center_flight`` (the owner's
-    operating apex, always in ``apexes_m``) while the offset-(0, 0) cell --
-    the identity-prior command every R2 columns THROW actually issues -- keeps
+    operating apex, always in ``apexes_m``) while every cell of the centre
+    rectangle -- which always contains the offset-(0, 0) cell, the
+    identity-prior command every R2 columns THROW actually issues -- keeps
     passing at each newly-included flight. A flight this sweep admits at NO
     offset at all (this run: apex 0.95 m fails ``HAND_LIMIT_ACC`` on the CATCH
     even at zero offset -- the higher apex's faster arrival speed alone
@@ -685,7 +686,7 @@ def _flight_band_and_rect(flights: Sequence[float], offsets_mm: Sequence[float],
 
     rect = _max_rectangle(list(offsets_mm), list(offsets_mm), _pass_at_centre,
                           must_contain=(0.0, 0.0))
-    if rect is None:      # (0, 0) is not on the offset grid: nothing to keep
+    if rect is None:      # defensive: unreachable while (0, 0) passed above
         return (center_T, center_T), None
     xlo, xhi, ylo, yhi = rect
     rect_cells = [(x, y) for x in offsets_mm if xlo <= x <= xhi
