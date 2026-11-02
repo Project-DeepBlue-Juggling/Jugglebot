@@ -4,7 +4,7 @@ kind: idea
 title: 'Hand end-of-stroke bumper, and first the planner''s own brake shape: let the ceiling, not the Hand, cap the Apex'
 status: inbox
 created: '2026-10-30'
-updated: '2026-10-30T09:56:22Z'
+updated: '2026-11-02T00:51:09Z'
 owners: []
 priority: medium
 effort: l
@@ -112,6 +112,7 @@ R0 done 2026-10-30 (Opus, scratchpad bumper/r0_brake_shape.md, probes r0/p1-p14 
 ## Progress
 
 - 2026-10-30: R0 done 2026-10-30 (Opus, scratchpad bumper/r0_brake_shape.md, probes r0/p1-p14 reproduce the logged peaks within 6 rev/s2). (detail below)
+- 2026-11-02: R1 split out as JB-144 (the release step, C-HAND-5; owner answer on JB-142: option 4). The bumper is pinned as a later safety stop; JB-145 is the firmware stall-stop case it would back up.
 
 ## Options (2026-11-02)
 

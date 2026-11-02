@@ -6,7 +6,7 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 3 blocks (87 min) · Bench leg 1 block (30 min)
+Rigs: Robot 3 blocks (122 min) · Bench leg 1 block (30 min)
 
 ## Setup 0: before power
 
@@ -16,9 +16,9 @@ Rigs: Robot 3 blocks (87 min) · Bench leg 1 block (30 min)
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Robot  (3 blocks, 87 min)
+## Robot  (3 blocks, 122 min)
 
-### Block 1: armed, bb-fed  (3 rows, 45 min)
+### Block 1: armed, bb-fed  (4 rows, 80 min)
 
 #### JB-120 A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve  (15 min, high, two-ball-oval)
 - why: confirm the Columns Ball 2 catch no longer ends on HAND_LIMIT_ACC after the box edge or fallback change.
@@ -42,6 +42,18 @@ Rigs: Robot 3 blocks (87 min) · Bench leg 1 block (30 min)
   - Fly Columns, Sep. 125, Apex 0.95, Throws 12, five starts from a cold hand.
 - pass: five of five starts past the first two catches, with no AIM-LATERAL-CLAMPED inward of 35 mm.
 - record: the HOP aim clamp line and the landing x error of each hop throw.
+
+#### JB-144 Release step: the Hand launches and brakes near the constant-acceleration ideal (C-HAND-5)  (35 min, high, unattached)
+- why: confirm the stepped release flies on the robot and that the Columns Apex can climb past 1.05 inside the Hand current limit.
+- do:
+  - Fly Columns, Sep. 125, Apex 0.95, Throws 20.
+  - Fly Columns, Sep. 125, Apex 1.05, Throws 20.
+  - Fly Columns, Sep. 125, Apex 1.15, Throws 20.
+  - Fly Columns, Sep. 125, Apex 1.25, Throws 20.
+  - Fly Columns, Sep. 125, Apex 1.35, Throws 20.
+  - Stop the ladder at the first rung with Hand iq over 54 A, a MAX_DEVIATION or stream STOP, a LANE_REFUSED, or an END on any HAND_LIMIT code.
+- pass: the 1.05 rung catches at least 18 of 20 with no stop condition, and every flown rung's peak Hand iq stays at or under 54 A.
+- record: per rung the catches, the peak Hand iq and planned peak Hand acceleration (install lines), the Ball 1 / Ball 2 landing bias, and the highest rung flown clean.
 
 ### Block 2: armed  (1 row, 10 min)
 
