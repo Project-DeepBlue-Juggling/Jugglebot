@@ -2,9 +2,9 @@
 id: JB-152
 kind: ticket
 title: 'JB-120 held on night-shift/2026-11-01-JB-120: apply the audit''s 2 fixes and merge, merge as is, or drop?'
-status: open
+status: complete
 created: '2026-11-03'
-updated: '2026-11-02T17:49:18Z'
+updated: '2026-11-02T22:48:42Z'
 owners: []
 priority: high
 effort: xs
@@ -35,3 +35,7 @@ Recommendation: 3. Keep the Sitting section's re-fly of main's bump brake-seed f
 - 1: the Night Shift applies the two fixes, re-gates and merges, and the Sitting keeps the branch line.
 - 2: a re-gate on the merged tip and a merge.
 - 3: the branch is deleted, the `- branch:` line comes out, and JB-120 waits only on its Sitting and on the structural fix.
+
+## Answer
+
+I agree with your recommendation
