@@ -33,6 +33,18 @@ Before levelling the Hand sat idle at 0.49 rev (normally held at 0.30). At LEVEL
 
 Option 2 also covers any other stall. 1 and 2 are firmware (flash).
 
+## Sitting
+
+- setup: level, armed
+- why: confirm the FW 36 stall guard (8ffeba66, flashed 2026-11-02) stays silent through every normal activation, and that the GUI's direct IDLE -> TRAJECTORY now works (2a19d9c6).
+- do:
+  - Level from IDLE.
+  - In the GUI, go straight from IDLE to TRAJECTORY.
+  - Return to IDLE, then go IDLE -> TRAJECTORY directly once more.
+- pass: no STALL line in the launch log, the Hand parks normally each time, and both direct IDLE -> TRAJECTORY requests arm without a time-out.
+- record: the launch log's activation lines (look for STALL and for "refused: setpoint output is DISARMED"), and the Hand's peak current during each park from the capture CSV.
+- minutes: 5
+
 ## Progress
 
 - 2026-11-02: FW 36 stall guard landed (8ffeba66): 25 A / 0.5 rev/s / 300 ms aborts the Hand to IDLE with a named STALL. Built, not flashed; closes after the flash receipt and a Sitting.

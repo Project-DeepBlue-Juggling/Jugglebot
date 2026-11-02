@@ -39,10 +39,13 @@ Raise `hand_curr_limit_a` to the owner's 70 A (configure pushes it over the GUI 
 - why: re-fly the Apex 1.35 rung that overshot, now with the 70 A limit and the C-HAND-6 speed-scaled top margin (8ffeba66), and with `hand_capture` on (the launch default since 8b9f990c), so an overshoot is caught at full rate.
 - do:
   - Fly Columns, Sep. 125, Apex 1.35, Throws 20, twice.
-  - Stop at the first SPINOUT_DETECTED, MAX_DEVIATION or stream STOP.
-- pass: no SPINOUT_DETECTED in either 20, and every launch's Hand top at or under the 10.501 rev clip.
-- record: per launch the Hand top (rev), peak Hand speed and brake current; the capture CSV path of any launch whose top exceeds its planned top.
-- minutes: 15
+  - Fly Columns, Sep. 125, Apex 1.45, Throws 20.
+  - Fly Columns, Sep. 125, Apex 1.50, Throws 20.
+  - Skip Columns 1.25 and 1.40 until the JB-143 box lands (those cells have no landing room yet).
+  - Stop at the first SPINOUT_DETECTED, MAX_DEVIATION, stream STOP, or Hand iq over 66 A.
+- pass: no SPINOUT_DETECTED in any run, and every launch's Hand top at or under the 10.501 rev clip.
+- record: per run the catches, the highest Hand top (rev), peak Hand speed, peak brake and launch current; the capture CSV of any launch whose top exceeds its planned top; whether the Hand torque feedforward (capture `cmd_tor_ff`) flat-lines at the 0.234 N m clamp at 1.45 or 1.50.
+- minutes: 30
 
 ## Progress
 

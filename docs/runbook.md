@@ -6,7 +6,7 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 2 blocks (62 min) · Bench leg 1 block (30 min)
+Rigs: Robot 3 blocks (82 min) · Bench leg 1 block (30 min)
 
 ## Setup 0: before power
 
@@ -16,9 +16,20 @@ Rigs: Robot 2 blocks (62 min) · Bench leg 1 block (30 min)
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Robot  (2 blocks, 62 min)
+## Robot  (3 blocks, 82 min)
 
-### Block 1: armed, bb-fed  (2 rows, 30 min)
+### Block 1: level, armed  (1 row, 5 min)
+
+#### JB-146 ODrive GUI save resets the Hand zero, the bridge stays homed, and ACTIVATE parks the Hand into its stop at full current  (5 min, high, unattached)
+- why: confirm the FW 36 stall guard (8ffeba66, flashed 2026-11-02) stays silent through every normal activation, and that the GUI's direct IDLE -> TRAJECTORY now works (2a19d9c6).
+- do:
+  - Level from IDLE.
+  - In the GUI, go straight from IDLE to TRAJECTORY.
+  - Return to IDLE, then go IDLE -> TRAJECTORY directly once more.
+- pass: no STALL line in the launch log, the Hand parks normally each time, and both direct IDLE -> TRAJECTORY requests arm without a time-out.
+- record: the launch log's activation lines (look for STALL and for "refused: setpoint output is DISARMED"), and the Hand's peak current during each park from the capture CSV.
+
+### Block 2: armed, bb-fed  (2 rows, 45 min)
 
 #### JB-120 A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve  (15 min, high, two-ball-oval)
 - why: re-fly with the bump brake-seed fix (2026-11-02 debrief): the 2026-11-02 refusals all followed an inward bump of 22 mm or more and replay under 3700 rev/s^2 with the fix.
@@ -28,15 +39,18 @@ Rigs: Robot 2 blocks (62 min) · Bench leg 1 block (30 min)
 - record: per-catch peak Hand acceleration from the install lines and the learner y for Ball 2.
 - branch: `night-shift/2026-11-01-JB-120`
 
-#### JB-147 Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT)  (15 min, high, unattached)
+#### JB-147 Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT)  (30 min, high, unattached)
 - why: re-fly the Apex 1.35 rung that overshot, now with the 70 A limit and the C-HAND-6 speed-scaled top margin (8ffeba66), and with `hand_capture` on (the launch default since 8b9f990c), so an overshoot is caught at full rate.
 - do:
   - Fly Columns, Sep. 125, Apex 1.35, Throws 20, twice.
-  - Stop at the first SPINOUT_DETECTED, MAX_DEVIATION or stream STOP.
-- pass: no SPINOUT_DETECTED in either 20, and every launch's Hand top at or under the 10.501 rev clip.
-- record: per launch the Hand top (rev), peak Hand speed and brake current; the capture CSV path of any launch whose top exceeds its planned top.
+  - Fly Columns, Sep. 125, Apex 1.45, Throws 20.
+  - Fly Columns, Sep. 125, Apex 1.50, Throws 20.
+  - Skip Columns 1.25 and 1.40 until the JB-143 box lands (those cells have no landing room yet).
+  - Stop at the first SPINOUT_DETECTED, MAX_DEVIATION, stream STOP, or Hand iq over 66 A.
+- pass: no SPINOUT_DETECTED in any run, and every launch's Hand top at or under the 10.501 rev clip.
+- record: per run the catches, the highest Hand top (rev), peak Hand speed, peak brake and launch current; the capture CSV of any launch whose top exceeds its planned top; whether the Hand torque feedforward (capture `cmd_tor_ff`) flat-lines at the 0.234 N m clamp at 1.45 or 1.50.
 
-### Block 2: level, armed, bb-fed  (2 rows, 32 min)
+### Block 3: level, armed, bb-fed  (2 rows, 32 min)
 
 #### JB-107 JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m  (12 min, medium, pattern-progression-columns-to-centre-and-orbit)
 - why: P5 of plan pattern-progression.md: two Apexes in one Pattern (JP-9). The Rung flies 1.00 over 0.90 at separation 100; since the 2026-10-31 re-sweep (Hand prime 10.45, box gate_hash 961808ee2d20) 1.05 over 0.95 is admissible at both Sites too, but a 1.05 launch waits for the faster hand current capture (plan D-c).
@@ -61,7 +75,7 @@ Rigs: Robot 2 blocks (62 min) · Bench leg 1 block (30 min)
 
 ## Bench leg  (1 block, 30 min)
 
-### Block 3: bridge-cycled  (1 row, 30 min)
+### Block 4: bridge-cycled  (1 row, 30 min)
 
 #### JB-73 Hand ODrive state can silently diverge from what the can-bridge commanded  (30 min, low, unattached)
 - why: confirm FW 35's suppress-edge hold flush leaves the bench leg at the last transmitted command instead of input_pos + vel_ff/pos_gain, and measure the current step it costs.
@@ -86,7 +100,6 @@ Rigs: Robot 2 blocks (62 min) · Bench leg 1 block (30 min)
 - JB-137 [Robot] Hand ODrive feedback starvation: 701 ms heartbeat dropout left the encoder 100 ms stale, the 2.0 rev lead clamp pinned the throw to stale+2.0, guard MAX_DEVIATION +3.707 fired correctly (turned-90 at 16/16): no ## Sitting section
 - JB-138 [Robot] Hand iq reached 53.3 A on a 45 deg turned hop launch, over the 50 A watch the high-low row names: no ## Sitting section
 - JB-139 [Robot] Ball 2 learner command pinned at the (-20,-20) mm clamp corner in 37 of 40 straight Columns rows (BOX-EXPECTED-LANDING-UNMET u=(-20,-20)): no ## Sitting section
-- JB-146 [Robot] ODrive GUI save resets the Hand zero, the bridge stays homed, and ACTIVATE parks the Hand into its stop at full current: no ## Sitting section
 - JB-148 [Robot] One-off 2 m Throws: raised Hand limits and an overshoot protection the speed-scaled margin cannot give: no ## Sitting section
 - JB-149 [Robot] 40 Hz setpoint stream starved past the firmware's 70 ms cover during CATCH-solve bursts: 3 LANE_REFUSED ends on 2026-11-02: no ## Sitting section
 - JB-2 [Robot] Design change: the Hand should be Idle, not Parked Closed-loop, while Active: no ## Sitting section
