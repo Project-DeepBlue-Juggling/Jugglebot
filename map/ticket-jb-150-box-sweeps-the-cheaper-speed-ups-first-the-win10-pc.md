@@ -4,9 +4,9 @@ kind: ticket
 title: 'JB-150 box sweeps: the cheaper speed-ups first, the Win10 PC over SSH, the PC by hand, or leave it?'
 status: open
 created: '2026-11-03'
-updated: '2026-11-02T18:15:22Z'
+updated: '2026-11-02T18:15:28Z'
 owners: []
-priority: low
+priority: medium
 effort: xs
 hardware: none
 owner: decision
