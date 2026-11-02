@@ -23,7 +23,9 @@ Filed 2026-11-02 at the owner's request, from the Sitting debrief Session (logbo
 
 ## Problem
 
-An admissible-box re-sweep (`tools/admissible_sweep.py`) takes about 2.5 h on the Jetson. Each gated-file change (feasibility.py, segments.py, cup_cycle.py, cup_realize.py, unified_cycle.py, tilt_geometry.py, hardware_config.py, skills/sites.py) re-hashes the box and needs one. The runner is 26-29 job families x two rounds (a and b, compared byte for byte), 6 at a time on the Jetson's 6 cores, BLAS 1 thread, about 75 min per round (examples: temp/sweeps/sweep_h4500.sh; the peer's 29-family runner in temp/sweeps/h70/).
+An admissible-box re-sweep (`tools/admissible_sweep.py`) takes about 2.5 h on the Jetson. Each gated-file change (feasibility.py, segments.py, cup_cycle.py, cup_realize.py, unified_cycle.py, tilt_geometry.py, hardware_config.py, skills/sites.py) re-hashes the box and needs one.
+
+The runner is 26-29 job families x two rounds (a and b, compared byte for byte), 6 at a time on the Jetson's 6 cores, BLAS 1 thread, about 75 min per round (examples: temp/sweeps/sweep_h4500.sh; the peer's 29-family runner in temp/sweeps/h70/).
 
 While a sweep runs it holds every core at about 85 %, so no Sitting can fly (JB-149: the setpoint stream starves even under ordinary load). Sweeps and Sittings therefore compete for the same box and the same evenings.
 
@@ -35,9 +37,10 @@ The Win10 PC is on the LAN (it hosts QTM, and the owner already keeps a clone th
 
 1. **Line endings.** gate_hash is a sha256 over the gated files' TEXT, so a Windows checkout with core.autocrlf rewriting to CRLF gives a different hash and a box the loader rejects. Use an LF checkout (`git config core.autocrlf false`, or a `.gitattributes` `eol=lf` for the gated files), and have the runner assert that `admissible.gate_hash()` on the PC equals the Jetson's for the same commit.
 2. **Same dependency versions.** Pin numpy (and anything else the planner imports) to the Jetson venv's versions; record them in the box file's metadata.
-3. **Cross-platform reproducibility.** x86 and aarch64 floating point (SIMD paths, libm, BLAS) can tip a borderline feasibility sample, so a cell bound may differ by one bisection step from a Jetson sweep. The a/b byte-identity check only proves determinism within one platform. Before a PC-swept box is committed, run a Jetson-side certification pass: re-check each cell's chosen rectangle corners and band ends with the Jetson's own `validate_cycle` (a fraction of the search cost). Any corner that fails on the Jetson shrinks that cell or fails the run.
-4. **QTM shares the PC.** Fine between Sittings. During a Sitting either do not sweep, or run at BelowNormal/Idle priority with an affinity mask that leaves QTM its cores.
-5. **Transport.** Either the Jetson drives the PC over SSH (enable Windows' built-in OpenSSH Server; the runner pushes the commit, runs the jobs, pulls the merged YAML back), or the owner starts it on the PC (PowerShell or WSL2) and the result comes back by git or scp. WSL2 gives a Linux userland (bash runner reused as is) at a small overhead.
+3. **Cross-platform reproducibility.** x86 and aarch64 floating point (SIMD paths, libm, BLAS) can tip a borderline feasibility sample, so a cell bound may differ by one bisection step from a Jetson sweep. The a/b byte-identity check only proves determinism within one platform.
+4. **Jetson-side certification.** Before a PC-swept box is committed, run a certification pass on the Jetson: re-check each cell's chosen rectangle corners and band ends with the Jetson's own `validate_cycle` (a fraction of the search cost). Any corner that fails on the Jetson shrinks that cell or fails the run.
+5. **QTM shares the PC.** Fine between Sittings. During a Sitting either do not sweep, or run at BelowNormal/Idle priority with an affinity mask that leaves QTM its cores.
+6. **Transport.** Either the Jetson drives the PC over SSH (enable Windows' built-in OpenSSH Server; the runner pushes the commit, runs the jobs, pulls the merged YAML back), or the owner starts it on the PC (PowerShell or WSL2) and the result comes back by git or scp. WSL2 gives a Linux userland (bash runner reused as is) at a small overhead.
 
 ## Cheaper speed-ups that need no PC (can land first)
 
