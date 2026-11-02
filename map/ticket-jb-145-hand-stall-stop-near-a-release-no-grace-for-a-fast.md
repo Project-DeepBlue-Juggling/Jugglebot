@@ -2,9 +2,9 @@
 id: JB-154
 kind: ticket
 title: 'JB-145 Hand stall stop near a release: no grace for a fast upward Hand, that plus a C1-entry stop at the brake authority, fix the starvation instead, or model first?'
-status: open
+status: complete
 created: '2026-11-03'
-updated: '2026-11-02T18:15:16Z'
+updated: '2026-11-02T22:49:45Z'
 owners: []
 priority: medium
 effort: xs
@@ -36,3 +36,7 @@ Recommendation: 4 then 2.
 - 1 or 2: a firmware change with a native test, then a bench-hand Sitting.
 - 3: JB-145 waits on JB-149.
 - 4: a probe run (offline), whose result picks between 1 and 2.
+
+## Answer
+
+I agree with your recommendation
