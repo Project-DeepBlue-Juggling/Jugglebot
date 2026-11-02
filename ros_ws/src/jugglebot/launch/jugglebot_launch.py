@@ -329,10 +329,12 @@ def generate_launch_description():
                     'refusal. false — the operator arms manually via '
                     '/set_setpoint_output (probe-first bench flow).')
 
-    # TEMPORARY (JB-147 diagnostic capture): opt-in full-rate Hand CSV capture.
+    # TEMPORARY (JB-147 diagnostic capture): full-rate Hand CSV capture. Default
+    # ON while JB-147's overshoot is being diagnosed (owner, 2026-11-02): flip
+    # back to 'false' (or remove the whole TEMPORARY set) once JB-147 closes.
     hand_capture = LaunchConfiguration('hand_capture')
     hand_capture_arg = DeclareLaunchArgument(
-        'hand_capture', default_value='false',
+        'hand_capture', default_value='true',
         description='TEMPORARY (JB-147): true -> teensy_bridge_node records every '
                     'received Hand sample to ~/Desktop/Jugglebot/temp/hand_capture/'
                     '*.csv (view with tools/probes/hand_capture_view.py).')

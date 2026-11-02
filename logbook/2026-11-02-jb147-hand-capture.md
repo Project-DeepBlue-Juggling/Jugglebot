@@ -54,3 +54,9 @@ once JB-147 is diagnosed.
   main itself (another session's map edit). `test_per_cycle_planning_budget`
   was a load flake (gate 911 s vs ~430 s with three agents testing); re-run
   alone it gave 2 passed.
+
+**Update 2026-11-02 late: ON by default.** The owner asked for the capture to
+run by default until it has served JB-147: the launch argument `hand_capture`
+now defaults to `true`. Flip it back to `false`, or remove the whole TEMPORARY
+set, when JB-147 closes. Gate (2026-11-02, `./run_tests.sh`): 8018 passed, 54
+skipped + 5 serial, RESULT PASS.
