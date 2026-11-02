@@ -2,9 +2,9 @@
 id: JB-113
 kind: idea
 title: JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them
-status: inbox
+status: in_progress
 created: '2026-10-30'
-updated: '2026-10-30T09:07:33Z'
+updated: '2026-11-02T22:34:33Z'
 owners: []
 priority: medium
 effort: xl
@@ -13,7 +13,8 @@ owner: decision
 radius: cross-cutting
 area: skill-stack
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-02-jb113-human-throw-bench.md
 filed_by: claude (jugglebot-f5, pattern exploration 2026-10-30)
 ---
 
@@ -82,3 +83,7 @@ Two human-only Sittings (robot moved aside) scored by `tools/probes/human_throw_
 - pass: the bag replays through `tools/probes/human_throw_bench.py` with the robot-spot landing sd and the phantom rate reported.
 - record: the bag path, the lighting change, and the bench report path.
 - minutes: 15
+
+## Progress
+
+- 2026-11-03: Human-throw bench landed: two human-only Sittings scored, owner decisions recorded, data Sitting section written (detail below)
