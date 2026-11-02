@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-03 | complete | night-shift follow-up | **The commanded-position freshness reads an injectable clock; the self-toss load flake closed (JB-141)** | [2026-11-03-jb141-commanded-position-clock-injected.md](2026-11-03-jb141-commanded-position-clock-injected.md) |
 | 2026-11-02 | in-progress | pattern progression | **Sitting 2026-11-02 debrief: Apex ladder to 1.35, Columns 58/58 and 64 of 65; JB-120 sharpened to big inward Bumps plus a stale brake seed, JB-137 CAN-arbitration sub-hypothesis withdrawn, JB-23 folded into the 70 ms cliff (JB-149)** | [2026-11-02-sitting-debrief.md](2026-11-02-sitting-debrief.md) |
 | 2026-11-02 | complete | pattern progression | **Bump re-derives the C-HAND-5 brake seed; install line shows the segment's own Hand peak; gap trackers reset on re-arm; MISSED-BALL evidence line** | [2026-11-02-bump-brake-seed-and-debrief-observability.md](2026-11-02-bump-brake-seed-and-debrief-observability.md) |
 | 2026-11-02 | complete | JB-147 diagnosis | **Opt-in, temporary full-rate Hand capture to CSV (`hand_capture:=true`): every telemetry, diagnostic and command-echo sample with its own stamp, written off the receive path** | [2026-11-02-jb147-hand-capture.md](2026-11-02-jb147-hand-capture.md) |

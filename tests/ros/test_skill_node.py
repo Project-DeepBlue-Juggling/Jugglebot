@@ -190,6 +190,9 @@ _HAND_CLOCK_FROZEN_S = 1.0e6
 #: `_node_with_client(frame=True)` freezes the node's frame clock here, the
 #: frame-check twin of `_HAND_CLOCK_FROZEN_S` (JB-64, 2026-10-28).
 _FRAME_CLOCK_FROZEN_S = 1.0e6
+#: `_node_with_client` freezes the node's commanded-position clock here, the
+#: `_prelevel` twin of `_HAND_CLOCK_FROZEN_S` (JB-141, 2026-11-03).
+_COMMANDED_CLOCK_FROZEN_S = 1.0e6
 
 
 def _robot_frame_msg(t=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0)):
@@ -233,6 +236,9 @@ def _node_with_client(response=None, ready=True, hand=True, frame=True,
     node = sn.SkillNode()
     # frozen hand clock: a loaded run cannot age the fixture's sample (2026-10-15)
     node._hand_clock = lambda: _HAND_CLOCK_FROZEN_S
+    # frozen commanded-position clock: a loaded run cannot age the sample
+    # `_prelevel_ready` stamps past `_TRAJ_STATUS_STALE_S` (JB-141)
+    node._commanded_clock = lambda: _COMMANDED_CLOCK_FROZEN_S
     client = _RecordingClient(response=response, ready=ready)
     node._install_cli = client
     # The live sitting limits the box was swept at (`_status()`: 300/5000/
@@ -275,7 +281,7 @@ def _prelevel_ready(node, *, x=-50.0, y=0.0, z=830.0, **resp_overrides):
     node._go_to_pose_cli = _RecordingClient(
         response=_go_to_pose_response(**resp_overrides), ready=True)
     node._commanded_pos_mm = (x, y, z)
-    node._commanded_pos_mono = time.perf_counter()
+    node._commanded_pos_mono = node._commanded_clock()   # the check's own clock
     return node._go_to_pose_cli
 
 
@@ -2794,6 +2800,39 @@ def test_on_mocap_buffers_the_platform_body_xy():
     _t, x, y, z = node._platform_mocap_xyz[-1]
     assert (x, y) == (3.0, 4.0)
     assert z == 0.0 + float(hw.GEOM_INITIAL_HEIGHT_MM)
+
+
+def test_commanded_position_freshness_reads_the_injected_clock():
+    """`_on_commanded_position` stamps on `_commanded_clock` and
+    `_live_commanded_position` ages the sample on the same clock: fresh inside
+    `_TRAJ_STATUS_STALE_S`, ``None`` (fail-closed) past it (JB-141)."""
+    node, _client = _node_with_client(hand=False, frame=False)
+    clock = [100.0]
+    node._commanded_clock = lambda: clock[0]
+    node._on_commanded_position(Point(x=5.0, y=6.0, z=830.0))
+    assert node._commanded_pos_mono == 100.0
+    clock[0] += sn._TRAJ_STATUS_STALE_S - 0.01
+    assert node._live_commanded_position(node._commanded_clock()) == \
+        (5.0, 6.0, 830.0)
+    clock[0] += 0.02
+    assert node._live_commanded_position(node._commanded_clock()) is None
+
+
+def test_a_slow_test_run_cannot_age_the_prelevel_sample():
+    """JB-141: `_prelevel_ready` stamped the commanded position on the real
+    `time.perf_counter()` and `_prelevel` judged it against
+    `_TRAJ_STATUS_STALE_S` (1.0 s) on the same, so a loaded full gate (Night
+    Shift 2026-11-02, a MuJoCo unit on the box) refused two self-toss tests
+    'commanded_position is stale'. The sleep stands in for the load: it
+    fails without the `_commanded_clock` injection and passes with it."""
+    node, _client = _node_with_client()
+    node._on_traj_status(_status())
+    _prelevel_ready(node)
+    node._params['plant_id'] = 'test_a_slow_test_run_cannot_age_the_prelevel'
+    time.sleep(sn._TRAJ_STATUS_STALE_S + 0.1)
+    resp = node._start_pattern(_self_toss_goal())
+    assert 'commanded_position is stale' not in resp.message
+    assert resp.success is True, resp.message
 
 
 def test_on_commanded_position_buffers_xy_history():

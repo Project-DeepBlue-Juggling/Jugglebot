@@ -2,19 +2,20 @@
 id: JB-141
 kind: bug
 title: 'test_self_toss_* refuse commanded_position stale under a loaded full gate: the freshness check ages the fixture sample on the wall clock'
-status: inbox
+status: complete
 created: '2026-11-02'
-updated: '2026-11-01T18:11:22Z'
+updated: '2026-11-02T17:53:31Z'
 owners: []
 priority: low
 effort: s
 hardware: none
 owner: none
 radius: local
-diagnosis: hypothesis
+diagnosis: confirmed
 area: tests-tooling
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-03-jb141-commanded-position-clock-injected.md
 filed_by: night-shift
 ---
 

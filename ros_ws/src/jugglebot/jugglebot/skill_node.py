@@ -824,6 +824,14 @@ class SkillNode(Node):
         # `_live_commanded_position`'s cache-plus-freshness shape.
         self._commanded_pos_mm = None
         self._commanded_pos_mono = 0.0
+        # the ONLY clock the commanded-position freshness reads (the stamp in
+        # `_on_commanded_position` and the ``now`` `_prelevel` and the
+        # magazine start hand `_live_commanded_position`) -- injectable, like
+        # `_hand_clock` / `_frame_clock`, so a test fixture can freeze it: a
+        # loaded test run must not be able to age a fixture's sample past
+        # `_TRAJ_STATUS_STALE_S` (load flake 2026-11-02, JB-141).
+        # Production: `time.perf_counter`, unchanged.
+        self._commanded_clock = time.perf_counter
         # Session-start mocap-vs-commanded frame check (`_frame_check`, plan
         # `cup-contact-contract.md` § 1): bounded, time-stamped
         # ``(mono_s, x_mm, y_mm, z_world_mm)`` of the mocap `Platform` body
@@ -1802,16 +1810,16 @@ class SkillNode(Node):
         (x, y, z) in STOW mm — restated from
         `reload_coordinator_node._on_commanded_position` (same NaN-drop
         discipline: a poisoned pose must never seed a pre-level move).
-        `_prelevel` (item 7) is the only reader."""
+        `_prelevel` (item 7) and the magazine start are the readers, both
+        through `_live_commanded_position` on `_commanded_clock`."""
         p = (float(msg.x), float(msg.y), float(msg.z))
         if not all(math.isfinite(v) for v in p):
             self.get_logger().error(
                 'trajectory/commanded_position %r is non-finite — DISCARDED'
                 % (p,))
             return
-        now = time.perf_counter()
         self._commanded_pos_mm = p
-        self._commanded_pos_mono = now
+        self._commanded_pos_mono = self._commanded_clock()
         # Session-start frame check's own at-rest window (plan
         # `cup-contact-contract.md` § 1) — xy only, same buffer shape as
         # `_platform_mocap_xyz` (xy only: the command is robot-frame already).
@@ -4716,7 +4724,7 @@ class SkillNode(Node):
         intent into the gravity-level counter-tilt — C-LEVEL-1)."""
         if not self._go_to_pose_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
             return 'trajectory/go_to_pose unavailable'
-        live = self._live_commanded_position(time.perf_counter())
+        live = self._live_commanded_position(self._commanded_clock())
         if live is None:
             return ('trajectory/commanded_position is stale — the pre-level '
                     'move has no xy/z to hold and one that guessed a pose '
@@ -5111,7 +5119,7 @@ class SkillNode(Node):
         frame_err = self._frame_check_error()
         if frame_err:
             return refuse('magazine refused: %s' % (frame_err,))
-        live = self._live_commanded_position(time.perf_counter())
+        live = self._live_commanded_position(self._commanded_clock())
         if live is None:
             return refuse('magazine refused: trajectory/commanded_position is '
                           'stale — the rest site is unknown')
