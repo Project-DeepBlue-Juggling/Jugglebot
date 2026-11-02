@@ -4,7 +4,7 @@ kind: bug
 title: Ball 2 learner command pinned at the (-20,-20) mm clamp corner in 37 of 40 straight Columns rows (BOX-EXPECTED-LANDING-UNMET u=(-20,-20))
 status: inbox
 created: '2026-11-01'
-updated: '2026-11-01T17:59:48Z'
+updated: '2026-11-02T07:26:03Z'
 owners: []
 priority: medium
 effort: s
@@ -53,3 +53,8 @@ What would settle it: with a fresh `plant_id` the first Ball 2 commands are the 
 - pass: the first 5 Ball 2 landings average +20 to +32 mm in y (the bias is real and stable); outside that band the fit, not the plant, is the next question.
 - record: per throw the Ball 2 landing (x, y) mm and the command u; the plant_id used.
 - minutes: 10
+
+## Sitting result (2026-11-02)
+
+- verdict: pass
+- notes: Two attempts with a fresh plant_id ('jb-139-test') succeeded with 20 throws. One attempt failed due to a mid-air collision
