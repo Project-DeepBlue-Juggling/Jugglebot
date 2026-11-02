@@ -4,7 +4,7 @@ kind: bug
 title: Teensy guard MAX_DEVIATION latched on the hand (+8.4 rev) mid-oval; recover_lane found nothing, re-dispatch rejected WRONG_MODE
 status: inbox
 created: '2026-10-28'
-updated: '2026-11-01T12:18:37Z'
+updated: '2026-11-02T08:49:50Z'
 owners: []
 priority: high
 effort: m
@@ -64,3 +64,4 @@ Two questions:
 - 2026-10-30: 2026-10-30 reframe (P3 re-gate Sitting 16:17, bag 2026-10-30_16-17-11): the O5 pose 0.45 goal ended at throw 41 by ONE 80 ms emitter wake gap (detail in the section above)
 - 2026-10-31: 2026-10-31: two more LANE_REFUSED ends (goals 10 and 12, firmware STOP +2): solves 107-138 ms with about 100 involuntary context switches, emitter wake gap 48 ms, goal 10 also a 1198 ms leg-1 heartbeat gap; 17 firmware STOPs this launch against 7 on 10-30
 - 2026-11-01: Sitting: high-low trip (+8.967 rev) fits the STOP cliff but the stall was teensy_bridge_node, not the emitter; turned-90 trip is a different mechanism (JB-137); forwarder gap monitor being added; scheduling deferred by owner (detail below)
+- 2026-11-02: Sitting 2026-11-02: three LANE_REFUSED ends, all past the firmware's 70 ms cover (two bridge-process stalls 79.6/101.3 ms, one emitter stall 81.7 ms), two then tripped the Hand guard. Class now owned by JB-149.

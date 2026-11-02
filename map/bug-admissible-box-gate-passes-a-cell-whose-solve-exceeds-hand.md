@@ -4,7 +4,7 @@ kind: bug
 title: 'A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve'
 status: in_progress
 created: '2026-10-31'
-updated: '2026-11-02T07:23:19Z'
+updated: '2026-11-02T08:50:02Z'
 owners:
 - night-shift
 priority: high
@@ -51,7 +51,7 @@ Entry: logbook/2026-11-01-jb120-box-gate-vs-hand-limit-acc-replay.md.
 ## Sitting
 
 - setup: armed, bb-fed
-- why: confirm the Columns Ball 2 catch no longer ends on HAND_LIMIT_ACC after the box edge or fallback change.
+- why: re-fly with the bump brake-seed fix (2026-11-02 debrief): the 2026-11-02 refusals all followed an inward bump of 22 mm or more and replay under 3700 rev/s^2 with the fix.
 - do:
   - Fly Columns, Sep. 125, Apex 0.95, Throws 50, twice.
 - pass: no END HAND_LIMIT_ACC and no refused first install in either 50.
@@ -83,3 +83,4 @@ The structural fix is FILED here as the next step, not built: the bump decision 
 - 2026-11-01: Night Shift 2026-11-01: held on night-shift/2026-11-01-JB-120: hardware robot; audit open on HAND_LIMIT_C2 admitted by the new HAND_LIMIT_ prefix and no both-refused test; unblocked by the Sitting in the section below plus the owner's call on the C2 finding (detail below)
 - 2026-11-01: Sitting: 6 Columns ENDs HAND_LIMIT_ACC 3910.6-4096.8 vs 3900; 7 of 7 refusals follow a BUMPED predecessor (0 of ~59 unbumped); reproduced offline within 3 pct. Branch fallback not flown, could not help. Owner keeps 3900; branch stays held (detail below)
 - 2026-11-01: Owner decision (debrief): HAND_LIMIT_ACC 3900 -> 4500 rev/s^2, hand_curr_limit_a 50 -> 60 A, box re-swept; the structural bump fix (plan the next catch at bump time) stays FILED here, not built (detail in the findings section).
+- 2026-11-02: Failed at the Sitting of 2026-11-02: HAND_LIMIT_ACC 4509 at 49/51 after a 30.5 mm bump; all 3 refusals of both Sittings follow the 3 largest inward bumps (22.2-30.5 mm), 0 of 329 unbumped. New cause found and fixed: the bump kept the pre-bump C-HAND-5 brake seed (offline 4696 -> 3407). Structural fix stays filed.

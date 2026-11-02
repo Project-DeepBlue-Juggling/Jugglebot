@@ -2,9 +2,9 @@
 id: JB-121
 kind: bug
 title: Two-ball Columns hop-start throw lands 25-56 mm inboard, past the 35 mm catch authority
-status: inbox
+status: complete
 created: '2026-10-31'
-updated: '2026-11-02T07:26:35Z'
+updated: '2026-11-02T08:49:46Z'
 owners: []
 priority: high
 effort: m
@@ -14,7 +14,8 @@ radius: subsystem
 diagnosis: hypothesis
 area: skill-stack
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-02-sitting-debrief.md
 parent: two-ball-oval
 filed_by: claude-books-2026-10-31
 ---
@@ -58,3 +59,4 @@ The 2026-10-31 hold analysis shows hold 0.100 lands about 10 mm short and shorte
 ## Progress
 
 - 2026-11-01: 2026-11-01 Sitting: 7 of 10 straight hop starts passed the first two catches at hold 0. The 3 failures were HAND_STROKE at the first CATCH (hand -0.004/-0.002/-0.001 rev vs a 0.000 floor), not a lateral miss; one AIM-LATERAL-CLAMPED inward of 35 mm (-38.9 mm x, L546). Hop-start failure at hold 0 is the floor dip, not the landing bias.
+- 2026-11-02: Passed at the Sitting of 2026-11-02: 16 of 16 Columns starts past the first two catches, no inward 35 mm clamp in any start window; hop-start throw landing x mean +3.8 mm, max 38 (the 25-56 mm inboard bias is gone).

@@ -8,6 +8,8 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-02 | in-progress | pattern progression | **Sitting 2026-11-02 debrief: Apex ladder to 1.35, Columns 58/58 and 64 of 65; JB-120 sharpened to big inward Bumps plus a stale brake seed, JB-137 CAN-arbitration sub-hypothesis withdrawn, JB-23 folded into the 70 ms cliff (JB-149)** | [2026-11-02-sitting-debrief.md](2026-11-02-sitting-debrief.md) |
+| 2026-11-02 | complete | pattern progression | **Bump re-derives the C-HAND-5 brake seed; install line shows the segment's own Hand peak; gap trackers reset on re-arm; MISSED-BALL evidence line** | [2026-11-02-bump-brake-seed-and-debrief-observability.md](2026-11-02-bump-brake-seed-and-debrief-observability.md) |
 | 2026-11-02 | complete | JB-147 diagnosis | **Opt-in, temporary full-rate Hand capture to CSV (`hand_capture:=true`): every telemetry, diagnostic and command-echo sample with its own stamp, written off the receive path** | [2026-11-02-jb147-hand-capture.md](2026-11-02-jb147-hand-capture.md) |
 | 2026-11-02 | complete | Sitting 2026-11-02 follow-up | **Hand ODrive config backup matches the drive (current soft 70 / hard 80 A, thermistor 60 / 70 °C); the code limit stays 60 A** | [2026-11-02-hand-odrive-limits-backup.md](2026-11-02-hand-odrive-limits-backup.md) |
 | 2026-11-02 | complete | Sitting 2026-11-02 follow-up | **GUI IDLE -> ACTIVE:TRAJECTORY no longer times out: a successful arm reply seeds the orchestrator's wire-armed mirror, so a mode queued during activation is not refused against the pre-arm /link_status** | [2026-11-02-idle-to-trajectory-arm-race.md](2026-11-02-idle-to-trajectory-arm-race.md) |

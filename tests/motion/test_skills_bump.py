@@ -568,3 +568,159 @@ def test_a_splice_at_a_bumped_release_keeps_the_bump_velocity_at_the_seam(
         assert not bad.accepted
         assert bad.code == uc.CHAIN_DISCONTINUITY, (delta, bad.code, bad.message)
         assert 'meta.cup_plan' in bad.message, bad.message
+
+
+# ---------------------------------------------------------------------------
+# C-HAND-5 x I-CATCH-5 — the bump re-derives the stepped release's brake seed
+# ---------------------------------------------------------------------------
+
+def _brake_seed_for(mark, cup_plan, dt, limits):
+    """The C-HAND-5 brake seed ``_meta_for`` records, recomputed for ``mark``:
+    ``release_brake_accel_mm_s2`` of the mark's take-off velocity and the cup
+    track's release-knot acceleration ``a_L`` (the launch window's last knot,
+    which ``_concat_cup`` keeps at a seam), to the production box top."""
+    k_rel = int(round(float(mark.t_s) / float(dt)))
+    return uc.release_brake_accel_mm_s2(
+        np.asarray(mark.vel_mm_s, float),
+        np.asarray(cup_plan.acc[k_rel], float) * 1000.0,
+        float(mark.site_mm[2]), uc.build_cup_config().z_max_m * 1000.0, limits)
+
+
+def test_a_bumped_stepped_release_reseeds_its_brake_for_the_bumped_takeoff(
+        record, limits, geom):
+    """The bump moves the carried release's velocity by ``v_b``; the C-HAND-5
+    brake seed on that mark must be the one the un-bumped computation gives for
+    the BUMPED take-off (and the bumped plan's own release acceleration
+    ``a_L + b̈(t_rel)``), not the pre-bump one.
+
+    Why it matters (2026-11-02 Sittings, debrief ``hand_acc.md``): the next
+    catch is seeded from this mark (``release_state_at_knot``), and its detach
+    rows pin knots 1-2's lateral acceleration to the brake through a near-
+    vertical axis, so a seed whose lateral part ignores ``v_b`` is steered by
+    the BRAKE MAGNITUDE: S2 L1489's successor peaked 4696 rev/s^2 offline
+    (4509 live) against 3407 with the refreshed seed.
+
+    Control: on the un-bumped record the stored seed IS this computation, so
+    the helper is the production recipe, not a second formula.  Non-vacuous:
+    probed 2026-11-02 on this record, the lateral seed moves by more than
+    100 mm/s^2 at these deltas.
+    """
+    i = list(record.meta.releases).index(_carried(record))
+    rm0 = record.meta.releases[i]
+    assert rm0.brake_accel_mm_s2 is not None        # production steps the release
+    dt = float(record.meta.dt)
+    np.testing.assert_allclose(
+        rm0.brake_accel_mm_s2,
+        _brake_seed_for(rm0, record.meta.cup_plan, dt, limits), rtol=0, atol=1e-6)
+
+    for delta in ((20.0, 0.0), (36.0, 0.0)):
+        res = _bump(record, limits, geom, 0.45, delta)
+        assert res.accepted, res.message
+        rm = res.meta.releases[i]
+        want = _brake_seed_for(rm, res.meta.cup_plan, dt, limits)
+        got = np.asarray(rm.brake_accel_mm_s2, float)
+        np.testing.assert_allclose(got, want, rtol=0, atol=1e-6)
+        assert np.abs(got[:2] - np.asarray(rm0.brake_accel_mm_s2)[:2]).max() > 100.0
+        # the step a_R - a_L is along the bumped take-off direction (C-HAND-5)
+        k_rel = int(round(float(rm.t_s) / dt))
+        step = got - np.asarray(res.meta.cup_plan.acc[k_rel], float) * 1000.0
+        u = np.asarray(rm.vel_mm_s, float) / np.linalg.norm(rm.vel_mm_s)
+        assert np.linalg.norm(step - np.dot(step, u) * u) <= 1e-9 * np.linalg.norm(step)
+
+
+def test_a_continuous_release_keeps_no_brake_seed_through_a_bump(
+        record, limits, geom):
+    """With the step off the mark carries ``None`` (the next window starts
+    from ``g``); the bump must not invent a seed."""
+    i = list(record.meta.releases).index(_carried(record))
+    rels = list(record.meta.releases)
+    rels[i] = dataclasses.replace(rels[i], brake_accel_mm_s2=None)
+    meta = dataclasses.replace(record.meta, releases=tuple(rels))
+    res = bump.apply_catch_bump(record.plan, meta, _k_wire(record, 0.45),
+                                (20.0, 0.0), T_LAND - record.t0_s, limits, geom)
+    assert res.accepted, res.message
+    assert res.meta.releases[i].brake_accel_mm_s2 is None
+
+
+def test_a_stepped_release_without_a_cup_track_declines_the_bump(
+        record, limits, geom):
+    """``a_L`` comes off ``meta.cup_plan``; without it the seed cannot be
+    re-derived, and a stale seed is the defect, so the bump is DECLINED
+    (terminal, the old record keeps streaming) rather than accepted stale."""
+    meta = dataclasses.replace(record.meta, cup_plan=None)
+    res = bump.apply_catch_bump(record.plan, meta, _k_wire(record, 0.45),
+                                (20.0, 0.0), T_LAND - record.t0_s, limits, geom)
+    assert not res.accepted
+    assert res.code == bump.BUMP_NO_CARRY and res.terminal
+    assert 'brake seed' in res.message
+
+
+def test_s2_l1489_the_bumped_successor_plans_inside_the_hand_limit(geom):
+    """Regression, 2026-11-02 Sitting 2 L1489 (Columns sep 125, Apex 0.95,
+    dwell 0.27, pose, hold 0, hand 4500): Ball 1's catch at P2 was bumped
+    (-30.5, -1.3) mm and Ball 2's next catch at P1, seeded from the bumped
+    release, was refused HAND_LIMIT_ACC 4509 live.
+
+    Recipe (``tools/probes/bump_seed_replay.py``'s construction with the logged
+    learner commands, probed 2026-11-02): with the pre-fix STALE seed injected
+    the successor refuses HAND_LIMIT_ACC (4696 offline); with the bump's own
+    seed it plans at 3407 rev/s^2.  Asserted with margin: < 4000.
+    """
+    from jugglebot.motion.trajectory import ballistics_bc as bal
+    apex, dwell, sep = 0.95, 0.27, 125.0
+    lim = TrajectoryLimits.from_config(hw).with_sitting_limits(
+        leg_vel_mmps=float(hw.JB_TRAJ_LEG_VEL_LIMIT_MMPS),
+        leg_acc_mmps2=float(hw.JB_TRAJ_LEG_ACC_LIMIT_MMPS2),
+        leg_jerk_mmps3=float(hw.JB_TRAJ_LEG_JERK_LIMIT_MMPS3),
+        hand_acc_rps2=4500.0)
+    p1, p2 = si.columns_sites(sep)
+    tp = sc.flight_s(apex)
+    tau = sc.transit_s(tp, dwell)
+    cfg = dataclasses.replace(sg.SegmentConfig(planner_mode='pose'),
+                              pre_release_hold_s=0.0)
+
+    def mm(v):
+        return np.array([float(v[0]), float(v[1]), 0.0])
+
+    def cterm(site, u, ua):
+        landing = site.catch_site_mm()
+        release = np.array([landing[0], landing[1], site.throw_site_mm()[2]])
+        r = release[:2] - np.asarray(site.cup_mm, float)[:2]
+        gain = min(max(apex / ua, 0.5), 2.0)
+        target = site.catch_site_mm() + mm(u) + mm(r * (1 - 1 / gain))
+        vl = bal.launch_velocity(site.throw_site_mm(), landing, tp)
+        return sg.CatchTerminal(
+            landing_mm=landing, landing_vel_mm_s=bal.arrival_velocity(vl, tp),
+            t_land_s=tau, rest_site_mm=site.rest_site_mm(),
+            then_throw=sg.ThrowAfterCatch(t_release_s=tau + dwell, site_mm=release,
+                                          target_mm=target,
+                                          flight_s=sc.flight_s(ua)))
+
+    launch = sg.plan_segment(
+        sg.THROW, _rest_state(p1.rest_site_mm()),
+        sg.ThrowTerminal(site_mm=p1.throw_site_mm(), target_mm=p1.throw_site_mm(),
+                         flight_s=tp, t_release_s=0.4),
+        cfg, lim, geom).release_state
+    seg = sg.plan_segment(sg.CATCH, launch, cterm(p2, (7.8, -4.0), 0.868),
+                          cfg, lim, geom)
+    k_rel = int(round(seg.release_t_s / float(seg.plan.dt)))
+    r = bump.apply_catch_bump(seg.plan, seg.meta, -1, (-30.5, -1.3),
+                              float(seg.event_t_s), lim, geom)
+    assert r.accepted, r.message
+    nxt = cterm(p1, (-20.0, -16.6), 0.892)
+
+    ok = sg.plan_segment(sg.CATCH, uc.release_state_at_knot(r.plan, r.meta, k_rel),
+                         nxt, cfg, lim, geom)
+    assert ok.meta.report.peak_hand_acc_rps2 < 4000.0
+
+    # the pre-fix shape: the pre-bump seed on the bumped mark
+    i = [j for j, m in enumerate(r.meta.releases)
+         if int(round(float(m.t_s) / float(seg.plan.dt))) == k_rel][0]
+    rels = list(r.meta.releases)
+    rels[i] = dataclasses.replace(
+        rels[i], brake_accel_mm_s2=seg.meta.releases[i].brake_accel_mm_s2)
+    stale = dataclasses.replace(r.meta, releases=tuple(rels))
+    with pytest.raises(uc.CycleInfeasible) as exc:
+        sg.plan_segment(sg.CATCH, uc.release_state_at_knot(r.plan, stale, k_rel),
+                        nxt, cfg, lim, geom)
+    assert exc.value.code == 'HAND_LIMIT_ACC'

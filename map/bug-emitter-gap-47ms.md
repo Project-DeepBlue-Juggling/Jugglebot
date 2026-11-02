@@ -2,9 +2,9 @@
 id: JB-23
 kind: bug
 title: 'Emitter gap: one 47 ms window over sitting 8 against the 35 ms max target'
-status: inbox
+status: complete
 created: '2026-10-24'
-updated: '2026-11-02T07:29:42Z'
+updated: '2026-11-02T08:49:47Z'
 owners: []
 priority: medium
 effort: m
@@ -16,6 +16,7 @@ area: skill-stack
 blocked_by: []
 links:
 - plans/archived/skill-stack-dress-rehearsals-and-residue.md
+- logbook/2026-11-02-sitting-debrief.md
 filed_by: claude
 ---
 
@@ -39,3 +40,4 @@ Over sitting 8 the emitter showed p50 25.9 / p99 29.9 / max 47.0 ms on `/traject
 ## Progress
 
 - 2026-11-01: 2026-11-01 Sitting: 28/29 goal emit gap p50 26.2 / p99 30.9 / max 32.8 ms (pass on the goal). Launch-wide max 47.8 ms: one 48 ms emitter wake gap WARN at L1264 in the 16/17 goal.
+- 2026-11-02: Superseded 2026-11-02 by JB-149: the 50-throw goal read 33.0 ms (pass), but two long goals hit 81.7 and 40.9 ms and the hop 63.2 ms; the 81.7 ms gap ended the 58/58 goal by LANE_REFUSED. Owner: fold into the starvation Item.

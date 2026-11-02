@@ -39,6 +39,7 @@ The most Catches in one continuous Attempt on the robot (never the sim), per Pat
 | 2026-09-29 19:20 | 6 | 6 | other (UNKNOWN) | seed: reconstructed from per-throw lines, no summary line (approximate) |  |
 | 2026-09-29 19:21 | 10 | 10 | other (UNKNOWN) | seed: reconstructed from per-throw lines, no summary line (approximate) |  |
 | 2026-09-29 19:21 | 28 | 24 | other (UNKNOWN) | seed: reconstructed from per-throw lines, no summary line (approximate) |  |
+| 2026-11-02 18:31 | 61 | 61 | drop (MISSED_CATCH) |  | apex_m=0.9; separation_mm=250; dwell_s=0.27; planner=pose |
 
 <!-- pattern: oval_1ball balls: 1 -->
 ### Oval — Ball 1
@@ -95,6 +96,8 @@ The most Catches in one continuous Attempt on the robot (never the sim), per Pat
 | 2026-10-22 20:00 | 48 | 47 | drop (MISSED_CATCH) | seed: fed goal |  |
 | 2026-10-28 14:33 | 49 | 49 | completed (COMPLETED) |  |  |
 | 2026-10-28 21:04 | 59 | 57 | drop (ABORTED_NO_RELEASE) |  |  |
+| 2026-11-02 18:20 | 58 | 58 | other (LANE_REFUSED) |  | apex_m=0.95; separation_mm=125; dwell_s=0.27; planner=pose |
+| 2026-11-02 18:21 | 65 | 64 | compute (LIMIT_VEL) |  | apex_m=0.95; separation_mm=125; dwell_s=0.27; planner=pose |
 
 <!-- pattern: columns_highlow balls: 2 -->
 ### Columns — high-low

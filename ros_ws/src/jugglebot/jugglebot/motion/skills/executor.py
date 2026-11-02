@@ -1275,6 +1275,36 @@ def _is_carried(skill: Skill) -> bool:
     return release_site_of(skill) is not skill.site
 
 
+def lost_ball_line(t_abs_s: float, ball_id: int, catch_idx: int,
+                   release, t_land_scheduled_s: float,
+                   landing: Optional['Landing']) -> str:
+    """The evidence line for a ball a MISSED_CATCH verdict lost (2026-11-02
+    debrief: 16 ends left no trace of the lost ball in the launch log).
+
+    ``release`` is :func:`_previous_release`'s answer (or ``None`` when the ball
+    was thrown before this schedule); ``landing`` the tracker's last fit for the
+    ball (``None`` -> ``NO FIT``).  Pure: formats only, so the node merely logs.
+    The release time is the SCHEDULED one -- the executor does not measure the
+    hand's actual release instant."""
+    if release is None:
+        thrown = 'thrown before this schedule'
+    else:
+        thrown = ('thrown by skill %d, scheduled release %.3f (%.3f s before '
+                  'its scheduled landing)'
+                  % (int(release[4]), float(release[1]),
+                     float(t_land_scheduled_s) - float(release[1])))
+    if landing is None:
+        fit = 'tracker last fit: NO FIT'
+    else:
+        fit = ('tracker last %s: landing (%.1f, %.1f) mm at %+.3f s from the '
+               'scheduled landing'
+               % ('fit' if landing.from_fit else 'estimate (unfitted)',
+                  float(landing.pos_mm[0]), float(landing.pos_mm[1]),
+                  float(landing.t_land_abs_s) - float(t_land_scheduled_s)))
+    return ('%.3f MISSED-BALL %s (the CATCH of skill %d): %s; %s'
+            % (t_abs_s, ball_label(ball_id), catch_idx, thrown, fit))
+
+
 def _previous_release(schedule: Schedule, idx: int, ball_id: int):
     """``(release_site, t_release_abs_s, y_d, target, release_idx)`` of the last
     release of ``ball_id`` strictly before ``schedule.skills[idx]`` -- a THROW
@@ -4719,6 +4749,15 @@ class SkillExecutor:
                        window.n_seated, 1000.0 * float(window.max_gap_s),
                        first))
                 continue
+            # The lost ball's evidence is read BEFORE the schedule is cut to the
+            # survivor (_install_survivor_tail) and before its rows are dropped.
+            lost_line = lost_ball_line(
+                t_abs_s, pend.ball_id, pend.catch_idx,
+                _previous_release(self.schedule, pend.catch_idx, pend.ball_id),
+                pend.t_land_scheduled_s,
+                pend.last_fit_landing if pend.last_fit_landing is not None
+                else (self.tracker(pend.ball_id)
+                      if self.tracker is not None else None))
             self._pending_outcomes = [
                 p for p in self._pending_outcomes
                 if p.ball_id != pend.ball_id]
@@ -4742,6 +4781,7 @@ class SkillExecutor:
                     % (t_abs_s, MISSED_CATCH, ball_label(pend.ball_id),
                        pend.catch_idx, window.n_valid, t_open_rel, t_close_rel,
                        ball_label(survivor[1].ball_id), survivor[0]))
+                lines.append(lost_line)
                 continue
             if not self.attempt_ended:
                 self.attempt_ended = True
@@ -4758,6 +4798,7 @@ class SkillExecutor:
                     % (t_abs_s, MISSED_CATCH, ball_label(pend.ball_id),
                        pend.catch_idx, window.n_valid, t_open_rel,
                        t_close_rel))
+                lines.append(lost_line)
             else:
                 # The attempt was already ended by a later skill (a
                 # refusal, a mode change): the verdict still resolves this
@@ -4770,6 +4811,7 @@ class SkillExecutor:
                     % (t_abs_s, MISSED_CATCH, ball_label(pend.ball_id),
                        pend.catch_idx, window.n_valid, t_open_rel,
                        t_close_rel))
+                lines.append(lost_line)
             continue                     # dropped either way
         for pend in self._pending_catches:
             if pend not in remaining:

@@ -2,9 +2,9 @@
 id: JB-139
 kind: bug
 title: Ball 2 learner command pinned at the (-20,-20) mm clamp corner in 37 of 40 straight Columns rows (BOX-EXPECTED-LANDING-UNMET u=(-20,-20))
-status: inbox
+status: in_progress
 created: '2026-11-01'
-updated: '2026-11-02T07:26:03Z'
+updated: '2026-11-02T08:49:48Z'
 owners: []
 priority: medium
 effort: s
@@ -43,7 +43,7 @@ Night Shift 2026-11-02 replayed the committed learner memory (`temp/learn/juggle
 
 What would settle it: with a fresh `plant_id` the first Ball 2 commands are the identity prior, so the first landings show the raw bias directly; if they average +20 to +32 mm in y the bias is in the plant (feed or seat geometry at that site, a JB-38 question), not the fit. Do not raise the authority on this evidence alone: the residual is small and the question is why the bias is site-specific.
 
-## Sitting
+## Sitting row flown 2026-11-02
 
 - setup: armed, bb-fed
 - why: confirm the +26 mm y landing bias at the -62.5 mm (Ball 2) site is in the plant, not the fit, by reading the identity-prior landings of a fresh memory.
@@ -58,3 +58,7 @@ What would settle it: with a fresh `plant_id` the first Ball 2 commands are the 
 
 - verdict: pass
 - notes: Two attempts with a fresh plant_id ('jb-139-test') succeeded with 20 throws. One attempt failed due to a mid-air collision
+
+## Progress
+
+- 2026-11-02: Sitting 2026-11-02 (owner: bias confirmed, keep open): fresh plant_id, first five Ball 2 landings y +16.4 mm (row band +20..+32 missed, 4 pure identity-prior rows, sigma ~15 mm); with commands the plant bias reads ~(+22 x, +17..+25 y) mm; main memory pins u_x at -20 in 93 of 151 rows. Next: re-seed the main memory or widen the clamp (re-sweep).

@@ -5967,6 +5967,31 @@ def _drive_to_decision(sch, seat_window, t_decide, observer=None):
     return x, lines, experiences
 
 
+def test_missed_catch_names_the_lost_ball_with_its_throw_and_the_last_fit(sites):
+    """2026-11-02 debrief: an END MISSED_CATCH is followed by one MISSED-BALL line
+    naming the lost ball, the skill that threw it, its scheduled release, and the
+    tracker's last fit (or NO FIT).  Pure formatter + the live executor path."""
+    line = ex.lost_ball_line(
+        12.5, 1, 7, (None, 10.25, None, None, 5), 11.0,
+        ex.Landing(pos_mm=np.array([12.34, -5.67, 0.0]),
+                   vel_mm_s=np.zeros(3), t_land_abs_s=11.02, from_fit=True))
+    assert 'MISSED-BALL' in line and 'skill 7' in line
+    assert 'thrown by skill 5, scheduled release 10.250 (0.750 s before' in line
+    assert 'tracker last fit: landing (12.3, -5.7) mm at +0.020 s' in line
+    assert ex.lost_ball_line(1.0, 0, 3, None, 2.0, None).endswith(
+        'thrown before this schedule; tracker last fit: NO FIT')
+    sch, _L, R, _t_land_a = _feed_catch_schedule(sites)
+    seat_window = lambda t0, t1: ex.SeatWindow(
+        n_valid=int(round((t1 - t0) * 100)), n_seated=0, max_gap_s=0.01)
+    t_decide = R + ex.MISSED_CATCH_CLOSE_AFTER_RELEASE_S \
+        + ex.MISSED_CATCH_DECIDE_LAG_S
+    _x, lines, _e = _drive_to_decision(sch, seat_window, t_decide)
+    lost = [ln for ln in lines if 'MISSED-BALL' in ln]
+    assert len(lost) == 1 and 'NO FIT' in lost[0]
+    assert 'scheduled release' in lost[0] or 'before this schedule' in lost[0]
+    print(lost[0])
+
+
 def test_missed_catch_fires_on_an_empty_cup_and_keeps_the_survivor(sites):
     """``seat_window`` reports a sample-complete, LIVE, never-seated window
     -- (40, 0, 0.01) -- for every query. MISSED_CATCH fires at

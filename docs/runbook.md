@@ -6,7 +6,7 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 3 blocks (87 min) · Bench leg 1 block (30 min)
+Rigs: Robot 2 blocks (47 min) · Bench leg 1 block (30 min)
 
 ## Setup 0: before power
 
@@ -16,43 +16,19 @@ Rigs: Robot 3 blocks (87 min) · Bench leg 1 block (30 min)
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Robot  (3 blocks, 87 min)
+## Robot  (2 blocks, 47 min)
 
-### Block 1: armed, bb-fed  (3 rows, 45 min)
+### Block 1: armed, bb-fed  (1 row, 15 min)
 
 #### JB-120 A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve  (15 min, high, two-ball-oval)
-- why: confirm the Columns Ball 2 catch no longer ends on HAND_LIMIT_ACC after the box edge or fallback change.
+- why: re-fly with the bump brake-seed fix (2026-11-02 debrief): the 2026-11-02 refusals all followed an inward bump of 22 mm or more and replay under 3700 rev/s^2 with the fix.
 - do:
   - Fly Columns, Sep. 125, Apex 0.95, Throws 50, twice.
 - pass: no END HAND_LIMIT_ACC and no refused first install in either 50.
 - record: per-catch peak Hand acceleration from the install lines and the learner y for Ball 2.
 - branch: `night-shift/2026-11-01-JB-120`
 
-#### JB-139 Ball 2 learner command pinned at the (-20,-20) mm clamp corner in 37 of 40 straight Columns rows (BOX-EXPECTED-LANDING-UNMET u=(-20,-20))  (10 min, medium, unattached)
-- why: confirm the +26 mm y landing bias at the -62.5 mm (Ball 2) site is in the plant, not the fit, by reading the identity-prior landings of a fresh memory.
-- do:
-  - Fly straight Columns, Sep. 125, Apex 0.95, Throws 10, with a FRESH `plant_id` (a name no memory file has) so the first commands are the identity prior.
-  - Read the Ball 2 landing y per throw from the install lines (or the new memory rows).
-- pass: the first 5 Ball 2 landings average +20 to +32 mm in y (the bias is real and stable); outside that band the fit, not the plant, is the next question.
-- record: per throw the Ball 2 landing (x, y) mm and the command u; the plant_id used.
-
-#### JB-121 Two-ball Columns hop-start throw lands 25-56 mm inboard, past the 35 mm catch authority  (20 min, high, two-ball-oval)
-- why: read the hop-start landing bias at the new default hold 0.
-- do:
-  - Fly Columns, Sep. 125, Apex 0.95, Throws 12, five starts from a cold hand.
-- pass: five of five starts past the first two catches, with no AIM-LATERAL-CLAMPED inward of 35 mm.
-- record: the HOP aim clamp line and the landing x error of each hop throw.
-
-### Block 2: armed  (1 row, 10 min)
-
-#### JB-23 Emitter gap: one 47 ms window over sitting 8 against the 35 ms max target  (10 min, medium, unattached)
-- why: the 47 ms emitter window has only one sample (sitting 8); a fresh read at today's launch says whether the max is still over the 35 ms target.
-- do:
-  - Fly one 50-throw goal of any Pattern and read the emitter p50 / p99 / max from `/trajectory/status` in the launch log.
-- pass: emitter max below 35 ms over the goal.
-- record: the emitter p50, p99 and max lines, and the goal flown.
-
-### Block 3: level, armed, bb-fed  (2 rows, 32 min)
+### Block 2: level, armed, bb-fed  (2 rows, 32 min)
 
 #### JB-107 JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m  (12 min, medium, pattern-progression-columns-to-centre-and-orbit)
 - why: P5 of plan pattern-progression.md: two Apexes in one Pattern (JP-9). The Rung flies 1.00 over 0.90 at separation 100; since the 2026-10-31 re-sweep (Hand prime 10.45, box gate_hash 961808ee2d20) 1.05 over 0.95 is admissible at both Sites too, but a 1.05 launch waits for the faster hand current capture (plan D-c).
@@ -77,7 +53,7 @@ Rigs: Robot 3 blocks (87 min) · Bench leg 1 block (30 min)
 
 ## Bench leg  (1 block, 30 min)
 
-### Block 4: bridge-cycled  (1 row, 30 min)
+### Block 3: bridge-cycled  (1 row, 30 min)
 
 #### JB-73 Hand ODrive state can silently diverge from what the can-bridge commanded  (30 min, low, unattached)
 - why: confirm FW 35's suppress-edge hold flush leaves the bench leg at the last transmitted command instead of input_pos + vel_ff/pos_gain, and measure the current step it costs.
@@ -101,9 +77,11 @@ Rigs: Robot 3 blocks (87 min) · Bench leg 1 block (30 min)
 - JB-117 [Bench hand] Hand brake and hold currents sit far below the throw envelope's model (brake -14 to -20 A measured vs 35 to 40 A predicted; hold 1.5 vs 2.6 A): Kt, moving mass or friction is mis-modelled: no ## Sitting section
 - JB-137 [Robot] Hand ODrive feedback starvation: 701 ms heartbeat dropout left the encoder 100 ms stale, the 2.0 rev lead clamp pinned the throw to stale+2.0, guard MAX_DEVIATION +3.707 fired correctly (turned-90 at 16/16): no ## Sitting section
 - JB-138 [Robot] Hand iq reached 53.3 A on a 45 deg turned hop launch, over the 50 A watch the high-low row names: no ## Sitting section
+- JB-139 [Robot] Ball 2 learner command pinned at the (-20,-20) mm clamp corner in 37 of 40 straight Columns rows (BOX-EXPECTED-LANDING-UNMET u=(-20,-20)): no ## Sitting section
 - JB-146 [Robot] ODrive GUI save resets the Hand zero, the bridge stays homed, and ACTIVATE parks the Hand into its stop at full current: no ## Sitting section
 - JB-147 [Robot] Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT): no ## Sitting section
 - JB-148 [Robot] One-off 2 m Throws: raised Hand limits and an overshoot protection the speed-scaled margin cannot give: no ## Sitting section
+- JB-149 [Robot] 40 Hz setpoint stream starved past the firmware's 70 ms cover during CATCH-solve bursts: 3 LANE_REFUSED ends on 2026-11-02: no ## Sitting section
 - JB-2 [Robot] Design change: the Hand should be Idle, not Parked Closed-loop, while Active: no ## Sitting section
 - JB-24 [Robot] 10 % jitter-margin class of LIMIT_* refusals: no ## Sitting section
 - JB-26 [Robot] Platform Teensy truncates the persisted levelling offset to int16 milliradians: no ## Sitting section

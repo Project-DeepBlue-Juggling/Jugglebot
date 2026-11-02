@@ -2,9 +2,9 @@
 id: JB-136
 kind: bug
 title: 'HAND_STROKE refuses the hop-start first CATCH at -0.000..-0.004 rev: the cup QP bounds height only at knots, the gate samples 4 per knot with a strict floor'
-status: inbox
+status: complete
 created: '2026-11-01'
-updated: '2026-11-01T12:19:17Z'
+updated: '2026-11-02T08:49:47Z'
 owners: []
 priority: high
 effort: s
@@ -17,6 +17,7 @@ blocked_by: []
 links:
 - map/bug-two-ball-columns-hop-start-throw-lands-25-56-mm-inboard-past.md
 - map/bug-admissible-box-gate-passes-a-cell-whose-solve-exceeds-hand.md
+- logbook/2026-11-02-sitting-debrief.md
 filed_by: claude
 ---
 
@@ -33,3 +34,7 @@ Found at the 2026-11-01 Sitting: 9 refusals and 7 goal ends on straight Columns 
 - Mid-span QP rows so the continuum respects the floor.
 - A 0.01 rev gate tolerance.
 - A fix is in flight this Sitting.
+
+## Progress
+
+- 2026-11-02: Verified on hardware 2026-11-02: zero HAND_STROKE refusals or ends over 35 starts in two Sittings (between-knot floor rows, d5477aee).

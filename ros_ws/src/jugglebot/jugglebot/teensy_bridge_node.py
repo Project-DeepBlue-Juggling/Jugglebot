@@ -4700,6 +4700,12 @@ class TeensyBridgeNode(Node):
         # is not silently dropped by the mpc_active gate (and so the Teensy is
         # told we are driving before any setpoint can flow).
         self._set_mpc_active(True)
+        # Gap trackers measure THIS arm's stream only: without the reset the first
+        # record after a re-arm spans the whole disarmed interval and reads as a
+        # starved-bridge gap (false WARNs, 2026-11-02 S1/S2 debrief).
+        self._fwd_gap.reset()
+        self._loop_gap.reset()
+        self._fwd_gap_latch = EpisodeLatch(SCHED_COVER_MS)
         self._sp_stop.clear()
         self._sp_thread = threading.Thread(
             target=self._setpoint_loop, name="teensy_bridge_setpoint", daemon=True)

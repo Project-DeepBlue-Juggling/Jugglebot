@@ -128,7 +128,44 @@ def test_every_accepted_install_line_carries_the_gate_peaks_as_a_share_of_the_li
     rep = SimpleNamespace(peak_hand_acc_rps2=3600.0, peak_leg_vel_mmps=175.0,
                           peak_leg_acc_mmps2=4000.0)
     line = tn.TrajectoryNode._peaks_suffix(fake, SimpleNamespace(meta=SimpleNamespace(report=rep)))
+    # No plan on the record: falls back to the report's (buffer) value.
     assert line == (', peaks hand acc 3600 rev/s^2 (80.0% of 4500), '
-                    'leg vel 50.0% acc 80.0%')
+                    'leg vel 50.0% acc 80.0%, buffer max hand acc 3600 rev/s^2')
     assert tn.TrajectoryNode._peaks_suffix(fake, SimpleNamespace(meta=SimpleNamespace(report=None))) == ''
     assert tn.TrajectoryNode._peaks_suffix(fake, SimpleNamespace()) == ''
+
+
+def test_install_line_hand_acc_is_this_segments_own_peak_not_the_buffer_max():
+    """2026-11-02 debrief: `report.peak_hand_acc_rps2` is a running maximum over the
+    plan buffer (`_merged_peaks`), so a bumped catch's peak rode every later
+    install.  The line prints the peak over the spans from the seam on, and the
+    report's value only as `buffer max`."""
+    import numpy as np
+    dt = 0.025
+    # Head: a violent hand move (knots 0..3); tail from knot 4: a gentle ramp.
+    hand = np.concatenate([[0.0, 0.5, 0.0, 0.5], 0.5 + 1.0 * dt * np.arange(1, 9) * 4.0])
+    vel = np.concatenate([[0.0, 0.0, 0.0, 0.0], np.full(8, 4.0)])
+    plan = SimpleNamespace(hand_rev=hand, hand_vel_rps=vel, dt=dt)
+    limits = SimpleNamespace(hand_acc_limit_rps2=4500.0, leg_vel_mmps=350.0,
+                             leg_acc_mmps2=5000.0)
+    fake = SimpleNamespace(_limits=limits)
+    fake._own_hand_peak_acc = tn.TrajectoryNode._own_hand_peak_acc
+    rep = SimpleNamespace(peak_hand_acc_rps2=4400.0, peak_leg_vel_mmps=175.0,
+                          peak_leg_acc_mmps2=4000.0)
+    rec = SimpleNamespace(meta=SimpleNamespace(report=rep), plan=plan)
+    whole = tn.TrajectoryNode._own_hand_peak_acc(plan, 0)
+    own = tn.TrajectoryNode._own_hand_peak_acc(plan, 5)
+    assert own < 0.1 * whole                     # the head's violence is excluded
+    line = tn.TrajectoryNode._peaks_suffix(fake, rec, 5)
+    assert line.startswith(', peaks hand acc %.0f rev/s^2 (' % own)
+    assert line.endswith('buffer max hand acc 4400 rev/s^2')
+    # brute-force check of the closed form against dense sampling of the Hermite
+    h = dt
+    best = 0.0
+    for k in range(4, len(hand) - 1):
+        for s in (0.0, 1.0):
+            d = (hand[k] - hand[k + 1]) / h
+            a_q = 6 * d + 3 * (vel[k] + vel[k + 1])
+            b_q = -6 * d - 4 * vel[k] - 2 * vel[k + 1]
+            best = max(best, abs((2 * a_q * s + b_q) / h))
+    assert abs(own - best) < 1e-6

@@ -5272,31 +5272,64 @@ class TrajectoryNode(Node):
             '%.3f s, solve %.1f ms%s, planner %s%s'
             % (kind, ball_label(ball_id), response.splice_k, response.plan_wall_ms,
                float(result.event_t_s), solve_s * 1e3, solve_cpu,
-               response.planner_mode, self._peaks_suffix(record)))
+               response.planner_mode,
+               self._peaks_suffix(record, int(result.splice_k))))
         return response
 
-    def _peaks_suffix(self, record) -> str:
+    @staticmethod
+    def _own_hand_peak_acc(plan, k_from: int) -> float:
+        """Exact peak |Hand acceleration| (rev/s^2) over the plan's spans from knot
+        ``k_from - 1`` (the seam span) to the end -- THIS segment's own peak, not
+        the buffer's running maximum (``unified_cycle._merged_peaks`` carries a
+        bumped catch's peak onto every later install; 2026-11-02 debrief).  The
+        hand is a cubic Hermite per span, so its acceleration is linear in the
+        span and the ends bound it (``feasibility._hand_span_extrema``'s closed
+        form, vectorised: a few array ops, no loop over knots)."""
+        k0 = max(0, int(k_from) - 1)
+        p = np.asarray(plan.hand_rev, dtype=float)[k0:]
+        v = np.asarray(plan.hand_vel_rps, dtype=float)[k0:]
+        if p.shape[0] < 2:
+            return 0.0
+        h = float(plan.dt)
+        d = (p[:-1] - p[1:]) / h
+        a_q = 6.0 * d + 3.0 * (v[:-1] + v[1:])
+        b_q = -6.0 * d - 4.0 * v[:-1] - 2.0 * v[1:]
+        return float(np.max(np.maximum(np.abs(b_q), np.abs(2.0 * a_q + b_q))) / h)
+
+    def _peaks_suffix(self, record, splice_k: int = 0) -> str:
         """The accepted plan's gate peaks as a share of the LIVE limits, for the
         install line (2026-11-01: the Runbook asked for per-catch peak Hand
         acceleration and the log carried it only on refusals).  Format only: reads
         the ``FeasibilityReport`` the solve already attached to the record's meta
         (no sampling, nothing on the 40 Hz path); '' when the record carries no
-        report.  The leg peaks are the report's maxima over the six legs."""
+        report.  The leg peaks are the report's maxima over the six legs.
+
+        The Hand acceleration is THIS segment's own peak, recomputed from the
+        installed plan's knots from the seam on; the report's value is a running
+        maximum over the whole plan buffer, so it is printed separately as
+        ``buffer max``, as are the leg peaks (a leg range gate is a full
+        ``validate_cycle`` -- too dear for the install path)."""
         rep = getattr(getattr(record, 'meta', None), 'report', None)
         if rep is None:
             return ''
+        plan = getattr(record, 'plan', None)
+        own = None
+        if plan is not None and hasattr(plan, 'hand_rev'):
+            own = self._own_hand_peak_acc(plan, splice_k)
+        if own is None:
+            own = float(rep.peak_hand_acc_rps2)
         lim = self._limits
 
         def pct(v, lim_v):
             return 100.0 * float(v) / float(lim_v) if float(lim_v) > 0.0 else float('nan')
 
         return (', peaks hand acc %.0f rev/s^2 (%.1f%% of %.0f), leg vel %.1f%% '
-                'acc %.1f%%'
-                % (float(rep.peak_hand_acc_rps2),
-                   pct(rep.peak_hand_acc_rps2, lim.hand_acc_limit_rps2),
+                'acc %.1f%%, buffer max hand acc %.0f rev/s^2'
+                % (own, pct(own, lim.hand_acc_limit_rps2),
                    float(lim.hand_acc_limit_rps2),
                    pct(rep.peak_leg_vel_mmps, lim.leg_vel_mmps),
-                   pct(rep.peak_leg_acc_mmps2, lim.leg_acc_mmps2)))
+                   pct(rep.peak_leg_acc_mmps2, lim.leg_acc_mmps2),
+                   float(rep.peak_hand_acc_rps2)))
 
     # ═══════════════════════════════════════════════════════════
     # Status + diagnostics (5 Hz)

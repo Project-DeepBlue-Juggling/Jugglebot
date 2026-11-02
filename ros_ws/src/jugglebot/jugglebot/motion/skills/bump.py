@@ -45,6 +45,13 @@ install instant ``t_inst`` the wire may already hold every knot up to
   constant-velocity state with zero acceleration and ends at zero offset,
   velocity and acceleration on the record's last knot), so the knot samples
   carry no hidden discontinuity at 40 Hz.
+* The carried release's C-HAND-5 brake seed (``ReleaseMark.brake_accel_mm_s2``)
+  is re-derived for the bumped take-off (:func:`_bumped_brake_seed`, added
+  2026-11-02).  It is META only: the bumped pose / hand arrays are the same
+  with or without it, so nothing streamed changes.  It feeds the NEXT window's
+  knot-0 acceleration (``release_state_at_knot``), i.e. only knots after the
+  release, which reach the wire through ``install_segment``'s own splice guard
+  and ``validate_cycle``.
 
 The shape (per lateral axis; W1-corrected 2026-10-16)
 ----------------------------------------------------
@@ -318,7 +325,7 @@ def _bumped_cup(cup, b, bd, bdd):
 
 
 def _bumped_meta(meta: uc.CycleMeta, i_rel: int, i_catch: Optional[int],
-                 delta, b_rel, v_b, profile=None) -> uc.CycleMeta:
+                 delta, b_rel, v_b, profile=None, limits=None) -> uc.CycleMeta:
     """The meta with the bumped catch's site moved by Δ and the carried
     release's site / cup velocity moved by ``b_rel`` / ``v_b`` — so the splice
     guard, the report and the next seed read the release the plan executes.
@@ -328,12 +335,19 @@ def _bumped_meta(meta: uc.CycleMeta, i_rel: int, i_catch: Optional[int],
     representation of the plan, and ``unified_cycle._seam_velocity`` /
     ``state_at_knot`` read it at the next splice.  ``meta.tilts`` is untouched
     because the bump does not touch ``pose[:, 3:5]``.
+
+    A STEPPED release (C-HAND-5, ``rm.brake_accel_mm_s2`` set) also gets its
+    brake seed re-derived — see :func:`_bumped_brake_seed` — so the next
+    window starts from the brake of the take-off the plan now executes, not
+    the pre-bump one.  That needs ``profile``, ``meta.cup_plan`` and
+    ``limits``; :func:`apply_catch_bump` declines before getting here when the
+    cup track is missing.
     """
     rels = list(meta.releases)
     rm = rels[i_rel]
     off3 = np.array([b_rel[0], b_rel[1], 0.0])
     vel3 = np.array([v_b[0], v_b[1], 0.0])
-    rels[i_rel] = dataclasses.replace(
+    rm_new = dataclasses.replace(
         rm, site_mm=np.asarray(rm.site_mm, float) + off3,
         vel_mm_s=np.asarray(rm.vel_mm_s, float) + vel3)
     cats = list(meta.catches)
@@ -342,11 +356,12 @@ def _bumped_meta(meta: uc.CycleMeta, i_rel: int, i_catch: Optional[int],
         cats[i_catch] = dataclasses.replace(
             cm, site_mm=np.asarray(cm.site_mm, float)
             + np.array([delta[0], delta[1], 0.0]))
-    kw = dict(releases=tuple(rels), catches=tuple(cats))
+    kw = dict(catches=tuple(cats))
     last_rel = i_rel == len(rels) - 1
     if last_rel and getattr(meta, 'takeoff_vel_mps', None) is not None:
         kw['takeoff_vel_mps'] = (np.asarray(meta.takeoff_vel_mps, float)
                                  + vel3 / 1000.0)
+    cup = None
     if profile is not None and meta.cup_plan is not None:
         cup = _bumped_cup(meta.cup_plan, *profile)
         if last_rel:
@@ -355,7 +370,55 @@ def _bumped_meta(meta: uc.CycleMeta, i_rel: int, i_catch: Optional[int],
             cup = dataclasses.replace(
                 cup, takeoff_vel=np.asarray(cup.takeoff_vel, float) + vel3 / 1000.0)
         kw['cup_plan'] = cup
+    if rm.brake_accel_mm_s2 is not None:
+        if cup is None or limits is None:
+            raise ValueError(
+                'a stepped release (C-HAND-5) needs the bumped cup track and the '
+                'limits to re-derive its brake seed; apply_catch_bump declines '
+                'before this point when meta.cup_plan is missing')
+        rm_new = dataclasses.replace(
+            rm_new, brake_accel_mm_s2=_bumped_brake_seed(
+                rm_new, cup, float(meta.dt), limits))
+    rels[i_rel] = rm_new
+    kw['releases'] = tuple(rels)
     return dataclasses.replace(meta, **kw)
+
+
+def _bumped_brake_seed(rm_new: uc.ReleaseMark, cup, dt: float,
+                       limits) -> np.ndarray:
+    """The C-HAND-5 brake seed of a BUMPED stepped release (2026-11-02 debrief).
+
+    The same rule ``unified_cycle._meta_for`` records at the original release,
+    through the same function (:func:`unified_cycle.release_brake_accel_mm_s2`,
+    the one enforcement point of the seed): the take-off velocity is the
+    bumped mark's (``v_plan + v_b``), the launch acceleration ``a_L`` is the
+    BUMPED cup track's at the release knot (``a_L + b̈(t_rel)``; the shape holds
+    ``v_b`` constant through the release, so ``b̈(t_rel)`` is 0 by
+    construction, but it is read rather than assumed), and the release height,
+    box top and limits are unchanged (the bump is xy-only; the box top is the
+    production ``build_cup_config``'s, the config ``_meta_for`` is called with).
+
+    Left at its pre-bump value the seed's lateral part ignores ``v_b``; the next
+    window's detach rows pin knots 1-2's lateral acceleration to the brake
+    through a near-vertical cup axis, so the planner steered that lateral
+    mismatch with the BRAKE MAGNITUDE: S2 L1489 (bump -30.5 mm) refused at
+    4509 rev/s^2 live, 4696 offline; re-derived here it plans at 3407.
+
+    Known cost, bounded: the tilt (the slider axis) is not moved by the bump,
+    so the step ``a_R - a_L = s·u_new`` is no longer purely a slider step; its
+    component across the cup axis is ``|s|·|u_new - u_old|`` (520-743 mm/s^2
+    at 21-31 mm bumps offline, against 0 for the stale seed).  It is a planned
+    acceleration difference between the two Hermite spans at the release knot
+    (the wire is C1 there either way), and every span of the next window is
+    measured by ``validate_cycle`` (offline its leg acc / jerk peaks went DOWN,
+    2961 -> 2592 mm/s^2 and 87k -> 69k mm/s^3).
+    """
+    k_rel = int(round(float(rm_new.t_s) / float(dt)))
+    return uc.release_brake_accel_mm_s2(
+        np.asarray(rm_new.vel_mm_s, dtype=float),
+        np.asarray(cup.acc[k_rel], dtype=float) * 1000.0,
+        float(rm_new.site_mm[2]),
+        float(uc.build_cup_config().z_max_m) * 1000.0, limits)
 
 
 def apply_catch_bump(plan: CyclePlan, meta: uc.CycleMeta, k_wire: int,
@@ -416,6 +479,13 @@ def apply_catch_bump(plan: CyclePlan, meta: uc.CycleMeta, k_wire: int,
                        'carry %.3f s / settle %.3f s shorter than %d knots'
                        % (t_rel - pre_s - t_c, t_end - t_rel - post_s,
                           BUMP_MIN_PHASE_KNOTS))
+    if rm.brake_accel_mm_s2 is not None and meta.cup_plan is None:
+        # C-HAND-5: the bumped release's brake seed is re-derived from the cup
+        # track's release acceleration (_bumped_brake_seed); without the track
+        # the only seed left is the stale pre-bump one, which is the defect.
+        return decline(BUMP_NO_CARRY, True,
+                       'stepped release at %.3f s has no cup track to re-derive '
+                       'its brake seed from' % t_rel)
     v_b, b_rel = retarget_parts(delta, t_c, t_rel, pre_s, flight)
     # The bound is on the TOTAL lateral launch velocity: the unbumped plan's own
     # release lateral velocity plus the bias (owner reading 2026-10-16).
@@ -463,7 +533,7 @@ def apply_catch_bump(plan: CyclePlan, meta: uc.CycleMeta, k_wire: int,
                       % (delta[0], delta[1], k_b, b_rel[0], b_rel[1], v_norm),
                       k_b, plan=new_plan,
                       meta=_bumped_meta(meta, i_rel, i_catch, delta, b_rel, v_b,
-                                        profile=(b, bd, bdd)),
+                                        profile=(b, bd, bdd), limits=limits),
                       report=rep, delta_xy_mm=delta, release_offset_xy_mm=b_rel,
                       launch_bias_xy_mm_s=v_b)
 
