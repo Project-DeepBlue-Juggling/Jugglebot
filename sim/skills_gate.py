@@ -164,7 +164,7 @@ _SESSION_LEG_JERK_MMPS3 = 200000.0
 # session cap moved to the YAML ceiling; config/hardware_config.yaml
 # `hand_acc_limit_rps2` is 3900 since the same day and the box is re-swept at it.
 # Owner, 2026-11-01 (Sitting debrief): 4500, with the hand current limit 50 ->
-# 60 A. Now IMPORTED from the YAML launch value (the hand has no set_limits
+# 60 A (70 A since 2026-11-02, JB-147; acc limit unchanged). Now IMPORTED from the YAML launch value (the hand has no set_limits
 # field, so the launch value IS the sitting value) so this can never again sit
 # under a box re-swept at a raised limit (adm.LimitsMismatch).
 _SESSION_HAND_ACC_RPS2 = float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)

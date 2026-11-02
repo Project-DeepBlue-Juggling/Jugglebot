@@ -32,8 +32,10 @@ bound                what it is
                      ``decel_ff_current_headroom_frac`` of the current limit, or
                      it saturates the drive and the loop has no authority left to
                      correct on top of it (C-HAND-2's requirement).  It bound
-                     at the 50 A hand current limit; since 60 A (2026-11-01)
-                     ``REGEN`` binds first.
+                     at the 50 A hand current limit; at 60 A (2026-11-01) the
+                     lossless ``REGEN`` bound bound first; at 70 A with the copper
+                     loss (2026-11-02) ``REGEN`` is out of band and this binds
+                     again.
 ``DECEL_AUTHORITY``  the deceleration the profile COMMANDS must be one the drive
                      can actually produce: ``a_cmd(v) <= I_max*Kt / (J*2*pi)``.
                      Inputs: ``jugglebot_odrive_defaults.hand_curr_limit_a``,
@@ -44,12 +46,16 @@ bound                what it is
                      well and fights gravity instead of being helped by it.
                      Never binds before ``DECEL_AUTHORITY`` (see the contract's
                      proof), but it is evaluated rather than assumed.
-``REGEN``            peak BURST braking power at release must fit what the drive
-                     is configured to push back: ``tau*omega <= |dc_max_negative
-                     _current| * V_bus`` = 360 W.  **The binding bound since
-                     the 60 A hand current limit (2026-11-01)**: it fences the
-                     torque LIMIT, so it moves in as the current limit rises.
-                     Inputs: ``regen_current_limit_a``, ``dc_bus_nominal_v``.
+``REGEN``            peak BURST power the braking returns to the BUS at release
+                     must fit what the drive is configured to push back:
+                     ``max over 0 <= I <= I_max of (Kt*I*omega - c*R*I^2) <=
+                     |dc_max_negative_current| * V_bus`` = 360 W, the
+                     mechanical braking power less the motor's copper loss
+                     (2026-11-02, JB-147; it read ``I_max*Kt*omega`` and so
+                     bound at 4.835 m/s once the limit was 70 A).  Since then
+                     it admits the whole wire band.
+                     Inputs: ``regen_current_limit_a``, ``dc_bus_nominal_v``,
+                     ``hand_phase_resistance_ohm``.
                      The rail's 300 W STEADY-STATE capacity is a separate,
                      documented check that a ~2 % duty cycle clears by ~60x — deliberately not the
                      instantaneous fence.
@@ -158,8 +164,42 @@ GRAVITY_TORQUE_NM = float(hw.HAND_ENV_GRAVITY_HOLD_CURRENT_A) * KT_NM_PER_A
 REGEN_POWER_W = (float(hw.HAND_ENV_REGEN_CURRENT_LIMIT_A)
                  * float(hw.HAND_ENV_DC_BUS_NOMINAL_V))
 
-#: Steady-state rail capacity (W).  Documented, not enforced — see above.
+#: Steady-state rail capacity (W).  Documented, not enforced — see above.  It
+#: needs no copper-loss term of its own: the average it is compared with is
+#: bounded by the burst fence times the duty, and the bus power the fence now
+#: bounds already has the loss taken out.
 REGEN_RAIL_STEADY_W = float(hw.HAND_ENV_REGEN_RAIL_CAPACITY_W)
+
+#: The Hand motor's phase resistance (Ohm), the drive's own calibration value.
+PHASE_RESISTANCE_OHM = float(hw.HAND_ENV_HAND_PHASE_RESISTANCE_OHM)
+
+#: ``c`` in the copper loss ``c * R * I^2`` at a q-axis current ``I`` (2026-11-02,
+#: JB-147).  1.5 for amplitude-invariant dq currents (a phase-current PEAK of
+#: ``I``; the open ODrive v3 FOC uses that Clarke form, ``I_alpha = I_a``) and
+#: 1.0 for power-invariant ones.  The ODrive Pro firmware is closed, so its
+#: convention is not verifiable here; 1.0 is the SMALLER loss and so the larger
+#: bus power, the conservative choice.  REGEN binds outside the wire band under
+#: either (8.8 m/s at 1.5, 7.5 m/s at 1.0, at 70 A).
+COPPER_LOSS_FACTOR = 1.0
+
+
+def regen_bus_power_w(release_speed_mps: float) -> float:
+    """Worst-case power the braking returns to the DC bus at ``v`` (W).
+
+    The bus sees the mechanical braking power less the copper loss,
+    ``P(I) = Kt*I*omega - c*R*I^2`` (inverter losses ignored, which can only
+    over-state it).  The brake current is anything from 0 to the torque LIMIT
+    (the fence covers what the drive COULD do, not what is commanded), so this
+    is the maximum over ``I`` in ``[0, I_lim]``: interior at ``I* = Kt*omega /
+    (2cR)`` when that is under the limit, ``(Kt*omega)^2 / (4cR)``, else at the
+    limit.  A low current brakes with little loss, so ``I*`` is where most
+    power reaches the bus.
+    """
+    omega = float(release_speed_mps) * float(hw.HAND_REV_PER_M) * 2.0 * math.pi
+    i_lim = BRAKING_TORQUE_LIMIT_NM / KT_NM_PER_A
+    cr = COPPER_LOSS_FACTOR * PHASE_RESISTANCE_OHM
+    i_star = min(KT_NM_PER_A * omega / (2.0 * cr), i_lim)
+    return KT_NM_PER_A * i_star * omega - cr * i_star * i_star
 #: R1 (2026-09-11): the reactive-catch ARM_WINDOW bound is deleted with the
 #: stroke engine, and its config key ``hand_throw_envelope.arm_window_margin_s``
 #: was deleted with it — no timing twin survives here.
@@ -196,8 +236,10 @@ J_ASCENT_KGM2 = (J_MEASURED_KGM2
 #: a saturated feedforward has no authority left to correct anything on top of
 #: itself.  This bound is what stops the envelope admitting a throw C-HAND-2
 #: forbids.  At 50 A it bound at 5.720 m/s, ahead of DECEL_AUTHORITY's 5.901;
-#: at 60 A (2026-11-01) it sits at 6.266 (DECEL_AUTHORITY 6.464) and REGEN
-#: (5.641) binds first (tests/motion/test_throw_envelope.py pins the order).
+#: at 60 A (2026-11-01) it sat at 6.266 (DECEL_AUTHORITY 6.464) and at 70 A
+#: (2026-11-02, JB-147) 6.768 (6.982).  REGEN bound first at 60 A (5.641) while
+#: it fenced ``I_max*Kt*omega``; with the copper loss (2026-11-02) it is outside
+#: the wire band (tests/motion/test_throw_envelope.py pins the order).
 DECEL_FF_HEADROOM_FRAC = float(hw.HAND_ENV_DECEL_FF_CURRENT_HEADROOM_FRAC)
 DECEL_FF_HEADROOM_RPS2 = (
     DECEL_FF_HEADROOM_FRAC * CURRENT_LIMIT_A * KT_NM_PER_A
@@ -542,17 +584,16 @@ def evaluate(flight_time_s: float, release_speed_mps: float) -> ThrowEnvelopeVer
 
     # 5. REGEN — peak braking power is at release, where omega is largest.
     #
-    # Deliberately the torque LIMIT, not the commanded torque: this fences what
-    # the drive COULD push back if it braked flat out, which is conservative
-    # inside the DECEL_AUTHORITY-admitted set (where tau_cmd <= tau_max by
-    # construction) and consistent with how DECEL_AUTHORITY itself is derived.
-    omega = v * float(hw.HAND_REV_PER_M) * 2.0 * math.pi
-    brake_power_w = BRAKING_TORQUE_LIMIT_NM * omega
+    # The worst case over every braking current up to the LIMIT, not the
+    # commanded one: this fences what the drive COULD push back, which is
+    # conservative inside the DECEL_AUTHORITY-admitted set.  The bus sees the
+    # mechanical power less the copper loss (:func:`regen_bus_power_w`).
+    brake_power_w = regen_bus_power_w(v)
     if brake_power_w > REGEN_POWER_W:
         return ThrowEnvelopeVerdict(
             False, 'REGEN',
-            'braking at {:.3f} m/s returns up to {:.0f} W, over the {:.0f} W '
-            'regen budget ({:.1f} A x {:.1f} V)'.format(
+            'braking at {:.3f} m/s returns up to {:.0f} W to the bus, over the '
+            '{:.0f} W regen budget ({:.1f} A x {:.1f} V)'.format(
                 v, brake_power_w, REGEN_POWER_W,
                 hw.HAND_ENV_REGEN_CURRENT_LIMIT_A, hw.HAND_ENV_DC_BUS_NOMINAL_V))
 
@@ -586,9 +627,7 @@ def _speed_ok(v):
             and commanded_decel_rps2(v) <= DECEL_FF_HEADROOM_RPS2
             and commanded_decel_rps2(v) <= DECEL_AUTHORITY_RPS2
             and commanded_accel_rps2(v) <= ACCEL_AUTHORITY_RPS2
-            and (BRAKING_TORQUE_LIMIT_NM * v
-                 * float(hw.HAND_REV_PER_M) * 2.0 * math.pi)
-            <= REGEN_POWER_W
+            and regen_bus_power_w(v) <= REGEN_POWER_W
             and hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS <= v
             <= hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS)
 

@@ -18,6 +18,10 @@
 //  cruise (activate_target_rev / activate_traj_vel_rps read s_mode), answers its
 //  request through a reply mailbox the net task drains, and retargets in flight
 //  on a second request. See leg_activate.h for why each of those three exists.
+//
+//  HAND STALL GUARD (FW 36, JB-146): every active tick, hand_stall_guard() drops a
+//  hand that has sat at high current without moving for HAND_STALL_HOLD_US to IDLE
+//  (leg_activate.h; thresholds + physics in canbridge_config.h).
 // =============================================================================
 #include "leg_activate.h"
 
@@ -64,6 +68,18 @@ static uint8_t  s_setup_idx = 0;      // SETUP cursor — configure ONE leg per 
 static uint64_t s_t_start_us = 0;     // ladder start (overall timeout clock)
 static uint64_t s_t_phase_us = 0;     // current sub-phase entry (settle clock)
 static uint8_t  s_result[NUM_AXES] = { ACTIVATE_NONE };
+
+// ── Hand stall guard (FW 36, JB-146) — activate-task owned, s_stalled read by
+//    the telemetry task (single-byte stores are atomic on Cortex-M7). ──────────
+static bool          s_stall_timing = false;   // the stall predicate held last tick
+static uint64_t      s_stall_t0_us  = 0;       // first tick of the current run
+static volatile bool s_stalled[NUM_AXES] = { false };   // sticky, Diagnostic flags bit2
+// A new ladder run starts with a clean stall record for the axes it targets.
+static void stall_reset_for_targets() {
+  s_stall_timing = false;
+  for (uint8_t i = 0; i < NUM_AXES; ++i)
+    if (s_targets & (uint8_t)(1u << i)) s_stalled[i] = false;
+}
 
 // ── HAND_MOVE_TO (FW 26) — the same ladder, a caller target (leg_activate.h) ──
 // s_mode says which op owns the ladder; it is written BEFORE s_phase leaves IDLE
@@ -199,6 +215,8 @@ static void abort_all(uint8_t result,
 
 void activate_init() {
   s_start_req = false;
+  s_stall_timing = false;
+  for (uint8_t i = 0; i < NUM_AXES; ++i) s_stalled[i] = false;
   s_hm_req = false;
   s_mode = AMode::ACTIVATE;
   s_hm_box_head = 0;
@@ -313,6 +331,7 @@ static void hm_consume() {
       return;
     }
     s_result[HAND_AXIS] = ACTIVATE_RUNNING;
+    stall_reset_for_targets();
     s_setup_idx = 0;
     s_t_start_us = micros64();
     s_t_phase_us = s_t_start_us;
@@ -344,6 +363,38 @@ uint8_t activate_result(uint8_t axis) {
   return (axis < NUM_AXES) ? s_result[axis] : (uint8_t)ACTIVATE_NONE;
 }
 
+bool activate_stalled(uint8_t axis) { return axis < NUM_AXES && s_stalled[axis]; }
+
+// The owner's rule (2026-11-02): no motion with high current for >= 300 ms aborts
+// the move. Runs every active tick, in every phase, while the hand is a target;
+// thresholds and their physics in canbridge_config.h. Only the HAND is guarded and
+// only the hand is stopped: the six legs of an ACTIVATE are a loaded Platform, and
+// IDLEing them for a Hand fault would drop it onto the stops (leg_activate.h).
+// Returns true when the guard ended the ladder (the hand was its only target).
+static bool hand_stall_guard(uint64_t now) {
+  constexpr uint8_t HB = (uint8_t)(1u << HAND_AXIS);
+  if (!(s_targets & HB)) { s_stall_timing = false; return false; }
+  const float iq  = axes[HAND_AXIS].iq_measured;   // single-word atomic reads
+  const float vel = axes[HAND_AXIS].vel_rps;
+  // A NaN fails both comparisons, so it can never read as a stall.
+  const bool stalled_now = fabsf(iq) >= HAND_STALL_IQ_A && fabsf(vel) <= HAND_STALL_VEL_RPS;
+  if (!stalled_now) { s_stall_timing = false; return false; }
+  if (!s_stall_timing) { s_stall_timing = true; s_stall_t0_us = now; return false; }
+  if (now - s_stall_t0_us < HAND_STALL_HOLD_US) return false;
+  // Window expired: stop pushing. A refused TX keeps the hand targeted and the
+  // window expired, so the IDLE is re-sent next tick (the bus-down and timeout
+  // aborts above still bound the ladder).
+  if (!can_jugglebot_send(ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE)))
+    return false;
+  s_result[HAND_AXIS]  = ACTIVATE_FAILED;
+  s_stalled[HAND_AXIS] = true;
+  s_stall_timing = false;
+  s_targets = (uint8_t)(s_targets & (uint8_t)~HB);
+  hm_finish(JbUdp::RpcStatus::ERR_REJECTED, HAND_MOVE_STALLED);   // HAND_MOVE_TO only
+  if (s_targets == 0) { s_phase = APhase::IDLE; return true; }
+  return false;                     // an ACTIVATE's legs carry on
+}
+
 void activate_step() {
   // ── HAND_MOVE_TO start / retarget (net task → activate task). ──
   hm_consume();
@@ -361,6 +412,7 @@ void activate_step() {
     if (s_targets == 0) { s_phase = APhase::IDLE; return; }  // legs vanished between request and consume
     for (uint8_t i = 0; i < NUM_AXES; ++i)
       if (s_targets & (uint8_t)(1u << i)) s_result[i] = ACTIVATE_RUNNING;
+    stall_reset_for_targets();
     s_setup_idx = 0;   // SETUP configures one leg per tick starting here
     s_t_start_us = micros64();
     s_t_phase_us = s_t_start_us;
@@ -376,6 +428,7 @@ void activate_step() {
   if (now - s_t_start_us > A_TIMEOUT_US) {
     abort_all(ACTIVATE_FAILED, JbUdp::RpcStatus::ERR_TIMEOUT, HAND_MOVE_TIMEOUT); return;
   }
+  if (hand_stall_guard(now)) return;   // FW 36: a stalled hand is IDLEd and dropped
 
   switch (s_phase) {
     case APhase::SETUP: {

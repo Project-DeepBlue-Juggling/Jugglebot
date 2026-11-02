@@ -655,7 +655,7 @@ def test_a_stepped_release_without_a_cup_track_declines_the_bump(
     assert 'brake seed' in res.message
 
 
-def test_s2_l1489_the_bumped_successor_plans_inside_the_hand_limit(geom):
+def test_s2_l1489_the_bumped_successor_plans_inside_the_hand_limit(geom, monkeypatch):
     """Regression, 2026-11-02 Sitting 2 L1489 (Columns sep 125, Apex 0.95,
     dwell 0.27, pose, hold 0, hand 4500): Ball 1's catch at P2 was bumped
     (-30.5, -1.3) mm and Ball 2's next catch at P1, seeded from the bumped
@@ -667,6 +667,11 @@ def test_s2_l1489_the_bumped_successor_plans_inside_the_hand_limit(geom):
     seed it plans at 3407 rev/s^2.  Asserted with margin: < 4000.
     """
     from jugglebot.motion.trajectory import ballistics_bc as bal
+    # C-HAND-6 margin OFF: this pins the bump's brake re-seed against the
+    # shape it was measured on (2026-11-02, no margin). With the margin on the
+    # stale seed no longer drives the successor past 4500, so the fail-before
+    # half would be vacuous; the re-seed logic itself is margin-independent.
+    monkeypatch.setattr(uc, 'POST_RELEASE_TOP_MARGIN', False)
     apex, dwell, sep = 0.95, 0.27, 125.0
     lim = TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=float(hw.JB_TRAJ_LEG_VEL_LIMIT_MMPS),

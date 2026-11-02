@@ -198,6 +198,16 @@ def test_the_bump_history_records_what_this_version_carries():
     assert 'JB-73' in m35.group(1) and 'MOTOR_FB_STALE' in m35.group(1), m35.group(1)
     assert 'vel_ff = 0' in m35.group(1) and 'torque_ff' in m35.group(1), m35.group(1)
     assert 'NO WIRE CHANGE' in m35.group(1), m35.group(1)
+    # FW 36 — JB-146 hand stall guard.  The substance: a SAFETY behaviour on the
+    # cold-start ladder (the Hand is IDLEd after HAND_STALL_HOLD_US of high current
+    # without motion; the legs carry on), named by a new HAND_MOVE_STALLED outcome
+    # and a Diagnostic flags bit, both previously-zero values, so the bump is
+    # wire-compatible and only BRIDGE_FW_CHECK says whether it is aboard.
+    m36 = re.search(r'^// 35→36:(.*)$', text, re.M)
+    assert m36 is not None, "FW 36 history line missing"
+    assert 'JB-146' in m36.group(1) and 'HAND_STALL_HOLD_US' in m36.group(1), m36.group(1)
+    assert 'HAND_MOVE_STALLED' in m36.group(1) and 'bit2' in m36.group(1), m36.group(1)
+    assert 'NO WIRE CHANGE' in m36.group(1), m36.group(1)
 
 
 def test_the_version_this_release_pins_is_actually_uplinked():

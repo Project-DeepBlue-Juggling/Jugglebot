@@ -556,7 +556,7 @@ MESSAGES = [
             Field("axis_state",    "u8",  1, "ODrive current_state"),
             Field("ctrl_mode",     "u8",  1, "ODrive controller mode"),
             Field("input_mode",    "u8",  1, "ODrive input mode"),
-            Field("flags",         "u8",  1, "bit0: heartbeat_stale, bit1: heartbeat_seen (ever, this boot)"),
+            Field("flags",         "u8",  1, "bit0: heartbeat_stale, bit1: heartbeat_seen (ever, this boot), bit2: activate_stall (the cold-start ladder's stall guard IDLEd this axis; sticky until the next ACTIVATE / HAND_MOVE_TO targeting it; can-bridge FW 36, JB-146)"),
             Field("homing_result", "u8",  1, "HomingResult for this Jugglebot axis (0 none/1 running/2 ok/3 failed); 0 for non-leg axes"),
             Field("homing_epoch",  "u8",  1, "Per-home epoch (u8, wraps): bumped on every ACCEPTED HOME of this axis, read with homing_result as one pair; a terminal result belongs to the HOME whose acceptance produced this epoch. 0 on an FW <= 33 board (the former pad byte) and for non-leg axes (can-bridge FW 34, JB-72)"),
             Field("pad",           "u8",  1, "Alignment pad (zero)"),
@@ -1768,10 +1768,10 @@ RPC_ARGS = [
     ]),
     # HAND_MOVE_TO result, carried by the DEFERRED reply on every terminal path
     # (status OK: ARRIVED / SUPERSEDED; ERR_TIMEOUT / ERR_BUS_DOWN / ERR_REJECTED:
-    # TIMEOUT / ABORTED, the hand left IDLE). pos/vel are the measured hand state
+    # TIMEOUT / ABORTED / STALLED, the hand left IDLE). pos/vel are the measured hand state
     # at the reply, so the caller learns where the hand actually is.
     RpcArg("ResultHandMoveTo", "HAND_MOVE_TO (result)", [
-        Field("outcome",    "u8",  1, "0 ARRIVED / 1 SUPERSEDED / 2 TIMEOUT / 3 ABORTED"),
+        Field("outcome",    "u8",  1, "0 ARRIVED / 1 SUPERSEDED / 2 TIMEOUT / 3 ABORTED / 4 STALLED (FW 36)"),
         Field("pad",        "u8",  3, "zero"),
         Field("pos_rev",    "f32", 1, "measured hand position at the reply (rev)"),
         Field("vel_rps",    "f32", 1, "measured hand velocity at the reply (rev/s)"),

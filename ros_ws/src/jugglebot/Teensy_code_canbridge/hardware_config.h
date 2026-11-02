@@ -139,7 +139,7 @@ namespace ODriveDefaults {
   constexpr float LEG_VEL_LIMIT_RPS = 12.0f;
   constexpr float LEG_CURR_LIMIT_A = 15.0f;
   constexpr float HAND_VEL_LIMIT_RPS = 1000.0f;
-  constexpr float HAND_CURR_LIMIT_A = 60.0f;
+  constexpr float HAND_CURR_LIMIT_A = 70.0f;
   constexpr float HAND_POS_GAIN = 35.0f;
   constexpr float HAND_VEL_GAIN = 0.007f;
   constexpr float HAND_VEL_INT_GAIN = 0.07f;
@@ -211,7 +211,7 @@ namespace TrajOp {
   constexpr uint32_t POSE_H_CATCH_PRE_KNOTS = 0u;
   constexpr uint32_t POSE_H_CATCH_POST_KNOTS = 0u;
   constexpr float POSE_SLIDER_MARGIN_MM = 0.5f;
-  constexpr float STREAM_STOP_HAND_ACCEL_RPS2 = 3500.0f;
+  constexpr float STREAM_STOP_HAND_ACCEL_RPS2 = 4500.0f;
   constexpr float STREAM_STOP_HAND_JERK_RPS3 = 350000.0f;
   constexpr float STREAM_STOP_LEG_ACCEL_RPS2 = 250.0f;
   constexpr float STREAM_STOP_LEG_JERK_RPS3 = 25000.0f;
@@ -271,6 +271,7 @@ namespace HandEnv {
   constexpr float DC_BUS_NOMINAL_V = 45.0f;
   constexpr float REGEN_RAIL_CAPACITY_W = 300.0f;
   constexpr float HAND_TORQUE_CONSTANT_NM_PER_A = 0.0055133f;
+  constexpr float HAND_PHASE_RESISTANCE_OHM = 0.04f;
   constexpr float HAND_TORQUE_SOFT_LIMIT_NM = 0.7f;
   constexpr float GRAVITY_HOLD_CURRENT_A = 1.5f;
   constexpr float REGEN_CURRENT_LIMIT_A = 8.0f;

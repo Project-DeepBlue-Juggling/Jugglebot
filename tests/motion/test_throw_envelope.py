@@ -370,6 +370,20 @@ def test_the_torque_bounds_bind_and_end_stop_does_not():
     ceiling (apex 1.665 -> 1.619 m). END_STOP stays last, which is the
     contract's headline: a drive bound, not a metal collision, limits height.
 
+    2026-11-02 (owner decision, JB-147): ``hand_curr_limit_a`` 60 -> 70 A (the
+    acceleration limit stays 4500). Same direction again: FF 6.266 -> 6.768,
+    DECEL 6.464 -> 6.982, ACCEL 6.594 -> 7.140 (sqrt(70/60)), REGEN IN by
+    60/70 (5.641 -> 4.835, flight ceiling 1.149 -> 0.985 s, apex 1.619 ->
+    1.189 m). The order is unchanged and END_STOP (8.494) is still last.
+
+    2026-11-02 (owner decision, JB-147): REGEN compares the BUS power, the
+    mechanical braking power less the copper loss ``c*R*I^2`` (R 0.040 Ohm,
+    c 1.0), worst case over every braking current up to the limit. It now
+    binds at 7.467 m/s, outside the 7.0 m/s wire band and behind the torque
+    bounds (8.783 m/s at c = 1.5): DECEL_FF_HEADROOM (6.768 m/s, flight
+    1.379 s, apex 2.33 m) is the ceiling. Without the loss term it would bind
+    at 4.835 (apex 1.189 m), refusing every Columns cell above about Apex 1.2.
+
     The order is pinned because it is the contract's whole claim. If END_STOP
     ever re-enters the front, the plant has regressed toward its pre-fix
     behaviour and the ladder must be re-measured before anything else is done.
@@ -381,19 +395,50 @@ def test_the_torque_bounds_bind_and_end_stop_does_not():
     v_decel = math.sqrt(te.DECEL_AUTHORITY_RPS2 / coeff)
     v_accel = math.sqrt(te.ACCEL_AUTHORITY_RPS2
                         / (coeff * hw.TEENSY_TRAJ_INERTIA_RATIO))
-    v_regen = te.REGEN_POWER_W / te.BRAKING_TORQUE_LIMIT_NM / (
+    lo, hi = 3.0, 12.0
+    for _ in range(100):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if te.regen_bus_power_w(mid) <= te.REGEN_POWER_W else (lo, mid)
+    v_regen = lo
+    v_regen_lossless = te.REGEN_POWER_W / te.BRAKING_TORQUE_LIMIT_NM / (
         2.0 * math.pi * float(hw.HAND_REV_PER_M))
-    assert v_decel == pytest.approx(6.464, abs=5e-3)
-    assert v_accel == pytest.approx(6.594, abs=5e-3)
-    assert v_regen == pytest.approx(5.641, abs=5e-3)
+    assert v_regen_lossless == pytest.approx(4.835, abs=5e-3)
+    assert v_decel == pytest.approx(6.982, abs=5e-3)
+    assert v_accel == pytest.approx(7.140, abs=5e-3)
+    assert v_regen == pytest.approx(7.467, abs=5e-3)
+    assert v_regen > hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS
     assert v_end == pytest.approx(8.494, abs=5e-3)
     v_ff = math.sqrt(te.DECEL_FF_HEADROOM_RPS2 / coeff)
-    assert v_ff == pytest.approx(6.266, abs=5e-3)
-    assert v_regen < v_ff < v_decel < v_accel < v_end, (
+    assert v_ff == pytest.approx(6.768, abs=5e-3)
+    assert v_ff < v_decel < v_accel < v_end and v_ff < v_regen, (
         f'the binding order moved: REGEN {v_regen:.3f} / FF {v_ff:.3f} / '
         f'DECEL {v_decel:.3f} / ACCEL {v_accel:.3f} / END_STOP {v_end:.3f} m/s '
         f'— re-read C-HAND-3 § The bounds before shipping this')
-    assert te.MAX_RELEASE_SPEED_MPS == pytest.approx(v_regen, abs=5e-3)
+    assert te.MAX_RELEASE_SPEED_MPS == pytest.approx(v_ff, abs=5e-3)
+
+
+def test_regen_takes_the_worst_braking_current_and_the_copper_loss():
+    """The bus power is ``Kt*I*omega - c*R*I^2`` maximised over ``I`` in
+    ``[0, I_lim]`` (2026-11-02, JB-147): interior at ``I* = Kt*omega/(2cR)``,
+    the limit once ``I*`` passes it, and never more than the lossless
+    ``I_lim*Kt*omega`` the fence used to take."""
+    kt, r, c = te.KT_NM_PER_A, te.PHASE_RESISTANCE_OHM, te.COPPER_LOSS_FACTOR
+    assert r == pytest.approx(0.0400, abs=1e-5)
+    assert c == 1.0           # the smaller loss: the conservative convention
+    i_lim = te.BRAKING_TORQUE_LIMIT_NM / kt
+    assert i_lim == pytest.approx(70.0)
+    for v in (2.0, 4.835, 6.0, 7.0):
+        w = v * float(hw.HAND_REV_PER_M) * 2.0 * math.pi
+        currents = [i_lim * k / 2000.0 for k in range(2001)]
+        brute = max(kt * i * w - c * r * i * i for i in currents)
+        assert te.regen_bus_power_w(v) == pytest.approx(brute, rel=1e-5)
+        assert te.regen_bus_power_w(v) < te.BRAKING_TORQUE_LIMIT_NM * w
+    # 4.835 m/s, where the lossless fence sat at 360 W: interior maximum
+    w = 4.835 * float(hw.HAND_REV_PER_M) * 2.0 * math.pi
+    assert kt * w / (2.0 * c * r) < i_lim
+    assert te.regen_bus_power_w(4.835) == pytest.approx(
+        (kt * w) ** 2 / (4.0 * c * r), rel=1e-9)
+    assert te.regen_bus_power_w(4.835) < 0.5 * te.REGEN_POWER_W
 
 
 def test_regen_fences_the_burst_not_the_steady_state():
@@ -421,9 +466,11 @@ def test_regen_fences_the_burst_not_the_steady_state():
     assert te.REGEN_RAIL_STEADY_W == pytest.approx(300.0)
     assert te.REGEN_POWER_W > te.REGEN_RAIL_STEADY_W
     # The steady-state check the duty cycle actually has to clear, at the
-    # ceiling: peak burst x duty, against the rail's continuous rating.
-    peak_w = (te.BRAKING_TORQUE_LIMIT_NM * te.MAX_RELEASE_SPEED_MPS
-              * float(hw.HAND_REV_PER_M) * 2.0 * math.pi)
+    # ceiling: peak burst x duty, against the rail's continuous rating.  The
+    # burst is the BUS power, copper loss taken out (2026-11-02, JB-147); the
+    # steady check needs no loss term of its own.
+    peak_w = te.regen_bus_power_w(te.MAX_RELEASE_SPEED_MPS)
+    assert peak_w <= te.REGEN_POWER_W
     ir = float(hw.TEENSY_TRAJ_INERTIA_RATIO)
     t_dec_s = (2.0 * te._THROW_ACCEL_STROKE_M * ir
               / ((ir + 1.0) * te.MAX_RELEASE_SPEED_MPS))
@@ -527,14 +574,15 @@ def test_the_derived_band_and_what_it_replaced():
     """
     lo, hi = te.flight_time_band_s()
     assert lo == pytest.approx(te._SEARCH_LO_S, abs=1e-9)
-    # 2026-11-01: 1.165 -> 1.149 s (apex 1.665 -> 1.619 m) — REGEN now binds
-    # at the 60 A hand current limit; see
-    # test_the_torque_bounds_bind_and_end_stop_does_not.
-    assert hi == pytest.approx(1.149, abs=1e-3)
+    # 2026-11-01: 1.165 -> 1.149 s (apex 1.665 -> 1.619 m) — REGEN bound at
+    # the 60 A hand current limit; 2026-11-02 (JB-147): 70 A and REGEN on the
+    # BUS power (copper loss out), so DECEL_FF_HEADROOM binds: 1.379 s, apex
+    # 2.332 m; see test_the_torque_bounds_bind_and_end_stop_does_not.
+    assert hi == pytest.approx(1.379, abs=1e-3)
     apex_lo, apex_hi = te.apex_height_band_m()
     assert apex_lo == pytest.approx(0.00306, abs=2e-4)
-    assert apex_hi == pytest.approx(1.619, abs=3e-3)
-    assert hi > 1.10
+    assert apex_hi == pytest.approx(2.332, abs=3e-3)
+    assert hi > 1.10           # the ceiling is above the box's Apex 1.40 flight
 
 
 def test_the_clamp_was_the_coast_mechanism():
@@ -633,10 +681,10 @@ def test_the_speed_gate_is_independent_of_the_flight_time():
     throw, which is the failure this signature exists to prevent."""
     t = 0.80                      # comfortably inside the band on its own
     assert te.evaluate(t, te.vertical_release_speed_mps(t)).ok
-    faster = te.evaluate(t, 5.85)  # an 8b aim that releases far harder
-    # REGEN since the 2026-11-01 60 A hand current limit (DECEL_FF_HEADROOM
-    # at 50 A); see test_the_torque_bounds_bind_and_end_stop_does_not.
-    assert not faster.ok and faster.bound == 'REGEN'
+    faster = te.evaluate(t, 6.85)  # an 8b aim that releases far harder
+    # DECEL_FF_HEADROOM (6.768) at 70 A since REGEN takes the copper loss out
+    # (2026-11-02, JB-147); see test_the_torque_bounds_bind_and_end_stop_does_not.
+    assert not faster.ok and faster.bound == 'DECEL_FF_HEADROOM'
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -646,12 +694,9 @@ def test_the_speed_gate_is_independent_of_the_flight_time():
 @pytest.mark.parametrize('flight_s, speed, bound', [
     (0.80, 8.6, 'END_STOP'),    # only reachable above the wire band; bounds are
                                 #   ordered machine-damage-first so it still wins
-    (0.80, 5.80, 'REGEN'),              # between the REGEN line (5.641) and
-                                        #   the FF line (6.266); 60 A since
-                                        #   2026-11-01 (was 5.720 / 5.901)
-    (0.80, 6.35, 'DECEL_FF_HEADROOM'),  # between the FF line (6.266) and the
-                                        #   hard authority line (6.464)
-    (0.80, 6.50, 'DECEL_AUTHORITY'),    # past both; the harder limit reports
+    (0.80, 6.90, 'DECEL_FF_HEADROOM'),  # between the FF line (6.768) and the
+                                        #   hard authority line (6.982)
+    (0.80, 7.10, 'DECEL_AUTHORITY'),    # past both; the harder limit reports
     (float('nan'), 3.0, 'INPUT'),
     (-0.8, 3.0, 'INPUT'),
     (0.80, 0.0, 'INPUT'),

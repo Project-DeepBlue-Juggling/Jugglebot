@@ -84,6 +84,23 @@ void activate_step();
 bool    activate_active();             // an activate is pending or running
 uint8_t activate_result(uint8_t axis); // last ActivateResult for an axis (0..6, hand included)
 
+// ── Hand stall guard (FW 36, JB-146) ─────────────────────────────────────────
+//  While the ladder (ACTIVATE or HAND_MOVE_TO) targets the hand, every tick checks
+//  |iq_measured| >= HAND_STALL_IQ_A AND |vel| <= HAND_STALL_VEL_RPS; held for
+//  HAND_STALL_HOLD_US (300 ms) the hand is commanded IDLE (re-sent each tick until
+//  the frame is queued), its result is ACTIVATE_FAILED, and it is DROPPED from the
+//  ladder: an ACTIVATE's legs carry on to their active pose (a Hand stall must not
+//  IDLE the loaded Platform onto its stops), a HAND_MOVE_TO is answered
+//  ERR_REJECTED / HAND_MOVE_STALLED. Thresholds and their physics: canbridge_config.h.
+//  Legs are NOT guarded (see the FW 36 changelog line for why).
+//
+//  activate_stalled(axis) is the sticky "this axis was stall-aborted" bit the
+//  Diagnostic carries as flags bit2 (DIAG_FLAG_ACTIVATE_STALL), so the Jetson can
+//  name a stalled ACTIVATE, whose RPC reply went out long before the move. Cleared
+//  when the next ACTIVATE / HAND_MOVE_TO that targets the axis starts.
+constexpr uint8_t DIAG_FLAG_ACTIVATE_STALL = 0x04u;
+bool     activate_stalled(uint8_t axis);
+
 // ── HAND_MOVE_TO (FW 26, additive RPC 0x61) ──────────────────────────────────
 //  ACTIVATE's axis-6 ladder with a CALLER target and cruise: SETUP (error gate,
 //  seed input_pos at the measured position, traj vel = the caller's cruise, traj
@@ -124,6 +141,7 @@ enum HandMoveOutcome : uint8_t {
   HAND_MOVE_SUPERSEDED = 1,   // OK: a newer HAND_MOVE_TO retargeted this move
   HAND_MOVE_TIMEOUT    = 2,   // ERR_TIMEOUT: 10 s elapsed, hand commanded IDLE
   HAND_MOVE_ABORTED    = 3,   // ERR_BUS_DOWN / ERR_REJECTED / ERR_TIMEOUT (TX): hand IDLE
+  HAND_MOVE_STALLED    = 4,   // ERR_REJECTED: the stall guard fired (FW 36), hand IDLE
 };
 
 // One deferred HAND_MOVE_TO reply (req_id echoed from the request).

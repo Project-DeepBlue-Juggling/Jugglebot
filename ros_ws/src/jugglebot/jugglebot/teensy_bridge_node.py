@@ -918,6 +918,8 @@ _BB_HAND_AXIS = proto.NODE_ID_BB_HAND     # 8
 _DIAG_FLAG_HB_STALE = 0x1   # ODrive CAN heartbeat older than CAN_AXIS_SILENCE_TIMEOUT_US (2.0 s);
                             # HeartbeatT2J HB_STALE_MASK is the sharper 0.5 s diagnostic (FW 23)
 _DIAG_FLAG_HB_SEEN = 0x2    # ODrive has heartbeated at least once this firmware boot
+_DIAG_FLAG_ACTIVATE_STALL = 0x4  # FW 36 (JB-146): the cold-start ladder's stall guard IDLEd
+                                 # this axis (sticky until the next ladder targeting it)
 # BB-axis liveness windows for the robot_state append. BB diag is a fixed 1 Hz
 # per axis (send_bb_diag), so 3 s = three missed frames; BB estimates ride the
 # 100 Hz telemetry tick, so 0.5 s of silence means the stream (not the bus) died.
@@ -2635,14 +2637,33 @@ class TeensyBridgeNode(Node):
             dg = Diagnostic.unpack(payload)
         except Exception:  # noqa: BLE001
             return
+        axis = int(dg.axis_id)
         with self._lock:
-            self._latest_diag[int(dg.axis_id)] = dg
-            self._latest_diag_mono[int(dg.axis_id)] = time.monotonic()
+            prev = self._latest_diag.get(axis)
+            self._latest_diag[axis] = dg
+            self._latest_diag_mono[axis] = time.monotonic()
         cap = self._hand_capture  # TEMPORARY (JB-147 diagnostic capture)
-        if cap is not None and int(dg.axis_id) == _HAND_AXIS:
+        if cap is not None and axis == _HAND_AXIS:
             cap.offer('diag', iq_sp=dg.iq_setpoint, iq_meas=dg.iq_measured,
                       axis_state=dg.axis_state, active_errors=dg.active_errors,
                       diag_flags=dg.flags)
+        # FW 36 (JB-146): name a stall-guard abort in the operator log on the
+        # bit's RISING edge. An ACTIVATE's RPC reply went out before the move, so
+        # this frame is the only place the bridge can say why the Hand went IDLE.
+        stalled = bool(int(dg.flags) & _DIAG_FLAG_ACTIVATE_STALL)
+        was = prev is not None and bool(int(prev.flags) & _DIAG_FLAG_ACTIVATE_STALL)
+        if stalled and not was and axis <= _HAND_AXIS:
+            name = 'Hand' if axis == _HAND_AXIS else f'leg {axis}'
+            # First Diagnostic since this node started: the sticky bit may be
+            # from a ladder that ran before it, so say so rather than call it live.
+            when = (' (sticky: from a ladder before this node started)'
+                    if prev is None else '')
+            self.get_logger().error(
+                f'STALL{when}: the can-bridge stall guard commanded axis {axis} ({name}) '
+                f'IDLE during ACTIVATE / HAND_MOVE_TO: high current without motion '
+                f'for 300 ms (iq now {float(dg.iq_measured):+.1f} A, motor '
+                f'{float(dg.temp_motor):.0f} C). Check the Hand zero (an ODrive GUI '
+                f'save resets it, JB-146) and re-home before the next ACTIVATE.')
 
     def _on_profile(self, msg_type, seq, payload, addr):
         try:
@@ -8093,7 +8114,8 @@ class TeensyBridgeNode(Node):
                 axis_state=int(d.axis_state),
                 pos_rev=float(telem.pos_rev[int(axis)]),
                 vel_rps=float(telem.vel_rps[int(axis)]),
-                active_errors=int(d.active_errors))
+                active_errors=int(d.active_errors),
+                stalled=bool(int(d.flags) & _DIAG_FLAG_ACTIVATE_STALL))
         return out
 
     def _deactivate_axis_status(self, axes):
@@ -8152,20 +8174,34 @@ class TeensyBridgeNode(Node):
         if not ok:
             return False, f"ACTIVATE rejected: {msg}"
         mon = ActivateMonitor(axes, targets)
+        # AXIS_ALL also parks the Hand, which `axes` (the legs) does not observe.
+        # Watch its FW 36 stall bit alongside so a stalled Hand fails the activate
+        # by name instead of passing with the Hand IDLE (JB-146). Same gate as
+        # ActivateMonitor: honoured only after a clear bit was seen this run.
+        hand_watch = fire_axis == rpc_args.AXIS_ALL and _HAND_AXIS not in axes
+        hand_mon = (ActivateMonitor([_HAND_AXIS], {_HAND_AXIS: float(
+                        hw.JB_OP_HAND_ACTIVATE_POSITION_REV)}) if hand_watch else None)
         _t_act = time.monotonic()
         hard_deadline = _t_act + mon.timeout_s + 5.0
         self.get_logger().debug(f"activate: TRAP_TRAJ move to active pose on axes {axes}")
         while True:
             now = time.monotonic()
             res = mon.step(now, self._activate_axis_status(axes))
+            if hand_mon is not None and not hand_mon.done:
+                hand_mon.step(now, self._activate_axis_status([_HAND_AXIS]))
             if res.done:
                 break
             if now > hard_deadline:
                 self.get_logger().error("activate: hard deadline exceeded")
                 break
             time.sleep(poll_dt)
-        if mon.failed:
+        hand_stall = (hand_mon.failed.get(_HAND_AXIS, '') if hand_mon is not None else '')
+        if not hand_stall.startswith('STALL'):
+            hand_stall = ''          # only the named stall fails the leg activate
+        if mon.failed or hand_stall:
             parts = [f"axis {a}: {r}" for a, r in mon.failed.items()]
+            if hand_stall:
+                parts.append(f"axis {_HAND_AXIS}: {hand_stall}")
             msg = "activate FAILED — " + "; ".join(parts)
             if mon.succeeded:
                 msg += f" (succeeded: {mon.succeeded})"

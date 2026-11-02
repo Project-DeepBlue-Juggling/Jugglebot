@@ -79,6 +79,7 @@ __all__ = [
     "ArgHandMoveTo", "ResultHandMoveTo", "encode_hand_move_to",
     "encode_hand_move_to_result", "decode_hand_move_to_result",
     "HAND_AXIS", "HAND_MOVE_ARRIVED", "HAND_MOVE_SUPERSEDED", "HAND_MOVE_TIMEOUT",
+    "HAND_MOVE_STALLED",
     "HAND_MOVE_ABORTED", "HAND_MOVE_OUTCOME_NAMES",
     # WAVE_CMD (FW 33)
     "ArgWaveCmd", "encode_wave_cmd", "WAVE_CMD_FLAG_CLEAR_FAULTS",
@@ -320,11 +321,13 @@ HAND_MOVE_ARRIVED = 0      # status OK: at target, settled, handed off to PASSTH
 HAND_MOVE_SUPERSEDED = 1   # status OK: a newer HAND_MOVE_TO retargeted this move
 HAND_MOVE_TIMEOUT = 2      # ERR_TIMEOUT: 10 s elapsed, the hand was commanded IDLE
 HAND_MOVE_ABORTED = 3      # ERR_BUS_DOWN / ERR_REJECTED / ERR_TIMEOUT(TX): hand IDLE
+HAND_MOVE_STALLED = 4      # ERR_REJECTED: the FW 36 stall guard (JB-146) IDLEd the hand
 HAND_MOVE_OUTCOME_NAMES = {
     HAND_MOVE_ARRIVED: "ARRIVED",
     HAND_MOVE_SUPERSEDED: "SUPERSEDED",
     HAND_MOVE_TIMEOUT: "TIMEOUT",
     HAND_MOVE_ABORTED: "ABORTED",
+    HAND_MOVE_STALLED: "STALLED",
 }
 
 
@@ -895,7 +898,12 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # (same input_pos, legs keep torque_ff), so the ODrive holds AT the last command
 # instead of input_pos + vel_ff/pos_gain. Behavioural only: no wire change,
 # PROTOCOL_VERSION stays 10.
-EXPECTED_BRIDGE_FW_VERSION = 35
+# 35 -> 36 (2026-11-02, JB-146): the ACTIVATE / HAND_MOVE_TO ladder's hand stall
+# guard: |iq| >= 25 A with |vel| <= 0.5 rev/s for 300 ms commands the Hand IDLE
+# (the legs of an ACTIVATE carry on). Named as the HAND_MOVE_TO outcome
+# HAND_MOVE_STALLED (4) and the Diagnostic flags bit2; both previously-zero
+# values, so PROTOCOL_VERSION stays 10.
+EXPECTED_BRIDGE_FW_VERSION = 36
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

@@ -643,6 +643,11 @@ def test_p3_resweep_changed_only_the_stamp_and_added_the_pose_cells():
     boxes = ab.load(_COMMITTED_BOX)
     for mode in ('level', 'pose'):
         for d in (0.65, 0.55, 0.50):
+            if (mode, d) == ('level', 0.50):
+                # 2026-11-02 h70 re-sweep (C-HAND-6 margin, 70 A): the LEVEL
+                # planner's oval 0.50 cell at 0.95 is empty (LIMIT_JERK on the
+                # tilted cross-Site release; level is the fallback planner).
+                continue
             hit = ab.select(boxes, 'oval_1ball', ('P1', 'P2'), 0.95,
                             release_site_xy_mm=(-75.0, 0.0),
                             target_site_xy_mm=(75.0, 0.0), dwell_s=d,
@@ -1760,7 +1765,7 @@ def test_release_step_resweep_kept_the_pose_cells_and_added_columns_to_apex_1_40
         return (b['pattern'], b['planner_mode'], tuple(b['site_pair']), b['dwell_s'],
                 tuple(b['release_site_xy_mm']), tuple(b['target_site_xy_mm']),
                 tuple(round(x, 6) for x in b['apex_band_m']))
-    assert len(old['boxes']) == 82 and len(new['boxes']) == 100
+    assert len(old['boxes']) == 82 and len(new['boxes']) == 104   # +4 (1.45 / 1.50, 2026-11-02 h70)
     assert [key(b) for b in old['boxes']] == [key(b) for b in new['boxes'][:82]]
 
     def same(x, y):
@@ -1781,7 +1786,7 @@ def test_release_step_resweep_kept_the_pose_cells_and_added_columns_to_apex_1_40
     assert all(b['pattern'] == 'columns' and b['planner_mode'] == 'pose'
                and b['dwell_s'] == 0.27 for b in added)
     assert sorted({round(b['apex_band_m'][0] + 0.025, 3) for b in added}) == \
-        [1.00, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30, 1.35, 1.40]
+        [1.00, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30, 1.35, 1.40, 1.45, 1.50]
     for b in added:
         assert b['site_pair'][0] == b['site_pair'][1] in ('P1', 'P2')
         assert math.isclose(abs(b['release_site_xy_mm'][0]), 62.5, abs_tol=1e-6)

@@ -138,7 +138,7 @@ SCHED_EXHAUST_US = SCHED_COVER_US + SCHED_GRACE_US
 SCHED_S_MAX = 1.0 + SCHED_GRACE_S / SEGMENT_T_S
 STREAM_STOP_LEG_ACCEL_RPS2 = 250.0           # hardware_config.yaml trajectory_op.stream_stop_*
 STREAM_STOP_LEG_JERK_RPS3 = 25000.0
-STREAM_STOP_HAND_ACCEL_RPS2 = 3500.0
+STREAM_STOP_HAND_ACCEL_RPS2 = 4500.0
 STREAM_STOP_HAND_JERK_RPS3 = 350000.0
 # FW 22 hand acceleration torque feedforward (U2b) — canbridge_config.h / trajectory_op.stream_hand_*
 HAND_TORQUE_FF_CLAMP_NM = 0.234

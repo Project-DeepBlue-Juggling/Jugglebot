@@ -13,6 +13,8 @@ Every plan here is a real QP + gate (~0.2-0.5 s); fixtures are module-scoped.
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -116,14 +118,20 @@ def test_a_stepped_release_lowers_both_peaks_toward_the_ideal(stepped,
     1.05, release 860, hand 4500): continuous launch / brake kappa 1.81 / 1.56,
     stepped 1.31 / 1.10; whole-plan hand peak 3270 -> 2366 rev/s^2.  (The
     logbook's 3484 -> 2362 is the folded STEADY window.)  Bounds leave room for
-    solver drift."""
+    solver drift.  Since C-HAND-6 (2026-11-02, K 4.75e-5) the brake to the
+    lowered top is the whole-plan peak, 2809 at this Apex (margin 0.92 rev), so
+    the 0.8 claim is the LAUNCH's and the whole plan holds 0.9."""
     kl, kb, _ = _kappas(stepped)
     assert kl <= 1.40, kl
     assert kb <= 1.15, kb
     kl0, kb0, _ = _kappas(continuous)
     assert kl0 >= 1.70 and kb0 >= 1.45, (kl0, kb0)     # not vacuous
+    ar, al = _hermite_acc(stepped.plan)
+    k = int(round(float(stepped.event_t_s) / stepped.plan.dt))
+    launch_pk = float(np.max(np.r_[ar[:k], al[:k]]))
+    assert launch_pk <= 0.8 * continuous.meta.report.peak_hand_acc_rps2
     assert (stepped.meta.report.peak_hand_acc_rps2
-            <= 0.8 * continuous.meta.report.peak_hand_acc_rps2)
+            <= 0.9 * continuous.meta.report.peak_hand_acc_rps2)
 
 
 def test_the_stepped_release_declares_its_knot_and_seeds_the_brake(stepped, limits,
@@ -150,10 +158,13 @@ def stepped_limits():
 def test_the_ceiling_apex_plans_inside_the_hand_limit(limits, geom):
     """Apex 1.42 (the ceiling target, 1.45 above the catch plane), THROW from
     REST: refused HAND_LIMIT_ACC continuous (4859 rev/s^2 measured), planned
-    stepped (3137)."""
+    stepped (3137; with the C-HAND-6 top margin fitted at 200 rev/s, K 4.75e-5,
+    and the 4500 stream STOP, the brake to a top lowered 1.25 rev is the peak:
+    ~4150, between the probe's 4075 at Apex 1.40 and 4275 at 1.45, measured
+    2026-11-02)."""
     seg = _throw(1.42, limits, geom, step=True)
     assert seg.meta.report.ok
-    assert seg.meta.report.peak_hand_acc_rps2 <= 3400.0
+    assert seg.meta.report.peak_hand_acc_rps2 <= 4300.0
     with pytest.raises(uc.CycleInfeasible) as exc:
         _throw(1.42, limits, geom, step=False)
     assert exc.value.code == fz.HAND_LIMIT_ACC
@@ -248,8 +259,12 @@ def test_the_brake_seed_is_clamped_to_the_stream_stop_and_to_two_g(limits):
     assert np.linalg.norm(np.cross(fast_t - uc._G_MM_S2, tilt)) < 1e-6 * 1e5
     v = 4500.0
     mid = uc.release_brake_accel_mm_s2(v * up, a_l, 860.0, 984.0, limits)
+    # The distance is to the box top LOWERED by the post-release margin
+    # (C-HAND-6): 124 mm less 29.5 mm at 4.5 m/s (138.2 rev/s, 0.907 rev).
+    d = 124.0 - uc.post_release_top_margin_mm(v * up)
+    assert d < 124.0 - 15.0                       # the margin is in it
     assert np.allclose(mid, [0.0, 0.0, -uc.RELEASE_BRAKE_FACTOR * v * v
-                             / (2.0 * 124.0)])
+                             / (2.0 * d)])
 
 
 def test_a_stepped_chain_declares_every_seam_and_seeds_each_window(limits, geom):
@@ -287,3 +302,137 @@ def test_a_stepped_chain_declares_every_seam_and_seeds_each_window(limits, geom)
     ar, al = _hermite_acc(j2)
     for k in (k1, k2):
         assert ar[k] < al[k - 1] - 100.0        # a real, downward step
+
+
+# ── C-HAND-6: the post-release top-of-stroke margin (JB-147) ──────────────────
+
+def _box_top_rev():
+    cfg = uc.build_cup_config()
+    return (float(cfg.z_max_m) - uc._CUP_Z_BOTTOM_M) * cr.HAND_REV_PER_M
+
+
+def test_the_top_margin_grows_with_release_speed_and_is_clamped():
+    """``margin_rev(v) = clamp(K v^2, MIN, MAX)``, K 4.75e-5: the owner's
+    fit at 200 rev/s has no solution in the JB-147 headroom model with the
+    4500 stream STOP, so K is the largest satisfiable fit, 1.180 rev at 157.7
+    rev/s (logbook ``2026-11-02-hand-top-margin-and-70a``).  At the incident's
+    planned 152 rev/s it is 1.097 rev (35.7 mm); zero at rest; MAX 1.9 rev so
+    the clamp does not cut K v^2 below 200 rev/s; off with the flag."""
+    m = uc.post_release_top_margin_rev
+    assert m(0.0) == uc.TOP_MARGIN_MIN_REV == 0.0
+    assert m(152.0) == pytest.approx(1.097, abs=1e-3)
+    assert m(157.7) == pytest.approx(1.181, abs=1e-3)   # the model's 1.180
+    assert m(200.0) == pytest.approx(1.900, abs=1e-3)   # not yet clamped
+    assert m(-152.0) == m(152.0)
+    assert m(400.0) == uc.TOP_MARGIN_MAX_REV == 1.9
+    speeds = np.linspace(0.0, 250.0, 51)
+    assert np.all(np.diff([m(v) for v in speeds]) >= 0.0)
+    # mm form: |v| on the slider, converted at the level gain
+    v_mm = np.array([0.0, 0.0, 152.0 / cr.HAND_REV_PER_M * 1000.0])
+    assert uc.post_release_top_margin_mm(v_mm) == pytest.approx(
+        m(152.0) / cr.HAND_REV_PER_M * 1000.0)
+    old = uc.POST_RELEASE_TOP_MARGIN
+    uc.POST_RELEASE_TOP_MARGIN = False
+    try:
+        assert m(152.0) == 0.0
+    finally:
+        uc.POST_RELEASE_TOP_MARGIN = old
+
+
+def test_a_window_whose_seed_is_not_rising_keeps_todays_box():
+    """Only a RISING seed lowers the top: a REST seed, a seed moving down or
+    sideways, and a rising seed with the step off, plan in the config they
+    were given (the very object, so nothing else about the window can move)."""
+    cfg = uc.build_cup_config()
+    rest = _rest_state(REST_MM)
+    assert uc.post_release_cup_config(cfg, rest) is cfg
+    for vel in ([0.0, 0.0, -4800.0], [900.0, 0.0, 0.0], [0.0, 300.0, -1e-9]):
+        moving = dataclasses.replace(rest, cup_vel_mm_s=np.array(vel))
+        assert uc.post_release_cup_config(cfg, moving) is cfg
+    off = uc.build_cup_config(release_acc_step=False)
+    post = dataclasses.replace(rest, post_release=True,
+                               cup_vel_mm_s=np.array([0.0, 0.0, 4800.0]))
+    assert uc.post_release_cup_config(off, post) is off
+    lowered = uc.post_release_cup_config(cfg, post)
+    assert lowered.z_max_m == pytest.approx(
+        cfg.z_max_m - uc.post_release_top_margin_mm(post.cup_vel_mm_s) / 1000.0)
+    assert lowered.z_min_m == cfg.z_min_m       # only the top moves
+
+
+def test_the_post_release_brake_stops_under_the_lowered_top(stepped):
+    """THROW from REST, Apex 1.05 (139 rev/s at the release): the SETTLE tail
+    tops out at the box top less the margin (0.62 rev), not at the box top
+    (10.143 rev with the margin off, measured 2026-11-02), and the margin is
+    the one the brake seed was sized to."""
+    plan = stepped.plan
+    k = int(round(float(stepped.event_t_s) / plan.dt))
+    v_rel = float(plan.hand_vel_rps[k])
+    margin = uc.post_release_top_margin_rev(v_rel)
+    assert margin > 0.5                          # not vacuous at Apex 1.05
+    top = float(np.max(plan.hand_rev[k:]))
+    assert top <= _box_top_rev() - margin + 0.03, (top, margin)
+    assert top >= _box_top_rev() - margin - 0.15  # the brake still uses it
+
+
+def test_a_splice_on_the_release_knot_plans_under_the_same_lowered_top(stepped):
+    """The interior seed path (``release_state_at_knot``) is post-release and
+    carries the take-off velocity, so a splice landing on the release knot
+    lowers the box top by the same margin as the window that followed it."""
+    mark = stepped.meta.releases[0]
+    k = int(round(float(mark.t_s) / stepped.plan.dt))
+    seed = uc.release_state_at_knot(stepped.plan, stepped.meta, k)
+    cfg = uc.build_cup_config()
+    lowered = uc.post_release_cup_config(cfg, seed)
+    assert lowered.z_max_m == pytest.approx(
+        cfg.z_max_m - uc.post_release_top_margin_mm(mark.vel_mm_s) / 1000.0)
+
+
+def test_a_mid_brake_seed_plans_under_the_lowered_top(stepped, limits, geom,
+                                                      monkeypatch):
+    """Owner decision 2026-11-02 (JB-147): the margin covers ANY window whose
+    seed cup is rising, not only the post-release ones.  An interior seed one
+    knot into the brake (``state_at_knot``: ``post_release=False``, still
+    rising at ~73 rev/s at Apex 1.05) plans under the box top less the margin
+    of the speed it still has (smaller than the release's, so the window it
+    replaces stays inside), and its plan stops under it.
+
+    Planner level on purpose: ``splice_at`` refuses a splice inside the
+    2-knot detach cone, and at this Apex the brake is over in ~2.3 knots, so
+    the stream has no mid-brake splice knot today; a longer brake (or a
+    shorter cone) would have one, and its seed takes this path."""
+    plan, meta = stepped.plan, stepped.meta
+    k_rel = int(round(float(stepped.event_t_s) / plan.dt))
+    k_s = k_rel + 1
+    v_s = float(plan.hand_vel_rps[k_s])
+    v_rel = float(plan.hand_vel_rps[k_rel])
+    assert 40.0 < v_s < v_rel                     # mid-brake, still rising
+    seed = uc.state_at_knot(plan, meta, k_s)
+    assert seed.post_release is False and float(seed.cup_vel_mm_s[2]) > 0.0
+    cfg = uc.build_cup_config()
+    lowered = uc.post_release_cup_config(cfg, seed)
+    drop_mm = uc.post_release_top_margin_mm(seed.cup_vel_mm_s)
+    margin_rev = drop_mm / 1000.0 * cr.HAND_REV_PER_M
+    assert margin_rev > 0.1                       # not vacuous
+    assert lowered.z_max_m == pytest.approx(cfg.z_max_m - drop_mm / 1000.0)
+    assert margin_rev < uc.post_release_top_margin_rev(v_rel)
+    terminal = sg.RestTerminal(rest_site_mm=REST_MM, t_rest_s=0.6,
+                               holds_ball=False)
+    seen = []                                     # the box the QP was given
+    real = uc.cc.plan_window
+
+    def spy(events, state0, cup_cfg, *args, **kwargs):
+        seen.append(float(cup_cfg.z_max_m))
+        return real(events, state0, cup_cfg, *args, **kwargs)
+
+    monkeypatch.setattr(uc.cc, 'plan_window', spy)
+    seg = sg.plan_segment(sg.REST, seed, terminal, sg.SegmentConfig(),
+                          limits, geom)
+    assert seen and all(z == pytest.approx(lowered.z_max_m) for z in seen)
+    top = float(np.max(seg.plan.hand_rev))
+    assert top <= _box_top_rev() - margin_rev + 0.03, (top, margin_rev)
+    old = uc.POST_RELEASE_TOP_MARGIN
+    uc.POST_RELEASE_TOP_MARGIN = False
+    try:                                          # and the margin is what did it
+        assert uc.post_release_cup_config(cfg, seed) is cfg
+    finally:
+        uc.POST_RELEASE_TOP_MARGIN = old

@@ -110,6 +110,27 @@ def test_active_errors_during_activate_fails():
     assert r.done and m.succeeded == [] and "active_errors" in m.failed[0]
 
 
+def test_stall_bit_fails_at_once_and_names_the_stall():
+    """FW 36 (JB-146): the bridge's stall guard IDLEd the axis -> FAILED with a
+    STALL reason now, not a 20 s timeout on a de-energised axis."""
+    m = mon([6], target=0.0)
+    m.step(0.0, {6: AxisStatus(axis_state=CL, pos_rev=0.49, vel_rps=-1.0)})   # bit clear
+    r = m.step(0.5, {6: AxisStatus(axis_state=1, pos_rev=0.22, vel_rps=0.0, stalled=True)})
+    assert r.done and m.failed[6].startswith("STALL")
+    assert "+0.220" in m.failed[6]
+
+
+def test_stall_bit_left_over_from_an_earlier_run_is_ignored_until_seen_clear():
+    """The host cache can hold the previous run's sticky bit for a tick after the
+    new ACTIVATE starts; it must not fail the new run (the firmware clears it at
+    start, so a real new stall is always preceded by a clear frame)."""
+    m = mon([6], target=0.0)
+    r = m.step(0.0, {6: AxisStatus(axis_state=1, pos_rev=0.30, vel_rps=0.0, stalled=True)})
+    assert not r.done                                       # stale bit: ignored
+    r = m.step(0.1, {6: AxisStatus(axis_state=CL, pos_rev=0.0, vel_rps=0.0)})
+    assert r.done and m.succeeded == [6]
+
+
 def test_timeout_fails():
     m = mon([0], timeout_s=2.0)
     m.step(0.0, {0: st(-0.10, vel_rps=0.0)})

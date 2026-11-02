@@ -12,6 +12,7 @@
 #include "can_buses.h"
 #include "ball_butler_state.h"   // bb_yaw — the BB YAW_ESTIMATE cache forwarded as BB_YAW_ESTIMATE (FW 28)
 #include "time_base.h"
+#include "leg_activate.h" // activate_stalled() — Diagnostic flags bit2, the FW 36 hand stall guard (JB-146)
 #include "leg_homing.h"   // homing_result() — uplinked in the Diagnostic (see logbook 2026-07-05-canhub-hardening-18a-homing-result-uplink)
 #include "gpio_poll.h"    // gpio_poll_snapshot() — the hand ball-sensor cache uplinked as HAND_SENSOR
 #include "leg_interp.h"   // interp_hand_sent() (streamed-echo freshness key) + interp_last_tick_us() (echo stamp age-correction) — FW 17
@@ -78,7 +79,11 @@ static void send_diag(uint8_t axis) {
   d.axis_state    = a.axis_state;
   d.ctrl_mode     = a.controller_mode;
   d.input_mode    = a.input_mode;
-  d.flags         = (stale ? 0x1u : 0x0u) | (a.heartbeat_seen ? 0x2u : 0x0u);
+  // bit2 (FW 36): the cold-start ladder's stall guard IDLEd this axis (sticky until
+  // the next ACTIVATE / HAND_MOVE_TO that targets it). Previously-zero bit: an
+  // older host ignores it, so PROTOCOL_VERSION stays 10.
+  d.flags         = (uint8_t)((stale ? 0x1u : 0x0u) | (a.heartbeat_seen ? 0x2u : 0x0u) |
+                              (activate_stalled(axis) ? DIAG_FLAG_ACTIVATE_STALL : 0x0u));
   d.active_errors = a.active_errors;
   d.disarm_reason = a.disarm_reason;
   d.iq_setpoint   = a.iq_setpoint;
@@ -750,9 +755,13 @@ void telemetry_step() {
 #endif
     uint8_t h_res, h_epoch;
     homing_status(i, &h_res, &h_epoch);
+    // The stall bit is news on its own (FW 36): the operator learns of a stalled
+    // ACTIVATE from this frame, so it must not wait for the 1 Hz refresh.
+    const bool stall_flip = activate_stalled(i) !=
+                            ((s_base[i].flags & DIAG_FLAG_ACTIVATE_STALL) != 0);
     if (diag_changed(axes[i], s_base[i]) ||
         h_res != s_base[i].homing_result || h_epoch != s_base[i].homing_epoch ||
-        due_forced || due_bench) {
+        stall_flip || due_forced || due_bench) {
       send_diag(i);
     }
   }

@@ -1349,6 +1349,102 @@ RELEASE_BRAKE_FACTOR = 1.10
 RELEASE_BRAKE_MIN_G = 2.0
 
 
+#: The post-release top-of-stroke margin (C-HAND-6, JB-147) on by default.
+#: Off reproduces the C-HAND-5 box exactly (the probe's before/after switch).
+POST_RELEASE_TOP_MARGIN = True
+
+#: ``margin_rev(v) = clamp(K · v², MIN, MAX)``, ``v`` the slider speed (rev/s).
+#: K is calibrated on the JB-147 overshoot (logbook
+#: ``2026-11-02-hand-top-margin-and-70a``, § Discussion): a velocity error of
+#: 0.426·v at the step, removed by the drive's headroom above the planned brake
+#: (the decel-FF bound at 70 A, 5495.7 rev/s², minus the brake seed
+#: ``1.10 · v² / 2 (D0 − m)``), should stop 0.10 rev under the 10.501 rev clip.
+#: ONE owner-adjustable number.  Owner 2026-11-02: fit at 200 rev/s, with the
+#: 4500 stream STOP (the seed follows the margin up to 4500).  The model has NO
+#: solution there: a plan must also stop at <= 4500 rev/s² inside D0 − m, which
+#: at 200 rev/s leaves m <= 0.24 rev, and the model's best stop is 13.57 rev.  It
+#: is satisfiable only up to 157.7 rev/s (above that a larger margin raises the
+#: seed and eats more headroom than it buys), so K is the fit there, the
+#: largest satisfiable one: m_req 1.180 rev at 157.7 rev/s.  MAX is raised so
+#: the clamp does not cut K·v² below 200 rev/s (1.90 rev); above ~170 rev/s the
+#: lowered top is beyond what a 4500 rev/s² brake can stop in, and the plan is
+#: refused HAND_LIMIT_ACC (the box loses those cells).
+TOP_MARGIN_K_REV_S2 = 4.75e-5
+TOP_MARGIN_MIN_REV = 0.0
+TOP_MARGIN_MAX_REV = 1.9
+
+
+def post_release_top_margin_rev(slider_speed_rps: float) -> float:
+    """The stroke (rev) the post-release brake keeps unused under the box top.
+
+    C-HAND-6.  The stepped brake (C-HAND-5) plans the stop near the
+    constant-deceleration ideal, so it uses nearly all the stroke above the
+    release; a launch that arrives FAST (JB-147: 168 rev/s against 152
+    planned, the hand 1.16 rev behind its command at the release) then has
+    only the drive's current headroom and the 0.34 rev between the planned
+    top and the clip to stop in.  The margin lowers the top the brake plans
+    to, growing with the release speed: ``clamp(K · v², MIN, MAX)``.  Zero
+    when :data:`POST_RELEASE_TOP_MARGIN` is off.
+    """
+    if not POST_RELEASE_TOP_MARGIN:
+        return 0.0
+    v = abs(float(slider_speed_rps))
+    return min(max(TOP_MARGIN_K_REV_S2 * v * v, TOP_MARGIN_MIN_REV),
+               TOP_MARGIN_MAX_REV)
+
+
+def post_release_top_margin_mm(takeoff_vel_mm_s) -> float:
+    """:func:`post_release_top_margin_rev` as a drop of the cup box top (mm).
+
+    The slider speed is the take-off speed ``|v|`` (the stepped release holds
+    the cup's specific force along the take-off direction, so the slider runs
+    along ``v``).  The drop is converted at the LEVEL gain (mm per rev): on a
+    tilted cup the slider must travel ``drop / u_z`` ≥ ``drop`` to cover it, so
+    the slider margin is never smaller than the one computed.
+    """
+    v = np.asarray(takeoff_vel_mm_s, dtype=float).reshape(3)
+    speed_rps = float(np.linalg.norm(v)) / 1000.0 * HAND_REV_PER_M
+    return post_release_top_margin_rev(speed_rps) / HAND_REV_PER_M * 1000.0
+
+
+def post_release_cup_config(cup_cfg, state, vel_mm_s=None):
+    """The cup config a window plans its QP in: the box top lowered by the
+    top-of-stroke margin (C-HAND-6) when the window's seed cup is MOVING UP,
+    else ``cup_cfg`` itself, unchanged (the very object).
+
+    Every seed whose cup velocity has ``v_z > 0`` is covered, sized from the
+    seed's own speed ``|v|`` with :func:`post_release_top_margin_mm`: the
+    post-release seeds (the SETTLE tail, the folded STEADY / LANDING window, a
+    splice on a release knot via :func:`release_state_at_knot`) carry the
+    take-off velocity, so for them it is the same number
+    :func:`release_brake_accel_mm_s2` lowered the seed's top by; a splice
+    mid-brake (seeded ``post_release=False``, still rising) or mid-launch gets
+    the margin of the speed it still has, never more than the release's (the
+    margin rises with speed and the brake only slows the cup), so the window
+    it replaces stays inside the box it plans in.  A seed at rest or moving
+    down keeps today's box exactly.  Only the scalar box top moves; the gate's
+    stroke ceiling does not.  Off with the stepped release (C-HAND-5): the
+    margin is part of the stepped brake's design.
+    """
+    # ``vel_mm_s`` is the velocity the QP is actually seeded with (``plan_cycle``
+    # passes ``to_cup_state``'s, which covers a live seed that carries no exact
+    # ``cup_vel_mm_s``); the state's own field is the fallback.
+    if vel_mm_s is None:
+        vel_mm_s = getattr(state, 'cup_vel_mm_s', None)
+    if (not isinstance(cup_cfg, cc.CupCycleConfig)
+            or not bool(cup_cfg.release_acc_step)
+            or vel_mm_s is None):
+        return cup_cfg
+    vel = np.asarray(vel_mm_s, dtype=float).reshape(3)
+    if not float(vel[2]) > 0.0:
+        return cup_cfg
+    drop_mm = post_release_top_margin_mm(vel)
+    if drop_mm <= 0.0:
+        return cup_cfg
+    return dataclasses.replace(cup_cfg,
+                               z_max_m=float(cup_cfg.z_max_m) - drop_mm / 1000.0)
+
+
 def release_brake_accel_mm_s2(takeoff_vel_mm_s, launch_accel_mm_s2,
                               z_release_mm: float, z_top_mm: float,
                               limits) -> np.ndarray:
@@ -1364,7 +1460,9 @@ def release_brake_accel_mm_s2(takeoff_vel_mm_s, launch_accel_mm_s2,
     post-release detach cone already holds at knot 0.
 
     ``s`` is chosen so the VERTICAL brake is ``B = RELEASE_BRAKE_FACTOR · v_z² /
-    (2 (z_top − z_release))``, clamped to ``[RELEASE_BRAKE_MIN_G · g, A·u_z]``
+    (2 (z_top − margin − z_release))``, ``margin`` the post-release top margin
+    (C-HAND-6, :func:`post_release_top_margin_mm`; ``z_top`` is the UNLOWERED
+    box top, the margin is applied here once), clamped to ``[RELEASE_BRAKE_MIN_G · g, A·u_z]``
     with ``A`` the smaller of the session hand acceleration limit and the
     firmware stream STOP's deceleration (``stream_stop_hand_accel_rps2``) — the
     cap is applied in the SLIDER's frame (the slider runs along ``u``, so a
@@ -1378,7 +1476,8 @@ def release_brake_accel_mm_s2(takeoff_vel_mm_s, launch_accel_mm_s2,
     a_l = np.asarray(launch_accel_mm_s2, dtype=float).reshape(3)
     u = v / float(np.linalg.norm(v))
     g = abs(float(_G_MM_S2[2]))
-    d = float(z_top_mm) - float(z_release_mm)
+    d = (float(z_top_mm) - post_release_top_margin_mm(v)
+         - float(z_release_mm))
     vz = max(float(v[2]), 0.0)
     b_lo = RELEASE_BRAKE_MIN_G * g
     a_cap_rps2 = min(float(limits.hand_acc_limit_rps2),
@@ -1888,9 +1987,16 @@ def plan_cycle(kind: str, goals: CycleGoals, state: CycleState,
     # The `pose` planner's spec (two-ball-oval P3) — None on every window the
     # pose formulation does not apply to, and then NOTHING below changes.  Built
     # inside the 'qp' stage: it is part of assembling the program.
-    pose_spec = _pose_spec_for(kind, goals, state, rcfg, cup_cfg, geom, events)
+    # C-HAND-6: a window whose seed cup is rising (a stepped release's tail, or
+    # a splice mid-launch / mid-brake) plans its QP under a box top lowered by
+    # the margin of the seed's speed.  ``cup_cfg`` itself (the
+    # unlowered box) still goes to ``_realize``: the brake seed of THIS
+    # window's own release applies its own margin to the unlowered top.
+    qp_cfg = post_release_cup_config(cup_cfg, state,
+                                     np.asarray(state0.vel, dtype=float) * 1000.0)
+    pose_spec = _pose_spec_for(kind, goals, state, rcfg, qp_cfg, geom, events)
     try:
-        cup = cc.plan_window(events, state0, cup_cfg,
+        cup = cc.plan_window(events, state0, qp_cfg,
                              period_s=float(goals.period_s),
                              settle_site=settle_m, warm_start=warm_start,
                              holds_ball_at_start=(kind == LAUNCH

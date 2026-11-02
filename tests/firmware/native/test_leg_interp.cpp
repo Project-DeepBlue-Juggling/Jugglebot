@@ -1563,7 +1563,7 @@ TEST_CASE("FW 22 scheduled: hand == leg parity on identical stamped knots (the p
   for (int k = 0; k < 30; ++k) {                  // spans both Hermite spans, then the stop
     interp_isr();
     // Parity is a PLAY-phase claim: once the cover ends each group stops under its
-    // OWN limits (hand 3500 rev/s² vs legs 250), so the stop curves differ by design.
+    // OWN limits (hand 4500 rev/s² vs legs 250), so the stop curves differ by design.
     if (interp_hand_lane_active() && interp_sched_phase(1) == 1) {
       ++play_ticks;
       CHECK(interp_sched_phase(0) == 1);

@@ -21,7 +21,15 @@ active pose (``ACTIVATE_POSITION_REVS`` ≈ 2.19 rev). So:
   * **success** ⇒ ``|pos − target| ≤ pos_tol`` AND ``|vel| ≤ vel_tol`` with no
     active errors (the leg reached the active pose and settled).
   * **failure** ⇒ active errors during the move, OR the timeout elapsed (the leg
-    never reached the target — e.g. not in CLOSED_LOOP, bad gains, stalled).
+    never reached the target — e.g. not in CLOSED_LOOP, bad gains, stalled), OR
+    the bridge's **stall guard** fired (can-bridge FW 36, JB-146: the Hand sat at
+    high current without moving for 300 ms and was commanded IDLE). The guard is
+    reported in the Diagnostic ``flags`` bit2, sticky until the next ladder that
+    targets the axis; the monitor honours it only after it has seen the bit CLEAR
+    for that axis, so a bit left over from an earlier run (the host's cache can
+    hold the old frame for a tick after the new ACTIVATE starts) never fails a new
+    one. Failing at once, with the reason ``STALL``, beats waiting out the timeout
+    with a de-energised axis.
 
 Convention. Both ``ACTIVATE_POSITION_REVS`` and the telemetry ``pos_rev`` are in
 the Jugglebot convention (positive = extension), so the target and the reading
@@ -43,6 +51,11 @@ from typing import Dict, Iterable, List
 # homing.py / encoder_search.py).
 AXIS_STATE_CLOSED_LOOP = 8
 
+# DIAGNOSTIC.flags bit2 (can-bridge FW 36, JB-146): the cold-start ladder's stall
+# guard IDLEd this axis. Mirrors leg_activate.h DIAG_FLAG_ACTIVATE_STALL (pinned by
+# tests/firmware/test_hand_stall_guard_xref.py).
+DIAG_FLAG_ACTIVATE_STALL = 0x4
+
 # Defaults. The firmware fire ladder is fast (~10 ms); the physical TRAP_TRAJ move
 # is bounded by the leg distance (≈ 2.3 rev) at the gentle vel limit (2.5 rps) +
 # accel — a few seconds. Allow generous margin. The tolerances mirror the firmware
@@ -61,11 +74,14 @@ class AxisStatus:
         pos_rev: ``TELEMETRY.pos_rev[axis]`` — Jugglebot convention.
         vel_rps: ``TELEMETRY.vel_rps[axis]`` — Jugglebot convention.
         active_errors: ODrive ``active_errors`` bitmask (``DIAGNOSTIC.active_errors``).
+        stalled: ``DIAGNOSTIC.flags & DIAG_FLAG_ACTIVATE_STALL`` (FW 36; always
+            False against an older board).
     """
     axis_state: int
     pos_rev: float
     vel_rps: float
     active_errors: int = 0
+    stalled: bool = False
 
 
 class Phase(str, Enum):
@@ -86,6 +102,7 @@ class StepResult:
 class _Prog:
     phase: Phase = Phase.ACTIVE
     reason: str = ""
+    saw_unstalled: bool = False   # the stall bit is honoured only after a clear one
 
 
 class ActivateMonitor:
@@ -157,6 +174,15 @@ class ActivateMonitor:
 
             st = status.get(axis)
             if st is not None:
+                if not st.stalled:
+                    pr.saw_unstalled = True
+                elif pr.saw_unstalled:
+                    pr.phase = Phase.FAILED
+                    pr.reason = (f"STALL: the can-bridge stall guard commanded IDLE "
+                                 f"(high current, no motion for 300 ms) at pos "
+                                 f"{st.pos_rev:+.3f} rev, target "
+                                 f"{self.targets_rev[axis]:+.3f} rev")
+                    continue
                 if st.active_errors != 0:
                     pr.phase = Phase.FAILED
                     pr.reason = f"active_errors 0x{st.active_errors:x} during activate"

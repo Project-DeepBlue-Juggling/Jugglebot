@@ -139,7 +139,7 @@ GRAVITY = np.array([0.0, 0.0, -9.806])
 #: layouts; logbook 2026-10-02-skill-stack-r5-sitting-2), and to 4500 on
 #: 2026-11-01 (owner, Sitting debrief, with the hand current limit 50 -> 60 A),
 #: under the C-HAND-2 decel-FF headroom bound of 4710.6 rev/s² at 60 A (3925.5
-#: at 50 A). IMPORTED from the YAML's
+#: at 50 A; 5495.7 at 70 A since 2026-11-02, JB-147, limit unchanged). IMPORTED from the YAML's
 #: ``hand_acc_limit_rps2`` rather than restated: the restated 3500 this used
 #: to be sat silently under the raised gate for one sweep on 2026-10-02 —
 #: the in-QP bound and ``validate_cycle``'s gate must be one number.

@@ -20,7 +20,7 @@ Neither fits the stroke, because the grace alone travels ~3 rev at 150 rev/s and
 the planned brake already uses the stroke above the release.  Re-run it when
 the stop limits, the grace or the cover change.
 
-    python tools/probes/hand_stall_stop.py [--accel 3500] [--clamp-entry]
+    python tools/probes/hand_stall_stop.py [--accel 4500] [--clamp-entry]
 """
 from __future__ import annotations
 

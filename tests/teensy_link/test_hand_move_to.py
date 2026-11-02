@@ -94,7 +94,8 @@ def test_outcome_codes_match_the_firmware_enum():
     assert host == {"ARRIVED": rpc_args.HAND_MOVE_ARRIVED,
                     "SUPERSEDED": rpc_args.HAND_MOVE_SUPERSEDED,
                     "TIMEOUT": rpc_args.HAND_MOVE_TIMEOUT,
-                    "ABORTED": rpc_args.HAND_MOVE_ABORTED}
+                    "ABORTED": rpc_args.HAND_MOVE_ABORTED,
+                    "STALLED": rpc_args.HAND_MOVE_STALLED}
 
 
 def test_method_map_and_non_idempotence():

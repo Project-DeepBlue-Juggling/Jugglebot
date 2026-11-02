@@ -330,13 +330,34 @@ Evaluated rather than assumed, because the crossing moves if the ball mass or
 
 ### B4 — `REGEN`
 
-Braking power peaks at release, where `ω` is largest:
+Braking power peaks at release, where `ω` is largest. The bus does not see
+all of it: the motor's copper loss is dissipated in the winding first
+(2026-11-02, JB-147, owner decision):
 
 ```
-τ_brake · ω(v)  ≤  |dc_max_negative_current| · V_bus  =  8.0 A × 45.0 V = 360 W
+P_bus(I, ω) = Kt·I·ω − c·R·I²
+max over 0 ≤ I ≤ I_lim of P_bus  ≤  |dc_max_negative_current| · V_bus  =  8.0 A × 45.0 V = 360 W
 ```
 
-**Result: `v ≤ 6.574 m/s` — non-binding.**
+`R` = 0.0400 Ω (`hand_phase_resistance_ohm`, the drive's own calibration in
+`config/ODrive config Files/odrive_pro_hand_config.json`). `c` is 1.5 for
+amplitude-invariant dq currents and 1.0 for power-invariant ones. The open
+ODrive v3 FOC uses the amplitude-invariant Clarke form (`I_alpha = I_a`); the
+ODrive Pro firmware is closed, so the code takes **c = 1.0**, the smaller loss
+and so the larger bus power. The brake current is anything up to the limit (the
+fence covers what the drive could do, not what is commanded), so the bound is
+the maximum over `I`: interior at `I* = Kt·ω / (2cR)` while that is under the
+limit, `(Kt·ω)² / (4cR)`, else at the limit. Inverter losses are ignored, which
+can only over-state the bus power.
+
+**Result: `v ≤ 7.467 m/s` at 70 A (8.783 at c = 1.5) — outside the 7.0 m/s wire
+band, non-binding.** Before the loss term the fence was `I_lim·Kt·ω ≤ 360 W`:
+6.574 m/s at 50 A, 5.641 at 60 A and 4.835 at 70 A (Apex ceiling 1.189 m),
+because a larger current LIMIT is a larger flat-out return. At 4.835 m/s the
+lossless figure is 360 W; the bus actually sees at most 165 W (interior
+maximum at `I*` = 64 A for c = 1.0). The 300 W steady-state check below needs
+no loss term of its own: it bounds the average by the burst fence times the
+duty, and the fence now bounds the bus power with the loss already out.
 
 **The fence is the BURST, not the rail's steady-state rating.** The HV rail's
 capacity is **300 W steady-state** (owner, 2026-08-20), and 360 W bursts are
@@ -477,8 +498,9 @@ fails if a pre-fix rung is readmitted.
 The ceiling is now `DECEL_FF_HEADROOM`, so the levers are different from before:
 
 * **Raising it needs an operator decision on the drive**, not a fresh capture:
-  either `hand_curr_limit_a` above 50 A (taken 2026-11-01: 60 A, after which
-  `REGEN` binds, see § Surviving measurements), or `decel_ff_current_headroom_frac`
+  either `hand_curr_limit_a` above 50 A (taken 2026-11-01: 60 A, 2026-11-02: 70 A, after which
+  `DECEL_FF_HEADROOM` binds; `REGEN` with the copper loss is 7.467 m/s, outside the
+  band, see § Surviving measurements), or `decel_ff_current_headroom_frac`
   above 0.85 — and the second is C-HAND-2's own requirement, so it moves that
   contract too. Neither is an implementer's call.
 * **Extending the coast ladder past 4.436 m/s** would shrink the extrapolation
@@ -552,33 +574,38 @@ The measurements, with provenance:
 | re-derivation on the **unclamped** drive: per-tier *upper* bounds | 1.004e-5 / 1.025e-5 / 9.41e-6 / 9.63e-6 / **9.04e-6** kg·m² | bag `~/Desktop/rosbags/2026-08-23_19-14-54`, 15 throws, 5 tiers × 3, 2026-08-23 (`tools/probes/hand_decel_authority.py --bag …`) |
 | same bag, regression slope 0.9415 (R² 0.9999) | `J_ff/slope` = 1.009e-5; on wire torque `1/(2π·slope)` = 1.027e-5 kg·m² | same bag |
 | **declared** inertia the retired firmware shipped | 9.5e-6 kg·m² | `teensy_trajectory.throw_decel_reflected_inertia_kgm2` — deliberately low; the 2026-08-23 channels bound `J_true ≤ 9.04e-6` (encoder) and `≤ ~7.5e-6` (ball), i.e. it was **over-braking** when the firmware died |
-| hand deceleration **authority bound** (the decel-FF headroom line) | **4710.6 rev/s²** at 60 A since 2026-11-01 (was **3925.5** at 50 A) | `decel_ff_current_headroom_frac 0.85` × `hand_curr_limit_a` × hand Kt 0.0055133 N·m/A ÷ (2π·J_ff 9.5e-6) = `throw_envelope.DECEL_FF_HEADROOM_RPS2`. `hand_acc_ceiling_rps2` = `hand_acc_limit_rps2` = 4500.0 sits under it (3900 under 3925.5 before), and `cup_cycle.HAND_ACC_LIMIT_RPS2` imports the limit. The full-current line at the measured J 1.05e-5 is `DECEL_AUTHORITY_RPS2` = 5014.1 (4178.4 at 50 A) |
+| hand deceleration **authority bound** (the decel-FF headroom line) | **5495.7 rev/s²** at 70 A since 2026-11-02, JB-147 (4710.6 at 60 A from 2026-11-01; 3925.5 at 50 A) | `decel_ff_current_headroom_frac 0.85` × `hand_curr_limit_a` × hand Kt 0.0055133 N·m/A ÷ (2π·J_ff 9.5e-6) = `throw_envelope.DECEL_FF_HEADROOM_RPS2`. `hand_acc_ceiling_rps2` = `hand_acc_limit_rps2` = 4500.0 sits under it (4500 under 4710.6 at 60 A; 3900 under 3925.5 before), and `cup_cycle.HAND_ACC_LIMIT_RPS2` imports the limit. The full-current line at the measured J 1.05e-5 is `DECEL_AUTHORITY_RPS2` = 5849.8 at 70 A (5014.1 at 60 A, 4178.4 at 50 A) |
 
 **2026-11-01: hand current limit 50 → 60 A, hand acceleration limit 3900 → 4500
 rev/s² (owner decision, Sitting debrief; JB-120).** Recomputed from
 `throw_envelope` at the measured gain (`J_ff` 9.5e-6, `J` 1.05e-5, `J_ascent`
 1.306e-5 with the ball, Kt 0.0055133):
 
-| quantity | 50 A | 60 A |
-|---|---|---|
-| `DECEL_FF_HEADROOM_RPS2` (0.85 of the limit, `J_ff`) | 3925.5 | **4710.6** |
-| `DECEL_AUTHORITY_RPS2` (full limit, measured `J`) | 4178.4 | 5014.1 |
-| `ACCEL_AUTHORITY_RPS2` (ball aboard, less gravity) | 3225.2 | 3897.3 |
-| current for the ball-free hand at the session limit (measured `J`) | 46.7 A at 3900 | 53.8 A at 4500 (90 %) |
-| current with the ball aboard at the session limit, ascent | 60.0 A at 3900 | 69.0 A at 4500 |
-| throw-envelope binding bound | `DECEL_FF_HEADROOM` 5.720 m/s | **`REGEN` 5.641 m/s** |
-| flight / apex ceiling | 1.165 s / 1.665 m | 1.149 s / 1.619 m |
+| quantity | 50 A | 60 A | 70 A (2026-11-02, JB-147) |
+|---|---|---|---|
+| `DECEL_FF_HEADROOM_RPS2` (0.85 of the limit, `J_ff`) | 3925.5 | 4710.6 | **5495.7** |
+| `DECEL_AUTHORITY_RPS2` (full limit, measured `J`) | 4178.4 | 5014.1 | **5849.8** |
+| `ACCEL_AUTHORITY_RPS2` (ball aboard, less gravity) | 3225.2 | 3897.3 | **4569.3** |
+| current for the ball-free hand at the session limit (measured `J`) | 46.7 A at 3900 | 53.8 A at 4500 (90 %) | 53.8 A at 4500 (77 %) |
+| current with the ball aboard at the session limit, ascent | 60.0 A at 3900 | 69.0 A at 4500 | 69.0 A at 4500 (99 %) |
+| throw-envelope binding bound | `DECEL_FF_HEADROOM` 5.720 m/s | `REGEN` 5.641 m/s | **`DECEL_FF_HEADROOM` 6.768 m/s** (REGEN with copper loss: 7.467) |
+| flight / apex ceiling | 1.165 s / 1.665 m | 1.149 s / 1.619 m | **1.379 s / 2.332 m** |
 
-`REGEN` moved IN (6.769 → 5.641 m/s) because it fences the torque LIMIT × ω
+`REGEN` moved IN (6.769 → 5.641 m/s) at 60 A because it fenced the torque LIMIT × ω
 against the unchanged 360 W drive budget; the FF, DECEL and ACCEL lines moved out.
+At 70 A that lossless fence would have sat at 4.835 m/s; since 2026-11-02 it takes
+the copper loss out (§ B4) and binds at 7.467 m/s, so `DECEL_FF_HEADROOM` is the
+ceiling again.
 `END_STOP` (8.494 m/s) stays last, so the contract's headline holds; the order is
 pinned in `tests/motion/test_throw_envelope.py`. The loaded-ascent row is the
 JB-115 gap: the session limit applies to the hand with and without the ball,
-and the ball-aboard ascent at the limit wants more than the drive limit at both
-operating points. The hand ODrive is set to `current_soft_max` 70 A /
+and the ball-aboard ascent at the limit wanted more than the drive limit at 50 and
+60 A; at 70 A it needs 69.0 A, and ACCEL_AUTHORITY (4569.3 rev/s²) clears the 4500
+limit, so the JB-115 gap closes at 70 A. The hand ODrive is set to `current_soft_max` 70 A /
 `current_hard_max` 80 A and motor thermistor limits 60 / 70 °C (owner
 2026-11-02, `config/ODrive config Files/odrive_pro_hand_config.json`); the
-launch still pushes `hand_curr_limit_a` (60 A) as the soft max at every
+launch now pushes `hand_curr_limit_a` (70 A since 2026-11-02, JB-147: the lossless REGEN would have
+moved IN to 4.835 m/s, the copper-loss REGEN binds at 7.467; FF 6.768, DECEL 6.982, ACCEL 7.140 out by sqrt(70/60)) as the soft max at every
 configure. iq has been measured 3.3 A over the 50 A soft limit (JB-138).
 
 ⚠ Pre-2026-08-18 numbers were measured through the hand ODrive's −10.00 A

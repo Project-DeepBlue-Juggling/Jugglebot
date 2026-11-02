@@ -16,7 +16,12 @@ continuous release ran launch / brake kappa 1.81 / 1.56-1.68 and refused Apex
 1.42; the stepped one runs ~1.3 / ~1.1 and plans Apex 1.5.  Re-run it after any
 change to the release rows, the brake seed or the objective.
 
-    python tools/probes/release_step_shape.py [apex ...]     # default 0.95 1.05 1.2 1.42
+    python tools/probes/release_step_shape.py [apex ...]          # C-HAND-6 margin off/on
+    python tools/probes/release_step_shape.py --step [apex ...]   # C-HAND-5 step off/on
+
+The default mode compares the post-release top margin (C-HAND-6, logbook
+``2026-11-02-hand-top-margin-and-70a``) off and on with the step on, and prints
+the release speed, the margin and each brake's top (hand rev) too.
 """
 from __future__ import annotations
 
@@ -83,24 +88,44 @@ def plan_pair(apex):
     return seg0, seg1, T
 
 
-def main(apexes):
-    for on in (False, True):
+def brake_top(plan, k0):
+    """Highest hand rev the plan reaches after knot ``k0`` (the brake's top)."""
+    return float(np.max(plan.hand_rev[k0:]))
+
+
+CONFIGS = {
+    # name: (RELEASE_ACC_STEP, POST_RELEASE_TOP_MARGIN)
+    'step': [(False, False), (True, False)],      # C-HAND-5 before/after
+    'margin': [(True, False), (True, True)],      # C-HAND-6 before/after
+}
+
+
+def main(apexes, mode='margin'):
+    for on, margin in CONFIGS[mode]:
         uc.RELEASE_ACC_STEP = on
+        uc.POST_RELEASE_TOP_MARGIN = margin
         for apex in apexes:
             try:
                 seg0, seg1, T = plan_pair(apex)
             except Exception as exc:              # a refusal is a result here
-                print('step=%d apex %.2f: REFUSED %s' % (on, apex, str(exc)[:140]))
+                print('step=%d margin=%d apex %.2f: REFUSED %s'
+                      % (on, margin, apex, str(exc)[:140]))
                 continue
             k0 = int(round(seg0.event_t_s / seg0.plan.dt))
             a = kappas(seg0.plan, k0, brake_from=k0)
             kr = int(round(seg1.release_t_s / seg1.plan.dt))
             b = kappas(seg1.plan, kr, int(round(T / seg1.plan.dt)), brake_from=0)
-            print('step=%d apex %.2f: THROW launch %4.0f (k %.2f) brake %4.0f (k %.2f) | '
-                  'STEADY launch %4.0f (k %.2f) brake %4.0f (k %.2f) | peak %4.0f %s'
-                  % (on, apex, *a['launch'], *a['brake'], *b['launch'], *b['brake'],
+            v_rel = float(seg0.plan.hand_vel_rps[k0])
+            print('step=%d margin=%d apex %.2f: v %5.1f rps margin %.3f rev | THROW launch '
+                  '%4.0f (k %.2f) brake %4.0f (k %.2f) top %.3f | STEADY launch %4.0f '
+                  '(k %.2f) brake %4.0f (k %.2f) top %.3f | peak %4.0f %s'
+                  % (on, margin, apex, v_rel, uc.post_release_top_margin_rev(v_rel),
+                     *a['launch'], *a['brake'], brake_top(seg0.plan, k0),
+                     *b['launch'], *b['brake'], brake_top(seg1.plan, 0),
                      seg1.meta.report.peak_hand_acc_rps2, seg1.meta.report.code))
 
 
 if __name__ == '__main__':
-    main([float(x) for x in sys.argv[1:]] or [0.95, 1.05, 1.2, 1.42])
+    _args = [a for a in sys.argv[1:] if not a.startswith('--')]
+    _mode = 'step' if '--step' in sys.argv else 'margin'
+    main([float(x) for x in _args] or [0.95, 1.05, 1.2, 1.42], _mode)

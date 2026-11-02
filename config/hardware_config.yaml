@@ -717,19 +717,23 @@ jugglebot_odrive_defaults:
                                          # temp, tracking error. 15 A ~ 77 N string tension per
                                          # leg vs 51 N at 10 A (Kt 0.057 Nm/A, spool ~11.2 mm).
   hand_vel_limit_rps: 1000.0             # Hand velocity limit {rev/s}
-  hand_curr_limit_a: 60.0                # Hand current limit {A}. 50.0 -> 60.0 (owner decision,
-                                         # 2026-11-01 Sitting debrief, with hand_acc_limit_rps2
-                                         # 3900 -> 4500): the owner accepts 60-80 A ("the
-                                         # current heating rate is manageable"); 60 is the
-                                         # lowest value whose decel-FF headroom bound
-                                         # (0.85 x I x Kt / (2 pi J_ff 9.5e-6)) clears 4500:
-                                         # 4710.6 rev/s^2 (3925.5 at 50 A). Pushed to the hand
-                                         # ODrive's current_soft_max at every configure, so this
-                                         # value, not the drive's own soft max, is what a launch
-                                         # runs. The drive itself is set to soft 70 / hard 80 A
-                                         # (owner 2026-11-02, config/ODrive config Files/
-                                         # odrive_pro_hand_config.json; the owner keeps 60 A in
-                                         # code until 70 is tested). Measured iq overshoots the
+  hand_curr_limit_a: 70.0                # Hand current limit {A}. 60.0 -> 70.0 (owner decision
+                                         # 2026-11-02, JB-147: an Apex 1.35 launch overshot to
+                                         # 168 rev/s, its stepped brake saturated at -60.4 A and the
+                                         # hand ran into the top stop). History: 50 -> 60 on
+                                         # 2026-11-01 (Sitting debrief, with hand_acc_limit_rps2
+                                         # 3900 -> 4500; the owner accepts 60-80 A, "the current
+                                         # heating rate is manageable"). The decel-FF headroom bound
+                                         # (0.85 x I x Kt / (2 pi J_ff 9.5e-6)) is 5495.7 rev/s^2
+                                         # at 70 A (4710.6 at 60, 3925.5 at 50); hand_acc_limit_rps2
+                                         # and the ceiling stay at 4500, so the extra 10 A is
+                                         # FEEDBACK headroom above the planned brake, not planner
+                                         # authority. Pushed to the hand ODrive's current_soft_max
+                                         # at every configure, so this value, not the drive's own
+                                         # soft max, is what a launch runs. The drive itself is set
+                                         # to soft 70 / hard 80 A (owner 2026-11-02, config/ODrive
+                                         # config Files/odrive_pro_hand_config.json), so 70 now
+                                         # equals the drive's soft max. Measured iq overshoots the
                                          # soft limit (53.3 A against 50 A, 2026-11-01, JB-138),
                                          # hence the 10 A gap to the hard max.
   hand_pos_gain: 35.0                    # Hand position gain
@@ -942,14 +946,16 @@ trajectory_op:
                                    # ENDED HAND_LIMIT_ACC 3910.6-4096.8 on bump-seeded successor
                                    # catches, JB-120; the structural bump fix is filed, not built).
                                    # Raised TOGETHER with hand_curr_limit_a 50 -> 60 A: at 50 A the
-                                   # authority bound below is 3925.5, under 4500.
+                                   # authority bound below is 3925.5, under 4500 (70 A since
+                                   # 2026-11-02, JB-147; this limit unchanged).
   hand_acc_ceiling_rps2: 4500.0    # Hard set_limits clamp {rev/s^2}. Sits UNDER the C-HAND-2
                                    # decel-FF headroom bound 0.85 x hand_curr_limit_a x Kt 0.0055133
-                                   # / (2 pi x J_ff 9.5e-6) = 4710.6 rev/s^2 at 60 A (3925.5 at 50 A;
+                                   # / (2 pi x J_ff 9.5e-6) = 5495.7 rev/s^2 at 70 A (since 2026-11-02;
+                                   # 4710.6 at 60 A, 3925.5 at 50 A;
                                    # ros_ws/docs/hand_throw_envelope.md § B2b and the surviving-
                                    # measurements table), so the ceiling stays inside what the hand
                                    # ODrive can produce. At the MEASURED inertia 1.05e-5 the
-                                   # ball-free hand needs 53.8 A at 4500 (90 % of 60 A); with the
+                                   # ball-free hand needs 53.8 A at 4500 (77 % of 70 A); with the
                                    # ball aboard the loaded ascent authority is lower still
                                    # (throw_envelope.ACCEL_AUTHORITY_RPS2), see JB-115.
   knot_dt_s: 0.025                 # Fixed 40 Hz knot spacing {s} (matches firmware SEGMENT_T_S; not runtime-configurable)
@@ -1132,11 +1138,15 @@ trajectory_op:
   # firmware runs a jerk-bounded cubic-in-velocity stop from the live (p, v, a)
   # to rest and HOLDS. Its duration is the smallest D (bisection) with peak |a| <=
   # max(accel, |a_entry|) and peak |jerk| <= jerk — a C2 stop cannot start below
-  # its own entry acceleration. Hand: the session hand acceleration limit and
-  # ~2.5x the plan's knot jerk (3500 rev/s^2 over ~1 knot). Legs: 250 rev/s^2
+  # its own entry acceleration. Hand: see the 4500 paragraph below. Legs: 250 rev/s^2
   # (~17.6 m/s^2 at 0.0142 rev/mm) is the FW 21 Mode-3 decay's own deceleration
   # from 14 rev/s over 60 ms, now C2; 25000 rev/s^3 bounds its onset.
-  stream_stop_hand_accel_rps2: 3500.0   # {rev/s^2}
+  # Hand 3500 -> 4500 rev/s^2 (owner, 2026-11-02, JB-147, can-bridge FW 36): the
+  # session hand acceleration limit since 2026-11-01, so a stall mid-brake gets a
+  # stop as hard as the brake the planner seeds (release_brake_accel_mm_s2 clamps
+  # its seed at this constant; C-HAND-5/6). The jerk bound stays 350000 (~1.9x the
+  # knot jerk at 4500): a stop whose jerk binds is longer, never harder.
+  stream_stop_hand_accel_rps2: 4500.0   # {rev/s^2}
   stream_stop_hand_jerk_rps3: 350000.0  # {rev/s^3}
   stream_stop_leg_accel_rps2: 250.0     # {rev/s^2}
   stream_stop_leg_jerk_rps3: 25000.0    # {rev/s^3}
@@ -1609,6 +1619,15 @@ hand_throw_envelope:
                                         # loop's vel_gain is in N.m, so iq = torque/Kt), and
                                         # the same coupling exists here.  This key is a
                                         # TRANSCRIPTION of what is flashed, never a command.
+  hand_phase_resistance_ohm: 0.04000    # axis0.config.motor.phase_resistance on the HAND
+                                        # ODrive {Ohm}, transcribed from
+                                        # `config/ODrive config Files/odrive_pro_hand_config.json`
+                                        # (0.04000087454915047, the drive's own calibration
+                                        # measurement, per phase). The REGEN bound's copper
+                                        # loss (2026-11-02, JB-147): the bus sees the braking
+                                        # power LESS c*R*I^2, see throw_envelope.REGEN. A
+                                        # transcription, never a command; a hot winding has
+                                        # more R and so returns less, the safe direction.
   hand_torque_soft_limit_nm: 0.7        # axis0.config.torque_soft_max / -torque_soft_min on the
                                         # hand ODrive {N.m}, symmetric since 2026-08-18 (it was
                                         # torque_soft_min = -0.055133 N.m = exactly -10.00 A, an
@@ -1638,8 +1657,12 @@ hand_throw_envelope:
                                         # dc_bus_nominal_v this is the BURST fence the
                                         # envelope uses: 8.0 A x 45 V = 360 W, which the
                                         # owner has confirmed the rail tolerates as a burst.
-                                        # It binds at 6.574 m/s — above DECEL_AUTHORITY's
-                                        # 5.816, so REGEN is a checked, NON-binding bound.
+                                        # Since 2026-11-02 (JB-147) the fence compares the
+                                        # BUS power, mechanical braking power less the
+                                        # copper loss (hand_phase_resistance_ohm), worst case
+                                        # over every braking current up to the limit: at
+                                        # 70 A it admits the whole wire band (it would have
+                                        # bound at 4.835 m/s without the loss term).
 
 # ============================================================
 # 9. Teensy Operational

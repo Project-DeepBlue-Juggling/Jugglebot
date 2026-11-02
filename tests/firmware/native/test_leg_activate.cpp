@@ -60,6 +60,7 @@ static void present_only(uint8_t mask) {
     axes[i].active_errors = 0;
     axes[i].pos_rev = 0.0f;
     axes[i].vel_rps = 0.0f;
+    axes[i].iq_measured = 0.0f;
   }
 }
 
@@ -585,4 +586,157 @@ TEST_CASE("a second HAND_MOVE_TO retargets in flight: old answered SUPERSEDED, n
   REQUIRE(drain_replies(r, 4) == 1);
   CHECK(r[0].req_id == 101);
   CHECK(r[0].result.outcome == HAND_MOVE_ARRIVED);
+}
+
+// ── FW 36 hand stall guard (JB-146) ───────────────────────────────────────────
+//  Owner rule: no motion with high current for >= 300 ms aborts the move. The
+//  2026-11-02 incident: ACTIVATE parked the hand into its stop (zero lost to an
+//  ODrive GUI save) and the position loop held ~70 A for 5.5 s to MOTOR_OVER_TEMP.
+//  activate_step runs at HOMING_RATE_HZ, so the tests tick it every 10 ms.
+static constexpr uint64_t TICK_US = 1000000ull / HOMING_RATE_HZ;   // 10 ms
+static void tick_for(uint64_t us) {
+  for (uint64_t t = 0; t < us; t += TICK_US) { cs_advance(TICK_US); activate_step(); }
+}
+// The incident's stalled state: well past the current threshold, not moving.
+static void hand_pinned() {
+  axes[HAND_AXIS].iq_measured = -(HAND_STALL_IQ_A + 20.0f);   // sign-agnostic
+  axes[HAND_AXIS].vel_rps     = 0.3f * HAND_STALL_VEL_RPS;
+}
+
+TEST_CASE("stall guard: a HAND_MOVE_TO pinned at high current is IDLEd at 300 ms and answered STALLED") {
+  full_reset(HAND_BIT);
+  axes[HAND_AXIS].pos_rev = 0.49f;
+  REQUIRE(hand_move_request(HAND_AXIS, 0.0f, JBOp::GENTLE_MOVE_VEL_LIMIT_RPS, 77) == JbUdp::RpcStatus::OK);
+  run_to_monitor(1);
+  axes[HAND_AXIS].pos_rev = 0.22f;             // on the stop, 0.22 rev short
+  hand_pinned();
+  activate_step();                             // first stalled tick opens the window
+  cs_clear_sent();
+  tick_for(HAND_STALL_HOLD_US - TICK_US);      // 290 ms in: not yet
+  CHECK(hand_move_active());
+  CHECK_FALSE(sent_frame(ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE)));
+  HandMoveReply r[4];
+  CHECK(drain_replies(r, 4) == 0);
+  tick_for(TICK_US);                           // 300 ms: the guard fires
+  CHECK(sent_frame(ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE)));
+  CHECK_FALSE(hand_move_active());
+  CHECK_FALSE(activate_active());              // HOME / DEACTIVATE are free again
+  CHECK(activate_result(HAND_AXIS) == ACTIVATE_FAILED);
+  CHECK(activate_stalled(HAND_AXIS));
+  REQUIRE(drain_replies(r, 4) == 1);           // exactly one, named reply
+  CHECK(r[0].req_id == 77);
+  CHECK(r[0].status == JbUdp::RpcStatus::ERR_REJECTED);
+  CHECK(r[0].result.outcome == HAND_MOVE_STALLED);
+  CHECK(r[0].result.pos_rev == doctest::Approx(0.22f));
+  cs_clear_sent();
+  tick_for(10 * TICK_US);                      // over: nothing more is sent
+  CHECK(cs_sent_count() == 0);
+  CHECK(drain_replies(r, 4) == 0);
+}
+
+TEST_CASE("stall guard: a hand MOVING under high current is never aborted") {
+  full_reset(HAND_BIT);
+  REQUIRE(hand_move_request(HAND_AXIS, 9.0f, JBOp::GENTLE_MOVE_VEL_LIMIT_RPS, 3) == JbUdp::RpcStatus::OK);
+  run_to_monitor(1);
+  axes[HAND_AXIS].iq_measured = HAND_STALL_IQ_A + 20.0f;
+  axes[HAND_AXIS].vel_rps = 2.0f * HAND_STALL_VEL_RPS;          // moving
+  tick_for(3 * HAND_STALL_HOLD_US);
+  CHECK(hand_move_active());
+  CHECK_FALSE(activate_stalled(HAND_AXIS));
+  CHECK_FALSE(sent_frame(ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE)));
+  // ...and a hand standing still at a modest current is not a stall either.
+  axes[HAND_AXIS].vel_rps = 0.0f;
+  axes[HAND_AXIS].iq_measured = 0.9f * HAND_STALL_IQ_A;
+  tick_for(3 * HAND_STALL_HOLD_US);
+  CHECK(hand_move_active());
+  CHECK_FALSE(activate_stalled(HAND_AXIS));
+}
+
+TEST_CASE("stall guard: stalls shorter than 300 ms never abort, and any break restarts the window") {
+  full_reset(HAND_BIT);
+  REQUIRE(hand_move_request(HAND_AXIS, 5.0f, JBOp::GENTLE_MOVE_VEL_LIMIT_RPS, 4) == JbUdp::RpcStatus::OK);
+  run_to_monitor(1);
+  for (int k = 0; k < 5; ++k) {
+    hand_pinned();
+    tick_for(HAND_STALL_HOLD_US - 2 * TICK_US);   // 280 ms of stall...
+    axes[HAND_AXIS].iq_measured = 2.0f;           // ...one quiet tick
+    tick_for(TICK_US);
+  }
+  CHECK(hand_move_active());
+  CHECK_FALSE(activate_stalled(HAND_AXIS));
+  // A NaN current never reads as a stall.
+  axes[HAND_AXIS].iq_measured = std::numeric_limits<float>::quiet_NaN();
+  axes[HAND_AXIS].vel_rps = 0.0f;
+  tick_for(2 * HAND_STALL_HOLD_US);
+  CHECK(hand_move_active());
+}
+
+TEST_CASE("stall guard: a healthy ACTIVATE park completes and leaves no stall record") {
+  full_reset(HAND_BIT);
+  axes[HAND_AXIS].pos_rev = Homing::HAND_ABS_POS_REV;
+  REQUIRE(activate_request(HAND_AXIS) == JbUdp::RpcStatus::OK);
+  run_to_monitor(1);
+  // The 2026-11-01 levelling: <= 5 A moving, 1.5 A holding.
+  axes[HAND_AXIS].iq_measured = 5.0f; axes[HAND_AXIS].vel_rps = 0.05f;   // starting off
+  tick_for(HAND_STALL_HOLD_US);
+  axes[HAND_AXIS].vel_rps = JBOp::GENTLE_MOVE_VEL_LIMIT_RPS;
+  tick_for(TICK_US);
+  axes[HAND_AXIS].pos_rev = JBOp::HAND_ACTIVATE_POSITION_REV;
+  axes[HAND_AXIS].vel_rps = 0.0f; axes[HAND_AXIS].iq_measured = HandEnv::GRAVITY_HOLD_CURRENT_A;
+  tick_for(TICK_US);
+  CHECK_FALSE(activate_active());
+  CHECK(activate_result(HAND_AXIS) == ACTIVATE_OK);
+  CHECK_FALSE(activate_stalled(HAND_AXIS));
+}
+
+TEST_CASE("stall guard: an ACTIVATE AXIS_ALL IDLEs only the stalled hand; the legs finish") {
+  full_reset((uint8_t)(0x3F | HAND_BIT));
+  axes[HAND_AXIS].pos_rev = 0.49f;
+  REQUIRE(activate_request(JbUdp::RpcArgs::AXIS_ALL) == JbUdp::RpcStatus::OK);
+  run_to_monitor(7);
+  hand_pinned();
+  axes[HAND_AXIS].pos_rev = 0.22f;
+  cs_clear_sent();
+  tick_for(HAND_STALL_HOLD_US + TICK_US);
+  CHECK(sent_frame(ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE)));
+  for (uint8_t leg = 0; leg < NUM_LEGS; ++leg)               // the Platform is NOT dropped
+    CHECK_FALSE(sent_frame(ODrive::encode_set_state(leg, ODriveState::IDLE)));
+  CHECK(activate_active());                                  // the legs are still rising
+  CHECK(activate_result(HAND_AXIS) == ACTIVATE_FAILED);
+  CHECK(activate_stalled(HAND_AXIS));
+  for (uint8_t leg = 0; leg < NUM_LEGS; ++leg) {
+    axes[leg].pos_rev = JBOp::ACTIVATE_POSITION_REVS[leg];
+    axes[leg].vel_rps = 0.0f;
+  }
+  cs_clear_sent();
+  tick_for(TICK_US);
+  CHECK_FALSE(activate_active());
+  for (uint8_t leg = 0; leg < NUM_LEGS; ++leg) CHECK(activate_result(leg) == ACTIVATE_OK);
+  CHECK(activate_result(HAND_AXIS) == ACTIVATE_FAILED);      // no PASSTHROUGH hand-off for an IDLE hand
+  CHECK_FALSE(sent_frame(ODrive::encode_set_controller_mode(
+      HAND_AXIS, ODriveControlMode::POSITION, ODriveInputMode::PASSTHROUGH)));
+  // The sticky record clears when the next ladder that targets the hand starts.
+  axes[HAND_AXIS].iq_measured = 0.0f;
+  REQUIRE(hand_move_request(HAND_AXIS, 1.0f, HM_V, 8) == JbUdp::RpcStatus::OK);
+  activate_step();
+  CHECK_FALSE(activate_stalled(HAND_AXIS));
+}
+
+TEST_CASE("stall guard: a refused IDLE frame is re-sent on the next tick") {
+  full_reset(HAND_BIT);
+  REQUIRE(hand_move_request(HAND_AXIS, 3.0f, HM_V, 6) == JbUdp::RpcStatus::OK);
+  run_to_monitor(1);
+  hand_pinned();
+  tick_for(HAND_STALL_HOLD_US);                // window open, one tick short of firing
+  cs_clear_sent();
+  cs_set_send_fail_index(0);                   // the guard's IDLE is refused
+  tick_for(TICK_US);
+  CHECK(hand_move_active());                   // still targeted, still guarded
+  cs_clear_sent();
+  tick_for(TICK_US);
+  CHECK(sent_frame(ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE)));
+  CHECK_FALSE(hand_move_active());
+  HandMoveReply r[4];
+  REQUIRE(drain_replies(r, 4) == 1);
+  CHECK(r[0].result.outcome == HAND_MOVE_STALLED);
 }

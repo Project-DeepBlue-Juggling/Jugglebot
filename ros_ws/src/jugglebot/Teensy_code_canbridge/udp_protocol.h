@@ -218,7 +218,7 @@ struct DiagnosticPayload {
   uint8_t axis_state;  // ODrive current_state
   uint8_t ctrl_mode;  // ODrive controller mode
   uint8_t input_mode;  // ODrive input mode
-  uint8_t flags;  // bit0: heartbeat_stale, bit1: heartbeat_seen (ever, this boot)
+  uint8_t flags;  // bit0: heartbeat_stale, bit1: heartbeat_seen (ever, this boot), bit2: activate_stall (the cold-start ladder's stall guard IDLEd this axis; sticky until the next ACTIVATE / HAND_MOVE_TO targeting it; can-bridge FW 36, JB-146)
   uint8_t homing_result;  // HomingResult for this Jugglebot axis (0 none/1 running/2 ok/3 failed); 0 for non-leg axes
   uint8_t homing_epoch;  // Per-home epoch (u8, wraps): bumped on every ACCEPTED HOME of this axis, read with homing_result as one pair; a terminal result belongs to the HOME whose acceptance produced this epoch. 0 on an FW <= 33 board (the former pad byte) and for non-leg axes (can-bridge FW 34, JB-72)
   uint8_t pad;  // Alignment pad (zero)
@@ -629,7 +629,7 @@ struct ArgHandMoveTo {
 static_assert(sizeof(ArgHandMoveTo) == 9, "ArgHandMoveTo size drift");
 // ResultHandMoveTo (HAND_MOVE_TO (result))
 struct ResultHandMoveTo {
-  uint8_t outcome;  // 0 ARRIVED / 1 SUPERSEDED / 2 TIMEOUT / 3 ABORTED
+  uint8_t outcome;  // 0 ARRIVED / 1 SUPERSEDED / 2 TIMEOUT / 3 ABORTED / 4 STALLED (FW 36)
   uint8_t pad[3];  // zero
   float pos_rev;  // measured hand position at the reply (rev)
   float vel_rps;  // measured hand velocity at the reply (rev/s)

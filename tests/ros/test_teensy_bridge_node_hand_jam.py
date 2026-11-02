@@ -37,12 +37,12 @@ FIXTURE = (pathlib.Path(__file__).resolve().parents[1] / 'motion' / 'fixtures'
            / 'hand_jam_20261002.csv')
 _HAND = 6
 #: The shipped hand current limit the node restores after a recovered jam
-#: (60 A since 2026-11-01, was 50 A).
+#: (70 A since 2026-11-02, JB-147; 60 A from 2026-11-01, 50 A before).
 _SHIPPED_CURR_A = float(hw.ODRIVE_HAND_CURR_LIMIT_A)
 #: The clamp the 2026-10-02 fixture was RECORDED under: its iq peaks at
 #: 50.1 A, so P4 (|iq| >= iq_frac x clamp) must be judged against 50 A, the
-#: clamp in force on that day, not today's limit (at 60 A no sample reaches
-#: 0.9 x 60 = 54 A; a real jam now pins at the 60 A clamp instead).
+#: clamp in force on that day, not today's limit (at 70 A no sample reaches
+#: 0.9 x 70 = 63 A; a real jam now pins at the 70 A clamp instead).
 _FIXTURE_CLAMP_A = 50.0
 
 
