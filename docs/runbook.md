@@ -130,7 +130,6 @@ Rigs: Robot 4 blocks (97 min) · Bench leg 1 block (30 min)
 
 ## Questions a Sitting can answer
 
-- JB-152 JB-120 held on night-shift/2026-11-01-JB-120: apply the audit's 2 fixes and merge, merge as is, or drop? (parent JB-120)
 - JB-155 JB-149 setpoint stream starved past the 70 ms cover: probe first, a CPU partition, a 4-knot frame, or a bridge-side cliff reaction? (parent JB-149)
 
 ## Close-out
