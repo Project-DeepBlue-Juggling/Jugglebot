@@ -219,6 +219,12 @@ STEP_BOUND_MARGIN = 0.80
 # solver noise. NEVER loosen this to make a specific plan pass; a plan that
 # needs a looser tolerance has a real C2 defect (see the seam survey in
 # U3b_handoff.md for which install paths were checked).
+#
+# ONE named exception (C-HAND-5, 2026-11-02, INVARIANTS.md): a knot the plan
+# DECLARES a stepped release on (``CyclePlan.release_step_knots``) may step
+# DOWNWARD by any amount, each side still under HAND_LIMIT_ACC. That is a
+# planned step, not a stream artefact, and the tolerance stays exact at every
+# other knot.
 HAND_C2_TOL_MARGIN = 1e-3
 
 # A jerk finite difference needs at least this many samples per segment.
@@ -2109,6 +2115,8 @@ def validate_cycle(cycle_plan, limits, geom, *,
     # is one vectorised pass over the knot arrays rather than 2*(n_knots-2)
     # scalar calls.
     peak_hand_c2 = 0.0
+    peak_release_step_up = 0.0
+    release_step_up_knot = -1
     if n_knots >= 3:
         p0, v0 = hrk[:-1], hvk[:-1]     # span i's LEFT endpoint,  i = 0..n_knots-2
         p1, v1 = hrk[1:], hvk[1:]       # span i's RIGHT endpoint, i = 0..n_knots-2
@@ -2122,8 +2130,24 @@ def validate_cycle(cycle_plan, limits, geom, *,
         a_left_interior = a_left_all[:n_knots - 2]
         a_right_interior = a_right_all[1:n_knots - 1]
         if a_left_interior.size:
-            peak_hand_c2 = float(
-                np.max(np.abs(a_left_interior - a_right_interior)))
+            jump = a_right_interior - a_left_interior     # knot k at index k-1
+            # C-HAND-5: a knot the plan DECLARES a stepped release on may step,
+            # but only DOWNWARD (the cup drops away from the ball it just let
+            # go; an upward step there would drive the cup into it).  Each side
+            # of the step is already held to HAND_LIMIT_ACC by the peak above,
+            # so the step's size needs no second bound.  Every other knot keeps
+            # the full C2 tolerance.
+            steps = getattr(cycle_plan, 'release_step_knots', None) or ()
+            if steps:
+                idx = np.asarray([k - 1 for k in steps], dtype=int)
+                jump = jump.copy()
+                up = jump[idx]
+                worst = int(np.argmax(up))
+                if float(up[worst]) > peak_release_step_up:
+                    peak_release_step_up = float(up[worst])
+                    release_step_up_knot = int(steps[worst])
+                jump[idx] = 0.0
+            peak_hand_c2 = float(np.max(np.abs(jump)))
 
     # ── Decide the code (priority order; first failure wins) ──
     step_bound = STEP_BOUND_MARGIN * float(limits.max_step_rev)
@@ -2221,6 +2245,14 @@ def validate_cycle(cycle_plan, limits, geom, *,
                   'the legs use; the firmware MAX_DEVIATION_HAND_REV half '
                   'lands in plan Phase 3'
                   % (int(STEP_BOUND_MARGIN * 100), hand_limit_v, dt)))]
+    elif peak_release_step_up > hand_c2_tol:
+        code = HAND_LIMIT_C2
+        reasons = [bound_msg(
+            'upward hand acceleration step at the stepped release on knot %d'
+            % release_step_up_knot, peak_release_step_up, '>', hand_c2_tol,
+            unit='rev/s^2', digits=3,
+            tail=('a release step (C-HAND-5) may only drop the cup away from '
+                  'the ball; one that steps UP drives the cup into it'))]
     elif peak_hand_c2 > hand_c2_tol:
         code = HAND_LIMIT_C2
         reasons = [bound_msg(

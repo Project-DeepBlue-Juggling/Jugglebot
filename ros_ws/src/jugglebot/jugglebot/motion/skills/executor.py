@@ -1421,7 +1421,8 @@ def _snap_to_release(meta: uc.CycleMeta, k_s: int,
     Snapping to
     ``k_rel`` and seeding POST-RELEASE (the same floats
     :func:`~jugglebot.motion.unified_cycle.release_state_from_meta` hands a
-    chain: site, take-off velocity, ``g``, detach axis, the head's levelling
+    chain: site, take-off velocity, the seed acceleration (``g``, or the
+    mark's brake seed at a stepped release, C-HAND-5), detach axis, the head's levelling
     frame) is what the chain has always done at a TERMINAL release — this is
     the interior spelling of it, and the cone is then carried by the new window
     rather than solved away.  The refusal stays for every other ``k_s`` in the

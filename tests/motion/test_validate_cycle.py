@@ -1607,6 +1607,22 @@ import functools
 import os
 
 from jugglebot.motion import unified_cycle as _uc
+
+
+def _release_step_off(fn):
+    """Build the wrapped helper's plans with the release step OFF.
+
+    release step OFF: pins the continuous-release shape (C-HAND-5 changes it; see tests/motion/test_release_step.py)
+    These helpers' callers pin numbers (stroke-end knots, seating g, cone angles)
+    measured on the continuous-release plan.  Inside the helper, so an
+    ``lru_cache`` over it can never hold a stepped plan for an unstepped caller.
+    """
+    @functools.wraps(fn)
+    def wrapper(*a, **k):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(uc, 'RELEASE_ACC_STEP', False)
+            return fn(*a, **k)
+    return wrapper
 _FIX = os.path.join(os.path.dirname(__file__), '..', 'fixtures', 'cup_catch_plans')
 _G = 9806.65 / 1000.0                                     # m/s^2, probe value 9.806
 _OVAL_LIMITS = (350.0, 5000.0, 200e3, 3900.0)             # leg vel/acc/jerk, hand acc
@@ -1635,6 +1651,7 @@ def _load_fixture(name):
 
 
 @functools.lru_cache(maxsize=1)
+@_release_step_off
 def _rung1_window():
     """The rung-1 one-ball oval window, regenerated from PRODUCTION code.
 
@@ -1754,6 +1771,7 @@ def test_the_p3_target_fixtures_pass_the_rebased_cone(geom, name, deg):
     assert rep.min_cup_seating_az_g > 0.5
 
 
+@_release_step_off
 def _oval_carry_segment(dwell_s, hold_s=0.100):
     """The rung-1 oval carry through the PRODUCTION segment path (the same
     ``segments._plan_catch_throw`` terminal the executor dispatches, default
@@ -1823,6 +1841,8 @@ def _gated_windows(fn, monkeypatch):
 def test_rung1_through_the_production_segment_path_passes_the_45_deg_cone(
         monkeypatch, geom):
     """C-CUP-4 margin on the rung-1 carry (150 mm / apex 0.95 / dwell 0.50 /
+    [Continuous release: the plan helper pins the release step OFF (C-HAND-5);
+    the stepped shape is gated at every install and pinned in test_release_step.py.]
     350-5000-200000 / hand 3900, production segment path, default 0.100 s
     pre-release hold).  Until 2026-10-19 this window was REFUSED at 32.1 deg
     (knot 49) against the 30 deg cone; at 45 deg, judged from the stroke end, it
@@ -1873,6 +1893,8 @@ def test_a_faster_rung1_carry_is_refused_after_the_stroke_ends():
 
 def test_the_production_default_carry_reads_the_holdless_seating(monkeypatch, geom):
     """Production default hold is 0.000 (2026-10-31): the rung-1 carry (dwell 0.50)
+    [Continuous release: the plan helper pins the release step OFF (C-HAND-5);
+    the stepped shape is gated at every install and pinned in test_release_step.py.]
     through the segment path reads the hold-less 20.17 deg (= the raw chain's
     20.16), well inside the 30 deg fall-back cone."""
     windows, _out = _gated_windows(
@@ -1884,6 +1906,7 @@ def test_the_production_default_carry_reads_the_holdless_seating(monkeypatch, ge
 
 
 @functools.lru_cache(maxsize=1)
+@_release_step_off
 def _hop_entry_skill2_plan():
     """The class window of the 2026-10-19 15:23 refusals, re-built offline: the
     columns hop-entry fed schedule's skill-2 CATCH (Ball 1 at the far site P1,
@@ -2288,6 +2311,7 @@ def test_the_planner_bounds_the_same_samples_the_gate_checks():
     assert cc.Z_BOX_SAMPLES_PER_KNOT == feas._CYCLE_SAMPLES_PER_KNOT
 
 
+@_release_step_off
 def _hop_entry_skill2_pose_plan():
     """The 2026-11-01 refused window, rebuilt offline: the columns hop-entry fed
     schedule's skill-2 CATCH under the SHIPPED ``pose`` planner at the Sitting's
@@ -2348,6 +2372,8 @@ def _hand_minima(plan):
 
 def test_the_hop_start_catch_no_longer_dips_between_knots(monkeypatch):
     """The 2026-11-01 HAND_STROKE class, closed in the planner.
+    [Continuous release: the plan helper pins the release step OFF (C-HAND-5);
+    the stepped shape is gated at every install and pinned in test_release_step.py.]
 
     Recipe (measured 2026-11-01 offline, this construction): with the box on the
     knots only (``Z_BOX_SAMPLES_PER_KNOT = 1``) the knot minimum sits ON the

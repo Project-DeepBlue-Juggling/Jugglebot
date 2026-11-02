@@ -36,7 +36,8 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..')
 sys.path[:0] = [ROOT, os.path.join(ROOT, 'ros_ws', 'src', 'jugglebot'), os.path.join(ROOT, 'sim')]
 from jugglebot.motion import unified_cycle as uc  # noqa: E402
 from jugglebot.motion.trajectory import feasibility as fz  # noqa: E402
-from jugglebot.motion.trajectory.cycle_plan import CyclePlan, shift_catch_evidence  # noqa: E402
+from jugglebot.motion.trajectory.cycle_plan import (  # noqa: E402
+    CyclePlan, shift_catch_evidence, shift_release_steps)
 from jugglebot.motion.skills import bump  # noqa: E402
 
 
@@ -76,7 +77,9 @@ def bumped(plan, b, bd, k0=0, k1=None):
     return CyclePlan(pose[sl], pv[sl], plan.hand_rev[sl], plan.hand_vel_rps[sl], plan.dt,
                      catch_k=catch_k, contact_knots=ck,
                      catch_evidence=shift_catch_evidence(
-                         plan.catch_evidence, -k0, plan.dt, k1 - k0 + 1))
+                         plan.catch_evidence, -k0, plan.dt, k1 - k0 + 1),
+                     release_step_knots=shift_release_steps(
+                         plan.release_step_knots, -k0, k1 - k0 + 1))
 
 
 HOLD_THROUGH = False

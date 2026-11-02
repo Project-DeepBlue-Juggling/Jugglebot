@@ -397,10 +397,13 @@ def test_a_handoff_splice_snaps_to_the_release_and_is_seeded_post_release(
     assert res.accepted, res.message
     assert res.splice_k == k_rel
     assert res.seeded_post_release is True
-    # The seed's cup acceleration is g EXACTLY — the free-fall equality the
-    # release ended on, not a mid-carry acceleration read off the plan.
-    assert np.allclose(seg.meta.cup_plan.acc[0] * 1000.0, uc._G_MM_S2,
-                       atol=1e-9)
+    # The seed's cup acceleration is the release mark's post-release value —
+    # g EXACTLY for a continuous release (the free-fall equality it ended on),
+    # the stepped brake seed (C-HAND-5) otherwise — not a mid-carry
+    # acceleration read off the plan.
+    brake = old.meta.releases[0].brake_accel_mm_s2
+    assert np.allclose(seg.meta.cup_plan.acc[0] * 1000.0,
+                       uc._G_MM_S2 if brake is None else brake, atol=1e-9)
     # The head keeps the release mark AT the seam: the ball that just left the
     # cup is still recorded as thrown, and the head is bit-identical.
     assert np.array_equal(new.plan.pose[:k_rel + 1], old.plan.pose[:k_rel + 1])

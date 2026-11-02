@@ -74,6 +74,33 @@ def throw_plan(gate):
     return seg.plan
 
 
+@pytest.fixture(scope='module')
+def throw_plan_continuous(gate):
+    """``throw_plan`` with the release step OFF (C-HAND-5).
+
+    The falling-edge test cuts at the knot of PEAK hand speed. With the step
+    that knot is the release itself, where the acceleration steps, and the
+    LEGACY ladder's Mode-2 Taylor extrapolation then runs from the frame's
+    accel and a finite-difference jerk taken across the step. The live robot
+    never runs that ladder for a skill plan: a scheduled hand group supersedes
+    it (``leg_interp.cpp``, FW 22). The test pins the ladder's wind-down rule,
+    so it keeps the continuous shape it was written against.
+    """
+    from jugglebot.motion import unified_cycle as uc
+    old = uc.RELEASE_ACC_STEP
+    uc.RELEASE_ACC_STEP = False
+    try:
+        site0, site1 = sites.columns_sites(gate.cfg.separation_mm)
+        terminal = ThrowTerminal(site_mm=site0.throw_site_mm(),
+                                 target_mm=site1.catch_site_mm(),
+                                 flight_s=sk.flight_s(gate.cfg.apex_m),
+                                 t_release_s=0.4)
+        return plan_segment(THROW, gate._rest_state(site0), terminal,
+                            SegmentConfig(), gate.limits, gate.geom).plan
+    finally:
+        uc.RELEASE_ACC_STEP = old
+
+
 # ── the gate's verdict ───────────────────────────────────────────────────────
 
 def test_the_smoke_run_is_not_vacuous_and_never_drops(smoke_report):
@@ -205,7 +232,7 @@ def test_the_plan_wall_time_is_reported(smoke_report):
 
 # ── the hand lane (ported from ``tests/sim/test_unified_gate.py``) ─────────
 
-def test_the_hand_lane_decays_on_the_falling_edge(throw_plan, gate):
+def test_the_hand_lane_decays_on_the_falling_edge(throw_plan_continuous, gate):
     """Cut the stream mid-stroke: the lane winds down, it does not hold.
 
     The NORMATIVE rule (canbridge_config.h's FW 17 block): when ``HAS_HAND``
@@ -217,7 +244,7 @@ def test_the_hand_lane_decays_on_the_falling_edge(throw_plan, gate):
     Cut deliberately at the knot of PEAK hand speed, so a lane that held
     would hold the worst possible feedforward.
     """
-    d = stream_chain.hand_decay_probe(throw_plan, gate.geom)
+    d = stream_chain.hand_decay_probe(throw_plan_continuous, gate.geom)
     assert d['ok'] is True
     assert abs(d['v_at_cut_rps']) > 10.0, (
         'the cut landed on a stationary hand (%.3f rev/s) -- the probe would '

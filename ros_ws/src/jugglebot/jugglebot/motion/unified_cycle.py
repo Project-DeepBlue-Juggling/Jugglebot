@@ -104,7 +104,7 @@ from jugglebot.motion.trajectory import cup_realize as cr
 from jugglebot.motion.trajectory import feasibility as fz
 from jugglebot.motion.trajectory import tilt_geometry as tg
 from jugglebot.motion.trajectory.cycle_plan import (
-    CatchEvidence, CyclePlan, shift_catch_evidence)
+    CatchEvidence, CyclePlan, shift_catch_evidence, shift_release_steps)
 from jugglebot.outcome_detail import bound_msg
 
 #: Hand rev/m — measured (``jugglebot_geometry.hand_mm_per_rev``), not the
@@ -909,6 +909,14 @@ class ReleaseMark:
     #: :data:`PRE_RELEASE_HOLD_S`).  Carried so the splice guard protects
     #: exactly the knots that hold, and none when it was planned at 0.
     pre_hold_knots: int = 0
+    #: The cup acceleration (mm/s², world) the window AFTER this release starts
+    #: from: the brake seed of a STEPPED release (C-HAND-5,
+    #: :func:`release_brake_accel_mm_s2`), or ``None`` for the continuous
+    #: release, whose next window starts from ``g`` exactly.  Recorded once,
+    #: when the throw is planned, so every consumer of the release (the SETTLE
+    #: tail, the next segment's window, a splice landing on this knot) reads one
+    #: number; it is also what ``validate_cycle`` is told admits a step here.
+    brake_accel_mm_s2: Optional[np.ndarray] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1180,7 +1188,9 @@ def release_state_at_knot(plan: CyclePlan, meta: CycleMeta, k: int,
 
     So this is the interior spelling of :func:`release_state_from_meta`, and
     the same floats: the mark on knot ``k`` supplies the site, the take-off
-    velocity, ``g`` and the detach axis (the direction the ball actually left
+    velocity, the seed acceleration (``g`` for a continuous release, the
+    mark's ``brake_accel_mm_s2`` for a stepped one, C-HAND-5) and the detach
+    axis (the direction the ball actually left
     along), the plan's knot ``k`` supplies pose and hand, and the levelling
     frame is the one the PLAN was built in (row E8's in-flight rule).  At the
     TERMINAL knot it equals :func:`release_state_from_meta` field for field,
@@ -1212,7 +1222,9 @@ def release_state_at_knot(plan: CyclePlan, meta: CycleMeta, k: int,
         post_release=True,
         cup_pos_mm=np.asarray(mark.site_mm, dtype=float).copy(),
         cup_vel_mm_s=np.asarray(mark.vel_mm_s, dtype=float).copy(),
-        cup_accel_mm_s2=_G_MM_S2.copy(),
+        cup_accel_mm_s2=(_G_MM_S2.copy() if mark.brake_accel_mm_s2 is None
+                         else np.asarray(mark.brake_accel_mm_s2,
+                                         dtype=float).copy()),
         levelling_correction=meta.levelling_correction,
     )
 
@@ -1223,7 +1235,8 @@ def release_state_from_meta(meta: CycleMeta, plan: CyclePlan,
 
     Windows abut at a release instant, and "exactly" is load-bearing: the cup
     position, velocity and acceleration are carried across as the same floats the
-    finished window's terminal equality pinned (site, take-off velocity, ``g``),
+    finished window's terminal equality pinned (site, take-off velocity, ``g``;
+    for a stepped release the acceleration is the mark's brake seed),
     not re-derived from the pose through the inverse map.  Round-tripping instead
     would cost ~1e-11 mm — harmless on its own, but it would make the two windows'
     shared knot merely *close*, and :func:`extend`'s seam check exists precisely
@@ -1320,6 +1333,63 @@ def build_realize_config(limits, *, banking: bool = True,
     return cr.RealizeConfig(**kwargs)
 
 
+#: The release step (C-HAND-5) on by default for every window this module
+#: plans.  See ``cup_cycle.CupCycleConfig.release_acc_step``.
+RELEASE_ACC_STEP = True
+
+#: The brake seed is this multiple of the constant-deceleration ideal
+#: ``v_z**2 / (2 d)``, with ``d`` the release's distance to the cup box top.
+#: Above 1 so the QP, which continues from the seed with CONTINUOUS
+#: acceleration, has room to finish the stop inside the box (R0 measured
+#: kappa 1.11 at a 1.1 seed with the launch unchanged).
+RELEASE_BRAKE_FACTOR = 1.10
+
+#: The seed is never gentler than this many g: below ``1 g`` the cup would fall
+#: SLOWER than the ball and carry it on, so the release would not be one.
+RELEASE_BRAKE_MIN_G = 2.0
+
+
+def release_brake_accel_mm_s2(takeoff_vel_mm_s, launch_accel_mm_s2,
+                              z_release_mm: float, z_top_mm: float,
+                              limits) -> np.ndarray:
+    """The cup acceleration (mm/s², world) a STEPPED release hands the next window.
+
+    ``a_R = a_L + s·u``: the launch's own release acceleration ``a_L`` (the QP's
+    knot-``n`` value, whose specific force ``a_L - g`` the release rows hold
+    along ``u``) stepped ALONG the take-off direction ``u`` — the cup axis the
+    release tilt is pinned to — so the step is a slider step and the platform's
+    acceleration stays continuous (a vertical-only step on a tilted cup made the
+    platform cancel its sideways part: 200 k mm/s³ of leg jerk on the hop
+    throws, 2026-11-01).  ``a_R - g`` is then along ``u`` too, so the
+    post-release detach cone already holds at knot 0.
+
+    ``s`` is chosen so the VERTICAL brake is ``B = RELEASE_BRAKE_FACTOR · v_z² /
+    (2 (z_top − z_release))``, clamped to ``[RELEASE_BRAKE_MIN_G · g, A·u_z]``
+    with ``A`` the smaller of the session hand acceleration limit and the
+    firmware stream STOP's deceleration (``stream_stop_hand_accel_rps2``) — the
+    cap is applied in the SLIDER's frame (the slider runs along ``u``, so a
+    vertical brake ``B`` is a slider deceleration ``B / u_z``): a stream stall
+    mid-brake hands the hand to that stop, and a plan braking harder than the
+    stop would overrun its own planned top.  A release too fast to stop at the
+    clamp still plans: the QP finishes the stop after the seed, as the
+    continuous release always has.
+    """
+    v = np.asarray(takeoff_vel_mm_s, dtype=float).reshape(3)
+    a_l = np.asarray(launch_accel_mm_s2, dtype=float).reshape(3)
+    u = v / float(np.linalg.norm(v))
+    g = abs(float(_G_MM_S2[2]))
+    d = float(z_top_mm) - float(z_release_mm)
+    vz = max(float(v[2]), 0.0)
+    b_lo = RELEASE_BRAKE_MIN_G * g
+    a_cap_rps2 = min(float(limits.hand_acc_limit_rps2),
+                     float(hw.JB_TRAJ_STREAM_STOP_HAND_ACCEL_RPS2))
+    b_hi = max(b_lo, a_cap_rps2 / HAND_REV_PER_M * 1000.0 * float(u[2]))
+    b = (RELEASE_BRAKE_FACTOR * vz * vz / (2.0 * d)) if d > 0.0 else b_hi
+    b = min(max(b, b_lo), b_hi)
+    s_step = (-b - float(a_l[2])) / float(u[2])
+    return a_l + s_step * u
+
+
 def build_cup_config(**overrides) -> cc.CupCycleConfig:
     """A :class:`cup_cycle.CupCycleConfig` boxed to the slider-reachable cup band.
 
@@ -1350,7 +1420,8 @@ def build_cup_config(**overrides) -> cc.CupCycleConfig:
                   z_max_m=_CUP_Z_TOP_M - _CUP_Z_TOP_INSET_M,
                   catch_runway_z_floor_m=_CUP_Z_BOTTOM_M,
                   # no stroke_z_top_m: ceiling rows are opt-in (cup_cycle.py)
-                  catch_runway_enabled=True)
+                  catch_runway_enabled=True,
+                  release_acc_step=RELEASE_ACC_STEP)
     kwargs.update(overrides)
     return cc.CupCycleConfig(**kwargs)
 
@@ -1840,7 +1911,7 @@ def plan_cycle(kind: str, goals: CycleGoals, state: CycleState,
     plan, meta = _realize(kind, cup, goals, state, limits, geom, rcfg,
                           t_wall=t_wall, stages=stages, pose_tilts=pose_tilts,
                           planner_mode=(PLANNER_POSE if pose_spec is not None
-                                        else PLANNER_LEVEL))
+                                        else PLANNER_LEVEL), cup_cfg=cup_cfg)
     return plan, meta
 
 
@@ -2135,7 +2206,7 @@ def _start_tilt_for(state: CycleState) -> Optional[np.ndarray]:
 def _realize(kind, cup, goals, state, limits, geom, rcfg, *, t_wall,
              stages: Optional[Dict[str, float]] = None,
              pose_tilts: Optional[np.ndarray] = None,
-             planner_mode: str = PLANNER_LEVEL):
+             planner_mode: str = PLANNER_LEVEL, cup_cfg=None):
     """Stages 2-4 plus the gate: tilt schedule, decomposition, plan, validate.
 
     ``stages`` is the caller's per-stage wall-time accumulator (see
@@ -2360,13 +2431,15 @@ def _realize(kind, cup, goals, state, limits, geom, rcfg, *, t_wall,
         catch_evidence=evidence)
     meta = _meta_for(kind, plan, cup, goals, tilts, recv, throw_tilt,
                      limits, geom, t_wall=t_wall, stages=stages,
-                     correction=correction, planner_mode=planner_mode)
+                     correction=correction, planner_mode=planner_mode,
+                     cup_cfg=cup_cfg)
     return plan, meta
 
 
 def _meta_for(kind, plan, cup, goals, tilts, recv, throw_tilt, limits, geom, *,
               t_wall, stages: Optional[Dict[str, float]] = None,
-              correction=None, planner_mode: str = PLANNER_LEVEL):
+              correction=None, planner_mode: str = PLANNER_LEVEL,
+              cup_cfg=None):
     t_stage = time.perf_counter()
     report = fz.validate_cycle(plan, limits, geom)
     if stages is not None:
@@ -2387,7 +2460,15 @@ def _meta_for(kind, plan, cup, goals, tilts, recv, throw_tilt, limits, geom, *,
             target_mm=_vec3(goals.throw_target_mm, 'throw_target_mm'),
             tilt=np.asarray(throw_tilt, dtype=float),
             stroke_clear_s=plan_stroke_clear_s(plan, t_rel),
-            pre_hold_knots=int(goals.pre_release_hold_knots)))
+            pre_hold_knots=int(goals.pre_release_hold_knots),
+            brake_accel_mm_s2=(
+                release_brake_accel_mm_s2(
+                    np.asarray(cup.takeoff_vel, dtype=float) * 1000.0,
+                    np.asarray(cup.acc[-1], dtype=float) * 1000.0,
+                    float(goals.throw_site_mm[2]),
+                    float(cc._cfg(cup_cfg, 'z_max_m')) * 1000.0, limits)
+                if cup_cfg is not None
+                and bool(cc._cfg(cup_cfg, 'release_acc_step')) else None)))
     if int(cup.catch_k) >= 0:
         t_catch = goals.catch_time_s()
         catches.append(CatchMark(
@@ -2618,7 +2699,7 @@ def _join_evidence(ev_a, ev_b):
 
 
 def _concat_plans(plan_a: CyclePlan, plan_b: CyclePlan, catch_k: int,
-                  seam_vel=(None, None)) -> CyclePlan:
+                  seam_vel=(None, None), seam_step: bool = False) -> CyclePlan:
     """``plan_a`` then ``plan_b`` with ``plan_b``'s duplicate first knot dropped.
 
     ``seam_vel`` is ``(pose_vel, hand_vel_rps)`` for the seam knot — see
@@ -2649,7 +2730,22 @@ def _concat_plans(plan_a: CyclePlan, plan_b: CyclePlan, catch_k: int,
         catch_evidence=_join_evidence(
             shift_catch_evidence(plan_a.catch_evidence, 0, plan_a.dt, n_joint),
             shift_catch_evidence(plan_b.catch_evidence, n_a - 1, plan_a.dt,
-                                 n_joint)))
+                                 n_joint)),
+        # C-HAND-5: both halves' declared steps on the joint clock, plus the
+        # seam itself when ``plan_a`` ends at a STEPPED release.
+        release_step_knots=(
+            tuple(plan_a.release_step_knots or ())
+            + tuple(k + n_a - 1 for k in (plan_b.release_step_knots or ()))
+            + ((n_a - 1,) if seam_step else ())))
+
+
+def _seam_is_release_step(meta_a: 'CycleMeta', n_a: int) -> bool:
+    """True when ``meta_a`` ends at a STEPPED release (C-HAND-5) on its last knot."""
+    if not meta_a.releases:
+        return False
+    m = meta_a.releases[-1]
+    return (m.brake_accel_mm_s2 is not None
+            and int(round(float(m.t_s) / float(meta_a.dt))) == int(n_a) - 1)
 
 
 def _concat_cup(cup_a, cup_b, dt, catch_k):
@@ -2770,6 +2866,9 @@ def _gate_view(plan: CyclePlan, k_from: int) -> CyclePlan:
                          int(plan.n_knots) - k_from),
                      catch_evidence=shift_catch_evidence(
                          plan.catch_evidence, -k_from, plan.dt,
+                         int(plan.n_knots) - k_from),
+                     release_step_knots=shift_release_steps(
+                         plan.release_step_knots, -k_from,
                          int(plan.n_knots) - k_from))
 
 
@@ -2994,7 +3093,8 @@ def extend(plan_a: CyclePlan, meta_a: CycleMeta,
     joined = _concat_plans(
         plan_a, plan_b, catch_k,
         seam_vel=(_seam_velocity(cup_joined, tilts_joined, n_a - 1, limits)
-                  if head_truncated else (None, None)))
+                  if head_truncated else (None, None)),
+        seam_step=_seam_is_release_step(meta_a, n_a))
     # The seam and the new window, not the whole plan — see `_gate_joined` for
     # why that is both sound and necessary (a ring's install cost must be flat).
     report, report_range = _gate_joined(joined, plan_a, plan_b, meta_a, limits,
@@ -3239,7 +3339,9 @@ def _head_view(plan: CyclePlan, meta: CycleMeta,
                      contact_knots=_shift_contact(plan.contact_knots, 0,
                                                   n_head),
                      catch_evidence=shift_catch_evidence(
-                         plan.catch_evidence, 0, dt, n_head))
+                         plan.catch_evidence, 0, dt, n_head),
+                     release_step_knots=shift_release_steps(
+                         plan.release_step_knots, 0, n_head))
     t_head = k_s * dt
     # Half a knot of tolerance on the release instant for the same float reason
     # the retired `replan_tail` documented at its nominated-catch bound: a
@@ -3315,7 +3417,9 @@ def tail_view(plan: CyclePlan, meta: CycleMeta,
                      hand_vel_rps=plan.hand_vel_rps[k:], dt=dt, catch_k=-1,
                      contact_knots=_shift_contact(plan.contact_knots, -k, m),
                      catch_evidence=shift_catch_evidence(
-                         plan.catch_evidence, -k, dt, m))
+                         plan.catch_evidence, -k, dt, m),
+                     release_step_knots=shift_release_steps(
+                         plan.release_step_knots, -k, m))
     cup = meta.cup_plan
     cup_tail = None if cup is None else cc.CupCyclePlan(
         pos=cup.pos[k:], vel=cup.vel[k:], acc=cup.acc[k:], jerk=cup.jerk[k:],

@@ -454,6 +454,11 @@ _PRE_OVAL_SNAPSHOT = os.path.join(_REPO, 'tests', 'fixtures',
 # The box as committed before the 2026-11-02 hand_acc 3900 -> 4500 re-sweep. The
 # box-history tests are anchored here, not on the live box.
 _PRE_H4500_BOX = os.path.join(_REPO, 'tests', 'fixtures', 'admissible_box_pre_h4500.yaml')
+#: The committed h4500 box (gate_hash 15c6d0ff8a84, d5477aee), frozen when the
+#: release step (C-HAND-5) re-swept the box on 2026-11-02, so the h4500 test
+#: below keeps pinning what that re-sweep changed.
+_PRE_RELEASE_STEP_BOX = os.path.join(_REPO, 'tests', 'fixtures',
+                                     'admissible_box_pre_release_step.yaml')
 
 
 @pytest.mark.skipif(not os.path.exists(_PRE_OVAL_SNAPSHOT),
@@ -1437,8 +1442,10 @@ def test_single_apex_columns_ladder_admits_a_commanded_apex_below_the_pattern(
         # (re-swept 2026-10-31: hold 0, hand prime 10.45, floor 0.06): the f=+0.05/+0.10 rungs no
         # longer refuse HAND_LIMIT_ACC (raised hand prime), so the band tops out
         # at the +0.10 rung, 0.90 * 1.05**2 = 0.99225 m (was 0.90 m).
+        # (2026-11-02, release step C-HAND-5): the +0.20 rung now plans inside the
+        # hand limit too, so the band tops out at 0.90 * 1.10**2 = 1.089 m.
         assert alo == pytest.approx(0.576)
-        assert ahi == pytest.approx(0.99225)
+        assert ahi == pytest.approx(1.089)
         assert alo < 0.90, (
             '%r admits no commanded apex below the pattern -- the R5 defect '
             'regressed: a ladder rung is shortening the schedule timing '
@@ -1579,7 +1586,7 @@ def test_h4500_resweep_kept_cells_and_columns_values_and_changed_only_hand_acc()
     import yaml as _y
     with open(_PRE_H4500_BOX) as fh:
         old = _y.safe_load(fh)
-    with open(_COMMITTED_BOX) as fh:
+    with open(_PRE_RELEASE_STEP_BOX) as fh:    # the h4500 box as committed
         new = _y.safe_load(fh)
     assert old['limits']['hand_acc_rps2'] == 3900
     assert new['limits']['hand_acc_rps2'] == pytest.approx(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2) == 4500
@@ -1630,7 +1637,9 @@ def test_pattern_progression_cells_are_the_tail_after_the_62():
     import yaml as _y
     with open(_COMMITTED_BOX) as fh:
         new = _y.safe_load(fh)
-    tail = new['boxes'][62:]    # (re-swept 2026-10-31: hold 0, hand prime 10.45, floor 0.06)
+    # (re-swept 2026-10-31: hold 0, hand prime 10.45, floor 0.06); cells 82.. are the
+    # release step's high Columns cells (2026-11-02), pinned by their own test.
+    tail = new['boxes'][62:82]
     assert len(tail) == 20 and all(b['planner_mode'] == 'pose' for b in tail)
     turned, highlow = tail[:12], tail[12:]
     assert all(b['pattern'] == 'columns' and b['dwell_s'] == 0.27 for b in turned)
@@ -1723,3 +1732,57 @@ def test_apex_pair_cli_is_columns_only_and_high_first():
                  ['--site-pairs', 'columns', '--apex-pair', '0.95', '1.05']):
         with pytest.raises(SystemExit):
             sw.main(argv + ['--out', os.devnull])
+
+
+def test_release_step_resweep_kept_the_pose_cells_and_added_columns_to_apex_1_40():
+    """2026-11-02 re-sweep for the release step (C-HAND-5, logbook
+    2026-11-02-hand-release-step): the first 82 cells keep their keys and order
+    and the limits are unchanged; every POSE cell of the four families the step
+    does not tilt (plain Columns, oval, turned Columns, high-low) is
+    bit-identical (NaN-equal); and 18 pose Columns cells are appended at Apex
+    bands 1.00..1.40 (separation 125, dwell 0.27), every one admissible, for the
+    Apex-ladder Sitting (JB-144).  What DID move is deliberately not pinned:
+    Hop landing rectangles and Apex floors in BOTH planner modes (selection,
+    JB-143) and the LEVEL planner's
+    self_toss / Columns / oval cells (level oval dwell 0.45 lost its 0.95 and
+    1.10 cells to LIMIT_JERK: the stepped release holds the launch's specific
+    force along a tilted take-off direction, which the level planner's
+    platform has to translate for)."""
+    import math
+    import yaml as _y
+    with open(_PRE_RELEASE_STEP_BOX) as fh:
+        old = _y.safe_load(fh)
+    with open(_COMMITTED_BOX) as fh:
+        new = _y.safe_load(fh)
+    assert new['limits'] == old['limits']
+
+    def key(b):
+        return (b['pattern'], b['planner_mode'], tuple(b['site_pair']), b['dwell_s'],
+                tuple(b['release_site_xy_mm']), tuple(b['target_site_xy_mm']),
+                tuple(round(x, 6) for x in b['apex_band_m']))
+    assert len(old['boxes']) == 82 and len(new['boxes']) == 100
+    assert [key(b) for b in old['boxes']] == [key(b) for b in new['boxes'][:82]]
+
+    def same(x, y):
+        if isinstance(x, float) and isinstance(y, float):
+            return (math.isnan(x) and math.isnan(y)) or x == y
+        if isinstance(x, (list, tuple)) and isinstance(y, (list, tuple)):
+            return len(x) == len(y) and all(same(i, j) for i, j in zip(x, y))
+        return x == y
+    n_kept = 0
+    for a, b in zip(old['boxes'], new['boxes'][:82]):
+        if a['planner_mode'] == 'pose' and a['pattern'] in (
+                'columns', 'columns_highlow', 'oval_1ball'):
+            n_kept += 1
+            assert same(a, b), (a, b)
+    assert n_kept == 38     # 6 plain Columns + 12 turned + 8 high-low + 12 oval
+
+    added = new['boxes'][82:]
+    assert all(b['pattern'] == 'columns' and b['planner_mode'] == 'pose'
+               and b['dwell_s'] == 0.27 for b in added)
+    assert sorted({round(b['apex_band_m'][0] + 0.025, 3) for b in added}) == \
+        [1.00, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30, 1.35, 1.40]
+    for b in added:
+        assert b['site_pair'][0] == b['site_pair'][1] in ('P1', 'P2')
+        assert math.isclose(abs(b['release_site_xy_mm'][0]), 62.5, abs_tol=1e-6)
+        assert not math.isnan(b['apex_m'][0]), b

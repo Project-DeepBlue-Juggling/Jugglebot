@@ -161,7 +161,9 @@ def test_release_state_at_the_terminal_knot_is_release_state_from_meta(halves):
             assert a == b, field.name
     assert got.post_release is True
     assert got.detach_axis is not None
-    assert np.array_equal(got.cup_accel_mm_s2, uc._G_MM_S2)
+    brake = meta_a.releases[-1].brake_accel_mm_s2     # C-HAND-5: g when None
+    assert np.array_equal(got.cup_accel_mm_s2,
+                          uc._G_MM_S2 if brake is None else brake)
 
 
 def test_release_state_at_knot_refuses_a_knot_with_no_release(throw):

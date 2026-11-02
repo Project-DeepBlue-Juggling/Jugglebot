@@ -837,8 +837,15 @@ def _off_launch_line_mm_s(plan, k_rel, n):
                for k in range(k_rel - n, k_rel))
 
 
+@pytest.fixture
+def release_step_off(monkeypatch):
+    # release step OFF: pins the continuous-release shape (C-HAND-5 changes it; see tests/motion/test_release_step.py)
+    monkeypatch.setattr(uc, 'RELEASE_ACC_STEP', False)
+
+
 @pytest.mark.parametrize('apex_m', [0.85, 0.9, 0.95])
-def test_a_hop_throw_holds_the_platform_still_for_the_last_100_ms(apex_m, geom):
+def test_a_hop_throw_holds_the_platform_still_for_the_last_100_ms(apex_m, geom,
+                                                                  release_step_off):
     """The 250 mm hop's platform no longer swings laterally into the release.
 
     MEASURED 2026-09-29 (probe ``probe_prehold.py`` and this test, R4 limits):
@@ -876,7 +883,8 @@ def test_a_hop_throw_holds_the_platform_still_for_the_last_100_ms(apex_m, geom):
 
 
 @pytest.mark.parametrize('apex_m', [0.85, 0.9, 0.95])
-def test_a_held_hop_throw_is_inside_the_r4_limits(apex_m, geom):
+def test_a_held_hop_throw_is_inside_the_r4_limits(apex_m, geom,
+                                                  release_step_off):
     """Peaks at R4's limits, and they FALL with the hold (the −97/+106 mm/s
     reversal becomes a −45 mm/s backswing): 0.9 m leg jerk 129k → 107k,
     acc 1735 → 1489 mm/s² (2026-09-29). plan_segment raises on any breach;

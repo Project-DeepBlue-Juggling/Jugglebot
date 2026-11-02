@@ -3871,7 +3871,8 @@ class TrajectoryNode(Node):
     # computed from the emitted curve's own acceleration
     # (``tau = K.J.2pi.a_cmd(t)``, firmware unit U2b): the owner's hard
     # requirement is HAND ACCELERATION C2 across every knot the wire ever
-    # plays, and an off-knot sample breaks exactly that, not merely
+    # plays (except a declared stepped-release knot, C-HAND-5 in
+    # motion/skills/INVARIANTS.md), and an off-knot sample breaks exactly that, not merely
     # position. The C2FF probe (scratchpad probe_hand_c2.md) measured why: the
     # PLAN itself is C2 to <= 8.5e-9 rev/s^2 at every knot and splice seam
     # (``install_segment`` seeds the cup acceleration exactly), but the STREAM
@@ -4363,7 +4364,8 @@ class TrajectoryNode(Node):
         # `to_cup_state` defaults a post-release window's cup acceleration to
         # `g` — right for the case it was written for (a CHAIN from a release,
         # where `release_state_from_meta` hands over the exact `g` the finished
-        # window's terminal equality pinned, ball in the air, cup following it),
+        # window's terminal equality pinned, or the mark's brake seed at a
+        # stepped release (C-HAND-5), ball in the air, cup following it),
         # and false for a post-release KIND planned at MODE_NEW off a terminal
         # hold (no ball in the air and the cup not accelerating at all) — and
         # false again mid-carry, where the cup IS accelerating but at 27.9 mm/s^2

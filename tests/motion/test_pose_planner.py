@@ -89,6 +89,13 @@ def _oval(limits, geom):
     return site_t, site_c, T, throw
 
 
+@pytest.fixture
+def release_step_off(monkeypatch):
+    """Release step OFF: pins the continuous-release shape (C-HAND-5 changes it;
+    see tests/motion/test_release_step.py)."""
+    monkeypatch.setattr(uc, 'RELEASE_ACC_STEP', False)
+
+
 def _folded_goals(dwell, mode, site_t, site_c, T, throw, cfg, pose_cfg=None):
     """The folded STEADY's ``CycleGoals`` exactly as ``segments._plan_catch_throw``
     builds them (catch at C, carry, release at T, land on C)."""
@@ -148,7 +155,7 @@ def test_pose_passes_decision_24_offline_gate_at_the_box_cells(dwell, limits, ge
     assert pose.report.max_cup_seating_deg < lvl.report.max_cup_seating_deg
 
 
-def test_pose_rung2_baseline_cell_reads_the_measured_values(limits, geom):
+def test_pose_rung2_baseline_cell_reads_the_measured_values(limits, geom, release_step_off):
     """Dwell 0.50 — the rung-2 as-is baseline (38/38 caught): level 111,510
     mm/s^3 / 32.1 deg vs pose 53,341 / 18.6 deg (44,329 before the 2026-10-24 skid bound), measured on this
     path.  Pinned loosely (±1 % jerk, ±0.3 deg) so a formulation drift shows
@@ -205,7 +212,7 @@ def test_a_pose_segment_spliced_onto_a_level_record_reports_its_own_mode(limits,
         assert throw.meta.planner_mode == uc.PLANNER_LEVEL   # the record is untouched
 
 
-def test_pose_accepts_dwell_045_where_level_reads_39_deg(limits, geom):
+def test_pose_accepts_dwell_045_where_level_reads_39_deg(limits, geom, release_step_off):
     """The shaper turns the 0.45 cell from a 39.4 deg carry (accepted only
     because the check is 45 deg) into an 18.6 deg one; 0.40 stays refused —
     on the hand's acceleration with the 175 mm/s skid bound (LIMIT_VEL 357 mm/s without it), not on seating.  That hand-off from

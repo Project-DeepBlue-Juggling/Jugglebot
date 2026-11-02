@@ -574,13 +574,19 @@ def ring(launch, limits, geom):
     Module-scoped because it costs three solves plus two whole-plan re-gates
     (~1.1 s measured, 2026-09-07).
     """
-    plan, meta = launch
     out = []
-    for _ in range(_RING_STEADY_WINDOWS):
-        window = uc.plan_steady(_goals(), uc.release_state_from_meta(meta, plan),
-                                limits, geom)
-        plan, meta = uc.extend(plan, meta, window[0], window[1], limits, geom)
-        out.append(((plan, meta), window))
+    # # release step OFF: pins the continuous-release shape (C-HAND-5 changes it; see tests/motion/test_release_step.py)
+    # (its own LAUNCH too: the shared `launch` fixture is the stepped one)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(uc, 'RELEASE_ACC_STEP', False)
+        plan, meta = uc.plan_launch(_goals(period_s=0.6), _rest_state(),
+                                    limits, geom)
+        for _ in range(_RING_STEADY_WINDOWS):
+            window = uc.plan_steady(
+                _goals(), uc.release_state_from_meta(meta, plan), limits, geom)
+            plan, meta = uc.extend(plan, meta, window[0], window[1], limits,
+                                   geom)
+            out.append(((plan, meta), window))
     return out
 
 
@@ -677,15 +683,19 @@ def long_ring(launch, limits, geom):
     ``(final_plan, final_meta, [(n_knots, k_from, n_gated), …])``.  Module-scoped:
     six windows plus six joins measured at ~2.1 s (2026-09-07).
     """
-    plan, meta = launch
     rows = []
-    for _ in range(_COST_CHAIN_WINDOWS):
-        p2, m2 = uc.plan_steady(_goals(),
-                                uc.release_state_from_meta(meta, plan),
-                                limits, geom)
-        k_from, n_gated = uc.extend_gate_range(plan, p2)
-        plan, meta = uc.extend(plan, meta, p2, m2, limits, geom)
-        rows.append((int(plan.n_knots), k_from, n_gated))
+    # # release step OFF: pins the continuous-release shape (C-HAND-5 changes it; see tests/motion/test_release_step.py)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(uc, 'RELEASE_ACC_STEP', False)
+        plan, meta = uc.plan_launch(_goals(period_s=0.6), _rest_state(),
+                                    limits, geom)
+        for _ in range(_COST_CHAIN_WINDOWS):
+            p2, m2 = uc.plan_steady(_goals(),
+                                    uc.release_state_from_meta(meta, plan),
+                                    limits, geom)
+            k_from, n_gated = uc.extend_gate_range(plan, p2)
+            plan, meta = uc.extend(plan, meta, p2, m2, limits, geom)
+            rows.append((int(plan.n_knots), k_from, n_gated))
     return plan, meta, rows
 
 
@@ -1319,7 +1329,11 @@ def test_release_state_from_meta_carries_the_cup_state_exactly(launch):
     assert state.post_release is True
     assert np.array_equal(state.cup_pos_mm, meta.releases[0].site_mm)
     assert np.array_equal(state.cup_vel_mm_s, meta.releases[0].vel_mm_s)
-    assert np.allclose(state.cup_accel_mm_s2, [0.0, 0.0, -9806.0])
+    # The seed is the mark's own post-release acceleration when the release is
+    # STEPPED (C-HAND-5) and g when it is continuous.
+    brake = meta.releases[0].brake_accel_mm_s2
+    assert np.allclose(state.cup_accel_mm_s2,
+                       [0.0, 0.0, -9806.0] if brake is None else brake)
     # detach_axis is the throw tilt's cup axis, and tilt_to_throw inverts it.
     assert np.allclose(np.asarray(tg.tilt_to_throw(state.detach_axis)),
                        meta.throw_tilt, atol=1e-12)

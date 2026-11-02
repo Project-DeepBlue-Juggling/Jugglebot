@@ -53,7 +53,7 @@ from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.trajectory import cup_realize as cr
 from jugglebot.motion.trajectory import feasibility as fz
-from jugglebot.motion.trajectory.cycle_plan import CyclePlan
+from jugglebot.motion.trajectory.cycle_plan import CyclePlan, shift_release_steps
 from jugglebot.motion.trajectory.limits import TrajectoryLimits
 
 pytestmark = pytest.mark.serial
@@ -113,7 +113,11 @@ def rig():
     k = SEGMENT_KNOTS
     segment = CyclePlan(pose=chain.pose[:k], pose_vel=chain.pose_vel[:k],
                         hand_rev=chain.hand_rev[:k],
-                        hand_vel_rps=chain.hand_vel_rps[:k], dt=chain.dt)
+                        hand_vel_rps=chain.hand_vel_rps[:k], dt=chain.dt,
+                        # C-HAND-5: carry the chain's declared release steps,
+                        # as every production re-indexing path does
+                        release_step_knots=shift_release_steps(
+                            chain.release_step_knots, 0, k))
     return limits, geom, segment, steady_plan
 
 

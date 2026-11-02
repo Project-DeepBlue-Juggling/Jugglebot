@@ -1,5 +1,5 @@
 swept_at: '2026-11-02'
-gate_hash: 15c6d0ff8a84
+gate_hash: 1749cca8bc23
 limits:
   leg_vel_mmps: 350.0
   leg_acc_mmps2: 5000.0
@@ -14,8 +14,8 @@ boxes:
   - 0.45
   - 0.55
   landing_xy_m:
-  - - -0.03
-    - 0.03
+  - - -0.04
+    - 0.04
   - - -0.03
     - 0.03
   apex_m:
@@ -106,8 +106,8 @@ boxes:
   - 0.85
   - 0.9500000000000001
   landing_xy_m:
-  - - -0.04
-    - 0.04
+  - - -0.02
+    - 0.02
   - - -0.04
     - 0.04
   apex_m:
@@ -129,12 +129,12 @@ boxes:
   - 0.775
   - 0.8250000000000001
   landing_xy_m:
+  - - -0.004
+    - 0.004
   - - -0.02
     - 0.02
-  - - -0.01
-    - 0.01
   apex_m:
-  - 0.6480000000000001
+  - 0.5780000000000001
   - 0.9680000000000003
   release_site_xy_mm:
   - -125.0
@@ -152,12 +152,12 @@ boxes:
   - 0.775
   - 0.8250000000000001
   landing_xy_m:
+  - - -0.004
+    - 0.004
   - - -0.02
     - 0.02
-  - - -0.01
-    - 0.01
   apex_m:
-  - 0.6480000000000001
+  - 0.5780000000000001
   - 0.9680000000000003
   release_site_xy_mm:
   - 125.0
@@ -175,8 +175,8 @@ boxes:
   - 0.825
   - 0.875
   landing_xy_m:
-  - - -0.006
-    - 0.006
+  - - -0.01
+    - 0.01
   - - -0.02
     - 0.02
   apex_m:
@@ -198,8 +198,8 @@ boxes:
   - 0.825
   - 0.875
   landing_xy_m:
-  - - -0.006
-    - 0.006
+  - - -0.01
+    - 0.01
   - - -0.02
     - 0.02
   apex_m:
@@ -221,12 +221,12 @@ boxes:
   - 0.875
   - 0.925
   landing_xy_m:
-  - - -0.02
-    - 0.02
-  - - -0.02
-    - 0.02
+  - - -0.004
+    - 0.004
+  - - -0.008
+    - 0.01
   apex_m:
-  - 0.65025
+  - 0.576
   - 1.0890000000000002
   release_site_xy_mm:
   - -125.0
@@ -244,12 +244,12 @@ boxes:
   - 0.875
   - 0.925
   landing_xy_m:
-  - - -0.02
-    - 0.02
-  - - -0.02
-    - 0.02
+  - - -0.004
+    - 0.004
+  - - -0.006
+    - 0.01
   apex_m:
-  - 0.65025
+  - 0.576
   - 1.0890000000000002
   release_site_xy_mm:
   - 125.0
@@ -267,10 +267,10 @@ boxes:
   - 0.9249999999999999
   - 0.975
   landing_xy_m:
-  - - -0.006
-    - 0.006
   - - -0.01
     - 0.01
+  - - -0.008
+    - 0.02
   apex_m:
   - 0.6080000000000001
   - 1.1495
@@ -286,41 +286,133 @@ boxes:
   site_pair:
   - P2
   - P1
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - -0.01
+    - 0.01
+  - - -0.006
+    - 0.02
+  apex_m:
+  - 0.6080000000000001
+  - 1.1495
+  release_site_xy_mm:
+  - 125.0
+  - 0.0
+  target_site_xy_mm:
+  - -125.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: level
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 0.825
+  - 0.875
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: level
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.825
+  - 0.875
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: level
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 0.875
+  - 0.925
+  landing_xy_m:
+  - - -0.002
+    - 0.001
+  - - -0.02
+    - 0.01
+  apex_m:
+  - 0.576
+  - 1.0890000000000002
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: level
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.875
+  - 0.925
+  landing_xy_m:
+  - - -0.001
+    - 0.002
+  - - -0.02
+    - 0.008
+  apex_m:
+  - 0.576
+  - 1.0890000000000002
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: level
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
   apex_band_m:
   - 0.9249999999999999
   - 0.975
   landing_xy_m:
   - - -0.004
-    - 0.004
-  - - -0.01
+    - 0.006
+  - - -0.02
     - 0.02
   apex_m:
   - 0.6080000000000001
   - 1.1495
   release_site_xy_mm:
-  - 125.0
-  - 0.0
-  target_site_xy_mm:
-  - -125.0
-  - 0.0
-  dwell_s: 0.27
-  planner_mode: level
-- pattern: columns
-  site_pair:
-  - P2
-  - P2
-  apex_band_m:
-  - 0.825
-  - 0.875
-  landing_xy_m:
-  - - .nan
-    - .nan
-  - - .nan
-    - .nan
-  apex_m:
-  - .nan
-  - .nan
-  release_site_xy_mm:
   - 62.5
   - 0.0
   target_site_xy_mm:
@@ -332,106 +424,14 @@ boxes:
   site_pair:
   - P1
   - P1
-  apex_band_m:
-  - 0.825
-  - 0.875
-  landing_xy_m:
-  - - .nan
-    - .nan
-  - - .nan
-    - .nan
-  apex_m:
-  - .nan
-  - .nan
-  release_site_xy_mm:
-  - -62.5
-  - 0.0
-  target_site_xy_mm:
-  - -62.5
-  - 0.0
-  dwell_s: 0.27
-  planner_mode: level
-- pattern: columns
-  site_pair:
-  - P2
-  - P2
-  apex_band_m:
-  - 0.875
-  - 0.925
-  landing_xy_m:
-  - - -0.002
-    - 0.002
-  - - -0.02
-    - 0.01
-  apex_m:
-  - 0.576
-  - 1.0890000000000002
-  release_site_xy_mm:
-  - 62.5
-  - 0.0
-  target_site_xy_mm:
-  - 62.5
-  - 0.0
-  dwell_s: 0.27
-  planner_mode: level
-- pattern: columns
-  site_pair:
-  - P1
-  - P1
-  apex_band_m:
-  - 0.875
-  - 0.925
-  landing_xy_m:
-  - - -0.002
-    - 0.002
-  - - -0.02
-    - 0.008
-  apex_m:
-  - 0.576
-  - 1.0890000000000002
-  release_site_xy_mm:
-  - -62.5
-  - 0.0
-  target_site_xy_mm:
-  - -62.5
-  - 0.0
-  dwell_s: 0.27
-  planner_mode: level
-- pattern: columns
-  site_pair:
-  - P2
-  - P2
   apex_band_m:
   - 0.9249999999999999
   - 0.975
   landing_xy_m:
   - - -0.006
-    - 0.008
+    - 0.004
   - - -0.02
-    - 0.01
-  apex_m:
-  - 0.6080000000000001
-  - 1.1495
-  release_site_xy_mm:
-  - 62.5
-  - 0.0
-  target_site_xy_mm:
-  - 62.5
-  - 0.0
-  dwell_s: 0.27
-  planner_mode: level
-- pattern: columns
-  site_pair:
-  - P1
-  - P1
-  apex_band_m:
-  - 0.9249999999999999
-  - 0.975
-  landing_xy_m:
-  - - -0.008
-    - 0.006
-  - - -0.02
-    - 0.01
+    - 0.02
   apex_m:
   - 0.6080000000000001
   - 1.1495
@@ -479,7 +479,7 @@ boxes:
   - - -0.02
     - 0.02
   apex_m:
-  - 0.6080000000000001
+  - 0.8573749999999998
   - 1.1495
   release_site_xy_mm:
   - -75.0
@@ -498,11 +498,11 @@ boxes:
   - 0.975
   landing_xy_m:
   - - -0.02
-    - 0.02
+    - 0.002
   - - -0.02
     - 0.02
   apex_m:
-  - 0.6080000000000001
+  - 0.9499999999999998
   - 1.1495
   release_site_xy_mm:
   - -75.0
@@ -520,13 +520,13 @@ boxes:
   - 0.9249999999999999
   - 0.975
   landing_xy_m:
-  - - -0.02
-    - 0.02
-  - - -0.02
-    - 0.02
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
   apex_m:
-  - 0.6080000000000001
-  - 1.1495
+  - .nan
+  - .nan
   release_site_xy_mm:
   - -75.0
   - 0.0
@@ -543,12 +543,12 @@ boxes:
   - 0.9249999999999999
   - 0.975
   landing_xy_m:
-  - - -0.02
-    - 0.01
+  - - -0.01
+    - 0.02
   - - -0.02
     - 0.02
   apex_m:
-  - 0.686375
+  - 0.6080000000000001
   - 1.1495
   release_site_xy_mm:
   - -75.0
@@ -704,12 +704,12 @@ boxes:
   - 0.775
   - 0.8250000000000001
   landing_xy_m:
+  - - -0.004
+    - 0.004
   - - -0.02
     - 0.02
-  - - -0.01
-    - 0.01
   apex_m:
-  - 0.6480000000000001
+  - 0.5780000000000001
   - 0.9680000000000003
   release_site_xy_mm:
   - -125.0
@@ -727,12 +727,12 @@ boxes:
   - 0.775
   - 0.8250000000000001
   landing_xy_m:
+  - - -0.004
+    - 0.004
   - - -0.02
     - 0.02
-  - - -0.01
-    - 0.01
   apex_m:
-  - 0.6480000000000001
+  - 0.5780000000000001
   - 0.9680000000000003
   release_site_xy_mm:
   - 125.0
@@ -750,8 +750,8 @@ boxes:
   - 0.825
   - 0.875
   landing_xy_m:
-  - - -0.006
-    - 0.006
+  - - -0.01
+    - 0.01
   - - -0.02
     - 0.02
   apex_m:
@@ -773,8 +773,8 @@ boxes:
   - 0.825
   - 0.875
   landing_xy_m:
-  - - -0.006
-    - 0.006
+  - - -0.01
+    - 0.01
   - - -0.02
     - 0.02
   apex_m:
@@ -796,12 +796,12 @@ boxes:
   - 0.875
   - 0.925
   landing_xy_m:
-  - - -0.02
-    - 0.02
-  - - -0.02
-    - 0.02
+  - - -0.004
+    - 0.004
+  - - -0.01
+    - 0.01
   apex_m:
-  - 0.65025
+  - 0.576
   - 1.0890000000000002
   release_site_xy_mm:
   - -125.0
@@ -819,12 +819,12 @@ boxes:
   - 0.875
   - 0.925
   landing_xy_m:
-  - - -0.02
-    - 0.02
-  - - -0.02
-    - 0.02
+  - - -0.004
+    - 0.004
+  - - -0.01
+    - 0.01
   apex_m:
-  - 0.65025
+  - 0.576
   - 1.0890000000000002
   release_site_xy_mm:
   - 125.0
@@ -842,8 +842,8 @@ boxes:
   - 0.9249999999999999
   - 0.975
   landing_xy_m:
-  - - -0.004
-    - 0.004
+  - - -0.01
+    - 0.01
   - - -0.02
     - 0.02
   apex_m:
@@ -865,8 +865,8 @@ boxes:
   - 0.9249999999999999
   - 0.975
   landing_xy_m:
-  - - -0.004
-    - 0.004
+  - - -0.01
+    - 0.01
   - - -0.02
     - 0.02
   apex_m:
@@ -1164,12 +1164,12 @@ boxes:
   - 0.975
   - 1.025
   landing_xy_m:
-  - - -0.02
+  - - 0.0
     - 0.02
   - - -0.02
     - 0.02
   apex_m:
-  - 0.64
+  - 0.9024999999999997
   - 1.21
   release_site_xy_mm:
   - -75.0
@@ -1188,11 +1188,11 @@ boxes:
   - 1.075
   landing_xy_m:
   - - -0.02
-    - 0.02
+    - 0.0
   - - -0.02
     - 0.02
   apex_m:
-  - 0.672
+  - 0.947625
   - 1.2705
   release_site_xy_mm:
   - -75.0
@@ -1211,11 +1211,11 @@ boxes:
   - 1.125
   landing_xy_m:
   - - -0.02
-    - 0.02
+    - 0.004
   - - -0.02
     - 0.02
   apex_m:
-  - 0.7040000000000002
+  - 0.9927499999999999
   - 1.3310000000000002
   release_site_xy_mm:
   - -75.0
@@ -1233,12 +1233,12 @@ boxes:
   - 0.975
   - 1.025
   landing_xy_m:
-  - - -0.02
+  - - -0.008
     - 0.02
   - - -0.02
     - 0.02
   apex_m:
-  - 0.64
+  - 0.9999999999999999
   - 1.21
   release_site_xy_mm:
   - -75.0
@@ -1256,12 +1256,12 @@ boxes:
   - 1.0250000000000001
   - 1.075
   landing_xy_m:
-  - - -0.02
+  - - -0.002
     - 0.02
-  - - -0.02
+  - - -0.006
     - 0.02
   apex_m:
-  - 0.672
+  - 1.05
   - 1.2705
   release_site_xy_mm:
   - -75.0
@@ -1279,13 +1279,13 @@ boxes:
   - 1.0750000000000002
   - 1.125
   landing_xy_m:
-  - - -0.02
-    - 0.02
-  - - -0.02
-    - 0.02
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
   apex_m:
-  - 0.7040000000000002
-  - 1.3310000000000002
+  - .nan
+  - .nan
   release_site_xy_mm:
   - -75.0
   - 0.0
@@ -1889,6 +1889,420 @@ boxes:
   - 0.0
   target_site_xy_mm:
   - 50.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 0.975
+  - 1.025
+  landing_xy_m:
+  - - -0.006
+    - 0.004
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.64
+  - 1.21
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.975
+  - 1.025
+  landing_xy_m:
+  - - -0.004
+    - 0.006
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.64
+  - 1.21
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 1.0250000000000001
+  - 1.075
+  landing_xy_m:
+  - - -0.01
+    - 0.01
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.672
+  - 1.2705
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 1.0250000000000001
+  - 1.075
+  landing_xy_m:
+  - - -0.01
+    - 0.01
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.672
+  - 1.2705
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 1.0750000000000002
+  - 1.125
+  landing_xy_m:
+  - - -0.01
+    - 0.01
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.7040000000000002
+  - 1.3310000000000002
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 1.0750000000000002
+  - 1.125
+  landing_xy_m:
+  - - -0.01
+    - 0.01
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.7040000000000002
+  - 1.3310000000000002
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 1.125
+  - 1.1749999999999998
+  landing_xy_m:
+  - - -0.02
+    - 0.01
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.7360000000000002
+  - 1.3915000000000002
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 1.125
+  - 1.1749999999999998
+  landing_xy_m:
+  - - -0.02
+    - 0.02
+  - - -0.02
+    - 0.01
+  apex_m:
+  - 0.7360000000000002
+  - 1.3915000000000002
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 1.175
+  - 1.2249999999999999
+  landing_xy_m:
+  - - -0.02
+    - 0.02
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.7680000000000001
+  - 1.4520000000000004
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 1.175
+  - 1.2249999999999999
+  landing_xy_m:
+  - - -0.02
+    - 0.02
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.7680000000000001
+  - 1.4520000000000004
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 1.225
+  - 1.275
+  landing_xy_m:
+  - - -0.02
+    - 0.02
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.8
+  - 1.5125000000000004
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 1.225
+  - 1.275
+  landing_xy_m:
+  - - -0.02
+    - 0.02
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.8
+  - 1.5125000000000004
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 1.2750000000000001
+  - 1.325
+  landing_xy_m:
+  - - -0.02
+    - 0.02
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.8320000000000002
+  - 1.5730000000000006
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 1.2750000000000001
+  - 1.325
+  landing_xy_m:
+  - - -0.02
+    - 0.02
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.8320000000000002
+  - 1.5730000000000006
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 1.3250000000000002
+  - 1.375
+  landing_xy_m:
+  - - -0.02
+    - 0.02
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.8640000000000002
+  - 1.4883750000000004
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 1.3250000000000002
+  - 1.375
+  landing_xy_m:
+  - - -0.02
+    - 0.02
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.8640000000000002
+  - 1.4883750000000004
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 1.375
+  - 1.4249999999999998
+  landing_xy_m:
+  - - -0.02
+    - 0.02
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.896
+  - 1.5435000000000005
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 1.375
+  - 1.4249999999999998
+  landing_xy_m:
+  - - -0.02
+    - 0.02
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.896
+  - 1.5435000000000005
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
   - 0.0
   dwell_s: 0.27
   planner_mode: pose

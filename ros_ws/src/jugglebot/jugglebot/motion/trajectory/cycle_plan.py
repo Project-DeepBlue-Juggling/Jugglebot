@@ -149,6 +149,20 @@ def shift_catch_evidence(evidence, shift_knots: int, dt: float, n_knots: int):
     return tuple(out) or None
 
 
+def shift_release_steps(knots, shift_knots: int, n_knots: int):
+    """``knots`` (release-step knot indices) shifted and clipped to the plan.
+
+    Only INTERIOR knots ``1 .. n_knots - 2`` survive: an end knot has one span,
+    so there is no left/right acceleration pair to step between.  Returns a
+    sorted tuple, or ``None`` when nothing survives.
+    """
+    if not knots:
+        return None
+    out = sorted({int(k) + int(shift_knots) for k in knots})
+    out = tuple(k for k in out if 1 <= k <= int(n_knots) - 2)
+    return out or None
+
+
 def _checked_contact_knots(contact_knots, n_knots: int):
     """Validate C-CUP-2's contact window(s) against this plan's knot count.
 
@@ -238,12 +252,14 @@ class CyclePlan(TrajectoryPlan):
     """
 
     __slots__ = ('pose', 'pose_vel', 'hand_rev', 'hand_vel_rps', 'dt',
-                 'n_knots', 't', 'catch_k', 'contact_knots', 'catch_evidence')
+                 'n_knots', 't', 'catch_k', 'contact_knots', 'catch_evidence',
+                 'release_step_knots')
 
     def __init__(self, pose, pose_vel, hand_rev, hand_vel_rps, dt,
                  catch_k: int = -1,
                  contact_knots: Optional[Tuple] = None,
-                 catch_evidence: Optional[Tuple] = None):
+                 catch_evidence: Optional[Tuple] = None,
+                 release_step_knots: Optional[Tuple] = None):
         p = np.asarray(pose, dtype=float)
         pv = np.asarray(pose_vel, dtype=float)
         hr = np.asarray(hand_rev, dtype=float).reshape(-1)
@@ -289,6 +305,11 @@ class CyclePlan(TrajectoryPlan):
                           tuple(float(x) for x in e.axis),
                           _checked_program(e.program))
             for e in catch_evidence) if catch_evidence else None)
+        # C-HAND-5: the interior knots at which a STEPPED release was planned,
+        # the only knots ``validate_cycle`` lets the hand acceleration step at.
+        # Dropping one is the SAFE failure (the gate then refuses the step as
+        # HAND_LIMIT_C2), unlike ``contact_knots``, whose loss disarms a gate.
+        self.release_step_knots = shift_release_steps(release_step_knots, 0, n)
         self.t = np.arange(n, dtype=float) * dt
         self.total_duration = (n - 1) * dt
 

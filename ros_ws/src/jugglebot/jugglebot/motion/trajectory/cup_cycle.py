@@ -356,6 +356,22 @@ class CupCycleConfig:
     #: would.  See :func:`_capture_knots_needed`.
     capture_jerk_mps3: Optional[float] = None
 
+    # ---- the release step (C-HAND-5, JB-114 R0, owner 2026-11-01) ---------
+    #: ``False`` (default) keeps the CasADi transcription's ``acc == g`` at the
+    #: release knot, which forces the cup's acceleration to be CONTINUOUS
+    #: through the release.  On the 25 ms knot grid that costs the launch its
+    #: last knot of authority (it must ramp from +A to -g) and the brake its
+    #: first (it must ramp from -g to -B), so both peaks run 1.5-1.85x the
+    #: constant-acceleration ideal (logbook ``2026-11-02-hand-release-step``).
+    #: ``True`` replaces the three ``acc == g`` rows with ``(acc - g) ∥ u``
+    #: (2 rows, ``u`` the take-off direction) plus the ``release_seated``
+    #: inequality, so the launch ends wherever its objective puts it, and the
+    #: NEXT window starts from the brake seed the release mark carries
+    #: (``unified_cycle.release_brake_accel_mm_s2``).  The acceleration then
+    #: STEPS at the release knot, which ``validate_cycle`` admits there and only
+    #: there (the knot is declared on ``CyclePlan.release_step_knots``).
+    release_acc_step: bool = False
+
 
 # The runway knobs are the only fields a sim ``PlannerConfig`` will not have.
 # Reading them through ``getattr`` is what makes the wrapper genuinely drop-in
@@ -374,6 +390,7 @@ _RUNWAY_DEFAULTS = {
     'feas_tol': 1e-7,
     'contact_floor_enabled': False,
     'capture_jerk_mps3': None,
+    'release_acc_step': False,
 }
 
 
@@ -1018,8 +1035,10 @@ def contact_window(n: int, dt: float, *, has_throw: bool, catch_t_s=None,
       in a throw, else at the last knot ``n`` (a rest-terminal window still holds
       the ball it caught).
 
-    **Why the release knot is excluded.**  The release equality pins
-    ``a_cup == g`` exactly — that is the paper's ``a_throw = g`` limiting case,
+    **Why the release knot is excluded.**  The continuous release pins
+    ``a_cup == g`` exactly (a STEPPED release, C-HAND-5, bounds that knot by its
+    own ``release_seated`` row instead, and the window still closes here because
+    on a joined plan the knot's right-hand acceleration is the brake) — that is the paper's ``a_throw = g`` limiting case,
     and a floor of ``-0.7 g`` at that knot is unsatisfiable, so including it would
     refuse every throw.  Acceleration is piecewise LINEAR in ``t`` between knots
     (the decision variable is per-knot jerk), so on the last span the cup crosses
@@ -1727,11 +1746,43 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
         throw_pos = np.asarray(throw.site, dtype=float)
         v_takeoff = takeoff_velocity(throw_pos, np.asarray(throw.target, float),
                                      float(throw.flight_s))
-        eq_marks.append(('release', len(rows)))
-        for a in range(3):                   # throw: pos, vel, acc == g
-            rows.append(_axis_row(n, a, Ap[n])); rhs.append(throw_pos[a] - cp[n, a])
-            rows.append(_axis_row(n, a, Av[n])); rhs.append(v_takeoff[a] - cv[n, a])
-            rows.append(_axis_row(n, a, Aa[n])); rhs.append(GRAVITY[a] - ca[n, a])
+        step = bool(_cfg(cfg, 'release_acc_step'))
+        if not step:
+            eq_marks.append(('release', len(rows)))
+            for a in range(3):                   # throw: pos, vel, acc == g
+                rows.append(_axis_row(n, a, Ap[n])); rhs.append(throw_pos[a] - cp[n, a])
+                rows.append(_axis_row(n, a, Av[n])); rhs.append(v_takeoff[a] - cv[n, a])
+                rows.append(_axis_row(n, a, Aa[n])); rhs.append(GRAVITY[a] - ca[n, a])
+        else:
+            # THE RELEASE STEP (C-HAND-5).  Position and velocity as always; the
+            # three ``acc == g`` rows become the detach cone AT the release,
+            # ``(acc - g) ∥ u`` with ``u`` the take-off direction (the cup axis
+            # the release tilt is pinned to, ``unified_cycle._throw_tilt_for``),
+            # rank 2 as in the post-release cone below.  So the cup's specific
+            # force is along its own axis — the ball pressed straight into the
+            # cup — but its SIZE is free, held at or above the contact floor by
+            # ``release_seated`` in the inequality block: the launch keeps its
+            # acceleration up to the release instead of ramping it to -g over
+            # the last knot.  The brake seed the next window starts from differs
+            # from this acceleration by a multiple of ``u`` alone
+            # (``unified_cycle.release_brake_accel_mm_s2``), so the step is a
+            # SLIDER step: the platform's acceleration stays continuous.
+            eq_marks.append(('release_step', len(rows)))
+            for a in range(3):
+                rows.append(_axis_row(n, a, Ap[n])); rhs.append(throw_pos[a] - cp[n, a])
+                rows.append(_axis_row(n, a, Av[n])); rhs.append(v_takeoff[a] - cv[n, a])
+            speed = float(np.linalg.norm(v_takeoff))
+            if not speed > 0.0:
+                raise CupCycleInfeasible(
+                    "this throw has no take-off speed, so a release step has no "
+                    "direction to step along.", reason='RELEASE_STEP')
+            for u in _perpendicular_basis(v_takeoff / speed):
+                row = np.zeros(nvar)
+                b = 0.0
+                for a in range(3):
+                    row[a * n:(a + 1) * n] = u[a] * Aa[n]
+                    b -= u[a] * (ca[n, a] - GRAVITY[a])
+                rows.append(row); rhs.append(b)
         eq_marks.append(('pre_release_hold', len(rows)))
         if pre_hold_knots > 0:
             # THE LAUNCH LINE, held over the last N knots before the release
@@ -2175,6 +2226,24 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
             # the solver exactly on it.
             rhss.append((a_floor + CONTACT_ACC_QP_SLACK_MPS2) - ca[ks, 2])
 
+    # ---- C-HAND-5: the ball is still SEATED at a stepped release -----------
+    # With ``release_acc_step`` the release knot's vertical acceleration is free
+    # (the ``acc == g`` row above is not written), and this one row is what
+    # still says the ball is in the cup at that instant: the contact floor's own
+    # bound (``CONTACT_ACC_FLOOR_G``, plus the same QP slack), at knot ``n``.
+    # It is its own block rather than an extension of the contact window because
+    # the GATE's contact window must keep closing at ``n - 1``: on a joined plan
+    # the release knot's right-hand acceleration is the brake, far below the
+    # floor, and the ball has left by then.  Its own block, last before the pose
+    # blocks, so with the flag off not one column index moves.
+    if throw is not None and bool(_cfg(cfg, 'release_acc_step')):
+        a_floor = -CONTACT_ACC_FLOOR_G * abs(float(GRAVITY[2]))
+        cols.append(_axis_row(n, 2, Aa[n]).reshape(-1, 1))
+        col_tags.append(None)
+        ineq_names.append('release_seated')
+        rhss.append(np.array([(a_floor + CONTACT_ACC_QP_SLACK_MPS2)
+                              - ca[n, 2]]))
+
     # ---- the `pose` planner's blocks, after every level column ------------
     n_dz, dz0 = 0, None
     if pose is not None:
@@ -2570,6 +2639,15 @@ def _eq_label(prog: _Program, i: int) -> str:
     name, start = marks[j][0], marks[j][1]
     off = i - start
     n = prog.n_steps
+    if name == 'release_step':
+        # x, y, z: position, velocity; then the two release-cone rows.
+        if off < 6:
+            return ("equality %d: release (throw) %s along %s"
+                    % (i, _EQ_QTY[off % 2], _AXIS[off // 2]))
+        if off < 8:
+            return ("equality %d: release (throw) acceleration off the take-off "
+                    "axis, component %d" % (i, off - 6 + 1))
+        return fallback
     if name in ('release', 'rest'):
         axes = marks[j][2] if len(marks[j]) > 2 else (0, 1, 2)
         if off < 3 * len(axes):
@@ -2646,6 +2724,9 @@ def _ineq_label(prog: _Program, i: int) -> str:
                                             2 + off // (m_span - 1)))
     if name == 'runway':
         return "inequality %d: catch-runway floor at knot %d" % (i, prog.catch_k)
+    if name == 'release_seated':
+        return ("inequality %d: ball seated at the release (knot %d vertical "
+                "acceleration floor)" % (i, n))
     if name == 'contact_floor' and prog.contact_knots is not None:
         k0, k1 = prog.contact_knots
         ks = list(range(max(k0, 1), k1 + 1))
