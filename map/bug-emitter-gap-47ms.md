@@ -4,7 +4,7 @@ kind: bug
 title: 'Emitter gap: one 47 ms window over sitting 8 against the 35 ms max target'
 status: inbox
 created: '2026-10-24'
-updated: '2026-11-01T12:18:36Z'
+updated: '2026-11-02T07:29:42Z'
 owners: []
 priority: medium
 effort: m
@@ -30,6 +30,11 @@ Over sitting 8 the emitter showed p50 25.9 / p99 29.9 / max 47.0 ms on `/traject
 - pass: emitter max below 35 ms over the goal.
 - record: the emitter p50, p99 and max lines, and the goal flown.
 - minutes: 10
+
+## Sitting result (2026-11-02)
+
+- verdict: pass
+- notes: Should be addressable using data from JB-120/139 Sitting. I watched this topic during a few attempts and max_emit_gap_ms never appeared to be above ~35 ms, but the frequency of that echo-ing was quite slow
 
 ## Progress
 
