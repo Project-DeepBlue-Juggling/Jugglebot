@@ -4,7 +4,7 @@ kind: bug
 title: 'A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve'
 status: in_progress
 created: '2026-10-31'
-updated: '2026-11-01T12:26:53Z'
+updated: '2026-11-02T07:23:19Z'
 owners:
 - night-shift
 priority: high
@@ -69,6 +69,11 @@ Entry: logbook/2026-11-01-jb120-box-gate-vs-hand-limit-acc-replay.md.
 **Owner decision 2026-11-01 (debrief).** HAND_LIMIT_ACC 3900 -> 4500 rev/s^2 and hand_curr_limit_a 50 -> 60 A (4500 needs ~57 A at the modelled Kt/J; owner open to 70-80 A later, heating manageable; the hand ODrive hard max is 70 A); box re-swept under the new limits.
 
 The structural fix is FILED here as the next step, not built: the bump decision also plans the next catch and declines or shrinks the bump if that solve refuses; late re-sends fall under the same rule. JB-117 bench hold-and-step measures the real authority.
+
+## Sitting result (2026-11-02)
+
+- verdict: fail
+- notes: First attempt got to pretty much exactly 50 throws before hitting " ERROR columns ENDED (HAND_LIMIT_ACC) at the CATCH: hand acceleration 4509.26 > 4500 rev/s^2 · 49/51 caught · apex 0.93–1.02 m · worst landing 41 mm · release +6 ms..+21 ms" Second attempt ended after ~30 throws with leg vel limit: ERROR columns ENDED (LIMIT_VEL) at the CATCH: leg velocity 355.33 > 350 mm/s (leg 1 @ +0.175 s) A few other attempts ended with collisions/missed throws and leg LIMIT_VEL errors. Tehcnically this was a failure due to the first LIMIT_ACC fire, but I think this was much more successful than previously!
 
 ## Progress
 
