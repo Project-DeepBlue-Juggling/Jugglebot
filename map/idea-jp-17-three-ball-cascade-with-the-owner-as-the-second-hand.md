@@ -39,3 +39,46 @@ Owner 2026-10-30: a plain three-ball cascade, every throw at an equal Apex and t
 ## First rung
 
 A tracker diagnosis replaying the 2026-09-30 bag through the parabolic detector.
+
+## Human-throw bench (2026-11-02)
+
+Two human-only Sittings (robot moved aside) scored by `tools/probes/human_throw_bench.py`; detail in logbook `2026-11-02-jb113-human-throw-bench.md`.
+
+| | passes, 91 s | cascade, 61 s |
+|---|---|---|
+| Throws (crossing the plane) | 44 (42) | 82 (71) |
+| Good landing estimate (50 mm, 30 ms) 0.30 s before the plane | 24 of 42 | 41 of 71 |
+| Good at any lead | 30 of 42, lead median 0.65 s | 55 of 71, lead median 0.56 s |
+| Phantoms (upper bound: lost flights count) | 12.5 per minute | 27.3 per minute |
+| Landing sd at the robot-spot hand | 75 x 125 mm | 129 x 90 mm |
+| Landing vs mean of the previous five | median 140, p90 278 mm | median 108, p90 223 mm |
+
+- **Tracks carry across throws**, and many failing rows hold a landing time 0.5-1.5 s early (hypothesis: the previous flight's frozen fit).
+- Phantoms start on Ball Butler markers, on balls handled low, and near the Cup position at z 0.8 m.
+- A hand-region gate passes 0 of 19 and 3 of 28 phantoms, mostly through its rising-start test (17 and 21 never rise); its retention of real Throws waits on the carried-track fix.
+
+## Decisions (owner, 2026-11-02)
+
+- The Pattern prior gates association (which marker, when) and confirms earlier through the announced-ball path; it never pulls the landing estimate.
+- The Cup moves to the running Pattern-mean landing before the release and re-aims as the fit arrives; the final aim is the fit's.
+- The owner expects tighter throws when juggling with the robot (better lighting, one hand); the bench re-measures at the next data Sitting.
+
+## Next
+
+1. Confirm or refute the carried-track hypothesis on the bench's failing rows; fix in the matcher.
+2. Phantom rejection and the hand-region gate, scored on the bench.
+3. The predicted-Throw announcement (the Pattern prior).
+4. Offline reach check: the Cup re-aiming over 150-300 mm in the last 0.5-0.8 s.
+
+## Sitting
+
+- setup: level
+- why: re-measure the human-throw bench with the robot in place (moving Platform markers, a ball in the Cup, the robot blocking camera views) and the owner's throws at better lighting.
+- do:
+  - Improve the lighting; launch, home and Level the Platform; do NOT arm. Rest one ball in the Cup.
+  - `ros2 param set /ball_tracker_node detect_human_throws true`.
+  - Juggle a three-ball cascade for about 60 s with one hand beside the Cup at its usual catch height, at a steady height; then 60 s of single passes into the space just above the Cup.
+  - Afterwards `ros2 param set /ball_tracker_node detect_human_throws false`.
+- pass: the bag replays through `tools/probes/human_throw_bench.py` with the robot-spot landing sd and the phantom rate reported.
+- record: the bag path, the lighting change, and the bench report path.
+- minutes: 15

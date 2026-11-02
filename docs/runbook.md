@@ -6,7 +6,7 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 3 blocks (82 min) · Bench leg 1 block (30 min)
+Rigs: Robot 4 blocks (97 min) · Bench leg 1 block (30 min)
 
 ## Setup 0: before power
 
@@ -16,7 +16,7 @@ Rigs: Robot 3 blocks (82 min) · Bench leg 1 block (30 min)
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Robot  (3 blocks, 82 min)
+## Robot  (4 blocks, 97 min)
 
 ### Block 1: level, armed  (1 row, 5 min)
 
@@ -73,9 +73,21 @@ Rigs: Robot 3 blocks (82 min) · Bench leg 1 block (30 min)
 - pass: 20 consecutive Catches in one Attempt at each angle; landing scatter within 3 mm of the straight control; no HAND_LIMIT line.
 - record: caught of thrown per angle, each angle's plant_id, landing scatter against the control, the bag path; commit docs/records.md.
 
+### Block 4: level  (1 row, 15 min)
+
+#### JB-113 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them  (15 min, medium, unattached)
+- why: re-measure the human-throw bench with the robot in place (moving Platform markers, a ball in the Cup, the robot blocking camera views) and the owner's throws at better lighting.
+- do:
+  - Improve the lighting; launch, home and Level the Platform; do NOT arm. Rest one ball in the Cup.
+  - `ros2 param set /ball_tracker_node detect_human_throws true`.
+  - Juggle a three-ball cascade for about 60 s with one hand beside the Cup at its usual catch height, at a steady height; then 60 s of single passes into the space just above the Cup.
+  - Afterwards `ros2 param set /ball_tracker_node detect_human_throws false`.
+- pass: the bag replays through `tools/probes/human_throw_bench.py` with the robot-spot landing sd and the phantom rate reported.
+- record: the bag path, the lighting change, and the bench report path.
+
 ## Bench leg  (1 block, 30 min)
 
-### Block 4: bridge-cycled  (1 row, 30 min)
+### Block 5: bridge-cycled  (1 row, 30 min)
 
 #### JB-73 Hand ODrive state can silently diverge from what the can-bridge commanded  (30 min, low, unattached)
 - why: confirm FW 35's suppress-edge hold flush leaves the bench leg at the last transmitted command instead of input_pos + vel_ff/pos_gain, and measure the current step it costs.
@@ -94,7 +106,6 @@ Rigs: Robot 3 blocks (82 min) · Bench leg 1 block (30 min)
 - JB-110 [Robot] JP-13 Rising and sinking columns: the whole Pattern rides the Platform in z: no ## Sitting section
 - JB-111 [Robot] JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm: no ## Sitting section
 - JB-112 [Robot] JP-15 Over the top: Ball 1 straight up, Ball 2 arcs over it (needs P4): no ## Sitting section
-- JB-113 [Robot] JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them: no ## Sitting section
 - JB-114 [Robot] Hand end-of-stroke bumper, and first the planner's own brake shape: let the ceiling, not the Hand, cap the Apex: no ## Sitting section
 - JB-117 [Bench hand] Hand brake and hold currents sit far below the throw envelope's model (brake -14 to -20 A measured vs 35 to 40 A predicted; hold 1.5 vs 2.6 A): Kt, moving mass or friction is mis-modelled: no ## Sitting section
 - JB-137 [Robot] Hand ODrive feedback starvation: 701 ms heartbeat dropout left the encoder 100 ms stale, the 2.0 rev lead clamp pinned the throw to stale+2.0, guard MAX_DEVIATION +3.707 fired correctly (turned-90 at 16/16): no ## Sitting section
