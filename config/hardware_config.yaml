@@ -724,12 +724,14 @@ jugglebot_odrive_defaults:
                                          # lowest value whose decel-FF headroom bound
                                          # (0.85 x I x Kt / (2 pi J_ff 9.5e-6)) clears 4500:
                                          # 4710.6 rev/s^2 (3925.5 at 50 A). Pushed to the hand
-                                         # ODrive's current_soft_max at every configure. ⚠ The
-                                         # drive's current_hard_max is 70.0 A (config/ODrive
-                                         # config Files/odrive_pro_hand_config.json): measured
-                                         # iq overshoots the soft limit (53.3 A against 50 A,
-                                         # 2026-11-01, JB-138), so a soft limit past ~65 A needs
-                                         # current_hard_max raised first or the drive trips.
+                                         # ODrive's current_soft_max at every configure, so this
+                                         # value, not the drive's own soft max, is what a launch
+                                         # runs. The drive itself is set to soft 70 / hard 80 A
+                                         # (owner 2026-11-02, config/ODrive config Files/
+                                         # odrive_pro_hand_config.json; the owner keeps 60 A in
+                                         # code until 70 is tested). Measured iq overshoots the
+                                         # soft limit (53.3 A against 50 A, 2026-11-01, JB-138),
+                                         # hence the 10 A gap to the hard max.
   hand_pos_gain: 35.0                    # Hand position gain
   hand_vel_gain: 0.007                   # Hand velocity gain
   hand_vel_int_gain: 0.07                # Hand velocity integrator gain

@@ -575,9 +575,11 @@ against the unchanged 360 W drive budget; the FF, DECEL and ACCEL lines moved ou
 pinned in `tests/motion/test_throw_envelope.py`. The loaded-ascent row is the
 JB-115 gap: the session limit applies to the hand with and without the ball,
 and the ball-aboard ascent at the limit wants more than the drive limit at both
-operating points. The hand ODrive's `current_hard_max` is 70.0 A
-(`config/ODrive config Files/odrive_pro_hand_config.json`); iq has been measured
-3.3 A over the 50 A soft limit (JB-138).
+operating points. The hand ODrive is set to `current_soft_max` 70 A /
+`current_hard_max` 80 A and motor thermistor limits 60 / 70 °C (owner
+2026-11-02, `config/ODrive config Files/odrive_pro_hand_config.json`); the
+launch still pushes `hand_curr_limit_a` (60 A) as the soft max at every
+configure. iq has been measured 3.3 A over the 50 A soft limit (JB-138).
 
 ⚠ Pre-2026-08-18 numbers were measured through the hand ODrive's −10.00 A
 braking clamp (`torque_soft_min`, fixed to a symmetric ±0.7 N·m on 2026-08-18)
