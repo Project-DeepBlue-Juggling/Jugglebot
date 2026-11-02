@@ -16,6 +16,9 @@
 # Guards, in order. Each one that stops the run writes a status (never silence):
 #   1. flock on $REPORTS/run.lock         two runs never overlap        -> OVERLAP
 #   2. $LIVE/temp/night-shift.hold        the owner's off switch        -> HELD
+#   2b. no Fable model: NIGHT_SHIFT_MODEL / _FALLBACK_MODEL naming Fable stop
+#      the run at once, before the live-session wait, any credential read or
+#      the clone (owner, 2026-11-02)                                    -> FORBIDDEN_MODEL
 #   3. live robot session (tools/lib/live_session.sh, the nightly's guard):
 #      wait up to the budget, then give up                              -> DEFERRED
 #   4. a credential (the unit's EnvironmentFile): ANTHROPIC_API_KEY and/or
@@ -53,16 +56,23 @@
 # subscription token is set, the runner RESUMES the same session (`--resume`,
 # probed 2026-11-02: a session begun on the key resumes on the token) with the
 # key removed from claude's environment, so the night carries on where it
-# stopped. The resumed leg runs on $NIGHT_SHIFT_FALLBACK_MODEL (opus): the
-# probe showed Fable is not in the subscription ("out of usage credits"), Opus
-# is. With no key at all the night runs on the subscription from the start.
+# stopped. The resumed leg runs on $NIGHT_SHIFT_FALLBACK_MODEL (opus; the
+# probe showed Fable is not in the subscription, "out of usage credits", Opus
+# is). With no key at all the night runs on the subscription from the start.
+#
+# Models (owner, 2026-11-02): the orchestrator is Opus ("more appropriate given
+# the size of the work chunks that we want to be happening overnight") and Fable
+# is never invoked by any part of the Night Shift. The runner refuses a Fable
+# model knob (FORBIDDEN_MODEL); subagents are Sonnet, or Opus with a reason, by
+# the protocol (.claude/commands/night-shift.md section 0 rule 5), and one spawned
+# without a model inherits the orchestrator's, i.e. Opus.
 # Each leg gets exactly one credential (`env -u` the other): when both are set
 # the key silently wins, which is what made the subscription unreachable.
 # The first leg's output is kept as <date>.claude-api.json/.err; the resumed
 # leg's is <date>.claude.json/.err, which everything downstream reads.
 #
 # Status words. Exit 0: OK, DRY_OK, HELD, DEFERRED, OVERLAP, NOTHING_NEW.
-# Exit 1: NO_GUARD, NO_API_KEY, NO_CLONE, CLONE_DIRTY, PULL_FAILED, NO_SETTINGS,
+# Exit 1: NO_GUARD, FORBIDDEN_MODEL, NO_API_KEY, NO_CLONE, CLONE_DIRTY, PULL_FAILED, NO_SETTINGS,
 # PREFLIGHT_FAILED, CLAUDE_MISSING, CLAUDE_TIMEOUT, CLAUDE_FAILED,
 # POST_FETCH_FAILED, PUSH_REJECTED, RUN_LEFT_DIRTY, DRY_CHANGED, DRY_NO_REPORT,
 # INTERNAL_ERROR. A real run that claimed the nightly ticker and ends in any
@@ -81,8 +91,8 @@
 #   tools/night_shift.sh --dry-run
 # Env knobs (defaults): NIGHT_SHIFT_CLONE, NIGHT_SHIFT_LIVE_REPO, NIGHT_SHIFT_ORIGIN,
 # NIGHT_SHIFT_REPORTS, NIGHT_SHIFT_DRY_RUN (0), NIGHT_SHIFT_MAX_USD (unset = no fuse),
-# NIGHT_SHIFT_MODEL (fable), NIGHT_SHIFT_FALLBACK_MODEL (opus; the subscription
-# leg), NIGHT_SHIFT_TIMEOUT_S (14400; both legs together), NIGHT_SHIFT_DEADLINE
+# NIGHT_SHIFT_MODEL (opus), NIGHT_SHIFT_FALLBACK_MODEL (opus; the subscription
+# leg; neither may name Fable), NIGHT_SHIFT_TIMEOUT_S (14400; both legs together), NIGHT_SHIFT_DEADLINE
 # (08:00), NIGHT_SHIFT_DEFER_BUDGET_S (7200), NIGHT_SHIFT_DEFER_POLL_S (120),
 # NIGHT_SHIFT_WAIT_NIGHTLY_S (3600), NIGHT_SHIFT_WAIT_NIGHTLY_POLL_S (60),
 # NIGHT_SHIFT_IGNORE_SESSION (0; hand runs only), NIGHT_SHIFT_SKIP_ENV (0; tests),
@@ -104,7 +114,7 @@ LIVE="${NIGHT_SHIFT_LIVE_REPO:-$HOME/Desktop/Jugglebot}"
 REPORTS="${NIGHT_SHIFT_REPORTS:-$CLONE/temp/reports/night-shift}"
 DRY_RUN="${NIGHT_SHIFT_DRY_RUN:-0}"
 MAX_USD="${NIGHT_SHIFT_MAX_USD:-}"   # empty or 0 = no --max-budget-usd (owner, 2026-10-31)
-MODEL="${NIGHT_SHIFT_MODEL:-fable}"
+MODEL="${NIGHT_SHIFT_MODEL:-opus}"
 FALLBACK_MODEL="${NIGHT_SHIFT_FALLBACK_MODEL:-opus}"
 TIMEOUT_S="${NIGHT_SHIFT_TIMEOUT_S:-14400}"
 DEADLINE="${NIGHT_SHIFT_DEADLINE:-08:00}"
@@ -314,6 +324,12 @@ if [[ -e "$HOLD_FILE" ]]; then
   hold_line="$(head -n1 "$HOLD_FILE" 2>/dev/null)"
   finish HELD "${hold_line:-$HOLD_FILE}"
 fi
+
+# ── 2b. No Fable (owner, 2026-11-02): before the live-session wait ──────────
+for m in "$MODEL" "$FALLBACK_MODEL"; do
+  [[ "${m,,}" == *fable* ]] \
+    && finish FORBIDDEN_MODEL "model '$m' names Fable; the Night Shift never invokes Fable (NIGHT_SHIFT_MODEL / NIGHT_SHIFT_FALLBACK_MODEL)"
+done
 
 # ── 3. Live robot session ─────────────────────────────────────────────────────
 # The same guard and semantics as the nightly: wait for the box, then give up

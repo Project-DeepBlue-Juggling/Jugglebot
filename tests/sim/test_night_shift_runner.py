@@ -265,7 +265,7 @@ def test_first_run_then_nothing_new_then_change(ns):
     assert argv[0] == "-p" and argv[1].startswith("/night-shift %s --candidates" % date)
     joined = " ".join(argv)
     for flag in ("--permission-mode acceptEdits", "--permission-prompts none",
-                 "--model fable", "--output-format json"):
+                 "--model opus", "--output-format json"):
         assert flag in joined
     assert "--dangerously-skip-permissions" not in joined
     # No budget fuse unless NIGHT_SHIFT_MAX_USD is set (owner, 2026-10-31).
@@ -449,6 +449,15 @@ def test_dry_run_that_commits_is_caught(ns):
     _check(r, "PUSH_REJECTED", 1)
 
 
+@pytest.mark.parametrize("knob", ["NIGHT_SHIFT_MODEL", "NIGHT_SHIFT_FALLBACK_MODEL"])
+@pytest.mark.parametrize("value", ["fable", "claude-fable-5-1", "Fable"])
+def test_a_fable_model_is_refused_before_anything_runs(ns, knob, value):
+    """Owner, 2026-11-02: Fable is never invoked by any part of the Night Shift."""
+    r = ns.run(**{knob: value})
+    _check(r, "FORBIDDEN_MODEL", 1)
+    assert not ns.clone.exists() and ns.calls() == []
+
+
 def test_no_api_key_stops_before_clone(ns):
     r = ns.run(ANTHROPIC_API_KEY=None)
     _check(r, "NO_API_KEY", 1)
@@ -465,7 +474,7 @@ def test_api_key_run_never_sees_the_token(ns):
     r = ns.run(CLAUDE_CODE_OAUTH_TOKEN="tok", FAKE_CLAUDE_REPORT=1)
     _check(r, "OK", 0)
     assert ns.auths() == ["key=set token="]
-    assert _argval(ns.calls()[0][0], "--model") == "fable"
+    assert _argval(ns.calls()[0][0], "--model") == "opus"
     last = ns.last()
     assert last["auth"] == "api" and last["cost_api_usd"] is None
     report = ns.clone / "docs" / "night-shift" / ("%s.md" % last["date"])
@@ -480,7 +489,7 @@ def test_credit_out_resumes_the_session_on_the_subscription(ns):
     _check(r, "OK", 0)
     assert ns.auths() == ["key=set token=", "key= token=set"]
     (first, _), (second, _) = ns.calls()
-    assert _argval(first, "--model") == "fable"
+    assert _argval(first, "--model") == "opus"
     assert _argval(second, "--resume") == "sess-123"
     assert _argval(second, "--model") == "opus"
     assert "credit balance ran out" in _argval(second, "-p")

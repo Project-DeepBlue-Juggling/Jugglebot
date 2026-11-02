@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-02 | complete | night-shift (models) | **Night Shift orchestrator defaults to Opus; the runner refuses any Fable model (FORBIDDEN_MODEL), owner decision** | [2026-11-02-night-shift-opus-never-fable.md](2026-11-02-night-shift-opus-never-fable.md) |
 | 2026-11-02 | complete | night-shift (credentials) | **Night Shift runs on the API key and resumes the same session on the Claude subscription when the credit balance runs out (Opus: Fable is not in the subscription); failures name their real cause** | [2026-11-02-night-shift-subscription-fallback.md](2026-11-02-night-shift-subscription-fallback.md) |
 | 2026-11-02 | complete | night-shift (owner response) | **Night Shift: every Item waiting on the owner gets a question ticket and a Respond in cell; an answered hold resumes its branch** | [2026-11-02-night-shift-owner-response-tickets.md](2026-11-02-night-shift-owner-response-tickets.md) |
 | 2026-11-02 | complete | gui | **JB-135: hovering a CONSOLE line in a replay draws a thin dashed marker on the trackbar at that line's time (mode `marker` event; hidden outside the zoom range; live never publishes)** | [2026-11-02-jb135-console-hover-marks-the-trackbar.md](2026-11-02-jb135-console-hover-marks-the-trackbar.md) |

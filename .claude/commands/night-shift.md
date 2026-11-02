@@ -38,7 +38,8 @@ Arguments: `$ARGUMENTS`
    You never merge on your own judgment, never edit its inputs to make it pass, and a
    HOLD is never promoted. "Merge anyway" does not exist.
 5. **Subagents are Sonnet by default, Opus only with a one-line reason in the brief
-   (planner math, firmware, control behaviour), never Fable.** One unit per Item, under
+   (planner math, firmware, control behaviour), never Fable** (owner, 2026-11-02: no part
+   of the Night Shift invokes Fable; you run on Opus, so never pass `model: fable`). One unit per Item, under
    about 80 tool calls; a bigger Item is held with a Progress headline, not split tonight.
    Subagents never write `map/` files and never commit; you do both.
 6. **One audit per Item.** Its fixer applies narrative, comment and test-metadata
@@ -153,7 +154,7 @@ after the gate, ever). If the branch ends up HELD, `main` keeps the Item `in_pro
 should produce. Commit:
 `git add -A && git commit -q -F -` with subject `<type>(<area>): <what> (JB-n)` (`fix`,
 `feat`, `docs`, `test`, `refactor`), a body of two or three lines, then the trailers
-`Logbook-Entry: <slug>` and `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
+`Logbook-Entry: <slug>` and `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 A rating change alone is `map: rate JB-n <title>` with no trailer.
 
 ### 2f. The audit

@@ -69,7 +69,7 @@ map app (:8765, own clone ~/map-live/Jugglebot, pulls every 30 s): board, drawer
            suite flock via run_tests.sh                                  |
    preflight: tools/night_shift_preflight.py -> candidates.json;         |
            exit 0 with "nothing new" if the set equals last night's      |
-   claude -p "/night-shift <date> ..." --model fable --max-budget-usd N   |
+   claude -p "/night-shift <date> ..." --model opus  [--max-budget-usd N] |
        --permission-mode acceptEdits --permission-prompts none          |
        --output-format json  (deny list installed in the clone)         |
        runner claims the ticker (real runs) and hands the line over <------+
@@ -199,7 +199,7 @@ Regression:
 ## 6. Notes for Collaborators
 
 - **Safety invariants**: the clone never runs `tests/hardware/`, `ros2 launch`, or any flash; the bridge is powered at night and the UDP link is single-owner (`project_hardware_bench_facts`). Night Shift never writes to `~/Desktop/Jugglebot`. No force-push, no history rewrite on `main`. A HOLD is never silently promoted to MERGE; the gate script is the single enforcement point and `tests/sim/test_night_shift_gate.py` pins it.
-- **Architecture decisions**: headless Claude Code over a cloud routine or Managed Agents because the trustworthy gate is this box (venv, MuJoCo, serial timing tests, teensy_link wire tests); over a hand-rolled orchestrator because it would reimplement the harness and every repo rule. Fable orchestrates because the role is judgment per call with a small context; units are Sonnet by default per the 2026-09-07 token rule. Questions are tickets because the drawer already edits and links them. The Runbook is generated from Items so it cannot drift from the board.
+- **Architecture decisions**: headless Claude Code over a cloud routine or Managed Agents because the trustworthy gate is this box (venv, MuJoCo, serial timing tests, teensy_link wire tests); over a hand-rolled orchestrator because it would reimplement the harness and every repo rule. Opus orchestrates (owner, 2026-11-02, replacing Fable: "more appropriate given the size of the work chunks that we want to be happening overnight"; the runner refuses any Fable model); units are Sonnet by default per the 2026-09-07 token rule. Questions are tickets because the drawer already edits and links them. The Runbook is generated from Items so it cannot drift from the board.
 - **Startup ordering**: nightly 04:00 -> Night Shift 04:45 (waits on the suite flock) -> auto-pull -> map-pull -> page. A Sitting that starts before Night Shift finishes is detected by the guard, which waits and then defers.
 - **Files affected**: listed per step above; the `jugglebot-map` changes live in that repository and deploy with `deploy-jetson.sh`.
 - **Rollback**: `systemctl --user disable --now jugglebot-night-shift.timer`; held branches are deleted or kept; merges to `main` revert like any commit and the bundled `complete` re-opens textually; the guard refactor reverts by restoring the regex into `nightly_suite.sh`.

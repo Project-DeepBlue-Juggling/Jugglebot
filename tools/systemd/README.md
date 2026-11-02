@@ -67,8 +67,10 @@ so the runner records `NO_API_KEY` in `last_run.json` instead of systemd
 refusing the start and leaving no trace there. Either line or both: with both,
 the night runs on the API key and, if its credit balance runs out, resumes the
 same session on the Claude subscription (`NIGHT_SHIFT_FALLBACK_MODEL`, default
-`opus`: Fable is not in the subscription); with only the token it runs on the
-subscription from the start (the script header has the detail).
+`opus`); with only the token it runs on the subscription from the start (the
+script header has the detail). Both legs run Opus (`NIGHT_SHIFT_MODEL`, default
+`opus`); the runner refuses any model naming Fable (`FORBIDDEN_MODEL`, owner
+2026-11-02).
 
 ```bash
 install -Dm600 /dev/null ~/.config/jugglebot/night-shift.env
