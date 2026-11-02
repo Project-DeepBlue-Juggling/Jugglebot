@@ -2,9 +2,9 @@
 id: JB-157
 kind: ticket
 title: 'JB-143 held on night-shift/2026-11-03-JB-143: merge the band rule and re-sweep, merge it and wait for the next sweep, re-sweep on the branch first, or drop?'
-status: open
+status: complete
 created: '2026-11-03'
-updated: '2026-11-02T18:28:53Z'
+updated: '2026-11-02T22:52:15Z'
 owners: []
 priority: high
 effort: xs
@@ -36,3 +36,7 @@ Recommendation: 2. The rule is inert until a re-sweep and changes no committed v
 - 1 or 2: the Night Shift merges the branch, and JB-143 closes after the re-sweep.
 - 3: a re-sweep in your Session on the branch, then a merge.
 - 4: the branch is deleted and JB-143 goes back to open.
+
+## Answer
+
+Agreed.
