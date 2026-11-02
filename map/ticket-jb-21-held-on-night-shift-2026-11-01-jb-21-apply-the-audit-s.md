@@ -2,9 +2,9 @@
 id: JB-153
 kind: ticket
 title: 'JB-21 held on night-shift/2026-11-01-JB-21: apply the audit''s 2 fixes and merge, apply the WARNING only, merge as is, or drop?'
-status: open
+status: complete
 created: '2026-11-03'
-updated: '2026-11-02T17:49:22Z'
+updated: '2026-11-02T22:47:13Z'
 owners: []
 priority: medium
 effort: xs
@@ -36,3 +36,7 @@ Recommendation: 1. Both fixes are a few lines each. With the WARNING open, the b
 - 1 or 2: the Night Shift applies the fixes, re-gates and merges, and JB-21 closes.
 - 3: a re-gate on the merged tip and a merge.
 - 4: the branch is deleted and JB-21 goes back to open, waiting on its trigger.
+
+## Answer
+
+I agree with your recommendation
