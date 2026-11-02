@@ -677,6 +677,18 @@ class ActiveHandler(StateHandler):
                 ctx.request = 'arm_setpoints'
                 return None
             self._armed = True
+            # The arm reply IS the wire's state: the bridge answers success only
+            # with its mpc_active set. Seed the /link_status mirror from it, or a
+            # streaming mode queued during the activation (the GUI's IDLE ->
+            # ACTIVE:TRAJECTORY plan publishes it the moment control_mode reads
+            # STANDBY, i.e. BEFORE the arm) is consumed below on this very tick
+            # against the PRE-arm 10 Hz /link_status and refused as "DISARMED"
+            # -- the GUI then times out waiting for TRAJECTORY. Whether the
+            # /link_status publish lands between the arm and this tick depends
+            # only on the two free-running 10 Hz timer phases, fixed per launch
+            # (Sitting 2026-11-02 17:00: refused twice; 2026-10-28 09:49 once).
+            # A later disarm still reaches wire_armed through /link_status.
+            ctx.wire_armed = True
 
         if self._deactivating:
             return self._step_deactivate(ctx)

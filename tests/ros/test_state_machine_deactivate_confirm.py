@@ -324,6 +324,72 @@ def test_manual_arm_session_may_switch_mode_before_arming(clock):
     assert ctx.control_mode == 'GUI'
 
 
+def _activate_with_lagging_link_status(queued_mode):
+    """IDLE -> ACTIVE with /link_status still reporting the PRE-arm wire
+    (mpc_active=0) when the arm reply lands, and a streaming mode queued during
+    the activation -- the GUI's IDLE -> ACTIVE:<mode> plan publishes it as soon
+    as control_mode reads STANDBY, which is before the arm."""
+    sm = build_default_machine(log_fn=lambda m: None)
+    sm.force_transition(RobotState.IDLE, Context())
+    ctx = Context()
+    ctx.legs_closed_loop = True
+    ctx.link_status_seen = True
+    ctx.wire_armed = False
+    sm.tick(ctx)
+    ctx.enqueue_command('activate')
+    sm.tick(ctx)                      # IDLE -> ACTIVE
+    sm.tick(ctx)                      # enter ACTIVE: 'activate' requested
+    assert ctx.drain_requests() == ['activate']
+    ctx.operation_result = True
+    sm.tick(ctx)                      # activated -> arm requested
+    assert ctx.drain_requests() == ['arm_setpoints']
+    assert ctx.control_mode == 'STANDBY'
+    ctx.enqueue_command(queued_mode)  # GUI publishes now; held until armed
+    sm.tick(ctx)                      # arm reply pending: not consumed yet
+    assert ctx.control_mode == 'STANDBY'
+    return sm, ctx
+
+
+def test_mode_queued_during_activation_lands_on_the_arm_tick(clock):
+    """Sitting 2026-11-02 17:00 (launch.log 369-380): 'trajectory' published
+    12 ms after control_mode read STANDBY, the bridge ARMED at .959, the
+    orchestrator tick at 285.022 consumed both against the /link_status of
+    284.940 (mpc_active=0) and refused; the GUI waited T_MODE (15 s) and timed
+    out. The arm reply is the wire's state, so the mode lands on that tick."""
+    sm, ctx = _activate_with_lagging_link_status('trajectory')
+    ctx.operation_result = True       # arm reply: success = mpc_active set
+    sm.tick(ctx)
+    assert sm.state == RobotState.ACTIVE
+    assert ctx.wire_armed is True
+    assert ctx.control_mode == 'TRAJECTORY'
+    assert not any('refused' in n for n in _notices(ctx))
+
+
+def test_disarm_after_the_arm_still_refuses_mode_switch(clock):
+    """The seed is not a latch: a later /link_status disarm (mpc_active=0)
+    restores the owner-policy refusal."""
+    sm, ctx = _activate_with_lagging_link_status('gui')
+    ctx.operation_result = True
+    sm.tick(ctx)
+    assert ctx.control_mode == 'GUI'
+    ctx.wire_armed = False            # /link_status: the wire went disarmed
+    ctx.enqueue_command('trajectory')
+    sm.tick(ctx)
+    assert ctx.control_mode == 'GUI'
+    assert "'trajectory' refused: setpoint output is DISARMED" in _notices(ctx)
+
+
+def test_failed_arm_attempt_does_not_seed_wire_armed(clock):
+    """Only a SUCCESSFUL arm reply seeds the mirror; a refused attempt retries
+    and the queued mode stays unconsumed."""
+    sm, ctx = _activate_with_lagging_link_status('trajectory')
+    ctx.operation_result = False
+    sm.tick(ctx)
+    assert ctx.drain_requests() == ['arm_setpoints']
+    assert ctx.wire_armed is False
+    assert ctx.control_mode == 'STANDBY'
+
+
 def test_orchestrator_node_keeps_active_on_refusal_and_logs_why(clock):
     """Node level (mocked ROS): the bridge's reject message reaches the handler
     via ctx.operation_message, the state stays ACTIVE, the reason is logged,
