@@ -1273,6 +1273,68 @@ def test_flight_band_and_rect_always_admits_the_identity_offset(sweep_mod):
     assert rect is not None and _contains_origin(rect)
 
 
+#: JB-143's grid: five flights, offsets +/-10 mm on a 2 mm step in x and y.
+_JB143_XS = [-10.0, -8.0, -6.0, -4.0, -2.0, 0.0, 2.0, 4.0, 6.0, 8.0, 10.0]
+
+
+def _jb143_grid(narrow_flights, narrow_x_mm=4.0):
+    """Every flight passes everywhere, except that the flights in
+    ``narrow_flights`` fail at |x| > ``narrow_x_mm`` (the 2026-11-02 hop shape
+    at hand acc 4500: the short flights pass at (0, 0) and fail HAND_LIMIT_C2
+    at large x offsets)."""
+    flights = [0.66, 0.70, 0.75, 0.80, 0.85]
+    grid = {}
+    for T in flights:
+        for x in _JB143_XS:
+            for y in _JB143_XS:
+                grid[(T, x, y)] = not (T in narrow_flights
+                                       and abs(x) > narrow_x_mm)
+    return flights, grid
+
+
+def test_flight_band_never_gives_up_landing_width_for_apex_band(sweep_mod):
+    """JB-143 (owner decision 2026-11-02): the short flights that pass only at
+    small x offsets stay out of the band, and the cell keeps the full +/-10 mm
+    rectangle the operating flights admit. The old rule grew the band on
+    zero-offset passing and returned (0.66, 0.85) with x [-4, +4]."""
+    flights, grid = _jb143_grid(narrow_flights={0.66, 0.70})
+    band, rect = sweep_mod._flight_band_and_rect(flights, _JB143_XS, grid,
+                                                 center_flight=0.80)
+    assert band == (0.75, 0.85)
+    assert rect == (-10.0, 10.0, -10.0, 10.0)
+
+
+def test_flight_band_still_grows_where_it_costs_no_width(sweep_mod):
+    """A flight that admits the whole centre rectangle still joins the band,
+    on either side, so the rule only declines the band that would cost
+    width."""
+    flights, grid = _jb143_grid(narrow_flights=set())
+    band, rect = sweep_mod._flight_band_and_rect(flights, _JB143_XS, grid,
+                                                 center_flight=0.75)
+    assert band == (0.66, 0.85)
+    assert rect == (-10.0, 10.0, -10.0, 10.0)
+
+
+def test_flight_band_stops_at_the_first_flight_that_would_cost_width(sweep_mod):
+    """The band is contiguous: a narrow flight between the centre and a wide
+    one stops the growth there, as a zero-offset failure always did."""
+    flights, grid = _jb143_grid(narrow_flights={0.70})
+    band, rect = sweep_mod._flight_band_and_rect(flights, _JB143_XS, grid,
+                                                 center_flight=0.80)
+    assert band == (0.75, 0.85)
+    assert rect == (-10.0, 10.0, -10.0, 10.0)
+
+
+def test_a_narrow_centre_flight_keeps_its_own_rectangle(sweep_mod):
+    """The rectangle is the centre flight's own; a band neighbour that admits
+    more never widens it, and one that admits that rectangle joins."""
+    flights, grid = _jb143_grid(narrow_flights={0.75})
+    band, rect = sweep_mod._flight_band_and_rect(flights, _JB143_XS, grid,
+                                                 center_flight=0.75)
+    assert band == (0.66, 0.85)
+    assert rect == (-4.0, 4.0, -10.0, 10.0)
+
+
 def test_refuse_overlapping_single_apex_bands_flags_an_overlap(sweep_mod):
     ap = argparse.ArgumentParser()
     with pytest.raises(SystemExit):

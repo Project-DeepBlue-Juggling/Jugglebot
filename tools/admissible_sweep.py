@@ -659,25 +659,46 @@ def _flight_band_and_rect(flights: Sequence[float], offsets_mm: Sequence[float],
     empty. Returns ``(None, None)`` only when the CENTRE flight itself fails
     at zero offset -- the owner's own operating point failing is not a band
     to narrow around, it is a sweep the caller must stop and look at.
+
+    **The band never costs landing width (owner decision 2026-11-02, JB-143).**
+    The rectangle is fixed FIRST, at the centre flight alone (the largest one
+    through (0, 0) there), and a neighbouring flight joins the band only if
+    EVERY cell of that rectangle passes at it. Zero-offset passing is implied,
+    since the rectangle contains (0, 0). Before this, the band grew on
+    zero-offset passing alone and the rectangle was fitted over the whole band
+    afterwards, so a short flight that passed at (0, 0) but failed at large
+    offsets narrowed the cell's landing rectangle for the whole band. The
+    2026-11-02 sweep at hand acc 4500 did exactly that: the hop 0.92-0.97 cell
+    went from +/-10 to +/-4 mm in x for apex band at 0.61-0.69 m that no
+    operating flight uses. Containment is monotone (more flights can only
+    remove cells), so the result does not depend on which side grows first.
     """
     flights_sorted = sorted(flights)
     center_i = min(range(len(flights_sorted)),
                    key=lambda i: abs(flights_sorted[i] - center_flight))
-    if not pass_grid.get((flights_sorted[center_i], 0.0, 0.0), False):
+    center_T = flights_sorted[center_i]
+    if not pass_grid.get((center_T, 0.0, 0.0), False):
         return None, None
-    lo = hi = center_i
-    while lo - 1 >= 0 and pass_grid.get((flights_sorted[lo - 1], 0.0, 0.0), False):
-        lo -= 1
-    while (hi + 1 < len(flights_sorted)
-           and pass_grid.get((flights_sorted[hi + 1], 0.0, 0.0), False)):
-        hi += 1
-    band = flights_sorted[lo:hi + 1]
 
-    def _pass(x, y, _band=band):
-        return all(pass_grid.get((T, x, y), False) for T in _band)
+    def _pass_at_centre(x, y):
+        return pass_grid.get((center_T, x, y), False)
 
-    rect = _max_rectangle(list(offsets_mm), list(offsets_mm), _pass,
+    rect = _max_rectangle(list(offsets_mm), list(offsets_mm), _pass_at_centre,
                           must_contain=(0.0, 0.0))
+    if rect is None:      # (0, 0) is not on the offset grid: nothing to keep
+        return (center_T, center_T), None
+    xlo, xhi, ylo, yhi = rect
+    rect_cells = [(x, y) for x in offsets_mm if xlo <= x <= xhi
+                  for y in offsets_mm if ylo <= y <= yhi]
+
+    def _keeps_rect(T):
+        return all(pass_grid.get((T, x, y), False) for x, y in rect_cells)
+
+    lo = hi = center_i
+    while lo - 1 >= 0 and _keeps_rect(flights_sorted[lo - 1]):
+        lo -= 1
+    while hi + 1 < len(flights_sorted) and _keeps_rect(flights_sorted[hi + 1]):
+        hi += 1
     return (flights_sorted[lo], flights_sorted[hi]), rect
 
 
