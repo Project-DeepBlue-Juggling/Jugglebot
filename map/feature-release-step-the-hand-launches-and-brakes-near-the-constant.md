@@ -2,9 +2,9 @@
 id: JB-144
 kind: feature
 title: 'Release step: the Hand launches and brakes near the constant-acceleration ideal (C-HAND-5)'
-status: inbox
+status: complete
 created: '2026-11-02'
-updated: '2026-11-02T06:18:01Z'
+updated: '2026-11-02T06:33:48Z'
 owners: []
 priority: high
 effort: m
@@ -46,3 +46,7 @@ Watch at the first Sitting: the Learner's Memory was built on the continuous sha
 
 - verdict: pass
 - notes: All heights worked well! The first attempt at 1.35 m led to a hand motor SPINOUT error, which was interesting and unexpected.
+
+## Progress
+
+- 2026-11-02: Flown 2026-11-02 17:00: Columns 19/19 at Apex 1.05, 1.15, 1.25 and 1.35, owner verdict pass. Follow-ups: JB-147 (one 1.35 launch overshot into the top stop, SPINOUT), JB-145 (stall stop near a release).

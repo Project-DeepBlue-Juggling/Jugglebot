@@ -1,8 +1,8 @@
 ---
-title: "C-HAND-5: the Hand's acceleration steps at the release, so the launch and the brake run near the constant-acceleration ideal (Apex 1.05 peak 3484 -> 2362 rev/s^2; Apex 1.42 refused -> planned at 3138); not flown"
+title: "C-HAND-5: the Hand's acceleration steps at the release, so the launch and the brake run near the constant-acceleration ideal (Apex 1.05 peak 3484 -> 2362 rev/s^2; Apex 1.42 refused -> planned at 3138); FLOWN 2026-11-02, Columns 19/19 at Apex 1.05, 1.15, 1.25 and 1.35"
 type: feature
 date: 2026-11-02
-status: in-progress
+status: complete
 phase: "JB-114 R1 (the planner's own brake)"
 subsystem: motion
 related_entries:
@@ -207,9 +207,35 @@ cup.**
 
 ## Hardware
 
-Not flown. The first Sitting is a Columns Apex ladder (Sep. 125, 0.95 -> 1.05
--> 1.15 -> 1.25 -> 1.35, 20 Throws each); its `## Sitting` section is on JB-144
-(the release-step Feature), with stop rules on Hand iq over 54 A, MAX_DEVIATION
-or a stream STOP, LANE_REFUSED and any HAND_LIMIT END. The box sweep adds pose
-Columns cells at Apex 1.00-1.40 for it. The Learner's Memory was built on the
-continuous shape, so expect a landing bias on the first Throws.
+Flown 2026-11-02 17:00 (launch `2026-11-02-17-00-38`, bag
+`2026-11-02_17-00-38_Higher-throws-with-JB-144-update`), Columns Sep. 125.
+Owner verdict on JB-144: pass ("All heights worked well!").
+
+| Apex | Best run | Peak Hand iq launch / brake | Planned peak Hand acc |
+|---|---|---|---|
+| 1.05 | 19/19 | +31 / -20 A | 2500-4300 rev/s^2 |
+| 1.15 | 19/19 (twice) | +35-45 / -25 A | 2400-3300 |
+| 1.25 | 19/19 (and 17/17, LANE_REFUSED) | +33-39 / -36 A | 2700-3000 |
+| 1.35 | 19/19 (after 18/18, 14/14) | +36-43 / -22-25 A | 2900-3650 |
+
+(The 0.95 goals that ended on LIMIT_VEL, HAND_LIMIT_ACC and MISSED_CATCH are
+the pre-existing Columns residue: leg velocity 354 > 350 on the catch side and
+the JB-120 class.)
+
+- **One SPINOUT, first 1.35 goal:** one launch overshot to 168 rev/s
+  (planned ~151). The stepped brake saturated at the 60 A limit and the Hand
+  ran to 10.83 rev into the top stop. Every other launch from 1.05 up stayed at
+  10.16-10.23 rev and at most -36 A. Filed as JB-147.
+- **The release throws HIGH, not low:** the Learner commanded about 1.26 m to
+  land 1.37 m. The prediction above (a rounded corner, slower release) had the
+  sign wrong; the Learner absorbs it.
+- **Reach, offline (same limits):** Apex 1.45 / 1.55 / 1.65 / 1.75 plan at a
+  peak of 3201 / 3423 / 3630 / 3834 rev/s^2. The peak Hand speed at 1.75 is
+  about 180 rev/s, under the 200 rev/s session limit, so Hand velocity is not
+  the next limit.
+- **The next limits are:**
+  - the box's coverage (swept to 1.40);
+  - the C-HAND-3 throw envelope (5.64 m/s, about 1.62);
+  - the firmware stream STOP's 3500 rev/s^2 that caps the brake seed (about 1.65);
+  - the room ceiling;
+  - JB-147's overspeed margin.
