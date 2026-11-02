@@ -4,7 +4,7 @@ kind: bug
 title: Two-ball Columns hop-start throw lands 25-56 mm inboard, past the 35 mm catch authority
 status: inbox
 created: '2026-10-31'
-updated: '2026-11-01T12:18:35Z'
+updated: '2026-11-02T07:26:35Z'
 owners: []
 priority: high
 effort: m
@@ -49,6 +49,11 @@ The 2026-10-31 hold analysis shows hold 0.100 lands about 10 mm short and shorte
 - pass: five of five starts past the first two catches, with no AIM-LATERAL-CLAMPED inward of 35 mm.
 - record: the HOP aim clamp line and the landing x error of each hop throw.
 - minutes: 20
+
+## Sitting result (2026-11-02)
+
+- verdict: pass
+- notes: Should be marked off with the JB-120/139 tests
 
 ## Progress
 
