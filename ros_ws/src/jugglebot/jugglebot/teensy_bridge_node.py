@@ -147,6 +147,7 @@ from jugglebot import mocap_status as mocap_st
 import jugglebot.hardware_config as hw
 import jugglebot.protocol_config as proto
 from jugglebot.motion import hand_jam as hj
+from jugglebot.hand_capture import HandCaptureWriter  # TEMPORARY (JB-147 diagnostic capture)
 
 
 #: /cache_diag WARN threshold on the per-axis encoder-cache age FLOOR
@@ -1919,6 +1920,12 @@ class TeensyBridgeNode(Node):
         # (node-default MutuallyExclusiveCallbackGroup), so it needs no lock.
         self._error_log = MotorStateTracker()
 
+        # TEMPORARY (JB-147 diagnostic capture): opt-in full-rate Hand CSV capture.
+        # Default '' = off (no writer, no thread, hot-path cost is one None test).
+        self.declare_parameter('hand_capture_dir', '')
+        self._hand_capture = None
+        self._hand_capture_start(self.get_parameter('hand_capture_dir').value)
+
         # ── Subscriptions to T→J streams (RX-thread callbacks) ──
         self._client.subscribe(int(MsgType.HEARTBEAT_T2J), self._on_heartbeat_t2j)
         self._client.subscribe(int(MsgType.TELEMETRY), self._on_telemetry)
@@ -2618,6 +2625,10 @@ class TeensyBridgeNode(Node):
         # executor timer: an executor thread blocked for seconds (`_park_hand`,
         # a cold-start verb) must not blind it. Non-blocking by contract.
         self._hand_jam_feed(tm)
+        cap = self._hand_capture  # TEMPORARY (JB-147 diagnostic capture)
+        if cap is not None:
+            cap.offer('telem', t_src_us=tm.t_teensy_us, pos=tm.pos_rev[_HAND_AXIS],
+                      vel=tm.vel_rps[_HAND_AXIS])
 
     def _on_diagnostic(self, msg_type, seq, payload, addr):
         try:
@@ -2627,6 +2638,11 @@ class TeensyBridgeNode(Node):
         with self._lock:
             self._latest_diag[int(dg.axis_id)] = dg
             self._latest_diag_mono[int(dg.axis_id)] = time.monotonic()
+        cap = self._hand_capture  # TEMPORARY (JB-147 diagnostic capture)
+        if cap is not None and int(dg.axis_id) == _HAND_AXIS:
+            cap.offer('diag', iq_sp=dg.iq_setpoint, iq_meas=dg.iq_measured,
+                      axis_state=dg.axis_state, active_errors=dg.active_errors,
+                      diag_flags=dg.flags)
 
     def _on_profile(self, msg_type, seq, payload, addr):
         try:
@@ -2740,6 +2756,23 @@ class TeensyBridgeNode(Node):
         # commanded the hand most recently IS the command.
         with self._lock:
             self._last_hand_cmd = {'pos': pos, 'vel': vel, 'tor': tor}
+        cap = self._hand_capture  # TEMPORARY (JB-147 diagnostic capture)
+        if cap is not None:
+            cap.offer('echo', t_src_us=ce.t_bridge_us, cmd_pos=pos, cmd_vel=vel,
+                      cmd_tor=tor)
+
+    # TEMPORARY (JB-147 diagnostic capture)
+    def _hand_capture_start(self, directory):
+        """Start the opt-in Hand capture writer (no-op for '' / None)."""
+        if not directory:
+            return
+        try:
+            self._hand_capture = HandCaptureWriter(str(directory)).start()
+            self.get_logger().warn(
+                f'JB-147 hand capture ON -> {self._hand_capture.path}')
+        except Exception as e:  # noqa: BLE001 -- a diagnostic must not stop the bridge
+            self._hand_capture = None
+            self.get_logger().error(f'hand capture failed to start: {e}')
 
     def _on_hand_sensor(self, msg_type, seq, payload, addr):
         # RX-thread callback (hand ball-present sensor): stash the decoded frame
@@ -9895,6 +9928,15 @@ class TeensyBridgeNode(Node):
             time.sleep(_SHUTDOWN_DISARM_SETTLE_S)
             self._wait_wire_disarmed()
             self._shutdown_stow()
+        # TEMPORARY (JB-147 diagnostic capture): flush after the stow so it is in the file.
+        if getattr(self, '_hand_capture', None) is not None:
+            try:
+                self._hand_capture.close()
+                self.get_logger().warn(
+                    f'JB-147 hand capture closed: {self._hand_capture.written} rows, '
+                    f'{self._hand_capture.dropped} dropped -> {self._hand_capture.path}')
+            except Exception:  # noqa: BLE001
+                pass
         # 4. Transport teardown.
         try:
             self._tod.close()

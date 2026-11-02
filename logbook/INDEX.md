@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-02 | complete | JB-147 diagnosis | **Opt-in, temporary full-rate Hand capture to CSV (`hand_capture:=true`): every telemetry, diagnostic and command-echo sample with its own stamp, written off the receive path** | [2026-11-02-jb147-hand-capture.md](2026-11-02-jb147-hand-capture.md) |
 | 2026-11-02 | complete | Sitting 2026-11-02 follow-up | **Hand ODrive config backup matches the drive (current soft 70 / hard 80 A, thermistor 60 / 70 °C); the code limit stays 60 A** | [2026-11-02-hand-odrive-limits-backup.md](2026-11-02-hand-odrive-limits-backup.md) |
 | 2026-11-02 | complete | Sitting 2026-11-02 follow-up | **GUI IDLE -> ACTIVE:TRAJECTORY no longer times out: a successful arm reply seeds the orchestrator's wire-armed mirror, so a mode queued during activation is not refused against the pre-arm /link_status** | [2026-11-02-idle-to-trajectory-arm-race.md](2026-11-02-idle-to-trajectory-arm-race.md) |
 | 2026-11-02 | complete | JB-114 R1 (the planner's own brake) | **C-HAND-5: the Hand's acceleration steps at the release (along the take-off axis), so launch and brake run near the constant-acceleration ideal; Apex 1.05 peak 3484 -> 2362 rev/s^2, Apex 1.42 refused -> planned at 3138; box re-swept with Columns cells to Apex 1.40; FLOWN 2026-11-02: Columns 19/19 at Apex 1.05 to 1.35, one SPINOUT (JB-147)** | [2026-11-02-hand-release-step.md](2026-11-02-hand-release-step.md) |

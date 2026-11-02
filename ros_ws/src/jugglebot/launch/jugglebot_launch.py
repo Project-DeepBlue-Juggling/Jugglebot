@@ -7,7 +7,7 @@ from launch.actions import (
     OpaqueFunction,
 )
 from launch.conditions import IfCondition, UnlessCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 import glob
 import os
 import subprocess
@@ -329,6 +329,14 @@ def generate_launch_description():
                     'refusal. false — the operator arms manually via '
                     '/set_setpoint_output (probe-first bench flow).')
 
+    # TEMPORARY (JB-147 diagnostic capture): opt-in full-rate Hand CSV capture.
+    hand_capture = LaunchConfiguration('hand_capture')
+    hand_capture_arg = DeclareLaunchArgument(
+        'hand_capture', default_value='false',
+        description='TEMPORARY (JB-147): true -> teensy_bridge_node records every '
+                    'received Hand sample to ~/Desktop/Jugglebot/temp/hand_capture/'
+                    '*.csv (view with tools/probes/hand_capture_view.py).')
+
     # ── Core ROS2 nodes ──────────────────────────────────────────
     orchestrator_node = Node(
         package='jugglebot',
@@ -561,6 +569,10 @@ def generate_launch_description():
             # declared default stays 0.0 (see teensy_bridge_node.py) as the
             # bare-launch fail-safe; this override is what a real launch runs.
             'hand_torque_ff_gain': 0.7,
+            # TEMPORARY (JB-147 diagnostic capture): '' = off.
+            'hand_capture_dir': PythonExpression([
+                "'", os.path.expanduser('~/Desktop/Jugglebot/temp/hand_capture'),
+                "' if '", hand_capture, "' == 'true' else ''"]),
         }],
         additional_env={'PYTHONPATH': _bridge_pythonpath},
         # JB-82 (2026-11-01): the shutdown Stow is bounded at _SHUTDOWN_DEACTIVATE_TIMEOUT_S = 6 s plus a
@@ -866,6 +878,7 @@ def generate_launch_description():
         teensy_ip_arg,
         enable_setpoint_output_arg,
         auto_arm_arg,
+        hand_capture_arg,  # TEMPORARY (JB-147 diagnostic capture)
         # Infrastructure (gui_server.py runs independently in the background)
         rosbridge_websocket_node,
         rosapi_node,
