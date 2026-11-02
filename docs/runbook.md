@@ -135,5 +135,5 @@ Rigs: Robot 4 blocks (97 min) · Bench leg 1 block (30 min)
 
 ## Close-out
 
-- Type each row's result in the map app (pass or fail, notes); it lands on the Item as `## Sitting result (<date>)`.
+- Type each row's result in the map app (pass, fail, or pending when the verdict needs the logs; notes); it lands on the Item as `## Sitting result (<date>)`.
 - Then, in a Session in the live checkout: `/sitting-debrief <date>`.

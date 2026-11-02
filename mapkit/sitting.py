@@ -248,16 +248,22 @@ def render_runbook(repo_root: str) -> str:
     out += ["", "## Questions a Sitting can answer", ""]
     out += ["- %s %s (parent %s)" % q for q in data["questions"]] or ["- none"]
     out += ["", "## Close-out", "",
-            "- Type each row's result in the map app (pass or fail, notes); it lands on the Item as "
-            "`## Sitting result (<date>)`.",
+            "- Type each row's result in the map app (pass, fail, or pending when the verdict needs "
+            "the logs; notes); it lands on the Item as `## Sitting result (<date>)`.",
             "- Then, in a Session in the live checkout: `/sitting-debrief <date>`.", ""]
     return "\n".join(out)
 
 
+# A Sitting result's verdict. ``pending``: the row was flown but its pass needs logs or an
+# analysis the operator cannot do live; ``/sitting-debrief`` derives the verdict. The map app
+# reads this tuple, so a new verdict lands here first.
+VERDICTS = ("pass", "fail", "pending")
+
+
 def append_sitting_result(body: str, date: str, verdict: str, notes: str) -> str:
     """Append ``## Sitting result (<date>)`` before any ``## Progress`` section, else at the end."""
-    if verdict not in ("pass", "fail"):
-        raise ValueError("verdict must be 'pass' or 'fail', got %r" % (verdict,))
+    if verdict not in VERDICTS:
+        raise ValueError("verdict must be one of %s, got %r" % (", ".join(VERDICTS), verdict))
     block = "## Sitting result (%s)\n\n- verdict: %s\n- notes: %s\n" % (
         date, verdict, " ".join(notes.split()))
     lines = body.split("\n")

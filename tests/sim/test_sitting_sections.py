@@ -163,6 +163,8 @@ def test_append_result_placement_and_error():
     assert "- verdict: pass\n- notes: ok\n" in out
     out = sitting.append_sitting_result("Body.\n", "2026-11-02", "fail", "bad")
     assert out.endswith("## Sitting result (2026-11-02)\n\n- verdict: fail\n- notes: bad\n")
+    out = sitting.append_sitting_result("Body.\n", "2026-11-02", "pending", "check the bag")
+    assert out.endswith("- verdict: pending\n- notes: check the bag\n")
     with pytest.raises(ValueError):
         sitting.append_sitting_result("Body.\n", "2026-11-02", "maybe", "")
 

@@ -81,12 +81,18 @@ Then go on to sections 2 to 6.
    robot) plus every Item named by a `branch:` in `docs/runbook.md`, read its body for
    `## Sitting result (<date>)` sections newer than the last debrief (the last debrief's date
    is the newest `logbook/*-sitting-debrief.md` or older `logbook/*-sitting-wrapup.md` entry; none = all of them).
-2. For each result: Item, verdict (`pass` or `fail`), notes, and the held branch its `## Sitting`
+2. For each result: Item, verdict (`pass`, `fail` or `pending`), notes, and the held branch its `## Sitting`
    section names (if any). List them in a table before touching anything. (Section 1 has already produced the verdicts; this table is the Items' typed results reconciled against them.)
+3. A `pending` result means the row was flown but the owner could not judge its `pass:` live: its
+   verdict is section 1's log-derived one (`unverified` if the logs cannot settle it), confirmed
+   by the owner in the C table. Sections 3 onward act on that resolved verdict; an `unverified`
+   row is neither closed nor merged, and gets a Progress line `Flown at the Sitting of <date>,
+   verdict unresolved: <what is missing>` so the next Runbook keeps it. The typed `pending`
+   section stays on the Item as the record of what was flown.
 
 ## 3. Merge the passed Items, one at a time
 
-For each result with verdict `pass` AND a held branch `night-shift/<d>-JB-n` (the
+For each result with verdict `pass` (typed, or a `pending` resolved to pass) AND a held branch `night-shift/<d>-JB-n` (the
 `branch:` line of its `## Sitting` section; if the section has none, still look for
 `git branch -r --list 'origin/night-shift/*-JB-n'` before treating the pass as a plain check,
 so held software work is never dropped):
