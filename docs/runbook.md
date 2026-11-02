@@ -99,7 +99,7 @@ Rigs: Robot 2 blocks (47 min) · Bench leg 1 block (30 min)
 
 ## Questions a Sitting can answer
 
-- none
+- JB-152 JB-120 held on night-shift/2026-11-01-JB-120: apply the audit's 2 fixes and merge, merge as is, or drop? (parent JB-120)
 
 ## Close-out
 
