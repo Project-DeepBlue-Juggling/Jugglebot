@@ -115,3 +115,20 @@ def test_stream_on_off_is_debug_and_an_empty_mode_reads_none():
     node._on_control_mode(SimpleNamespace(data=''))
     assert [m for s, m in rec.lines if s == 'INFO'] == []
     assert ('DEBUG', 'streaming DISABLED (mode none)') in rec.lines
+
+
+def test_every_accepted_install_line_carries_the_gate_peaks_as_a_share_of_the_live_limits():
+    """2026-11-01 Sitting debrief: the Runbook asked for the per-catch peak Hand
+    acceleration of the catches that PASSED, and the log printed it only on
+    refusals.  `_peaks_suffix` formats the report the solve already attached,
+    against the LIVE limits (not a literal cap), and is '' with no report."""
+    limits = SimpleNamespace(hand_acc_limit_rps2=4500.0, leg_vel_mmps=350.0,
+                             leg_acc_mmps2=5000.0)
+    fake = SimpleNamespace(_limits=limits)
+    rep = SimpleNamespace(peak_hand_acc_rps2=3600.0, peak_leg_vel_mmps=175.0,
+                          peak_leg_acc_mmps2=4000.0)
+    line = tn.TrajectoryNode._peaks_suffix(fake, SimpleNamespace(meta=SimpleNamespace(report=rep)))
+    assert line == (', peaks hand acc 3600 rev/s^2 (80.0% of 4500), '
+                    'leg vel 50.0% acc 80.0%')
+    assert tn.TrajectoryNode._peaks_suffix(fake, SimpleNamespace(meta=SimpleNamespace(report=None))) == ''
+    assert tn.TrajectoryNode._peaks_suffix(fake, SimpleNamespace()) == ''

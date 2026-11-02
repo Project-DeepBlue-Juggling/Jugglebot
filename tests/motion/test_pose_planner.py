@@ -64,7 +64,7 @@ def geom():
 def limits():
     return TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=350.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=200000.0,
-        hand_acc_rps2=3900.0)
+        hand_acc_rps2=float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2))
 
 
 def _rest_state(cup_mm):
@@ -220,9 +220,18 @@ def test_pose_accepts_dwell_045_where_level_reads_39_deg(limits, geom):
     # 2026-10-24 touch-down skid bound 175 mm/s: 0.45 jerk 56,479 -> 73,949;
     # 0.40 now refused HAND_LIMIT_ACC (was LIMIT_VEL).
     assert pose.report.peak_leg_jerk_mmps3 == pytest.approx(73949, rel=0.01)
+    # The 0.40 refusal is a characterisation of the 2026-10-24 premise at the
+    # hand cap of that day (3900 rev/s^2), so it is pinned to that cap, not to
+    # the live one: on 2026-11-01 the owner raised hand_acc_limit_rps2 to 4500
+    # (logbook/2026-11-01-hand-limit-4500-and-stroke-floor.md), and at the live
+    # cap the same cell is ACCEPTED -- which is the second assertion below.
+    limits_3900 = limits.with_sitting_limits(hand_acc_rps2=3900.0)
     with pytest.raises(uc.CycleInfeasible) as exc_p:
-        _folded(0.40, uc.PLANNER_POSE, limits, geom)
+        _folded(0.40, uc.PLANNER_POSE, limits_3900, geom)
     assert exc_p.value.code == 'HAND_LIMIT_ACC'
+    _, pose_040 = _folded(0.40, uc.PLANNER_POSE, limits, geom)
+    assert 3900.0 < pose_040.report.peak_hand_acc_rps2 <= float(
+        limits.hand_acc_limit_rps2)
 
 
 # ---------------------------------------------------------------------------

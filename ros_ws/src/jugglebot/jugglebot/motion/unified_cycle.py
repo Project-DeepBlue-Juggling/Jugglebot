@@ -1341,10 +1341,15 @@ def build_cup_config(**overrides) -> cc.CupCycleConfig:
     feeding that inset number as the runway floor made the analytic gate believe
     the inset's worth less runway existed than the gate downstream of it allows, i.e. two
     layers disagreeing about the same physical stop.  Corrected 2026-09-04.
+
+    The stroke TOP (``stroke_z_top_m``) is deliberately NOT passed: the
+    between-knot ceiling rows are opt-in, off since 2026-11-02 (cup_cycle.py,
+    INVARIANTS I-PLAN-15).
     """
     kwargs = dict(z_min_m=_CUP_Z_BOTTOM_M + _CUP_Z_BOTTOM_INSET_M,
                   z_max_m=_CUP_Z_TOP_M - _CUP_Z_TOP_INSET_M,
                   catch_runway_z_floor_m=_CUP_Z_BOTTOM_M,
+                  # no stroke_z_top_m: ceiling rows are opt-in (cup_cycle.py)
                   catch_runway_enabled=True)
     kwargs.update(overrides)
     return cc.CupCycleConfig(**kwargs)

@@ -4230,6 +4230,19 @@ class SkillExecutor:
                     fb_terminal = self._catch_terminal(idx, skill, fb_landing)
                 except _NoAdmissibleCommand:
                     fb_terminal = None
+                if (fb_terminal is not None
+                        and np.allclose(fb_terminal.landing_mm,
+                                        terminal.landing_mm, rtol=0.0,
+                                        atol=1e-6)):
+                    # The y_d aim IS the learned aim (2026-11-01: (-44.2,
+                    # -44.2) twice, one wasted 32 ms solve): the fallback
+                    # would re-solve the same aim one solve (~30 ms) later
+                    # from a barely evolved seed -- normally the identical
+                    # refusal, which then ends the attempt just as the
+                    # refusal below does.  Skip the second solve; the
+                    # duplicate clamp notes of the second terminal are dropped.
+                    self._pending_notes = []
+                    fb_terminal = None
                 if fb_terminal is not None:
                     clamp_lines = clamp_lines + self._pending_notes
                     self._pending_notes = []

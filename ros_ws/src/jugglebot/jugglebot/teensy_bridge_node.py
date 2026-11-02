@@ -124,6 +124,8 @@ from teensy_link import protocol as p
 from teensy_link import rpc_args
 from teensy_link.rpc import HandMoveToUnavailable, RpcTimeout
 from teensy_link.fault_logic import LinkLossLatch
+from teensy_link.gap_monitor import (
+    EMPTY_STATS, SCHED_COVER_MS, EpisodeLatch, GapTracker)
 from teensy_link.setpoint_pump import SetpointPump, FLAG_HAS_HAND, HAND_FF_GAIN_MAX
 from teensy_link.encoder_search import (
     EncoderSearch, AxisStatus, AXIS_STATE_ENCODER_INDEX_SEARCH,
@@ -1616,6 +1618,10 @@ class TeensyBridgeNode(Node):
         # Latest per-axis enc_frames census (FW 23 CacheDiag), kept so an
         # episode's co-dropped encoder count can be differenced across it.
         self._latest_enc_frames: list | None = None
+        # Latest per-axis encoder AGE max (us, /cache_diag 1 s window) and its
+        # max over the current hb-stale episode: a frame COUNT hid 100 ms stalls.
+        self._latest_enc_age_max_us: list | None = None
+        self._hb_stale_age_max_us: list = [0] * _NUM_AXES
         self._latest_profile: Profile | None = None
         # Per-axis latest Diagnostic (one axis per frame on the wire), plus its
         # host-arrival time (monotonic). The arrival times gate the BB axes'
@@ -1689,6 +1695,14 @@ class TeensyBridgeNode(Node):
         # JB-95 follow-up: firmware sched_stops baseline / WARN rate limit.
         self._sched_stops_seen = None
         self._sched_stops_warn_mono = 0.0
+        # 2026-11-01 observability (JB-98): forwarding-thread gap monitors. The
+        # emitter's max_emit_gap_ms cannot see a stall of THIS process; these
+        # can. fwd = spacing of successful sends; loop = spacing of
+        # _setpoint_loop iterations (~1 kHz idle poll, so a long one = starved).
+        self._fwd_gap = GapTracker(window_s=1.0, idle_s=1.0)
+        self._loop_gap = GapTracker(window_s=1.0, idle_s=5.0)
+        self._fwd_gap_latch = EpisodeLatch(SCHED_COVER_MS)
+        self._gap_snap = (EMPTY_STATS, EMPTY_STATS)   # (forward, loop)
         self._client.start_heartbeat(hz=float(p.HEARTBEAT_HZ), flags=0)
         self._client.set_heartbeat_flags(0)
 
@@ -2979,6 +2993,7 @@ class TeensyBridgeNode(Node):
             # renders it. Cheap: a list copy at 1 Hz on the RX thread.
             try:
                 self._latest_enc_frames = [int(v) for v in cd.enc_frames]
+                self._latest_enc_age_max_us = [int(v) for v in cd.age_max_us]
             except Exception:  # noqa: BLE001 — a census miss must never poison RX
                 pass
             # ~1 h at the 1 Hz emit cadence. Bounds a stalled drain (the drain is
@@ -5512,6 +5527,7 @@ class TeensyBridgeNode(Node):
     def _setpoint_loop(self):
         """Dedicated thread: drain the 40 Hz setpoint command → pack Teensy-side knots → gate → send."""
         while not self._sp_stop.is_set():
+            self._loop_gap.record(time.monotonic())
             try:
                 cmd = self._sp_source.recv_latest()
             except Exception as e:  # noqa: BLE001
@@ -5577,6 +5593,7 @@ class TeensyBridgeNode(Node):
                 self._last_accepted_u0_seq += 1
             try:
                 self._client.send_stream(int(MsgType.SETPOINT), sp.pack())
+                self._fwd_gap.record(time.monotonic())
             except OSError as e:
                 # Transient link error (ENETUNREACH/EHOSTUNREACH before the peer
                 # is up, or a mid-run drop). The link watchdog owns the stow; here
@@ -5897,8 +5914,12 @@ class TeensyBridgeNode(Node):
         """WARN (<= 1/s) when the firmware's ``sched_stops`` rises while armed.
 
         A rise while streaming means the lane's cover (2 knots x 25 ms + 20 ms
-        grace = ~70 ms) expired: the Jetson-side setpoint stream stalled.
-        Advisory only; runs on the 10 Hz link_status timer, never the RX path.
+        grace = ~70 ms) expired. Two candidates, and this WARN prints both
+        measured maxima for the last ~1 s window (published on /link_status as
+        max_forward_gap_ms / max_loop_gap_ms): the setpoint stream arriving late
+        (emitter gap: forward gap large, loop gap small) or this bridge process
+        stalling (loop gap large too). Advisory only; runs on the 10 Hz
+        link_status timer, never the RX path.
         """
         prev = self._sched_stops_seen
         self._sched_stops_seen = total
@@ -5908,10 +5929,32 @@ class TeensyBridgeNode(Node):
         if t - self._sched_stops_warn_mono < 1.0:
             return
         self._sched_stops_warn_mono = t
+        fwd, loop = self._gap_snap
         self.get_logger().warning(
-            'firmware scheduler STOP (+%d, total %d) while streaming: the '
-            'Jetson-side setpoint stream stalled past the ~70 ms cover'
-            % (total - prev, total))
+            'firmware scheduler STOP (+%d, total %d) while streaming: the lane '
+            'cover (~%.0f ms) expired. Candidates: emitter gap (setpoints '
+            'arrived late) vs bridge forwarding gap (this node starved). '
+            'Window maxima: forward gap %.1f ms (p99 %.1f), bridge loop gap '
+            '%.1f ms. Loop gap near the forward gap = bridge stall; loop gap '
+            'small = the stream itself was late (see /trajectory/status '
+            'max_emit_gap_ms)'
+            % (total - prev, total, SCHED_COVER_MS, fwd.max_ms, fwd.p99_ms,
+               loop.max_ms))
+
+    def _update_gap_snapshot(self) -> None:
+        """Snapshot the forwarding-gap monitors (10 Hz timer) and WARN once per
+        episode when the forward or loop gap exceeds the firmware STOP cover."""
+        now = time.monotonic()
+        fwd = self._fwd_gap.snapshot(now)
+        loop = self._loop_gap.snapshot(now, with_p99=False)
+        self._gap_snap = (fwd, loop)
+        if (self._mpc_active
+                and self._fwd_gap_latch.update(max(fwd.max_ms, loop.max_ms))):
+            self.get_logger().warning(
+                'setpoint forwarding gap exceeded the ~%.0f ms firmware STOP '
+                'cover: forward gap %.1f ms, bridge loop gap %.1f ms (loop '
+                'gap large = this node was starved; small = the stream was '
+                'late)' % (SCHED_COVER_MS, fwd.max_ms, loop.max_ms))
 
     def _publish_link_status(self):
         """Publish link_status as a DiagnosticStatus.
@@ -5932,6 +5975,7 @@ class TeensyBridgeNode(Node):
             # 10 Hz heartbeat this method already holds). Runs BEFORE the level
             # is decided and never touches it — advisory, by contract.
             latency_monitor = self._latency_monitor_step(hb, hb_gen)
+            self._update_gap_snapshot()
             # F3/C2 — throttled per-axis ODrive error decode onto the node log.
             # Rides this 10 Hz timer (see _log_odrive_errors for why this one)
             # and, like the latency monitor, is ADVISORY: it reads the diag
@@ -6307,6 +6351,15 @@ class TeensyBridgeNode(Node):
                     # refuses out of (its cover expired), so the pair reads as
                     # one story in a bag.
                     KeyValue(key='sched_stops', value=str(int(hb.sched_stops))),
+                    # Forwarding-thread gap monitors (1 s rolling window,
+                    # 2026-11-01): the bridge's own view, independent of the
+                    # emitter's max_emit_gap_ms (/trajectory/status).
+                    KeyValue(key='max_forward_gap_ms',
+                             value=f'{self._gap_snap[0].max_ms:.1f}'),
+                    KeyValue(key='forward_gap_p99_ms',
+                             value=f'{self._gap_snap[0].p99_ms:.1f}'),
+                    KeyValue(key='max_loop_gap_ms',
+                             value=f'{self._gap_snap[1].max_ms:.1f}'),
                     KeyValue(key='sched_refused',
                              value=str(int(hb.sched_refused))),
                     # The latch itself (flags bit 15), not just its counter:
@@ -7440,10 +7493,19 @@ class TeensyBridgeNode(Node):
         with self._lock:
             enc_now = (list(self._latest_enc_frames)
                        if self._latest_enc_frames is not None else None)
+            age_now = (list(self._latest_enc_age_max_us)
+                       if self._latest_enc_age_max_us is not None else None)
         for i in range(_NUM_AXES):
             stale = bool(hb_stale_mask & (1 << i))
             since = self._hb_stale_since[i]
+            if age_now is not None and i < len(age_now) and (stale or since is not None):
+                # Max encoder age seen across the episode (the cache_diag
+                # window that covers it can land just after the clearing edge,
+                # so this is a lower bound).
+                self._hb_stale_age_max_us[i] = max(
+                    self._hb_stale_age_max_us[i], min(age_now[i], 60_000_000))
             if stale and since is None:
+                self._hb_stale_age_max_us[i] = 0
                 self._hb_stale_since[i] = now_mono
                 self._hb_stale_enc_at_onset[i] = (
                     enc_now[i] if (enc_now is not None and i < len(enc_now))
@@ -7483,6 +7545,10 @@ class TeensyBridgeNode(Node):
                     enc_txt = (f'{got} encoder frames in the window vs ~{expect} '
                                f'nominal ({max(0, expect - got)} co-dropped)')
                     enc_short = f'{got}/{expect} encoder frames'
+                    age_ms = self._hb_stale_age_max_us[i] / 1e3
+                    if age_now is not None:
+                        enc_txt += f'; encoder age max {age_ms:.0f} ms'
+                        enc_short += f', encoder age max {age_ms:.0f} ms'
                 else:
                     enc_txt = 'encoder census unavailable'
                     enc_short = 'encoder census unavailable'

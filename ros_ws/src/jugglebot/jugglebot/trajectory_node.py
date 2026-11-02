@@ -5267,11 +5267,34 @@ class TrajectoryNode(Node):
         self._cycle_plan_wall_ms = response.plan_wall_ms
         self.get_logger().debug(
             'install_segment %s %s: splice_k=%d, plan %.1f ms, event tau '
-            '%.3f s, solve %.1f ms%s, planner %s'
+            '%.3f s, solve %.1f ms%s, planner %s%s'
             % (kind, ball_label(ball_id), response.splice_k, response.plan_wall_ms,
                float(result.event_t_s), solve_s * 1e3, solve_cpu,
-               response.planner_mode))
+               response.planner_mode, self._peaks_suffix(record)))
         return response
+
+    def _peaks_suffix(self, record) -> str:
+        """The accepted plan's gate peaks as a share of the LIVE limits, for the
+        install line (2026-11-01: the Runbook asked for per-catch peak Hand
+        acceleration and the log carried it only on refusals).  Format only: reads
+        the ``FeasibilityReport`` the solve already attached to the record's meta
+        (no sampling, nothing on the 40 Hz path); '' when the record carries no
+        report.  The leg peaks are the report's maxima over the six legs."""
+        rep = getattr(getattr(record, 'meta', None), 'report', None)
+        if rep is None:
+            return ''
+        lim = self._limits
+
+        def pct(v, lim_v):
+            return 100.0 * float(v) / float(lim_v) if float(lim_v) > 0.0 else float('nan')
+
+        return (', peaks hand acc %.0f rev/s^2 (%.1f%% of %.0f), leg vel %.1f%% '
+                'acc %.1f%%'
+                % (float(rep.peak_hand_acc_rps2),
+                   pct(rep.peak_hand_acc_rps2, lim.hand_acc_limit_rps2),
+                   float(lim.hand_acc_limit_rps2),
+                   pct(rep.peak_leg_vel_mmps, lim.leg_vel_mmps),
+                   pct(rep.peak_leg_acc_mmps2, lim.leg_acc_mmps2)))
 
     # ═══════════════════════════════════════════════════════════
     # Status + diagnostics (5 Hz)

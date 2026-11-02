@@ -733,6 +733,27 @@ def test_hb_stale_episode_warns_once_on_the_clearing_edge(bridge):
     assert not any('dropout episode' in m for m in _messages(node._logger.debug))
 
 
+def test_hb_stale_episode_prints_encoder_age_max(bridge):
+    """2026-11-01: '0 co-dropped' is a frame COUNT and hid a 100 ms stale
+    encoder; the episode lines must carry the axis's encoder age max."""
+    from unittest.mock import MagicMock
+    teensy, node = bridge
+    node._latest_enc_frames = [1000] * p.NUM_AXES
+    node._latest_enc_age_max_us = [2000] * p.NUM_AXES
+    _send_hb_stale(teensy, node, 0b1000000)      # the hand
+    node._publish_link_status()
+    node._hb_stale_since[6] = time.monotonic() - 1.0
+    node._latest_enc_frames = [1100] * p.NUM_AXES
+    node._latest_enc_age_max_us = [100_100] * p.NUM_AXES
+    node._logger = MagicMock()
+    _send_hb_stale(teensy, node, 0)
+    node._publish_link_status()
+    infos = [m for m in _messages(node._logger.info) if 'heartbeat gap' in m]
+    assert len(infos) == 1 and 'encoder age max 100 ms' in infos[0], infos
+    dbg = [m for m in _messages(node._logger.debug) if 'dropout episode ENDED' in m]
+    assert len(dbg) == 1 and 'encoder age max 100 ms' in dbg[0], dbg
+
+
 def test_hb_stale_episode_warn_says_so_when_no_census_is_available(bridge):
     """A pre-FW-23 bridge (or a session with no /cache_diag yet) still gets the
     episode line — it says the encoder census is unavailable rather than

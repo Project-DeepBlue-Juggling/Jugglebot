@@ -431,10 +431,13 @@ def test_a_plan_starting_ABOVE_zero_keeps_the_strict_floor(geom):
     """Strictly above the homed zero ⇒ no tolerance, and the ORIGINAL wording.
 
     This is the fence the 2026-09-16 change must not move: every plan seeded
-    anywhere in the working stroke is judged exactly as before.
+    anywhere in the working stroke is judged exactly as before — less only the
+    owner's 2026-11-01 in-band stopgap ``HAND_STROKE_FLOOR_TOL_REV`` (0.01 rev),
+    so the probe sits 1 mrev past it (it was -0.001 before that).
     """
+    dip = -(feas.HAND_STROKE_FLOOR_TOL_REV + 0.001)
     report = feas.validate_cycle(
-        _held([0.5, -0.001, 0.5], [0.0, 0.0, 0.0]), _limits(), geom)
+        _held([0.5, dip, 0.5], [0.0, 0.0, 0.0]), _limits(), geom)
     assert report.code == feas.HAND_STROKE
     assert 'BELOW the homed zero' in report.reasons[0]
 
@@ -525,7 +528,7 @@ def test_hand_limit_vel_refuses_a_span_over_the_cap(geom):
     assert report.peak_hand_vel_rps == pytest.approx(260.0)
     assert report.peak_hand_acc_rps2 == pytest.approx(0.0, abs=1e-9)
     detail = report.reasons[0]
-    assert '260.00 rev/s' in detail and '200.00 rev/s' in detail
+    assert '260.000 rev/s' in detail and '200.000 rev/s' in detail
     assert '[trajectory_op.hand_vel_limit_rps]' in detail
 
 
@@ -561,8 +564,8 @@ def test_hand_limit_acc_refuses_a_span_over_the_cap(geom):
     assert report.peak_hand_vel_rps <= float(hw.JB_TRAJ_HAND_VEL_LIMIT_RPS)
     detail = report.reasons[0]
     # The detail names the SHIPPED limit (3900 since 2026-10-02, was 3500).
-    assert '6400.0 rev/s^2' in detail
-    assert ('%.1f rev/s^2' % float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)) in detail
+    assert '6400.00 rev/s^2' in detail
+    assert ('%.2f rev/s^2' % float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)) in detail
     assert '[trajectory_op.hand_acc_limit_rps2]' in detail
 
 
@@ -599,7 +602,11 @@ def test_hand_acceleration_is_the_plans_true_demand_not_a_knot_difference(geom):
 
     fd_rps2 = float(np.abs(np.diff(cyc.hand_vel_rps) / cyc.dt).max())
     assert fd_rps2 < 0.75 * truth_rps2          # the under-measurement is real
-    assert fd_rps2 < float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2) < truth_rps2
+    # The bracket is pinned at the 3900 cap this was written against: since
+    # 2026-11-01 the shipped limit is 4500 and this plan's true demand (~4305)
+    # sits under it, but the FD would still have accepted it at 3900, which is
+    # the argument; the 0.75 under-measurement above is unchanged.
+    assert fd_rps2 < 3900.0 < truth_rps2
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2257,3 +2264,290 @@ def test_batched_cup_geometry_is_the_planners_own():
         assert np.allclose(ax[i], tg.cup_axis(pose[i, 3], pose[i, 4]), atol=1e-12)
         assert np.allclose(pos[i], _uc.cup_state_from_platform(pose[i], hand[i]),
                            atol=1e-9)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# HAND_STROKE at the hop-start CATCH — Sitting 2026-11-01 (I-PLAN-15)
+#
+# 9 installs refused HAND_STROKE at -0.000 .. -0.004 rev, every one the
+# hop-entry skill-2 CATCH at t = 0.488 s, the exact middle of a 25 ms span.
+# The cup QP boxed the slider at its KNOTS only; the catch-to-throw reversal
+# rides the box floor (band floor + 2 mm inset = 0.0614 rev) and the cubic
+# between two floor knots dips ~a·dt²/8 under them.  Fixed twice over: the
+# planner now bounds the gate's own quarter-span samples
+# (``cup_cycle.Z_BOX_SAMPLES_PER_KNOT``), and the gate carries a 0.01 rev
+# in-band stopgap (``feasibility.HAND_STROKE_FLOOR_TOL_REV``).
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: The box floor in hand revs: band floor 0.0 + ``_CUP_Z_BOTTOM_INSET_M`` (2 mm).
+_BOX_FLOOR_REV = _uc._CUP_Z_BOTTOM_INSET_M * float(hw.HAND_REV_PER_M)
+
+
+def test_the_planner_bounds_the_same_samples_the_gate_checks():
+    """The z box's between-knot sampling IS the gate's mesh, by value."""
+    assert cc.Z_BOX_SAMPLES_PER_KNOT == feas._CYCLE_SAMPLES_PER_KNOT
+
+
+def _hop_entry_skill2_pose_plan():
+    """The 2026-11-01 refused window, rebuilt offline: the columns hop-entry fed
+    schedule's skill-2 CATCH under the SHIPPED ``pose`` planner at the Sitting's
+    operating point (apex 0.95 m, separation 125 mm, dwell 0.27 s, 350/5000/
+    200000 + hand 3900).  Same construction as :func:`_hop_entry_skill2_plan`
+    (seeded at the feed catch's release state), without the landing offset.
+    ``(plan, limits, geom)``."""
+    from tests.motion import test_skills_executor as tse
+    ex, sg, sc = tse.ex, tse.sg, tse.sc
+    geom = StewartGeometry()
+    limits = TrajectoryLimits.from_config(hw).with_sitting_limits(
+        leg_vel_mmps=350.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=200000.0,
+        hand_acc_rps2=3900.0)
+    cfg = sg.SegmentConfig(planner_mode='pose')
+    p1, p2 = tse.si.columns_sites(125.0)
+    pattern = sc.Pattern(sites=(p1, p2), apex_m=0.95, dwell_s=0.27,
+                         n_throws=6, phantom_balls=(0,))
+    feed = sc.LandingPrior(pos_mm=p2.catch_site_mm(), vel_mm_s=tse._A1_ARRIVAL_MM_S,
+                           t_land_abs_s=tse.T0_ABS)
+    schedule = sc.compile_columns(pattern, feed=feed, hop_entry=True)
+    dry = ex.SkillExecutor(schedule, ex._never_install)
+    sk = schedule.skills
+    ti = next(i for i, s_ in enumerate(sk) if s_.kind == sg.THROW)
+    fi = next(i for i, s_ in enumerate(sk) if s_.landing_prior is not None)
+    seed = ex._rest_state_at(sk[ti].site.rest_site_mm())
+    tt = ex._terminal_on_segment_clock(
+        sg.THROW, dry._throw_terminal(ti, sk[ti]),
+        float(sk[ti].t_abs_s) - float(sk[ti].window_s))
+    seg1 = sg.plan_segment(sg.THROW, seed, tt, cfg, limits, geom)
+    lp = sk[fi].landing_prior
+    t1 = float(sk[fi].t_abs_s) - float(sk[fi].window_s)
+    ct = ex._terminal_on_segment_clock(
+        sg.CATCH, dry._catch_terminal(fi, sk[fi], ex.Landing(
+            pos_mm=lp.pos_mm, vel_mm_s=lp.vel_mm_s, t_land_abs_s=lp.t_land_abs_s)),
+        t1)
+    seg_feed = sg.plan_segment(sg.CATCH, seg1.release_state, ct, cfg, limits, geom)
+    ci = fi + 1
+    assert sk[ci].kind == sg.CATCH and sk[ci].site.name == p1.name
+    land = dry._predicted_landing(ci, sk[ci])
+    ct2 = ex._terminal_on_segment_clock(
+        sg.CATCH, dry._catch_terminal(ci, sk[ci], land),
+        t1 + float(seg_feed.release_t_s))
+    seg2 = sg.plan_segment(sg.CATCH, seg_feed.release_state, ct2, cfg, limits, geom)
+    assert seg2.meta.planner_mode == 'pose'
+    return seg2.plan, limits, geom
+
+
+def _hand_minima(plan):
+    """``(min over the gate's quarter-span samples, dense min)`` of the hand."""
+    n = plan.hand_rev.shape[0]
+    m = feas._CYCLE_SAMPLES_PER_KNOT
+    quarter = np.array([plan.hand_at(t)[0]
+                        for t in np.arange((n - 1) * m + 1) * plan.dt / m])
+    dense = np.array([plan.hand_at(t)[0]
+                      for t in np.linspace(0.0, (n - 1) * plan.dt, (n - 1) * 200 + 1)])
+    return float(quarter.min()), float(dense.min())
+
+
+def test_the_hop_start_catch_no_longer_dips_between_knots(monkeypatch):
+    """The 2026-11-01 HAND_STROKE class, closed in the planner.
+
+    Recipe (measured 2026-11-01 offline, this construction): with the box on the
+    knots only (``Z_BOX_SAMPLES_PER_KNOT = 1``) the knot minimum sits ON the
+    0.0614 rev box floor while the cubic at t = 0.488 s (the span midpoint the
+    Sitting refused at) dips to ~0.008 rev, 0.053 rev under it; the hardware
+    seed went a further 0.012 down, to -0.004.  With the shipped 4-per-span rows
+    every quarter-span sample the gate reads is on or above the stroke bottom
+    plus the cap's between-sample sag a·(dt/4)²/8 (0.019 rev), so the continuum
+    clears the gate's 0.0 floor WITHOUT the stopgap tolerance, and the gate
+    accepts.  The knots keep the 2 mm box floor.
+    """
+    monkeypatch.setattr(cc, 'Z_BOX_SAMPLES_PER_KNOT', 1)
+    old, _, _ = _hop_entry_skill2_pose_plan()
+    old_q, old_dense = _hand_minima(old)
+    # the counterfactual: the test sees the class (> 0.03 rev under the floor)
+    assert old_dense < _BOX_FLOOR_REV - 0.03, (old_q, old_dense)
+    assert float(old.hand_rev.min()) == pytest.approx(_BOX_FLOOR_REV, abs=2e-3)
+
+    monkeypatch.setattr(cc, 'Z_BOX_SAMPLES_PER_KNOT', 4)
+    plan, limits, geom = _hop_entry_skill2_pose_plan()
+    q_min, dense_min = _hand_minima(plan)
+    sag_rev = (cc.HAND_ACC_LIMIT_RPS2 * (plan.dt / feas._CYCLE_SAMPLES_PER_KNOT) ** 2
+               / 8.0)                           # 0.019 rev @ 3900, 0.022 @ 4500
+    assert float(plan.hand_rev[1:].min()) >= _BOX_FLOOR_REV - 1e-4
+    assert q_min >= feas.HAND_STROKE_MIN_REV + sag_rev - 1e-4, (q_min, sag_rev)
+    assert q_min > old_q + 0.005, (q_min, old_q)            # the rows bound it
+    assert dense_min >= feas.HAND_STROKE_MIN_REV, dense_min  # no tolerance used
+    rep = feas.validate_cycle(plan, limits, geom)
+    assert rep.code == feas.OK, (rep.code, rep.reasons)
+
+
+def test_the_in_band_floor_tolerance_admits_0_009_and_refuses_0_011(geom):
+    """The 2026-11-01 stopgap, at its edges, for an IN-BAND plan (first knot
+    0.5 rev, so the floor is the strict 0.0).  Hand caps opened so the stroke
+    floor is the only gate under test; zero knot velocities keep the cubic's
+    minimum AT the middle knot, so the sampled value is exactly the knot."""
+    lim = _limits(hand_vel=1e9, hand_acc=1e9)
+    ok = feas.validate_cycle(_held([0.5, -0.009, 0.5], [0.0, 0.0, 0.0]), lim, geom)
+    assert ok.code == feas.OK, (ok.code, ok.reasons)
+    bad = feas.validate_cycle(_held([0.5, -0.011, 0.5], [0.0, 0.0, 0.0]), lim, geom)
+    assert bad.code == feas.HAND_STROKE
+    # the RAW value and the TRUE floor, never the tolerance-shifted one
+    assert '-0.011 rev' in bad.reasons[0], bad.reasons
+    assert '[0.000, ' in bad.reasons[0], bad.reasons
+    assert 'BELOW the homed zero' in bad.reasons[0]
+
+
+def test_a_parked_plan_does_not_stack_the_in_band_tolerance(geom):
+    """A plan parked AT zero keeps the 1e-4 rev dive tolerance and nothing more:
+    the stopgap is for in-band plans only."""
+    lim = _limits(hand_vel=1e9, hand_acc=1e9)
+    rep = feas.validate_cycle(_held([0.0, -0.005, 0.0], [0.0, 0.0, 0.0]), lim, geom)
+    assert rep.code == feas.HAND_STROKE, (rep.code, rep.reasons)
+    # refused at the first sample past knot 0 - 1e-4, long before -0.005
+    assert 'DIVES past the bottom of travel' in rep.reasons[0], rep.reasons
+
+
+# ── The CEILING side of I-PLAN-15 (2026-11-01, the same night) ──────────────
+# The hand acceleration cap went 3900 -> 4500 rev/s^2.  The 10 mm top inset
+# (0.307 rev) covers the knot-only overshoot a·dt²/8 only up to ~3930 rev/s^2;
+# at 4500 it is 0.352 rev, so a top-of-stroke reversal at the cap could cross
+# the prime between knots and refuse HAND_STROKE (no ceiling tolerance).  The
+# cup QP now mirrors the floor rows: quarter-span samples held at or below the
+# stroke top (``CupCycleConfig.stroke_z_top_m``) minus the cap's sag.
+
+def _top_reversal_plan(stroke_top_m):
+    """A REST-terminal window whose seed runs UP at 2.3 m/s 45 mm under the box
+    ceiling, so the brake reverses on the ceiling knots (level, zero tilt: the
+    hand is the cup z through the slider gain, exactly).  ``stroke_top_m`` is the
+    stroke top the ceiling rows hold the samples under.  ``(plan, cfg)``."""
+    zhi = _uc._CUP_Z_TOP_M - _uc._CUP_Z_TOP_INSET_M
+    cfg = _uc.build_cup_config(stroke_z_top_m=stroke_top_m)
+    s0 = cc.CupState(pos=np.array([0.0, 0.0, zhi - 0.045]),
+                     vel=np.array([0.0, 0.0, 2.3]), acc=np.zeros(3),
+                     post_release=False)
+    cup = cc.plan_window([], s0, cfg, period_s=0.5,
+                         settle_site=np.array([0.0, 0.0, zhi - 0.06]))
+    rcfg = cr.RealizeConfig(banking_enabled=False)
+    tilts = cr.tilt_schedule(cup, np.zeros(2), np.zeros(2), rcfg)
+    return CyclePlan.from_realized(cr.decompose(cup, tilts, rcfg)), cfg
+
+
+def _hand_maxima(plan):
+    """``(knot max, max over the gate's quarter-span samples, dense max)``."""
+    n = plan.hand_rev.shape[0]
+    m = feas._CYCLE_SAMPLES_PER_KNOT
+    quarter = np.array([plan.hand_at(t)[0]
+                        for t in np.arange((n - 1) * m + 1) * plan.dt / m])
+    dense = np.array([plan.hand_at(t)[0]
+                      for t in np.linspace(0.0, (n - 1) * plan.dt, (n - 1) * 200 + 1)])
+    return float(plan.hand_rev.max()), float(quarter.max()), float(dense.max())
+
+
+def test_the_shipped_cup_config_does_not_pass_stroke_z_top_m():
+    """Ceiling rows are OFF by default (2026-11-02, pose-budget cost ~2.2 ms):
+    the shipped config leaves ``stroke_z_top_m`` None, so no ceiling block."""
+    cfg = _uc.build_cup_config()
+    assert cfg.stroke_z_top_m is None
+    assert cfg.z_max_m == pytest.approx(
+        _uc._CUP_Z_TOP_M - _uc._CUP_Z_TOP_INSET_M, abs=1e-12)
+    # opt-in still works and still names the gate's prime
+    on = _uc.build_cup_config(stroke_z_top_m=_uc._CUP_Z_TOP_M)
+    rev_top = ((on.stroke_z_top_m - on.catch_runway_z_floor_m)
+               * float(hw.HAND_REV_PER_M))
+    assert rev_top == pytest.approx(feas.HAND_STROKE_MAX_REV, abs=1e-9)
+
+
+def test_a_top_reversal_at_the_raised_cap_is_held_under_the_stroke_top(
+        monkeypatch, geom):
+    """The ceiling rows, end to end through the gate.
+
+    The natural columns cells do not reverse at the cap on the ceiling (measured
+    2026-11-01, pose planner, apex 0.95-1.30 at hand 4500: the continuum peaks
+    0.02-0.13 rev over the ceiling knots, >= 0.17 rev under the prime), so the
+    case is built: the seed above reverses on the ceiling knots, and the stroke
+    top is put 1 mm over the box ceiling (the gate's prime moved with it) — the
+    same structure as the 10 mm inset against the 11.45 mm sag at 4500, scaled
+    to a reversal this QP actually makes.  Measured 2026-11-01: rows off, the
+    continuum crosses the top by ~0.061 rev and the gate refuses HAND_STROKE;
+    rows on, every quarter sample is at or under top - a·(dt/4)²/8, the
+    continuum peaks ~0.021 rev under the top, the knots keep the box ceiling,
+    and the gate accepts at a peak hand acceleration of ~4080 rev/s^2 (under the
+    raised cap; the price of the bound is acceleration, so a hotter seed —
+    2.4 m/s — is bounded too but then refuses HAND_LIMIT_ACC at ~4560).
+
+    The guarantee needs the inset to be at least the sag (knot ceiling <=
+    top - a·(dt/4)²/8): the rows hold samples at ``max(knot ceiling, top -
+    sag)``, so with a 0.5 mm inset (< the 0.72 mm sag at 4500) a sample AT the
+    knot ceiling can still sag past the top.  The shipped insets (10 mm top,
+    2 mm bottom) clear it by 14x and 2.8x.
+    """
+    R = float(hw.HAND_REV_PER_M)
+    zhi = _uc._CUP_Z_TOP_M - _uc._CUP_Z_TOP_INSET_M
+    top_m = zhi + 0.001
+    top_rev = (top_m - _uc._CUP_Z_BOTTOM_M) * R
+    monkeypatch.setattr(feas, 'HAND_STROKE_MAX_REV', top_rev)
+    lim = _limits(hand_acc=4500.0)
+
+    monkeypatch.setattr(cc, 'Z_BOX_SAMPLES_PER_KNOT', 1)
+    old, _ = _top_reversal_plan(top_m)
+    old_k, old_q, old_dense = _hand_maxima(old)
+    assert old_dense > top_rev + 0.005, (old_dense, top_rev)    # the class
+    bad = feas.validate_cycle(old, lim, geom)
+    assert bad.code == feas.HAND_STROKE, (bad.code, bad.reasons)
+
+    monkeypatch.setattr(cc, 'Z_BOX_SAMPLES_PER_KNOT', 4)
+    plan, _ = _top_reversal_plan(top_m)
+    k_max, q_max, dense_max = _hand_maxima(plan)
+    sag_rev = (cc.HAND_ACC_LIMIT_RPS2
+               * (plan.dt / feas._CYCLE_SAMPLES_PER_KNOT) ** 2 / 8.0)
+    assert k_max <= (zhi - _uc._CUP_Z_BOTTOM_M) * R + 1e-4
+    assert q_max <= top_rev - sag_rev + 1e-4, (q_max, top_rev, sag_rev)
+    assert dense_max <= top_rev, (dense_max, top_rev)
+    assert dense_max < old_dense - 0.005
+    rep = feas.validate_cycle(plan, lim, geom)
+    assert rep.code == feas.OK, (rep.code, rep.reasons)
+
+
+def test_the_ceiling_rows_are_slack_under_the_shipped_stroke_top():
+    """At the real prime the same reversal is ~0.3 rev clear of the stroke top,
+    so the rows change nothing: bit-identical to the knot-only program."""
+    saved = cc.Z_BOX_SAMPLES_PER_KNOT
+    try:
+        cc.Z_BOX_SAMPLES_PER_KNOT = 1
+        old, _ = _top_reversal_plan(_uc._CUP_Z_TOP_M)
+        cc.Z_BOX_SAMPLES_PER_KNOT = 4
+        new, _ = _top_reversal_plan(_uc._CUP_Z_TOP_M)
+    finally:
+        cc.Z_BOX_SAMPLES_PER_KNOT = saved
+    assert np.array_equal(old.hand_rev, new.hand_rev)
+
+
+def test_the_ceiling_rows_sample_the_same_points_as_the_floor_rows():
+    """Both between-knot blocks sit at the gate's quarter points: the ceiling
+    block is the floor block's columns negated (``-z >= -span_hi``), one row per
+    interior sample of spans 1..n-1, named with its side."""
+    from tests.motion.test_cup_cycle_row_labels import _throw_catch_program
+    prog = _throw_catch_program(cc.CupCycleConfig(stroke_z_top_m=1.0))
+    names, widths = list(prog.ineq_names), list(prog.ineq_widths)
+    n, m = prog.n_steps, cc.Z_BOX_SAMPLES_PER_KNOT
+    lo, hi = names.index('z_span_lower'), names.index('z_span_upper')
+    assert hi == lo + 1
+    assert widths[lo] == widths[hi] == (n - 1) * (m - 1)
+    start = sum(widths[:lo])
+    w = widths[lo]
+    LO = prog.C[:, start:start + w]
+    HI = prog.C[:, start + w:start + 2 * w]
+    assert np.array_equal(HI, -LO)
+    lab = cc._ineq_label(prog, start + w + 1)
+    assert 'z position upper bound 2/%d of the way from knot 1 to 2' % m in lab, lab
+
+
+def test_the_ceiling_block_is_absent_by_default_and_present_when_opted_in():
+    """None = no ceiling rows (and not one floor column moves); a set top adds
+    exactly the negated floor block right after it."""
+    from tests.motion.test_cup_cycle_row_labels import _throw_catch_program
+    off = _throw_catch_program()
+    on = _throw_catch_program(cc.CupCycleConfig(stroke_z_top_m=1.0))
+    assert 'z_span_upper' not in list(off.ineq_names)
+    assert 'z_span_upper' in list(on.ineq_names)
+    lo = list(off.ineq_names).index('z_span_lower')
+    start = sum(list(off.ineq_widths)[:lo]) + list(off.ineq_widths)[lo]
+    assert np.array_equal(off.C[:, :start], on.C[:, :start])

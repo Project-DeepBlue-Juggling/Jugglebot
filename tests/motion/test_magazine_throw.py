@@ -177,7 +177,10 @@ def test_unreachable_target_refuses_with_the_speed_and_least_speed_flight(limits
                          sg.SegmentConfig(), limits, geom)
     assert err.value.code == mt.MAGAZINE_UNREACHABLE
     text = err.value.reasons[0]
-    assert 'hand cap is 5.3' in text and 'least-speed flight' in text
+    # 5.69 since the 60 A hand current limit (2026-11-01): the ball-aboard
+    # ascent authority throw_envelope.ACCEL_AUTHORITY_RPS2 rose 3225 -> 3897
+    # rev/s^2 (it was 5.3x at 50 A).
+    assert 'hand cap is 5.69' in text and 'least-speed flight' in text
     assert err.value.outcome().startswith(uc.OUTCOME_CODE + '(' + mt.MAGAZINE_UNREACHABLE)
 
 

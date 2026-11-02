@@ -2148,7 +2148,7 @@ def _bump_node_and_record(at):
     node = _perf_node()
     node._limits = TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=350.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=200000.0,
-        hand_acc_rps2=3900.0)
+        hand_acc_rps2=float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2))
     p1, p2 = si.columns_sites(100.0)
     t_land = at + 0.45
     t_rel0 = t_land - tb.FLIGHT_S

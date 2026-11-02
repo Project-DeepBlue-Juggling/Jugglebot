@@ -4,7 +4,7 @@ kind: pathway
 title: 'Pattern progression: Columns to Centre and orbit'
 status: active
 created: '2026-10-30'
-updated: '2026-10-30T14:26:58Z'
+updated: '2026-11-01T13:49:21Z'
 owners: []
 priority: medium
 effort: xl
@@ -73,3 +73,4 @@ JP-13 (JB-110): it moves the Catch plane with the Platform, and the glossary def
 ## Progress
 
 - 2026-10-31: P1, P2 and P4 of plans/active/pattern-progression.md complete (bag check; turned Columns; high-low Columns, both swept into the box). P3 and P5 are the next Rungs and need a Sitting; P6 waits on JB-38.
+- 2026-11-02: 2026-11-01: hand_curr_limit_a is now 60 A (hand ODrive current_hard_max 70 A); the 50 A cited here is the limit at filing/measurement time.

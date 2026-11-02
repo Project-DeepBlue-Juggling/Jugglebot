@@ -128,7 +128,7 @@ def limits_r5():
     """The R5 operating point's sitting limits (see ``R5_APEX_M`` above)."""
     return TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=350.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=200000.0,
-        hand_acc_rps2=3900.0)
+        hand_acc_rps2=float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2))
 
 
 @pytest.fixture(scope='module')
@@ -6963,6 +6963,26 @@ def test_a_refused_tracker_fit_catch_is_not_retried(sites):
     lines = x.tick(sch.skills[1].dispatch_s())
     assert len([c for c in inst.calls if c[0] == sg.CATCH]) == 1
     assert x.attempt_ended
+    assert not any('CATCH-AIM-FALLBACK' in ln for ln in lines)
+
+
+def test_an_identical_learned_and_y_d_aim_is_not_re_solved(sites):
+    """(e) The learned prior EQUALS the y_d landing (2026-11-01: one wasted
+    32 ms re-solve of the identical problem): the refusal ends the attempt on
+    the first install, with its own code and no FALLBACK line."""
+    sch = _cross_schedule(sites)
+    inst = _FakeInstaller([_ok(), _refusal(), _ok()])
+    x = ex.SkillExecutor(
+        sch, inst, learner=_PredictingLearner(y_hat=[0.0, 0.0, APEX_M]),
+        lateral_authority_m=0.020, catch_inward_authority_m=0.035,
+        catch_aim_source=ex.AIM_SCHEDULE)
+    lines = list(x.tick(sch.skills[0].dispatch_s()))
+    lines += x.tick(sch.skills[1].dispatch_s())
+    catches = [c for c in inst.calls if c[0] == sg.CATCH]
+    assert len(catches) == 1
+    assert np.allclose(catches[0][1].landing_mm[:2], sites[0].catch_site_mm()[:2])
+    assert x.attempt_ended
+    assert x.end_code == 'REJECTED_CYCLE_INFEASIBLE'
     assert not any('CATCH-AIM-FALLBACK' in ln for ln in lines)
 
 

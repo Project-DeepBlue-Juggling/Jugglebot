@@ -139,7 +139,7 @@ namespace ODriveDefaults {
   constexpr float LEG_VEL_LIMIT_RPS = 12.0f;
   constexpr float LEG_CURR_LIMIT_A = 15.0f;
   constexpr float HAND_VEL_LIMIT_RPS = 1000.0f;
-  constexpr float HAND_CURR_LIMIT_A = 50.0f;
+  constexpr float HAND_CURR_LIMIT_A = 60.0f;
   constexpr float HAND_POS_GAIN = 35.0f;
   constexpr float HAND_VEL_GAIN = 0.007f;
   constexpr float HAND_VEL_INT_GAIN = 0.07f;
@@ -185,8 +185,8 @@ namespace TrajOp {
   constexpr float LEG_JERK_CEILING_MMPS3 = 200000.0f;
   constexpr float HAND_VEL_LIMIT_RPS = 200.0f;
   constexpr float HAND_VEL_CEILING_RPS = 300.0f;
-  constexpr float HAND_ACC_LIMIT_RPS2 = 3900.0f;
-  constexpr float HAND_ACC_CEILING_RPS2 = 3900.0f;
+  constexpr float HAND_ACC_LIMIT_RPS2 = 4500.0f;
+  constexpr float HAND_ACC_CEILING_RPS2 = 4500.0f;
   constexpr float KNOT_DT_S = 0.025f;
   constexpr uint32_t EMIT_LEAD_KNOTS = 0u;
   constexpr float MIN_MOVE_DURATION_S = 0.2f;

@@ -163,7 +163,11 @@ _SESSION_LEG_JERK_MMPS3 = 200000.0
 # 2026-09-30 pass was the same knife edge landing on the right side), so the
 # session cap moved to the YAML ceiling; config/hardware_config.yaml
 # `hand_acc_limit_rps2` is 3900 since the same day and the box is re-swept at it.
-_SESSION_HAND_ACC_RPS2 = 3900.0
+# Owner, 2026-11-01 (Sitting debrief): 4500, with the hand current limit 50 ->
+# 60 A. Now IMPORTED from the YAML launch value (the hand has no set_limits
+# field, so the launch value IS the sitting value) so this can never again sit
+# under a box re-swept at a raised limit (adm.LimitsMismatch).
+_SESSION_HAND_ACC_RPS2 = float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)
 
 #: Worst |mirror - plan| (rev) the HAND / LEG reconstruction bands allow --
 #: carried over from ``sim/unified_gate.py`` (deleted this rung) verbatim, with
@@ -995,7 +999,7 @@ class SelfTossGateConfig:
     leg_vel_mmps: float = _SESSION_LEG_VEL_MMPS
     leg_acc_mmps2: float = _SESSION_LEG_ACC_MMPS2
     leg_jerk_mmps3: float = _SESSION_LEG_JERK_MMPS3
-    #: Follows the session constant (3900 since 2026-10-02, see its comment)
+    #: Follows the session constant (the YAML launch value, see its comment)
     #: for the same reason ``leg_jerk_mmps3`` follows its own: a stale literal
     #: here made every fed attempt restart on the 2026-09-30 rehearsal.
     hand_acc_rps2: float = _SESSION_HAND_ACC_RPS2

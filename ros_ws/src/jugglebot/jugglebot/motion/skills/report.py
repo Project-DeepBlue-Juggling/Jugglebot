@@ -200,7 +200,7 @@ def _compact(value: float) -> str:
     """``257921`` -> ``258k``; small values unchanged."""
     if abs(value) >= 10000.0:
         return '%.0fk' % (value / 1000.0,)
-    return ('%.1f' % (value,)).rstrip('0').rstrip('.')
+    return ('%.2f' % (value,)).rstrip('0').rstrip('.')
 
 
 def short_refusal(message: str, limit: int = 90) -> str:

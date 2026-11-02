@@ -18,6 +18,7 @@ via ``python sim/skills_gate.py``.
 
 from __future__ import annotations
 
+import os
 import math
 import re
 
@@ -497,10 +498,20 @@ def _preclip_x_by_skill(res):
     return out
 
 
+#: The hop box these biased runs were written against: the +/-10 mm hop cell of
+#: the pre-2026-11-02 box. The re-sweep at hand acc 4500 widened the cell the
+#: sim's hop flies to +/-20 mm, where a +30 mm plant bias lands inside the box
+#: and the clip rightly never fires; the test is about the clip rule, so it keeps
+#: its frozen geometry (logbook/2026-11-01-hand-limit-4500-and-stroke-floor.md).
+_PRE_H4500_BOX = os.path.join(os.path.dirname(__file__), '..', 'fixtures',
+                              'admissible_box_pre_h4500.yaml')
+
+
 def _biased_hop_run(bias):
     cfg = SelfTossGateConfig(pattern='hop', separation_mm=250.0,
                              target_throws=5, band_entry_throws=5,
-                             max_attempts=15, plant_landing_bias_mm=bias)
+                             max_attempts=15, plant_landing_bias_mm=bias,
+                             admissible_box_path=_PRE_H4500_BOX)
     return SkillsGate(cfg).run_self_toss_seed(0, policy='A')
 
 

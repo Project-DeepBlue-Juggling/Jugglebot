@@ -717,7 +717,19 @@ jugglebot_odrive_defaults:
                                          # temp, tracking error. 15 A ~ 77 N string tension per
                                          # leg vs 51 N at 10 A (Kt 0.057 Nm/A, spool ~11.2 mm).
   hand_vel_limit_rps: 1000.0             # Hand velocity limit {rev/s}
-  hand_curr_limit_a: 50.0                # Hand current limit {A}
+  hand_curr_limit_a: 60.0                # Hand current limit {A}. 50.0 -> 60.0 (owner decision,
+                                         # 2026-11-01 Sitting debrief, with hand_acc_limit_rps2
+                                         # 3900 -> 4500): the owner accepts 60-80 A ("the
+                                         # current heating rate is manageable"); 60 is the
+                                         # lowest value whose decel-FF headroom bound
+                                         # (0.85 x I x Kt / (2 pi J_ff 9.5e-6)) clears 4500:
+                                         # 4710.6 rev/s^2 (3925.5 at 50 A). Pushed to the hand
+                                         # ODrive's current_soft_max at every configure. ⚠ The
+                                         # drive's current_hard_max is 70.0 A (config/ODrive
+                                         # config Files/odrive_pro_hand_config.json): measured
+                                         # iq overshoots the soft limit (53.3 A against 50 A,
+                                         # 2026-11-01, JB-138), so a soft limit past ~65 A needs
+                                         # current_hard_max raised first or the drive trips.
   hand_pos_gain: 35.0                    # Hand position gain
   hand_vel_gain: 0.007                   # Hand velocity gain
   hand_vel_int_gain: 0.07                # Hand velocity integrator gain
@@ -920,14 +932,24 @@ trajectory_op:
                                    # a session ramp can never ask for a hand velocity feedforward the
                                    # firmware would clip — the clip would be silent, and a silently
                                    # clipped VELFF is a lagging hand, not a refused plan.
-  hand_acc_limit_rps2: 3900.0      # Session hand acceleration limit {rev/s^2} at launch. Also the
+  hand_acc_limit_rps2: 4500.0      # Session hand acceleration limit {rev/s^2} at launch. Also the
                                    # deceleration authority validate_cycle sizes the catch runway with
-                                   # (v^2/2a), and cup_cycle.HAND_ACC_LIMIT_RPS2 mirrors it for the
-                                   # in-QP bound.
-  hand_acc_ceiling_rps2: 3900.0    # Hard set_limits clamp {rev/s^2}. Sits just UNDER the C-HAND-2
-                                   # measured authority bound of 3925.5 rev/s^2 (ros_ws/docs/
-                                   # hand_decel_feedforward.md), so the ceiling stays inside what the
-                                   # hand ODrive can actually produce rather than above it.
+                                   # (v^2/2a), and cup_cycle.HAND_ACC_LIMIT_RPS2 imports it for the
+                                   # in-QP bound. 3500 (2026-08-30) -> 3900 (2026-10-02) -> 4500
+                                   # (owner decision 2026-11-01 Sitting debrief: six Columns goals
+                                   # ENDED HAND_LIMIT_ACC 3910.6-4096.8 on bump-seeded successor
+                                   # catches, JB-120; the structural bump fix is filed, not built).
+                                   # Raised TOGETHER with hand_curr_limit_a 50 -> 60 A: at 50 A the
+                                   # authority bound below is 3925.5, under 4500.
+  hand_acc_ceiling_rps2: 4500.0    # Hard set_limits clamp {rev/s^2}. Sits UNDER the C-HAND-2
+                                   # decel-FF headroom bound 0.85 x hand_curr_limit_a x Kt 0.0055133
+                                   # / (2 pi x J_ff 9.5e-6) = 4710.6 rev/s^2 at 60 A (3925.5 at 50 A;
+                                   # ros_ws/docs/hand_throw_envelope.md § B2b and the surviving-
+                                   # measurements table), so the ceiling stays inside what the hand
+                                   # ODrive can produce. At the MEASURED inertia 1.05e-5 the
+                                   # ball-free hand needs 53.8 A at 4500 (90 % of 60 A); with the
+                                   # ball aboard the loaded ascent authority is lower still
+                                   # (throw_envelope.ACCEL_AUTHORITY_RPS2), see JB-115.
   knot_dt_s: 0.025                 # Fixed 40 Hz knot spacing {s} (matches firmware SEGMENT_T_S; not runtime-configurable)
   emit_lead_knots: 0               # Emitter lookahead {knots} (C2FF, 2026-09-14): at tick k the emitter targets knot
                                    # time T = t_k + emit_lead_knots*knot_dt_s, stamped; FW 22 plays it on that stamp,
@@ -1123,7 +1145,10 @@ trajectory_op:
   # inertia_kgm2). Ks slews toward the per-frame hand_ff_gain (legacy frames
   # target 0, so FW 21 behaviour is tau == 0 exactly). sat is 0.85 x the drive's
   # 50 A x Kt 0.0055133 = 0.2757 N m, leaving the position/velocity loop 15 %
-  # authority (the decel_ff_current_headroom_frac rule). fade ramps to 0 while
+  # authority (the decel_ff_current_headroom_frac rule). 2026-11-01: the hand
+  # current limit is 60 A but this clamp is DELIBERATELY left at 0.234 (42.4 A,
+  # 71 % of 60 A, so the loop keeps MORE than 15 %): it is compiled into the
+  # can-bridge firmware, and raising it is a separate flash decision. fade ramps to 0 while
   # the lead clamp, stroke clip, recovery slew or NaN backstop owns the command
   # (feedforward of a curve the hand is not following), never a step: 50 /s is a
   # 10-tick (20 ms) ramp, 0.1 x |raw| per tick (<= 0.023 N m = 4.2 A at the clamp). Gain slew 5 /s bounds the K-change torque
@@ -1261,8 +1286,10 @@ teensy_trajectory:
                                         # J * 2*pi * a_dec / Kt: 31.6 A at the 4.86 m/s tier that
                                         # touched the stop, 38.9 A at the shipped FLIGHT_TIME_MAX_S =
                                         # 1.10 s ceiling, against jugglebot_operational
-                                        # hand_curr_limit_a = 50.0 (22 % headroom).  Pinned by
-                                        # tests/sim/test_hand_throw_decel_ff.py.
+                                        # hand_curr_limit_a = 50.0 (22 % headroom; 35 % at the 60 A
+                                        # of 2026-11-01).  Was pinned by
+                                        # tests/sim/test_hand_throw_decel_ff.py (deleted with the
+                                        # Platform Teensy stroke engine at skill-stack R1).
   throw_vel_hold_pct: 0.05              # Fraction of throw profile at constant velocity
   catch_vel_ratio: 0.6                  # Catch velocity as fraction of throw velocity
   catch_vel_hold_pct: 0.10              # Fraction of catch profile at constant velocity
@@ -1516,7 +1543,9 @@ hand_throw_envelope:
                                         # feedforward alone wants 45.2 A of 50 — 90 %, over
                                         # this line.  Encoding it here stops the envelope
                                         # admitting a throw C-HAND-2 forbids.  It binds at
-                                        # 5.636 m/s.
+                                        # 5.636 m/s.  (Pre-R1 gain numbers.  2026-11-01, at
+                                        # 60 A and the measured gain: this line sits at
+                                        # 6.266 m/s and REGEN binds first at 5.641.)
   measured_reflected_inertia_kgm2: 1.050e-5
                                         # TOTAL reflected inertia of the hand axis at the
                                         # motor, as MEASURED {kg m^2} — the counterpart of
@@ -1583,7 +1612,8 @@ hand_throw_envelope:
                                         # torque_soft_min = -0.055133 N.m = exactly -10.00 A, an
                                         # asymmetry that truncated the braking feedforward; see
                                         # the runbook row H7.0c).  At 0.7 N.m this fence is
-                                        # 2.5x the 0.2757 N.m the 50 A current limit allows, so
+                                        # 2.1x the 0.3308 N.m the 60 A current limit allows
+                                        # (2.5x the 0.2757 N.m at 50 A, before 2026-11-01), so
                                         # the CURRENT limit is what binds — the key exists so
                                         # the envelope can SAY that rather than assume it, and
                                         # so a regression back to -0.0551 shows up as a

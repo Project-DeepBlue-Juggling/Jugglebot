@@ -477,7 +477,8 @@ fails if a pre-fix rung is readmitted.
 The ceiling is now `DECEL_FF_HEADROOM`, so the levers are different from before:
 
 * **Raising it needs an operator decision on the drive**, not a fresh capture:
-  either `hand_curr_limit_a` above 50 A, or `decel_ff_current_headroom_frac`
+  either `hand_curr_limit_a` above 50 A (taken 2026-11-01: 60 A, after which
+  `REGEN` binds, see § Surviving measurements), or `decel_ff_current_headroom_frac`
   above 0.85 — and the second is C-HAND-2's own requirement, so it moves that
   contract too. Neither is an implementer's call.
 * **Extending the coast ladder past 4.436 m/s** would shrink the extrapolation
@@ -551,7 +552,32 @@ The measurements, with provenance:
 | re-derivation on the **unclamped** drive: per-tier *upper* bounds | 1.004e-5 / 1.025e-5 / 9.41e-6 / 9.63e-6 / **9.04e-6** kg·m² | bag `~/Desktop/rosbags/2026-08-23_19-14-54`, 15 throws, 5 tiers × 3, 2026-08-23 (`tools/probes/hand_decel_authority.py --bag …`) |
 | same bag, regression slope 0.9415 (R² 0.9999) | `J_ff/slope` = 1.009e-5; on wire torque `1/(2π·slope)` = 1.027e-5 kg·m² | same bag |
 | **declared** inertia the retired firmware shipped | 9.5e-6 kg·m² | `teensy_trajectory.throw_decel_reflected_inertia_kgm2` — deliberately low; the 2026-08-23 channels bound `J_true ≤ 9.04e-6` (encoder) and `≤ ~7.5e-6` (ball), i.e. it was **over-braking** when the firmware died |
-| hand deceleration **authority bound** | **3925.5 rev/s²** | `hand_curr_limit_a = 50.0` × hand Kt 0.0055133 N·m/A ÷ (2π·J). `hand_acc_ceiling_rps2 = 3900.0` sits just under it, and `cup_cycle.HAND_ACC_LIMIT_RPS2 = 3500.0` under that |
+| hand deceleration **authority bound** (the decel-FF headroom line) | **4710.6 rev/s²** at 60 A since 2026-11-01 (was **3925.5** at 50 A) | `decel_ff_current_headroom_frac 0.85` × `hand_curr_limit_a` × hand Kt 0.0055133 N·m/A ÷ (2π·J_ff 9.5e-6) = `throw_envelope.DECEL_FF_HEADROOM_RPS2`. `hand_acc_ceiling_rps2` = `hand_acc_limit_rps2` = 4500.0 sits under it (3900 under 3925.5 before), and `cup_cycle.HAND_ACC_LIMIT_RPS2` imports the limit. The full-current line at the measured J 1.05e-5 is `DECEL_AUTHORITY_RPS2` = 5014.1 (4178.4 at 50 A) |
+
+**2026-11-01: hand current limit 50 → 60 A, hand acceleration limit 3900 → 4500
+rev/s² (owner decision, Sitting debrief; JB-120).** Recomputed from
+`throw_envelope` at the measured gain (`J_ff` 9.5e-6, `J` 1.05e-5, `J_ascent`
+1.306e-5 with the ball, Kt 0.0055133):
+
+| quantity | 50 A | 60 A |
+|---|---|---|
+| `DECEL_FF_HEADROOM_RPS2` (0.85 of the limit, `J_ff`) | 3925.5 | **4710.6** |
+| `DECEL_AUTHORITY_RPS2` (full limit, measured `J`) | 4178.4 | 5014.1 |
+| `ACCEL_AUTHORITY_RPS2` (ball aboard, less gravity) | 3225.2 | 3897.3 |
+| current for the ball-free hand at the session limit (measured `J`) | 46.7 A at 3900 | 53.8 A at 4500 (90 %) |
+| current with the ball aboard at the session limit, ascent | 60.0 A at 3900 | 69.0 A at 4500 |
+| throw-envelope binding bound | `DECEL_FF_HEADROOM` 5.720 m/s | **`REGEN` 5.641 m/s** |
+| flight / apex ceiling | 1.165 s / 1.665 m | 1.149 s / 1.619 m |
+
+`REGEN` moved IN (6.769 → 5.641 m/s) because it fences the torque LIMIT × ω
+against the unchanged 360 W drive budget; the FF, DECEL and ACCEL lines moved out.
+`END_STOP` (8.494 m/s) stays last, so the contract's headline holds; the order is
+pinned in `tests/motion/test_throw_envelope.py`. The loaded-ascent row is the
+JB-115 gap: the session limit applies to the hand with and without the ball,
+and the ball-aboard ascent at the limit wants more than the drive limit at both
+operating points. The hand ODrive's `current_hard_max` is 70.0 A
+(`config/ODrive config Files/odrive_pro_hand_config.json`); iq has been measured
+3.3 A over the 50 A soft limit (JB-138).
 
 ⚠ Pre-2026-08-18 numbers were measured through the hand ODrive's −10.00 A
 braking clamp (`torque_soft_min`, fixed to a symmetric ±0.7 N·m on 2026-08-18)

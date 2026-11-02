@@ -451,6 +451,9 @@ def test_site_workspace_columns_and_hop_operating_points_pass():
 
 _PRE_OVAL_SNAPSHOT = os.path.join(_REPO, 'tests', 'fixtures',
                                   'admissible_box_pre_oval.yaml')
+# The box as committed before the 2026-11-02 hand_acc 3900 -> 4500 re-sweep. The
+# box-history tests are anchored here, not on the live box.
+_PRE_H4500_BOX = os.path.join(_REPO, 'tests', 'fixtures', 'admissible_box_pre_h4500.yaml')
 
 
 @pytest.mark.skipif(not os.path.exists(_PRE_OVAL_SNAPSHOT),
@@ -486,7 +489,7 @@ def test_cone45_resweep_restores_every_non_oval_cell_to_the_pre_oval_snapshot():
     import yaml as _y
     with open(_PRE_OVAL_SNAPSHOT) as fh:
         old = _y.safe_load(fh)
-    with open(_COMMITTED_BOX) as fh:
+    with open(_PRE_H4500_BOX) as fh:
         new = _y.safe_load(fh)
     assert new['limits'] == old['limits']
 
@@ -570,7 +573,7 @@ def test_p3_resweep_changed_only_the_stamp_and_added_the_pose_cells():
     import yaml as _y
     with open(_PRE_P3_SNAPSHOT) as fh:
         old = _y.safe_load(fh)
-    with open(_COMMITTED_BOX) as fh:
+    with open(_PRE_H4500_BOX) as fh:
         new = _y.safe_load(fh)
     assert new['limits'] == old['limits']
     assert new['gate_hash'] != old['gate_hash']          # the gated files changed
@@ -1070,7 +1073,7 @@ def _oval_rung1_cell(sweep_mod, dwell_s):
     """The rung-1 oval centre cell through the sweep's own production chain
     (apex 0.95, 150 mm, 350/5000/200k, hand 3900, zero offset)."""
     geom = sweep_mod.StewartGeometry()
-    limits = sweep_mod._limits(350.0, 5000.0, 200000.0, 3900.0)
+    limits = sweep_mod._limits(350.0, 5000.0, 200000.0, float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2))
     cfg = sweep_mod.sg.SegmentConfig()
     t, c = st.columns_sites(150.0)
     flight = sweep_mod.sc.flight_s(0.95)
@@ -1541,13 +1544,14 @@ def test_oval_apex_extension_is_the_12_cell_tail_after_the_50_core_cells():
     (12 turned + 8 high-low).  The core keeps its order: the 12 are the tail of
     the first 62.  (The function name was 'eight_cells_after_the_46' until then.)"""
     import yaml as _y
-    with open(_COMMITTED_BOX) as fh:
+    with open(_PRE_H4500_BOX) as fh:
         new = _y.safe_load(fh)
     # Re-swept 2026-10-31 (Pattern progression P2, sites.py gated): same values.
     # (re-swept 2026-10-31: hold 0, hand prime 10.45, floor 0.06): the core is now 50 cells (oval 0.40 / 0.35
     # added) and the tail 12 (apex 1.10 added: bands 0.975 / 1.025 / 1.075); 62 cells
     # before the 20 P2/P4 Columns cells.  The function name keeps its history.
     # Re-swept 2026-11-01 (JB-126, refusal message text only): same values.
+    # anchored on the frozen pre-h4500 box (gate_hash fe8c52ba88b4 at hand_acc 3900)
     assert new['gate_hash'] == 'fe8c52ba88b4' and new['swept_at'] == '2026-11-01'
     assert len(new['boxes']) == 62 + 20          # + the P2/P4 Columns cells (pose)
     assert sum(b['planner_mode'] == 'level' for b in new['boxes']) == 31
@@ -1561,6 +1565,46 @@ def test_oval_apex_extension_is_the_12_cell_tail_after_the_50_core_cells():
         assert b['pattern'] == 'oval_1ball' and b['site_pair'] == ['P1', 'P2']
         assert b['release_site_xy_mm'] == [-75.0, 0.0] and b['target_site_xy_mm'] == [75.0, 0.0]
         assert b['apex_m'][0] < b['apex_m'][1], 'an apex-extension cell must be non-empty'
+
+
+def test_h4500_resweep_kept_cells_and_columns_values_and_changed_only_hand_acc():
+    """2026-11-02 re-sweep at hand_acc 4500 rev/s^2 (owner; was 3900): the live
+    box has the same 82 cells in the same order as the frozen pre-h4500 box,
+    its limits differ only in hand_acc_rps2, and every Columns-family cell
+    (pattern 'columns', any planner mode, turned or not; columns_highlow DID gain apex band) kept its
+    landing_xy_m and apex_m (NaN-equal for empty cells).  The hop narrowing is
+    deliberately not asserted (owner review, map Item JB-143).  gate_hash is
+    not pinned: it moves with every gated-file edit."""
+    import math
+    import yaml as _y
+    with open(_PRE_H4500_BOX) as fh:
+        old = _y.safe_load(fh)
+    with open(_COMMITTED_BOX) as fh:
+        new = _y.safe_load(fh)
+    assert old['limits']['hand_acc_rps2'] == 3900
+    assert new['limits']['hand_acc_rps2'] == pytest.approx(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2) == 4500
+    assert {k: v for k, v in new['limits'].items() if k != 'hand_acc_rps2'} == \
+           {k: v for k, v in old['limits'].items() if k != 'hand_acc_rps2'}
+
+    def key(b):
+        return (b['pattern'], b['planner_mode'], tuple(b['site_pair']), b['dwell_s'],
+                tuple(b['release_site_xy_mm']), tuple(b['target_site_xy_mm']))
+    assert len(old['boxes']) == len(new['boxes']) == 82
+    assert [key(b) for b in old['boxes']] == [key(b) for b in new['boxes']]
+
+    def same(x, y):
+        if isinstance(x, float) and isinstance(y, float):
+            return (math.isnan(x) and math.isnan(y)) or x == y
+        if isinstance(x, (list, tuple)) and isinstance(y, (list, tuple)):
+            return len(x) == len(y) and all(same(i, j) for i, j in zip(x, y))
+        return x == y
+    n_col = 0
+    for a, b in zip(old['boxes'], new['boxes']):
+        if a['pattern'] == 'columns':
+            n_col += 1
+            assert same(a['landing_xy_m'], b['landing_xy_m']), (a, b)
+            assert same(a['apex_m'], b['apex_m']), (a, b)
+    assert n_col >= 18
 
 
 def test_pattern_progression_cells_are_the_tail_after_the_62():
@@ -1656,7 +1700,7 @@ def test_highlow_sweep_stamps_both_assignments_without_collision(pair):
     boxes, rows = sw.highlow_sweep(
         hi, lo, flight_frac=(0.0,), halfwidth_m=0.025, offsets_mm=(0.0,),
         dwell_s=0.27, separation_mm=125.0, leg_vel=350.0, leg_acc=5000.0,
-        leg_jerk=200000.0, hand_acc=3900.0, planner_mode='pose',
+        leg_jerk=200000.0, hand_acc=float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2), planner_mode='pose',
         log=lambda r: None)
     timing = sc.columns_ball_timing(hi, lo, 0.27)
     got = sorted((b.site_pair[0], round(b.apex_band_m[0], 6),

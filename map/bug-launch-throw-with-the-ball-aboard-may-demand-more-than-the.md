@@ -4,7 +4,7 @@ kind: bug
 title: 'Launch THROW with the ball aboard may demand more than the 50 A hand current limit from Apex about 0.99 (envelope arithmetic, unverified): check hand current in a columns bag'
 status: backlog
 created: '2026-10-30'
-updated: '2026-10-30T11:52:31Z'
+updated: '2026-11-01T13:49:21Z'
 owners: []
 priority: medium
 effort: xs
@@ -40,3 +40,4 @@ Hand iq against the planned acceleration in an existing Apex 1.0-1.05 columns ba
 ## Progress
 
 - 2026-10-30: bag check done, see Result above; no clipping in the flown band, inconclusive at the claimed Apex; back to backlog, diagnosis stays hypothesis.
+- 2026-11-02: 2026-11-01: hand_curr_limit_a is now 60 A (hand ODrive current_hard_max 70 A); the 50 A cited here is the limit at filing/measurement time.

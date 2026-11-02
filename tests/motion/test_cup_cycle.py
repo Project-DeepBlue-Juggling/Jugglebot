@@ -366,7 +366,7 @@ def test_reference_fixture_is_the_expected_capture(reference):
             assert case['name'] + '/' + field in data.files
 
 
-def test_qp_matches_casadi_reference(reference):
+def test_qp_matches_casadi_reference(reference, monkeypatch):
     """T-U2 — < 1 mm / < 10 mm/s against IPOPT on every captured cycle.
 
     The runway constraint is OFF here: the reference program does not have it,
@@ -377,6 +377,10 @@ def test_qp_matches_casadi_reference(reference):
       ``/home/jetson/Desktop/PDJ_venv/venv/bin/python
       tools/probes/capture_cup_cycle_refs.py --emit-fixture``
     """
+    # The IPOPT reference has no between-knot floor rows (I-PLAN-15,
+    # ``cc.Z_BOX_SAMPLES_PER_KNOT``, 2026-11-01) and ``grid_p100_tall`` binds
+    # one (2.0 mm apart with them): parity is the KNOT-box program's property.
+    monkeypatch.setattr(cc, 'Z_BOX_SAMPLES_PER_KNOT', 1)
     cases, data = reference
     for case in cases:
         plan = _plan_reference_case(case)
@@ -392,7 +396,7 @@ def test_qp_matches_casadi_reference(reference):
         assert np.allclose(plan.t, data[name + '/t'], atol=1e-12)
 
 
-def test_plan_window_matches_plan_cup_cycle_on_one_throw_one_catch(reference):
+def test_plan_window_matches_plan_cup_cycle_on_one_throw_one_catch(reference, monkeypatch):
     """T-U2's event-timeline twin (owner resolution 3, 2026-08-29).
 
     v1 callers pass exactly one throw and one catch, and on that timeline
@@ -402,6 +406,10 @@ def test_plan_window_matches_plan_cup_cycle_on_one_throw_one_catch(reference):
     transfers to the event API for free, which is the point of asserting it
     here rather than only on the wrapper.
     """
+    # The IPOPT reference has no between-knot floor rows (I-PLAN-15,
+    # ``cc.Z_BOX_SAMPLES_PER_KNOT``, 2026-11-01) and ``grid_p100_tall`` binds
+    # one (2.0 mm apart with them): parity is the KNOT-box program's property.
+    monkeypatch.setattr(cc, 'Z_BOX_SAMPLES_PER_KNOT', 1)
     cases, data = reference
     for case in cases:
         cfg = cc.CupCycleConfig(z_min_m=case['z_min_m'],
@@ -468,21 +476,23 @@ def test_runway_requirement_is_the_stopping_distance():
 
 
 def test_runway_default_decel_is_the_signed_off_hand_limit():
-    """3900 rev/s² ÷ the package's slider gain, and the gain's two sources agree.
+    """4500 rev/s² ÷ the package's slider gain, and the gain's two sources agree.
 
-    3900 rev/s² is the owner-signed hand acceleration limit (3500 from Phase 0
-    decision 4, 2026-08-30, raised to the YAML ceiling on 2026-10-02 when the
-    fed columns rehearsal's same-site catch-and-throw peaked at 101 % of 3500 in
-    both feed layouts — logbook 2026-10-02-skill-stack-r5-sitting-2), under the
-    C-HAND-2 authority bound of 3925.5. R1 (2026-09-11): the gain is the
+    4500 rev/s² is the owner-signed hand acceleration limit (3500 from Phase 0
+    decision 4, 2026-08-30, raised to the YAML ceiling 3900 on 2026-10-02 when
+    the fed columns rehearsal's same-site catch-and-throw peaked at 101 % of
+    3500 in both feed layouts — logbook 2026-10-02-skill-stack-r5-sitting-2;
+    4500 by owner decision at the 2026-11-01 Sitting debrief, with the hand
+    current limit 50 -> 60 A), under the C-HAND-2 decel-FF headroom bound of
+    4710.6 at 60 A (3925.5 at 50 A). R1 (2026-09-11): the gain is the
     MEASURED ``hw.HAND_REV_PER_M`` (jugglebot_geometry.hand_mm_per_rev,
     inverted) — ``hand_stroke`` and the retired ``TEENSY_LINEAR_GAIN``
     fudge-factor gain it derived are both deleted.
     """
     assert cc.HAND_REV_PER_M == hw.HAND_REV_PER_M
-    assert cc.HAND_ACC_LIMIT_RPS2 == 3900.0
+    assert cc.HAND_ACC_LIMIT_RPS2 == 4500.0
     assert cc.HAND_ACC_LIMIT_RPS2 == hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2
-    assert cc.HAND_MAX_DECEL_MPS2 == pytest.approx(3900.0 / hw.HAND_REV_PER_M)
+    assert cc.HAND_MAX_DECEL_MPS2 == pytest.approx(4500.0 / hw.HAND_REV_PER_M)
     assert cc.CupCycleConfig().catch_runway_decel_mps2 == cc.HAND_MAX_DECEL_MPS2
 
 
@@ -1648,7 +1658,7 @@ def test_a_held_steady_still_refuses_a_capture_span():
     assert "isn't lined up" in str(exc.value)
 
 
-def test_a_held_LANDING_assembles_the_program_it_did_before_the_span():
+def test_a_held_LANDING_assembles_the_program_it_did_before_the_span(monkeypatch):
     """The held-span change moved no row of a held catch that ends at rest.
 
     A regression GUARD, not a fail-before test: the fingerprints below were
@@ -1664,6 +1674,9 @@ def test_a_held_LANDING_assembles_the_program_it_did_before_the_span():
     runway rows of ``bc`` and would fail this guard for a reason it does not
     guard — the held-span rows, not the hand cap, are what it pins.
     """
+    # The fingerprints predate the between-knot floor rows (I-PLAN-15,
+    # 2026-11-01), which append their own block; this guard pins the held span.
+    monkeypatch.setattr(cc, 'Z_BOX_SAMPLES_PER_KNOT', 1)
     cfg = cc.CupCycleConfig(z_min_m=0.690, z_max_m=0.985,
                             catch_runway_z_floor_m=0.690,
                             catch_runway_enabled=True,
@@ -1816,3 +1829,202 @@ def test_a_catch_inside_the_platform_hold_is_refused():
         cc.plan_window([catch], state0, cfg, period_s=1.0, settle_site=_W_REST,
                        hold_axis=axis, hold_knots=hk)
     assert excinfo.value.reason == 'CATCH_TOO_EARLY'
+
+
+# ── I-PLAN-15 row assembly: the broadcast form is bit-identical to the loop ──
+# The between-knot rows were first assembled one row at a time (a Python loop
+# over 3(n−1) samples, plus a per-column slider rewrite in the pose planner's dz
+# block); on the 61-knot pose window that cost ~2.4 ms of the 50 ms core budget
+# (2026-11-02).  ``cc._z_span_rows`` and ``cc._slider_rewrite`` replaced them
+# with broadcasts.  The ORIGINAL per-row code is kept below as the reference,
+# and three production windows are built through both: every assembled program
+# (C, bc, H, f, Aeq, beq, labels) and every plan output must be bit-identical,
+# and the rows/tags the reference produces from the SAME inputs must match.
+
+def _z_span_rows_reference(n, dt, m_span, Ap, Av, Aa, cp, cv, ca):
+    """The pre-2026-11-02 per-row loop, verbatim."""
+    zrows, zconst, ztags = [], [], []
+    for k in range(1, n):
+        for i in range(1, m_span):
+            tau = i * dt / m_span
+            coef = Ap[k] + tau * Av[k] + 0.5 * tau * tau * Aa[k]
+            coef[k] += tau ** 3 / 6.0
+            zrows.append(cc._axis_row(n, 2, coef))
+            zconst.append(cp[k, 2] + tau * cv[k, 2]
+                          + 0.5 * tau * tau * ca[k, 2])
+            ztags.append((k, tau))
+    return np.array(zrows), np.array(zconst), ztags
+
+
+def _slider_rewrite_reference(cols, rhss, col_tags, n, cp_dz, cv_dz, ca_dz,
+                              margin):
+    """The pre-2026-11-02 per-column slider rewrite, verbatim."""
+    j = 0
+    for blk_i, (blk, rb) in enumerate(zip(cols, rhss)):
+        ext = np.zeros((n, blk.shape[1]))
+        for jj in range(blk.shape[1]):
+            tag = col_tags[j]; j += 1
+            if tag is None:
+                continue
+            kind, k, s = tag[:3]
+            ext[:, jj] = -blk[2 * n:3 * n, jj]
+            if kind in ('pz', 'rw'):
+                rb[jj] += s * cp_dz[k]
+            elif kind == 'pzm':
+                tau = tag[3]
+                rb[jj] += s * (cp_dz[k] + tau * cv_dz[k]
+                               + 0.5 * tau * tau * ca_dz[k])
+            if kind in ('pz', 'pzm') and s < 0.0:
+                rb[jj] += margin
+        cols[blk_i] = np.vstack([blk, ext])
+
+
+def _bit_equal(a, b, path='x'):
+    """Exact structural equality: arrays by dtype, shape and ``array_equal``;
+    floats by ``==`` (NaN equal to NaN); dataclasses/objects field by field;
+    callables by identity of their code."""
+    if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+        a_, b_ = np.asarray(a), np.asarray(b)
+        assert a_.dtype == b_.dtype and a_.shape == b_.shape, path
+        eq = (np.array_equal(a_, b_, equal_nan=True)
+              if a_.dtype.kind in 'fc' else np.array_equal(a_, b_))
+        assert eq, path
+    elif dataclasses.is_dataclass(a) and not isinstance(a, type):
+        assert type(a) is type(b), path
+        for fld in dataclasses.fields(a):
+            _bit_equal(getattr(a, fld.name), getattr(b, fld.name),
+                       '%s.%s' % (path, fld.name))
+    elif isinstance(a, (tuple, list)):
+        assert type(a) is type(b) and len(a) == len(b), path
+        for i, (x, y) in enumerate(zip(a, b)):
+            _bit_equal(x, y, '%s[%d]' % (path, i))
+    elif isinstance(a, dict):
+        assert a.keys() == b.keys(), path
+        for key in a:
+            _bit_equal(a[key], b[key], '%s[%r]' % (path, key))
+    elif isinstance(a, float):
+        assert type(a) is type(b) and (a == b or (a != a and b != b)), path
+    elif callable(a):
+        assert getattr(a, '__code__', a) is getattr(b, '__code__', b), path
+    elif hasattr(a, '__dict__') or hasattr(type(a), '__slots__'):
+        assert type(a) is type(b), path
+        slots = [nm for cls in type(a).__mro__
+                 for nm in getattr(cls, '__slots__', ()) if hasattr(a, nm)]
+        assert slots or vars(a), path
+        for nm in slots:
+            _bit_equal(getattr(a, nm), getattr(b, nm), '%s.%s' % (path, nm))
+        if hasattr(a, '__dict__'):
+            _bit_equal(vars(a), vars(b), path)
+    else:
+        assert type(a) is type(b) and a == b, path
+
+
+def _hop_start_catch():
+    """The hop-start CATCH window (pose, band 0) that
+    ``test_validate_cycle.py::test_the_hop_start_catch_no_longer_dips_between_knots``
+    rebuilds."""
+    from tests.motion import test_validate_cycle as tv
+    return tv._hop_entry_skill2_pose_plan()[0]
+
+
+def _oval_rung1_carry():
+    """The oval rung-1 carry through the production segment path (level).  At
+    these limits the whole segment is refused on its SETTLE tail (LIMIT_VEL, see
+    ``test_validate_cycle.py::test_rung1_through_the_production_segment_path_\
+passes_the_45_deg_cone``), so the output is every plan the path handed the
+    gate plus the refusal's text."""
+    from jugglebot.motion import unified_cycle as uc
+    from tests.motion import test_validate_cycle as tv
+    seen, real = [], uc.fz.validate_cycle
+
+    def spy(plan, *a, **k):
+        seen.append(plan)
+        return real(plan, *a, **k)
+    uc.fz.validate_cycle = spy
+    try:
+        out = tv._oval_carry_segment(0.50)[0]
+    except uc.CycleInfeasible as e:
+        out = str(e)
+    finally:
+        uc.fz.validate_cycle = real
+    assert seen
+    return seen, out
+
+
+def _columns_pose_window_band30():
+    """The folded columns STEADY in POSE mode with the dz band ON (30 mm), so
+    the slider rewrite (``_slider_rewrite``) runs over the 'pzm' columns."""
+    from jugglebot.motion import unified_cycle as uc
+    from jugglebot.motion.geometry import StewartGeometry
+    from jugglebot.motion.trajectory.limits import TrajectoryLimits
+    from tests.motion import test_pose_planner as tp
+    limits = TrajectoryLimits.from_config(hw).with_sitting_limits(
+        leg_vel_mmps=350.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=200000.0,
+        hand_acc_rps2=3900.0)
+    return tp._folded(0.50, uc.PLANNER_POSE, limits, StewartGeometry(),
+                      pose_cfg=cc.PoseConfig(z_band_mm=30.0))[0]
+
+
+def _build_through(monkeypatch, build, reference):
+    """Run ``build`` with the production (``reference=False``) or the per-row
+    reference helpers; return ``(plan, programs, span_calls, rewrite_calls)``,
+    the calls carrying each helper's inputs (copied before any mutation) and
+    outputs so the two forms can also be compared on IDENTICAL inputs."""
+    import copy
+    progs, spans, rewrites = [], [], []
+    orig_asm = cc._assemble
+    span_fn = _z_span_rows_reference if reference else cc._z_span_rows
+    rw_fn = _slider_rewrite_reference if reference else cc._slider_rewrite
+
+    def asm(*a, **k):
+        p = orig_asm(*a, **k)
+        progs.append(p)
+        return p
+
+    def span(*a):
+        out = span_fn(*a)
+        spans.append((copy.deepcopy(a), out))
+        return out
+
+    def rewrite(cols, rhss, col_tags, *rest):
+        before = (copy.deepcopy(cols), copy.deepcopy(rhss), list(col_tags), rest)
+        rw_fn(cols, rhss, col_tags, *rest)
+        rewrites.append((before, (list(cols), list(rhss))))
+
+    with monkeypatch.context() as mp:
+        mp.setattr(cc, '_assemble', asm)
+        mp.setattr(cc, '_z_span_rows', span)
+        mp.setattr(cc, '_slider_rewrite', rewrite)
+        plan = build()
+    return plan, progs, spans, rewrites
+
+
+@pytest.mark.parametrize('build', [_hop_start_catch, _oval_rung1_carry,
+                                   _columns_pose_window_band30],
+                         ids=['hop_start_catch', 'oval_rung1_carry',
+                              'columns_pose_band30'])
+def test_the_between_knot_rows_are_bit_identical_to_the_per_row_loop(
+        monkeypatch, build):
+    new = _build_through(monkeypatch, build, reference=False)
+    ref = _build_through(monkeypatch, build, reference=True)
+    plan, progs, spans, rewrites = new
+    assert progs and spans, "the window assembled no I-PLAN-15 rows"
+    assert len(progs) == len(ref[1]) and len(spans) == len(ref[2])
+    assert len(rewrites) == len(ref[3])
+    for i, (p, q) in enumerate(zip(progs, ref[1])):
+        _bit_equal(p, q, 'program[%d]' % i)
+    _bit_equal(plan, ref[0], 'plan')
+    # the same inputs through both forms: rows, constants and (k, tau) tags
+    for args, (ZR, ZC, tags) in spans:
+        RR, RC, rtags = _z_span_rows_reference(*args)
+        _bit_equal(ZR, RR, 'ZR')
+        _bit_equal(ZC, RC, 'ZC')
+        _bit_equal(tags, rtags, 'tags')
+        assert all(type(k) is int and type(t) is float for k, t in tags)
+    for (cols, rhss, col_tags, rest), (out_cols, out_rhss) in rewrites:
+        _slider_rewrite_reference(cols, rhss, col_tags, *rest)
+        _bit_equal(out_cols, cols, 'slider cols')
+        _bit_equal(out_rhss, rhss, 'slider rhss')
+    if build is _columns_pose_window_band30:      # the dz path really ran
+        assert rewrites and any(t and t[0] == 'pzm'
+                                for (_, _, ct, _), _ in rewrites for t in ct)

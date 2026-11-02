@@ -53,7 +53,7 @@ def geom():
 def limits():
     return TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=350.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=200000.0,
-        hand_acc_rps2=3900.0)
+        hand_acc_rps2=float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2))
 
 
 @pytest.fixture(scope='module')

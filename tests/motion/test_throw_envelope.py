@@ -360,6 +360,16 @@ def test_the_torque_bounds_bind_and_end_stop_does_not():
     the corrected gain widened ``DECEL_ALLOWANCE_REV`` (3.929 vs 4.046 rev).
     The ORDER — the contract's whole claim — is unchanged.
 
+    2026-11-01 (owner decision, Sitting debrief): ``hand_curr_limit_a`` 50 ->
+    60 A, with the planner's hand acceleration limit 3900 -> 4500. The three
+    current-proportional bounds moved out by sqrt(1.2) (FF 5.720 -> 6.266,
+    DECEL 5.901 -> 6.464) and ACCEL with its gravity offset (5.999 -> 6.594),
+    while REGEN moved IN by 1/1.2 (6.769 -> 5.641): it fences the torque LIMIT
+    times omega (a flat-out brake), so a larger current limit is a larger
+    possible return into the unchanged 360 W drive budget. REGEN is now the
+    ceiling (apex 1.665 -> 1.619 m). END_STOP stays last, which is the
+    contract's headline: a drive bound, not a metal collision, limits height.
+
     The order is pinned because it is the contract's whole claim. If END_STOP
     ever re-enters the front, the plant has regressed toward its pre-fix
     behaviour and the ladder must be re-measured before anything else is done.
@@ -373,17 +383,17 @@ def test_the_torque_bounds_bind_and_end_stop_does_not():
                         / (coeff * hw.TEENSY_TRAJ_INERTIA_RATIO))
     v_regen = te.REGEN_POWER_W / te.BRAKING_TORQUE_LIMIT_NM / (
         2.0 * math.pi * float(hw.HAND_REV_PER_M))
-    assert v_decel == pytest.approx(5.901, abs=5e-3)
-    assert v_accel == pytest.approx(5.999, abs=5e-3)
-    assert v_regen == pytest.approx(6.769, abs=5e-3)
+    assert v_decel == pytest.approx(6.464, abs=5e-3)
+    assert v_accel == pytest.approx(6.594, abs=5e-3)
+    assert v_regen == pytest.approx(5.641, abs=5e-3)
     assert v_end == pytest.approx(8.494, abs=5e-3)
     v_ff = math.sqrt(te.DECEL_FF_HEADROOM_RPS2 / coeff)
-    assert v_ff == pytest.approx(5.720, abs=5e-3)
-    assert v_ff < v_decel < v_accel < v_regen < v_end, (
-        f'the binding order moved: FF {v_ff:.3f} / DECEL {v_decel:.3f} / '
-        f'ACCEL {v_accel:.3f} / REGEN {v_regen:.3f} / END_STOP {v_end:.3f} m/s '
+    assert v_ff == pytest.approx(6.266, abs=5e-3)
+    assert v_regen < v_ff < v_decel < v_accel < v_end, (
+        f'the binding order moved: REGEN {v_regen:.3f} / FF {v_ff:.3f} / '
+        f'DECEL {v_decel:.3f} / ACCEL {v_accel:.3f} / END_STOP {v_end:.3f} m/s '
         f'— re-read C-HAND-3 § The bounds before shipping this')
-    assert te.MAX_RELEASE_SPEED_MPS == pytest.approx(v_ff, abs=5e-3)
+    assert te.MAX_RELEASE_SPEED_MPS == pytest.approx(v_regen, abs=5e-3)
 
 
 def test_regen_fences_the_burst_not_the_steady_state():
@@ -517,10 +527,13 @@ def test_the_derived_band_and_what_it_replaced():
     """
     lo, hi = te.flight_time_band_s()
     assert lo == pytest.approx(te._SEARCH_LO_S, abs=1e-9)
-    assert hi == pytest.approx(1.165, abs=1e-3)
+    # 2026-11-01: 1.165 -> 1.149 s (apex 1.665 -> 1.619 m) — REGEN now binds
+    # at the 60 A hand current limit; see
+    # test_the_torque_bounds_bind_and_end_stop_does_not.
+    assert hi == pytest.approx(1.149, abs=1e-3)
     apex_lo, apex_hi = te.apex_height_band_m()
     assert apex_lo == pytest.approx(0.00306, abs=2e-4)
-    assert apex_hi == pytest.approx(1.665, abs=3e-3)
+    assert apex_hi == pytest.approx(1.619, abs=3e-3)
     assert hi > 1.10
 
 
@@ -621,7 +634,9 @@ def test_the_speed_gate_is_independent_of_the_flight_time():
     t = 0.80                      # comfortably inside the band on its own
     assert te.evaluate(t, te.vertical_release_speed_mps(t)).ok
     faster = te.evaluate(t, 5.85)  # an 8b aim that releases far harder
-    assert not faster.ok and faster.bound == 'DECEL_FF_HEADROOM'
+    # REGEN since the 2026-11-01 60 A hand current limit (DECEL_FF_HEADROOM
+    # at 50 A); see test_the_torque_bounds_bind_and_end_stop_does_not.
+    assert not faster.ok and faster.bound == 'REGEN'
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -631,9 +646,12 @@ def test_the_speed_gate_is_independent_of_the_flight_time():
 @pytest.mark.parametrize('flight_s, speed, bound', [
     (0.80, 8.6, 'END_STOP'),    # only reachable above the wire band; bounds are
                                 #   ordered machine-damage-first so it still wins
-    (0.80, 5.80, 'DECEL_FF_HEADROOM'),  # between the FF line (5.720) and the
-                                        #   hard authority line (5.901)
-    (0.80, 6.20, 'DECEL_AUTHORITY'),    # past both; the harder limit reports
+    (0.80, 5.80, 'REGEN'),              # between the REGEN line (5.641) and
+                                        #   the FF line (6.266); 60 A since
+                                        #   2026-11-01 (was 5.720 / 5.901)
+    (0.80, 6.35, 'DECEL_FF_HEADROOM'),  # between the FF line (6.266) and the
+                                        #   hard authority line (6.464)
+    (0.80, 6.50, 'DECEL_AUTHORITY'),    # past both; the harder limit reports
     (float('nan'), 3.0, 'INPUT'),
     (-0.8, 3.0, 'INPUT'),
     (0.80, 0.0, 'INPUT'),

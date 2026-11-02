@@ -85,7 +85,7 @@ the bottom of its stroke — and :attr:`CupCycleConfig.catch_runway_margin_m`),
 never by importing platform geometry here; the floor defaults to ``z_min_m``,
 which is already documented in the sim planner as the caller's slider-reachable
 range. ``a_hand_max`` defaults to the owner-signed hand acceleration limit
-(3900 rev/s² since 2026-10-02, 3500 before) divided by the package's existing
+(4500 rev/s² since 2026-11-01, 3900 from 2026-10-02, 3500 before) divided by the package's existing
 slider gain (see :data:`HAND_MAX_DECEL_MPS2`).
 
 The whole constraint is disableable (``catch_runway_enabled = False``) so exact
@@ -136,8 +136,10 @@ GRAVITY = np.array([0.0, 0.0, -9.806])
 #: Owner-signed hand acceleration LIMIT: 3500 rev/s² from Phase 0 decision 4
 #: (2026-08-30), raised to the YAML ceiling 3900 on 2026-10-02 (the fed columns
 #: rehearsal's same-site catch-and-throw peaked at 101 % of 3500 in both feed
-#: layouts; logbook 2026-10-02-skill-stack-r5-sitting-2), still under the
-#: C-HAND-2 authority bound of 3925.5 rev/s². IMPORTED from the YAML's
+#: layouts; logbook 2026-10-02-skill-stack-r5-sitting-2), and to 4500 on
+#: 2026-11-01 (owner, Sitting debrief, with the hand current limit 50 -> 60 A),
+#: under the C-HAND-2 decel-FF headroom bound of 4710.6 rev/s² at 60 A (3925.5
+#: at 50 A). IMPORTED from the YAML's
 #: ``hand_acc_limit_rps2`` rather than restated: the restated 3500 this used
 #: to be sat silently under the raised gate for one sweep on 2026-10-02 —
 #: the in-QP bound and ``validate_cycle``'s gate must be one number.
@@ -196,6 +198,41 @@ REST_FLOOR_BELOW_HAND_ZERO_M = abs(HAND_HOMED_REST_FLOOR_REV) / HAND_REV_PER_M
 #: is, and no caller should be able to widen it for one window. A window whose
 #: start is further out than this has a state problem, not a planning problem.
 SEED_OUTSIDE_BOX_MAX_M = 0.020
+
+#: Points per 25 ms span at which the cup's z position is bounded, knots
+#: included: the box rows sit at knots 1..n, and this adds ``m - 1`` FLOOR rows
+#: and ``m - 1`` CEILING rows inside each span 1..n-1 at ``tau = i·dt/m``.  MUST equal
+#: ``feasibility._CYCLE_SAMPLES_PER_KNOT`` (pinned by a test): the planner bounds
+#: the same samples the gate checks (INVARIANTS I-PLAN-15).
+#:
+#: WHY (Sitting 2026-11-01): with the box on the knots only, a catch-to-throw
+#: reversal rides the box floor and the cubic between two floor knots dips about
+#: ``a·dt²/8`` under them — 0.065 rev at the ~830 rev/s² of the hop-start CATCH,
+#: past the 2 mm inset (0.0614 rev) — and ``validate_cycle`` refused 9 installs
+#: ``HAND_STROKE`` at the exact middle of a span.  Bounding the quarter points
+#: closes it: between two of them the dip is at most ``a·(dt/m)²/8`` = 0.019 rev
+#: at a 3900 rev/s² hand cap (0.022 rev at the 4500 cap of 2026-11-01), inside the inset, so a plan the hand-acc gate
+#: passes cannot dip under the gate's floor (the half-point alone would leave
+#: 0.076 rev at the cap, which the 2 mm inset does not cover).
+#:
+#: The rows are EXACT for the interpolant the gate samples: the jerk is constant
+#: on a span, so the cup z there is the cubic ``p + v·tau + a·tau²/2 + j·tau³/6``,
+#: linear in the knot variables and identical to the cubic Hermite the realised
+#: plan interpolates.  Span 0 is skipped for the reason knot 0 is: its only free
+#: variable is one jerk, so a row there is a statement about the SEED, and a seed
+#: near the floor moving down would be refused for where it already is.
+#:
+#: THE CEILING (same night): the hand cap went 3900 -> 4500 rev/s², past the
+#: ~3930 the 10 mm top inset covers for the knot-only overshoot (0.352 rev at
+#: 4500 vs the 0.307 rev inset), so the rows are mirrored at the stroke top
+#: (``CupCycleConfig.stroke_z_top_m``, the prime) minus the same sag.
+#:
+#: The guarantee needs each inset to be at least the sag (the rows hold a
+#: sample at ``max(knot ceiling, top − sag)`` / ``min(knot floor, bottom +
+#: sag)``); 10 mm and 2 mm against 0.72 mm at 4500.
+#:
+#: 1 disables both blocks (the knot-only program, column for column).
+Z_BOX_SAMPLES_PER_KNOT = 4
 
 
 class CupCycleInfeasible(RuntimeError):
@@ -261,6 +298,13 @@ class CupCycleConfig:
     #: falls back to ``z_min_m``, which the sim planner already documents as
     #: "the caller MUST override this to the SLIDER's reachable range".
     catch_runway_z_floor_m: Optional[float] = None
+    #: Cup z (m, world) with the slider at the TOP of its operating band (the
+    #: catch prime, ``feasibility.HAND_STROKE_MAX_REV``).  Read only by the
+    #: between-knot ceiling rows (:data:`Z_BOX_SAMPLES_PER_KNOT`, INVARIANTS
+    #: I-PLAN-15), the mirror of ``catch_runway_z_floor_m`` for the floor rows.
+    #: ``None`` (the default, and what ``build_cup_config`` ships since
+    #: 2026-11-02) adds NO ceiling rows; pass a value to turn them on.
+    stroke_z_top_m: Optional[float] = None
     #: Extra stroke reserved below the computed deceleration distance (m).
     catch_runway_margin_m: float = 0.020
     #: Deceleration authority used for ``v²/(2a)`` (m/s²).
@@ -320,6 +364,7 @@ class CupCycleConfig:
 _RUNWAY_DEFAULTS = {
     'catch_runway_enabled': False,
     'catch_runway_z_floor_m': None,
+    'stroke_z_top_m': None,
     'catch_runway_margin_m': 0.020,
     'catch_runway_decel_mps2': HAND_MAX_DECEL_MPS2,
     'max_acc_z': None,
@@ -716,6 +761,31 @@ def _axis_row(n: int, axis: int, coeffs: np.ndarray) -> np.ndarray:
     return row
 
 
+def _z_span_rows(n: int, dt: float, m_span: int, Ap, Av, Aa, cp, cv, ca):
+    """The I-PLAN-15 between-knot cup-z rows, one per interior sample
+    ``tau = i·dt/m_span`` (``i = 1 .. m_span − 1``) of every span ``k = 1 ..
+    n − 1``, k-major: ``(ZR, ZC, tags)``, ``ZR`` the ``3n``-wide rows (z jerk
+    block only) and ``ZC`` the constant part of ``z(t_k + tau)``, ``tags`` the
+    ``(k, tau)`` pairs.  One broadcast, not a row loop (the loop cost ~2.4 ms of
+    the pose window's 50 ms core budget, measured 2026-11-02); every element is
+    the loop's own IEEE expression, scalars formed in Python exactly as the loop
+    formed them, so the rows are bit-identical to it (pinned by
+    ``tests/motion/test_cup_cycle.py``)."""
+    taus = [i * dt / m_span for i in range(1, m_span)]
+    tau = np.array(taus)
+    half = np.array([0.5 * t * t for t in taus])
+    ks = np.arange(1, n)
+    coef = (Ap[ks][:, None, :] + tau[None, :, None] * Av[ks][:, None, :]
+            + half[None, :, None] * Aa[ks][:, None, :])        # (n−1, m−1, n)
+    coef[np.arange(n - 1)[:, None], np.arange(m_span - 1)[None, :],
+         ks[:, None]] += np.array([t ** 3 / 6.0 for t in taus])[None, :]
+    ZR = np.zeros(((n - 1) * (m_span - 1), 3 * n))
+    ZR[:, 2 * n:3 * n] = coef.reshape(-1, n)
+    ZC = (cp[ks, 2][:, None] + tau[None, :] * cv[ks, 2][:, None]
+          + half[None, :] * ca[ks, 2][:, None]).reshape(-1)
+    return ZR, ZC, [(k, t) for k in range(1, n) for t in taus]
+
+
 def _perpendicular_basis(axis: np.ndarray):
     """Two orthonormal vectors spanning the plane perpendicular to ``axis``.
 
@@ -857,6 +927,13 @@ def _seed_relaxed_z_box(state0: CupState, z_min: float, z_max: float):
     bottom of travel"* — where today it plans. Turning a working rung into a
     refusal is a worse trade than leaving a distortion that every gate already
     accepts, so the launch keeps the plan it has.
+
+    (2026-11-01: the knot-vs-continuum half of that collision is now closed in
+    the planner — the z floor also holds at the gate's own quarter-span
+    samples, :data:`Z_BOX_SAMPLES_PER_KNOT`, INVARIANTS I-PLAN-15 — after the
+    same sag fired ``HAND_STROKE`` on the hop-start CATCH at the 2 mm inset.
+    Widening this relaxation to release-terminal windows was NOT re-measured
+    under the new rows and stays the owner's call.)
 
     A ``LANDING`` (catch, then rest) DOES get the relaxation, and from a parked
     seed it now refuses that way instead of planning: measured, that window's
@@ -1969,6 +2046,60 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
             col_tags.append(('rw', k_td, 1.0))
             ineq_names.append('runway')
 
+    # ---- the z position FLOOR and CEILING between knots (I-PLAN-15) --------
+    # See `Z_BOX_SAMPLES_PER_KNOT`.  Its OWN block, after the runway row and
+    # BEFORE the optional acc boxes / contact floor, so it is always present
+    # when those are toggled (their "not one column index moves" contract is
+    # unchanged); the shape change is carried by the warm-start key's
+    # ``C.shape[1]``.  Tagged 'pzm' so the `pose` planner moves the rows onto
+    # the SLIDER exactly as it moves the knot rows.
+    #
+    # THE BOUND IS THE GATE'S FLOOR, NOT THE BOX'S.  The knots keep the box floor
+    # (stroke bottom + the 2 mm inset, which is margin).  A quarter-span sample is
+    # held at or above the STROKE bottom (``catch_runway_z_floor_m``, the cup z of
+    # ``feasibility.HAND_STROKE_MIN_REV``) plus the most the continuum can sag
+    # between two samples at the hand's acceleration cap, ``a·(dt/m)²/8`` (0.62 mm
+    # = 0.019 rev at 3900 rev/s²; 0.72 mm = 0.022 rev at the 4500 cap of
+    # 2026-11-01), never above the knot floor itself.  So a plan
+    # that passes HAND_LIMIT_ACC cannot pass under the gate's 0.0 floor, and the
+    # rows are slack (bit-identical solution: the active-set solver only adds a
+    # violated row) on every plan whose quarter samples already clear that
+    # level — i.e. every plan the gate accepted before, bar the ones within
+    # 0.019 rev of refusal.  Bounding the samples at the BOX floor instead binds
+    # on most carries (the oval rung-1 cone pins all moved, measured 2026-11-01)
+    # for no refusal avoided.
+    #
+    # THE CEILING, MIRRORED: present and tested, OFF by default since 2026-11-02.
+    # It holds a quarter-span sample at or below the STROKE top
+    # (``stroke_z_top_m``, the prime) minus the same sag, never below the knot
+    # ceiling.  It cost ~2.2 ms of the 50 ms pose budget (pose core 47.75 ms
+    # with it, 45.59 ms floor-only) and no swept or flown cell's top reversal
+    # comes near it (0.02-0.13 rev above the ceiling knots, every cell >= 0.17
+    # rev under the prime).  Without it the 10 mm knot inset covers the
+    # between-knot overshoot up to 3930 rev/s^2, and a plan past it is REFUSED
+    # HAND_STROKE by the gate (safe).  Turn it on by passing ``stroke_z_top_m``;
+    # None = no ceiling rows.
+    m_span = int(Z_BOX_SAMPLES_PER_KNOT)
+    if m_span > 1 and n > 1:
+        stroke_floor = _cfg(cfg, 'catch_runway_z_floor_m')
+        stroke_floor = z_min if stroke_floor is None else float(stroke_floor)
+        sag_m = HAND_MAX_DECEL_MPS2 * (dt / m_span) ** 2 / 8.0
+        span_lo = min(z_lo, stroke_floor + sag_m)
+        ZR, ZC, ztags = _z_span_rows(n, dt, m_span, Ap, Av, Aa, cp, cv, ca)
+        cols.append(ZR.T)
+        rhss.append(span_lo - ZC)
+        col_tags.extend([('pzm', k, 1.0, tau) for k, tau in ztags])
+        ineq_names.append('z_span_lower')
+        # The ceiling rows (opt-in): ``z(tau) <= span_hi`` written
+        # ``-z >= -span_hi``, after the floor rows so no floor column moves.
+        stroke_top = _cfg(cfg, 'stroke_z_top_m')
+        if stroke_top is not None:
+            span_hi = max(z_hi, float(stroke_top) - sag_m)
+            cols.append(-ZR.T)
+            rhss.append(ZC - span_hi)
+            col_tags.extend([('pzm', k, -1.0, tau) for k, tau in ztags])
+            ineq_names.append('z_span_upper')
+
     # ---- optional acceleration boxes (default OFF; see CupCycleConfig) ------
     # Appended as their OWN block after every pre-existing column so that with the
     # boxes off not one column index moves — which is what makes the T-U1/T-U2
@@ -2112,6 +2243,44 @@ def _rots_from_tilts(tilts: np.ndarray) -> np.ndarray:
     R[:, 2, 1] = s * kx
     R[:, 2, 2] = c
     return R
+
+
+def _slider_rewrite(cols, rhss, col_tags, n: int, cp_dz, cv_dz, ca_dz,
+                    margin: float) -> None:
+    """Move the tagged z rows of the level blocks onto the SLIDER ``cup_z − dz``
+    (``_pose_augment`` block 4), in place: each block gains ``n`` dz rows, the
+    negated cup-z coefficients on its tagged columns and zeros elsewhere; a
+    ``pz`` / ``rw`` rhs gains ``s·dz_k``, a ``pzm`` (between-knot, I-PLAN-15)
+    rhs the dz constant at the same ``tau`` into span ``k`` as its cup-z cubic,
+    and every stroke-top side (``pz`` / ``pzm``, ``s < 0``) then ``margin``.
+    Per block, not per column: each element gets the per-column form's IEEE
+    expressions in the same order, so the result is bit-identical to it
+    (pinned by ``tests/motion/test_cup_cycle.py``)."""
+    j = 0
+    for blk_i, (blk, rb) in enumerate(zip(cols, rhss)):
+        w = blk.shape[1]
+        tags = col_tags[j:j + w]
+        j += w
+        ext = np.zeros((n, w))
+        on = [jj for jj, t in enumerate(tags) if t is not None]
+        if on:
+            ext[:, on] = -blk[2 * n:3 * n, on]
+            kn = [jj for jj in on if tags[jj][0] in ('pz', 'rw')]
+            if kn:
+                rb[kn] += (np.array([tags[jj][2] for jj in kn])
+                           * cp_dz[[tags[jj][1] for jj in kn]])
+            sp = [jj for jj in on if tags[jj][0] == 'pzm']
+            if sp:
+                k_ = [tags[jj][1] for jj in sp]
+                tau = np.array([tags[jj][3] for jj in sp])
+                half = np.array([0.5 * tags[jj][3] * tags[jj][3] for jj in sp])
+                rb[sp] += (np.array([tags[jj][2] for jj in sp])
+                           * (cp_dz[k_] + tau * cv_dz[k_] + half * ca_dz[k_]))
+            top = [jj for jj in on
+                   if tags[jj][0] in ('pz', 'pzm') and tags[jj][2] < 0.0]
+            if top:
+                rb[top] += margin
+        cols[blk_i] = np.vstack([blk, ext])
 
 
 def _pose_augment(pose: PoseSpec, n: int, dt: float, H, f, Aeq, beq, cols, rhss,
@@ -2273,21 +2442,8 @@ def _pose_augment(pose: PoseSpec, n: int, dt: float, H, f, Aeq, beq, cols, rhss,
         if n_cols != len(col_tags):
             raise RuntimeError("pose planner: %d inequality columns but %d tags"
                                % (n_cols, len(col_tags)))
-        margin = float(pcfg.slider_margin_mm) / 1000.0
-        j = 0
-        for blk_i, (blk, rb) in enumerate(zip(cols, rhss)):
-            ext = np.zeros((n, blk.shape[1]))
-            for jj in range(blk.shape[1]):
-                tag = col_tags[j]; j += 1
-                if tag is None:
-                    continue
-                kind, k, s = tag
-                ext[:, jj] = -blk[2 * n:3 * n, jj]       # slider = cup_z − dz
-                if kind in ('pz', 'rw'):
-                    rb[jj] += s * cp_dz[k]
-                if kind == 'pz' and s < 0.0:
-                    rb[jj] += margin                      # stroke top − margin
-            cols[blk_i] = np.vstack([blk, ext])
+        _slider_rewrite(cols, rhss, col_tags, n, cp_dz, cv_dz, ca_dz,
+                        float(pcfg.slider_margin_mm) / 1000.0)
         D = np.zeros((nv, 2 * n))
         db = np.zeros(2 * n)
         for k in range(1, n + 1):
@@ -2480,6 +2636,14 @@ def _ineq_label(prog: _Program, i: int) -> str:
         k, a = 1 + o // 3, o % 3
         return ("inequality %d: knot %d %s position %s bound"
                 % (i, k, _AXIS[a], side))
+    if name in ('z_span_lower', 'z_span_upper'):
+        m_span = int(Z_BOX_SAMPLES_PER_KNOT)
+        if m_span > 1 and w == (n - 1) * (m_span - 1):
+            return ("inequality %d: z position %s bound %d/%d of the way "
+                    "from knot %d to %d" % (i, name.split('_')[2],
+                                            1 + off % (m_span - 1), m_span,
+                                            1 + off // (m_span - 1),
+                                            2 + off // (m_span - 1)))
     if name == 'runway':
         return "inequality %d: catch-runway floor at knot %d" % (i, prog.catch_k)
     if name == 'contact_floor' and prog.contact_knots is not None:

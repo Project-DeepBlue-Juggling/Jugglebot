@@ -25,6 +25,7 @@ from teensy_link import protocol as p
 from teensy_link import rpc_args
 from teensy_link.rpc import HandMoveToUnavailable, RpcError, RpcTimeout
 
+import jugglebot.hardware_config as hw
 from jugglebot.motion import hand_jam as hj
 
 from std_srvs.srv import SetBool, Trigger
@@ -35,6 +36,14 @@ from tests.ros.test_teensy_bridge_node_setpoint import _bring_link_and_telem_up
 FIXTURE = (pathlib.Path(__file__).resolve().parents[1] / 'motion' / 'fixtures'
            / 'hand_jam_20261002.csv')
 _HAND = 6
+#: The shipped hand current limit the node restores after a recovered jam
+#: (60 A since 2026-11-01, was 50 A).
+_SHIPPED_CURR_A = float(hw.ODRIVE_HAND_CURR_LIMIT_A)
+#: The clamp the 2026-10-02 fixture was RECORDED under: its iq peaks at
+#: 50.1 A, so P4 (|iq| >= iq_frac x clamp) must be judged against 50 A, the
+#: clamp in force on that day, not today's limit (at 60 A no sample reaches
+#: 0.9 x 60 = 54 A; a real jam now pins at the 60 A clamp instead).
+_FIXTURE_CLAMP_A = 50.0
 
 
 def _set_hand(node, pos, vel=0.0, iq=-2.0, cmd=None, state=8, err=0, age=0.0):
@@ -196,6 +205,7 @@ def test_fixture_fires_on_the_rx_feed_and_the_worker_relieves_first():
     teensy, client, node = _build_paired_node()
     try:
         _fast_cfg(node, max_gap_s=1.0)          # pacing jitter is not a gap here
+        node._hand_curr_limit = _FIXTURE_CLAMP_A  # the recording's own clamp
         calls = _instrument(node)
         node._mpc_active = True
         _hb(node, fault=FaultState.NONE, armed=True)
@@ -236,7 +246,7 @@ def test_fixture_fires_on_the_rx_feed_and_the_worker_relieves_first():
         assert node._hand_jam_hold is True and node._hand_jam_busy is False
         assert node._hand_jam_status == 'HAND_JAM_UNRECOVERED: firmware has no HAND_MOVE_TO'
         assert node._published_fault_state(node._latest_heartbeat) == 'RECOVERING'
-        assert node._hand_curr_limit == 50.0    # the cached shipped limit is untouched
+        assert node._hand_curr_limit == _FIXTURE_CLAMP_A  # the cached limit is untouched
     finally:
         node._hand_jam_hold = False
         _teardown(teensy, client, node)
@@ -259,7 +269,7 @@ def test_recovered_sequence_order_restores_last_and_releases_recovering():
         assert [c[:2] for c in calls] == [
             ('SET_VEL_CURR', 10.0), ('RECOVER', False), ('STOP_SP', None),
             ('WAIT_DISARMED', None), ('MOVE', 2.85), ('MOVE', 5.0), ('MOVE', 0.0),
-            ('SET_VEL_CURR', 50.0)]
+            ('SET_VEL_CURR', _SHIPPED_CURR_A)]
         assert all(c[2] for c in calls), 'RECOVERING dropped mid-sequence'
         assert node._hand_jam_hold is False
         assert node._hand_jam_status.startswith('HAND_JAM_RECOVERED')
@@ -284,7 +294,7 @@ def test_an_exception_in_a_primitive_reports_unrecovered_and_keeps_the_hold():
         time.sleep(0.05)
         node._hand_jam_start(hj.Verdict.HAND_JAM, node._hand_jam_sample())
         _wait_done(node)
-        assert ('SET_VEL_CURR', 50.0) not in [c[:2] for c in calls]
+        assert ('SET_VEL_CURR', _SHIPPED_CURR_A) not in [c[:2] for c in calls]
         assert not any(c[0] == 'MOVE' for c in calls)
         assert node._hand_jam_hold is True and node._hand_jam_busy is False
         assert 'exception' in node._hand_jam_status
@@ -307,7 +317,7 @@ def test_recover_after_unrecovered_resumes_at_the_lower_not_the_park():
             raise AssertionError('the park must not run under a held jam')
         node._park_hand_disarmed = no_park
         held = hj.JamRecovery(node._hand_jam_cfg, kind=hj.Verdict.HAND_JAM,
-                              stall_pos=2.85, restore_curr_a=50.0)
+                              stall_pos=2.85, restore_curr_a=_SHIPPED_CURR_A)
         held.abort('lower stalled twice')
         node._hand_jam_rec, node._hand_jam_hold = held, True
         time.sleep(0.05)
@@ -315,7 +325,7 @@ def test_recover_after_unrecovered_resumes_at_the_lower_not_the_park():
         assert res.success is True, res.message
         assert [c[:2] for c in calls] == [
             ('SET_VEL_CURR', 10.0), ('WAIT_DISARMED', None), ('MOVE', 0.0),
-            ('SET_VEL_CURR', 50.0)]
+            ('SET_VEL_CURR', _SHIPPED_CURR_A)]
         assert node._hand_jam_hold is False
     finally:
         hand.stop()
@@ -490,7 +500,7 @@ def test_a_wedged_ball_anchors_each_stalled_lower_at_the_hand_and_never_restores
         moves = [c[1] for c in calls if c[0] == 'MOVE']
         # anchor, raise1, lower, anchor, raise2, lower, anchor, final raise
         assert moves == [2.85, 5.0, 0.0, 2.85, 5.0, 0.0, 2.85, 5.0]
-        assert ('SET_VEL_CURR', 50.0) not in [c[:2] for c in calls]
+        assert ('SET_VEL_CURR', _SHIPPED_CURR_A) not in [c[:2] for c in calls]
         # each stalled lower was RETARGETED by its anchor (superseded), not
         # left to time out; the anchors themselves ARRIVED
         outcomes = [rpc_args.decode_hand_move_to_result(c.final).outcome for c in hand.calls]

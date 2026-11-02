@@ -442,12 +442,12 @@ def _validate_cycle_scalar(cycle_plan, limits, geom, *,
     reasons: list = []
     if peak_vel > limits.leg_vel_mmps:
         code = LIMIT_VEL
-        reasons = [f"peak leg velocity {peak_vel:.1f} mm/s > "
-                   f"{limits.leg_vel_mmps:.1f}"]
+        reasons = [f"peak leg velocity {peak_vel:.2f} mm/s > "
+                   f"{limits.leg_vel_mmps:.2f}"]
     elif peak_acc > limits.leg_acc_mmps2:
         code = LIMIT_ACC
-        reasons = [f"peak leg acceleration {peak_acc:.1f} mm/s² > "
-                   f"{limits.leg_acc_mmps2:.1f}"]
+        reasons = [f"peak leg acceleration {peak_acc:.2f} mm/s² > "
+                   f"{limits.leg_acc_mmps2:.2f}"]
     elif peak_jerk > limits.leg_jerk_mmps3:
         code = LIMIT_JERK
         reasons = [f"peak leg jerk {peak_jerk:.0f} mm/s³ > "
@@ -461,12 +461,12 @@ def _validate_cycle_scalar(cycle_plan, limits, geom, *,
         code = HAND_LIMIT_VEL
         reasons = [bound_msg('peak hand velocity', peak_hand_vel, '>',
                              hand_limit_v, unit='rev/s',
-                             knob='trajectory_op.hand_vel_limit_rps', digits=2)]
+                             knob='trajectory_op.hand_vel_limit_rps', digits=3)]
     elif peak_hand_acc > hand_limit_a:
         code = HAND_LIMIT_ACC
         reasons = [bound_msg('peak hand acceleration', peak_hand_acc, '>',
                              hand_limit_a, unit='rev/s^2',
-                             knob='trajectory_op.hand_acc_limit_rps2', digits=1)]
+                             knob='trajectory_op.hand_acc_limit_rps2', digits=2)]
     elif peak_hand_step > hand_step_bound:
         code = STEP_BOUND
         reasons = [bound_msg(

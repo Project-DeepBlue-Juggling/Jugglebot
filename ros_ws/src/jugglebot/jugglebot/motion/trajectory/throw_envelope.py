@@ -31,8 +31,9 @@ bound                what it is
 ``DECEL_FF_HEADROOM`` the decel FEEDFORWARD alone must stay inside
                      ``decel_ff_current_headroom_frac`` of the current limit, or
                      it saturates the drive and the loop has no authority left to
-                     correct on top of it (C-HAND-2's requirement).  **This is
-                     what binds.**
+                     correct on top of it (C-HAND-2's requirement).  It bound
+                     at the 50 A hand current limit; since 60 A (2026-11-01)
+                     ``REGEN`` binds first.
 ``DECEL_AUTHORITY``  the deceleration the profile COMMANDS must be one the drive
                      can actually produce: ``a_cmd(v) <= I_max*Kt / (J*2*pi)``.
                      Inputs: ``jugglebot_odrive_defaults.hand_curr_limit_a``,
@@ -45,10 +46,12 @@ bound                what it is
                      proof), but it is evaluated rather than assumed.
 ``REGEN``            peak BURST braking power at release must fit what the drive
                      is configured to push back: ``tau*omega <= |dc_max_negative
-                     _current| * V_bus`` = 360 W.  Inputs:
-                     ``regen_current_limit_a``, ``dc_bus_nominal_v``.  The rail's
-                     300 W STEADY-STATE capacity is a separate, documented check
-                     that a ~2 % duty cycle clears by ~60x — deliberately not the
+                     _current| * V_bus`` = 360 W.  **The binding bound since
+                     the 60 A hand current limit (2026-11-01)**: it fences the
+                     torque LIMIT, so it moves in as the current limit rises.
+                     Inputs: ``regen_current_limit_a``, ``dc_bus_nominal_v``.
+                     The rail's 300 W STEADY-STATE capacity is a separate,
+                     documented check that a ~2 % duty cycle clears by ~60x — deliberately not the
                      instantaneous fence.
 ``WIRE_BAND``        ``teensy_bridge_node`` raises outside
                      ``[min_event_vel_mps, max_event_vel_mps]`` before any CAN
@@ -192,7 +195,9 @@ J_ASCENT_KGM2 = (J_MEASURED_KGM2
 #: ``J_ff*2*pi*a_cmd/Kt`` amps.  C-HAND-2 requires that to leave the loop room —
 #: a saturated feedforward has no authority left to correct anything on top of
 #: itself.  This bound is what stops the envelope admitting a throw C-HAND-2
-#: forbids; it binds at 5.636 m/s, ahead of DECEL_AUTHORITY's 5.816.
+#: forbids.  At 50 A it bound at 5.720 m/s, ahead of DECEL_AUTHORITY's 5.901;
+#: at 60 A (2026-11-01) it sits at 6.266 (DECEL_AUTHORITY 6.464) and REGEN
+#: (5.641) binds first (tests/motion/test_throw_envelope.py pins the order).
 DECEL_FF_HEADROOM_FRAC = float(hw.HAND_ENV_DECEL_FF_CURRENT_HEADROOM_FRAC)
 DECEL_FF_HEADROOM_RPS2 = (
     DECEL_FF_HEADROOM_FRAC * CURRENT_LIMIT_A * KT_NM_PER_A

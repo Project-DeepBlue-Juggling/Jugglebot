@@ -323,3 +323,50 @@ def test_sched_stop_rise_while_armed_warns_once_per_second():
         assert len(lines) == 1
     finally:
         _teardown(teensy, client, node)
+
+
+def test_sched_stop_warn_names_both_candidates_and_prints_both_maxima():
+    """2026-11-01: the STOP text must not blame the emitter alone (trip 0 was a
+    bridge-node stall) and must print the forward and loop gap maxima."""
+    from tests.ros._bridge_harness import _build_paired_node, _teardown
+    from teensy_link.gap_monitor import GapStats
+    teensy, client, node = _build_paired_node(boot_state_read=False)
+    try:
+        lines = []
+        node.get_logger().warning = lambda m, *a, **k: lines.append(str(m))
+        node._mpc_active = True
+        node._gap_snap = (GapStats(40, 109.0, 109.0), GapStats(900, 107.5, 107.5))
+        node._warn_on_sched_stop(3, now=100.0)
+        node._warn_on_sched_stop(4, now=101.0)
+        assert len(lines) == 1
+        m = lines[0]
+        assert 'emitter gap' in m and 'bridge forwarding gap' in m
+        assert 'forward gap 109.0 ms' in m and 'loop gap 107.5 ms' in m
+        assert 'Jetson-side setpoint stream stalled' not in m
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_forward_gap_warns_once_per_episode_and_snapshots():
+    """One WARN when a gap passes the 70 ms STOP cover; the snapshot (published
+    as max_forward_gap_ms / forward_gap_p99_ms / max_loop_gap_ms) carries it."""
+    from tests.ros._bridge_harness import _build_paired_node, _teardown
+    teensy, client, node = _build_paired_node(boot_state_read=False)
+    try:
+        lines = []
+        node.get_logger().warning = lambda m, *a, **k: lines.append(str(m))
+        node._mpc_active = True
+        import time as _t
+        t0 = _t.monotonic() - 0.5
+        for dt in [0.0, 0.025, 0.025, 0.109, 0.025]:
+            t0 += dt
+            node._fwd_gap.record(t0)
+            node._loop_gap.record(t0)
+        node._update_gap_snapshot()
+        node._update_gap_snapshot()
+        gap_lines = [l for l in lines if 'forwarding gap exceeded' in l]
+        assert len(gap_lines) == 1 and '109.0' in gap_lines[0]
+        fwd, loop = node._gap_snap
+        assert abs(fwd.max_ms - 109.0) < 1e-3 and abs(loop.max_ms - 109.0) < 1e-3
+    finally:
+        _teardown(teensy, client, node)

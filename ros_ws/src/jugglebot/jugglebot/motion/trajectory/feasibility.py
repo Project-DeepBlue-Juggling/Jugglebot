@@ -552,12 +552,12 @@ def validate(plan, limits, geom, *, samples_per_segment: int = _VALIDATE_SAMPLES
     reasons: list = []
     if peak_vel > limits.leg_vel_mmps:
         code = LIMIT_VEL
-        reasons = [f"peak leg velocity {peak_vel:.1f} mm/s > "
-                   f"{limits.leg_vel_mmps:.1f}"]
+        reasons = [f"peak leg velocity {peak_vel:.2f} mm/s > "
+                   f"{limits.leg_vel_mmps:.2f}"]
     elif peak_acc > limits.leg_acc_mmps2:
         code = LIMIT_ACC
-        reasons = [f"peak leg acceleration {peak_acc:.1f} mm/s² > "
-                   f"{limits.leg_acc_mmps2:.1f}"]
+        reasons = [f"peak leg acceleration {peak_acc:.2f} mm/s² > "
+                   f"{limits.leg_acc_mmps2:.2f}"]
     elif peak_jerk > limits.leg_jerk_mmps3:
         code = LIMIT_JERK
         reasons = [f"peak leg jerk {peak_jerk:.0f} mm/s³ > "
@@ -868,12 +868,12 @@ def _validate_shaped_batched(plan, limits, geom, samples_per_segment, *,
     reasons: list = []
     if peak_vel > limits.leg_vel_mmps:
         code = LIMIT_VEL
-        reasons = [f"peak leg velocity {peak_vel:.1f} mm/s > "
-                   f"{limits.leg_vel_mmps:.1f}"]
+        reasons = [f"peak leg velocity {peak_vel:.2f} mm/s > "
+                   f"{limits.leg_vel_mmps:.2f}"]
     elif peak_acc > limits.leg_acc_mmps2:
         code = LIMIT_ACC
-        reasons = [f"peak leg acceleration {peak_acc:.1f} mm/s² > "
-                   f"{limits.leg_acc_mmps2:.1f}"]
+        reasons = [f"peak leg acceleration {peak_acc:.2f} mm/s² > "
+                   f"{limits.leg_acc_mmps2:.2f}"]
     elif peak_jerk > limits.leg_jerk_mmps3:
         code = LIMIT_JERK
         reasons = [f"peak leg jerk {peak_jerk:.0f} mm/s³ > "
@@ -1031,12 +1031,12 @@ def validate_follow(plan, limits, geom, *,
     reasons: list = []
     if peak_vel > limits.leg_vel_mmps:
         code = LIMIT_VEL
-        reasons = [f"peak leg velocity {peak_vel:.1f} mm/s > "
-                   f"{limits.leg_vel_mmps:.1f}"]
+        reasons = [f"peak leg velocity {peak_vel:.2f} mm/s > "
+                   f"{limits.leg_vel_mmps:.2f}"]
     elif peak_acc > limits.leg_acc_mmps2:
         code = LIMIT_ACC
-        reasons = [f"peak leg acceleration {peak_acc:.1f} mm/s² > "
-                   f"{limits.leg_acc_mmps2:.1f}"]
+        reasons = [f"peak leg acceleration {peak_acc:.2f} mm/s² > "
+                   f"{limits.leg_acc_mmps2:.2f}"]
     elif peak_jerk > limits.leg_jerk_mmps3:
         code = LIMIT_JERK
         reasons = [f"peak leg jerk {peak_jerk:.0f} mm/s³ > "
@@ -1160,6 +1160,30 @@ HAND_HOMED_REST_FLOOR_REV = float(hw.HAND_HOMED_REST_FLOOR_REV)
 #: knot, so it admits the curvature and still refuses any dive a machine could
 #: execute or an encoder could see.
 _HAND_DIVE_TOL_REV = 1e-4
+
+#: How far an IN-BAND plan (one whose first knot is above the homed zero, so
+#: :func:`_cycle_stroke_floor` returns the strict :data:`HAND_STROKE_MIN_REV`)
+#: may dip below that floor before ``HAND_STROKE`` refuses it, in revs.
+#: 0.01 rev = 0.33 mm of slider.
+#:
+#: A STOPGAP, owner decision 2026-11-01. That Sitting refused 9 installs (6
+#: goals ended) at -0.000 .. -0.004 rev, every one the hop-start skill-2
+#: CATCH at t = 0.488 s, the exact middle of a 25 ms span. The cause is
+#: structural: the cup QP bounded the slider at its KNOTS only, and the
+#: catch-to-throw reversal rides the box floor (band floor + the 2 mm inset,
+#: 0.0614 rev), so the cubic between two floor knots sat about a·dt²/8 below
+#: them: 0.065 rev at the ~830 rev/s² of that reversal. The real fix is the
+#: planner's between-knot rows (``cup_cycle.Z_BOX_SAMPLES_PER_KNOT``,
+#: INVARIANTS I-PLAN-15); this tolerance keeps a Sitting flying if a window
+#: those rows do not cover still lands a hair under the floor.
+#:
+#: Why 0.01 is physically harmless: the firmware clips every hand setpoint at
+#: 0.0 rev (``odrive_protocol.h::clip_position``), so a dip this size is
+#: EXECUTED as a 0.33 mm hold at the floor, and the homed end stop is 0.1 rev
+#: (3.3 mm) further down. The refusal text keeps quoting the RAW value and the
+#: true 0.0 floor. Parked plans (floor already lowered to the first knot) do
+#: not get it: their dive tolerance is :data:`_HAND_DIVE_TOL_REV`.
+HAND_STROKE_FLOOR_TOL_REV = 0.01
 
 #: The physical end stop. Crossing the operating band is a refusal; crossing THIS
 #: is a materially worse fact (the 2026-07-27 sitting made light physical contact
@@ -1451,7 +1475,7 @@ def _cup_stroke_end_knot(cycle_plan, evidence, k_last=None) -> int:
         exempted (BRAKING only).
 
     Read off the REALISED hand, not ``|v_td| / hand_acc_limit_rps2``: the
-    planner brakes at ~440 rev/s^2, not the 3900 rev/s^2 limit, so the
+    planner brakes at ~440 rev/s^2, not the hand_acc_limit (3900 rev/s^2 then, 4500 since 2026-11-01), so the
     limit-derived span is 13 ms - under one knot - against the 6-8 braking knots
     measured 2026-10-19 (k_b / k_end: reload held-axis LANDING 20 / 28; R5
     hop-entry fed skill 2 12 / 19; rung-1 carry dwell 0.50 36 / 42).
@@ -1712,7 +1736,9 @@ def validate_cycle(cycle_plan, limits, geom, *,
        leg extensions outside the hard stroke → ``WORKSPACE``; Jacobian condition
        past the workspace bound → ``UNREACHABLE``. The FLOOR of the stroke band is
        the plan's own first knot when the hand is parked below the homed zero
-       (:func:`_cycle_stroke_floor`); the ceiling is never relaxed. On the
+       (:func:`_cycle_stroke_floor`), and an in-band plan may dip
+       :data:`HAND_STROKE_FLOOR_TOL_REV` under the 0.0 floor (the 2026-11-01
+       stopgap); the ceiling is never relaxed. On the
        ``HAND_STROKE``/``WORKSPACE``/condition-number ``UNREACHABLE`` early
        returns (every sample here is finite by construction) the cup-contact
        reason is APPENDED when ``contact_knots`` is set and violated — the code
@@ -1846,7 +1872,11 @@ def validate_cycle(cycle_plan, limits, geom, *,
     J_cond[:, :, 3:] /= geom.plat_radius_mm
     conds = np.linalg.cond(J_cond)                                      # (n,)
 
-    stroke_bad = ~((hand_revs >= stroke_min) & (hand_revs <= HAND_STROKE_MAX_REV))
+    # `_stroke_floor_tol`: the in-band stopgap tolerance, the same number the
+    # scalar `_hand_stroke_reason` accepts with (the two MUST agree sample for
+    # sample, or pass 1 and pass 2 judge the same floor differently).
+    stroke_bad = ~((hand_revs >= stroke_min - _stroke_floor_tol(stroke_min))
+                   & (hand_revs <= HAND_STROKE_MAX_REV))
     ws_bad = np.any((ext < wlimits.leg_hard_min_mm)
                     | (ext > wlimits.leg_hard_max_mm), axis=1)
     cond_bad = conds > wlimits.cond_hard
@@ -2121,8 +2151,8 @@ def validate_cycle(cycle_plan, limits, geom, *,
         code = LIMIT_VEL
         _r, _c = np.unravel_index(int(np.argmax(np.abs(leg_vel))), leg_vel.shape)
         peak_leg_index, peak_leg_t_s = int(_c), float(ts[_r])
-        reasons = [f"peak leg velocity {peak_vel:.1f} mm/s > "
-                   f"{limits.leg_vel_mmps:.1f}"
+        reasons = [f"peak leg velocity {peak_vel:.2f} mm/s > "
+                   f"{limits.leg_vel_mmps:.2f}"
                    + _where_suffix(peak_leg_index, peak_leg_t_s)]
     elif peak_acc > limits.leg_acc_mmps2:
         code = LIMIT_ACC
@@ -2141,8 +2171,8 @@ def validate_cycle(cycle_plan, limits, geom, *,
             _r, _c = np.unravel_index(int(np.argmax(np.abs(_arr))), _arr.shape)
             _t = (int(_r) + (0 if _which == 1 else 1)) * float(dt)
         peak_leg_index, peak_leg_t_s = int(_c), _t
-        reasons = [f"peak leg acceleration {peak_acc:.1f} mm/s² > "
-                   f"{limits.leg_acc_mmps2:.1f}"
+        reasons = [f"peak leg acceleration {peak_acc:.2f} mm/s² > "
+                   f"{limits.leg_acc_mmps2:.2f}"
                    + _where_suffix(peak_leg_index, peak_leg_t_s)]
     elif peak_jerk > limits.leg_jerk_mmps3:
         code = LIMIT_JERK
@@ -2175,12 +2205,12 @@ def validate_cycle(cycle_plan, limits, geom, *,
         code = HAND_LIMIT_VEL
         reasons = [bound_msg('peak hand velocity', peak_hand_vel, '>',
                              hand_limit_v, unit='rev/s',
-                             knob='trajectory_op.hand_vel_limit_rps', digits=2)]
+                             knob='trajectory_op.hand_vel_limit_rps', digits=3)]
     elif peak_hand_acc > hand_limit_a:
         code = HAND_LIMIT_ACC
         reasons = [bound_msg('peak hand acceleration', peak_hand_acc, '>',
                              hand_limit_a, unit='rev/s^2',
-                             knob='trajectory_op.hand_acc_limit_rps2', digits=1)]
+                             knob='trajectory_op.hand_acc_limit_rps2', digits=2)]
     elif peak_hand_step > hand_step_bound:
         code = STEP_BOUND
         reasons = [bound_msg(
@@ -2269,8 +2299,13 @@ def _hand_stroke_reason(rev: float, t: float,
     :func:`validate_cycle` lowers it to the plan's first knot when the hand is
     parked below the homed zero (see :data:`HAND_HOMED_REST_FLOOR_REV`). The
     UPPER bound is never relaxed.
+
+    An in-band plan may dip :data:`HAND_STROKE_FLOOR_TOL_REV` under the floor
+    (the 2026-11-01 stopgap, see :func:`_stroke_floor_tol`); a refusal still
+    quotes the RAW value and the true floor.
     """
-    if stroke_min <= rev <= HAND_STROKE_MAX_REV:
+    if (stroke_min - _stroke_floor_tol(stroke_min) <= rev
+            <= HAND_STROKE_MAX_REV):
         return None
     if rev > HAND_HARD_STOP_REV:
         tail = ('at t=%.3fs; PAST THE %.2f rev END STOP'
@@ -2294,6 +2329,17 @@ def _hand_stroke_reason(rev: float, t: float,
         tail = 'at t=%.3fs' % t
     return range_msg('hand position', rev, stroke_min,
                      HAND_STROKE_MAX_REV, unit='rev', digits=3, tail=tail)
+
+
+def _stroke_floor_tol(stroke_min: float) -> float:
+    """The tolerance under ``stroke_min`` a hand sample may reach, in revs.
+
+    :data:`HAND_STROKE_FLOOR_TOL_REV` when the floor is the operating band's own
+    bottom (an IN-BAND plan, the only kind that can carry the planner's
+    between-knot dip); 0.0 for a lowered parked floor, which already carries
+    :data:`_HAND_DIVE_TOL_REV` and must not stack a second allowance on it.
+    """
+    return HAND_STROKE_FLOOR_TOL_REV if stroke_min >= HAND_STROKE_MIN_REV else 0.0
 
 
 def _cycle_stroke_floor(cycle_plan) -> float:

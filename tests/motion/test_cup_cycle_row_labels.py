@@ -28,7 +28,7 @@ from tests.motion.test_cup_cycle import _grid_case
 AX = {'x': 0, 'y': 1, 'z': 2}
 
 
-def _throw_catch_program():
+def _throw_catch_program(cfg=None):
     case = _grid_case(0.8, 0.8, False)
     state0 = cc.CupState(case['pos0'], case['vel0'], case['acc0'], None)
     throw = cc.ThrowEvent(1, case['period_s'], case['throw_pos'],
@@ -36,7 +36,7 @@ def _throw_catch_program():
     catch = cc.CatchEvent(0, case['catch_time_s'], case['catch_pos'],
                           case['catch_vel'])
     return cc._assemble(state0, throw, catch, case['period_s'],
-                        cc.CupCycleConfig())
+                        cc.CupCycleConfig() if cfg is None else cfg)
 
 
 def _capture_program():
