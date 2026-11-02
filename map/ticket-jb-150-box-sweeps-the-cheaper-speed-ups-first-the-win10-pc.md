@@ -2,9 +2,9 @@
 id: JB-156
 kind: ticket
 title: 'JB-150 box sweeps: the cheaper speed-ups first, the Win10 PC over SSH, the PC by hand, or leave it?'
-status: open
+status: complete
 created: '2026-11-03'
-updated: '2026-11-02T18:15:28Z'
+updated: '2026-11-02T22:51:33Z'
 owners: []
 priority: medium
 effort: xs
@@ -36,3 +36,7 @@ Recommendation: 1 now, then 2 if the halved sweep still blocks Sittings. Option 
 - 1: a tools-only unit the Night Shift can build and gate.
 - 2 or 3: a plan under `plans/` and the PC setup in your Session.
 - 4: the Item stays inbox.
+
+## Answer
+
+Agreed. A Jetson certification pass is enough for the record. Option 2 would be our backup if the speedup from Option 1 isn't sufficient
