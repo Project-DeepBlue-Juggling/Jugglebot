@@ -1,0 +1,33 @@
+---
+id: JB-146
+kind: bug
+title: ODrive GUI save resets the Hand zero, the bridge stays homed, and ACTIVATE parks the Hand into its stop at full current
+status: inbox
+created: '2026-11-02'
+updated: '2026-11-02T06:28:12Z'
+owners: []
+priority: high
+effort: s
+hardware: robot
+owner: decision
+radius: normative
+diagnosis: confirmed
+area: can-bridge
+blocked_by: []
+links: []
+filed_by: jugglebot-3d
+---
+
+Saving settings in the ODrive GUI reboots the Hand ODrive, which erases the homed absolute position (`set_absolute_position(-0.1)` at the hard stop lives in ODrive RAM). The can-bridge keeps `is_homed=1`, so nothing re-homes, and the next ACTIVATE parks the Hand at "0.0 rev" in the wrong frame.
+
+## Evidence (2026-11-02 16:52 launch, bag `2026-11-02_16-52-08_Hand-motor-overheat`)
+
+Before levelling the Hand sat idle at 0.49 rev (normally held at 0.30). At LEVELLING it went closed-loop to 0.0, stalled at 0.22 rev against the stop, and the position loop wound up linearly to the 70 A soft limit in 0.55 s. It held about -70 A for 5.5 s until MOTOR_OVER_TEMP. The levelling DEACTIVATE was rejected meanwhile. The owner confirmed the zero reset and re-homed.
+
+## Options
+
+1. The bridge clears the Hand's homed flag when it sees the Hand ODrive reboot (heartbeat state, uptime or a position jump), forcing a re-home.
+2. A stall guard in the ACTIVATE / HAND_MOVE_TO ladder: |iq| near the limit with |v| about 0 for more than ~300 ms aborts to IDLE with a named refusal.
+3. A procedure note: after any ODrive GUI save, power-cycle the bridge or re-home before ACTIVATE.
+
+Option 2 also covers any other stall. 1 and 2 are firmware (flash).

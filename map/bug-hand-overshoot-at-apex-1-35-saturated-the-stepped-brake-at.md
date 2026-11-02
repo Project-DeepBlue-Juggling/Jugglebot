@@ -1,0 +1,33 @@
+---
+id: JB-147
+kind: bug
+title: Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT)
+status: inbox
+created: '2026-11-02'
+updated: '2026-11-02T06:28:13Z'
+owners: []
+priority: high
+effort: m
+hardware: robot
+owner: decision
+radius: subsystem
+diagnosis: hypothesis
+area: hand
+blocked_by: []
+links: []
+filed_by: jugglebot-3d
+---
+
+At the first Apex 1.35 Columns goal (2026-11-02 17:00 Sitting, throw 10), one launch overshot. The Hand reached 168 rev/s against a planned ~151, and the release step's brake saturated at the 60 A limit (-60.4 A). The Hand overran the planned top (10.16 rev) and the 10.501 clip to 10.83 rev and hit the top stop; the encoder slipped (SPINOUT_DETECTED). The Ball went to 1.65 m.
+
+## Evidence
+
+Across the ~190 launches from Apex 1.05 to 1.35 that Sitting, the Hand topped out at 10.16-10.23 rev with brake current -10 to -36 A; only this one exceeded them. The launch came straight off a Catch that dived to the stroke floor (0.03 rev). There was no stream gap, the Platform z was fixed at 170 mm, and the cause of the overshoot is not resolved by the 100 Hz `/hand_telemetry`.
+
+## Why it matters
+
+The stepped brake runs near the constant-deceleration ideal, so an overspeed has only the current headroom and about 0.34 rev of stroke above the planned top. The same margin shrinks as the Apex rises.
+
+## Options
+
+Raise `hand_curr_limit_a` to the owner's 70 A (configure pushes it over the GUI value); scale a top margin with release speed; capture the Hand at a higher rate to find the overshoot's cause; a firmware overspeed guard. Related: JB-144, JB-145, the JB-114 bumper.
