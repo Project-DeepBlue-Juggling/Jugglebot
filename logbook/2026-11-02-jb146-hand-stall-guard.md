@@ -92,6 +92,10 @@ ladder.
   rebasing onto f81984b2): 8014 passed, 56 skipped + 8 serial. The two
   failures are listed in `2026-11-02-hand-top-margin-and-70a`; neither is in
   this guard.
-- Build: `pio run -e teensy41` (2026-11-02) succeeded. NOT flashed yet: the
-  owner flashes with the launch down, and the BridgeIdentity receipt will be
-  added then.
+- Flashed 2026-11-02 ~23:40 with the launch down (`pio run -e teensy41 -t
+  upload` from the live checkout at 9ec01762): SUCCESS. BridgeIdentity receipt:
+  **FW 36 / PROTOCOL 10**. The live checkout was rebuilt (`colcon build
+  --packages-select jugglebot`, install == source).
+- Owner on the "IDLE drops a Hand that stalls high" limit: it will not happen.
+  The Hand is stiff enough that it does not move under gravity even holding a
+  Ball, so IDLE is the response.
