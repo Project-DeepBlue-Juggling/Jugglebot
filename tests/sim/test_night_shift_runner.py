@@ -38,7 +38,14 @@ _GREEN = "GREEN 10/10 passed, 0 failed, 0 errored, 0 xfailed, 0 skipped %sT04:20
 FAKE_CLAUDE = r"""#!/usr/bin/env bash
 # Fake claude for the Night Shift runner tests: records argv + PWD, can sleep,
 # fail, commit on main, and writes the dry-run report the protocol would.
-{ for a in "$@"; do printf 'ARG %s\n' "$a"; done; printf 'PWD %s\nEND\n' "$PWD"; } >>"$FAKE_CLAUDE_LOG"
+{ for a in "$@"; do printf 'ARG %s\n' "$a"; done
+  printf 'AUTH key=%s token=%s\n' "${ANTHROPIC_API_KEY:+set}" "${CLAUDE_CODE_OAUTH_TOKEN:+set}"
+  printf 'PWD %s\nEND\n' "$PWD"; } >>"$FAKE_CLAUDE_LOG"
+if [[ "${FAKE_CLAUDE_CREDIT_OUT:-0}" == 1 && -n "${ANTHROPIC_API_KEY:-}" ]]; then
+  echo '{"type":"result","is_error":true,"api_error_status":400,"result":"Credit balance is too low","session_id":"sess-123","total_cost_usd":1.5,"num_turns":9}'
+  echo 'warning: claude.ai connectors are disabled' >&2
+  exit 1
+fi
 prompt=""
 while (( $# )); do [[ "$1" == "-p" ]] && prompt="$2"; shift; done
 [[ -n "${FAKE_CLAUDE_SLEEP:-}" ]] && sleep "$FAKE_CLAUDE_SLEEP"
@@ -49,6 +56,7 @@ if [[ "$prompt" == *--dry-run* && "${FAKE_CLAUDE_NO_REPORT:-0}" != 1 ]]; then
 fi
 [[ "${FAKE_CLAUDE_COMMIT_MAIN:-0}" == 1 ]] && git -C "$PWD" commit -q --allow-empty -m x
 if [[ "${FAKE_CLAUDE_REPORT:-0}" == 1 && "$prompt" != *--dry-run* ]]; then
+  date="$(date +%F)"   # a resumed leg's prompt carries no date
   [[ "$prompt" =~ ^/night-shift\ ([0-9-]+) ]] && date="${BASH_REMATCH[1]}"
   mkdir -p docs/night-shift
   printf '# Night Shift %s\n\n## Nightly\nGREEN\n\n## Cost\nunits: 0\n' "$date" >"docs/night-shift/$date.md"
@@ -179,6 +187,12 @@ class NS:
 
     def last(self, reports=None):
         return json.loads(((reports or self.reports) / "last_run.json").read_text())
+
+    def auths(self):
+        """The credentials each fake claude invocation saw, e.g. 'key=set token='."""
+        if not self.log.exists():
+            return []
+        return [l[5:] for l in self.log.read_text().splitlines() if l.startswith("AUTH ")]
 
     def calls(self):
         """[(argv, pwd)] per fake claude invocation."""
@@ -439,6 +453,77 @@ def test_no_api_key_stops_before_clone(ns):
     r = ns.run(ANTHROPIC_API_KEY=None)
     _check(r, "NO_API_KEY", 1)
     assert not ns.clone.exists() and ns.calls() == []
+
+
+def _argval(argv, flag):
+    return argv[argv.index(flag) + 1] if flag in argv else None
+
+
+def test_api_key_run_never_sees_the_token(ns):
+    """Both credentials set: the API leg gets the key alone (the key silently
+    wins over a token, so each leg must carry exactly one)."""
+    r = ns.run(CLAUDE_CODE_OAUTH_TOKEN="tok", FAKE_CLAUDE_REPORT=1)
+    _check(r, "OK", 0)
+    assert ns.auths() == ["key=set token="]
+    assert _argval(ns.calls()[0][0], "--model") == "fable"
+    last = ns.last()
+    assert last["auth"] == "api" and last["cost_api_usd"] is None
+    report = ns.clone / "docs" / "night-shift" / ("%s.md" % last["date"])
+    assert report.read_text().splitlines()[-1].startswith("total API cost: USD 0.42")
+
+
+def test_credit_out_resumes_the_session_on_the_subscription(ns):
+    """The 2026-11-02 failure: the API leg ends on 'Credit balance is too low';
+    with a token set the runner resumes the SAME session on the subscription,
+    on the fallback model, without the key, and the night ends OK."""
+    r = ns.run(CLAUDE_CODE_OAUTH_TOKEN="tok", FAKE_CLAUDE_CREDIT_OUT=1, FAKE_CLAUDE_REPORT=1)
+    _check(r, "OK", 0)
+    assert ns.auths() == ["key=set token=", "key= token=set"]
+    (first, _), (second, _) = ns.calls()
+    assert _argval(first, "--model") == "fable"
+    assert _argval(second, "--resume") == "sess-123"
+    assert _argval(second, "--model") == "opus"
+    assert "credit balance ran out" in _argval(second, "-p")
+    last = ns.last()
+    assert last["auth"] == "api-then-subscription"
+    assert last["cost_api_usd"] == 1.5 and last["cost_usd"] == 0.42
+    assert (ns.reports / ("%s.claude-api.json" % last["date"])).exists()
+    report = ns.clone / "docs" / "night-shift" / ("%s.md" % last["date"])
+    line = report.read_text().splitlines()[-1]
+    assert "USD 1.50 until the credit balance ran out" in line and "USD 0.42 notional" in line
+
+
+def test_fallback_model_is_a_knob(ns):
+    r = ns.run(CLAUDE_CODE_OAUTH_TOKEN="tok", FAKE_CLAUDE_CREDIT_OUT=1, FAKE_CLAUDE_REPORT=1,
+               NIGHT_SHIFT_FALLBACK_MODEL="sonnet")
+    _check(r, "OK", 0)
+    assert _argval(ns.calls()[1][0], "--model") == "sonnet"
+
+
+def test_credit_out_without_a_token_names_the_real_cause(ns):
+    r = ns.run(FAKE_CLAUDE_CREDIT_OUT=1)
+    _check(r, "CLAUDE_FAILED", 1)
+    assert len(ns.calls()) == 1
+    detail = ns.last()["detail"]
+    assert "Credit balance is too low" in detail and "connectors" not in detail
+
+
+def test_other_failures_do_not_fall_back(ns):
+    r = ns.run(CLAUDE_CODE_OAUTH_TOKEN="tok", FAKE_CLAUDE_EXIT=7)
+    _check(r, "CLAUDE_FAILED", 1)
+    assert len(ns.calls()) == 1 and ns.last()["auth"] == "api"
+
+
+def test_token_only_runs_on_the_subscription(ns):
+    r = ns.run(ANTHROPIC_API_KEY=None, CLAUDE_CODE_OAUTH_TOKEN="tok", FAKE_CLAUDE_REPORT=1)
+    _check(r, "OK", 0)
+    assert ns.auths() == ["key= token=set"]
+    argv = ns.calls()[0][0]
+    assert _argval(argv, "--model") == "opus" and "--resume" not in argv
+    last = ns.last()
+    assert last["auth"] == "subscription"
+    report = ns.clone / "docs" / "night-shift" / ("%s.md" % last["date"])
+    assert "notional, on the Claude subscription" in report.read_text().splitlines()[-1]
 
 
 def test_default_reports_dir_inside_the_clone(ns):

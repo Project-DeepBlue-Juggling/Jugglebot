@@ -18,7 +18,9 @@
 #   2. $LIVE/temp/night-shift.hold        the owner's off switch        -> HELD
 #   3. live robot session (tools/lib/live_session.sh, the nightly's guard):
 #      wait up to the budget, then give up                              -> DEFERRED
-#   4. ANTHROPIC_API_KEY set (the unit's EnvironmentFile)               -> NO_API_KEY
+#   4. a credential (the unit's EnvironmentFile): ANTHROPIC_API_KEY and/or
+#      CLAUDE_CODE_OAUTH_TOKEN (the Claude subscription, `claude setup-token`)
+#                                                                       -> NO_API_KEY
 #   5. clone on `main` and clean; never checkout/stash/reset, the owner
 #      sorts a dirty clone out by hand                                  -> CLONE_DIRTY
 #   6. ff-only pull from origin                                         -> PULL_FAILED
@@ -44,6 +46,21 @@
 #   dry-<date>.md           the dry-run report (dry runs only)
 # stdout gets one line, "night_shift: <STATUS> <detail>".
 #
+# Credentials (owner, 2026-11-02: "default to API, but if there are not enough
+# funds available there, swap to the subscription"). With an API key the night
+# runs on it, on $NIGHT_SHIFT_MODEL. If that run ends on an exhausted credit
+# balance (HTTP 400 "Credit balance is too low", the 2026-11-02 night) and a
+# subscription token is set, the runner RESUMES the same session (`--resume`,
+# probed 2026-11-02: a session begun on the key resumes on the token) with the
+# key removed from claude's environment, so the night carries on where it
+# stopped. The resumed leg runs on $NIGHT_SHIFT_FALLBACK_MODEL (opus): the
+# probe showed Fable is not in the subscription ("out of usage credits"), Opus
+# is. With no key at all the night runs on the subscription from the start.
+# Each leg gets exactly one credential (`env -u` the other): when both are set
+# the key silently wins, which is what made the subscription unreachable.
+# The first leg's output is kept as <date>.claude-api.json/.err; the resumed
+# leg's is <date>.claude.json/.err, which everything downstream reads.
+#
 # Status words. Exit 0: OK, DRY_OK, HELD, DEFERRED, OVERLAP, NOTHING_NEW.
 # Exit 1: NO_GUARD, NO_API_KEY, NO_CLONE, CLONE_DIRTY, PULL_FAILED, NO_SETTINGS,
 # PREFLIGHT_FAILED, CLAUDE_MISSING, CLAUDE_TIMEOUT, CLAUDE_FAILED,
@@ -64,7 +81,8 @@
 #   tools/night_shift.sh --dry-run
 # Env knobs (defaults): NIGHT_SHIFT_CLONE, NIGHT_SHIFT_LIVE_REPO, NIGHT_SHIFT_ORIGIN,
 # NIGHT_SHIFT_REPORTS, NIGHT_SHIFT_DRY_RUN (0), NIGHT_SHIFT_MAX_USD (unset = no fuse),
-# NIGHT_SHIFT_MODEL (fable), NIGHT_SHIFT_TIMEOUT_S (14400), NIGHT_SHIFT_DEADLINE
+# NIGHT_SHIFT_MODEL (fable), NIGHT_SHIFT_FALLBACK_MODEL (opus; the subscription
+# leg), NIGHT_SHIFT_TIMEOUT_S (14400; both legs together), NIGHT_SHIFT_DEADLINE
 # (08:00), NIGHT_SHIFT_DEFER_BUDGET_S (7200), NIGHT_SHIFT_DEFER_POLL_S (120),
 # NIGHT_SHIFT_WAIT_NIGHTLY_S (3600), NIGHT_SHIFT_WAIT_NIGHTLY_POLL_S (60),
 # NIGHT_SHIFT_IGNORE_SESSION (0; hand runs only), NIGHT_SHIFT_SKIP_ENV (0; tests),
@@ -87,6 +105,7 @@ REPORTS="${NIGHT_SHIFT_REPORTS:-$CLONE/temp/reports/night-shift}"
 DRY_RUN="${NIGHT_SHIFT_DRY_RUN:-0}"
 MAX_USD="${NIGHT_SHIFT_MAX_USD:-}"   # empty or 0 = no --max-budget-usd (owner, 2026-10-31)
 MODEL="${NIGHT_SHIFT_MODEL:-fable}"
+FALLBACK_MODEL="${NIGHT_SHIFT_FALLBACK_MODEL:-opus}"
 TIMEOUT_S="${NIGHT_SHIFT_TIMEOUT_S:-14400}"
 DEADLINE="${NIGHT_SHIFT_DEADLINE:-08:00}"
 DEFER_BUDGET_S="${NIGHT_SHIFT_DEFER_BUDGET_S:-7200}"
@@ -115,7 +134,8 @@ DRY=""
 # Summary fields: unset means "not reached" and becomes null in last_run.json.
 unset NS_COST NS_TURNS NS_DENIALS NS_SPAWNED NS_CLAUDE_EXIT NS_HEAD_BEFORE \
   NS_HEAD_AFTER NS_BRANCH_AFTER NS_UNPUSHED NS_REPORT NS_CANDIDATES \
-  NS_NIGHTLY_LINE NS_PREFLIGHT NS_RESULT NS_MAIN_COMMITS NS_TICKER_RERAISED NS_COST_RECORDED
+  NS_NIGHTLY_LINE NS_PREFLIGHT NS_RESULT NS_MAIN_COMMITS NS_TICKER_RERAISED NS_COST_RECORDED \
+  NS_AUTH NS_COST_API
 STATUS_WRITTEN=0
 TICKER_CLAIMED=0
 
@@ -128,7 +148,17 @@ one_line() { tr '\n\r\t' '   ' <<<"$1" | sed 's/  */ /g; s/ *$//'; }
 # plain file; a real run's is on main, so the line is its own docs commit,
 # pushed, and dropped again if main moved meanwhile (nothing may be left on the
 # clone's main unpushed). NS_COST_RECORDED says what happened.
-cost_line() { printf 'total API cost: USD %.2f (runner, total_cost_usd)\n' "$NS_COST"; }
+cost_line() {
+  case "${NS_AUTH:-api}" in
+    subscription)
+      printf 'total cost: USD %.2f notional, on the Claude subscription (%s; not billed) (runner, total_cost_usd)\n' \
+        "$NS_COST" "$FALLBACK_MODEL" ;;
+    api-then-subscription)
+      printf 'total API cost: USD %.2f until the credit balance ran out, then USD %.2f notional on the Claude subscription (%s; not billed) (runner, total_cost_usd)\n' \
+        "${NS_COST_API:-0}" "$NS_COST" "$FALLBACK_MODEL" ;;
+    *) printf 'total API cost: USD %.2f (runner, total_cost_usd)\n' "$NS_COST" ;;
+  esac
+}
 record_cost_dry() {
   [[ -n "${NS_COST:-}" && -s "$NS_REPORT" ]] || { export NS_COST_RECORDED=no-report; return 0; }
   cost_line >>"$NS_REPORT" && export NS_COST_RECORDED=file || export NS_COST_RECORDED=write-failed
@@ -200,6 +230,8 @@ out = {
                      else [c for c in e("NS_MAIN_COMMITS").splitlines() if c]),
     "ticker_reraised": e("NS_TICKER_RERAISED") == "1",
     "cost_recorded": e("NS_COST_RECORDED"),
+    "auth": e("NS_AUTH"),
+    "cost_api_usd": num("NS_COST_API", float),
 }
 tmp = sys.argv[1] + ".tmp"
 with open(tmp, "w") as fh:
@@ -300,10 +332,12 @@ if [[ "$IGNORE_SESSION" != "1" ]]; then
   fi
 fi
 
-# ── 4. API key (before anything is cloned or fetched) ─────────────────────────
-[[ -n "${ANTHROPIC_API_KEY:-}" ]] \
-  || finish NO_API_KEY "ANTHROPIC_API_KEY empty (EnvironmentFile ~/.config/jugglebot/night-shift.env)"
-export ANTHROPIC_API_KEY
+# ── 4. A credential (before anything is cloned or fetched) ────────────────────
+have_credential() { [[ -n "${ANTHROPIC_API_KEY:-}" || -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; }
+have_credential \
+  || finish NO_API_KEY "neither ANTHROPIC_API_KEY nor CLAUDE_CODE_OAUTH_TOKEN set (EnvironmentFile ~/.config/jugglebot/night-shift.env)"
+[[ -n "${ANTHROPIC_API_KEY:-}" ]] && export ANTHROPIC_API_KEY
+[[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]] && export CLAUDE_CODE_OAUTH_TOKEN
 
 # ── 5. The clone: main, clean, ff from origin ─────────────────────────────────
 if [[ ! -e "$CLONE/.git" ]]; then
@@ -366,7 +400,7 @@ if [[ "$SKIP_ENV" != "1" ]]; then
   [[ -f "$VENV_DIR/bin/activate" ]] && source "$VENV_DIR/bin/activate"
   set -u
 fi
-[[ -n "${ANTHROPIC_API_KEY:-}" ]] || finish NO_API_KEY "ANTHROPIC_API_KEY lost after sourcing the environment"
+have_credential || finish NO_API_KEY "credentials lost after sourcing the environment"
 
 # ── 8. Preflight: anything new since the last real run? ───────────────────────
 CANDIDATES="$REPORTS/candidates-$DATE.json"
@@ -457,26 +491,92 @@ cd "$CLONE" || finish INTERNAL_ERROR "cannot cd $CLONE"
 claude_start=$SECONDS
 # The budget fuse is opt-in: the owner wants the first nights unlimited and
 # will set NIGHT_SHIFT_MAX_USD once the cost line in the reports shows a norm.
+# It caps real money only, so it applies to the API leg alone.
 budget_args=()
 if [[ -n "$MAX_USD" && "$MAX_USD" != 0 ]]; then budget_args=(--max-budget-usd "$MAX_USD"); fi
-timeout --kill-after=120 "$TIMEOUT_S" "$CLAUDE_BIN" -p "$PROMPT" \
-  --model "$MODEL" "${budget_args[@]}" \
-  --permission-mode acceptEdits --permission-prompts none \
-  --output-format json </dev/null >"$CLAUDE_JSON" 2>"$CLAUDE_ERR" 8>&- &
-CHILD_PID=$!
-wait "$CHILD_PID"
-claude_rc=$?
-CHILD_PID=""
+
+# run_leg AUTH MODEL TIMEOUT_S [claude args...]: one claude -p call on exactly
+# one credential (api | subscription), output to $CLAUDE_JSON / $CLAUDE_ERR,
+# exit code in claude_rc. Waited on in the background so on_signal can pass a
+# signal on (see above).
+run_leg() {
+  local auth="$1" model="$2" leg_timeout="$3"; shift 3
+  local -a envx
+  if [[ "$auth" == api ]]; then envx=(env -u CLAUDE_CODE_OAUTH_TOKEN); else envx=(env -u ANTHROPIC_API_KEY); fi
+  timeout --kill-after=120 "$leg_timeout" "${envx[@]}" "$CLAUDE_BIN" "$@" \
+    --model "$model" \
+    --permission-mode acceptEdits --permission-prompts none \
+    --output-format json </dev/null >"$CLAUDE_JSON" 2>"$CLAUDE_ERR" 8>&- &
+  CHILD_PID=$!
+  wait "$CHILD_PID"
+  claude_rc=$?
+  CHILD_PID=""
+}
+
+# credit_out FILE: prints the session id and exits 0 when FILE is a result that
+# ended on an exhausted API credit balance; exits 1 otherwise.
+credit_out() {
+  "$PYTHON" - "$1" <<'PY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    sys.exit(1)
+if isinstance(data, list):
+    data = next((m for m in reversed(data)
+                 if isinstance(m, dict) and m.get("type") == "result"), None)
+if not isinstance(data, dict) or not data.get("is_error"):
+    sys.exit(1)
+if "credit balance is too low" not in str(data.get("result") or "").lower():
+    sys.exit(1)
+print(data.get("session_id") or "")
+sys.exit(0)
+PY
+}
+
+leg_timed_out() {   # leg_timed_out RC LEG_START LEG_TIMEOUT
+  (( $1 == 124 )) || { (( $1 == 137 )) && (( SECONDS - $2 >= $3 )); }
+}
+
+if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+  export NS_AUTH=api
+  run_leg api "$MODEL" "$TIMEOUT_S" -p "$PROMPT" "${budget_args[@]}"
+  if ! leg_timed_out "$claude_rc" "$claude_start" "$TIMEOUT_S" \
+     && [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]] \
+     && sid="$(credit_out "$CLAUDE_JSON")"; then
+    # The API ran dry mid-night: keep its record, resume the session on the
+    # subscription with what is left of the time budget.
+    NS_COST_API="$("$PYTHON" -c 'import json,sys
+try: print(float(json.load(open(sys.argv[1])).get("total_cost_usd") or 0))
+except Exception: print(0)' "$CLAUDE_JSON")"
+    export NS_COST_API NS_AUTH=api-then-subscription
+    mv -f "$CLAUDE_JSON" "$REPORTS/$DATE.claude-api.json"
+    mv -f "$CLAUDE_ERR" "$REPORTS/$DATE.claude-api.err"
+    left=$(( TIMEOUT_S - (SECONDS - claude_start) ))
+    (( left > 60 )) || left=60
+    resume_prompt="The API credit balance ran out, so the Night Shift runner has resumed this session on the Claude subscription (model $FALLBACK_MODEL). Continue the /night-shift protocol from exactly where you stopped, with the same arguments and deadline: first run git status and git branch --show-current in the clone and git log origin/main..HEAD, finish or hold the Item that was in flight (its units may have been cut off mid-way: check their output before trusting it), then carry on to the report. Under ## Cost, add the line: auth: API until the credit balance ran out, then the Claude subscription ($FALLBACK_MODEL)."
+    resume_args=(-p "$resume_prompt")
+    [[ -n "$sid" ]] && resume_args+=(--resume "$sid")
+    leg2_start=$SECONDS
+    run_leg subscription "$FALLBACK_MODEL" "$left" "${resume_args[@]}"
+    if leg_timed_out "$claude_rc" "$leg2_start" "$left"; then claude_rc=124; fi
+  fi
+else
+  export NS_AUTH=subscription
+  run_leg subscription "$FALLBACK_MODEL" "$TIMEOUT_S" -p "$PROMPT"
+fi
 export NS_CLAUDE_EXIT="$claude_rc"
 export_posthoc_git
 
-if (( claude_rc == 124 )) || { (( claude_rc == 137 )) && (( SECONDS - claude_start >= TIMEOUT_S )); }; then
+if leg_timed_out "$claude_rc" "$claude_start" "$TIMEOUT_S"; then
   finish CLAUDE_TIMEOUT "killed after ${TIMEOUT_S}s; unpushed: ${NS_UNPUSHED:-none}"
 fi
 err_tail="$(tail -n3 "$CLAUDE_ERR" 2>/dev/null)"
-(( claude_rc == 0 )) || finish CLAUDE_FAILED "rc=$claude_rc $err_tail"
 
 # Parse the result (stdlib only). Tab-separated key/value lines on stdout.
+# Parsed before the exit code is judged, so a failure names its real cause
+# (the result) rather than the first stderr line (on 2026-11-02 that was the
+# connectors warning, not "Credit balance is too low").
 parsed="$("$PYTHON" - "$CLAUDE_JSON" <<'PY'
 import json, sys
 try:
@@ -508,9 +608,10 @@ parse_rc=$?
 while IFS=$'\t' read -r key value; do
   [[ -n "$key" ]] && export "$key=$value"
 done <<<"$parsed"
+(( claude_rc == 0 )) || finish CLAUDE_FAILED "rc=$claude_rc auth=$NS_AUTH ${NS_RESULT:-$err_tail}"
 case "$parse_rc" in
   0) ;;
-  3) finish CLAUDE_FAILED "is_error: ${NS_RESULT:-}" ;;
+  3) finish CLAUDE_FAILED "is_error: auth=$NS_AUTH ${NS_RESULT:-}" ;;
   *) finish CLAUDE_FAILED "unparsable result JSON; $err_tail" ;;
 esac
 

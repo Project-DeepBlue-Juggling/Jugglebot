@@ -18,10 +18,11 @@ ExecStartPre=/bin/mkdir -p %h/night-shift
 # It never writes there: no git, and only the ticker claim under temp/reports/
 # nightly/ (see the script header for the single-writer rule).
 ExecStart=/home/jetson/Desktop/Jugglebot/tools/night_shift.sh
-# ANTHROPIC_API_KEY=... (mode 600). The leading `-` is deliberate: without it
-# systemd refuses to start the unit when the file is missing, the runner never
-# runs, and there is no last_run.json to say why. With it the runner starts and
-# records NO_API_KEY.
+# ANTHROPIC_API_KEY=... and/or CLAUDE_CODE_OAUTH_TOKEN=... (mode 600; the API
+# key first, the subscription token when its credit runs out). The leading `-`
+# is deliberate: without it systemd refuses to start the unit when the file is
+# missing, the runner never runs, and there is no last_run.json to say why.
+# With it the runner starts and records NO_API_KEY.
 EnvironmentFile=-%h/.config/jugglebot/night-shift.env
 # The runner's claude timeout is 4 h (NIGHT_SHIFT_TIMEOUT_S), after up to 2 h of
 # live-session wait. If both run long, this 5 h cap wins: systemd's SIGTERM takes

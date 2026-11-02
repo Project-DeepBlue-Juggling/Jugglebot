@@ -61,14 +61,19 @@ systemctl --user daemon-reload
 systemctl --user enable --now jugglebot-night-shift.timer
 ```
 
-The API key lives in an env file the unit reads. The unit names it as
+The credentials live in an env file the unit reads. The unit names it as
 `EnvironmentFile=-...`: the `-` lets the unit start when the file is missing,
 so the runner records `NO_API_KEY` in `last_run.json` instead of systemd
-refusing the start and leaving no trace there.
+refusing the start and leaving no trace there. Either line or both: with both,
+the night runs on the API key and, if its credit balance runs out, resumes the
+same session on the Claude subscription (`NIGHT_SHIFT_FALLBACK_MODEL`, default
+`opus`: Fable is not in the subscription); with only the token it runs on the
+subscription from the start (the script header has the detail).
 
 ```bash
 install -Dm600 /dev/null ~/.config/jugglebot/night-shift.env
-echo 'ANTHROPIC_API_KEY=...' > ~/.config/jugglebot/night-shift.env   # one line, mode 600
+echo 'ANTHROPIC_API_KEY=...' >> ~/.config/jugglebot/night-shift.env         # mode 600
+echo 'CLAUDE_CODE_OAUTH_TOKEN=...' >> ~/.config/jugglebot/night-shift.env   # from `claude setup-token`
 ```
 
 Verify with a dry fire (reads the board, writes `dry-<date>.md`, changes

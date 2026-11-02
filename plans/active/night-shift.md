@@ -93,7 +93,7 @@ Sitting: checkout night-shift/sitting-<date> -> fly rows -> /sitting-debrief Ses
 | `tools/night_shift_preflight.py` | the candidate record and the "nothing new" exit (P1) |
 | `tools/night_shift_settings.json` | the clone's permission settings, installed over `.claude/settings.local.json` every run (P1) |
 | `tools/lib/live_session.sh` | the live-Sitting guard shared by the nightly and Night Shift (P1) |
-| `tools/systemd/jugglebot-night-shift.{service,timer}` | user units; `OnCalendar=*-*-* 04:45`, `Persistent=false` (a missed night never fires at the next boot, which is when the robot is powered), `After=jugglebot-nightly.service`, `Nice=10`, `EnvironmentFile=-%h/.config/jugglebot/night-shift.env` (mode 600, holds `ANTHROPIC_API_KEY`) |
+| `tools/systemd/jugglebot-night-shift.{service,timer}` | user units; `OnCalendar=*-*-* 04:45`, `Persistent=false` (a missed night never fires at the next boot, which is when the robot is powered), `After=jugglebot-nightly.service`, `Nice=10`, `EnvironmentFile=-%h/.config/jugglebot/night-shift.env` (mode 600, holds `ANTHROPIC_API_KEY` and, since 2026-11-02, `CLAUDE_CODE_OAUTH_TOKEN`: the subscription fallback when the API credit runs out) |
 | `.claude/commands/night-shift.md` | the orchestrator protocol (what `/work-inbox` is for one Item, for the whole board, unattended) |
 | `tools/night_shift_gate.py` | deterministic merge gate; input: repo, base, branch, Item ID, gate log path, audit report path; output `MERGE` or `HOLD <reasons>`; exit 0/1 (P2) |
 | `mapkit/night_shift_report.py` | the report layout parser that pins `docs/night-shift/README.md` (P2) |

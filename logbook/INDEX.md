@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-02 | complete | night-shift (credentials) | **Night Shift runs on the API key and resumes the same session on the Claude subscription when the credit balance runs out (Opus: Fable is not in the subscription); failures name their real cause** | [2026-11-02-night-shift-subscription-fallback.md](2026-11-02-night-shift-subscription-fallback.md) |
 | 2026-11-02 | complete | night-shift (owner response) | **Night Shift: every Item waiting on the owner gets a question ticket and a Respond in cell; an answered hold resumes its branch** | [2026-11-02-night-shift-owner-response-tickets.md](2026-11-02-night-shift-owner-response-tickets.md) |
 | 2026-11-02 | complete | gui | **JB-135: hovering a CONSOLE line in a replay draws a thin dashed marker on the trackbar at that line's time (mode `marker` event; hidden outside the zoom range; live never publishes)** | [2026-11-02-jb135-console-hover-marks-the-trackbar.md](2026-11-02-jb135-console-hover-marks-the-trackbar.md) |
 | 2026-11-02 | complete | night-shift (second live night) | **Night Shift 2026-11-02: 0 merged, 2 held for one-line calls (JB-135 console hover marker, JB-32 biased sim plant), 2 question tickets (JB-140, JB-142), JB-139 findings and Sitting section, JB-141 filed; nightly RED traced to the live checkout's uncommitted 4500 limit raise, HEAD green** | [2026-11-02-night-shift.md](2026-11-02-night-shift.md) |
