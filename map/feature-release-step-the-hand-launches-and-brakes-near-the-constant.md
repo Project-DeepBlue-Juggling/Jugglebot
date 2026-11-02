@@ -4,7 +4,7 @@ kind: feature
 title: 'Release step: the Hand launches and brakes near the constant-acceleration ideal (C-HAND-5)'
 status: inbox
 created: '2026-11-02'
-updated: '2026-11-02T00:50:21Z'
+updated: '2026-11-02T06:18:01Z'
 owners: []
 priority: high
 effort: m
@@ -41,3 +41,8 @@ Watch at the first Sitting: the Learner's Memory was built on the continuous sha
 - pass: the 1.05 rung catches at least 18 of 20 with no stop condition, and every flown rung's peak Hand iq stays at or under 54 A.
 - record: per rung the catches, the peak Hand iq and planned peak Hand acceleration (install lines), the Ball 1 / Ball 2 landing bias, and the highest rung flown clean.
 - minutes: 35
+
+## Sitting result (2026-11-02)
+
+- verdict: pass
+- notes: All heights worked well! The first attempt at 1.35 m led to a hand motor SPINOUT error, which was interesting and unexpected.
