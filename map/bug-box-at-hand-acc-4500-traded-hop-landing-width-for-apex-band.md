@@ -2,10 +2,11 @@
 id: JB-143
 kind: bug
 title: 'Box at hand acc 4500 traded hop landing width for apex band: the apex 0.95 hop cell''s x range shrank from +/-10 to +/-4 mm'
-status: inbox
+status: in_progress
 created: '2026-11-02'
-updated: '2026-11-02T18:15:07Z'
-owners: []
+updated: '2026-11-02T18:28:44Z'
+owners:
+- night-shift
 priority: high
 effort: m
 hardware: none
@@ -42,3 +43,4 @@ Found 2026-11-02 reviewing the re-sweep at hand acc 4500 (temp/sweeps/h4500, gat
 ## Progress
 
 - 2026-11-02: Owner decision 2026-11-02: keep the landing rectangle as wide as possible; change the sweep's band rule so a cell never gives up landing width for apex band, then re-sweep. Next unit after the 4500 commit.
+- 2026-11-03: Night Shift 2026-11-03: held on night-shift/2026-11-03-JB-143: the band rule built (gate green, audit clean), held as an effort-m slice; unblocked by your call on JB-157 and a re-sweep
