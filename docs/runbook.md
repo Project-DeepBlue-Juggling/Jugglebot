@@ -130,7 +130,7 @@ Rigs: Robot 4 blocks (97 min) · Bench leg 1 block (30 min)
 
 ## Questions a Sitting can answer
 
-- JB-155 JB-149 setpoint stream starved past the 70 ms cover: probe first, a CPU partition, a 4-knot frame, or a bridge-side cliff reaction? (parent JB-149)
+- none
 
 ## Close-out
 
