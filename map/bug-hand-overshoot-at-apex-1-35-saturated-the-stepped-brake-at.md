@@ -4,7 +4,7 @@ kind: bug
 title: Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT)
 status: in_progress
 created: '2026-11-02'
-updated: '2026-11-02T11:56:36Z'
+updated: '2026-11-02T18:15:07Z'
 owners:
 - jugglebot-3d
 priority: high
@@ -32,6 +32,17 @@ The stepped brake runs near the constant-deceleration ideal, so an overspeed has
 ## Options
 
 Raise `hand_curr_limit_a` to the owner's 70 A (configure pushes it over the GUI value); scale a top margin with release speed; capture the Hand at a higher rate to find the overshoot's cause; a firmware overspeed guard. Related: JB-144, JB-145, the JB-114 bumper.
+
+## Sitting
+
+- setup: armed, bb-fed
+- why: re-fly the Apex 1.35 rung that overshot, now with the 70 A limit and the C-HAND-6 speed-scaled top margin (8ffeba66), and with `hand_capture` on (the launch default since 8b9f990c), so an overshoot is caught at full rate.
+- do:
+  - Fly Columns, Sep. 125, Apex 1.35, Throws 20, twice.
+  - Stop at the first SPINOUT_DETECTED, MAX_DEVIATION or stream STOP.
+- pass: no SPINOUT_DETECTED in either 20, and every launch's Hand top at or under the 10.501 rev clip.
+- record: per launch the Hand top (rev), peak Hand speed and brake current; the capture CSV path of any launch whose top exceeds its planned top.
+- minutes: 15
 
 ## Progress
 

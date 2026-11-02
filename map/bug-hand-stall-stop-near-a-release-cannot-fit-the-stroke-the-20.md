@@ -4,7 +4,7 @@ kind: bug
 title: 'Hand stall stop near a release cannot fit the stroke: the 20 ms grace plus the C2 stop carry the Hand past the clip'
 status: inbox
 created: '2026-11-02'
-updated: '2026-11-02T00:50:51Z'
+updated: '2026-11-02T18:15:06Z'
 owners: []
 priority: medium
 effort: m
@@ -31,3 +31,14 @@ A frame that loses its scheduled knot set (`HAS_SCHED` cleared by `setpoint_pump
 ## Options
 
 To weigh (firmware, flash): drop the grace for the Hand while it moves upward fast, start the Hand stop at the cover end with a C1 entry, stop at the plan's own brake authority; the JB-114 bumper is the physical backstop. Logbook 2026-11-02-hand-release-step.
+
+## Options (2026-11-03)
+
+Options 1 and 2 change the can-bridge firmware (`ros_ws/src/jugglebot/Teensy_code_canbridge/`) and only matter once flashed. Option 4 runs a probe script the night may not run. Each is work for the owner's Session. The night drafted them from the body and from JB-149, which shows the trigger is real: three forward gaps over 70 ms on 2026-11-02, one of them ending in Hand MAX_DEVIATION +9.9 rev.
+
+1. No grace for the Hand while it moves upward faster than a threshold (say 50 rev/s): the C2 stop starts at the cover end. This removes the main term, about 3 rev at 150 rev/s.
+2. Option 1 plus a stop that enters from the span's current acceleration (C1 entry) and brakes at the plan's own brake authority (4500 rev/s^2, the stream STOP since 8ffeba66). This is the shortest stop the drive can give.
+3. Fix the starvation instead (JB-149: probe, then a CPU partition or a 4-knot frame), and leave the stop as is. The JB-114 bumper is the physical backstop.
+4. Model first: extend `tools/probes/hand_stall_stop.py` to options 1 and 2, and pick on the stop height against the 10.501 clip.
+
+Recommendation: 4 then 2. The probe exists, it settles whether option 1 alone fits under the clip, and option 2 is one firmware change with one native test. JB-149 still matters, but a stop that cannot fit the stroke is a hazard on its own.

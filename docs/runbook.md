@@ -6,7 +6,7 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 2 blocks (47 min) · Bench leg 1 block (30 min)
+Rigs: Robot 2 blocks (62 min) · Bench leg 1 block (30 min)
 
 ## Setup 0: before power
 
@@ -16,9 +16,9 @@ Rigs: Robot 2 blocks (47 min) · Bench leg 1 block (30 min)
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Robot  (2 blocks, 47 min)
+## Robot  (2 blocks, 62 min)
 
-### Block 1: armed, bb-fed  (1 row, 15 min)
+### Block 1: armed, bb-fed  (2 rows, 30 min)
 
 #### JB-120 A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve  (15 min, high, two-ball-oval)
 - why: re-fly with the bump brake-seed fix (2026-11-02 debrief): the 2026-11-02 refusals all followed an inward bump of 22 mm or more and replay under 3700 rev/s^2 with the fix.
@@ -27,6 +27,14 @@ Rigs: Robot 2 blocks (47 min) · Bench leg 1 block (30 min)
 - pass: no END HAND_LIMIT_ACC and no refused first install in either 50.
 - record: per-catch peak Hand acceleration from the install lines and the learner y for Ball 2.
 - branch: `night-shift/2026-11-01-JB-120`
+
+#### JB-147 Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT)  (15 min, high, unattached)
+- why: re-fly the Apex 1.35 rung that overshot, now with the 70 A limit and the C-HAND-6 speed-scaled top margin (8ffeba66), and with `hand_capture` on (the launch default since 8b9f990c), so an overshoot is caught at full rate.
+- do:
+  - Fly Columns, Sep. 125, Apex 1.35, Throws 20, twice.
+  - Stop at the first SPINOUT_DETECTED, MAX_DEVIATION or stream STOP.
+- pass: no SPINOUT_DETECTED in either 20, and every launch's Hand top at or under the 10.501 rev clip.
+- record: per launch the Hand top (rev), peak Hand speed and brake current; the capture CSV path of any launch whose top exceeds its planned top.
 
 ### Block 2: level, armed, bb-fed  (2 rows, 32 min)
 
@@ -79,7 +87,6 @@ Rigs: Robot 2 blocks (47 min) · Bench leg 1 block (30 min)
 - JB-138 [Robot] Hand iq reached 53.3 A on a 45 deg turned hop launch, over the 50 A watch the high-low row names: no ## Sitting section
 - JB-139 [Robot] Ball 2 learner command pinned at the (-20,-20) mm clamp corner in 37 of 40 straight Columns rows (BOX-EXPECTED-LANDING-UNMET u=(-20,-20)): no ## Sitting section
 - JB-146 [Robot] ODrive GUI save resets the Hand zero, the bridge stays homed, and ACTIVATE parks the Hand into its stop at full current: no ## Sitting section
-- JB-147 [Robot] Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT): no ## Sitting section
 - JB-148 [Robot] One-off 2 m Throws: raised Hand limits and an overshoot protection the speed-scaled margin cannot give: no ## Sitting section
 - JB-149 [Robot] 40 Hz setpoint stream starved past the firmware's 70 ms cover during CATCH-solve bursts: 3 LANE_REFUSED ends on 2026-11-02: no ## Sitting section
 - JB-2 [Robot] Design change: the Hand should be Idle, not Parked Closed-loop, while Active: no ## Sitting section

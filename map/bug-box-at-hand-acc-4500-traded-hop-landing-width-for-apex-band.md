@@ -4,9 +4,15 @@ kind: bug
 title: 'Box at hand acc 4500 traded hop landing width for apex band: the apex 0.95 hop cell''s x range shrank from +/-10 to +/-4 mm'
 status: inbox
 created: '2026-11-02'
-updated: '2026-11-02T00:14:49Z'
+updated: '2026-11-02T18:15:07Z'
 owners: []
 priority: high
+effort: m
+hardware: none
+owner: none
+radius: subsystem
+diagnosis: confirmed
+area: skill-stack
 blocked_by: []
 links:
 - map/bug-two-ball-columns-hop-start-throw-lands-25-56-mm-inboard-past.md

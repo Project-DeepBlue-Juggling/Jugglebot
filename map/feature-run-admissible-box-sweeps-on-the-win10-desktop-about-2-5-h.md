@@ -4,7 +4,7 @@ kind: feature
 title: 'Run admissible-box sweeps on the Win10 desktop: about 2.5 h on the Jetson, and a sweep blocks Sittings'
 status: inbox
 created: '2026-11-02'
-updated: '2026-11-02T09:31:19Z'
+updated: '2026-11-02T18:15:07Z'
 owners: []
 priority: medium
 effort: m
@@ -53,3 +53,13 @@ The Win10 PC is on the LAN (it hosts QTM, and the owner already keeps a clone th
 - The PC's CPU model and core count (sets the worker count and the real speed-up).
 - SSH server on the PC, or start the sweep by hand there?
 - Is the Jetson-side certification pass the acceptance rule, or must a box always be swept on the Jetson for the record?
+
+## Options (2026-11-03)
+
+
+1. Cheaper speed-ups first, as a Night Shift unit: compare a rotating sample of 3 families in round b instead of all 29 (rounds a and b have been identical on every sweep), and profile `tools/admissible_sweep.py`. This roughly halves the wall time with no new machine.
+2. Sweep on the PC over SSH: Windows OpenSSH server, an LF checkout, pinned numpy, and a Jetson-side certification pass before a box is committed.
+3. Sweep on the PC by hand (PowerShell or WSL2), with the result back by git, and the same certification pass.
+4. Leave it until a sweep blocks a Sitting again.
+
+Recommendation: 1 now, then 2 if the halved sweep still blocks Sittings. Option 1 needs only your yes. Options 2 and 3 also need the PC's CPU and core count, and your call on whether a Jetson certification pass is enough for the record.

@@ -4,7 +4,7 @@ kind: bug
 title: '40 Hz setpoint stream starved past the firmware''s 70 ms cover during CATCH-solve bursts: 3 LANE_REFUSED ends on 2026-11-02'
 status: inbox
 created: '2026-11-02'
-updated: '2026-11-02T08:49:29Z'
+updated: '2026-11-02T18:15:07Z'
 owners: []
 priority: high
 effort: m
@@ -50,3 +50,12 @@ The logs cannot tell CPU preemption from a whole-process Python pause (GC or GIL
    - **Bridge-side cliff reaction.** Start lane recovery the moment the forwarder sees a gap over 70 ms. This saves about 200 ms of the heartbeat → skill_node → trajectory_node chain. It is safety-bearing, so it needs an offline replay first.
 
 Unit write-up: the debrief scratchpad lane.md, summarised in the logbook entry.
+
+## Options (2026-11-03)
+
+1. Probe first (the body's step 1, no behaviour change): time `gc.callbacks` and sample `/proc/<pid>/sched` around CATCH solves over one long Columns goal. This tells CPU preemption from a whole-process pause.
+2. A CPU partition: the solver worker on cores 4-5, `trajectory_node` and the bridge node on 0-3. This is right if the probe says preemption.
+3. A 4-knot setpoint frame (120 ms cover). It covers every gap seen so far, but costs a PROTOCOL bump and a flash, and delays a real stream death's hold by 50 ms.
+4. A bridge-side cliff reaction: start lane recovery on a forward gap over 70 ms. This is safety-bearing and needs an offline replay first.
+
+Recommendation: 1, flown at the next Sitting with the instrumentation, then 2 or a GC fix depending on what it shows. Options 3 and 4 move the cliff instead of removing the stall.

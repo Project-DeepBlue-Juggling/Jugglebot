@@ -4,11 +4,15 @@ kind: bug
 title: Editing long Descriptions is buggy
 status: inbox
 created: '2026-11-02'
-updated: '2026-11-02T09:47:07Z'
+updated: '2026-11-02T18:15:07Z'
 owners: []
 priority: medium
 effort: s
 hardware: none
+owner: none
+radius: local
+diagnosis: unknown
+area: map-app
 blocked_by: []
 links: []
 filed_by: harrison
