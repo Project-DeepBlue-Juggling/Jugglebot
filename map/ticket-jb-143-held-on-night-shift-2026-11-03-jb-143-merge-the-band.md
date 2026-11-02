@@ -4,9 +4,9 @@ kind: ticket
 title: 'JB-143 held on night-shift/2026-11-03-JB-143: merge the band rule and re-sweep, merge it and wait for the next sweep, re-sweep on the branch first, or drop?'
 status: open
 created: '2026-11-03'
-updated: '2026-11-02T18:28:48Z'
+updated: '2026-11-02T18:28:53Z'
 owners: []
-priority: medium
+priority: high
 effort: xs
 hardware: none
 owner: decision
