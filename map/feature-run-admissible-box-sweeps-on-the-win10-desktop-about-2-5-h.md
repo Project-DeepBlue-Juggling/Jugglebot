@@ -65,6 +65,13 @@ The Win10 PC is on the LAN (it hosts QTM, and the owner already keeps a clone th
 
 Recommendation: 1 now, then 2 if the halved sweep still blocks Sittings. Option 1 needs only your yes. Options 2 and 3 also need the PC's CPU and core count, and your call on whether a Jetson certification pass is enough for the record.
 
+## Option 1 landed (2026-11-03)
+
+- `tools/admissible_sweep_run.py` reproduces the a/b flow; round b re-runs a rotating 3-family sample keyed by the gate_hash (`--sample all` restores the full round). Estimated full sweep 150 min to about 85 min; not yet measured on a real sweep.
+- The profile found all hot code inside gated files, so no speed-up was applied (candidates listed in the logbook entry).
+- Owner rules: a Jetson-side certification pass is enough for the record; the Win10 PC (option 2) is the backup if the halved sweep still blocks Sittings.
+- Next: the first real re-sweep through the runner, once with `--sample all`, to prove round-a parity. Logbook 2026-11-03-jb150-sweep-round-b-sample-and-profile.
+
 ## Progress
 
-- 2026-11-03: Owner call 2026-11-03 (JB-156): option 1 landed as tools/admissible_sweep_run.py (round b = rotating 3-family sample, ~150 -> ~85 min estimated; profile found no safe speed-up outside gated files). Owner rules: a Jetson-side certification pass is enough for the record; the Win10 PC (option 2) is the backup if the halved sweep still blocks Sittings. Next: first real re-sweep through the runner with --sample all to prove round-a parity (detail in logbook 2026-11-03-jb150-sweep-round-b-sample-and-profile)
+- 2026-11-03: Owner call (JB-156): option 1 landed as tools/admissible_sweep_run.py (round b = rotating 3-family sample); a Jetson certification pass is enough for the record; the PC is the backup (detail below)

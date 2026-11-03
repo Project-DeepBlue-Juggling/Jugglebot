@@ -85,6 +85,14 @@ The structural fix is FILED here as the next step, not built: the bump decision 
 - verdict: pass
 - notes: Ran a few attempts of the described columns pattern. Some ended prematurely due to messy throws, collisions, LIMIT_VEL errors, and GUARD_LATCHED errors, but none due to HAND_LIMIT_ACC
 
+## Structural fix landed unwired (2026-11-03)
+
+- I-CATCH-7 in `bump.py::bump_with_next_catch_gate`: a Bump is applied at the largest of D, D/2, D/4, D/8 whose seed the next catch's gate accepts, else declined `BUMP-NEXT-CATCH`; a shrink is logged `BUMP-SHRUNK`, never silent.
+- No cheap gate exists: only the next catch's own solve (33-93 ms) predicts the Hand peak, too slow for the 25-50 ms bump window, so no live caller passes a gate yet and the live path is unchanged.
+- Owner call 2026-11-03: land unwired. Offline, every bumped seed up to 30 mm now plans at or under 82 pct of the 4500 limit.
+- Trigger to wire it (option B, an offline bump envelope per box cell): a HAND_LIMIT_ACC after a Bump at the 4500 limit.
+- The fallback branch night-shift/2026-11-01-JB-120 was dropped per JB-152. Logbook 2026-11-03-jb120-bump-gated-by-the-next-catch.
+
 ## Progress
 
 - 2026-11-01: Night Shift 2026-11-01: held on night-shift/2026-11-01-JB-120: hardware robot; audit open on HAND_LIMIT_C2 admitted by the new HAND_LIMIT_ prefix and no both-refused test; unblocked by the Sitting in the section below plus the owner's call on the C2 finding (detail below)
@@ -92,4 +100,4 @@ The structural fix is FILED here as the next step, not built: the bump decision 
 - 2026-11-01: Owner decision (debrief): HAND_LIMIT_ACC 3900 -> 4500 rev/s^2, hand_curr_limit_a 50 -> 60 A, box re-swept; the structural bump fix (plan the next catch at bump time) stays FILED here, not built (detail in the findings section).
 - 2026-11-02: Failed at the Sitting of 2026-11-02: HAND_LIMIT_ACC 4509 at 49/51 after a 30.5 mm bump; all 3 refusals of both Sittings follow the 3 largest inward bumps (22.2-30.5 mm), 0 of 329 unbumped. New cause found and fixed: the bump kept the pre-bump C-HAND-5 brake seed (offline 4696 -> 3407). Structural fix stays filed.
 - 2026-11-03: Passed at the Sitting of 2026-11-03 on the Hand criterion: 0 HAND_LIMIT_ACC after 71 bumps, peak Hand acc 3794 rev/s^2 = 84% of 4500 (L2532). 15 leg LIMIT_VEL/JERK refusals and 3 Hand faults in the block belong to JB-24 and JB-147. Held branch dropped (JB-152 option 3); Item stays open for the structural bump fix.
-- 2026-11-03: Structural fix landed UNWIRED 2026-11-03 (I-CATCH-7, bump.py bump_with_next_catch_gate: a Bump is applied at the largest of D, D/2, D/4, D/8 whose seed the next catch's gate accepts, else declined BUMP-NEXT-CATCH; shrink logged BUMP-SHRUNK). No cheap gate exists (only the next catch's own 33-93 ms solve predicts the Hand peak; too slow for the 25-50 ms bump window). Owner call 2026-11-03: land unwired; every bumped seed up to 30 mm now plans at or under 82 pct of 4500. Trigger to wire it (option B, an offline bump envelope per box cell): a HAND_LIMIT_ACC after a Bump at the 4500 limit. Fallback branch night-shift/2026-11-01-JB-120 dropped per JB-152 (detail in logbook 2026-11-03-jb120-bump-gated-by-the-next-catch)
+- 2026-11-03: Structural fix landed UNWIRED (I-CATCH-7, bump_with_next_catch_gate); owner call: land unwired, wire option B if a HAND_LIMIT_ACC after a Bump fires at 4500; fallback branch dropped per JB-152 (detail below)
