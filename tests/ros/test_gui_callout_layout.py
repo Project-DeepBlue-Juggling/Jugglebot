@@ -76,3 +76,6 @@ def test_chart_modules_import_and_call_layout(mod):
     src = open(os.path.join(_JS, mod), encoding='utf-8').read()
     assert "from './callout-layout.js'" in src
     assert 'layoutCallouts(' in src
+    # The laid-out y, not the raw curve y, is what positions each pill.
+    assert 'style.top = `${ys[k]}px`' in src
+    assert 'el.style.top = `${yPx}px`' not in src
