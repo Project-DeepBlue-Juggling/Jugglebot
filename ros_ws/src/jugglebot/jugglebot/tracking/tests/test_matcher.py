@@ -255,3 +255,63 @@ class TestFrameToFrameAssociation:
 
         ball = tracker.get_ball(1)
         assert ball.frames_without_measurement == 0
+
+
+class TestHumanThrowCarriedAcrossFlights:
+    """A human-thrown ball is caught in a hand and thrown again without the
+    tracker ever losing its marker, so ONE ball id serves both flights. Its
+    flight fit must forget the first flight at the re-throw, or the landing
+    published for the second flight is the first flight's (JB-113, the
+    2026-11-02 human-throw bags: 5 of 34 such throws usable at the 0.3 s
+    deadline before the fix). Plane 830, freeze floor 1080, hand at 450."""
+
+    PLANE = 830.0
+    # The production mocap rate (every QTM frame since 2026-10-10). At 200 Hz
+    # this 3 g scoop pulls the free-fall Kalman prediction past the 50 mm
+    # gate and the track is dropped at the re-throw (the precondition fails).
+    DT = 1.0 / 300.0
+
+    def _run(self, rise_mm):
+        DT = self.DT
+        tracker = BallTracker(dt=DT, landing_z=self.PLANE, detect_human_throws=True,
+                              flight_fit_new_flight_rise_mm=rise_mm)
+        f1_p, f1_v = np.array([0.0, 0.0, 450.0]), np.array([0.0, 0.0, 4500.0])
+        f2_p, f2_v = np.array([150.0, 0.0, 450.0]), np.array([-400.0, 100.0, 4000.0])
+        t1_end = 2.0 * f1_v[2] / GRAVITY_MMPS2           # back at the hand
+        hand_s = 0.30
+        # The scoop: a cubic Hermite from the catch (flight 1's landing state)
+        # to the release (flight 2's launch state), so velocity is continuous
+        # as a real hand's is; it dips ~300 mm and moves 150 mm in x.
+        c_p, c_v = _ballistic_pos(f1_p, f1_v, t1_end), f1_v - [0.0, 0.0, GRAVITY_MMPS2 * t1_end]
+        t2 = t1_end + hand_s
+        t2_apex = t2 + f2_v[2] / GRAVITY_MMPS2
+        ids, t = set(), 0.0
+        while True:
+            if t < t1_end:
+                p = _ballistic_pos(f1_p, f1_v, t)
+            elif t < t2:
+                s = (t - t1_end) / hand_s
+                p = ((2 * s**3 - 3 * s**2 + 1) * c_p + (s**3 - 2 * s**2 + s) * hand_s * c_v
+                     + (-2 * s**3 + 3 * s**2) * f2_p + (s**3 - s**2) * hand_s * f2_v)
+            else:
+                p = _ballistic_pos(f2_p, f2_v, t - t2)
+            balls = [b for b in tracker.process_frame([p], t) if b.status == BallStatus.IN_FLIGHT]
+            ids |= {b.id for b in balls}
+            if t > t2_apex and p[2] < 1150.0:             # second flight descending
+                break
+            t += DT
+        vz, dz = f2_v[2], self.PLANE - f2_p[2]
+        t_true = t2 + (vz + np.sqrt(vz * vz - 2.0 * GRAVITY_MMPS2 * dz)) / GRAVITY_MMPS2
+        assert len(ids) == 1 and len(balls) == 1, 'precondition: one ball carried through the hand'
+        return balls[0], t_true
+
+    def test_second_flight_landing_comes_from_its_own_fit(self):
+        ball, t_true = self._run(50.0)
+        assert ball.landing_from_fit
+        assert abs(ball.landing_time - t_true) < 0.005
+
+    def test_without_segmentation_the_first_flight_poisons_the_fit(self):
+        """The control: the defect the segmentation fixes, pinned so a change
+        that makes it moot (e.g. a new id per human throw) is noticed."""
+        ball, t_true = self._run(None)
+        assert abs(ball.landing_time - t_true) > 0.030

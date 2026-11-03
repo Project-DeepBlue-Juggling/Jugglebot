@@ -64,9 +64,13 @@ Two human-only Sittings (robot moved aside) scored by `tools/probes/human_throw_
 - The Cup moves to the running Pattern-mean landing before the release and re-aims as the fit arrives; the final aim is the fit's.
 - The owner expects tighter throws when juggling with the robot (better lighting, one hand); the bench re-measures at the next data Sitting.
 
+## Carried-track fix (2026-11-03)
+
+Confirmed: a ball carried through a hand kept its previous flight in its fit. A human ball's fit now starts fresh at the re-throw. Usable landing 0.3 s ahead: 24 to 37 of 42 passes, 41 to 51 of 71 cascade Throws; phantoms unchanged. Entry `logbook/2026-11-03-jb113-human-ball-fit-segments-flights.md`.
+
 ## Next
 
-1. Confirm or refute the carried-track hypothesis on the bench's failing rows; fix in the matcher.
+1. Low Throws: a human ball's fit admits only samples above the Cup's freeze floor (1080 mm), so Throws with apex under about 1160 mm never get a fit (15 of the cascade's 20 remaining failures). Decide a floor for human balls (their push is in a hand near z 450).
 2. Phantom rejection and the hand-region gate, scored on the bench.
 3. The predicted-Throw announcement (the Pattern prior).
 4. Offline reach check: the Cup re-aiming over 150-300 mm in the last 0.5-0.8 s.

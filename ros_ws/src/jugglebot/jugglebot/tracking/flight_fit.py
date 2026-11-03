@@ -63,6 +63,21 @@ class FlightFit:
     whose 3D residual against the current fit exceeds `residual_mm` is
     dropped and the fit re-run once. A fit is valid only with at least
     `min_samples` surviving samples spanning at least `min_span_s`.
+
+    One fit holds ONE flight. An announced ball gets that by construction (a
+    new ball id, so a new fit, per throw). A human-thrown ball does not: the
+    tracker keeps one ball through catch and re-throw, so its fit would
+    otherwise pool every flight's samples, and the stale flight dominated the
+    fit. On the 2026-11-02 human-throw bags (`tools/probes/human_throw_bench.py`), a fit
+    with samples from the ball's previous flight gave a usable landing at the
+    0.3 s deadline for 5 of 34 throws, a clean fit for 56 of 57. Pass
+    `new_flight_rise_mm` to segment: the flight CLOSES when a sample is at
+    least that far below the freeze floor (back in a hand: a margin so marker
+    jitter at the floor can't close it), and a NEW flight starts, clearing
+    the samples, when the ball then rises that far above its lowest point
+    since. The old fit stays readable while the ball is in the hand, as an
+    announced ball's frozen fit does after the catch. None (the default)
+    keeps the pre-2026-11-03 behaviour exactly.
     """
 
     def __init__(
@@ -74,6 +89,7 @@ class FlightFit:
         freeze_above_plane_mm: float = 250.0,
         min_span_s: float = 0.050,
         max_samples: int = 400,
+        new_flight_rise_mm: Optional[float] = None,
     ):
         self.throw_time = float(throw_time)
         self.landing_z = float(landing_z)
@@ -82,9 +98,14 @@ class FlightFit:
         self.freeze_floor_z = float(landing_z) + float(freeze_above_plane_mm)
         self.min_span_s = float(min_span_s)
         self.max_samples = int(max_samples)
+        self.new_flight_rise_mm = (None if new_flight_rise_mm is None
+                                   else float(new_flight_rise_mm))
 
         self._t: List[float] = []
         self._pos: List[np.ndarray] = []
+        # Flight segmentation (only with `new_flight_rise_mm`): lowest z seen
+        # since this flight closed, None while it is open.
+        self._closed_min_z: Optional[float] = None
 
     def reset(self, throw_time: Optional[float] = None) -> None:
         """Clear all accumulated samples — a fresh flight starts clean.
@@ -99,6 +120,7 @@ class FlightFit:
             self.throw_time = float(throw_time)
         self._t = []
         self._pos = []
+        self._closed_min_z = None
 
     def add(self, t: float, pos) -> None:
         """Feed one raw (unfiltered) marker sample.
@@ -114,6 +136,8 @@ class FlightFit:
             return  # pre-release: still riding the cup/thrower
 
         z = float(pos[2])
+        if self.new_flight_rise_mm is not None:
+            self._segment(z)
         if z <= self.freeze_floor_z:
             return  # in/near the cup: pushed on the way up, caught on the way down
 
@@ -122,6 +146,18 @@ class FlightFit:
         if len(self._t) > self.max_samples:
             self._t.pop(0)
             self._pos.pop(0)
+
+    def _segment(self, z: float) -> None:
+        """Close the flight on a landing, start a new one on the next rise
+        (see the class doc). Called for every sample, admitted or not."""
+        rise = self.new_flight_rise_mm
+        if self._closed_min_z is None:
+            if self._t and z <= self.freeze_floor_z - rise:
+                self._closed_min_z = z
+            return
+        self._closed_min_z = min(self._closed_min_z, z)
+        if z >= self._closed_min_z + rise:
+            self.reset()
 
     def __len__(self) -> int:
         return len(self._t)

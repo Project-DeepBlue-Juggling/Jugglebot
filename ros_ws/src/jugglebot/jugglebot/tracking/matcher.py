@@ -110,6 +110,7 @@ class BallTracker:
         flight_fit_min_samples: int = 12,
         flight_fit_residual_mm: float = 12.0,
         flight_fit_freeze_above_plane_mm: float = 250.0,
+        flight_fit_new_flight_rise_mm: Optional[float] = 50.0,
         announced_release_lead_s: float = 0.10,
         announced_speed_ratio: Tuple[float, float] = (0.4, 1.8),
         announced_min_direction_cos: float = 0.5,
@@ -262,6 +263,15 @@ class BallTracker:
         self.flight_fit_min_samples = int(flight_fit_min_samples)
         self.flight_fit_residual_mm = float(flight_fit_residual_mm)
         self.flight_fit_freeze_above_plane_mm = float(flight_fit_freeze_above_plane_mm)
+        # A human-thrown ball keeps its id through catch and re-throw, so its
+        # fit segments flights (`FlightFit` class doc; 2026-11-03, JB-113). An
+        # announced ball gets a new id per throw and never segments. A
+        # constructor default, not a YAML key: `hardware_config.py` is a box-
+        # gated file, and this knob does not touch the robot's own throws.
+        # None turns segmentation off (pools every flight, the old behaviour).
+        self.flight_fit_new_flight_rise_mm = (
+            None if flight_fit_new_flight_rise_mm is None
+            else float(flight_fit_new_flight_rise_mm))
         self._flight_fits: Dict[int, FlightFit] = {}
 
         # Active balls keyed by id
@@ -1012,7 +1022,9 @@ class BallTracker:
 
         One `FlightFit` per ball id; a chained self-toss always gets a NEW
         ball id (`handle_announcement` — `_next_id` is monotonic and never
-        reused), so a fresh id here always means a fresh fit.
+        reused), so a fresh id here always means a fresh fit. A ball with no
+        announcement (a human throw) keeps its id across flights, so its fit
+        segments them (`flight_fit_new_flight_rise_mm`).
         """
         fit = self._flight_fits.get(ball_id)
         if fit is None:
@@ -1022,6 +1034,9 @@ class BallTracker:
                 min_samples=self.flight_fit_min_samples,
                 residual_mm=self.flight_fit_residual_mm,
                 freeze_above_plane_mm=self.flight_fit_freeze_above_plane_mm,
+                new_flight_rise_mm=(self.flight_fit_new_flight_rise_mm
+                                    if ball_id not in self._announcement_states
+                                    else None),
             )
             self._flight_fits[ball_id] = fit
         return fit

@@ -275,3 +275,70 @@ class TestReset:
         # pre-release under the NEW one.
         ff.add(self.T0 + 0.001, self.POS0)
         assert len(ff) == 0
+
+
+class TestFlightSegmentation:
+    """`new_flight_rise_mm`: one fit = one flight for a ball the tracker keeps
+    through catch and re-throw (a human throw, JB-113, 2026-11-03). Landing
+    plane 830, freeze floor 1080, hand at 450, as on the 2026-11-02 bags."""
+
+    LANDING_Z = 830.0
+    DT = 1.0 / 200.0
+    RISE = 50.0
+
+    def _fit(self, rise):
+        return FlightFit(throw_time=0.0, landing_z=self.LANDING_Z,
+                         new_flight_rise_mm=rise)
+
+    def _feed_flight(self, ff, pos0, vel0, t0, until_z=450.0):
+        """Feed one free flight from t0 until it falls back below `until_z`
+        on the way DOWN; return the time after the last sample."""
+        t = t0
+        t_apex = t0 + vel0[2] / GRAVITY_MMPS2
+        while True:
+            p = _free_flight_pos(pos0, vel0, t0, t)
+            if t > t_apex and p[2] < until_z:
+                return t
+            ff.add(t, p)
+            t += self.DT
+
+    def _feed_hand(self, ff, t, z_values):
+        for z in z_values:
+            ff.add(t, np.array([0.0, 0.0, z]))
+            t += self.DT
+        return t
+
+    def test_default_pools_flights_unchanged(self):
+        ff = FlightFit(throw_time=0.0, landing_z=self.LANDING_Z)
+        t = self._feed_flight(ff, [0, 0, 450], [0, 0, 4500], 0.0)
+        n1 = len(ff)
+        t = self._feed_hand(ff, t, [450.0, 400.0, 450.0, 600.0])
+        self._feed_flight(ff, [0, 0, 600], [200, 0, 4000], t)
+        assert len(ff) > n1  # the second flight's samples join the first's
+
+    def test_rethrow_starts_a_clean_fit(self):
+        ff = self._fit(self.RISE)
+        t = self._feed_flight(ff, [0, 0, 450], [0, 0, 4500], 0.0)
+        old = ff.landing(self.LANDING_Z)
+        assert old is not None
+        # In the hand: the frozen first-flight fit stays readable.
+        t = self._feed_hand(ff, t, [440.0, 400.0, 380.0, 400.0])
+        assert ff.landing(self.LANDING_Z) is not None
+        # The re-throw's rise (>= 50 mm above the hand's lowest point) clears it.
+        t = self._feed_hand(ff, t, [431.0])
+        assert len(ff) == 0 and ff.landing(self.LANDING_Z) is None
+        pos0, vel0 = np.array([0.0, 0.0, 450.0]), np.array([300.0, -100.0, 4200.0])
+        self._feed_flight(ff, pos0, vel0, t, until_z=1100.0)
+        _, _, t_land = ff.landing(self.LANDING_Z)
+        # The DESCENDING crossing (the launch is below the plane).
+        vz, dz = vel0[2], self.LANDING_Z - pos0[2]
+        t_true = t + (vz + np.sqrt(vz * vz - 2.0 * GRAVITY_MMPS2 * dz)) / GRAVITY_MMPS2
+        assert abs(t_land - t_true) < 0.002
+
+    def test_jitter_at_the_freeze_floor_does_not_close_the_flight(self):
+        ff = self._fit(self.RISE)
+        self._feed_flight(ff, [0, 0, 450], [0, 0, 4500], 0.0, until_z=1100.0)
+        n = len(ff)
+        # Hovering around the floor (1080) within the margin never closes it.
+        self._feed_hand(ff, 10.0, [1085.0, 1075.0, 1040.0, 1090.0, 1035.0, 1100.0])
+        assert n > 0 and len(ff) == n + 3  # 1085, 1090, 1100 admitted, no reset
