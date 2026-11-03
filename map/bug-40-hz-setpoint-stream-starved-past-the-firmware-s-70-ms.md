@@ -2,10 +2,11 @@
 id: JB-149
 kind: bug
 title: '40 Hz setpoint stream starved past the firmware''s 70 ms cover during CATCH-solve bursts: 3 LANE_REFUSED ends on 2026-11-02'
-status: inbox
+status: in_progress
 created: '2026-11-02'
-updated: '2026-11-02T18:15:07Z'
-owners: []
+updated: '2026-11-03T06:06:05Z'
+owners:
+- jugglebot-50
 priority: high
 effort: m
 hardware: robot
@@ -39,17 +40,18 @@ JB-76 and JB-95 protected the CATCH solve from the rest of the box: nicing the b
 
 ## Not yet known
 
-The logs cannot tell CPU preemption from a whole-process Python pause (GC or GIL). In the bridge case every timer in the process froze together.
+Two classes since the 2026-11-03 Sitting (findings section below), and which one dominates:
+
+1. A real host gap (2026-11-02: bridge gaps of 79.6 and 101.3 ms and an emitter stall of 81.7 ms, each inside a CATCH-solve burst). The logs cannot tell CPU preemption from a whole-process Python pause (GC or GIL).
+2. A STOP with a clean host stream (2026-11-03: both LANE_REFUSED ends sat at forward gaps of 42 ms). The firmware's cover-expiry counters and the frames' arrival age never reached the Jetson, so a late link, a discontinuous frame stamp and a firmware tick cannot be told apart.
 
 ## Next
 
-1. Probe (no behaviour change): time `gc.callbacks` in teensy_bridge_node and trajectory_node, and sample `/proc/<pid>/sched` involuntary switches around CATCH solves, over one long Columns goal.
-2. If it is preemption: a CPU partition, with the solver worker on cores 4-5 and trajectory_node plus teensy_bridge_node on 0-3.
-3. Alternatives, each an owner decision:
-   - **4-knot setpoint frame (120 ms cover).** Covers all four gaps seen so far (79.6, 82.7, 101.3 and 109 ms on 2026-11-01). Costs a PROTOCOL bump and a firmware flash, and a real stream death would hold 50 ms later.
-   - **Bridge-side cliff reaction.** Start lane recovery the moment the forwarder sees a gap over 70 ms. This saves about 200 ms of the heartbeat → skill_node → trajectory_node chain. It is safety-bearing, so it needs an offline replay first.
+Owner call 2026-11-03 (JB-155, then the follow-up after the Sitting findings): both probes, then decide.
 
-Unit write-up: the debrief scratchpad lane.md, summarised in the logbook entry.
+1. Fly the Sitting row below once, with both probes landed 2026-11-03: the opt-in host probe (`gc_probe:=true` plus `tools/probes/sched_probe.py`, logbook 2026-11-03-jb149-gc-sched-probe) and FW 38 / PROTOCOL 11 (heartbeat sched counters, per-window frame-age max and buckets, the STOP WARN's third verdict "host stream clean, cover expired firmware-side", logbook 2026-11-03-jb149-firmware-sched-counters).
+2. Read the result. Class 1 (GC pauses over 10 ms or involuntary switches around the solves) points at a GC fix or the CPU partition (option 2). Class 2 (`rx_age_gt70` above 0 or `sched_expired` rising at a STOP whose host maxima are clean) points at the link or the stamps; the 4-knot frame and the bridge-side reaction (options 3 and 4) stay owner decisions to take with that data.
+3. The resume refusal after a STOP (`sched_apply` tolerance) turned both 2026-11-03 STOPs into attempt ends. A profiled rejoin instead of a refusal is a separate owner decision, safety-bearing, offline replay first.
 
 ## Options (2026-11-03)
 
@@ -78,3 +80,20 @@ Recommendation: 1, flown at the next Sitting with the instrumentation, then 2 or
 - CPU load not supported: 946 CATCH solves (wall median 79.2 ms, p99 124.4, max 161.4) but only 1 of 17 STOPs sits within 20 ms of one.
 - The discriminating counters are firmware-side and absent from `/link_status`: `sched_expired` (`udp_protocol.h:269`), superseded, stale and future drops, plus a per-frame `rx_age_us`.
 
+## Sitting
+
+- setup: level, armed, bb-fed
+- why: JB-155 (probe first): one long Columns goal with both probes on tells CPU preemption, a whole-process Python pause and a firmware-side cover expiry apart.
+- do:
+  - Confirm the launch log's BridgeIdentity reads FW 38 (proto 11), then launch with `ros2 launch jugglebot jugglebot_launch.py gc_probe:=true`.
+  - Once the launch is up, start the sampler from the repo root: `python tools/probes/sched_probe.py record` (writes temp/probes/sched_probe_<ts>.csv).
+  - Fly Columns, Sep. 125, Apex 0.95, Throws 50. If a goal ends LANE_REFUSED, start it again, up to 3 goals.
+  - Stop the sampler with Ctrl-C.
+  - Run `python tools/probes/sched_probe.py report temp/probes/sched_probe_<ts>.csv <launch.log>` and `grep -n 'firmware scheduler STOP' <launch.log>`.
+- pass: the record is complete: the CSV spans every goal, GC_PROBE lines appear at 1 Hz from trajectory_node and teensy_bridge_node, every STOP WARN carries one of the three verdicts with its fw_sched counters and frame ages, and /link_status in the bag carries rx_age_max_us.
+- record: the launch log, bag and CSV paths; the report output; the STOP count by verdict; the max GC pause per node; rx_age max and the gt70 count at each STOP; whether any end was LANE_REFUSED.
+- minutes: 20
+
+## Progress
+
+- 2026-11-03: Both probes landed 2026-11-03 (owner call on JB-155 plus the Sitting-findings follow-up): opt-in host GC and sched probe, and FW 38 / PROTOCOL 11 heartbeat sched counters, frame-age stats and the STOP WARN third verdict. Body rewritten: two classes (host gap on 11-02, clean-host STOP on 11-03). Sitting row written; flash and colcon build owed before it (detail below)
