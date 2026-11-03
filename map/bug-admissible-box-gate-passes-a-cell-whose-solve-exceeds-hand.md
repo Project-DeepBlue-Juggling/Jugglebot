@@ -6,7 +6,6 @@ status: in_progress
 created: '2026-10-31'
 updated: '2026-11-03T03:32:20Z'
 owners:
-- night-shift
 - jugglebot-50
 priority: high
 effort: m

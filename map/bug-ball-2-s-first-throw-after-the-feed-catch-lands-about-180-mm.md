@@ -4,11 +4,13 @@ kind: bug
 title: Ball 2's first throw after the feed catch lands about 180 mm outward along the separation axis
 status: inbox
 created: '2026-11-03'
-updated: '2026-11-03T02:50:59Z'
+updated: '2026-11-03T18:15:47Z'
 owners: []
 priority: high
 effort: m
 hardware: robot
+owner: hands
+radius: subsystem
 diagnosis: hypothesis
 area: skill-stack
 blocked_by: []
