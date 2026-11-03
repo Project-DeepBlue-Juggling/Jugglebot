@@ -4,7 +4,7 @@ kind: bug
 title: Ball 2 learner command pinned at the (-20,-20) mm clamp corner in 37 of 40 straight Columns rows (BOX-EXPECTED-LANDING-UNMET u=(-20,-20))
 status: in_progress
 created: '2026-11-01'
-updated: '2026-11-03T07:09:00Z'
+updated: '2026-11-03T21:54:17Z'
 owners: []
 priority: medium
 effort: s
@@ -17,6 +17,7 @@ blocked_by: []
 links:
 - map/pathway-learner-generalisation.md
 - logbook/2026-11-03-jb143-margin-first-box-and-jb139-30mm-authority.md
+- logbook/2026-11-04-sitting-debrief.md
 filed_by: claude
 ---
 
@@ -76,3 +77,4 @@ What would settle it: with a fresh `plant_id` the first Ball 2 commands are the 
 - 2026-11-02: Sitting 2026-11-02 (owner: bias confirmed, keep open): fresh plant_id, first five Ball 2 landings y +16.4 mm (row band +20..+32 missed, 4 pure identity-prior rows, sigma ~15 mm); with commands the plant bias reads ~(+22 x, +17..+25 y) mm; main memory pins u_x at -20 in 93 of 151 rows. Next: re-seed the main memory or widen the clamp (re-sweep).
 - 2026-11-03: 2026-11-03 Sitting (L547-4800): Ball 2 x command pinned at <= -19.5 mm in 36 of 91 BOX-EXPECTED-LANDING rows (40 %), y at the -20 clamp in 4; landing centred only at the clamp edge. The y bias of 2026-11-02 (first-5 +16.4 mm) is not present: -6.4 mm.
 - 2026-11-03: Learner lateral authority 20 -> 30 mm for Throw and catch re-aims (skill_node param; capture cap 46.10 mm, I-CATCH-6) and the box re-swept on a +/-30 grid, 2026-11-03; Sitting row added.
+- 2026-11-04: 2026-11-03 Sitting, one-ball oval (new plant p4-oval-2026-11-03): the learner command pushed the right way (u_x -18 -> -26 -> -30 mm) and was PINNED at the 30 mm authority from goal 4 onward; BOX-EXPECTED-LANDING-UNMET on every later Throw (y_hat +32..+52 mm outside x[-30,+30]). Owner 2026-11-04: try 60 mm for the oval Throw.

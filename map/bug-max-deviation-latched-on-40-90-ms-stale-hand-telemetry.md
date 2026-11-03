@@ -4,7 +4,7 @@ kind: bug
 title: MAX_DEVIATION latched on 40-90 ms stale Hand telemetry without MOTOR_FB_STALE firing first
 status: inbox
 created: '2026-11-03'
-updated: '2026-11-03T18:15:47Z'
+updated: '2026-11-03T21:54:30Z'
 owners: []
 priority: high
 effort: m
@@ -18,6 +18,7 @@ links:
 - map/bug-hand-odrive-feedback-starvation-701-ms-heartbeat-dropout.md
 - map/bug-teensy-guard-max-deviation-latched-on-the-hand-8-4-rev-mid.md
 - map/bug-40-hz-setpoint-stream-starved-past-the-firmware-s-70-ms.md
+- logbook/2026-11-04-sitting-debrief.md
 filed_by: sitting-debrief 2026-11-03
 ---
 
@@ -49,3 +50,7 @@ Find why the guard compared a fresh command with an encoder frozen 40-90 ms with
 ## Next (revised 2026-11-04)
 
 Read the `hand_capture` CSV of 12:35:23. In the frozen windows, do the `telem` rows' `t_src_us` (Teensy stamps) keep advancing at the native rate? If yes, the firmware's own `pos_rev` froze while frames arrived, so look at the drive's feedback. If they gap too, the freeze is on the uplink or Jetson side and the trip is the honest residual above. Then read the guard's `dev_stale` (stale-skip) count across the block. No threshold change either way.
+
+## Progress
+
+- 2026-11-04: 2026-11-03 Sitting (22:29, P4 ramp): the two Hand MAX_DEVIATION latches (goals 3, 15) were preceded by a firmware scheduler STOP, not by stale telemetry: the Hand capture shows the command frozen and the encoder stopped; the deviation grew from the host plan moving on.

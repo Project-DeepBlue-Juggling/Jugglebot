@@ -4,7 +4,7 @@ kind: bug
 title: Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT)
 status: in_progress
 created: '2026-11-02'
-updated: '2026-11-03T02:49:01Z'
+updated: '2026-11-03T21:54:43Z'
 owners:
 - jugglebot-3d
 priority: high
@@ -15,7 +15,8 @@ radius: subsystem
 diagnosis: hypothesis
 area: hand
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-04-sitting-debrief.md
 filed_by: jugglebot-3d
 ---
 
@@ -114,3 +115,4 @@ In every block the faulting launches sit at or above the p90 of that block's mea
 
 - 2026-11-02: Landed 8ffeba66: 70 A code limit, stream STOP 4500, C-HAND-6 speed-scaled top margin (K 4.75e-5), plus the opt-in hand_capture:=true for diagnosing the overshoot. Cause of the overshoot still open; fly with the capture on.
 - 2026-11-03: Failed at the Sitting of 2026-11-03: 7 of 9 Apex 1.35-1.50 attempts ended SPINOUT_DETECTED (L5380, 6358, 6906, 7374, 7616, 7853, 8106), tops to 10.855 rev vs clip 10.501. Capture shows torque lost 10-20 ms into the brake at 13-54 A, not saturation: overshoot hypothesis withdrawn (detail below).
+- 2026-11-04: 2026-11-03 Sitting (22:29, P4 ramp): REFUTED for the three firmware-STOP ends (goals 3, 9, 15): the Hand braked on its profile at -23..-24 A, no SPINOUT_DETECTED all Sitting, peak |iq_set| 54.1 A vs the 70 A clamp. Withdrawn for that class; the Apex 1.35 overshoot it was filed for was not exercised.

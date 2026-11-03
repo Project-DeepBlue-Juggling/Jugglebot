@@ -4,7 +4,7 @@ kind: bug
 title: 'Hand stall stop near a release cannot fit the stroke: the 20 ms grace plus the C2 stop carry the Hand past the clip'
 status: in_progress
 created: '2026-11-02'
-updated: '2026-11-03T06:24:23Z'
+updated: '2026-11-03T21:54:42Z'
 owners:
 - jugglebot-50
 priority: medium
@@ -15,7 +15,8 @@ radius: normative
 diagnosis: confirmed
 area: can-bridge
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-04-sitting-debrief.md
 filed_by: jugglebot-3d
 ---
 
@@ -65,3 +66,4 @@ The FW 36 stall guard never fired: `diag_flags` bit2 (value 4) was never set in 
 ## Progress
 
 - 2026-11-03: Owner call 2026-11-03 (JB-154): probe extended, FW 37 built (no grace for a fast upward Hand becomes a 6 ms grace then a C1 stop at 4500; +0.71 rev margin at Apex 1.42), FW 38 adds the counters, stroke_cut bench stage written; flash and the bench-hand Sitting row below are owed (detail in logbook 2026-11-03-jb145-hand-stall-stop-options)
+- 2026-11-04: 2026-11-03 Sitting (22:29, P4 ramp): the FW 37 C1 stop FIRED on the robot twice (goal 9 THROW launch brake 117 -> ~4 rps in 60 ms at -24 A, rest 8.71 rev; goal 15 launch start 19 -> 0 rps in 40 ms at -23 A, rest 1.69 rev; clip 10.501; sched_hand_c1_stops +1 each), stopping the Hand inside the stroke with no overshoot. The bench S1-S5 pass is still owed.

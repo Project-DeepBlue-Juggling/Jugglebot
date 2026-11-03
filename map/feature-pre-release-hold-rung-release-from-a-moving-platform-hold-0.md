@@ -4,7 +4,7 @@ kind: feature
 title: 'Pre-release hold rung: release from a moving Platform (hold 0.100 → 0)'
 status: inbox
 created: '2026-10-30'
-updated: '2026-10-31T04:52:13Z'
+updated: '2026-11-03T21:54:16Z'
 owners: []
 priority: high
 effort: m
@@ -14,6 +14,7 @@ blocked_by: []
 links:
 - plans/active/two-ball-oval.md
 - logbook/2026-10-31-hold-ladder-sitting-the-hold-model-was-wrong.md
+- logbook/2026-11-04-sitting-debrief.md
 parent: two-ball-oval
 filed_by: claude (P3 re-gate close-out 2026-10-30)
 ---
@@ -67,3 +68,7 @@ The Sitting flew the ladder and **withdrew the model** this Item was written on.
 ## Progress
 
 - 2026-10-31: 2026-10-31 ladder flown: shorter hold lands LONG, model withdrawn, hold default now 0; do not build delay-aware composition as specified (detail in Reframe section; logbook 2026-10-31-hold-ladder-sitting-the-hold-model-was-wrong)
+- 2026-11-04: 2026-11-03 Sitting (one-ball oval, dwell 0.40/0.35, legs 600/8000): the release-from-a-moving-Platform mechanism measured on the CARRY.
+  - The carry decelerates until 25-30 ms before release; the Platform moves +40 (0.40) / +79 (0.35) mm/s faster than commanded at separation (encoder FK; mocap +75/+131), the ball's launch-velocity error matches ~1:1 and carried throws land +76 / +122 mm long (+48 from rest; +46 at dwell 0.50, hold 0, on 10-31).
+  - Root cause (offline, 2026-11-04, logbook/2026-11-04-sitting-debrief.md): the STEADY QP's minimum-energy carry uses the whole Dwell and decelerates into the release knot; nothing models the ~6 Hz mode. A 6 Hz / damping 0.17 model gives a ring share of +24 / +51 / +79 mm at dwell 0.50 / 0.40 / 0.35.
+  - Ranked fixes: ZVD rows on the carry in cup_cycle._pose_augment (gated, re-sweep, mode ID first); pre_release_hold_s 0.050 as phase compensation (about -60 mm at 0.40); leg accel FF; learner-side compensation; Dwell 0.45-0.50.

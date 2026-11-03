@@ -4,7 +4,7 @@ kind: bug
 title: Ball 2's first throw after the feed catch lands about 180 mm outward along the separation axis
 status: inbox
 created: '2026-11-03'
-updated: '2026-11-03T18:15:47Z'
+updated: '2026-11-03T21:54:16Z'
 owners: []
 priority: high
 effort: m
@@ -18,6 +18,7 @@ links:
 - map/idea-jp-9-high-low-columns-ball-1-at-apex-1-05-m-ball-2-at-0-95-m.md
 - map/idea-jp-10-turned-columns-the-columns-pair-at-fixed-angles-about.md
 - map/bug-ball-2-learner-command-pinned-at-the-20-20-mm-clamp-corner.md
+- logbook/2026-11-04-sitting-debrief.md
 filed_by: sitting-debrief 2026-11-03
 ---
 
@@ -52,3 +53,8 @@ A feed catch whose lateral aim was clamped (`CATCH-AIM skill 1 ... y -20.0`) sea
 ## Next
 
 A bag probe (`tools/probes/`) of the ball's seat position in the Cup at the first Ball 2 release against the outcome. No change on the Throw path until it names a cause. Related: JB-107, JB-108, JB-139.
+
+## Progress
+
+- 2026-11-04: 2026-11-03 Sitting, one-ball oval: the clamped-feed-catch mechanism is REFUTED for the oval (first Throw after the feed catch was the BEST throw, caught 19/19, +47.8 mm raw; 7 clamped feed catches each followed by a normal Throw 1). The oval's long throws follow the CARRY (JB-102 mechanism).
+  - Next: check whether Columns Ball 2's first Throw follows a transit whose deceleration ends close to release (fk.py restricted to those releases).

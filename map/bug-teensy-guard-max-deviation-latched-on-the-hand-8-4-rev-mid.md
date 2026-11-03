@@ -4,7 +4,7 @@ kind: bug
 title: Teensy guard MAX_DEVIATION latched on the hand (+8.4 rev) mid-oval; recover_lane found nothing, re-dispatch rejected WRONG_MODE
 status: inbox
 created: '2026-10-28'
-updated: '2026-11-03T02:51:14Z'
+updated: '2026-11-03T21:54:29Z'
 owners: []
 priority: high
 effort: m
@@ -17,6 +17,7 @@ blocked_by: []
 links:
 - 2026-10-28-jb76-solve-tail-is-environment-starvation-instrumented
 - map/bug-max-deviation-latched-on-40-90-ms-stale-hand-telemetry.md
+- logbook/2026-11-04-sitting-debrief.md
 parent: two-ball-oval
 filed_by: claude (JB-76 21:02 Sitting read-out)
 ---
@@ -67,3 +68,4 @@ Two questions:
 - 2026-11-01: Sitting: high-low trip (+8.967 rev) fits the STOP cliff but the stall was teensy_bridge_node, not the emitter; turned-90 trip is a different mechanism (JB-137); forwarder gap monitor being added; scheduling deferred by owner (detail below)
 - 2026-11-02: Sitting 2026-11-02: three LANE_REFUSED ends, all past the firmware's 70 ms cover (two bridge-process stalls 79.6/101.3 ms, one emitter stall 81.7 ms), two then tripped the Hand guard. Class now owned by JB-149.
 - 2026-11-03: 2026-11-03 Sitting: one more latch, L2528 (+3.012 rev, Hand at 9.34 rev vs 9.395 command, telem frozen 40/90/30 ms, 60 ms setpoint echo gap). Filed as JB-160 with the numbers; same starvation class.
+- 2026-11-04: 2026-11-03 Sitting (22:29, P4 ramp): two more Hand MAX_DEVIATION latches (goal 3 dev -3.057 rev during the CARRY approach; goal 15 +7.660 rev 68 ms after a LANE_REFUSED END). Both follow a firmware scheduler STOP: the Hand is held where it stands while the host plan walks on, and the host hold lands 130-214 ms after the END.
