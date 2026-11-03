@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-04 | complete | night-shift | **Night Shift 2026-11-04: 2 merged (JB-159 chart callouts, JB-165 the opening-REST tick load flake), 0 held, 1 question (JB-164 for JB-163)** | [2026-11-04-night-shift.md](2026-11-04-night-shift.md) |
 | 2026-11-04 | complete | JB-165 | **The ladder's mocap and trajectory-status freshness reads an injectable `_obs_clock`, frozen in the test fixture; the opening-REST tick load flake closed** | [2026-11-04-jb165-observation-clock-injectable.md](2026-11-04-jb165-observation-clock-injectable.md) |
 | 2026-11-04 | complete | JB-159 | **GUI chart hover callout pills no longer overlap: a pure 1-D label layout spreads pills of nearby curves** | [2026-11-04-gui-callout-pills-no-overlap.md](2026-11-04-gui-callout-pills-no-overlap.md) |
 | 2026-11-03 | complete | two-ball oval P4 | **P4 working point: leg limits 600 mm/s / 8000 mm/s^2 (jerk 200000), acc ceiling 10000, leg current 20 A under a 30 A trip; box re-swept to 113 cells (pose room kept or grown everywhere, one-ball oval cells at dwell 0.40 / 0.35 / 0.30)** | [2026-11-03-p4-working-point-600-8000-20a.md](2026-11-03-p4-working-point-600-8000-20a.md) |
