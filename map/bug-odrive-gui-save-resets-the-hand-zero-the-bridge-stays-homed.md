@@ -4,7 +4,7 @@ kind: bug
 title: ODrive GUI save resets the Hand zero, the bridge stays homed, and ACTIVATE parks the Hand into its stop at full current
 status: in_progress
 created: '2026-11-02'
-updated: '2026-11-02T11:56:36Z'
+updated: '2026-11-03T01:31:33Z'
 owners:
 - jugglebot-3d
 priority: high
@@ -44,6 +44,11 @@ Option 2 also covers any other stall. 1 and 2 are firmware (flash).
 - pass: no STALL line in the launch log, the Hand parks normally each time, and both direct IDLE -> TRAJECTORY requests arm without a time-out.
 - record: the launch log's activation lines (look for STALL and for "refused: setpoint output is DISARMED"), and the Hand's peak current during each park from the capture CSV.
 - minutes: 5
+
+## Sitting result (2026-11-03)
+
+- verdict: pass
+- notes: IDLE > TRAJECTORY passed without issue three times.
 
 ## Progress
 
