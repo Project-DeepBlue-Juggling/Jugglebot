@@ -96,3 +96,29 @@ def test_ready_info_line_carries_sched_through_solver_log(monkeypatch):
         assert 'sched=CFS (' in ready[0]
         warns = [m for lvl, m in rec.lines if lvl == 'warning']
         assert len(warns) == 1 and 'stayed on CFS' in warns[0]
+
+
+def test_gc_probe_param_off_installs_nothing_on_installs_hook(monkeypatch):
+    """JB-149: ``gc_probe`` False -> no hook; True -> hook installed."""
+    import gc
+    _capture_factory(monkeypatch)
+    n0 = len(gc.callbacks)
+    node = tn.TrajectoryNode(start_emitter=False)
+    assert node._gc_probe is None and len(gc.callbacks) == n0
+    orig = tn.TrajectoryNode.declare_parameter
+
+    def declare(self, name, default_value=None, *a, **kw):
+        if name == 'gc_probe':
+            default_value = True
+        return orig(self, name, default_value, *a, **kw)
+    monkeypatch.setattr(tn.TrajectoryNode, 'declare_parameter', declare)
+    node = tn.TrajectoryNode(start_emitter=False)
+    try:
+        assert node._gc_probe is not None and node._gc_probe.installed
+        assert len(gc.callbacks) == n0 + 1
+        lines = []
+        node.get_logger().info = lambda m, *a, **k: lines.append(str(m))
+        node._gc_probe_tick()
+        assert lines and lines[0].startswith('GC_PROBE trajectory_node ')
+    finally:
+        node._gc_probe.uninstall()

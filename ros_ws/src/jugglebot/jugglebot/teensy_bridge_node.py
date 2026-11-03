@@ -1927,6 +1927,14 @@ class TeensyBridgeNode(Node):
         self.declare_parameter('hand_capture_dir', '')
         self._hand_capture = None
         self._hand_capture_start(self.get_parameter('hand_capture_dir').value)
+        # JB-149: opt-in GC pause probe (default off: nothing installed).
+        self._gc_probe = None
+        self.declare_parameter('gc_probe', False)
+        if bool(self.get_parameter('gc_probe').value):
+            from jugglebot import gc_probe as _gcp
+            self._gc_probe = _gcp.GcProbe()
+            self._gc_probe.install()
+            self.create_timer(1.0, self._gc_probe_tick)   # 1 Hz, not the 500 Hz path
 
         # ── Subscriptions to T→J streams (RX-thread callbacks) ──
         self._client.subscribe(int(MsgType.HEARTBEAT_T2J), self._on_heartbeat_t2j)
@@ -6588,6 +6596,15 @@ class TeensyBridgeNode(Node):
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(f"Profile publish error: {e}",
                                     throttle_duration_sec=5.0)
+
+    def _gc_probe_tick(self):
+        """JB-149: drain the GC probe and log it (1 Hz timer; probe on only)."""
+        from jugglebot import gc_probe as _gcp
+        s = self._gc_probe.summary()
+        line = _gcp.format_summary('teensy_bridge_node', s)
+        self.get_logger().info(line)
+        if s['max_ms'] > _gcp.WARN_PAUSE_MS:
+            self.get_logger().warning(line)
 
     def _publish_udp_diag(self):
         """Publish the per-message-type UDP link census as DiagnosticStatus.

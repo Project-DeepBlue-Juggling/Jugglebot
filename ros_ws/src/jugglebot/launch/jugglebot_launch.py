@@ -339,6 +339,13 @@ def generate_launch_description():
                     'received Hand sample to ~/Desktop/Jugglebot/temp/hand_capture/'
                     '*.csv (view with tools/probes/hand_capture_view.py).')
 
+    # JB-149: opt-in GC pause probe in both stream nodes (default off).
+    gc_probe = LaunchConfiguration('gc_probe')
+    gc_probe_arg = DeclareLaunchArgument(
+        'gc_probe', default_value='false',
+        description='JB-149: true -> trajectory_node and teensy_bridge_node log a '
+                    '1 Hz GC_PROBE line (collections, max pause ms). Diagnostic only.')
+
     # ── Core ROS2 nodes ──────────────────────────────────────────
     orchestrator_node = Node(
         package='jugglebot',
@@ -511,7 +518,8 @@ def generate_launch_description():
         # with it applied (sitting 7b, n=22). `ros2 param set` still
         # overrides it live; [0.0, 0.0] turns it off for an A/B.
         parameters=[{'pre_release_hold_s': pre_release_hold_s,
-                     'level_trim_deg': [0.0945, 0.3678]}],
+                     'level_trim_deg': [0.0945, 0.3678],
+                     'gc_probe': PythonExpression(["'", gc_probe, "' == 'true'"])}],
         # THE node the cap exists for: it owns BOTH the planner (plan_cycle) and
         # the 40 Hz emitter thread the can-bridge's 250 ms SETPOINT_STALE watchdog
         # watches, so an uncapped BLAS pool here starves the wire from inside the
@@ -572,6 +580,7 @@ def generate_launch_description():
             # bare-launch fail-safe; this override is what a real launch runs.
             'hand_torque_ff_gain': 0.7,
             # TEMPORARY (JB-147 diagnostic capture): '' = off.
+            'gc_probe': PythonExpression(["'", gc_probe, "' == 'true'"]),
             'hand_capture_dir': PythonExpression([
                 "'", os.path.expanduser('~/Desktop/Jugglebot/temp/hand_capture'),
                 "' if '", hand_capture, "' == 'true' else ''"]),
@@ -880,6 +889,7 @@ def generate_launch_description():
         teensy_ip_arg,
         enable_setpoint_output_arg,
         auto_arm_arg,
+        gc_probe_arg,  # JB-149 diagnostic
         hand_capture_arg,  # TEMPORARY (JB-147 diagnostic capture)
         # Infrastructure (gui_server.py runs independently in the background)
         rosbridge_websocket_node,

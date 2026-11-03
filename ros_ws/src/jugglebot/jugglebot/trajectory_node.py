@@ -84,6 +84,8 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.logging import LoggingSeverity
 from rclpy.node import Node
 
+from jugglebot import gc_probe as _gc_probe_mod
+
 from std_msgs.msg import Float64MultiArray, String
 from std_srvs.srv import Trigger
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
@@ -1143,6 +1145,13 @@ class TrajectoryNode(Node):
         self.commanded_pose_pub = self.create_publisher(
             Pose, 'trajectory/commanded_pose', 10)
         self.create_timer(0.2, self._publish_status)
+        # JB-149: opt-in GC pause probe (default off: nothing installed).
+        self._gc_probe = None
+        self.declare_parameter('gc_probe', False)
+        if bool(self.get_parameter('gc_probe').value):
+            self._gc_probe = _gc_probe_mod.GcProbe()
+            self._gc_probe.install()
+            self.create_timer(1.0, self._gc_probe_tick)   # 1 Hz, not the 40 Hz path
         # Re-measure the ROS↔perf clock offset every REFRESH_PERIOD_S to track
         # drift (cadence shared with catch_coordinator_node via
         # jugglebot.clock_offset). NOTE: since the lead_time_s interface change
@@ -5334,6 +5343,14 @@ class TrajectoryNode(Node):
     # ═══════════════════════════════════════════════════════════
     # Status + diagnostics (5 Hz)
     # ═══════════════════════════════════════════════════════════
+
+    def _gc_probe_tick(self):
+        """JB-149: drain the GC probe and log it (1 Hz timer; probe on only)."""
+        s = self._gc_probe.summary()
+        line = _gc_probe_mod.format_summary('trajectory_node', s)
+        self.get_logger().info(line)
+        if s['max_ms'] > _gc_probe_mod.WARN_PAUSE_MS:
+            self.get_logger().warning(line)
 
     def _publish_status(self):
         # Non-blocking worker health (reap a dead / kill a hung worker, take
