@@ -11,6 +11,10 @@ invents a ``do:`` step: an Item without a valid section is listed under
 Rows are grouped by rig first (robot, bench leg, bench hand: a Sitting is on one
 rig), then by setup set within a rig.
 
+A result typed in the map app lands on the Item as ``## Sitting result (<date>)`` or, since
+2026-11-03, ``## Sitting result (<date> HH:MM)`` (24-hour local clock, the time it was saved);
+``parse_sitting_results`` reads both forms.
+
 The page carries no wall-clock date, so ``python -m mapkit gen --check`` can
 tell a stale committed page from a fresh one.
 """
@@ -249,7 +253,8 @@ def render_runbook(repo_root: str) -> str:
     out += ["- %s %s (parent %s)" % q for q in data["questions"]] or ["- none"]
     out += ["", "## Close-out", "",
             "- Type each row's result in the map app (pass, fail, or pending when the verdict needs "
-            "the logs; notes); it lands on the Item as `## Sitting result (<date>)`.",
+            "the logs; notes); it lands on the Item as `## Sitting result (<date>)` "
+            "or, when saved with a time, `## Sitting result (<date> HH:MM)` with the time the result was saved.",
             "- Then, in a Session in the live checkout: `/sitting-debrief <date>`.", ""]
     return "\n".join(out)
 
@@ -260,12 +265,27 @@ def render_runbook(repo_root: str) -> str:
 VERDICTS = ("pass", "fail", "pending")
 
 
-def append_sitting_result(body: str, date: str, verdict: str, notes: str) -> str:
-    """Append ``## Sitting result (<date>)`` before any ``## Progress`` section, else at the end."""
+RESULT_HEADING = re.compile(r"^##\s+Sitting result \((\d{4}-\d{2}-\d{2})(?: (\d{2}:\d{2}))?\)\s*$")
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_TIME_RE = re.compile(r"^(\d{2}):(\d{2})$")
+
+
+def append_sitting_result(body: str, date: str, verdict: str, notes: str,
+                          time: Optional[str] = None) -> str:
+    """Append ``## Sitting result (<date>)`` (``(<date> HH:MM)`` with ``time``) before any
+    ``## Progress`` section, else at the end."""
     if verdict not in VERDICTS:
         raise ValueError("verdict must be one of %s, got %r" % (", ".join(VERDICTS), verdict))
+    if not _DATE_RE.fullmatch(date) or not (1 <= int(date[5:7]) <= 12 and 1 <= int(date[8:10]) <= 31):
+        raise ValueError("date must be YYYY-MM-DD, got %r" % (date,))
+    stamp = date
+    if time is not None:
+        m = _TIME_RE.fullmatch(time)
+        if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+            raise ValueError("time must be HH:MM (00:00-23:59), got %r" % (time,))
+        stamp = "%s %s" % (date, time)
     block = "## Sitting result (%s)\n\n- verdict: %s\n- notes: %s\n" % (
-        date, verdict, " ".join(notes.split()))
+        stamp, verdict, " ".join(notes.split()))
     lines = body.split("\n")
     for idx, line in enumerate(lines):
         if re.match(r"^##\s+progress\s*$", line, re.IGNORECASE):
@@ -273,3 +293,28 @@ def append_sitting_result(body: str, date: str, verdict: str, notes: str) -> str
             tail = "\n".join(lines[idx:])
             return (head + "\n\n" if head else "") + block + "\n" + tail
     return body.rstrip("\n") + ("\n\n" if body.strip() else "") + block
+
+
+def parse_sitting_results(body: str) -> List[Dict[str, Optional[str]]]:
+    """Every ``## Sitting result`` section in file order: date, time (or None), verdict, notes."""
+    out: List[Dict[str, Optional[str]]] = []
+    cur: Optional[Dict[str, Optional[str]]] = None
+    last = ""  # the bullet key the previous line set, for indented notes continuations
+    for line in body.split("\n"):
+        m = RESULT_HEADING.match(line)
+        if m:
+            cur = {"date": m.group(1), "time": m.group(2), "verdict": "", "notes": ""}
+            last = ""
+            out.append(cur)
+        elif re.match(r"^##\s", line):
+            cur = None
+        elif cur is not None:
+            # ``- notes:`` as written by the app, or a hand-edited variant such as
+            # ``- notes (split into bullets):`` whose text continues in indented bullets.
+            b = re.match(r"^[-*]\s+(verdict|notes)\b[^:]*:\s*(.*?)\s*$", line)
+            if b:
+                cur[b.group(1)] = b.group(2)
+                last = b.group(1)
+            elif last == "notes" and re.match(r"^\s+[-*]\s+\S", line):
+                cur["notes"] = (cur["notes"] + " " + line.strip()[2:].strip()).strip()
+    return out

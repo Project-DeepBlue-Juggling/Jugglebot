@@ -45,11 +45,11 @@ Visually subtle: the two apexes differ by 100 mm.
 - why: P5 of plan pattern-progression.md: two Apexes in one Pattern (JP-9). The Rung flies 1.00 over 0.90 at separation 100; since the 2026-10-31 re-sweep (Hand prime 10.45, box gate_hash 961808ee2d20) 1.05 over 0.95 is admissible at both Sites too, but a 1.05 launch waits for the faster hand current capture (plan D-c).
 - do:
   - Rehearse before arming: cup empty, Ball Butler unpowered, `ros2 param set /skill_node apex_m_ball2 0.90`, send the goal below once. The accept message may name only the cup and Ball Butler refusals (no box, planner or apex2 refusal) and nothing moves.
-  - GUI: Juggle panel `Columns — high-low`, Apex 1.00, Apex 2 0.90, Sep. 100, Dwell 0.27, Throws 20 (Start writes apex_m_ball2 to the node first). Terminal fallback: `ros2 param set /skill_node apex_m_ball2 0.90` (refused while a goal runs), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_highlow, apex_m: 1.00, separation_mm: 100.0, dwell_s: 0.27, num_cycles: 21}" --feedback`.
+  - GUI: Juggle panel `Columns — high-low`, Apex 1.00, Apex 2 0.90, Sep. 100, Dwell 0.27, Throws 21 (Start writes apex_m_ball2 to the node first). Terminal fallback: `ros2 param set /skill_node apex_m_ball2 0.90` (refused while a goal runs), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_highlow, apex_m: 1.00, separation_mm: 100.0, dwell_s: 0.27, num_cycles: 21}" --feedback`.
   - Watch the hand current at every launch; cancel the goal if any hand iq sample reaches 55.0 A (the hand current limit is 60 A since 2026-11-01, was 50 A with a 50.0 A watch).
   - Afterwards `ros2 param set /skill_node apex_m_ball2 0.0`.
 - pass: 20 consecutive Catches in one Attempt, flown with Throws 21 (the 21st throw is the Stop throw, not counted, so a full Attempt reads `COMPLETED (20/20 caught)`; with Throws 20 it reads 19/19 and the bar is unreachable); Tracker mean Apex difference between the two balls within 20 mm of the commanded 100 mm; hand iq under 54 A at every launch, judged on launches only (the brake is excluded; it reached the 60 A clamp twice on 2026-11-03).
-- record: caught of thrown, each ball's mean Tracker Apex, peak hand iq per launch, the bag path; commit docs/records.md.
+- record: caught of thrown, each ball's mean Tracker Apex, peak hand iq per launch, Ball 2's first-throw landing (x, y) mm per Attempt from the install line (JB-161: 4 of 11 landed about 180 mm outward and a fifth 37 mm on 2026-11-03), the bag path; commit docs/records.md.
 - minutes: 12
 
 ## Sitting result (2026-11-03)

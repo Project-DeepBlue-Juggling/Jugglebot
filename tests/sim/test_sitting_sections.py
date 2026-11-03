@@ -169,6 +169,49 @@ def test_append_result_placement_and_error():
         sitting.append_sitting_result("Body.\n", "2026-11-02", "maybe", "")
 
 
+def test_append_result_timed_and_validation():
+    out = sitting.append_sitting_result("Body.\n", "2026-11-02", "pass", "ok", time="14:05")
+    assert out.endswith("## Sitting result (2026-11-02 14:05)\n\n- verdict: pass\n- notes: ok\n")
+    untimed = sitting.append_sitting_result("Body.\n", "2026-11-02", "pass", "ok")
+    assert untimed == "Body.\n\n## Sitting result (2026-11-02)\n\n- verdict: pass\n- notes: ok\n"
+    for bad in ("24:00", "12:60", "9:05", "1405", ""):
+        with pytest.raises(ValueError):
+            sitting.append_sitting_result("Body.\n", "2026-11-02", "pass", "ok", time=bad)
+    with pytest.raises(ValueError):
+        sitting.append_sitting_result("Body.\n", "11/02", "pass", "ok")
+
+
+def test_parse_sitting_results_both_forms():
+    body = sitting.append_sitting_result("Body.\n", "2026-11-02", "fail", "bad")
+    body = sitting.append_sitting_result(body, "2026-11-03", "pending", "check the bag", time="09:30")
+    body += "\n## Progress\n\n- verdict: pass\n"
+    assert sitting.parse_sitting_results(body) == [
+        {"date": "2026-11-02", "time": None, "verdict": "fail", "notes": "bad"},
+        {"date": "2026-11-03", "time": "09:30", "verdict": "pending", "notes": "check the bag"},
+    ]
+    assert sitting.parse_sitting_results("Body.\n") == []
+
+
+def test_append_result_rejects_trailing_newline_and_impossible_dates():
+    # ``$`` would accept "2026-11-02\n" and write a heading no reader matches; fullmatch does not.
+    for bad_date in ("2026-11-02\n", "2026-13-01", "2026-11-32"):
+        with pytest.raises(ValueError):
+            sitting.append_sitting_result("Body.\n", bad_date, "pass", "ok")
+    with pytest.raises(ValueError):
+        sitting.append_sitting_result("Body.\n", "2026-11-02", "pass", "ok", time="14:05\n")
+
+
+def test_parse_sitting_results_reads_hand_split_notes():
+    # The debrief re-flows an over-long owner box into ``- notes (...):`` plus indented bullets.
+    body = ("## Sitting result (2026-11-03)\n\n- verdict: fail\n"
+            "- notes (the owner's box, split into bullets):\n"
+            "  - At 1.35 the hand isn't using the full stroke.\n"
+            "  - At 1.45 the first attempt was uncatchable.\n\n## Progress\n\n- 2026-11-03: x\n")
+    assert sitting.parse_sitting_results(body) == [{
+        "date": "2026-11-03", "time": None, "verdict": "fail",
+        "notes": "At 1.35 the hand isn't using the full stroke. At 1.45 the first attempt was uncatchable."}]
+
+
 def test_runbook_page_current():
     with open(os.path.join(REPO, "docs", "runbook.md"), encoding="utf-8") as fh:
         assert fh.read() == sitting.render_runbook(REPO)

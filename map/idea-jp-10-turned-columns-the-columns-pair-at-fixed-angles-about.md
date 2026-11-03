@@ -48,7 +48,7 @@ It proves the rotational symmetry on hardware that lets the admissible box key o
   - Set the plant per angle before each angle's first goal (never set on 2026-11-01 or 2026-11-03, so JB-38 P2(b) is unanswered): `ros2 param set /skill_node plant_id <name>` with a distinct name per angle, for example `turned45` and `turned90`, refused while a goal runs; read it back from the goal start line (`plant_id=...`) and write it in the record.
   - Afterwards `ros2 param set /skill_node columns_angle_deg 0`.
 - pass: 20 consecutive Catches in one Attempt at each angle, flown with Throws 21 (the 21st throw is the Stop throw, so `COMPLETED (20/20 caught)`; with Throws 20 it reads 19/19); landing scatter, per ball and per axis, with the mean within 15 mm and the sd within 10 mm of the straight control (proposed 2026-11-03, owner to confirm; the old "within 3 mm" was below the control's own run-to-run sd of 18-31 mm); no HAND_LIMIT line.
-- record: caught of thrown per angle, each angle's plant_id, landing scatter against the control, the bag path; commit docs/records.md.
+- record: caught of thrown per angle, each angle's plant_id, landing scatter against the control, Ball 2's first-throw landing (x, y) mm per Attempt (JB-161: 5 of 7 landed outward at 90 deg on 2026-11-03), the bag path; commit docs/records.md.
 - minutes: 20
 
 ## Sitting 2026-11-01 findings

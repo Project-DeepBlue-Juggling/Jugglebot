@@ -21,6 +21,18 @@ filed_by: sitting-debrief 2026-11-03
 
 On 2026-11-03 Ball 2's first Throw after the feed catch landed about 180 mm outward along the separation axis in 5 of 11 high-low Attempts and in 5 of 7 turned-90-degree Attempts. When it happens the Attempt ends within about 3 s at 0/0 or 1/1.
 
+## Sitting
+
+- setup: level, armed, bb-fed
+- why: the hypothesis is that a feed catch whose lateral aim was clamped seats the ball off-centre and the first Throw carries a lateral kick. A fresh plant_id aims the feed catch by the identity prior, so the clamp never engages: if the outward first throw disappears the clamped aim is implicated, if it persists the clamp is cleared. Either outcome is data.
+- do:
+  - Fly this right after the JB-107 high-low Attempts, same settings. Before the goal: `ros2 param set /skill_node plant_id jb161-fresh-<date>` (a name no memory file has; refused while a goal runs) and `ros2 param set /skill_node apex_m_ball2 0.90`.
+  - GUI: Juggle panel `Columns - high-low`, Apex 1.00, Apex 2 0.90, Sep. 100, Dwell 0.27, Throws 21. One Attempt; a second only if the first ended before Ball 2's first Throw for an unrelated reason.
+  - Afterwards restore the plant_id the JB-107 Attempts used (read it from their goal start line, `plant_id=...`) and `ros2 param set /skill_node apex_m_ball2 0.0`.
+- pass: Ball 2's first Throw after the feed catch lands within 60 mm of its Site along the separation axis (the 2026-11-03 misses were about 180 mm outward: landings x -223 to -240 against aims near -50).
+- record: the plant_id, Ball 2's first-throw landing (x, y) mm and its aim from the install line, the feed-catch aim line (clamped or not), how the Attempt ended, the bag path.
+- minutes: 10
+
 ## Findings (Sitting 2026-11-03, launch.log lines as cited)
 
 - High-low Attempts 5, 8, 10 and 11 (ends at L9881, L10944, L11442, L11610) ended 0/0 or 1/1 on that Throw, with first Ball 2 landings (-230,-17), (-223,-97), (-228,-117) and (-240,+16) mm against aims near x -50.

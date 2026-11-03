@@ -305,7 +305,7 @@ wall-clock from `date` at start and end, one `key: value` line each, and make it
 section with no trailing text: after you exit the runner appends `total API cost: USD <n>` to it as its own docs
 commit on `main` (and records the figure in `last_run.json`).
 
-`## Unaddressed Sitting results`: every `## Sitting result (<date>)` section on an Item
+`## Unaddressed Sitting results`: every `## Sitting result (<date>)` section (optionally `(<date> HH:MM)`; the date part decides) on an Item
 (`grep -l '## Sitting result' map/*.md`) whose date is newer than the newest
 `logbook/*-sitting-debrief.md` (or the older `*-sitting-wrapup.md`) entry, one table row `| JB-n | <date> | <verdict> |`; none ->
 `none recorded`. The owner closes them with `/sitting-debrief <date>`; you never merge a Sitting's

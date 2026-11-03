@@ -96,7 +96,7 @@ In every block the faulting launches sit at or above the p90 of that block's mea
 - why: the torque loss happened at 13-54 A so the 60 A limit does not explain the SPINOUTs and a 70 A brake is harder; this run measures whether the SPINOUT rate moves with the drive now at 70/80 A (K and limits unchanged).
 - do:
   - Re-home the Hand first: the ODrive GUI save on 2026-11-03 (limits 70/80 A, thermistor 60/70 C) reset the zero (JB-146 class).
-  - Fly Columns, Sep. 125, Apex 1.35, Throws 20, twice, with `hand_capture` on.
+  - Fly Columns, Sep. 125, Apex 1.35, Throws 21, twice, with `hand_capture` on (the 21st throw is the Stop throw, so a full Attempt reads 20/20).
   - Stop at the FIRST SPINOUT_DETECTED or Hand iq over 66 A.
 - pass: no SPINOUT_DETECTED in either run.
 - record: per run the catches; the SPINOUT count with the Hand position, velocity and iq at the torque loss from the capture; the peak brake iq; whether the 70 A limit was in effect (an iq setpoint beyond 60 A).

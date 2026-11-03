@@ -12,7 +12,7 @@ paperwork is this command. It is the close-out the Next Sitting Runbook (`docs/r
 `## Close-out`) promises, step for step.
 
 Arguments: `$ARGUMENTS` (`<date>` = the Sitting's date, the one in the `## Sitting result
-(<date>)` headings and in `night-shift/sitting-<date>`; with no date, every Sitting since the
+(<date>)` headings (optionally `(<date> HH:MM)`, time informational) and in `night-shift/sitting-<date>`; with no date, every Sitting since the
 last debrief is in scope; `--dry-run` = run the analysis (section 1) and the results table
 (section 2.2), write nothing to the repo or the map, and stop after the verdict table).
 
@@ -79,7 +79,7 @@ Then go on to sections 2 to 6.
 
 1. `python -m mapkit items --open --json` and, for every hardware Item (`hardware` bench-leg, bench-hand or
    robot) plus every Item named by a `branch:` in `docs/runbook.md`, read its body for
-   `## Sitting result (<date>)` sections newer than the last debrief (the last debrief's date
+   `## Sitting result (<date>)` sections (the heading may carry a trailing `HH:MM`, informational; scope by the date part; parser: `mapkit.sitting.parse_sitting_results`) newer than the last debrief (the last debrief's date
    is the newest `logbook/*-sitting-debrief.md` or older `logbook/*-sitting-wrapup.md` entry; none = all of them).
 2. For each result: Item, verdict (`pass`, `fail` or `pending`), notes, and the held branch its `## Sitting`
    section names (if any). List them in a table before touching anything. (Section 1 has already produced the verdicts; this table is the Items' typed results reconciled against them.)
