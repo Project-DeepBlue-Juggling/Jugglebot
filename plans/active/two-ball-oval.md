@@ -514,7 +514,7 @@ Where the idea lives now: a note inside P3 (below). Code never started; nothing 
 - One commit: `leg_acc_ceiling_mmps2` 5000 → 10000; session defaults 350/5000/200000 →
   600/8000/200000; `leg_curr_limit_a` 15 → 20 (amended 2026-11-03, owner: 20 A operating, ODrive trip 30 A), the drives' `current_hard_max` and `config/ODrive config Files/` written by a separate session;
   `python config/generate_config.py`; box re-swept with oval cells (150 mm at the plannable dwells,
-  apex band covering 0.95–1.0) AND the columns cells, twice, bit-identical; relaunch.
+  apex band covering 0.95–1.0) AND the columns cells, one round plus a byte-for-byte spot check (owner 2026-11-03); relaunch.
 - Ramp sitting: five columns attempts at the proven geometry under the new box (guard margin,
   leg current, tracking lag against the 32-consecutive baseline), then the one-ball oval at the
   shortest admissible dwell (peak leg current per transit from the bag is the 20 A measurement).
