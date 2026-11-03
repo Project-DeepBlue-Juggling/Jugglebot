@@ -1132,8 +1132,16 @@ class SkillNode(Node):
         # first unpinned sitting (Block B): 40 mm dropped balls on the 25-throw
         # chains at 0.9 m (the learner's y command reached +29 mm against a
         # 17.6 mm plant scatter — two drops in 51), 20 mm was stable at both
-        # apexes — 20 mm is the launch default; the box still admits 40.
-        self.declare_parameter('learner_lateral_authority_mm', 20.0)
+        # apexes — 20 mm was the launch default. Owner 2026-11-02 (JB-139):
+        # 30 mm. Ball 2's Columns throw lands ~(+22, +17) mm off its aim, a
+        # stable plant bias since 2026-10-04, and the learner sat pinned at
+        # 20; shipped in the SAME commit as the box swept to +/-30 mm
+        # (tools/admissible_sweep.py OFFSETS_MM; the 250 mm hop's grid stops
+        # at +/-25, the accept-time workspace bound). This knob also sets the
+        # tracker catch's ACROSS-axis clamp and the one-site catch clamp
+        # (executor._clamp_lateral_to_schedule), hence cup_cycle.
+        # CAPTURE_MAX_OFFSET_M = hypot(inward 35, 30).
+        self.declare_parameter('learner_lateral_authority_mm', 30.0)
         # DEBUG catch-time offset (ms), added to every catch's touch-down time
         # AT DISPATCH (executor `_clamp_lateral_to_schedule`).  Default 0 =
         # bit-identical.  The Ball Butler A/B of the catch-learner decision

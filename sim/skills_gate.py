@@ -745,10 +745,10 @@ def _make_bumper(ictx: _InstallCtx, limits, geom):
 #: ``skill_node.py`` and fails if these drift. JB-27 (2026-11-01): the
 #: ``--reload`` gate left them unset, so the second catch's 41-45 mm tracker
 #: re-aim went through UNCLAMPED where the robot clips it to the 20 mm learner
-#: authority; with them set the gate makes 2 per seed again (1 before; the
+#: authority (30 mm since JB-139, 2026-11-02); with them set the gate makes 2 per seed again (1 before; the
 #: ``LIMIT_JERK`` ends JB-27 saw after 08ec3fe6 no longer reproduce on main).
 LAUNCH_LATERAL_AUTHORITY_MM = {
-    'learner_lateral_authority_mm': 20.0,
+    'learner_lateral_authority_mm': 30.0,
     'catch_outward_authority_mm': 10.0,
     'catch_inward_authority_mm': 35.0,
 }

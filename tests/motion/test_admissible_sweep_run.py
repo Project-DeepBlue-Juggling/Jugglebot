@@ -13,9 +13,10 @@ def _names(which='committed'):
 
 
 def test_family_sets_are_unique_and_sized():
-    c, h = _names('committed'), _names('h70')
-    assert len(c) == 26 and len(set(c)) == 26
-    assert len(h) == 30 and h[:26] == c
+    c, h, old = _names('committed'), _names('h70'), _names('h4500')
+    assert len(old) == 26 and len(set(old)) == 26
+    assert len(c) == 30 and len(set(c)) == 30 and c[:26] == old
+    assert h == c
 
 
 def test_sample_is_deterministic_and_sized():

@@ -207,15 +207,16 @@ def test_a_fit_beyond_the_per_axis_clamp_is_clamped_then_installs(limits, geom):
 def test_a_re_aim_past_the_clamp_is_refused_at_the_planner_by_the_cap(
         limits, geom):
     """With the clamp opened to 50 mm (the failure this backstop exists for: a
-    wrong clamp or a wrong tracker fit) a (30, 30) mm = 42.4 mm re-aim exceeds
-    ``CAPTURE_MAX_OFFSET_M`` (40.31 mm = hypot(35, 20), the widest the real
+    wrong clamp or a wrong tracker fit) a (35, 35) mm = 49.5 mm re-aim exceeds
+    ``CAPTURE_MAX_OFFSET_M`` (46.10 mm = hypot(35, 30) since JB-139,
+    2026-11-02; 40.31 = hypot(35, 20) before), the widest the real
     clamp can emit) and the PLANNER refuses ``CATCH_AXIS`` naming the cap —
     it is not chased.  Just inside the cap (25, 25) = 35.4 mm installs."""
     rig = _Rig(limits, geom, authority_m=0.050)
-    rig.start(30.0, 30.0)
+    rig.start(35.0, 35.0)
     x = rig.x
     assert x.attempt_ended and x.end_code == 'CATCH_AXIS'
-    assert 'past the' in x.end_message and '40.3 mm' in x.end_message
+    assert 'past the' in x.end_message and '46.1 mm' in x.end_message
     assert 'slide' in x.end_message
 
     inside = _Rig(limits, geom, authority_m=0.050)
@@ -231,7 +232,7 @@ def test_a_refused_first_dispatch_ends_cleanly_and_levels_the_platform(
     closing decay then dispatches the schedule's level REST at its scheduled
     instant — through the real planner — so the machine is not left tilted."""
     rig = _Rig(limits, geom, authority_m=0.050)
-    rig.start(30.0, 30.0)
+    rig.start(35.0, 35.0)
     x = rig.x
     assert x.attempt_ended and x.end_code == 'CATCH_AXIS'
     assert [k for k, r in rig.installs] == [sg.REST, sg.CATCH]

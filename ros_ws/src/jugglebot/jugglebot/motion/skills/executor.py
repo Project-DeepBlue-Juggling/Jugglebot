@@ -706,7 +706,7 @@ TRACKED_LANDING_TIME_BAND_S = RELEASE_FIT_TOL_S
 
 #: Lateral identity bound (mm, per axis) on a tracker landing against the
 #: schedule's landing for the same release. Not the platform's lateral
-#: AUTHORITY (:attr:`SkillExecutor.lateral_authority_m`, 20 mm live), which
+#: AUTHORITY (:attr:`SkillExecutor.lateral_authority_m`, 30 mm live since 2026-11-02, JB-139), which
 #: decides how far a VALID estimate may move the catch: this decides whether
 #: the estimate is about this ball at all. Our own throws' lateral bias is
 #: +0.05..+0.12 m (:meth:`SkillExecutor._clamp_lateral_to_schedule`), Ball
@@ -2504,7 +2504,7 @@ class SkillExecutor:
         command is what the sweep's flight-fraction rungs
         (``--single-flight-frac``, -20..+10 %) cover. What changes on the
         wire: only the throw's lateral launch velocity, bounded by
-        :attr:`lateral_authority_m` (20 mm over a ~0.86 s flight, ~25 mm/s).
+        :attr:`lateral_authority_m` (30 mm over a ~0.86 s flight, ~35 mm/s; 20 mm before JB-139).
         Without a learner the box clips ``y_d`` exactly as before.
 
         No ``learner`` ⇒ ``u = y_d`` exactly (R2 behaviour). Raises
@@ -3060,8 +3060,8 @@ class SkillExecutor:
         ``ThrowAfterCatch.site_mm`` is the CLAMPED landing's xy at this site's
         release z. ``target_mm``, ``flight_s`` and ``t_release_s`` are
         unchanged: the pattern still names the SITE as the target, and the
-        ballistics from the offset release absorb the <= 20 mm shift as a
-        <= 25 mm/s lateral launch component (20 mm over a 0.86 s flight).
+        ballistics from the offset release absorb the <= 30 mm shift as a
+        <= 35 mm/s lateral launch component (30 mm over a 0.86 s flight).
         Re-centring on the nominal site belongs in the flight — the SETTLE
         tail AFTER the ball has left — which is why ``rest_site_mm`` stays
         ``skill.site.rest_site_mm()``. A re-send re-derives the release xy
@@ -3098,8 +3098,8 @@ class SkillExecutor:
         **Admissible box:** the boxes in ``config/generated/admissible_box.
         yaml`` were swept for releases AT the site, and this unit deliberately
         does not touch them. The release offset is bounded by the same lateral
-        authority the landing is (:attr:`lateral_authority_m`, 20 mm at the
-        R4 launch default), and the online ``validate_cycle`` gate remains the
+        authority the landing is (:attr:`lateral_authority_m`, 30 mm at the
+        launch default since 2026-11-02, JB-139; 20 mm at R4), and the online ``validate_cycle`` gate remains the
         authority: a ``REJECTED_CYCLE_INFEASIBLE`` on a re-aimed carried throw
         is the expected surface, not a box to widen.
 
@@ -3208,7 +3208,7 @@ class SkillExecutor:
         its dispatch, or the last re-send that refined its landing. A prior
         built between the dispatch and a later re-send therefore uses a
         release that the re-send can still move, by at most the re-aim delta
-        (<= :attr:`lateral_authority_m`, 20 mm): a <= 25 mm/s launch-velocity
+        (<= :attr:`lateral_authority_m`, 30 mm): a <= 35 mm/s launch-velocity
         difference, far inside the tracker fit that supersedes this prior the
         moment the ball is in the air (:meth:`_catch_aim`, rank 1 vs rank 2).
         The site is the fallback when nothing is recorded — a release this

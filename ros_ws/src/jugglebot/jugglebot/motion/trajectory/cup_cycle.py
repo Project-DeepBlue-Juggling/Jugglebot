@@ -1135,27 +1135,29 @@ HELD_AXIS_SEED_TOL = (1e-4, 1e-3, 1e-2)
 #: fit:
 #:
 #: * ``executor._clamp_lateral_to_schedule`` clips the tracker landing to
-#:   ``learner_lateral_authority_mm`` = 20 mm per axis about the schedule's
+#:   ``learner_lateral_authority_mm`` = 30 mm per axis about the schedule's
 #:   landing, EXCEPT on a two-site schedule, whose INWARD authority is
 #:   ``catch_inward_authority_mm`` = 35 mm (owner decision
 #:   2026-10-19: the cap follows the clamp INCLUDING that branch).  Worst case
-#:   is 35 mm inward on one axis with 20 mm on the other:
-#:   ``hypot(35, 20)`` = **40.31 mm**.
+#:   is 35 mm inward on one axis with 30 mm on the other (the lateral
+#:   authority went 20 -> 30 mm with JB-139, 2026-11-02; 40.31 mm before):
+#:   ``hypot(35, 30)`` = **46.10 mm**.
 #: * Its jerk, from the planner's own minimum-acceleration rest-to-rest
 #:   expression (``6·|e0| / (k(k−1)·dt³)``, see :func:`_capture_knots_needed`):
-#:   at 40.31 mm and the 200 000 mm/s³ live leg jerk cap ``k(k−1) >= 77.4``, so
+#:   at 46.10 mm and the 200 000 mm/s³ live leg jerk cap ``k(k−1) >= 88.5``, so
 #:   the minimum hold-start knot is **k_h = 10 (250 ms)**; at the dispatch-time
-#:   ``k_h`` of 15-17 it peaks at 57-74 m/s³, 28-37 % of the cap.
+#:   ``k_h`` of 15-17 it peaks at 65-84 m/s³, 33-42 % of the cap (40.31 mm:
+#:   77.4, 57-74 m/s³).
 #:
 #: A tracker landing whose height differs from the announced one adds
 #: ``κ·Δz`` (≤ 0.21 mm per mm at the 12° ceiling) on top of the clamp, so a
-#: re-aim AT the 40.31 mm corner with a few mm of height disagreement is
+#: re-aim AT the 46.10 mm corner with a few mm of height disagreement is
 #: refused — accepted on purpose: that corner is reachable only on a two-site
 #: reload schedule, which nothing compiles today.  (The two-site branch clips
 #: the ACROSS component per axis, so an outward unit that is not on a world
-#: axis could reach ``hypot(35, 20·√2)`` = 45.0 mm; every pattern flown has
+#: axis could reach ``hypot(35, 30·√2)`` = 55.0 mm; every pattern flown has
 #: its sites on one axis, and the owner's sizing is the on-axis corner.)
-CAPTURE_MAX_OFFSET_M = float(np.hypot(0.035, 0.020))
+CAPTURE_MAX_OFFSET_M = float(np.hypot(0.035, 0.030))
 
 #: The rank floor on ``k_h``: the three per-axis rows at ``k_h`` (position,
 #: velocity, acceleration onto the line) reach the lateral jerks ``0..k_h-1``

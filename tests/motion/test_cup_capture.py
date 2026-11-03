@@ -188,17 +188,18 @@ def test_a_held_landing_captures_onto_the_refined_line_by_the_contact_window(off
 
 
 def test_a_capture_past_the_authority_is_refused_before_the_solve():
-    """Past ``CAPTURE_MAX_OFFSET_M`` (40.31 mm = hypot(35, 20), the widest the
+    """Past ``CAPTURE_MAX_OFFSET_M`` (46.10 mm = hypot(35, 30) since JB-139,
+    2026-11-02, 40.31 = hypot(35, 20) before; the widest the
     executor's clamp can emit) the refusal is ``CATCH_AXIS`` at ASSEMBLY — no
     solve — and the sentence names the offset, the cap, and the knots
     available and needed."""
-    assert cc.CAPTURE_MAX_OFFSET_M == pytest.approx(math.hypot(0.035, 0.020))
-    s0, catch, period, settle, _ = _cup_case((36.0, 21.0), 15)
+    assert cc.CAPTURE_MAX_OFFSET_M == pytest.approx(math.hypot(0.035, 0.030))
+    s0, catch, period, settle, _ = _cup_case((40.0, 24.0), 15)
     with pytest.raises(cc.CupCycleInfeasible) as exc:
         cc._assemble(s0, None, catch, period, _cfg(), settle_site=settle)
     msg = str(exc.value)
     assert exc.value.reason == 'CATCH_AXIS'
-    assert '41.7 mm' in msg and '40.3 mm' in msg, msg
+    assert '46.6 mm' in msg and '46.1 mm' in msg, msg
     assert '15 steps are left' in msg and 'would need 10' in msg, msg
 
 

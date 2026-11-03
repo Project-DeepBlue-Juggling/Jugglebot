@@ -101,10 +101,10 @@ release lateral velocity ``rm.vel_mm_s[:2]`` plus the Euclidean bias ``v_b`` the
 retarget adds) is bounded by :data:`BUMP_MAX_LAUNCH_LATERAL_MM_S` = 50 mm/s;
 above it the bump is declined :data:`BUMP_LAUNCH` (non-terminal: a smaller Δ
 can pass).  ``BumpResult.launch_bias_xy_mm_s`` still reports the bias alone.
-The executor's "<= 25 mm/s" figures (``SkillExecutor._catch_terminal`` /
+The executor's "<= 35 mm/s" figures (``SkillExecutor._catch_terminal`` /
 ``_release_pos_mm``) describe the UNBUMPED carried throw — the release rides
-the caught xy and the ballistics absorb the <= 20 mm offset as <= 25 mm/s —
-so the total is the plan's own <= ~25 mm/s plus ``v_b``; ``v_b`` is a SEPARATE,
+the caught xy and the ballistics absorb the <= 30 mm offset as <= 35 mm/s —
+so the total is the plan's own <= ~35 mm/s plus ``v_b``; ``v_b`` is a SEPARATE,
 planned bias that exists only on a bumped catch (design typical <= 38 mm/s at
 columns timing, T_f 0.88, T_a 0.17; 46 mm/s for any ``T_a`` at the clamped
 ``|Δ| <= 40.3`` mm).  The 2026-09-28 rule exists because an UNPLANNED 85-110

@@ -2,9 +2,9 @@
 id: JB-143
 kind: bug
 title: 'Box at hand acc 4500 traded hop landing width for apex band: the apex 0.95 hop cell''s x range shrank from +/-10 to +/-4 mm'
-status: in_progress
+status: complete
 created: '2026-11-02'
-updated: '2026-11-03T02:35:50Z'
+updated: '2026-11-03T07:09:01Z'
 owners:
 - night-shift
 - jugglebot-50
@@ -19,6 +19,7 @@ blocked_by: []
 links:
 - map/bug-two-ball-columns-hop-start-throw-lands-25-56-mm-inboard-past.md
 - map/bug-admissible-box-gate-passes-a-cell-whose-solve-exceeds-hand.md
+- logbook/2026-11-03-jb143-margin-first-box-and-jb139-30mm-authority.md
 filed_by: claude
 ---
 
@@ -46,3 +47,4 @@ Found 2026-11-02 reviewing the re-sweep at hand acc 4500 (temp/sweeps/h4500, gat
 - 2026-11-02: Owner decision 2026-11-02: keep the landing rectangle as wide as possible; change the sweep's band rule so a cell never gives up landing width for apex band, then re-sweep. Next unit after the 4500 commit.
 - 2026-11-03: Night Shift 2026-11-03: held on night-shift/2026-11-03-JB-143: the band rule built (gate green, audit clean), held as an effort-m slice; unblocked by your call on JB-157 and a re-sweep
 - 2026-11-03: Merged to main 2026-11-03 per JB-157 (option 2): the band-first rule is in tools/admissible_sweep.py and takes effect at the next re-sweep; the committed box is unchanged until then
+- 2026-11-03: Box re-swept 2026-11-03 with the rectangle chosen room-around-the-target first, then area, then band (supersedes the area-ranked rule of f462835b); 104 cells, gate_hash 12ec30249323, room fell in no cell, the four 0 mm cells now 2-30 mm.

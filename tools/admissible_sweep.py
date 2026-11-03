@@ -77,8 +77,13 @@ Usage (venv)::
         --oval-separation-mm 150 --oval-apex 0.95 --single-apex-halfwidth 0.025
 
 Deterministic (``tests/motion/test_unified_cycle.py::
-test_planning_is_deterministic``); run twice and diff the YAML before quoting
-a row. Two operational rules learned 2026-09-27 (kinematic-calibration apply):
+test_planning_is_deterministic``). **A box sweep is ONE full round plus a
+SPOT CHECK (owner, 2026-11-03)**: after the round, re-run two or three small
+families and ``cmp`` their YAML byte for byte against the round's; any
+difference fails the sweep and nothing is committed. The full second round it
+replaces (2026-09-21 .. 2026-11-03) has no logged mismatch once BLAS was
+pinned in code (below), and it doubled the box time (about 2 h at 30
+families). Two operational rules learned 2026-09-27 (kinematic-calibration apply):
 
 * **Pin BLAS to one thread** (``OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1``),
   as the live nodes do. Two default-threaded sweeps side by side thrashed the
@@ -166,9 +171,21 @@ HOP_APEXES_M = (0.80, 0.85, 0.90, 0.95)
 #: Landing offsets per axis (mm): the original +-20/10/0 grid, densified
 #: around the origin 2026-09-21 with +-0.5/1/2/4/6/8 mm -- the 2026-09-16 grid
 #: never sampled the 0-10 mm band, exactly where the old banking defect (fixed
-#: by the cup-contact contract, C-CUP-1) was worst.
-OFFSETS_MM = (-20.0, -10.0, -8.0, -6.0, -4.0, -2.0, -1.0, -0.5, 0.0,
-             0.5, 1.0, 2.0, 4.0, 6.0, 8.0, 10.0, 20.0)
+#: by the cup-contact contract, C-CUP-1) was worst. Widened to +-30 mm with
+#: +-25 between (JB-139, owner decision 2026-11-02): Ball 2's Columns throw
+#: lands ~+22 mm x / +17 mm y off its aim and the learner sat pinned at its
+#: 20 mm authority (``skill_node`` ``learner_lateral_authority_mm``, raised to
+#: 30 in the SAME commit as the box swept on this grid), so commands out to
+#: 30 mm must be swept, not extrapolated. +-25 keeps the edge resolution
+#: where the bias lives, and is the widest a 250 mm HOP may use: the
+#: accept-time ``admissible.check_site_workspace`` refuses a hop box whose
+#: half-extent puts a site (+-125 mm) past ``workspace_xy_m`` (150 mm), so
+#: the hop families pass ``--offsets-mm`` without +-30. Cost: 21^2 / 17^2 =
+#: 1.53x the solves per flight of every non-single family.
+OFFSETS_MM = (-30.0, -25.0, -20.0, -10.0, -8.0, -6.0, -4.0, -2.0, -1.0, -0.5,
+             0.0, 0.5, 1.0, 2.0, 4.0, 6.0, 8.0, 10.0, 20.0, 25.0, 30.0)
+#: :data:`OFFSETS_MM` capped at +-25 mm for the 250 mm HOP (see above).
+HOP_OFFSETS_MM = tuple(o for o in OFFSETS_MM if abs(o) <= 25.0)
 DWELL_S = 0.30
 LEG_VEL_MMPS = float(hw.JB_TRAJ_LEG_VEL_LIMIT_MMPS)
 LEG_ACC_MMPS2 = float(hw.JB_TRAJ_LEG_ACC_LIMIT_MMPS2)
@@ -609,16 +626,34 @@ def _max_rectangle(xs: Sequence[float], ys: Sequence[float], pass_fn,
     contained the origin only because its three-flight grid missed those
     flights.
 
-    Brute force over the O(n^2) index sub-ranges per axis -- trivially cheap
-    at the grid sizes this sweep ever runs (<= 5x5): no solve happens here,
-    every ``pass_fn`` call is a dict lookup already computed by the sweep.
-    Ties (equal area) prefer the rectangle covering more grid points, i.e. the
-    coarser statement of the same admissible set. Returns ``None`` when no
-    single cell passes.
+    Brute force over the O(n^2) index sub-ranges per axis; no solve happens
+    here, every ``pass_fn`` call is a dict lookup already computed by the
+    sweep. ``pass_fn`` is evaluated ONCE per grid point into a matrix and each
+    candidate is checked with a 2D prefix sum (JB-143, 2026-11-02: the
+    rectangle-first band rule calls this once per candidate band, ~16 per
+    cell, so the old per-candidate re-evaluation became minutes per family).
+    Candidates are ranked by :func:`_rect_key`: with ``must_contain`` (every
+    box the sweep writes) **room around the target first** (owner decision
+    2026-11-02, JB-143) -- the smallest distance from ``must_contain`` to any
+    edge, then area, then grid points; without it, area then grid points (the
+    pre-2026-11-02 key). Why margin first: the box bounds the learner's
+    EXPECTED landing about the target (``executor._forward_clip_xy``), and
+    the landing scatter is two-sided, so an area-largest rectangle with (0, 0)
+    on an edge (2026-11-02 h4500/hstep logs, turned45 apex 0.95:
+    x[0, 6] y[-6, 0] mm) leaves zero room in two directions. Ties on the full
+    key keep the first candidate in scan order (strict ``>``). Returns
+    ``None`` when no single cell passes.
     """
     n, m = len(xs), len(ys)
+    # prefix[i][j] = number of FAILING grid points in xs[:i] x ys[:j]
+    prefix = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n):
+        row_fail = 0
+        for j in range(m):
+            row_fail += 0 if pass_fn(xs[i], ys[j]) else 1
+            prefix[i + 1][j + 1] = prefix[i][j + 1] + row_fail
     best = None          # (xlo, xhi, ylo, yhi)
-    best_key = (-1.0, -1)
+    best_key = _rect_key(None, xs, ys, must_contain)
     for xlo_i in range(n):
         for xhi_i in range(xlo_i, n):
             for ylo_i in range(m):
@@ -627,52 +662,100 @@ def _max_rectangle(xs: Sequence[float], ys: Sequence[float], pass_fn,
                             xs[xlo_i] <= must_contain[0] <= xs[xhi_i]
                             and ys[ylo_i] <= must_contain[1] <= ys[yhi_i]):
                         continue
-                    ok = all(pass_fn(xs[i], ys[j])
-                             for i in range(xlo_i, xhi_i + 1)
-                             for j in range(ylo_i, yhi_i + 1))
-                    if not ok:
+                    fails = (prefix[xhi_i + 1][yhi_i + 1] - prefix[xlo_i][yhi_i + 1]
+                             - prefix[xhi_i + 1][ylo_i] + prefix[xlo_i][ylo_i])
+                    if fails:
                         continue
                     area = (xs[xhi_i] - xs[xlo_i]) * (ys[yhi_i] - ys[ylo_i])
                     n_points = (xhi_i - xlo_i + 1) * (yhi_i - ylo_i + 1)
-                    key = (area, n_points)
+                    if must_contain is None:
+                        key = (area, n_points)
+                    else:
+                        key = (min(must_contain[0] - xs[xlo_i],
+                                   xs[xhi_i] - must_contain[0],
+                                   must_contain[1] - ys[ylo_i],
+                                   ys[yhi_i] - must_contain[1]),
+                               area, n_points)
                     if key > best_key:
                         best_key = key
                         best = (xs[xlo_i], xs[xhi_i], ys[ylo_i], ys[yhi_i])
     return best
 
 
+def _rect_key(rect: Optional[Tuple[float, float, float, float]],
+              xs: Sequence[float], ys: Sequence[float],
+              about: Optional[Tuple[float, float]] = None) -> Tuple:
+    """The key :func:`_max_rectangle` ranks by. With ``about`` (its
+    ``must_contain``): ``(margin, area, n_grid_points)``, ``margin`` = the
+    smallest distance from ``about`` to any edge (room around the target,
+    JB-143 owner decision 2026-11-02); without: ``(area, n_grid_points)``.
+    ``None`` ranks below every real rectangle, including the zero-area single
+    point ``(0, 0, 0, 0)``."""
+    if rect is None:
+        return (-1.0, -1) if about is None else (-1.0, -1.0, -1)
+    xlo, xhi, ylo, yhi = rect
+    nx = sum(1 for x in xs if xlo <= x <= xhi)
+    ny = sum(1 for y in ys if ylo <= y <= yhi)
+    area = (xhi - xlo) * (yhi - ylo)
+    if about is None:
+        return (area, nx * ny)
+    return (min(about[0] - xlo, xhi - about[0], about[1] - ylo, yhi - about[1]),
+            area, nx * ny)
+
+
 def _flight_band_and_rect(flights: Sequence[float], offsets_mm: Sequence[float],
                           pass_grid: Dict, center_flight: float
                           ) -> Tuple[Optional[Tuple[float, float]],
                                     Optional[Tuple[float, float, float, float]]]:
-    """The centre flight's xy landing rectangle, and the flight sub-band
-    around ``center_flight`` over which that whole rectangle passes.
+    """The admitted flight sub-band around ``center_flight``, and the xy
+    landing rectangle over it: the LANDING RECTANGLE FIRST, the band second
+    (JB-143, owner decision 2026-11-02: "keep as wide of a tolerated landing
+    x/y as possible").
 
-    Grows OUTWARD from the flight closest to ``center_flight`` (the owner's
-    operating apex, always in ``apexes_m``) while every cell of the centre
-    rectangle -- which always contains the offset-(0, 0) cell, the
-    identity-prior command every R2 columns THROW actually issues -- keeps
-    passing at each newly-included flight. A flight this sweep admits at NO
-    offset at all (this run: apex 0.95 m fails ``HAND_LIMIT_ACC`` on the CATCH
-    even at zero offset -- the higher apex's faster arrival speed alone
-    exceeds the session hand-acceleration limit, independent of any landing
-    miss) is excluded from the band rather than collapsing the whole box to
-    empty. Returns ``(None, None)`` only when the CENTRE flight itself fails
-    at zero offset -- the owner's own operating point failing is not a band
-    to narrow around, it is a sweep the caller must stop and look at.
+    **The objective.** Over every CONTIGUOUS band of grid flights that
+    contains the flight closest to ``center_flight`` (the owner's operating
+    apex, always in the grid), take the rectangle :func:`_max_rectangle`
+    fits over the offsets that pass at EVERY flight of that band, constrained
+    to contain the identity offset (0, 0). Return the band whose rectangle
+    ranks highest, lexicographically on:
 
-    **The band never costs landing width (owner decision 2026-11-02, JB-143).**
-    The rectangle is fixed FIRST, at the centre flight alone (the largest one
-    through (0, 0) there), and a neighbouring flight joins the band only if
-    EVERY cell of that rectangle passes at it. Zero-offset passing is implied,
-    since the rectangle contains (0, 0). Before this, the band grew on
-    zero-offset passing alone and the rectangle was fitted over the whole band
-    afterwards, so a short flight that passed at (0, 0) but failed at large
-    offsets narrowed the cell's landing rectangle for the whole band. The
-    2026-11-02 sweep at hand acc 4500 did exactly that: the hop 0.92-0.97 cell
-    went from +/-10 to +/-4 mm in x for apex band at 0.61-0.69 m that no
-    operating flight uses. Containment is monotone (more flights can only
-    remove cells), so the result does not depend on which side grows first.
+    1. the rectangle's ``(margin, area, n_grid_points)`` (:func:`_rect_key`
+       about (0, 0), the key :func:`_max_rectangle` maximises: ROOM AROUND
+       THE TARGET first -- the smallest distance from (0, 0) to any edge --
+       owner decision 2026-11-02) -- so the returned rectangle is ALWAYS the
+       best one the centre flight admits on its own: a band is only ever
+       grown at no cost to the rectangle;
+    2. the band's flight count, then its span in seconds -- among bands that
+       keep that rectangle, the widest;
+    3. first found (lo/hi walked outward from the centre) -- deterministic.
+
+    Because the rectangle contains (0, 0), every flight of the chosen band
+    passes at zero offset, so the band never crosses a flight the identity
+    command fails (the old rule's own stop, unchanged as a necessary
+    condition). A flight this sweep admits at NO offset (apex 0.95 m failed
+    ``HAND_LIMIT_ACC`` on the CATCH at zero offset at R2) is excluded rather
+    than collapsing the box. Returns ``(None, None)`` only when the CENTRE
+    flight itself fails at zero offset -- the owner's own operating point
+    failing is not a band to narrow around, it is a sweep the caller must
+    stop and look at.
+
+    **Why not the old band-first rule (2026-09-12 .. 2026-11-02).** It grew
+    the band outward while the (0, 0) cell kept passing, THEN fitted the
+    rectangle over offsets passing at every flight of that band -- so a wider
+    band could only narrow the rectangle. At hand acc 4500 (gate_hash
+    dd4ae01a93a0, JB-143) the 0.65-0.73 s hop flights began to pass at (0, 0)
+    but failed HAND_LIMIT_C2 at large x offsets; the band grew down to apex
+    ~0.61 m and the apex 0.92-0.97 hop cell (the one Columns at 0.95 flies)
+    shrank from x +/-10 to +/-4 mm, 0.82-0.88 to +/-6, although every grid
+    offset passes at the operating flights (>= 0.7283 s). The box bounds the
+    LEARNER's throw-aim command per cell, so the lost width was lost learner
+    authority bought for an apex range nobody commands.
+
+    **Accepted cost.** A cell's band can now be NARROWER than before, down to
+    the single centre flight when the centre's own largest rectangle fails at
+    both neighbours (the learner then cannot move apex in that cell; the
+    apex command clips to it). The prediction script for a re-sweep
+    tabulates such collapses before the box is committed.
     """
     flights_sorted = sorted(flights)
     center_i = min(range(len(flights_sorted)),
@@ -680,27 +763,35 @@ def _flight_band_and_rect(flights: Sequence[float], offsets_mm: Sequence[float],
     center_T = flights_sorted[center_i]
     if not pass_grid.get((center_T, 0.0, 0.0), False):
         return None, None
+    # The (0, 0)-contiguous span bounds every candidate band (a band reaching
+    # past it holds a flight whose identity cell fails -> no rectangle).
+    lo_lim = hi_lim = center_i
+    while lo_lim - 1 >= 0 and pass_grid.get(
+            (flights_sorted[lo_lim - 1], 0.0, 0.0), False):
+        lo_lim -= 1
+    while (hi_lim + 1 < len(flights_sorted)
+           and pass_grid.get((flights_sorted[hi_lim + 1], 0.0, 0.0), False)):
+        hi_lim += 1
+    offs = list(offsets_mm)
+    best = None          # (key, (lo, hi), rect)
+    for lo in range(center_i, lo_lim - 1, -1):
+        for hi in range(center_i, hi_lim + 1):
+            band = flights_sorted[lo:hi + 1]
 
-    def _pass_at_centre(x, y):
-        return pass_grid.get((center_T, x, y), False)
+            def _pass(x, y, _band=band):
+                return all(pass_grid.get((T, x, y), False) for T in _band)
 
-    rect = _max_rectangle(list(offsets_mm), list(offsets_mm), _pass_at_centre,
-                          must_contain=(0.0, 0.0))
-    if rect is None:      # defensive: unreachable while (0, 0) passed above
-        return (center_T, center_T), None
-    xlo, xhi, ylo, yhi = rect
-    rect_cells = [(x, y) for x in offsets_mm if xlo <= x <= xhi
-                  for y in offsets_mm if ylo <= y <= yhi]
-
-    def _keeps_rect(T):
-        return all(pass_grid.get((T, x, y), False) for x, y in rect_cells)
-
-    lo = hi = center_i
-    while lo - 1 >= 0 and _keeps_rect(flights_sorted[lo - 1]):
-        lo -= 1
-    while hi + 1 < len(flights_sorted) and _keeps_rect(flights_sorted[hi + 1]):
-        hi += 1
-    return (flights_sorted[lo], flights_sorted[hi]), rect
+            rect = _max_rectangle(offs, offs, _pass, must_contain=(0.0, 0.0))
+            if rect is None:
+                continue
+            key = (_rect_key(rect, offs, offs, (0.0, 0.0)), hi - lo,
+                   flights_sorted[hi] - flights_sorted[lo])
+            if best is None or key > best[0]:
+                best = (key, (lo, hi), rect)
+    if best is None:     # unreachable: the centre alone admits (0, 0)
+        return None, None
+    lo, hi = best[1]
+    return (flights_sorted[lo], flights_sorted[hi]), best[2]
 
 
 def sweep(*, planner_mode: str = uc.PLANNER_MODE_DEFAULT,
@@ -1104,7 +1195,7 @@ def highlow_sweep(apex_high_m: float, apex_low_m: float, *,
 def hop_sweep(*, planner_mode: str = uc.PLANNER_MODE_DEFAULT,
           swept_at: Optional[str] = None,
              apexes_m: Sequence[float] = HOP_APEXES_M,
-             offsets_mm: Sequence[float] = OFFSETS_MM, dwell_s: float = DWELL_S,
+             offsets_mm: Sequence[float] = HOP_OFFSETS_MM, dwell_s: float = DWELL_S,
              separation_mm: float = HOP_SEPARATION_MM, leg_vel: float = LEG_VEL_MMPS,
              leg_acc: float = LEG_ACC_MMPS2, leg_jerk: float = LEG_JERK_MMPS3,
              hand_acc: float = HAND_ACC_RPS2, launch_s: float = SINGLE_SITE_LAUNCH_S,
@@ -1616,8 +1707,11 @@ def main(argv=None) -> int:
                     help='R5 hop apex grid (m), independent of --apex -- gains '
                          'a 0.80 m row the columns grid does not carry (D4, '
                          '2026-09-30)')
-    ap.add_argument('--offsets-mm', type=float, nargs='+', default=list(OFFSETS_MM),
-                    help='columns landing-offset grid per axis (mm)')
+    ap.add_argument('--offsets-mm', type=float, nargs='+', default=None,
+                    help='landing-offset grid per axis (mm) for every family '
+                         'but single; default OFFSETS_MM, and HOP_OFFSETS_MM '
+                         '(capped at +-25 mm by the accept-time workspace '
+                         'check) for --site-pairs hop')
     flight_group = ap.add_mutually_exclusive_group()
     flight_group.add_argument(
         '--flights-s', type=float, nargs='+', default=None,
@@ -1706,6 +1800,11 @@ def main(argv=None) -> int:
             ap.error('--apex-pair is HIGH LOW, got %r' % (args.apex_pair,))
     log = (lambda r: None) if args.quiet else print
 
+    # JB-139 (2026-11-02): the hop's grid stops at +-25 mm unless given.
+    hop_offsets_mm = (list(HOP_OFFSETS_MM) if args.offsets_mm is None
+                      else args.offsets_mm)
+    if args.offsets_mm is None:
+        args.offsets_mm = list(OFFSETS_MM)
     t_start = time.perf_counter()
     boxes: List['ab.AdmissibleBox'] = []
     if args.apex_pair is not None:
@@ -1741,13 +1840,13 @@ def main(argv=None) -> int:
             hboxes, _rows = _single_apex_boxes(
                 args.single_apex, flight_frac=args.single_flight_frac,
                 halfwidth_m=args.single_apex_halfwidth,
-                offsets_mm=args.offsets_mm, dwell_s=args.dwell_s,
+                offsets_mm=hop_offsets_mm, dwell_s=args.dwell_s,
                 separation_mm=args.hop_separation_mm, leg_vel=args.leg_vel,
                 leg_acc=args.leg_acc, leg_jerk=args.leg_jerk,
                 hand_acc=args.hand_acc, pattern='hop', planner_mode=args.planner_mode, log=log)
         else:
             hboxes, _rows = hop_sweep(
-                apexes_m=args.hop_apex, offsets_mm=args.offsets_mm, dwell_s=args.dwell_s,
+                apexes_m=args.hop_apex, offsets_mm=hop_offsets_mm, dwell_s=args.dwell_s,
                 separation_mm=args.hop_separation_mm, leg_vel=args.leg_vel,
                 leg_acc=args.leg_acc, leg_jerk=args.leg_jerk, hand_acc=args.hand_acc,
                 planner_mode=args.planner_mode, log=log)

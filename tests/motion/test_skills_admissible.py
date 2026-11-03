@@ -1337,6 +1337,210 @@ def test_a_narrow_centre_flight_keeps_its_own_rectangle(sweep_mod):
     assert rect == (-4.0, 4.0, -10.0, 10.0)
 
 
+# -- JB-143 (2026-11-02): the landing rectangle first, the apex band second --
+#: The hop grid's shape at hand acc 4500 (gate_hash dd4ae01a93a0): the short
+#: flights pass at the identity offset but fail at |x| > 4 mm
+#: (HAND_LIMIT_C2), the operating flights pass at every offset.
+_HOP_XS = [-20.0, -10.0, -4.0, -2.0, 0.0, 2.0, 4.0, 10.0, 20.0]
+_HOP_FLIGHTS = [0.6463, 0.6867, 0.7271, 0.7675, 0.8079, 0.8483, 0.8887]
+
+
+def _hop_4500_grid():
+    pg = {}
+    for T in _HOP_FLIGHTS:
+        for x in _HOP_XS:
+            for y in _HOP_XS:
+                pg[(T, x, y)] = T > 0.70 or abs(x) <= 4.0
+    return pg
+
+
+def _band_first(sweep_mod, flights, xs, pg, center_flight):
+    """The pre-JB-143 rule, kept here as the regression's reference: grow the
+    band while (0, 0) passes, THEN fit the rectangle over the whole band."""
+    fs = sorted(flights)
+    ci = min(range(len(fs)), key=lambda i: abs(fs[i] - center_flight))
+    lo = hi = ci
+    while lo > 0 and pg.get((fs[lo - 1], 0.0, 0.0), False):
+        lo -= 1
+    while hi + 1 < len(fs) and pg.get((fs[hi + 1], 0.0, 0.0), False):
+        hi += 1
+    band = fs[lo:hi + 1]
+    rect = sweep_mod._max_rectangle(
+        xs, xs, lambda x, y: all(pg.get((T, x, y), False) for T in band),
+        must_contain=(0.0, 0.0))
+    return (fs[lo], fs[hi]), rect
+
+
+def test_band_first_rule_narrowed_the_hop_rectangle_reference(sweep_mod):
+    """The defect JB-143 closes, pinned on its reference copy: band-first
+    grows the band down to the 0.65 s flight and pays for it with x +/-4."""
+    band, rect = _band_first(sweep_mod, _HOP_FLIGHTS, _HOP_XS, _hop_4500_grid(),
+                             center_flight=0.8079)
+    assert band == (0.6463, 0.8887)
+    assert rect == (-4.0, 4.0, -20.0, 20.0)
+
+
+def test_flight_band_and_rect_keeps_the_wide_rectangle_over_a_wider_band(
+        sweep_mod):
+    """JB-143 (owner, 2026-11-02): the cell keeps the full x +/-20 the
+    operating flights admit and gives up the 0.65-0.69 s flights instead."""
+    band, rect = sweep_mod._flight_band_and_rect(
+        _HOP_FLIGHTS, _HOP_XS, _hop_4500_grid(), center_flight=0.8079)
+    assert rect == (-20.0, 20.0, -20.0, 20.0)
+    assert band == (0.7271, 0.8887)
+
+
+def test_flight_band_and_rect_band_can_collapse_to_the_centre_flight(sweep_mod):
+    """The accepted cost: when both neighbours fail the centre's largest
+    rectangle, the band is the centre flight alone (the apex command then
+    clips to it) -- never a narrower rectangle to keep a band."""
+    flights = [0.70, 0.80, 0.90]
+    pg = {(T, x, y): (T == 0.80 or abs(x) <= 2.0)
+          for T in flights for x in _HOP_XS for y in _HOP_XS}
+    band, rect = sweep_mod._flight_band_and_rect(flights, _HOP_XS, pg, 0.80)
+    assert band == (0.80, 0.80)
+    assert rect == (-20.0, 20.0, -20.0, 20.0)
+
+
+O = (0.0, 0.0)
+
+
+def _random_grid(rng, flights, xs, p_fail):
+    return {(T, x, y): (x == 0.0 and y == 0.0 and T != flights[0])
+            or rng.random() > p_fail
+            for T in flights for x in xs for y in xs}
+
+
+def test_flight_band_and_rect_invariants_on_random_grids(sweep_mod):
+    """On seeded random pass grids: (1) the rectangle is the centre flight's
+    own largest (same _rect_key) -- no band ever costs rectangle; (2) every
+    grid point of it passes at every flight of the band; (3) the band lies
+    inside the band-first rule's band and the rectangle ranks >= its
+    rectangle; (4) no wider contiguous band keeps an equal-ranked rectangle."""
+    import random
+    rng = random.Random(143)
+    xs = [-20.0, -4.0, 0.0, 4.0, 20.0]
+    flights = [0.60, 0.65, 0.70, 0.75, 0.80]
+    centre = 0.70
+    for _ in range(60):
+        pg = _random_grid(rng, flights, xs, p_fail=rng.choice([0.1, 0.25, 0.4]))
+        band, rect = sweep_mod._flight_band_and_rect(flights, xs, pg, centre)
+        assert rect is not None and _contains_origin(rect)
+        alone = sweep_mod._max_rectangle(
+            xs, xs, lambda x, y: pg[(centre, x, y)], must_contain=(0.0, 0.0))
+        key = sweep_mod._rect_key(rect, xs, xs, O)
+        assert key == sweep_mod._rect_key(alone, xs, xs, O)
+        in_band = [T for T in flights if band[0] <= T <= band[1]]
+        assert centre in in_band
+        assert all(pg[(T, x, y)] for T in in_band
+                   for x in xs if rect[0] <= x <= rect[1]
+                   for y in xs if rect[2] <= y <= rect[3])
+        old_band, old_rect = _band_first(sweep_mod, flights, xs, pg, centre)
+        assert old_band[0] <= band[0] and band[1] <= old_band[1]
+        assert key >= sweep_mod._rect_key(old_rect, xs, xs, O)
+        lo, hi = flights.index(band[0]), flights.index(band[1])
+        for lo2 in range(0, lo + 1):
+            for hi2 in range(hi, len(flights)):
+                if (lo2, hi2) == (lo, hi):
+                    continue
+                wider = flights[lo2:hi2 + 1]
+                r2 = sweep_mod._max_rectangle(
+                    xs, xs, lambda x, y: all(pg[(T, x, y)] for T in wider),
+                    must_contain=(0.0, 0.0))
+                assert sweep_mod._rect_key(r2, xs, xs, O) < key
+
+
+def test_flight_band_and_rect_keeps_the_target_interior_over_a_corner(
+        sweep_mod):
+    """Room around the target first (owner decision 2026-11-02): the
+    2026-11-02 turned45 apex 0.95 cell's area-largest rectangle put (0, 0) on
+    its corner (x[0, 6] y[-6, 0] mm: no room toward -x or +y). When any
+    rectangle with (0, 0) strictly inside passes, it wins over the larger
+    corner one; area only breaks ties of equal margin."""
+    xs = [-6.0, -4.0, -2.0, -1.0, 0.0, 1.0, 2.0, 4.0, 6.0]
+    # A big all-pass block with (0, 0) at its corner, and a small one around it.
+    def ok(x, y):
+        return (x >= 0.0 and y <= 0.0) or (abs(x) <= 1.0 and abs(y) <= 1.0)
+    area_first = sweep_mod._max_rectangle(xs, xs, ok)   # no target: area key
+    assert area_first == (0.0, 6.0, -6.0, 0.0)
+    pg = {(0.80, x, y): ok(x, y) for x in xs for y in xs}
+    band, rect = sweep_mod._flight_band_and_rect([0.80], xs, pg, 0.80)
+    assert band == (0.80, 0.80)
+    assert rect == (-1.0, 1.0, -1.0, 1.0)           # area 4 beats area 36
+    assert sweep_mod._rect_key(rect, xs, xs, O)[0] == 1.0
+    # Equal margin: area breaks the tie (widen the +x/-y side only).
+    def ok2(x, y):
+        return ok(x, y) or (-1.0 <= x and y <= 1.0)
+    pg2 = {(0.80, x, y): ok2(x, y) for x in xs for y in xs}
+    _band, rect2 = sweep_mod._flight_band_and_rect([0.80], xs, pg2, 0.80)
+    assert rect2 == (-1.0, 6.0, -6.0, 1.0)
+
+
+def test_max_rectangle_prefix_sum_matches_the_per_cell_scan(sweep_mod):
+    """The prefix-sum rewrite (JB-143) returns exactly what a per-cell scan
+    returns under the same key, ties included: area then grid points without
+    ``must_contain``, margin about it then area then grid points with it."""
+    import random
+    rng = random.Random(1143)
+    xs = [-20.0, -10.0, -2.0, 0.0, 2.0, 10.0, 20.0]
+
+    def naive(pass_fn, must_contain):
+        best = None
+        best_key = (-1.0, -1) if must_contain is None else (-1.0, -1.0, -1)
+        n = len(xs)
+        for a in range(n):
+            for b in range(a, n):
+                for c in range(n):
+                    for d in range(c, n):
+                        if must_contain is not None and not (
+                                xs[a] <= must_contain[0] <= xs[b]
+                                and xs[c] <= must_contain[1] <= xs[d]):
+                            continue
+                        if not all(pass_fn(xs[i], xs[j])
+                                   for i in range(a, b + 1)
+                                   for j in range(c, d + 1)):
+                            continue
+                        k = ((xs[b] - xs[a]) * (xs[d] - xs[c]),
+                             (b - a + 1) * (d - c + 1))
+                        if must_contain is not None:
+                            k = (min(must_contain[0] - xs[a],
+                                     xs[b] - must_contain[0],
+                                     must_contain[1] - xs[c],
+                                     xs[d] - must_contain[1]),) + k
+                        if k > best_key:
+                            best_key, best = k, (xs[a], xs[b], xs[c], xs[d])
+        return best
+
+    for _ in range(40):
+        fails = {(x, y) for x in xs for y in xs if rng.random() < 0.3}
+        def pass_fn(x, y, _f=fails):
+            return (x, y) not in _f
+        for mc in (None, (0.0, 0.0)):
+            assert (sweep_mod._max_rectangle(xs, xs, pass_fn, must_contain=mc)
+                    == naive(pass_fn, mc))
+
+
+def test_offset_grid_reaches_30_mm_and_the_hop_grid_stops_at_the_workspace(
+        sweep_mod):
+    """JB-139 (owner, 2026-11-02): the learner authority goes 20 -> 30 mm, so
+    the grid sweeps +/-30 (with +/-25 between). The 250 mm hop's sites sit at
+    +/-125 mm, and the accept-time workspace check refuses a box whose
+    half-extent takes a site past 150 mm: the hop grid stops at +/-25."""
+    offs = sweep_mod.OFFSETS_MM
+    assert min(offs) == -30.0 and max(offs) == 30.0
+    assert {-25.0, 25.0, 0.0} <= set(offs)
+    assert list(offs) == sorted(offs) and all(-o in offs for o in offs)
+    hop = sweep_mod.HOP_OFFSETS_MM
+    assert max(abs(o) for o in hop) == 25.0
+    assert set(hop) == {o for o in offs if abs(o) <= 25.0}
+    sites = [(-sweep_mod.HOP_SEPARATION_MM / 2.0, 0.0),
+             (sweep_mod.HOP_SEPARATION_MM / 2.0, 0.0)]
+    ws = 0.150
+    assert ab.check_site_workspace(sites, _ws_box(max(hop) / 1000.0), ws) is None
+    assert ab.check_site_workspace(sites, _ws_box(max(offs) / 1000.0), ws) \
+        is not None
+
+
 def test_refuse_overlapping_single_apex_bands_flags_an_overlap(sweep_mod):
     ap = argparse.ArgumentParser()
     with pytest.raises(SystemExit):
@@ -1808,7 +2012,11 @@ def test_release_step_resweep_kept_the_pose_cells_and_added_columns_to_apex_1_40
     2026-11-02-hand-release-step): the first 82 cells keep their keys and order
     and the limits are unchanged; every POSE cell of the four families the step
     does not tilt (plain Columns, oval, turned Columns, high-low) is
-    bit-identical (NaN-equal); and 18 pose Columns cells are appended at Apex
+    bit-identical (NaN-equal) -- since the JB-143 re-sweep (2026-11-03,
+    landing rectangle chosen margin-first at the centre flight, offset grid
+    widened to +/-30 mm) relaxed to: every one keeps at least the old room
+    around (0, 0), because the centre flight's pass set is unchanged and the
+    new rule maximises that room over it; and 18 pose Columns cells are appended at Apex
     bands 1.00..1.40 (separation 125, dwell 0.27), every one admissible, for the
     Apex-ladder Sitting (JB-144).  What DID move is deliberately not pinned:
     Hop landing rectangles and Apex floors in BOTH planner modes (selection,
@@ -1832,18 +2040,21 @@ def test_release_step_resweep_kept_the_pose_cells_and_added_columns_to_apex_1_40
     assert len(old['boxes']) == 82 and len(new['boxes']) == 104   # +4 (1.45 / 1.50, 2026-11-02 h70)
     assert [key(b) for b in old['boxes']] == [key(b) for b in new['boxes'][:82]]
 
-    def same(x, y):
-        if isinstance(x, float) and isinstance(y, float):
-            return (math.isnan(x) and math.isnan(y)) or x == y
-        if isinstance(x, (list, tuple)) and isinstance(y, (list, tuple)):
-            return len(x) == len(y) and all(same(i, j) for i, j in zip(x, y))
-        return x == y
+    def room(b):    # an empty cell (NaN bounds) has no room: -inf
+        (xlo, xhi), (ylo, yhi) = b['landing_xy_m']
+        r = min(-xlo, xhi, -ylo, yhi)
+        return -math.inf if math.isnan(r) else r
     n_kept = 0
     for a, b in zip(old['boxes'], new['boxes'][:82]):
         if a['planner_mode'] == 'pose' and a['pattern'] in (
                 'columns', 'columns_highlow', 'oval_1ball'):
             n_kept += 1
-            assert same(a, b), (a, b)
+            assert room(b) >= room(a) - 1e-12, (a, b)
+            # the new band is a sub-band of the old one (both bounded by the
+            # centre's (0, 0)-passing span; the new rule only declines flights)
+            if not math.isnan(b['apex_m'][0]):
+                assert a['apex_m'][0] - 1e-9 <= b['apex_m'][0] <= b['apex_m'][1] \
+                    <= a['apex_m'][1] + 1e-9, (a, b)
     assert n_kept == 38     # 6 plain Columns + 12 turned + 8 high-low + 12 oval
 
     added = new['boxes'][82:]

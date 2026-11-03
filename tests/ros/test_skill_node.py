@@ -640,16 +640,18 @@ def test_a_new_schedule_drops_the_previous_attempts_flight_latches(tmp_path):
     assert 0 not in node._correlation
 
 
-def test_the_learner_lateral_authority_parameter_defaults_to_twenty():
+def test_the_learner_lateral_authority_parameter_defaults_to_thirty():
     """Owner 2026-09-16 pinned this at 0.0 (the learner corrects flight only)
     until the planner's small-lateral-offset banking defect was fixed; owner
     2026-09-21 lifted the pin to 40 mm once the cup-contact contract landed
     amplitude-aware banking (`plans/archived/cup-contact-contract.md` § 6);
     owner 2026-09-23 set 20 mm after the first unpinned sitting — 40 mm
     dropped balls on the 25-throw chains at 0.9 m, 20 mm was stable at both
-    apexes. The box still admits +/-40 mm; this is the executor's clamp."""
+    apexes. Owner 2026-11-02 (JB-139): 30 mm, with the box re-swept to
+    +/-30 mm in the same commit -- Ball 2's stable ~+22 mm landing bias held
+    the learner pinned at 20. This is the executor's clamp."""
     node, _client = _node_with_client()
-    assert node.get_parameter('learner_lateral_authority_mm').value == 20.0
+    assert node.get_parameter('learner_lateral_authority_mm').value == 30.0
 
 
 def test_the_catch_outward_authority_parameter_defaults_to_ten_and_plumbs():
@@ -705,7 +707,7 @@ def test_the_executor_gets_the_inward_authority_and_a_forward_model():
     resp = node._start_pattern(_self_toss_goal())
     assert resp.success is True, resp.message
     assert node._executor.catch_inward_authority_m == pytest.approx(0.035)
-    assert node._executor.lateral_authority_m == pytest.approx(0.020)
+    assert node._executor.lateral_authority_m == pytest.approx(0.030)
     y_hat = node._executor.learner.predict(
         np.zeros(4), np.array([0.001, 0.0, 0.9]), np.array([0.0, 0.0, 0.9]))
     np.testing.assert_allclose(y_hat, [0.001, 0.0, 0.9])   # cold: identity
@@ -1693,8 +1695,9 @@ def test_check_reports_frame_check_ok_when_within_limit_with_authority():
 
 
 def test_default_parameters_refuse_every_start_path_with_no_frame_data(tmp_path):
-    """`learner_lateral_authority_mm` defaults to 40.0 since 2026-09-21
-    (`plans/archived/cup-contact-contract.md` § 6, the unpinning) — a session
+    """`learner_lateral_authority_mm` has a non-zero default (40.0 at the
+    2026-09-21 unpinning, `plans/archived/cup-contact-contract.md` § 6; 30.0
+    since 2026-11-02, JB-139) — a session
     that never saw a mocap `Platform` sample must now be refused
     REJECTED_FRAME_OFFSET on EVERY default-parameter start path, not just
     under an explicit `:=40`. This is the production fail-closed face of the

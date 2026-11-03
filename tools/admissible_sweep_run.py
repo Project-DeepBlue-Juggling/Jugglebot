@@ -2,10 +2,13 @@
 """Drive a full admissible-box re-sweep: every job family once (round a), then a
 ROTATING SAMPLE of families again (round b) and a byte-for-byte compare (JB-150).
 
-Replaces the uncommitted ``temp/sweeps/sweep_h4500.sh`` runner. Round a is the
-same invocations as that script (26 families = the committed box; ``--set h70``
-adds the four extra columns-apex families of the 29-family sweep), so its
-outputs are byte-identical to the old path for the same commit. Round b used to
+Replaces the uncommitted ``temp/sweeps/sweep_h4500.sh`` runner. The default
+family set ``committed`` is the 30 families of the committed box (104 cells
+since 2026-11-03, JB-143): the 26 of ``sweep_h4500.sh`` (``--set h4500``) plus
+the four columns-apex families above 0.95 (C-HAND-5); ``h70`` is kept as an
+alias of ``committed``. The leg and Hand limits default to the committed box's
+own ``limits`` stamp, so a re-sweep at NEW limits (a working-point change)
+must name them: ``--leg-vel 600 --leg-acc 8000 --leg-jerk 200000``. Round b used to
 re-run ALL families (about half the wall time); rounds a and b have been
 byte-identical on every sweep so far, so b now re-runs a sample (default 3) that
 rotates with the gate_hash: ``start = int(gate_hash, 16) % n`` over the families
@@ -19,8 +22,12 @@ mixed-in key would re-shape the committed file).
 
 Usage (venv; run from a tree whose gated files are frozen)::
 
-    python tools/admissible_sweep_run.py --out temp/sweeps/h4500 [--sample all|N]
-        [--hand-acc 4500] [--workers 6] [--set committed|h70] [--list-sample]
+    python tools/admissible_sweep_run.py --out temp/sweeps/<name> [--sample all|N]
+        [--leg-vel V --leg-acc A --leg-jerk J --hand-acc H] [--workers 6]
+        [--set committed|h4500] [--list-sample]
+
+Owner norm (2026-11-03): every box sweep is round a plus the sampled round b;
+``--sample all`` only with a recorded a/b mismatch as the reason.
 
 BLAS is pinned to one thread here and again inside admissible_sweep.py.
 """
@@ -39,7 +46,7 @@ for _v in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS'):
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_SAMPLE = 3
-_COMMON = ['--leg-vel', '350', '--leg-acc', '5000', '--leg-jerk', '200000']
+_BOX = os.path.join(_ROOT, 'config', 'generated', 'admissible_box.yaml')
 _OVAL = ['--site-pairs', 'oval', '--oval-separation-mm', '150', '--oval-apex', '0.95',
          '--single-apex-halfwidth', '0.025']
 _OVALX = ['--site-pairs', 'oval', '--oval-separation-mm', '150', '--oval-apex',
@@ -87,11 +94,11 @@ def families(which: str = 'committed') -> List[Tuple[str, List[str]]]:
         res.append(('hl_100_' + ''.join(pair).replace('.', ''), ['--planner-mode', 'pose']
                     + d27 + ['--site-pairs', 'columns', '--apex-pair', pair[0], pair[1],
                              '--separation-mm', '100', '--single-apex-halfwidth', '0.025']))
-    if which == 'h70':
+    if which in ('committed', 'h70'):
         for i, ap in enumerate((['1.00', '1.05', '1.10'], ['1.15', '1.20', '1.25'],
                                 ['1.30', '1.35', '1.40'], ['1.45', '1.50']), 1):
             res.append(('columnsx%d_pose' % i, ['--planner-mode', 'pose'] + d27 + _col(ap)))
-    elif which != 'committed':
+    elif which != 'h4500':
         raise ValueError('unknown family set %r' % which)
     return res
 
@@ -110,19 +117,33 @@ def round_b_sample(names: Sequence[str], gate_hash: str, n: Optional[int]) -> Li
     return [names[(start + i * step) % k] for i in range(n)]
 
 
-def _run_job(name: str, args: List[str], hand_acc: str, out_dir: str, rnd: str) -> Tuple[str, int]:
+def committed_limits(path: str = _BOX) -> Dict[str, str]:
+    """The committed box's own ``limits`` stamp, as CLI strings (``%g``)."""
+    import yaml
+    with open(path) as fh:
+        lim = yaml.safe_load(fh)['limits']
+    return {'leg_vel': '%g' % lim['leg_vel_mmps'], 'leg_acc': '%g' % lim['leg_acc_mmps2'],
+            'leg_jerk': '%g' % lim['leg_jerk_mmps3'], 'hand_acc': '%g' % lim['hand_acc_rps2']}
+
+
+def _limit_args(lim: Dict[str, str]) -> List[str]:
+    return ['--leg-vel', lim['leg_vel'], '--leg-acc', lim['leg_acc'],
+            '--leg-jerk', lim['leg_jerk'], '--hand-acc', lim['hand_acc']]
+
+
+def _run_job(name: str, args: List[str], lim: Dict[str, str], out_dir: str, rnd: str) -> Tuple[str, int]:
     path = os.path.join(out_dir, 'box_%s_%s.yaml' % (name, rnd))
     log = os.path.join(out_dir, 'logs', '%s_%s.log' % (name, rnd))
     cmd = ([sys.executable, os.path.join(_ROOT, 'tools', 'admissible_sweep.py')]
-           + _COMMON + ['--hand-acc', hand_acc] + args + ['--out', path])
+           + _limit_args(lim) + args + ['--out', path])
     with open(log, 'w') as fh:
         rc = subprocess.call(cmd, stdout=fh, stderr=subprocess.STDOUT, cwd=_ROOT)
     return name, rc
 
 
-def _run_round(fams, rnd, hand_acc, out_dir, workers) -> None:
+def _run_round(fams, rnd, lim, out_dir, workers) -> None:
     with cf.ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = [ex.submit(_run_job, n, a, hand_acc, out_dir, rnd) for n, a in fams]
+        futs = [ex.submit(_run_job, n, a, lim, out_dir, rnd) for n, a in fams]
         bad = [n for n, rc in (f.result() for f in futs) if rc != 0]
     if bad:
         raise SystemExit('round %s: job(s) FAILED (see logs/): %s' % (rnd, ', '.join(bad)))
@@ -131,9 +152,13 @@ def _run_round(fams, rnd, hand_acc, out_dir, workers) -> None:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--out', required=True, help='output directory')
-    ap.add_argument('--hand-acc', default='4500')
+    box_lim = committed_limits()
+    ap.add_argument('--leg-vel', default=box_lim['leg_vel'])
+    ap.add_argument('--leg-acc', default=box_lim['leg_acc'])
+    ap.add_argument('--leg-jerk', default=box_lim['leg_jerk'])
+    ap.add_argument('--hand-acc', default=box_lim['hand_acc'])
     ap.add_argument('--workers', type=int, default=6)
-    ap.add_argument('--set', dest='fam_set', default='committed', choices=('committed', 'h70'))
+    ap.add_argument('--set', dest='fam_set', default='committed', choices=('committed', 'h70', 'h4500'))
     ap.add_argument('--sample', default=str(DEFAULT_SAMPLE),
                     help='round-b families: N (default 3) or "all"')
     ap.add_argument('--list-sample', action='store_true',
@@ -142,6 +167,9 @@ def main(argv=None) -> int:
     sys.path.insert(0, os.path.join(_ROOT, 'ros_ws', 'src', 'jugglebot'))
     from jugglebot.motion.skills import admissible as adm
     fams = families(args.fam_set)
+    lim = {'leg_vel': args.leg_vel, 'leg_acc': args.leg_acc,
+           'leg_jerk': args.leg_jerk, 'hand_acc': args.hand_acc}
+    print('limits: %s' % ' '.join(_limit_args(lim)), flush=True)
     names = [n for n, _ in fams]
     ghash = adm.gate_hash()
     nsamp = None if args.sample == 'all' else int(args.sample)
@@ -152,9 +180,9 @@ def main(argv=None) -> int:
         return 0
     out = os.path.abspath(args.out)
     os.makedirs(os.path.join(out, 'logs'), exist_ok=True)
-    _run_round(fams, 'a', args.hand_acc, out, args.workers)
+    _run_round(fams, 'a', lim, out, args.workers)
     print('round a done', flush=True)
-    _run_round([f for f in fams if f[0] in sample], 'b', args.hand_acc, out, args.workers)
+    _run_round([f for f in fams if f[0] in sample], 'b', lim, out, args.workers)
     print('round b done', flush=True)
     verdicts: Dict[str, str] = {}
     for n in sample:
@@ -176,7 +204,10 @@ def main(argv=None) -> int:
     parts = [yaml.safe_load(open(os.path.join(out, 'box_%s_a.yaml' % n))) for n in names]
     for key in ('swept_at', 'gate_hash', 'limits'):
         assert all(p[key] == parts[0][key] for p in parts), key
-    assert parts[0]['limits']['hand_acc_rps2'] == float(args.hand_acc)
+    got = parts[0]['limits']
+    assert (got['leg_vel_mmps'], got['leg_acc_mmps2'], got['leg_jerk_mmps3'],
+            got['hand_acc_rps2']) == tuple(float(lim[k]) for k in (
+                'leg_vel', 'leg_acc', 'leg_jerk', 'hand_acc')), got
     merged = dict(parts[0])
     merged['boxes'] = [b for p in parts for b in p['boxes']]
     mpath = os.path.join(out, 'merged.yaml')

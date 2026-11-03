@@ -1245,6 +1245,6 @@ def test_gate_lateral_authorities_match_the_launch():
         assert name not in launch.read_text(), (
             '%s is now set in the launch; read it from there' % name)
     kw = sg._launch_authority_kwargs()
-    assert kw == dict(lateral_authority_m=0.020,
+    assert kw == dict(lateral_authority_m=0.030,
                       catch_outward_authority_m=0.010,
                       catch_inward_authority_m=0.035)

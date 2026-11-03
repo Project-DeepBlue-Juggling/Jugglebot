@@ -6,7 +6,7 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 3 blocks (92 min) · Bench leg 1 block (30 min) · Bench hand 1 block (30 min)
+Rigs: Robot 3 blocks (102 min) · Bench leg 1 block (30 min) · Bench hand 1 block (30 min)
 
 ## Setup 0: before power
 
@@ -16,7 +16,7 @@ Rigs: Robot 3 blocks (92 min) · Bench leg 1 block (30 min) · Bench hand 1 bloc
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Robot  (3 blocks, 92 min)
+## Robot  (3 blocks, 102 min)
 
 ### Block 1: level, armed, bb-fed  (4 rows, 62 min)
 
@@ -62,7 +62,15 @@ Rigs: Robot 3 blocks (92 min) · Bench leg 1 block (30 min) · Bench hand 1 bloc
 - pass: 20 consecutive Catches in one Attempt at each angle, flown with Throws 21 (the 21st throw is the Stop throw, so `COMPLETED (20/20 caught)`; with Throws 20 it reads 19/19); landing scatter, per ball and per axis, with the mean within 15 mm and the sd within 10 mm of the straight control (proposed 2026-11-03, owner to confirm; the old "within 3 mm" was below the control's own run-to-run sd of 18-31 mm); no HAND_LIMIT line.
 - record: caught of thrown per angle, each angle's plant_id, landing scatter against the control, Ball 2's first-throw landing (x, y) mm per Attempt (JB-161: 5 of 7 landed outward at 90 deg on 2026-11-03), the bag path; commit docs/records.md.
 
-### Block 2: armed, bb-fed  (1 row, 15 min)
+### Block 2: armed, bb-fed  (2 rows, 25 min)
+
+#### JB-139 Ball 2 learner command pinned at the (-20,-20) mm clamp corner in 37 of 40 straight Columns rows (BOX-EXPECTED-LANDING-UNMET u=(-20,-20))  (10 min, medium, unattached)
+- why: the Learner's lateral authority is now +/-30 mm for Throw and catch re-aims (was +/-20) and the box is re-swept on a +/-30 grid; check that Ball 2's command leaves the clamp and that the wider catch re-aims build.
+- do:
+  - Fly straight Columns, Sep. 125, Apex 0.95, Throws 20, the default plant_id.
+  - Read the BOX-EXPECTED-LANDING lines and any CATCH_AXIS refusals.
+- pass: Ball 2's command is at the +/-30 mm clamp in under 10 % of rows on each axis, and no catch is refused CATCH_AXIS for a re-aim past the capture cap.
+- record: per axis the fraction of Ball 2 rows at the clamp; every CATCH_AXIS refusal line.
 
 #### JB-147 Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT)  (15 min, high, unattached)
 - why: the torque loss happened at 13-54 A so the 60 A limit does not explain the SPINOUTs and a 70 A brake is harder; this run measures whether the SPINOUT rate moves with the drive now at 70/80 A (K and limits unchanged).
@@ -126,7 +134,6 @@ Rigs: Robot 3 blocks (92 min) · Bench leg 1 block (30 min) · Bench hand 1 bloc
 - JB-120 [Robot] A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve: no ## Sitting section
 - JB-137 [Robot] Hand ODrive feedback starvation: 701 ms heartbeat dropout left the encoder 100 ms stale, the 2.0 rev lead clamp pinned the throw to stale+2.0, guard MAX_DEVIATION +3.707 fired correctly (turned-90 at 16/16): no ## Sitting section
 - JB-138 [Robot] Hand iq reached 53.3 A on a 45 deg turned hop launch, over the 50 A watch the high-low row names: no ## Sitting section
-- JB-139 [Robot] Ball 2 learner command pinned at the (-20,-20) mm clamp corner in 37 of 40 straight Columns rows (BOX-EXPECTED-LANDING-UNMET u=(-20,-20)): no ## Sitting section
 - JB-148 [Robot] One-off 2 m Throws: raised Hand limits and an overshoot protection the speed-scaled margin cannot give: no ## Sitting section
 - JB-160 [Robot] MAX_DEVIATION latched on 40-90 ms stale Hand telemetry without MOTOR_FB_STALE firing first: no ## Sitting section
 - JB-2 [Robot] Design change: the Hand should be Idle, not Parked Closed-loop, while Active: no ## Sitting section
