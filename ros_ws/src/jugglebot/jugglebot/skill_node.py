@@ -802,6 +802,17 @@ class SkillNode(Node):
         # identical purpose (that module's `_*_mono` caches).
         self._traj_status_mono = 0.0
         self._mocap_mono = 0.0
+        # the ONLY clock the ladder's mocap and trajectory-status freshness
+        # reads: the stamps in `_on_traj_status` / `_on_mocap`, the
+        # `_last_install_mono` stamp `plan_superseded` compares against, and
+        # the ``now`` `_observations` judges all three with. Injectable, like
+        # `_hand_clock` / `_frame_clock` / `_commanded_clock`, so a test
+        # fixture can freeze it: a loaded test run must not be able to age a
+        # fixture's status past `_TRAJ_STATUS_STALE_S` across a
+        # `_start_pattern` (load flake 2026-11-04, JB-165). One clock for all
+        # three, so `plan_superseded`'s status-vs-install comparison stays in
+        # one domain. Production: `time.perf_counter`, unchanged.
+        self._obs_clock = time.perf_counter
         self._hand_telemetry_mono = 0.0
         # the ONLY clock the hand-telemetry freshness family reads (stamp in
         # `_on_hand_telemetry`, the ladder's `hand_fresh`, the accept-time cup
@@ -1796,7 +1807,7 @@ class SkillNode(Node):
         fields (`_observations`, item 6). Perf-stamped like every other
         freshness-gated cache in this node."""
         self._traj_status = msg
-        self._traj_status_mono = time.perf_counter()
+        self._traj_status_mono = self._obs_clock()
 
     def _on_mocap(self, msg) -> None:
         """`rigid_body_poses` freshness (the R3 ladder's `mocap_fresh`, item
@@ -1811,7 +1822,7 @@ class SkillNode(Node):
         through the attempt's snapshot (frame/units note on
         `_FRAME_CHECK_WINDOW_S`, 2026-10-19). No transform here: the snapshot
         is chosen at the check, not at receive."""
-        now = time.perf_counter()
+        now = self._obs_clock()
         self._mocap_mono = now
         for body in msg.bodies:
             if body.name == 'Platform':
@@ -2183,8 +2194,10 @@ class SkillNode(Node):
         """The R3 precondition ladder's snapshot of the whole machine at one
         instant (item 6; fields per `executor.Observations`'s docstring).
 
-        Staleness is judged on THIS node's own `time.perf_counter()` — the
-        SAME monotonic domain every cache above is stamped in — never on
+        Staleness is judged on THIS node's own perf clock (`_obs_clock` for
+        mocap, status and the last install, `_hand_clock` for the Hand,
+        both `time.perf_counter` in production) — the SAME monotonic
+        domain each cache is stamped in — never on
         ``t_abs_s`` (the schedule's own wall clock, read off
         `self.get_clock()` in `_on_tick`/`_svc_check`, which may carry a
         CAN-offset the perf-clock caches know nothing about).
@@ -2193,7 +2206,7 @@ class SkillNode(Node):
         `_ball_evidence`, its ``observer=`` — one builder, no second copy of
         the evidence read.
         """
-        now = time.perf_counter()
+        now = self._obs_clock()
         mocap_fresh = (self._mocap_mono > 0.0
                        and (now - self._mocap_mono) < _MOCAP_STALE_S)
         status_fresh = (self._traj_status_mono > 0.0
@@ -2243,7 +2256,9 @@ class SkillNode(Node):
             mocap_fresh=mocap_fresh, hand_fresh=hand_fresh,
             levelled=levelled, ball_evidence=self._possession_evidence_stable,
             in_trajectory_mode=in_trajectory_mode,
-            hand_lane_refused=self._hand_lane_refused(now),
+            # `/link_status` stamps `_sched_refused_mono` on the raw
+            # perf clock, so its judge reads that clock, not `_obs_clock`.
+            hand_lane_refused=self._hand_lane_refused(time.perf_counter()),
             robot_frame_known=self._robot_frame is not None,
             # Accept-time only: the per-attempt frame is FROZEN at the snapshot,
             # so a mid-attempt unsettle (a transient marker loss clearing the
@@ -2446,7 +2461,7 @@ class SkillNode(Node):
         # -- a refusal changes nothing about what is actually streaming.
         if result.accepted:
             self._pending_event_mono = release_mono if release_mono > 0.0 else 0.0
-            self._last_install_mono = time.perf_counter()
+            self._last_install_mono = self._obs_clock()
         self._maybe_announce(kind, terminal, result, release_mono,
                              ball_id=ball_id)
         return result

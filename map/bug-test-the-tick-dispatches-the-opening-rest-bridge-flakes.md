@@ -2,9 +2,9 @@
 id: JB-165
 kind: bug
 title: 'test_the_tick_dispatches_the_opening_rest_bridge flakes under a loaded full gate: the mocap and status freshness clock is not frozen'
-status: inbox
+status: complete
 created: '2026-11-04'
-updated: '2026-11-03T18:15:42Z'
+updated: '2026-11-03T18:29:24Z'
 owners: []
 priority: medium
 effort: xs
@@ -14,7 +14,8 @@ radius: local
 diagnosis: confirmed
 area: tests-tooling
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-04-jb165-observation-clock-injectable.md
 filed_by: night-shift-2026-11-04
 ---
 

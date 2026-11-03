@@ -195,6 +195,9 @@ _FRAME_CLOCK_FROZEN_S = 1.0e6
 #: `_node_with_client` freezes the node's commanded-position clock here, the
 #: `_prelevel` twin of `_HAND_CLOCK_FROZEN_S` (JB-141, 2026-11-03).
 _COMMANDED_CLOCK_FROZEN_S = 1.0e6
+#: `_node_with_client` freezes the node's mocap / trajectory-status / last-install
+#: clock here, the `_observations` twin of `_HAND_CLOCK_FROZEN_S` (JB-165, 2026-11-04).
+_OBS_CLOCK_FROZEN_S = 1.0e6
 
 
 def _robot_frame_msg(t=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0)):
@@ -241,6 +244,10 @@ def _node_with_client(response=None, ready=True, hand=True, frame=True,
     # frozen commanded-position clock: a loaded run cannot age the sample
     # `_prelevel_ready` stamps past `_TRAJ_STATUS_STALE_S` (JB-141)
     node._commanded_clock = lambda: _COMMANDED_CLOCK_FROZEN_S
+    # frozen observation clock: a loaded run cannot age the fixture's
+    # trajectory status past `_TRAJ_STATUS_STALE_S` across `_start_pattern`
+    # (JB-165)
+    node._obs_clock = lambda: _OBS_CLOCK_FROZEN_S
     client = _RecordingClient(response=response, ready=ready)
     node._install_cli = client
     # The live sitting limits the box was swept at (`_status()`: 300/5000/
@@ -1086,6 +1093,25 @@ def test_the_tick_dispatches_the_opening_rest_bridge_through_the_mocked_client()
     assert req.kind == InstallSegment.Request.KIND_REST
     assert req.ball_id == bridge.ball_id
     assert req.t_event_s == pytest.approx(bridge.t_abs_s)
+
+
+
+def test_a_slow_test_run_cannot_age_the_status_before_the_first_tick():
+    """JB-165: `_observations` judged mocap and trajectory-status freshness on
+    the real `time.perf_counter()`, and `_start_pattern` sits between
+    `_freshen` and the first tick, so a loaded full gate (Night Shift
+    2026-11-04) aged the status past `_TRAJ_STATUS_STALE_S`: the tick ended
+    ABORTED_MODE_CHANGED with nothing installed. The sleep stands in for the
+    load: it fails without the `_obs_clock` injection and passes with it."""
+    node, client = _node_with_client(response=_response())
+    _reload_ready(node)
+    _freshen(node)
+    assert node._start_pattern(_flown_columns_goal()).success is True
+    bridge = node._executor.schedule.skills[0]
+    time.sleep(sn._TRAJ_STATUS_STALE_S + 0.1)
+    node._executor.tick(bridge.dispatch_s())
+    assert len(client.calls) == 1
+    assert client.calls[0].kind == InstallSegment.Request.KIND_REST
 
 
 def test_a_refusal_ends_the_attempt(tmp_path):
