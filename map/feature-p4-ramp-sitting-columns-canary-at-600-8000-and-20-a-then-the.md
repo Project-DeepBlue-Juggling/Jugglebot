@@ -4,7 +4,7 @@ kind: feature
 title: 'P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30'
 status: inbox
 created: '2026-11-03'
-updated: '2026-11-03T10:57:03Z'
+updated: '2026-11-03T11:47:33Z'
 owners: []
 priority: high
 effort: m
@@ -37,3 +37,8 @@ P4 ramp of plan `plans/active/two-ball-oval.md`: the first Sitting at the P4 wor
 - pass: the five Columns Attempts each read `COMPLETED (20/20 caught)` with no leg LIMIT end and peak leg iq under 20 A; then the one-ball oval sustains 30 consecutive Catches in one Attempt at the shortest dwell flown (plan P4 gate).
 - record: caught of thrown and the end code per Attempt; the CATCH leg-velocity refusal count across the canary (JB-24 expects none at 600 mm/s); peak leg iq per leg per Attempt from the bag (the 20 A measurement); the shortest dwell reaching 30; the oval plant_id; the bag and launch log paths; commit docs/records.md.
 - minutes: 50
+
+## Sitting result (2026-11-03 22:47)
+
+- verdict: pending
+- notes: Many attempts of the patterns described in 6 and 7. Didn't run 8, as 6 and 7 had no successful runs, thrown to completion. There were a few LANE_REFUSED, MAX_DEVIATION, and FRAME_OFFSET errors in the attempt, but most attempts ended due to a messy throw being uncatchable. No Lef LIMIT ends, with peak leg current of ~10 A. 'Pending' because we didn't technically pass, but we also didn't observe the fail conditions.
