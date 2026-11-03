@@ -729,3 +729,56 @@ def test_s2_l1489_the_bumped_successor_plans_inside_the_hand_limit(geom, monkeyp
         sg.plan_segment(sg.CATCH, uc.release_state_at_knot(r.plan, stale, k_rel),
                         nxt, cfg, lim, geom)
     assert exc.value.code == 'HAND_LIMIT_ACC'
+
+
+# ── I-CATCH-7 (JB-120): the executor logs and commits the next-catch gate's call ──
+
+def test_a_shrunk_bump_commits_the_applied_delta_and_logs_requested_and_applied(
+        sites, limits, geom):
+    """The gate here is a stand-in (refuses |Δ| > 12 mm) because this file's record
+    is the R5 construction; the real planner's refusals are pinned in
+    ``test_skills_bump_next_catch.py``.  What this pins is the executor's half:
+    the BUMP line names requested and applied, the live terminal and the learner's
+    carried release follow the APPLIED step, and the cap counts one re-aim."""
+    x, box, _land = _live(sites, limits, geom)
+    rec = box['rec']
+    rel0 = x._carried_release_mm[1].copy()
+    moved = ex.Landing(pos_mm=sites[1].catch_site_mm() + np.array([20.0, 0.0, 0.0]),
+                       vel_mm_s=LAND_VEL, t_land_abs_s=T_LAND, from_fit=True)
+    t = T_LAND - 0.45
+
+    def gate(res):
+        return (None if np.hypot(*res.delta_xy_mm) <= 12.0
+                else 'HAND_LIMIT_ACC (stand-in)')
+    d = x.catch_bump(rec.plan, rec.meta, rec.t0_s, t, limits, geom, landing=moved,
+                     next_catch_gate=gate)
+    assert d.reason == 'OK', d
+    assert np.allclose(d.delta_xy_mm, (20.0, 0.0))          # the request
+    assert np.allclose(d.result.delta_xy_mm, (10.0, 0.0))   # the applied step
+    lines = x.commit_catch_bump(d, t)
+    assert ('BUMP-SHRUNK step 1: requested (20.0, 0.0) -> applied (10.0, 0.0) mm'
+            in lines[-1]), lines
+    assert 'BUMP skill 1' in lines[-1]
+    assert np.allclose(x._live_catch[1].landing_mm[:2],
+                       sites[1].catch_site_mm()[:2] + (10.0, 0.0))
+    assert np.allclose(x._carried_release_mm[1][:2] - rel0[:2],
+                       d.result.release_offset_xy_mm, atol=1e-9)
+    assert x._resend_counts[1] == 1
+
+
+def test_a_bump_the_next_catch_refuses_at_every_step_is_declined_and_logged(
+        sites, limits, geom):
+    x, box, _land = _live(sites, limits, geom)
+    rec = box['rec']
+    moved = ex.Landing(pos_mm=sites[1].catch_site_mm() + np.array([20.0, 0.0, 0.0]),
+                       vel_mm_s=LAND_VEL, t_land_abs_s=T_LAND, from_fit=True)
+    t = T_LAND - 0.45
+    d = x.catch_bump(rec.plan, rec.meta, rec.t0_s, t, limits, geom, landing=moved,
+                     next_catch_gate=lambda res: 'HAND_LIMIT_ACC (stand-in)')
+    assert d.reason == bump.BUMP_NEXT_CATCH and not d.terminal
+    lines = x.commit_catch_bump(d, t)
+    assert 'BUMP-DECLINED BUMP-NEXT-CATCH skill 1' in lines[-1], lines
+    assert x._live_catch is not None                 # non-terminal: re-aim stays open
+    assert x._bump_refused_mm[1] == pytest.approx(20.0)   # the shrink-retry rule
+    assert x._resend_counts.get(1, 0) == 0
+    assert np.allclose(x._live_catch[1].landing_mm[:2], sites[1].catch_site_mm()[:2])

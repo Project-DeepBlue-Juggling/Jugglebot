@@ -8,9 +8,35 @@ instead: an offset ``b(t)`` added to ``pose[:, 0:2]`` and its exact derivative
 ``ḃ(t)`` to ``pose_vel[:, 0:2]``.  The hand arrays are never touched, the
 record keeps its ``t0``, nothing is re-solved, and the bumped plan must pass
 ``feasibility.validate_cycle`` at the live limits or the bump is DECLINED —
-never clipped, never scaled down (a partial bump is a silent clip).
+never clipped, never scaled down (a partial bump is a silent clip).  The ONE
+exception is I-CATCH-7 below: a bump whose seed the NEXT catch's gate refuses
+is shrunk in named, logged steps (never silently), each step a full bump that
+passes this same gate.
 
-:func:`apply_catch_bump` is the ONE enforcement point of I-CATCH-5.
+:func:`apply_catch_bump` is the ONE enforcement point of I-CATCH-5;
+:func:`bump_with_next_catch_gate` (reached through :func:`bump_record`) is the
+one enforcement point of I-CATCH-7.
+
+I-CATCH-7: the next catch gates the bump (JB-120, 2026-11-03)
+-------------------------------------------------------------
+A bump moves the carried release (site + ``b(t_rel)``, velocity + ``v_b``, the
+C-HAND-5 brake seed), and catch N+1 is solved from exactly that state
+(``unified_cycle.release_state_at_knot``).  ``validate_cycle`` on the bumped
+record cannot see what that solve will do: the hand arrays a bump leaves alone
+are the record's, not the successor's.  So a caller may supply
+``next_catch_gate(result) -> None | reason``; if it refuses the bumped seed,
+Δ is halved (at most :data:`BUMP_SHRINK_STEPS` times) and the LARGEST step that
+passes both this module's own gate and the next-catch gate is applied, tagged
+``BUMP-SHRUNK`` on its message; none passing declines :data:`BUMP_NEXT_CATCH`
+(non-terminal, the record unchanged).  The seed is never edited to make a gate
+pass.  A scaled Δ scales ``b``, ``ḃ``, ``b̈`` linearly, so every step is the
+same C2 shape and knots ``0..k_b`` stay bit-identical (asserted per step).
+Cost per step: one :func:`apply_catch_bump` (8 ms idle, up to 24 ms under load,
+2026-11-03) plus one gate call; the swap still meets the node's apply-time
+``SPLICE_TOO_LATE`` check or is refused there (safe, non-terminal).  No live
+caller supplies a gate yet: the faithful gate is the next catch's solve
+(33-93 ms), which does not fit the 25-50 ms dispatch-to-swap allowance —
+``logbook/2026-11-03-jb120-bump-gated-by-the-next-catch.md``.
 
 The 40 Hz walk (written before the code, CLAUDE.md)
 ---------------------------------------------------
@@ -97,7 +123,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from typing import Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 
@@ -137,6 +163,14 @@ BUMP_HANDOFF = 'BUMP_HANDOFF'
 #: Node-side: the active record no longer holds this catch (a later install
 #: superseded it, or nothing is streaming): terminal.
 BUMP_NO_RECORD = 'BUMP-NO-RECORD'
+#: I-CATCH-7 (JB-120): no step of the shrink ladder leaves a seed the next catch's
+#: gate accepts: non-terminal, joins the executor's shrink-retry rule.
+BUMP_NEXT_CATCH = 'BUMP-NEXT-CATCH'
+#: Tag on an accepted bump's message when a step below the requested Δ was applied.
+BUMP_SHRUNK = 'BUMP-SHRUNK'
+#: I-CATCH-7 ladder: Δ·BUMP_SHRINK_FACTOR**k for k = 1..BUMP_SHRINK_STEPS (floor Δ/8).
+BUMP_SHRINK_STEPS = 3
+BUMP_SHRINK_FACTOR = 0.5
 #: Non-terminal declines that are NOT gate refusals: retried on the next tick
 #: as-is (the executor's BUMP-WINDOW shrink rule applies to gate codes and
 #: BUMP-LAUNCH only, whose answer cannot change for the same delta).
@@ -177,6 +211,14 @@ class BumpResult:
     release_offset_xy_mm: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(2))
     #: The lateral launch-velocity bias ``v_b`` (mm/s, xy).
     launch_bias_xy_mm_s: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(2))
+    #: The Δ the caller asked for (I-CATCH-7); ``delta_xy_mm`` is the one applied.
+    #: ``None`` when no next-catch gate ran (then they are the same).
+    requested_delta_xy_mm: Optional[np.ndarray] = None
+    #: Halvings applied by I-CATCH-7 (0 = the requested Δ).
+    shrink_steps: int = 0
+    #: Knot of the carried release on an accepted plan (the next catch's seed
+    #: knot, ``release_state_at_knot``); -1 on a decline.
+    carried_release_k: int = -1
 
 
 def _q5(u):
@@ -535,7 +577,68 @@ def apply_catch_bump(plan: CyclePlan, meta: uc.CycleMeta, k_wire: int,
                       meta=_bumped_meta(meta, i_rel, i_catch, delta, b_rel, v_b,
                                         profile=(b, bd, bdd), limits=limits),
                       report=rep, delta_xy_mm=delta, release_offset_xy_mm=b_rel,
-                      launch_bias_xy_mm_s=v_b)
+                      launch_bias_xy_mm_s=v_b,
+                      carried_release_k=int(round(t_rel / dt)))
+
+
+#: ``gate(accepted BumpResult) -> None`` (the next catch can be planned from the
+#: bumped seed) or a one-line refusal reason.
+NextCatchGate = Callable[[BumpResult], Optional[str]]
+
+
+def bump_with_next_catch_gate(plan: CyclePlan, meta: uc.CycleMeta, k_wire: int,
+                              delta_xy_mm, t_catch_s: float, limits, geom, *,
+                              next_catch_gate: Optional[NextCatchGate] = None,
+                              shrink_steps: int = BUMP_SHRINK_STEPS,
+                              shrink_factor: float = BUMP_SHRINK_FACTOR,
+                              **kw) -> BumpResult:
+    """I-CATCH-7's one enforcement point: :func:`apply_catch_bump`, then the
+    next catch's gate on the seed the bump leaves; shrink or decline (module doc).
+
+    Without a gate (or when the requested bump is declined by its own gate)
+    this IS :func:`apply_catch_bump` — I-CATCH-5's declines pass through
+    unchanged.  With a gate: the requested Δ, then ``Δ·f**k`` for
+    ``k = 1..shrink_steps``; a step its own gate refuses is skipped (logged in
+    the reasons), the first step both gates pass is returned with
+    ``requested_delta_xy_mm``, ``shrink_steps`` and, below the request, a
+    ``BUMP-SHRUNK`` message; none passing declines :data:`BUMP_NEXT_CATCH`.
+    """
+    requested = np.asarray(delta_xy_mm, float).reshape(2)
+    first = apply_catch_bump(plan, meta, k_wire, requested, t_catch_s, limits,
+                             geom, **kw)
+    if next_catch_gate is None or not first.accepted:
+        return first
+    refusals: List[str] = []
+    res = first
+    for step in range(int(shrink_steps) + 1):
+        d = requested * (float(shrink_factor) ** step)
+        if step > 0:
+            res = apply_catch_bump(plan, meta, k_wire, d, t_catch_s, limits,
+                                   geom, **kw)
+            if not res.accepted:
+                refusals.append('(%.1f, %.1f) own gate %s' % (d[0], d[1], res.code))
+                continue
+        why = next_catch_gate(res)
+        if why is None:
+            msg = res.message
+            if step > 0:
+                msg = ('%s step %d: requested (%.1f, %.1f) -> applied (%.1f, %.1f) mm; '
+                       'next catch refused %s; %s'
+                       % (BUMP_SHRUNK, step, requested[0], requested[1], d[0], d[1],
+                          '; '.join(refusals), res.message))
+            return dataclasses.replace(res, message=msg,
+                                       requested_delta_xy_mm=requested,
+                                       shrink_steps=step)
+        refusals.append('(%.1f, %.1f) %s' % (d[0], d[1], why))
+    return BumpResult(False, BUMP_NEXT_CATCH, False,
+                      'no step of (%.1f, %.1f) mm down to x%.3g leaves a seed the '
+                      'next catch can plan: %s'
+                      % (requested[0], requested[1],
+                         float(shrink_factor) ** int(shrink_steps),
+                         '; '.join(refusals)),
+                      first.k_b, report=first.report, delta_xy_mm=requested,
+                      requested_delta_xy_mm=requested,
+                      shrink_steps=int(shrink_steps))
 
 
 def k_wire_at(t0_s: float, t_s: float, dt: float) -> int:
@@ -550,7 +653,10 @@ def bump_record(plan: CyclePlan, meta: uc.CycleMeta, t0_s: float,
                 **kw) -> Tuple[BumpResult, int]:
     """Wall-clock wrapper: ``k_wire`` from the DISPATCH instant, plus the node's
     apply-time check (``k_b <= k_wire_at(t_apply_s)`` -> non-terminal
-    ``SPLICE_TOO_LATE``, record unchanged).  Returns ``(result, k_wire)``."""
+    ``SPLICE_TOO_LATE``, record unchanged).  Returns ``(result, k_wire)``.
+    ``next_catch_gate`` (in ``kw``) routes through I-CATCH-7's
+    :func:`bump_with_next_catch_gate`; absent, the result is
+    :func:`apply_catch_bump`'s."""
     dt = float(plan.dt)
     k_wire = k_wire_at(t0_s, t_dispatch_s, dt)
     if t_apply_s is not None:
@@ -561,6 +667,6 @@ def bump_record(plan: CyclePlan, meta: uc.CycleMeta, t0_s: float,
                               % (k_wire + BUMP_EXTRA_KNOTS, k_now),
                               k_wire + BUMP_EXTRA_KNOTS,
                               delta_xy_mm=np.asarray(delta_xy_mm, float)), k_wire
-    return apply_catch_bump(plan, meta, k_wire, delta_xy_mm,
-                            float(t_catch_abs_s) - float(t0_s), limits, geom,
-                            **kw), k_wire
+    return bump_with_next_catch_gate(plan, meta, k_wire, delta_xy_mm,
+                                     float(t_catch_abs_s) - float(t0_s), limits,
+                                     geom, **kw), k_wire

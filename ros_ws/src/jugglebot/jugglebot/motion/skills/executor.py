@@ -5768,7 +5768,9 @@ class SkillExecutor:
 
     def catch_bump(self, plan: CyclePlan, meta: uc.CycleMeta, t0_s: float,
                    t_abs_s: float, limits, geom,
-                   landing: Optional[Landing] = None) -> 'CatchBumpDecision':
+                   landing: Optional[Landing] = None,
+                   next_catch_gate: Optional['bmp.NextCatchGate'] = None
+                   ) -> 'CatchBumpDecision':
         """Decide and compute a post-band re-aim of the LIVE catch as a bump on
         the installed record ``(plan, meta, t0_s)`` dispatched at ``t_abs_s``
         — WITHOUT mutating the executor (:meth:`commit_catch_bump` does).
@@ -5787,10 +5789,11 @@ class SkillExecutor:
         This form applies over a record the CALLER holds (tests, probes); the
         live path is :meth:`_bump_live_catch`, which applies through
         :attr:`bumper`.  Both run the same fences (:meth:`_catch_bump_decide`).
+        ``next_catch_gate`` is I-CATCH-7's (:func:`bump.bump_with_next_catch_gate`).
         """
         def apply(_idx, _ball_id, delta, t_c_abs, t_dispatch):
             return bmp.bump_record(plan, meta, t0_s, t_dispatch, delta, t_c_abs,
-                                   limits, geom)[0]
+                                   limits, geom, next_catch_gate=next_catch_gate)[0]
         return self._catch_bump_decide(t_abs_s, apply, landing)
 
     def _bump_live_catch(self, t_abs_s: float) -> List[str]:
@@ -5852,19 +5855,26 @@ class SkillExecutor:
             return out('BUMP-WINDOW', **kw)
         res = apply(idx, skill.ball_id, delta, t_c_abs, t_abs_s)
         if not res.accepted:
-            # Terminal codes and the non-gate retries pass through by name; a
-            # gate refusal (LIMIT_*, ...) is BUMP-WINDOW (shrink-retry rule).
-            reason = res.code if (res.terminal or res.code == bmp.BUMP_LAUNCH
-                                  or res.code in bmp.BUMP_RETRY_CODES) \
-                else 'BUMP-WINDOW'
+            # Terminal codes, the non-gate retries and I-CATCH-7's next-catch
+            # decline pass through by name; a gate refusal (LIMIT_*, ...) is
+            # BUMP-WINDOW (shrink-retry rule).
+            reason = res.code if (res.terminal or res.code in (
+                bmp.BUMP_LAUNCH, bmp.BUMP_NEXT_CATCH)
+                or res.code in bmp.BUMP_RETRY_CODES) else 'BUMP-WINDOW'
             return out(reason, terminal=res.terminal, result=res, **kw)
         base = self._carried_release_mm.get(idx)
         release_mm = None
         if base is not None:
             release_mm = np.asarray(base, dtype=float) + np.array(
                 [res.release_offset_xy_mm[0], res.release_offset_xy_mm[1], 0.0])
+        landing_xy = np.asarray(clamped.pos_mm, dtype=float)[:2]
+        if res.shrink_steps:
+            # I-CATCH-7 shrank the bump: the plan now catches at the committed
+            # landing + the APPLIED Δ, not at the tracker's clamped landing.
+            landing_xy = (np.asarray(terminal.landing_mm, dtype=float)[:2]
+                          + np.asarray(res.delta_xy_mm, dtype=float))
         return out('OK', result=res, release_mm=release_mm,
-                   landing_xy=np.asarray(clamped.pos_mm, dtype=float)[:2], **kw)
+                   landing_xy=landing_xy, **kw)
 
     def commit_catch_bump(self, decision: 'CatchBumpDecision',
                           t_abs_s: float) -> List[str]:
@@ -5910,10 +5920,12 @@ class SkillExecutor:
             self._live_catch = None
             if decision.result is not None:
                 self._note_reaim_refused(idx, decision.reason)
-        elif (decision.reason in ('BUMP-WINDOW', bmp.BUMP_LAUNCH)
+        elif (decision.reason in ('BUMP-WINDOW', bmp.BUMP_LAUNCH,
+                                  bmp.BUMP_NEXT_CATCH)
               and decision.result is not None):
             # BUMP-LAUNCH joins the shrink rule: |v_b| is linear in delta at
             # fixed timing, so the same delta can only be refused again.
+            # BUMP-NEXT-CATCH too: its ladder already tried delta down to /8.
             self._bump_refused_mm[idx] = float(np.hypot(*decision.delta_xy_mm))
         key = (idx, 'BUMP:' + decision.reason)
         if key in self._resend_notes:
