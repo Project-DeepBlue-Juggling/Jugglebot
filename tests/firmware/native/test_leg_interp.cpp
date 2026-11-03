@@ -1508,9 +1508,9 @@ TEST_CASE("FW 22 scheduled: stamped frames with late arrivals + a dropped frame 
     // One dropped frame. Frame 22's cover ends at 24T where the Hand moves DOWN at
     // ~72 rev/s through a = 0 (the grace rides it, and the rejoin's knot-jerk change
     // is ~0, as it was at the pre-FW 37 drop of 17); a drop where the Hand moves UP
-    // faster than HAND_C1_STOP_MIN_UP_VEL_RPS (17: 18T at +72 rev/s) stops at the
-    // cover end instead (FW 37, JB-145; the twin's
-    // ..._on_a_fast_upward_hand_meets_the_c1_stop_and_latches pins that case).
+    // faster than HAND_C1_STOP_MIN_UP_VEL_RPS (17: 18T at +72 rev/s) keeps only the
+    // 6 ms HAND_C1_STOP_GRACE_US before its C1 stop (FW 37, JB-145; the twin's
+    // ..._rides_the_short_grace_or_meets_the_c1_stop pins both sides of that case).
     if (k == 23) continue;
     const uint64_t late = (uint64_t)(1 + (k * 7919) % 15) * 1000u;   // 1..15 ms AFTER the stamp (emit lead 0)
     uint64_t arr = t0 + (uint64_t)k * 25'000u + late;
@@ -1644,9 +1644,10 @@ TEST_CASE("FW 22 scheduled: cover exhaustion runs a C2 stop, holds, and refuses 
 }
 
 // ═══ FW 37 hand C1 stop (JB-145) ═════════════════════════════════════════════
-// A hand cover that ends with no newer frame while the Hand moves UP faster than
-// HAND_C1_STOP_MIN_UP_VEL_RPS skips the grace and stops at the cover end with a
-// C1 entry at SCHED_STOP_ACCEL_HAND_RPS2, ramping out at SCHED_STOP_JERK_HAND_RPS3.
+// A hand cover that ends with no newer frame gets a short grace first
+// (HAND_C1_STOP_GRACE_US, the span-2 cubic continuing); if the Hand then still moves
+// UP faster than HAND_C1_STOP_MIN_UP_VEL_RPS it stops there with a C1 entry at
+// SCHED_STOP_ACCEL_HAND_RPS2, ramping out at SCHED_STOP_JERK_HAND_RPS3.
 // Everything else (slow, downward, legs) keeps the grace + C2 stop. The plans are
 // constant-acceleration knot sets, which the cubic Hermite reproduces exactly
 // (also past s = 1, so the grace continuation is the same parabola).
@@ -1689,34 +1690,52 @@ static std::vector<HandTick> run_one_hand_frame(const C2Plan& P, uint64_t t0, ui
   return out;
 }
 
-TEST_CASE("FW 37 hand C1 stop: a Hand at +160 rev/s whose cover ends stops at the cover end, C1 entry at -4500, no grace (JB-145)") {
+TEST_CASE("FW 37 hand C1 stop: a Hand at +150 rev/s whose cover ends rides the 6 ms short grace, then a C1 entry at -4500 (JB-145)") {
   reset_interp_test();
   seed_hand_encoder();
-  const C2Plan P = make_const_acc_plan(0.5, 100.0, 1200.0);   // knot 2: p 7.0, v 160, a +1200
+  const C2Plan P = make_const_acc_plan(0.0, 90.0, 1200.0);    // knot 2: p 6.0, v 150, a +1200
   const uint64_t t0 = 1'100'000, t_c = t0 + (uint64_t)SCHED_COVER_US;   // t_c on the 2 ms tick grid
+  const uint64_t t_d = t_c + HAND_C1_STOP_GRACE_US;               // the C1 decision instant
+  REQUIRE(HAND_C1_STOP_GRACE_US == 6'000u);
   const auto ticks = run_one_hand_frame(P, t0, t_c + 200'000u);
-  const double A = SCHED_STOP_ACCEL_HAND_RPS2, J = SCHED_STOP_JERK_HAND_RPS3, V = P.v[2], Pc = P.p[2];
+  const double A = SCHED_STOP_ACCEL_HAND_RPS2, J = SCHED_STOP_JERK_HAND_RPS3;
+  const double td = 2 * SEGMENT_T_S + 0.006;                    // the parabola continued to t_d
+  const double Pd = 90.0 * td + 600.0 * td * td, V = 90.0 + 1200.0 * td;   // 6.9216, 157.2
   const HandTick* last_cov = nullptr;
   const HandTick* first_stop = nullptr;
+  int grace_ticks = 0;
   for (const auto& h : ticks) {
-    if (h.now < t_c) { CHECK(h.phase == 1); last_cov = &h; continue; }
+    if (h.now < t_d) {
+      CHECK(h.phase == 1);
+      if (h.now >= t_c) {                                          // the short grace: the span continues
+        ++grace_ticks;
+        double pr, vr, ar;
+        plan_ref(P, t0, h.now, pr, vr, ar);
+        CHECK(std::fabs(h.p - pr) < 2e-3);
+        CHECK(std::fabs(h.v - vr) < 2e-2);
+        CHECK(std::fabs(h.a - ar) < 1.0);
+      }
+      last_cov = &h;
+      continue;
+    }
     if (!first_stop) first_stop = &h;
     double pr, vr, ar;
-    c1_stop_ref(Pc, V, (double)(h.now - t_c) * 1e-6, pr, vr, ar);
-    CHECK(h.phase != 1);                                          // no grace: never PLAY past t_c
+    c1_stop_ref(Pd, V, (double)(h.now - t_d) * 1e-6, pr, vr, ar);
+    CHECK(h.phase != 1);                                          // never PLAY past the short grace
     CHECK(std::fabs(h.p - pr) < 2e-3);
     CHECK(std::fabs(h.v - vr) < 2e-2);
     CHECK(std::fabs(h.a - ar) < 1.0);
   }
+  CHECK(grace_ticks == 3);                                        // t_c, t_c + 2, t_c + 4 ms
   REQUIRE(last_cov != nullptr);
   REQUIRE(first_stop != nullptr);
-  CHECK(last_cov->now == t_c - 2'000u);
-  CHECK(first_stop->now == t_c);
-  // C1 entry: the first stop sample IS the covered curve's cover-end state (u2, v2),
-  // one tick on from the last covered sample; only the acceleration steps.
+  CHECK(last_cov->now == t_d - 2'000u);
+  CHECK(first_stop->now == t_d);
+  // C1 entry: the first stop sample IS the continued cubic's state at t_d, one tick
+  // on from the last grace sample; only the acceleration steps.
   CHECK(first_stop->phase == 2);
-  CHECK(first_stop->p == doctest::Approx(Pc).epsilon(1e-6));
-  CHECK(first_stop->v == doctest::Approx(V).epsilon(1e-6));
+  CHECK(first_stop->p == doctest::Approx(Pd).epsilon(1e-5));
+  CHECK(first_stop->v == doctest::Approx(V).epsilon(1e-5));
   CHECK(first_stop->a == doctest::Approx(-A).epsilon(1e-6));
   CHECK(last_cov->a == doctest::Approx(1200.0).epsilon(1e-3));
   CHECK(std::fabs(first_stop->v - last_cov->v) < 1200.0 * 0.002 + 0.05);   // no velocity step
@@ -1726,12 +1745,46 @@ TEST_CASE("FW 37 hand C1 stop: a Hand at +160 rev/s whose cover ends stops at th
   CHECK(end.phase == 3);
   CHECK(end.v == 0.0f);
   CHECK(end.a == 0.0f);
-  const double analytic = Pc + V * V / (2 * A);
+  const double analytic = Pd + V * V / (2 * A);
   CHECK(std::fabs(end.p - (analytic + A * A * A / (24 * J * J))) < 2e-3);
   CHECK(std::fabs(end.p - analytic) < 0.05);
   CHECK(end.p < 10.501f);                                        // inside the stroke clip
   CHECK(interp_sched_hand_c1_stops() == 1u);
   CHECK(interp_sched_stops() == 2u);                              // + the flat leg group (grace + C2)
+}
+
+TEST_CASE("FW 37 hand C1 stop: one late knot landing inside the 6 ms short grace is promoted, no stop starts (JB-145)") {
+  // Emit lead 0: one dropped knot ends the cover and the next frame lands a few ms
+  // after its stamp. Inside HAND_C1_STOP_GRACE_US it is promoted as a normal PLAY
+  // frame (the span-2 cubic was still continuing), armed or not: no stop, no refusal.
+  reset_interp_test();
+  seed_hand_encoder();
+  const C2Plan P = make_const_acc_plan(0.0, 90.0, 1200.0);
+  const uint64_t t0 = 1'100'000, t_c = t0 + (uint64_t)SCHED_COVER_US;
+  write_pos_vel(hand_axis(), (float)P.p[0], 0.0f, fake_mono_us());
+  SchedRun r;
+  r.ev.push_back({t0 - 20'000u, 0});
+  sched_ticks(r, P, t0, t_c + 4'000u, [](uint64_t) {});          // ticks through t_c + 2 ms
+  REQUIRE(interp_sched_phase(1) == 1);                            // still the short grace
+  s_output_enabled = true;                                        // armed, without an edge
+  s_output_enabled_prev = true;
+  stage_sched_frame(50, P, 2, t0);                                // stamped t_c, landing 4 ms late
+  for (int j = 0; j < 10; ++j) {
+    interp_isr();
+    double pr, vr, ar;
+    plan_ref(P, t0, fake_wall_us(), pr, vr, ar);
+    CHECK(interp_sched_phase(1) == 1);
+    CHECK(std::fabs(axes[HAND_AXIS].target_pos_rev - pr) < 2e-3);
+    CHECK(std::fabs(axes[HAND_AXIS].target_vel_rps - vr) < 2e-2);
+    write_pos_vel(hand_axis(), axes[HAND_AXIS].target_pos_rev, 0.0f, fake_mono_us());
+    fake_advance(INTERP_PERIOD_US);
+  }
+  CHECK(interp_sched_refused() == 0u);
+  CHECK_FALSE(interp_sched_hold_latched());
+  CHECK(interp_sched_hand_c1_stops() == 0u);
+  CHECK(interp_sched_stops() == 0u);
+  s_output_enabled = false;
+  s_output_enabled_prev = false;
 }
 
 TEST_CASE("FW 37 hand C1 stop: a Hand at +30 rev/s (below the threshold) keeps the 20 ms grace and the C2 stop") {
@@ -1821,22 +1874,24 @@ TEST_CASE("FW 37 hand C1 stop: a leg lane moving up at 60 rev/s keeps the grace 
   CHECK(interp_sched_stops() == 1u);
 }
 
-TEST_CASE("FW 37 hand C1 stop: the accepted price, a frame landing after the stop started is refused while armed") {
+TEST_CASE("FW 37 hand C1 stop: the accepted price, a frame landing after the short grace is refused while armed") {
   // Emit lead 0: one dropped knot ends the cover, the next frame lands 1-15 ms
-  // after its stamp. Before FW 37 it rode the grace; a fast upward Hand now meets
-  // the C1 stop (da ~ 5700 rev/s^2 > the 1000 resume tolerance) -> latched hold.
+  // after its stamp. Before FW 37 it rode the 20 ms grace; a fast upward Hand now
+  // rides only HAND_C1_STOP_GRACE_US (6 ms), and a frame later than that meets the
+  // C1 stop (da ~ 5700 rev/s^2 > the 1000 resume tolerance) -> latched hold.
   reset_interp_test();
   seed_hand_encoder();
-  const C2Plan P = make_const_acc_plan(0.5, 100.0, 1200.0);
+  const C2Plan P = make_const_acc_plan(0.0, 90.0, 1200.0);
   const uint64_t t0 = 1'100'000, t_c = t0 + (uint64_t)SCHED_COVER_US;
   write_pos_vel(hand_axis(), (float)P.p[0], 0.0f, fake_mono_us());
   SchedRun r;
   r.ev.push_back({t0 - 20'000u, 0});
-  sched_ticks(r, P, t0, t_c + 2'000u, [](uint64_t) {});
+  sched_ticks(r, P, t0, t_c + 8'000u, [](uint64_t) {});          // ticks through t_c + 6 ms
   REQUIRE(interp_sched_phase(1) == 2);
+  CHECK(interp_sched_hand_c1_stops() == 1u);
   s_output_enabled = true;                                        // armed, without an edge
   s_output_enabled_prev = true;
-  stage_sched_frame(50, P, 2, t0);                                // stamped t_c, landing 4 ms late
+  stage_sched_frame(50, P, 2, t0);                                // stamped t_c, landing 8 ms late
   for (int j = 0; j < 5; ++j) {
     interp_isr();
     write_pos_vel(hand_axis(), axes[HAND_AXIS].target_pos_rev, 0.0f, fake_mono_us());

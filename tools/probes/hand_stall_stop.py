@@ -28,28 +28,35 @@ the stop limits, the grace or the cover change.
 
 OPTIONS (JB-145 / JB-154, which firmware change fits the stroke?)
 -----------------------------------------------------------------
-FW 37 IMPLEMENTS OPTION 2 (logbook ``2026-11-03-jb145-hand-stall-stop-options``,
-``leg_interp.cpp::hand_c1_stop_eval``): ``--option 2`` reproduces the firmware's
-stop height to within +0.03 rev, the one difference being that FW 37 also
-jerk-limits the ramp-OUT (a back to 0 at standstill, +A^3/(24 J^2) = 0.031 rev);
-the firmware threshold is strict (v > 50 rev/s) where the probe uses >=.
+FW 37 IMPLEMENTS OPTION 2 WITH A 6 ms GRACE (logbook
+``2026-11-03-jb145-hand-stall-stop-options``, ``leg_interp.cpp::hand_c1_stop_eval``,
+``canbridge_config.h::HAND_C1_STOP_GRACE_US``): ``--option 2 --grace-ms 6``
+reproduces the firmware exactly, ramp-out included: the cubic continues 6 ms past
+the cover end (a frame landing inside it is promoted as before), then if the
+CONTINUED v is above 50 rev/s (strict, as the firmware) the C1 stop starts there.
+Sizing (2026-11-03, ``--option 2 --grace-ms G 1.05 1.42``): the longest grace on
+the 2 ms tick grid that keeps the Apex 1.42 step-release worst knot >= 0.30 rev
+under the clip is 6 ms (9.79 rev, +0.71); 8 ms gives 10.28 (+0.23), 10 ms passes
+the clip. ``--grace-ms 0`` is FW 37 as first built (8.37 at 1.42).
 ``--option baseline`` is FW 36 and earlier.
 
 ``--option`` (default ``baseline`` = the FW 36 lane, output unchanged;
 ``all`` prints every option):
   baseline  grace (cubic continues 20 ms) then the C2 stop (a0 kept, jerk-limited).
-  1         "no grace for a fast upward Hand": if v at the cover end is > 0 and
-            >= ``--fast-up-thresh`` (50 rev/s) the stop starts AT the cover end
-            (same C2 stop); below the threshold the baseline is kept.
+  1         "short or no grace for a fast upward Hand": if v at the cover end +
+            ``--grace-ms`` (default 0, the cubic continued) is > ``--fast-up-thresh``
+            (50 rev/s) the stop starts there (same C2 stop); below the threshold
+            the baseline is kept.
   2         option 1 plus a C1-entry stop: p and v continuous, acceleration steps
             to -``--stop-accel`` (4500) at once, no jerk ramp-in, travel v^2/(2A)
-            (the jerk-limited return of a to 0 at standstill is not modelled).
+            plus the firmware's jerk-limited ramp-out A^3/(24 J^2) (0.031 rev).
   2-jerk    as 2 but the ramp-in from a_entry to -A and the ramp-out to 0 obey the
             jerk limit (``--jerk``): shows what the jerk limit costs.
 Sanity: a stop from v at constant A travels v^2/(2A) (150 rev/s, 4500: 2.5 rev).
 
     python tools/probes/hand_stall_stop.py [--accel 4500] [--clamp-entry]
         [--option baseline|1|2|2-jerk|all] [--fast-up-thresh 50] [--stop-accel 4500]
+        [--grace-ms 6]
 """
 from __future__ import annotations
 
@@ -144,13 +151,19 @@ def cover_end_stop(opt, sp1, args):
     segment (p0, v0, p1, v1).  Returns (end_rev, v_entry, a_entry, started_at)."""
     p0, v0, p1, v1 = sp1
     if opt != 'baseline':
-        pc, vc, ac = span(p0, v0, p1, v1, 1.0)
-        if vc >= args.fast_up_thresh:                  # fast upward Hand: no grace
+        # The fast-up decision is taken at cover end + --grace-ms on the CONTINUED
+        # cubic (FW 37: HAND_C1_STOP_GRACE_US), strictly above the threshold.
+        pc, vc, ac = span(p0, v0, p1, v1, 1.0 + args.grace_ms * 1e-3 / T)
+        where = 'cover end' if args.grace_ms == 0 else 'cover end +%g ms' % args.grace_ms
+        if vc > args.fast_up_thresh:                   # fast upward Hand: short or no grace
             if opt == '1':
                 a_in = min(ac, 0.0) if args.clamp_entry else ac
-                return pc + stop_travel(vc, a_in, args.accel, args.jerk), vc, a_in, 'cover end'
-            jerk = args.jerk if opt == '2-jerk' else None
-            return pc + stop_travel_c1(vc, ac, args.stop_accel, jerk), vc, ac, 'cover end'
+                return pc + stop_travel(vc, a_in, args.accel, args.jerk), vc, a_in, where
+            if opt == '2-jerk':
+                return pc + stop_travel_c1(vc, ac, args.stop_accel, args.jerk), vc, ac, where
+            A, J = args.stop_accel, args.jerk           # option 2 = the firmware, exactly:
+            return (pc + stop_travel_c1(vc, ac, A) + A ** 3 / (24.0 * J * J),   # + jerk-limited
+                    vc, ac, where)                                              # ramp-out
     pe, ve, ae = span(p0, v0, p1, v1, S_MAX)           # below threshold: today's lane
     if args.clamp_entry:
         ae = min(ae, 0.0)
@@ -169,6 +182,9 @@ def main():
                     help='rev/s: options 1/2 skip the grace above this upward v')
     ap.add_argument('--stop-accel', type=float, default=4500.0,
                     help='rev/s^2: option 2 C1-entry stop deceleration')
+    ap.add_argument('--grace-ms', type=float, default=0.0,
+                    help='ms: options 1/2/2-jerk continue the cubic this long past the '
+                         'cover end before the fast-up check and the stop (FW 37: 6)')
     ap.add_argument('apex', nargs='*', type=float, default=[0.95, 1.05, 1.2, 1.42])
     args = ap.parse_args()
     opts = ['baseline', '1', '2', '2-jerk'] if args.option == 'all' else [args.option]

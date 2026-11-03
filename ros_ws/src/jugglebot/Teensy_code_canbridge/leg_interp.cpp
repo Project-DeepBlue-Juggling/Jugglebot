@@ -364,7 +364,9 @@ static float s_hand_recover_speed    = 0.0f;
 // frame older than the one playing (no double play).
 // GRACE. Past t_start+2T the span-2 cubic simply continues (s > 1) for
 // SCHED_GRACE_S (canbridge_config.h: at emit lead 0 a dropped knot is routine,
-// and a stop started at 2T would refuse the next, barely-late frame).
+// and a stop started at 2T would refuse the next, barely-late frame). FW 37: the
+// hand group's grace is cut to HAND_C1_STOP_GRACE_US when the Hand is still moving
+// up fast there (the C1 stop below).
 // C2 STOP. If the grace also runs out with no newer frame, the lane runs a cubic-in-
 // velocity stop from the exact extended span-2 state (p, v, a) to rest:
 //   v(τ) = v0(1−3τ²+2τ³) + a0·D(τ−2τ²+τ³),  τ = t/D
@@ -426,6 +428,8 @@ static constexpr int64_t SCHED_COVER_US = 2 * SCHED_SEG_US;                     
 static constexpr int64_t SCHED_GRACE_US = (int64_t)(SCHED_GRACE_S * 1e6f + 0.5f);
 static constexpr int64_t SCHED_EXHAUST_US = SCHED_COVER_US + SCHED_GRACE_US;            // cover + grace
 static constexpr float   SCHED_S_MAX = 1.0f + SCHED_GRACE_S / SEGMENT_T_S;              // span-2 s at exhaustion
+static constexpr int64_t HAND_C1_DECIDE_US = SCHED_COVER_US + (int64_t)HAND_C1_STOP_GRACE_US;   // cover + short grace
+static constexpr float   HAND_C1_S = 1.0f + ((float)HAND_C1_STOP_GRACE_US * 1e-6f) / SEGMENT_T_S;  // span-2 s there
 
 // Counters (census idiom: cumulative, single writer, consumer differences).
 static volatile uint32_t s_sched_frames       = 0;   // net task: accepted as scheduled
@@ -573,19 +577,24 @@ static void stop_eval(float P, float V, float A, float D, float t, float& p, flo
 // faster than HAND_C1_STOP_MIN_UP_VEL_RPS must stop inside the stroke. The grace
 // (20 ms of the span's own cubic, ~3 rev at 150 rev/s) plus a C2 stop that cannot
 // start below its entry acceleration carried the Hand to 13-16 rev against the
-// 10.501 rev clip (tools/probes/hand_stall_stop.py; option 2 there is this code,
-// 7.58 / 8.34 rev at Apex 1.05 / 1.42). So, for the HAND group only: no grace, the
-// stop starts AT the cover end from the covered knot (u2, v2) — position and
-// velocity continuous (C1), acceleration stepping to -A with A the existing hand
+// 10.501 rev clip (tools/probes/hand_stall_stop.py; option 2 --grace-ms 6 there is
+// this code, release-knot stop 8.30 / 9.79 rev at Apex 1.05 / 1.42 step). So, for
+// the HAND group only: a SHORT grace (HAND_C1_STOP_GRACE_US, 6 ms — the same
+// continuation of the span-2 cubic, so a frame landing inside it is promoted
+// exactly as in the full grace), then, if the continued velocity is upward above
+// the threshold, the stop starts there from the continued state (p, v) — position
+// and velocity continuous (C1), acceleration stepping to -A with A the existing hand
 // stop authority SCHED_STOP_ACCEL_HAND_RPS2 — held until v = v_r = A^2/(2J), then
 // a ramp-out at jerk J = SCHED_STOP_JERK_HAND_RPS3 to a = 0 exactly at v = 0 (no
 // second step at the stroke top; costs A^3/(24 J^2) = 0.03 rev). Final position
 // P + V^2/(2A) + A^3/(24 J^2). The ramp-IN is a step on purpose: a jerk-limited
-// ramp-in fails Apex 1.42 by 0.07 rev in the probe. Downward or slow Hands and
-// every leg lane keep the grace and the C2 stop unchanged. A frame landing after
-// this stop has started meets it in sched_apply and is refused while armed (the
-// latched hold) — the accepted price of skipping the grace (logbook
-// 2026-11-03-jb145-hand-stall-stop-options).
+// ramp-in fails Apex 1.42 by 0.07 rev in the probe. The decision is taken on the
+// CONTINUED velocity (> HAND_C1_STOP_MIN_UP_VEL_RPS > A^2/(2J), so the profile is
+// always well formed); a Hand that is slow or downward there keeps the rest of the
+// grace and the C2 stop, as does every leg lane. A frame landing after this stop
+// has started (more than 6 ms past the cover end) meets it in sched_apply and is
+// refused while armed (the latched hold) — the accepted price of shortening the
+// grace (logbook 2026-11-03-jb145-hand-stall-stop-options).
 static void hand_c1_stop_eval(float P, float V, float A, float J, float t, float& p, float& v, float& a) {
   const float vr = A * A / (2.0f * J);           // ramp-out entry speed (static_assert: V > vr)
   const float t1 = (V - vr) / A;                 // constant-deceleration phase
@@ -622,24 +631,29 @@ static void sched_eval_axis(const SchedGroup& g, uint8_t i, int64_t now, float& 
 
 // PLAY → STOP at cover exhaustion (entry state = the span-2 endpoint, exactly, at
 // t_start + 2T — not at the tick that noticed), STOP → HOLD at D. FW 37: the hand
-// group moving up faster than HAND_C1_STOP_MIN_UP_VEL_RPS enters the C1 stop at
-// the cover end instead (see hand_c1_stop_eval).
+// group whose continued cubic, at cover end + HAND_C1_STOP_GRACE_US, moves up
+// faster than HAND_C1_STOP_MIN_UP_VEL_RPS enters the C1 stop at that instant
+// instead (see hand_c1_stop_eval). The check repeats each tick until exhaustion
+// but reads the same fixed instant, so its answer cannot change.
 static void sched_advance(SchedGroup& g, uint8_t first, uint8_t last, int64_t now, float A, float J) {
-  if (first == HAND_AXIS && g.phase == SCHED_PLAY && (now - g.t0_us) >= SCHED_COVER_US) {
+  if (first == HAND_AXIS && g.phase == SCHED_PLAY && (now - g.t0_us) >= HAND_C1_DECIDE_US) {
     bool fast_up = true;
-    for (uint8_t i = first; i < last; ++i) if (!(g.v2[i] > HAND_C1_STOP_MIN_UP_VEL_RPS)) fast_up = false;
+    for (uint8_t i = first; i < last; ++i) {
+      float pc, vc, ac;
+      span_eval(g.p1[i], g.v1[i], g.p2[i], g.v2[i], HAND_C1_S, pc, vc, ac);
+      if (!(vc > HAND_C1_STOP_MIN_UP_VEL_RPS)) fast_up = false;
+    }
     if (fast_up) {
       float D = 0.0f;
       for (uint8_t i = first; i < last; ++i) {
-        g.ep[i] = g.p2[i]; g.ev[i] = g.v2[i];      // span 2 at s = 1 is exactly the knot (u2, v2)
-        float pd, vd;
-        span_eval(g.p1[i], g.v1[i], g.p2[i], g.v2[i], 1.0f, pd, vd, g.ea[i]);   // observability only
-        const float Di = hand_c1_stop_duration(g.v2[i], SCHED_STOP_ACCEL_HAND_RPS2, SCHED_STOP_JERK_HAND_RPS3);
+        // Entry = the continued span-2 state at the short grace's end (ea: observability only).
+        span_eval(g.p1[i], g.v1[i], g.p2[i], g.v2[i], HAND_C1_S, g.ep[i], g.ev[i], g.ea[i]);
+        const float Di = hand_c1_stop_duration(g.ev[i], SCHED_STOP_ACCEL_HAND_RPS2, SCHED_STOP_JERK_HAND_RPS3);
         if (Di > D) D = Di;
       }
       g.stop_D = D;
       g.c1_stop = true;
-      g.t0_us += SCHED_COVER_US;
+      g.t0_us += HAND_C1_DECIDE_US;
       g.phase = SCHED_STOP;
       ++s_sched_stops;
       ++s_sched_hand_c1_stops;

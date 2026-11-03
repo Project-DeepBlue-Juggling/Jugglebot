@@ -66,7 +66,7 @@ constexpr uint16_t FW_VERSION   = 37;         // bump on behavioural change (1�
 // 33→34: 2026-10-28 JB-75 + JB-72. (a) SETPOINT_STALE measures from max(last setpoint, mpc_active arm edge) and the output gate stays shut until a setpoint lands after the arm edge, so a re-arm on a bridge that streamed before can no longer latch on the previous stream's age in the 16-37 ms before the first new frame; a dead stream after an arm still trips 250 ms after the ARM. (b) Diagnostic pad[0] becomes homing_epoch (u8, bumped on every ACCEPTED HOME, with HomingResult set to RUNNING at accept in the same IRQ-guarded section; result + epoch read as one pair). Same payload size, previously-zero byte: an older host ignores it and a newer host against an FW <= 33 board reads epoch 0 and falls back to its RUNNING gate, so PROTOCOL_VERSION stays 10 (the u32-flags precedent). EXPECTED_BRIDGE_FW_VERSION moves 33 -> 34 in the same change.
 // 34→35: 2026-11-01 JB-73 SUPPRESS-EDGE HOLD FLUSH. During a MOTOR_FB_STALE suppression the ODrive held its last Set_Input_Pos INCLUDING vel_ff and settled at input_pos + vel_ff/pos_gain (bench 2026-10-27: 0.05 rev past the last command; 0.0875 rev at the 3.5 rev/s LEAD_CLAMP_VELFF_LIMIT_RPS cap). On the first suppressed tick the interp now re-sends each lane's LAST TRANSMITTED frame once with vel_ff = 0: legs keep input_pos and torque_ff (gravity FF), the Hand keeps input_pos and its FW 22 tau drain now carries vel_ff = 0 (a tau == 0 Hand gets one hold frame). Only when fb_stale is the SOLE reason output is off (interp_set_output_enabled(allow, hold_flush)): never on an E-STOP latch, fatal, bus-down, guard DISABLED or the FW 34 arm shut, never during a cold-start move, never for the deferred Stow (it forces output on). The flush replaces the burst it follows, so the bus never carries more than the qualified 7-frame burst. Census interp_hold_flush_edges() (not uplinked). NO WIRE CHANGE — PROTOCOL_VERSION stays 10.
 // 35→36: 2026-11-02 JB-146 HAND STALL GUARD. The ACTIVATE / HAND_MOVE_TO ladder (leg_activate.cpp) now aborts the HAND when |iq_measured| >= HAND_STALL_IQ_A (25 A) AND |vel| <= HAND_STALL_VEL_RPS (0.5 rev/s) hold continuously for HAND_STALL_HOLD_US (300 ms; owner rule "no motion with high current for >= 300 ms aborts the move"): axis 6 is commanded IDLE and dropped from the ladder, the legs of an ACTIVATE carry on to their active pose (a Hand stall never drops the Platform). Incident 2026-11-02 16:52: an ODrive GUI save reset the Hand zero, ACTIVATE parked into the stop, the position loop wound up to ~70 A in 0.55 s and held it 5.5 s to MOTOR_OVER_TEMP. Named on the wire two ways, both previously-zero values: a HAND_MOVE_TO is answered ERR_REJECTED with the NEW outcome HAND_MOVE_STALLED = 4 (an older host prints outcome_4), and the hand's Diagnostic flags gain bit2 = activate_stall (sticky until the next ladder that targets the hand starts; flags is also a change-detect term for that bit, so the edge is sent at once). Legs are NOT guarded (no config-derivable leg stall threshold, and a leg abort IDLEs a loaded Platform). Same build, owner 2026-11-02 (JB-147): the scheduled-playback stream STOP's hand deceleration SCHED_STOP_ACCEL_HAND_RPS2 (hardware_config.yaml trajectory_op.stream_stop_hand_accel_rps2) 3500 -> 4500 rev/s^2, the session hand acceleration limit, so a stall mid-brake stops as hard as the planner's brake seed (jerk bound unchanged at 350000). NO WIRE CHANGE to any layout: PROTOCOL_VERSION stays 10.
-// 36→37: 2026-11-03 JB-145 HAND C1 STOP. When the scheduled hand cover ends with no newer frame while the Hand moves UP faster than HAND_C1_STOP_MIN_UP_VEL_RPS (50 rev/s), the hand group skips SCHED_GRACE_S and stops AT the cover end: position and velocity continuous with the covered knot, acceleration stepping to -SCHED_STOP_ACCEL_HAND_RPS2 (4500 rev/s^2) and held to v = A^2/(2J), then a jerk-limited ramp-out (SCHED_STOP_JERK_HAND_RPS3) to rest and HOLD. Before this the 20 ms grace plus the C2 stop carried a fast upward Hand to 13-16 rev against the 10.501 rev stroke clip (tools/probes/hand_stall_stop.py --option 2: 7.58 / 8.34 rev at Apex 1.05 / 1.42). Slow or downward Hands and every leg lane keep the grace and the C2 stop unchanged. Tradeoff accepted: a frame landing after an uncovered cover end during a fast upward stroke now meets the stop and is refused (latched hold) instead of riding the grace. Census interp_sched_hand_c1_stops() (not uplinked). NO WIRE CHANGE: PROTOCOL_VERSION stays 10.
+// 36→37: 2026-11-03 JB-145 HAND C1 STOP. When the scheduled hand cover ends with no newer frame while the Hand moves UP faster than HAND_C1_STOP_MIN_UP_VEL_RPS (50 rev/s), the hand group shortens SCHED_GRACE_S to HAND_C1_STOP_GRACE_US (6 ms: the span-2 cubic continues, a frame landing inside it is promoted as before, so one late knot up to 56 ms after the previous stamp rides through) and, if the CONTINUED velocity is still upward above the threshold, stops at cover end + 6 ms: position and velocity continuous with the continued cubic, acceleration stepping to -SCHED_STOP_ACCEL_HAND_RPS2 (4500 rev/s^2) and held to v = A^2/(2J), then a jerk-limited ramp-out (SCHED_STOP_JERK_HAND_RPS3) to rest and HOLD. Before this the 20 ms grace plus the C2 stop carried a fast upward Hand to 13-16 rev against the 10.501 rev stroke clip (tools/probes/hand_stall_stop.py --option 2 --grace-ms 6: release-knot stop 8.30 / 9.79 rev at Apex 1.05 / 1.42 step, +0.71 rev to the clip at 1.42; 8 ms would leave +0.23). Slow or downward Hands and every leg lane keep the grace and the C2 stop unchanged. Tradeoff accepted: a frame landing more than 6 ms after an uncovered cover end during a fast upward stroke meets the stop and is refused (latched hold) instead of riding the 20 ms grace. Census interp_sched_hand_c1_stops() (not uplinked). NO WIRE CHANGE: PROTOCOL_VERSION stays 10.
 
 // ── Network (static, point-to-point /30) ─────────────────────────────────────
 // IP octets and ports come from the generated udp_protocol.h (JbUdp::).
@@ -517,16 +517,32 @@ constexpr float    SCHED_STOP_ACCEL_LEG_RPS2  = TrajOp::STREAM_STOP_LEG_ACCEL_RP
 constexpr float    SCHED_STOP_JERK_LEG_RPS3   = TrajOp::STREAM_STOP_LEG_JERK_RPS3;
 constexpr float    SCHED_STOP_ACCEL_HAND_RPS2 = TrajOp::STREAM_STOP_HAND_ACCEL_RPS2;
 constexpr float    SCHED_STOP_JERK_HAND_RPS3  = TrajOp::STREAM_STOP_HAND_JERK_RPS3;
-// FW 37 HAND C1 STOP (JB-145, tools/probes/hand_stall_stop.py --option 2). When a
-// hand cover ends while the Hand moves UP faster than this, the grace is skipped
-// and the hand stop starts AT the cover end with a C1 entry (position and velocity
-// continuous, acceleration stepping to -SCHED_STOP_ACCEL_HAND_RPS2), held to
-// v = A^2/(2J), then a jerk-limited ramp-out (SCHED_STOP_JERK_HAND_RPS3) to rest.
-// Below it, downward, and for every leg lane, the grace + C2 stop are unchanged.
+// FW 37 HAND C1 STOP (JB-145, tools/probes/hand_stall_stop.py --option 2
+// --grace-ms 6). A hand cover that ends with no newer frame gets a SHORT grace
+// first: the span-2 cubic continues for HAND_C1_STOP_GRACE_US exactly as in the
+// full grace (a frame landing inside it is promoted as a normal PLAY frame). At
+// cover end + HAND_C1_STOP_GRACE_US, if the CONTINUED Hand velocity is upward and
+// faster than HAND_C1_STOP_MIN_UP_VEL_RPS, the hand stop starts there with a C1
+// entry (position and velocity continuous with the continued cubic, acceleration
+// stepping to -SCHED_STOP_ACCEL_HAND_RPS2), held to v = A^2/(2J), then a
+// jerk-limited ramp-out (SCHED_STOP_JERK_HAND_RPS3) to rest. Otherwise (slow or
+// downward Hand) the rest of SCHED_GRACE_S and the C2 stop run unchanged; every
+// leg lane is unchanged.
 constexpr float    HAND_C1_STOP_MIN_UP_VEL_RPS = 50.0f;
 static_assert(HAND_C1_STOP_MIN_UP_VEL_RPS >
               SCHED_STOP_ACCEL_HAND_RPS2 * SCHED_STOP_ACCEL_HAND_RPS2 / (2.0f * SCHED_STOP_JERK_HAND_RPS3),
               "the C1 stop's constant-deceleration phase must exist above the threshold");
+// The short grace (owner, 2026-11-03): the LONGEST on the 2 ms tick grid whose
+// worst-knot stop at Apex 1.42 (step release) keeps >= 0.30 rev under the 10.501
+// rev stroke clip. Probe: 6 ms -> 9.79 rev (+0.71); 8 ms -> 10.28 (+0.23, fails);
+// 0 ms (FW 37 as first built) -> 8.37. It lets a frame up to 2T + 6 ms = 56 ms
+// after the previous frame's stamp ride through the fast upstroke, where no grace
+// refused a single late knot (latched hold, aborted Throw).
+constexpr uint32_t HAND_C1_STOP_GRACE_US = 6000u;
+static_assert((float)HAND_C1_STOP_GRACE_US < SCHED_GRACE_S * 1e6f,
+              "the fast-upstroke grace must be shorter than the full grace");
+static_assert(HAND_C1_STOP_GRACE_US % INTERP_PERIOD_US == 0,
+              "the fast-upstroke grace must be a whole number of interpolator ticks");
 constexpr float    SCHED_STOP_BRACKET_S       = 0.004f;   // first bisection bracket
 constexpr float    SCHED_STOP_MAX_S           = 0.5f;     // duration cap (counted if it binds)
 constexpr uint8_t  SCHED_STOP_BISECT_ITERS    = 20;

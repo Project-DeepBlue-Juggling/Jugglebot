@@ -141,6 +141,9 @@ STREAM_STOP_LEG_JERK_RPS3 = 25000.0
 STREAM_STOP_HAND_ACCEL_RPS2 = 4500.0
 STREAM_STOP_HAND_JERK_RPS3 = 350000.0
 HAND_C1_STOP_MIN_UP_VEL_RPS = 50.0             # FW 37 hand C1 stop (JB-145), canbridge_config.h
+HAND_C1_STOP_GRACE_US = 6000                   # FW 37 short grace on the fast upstroke
+HAND_C1_DECIDE_US = SCHED_COVER_US + HAND_C1_STOP_GRACE_US
+HAND_C1_S = 1.0 + HAND_C1_STOP_GRACE_US * 1e-6 / SEGMENT_T_S
 # FW 22 hand acceleration torque feedforward (U2b) — canbridge_config.h / trajectory_op.stream_hand_*
 HAND_TORQUE_FF_CLAMP_NM = 0.234
 HAND_FF_GAIN_SLEW_PER_S = 5.0
@@ -956,20 +959,22 @@ class TeensyLegInterp:
         return g.ep[i], 0.0, 0.0
 
     def _sched_advance(self, g, now_us):
-        # FW 37 (JB-145): the hand group moving up faster than the threshold skips
-        # the grace and enters the C1 stop at the cover end (leg_interp.cpp).
+        # FW 37 (JB-145): the hand group whose continued cubic, at cover end +
+        # HAND_C1_STOP_GRACE_US, moves up faster than the threshold enters the C1
+        # stop there from the continued state (leg_interp.cpp).
         if (g.first == HAND_AXIS and g.phase == SCHED_PLAY
-                and (now_us - g.t0_us) >= SCHED_COVER_US
-                and all(g.v2[i] > HAND_C1_STOP_MIN_UP_VEL_RPS for i in range(g.first, g.last))):
+                and (now_us - g.t0_us) >= HAND_C1_DECIDE_US
+                and all(span_eval(g.p1[i], g.v1[i], g.p2[i], g.v2[i], HAND_C1_S)[1]
+                        > HAND_C1_STOP_MIN_UP_VEL_RPS for i in range(g.first, g.last))):
             D = 0.0
             for i in range(g.first, g.last):
-                g.ep[i], g.ev[i] = g.p2[i], g.v2[i]
-                g.ea[i] = span_eval(g.p1[i], g.v1[i], g.p2[i], g.v2[i], 1.0)[2]
-                D = max(D, hand_c1_stop_duration(g.v2[i], STREAM_STOP_HAND_ACCEL_RPS2,
+                g.ep[i], g.ev[i], g.ea[i] = span_eval(g.p1[i], g.v1[i], g.p2[i], g.v2[i],
+                                                      HAND_C1_S)
+                D = max(D, hand_c1_stop_duration(g.ev[i], STREAM_STOP_HAND_ACCEL_RPS2,
                                                  STREAM_STOP_HAND_JERK_RPS3))
             g.stop_D = D
             g.c1_stop = True
-            g.t0_us += SCHED_COVER_US
+            g.t0_us += HAND_C1_DECIDE_US
             g.phase = SCHED_STOP
             self.sched_stops += 1
             self.sched_hand_c1_stops += 1
