@@ -118,7 +118,11 @@ def test_gain_change_slews_ks_never_steps():
 
 def test_late_arrivals_and_dropped_frame_add_no_step_beyond_the_curve():
     P = _plan(1500.0, 12, 5.0)
-    tw, t0, out = _run(P, 44, 100_000 + 40 * 25_000, K=0.5, drop=(17,),
+    # Drop 23, not 17: frame 22's cover ends at 24T with the Hand moving DOWN, so the
+    # grace rides it (the same drop as native test_leg_interp.cpp). At 18T the Hand
+    # moves up at ~72 rev/s, where FW 37 (JB-145) stops at the cover end instead
+    # (test_sched_c2_twin.py pins that case).
+    tw, t0, out = _run(P, 44, 100_000 + 40 * 25_000, K=0.5, drop=(23,),
                        arrival=lambda k, stamp: stamp + (1 + (k * 7919) % 15) * 1000)
     live = [o for o in out if o[0] >= t0 + 200_000]
     # The torque path itself adds at most the fade/K/bias rate terms on top of

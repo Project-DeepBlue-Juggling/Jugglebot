@@ -71,6 +71,7 @@ class Driver:
         self.hand = []      # (now_us, p, v, a) raw hand ladder, from the first transmitted tick
         self.leg = []
         self.fb = 0.0
+        self.c1_entries = []   # tick times at which an FW 37 hand C1 stop began (JB-145)
 
     def send(self, k, recv_us, **kw):
         P, V, A = self.P, self.V, self.A
@@ -89,8 +90,11 @@ class Driver:
             while ei < len(events) and events[ei][0] <= now:
                 self.send(events[ei][1], events[ei][0])
                 ei += 1
+            c1_before = self.it.sched_hand_c1_stops
             self.it.tick(now / 1e6, [0.0] * 6)
             out = self.it.tick_hand(now / 1e6, fb_rev=self.fb)
+            if self.it.sched_hand_c1_stops != c1_before:
+                self.c1_entries.append(now)
             if out is not None:
                 self.hand.append((now, self.it.hand_raw_pos, self.it.hand_raw_vel, self.it.hand_raw_acc))
                 self.leg.append((now, self.it.raw_pos[0], self.it.raw_vel[0], self.it.cmd_acc[0]))
@@ -185,6 +189,31 @@ def test_a_single_dropped_frame_at_emit_lead_0_rides_the_grace_and_rejoins_the_p
     assert_exact_plan(d, samples=[s for s in d.hand if s[0] < T0_US + 21 * T_US], legs=False)
 
 
+@pytest.mark.parametrize("late_ms", [1.0, 3.0, 8.0, 15.0])
+def test_a_single_dropped_frame_at_emit_lead_0_on_a_fast_upward_hand_meets_the_c1_stop_and_latches(late_ms):
+    # FW 37 (JB-145), the accepted price: frame 15 covers [15T, 17T) and the Hand
+    # is moving up at ~103 rev/s at 17T. Frame 16 is dropped and frame 17 lands
+    # late_ms after 17T. Before FW 37 it rode the 20 ms grace (the test above);
+    # now the Hand has started its C1 stop at 17T, the late frame differs by the
+    # ~4500+ rev/s^2 acceleration step, and while armed it is REFUSED (latched hold).
+    P, V, A = c2_plan(64)
+    assert V[17] > ti.HAND_C1_STOP_MIN_UP_VEL_RPS
+    d = Driver(P, V, A)
+    d.run(nominal_events(60, lambda k: late_ms, drop={16}), T0_US - 40_000, T0_US + 30 * T_US)
+    it = d.it
+    if late_ms * 1000 < 1700:
+        # The driver ticks at 17T - 300 us and 17T + 1700 us: a frame landing before
+        # the first tick past the cover end is promoted first and the stop never starts.
+        assert it.sched_hand_c1_stops == 0 and it.sched_refused == 0
+        return
+    assert it.sched_hand_c1_stops == 1
+    assert d.c1_entries and d.c1_entries[0] >= T0_US + 17 * T_US
+    assert d.c1_entries[0] < T0_US + 17 * T_US + TICK_US
+    assert it.sched_refused >= 1 and it._sg[1].latched
+    assert it.sched_phase(1) in (2, 3)
+    assert it.sched_phase(0) == 1                      # the legs rode their grace and rejoined
+
+
 def test_a_late_burst_is_played_at_its_true_phase():
     P, V, A = c2_plan(64)
     d = Driver(P, V, A)
@@ -225,7 +254,13 @@ def test_stress_lead0_random_lateness_never_steps(late_hi_ms):
     """Emit lead 0 with 0-40 ms lateness (the stress case: cover + grace holds it)
     and 0-80 ms (forces exhaustion, stops and refusals). Whatever the resume rule
     decides, the emitted curve never steps beyond the stop jerk plus the resume
-    tolerances, and every stop is accounted for."""
+    tolerances, and every stop is accounted for.
+
+    FW 37 (JB-145): a frame more than 25 ms late ends the previous cover, and a
+    Hand moving up faster than HAND_C1_STOP_MIN_UP_VEL_RPS then stops AT the cover
+    end with no grace and a C1 entry, so at 0-40 ms every stop that happens is a
+    hand C1 stop (never a C2 one), and the entry tick is the one place the
+    acceleration may step (to exactly -A; position and velocity stay continuous)."""
     P, V, A = c2_plan(64)
     J = max(plan_jerk(A), ti.STREAM_STOP_HAND_JERK_RPS3)
     rp, rv, ra = ti.SCHED_RESUME_TOL_HAND
@@ -235,12 +270,15 @@ def test_stress_lead0_random_lateness_never_steps(late_hi_ms):
         d.run(nominal_events(60, lambda k: rng.uniform(0.0, late_hi_ms)), T0_US - 40_000, T0_US + 58 * T_US)
         for (t0, p0, v0, a0), (t1, p1, v1, a1) in zip(d.hand, d.hand[1:]):
             h = (t1 - t0) * 1e-6
-            assert abs(a1 - a0) <= J * h + ra
+            if t1 in d.c1_entries:
+                assert a1 == -ti.STREAM_STOP_HAND_ACCEL_RPS2
+            else:
+                assert abs(a1 - a0) <= J * h + ra
             assert abs(v1 - v0 - h * (a0 + a1) / 2.0) <= J * h * h / 4.0 + rv
             assert abs(p1 - p0 - h * (v0 + v1) / 2.0 - h * h * (a0 - a1) / 12.0) <= J * h ** 3 / 6.0 + rp
         it = d.it
         if late_hi_ms <= 40.0:
-            assert it.sched_stops == 0 and it.sched_refused == 0
+            assert it.sched_stops == it.sched_hand_c1_stops
         else:
             assert it.sched_stops >= 1
 
@@ -280,14 +318,28 @@ def test_cover_exhaustion_runs_a_c2_stop_then_holds_and_refuses_a_step(last_fram
     assert it.sched_stops == 2                          # legs group + hand group
     assert it.sched_stop_capped == 0
     assert it.sched_phase(1) == 3 and it.sched_phase(0) == 3
-    p_entry, v_entry, a_entry = ti.span_eval(P[K + 1], V[K + 1], P[K + 2], V[K + 2], ti.SCHED_S_MAX)
-    stop = [s for s in d.hand if s[0] >= t_exh]
-    assert abs(stop[0][3] - ti.stop_eval(p_entry, v_entry, a_entry, g.stop_D,
-                                         (stop[0][0] - t_exh) * 1e-6)[2]) < 1e-6
-    peak = max(abs(s[3]) for s in stop)
-    assert peak <= max(ti.STREAM_STOP_HAND_ACCEL_RPS2, abs(a_entry)) * (1.0 + 1e-3)
     jb = max(plan_jerk(A), ti.STREAM_STOP_HAND_JERK_RPS3) * 1.001
-    assert not c2_violations(d.hand, jb), c2_violations(d.hand, jb)[:3]
+    if V[K + 2] > ti.HAND_C1_STOP_MIN_UP_VEL_RPS:
+        # FW 37 (JB-145): a fast upward Hand stops AT the cover end, no grace, C1 entry.
+        t_c = T0_US + (K + 2) * T_US
+        assert it.sched_hand_c1_stops == 1 and g.c1_stop
+        stop = [s for s in d.hand if s[0] >= t_c]
+        for now, p, v, a in stop:
+            pr, vr, ar = ti.hand_c1_stop_eval(P[K + 2], V[K + 2], ti.STREAM_STOP_HAND_ACCEL_RPS2,
+                                              ti.STREAM_STOP_HAND_JERK_RPS3, (now - t_c) * 1e-6)
+            assert abs(p - pr) < 1e-9 and abs(v - vr) < 1e-7 and abs(a - ar) < 1e-6
+        assert stop[0][3] == -ti.STREAM_STOP_HAND_ACCEL_RPS2
+        before = [s for s in d.hand if s[0] < t_c]
+        assert not c2_violations(before, jb) and not c2_violations(stop, jb)
+    else:
+        assert it.sched_hand_c1_stops == 0
+        p_entry, v_entry, a_entry = ti.span_eval(P[K + 1], V[K + 1], P[K + 2], V[K + 2], ti.SCHED_S_MAX)
+        stop = [s for s in d.hand if s[0] >= t_exh]
+        assert abs(stop[0][3] - ti.stop_eval(p_entry, v_entry, a_entry, g.stop_D,
+                                             (stop[0][0] - t_exh) * 1e-6)[2]) < 1e-6
+        peak = max(abs(s[3]) for s in stop)
+        assert peak <= max(ti.STREAM_STOP_HAND_ACCEL_RPS2, abs(a_entry)) * (1.0 + 1e-3)
+        assert not c2_violations(d.hand, jb), c2_violations(d.hand, jb)[:3]
     assert not c2_violations(d.leg, max(plan_jerk(A) * LEG_SCALE, ti.STREAM_STOP_LEG_JERK_RPS3) * 1.001)
     hold_p = d.hand[-1][1]
     assert d.hand[-1][2] == 0.0 and d.hand[-1][3] == 0.0
@@ -442,6 +494,7 @@ def test_sched_constants_match_the_firmware():
     assert c("SCHED_STOP_REL_EPS") == pytest.approx(ti.SCHED_STOP_REL_EPS)
     assert c("HAND_FF_GAIN_MAX") == pytest.approx(ti.HAND_FF_GAIN_MAX)
     assert c("SCHED_GRACE_S") == pytest.approx(ti.SCHED_GRACE_S)
+    assert c("HAND_C1_STOP_MIN_UP_VEL_RPS") == pytest.approx(ti.HAND_C1_STOP_MIN_UP_VEL_RPS)
     assert ti.SCHED_GRACE_US == round(ti.SCHED_GRACE_S * 1e6)
     assert c("STREAM_STOP_HAND_ACCEL_RPS2", hw) == ti.STREAM_STOP_HAND_ACCEL_RPS2
     assert c("STREAM_STOP_HAND_JERK_RPS3", hw) == ti.STREAM_STOP_HAND_JERK_RPS3

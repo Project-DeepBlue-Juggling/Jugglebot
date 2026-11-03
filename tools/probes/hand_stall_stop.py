@@ -28,7 +28,14 @@ the stop limits, the grace or the cover change.
 
 OPTIONS (JB-145 / JB-154, which firmware change fits the stroke?)
 -----------------------------------------------------------------
-``--option`` (default ``baseline`` = today's firmware, output unchanged;
+FW 37 IMPLEMENTS OPTION 2 (logbook ``2026-11-03-jb145-hand-stall-stop-options``,
+``leg_interp.cpp::hand_c1_stop_eval``): ``--option 2`` reproduces the firmware's
+stop height to within +0.03 rev, the one difference being that FW 37 also
+jerk-limits the ramp-OUT (a back to 0 at standstill, +A^3/(24 J^2) = 0.031 rev);
+the firmware threshold is strict (v > 50 rev/s) where the probe uses >=.
+``--option baseline`` is FW 36 and earlier.
+
+``--option`` (default ``baseline`` = the FW 36 lane, output unchanged;
 ``all`` prints every option):
   baseline  grace (cubic continues 20 ms) then the C2 stop (a0 kept, jerk-limited).
   1         "no grace for a fast upward Hand": if v at the cover end is > 0 and

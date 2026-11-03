@@ -140,6 +140,7 @@ STREAM_STOP_LEG_ACCEL_RPS2 = 250.0           # hardware_config.yaml trajectory_o
 STREAM_STOP_LEG_JERK_RPS3 = 25000.0
 STREAM_STOP_HAND_ACCEL_RPS2 = 4500.0
 STREAM_STOP_HAND_JERK_RPS3 = 350000.0
+HAND_C1_STOP_MIN_UP_VEL_RPS = 50.0             # FW 37 hand C1 stop (JB-145), canbridge_config.h
 # FW 22 hand acceleration torque feedforward (U2b) — canbridge_config.h / trajectory_op.stream_hand_*
 HAND_TORQUE_FF_CLAMP_NM = 0.234
 HAND_FF_GAIN_SLEW_PER_S = 5.0
@@ -249,6 +250,28 @@ def stop_eval(P, V, A, D, t):
     return p, v, a
 
 
+def hand_c1_stop_eval(P, V, A, J, t):
+    """FW 37 hand C1 stop (JB-145) from (P, V) at t -> (p, v, a).  leg_interp.cpp
+    hand_c1_stop_eval: a = -A until v = A^2/(2J), then a jerk-J ramp-out to rest."""
+    vr = A * A / (2.0 * J)
+    t1 = (V - vr) / A
+    t2 = A / J
+    if t < 0.0:
+        t = 0.0
+    if t < t1:
+        return P + t * (V - 0.5 * A * t), V - A * t, -A
+    p1 = P + t1 * (V - 0.5 * A * t1)
+    if t < t1 + t2:
+        r = t - t1
+        return (p1 + r * (vr - 0.5 * A * r + J * r * r / 6.0),
+                vr - A * r + 0.5 * J * r * r, -A + J * r)
+    return p1 + A * A * A / (6.0 * J * J), 0.0, 0.0
+
+
+def hand_c1_stop_duration(V, A, J):
+    return (V - A * A / (2.0 * J)) / A + A / J
+
+
 class SchedGroup:
     """leg_interp.cpp ``struct SchedGroup`` (first/last = the group's axis range)."""
 
@@ -263,6 +286,7 @@ class SchedGroup:
         self.t0_us = 0
         self.frame_t_start_us = 0
         self.stop_D = 0.0
+        self.c1_stop = False                 # FW 37 hand C1 stop (JB-145)
         z = [0.0] * NUM_AXES
         self.p0, self.v0, self.p1, self.v1, self.p2, self.v2 = (list(z) for _ in range(6))
         self.ep, self.ev, self.ea = list(z), list(z), list(z)
@@ -380,6 +404,7 @@ class TeensyLegInterp:
         self.sched_frames = self.sched_demoted = self.sched_future_drops = 0
         self.sched_q_overflow = self.sched_expired = self.sched_superseded = 0
         self.sched_stale = self.sched_stops = self.sched_stop_capped = 0
+        self.sched_hand_c1_stops = 0
         self.sched_refused = self.sched_resumes = self.sched_slew_rearms = 0
         self.cmd_acc = [0.0] * NUM_LEGS
         self.hand_raw_acc = 0.0
@@ -922,12 +947,32 @@ class TeensyLegInterp:
         if g.phase == SCHED_PLAY:
             return play_eval(g.t0_us, g.p0[i], g.v0[i], g.p1[i], g.v1[i],
                              g.p2[i], g.v2[i], now_us)
+        if g.phase == SCHED_STOP and g.c1_stop:
+            return hand_c1_stop_eval(g.ep[i], g.ev[i], STREAM_STOP_HAND_ACCEL_RPS2,
+                                     STREAM_STOP_HAND_JERK_RPS3, (now_us - g.t0_us) * 1e-6)
         if g.phase == SCHED_STOP:
             return stop_eval(g.ep[i], g.ev[i], g.ea[i], g.stop_D,
                              (now_us - g.t0_us) * 1e-6)
         return g.ep[i], 0.0, 0.0
 
     def _sched_advance(self, g, now_us):
+        # FW 37 (JB-145): the hand group moving up faster than the threshold skips
+        # the grace and enters the C1 stop at the cover end (leg_interp.cpp).
+        if (g.first == HAND_AXIS and g.phase == SCHED_PLAY
+                and (now_us - g.t0_us) >= SCHED_COVER_US
+                and all(g.v2[i] > HAND_C1_STOP_MIN_UP_VEL_RPS for i in range(g.first, g.last))):
+            D = 0.0
+            for i in range(g.first, g.last):
+                g.ep[i], g.ev[i] = g.p2[i], g.v2[i]
+                g.ea[i] = span_eval(g.p1[i], g.v1[i], g.p2[i], g.v2[i], 1.0)[2]
+                D = max(D, hand_c1_stop_duration(g.v2[i], STREAM_STOP_HAND_ACCEL_RPS2,
+                                                 STREAM_STOP_HAND_JERK_RPS3))
+            g.stop_D = D
+            g.c1_stop = True
+            g.t0_us += SCHED_COVER_US
+            g.phase = SCHED_STOP
+            self.sched_stops += 1
+            self.sched_hand_c1_stops += 1
         if g.phase == SCHED_PLAY and (now_us - g.t0_us) >= SCHED_EXHAUST_US:
             for i in range(g.first, g.last):
                 g.ep[i], g.ev[i], g.ea[i] = span_eval(g.p1[i], g.v1[i],
@@ -936,12 +981,17 @@ class TeensyLegInterp:
                                              g.accel_limit, g.jerk_limit)
             if capped:
                 self.sched_stop_capped += 1
+            g.c1_stop = False
             g.t0_us += SCHED_EXHAUST_US
             g.phase = SCHED_STOP
             self.sched_stops += 1
         if g.phase == SCHED_STOP and (now_us - g.t0_us) * 1e-6 >= g.stop_D:
             for i in range(g.first, g.last):
-                p, _, _ = stop_eval(g.ep[i], g.ev[i], g.ea[i], g.stop_D, g.stop_D)
+                if g.c1_stop:
+                    p, _, _ = hand_c1_stop_eval(g.ep[i], g.ev[i], STREAM_STOP_HAND_ACCEL_RPS2,
+                                                STREAM_STOP_HAND_JERK_RPS3, g.stop_D)
+                else:
+                    p, _, _ = stop_eval(g.ep[i], g.ev[i], g.ea[i], g.stop_D, g.stop_D)
                 g.ep[i], g.ev[i], g.ea[i] = p, 0.0, 0.0
             g.phase = SCHED_HOLD
 

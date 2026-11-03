@@ -208,6 +208,15 @@ def test_the_bump_history_records_what_this_version_carries():
     assert 'JB-146' in m36.group(1) and 'HAND_STALL_HOLD_US' in m36.group(1), m36.group(1)
     assert 'HAND_MOVE_STALLED' in m36.group(1) and 'bit2' in m36.group(1), m36.group(1)
     assert 'NO WIRE CHANGE' in m36.group(1), m36.group(1)
+    # FW 37 — JB-145 hand C1 stop.  The substance: the scheduled lane's stop for
+    # a fast upward Hand (no grace, C1 entry at the existing hand stop authority),
+    # leg lanes and slow/downward Hands unchanged, and the bump is wire-invisible,
+    # so only BRIDGE_FW_CHECK says whether it is aboard.
+    m37 = re.search(r'^// 36→37:(.*)$', text, re.M)
+    assert m37 is not None, "FW 37 history line missing"
+    assert 'JB-145' in m37.group(1) and 'HAND_C1_STOP_MIN_UP_VEL_RPS' in m37.group(1), m37.group(1)
+    assert 'SCHED_GRACE_S' in m37.group(1) and 'SCHED_STOP_ACCEL_HAND_RPS2' in m37.group(1), m37.group(1)
+    assert 'NO WIRE CHANGE' in m37.group(1), m37.group(1)
 
 
 def test_the_version_this_release_pins_is_actually_uplinked():

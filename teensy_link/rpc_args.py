@@ -903,7 +903,11 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # (the legs of an ACTIVATE carry on). Named as the HAND_MOVE_TO outcome
 # HAND_MOVE_STALLED (4) and the Diagnostic flags bit2; both previously-zero
 # values, so PROTOCOL_VERSION stays 10.
-EXPECTED_BRIDGE_FW_VERSION = 36
+# 36 -> 37 (2026-11-03, JB-145): a hand cover that ends with no newer frame while
+# the Hand moves up faster than 50 rev/s skips the 20 ms grace and stops at the
+# cover end (C1 entry, 4500 rev/s^2, jerk-limited ramp-out), so the stop fits
+# the stroke. Behavioural only: no wire change, PROTOCOL_VERSION stays 10.
+EXPECTED_BRIDGE_FW_VERSION = 37
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

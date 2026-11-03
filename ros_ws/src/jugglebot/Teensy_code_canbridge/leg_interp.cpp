@@ -411,7 +411,8 @@ struct SchedGroup {
   bool     restart;           // legs: the next promotion is a stream start (set at the arm edge from a stop/hold)
   int64_t  t0_us;             // PLAY: u0 play time; STOP: stop entry time
   int64_t  frame_t_start_us;  // t_start of the last loaded frame (stale-order guard)
-  float    stop_D;            // C2 stop duration (s)
+  float    stop_D;            // C2 stop duration (s); for a C1 stop its total duration
+  bool     c1_stop;           // STOP is the FW 37 hand C1 stop (JB-145), not the C2 stop
   float    p0[NUM_AXES], v0[NUM_AXES], p1[NUM_AXES], v1[NUM_AXES], p2[NUM_AXES], v2[NUM_AXES];
   float    ep[NUM_AXES], ev[NUM_AXES], ea[NUM_AXES];   // STOP entry state; HOLD position in ep
   float    hand_ff_gain;
@@ -436,6 +437,7 @@ static volatile uint32_t s_sched_superseded   = 0;   // ISR: a newer due frame w
 static volatile uint32_t s_sched_stale        = 0;   // ISR: older than the playing frame
 static volatile uint32_t s_sched_stops        = 0;   // ISR: cover exhaustions
 static volatile uint32_t s_sched_stop_capped  = 0;   // ISR: the stop hit SCHED_STOP_MAX_S
+static volatile uint32_t s_sched_hand_c1_stops = 0;  // ISR: FW 37 hand C1 stops (subset of s_sched_stops)
 static volatile uint32_t s_sched_refused      = 0;   // ISR: discontinuous resume refused while armed
 static volatile uint32_t s_sched_resumes      = 0;   // ISR: continuous resume out of a stop/hold
 static volatile uint32_t s_sched_slew_rearms  = 0;   // ISR: leg stream restart re-armed the recovery slew
@@ -566,9 +568,51 @@ static void stop_eval(float P, float V, float A, float D, float t, float& p, flo
   p = P + D * (V * (u - u3 + 0.5f * u4) + A * D * (0.5f * u2 - (2.0f / 3.0f) * u3 + 0.25f * u4));
 }
 
+// ═══ FW 37 — HAND C1 STOP (JB-145) ═══════════════════════════════════════════
+// INVARIANT. A hand cover that ends with no newer frame while the Hand moves UP
+// faster than HAND_C1_STOP_MIN_UP_VEL_RPS must stop inside the stroke. The grace
+// (20 ms of the span's own cubic, ~3 rev at 150 rev/s) plus a C2 stop that cannot
+// start below its entry acceleration carried the Hand to 13-16 rev against the
+// 10.501 rev clip (tools/probes/hand_stall_stop.py; option 2 there is this code,
+// 7.58 / 8.34 rev at Apex 1.05 / 1.42). So, for the HAND group only: no grace, the
+// stop starts AT the cover end from the covered knot (u2, v2) — position and
+// velocity continuous (C1), acceleration stepping to -A with A the existing hand
+// stop authority SCHED_STOP_ACCEL_HAND_RPS2 — held until v = v_r = A^2/(2J), then
+// a ramp-out at jerk J = SCHED_STOP_JERK_HAND_RPS3 to a = 0 exactly at v = 0 (no
+// second step at the stroke top; costs A^3/(24 J^2) = 0.03 rev). Final position
+// P + V^2/(2A) + A^3/(24 J^2). The ramp-IN is a step on purpose: a jerk-limited
+// ramp-in fails Apex 1.42 by 0.07 rev in the probe. Downward or slow Hands and
+// every leg lane keep the grace and the C2 stop unchanged. A frame landing after
+// this stop has started meets it in sched_apply and is refused while armed (the
+// latched hold) — the accepted price of skipping the grace (logbook
+// 2026-11-03-jb145-hand-stall-stop-options).
+static void hand_c1_stop_eval(float P, float V, float A, float J, float t, float& p, float& v, float& a) {
+  const float vr = A * A / (2.0f * J);           // ramp-out entry speed (static_assert: V > vr)
+  const float t1 = (V - vr) / A;                 // constant-deceleration phase
+  const float t2 = A / J;                        // ramp-out
+  if (t < 0.0f) t = 0.0f;
+  if (t < t1) {
+    p = P + t * (V - 0.5f * A * t); v = V - A * t; a = -A;
+    return;
+  }
+  const float p1 = P + t1 * (V - 0.5f * A * t1);
+  if (t < t1 + t2) {
+    const float r = t - t1;
+    p = p1 + r * (vr - 0.5f * A * r + J * r * r / 6.0f);
+    v = vr - A * r + 0.5f * J * r * r;
+    a = -A + J * r;
+    return;
+  }
+  p = p1 + A * A * A / (6.0f * J * J); v = 0.0f; a = 0.0f;
+}
+static float hand_c1_stop_duration(float V, float A, float J) { return (V - A * A / (2.0f * J)) / A + A / J; }
+
 static void sched_eval_axis(const SchedGroup& g, uint8_t i, int64_t now, float& p, float& v, float& a) {
   if (g.phase == SCHED_PLAY) {
     play_eval(g.t0_us, g.p0[i], g.v0[i], g.p1[i], g.v1[i], g.p2[i], g.v2[i], now, p, v, a);
+  } else if (g.phase == SCHED_STOP && g.c1_stop) {
+    hand_c1_stop_eval(g.ep[i], g.ev[i], SCHED_STOP_ACCEL_HAND_RPS2, SCHED_STOP_JERK_HAND_RPS3,
+                      (float)((double)(now - g.t0_us) * 1e-6), p, v, a);
   } else if (g.phase == SCHED_STOP) {
     stop_eval(g.ep[i], g.ev[i], g.ea[i], g.stop_D, (float)((double)(now - g.t0_us) * 1e-6), p, v, a);
   } else {
@@ -577,14 +621,37 @@ static void sched_eval_axis(const SchedGroup& g, uint8_t i, int64_t now, float& 
 }
 
 // PLAY → STOP at cover exhaustion (entry state = the span-2 endpoint, exactly, at
-// t_start + 2T — not at the tick that noticed), STOP → HOLD at D.
+// t_start + 2T — not at the tick that noticed), STOP → HOLD at D. FW 37: the hand
+// group moving up faster than HAND_C1_STOP_MIN_UP_VEL_RPS enters the C1 stop at
+// the cover end instead (see hand_c1_stop_eval).
 static void sched_advance(SchedGroup& g, uint8_t first, uint8_t last, int64_t now, float A, float J) {
+  if (first == HAND_AXIS && g.phase == SCHED_PLAY && (now - g.t0_us) >= SCHED_COVER_US) {
+    bool fast_up = true;
+    for (uint8_t i = first; i < last; ++i) if (!(g.v2[i] > HAND_C1_STOP_MIN_UP_VEL_RPS)) fast_up = false;
+    if (fast_up) {
+      float D = 0.0f;
+      for (uint8_t i = first; i < last; ++i) {
+        g.ep[i] = g.p2[i]; g.ev[i] = g.v2[i];      // span 2 at s = 1 is exactly the knot (u2, v2)
+        float pd, vd;
+        span_eval(g.p1[i], g.v1[i], g.p2[i], g.v2[i], 1.0f, pd, vd, g.ea[i]);   // observability only
+        const float Di = hand_c1_stop_duration(g.v2[i], SCHED_STOP_ACCEL_HAND_RPS2, SCHED_STOP_JERK_HAND_RPS3);
+        if (Di > D) D = Di;
+      }
+      g.stop_D = D;
+      g.c1_stop = true;
+      g.t0_us += SCHED_COVER_US;
+      g.phase = SCHED_STOP;
+      ++s_sched_stops;
+      ++s_sched_hand_c1_stops;
+    }
+  }
   if (g.phase == SCHED_PLAY && (now - g.t0_us) >= SCHED_EXHAUST_US) {
     for (uint8_t i = first; i < last; ++i)
       span_eval(g.p1[i], g.v1[i], g.p2[i], g.v2[i], SCHED_S_MAX, g.ep[i], g.ev[i], g.ea[i]);
     bool capped = false;
     g.stop_D = stop_duration(g, first, last, A, J, capped);
     if (capped) ++s_sched_stop_capped;
+    g.c1_stop = false;
     g.t0_us += SCHED_EXHAUST_US;
     g.phase = SCHED_STOP;
     ++s_sched_stops;
@@ -592,7 +659,9 @@ static void sched_advance(SchedGroup& g, uint8_t first, uint8_t last, int64_t no
   if (g.phase == SCHED_STOP && (float)((double)(now - g.t0_us) * 1e-6) >= g.stop_D) {
     for (uint8_t i = first; i < last; ++i) {
       float p, v, a;
-      stop_eval(g.ep[i], g.ev[i], g.ea[i], g.stop_D, g.stop_D, p, v, a);
+      if (g.c1_stop) hand_c1_stop_eval(g.ep[i], g.ev[i], SCHED_STOP_ACCEL_HAND_RPS2, SCHED_STOP_JERK_HAND_RPS3,
+                                       g.stop_D, p, v, a);
+      else           stop_eval(g.ep[i], g.ev[i], g.ea[i], g.stop_D, g.stop_D, p, v, a);
       g.ep[i] = p; g.ev[i] = 0.0f; g.ea[i] = 0.0f;
     }
     g.phase = SCHED_HOLD;
@@ -1800,7 +1869,7 @@ void interp_reset() {
   s_sq_n = 0;
   for (uint8_t gi = 0; gi < 2; ++gi) s_sg[gi] = SchedGroup{};
   s_sched_frames = 0; s_sched_demoted = 0; s_sched_future_drops = 0; s_sched_q_overflow = 0;
-  s_sched_expired = 0; s_sched_superseded = 0; s_sched_stale = 0; s_sched_stops = 0;
+  s_sched_expired = 0; s_sched_superseded = 0; s_sched_stale = 0; s_sched_stops = 0; s_sched_hand_c1_stops = 0;
   s_sched_stop_capped = 0; s_sched_refused = 0; s_sched_resumes = 0; s_sched_slew_rearms = 0;
   s_hand_a_cmd = 0.0f;
   s_hand_ff_ks = s_hand_ff_fade = s_hand_ff_bias = 0.0f;
@@ -1990,7 +2059,7 @@ void interp_hand_counters_reset() {
   // FW 22: the scheduled-playback fields the [hand7] line prints.
   s_sg[SG_HAND].dp_max = 0.0f; s_sg[SG_HAND].dv_max = 0.0f; s_sg[SG_HAND].da_max = 0.0f;
   s_sg[SG_HAND].promo_over = 0;
-  s_sched_stops = 0; s_sched_refused = 0; s_sched_expired = 0; s_sched_demoted = 0;
+  s_sched_stops = 0; s_sched_hand_c1_stops = 0; s_sched_refused = 0; s_sched_expired = 0; s_sched_demoted = 0;
   s_hand_tau_max_abs = 0.0f; s_hand_tau_clamp_ticks = 0; s_hand_tau_fade_ticks = 0; s_hand_drain_frames = 0;
   // Re-baseline the fault task's own copy of this counter ATOMICALLY with the
   // zeroing above, so a reset can never open a one-poll masking window where
@@ -2031,6 +2100,7 @@ uint32_t interp_sched_frames()   { return s_sched_frames; }
 uint32_t interp_sched_demoted()  { return s_sched_demoted; }
 uint32_t interp_sched_expired()  { return s_sched_expired; }
 uint32_t interp_sched_stops()    { return s_sched_stops; }
+uint32_t interp_sched_hand_c1_stops() { return s_sched_hand_c1_stops; }
 uint32_t interp_sched_refused()  { return s_sched_refused; }
 float    interp_hand_a_cmd()     { return s_hand_a_cmd; }
 float    interp_leg_a_cmd(uint8_t i) { return (i < NUM_LEGS) ? s_leg_a_cmd[i] : 0.0f; }
