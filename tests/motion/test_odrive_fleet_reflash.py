@@ -502,3 +502,239 @@ def test_hand_config_target_exits_before_touching_hardware(tool, tmp_path, capsy
     with pytest.raises(SystemExit) as excinfo:
         tool.main(['--config', _HAND_CONFIG, '--backup-dir', str(tmp_path)])
     assert 'refusing to flash' in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# --set: no-erase property writes, driven through main() with fake drives
+# ---------------------------------------------------------------------------
+
+SOFT = 'axis0.config.motor.current_soft_max'
+HARD = 'axis0.config.motor.current_hard_max'
+SET_BOTH = ['--set', HARD + '=30', '--set', SOFT + '=20']
+
+
+class _Ns:
+    """Attribute tree view over a flat {dotted path: value} dict."""
+
+    def __init__(self, store, prefix=''):
+        object.__setattr__(self, '_store', store)
+        object.__setattr__(self, '_prefix', prefix)
+
+    def __getattr__(self, name):
+        path = self._prefix + name
+        if path in self._store:
+            return self._store[path]
+        if any(k.startswith(path + '.') for k in self._store):
+            return _Ns(self._store, path + '.')
+        raise AttributeError(path)
+
+    def __setattr__(self, name, value):
+        path = self._prefix + name
+        assert path in self._store, path
+        self._store[path] = value
+
+
+class _FakeDrive:
+    def __init__(self, serial, node_id, state=1, soft=10.0, hard=20.0,
+                 save_works=True, readback_override=None):
+        self.serial = serial
+        self.nvm = {NODE: node_id, 'axis0.current_state': state,
+                    SOFT: soft, HARD: hard}
+        self.ram = dict(self.nvm)
+        self.save_works = save_works
+        self.readback_override = readback_override or {}
+        self.writes = []
+        self.saves = 0
+        self.reboots = 0
+        self.erased = False
+        self._dev = type('Dev', (), {'serial_number': serial})()
+
+    def __getattr__(self, name):
+        return getattr(_Ns(self.ram), name)
+
+    def save_configuration(self):
+        self.saves += 1
+        if self.save_works:
+            self.nvm = dict(self.ram)
+
+    def reboot(self):
+        self.reboots += 1
+        self.ram = dict(self.nvm)
+        self.ram.update(self.readback_override)
+
+    def erase_configuration(self):  # must never be called in --set mode
+        self.erased = True
+
+
+NODE = 'axis0.config.can.node_id'
+
+
+def _install_fleet(tool, monkeypatch, drives):
+    """Replace the hardware layer with fakes; record every property write."""
+    by_serial = {d.serial: d for d in drives}
+
+    class FakeApi:
+        DeviceLostException = type('Lost', (Exception,), {})
+
+        def __init__(self):
+            self.odrive = self
+            self.backups = []
+
+        def find_sync(self, count=None, timeout=None, serial_number=None):
+            if serial_number is not None:
+                return by_serial[serial_number]
+            return list(drives)
+
+        def backup_config(self, odrv):
+            self.backups.append(odrv.serial)
+            return dict(odrv.ram)
+
+    monkeypatch.setattr(tool, 'OdriveApi', FakeApi)
+    monkeypatch.setattr(tool, 'read_proc_cmdlines', lambda: [])
+    monkeypatch.setattr(tool.time, 'sleep', lambda s: None)
+    monkeypatch.setattr(tool, 'discover',
+                        lambda api, count, timeout: list(drives))
+    monkeypatch.setattr(tool, 'wait_for_drive',
+                        lambda api, serial, timeout=0: by_serial[serial])
+    monkeypatch.setattr(tool, 'call_tolerating_reboot',
+                        lambda odrv, api, name: (getattr(odrv, name)(), True)[1])
+
+    real_set_path = tool.set_path
+
+    def spy_set_path(odrv, path, value):
+        odrv.writes.append((path, value))
+        real_set_path(odrv, path, value)
+
+    monkeypatch.setattr(tool, 'set_path', spy_set_path)
+
+
+def _fleet(per_node=None):
+    per_node = per_node or {}
+    out = []
+    for n in range(7):
+        out.append(_FakeDrive('S%d' % n, n, **per_node.get(n, {})))
+    return out
+
+
+def _run(tool, tmp_path, *argv):
+    return tool.main(list(argv) + ['--backup-dir', str(tmp_path)])
+
+
+def test_set_writes_saves_reboots_and_verifies_legs_only(tool, monkeypatch, tmp_path, capsys):
+    drives = _fleet()
+    _install_fleet(tool, monkeypatch, drives)
+    assert _run(tool, tmp_path, *SET_BOTH) == 0
+
+    for d in drives[:6]:
+        assert sorted(d.writes) == [(HARD, 30.0), (SOFT, 20.0)]
+        assert d.saves == 1 and d.reboots == 1
+        assert d.nvm[SOFT] == 20.0 and d.nvm[HARD] == 30.0
+        assert d.nvm[NODE] == int(d.serial[1:]), 'node ID untouched'
+        assert not d.erased
+    hand = drives[6]
+    assert hand.writes == [] and hand.saves == 0 and hand.reboots == 0
+    assert hand.nvm[SOFT] == 10.0
+
+    out = capsys.readouterr()
+    assert 'REBOOTED' in out.out and 'JB-146' in out.out and 'can-bridge' in out.out
+    assert 'node 3 serial S3' in out.out and '10.0 -> 20.0' in out.out
+    assert 'verify OK' in out.out
+    assert (tmp_path / 'fleet_map.json').exists()
+    assert len(list(tmp_path.glob('pre_set_node*_S*.json'))) == 6
+
+
+def test_set_only_narrows_the_legs(tool, monkeypatch, tmp_path):
+    drives = _fleet()
+    _install_fleet(tool, monkeypatch, drives)
+    assert _run(tool, tmp_path, '--only', '2', *SET_BOTH) == 0
+    assert [d.saves for d in drives] == [0, 0, 1, 0, 0, 0, 0]
+
+
+def test_set_refuses_a_non_idle_axis_before_any_write(tool, monkeypatch, tmp_path):
+    drives = _fleet({4: {'state': 8}})  # CLOSED_LOOP_CONTROL
+    _install_fleet(tool, monkeypatch, drives)
+    with pytest.raises(SystemExit) as excinfo:
+        _run(tool, tmp_path, *SET_BOTH)
+    assert 'nothing was written' in str(excinfo.value)
+    assert all(d.writes == [] and d.saves == 0 for d in drives)
+
+
+def test_set_refuses_an_unknown_key_before_touching_hardware(tool, monkeypatch, tmp_path):
+    drives = _fleet()
+    _install_fleet(tool, monkeypatch, drives)
+    with pytest.raises(SystemExit):
+        _run(tool, tmp_path, '--set', 'axis0.config.motor.no_such_key=1')
+    assert all(d.writes == [] and d.saves == 0 for d in drives)
+
+
+def test_set_refuses_unparseable_readonly_and_node_id_keys(tool, monkeypatch, tmp_path):
+    drives = _fleet()
+    _install_fleet(tool, monkeypatch, drives)
+    for bad in (SOFT + '=abc', 'vbus_voltage=1', NODE + '=3', SOFT + '=nan'):
+        with pytest.raises(SystemExit):
+            _run(tool, tmp_path, '--set', bad)
+    assert all(d.writes == [] for d in drives)
+
+
+def test_set_refuses_soft_above_hard_before_any_write(tool, monkeypatch, tmp_path):
+    drives = _fleet()
+    _install_fleet(tool, monkeypatch, drives)
+    # both keys given: soft 25 > hard 20
+    with pytest.raises(SystemExit):
+        _run(tool, tmp_path, '--set', SOFT + '=25', '--set', HARD + '=20')
+    # one key given: soft 25 against the drive's current hard 20
+    with pytest.raises(SystemExit) as excinfo:
+        _run(tool, tmp_path, '--set', SOFT + '=25')
+    assert 'nothing was written' in str(excinfo.value)
+    assert all(d.writes == [] and d.saves == 0 for d in drives)
+
+
+def test_set_dry_run_prints_the_plan_and_writes_nothing(tool, monkeypatch, tmp_path, capsys):
+    drives = _fleet()
+    _install_fleet(tool, monkeypatch, drives)
+    assert _run(tool, tmp_path, '--dry-run', *SET_BOTH) == 0
+    assert all(d.writes == [] and d.saves == 0 and d.reboots == 0 for d in drives)
+    out = capsys.readouterr().out
+    assert 'DRY RUN' in out and '10.0 -> 20.0' in out and '20.0 -> 30.0' in out
+
+
+def test_set_verify_mismatch_fails_the_run(tool, monkeypatch, tmp_path, capsys):
+    drives = _fleet({2: {'save_works': False}})
+    _install_fleet(tool, monkeypatch, drives)
+    assert _run(tool, tmp_path, *SET_BOTH) == 1
+    out = capsys.readouterr()
+    assert 'verify FAILED on node(s) [2]' in out.err
+    assert 'verify FAILED' in out.out or 'FAILED' in out.out
+
+
+def test_set_is_mutually_exclusive_with_config_and_erase_flags(tool, tmp_path):
+    for extra in (['--config', _LEG_CONFIG], ['--config=' + _LEG_CONFIG],
+                  ['--no-calibration'], ['--calib-scan-distance', '2'],
+                  ['--ignore-restore-errors']):
+        with pytest.raises(SystemExit) as excinfo:
+            tool.parse_args(['--set', SOFT + '=20'] + extra)
+        assert excinfo.value.code == 2
+
+
+def test_set_helpers_parse_types(tool):
+    assert tool.parse_endpoint_value('30', 'float') == 30.0
+    assert tool.parse_endpoint_value('0x10', 'uint8') == 16
+    assert tool.parse_endpoint_value('true', 'bool') is True
+    with pytest.raises(ValueError):
+        tool.parse_endpoint_value('300', 'uint8')
+    with pytest.raises(ValueError):
+        tool.parse_endpoint_value('1.5', 'uint32')
+
+
+def test_endpoint_list_has_the_current_limits_as_rw_floats(tool):
+    eps = tool.load_endpoints()
+    for key in (SOFT, HARD):
+        assert eps[key]['type'] == 'float' and eps[key]['access'] == 'rw'
+
+
+def test_leg_snapshot_carries_the_2026_11_03_current_limits(tool, leg_config):
+    flat = tool.flatten_config(leg_config)
+    assert flat[SOFT] == 20.0 and flat[HARD] == 30.0
+    assert flat[SOFT] <= flat[HARD]
+    # the inverter ceiling must stay above the motor hard limit
+    assert flat['config.inverter0.current_hard_max'] > flat[HARD]

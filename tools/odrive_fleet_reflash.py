@@ -111,9 +111,33 @@ Usage
     # flash + calibrate, one leg at a time, pausing between legs
     python tools/odrive_fleet_reflash.py --calib-scan-distance 3.0 --pause-between-legs
 
+    # light mode: write named properties to the leg drives, NO erase (see below)
+    python tools/odrive_fleet_reflash.py --dry-run \\
+        --set axis0.config.motor.current_hard_max=30 \\
+        --set axis0.config.motor.current_soft_max=20
+    python tools/odrive_fleet_reflash.py --yes \\
+        --set axis0.config.motor.current_hard_max=30 \\
+        --set axis0.config.motor.current_soft_max=20
+
     # one drive only; or resume a partial run off the recorded map
     python tools/odrive_fleet_reflash.py --only 3
     python tools/odrive_fleet_reflash.py --map temp/odrive_configs/<ts>/fleet_map.json
+
+``--set KEY=VALUE`` (repeatable) is the no-erase mode, for changing a few named
+properties without touching the rest of the config. Per LEG drive only (the hand
+at node 6 is never written; ``--only`` still narrows the set): discover and
+record the map, back each drive up, then validate EVERYTHING before the first
+write -- every axis IDLE, every KEY an existing read-write endpoint of the
+0.6.11 flat-endpoint list, every VALUE parseable to that endpoint's type,
+``current_soft_max <= current_hard_max`` after the change (the drive's current
+value stands in for a key not being set). Then write, ``save_configuration()``,
+reboot, reconnect, and read every key back from NVM; any mismatch fails the run.
+No erase, no restore, no calibration, no motion. ``--dry-run`` prints the
+before -> after plan and writes nothing. Mutually exclusive with ``--config`` and
+the erase-path flags. **The reboot drops each leg's encoder zero**: power-cycle
+or reboot the can-bridge before the next launch so it re-homes the legs (a
+bridge that still believes they are homed is the JB-146 hazard).
+``axis0.config.can.node_id`` cannot be set this way.
 
 ``--map`` is the fix for the one state this script can otherwise not reason
 about: a run that died between erase and restore leaves a drive at the default
@@ -468,6 +492,134 @@ def read_proc_cmdlines() -> List[str]:
         if raw:
             cmdlines.append(raw.replace(b'\0', b' ').decode('utf-8', 'replace').strip())
     return cmdlines
+
+
+# ---------------------------------------------------------------------------
+# --set mode: pure helpers
+# ---------------------------------------------------------------------------
+
+ENDPOINTS_PATH = os.path.join(
+    _PROJECT_ROOT, 'config', 'ODrive config Files',
+    'odrive-pro-4.4.58-0.6.11-1_flat_endpoints.json')
+
+#: (soft, hard) pairs where soft must not exceed hard.
+LIMIT_PAIRS: Tuple[Tuple[str, str], ...] = (
+    ('axis0.config.motor.current_soft_max', 'axis0.config.motor.current_hard_max'),
+    ('config.inverter0.current_soft_max', 'config.inverter0.current_hard_max'),
+)
+
+_INT_RANGES = {
+    'uint8': (0, 2 ** 8 - 1), 'uint16': (0, 2 ** 16 - 1),
+    'uint32': (0, 2 ** 32 - 1), 'uint64': (0, 2 ** 64 - 1),
+    'int32': (-2 ** 31, 2 ** 31 - 1), 'int64': (-2 ** 63, 2 ** 63 - 1),
+}
+
+
+def load_endpoints(path: str = ENDPOINTS_PATH) -> Dict[str, Dict[str, Any]]:
+    """Flat endpoint table ``{path: {id, type, access}}`` for the fleet firmware."""
+    with open(path) as handle:
+        return json.load(handle)['endpoints']
+
+
+def parse_set_items(items: Sequence[str]) -> Dict[str, str]:
+    """``['k=v', ...]`` -> ordered ``{k: v}`` (raw strings). Duplicates are an error."""
+    out: Dict[str, str] = {}
+    for item in items:
+        if '=' not in item:
+            raise SystemExit('--set takes KEY=VALUE, got {!r}'.format(item))
+        key, raw = item.split('=', 1)
+        key, raw = key.strip(), raw.strip()
+        if not key or not raw:
+            raise SystemExit('--set takes KEY=VALUE, got {!r}'.format(item))
+        if key in out:
+            raise SystemExit('--set {} given twice'.format(key))
+        out[key] = raw
+    return out
+
+
+def parse_endpoint_value(raw: str, type_name: str) -> Any:
+    """Parse ``raw`` to the endpoint's type, or raise ValueError."""
+    if type_name == 'float':
+        value = float(raw)
+        if not math.isfinite(value):
+            raise ValueError('non-finite float {!r}'.format(raw))
+        return value
+    if type_name == 'bool':
+        lowered = raw.lower()
+        if lowered in ('1', 'true'):
+            return True
+        if lowered in ('0', 'false'):
+            return False
+        raise ValueError('not a bool: {!r}'.format(raw))
+    if type_name in _INT_RANGES:
+        value = int(raw, 0)
+        low, high = _INT_RANGES[type_name]
+        if not low <= value <= high:
+            raise ValueError('{} out of range for {}'.format(raw, type_name))
+        return value
+    raise ValueError('unsupported endpoint type {!r}'.format(type_name))
+
+
+def validate_set_request(
+    sets: Dict[str, str],
+    endpoints: Dict[str, Dict[str, Any]],
+    current: Dict[str, Any],
+) -> Tuple[Dict[str, Any], List[str]]:
+    """Typed values for ``sets`` plus every reason the request must be refused.
+
+    ``current`` is the drive's present value for each key (and for the limit
+    partners of any key being set), so soft <= hard can be judged on the
+    would-be result.
+    """
+    problems: List[str] = []
+    typed: Dict[str, Any] = {}
+    for key, raw in sets.items():
+        entry = endpoints.get(key)
+        if entry is None or entry.get('type') in (None, 'function', 'endpoint_ref'):
+            problems.append('{}: not a settable endpoint in the flat endpoint list'.format(key))
+            continue
+        if entry.get('access') != 'rw':
+            problems.append('{}: endpoint is read-only'.format(key))
+            continue
+        if key == NODE_ID_PATH:
+            problems.append('{}: the node ID is not settable here (the map depends on it)'
+                            .format(key))
+            continue
+        try:
+            typed[key] = parse_endpoint_value(raw, entry['type'])
+        except ValueError as exc:
+            problems.append('{}: {} (type {})'.format(key, exc, entry['type']))
+    if problems:
+        return typed, problems
+    merged = dict(current)
+    merged.update(typed)
+    for soft_key, hard_key in LIMIT_PAIRS:
+        if soft_key not in typed and hard_key not in typed:
+            continue
+        soft, hard = merged.get(soft_key), merged.get(hard_key)
+        if soft is None or hard is None:
+            problems.append('{}/{}: cannot check soft <= hard, a value is unknown'.format(
+                soft_key, hard_key))
+        elif soft > hard:
+            problems.append('{} ({}) would exceed {} ({})'.format(
+                soft_key, soft, hard_key, hard))
+    return typed, problems
+
+
+def get_path(odrv: Any, path: str) -> Any:
+    """Read a dotted endpoint path off a connected drive."""
+    obj = odrv
+    for part in path.split('.'):
+        obj = getattr(obj, part)
+    return obj
+
+
+def set_path(odrv: Any, path: str, value: Any) -> None:
+    obj = odrv
+    parts = path.split('.')
+    for part in parts[:-1]:
+        obj = getattr(obj, part)
+    setattr(obj, parts[-1], value)
 
 
 # ---------------------------------------------------------------------------
@@ -894,6 +1046,71 @@ def process_drive(
 # Entry point
 # ---------------------------------------------------------------------------
 
+class SetResult:
+    def __init__(self, node_id: int, serial: str) -> None:
+        self.node_id = node_id
+        self.serial = serial
+        self.before: Dict[str, Any] = {}
+        self.typed: Dict[str, Any] = {}
+        self.after: Dict[str, Any] = {}
+        self.problems: List[str] = []
+        self.verified = False
+
+    @property
+    def ok(self) -> bool:
+        return not self.problems and self.verified
+
+
+def read_set_state(
+    api: OdriveApi, odrv: Any, node_id: int, sets: Dict[str, str],
+    endpoints: Dict[str, Dict[str, Any]], backup_dir: str,
+) -> SetResult:
+    """Back up one drive and judge the --set request against its live state.
+    Writes nothing to the drive."""
+    serial = usb_serial(odrv)
+    result = SetResult(node_id, serial)
+    write_backup(api, odrv, os.path.join(
+        backup_dir, 'pre_set_node{}_{}.json'.format(node_id, serial)))
+    state = int(odrv.axis0.current_state)
+    if state != AXIS_STATE_IDLE:
+        result.problems.append('axis0 is not IDLE (current_state={})'.format(state))
+    wanted = set(sets)
+    for soft_key, hard_key in LIMIT_PAIRS:
+        if soft_key in sets or hard_key in sets:
+            wanted.update((soft_key, hard_key))
+    current: Dict[str, Any] = {}
+    for key in wanted:
+        if key in endpoints:
+            try:
+                current[key] = get_path(odrv, key)
+            except Exception as exc:
+                result.problems.append('{}: could not read ({})'.format(key, exc))
+    result.before = {key: current.get(key) for key in sets}
+    result.typed, more = validate_set_request(sets, endpoints, current)
+    result.problems.extend(more)
+    return result
+
+
+def apply_set(api: OdriveApi, odrv: Any, result: SetResult) -> Any:
+    """Write, save, reboot, reconnect, read back from NVM. Returns the new handle."""
+    for key, value in result.typed.items():
+        set_path(odrv, key, value)
+    print('  node {}: saving configuration...'.format(result.node_id))
+    odrv.save_configuration()
+    if not call_tolerating_reboot(odrv, api, 'reboot'):
+        print('  note: drive still answered after reboot(); reading anyway')
+    odrv = wait_for_drive(api, result.serial)
+    for key in result.typed:
+        result.after[key] = get_path(odrv, key)
+    mismatches = [key for key, want in result.typed.items()
+                  if not values_equal(result.after[key], want)]
+    for key in mismatches:
+        result.problems.append('verify: {} reads {!r} after reboot, wrote {!r}'.format(
+            key, result.after[key], result.typed[key]))
+    result.verified = not mismatches
+    return odrv
+
+
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description='Erase and reflash the leg ODrives, preserving CAN node IDs.',
@@ -933,7 +1150,27 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument('--force', action='store_true',
                         help='proceed despite conflicting processes, a suspect config file, '
                              'or a calibration scan longer than the leg stroke')
-    return parser.parse_args(argv)
+    parser.add_argument('--set', dest='set', action='append', default=[],
+                        metavar='KEY=VALUE',
+                        help='no-erase mode: write this property on the leg drives, save, '
+                             'reboot and verify from NVM (repeatable). Mutually exclusive '
+                             'with --config and the erase/calibration flags')
+    raw = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(raw)
+    if args.set:
+        clashes = []
+        if any(tok == '--config' or tok.startswith('--config=') for tok in raw):
+            clashes.append('--config')
+        for flag, given in (('--no-calibration', args.no_calibration),
+                            ('--calib-scan-distance', args.calib_scan_distance is not None),
+                            ('--ignore-restore-errors', args.ignore_restore_errors),
+                            ('--pause-between-legs', args.pause_between_legs)):
+            if given:
+                clashes.append(flag)
+        if clashes:
+            parser.error('--set is the no-erase mode and cannot be combined with {}'.format(
+                ', '.join(clashes)))
+    return args
 
 
 def parse_only(only: Optional[str]) -> List[int]:
@@ -972,8 +1209,155 @@ def load_fleet_map(path: str) -> Dict[str, int]:
     return {entry['serial']: int(entry['node_id']) for entry in data['drives']}
 
 
+def record_fleet(args: argparse.Namespace, backup_dir: str, target_label: str):
+    """Discover the fleet, print and record the serial -> node ID map, validate it.
+
+    Returns ``(api, by_serial, targets, serial_of)``.
+    """
+    api = OdriveApi()
+    drives = discover(api, args.expect, args.timeout)
+
+    # --- step 1: record the serial -> node ID mapping -------------------
+    by_serial: Dict[str, Any] = {}
+    node_by_serial: Dict[str, int] = {}
+    fw_by_serial: Dict[str, Optional[str]] = {}
+    mapped = load_fleet_map(args.map) if args.map else None
+
+    for odrv in drives:
+        serial = usb_serial(odrv)
+        by_serial[serial] = odrv
+        fw_by_serial[serial] = read_fw_version(odrv)
+        if mapped is not None:
+            if serial not in mapped:
+                print('  USB {}: not in the supplied map — ignoring'.format(serial))
+                continue
+            node_by_serial[serial] = mapped[serial]
+        else:
+            node_by_serial[serial] = read_node_id(odrv)
+
+    print('\nUSB serial        node ID  firmware  role')
+    for serial, node_id in sorted(node_by_serial.items(), key=lambda kv: kv[1]):
+        role = 'PROTECTED' if node_id in PROTECTED_NODE_IDS else (
+            'leg' if node_id in LEG_NODE_IDS else 'unknown')
+        print('  {:<16}  {:>5}    {:<8}  {}'.format(
+            serial, node_id, fw_by_serial.get(serial) or '?', role))
+    if mapped is not None:
+        print('(node IDs from {}, not read off the drives)'.format(args.map))
+
+    errors, warnings = validate_fleet(node_by_serial)
+    for line in warnings:
+        print('WARNING: {}'.format(line), file=sys.stderr)
+    if errors:
+        for line in errors:
+            print('FLEET ERROR: {}'.format(line), file=sys.stderr)
+        raise SystemExit('refusing to touch anything while the fleet looks like this')
+
+    map_path = os.path.join(backup_dir, 'fleet_map.json')
+    with open(map_path, 'w') as handle:
+        json.dump({
+            'recorded': datetime.now().isoformat(timespec='seconds'),
+            'target_config': target_label,
+            'node_id_source': args.map if mapped is not None else 'read from drives',
+            'drives': [
+                {
+                    'serial': serial,
+                    'node_id': node_id,
+                    'fw_version': fw_by_serial.get(serial),
+                    'role': 'protected' if node_id in PROTECTED_NODE_IDS else 'leg',
+                }
+                for serial, node_id in sorted(node_by_serial.items(), key=lambda kv: kv[1])
+            ],
+        }, handle, indent=2)
+    print('\nmapping recorded -> {}'.format(os.path.relpath(map_path, _PROJECT_ROOT)))
+
+    targets = resolve_targets(node_by_serial, args.only)
+    serial_of = {node_id: serial for serial, node_id in node_by_serial.items()}
+
+    return api, by_serial, targets, serial_of
+
+
+def check_no_conflicts(force: bool) -> None:
+    conflicts = find_conflicting_processes(read_proc_cmdlines())
+    if conflicts:
+        print('CONFLICTING PROCESSES:', file=sys.stderr)
+        for pattern, cmd in conflicts:
+            print('  [{}] {}'.format(pattern, cmd[:160]), file=sys.stderr)
+        if not force:
+            raise SystemExit(
+                'stop the ROS stack / odrivetool / ODrive GUI first: they command '
+                'or claim these drives while they are being written '
+                '(--force overrides)')
+
+
+def main_set(args: argparse.Namespace) -> int:
+    """``--set``: write named properties to the leg drives, no erase."""
+    sets = parse_set_items(args.set)
+    endpoints = load_endpoints()
+    # Syntax-level refusals before any hardware is claimed (current={} => only
+    # the per-key checks fire here; the soft/hard check runs per drive below).
+    _, early = validate_set_request(sets, endpoints, {})
+    early = [p for p in early if 'cannot check soft <= hard' not in p]
+    if early:
+        for line in early:
+            print('REFUSED: {}'.format(line), file=sys.stderr)
+        raise SystemExit('--set request is invalid; nothing was touched')
+
+    check_no_conflicts(args.force)
+    backup_dir = args.backup_dir or os.path.join(
+        DEFAULT_BACKUP_ROOT, datetime.now().strftime('%Y%m%d_%H%M%S'))
+    os.makedirs(backup_dir, exist_ok=True)
+    print('--set mode: no erase, no calibration, no motion. Legs only; the hand is never written.')
+    for key, raw in sets.items():
+        print('  {} = {}'.format(key, raw))
+    print('backup dir    : {}'.format(os.path.relpath(backup_dir, _PROJECT_ROOT)))
+
+    api, by_serial, targets, serial_of = record_fleet(args, backup_dir, '--set')
+
+    # Phase A: back up and validate EVERY drive before the first write.
+    results = [read_set_state(api, by_serial[serial_of[n]], n, sets, endpoints, backup_dir)
+               for n in targets]
+    refused = [r for r in results if r.problems]
+    for res in results:
+        print('  node {} (USB {}): {}'.format(res.node_id, res.serial, ', '.join(
+            '{}: {!r} -> {!r}'.format(k, res.before.get(k), res.typed.get(k))
+            for k in sets)))
+        for line in res.problems:
+            print('    REFUSED: {}'.format(line), file=sys.stderr)
+    if refused:
+        raise SystemExit('refusing to write: {} drive(s) failed validation; '
+                         'nothing was written'.format(len(refused)))
+    if args.dry_run:
+        print('\nDRY RUN: the plan above is what would be written. Nothing was written.')
+        return 0
+
+    # Phase B: write, save, reboot, verify from NVM, one drive at a time.
+    for res in results:
+        odrv = by_serial[serial_of[res.node_id]]
+        apply_set(api, odrv, res)
+
+    print('\n=== summary ==========================================')
+    for res in results:
+        print('node {} serial {}: {}  verify {}'.format(
+            res.node_id, res.serial,
+            ', '.join('{}: {!r} -> {!r}'.format(k, res.before.get(k), res.after.get(k))
+                      for k in sets),
+            'OK' if res.ok else 'FAILED'))
+        for line in res.problems:
+            print('    ! {}'.format(line), file=sys.stderr)
+    print('\nREMINDER: the drives REBOOTED, so their encoder zero is gone. Power-cycle or '
+          'reboot the can-bridge before the next launch so it re-homes the legs; a '
+          'bridge that still believes the legs are homed is the JB-146 hazard.')
+    failed = [res.node_id for res in results if not res.ok]
+    if failed:
+        print('\nverify FAILED on node(s) {}'.format(failed), file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
+    if args.set:
+        return main_set(args)
 
     # --- preflight: the target file -------------------------------------
     if not os.path.exists(args.config):
@@ -1046,64 +1430,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print('backup dir    : {}'.format(os.path.relpath(backup_dir, _PROJECT_ROOT)))
     print('legs          : {}   protected: {}'.format(list(LEG_NODE_IDS), list(PROTECTED_NODE_IDS)))
 
-    api = OdriveApi()
-    drives = discover(api, args.expect, args.timeout)
-
-    # --- step 1: record the serial -> node ID mapping -------------------
-    by_serial: Dict[str, Any] = {}
-    node_by_serial: Dict[str, int] = {}
-    fw_by_serial: Dict[str, Optional[str]] = {}
-    mapped = load_fleet_map(args.map) if args.map else None
-
-    for odrv in drives:
-        serial = usb_serial(odrv)
-        by_serial[serial] = odrv
-        fw_by_serial[serial] = read_fw_version(odrv)
-        if mapped is not None:
-            if serial not in mapped:
-                print('  USB {}: not in the supplied map — ignoring'.format(serial))
-                continue
-            node_by_serial[serial] = mapped[serial]
-        else:
-            node_by_serial[serial] = read_node_id(odrv)
-
-    print('\nUSB serial        node ID  firmware  role')
-    for serial, node_id in sorted(node_by_serial.items(), key=lambda kv: kv[1]):
-        role = 'PROTECTED' if node_id in PROTECTED_NODE_IDS else (
-            'leg' if node_id in LEG_NODE_IDS else 'unknown')
-        print('  {:<16}  {:>5}    {:<8}  {}'.format(
-            serial, node_id, fw_by_serial.get(serial) or '?', role))
-    if mapped is not None:
-        print('(node IDs from {}, not read off the drives)'.format(args.map))
-
-    errors, warnings = validate_fleet(node_by_serial)
-    for line in warnings:
-        print('WARNING: {}'.format(line), file=sys.stderr)
-    if errors:
-        for line in errors:
-            print('FLEET ERROR: {}'.format(line), file=sys.stderr)
-        raise SystemExit('refusing to touch anything while the fleet looks like this')
-
-    map_path = os.path.join(backup_dir, 'fleet_map.json')
-    with open(map_path, 'w') as handle:
-        json.dump({
-            'recorded': datetime.now().isoformat(timespec='seconds'),
-            'target_config': os.path.relpath(args.config, _PROJECT_ROOT),
-            'node_id_source': args.map if mapped is not None else 'read from drives',
-            'drives': [
-                {
-                    'serial': serial,
-                    'node_id': node_id,
-                    'fw_version': fw_by_serial.get(serial),
-                    'role': 'protected' if node_id in PROTECTED_NODE_IDS else 'leg',
-                }
-                for serial, node_id in sorted(node_by_serial.items(), key=lambda kv: kv[1])
-            ],
-        }, handle, indent=2)
-    print('\nmapping recorded -> {}'.format(os.path.relpath(map_path, _PROJECT_ROOT)))
-
-    targets = resolve_targets(node_by_serial, args.only)
-    serial_of = {node_id: serial for serial, node_id in node_by_serial.items()}
+    api, by_serial, targets, serial_of = record_fleet(
+        args, backup_dir, os.path.relpath(args.config, _PROJECT_ROOT))
 
     # --- dry run: back up and diff, touch nothing -----------------------
     if args.dry_run:
