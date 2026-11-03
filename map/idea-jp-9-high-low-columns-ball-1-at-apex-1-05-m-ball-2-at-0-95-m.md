@@ -4,7 +4,7 @@ kind: idea
 title: 'JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m'
 status: in_progress
 created: '2026-10-30'
-updated: '2026-11-01T12:18:47Z'
+updated: '2026-11-03T01:58:43Z'
 owners:
 - jugglebot-f5
 priority: medium
@@ -51,6 +51,11 @@ Visually subtle: the two apexes differ by 100 mm.
 - pass: 20 consecutive Catches in one Attempt; Tracker mean Apex difference between the two balls within 20 mm of the commanded 100 mm; hand iq under 54 A at every launch (90 % of the 60 A limit).
 - record: caught of thrown, each ball's mean Tracker Apex, peak hand iq per launch, the bag path; commit docs/records.md.
 - minutes: 12
+
+## Sitting result (2026-11-03)
+
+- verdict: pending
+- notes: With Ball 1 at apex 1.0 m, Ball 2 at 0.9 m: First, third, fourth attempts ended with a messy throw being uncatchable. Second ended with leg ACCEL_LIM error. One attempt ended with SPINOUT_DETECTED, for which I heard what sounded like the hand colliding with the end-stop. Trying with Ball 1 at apex 1.05 m, Ball 2 at 0.95 m, there were a lot of messy throws, leading to collisions and missed catches. Every attempt ended this way.
 
 ## Progress
 
