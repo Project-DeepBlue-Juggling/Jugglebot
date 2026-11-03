@@ -587,8 +587,10 @@ def test_default_constructed_request_defers_to_shipped_lean_gain():
 
 
 def test_shipped_trajectory_defaults_are_the_r5_working_point():
-    """Tripwire: sitting limits (350, 5000, 200000) and lean_gain 0.6.
-    The R5 working point (2026-10-05) SUPERSEDES the R2/R3 point (300, 5000,
+    """Tripwire: sitting limits (600, 8000, 200000) and lean_gain 0.6.
+    The two-ball-oval P4 working point (2026-11-03, plans/active/two-ball-oval.md
+    P4; the box re-swept at it in the same commit) SUPERSEDES the R5 point
+    (350, 5000, 200000). The R5 working point (2026-10-05) SUPERSEDED the R2/R3 point (300, 5000,
     150000; owner decision 2026-09-16, "300/5000/150000 are safe enough"),
     which itself superseded the S4 point (1000, 5000, 30000) of 2026-07-17.
     350/5000/200000 is what the R5 columns geometry was swept at (2026-10-04)
@@ -603,8 +605,8 @@ def test_shipped_trajectory_defaults_are_the_r5_working_point():
     — that is the logged act. Also pins the GoToPose.srv FIELD default at
     -1.0 (defer-to-config): without it the YAML gain is unreachable by
     default-constructed requests (the 2026-07-17 lesson)."""
-    assert hw.JB_TRAJ_LEG_VEL_LIMIT_MMPS == pytest.approx(350.0)
-    assert hw.JB_TRAJ_LEG_ACC_LIMIT_MMPS2 == pytest.approx(5000.0)
+    assert hw.JB_TRAJ_LEG_VEL_LIMIT_MMPS == pytest.approx(600.0)
+    assert hw.JB_TRAJ_LEG_ACC_LIMIT_MMPS2 == pytest.approx(8000.0)
     assert hw.JB_TRAJ_LEG_JERK_LIMIT_MMPS3 == pytest.approx(200000.0)
     assert hw.JB_TRAJ_LEAN_GAIN == pytest.approx(0.6)
     import re

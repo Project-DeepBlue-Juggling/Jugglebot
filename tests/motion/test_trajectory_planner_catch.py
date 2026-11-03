@@ -271,8 +271,10 @@ def test_too_tight_lead_rejected_too_fast(monkeypatch, seat_rate):
     """
     _set_seat_rate(monkeypatch, seat_rate)
     catch_pose = _tilted_catch_pose(reach_xy=(70.0, 0.0))
-    # A tight lead at low sitting limits forces a leg-limit failure.
-    tight = TrajectoryLimits.from_config(hw)   # the low Phase-1 defaults
+    # A tight lead at low sitting limits forces a leg-limit failure. Pinned at the
+    # pre-P4 launch defaults 350 / 5000: at the P4 defaults (600 / 8000, 2026-11-03)
+    # a 0.26 s lead to this reach is feasible and nothing raises.
+    tight = TrajectoryLimits.from_config(hw, leg_vel_mmps=350.0, leg_acc_mmps2=5000.0)
     with pytest.raises(TrajectoryInfeasible) as ei:
         planner.build_catch(REST, catch_pose, 0.26, tight, _geom(),
                             settle_hold_s=0.5)

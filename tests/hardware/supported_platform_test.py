@@ -71,7 +71,7 @@ LEG_AXES = list(range(6))  # [0, 1, 2, 3, 4, 5]
 NUM_LEGS = 6
 
 # Safety: 50% of rated leg current
-SAFE_CURRENT_LIMIT_A = hw.ODRIVE_LEG_CURR_LIMIT_A * 0.5  # 7.5A (15A leg limit since 2026-10-06, was 10A)
+SAFE_CURRENT_LIMIT_A = hw.ODRIVE_LEG_CURR_LIMIT_A * 0.5  # 10 A (20 A leg limit since 2026-11-03; 15 A from 2026-10-06, 10 A before)
 
 # Per-leg spool geometry from hardware_config (standard Jugglebot legs)
 MM_TO_REV = np.array(hw.GEOM_MM_TO_REV, dtype=np.float64)  # 6 values

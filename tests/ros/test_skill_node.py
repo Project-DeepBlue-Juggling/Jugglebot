@@ -44,13 +44,15 @@ from jugglebot import ball_possession
 from jugglebot import skill_node as sn
 import jugglebot.hardware_config as hw
 
-#: The session leg velocity every box fixture and the status fixture below
-#: carry -- 350 since 2026-10-04 (R5 sitting 3: the roomier columns geometry
-#: is swept and flown at 350 mm/s; `config/generated/admissible_box.yaml`
-#: says so, and `check_limits` refuses a live limit the box was not swept
-#: at, so a fixture pinning the old 300 fails every test that loads the
-#: real box). One name, so the next raise is one edit.
-_SESSION_LEG_VEL_MMPS = 350.0
+#: The session leg velocity and acceleration every box fixture and the status
+#: fixture below carry: the shipped launch defaults, which the committed
+#: `config/generated/admissible_box.yaml` is swept at (pinned by
+#: test_skills_admissible), because `check_limits` refuses a live limit the box
+#: was not swept at. Read from the generated config, so a working-point move
+#: (350 / 5000 from 2026-10-04, 600 / 8000 since the P4 commit, 2026-11-03)
+#: needs no edit here.
+_SESSION_LEG_VEL_MMPS = hw.JB_TRAJ_LEG_VEL_LIMIT_MMPS
+_SESSION_LEG_ACC_MMPS2 = hw.JB_TRAJ_LEG_ACC_LIMIT_MMPS2
 from jugglebot.motion.skills import admissible as adm
 from jugglebot.motion.skills import executor as ex
 from jugglebot.motion.skills.executor import CAUGHT_WINDOW_S
@@ -124,14 +126,14 @@ def _pose_at(x, y):
 
 def _status(**overrides):
     """A `trajectory/status` message at the admissible box's swept limits
-    (`config/generated/admissible_box.yaml`: 350/5000/200000 since the sitting-3
-    re-sweep, 2026-10-04; 300 from 2026-09-30 — the session leg jerk ramped from 150000 to the YAML
+    (`config/generated/admissible_box.yaml`: the shipped launch defaults, 600/8000/200000
+    since the P4 re-sweep 2026-11-03, 350/5000/200000 from 2026-10-04; 300 from 2026-09-30 — the session leg jerk ramped from 150000 to the YAML
     ceiling; the launch default stays 150000 until the ramp is logged, which
     is why the runsheet sets the limits before `skills/check`) — the LIVE
     limits `_run_one_ball` reads."""
     st = TrajectoryStatus()
     st.leg_vel_limit_mmps = _SESSION_LEG_VEL_MMPS
-    st.leg_acc_limit_mmps2 = 5000.0
+    st.leg_acc_limit_mmps2 = _SESSION_LEG_ACC_MMPS2
     st.leg_jerk_limit_mmps3 = 200000.0
     for k, v in overrides.items():
         setattr(st, k, v)
@@ -555,10 +557,11 @@ def test_the_committed_box_is_swept_at_the_node_default_dwell():
     assert oval, 'the committed box has no oval cell'
     # rung 2 (2026-10-23) swept the oval at 0.55 / 0.50 as well as 0.65;
     # P3 tail (2026-10-24) added the 0.45 cell under the pose planner;
-    # 0.40 / 0.35 added 2026-10-31 (re-swept 2026-10-31: hold 0, hand prime 10.45, floor 0.06).
+    # 0.40 / 0.35 added 2026-10-31 (re-swept 2026-10-31: hold 0, hand prime 10.45, floor 0.06);
+    # 0.30 added at the P4 working point (2026-11-03, separation 150, pose).
     assert any(box.dwell_s == pytest.approx(0.65) for box in oval)
     for box in oval:
-        assert any(box.dwell_s == pytest.approx(d) for d in (0.65, 0.55, 0.50, 0.45, 0.40, 0.35)), (
+        assert any(box.dwell_s == pytest.approx(d) for d in (0.65, 0.55, 0.50, 0.45, 0.40, 0.35, 0.30)), (
             box.site_pair, box.pattern, box.dwell_s)
     # High-low Columns (JP-9, 2026-10-31) is the second exception by design:
     # the high ball's cells carry the default dwell, the low ball's cells its
@@ -590,7 +593,7 @@ def test_self_toss_is_refused_on_a_dwell_mismatch(tmp_path):
         landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
         pattern='self_toss', release_site_xy_mm=(-50.0, 0.0),
         target_site_xy_mm=(-50.0, 0.0),
-        limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
+        limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': _SESSION_LEG_ACC_MMPS2,
                'leg_jerk_mmps3': 200000.0,
                # The node's live hand limit IS this constant (`_live_limits`;
                # set_limits has no hand field) — 3900 since 2026-10-02.
@@ -909,7 +912,7 @@ def test_self_toss_refuses_an_uncovered_apex_before_any_motion(tmp_path):
         landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
         pattern='self_toss', release_site_xy_mm=(-50.0, 0.0),
         target_site_xy_mm=(-50.0, 0.0),
-        limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
+        limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': _SESSION_LEG_ACC_MMPS2,
                'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13',
         dwell_s=sn._DEFAULT_DWELL_S, planner_mode='pose')
@@ -1583,7 +1586,7 @@ def test_check_reports_box_refused_when_the_apex_param_is_uncovered(tmp_path):
         landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
         pattern='self_toss', release_site_xy_mm=(-50.0, 0.0),
         target_site_xy_mm=(-50.0, 0.0),
-        limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
+        limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': _SESSION_LEG_ACC_MMPS2,
                'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13',
         dwell_s=sn._DEFAULT_DWELL_S, planner_mode='pose')
@@ -2975,7 +2978,7 @@ def _good_box_path(tmp_path, *, apex_band_m=(0.85, 0.95), hop=False,
         landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
         pattern='self_toss', release_site_xy_mm=(-50.0, 0.0),
         target_site_xy_mm=(-50.0, 0.0),
-        limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
+        limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': _SESSION_LEG_ACC_MMPS2,
                'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13',
         dwell_s=sn._DEFAULT_DWELL_S, planner_mode='pose')
@@ -2990,7 +2993,7 @@ def _good_box_path(tmp_path, *, apex_band_m=(0.85, 0.95), hop=False,
                 site_pair=names, apex_band_m=apex_band_m,
                 landing_xy_m=((-0.02, 0.02), (-0.02, 0.02)), apex_m=(0.85, 0.90),
                 pattern='hop', release_site_xy_mm=rel, target_site_xy_mm=tgt,
-                limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
+                limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': _SESSION_LEG_ACC_MMPS2,
                        'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
                 gate_hash=adm.gate_hash(), swept_at='2026-09-13',
                 dwell_s=sn._DEFAULT_DWELL_S, planner_mode='pose'))
@@ -3004,7 +3007,7 @@ def _good_box_path(tmp_path, *, apex_band_m=(0.85, 0.95), hop=False,
                 site_pair=(name, name), apex_band_m=apex_band_m,
                 landing_xy_m=((-0.02, 0.02), (-0.02, 0.02)), apex_m=(0.85, 0.95),
                 pattern='columns', release_site_xy_mm=xy, target_site_xy_mm=xy,
-                limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
+                limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': _SESSION_LEG_ACC_MMPS2,
                        'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
                 gate_hash=adm.gate_hash(), swept_at='2026-09-13',
                 dwell_s=sn._DEFAULT_DWELL_S, planner_mode='pose'))
@@ -3020,7 +3023,7 @@ def _good_box_path(tmp_path, *, apex_band_m=(0.85, 0.95), hop=False,
                           (-oval_half_m, oval_half_m)), apex_m=(0.85, 0.95),
             pattern='oval_1ball', release_site_xy_mm=(-75.0, 0.0),
             target_site_xy_mm=(75.0, 0.0),
-            limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
+            limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': _SESSION_LEG_ACC_MMPS2,
                    'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
             gate_hash=adm.gate_hash(), swept_at='2026-09-13',
             dwell_s=sn._DEFAULT_DWELL_S if oval_dwell_s is None
@@ -4332,7 +4335,7 @@ class TestJuggleAction:
                 site_pair=pair, apex_band_m=(0.85, 0.95),
                 landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
                 pattern='hop', release_site_xy_mm=rel, target_site_xy_mm=tgt,
-                limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
+                limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': _SESSION_LEG_ACC_MMPS2,
                        'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
                 gate_hash=adm.gate_hash(), swept_at='2026-09-13',
                 dwell_s=sn._DEFAULT_DWELL_S, planner_mode='pose')
@@ -7173,7 +7176,7 @@ def _self_toss_box(planner_mode):
         landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
         pattern='self_toss', release_site_xy_mm=(-50.0, 0.0),
         target_site_xy_mm=(-50.0, 0.0),
-        limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
+        limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': _SESSION_LEG_ACC_MMPS2,
                'leg_jerk_mmps3': 200000.0,
                'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
         gate_hash=adm.gate_hash(), swept_at='2026-10-23',

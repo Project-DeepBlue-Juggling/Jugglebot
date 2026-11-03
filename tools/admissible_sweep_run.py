@@ -98,6 +98,13 @@ def families(which: str = 'committed') -> List[Tuple[str, List[str]]]:
         for i, ap in enumerate((['1.00', '1.05', '1.10'], ['1.15', '1.20', '1.25'],
                                 ['1.30', '1.35', '1.40'], ['1.45', '1.50']), 1):
             res.append(('columnsx%d_pose' % i, ['--planner-mode', 'pose'] + d27 + _col(ap)))
+        # Two-ball-oval P4 (2026-11-03; committed set only, h70 stays the JB-144 30):
+        # the one-ball oval ladder at the P4 working point, pose planner only (level is CUP_SEATING_CONE-refused at 0.40 at any
+        # leg limit, plan amendment 52-58). `p4_headroom_cells.py` plans all three
+        # dwells at apex 1.00 / 1.05 at 600/8000/200k with the Hand at 4500.
+        for d in ('0.40', '0.35', '0.30') if which == 'committed' else ():
+            res.append(('ovalx%s_pose' % d.replace('.', ''),
+                        ['--planner-mode', 'pose', '--dwell-s', d] + _OVALX))
     elif which != 'h4500':
         raise ValueError('unknown family set %r' % which)
     return res

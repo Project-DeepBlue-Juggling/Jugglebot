@@ -15,8 +15,10 @@ def _names(which='committed'):
 def test_family_sets_are_unique_and_sized():
     c, h, old = _names('committed'), _names('h70'), _names('h4500')
     assert len(old) == 26 and len(set(old)) == 26
-    assert len(c) == 30 and len(set(c)) == 30 and c[:26] == old
-    assert h == c
+    assert len(h) == 30 and len(set(h)) == 30 and h[:26] == old
+    # P4 (2026-11-03): the committed set is h70 plus the three one-ball oval dwells.
+    assert len(c) == 33 and len(set(c)) == 33 and c[:30] == h
+    assert c[30:] == ['ovalx040_pose', 'ovalx035_pose', 'ovalx030_pose']
 
 
 def test_sample_is_deterministic_and_sized():

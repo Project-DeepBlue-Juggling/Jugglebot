@@ -277,9 +277,10 @@ def test_the_default_tilt_accel_cap_is_derived_from_the_leg_budget():
     assert cr.TILT_ACCEL_LEVER_MM == pytest.approx(lever)
     assert cr.TILT_ACCEL_LIMIT_DEFAULT_RAD_S2 == pytest.approx(
         cr.TILT_ACCEL_BUDGET_FRACTION * hw.JB_TRAJ_LEG_ACC_LIMIT_MMPS2 / lever)
-    # Sanity: the derived number must be in the band the WP4 sweep found workable
-    # (5-7 rad/s² validates on the demo cycle; 10 does not).
-    assert 3.0 < cr.TILT_ACCEL_LIMIT_DEFAULT_RAD_S2 < 8.0
+    # Sanity: the derived number must be in the band found workable (WP4: 5-7 rad/s²
+    # validates on the demo cycle, 10 does not; the P4 working point, 2026-11-03,
+    # derives 8.09 at leg acc 8000 and the P4 box sweep and headroom probe plan at it).
+    assert 3.0 < cr.TILT_ACCEL_LIMIT_DEFAULT_RAD_S2 < 8.5
 
 
 # ── C-CUP-1 / C-CUP-3 (plans/archived/cup-contact-contract.md § 2) ─────────────

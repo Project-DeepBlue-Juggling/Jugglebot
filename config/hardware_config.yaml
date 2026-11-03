@@ -193,14 +193,14 @@ dynamics:
                                                 # 0.15 Nm ≈ 2.6 A of feedforward current (0.15 × 0.9673 / 0.055133),
                                                 # i.e. ~3× the largest gravity+inertia torque seen anywhere in the
                                                 # workspace and still leaving ~7.4 A of headroom under the leg
-                                                # current clamp (`leg_curr_limit_a`, 15 A since 2026-10-06, 10 A
-                                                # before) for the velocity loop's disturbance rejection — the
+                                                # current clamp (`leg_curr_limit_a`, 20 A since 2026-11-03, 15 A
+                                                # from 2026-10-06, 10 A before) for the velocity loop's disturbance rejection — the
                                                 # ~7.4 A figure is against the pre-2026-10-06 10 A limit and has
                                                 # not been re-derived at 15 A.
                                                 # WHY A CLAMP AT ALL: the ODrive ADDS input_torque to the velocity
                                                 # loop's output BEFORE the torque limit, so a feedforward above
                                                 # ~0.55 Nm (= the leg current clamp's pre-2026-10-06 value, 10 A,
-                                                # × 0.055133; `leg_curr_limit_a` is 15 A since 2026-10-06) saturates
+                                                # × 0.055133; `leg_curr_limit_a` is 20 A since 2026-11-03) saturates
                                                 # the current clamp and the
                                                 # position loop loses ALL authority — the leg then runs open-loop
                                                 # at full current until MAX_DEVIATION E-STOPs it mid-motion.  This
@@ -230,8 +230,8 @@ dynamics:
                                                 #      10 A, × 0.055133) point where the FF would consume the
                                                 #      whole current budget and the position loop loses all
                                                 #      authority.
-                                                #   3. The ODrive current clamp (`leg_curr_limit_a`, 15 A since
-                                                #      2026-10-06, 10 A before) — last resort; by the time it
+                                                #   3. The ODrive current clamp (`leg_curr_limit_a`, 20 A since
+                                                #      2026-11-03, 15 A from 2026-10-06, 10 A before) — last resort; by the time it
                                                 #      binds, the position loop has no authority left.
                                                 # NEEDS A CAN-BRIDGE REFLASH to take effect: until the firmware is
                                                 # reflashed this clamp is dormant and layer 1 is the only software
@@ -704,8 +704,13 @@ jugglebot_odrive_defaults:
                                          # past 7.5 only widens the UN-clamped envelope;
                                          # the VELFF cap raise is a firmware-flash item.
                                          # See logbook 2026-07-16-max-deviation-guard-tracking-lag.md.
-  leg_curr_limit_a: 15.0                 # Leg current limit {A}. 10.0 -> 15.0 (owner decision,
-                                         # 2026-10-06): legs 1 and 2 carry every x transit and
+  leg_curr_limit_a: 20.0                 # Leg current limit {A}, pushed to each leg's current_soft_max
+                                         # by configure at every launch. 15.0 -> 20.0 (owner decision
+                                         # 2026-11-03, with ODrive current_hard_max 20 -> 30, the
+                                         # fault trip, NVM only): a 10 A margin to the trip, as the
+                                         # Hand's 70/80; ~102 N string tension per leg at 20 A.
+                                         # Rides the two-ball-oval P4 working point (600/8000).
+                                         # History: 10.0 -> 15.0 (owner decision, 2026-10-06): legs 1 and 2 carry every x transit and
                                          # touch the 10 A clamp ~1% of transit time (peak 10.3 A,
                                          # p95 6-7 A); when the clamp binds the position loop has
                                          # no authority (see the current-clamp-chain comment on
@@ -904,10 +909,13 @@ trajectory_op:
   # and the committed box now agree by construction —
   # tests/motion/test_skills_admissible.py pins the box's limits to these
   # values, so moving either alone fails the suite. Changing this point means a
-  # re-sweep (tools/admissible_sweep.py, BLAS one thread, run twice,
-  # bit-identical) in the same commit.
-  leg_vel_limit_mmps: 350.0        # Session leg velocity limit {mm/s} at launch (set_limits to change)
-  leg_acc_limit_mmps2: 5000.0      # Session leg acceleration limit {mm/s^2} at launch
+  # re-sweep (tools/admissible_sweep.py, BLAS one thread; one full round plus a
+  # byte-for-byte spot check, owner 2026-11-03) in the same commit.
+  # P4 working point (2026-11-03, plans/active/two-ball-oval.md P4): 350/5000/200000 ->
+  # 600/8000/200000 and the acceleration ceiling 5000 -> 10000. The box was re-swept
+  # as one full round plus a byte-for-byte spot check (owner, 2026-11-03).
+  leg_vel_limit_mmps: 600.0        # Session leg velocity limit {mm/s} at launch (set_limits to change)
+  leg_acc_limit_mmps2: 8000.0      # Session leg acceleration limit {mm/s^2} at launch
   leg_jerk_limit_mmps3: 200000.0   # Session leg jerk limit {mm/s^3} at launch — the binding constraint
   # Ceilings OPENED 280/4000/200000 → 5000/5000/200000 (2026-07-16, operator decision):
   # they are now ADMINISTRATIVE clamps, deliberately ABOVE both the drive-trackable
@@ -918,7 +926,7 @@ trajectory_op:
   # per-move kinematic feasibility gate → lead/stroke clamps (physical) → MAX_DEVIATION
   # guard (command-space) → overspeed E-STOP. The ceilings no longer encode trackability.
   leg_vel_ceiling_mmps: 5000.0     # Hard set_limits clamp {mm/s} — administrative (see note above)
-  leg_acc_ceiling_mmps2: 5000.0    # Hard set_limits clamp {mm/s^2} — administrative
+  leg_acc_ceiling_mmps2: 10000.0   # Hard set_limits clamp {mm/s^2} — administrative (5000 -> 10000, P4)
   leg_jerk_ceiling_mmps3: 200000.0 # Hard set_limits clamp {mm/s^3} (unchanged 2026-07-16)
   # HAND (7th channel) limits — the same two-tier limit/ceiling shape as the legs
   # above, so trajectory/set_limits ramps the hand within a YAML-pinned envelope

@@ -2127,7 +2127,8 @@ def test_build_realize_config_follows_the_live_leg_acc_limit():
     """The tilt-accel cap is DERIVED from the sitting limit, not from the shipped one.
 
     ``cup_realize``'s module constant is computed once, at import, from the
-    shipped ``JB_TRAJ_LEG_ACC_LIMIT_MMPS2`` (5000 mm/s²).  A unified sitting
+    shipped ``JB_TRAJ_LEG_ACC_LIMIT_MMPS2`` (8000 mm/s² since the P4 working
+    point, 2026-11-03; 5000 before).  A unified sitting
     raises the sitting limits at Sitting start, and the Phase-1 gate itself runs
     at 3000 — so leaving the schedule shaped for 5000 makes the smoother ask for
     tilt accelerations the session's own gate will then refuse.  Not a safety
@@ -2136,14 +2137,16 @@ def test_build_realize_config_follows_the_live_leg_acc_limit():
     MEASURED (2026-09-04, pre-R1 gain 31.617 rev/m): 2000 → 2.1305, 3000 → 3.1957,
     5000 → 5.3262 rad/s²; at the measured gain (R1, ``hand_mm_per_rev`` 32.567)
     the same cap reads 2.0889 / 3.1333 / 5.2222.  What is pinned is the RELATION
-    — the cap is linear in the session leg limit, and 5000 returns exactly the
-    shipped constant, the identity that says the expression was not re-derived
+    — the cap is linear in the session leg limit, and the shipped limit returns
+    exactly the shipped constant, the identity that says the expression was not re-derived
     by hand — not the literals, which follow the gain.
     """
     base = TrajectoryLimits.from_config(hw)
     shipped = float(cr.TILT_ACCEL_LIMIT_DEFAULT_RAD_S2)
-    for leg_acc, expect in ((2000.0, shipped * 0.4), (3000.0, shipped * 0.6),
-                            (5000.0, cr.TILT_ACCEL_LIMIT_DEFAULT_RAD_S2)):
+    shipped_acc = float(hw.JB_TRAJ_LEG_ACC_LIMIT_MMPS2)
+    for leg_acc, expect in ((0.4 * shipped_acc, shipped * 0.4),
+                            (0.6 * shipped_acc, shipped * 0.6),
+                            (shipped_acc, cr.TILT_ACCEL_LIMIT_DEFAULT_RAD_S2)):
         cfg = uc.build_realize_config(
             base.with_sitting_limits(leg_acc_mmps2=leg_acc))
         assert cfg.tilt_accel_limit_rad_s2 == pytest.approx(expect, rel=1e-4)

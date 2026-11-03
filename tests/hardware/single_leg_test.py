@@ -89,7 +89,7 @@ ERROR_CODES = {
 }
 
 # Safety: 50% of rated leg current
-SAFE_CURRENT_LIMIT_A = hw.ODRIVE_LEG_CURR_LIMIT_A * 0.5  # 7.5A (15A leg limit since 2026-10-06, was 10A)
+SAFE_CURRENT_LIMIT_A = hw.ODRIVE_LEG_CURR_LIMIT_A * 0.5  # 10 A (20 A leg limit since 2026-11-03; 15 A from 2026-10-06, 10 A before)
 
 # Motor torque constant from Phase 2 multi-weight bench test (R^2=0.994)
 KT_MEASURED = 0.0570  # Nm/A — measured 2026-07-15 (friction-cancelling traverse, weighed

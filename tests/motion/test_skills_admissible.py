@@ -459,6 +459,10 @@ _PRE_H4500_BOX = os.path.join(_REPO, 'tests', 'fixtures', 'admissible_box_pre_h4
 #: below keeps pinning what that re-sweep changed.
 _PRE_RELEASE_STEP_BOX = os.path.join(_REPO, 'tests', 'fixtures',
                                      'admissible_box_pre_release_step.yaml')
+#: The committed JB-143 box (gate_hash 12ec30249323, 27680eda; limits 350 / 5000 /
+#: 200000, Hand 4500), frozen when the P4 working point re-swept the box at
+#: 600 / 8000 on 2026-11-03, so the release-step test keeps pinning its own re-sweep.
+_PRE_P4_BOX = os.path.join(_REPO, 'tests', 'fixtures', 'admissible_box_pre_p4.yaml')
 
 
 @pytest.mark.skipif(not os.path.exists(_PRE_OVAL_SNAPSHOT),
@@ -1905,7 +1909,8 @@ def test_pattern_progression_cells_are_the_tail_after_the_62():
     2026-10-31-pattern-progression-p4-high-low-columns.md).  The viability
     finding is pinned here so a re-sweep that changes it is seen: at 100 mm
     1.00/0.90 is admissible at both Sites and 1.05/0.95 only for the high ball;
-    turned 45 deg admits only the 0.925 band, 90 deg the 0.875 and 0.925 bands."""
+    since the P4 working point (2026-11-03) every turned band is admissible at
+    both angles (before it, 45 deg admitted only 0.925 and 90 deg 0.875 / 0.925)."""
     import math
     import yaml as _y
     with open(_COMMITTED_BOX) as fh:
@@ -1923,8 +1928,10 @@ def test_pattern_progression_cells_are_the_tail_after_the_62():
         assert b['release_site_xy_mm'] == b['target_site_xy_mm']
         assert math.isclose(math.hypot(*b['release_site_xy_mm']), 62.5, abs_tol=1e-6)
     empty = lambda b: math.isnan(b['apex_m'][0])
-    assert [not empty(b) for b in turned[:6]] == [False, False, False, False, True, True]
-    assert [not empty(b) for b in turned[6:]] == [False, False, True, True, True, True]
+    # P4 working point (2026-11-03, leg 600 mm/s / 8000 mm/s^2): every turned cell is
+    # admissible now; at 350 / 5000 45 deg admitted only 0.925 and 90 deg 0.875 / 0.925
+    # (pinned on the frozen pre-P4 box by the P4 re-sweep test below).
+    assert all(not empty(b) for b in turned)
     assert all(b['pattern'] == 'columns_highlow' for b in highlow)
     seps = [round(abs(b['release_site_xy_mm'][0]) * 2, 3) for b in highlow]
     assert seps == [100.0] * 8
@@ -2024,12 +2031,13 @@ def test_release_step_resweep_kept_the_pose_cells_and_added_columns_to_apex_1_40
     self_toss / Columns / oval cells (level oval dwell 0.45 lost its 0.95 and
     1.10 cells to LIMIT_JERK: the stepped release holds the launch's specific
     force along a tilted take-off direction, which the level planner's
-    platform has to translate for)."""
+    platform has to translate for).  Anchored on the frozen pre-P4 box since
+    the P4 re-sweep (2026-11-03) changed the limits."""
     import math
     import yaml as _y
     with open(_PRE_RELEASE_STEP_BOX) as fh:
         old = _y.safe_load(fh)
-    with open(_COMMITTED_BOX) as fh:
+    with open(_PRE_P4_BOX) as fh:    # the JB-143 box as committed (27680eda)
         new = _y.safe_load(fh)
     assert new['limits'] == old['limits']
 
@@ -2066,3 +2074,61 @@ def test_release_step_resweep_kept_the_pose_cells_and_added_columns_to_apex_1_40
         assert b['site_pair'][0] == b['site_pair'][1] in ('P1', 'P2')
         assert math.isclose(abs(b['release_site_xy_mm'][0]), 62.5, abs_tol=1e-6)
         assert not math.isnan(b['apex_m'][0]), b
+
+
+def test_p4_resweep_kept_every_pose_cell_room_and_added_one_ball_oval_dwells():
+    """2026-11-03 re-sweep at the P4 working point (plan two-ball-oval.md P4,
+    leg 350 -> 600 mm/s and 5000 -> 8000 mm/s^2, jerk 200000 and Hand 4500
+    unchanged): the first 104 cells keep their keys and order; every POSE
+    Columns / high-low / oval cell keeps at least its old room around (0, 0)
+    and none becomes empty (60 cells; most grew to the full +/-30 mm grid);
+    and 9 pose one-ball oval cells are appended at separation 150 for the
+    dwell ladder (dwell 0.40 / 0.35 / 0.30 x Apex 1.00 / 1.05 / 1.10), every
+    one admissible -- 0.40 and 0.35 with the full +/-30 mm, 0.30 with a narrow
+    +x side (1 / 10 / 25 mm).  Deliberately not pinned: the LEVEL planner's
+    cells and the self_toss cells, several of which lost room to MARGIN (the
+    realize config scales with the leg acc limit against the same jerk
+    ceiling, and the level planner's tilt-accel cap rose 5 -> 8 rad/s^2)."""
+    import math
+    import yaml as _y
+    with open(_PRE_P4_BOX) as fh:
+        old = _y.safe_load(fh)
+    with open(_COMMITTED_BOX) as fh:
+        new = _y.safe_load(fh)
+    assert old['limits'] == {'leg_vel_mmps': 350.0, 'leg_acc_mmps2': 5000.0,
+                             'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': 4500.0}
+    assert new['limits'] == {'leg_vel_mmps': 600.0, 'leg_acc_mmps2': 8000.0,
+                             'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': 4500.0}
+
+    def key(b):
+        return (b['pattern'], b['planner_mode'], tuple(b['site_pair']), b['dwell_s'],
+                tuple(b['release_site_xy_mm']), tuple(b['target_site_xy_mm']),
+                tuple(round(x, 6) for x in b['apex_band_m']))
+    assert len(old['boxes']) == 104 and len(new['boxes']) == 113
+    assert [key(b) for b in old['boxes']] == [key(b) for b in new['boxes'][:104]]
+
+    def room(b):    # an empty cell (NaN bounds) has no room: -inf
+        (xlo, xhi), (ylo, yhi) = b['landing_xy_m']
+        r = min(-xlo, xhi, -ylo, yhi)
+        return -math.inf if math.isnan(r) else r
+    n_kept = 0
+    for a, b in zip(old['boxes'], new['boxes'][:104]):
+        if a['planner_mode'] == 'pose' and a['pattern'] in (
+                'columns', 'columns_highlow', 'oval_1ball'):
+            n_kept += 1
+            assert room(b) >= room(a) - 1e-12, (a, b)
+            assert not math.isnan(b['apex_m'][0]), b
+    assert n_kept == 60     # 40 Columns + 8 high-low + 12 oval
+
+    added = new['boxes'][104:]
+    assert all(b['pattern'] == 'oval_1ball' and b['planner_mode'] == 'pose'
+               and tuple(b['site_pair']) == ('P1', 'P2') for b in added)
+    for b in added:
+        assert b['release_site_xy_mm'] == [-75.0, 0.0]
+        assert b['target_site_xy_mm'] == [75.0, 0.0]
+        assert not math.isnan(b['apex_m'][0]), b
+    assert [b['dwell_s'] for b in added] == [0.40] * 3 + [0.35] * 3 + [0.30] * 3
+    assert [round(sum(b['apex_band_m']) / 2, 3) for b in added] == [1.00, 1.05, 1.10] * 3
+    assert all(room(b) == pytest.approx(0.030) for b in added[:6])
+    assert [b['landing_xy_m'][0][1] for b in added[6:]] == \
+        pytest.approx([0.001, 0.010, 0.025])

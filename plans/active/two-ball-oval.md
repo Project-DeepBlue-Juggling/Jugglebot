@@ -3,7 +3,7 @@ title: Two-ball oval — two balls in one hand, every throw carried back in the 
 created: 2026-10-17
 status: active
 owner: Harrison
-last_updated: 2026-10-30
+last_updated: 2026-11-03
 pathway: two-ball-oval
 scope: >-
   Two balls in one hand on an oval: every throw T to C, the ball carried back in the cup. Five phases, each
@@ -11,14 +11,14 @@ scope: >-
   cell at dwell 0.65) and rung 1 on the loaded carry at 150 mm / 0.65 s / 0.95 m; P2 the banking leak fix
   (retired, the leak does not reproduce); rung 2 at dwell 0.55 then 0.50 on the as-is level planner; P3 the
   pose-level carry planner behind `level | pose` with the C-CUP-4 rows; P4 one working-point move
-  600/8000/200k, acc ceiling 10000, 30 A, dwell ladder to the first plannable dwell (0.45 today; amended 2026-10-24); P5 the two-ball `oval` with the
+  600/8000/200k, acc ceiling 10000, 20 A (30 A trip; owner 2026-11-03), dwell ladder to the first plannable dwell (0.45 today; amended 2026-10-24); P5 the two-ball `oval` with the
   hop-shaped fed entry, closed by 30 consecutive Ball Butler-fed catches in one attempt. "Not with this cup"
   at rung 1 is a valid end. Where we are lives in § 3 of the plan.
 steps:
   - {id: P1, title: The oval pattern dispatchable, kind: phase, status: complete, date: 2026-10-18, effort: m, hardware: none}
   - {id: P2, title: Banking leak fix, kind: phase, status: retired, date: 2026-10-23, effort: s, hardware: none}
   - {id: P3, title: Pose-level carry planner, kind: phase, status: complete, date: 2026-10-30, effort: m, hardware: robot}
-  - {id: P4, title: Working point and the dwell ladder, kind: phase, status: not_started, effort: m, hardware: robot}
+  - {id: P4, title: Working point and the dwell ladder, kind: phase, status: in_progress, effort: m, hardware: robot}
   - {id: P5, title: Two-ball oval, kind: phase, status: not_started, effort: l, hardware: robot}
 related_logbook:
   - 2026-10-17-two-ball-oval-plan-written.md
@@ -29,7 +29,7 @@ related_logbook:
 related_config:
   - config/hardware_config.yaml → trajectory_op.leg_acc_ceiling_mmps2 (5000 → 10000 at P4, decision 53)
   - config/hardware_config.yaml → trajectory_op.leg_{vel,acc,jerk}_limit_* (350/5000/200000 → 600/8000/200000 at P4, decision 54)
-  - config/hardware_config.yaml → leg_curr_limit_a (15 → 30 at P4, with the ODrive backup JSON, decision 55)
+  - config/hardware_config.yaml → leg_curr_limit_a (15 → 20 at P4 with ODrive current_hard_max 30, decision 55 amended 2026-11-03)
   - config/generated/admissible_box.yaml (oval cells; dwell_s joins the select() key, decision 39)
 related_code:
   - ros_ws/src/jugglebot/jugglebot/motion/skills/schedule.py::OneBallPattern.roles / _append_one_ball_pattern / ThenThrow.release_site / _fold_catch_throw_pairs / compile_oval (P5)
@@ -132,7 +132,7 @@ and whether this cup can carry a ball 150 mm in 0.30 s is what the plan finds ou
   unchanged; exit = the columns Stop (held catch at C, last ball lands on it; NOT landed in P1, see the P1 Outcome).
 - **Limits (5, 13, 52–56):** two-ball point apex 1.0 at 600/8000/200k, jerk untouched; only
   `leg_acc_ceiling_mmps2` moves (5000 → 10000); one working-point move at P4 start with the box
-  re-swept (oval + columns cells, same commit); leg current 15 → 30 A in that commit; ramp
+  re-swept (oval + columns cells, same commit); leg current 15 → 20 A in that commit (amended 2026-11-03, owner: 20 A operating, ODrive trip 30 A); ramp
   sitting = five columns canary attempts, then the one-ball oval at 0.40 (the 0.40 rung IS the
   ramp).
 
@@ -213,7 +213,7 @@ and whether this cup can carry a ball 150 mm in 0.30 s is what the plan finds ou
   - *New prerequisite* — the single-leg ~10 Hz vibrations (three events on legs 1 and 2, both planners, two with the iq setpoint on the 15 A clamp: S1 leg 2, S2 leg 1) are the
     can-bridge LEAD CLAMP amplifying leg-bus encoder frame drops (`leg_interp.cpp`, no age extrapolation): archived plan
     `leg-bus-frame-drops.md` Workstream A, re-opened as `plans/archived/leg-lead-clamp-age-aware.md`, **a prerequisite of
-    the next powered oval Sitting and of P4's `leg_curr_limit_a` 15 → 30.**
+    the next powered oval Sitting and of P4's `leg_curr_limit_a` raise (15 → 20 since 2026-11-03).**
     **MET 2026-10-27:** that plan's P3 Sitting flew FW 33 with zero staircase episodes and zero clamp ticks through real
     frame drops (`logbook/2026-10-27-leg-lead-clamp-age-aware-p3-robot.md`); the plan is archived.
   - *P3-5 (0.45 under pose)* — refused by the box because no 0.45 pose cell had been swept (the runbook row assumed one);
@@ -339,7 +339,7 @@ second-to-last catch at C is a standalone HELD catch and the last throw lands on
 | P2 | Banking leak fix (principle a) | ~~Rung 1 re-flown = the leak-fixed column~~ | RETIRED 2026-10-23 (row kept): the leak does not reproduce on today's planner, delta 0 at every accepted dwell 0.65-0.45, § 4 P2 | 2026-10-23 |
 | Rung 2 | No planner code (box cells at 0.55 / 0.50 swept 2026-10-23, see the logbook): one-ball oval at dwell 0.55 then 0.50 on the as-is `level` planner at today's limits, bundled with the sitting that flies the three owed unflown fixes first | Row-27 metrics per step against the 0.65 baseline (runbook `session_oval_rung1.md` § 7) sets P3's shaper target | FLOWN 2026-10-23, MET (owner GO): 0.50 38/38 with a 32-run, 0.55 4/4, 0.65 75/76; leg 2 peak 10.1 A accepted (15 A clamp) | `2026-10-23-oval-rung2-flown-dwell-050` |
 | P3 | Pose-level carry planner behind `level \| pose`, C-CUP-4 rows, knob re-tune, cycle budget, seam-dz ablation (design starts AFTER rung 2 flies) | Starts from the dwell-0.50 as-is baseline (38/38); rung 1 re-flown = the swept column → decision 24 gate; columns re-gated if the mode flips | CODE COMPLETE 2026-10-23; **A/B FLOWN 2026-10-24 (two Sittings): `pose` NO-GO at 0.50 as built (47/57; the logged skid was the drop cause), equal at 0.65; default stays `level` (flipped to `pose` 2026-10-30). Skid BOUND landed the same day (`I-PLAN-14`, 175 mm/s, pose cells re-swept + 0.45 cell); re-gate = the next Sitting (runbook § 9), AFTER the lead-clamp prerequisite plan** | 2026-10-24 |
-| P4 | Working point 600/8000/200k, acc ceiling 10000, 30 A (gated by `leg-lead-clamp-age-aware.md`, MET 2026-10-27), box re-sweep (oval + columns), one-ball cells at the FIRST PLANNABLE dwells (0.45 today; 0.40 / 0.30 only if the hand-acc and release-hold design items open them — amendment 52–58, 2026-10-24) | Ramp sitting (five columns canary, one-ball oval at the shortest admissible dwell) | NOT STARTED — premise amended 2026-10-24 | |
+| P4 | Working point 600/8000/200k, acc ceiling 10000, 20 A operating / 30 A trip (gated by `leg-lead-clamp-age-aware.md`, MET 2026-10-27), box re-sweep (oval + columns), one-ball cells at the FIRST PLANNABLE dwells (amendment 52–58, 2026-10-24; 0.40 / 0.35 / 0.30 at the P4 point with Hand 4500 and hold 0, re-run 2026-11-03) | Ramp sitting (five columns canary, one-ball oval at the shortest admissible dwell) | IN PROGRESS — working-point commit 2026-11-03 | |
 | P5 | Two-ball `oval(_fed)`: `compile_oval`, hop-shaped entry, Stop exit, clearance pre-flight | 30 consecutive BB-fed catches in one attempt at P4's gate dwell | NOT STARTED | |
 
 Each rung is the gate (P3's gate is rung 2's outcome): a phase does not start until the rung before it has flown and its
@@ -475,7 +475,10 @@ Where the idea lives now: a note inside P3 (below). Code never started; nothing 
   Power-cycle the bridge first. Next = the re-gate Sitting.
 - **2026-10-30 re-gate FLOWN, GO (owner; runbook § 9.1, bag `2026-10-30_16-17-11`, entry `logbook/2026-10-30-two-ball-oval-p3-regate-go-and-dwell-headroom.md`):** one CFS launch, `level` 0.50 50/50 then `pose` 0.50 50/50 (+6/6). Against the same-launch `level` column `pose` had legs 1/2 peak 6.59 / 9.45 A vs 7.38 / 9.96 A, `ball_held` unbroken 55/55, touch-down v_x median -73 mm/s (bound 175, 0 carries over; 10-24 read -507), same landing scatter (sd 14-16 mm). `pose` 0.45 caught 40/40, then the goal ended at throw 41 on one 80 ms emitter gap (firmware STOP, hand `MAX_DEVIATION`: the JB-98 reframe, not the planner). Owner: the default flips to `pose`, every family re-swept under `pose`, sim gate, one columns check Sitting (flip, re-sweep and sim gate landed 2026-10-30; the columns check Sitting remains); P3R-4's leg-current reference is the same-launch `level` column; a pre-release-hold rung (P4.0) is scheduled ahead of the P4 working-point commit; the next CPU lever is JB-94.
 
-### P4 — Working point and the dwell ladder — NOT STARTED (premise amended 2026-10-24, 2026-10-30)
+### P4 — Working point and the dwell ladder — IN PROGRESS (working-point commit 2026-11-03) (premise amended 2026-10-24, 2026-10-30)
+
+- **Headroom re-run 2026-11-03 (owner go for P4):** `tools/probes/p4_headroom_cells.py --balls 1,2 --dwells 0.50,0.45,0.40,0.35,0.30 --apexes 1.0,1.05 --hand 4500 --pre 0 --post 0.05 --mode pose --point today|p4` (outputs `temp/probes/p4_headroom_{today,p4}.json`). With the Hand at 4500 and hold 0, today's point plans the one-ball oval down to dwell 0.35 (0.30 is `MARGIN`, leg velocity +2..+4 %); the P4 point plans every one-ball dwell to 0.30 (leg velocity at least 40 % under its bound), and the probe's two-ball fold plans at dwell 0.35 and 0.30 at apex 1.00 and 1.05 (0.40-0.50 refused), none at today's point. Two-ball margins are thin: leg jerk -1..-18 % (200k unchanged), Hand 4309 of 4500 at 1.05 / 0.30. This reproduces the 10-17 "0.30 at apex 1.0 under P4" result, the offline item below.
+- **Sweep rule (owner, 2026-11-03):** one full round plus a byte-for-byte spot check of 2-3 small families, not two full rounds.
 
 - **Premise amended 2026-10-24 (§ 1.3 Amendments, P3 tail):** neither planner reaches dwell 0.30 at 150 mm at this
   working point — `level` is cone-refused at 0.40 at ANY leg limit, `pose` (with the skid bound) clears 0.45, is
@@ -494,7 +497,7 @@ Where the idea lives now: a note inside P3 (below). Code never started; nothing 
   bound and C-CUP-4; that result is reproduced on today's code first (offline item below). The destination is unchanged
   (owner, 2026-10-30).
 - **Prerequisite:** `leg-lead-clamp-age-aware.md` (the frame-drop lead-clamp amplifier) is flown and
-  passed before the clamp raise below — a 15 A staircase on one leg today becomes a 30 A one. **MET 2026-10-27** (plan
+  passed before the clamp raise below — a 15 A staircase on one leg today becomes a 20 A one. **MET 2026-10-27** (plan
   archived; `logbook/2026-10-27-leg-lead-clamp-age-aware-p3-robot.md`). JB-76 (`SPLICE_TOO_LATE` ending half the goals)
   still stands in front of any 30-catch run.
 - **P4.0 pre-release hold rung (owner 2026-10-30, map JB-102) - FLOWN 2026-10-31, model WITHDRAWN, hold default 0.** Runbook § 11, bag `2026-10-31_13-14-00`, entry `logbook/2026-10-31-hold-ladder-sitting-the-hold-model-was-wrong.md` (the 10-30 prep entry stays the prep record).
@@ -509,12 +512,12 @@ Where the idea lives now: a note inside P3 (below). Code never started; nothing 
 - First item after P4.0 (the working-point commit follows it): sweep the pose planner's one-ball cells at every dwell the probe clears at the new working point
   (0.50 / 0.45 today; 0.40 if item (a) lands first).
 - One commit: `leg_acc_ceiling_mmps2` 5000 → 10000; session defaults 350/5000/200000 →
-  600/8000/200000; `leg_curr_limit_a` 15 → 30 with `config/ODrive config Files/` updated;
+  600/8000/200000; `leg_curr_limit_a` 15 → 20 (amended 2026-11-03, owner: 20 A operating, ODrive trip 30 A), the drives' `current_hard_max` and `config/ODrive config Files/` written by a separate session;
   `python config/generate_config.py`; box re-swept with oval cells (150 mm at the plannable dwells,
   apex band covering 0.95–1.0) AND the columns cells, twice, bit-identical; relaunch.
 - Ramp sitting: five columns attempts at the proven geometry under the new box (guard margin,
   leg current, tracking lag against the 32-consecutive baseline), then the one-ball oval at the
-  shortest admissible dwell (peak leg current per transit from the bag is the 30 A measurement).
+  shortest admissible dwell (peak leg current per transit from the bag is the 20 A measurement).
 - Gate: one-ball oval at the shortest admissible dwell and 150 mm sustains a 30-cycle attempt.
 
 ### P5 — Two-ball oval — NOT STARTED
@@ -553,7 +556,7 @@ Where the idea lives now: a note inside P3 (below). Code never started; nothing 
 - **Safety**: the Teensy `MAX_DEVIATION` guard is the leg-path authority; nothing here changes
   it. The carry is the first LOADED translation — the first rung's stop rules (ball leaves the cup
   twice in one region, FET > 60 °C, a leg on the current clamp > 50 ms, lane recovery failed) are
-  in the runbook. 30 A is the owner's number (~30 A judged safe 2026-10-12); the 0.40 rung's bag
+  in the runbook. 20 A operating / 30 A trip is the owner's choice 2026-11-03 (a 10 A margin to the trip, as the Hand's 70/80; ~30 A had been judged safe 2026-10-12); the 0.40 rung's bag
   is the measurement. The hand cap 3900 was NOT raisable at 50 A; raised to 4500 with 60 A on 2026-11-01 (debrief; see JB-120, hand_throw_envelope.md).
 - **Non-obvious choices**: the first rung flies at dwell 0.65 (pre-release hold; the cone moved to 45° since b28b129f so 0.50 passes the planner and cone offline (32.1° < 45°) but is NOT dispatchable until the oval box cells at 0.55 and 0.50 are swept; rung 2 flew it 2026-10-23 once the cells were swept); symmetric sites (every one-sided probe placement produced edge
   artefacts); the catch stays level because the capture span is infeasible at two balls (probe,
