@@ -124,6 +124,7 @@ from teensy_link import protocol as p
 from teensy_link import rpc_args
 from teensy_link.rpc import HandMoveToUnavailable, RpcTimeout
 from teensy_link.fault_logic import LinkLossLatch
+from jugglebot import stream_tuning as _tuning
 from teensy_link.gap_monitor import (
     EMPTY_STATS, SCHED_COVER_MS, EpisodeLatch, GapTracker)
 from teensy_link.setpoint_pump import SetpointPump, FLAG_HAS_HAND, HAND_FF_GAIN_MAX
@@ -1397,6 +1398,22 @@ class TeensyBridgeNode(Node):
                  setpoint_source=None, boot_state_read: bool = True,
                  stow_on_shutdown: bool = True):
         super().__init__('teensy_bridge_node')
+        # JB-149 cpu_partition (opt-in, default OFF): pin this process FIRST,
+        # before the client's RX/heartbeat threads and the forwarder exist, so
+        # all of them inherit the stream cores.
+        self.declare_parameter('cpu_partition', False)
+        self.declare_parameter('stream_cpus', list(_tuning.DEFAULT_STREAM_CPUS))
+        if bool(self.get_parameter('cpu_partition').value):
+            ok, txt = _tuning.pin_process(
+                self.get_parameter('stream_cpus').value)
+            if ok:
+                self.get_logger().info(
+                    'JB-149 cpu_partition ON: teensy_bridge_node pinned to '
+                    'cpus %s' % txt)
+            else:
+                self.get_logger().warning(
+                    'JB-149 cpu_partition requested but NOT applied '
+                    '(fail-open, scheduling unchanged): %s' % txt)
         # Record DEBUG detail in the node log (the launch shell filters it out of
         # the screen). Safe here: this node has no per-frame / per-tick debug()
         # call, and every debug() line is an event-level line.
@@ -2621,6 +2638,14 @@ class TeensyBridgeNode(Node):
         # banner — the launch says whether the INSTALLED copy is stale, this
         # says which file this process actually got.
         self.get_logger().debug("config identity — " + hardware_config_identity())
+        # JB-149 gc_freeze (opt-in, default OFF): init is complete; the
+        # forwarder thread starts at arm, after this.
+        self.declare_parameter('gc_freeze', False)
+        if bool(self.get_parameter('gc_freeze').value):
+            n, th = _tuning.freeze_gc()
+            self.get_logger().info(
+                'JB-149 gc_freeze ON: teensy_bridge_node froze %d objects, '
+                'gc thresholds %r' % (n, th))
 
     # ═══════════════════════════════════════════════════════════
     # RX-thread frame callbacks — keep these short (stash + return)

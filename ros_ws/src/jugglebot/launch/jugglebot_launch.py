@@ -346,6 +346,20 @@ def generate_launch_description():
         description='JB-149: true -> trajectory_node and teensy_bridge_node log a '
                     '1 Hz GC_PROBE line (collections, max pause ms). Diagnostic only.')
 
+    # JB-149 opt-in cures for the 40 Hz stream stalls (both DEFAULT OFF; the
+    # probe Sitting decides which, if either, becomes the default).
+    gc_freeze = LaunchConfiguration('gc_freeze')
+    gc_freeze_arg = DeclareLaunchArgument(
+        'gc_freeze', default_value='false',
+        description='JB-149: true -> trajectory_node and teensy_bridge_node '
+                    'gc.collect()+gc.freeze() after init and raise the gc '
+                    'thresholds (no gen2 pause over the 70 ms firmware cover).')
+    cpu_partition = LaunchConfiguration('cpu_partition')
+    cpu_partition_arg = DeclareLaunchArgument(
+        'cpu_partition', default_value='false',
+        description='JB-149: true -> trajectory_node and teensy_bridge_node '
+                    'pin to cpus 0-3, the CATCH-solve worker to cpus 4-5.')
+
     # ── Core ROS2 nodes ──────────────────────────────────────────
     orchestrator_node = Node(
         package='jugglebot',
@@ -519,7 +533,10 @@ def generate_launch_description():
         # overrides it live; [0.0, 0.0] turns it off for an A/B.
         parameters=[{'pre_release_hold_s': pre_release_hold_s,
                      'level_trim_deg': [0.0945, 0.3678],
-                     'gc_probe': PythonExpression(["'", gc_probe, "' == 'true'"])}],
+                     'gc_probe': PythonExpression(["'", gc_probe, "' == 'true'"]),
+                     'gc_freeze': PythonExpression(["'", gc_freeze, "' == 'true'"]),
+                     'cpu_partition': PythonExpression(
+                         ["'", cpu_partition, "' == 'true'"])}],
         # THE node the cap exists for: it owns BOTH the planner (plan_cycle) and
         # the 40 Hz emitter thread the can-bridge's 250 ms SETPOINT_STALE watchdog
         # watches, so an uncapped BLAS pool here starves the wire from inside the
@@ -581,6 +598,8 @@ def generate_launch_description():
             'hand_torque_ff_gain': 0.7,
             # TEMPORARY (JB-147 diagnostic capture): '' = off.
             'gc_probe': PythonExpression(["'", gc_probe, "' == 'true'"]),
+            'gc_freeze': PythonExpression(["'", gc_freeze, "' == 'true'"]),       # JB-149
+            'cpu_partition': PythonExpression(["'", cpu_partition, "' == 'true'"]),
             'hand_capture_dir': PythonExpression([
                 "'", os.path.expanduser('~/Desktop/Jugglebot/temp/hand_capture'),
                 "' if '", hand_capture, "' == 'true' else ''"]),
@@ -890,6 +909,8 @@ def generate_launch_description():
         enable_setpoint_output_arg,
         auto_arm_arg,
         gc_probe_arg,  # JB-149 diagnostic
+        gc_freeze_arg,      # JB-149 opt-in cures (default off)
+        cpu_partition_arg,
         hand_capture_arg,  # TEMPORARY (JB-147 diagnostic capture)
         # Infrastructure (gui_server.py runs independently in the background)
         rosbridge_websocket_node,

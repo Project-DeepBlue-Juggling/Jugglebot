@@ -494,8 +494,15 @@ def test_rearm_resets_the_gap_trackers_so_the_disarmed_interval_is_no_gap():
     """2026-11-02 debrief: arm, stream, disarm, wait, re-arm.  Without the reset in
     `_start_setpoint_output` the first record after the re-arm spans the disarmed
     interval (shorter than idle_s, so it is recorded) and reads as a starved gap."""
+    import gc as _gc
     import time as _t
     teensy, client, node = _build_paired_node(boot_state_read=False)
+    # A gen2 collection in this test process takes 130-190 ms on the loaded
+    # Jetson (JB-149 probe, 2026-11-02) and froze the loop thread past the
+    # 100 ms bound whenever file order put one here; the assertion is about
+    # the reset, not GC pauses, so collections are held off for its duration.
+    _gc_was = _gc.isenabled()
+    _gc.disable()
     try:
         now = _t.monotonic()
         for k in range(3):
@@ -517,4 +524,6 @@ def test_rearm_resets_the_gap_trackers_so_the_disarmed_interval_is_no_gap():
         assert loop.max_ms < 100.0
         assert node._fwd_gap_latch.update(1e6) is True  # a fresh latch can fire
     finally:
+        if _gc_was:
+            _gc.enable()
         _teardown(teensy, client, node)

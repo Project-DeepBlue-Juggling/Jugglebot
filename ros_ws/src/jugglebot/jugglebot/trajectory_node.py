@@ -105,6 +105,7 @@ from jugglebot_interfaces.srv import (
 
 import jugglebot.hardware_config as hw
 from jugglebot import clock_offset
+from jugglebot import stream_tuning as _tuning
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.ik_solver import (
     leg_lengths_to_pose,
@@ -536,6 +537,32 @@ class TrajectoryNode(Node):
                  command_pub_factory=None, start_emitter: bool = True,
                  segment_solver=None):
         super().__init__('trajectory_node')
+        # JB-149 cpu_partition (opt-in, default OFF): pin THIS process to the
+        # stream cores FIRST, before any thread exists, so the emitter and every
+        # later thread inherit it.  The solver worker gets solver_cpus below.
+        self.declare_parameter('cpu_partition', False)
+        self.declare_parameter('stream_cpus', list(_tuning.DEFAULT_STREAM_CPUS))
+        self.declare_parameter('solver_cpus', list(_tuning.DEFAULT_SOLVER_CPUS))
+        self._cpu_partition = bool(self.get_parameter('cpu_partition').value)
+        self._solver_cpus = None
+        if self._cpu_partition:
+            ok, txt = _tuning.pin_process(
+                self.get_parameter('stream_cpus').value)
+            try:
+                self._solver_cpus = _tuning.parse_cpus(
+                    self.get_parameter('solver_cpus').value)
+            except Exception as e:          # noqa: BLE001 -- fail-open
+                ok, txt = False, '%s (solver_cpus: %s)' % (txt, e)
+            if ok:
+                self.get_logger().info(
+                    'JB-149 cpu_partition ON: trajectory_node pinned to cpus '
+                    '%s, solver worker to cpus %s'
+                    % (txt, _tuning.format_cpus(self._solver_cpus)))
+            else:
+                self._solver_cpus = None
+                self.get_logger().warning(
+                    'JB-149 cpu_partition requested but NOT applied '
+                    '(fail-open, scheduling unchanged): %s' % txt)
         # Record everything, show little (operator console phase 2; see
         # skill_node's __init__): per-install detail -- accepted/refused
         # install_segment, the cycle seed, the 30 s clock-offset refresh --
@@ -1198,7 +1225,17 @@ class TrajectoryNode(Node):
                 python=sys.executable, sys_path=list(sys.path), env=None,
                 log=self._solver_log,
                 expected_executor_file=sk_exec.__file__,
-                rt_priority=self._solver_rt_priority))
+                rt_priority=self._solver_rt_priority,
+                **({'cpus': self._solver_cpus} if self._solver_cpus else {})))
+
+        # JB-149 gc_freeze (opt-in, default OFF): everything built so far is
+        # permanent; the emitter thread starts after.
+        self.declare_parameter('gc_freeze', False)
+        if bool(self.get_parameter('gc_freeze').value):
+            n, th = _tuning.freeze_gc()
+            self.get_logger().info(
+                'JB-149 gc_freeze ON: trajectory_node froze %d objects, gc '
+                'thresholds %r' % (n, th))
 
         if start_emitter:
             self._start_emitter()

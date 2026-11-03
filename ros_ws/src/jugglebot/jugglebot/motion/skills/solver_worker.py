@@ -404,13 +404,17 @@ class WorkerSegmentSolver:
                  env: Optional[dict] = None,
                  log: Optional[Callable[[str, str], None]] = None,
                  expected_executor_file: Optional[str] = None,
-                 rt_priority: int = 0):
+                 rt_priority: int = 0,
+                 cpus: Optional[Iterable[int]] = None):
         from jugglebot.motion.skills import executor as ex
         self._python = python
         self._sys_path = list(sys.path if sys_path is None else sys_path)
         self._env_override = env
         self._log = log
         self._rt_priority = int(rt_priority)
+        # JB-149 cpu_partition: pin the worker process to these cores (None =
+        # untouched).  Overrides WORKER_RT_CPUS when FIFO is also requested.
+        self._cpus = None if cpus is None else sorted(int(c) for c in cpus)
         self._sched_info: Optional[SchedInfo] = None
         self._expected = os.path.realpath(
             ex.__file__ if expected_executor_file is None
@@ -464,6 +468,8 @@ class WorkerSegmentSolver:
         argv = [self._python, '-m', _MODULE, '--fd', str(_WORKER_FD)]
         if self._rt_priority > 0:
             argv += ['--rt-prio', str(self._rt_priority)]
+        if self._cpus:
+            argv += ['--cpus', ','.join(str(c) for c in self._cpus)]
         try:
             pid = os.posix_spawn(
                 self._python, argv, env,
@@ -754,10 +760,19 @@ def _main(argv: Optional[List[str]] = None) -> int:
                     help='inherited socket carrying the request stream')
     ap.add_argument('--rt-prio', type=int, default=0,
                     help='try SCHED_FIFO at this priority (fail-open; 0 = off)')
+    ap.add_argument('--cpus', default='',
+                    help='JB-149 cpu_partition: pin to these cores, e.g. 4,5 '
+                         '(fail-open; also replaces the FIFO core set)')
     args = ap.parse_args(argv)
+    cpus = [int(c) for c in args.cpus.split(',') if c]
     # Applied HERE, before worker_main: sched_setscheduler(0) acts on the
     # calling thread, so it must never run inside worker_main (pytest thread).
-    sched = apply_rt_policy(args.rt_prio)
+    sched = apply_rt_policy(args.rt_prio, cpus or WORKER_RT_CPUS)
+    if cpus:
+        try:        # fail-open: the partition is a cure, not a gate
+            os.sched_setaffinity(0, set(cpus))
+        except (OSError, ValueError, AttributeError):
+            pass
     # Serve from the CANONICAL module, not ``__main__``: the reply dataclasses
     # pickle by module path, and the parent must be able to unpickle them
     # (found by the round-trip test: "Can't get attribute ... on __main__").
