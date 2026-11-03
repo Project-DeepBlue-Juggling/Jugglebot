@@ -553,9 +553,12 @@ class _FakeDrive:
         return getattr(_Ns(self.ram), name)
 
     def save_configuration(self):
+        # Faithful to ODrive Pro 0.6.11: save persists and then reboots the
+        # drive (the 2026-11-03 live run lost the device inside this call).
         self.saves += 1
         if self.save_works:
             self.nvm = dict(self.ram)
+        self.reboot()
 
     def reboot(self):
         self.reboots += 1

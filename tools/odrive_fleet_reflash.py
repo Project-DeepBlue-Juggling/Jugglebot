@@ -1096,9 +1096,12 @@ def apply_set(api: OdriveApi, odrv: Any, result: SetResult) -> Any:
     for key, value in result.typed.items():
         set_path(odrv, key, value)
     print('  node {}: saving configuration...'.format(result.node_id))
-    odrv.save_configuration()
-    if not call_tolerating_reboot(odrv, api, 'reboot'):
-        print('  note: drive still answered after reboot(); reading anyway')
+    # 0.6.11 reboots inside save_configuration() (the erase path at the two
+    # calls above tolerates it the same way); only an explicit reboot() is owed
+    # if the drive is still up, so the read-back below comes from NVM.
+    if not call_tolerating_reboot(odrv, api, 'save_configuration'):
+        if not call_tolerating_reboot(odrv, api, 'reboot'):
+            print('  note: drive still answered after reboot(); reading anyway')
     odrv = wait_for_drive(api, result.serial)
     for key in result.typed:
         result.after[key] = get_path(odrv, key)
