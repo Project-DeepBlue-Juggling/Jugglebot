@@ -2,10 +2,11 @@
 id: JB-150
 kind: feature
 title: 'Run admissible-box sweeps on the Win10 desktop: about 2.5 h on the Jetson, and a sweep blocks Sittings'
-status: inbox
+status: in_progress
 created: '2026-11-02'
-updated: '2026-11-02T18:15:07Z'
-owners: []
+updated: '2026-11-03T02:42:08Z'
+owners:
+- jugglebot-50
 priority: medium
 effort: m
 hardware: none
@@ -63,3 +64,7 @@ The Win10 PC is on the LAN (it hosts QTM, and the owner already keeps a clone th
 4. Leave it until a sweep blocks a Sitting again.
 
 Recommendation: 1 now, then 2 if the halved sweep still blocks Sittings. Option 1 needs only your yes. Options 2 and 3 also need the PC's CPU and core count, and your call on whether a Jetson certification pass is enough for the record.
+
+## Progress
+
+- 2026-11-03: Owner call 2026-11-03 (JB-156): option 1 landed as tools/admissible_sweep_run.py (round b = rotating 3-family sample, ~150 -> ~85 min estimated; profile found no safe speed-up outside gated files). Owner rules: a Jetson-side certification pass is enough for the record; the Win10 PC (option 2) is the backup if the halved sweep still blocks Sittings. Next: first real re-sweep through the runner with --sample all to prove round-a parity (detail in logbook 2026-11-03-jb150-sweep-round-b-sample-and-profile)
