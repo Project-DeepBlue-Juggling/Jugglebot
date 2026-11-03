@@ -30,6 +30,7 @@
 
 import * as clock from './clock.js';
 import { TIME_INCRS, timeTickSpace, numTickSpace, timeTickLabels } from './axis-ticks.js';
+import { layoutCallouts } from './callout-layout.js';
 import { setStewartHighlight } from './stewart-model.js';
 import { setBallButlerHighlight } from './ball-butler-model.js';
 import {
@@ -2932,6 +2933,7 @@ function updateCallouts(u, record) {
     // Flip callout side when near the right edge so labels stay readable.
     const flipLeft = xPx > plotW * 0.75;
 
+    const shown = [];
     for (let j = 0; j < pills.length; j++) {
         const { el, textNode, sig } = pills[j];
         const val = data[j + 1] ? data[j + 1][idx] : undefined;
@@ -2946,14 +2948,20 @@ function updateCallouts(u, record) {
         }
         el.style.display = '';
         el.style.left = `${xPx}px`;
-        el.style.top = `${yPx}px`;
         el.classList.toggle('flip-left', flipLeft);
         textNode.textContent = formatCalloutValue(val, sig.scale, chartIdx);
         // Bare numeric (no unit suffix) for click-to-copy, in the chart's
         // display unit.  Kept at full precision so copy-paste into a script
         // preserves everything we have.
         el.dataset.rawValue = String(val);
+        shown.push({ el, yPx });
     }
+    // JB-159: pills whose curves are close would stack and hide each other;
+    // spread them so none overlaps (text unchanged, only the vertical position).
+    const pillH = (shown.length && shown[0].el.offsetHeight) || 16;
+    const plotH = u.bbox ? (u.bbox.height / devicePixelRatio) : u.over.clientHeight;
+    const ys = layoutCallouts(shown.map((s) => s.yPx), pillH, plotH);
+    for (let k = 0; k < shown.length; k++) shown[k].el.style.top = `${ys[k]}px`;
 }
 
 // ---- Per-chart physical units -------------------------------------------

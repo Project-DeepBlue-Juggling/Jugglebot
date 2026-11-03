@@ -33,6 +33,7 @@
 import * as clock from './clock.js';
 import { CAN_BITS_PER_FRAME_APPROX } from './geometry-config.js';
 import { TIME_INCRS, timeTickSpace, numTickSpace, timeTickLabels } from './axis-ticks.js';
+import { layoutCallouts } from './callout-layout.js';
 import { nanGaps } from './telemetry-charts.js';
 
 // ---- Bus registry ----
@@ -806,6 +807,7 @@ function updateCallouts(u) {
     // inside the plot instead of overflowing the sidebar.
     const flipLeft = xPx > plotW * 0.75;
 
+    const shown = [];
     for (const { el, textNode, bus } of calloutPills) {
         const val = u.data[BUSES.indexOf(bus) + 1]?.[idx];
         // Hidden series draw no curve, so they get no callout either.
@@ -820,13 +822,18 @@ function updateCallouts(u) {
         }
         el.style.display = '';
         el.style.left = `${xPx}px`;
-        el.style.top = `${yPx}px`;
         el.classList.toggle('flip-left', flipLeft);
         // Bus label included: two curves can cross, and colour alone shouldn't
         // be the only way to tell which pill is which (same non-colour-alone
         // rule the bus rows follow).  Unit is the y-axis label, msg/s.
         textNode.textContent = `${bus.label} ${Math.round(val)}`;
+        shown.push({ el, yPx });
     }
+    // JB-159: spread pills of nearby curves so none hides another.
+    const pillH = (shown.length && shown[0].el.offsetHeight) || 16;
+    const plotH = u.bbox ? (u.bbox.height / window.devicePixelRatio) : u.over.clientHeight;
+    const ys = layoutCallouts(shown.map((s) => s.yPx), pillH, plotH);
+    for (let k = 0; k < shown.length; k++) shown[k].el.style.top = `${ys[k]}px`;
 }
 
 /**

@@ -2,15 +2,20 @@
 id: JB-159
 kind: bug
 title: GUI Chart hover-over callouts overlap
-status: inbox
+status: complete
 created: '2026-11-03'
-updated: '2026-11-03T01:42:47Z'
+updated: '2026-11-03T17:53:21Z'
 owners: []
 priority: medium
 effort: s
 hardware: none
+owner: none
+radius: local
+diagnosis: confirmed
+area: gui
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-04-gui-callout-pills-no-overlap.md
 filed_by: harrison
 ---
 

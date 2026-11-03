@@ -28,7 +28,7 @@ pytestmark = pytest.mark.skipif(_NODE is None, reason='node not found')
 def result(tmp_path_factory):
     sb = str(tmp_path_factory.mktemp('traffic_reset'))
     for name in ('can-traffic.js', 'udp-traffic.js', 'clock.js', 'geometry-config.js', 'axis-ticks.js',
-                 'console-view.js', 'console-logic.js'):
+                 'console-view.js', 'console-logic.js', 'callout-layout.js'):
         shutil.copy(os.path.join(_GUI_JS, name), os.path.join(sb, name))
     with open(os.path.join(sb, 'telemetry-charts.js'), 'w') as f:
         f.write('export function nanGaps() { return []; }\n')

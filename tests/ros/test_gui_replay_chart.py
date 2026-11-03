@@ -57,7 +57,7 @@ def out(tmp_path_factory):
 
     sb = d / "sandbox"
     (sb / "replay").mkdir(parents=True)
-    for name in ("telemetry-charts.js", "axis-ticks.js", "clock.js", "event-store.js", "geometry-config.js"):
+    for name in ("telemetry-charts.js", "axis-ticks.js", "clock.js", "event-store.js", "geometry-config.js", "callout-layout.js"):
         shutil.copy(GUI / "js" / name, sb / name)
     for name in ("chunk.js", "chart-store.js"):
         shutil.copy(GUI / "js" / "replay" / name, sb / "replay" / name)
