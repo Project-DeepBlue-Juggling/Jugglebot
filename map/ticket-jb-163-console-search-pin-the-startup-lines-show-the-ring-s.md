@@ -2,9 +2,9 @@
 id: JB-164
 kind: ticket
 title: 'JB-163 CONSOLE search: pin the startup lines, show the ring''s window, backfill from launch.log, or leave it?'
-status: open
+status: complete
 created: '2026-11-04'
-updated: '2026-11-03T17:50:26Z'
+updated: '2026-11-03T21:55:31Z'
 owners: []
 priority: medium
 effort: xs
@@ -34,3 +34,9 @@ Recommendation: 2 then 1.
 - 1 or 2 (or both): a GUI unit the Night Shift can build, test under node and gate.
 - 3: a larger unit that adds a server endpoint, still offline-testable.
 - 4: JB-163 closes as explained.
+
+## Answer
+
+I'm not sure this was an eviction problem; I searched for these terms during a live Sitting that had only just begun, so  there were fewer than 5,000 messages that had been sent.
+
+I agree with your recommendation: do (2), then (1)
