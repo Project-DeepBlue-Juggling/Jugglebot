@@ -4,7 +4,7 @@ kind: idea
 title: 'JP-10 Turned columns: the columns pair at fixed angles about +z, under pose'
 status: in_progress
 created: '2026-10-30'
-updated: '2026-11-01T12:18:47Z'
+updated: '2026-11-03T02:04:57Z'
 owners:
 - jugglebot-f5
 priority: medium
@@ -55,6 +55,11 @@ It proves the rotational symmetry on hardware that lets the admissible box key o
 - 45 deg: three MISSED_CATCH on an empty cup, two after TRACKER-IDENTITY-REFUSED, one after a half-speed launch (2341 vs 4268 mm/s); one leg LIMIT_VEL 361 > 350 at 0/1.
 - Hand iq 53.3 A at L3521 (over the 50 A watch). Tracker apex 1.01-1.04 m turned vs 0.93-0.96 straight.
 - No per-angle `plant_id` was set, and no tracker landing on any miss, so JB-38 P2(b) is not answered.
+
+## Sitting result (2026-11-03)
+
+- verdict: fail
+- notes: At 45 deg: first attempt completed all throws. Second and Third attempts ended with mid-air collisions between the balls. Final attempt ended successfully with all 20 catches At 90 deg: every ended with a ball hitting the top of the Platform and bouncing off in such a way as to be uncatchable
 
 ## Progress
 
