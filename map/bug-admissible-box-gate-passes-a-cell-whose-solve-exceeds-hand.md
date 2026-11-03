@@ -4,9 +4,10 @@ kind: bug
 title: 'A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve'
 status: in_progress
 created: '2026-10-31'
-updated: '2026-11-03T02:49:00Z'
+updated: '2026-11-03T03:32:20Z'
 owners:
 - night-shift
+- jugglebot-50
 priority: high
 effort: m
 hardware: robot
@@ -91,3 +92,4 @@ The structural fix is FILED here as the next step, not built: the bump decision 
 - 2026-11-01: Owner decision (debrief): HAND_LIMIT_ACC 3900 -> 4500 rev/s^2, hand_curr_limit_a 50 -> 60 A, box re-swept; the structural bump fix (plan the next catch at bump time) stays FILED here, not built (detail in the findings section).
 - 2026-11-02: Failed at the Sitting of 2026-11-02: HAND_LIMIT_ACC 4509 at 49/51 after a 30.5 mm bump; all 3 refusals of both Sittings follow the 3 largest inward bumps (22.2-30.5 mm), 0 of 329 unbumped. New cause found and fixed: the bump kept the pre-bump C-HAND-5 brake seed (offline 4696 -> 3407). Structural fix stays filed.
 - 2026-11-03: Passed at the Sitting of 2026-11-03 on the Hand criterion: 0 HAND_LIMIT_ACC after 71 bumps, peak Hand acc 3794 rev/s^2 = 84% of 4500 (L2532). 15 leg LIMIT_VEL/JERK refusals and 3 Hand faults in the block belong to JB-24 and JB-147. Held branch dropped (JB-152 option 3); Item stays open for the structural bump fix.
+- 2026-11-03: Structural fix landed UNWIRED 2026-11-03 (I-CATCH-7, bump.py bump_with_next_catch_gate: a Bump is applied at the largest of D, D/2, D/4, D/8 whose seed the next catch's gate accepts, else declined BUMP-NEXT-CATCH; shrink logged BUMP-SHRUNK). No cheap gate exists (only the next catch's own 33-93 ms solve predicts the Hand peak; too slow for the 25-50 ms bump window). Owner call 2026-11-03: land unwired; every bumped seed up to 30 mm now plans at or under 82 pct of 4500. Trigger to wire it (option B, an offline bump envelope per box cell): a HAND_LIMIT_ACC after a Bump at the 4500 limit. Fallback branch night-shift/2026-11-01-JB-120 dropped per JB-152 (detail in logbook 2026-11-03-jb120-bump-gated-by-the-next-catch)
