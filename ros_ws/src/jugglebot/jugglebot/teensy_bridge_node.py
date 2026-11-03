@@ -833,6 +833,16 @@ _T2J_TORQUE_CLAMP_SHIFT = int(p.HEARTBEAT_TORQUE_CLAMP_SHIFT)
 # continuous promotion or the next disarm/arm edge. On the wire since FW 22,
 # surfaced 2026-10-13 after R5 sitting 7's latch went unread by every node.
 _T2J_FLAG_SCHED_HOLD_LATCHED = int(p.HeartbeatT2JFlags.SCHED_HOLD_LATCHED)
+# JB-149 (FW 38 / PROTOCOL_VERSION 11): firmware scheduled-lane counters the
+# STOP WARN differences over its ~1 s sample ring, the per-heartbeat frame-age
+# buckets, and the rx_age_max_us sentinel of a window with no stamped frame.
+_SCHED_FW_COUNTERS = ('sched_expired', 'sched_superseded', 'sched_stale',
+                      'sched_refused', 'sched_hand_c1_stops',
+                      'sched_future_drops', 'sched_q_overflow')
+_RX_AGE_BUCKETS = ('rx_age_le25', 'rx_age_le50', 'rx_age_le70', 'rx_age_gt70')
+_RX_AGE_NONE = -2 ** 31
+_SCHED_HIST_LEN = 11            # 10 heartbeat windows (~1 s) + the baseline
+_SCHED_DISARM_EDGE_S = 0.5      # a STOP this soon after the 1->0 fall is "at" it
 
 # Bits 16-22 carry the report-only per-axis ODrive heartbeat-staleness mask
 # (bit 16+i = axis i's CAN heartbeat older than CAN_HEARTBEAT_STALE_US = 0.5 s;
@@ -1698,6 +1708,13 @@ class TeensyBridgeNode(Node):
         # JB-95 follow-up: firmware sched_stops baseline / WARN rate limit.
         self._sched_stops_seen = None
         self._sched_stops_warn_mono = 0.0
+        # JB-149 (FW 38 / PROTOCOL 11): the last ~1 s of heartbeat samples of the
+        # firmware scheduled-lane counters + frame-age windows, for the STOP WARN,
+        # and the disarm-edge state (a STOP at the 1->0 fall WARNs once).
+        self._sched_hist = deque(maxlen=_SCHED_HIST_LEN)
+        self._sched_hist_gen = None
+        self._sched_prev_armed = False
+        self._sched_fall_mono = None
         # 2026-11-01 observability (JB-98): forwarding-thread gap monitors. The
         # emitter's max_emit_gap_ms cannot see a stall of THIS process; these
         # can. fwd = spacing of successful sends; loop = spacing of
@@ -5978,36 +5995,113 @@ class TeensyBridgeNode(Node):
             return 'RECOVERING'
         return fault
 
+    def _note_sched_sample(self, hb, hb_gen) -> None:
+        """Keep the last ~1 s of firmware scheduled-lane samples (JB-149).
+
+        One entry per NEW heartbeat (``hb_gen`` changes): the cumulative
+        counters and that heartbeat window's frame-age census. Read by the
+        STOP WARN only; never gates anything.
+        """
+        if hb is None or hb_gen == self._sched_hist_gen:
+            return
+        self._sched_hist_gen = hb_gen
+        self._sched_hist.append((
+            tuple(int(getattr(hb, k, 0)) for k in _SCHED_FW_COUNTERS),
+            int(getattr(hb, 'rx_age_max_us', _RX_AGE_NONE)),
+            tuple(int(getattr(hb, k, 0)) for k in _RX_AGE_BUCKETS)))
+
+    def _sched_fw_summary(self) -> str:
+        """The firmware side of a STOP over the samples held (~1 s):
+        counter deltas, frame-age max and summed buckets. '' with < 2 samples."""
+        h = self._sched_hist
+        if len(h) < 2:
+            return ''
+        first, last = h[0][0], h[-1][0]
+        deltas = ' '.join('%s +%d' % (k[len('sched_'):], (b - a) & 0xFFFFFFFF)
+                          for k, a, b in zip(_SCHED_FW_COUNTERS, first, last))
+        windows = list(h)[1:]   # the first entry is only the counter baseline
+        ages = [m for (_c, m, bk) in windows if sum(bk) > 0 and m != _RX_AGE_NONE]
+        bsum = [sum(w[2][i] for w in windows) for i in range(4)]
+        age = ('none' if not ages else '%.1f ms' % (max(ages) / 1e3))
+        return ('fw_sched last %d heartbeats: %s; frame age at bridge receipt '
+                'max %s, <=25 ms %d, <=50 ms %d, <=70 ms %d, >70 ms %d'
+                % (len(windows), deltas, age, bsum[0], bsum[1], bsum[2],
+                   bsum[3]))
+
     def _warn_on_sched_stop(self, total: int, now=None) -> None:
-        """WARN (<= 1/s) when the firmware's ``sched_stops`` rises while armed.
+        """WARN (<= 1/s) when the firmware's ``sched_stops`` rises while armed,
+        and ONCE at a disarm edge.
 
         A rise while streaming means the lane's cover (2 knots x 25 ms + 20 ms
-        grace = ~70 ms) expired. Two candidates, and this WARN prints both
-        measured maxima for the last ~1 s window (published on /link_status as
-        max_forward_gap_ms / max_loop_gap_ms): the setpoint stream arriving late
-        (emitter gap: forward gap large, loop gap small) or this bridge process
-        stalling (loop gap large too). Advisory only; runs on the 10 Hz
-        link_status timer, never the RX path.
+        grace = ~70 ms) expired. Three verdicts, and this WARN prints the
+        measured host maxima for the last ~1 s window (published on
+        /link_status as max_forward_gap_ms / max_loop_gap_ms) plus, from FW 38
+        (JB-149), the firmware's own counters and frame ages:
+
+        * **host stream clean, cover expired firmware-side** when the forward
+          gap tracker saw frames, its max, its OPEN gap (time since the last
+          forward) and the loop gap max are all below the cover: the frames
+          left this node in time, so the cover ran out between the send and
+          the promotion (link, net task, stamps, ISR). The fw_sched segment
+          says which (frame ages > 50 ms = late arrival, dropped as expired).
+        * otherwise the two host candidates as before: emitter gap (setpoints
+          arrived late) vs bridge forwarding gap (this node starved).
+
+        Disarm edge: a STOP rise seen within ``_SCHED_DISARM_EDGE_S`` of
+        ``mpc_active`` falling 1->0 WARNs once for that fall, rate limit
+        bypassed (the host flag falls a heartbeat or two before the firmware
+        reports the stop, so "the same sample" alone would miss most of them).
+        Advisory only; runs on the 10 Hz link_status timer, never the RX path.
         """
         prev = self._sched_stops_seen
         self._sched_stops_seen = total
-        if prev is None or total <= prev or not self._mpc_active:
-            return
         t = time.monotonic() if now is None else float(now)
-        if t - self._sched_stops_warn_mono < 1.0:
+        armed = bool(self._mpc_active)
+        if self._sched_prev_armed and not armed:
+            self._sched_fall_mono = t
+        self._sched_prev_armed = armed
+        if prev is None or total <= prev:
             return
+        edge = (not armed and self._sched_fall_mono is not None
+                and t - self._sched_fall_mono <= _SCHED_DISARM_EDGE_S)
+        if not armed and not edge:
+            return
+        if not edge and t - self._sched_stops_warn_mono < 1.0:
+            return
+        if edge:
+            self._sched_fall_mono = None   # once per fall
         self._sched_stops_warn_mono = t
         fwd, loop = self._gap_snap
+        open_ms = self._fwd_gap.open_gap_ms(time.monotonic())
+        clean = (fwd.n > 0 and fwd.max_ms < SCHED_COVER_MS
+                 and loop.max_ms < SCHED_COVER_MS and open_ms < SCHED_COVER_MS)
+        where = ('at the disarm edge (mpc_active 1->0)' if edge
+                 else 'while streaming')
+        if clean:
+            verdict = (
+                'host stream clean, cover expired firmware-side: forward gap '
+                '%.1f ms (p99 %.1f, open %.1f), bridge loop gap %.1f ms, all '
+                'below the ~%.0f ms cover, so the frames left this node in '
+                'time; read fw_sched (frame age > 50 ms = arrived late and '
+                'dropped as expired: link or net task; small ages = stamps or '
+                'the ISR)'
+                % (fwd.max_ms, fwd.p99_ms, open_ms, loop.max_ms,
+                   SCHED_COVER_MS))
+        else:
+            verdict = (
+                'the lane cover (~%.0f ms) expired. Candidates: emitter gap '
+                '(setpoints arrived late) vs bridge forwarding gap (this node '
+                'starved). Window maxima: forward gap %.1f ms (p99 %.1f, open '
+                '%.1f), bridge loop gap %.1f ms. Loop gap near the forward gap '
+                '= bridge stall; loop gap small = the stream itself was late '
+                '(see /trajectory/status max_emit_gap_ms)'
+                % (SCHED_COVER_MS, fwd.max_ms, fwd.p99_ms, open_ms,
+                   loop.max_ms))
+        fw = self._sched_fw_summary()
         self.get_logger().warning(
-            'firmware scheduler STOP (+%d, total %d) while streaming: the lane '
-            'cover (~%.0f ms) expired. Candidates: emitter gap (setpoints '
-            'arrived late) vs bridge forwarding gap (this node starved). '
-            'Window maxima: forward gap %.1f ms (p99 %.1f), bridge loop gap '
-            '%.1f ms. Loop gap near the forward gap = bridge stall; loop gap '
-            'small = the stream itself was late (see /trajectory/status '
-            'max_emit_gap_ms)'
-            % (total - prev, total, SCHED_COVER_MS, fwd.max_ms, fwd.p99_ms,
-               loop.max_ms))
+            'firmware scheduler STOP (+%d, total %d) %s: %s%s'
+            % (total - prev, total, where, verdict,
+               ('. ' + fw) if fw else ''))
 
     def _update_gap_snapshot(self) -> None:
         """Snapshot the forwarding-gap monitors (10 Hz timer) and WARN once per
@@ -6060,6 +6154,7 @@ class TeensyBridgeNode(Node):
                 hb_stale_mask = ((int(hb.flags) & _T2J_HB_STALE_MASK)
                                   >> _T2J_HB_STALE_SHIFT)
                 self._track_hb_stale_episodes(hb_stale_mask)
+                self._note_sched_sample(hb, hb_gen)
                 self._warn_on_sched_stop(int(hb.sched_stops))
 
             msg = DiagnosticStatus()
@@ -6437,6 +6532,20 @@ class TeensyBridgeNode(Node):
                     KeyValue(key='sched_hold_latched',
                              value=str(int(bool(int(hb.flags)
                                                 & _T2J_FLAG_SCHED_HOLD_LATCHED)))),
+                    # FW 38 / PROTOCOL 11 (JB-149): the rest of the firmware's
+                    # scheduled-lane census (cumulative since boot, difference
+                    # two samples) and this heartbeat window's frame-age census
+                    # (rx_age = bridge now - the frame's t_start at queue entry;
+                    # reset every heartbeat, so a bag holds every window).
+                    *[KeyValue(key=k, value=str(int(getattr(hb, k))))
+                      for k in ('sched_demoted',) + _SCHED_FW_COUNTERS
+                      if k not in ('sched_refused',)],
+                    KeyValue(key='rx_age_max_us',
+                             value=('none' if int(hb.rx_age_max_us)
+                                    == _RX_AGE_NONE
+                                    else str(int(hb.rx_age_max_us)))),
+                    *[KeyValue(key=k, value=str(int(getattr(hb, k))))
+                      for k in _RX_AGE_BUCKETS],
                     # /recover_lane's progress (2026-10-13): idle|in_progress|
                     # done|failed, and the stage last entered (none|converge|
                     # rest|disarm|arm|confirm). trajectory_node and skill_node

@@ -221,6 +221,14 @@ uint32_t interp_sched_expired();     // cover already over at promotion
 uint32_t interp_sched_stops();       // cover exhaustions (C2 stop or FW 37 hand C1 stop)
 uint32_t interp_sched_hand_c1_stops();   // FW 37 hand C1 stops (JB-145), a subset of the above
 uint32_t interp_sched_refused();     // discontinuous resumes refused while armed
+uint32_t interp_sched_superseded();  // due frames beaten by a newer due frame in the same tick
+uint32_t interp_sched_stale();       // frames older than the playing frame, not played
+uint32_t interp_sched_future_drops(); // stamps beyond SCHED_MAX_FUTURE_US, dropped at receipt
+uint32_t interp_sched_q_overflow();  // queue full, oldest stamp dropped
+// FW 38 (JB-149): read-and-reset the per-heartbeat-window frame-age census
+// (rx_age = now − t_start at queue entry): window max (INT32_MIN = no stamped
+// frame this window) and counts at ≤25 / ≤50 / ≤70 / >70 ms. Heartbeat task only.
+void     interp_sched_rx_age_take(int32_t* max_us, uint16_t* buckets4);
 // a_cmd — the ANALYTIC acceleration (rev/s^2) of the hand curve the lane emitted
 // on the last tick: span Hermite, C2 stop, recovery slew profile, 0 at hold /
 // NaN backstop / lane idle. Written once per tick by the ISR (single float).

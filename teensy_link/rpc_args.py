@@ -907,7 +907,14 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # the Hand moves up faster than 50 rev/s skips the 20 ms grace and stops at the
 # cover end (C1 entry, 4500 rev/s^2, jerk-limited ramp-out), so the stop fits
 # the stroke. Behavioural only: no wire change, PROTOCOL_VERSION stays 10.
-EXPECTED_BRIDGE_FW_VERSION = 37
+# 37 -> 38 (2026-11-03, JB-149): scheduled-lane observability. HeartbeatT2J
+# grows 126 -> 158 B with five more cumulative scheduled-lane counters
+# (sched_superseded / _stale / _hand_c1_stops / _future_drops / _q_overflow) and
+# a per-heartbeat-window frame-age census (rx_age_max_us + rx_age_le25/le50/
+# le70/gt70, age = bridge now - the frame's t_start at queue entry). A WIRE
+# change: PROTOCOL_VERSION 10 -> 11, so an FW 37 board is DARK to this host
+# (and vice versa) until the lockstep flash. No lane behaviour changes.
+EXPECTED_BRIDGE_FW_VERSION = 38
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

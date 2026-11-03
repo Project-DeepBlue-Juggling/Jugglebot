@@ -50,6 +50,7 @@
 
 #include <Arduino.h>          // IntervalTimer
 #include <cstring>
+#include <cstdint>            // INT32_MIN / INT32_MAX (FW 38 rx_age census)
 #include <cmath>              // std::isfinite (setpoint trust-boundary drop)
 #include "canbridge_config.h"
 #include "udp_protocol.h"
@@ -445,6 +446,27 @@ static volatile uint32_t s_sched_hand_c1_stops = 0;  // ISR: FW 37 hand C1 stops
 static volatile uint32_t s_sched_refused      = 0;   // ISR: discontinuous resume refused while armed
 static volatile uint32_t s_sched_resumes      = 0;   // ISR: continuous resume out of a stop/hold
 static volatile uint32_t s_sched_slew_rearms  = 0;   // ISR: leg stream restart re-armed the recovery slew
+
+// FW 38 (JB-149): per-heartbeat-WINDOW frame-age census. rx_age = micros64() −
+// the frame's t_start at queue entry (net task, inside the queue's IRQ-off
+// section, so the heartbeat task's read-and-reset cannot tear it). Edges 25 / 50
+// / 70 ms: ≤ 25 one knot of lead eaten, ≤ 50 still promotable, ≤ 70 already past
+// the 2T cover (counted sched_expired at promotion), > 70 past cover + grace at
+// ARRIVAL (the playing frame has run out). Uplinked on HeartbeatT2J (v11).
+static constexpr int64_t RX_AGE_EDGE_US[3] = { 25'000, 50'000, 70'000 };
+static_assert(SCHED_COVER_US == 50'000 && SCHED_EXHAUST_US == 70'000,
+              "HeartbeatT2J rx_age bucket edges document the 2T cover (50 ms) and cover + grace (70 ms); re-edge the buckets and the wire docs with them");
+static int32_t  s_rx_age_max_us = INT32_MIN;          // window max (INT32_MIN = no stamped frame)
+static uint16_t s_rx_age_bucket[4] = { 0, 0, 0, 0 };  // ≤25, ≤50, ≤70, >70 ms (saturating)
+
+// Net task, IRQs already off (the queue insertion section): O(1).
+static inline void rx_age_note(int64_t age_us) {
+  const int32_t a = (age_us > INT32_MAX) ? INT32_MAX : (age_us < INT32_MIN + 1) ? (INT32_MIN + 1) : (int32_t)age_us;
+  if (a > s_rx_age_max_us) s_rx_age_max_us = a;
+  const uint8_t b = (age_us <= RX_AGE_EDGE_US[0]) ? 0 : (age_us <= RX_AGE_EDGE_US[1]) ? 1
+                  : (age_us <= RX_AGE_EDGE_US[2]) ? 2 : 3;
+  if (s_rx_age_bucket[b] != 0xFFFFu) ++s_rx_age_bucket[b];
+}
 // a_cmd (U2b's input): ISR-written once per tick.
 static volatile float    s_hand_a_cmd         = 0.0f;
 static float             s_leg_a_cmd[NUM_LEGS];
@@ -918,6 +940,7 @@ void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len) {
     f.hand_ff_gain = hand_k;
     f.has_hand = has_hand_flag;
     const uint32_t pmq = __get_PRIMASK(); __disable_irq();
+    rx_age_note(mono - t_start);   // FW 38 frame-age census (JB-149)
     uint8_t n = s_sq_n;
     bool placed = false;
     for (uint8_t k = 0; k < n; ++k)
@@ -1885,6 +1908,8 @@ void interp_reset() {
   s_sched_frames = 0; s_sched_demoted = 0; s_sched_future_drops = 0; s_sched_q_overflow = 0;
   s_sched_expired = 0; s_sched_superseded = 0; s_sched_stale = 0; s_sched_stops = 0; s_sched_hand_c1_stops = 0;
   s_sched_stop_capped = 0; s_sched_refused = 0; s_sched_resumes = 0; s_sched_slew_rearms = 0;
+  s_rx_age_max_us = INT32_MIN;
+  s_rx_age_bucket[0] = s_rx_age_bucket[1] = s_rx_age_bucket[2] = s_rx_age_bucket[3] = 0;
   s_hand_a_cmd = 0.0f;
   s_hand_ff_ks = s_hand_ff_fade = s_hand_ff_bias = 0.0f;
   s_hand_tau_cmd = 0.0f; s_hand_tau_max_abs = 0.0f;
@@ -2116,6 +2141,20 @@ uint32_t interp_sched_expired()  { return s_sched_expired; }
 uint32_t interp_sched_stops()    { return s_sched_stops; }
 uint32_t interp_sched_hand_c1_stops() { return s_sched_hand_c1_stops; }
 uint32_t interp_sched_refused()  { return s_sched_refused; }
+uint32_t interp_sched_superseded()   { return s_sched_superseded; }
+uint32_t interp_sched_stale()        { return s_sched_stale; }
+uint32_t interp_sched_future_drops() { return s_sched_future_drops; }
+uint32_t interp_sched_q_overflow()   { return s_sched_q_overflow; }
+void interp_sched_rx_age_take(int32_t* max_us, uint16_t* buckets4) {
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  const int32_t m = s_rx_age_max_us;
+  uint16_t b[4] = { s_rx_age_bucket[0], s_rx_age_bucket[1], s_rx_age_bucket[2], s_rx_age_bucket[3] };
+  s_rx_age_max_us = INT32_MIN;
+  s_rx_age_bucket[0] = s_rx_age_bucket[1] = s_rx_age_bucket[2] = s_rx_age_bucket[3] = 0;
+  __set_PRIMASK(pm);
+  if (max_us) *max_us = m;
+  if (buckets4) for (uint8_t i = 0; i < 4; ++i) buckets4[i] = b[i];
+}
 float    interp_hand_a_cmd()     { return s_hand_a_cmd; }
 float    interp_leg_a_cmd(uint8_t i) { return (i < NUM_LEGS) ? s_leg_a_cmd[i] : 0.0f; }
 float    interp_hand_ff_gain_target() { return s_sg[SG_HAND].active ? s_sg[SG_HAND].hand_ff_gain : 0.0f; }

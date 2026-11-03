@@ -1551,6 +1551,40 @@ TEST_CASE("FW 22 scheduled: stamped frames with late arrivals + a dropped frame 
   CHECK(max_da_step < 70.0f);
 }
 
+TEST_CASE("FW 38 frame-age census: window max + 25/50/70 ms buckets at queue entry, read-and-reset (JB-149)") {
+  reset_interp_test();
+  seed_hand_encoder();
+  const C2Plan P = make_c2_plan(1500.0, 12, 5.0);
+  int32_t mx = 0;
+  uint16_t b[4] = { 9, 9, 9, 9 };
+  interp_sched_rx_age_take(&mx, b);   // drain whatever an earlier case left in the window
+  interp_sched_rx_age_take(&mx, b);
+  CHECK(mx == INT32_MIN);             // empty window: the no-frame sentinel, zero counts
+  CHECK((b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 0));
+  fake_advance(500'000);
+  const uint64_t now = fake_wall_us();   // fake wall == mono, so age = now - stamp exactly
+  // Window 1: a frame 5 ms AHEAD of its stamp, one exactly on the 25 ms edge, one
+  // at 40 ms, one at 90 ms (past cover + grace at arrival). No ISR runs, so the
+  // four distinct stamps fill the SCHED_QUEUE_LEN = 4 queue without overflow.
+  stage_sched_frame(1, P, 0, now + 5'000);
+  stage_sched_frame(2, P, 0, now - 25'000);
+  stage_sched_frame(3, P, 0, now - 40'000);
+  stage_sched_frame(4, P, 0, now - 90'000);
+  interp_sched_rx_age_take(&mx, b);
+  CHECK(mx == 90'000);
+  CHECK(b[0] == 2); CHECK(b[1] == 1); CHECK(b[2] == 0); CHECK(b[3] == 1);
+  // Window 2 is fresh: one 60 ms frame (the full queue drops its oldest stamp,
+  // the census still counts the arrival) lands in the 50-70 bucket alone.
+  stage_sched_frame(5, P, 0, now - 60'000);
+  interp_sched_rx_age_take(&mx, b);
+  CHECK(mx == 60'000);
+  CHECK(b[0] == 0); CHECK(b[1] == 0); CHECK(b[2] == 1); CHECK(b[3] == 0);
+  CHECK(interp_sched_q_overflow() >= 1);
+  interp_sched_rx_age_take(&mx, b);
+  CHECK(mx == INT32_MIN);
+  CHECK((b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 0));
+}
+
 TEST_CASE("FW 22 scheduled: hand == leg parity on identical stamped knots (the parity anchor, scheduled path)") {
   reset_interp_test();
   seed_hand_encoder();

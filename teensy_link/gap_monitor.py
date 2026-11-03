@@ -81,6 +81,17 @@ class GapTracker:
             p99 = gaps[min(len(gaps) - 1, int(0.99 * len(gaps)))] * 1e3
         return GapStats(len(gaps), mx, p99)
 
+    def open_gap_ms(self, now: float) -> float:
+        """Time since the last ``record`` (ms), 0.0 before the first one.
+
+        ``snapshot`` only sees a gap once it CLOSES; a stream that is dead right
+        now reads as no gap at all. The STOP verdict (JB-149) needs the open gap
+        too before it may call the host stream clean.
+        """
+        with self._lock:
+            last = self._last
+        return 0.0 if last is None else max(0.0, (now - last) * 1e3)
+
     def reset(self) -> None:
         with self._lock:
             self._last = None

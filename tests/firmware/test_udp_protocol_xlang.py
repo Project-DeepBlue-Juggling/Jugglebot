@@ -249,7 +249,13 @@ def test_protocol_version_frozen(gen, proto):
     Bumping it is an INCOMPATIBLE-wire change that requires reflashing the whole
     fleet — this makes the bump deliberate and keeps all three artifacts in lockstep."""
     spec_ver = _spec_const(gen, "PROTOCOL_VERSION")
-    assert spec_ver == 10, (  # 9→10: BB absolute release (can-bridge FW 29, 2026-10-12) —
+    assert spec_ver == 11, (  # 10→11: scheduled-lane observability (can-bridge FW 38,
+                              # 2026-11-03, JB-149) — HeartbeatT2J GROWS 126→158 B by
+                              # five cumulative sched_* counters and the per-window
+                              # frame-age census (rx_age_max_us + 4 buckets); a grown
+                              # heartbeat misreads every counter ⇒ incompatible;
+                              # darkness vs any FW ≤ 37 board is intended.
+                              # 9→10: BB absolute release (can-bridge FW 29, 2026-10-12) —
                               # ArgBbThrow.delay_s (f32, relative-on-receipt) became
                               # release_wall_us (u64, absolute) and BB_THROW gained
                               # ResultBbThrow + ERR_RELEASE_PAST/TOO_SOON/TOO_FAR; a
@@ -540,7 +546,12 @@ def test_wire_layout_frozen(gen):
     # mismatches degrade to the pre-FW 34 behaviour, so PROTOCOL_VERSION stays 10.
     # Previous digest (WAVE_CMD):
     #   2e17196c14b4b94fa7dd198609becd3a4ca30618d6fba7a92448eb0d56254cb3
-    _EXPECTED = "b90f835978415dcfcc4e49643db9c2041ef6fdc7a518ebcf87e65cd8e50dd877"
+    # Re-pinned for the INCOMPATIBLE scheduled-lane observability (2026-11-03,
+    # can-bridge FW 38, JB-149, PROTOCOL_VERSION 10→11): HeartbeatT2J GROWS
+    # 126→158 B by five u32 sched_* counters, i32 rx_age_max_us and four u16
+    # rx_age buckets. Previous digest (homing_epoch):
+    #   b90f835978415dcfcc4e49643db9c2041ef6fdc7a518ebcf87e65cd8e50dd877
+    _EXPECTED = "e184b76e3d3c82ea08a24ff64e002452a4bf85388c59c6695dc55d062497426f"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

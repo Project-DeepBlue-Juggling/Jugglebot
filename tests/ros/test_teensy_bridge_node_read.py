@@ -1562,3 +1562,37 @@ def test_link_status_surfaces_the_latched_scheduled_hold(bridge):
     kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}
     assert kv['sched_stops'] == '4'
     assert kv['sched_refused'] == '2'
+
+
+def test_link_status_surfaces_the_fw38_sched_census_and_frame_ages(bridge):
+    """FW 38 / PROTOCOL 11 (JB-149): every scheduled-lane counter and the
+    heartbeat window's frame-age census reach /link_status, so a bag holds the
+    firmware side of every STOP; a window with no stamped frame reads 'none'."""
+    teensy, node = bridge
+    for gen, (age_max, want) in enumerate([(71_500, '71500'),
+                                           (-2 ** 31, 'none')]):
+        hb = HeartbeatT2J(t_teensy_us=1 + gen, link_state=int(LinkState.UP),
+                          bus1_health=int(BusHealth.OK),
+                          bus2_health=int(BusHealth.OK),
+                          fault_state=int(FaultState.NONE), flags=0,
+                          uptime_ms=1 + gen, sched_expired=5, sched_demoted=6,
+                          sched_superseded=7, sched_stale=8,
+                          sched_hand_c1_stops=9, sched_future_drops=10,
+                          sched_q_overflow=12, rx_age_max_us=age_max,
+                          rx_age_le25=3, rx_age_le50=1, rx_age_le70=0,
+                          rx_age_gt70=2)
+        before = node._heartbeat_gen
+        teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+        assert _wait_until(lambda: node._heartbeat_gen != before)
+        node._publish_link_status()
+        kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}
+        assert (kv['sched_expired'], kv['sched_demoted'], kv['sched_superseded'],
+                kv['sched_stale'], kv['sched_hand_c1_stops'],
+                kv['sched_future_drops'], kv['sched_q_overflow']) == (
+                    '5', '6', '7', '8', '9', '10', '12')
+        assert kv['rx_age_max_us'] == want
+        assert (kv['rx_age_le25'], kv['rx_age_le50'], kv['rx_age_le70'],
+                kv['rx_age_gt70']) == ('3', '1', '0', '2')
+        # sched_refused keeps its one, original KeyValue (no duplicate key).
+        keys = [v.key for v in node.link_status_pub.published[-1].values]
+        assert keys.count('sched_refused') == 1

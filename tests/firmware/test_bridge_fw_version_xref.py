@@ -219,6 +219,19 @@ def test_the_bump_history_records_what_this_version_carries():
     assert 'SCHED_GRACE_S' in m37.group(1) and 'SCHED_STOP_ACCEL_HAND_RPS2' in m37.group(1), m37.group(1)
     assert 'HAND_C1_STOP_GRACE_US' in m37.group(1), m37.group(1)
     assert 'NO WIRE CHANGE' in m37.group(1), m37.group(1)
+    # FW 38 — JB-149 scheduled-lane observability.  The substance: the
+    # scheduled-lane counters and a per-heartbeat frame-age census reach the
+    # Jetson, HeartbeatT2J GROWS, so the bump IS a wire change (PROTOCOL 10→11)
+    # and darkness against an older board is the intended failure.
+    m38 = re.search(r'^// 37→38:(.*)$', text, re.M)
+    assert m38 is not None, "FW 38 history line missing"
+    assert 'JB-149' in m38.group(1) and 'HeartbeatT2J GROWS 126→158' in m38.group(1), m38.group(1)
+    assert 'PROTOCOL_VERSION 10→11' in m38.group(1), m38.group(1)
+    for name in ('sched_superseded', 'sched_stale', 'sched_hand_c1_stops',
+                 'sched_future_drops', 'sched_q_overflow', 'rx_age_max_us',
+                 'interp_sched_rx_age_take', 'SCHED_EXHAUST_US'):
+        assert name in m38.group(1), name
+    assert 'No behaviour change' in m38.group(1), m38.group(1)
 
 
 def test_the_version_this_release_pins_is_actually_uplinked():

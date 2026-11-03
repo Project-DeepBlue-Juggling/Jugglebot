@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 
 # ── Constants ──────────────────────────────────────────────────────────
-PROTOCOL_VERSION = 10  # Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed; 7→8: 2026-09-14 hand C2 (can-bridge FW 22) — Setpoint GROWS 208→240 B: v2[7] (exact u2-knot velocity, flags bit4 HAS_V2) + hand_ff_gain (K, clamped [0,1.5] at ingest), flags bit5 HAS_SCHED plays the frame on its t_origin_us stamp instead of on UDP arrival; HeartbeatT2J GROWS by the scheduled-playback promotion-continuity diagnostics and flags bits 14 HAND_TORQUE_CLAMP / 15 SCHED_HOLD_LATCHED. Growing a struct is as incompatible as shrinking one: darkness against any FW ≤ 21 board is the INTENDED failure. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design) 8→9: 2026-09-15 axis-silence watchdog (can-bridge FW 23) — HeartbeatT2J GROWS by can_fault_leg/can_fault_age_ms/can_fault_count (the CAN_BUS_DOWN trip latch: WHICH leg went silent, how stale it was, how many trips this boot) and gains flags bits 16-22 HB_STALE_MASK (per-axis ODrive heartbeat staleness at CAN_HEARTBEAT_STALE_US = 0.5 s, report-only); CacheDiag GROWS by hb_frames[7], the per-axis heartbeat-frame census beside enc_frames. Both structs grow, so this is an incompatible wire change: darkness against any FW ≤ 22 board is the INTENDED failure. 9→10: 2026-10-12 BB absolute release (can-bridge FW 29) — ArgBbThrow.delay_s (f32, relative, converted to absolute ON RECEIPT, so Jetson dispatch latency moved the release 1:1) is replaced by release_wall_us (u64, absolute, the bridge wall clock = Jetson CLOCK_REALTIME), the arg GROWS 16→20 B, BB_THROW gains ResultBbThrow (lead at receipt) and three named refusals ERR_RELEASE_PAST/TOO_SOON/TOO_FAR. A delay_s read as an epoch would throw at the wrong instant, so darkness against any FW ≤ 28 board is the INTENDED failure.
+PROTOCOL_VERSION = 11  # Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed; 7→8: 2026-09-14 hand C2 (can-bridge FW 22) — Setpoint GROWS 208→240 B: v2[7] (exact u2-knot velocity, flags bit4 HAS_V2) + hand_ff_gain (K, clamped [0,1.5] at ingest), flags bit5 HAS_SCHED plays the frame on its t_origin_us stamp instead of on UDP arrival; HeartbeatT2J GROWS by the scheduled-playback promotion-continuity diagnostics and flags bits 14 HAND_TORQUE_CLAMP / 15 SCHED_HOLD_LATCHED. Growing a struct is as incompatible as shrinking one: darkness against any FW ≤ 21 board is the INTENDED failure. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design) 8→9: 2026-09-15 axis-silence watchdog (can-bridge FW 23) — HeartbeatT2J GROWS by can_fault_leg/can_fault_age_ms/can_fault_count (the CAN_BUS_DOWN trip latch: WHICH leg went silent, how stale it was, how many trips this boot) and gains flags bits 16-22 HB_STALE_MASK (per-axis ODrive heartbeat staleness at CAN_HEARTBEAT_STALE_US = 0.5 s, report-only); CacheDiag GROWS by hb_frames[7], the per-axis heartbeat-frame census beside enc_frames. Both structs grow, so this is an incompatible wire change: darkness against any FW ≤ 22 board is the INTENDED failure. 9→10: 2026-10-12 BB absolute release (can-bridge FW 29) — ArgBbThrow.delay_s (f32, relative, converted to absolute ON RECEIPT, so Jetson dispatch latency moved the release 1:1) is replaced by release_wall_us (u64, absolute, the bridge wall clock = Jetson CLOCK_REALTIME), the arg GROWS 16→20 B, BB_THROW gains ResultBbThrow (lead at receipt) and three named refusals ERR_RELEASE_PAST/TOO_SOON/TOO_FAR. A delay_s read as an epoch would throw at the wrong instant, so darkness against any FW ≤ 28 board is the INTENDED failure; 10→11: 2026-11-03 scheduled-lane observability (can-bridge FW 38, JB-149) — HeartbeatT2J GROWS 126→158 B: five more cumulative scheduled-lane counters (sched_superseded, sched_stale, sched_hand_c1_stops, sched_future_drops, sched_q_overflow) and a per-heartbeat-window frame-age census measured in the net task at queue entry (rx_age_max_us + four buckets at 25/50/70 ms, age = bridge monotonic now − the frame's t_start). Two LANE_REFUSED ends on 2026-11-03 had a clean host stream, so the cover was expiring between the bridge's send and the firmware's promotion, where no uplinked number could see it. A 126 B heartbeat decoded as 158 B (or the reverse) would misread every counter, so darkness against any FW ≤ 37 board is the INTENDED failure.
 BB_RELEASE_MIN_LEAD_US = 700000  # BB_THROW: refuse a release closer than this at bridge receipt (ERR_RELEASE_TOO_SOON); BB wind-up 0.6 s + schedule margin 0.1 s
 BB_RELEASE_MAX_LEAD_US = 30000000  # BB_THROW: refuse a release further than this at bridge receipt (ERR_RELEASE_TOO_FAR); BB's 16-bit epoch-ms wrap is ±32.768 s
 MAGIC = 19010  # "JB" little-endian preamble (bytes 0x42 0x4A)
@@ -326,10 +326,10 @@ class Diagnostic:
         return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
 
 # HeartbeatT2J: Teensy → Jetson liveness + link/bus health, ~10 Hz.
-HEARTBEAT_T2J_FMT = '<QBBBBIIBBBfffffffffBBfffBHHffffffIIIIII'
-HEARTBEAT_T2J_SIZE = 126
+HEARTBEAT_T2J_FMT = '<QBBBBIIBBBfffffffffBBfffBHHffffffIIIIIIIIIIIiHHHH'
+HEARTBEAT_T2J_SIZE = 158
 _HEARTBEAT_T2J_STRUCT = struct.Struct(HEARTBEAT_T2J_FMT)
-assert _HEARTBEAT_T2J_STRUCT.size == 126
+assert _HEARTBEAT_T2J_STRUCT.size == 158
 
 @dataclass
 class HeartbeatT2J:
@@ -367,15 +367,25 @@ class HeartbeatT2J:
     sched_expired: int = 0
     sched_refused: int = 0
     sched_demoted: int = 0
+    sched_superseded: int = 0
+    sched_stale: int = 0
+    sched_hand_c1_stops: int = 0
+    sched_future_drops: int = 0
+    sched_q_overflow: int = 0
+    rx_age_max_us: int = 0
+    rx_age_le25: int = 0
+    rx_age_le50: int = 0
+    rx_age_le70: int = 0
+    rx_age_gt70: int = 0
 
     def pack(self) -> bytes:
-        return _HEARTBEAT_T2J_STRUCT.pack(self.t_teensy_us, self.link_state, self.bus1_health, self.bus2_health, self.fault_state, self.flags, self.uptime_ms, self.bb_state, self.bb_state_data, self.bb_flags, self.bb_yaw_deg, self.bb_pitch_deg, self.bb_hand_mm, *self.live_deviation, self.lead_clamp_mask, self.max_dev_leg, self.max_dev_value, self.max_dev_u0, self.max_dev_enc, self.can_fault_leg, self.can_fault_age_ms, self.can_fault_count, self.hand_promo_dp_max, self.hand_promo_dv_max, self.hand_promo_da_max, self.leg_promo_dp_max, self.leg_promo_dv_max, self.leg_promo_da_max, self.hand_promo_over, self.leg_promo_over, self.sched_stops, self.sched_expired, self.sched_refused, self.sched_demoted)
+        return _HEARTBEAT_T2J_STRUCT.pack(self.t_teensy_us, self.link_state, self.bus1_health, self.bus2_health, self.fault_state, self.flags, self.uptime_ms, self.bb_state, self.bb_state_data, self.bb_flags, self.bb_yaw_deg, self.bb_pitch_deg, self.bb_hand_mm, *self.live_deviation, self.lead_clamp_mask, self.max_dev_leg, self.max_dev_value, self.max_dev_u0, self.max_dev_enc, self.can_fault_leg, self.can_fault_age_ms, self.can_fault_count, self.hand_promo_dp_max, self.hand_promo_dv_max, self.hand_promo_da_max, self.leg_promo_dp_max, self.leg_promo_dv_max, self.leg_promo_da_max, self.hand_promo_over, self.leg_promo_over, self.sched_stops, self.sched_expired, self.sched_refused, self.sched_demoted, self.sched_superseded, self.sched_stale, self.sched_hand_c1_stops, self.sched_future_drops, self.sched_q_overflow, self.rx_age_max_us, self.rx_age_le25, self.rx_age_le50, self.rx_age_le70, self.rx_age_gt70)
 
     @classmethod
     def unpack(cls, data: bytes) -> 'HeartbeatT2J':
-        vals = _HEARTBEAT_T2J_STRUCT.unpack(data[:126])
+        vals = _HEARTBEAT_T2J_STRUCT.unpack(data[:158])
         it = iter(vals)
-        return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), tuple(next(it) for _ in range(6)), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
+        return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), tuple(next(it) for _ in range(6)), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
 
 # Profile: 1 Hz firmware instrumentation. Per-task CPU%, CAN bus utilisation, UDP round-trip/jitter, the 500 Hz interp deadline-miss counter, and free heap. Consumed by tools/probes/teensy_link_profiling/jetson.
 PROFILE_FMT = '<QHHHHHHHHHIIIIHHIIIIIIIH'

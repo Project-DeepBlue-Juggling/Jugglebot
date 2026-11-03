@@ -169,6 +169,20 @@ static void send_heartbeat_t2j() {
   p.sched_expired   = interp_sched_expired();
   p.sched_refused   = interp_sched_refused();
   p.sched_demoted   = interp_sched_demoted();
+  // FW 38 / PROTOCOL 11 (JB-149): the rest of the scheduled-lane census and the
+  // per-window frame-age statistics (read-and-reset here, once per heartbeat).
+  p.sched_superseded    = interp_sched_superseded();
+  p.sched_stale         = interp_sched_stale();
+  p.sched_hand_c1_stops = interp_sched_hand_c1_stops();
+  p.sched_future_drops  = interp_sched_future_drops();
+  p.sched_q_overflow    = interp_sched_q_overflow();
+  {
+    int32_t age_max = INT32_MIN;
+    uint16_t age_b[4] = { 0, 0, 0, 0 };
+    interp_sched_rx_age_take(&age_max, age_b);   // locals: the payload struct is packed
+    p.rx_age_max_us = age_max;
+    p.rx_age_le25 = age_b[0]; p.rx_age_le50 = age_b[1]; p.rx_age_le70 = age_b[2]; p.rx_age_gt70 = age_b[3];
+  }
   if (interp_sched_hold_latched()) p.flags |= HF::SCHED_HOLD_LATCHED;   // bit 15
   // bit 14: the hand torque feedforward saturated at ±HAND_TORQUE_FF_CLAMP_NM on
   // at least one on-wire tick since the previous heartbeat (read-and-clear).
