@@ -15,6 +15,9 @@ files_changed:
   - teensy_link/rpc_args.py
   - tools/probes/teensy_link_profiling/hermite_xref/teensy_interp.py
   - tools/probes/hand_stall_stop.py
+  - tests/hardware/hand_stream_bench.py
+  - tests/hardware/hand_stroke_cut.py
+  - tests/motion/test_hand_stream_bench_stroke_cut.py
   - tests/firmware/native/test_leg_interp.cpp
   - tests/firmware/test_sched_c2_twin.py
   - tests/firmware/test_hand_torque_ff_twin.py
@@ -154,6 +157,39 @@ state, t0 = t_c + 6 ms, STOP; emit hand_c1_stop_eval(0) = (p, v at s = 1.24, -45
 previous sample (s = 1.16) position and velocity are continuous (the same cubic) and a_cmd steps to
 -4500; the next tick is v - 9 rev/s. A frame landing on or after that tick meets the stop.
 
+## Bench-hand rung
+
+`tests/hardware/hand_stream_bench.py --stage stroke_cut` (pure half `tests/hardware/hand_stroke_cut.py`,
+tests `tests/motion/test_hand_stream_bench_stroke_cut.py`). It needs FW 38 and NO BALL, with the launch down.
+The existing stages stream pre-v8 frames, which play on the legacy FW 17 lane and never reach the
+FW 37 code, so this stage streams HAS_SCHED frames (knot_epoch_us one knot ahead). It runs a scaled
+C2 stroke, because the production 150-190 rev/s at 4500 rev/s^2 is out of reach for a bench drive
+capped at about 10 A (an assumption; the cap is not recorded for the bench Hand rig). After the
+first frame whose continued velocity at cover end + 6 ms passes `--cut-at-vel`, it withholds the
+hand channel and keeps the legs streaming. Flags: `--stroke-peak-vel` (70 rev/s), `--stroke-top`
+(8.5 rev), `--stroke-accel` (800 rev/s^2), `--cut-at-vel` (55), `--cut-mode upstroke|downstroke|slow`,
+`--repeat N`, `--cut-max-dev` (1.9 rev, the belt against the twin-modelled stop inside the cut window).
+Parked at 0.2 rev, the default upstroke cuts after frame 21 with a C1 entry at 56.8 rev/s and a modelled hold
+at 2.619 rev; the FW 36 path would hold at 4.531.
+
+Recommended pass criteria, scored by the stage itself:
+- upstroke: commanded peak (HAND_CMD_ECHO) at most the modelled stop end + 0.1 rev, under
+  10.0 rev, and below the midpoint to the FW 36 hold; `sched_hand_c1_stops` +1 per run;
+  `sched_stops` +1; no fault and no `sched_refused`; the encoder settled within 0.05 rev of
+  the hold within 150 ms of the modelled stop end. Record the encoder overshoot; it is the
+  bench drive's lag, not a firmware property.
+- downstroke control (cut at -67 rev/s): no C1 count; the C2 hold within 0.1 rev of the model.
+- slow control (peak 40, decision velocity 36.8): no C1 count; the hold within 0.1 rev of the
+  model with the full 20 ms grace (2.536 rev), and above the midpoint to a stop at cover + 6 ms
+  (1.674 rev). That separation is what makes the grace visible.
+
+After each run the stage resumes CONTINUOUSLY at the echoed hold. A refusal is latched and the
+stage disarms at the hold. It then returns to the start, so every disarm happens from a hold:
+the bridge does not flush vel_ff on a disarm, and a disarm while moving would leave the Hand
+at input_pos + vel_ff/35. Offline, the stage's own loop
+(`_run_stroke_cut`) ran against the firmware twin through the real pump and wire struct. It ran
+two repeats in each mode, and every criterion passed (2026-11-03, scratchpad probe, not committed).
+
 ## Verification
 
 Short-grace build (this revision of FW 37):
@@ -188,6 +224,13 @@ Short-grace build (this revision of FW 37):
 - Skill-stack sim gate, which imports the twin (2026-11-03, `python -m pytest -q -p no:cacheprovider
   tests/sim/test_skills_gate.py`): **42 passed in 1572.21 s** (load average about 12 from other
   sessions; 343.97 s on the first build).
+- Bench-hand stage (2026-11-03, `python -m pytest -q -p no:cacheprovider
+  tests/motion/test_hand_stream_bench_stroke_cut.py tests/teensy_link/test_hand_stream_bench_gap.py
+  tests/sim/test_logbook_front_matter.py tests/sim/test_docs_links.py`): **96 passed in 8.29 s**.
+  The new file checks the profile bounds and C2 continuity, the cut frame, the C1 hold against
+  `hand_stall_stop.py --option 2 --grace-ms 6` (to 1e-9 rev) and the C2 hold against its
+  baseline, the refusals, and the real pump through the wire struct into the twin (hold within
+  2e-3 rev of the model, the resume accepted, an off-hold resume refused).
 - The default gate (`./run_tests.sh`) was NOT run in this worktree; it is owed before merge to main.
 
 First FW 37 build (3ad356e5, no grace), for the record: native 17 passed in 221.06 s (62/62 cases,
