@@ -1822,8 +1822,7 @@ class SkillNode(Node):
         through the attempt's snapshot (frame/units note on
         `_FRAME_CHECK_WINDOW_S`, 2026-10-19). No transform here: the snapshot
         is chosen at the check, not at receive."""
-        now = self._obs_clock()
-        self._mocap_mono = now
+        self._mocap_mono = self._obs_clock()
         for body in msg.bodies:
             if body.name == 'Platform':
                 p = body.pose.pose.position
