@@ -242,3 +242,5 @@ a bench-hand Sitting that kills the stream mid-upstroke and checks the stop heig
 and that one late knot (under 6 ms past the cover end) during the upstroke rides through (see
 the JB-145 item's Sitting section once filed). Until then the live board is FW 36 and the launch logs
 the BRIDGE_FW_CHECK skew advisory (37 expected).
+
+**Flashed 2026-11-03 ~18:05** (session jugglebot-50, launch down, from the pushed tip 341950b5): `pio run -e teensy41 -t upload` -> SUCCESS 80.17 s; receipt: a read-only listener on PORT_STREAM saw 8 BridgeIdentity frames in 8 s, all `(fw_version=38, protocol_version=11)`, every frame decoding at PROTOCOL 11. The live checkout was rebuilt (`colcon build --packages-select jugglebot`, 2026-11-03, 1 package finished). The bench-hand Sitting row on JB-145 and the robot Sitting row on JB-149 remain the behaviour checks.

@@ -100,3 +100,5 @@ small ages with expiries or STOPs = the stamps or the ISR, not the link.
 **Owed:** flash FW 38 (`pio run -e teensy41 -t upload`, launch down) together with a
 `colcon build` of this tree (PROTOCOL 11 on both ends or the link is dark), check the
 BridgeIdentity receipt (`38 (proto 11)`), then one Sitting to read the counters.
+
+**Flashed 2026-11-03 ~18:05** (session jugglebot-50, launch down, from the pushed tip 341950b5): `pio run -e teensy41 -t upload` -> SUCCESS 80.17 s; receipt: a read-only listener on PORT_STREAM saw 8 BridgeIdentity frames in 8 s, all `(fw_version=38, protocol_version=11)`, every frame decoding at PROTOCOL 11. The live checkout was rebuilt (`colcon build --packages-select jugglebot`, 2026-11-03, 1 package finished). The bench-hand Sitting row on JB-145 and the robot Sitting row on JB-149 remain the behaviour checks.
