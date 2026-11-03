@@ -59,3 +59,22 @@ Unit write-up: the debrief scratchpad lane.md, summarised in the logbook entry.
 4. A bridge-side cliff reaction: start lane recovery on a forward gap over 70 ms. This is safety-bearing and needs an offline replay first.
 
 Recommendation: 1, flown at the next Sitting with the instrumentation, then 2 or a GC fix depending on what it shows. Options 3 and 4 move the cliff instead of removing the stall.
+
+## Sitting 2026-11-03 findings
+
+**Verdict: the host-side starvation hypothesis is refuted for this Sitting, including both LANE_REFUSED ends (2 of 2 with a clean host stream).** Source: launch.log `~/.ros/log/2026-11-03-12-30-00-967281-jetson-3807496/launch.log` and the bag `/link_status` (21,230 msgs) and `/trajectory/status` (10,616 msgs).
+
+- Whole Sitting: emitter gap max 38.9 ms (0 of 10,616 samples above 40 ms); forward gap above 70 ms in exactly one episode (81.6 ms, L6066, loop 63.8 ms); `setpoints_sent` advanced a steady 4 per 100 ms through both LANE_REFUSED STOPs.
+- Bag counter `sched_stops` went 0 -> 48: 17 produced a WARN (L2549 ... L14780), 31 were silent (21 with `mpc_active` 0 at faults and disarms, in pairs).
+- 10 of the 17 WARNs are the +1 STOP at the pre-level `go_to_pose` at attempt start (forward 32.1-44.7 ms); all 10 ran on with no refusal.
+
+| L | forward / loop (ms) | context | ended an Attempt |
+|---|---|---|---|
+| 5962 | 41.7 / 21.5 | columns 1.35, throw 10/20, 16 ms after a CATCH solve | yes, LANE_REFUSED 10/10 (L5991), `sched_refused` 0 -> 4 |
+| 13842 | 42.1 / 19.0 | turned 90 deg, hop entry, 1.06 s into the REST, 0 throws | yes, LANE_REFUSED 0/0 (L13844), `sched_refused` 25 -> 28 |
+| 6068 | 81.6 / 63.8 | columns 1.35, hop entry, REST | no: the only real gap gave a STOP but no refusal |
+
+- The refusal is the second half of a chain: STOP (cause unseen), then the resume is refused by the firmware's discontinuity tolerance (`leg_interp.cpp:626-631`). The cover is measured from the frame stamp, not arrival (`leg_interp.cpp:582`), so a host-to-firmware latency step eats it without any host gap.
+- CPU load not supported: 946 CATCH solves (wall median 79.2 ms, p99 124.4, max 161.4) but only 1 of 17 STOPs sits within 20 ms of one.
+- The discriminating counters are firmware-side and absent from `/link_status`: `sched_expired` (`udp_protocol.h:269`), superseded, stale and future drops, plus a per-frame `rx_age_us`.
+

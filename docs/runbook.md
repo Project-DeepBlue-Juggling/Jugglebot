@@ -6,7 +6,7 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 4 blocks (97 min) · Bench leg 1 block (30 min)
+Rigs: Robot 3 blocks (62 min) · Bench leg 1 block (30 min)
 
 ## Setup 0: before power
 
@@ -16,64 +16,44 @@ Rigs: Robot 4 blocks (97 min) · Bench leg 1 block (30 min)
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Robot  (4 blocks, 97 min)
+## Robot  (3 blocks, 62 min)
 
-### Block 1: level, armed  (1 row, 5 min)
+### Block 1: armed, bb-fed  (1 row, 15 min)
 
-#### JB-146 ODrive GUI save resets the Hand zero, the bridge stays homed, and ACTIVATE parks the Hand into its stop at full current  (5 min, high, unattached)
-- why: confirm the FW 36 stall guard (8ffeba66, flashed 2026-11-02) stays silent through every normal activation, and that the GUI's direct IDLE -> TRAJECTORY now works (2a19d9c6).
+#### JB-147 Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT)  (15 min, high, unattached)
+- why: the torque loss happened at 13-54 A so the 60 A limit does not explain the SPINOUTs and a 70 A brake is harder; this run measures whether the SPINOUT rate moves with the drive now at 70/80 A (K and limits unchanged).
 - do:
-  - Level from IDLE.
-  - In the GUI, go straight from IDLE to TRAJECTORY.
-  - Return to IDLE, then go IDLE -> TRAJECTORY directly once more.
-- pass: no STALL line in the launch log, the Hand parks normally each time, and both direct IDLE -> TRAJECTORY requests arm without a time-out.
-- record: the launch log's activation lines (look for STALL and for "refused: setpoint output is DISARMED"), and the Hand's peak current during each park from the capture CSV.
+  - Re-home the Hand first: the ODrive GUI save on 2026-11-03 (limits 70/80 A, thermistor 60/70 C) reset the zero (JB-146 class).
+  - Fly Columns, Sep. 125, Apex 1.35, Throws 20, twice, with `hand_capture` on.
+  - Stop at the FIRST SPINOUT_DETECTED or Hand iq over 66 A.
+- pass: no SPINOUT_DETECTED in either run.
+- record: per run the catches; the SPINOUT count with the Hand position, velocity and iq at the torque loss from the capture; the peak brake iq; whether the 70 A limit was in effect (an iq setpoint beyond 60 A).
 
-### Block 2: armed, bb-fed  (2 rows, 45 min)
-
-#### JB-120 A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve  (15 min, high, two-ball-oval)
-- why: re-fly with the bump brake-seed fix (2026-11-02 debrief): the 2026-11-02 refusals all followed an inward bump of 22 mm or more and replay under 3700 rev/s^2 with the fix.
-- do:
-  - Fly Columns, Sep. 125, Apex 0.95, Throws 50, twice.
-- pass: no END HAND_LIMIT_ACC and no refused first install in either 50.
-- record: per-catch peak Hand acceleration from the install lines and the learner y for Ball 2.
-- branch: `night-shift/2026-11-01-JB-120`
-
-#### JB-147 Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT)  (30 min, high, unattached)
-- why: re-fly the Apex 1.35 rung that overshot, now with the 70 A limit and the C-HAND-6 speed-scaled top margin (8ffeba66), and with `hand_capture` on (the launch default since 8b9f990c), so an overshoot is caught at full rate.
-- do:
-  - Fly Columns, Sep. 125, Apex 1.35, Throws 20, twice.
-  - Fly Columns, Sep. 125, Apex 1.45, Throws 20.
-  - Fly Columns, Sep. 125, Apex 1.50, Throws 20.
-  - Skip Columns 1.25 and 1.40 until the JB-143 box lands (those cells have no landing room yet).
-  - Stop at the first SPINOUT_DETECTED, MAX_DEVIATION, stream STOP, or Hand iq over 66 A.
-- pass: no SPINOUT_DETECTED in any run, and every launch's Hand top at or under the 10.501 rev clip.
-- record: per run the catches, the highest Hand top (rev), peak Hand speed, peak brake and launch current; the capture CSV of any launch whose top exceeds its planned top; whether the Hand torque feedforward (capture `cmd_tor_ff`) flat-lines at the 0.234 N m clamp at 1.45 or 1.50.
-
-### Block 3: level, armed, bb-fed  (2 rows, 32 min)
+### Block 2: level, armed, bb-fed  (2 rows, 32 min)
 
 #### JB-107 JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m  (12 min, medium, pattern-progression-columns-to-centre-and-orbit)
 - why: P5 of plan pattern-progression.md: two Apexes in one Pattern (JP-9). The Rung flies 1.00 over 0.90 at separation 100; since the 2026-10-31 re-sweep (Hand prime 10.45, box gate_hash 961808ee2d20) 1.05 over 0.95 is admissible at both Sites too, but a 1.05 launch waits for the faster hand current capture (plan D-c).
 - do:
   - Rehearse before arming: cup empty, Ball Butler unpowered, `ros2 param set /skill_node apex_m_ball2 0.90`, send the goal below once. The accept message may name only the cup and Ball Butler refusals (no box, planner or apex2 refusal) and nothing moves.
-  - GUI: Juggle panel `Columns — high-low`, Apex 1.00, Apex 2 0.90, Sep. 100, Dwell 0.27, Throws 20 (Start writes apex_m_ball2 to the node first). Terminal fallback: `ros2 param set /skill_node apex_m_ball2 0.90` (refused while a goal runs), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_highlow, apex_m: 1.00, separation_mm: 100.0, dwell_s: 0.27, num_cycles: 20}" --feedback`.
+  - GUI: Juggle panel `Columns — high-low`, Apex 1.00, Apex 2 0.90, Sep. 100, Dwell 0.27, Throws 20 (Start writes apex_m_ball2 to the node first). Terminal fallback: `ros2 param set /skill_node apex_m_ball2 0.90` (refused while a goal runs), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_highlow, apex_m: 1.00, separation_mm: 100.0, dwell_s: 0.27, num_cycles: 21}" --feedback`.
   - Watch the hand current at every launch; cancel the goal if any hand iq sample reaches 55.0 A (the hand current limit is 60 A since 2026-11-01, was 50 A with a 50.0 A watch).
   - Afterwards `ros2 param set /skill_node apex_m_ball2 0.0`.
-- pass: 20 consecutive Catches in one Attempt; Tracker mean Apex difference between the two balls within 20 mm of the commanded 100 mm; hand iq under 54 A at every launch (90 % of the 60 A limit).
+- pass: 20 consecutive Catches in one Attempt, flown with Throws 21 (the 21st throw is the Stop throw, not counted, so a full Attempt reads `COMPLETED (20/20 caught)`; with Throws 20 it reads 19/19 and the bar is unreachable); Tracker mean Apex difference between the two balls within 20 mm of the commanded 100 mm; hand iq under 54 A at every launch, judged on launches only (the brake is excluded; it reached the 60 A clamp twice on 2026-11-03).
 - record: caught of thrown, each ball's mean Tracker Apex, peak hand iq per launch, the bag path; commit docs/records.md.
 
 #### JB-108 JP-10 Turned columns: the columns pair at fixed angles about +z, under pose  (20 min, medium, pattern-progression-columns-to-centre-and-orbit)
-- why: P3 of plan pattern-progression.md: two-ball Columns off the x axis under the pose planner, one plant_id per angle, which answers JB-38 P2(b) (does the lateral bias rotate with the pair).
+- why: P3 of plan pattern-progression.md: two-ball Columns off the x axis under the pose planner, one plant_id per angle (set explicitly in the steps below), which answers JB-38 P2(b) (does the lateral bias rotate with the pair).
 - do:
   - Rehearse before arming: cup empty, Ball Butler unpowered, `ros2 param set /skill_node columns_angle_deg 45`, send the goal below once. The accept message may name only the cup and Ball Butler refusals (no box, planner or angle refusal) and nothing moves. Repeat at 90.
-  - Fly a straight `Columns` control first if this Sitting has not flown one (GUI Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 20).
-  - GUI: Juggle panel `Columns — turned`, Angle 45, Apex 0.95, Sep. 125, Dwell 0.27, Throws 20 (Start writes columns_angle_deg to the node first). Terminal fallback: `ros2 param set /skill_node columns_angle_deg 45` (refused while a goal runs), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_turned, apex_m: 0.95, separation_mm: 125.0, dwell_s: 0.27, num_cycles: 20}" --feedback`. Only the 0.925 to 0.975 Apex band is admissible at 45 deg.
+  - Fly a straight `Columns` control first if this Sitting has not flown one (GUI Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21).
+  - GUI: Juggle panel `Columns — turned`, Angle 45, Apex 0.95, Sep. 125, Dwell 0.27, Throws 21 (Start writes columns_angle_deg to the node first). Terminal fallback: `ros2 param set /skill_node columns_angle_deg 45` (refused while a goal runs), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_turned, apex_m: 0.95, separation_mm: 125.0, dwell_s: 0.27, num_cycles: 21}" --feedback`. Only the 0.925 to 0.975 Apex band is admissible at 45 deg.
   - Angle 90 (or `ros2 param set /skill_node columns_angle_deg 90`), then the same goal at Apex 0.95 (0.90 is also admissible at 90 deg).
+  - Set the plant per angle before each angle's first goal (never set on 2026-11-01 or 2026-11-03, so JB-38 P2(b) is unanswered): `ros2 param set /skill_node plant_id <name>` with a distinct name per angle, for example `turned45` and `turned90`, refused while a goal runs; read it back from the goal start line (`plant_id=...`) and write it in the record.
   - Afterwards `ros2 param set /skill_node columns_angle_deg 0`.
-- pass: 20 consecutive Catches in one Attempt at each angle; landing scatter within 3 mm of the straight control; no HAND_LIMIT line.
+- pass: 20 consecutive Catches in one Attempt at each angle, flown with Throws 21 (the 21st throw is the Stop throw, so `COMPLETED (20/20 caught)`; with Throws 20 it reads 19/19); landing scatter, per ball and per axis, with the mean within 15 mm and the sd within 10 mm of the straight control (proposed 2026-11-03, owner to confirm; the old "within 3 mm" was below the control's own run-to-run sd of 18-31 mm); no HAND_LIMIT line.
 - record: caught of thrown per angle, each angle's plant_id, landing scatter against the control, the bag path; commit docs/records.md.
 
-### Block 4: level  (1 row, 15 min)
+### Block 3: level  (1 row, 15 min)
 
 #### JB-113 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them  (15 min, medium, unattached)
 - why: re-measure the human-throw bench with the robot in place (moving Platform markers, a ball in the Cup, the robot blocking camera views) and the owner's throws at better lighting.
@@ -87,7 +67,7 @@ Rigs: Robot 4 blocks (97 min) · Bench leg 1 block (30 min)
 
 ## Bench leg  (1 block, 30 min)
 
-### Block 5: bridge-cycled  (1 row, 30 min)
+### Block 4: bridge-cycled  (1 row, 30 min)
 
 #### JB-73 Hand ODrive state can silently diverge from what the can-bridge commanded  (30 min, low, unattached)
 - why: confirm FW 35's suppress-edge hold flush leaves the bench leg at the last transmitted command instead of input_pos + vel_ff/pos_gain, and measure the current step it costs.
@@ -108,11 +88,14 @@ Rigs: Robot 4 blocks (97 min) · Bench leg 1 block (30 min)
 - JB-112 [Robot] JP-15 Over the top: Ball 1 straight up, Ball 2 arcs over it (needs P4): no ## Sitting section
 - JB-114 [Robot] Hand end-of-stroke bumper, and first the planner's own brake shape: let the ceiling, not the Hand, cap the Apex: no ## Sitting section
 - JB-117 [Bench hand] Hand brake and hold currents sit far below the throw envelope's model (brake -14 to -20 A measured vs 35 to 40 A predicted; hold 1.5 vs 2.6 A): Kt, moving mass or friction is mis-modelled: no ## Sitting section
+- JB-120 [Robot] A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve: no ## Sitting section
 - JB-137 [Robot] Hand ODrive feedback starvation: 701 ms heartbeat dropout left the encoder 100 ms stale, the 2.0 rev lead clamp pinned the throw to stale+2.0, guard MAX_DEVIATION +3.707 fired correctly (turned-90 at 16/16): no ## Sitting section
 - JB-138 [Robot] Hand iq reached 53.3 A on a 45 deg turned hop launch, over the 50 A watch the high-low row names: no ## Sitting section
 - JB-139 [Robot] Ball 2 learner command pinned at the (-20,-20) mm clamp corner in 37 of 40 straight Columns rows (BOX-EXPECTED-LANDING-UNMET u=(-20,-20)): no ## Sitting section
 - JB-148 [Robot] One-off 2 m Throws: raised Hand limits and an overshoot protection the speed-scaled margin cannot give: no ## Sitting section
 - JB-149 [Robot] 40 Hz setpoint stream starved past the firmware's 70 ms cover during CATCH-solve bursts: 3 LANE_REFUSED ends on 2026-11-02: no ## Sitting section
+- JB-160 [Robot] MAX_DEVIATION latched on 40-90 ms stale Hand telemetry without MOTOR_FB_STALE firing first: no ## Sitting section
+- JB-161 [Robot] Ball 2's first throw after the feed catch lands about 180 mm outward along the separation axis: no ## Sitting section
 - JB-2 [Robot] Design change: the Hand should be Idle, not Parked Closed-loop, while Active: no ## Sitting section
 - JB-24 [Robot] 10 % jitter-margin class of LIMIT_* refusals: no ## Sitting section
 - JB-26 [Robot] Platform Teensy truncates the persisted levelling offset to int16 milliradians: no ## Sitting section

@@ -38,6 +38,12 @@ All two-ball one-Hand Patterns share one timing identity: throws alternate every
 | JP-16 | Wide columns | - | 2 | Columns at 175 to 200 mm separation; needs the P4 working point | unfiled | this page |
 | JP-18 | Crossing columns | - | 2 | each ball thrown across to the other Site, so the balls cross in the air (a one-Hand shower); not yet probed | unfiled | this page |
 
+**Rung status, 2026-11-03 (second flight, both gates not met; both stay *idea* until a gate is met).**
+
+- JP-9 (JB-107): best 18 consecutive Catches at 1.00/0.90 and 15 at 1.05/0.95 over 11 Attempts; Tracker apex difference 119.2 mm and 89.7 mm against 100; launch iq at most 36.5 A. Five of 11 Attempts ended on Ball 2's first Throw landing about 180 mm outward. Ball 1 reached only 1.019 m when commanded 1.05.
+- JP-10 (JB-108): at 45 deg two of five Attempts COMPLETED 19/19 (a new record, with the Stop Throw); at 90 deg none of seven (best 12/12), Ball 2 landing 37-50 mm outward against a 10 mm outward authority. `plant_id` was still not set per angle.
+- With Throws 20 the 20th Throw is the Stop Throw, so a full Attempt reads 19/19; both Rungs now fly Throws 21 for a `COMPLETED (20/20 caught)` reading.
+
 ## With a human partner
 
 | ID | Name | Machine label | Sites | What moves | Status | Where |

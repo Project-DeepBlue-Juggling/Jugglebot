@@ -4,7 +4,7 @@ kind: feature
 title: 'One-off 2 m Throws: raised Hand limits and an overshoot protection the speed-scaled margin cannot give'
 status: inbox
 created: '2026-11-02'
-updated: '2026-11-02T08:20:38Z'
+updated: '2026-11-03T02:51:12Z'
 owners: []
 priority: medium
 effort: l
@@ -30,3 +30,7 @@ The JB-147 overshoot margin (fitted at 200 rev/s in C-HAND-6) needs 1.5-2 rev of
 - the JB-114 bumper as a physical stop;
 - or a deliberate, supervised one-off risk.
 Catching a Ball arriving at about 6.3 m/s is unchecked. Related: JB-144, JB-147, JB-114.
+
+## Progress
+
+- 2026-11-03: 2026-11-03 Sitting: narrowed. Apex 1.35-1.50 already ends SPINOUT_DETECTED by the torque-loss class (7 of 9 attempts, see JB-147); the speed-scaled margin cost 34-37 mm of stroke and did not prevent it. 2 m waits on JB-147.

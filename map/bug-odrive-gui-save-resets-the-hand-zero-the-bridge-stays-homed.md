@@ -2,9 +2,9 @@
 id: JB-146
 kind: bug
 title: ODrive GUI save resets the Hand zero, the bridge stays homed, and ACTIVATE parks the Hand into its stop at full current
-status: in_progress
+status: complete
 created: '2026-11-02'
-updated: '2026-11-03T01:31:33Z'
+updated: '2026-11-03T02:48:50Z'
 owners:
 - jugglebot-3d
 priority: high
@@ -15,7 +15,8 @@ radius: normative
 diagnosis: confirmed
 area: can-bridge
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-03-sitting-debrief.md
 filed_by: jugglebot-3d
 ---
 
@@ -53,3 +54,4 @@ Option 2 also covers any other stall. 1 and 2 are firmware (flash).
 ## Progress
 
 - 2026-11-02: FW 36 stall guard landed (8ffeba66): 25 A / 0.5 rev/s / 300 ms aborts the Hand to IDLE with a named STALL. Built, not flashed; closes after the flash receipt and a Sitting.
+- 2026-11-03: Passed at the Sitting of 2026-11-03: 3 direct IDLE->TRAJECTORY arms in 1.6 s (launch.log L273/335/422), 0 STALL lines, diag bit2 never set in 31,389 rows, park peaks 2.3-2.8 A. A GUI save still resets the Hand zero: re-home after every ODrive GUI save (the owner saved again on 2026-11-03 after the Sitting).

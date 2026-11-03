@@ -4,7 +4,7 @@ kind: bug
 title: 'A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve'
 status: in_progress
 created: '2026-10-31'
-updated: '2026-11-03T01:39:17Z'
+updated: '2026-11-03T02:49:00Z'
 owners:
 - night-shift
 priority: high
@@ -48,7 +48,9 @@ The lateral inputs move the peak by at most 0.7 points, the seed by 12. Fix cand
 
 Entry: logbook/2026-11-01-jb120-box-gate-vs-hand-limit-acc-replay.md.
 
-## Sitting
+## Sitting 2026-11-03 flown
+
+Flown 2026-11-03 (passed on the Hand criterion, see Progress); renamed from `## Sitting` so the generator, which lists every open hardware Item's exact `## Sitting` section, does not offer it again. The structural bump fix will write a fresh `## Sitting`.
 
 - setup: armed, bb-fed
 - why: re-fly with the bump brake-seed fix (2026-11-02 debrief): the 2026-11-02 refusals all followed an inward bump of 22 mm or more and replay under 3700 rev/s^2 with the fix.
@@ -57,7 +59,6 @@ Entry: logbook/2026-11-01-jb120-box-gate-vs-hand-limit-acc-replay.md.
 - pass: no END HAND_LIMIT_ACC and no refused first install in either 50.
 - record: per-catch peak Hand acceleration from the install lines and the learner y for Ball 2.
 - minutes: 15
-- branch: night-shift/2026-11-01-JB-120
 
 ## Sitting 2026-11-01 findings
 
@@ -89,3 +90,4 @@ The structural fix is FILED here as the next step, not built: the bump decision 
 - 2026-11-01: Sitting: 6 Columns ENDs HAND_LIMIT_ACC 3910.6-4096.8 vs 3900; 7 of 7 refusals follow a BUMPED predecessor (0 of ~59 unbumped); reproduced offline within 3 pct. Branch fallback not flown, could not help. Owner keeps 3900; branch stays held (detail below)
 - 2026-11-01: Owner decision (debrief): HAND_LIMIT_ACC 3900 -> 4500 rev/s^2, hand_curr_limit_a 50 -> 60 A, box re-swept; the structural bump fix (plan the next catch at bump time) stays FILED here, not built (detail in the findings section).
 - 2026-11-02: Failed at the Sitting of 2026-11-02: HAND_LIMIT_ACC 4509 at 49/51 after a 30.5 mm bump; all 3 refusals of both Sittings follow the 3 largest inward bumps (22.2-30.5 mm), 0 of 329 unbumped. New cause found and fixed: the bump kept the pre-bump C-HAND-5 brake seed (offline 4696 -> 3407). Structural fix stays filed.
+- 2026-11-03: Passed at the Sitting of 2026-11-03 on the Hand criterion: 0 HAND_LIMIT_ACC after 71 bumps, peak Hand acc 3794 rev/s^2 = 84% of 4500 (L2532). 15 leg LIMIT_VEL/JERK refusals and 3 Hand faults in the block belong to JB-24 and JB-147. Held branch dropped (JB-152 option 3); Item stays open for the structural bump fix.

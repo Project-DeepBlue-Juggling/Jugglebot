@@ -1,0 +1,40 @@
+---
+id: JB-161
+kind: bug
+title: Ball 2's first throw after the feed catch lands about 180 mm outward along the separation axis
+status: inbox
+created: '2026-11-03'
+updated: '2026-11-03T02:50:59Z'
+owners: []
+priority: high
+effort: m
+hardware: robot
+diagnosis: hypothesis
+area: skill-stack
+blocked_by: []
+links:
+- map/idea-jp-9-high-low-columns-ball-1-at-apex-1-05-m-ball-2-at-0-95-m.md
+- map/idea-jp-10-turned-columns-the-columns-pair-at-fixed-angles-about.md
+- map/bug-ball-2-learner-command-pinned-at-the-20-20-mm-clamp-corner.md
+filed_by: sitting-debrief 2026-11-03
+---
+
+On 2026-11-03 Ball 2's first Throw after the feed catch landed about 180 mm outward along the separation axis in 5 of 11 high-low Attempts and in 5 of 7 turned-90-degree Attempts. When it happens the Attempt ends within about 3 s at 0/0 or 1/1.
+
+## Findings (Sitting 2026-11-03, launch.log lines as cited)
+
+- High-low Attempts 5, 8, 10 and 11 (ends at L9881, L10944, L11442, L11610) ended 0/0 or 1/1 on that Throw, with first Ball 2 landings (-230,-17), (-223,-97), (-228,-117) and (-240,+16) mm against aims near x -50.
+- Attempt 4 (L9713) is a 37 mm cousin: Ball 2 landed (-14,-17) against (-52,0).
+- The along-axis error is about 180 mm every time; the perpendicular part varies from -117 to +16 mm.
+- At 90 deg the Ball 2 misses landed 37-50 mm outward of the aim (y -89, -96, -93, -95, -104 against -53) while the catch aim was clamped to 10 mm outward (`AIM-LATERAL-CLAMPED`).
+- Not timing (tracker landing time minus schedule -46..+17 ms, release error -8..+17 ms), not apex (normal apart from one 1.23 m), not a saturated launch (launch iq 22-36 A, speeds as scheduled).
+- The logged feed-catch numbers do not separate good from bad: settle 133-276 ms and seat +0.12..+0.31 s in both.
+- The re-aim refusals (INFEASIBLE x4, UNVERIFIED x1, LIMIT_JERK x1) sit on these misses but a 180 mm miss is outside any re-aim authority (20 mm lateral, 10 mm outward), so they are consequences.
+
+## Hypothesis (not tested)
+
+A feed catch whose lateral aim was clamped (`CATCH-AIM skill 1 ... y -20.0`) seats the ball off-centre in the Cup, so the first Throw off it carries a lateral kick: 0.2 m/s over 0.88 s is 180 mm, about 2.9 degrees. A collision of Ball 1 with Ball 2 is not the natural reading because Ball 2 goes away from Ball 1's column.
+
+## Next
+
+A bag probe (`tools/probes/`) of the ball's seat position in the Cup at the first Ball 2 release against the outcome. No change on the Throw path until it names a cause. Related: JB-107, JB-108, JB-139.

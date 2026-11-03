@@ -42,3 +42,8 @@ Options 1 and 2 change the can-bridge firmware (`ros_ws/src/jugglebot/Teensy_cod
 4. Model first: extend `tools/probes/hand_stall_stop.py` to options 1 and 2, and pick on the stop height against the 10.501 clip.
 
 Recommendation: 4 then 2. The probe exists, it settles whether option 1 alone fits under the clip, and option 2 is one firmware change with one native test. JB-149 still matters, but a stop that cannot fit the stroke is a hazard on its own.
+
+## Sitting 2026-11-03 findings
+
+The FW 36 stall guard never fired: `diag_flags` bit2 (value 4) was never set in 31,389 capture rows, and the launch log holds no STALL or HAND_MOVE_STALLED line, so there was no stall stop today.
+
