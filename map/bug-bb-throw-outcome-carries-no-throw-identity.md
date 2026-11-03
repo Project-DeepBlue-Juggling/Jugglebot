@@ -2,9 +2,9 @@
 id: JB-21
 kind: bug
 title: bb/throw_outcome carries no throw identity
-status: in_progress
+status: complete
 created: '2026-10-24'
-updated: '2026-10-31T18:45:04Z'
+updated: '2026-11-03T02:35:23Z'
 owners:
 - night-shift
 priority: medium
@@ -34,3 +34,4 @@ The branch appends ` release_wall_s=<epoch>` to `bb/throw_outcome` and `skill_no
 ## Progress
 
 - 2026-11-01: Night Shift 2026-11-01: held on night-shift/2026-11-01-JB-21 (fix committed, Item closed on the branch): audit WARNING open on the release window bound; unblocked by the owner's call on it, then a re-gate (detail below)
+- 2026-11-03: Audit findings applied 2026-11-03 (2.5 s window re-read after wait_for_service; window set with the inflight flag); merged to main from night-shift/2026-11-01-JB-21

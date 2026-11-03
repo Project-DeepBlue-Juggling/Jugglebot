@@ -30,8 +30,13 @@ _SUFFIX_RE = re.compile(r' ' + RELEASE_KEY + r'=(-?\d+(?:\.\d+)?)\s*$')
 #: command-to-release latency compensation (44 ms) with margin, the upper side
 #: the `bb/throw_at_target` round trip (the producer stamps its OWN `now`,
 #: somewhere inside the consumer's blocking call) plus the same margin.
+#: 2.5 s (audit 2026-11-03; was 0.75): the consumer reads its clock after
+#: `wait_for_service`, but the service round trip itself can still take over
+#: a second under load, and a too-tight bound drops a GENUINE verdict (a
+#: genuine NOT_SETTLED is then never retried) while the identity only needs
+#: to separate throws that are whole beats (seconds) apart.
 WINDOW_BEFORE_S = 0.25
-WINDOW_AFTER_S = 0.75
+WINDOW_AFTER_S = 2.5
 
 
 def tag_message(message: str, release_wall_s: float) -> str:

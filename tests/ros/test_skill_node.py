@@ -7376,7 +7376,7 @@ def test_jb21_fire_records_the_release_window_it_asked_for(tmp_path):
     resp = _start_reload(node, tmp_path)
     assert resp.success is True, resp.message
     lo, hi = node._bb_throw_release_window
-    assert hi - lo == pytest.approx(1.0)
+    assert hi - lo == pytest.approx(0.25 + 2.5)
 
 
 def test_jb21_a_late_verdict_for_the_previous_throw_is_ignored(tmp_path):
@@ -7397,14 +7397,17 @@ def test_jb21_a_late_verdict_for_the_previous_throw_is_ignored(tmp_path):
     assert node._executor.end_code == 'REJECTED_BB(THROW_REJECTED_BAD_STATE)'
 
 
-def test_jb21_a_late_not_settled_does_not_spend_the_retry(tmp_path):
+def test_jb21_a_late_not_settled_does_not_end_the_attempt(tmp_path):
+    # The once-per-attempt retry was retired 2026-11-01 (JB-25); a late
+    # NOT_SETTLED for another throw must still not end THIS attempt.
     node, _client = _node_with_client(response=_response())
     resp = _start_reload(node, tmp_path)
     assert resp.success is True, resp.message
     lo, _hi = node._bb_throw_release_window
     node._on_bb_throw_outcome(_tagged('THROW_ABORTED_NOT_SETTLED', lo - 6.0))
-    assert node._reload_ctx.not_settled_retried is False
+    assert node._reload_ctx is not None
     assert node._reload_ctx.phase == 'await_announcement'
+    assert node._goal_end_code == ''
 
 
 def test_jb21_an_unsuffixed_verdict_behaves_as_before(tmp_path):
@@ -7416,3 +7419,84 @@ def test_jb21_an_unsuffixed_verdict_behaves_as_before(tmp_path):
         String(data='THROW_REJECTED_BAD_STATE (axis=n/a, detail1=0)'))
     assert node._reload_ctx is None
     assert node._executor.end_code == 'REJECTED_BB(THROW_REJECTED_BAD_STATE)'
+
+
+class _StepClock:
+    """Controllable ROS clock (the shared MockClock always reads 0.0)."""
+
+    def __init__(self):
+        self.t = 0.0
+
+    def now(self):
+        return SimpleNamespace(nanoseconds=int(round(self.t * 1e9)))
+
+
+class _SlowWaitThrowClient(_RecordingClient):
+    """`bb/throw_at_target` client whose `wait_for_service` takes
+    ``wait_s`` of ROS time (BB's service slow to appear), and which records
+    what the node's state looked like while its call was in flight."""
+
+    def __init__(self, node, clock, wait_s, **kw):
+        super().__init__(**kw)
+        self._node, self._clock, self._wait_s = node, clock, wait_s
+        self.in_flight = None
+
+    def wait_for_service(self, timeout_sec=None):
+        self._clock.t += self._wait_s
+        return True
+
+    def call_async(self, req):
+        n = self._node
+        self.in_flight = (n._reload_throw_inflight,
+                          n._bb_throw_release_window)
+        return super().call_async(req)
+
+
+def _fire_with_slow_throw_client(node, tmp_path, wait_s):
+    clock = _StepClock()
+    node._clock = clock
+    node._params['plant_id'] = 'test_jb21_audit_' + str(id(node))
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=False)
+    _prelevel_ready(node)
+    _reload_ready(node)
+    cli = _SlowWaitThrowClient(
+        node, clock, wait_s, ready=True,
+        response=_bb_throw_response(success=True, throw_delay_s=3.0))
+    node._bb_throw_cli = cli
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_self_toss_goal())
+    assert resp.success is True, resp.message
+    assert node._reload_ctx.phase == 'await_bb_idle'
+    _bb_ready(node)
+    node._maybe_fire_reload_throw()
+    assert len(cli.calls) == 1
+    return cli
+
+
+def test_jb21_window_opens_after_wait_for_service_not_before(tmp_path):
+    """Audit (2026-11-03): the window was centred on a clock read taken
+    BEFORE `wait_for_service`, so a slow service dropped a genuine verdict.
+    wait_for_service takes 1.5 s; the genuine release lands 1.9 s after the
+    PRE-wait read -- outside the old [-0.25, +0.75], inside the post-wait
+    window -- and its rejection must end the attempt."""
+    node, _client = _node_with_client(response=_response())
+    cli = _fire_with_slow_throw_client(node, tmp_path, wait_s=1.5)
+    delay_s = cli.calls[0].throw_delay_s
+    release = 0.0 + delay_s + 1.9
+    assert node._reload_ctx is not None
+    node._on_bb_throw_outcome(_tagged('THROW_REJECTED_BAD_STATE', release))
+    assert node._reload_ctx is None
+    assert node._executor.end_code == 'REJECTED_BB(THROW_REJECTED_BAD_STATE)'
+
+
+def test_jb21_window_exists_the_moment_inflight_is_true(tmp_path):
+    """Audit (2026-11-03): no gap -- while the throw call is in flight (and
+    from then on) `_reload_throw_inflight` and the window are both set, so a
+    stale suffixed verdict never takes the unfiltered path."""
+    node, _client = _node_with_client(response=_response())
+    cli = _fire_with_slow_throw_client(node, tmp_path, wait_s=0.0)
+    inflight, window = cli.in_flight
+    assert inflight is True
+    assert window is not None

@@ -3289,6 +3289,11 @@ class SkillNode(Node):
                 self._end_attempt('ABORTED_BB_THROW_UNAVAILABLE',
                                   'reload refused: bb/throw_at_target unavailable')
             return
+        # JB-21 (audit 2026-11-03): the identity window opens from a clock
+        # read taken HERE, after `wait_for_service` returned -- `now` above
+        # predates a wait of up to `_SERVICE_WAIT_S`, and Ball Butler stamps
+        # its release from ITS OWN `now` inside the handler, after the wait.
+        window_now = self.get_clock().now().nanoseconds / 1e9
 
         # C2: armed BEFORE the call (not after `_wait_future` returns) so an
         # announcement delivered while the call is in flight is accepted,
@@ -3310,11 +3315,17 @@ class SkillNode(Node):
             # This attempt has now asked Ball Butler for a throw: the
             # phantom-catch guard may attribute a BY_HOST verdict to it.
             self._bb_throw_dispatched = True
-            # JB-21: the identity the verdict must carry; `now` is wall time
-            # (the ROS clock), the same clock `ball_butler_node` stamps
-            # `goal.release_wall_s` on, and `delay_s` is exactly what `req`
-            # asks it for. Re-set by the NOT_SETTLED re-fire.
-            self._bb_throw_release_window = ti.release_window(now, delay_s)
+            # JB-21: the identity the verdict must carry; `window_now` is
+            # wall time (the ROS clock, read after `wait_for_service`), the
+            # same clock `ball_butler_node` stamps `goal.release_wall_s` on,
+            # and `delay_s` is exactly what `req` asks it for. Set in the
+            # SAME lock block that arms `_reload_throw_inflight` (audit
+            # 2026-11-03): from the handler's view the window exists the
+            # moment the flag is True, so no suffixed verdict can take the
+            # unfiltered path in a gap. Every end path clears both.
+            self._reload_throw_inflight = True
+            self._bb_throw_release_window = ti.release_window(
+                window_now, delay_s)
 
         throw_resp = self._wait_future(self._bb_throw_cli.call_async(req))
         # Record the pending release BEFORE any end path below can run: an
