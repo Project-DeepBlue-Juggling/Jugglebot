@@ -174,7 +174,7 @@ Rigs: Robot 5 blocks (168 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 
 ## Questions a Sitting can answer
 
-- JB-171 JB-167 STOP to hold latency: probe it first, publish link_status on change, raise it to 40 Hz, or leave the guard as the authority? (parent JB-167)
+- none
 
 ## Close-out
 
