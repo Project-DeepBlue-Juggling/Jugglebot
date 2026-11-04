@@ -156,6 +156,7 @@ Rigs: Robot 5 blocks (168 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - JB-160 [Robot] MAX_DEVIATION latched on 40-90 ms stale Hand telemetry without MOTOR_FB_STALE firing first: no ## Sitting section
 - JB-166 [Robot] Firmware scheduler STOP fires on a clean host stream and ends the Attempt: no ## Sitting section
 - JB-167 [Robot] Install the host hold within one tick of a firmware scheduler STOP so a guard latch becomes a recoverable LANE_REFUSED: no ## Sitting section
+- JB-168 [Robot] Learner context cannot tell a Throw from rest from a carried Throw: no ## Sitting section
 - JB-2 [Robot] Design change: the Hand should be Idle, not Parked Closed-loop, while Active: no ## Sitting section
 - JB-24 [Robot] 10 % jitter-margin class of LIMIT_* refusals: no ## Sitting section
 - JB-26 [Robot] Platform Teensy truncates the persisted levelling offset to int16 milliradians: no ## Sitting section

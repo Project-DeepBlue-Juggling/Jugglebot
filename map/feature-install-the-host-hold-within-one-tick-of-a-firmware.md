@@ -4,7 +4,7 @@ kind: feature
 title: Install the host hold within one tick of a firmware scheduler STOP so a guard latch becomes a recoverable LANE_REFUSED
 status: inbox
 created: '2026-11-04'
-updated: '2026-11-03T21:55:21Z'
+updated: '2026-11-04T17:51:06Z'
 owners: []
 priority: medium
 effort: m
@@ -26,3 +26,14 @@ Filed by the 2026-11-04 debrief (2026-11-03 Sitting).
 - Converts goal-3/15-style guard latches (FAULT, operator CLEAR_ERRORS) into goal-9-style LANE_REFUSED with auto-recovery; does not remove the Attempt end.
 - Owner decision: touches the hold path next to the Teensy guard (the guard stays the authority).
 - Probe STOP->hold latency first.
+
+## Options (2026-11-05)
+
+Where the host learns of a STOP today: `skill_node` reads `sched_refused` only from the bridge's 10 Hz `link_status` diagnostic (`_on_link_status`, `_hand_lane_refused`), so a STOP can sit up to ~100 ms plus a 25 ms tick before `_on_tick`'s LANE_REFUSED branch installs the hold.
+
+1. Probe first: measure STOP to hold latency per STOP from the launch logs and bags already flown (the Item's own Next). No code on the robot path. xs.
+2. Publish `link_status` on change as well as at 10 Hz, when `sched_stops` or `sched_refused` moves, so `skill_node` acts within one tick. Same message type, so no interface rebuild. s, needs a Sitting.
+3. Raise `link_status` to 40 Hz. One parameter, but 4x the diagnostic traffic on a loaded box. xs, needs a Sitting.
+4. Leave it: the Teensy guard stays the authority and a latch costs one operator CLEAR_ERRORS.
+
+Recommendation: 1, then 2 if the probe shows the latch would have been a LANE_REFUSED inside one tick.

@@ -4,14 +4,14 @@ kind: bug
 title: GUI Chart hover-over callouts overlap
 status: in_progress
 created: '2026-11-03'
-updated: '2026-11-03T21:57:22Z'
+updated: '2026-11-04T17:51:06Z'
 owners: []
 priority: medium
 effort: s
 hardware: none
 owner: none
 radius: local
-diagnosis: confirmed
+diagnosis: unknown
 area: gui
 blocked_by: []
 links:
