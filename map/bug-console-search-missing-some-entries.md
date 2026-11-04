@@ -2,10 +2,11 @@
 id: JB-163
 kind: bug
 title: CONSOLE search missing some entries?
-status: inbox
+status: in_progress
 created: '2026-11-03'
-updated: '2026-11-04T17:52:10Z'
-owners: []
+updated: '2026-11-04T18:04:15Z'
+owners:
+- night-shift
 priority: medium
 effort: s
 hardware: none
@@ -37,3 +38,7 @@ Filed from the Robot tab at 2026-11-03T22:31:17+11:00.
 4. Leave it: the sidebar already shows the versions.
 
 Recommendation: 2 then 1. Both are small, and 2 makes any future miss legible. 3 only if a startup line other than the version checks turns out to matter.
+
+## Progress
+
+- 2026-11-05: Night Shift 2026-11-05: held on night-shift/2026-11-05-JB-163: suite green, 3 audit findings open on the window label; unblocked by JB-173
