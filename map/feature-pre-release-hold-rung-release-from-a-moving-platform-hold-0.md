@@ -2,9 +2,9 @@
 id: JB-102
 kind: feature
 title: 'Pre-release hold rung: release from a moving Platform (hold 0.100 → 0)'
-status: inbox
+status: in_progress
 created: '2026-10-30'
-updated: '2026-11-03T21:54:16Z'
+updated: '2026-11-04T05:20:28Z'
 owners: []
 priority: high
 effort: m
@@ -15,6 +15,7 @@ links:
 - plans/active/two-ball-oval.md
 - logbook/2026-10-31-hold-ladder-sitting-the-hold-model-was-wrong.md
 - logbook/2026-11-04-sitting-debrief.md
+- plans/active/carry-ring-zvd.md
 parent: two-ball-oval
 filed_by: claude (P3 re-gate close-out 2026-10-30)
 ---
@@ -72,3 +73,4 @@ The Sitting flew the ladder and **withdrew the model** this Item was written on.
   - The carry decelerates until 25-30 ms before release; the Platform moves +40 (0.40) / +79 (0.35) mm/s faster than commanded at separation (encoder FK; mocap +75/+131), the ball's launch-velocity error matches ~1:1 and carried throws land +76 / +122 mm long (+48 from rest; +46 at dwell 0.50, hold 0, on 10-31).
   - Root cause (offline, 2026-11-04, logbook/2026-11-04-sitting-debrief.md): the STEADY QP's minimum-energy carry uses the whole Dwell and decelerates into the release knot; nothing models the ~6 Hz mode. A 6 Hz / damping 0.17 model gives a ring share of +24 / +51 / +79 mm at dwell 0.50 / 0.40 / 0.35.
   - Ranked fixes: ZVD rows on the carry in cup_cycle._pose_augment (gated, re-sweep, mode ID first); pre_release_hold_s 0.050 as phase compensation (about -60 mm at 0.40); leg accel FF; learner-side compensation; Dwell 0.45-0.50.
+- 2026-11-04: 2026-11-04: planned as plans/active/carry-ring-zvd.md (owner 2026-11-04): P0 mode identification from the 2026-10-31 and 2026-11-03 bags, P1 ZVD equality rows on the modelled Platform residual at release in cup_cycle._pose_augment behind trajectory_op.carry_zvd (I-PLAN-16, soft-penalty fallback pre-registered), P2 box re-sweep with the rows on, P3 A/B oval Sitting.
