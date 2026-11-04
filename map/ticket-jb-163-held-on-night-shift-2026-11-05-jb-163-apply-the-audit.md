@@ -2,9 +2,9 @@
 id: JB-173
 kind: ticket
 title: 'JB-163 held on night-shift/2026-11-05-JB-163: apply the audit''s 3 label fixes and merge, apply only the ring-full fix, merge as is, or drop?'
-status: open
+status: complete
 created: '2026-11-05'
-updated: '2026-11-04T18:04:31Z'
+updated: '2026-11-04T21:23:17Z'
 owners: []
 priority: medium
 effort: xs
@@ -32,3 +32,7 @@ Recommendation: 1. It is about ten lines, and it fixes exactly the label this It
 - 1 or 2: the next night applies the fixes, re-gates and merges.
 - 3: the next night re-gates and merges.
 - 4: JB-163 goes back to open.
+
+## Answer
+
+Agreed
