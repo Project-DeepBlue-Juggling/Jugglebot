@@ -14,6 +14,8 @@
 export const LEVELS = Object.freeze(['DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL']);
 /** Ring buffer capacity (live).  ~10 msg/s measured => ~8 min of history. */
 export const RING_CAP = 5000;
+/** Pinned one-shot startup lines (never evicted by the ring cap); bounded so the set cannot grow without limit. */
+export const PIN_CAP = 50;
 /** A playhead within this many seconds of a line counts as ON it (prev/next skip it). */
 export const HIT_EPS_S = 0.0005;
 
@@ -66,6 +68,50 @@ export function pushCapped(arr, line, cap = RING_CAP) {
     arr.push(line);
     if (arr.length > cap) arr.splice(0, arr.length - cap);
     return arr;
+}
+
+/** One-shot startup lines the bridge logs once at start (BRIDGE_FW_CHECK / PLATFORM_FW_CHECK):
+ *  pinned so the ring cap never evicts them.  Cannot recover a line that arrived before the page subscribed. */
+export function isPinned(line) {
+    return !!line && typeof line.msg === 'string' && line.msg.indexOf('_FW_CHECK') >= 0;
+}
+
+/** Fresh live-buffer state: ring (capped), pinned (capped at PIN_CAP), dropped = lines lost to either cap. */
+export function newLive() { return { ring: [], pinned: [], dropped: 0 }; }
+
+/** Add a live line: pinned lines go to the pinned set, the rest to the ring.  Mutates and returns `st`. */
+export function pushLive(st, line, cap = RING_CAP, pinCap = PIN_CAP) {
+    if (isPinned(line)) {
+        st.pinned.push(line);
+        if (st.pinned.length > pinCap) { const n = st.pinned.length - pinCap; st.pinned.splice(0, n); st.dropped += n; }
+    } else {
+        st.ring.push(line);
+        if (st.ring.length > cap) { const n = st.ring.length - cap; st.ring.splice(0, n); st.dropped += n; }
+    }
+    return st;
+}
+
+/** Pinned + ring lines in time order (stable: the pinned line wins a tie). */
+export function liveLines(st) {
+    const a = st.pinned, b = st.ring;
+    if (!a.length) return b;
+    const out = [];
+    let i = 0, j = 0;
+    while (i < a.length && j < b.length) out.push(a[i].t <= b[j].t ? a[i++] : b[j++]);
+    while (i < a.length) out.push(a[i++]);
+    while (j < b.length) out.push(b[j++]);
+    return out;
+}
+
+/** The window line shown above the list: where the held lines start and how many were dropped.
+ *  Nothing dropped => the page's subscribe time (a line from before it was never received);
+ *  something dropped => the oldest ring line's time. */
+export function windowLabel(st, subscribeT) {
+    const hms = (t) => formatTime(t).slice(0, 8);
+    if (st.dropped > 0 && st.ring.length) {
+        return `lines since ${hms(st.ring[0].t)}, ${st.dropped} dropped (ring full)`;
+    }
+    return `lines since ${hms(subscribeT)} (page subscribed), ${st.dropped} dropped`;
 }
 
 /** True when the line passes the search (case-insensitive substring over name + message). */

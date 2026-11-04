@@ -1552,6 +1552,7 @@
     color: var(--text-secondary); font-size: 10px; padding: 1px 6px; cursor: pointer;
 }
 .console-nav:hover { background: var(--bg-card-hover); color: var(--text-primary); }
+.console-window { color: var(--text-muted); font-family: var(--font-mono); font-size: 10px; padding-bottom: var(--gap-xs); }
 .console-count { flex-basis: 100%; color: var(--text-muted); font-family: var(--font-mono); font-size: 10px; }
 .console-list {
     flex: 1; min-height: 0;

@@ -76,6 +76,20 @@ def test_ring_cap(r):
     assert r['viewHost'] is True
 
 
+def test_window_label_and_pinned_lines(r):
+    # a pinned line survives > RING_CAP later lines, still in time order, still found by search and level filter
+    assert r['pin']['len'] == 5001 and r['pin']['first'].startswith('BRIDGE_FW_CHECK')
+    assert r['pin']['ringLen'] == 5000 and r['pin']['dropped'] == 10     # only ring evictions count
+    assert r['pin']['find'] == [0] and r['pin']['infoOff'] == []
+    assert r['pin']['isPinned'] == [True, False, False]
+    assert r['pinOrder'] == ['a', 'PLATFORM_FW_CHECK: OK', 'b']
+    # the pinned set is itself bounded
+    assert r['pinBound'] == {'len': 50, 'first': 'X_FW_CHECK 7', 'dropped': 7, 'cap': 50}
+    # window label: subscribe time when nothing dropped, oldest held ring line once the cap evicted
+    assert r['winFresh'] == 'lines since %s (page subscribed), 0 dropped' % r['winFreshExpect']
+    assert r['winDropped'] == 'lines since %s, 10 dropped (ring full)' % r['winDroppedExpect']
+
+
 def test_replay_hit_selection(r):
     h = r['hit']
     assert h['hits'] == [0, 2, 4]

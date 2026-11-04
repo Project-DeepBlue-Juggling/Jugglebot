@@ -2,9 +2,9 @@
 id: JB-163
 kind: bug
 title: CONSOLE search missing some entries?
-status: inbox
+status: complete
 created: '2026-11-03'
-updated: '2026-11-04T17:52:10Z'
+updated: '2026-11-04T17:52:52Z'
 owners: []
 priority: medium
 effort: s
@@ -14,7 +14,8 @@ radius: local
 diagnosis: hypothesis
 area: gui
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-05-gui-console-window-and-pinned-startup-lines.md
 filed_by: harrison
 ---
 

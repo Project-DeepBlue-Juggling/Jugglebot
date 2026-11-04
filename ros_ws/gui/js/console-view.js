@@ -22,7 +22,7 @@
  */
 import * as clock from './clock.js';
 import {
-    LEVELS, RING_CAP, normalizeLine, pushCapped, filterIndices, levelCounts,
+    LEVELS, normalizeLine, newLive, pushLive, liveLines, windowLabel, filterIndices, levelCounts,
     currentHit, prevHit, nextHit, lineHtml, parseEnabled, hoverTime,
 } from './console-logic.js';
 
@@ -31,7 +31,8 @@ const RENDER_MS = 250;
 const RENDER_WINDOW = 6000;
 const REPLAY_TOPIC = '/rosout';
 
-const live = [];                 // live ring
+const live = newLive();          // live ring + pinned startup lines
+let subscribeT = 0;              // epoch s the page started listening (earlier lines were never received)
 let replayLines = null;          // null = not in replay; else ascending-by-t lines of the bag
 let replayLoading = '';          // '' | 'loading i/N'
 let enabled = parseEnabled(null);
@@ -51,6 +52,7 @@ const $ = (id) => document.getElementById(id);
 export function initConsoleView() {
     host = $('console-container');
     if (!host) return;
+    subscribeT = clock.now() / 1000;
     try { enabled = parseEnabled(localStorage.getItem(FILTER_KEY)); } catch (e) { /* default all on */ }
     query = '';   // the search is deliberately NOT persisted: a stale filter would hide log lines after a reload
     host.innerHTML = `
@@ -65,6 +67,7 @@ export function initConsoleView() {
             <button type="button" class="console-nav" id="console-next" title="Next matching line (replay)" style="display:none">&#9660;</button>
             <span class="console-count" id="console-count"></span>
         </div>
+        <div class="console-window" id="console-window"></div>
         <div class="console-list" id="console-list" role="log" aria-readonly="true"></div>
         <button type="button" class="console-jump" id="console-jump" style="display:none">Jump to latest</button>`;
     const search = $('console-search');
@@ -120,13 +123,13 @@ export function consoleOnLog(msg) {
     if (clock.isReplay()) return;
     const line = normalizeLine(msg, clock.now() / 1000);
     if (!line) return;
-    pushCapped(live, line, RING_CAP);
+    pushLive(live, line);
     if (!replayLines) markDirty();
 }
 
 function markDirty() { dirty = true; }
 
-function activeLines() { return replayLines || live; }
+function activeLines() { return replayLines || liveLines(live); }
 
 function playhead() {
     const e = replayCtl && replayCtl.engine;
@@ -148,6 +151,7 @@ function render() {
         $('console-n-' + b.dataset.lv).textContent = String(counts[b.dataset.lv]);
     });
     const inReplay = !!replayLines;
+    $('console-window').textContent = inReplay ? '' : windowLabel(live, subscribeT);
     $('console-prev').style.display = inReplay ? '' : 'none';
     $('console-next').style.display = inReplay ? '' : 'none';
     curIdx = inReplay ? currentHit(lines, hits, playhead()) : -1;
@@ -261,4 +265,4 @@ export function attachConsoleReplay(mode) {
 }
 
 /** Test/debug seam. */
-export function _consoleState() { return { live: live.length, replay: replayLines ? replayLines.length : null }; }
+export function _consoleState() { return { live: live.ring.length + live.pinned.length, replay: replayLines ? replayLines.length : null }; }
