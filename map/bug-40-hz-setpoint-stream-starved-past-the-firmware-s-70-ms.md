@@ -4,7 +4,7 @@ kind: bug
 title: '40 Hz setpoint stream starved past the firmware''s 70 ms cover during CATCH-solve bursts: 3 LANE_REFUSED ends on 2026-11-02'
 status: in_progress
 created: '2026-11-02'
-updated: '2026-11-03T21:54:43Z'
+updated: '2026-11-04T07:48:39Z'
 owners:
 - jugglebot-50
 priority: high
@@ -95,6 +95,11 @@ Recommendation: 1, flown at the next Sitting with the instrumentation, then 2 or
 - pass: the record is complete: the CSV spans every goal, GC_PROBE lines appear at 1 Hz from trajectory_node and teensy_bridge_node, every STOP WARN carries one of the three verdicts with its fw_sched counters and frame ages, and /link_status in the bag carries rx_age_max_us.
 - record: the launch log, bag and CSV paths; the report output; the STOP count by verdict; the max GC pause per node; rx_age max and the gt70 count at each STOP; whether any end was LANE_REFUSED.
 - minutes: 20
+
+## Sitting result (2026-11-04 18:48)
+
+- verdict: pass
+- notes: First two attempts ended with MISSED_CATCH. Third attempt finished cleanly
 
 ## Progress
 
