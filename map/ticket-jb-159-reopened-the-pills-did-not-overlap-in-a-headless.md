@@ -22,7 +22,7 @@ You reopened JB-159: after the 2026-11-04 fix (298f2a38) the hover pills still o
 
 ## Options
 1. Send a screenshot of the overlap and say which chart it was on (a leg chart, the Hand, the CAN traffic chart). The night then reproduces that exact case.
-2. Re-check first: reload a recording now (the live checkout must have been on `main` at or after 05:46 on 2026-11-04) and say whether it still overlaps.
+2. Re-check first: open a recording again now (the live checkout must have been on `main` at or after 05:46 on 2026-11-04) and say whether it still overlaps.
 3. Close JB-159 if 2 shows it fixed.
 
 Recommendation: 2, then 1 if it still overlaps.
