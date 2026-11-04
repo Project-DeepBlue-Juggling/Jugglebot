@@ -189,6 +189,9 @@ def test_launch_exposes_both_args_default_false_and_passes_through():
                     defaults[c.args[0].value] = k.value.value
     assert defaults['gc_freeze'] == 'false'
     assert defaults['cpu_partition'] == 'false'
+    # the probe is ON at launch since 2026-11-04 (owner; JB-149 waits for a
+    # LANE_REFUSED caught with it running)
+    assert defaults['gc_probe'] == 'true'
     for flag in ('gc_freeze', 'cpu_partition'):
         # passed as a real bool, the gc_probe idiom (PythonExpression == 'true')
         assert src.count('\'%s\': PythonExpression' % flag) == 2, \

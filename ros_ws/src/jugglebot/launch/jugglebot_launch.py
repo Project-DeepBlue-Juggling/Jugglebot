@@ -339,12 +339,16 @@ def generate_launch_description():
                     'received Hand sample to ~/Desktop/Jugglebot/temp/hand_capture/'
                     '*.csv (view with tools/probes/hand_capture_view.py).')
 
-    # JB-149: opt-in GC pause probe in both stream nodes (default off).
+    # JB-149: GC pause probe in both stream nodes. Default ON at launch since
+    # 2026-11-04 (owner): it costs under 1 us/s per node, and the next
+    # LANE_REFUSED has to be caught with it running. The node parameter itself
+    # still defaults False, so tests and other launches install nothing.
     gc_probe = LaunchConfiguration('gc_probe')
     gc_probe_arg = DeclareLaunchArgument(
-        'gc_probe', default_value='false',
-        description='JB-149: true -> trajectory_node and teensy_bridge_node log a '
-                    '1 Hz GC_PROBE line (collections, max pause ms). Diagnostic only.')
+        'gc_probe', default_value='true',
+        description='JB-149: true (default) -> trajectory_node and teensy_bridge_node '
+                    'log a 1 Hz GC_PROBE line (collections, max pause ms). '
+                    'Diagnostic only; gc_probe:=false turns it off.')
 
     # JB-149 opt-in cures for the 40 Hz stream stalls (both DEFAULT OFF; the
     # probe Sitting decides which, if either, becomes the default).

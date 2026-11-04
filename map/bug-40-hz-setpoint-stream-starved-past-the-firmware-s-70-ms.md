@@ -85,17 +85,12 @@ Recommendation: 1, flown at the next Sitting with the instrumentation, then 2 or
 
 ## Sitting
 
-- setup: level, armed, bb-fed
-- why: JB-155 (probe first): one long Columns goal with both probes on tells CPU preemption, a whole-process Python pause and a firmware-side cover expiry apart.
-- do:
-  - Confirm the launch log's BridgeIdentity reads FW 38 (proto 11), then launch with `ros2 launch jugglebot jugglebot_launch.py gc_probe:=true`.
-  - Once the launch is up, start the sampler from the repo root: `python tools/probes/sched_probe.py record` (writes temp/probes/sched_probe_<ts>.csv).
-  - Fly Columns, Sep. 125, Apex 0.95, Throws 50. If a goal ends LANE_REFUSED, start it again, up to 3 goals.
-  - Stop the sampler with Ctrl-C.
-  - Run `python tools/probes/sched_probe.py report temp/probes/sched_probe_<ts>.csv <launch.log>` and `grep -n 'firmware scheduler STOP' <launch.log>`.
-- pass: the record is complete: the CSV spans every goal, GC_PROBE lines appear at 1 Hz from trajectory_node and teensy_bridge_node, every STOP WARN carries one of the three verdicts with its fw_sched counters and frame ages, and /link_status in the bag carries rx_age_max_us.
-- record: the launch log, bag and CSV paths; the report output; the STOP count by verdict; the max GC pause per node; rx_age max and the gt70 count at each STOP; whether any end was LANE_REFUSED.
-- minutes: 20
+- setup: armed
+- why: catch the next LANE_REFUSED with the GC probe running; three Sittings (2026-11-03 12:30 and 22:29, 2026-11-04 18:45) found no host-side cause, so only an end caught under the probe can rule the host out at the moment of failure.
+- do: Nothing extra: `gc_probe` is on by default at launch since 2026-11-04 (do not pass `gc_probe:=false`). If an Attempt ends LANE_REFUSED, note the time.
+- pass: a LANE_REFUSED end is on record with GC_PROBE lines from both stream nodes within 1 s of its STOP WARN, and that WARN carries its verdict, fw_sched counters and frame ages.
+- record: the launch log path and the line of each LANE_REFUSED end; none = say so.
+- minutes: 1
 
 ## Sitting result (2026-11-04 18:48)
 
@@ -107,4 +102,4 @@ Recommendation: 1, flown at the next Sitting with the instrumentation, then 2 or
 - 2026-11-03: Both probes landed 2026-11-03 (owner call on JB-155 plus the Sitting-findings follow-up): opt-in host GC and sched probe, and FW 38 / PROTOCOL 11 heartbeat sched counters, frame-age stats and the STOP WARN third verdict. Body rewritten: two classes (host gap on 11-02, clean-host STOP on 11-03). Sitting row written; flash and colcon build owed before it (detail below)
 - 2026-11-03: Opt-in cures landed 2026-11-03, both default off: gc_freeze:=true and cpu_partition:=true (option 2), ready to A/B once the probe row shows class 1; the overlapping stall probe from 11-02 was dropped for gc_probe (logbook 2026-11-03-jb149-opt-in-cures).
 - 2026-11-04: 2026-11-03 Sitting (22:29, P4 ramp): REFUTED again for the 2 LANE_REFUSED and 1 GUARD_LATCHED ends: forward gap 37-47 ms, loop gap <= 20 ms, emit max 34 ms, bridge frame age max 24.8 ms, the firmware's expired/superseded/stale counters did not move; each end was a firmware scheduler STOP with a clean host stream (cause firmware-side, unknown).
-- 2026-11-04: 2026-11-04 18:45 probe Sitting (gc_probe on, FW 38, 3 Columns goals): row PASSED (record complete). No LANE_REFUSED and no STOP inside an Attempt; 2 STOPs at go_home start (host stream clean, firmware-side) and the disarm edge; max GC pause 2.1 ms (trajectory_node) / 1.6 ms (bridge); rx_age max 27 ms, gt70 0; sched_expired/stale 0. Third Sitting with no host-side support; the cure flags have no class-1 event to A/B. Keep gc_probe:=true on (cost under 1 us/s) until a LANE_REFUSED is caught under it.
+- 2026-11-04: Probe Sitting 2026-11-04 18:45 (gc_probe on, FW 38): row PASSED, record complete. No LANE_REFUSED, no STOP inside an Attempt; max GC pause 2.1 ms; rx_age max 27 ms, gt70 0. Third Sitting with no host-side support. gc_probe now on by default at launch; the row is a ride-along until a LANE_REFUSED is caught under it.

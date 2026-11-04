@@ -14,6 +14,8 @@ files_changed:
   - docs/runbook.md
   - logbook/2026-11-04-jb149-probe-sitting-and-jb139-close.md
   - logbook/INDEX.md
+  - ros_ws/src/jugglebot/launch/jugglebot_launch.py
+  - tests/ros/test_stream_tuning.py
 subsystem: [ros, skills]
 tags: [sitting, hardware]
 ---
@@ -83,6 +85,14 @@ Pass clause and result:
 - The nodes collect 0.3/s (trajectory_node) and 0.2/s (bridge), so the hook costs under 1 us per second.
 - On top of that, one INFO line per node per second.
 - The sched_probe sampler is a separate process at ~20 Hz; the bridge never sees it.
+
+## Follow-up (owner, 2026-11-04): probe on by default, row slimmed
+
+- `jugglebot_launch.py`: `gc_probe` now defaults to `'true'`.
+  - The node parameter in `trajectory_node` / `teensy_bridge_node` still defaults False, so unit tests and any other launch install nothing.
+  - `gc_probe:=false` turns it off.
+- `tests/ros/test_stream_tuning.py` pins the launch default.
+- JB-149's `## Sitting` section is now a 1-minute ride-along: no dedicated goal and no sampler. Its pass is a LANE_REFUSED end caught with GC_PROBE lines around its STOP.
 
 ## Verification
 

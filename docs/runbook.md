@@ -6,7 +6,7 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 4 blocks (142 min) · Bench leg 1 block (30 min) · Bench hand 1 block (30 min)
+Rigs: Robot 5 blocks (123 min) · Bench leg 1 block (30 min) · Bench hand 1 block (30 min)
 
 ## Setup 0: before power
 
@@ -16,9 +16,18 @@ Rigs: Robot 4 blocks (142 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Robot  (4 blocks, 142 min)
+## Robot  (5 blocks, 123 min)
 
-### Block 1: level, armed, bb-fed  (4 rows, 62 min)
+### Block 1: armed  (1 row, 1 min)
+
+#### JB-149 40 Hz setpoint stream starved past the firmware's 70 ms cover during CATCH-solve bursts: 3 LANE_REFUSED ends on 2026-11-02  (1 min, high, unattached)
+- why: catch the next LANE_REFUSED with the GC probe running; three Sittings (2026-11-03 12:30 and 22:29, 2026-11-04 18:45) found no host-side cause, so only an end caught under the probe can rule the host out at the moment of failure.
+- do:
+  - Nothing extra: `gc_probe` is on by default at launch since 2026-11-04 (do not pass `gc_probe:=false`). If an Attempt ends LANE_REFUSED, note the time.
+- pass: a LANE_REFUSED end is on record with GC_PROBE lines from both stream nodes within 1 s of its STOP WARN, and that WARN carries its verdict, fw_sched counters and frame ages.
+- record: the launch log path and the line of each LANE_REFUSED end; none = say so.
+
+### Block 2: level, armed, bb-fed  (3 rows, 42 min)
 
 #### JB-161 Ball 2's first throw after the feed catch lands about 180 mm outward along the separation axis  (10 min, high, unattached)
 - why: the hypothesis is that a feed catch whose lateral aim was clamped seats the ball off-centre and the first Throw carries a lateral kick. A fresh plant_id aims the feed catch by the identity prior, so the clamp never engages: if the outward first throw disappears the clamped aim is implicated, if it persists the clamp is cleared. Either outcome is data.
@@ -39,17 +48,6 @@ Rigs: Robot 4 blocks (142 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - pass: 20 consecutive Catches in one Attempt, flown with Throws 21 (the 21st throw is the Stop throw, not counted, so a full Attempt reads `COMPLETED (20/20 caught)`; with Throws 20 it reads 19/19 and the bar is unreachable); Tracker mean Apex difference between the two balls within 20 mm of the commanded 100 mm; hand iq under 54 A at every launch, judged on launches only (the brake is excluded; it reached the 60 A clamp twice on 2026-11-03).
 - record: caught of thrown, each ball's mean Tracker Apex, peak hand iq per launch, Ball 2's first-throw landing (x, y) mm per Attempt from the install line (JB-161: 4 of 11 landed about 180 mm outward and a fifth 37 mm on 2026-11-03), the bag path; commit docs/records.md.
 
-#### JB-149 40 Hz setpoint stream starved past the firmware's 70 ms cover during CATCH-solve bursts: 3 LANE_REFUSED ends on 2026-11-02  (20 min, high, unattached)
-- why: JB-155 (probe first): one long Columns goal with both probes on tells CPU preemption, a whole-process Python pause and a firmware-side cover expiry apart.
-- do:
-  - Confirm the launch log's BridgeIdentity reads FW 38 (proto 11), then launch with `ros2 launch jugglebot jugglebot_launch.py gc_probe:=true`.
-  - Once the launch is up, start the sampler from the repo root: `python tools/probes/sched_probe.py record` (writes temp/probes/sched_probe_<ts>.csv).
-  - Fly Columns, Sep. 125, Apex 0.95, Throws 50. If a goal ends LANE_REFUSED, start it again, up to 3 goals.
-  - Stop the sampler with Ctrl-C.
-  - Run `python tools/probes/sched_probe.py report temp/probes/sched_probe_<ts>.csv <launch.log>` and `grep -n 'firmware scheduler STOP' <launch.log>`.
-- pass: the record is complete: the CSV spans every goal, GC_PROBE lines appear at 1 Hz from trajectory_node and teensy_bridge_node, every STOP WARN carries one of the three verdicts with its fw_sched counters and frame ages, and /link_status in the bag carries rx_age_max_us.
-- record: the launch log, bag and CSV paths; the report output; the STOP count by verdict; the max GC pause per node; rx_age max and the gt70 count at each STOP; whether any end was LANE_REFUSED.
-
 #### JB-108 JP-10 Turned columns: the columns pair at fixed angles about +z, under pose  (20 min, medium, pattern-progression-columns-to-centre-and-orbit)
 - why: P3 of plan pattern-progression.md: two-ball Columns off the x axis under the pose planner, one plant_id per angle (set explicitly in the steps below), which answers JB-38 P2(b) (does the lateral bias rotate with the pair).
 - do:
@@ -62,7 +60,7 @@ Rigs: Robot 4 blocks (142 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - pass: 20 consecutive Catches in one Attempt at each angle, flown with Throws 21 (the 21st throw is the Stop throw, so `COMPLETED (20/20 caught)`; with Throws 20 it reads 19/19); landing scatter, per ball and per axis, with the mean within 15 mm and the sd within 10 mm of the straight control (proposed 2026-11-03, owner to confirm; the old "within 3 mm" was below the control's own run-to-run sd of 18-31 mm); no HAND_LIMIT line.
 - record: caught of thrown per angle, each angle's plant_id, landing scatter against the control, Ball 2's first-throw landing (x, y) mm per Attempt (JB-161: 5 of 7 landed outward at 90 deg on 2026-11-03), the bag path; commit docs/records.md.
 
-### Block 2: armed, bb-fed  (1 row, 15 min)
+### Block 3: armed, bb-fed  (1 row, 15 min)
 
 #### JB-147 Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT)  (15 min, high, unattached)
 - why: the torque loss happened at 13-54 A so the 60 A limit does not explain the SPINOUTs and a 70 A brake is harder; this run measures whether the SPINOUT rate moves with the drive now at 70/80 A (K and limits unchanged).
@@ -73,7 +71,7 @@ Rigs: Robot 4 blocks (142 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - pass: no SPINOUT_DETECTED in either run.
 - record: per run the catches; the SPINOUT count with the Hand position, velocity and iq at the torque loss from the capture; the peak brake iq; whether the 70 A limit was in effect (an iq setpoint beyond 60 A).
 
-### Block 3: level  (1 row, 15 min)
+### Block 4: level  (1 row, 15 min)
 
 #### JB-113 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them  (15 min, medium, unattached)
 - why: re-measure the human-throw bench with the robot in place (moving Platform markers, a ball in the Cup, the robot blocking camera views) and the owner's throws at better lighting.
@@ -85,7 +83,7 @@ Rigs: Robot 4 blocks (142 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - pass: the bag replays through `tools/probes/human_throw_bench.py` with the robot-spot landing sd and the phantom rate reported.
 - record: the bag path, the lighting change, and the bench report path.
 
-### Block 4: armed, bb-fed, bridge-cycled  (1 row, 50 min)
+### Block 5: armed, bb-fed, bridge-cycled  (1 row, 50 min)
 
 #### JB-162 P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30  (50 min, high, two-ball-oval)
 - why: P4 ramp of plan two-ball-oval.md: the first flight at the 600 / 8000 working point with the legs at 20 A (box gate_hash 2605fc1bd25e); five Columns canary Attempts show nothing regressed, then the one-ball oval dwell ladder finds the shortest dwell that holds.
@@ -104,7 +102,7 @@ Rigs: Robot 4 blocks (142 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 
 ## Bench leg  (1 block, 30 min)
 
-### Block 5: bridge-cycled  (1 row, 30 min)
+### Block 6: bridge-cycled  (1 row, 30 min)
 
 #### JB-73 Hand ODrive state can silently diverge from what the can-bridge commanded  (30 min, low, unattached)
 - why: confirm FW 35's suppress-edge hold flush leaves the bench leg at the last transmitted command instead of input_pos + vel_ff/pos_gain, and measure the current step it costs.
@@ -117,7 +115,7 @@ Rigs: Robot 4 blocks (142 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 
 ## Bench hand  (1 block, 30 min)
 
-### Block 6: armed, bridge-cycled  (1 row, 30 min)
+### Block 7: armed, bridge-cycled  (1 row, 30 min)
 
 #### JB-145 Hand stall stop near a release cannot fit the stroke: the 20 ms grace plus the C2 stop carry the Hand past the clip  (30 min, medium, unattached)
 - why: FW 37 (owner call JB-154, option 2 with a 6 ms grace) stops a fast upward Hand inside the stroke when the stream dies; it has never run on hardware, and the stroke_cut bench stage exercises exactly that path with no ball.
