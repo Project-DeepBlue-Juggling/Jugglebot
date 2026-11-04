@@ -3,7 +3,7 @@ title: Carry ring suppression — zero-residual-vibration rows on the pose carry
 created: 2026-11-04
 status: active
 owner: Harrison
-last_updated: 2026-11-04
+last_updated: 2026-11-05
 pathway: two-ball-oval
 scope: >-
   The one-ball oval's carried Throws land +76 mm (dwell 0.40) and +122 mm (0.35) long because the pose STEADY
@@ -14,9 +14,9 @@ scope: >-
   the flag on, and fly it A/B on the oval. Closes when carried and from-rest Throws land within 10 mm of each
   other at dwell 0.40 and the oval holds 30 consecutive Catches there.
 steps:
-  - {id: P0, title: Identify the Platform mode from existing bags, kind: phase, status: not_started, effort: s, hardware: none}
-  - {id: P1, title: The ZVD contract and rows behind a flag, kind: phase, status: not_started, effort: m, hardware: none}
-  - {id: P2, title: Box re-sweep with the rows on, kind: phase, status: not_started, effort: s, hardware: none}
+  - {id: P0, title: Identify the Platform mode from existing bags, kind: phase, status: complete, effort: s, hardware: none}
+  - {id: P1, title: The ZVD contract and rows behind a flag, kind: phase, status: complete, effort: m, hardware: none}
+  - {id: P2, title: Box re-sweep with the rows on, kind: phase, status: complete, effort: s, hardware: none}
   - {id: P3, title: A/B Sitting on the oval, kind: phase, status: not_started, effort: s, hardware: robot}
 related_logbook:
   - 2026-11-04-sitting-debrief.md
@@ -99,6 +99,17 @@ scope here (§ 6).
   beyond the motors) has a different frequency from the servo part, the rows need two modes (§ 5 risk 1).
 - Output: the values for `trajectory_op.platform_mode_*` and a short logbook entry.
 
+**P0 result (2026-11-04, `tools/probes/platform_mode_fit.py`, bags 2026-10-31 and 2026-11-03; logbook/2026-11-04-carry-ring-zvd-p0-p1.md): the gate FAILED.**
+
+| source | f_n Hz | zeta | delay ms | n good / n |
+|---|---|---|---|---|
+| encoder (forced fit, both days) | 5.40 / 5.42 | 0.28 / 0.14 | 21 / 22 | 96/109, 99/233 |
+| mocap (forced fit, both days) | 4.48 / 4.41 | 0.22 / 0.20 | 17 / 18 | 66/109, 41/233 |
+
+- The two estimators do not agree: free decay is not evaluable (the composed command is never acceleration-quiet through a hold; 2 and 4 usable windows), and the encoder and mocap frequencies differ by ~20 % on both days with non-overlapping IQRs. That is the § 5 risk-1 signature (structure rings below the motors), but one mode versus two is not settled.
+- The encoder fit over-predicts the 2026-11-03 separation excess by +69.5 (0.40) and +58.3 mm/s (0.35); Model A by +66 / +54. Model A matches the mocap excess (+127 vs +122 at 0.35), so the debrief's landing-bias validation was a mocap-like match. y is unidentified (carry acceleration 345 mm/s^2 rms against ~3000 in x).
+- **Decision (orchestrator, owner can overturn):** proceed with P1 and P2 at the provisional 4.9 Hz / zeta 0.20 / 20 ms now in the yaml, and fly the identification row at the P3 Sitting before the A/B. Reason: the ZVD rows' +/-15 % band centred at 4.9 Hz spans 4.2-5.6 Hz, covering both the mocap (4.45) and encoder (5.4) frequencies, whereas the old 6.0 Hz sits outside the band for the mode the ball sees; and nothing in P1 or P2 is wasted by a later re-fit (values are config, the box is swept under the flag).
+
 ### P1: The ZVD contract and rows behind a flag
 
 Contract first (CLAUDE.md "contracts over patches"):
@@ -133,6 +144,14 @@ Contract first (CLAUDE.md "contracts over patches"):
 - Gate: `./run_tests.sh --full` (a `controller/`-adjacent planner change; CLAUDE.md tier 1 case (c)).
 - Logbook: full form (the hard-vs-soft choice and the seed-state choice are Discussion triggers).
 
+**P1 result (2026-11-04, uncommitted; lands with the P2 box in one commit):**
+- I-PLAN-16 (INVARIANTS.md) and eight ZVD equality rows (4 per lateral axis: e, e', de/dw, de'/dw) in `cup_cycle._pose_augment`, behind `trajectory_op.carry_zvd` (default false). The mode math stays in the gated `cup_cycle.py`, as a list of modes per axis so a second mode is config.
+- **Hard rows with a RING re-solve:** when the QP refuses and ring rows were assembled, the same program is re-solved without them; if that solves, the window is refused `RING` naming the residual it would have had, else the original reason stands.
+- **Seed:** `CycleState.mode_state` carries the mode state from the head's realised Hermite acceleration (head assumed at rest at knot 0); flag off leaves `mode_state` and `mode0` None.
+- **Live switch (mirrors I-PLAN-13 (d)):** `carry_zvd` is a skill_node parameter on every InstallSegment request (new srv field, colcon build needed), the response reports what was solved, and the box carries a `carry_zvd` stamp (level cells false); the sweep has 55 families.
+- Measured at 4.9 Hz / 0.20 / 20 ms (x axis e' at release, mm/s): flag off -54.7 at 0.40 and -84.8 at 0.35; on, ~0 at nominal and in the realised Hermite plan. Leg peaks stay inside 600 / 8000 / 200000 (0.35: acc 5096, jerk 123041). Core solve 47.6 ms of 50 at dwell 0.65. Flag-off plans are byte-identical to the pre-change golden.
+- **Open owner decision:** the +/-15 % bound (< 15 mm/s) is not met at the short Dwell: 0.35 x1.15 +18.8 mm/s at the old 6 Hz mode (pinned `xfail(strict)`), and at 4.9 Hz the off-nominal frequencies leave 16.0 (0.40 x1.15) and 28.3 (0.35 x1.15) mm/s. A second-derivative (ZVDD) row set was probed and only moves the excess to the other side. It is the short carry against the 200 ms mode period; accept the worst case or change the bound.
+
 ### P2: Box re-sweep with the rows on
 
 - `tools/admissible_sweep_run.py`, committed family set, one round plus the 3-family spot check, BLAS one
@@ -146,13 +165,21 @@ Contract first (CLAUDE.md "contracts over patches"):
 - Decide whether the box stamp records `carry_zvd` (so a flag-off launch refuses loudly on a stamp mismatch)
   or the flag is removed once P3 passes. Recommendation: stamp it.
 
+**P2 result (2026-11-05; sweep `python tools/admissible_sweep_run.py --out temp/sweeps/zvd_2026-11-04`, started 2026-11-04 20:08, finished ~23:55; logbook/2026-11-04-carry-ring-zvd-p0-p1.md): gate 1 PASSED, gate 2 FAILED.**
+- Box `gate_hash e8d303ae93bc`, 55 families (level 11, pose 22, pose + `carry_zvd` 22), limits 600 / 8000 / 200000 / 4500, 195 cells (level 31, pose 82 flag off, 82 flag on of which 25 EMPTY). Round b (ovalx040_pose, columnsx1_pose_zvd, columns_pose) identical, `CMP_STATUS 0`. All 113 old cells are present flag off and value-equal; zero flag-off pose cells are empty.
+- **Gate 1 (oval Dwell 0.40, Apex 1.00, rows on, at least 20 mm x room): PASS.** 30 mm x and y room, same as flag off, and every oval band at 0.40 / 0.45 / 0.50 keeps 30 / 30. Dwell 0.35 at Apex 1.00 also keeps 30 / 30; 0.35 at Apex 1.10 drops 30 to 10 mm x; the three oval 0.30 flag-on cells are empty (at 0.30 flag off they were already thin: 1 / 10 / 25 mm x).
+- **Gate 2 (no Columns pose cell the Runbook flies loses admissibility): FAIL.** The Columns canary cell (Sep 125, Apex 0.95, Dwell 0.27) is present flag off at 30 x 30 and EMPTY with the rows on, at P1/P1 and P2/P2: `RING` refused 18522 of 18522 probes in columns_pose_zvd (and turned90; 6174 in turned45). Columns Apex 0.85 / 0.90, the turned cells 0.85-0.97 and columns_highlow Apex 1.00 are empty too; Columns Apex 1.00 keeps 10 mm x, highlow 1.05 keeps 8 mm x / 25 mm y. Hop, self_toss and oval at 0.40 and above are identical flag on and off.
+- Zero `CUP_SEATING_CONE` and zero `POSE_WINDOW` refusals anywhere; at 0.35 only 375 `HAND_LIMIT_ACC` probes (ovalx035) and 23 `MARGIN` (oval035).
+- Reading: Columns has no lateral carry, so the only lateral Platform excitation is the prescribed tilt sweep's lever-arm term. A Dwell 0.27 window (11 knots, most pinned by the catch / release triples and the holds) cannot shape it around a 204 ms mode period, so the eight hard rows plus the jerk box are infeasible while the ring-less program solves (that is `RING` by construction).
+- **Decision (orchestrator 2026-11-05 00:20, owner asked and not yet answered):** ship the box as swept. An empty flag-on Columns cell means a flag-on Columns launch is refused by the box, loudly; nothing is silently clipped. Fly the P3 A/B on the oval with the rows on and the Columns canary with the flag OFF. The pre-registered soft-penalty fallback is deferred to the owner (see Questions) instead of a second 3.5 h sweep that would collide with the 04:45 Night Shift.
+
 ### P3: A/B Sitting on the oval
 
 JB-102's `## Sitting` section, written when P2 commits. Outline:
 - Setup armed, bb-fed, bridge cycled; the P4 working point; plant_id `zvd-oval-<date>`.
 - Oval dwell 0.40, Apex 1.00: one Attempt with `carry_zvd` off (learner on a fresh plant), one with it on.
   Then 0.35 with it on, if 0.40 holds.
-- Columns canary, two Attempts, flag on: nothing regressed.
+- Columns canary, two Attempts, flag OFF (the box has no Columns cell with the rows on at Dwell 0.27): the flag-off planner is unchanged.
 - **Pass:** at Dwell 0.40 with the flag on, carried minus from-rest raw bias within +/-10 mm, carried
   per-Throw sd under 17.5 mm, and 30 consecutive Catches in one Attempt (this also meets two-ball-oval P4's
   gate). No `CUP_SEATING_CONE` or leg LIMIT end.
@@ -187,7 +214,7 @@ JB-102's `## Sitting` section, written when P2 commits. Outline:
    it reopens the superseded accel-FF arc).
 2. **Mode drift.** Load, temperature or a re-tune moves the frequency; ZVD tolerates about +/-15 %. P3's
    record re-fits the mode on every Sitting bag that flies the oval, which keeps a running check.
-3. **0.35 loses cells.** Expected near the jerk limit. Two balls need 0.30-0.35; if the rows price 0.35 out,
+3. **0.35 loses cells.** Measured (P2): only the Apex 1.10 band drops (30 to 10 mm x); 0.35 at Apex 1.00 keeps its room; 0.30 is empty with the rows on. The Columns window (Dwell 0.27) is the larger loss (gate 2). Expected near the jerk limit. Two balls need 0.30-0.35; if the rows price 0.35 out,
    that is the P5 conversation (a longer Dwell, a higher Apex, or the jerk limit), not a reason to drop the rows.
 4. **The common +22 mm offset** stays, absorbed by the learner within its 30 mm authority.
 
@@ -203,7 +230,18 @@ JB-102's `## Sitting` section, written when P2 commits. Outline:
 
 | Step | Status | Note |
 |---|---|---|
-| P0 | not started | |
-| P1 | not started | |
-| P2 | not started | |
-| P3 | not started | |
+| P0 | done (gate FAILED) | Mode 5.4 Hz encoder / 4.45 Hz mocap, zeta 0.14-0.28, delay 17-22 ms; yaml 4.9 / 0.20 / 0.020 provisional; identification row scheduled at the P3 Sitting |
+| P1 | done | Landed uncommitted with the P2 box: flag-off byte-identical, residual ~0 nominal, budget 47.6 ms core of 50; 0.35 x1.15 bound is an open owner decision |
+| P2 | done (gate 1 PASS, gate 2 FAIL) | Box e8d303ae93bc, 195 cells; oval 0.40 / Apex 1.00 keeps 30 mm; Columns canary cell empty with the rows on (RING 18522 / 18522); shipped as swept, fallback is an owner decision (Questions) |
+| P3 | not started | Gains the identification row first (JB-102 `## Sitting`); Columns canary flies with the flag off |
+
+## 8. Questions
+
+Owner decision needed (asked 2026-11-05, unanswered). Gate 2 failed: with the rows on the Columns window at Dwell 0.27 is infeasible (RING), and the pre-registered fallback (decision 2) was written for a gate-1 failure, not this one. Shipped meanwhile: the box as swept, P3 oval A/B with the rows on, Columns canary flag off.
+
+- (a) **Accept:** Columns under Dwell about 0.30 flies flag off; the rows are an oval / carry tool. This reverses decision 5 in effect.
+- (b) **Soft-penalty fallback** (decision 2) and a second re-sweep (about 3.5 h; must avoid the 04:45 Night Shift).
+- (c) **A principled scope rule:** the rows are assembled only when the window can hold them (for example carry knots at least one damped mode period); `RING` is replaced by "rows not assembled", with the stamp recording it.
+- (d) Something else.
+
+Recommendation: (a) for P3, then decide between (b) and (c) with the A/B data in hand, because the two-ball patterns at Dwell 0.30-0.35 face the same window-length limit and the A/B shows whether hard rows are worth it.

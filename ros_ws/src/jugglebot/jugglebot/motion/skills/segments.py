@@ -18,6 +18,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+import jugglebot.hardware_config as hw
 from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.trajectory import cup_cycle as cc
 from jugglebot.motion.trajectory import tilt_geometry as tg
@@ -252,6 +253,15 @@ class SegmentConfig:
     #: box cell, which is stamped with the mode it was swept under); this field
     #: is what the emitter plans with when a request carries none.
     planner_mode: str = uc.PLANNER_MODE_DEFAULT
+    #: carry-ring-zvd P1c (JB-102): the pose planner's ZVD ring rows
+    #: (``cup_cycle.PoseConfig.carry_zvd``).  ``None`` = plan with
+    #: ``PoseConfig()``'s own default (``trajectory_op.carry_zvd``); a bool
+    #: overrides it through ``CycleGoals.pose_cfg``.  Like ``planner_mode`` the
+    #: LIVE value is skill_node's ``carry_zvd`` parameter, carried on every
+    #: ``InstallSegment`` request and stamped on the admissible box cell; this
+    #: field is what the emitter plans with when a request carries none.
+    #: Inert in level mode and for every segment but :func:`_plan_catch_throw`.
+    carry_zvd: Optional[bool] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -331,6 +341,20 @@ def hold_axis_site(landing_mm, hold_tilt, z_mm: float) -> np.ndarray:
     dz = float(z_mm) - float(land[2])
     return np.array([land[0] + kappa[0] * dz, land[1] + kappa[1] * dz,
                      float(z_mm)])
+
+
+#: The yaml default of the live ``carry_zvd`` switch (``trajectory_op.carry_zvd``);
+#: skill_node's parameter and the executor's box selection start from it.
+CARRY_ZVD_DEFAULT = bool(hw.JB_TRAJ_CARRY_ZVD)
+
+
+def _pose_cfg(cfg: 'SegmentConfig'):
+    """``CycleGoals.pose_cfg`` for ``cfg``: ``None`` (the planner's own
+    ``PoseConfig()``) unless ``cfg.carry_zvd`` overrides the flag -- the ONE
+    place a segment turns the switch into a planner config."""
+    if cfg.carry_zvd is None:
+        return None
+    return dataclasses.replace(cc.PoseConfig(), carry_zvd=bool(cfg.carry_zvd))
 
 
 def _planner_mode(cfg: 'SegmentConfig') -> str:
@@ -430,7 +454,8 @@ def _plan_catch_throw(seed, terminal: CatchTerminal, cfg: SegmentConfig,
                             receive_tilt=terminal.receive_tilt,
                             hold_platform_knots=_hold_knots(cfg, seed),
                             pre_release_hold_knots=_pre_hold_knots(cfg),
-                            planner_mode=_planner_mode(cfg))
+                            planner_mode=_planner_mode(cfg),
+                            pose_cfg=_pose_cfg(cfg))
     plan_a, meta_a = uc.plan_steady(goals_a, seed, limits, geom,
                                     warm_start=warm_start)
     seed_b = uc.release_state_from_meta(meta_a, plan_a)

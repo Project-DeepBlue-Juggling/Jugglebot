@@ -4682,6 +4682,7 @@ class TrajectoryNode(Node):
         response.seeded_post_release = False
         response.t_release_mono = 0.0
         response.planner_mode = ''
+        response.carry_zvd = False
         # KIND_BUMP (I-CATCH-5): every guard refusal below is TERMINAL for a
         # bump (the attempt is ending; a 40 Hz retry would only spam this
         # service); `_svc_bump_catch` sets its own outcomes explicitly.
@@ -4742,6 +4743,15 @@ class TrajectoryNode(Node):
                 response, _PLANNER_MODE,
                 'planner_mode %r is not one of %s (nothing solved)'
                 % (req_mode, list(uc.PLANNER_MODES)), t_wall)
+        # carry-ring-zvd P1c (JB-102): the ZVD ring-row flag rides with the
+        # planner (the same skill_node parameter stamped the box cell). A bool
+        # cannot say "absent", so the request's flag is honoured whenever the
+        # request names a planner (req_mode != ''); a request with none is the
+        # pre-P3 / hand-built client and plans with the node's default
+        # (`SegmentConfig.carry_zvd`, None = `PoseConfig()` yaml default).
+        req_zvd = bool(request.carry_zvd)
+        if req_mode != '' and seg_cfg.carry_zvd != req_zvd:
+            seg_cfg = dataclasses.replace(seg_cfg, carry_zvd=req_zvd)
         t_event_perf = float(request.t_event_s) + self._ros_to_perf_offset
         # A CATCH-with-throw's release time gets the identical crossing; a
         # plain CATCH's `t_release_s` is 0.0 (the wire's own sentinel for "no
@@ -5069,6 +5079,8 @@ class TrajectoryNode(Node):
                                     solve_s=float(reply.solve_s),
                                     solve_cpu=_solve_cpu_suffix(reply),
                                     planner_mode=self._solved_planner_mode(
+                                        kind, terminal, new_record, seg_cfg),
+                                    carry_zvd=self._solved_carry_zvd(
                                         kind, terminal, new_record, seg_cfg))
 
     def _svc_bump_catch(self, request, response, t_wall: float, epoch0):
@@ -5294,9 +5306,23 @@ class TrajectoryNode(Node):
         CATCH+SETTLE segment reports the carry's formulation."""
         return str(getattr(record.meta, 'planner_mode', '') or 'level')
 
+    @staticmethod
+    def _solved_carry_zvd(kind, terminal, record, seg_cfg) -> bool:
+        """The ``carry_zvd`` flag this install was SOLVED with, for the reply:
+        the planned flag when the solved window was the pose formulation (the
+        only one with ring rows), ``False`` otherwise -- the same
+        what-actually-ran rule as :meth:`_solved_planner_mode`.  A node-default
+        ``None`` reads the ``PoseConfig()`` yaml default."""
+        if str(getattr(record.meta, 'planner_mode', '') or 'level') != 'pose':
+            return False
+        if seg_cfg.carry_zvd is None:
+            return bool(sk_seg.CARRY_ZVD_DEFAULT)
+        return bool(seg_cfg.carry_zvd)
+
     def _accept_segment(self, response, kind, ball_id, record, result, t_wall,
                         t_release_mono: float = 0.0, solve_s: float = 0.0,
-                        planner_mode: str = '', solve_cpu: str = ''):
+                        planner_mode: str = '', solve_cpu: str = '',
+                        carry_zvd: bool = False):
         """Fill ``response`` from an INSTALLED segment. Mirrors ``_accept_cycle``."""
         response.accepted = True
         response.code = feas.OK
@@ -5311,6 +5337,7 @@ class TrajectoryNode(Node):
         response.seeded_post_release = bool(result.seeded_post_release)
         response.t_release_mono = float(t_release_mono)
         response.planner_mode = str(planner_mode)
+        response.carry_zvd = bool(carry_zvd)
         response.plan_wall_ms = (time.perf_counter() - t_wall) * 1e3
         self._cycle_plan_wall_ms = response.plan_wall_ms
         self.get_logger().debug(

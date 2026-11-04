@@ -4,12 +4,14 @@ kind: feature
 title: 'Pre-release hold rung: release from a moving Platform (hold 0.100 → 0)'
 status: in_progress
 created: '2026-10-30'
-updated: '2026-11-04T05:20:28Z'
+updated: '2026-11-04T08:37:23Z'
 owners: []
 priority: high
 effort: m
 hardware: robot
 owner: hands
+radius: normative
+area: skill-stack
 blocked_by: []
 links:
 - plans/active/two-ball-oval.md
@@ -66,6 +68,21 @@ The Sitting flew the ladder and **withdrew the model** this Item was written on.
 - Gate addition: a mean-bias criterion (plant residual y − u per rung, read by `tools/probes/hold_rung_bias.py --latest` from the launch log and the one shared memory; it attributes goals and holds itself and prints the next hold), since scatter + catch rate cannot see a shift the learner absorbs.
 - Sitting Runbook section: `tests/hardware/session_oval_rung1.md` § 11. Logbook: `logbook/2026-10-30-sitting-prep-columns-check-hold-ladder-and-apex-cells.md`.
 
+## Sitting
+
+- setup: armed, bb-fed, bridge-cycled
+- why: carry-ring-zvd P0 could not identify the Platform mode from the bags on disk (the encoder and mocap fits disagree, 5.4 vs 4.45 Hz), so the mode is identified on the robot first and the ZVD rows (provisional 4.9 Hz / 0.20 / 20 ms) are then flown A/B against the flag-off carry.
+- do:
+  - Before arming: confirm the colcon build is done (`cd ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot`, then re-source; InstallSegment.srv changed) and the launch log shows the new box line gate_hash e8d303ae93bc. Run `ros2 param get /skill_node carry_zvd` and confirm it reads false.
+  - IDENTIFICATION FIRST, Platform only, no Throw, cup empty, Ball Butler unpowered: in the GUI step the pose +20 mm in x, hold 1 s, step back, hold 1 s; repeat 5 times; then the same in y. Mocap and encoders recording (bag on).
+  - A arm (flag off, the existing behaviour): `ros2 param set /skill_node plant_id zvd-oval-<date>` and read it back, then one Attempt of `{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.40, num_cycles: 32}` (cup empty, Ball Butler loaded).
+  - B arm: `ros2 param set /skill_node carry_zvd true` (refused while a goal runs) and read it back with `ros2 param get /skill_node carry_zvd`; the goal start line must show carry_zvd. Fly the same oval goal at dwell 0.40 on the same plant. Then dwell 0.35 (`dwell_s: 0.35`, same other keys) with the flag on, only if 0.40 holds.
+  - Columns canary with the flag OFF (the swept box has no Columns cell with the rows on): before it run `ros2 param set /skill_node carry_zvd false` and read it back with `ros2 param get /skill_node carry_zvd`; two Attempts: GUI Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21.
+  - Afterwards re-fit the mode on this bag: `python tools/probes/platform_mode_fit.py <bag>` (the step responses give the free-decay estimate P0 could not get).
+- pass: at Dwell 0.40 with the flag on, the carried minus from-rest raw landing bias is within +/-10 mm, the carried per-Throw sd is under 17.5 mm, and 30 consecutive Catches land in one Attempt; no CUP_SEATING_CONE or leg LIMIT end; the Columns canary (flag off) is unchanged (each Attempt COMPLETED, no new refusal).
+- record: raw x per Throw (landed minus u) split from-rest / carried, per arm; encoder and mocap excess at separation per arm; RING refusals (the RING refusal text if any oval install is refused); install-line leg peaks; the platform_mode_fit.py result on the identification bag (x and y); the bag and launch log paths.
+- minutes: 45
+
 ## Progress
 
 - 2026-10-31: 2026-10-31 ladder flown: shorter hold lands LONG, model withdrawn, hold default now 0; do not build delay-aware composition as specified (detail in Reframe section; logbook 2026-10-31-hold-ladder-sitting-the-hold-model-was-wrong)
@@ -74,3 +91,4 @@ The Sitting flew the ladder and **withdrew the model** this Item was written on.
   - Root cause (offline, 2026-11-04, logbook/2026-11-04-sitting-debrief.md): the STEADY QP's minimum-energy carry uses the whole Dwell and decelerates into the release knot; nothing models the ~6 Hz mode. A 6 Hz / damping 0.17 model gives a ring share of +24 / +51 / +79 mm at dwell 0.50 / 0.40 / 0.35.
   - Ranked fixes: ZVD rows on the carry in cup_cycle._pose_augment (gated, re-sweep, mode ID first); pre_release_hold_s 0.050 as phase compensation (about -60 mm at 0.40); leg accel FF; learner-side compensation; Dwell 0.45-0.50.
 - 2026-11-04: 2026-11-04: planned as plans/active/carry-ring-zvd.md (owner 2026-11-04): P0 mode identification from the 2026-10-31 and 2026-11-03 bags, P1 ZVD equality rows on the modelled Platform residual at release in cup_cycle._pose_augment behind trajectory_op.carry_zvd (I-PLAN-16, soft-penalty fallback pre-registered), P2 box re-sweep with the rows on, P3 A/B oval Sitting.
+- 2026-11-05: P2 box swept (gate_hash e8d303ae93bc, 195 cells): oval Dwell 0.40 / Apex 1.00 keeps 30 mm with the rows on; the Columns canary cell (Dwell 0.27) is empty with the rows on (RING), so the Columns canary flies flag off; fallback is an owner question (plan carry-ring-zvd.md section 8)

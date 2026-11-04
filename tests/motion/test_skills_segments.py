@@ -1029,3 +1029,18 @@ def test_a_catch_inside_the_pre_release_hold_is_refused_in_plain_language(
     out = ei.value.outcome()
     assert 'UNVERIFIED' not in out, out
     assert 'POSE_WINDOW' in out and 'no knots left' in out, out
+
+
+# -- carry_zvd on the segment config (carry-ring-zvd P1c, JB-102) ---------------
+
+def test_segment_config_carry_zvd_becomes_the_goals_pose_cfg():
+    """None = the planner's own PoseConfig() (the yaml default); a bool is the
+    ONE override, delivered through CycleGoals.pose_cfg."""
+    from jugglebot.motion.trajectory import cup_cycle as cc
+    assert sg.SegmentConfig().carry_zvd is None
+    assert sg._pose_cfg(sg.SegmentConfig()) is None
+    for flag in (True, False):
+        pcfg = sg._pose_cfg(sg.SegmentConfig(carry_zvd=flag))
+        assert pcfg.carry_zvd is flag
+        assert pcfg == cc.PoseConfig(carry_zvd=flag)
+    assert sg.CARRY_ZVD_DEFAULT is cc.PoseConfig().carry_zvd

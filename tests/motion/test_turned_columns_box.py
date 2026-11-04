@@ -27,7 +27,7 @@ def _box(site, planner_mode='pose'):
         limits={'leg_vel_mmps': 600.0, 'leg_acc_mmps2': 5000.0,
                'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': 30.0},
         gate_hash=adm.gate_hash(), swept_at='2026-10-30',
-        dwell_s=0.27, planner_mode=planner_mode)
+        dwell_s=0.27, planner_mode=planner_mode, carry_zvd=False)
 
 
 def _select(boxes, site):

@@ -2170,7 +2170,8 @@ class SkillExecutor:
                  contact_probe: Optional[Callable[[float, float],
                                                   Optional[float]]] = None,
                  catch_time_offset_s: float = 0.0,
-                 planner_mode: str = uc.PLANNER_MODE_DEFAULT):
+                 planner_mode: str = uc.PLANNER_MODE_DEFAULT,
+                 carry_zvd: bool = sg.CARRY_ZVD_DEFAULT):
         self.schedule = schedule
         #: ``contact_probe(t0, t1)`` -> wall stamp of the first hand
         #: velocity KICK (cup struck by the ball) inside ``[t0, t1]``, or
@@ -2247,6 +2248,9 @@ class SkillExecutor:
             raise ValueError('planner_mode must be one of %r, not %r'
                              % (uc.PLANNER_MODES, planner_mode))
         self.planner_mode = str(planner_mode)
+        #: carry-ring-zvd P1c: the box-selection twin of skill_node's live
+        #: ``carry_zvd`` parameter (stamped on the box like ``planner_mode``).
+        self.carry_zvd = bool(carry_zvd)
         #: How far (m, per axis) the learner's THROW command, and a tracker
         #: CATCH aim (:meth:`_clamp_lateral_to_schedule`), may move the
         #: commanded/aimed landing AWAY from the schedule's desired offset
@@ -2590,7 +2594,8 @@ class SkillExecutor:
                              release_site_xy_mm=site.cup_mm[:2],
                              target_site_xy_mm=target.cup_mm[:2],
                              dwell_s=self._box_dwell_s(idx),
-                             planner_mode=self.planner_mode)
+                             planner_mode=self.planner_mode,
+                             carry_zvd=self.carry_zvd)
             if self.learner is not None and box is None:
                 reason = adm.describe_miss(
                     self.boxes, self.schedule.pattern,
@@ -2598,7 +2603,8 @@ class SkillExecutor:
                     release_site_xy_mm=site.cup_mm[:2],
                     target_site_xy_mm=target.cup_mm[:2],
                     dwell_s=self._box_dwell_s(idx),
-                             planner_mode=self.planner_mode)
+                             planner_mode=self.planner_mode,
+                             carry_zvd=self.carry_zvd)
                 raise _NoAdmissibleCommand(
                     'no admissible box covers pattern %r site pair %r: %s — '
                     'a learner command may not reach the platform unclipped'
@@ -2827,7 +2833,8 @@ class SkillExecutor:
                              release_site_xy_mm=site.cup_mm[:2],
                              target_site_xy_mm=site.cup_mm[:2],
                              dwell_s=self._box_dwell_s(idx),
-                             planner_mode=self.planner_mode)
+                             planner_mode=self.planner_mode,
+                             carry_zvd=self.carry_zvd)
             if box is not None and not box.empty:
                 alo, ahi = box.apex_m
                 u_apex = min(max(u_apex, alo), ahi)

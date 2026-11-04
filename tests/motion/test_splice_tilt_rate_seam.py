@@ -96,6 +96,15 @@ def hop_level(geom, limits):
     return _hop_chain(geom, limits, LEVEL_CFG)
 
 
+ZVD_CFG = sg.SegmentConfig(planner_mode='pose', carry_zvd=True)
+
+
+@pytest.fixture(scope='module')
+def hop_zvd(geom, limits):
+    """The same chain with the carry ZVD rows on (carry-ring-zvd P1b, I-PLAN-16)."""
+    return _hop_chain(geom, limits, ZVD_CFG)
+
+
 def _hop_chain(geom, limits, cfg_seg=None):
     sites = si.columns_sites(SEPARATION_MM)
     sched = sc.compile_one_ball(sc.OneBallPattern(
@@ -547,3 +556,21 @@ def test_the_carried_rest_slew_caps_include_the_rate_term():
     # checked=False (the held re-level's rule) shapes, never refuses.
     cr._smooth_slew(np.zeros(2), hold, n, dt, cfg, checked=False,
                     start_rate=np.array([big, 0.0]))
+
+
+# carry-ring-zvd P1b: I-PLAN-11's C1 seam, re-run with the ZVD rows on.  The rows
+# move interior carry knots only; the seed (value AND rate) is the head's, so the
+# splice must still open at the head's tilt rate and xy rate, and the new
+# window's mode0 seed must not break the seam.  (This test asserts C1 only; the
+# mode0 seeding itself is asserted in test_cup_zvd.py via CycleMeta.pose_cfg.)
+@pytest.mark.parametrize('case', STOP_RESTS + [REAIM])
+def test_the_seam_stays_c1_with_the_carry_zvd_rows_on(hop_zvd, limits, geom, case):
+    rec, new, res, seg, k_s = _splice(hop_zvd, limits, geom, case, ZVD_CFG)
+    assert res.accepted, res.message
+    head_v = rec.plan.pose_vel[k_s]
+    seg_v = seg.plan.pose_vel[0]
+    np.testing.assert_allclose(seg_v[3:5], head_v[3:5], atol=SEAM_DV_TILT_RAD_S)
+    np.testing.assert_allclose(seg_v[0:2], head_v[0:2], atol=SEAM_DV_XY_MM_S)
+    jumps = _knot_acc_jumps(new.plan, k_s)
+    assert float(jumps[:, :2].max()) <= SEAM_ACC_JUMP_MM_S2, jumps[:, :2]
+    assert new.meta.report.peak_leg_jerk_mmps3 < limits.leg_jerk_mmps3

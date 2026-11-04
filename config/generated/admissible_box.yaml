@@ -1,5 +1,5 @@
-swept_at: '2026-11-03'
-gate_hash: 2605fc1bd25e
+swept_at: '2026-11-04'
+gate_hash: e8d303ae93bc
 limits:
   leg_vel_mmps: 600.0
   leg_acc_mmps2: 8000.0
@@ -29,6 +29,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: level
+  carry_zvd: false
 - pattern: self_toss
   site_pair:
   - P1
@@ -52,6 +53,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: level
+  carry_zvd: false
 - pattern: self_toss
   site_pair:
   - P1
@@ -75,6 +77,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: level
+  carry_zvd: false
 - pattern: self_toss
   site_pair:
   - P1
@@ -98,6 +101,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: level
+  carry_zvd: false
 - pattern: self_toss
   site_pair:
   - P1
@@ -121,6 +125,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: level
+  carry_zvd: false
 - pattern: hop
   site_pair:
   - P1
@@ -144,6 +149,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: level
+  carry_zvd: false
 - pattern: hop
   site_pair:
   - P2
@@ -167,6 +173,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: level
+  carry_zvd: false
 - pattern: hop
   site_pair:
   - P1
@@ -190,6 +197,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: level
+  carry_zvd: false
 - pattern: hop
   site_pair:
   - P2
@@ -213,6 +221,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: level
+  carry_zvd: false
 - pattern: hop
   site_pair:
   - P1
@@ -236,6 +245,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: level
+  carry_zvd: false
 - pattern: hop
   site_pair:
   - P2
@@ -259,6 +269,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: level
+  carry_zvd: false
 - pattern: hop
   site_pair:
   - P1
@@ -282,6 +293,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: level
+  carry_zvd: false
 - pattern: hop
   site_pair:
   - P2
@@ -305,6 +317,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: level
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P2
@@ -328,6 +341,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: level
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P1
@@ -351,6 +365,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: level
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P2
@@ -374,6 +389,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: level
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P1
@@ -397,6 +413,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: level
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P2
@@ -420,6 +437,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: level
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P1
@@ -443,6 +461,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: level
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -466,6 +485,7 @@ boxes:
   - 0.0
   dwell_s: 0.65
   planner_mode: level
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -489,6 +509,7 @@ boxes:
   - 0.0
   dwell_s: 0.55
   planner_mode: level
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -512,6 +533,7 @@ boxes:
   - 0.0
   dwell_s: 0.5
   planner_mode: level
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -535,6 +557,7 @@ boxes:
   - 0.0
   dwell_s: 0.45
   planner_mode: level
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -558,6 +581,7 @@ boxes:
   - 0.0
   dwell_s: 0.4
   planner_mode: level
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -581,6 +605,7 @@ boxes:
   - 0.0
   dwell_s: 0.35
   planner_mode: level
+  carry_zvd: false
 - pattern: self_toss
   site_pair:
   - P1
@@ -604,6 +629,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: self_toss
   site_pair:
   - P1
@@ -627,6 +653,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: self_toss
   site_pair:
   - P1
@@ -650,6 +677,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: self_toss
   site_pair:
   - P1
@@ -673,6 +701,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: self_toss
   site_pair:
   - P1
@@ -696,6 +725,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: hop
   site_pair:
   - P1
@@ -719,6 +749,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: hop
   site_pair:
   - P2
@@ -742,6 +773,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: hop
   site_pair:
   - P1
@@ -765,6 +797,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: hop
   site_pair:
   - P2
@@ -788,6 +821,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: hop
   site_pair:
   - P1
@@ -811,6 +845,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: hop
   site_pair:
   - P2
@@ -834,6 +869,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: hop
   site_pair:
   - P1
@@ -857,6 +893,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: hop
   site_pair:
   - P2
@@ -880,6 +917,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P2
@@ -903,6 +941,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P1
@@ -926,6 +965,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P2
@@ -949,6 +989,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P1
@@ -972,6 +1013,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P2
@@ -995,6 +1037,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P1
@@ -1018,6 +1061,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -1041,6 +1085,7 @@ boxes:
   - 0.0
   dwell_s: 0.65
   planner_mode: pose
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -1064,6 +1109,7 @@ boxes:
   - 0.0
   dwell_s: 0.55
   planner_mode: pose
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -1087,6 +1133,7 @@ boxes:
   - 0.0
   dwell_s: 0.5
   planner_mode: pose
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -1110,6 +1157,7 @@ boxes:
   - 0.0
   dwell_s: 0.45
   planner_mode: pose
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -1133,6 +1181,7 @@ boxes:
   - 0.0
   dwell_s: 0.4
   planner_mode: pose
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -1156,6 +1205,7 @@ boxes:
   - 0.0
   dwell_s: 0.35
   planner_mode: pose
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -1179,6 +1229,7 @@ boxes:
   - 0.0
   dwell_s: 0.5
   planner_mode: level
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -1202,6 +1253,7 @@ boxes:
   - 0.0
   dwell_s: 0.5
   planner_mode: level
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -1225,6 +1277,7 @@ boxes:
   - 0.0
   dwell_s: 0.5
   planner_mode: level
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -1248,6 +1301,7 @@ boxes:
   - 0.0
   dwell_s: 0.45
   planner_mode: level
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -1271,6 +1325,7 @@ boxes:
   - 0.0
   dwell_s: 0.45
   planner_mode: level
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -1294,6 +1349,7 @@ boxes:
   - 0.0
   dwell_s: 0.45
   planner_mode: level
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -1317,6 +1373,7 @@ boxes:
   - 0.0
   dwell_s: 0.5
   planner_mode: pose
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -1340,6 +1397,7 @@ boxes:
   - 0.0
   dwell_s: 0.5
   planner_mode: pose
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -1363,6 +1421,7 @@ boxes:
   - 0.0
   dwell_s: 0.5
   planner_mode: pose
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -1386,6 +1445,7 @@ boxes:
   - 0.0
   dwell_s: 0.45
   planner_mode: pose
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -1409,6 +1469,7 @@ boxes:
   - 0.0
   dwell_s: 0.45
   planner_mode: pose
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -1432,6 +1493,7 @@ boxes:
   - 0.0
   dwell_s: 0.45
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P2@45
@@ -1455,6 +1517,7 @@ boxes:
   - 44.194173824159215
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P1@45
@@ -1478,6 +1541,7 @@ boxes:
   - -44.194173824159215
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P2@45
@@ -1501,6 +1565,7 @@ boxes:
   - 44.194173824159215
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P1@45
@@ -1524,6 +1589,7 @@ boxes:
   - -44.194173824159215
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P2@45
@@ -1547,6 +1613,7 @@ boxes:
   - 44.194173824159215
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P1@45
@@ -1570,6 +1637,7 @@ boxes:
   - -44.194173824159215
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P2@90
@@ -1593,6 +1661,7 @@ boxes:
   - 62.5
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P1@90
@@ -1616,6 +1685,7 @@ boxes:
   - -62.5
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P2@90
@@ -1639,6 +1709,7 @@ boxes:
   - 62.5
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P1@90
@@ -1662,6 +1733,7 @@ boxes:
   - -62.5
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P2@90
@@ -1685,6 +1757,7 @@ boxes:
   - 62.5
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P1@90
@@ -1708,6 +1781,7 @@ boxes:
   - -62.5
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns_highlow
   site_pair:
   - P2
@@ -1731,6 +1805,7 @@ boxes:
   - 0.0
   dwell_s: 0.3151757007397771
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns_highlow
   site_pair:
   - P1
@@ -1754,6 +1829,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns_highlow
   site_pair:
   - P1
@@ -1777,6 +1853,7 @@ boxes:
   - 0.0
   dwell_s: 0.3151757007397771
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns_highlow
   site_pair:
   - P2
@@ -1800,6 +1877,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns_highlow
   site_pair:
   - P2
@@ -1823,6 +1901,7 @@ boxes:
   - 0.0
   dwell_s: 0.31635085889508385
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns_highlow
   site_pair:
   - P1
@@ -1846,6 +1925,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns_highlow
   site_pair:
   - P1
@@ -1869,6 +1949,7 @@ boxes:
   - 0.0
   dwell_s: 0.31635085889508385
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns_highlow
   site_pair:
   - P2
@@ -1892,6 +1973,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P2
@@ -1915,6 +1997,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P1
@@ -1938,6 +2021,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P2
@@ -1961,6 +2045,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P1
@@ -1984,6 +2069,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P2
@@ -2007,6 +2093,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P1
@@ -2030,6 +2117,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P2
@@ -2053,6 +2141,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P1
@@ -2076,6 +2165,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P2
@@ -2099,6 +2189,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P1
@@ -2122,6 +2213,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P2
@@ -2145,6 +2237,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P1
@@ -2168,6 +2261,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P2
@@ -2191,6 +2285,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P1
@@ -2214,6 +2309,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P2
@@ -2237,6 +2333,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P1
@@ -2260,6 +2357,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P2
@@ -2283,6 +2381,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P1
@@ -2306,6 +2405,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P2
@@ -2329,6 +2429,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P1
@@ -2352,6 +2453,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P2
@@ -2375,6 +2477,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: columns
   site_pair:
   - P1
@@ -2398,6 +2501,7 @@ boxes:
   - 0.0
   dwell_s: 0.27
   planner_mode: pose
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -2421,6 +2525,7 @@ boxes:
   - 0.0
   dwell_s: 0.4
   planner_mode: pose
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -2444,6 +2549,7 @@ boxes:
   - 0.0
   dwell_s: 0.4
   planner_mode: pose
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -2467,6 +2573,7 @@ boxes:
   - 0.0
   dwell_s: 0.4
   planner_mode: pose
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -2490,6 +2597,7 @@ boxes:
   - 0.0
   dwell_s: 0.35
   planner_mode: pose
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -2513,6 +2621,7 @@ boxes:
   - 0.0
   dwell_s: 0.35
   planner_mode: pose
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -2536,6 +2645,7 @@ boxes:
   - 0.0
   dwell_s: 0.35
   planner_mode: pose
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -2559,6 +2669,7 @@ boxes:
   - 0.0
   dwell_s: 0.3
   planner_mode: pose
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -2582,6 +2693,7 @@ boxes:
   - 0.0
   dwell_s: 0.3
   planner_mode: pose
+  carry_zvd: false
 - pattern: oval_1ball
   site_pair:
   - P1
@@ -2605,3 +2717,1972 @@ boxes:
   - 0.0
   dwell_s: 0.3
   planner_mode: pose
+  carry_zvd: false
+- pattern: self_toss
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.45
+  - 0.55
+  landing_xy_m:
+  - - -0.04
+    - 0.04
+  - - -0.04
+    - 0.04
+  apex_m:
+  - 0.405
+  - 0.6050000000000001
+  release_site_xy_mm:
+  - -50.0
+  - 0.0
+  target_site_xy_mm:
+  - -50.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: self_toss
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.5499999999999999
+  - 0.65
+  landing_xy_m:
+  - - -0.04
+    - 0.04
+  - - -0.04
+    - 0.04
+  apex_m:
+  - 0.384
+  - 0.7260000000000001
+  release_site_xy_mm:
+  - -50.0
+  - 0.0
+  target_site_xy_mm:
+  - -50.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: self_toss
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.6499999999999999
+  - 0.75
+  landing_xy_m:
+  - - -0.04
+    - 0.04
+  - - -0.04
+    - 0.04
+  apex_m:
+  - 0.448
+  - 0.847
+  release_site_xy_mm:
+  - -50.0
+  - 0.0
+  target_site_xy_mm:
+  - -50.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: self_toss
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.75
+  - 0.8500000000000001
+  landing_xy_m:
+  - - -0.04
+    - 0.04
+  - - -0.04
+    - 0.04
+  apex_m:
+  - 0.5120000000000002
+  - 0.9680000000000003
+  release_site_xy_mm:
+  - -50.0
+  - 0.0
+  target_site_xy_mm:
+  - -50.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: self_toss
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.85
+  - 0.9500000000000001
+  landing_xy_m:
+  - - -0.04
+    - 0.04
+  - - -0.04
+    - 0.04
+  apex_m:
+  - 0.576
+  - 1.0890000000000002
+  release_site_xy_mm:
+  - -50.0
+  - 0.0
+  target_site_xy_mm:
+  - -50.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: hop
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 0.775
+  - 0.8250000000000001
+  landing_xy_m:
+  - - -0.025
+    - 0.025
+  - - -0.025
+    - 0.025
+  apex_m:
+  - 0.6480000000000001
+  - 0.9680000000000003
+  release_site_xy_mm:
+  - -125.0
+  - 0.0
+  target_site_xy_mm:
+  - 125.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: hop
+  site_pair:
+  - P2
+  - P1
+  apex_band_m:
+  - 0.775
+  - 0.8250000000000001
+  landing_xy_m:
+  - - -0.025
+    - 0.025
+  - - -0.025
+    - 0.025
+  apex_m:
+  - 0.6480000000000001
+  - 0.9680000000000003
+  release_site_xy_mm:
+  - 125.0
+  - 0.0
+  target_site_xy_mm:
+  - -125.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: hop
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 0.825
+  - 0.875
+  landing_xy_m:
+  - - -0.025
+    - 0.025
+  - - -0.025
+    - 0.025
+  apex_m:
+  - 0.6884999999999998
+  - 1.0285
+  release_site_xy_mm:
+  - -125.0
+  - 0.0
+  target_site_xy_mm:
+  - 125.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: hop
+  site_pair:
+  - P2
+  - P1
+  apex_band_m:
+  - 0.825
+  - 0.875
+  landing_xy_m:
+  - - -0.025
+    - 0.025
+  - - -0.025
+    - 0.025
+  apex_m:
+  - 0.6884999999999998
+  - 1.0285
+  release_site_xy_mm:
+  - 125.0
+  - 0.0
+  target_site_xy_mm:
+  - -125.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: hop
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 0.875
+  - 0.925
+  landing_xy_m:
+  - - -0.025
+    - 0.025
+  - - -0.025
+    - 0.025
+  apex_m:
+  - 0.65025
+  - 1.0890000000000002
+  release_site_xy_mm:
+  - -125.0
+  - 0.0
+  target_site_xy_mm:
+  - 125.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: hop
+  site_pair:
+  - P2
+  - P1
+  apex_band_m:
+  - 0.875
+  - 0.925
+  landing_xy_m:
+  - - -0.025
+    - 0.025
+  - - -0.025
+    - 0.025
+  apex_m:
+  - 0.65025
+  - 1.0890000000000002
+  release_site_xy_mm:
+  - 125.0
+  - 0.0
+  target_site_xy_mm:
+  - -125.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: hop
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - -0.025
+    - 0.025
+  - - -0.025
+    - 0.025
+  apex_m:
+  - 0.686375
+  - 1.1495
+  release_site_xy_mm:
+  - -125.0
+  - 0.0
+  target_site_xy_mm:
+  - 125.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: hop
+  site_pair:
+  - P2
+  - P1
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - -0.025
+    - 0.025
+  - - -0.025
+    - 0.025
+  apex_m:
+  - 0.686375
+  - 1.1495
+  release_site_xy_mm:
+  - 125.0
+  - 0.0
+  target_site_xy_mm:
+  - -125.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 0.825
+  - 0.875
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.825
+  - 0.875
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 0.875
+  - 0.925
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.875
+  - 0.925
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: oval_1ball
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.6080000000000001
+  - 1.1495
+  release_site_xy_mm:
+  - -75.0
+  - 0.0
+  target_site_xy_mm:
+  - 75.0
+  - 0.0
+  dwell_s: 0.65
+  planner_mode: pose
+  carry_zvd: true
+- pattern: oval_1ball
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.6080000000000001
+  - 1.1495
+  release_site_xy_mm:
+  - -75.0
+  - 0.0
+  target_site_xy_mm:
+  - 75.0
+  - 0.0
+  dwell_s: 0.55
+  planner_mode: pose
+  carry_zvd: true
+- pattern: oval_1ball
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.6080000000000001
+  - 1.1495
+  release_site_xy_mm:
+  - -75.0
+  - 0.0
+  target_site_xy_mm:
+  - 75.0
+  - 0.0
+  dwell_s: 0.5
+  planner_mode: pose
+  carry_zvd: true
+- pattern: oval_1ball
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.6080000000000001
+  - 1.1495
+  release_site_xy_mm:
+  - -75.0
+  - 0.0
+  target_site_xy_mm:
+  - 75.0
+  - 0.0
+  dwell_s: 0.45
+  planner_mode: pose
+  carry_zvd: true
+- pattern: oval_1ball
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.6080000000000001
+  - 1.1495
+  release_site_xy_mm:
+  - -75.0
+  - 0.0
+  target_site_xy_mm:
+  - 75.0
+  - 0.0
+  dwell_s: 0.4
+  planner_mode: pose
+  carry_zvd: true
+- pattern: oval_1ball
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.686375
+  - 1.1495
+  release_site_xy_mm:
+  - -75.0
+  - 0.0
+  target_site_xy_mm:
+  - 75.0
+  - 0.0
+  dwell_s: 0.35
+  planner_mode: pose
+  carry_zvd: true
+- pattern: oval_1ball
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 0.975
+  - 1.025
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.64
+  - 1.21
+  release_site_xy_mm:
+  - -75.0
+  - 0.0
+  target_site_xy_mm:
+  - 75.0
+  - 0.0
+  dwell_s: 0.5
+  planner_mode: pose
+  carry_zvd: true
+- pattern: oval_1ball
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 1.0250000000000001
+  - 1.075
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.672
+  - 1.2705
+  release_site_xy_mm:
+  - -75.0
+  - 0.0
+  target_site_xy_mm:
+  - 75.0
+  - 0.0
+  dwell_s: 0.5
+  planner_mode: pose
+  carry_zvd: true
+- pattern: oval_1ball
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 1.0750000000000002
+  - 1.125
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.7040000000000002
+  - 1.3310000000000002
+  release_site_xy_mm:
+  - -75.0
+  - 0.0
+  target_site_xy_mm:
+  - 75.0
+  - 0.0
+  dwell_s: 0.5
+  planner_mode: pose
+  carry_zvd: true
+- pattern: oval_1ball
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 0.975
+  - 1.025
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.64
+  - 1.21
+  release_site_xy_mm:
+  - -75.0
+  - 0.0
+  target_site_xy_mm:
+  - 75.0
+  - 0.0
+  dwell_s: 0.45
+  planner_mode: pose
+  carry_zvd: true
+- pattern: oval_1ball
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 1.0250000000000001
+  - 1.075
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.672
+  - 1.2705
+  release_site_xy_mm:
+  - -75.0
+  - 0.0
+  target_site_xy_mm:
+  - 75.0
+  - 0.0
+  dwell_s: 0.45
+  planner_mode: pose
+  carry_zvd: true
+- pattern: oval_1ball
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 1.0750000000000002
+  - 1.125
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.7040000000000002
+  - 1.3310000000000002
+  release_site_xy_mm:
+  - -75.0
+  - 0.0
+  target_site_xy_mm:
+  - 75.0
+  - 0.0
+  dwell_s: 0.45
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P2@45
+  - P2@45
+  apex_band_m:
+  - 0.825
+  - 0.875
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - 44.19417382415922
+  - 44.194173824159215
+  target_site_xy_mm:
+  - 44.19417382415922
+  - 44.194173824159215
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P1@45
+  - P1@45
+  apex_band_m:
+  - 0.825
+  - 0.875
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - -44.19417382415922
+  - -44.194173824159215
+  target_site_xy_mm:
+  - -44.19417382415922
+  - -44.194173824159215
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P2@45
+  - P2@45
+  apex_band_m:
+  - 0.875
+  - 0.925
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - 44.19417382415922
+  - 44.194173824159215
+  target_site_xy_mm:
+  - 44.19417382415922
+  - 44.194173824159215
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P1@45
+  - P1@45
+  apex_band_m:
+  - 0.875
+  - 0.925
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - -44.19417382415922
+  - -44.194173824159215
+  target_site_xy_mm:
+  - -44.19417382415922
+  - -44.194173824159215
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P2@45
+  - P2@45
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - 44.19417382415922
+  - 44.194173824159215
+  target_site_xy_mm:
+  - 44.19417382415922
+  - 44.194173824159215
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P1@45
+  - P1@45
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - -44.19417382415922
+  - -44.194173824159215
+  target_site_xy_mm:
+  - -44.19417382415922
+  - -44.194173824159215
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P2@90
+  - P2@90
+  apex_band_m:
+  - 0.825
+  - 0.875
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - 3.827021247335479e-15
+  - 62.5
+  target_site_xy_mm:
+  - 3.827021247335479e-15
+  - 62.5
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P1@90
+  - P1@90
+  apex_band_m:
+  - 0.825
+  - 0.875
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - -3.827021247335479e-15
+  - -62.5
+  target_site_xy_mm:
+  - -3.827021247335479e-15
+  - -62.5
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P2@90
+  - P2@90
+  apex_band_m:
+  - 0.875
+  - 0.925
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - 3.827021247335479e-15
+  - 62.5
+  target_site_xy_mm:
+  - 3.827021247335479e-15
+  - 62.5
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P1@90
+  - P1@90
+  apex_band_m:
+  - 0.875
+  - 0.925
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - -3.827021247335479e-15
+  - -62.5
+  target_site_xy_mm:
+  - -3.827021247335479e-15
+  - -62.5
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P2@90
+  - P2@90
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - 3.827021247335479e-15
+  - 62.5
+  target_site_xy_mm:
+  - 3.827021247335479e-15
+  - 62.5
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P1@90
+  - P1@90
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - -3.827021247335479e-15
+  - -62.5
+  target_site_xy_mm:
+  - -3.827021247335479e-15
+  - -62.5
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns_highlow
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - -0.03
+    - 0.008
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.6080000000000001
+  - 0.9499999999999998
+  release_site_xy_mm:
+  - 50.0
+  - 0.0
+  target_site_xy_mm:
+  - 50.0
+  - 0.0
+  dwell_s: 0.3151757007397771
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns_highlow
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 1.0250000000000001
+  - 1.075
+  landing_xy_m:
+  - - -0.03
+    - 0.008
+  - - -0.025
+    - 0.03
+  apex_m:
+  - 0.947625
+  - 1.05
+  release_site_xy_mm:
+  - -50.0
+  - 0.0
+  target_site_xy_mm:
+  - -50.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns_highlow
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - -0.008
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.6080000000000001
+  - 0.9499999999999998
+  release_site_xy_mm:
+  - -50.0
+  - 0.0
+  target_site_xy_mm:
+  - -50.0
+  - 0.0
+  dwell_s: 0.3151757007397771
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns_highlow
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 1.0250000000000001
+  - 1.075
+  landing_xy_m:
+  - - -0.008
+    - 0.03
+  - - -0.025
+    - 0.03
+  apex_m:
+  - 0.947625
+  - 1.05
+  release_site_xy_mm:
+  - 50.0
+  - 0.0
+  target_site_xy_mm:
+  - 50.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns_highlow
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 0.875
+  - 0.925
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - 50.0
+  - 0.0
+  target_site_xy_mm:
+  - 50.0
+  - 0.0
+  dwell_s: 0.31635085889508385
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns_highlow
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.975
+  - 1.025
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - -50.0
+  - 0.0
+  target_site_xy_mm:
+  - -50.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns_highlow
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.875
+  - 0.925
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - -50.0
+  - 0.0
+  target_site_xy_mm:
+  - -50.0
+  - 0.0
+  dwell_s: 0.31635085889508385
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns_highlow
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 0.975
+  - 1.025
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - 50.0
+  - 0.0
+  target_site_xy_mm:
+  - 50.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 0.975
+  - 1.025
+  landing_xy_m:
+  - - -0.03
+    - 0.01
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.7224999999999999
+  - 1.21
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.975
+  - 1.025
+  landing_xy_m:
+  - - -0.01
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.7224999999999999
+  - 1.21
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 1.0250000000000001
+  - 1.075
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.8505000000000001
+  - 1.2705
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 1.0250000000000001
+  - 1.075
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.8505000000000001
+  - 1.2705
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 1.0750000000000002
+  - 1.125
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.7040000000000002
+  - 1.3310000000000002
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 1.0750000000000002
+  - 1.125
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.7040000000000002
+  - 1.3310000000000002
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 1.125
+  - 1.1749999999999998
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.7360000000000002
+  - 1.3915000000000002
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 1.125
+  - 1.1749999999999998
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.7360000000000002
+  - 1.3915000000000002
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 1.175
+  - 1.2249999999999999
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.7680000000000001
+  - 1.4520000000000004
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 1.175
+  - 1.2249999999999999
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.7680000000000001
+  - 1.4520000000000004
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 1.225
+  - 1.275
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.8
+  - 1.378125
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 1.225
+  - 1.275
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.8
+  - 1.378125
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 1.2750000000000001
+  - 1.325
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.8320000000000002
+  - 1.4332500000000001
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 1.2750000000000001
+  - 1.325
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.8320000000000002
+  - 1.4332500000000001
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 1.3250000000000002
+  - 1.375
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.8640000000000002
+  - 1.4883750000000004
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 1.3250000000000002
+  - 1.375
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.8640000000000002
+  - 1.4883750000000004
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 1.375
+  - 1.4249999999999998
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.896
+  - 1.4000000000000001
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 1.375
+  - 1.4249999999999998
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.896
+  - 1.4000000000000001
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 1.425
+  - 1.4749999999999999
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.9279999999999999
+  - 1.45
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 1.425
+  - 1.4749999999999999
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.9279999999999999
+  - 1.45
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 1.475
+  - 1.525
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.9599999999999999
+  - 1.4999999999999996
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 1.475
+  - 1.525
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.9599999999999999
+  - 1.4999999999999996
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+  carry_zvd: true
+- pattern: oval_1ball
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 0.975
+  - 1.025
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.64
+  - 1.21
+  release_site_xy_mm:
+  - -75.0
+  - 0.0
+  target_site_xy_mm:
+  - 75.0
+  - 0.0
+  dwell_s: 0.4
+  planner_mode: pose
+  carry_zvd: true
+- pattern: oval_1ball
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 1.0250000000000001
+  - 1.075
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.672
+  - 1.2705
+  release_site_xy_mm:
+  - -75.0
+  - 0.0
+  target_site_xy_mm:
+  - 75.0
+  - 0.0
+  dwell_s: 0.4
+  planner_mode: pose
+  carry_zvd: true
+- pattern: oval_1ball
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 1.0750000000000002
+  - 1.125
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.7040000000000002
+  - 1.3310000000000002
+  release_site_xy_mm:
+  - -75.0
+  - 0.0
+  target_site_xy_mm:
+  - 75.0
+  - 0.0
+  dwell_s: 0.4
+  planner_mode: pose
+  carry_zvd: true
+- pattern: oval_1ball
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 0.975
+  - 1.025
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.64
+  - 1.21
+  release_site_xy_mm:
+  - -75.0
+  - 0.0
+  target_site_xy_mm:
+  - 75.0
+  - 0.0
+  dwell_s: 0.35
+  planner_mode: pose
+  carry_zvd: true
+- pattern: oval_1ball
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 1.0250000000000001
+  - 1.075
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.672
+  - 1.2705
+  release_site_xy_mm:
+  - -75.0
+  - 0.0
+  target_site_xy_mm:
+  - 75.0
+  - 0.0
+  dwell_s: 0.35
+  planner_mode: pose
+  carry_zvd: true
+- pattern: oval_1ball
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 1.0750000000000002
+  - 1.125
+  landing_xy_m:
+  - - -0.03
+    - 0.01
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.7040000000000002
+  - 1.3310000000000002
+  release_site_xy_mm:
+  - -75.0
+  - 0.0
+  target_site_xy_mm:
+  - 75.0
+  - 0.0
+  dwell_s: 0.35
+  planner_mode: pose
+  carry_zvd: true
+- pattern: oval_1ball
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 0.975
+  - 1.025
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - -75.0
+  - 0.0
+  target_site_xy_mm:
+  - 75.0
+  - 0.0
+  dwell_s: 0.3
+  planner_mode: pose
+  carry_zvd: true
+- pattern: oval_1ball
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 1.0250000000000001
+  - 1.075
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - -75.0
+  - 0.0
+  target_site_xy_mm:
+  - 75.0
+  - 0.0
+  dwell_s: 0.3
+  planner_mode: pose
+  carry_zvd: true
+- pattern: oval_1ball
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 1.0750000000000002
+  - 1.125
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - -75.0
+  - 0.0
+  target_site_xy_mm:
+  - 75.0
+  - 0.0
+  dwell_s: 0.3
+  planner_mode: pose
+  carry_zvd: true

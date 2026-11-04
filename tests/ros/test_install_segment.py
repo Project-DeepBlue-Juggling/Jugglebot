@@ -2375,6 +2375,63 @@ def test_an_unknown_planner_mode_is_refused_by_name_before_any_solve():
     assert node._active_plan is active_before and node._cycle is cycle_before
 
 
+# ── carry_zvd on the wire (carry-ring-zvd P1c, JB-102) ────────────────────────
+# Same switch discipline as planner_mode: skill_node's `carry_zvd` parameter
+# rides on every request, trajectory_node plans THAT install with it
+# (CycleGoals.pose_cfg via SegmentConfig.carry_zvd) and the reply names what
+# was solved. A bool cannot say "absent", so a request with an EMPTY
+# planner_mode (the pre-P3 / hand-built client) keeps the node's default.
+
+def _zvd_req(node, at, mode, flag):
+    req = _catch_throw_req(at + 0.5, at + 1.0)
+    req.planner_mode = mode
+    req.carry_zvd = flag
+    return node._svc_install_segment(req, InstallSegment.Response())
+
+
+def test_a_pose_request_plans_with_its_carry_zvd_flag_and_the_reply_names_it():
+    for flag in (True, False):
+        solver = _FakeSolver()
+        node = _solver_node(solver)
+        with _frozen_perf() as at:
+            resp = _zvd_req(node, at, 'pose', flag)
+        assert resp.accepted is True, (flag, resp.code, resp.message)
+        assert resp.planner_mode == 'pose'
+        assert solver.requests[0].cfg.carry_zvd is flag
+        assert resp.carry_zvd is flag
+        # per-install only: the node's own default is untouched
+        assert node._segment_cfg.carry_zvd is None
+
+
+def test_a_level_request_reports_carry_zvd_false_whatever_it_asked():
+    solver = _FakeSolver()
+    node = _solver_node(solver)
+    with _frozen_perf() as at:
+        resp = _zvd_req(node, at, 'level', True)
+    assert resp.accepted is True, resp.message
+    assert resp.planner_mode == 'level'
+    assert resp.carry_zvd is False
+
+
+def test_an_empty_planner_mode_request_keeps_the_nodes_carry_zvd_default():
+    solver = _FakeSolver()
+    node = _solver_node(solver)
+    with _frozen_perf() as at:
+        resp = _zvd_req(node, at, '', True)       # the flag is ignored here
+    assert resp.accepted is True, resp.message
+    assert solver.requests[0].cfg is node._segment_cfg
+    assert node._segment_cfg.carry_zvd is None
+
+
+def test_a_refused_install_reports_carry_zvd_false():
+    solver = _FakeSolver()
+    node = _solver_node(solver)
+    with _frozen_perf() as at:
+        resp = _zvd_req(node, at, 'banana', True)
+    assert resp.accepted is False and resp.code == 'PLANNER_MODE'
+    assert resp.carry_zvd is False
+
+
 def test_the_planner_mode_parameter_is_the_default_for_an_empty_request():
     node = _perf_node()
     assert node._segment_cfg.planner_mode == 'pose'

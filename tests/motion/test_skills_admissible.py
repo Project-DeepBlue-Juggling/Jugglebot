@@ -61,7 +61,7 @@ def _box(**overrides):
         pattern='hop', release_site_xy_mm=_DEFAULT_XY_MM,
         target_site_xy_mm=_DEFAULT_XY_MM,
         limits=dict(_LIMITS_DICT), gate_hash=_GATE_HASH, swept_at='2026-09-12',
-        dwell_s=_DWELL_S, planner_mode='level')
+        dwell_s=_DWELL_S, planner_mode='level', carry_zvd=False)
     kwargs.update(overrides)
     return ab.AdmissibleBox(**kwargs)
 
@@ -74,7 +74,7 @@ def _empty_box(**overrides):
         release_site_xy_mm=_DEFAULT_XY_MM, target_site_xy_mm=_DEFAULT_XY_MM,
         limits=dict(_LIMITS_DICT),
         gate_hash=_GATE_HASH, swept_at='2026-09-12', dwell_s=_DWELL_S,
-        planner_mode='level')
+        planner_mode='level', carry_zvd=False)
     kwargs.update(overrides)
     return ab.AdmissibleBox(**kwargs)
 
@@ -290,11 +290,11 @@ def test_select_requires_dwell_s():
 # -- planner_mode stamp (two-ball-oval P3, 2026-10-23) ---------------------------
 
 def _miss(boxes, pattern='oval_1ball', apex=0.90, dwell_s=_DWELL_S,
-          planner_mode='level'):
+          planner_mode='level', carry_zvd=False):
     return ab.describe_miss(boxes, pattern, ('P1', 'P2'), apex,
                             release_site_xy_mm=_DEFAULT_XY_MM,
                             target_site_xy_mm=_DEFAULT_XY_MM, dwell_s=dwell_s,
-                            planner_mode=planner_mode)
+                            planner_mode=planner_mode, carry_zvd=carry_zvd)
 
 
 def test_planner_modes_vocabulary_equals_unified_cycles():
@@ -375,6 +375,82 @@ def test_select_treats_an_unstamped_box_as_matching_no_planner_mode():
         assert _sel([box], 'hop', ('P1', 'P2'), 0.90, planner_mode=mode) is None
     assert 'planner_mode' in _miss([box], pattern='hop') and 'unstamped' in _miss(
         [box], pattern='hop')
+
+
+# -- carry_zvd stamp (carry-ring-zvd P1c, JB-102) --------------------------------
+
+def test_box_rejects_a_carry_zvd_that_is_not_a_bool():
+    with pytest.raises(ValueError, match='carry_zvd'):
+        _box(carry_zvd='true')
+    assert _box(carry_zvd=None).carry_zvd is None
+
+
+def test_select_refuses_a_cell_swept_under_the_other_zvd_flag_and_names_it():
+    off = _box(pattern='oval_1ball', planner_mode='pose', carry_zvd=False)
+    assert _sel([off], 'oval_1ball', ('P1', 'P2'), 0.90,
+                planner_mode='pose', carry_zvd=False) is off
+    assert _sel([off], 'oval_1ball', ('P1', 'P2'), 0.90,
+                planner_mode='pose', carry_zvd=True) is None
+    msg = _miss([off], planner_mode='pose', carry_zvd=True)
+    assert msg.startswith('carry_zvd') and 'true' in msg and 'false' in msg
+    assert 'planner_mode' not in msg and 'dwell_s' not in msg
+    on = _box(pattern='oval_1ball', planner_mode='pose', carry_zvd=True)
+    assert _sel([off, on], 'oval_1ball', ('P1', 'P2'), 0.90,
+                planner_mode='pose', carry_zvd=True) is on
+    assert _sel([off, on], 'oval_1ball', ('P1', 'P2'), 0.90,
+                planner_mode='pose', carry_zvd=False) is off
+
+
+def test_the_zvd_flag_is_inert_for_a_level_request():
+    lvl = _box(pattern='oval_1ball', planner_mode='level', carry_zvd=False)
+    for flag in (False, True):
+        assert _sel([lvl], 'oval_1ball', ('P1', 'P2'), 0.90,
+                    planner_mode='level', carry_zvd=flag) is lvl
+
+
+def test_an_unstamped_zvd_box_matches_no_flag_value_and_the_miss_says_so():
+    box = _box(planner_mode='pose', carry_zvd=None)
+    for flag in (False, True):
+        assert _sel([box], 'hop', ('P1', 'P2'), 0.90,
+                    planner_mode='pose', carry_zvd=flag) is None
+    msg = _miss([box], pattern='hop', planner_mode='pose')
+    assert msg.startswith('carry_zvd') and 'unstamped' in msg
+
+
+def test_zvd_flag_cells_coexist_and_the_yaml_round_trips(tmp_path):
+    off = _box(pattern='oval_1ball', planner_mode='pose', carry_zvd=False)
+    on = _box(pattern='oval_1ball', planner_mode='pose', carry_zvd=True)
+    legacy = _box(pattern='hop', planner_mode='pose', carry_zvd=None)
+    path = str(tmp_path / 'x.yaml')
+    ab.dump(path, [off, on, legacy])
+    got = ab.load(path)
+    assert [b.carry_zvd for b in got] == [False, True, None]
+    # an old file with NO carry_zvd key loads unstamped (tolerated, matches nothing)
+    import yaml
+    ab.dump(path, [off, legacy])
+    with open(path) as fh:
+        doc = yaml.safe_load(fh)
+    for b in doc['boxes']:
+        b.pop('carry_zvd')
+    with open(path, 'w') as fh:
+        yaml.safe_dump(doc, fh, sort_keys=False)
+    assert [b.carry_zvd for b in ab.load(path)] == [None, None]
+    # a non-bool value is refused by the loader
+    doc['boxes'][0]['carry_zvd'] = 'yes'
+    with open(path, 'w') as fh:
+        yaml.safe_dump(doc, fh, sort_keys=False)
+    with pytest.raises(ab.AdmissibleError, match='carry_zvd'):
+        ab.load(path)
+
+
+def test_overlap_refusal_keys_on_carry_zvd(tmp_path):
+    path = str(tmp_path / 'x.yaml')
+    off = _box(pattern='oval_1ball', planner_mode='pose', carry_zvd=False)
+    on = _box(pattern='oval_1ball', planner_mode='pose', carry_zvd=True)
+    ab.dump(path, [off, on])                      # same band, different flag: fine
+    with pytest.raises(ValueError, match='carry_zvd'):
+        ab.dump(path, [off, _box(pattern='oval_1ball', planner_mode='pose',
+                                 carry_zvd=False)])
 
 
 def test_select_and_describe_miss_require_planner_mode():
@@ -764,10 +840,10 @@ def test_load_refuses_a_box_missing_apex_m():
 # ---------------------------------------------------------------------------
 
 def _sel(boxes, pattern, pair, apex, xy=_DEFAULT_XY_MM, dwell_s=_DWELL_S,
-         planner_mode='level'):
+         planner_mode='level', carry_zvd=False):
     return ab.select(boxes, pattern, pair, apex, release_site_xy_mm=xy,
                      target_site_xy_mm=xy, dwell_s=dwell_s,
-                     planner_mode=planner_mode)
+                     planner_mode=planner_mode, carry_zvd=carry_zvd)
 
 
 def test_select_hits_a_box_covering_the_apex():
@@ -1569,7 +1645,7 @@ def test_single_apex_boxes_records_the_requested_band_not_the_grid_derived_one(
 
     def _fake_sweep(*, flights_s, offsets_mm, dwell_s, separation_mm, leg_vel,
                     leg_acc, leg_jerk, hand_acc, center_flight_s, site_pairs,
-                    pattern_flight_s, log, planner_mode='level', swept_at=None):
+                    pattern_flight_s, log, planner_mode='level', carry_zvd=False, swept_at=None):
         modes.append(planner_mode)
         # P3 (2026-10-24): the ladder stamps ONE date per invocation and passes it
         # to every apex's sweep call (a midnight straddle mixed two dates in one
@@ -1589,7 +1665,7 @@ def test_single_apex_boxes_records_the_requested_band_not_the_grid_derived_one(
             limits=dict(leg_vel_mmps=leg_vel, leg_acc_mmps2=leg_acc,
                        leg_jerk_mmps3=leg_jerk, hand_acc_rps2=hand_acc),
             gate_hash=sweep_mod.ab.gate_hash(), swept_at='2026-09-14',
-            planner_mode=planner_mode)
+            planner_mode=planner_mode, carry_zvd=False)
         return [box], []
 
     monkeypatch.setattr(sweep_mod, 'sweep', _fake_sweep)
@@ -1963,7 +2039,7 @@ def test_columns_highlow_is_its_own_box_pattern():
         landing_xy_m=((-0.01, 0.01), (-0.01, 0.01)), apex_m=(1.0, 1.1),
         pattern=sc.COLUMNS_HIGHLOW, release_site_xy_mm=xy,
         target_site_xy_mm=xy, limits=dict(_LIMITS_DICT), gate_hash=_GATE_HASH,
-        swept_at='2026-10-30', dwell_s=0.27, planner_mode='pose')
+        swept_at='2026-10-30', dwell_s=0.27, planner_mode='pose', carry_zvd=False)
     kw = dict(release_site_xy_mm=xy, target_site_xy_mm=xy, dwell_s=0.27,
               planner_mode='pose')
     assert ab.select([cell], 'columns', ('P1', 'P1'), 1.05, **kw) is None
@@ -2088,13 +2164,24 @@ def test_p4_resweep_kept_every_pose_cell_room_and_added_one_ball_oval_dwells():
     +x side (1 / 10 / 25 mm).  Deliberately not pinned: the LEVEL planner's
     cells and the self_toss cells, several of which lost room to MARGIN (the
     realize config scales with the leg acc limit against the same jerk
-    ceiling, and the level planner's tilt-accel cap rose 5 -> 8 rad/s^2)."""
+    ceiling, and the level planner's tilt-accel cap rose 5 -> 8 rad/s^2).
+
+    2026-11-04/05 (carry-ring-zvd P2 re-sweep, gate_hash e8d303ae93bc, 195
+    cells): every old cell is still present stamped carry_zvd=False (the 113
+    above, value-equal), so the comparison is against the flag-off cells only;
+    82 flag-on pose cells are added, 25 of them EMPTY (the ZVD rows made them
+    infeasible, e.g. Columns Dwell 0.27 Apex 0.95), and the oval_1ball P1->P2
+    Dwell 0.40 Apex 1.00 flag-on cell keeps the full 30 mm x room (the P2 gate)."""
     import math
     import yaml as _y
     with open(_PRE_P4_BOX) as fh:
         old = _y.safe_load(fh)
     with open(_COMMITTED_BOX) as fh:
-        new = _y.safe_load(fh)
+        full = _y.safe_load(fh)
+    new = dict(full)
+    new['boxes'] = [b for b in full['boxes'] if b.get('carry_zvd') is False]
+    flag_on = [b for b in full['boxes'] if b.get('carry_zvd') is True]
+    assert len(full['boxes']) == 195 and len(flag_on) == 82
     assert old['limits'] == {'leg_vel_mmps': 350.0, 'leg_acc_mmps2': 5000.0,
                              'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': 4500.0}
     assert new['limits'] == {'leg_vel_mmps': 600.0, 'leg_acc_mmps2': 8000.0,
@@ -2132,3 +2219,16 @@ def test_p4_resweep_kept_every_pose_cell_room_and_added_one_ball_oval_dwells():
     assert all(room(b) == pytest.approx(0.030) for b in added[:6])
     assert [b['landing_xy_m'][0][1] for b in added[6:]] == \
         pytest.approx([0.001, 0.010, 0.025])
+
+    # P2 re-sweep: the flag-on cells and the 25 the ZVD rows emptied (record)
+    empties = sorted((b['pattern'], round(b['dwell_s'], 3), tuple(round(x, 3) for x in b['apex_band_m']))
+                     for b in flag_on if math.isnan(b['apex_m'][0]))
+    assert len(empties) == 25, empties
+    assert ('columns', 0.27, (0.925, 0.975)) in empties
+    assert sum(e[0] == 'columns' for e in empties) == 18
+    assert sum(e[0] == 'columns_highlow' for e in empties) == 4
+    assert sum(e[0] == 'oval_1ball' for e in empties) == 3     # Dwell 0.30 x Apex 1.00/1.05/1.10
+    ov = [b for b in flag_on if b['pattern'] == 'oval_1ball'
+          and tuple(b['site_pair']) == ('P1', 'P2') and b['dwell_s'] == 0.40
+          and b['apex_band_m'][0] <= 1.00 <= b['apex_band_m'][1]]
+    assert len(ov) == 1 and room(ov[0]) == pytest.approx(0.030), ov

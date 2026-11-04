@@ -440,8 +440,40 @@ class PoseConfig:
     #: Sides of the inscribed polygon the cone is written as (8: the ticket-09
     #: prototype's; the polygon is INSIDE the cone, so it is conservative).
     cone_sides: int = 8
+    #: I-PLAN-16 (carry-ring-zvd, JB-102): the ZVD rows on the modelled Platform
+    #: mode at the release knot (:func:`_zvd_rows`).  False = not assembled, the
+    #: pose program byte for byte as before (``trajectory_op.carry_zvd``).
+    carry_zvd: bool = bool(hw.JB_TRAJ_CARRY_ZVD)
+    #: The Platform lateral mode(s) per axis ``(x, y)``: each entry a frequency
+    #: (Hz) or a tuple of them (one mode per element); ``mode_zeta`` the same
+    #: shape.  ``mode_delay_s``: the mode is driven by ``a_cmd(t - delay)``.
+    mode_hz: tuple = tuple(hw.JB_TRAJ_PLATFORM_MODE_HZ)
+    mode_zeta: tuple = tuple(hw.JB_TRAJ_PLATFORM_MODE_ZETA)
+    mode_delay_s: float = float(hw.JB_TRAJ_PLATFORM_MODE_DELAY_S)
 
     def __post_init__(self):
+        def _per_axis(v, name):
+            if isinstance(v, (list, tuple)) and len(v) == 2:
+                out = tuple(tuple(float(q) for q in e) if isinstance(e, (list, tuple))
+                            else float(e) for e in v)
+                object.__setattr__(self, name, out)
+                return [(e,) if isinstance(e, float) else e for e in out]
+            raise ValueError("%s must be a per-axis (x, y) pair, got %r" % (name, v))
+        hz = _per_axis(self.mode_hz, 'mode_hz')
+        ze = _per_axis(self.mode_zeta, 'mode_zeta')
+        for i in (0, 1):
+            if len(hz[i]) != len(ze[i]) or not hz[i]:
+                raise ValueError("mode_hz and mode_zeta must list the same (>= 1) "
+                                 "modes per axis, got %r / %r"
+                                 % (self.mode_hz, self.mode_zeta))
+            if not all(np.isfinite(f_) and f_ > 0.0 for f_ in hz[i]):
+                raise ValueError("mode_hz must be > 0, got %r" % (self.mode_hz,))
+            if not all(0.0 <= z_ < 1.0 for z_ in ze[i]):
+                raise ValueError("mode_zeta must be in [0, 1) (an underdamped mode), "
+                                 "got %r" % (self.mode_zeta,))
+        if not (np.isfinite(float(self.mode_delay_s))
+                and float(self.mode_delay_s) >= 0.0):
+            raise ValueError("mode_delay_s must be >= 0, got %r" % (self.mode_delay_s,))
         if not 0.0 < float(self.cone_deg) < 90.0:
             raise ValueError("cone_deg must be in (0, 90), got %r" % (self.cone_deg,))
         if not float(self.floor_g) >= 0.0:
@@ -485,6 +517,13 @@ class PoseSpec:
     cfg: PoseConfig = PoseConfig()
     dz0: Optional[np.ndarray] = None
     cup_tilt_center_z_m: float = float(CUP_TILT_CENTER_Z_MM) / 1000.0
+    #: I-PLAN-16: the Platform mode state the seed carries in, one row per mode
+    #: in :func:`zvd_modes` order: ``(e mm, e' mm/s)`` or with the sensitivities
+    #: ``(e, e', de/dw, de'/dw)``, the state at window time ``mode_delay_s``
+    #: (every commanded acceleration before knot 0 has entered by then; the
+    #: window's own enters from there).  None = at rest.  Read only with
+    #: ``cfg.carry_zvd``.
+    mode0: Optional[np.ndarray] = None
 
     def __post_init__(self):
         J = np.asarray(self.jacobian, dtype=float)
@@ -1090,6 +1129,13 @@ class _Program:
     #: state ``(m, m/s, m/s²)`` so :func:`plan_window` can integrate it.
     n_dz: int = 0
     dz0: Optional[np.ndarray] = None
+    #: I-PLAN-16's ring rows, the LAST ``len(ring_names)`` rows of ``Aeq``
+    #: (none with ``carry_zvd`` off): ``ring_R @ x + ring_c`` is the modelled
+    #: mode state at release, UNSCALED (mm, mm/s), kept so a ``RING`` refusal
+    #: can name the residual the ring-less plan would have had.
+    ring_R: Optional[np.ndarray] = None
+    ring_c: Optional[np.ndarray] = None
+    ring_names: tuple = ()
     #: Row-layout bookkeeping for REFUSAL MESSAGES ONLY (:func:`_row_label`):
     #: where each equality group starts, the name and width of each inequality
     #: column block, and the held-knot range that shapes the jerk box.  Plain
@@ -2247,9 +2293,9 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
                               - ca[n, 2]]))
 
     # ---- the `pose` planner's blocks, after every level column ------------
-    n_dz, dz0 = 0, None
+    n_dz, dz0, ring = 0, None, None
     if pose is not None:
-        H, f, Aeq, beq, cols, rhss, n_dz, dz0 = _pose_augment(
+        H, f, Aeq, beq, cols, rhss, n_dz, dz0, ring = _pose_augment(
             pose, n, dt, H, f, Aeq, beq, cols, rhss, col_tags,
             Ap, Av, Aa, Cp, Cv, Ca, cp, cv, ca, throw, catch, k_td,
             holds_ball_at_start=bool(holds_ball_at_start), axis=axis,
@@ -2269,6 +2315,9 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
                                   np.asarray(catch.site, float).reshape(3)),
                     capture_kappa=(None if not capture_k else kappa),
                     n_dz=int(n_dz), dz0=dz0,
+                    ring_R=(None if ring is None else ring[0]),
+                    ring_c=(None if ring is None else ring[1]),
+                    ring_names=(() if ring is None else ring[2]),
                     eq_marks=tuple(eq_marks), ineq_names=tuple(ineq_names),
                     ineq_widths=ineq_widths, held_knots=held_knots)
 
@@ -2354,6 +2403,250 @@ def _slider_rewrite(cols, rhss, col_tags, n: int, cp_dz, cv_dz, ca_dz,
         cols[blk_i] = np.vstack([blk, ext])
 
 
+# ---------------------------------------------------------------------------
+# I-PLAN-16: the carry ZVD rows (carry-ring-zvd P1, JB-102)
+# ---------------------------------------------------------------------------
+#
+# The legs carry no acceleration feedforward, so the Platform follows its
+# command through a lightly damped lateral mode.  Modelled per lateral axis
+# and per mode as ``e'' + 2ζω e' + ω² e = a_cmd(t − τ)`` (e in mm: the
+# Platform's excursion off its command), the state at the release knot is a
+# fixed LINEAR functional of the window's commanded Platform acceleration —
+# which, with the tilt prescribed, is affine in the cup jerk variables.  The
+# rows below pin that state, and its derivative in ω, to zero.
+
+#: Gauss-Legendre nodes per 25 ms span for the convolution (parity with the
+#: gate's ``feasibility._CYCLE_SAMPLES_PER_KNOT`` = 4).  The integrand inside a
+#: span is the cup's constant-jerk cubic times a smooth prescribed-tilt factor
+#: times the mode kernel (≲ 1 rad of phase per span at 6 Hz), and the tilt
+#: series' piece boundaries sit on knots, so 4 nodes (exact to degree 7) are at
+#: the floating-point floor of the functional (``test_cup_zvd`` checks against
+#: a 1 ms RK4 of the same ODE).
+ZVD_NODES_PER_SPAN = 4
+_GL_X, _GL_W = np.polynomial.legendre.leggauss(ZVD_NODES_PER_SPAN)
+_ZVD_QTY = ("e", "e'", "de/dw", "de'/dw")
+
+
+def zvd_modes(cfg: PoseConfig):
+    """``[(axis, ω rad/s, ζ), ...]`` in ring-row order (x modes, then y)."""
+    out = []
+    for i in (0, 1):
+        hz, ze = cfg.mode_hz[i], cfg.mode_zeta[i]
+        hz = hz if isinstance(hz, tuple) else (hz,)
+        ze = ze if isinstance(ze, tuple) else (ze,)
+        for f_hz, z_ in zip(hz, ze):
+            out.append((i, 2.0 * np.pi * float(f_hz), float(z_)))
+    return out
+
+
+def _mode_kernels(omega: float, zeta: float, s) -> np.ndarray:
+    """``(4, m)``: the mode's impulse response ``h(s)``, its rate ``h'(s)`` and
+    their EXACT derivatives in ω, at lags ``s`` (s).
+
+    With ``μ = −ζ + i·√(1 − ζ²)`` the poles are ``ωμ`` and
+    ``h = Im(e^{ωμs}) / (ω Im μ)``, ``h' = Im(μ e^{ωμs}) / Im μ``; the ω
+    derivatives follow in closed form (``∂/∂ω e^{ωμs} = μ s e^{ωμs}``).
+    Analytic rather than a central difference in ω: no step to choose, and
+    the rows are the true first-order ZVD conditions.
+    """
+    s = np.asarray(s, dtype=float)
+    mu = complex(-zeta, np.sqrt(1.0 - zeta * zeta))
+    im = mu.imag
+    E = np.exp(omega * mu * s)
+    h = E.imag / (omega * im)
+    hd = (mu * E).imag / im
+    dh = (mu * s * E).imag / (omega * im) - E.imag / (omega * omega * im)
+    dhd = (mu * mu * s * E).imag / im
+    return np.stack([h, hd, dh, dhd])
+
+
+def _mode_free_stack(omega: float, zeta: float, s) -> np.ndarray:
+    """``(m, 4, 4)``: :func:`_mode_free` at each lag in ``s`` (vectorised)."""
+    s = np.atleast_1d(np.asarray(s, dtype=float))
+    h, hd, dh, dhd = _mode_kernels(omega, zeta, s)
+    w2 = omega * omega
+    p11 = hd + 2.0 * zeta * omega * h
+    z = np.zeros_like(h)
+    return np.stack([
+        np.stack([p11, h, z, z], axis=-1),
+        np.stack([-w2 * h, hd, z, z], axis=-1),
+        np.stack([dhd + 2.0 * zeta * h + 2.0 * zeta * omega * dh, dh, p11, h],
+                 axis=-1),
+        np.stack([-2.0 * omega * h - w2 * dh, dhd, -w2 * h, hd], axis=-1)],
+        axis=1)
+
+
+def _mode_free(omega: float, zeta: float, s: float) -> np.ndarray:
+    """``(4, 4)``: ``z(s) = Φ z(0)`` for ``z = (e, e', ∂e/∂ω, ∂e'/∂ω)`` with no
+    input — the free response a seed's ring (``PoseSpec.mode0``) contributes."""
+    return _mode_free_stack(omega, zeta, [float(s)])[0]
+
+
+_SEED_NODES = 6
+_SEED_X, _SEED_W = np.polynomial.legendre.leggauss(_SEED_NODES)
+
+
+def platform_mode_state(plan, meta, k: int, pose_cfg=None) -> np.ndarray:
+    """``(M, 4)`` mode state a window seeded at knot ``k`` of ``plan`` inherits
+    as ``PoseSpec.mode0``: per mode of :func:`zvd_modes` the state
+    ``(e, e', ∂e/∂ω, ∂e'/∂ω)`` of the modelled lateral ring driven by the
+    REALISED Platform acceleration over knots ``0..k`` (the second derivative
+    of the cubic Hermite the wire carries, ``plan.pose`` / ``plan.pose_vel``,
+    piecewise linear per span), taken at the undelayed time ``k·dt``.  Because
+    the mode sees the acceleration ``mode_delay_s`` late, that IS the state at
+    window time ``τ`` that :class:`PoseSpec` documents for ``mode0`` (exact: the
+    last ``τ`` of the head's acceleration is the new window's own).
+
+    APPROXIMATION: the mode is assumed at rest at the plan's knot 0.  Exact for
+    a rest start; for a head that itself began mid-ring (a spliced or chained
+    head) the head's own seed ring is not folded in, so its free decay (6 Hz,
+    ζ 0.17: ~e^-6.4 per second) is missed — P3's problem if a flown seam shows it.
+
+    Vectorised: per-span moments by Gauss-Legendre, then
+    ``x_k = Σ_j Φ((k-1-j)·dt) c_j`` with ``Φ`` the exact free response
+    (semigroup), no per-knot Python loop.  ``pose_cfg`` defaults to the head's
+    own (``meta.goals.pose_cfg``, else ``PoseConfig()``).
+    """
+    if pose_cfg is None:
+        g = getattr(meta, 'goals', None)
+        pose_cfg = g.pose_cfg if g is not None and g.pose_cfg is not None \
+            else PoseConfig()
+    k = int(k)
+    modes = zvd_modes(pose_cfg)
+    out = np.zeros((len(modes), 4))
+    if k <= 0:
+        return out
+    dt = float(meta.dt)
+    sn = (_SEED_X + 1.0) / 2.0            # span fraction at each node
+    wn = _SEED_W / 2.0 * dt
+    for j, (i, omega, zeta) in enumerate(modes):
+        P = np.asarray(plan.pose[:k + 1, i], dtype=float)
+        V = np.asarray(plan.pose_vel[:k + 1, i], dtype=float)
+        P0, P1, V0, V1 = P[:-1], P[1:], V[:-1], V[1:]
+        a0 = (-6 * P0 - 4 * dt * V0 + 6 * P1 - 2 * dt * V1) / dt ** 2
+        a1 = (6 * P0 + 2 * dt * V0 - 6 * P1 + 4 * dt * V1) / dt ** 2
+        Kn = _mode_kernels(omega, zeta, dt * (1.0 - sn)) * wn      # (4, nodes)
+        # a(s) = a0 + (a1 - a0) s: moments of the kernel against 1 and s
+        m0 = Kn.sum(axis=1)
+        m1 = Kn @ sn
+        c = a0[:, None] * (m0 - m1) + a1[:, None] * m1             # (k, 4)
+        Phi = _mode_free_stack(omega, zeta, np.arange(k) * dt)     # (k, 4, 4)
+        out[j] = np.einsum('jab,jb->a', Phi[::-1], c)
+    return out
+
+
+def _cubic_moment_rows(g, spow, n_sp: int, n: int, Ap, Av, Aa):
+    """``g @ P`` for the cup's constant-jerk cubic sampled at the nodes, per
+    weighting row of ``g`` (``(r, Q)``, Q = ``n_sp`` spans x
+    :data:`ZVD_NODES_PER_SPAN` nodes; ``spow`` ``(4, n_sp, nodes)`` the node
+    offsets into their span to the powers 0..3): returns
+    ``(gA, gV, gP)``, each ``(r, n)``, the weighted sums of the acceleration,
+    velocity and position rows ``Aa[k] + s·e_k``, ``Av[k] + Aa[k]·s + s²/2·e_k``,
+    ``Ap[k] + Av[k]·s + Aa[k]·s²/2 + s³/6·e_k``.  Reduced to per-span moments
+    of ``g`` first, so the cost is a few ``(r, n_sp) @ (n_sp, n)`` products
+    instead of a ``(Q, n)`` matrix per quantity (measured: 4.3 -> <1 ms at 61
+    knots, the pose budget's binding cell)."""
+    m0, m1, m2, m3 = np.einsum('rkq,pkq->prk',
+                               g.reshape(g.shape[0], n_sp, ZVD_NODES_PER_SPAN), spow)
+    A_, V_, P_ = Aa[:n_sp], Av[:n_sp], Ap[:n_sp]
+    gA = m0 @ A_
+    gA[:, :n_sp] += m1
+    gV = m0 @ V_ + m1 @ A_
+    gV[:, :n_sp] += 0.5 * m2
+    gP = m0 @ P_ + m1 @ V_ + 0.5 * m2 @ A_
+    gP[:, :n_sp] += m3 / 6.0
+    return gA, gV, gP
+
+
+def _platform_acc_functional(i: int, Kw, n: int, nv: int, n_sp: int, kq, sq,
+                             spow, a0, a1, a2, Ap, Av, Aa, cp, cv, ca, c_mm: float):
+    """``(R (r, nv), c (r,))`` with ``R @ x + c = Σ_q Kw[:, q] · X_i''(u_q)``:
+    the node-weighted sum of lateral axis ``i``'s COMPOSED Platform
+    acceleration (mm/s²).  The second-derivative sibling of the leg-jerk
+    block's ``M``: ``X_i'' = 1000 c_i'' − (1000 c_z'' a_i + 2000 c_z' a_i' +
+    (1000 c_z − C) a_i'')`` with ``(a, a', a'')`` the prescribed axis's
+    component and its rates at the node, the cup terms the exact constant-jerk
+    cubic inside the span (the skid block's ``r_vtd`` pattern)."""
+    R = np.zeros((Kw.shape[0], nv))
+    r = Kw.shape[0]
+    gA, gV, gP = _cubic_moment_rows(
+        np.vstack([Kw, Kw * a0[None, :, i], Kw * a1[None, :, i], Kw * a2[None, :, i]]),
+        spow, n_sp, n, Ap, Av, Aa)
+    R[:, i * n:(i + 1) * n] = 1000.0 * gA[:r]
+    R[:, 2 * n:3 * n] = -(1000.0 * gA[r:2 * r] + 2000.0 * gV[2 * r:3 * r]
+                          + 1000.0 * gP[3 * r:])
+    s2 = sq[:, None]
+    cA = ca[kq]
+    cV = cv[kq] + ca[kq] * s2
+    cP = cp[kq] + cv[kq] * s2 + 0.5 * ca[kq] * s2 ** 2
+    x0 = 1000.0 * cA[:, i] - (1000.0 * cA[:, 2] * a0[:, i]
+                              + 2000.0 * cV[:, 2] * a1[:, i]
+                              + (1000.0 * cP[:, 2] - c_mm) * a2[:, i])
+    return R, Kw @ x0
+
+
+def _zvd_rows(pose: PoseSpec, n: int, dt: float, nv: int, tl, Ap, Av, Aa,
+              cp, cv, ca):
+    """I-PLAN-16's rows: ``(R (4M, nv), c (4M,), names)`` with ``R @ x + c`` the
+    modelled mode state ``(e mm, e' mm/s, ∂e/∂ω, ∂e'/∂ω)`` of each of the ``M``
+    modes (:func:`zvd_modes`) at the release knot ``t_n = n·dt``.
+
+    The state at ``t_n`` is the free response of ``mode0`` (the state at
+    ``τ``) plus ``∫₀^{T'} K(T' − u) a(u) du`` with ``T' = t_n − τ``: the last
+    ``τ`` of the window's acceleration has not reached the mode by the release
+    (it is the next window's seed, P1b).  The integral runs span by span (the
+    last one partial when ``τ`` is not a knot multiple) on
+    :data:`ZVD_NODES_PER_SPAN` Gauss-Legendre nodes; ``tl`` is
+    :func:`_pose_augment`'s checked tilt callable, differentiated with the
+    leg-jerk block's own central differences (``h = 2e-4 s``; no node lies
+    within ``h`` of a span end, so no difference straddles a tilt piece).
+    Vectorised: no per-knot Python loop (the pose budget rule)."""
+    pcfg = pose.cfg
+    tau = float(pcfg.mode_delay_s)
+    t_end = n * dt - tau
+    if not t_end > 0.0:
+        raise ValueError("the window (%.3f s) is not longer than the mode delay "
+                         "(%.3f s)" % (n * dt, tau))
+    n_sp = int(np.ceil(t_end / dt - 1e-9))
+    k_sp = np.arange(n_sp)
+    L = np.minimum(dt, t_end - k_sp * dt)
+    kq = np.repeat(k_sp, ZVD_NODES_PER_SPAN)
+    sq = (np.repeat(L, ZVD_NODES_PER_SPAN) * (np.tile(_GL_X, n_sp) + 1.0) / 2.0)
+    wq = np.repeat(L, ZVD_NODES_PER_SPAN) * np.tile(_GL_W, n_sp) / 2.0
+    uq = kq * dt + sq
+    spow = sq.reshape(1, n_sp, ZVD_NODES_PER_SPAN) ** np.arange(4)[:, None, None]
+    h = 2e-4
+    q_n = uq.size
+    ax3 = _axes_from_tilts(tl(np.concatenate([uq, uq + h, uq - h])))
+    a0, ap, am = ax3[:q_n], ax3[q_n:2 * q_n], ax3[2 * q_n:]
+    a1 = (ap - am) / (2.0 * h)
+    a2 = (ap - 2.0 * a0 + am) / h ** 2
+    c_mm = 1000.0 * float(pose.cup_tilt_center_z_m)
+    modes = zvd_modes(pcfg)
+    m0 = None
+    if pose.mode0 is not None:
+        m0 = np.asarray(pose.mode0, dtype=float)
+        if m0.ndim != 2 or m0.shape[0] != len(modes) or m0.shape[1] not in (2, 4) \
+                or not np.all(np.isfinite(m0)):
+            raise ValueError("mode0 must be a finite (%d, 2|4) array (one row per "
+                             "mode), got shape %s" % (len(modes), m0.shape))
+        if m0.shape[1] == 2:
+            m0 = np.hstack([m0, np.zeros((len(modes), 2))])
+    R, c, names = [], [], []
+    for j, (i, omega, zeta) in enumerate(modes):
+        Kw = _mode_kernels(omega, zeta, t_end - uq) * wq[None, :]
+        Rj, cj = _platform_acc_functional(i, Kw, n, nv, n_sp, kq, sq, spow,
+                                          a0, a1, a2,
+                                          Ap, Av, Aa, cp, cv, ca, c_mm)
+        R.append(Rj)
+        if m0 is not None:
+            cj = cj + _mode_free(omega, zeta, t_end) @ m0[j]
+        c.append(cj)
+        names.extend("%s %.2f Hz mode %s" % (_AXIS[i], omega / (2.0 * np.pi), q)
+                     for q in _ZVD_QTY)
+    return np.vstack(R), np.concatenate(c), tuple(names)
+
+
 def _pose_augment(pose: PoseSpec, n: int, dt: float, H, f, Aeq, beq, cols, rhss,
                   col_tags, Ap, Av, Aa, Cp, Cv, Ca, cp, cv, ca, throw, catch,
                   k_td: int, *, holds_ball_at_start: bool, axis, capture_k: int,
@@ -2363,9 +2656,10 @@ def _pose_augment(pose: PoseSpec, n: int, dt: float, H, f, Aeq, beq, cols, rhss,
     The level program's pieces arrive UNNORMALISED (``cols`` / ``rhss`` as
     :func:`_assemble` built them, ``Aeq`` / ``beq`` already row-scaled) and go
     back the same way; :func:`_assemble` normalises the columns once, after
-    this.  Five blocks (plan two-ball-oval § 2.5, ticket 11's formulation,
-    re-measured through the production holds 2026-10-23; the skid rows added
-    2026-10-24 from the A/B sittings):
+    this.  The blocks, in EXECUTION order (plan two-ball-oval § 2.5, ticket
+    11's formulation, re-measured through the production holds 2026-10-23; the
+    skid rows added 2026-10-24 from the A/B sittings; the ring rows 2026-11-04,
+    carry-ring-zvd P1):
 
     1. **The leg-jerk objective** ``w/n/1e6 · Σ_k |J0 · pose'''_k|²`` on the
        continuous jerk of the COMPOSED pose at every jerk knot ``k``:
@@ -2378,7 +2672,10 @@ def _pose_augment(pose: PoseSpec, n: int, dt: float, H, f, Aeq, beq, cols, rhss,
        VARIABLE would make the lever bilinear and the program non-convex.
        Leg VELOCITY is not in the objective, which is why a free z band spends
        it (measured: +57..+62 mm/s for the same peak jerk).
-    2. **C-CUP-4 rows** on every loaded knot ``catch + 1 .. n − 2``: the
+    2. **The dz block** (only with ``cfg.z_band_mm > 0``): see 5 below — it
+       executes here, before the C-CUP-4 rows, so its equality rows sit right
+       after the level ones.
+    3. **C-CUP-4 rows** on every loaded knot ``catch + 1 .. n − 2``: the
        specific force ``s = a − g`` expressed in the PRESCRIBED cup frame
        (``R_kᵀ s``, ``R_k`` the knot's rotation) must satisfy the inscribed
        ``cone_sides``-gon ``u_i · s_xy <= s_z · tan θ · cos(π/m)`` and the
@@ -2386,7 +2683,7 @@ def _pose_augment(pose: PoseSpec, n: int, dt: float, H, f, Aeq, beq, cols, rhss,
        _cup_seating_check``, 45° / 0.30 g, judged from the stroke end) stays
        the authority on the REALISED plan; these rows are the shaper that
        keeps the realised residual ~18.6° on every measured cell.
-    3. **Touch-down skid rows** (only with ``cfg.touchdown_skid_mmps > 0``):
+    4. **Touch-down skid rows** (only with ``cfg.touchdown_skid_mmps > 0``):
        the cup velocity at the catch TIME, projected on the two directions
        perpendicular to the prescribed cup axis there, inside an inscribed
        ``cone_sides``-gon of radius ``touchdown_skid_mmps``.  The quantity
@@ -2394,7 +2691,7 @@ def _pose_augment(pose: PoseSpec, n: int, dt: float, H, f, Aeq, beq, cols, rhss,
        bounded instead of logged: the 2026-10-24 sittings read it at −507
        mm/s (dwell 0.50) and lost every inward-landing ball to the advancing
        rim, while −174 (0.65) caught 63/64.
-    4. **The dz block** (only with ``cfg.z_band_mm > 0``): ``n`` platform-z
+    5. **The dz block, in full** (only with ``cfg.z_band_mm > 0``): ``n`` platform-z
        jerk variables with the knot-0 state ``dz0``, ``dz = dz' = dz'' = 0``
        at the release knot (the seam is unchanged), a ``±band`` position box,
        an acceleration regulariser with the cup-z weight, and every z-only
@@ -2404,7 +2701,15 @@ def _pose_augment(pose: PoseSpec, n: int, dt: float, H, f, Aeq, beq, cols, rhss,
        C-CUP-2 floor and the cone stay on the cup's acceleration (ball
        physics).  The stroke-top bound keeps ``slider_margin_mm`` for the
        tilt drop.
-    5. Nothing else: the catch's soft velocity match, the holds and the
+    6. **The ring rows** (I-PLAN-16, only with ``cfg.carry_zvd``), LAST: four
+       equality rows per Platform mode (:func:`_zvd_rows`) pinning the
+       modelled mode state at the release knot, and its derivative in ω, to
+       zero, row-scaled like the dz rows and appended after them.  They touch
+       interior knots only; the RHS carries the seed's ring (``pose.mode0``).
+       Returned as ``ring = (R, c, names)`` (unscaled, ``R @ x + c`` = the
+       modelled state) so :func:`plan_window` can name a ``RING`` refusal;
+       ``None`` with the flag off, when nothing is computed.
+    7. Nothing else: the catch's soft velocity match, the holds and the
        release triple are the level program's, untouched.
     """
     pcfg = pose.cfg
@@ -2499,7 +2804,7 @@ def _pose_augment(pose: PoseSpec, n: int, dt: float, H, f, Aeq, beq, cols, rhss,
     cols = [np.asarray(c, dtype=float) for c in cols]
     rhss = [np.asarray(r, dtype=float).copy() for r in rhss]
 
-    # ---- 3. the dz block ---------------------------------------------------
+    # ---- 2. the dz block ---------------------------------------------------
     if use_dz:
         H[nv3:, nv3:] += 2.0 / n * (Aa.T @ Aa)
         cp_dz, cv_dz, ca_dz = Cp @ dz0, Cv @ dz0, Ca @ dz0
@@ -2526,7 +2831,7 @@ def _pose_augment(pose: PoseSpec, n: int, dt: float, H, f, Aeq, beq, cols, rhss,
         if ineq_names is not None:
             ineq_names.append('dz_band')
 
-    # ---- 2. C-CUP-4 rows: the cone about the prescribed axis + the floor ----
+    # ---- 3. C-CUP-4 rows: the cone about the prescribed axis + the floor ----
     ks = np.arange(k_td + 1, n - 1)
     ks = ks[ks >= 1]
     if ks.size:
@@ -2554,7 +2859,7 @@ def _pose_augment(pose: PoseSpec, n: int, dt: float, H, f, Aeq, beq, cols, rhss,
             if ineq_names is not None:
                 ineq_names.append('cone_floor')
 
-    # ---- 3. Touch-down skid rows: the cup's lateral velocity at the catch ----
+    # ---- 4. Touch-down skid rows: the cup's lateral velocity at the catch ----
     # The cup velocity at the catch TIME (between knots k_td and k_td + 1, as the
     # catch-position row interpolates it) is ``v = Σ_a (r_vtd · x_a) e_a + c_vtd``
     # in m/s; its components along the two directions perpendicular to the
@@ -2588,7 +2893,16 @@ def _pose_augment(pose: PoseSpec, n: int, dt: float, H, f, Aeq, beq, cols, rhss,
         if ineq_names is not None:
             ineq_names.append('touchdown_skid')
 
-    return H, f, Aeq, beq, cols, rhss, (n if use_dz else 0), dz0
+    # ---- 6. The ring rows (I-PLAN-16): the modelled Platform mode still at release
+    ring = None
+    if bool(pcfg.carry_zvd):
+        Rr, cr_, names = _zvd_rows(pose, n, dt, nv, tl, Ap, Av, Aa, cp, cv, ca)
+        sc = np.linalg.norm(Rr, axis=1)
+        Aeq = np.vstack([Aeq, Rr / sc[:, None]])
+        beq = np.concatenate([beq, -cr_ / sc])
+        ring = (Rr, cr_, names)
+
+    return H, f, Aeq, beq, cols, rhss, (n if use_dz else 0), dz0, ring
 
 
 def catch_runway_requirement(catch_vel, cfg):
@@ -2631,10 +2945,17 @@ def _eq_label(prog: _Program, i: int) -> str:
         return fallback
     end = marks[-1][1]
     if i >= end:
-        # the pose planner's dz-terminal rows: three, appended after the level rows
-        if i - end < 3 and m == end + 3:
+        # the pose planner's dz-terminal rows (three) then its ring rows
+        # (I-PLAN-16), both appended after the level rows
+        n_ring = len(prog.ring_names)
+        n_z = m - end - n_ring
+        off = i - end
+        if n_z == 3 and off < 3:
             return ("equality %d: platform-z terminal %s"
-                    % (i, _EQ_QTY[i - end]))
+                    % (i, _EQ_QTY[off]))
+        if n_z in (0, 3) and 0 <= off - n_z < n_ring:
+            return ("equality %d: ring residual at release, %s"
+                    % (i, prog.ring_names[off - n_z]))
         return fallback
     # the group is the LAST mark starting at or before i (zero-width ones skipped)
     j = max(q for q in range(len(marks) - 1) if marks[q][1] <= i)
@@ -2934,6 +3255,42 @@ def _solve_qp(prog: _Program, warm: Optional[SolverState], max_iter: int,
 # Public entry points
 # ---------------------------------------------------------------------------
 
+#: The solver outcomes a ring-row window is re-solved without its rows for
+#: (I-PLAN-16): the program itself had no verified optimum.  The gate's codes
+#: after the QP (``LIMIT_JERK``, ``HAND_LIMIT_ACC`` ...) keep their own names.
+_RING_SOLVER_REASONS = ('INFEASIBLE', 'SINGULAR', 'UNVERIFIED')
+
+
+def _refuse_ring(prog: _Program, exc: CupCycleInfeasible, throw, catch,
+                 window_s: float, cfg):
+    """I-PLAN-16's refusal path, ONLY after the ring-row program failed: the
+    SAME program with the ring rows dropped is solved once more.  If it solves,
+    the rows are what made the window impossible: raise ``RING`` with the
+    residual the ring-less plan would have carried.  If it fails too, the
+    original refusal stands (the rows were not the cause)."""
+    nr = len(prog.ring_names)
+    bare = dataclasses.replace(prog, Aeq=prog.Aeq[:-nr], beq=prog.beq[:-nr],
+                               ring_R=None, ring_c=None, ring_names=())
+    try:
+        xb, _, _ = _solve_qp(bare, None, int(_cfg(cfg, 'max_iter')),
+                             float(_cfg(cfg, 'tol')), float(_cfg(cfg, 'feas_tol')))
+    except CupCycleInfeasible:
+        raise exc
+    res = prog.ring_R @ xb + prog.ring_c
+    parts = ["%s %.1f" % (nm, v) for nm, v in zip(prog.ring_names, res)
+             if nm.endswith(" e") or nm.endswith(" e'")]
+    dwell = (float(throw.t_s) - float(catch.t_s)
+             if throw is not None and catch is not None else float('nan'))
+    raise CupCycleInfeasible(
+        "the carry cannot leave the Platform still at the release (I-PLAN-16, "
+        "carry_zvd on): the %.3f s window with a %.3f s Dwell has no solution "
+        "with the ring rows (%s), and without them it solves with a modelled "
+        "release residual of %s (mm, mm/s).  Refused rather than flown with the "
+        "ring: a longer Dwell, a higher Apex or carry_zvd off."
+        % (window_s, dwell, exc.reason, ", ".join(parts)),
+        reason='RING') from exc
+
+
 def plan_window(events: Sequence, state0: CupState,
                 cfg: Optional[CupCycleConfig] = None, *,
                 period_s: Optional[float] = None,
@@ -3065,9 +3422,14 @@ def plan_window(events: Sequence, state0: CupState,
     key = (n, dt, prog.C.shape[1])
     warm = warm_start if (warm_start is not None
                           and warm_start.key == key) else None
-    x, active, iters = _solve_qp(prog, warm, int(_cfg(cfg, 'max_iter')),
-                                 float(_cfg(cfg, 'tol')),
-                                 float(_cfg(cfg, 'feas_tol')))
+    try:
+        x, active, iters = _solve_qp(prog, warm, int(_cfg(cfg, 'max_iter')),
+                                     float(_cfg(cfg, 'tol')),
+                                     float(_cfg(cfg, 'feas_tol')))
+    except CupCycleInfeasible as exc:
+        if not prog.ring_names or exc.reason not in _RING_SOLVER_REASONS:
+            raise
+        _refuse_ring(prog, exc, throw, catch, window_s, cfg)
 
     jerk = x[:3 * n].reshape(3, n).T
     Ap, Av, Aa, Cp, Cv, Ca = _integrator_maps(n, dt)

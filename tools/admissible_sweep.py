@@ -239,6 +239,13 @@ SINGLE_APEX_HALFWIDTH_M = 0.05
 _DEFAULT_OUT = os.path.join(_ROOT, 'config', 'generated', 'admissible_box.yaml')
 
 
+def _effective_zvd(planner_mode: str, carry_zvd: bool) -> bool:
+    """The ``carry_zvd`` stamp a cell is swept (and stamped) under: the ring
+    rows exist only in the pose planner, so a level cell is always ``False``
+    (matching ``admissible._effective_zvd``)."""
+    return bool(carry_zvd) and planner_mode == 'pose'
+
+
 def _rest_state(cup_mm):
     """A plan seed at rest at ``cup_mm`` -- identical construction to
     ``tests/motion/test_skills_segments.py::_rest_state`` and
@@ -795,6 +802,7 @@ def _flight_band_and_rect(flights: Sequence[float], offsets_mm: Sequence[float],
 
 
 def sweep(*, planner_mode: str = uc.PLANNER_MODE_DEFAULT,
+          carry_zvd: bool = sg.CARRY_ZVD_DEFAULT,
           swept_at: Optional[str] = None,
           apexes_m: Sequence[float] = APEXES_M,
           flights_s: Optional[Sequence[float]] = None,
@@ -884,7 +892,8 @@ def sweep(*, planner_mode: str = uc.PLANNER_MODE_DEFAULT,
     """
     geom = StewartGeometry()
     limits = _limits(leg_vel, leg_acc, leg_jerk, hand_acc)
-    cfg = sg.SegmentConfig(planner_mode=planner_mode)
+    zvd = _effective_zvd(planner_mode, carry_zvd)
+    cfg = sg.SegmentConfig(planner_mode=planner_mode, carry_zvd=zvd)
     if pre_release_hold_s is not None:
         cfg = dataclasses.replace(cfg, pre_release_hold_s=float(pre_release_hold_s))
     if site_pairs is None:
@@ -1050,7 +1059,8 @@ def sweep(*, planner_mode: str = uc.PLANNER_MODE_DEFAULT,
             landing_xy_m=landing_xy, apex_m=apex_bounds, pattern=pattern,
             release_site_xy_mm=box_xy, target_site_xy_mm=box_xy,
             limits=limits_dict, gate_hash=ghash, swept_at=swept_at,
-            dwell_s=float(dwell_s), planner_mode=planner_mode))
+            dwell_s=float(dwell_s), planner_mode=planner_mode,
+            carry_zvd=zvd))
     return boxes, rows
 
 
@@ -1061,6 +1071,7 @@ def highlow_sweep(apex_high_m: float, apex_low_m: float, *,
                   leg_jerk: float, hand_acc: float,
                   launch_s: float = SINGLE_SITE_LAUNCH_S,
                   planner_mode: str = uc.PLANNER_MODE_DEFAULT,
+          carry_zvd: bool = sg.CARRY_ZVD_DEFAULT,
                   swept_at: Optional[str] = None,
                   site_pairs: Optional[List[Tuple['st.Site', 'st.Site']]] = None,
                   log=print) -> Tuple[List['ab.AdmissibleBox'], List[Dict]]:
@@ -1098,7 +1109,8 @@ def highlow_sweep(apex_high_m: float, apex_low_m: float, *,
                          '%r / %r' % (apex_high_m, apex_low_m))
     geom = StewartGeometry()
     limits = _limits(leg_vel, leg_acc, leg_jerk, hand_acc)
-    cfg = sg.SegmentConfig(planner_mode=planner_mode)
+    zvd = _effective_zvd(planner_mode, carry_zvd)
+    cfg = sg.SegmentConfig(planner_mode=planner_mode, carry_zvd=zvd)
     # ball id 0 = high, 1 = low: only the per-ball numbers are read here.
     timing = sc.columns_ball_timing(apex_high_m, apex_low_m, dwell_s)
     apex_of = (apex_high_m, apex_low_m)
@@ -1188,11 +1200,12 @@ def highlow_sweep(apex_high_m: float, apex_low_m: float, *,
                 pattern=sc.COLUMNS_HIGHLOW, release_site_xy_mm=xy,
                 target_site_xy_mm=xy, limits=limits_dict, gate_hash=ghash,
                 swept_at=swept_at, dwell_s=float(d_here),
-                planner_mode=planner_mode))
+                planner_mode=planner_mode, carry_zvd=zvd))
     return boxes, rows
 
 
 def hop_sweep(*, planner_mode: str = uc.PLANNER_MODE_DEFAULT,
+          carry_zvd: bool = sg.CARRY_ZVD_DEFAULT,
           swept_at: Optional[str] = None,
              apexes_m: Sequence[float] = HOP_APEXES_M,
              offsets_mm: Sequence[float] = HOP_OFFSETS_MM, dwell_s: float = DWELL_S,
@@ -1229,7 +1242,8 @@ def hop_sweep(*, planner_mode: str = uc.PLANNER_MODE_DEFAULT,
     """
     geom = StewartGeometry()
     limits = _limits(leg_vel, leg_acc, leg_jerk, hand_acc)
-    cfg = sg.SegmentConfig(planner_mode=planner_mode)
+    zvd = _effective_zvd(planner_mode, carry_zvd)
+    cfg = sg.SegmentConfig(planner_mode=planner_mode, carry_zvd=zvd)
     site0, site1 = st.columns_sites(separation_mm)
     flights = [sc.flight_s(a) for a in apexes_m]
     apex_band = (min(float(a) for a in apexes_m), max(float(a) for a in apexes_m))
@@ -1313,7 +1327,8 @@ def hop_sweep(*, planner_mode: str = uc.PLANNER_MODE_DEFAULT,
             release_site_xy_mm=(float(from_site.cup_mm[0]), float(from_site.cup_mm[1])),
             target_site_xy_mm=(float(to_site.cup_mm[0]), float(to_site.cup_mm[1])),
             limits=limits_dict, gate_hash=ghash, swept_at=swept_at,
-            dwell_s=float(dwell_s), planner_mode=planner_mode))
+            dwell_s=float(dwell_s), planner_mode=planner_mode,
+            carry_zvd=zvd))
     return boxes, rows
 
 
@@ -1379,6 +1394,7 @@ def _oval_window(site_t, site_c, apex_m: float, dwell_s: float):
 
 
 def oval_sweep(*, planner_mode: str = uc.PLANNER_MODE_DEFAULT,
+          carry_zvd: bool = sg.CARRY_ZVD_DEFAULT,
           swept_at: Optional[str] = None,
                apexes_m: Sequence[float] = OVAL_APEXES_M,
                offsets_mm: Sequence[float] = OFFSETS_MM,
@@ -1412,7 +1428,8 @@ def oval_sweep(*, planner_mode: str = uc.PLANNER_MODE_DEFAULT,
     """
     geom = StewartGeometry()
     limits = _limits(leg_vel, leg_acc, leg_jerk, hand_acc)
-    cfg = sg.SegmentConfig(planner_mode=planner_mode)
+    zvd = _effective_zvd(planner_mode, carry_zvd)
+    cfg = sg.SegmentConfig(planner_mode=planner_mode, carry_zvd=zvd)
     ws_m = (float(workspace_xy_m) if workspace_xy_m is not None
             else float(cc.CupCycleConfig().workspace_xy_m))
     site_t, site_c = st.columns_sites(separation_mm)
@@ -1439,7 +1456,7 @@ def oval_sweep(*, planner_mode: str = uc.PLANNER_MODE_DEFAULT,
             apex_m=(0.0, 1.0), pattern='oval_1ball', release_site_xy_mm=xy_t,
             target_site_xy_mm=xy_c, limits=limits_dict, gate_hash=ghash,
             swept_at=swept_at, dwell_s=float(dwell_s),
-            planner_mode=planner_mode)
+            planner_mode=planner_mode, carry_zvd=zvd)
 
     rows: List[Dict] = []
     pass_grid = {}   # (flight, dx, dy) -> bool
@@ -1522,7 +1539,7 @@ def oval_sweep(*, planner_mode: str = uc.PLANNER_MODE_DEFAULT,
         landing_xy_m=landing_xy, apex_m=apex_bounds, pattern='oval_1ball',
         release_site_xy_mm=xy_t, target_site_xy_mm=xy_c, limits=limits_dict,
         gate_hash=ghash, swept_at=swept_at, dwell_s=float(dwell_s),
-        planner_mode=planner_mode)
+        planner_mode=planner_mode, carry_zvd=zvd)
     final = ab.check_site_workspace((site_t, site_c), box, ws_m)
     if final is not None:
         log({'site_pair': (site_t.name, site_c.name), 'WARNING': final})
@@ -1563,6 +1580,7 @@ def _single_apex_boxes(apexes_m: Sequence[float], *, flight_frac: Sequence[float
                        angle_deg: float = 0.0,
                        pattern: str = 'self_toss', site: Optional['st.Site'] = None,
                        planner_mode: str = uc.PLANNER_MODE_DEFAULT,
+          carry_zvd: bool = sg.CARRY_ZVD_DEFAULT,
                        swept_at: Optional[str] = None,
                        log=print) -> Tuple[List['ab.AdmissibleBox'], List[Dict]]:
     """One box PER apex in ``apexes_m``, own flight grid and own
@@ -1616,14 +1634,14 @@ def _single_apex_boxes(apexes_m: Sequence[float], *, flight_frac: Sequence[float
                 flights_s=flights, offsets_mm=offsets_mm, dwell_s=dwell_s,
                 separation_mm=separation_mm, leg_vel=leg_vel, leg_acc=leg_acc,
                 leg_jerk=leg_jerk, hand_acc=hand_acc, center_flight_s=centre,
-                site_pairs=[(site, site)], pattern_flight_s=centre, planner_mode=planner_mode, swept_at=swept_at,
+                site_pairs=[(site, site)], pattern_flight_s=centre, planner_mode=planner_mode, carry_zvd=carry_zvd, swept_at=swept_at,
                 log=log)
         elif pattern == 'columns':
             a_boxes, a_rows = sweep(
                 flights_s=flights, offsets_mm=offsets_mm, dwell_s=dwell_s,
                 separation_mm=separation_mm, leg_vel=leg_vel, leg_acc=leg_acc,
                 leg_jerk=leg_jerk, hand_acc=hand_acc, center_flight_s=centre,
-                site_pairs=None, pattern_flight_s=centre, planner_mode=planner_mode, swept_at=swept_at,
+                site_pairs=None, pattern_flight_s=centre, planner_mode=planner_mode, carry_zvd=carry_zvd, swept_at=swept_at,
                 angle_deg=angle_deg, log=log)
         elif pattern == 'hop':
             hop_apexes = [sc.apex_m(t) for t in flights]
@@ -1631,7 +1649,7 @@ def _single_apex_boxes(apexes_m: Sequence[float], *, flight_frac: Sequence[float
                 apexes_m=hop_apexes, offsets_mm=offsets_mm, dwell_s=dwell_s,
                 separation_mm=separation_mm, leg_vel=leg_vel, leg_acc=leg_acc,
                 leg_jerk=leg_jerk, hand_acc=hand_acc, center_apex_m=float(a),
-                pattern_flight_s=centre, planner_mode=planner_mode, swept_at=swept_at,
+                pattern_flight_s=centre, planner_mode=planner_mode, carry_zvd=carry_zvd, swept_at=swept_at,
                 log=log)
         elif pattern == 'oval_1ball':
             oval_apexes = [sc.apex_m(t) for t in flights]
@@ -1639,7 +1657,7 @@ def _single_apex_boxes(apexes_m: Sequence[float], *, flight_frac: Sequence[float
                 apexes_m=oval_apexes, offsets_mm=offsets_mm, dwell_s=dwell_s,
                 separation_mm=separation_mm, leg_vel=leg_vel, leg_acc=leg_acc,
                 leg_jerk=leg_jerk, hand_acc=hand_acc, center_apex_m=float(a),
-                pattern_flight_s=centre, planner_mode=planner_mode, swept_at=swept_at,
+                pattern_flight_s=centre, planner_mode=planner_mode, carry_zvd=carry_zvd, swept_at=swept_at,
                 log=log)
         else:
             raise ValueError(
@@ -1655,8 +1673,8 @@ def _single_apex_boxes(apexes_m: Sequence[float], *, flight_frac: Sequence[float
 
 def to_markdown(boxes: List['ab.AdmissibleBox']) -> str:
     out = ['| pattern | site pair | apex band m | landing xy box (mm) |'
-          ' apex box (m) | limits (vel/acc/jerk mm, hand acc rev) | planner |',
-          '|---|---|---|---|---|---|---|']
+          ' apex box (m) | limits (vel/acc/jerk mm, hand acc rev) | planner | zvd |',
+          '|---|---|---|---|---|---|---|---|']
     for box in boxes:
         if box.empty:
             xy_str, ap_str = 'EMPTY', 'EMPTY'
@@ -1665,11 +1683,12 @@ def to_markdown(boxes: List['ab.AdmissibleBox']) -> str:
             xy_str = '[%.0f, %.0f] x [%.0f, %.0f]' % (
                 xlo * 1000.0, xhi * 1000.0, ylo * 1000.0, yhi * 1000.0)
             ap_str = '%.4f-%.4f' % box.apex_m
-        out.append('| %s | %s | %.2f-%.2f | %s | %s | %.0f/%.0f/%.0fk, %.0f | %s |' % (
+        out.append('| %s | %s | %.2f-%.2f | %s | %s | %.0f/%.0f/%.0fk, %.0f | %s | %s |' % (
             box.pattern, box.site_pair, box.apex_band_m[0], box.apex_band_m[1],
             xy_str, ap_str, box.limits['leg_vel_mmps'], box.limits['leg_acc_mmps2'],
             box.limits['leg_jerk_mmps3'] / 1000.0, box.limits['hand_acc_rps2'],
-            box.planner_mode or 'unstamped'))
+            box.planner_mode or 'unstamped',
+            'unstamped' if box.carry_zvd is None else str(box.carry_zvd).lower()))
     return '\n'.join(out)
 
 
@@ -1778,8 +1797,15 @@ def main(argv=None) -> int:
                     help='segment planner the cells are swept under; stamped '
                          'on every box (select refuses a mismatch) -- level '
                          'and pose cells coexist in one YAML (default %(default)s)')
+    ap.add_argument('--carry-zvd', choices=('true', 'false'),
+                    default=str(sg.CARRY_ZVD_DEFAULT).lower(),
+                    help="the pose planner's ZVD ring rows (carry-ring-zvd, "
+                         "JB-102); stamped on every box (select refuses a "
+                         "mismatch). Level cells are always stamped false "
+                         "(default %(default)s, the yaml value)")
     ap.add_argument('--hand-acc', type=float, default=HAND_ACC_RPS2)
     args = ap.parse_args(argv)
+    args.carry_zvd = (args.carry_zvd == 'true')
     if args.angle_deg != 0.0:
         if args.site_pairs != 'columns':
             ap.error('--angle-deg applies to --site-pairs columns only')
@@ -1815,7 +1841,7 @@ def main(argv=None) -> int:
             offsets_mm=args.offsets_mm, dwell_s=args.dwell_s,
             separation_mm=args.separation_mm, leg_vel=args.leg_vel,
             leg_acc=args.leg_acc, leg_jerk=args.leg_jerk,
-            hand_acc=args.hand_acc, planner_mode=args.planner_mode, log=log)
+            hand_acc=args.hand_acc, planner_mode=args.planner_mode, carry_zvd=args.carry_zvd, log=log)
         boxes.extend(cboxes)
     elif args.site_pairs in ('columns', 'all'):
         if args.single_apex is not None:
@@ -1825,7 +1851,7 @@ def main(argv=None) -> int:
                 offsets_mm=args.offsets_mm, dwell_s=args.dwell_s,
                 separation_mm=args.separation_mm, leg_vel=args.leg_vel,
                 leg_acc=args.leg_acc, leg_jerk=args.leg_jerk,
-                hand_acc=args.hand_acc, pattern='columns', planner_mode=args.planner_mode,
+                hand_acc=args.hand_acc, pattern='columns', planner_mode=args.planner_mode, carry_zvd=args.carry_zvd,
                 angle_deg=args.angle_deg, log=log)
         else:
             cboxes, _rows = sweep(
@@ -1833,7 +1859,7 @@ def main(argv=None) -> int:
                 separation_mm=args.separation_mm, angle_deg=args.angle_deg,
                 leg_vel=args.leg_vel,
                 leg_acc=args.leg_acc, leg_jerk=args.leg_jerk, hand_acc=args.hand_acc,
-                planner_mode=args.planner_mode, log=log)
+                planner_mode=args.planner_mode, carry_zvd=args.carry_zvd, log=log)
         boxes.extend(cboxes)
     if args.site_pairs in ('hop', 'all'):
         if args.single_apex is not None:
@@ -1843,13 +1869,13 @@ def main(argv=None) -> int:
                 offsets_mm=hop_offsets_mm, dwell_s=args.dwell_s,
                 separation_mm=args.hop_separation_mm, leg_vel=args.leg_vel,
                 leg_acc=args.leg_acc, leg_jerk=args.leg_jerk,
-                hand_acc=args.hand_acc, pattern='hop', planner_mode=args.planner_mode, log=log)
+                hand_acc=args.hand_acc, pattern='hop', planner_mode=args.planner_mode, carry_zvd=args.carry_zvd, log=log)
         else:
             hboxes, _rows = hop_sweep(
                 apexes_m=args.hop_apex, offsets_mm=hop_offsets_mm, dwell_s=args.dwell_s,
                 separation_mm=args.hop_separation_mm, leg_vel=args.leg_vel,
                 leg_acc=args.leg_acc, leg_jerk=args.leg_jerk, hand_acc=args.hand_acc,
-                planner_mode=args.planner_mode, log=log)
+                planner_mode=args.planner_mode, carry_zvd=args.carry_zvd, log=log)
         boxes.extend(hboxes)
     if args.site_pairs == 'oval':
         oboxes, _rows = _single_apex_boxes(
@@ -1858,7 +1884,7 @@ def main(argv=None) -> int:
             offsets_mm=args.offsets_mm, dwell_s=args.dwell_s,
             separation_mm=args.oval_separation_mm, leg_vel=args.leg_vel,
             leg_acc=args.leg_acc, leg_jerk=args.leg_jerk,
-            hand_acc=args.hand_acc, pattern='oval_1ball', planner_mode=args.planner_mode, log=log)
+            hand_acc=args.hand_acc, pattern='oval_1ball', planner_mode=args.planner_mode, carry_zvd=args.carry_zvd, log=log)
         boxes.extend(oboxes)
     if args.site_pairs in ('single', 'all'):
         if args.single_site_xy is not None:
@@ -1873,7 +1899,7 @@ def main(argv=None) -> int:
                 offsets_mm=args.single_offsets_mm, dwell_s=args.dwell_s,
                 separation_mm=args.separation_mm, leg_vel=args.leg_vel,
                 leg_acc=args.leg_acc, leg_jerk=args.leg_jerk,
-                hand_acc=args.hand_acc, site=site, planner_mode=args.planner_mode, log=log)
+                hand_acc=args.hand_acc, site=site, planner_mode=args.planner_mode, carry_zvd=args.carry_zvd, log=log)
         else:
             flights_s = (args.flights_s if args.flights_s is not None
                         else list(SINGLE_SITE_FLIGHTS_S))
@@ -1881,7 +1907,7 @@ def main(argv=None) -> int:
                 flights_s=flights_s, offsets_mm=args.single_offsets_mm,
                 dwell_s=args.dwell_s, leg_vel=args.leg_vel, leg_acc=args.leg_acc,
                 leg_jerk=args.leg_jerk, hand_acc=args.hand_acc,
-                site_pairs=[(site, site)], planner_mode=args.planner_mode, log=log)
+                site_pairs=[(site, site)], planner_mode=args.planner_mode, carry_zvd=args.carry_zvd, log=log)
         boxes.extend(sboxes)
     wall_s = time.perf_counter() - t_start
     md = to_markdown(boxes)

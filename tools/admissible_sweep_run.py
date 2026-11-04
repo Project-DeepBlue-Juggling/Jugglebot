@@ -3,10 +3,11 @@
 ROTATING SAMPLE of families again (round b) and a byte-for-byte compare (JB-150).
 
 Replaces the uncommitted ``temp/sweeps/sweep_h4500.sh`` runner. The default
-family set ``committed`` is the 30 families of the committed box (104 cells
-since 2026-11-03, JB-143): the 26 of ``sweep_h4500.sh`` (``--set h4500``) plus
-the four columns-apex families above 0.95 (C-HAND-5); ``h70`` is kept as an
-alias of ``committed``. The leg and Hand limits default to the committed box's
+family set ``committed`` is 55 families (carry-ring-zvd P1c, JB-102): the 33
+pre-ZVD families (the 26 of ``sweep_h4500.sh`` / ``--set h4500``, the four
+columns-apex families above 0.95 (C-HAND-5), three one-ball oval dwells) of
+which 22 are pose, plus a ``<name>_zvd`` twin (``--carry-zvd true``) of every
+pose family; ``h70`` is the 30-family pre-oval set (49 with its twins). The leg and Hand limits default to the committed box's
 own ``limits`` stamp, so a re-sweep at NEW limits (a working-point change)
 must name them: ``--leg-vel 600 --leg-acc 8000 --leg-jerk 200000``. Round b used to
 re-run ALL families (about half the wall time); rounds a and b have been
@@ -107,7 +108,27 @@ def families(which: str = 'committed') -> List[Tuple[str, List[str]]]:
                         ['--planner-mode', 'pose', '--dwell-s', d] + _OVALX))
     elif which != 'h4500':
         raise ValueError('unknown family set %r' % which)
-    return res
+    # carry-ring-zvd P1c (JB-102): the ZVD ring rows exist only in the pose
+    # planner. Every family states its flag explicitly (never the yaml default,
+    # so a yaml flip cannot silently re-label a sweep); level families run once
+    # (stamped false, the flag is inert there); every pose family runs TWICE,
+    # flag false in place and its `<name>_zvd` twin (flag true) appended after
+    # the existing order, so a merge keeps the pre-ZVD cells first.
+    out_res = [(n, a + ['--carry-zvd', 'false']) for n, a in res]
+    out_res += [(n + '_zvd', a + ['--carry-zvd', 'true']) for n, a in res
+                if a[:2] == ['--planner-mode', 'pose']]
+    return out_res
+
+
+def family_plan(fams: Sequence[Tuple[str, List[str]]]) -> Dict[Tuple[str, str], List[str]]:
+    """Family names grouped by (planner_mode, carry_zvd), read off each
+    family's own args -- the dry listing of what the sweep will stamp."""
+    plan: Dict[Tuple[str, str], List[str]] = {}
+    for name, args in fams:
+        mode = args[args.index('--planner-mode') + 1]
+        zvd = args[args.index('--carry-zvd') + 1]
+        plan.setdefault((mode, zvd), []).append(name)
+    return plan
 
 
 def round_b_sample(names: Sequence[str], gate_hash: str, n: Optional[int]) -> List[str]:
@@ -183,7 +204,22 @@ def main(argv=None) -> int:
     sample = round_b_sample(names, ghash, nsamp)
     print('gate_hash %s; round-b sample (%s of %d): %s'
           % (ghash, args.sample, len(names), ', '.join(sample)), flush=True)
+    plan = family_plan(fams)
+    for (mode, zvd), fnames in sorted(plan.items()):
+        print('plan: planner_mode=%s carry_zvd=%s: %d families' % (mode, zvd, len(fnames)))
+    print('plan: %d families total' % len(fams))
     if args.list_sample:
+        # Cells per planner of the COMMITTED box (the pose count doubles under
+        # the flag; the zvd cells are expected to be a subset where RING refuses).
+        boxes = adm.load(_BOX)
+        by_mode: Dict[str, int] = {}
+        for b in boxes:
+            by_mode[str(b.planner_mode)] = by_mode.get(str(b.planner_mode), 0) + 1
+        print('plan: committed box cells by planner_mode %s; upper bound after the '
+              'sweep: level %d + pose %d x 2 = %d' % (
+                  dict(sorted(by_mode.items())), by_mode.get('level', 0),
+                  by_mode.get('pose', 0),
+                  by_mode.get('level', 0) + 2 * by_mode.get('pose', 0)))
         return 0
     out = os.path.abspath(args.out)
     os.makedirs(os.path.join(out, 'logs'), exist_ok=True)

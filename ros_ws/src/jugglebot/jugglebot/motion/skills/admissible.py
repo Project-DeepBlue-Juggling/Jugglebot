@@ -198,6 +198,15 @@ class AdmissibleBox:
     #: so pose- and level-swept cells coexist in one file. ``None`` is a
     #: pre-P3 box: tolerated at load, but it matches NO planner mode.
     planner_mode: Optional[str] = None
+    #: carry-ring-zvd P1c (JB-102): whether the POSE planner's ZVD ring rows
+    #: (``PoseConfig.carry_zvd``) were on when this box was swept. The rows
+    #: change what the pose planner admits (and refuses with ``RING``), so a
+    #: box swept with them off and selected for a session running them on is
+    #: the same unenforced-twin class as ``planner_mode``. The flag is inert
+    #: in level mode, so level cells are stamped ``False`` and :func:`select`
+    #: normalises the live flag to ``False`` for a level request. ``None`` is a
+    #: pre-ZVD box: tolerated at load, but it matches NO flag value.
+    carry_zvd: Optional[bool] = None
 
     def __post_init__(self):
         if (not isinstance(self.site_pair, tuple) or len(self.site_pair) != 2
@@ -257,6 +266,9 @@ class AdmissibleBox:
         if self.planner_mode is not None and self.planner_mode not in PLANNER_MODES:
             raise ValueError('planner_mode must be None or one of %r, got %r'
                               % (PLANNER_MODES, self.planner_mode))
+        if self.carry_zvd is not None and not isinstance(self.carry_zvd, bool):
+            raise ValueError('carry_zvd must be None or a bool, got %r'
+                              % (self.carry_zvd,))
 
     @property
     def empty(self) -> bool:
@@ -373,10 +385,26 @@ def _mode_matches(box: AdmissibleBox, planner_mode: str) -> bool:
     return box.planner_mode is not None and box.planner_mode == planner_mode
 
 
+def _effective_zvd(planner_mode: str, carry_zvd: bool) -> bool:
+    """The flag value a request is matched under: ``carry_zvd`` is inert in
+    level mode (the ring rows exist only in the pose planner), so a level
+    request always asks for the ``False`` stamp."""
+    return bool(carry_zvd) and planner_mode == 'pose'
+
+
+def _zvd_matches(box: AdmissibleBox, planner_mode: str,
+                 carry_zvd: bool) -> bool:
+    """True when ``box`` was swept under exactly the effective ``carry_zvd``
+    (an unstamped box matches no value)."""
+    return (box.carry_zvd is not None
+            and box.carry_zvd == _effective_zvd(planner_mode, carry_zvd))
+
+
 def select(boxes: List[AdmissibleBox], pattern: str, site_pair: Tuple[str, str],
           apex_m: float, *, release_site_xy_mm: Tuple[float, float],
           target_site_xy_mm: Tuple[float, float],
-          dwell_s: float, planner_mode: str) -> Optional[AdmissibleBox]:
+          dwell_s: float, planner_mode: str,
+          carry_zvd: bool = False) -> Optional[AdmissibleBox]:
     """The box in ``boxes`` whose ``pattern`` matches ``pattern``, whose
     ``site_pair`` matches ``site_pair``, whose ``apex_band_m`` contains
     ``apex_m`` (inclusive, 1e-9 m tolerance), and whose ``release_site_xy_mm``
@@ -397,7 +425,11 @@ def select(boxes: List[AdmissibleBox], pattern: str, site_pair: Tuple[str, str],
     :func:`describe_miss`. ``planner_mode`` (two-ball-oval P3) is likewise
     REQUIRED and matched exactly: a box swept under the level planner is never
     selected for a session running the pose planner, or vice versa; an
-    unstamped box matches no mode."""
+    unstamped box matches no mode. ``carry_zvd`` (carry-ring-zvd P1c) is
+    matched exactly the same way (``False`` for a level request whatever the
+    live flag, see :func:`_effective_zvd`); an unstamped box matches neither
+    value. It defaults to ``False`` only so pre-ZVD callers keep reading as
+    flag-off; skill_node always passes its live parameter."""
     tol = 1e-9
     xy_tol_mm = 1e-6
     pair = tuple(site_pair)
@@ -409,6 +441,8 @@ def select(boxes: List[AdmissibleBox], pattern: str, site_pair: Tuple[str, str],
         if not _dwell_matches(box, dwell_s):
             continue
         if not _mode_matches(box, planner_mode):
+            continue
+        if not _zvd_matches(box, planner_mode, carry_zvd):
             continue
         if (abs(box.release_site_xy_mm[0] - rel_x) > xy_tol_mm
                 or abs(box.release_site_xy_mm[1] - rel_y) > xy_tol_mm
@@ -425,7 +459,8 @@ def describe_miss(boxes: List[AdmissibleBox], pattern: str,
                   site_pair: Tuple[str, str], apex_m: float, *,
                   release_site_xy_mm: Tuple[float, float],
                   target_site_xy_mm: Tuple[float, float],
-                  dwell_s: float, planner_mode: str) -> str:
+                  dwell_s: float, planner_mode: str,
+                  carry_zvd: bool = False) -> str:
     """Plain-language reason :func:`select` returned ``None`` for these exact
     arguments -- for an operator-facing refusal message, not for control flow.
 
@@ -445,6 +480,10 @@ def describe_miss(boxes: List[AdmissibleBox], pattern: str,
     A fourth, reported before all others (two-ball-oval P3): a box matches on
     everything except ``planner_mode`` -- the message names the field, the live
     mode and the swept mode(s).
+
+    A fifth, reported right after the planner_mode one (carry-ring-zvd P1c): a
+    box matches on everything except ``carry_zvd`` -- the message names the
+    field, the live value and the swept value(s).
 
     A third, reported FIRST after that (two-ball-oval P1): a box matches on everything
     except ``dwell_s`` -- the message names ``dwell_s``, the live value and
@@ -480,6 +519,26 @@ def describe_miss(boxes: List[AdmissibleBox], pattern: str,
                planner_mode))
     same_pair = [b for b in same_pair if _mode_matches(b, planner_mode)] \
         if any(_mode_matches(b, planner_mode) for b in same_pair) \
+        else same_pair
+    live_zvd = _effective_zvd(planner_mode, carry_zvd)
+    wrong_zvd = [b.carry_zvd for b in same_pair
+                 if _geom_ok(b) and _mode_matches(b, planner_mode)
+                 and not _zvd_matches(b, planner_mode, carry_zvd)]
+    if wrong_zvd and not any(
+            _geom_ok(b) and _mode_matches(b, planner_mode)
+            and _zvd_matches(b, planner_mode, carry_zvd)
+            for b in same_pair):
+        return (
+            'carry_zvd: the live flag is %s but the box covering this '
+            'request was swept under carry_zvd=%s -- set skill_node\'s '
+            'carry_zvd parameter to the swept value, or re-sweep with it '
+            '(tools/admissible_sweep.py --carry-zvd %s)'
+            % (str(live_zvd).lower(), ', '.join(
+                'unstamped' if z is None else str(z).lower()
+                for z in sorted(set(wrong_zvd), key=lambda z: str(z))),
+               str(live_zvd).lower()))
+    same_pair = [b for b in same_pair if _zvd_matches(b, planner_mode, carry_zvd)] \
+        if any(_zvd_matches(b, planner_mode, carry_zvd) for b in same_pair) \
         else same_pair
     wrong_dwell = []
     for box in same_pair:
@@ -553,7 +612,7 @@ def _apex_bands_overlap(a: Tuple[float, float], b: Tuple[float, float]) -> bool:
 
 def _refuse_overlapping_apex_bands(boxes: List[AdmissibleBox], error_cls) -> None:
     """Refuse (raising ``error_cls``) when two boxes share a
-    ``(pattern, site_pair, dwell_s, planner_mode)`` and their ``apex_band_m`` ranges overlap --
+    ``(pattern, site_pair, dwell_s, planner_mode, carry_zvd)`` and their ``apex_band_m`` ranges overlap --
     ambiguous at :func:`select` time, so it is a contract violation in
     whatever built the file, not a tie for the caller to break. Keyed on
     pattern too (R4): a 'hop' and a 'columns' box may legitimately share a
@@ -561,14 +620,15 @@ def _refuse_overlapping_apex_bands(boxes: List[AdmissibleBox], error_cls) -> Non
     :func:`select` never confuses them, so this must not refuse them either."""
     by_key: Dict[tuple, List[Tuple[float, float]]] = {}
     for box in boxes:
-        key = (box.pattern, box.site_pair, box.dwell_s, box.planner_mode)
+        key = (box.pattern, box.site_pair, box.dwell_s, box.planner_mode,
+               box.carry_zvd)
         for band in by_key.get(key, ()):
             if _apex_bands_overlap(band, box.apex_band_m):
                 raise error_cls(
                     'two boxes for pattern %r site pair %r dwell_s %r '
-                    'planner_mode %r have overlapping apex_band_m %r and %r -- select() could not '
+                    'planner_mode %r carry_zvd %r have overlapping apex_band_m %r and %r -- select() could not '
                     'resolve which one a command in the overlap belongs to'
-                    % (box.pattern, box.site_pair, box.dwell_s, box.planner_mode, band,
+                    % (box.pattern, box.site_pair, box.dwell_s, box.planner_mode, box.carry_zvd, band,
                        box.apex_band_m))
         by_key.setdefault(key, []).append(box.apex_band_m)
 
@@ -699,6 +759,7 @@ def dump(path: str, boxes: List[AdmissibleBox]) -> None:
                 'dwell_s': (float(box.dwell_s) if box.dwell_s is not None
                            else None),
                 'planner_mode': box.planner_mode,
+                'carry_zvd': box.carry_zvd,
             }
             for box in boxes
         ],
@@ -804,6 +865,14 @@ def load(path: str) -> List[AdmissibleBox]:
             raise AdmissibleError(
                 "%s: box %d planner_mode must be a string or null, got %r"
                 % (path, i, raw_mode))
+        # carry-ring-zvd P1c: `carry_zvd` is tolerated ABSENT or null (a
+        # pre-ZVD file loads unstamped and matches no flag value); anything
+        # but a bool is refused.
+        raw_zvd = raw.get('carry_zvd')
+        if raw_zvd is not None and not isinstance(raw_zvd, bool):
+            raise AdmissibleError(
+                "%s: box %d carry_zvd must be a bool or null, got %r"
+                % (path, i, raw_zvd))
         out.append(AdmissibleBox(
             site_pair=tuple(raw['site_pair']),
             apex_band_m=(float(raw['apex_band_m'][0]), float(raw['apex_band_m'][1])),
@@ -818,6 +887,7 @@ def load(path: str) -> List[AdmissibleBox]:
             swept_at=swept_at,
             dwell_s=dwell,
             planner_mode=raw_mode,
+            carry_zvd=raw_zvd,
         ))
     _refuse_overlapping_apex_bands(out, AdmissibleError)
     return out

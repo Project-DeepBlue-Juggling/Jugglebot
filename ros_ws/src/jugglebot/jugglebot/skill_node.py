@@ -105,6 +105,7 @@ from jugglebot.motion.skills.schedule import (COLUMNS_HIGHLOW,
 from jugglebot.motion.skills import magazine_target as mt
 from jugglebot.motion.skills.magazine_throw import MAGAZINE, MagazineTerminal
 from jugglebot.motion.skills.segments import CATCH, REST, THROW
+from jugglebot.motion.skills import segments as sk_seg
 from jugglebot.motion.skills.sites import (CATCH_CUP_Z_MM, REST_CUP_Z_MM,
                                            RELEASE_CUP_Z_MM,
                                            REST_HAND_REV, Site, columns_sites)
@@ -1110,6 +1111,13 @@ class SkillNode(Node):
         # `_on_set_parameters`); a bad launch override is refused at start.
         self.declare_parameter('planner_mode', uc.PLANNER_MODE_DEFAULT)
         self._planner_mode()
+        # carry-ring-zvd P1c (JB-102): the pose planner's ZVD ring rows, ONE
+        # live switch exactly like `planner_mode`: selects the admissible box
+        # (stamped with the flag it was swept under; inert in level mode) and
+        # rides on every InstallSegment request. Default from the yaml
+        # (`trajectory_op.carry_zvd`); settable between attempts only.
+        self.declare_parameter('carry_zvd', sk_seg.CARRY_ZVD_DEFAULT)
+        self._carry_zvd()
         self.declare_parameter('n_throws', _DEFAULT_N_THROWS)
         # The records ledger (JB-35, `jugglebot/records.py`): the file each
         # juggling Attempt's end is offered to. '' (the default) = disabled,
@@ -1787,6 +1795,14 @@ class SkillNode(Node):
                              % (value, list(uc.PLANNER_MODES)))
         return value
 
+    def _carry_zvd(self) -> bool:
+        """The validated ``carry_zvd`` parameter (a bool; the box stamp and
+        every InstallSegment request read it here, never the yaml directly)."""
+        value = self.get_parameter('carry_zvd').value
+        if not isinstance(value, bool):
+            raise ValueError('carry_zvd=%r is not a bool' % (value,))
+        return value
+
     def _launch_ratio(self, ball_id: int, t_release_abs_s: float):
         """The executor's ``launch_ratio`` callable: the MEASURED hand
         launch-speed ratio of the stroke ending at ``t_release_abs_s``, or
@@ -2384,6 +2400,7 @@ class SkillNode(Node):
         # ONE live switch: the SAME value the admissible box was selected
         # under rides every request, and trajectory_node plans with it.
         req.planner_mode = self._planner_mode()
+        req.carry_zvd = self._carry_zvd()
         if kind == THROW:
             req.t_event_s = float(terminal.t_release_s)
             req.site_mm = [float(v) for v in terminal.site_mm]
@@ -2424,6 +2441,15 @@ class SkillNode(Node):
                 False, 'SERVICE_TIMEOUT',
                 'trajectory/install_segment did not answer in %.1f s'
                 % (_SERVICE_WAIT_S,), 0.0)
+        if (resp.accepted and int(req.kind) == InstallSegment.Request.KIND_CATCH
+                and float(req.t_release_s) > 0.0
+                and str(resp.planner_mode) == 'pose'
+                and bool(resp.carry_zvd) != bool(req.carry_zvd)):
+            # Same class as the planner_mode check below: the emitter must
+            # plan with the request's flag.
+            self.get_logger().warning(
+                'install_segment carry_zvd MISMATCH: requested %r, solved %r'
+                % (bool(req.carry_zvd), bool(resp.carry_zvd)))
         if (resp.accepted and str(resp.planner_mode)
                 and str(resp.planner_mode) != req.planner_mode
                 and int(req.kind) == InstallSegment.Request.KIND_CATCH
@@ -3599,6 +3625,25 @@ class SkillNode(Node):
                         reason='a goal is active -- set planner_mode between '
                                'attempts')
                 continue
+            if param.name == 'carry_zvd':
+                if not isinstance(param.value, bool):
+                    self.get_logger().warning(
+                        'REFUSED carry_zvd=%r: not a bool (param NOT applied)'
+                        % (param.value,))
+                    return SetParametersResult(
+                        successful=False, reason='carry_zvd must be a bool')
+                # Between attempts only, for the same reason as planner_mode:
+                # the executor's box selection is frozen at goal accept.
+                if (self._attempt_running()
+                        and bool(param.value) != self._carry_zvd()):
+                    self.get_logger().warning(
+                        'REFUSED carry_zvd=%r: a goal is active (param NOT '
+                        'applied) -- set it between attempts' % (param.value,))
+                    return SetParametersResult(
+                        successful=False,
+                        reason='a goal is active -- set carry_zvd between '
+                               'attempts')
+                continue
             if param.name == 'columns_angle_deg':
                 if (self._attempt_running()
                         and float(param.value)
@@ -3859,6 +3904,8 @@ class SkillNode(Node):
             if pattern == 'columns_highlow' and apex_m_ball2 is not None:
                 out.append(('apex_m_ball2', '%g' % round(apex_m_ball2, 3)))
             out.append(('planner', self._planner_mode()))
+            if self._planner_mode() == 'pose' and self._carry_zvd():
+                out.append(('carry_zvd', 'true'))
             return tuple(out)
         except Exception:  # noqa: BLE001 -- never the goal's fault
             return ()
@@ -4465,6 +4512,7 @@ class SkillNode(Node):
             **self._bump_kwargs(),
             catch_aim_source=self._catch_aim_source(),
             planner_mode=self._planner_mode(),
+            carry_zvd=self._carry_zvd(),
             resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio,
             learner=learner, boxes=boxes,
@@ -4837,18 +4885,20 @@ class SkillNode(Node):
         what = what or label
         workspace_xy_m = cup_cycle.CupCycleConfig().workspace_xy_m
         planner_mode = self._planner_mode()
+        carry_zvd = self._carry_zvd()
         missing, outside = [], []
         for pair, rel, tgt, pair_sites in items:
             rel = (float(rel[0]), float(rel[1]))
             tgt = (float(tgt[0]), float(tgt[1]))
             box = adm.select(boxes, label, pair, apex_m,
                              release_site_xy_mm=rel, target_site_xy_mm=tgt,
-                             dwell_s=dwell_s, planner_mode=planner_mode)
+                             dwell_s=dwell_s, planner_mode=planner_mode,
+                             carry_zvd=carry_zvd)
             if box is None:
                 missing.append('%r: %s' % (pair, adm.describe_miss(
                     boxes, label, pair, apex_m, release_site_xy_mm=rel,
                     target_site_xy_mm=tgt, dwell_s=dwell_s,
-                    planner_mode=planner_mode)))
+                    planner_mode=planner_mode, carry_zvd=carry_zvd)))
                 continue
             reason = adm.check_site_workspace(pair_sites, box, workspace_xy_m)
             if reason:
@@ -5073,6 +5123,7 @@ class SkillNode(Node):
             **self._bump_kwargs(),
             catch_aim_source=self._catch_aim_source(),
             planner_mode=self._planner_mode(),
+            carry_zvd=self._carry_zvd(),
             resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio,
             learner=learner, boxes=boxes,
@@ -5488,6 +5539,7 @@ class SkillNode(Node):
                 **self._bump_kwargs(),
                 catch_aim_source=self._catch_aim_source(),
                 planner_mode=self._planner_mode(),
+                carry_zvd=self._carry_zvd(),
                 resend_max_per_catch=self._catch_resend_max(),
                 launch_ratio=self._launch_ratio,
                 observer=self._ball_evidence, observations=self._observations,
@@ -5501,6 +5553,7 @@ class SkillNode(Node):
                 **self._bump_kwargs(),
                 catch_aim_source=self._catch_aim_source(),
                 planner_mode=self._planner_mode(),
+                carry_zvd=self._carry_zvd(),
                 resend_max_per_catch=self._catch_resend_max(),
                 launch_ratio=self._launch_ratio,
                 observer=self._ball_evidence, observations=self._observations,
@@ -5786,6 +5839,7 @@ class SkillNode(Node):
                 **self._bump_kwargs(),
                 catch_aim_source=self._catch_aim_source(),
                 planner_mode=self._planner_mode(),
+                carry_zvd=self._carry_zvd(),
                 resend_max_per_catch=self._catch_resend_max(),
                 launch_ratio=self._launch_ratio,
                 learner=learner, boxes=ctx.boxes,
@@ -5934,6 +5988,7 @@ class SkillNode(Node):
             **self._bump_kwargs(),
             catch_aim_source=self._catch_aim_source(),
             planner_mode=self._planner_mode(),
+            carry_zvd=self._carry_zvd(),
             resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio,
             learner=learner, boxes=ctx.boxes,
@@ -6115,6 +6170,7 @@ class SkillNode(Node):
             **self._bump_kwargs(),
             catch_aim_source=self._catch_aim_source(),
             planner_mode=self._planner_mode(),
+            carry_zvd=self._carry_zvd(),
             resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio,
             learner=learner, boxes=ctx.boxes,
@@ -6584,13 +6640,15 @@ class SkillNode(Node):
                 check_apex_m = float(self.get_parameter('apex_m').value)
                 check_dwell_s = float(self.get_parameter('dwell_s').value)
                 check_mode = self._planner_mode()
+                check_zvd = self._carry_zvd()
                 lines.append('planner_mode: %s' % check_mode)
+                lines.append('carry_zvd: %s' % str(check_zvd).lower())
                 pair = (_DEFAULT_SITE_NAME, _DEFAULT_SITE_NAME)
                 default_xy = (_DEFAULT_SITE_X_MM, _DEFAULT_SITE_Y_MM)
                 if adm.select(boxes, 'self_toss', pair, check_apex_m,
                               release_site_xy_mm=default_xy,
                               target_site_xy_mm=default_xy,
-                              dwell_s=check_dwell_s, planner_mode=check_mode) is None:
+                              dwell_s=check_dwell_s, planner_mode=check_mode, carry_zvd=check_zvd) is None:
                     ok = False
                     lines.append(
                         'box REFUSED: no box covers %r at apex %.3f m (%s): %s'
@@ -6599,7 +6657,7 @@ class SkillNode(Node):
                                boxes, 'self_toss', pair, check_apex_m,
                                release_site_xy_mm=default_xy,
                                target_site_xy_mm=default_xy,
-                               dwell_s=check_dwell_s, planner_mode=check_mode)))
+                               dwell_s=check_dwell_s, planner_mode=check_mode, carry_zvd=check_zvd)))
                 else:
                     lines.append('box OK: %s' % ('; '.join(parts),))
                 # The HOP's boxes at the node's separation, both directions —
@@ -6619,7 +6677,7 @@ class SkillNode(Node):
                                       check_apex_m,
                                       release_site_xy_mm=a.cup_mm[:2],
                                       target_site_xy_mm=b.cup_mm[:2],
-                                      dwell_s=check_dwell_s, planner_mode=check_mode) is None:
+                                      dwell_s=check_dwell_s, planner_mode=check_mode, carry_zvd=check_zvd) is None:
                             ok = False
                             lines.append(
                                 'hop box REFUSED: no hop box covers %s->%s at '
@@ -6630,7 +6688,7 @@ class SkillNode(Node):
                                        check_apex_m,
                                        release_site_xy_mm=a.cup_mm[:2],
                                        target_site_xy_mm=b.cup_mm[:2],
-                                       dwell_s=check_dwell_s, planner_mode=check_mode)))
+                                       dwell_s=check_dwell_s, planner_mode=check_mode, carry_zvd=check_zvd)))
                         else:
                             lines.append('hop box OK: %s->%s at %.1f mm'
                                          % (a.name, b.name, sep_mm))
@@ -6644,7 +6702,7 @@ class SkillNode(Node):
                         boxes, 'oval_1ball', (t_site.name, c_site.name),
                         check_apex_m, release_site_xy_mm=t_site.cup_mm[:2],
                         target_site_xy_mm=c_site.cup_mm[:2],
-                        dwell_s=check_dwell_s, planner_mode=check_mode)
+                        dwell_s=check_dwell_s, planner_mode=check_mode, carry_zvd=check_zvd)
                     if oval_box is None:
                         lines.append(
                             'oval box not swept: no oval_1ball box covers '
@@ -6657,7 +6715,7 @@ class SkillNode(Node):
                                    (t_site.name, c_site.name), check_apex_m,
                                    release_site_xy_mm=t_site.cup_mm[:2],
                                    target_site_xy_mm=c_site.cup_mm[:2],
-                                   dwell_s=check_dwell_s, planner_mode=check_mode)))
+                                   dwell_s=check_dwell_s, planner_mode=check_mode, carry_zvd=check_zvd)))
                     else:
                         ws_reason = adm.check_site_workspace(
                             (t_site, c_site), oval_box,

@@ -145,6 +145,11 @@ TILT_PIN = 'TILT_PIN'                    #: a tilt pin outside the 12° ceiling
 #: ``ValueError``, re-coded so an operator reads "shorten a hold / lengthen the
 #: window", not "aim outside the cone" (two-ball-oval P3).
 POSE_WINDOW = 'POSE_WINDOW'
+#: I-PLAN-16 (carry-ring-zvd, JB-102): with ``PoseConfig.carry_zvd`` on, the
+#: window has no solution that leaves the modelled Platform mode still at the
+#: release, while the same window without those rows solves —
+#: ``cup_cycle._refuse_ring``'s code, passed through unchanged.
+RING = 'RING'
 
 #: The two formulations ``cup_cycle`` can solve the folded STEADY window with
 #: (two-ball-oval § 2.5; ``hardware_config.yaml`` ``trajectory_op.planner_mode``).
@@ -813,6 +818,13 @@ class CycleState:
     cup_pos_mm: Optional[np.ndarray] = None
     cup_vel_mm_s: Optional[np.ndarray] = None
     cup_accel_mm_s2: Optional[np.ndarray] = None
+    #: The modelled Platform ring the seed inherits (carry-ring-zvd, I-PLAN-16):
+    #: ``(M, 4)`` rows ``(e, e', ∂e/∂ω, ∂e'/∂ω)`` per mode of
+    #: ``cup_cycle.zvd_modes``, the ``PoseSpec.mode0`` convention.  ``None`` =
+    #: zeros = a seed with no ring (rest, or ``carry_zvd`` off): bit-identical to
+    #: before.  Filled by :func:`release_state_at_knot` / :func:`state_at_knot`
+    #: only when the head's pose config has ``carry_zvd`` on.
+    mode_state: Optional[np.ndarray] = None
     #: The gravity-levelling correction the PLAN frame is expressed in — the 3×3
     #: matrix ``levelling.correction_for_pose`` builds, or ``None`` for "this
     #: state's rotations ARE gravity-referenced" (every pure/sim caller, and an
@@ -1016,6 +1028,12 @@ class CycleMeta:
     #: pose-mode SESSION still reports ``level`` on its LAUNCH / LANDING /
     #: SETTLE windows — the field names what was SOLVED, not what was asked.
     planner_mode: str = PLANNER_LEVEL
+    #: The :class:`cc.PoseConfig` this window was SOLVED with (the I-PLAN-13 (b)
+    #: pattern: what was solved, not what was asked).  ``None`` unless the window
+    #: was solved in pose mode.  The seed's ``mode_state`` reads it
+    #: (:func:`_seed_mode_state`) because a spliced / joined meta's ``goals`` are
+    #: the SETTLE tail's, which carry no ``pose_cfg``.
+    pose_cfg: Optional['cc.PoseConfig'] = None
     #: Per-stage wall time, seconds, keyed :data:`STAGE_KEYS`.  ``None`` when the
     #: meta did not come from :func:`plan_cycle` directly (a spliced/joined meta).
     #:
@@ -1174,6 +1192,21 @@ def protected_release_knots(cup_cfg=None) -> int:
     return max(detach_knots(cup_cfg), post_release_hold_knots(cup_cfg=cup_cfg))
 
 
+def _seed_mode_state(plan: CyclePlan, meta: CycleMeta, k: int):
+    """``CycleState.mode_state`` for a seed at knot ``k``: the head's modelled
+    ring when ITS pose config has ``carry_zvd`` on, else ``None`` (flag off is
+    byte-identical to the pre-ZVD seed)."""
+    g = meta.goals
+    pcfg = getattr(meta, 'pose_cfg', None)
+    if pcfg is None:
+        pcfg = g.pose_cfg if g is not None and g.pose_cfg is not None else None
+    if pcfg is None:
+        pcfg = cc.PoseConfig()
+    if not pcfg.carry_zvd:
+        return None
+    return cc.platform_mode_state(plan, meta, k, pcfg)
+
+
 def release_state_at_knot(plan: CyclePlan, meta: CycleMeta, k: int,
                           cfg=None) -> CycleState:
     """The POST-RELEASE boundary condition at the release sitting on knot ``k``.
@@ -1226,6 +1259,7 @@ def release_state_at_knot(plan: CyclePlan, meta: CycleMeta, k: int,
                          else np.asarray(mark.brake_accel_mm_s2,
                                          dtype=float).copy()),
         levelling_correction=meta.levelling_correction,
+        mode_state=_seed_mode_state(plan, meta, k),
     )
 
 
@@ -2018,6 +2052,10 @@ def plan_cycle(kind: str, goals: CycleGoals, state: CycleState,
                           t_wall=t_wall, stages=stages, pose_tilts=pose_tilts,
                           planner_mode=(PLANNER_POSE if pose_spec is not None
                                         else PLANNER_LEVEL), cup_cfg=cup_cfg)
+    if pose_spec is not None:
+        meta = dataclasses.replace(
+            meta, pose_cfg=(goals.pose_cfg if goals.pose_cfg is not None
+                            else cc.PoseConfig()))
     return plan, meta
 
 
@@ -2126,7 +2164,11 @@ def _pose_spec_for(kind, goals: CycleGoals, state: CycleState, rcfg, cup_cfg,
     pose_acc = np.asarray(state.pose_accel, dtype=float).reshape(6)
     dz0 = np.array([(pose[2] - float(rcfg.active_z_mm)) / 1000.0,
                     pose_vel[2] / 1000.0, pose_acc[2] / 1000.0])
-    return cc.PoseSpec(tilt_fn=fn, jacobian=jacobian, cfg=pcfg, dz0=dz0)
+    mode0 = None
+    if pcfg.carry_zvd and state.mode_state is not None:
+        mode0 = np.asarray(state.mode_state, dtype=float)
+    return cc.PoseSpec(tilt_fn=fn, jacobian=jacobian, cfg=pcfg, dz0=dz0,
+                       mode0=mode0)
 
 
 def _throw_tilt_for(cup, max_tilt_deg: float) -> np.ndarray:
@@ -3251,6 +3293,7 @@ def extend(plan_a: CyclePlan, meta_a: CycleMeta,
         # every pose-mode segment and the install reply could only echo the
         # request.
         planner_mode=meta_a.planner_mode,
+        pose_cfg=meta_a.pose_cfg,
         cup_plan=cup_joined,
         goals=meta_b.goals, seam_vel_mismatch=seam,
         levelling_correction=correction,
@@ -3312,7 +3355,8 @@ def state_at_knot(plan: CyclePlan, meta: CycleMeta, k: int) -> CycleState:
         cup_pos_mm=cup0.pos[k] * 1000.0,
         cup_vel_mm_s=cup0.vel[k] * 1000.0,
         cup_accel_mm_s2=cup0.acc[k] * 1000.0,
-        levelling_correction=meta.levelling_correction)
+        levelling_correction=meta.levelling_correction,
+        mode_state=_seed_mode_state(plan, meta, k))
 
 
 def _refuse_splice_into_a_detach_cone(meta: CycleMeta, k_s: int, dt: float,
@@ -3474,7 +3518,7 @@ def _head_view(plan: CyclePlan, meta: CycleMeta,
         levelling_correction=meta.levelling_correction,
         seam_vel_mismatch=meta.seam_vel_mismatch,
         report_range_knots=meta.report_range_knots, stage_wall_s=None,
-        planner_mode=meta.planner_mode)
+        planner_mode=meta.planner_mode, pose_cfg=meta.pose_cfg)
     return head, head_meta
 
 
@@ -3668,4 +3712,5 @@ def splice_at(plan: CyclePlan, meta: CycleMeta, k_s: int,
     # finding 2026-10-24: a pose CATCH spliced onto a level THROW record
     # otherwise replied 'level').
     return joined, dataclasses.replace(joined_meta, kind=SPLICED,
-                                       planner_mode=seg_meta.planner_mode)
+                                       planner_mode=seg_meta.planner_mode,
+                                       pose_cfg=seg_meta.pose_cfg)

@@ -636,6 +636,8 @@ class InstallSegment:
             self.t_dispatch_s = 0.0
             # two-ball-oval P3: '' = the emitter's SegmentConfig default.
             self.planner_mode = ''
+            # carry-ring-zvd P1c (JB-102).
+            self.carry_zvd = False
 
     Response = _make_service(
         resp_fields={'accepted': False, 'code': '', 'message': '',
@@ -643,6 +645,7 @@ class InstallSegment:
                      't_event_mono': 0.0, 'duration_s': 0.0,
                      'seeded_post_release': False, 't_release_mono': 0.0,
                      'planner_mode': '',
+                     'carry_zvd': False,
                      'terminal': False,
                      'release_offset_xy_mm': [0.0, 0.0],
                      'launch_bias_xy_mm_s': [0.0, 0.0]}).Response

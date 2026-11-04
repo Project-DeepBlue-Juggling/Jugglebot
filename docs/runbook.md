@@ -6,7 +6,7 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 5 blocks (123 min) · Bench leg 1 block (30 min) · Bench hand 1 block (30 min)
+Rigs: Robot 5 blocks (168 min) · Bench leg 1 block (30 min) · Bench hand 1 block (30 min)
 
 ## Setup 0: before power
 
@@ -16,7 +16,7 @@ Rigs: Robot 5 blocks (123 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Robot  (5 blocks, 123 min)
+## Robot  (5 blocks, 168 min)
 
 ### Block 1: armed  (1 row, 1 min)
 
@@ -83,7 +83,19 @@ Rigs: Robot 5 blocks (123 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - pass: the bag replays through `tools/probes/human_throw_bench.py` with the robot-spot landing sd and the phantom rate reported.
 - record: the bag path, the lighting change, and the bench report path.
 
-### Block 5: armed, bb-fed, bridge-cycled  (1 row, 50 min)
+### Block 5: armed, bb-fed, bridge-cycled  (2 rows, 95 min)
+
+#### JB-102 Pre-release hold rung: release from a moving Platform (hold 0.100 → 0)  (45 min, high, two-ball-oval)
+- why: carry-ring-zvd P0 could not identify the Platform mode from the bags on disk (the encoder and mocap fits disagree, 5.4 vs 4.45 Hz), so the mode is identified on the robot first and the ZVD rows (provisional 4.9 Hz / 0.20 / 20 ms) are then flown A/B against the flag-off carry.
+- do:
+  - Before arming: confirm the colcon build is done (`cd ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot`, then re-source; InstallSegment.srv changed) and the launch log shows the new box line gate_hash e8d303ae93bc. Run `ros2 param get /skill_node carry_zvd` and confirm it reads false.
+  - IDENTIFICATION FIRST, Platform only, no Throw, cup empty, Ball Butler unpowered: in the GUI step the pose +20 mm in x, hold 1 s, step back, hold 1 s; repeat 5 times; then the same in y. Mocap and encoders recording (bag on).
+  - A arm (flag off, the existing behaviour): `ros2 param set /skill_node plant_id zvd-oval-<date>` and read it back, then one Attempt of `{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.40, num_cycles: 32}` (cup empty, Ball Butler loaded).
+  - B arm: `ros2 param set /skill_node carry_zvd true` (refused while a goal runs) and read it back with `ros2 param get /skill_node carry_zvd`; the goal start line must show carry_zvd. Fly the same oval goal at dwell 0.40 on the same plant. Then dwell 0.35 (`dwell_s: 0.35`, same other keys) with the flag on, only if 0.40 holds.
+  - Columns canary with the flag OFF (the swept box has no Columns cell with the rows on): before it run `ros2 param set /skill_node carry_zvd false` and read it back with `ros2 param get /skill_node carry_zvd`; two Attempts: GUI Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21.
+  - Afterwards re-fit the mode on this bag: `python tools/probes/platform_mode_fit.py <bag>` (the step responses give the free-decay estimate P0 could not get).
+- pass: at Dwell 0.40 with the flag on, the carried minus from-rest raw landing bias is within +/-10 mm, the carried per-Throw sd is under 17.5 mm, and 30 consecutive Catches land in one Attempt; no CUP_SEATING_CONE or leg LIMIT end; the Columns canary (flag off) is unchanged (each Attempt COMPLETED, no new refusal).
+- record: raw x per Throw (landed minus u) split from-rest / carried, per arm; encoder and mocap excess at separation per arm; RING refusals (the RING refusal text if any oval install is refused); install-line leg peaks; the platform_mode_fit.py result on the identification bag (x and y); the bag and launch log paths.
 
 #### JB-162 P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30  (50 min, high, two-ball-oval)
 - why: P4 ramp of plan two-ball-oval.md: the first flight at the 600 / 8000 working point with the legs at 20 A (box gate_hash 2605fc1bd25e); five Columns canary Attempts show nothing regressed, then the one-ball oval dwell ladder finds the shortest dwell that holds.
@@ -130,7 +142,6 @@ Rigs: Robot 5 blocks (123 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 
 ## Needs a Sitting section
 
-- JB-102 [Robot] Pre-release hold rung: release from a moving Platform (hold 0.100 → 0): no ## Sitting section
 - JB-106 [Robot] JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites: no ## Sitting section
 - JB-109 [Robot] JP-11 Rotating columns: the pair turns a few degrees every Beat: no ## Sitting section
 - JB-110 [Robot] JP-13 Rising and sinking columns: the whole Pattern rides the Platform in z: no ## Sitting section

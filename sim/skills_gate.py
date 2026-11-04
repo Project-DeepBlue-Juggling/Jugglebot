@@ -125,7 +125,7 @@ from jugglebot.motion.skills import schedule as sk                 # noqa: E402
 from jugglebot.motion.skills import sites                          # noqa: E402
 from jugglebot.motion.skills import executor as ex                 # noqa: E402
 from jugglebot.motion.skills.segments import (                     # noqa: E402
-    CATCH, THROW, SegmentConfig,
+    CARRY_ZVD_DEFAULT, CATCH, THROW, SegmentConfig,
 )
 
 from teensy_link.protocol import Setpoint                          # noqa: E402
@@ -285,6 +285,11 @@ class SkillsGateConfig:
     #: twin of skill_node's live ``planner_mode`` parameter. Validated in
     #: :class:`SkillsGate`.
     planner_mode: str = uc.PLANNER_MODE_DEFAULT
+    #: The pose planner's ZVD ring rows (carry-ring-zvd P1c, JB-102): the
+    #: gate's twin of skill_node's live ``carry_zvd`` parameter. Plans with it
+    #: (``SegmentConfig.carry_zvd``) AND selects boxes under it; inert (and
+    #: stamped false) under ``planner_mode='level'``.
+    carry_zvd: bool = CARRY_ZVD_DEFAULT
     noise: NoiseConfig = dataclasses.field(
         default_factory=lambda: NoiseConfig(bb_throw_noise_frac=0.0,
                                             tracking_noise_mm=0.5))
@@ -1014,6 +1019,11 @@ class SelfTossGateConfig:
     #: twin of skill_node's live ``planner_mode`` parameter. Validated in
     #: :class:`SkillsGate`.
     planner_mode: str = uc.PLANNER_MODE_DEFAULT
+    #: The pose planner's ZVD ring rows (carry-ring-zvd P1c, JB-102): the
+    #: gate's twin of skill_node's live ``carry_zvd`` parameter. Plans with it
+    #: (``SegmentConfig.carry_zvd``) AND selects boxes under it; inert (and
+    #: stamped false) under ``planner_mode='level'``.
+    carry_zvd: bool = CARRY_ZVD_DEFAULT
     #: ``SegmentConfig.pre_release_hold_s`` override in [0, 0.25] s (twin of
     #: trajectory_node's ``pre_release_hold_s``); None = the production default.
     pre_release_hold_s: Optional[float] = None
@@ -1355,6 +1365,7 @@ class SkillsGate:
                                  'got %r' % (_hold,))
             _seg_kw['pre_release_hold_s'] = float(_hold)
         self.seg_cfg = SegmentConfig(planner_mode=self.cfg.planner_mode,
+                                     carry_zvd=bool(self.cfg.carry_zvd),
                                      **_seg_kw)
         self.viewer = None
         self._plant = None
@@ -1869,6 +1880,7 @@ class SkillsGate:
             catch_aim_source=self.cfg.catch_aim_source,
             learner=learner, boxes=boxes,
             planner_mode=self.seg_cfg.planner_mode,
+            carry_zvd=bool(self.seg_cfg.carry_zvd),
             observer=observer, on_experience=lambda exp: (
                 memory.append(exp), throws_out.append(exp)),
             observations=observations,
@@ -3207,6 +3219,7 @@ class SkillsGate:
             'separation_mm': self.cfg.separation_mm,
             'dwell_s': self.cfg.dwell_s,
             'planner_mode': self.cfg.planner_mode,
+            'carry_zvd': bool(self.cfg.carry_zvd),
             'wall_s': wall_s,
             'plan_wall_ms': _wall_ms_stats(all_wall_s),
             'thresholds': {
@@ -3286,6 +3299,7 @@ def run_learn(cfg: SelfTossGateConfig = None, seeds=(0, 1, 2, 3, 4),
         'apex_m': cfg.apex_m,
         'dwell_s': cfg.dwell_s,
         'planner_mode': cfg.planner_mode,
+        'carry_zvd': bool(cfg.carry_zvd),
         'pre_release_hold_s': float(SegmentConfig().pre_release_hold_s
                                     if cfg.pre_release_hold_s is None
                                     else cfg.pre_release_hold_s),
@@ -3337,6 +3351,7 @@ def run_reload_gate(cfg: SelfTossGateConfig = None,
         'apex_m': cfg.apex_m,
         'dwell_s': cfg.dwell_s,
         'planner_mode': cfg.planner_mode,
+        'carry_zvd': bool(cfg.carry_zvd),
         'arrival_angle_deg': SkillsGate._RELOAD_ARRIVAL_ANGLE_DEG,
         'arrival_speed_mmps': SkillsGate._RELOAD_ARRIVAL_SPEED_MMPS,
         'wall_s': wall_s,
@@ -3469,6 +3484,11 @@ def main(argv=None) -> int:
                    help='the segment planner this run plans with and selects '
                         'admissible boxes under (level | pose); the box '
                         'file must carry cells swept under it')
+    p.add_argument('--carry-zvd', choices=('true', 'false'),
+                   default=str(CARRY_ZVD_DEFAULT).lower(),
+                   help="the pose planner's ZVD ring rows (carry-ring-zvd); "
+                        'plans with it and selects boxes stamped with it '
+                        '(inert under --planner-mode level)')
     p.add_argument('--pre-release-hold-s', type=float, default=None,
                    help='--learn only: override SegmentConfig.pre_release_hold_s '
                         '(s, in [0, 0.25]; default = the production value)')
@@ -3606,7 +3626,8 @@ def main(argv=None) -> int:
     if args.reload:
         rcfg = SelfTossGateConfig(report_path=args.report,
                                   catch_aim_source=args.catch_aim_source,
-                                  planner_mode=args.planner_mode)
+                                  planner_mode=args.planner_mode,
+                                  carry_zvd=(args.carry_zvd == 'true'))
         if args.reload_bias_mm is not None:
             rcfg.reload_bias_mm = (float(args.reload_bias_mm[0]),
                                    float(args.reload_bias_mm[1]))
@@ -3650,6 +3671,7 @@ def main(argv=None) -> int:
                                   catch_aim_source=args.catch_aim_source,
                                   pattern=args.pattern,
                                   planner_mode=args.planner_mode,
+                                  carry_zvd=(args.carry_zvd == 'true'),
                                   separation_mm=separation_mm)
         if args.angle_deg:
             if args.pattern != 'columns':
@@ -3700,7 +3722,8 @@ def main(argv=None) -> int:
 
     cfg = SkillsGateConfig(report_path=args.report,
                            catch_aim_source=args.catch_aim_source,
-                           planner_mode=args.planner_mode)
+                           planner_mode=args.planner_mode,
+                                  carry_zvd=(args.carry_zvd == 'true'))
     if args.seeds is not None:
         cfg.seeds = tuple(args.seeds)
     if args.n_throws is not None:

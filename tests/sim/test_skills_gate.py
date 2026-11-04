@@ -534,11 +534,26 @@ _PRE_H4500_BOX = os.path.join(os.path.dirname(__file__), '..', 'fixtures',
                               'admissible_box_pre_h4500.yaml')
 
 
-def _biased_hop_run(bias):
+def _stamped_pre_h4500_box(tmp_dir):
+    """The frozen fixture predates the carry_zvd stamp; select() matches the
+    flag exactly and an unstamped box matches no mode, so stamp every cell
+    carry_zvd=False (the yaml default the gate flies) in a tmp copy."""
+    import yaml
+    with open(_PRE_H4500_BOX) as fh:
+        doc = yaml.safe_load(fh)
+    for b in doc['boxes']:
+        b.setdefault('carry_zvd', False)
+    out = os.path.join(str(tmp_dir), 'admissible_box_pre_h4500_stamped.yaml')
+    with open(out, 'w') as fh:
+        yaml.safe_dump(doc, fh)
+    return out
+
+
+def _biased_hop_run(bias, tmp_dir):
     cfg = SelfTossGateConfig(pattern='hop', separation_mm=250.0,
                              target_throws=5, band_entry_throws=5,
                              max_attempts=15, plant_landing_bias_mm=bias,
-                             admissible_box_path=_PRE_H4500_BOX)
+                             admissible_box_path=_stamped_pre_h4500_box(tmp_dir))
     return SkillsGate(cfg).run_self_toss_seed(0, policy='A')
 
 
@@ -562,15 +577,15 @@ def test_plant_landing_bias_release_adds_the_lateral_speed_for_the_bias():
         sg._measured_release_bias(down))
 
 
-def test_a_biased_plant_fires_the_forward_clip_in_a_small_hop_run():
+def test_a_biased_plant_fires_the_forward_clip_in_a_small_hop_run(tmp_path):
     """+30 mm x plant bias: the fit's expected landing leaves the hop box,
     the clip fires (`on the box edge` / `UNMET`), the run completes, and at
     a skill both runs clipped, its pre-clip expected landing is further out
     than at zero bias."""
-    biased = _biased_hop_run((30.0, 0.0))
+    biased = _biased_hop_run((30.0, 0.0), tmp_path)
     assert biased['n_throws_collected'] == 5
     assert _clip_lines(biased)
-    base = _biased_hop_run((0.0, 0.0))
+    base = _biased_hop_run((0.0, 0.0), tmp_path)
     # Compare the SAME skill in both runs (notes are once per skill, and the
     # learner moves between Throws, so the first line of each run can belong
     # to different Throws).

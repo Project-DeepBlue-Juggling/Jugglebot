@@ -1140,6 +1140,23 @@ trajectory_op:
   pose_slider_margin_mm: 0.5       # With a free z band the hand's stroke-top box moves onto the
                                    # SLIDER (cup_z - dz); this margin {mm} keeps the tilt drop's
                                    # share of the stroke out of it. Inert at pose_z_band_mm 0.
+  carry_zvd: false                 # I-PLAN-16 (carry-ring-zvd, JB-102): zero-residual-vibration rows on
+                                   # every pose STEADY window - the modelled Platform mode (below) is
+                                   # still at the release knot, with its derivative in frequency (ZVD).
+                                   # A window that cannot meet them is refused RING. FALSE until the
+                                   # plan's P3 Sitting. Gated file: flipping it re-hashes the box.
+  platform_mode_hz: [4.9, 4.9]     # Platform lateral mode {Hz} per axis [x, y] (a list per axis = more
+                                   # modes; both axes must then list the SAME number of modes -
+                                   # the generated C header is a rectangular array, a ragged
+                                   # list crashes generate_config.py). P0 bag fit 2026-11-04 (tools/probes/platform_mode_fit.py,
+                                   # bags 10-31 + 11-03, x axis): encoder 5.4 Hz, mocap 4.45 Hz, stable
+                                   # across both days. 4.9 centres the ZVD +/-15 % band on both. y is NOT
+                                   # identified (10x less excitation) and copies x. The P0 gate FAILED
+                                   # (the fit over-predicts the encoder excess ~2x), so these are
+                                   # provisional until JB-102's identification row flies.
+  platform_mode_zeta: [0.20, 0.20] # Damping ratio per axis, same shape as platform_mode_hz (fits 0.14-0.28).
+  platform_mode_delay_s: 0.020     # Mode input delay {s}: the mode is driven by a_cmd(t - delay)
+                                   # (mocap 17-18 ms, encoder 21-22 ms, against /leg_cmd_executed stamps).
 
   # ── Stream C2 stop (can-bridge FW 22 scheduled playback, cover exhaustion) ──
   # When a stamped stream's 2-knot cover runs out with no newer frame, the

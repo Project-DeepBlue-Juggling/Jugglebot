@@ -42,6 +42,7 @@ float64[2] rest_tilt_rad       # REST only: the attitude (rx, ry) this REST ends
 float64[2] bump_delta_xy_mm    # BUMP only: the CLAMPED landing's xy minus the committed one (mm, platform frame)
 float64 t_dispatch_s           # BUMP only: the executor's dispatch instant (wall clock); k_wire = floor((t - t0)/dt) + WIRE_READ_KNOTS is derived from it, exactly as the executor did
 string planner_mode            # two-ball-oval P3: the planner formulation skill_node selected the box under ('level' | 'pose'); '' = the emitter's SegmentConfig default. Refused by name (code PLANNER_MODE) on any other value.
+bool carry_zvd                # carry-ring-zvd P1c (JB-102): the pose planner's ZVD ring rows (skill_node's live carry_zvd parameter, the same value the box cell was selected under); honoured whenever planner_mode is non-empty, inert in level mode
 ---
 bool accepted
 string code                    # OK, or the refusal code: the layer's own (SPLICE_TOO_LATE, WINDOW_TOO_SHORT, STALE_STATE, WRONG_MODE, GUARD_LATCHED, SUPERSEDED_BY_HOLD, IN_MOTION, PLANNER_MODE) or the bare CycleInfeasible subcode (LIMIT_JERK, TILT_PIN, HAND_STROKE, ...); `message` carries the full REJECTED_CYCLE_INFEASIBLE(...) text
@@ -58,3 +59,4 @@ bool terminal                  # BUMP only: a decline that ends bumping for this
 float64[2] release_offset_xy_mm  # BUMP only: the realised release offset b(t_rel), mm (what the learner row records, never delta)
 float64[2] launch_bias_xy_mm_s   # BUMP only: the lateral launch-velocity bias v_b, mm/s
 string planner_mode            # the planner this segment was SOLVED with (the installed head window's CycleMeta.planner_mode); '' for a refusal and for BUMP
+bool carry_zvd                # the carry_zvd flag this segment was SOLVED with (False unless the solved window was the pose formulation); False for a refusal and for BUMP

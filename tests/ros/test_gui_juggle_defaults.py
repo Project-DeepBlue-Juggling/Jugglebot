@@ -158,13 +158,16 @@ def test_param_backed_points_sit_in_their_own_admissible_cells():
     angle = float(re.search(r"columns_turned:.*?columns_angle_deg: ([\d.]+)", js_pts).group(1))
     apex2 = float(re.search(r"columns_highlow:.*?apex_m_ball2: ([\d.]+)", js_pts).group(1))
     kind, apex, sep, _ = _points()["columns_turned"]
-    turned = [b for b in BOX["boxes"] if b["pattern"] == kind and b["planner_mode"] == "pose"
+    # the GUI's param-backed points fly at the yaml default (carry_zvd False):
+    # flag-on cells are a different sweep (some empty) and do not apply
+    boxes = [b for b in BOX["boxes"] if b.get("carry_zvd") is False]
+    turned = [b for b in boxes if b["pattern"] == kind and b["planner_mode"] == "pose"
               and b["site_pair"][0].endswith("@%g" % angle) and abs(_sep_of(b) - sep) < 1e-6
               and b["apex_band_m"][0] <= apex <= b["apex_band_m"][1]]
     assert len(turned) == 2 and all(_admissible(b) for b in turned), turned
     kind, apex, sep, _ = _points()["columns_highlow"]
     for a in (apex, apex2):
-        cells = [b for b in BOX["boxes"] if b["pattern"] == kind and abs(_sep_of(b) - sep) < 1e-6
+        cells = [b for b in boxes if b["pattern"] == kind and abs(_sep_of(b) - sep) < 1e-6
                  and b["apex_band_m"][0] <= a <= b["apex_band_m"][1]]
         assert len(cells) == 2 and all(_admissible(b) for b in cells), (a, cells)
 

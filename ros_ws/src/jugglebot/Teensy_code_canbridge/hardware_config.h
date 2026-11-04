@@ -211,6 +211,10 @@ namespace TrajOp {
   constexpr uint32_t POSE_H_CATCH_PRE_KNOTS = 0u;
   constexpr uint32_t POSE_H_CATCH_POST_KNOTS = 0u;
   constexpr float POSE_SLIDER_MARGIN_MM = 0.5f;
+  constexpr bool CARRY_ZVD = false;
+  constexpr float PLATFORM_MODE_HZ[2] = {4.9f, 4.9f};
+  constexpr float PLATFORM_MODE_ZETA[2] = {0.2f, 0.2f};
+  constexpr float PLATFORM_MODE_DELAY_S = 0.02f;
   constexpr float STREAM_STOP_HAND_ACCEL_RPS2 = 4500.0f;
   constexpr float STREAM_STOP_HAND_JERK_RPS3 = 350000.0f;
   constexpr float STREAM_STOP_LEG_ACCEL_RPS2 = 250.0f;

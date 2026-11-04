@@ -14,11 +14,21 @@ def _names(which='committed'):
 
 def test_family_sets_are_unique_and_sized():
     c, h, old = _names('committed'), _names('h70'), _names('h4500')
-    assert len(old) == 26 and len(set(old)) == 26
-    assert len(h) == 30 and len(set(h)) == 30 and h[:26] == old
+    # carry-ring-zvd P1c (JB-102): every pose family gains a `<name>_zvd` twin
+    # (carry_zvd true) appended after the pre-ZVD order, so each set is its old
+    # base (26 / 30 / 33) plus one twin per pose family (15 / 19 / 22).
+    assert len(old) == 41 and len(set(old)) == 41
+    assert len(h) == 49 and len(set(h)) == 49
+    # the pre-ZVD prefix of each set is unchanged (merge order preserved)
+    base = lambda ns: [n for n in ns if not n.endswith('_zvd')]
+    assert len(base(old)) == 26 and old[:26] == base(old)
+    assert len(base(h)) == 30 and h[:30] == base(h) and base(h)[:26] == base(old)
     # P4 (2026-11-03): the committed set is h70 plus the three one-ball oval dwells.
-    assert len(c) == 33 and len(set(c)) == 33 and c[:30] == h
-    assert c[30:] == ['ovalx040_pose', 'ovalx035_pose', 'ovalx030_pose']
+    assert len(c) == 55 and len(set(c)) == 55
+    assert len(base(c)) == 33 and c[:33] == base(c) and base(c)[:30] == base(h)
+    assert base(c)[30:] == ['ovalx040_pose', 'ovalx035_pose', 'ovalx030_pose']
+    assert len([n for n in c if n.endswith('_zvd')]) == 22
+    assert c[-3:] == ['ovalx040_pose_zvd', 'ovalx035_pose_zvd', 'ovalx030_pose_zvd']
 
 
 def test_sample_is_deterministic_and_sized():

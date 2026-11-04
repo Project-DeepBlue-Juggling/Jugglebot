@@ -65,6 +65,7 @@ Plan: ``plans/archived/unified-7dof-planner.md`` § 4 Phase 4.
 
 from __future__ import annotations
 
+import dataclasses
 import time
 
 import numpy as np
@@ -320,6 +321,39 @@ def oval_rig():
     return limits, geom, throw.release_state, goals, plan
 
 
+def test_pose_mode_steady_with_the_carry_zvd_rows_fits_the_same_budget(oval_rig):
+    """carry-ring-zvd P1b: the SAME budget with ``carry_zvd`` on (I-PLAN-16's 8
+    ring rows).  P1a measured the core at 43.8 -> 46.2 ms on the dwell-0.65 cell
+    (min of 15, one BLAS thread) against the 50 ms budget.
+
+    Measured 47.6 ms of 50 under load: a RED here under load is re-run scoped
+    (``OPENBLAS_NUM_THREADS=1 pytest tests/motion/test_unified_cycle_budget.py
+    -q``) before it is read as a regression, the same rule as
+    ``test_decay_boundary_continuity``."""
+    from jugglebot.motion.trajectory import cup_cycle as cc
+    limits, geom, state, goals, _plan = oval_rig
+    goals = dataclasses.replace(
+        goals, pose_cfg=dataclasses.replace(cc.PoseConfig(), carry_zvd=True))
+    plan, meta = uc.plan_steady(goals, state, limits, geom)
+    assert meta.planner_mode == uc.PLANNER_POSE
+    totals = _samples(lambda: uc.plan_steady(goals, state, limits, geom), N_SOLVES)
+    gates = _samples(lambda: fz.validate_cycle(plan, limits, geom), N_GATE)
+    tmin, t50, t90, t99, tmax = _stats(totals)
+    gmin, g50, _, _, _ = _stats(gates)
+    tmin_core = float(totals[:N_GATE].min())
+    note = ("zvd total min %.1f (first %d: %.1f) p50 %.1f p90 %.1f p99 %.1f max "
+            "%.1f | gate min %.1f p50 %.1f"
+            % (tmin, N_GATE, tmin_core, t50, t90, t99, tmax, gmin, g50))
+    print(note)
+    core = tmin_core - gmin
+    assert core <= OWNER_BUDGET_MS, (
+        "pose+ZVD planner core %.1f ms > %.1f ms owner budget [%s]"
+        % (core, OWNER_BUDGET_MS, note))
+    assert tmin <= TOTAL_BUDGET_MS, (
+        "pose+ZVD plan_cycle %.1f ms > %.1f ms owner plan+validate ceiling [%s]"
+        % (tmin, TOTAL_BUDGET_MS, note))
+
+
 def test_pose_mode_steady_fits_the_same_budget(oval_rig):
     """The pose planner on the 61-knot oval cell: the SAME two halves as the
     reference cycle above — core (plan minus gate) <= 50 ms, whole call <= 250
@@ -343,6 +377,7 @@ def test_pose_mode_steady_fits_the_same_budget(oval_rig):
     note = ("pose total min %.1f (first %d: %.1f) p50 %.1f p90 %.1f p99 %.1f max "
             "%.1f | gate min %.1f p50 %.1f"
             % (tmin, N_GATE, tmin_core, t50, t90, t99, tmax, gmin, g50))
+    print(note)
     core = tmin_core - gmin
     assert core <= OWNER_BUDGET_MS, (
         "pose planner core %.1f ms > %.1f ms owner budget [%s]"
