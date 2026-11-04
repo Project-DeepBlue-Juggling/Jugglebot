@@ -4,12 +4,12 @@ kind: bug
 title: CONSOLE search missing some entries?
 status: inbox
 created: '2026-11-03'
-updated: '2026-11-03T17:50:25Z'
+updated: '2026-11-04T17:52:10Z'
 owners: []
 priority: medium
 effort: s
 hardware: none
-owner: decision
+owner: none
 radius: local
 diagnosis: hypothesis
 area: gui
