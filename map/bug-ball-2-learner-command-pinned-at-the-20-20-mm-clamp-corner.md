@@ -2,9 +2,9 @@
 id: JB-139
 kind: bug
 title: Ball 2 learner command pinned at the (-20,-20) mm clamp corner in 37 of 40 straight Columns rows (BOX-EXPECTED-LANDING-UNMET u=(-20,-20))
-status: in_progress
+status: complete
 created: '2026-11-01'
-updated: '2026-11-03T21:54:17Z'
+updated: '2026-11-04T08:01:15Z'
 owners: []
 priority: medium
 effort: s
@@ -18,6 +18,7 @@ links:
 - map/pathway-learner-generalisation.md
 - logbook/2026-11-03-jb143-margin-first-box-and-jb139-30mm-authority.md
 - logbook/2026-11-04-sitting-debrief.md
+- logbook/2026-11-04-jb149-probe-sitting-and-jb139-close.md
 filed_by: claude
 ---
 
@@ -78,3 +79,4 @@ What would settle it: with a fresh `plant_id` the first Ball 2 commands are the 
 - 2026-11-03: 2026-11-03 Sitting (L547-4800): Ball 2 x command pinned at <= -19.5 mm in 36 of 91 BOX-EXPECTED-LANDING rows (40 %), y at the -20 clamp in 4; landing centred only at the clamp edge. The y bias of 2026-11-02 (first-5 +16.4 mm) is not present: -6.4 mm.
 - 2026-11-03: Learner lateral authority 20 -> 30 mm for Throw and catch re-aims (skill_node param; capture cap 46.10 mm, I-CATCH-6) and the box re-swept on a +/-30 grid, 2026-11-03; Sitting row added.
 - 2026-11-04: 2026-11-03 Sitting, one-ball oval (new plant p4-oval-2026-11-03): the learner command pushed the right way (u_x -18 -> -26 -> -30 mm) and was PINNED at the 30 mm authority from goal 4 onward; BOX-EXPECTED-LANDING-UNMET on every later Throw (y_hat +32..+52 mm outside x[-30,+30]). Owner 2026-11-04: try 60 mm for the oval Throw.
+- 2026-11-04: Closed on the Sitting of 2026-11-04 18:45: Ball 2's Throw command at the +/-30 mm clamp in 0 of 39 rows in x and 0 of 39 in y (u_x mean -17.6 mm, was pinned at -20 in 40 % on 11-03); no CATCH_AXIS refusal; 77 rows on the default memory. The one-ball Oval 60 mm request stays with the JB-102 carry-ring investigation (2026-11-04 debrief).
