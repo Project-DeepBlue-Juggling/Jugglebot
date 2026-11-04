@@ -2,9 +2,9 @@
 id: JB-170
 kind: ticket
 title: 'JB-159 reopened: the pills did not overlap in a headless repro; re-check on a recording now, or send a screenshot naming the chart?'
-status: open
+status: complete
 created: '2026-11-05'
-updated: '2026-11-04T17:51:16Z'
+updated: '2026-11-04T21:22:21Z'
 owners: []
 priority: medium
 effort: xs
@@ -30,3 +30,7 @@ Recommendation: 2, then 1 if it still overlaps.
 ## What each answer unblocks
 - 1: a unit that reproduces your case in the headless harness and fixes it.
 - 2 or 3: JB-159 closes, or goes to 1 with the chart named.
+
+## Answer
+
+Yes, this must have been an incorrect-checkout problem; this is working well now.
