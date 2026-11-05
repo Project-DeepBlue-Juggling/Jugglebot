@@ -520,6 +520,12 @@
 - **clients:** _none_
 - **type:** `std_srvs.srv.Trigger`
 
+### `skills/nominate`
+
+- **servers:** `skill_node`
+- **clients:** _none_
+- **type:** `jugglebot_interfaces.srv.SetString`
+
 ### `trajectory/go_home`
 
 - **servers:** `trajectory_node`
@@ -637,6 +643,7 @@ broken wire cannot hide among them.
 - `set_motor_vel_curr_limits` — topic with no publishers
 - `skills/attempt` — topic with no subscribers
 - `skills/check` — service with no clients
+- `skills/nominate` — service with no clients
 - `trajectory/commanded_pose` — topic with no subscribers
 - `trajectory/diagnostics` — topic with no subscribers
 - `trajectory/go_home` — service with no clients

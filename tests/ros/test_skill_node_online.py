@@ -3,8 +3,8 @@
 `SkillNode._checker` plans a segment with `check_only` and installs
 nothing; this phase WIRES it: every `SkillExecutor(...)` the node builds gets
 `checker=self._checker` and `early_command=<admissibility_early_command>`
-through `_online_kwargs`. Goal ACCEPTANCE is unchanged (the box still gates
-it; the accept-time box tests in test_skill_node.py stay as they are).
+through `_online_kwargs`. (P3b: goal ACCEPTANCE is now decided by nomination,
+not the box; see test_skill_node_nominate.py.)
 """
 from __future__ import annotations
 
@@ -60,8 +60,8 @@ def test_a_self_toss_executor_gets_the_checker_and_the_early_switch():
     assert resp.success is True, resp.message
     assert node._executor.checker == node._checker
     assert node._executor.early_command is True
-    # The box still loads and rides on the executor (acceptance unchanged).
-    assert node._executor.boxes
+    # P3b: no box rides on the executor (acceptance is the nomination's).
+    assert node._executor.boxes is None
 
 
 def test_every_executor_construction_site_hands_the_online_kwargs():
@@ -92,9 +92,9 @@ def test_check_states_the_command_path_line():
     node._on_traj_status(_status())
     _freshen(node)
     resp = node._svc_check(Trigger.Request(), Trigger.Response())
-    assert ('admissibility: online check on the command path (margin 0.9, '
-            'early_command=true); the box still gates goal acceptance'
-            in resp.message)
+    assert ('admissibility: acceptance is decided by nomination (a real plan '
+            'of the Pattern at the live limits); online check on the command '
+            'path (margin 0.9, early_command=true)' in resp.message)
     node._params['admissibility_early_command'] = False
     resp = node._svc_check(Trigger.Request(), Trigger.Response())
-    assert 'early_command=false); the box still gates' in resp.message
+    assert 'early_command=false)' in resp.message

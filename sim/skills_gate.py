@@ -3501,6 +3501,67 @@ def _print_table(rep: dict) -> None:
     print('[skills_gate] %s' % _bump_stats_line())
 
 
+#: ``--nominate`` per-pattern defaults (apex m, separation mm, dwell s): the
+#: sim gate's ``--learn`` branch, the GUI Juggle panel's ``PATTERN_POINTS``.
+_NOMINATE_DEFAULTS = {
+    'self_toss':         (0.9, _SELF_TOSS_SEPARATION_MM, 0.27),
+    'hop':               (0.9, _HOP_SEPARATION_MM, 0.27),
+    'columns':           (0.95, 125.0, 0.27),
+    'columns_1ball':     (0.95, 125.0, 0.27),
+    'columns_1ball_fed': (0.95, 125.0, 0.27),
+    'columns_turned':    (0.95, 125.0, 0.27),
+    'columns_highlow':   (1.0, 100.0, 0.27),
+    'oval_1ball':        (0.95, _OVAL_SEPARATION_MM, _OVAL_DWELL_S),
+    'oval_1ball_fed':    (0.95, _OVAL_SEPARATION_MM, _OVAL_DWELL_S),
+}
+_NOMINATE_DEFAULTS_HELP = '; '.join(
+    '%s %g/%g/%g' % ((k,) + v) for k, v in _NOMINATE_DEFAULTS.items()
+) + '; columns_highlow apex-ball2 0.9; columns_turned angle 45'
+_PATTERN_CHOICES = tuple(_NOMINATE_DEFAULTS)
+
+
+def _main_nominate(p, args) -> int:
+    """``--nominate``: print the nomination verdict, exit 0 viable / 1 refused."""
+    from jugglebot.motion.skills import nominate as nom
+    bad = [n for n, on in (('--learn', args.learn), ('--reload', args.reload),
+                           ('--seeds', args.seeds is not None),
+                           ('--viewer', args.viewer)) if on]
+    if bad:
+        p.error('--nominate runs no simulation; it cannot combine with '
+                + ', '.join(bad))
+    pattern = args.pattern or 'columns'
+    if pattern not in _NOMINATE_DEFAULTS:
+        p.error('--pattern %s is not nominable' % pattern)
+    apex, sep, dwell = _NOMINATE_DEFAULTS[pattern]
+    if args.apex_ball2 is not None and pattern != 'columns_highlow':
+        p.error('--apex-ball2 only applies to --pattern columns_highlow')
+    ball2 = (args.apex_ball2 if args.apex_ball2 is not None else 0.9
+             ) if pattern == 'columns_highlow' else None
+    angle = args.angle_deg
+    if pattern == 'columns_turned' and not angle:
+        angle = 45.0
+    if angle and pattern != 'columns_turned':
+        p.error('--angle-deg only applies to --pattern columns_turned '
+                'under --nominate')
+    cfg = nom.NominationConfig(
+        pattern=pattern,
+        apex_m=float(args.apex_m if args.apex_m is not None else apex),
+        separation_mm=float(args.separation_mm if args.separation_mm
+                            is not None else sep),
+        dwell_s=float(args.dwell_s if args.dwell_s is not None else dwell),
+        apex_m_ball2=ball2, angle_deg=float(angle),
+        planner_mode=args.planner_mode,
+        carry_zvd=(args.carry_zvd == 'true'),
+        n_throws=args.n_throws)
+    limits = (nom.sitting_limits(*args.limits) if args.limits is not None
+              else nom.default_limits())
+    rep = nom.nominate(cfg, limits, search=not args.no_search)
+    print(rep.summary())
+    for line in rep.lines():
+        print(line)
+    return 0 if rep.ok else 1
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     p.add_argument('--seeds', type=int, nargs='+', default=None,
@@ -3561,11 +3622,29 @@ def main(argv=None) -> int:
                    help='run the R3/R4/R5 sim-validation learner run (plan '
                         '§ 4 R3; R4 Unit U7a; R5 Unit G) instead of the R2 '
                         'identity-prior columns gate')
-    p.add_argument('--pattern', choices=('self_toss', 'hop', 'columns', 'oval_1ball'),
-                   default='self_toss',
-                   help='--learn only: self_toss (R3, 1 site, P1), hop '
-                        '(R4, 2 sites, P1<->P2, Unit U7a) or columns (R5, '
-                        'both sites + the Stop, Unit G, --policy ignored)')
+    p.add_argument('--pattern', choices=_PATTERN_CHOICES, default=None,
+                   help='--learn: self_toss (R3, 1 site, P1; the default), '
+                        'hop (R4, 2 sites, P1<->P2, Unit U7a), columns (R5, '
+                        'both sites + the Stop, Unit G, --policy ignored) or '
+                        'oval_1ball; --nominate: any of the nominable '
+                        'patterns (default columns)')
+    p.add_argument('--nominate', action='store_true',
+                   help='P3b: run the admissibility NOMINATION for the '
+                        'pattern / goal given by --pattern --apex-m '
+                        '[--apex-ball2] --separation-mm --dwell-s '
+                        '[--angle-deg] --planner-mode --carry-zvd and print '
+                        'its verdict (summary line, then the refusal lines '
+                        'and the nearest viable configuration); exit 0 viable, '
+                        '1 refused. No simulation, no ROS, no viewer. Flags '
+                        'not given default per pattern (apex / separation mm '
+                        '/ dwell s): ' + _NOMINATE_DEFAULTS_HELP)
+    p.add_argument('--limits', type=float, nargs=4, default=None,
+                   metavar=('VEL', 'ACC', 'JERK', 'HAND_ACC'),
+                   help='--nominate only: leg vel mm/s, leg acc mm/s^2, leg '
+                        'jerk mm/s^3 and Hand acc rev/s^2 to judge against '
+                        "(default: hardware_config's working point)")
+    p.add_argument('--no-search', action='store_true',
+                   help='--nominate only: skip the nearest-viable search')
     p.add_argument('--policy', choices=('A', 'B'), default='A',
                    help='--learn only: A = single-throw attempts until '
                         'k_min rows then chained (the gated policy); B = '
@@ -3667,6 +3746,13 @@ def main(argv=None) -> int:
                         '--feed-speed-mmps (ball B is always fed here); '
                         'mutually exclusive with --one-ball')
     args = p.parse_args(argv)
+
+    if args.nominate:
+        return _main_nominate(p, args)
+    if args.limits is not None or args.no_search:
+        p.error('--limits / --no-search only apply to --nominate')
+    if args.pattern is None:
+        args.pattern = 'self_toss'
 
     if args.apex_ball2 is not None and (
             args.reload or args.learn or args.one_ball or args.one_ball_fed

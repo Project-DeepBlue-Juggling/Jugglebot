@@ -80,6 +80,16 @@ const STATUS_CLEAR_MS = 8000;
 const T_SVC_REQUEST = 10000;
 const T_SVC_STOP = 5000;
 const T_SVC_PARAMS = 3000;
+/** Nomination solves the whole pattern's schedules plus a parameter search on
+ *  the node, so it gets longer than a dispatch ack before it is called
+ *  unavailable. */
+const T_SVC_NOMINATE = 20000;
+/** Pattern select / field edits settle this long before a nomination is asked. */
+const NOMINATE_DEBOUNCE_MS = 400;
+/** skill_node's nomination service (SetString: the SAME data string Start
+ *  sends; reply message = summary line, then one refusal per line).  Relative
+ *  name like skills/attempt and jugglebot/juggle_request. */
+const NOMINATE_SERVICE = 'skills/nominate';
 /** Param-fetch retry while connected and skill_node isn't answering yet
  *  (it starts after rosbridge): a few fast tries, then slow. */
 const PARAM_RETRY_FAST_MS = 5000;
@@ -291,6 +301,9 @@ let magazineMiss = null;        // { text, cls } — latest MAGAZINE_MISS, until
 let last = null;                // { kind: 'end'|'refused', ... }
 let crossCheck = null;          // { pattern, typed, t }
 let warn = null;                // stale-relay mismatch text
+let nom = null;                 // { state: checking|ok|err|unavailable, summary, lines } | null
+let nomTimer = null;
+let nomSeq = 0;                 // request counter: a reply for an older request is dropped
 
 let speed = 0.5;
 try {
@@ -586,12 +599,8 @@ function setParamThenDispatch(p, data, cc) {
     busy = true;
     warn = null;
     setTransient('Setting ' + p.param + ' = ' + wireNum(value, false) + '…', '');
-    ros.withTimeout(transport.callService(SET_PARAM_SERVICE, SET_PARAM_SERVICE_TYPE, {
-        parameters: [{ name: p.param, value: { type: PARAMETER_DOUBLE, double_value: value } }],
-    }), T_SVC_PARAMS, 'skill_node set_parameters')
-        .then((res) => {
-            const r = res && res.results && res.results[0];
-            if (!r || !r.successful) throw new Error((r && r.reason) || 'parameter not set');
+    writeParam(p)
+        .then(() => {
             dispatchJuggle(data, cc);   // its own latch, ack and cooldown
         })
         .catch((err) => {
@@ -600,6 +609,85 @@ function setParamThenDispatch(p, data, cc) {
             clearTimeout(cooldownTimer);
             cooldownTimer = setTimeout(() => { busy = false; sync(); }, JUGGLE_COOLDOWN_MS);
             armTransientClear();
+            sync();
+        });
+}
+
+/** Write pattern `p`'s parameter-backed field to skill_node (one double).
+ *  Resolves on success; rejects with the node's reason, a timeout or a
+ *  transport error.  Shared by Start and the nomination, so both judge the
+ *  same parameter. */
+function writeParam(p) {
+    const value = fields[p.param].value;
+    return ros.withTimeout(transport.callService(SET_PARAM_SERVICE, SET_PARAM_SERVICE_TYPE, {
+        parameters: [{ name: p.param, value: { type: PARAMETER_DOUBLE, double_value: value } }],
+    }), T_SVC_PARAMS, 'skill_node set_parameters')
+        .then((res) => {
+            const r = res && res.results && res.results[0];
+            if (!r || !r.successful) throw new Error((r && r.reason) || 'parameter not set');
+        });
+}
+
+// ====================================================================
+// Nomination (advisory: never blocks Start, never an error toast)
+// ====================================================================
+
+/** Drop whatever nomination is pending or in flight (its reply is stale). */
+function cancelNominate() {
+    clearTimeout(nomTimer);
+    nomSeq++;
+}
+
+/** The request changed (pattern, field, defaults): show "checking" and, once
+ *  the edits settle, ask skill_node whether the request is admissible. */
+function scheduleNominate() {
+    cancelNominate();
+    if (!gate.connected || running || busy || firstFieldError(patternOf(ui.pattern))) {
+        nom = null;   // nothing to judge, or judging would write parameters under a live goal
+        sync();
+        return;
+    }
+    nom = { state: 'checking', summary: 'checking nomination…', lines: [] };
+    sync();
+    const seq = nomSeq;
+    nomTimer = setTimeout(() => runNominate(seq), NOMINATE_DEBOUNCE_MS);
+}
+
+/** Start's request string plus the parameter-backed fields.  A nomination must
+ *  not mutate node parameters while the operator is still editing, so instead
+ *  of writing them (as Start does) it carries them as optional request keys
+ *  that override the node parameters for that nomination only.  A blank
+ *  field omits its key. */
+function buildNominateData(p) {
+    let data = buildRequestData(p);
+    if (p.param && fields[p.param].value != null) {
+        data += ',' + p.param + '=' + wireNum(fields[p.param].value, false);
+    }
+    return data;
+}
+
+function runNominate(seq) {
+    if (seq !== nomSeq) return;
+    const p = patternOf(ui.pattern);
+    const data = buildNominateData(p);
+    ros.withTimeout(new Promise((r) => r(transport.callService(NOMINATE_SERVICE, SETSTRING, { data }))),
+        T_SVC_NOMINATE, 'nomination')
+        .then((res) => {
+            if (seq !== nomSeq) return;   // the fields moved while this was out
+            const text = String((res && res.message) || '').trim();
+            const rows = text ? text.split('\n').map((l) => l.trim()).filter((l) => l) : [];
+            const ok = !!(res && res.success);
+            // "nomination unavailable: ..." (an Attempt is running) is not a verdict on the configuration.
+            const neutral = /^nomination unavailable/i.test(text);
+            nom = { state: neutral ? 'unavailable' : (ok ? 'ok' : 'err'),
+                summary: rows.length ? rows[0] : (ok ? 'nomination OK' : 'nomination REFUSED'),
+                lines: rows.slice(1) };
+            sync();
+        })
+        .catch((err) => {
+            if (seq !== nomSeq) return;
+            nom = { state: 'unavailable', lines: [],
+                summary: 'nomination unavailable (' + (err && err.message ? err.message : err) + ')' };
             sync();
         });
 }
@@ -628,6 +716,7 @@ function onReloadConfirm() {
 
 /** Shared Start / reload / magazine dispatch (one latch, one cooldown, one ack path). */
 function dispatchJuggle(data, cc) {
+    cancelNominate();   // a late nomination must not write parameters under the goal
     busy = true;
     warn = null;
     crossCheck = cc;
@@ -1144,7 +1233,7 @@ function buildField(key) {
     input.addEventListener('input', () => {
         fields[key].raw = input.value;
         Object.assign(fields[key], parseField(key, input.value));
-        sync();
+        scheduleNominate();
     });
     input.addEventListener('keydown', (ev) => {
         if (ev.key === 'Escape') {
@@ -1177,7 +1266,7 @@ export function buildJugglePanel(container) {
             dom.fields[k].input.value = '';
         }
         applyPatternPoint(ui.pattern);   // back to the pattern's certified point
-        sync();
+        scheduleNominate();
     });
     const badge = el('span', 'badge jp-badge', '—');
     badge.id = 'juggle-badge';
@@ -1195,7 +1284,7 @@ export function buildJugglePanel(container) {
     select.addEventListener('change', () => {
         ui.pattern = select.value;
         applyPatternPoint(ui.pattern);
-        sync();
+        scheduleNominate();
     });
     // Cup preview (not a control): the node decides from the cup sensor.
     const cupPreview = el('span', 'jp-reload jp-cup-preview');
@@ -1253,13 +1342,23 @@ export function buildJugglePanel(container) {
     const warnEl = el('div', 'jp-warn');
     warnEl.id = 'juggle-warn';
 
-    container.append(head, row, main, timing, summary, actions, attempt, warnEl);
+    const nomBox = el('div', 'jp-nom');
+    nomBox.id = 'juggle-nomination';
+    nomBox.hidden = true;
+    const nomSum = el('div', 'jp-nom-sum');
+    nomSum.id = 'juggle-nomination-summary';
+    const nomLines = el('div', 'jp-nom-lines');
+    nomLines.id = 'juggle-nomination-lines';
+    nomBox.append(nomSum, nomLines);
+
+    container.append(head, row, main, nomBox, timing, summary, actions, attempt, warnEl);
 
     dom = {
         root: container, title, clear, badge, select, cupPreview,
         svg: diag.svg, diagTitle: diag.title, diagStatic: diag.stat, hand: diag.hand,
         handStem: diag.handStem, balls: diag.balls, speedT: diag.speedT,
         fields: fieldDom, timing, start, reloadBtn, magazine, stop, status, summary, attempt, warn: warnEl,
+        nom: nomBox, nomSum, nomLines, nomKey: '',
     };
     document.addEventListener('visibilitychange', ensureAnim);
     sync();
@@ -1304,6 +1403,7 @@ export function renderJugglePanel(g) {
         || (gate.expanded && !wasExpanded))) {
         fetchDefaults();
     }
+    if (gate.connected !== wasConnected) scheduleNominate();   // connect: judge the pre-filled point; drop on disconnect
     sync();
 }
 
@@ -1493,6 +1593,20 @@ function sync() {
     setText(dom.attempt, a.text);
     setClassSet(dom.attempt, 'jp-attempt', a.cls);
     setTitle(dom.attempt, a.tip);
+
+    // Nomination block (advisory): summary line + one wrapped line per refusal.
+    setHidden(dom.nom, !nom);
+    if (nom) {
+        setText(dom.nomSum, nom.summary);
+        setClassSet(dom.nomSum, 'jp-nom-sum', nom.state);
+        setTitle(dom.nomSum, nom.summary);
+    }
+    const nomKey = nom ? nom.lines.join('\n') : '';
+    if (dom.nomKey !== nomKey) {
+        dom.nomKey = nomKey;
+        dom.nomLines.innerHTML = '';
+        if (nom) for (const l of nom.lines) dom.nomLines.appendChild(el('div', 'jp-nom-line', l));
+    }
 
     setText(dom.warn, warn || '');
     setHidden(dom.warn, !warn);

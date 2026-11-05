@@ -15,7 +15,7 @@ scope: >-
   stream, P5 close-out.
 steps:
   - {id: P3a, title: Command-time admissibility check, kind: phase, status: in_progress, effort: m, hardware: none}
-  - {id: P3b, title: Nomination-time check and the nearest viable configuration, kind: phase, status: not_started, effort: m, hardware: none}
+  - {id: P3b, title: Nomination-time check and the nearest viable configuration, kind: phase, status: in_progress, effort: m, hardware: none}
   - {id: P3c, title: Box retirement, kind: phase, status: not_started, effort: s, hardware: none}
   - {id: P1, title: Learner core, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: P2, title: The characterisation sitting, kind: phase, status: not_started, effort: m, hardware: robot}
@@ -287,9 +287,19 @@ every commanded Throw; a launch THROW and the hop entry take it alone. A per-bea
 Schedule and plan every nominal Segment at the identity command and at the commanded-flight ladder's edges
 (-20 % / +10 %), report every refusal at once with the refusing gate and leg, and when the configuration is
 refused search one parameter at a time toward viability (apex first, then dwell or separation) by bisection
-on the margin and report the nearest viable configuration ("1.05 at separation 125 refused by leg jerk on the
+on the margin (as built: a search on the operator's grid, see "As built (P3b)" below) and report the nearest viable configuration ("1.05 at separation 125 refused by leg jerk on the
 cross-site catch; 1.00 at 125, or 1.05 at 100, is viable"). Seconds of solving. This is the only form a
 configuration check can take for the moving-site Patterns (JP-5, JP-11, JP-12, JP-14).
+
+**As built (P3b, 2026-11-06; `INVARIANTS.md` I-ADMIT-2).** `motion/skills/nominate.py` walks the compiled
+Schedule (`schedule.nominal_segments`), not the sweep's idealised cells, so a Pattern whose Sites move needs no
+new cell shape; it found Segments the sweep never gated (the standalone last Catch is the thinnest Segment of
+turned Columns and of high-low). The nearest viable configuration is a search on the operator's grid (apex
+0.05 m, separation 25 mm, dwell 0.05 s; four steps each), not a bisection: the answer has to be typed into a
+field. It runs in-process in `skill_node` at acceptance (no Attempt is running there) and is served by
+`skills/nominate` (refused while an Attempt runs), `skills/check`, the GUI Juggle panel and
+`sim/skills_gate.py --nominate`. The workspace rule lost the box's half-extent: a Site outside the workspace
+refuses the goal; landing headroom is the per-Throw check's.
 
 **Not done (ruled out 2026-11-04):** a learned feasibility classifier as the gate, an analytic pre-check as
 the gate (sound only for refusal), full explicit mpQP region enumeration (one region covers the grid),
@@ -336,7 +346,7 @@ reproduces today's compiled columns schedule segment for segment.
 | Phase | Scope | Status | Date | Risk | Validates |
 |-------|-------|--------|------|------|-----------|
 | P3a | Command-time admissibility check (three evaluations max, early start), `throw_envelope.evaluate` re-homed | IN PROGRESS (code complete 2026-11-06, held on branch `p3-online-admissibility`; merge and live rehearsal owed) | 2026-11-06 | High (safety content moves) | Loaded-Jetson p99 within slack; sim gate green with no box |
-| P3b | Nomination-time check and the nearest viable configuration | NOT STARTED | | Medium (goal acceptance, GUI) | Every refusal at once; nearest viable named; moving-site Patterns checkable |
+| P3b | Nomination-time check and the nearest viable configuration | IN PROGRESS (code complete 2026-11-06, held on branch `p3-online-admissibility`; merge and live rehearsal owed) | 2026-11-06 | Medium (goal acceptance, GUI) | Every refusal at once; nearest viable named; moving-site Patterns checkable |
 | P3c | Box retirement per § 6.4 | NOT STARTED | | Low | Census counts to zero |
 | P1 | Learner core: `plant_model.py`, `learner.py`, `memory.py` v2 + migration, replay probe | NOT STARTED | | Medium (changes every commanded u) | Cold-start apex error < 15 mm at a held-out site |
 | P2 | Characterisation sitting (D6): θ structure, yaw frame, telemetry | NOT STARTED | | Medium (hardware) | Aim vs offset; radial vs x; frame; Δ_b |
@@ -384,14 +394,28 @@ can be A/B'd in sim.
   `NO_ADMISSIBLE_COMMAND` preserved for a failing model command; `./run_tests.sh --full` green;
   loaded-Jetson dress rehearsal of `skills/check`. Depends: none (D7).
 
-### Phase 3b: Nomination-time check and the nearest viable configuration — NOT STARTED
+### Phase 3b: Nomination-time check and the nearest viable configuration — IN PROGRESS
+
+**Outcome (2026-11-06).** Built on branch `p3-online-admissibility`, held for the owner's merge; commits carry
+`Logbook-Entry: 2026-11-06-learner-generalisation-p3b-nomination-check` and the entry
+(`logbook/2026-11-06-learner-generalisation-p3b-nomination-check.md`) has the probe, the Discussion and the
+tests. Against the gate: the high-low finding of 2026-10-31 is reproduced as a nomination report at that day's
+limits (350 / 5000 / 200000, Hand 4500): 1.00 / 0.90 and 1.05 / 0.95 refused at separation 125, the report naming
+separation 100 (pinned in `tests/motion/test_skills_nominate.py`, through the node and from
+`sim/skills_gate.py --nominate`); a refused oval dwell names the first viable dwell (0.30 -> 0.35 at the P4
+point; 0.35 -> 0.40 at 350 / 5000 with `carry_zvd`); a nomination is 0.6 s on this Jetson and 2-3 s when it
+refuses and searches (up to 5 s inside the node on a busy box); `./run_tests.sh --full` green (2026-11-06 07:23, 8459 passed, 51 skipped + 10 serial;
+baseline 2026-11-06 06:16 at 53cd976b, `./run_tests.sh`: 8344 passed, 51 skipped + 7 serial; 115 new tests). NOT met: the loaded-Jetson rehearsal on the live stack (needs the
+merge and a colcon build). Goal acceptance no longer reads the box. Status stays in progress until the
+rehearsal. P3c cleared to start on the branch.
+
 
 Modified: `skill_node.py` (goal acceptance and `skills/check`), `schedule.py` (a "nominal segments of this
-Schedule" iterator), `admissible.py` (the parameter search), the GUI Juggle panel (shows the report),
+Schedule" iterator), `nominate.py` (new: the walker and the grid search; as built), the GUI Juggle panel (shows the report),
 `sim/skills_gate.py` (`--nominate` dry run).
 
 - Plans every nominal Segment at the identity command and the ladder edges; reports every refusal at once
-  (gate, leg, knot time) in the existing `skills/check` style; on refusal bisects apex, then dwell or
+  (gate, leg, knot time) in the existing `skills/check` style; on refusal searches apex, then separation, then dwell on the operator's grid (four steps each; as built), i.e. apex, then dwell or
   separation, on the margin to the nearest viable configuration and names it.
 - Gate: the eight high-low cells of 2026-10-31 (empty at separation 125, viable at 100) reproduced as a
   nomination report naming separation 100; a refused oval dwell names the first viable dwell; seconds on the

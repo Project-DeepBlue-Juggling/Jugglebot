@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -943,19 +943,69 @@ def _assign_leads(skills):
     stated on the SEGMENT's geometry, not on the kind, so a pattern that puts a
     standalone catch after a throw gets the handoff lead too.
     """
-    out = []
+    # The splice rule itself lives in :func:`splices_at_release`, read through
+    # :func:`_splice_sources` -- ONE definition shared with
+    # :func:`nominal_segments` (P3b), so the Segment a nomination seeds from a
+    # release is exactly the Segment that gets the handoff lead here.
+    return [dataclasses.replace(
+                sk, lead_s=(HANDOFF_LEAD_S if src is not None
+                            else install_lead_s(sk.kind)))
+            for sk, src in _splice_sources(skills)]
+
+
+def splices_at_release(sk: Skill, last_release_s: Optional[float]) -> bool:
+    """True when ``sk``'s Segment splices AT the release ``last_release_s``
+    (the latest release the head already carries, wall clock), i.e. its splice
+    base ``t_abs_s - window_s`` falls at or before that release (1e-9 s
+    tolerance).  ``None`` (nothing released yet) -> False.
+
+    The ONE statement of the rule :func:`_assign_leads` gives the handoff lead
+    by and :func:`nominal_segments` seeds a Segment from a release by."""
+    if last_release_s is None:
+        return False
+    base = float(sk.t_abs_s) - float(sk.window_s)
+    return base <= float(last_release_s) + 1e-9
+
+
+def _splice_sources(skills):
+    """Yield ``(skill, source_idx)`` in order: ``source_idx`` is the index of
+    the skill whose release (the LATEST release before this skill, ties to the
+    later skill) ``skill`` splices at by :func:`splices_at_release`, or None
+    when it does not splice at a release."""
     last_release_s = None
-    for sk in skills:
-        base = float(sk.t_abs_s) - float(sk.window_s)
-        follows_release = (last_release_s is not None
-                           and base <= last_release_s + 1e-9)
-        out.append(dataclasses.replace(
-            sk, lead_s=(HANDOFF_LEAD_S if follows_release
-                        else install_lead_s(sk.kind))))
+    last_release_idx = None
+    for i, sk in enumerate(skills):
+        yield sk, (last_release_idx if splices_at_release(sk, last_release_s)
+                   else None)
         for t_rel in _release_instants(sk):
-            last_release_s = (t_rel if last_release_s is None
-                              else max(last_release_s, t_rel))
-    return out
+            if last_release_s is None or t_rel >= last_release_s:
+                last_release_s, last_release_idx = t_rel, i
+
+
+@dataclasses.dataclass(frozen=True)
+class NominalSegment:
+    """One Skill of a compiled Schedule as the Segment it puts on the machine
+    (:func:`nominal_segments`)."""
+    idx: int
+    skill: Skill
+    kind: str
+    #: index of the earlier Skill whose RELEASE this Segment splices at
+    #: (:func:`splices_at_release`, the rule :func:`_assign_leads` gives the
+    #: handoff lead by), or None when the Segment starts from rest.
+    seed_from: Optional[int]
+
+
+def nominal_segments(schedule: 'Schedule') -> List[NominalSegment]:
+    """One :class:`NominalSegment` per Skill of ``schedule``, in dispatch
+    order (the P3b nomination walker's iterator, ``motion/skills/nominate``).
+
+    ``seed_from`` comes from :func:`_splice_sources`, the same iterator
+    :func:`_assign_leads` reads: a Segment gets :data:`HANDOFF_LEAD_S` iff its
+    ``seed_from`` is not None.  REST Skills are yielded too (kind REST, for
+    counting); the walker does not gate them (see ``nominate``'s docstring).
+    """
+    return [NominalSegment(i, sk, sk.kind, src)
+            for i, (sk, src) in enumerate(_splice_sources(schedule.skills))]
 
 
 def schedule_has_shadow_landing(schedule: Schedule) -> bool:

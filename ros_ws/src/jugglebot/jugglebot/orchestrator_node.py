@@ -35,6 +35,7 @@ from jugglebot.state_machine import (
     RobotState, Context, build_default_machine, BOOT_TIMEOUT_S,
 )
 from jugglebot import mocap_status as mocap_st
+from jugglebot.juggle_request import parse_juggle_request
 from jugglebot.can import odrive
 
 
@@ -49,16 +50,9 @@ from jugglebot.can import odrive
 # on whether that value is admissible (it refuses an unswept apex/separation
 # with an honest code before anything moves).
 #
-# goal field → parser.  The keys ARE the Juggle.action field names, so the
-# wire string reads the same as the goal it becomes.  Each parser returns the
-# value or raises ValueError; ``0`` is legal and means "the node's default",
-# exactly as an omitted key does.
-_JUGGLE_NUMERIC_FIELDS = {
-    'apex_m': float,
-    'separation_mm': float,
-    'dwell_s': float,
-    'num_cycles': int,
-}
+# The request grammar (goal field -> parser, strict on unknown tokens) lives in
+# the pure module `jugglebot.juggle_request`, shared with skill_node's
+# `skills/nominate` (which allows two extra keys; this relay does not).
 
 
 # ── Operator-command feedback (log-only; the handlers own the real logic) ──
@@ -345,42 +339,6 @@ class OrchestratorNode(Node):
     # bb/throw: send_goal_async + a goal-response → result callback chain that only
     # logs the terminal outcome.
 
-    @staticmethod
-    def _parse_juggle_request(data):
-        """``<pattern>[,apex_m=<f>][,separation_mm=<f>][,dwell_s=<f>][,num_cycles=<n>]``
-        → ``(pattern, {field: value})``, or raise ValueError naming
-        the offending token.  Tokens after the pattern may come in any order.
-
-        Strict on purpose: an unknown or malformed token REFUSES the request
-        rather than being dropped, because dropping it would silently fly
-        the node's default in place of a value the operator typed (a typo'd
-        ``apex=1.2`` becoming a 0.9 m attempt).  Negative and non-finite
-        values are refused here too — they can only be a GUI bug, and 0 is
-        already the spelling of "use the node's default"."""
-        parts = [p.strip() for p in str(data).split(',')]
-        pattern = parts[0]
-        if not pattern:
-            raise ValueError('no pattern')
-        values = {}
-        for tok in parts[1:]:
-            key, sep, raw = tok.partition('=')
-            key = key.strip()
-            parse = _JUGGLE_NUMERIC_FIELDS.get(key)
-            if not sep or parse is None:
-                raise ValueError('unknown token %r' % (tok,))
-            if key in values:
-                raise ValueError('%s given twice' % (key,))
-            try:
-                value = parse(raw.strip())
-            except ValueError:
-                raise ValueError('%s=%r is not a valid %s'
-                                 % (key, raw.strip(), parse.__name__)) from None
-            if not math.isfinite(value) or value < 0:
-                raise ValueError('%s=%r must be finite and >= 0'
-                                 % (key, raw.strip()))
-            values[key] = value
-        return pattern, values
-
     def _svc_juggle_request(self, req, res):
         """Relay a GUI juggle request to jugglebot/juggle (fire-and-forget
         ACK). ``req.data`` is
@@ -396,7 +354,7 @@ class OrchestratorNode(Node):
                 'Juggle request received but jugglebot/juggle server is not ready.')
             return res
         try:
-            pattern, values = self._parse_juggle_request(req.data)
+            pattern, values = parse_juggle_request(req.data)
         except ValueError as e:
             res.success = False
             res.message = 'juggle request refused: %s in %r' % (e, req.data)

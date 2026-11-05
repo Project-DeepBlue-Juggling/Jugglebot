@@ -133,7 +133,6 @@ from jugglebot.motion import unified_cycle as uc                       # noqa: E
 from jugglebot.motion.geometry import StewartGeometry                  # noqa: E402
 from jugglebot.motion.trajectory import ballistics_bc as bal           # noqa: E402
 from jugglebot.motion.trajectory import cup_cycle as cc                # noqa: E402
-from jugglebot.motion.trajectory import cup_realize as cr              # noqa: E402
 from jugglebot.motion.trajectory import feasibility as fz              # noqa: E402
 from jugglebot.motion.trajectory import throw_envelope                 # noqa: E402
 from jugglebot.motion.trajectory.limits import TrajectoryLimits        # noqa: E402
@@ -141,6 +140,7 @@ from jugglebot.motion.skills import admissible as ab                   # noqa: E
 from jugglebot.motion.skills import schedule as sc                     # noqa: E402
 from jugglebot.motion.skills import segments as sg                     # noqa: E402
 from jugglebot.motion.skills import sites as st                        # noqa: E402
+from jugglebot.motion.skills import nominate as nm                     # noqa: E402
 
 # ── the owner's R2 operating point (plan § 0, 2026-09-12) ───────────────────
 # Leg/hand limits are read from the GENERATED launch constants
@@ -246,21 +246,13 @@ def _effective_zvd(planner_mode: str, carry_zvd: bool) -> bool:
     return bool(carry_zvd) and planner_mode == 'pose'
 
 
-def _rest_state(cup_mm):
-    """A plan seed at rest at ``cup_mm`` -- identical construction to
-    ``tests/motion/test_skills_segments.py::_rest_state`` and
-    ``tools/probes/skills_sizing_sweep.py::_rest_state``."""
-    rcfg = cr.RealizeConfig()
-    slider_mm = float(cup_mm[2]) - rcfg.cup_z_base_mm
-    rev = ((slider_mm - rcfg.slider_rev_zero_mm) / 1000.0) * cr.HAND_REV_PER_M
-    pose = np.array([cup_mm[0], cup_mm[1], rcfg.active_z_mm, 0.0, 0.0, 0.0])
-    return uc.CycleState.at_rest(pose, rev, rcfg)
-
-
-def _limits(leg_vel, leg_acc, leg_jerk, hand_acc) -> TrajectoryLimits:
-    return TrajectoryLimits.from_config(hw).with_sitting_limits(
-        leg_vel_mmps=float(leg_vel), leg_acc_mmps2=float(leg_acc),
-        leg_jerk_mmps3=float(leg_jerk), hand_acc_rps2=float(hand_acc))
+# ``_rest_state`` and ``_limits`` moved to ``motion/skills/nominate.py``
+# (learner-generalisation P3b § 5: the nomination walker needs them and
+# tools/ is not importable from the node package); imported back under their
+# old names so this sweep and the probes that read ``asw._rest_state`` /
+# ``asw._limits`` are unchanged until P3c retires the sweep.
+_rest_state = nm.rest_state
+_limits = nm.sitting_limits
 
 
 def _within_margin(report, limits: TrajectoryLimits) -> bool:
