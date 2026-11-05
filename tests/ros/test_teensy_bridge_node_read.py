@@ -1596,3 +1596,27 @@ def test_link_status_surfaces_the_fw38_sched_census_and_frame_ages(bridge):
         # sched_refused keeps its one, original KeyValue (no duplicate key).
         keys = [v.key for v in node.link_status_pub.published[-1].values]
         assert keys.count('sched_refused') == 1
+
+
+def test_link_status_surfaces_the_fw40_downlink_ledger(bridge):
+    """FW 40 / PROTOCOL 12 (JB-174): the firmware's downlink ledger reaches
+    /link_status, with the host's own verdict beside it. No setpoint was sent
+    here, so setpoints_lost is 0 whatever the firmware's counter says."""
+    teensy, node = bridge
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK),
+                      bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.NONE), flags=0, uptime_ms=1,
+                      dn_rx_setpoints=4001, dn_queue_dropped=2, dn_seq_gaps=3,
+                      dn_crc_errors=5, sched_frames=3990, sp_seq_drops=7,
+                      sp_no_hand=11, sp_no_sched=13)
+    before = node._heartbeat_gen
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._heartbeat_gen != before)
+    node._publish_link_status()
+    kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}
+    assert (kv['dn_rx_setpoints'], kv['dn_queue_dropped'], kv['dn_seq_gaps'],
+            kv['dn_crc_errors'], kv['sched_frames'], kv['sp_seq_drops'],
+            kv['sp_no_hand'], kv['sp_no_sched']) == (
+                '4001', '2', '3', '5', '3990', '7', '11', '13')
+    assert kv['setpoints_lost'] == '0'

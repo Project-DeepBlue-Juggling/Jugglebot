@@ -119,3 +119,46 @@ class EpisodeLatch:
             return fired
         self._active = False
         return False
+
+
+class DownlinkLossTracker:
+    """Setpoints the host sent that the firmware never dispatched (JB-174).
+
+    ``update(sent, rx)`` takes the host's sent count, sampled when a heartbeat
+    arrived, and that heartbeat's cumulative ``dn_rx_setpoints`` (FW 40).
+    ``sent - rx`` is the loss, plus a constant (the two counters start at
+    different times), plus the frames in flight at the sample, which only ever
+    ADD. So the all-time minimum of the difference is the constant, and the
+    minimum over the last ``window`` samples minus it is the loss: exact as
+    soon as one sample in the window caught nothing in flight. A counter that
+    goes backwards (bridge reboot, node restart) re-baselines.
+
+    Not thread-safe: one caller (the bridge node's 10 Hz link_status timer).
+    """
+
+    def __init__(self, window: int = 10):
+        self._win: Deque[int] = deque(maxlen=int(window))
+        self._floor: Optional[int] = None
+        self._last: Optional[Tuple[int, int]] = None
+
+    def reset(self) -> None:
+        self._win.clear()
+        self._floor = None
+        self._last = None
+
+    def update(self, sent: int, rx: int) -> int:
+        sent, rx = int(sent), int(rx)
+        if self._last is not None and (sent < self._last[0] or rx < self._last[1]):
+            self.reset()
+        self._last = (sent, rx)
+        d = sent - rx
+        self._win.append(d)
+        if self._floor is None or d < self._floor:
+            self._floor = d
+        return self.lost
+
+    @property
+    def lost(self) -> int:
+        if not self._win or self._floor is None:
+            return 0
+        return min(self._win) - self._floor

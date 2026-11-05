@@ -149,7 +149,7 @@ def test_v6_decode_rejects_a_version5_frame():
     # checked before the CRC), and total: EVERY frame from a v5 peer dies here.
     frame = bytearray(p.encode_frame(int(p.MsgType.SETPOINT), 3,
                                      p.Setpoint().pack()))
-    assert frame[2] == p.PROTOCOL_VERSION == 11
+    assert frame[2] == p.PROTOCOL_VERSION == 12
     frame[2] = 5
     body = bytes(frame[:-2])
     frame[-2:] = struct.pack('<H', p.crc16_ccitt(body))   # valid CRC, old version
@@ -322,7 +322,7 @@ def test_heartbeat_t2j_fw38_sched_census_roundtrip_and_tail_layout():
                             rx_age_le25=29, rx_age_le50=31, rx_age_le70=37,
                             rx_age_gt70=0xFFFF)
         blob = hb.pack()
-        assert len(blob) == p.HEARTBEAT_T2J_SIZE == 158
+        assert len(blob) == p.HEARTBEAT_T2J_SIZE == 190
         d = p.HeartbeatT2J.unpack(blob)
         assert (d.sched_demoted, d.sched_superseded, d.sched_stale,
                 d.sched_hand_c1_stops, d.sched_future_drops,
@@ -334,6 +334,35 @@ def test_heartbeat_t2j_fw38_sched_census_roundtrip_and_tail_layout():
         assert struct.unpack_from('<I', blob, 122) == (9,)          # sched_demoted ends at 126
         assert struct.unpack_from('<IIIIIiHHHH', blob, 126) == (
             11, 13, 17, 19, 23, age_max, 29, 31, 37, 0xFFFF)
+
+
+def test_heartbeat_t2j_fw40_downlink_ledger_roundtrip_and_tail_layout():
+    # FW 40 / PROTOCOL 12 (JB-174): the eight cumulative downlink counters are
+    # APPENDED after rx_age_gt70, so the v11 158 B prefix keeps its offsets.
+    # Distinct values so an order slip cannot round-trip by luck; u32 max
+    # survives the unsigned fields.
+    hb = p.HeartbeatT2J(t_teensy_us=1, uptime_ms=1, rx_age_gt70=41,
+                        dn_rx_setpoints=43, dn_queue_dropped=47,
+                        dn_seq_gaps=53, dn_crc_errors=59, sched_frames=61,
+                        sp_seq_drops=67, sp_no_hand=71,
+                        sp_no_sched=0xFFFFFFFF)
+    blob = hb.pack()
+    assert len(blob) == p.HEARTBEAT_T2J_SIZE == 190
+    d = p.HeartbeatT2J.unpack(blob)
+    assert (d.dn_rx_setpoints, d.dn_queue_dropped, d.dn_seq_gaps,
+            d.dn_crc_errors, d.sched_frames, d.sp_seq_drops, d.sp_no_hand,
+            d.sp_no_sched) == (43, 47, 53, 59, 61, 67, 71, 0xFFFFFFFF)
+    # The tail, read by offset as the firmware's packed struct lays it out.
+    assert struct.unpack_from('<H', blob, 156) == (41,)             # rx_age_gt70 ends at 158
+    assert struct.unpack_from('<IIIIIIII', blob, 158) == (
+        43, 47, 53, 59, 61, 67, 71, 0xFFFFFFFF)
+
+
+def test_heartbeat_t2j_a_v11_sized_payload_does_not_decode():
+    # An FW 38/39 heartbeat is 158 B: the exact-size unpack refuses it (the
+    # frame is already dark at the header version check; payload backstop).
+    with pytest.raises(struct.error):
+        p.HeartbeatT2J.unpack(p.HeartbeatT2J(t_teensy_us=1).pack()[:158])
 
 
 def test_heartbeat_t2j_a_v10_sized_payload_does_not_decode():
@@ -461,8 +490,10 @@ def test_clock_diag_is_additive_protocol_version_unchanged():
     """
     # The frames that existed before FW 11 keep their exact sizes.
     assert p.PROFILE_SIZE == 76
-    assert p.HEARTBEAT_T2J_SIZE == 158   # 73 until v8 (2026-09-14) appended the FW 22 promotion
-                                     # diagnostics; 158 at v11 (2026-11-03, FW 38, JB-149) which
+    assert p.HEARTBEAT_T2J_SIZE == 190   # 73 until v8 (2026-09-14) appended the FW 22 promotion
+                                     # diagnostics; 190 at v12 (2026-11-06, FW 40, JB-174) which
+                                     # appended the downlink ledger (eight u32);
+                                     # 158 at v11 (2026-11-03, FW 38, JB-149) which
                                      # appended the scheduled-lane census + frame-age window;
                                      # 126 at v9 (2026-09-15, FW 23) which appended
                                      # the CAN_BUS_DOWN trip latch can_fault_leg/age_ms/count
@@ -643,8 +674,10 @@ def test_cache_diag_is_additive_protocol_version_unchanged():
     # most likely to be disturbed by an edit in the same region of the spec.
     assert p.CLOCK_DIAG_SIZE == 49
     assert p.PROFILE_SIZE == 76
-    assert p.HEARTBEAT_T2J_SIZE == 158   # 73 until v8 (2026-09-14) appended the FW 22 promotion
-                                     # diagnostics; 158 at v11 (2026-11-03, FW 38, JB-149) which
+    assert p.HEARTBEAT_T2J_SIZE == 190   # 73 until v8 (2026-09-14) appended the FW 22 promotion
+                                     # diagnostics; 190 at v12 (2026-11-06, FW 40, JB-174) which
+                                     # appended the downlink ledger (eight u32);
+                                     # 158 at v11 (2026-11-03, FW 38, JB-149) which
                                      # appended the scheduled-lane census + frame-age window;
                                      # 126 at v9 (2026-09-15, FW 23) which appended
                                      # the CAN_BUS_DOWN trip latch can_fault_leg/age_ms/count
@@ -868,8 +901,10 @@ def test_ring_diag_is_additive_protocol_version_unchanged():
     assert p.CACHE_DIAG_SIZE == 157   # 129 until v9 added hb_frames[7] (FW 23)
     assert p.CLOCK_DIAG_SIZE == 49
     assert p.PROFILE_SIZE == 76
-    assert p.HEARTBEAT_T2J_SIZE == 158   # 73 until v8 (2026-09-14) appended the FW 22 promotion
-                                     # diagnostics; 158 at v11 (2026-11-03, FW 38, JB-149) which
+    assert p.HEARTBEAT_T2J_SIZE == 190   # 73 until v8 (2026-09-14) appended the FW 22 promotion
+                                     # diagnostics; 190 at v12 (2026-11-06, FW 40, JB-174) which
+                                     # appended the downlink ledger (eight u32);
+                                     # 158 at v11 (2026-11-03, FW 38, JB-149) which
                                      # appended the scheduled-lane census + frame-age window;
                                      # 126 at v9 (2026-09-15, FW 23) which appended
                                      # the CAN_BUS_DOWN trip latch can_fault_leg/age_ms/count

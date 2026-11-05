@@ -70,15 +70,32 @@ static constexpr uint8_t UDP_RX_DRAIN_BUDGET = 8;
 // surfaced as an RpcTimeout), and fatal to the pipelined firmware-update DATA
 // path (4 back-to-back NOPs got 2 acks). A queue no deeper than the drain budget
 // empties in the SAME tick it is filled, so this adds no latency; the cost is at
-// most that many retained frame buffers of heap. The stream socket (setpoints,
-// heartbeats) keeps the library default — unchanged behaviour on the hot path.
+// most that many retained frame buffers of heap.
 static constexpr size_t RPC_RX_QUEUE_CAPACITY = 8;
 static_assert(RPC_RX_QUEUE_CAPACITY <= UDP_RX_DRAIN_BUDGET,
               "a queued RPC must be drained in the tick it arrives (no added latency)");
 
+// Stream socket receive queue (FW 40, 2026-11-06, JB-174). Until FW 39 the stream
+// socket kept the library default of ONE packet. The host sends two kinds of
+// datagram to it — the 40 Hz SETPOINT stream and its own 10 Hz HEARTBEAT_J2T —
+// so whenever both landed inside one 1 kHz task_net tick the older one was
+// OVERWRITTEN before the drain saw it. A heartbeat arriving just after a
+// setpoint therefore deleted that setpoint: the firmware's scheduled-frame
+// census ran 1.3-1.5 % short of the host's sent count in three Sittings
+// (2026-11-03/04/05), and every STOP with a clean host stream needed exactly
+// one missing frame (logbook 2026-11-06-jb174-stream-socket-queue). Same remedy
+// as the RPC socket: a queue no deeper than the drain budget, emptied in the
+// tick it fills, FIFO, so order and latency are unchanged. What was overwritten
+// is now delivered; the library's own overwrite count is uplinked
+// (udp_link_stream_queue_dropped) so a recurrence is a number, not an inference.
+static constexpr size_t STREAM_RX_QUEUE_CAPACITY = 8;
+static_assert(STREAM_RX_QUEUE_CAPACITY <= UDP_RX_DRAIN_BUDGET,
+              "a queued stream frame must be drained in the tick it arrives (no added latency)");
+
 void udp_link_init() {
   if (!s_net_mtx) s_net_mtx = xSemaphoreCreateRecursiveMutex();
   NetLock lk;
+  s_stream.setReceiveQueueCapacity(STREAM_RX_QUEUE_CAPACITY);
   s_stream.begin(JbUdp::PORT_STREAM);
   s_rpc.setReceiveQueueCapacity(RPC_RX_QUEUE_CAPACITY);
   s_rpc.begin(JbUdp::PORT_RPC);
@@ -123,6 +140,7 @@ static void drain_socket(EthernetUDP& sock, bool is_rpc) {
 
     switch (hdr.msg_type) {
       case JbUdp::MsgType::SETPOINT:
+        s_stats.rx_setpoints++;   // FW 40: every valid SETPOINT datagram, before any interp guard
         if (s_h_setpoint) s_h_setpoint(hdr.seq, payload, hdr.length);
         break;
       case JbUdp::MsgType::HEARTBEAT_J2T:
@@ -203,6 +221,15 @@ bool udp_send_rpc(uint8_t msg_type, const uint8_t* payload, uint16_t len) {
 }
 
 UdpStats udp_link_stats()      { return s_stats; }
+// FW 40 (JB-174): packets QNEthernet overwrote in the stream socket's receive
+// queue since boot (its droppedReceiveCount). 0 is the invariant with the queue
+// at STREAM_RX_QUEUE_CAPACITY; non-zero means frames arrived faster than the
+// drain for a whole queue's worth. Under NetLock: the count is written by
+// whichever task pumps lwIP.
+uint32_t udp_link_stream_queue_dropped() {
+  NetLock lk;
+  return s_stream.droppedReceiveCount();
+}
 uint32_t udp_last_rtt_us()     { return s_last_rtt_us; }
 uint32_t udp_rtt_jitter_us()   { return s_rtt_jitter_us; }
 uint64_t udp_last_rx_us()      { return atomic_read_u64(&s_last_rx_us); }

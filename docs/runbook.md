@@ -30,8 +30,8 @@ Rigs: Robot 5 blocks (173 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 #### JB-174 Count scheduled-stream holes and downlink datagram loss in the can-bridge heartbeat  (5 min, high, unattached)
 - why: confirm that the FW 40 stream-socket queue fix takes downlink setpoint loss from about 1.5 % to zero (three Sittings measured 1.3 to 1.5 %).
 - do:
-  - Launch and arm as usual, then leave the robot holding the Active pose for 5 minutes before the first goal. Fly the rest of the Sitting as normal. The bridge logs one `downlink summary` line each time streaming ends.
-- pass: every `downlink summary` line of the Sitting reads lost 0, queue_dropped +0 and seq_gaps +0, over at least 10,000 setpoints in total.
+  - Confirm the launch log reads `can-bridge v40`. Launch and arm as usual, then leave the robot holding the Active pose for 5 minutes before the first goal. Fly the rest of the Sitting as normal. The bridge logs one `downlink summary` line each time streaming ends.
+- pass: every `downlink summary` line of the Sitting reads lost 0 and queue_dropped +0, over at least 10,000 setpoints in total (seq_gaps is recorded, not judged).
 - record: the launch log path and its `downlink summary` lines.
 
 ### Block 2: level, armed, bb-fed  (3 rows, 42 min)

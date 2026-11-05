@@ -239,6 +239,20 @@ def test_the_bump_history_records_what_this_version_carries():
     assert m39 is not None, "FW 39 history line missing"
     assert 'JB-166' in m39.group(1) and 'HAND_C1_STOP_GRACE_US 6000→14000' in m39.group(1), m39.group(1)
     assert 'NO WIRE CHANGE' in m39.group(1) and 'PROTOCOL_VERSION stays 11' in m39.group(1), m39.group(1)
+    # FW 40 — JB-174 stream-socket receive queue + downlink ledger.  The
+    # substance: the queue depth that stops a heartbeat overwriting a setpoint,
+    # and the counters that make any recurrence a number; HeartbeatT2J GROWS,
+    # so the bump IS a wire change (PROTOCOL 11→12).
+    m40 = re.search(r'^// 39→40:(.*)$', text, re.M)
+    assert m40 is not None, "FW 40 history line missing"
+    assert 'JB-174' in m40.group(1) and 'STREAM_RX_QUEUE_CAPACITY = 8' in m40.group(1), m40.group(1)
+    assert 'HeartbeatT2J GROWS 158→190' in m40.group(1), m40.group(1)
+    assert 'PROTOCOL_VERSION 11→12' in m40.group(1), m40.group(1)
+    for name in ('dn_rx_setpoints', 'dn_queue_dropped', 'dn_seq_gaps',
+                 'dn_crc_errors', 'sched_frames', 'sp_seq_drops', 'sp_no_hand',
+                 'sp_no_sched'):
+        assert name in m40.group(1), name
+    assert 'no lane behaviour change' in m40.group(1), m40.group(1)
 
 
 def test_the_version_this_release_pins_is_actually_uplinked():

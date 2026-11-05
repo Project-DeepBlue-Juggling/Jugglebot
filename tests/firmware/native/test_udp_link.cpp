@@ -143,12 +143,13 @@ TEST_CASE("drain_cap_hits stays 0 at <= 1 frame per service() call") {
   CHECK(netlockprobe::violations() == 0);
 }
 
-TEST_CASE("the RPC socket's receive queue is deepened (FW 22); the stream socket keeps the default") {
+TEST_CASE("both sockets' receive queues are deepened (RPC FW 22, stream FW 40)") {
   // QNEthernet's default queue is ONE packet and a full queue overwrites the
   // oldest, so only the last RPC request of a 1 ms task_net tick survived. The
-  // RPC socket now queues RPC_RX_QUEUE_CAPACITY (<= the drain budget, so no added
-  // latency — static_assert in udp_link.cpp); the setpoint/heartbeat stream
-  // socket is deliberately untouched.
+  // RPC socket queues RPC_RX_QUEUE_CAPACITY (<= the drain budget, so no added
+  // latency — static_assert in udp_link.cpp). FW 40 (JB-174) gives the stream
+  // socket the same depth: it was left at the default until then, and a host
+  // heartbeat landing in the same tick as a setpoint overwrote the setpoint.
   netlockprobe::reset();
   CanBridge::udp_link_init();
   EthernetUDP* rpc = _registry()[JbUdp::PORT_RPC];
@@ -158,5 +159,65 @@ TEST_CASE("the RPC socket's receive queue is deepened (FW 22); the stream socket
   CHECK(rpc->receive_queue_capacity() == CanBridge::RPC_RX_QUEUE_CAPACITY);
   CHECK(CanBridge::RPC_RX_QUEUE_CAPACITY >= 4);   // the fw-update pipeline depth
   CHECK(CanBridge::RPC_RX_QUEUE_CAPACITY <= CanBridge::UDP_RX_DRAIN_BUDGET);
-  CHECK(stream->receive_queue_capacity() == 1);
+  CHECK(stream->receive_queue_capacity() == CanBridge::STREAM_RX_QUEUE_CAPACITY);
+  CHECK(CanBridge::STREAM_RX_QUEUE_CAPACITY >= 2);   // a setpoint AND a heartbeat in one tick
+  CHECK(CanBridge::STREAM_RX_QUEUE_CAPACITY <= CanBridge::UDP_RX_DRAIN_BUDGET);
+}
+
+// Encode a valid HEARTBEAT_J2T frame (no handler registered → counted, dropped).
+static uint16_t make_heartbeat(uint8_t* out, uint16_t out_cap, uint16_t seq) {
+  const uint8_t payload[JbUdp::HEARTBEAT_J2T_SIZE] = {0};
+  return JbUdp::encode_frame(JbUdp::MsgType::HEARTBEAT_J2T, seq,
+                             payload, sizeof(payload), out, out_cap);
+}
+
+TEST_CASE("FW 40: a setpoint and a heartbeat landing in ONE task_net tick both reach the dispatcher") {
+  // The JB-174 defect, at the socket. The host's 40 Hz SETPOINT and 10 Hz
+  // HEARTBEAT_J2T share the stream socket and one sequence counter. With the
+  // library's one-packet queue the heartbeat (arriving second, same 1 ms tick)
+  // overwrote the setpoint: rx_setpoints stayed put, seq_gaps and the queue's
+  // dropped count each rose by one. With the FW 40 queue both are drained, in
+  // order, in that tick, and all three loss witnesses stay flat.
+  uint8_t sp[64], hb[64];
+  auto run_tick = [&](size_t capacity, uint16_t seq0) {
+    netlockprobe::reset();
+    CanBridge::udp_link_init();
+    EthernetUDP* stream = _registry()[JbUdp::PORT_STREAM];
+    REQUIRE(stream != nullptr);
+    { CanBridge::NetLock lk; stream->setReceiveQueueCapacity(capacity); }
+    stream->clear();
+    // Prime the sequence tracker with one in-order setpoint, alone in its tick.
+    const uint16_t n0 = make_setpoint(sp, sizeof(sp), seq0);
+    stream->deliver(sp, n0);
+    CanBridge::udp_link_service();
+    const CanBridge::UdpStats before = CanBridge::udp_link_stats();
+    const uint32_t dropped0 = CanBridge::udp_link_stream_queue_dropped();
+    // The tick under test: setpoint, then heartbeat, before the drain runs.
+    const uint16_t n1 = make_setpoint(sp, sizeof(sp), (uint16_t)(seq0 + 1));
+    const uint16_t n2 = make_heartbeat(hb, sizeof(hb), (uint16_t)(seq0 + 2));
+    stream->deliver(sp, n1);
+    stream->deliver(hb, n2);
+    CanBridge::udp_link_service();
+    const CanBridge::UdpStats after = CanBridge::udp_link_stats();
+    struct R { uint32_t setpoints, frames, gaps, dropped; } r{
+        after.rx_setpoints - before.rx_setpoints, after.rx_frames - before.rx_frames,
+        after.seq_gaps - before.seq_gaps,
+        CanBridge::udp_link_stream_queue_dropped() - dropped0};
+    return r;
+  };
+  SUBCASE("library default of ONE packet (FW <= 39): the setpoint is overwritten") {
+    const auto r = run_tick(1, 100);
+    CHECK(r.setpoints == 0u);   // the setpoint never reached the dispatcher
+    CHECK(r.frames == 1u);      // only the heartbeat did
+    CHECK(r.gaps == 1u);        // the hole is visible in the shared sequence
+    CHECK(r.dropped == 1u);     // and in the library's own count
+  }
+  SUBCASE("FW 40 queue: both delivered, nothing counted as lost") {
+    const auto r = run_tick(CanBridge::STREAM_RX_QUEUE_CAPACITY, 200);
+    CHECK(r.setpoints == 1u);
+    CHECK(r.frames == 2u);
+    CHECK(r.gaps == 0u);
+    CHECK(r.dropped == 0u);
+  }
+  CHECK(netlockprobe::violations() == 0);
 }

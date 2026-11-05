@@ -73,6 +73,9 @@ class EthernetUDP {
     rx_queue_capacity_ = capacity;
   }
   size_t receive_queue_capacity() const { return rx_queue_capacity_; }
+  // The library's overwrite count (QNEthernetUDP.cpp recvFunc: a push into a
+  // FULL queue bumps droppedReceiveCount_ and overwrites the OLDEST packet).
+  uint32_t droppedReceiveCount() const { netlockprobe::require_held(); return dropped_; }
 
   bool begin(uint16_t port) {
     netlockprobe::require_held();
@@ -121,14 +124,25 @@ class EthernetUDP {
 
   // ―― test-only staging / inspection ――
   void stage(const uint8_t* d, int len) { pending_.emplace_back(d, d + len); }
+  // Deliver one packet the way the real receive callback does: bounded by the
+  // queue capacity, a full queue losing its OLDEST undrained packet (counted).
+  // stage() above stays unbounded for the drain-budget tests.
+  void deliver(const uint8_t* d, int len) {
+    if (pending_.size() - next_ >= rx_queue_capacity_) {
+      pending_.erase(pending_.begin() + (long)next_);
+      ++dropped_;
+    }
+    pending_.emplace_back(d, d + len);
+  }
   int  remaining() const { return (int)pending_.size() - (int)next_; }
   int  consumed()  const { return (int)next_; }
   unsigned tx_packets() const { return tx_packets_; }
-  void clear() { pending_.clear(); cur_.clear(); next_ = 0; tx_packets_ = 0; tx_bytes_ = 0; }
+  void clear() { pending_.clear(); cur_.clear(); next_ = 0; tx_packets_ = 0; tx_bytes_ = 0; dropped_ = 0; }
 
  private:
   uint16_t port_ = 0;
   size_t rx_queue_capacity_ = 1;   // the library default
+  uint32_t dropped_ = 0;
   std::vector<std::vector<uint8_t>> pending_;
   std::vector<uint8_t> cur_;
   size_t next_ = 0;
