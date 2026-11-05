@@ -2,9 +2,9 @@
 id: JB-180
 kind: ticket
 title: 'JB-169 held on night-shift/2026-11-06-JB-169: apply the audit''s 2 fixes and merge, also count the final Catch in the records, merge as is, or drop?'
-status: open
+status: complete
 created: '2026-11-06'
-updated: '2026-11-05T19:54:58Z'
+updated: '2026-11-05T22:53:51Z'
 owners: []
 priority: medium
 effort: xs
@@ -40,3 +40,7 @@ Recommendation: 1.
 - 1 or 2: the next night applies them, re-gates and merges.
 - 3: the next night re-gates and merges.
 - 4: JB-169 goes back to open.
+
+## Answer
+
+Option 2 is the desired outcome
