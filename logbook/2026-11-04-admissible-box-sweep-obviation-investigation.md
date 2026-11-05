@@ -3,11 +3,14 @@ title: "The admissible-box sweep can be retired: at the P4 working point 82 of 1
 type: investigation
 date: 2026-11-04
 status: in-progress
-phase: "learner-generalisation P3 (online admissibility) - desk investigation, recommendation written, no production code changed"
+phase: "learner-generalisation P3a-c (online admissibility) - desk investigation, recommendation accepted 2026-11-05 and the plan re-phased; no production code changed"
 related_plan: learner-generalisation.md
 files_changed:
   - logbook/2026-11-04-admissible-box-sweep-obviation-investigation.md
   - logbook/INDEX.md
+  - plans/active/learner-generalisation.md
+  - plans/active/INDEX.md
+  - docs/project-map.md
   - tools/probes/README.md
   - tools/probes/admissible_obviation/
 subsystem:
@@ -145,7 +148,18 @@ Recommendation to the owner, as a change to `plans/active/learner-generalisation
 - 2026-11-04, `python tools/probes/admissible_obviation/online_check_replay.py` (P4 limits): part A 3099 OK / 2 MARGIN of 3101 replayed rows (175 hop-site rows skipped), 11.8 ms per row; part B 48 of 48 candidates pass outright. With `--limits 350 5000 200000 4500`: part B 33 pass, 15 refused, 15 of 15 confirmed on the second solve. With `--pattern-apex 0.95` at the P4 limits: 3101 of 3101 OK, margin p1 0.18.
 - Tests for this commit (tier 3 docs plus tier 2 probes with no importer): see the commit message for the exact command and count.
 
-## Open Questions (for the owner)
+## Owner decisions (2026-11-05)
+
+The owner read the entry and answered the questions below; the decisions are recorded as D7-D11 in
+`plans/active/learner-generalisation.md` § 1.7 and the plan was re-ordered and re-phased the same day
+(P3a command-time check, P3b nomination-time check naming the nearest viable configuration, P3c box
+retirement, then P1, P2, P4, P5): (1) yes, refusal at pattern NOMINATION with the nearest viable
+configuration declared to the user; (2) the check runs as the user selects the Pattern; (3) a headroom
+report is kept as a tool, pose planner only, nothing at runtime reads it; (4) `MARGIN_FRAC` 0.9 stays as the
+online acceptance criterion, a measured overrun is a follow-up; (5) P3 moves ahead of P1; (6) the 2026-10-18
+"learned boundary" was never tried for want of data (the sweep kept no rows) and is not pursued.
+
+## Open Questions (for the owner) - as asked 2026-11-04, answered above
 
 1. **Is a pre-commit refusal or adjustment at command time acceptable as a normal event**, with the hand parking rest-terminal when the model command itself fails? This is the premise of P3 and of this recommendation.
 2. **Does the box's "configuration flyable" role move to a Start pre-flight (P3b above), or to `skills/check` only?** The pre-flight is also how the moving-site Patterns (JP-5, JP-11, JP-12, JP-14) can be checked at all.
