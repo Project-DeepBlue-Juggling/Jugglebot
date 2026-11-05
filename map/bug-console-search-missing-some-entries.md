@@ -2,7 +2,7 @@
 id: JB-163
 kind: bug
 title: CONSOLE search missing some entries?
-status: in_progress
+status: complete
 created: '2026-11-03'
 updated: '2026-11-04T18:04:15Z'
 owners:
@@ -15,7 +15,8 @@ radius: local
 diagnosis: hypothesis
 area: gui
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-05-gui-console-window-and-pinned-startup-lines.md
 filed_by: harrison
 ---
 
@@ -42,3 +43,4 @@ Recommendation: 2 then 1. Both are small, and 2 makes any future miss legible. 3
 ## Progress
 
 - 2026-11-05: Night Shift 2026-11-05: held on night-shift/2026-11-05-JB-163: suite green, 3 audit findings open on the window label; unblocked by JB-173
+- 2026-11-06: Closed: the owner accepted the three label fixes in JB-173; applied and merged through the gate (see the logbook entry).

@@ -4,12 +4,12 @@ kind: bug
 title: Full-length Columns goal ends MISSED_CATCH on its final Catch although the ball was caught
 status: inbox
 created: '2026-11-04'
-updated: '2026-11-05T12:29:20Z'
+updated: '2026-11-05T18:57:21Z'
 owners: []
 priority: medium
 effort: s
 hardware: none
-owner: decision
+owner: none
 radius: local
 diagnosis: hypothesis
 area: skill-stack
