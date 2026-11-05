@@ -101,7 +101,7 @@ def test_a_feed_or_unknown_pattern_is_never_a_record(pattern):
     (ex.UNREACHABLE, 'compute'), (ex.NO_ADMISSIBLE_COMMAND, 'compute'),
     ('LIMIT_JERK', 'compute'), ('CYCLE_INFEASIBLE', 'compute'),
     ('SOLVE_BUDGET_EXCEEDED', 'compute'),
-    (ex.ABORTED_MODE_CHANGED, 'other'), (ex.LANE_REFUSED, 'other'),
+    (ex.ABORTED_MODE_CHANGED, 'other'), (ex.ABORTED_FAULT, 'other'), (ex.LANE_REFUSED, 'other'),
     (ex.REJECTED_NO_BALL, 'other'), ('REJECTED_BB(busy)', 'other'),
     ('ATTEMPT_ENDED', 'other'), ('', 'other'),
 ])

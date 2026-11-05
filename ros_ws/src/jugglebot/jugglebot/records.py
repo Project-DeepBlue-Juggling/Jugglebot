@@ -41,7 +41,7 @@ The "How it ended" cell is a human category plus the raw end code, e.g.
   limits: ``SPLICE_TOO_LATE``, ``ORIGIN_TOO_LATE``, ``REBASE_DISCONTINUOUS``,
   ``WINDOW_TOO_SHORT``, ``UNREACHABLE``, ``NO_ADMISSIBLE_COMMAND``, any
   ``LIMIT_*``, and any code naming ``INFEASIBLE``, ``BUDGET`` or ``SOLVE``.
-* ``other``     -- everything else (``ABORTED_MODE_CHANGED``, ``LANE_REFUSED``,
+* ``other``     -- everything else (``ABORTED_MODE_CHANGED``, ``ABORTED_FAULT``, ``LANE_REFUSED``,
   ``REJECTED_*``, ``ATTEMPT_ENDED``, ...).
 
 The literals are restated, not imported, from ``motion/skills/executor.py`` so

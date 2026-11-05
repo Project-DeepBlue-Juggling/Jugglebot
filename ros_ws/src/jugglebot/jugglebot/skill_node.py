@@ -902,6 +902,11 @@ class SkillNode(Node):
         # pre-2026-09-18 behaviour on a bridge that does not publish the key.
         self._sched_refused = -1
         self._sched_refused_mono = 0.0
+        # JB-175: the bridge's Teensy guard `fault_state` off `/link_status`
+        # (the orchestrator's own latch read: not NONE/UNKNOWN/'' = latched)
+        # and its perf stamp. Never observed / absent key = not latched.
+        self._guard_fault_state = ''
+        self._guard_fault_state_mono = 0.0
         self._sched_refused_at_start = -1
         # The latch itself (`/link_status` `sched_hold_latched`, heartbeat
         # flags bit 15; -1 = never observed) and when `sched_refused` last
@@ -1910,6 +1915,10 @@ class SkillNode(Node):
                 except (TypeError, ValueError):
                     pass
                 continue
+            if key == 'fault_state':
+                self._guard_fault_state = str(kv.value).strip()
+                self._guard_fault_state_mono = now
+                continue
             if key != 'sched_refused':
                 continue
             try:
@@ -1996,6 +2005,17 @@ class SkillNode(Node):
                 or (now - self._sched_refused_mono) >= _TRAJ_STATUS_STALE_S):
             return False
         return self._sched_refused > self._sched_refused_at_start
+
+    def _guard_latched(self, now: float) -> bool:
+        """JB-175: is the Teensy guard latched (`/link_status` `fault_state`
+        not NONE/UNKNOWN/'') on a FRESH sample? Same staleness rule as
+        `_hand_lane_refused`; absent or stale reads as not latched (fail
+        open: a bridge without the key must not end every attempt)."""
+        if (self._guard_fault_state_mono <= 0.0
+                or (now - self._guard_fault_state_mono)
+                >= _TRAJ_STATUS_STALE_S):
+            return False
+        return self._guard_fault_state not in ('NONE', 'UNKNOWN', '')
 
     def _on_bb_heartbeat(self, msg) -> None:
         """Cache Ball Butler's own state (R4 reload C1, 2026-09-28) —
@@ -2231,6 +2251,12 @@ class SkillNode(Node):
                         and self._traj_status.gravity_correction_loaded)
         in_trajectory_mode = bool(status_fresh
                                   and self._traj_status.mode == 'TRAJECTORY')
+        # JB-175: the orchestrator publishes control mode 'ERROR' only on a
+        # real FAULT (`state_machine`: a guard-only latch keeps the streaming
+        # mode, an operator disarm blanks it to ''), so on a FRESH status it
+        # names the fault that `in_trajectory_mode` would call a mode change.
+        machine_fault = bool(status_fresh
+                             and self._traj_status.mode == 'ERROR')
         hand_fresh = (self._hand_telemetry_mono > 0.0
                      and (self._hand_clock() - self._hand_telemetry_mono)
                      < _HAND_STATE_STALE_S)
@@ -2271,9 +2297,11 @@ class SkillNode(Node):
             mocap_fresh=mocap_fresh, hand_fresh=hand_fresh,
             levelled=levelled, ball_evidence=self._possession_evidence_stable,
             in_trajectory_mode=in_trajectory_mode,
+            machine_fault=machine_fault,
             # `/link_status` stamps `_sched_refused_mono` on the raw
             # perf clock, so its judge reads that clock, not `_obs_clock`.
             hand_lane_refused=self._hand_lane_refused(time.perf_counter()),
+            guard_latched=self._guard_latched(time.perf_counter()),
             robot_frame_known=self._robot_frame is not None,
             # Accept-time only: the per-attempt frame is FROZEN at the snapshot,
             # so a mid-attempt unsettle (a transient marker loss clearing the

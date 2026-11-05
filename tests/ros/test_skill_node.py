@@ -1518,6 +1518,45 @@ def test_observations_report_true_once_everything_is_fresh_and_levelled():
     assert obs.ball_evidence == ball_possession.EVIDENCE_SEATED
 
 
+def test_observations_map_status_mode_error_to_machine_fault():
+    """JB-175: the orchestrator publishes mode ERROR only on a real FAULT; an
+    operator disarm (STANDBY here) is a mode change, NOT a fault; a stale
+    ERROR status says nothing."""
+    node, _client = _node_with_client()
+    _freshen(node)
+    obs = node._observations(0.0)
+    assert obs.machine_fault is False and obs.in_trajectory_mode is True
+    node._on_traj_status(_status(gravity_correction_loaded=True, mode='ERROR'))
+    obs = node._observations(0.0)
+    assert obs.machine_fault is True and obs.in_trajectory_mode is False
+    node._on_traj_status(_status(gravity_correction_loaded=True, mode='STANDBY'))
+    obs = node._observations(0.0)
+    assert obs.machine_fault is False and obs.in_trajectory_mode is False
+    node._on_traj_status(_status(gravity_correction_loaded=True, mode='ERROR'))
+    node._traj_status_mono -= sn._TRAJ_STATUS_STALE_S + 0.1
+    assert node._observations(0.0).machine_fault is False
+
+
+def test_observations_map_link_status_fault_state_to_guard_latched():
+    """JB-175: `/link_status` fault_state not NONE/UNKNOWN/'' on a FRESH
+    sample is a latched guard; it is its own field, not `machine_fault`."""
+    from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
+    node, _client = _node_with_client()
+    _freshen(node)
+
+    def link(state):
+        node._on_link_status(DiagnosticStatus(
+            values=[KeyValue(key='fault_state', value=state)]))
+        return node._observations(0.0)
+    assert link('NONE').guard_latched is False
+    obs = link('ODRIVE_FATAL')
+    assert obs.guard_latched is True and obs.machine_fault is False
+    assert link('UNKNOWN').guard_latched is False
+    link('ODRIVE_FATAL')
+    node._guard_fault_state_mono -= sn._TRAJ_STATUS_STALE_S + 0.1
+    assert node._observations(0.0).guard_latched is False
+
+
 def test_observations_go_stale_after_the_freshness_window(monkeypatch):
     node, _client = _node_with_client()
     _freshen(node)

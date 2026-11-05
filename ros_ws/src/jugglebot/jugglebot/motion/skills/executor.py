@@ -412,6 +412,15 @@ REJECTED_SITE_OUTSIDE_WORKSPACE = 'REJECTED_SITE_OUTSIDE_WORKSPACE'
 #: tail already streaming is the safe end (``reload_sequencer.py:340-366``'s
 #: ``obs.control_mode != RELOAD_CONTROL_MODE`` -> ``self._abort('MODE_CHANGED')``).
 ABORTED_MODE_CHANGED = 'ABORTED_MODE_CHANGED'
+#: The machine FAULTED (a Hand or leg disarm, a latched guard: the orchestrator
+#: published control mode ``ERROR``) while the attempt ran -- JB-175, 2026-11-06.
+#: Distinct from :data:`ABORTED_MODE_CHANGED` (the operator took the platform,
+#: no fault) so the log names the true cause.  It also pre-empts a Catch's
+#: :data:`MISSED_CATCH` verdict: a window that closed on a faulted machine
+#: judges nothing (the 2026-11-05 Hand SPINOUT disarm fell 0.03 s before skill
+#: 5's window closed and the attempt read "the Catch produced no ball").  A
+#: LABEL only: the stop path is exactly :data:`ABORTED_MODE_CHANGED`'s.
+ABORTED_FAULT = 'ABORTED_FAULT'
 #: The FIRMWARE refused a streamed hand lane (its ``sched_refused`` counter
 #: incremented while the attempt was running) -- fail-closed, 2026-09-18.
 #:
@@ -451,7 +460,8 @@ _CLOSING_CANCELLED = 'cancelled'
 #: END codes after which the closing decay is NEVER dispatched: the firmware is
 #: holding a refused lane (the node's forced hand-less hold is the safe end),
 #: or the operator has taken the platform.
-CLOSING_EXCLUDED_END_CODES = frozenset({LANE_REFUSED, ABORTED_MODE_CHANGED})
+CLOSING_EXCLUDED_END_CODES = frozenset(
+    {LANE_REFUSED, ABORTED_MODE_CHANGED, ABORTED_FAULT})
 
 #: No evidence the ball left by ``t_release + RELEASE_GRACE_S`` -- the throw
 #: produces no learner row (``toss_sequencer.py::_step_throwing``'s
@@ -586,6 +596,16 @@ MISSED_CATCH_MIN_VALID_FRAC = 0.8
 #: contain and still count as live. Matches the hand-telemetry staleness
 #: family already used elsewhere in this plan arc (0.05 s).
 MISSED_CATCH_MAX_GAP_S = 0.05
+
+#: A :data:`MISSED_CATCH` end is PROVISIONAL for this long (JB-175): a fault
+#: that reaches the executor just after the verdict re-labels the end
+#: :data:`ABORTED_FAULT`.  The fault is seen only through ``trajectory/status``
+#: (5 Hz) -- bag 2026-11-05_22-46-00: Hand disarm 503.683, orchestrator FAULT
+#: 503.750, first status carrying mode ERROR 503.894, i.e. 0.211 s after the
+#: disarm and 0.127 s AFTER the verdict at 503.767.  Worst case after a fault
+#: is the orchestrator's 0.07 s detection plus one 0.2 s status period; the
+#: 0.4 s keeps ~0.1 s of margin over that (and over the 25 ms tick).
+MISSED_CATCH_FAULT_SETTLE_S = 0.4
 
 #: How long AFTER this ball's next scheduled release ``R`` a SEATED sample
 #: still counts as this row's catch -- the same bound the MISSED_CATCH rule
@@ -807,6 +827,17 @@ class Observations:
       started (``teensy_bridge_node`` publishes it on ``/link_status``) --
       :data:`LANE_REFUSED`.  Defaults False, so a caller that cannot
       observe the counter keeps the pre-2026-09-18 behaviour exactly.
+    * ``machine_fault`` -- a FRESH ``trajectory/status`` carries control mode
+      ``ERROR`` (the orchestrator's FAULT: a Hand/leg disarm or a latched
+      guard on a real ODrive error) -- :data:`ABORTED_FAULT`, checked before
+      ``in_trajectory_mode`` so the end names the fault, not the mode change
+      it causes.  Defaults False (every other caller is unchanged).
+    * ``guard_latched`` -- the Teensy guard is latched (a fresh ``/link_status``
+      ``fault_state`` not NONE/UNKNOWN), which a GUARD-ONLY fault shows while
+      the status keeps its streaming mode.  Ends :data:`ABORTED_FAULT` but is
+      checked LAST in :meth:`SkillExecutor.tick`, after ``hand_lane_refused``:
+      a latch must never pre-empt :data:`LANE_REFUSED`, whose forced hold is
+      what stops the plan walking into the guard.  Defaults False.
     * ``plan_superseded`` -- the streaming plan is no longer a skill plan:
       ``go_home`` / ``go_to_pose`` / ``hold`` install a NON-cycle plan and,
       unlike a disarm, leave the control mode at TRAJECTORY, so
@@ -824,9 +855,20 @@ class Observations:
     ball_evidence: str
     in_trajectory_mode: bool
     hand_lane_refused: bool = False
+    machine_fault: bool = False
+    guard_latched: bool = False
     robot_frame_known: bool = True
     robot_frame_settled: bool = True
     plan_superseded: bool = False
+
+
+def fault_cause(obs: Observations) -> str:
+    """Which signal says the machine faulted (JB-175), for the log lines."""
+    if obs.machine_fault and obs.guard_latched:
+        return 'control mode ERROR and the Teensy guard latched'
+    if obs.guard_latched:
+        return 'the Teensy guard latched (fault_state)'
+    return 'control mode ERROR'
 
 
 def precondition_refusals(obs: Observations, *, launch: bool,
@@ -2373,6 +2415,10 @@ class SkillExecutor:
         #: (:class:`_PendingCatch`) -- empty, and never appended to, when
         #: :attr:`seat_window` is ``None``.
         self._pending_catches: List[_PendingCatch] = []
+        #: JB-175: wall-clock instant until which a :data:`MISSED_CATCH` end
+        #: is provisional (:data:`MISSED_CATCH_FAULT_SETTLE_S`), else ``None``.
+        #: :attr:`done` waits on it.
+        self._fault_settle_until_s: Optional[float] = None
         #: catch idx -> last converged tracked landing (every catch; popped
         #: when its pending catch resolves); the dispatch aim runs
         #: BEFORE :meth:`_register_catch`, so its fit is parked here and
@@ -2439,6 +2485,7 @@ class SkillExecutor:
                    or len(self.dispatched) >= len(self.schedule.skills))
         return (finished and not self._pending_outcomes
                and not self._pending_catches
+               and self._fault_settle_until_s is None
                and not self._closing_waiting())
 
     # ── the R3 command: learner + admissible box, computed once per throw ──
@@ -3820,7 +3867,16 @@ class SkillExecutor:
         lines = []
         if not self.attempt_ended:
             obs = None if self.observations is None else self.observations(t_abs_s)
-            if obs is not None and not obs.in_trajectory_mode:
+            if obs is not None and obs.machine_fault:
+                self.attempt_ended = True
+                self.end_code = ABORTED_FAULT
+                self.end_message = ('the machine faulted (control mode ERROR) '
+                                    'mid-attempt')
+                lines.append(
+                    '%.3f END %s: the machine faulted (control mode ERROR) '
+                    'mid-attempt — the rest tail already streaming is the '
+                    'safe end' % (t_abs_s, ABORTED_FAULT))
+            elif obs is not None and not obs.in_trajectory_mode:
                 self.attempt_ended = True
                 self.end_code = ABORTED_MODE_CHANGED
                 self.end_message = ('left the streaming mode that owns the '
@@ -3845,6 +3901,16 @@ class SkillExecutor:
                     'or hand; sched_refused moved) and is HOLDING it — hold '
                     'the plan before the refused command walks into '
                     'MAX_DEVIATION' % (t_abs_s, LANE_REFUSED))
+            elif obs is not None and obs.guard_latched:
+                # LAST on purpose (see Observations.guard_latched).
+                self.attempt_ended = True
+                self.end_code = ABORTED_FAULT
+                self.end_message = ('the Teensy guard latched (/link_status '
+                                    'fault_state) mid-attempt')
+                lines.append(
+                    '%.3f END %s: the Teensy guard latched (/link_status '
+                    'fault_state) mid-attempt — the rest tail already '
+                    'streaming is the safe end' % (t_abs_s, ABORTED_FAULT))
             else:
                 for idx, skill in enumerate(self.schedule.skills):
                     if idx in self.dispatched:
@@ -3891,10 +3957,39 @@ class SkillExecutor:
             # ordering ("before `_advance_release_evidence`") only matters
             # while the attempt runs, which is the branch above.
             lines.extend(self._advance_catch_evidence(t_abs_s))
+        if self.attempt_ended and self._fault_settle_until_s is not None:
+            lines.extend(self._advance_fault_settle(t_abs_s))
         if self.attempt_ended:
             lines.extend(self._advance_closing(t_abs_s))
         lines.extend(self._advance_outcomes(t_abs_s))
         return lines
+
+    def _advance_fault_settle(self, t_abs_s: float) -> List[str]:
+        """JB-175: while a :data:`MISSED_CATCH` end is provisional, a fault
+        seen now re-labels it :data:`ABORTED_FAULT`.
+
+        Changes ``end_code``, ``end_message`` and log lines ONLY -- the stop
+        path already ran (or is running) off the first END and nothing here
+        arms a hold, a REST, a decay or a dispatch.  The rows the verdict
+        already dropped stay dropped (the safe direction for the learner).
+        """
+        obs = None if self.observations is None else self.observations(t_abs_s)
+        if (obs is not None and (obs.machine_fault or obs.guard_latched)
+                and self.end_code == MISSED_CATCH):
+            self._fault_settle_until_s = None
+            was = self.end_code
+            cause = fault_cause(obs)
+            self.end_code = ABORTED_FAULT
+            self.end_message = ('the machine faulted (%s) -- the fault '
+                                'pre-empted the CATCH verdict' % cause)
+            return [
+                '%.3f END %s (was %s): the machine faulted (%s) just after '
+                'the CATCH verdict -- the fault pre-empted it; the rows the '
+                'verdict already dropped stay dropped'
+                % (t_abs_s, ABORTED_FAULT, was, cause)]
+        if t_abs_s >= self._fault_settle_until_s:
+            self._fault_settle_until_s = None
+        return []
 
     # ── D2: level the platform after an END (2026-10-19) ──
 
@@ -4030,7 +4125,9 @@ class SkillExecutor:
         obs = None if self.observations is None else self.observations(t_abs_s)
         why = ''
         if obs is not None:
-            if not obs.in_trajectory_mode:
+            if obs.machine_fault or obs.guard_latched:
+                why = 'the machine faulted (%s)' % fault_cause(obs)
+            elif not obs.in_trajectory_mode:
                 why = 'the control mode left TRAJECTORY (disarm / E-stop)'
             elif obs.plan_superseded:
                 why = ('another command replaced the streaming plan '
@@ -4712,6 +4809,43 @@ class SkillExecutor:
             if t_abs_s < pend.t_close_s + MISSED_CATCH_DECIDE_LAG_S:
                 remaining.append(pend)
                 continue
+            fobs = (None if self.observations is None
+                    else self.observations(t_abs_s))
+            if self.end_code == ABORTED_FAULT or (
+                    fobs is not None
+                    and (fobs.machine_fault or fobs.guard_latched)):
+                # JB-175: the machine faulted -- a cup read off a dead
+                # machine is no evidence either way.  No verdict, no
+                # lost_ball_line, and the ball's OUTCOME rows are KEPT.
+                lines.append(
+                    '%.3f CATCH-EVIDENCE-UNVERIFIABLE the CATCH of %s '
+                    '(skill %d): the machine faulted (%s) '
+                    'before/at its window [%+.2f, %+.2f] s of its scheduled '
+                    'landing closed -- no verdict, row dropped'
+                    % (t_abs_s, ball_label(pend.ball_id), pend.catch_idx,
+                       'a fault ended this attempt' if fobs is None
+                       else fault_cause(fobs),
+                       pend.t_open_s - pend.t_land_scheduled_s,
+                       pend.t_close_s - pend.t_land_scheduled_s))
+                if not self.attempt_ended:
+                    # The fault became visible between this tick's first
+                    # observation and now: the attempt must END, never carry
+                    # on with the row gone and no verdict.  A refused lane
+                    # still wins (its forced hold stops the plan walking).
+                    self.attempt_ended = True
+                    if fobs is not None and fobs.hand_lane_refused:
+                        self.end_code = LANE_REFUSED
+                        self.end_message = ('the firmware refused a streamed '
+                                            'lane (legs or hand) and is '
+                                            'holding it')
+                    else:
+                        self.end_code = ABORTED_FAULT
+                        self.end_message = (
+                            'the machine faulted (%s) at the CATCH verdict'
+                            % fault_cause(fobs))
+                    lines.append('%.3f END %s: %s' % (
+                        t_abs_s, self.end_code, self.end_message))
+                continue
             window = self.seat_window(pend.t_open_s, pend.t_close_s)
             t_open_rel = pend.t_open_s - pend.t_land_scheduled_s
             t_close_rel = pend.t_close_s - pend.t_land_scheduled_s
@@ -4794,6 +4928,8 @@ class SkillExecutor:
                 self.attempt_ended = True
                 self.end_code = MISSED_CATCH
                 self.end_kind = CATCH
+                self._fault_settle_until_s = (
+                    t_abs_s + MISSED_CATCH_FAULT_SETTLE_S)
                 self.end_message = (
                     'the CATCH of %s (skill %d) produced no ball'
                     % (ball_label(pend.ball_id), pend.catch_idx))

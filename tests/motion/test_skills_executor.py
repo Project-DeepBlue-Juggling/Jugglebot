@@ -8148,3 +8148,173 @@ def test_goal_13_rest_resplice_with_a_323_ms_solve_is_no_longer_too_late(
         t_install_s=t_inst)
     assert res2.code != ex.SPLICE_TOO_LATE, res2.message
     assert res2.splice_k == k_s or not res2.accepted
+
+
+# ── JB-175: a fault inside a Catch's judging window is a fault, not a miss ──
+#
+# 2026-11-05 (launch.log L2589-2615): a Hand SPINOUT disarm fell 0.03 s before
+# skill 5's window closed; the verdict fired 0.127 s BEFORE the first
+# `trajectory/status` carrying mode ERROR reached the node, so the Attempt read
+# "the Catch produced no ball".  `machine_fault` + a provisional MISSED_CATCH.
+
+def _lone_feed_catch_schedule(sites):
+    """`_feed_catch_schedule` minus the survivor catch (ball A's), so the
+    empty-cup verdict ENDS the attempt instead of cutting to a survivor."""
+    sch, L, R, _t = _feed_catch_schedule(sites)
+    keep = tuple(sk for i, sk in enumerate(sch.skills) if i in (0, 1, 4))
+    import dataclasses
+    return dataclasses.replace(sch, skills=keep), L, R
+
+
+class _FaultDriver:
+    def __init__(self, sites, fault_at=None, mode_off_at=None):
+        self.sch, self.L, self.R = _lone_feed_catch_schedule(sites)
+        self.fault_at, self.mode_off_at = fault_at, mode_off_at
+        self.guard_at = None            # /link_status fault_state latched
+        self.lane_at = None             # sched_refused moved
+        self.t_decide = (self.R + ex.MISSED_CATCH_CLOSE_AFTER_RELEASE_S
+                         + ex.MISSED_CATCH_DECIDE_LAG_S)
+        self.seat = lambda t0, t1: ex.SeatWindow(
+            n_valid=int(round((t1 - t0) * 100)), n_seated=0, max_gap_s=0.01)
+        self.x = ex.SkillExecutor(
+            self.sch, _FakeInstaller(), tracker=None,
+            observer=_observer_confirms_a_only, observations=self._obs,
+            on_experience=lambda e: None, seat_window=self.seat)
+        self.lines = []
+
+    def _obs(self, t):
+        fault = self.fault_at is not None and t >= self.fault_at
+        off = fault or (self.mode_off_at is not None and t >= self.mode_off_at)
+        # filtered to the dataclass's fields so a guard on the OLD code fails
+        # on behaviour, not on a TypeError for a field that does not exist
+        want = dict(
+            machine_fault=fault, in_trajectory_mode=not off,
+            guard_latched=self.guard_at is not None and t >= self.guard_at,
+            hand_lane_refused=(self.lane_at is not None
+                               and t >= self.lane_at))
+        keep = {k: v for k, v in want.items()
+                if k in ex.Observations.__dataclass_fields__}
+        return _obs(**keep)
+
+    def run(self, t_from, t_to, dt=0.02):
+        t = t_from
+        while t <= t_to + 1e-9:
+            self.lines.extend(self.x.tick(t))
+            t += dt
+        return t
+
+
+def test_fault_visible_before_the_verdict_is_aborted_fault_not_missed(sites):
+    d = _FaultDriver(sites)
+    d.fault_at = d.t_decide - 0.1
+    d.run(d.sch.skills[0].dispatch_s() - 0.01, d.t_decide + 0.1)
+    assert d.x.end_code == ex.ABORTED_FAULT
+    text = '\n'.join(d.lines)
+    assert ex.MISSED_CATCH not in text and 'MISSED-BALL' not in text
+    assert 'CATCH-EVIDENCE-UNVERIFIABLE' in text
+    assert d.x._pending_catches == []
+    # the ball's OUTCOME rows are NOT dropped by an unverifiable window
+    assert any(p.ball_id == 1 for p in d.x._pending_outcomes)
+
+
+def test_fault_just_after_the_verdict_rewrites_the_code_once(sites):
+    d = _FaultDriver(sites)
+    d.fault_at = d.t_decide + 0.12            # the 0.127 s of 2026-11-05
+    d.run(d.sch.skills[0].dispatch_s() - 0.01, d.t_decide - 0.001)
+    assert d.x.end_code is None or d.x.end_code == ''
+    d.lines.append('--verdict--')
+    d.x.tick(d.t_decide)
+    assert d.x.end_code == ex.MISSED_CATCH and d.x.attempt_ended
+    assert not d.x.done                        # held through the settle
+    d.run(d.t_decide + 0.02, d.t_decide + 0.5)
+    assert d.x.end_code == ex.ABORTED_FAULT
+    assert 'pre-empted' in d.x.end_message
+    rewrites = [ln for ln in d.lines if 'END %s (was' % ex.ABORTED_FAULT in ln]
+    assert len(rewrites) == 1 and 'stay dropped' in rewrites[0]
+    assert d.x._fault_settle_until_s is None   # the settle is spent
+
+
+def test_missed_catch_stands_when_the_fault_lands_after_the_settle(sites):
+    d = _FaultDriver(sites)
+    d.fault_at = d.t_decide + getattr(ex, 'MISSED_CATCH_FAULT_SETTLE_S', 0.4) + 0.1
+    d.run(d.sch.skills[0].dispatch_s() - 0.01, d.t_decide + 1.5)
+    assert d.x.end_code == ex.MISSED_CATCH
+    assert not any(ex.ABORTED_FAULT in ln for ln in d.lines)
+
+
+def test_a_genuine_miss_with_no_fault_ends_as_before_and_done_waits_the_settle(sites):
+    d = _FaultDriver(sites)
+    d.run(d.sch.skills[0].dispatch_s() - 0.01, d.t_decide - 0.001)
+    d.x.tick(d.t_decide)
+    assert d.x.end_code == ex.MISSED_CATCH and d.x.attempt_ended
+    # held through the settle (outcomes cleared first so only the settle holds)
+    d.x._pending_outcomes = []
+    d.x.tick(d.t_decide + getattr(ex, 'MISSED_CATCH_FAULT_SETTLE_S', 0.4) - 0.05)
+    assert not d.x.done
+    d.x.tick(d.t_decide + getattr(ex, 'MISSED_CATCH_FAULT_SETTLE_S', 0.4) + 0.02)
+    assert d.x.done and d.x.end_code == ex.MISSED_CATCH
+
+
+def test_operator_disarm_without_a_fault_stays_aborted_mode_changed(sites):
+    d = _FaultDriver(sites)
+    d.mode_off_at = d.sch.skills[0].dispatch_s() + 0.05
+    d.run(d.sch.skills[0].dispatch_s() - 0.01, d.t_decide + 0.5)
+    assert d.x.end_code == ex.ABORTED_MODE_CHANGED
+    assert not any(ex.ABORTED_FAULT in ln for ln in d.lines)
+
+
+def test_guard_only_latch_before_the_verdict_is_aborted_fault(sites):
+    """A GUARD-ONLY fault keeps the streaming mode (no `machine_fault`);
+    `/link_status` fault_state is the signal."""
+    d = _FaultDriver(sites)
+    d.guard_at = d.t_decide - 0.1
+    d.run(d.sch.skills[0].dispatch_s() - 0.01, d.t_decide + 0.1)
+    assert d.x.end_code == ex.ABORTED_FAULT
+    text = '\n'.join(d.lines)
+    assert ex.MISSED_CATCH not in text
+    assert 'CATCH-EVIDENCE-UNVERIFIABLE' in text and 'guard latched' in text
+    assert any(p.ball_id == 1 for p in d.x._pending_outcomes)
+
+
+def test_guard_latch_just_after_the_verdict_rewrites_naming_the_guard(sites):
+    d = _FaultDriver(sites)
+    d.guard_at = d.t_decide + 0.013          # bag: 503.780 vs verdict 503.767
+    d.run(d.sch.skills[0].dispatch_s() - 0.01, d.t_decide - 0.001)
+    d.x.tick(d.t_decide)
+    assert d.x.end_code == ex.MISSED_CATCH
+    d.run(d.t_decide + 0.02, d.t_decide + 0.3)
+    assert d.x.end_code == ex.ABORTED_FAULT
+    assert 'guard latched' in d.x.end_message
+
+
+def test_a_guard_latch_never_pre_empts_lane_refused(sites):
+    """Both true on one tick: LANE_REFUSED wins (its END arms the forced hold)
+    and a later latch never rewrites it."""
+    d = _FaultDriver(sites)
+    t_both = d.sch.skills[0].dispatch_s() + 0.05
+    d.lane_at = d.guard_at = t_both
+    d.run(d.sch.skills[0].dispatch_s() - 0.01, t_both + 0.6)
+    assert d.x.end_code == ex.LANE_REFUSED
+    assert not any(ex.ABORTED_FAULT in ln for ln in d.lines)
+
+
+def test_fault_first_seen_inside_the_verdict_still_ends_the_attempt(sites):
+    """The tick's own observation is clean but the evidence pass's reads a
+    fault: the row is dropped UNVERIFIABLE AND the attempt ENDS (never carries
+    on with no verdict)."""
+    d = _FaultDriver(sites)
+    d.run(d.sch.skills[0].dispatch_s() - 0.01, d.t_decide - 0.001)
+    calls = []
+    clean = d.x.observations
+
+    def flip(t):
+        calls.append(t)
+        o = clean(t)
+        if len(calls) >= 2:
+            return _obs(machine_fault=True, in_trajectory_mode=False)
+        return o
+    d.x.observations = flip
+    lines = d.x.tick(d.t_decide)
+    assert d.x.attempt_ended and d.x.end_code == ex.ABORTED_FAULT
+    assert any('CATCH-EVIDENCE-UNVERIFIABLE' in ln for ln in lines)
+    assert not any('MISSED-BALL' in ln for ln in lines)
