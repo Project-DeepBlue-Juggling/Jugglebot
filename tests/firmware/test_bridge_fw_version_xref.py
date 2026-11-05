@@ -232,6 +232,13 @@ def test_the_bump_history_records_what_this_version_carries():
                  'interp_sched_rx_age_take', 'SCHED_EXHAUST_US'):
         assert name in m38.group(1), name
     assert 'No behaviour change' in m38.group(1), m38.group(1)
+    # FW 39 — JB-166 hand C1 stop grace 6→14 ms.  The substance: the safety
+    # constant HAND_C1_STOP_GRACE_US moved, wire-invisible, so only
+    # BRIDGE_FW_CHECK says whether it is aboard.
+    m39 = re.search(r'^// 38→39:(.*)$', text, re.M)
+    assert m39 is not None, "FW 39 history line missing"
+    assert 'JB-166' in m39.group(1) and 'HAND_C1_STOP_GRACE_US 6000→14000' in m39.group(1), m39.group(1)
+    assert 'NO WIRE CHANGE' in m39.group(1) and 'PROTOCOL_VERSION stays 11' in m39.group(1), m39.group(1)
 
 
 def test_the_version_this_release_pins_is_actually_uplinked():

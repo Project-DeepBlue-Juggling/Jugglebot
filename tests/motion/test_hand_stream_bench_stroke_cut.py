@@ -4,7 +4,7 @@ The stage COMMANDS THE HAND MOTOR and lives in tests/hardware (``--ignore``d);
 its profile, cut selection, stop model, refusals and frame builder live in
 ``tests/hardware/hand_stroke_cut.py`` so they import with no link and no I/O.
 The stop model is checked two ways: against the probe that sized FW 37
-(``tools/probes/hand_stall_stop.py --option 2 --grace-ms 6``) and end to end
+(``tools/probes/hand_stall_stop.py --option 2 --grace-ms <twin grace>``) and end to end
 through the real SetpointPump and the firmware twin's scheduled lane.
 """
 from __future__ import annotations
@@ -25,6 +25,8 @@ import hand_stroke_cut as SC  # noqa: E402
 import teensy_interp as ti  # noqa: E402  (on sys.path via hand_stroke_cut)
 
 START, TOP = 0.2, 8.5
+# The grace the tool (and the firmware twin) uses; never a literal.
+GRACE_MS = ti.HAND_C1_STOP_GRACE_US * 1e-3
 
 
 def _fine(traj, dt=1e-4):
@@ -88,8 +90,10 @@ def test_upstroke_default_numbers():
     """The figures the logbook and the Sitting quote (start 0.2, top 8.5)."""
     plan = SC.plan_stroke_cut(START, TOP)
     assert plan.cut == 21
-    assert plan.stop["entry"][1] == pytest.approx(56.8, abs=0.05)
-    assert plan.stop["end_rev"] == pytest.approx(2.619, abs=0.001)
+    # FW 39 (HAND_C1_STOP_GRACE_US 14000): entry 63.2 rev/s, end 3.185 rev. History: at
+    # FW 37 (6 ms grace) these were 56.8 rev/s and 2.619 rev; fw36_end is grace-independent.
+    assert plan.stop["entry"][1] == pytest.approx(63.2, abs=0.05)
+    assert plan.stop["end_rev"] == pytest.approx(3.185, abs=0.001)
     assert plan.fw36_end == pytest.approx(4.531, abs=0.001)
     assert plan.stop["end_rev"] + SC.CMD_TOL_REV < 0.5 * (plan.stop["end_rev"] + plan.fw36_end)
 
@@ -106,8 +110,8 @@ def test_c1_stop_end_matches_the_probe_option_2(cut):
     hs = pytest.importorskip("hand_stall_stop")
     plan = SC.plan_stroke_cut(START, TOP, "upstroke", 70.0, cut)
     _, _, p1, v1, p2, v2, _ = plan.knots
-    end, v_in, _a, where = hs.cover_end_stop("2", (p1, v1, p2, v2), _probe_args(6.0))
-    assert where == "cover end +6 ms"
+    end, v_in, _a, where = hs.cover_end_stop("2", (p1, v1, p2, v2), _probe_args(GRACE_MS))
+    assert where == "cover end +%g ms" % GRACE_MS
     assert v_in == pytest.approx(plan.stop["entry"][1], abs=1e-9)
     assert plan.stop["end_rev"] == pytest.approx(end, abs=1e-9)
 

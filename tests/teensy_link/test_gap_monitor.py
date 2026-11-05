@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from teensy_link.gap_monitor import (
-    EMPTY_STATS, SCHED_COVER_MS, EpisodeLatch, GapTracker)
+    EMPTY_STATS, HAND_C1_COVER_MS, HAND_C1_STOP_GRACE_MS, SCHED_COVER_MS, EpisodeLatch, GapTracker)
 
 
 def test_cover_constant_is_two_knots_plus_grace():
@@ -53,3 +53,21 @@ def test_episode_latch_fires_once_per_episode():
     assert not e.update(120.0)
     assert not e.update(70.0)                 # at the limit = clear
     assert e.update(71.0)                     # new episode
+
+
+def test_hand_c1_cover_mirrors_the_header_grace_and_the_twin():
+    """HAND_C1_COVER_MS = 50 ms cover + HAND_C1_STOP_GRACE_US; pinned to the
+    firmware header and the Python twin so a grace change cannot go stale here."""
+    import os
+    import re
+    import sys
+    repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    hdr = open(os.path.join(repo, "ros_ws", "src", "jugglebot",
+                            "Teensy_code_canbridge", "canbridge_config.h")).read()
+    m = re.search(r"HAND_C1_STOP_GRACE_US\s*=\s*(\d+)u", hdr)
+    assert m
+    assert HAND_C1_STOP_GRACE_MS * 1e3 == int(m.group(1))
+    sys.path.insert(0, os.path.join(repo, "tools", "probes",
+                                    "teensy_link_profiling", "hermite_xref"))
+    import teensy_interp as ti
+    assert HAND_C1_COVER_MS * 1e3 == ti.HAND_C1_DECIDE_US

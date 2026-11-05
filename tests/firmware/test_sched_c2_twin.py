@@ -189,14 +189,14 @@ def test_a_single_dropped_frame_at_emit_lead_0_rides_the_grace_and_rejoins_the_p
     assert_exact_plan(d, samples=[s for s in d.hand if s[0] < T0_US + 21 * T_US], legs=False)
 
 
-@pytest.mark.parametrize("late_ms", [1.0, 3.0, 5.0, 7.0, 8.0, 15.0])
+@pytest.mark.parametrize("late_ms", [1.0, 3.0, 5.0, 7.0, 8.0, 15.0, 17.0, 20.0])
 def test_a_single_dropped_frame_at_emit_lead_0_on_a_fast_upward_hand_rides_the_short_grace_or_meets_the_c1_stop(late_ms):
     # FW 37 (JB-145): frame 15 covers [15T, 17T) and the Hand is moving up at
     # ~103 rev/s at 17T. Frame 16 is dropped and frame 17 lands late_ms after 17T.
-    # The span-2 cubic continues for HAND_C1_STOP_GRACE_US (6 ms) and a frame
-    # landing before the first tick past 17T + 6 ms is promoted as a normal PLAY
+    # The span-2 cubic continues for HAND_C1_STOP_GRACE_US (14 ms at FW 39) and a frame
+    # landing before the first tick past 17T + 14 ms is promoted as a normal PLAY
     # frame: the Hand rejoins the plan exactly, no stop, no refusal. Later than
-    # that (the accepted price) the Hand has started its C1 stop at 17T + 6 ms, the
+    # that (the accepted price) the Hand has started its C1 stop at 17T + 14 ms, the
     # late frame differs by the ~4500+ rev/s^2 acceleration step, and while armed it
     # is REFUSED (latched hold). FW 36 rode the full 20 ms grace in both cases.
     P, V, A = c2_plan(64)
@@ -206,10 +206,10 @@ def test_a_single_dropped_frame_at_emit_lead_0_on_a_fast_upward_hand_rides_the_s
     d = Driver(P, V, A)
     d.run(nominal_events(60, lambda k: late_ms, drop={16}), T0_US - 40_000, T0_US + 30 * T_US)
     it = d.it
-    # The driver ticks at 17T - 300 us + n * 2 ms: the first tick at or past t_d is 17T + 7.7 ms.
-    first_tick_past = t_c + 7_700
+    # The driver ticks at 17T - 300 us + n * 2 ms: the first tick at or past t_d is 17T + 15.7 ms.
+    first_tick_past = t_c + 15_700
     assert t_d <= first_tick_past < t_d + TICK_US
-    if late_ms * 1000 < 7_700:
+    if late_ms * 1000 < 15_700:
         assert it.sched_hand_c1_stops == 0 and it.sched_refused == 0 and it.sched_stops == 0
         assert it.sched_phase(1) == 1 and not it._sg[1].latched
         # Exact before the cover end and from the tick that promotes frame 17 on (it
@@ -272,7 +272,7 @@ def test_stress_lead0_random_lateness_never_steps(late_hi_ms):
     decides, the emitted curve never steps beyond the stop jerk plus the resume
     tolerances, and every stop is accounted for.
 
-    FW 37 (JB-145): a frame more than 25 + 6 ms late outlasts the previous cover
+    FW 37 (JB-145; 14 ms grace since FW 39): a frame more than 25 + 14 ms late outlasts the previous cover
     and its short grace, and a Hand still moving up faster than
     HAND_C1_STOP_MIN_UP_VEL_RPS then stops at cover end + HAND_C1_STOP_GRACE_US
     with a C1 entry, so at 0-40 ms every stop that happens is a

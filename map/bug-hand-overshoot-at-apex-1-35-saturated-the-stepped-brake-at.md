@@ -4,7 +4,7 @@ kind: bug
 title: Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT)
 status: in_progress
 created: '2026-11-02'
-updated: '2026-11-03T21:54:43Z'
+updated: '2026-11-05T12:29:44Z'
 owners:
 - jugglebot-3d
 priority: high
@@ -94,7 +94,7 @@ In every block the faulting launches sit at or above the p90 of that block's mea
 ## Sitting
 
 - setup: armed, bb-fed
-- why: the torque loss happened at 13-54 A so the 60 A limit does not explain the SPINOUTs and a 70 A brake is harder; this run measures whether the SPINOUT rate moves with the drive now at 70/80 A (K and limits unchanged).
+- why: the torque loss happened at 13-54 A so the 60 A limit does not explain the SPINOUTs and a 70 A brake is harder; this run measures whether the SPINOUT rate moves with the drive now at 70/80 A (K and limits unchanged). NOT under FW 39 (Hand C1 grace 14 ms): Apex 1.35 overruns the stroke clip by 0.93 rev on a release-knot C1 stop; wait for JB-174's hole counters before flying this row.
 - do:
   - Re-home the Hand first: the ODrive GUI save on 2026-11-03 (limits 70/80 A, thermistor 60/70 C) reset the zero (JB-146 class).
   - Fly Columns, Sep. 125, Apex 1.35, Throws 21, twice, with `hand_capture` on (the 21st throw is the Stop throw, so a full Attempt reads 20/20).
@@ -116,3 +116,4 @@ In every block the faulting launches sit at or above the p90 of that block's mea
 - 2026-11-02: Landed 8ffeba66: 70 A code limit, stream STOP 4500, C-HAND-6 speed-scaled top margin (K 4.75e-5), plus the opt-in hand_capture:=true for diagnosing the overshoot. Cause of the overshoot still open; fly with the capture on.
 - 2026-11-03: Failed at the Sitting of 2026-11-03: 7 of 9 Apex 1.35-1.50 attempts ended SPINOUT_DETECTED (L5380, 6358, 6906, 7374, 7616, 7853, 8106), tops to 10.855 rev vs clip 10.501. Capture shows torque lost 10-20 ms into the brake at 13-54 A, not saturation: overshoot hypothesis withdrawn (detail below).
 - 2026-11-04: 2026-11-03 Sitting (22:29, P4 ramp): REFUTED for the three firmware-STOP ends (goals 3, 9, 15): the Hand braked on its profile at -23..-24 A, no SPINOUT_DETECTED all Sitting, peak |iq_set| 54.1 A vs the 70 A clamp. Withdrawn for that class; the Apex 1.35 overshoot it was filed for was not exercised.
+- 2026-11-05: 2026-11-05 L2596: SPINOUT after a C1-stop brake: decel 4826 -> ~500 rev/s^2 within 10 ms of the brake peak, 25 ms into the brake, at 4.4 rev / 20 rev/s, iq -41 A (limit 70, not saturated). Same torque-loss signature as 11-03, far from the clip; Hand rested at 5.0 rev. 1 of 3 C1 brakes at -40 A went SPINOUT.

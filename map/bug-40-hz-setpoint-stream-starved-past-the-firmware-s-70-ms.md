@@ -4,7 +4,7 @@ kind: bug
 title: '40 Hz setpoint stream starved past the firmware''s 70 ms cover during CATCH-solve bursts: 3 LANE_REFUSED ends on 2026-11-02'
 status: in_progress
 created: '2026-11-02'
-updated: '2026-11-05T11:54:01Z'
+updated: '2026-11-05T12:29:42Z'
 owners:
 - jugglebot-50
 priority: high
@@ -108,3 +108,4 @@ Recommendation: 1, flown at the next Sitting with the instrumentation, then 2 or
 - 2026-11-03: Opt-in cures landed 2026-11-03, both default off: gc_freeze:=true and cpu_partition:=true (option 2), ready to A/B once the probe row shows class 1; the overlapping stall probe from 11-02 was dropped for gc_probe (logbook 2026-11-03-jb149-opt-in-cures).
 - 2026-11-04: 2026-11-03 Sitting (22:29, P4 ramp): REFUTED again for the 2 LANE_REFUSED and 1 GUARD_LATCHED ends: forward gap 37-47 ms, loop gap <= 20 ms, emit max 34 ms, bridge frame age max 24.8 ms, the firmware's expired/superseded/stale counters did not move; each end was a firmware scheduler STOP with a clean host stream (cause firmware-side, unknown).
 - 2026-11-04: Probe Sitting 2026-11-04 18:45 (gc_probe on, FW 38): row PASSED, record complete. No LANE_REFUSED, no STOP inside an Attempt; max GC pause 2.1 ms; rx_age max 27 ms, gt70 0. Third Sitting with no host-side support. gc_probe now on by default at launch; the row is a ride-along until a LANE_REFUSED is caught under it.
+- 2026-11-05: Row PASSED 2026-11-05 22:46 (first LANE_REFUSED under gc_probe). 1 of 5 STOPs host-side: 60.0 ms gen-2 GC pause in teensy_bridge_node (launch L1615, 421.040), forward 99.5 / loop 77.5 ms, expired +1; the only GC pause > 5 ms all Sitting. Other 4 host-clean (emit <= 28 ms, GC 0, seq_gaps 0). Next: A/B gc_freeze:=true (bridge node first).

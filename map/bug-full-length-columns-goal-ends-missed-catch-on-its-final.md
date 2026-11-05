@@ -4,7 +4,7 @@ kind: bug
 title: Full-length Columns goal ends MISSED_CATCH on its final Catch although the ball was caught
 status: inbox
 created: '2026-11-04'
-updated: '2026-11-04T17:52:40Z'
+updated: '2026-11-05T12:29:20Z'
 owners: []
 priority: medium
 effort: s
@@ -36,3 +36,7 @@ From the 2026-11-04 18:45 bag (`/hand_telemetry`, `/balls`) and launch.log, Nigh
 - What mocap saw: Ball 1 came down to about cup height (z 702-706 mm) and was then lost, as an occluded ball in the cup is. The Stop ball rests at z 728 mm, about 26 mm above and 40 mm across from Ball 1.
 - Skill 50's Catch was marginal: aim clamped to 35 mm, last fit 15-19 mm from the aim, second re-aim refused (LIMIT_JERK).
 - Open: either the cup sensor does not read a lone off-centre ball at rest (it did read the stacked pair), or Ball 1 never seated and the Stop landed in an empty cup. The bag cannot tell them apart.
+
+## Progress
+
+- 2026-11-05: 2026-11-05 L2615 MISSED_CATCH is a different class: Hand SPINOUT disarm at 503.68 inside the Catch window, verdict 503.767 after the lane latched; not a false miss, and JB-172 option 4 (no Stop) would not cover it. Separate bug filed for fault-preempted Catch verdicts.

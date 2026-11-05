@@ -30,6 +30,12 @@ from typing import Deque, NamedTuple, Optional, Tuple
 SCHED_KNOT_DT_MS = 25.0
 SCHED_GRACE_MS = 20.0
 SCHED_COVER_MS = 2.0 * SCHED_KNOT_DT_MS + SCHED_GRACE_MS  # 70.0
+# FW 37 Hand C1 stop (fast upstroke): the Hand group's grace shrinks to
+# HAND_C1_STOP_GRACE_US (canbridge_config.h), so its deadline is the 50 ms
+# cover + that grace. Mirror of the header constant; pinned against the header
+# and the twin (teensy_interp.py) by tests/teensy_link/test_gap_monitor.py.
+HAND_C1_STOP_GRACE_MS = 14.0
+HAND_C1_COVER_MS = 2.0 * SCHED_KNOT_DT_MS + HAND_C1_STOP_GRACE_MS  # 64.0
 
 
 class GapStats(NamedTuple):

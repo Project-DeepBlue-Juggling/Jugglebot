@@ -914,7 +914,7 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # le70/gt70, age = bridge now - the frame's t_start at queue entry). A WIRE
 # change: PROTOCOL_VERSION 10 -> 11, so an FW 37 board is DARK to this host
 # (and vice versa) until the lockstep flash. No lane behaviour changes.
-EXPECTED_BRIDGE_FW_VERSION = 38
+EXPECTED_BRIDGE_FW_VERSION = 39
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

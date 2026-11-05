@@ -17,7 +17,7 @@ steps:
   - {id: P0, title: Identify the Platform mode from existing bags, kind: phase, status: complete, effort: s, hardware: none}
   - {id: P1, title: The ZVD contract and rows behind a flag, kind: phase, status: complete, effort: m, hardware: none}
   - {id: P2, title: Box re-sweep with the rows on, kind: phase, status: complete, effort: s, hardware: none}
-  - {id: P3, title: A/B Sitting on the oval, kind: phase, status: not_started, effort: s, hardware: robot}
+  - {id: P3, title: A/B Sitting on the oval, kind: phase, status: in_progress, effort: s, hardware: robot}
 related_logbook:
   - 2026-11-04-sitting-debrief.md
   - 2026-10-31-hold-ladder-sitting-the-hold-model-was-wrong.md
@@ -233,7 +233,7 @@ JB-102's `## Sitting` section, written when P2 commits. Outline:
 | P0 | done (gate FAILED) | Mode 5.4 Hz encoder / 4.45 Hz mocap, zeta 0.14-0.28, delay 17-22 ms; yaml 4.9 / 0.20 / 0.020 provisional; identification row scheduled at the P3 Sitting |
 | P1 | done | Landed uncommitted with the P2 box: flag-off byte-identical, residual ~0 nominal, budget 47.6 ms core of 50; 0.35 x1.15 bound is an open owner decision |
 | P2 | done (gate 1 PASS, gate 2 FAIL) | Box e8d303ae93bc, 195 cells; oval 0.40 / Apex 1.00 keeps 30 mm; Columns canary cell empty with the rows on (RING 18522 / 18522); shipped as swept, fallback is an owner decision (Questions) |
-| P3 | not started | Gains the identification row first (JB-102 `## Sitting`); Columns canary flies with the flag off |
+| P3 | in progress | 2026-11-05 22:46 Sitting: A arm flag-off only (9/9, 3/3, 0/0, each ended by a firmware STOP: 2 Hand C1 stops, 1 bridge GC pause); B arm never set, no A/B data. Re-fly under FW 39 (Hand C1 grace raised). Identification step dropped from the row: 20 mm profiled steps excite no ring; whole-bag forced fit x 5.47 enc / 4.68 mocap Hz, y 4.06 / 4.24 Hz, zeta x 0.26-0.36, y 0.14-0.17, delay 15-21 ms; provisional 4.9 / 0.20 / 0.020 kept. Gains the identification row first (JB-102 `## Sitting`); Columns canary flies with the flag off |
 
 ## 8. Questions
 
@@ -243,5 +243,7 @@ Owner decision needed (asked 2026-11-05, unanswered). Gate 2 failed: with the ro
 - (b) **Soft-penalty fallback** (decision 2) and a second re-sweep (about 3.5 h; must avoid the 04:45 Night Shift).
 - (c) **A principled scope rule:** the rows are assembled only when the window can hold them (for example carry knots at least one damped mode period); `RING` is replaced by "rows not assembled", with the stamp recording it.
 - (d) Something else.
+
+2026-11-05 22:46 Sitting note for the owner: the A/B gave no data on (a)-(d) (B arm never flown), and y now has a measured 4.1-4.2 Hz, below the provisional 4.9 Hz.
 
 Recommendation: (a) for P3, then decide between (b) and (c) with the A/B data in hand, because the two-ball patterns at Dwell 0.30-0.35 face the same window-length limit and the A/B shows whether hard rows are worth it.

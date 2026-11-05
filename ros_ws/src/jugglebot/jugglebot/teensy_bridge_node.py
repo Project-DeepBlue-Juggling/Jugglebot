@@ -126,7 +126,7 @@ from teensy_link.rpc import HandMoveToUnavailable, RpcTimeout
 from teensy_link.fault_logic import LinkLossLatch
 from jugglebot import stream_tuning as _tuning
 from teensy_link.gap_monitor import (
-    EMPTY_STATS, SCHED_COVER_MS, EpisodeLatch, GapTracker)
+    EMPTY_STATS, HAND_C1_COVER_MS, SCHED_COVER_MS, EpisodeLatch, GapTracker)
 from teensy_link.setpoint_pump import SetpointPump, FLAG_HAS_HAND, HAND_FF_GAIN_MAX
 from teensy_link.encoder_search import (
     EncoderSearch, AxisStatus, AXIS_STATE_ENCODER_INDEX_SEARCH,
@@ -6053,6 +6053,14 @@ class TeensyBridgeNode(Node):
                 % (len(windows), deltas, age, bsum[0], bsum[1], bsum[2],
                    bsum[3]))
 
+    def _sched_c1_delta(self) -> int:
+        """``hand_c1_stops`` rise over the held fw_sched samples (0 with < 2)."""
+        h = self._sched_hist
+        if len(h) < 2:
+            return 0
+        i = _SCHED_FW_COUNTERS.index('sched_hand_c1_stops')
+        return (h[-1][0][i] - h[0][0][i]) & 0xFFFFFFFF
+
     def _warn_on_sched_stop(self, total: int, now=None) -> None:
         """WARN (<= 1/s) when the firmware's ``sched_stops`` rises while armed,
         and ONCE at a disarm edge.
@@ -6098,8 +6106,12 @@ class TeensyBridgeNode(Node):
         self._sched_stops_warn_mono = t
         fwd, loop = self._gap_snap
         open_ms = self._fwd_gap.open_gap_ms(time.monotonic())
-        clean = (fwd.n > 0 and fwd.max_ms < SCHED_COVER_MS
-                 and loop.max_ms < SCHED_COVER_MS and open_ms < SCHED_COVER_MS)
+        # A Hand C1 stop (FW 37, fast upstroke) fires at the 50 ms cover + the
+        # short C1 grace, not at the 70 ms lane cover: judge against that.
+        c1 = self._sched_c1_delta() > 0
+        cover_ms = HAND_C1_COVER_MS if c1 else SCHED_COVER_MS
+        clean = (fwd.n > 0 and fwd.max_ms < cover_ms
+                 and loop.max_ms < cover_ms and open_ms < cover_ms)
         where = ('at the disarm edge (mpc_active 1->0)' if edge
                  else 'while streaming')
         if clean:
@@ -6111,7 +6123,7 @@ class TeensyBridgeNode(Node):
                 'dropped as expired: link or net task; small ages = stamps or '
                 'the ISR)'
                 % (fwd.max_ms, fwd.p99_ms, open_ms, loop.max_ms,
-                   SCHED_COVER_MS))
+                   cover_ms))
         else:
             verdict = (
                 'the lane cover (~%.0f ms) expired. Candidates: emitter gap '
@@ -6120,8 +6132,12 @@ class TeensyBridgeNode(Node):
                 '%.1f), bridge loop gap %.1f ms. Loop gap near the forward gap '
                 '= bridge stall; loop gap small = the stream itself was late '
                 '(see /trajectory/status max_emit_gap_ms)'
-                % (SCHED_COVER_MS, fwd.max_ms, fwd.p99_ms, open_ms,
+                % (cover_ms, fwd.max_ms, fwd.p99_ms, open_ms,
                    loop.max_ms))
+        if c1:
+            verdict = (
+                'Hand C1 stop (fast upstroke): the Hand\'s cover ended at '
+                '%.0f ms with no newer frame; ' % HAND_C1_COVER_MS) + verdict
         fw = self._sched_fw_summary()
         self.get_logger().warning(
             'firmware scheduler STOP (+%d, total %d) %s: %s%s'

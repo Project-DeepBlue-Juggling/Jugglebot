@@ -527,3 +527,41 @@ def test_rearm_resets_the_gap_trackers_so_the_disarmed_interval_is_no_gap():
         if _gc_was:
             _gc.enable()
         _teardown(teensy, client, node)
+
+
+def _c1_warn_text(c1_second):
+    from tests.ros._bridge_harness import _build_paired_node, _teardown
+    from teensy_link.gap_monitor import GapStats
+    teensy, client, node = _build_paired_node(boot_state_read=False)
+    try:
+        lines = []
+        node.get_logger().warning = lambda m, *a, **k: lines.append(str(m))
+        node._mpc_active = True
+        node._gap_snap = (GapStats(40, 42.1, 30.0), GapStats(900, 19.0, 19.0))
+        node._note_sched_sample(_sched_hb(10, 25, 4_000, (4, 0, 0, 0)), 1)
+        node._note_sched_sample(
+            _sched_hb(10, 25, 4_000, (4, 0, 0, 0), c1=c1_second), 2)
+        node._warn_on_sched_stop(3, now=100.0)
+        node._warn_on_sched_stop(4, now=101.0)
+        assert len(lines) == 1
+        return lines[0]
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_sched_stop_with_c1_delta_names_the_hand_c1_path_and_its_derived_deadline():
+    """2026-11-05: a hand_c1_stops rise means the Hand C1 stop (cover + short
+    grace), not the 70 ms lane cover; the deadline is derived, never literal."""
+    from teensy_link.gap_monitor import HAND_C1_COVER_MS
+    m = _c1_warn_text(1)
+    assert 'Hand C1 stop (fast upstroke)' in m
+    assert "the Hand's cover ended at %.0f ms with no newer frame" % HAND_C1_COVER_MS in m
+    assert 'below the ~%.0f ms cover' % HAND_C1_COVER_MS in m
+    assert '~70 ms' not in m
+    assert 'hand_c1_stops +1' in m and 'fw_sched' in m
+
+
+def test_sched_stop_without_c1_delta_keeps_the_lane_cover_text():
+    m = _c1_warn_text(0)
+    assert 'Hand C1' not in m
+    assert 'below the ~70 ms cover' in m and 'hand_c1_stops +0' in m
