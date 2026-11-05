@@ -4,7 +4,7 @@ kind: feature
 title: 'Pre-release hold rung: release from a moving Platform (hold 0.100 → 0)'
 status: in_progress
 created: '2026-10-30'
-updated: '2026-11-04T08:37:23Z'
+updated: '2026-11-05T11:55:46Z'
 owners: []
 priority: high
 effort: m
@@ -82,6 +82,11 @@ The Sitting flew the ladder and **withdrew the model** this Item was written on.
 - pass: at Dwell 0.40 with the flag on, the carried minus from-rest raw landing bias is within +/-10 mm, the carried per-Throw sd is under 17.5 mm, and 30 consecutive Catches land in one Attempt; no CUP_SEATING_CONE or leg LIMIT end; the Columns canary (flag off) is unchanged (each Attempt COMPLETED, no new refusal).
 - record: raw x per Throw (landed minus u) split from-rest / carried, per arm; encoder and mocap excess at separation per arm; RING refusals (the RING refusal text if any oval install is refused); install-line leg peaks; the platform_mode_fit.py result on the identification bag (x and y); the bag and launch log paths.
 - minutes: 45
+
+## Sitting result (2026-11-05 22:55)
+
+- verdict: fail
+- notes: Attempted. Only tried up to step 3, as every attempt was ending prematurely due to LANE_REFUSED, MAX_DEVIATION, or SPINOUT_DETECTED
 
 ## Progress
 
