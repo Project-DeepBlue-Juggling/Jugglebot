@@ -6,7 +6,7 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 5 blocks (168 min) · Bench leg 1 block (30 min) · Bench hand 1 block (30 min)
+Rigs: Robot 5 blocks (173 min) · Bench leg 1 block (30 min) · Bench hand 1 block (30 min)
 
 ## Setup 0: before power
 
@@ -16,9 +16,9 @@ Rigs: Robot 5 blocks (168 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Robot  (5 blocks, 168 min)
+## Robot  (5 blocks, 173 min)
 
-### Block 1: armed  (1 row, 1 min)
+### Block 1: armed  (2 rows, 6 min)
 
 #### JB-149 40 Hz setpoint stream starved past the firmware's 70 ms cover during CATCH-solve bursts: 3 LANE_REFUSED ends on 2026-11-02  (1 min, high, unattached)
 - why: catch the next LANE_REFUSED with the GC probe running; three Sittings (2026-11-03 12:30 and 22:29, 2026-11-04 18:45) found no host-side cause, so only an end caught under the probe can rule the host out at the moment of failure.
@@ -26,6 +26,13 @@ Rigs: Robot 5 blocks (168 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
   - Nothing extra: `gc_probe` is on by default at launch since 2026-11-04 (do not pass `gc_probe:=false`). If an Attempt ends LANE_REFUSED, note the time.
 - pass: a LANE_REFUSED end is on record with GC_PROBE lines from both stream nodes within 1 s of its STOP WARN, and that WARN carries its verdict, fw_sched counters and frame ages.
 - record: the launch log path and the line of each LANE_REFUSED end; none = say so.
+
+#### JB-174 Count scheduled-stream holes and downlink datagram loss in the can-bridge heartbeat  (5 min, high, unattached)
+- why: confirm that the FW 40 stream-socket queue fix takes downlink setpoint loss from about 1.5 % to zero (three Sittings measured 1.3 to 1.5 %).
+- do:
+  - Launch and arm as usual, then leave the robot holding the Active pose for 5 minutes before the first goal. Fly the rest of the Sitting as normal. The bridge logs one `downlink summary` line each time streaming ends.
+- pass: every `downlink summary` line of the Sitting reads lost 0, queue_dropped +0 and seq_gaps +0, over at least 10,000 setpoints in total.
+- record: the launch log path and its `downlink summary` lines.
 
 ### Block 2: level, armed, bb-fed  (3 rows, 42 min)
 
@@ -157,7 +164,6 @@ Rigs: Robot 5 blocks (168 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - JB-166 [Robot] Firmware scheduler STOP fires on a clean host stream and ends the Attempt: no ## Sitting section
 - JB-167 [Robot] Install the host hold within one tick of a firmware scheduler STOP so a guard latch becomes a recoverable LANE_REFUSED: no ## Sitting section
 - JB-168 [Robot] Learner context cannot tell a Throw from rest from a carried Throw: no ## Sitting section
-- JB-174 [Robot] Count scheduled-stream holes and downlink datagram loss in the can-bridge heartbeat: no ## Sitting section
 - JB-2 [Robot] Design change: the Hand should be Idle, not Parked Closed-loop, while Active: no ## Sitting section
 - JB-24 [Robot] 10 % jitter-margin class of LIMIT_* refusals: no ## Sitting section
 - JB-26 [Robot] Platform Teensy truncates the persisted levelling offset to int16 milliradians: no ## Sitting section
