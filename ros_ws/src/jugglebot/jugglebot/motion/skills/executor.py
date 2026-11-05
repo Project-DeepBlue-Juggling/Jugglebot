@@ -4746,6 +4746,10 @@ class SkillExecutor:
         :data:`MISSED_CATCH` either way, and ``end_kind`` is set to
         :data:`CATCH` so the operator line reads "... ENDED (MISSED_CATCH)
         at the CATCH: ...".
+
+        One exception (JB-169): a live EMPTY window on the final CATCH of a
+        goal ending on a Stop (:meth:`_ends_on_stop_final_catch`) fires
+        nothing: the Catch is booked unverifiable and the rows are kept.
         """
         if not self._pending_catches:
             return []
