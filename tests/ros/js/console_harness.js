@@ -91,6 +91,20 @@ cv.initConsoleView();
     out.pinBound = { len: pb.pinned.length, first: pb.pinned[0].msg, dropped: pb.dropped, cap: L.PIN_CAP };
     out.winFresh = L.windowLabel(L.newLive(), 3600);
     out.winDropped = L.windowLabel(st, 3600);
+    out.winPinCap = L.windowLabel(pb, 3600);      // pinned cap dropped, ring never did
+    const small = (pin) => {                      // ring cap 3 over 5 lines t=10..14 keeps t=12..14
+        const s = L.newLive();
+        if (pin !== undefined) L.pushLive(s, { t: pin, level: 20, name: 'n', msg: 'A_FW_CHECK' });
+        for (let i = 0; i < 5; i++) L.pushLive(s, { t: 10 + i, level: 20, name: 'n', msg: 'm' + i }, 3);
+        return s;
+    };
+    out.winRingOnly = L.windowLabel(small(), 3600);
+    out.winPinOld = L.windowLabel(small(1), 3600);
+    const tie = L.newLive();
+    L.pushLive(tie, { t: 5, level: 20, name: 'n', msg: 'm' });
+    L.pushLive(tie, { t: 5, level: 20, name: 'n', msg: 'B_FW_CHECK' });
+    out.winTie = { label: L.windowLabel(small(12), 3600), order: L.liveLines(tie).map((l) => l.msg) };
+    out.winRingT = L.formatTime(12).slice(0, 8);
     out.winDroppedExpect = L.formatTime(st.ring[0].t).slice(0, 8);
     out.winFreshExpect = L.formatTime(3600).slice(0, 8);
 }

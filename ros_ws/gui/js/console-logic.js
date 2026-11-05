@@ -76,17 +76,17 @@ export function isPinned(line) {
     return !!line && typeof line.msg === 'string' && line.msg.indexOf('_FW_CHECK') >= 0;
 }
 
-/** Fresh live-buffer state: ring (capped), pinned (capped at PIN_CAP), dropped = lines lost to either cap. */
-export function newLive() { return { ring: [], pinned: [], dropped: 0 }; }
+/** Fresh live-buffer state: ring (capped), pinned (capped at PIN_CAP), dropped = lines lost to either cap (droppedRing + droppedPinned). */
+export function newLive() { return { ring: [], pinned: [], dropped: 0, droppedRing: 0, droppedPinned: 0 }; }
 
 /** Add a live line: pinned lines go to the pinned set, the rest to the ring.  Mutates and returns `st`. */
 export function pushLive(st, line, cap = RING_CAP, pinCap = PIN_CAP) {
     if (isPinned(line)) {
         st.pinned.push(line);
-        if (st.pinned.length > pinCap) { const n = st.pinned.length - pinCap; st.pinned.splice(0, n); st.dropped += n; }
+        if (st.pinned.length > pinCap) { const n = st.pinned.length - pinCap; st.pinned.splice(0, n); st.dropped += n; st.droppedPinned += n; }
     } else {
         st.ring.push(line);
-        if (st.ring.length > cap) { const n = st.ring.length - cap; st.ring.splice(0, n); st.dropped += n; }
+        if (st.ring.length > cap) { const n = st.ring.length - cap; st.ring.splice(0, n); st.dropped += n; st.droppedRing += n; }
     }
     return st;
 }
@@ -105,11 +105,12 @@ export function liveLines(st) {
 
 /** The window line shown above the list: where the held lines start and how many were dropped.
  *  Nothing dropped => the page's subscribe time (a line from before it was never received);
- *  something dropped => the oldest ring line's time. */
+ *  the ring evicted => the oldest ring line's time (+ "startup lines pinned" when a pinned line is older). */
 export function windowLabel(st, subscribeT) {
     const hms = (t) => formatTime(t).slice(0, 8);
-    if (st.dropped > 0 && st.ring.length) {
-        return `lines since ${hms(st.ring[0].t)}, ${st.dropped} dropped (ring full)`;
+    if (st.droppedRing > 0 && st.ring.length) {
+        const old = st.pinned.length && st.pinned[0].t < st.ring[0].t;   // strict: a tie is inside the window
+        return `lines since ${hms(st.ring[0].t)}, ${st.dropped} dropped (ring full)${old ? ', startup lines pinned' : ''}`;
     }
     return `lines since ${hms(subscribeT)} (page subscribed), ${st.dropped} dropped`;
 }

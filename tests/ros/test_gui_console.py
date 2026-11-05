@@ -85,9 +85,15 @@ def test_window_label_and_pinned_lines(r):
     assert r['pinOrder'] == ['a', 'PLATFORM_FW_CHECK: OK', 'b']
     # the pinned set is itself bounded
     assert r['pinBound'] == {'len': 50, 'first': 'X_FW_CHECK 7', 'dropped': 7, 'cap': 50}
+    t = r['winRingT']   # ring cap 3 over 5 lines t=10..14 keeps t=12..14
+    assert r['winPinCap'] == 'lines since %s (page subscribed), 7 dropped' % r['winFreshExpect']   # pinned cap only: no "(ring full)"
+    assert r['winRingOnly'] == 'lines since %s, 2 dropped (ring full)' % t
+    assert r['winPinOld'] == 'lines since %s, 2 dropped (ring full), startup lines pinned' % t
+    assert r['winTie']['label'] == 'lines since %s, 2 dropped (ring full)' % t   # pinned t == ring[0].t is inside the window
+    assert r['winTie']['order'] == ['B_FW_CHECK', 'm']   # equal timestamps: the pinned line wins the tie
     # window label: subscribe time when nothing dropped, oldest held ring line once the cap evicted
     assert r['winFresh'] == 'lines since %s (page subscribed), 0 dropped' % r['winFreshExpect']
-    assert r['winDropped'] == 'lines since %s, 10 dropped (ring full)' % r['winDroppedExpect']
+    assert r['winDropped'] == 'lines since %s, 10 dropped (ring full), startup lines pinned' % r['winDroppedExpect']
 
 
 def test_replay_hit_selection(r):
