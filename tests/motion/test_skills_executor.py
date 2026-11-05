@@ -4167,6 +4167,67 @@ def test_a_chained_re_throw_cannot_contaminate_its_own_previous_row(sites):
     assert launch_rows[0].caught is True
 
 
+def _drive_row_then_next_flight(sites, *, own_fit):
+    """Real compiled THROW -> CATCH-with-re-throw schedule. The tracker serves
+    the row's own fit (only when ``own_fit``), then the same ball's NEXT
+    flight (321 mm off, a beat later) which the identity gate refuses, all
+    BEFORE the re-release. Returns ``(lines, pend, first, second)``."""
+    sch = _schedule_with_then_throw(sites)
+    p1, _p2 = sites
+    t_throw = sch.skills[0].t_abs_s
+    t_land = t_throw + FLIGHT_S
+    t_rethrow = sch.skills[1].then_throw.t_release_abs_s
+    first = _land(p1, t_land + 0.04, dx_mm=8.0, t_release=t_throw)
+    second = _land(p1, t_rethrow + FLIGHT_S, dx_mm=321.0, t_release=t_rethrow)
+    t_switch = t_land + 0.10
+    assert t_switch < t_rethrow
+    clock = {'t': t_throw}
+
+    def tracker(_ball_id):
+        if clock['t'] < t_switch:
+            return first if own_fit else None
+        return second
+
+    x = ex.SkillExecutor(sch, _FakeInstaller(), tracker=tracker,
+                         observer=lambda _b, _t: 'EMPTY',
+                         on_experience=lambda _e: None)
+    lines, pend = [], None
+    t = sch.skills[0].dispatch_s() - 0.01
+    while t < t_rethrow - 0.05:
+        clock['t'] = t
+        lines.extend(x.tick(t))
+        for cand in x._pending_outcomes:
+            if cand.t_release_s == pytest.approx(t_throw):
+                pend = cand
+        t += 0.025
+    assert pend is not None
+    return lines, pend, first, second
+
+
+def test_a_row_with_its_own_fit_logs_no_refusal_for_the_next_flights_fit(sites):
+    """JB-176: once the row holds its own fit, the gate still refuses the next
+    flight's fit (it never becomes a landing) but says nothing and does not
+    touch the rejected bookkeeping -- "no evidence or row from it" was false."""
+    lines, pend, first, _second = _drive_row_then_next_flight(
+        sites, own_fit=True)
+    assert pend.best_landing is first
+    assert pend.n_rejected == 0
+    assert pend.rejected_reason == '' and pend.rejected_apex_m is None
+    assert not [ln for ln in lines if 'TRACKER-IDENTITY-REFUSED throw' in ln]
+
+
+def test_a_row_with_no_fit_still_logs_the_refusal_and_takes_no_landing(sites):
+    """The Throw 3 shape: no fit of its own, then the next flight's fit. The
+    refusal line is true here and the bookkeeping stands; no landing taken."""
+    lines, pend, _first, _second = _drive_row_then_next_flight(
+        sites, own_fit=False)
+    assert pend.best_landing is None
+    assert pend.n_rejected >= 1
+    assert pend.rejected_reason.startswith('not this release')
+    refused = [ln for ln in lines if 'TRACKER-IDENTITY-REFUSED throw' in ln]
+    assert len(refused) == 1                       # once per throw
+
+
 def test_an_out_of_band_estimate_is_refused_at_admission(sites):
     """The band is applied at ADMISSION as well as at finalise, so a garbage
     estimate can never become the row's landing — and therefore can never

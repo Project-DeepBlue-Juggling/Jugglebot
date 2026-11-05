@@ -5182,9 +5182,9 @@ class SkillExecutor:
         The tracker is only sampled at or after ``t_release_s``, and which
         estimates count as THIS flight's outcome is
         :meth:`_consider_landing`'s contract -- in particular the observation
-        FREEZES at the crossing, so a ball re-thrown on the same continuous
-        track cannot overwrite the row it has already earned (the 2026-09-16
-        contamination).
+        FREEZES at this ball's next release, so a ball re-thrown on the same
+        continuous track cannot overwrite the row it has already earned (the
+        2026-09-16 contamination).
 
         The possession observer is read EVERY tick inside a row's verdict
         window (:meth:`_outcome_window`) and
@@ -5211,9 +5211,23 @@ class SkillExecutor:
                     # Only a fit can become a row; an unfitted estimate is
                     # left to `_consider_landing`, which names it as such.
                     raw = landing
+                    # `best_landing` is only ever set by `_consider_landing`
+                    # from a fit, so a row that holds one already has its own
+                    # flight; the tracker moving on to the same ball's NEXT
+                    # flight is expected, and the gate's refusal of it is
+                    # neither a line ("no evidence or row" would be false)
+                    # nor a rejected-bookkeeping event (JB-176). The gate
+                    # still decides; its line goes to a scratch sink and the
+                    # once-per-throw key is left as it was.
+                    has_own_fit = pend.best_landing is not None
+                    key = ('throw', pend.throw_no)
+                    key_was_set = key in self._identity_refused
                     landing, refusal = self._release_landing(
-                        pend, landing, lines)
-                    if refusal is not None:
+                        pend, landing, [] if has_own_fit else lines)
+                    if has_own_fit:
+                        if not key_was_set:
+                            self._identity_refused.discard(key)
+                    elif refusal is not None:
                         pend.rejected_apex_m = _observed_apex_m(raw)
                         pend.rejected_reason = ('not this release\'s flight: '
                                                 + refusal)
