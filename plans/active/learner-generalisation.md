@@ -3,22 +3,27 @@ title: Learner generalisation — a global plant model, a physics-keyed residual
 created: 2026-10-18
 status: active
 owner: Harrison
-last_updated: 2026-10-18
+last_updated: 2026-11-05
 pathway: learner-generalisation
 scope: >-
   Replace the local-linear memory with a global plant model (apex gain, lateral offset, centre-pull, per-ball
   offset) plus a physics-keyed fixed-Jacobian residual and evidence-scaled authority, retire the offline
   AdmissibleBox sweep for online admissibility, and add a per-beat event stream so any throw site, apex,
-  dwell or yaw can be commanded and changed mid-pattern. P1 learner core, P2 characterisation sitting, P3
-  online admissibility, P4 event stream, P5 close-out.
+  dwell or yaw can be commanded and changed mid-pattern. Re-ordered 2026-11-05 (owner): P3a the
+  command-time check with a two-solve bound, P3b the nomination-time check that names the nearest viable
+  configuration, P3c the box retirement, then P1 learner core, P2 characterisation sitting, P4 event
+  stream, P5 close-out.
 steps:
+  - {id: P3a, title: Command-time admissibility check, kind: phase, status: not_started, effort: m, hardware: none}
+  - {id: P3b, title: Nomination-time check and the nearest viable configuration, kind: phase, status: not_started, effort: m, hardware: none}
+  - {id: P3c, title: Box retirement, kind: phase, status: not_started, effort: s, hardware: none}
   - {id: P1, title: Learner core, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: P2, title: The characterisation sitting, kind: phase, status: not_started, effort: m, hardware: robot}
-  - {id: P3, title: Online admissibility and box retirement, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: P4, title: BeatEvent stream and the columns wrapper, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: P5, title: Close-out, kind: phase, status: not_started, effort: s, hardware: none}
 related_logbook:
   - 2026-10-18-learner-generalisation-investigation.md
+  - 2026-11-04-admissible-box-sweep-obviation-investigation.md
 related_config:
   - config/generated/admissible_box.yaml (retired at P3, with gate_hash and the dwell-in-key)
 related_code:
@@ -26,6 +31,7 @@ related_code:
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/feasibility.py::validate_cycle
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/throw_envelope.py::evaluate
   - ros_ws/src/jugglebot/jugglebot/skill_node.py, sim/skills_gate.py, tools/admissible_sweep.py, temp/learn/jugglebot/memory.csv
+  - tools/probes/admissible_obviation/ (the 2026-11-04 probes: margin_rays, affine_check, online_check_replay, family_run, boundary_replay)
 ---
 
 # Learner generalisation
@@ -144,6 +150,25 @@ at its P5); none on yaw, variable heights or mid-pattern change.
 - **D5** Sequencing: learner core first (the oval's first learned throw uses it), then online
   admissibility, then the event stream. **D6** One characterisation sitting BEFORE the oval ramp.
 
+**Owner decisions 2026-11-05** (after `logbook/2026-11-04-admissible-box-sweep-obviation-investigation.md`;
+the measured facts they rest on are in § 2.5):
+
+- **D7** P3 moves ahead of P1 and splits into P3a / P3b / P3c (*"if P3 can be done offline without new data,
+  and there's no good reason to keep it for later: certainly"*). Nothing in P3 depends on the new learner law.
+- **D8** Admissibility is decided at pattern NOMINATION, as the user selects the Pattern, and a refused
+  configuration is reported with the nearest viable one (*"refusal at pattern nomination, with the closest
+  viable pattern being declared to the user"*; *"ideally this runs right as the user selects the pattern"*).
+  The command-time check (P3a) stays alongside it for the Learner's per-Throw offsets.
+- **D9** `MARGIN_FRAC` 0.9 stays as the online acceptance criterion for both refusal and the adjustment target
+  (D2 stands); replacing the fixed fraction with a measured per-limit-class tracking overrun from bags is a
+  follow-up Item once sittings exist on the new path, not part of P3.
+- **D10** The offline sweep is retired as a runtime dependency. A design-time headroom report (rays on the
+  margin, pose planner only, seconds per cell) is kept as a TOOL for working-point and Pattern decisions;
+  nothing at runtime reads it.
+- **D11** The 2026-10-18 "boundary learned from sweep output (discarded)" was never tried (the sweep kept
+  no rows); it is not pursued, because the planner is a one-iteration convex QP with an exact affine
+  sensitivity and a smooth margin, so a learned classifier would be a lossy copy of a 2 ms evaluation.
+
 ## 2. Architecture
 ### 2.1 Current and proposed
 
@@ -151,7 +176,7 @@ at its P5); none on yaw, variable heights or mid-pattern change.
 CURRENT                                      PROPOSED
 node params (dwell, apex, sites)             BeatEvent stream, compile_* wrappers          [P4]
 _command_u: local-linear fit, clamp 20 mm    _command_u: f₀⁻¹ + α·residual, cap(x)         [P1]
-AdmissibleBox clip (offline sweep, hash)     online admissibility, bisect to f₀⁻¹(y_d)     [P3]
+AdmissibleBox clip (offline sweep, hash)     command-time check, 2 solves max (P3a); nomination check (P3b)
 install_segment → validate_cycle → Teensy    install_segment → validate_cycle → Teensy (same)
 ```
 
@@ -217,12 +242,43 @@ layer (D3): every u still passes L0, install-time `validate_cycle` and the Teens
 
 ### 2.5 L0 — online admissibility (`admissible.py` rewrite; the sweep retires)
 
-At command time (~0.12 s before the partner's release, in the solver worker, off the dispatch path):
-plan the candidate throw segment(s) with the box's 1–2 segment look-ahead and run `validate_cycle`
-at `MARGIN_FRAC` 0.9 (D2) plus `throw_envelope.evaluate` re-homed onto this path. Fail → bisect u
-toward f₀⁻¹(y_d) (≤ 5 steps). The model command failing → REFUSE (`NO_ADMISSIBLE_COMMAND` retained);
-the hand parks holding the ball (rest-terminal: safe by construction). Budget and gate: § 4 P3, a
-`serial` wall-clock test like `tests/motion/test_validate_cycle_budget.py`.
+**Measured facts (2026-11-04, `tools/probes/admissible_obviation/`, dev box, tree at gate_hash 2605fc1bd25e):**
+(a) at the P4 working point the landing room is at the sweep's own +-30 mm grid edge in 82 of 113 committed
+cells, equal to the Learner's authority, so the clip never binds there; the true columns pose 0.95 boundary is
+at 68-96 mm. (b) Every one of 441 grid solves of the catch-with-throw ends in ONE Goldfarb-Idnani iteration
+with the SAME single active constraint (both planners, both working points): inside a flight time the QP
+optimiser is exactly affine in the landing offset, and the planned pose/hand arrays predicted affinely from
+three solves are within 0.12-0.6 mm of the real solve inside +-20 mm. (c) The pose planner's gate margin
+`m = min_k (0.9 L_k - peak_k) / (0.9 L_k)` is smooth in the offset (slope at most 0.007 per mm, quadratic along
+a ray to 0.012); the level planner's is rough. (d) One plan + gate costs 9.8 ms on the dev box (about 23 ms on
+the idle Jetson by the gate's 2.3x ratio; 35 ms loaded is the 2026-10-18 estimate, unmeasured). (e) The
+two-solve fallback below repaired 15 of 15 refused candidates at the old working point (predicted margins
+matched the real ones to 0.003); all 3101 non-hop Learner-corpus commands pass at the P4 point.
+
+**Command-time check (P3a).** At command time (~0.12 s before the partner's release, in the solver worker,
+off the dispatch path): plan the catch-with-throw at the Learner's candidate `u` from the streaming
+segment's release state (the real seed, not the sweep's nominal one), gate at `MARGIN_FRAC` 0.9 (D2, D9) and
+run `throw_envelope.evaluate` on the carried throw's release speed (C-HAND-3, re-homed from the sweep). Pass:
+install as today. Fail: read the margin of the nominal plan `m0` (the plan at the model command, solved once
+per beat) and the margin `m_u` of the affinely PREDICTED plan at `u` (gate only, no solve, ~2 ms), move
+the command along the line toward the model command to the predicted zero, `s = m0 / (m0 - m_u)`, backed
+off 1 mm, and CONFIRM with one real solve. Two real solves is the bound; never a bisection loop. The model
+command itself failing → REFUSE (`NO_ADMISSIBLE_COMMAND` retained); the hand parks holding the ball
+(rest-terminal: safe by construction). The box's third gate (the following catch) is the next beat's own
+check. Budget and gate: § 4 P3a, a `serial` wall-clock test like `tests/motion/test_validate_cycle_budget.py`.
+
+**Nomination-time check (P3b, D8).** When a Pattern goal is accepted (and from `skills/check`): compile the
+Schedule and plan every nominal Segment at the identity command and at the commanded-flight ladder's edges
+(-20 % / +10 %), report every refusal at once with the refusing gate and leg, and when the configuration is
+refused search one parameter at a time toward viability (apex first, then dwell or separation) by bisection
+on the margin and report the nearest viable configuration ("1.05 at separation 125 refused by leg jerk on the
+cross-site catch; 1.00 at 125, or 1.05 at 100, is viable"). Seconds of solving. This is the only form a
+configuration check can take for the moving-site Patterns (JP-5, JP-11, JP-12, JP-14).
+
+**Not done (ruled out 2026-11-04):** a learned feasibility classifier as the gate, an analytic pre-check as
+the gate (sound only for refusal), full explicit mpQP region enumeration (one region covers the grid),
+interval / Taylor-model proofs, warm-started or GPU QP solvers (the QP is one iteration; the cost is Python
+dispatch).
 
 ### 2.6 L4 — the per-beat event stream (`schedule.py`; D4)
 
@@ -263,15 +319,62 @@ reproduces today's compiled columns schedule segment for segment.
 
 | Phase | Scope | Status | Date | Risk | Validates |
 |-------|-------|--------|------|------|-----------|
+| P3a | Command-time admissibility check, two solves max, `throw_envelope.evaluate` re-homed | NOT STARTED | | High (safety content moves) | Loaded-Jetson p99 within slack; sim gate green with no box |
+| P3b | Nomination-time check and the nearest viable configuration | NOT STARTED | | Medium (goal acceptance, GUI) | Every refusal at once; nearest viable named; moving-site Patterns checkable |
+| P3c | Box retirement per § 6.4 | NOT STARTED | | Low | Census counts to zero |
 | P1 | Learner core: `plant_model.py`, `learner.py`, `memory.py` v2 + migration, replay probe | NOT STARTED | | Medium (changes every commanded u) | Cold-start apex error < 15 mm at a held-out site |
 | P2 | Characterisation sitting (D6): θ structure, yaw frame, telemetry | NOT STARTED | | Medium (hardware) | Aim vs offset; radial vs x; frame; Δ_b |
-| P3 | Online admissibility, box retirement, `throw_envelope.evaluate` re-homed | NOT STARTED | | High (safety content moves) | Loaded-Jetson p99 within slack; ledger counts to zero |
 | P4 | BeatEvent stream, columns wrapper, next-beat rule, dwell out of node params | NOT STARTED | | High (schedule path, ~20 test files) | Golden test; sim mid-pattern change |
 | P5 | Close-out: columns ↔ oval shared memory on hardware, INVARIANTS rows, archive | NOT STARTED | | Low | No aliasing; invariants pinned |
 
-Order per D5: P1 → P3 → P4; P2 (D6) sits between P1 and the oval ramp and does not block P3.
+Order per D7 (supersedes D5's P1 → P3 → P4): P3a → P3b → P3c → P1 → P4; P2 (D6) sits between P1 and the
+oval ramp and blocks nothing here. P3a, P3b, P3c, P1 and P4 need no hardware; P2 and P5 do.
 
 ## 4. Implementation phases (detailed)
+### Phase 3a: Command-time admissibility check — NOT STARTED
+
+Modified: `admissible.py` (§ 2.5: the check, the affine margin step, the confirm), `executor.py::_command_u`
+(calls the check in the solver worker; the box clip path goes), `solver_worker.py` (a check request kind
+beside the solve), `skill_node.py`, `sim/skills_gate.py`. The box stays loadable until P3c so the two paths
+can be A/B'd in sim.
+
+- **Probe FIRST, then the budget.** `tools/probes/admissible_obviation/online_check_replay.py` is the
+  prototype of the check and the two-solve step; the production function reproduces its verdicts on the
+  same candidates (a pinned test). Loaded-Jetson budget of one plan + gate and of the two-solve path
+  measured before the `serial` budget test is written (bag recording and GUI up, p50 / p99 / max).
+- Control walk (CLAUDE.md rule): the command enters the same slot as today (~0.12 s before the partner's
+  release) and the installed segment is still gated by install-time `validate_cycle` and the Teensy guard; the
+  only behavioural change is that a candidate the old box would have clipped is now either confirmed by a
+  real solve or moved along the line to the model command. No feedforward or timing path is touched.
+- `throw_envelope.evaluate` re-homed onto this path with its own test (T-U8).
+- Gate: p99 of the check below the measured handoff slack; sim gate green with the box bypassed;
+  `NO_ADMISSIBLE_COMMAND` preserved for a failing model command; `./run_tests.sh --full` green;
+  loaded-Jetson dress rehearsal of `skills/check`. Depends: none (D7).
+
+### Phase 3b: Nomination-time check and the nearest viable configuration — NOT STARTED
+
+Modified: `skill_node.py` (goal acceptance and `skills/check`), `schedule.py` (a "nominal segments of this
+Schedule" iterator), `admissible.py` (the parameter search), the GUI Juggle panel (shows the report),
+`sim/skills_gate.py` (`--nominate` dry run).
+
+- Plans every nominal Segment at the identity command and the ladder edges; reports every refusal at once
+  (gate, leg, knot time) in the existing `skills/check` style; on refusal bisects apex, then dwell or
+  separation, on the margin to the nearest viable configuration and names it.
+- Gate: the eight high-low cells of 2026-10-31 (empty at separation 125, viable at 100) reproduced as a
+  nomination report naming separation 100; a refused oval dwell names the first viable dwell; seconds on the
+  loaded Jetson; `--full` green. Depends: P3a (shares the check).
+
+### Phase 3c: Box retirement — NOT STARTED
+
+Deleted per § 6.4: `tools/admissible_sweep.py`, `tools/admissible_sweep_run.py`,
+`config/generated/admissible_box.yaml`, `gate_hash`, `check_limits`, `select`, the dwell-in-key and the
+runbook rows; the headroom report of D10 lives in `tools/probes/admissible_obviation/margin_rays.py`.
+
+- Census: ~35 production call sites, ~20 test files, ~10 doc files is the 2026-10-18 estimate; count at
+  P3c start and end (`grep -rn` over `AdmissibleBox|select(|check_limits|gate_hash|admissible_box`; `rg`
+  is not installed), both in the logbook. Gate: second count zero per retired symbol; `--full` green;
+  `docs/runbook.md` regenerated without the box rows. Depends: P3a, P3b.
+
 ### Phase 1: Learner core — NOT STARTED
 
 New: `plant_model.py`, `tools/probes/learner_replay.py` (output under `temp/probes/`),
@@ -287,7 +390,7 @@ New: `plant_model.py`, `tools/probes/learner_replay.py` (output under `temp/prob
   timing is touched.
 - Gate: cold-start apex error < 15 mm at a held-out site (today ~73 mm) and lateral no worse than
   today; `sim/skills_gate.py --learn` still passes; `./run_tests.sh` green, `--full` before merge.
-  The oval's rung 1 may use the learner once P1 lands (D5). Depends: none.
+  The oval's rung 1 may use the learner once P1 lands (D5). Depends: none (P3a-c land first per D7).
 
 ### Phase 2: The characterisation sitting — NOT STARTED
 
@@ -311,25 +414,12 @@ Outputs: θ structure pinned in § 2.2, memory re-seeded, yaw frame chosen. Depe
 before the sitting. At each framing pivot: *"if your physical intuition disagrees with my framing,
 that's load-bearing signal — say so."*
 
-### Phase 3: Online admissibility and box retirement — NOT STARTED
-
-Modified: `admissible.py` (§ 2.5), `executor.py` (check in the solver worker), `skill_node.py`,
-`sim/skills_gate.py`. Deleted: § 6.4.
-
-- Census: ~35 call sites is the 2026-10-18 estimate; count at P3 start and end (`grep -rn` over
-  `AdmissibleBox|select(|check_limits|gate_hash|admissible_box`; `rg` is not installed), both in the
-  logbook. Gate: second count zero per retired symbol.
-- `throw_envelope.evaluate` re-homed with its own test. Loaded-Jetson budget measured first (bag
-  recording and GUI up); the `serial` budget test derives from it (~9 ms dev box, ~35 ms loaded [INF]).
-  Gate: p99 of the check below the measured slack; refusals preserved (`NO_ADMISSIBLE_COMMAND`,
-  `LimitsMismatch` on limits); `--full` green; loaded-Jetson dress rehearsal. Depends: P1.
-
 ### Phase 4: BeatEvent stream and the columns wrapper — NOT STARTED
 
 Modified: `schedule.py` (`BeatEvent`, next-beat rule, `compile_columns` wrapper), `executor.py`
 pattern handling, node goal acceptance, GUI pattern controls, `sim/skills_gate.py`; yaw per P2.
 Gate: golden test; a sim mid-pattern change of apex and of dwell takes effect one beat later; the
-next-beat refusal exercised; `--full` green. Coordination per § 6.3. Depends: P1, P3.
+next-beat refusal exercised; `--full` green. Coordination per § 6.3. Depends: P1, P3a-c.
 
 ### Phase 5: Close-out — NOT STARTED
 
@@ -403,8 +493,10 @@ sweep tool and YAML. Each phase reverts independently; the migration never rewri
 - Whether the −0.06/m centre pull is a leg-geometry tracking error (rotates with the pattern) or a
   mocap/feed frame offset (does not): P2(b). Whether the +1 %/corpus apex drift is wear (ball), hand
   or tracker: P2(c). Release-timing lag stays out of the learner until P2(d) telemetry exists.
-- The 10 % margin empties every cell at apex 0.90 m today; online it applies to the real candidate,
-  not a grid. The range it costs is re-measured at P3 and the owner may tighten (D2).
+- The 10 % margin: DECIDED 2026-11-05 (D9), kept as the online acceptance criterion; a measured
+  per-limit-class overrun from bags is a follow-up Item, not P3.
+- P3a's loaded-Jetson cost is still an estimate (23 ms idle by the gate's 2.3x ratio, 35 ms loaded [INF]);
+  the first P3a step measures it.
 - The carried oval release may show the release-contact discontinuity that limited Lee et al.'s
   shower/box plateau (release_kind separation is the first defence, a per-kind model term the
   second). Whether the oval's seam-dz ablation needs release-velocity terms inside f₀ beyond L2's
