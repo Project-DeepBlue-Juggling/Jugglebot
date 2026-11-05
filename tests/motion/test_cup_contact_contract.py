@@ -84,7 +84,7 @@ from jugglebot.motion.trajectory.limits import TrajectoryLimits
 from jugglebot.motion.skills import segments as sg
 from jugglebot.motion.skills import sites as st
 
-#: R3's single-site operating point (``tools/admissible_sweep.py``'s
+#: R3's single-site operating point (the retired ``tools/admissible_sweep.py``'s
 #: ``SINGLE_SITE_LEG_JERK_MMPS3`` / ``tests/motion/test_skills_segments.py``'s
 #: LEG_VEL/LEG_ACC/HAND_ACC — the leg jerk cap is R3's, not R2's 200000).
 LEG_VEL = 300.0
@@ -94,7 +94,7 @@ HAND_ACC = 3500.0
 APEX_M = 0.9
 T_F = 2.0 * (2.0 * APEX_M / (ballistics_bc.GRAVITY_MMS2 / 1000.0)) ** 0.5
 DWELL_S = 0.30
-LAUNCH_S = 0.4               # tools/admissible_sweep.py SINGLE_SITE_LAUNCH_S
+LAUNCH_S = 0.4               # the retired admissible_sweep's SINGLE_SITE_LAUNCH_S
 
 OFFSETS_MM = (0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 31.0)
 #: The exact 2026-09-16 reproduction point (the logbook entry / plan § 4 test 2).
@@ -116,7 +116,7 @@ OUT_OF_WORKSPACE_Z_MM = 750.0
 
 
 def _rest_state(cup_mm):
-    """Same construction as ``test_skills_segments.py`` / ``admissible_sweep.py``."""
+    """Same construction as ``test_skills_segments.py`` / the retired ``admissible_sweep.py``."""
     rcfg = cr.RealizeConfig()
     slider_mm = float(cup_mm[2]) - rcfg.cup_z_base_mm
     rev = ((slider_mm - rcfg.slider_rev_zero_mm) / 1000.0) * cr.HAND_REV_PER_M
@@ -151,7 +151,7 @@ def site():
 def catch_seed(limits, geom, site):
     """The post-release state a CATCH plans from: a real self-toss LAUNCH's
     release, same recipe as ``test_skills_segments.py``'s ``catch_seed`` /
-    ``admissible_sweep._throw_cell``."""
+    ``tools/probes/planner_cells.py::throw_cell``."""
     seed = _rest_state(site.rest_site_mm())
     goals = uc.CycleGoals(period_s=LAUNCH_S, throw_site_mm=site.throw_site_mm(),
                           throw_target_mm=site.throw_site_mm(), flight_s=T_F)
@@ -169,7 +169,7 @@ def _v_arrival():
 def _catch_throw_segment(dx_mm, catch_seed, cfg, limits, geom, site):
     """The CATCH-with-``then_throw`` (STEADY window) R3's schedule actually
     dispatches, at lateral landing offset ``dx_mm`` (x only, y=0) — the same
-    shape ``admissible_sweep._chained_catch_cell`` gates."""
+    shape ``tools/probes/planner_cells.py::chained_catch_cell`` plans."""
     landing_mm = site.catch_site_mm() + np.array([dx_mm, 0.0, 0.0])
     then_throw = sg.ThrowAfterCatch(t_release_s=T_F + DWELL_S,
                                     site_mm=site.throw_site_mm(),

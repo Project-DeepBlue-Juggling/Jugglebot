@@ -16,7 +16,7 @@ scope: >-
 steps:
   - {id: P3a, title: Command-time admissibility check, kind: phase, status: in_progress, effort: m, hardware: none}
   - {id: P3b, title: Nomination-time check and the nearest viable configuration, kind: phase, status: in_progress, effort: m, hardware: none}
-  - {id: P3c, title: Box retirement, kind: phase, status: not_started, effort: s, hardware: none}
+  - {id: P3c, title: Box retirement, kind: phase, status: complete, effort: s, hardware: none}
   - {id: P1, title: Learner core, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: P2, title: The characterisation sitting, kind: phase, status: not_started, effort: m, hardware: robot}
   - {id: P4, title: BeatEvent stream and the columns wrapper, kind: phase, status: not_started, effort: m, hardware: none}
@@ -25,13 +25,13 @@ related_logbook:
   - 2026-10-18-learner-generalisation-investigation.md
   - 2026-11-04-admissible-box-sweep-obviation-investigation.md
 related_config:
-  - config/generated/admissible_box.yaml (retired at P3, with gate_hash and the dwell-in-key)
+  - config/generated/admissible_box.yaml (RETIRED 2026-11-06 at P3c, with gate_hash and the dwell-in-key)
 related_code:
-  - ros_ws/src/jugglebot/jugglebot/motion/skills/{learner,memory,admissible,schedule,executor}.py (learner::command, memory::Memory, admissible::AdmissibleBox/select/check_limits/gate_hash, schedule::compile_columns, executor::SkillExecutor._command_u)
+  - ros_ws/src/jugglebot/jugglebot/motion/skills/{learner,memory,admissible,schedule,executor}.py (learner::command, memory::Memory, admissible::margin/resolve_command (the box API AdmissibleBox/select/check_limits/gate_hash was retired at P3c), nominate::nominate, schedule::compile_columns, executor::SkillExecutor._command_u)
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/feasibility.py::validate_cycle
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/throw_envelope.py::evaluate
-  - ros_ws/src/jugglebot/jugglebot/skill_node.py, sim/skills_gate.py, tools/admissible_sweep.py, temp/learn/jugglebot/memory.csv
-  - tools/probes/admissible_obviation/ (the 2026-11-04 probes: margin_rays, affine_check, online_check_replay, family_run, boundary_replay)
+  - ros_ws/src/jugglebot/jugglebot/skill_node.py, sim/skills_gate.py, tools/probes/planner_cells.py (the cells of the retired tools/admissible_sweep.py), temp/learn/jugglebot/memory.csv
+  - tools/probes/admissible_obviation/ (the 2026-11-04 probes kept: margin_rays, affine_check, online_check_replay; loaded_budget added at P3a)
 ---
 
 # Learner generalisation
@@ -347,7 +347,7 @@ reproduces today's compiled columns schedule segment for segment.
 |-------|-------|--------|------|------|-----------|
 | P3a | Command-time admissibility check (three evaluations max, early start), `throw_envelope.evaluate` re-homed | IN PROGRESS (code complete 2026-11-06, held on branch `p3-online-admissibility`; merge and live rehearsal owed) | 2026-11-06 | High (safety content moves) | Loaded-Jetson p99 within slack; sim gate green with no box |
 | P3b | Nomination-time check and the nearest viable configuration | IN PROGRESS (code complete 2026-11-06, held on branch `p3-online-admissibility`; merge and live rehearsal owed) | 2026-11-06 | Medium (goal acceptance, GUI) | Every refusal at once; nearest viable named; moving-site Patterns checkable |
-| P3c | Box retirement per § 6.4 | NOT STARTED | | Low | Census counts to zero |
+| P3c | Box retirement per § 6.4 | COMPLETE (on branch `p3-online-admissibility`, held for the owner's merge) | 2026-11-06 | Low | Census counts to zero |
 | P1 | Learner core: `plant_model.py`, `learner.py`, `memory.py` v2 + migration, replay probe | NOT STARTED | | Medium (changes every commanded u) | Cold-start apex error < 15 mm at a held-out site |
 | P2 | Characterisation sitting (D6): θ structure, yaw frame, telemetry | NOT STARTED | | Medium (hardware) | Aim vs offset; radial vs x; frame; Δ_b |
 | P4 | BeatEvent stream, columns wrapper, next-beat rule, dwell out of node params | NOT STARTED | | High (schedule path, ~20 test files) | Golden test; sim mid-pattern change |
@@ -421,7 +421,20 @@ Schedule" iterator), `nominate.py` (new: the walker and the grid search; as buil
   nomination report naming separation 100; a refused oval dwell names the first viable dwell; seconds on the
   loaded Jetson; `--full` green. Depends: P3a (shares the check).
 
-### Phase 3c: Box retirement — NOT STARTED
+### Phase 3c: Box retirement — COMPLETE
+
+**Outcome (2026-11-06).** Done on branch `p3-online-admissibility`, held for the owner's merge; commits carry
+`Logbook-Entry: 2026-11-06-learner-generalisation-p3c-box-retirement`
+(`logbook/2026-11-06-learner-generalisation-p3c-box-retirement.md` has the census at start and end). Deleted
+per § 6.4: the box API in `admissible.py`, the executor's box path, `skill_node`'s box plumbing, the sim
+gate's `--box`, `tools/admissible_sweep.py` and `tools/admissible_sweep_run.py`, the committed YAML and its
+five fixtures; the sweep's planner cells live on in `tools/probes/planner_cells.py` and `margin_rays.py` is
+the kept headroom report (D10). Gate: no living use of a retired symbol remains (census in the entry); `./run_tests.sh --full` green
+(2026-11-06 09:17, 8326 passed, 51 skipped + 10 serial; baseline 2026-11-06 07:23, same command: 8459 / 51 + 10;
+the difference is the deleted box and sweep tests net of the new ones); the sim gate passes on its only path;
+`docs/runbook.md` regenerated without box rows; `plans/archived/box-sweep-same-site-fidelity.md`
+archived as superseded. "Admissible box" is still a GLOSSARY term (owner's call). P1 cleared to start.
+
 
 Deleted per § 6.4: `tools/admissible_sweep.py`, `tools/admissible_sweep_run.py`,
 `config/generated/admissible_box.yaml`, `gate_hash`, `check_limits`, `select`, the dwell-in-key and the
@@ -540,7 +553,8 @@ radius is the compilers, executor, node goal acceptance, GUI, sim gate and ~20 t
 | `check_limits` limits/dwell compares; `AdmissibleBox` clip in the learner | limits precondition and ladder stay; L3 cap(x) + L0 |
 
 Census (~35 production call sites, ~20 test files, ~10 doc files) is counted at P3 start and end, not
-now (§ 4 P3). Unchanged per § 2.1, plus the clamp (as a learner bound) and `throw_envelope.evaluate`.
+now (§ 4 P3). DONE 2026-11-06 (P3c): the counts are in the P3c logbook entry; the "Replaced by" column above
+is as built, with `motion/skills/nominate.py` (goal acceptance) beside the online check. Unchanged per § 2.1, plus the clamp (as a learner bound) and `throw_envelope.evaluate`.
 
 **Files affected and rollback.** New and modified files are listed per phase in § 4; deleted (P3): the
 sweep tool and YAML. Each phase reverts independently; the migration never rewrites `memory.csv` in place.

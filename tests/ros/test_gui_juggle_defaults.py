@@ -1,62 +1,77 @@
-"""Pin the GUI juggle panel's per-pattern apex / separation pre-fill
-(``PATTERN_POINTS`` in ros_ws/gui/js/juggle-panel.js) to the committed
-admissible box.
+"""Pin the GUI juggle panel's per-pattern apex / separation / dwell pre-fill
+(``PATTERN_POINTS`` in ros_ws/gui/js/juggle-panel.js) to what the robot accepts.
 
 Root cause (R5 sitting 7b): the panel flew skill_node's single 0.9 m / 250 mm
-default and kept a typed apex across pattern switches, but the box is swept at
-a different point per pattern (columns 125 mm / apex band 0.925-0.975, hop
-only 250 mm), so operator inputs were refused or silently flew the wrong
-geometry.  A pre-fill that drifts out of the box recreates that refusal, so
-this test fails if any row is outside it.
+default and kept a typed apex across pattern switches, but each pattern is
+flyable at a different point (columns 125 mm, hop only 250 mm), so operator
+inputs were refused or silently flew the wrong geometry.  Goal acceptance is a
+nomination (``motion/skills/nominate.py``, since P3b 2026-11-06; the offline
+Admissible box this file used to pin the pre-fills to is retired), so a
+pre-fill the nomination refuses at the working point recreates that refusal:
+this test fails if any row does not nominate viable.
 """
 from __future__ import annotations
 
 import re
 from pathlib import Path
 
-import yaml
+from jugglebot.motion.skills import nominate as nom
 
 ROOT = Path(__file__).resolve().parents[2]
 JS = (ROOT / "ros_ws" / "gui" / "js" / "juggle-panel.js").read_text()
-BOX = yaml.safe_load((ROOT / "config" / "generated" / "admissible_box.yaml").read_text())
 PATTERNS = re.findall(r"^\s*\{ value: '(\w+)'", JS, re.M)
 
 
-def _sep_of(cell):
-    """Site separation of a two-site cell: twice the release site's radius
-    (the turned cells sit off the x axis, so the x coordinate alone is not it)."""
-    x, y = cell["release_site_xy_mm"]
-    return 2 * (x * x + y * y) ** 0.5
-
-
 def _points():
+    """pattern -> dict(apex_m, separation_mm|None, dwell_s, + the optional
+    param-backed field), parsed from the PATTERN_POINTS block."""
     block = re.search(r"export const PATTERN_POINTS = \{(.*?)\n\};", JS, re.S).group(1)
     out = {}
-    for m in re.finditer(
-            r"(\w+):\s*\{ box: '(\w+)',\s*apex_m: ([\d.]+),\s*separation_mm: (null|[\d.]+),"
-            r"\s*dwell_s: ([\d.]+)(?:, \w+: [\d.]+)? \}", block):
-        out[m.group(1)] = (m.group(2), float(m.group(3)),
-                           None if m.group(4) == "null" else float(m.group(4)),
-                           float(m.group(5)))
+    for m in re.finditer(r"^\s*(\w+):\s*\{(.*?)\},?\s*$", block, re.M):
+        fields = dict(re.findall(r"(\w+): (null|[\d.]+)", m.group(2)))
+        out[m.group(1)] = {k: (None if v == "null" else float(v))
+                           for k, v in fields.items()}
     return out
 
 
 def test_every_panel_pattern_has_a_point():
     assert set(_points()) == set(PATTERNS) and len(PATTERNS) == 9
+    for pt in _points().values():
+        assert pt["apex_m"] > 0.0 and pt["dwell_s"] > 0.0
 
 
-def test_points_sit_inside_the_committed_box():
-    for pattern, (kind, apex, sep, _dwell) in _points().items():
-        rows = [b for b in BOX["boxes"] if b["pattern"] == kind]
-        assert rows, pattern
-        if sep is None:   # one-site pattern: apex only
-            hits = [b for b in rows if b["apex_band_m"][0] <= apex <= b["apex_band_m"][1]]
-        else:
-            hits = [b for b in rows
-                    if abs(_sep_of(b) - sep) < 1e-6
-                    and b["apex_band_m"][0] <= apex <= b["apex_band_m"][1]]
-        assert hits, "%s: apex %.3f / sep %s is not covered by any %s box" % (
-            pattern, apex, sep, kind)
+def _nomination_config(pattern, pt):
+    """The NominationConfig the node builds for this pattern's pre-fill
+    (`SkillNode._nomination_config` at the node defaults: pose planner, no carry
+    ZVD, feed site P1, self-toss Site (-50, 0); the two parameter-backed
+    patterns add `apex_m_ball2` / the angle)."""
+    return nom.NominationConfig(
+        pattern=pattern, apex_m=pt["apex_m"],
+        separation_mm=0.0 if pt["separation_mm"] is None else pt["separation_mm"],
+        dwell_s=pt["dwell_s"], apex_m_ball2=pt.get("apex_m_ball2"),
+        angle_deg=pt.get("columns_angle_deg", 0.0), planner_mode="pose",
+        carry_zvd=False, feed_site="P1", self_toss_site_xy_mm=(-50.0, 0.0),
+        entry="hop" if pattern in nom.COLUMNS_FED else "t0")
+
+
+def test_every_point_nominates_viable_at_the_working_point():
+    """A pre-fill the robot would refuse reddens the suite: each pattern's
+    pre-filled apex / separation / dwell (and Apex 2 / Angle for the two
+    parameter-backed goals) nominates viable at the generated launch limits."""
+    for pattern, pt in _points().items():
+        rep = nom.nominate(_nomination_config(pattern, pt), search=False)
+        assert rep.ok, "%s pre-fill %s is refused: %s" % (
+            pattern, pt, "; ".join(rep.lines()))
+
+
+def test_param_backed_points_are_present():
+    """The Angle and Apex 2 pre-fills the nomination test above feeds its
+    config exist and are positive (a missing one would silently nominate plain
+    Columns / equal-apex high-low)."""
+    pts = _points()
+    assert pts["columns_turned"]["columns_angle_deg"] > 0.0
+    assert pts["columns_highlow"]["apex_m_ball2"] > 0.0
+    assert pts["columns_highlow"]["apex_m_ball2"] != pts["columns_highlow"]["apex_m"]
 
 
 def test_panel_switches_points_on_pattern_change():
@@ -111,65 +126,10 @@ def test_no_reload_flag_on_wire_and_cup_preview_exists():
     assert "flag-ball-held-pill" in JS and "ros.subscribe" not in JS
 
 
-def test_point_dwell_equals_the_boxs_swept_dwell_per_pattern():
-    """Owner 2026-10-21: dwell_s travels on the Juggle goal and the GUI
-    pre-fills it per pattern FROM THE BOX.  The 22:53 sitting's oval refusal
-    ("live dwell 0.27 but the box was swept at 0.65") was a per-pattern value
-    living in a node parameter the operator had to remember.  A re-sweep at a
-    new dwell now fails here until PATTERN_POINTS follows it."""
-    for pattern, (kind, apex, sep, dwell) in _points().items():
-        rows = [b for b in BOX["boxes"] if b["pattern"] == kind]
-        assert rows, pattern
-        if sep is None:
-            near = rows
-        else:
-            near = [b for b in rows if abs(_sep_of(b) - sep) < 1e-6]
-        covering = [b for b in near
-                    if b["apex_band_m"][0] <= apex <= b["apex_band_m"][1]]
-        assert covering, pattern
-        swept = {float(b["dwell_s"]) for b in covering}
-        # rung 2 (2026-10-23) swept the oval at 0.55 / 0.50 too: the GUI
-        # default must be one of the swept dwells (the other families: only one).
-        assert dwell in swept, "%s: GUI dwell %s not in box dwell(s) %s" % (
-            pattern, dwell, sorted(swept))
-        if kind not in ("oval_1ball", "oval"):
-            assert swept == {dwell}
-
-
 def test_dwell_is_an_editable_field_sent_on_the_wire():
     assert "dwell_s: {" in JS and "'dwell_s']" in JS
     assert "parts.push('dwell_s=' + wireNum(typed.dwell_s, false));" in JS
     assert "juggle-dwell" not in JS and "dwellVal" not in JS   # the read-only span is gone
-
-
-def _admissible(cell):
-    """A swept cell that admits something: a finite landing window."""
-    import math
-    return all(math.isfinite(v) for row in cell["landing_xy_m"] for v in row)
-
-
-def test_param_backed_points_sit_in_their_own_admissible_cells():
-    """The two parameter-backed goals (pattern-progression P2/P4, 2026-10-31):
-    the pre-filled Angle must have an admissible turned cell (`P1@<angle>`) at
-    the pre-filled apex and separation, and the pre-filled Apex 2 an admissible
-    `columns_highlow` cell in its own band at that separation.  A re-sweep that
-    empties either band fails here until the pre-fill follows it."""
-    js_pts = re.search(r"export const PATTERN_POINTS = \{(.*?)\n\};", JS, re.S).group(1)
-    angle = float(re.search(r"columns_turned:.*?columns_angle_deg: ([\d.]+)", js_pts).group(1))
-    apex2 = float(re.search(r"columns_highlow:.*?apex_m_ball2: ([\d.]+)", js_pts).group(1))
-    kind, apex, sep, _ = _points()["columns_turned"]
-    # the GUI's param-backed points fly at the yaml default (carry_zvd False):
-    # flag-on cells are a different sweep (some empty) and do not apply
-    boxes = [b for b in BOX["boxes"] if b.get("carry_zvd") is False]
-    turned = [b for b in boxes if b["pattern"] == kind and b["planner_mode"] == "pose"
-              and b["site_pair"][0].endswith("@%g" % angle) and abs(_sep_of(b) - sep) < 1e-6
-              and b["apex_band_m"][0] <= apex <= b["apex_band_m"][1]]
-    assert len(turned) == 2 and all(_admissible(b) for b in turned), turned
-    kind, apex, sep, _ = _points()["columns_highlow"]
-    for a in (apex, apex2):
-        cells = [b for b in boxes if b["pattern"] == kind and abs(_sep_of(b) - sep) < 1e-6
-                 and b["apex_band_m"][0] <= a <= b["apex_band_m"][1]]
-        assert len(cells) == 2 and all(_admissible(b) for b in cells), (a, cells)
 
 
 def test_param_backed_goals_write_the_node_parameter_before_dispatch():

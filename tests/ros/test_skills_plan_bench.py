@@ -640,22 +640,6 @@ def test_build_self_toss_schedule_honours_an_explicit_site():
     assert all(sk.site is other for sk in sched.skills)
 
 
-def test_self_toss_leg_jerk_matches_the_swept_admissible_box():
-    """The box `config/generated/admissible_box.yaml` was swept UNDER a
-    specific leg-jerk ceiling (`admissible.check_limits`'s job at runtime); if
-    this constant silently drifted from that sweep, every self-toss rehearsal
-    would clip against the WRONG envelope with no loud complaint until a live
-    `check_limits` call — this pins the two together offline."""
-    box_path = os.path.join(_REPO, 'config', 'generated', 'admissible_box.yaml')
-    if not os.path.exists(box_path):
-        pytest.skip('admissible_box.yaml not generated in this checkout')
-    from jugglebot.motion.skills import admissible as adm
-    boxes = adm.load(box_path)
-    p1p1 = next(b for b in boxes if b.site_pair == ('P1', 'P1'))
-    assert p1p1.limits['leg_jerk_mmps3'] == pytest.approx(
-        spb.SELF_TOSS_LEG_JERK_MMPS3)
-
-
 # ── biased_landing — the analytic R3 plant-error model ─────────────────────
 
 def test_biased_landing_is_deterministic():
@@ -864,7 +848,7 @@ def test_self_toss_rehearsal_grows_memory_and_the_learner_changes_the_command(
         rows, meta = spb.rehearse_attempt(
             a, n_throws=1, jitter_mm=0.0, limits=limits, geom=geom, run_t0=0.0,
             now_fn=now_fn, sleep_fn=sleep_fn, state=shared, pattern='self-toss',
-            site=site, learner=learner, boxes=None, on_experience=memory.append)
+            site=site, learner=learner, on_experience=memory.append)
         assert not meta['ended_early'], (a, meta['end_code'])
         commands.append(memory.arrays()[1][-1].copy())    # this attempt's u
 

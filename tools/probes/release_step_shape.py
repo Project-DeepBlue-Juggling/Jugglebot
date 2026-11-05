@@ -37,14 +37,14 @@ for _p in (ROOT, os.path.join(ROOT, 'ros_ws', 'src', 'jugglebot'),
         sys.path.insert(0, _p)
 
 import numpy as np                                    # noqa: E402
-import admissible_sweep as A                          # noqa: E402
+import planner_cells as A                          # noqa: E402
 from jugglebot.motion import unified_cycle as uc      # noqa: E402
 from jugglebot.motion.skills import schedule as sc    # noqa: E402
 from jugglebot.motion.skills import segments as sg    # noqa: E402
 from jugglebot.motion.skills import sites as st       # noqa: E402
 
 GEOM = A.StewartGeometry()
-LIM = A._limits(350, 5000, 200000, 4500)
+LIM = A.sitting_limits(350, 5000, 200000, 4500)
 SITE, _ = st.columns_sites(150)
 
 
@@ -77,7 +77,7 @@ def plan_pair(apex):
     T = sc.flight_s(apex)
     term = sg.ThrowTerminal(site_mm=SITE.throw_site_mm(), target_mm=SITE.throw_site_mm(),
                             flight_s=T, t_release_s=0.4)
-    seg0 = sg.plan_segment(sg.THROW, A._rest_state(SITE.rest_site_mm()), term,
+    seg0 = sg.plan_segment(sg.THROW, A.rest_state(SITE.rest_site_mm()), term,
                            sg.SegmentConfig(), LIM, GEOM)
     tt = sg.ThrowAfterCatch(t_release_s=T + 0.30, site_mm=SITE.throw_site_mm(),
                             target_mm=SITE.throw_site_mm(), flight_s=T)

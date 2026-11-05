@@ -25,17 +25,17 @@ P4 ramp of plan `plans/active/two-ball-oval.md`: the first Sitting at the P4 wor
 ## Sitting
 
 - setup: armed, bb-fed, bridge-cycled
-- why: P4 ramp of plan two-ball-oval.md: the first flight at the 600 / 8000 working point with the legs at 20 A (box gate_hash 2605fc1bd25e); five Columns canary Attempts show nothing regressed, then the one-ball oval dwell ladder finds the shortest dwell that holds.
+- why: P4 ramp of plan two-ball-oval.md: the first flight at the 600 / 8000 working point with the legs at 20 A; five Columns canary Attempts show nothing regressed, then the one-ball oval dwell ladder finds the shortest dwell that holds.
 - do:
   - Fly this row FIRST, before every other robot row: since cf35526c every goal runs at 600 / 8000 and 20 A. The 2026-11-03 Sitting flew 1 of the 5 canary Attempts (20/20, peak leg iq 11.7 A) and the oval to dwell 0.35 without a pass (debrief 2026-11-04: carried throws land long, the carry's deceleration ends 25-30 ms before release).
-  - Before arming: confirm the launch log shows BridgeIdentity FW 39 (proto 11), the box line gate_hash 2605fc1bd25e, and the Sitting limits 600 / 8000 / 200000 (none of the three was in the 2026-11-03 launch log; read them from the GUI or `ros2 param get` and note where they came from).
-  - Rehearse before arming: cup empty, Ball Butler unpowered, send `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.40, num_cycles: 4}" --feedback` once. The accept message may name only the cup and Ball Butler refusals (no box, dwell or limit refusal) and nothing moves.
+  - Before arming: confirm the launch log shows BridgeIdentity FW 39 (proto 11) and the Sitting limits 600 / 8000 / 200000 (neither was in the 2026-11-03 launch log; read them from the GUI or `ros2 param get` and note where they came from).
+  - Rehearse before arming: cup empty, Ball Butler unpowered, send `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.40, num_cycles: 4}" --feedback` once. The accept message may name only the cup and Ball Butler refusals (no nomination refusal) and nothing moves.
   - Columns canary: GUI Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21. Five Attempts (the 2026-11-03 one does not count toward this Sitting's five).
   - Watch the leg current throughout: cancel the goal if any leg iq sample reaches 19 A (1 A under the 20 A clamp; proposed 2026-11-03, owner to confirm; the 2026-11-03 peak was 11.7 A).
   - One-ball oval, on its own plant: `ros2 param set /skill_node plant_id p4-oval-<date>` (refused while a goal runs) and read it back from the goal start line.
   - FIRST one Attempt at dwell 0.50: `{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.50, num_cycles: 32}` (cup empty, Ball Butler loaded). It separates the new leg point from the dwell: dwell 0.50 landed 46 +/- 10 mm long at 350 / 5000 on 2026-10-31; about the same here clears P4 of the long bias.
   - Then re-fly the 2026-11-03 ladder unchanged (owner 2026-11-04): dwell 0.40 at Apex 1.00 (oval_1ball_fed, then oval_1ball), then dwell 0.35 at Apex 1.00 after one Attempt with no leg LIMIT, guard or HAND_LIMIT end.
-  - Fly dwell 0.30 at Apex 1.10, not 1.00, and only if 0.35 holds: the box leaves 1 mm of +x landing room at 1.00 / 0.30 and 25 mm at 1.10 / 0.30.
+  - Fly dwell 0.30 at Apex 1.10, not 1.00, and only if 0.35 holds: the retired box left 1 mm of +x landing room at 1.00 / 0.30 and 25 mm at 1.10 / 0.30 (read the nomination at the live limits before flying).
 - pass: the five Columns Attempts each read `COMPLETED (20/20 caught)` with no leg LIMIT end and peak leg iq under 20 A; then the one-ball oval sustains 30 consecutive Catches in one Attempt at the shortest dwell flown (plan P4 gate).
 - record: caught of thrown and the end code per Attempt; the CATCH leg-velocity refusal count across the canary (JB-24 expects none at 600 mm/s); peak leg iq per leg per Attempt from the bag (the 20 A measurement); the shortest dwell reaching 30; the raw long bias per dwell (landed minus the command u), from rest and carried; the LIMIT_JERK refusal count; the oval plant_id; the bag and launch log paths; commit docs/records.md.
 - minutes: 50

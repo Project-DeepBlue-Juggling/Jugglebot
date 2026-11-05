@@ -155,9 +155,10 @@ RING = 'RING'
 #: (two-ball-oval § 2.5; ``hardware_config.yaml`` ``trajectory_op.planner_mode``).
 #: ``level`` = cup xyz jerk, banking after the QP; ``pose`` = prescribed tilt +
 #: leg-jerk objective + C-CUP-4 rows (+ an optional free centroid-z block).
-#: Every other window kind is the level program in BOTH modes.  The admissible
-#: box is stamped with the mode it was swept under and ``admissible.select``
-#: refuses a mismatch by name, so the default flips only with a re-sweep.
+#: Every other window kind is the level program in BOTH modes.  Until
+#: 2026-11-06 the Admissible box was stamped with the mode it was swept
+#: under and refused a mismatch by name; now the nomination and the online
+#: check plan under the live mode, so the default flips with no re-sweep.
 PLANNER_LEVEL = 'level'
 PLANNER_POSE = 'pose'
 PLANNER_MODES = (PLANNER_LEVEL, PLANNER_POSE)
@@ -1402,7 +1403,7 @@ POST_RELEASE_TOP_MARGIN = True
 #: largest satisfiable one: m_req 1.180 rev at 157.7 rev/s.  MAX is raised so
 #: the clamp does not cut K·v² below 200 rev/s (1.90 rev); above ~170 rev/s the
 #: lowered top is beyond what a 4500 rev/s² brake can stop in, and the plan is
-#: refused HAND_LIMIT_ACC (the box loses those cells).
+#: refused HAND_LIMIT_ACC (until 2026-11-06 the Admissible box lost those cells; now the online check refuses it).
 TOP_MARGIN_K_REV_S2 = 4.75e-5
 TOP_MARGIN_MIN_REV = 0.0
 TOP_MARGIN_MAX_REV = 1.9

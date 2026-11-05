@@ -28,7 +28,7 @@ the cup decides. Cancelling the goal ends the current attempt
 segment is rest-terminal (``segments``' invariant), so ending an attempt
 needs no motion command of its own: whatever is streaming already ends at
 rest, and a released ball's outcome keeps finalising after the attempt ends.
-``skills/check`` reports every current ladder refusal plus the box/limits
+``skills/check`` reports every current ladder refusal plus the nomination
 status in one call, for a dress-rehearsal runsheet.
 """
 
@@ -38,7 +38,6 @@ import collections
 import csv
 import dataclasses
 import math
-import os
 import re
 import threading
 import time
@@ -140,12 +139,9 @@ _BALL_TRACKING_CONFIRMED = 1
 # The repo root, found the same way reload_coordinator_node._REPO_ROOT is
 # (tilt_map.find_repo_root's MARKER walk, never a fixed __file__ depth — see
 # that function's docstring for why a fixed walk breaks under colcon install).
-# None for a genuinely detached deployment, where the admissible box / memory
-# paths below cannot be resolved and a self-toss/hop Juggle goal refuses.
+# None for a genuinely detached deployment, where the memory paths below
+# cannot be resolved and a self-toss/hop Juggle goal refuses.
 _REPO_ROOT = find_repo_root(__file__)
-_ADMISSIBLE_BOX_PATH = (os.path.join(_REPO_ROOT, 'config', 'generated',
-                                     'admissible_box.yaml')
-                       if _REPO_ROOT else None)
 
 #: A FED Columns (`_install_columns_schedule`) always compiles with the hop
 #: entry (owner decision 2026-10-05). The ONE flag the compile and
@@ -392,11 +388,9 @@ _ROBOT_FRAME_STALE_WARN_S = 10.0
 #: the two-site pattern parameter defaults: apex 0.9 m and dwell 0.30 s are the
 #: owner's R2 operating point (2026-09-12); separation 250 mm is the owner's
 #: R4 target (plan § 0, 2026-09-16, BallButler experience; decision D2
-#: 2026-09-23: "sweep 250 first, fly 250 first") and the ONLY separation the
-#: hop boxes in config/generated/admissible_box.yaml are swept at — the GUI
+#: 2026-09-23: "sweep 250 first, fly 250 first") — the GUI
 #: relay sends 0 for every numeric goal field ("use the node's default"), so
-#: this constant IS the separation a GUI-started hop flies.  A 100 mm hop has
-#: no box and is refused NO_ADMISSIBLE_COMMAND before anything moves.
+#: this constant IS the separation a GUI-started hop flies.
 _DEFAULT_APEX_M = 0.9
 _DEFAULT_SEPARATION_MM = 250.0
 #: 0.30 -> 0.27 on 2026-10-04 (R5 sitting 3): with two balls in columns the
@@ -407,9 +401,6 @@ _DEFAULT_SEPARATION_MM = 250.0
 #: acceleration-bound at dwell 0.30 (4507-4813 mm/s^2 against 4500) and
 #: jerk-bound at 0.25 (205-226 k against 180 k -- the catch-with-throw has
 #: 50 ms less to re-level for its throw), and passes all three at 0.27.
-#: The admissible box is swept at this dwell; `check_limits` refuses a
-#: live dwell it was not swept for, so this constant and the YAML move
-#: together.
 _DEFAULT_DWELL_S = 0.27
 _DEFAULT_N_THROWS = 4
 
@@ -420,9 +411,8 @@ _START_LEAD_S = 1.0
 
 #: the self-toss-pattern parameter defaults (R3 owner decisions,
 #: brief_common.md § "Owner decisions"): one site, P1 = (-50, 0) mm — the SAME
-#: point `columns_sites(100.0)`'s P1 names, so a box swept for site pair
-#: ('P1', 'P1') at that xy (`config/generated/admissible_box.yaml`) matches
-#: without a second geometry definition.
+#: point `columns_sites(100.0)`'s P1 names, without a second geometry
+#: definition.
 _DEFAULT_SITE_X_MM = -50.0
 _DEFAULT_SITE_Y_MM = 0.0
 _DEFAULT_SITE_NAME = 'P1'
@@ -963,7 +953,7 @@ class SkillNode(Node):
         self._hold_forced_code = ''
         # R4 reload (C1, 2026-09-28 rework of brief step 1): the reload
         # context spanning the WHOLE reload wait — `None` outside one, else
-        # a `SimpleNamespace(phase=..., pattern=..., boxes=..., memory=...,
+        # a `SimpleNamespace(phase=..., pattern=..., memory=...,
         # deadline_mono=..., site=..., bridge=...)`.  Three phases, one
         # object mutated in place (never replaced — `is` identity checks
         # elsewhere rely on it):
@@ -1147,15 +1137,13 @@ class SkillNode(Node):
         # a goal is active (`_on_set_parameters`), like `planner_mode`.
         self.declare_parameter('apex_m_ball2', 0.0)
         # The segment planner this session runs ('level' | 'pose', two-ball-oval
-        # P3): selects the admissible box (boxes are stamped with the planner
-        # they were swept under) and rides on the executor. Settable live
+        # P3): rides on the executor. Settable live
         # (`ros2 param set /skill_node planner_mode pose`, validated in
         # `_on_set_parameters`); a bad launch override is refused at start.
         self.declare_parameter('planner_mode', uc.PLANNER_MODE_DEFAULT)
         self._planner_mode()
         # carry-ring-zvd P1c (JB-102): the pose planner's ZVD ring rows, ONE
-        # live switch exactly like `planner_mode`: selects the admissible box
-        # (stamped with the flag it was swept under; inert in level mode) and
+        # live switch exactly like `planner_mode`: inert in level mode, and
         # rides on every InstallSegment request. Default from the yaml
         # (`trajectory_op.carry_zvd`); settable between attempts only.
         self.declare_parameter('carry_zvd', sk_seg.CARRY_ZVD_DEFAULT)
@@ -1199,9 +1187,9 @@ class SkillNode(Node):
         # apexes — 20 mm was the launch default. Owner 2026-11-02 (JB-139):
         # 30 mm. Ball 2's Columns throw lands ~(+22, +17) mm off its aim, a
         # stable plant bias since 2026-10-04, and the learner sat pinned at
-        # 20; shipped in the SAME commit as the box swept to +/-30 mm
-        # (tools/admissible_sweep.py OFFSETS_MM; the 250 mm hop's grid stops
-        # at +/-25, the accept-time workspace bound). This knob also sets the
+        # 20; shipped in the SAME commit as the offline Admissible box swept to
+        # +/-30 mm (that box was retired 2026-11-06; the Throw's online check,
+        # I-ADMIT-1, bounds the landing now). This knob also sets the
         # tracker catch's ACROSS-axis clamp and the one-site catch clamp
         # (executor._clamp_lateral_to_schedule), hence cup_cycle.
         # CAPTURE_MAX_OFFSET_M = hypot(inward 35, 30).
@@ -1246,7 +1234,7 @@ class SkillNode(Node):
         # the learner's lateral THROW command and the hop keep
         # learner_lateral_authority_mm). Owner decision 2026-10-13: the
         # catch prior is now the learner's forward prediction of the
-        # (box-clipped) command sent, and sitting 7's P1 landings sat +27 mm
+        # (then box-clipped; now online-checked) command sent, and sitting 7's P1 landings sat +27 mm
         # inward of y_d, so a 20 mm clamp would cut the prior short. Inward
         # moves shorten the transit to the next catch. One-site patterns
         # ignore it.
@@ -1844,8 +1832,8 @@ class SkillNode(Node):
 
     def _planner_mode(self) -> str:
         """The validated ``planner_mode`` parameter (``uc.PLANNER_MODES``).
-        Refuses by name: a typo would silently select the other planner's
-        admissible box, so there is no fall-back."""
+        Refuses by name: a typo would silently select the other planner,
+        so there is no fall-back."""
         value = str(self.get_parameter('planner_mode').value)
         if value not in uc.PLANNER_MODES:
             raise ValueError('planner_mode=%r is not one of %s'
@@ -1853,8 +1841,7 @@ class SkillNode(Node):
         return value
 
     def _carry_zvd(self) -> bool:
-        """The validated ``carry_zvd`` parameter (a bool; the box stamp and
-        every InstallSegment request read it here, never the yaml directly)."""
+        """The validated ``carry_zvd`` parameter (a bool; every InstallSegment request read it here, never the yaml directly)."""
         value = self.get_parameter('carry_zvd').value
         if not isinstance(value, bool):
             raise ValueError('carry_zvd=%r is not a bool' % (value,))
@@ -2477,7 +2464,7 @@ class SkillNode(Node):
                 and int(req.kind) == InstallSegment.Request.KIND_CATCH
                 and float(req.t_release_s) > 0.0):
             # The emitter solved the FOLDED catch under a different planner
-            # than the box was selected under: never expected (it plans with
+            # than the nomination / online check planned under: never expected (it plans with
             # the request's).  Only the folded CATCH+throw can be solved under
             # `pose`; a LAUNCH / REST / plain CATCH in a pose session reports
             # `level` by design (I-PLAN-13 b) and is not a mismatch.
@@ -2519,8 +2506,8 @@ class SkillNode(Node):
         req = InstallSegment.Request()
         req.kind = _WIRE_KIND[kind]
         req.ball_id = int(ball_id)
-        # ONE live switch: the SAME value the admissible box was selected
-        # under rides every request, and trajectory_node plans with it.
+        # ONE live switch: the SAME value the nomination and the online check
+        # plan under rides every request, and trajectory_node plans with it.
         req.planner_mode = self._planner_mode()
         req.carry_zvd = self._carry_zvd()
         if kind == THROW:
@@ -3723,11 +3710,12 @@ class SkillNode(Node):
                         successful=False,
                         reason='planner_mode must be one of %s'
                         % list(uc.PLANNER_MODES))
-                # Between attempts only: the executor's box selection is frozen
+                # Between attempts only: the executor's planner choice is frozen
                 # at goal accept while every InstallSegment request re-reads the
                 # live value, so a mid-goal flip would solve the remaining
-                # installs under a planner the box (and the learner's clipping)
-                # was not selected under — the twin the stamp exists to close.
+                # installs under a planner the online check was not made under
+                # (until 2026-11-06: the box and the learner's clipping were not
+                # selected under — the twin the stamp existed to close).
                 # Runsheet P3-3 ("applies from the NEXT goal") by construction.
                 if (self._attempt_running()
                         and str(param.value) != self._planner_mode()):
@@ -3747,7 +3735,7 @@ class SkillNode(Node):
                     return SetParametersResult(
                         successful=False, reason='carry_zvd must be a bool')
                 # Between attempts only, for the same reason as planner_mode:
-                # the executor's box selection is frozen at goal accept.
+                # the executor's planner choice is frozen at goal accept.
                 if (self._attempt_running()
                         and bool(param.value) != self._carry_zvd()):
                     self.get_logger().warning(
@@ -3974,8 +3962,8 @@ class SkillNode(Node):
     #: sitting 4's ``columns_1ball_fed`` (the other half: ball B real and
     #: fed by Ball Butler, ball A phantom — `_run_columns(...,
     #: phantom_a=True)`). NEITHER becomes a `Schedule.pattern` value of its
-    #: own: `compile_columns` always labels it 'columns' (the admissible box
-    #: has no 'columns_1ball'/'columns_1ball_fed' kind, and none is swept —
+    #: own: `compile_columns` always labels it 'columns' (the nomination
+    #: has no separate 'columns_1ball'/'columns_1ball_fed' pattern kind —
     #: see `_run_columns_1ball`'s docstring and `_run_columns`'s own
     #: ``phantom_a`` paragraph), so this tuple names two more GOAL-facing
     #: strings than `Schedule.pattern` has values. ``magazine`` (one
@@ -4343,7 +4331,7 @@ class SkillNode(Node):
         """The ``columns_highlow`` goal's own no-motion refusals (JP-9), or
         ``None``: Ball 2's Apex unset (``apex_m_ball2`` 0) or equal to Ball
         1's (that is plain ``columns``), and the ``level`` planner (high-low
-        cells are swept under ``pose`` only; the level planner is
+        is planned and flown under ``pose`` only; the level planner is
         direction-sensitive -- owner, 2026-10-30)."""
         problems = []
         if not apex_m_ball2 > 0.0:
@@ -4353,7 +4341,7 @@ class SkillNode(Node):
             problems.append('apex_m_ball2 %.3f m equals the goal Apex -- that '
                             'is plain columns' % (apex_m_ball2,))
         if self._planner_mode() != 'pose':
-            problems.append('planner_mode is %r -- columns_highlow is swept '
+            problems.append('planner_mode is %r -- columns_highlow is planned '
                             'and flown under pose only' % (self._planner_mode(),))
         if not problems:
             return None
@@ -4519,8 +4507,6 @@ class SkillNode(Node):
             msg = 'columns pattern refused: %s' % (exc,)
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
-        boxes = None
-
         try:
             memory = Memory(memory_path(_REPO_ROOT, plant_id))
         except (ValueError, OSError, csv.Error) as exc:
@@ -4555,7 +4541,7 @@ class SkillNode(Node):
         # Everything the shared tail (`_start_columns_feed`) needs, built
         # ONCE here so the SEATED path and the two-feed chain cannot drift.
         plan = SimpleNamespace(
-            site=bridge_site, lift_s=lift_s, boxes=boxes, memory=memory,
+            site=bridge_site, lift_s=lift_s, memory=memory,
             aim_site=feed_aim_site, columns_pattern=pattern,
             holds_ball=not phantom_a, entry_tag=entry_tag)
         if not reload_a:
@@ -4588,7 +4574,7 @@ class SkillNode(Node):
             return SimpleNamespace(success=False, message=msg)
         return self._start_reload(
             SimpleNamespace(success=None, message=None), site=a_reload_site,
-            lift_s=lift_s, pattern=a_pattern, boxes=boxes, memory=memory,
+            lift_s=lift_s, pattern=a_pattern, memory=memory,
             kind='reload', then_columns=plan)
 
     def _start_columns_feed(self, plan, *, chain_ctx=None):
@@ -4607,7 +4593,7 @@ class SkillNode(Node):
         either way, from the one ``plan`` `_run_columns` built."""
         return self._start_reload(
             SimpleNamespace(success=None, message=None), site=plan.site,
-            lift_s=plan.lift_s, boxes=plan.boxes, memory=plan.memory,
+            lift_s=plan.lift_s, memory=plan.memory,
             kind='columns', aim_site=plan.aim_site,
             columns_pattern=plan.columns_pattern,
             holds_ball=plan.holds_ball, chain_ctx=chain_ctx)
@@ -4674,7 +4660,6 @@ class SkillNode(Node):
             msg = 'columns_1ball pattern refused: %s' % (exc,)
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
-        boxes = None   # acceptance is the nomination's; the executor checks online
 
         try:
             memory = Memory(memory_path(_REPO_ROOT, plant_id))
@@ -4705,7 +4690,7 @@ class SkillNode(Node):
         if reload:
             return self._start_reload(
                 SimpleNamespace(success=None, message=None), site=a_site,
-                lift_s=lift_s, boxes=boxes, memory=memory,
+                lift_s=lift_s, memory=memory,
                 kind='columns_1ball', columns_pattern=pattern)
 
         # The phantom's first catch takes the FED start's aim point (the
@@ -4760,7 +4745,7 @@ class SkillNode(Node):
             carry_zvd=self._carry_zvd(),
             resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio,
-            learner=learner, boxes=boxes,
+            learner=learner,
             lateral_authority_m=float(self.get_parameter(
                 'learner_lateral_authority_mm').value) / 1000.0,
             catch_outward_authority_m=self._catch_outward_authority_m(),
@@ -5156,7 +5141,6 @@ class SkillNode(Node):
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
         sites = pattern.sites
-        boxes = None   # acceptance is the nomination's; the executor checks online
 
         # Finding 11, R3 audit (2026-09-13): built here, before `_prelevel`
         # actually moves the platform, and guarded — `memory_path` raises
@@ -5212,7 +5196,7 @@ class SkillNode(Node):
             return self._start_reload(
                 SimpleNamespace(success=None, message=None), site=sites[0],
                 lift_s=float(pattern.floor_lift_s), pattern=pattern,
-                boxes=boxes, memory=memory)
+                memory=memory)
 
         now = self.get_clock().now().nanoseconds / 1e9
         try:
@@ -5267,7 +5251,7 @@ class SkillNode(Node):
             carry_zvd=self._carry_zvd(),
             resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio,
-            learner=learner, boxes=boxes,
+            learner=learner,
             lateral_authority_m=float(self.get_parameter(
                 'learner_lateral_authority_mm').value) / 1000.0,
             catch_outward_authority_m=self._catch_outward_authority_m(),
@@ -5516,9 +5500,8 @@ class SkillNode(Node):
         ``n_throws=0`` so the compiled schedule ends at its DECAY REST
         (`schedule.compile_reload`). What `_run_one_ball` checks for its
         throws does NOT apply — no nomination (`_start_pattern` skips it for
-        ``reload``) — because nothing the learner commands flies; the ctx's
-        ``boxes`` is ``None`` (the executor checks online) and memory rides
-        it because `_install_announced_reload` builds every reload executor
+        ``reload``) — because nothing the learner commands flies; memory rides
+        the ctx because `_install_announced_reload` builds every reload executor
         with it. Same order otherwise: every
         no-motion refusal, then the opening-REST sizing, the frame check,
         and `_prelevel` as the last thing before the bridge streams."""
@@ -5534,7 +5517,6 @@ class SkillNode(Node):
         pattern = OneBallPattern(
             sites=sites, apex_m=float(self.get_parameter('apex_m').value),
             dwell_s=dwell_s, n_throws=0)
-        boxes = None   # nothing the learner commands flies in a reload
         try:
             memory = Memory(memory_path(_REPO_ROOT, plant_id))
         except (ValueError, OSError, csv.Error) as exc:
@@ -5560,10 +5542,10 @@ class SkillNode(Node):
         return self._start_reload(
             SimpleNamespace(success=None, message=None), site=sites[0],
             lift_s=float(pattern.floor_lift_s), pattern=pattern,
-            boxes=boxes, memory=memory)
+            memory=memory)
 
     def _start_reload(self, response, *, site: Site, lift_s: float,
-                      boxes, memory: Memory,
+                      memory: Memory,
                       pattern: Optional[OneBallPattern] = None,
                       kind: str = 'reload',
                       aim_site: Optional[Site] = None,
@@ -5583,12 +5565,12 @@ class SkillNode(Node):
         answered, drawing `THROW_REJECTED_BAD_STATE` on every attempt).
 
         Called from `_run_one_ball`, after every no-motion refusal, the
-        box/memory build and `_prelevel` — see that method's R4 branch.
-        ``site``/``lift_s``/``pattern``/``boxes``/``memory`` are exactly
+        memory build and `_prelevel` — see that method's R4 branch.
+        ``site``/``lift_s``/``pattern``/``memory`` are exactly
         what the ordinary self-toss path would compile with; the reload's
         own DECAY REST hands off into the SAME one-ball pattern
         (`schedule.compile_reload`'s docstring), so it needs the identical
-        box/memory the tail throws will be judged and learned against.
+        memory the tail throws will be judged and learned against.
 
         R5 (owner decision D1, 2026-09-30): also called from
         `_run_columns` with ``kind='columns'`` — the SAME bridge-then-BB-
@@ -5786,7 +5768,7 @@ class SkillNode(Node):
         # the one AFTER BB's own reload/check cycle, never the one before it.
         new_ctx = SimpleNamespace(
                 kind=kind, phase='await_bb_idle', pattern=pattern,
-                columns_pattern=columns_pattern, boxes=boxes,
+                columns_pattern=columns_pattern,
                 memory=memory, site=site, aim_site=aim_site, bridge=bridge,
                 reload_sent=reload_sent, bb_left_idle=False,
                 announced=False,
@@ -5981,7 +5963,7 @@ class SkillNode(Node):
                 carry_zvd=self._carry_zvd(),
                 resend_max_per_catch=self._catch_resend_max(),
                 launch_ratio=self._launch_ratio,
-                learner=learner, boxes=ctx.boxes,
+                learner=learner,
                 lateral_authority_m=float(self.get_parameter(
                     'learner_lateral_authority_mm').value) / 1000.0,
                 catch_outward_authority_m=self._catch_outward_authority_m(),
@@ -6131,7 +6113,7 @@ class SkillNode(Node):
             carry_zvd=self._carry_zvd(),
             resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio,
-            learner=learner, boxes=ctx.boxes,
+            learner=learner,
             lateral_authority_m=float(self.get_parameter(
                 'learner_lateral_authority_mm').value) / 1000.0,
             catch_outward_authority_m=self._catch_outward_authority_m(),
@@ -6314,7 +6296,7 @@ class SkillNode(Node):
             carry_zvd=self._carry_zvd(),
             resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio,
-            learner=learner, boxes=ctx.boxes,
+            learner=learner,
             lateral_authority_m=float(self.get_parameter(
                 'learner_lateral_authority_mm').value) / 1000.0,
             catch_outward_authority_m=self._catch_outward_authority_m(),
@@ -6757,7 +6739,7 @@ class SkillNode(Node):
 
     def _svc_check(self, request, response):
         """``skills/check`` (item 8): every current R3 precondition-ladder
-        refusal at once, plus the admissible-box/limits status and the
+        refusal at once, plus the nomination status and the
         session-start frame check (`_frame_check_error`, plan
         `cup-contact-contract.md` § 1) — the dress-rehearsal runsheet calls
         this before any powered attempt (Rigor: "make gates report every
@@ -6862,7 +6844,7 @@ class SkillNode(Node):
             if res.ok:
                 lines.append(line)
             elif name == 'oval_1ball' and res.report is not None:
-                # The oval is optional (as its box was: "not swept ...
+                # The oval is optional (as it was under the retired box: "not swept ...
                 # informational"): a node that never flies it must not be
                 # failed by it. A Site OUTSIDE the workspace still fails
                 # (that was a refusal before too).

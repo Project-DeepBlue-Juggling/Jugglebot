@@ -256,7 +256,7 @@ def _verdict(chk) -> adm.CommandVerdict:
 
 def _pin(probe_mod, fixture_path):
     fx = json.load(open(fixture_path))
-    limits = probe_mod.asw._limits(*fx['limits'])
+    limits = probe_mod.asw.sitting_limits(*fx['limits'])
     cfg = sg.SegmentConfig(planner_mode=fx['mode'])
     geom = StewartGeometry()
     cells = {}
@@ -328,19 +328,19 @@ _DWELL = 0.27
 @pytest.fixture(scope='module')
 def chain(probe):
     asw = probe.asw
-    limits = asw._limits(*_P4_LIMITS)
+    limits = asw.sitting_limits(*_P4_LIMITS)
     geom = StewartGeometry()
     cfg = sg.SegmentConfig(planner_mode='pose')
     site = st.Site('S', np.array([62.5, 0.0, st.CATCH_CUP_Z_MM]))
     partner = st.Site('Q', np.array([-62.5, 0.0, st.CATCH_CUP_Z_MM]))
     T = sc.flight_s(_APEX)
-    ok, code, _seed, takeoff = asw._throw_cell(
+    ok, code, _seed, takeoff = asw.throw_cell(
         partner, partner, T, asw.SINGLE_SITE_LAUNCH_S, limits, geom, cfg)
     assert ok, code
     t0 = 1000.0
     t_rel = t0 + asw.SINGLE_SITE_LAUNCH_S
     record, res, seg = ex.install_segment(
-        None, asw._rest_state(partner.rest_site_mm()), sg.THROW,
+        None, asw.rest_state(partner.rest_site_mm()), sg.THROW,
         sg.ThrowTerminal(site_mm=partner.throw_site_mm(),
                          target_mm=partner.throw_site_mm(), flight_s=T,
                          t_release_s=t_rel),
@@ -422,3 +422,122 @@ def test_check_segment_refuses_a_magazine_by_name_and_a_seedless_origin(chain):
                                      limits=chain['limits'])
     assert chk.code == res.code == ex.UNREACHABLE
     assert chk.message == res.message
+
+
+# ---------------------------------------------------------------------------
+# (7) the cell helpers' pattern-timing split (moved here 2026-11-06, P3c, from
+# the retired test_skills_admissible.py: the helpers survive in
+# tools/probes/planner_cells.py, only the sweep that drove them is retired)
+# ---------------------------------------------------------------------------
+#
+# R5 fix (2026-09-30): ``pattern_flight_s`` separates the SCHEDULE's timing
+# (tau/t_land/t_release) from the COMMANDED flight (the carried throw's own
+# ballistic solve). Before the fix every cell derived BOTH roles from one
+# ``flight_s``, so a ladder rung below the pattern apex wrongly shortened the
+# schedule window it was judged against.
+
+def test_chained_catch_cell_timing_is_the_patterns_not_the_commanded(
+        probe, monkeypatch):
+    """``chained_catch_cell``'s CatchTerminal carries the PATTERN's timing
+    (``t_land_s``, ``then_throw.t_release_s``) while the carried throw's own
+    ``then_throw.flight_s`` follows the COMMANDED flight -- production's own
+    split (``schedule.compile_columns`` places every CATCH at
+    ``t_throw + flight_s(pattern.apex_m)``; ``executor._throw_terminal`` gives
+    the carried throw ``flight_s = sch.flight_s(u_apex)``). ``plan_segment`` is
+    stubbed to capture the terminal: an argument-construction check, no solve
+    (confirmed failing against the pre-fix body, 2026-09-30: it read 0.771193
+    (Tc) instead of 0.856881 (Tp))."""
+    pc = probe.asw
+    captured = {}
+
+    def _stub(kind, seed, terminal, cfg, limits, geom, **kw):
+        captured['terminal'] = terminal
+        raise pc.uc.CycleInfeasible('STUB')
+
+    monkeypatch.setattr(pc.sg, 'plan_segment', _stub)
+    site = st.columns_sites(100.0)[0]
+    Tp = pc.sc.flight_s(0.90)
+    Tc = Tp * 0.90  # f = -0.10, a ladder rung below the pattern
+    takeoff = np.array([0.0, 0.0, 5000.0])
+    pc.chained_catch_cell(
+        site, object(), takeoff, Tc, 0.30, (0.0, 0.0),
+        object(), object(), object(), pattern_flight_s=Tp)
+    terminal = captured['terminal']
+    assert terminal.t_land_s == pytest.approx(Tp)
+    assert terminal.then_throw.t_release_s == pytest.approx(Tp + 0.30)
+    assert terminal.then_throw.flight_s == pytest.approx(Tc)
+
+
+def test_columns_catch_throw_cell_timing_is_the_patterns_not_the_commanded(
+        probe, monkeypatch):
+    """Same split, for the cross-site columns cell: ``tau``/``t_release`` are
+    ``sc.transit_s(pattern_flight_s, dwell_s)``-derived, never the commanded
+    flight's transit."""
+    pc = probe.asw
+    captured = {}
+
+    def _stub(kind, seed, terminal, cfg, limits, geom, **kw):
+        captured['terminal'] = terminal
+        raise pc.uc.CycleInfeasible('STUB')
+
+    monkeypatch.setattr(pc.sg, 'plan_segment', _stub)
+    site0, site1 = st.columns_sites(100.0)
+    Tp = pc.sc.flight_s(0.90)
+    Tc = Tp * 0.90  # f = -0.10
+    takeoff = np.array([0.0, 0.0, 5000.0])
+    dwell = 0.30
+    pc.columns_catch_throw_cell(
+        site1, object(), takeoff, Tc, dwell, (0.0, 0.0),
+        object(), object(), object(), pattern_flight_s=Tp)
+    terminal = captured['terminal']
+    expected_tau = pc.sc.transit_s(Tp, dwell)
+    assert terminal.t_land_s == pytest.approx(expected_tau)
+    assert terminal.then_throw.t_release_s == pytest.approx(expected_tau + dwell)
+    assert terminal.then_throw.flight_s == pytest.approx(Tc)
+    # The pre-fix body used ``sc.transit_s(flight_s, dwell_s)`` -- Tc, not Tp.
+    assert expected_tau != pytest.approx(pc.sc.transit_s(Tc, dwell))
+
+
+# ---------------------------------------------------------------------------
+# (8) T-R3 (P3c, plan § 5): the offline box is gone from the importable API
+# ---------------------------------------------------------------------------
+
+_RETIRED_NAMES = (
+    'AdmissibleBox', 'clip', 'select', 'describe_miss', 'check_limits',
+    'check_site_workspace', 'dump', 'load', 'gate_hash', '_GATED_FILES',
+    'LimitsMismatch', 'PATTERNS', 'PLANNER_MODES',
+    'SITE_OUTSIDE_WORKSPACE_REASON')
+
+
+def test_margin_frac_is_the_ten_percent_headroom():
+    assert adm.MARGIN_FRAC == 0.9
+
+
+@pytest.mark.parametrize('name', _RETIRED_NAMES)
+def test_every_retired_box_name_is_absent_from_admissible(name):
+    assert not hasattr(adm, name), (
+        'admissible.%s was retired with the offline box (P3c, 2026-11-06)'
+        % (name,))
+
+
+def test_the_surviving_api_is_exactly_the_online_check():
+    assert sorted(adm.__all__) == sorted([
+        'AdmissibleError', 'MARGIN_FRAC', 'CommandVerdict', 'Resolution',
+        'margin', 'resolve_command'])
+
+
+def test_the_executor_takes_no_boxes_argument():
+    import inspect
+    params = inspect.signature(ex.SkillExecutor.__init__).parameters
+    assert 'boxes' not in params
+    assert not hasattr(ex, 'BOX_FORWARD_GAIN_FLOOR')
+    assert not hasattr(ex.SkillExecutor, '_forward_clip_xy')
+    assert not hasattr(ex.SkillExecutor, '_box_dwell_s')
+
+
+@pytest.mark.parametrize('rel', [
+    os.path.join('tools', 'admissible_sweep.py'),
+    os.path.join('tools', 'admissible_sweep_run.py'),
+    os.path.join('config', 'generated', 'admissible_box.yaml')])
+def test_the_sweep_tools_and_the_box_yaml_do_not_exist(rel):
+    assert not os.path.exists(os.path.join(_ROOT, rel)), rel

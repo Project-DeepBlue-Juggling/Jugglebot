@@ -185,11 +185,11 @@ def columns_sites(separation_mm: float,
     # TURNED pair (JP-10, ``columns_turned``): the same pair rotated by
     # ``angle_deg`` about the Platform origin (+z), P1 at (-half cos, -half
     # sin), P2 at (+half cos, +half sin) -- 90 deg puts P1 at -y, P2 at +y.
-    # The Sites carry DISTINCT names ('P1@45'): the admissible box is keyed
-    # on the site-pair NAMES (``admissible._refuse_overlapping_apex_bands``
-    # ignores the xy stamps), so a turned cell sharing 'P1' would collide
-    # with the straight cell in one YAML. ``select`` also compares the xy
-    # stamps, but only the name makes the collision impossible in the file.
+    # The Sites carry DISTINCT names ('P1@45'): until 2026-11-06 the
+    # Admissible box was keyed on the site-pair NAMES, so a turned cell
+    # sharing 'P1' would collide with the straight cell in one YAML; the
+    # distinct names still keep a turned pair from being mistaken for the
+    # straight one by name-keyed lookups.
     rad = math.radians(angle)
     c, s = math.cos(rad), math.sin(rad)
     tag = '@%g' % (angle,)

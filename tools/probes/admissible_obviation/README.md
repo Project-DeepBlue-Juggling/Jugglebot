@@ -11,29 +11,24 @@ Everything here is offline: the production planner and gate (`skills.segments.pl
 `feasibility.validate_cycle`) imported exactly as the sweep imports them, no ROS, no hardware.
 Outputs go under `temp/probes/admissible_obviation/`. BLAS is pinned to one thread.
 
+**Retired 2026-11-06 (learner-generalisation P3c):** the sweep itself (`tools/admissible_sweep.py`) and the three probes that existed only to study it (`family_run.py`, `boundary_replay.py`, `semantic_gate_hash.py`) are deleted; their findings stay in the Results section below and in `logbook/2026-11-04-admissible-box-sweep-obviation-investigation.md`. The cell functions the remaining probes call now live in `tools/probes/planner_cells.py`.
+
 ## Files
 
 | File | What it does |
 |------|--------------|
-| `family_run.py` | Runs one real sweep family (same grid, same cell functions, same limits as the sweep) and keeps EVERY per-cell row (ok, refusing gate code, wall time) as JSON, not just the extracted rectangle. |
-| `margin_rays.py` | The gate margin `m = min_k (0.9 L_k - peak_k) / (0.9 L_k)` (leg vel / acc / jerk; `m >= 0` is the sweep's pass) along 8 rays of landing offset out to a chosen radius, for the columns catch-with-throw cell and the launch cell; records the binding peaks and the planner code. |
+| `margin_rays.py` | **Kept as the design-time headroom report** (owner decision D10, `plans/active/learner-generalisation.md`). The gate margin `m = min_k (0.9 L_k - peak_k) / (0.9 L_k)` (leg vel / acc / jerk; `m >= 0` is the sweep's pass) along 8 rays of landing offset out to a chosen radius, for the columns catch-with-throw cell and the launch cell; records the binding peaks and the planner code. |
 | `affine_check.py` | The QP's final active set and iteration count over the whole 17x17 offset grid; then an affine prediction of the planned pose/hand arrays from three solves, gated with `validate_cycle`, against the real solve. |
-| `boundary_replay.py` | Replays a boundary-only rectangle search (bisection on a centred square's half-width, perimeter cells only, then per-edge growth) against the dense grids from `family_run.py`: soundness (perimeter pass but interior fail?) and cells touched. No new solves. |
 | `online_check_replay.py` | Two tests of the proposed online check: (A) replays every Learner-corpus command through the real catch-with-throw plan + gate (hop-site rows skipped: wrong cell shape; `--pattern-apex` separates the pattern timing from the commanded apex, which the corpus does not record); (B) for refused candidates on rays, the two-solve fallback: nominal margin plus the affinely predicted margin at the candidate, interpolate the zero, back off 1 mm, confirm with one real solve. |
 | `loaded_budget.py` | Wall-clock budget of ONE columns catch-with-throw plan + gate through a real `WorkerSegmentSolver` child (`--kind install` = the production request, `--kind check` = the P3a CHECK request, also records the gate margin), a back-to-back burst (the refused path), a 25 ms grid thread's lateness in the caller, load/governor/temperature facts, and the worker's cpu / context-switch counters. One run per load condition label: L0 idle, L1 Sitting-loaded (L1n no browser, L1h headless browser page), L2 plus a parallel gate, L3 the launch's `cpu_partition` (`--cpus 4,5`). |
-| `semantic_gate_hash.py` | Prototype of a parse-tree hash of the eight gated files with docstrings stripped, beside the committed text `gate_hash`; shows a comment edit no longer flips it. |
 | `research_optimisation.md` | Literature report (optimisation / verification side): multi-parametric QP, sensitivity, level-set estimation, Lipschitz certificates, incremental re-verification. 12 ranked avenues, references, experiments. |
 | `research_robotics.md` | Literature report (robotics / systems side): what juggling, catching and table-tennis robots do about throw admissibility; capability maps, mutually reachable sets, learned feasibility, safe exploration. 8 ranked avenues, references, experiments. |
 
 Reproduce (repo root, venv):
 
 ```bash
-python tools/probes/admissible_obviation/family_run.py columns pose 0.95 temp/probes/admissible_obviation/columns_pose_095.json
-python tools/probes/admissible_obviation/family_run.py columns pose 0.95 temp/probes/admissible_obviation/columns_pose_095_old.json --limits 350 5000 200000 4500
 python tools/probes/admissible_obviation/margin_rays.py pose 0.95 temp/probes/admissible_obviation/rays_pose_095.json --rmax 120 --step 4
 python tools/probes/admissible_obviation/affine_check.py --mode pose --apex 0.95
-python tools/probes/admissible_obviation/boundary_replay.py temp/probes/admissible_obviation/*.json
-python tools/probes/admissible_obviation/semantic_gate_hash.py
 python tools/probes/admissible_obviation/online_check_replay.py [--limits 350 5000 200000 4500] [--pattern-apex 0.95]
 ```
 

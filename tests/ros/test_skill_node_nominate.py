@@ -2,7 +2,7 @@
 
 A Juggle goal is accepted or refused by a real offline plan of the Pattern's
 nominal Segments (``motion/skills/nominate.py``) at the LIVE Sitting limits,
-before anything moves; the offline admissible box no longer gates it. These
+before anything moves (the offline admissible box was retired 2026-11-06). These
 tests use the REAL planner (no mocked nomination) except
 ``test_the_nomination_runs_once_per_goal_and_never_for_magazine_or_reload``,
 the one plumbing test, which stubs ``nominate`` to count calls.
@@ -62,16 +62,13 @@ def _nominate_req(node, data):
 
 # ── acceptance by nomination ─────────────────────────────────────────────────
 
-def test_a_viable_goal_is_accepted_with_no_box_file_on_disk(tmp_path):
-    """THE POINT OF THE PHASE: no `admissible_box.yaml` anywhere (the path is
-    patched to a file that does not exist), a viable hop is accepted and the
-    executor carries no box."""
+def test_a_viable_goal_is_accepted_by_nomination_alone(tmp_path):
+    """THE POINT OF THE PHASE: nothing on disk gates a goal; a viable hop
+    is accepted on its nomination."""
     node, _ = _ready_node('nobox')
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', str(tmp_path / 'absent.yaml')), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_hop_goal(separation_mm=250.0))
     assert resp.success is True, resp.message
-    assert node._executor.boxes is None
     assert node._last_nomination_lines == []
 
 
@@ -363,7 +360,6 @@ def test_check_prints_one_nomination_line_per_configuration():
     assert 'informational' in resp.message
     assert resp.success is True
     assert 'acceptance is decided by nomination' in resp.message
-    assert 'the box still gates' not in resp.message
 
 
 def test_check_does_not_solve_while_an_attempt_runs():

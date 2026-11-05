@@ -975,8 +975,8 @@ class TrajectoryNode(Node):
         # `planner_mode` ('level' | 'pose', two-ball-oval P3) is ONLY the
         # DEFAULT for an InstallSegment request that carries none (''): the
         # LIVE switch is skill_node's `planner_mode` parameter, which rides on
-        # every request (it selects the admissible box AND the plan, so the two
-        # cannot disagree). Deliberately NOT live-settable here -- a second
+        # every request (it drives the nomination / online check AND the plan, so the
+        # two cannot disagree). Deliberately NOT live-settable here -- a second
         # live knob would be an unenforced twin of that one.
         self.declare_parameter('planner_mode',
                                str(sk_seg.SegmentConfig().planner_mode))
@@ -4754,8 +4754,8 @@ class TrajectoryNode(Node):
         # (not a `builtin_interfaces/Time`), so the crossing is the same sum
         # `_ros_time_to_perf` does without that message's two-field unpack.
         # The planner this ONE install is solved with: the request's (skill_node's
-        # live parameter -- the same value the admissible box was selected
-        # under), else the node's default for a pre-P3 / hand-built client.
+        # live parameter -- the same value the nomination and online check
+        # plan under), else the node's default for a pre-P3 / hand-built client.
         # Refused by name BEFORE any solve; per install only (the node's own
         # `_segment_cfg` is never mutated).
         req_mode = str(request.planner_mode)
@@ -4772,7 +4772,7 @@ class TrajectoryNode(Node):
                 'planner_mode %r is not one of %s (nothing solved)'
                 % (req_mode, list(uc.PLANNER_MODES)), t_wall)
         # carry-ring-zvd P1c (JB-102): the ZVD ring-row flag rides with the
-        # planner (the same skill_node parameter stamped the box cell). A bool
+        # planner (the same skill_node parameter selected the nomination and online check). A bool
         # cannot say "absent", so the request's flag is honoured whenever the
         # request names a planner (req_mode != ''); a request with none is the
         # pre-P3 / hand-built client and plans with the node's default

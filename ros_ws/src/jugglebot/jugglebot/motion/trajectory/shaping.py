@@ -80,9 +80,8 @@ from jugglebot.motion.trajectory.segment import POSE_DIM, QuinticSegment
 # calibration moved the STOW height to 578.2 (plans/active/kinematic-calibration.md
 # § 6 step 5), and the literal would have left every lever 3.9 mm short — the sim's
 # cup opening landed exactly that far above its target. Deriving it from the
-# generated config also puts it under the admissible-box gate hash
-# (motion/skills/admissible.py gates hardware_config.py), so a future height change
-# forces a box re-sweep instead of silently mis-levering the swept boxes.
+# generated config keeps it in step with a future height change (until
+# 2026-11-06 it also put it under the Admissible box's gate hash, forcing a re-sweep).
 CUP_TILT_CENTER_Z_MM = float(hw.GEOM_INITIAL_HEIGHT_MM) + float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM)
 # Nominal world cup height (mm) at the lean operating point. juggle_tilt's Rung-0:
 # at the 180 mm slider the cup rides ~840 mm, giving arm ≈ +95 mm and reproducing

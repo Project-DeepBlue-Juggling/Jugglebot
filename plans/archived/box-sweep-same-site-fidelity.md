@@ -1,9 +1,10 @@
 ---
 title: Box sweep fidelity for same-site families (plan what the executor dispatches)
 created: 2026-10-18
-status: active
+status: superseded
+archived: 2026-11-06
 owner: Harrison
-last_updated: 2026-10-18
+last_updated: 2026-11-06
 pathway: learner-generalisation
 scope: >-
   Make the box sweep plan what the executor dispatches for same-site families (release at the caught xy
@@ -19,6 +20,17 @@ related_code:
 ---
 
 # Box sweep fidelity for same-site families
+
+## Archival note (2026-11-06): superseded, nothing shipped
+
+Superseded by `plans/active/learner-generalisation.md` phases P3a-P3c, which retire the Admissible box and
+its sweep outright; this plan's subject (make the sweep plan what the executor dispatches for same-site
+families) no longer exists. None of its work landed (the file's history is its filing and a frontmatter
+backfill). Its concern is resolved in the replacement, not carried: the per-Throw check's stand-in
+(`SkillExecutor._fold_release_mm`, P3a) and the nomination walker (`motion/skills/nominate.py`, P3b) both
+release a same-site fold at the caught xy with the executor's own aim shift, so no cup fly-back is ever
+planned. No residue, no residual xfail markers. Reviewed read-only before archival (plan-reviewer,
+2026-11-06). Logbook: `logbook/2026-11-06-learner-generalisation-p3c-box-retirement.md`.
 
 ## 1. Problem
 The 2026-10-18 re-sweep (gate 606b53e3912f after the 20 % closing re-base; the cells are identical to the first 2026-10-18 merge at gate 20436164b087) CHANGED the five self_toss cells' `landing_xy_m` (per cell (apex band: x, y landing half-range old -> new, m): 0.45-0.55: +-0.03/+-0.03 -> +-0.02/+-0.02; 0.55-0.65: -0.04..0.03 both axes -> +-0.03 (x), +-0.02 (y); 0.65-0.75 (cell 3): -0.04..0.03 both axes -> +-0.04 (x), +-0.03 (y), x upper 0.03 -> 0.04 is a WIDENING, accepted by the owner (one grid step; the sweep tool gained the carry-window metric path and the settle-at-release-site rule since the 2026-10-09 box); 0.75-0.85 and 0.85-0.95: -0.04..0.03 both axes -> +-0.03 (x), +-0.02 (y); owner accepted it as is; hop 8 and columns 6 cells are value-identical to the pre-oval snapshot).

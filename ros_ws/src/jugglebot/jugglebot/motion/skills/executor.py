@@ -112,12 +112,12 @@ NO_LANDING = 'NO_LANDING'
 #: A ``ValueError`` escaped a terminal build — the same code ``_svc_plan_cycle``
 #: converts an unclassified failure to, so a guard matching it keeps matching.
 UNREACHABLE = 'UNREACHABLE'
-#: No safe command exists for this throw (R3, plan § 2.5/2.6): either the
-#: admissible box swept for this (site, target) pair is EMPTY — no grid point
-#: passed the offline sweep with margin — or the learner's local kernel fit
-#: diverged to a non-finite command (the neighbourhood weights underflowed to
-#: 0, a query far outside every ``h_y``-scaled neighbour). Both are the same
-#: physical fact from the skill's point of view: nothing here can hand the
+#: No safe command exists for this throw (R3, plan § 2.5/2.6): the learner's
+#: local kernel fit diverged to a non-finite command (the neighbourhood weights
+#: underflowed to 0, a query far outside every ``h_y``-scaled neighbour), or --
+#: with a checker -- neither the candidate nor the model command passed the
+#: online check (until 2026-11-06 also an EMPTY offline admissible box). All
+#: are the same physical fact from the skill's point of view: nothing here can hand the
 #: platform a command it can stand behind, so the throw is refused before any
 #: solve is attempted rather than handed a NaN or an out-of-envelope target.
 NO_ADMISSIBLE_COMMAND = 'NO_ADMISSIBLE_COMMAND'
@@ -446,8 +446,7 @@ REJECTED_NO_BALL = 'REJECTED_NO_BALL'
 #: at accept.  See ``INVARIANTS.md``.
 REJECTED_BALL_IN_HAND = 'REJECTED_BALL_IN_HAND'
 #: A site of the pattern is outside the reachable workspace (decision 38 /
-#: plan two-ball-oval § 2.6); the reason text is
-#: ``admissible.SITE_OUTSIDE_WORKSPACE_REASON``. Raised by the node unit.
+#: plan two-ball-oval § 2.6). Raised by the node unit.
 REJECTED_SITE_OUTSIDE_WORKSPACE = 'REJECTED_SITE_OUTSIDE_WORKSPACE'
 #: Leaving the streaming mode that owns the platform mid-attempt -- the rest
 #: tail already streaming is the safe end (``reload_sequencer.py:340-366``'s
@@ -758,23 +757,6 @@ TRACKED_LANDING_TIME_BAND_S = RELEASE_FIT_TOL_S
 #: have had to throw away.
 TRACKED_LANDING_LATERAL_IDENTITY_MM = 200.0
 
-#: Floor on the lateral gain of the learner's local fit below which the
-#: admissible box is NOT pulled back through it
-#: (:meth:`SkillExecutor._forward_clip_xy`, wave 3 unit H, 2026-10-13): the
-#: smallest eigenvalue of the SYMMETRIC part of the fit's 2x2 xy block of
-#: ``D = d y_hat / d u``. The identity prior is 1.0 (the plant lands where
-#: told); every bias measured on this plant is an OFFSET ``d`` (sitting 7: P1
-#: +27 mm), not a gain. A fit claiming the landing moves less than half as
-#: far as the command is outside anything measured, and inverting it would
-#: turn each mm of landing error into > 2 mm of command; a sign-flipped or
-#: strongly rotated block (where the symmetric part goes non-positive) is not
-#: inverted at all. ``lambda_min(sym) >= floor`` also bounds the smallest
-#: singular value from below (``|D v| >= v^T D v / |v|``), so the pull-back
-#: step is at most ``1 / floor`` = 2x the landing excess. Below it the box
-#: falls back to clipping the COMMAND (the pre-2026-10-13 rule).
-BOX_FORWARD_GAIN_FLOOR = 0.5
-
-
 def tracked_landing_band_s(beat_s: Optional[float]) -> float:
     """The landing-time band (s) for a schedule with release spacing
     ``beat_s`` (``Schedule.beat_s``: release to release of ANY ball, 0.579 s
@@ -930,8 +912,8 @@ def precondition_refusals(obs: Observations, *, launch: bool,
 
 class _NoAdmissibleCommand(Exception):
     """Raised by :meth:`SkillExecutor._command_u` when no safe command exists
-    for a throw -- an empty admissible box, or the learner's fit diverging to
-    a non-finite command. Caught by :meth:`SkillExecutor._dispatch` and turned
+    for a throw -- the learner's fit diverging to a non-finite command, or the
+    online check refusing both the candidate and the model command. Caught by :meth:`SkillExecutor._dispatch` and turned
     into a :data:`NO_ADMISSIBLE_COMMAND` refusal; never escapes this module."""
 
 
@@ -1162,12 +1144,11 @@ class _PendingOutcome:
     #: R5 sitting-6 prep — read straight off
     #: :attr:`~jugglebot.motion.skills.schedule.Skill.entry_hop` at
     #: registration, THROW only). Shares ``shadow_landing``'s command bypass
-    #: in :meth:`SkillExecutor._command_u` (``u = y_d`` exactly, no learner,
-    #: no box lookup) and its NO-MEMORY-ROW treatment in
+    #: in :meth:`SkillExecutor._command_u` (``u = y_d`` exactly, no learner)
+    #: and its NO-MEMORY-ROW treatment in
     #: :meth:`_finalise_outcome` — a cross-site throw from the feed site
     #: would pool with that site's vertical column throws in the learner's
-    #: memory (same release-site ``x``) and corrupt both, and no box is
-    #: swept for a 125 mm cross pair under the ``columns`` pattern. UNLIKE
+    #: memory (same release-site ``x``) and corrupt both. UNLIKE
     #: ``shadow_landing`` it does NOT override the possession latch: this
     #: ball is caught in the ordinary way (it is not landing on a ball
     #: already held), so ``caught`` is read normally and the OUTCOME line is
@@ -2033,8 +2014,7 @@ def install_segment(record: Optional[PlanRecord],
     * ``t0 = t_now_s + lead_s`` — the origin sits where a splice's ``k_s``
       would (the first instant ``lead_s`` ahead of dispatch), so the planned
       window is the schedule's own ``window_s`` less the dispatch lateness,
-      i.e. the window ``plan_columns_first_cycle`` and the admissible box
-      already certify (``t_abs - window_s``), not ``window_s + lead``;
+      i.e. the window ``plan_columns_first_cycle`` already certifies (``t_abs - window_s``), not ``window_s + lead``;
     * refused :data:`ORIGIN_TOO_LATE` by the SPLICE's own arithmetic with
       ``k_s = 0`` on that origin — ``0 <= floor((t_inst - t0)/dt) +
       WIRE_READ_KNOTS`` — so the solve budget is ``lead_s - WIRE_READ_KNOTS·dt``
@@ -2304,20 +2284,17 @@ class SkillExecutor:
     and one whose splice tracks its dispatch cannot — an executor-wide lead
     would have to be the smaller of the two for every skill.
 
-    **R3: the learner, the admissible box, and outcome capture — all optional.**
+    **R3: the learner and outcome capture -- both optional.**
     ``learner`` (an object exposing ``command(x, y_d) -> (3,)``, e.g. a
     ``memory.Memory`` bound to its ``LearnerConfig`` via a lambda at the call
     site; optionally ``predict(x, u, y_d)`` for the catch prior and
-    ``local_model(x, y_d) -> (u_bar, D, d) | None`` so the box bounds the
-    EXPECTED landing, :meth:`_forward_clip_xy`) and ``boxes`` (a SEQUENCE of :class:`~jugglebot.motion.skills.
-    admissible.AdmissibleBox` — ``admissible.load``'s own return shape,
-    selected by ``(site pair, apex band)`` via ``admissible.select`` rather
-    than a ``{site_pair: box}`` dict, so a box swept for one apex can never
-    be silently reused at another) are consulted ONCE per released ball, at
-    the releasing skill's first dispatch (:meth:`_command_u`); a CATCH
-    re-send reuses that command rather than recomputing it, because the
-    command must not change late in a transit (plan § 0). No ``learner`` ⇒
-    the command is the identity prior (``u = y_d`` exactly, R2's behaviour).
+    ``local_model(x, y_d) -> (u_bar, D, d) | None``, the fit the online check's
+    stand-in is planned at, :meth:`_forward_model_xy`) is consulted ONCE per
+    released ball, at the releasing skill's first dispatch
+    (:meth:`_command_u`); a CATCH re-send reuses that command rather than
+    recomputing it, because the command must not change late in a transit
+    (plan § 0). No ``learner`` ⇒ the command is the identity prior (``u = y_d``
+    exactly, R2's behaviour).
     ``observer`` (``(ball_id, t_abs_s) -> str``, the possession evidence at
     that instant) and ``on_experience``
     (called with one ``memory.Experience`` per released ball, in schedule
@@ -2347,9 +2324,11 @@ class SkillExecutor:
     InstallSegment, the sim gate's ``check_segment`` twin). With a
     ``checker`` the command is the ONLINE one (:meth:`_resolve_catch_command`
     for a CATCH carrying a throw, :meth:`_resolve_throw_envelope` for a plain
-    THROW and the hop entry) and ``boxes`` is NOT consulted for it. No
-    ``checker`` ⇒ the admissible-box path exactly as before (the sim A/B
-    until P3c).
+    THROW and the hop entry). No ``checker`` ⇒ no admissibility check at all:
+    the command is the Learner's authority-clipped candidate (``y_d`` without
+    a Learner), never clipped and never refused here -- the sim runs and the
+    unit tests without a checker rely on it. (Until 2026-11-06, P3c, that
+    path consulted an offline admissible box; it is retired.)
     """
 
     def __init__(self, schedule: Schedule,
@@ -2363,7 +2342,7 @@ class SkillExecutor:
                  resend_pos_tol_mm: float = 10.0,
                  resend_t_tol_s: float = 0.010,
                  resend_max_per_catch: int = 2,
-                 learner=None, boxes=None,
+                 learner=None,
                  checker: Optional[Callable[..., 'adm.CommandVerdict']] = None,
                  early_command: bool = True,
                  lateral_authority_m: Optional[float] = None,
@@ -2448,9 +2427,8 @@ class SkillExecutor:
         #: the catch it is refining.
         self.resend_max_per_catch = int(resend_max_per_catch)
         self.learner = learner
-        self.boxes = boxes
         #: P3a: the online admissibility check (class docstring). ``None`` =
-        #: the admissible-box path, bit-identical to before P3a.
+        #: no check: the command is the Learner's authority-clipped candidate.
         self.checker = checker
         #: P3a: with a checker, compute and check a CATCH-with-throw's command
         #: in the idle slot BEFORE its dispatch (:meth:`_early_command`, the
@@ -2463,21 +2441,20 @@ class SkillExecutor:
         self._early_by_idx: Dict[int, _EarlyCommand] = {}
         #: The segment planner ('level' | 'pose', ``uc.PLANNER_MODES``) this
         #: session runs: ``skill_node`` sets it from its ``planner_mode``
-        #: parameter; it selects the admissible box (a box is stamped with the
-        #: planner it was swept under) and the same value rides on every
-        #: InstallSegment request (a later unit wires that).
+        #: parameter; the same value rides on every InstallSegment request (a
+        #: later unit wires that).
         if planner_mode not in uc.PLANNER_MODES:
             raise ValueError('planner_mode must be one of %r, not %r'
                              % (uc.PLANNER_MODES, planner_mode))
         self.planner_mode = str(planner_mode)
-        #: carry-ring-zvd P1c: the box-selection twin of skill_node's live
-        #: ``carry_zvd`` parameter (stamped on the box like ``planner_mode``).
+        #: carry-ring-zvd P1c: the twin of skill_node's live ``carry_zvd``
+        #: parameter.
         self.carry_zvd = bool(carry_zvd)
         #: How far (m, per axis) the learner's THROW command, and a tracker
         #: CATCH aim (:meth:`_clamp_lateral_to_schedule`), may move the
         #: commanded/aimed landing AWAY from the schedule's desired offset
-        #: ``y_d``. ``None`` = the swept box alone bounds the learner, and the
-        #: tracker aim is unclamped. ``0.0`` (the live default, owner
+        #: ``y_d``. ``None`` = no clamp on the learner (the online check, when wired,
+        #: is its only bound), and the tracker aim is unclamped. ``0.0`` (the live default, owner
         #: 2026-09-16) pins the lateral command to ``y_d`` and lets the learner
         #: correct FLIGHT only: a 4 mm lateral aim command made the banking
         #: step saturate to its 12 deg clamp during the pre-catch dive (leg
@@ -2512,7 +2489,7 @@ class SkillExecutor:
         #: and keeps :attr:`lateral_authority_m` whatever this is. Split from
         #: the learner's authority 2026-10-13 (owner decision 3): sitting 7's
         #: P1 landings sat +27 mm inward of ``y_d`` (the learner's command
-        #: pinned by the columns box), so a 20 mm clamp would cut the learner-
+        #: was pinned by the since-retired columns box), so a 20 mm clamp would cut the learner-
         #: predicted prior (:meth:`_prior_landing`) short of where the ball
         #: lands; an inward move SHORTENS the transit to the next catch.
         self.catch_inward_authority_m = (
@@ -2663,17 +2640,7 @@ class SkillExecutor:
                and not self._pending_catches
                and not self._closing_waiting())
 
-    # ── the R3 command: learner + admissible box, computed once per throw ──
-
-    def _box_dwell_s(self, idx: int) -> float:
-        """The ``dwell_s`` the admissible box is selected by for skill
-        ``idx``: the Dwell of the BALL that skill throws
-        (``Schedule.dwell_for``). That is ``schedule.dwell_s`` for every
-        schedule whose balls share one Apex -- bit-identical to the select
-        before JP-9 -- and the LOW ball's longer Dwell in a high-low Columns,
-        whose cells are stamped with it (the high ball's are stamped with the
-        commanded Dwell)."""
-        return self.schedule.dwell_for(self.schedule.skills[idx].ball_id)
+    # ── the R3 command: the learner's, computed once per throw ──
 
     def _command_u(self, idx: int, site, target, y_d,
                    seat_offset_m=None,
@@ -2711,49 +2678,30 @@ class SkillExecutor:
         no longer partitions the memory (the offset's effect on the outcome
         tested within noise; ``learner`` module docstring).
 
-        **What the box bounds (owner rule, 2026-10-13, wave 3 unit H).** With
-        a learner, the admissible box bounds the EXPECTED landing laterally,
-        not the lateral command: the authority-clipped command is run through
-        the learner's own forward model (``learner.local_model``, the fit
-        that produced it) and only if THAT prediction leaves the box is the
-        command pulled back -- through the exact inverse of the fit's lateral
-        gain -- until the prediction sits on the box edge
-        (:meth:`_forward_clip_xy`). Why: the box was swept on the CATCH
-        transit to the landing (legs 1/2 hit the acceleration limit 0.1 s
-        into it at +-15 mm), so it is where the ball goes that the box must
-        bound; clipping the command instead turned sitting 7's -20 mm
-        correction for a +27 mm lean into -4 mm, the ball landed ~+23 mm and
-        the catch re-aimed past the outward authority into LIMIT_*. The
-        APEX is still clipped as a COMMAND: the box's ``apex_m`` is the band
-        of COMMANDED flight times whose launch passed the hand envelope
-        (C-HAND-3, ``throw_envelope`` in the sweep -- a bound on the
-        commanded release speed), and the plant's apex response about that
-        command is what the sweep's flight-fraction rungs
-        (``--single-flight-frac``, -20..+10 %) cover. What changes on the
-        wire: only the throw's lateral launch velocity, bounded by
-        :attr:`lateral_authority_m` (30 mm over a ~0.86 s flight, ~35 mm/s; 20 mm before JB-139).
-        Without a learner the box clips ``y_d`` exactly as before.
-
-        No ``learner`` ⇒ ``u = y_d`` exactly (R2 behaviour). Raises
-        :class:`_NoAdmissibleCommand` when the learner's fit is non-finite,
-        or no swept box covers ``(site.name, target.name)`` at the DESIRED
-        apex — the caller converts that to a :data:`NO_ADMISSIBLE_COMMAND`
-        refusal before any solve is attempted.
+        **Lateral command (no checker).** The Learner's command is clipped
+        per axis to :attr:`lateral_authority_m` about ``dy``
+        (:meth:`_learner_candidate`) and that is the command: no ``learner`` ⇒
+        ``u = y_d`` exactly (R2 behaviour). A ``ValueError`` or non-finite
+        answer from the Learner raises :class:`_NoAdmissibleCommand`; the
+        caller converts that to a :data:`NO_ADMISSIBLE_COMMAND` refusal before
+        any solve is attempted. (Until 2026-11-06 an offline admissible box
+        also bounded the EXPECTED landing here -- owner rule 2026-10-13, after
+        sitting 7's -20 mm correction for a +27 mm lean was clipped to -4 mm;
+        P3c retired the box, and with a checker the real plan + gate judges
+        the command that is about to fly.)
 
         ``shadow_landing`` (owner decision D2, 2026-09-30, R5 rescope, E1'):
         the columns Stop's cross-site last throw bypasses the learner AND the
-        box entirely, ``u = y_d`` exactly, no clip — the ball lands on the
-        ball already held, so precision buys nothing, and the admissible box
-        is swept per pattern for SAME-site throws only (this one is not; a
-        lookup here would either miss and refuse, or hit a box that was never
-        measured for this segment shape).
+        check entirely, ``u = y_d`` exactly, no clip — the ball lands on the
+        ball already held, so precision buys nothing (and this cross-site
+        segment shape was never measured for the Learner).
 
         ``entry_hop`` (owner decision, 2026-10-05, R5 sitting-6 prep): a fed
         columns schedule's HOP ENTRY (THROW 0, released from the feed site)
         gets the SAME bypass as
         ``shadow_landing`` for the SAME structural reason — this is a
-        cross-site throw, so the box swept for SAME-site throws does not
-        apply, and a cross throw from the feed site would pool with that
+        cross-site throw (the Learner's memory holds SAME-site throws), and a
+        cross throw from the feed site would pool with that
         site's vertical column throws in the learner's memory (same
         release-site ``x``) and corrupt both. Unlike ``shadow_landing`` this
         throw IS caught in the ordinary way; only the command is bypassed
@@ -2771,14 +2719,15 @@ class SkillExecutor:
         does a READ-ONLY learner query at the release site's column context
         (see :meth:`_hop_command`): the correction ``u - y_d`` a P1 column
         throw would get is added to the hop's own ``y_d``. It still writes NO
-        memory row (the pooling argument above stands) and still bypasses the
-        cross-site box except for an apex-only clip to the same-site box.
+        memory row (the pooling argument above stands). Until 2026-11-06 its
+        apex was also clipped to the same-site box's range; with a checker the
+        envelope resolution below replaces that, without one the apex is
+        unclipped.
 
-        **P3a online path (``self.checker`` set).** No box is looked up. A
+        **P3a online path (``self.checker`` set).** A
         plain THROW and the hop entry (``online_release_mm`` = the release
         the THROW terminal uses) get the ENVELOPE-only resolution
-        (:meth:`_resolve_throw_envelope`); the hop's apex-only box clip is
-        replaced by it. A CATCH's carried throw never reaches the online
+        (:meth:`_resolve_throw_envelope`). A CATCH's carried throw never reaches the online
         branch here: :meth:`_catch_terminal` fills the cache first
         (:meth:`_resolve_catch_command`), and a call that arrives without
         that (``online_release_mm`` None, cache empty) refuses -- fail
@@ -2819,68 +2768,15 @@ class SkillExecutor:
             u_dy, u_apex = self._hop_command(idx, site, dy, apex, x)
             self._u_cache[idx] = (x, u_dy, u_apex)
             return u_dy, u_apex
-        # The box is looked up BEFORE the learner runs (finding 5, R3 audit,
-        # 2026-09-13): a missing box means there is no admissible-region clip
-        # to apply afterward, so a learner command would reach the platform
-        # UNCLIPPED -- refuse up front rather than let an unbounded command
-        # through the crack. Selected by the DESIRED apex (``y_d``), never the
-        # learner's own command -- the learner has not run yet here, and must
-        # never be able to hop the lookup between boxes by proposing a
-        # different apex (the latent defect this closes: a 0.5 m apex
-        # self-toss silently reusing the 0.9 m box and being clipped UP to
-        # it).
-        if self.boxes is None:
-            box = None
-        else:
-            # R4 (2026-09-23): a box now carries its own pattern + site xy
-            # (motion/skills/admissible.py's module docstring, "Why" #1/#2),
-            # so `select` is judged on all four -- the schedule states which
-            # pattern it was compiled for (`Schedule.pattern`), and the LIVE
-            # sites (not merely their names) close the defect a box swept at
-            # one separation being silently applied at another.
-            box = adm.select(self.boxes, self.schedule.pattern,
-                             (site.name, target.name), apex,
-                             release_site_xy_mm=site.cup_mm[:2],
-                             target_site_xy_mm=target.cup_mm[:2],
-                             dwell_s=self._box_dwell_s(idx),
-                             planner_mode=self.planner_mode,
-                             carry_zvd=self.carry_zvd)
-            if self.learner is not None and box is None:
-                reason = adm.describe_miss(
-                    self.boxes, self.schedule.pattern,
-                    (site.name, target.name), apex,
-                    release_site_xy_mm=site.cup_mm[:2],
-                    target_site_xy_mm=target.cup_mm[:2],
-                    dwell_s=self._box_dwell_s(idx),
-                             planner_mode=self.planner_mode,
-                             carry_zvd=self.carry_zvd)
-                raise _NoAdmissibleCommand(
-                    'no admissible box covers pattern %r site pair %r: %s — '
-                    'a learner command may not reach the platform unclipped'
-                    % (self.schedule.pattern, (site.name, target.name),
-                       reason))
+        # No checker: the Learner's authority-clipped candidate IS the
+        # command (no Learner: ``y_d``); nothing clips or refuses it here.
         u_dy, u_apex = self._learner_candidate(idx, site, target, dy, apex, x)
-        if self.learner is not None:
-            y_d_si = np.array([dy[0], dy[1], apex])
-        if box is not None:
-            try:
-                u_dy_cmd_clip, u_apex = adm.clip((u_dy, u_apex), box)
-            except adm.AdmissibleError as exc:
-                raise _NoAdmissibleCommand(str(exc)) from exc
-            # APEX: the box still clips the COMMAND (see the docstring's
-            # "What the box bounds" note). LATERAL: with a learner, the box
-            # bounds the EXPECTED landing (owner, 2026-10-13).
-            if self.learner is None:
-                u_dy = u_dy_cmd_clip
-            else:
-                u_dy = self._forward_clip_xy(
-                    idx, x, y_d_si, dy, u_dy, u_apex, box, u_dy_cmd_clip)
         u_dy = np.asarray(u_dy, dtype=float).reshape(2)
         u_apex = float(u_apex)
         self._u_cache[idx] = (x, u_dy, u_apex)
         return u_dy, u_apex
 
-    def _box_note_once(self, idx: int, reason: str, line: str) -> None:
+    def _note_once(self, idx: int, reason: str, line: str) -> None:
         """Queue ``line`` once per ``(idx, reason)`` (the shared
         :attr:`_resend_notes` set, as ``AIM-LATERAL-CLAMPED``)."""
         key = (idx, reason)
@@ -2893,7 +2789,7 @@ class SkillExecutor:
                            online: bool = False, mark_learned: bool = True
                            ) -> Tuple[np.ndarray, float]:
         """The Learner's command for ``(x, y_d)``, lateral-authority-clipped
-        about ``dy`` -- what :meth:`_command_u` computes BEFORE any box (and
+        about ``dy`` -- what :meth:`_command_u` computes BEFORE any check (and
         the P3a online path's CANDIDATE). No Learner -> ``y_d`` exactly. A
         ``ValueError`` from the Learner (and, on the ``online`` path, a
         non-finite answer) refuses: :class:`_NoAdmissibleCommand`. Marks
@@ -3011,7 +2907,7 @@ class SkillExecutor:
                        u_cand[1], v.code, u_model[0][0] * 1e3,
                        u_model[0][1] * 1e3, u_model[1], v0.code))
             res = adm.Resolution(u_model, 'model', 2, (v, ok))
-        self._box_note_once(idx, 'ADMISSIBILITY', self._admissibility_line(
+        self._note_once(idx, 'ADMISSIBILITY', self._admissibility_line(
             idx, u_cand, res, envelope_only=True))
         return res.u[0], float(res.u[1])
 
@@ -3119,7 +3015,7 @@ class SkillExecutor:
                     idx, u_cand, res).split(': ', 1)[1]
         else:
             line = self._admissibility_line(idx, u_cand, res)
-        self._box_note_once(idx, 'ADMISSIBILITY', line)
+        self._note_once(idx, 'ADMISSIBILITY', line)
         u_dy = np.asarray(res.u[0], dtype=float).reshape(2).copy()
         u_apex = float(res.u[1])
         self._u_cache[idx] = (x, u_dy, u_apex)
@@ -3335,7 +3231,7 @@ class SkillExecutor:
 
     def _forward_model_xy(self, x, y_d_si):
         """``u -> y_hat_xy(u)`` (metres), the Learner's own forward model at
-        ``(x, y_d)`` evaluated exactly as :meth:`_forward_clip_xy` does
+        ``(x, y_d)`` evaluated as the retired box clip did
         (``d[:2] + D[:2, :] (u - u_bar)``, at ``u``'s own apex). No Learner,
         no ``local_model``, thin support (``None``), a fit that raises or a
         non-finite prediction -> the identity, ``y_hat = u``."""
@@ -3362,140 +3258,6 @@ class SkillExecutor:
             return y if np.all(np.isfinite(y)) else _identity(u)
         return _y_hat
 
-    def _forward_clip_xy(self, idx: int, x, y_d_si, dy, u_dy, u_apex, box,
-                         u_dy_cmd_clip) -> np.ndarray:
-        """The LATERAL command after the admissible box is applied to the
-        learner's EXPECTED landing (owner rule, 2026-10-13: "run the aim
-        through the learner's own prediction of where the ball will land and
-        clip that"). ``u_dy`` arrives authority-clipped about ``dy``;
-        ``u_apex`` is already the box-clipped apex command (the forward model
-        is evaluated at the apex actually sent, so the xy prediction carries
-        the fit's apex coupling ``D[:2, 2]`` exactly).
-
-        1. ``learner.local_model(x, y_d)`` -> ``(u_bar, D, d)``, the SAME fit
-           ``learner.command``/``predict`` use; ``y_hat = d + D (u - u_bar)``.
-           Thin support (``None``) is the identity prior, ``y_hat = u``, so
-           clipping ``y_hat`` IS clipping ``u``: the command clip, no line.
-        2. ``y_hat_xy`` inside ``box.landing_xy_m`` -> ``u_dy`` passes
-           UNCHANGED (``BOX-EXPECTED-LANDING ... inside``).
-        3. Else ``y_clip`` = ``y_hat_xy`` clipped into the box and
-           ``u' = u_dy + Dxy^-1 (y_clip - y_hat_xy)`` -- the EXACT inverse of
-           the fit's 2x2 lateral block (the learner's ``eta``-damped step
-           never reaches the edge), refused below
-           :data:`BOX_FORWARD_GAIN_FLOOR` -> the command clip
-           (``BOX-FORWARD-CLIP-FALLBACK``).
-        4. The lateral authority is RE-APPLIED to ``u'``, per axis, as the
-           band ``[dy - a, dy + a]`` WIDENED to include the box's own range
-           (the command clip's result was always accepted, whatever its
-           distance from ``dy``, so a desired landing outside the box keeps
-           exactly today's reach). If the authority binds, the expected
-           landing stays OUTSIDE the box and the command is ACCEPTED
-           (``BOX-EXPECTED-LANDING-UNMET``) -- never a refusal: the catch's
-           own authority and the live ``validate_cycle`` gate still bound the
-           catch the box was swept on.
-
-        A learner without ``local_model`` (an older namespace) gets the
-        command clip and one ``BOX-FORWARD-CLIP-UNAVAILABLE`` line per skill
-        (marked WARN in its text: skill_node logs executor lines at one
-        severity). A fit that raises or is non-finite falls back the same
-        way (``BOX-FORWARD-CLIP-FALLBACK``) -- ``learner.command`` already
-        succeeded on that fit, so this is defensive only.
-        """
-        u_dy = np.asarray(u_dy, dtype=float).reshape(2)
-        cmd_clip = np.asarray(u_dy_cmd_clip, dtype=float).reshape(2)
-        (xlo, xhi), (ylo, yhi) = box.landing_xy_m
-        lo = np.array([float(xlo), float(ylo)])
-        hi = np.array([float(xhi), float(yhi)])
-        local_model = getattr(self.learner, 'local_model', None)
-        if local_model is None:
-            self._box_note_once(
-                idx, 'BOX-FORWARD-CLIP-UNAVAILABLE',
-                'BOX-FORWARD-CLIP-UNAVAILABLE skill %d (WARN): the learner has '
-                'no local_model -- the box clips the COMMAND (%+.1f, %+.1f) -> '
-                '(%+.1f, %+.1f) mm, not the expected landing'
-                % (idx, u_dy[0] * 1e3, u_dy[1] * 1e3,
-                   cmd_clip[0] * 1e3, cmd_clip[1] * 1e3))
-            return cmd_clip
-
-        def _fallback(why):
-            self._box_note_once(
-                idx, 'BOX-FORWARD-CLIP-FALLBACK',
-                'BOX-FORWARD-CLIP-FALLBACK skill %d: %s -- the box clips the '
-                'COMMAND (%+.1f, %+.1f) -> (%+.1f, %+.1f) mm'
-                % (idx, why, u_dy[0] * 1e3, u_dy[1] * 1e3,
-                   cmd_clip[0] * 1e3, cmd_clip[1] * 1e3))
-            return cmd_clip
-
-        try:
-            fit = local_model(x, y_d_si)
-        except Exception as exc:  # defensive: command() ran on this fit
-            return _fallback('local model failed (%s)' % (exc,))
-        if fit is None:   # thin support: identity, y_hat = u
-            return cmd_clip
-        u_bar, D, d = (np.asarray(v, dtype=float) for v in fit)
-        u_bar = u_bar.reshape(3)
-        D = D.reshape(3, 3)
-        d = d.reshape(3)
-
-        def _y_hat_xy(u_xy):
-            u3 = np.array([u_xy[0], u_xy[1], float(u_apex)])
-            return d[:2] + D[:2, :] @ (u3 - u_bar)
-
-        y_hat = _y_hat_xy(u_dy)
-        if not np.all(np.isfinite(y_hat)):
-            return _fallback('non-finite expected landing')
-        tol = 1e-9
-        if np.all(y_hat >= lo - tol) and np.all(y_hat <= hi + tol):
-            self._box_note_once(
-                idx, 'BOX-EXPECTED-LANDING',
-                'BOX-EXPECTED-LANDING skill %d: u=(%+.1f, %+.1f) mm '
-                'y_hat=(%+.1f, %+.1f) mm inside box x[%+.1f, %+.1f] '
-                'y[%+.1f, %+.1f] mm -- command unchanged'
-                % (idx, u_dy[0] * 1e3, u_dy[1] * 1e3, y_hat[0] * 1e3,
-                   y_hat[1] * 1e3, lo[0] * 1e3, hi[0] * 1e3, lo[1] * 1e3,
-                   hi[1] * 1e3))
-            return u_dy
-        Dxy = D[:2, :2]
-        gain = float(np.min(np.linalg.eigvalsh(0.5 * (Dxy + Dxy.T))))
-        if not (math.isfinite(gain) and gain >= BOX_FORWARD_GAIN_FLOOR):
-            return _fallback('the fit\'s lateral gain %.3f is below the floor '
-                             '%.2f (expected landing (%+.1f, %+.1f) mm)'
-                             % (gain, BOX_FORWARD_GAIN_FLOOR, y_hat[0] * 1e3,
-                                y_hat[1] * 1e3))
-        y_clip = np.minimum(np.maximum(y_hat, lo), hi)
-        u_new = u_dy + np.linalg.solve(Dxy, y_clip - y_hat)
-        if self.lateral_authority_m is not None:
-            a = abs(self.lateral_authority_m)
-            dyv = np.asarray(dy, dtype=float).reshape(2)
-            band_lo = np.minimum(dyv - a, lo)
-            band_hi = np.maximum(dyv + a, hi)
-            u_new = np.minimum(np.maximum(u_new, band_lo), band_hi)
-        y_new = _y_hat_xy(u_new)
-        if np.all(y_new >= lo - tol) and np.all(y_new <= hi + tol):
-            self._box_note_once(
-                idx, 'BOX-EXPECTED-LANDING',
-                'BOX-EXPECTED-LANDING skill %d: u=(%+.1f, %+.1f) -> '
-                '(%+.1f, %+.1f) mm puts y_hat (%+.1f, %+.1f) -> (%+.1f, '
-                '%+.1f) mm on the box edge'
-                % (idx, u_dy[0] * 1e3, u_dy[1] * 1e3, u_new[0] * 1e3,
-                   u_new[1] * 1e3, y_hat[0] * 1e3, y_hat[1] * 1e3,
-                   y_new[0] * 1e3, y_new[1] * 1e3))
-        else:
-            self._box_note_once(
-                idx, 'BOX-EXPECTED-LANDING-UNMET',
-                'BOX-EXPECTED-LANDING-UNMET skill %d: u=(%+.1f, %+.1f) mm '
-                '(authority %s mm about y_d (%+.1f, %+.1f) mm) leaves '
-                'y_hat=(%+.1f, %+.1f) mm outside box x[%+.1f, %+.1f] '
-                'y[%+.1f, %+.1f] mm -- command accepted, the catch gate '
-                'decides'
-                % (idx, u_new[0] * 1e3, u_new[1] * 1e3,
-                   ('none' if self.lateral_authority_m is None else
-                    '%.1f' % (abs(self.lateral_authority_m) * 1e3)),
-                   float(dy[0]) * 1e3, float(dy[1]) * 1e3, y_new[0] * 1e3,
-                   y_new[1] * 1e3, lo[0] * 1e3, hi[0] * 1e3, lo[1] * 1e3,
-                   hi[1] * 1e3))
-        return u_new
-
     def _hop_command(self, idx: int, site, dy, apex, x):
         """The hop entry's command: ``y_d`` plus the learner's P1 column
         correction (read-only; see :meth:`_command_u`'s ``entry_hop`` note).
@@ -3510,9 +3272,9 @@ class SkillExecutor:
         quantity.
 
         Lateral part: clipped to ``lateral_authority_m`` about ``dy`` (the hop's
-        cross-site lateral target stays where it is). Apex part: clipped to the
-        apex range of the SAME-site box (``(site, site)``) when one is
-        selectable, else unclipped (the hop was never boxed). A learner that
+        cross-site lateral target stays where it is). Apex part: unclipped
+        (until 2026-11-06 it was clipped to the SAME-site box's apex range; the
+        online envelope resolution replaces that). A learner that
         raises or returns non-finite falls back to ``u = y_d`` -- never a
         refusal."""
         if self.learner is None:
@@ -3534,19 +3296,6 @@ class SkillExecutor:
             d_dy = np.clip(d_dy, -a, a)
         u_dy = dy + d_dy
         u_apex = float(u[2])
-        # P3a: with a checker the online envelope check replaces this
-        # apex-only box clip (:meth:`_command_u`'s online branch).
-        if self.checker is None and self.boxes is not None:
-            box = adm.select(self.boxes, self.schedule.pattern,
-                             (site.name, site.name), apex,
-                             release_site_xy_mm=site.cup_mm[:2],
-                             target_site_xy_mm=site.cup_mm[:2],
-                             dwell_s=self._box_dwell_s(idx),
-                             planner_mode=self.planner_mode,
-                             carry_zvd=self.carry_zvd)
-            if box is not None and not box.empty:
-                alo, ahi = box.apex_m
-                u_apex = min(max(u_apex, alo), ahi)
         identity = abs(u_apex - apex) < 1e-9 and not np.any(d_dy)
         self._learned_u.add(idx)
         self._pending_notes.append(
@@ -3834,13 +3583,11 @@ class SkillExecutor:
         (``x[2:4]``, :meth:`_command_u` / :meth:`_register_outcome`), which is
         the slot ``memory.Experience`` always reserved for it.
 
-        **Admissible box:** the boxes in ``config/generated/admissible_box.
-        yaml`` were swept for releases AT the site, and this unit deliberately
-        does not touch them. The release offset is bounded by the same lateral
+        **Bounds:** the release offset is bounded by the same lateral
         authority the landing is (:attr:`lateral_authority_m`, 30 mm at the
         launch default since 2026-11-02, JB-139; 20 mm at R4), and the online ``validate_cycle`` gate remains the
         authority: a ``REJECTED_CYCLE_INFEASIBLE`` on a re-aimed carried throw
-        is the expected surface, not a box to widen.
+        is the expected surface.
 
         ``landing`` itself is clamped laterally first
         (:meth:`_clamp_lateral_to_schedule`) — the ONE place a landing becomes
@@ -4010,7 +3757,7 @@ class SkillExecutor:
         thing it would have had to learn.
 
         ``g`` is clamped to [0.5, 2.0]: outside that band the apex command
-        is not a plant gain but a refusal in the making (the box clips it),
+        is not a plant gain but a refusal in the making,
         and a wild ``1/g`` must not steer the aim."""
         return self._flyback_for_offset_mm(
             self._release_offset_m(idx) * 1000.0, y_d, u_apex)
@@ -4159,13 +3906,13 @@ class SkillExecutor:
         :meth:`_predicted_landing`).
 
         Why not ``y_d`` (owner decision 2, 2026-10-13). The command that
-        reaches the platform is BOUNDED -- by :attr:`lateral_authority_m`,
-        and the admissible box on the apex (and, since 2026-10-13, on this
-        very prediction laterally; :meth:`_forward_clip_xy`) -- so a plant
+        reaches the platform is BOUNDED -- by :attr:`lateral_authority_m`
+        (until 2026-11-06 also by an admissible box, on the apex and on this
+        very prediction laterally) -- so a plant
         bias the learner sees but may not command away lands the ball at
         ``y_d`` + that residual, not at ``y_d``. Sitting 7: P1 landed +27 mm toward P2
-        (the learner's unclipped command was -24 mm, the columns box allowed
-        -4), every catch whose tracker fit never converged (28 in L2, every
+        (the learner's unclipped command was -24 mm, the then columns box
+        allowed -4), every catch whose tracker fit never converged (28 in L2, every
         hop-entry catch among them) stayed on the ``y_d`` prior, and every
         landing < 30 mm off the aim was caught. The forward model is the same
         local fit that produced the command (``learner.predict``'s
@@ -4713,8 +4460,8 @@ class SkillExecutor:
         that is up to one orchestrator tick here, plus ``trajectory_node``'s
         ceil-snap of ``t_now`` onto the 40 Hz knot grid, plus the service
         transit — the live first throws of 2026-10-02 planned 0.375 s
-        against the 0.4 s ``launch_s`` the admissible box and
-        ``plan_columns_first_cycle`` certify. Dispatching the quantisation
+        against the 0.4 s ``launch_s`` that
+        ``plan_columns_first_cycle`` certifies. Dispatching the quantisation
         early keeps the planned window at or above ``window_s`` (by at most
         the look-ahead). A splice is unaffected except that it dispatches
         that much earlier: its ``k_s`` still follows ``t_now + lead``, so its
@@ -6307,8 +6054,8 @@ class SkillExecutor:
         caught = False if pend.shadow_landing else bool(pend.caught_seen)
         # NO memory row for a shadow-landed throw: `u = y_d` exactly
         # (`_command_u`'s bypass) so there is nothing for the learner to fit
-        # against, and the command never came off a box this segment shape
-        # was swept for -- an Experience built from it would teach the
+        # against, and the command never came off a Learner this segment shape
+        # was fitted for -- an Experience built from it would teach the
         # memory a command/outcome pair from a throw it never chose. The
         # operator's report still gets the real observed landing/apex below
         # (`row=True`): only the memory row is skipped, not the account of
@@ -6884,7 +6631,7 @@ class CatchBumpDecision:
 
 def _rest_state_at(cup_mm) -> uc.CycleState:
     """A plan seed at rest with the cup at ``cup_mm`` — identical
-    construction to ``tools/admissible_sweep.py::_rest_state``,
+    construction to ``motion/skills/nominate.py::rest_state``,
     ``tests/motion/test_skills_executor.py::_rest_state`` and
     ``tests/motion/test_skills_segments.py::_rest_state`` (one physical
     fact, several private copies by standing convention rather than a
@@ -6970,7 +6717,7 @@ def plan_columns_first_cycle(schedule: Schedule, limits, *,
 
     **How the terminals are built.** Through a THROWAWAY
     :class:`SkillExecutor` bound to ``schedule`` with a never-called
-    installer (:func:`_never_install`) and no ``learner``/``boxes``/
+    installer (:func:`_never_install`) and no ``learner``/
     ``lateral_authority_m`` — at a first dispatch with none of those
     configured, :meth:`SkillExecutor._command_u` is the identity prior
     (``u = y_d`` exactly), which is what a live dispatch ALSO uses for

@@ -3,7 +3,7 @@
 predicted trajectory give the same verdict as gating the real solve?
 
 Two measurements on the columns catch-with-throw cell (separation 125, dwell 0.27,
-seeded exactly as ``tools/admissible_sweep.py`` seeds it):
+seeded exactly as ``tools/probes/planner_cells.py`` seeds it):
 
 1. **Active-set map.** Solve every offset of the sweep's 17x17 grid and record the
    Goldfarb-Idnani final active set and iteration count (``Segment.warm_start``).
@@ -28,9 +28,9 @@ for _v in ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS'):
     os.environ[_v] = '1'
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 sys.path.insert(0, ROOT); sys.path.insert(0, os.path.join(ROOT, 'ros_ws', 'src', 'jugglebot'))
-sys.path.insert(0, os.path.join(ROOT, 'tools'))
+sys.path.insert(0, os.path.join(ROOT, 'tools', 'probes'))
 import numpy as np                                                    # noqa: E402
-import admissible_sweep as asw                                        # noqa: E402
+import planner_cells as asw                                        # noqa: E402
 from jugglebot.motion import unified_cycle as uc                      # noqa: E402
 from jugglebot.motion.geometry import StewartGeometry                 # noqa: E402
 from jugglebot.motion.skills import segments as sg, sites as st, schedule as sc  # noqa: E402
@@ -47,12 +47,12 @@ def main(argv=None):
     ap.add_argument('--out', default=None)
     a = ap.parse_args(argv)
     geom = StewartGeometry()
-    limits = asw._limits(*a.limits)
+    limits = asw.sitting_limits(*a.limits)
     cfg = sg.SegmentConfig(planner_mode=a.mode)
     s0, s1 = st.columns_sites(125.0, 0.0)
     T = sc.flight_s(a.apex)
     dwell = 0.27
-    ok, code, seed, takeoff = asw._throw_cell(s0, s0, T, asw.SINGLE_SITE_LAUNCH_S, limits, geom, cfg)
+    ok, code, seed, takeoff = asw.throw_cell(s0, s0, T, asw.SINGLE_SITE_LAUNCH_S, limits, geom, cfg)
     if not ok:
         print('seed throw refused:', code)
         return 1
@@ -107,9 +107,9 @@ def main(argv=None):
         rt = fz.validate_cycle(p, limits, geom)
         t0 = time.perf_counter(); rp = fz.validate_cycle(plan_pred, limits, geom); t_gate = time.perf_counter() - t0
         row = dict(off=off, max_affine_err=err, gate_ms=1e3 * t_gate,
-                   true=dict(code=rt.code, margin_ok=asw._within_margin(rt, limits), vel=rt.peak_leg_vel_mmps,
+                   true=dict(code=rt.code, margin_ok=asw.within_margin(rt, limits), vel=rt.peak_leg_vel_mmps,
                              acc=rt.peak_leg_acc_mmps2, jerk=rt.peak_leg_jerk_mmps3),
-                   pred=dict(code=rp.code, margin_ok=asw._within_margin(rp, limits), vel=rp.peak_leg_vel_mmps,
+                   pred=dict(code=rp.code, margin_ok=asw.within_margin(rp, limits), vel=rp.peak_leg_vel_mmps,
                              acc=rp.peak_leg_acc_mmps2, jerk=rp.peak_leg_jerk_mmps3))
         rows.append(row)
         print(off, 'max affine err %.1e' % err, '| acc true/pred %.0f/%.0f jerk %.0f/%.0f' % (

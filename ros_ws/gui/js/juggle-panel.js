@@ -41,9 +41,10 @@
  * raises an amber warning (a stale relay silently flies the node defaults
  * instead of the typed values — the fix is a colcon build).
  *
- * Dwell IS a goal field (owner 2026-10-21): the admissible box is swept AT a
- * dwell per pattern (columns/hop/self_toss 0.27, oval 0.65), a different dwell
- * is refused, so PATTERN_POINTS pre-fills it per pattern (editable) and the
+ * Dwell IS a goal field (owner 2026-10-21): the Admissible box was swept AT a
+ * dwell per pattern (columns/hop/self_toss 0.27, oval 0.65) and refused a
+ * different one (retired 2026-11-06; the nomination plans at the dwell
+ * now), so PATTERN_POINTS pre-fills it per pattern (editable) and the
  * request carries `dwell_s=`; blank = skill_node's dwell_s parameter.
  *
  * Two goals ride on a NODE PARAMETER, not a goal field (pattern-progression
@@ -163,18 +164,18 @@ export const JUGGLE_PATTERNS = [
     { value: 'columns_turned', label: 'Columns — turned', kind: 'columns', sites: 2, phantom: null,
       param: 'columns_angle_deg',
       blurb: 'Two-ball Columns with the site pair turned about the Platform +z by the '
-             + 'Angle field (45 or 90 deg are swept); the fed site is the one nearest Ball Butler.' },
+             + 'Angle field (45 or 90 deg are the angles flown); the fed site is the one nearest Ball Butler.' },
     // Pattern-progression P4 (JP-9): Ball 1 at Apex, Ball 2 at `apex_m_ball2`;
     // the Beat follows the high ball and the low ball dwells longer.
     { value: 'columns_highlow', label: 'Columns — high-low', kind: 'columns', sites: 2, phantom: null,
       param: 'apex_m_ball2',
       blurb: 'Two-ball Columns with Ball 1 at Apex and Ball 2 at Apex 2 (1.00 over 0.90 at '
-             + '100 mm is the swept pair); the diagram timing follows the higher ball.' },
+             + '100 mm is the pair flown); the diagram timing follows the higher ball.' },
 ];
 
 /**
  * Operator-typed fields.  The bounds are TYPO GUARDS, not authority: the
- * admissible box in skill_node is what decides whether a value flies.  They
+ * nomination and online check in skill_node decide whether a value flies.  They
  * catch the unit slips that matter (apex typed in mm reads as a 900 m
  * throw) and the 0 that would silently mean "node default" on the wire.
  */
@@ -196,21 +197,21 @@ const FIELDS = {
     },
     dwell_s: {
         label: 'Dwell', unit: 's', integer: false, max: 3, param: 'dwell_s',
-        tip: 'dwell_s — dwell at a site, seconds. The admissible box is swept AT a dwell '
-            + 'per pattern (PATTERN_POINTS); a different dwell is refused. Blank = skill_node\'s dwell_s.',
+        tip: 'dwell_s — dwell at a site, seconds. Each pattern has a default dwell '
+            + '(PATTERN_POINTS); the nomination plans at the dwell given. Blank = skill_node\'s dwell_s.',
         tooBig: 'dwell is in SECONDS',
     },
     // Parameter-backed fields (one pattern each; hidden otherwise, REQUIRED there).
     columns_angle_deg: {
         label: 'Angle', unit: '°', integer: false, max: 359, param: 'columns_angle_deg',
         tip: 'columns_angle_deg — the Columns pair turned about +z, degrees, written to '
-            + 'skill_node before Start. Required; the box is swept at 45 and 90.',
+            + 'skill_node before Start. Required; 45 and 90 are the angles flown.',
         tooBig: 'angle is in DEGREES (under 360)',
     },
     apex_m_ball2: {
         label: 'Apex 2', unit: 'm', integer: false, max: 3, param: 'apex_m_ball2',
         tip: 'apex_m_ball2 — Ball 2\'s apex, metres, written to skill_node before Start. '
-            + 'Required and different from Apex; 1.00 over 0.90 at 100 mm is the swept pair.',
+            + 'Required and different from Apex; 1.00 over 0.90 at 100 mm is the pair flown.',
         tooBig: 'apex is in METRES',
     },
 };
@@ -226,12 +227,12 @@ const POINT_KEYS = ['apex_m', 'separation_mm', 'dwell_s'].concat(PARAM_FIELD_KEY
  * with whenever the pattern is selected (an operator edit after that wins
  * until the pattern changes again).  Root cause (R5 sitting 7b): blank
  * fields flew skill_node's single 0.9 m / 250 mm default and a typed value
- * stuck across pattern switches, but the admissible box is swept at
+ * stuck across pattern switches, but the Admissible box (retired 2026-11-06) was swept at
  * DIFFERENT points per pattern -- columns at 125 mm / apex 0.95 (its
  * 0.875-0.925 band is empty), hop only at 250 mm, self-toss up to 0.95 --
  * so inputs were refused (or columns_1ball silently flew 250 mm).
- * `box` = the admissible_box.yaml pattern kind the point must sit inside;
- * tests/ros/test_gui_juggle_defaults.py pins every row to the committed box.
+ * `box` = the pattern kind of the retired admissible_box.yaml the point had
+ * to sit inside (the key is kept as data).
  */
 export const PATTERN_POINTS = {
     self_toss:         { box: 'self_toss', apex_m: 0.9,  separation_mm: null, dwell_s: 0.27 },
@@ -241,8 +242,7 @@ export const PATTERN_POINTS = {
     columns_1ball_fed: { box: 'columns',   apex_m: 0.95, separation_mm: 125, dwell_s: 0.27 },
     oval_1ball:        { box: 'oval_1ball', apex_m: 0.95, separation_mm: 150, dwell_s: 0.65 },
     oval_1ball_fed:    { box: 'oval_1ball', apex_m: 0.95, separation_mm: 150, dwell_s: 0.65 },
-    // Swept 2026-10-31 (see config/generated/admissible_box.yaml gate_hash; the
-    // box was re-swept the same day, 82 cells): turned cells at 125 mm, bands
+    // Swept 2026-10-31 (82 cells of the retired Admissible box): turned cells at 125 mm, bands
     // 0.925-0.975 at 45 deg and 0.875-0.975 at 90 deg; high-low cells only at
     // 100 mm, the 1.00 / 0.90 pair admissible at both sites; the 1.05 / 0.95
     // pair's LOW cells are admissible since the re-sweep (they were empty).

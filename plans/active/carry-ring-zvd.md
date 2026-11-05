@@ -31,6 +31,8 @@ related_code:
 
 # Carry ring suppression (ZVD on the pose carry)
 
+> 2026-11-06 (learner-generalisation P3c, branch p3-online-admissibility, pending the owner's merge): the Admissible box, its sweep (`tools/admissible_sweep.py`, `admissible_sweep_run.py`) and `admissible.select` are retired. Wherever this plan says to sweep or re-sweep the box, check a `gate_hash`, or lists the box among a phase's files, that is history; goal acceptance is now the nomination (`skills/check`, `skills/nominate`, the GUI Juggle panel's report, `python sim/skills_gate.py --nominate ...`, I-ADMIT-2) and each commanded Throw is checked online (I-ADMIT-1).
+
 Map Item: JB-102 (`map/feature-pre-release-hold-rung-release-from-a-moving-platform-hold-0.md`), under the
 two-ball-oval Pathway. This plan is the root-cause fix ranked first by the 2026-11-04 offline investigation;
 it sits beside two-ball-oval P4 (whose 30-Catch gate it unblocks) and ahead of P5 (two balls need dwell

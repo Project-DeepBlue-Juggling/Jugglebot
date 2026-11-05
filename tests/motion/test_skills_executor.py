@@ -61,7 +61,6 @@ from jugglebot import ball_possession as bp
 from jugglebot.motion import levelling
 from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.geometry import StewartGeometry
-from jugglebot.motion.skills import admissible as adm
 from jugglebot.motion.skills import executor as ex
 from jugglebot.motion.skills import segments as sg
 from jugglebot.motion.skills import schedule as sc
@@ -80,7 +79,7 @@ LAUNCH_S = 0.4
 SEPARATION_MM = 100.0
 #: The R5 operating point (plan § 0, catch-high sitting 6, 2026-10-05):
 #: apex 0.95 m, dwell 0.27 s, separation 125 mm, leg 350/5000/200000, hand
-#: acc 3900 rev/s^2 -- the committed box's own point, re-swept there after
+#: acc 3900 rev/s^2 -- the point the (since retired) committed box was swept at, re-swept there after
 #: ``sites.CATCH_CUP_Z_MM`` moved 830 -> 930 mm. A handful of tests below
 #: need only a FEASIBLE schedule to exercise executor/learner/attribution
 #: logic (not a check of the R2/R3 point itself); those move here rather
@@ -1512,7 +1511,7 @@ def test_lateral_authority_moves_the_tracker_clamp_and_the_learner_clamp_togethe
 
 
 # ---------------------------------------------------------------------------
-# R3 — the learner's command, the admissible box, and outcome capture
+# R3 — the learner's command and outcome capture
 # ---------------------------------------------------------------------------
 #
 # ``executor.CATCH_FREEZE_S`` is 0.175 s as landed (``LEAD_S`` + one knot).
@@ -1537,27 +1536,6 @@ class _FakeLearner:
         if self._raise:
             raise ValueError('neighbourhood weights underflowed to 0')
         return np.array(y_d if self._u is None else self._u, dtype=float)
-
-
-def _box(xy=((-0.05, 0.05), (-0.05, 0.05)), apex=(0.3, 1.5), empty=False,
-         site_pair=('P1', 'P1'), apex_band_m=(0.8, 1.0), pattern='self_toss',
-         release_xy_mm=(-50.0, 0.0), target_xy_mm=(-50.0, 0.0)):
-    """R4 (2026-09-23): every caller in this file uses ``sites[0]`` (P1, at
-    (-50, 0) mm -- ``SEPARATION_MM = 100.0``) for both ends of ``site_pair``,
-    so those are the xy defaults -- ``executor._command_u`` now passes the
-    LIVE site's own ``cup_mm[:2]`` to ``adm.select``, and a box whose stamped
-    xy disagreed would refuse regardless of ``site_pair`` / ``apex_band_m``."""
-    if empty:
-        xy = ((float('nan'), float('nan')), (float('nan'), float('nan')))
-        apex = (float('nan'), float('nan'))
-    return adm.AdmissibleBox(
-        site_pair=site_pair, apex_band_m=apex_band_m, landing_xy_m=xy,
-        apex_m=apex, pattern=pattern, release_site_xy_mm=release_xy_mm,
-        target_site_xy_mm=target_xy_mm,
-        limits={'leg_vel_mmps': 1.0, 'leg_acc_mmps2': 1.0,
-               'leg_jerk_mmps3': 1.0, 'hand_acc_rps2': 1.0},
-        gate_hash='0123456789ab', swept_at='2026-09-13',
-        dwell_s=0.30, planner_mode='pose', carry_zvd=False)   # the dwell every schedule in this file compiles at
 
 
 def _schedule_with_then_throw(sites):
@@ -1920,92 +1898,10 @@ def test_an_end_to_end_self_toss_schedule_fails_today_without_the_scheduled_disp
     assert len(dispatched_kinds) == len(sched.skills) == 7
 
 
-def test_an_out_of_box_command_is_clipped(sites):
-    sch = _schedule(sites)
-    inst = _FakeInstaller()
-    learner = _FakeLearner(u=[100.0, 100.0, 5.0])
-    boxes = [_box(site_pair=(sites[0].name, sites[0].name))]
-    x = ex.SkillExecutor(sch, inst, learner=learner, boxes=boxes)
-    x.tick(sch.skills[0].dispatch_s())
-    _kind, terminal, _t, _b = inst.calls[0]
-    want_target = sites[0].catch_site_mm() + np.array([50.0, 50.0, 0.0])
-    assert np.allclose(terminal.target_mm, want_target)
-    # Clipped to the box's apex ceiling, then converted to the planner's flight.
-    assert terminal.flight_s == pytest.approx(sc.flight_s(1.5))
-
-
-def test_an_empty_box_ends_the_attempt_before_any_install(sites):
-    sch = _schedule(sites)
-    inst = _FakeInstaller()
-    boxes = [_box(empty=True, site_pair=(sites[0].name, sites[0].name))]
-    x = ex.SkillExecutor(sch, inst, boxes=boxes)
-    lines = x.tick(sch.skills[0].dispatch_s())
-    assert x.attempt_ended and x.end_code == ex.NO_ADMISSIBLE_COMMAND
-    assert inst.calls == []
-    assert 'EMPTY' in lines[0]
-
-
-def test_a_learner_with_no_box_for_its_site_pair_is_refused(sites):
-    """Finding 5, R3 audit (2026-09-13): a ``boxes`` sequence that carries no
-    box for ``(site.name, target.name)`` -- distinct from an EMPTY box for a
-    pair that IS present -- must also refuse before any solve, or a
-    learner's unclipped command reaches the platform with no admissible-
-    region clip applied at all. The learner itself must never be called
-    either: the box check runs before it."""
-    sch = _schedule(sites)
-    inst = _FakeInstaller()
-    learner = _FakeLearner(u=[100.0, 100.0, 5.0])
-    x = ex.SkillExecutor(sch, inst, learner=learner, boxes=[])
-    lines = x.tick(sch.skills[0].dispatch_s())
-    assert x.attempt_ended and x.end_code == ex.NO_ADMISSIBLE_COMMAND
-    assert inst.calls == []
-    assert learner.calls == []
-    assert 'no admissible box' in lines[0]
-
-
-def test_a_learner_with_a_box_swept_for_a_different_apex_is_refused(sites):
-    """THE LATENT DEFECT this closes (found 2026-09-14): a box exists for the
-    right site pair, but its ``apex_band_m`` was swept for a DIFFERENT apex
-    (0.85-0.95 m) than this schedule's own nominal flight implies (a 0.5 m
-    apex self-toss, flight = ``sc.flight_s(0.5)`` ~= 0.639 s). Before the fix,
-    ``_command_u`` looked the box up by site pair ALONE and would have
-    silently clipped this throw's flight UP into the 0.85-0.95 m band. After
-    the fix it must refuse NO_ADMISSIBLE_COMMAND before any solve, naming the
-    apex and the swept bands."""
-    p1, _p2 = sites
-    sch = _single_throw_schedule(p1, 0, T0_ABS + LAUNCH_S, apex=0.5)
-    inst = _FakeInstaller()
-    learner = _FakeLearner(u=[0.0, 0.0, 0.5])
-    boxes = [_box(site_pair=(p1.name, p1.name), apex_band_m=(0.85, 0.95))]
-    x = ex.SkillExecutor(sch, inst, learner=learner, boxes=boxes)
-    lines = x.tick(sch.skills[0].dispatch_s())
-    assert x.attempt_ended and x.end_code == ex.NO_ADMISSIBLE_COMMAND
-    assert inst.calls == []
-    assert learner.calls == []
-    assert '0.85' in lines[0] and '0.95' in lines[0]
-    assert '0.500' in lines[0]  # the apex, 3 dp
-
-
-def test_a_learner_with_a_box_covering_the_nominal_apex_is_used(sites):
-    """The companion case: a schedule whose nominal apex IS covered by a
-    swept band uses that box (and clips into it) rather than refusing."""
-    p1, _p2 = sites
-    sch = _single_throw_schedule(p1, 0, T0_ABS + LAUNCH_S, apex=0.5)
-    inst = _FakeInstaller()
-    learner = _FakeLearner(u=[100.0, 100.0, 5.0])
-    boxes = [_box(site_pair=(p1.name, p1.name), apex_band_m=(0.4, 0.6))]
-    x = ex.SkillExecutor(sch, inst, learner=learner, boxes=boxes)
-    x.tick(sch.skills[0].dispatch_s())
-    _kind, terminal, _t, _b = inst.calls[0]
-    want_target = p1.catch_site_mm() + np.array([50.0, 50.0, 0.0])
-    assert np.allclose(terminal.target_mm, want_target)
-    assert terminal.flight_s == pytest.approx(sc.flight_s(1.5))
-
-
-def test_a_learner_value_error_ends_the_attempt_like_an_empty_box(sites):
+def test_a_learner_value_error_ends_the_attempt_with_no_admissible_command(sites):
     """R3-a interface (owner amendment): ``learner.command`` raises
     ``ValueError`` rather than returning a non-finite command; the executor
-    treats it exactly like an empty box — one refusal code, nothing solved."""
+    refuses it with one code (NO_ADMISSIBLE_COMMAND) — nothing solved."""
     sch = _schedule(sites)
     inst = _FakeInstaller()
     learner = _FakeLearner(raise_value_error=True)
@@ -2592,17 +2488,16 @@ def test_a_shadow_landed_throw_is_never_read_caught(sites):
     assert 'landed on the held ball' not in ordinary_outcome
 
 
-def _hop_setup(sites, learner, boxes=None, lateral_authority_m=None,
-               target_is_p2=True):
+def _hop_setup(sites, learner, lateral_authority_m=None, target_is_p2=True):
     """A one-THROW hop schedule (release P1, target P2 -- the sitting-7 shape,
-    y_d = (0, APEX_M)) plus an executor wired with ``learner``/``boxes``."""
+    y_d = (0, APEX_M)) plus an executor wired with ``learner``."""
     p1, p2 = sites
     sch = _single_throw_schedule(p1, ball_id=0, t_release=T0_ABS + LAUNCH_S)
     hop_skill = dataclasses.replace(sch.skills[0], entry_hop=True,
                                     target=p2 if target_is_p2 else p1)
     sch = dataclasses.replace(sch, skills=(hop_skill,))
     inst = _FakeInstaller()
-    x = ex.SkillExecutor(sch, inst, learner=learner, boxes=boxes,
+    x = ex.SkillExecutor(sch, inst, learner=learner,
                          lateral_authority_m=lateral_authority_m)
     lines = x.tick(sch.skills[0].dispatch_s())
     return sch, inst, x, lines
@@ -2669,19 +2564,6 @@ def test_an_entry_hop_lateral_correction_is_clipped_to_the_authority(sites):
     assert terminal.flight_s == pytest.approx(sc.flight_s(0.871), abs=1e-9)
 
 
-def test_an_entry_hop_apex_is_clipped_to_the_same_site_box(sites):
-    """The apex part is bounded by the (P1, P1) box's apex range; the hop's
-    cross-site lateral is not boxed."""
-    p1, _p2 = sites
-    learner = _FakeLearner(u=[0.5, 0.0, 5.0])
-    boxes = [_box(site_pair=(p1.name, p1.name), apex=(0.8, 1.0))]
-    sch, inst, x, lines = _hop_setup(sites, learner, boxes=boxes)
-    _kind, terminal, _t, _b = inst.calls[0]
-    assert terminal.flight_s == pytest.approx(sc.flight_s(1.0), abs=1e-9)
-    assert terminal.target_mm[0] == pytest.approx(
-        sites[1].catch_site_mm()[0] + 500.0)
-
-
 def test_a_shadow_landing_throw_still_bypasses_the_learner(sites):
     """`shadow_landing` keeps its plain bypass (2026-10-11 change is hop only)."""
     p1, p2 = sites
@@ -2690,8 +2572,7 @@ def test_a_shadow_landing_throw_still_bypasses_the_learner(sites):
     sch = dataclasses.replace(sch, skills=(sk,))
     inst = _FakeInstaller()
     learner = _FakeLearner(u=[0.5, 0.5, 5.0])
-    x = ex.SkillExecutor(sch, inst, learner=learner,
-                         boxes=[_box(site_pair=(p1.name, p1.name))])
+    x = ex.SkillExecutor(sch, inst, learner=learner)
     x.tick(sch.skills[0].dispatch_s())
     assert learner.calls == []
     _kind, terminal, _t, _b = inst.calls[0]
@@ -5127,8 +5008,8 @@ def test_a_hop_catch_releases_from_the_caught_position_too(limits_r5, geom):
     window's feasibility edge for BOTH planners (probe 2026-10-30: level OK at
     15, both refuse INFEASIBLE at 16 and 20; pose OK at 0-14 and -15, and at
     +15 ends ``UNVERIFIED`` with equality residual 8.0e-03), and it is outside
-    the swept hop box (x +-1 mm at apex 0.9, dwell 0.27), so the executor's
-    clip never dispatches it live.  The invariant is planner-agnostic."""
+    the hop box swept until 2026-11-06 (x +-1 mm at apex 0.9, dwell 0.27), so
+    the executor's clip never dispatched it live.  The invariant is planner-agnostic."""
     p1, p2 = si.columns_sites(250.0)
     for dx, mode in ((15.0, 'level'), (10.0, 'pose')):
         sched, execu, records, landings = _carried_chain(
@@ -5183,7 +5064,7 @@ def test_a_landing_on_the_site_leaves_the_carried_release_bit_identical(
 # ---------------------------------------------------------------------------
 
 def _offset_dispatch(landing_offset_mm, authority_m=0.020, sites=None,
-                     roles='alternate', boxes=None, learner=None):
+                     roles='alternate', learner=None):
     """Dispatch a two-throw self-toss against a FAKE installer with every
     tracker landing offset by ``landing_offset_mm``; return
     ``(schedule, executor, rows)`` with ``rows`` the Experience sink.
@@ -5206,7 +5087,7 @@ def _offset_dispatch(landing_offset_mm, authority_m=0.020, sites=None,
         sched, _FakeInstaller(),
         tracker=lambda ball_id: landings[min(landings)],
         catch_aim_source=ex.AIM_TRACKER, lateral_authority_m=authority_m,
-        on_experience=rows.append, boxes=boxes, learner=learner)
+        on_experience=rows.append, learner=learner)
     for sk in sched.skills:
         x.tick(sk.dispatch_s())
     return sched, x, rows
@@ -7033,209 +6914,6 @@ def test_a_non_aim_refusal_of_the_learned_prior_does_not_fall_back(sites):
 
 
 # ---------------------------------------------------------------------------
-# Wave 3 unit H (owner rule, 2026-10-13): the admissible box bounds the
-# learner's EXPECTED landing laterally, not its lateral command. A learner
-# here is an exact AFFINE plant model ``y = d + D (u - u_bar)`` exposing the
-# same three entries skill_node binds (command / predict / local_model), so
-# every number below is closed-form. Throw: P1, y_d = (0, 0, APEX_M); box
-# x in [-4, +2] mm (the columns P1 box's x range), y wide, apex wide.
-# ---------------------------------------------------------------------------
-
-_ETA = lr.LearnerConfig().eta
-_COLUMNS_X_BOX = ((-0.004, 0.002), (-0.05, 0.05))
-
-
-class _AffineLearner:
-    def __init__(self, D, d, u_bar=(0.0, 0.0, APEX_M), local_model=True):
-        self.u_bar = np.asarray(u_bar, dtype=float)
-        self.D = np.asarray(D, dtype=float)
-        self.d = np.asarray(d, dtype=float)
-        if not local_model:
-            self.local_model = None
-
-    def command(self, x, y_d):
-        D = self.D
-        return self.u_bar + np.linalg.solve(
-            D.T @ D + _ETA * np.eye(3), D.T @ (np.asarray(y_d) - self.d))
-
-    def predict(self, x, u, y_d=None):
-        return self.d + self.D @ (np.asarray(u, dtype=float) - self.u_bar)
-
-    def local_model(self, x, y_d):
-        return self.u_bar.copy(), self.D.copy(), self.d.copy()
-
-
-def _lean_d(dx_m, dy_m=0.0, dapex=0.0):
-    return np.array([dx_m, dy_m, APEX_M + dapex])
-
-
-def _forward_clip_run(sites, learner, authority_m=0.020, xy=_COLUMNS_X_BOX,
-                      apex=(0.3, 1.5), y_d_xy=None):
-    sch = _schedule(sites)
-    if y_d_xy is not None:
-        sch = dataclasses.replace(sch, skills=(dataclasses.replace(
-            sch.skills[0], y_d=(np.asarray(y_d_xy, dtype=float), APEX_M)),)
-            + tuple(sch.skills[1:]))
-    inst = _FakeInstaller()
-    boxes = [_box(xy=xy, apex=apex, site_pair=(sites[0].name, sites[0].name))]
-    x = ex.SkillExecutor(sch, inst, learner=learner, boxes=boxes,
-                         lateral_authority_m=authority_m)
-    lines = list(x.tick(sch.skills[0].dispatch_s()))
-    lines += x.tick(sch.skills[0].dispatch_s() + 0.001)   # a re-tick: no repeats
-    assert inst.calls and inst.calls[0][0] == sg.THROW
-    _x, u_dy, u_apex = x._u_cache[0]
-    return np.asarray(u_dy), float(u_apex), lines, inst.calls[0][1], x
-
-
-def _today_command_clip(learner, authority_m, xy):
-    """The pre-2026-10-13 rule, for the explicit before/after contrast."""
-    u = learner.command(None, np.array([0.0, 0.0, APEX_M]))
-    u_xy = np.clip(u[:2], -authority_m, authority_m)
-    return np.array([np.clip(u_xy[0], *xy[0]), np.clip(u_xy[1], *xy[1])])
-
-
-def test_box_forward_clip_identity_learner_is_todays_command_clip(sites):
-    """Thin support (``local_model`` -> None, command = y_d): an in-box y_d
-    passes, no BOX lines."""
-    learner = SimpleNamespace(
-        command=lambda x, y_d: np.array(y_d, dtype=float),
-        predict=lambda x, u, y_d: np.array(u, dtype=float),
-        local_model=lambda x, y_d: None)
-    u_dy, u_apex, lines, _t, _x = _forward_clip_run(sites, learner)
-    assert np.allclose(u_dy, [0.0, 0.0]) and u_apex == pytest.approx(APEX_M)
-    assert not any('BOX-' in ln for ln in lines)
-
-
-def test_box_forward_clip_y_d_outside_the_box_is_clipped_as_today(sites):
-    """The feed-aim shape: y_d = +20 mm, identity (thin) learner -> +2 mm,
-    exactly the command clip."""
-    learner = SimpleNamespace(
-        command=lambda x, y_d: np.array(y_d, dtype=float),
-        predict=lambda x, u, y_d: np.array(u, dtype=float),
-        local_model=lambda x, y_d: None)
-    u_dy, _a, lines, _t, _x = _forward_clip_run(sites, learner,
-                                                y_d_xy=(0.020, 0.0))
-    assert u_dy == pytest.approx([0.002, 0.0])
-    assert not any('BOX-' in ln for ln in lines)
-
-
-def test_box_forward_clip_sitting_7_lean_keeps_the_authority_command(sites):
-    """d = +27 mm lean, authority 20: the learner wants -22.5, the authority
-    gives -20, the expected landing +7 mm is outside [-4, +2], the authority
-    binds -> the command STAYS -20 (today's rule clipped it to -4), one
-    UNMET line, no refusal."""
-    learner = _AffineLearner(np.eye(3), _lean_d(0.027))
-    assert learner.command(None, [0, 0, APEX_M])[0] == pytest.approx(
-        -0.027 / (1.0 + _ETA))
-    u_dy, _a, lines, terminal, x = _forward_clip_run(sites, learner)
-    assert u_dy == pytest.approx([-0.020, 0.0])
-    assert _today_command_clip(learner, 0.020, _COLUMNS_X_BOX) == \
-        pytest.approx([-0.004, 0.0])
-    assert not x.attempt_ended
-    want = sites[0].catch_site_mm() + np.array([-20.0, 0.0, 0.0])
-    assert np.allclose(terminal.target_mm, want)
-    unmet = [ln for ln in lines if 'BOX-EXPECTED-LANDING-UNMET' in ln]
-    assert len(unmet) == 1 and 'y_hat=(+7.0, +0.0) mm' in unmet[0]
-
-
-def test_box_forward_clip_inside_prediction_passes_the_command(sites):
-    """d = +10 mm: u* = -8.3 mm, y_hat = +1.7 mm inside -> unchanged (today:
-    -4 mm). The apex is still COMMAND-clipped: a fit landing 60 mm low asks
-    for +50 mm of apex, the box's apex ceiling APEX_M holds it."""
-    learner = _AffineLearner(np.eye(3), _lean_d(0.010, dapex=-0.060))
-    u_star = learner.command(None, [0, 0, APEX_M])
-    u_dy, u_apex, lines, terminal, _x = _forward_clip_run(
-        sites, learner, apex=(0.3, APEX_M))
-    assert u_dy == pytest.approx(u_star[:2])
-    assert u_dy[0] == pytest.approx(-0.010 / 1.2)
-    assert _today_command_clip(learner, 0.020, _COLUMNS_X_BOX)[0] == \
-        pytest.approx(-0.004)
-    assert u_star[2] == pytest.approx(APEX_M + 0.050)
-    assert u_apex == pytest.approx(APEX_M)
-    assert terminal.flight_s == pytest.approx(sc.flight_s(APEX_M))
-    inside = [ln for ln in lines if 'BOX-EXPECTED-LANDING' in ln]
-    assert len(inside) == 1 and 'inside' in inside[0]
-
-
-def test_box_forward_clip_pulls_the_expected_landing_onto_the_edge(sites):
-    """Authority room (40 mm), a COUPLED lateral gain and an apex coupling:
-    the pulled-back command puts predict(x, u') exactly on the x edge."""
-    D = np.array([[1.2, 0.1, 0.02], [0.05, 0.9, 0.0], [0.0, 0.0, 1.0]])
-    learner = _AffineLearner(D, _lean_d(0.027, 0.003))
-    u_dy, u_apex, lines, _t, _x = _forward_clip_run(sites, learner,
-                                                    authority_m=0.040)
-    y_new = learner.predict(None, [u_dy[0], u_dy[1], u_apex])
-    assert y_new[0] == pytest.approx(0.002, abs=1e-9)
-    # the damped command alone stopped short of the edge
-    u_star = learner.command(None, [0, 0, APEX_M])
-    assert learner.predict(None, u_star)[0] > 0.002
-    assert np.all(np.abs(u_dy) <= 0.040 + 1e-12)
-    edge = [ln for ln in lines if 'BOX-EXPECTED-LANDING' in ln]
-    assert len(edge) == 1 and 'on the box edge' in edge[0]
-
-
-def test_box_forward_clip_reapplies_the_authority_after_the_pull_back(sites):
-    """Same plant, 25 mm authority: the edge needs ~-26.7 mm, the authority
-    re-clips it to -25 and the landing stays outside (UNMET)."""
-    D = np.eye(3)
-    learner = _AffineLearner(D, _lean_d(0.0287))
-    u_dy, _a, lines, _t, _x = _forward_clip_run(sites, learner,
-                                                authority_m=0.025)
-    assert u_dy[0] == pytest.approx(-0.025)
-    assert any('BOX-EXPECTED-LANDING-UNMET' in ln for ln in lines)
-
-
-def test_box_forward_clip_ill_conditioned_gain_falls_back(sites):
-    """A fit that says the landing barely responds (gain 0.1 < floor 0.5) is
-    not inverted: the command clip, BOX-FORWARD-CLIP-FALLBACK once."""
-    D = np.diag([0.1, 0.1, 1.0])
-    learner = _AffineLearner(D, _lean_d(0.027))
-    u_dy, _a, lines, _t, _x = _forward_clip_run(sites, learner)
-    assert u_dy == pytest.approx([-0.004, 0.0])
-    fb = [ln for ln in lines if 'BOX-FORWARD-CLIP-FALLBACK' in ln]
-    assert len(fb) == 1 and 'below the floor' in fb[0]
-    assert ex.BOX_FORWARD_GAIN_FLOOR == 0.5
-
-
-def test_box_forward_clip_without_local_model_warns_and_clips_command(sites):
-    learner = SimpleNamespace(
-        command=_AffineLearner(np.eye(3), _lean_d(0.027)).command,
-        predict=lambda x, u, y_d: np.array(u, dtype=float))
-    u_dy, _a, lines, _t, _x = _forward_clip_run(sites, learner)
-    assert u_dy == pytest.approx([-0.004, 0.0])
-    warn = [ln for ln in lines if 'BOX-FORWARD-CLIP-UNAVAILABLE' in ln]
-    assert len(warn) == 1 and '(WARN)' in warn[0]
-
-
-def test_box_forward_clip_with_a_real_memory_matches_predict(sites, tmp_path):
-    """End to end on a REAL ``memory.Memory`` biased +27 mm: the pulled-back
-    command's ``learner.predict`` sits on the box edge (40 mm authority)."""
-    p1 = sites[0]
-    m = mem.Memory(str(tmp_path / 'plant' / 'memory.csv'))
-    x_p1 = np.array([p1.cup_mm[0] / 1000.0, p1.cup_mm[1] / 1000.0, 0.0, 0.0])
-    rng = np.random.default_rng(0)
-    for i in range(16):
-        u = np.array([rng.uniform(-0.03, 0.0), rng.uniform(-0.01, 0.01),
-                      APEX_M])
-        m.append(mem.Experience(x=x_p1, u=u, y=u + np.array([0.027, 0, 0]),
-                                t_abs_s=1e9 + i, ball_id=0, caught=True))
-    cfg = lr.LearnerConfig()
-    X, U, Y = m.arrays()
-    learner = SimpleNamespace(
-        command=lambda x, y_d: m.command(x, y_d, cfg),
-        predict=lambda x, u, y_d: m.predict(x, u, cfg, y_d=y_d),
-        local_model=lambda x, y_d: lr.local_model(x, y_d, *m.arrays(), cfg))
-    u_dy, u_apex, lines, _t, x = _forward_clip_run(sites, learner,
-                                                   authority_m=0.040)
-    xq = x._u_cache[0][0]
-    y_hat = m.predict(xq, [u_dy[0], u_dy[1], u_apex], cfg,
-                      y_d=[0.0, 0.0, APEX_M])
-    assert y_hat[0] == pytest.approx(0.002, abs=1e-9)   # the +x edge
-    assert -0.05 <= y_hat[1] <= 0.05
-    assert any('on the box edge' in ln for ln in lines)
-
-
-# ---------------------------------------------------------------------------
 # P1b (handoff-solve-chaining): the live re-send fences model the node's
 # splice arithmetic -- snap-aware MIN_WINDOW / CONTACT-WINDOW and the
 # non-terminal PINNED-BUDGET pre-decline
@@ -8014,66 +7692,6 @@ def test_a_catch_time_offset_run_writes_no_learner_row(sites, offset_s):
         assert 'no learner row: catch_time_offset in force' in outcome
         assert not x.reports[0].row
         assert 'catch_time_offset in force' in x.reports[0].no_row_reason
-
-
-# ── High-low Columns (JP-9): the box is selected by the THROWN ball's Dwell ──
-
-def _highlow_cells(p_hi, p_lo, timing, apex_hi=1.05, apex_lo=0.95):
-    out = []
-    for site, apex, dwell in ((p_hi, apex_hi, timing.dwells[0]),
-                              (p_lo, apex_lo, timing.dwells[1])):
-        xy = (float(site.cup_mm[0]), float(site.cup_mm[1]))
-        out.append(dataclasses.replace(
-            _box(site_pair=(site.name, site.name),
-                 apex_band_m=(apex - 0.025, apex + 0.025),
-                 pattern=sc.COLUMNS_HIGHLOW, release_xy_mm=xy,
-                 target_xy_mm=xy), dwell_s=dwell))
-    return out
-
-
-def test_high_low_selects_each_balls_cell_by_its_own_dwell():
-    """Ball A (1.05, at P2) is stamped with the commanded Dwell, ball B (0.95,
-    at P1) with its longer one. `_box_dwell_s` reads the skill's ball, so every
-    THROW command finds its ball's cell; a box carrying only the commanded
-    Dwell for the low ball (today's single `schedule.dwell_s` key) is refused
-    -- which is the select defect a scalar dwell would have had."""
-    p1, p2 = si.columns_sites(125.0)
-    pat = sc.Pattern(sites=(p2, p1), apex_m=1.05, apex_m_ball_b=0.95,
-                     dwell_s=0.27, n_throws=6)
-    sch = sc.compile_columns(pat, t0_abs_s=T0_ABS)
-    timing = sc.columns_ball_timing(1.05, 0.95, 0.27)
-    boxes = _highlow_cells(p2, p1, timing)
-    x = ex.SkillExecutor(sch, _FakeInstaller(), learner=_FakeLearner(),
-                         boxes=boxes)
-    seen = set()
-    for idx, sk in enumerate(sch.skills):
-        tt = sk.then_throw
-        if tt is None or tt.shadow_landing:
-            continue
-        assert x._box_dwell_s(idx) == timing.dwells[sk.ball_id]
-        _dy, u_apex = x._command_u(idx, sk.site, tt.target, tt.y_d)
-        assert u_apex == pytest.approx(tt.y_d[1])
-        seen.add(sk.ball_id)
-    assert seen == {0, 1}
-    # The low ball's cell stamped at the COMMANDED dwell: no cell for ball B.
-    wrong = [boxes[0], dataclasses.replace(boxes[1], dwell_s=0.27)]
-    x2 = ex.SkillExecutor(sch, _FakeInstaller(), learner=_FakeLearner(),
-                          boxes=wrong)
-    low = next(i for i, s in enumerate(sch.skills)
-               if s.ball_id == 1 and s.then_throw is not None
-               and not s.then_throw.shadow_landing)
-    with pytest.raises(ex._NoAdmissibleCommand, match='dwell'):
-        x2._command_u(low, sch.skills[low].site, sch.skills[low].then_throw.target,
-                      sch.skills[low].then_throw.y_d)
-
-
-def test_equal_apex_box_dwell_is_the_schedule_dwell():
-    p1, p2 = si.columns_sites(125.0)
-    sch = sc.compile_columns(sc.Pattern(sites=(p2, p1), apex_m=0.95,
-                                        dwell_s=0.27, n_throws=4),
-                             t0_abs_s=T0_ABS)
-    x = ex.SkillExecutor(sch, _FakeInstaller())
-    assert {x._box_dwell_s(i) for i in range(len(sch.skills))} == {sch.dwell_s}
 
 
 # ---------------------------------------------------------------------------

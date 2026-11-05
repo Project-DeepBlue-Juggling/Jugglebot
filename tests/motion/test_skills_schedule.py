@@ -1703,8 +1703,8 @@ def test_compile_reload_dispatch_is_monotone_non_decreasing(site):
 def test_compile_reload_pattern_label_reuses_the_swept_self_toss_hop_box(site):
     """``Schedule.pattern`` must stay ``'self_toss'``/``'hop'`` — NOT a third
     label — because every THROW a reload schedules is kinematically an
-    ordinary self-toss/hop throw and that is the box actually swept
-    (`tools/admissible_sweep.py` sweeps no 'reload' box at R4)."""
+    ordinary self-toss/hop throw and that label is the one planned
+    (until 2026-11-06 the box actually swept; no 'reload' box was ever swept)."""
     landing_mm, landing_vel, t_land_abs, pattern, t0 = _reload_args(site)
     schedule = sc.compile_reload(landing_mm, landing_vel, t_land_abs, pattern, t0)
     assert schedule.pattern == 'self_toss'

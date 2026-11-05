@@ -237,7 +237,7 @@ def test_the_reserved_window_is_the_schedules_window_not_window_plus_lead(
     """The planned window shrinks by exactly the lead: the default plans
     ``launch_s + lead`` (the live 0.600 s "over 0.900 s from rest" THROW), the
     reserved origin plans ``launch_s`` — the window ``plan_columns_first_cycle``
-    and the admissible box certify (``t_abs - window_s``)."""
+    and the online check (until 2026-11-06 the admissible box) certify (``t_abs - window_s``)."""
     rec_d, res_d, _ = _reserved_throw(limits, geom, 0.0, reserve=False)
     rec_r, res_r, _ = _reserved_throw(limits, geom, 0.0)
     assert res_d.accepted and res_r.accepted, (res_d.message, res_r.message)

@@ -47,8 +47,8 @@ from jugglebot.can import odrive
 # numeric default lived ONLY in the coordinator, never here or in the GUI).
 # A numeric field the operator DID set in the GUI's Juggle panel arrives as a
 # ``key=value`` token and is relayed verbatim; skill_node stays the authority
-# on whether that value is admissible (it refuses an unswept apex/separation
-# with an honest code before anything moves).
+# on whether that value is admissible (it refuses an apex/separation the nomination
+# cannot plan, with an honest code before anything moves).
 #
 # The request grammar (goal field -> parser, strict on unknown tokens) lives in
 # the pure module `jugglebot.juggle_request`, shared with skill_node's

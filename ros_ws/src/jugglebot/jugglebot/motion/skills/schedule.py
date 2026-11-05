@@ -204,10 +204,9 @@ def apex_m(flight_s_: float) -> float:
     is consistent with — ``t_f = 2·sqrt(2·apex_m / g)`` run backward, i.e.
     ``apex_m = g · (t_f / 2)² / 2``, the SAME ``g`` (:data:`_G_SI`) so a
     round trip through both functions is exact to float precision.  Lets a
-    caller that only has a flight time — an admissible box swept over an
-    explicit flight grid before 2026-09-18
-    (:func:`~jugglebot.motion.skills.admissible.load`) — recover the apex the
-    command is expressed in."""
+    caller that only has a flight time — as the retired Admissible box did
+    before 2026-09-18, when it was swept over an explicit flight grid —
+    recover the apex the command is expressed in."""
     if not float(flight_s_) > 0.0:
         raise ValueError('flight_s must be > 0, got %r' % (flight_s_,))
     return _G_SI * (float(flight_s_) / 2.0) ** 2 / 2.0
@@ -296,7 +295,7 @@ def transit_s(flight_s_: float, dwell_s: float) -> float:
     return (float(flight_s_) - float(dwell_s)) / 2.0
 
 
-#: The ``Schedule.pattern`` label (and admissible-box pattern) of a Columns
+#: The ``Schedule.pattern`` label (and nomination pattern; formerly the admissible-box pattern) of a Columns
 #: whose two balls fly to DIFFERENT Apexes (JP-9, goal ``columns_highlow``).
 COLUMNS_HIGHLOW = 'columns_highlow'
 
@@ -340,8 +339,9 @@ def columns_ball_timing(apex_a_m: float, apex_b_m: float,
     Equal Apexes are today's arithmetic EXACTLY (no float re-association):
     both balls take the high branch, ``d`` and ``transit_s(t_f, d)``
     unchanged, which is what keeps an equal-Apex schedule bit-identical.
-    The sweep (``tools/admissible_sweep.py``) reads this same function, so a
-    low ball's ``dwell_s`` stamp and the executor's select agree to the bit.
+    The nomination (``motion/skills/nominate.py``) and the executor read this
+    same function, so the planned low ball's dwell and the executed one agree
+    to the bit.
     """
     t = (flight_s(apex_a_m), flight_s(apex_b_m))
     t_hi = max(t)
@@ -583,7 +583,7 @@ class Skill:
     #: self-toss. Mutually exclusive with ``shadow_landing`` (THROW 0 can
     #: never be the columns Stop's cross-site last throw — that needs
     #: ``n_throws >= 2`` and ``i == n - 1``, never ``i == 0``). The
-    #: executor bypasses the learner AND the admissible box for this throw
+    #: executor bypasses the learner AND the online check's lateral bound for this throw
     #: (``u = y_d`` exactly) and writes no memory row — the same bypass
     #: mechanism ``shadow_landing`` uses, but none of its other semantics
     #: (this throw's ``caught`` reads normally; it is not landing on a ball
@@ -743,17 +743,16 @@ class Schedule:
     #: :meth:`SkillExecutor._command_u` (only a THROW does), and every THROW
     #: it schedules afterward is kinematically an ordinary self-toss/hop
     #: throw (same site, same apex/dwell, a fresh-origin THROW 0 from a level
-    #: rest then dwell-carried throws) — so the box already swept for that
-    #: pattern is the CORRECT one, and a ``'reload'`` label would only send
-    #: every such throw to a box that does not exist (no sweep runs at R4;
-    #: `tools/` is out of scope for this unit).  Read by the admissible-box
-    #: selection at dispatch
-    #: (:mod:`~jugglebot.motion.skills.admissible`), which a box is swept
-    #: per-pattern for.  REQUIRED, no default (R4 audit call, 2026-09-23):
-    #: a schedule with no stated pattern is a schedule the executor cannot
-    #: safely look a box up for, and a defaulted label would let a hand-built
-    #: schedule silently borrow another pattern's swept box -- the same class
-    #: of defect as a box swept for one apex being reused at another.
+    #: rest then dwell-carried throws) — so that pattern's own label is the CORRECT
+    #: one, and a ``'reload'`` label would only send every such throw to a
+    #: pattern the planner has no treatment for (until 2026-11-06: a box that
+    #: does not exist, no sweep ran at R4).  Read per-pattern at dispatch
+    #: (:mod:`~jugglebot.motion.skills.admissible`), for which the (retired)
+    #: Admissible box was swept per pattern.  REQUIRED, no default (R4 audit
+    #: call, 2026-09-23): a schedule with no stated pattern is a schedule the
+    #: executor cannot safely key per-pattern behaviour on, and a defaulted
+    #: label would let a hand-built schedule silently borrow another
+    #: pattern's treatment (until 2026-11-06, another pattern's swept box).
     pattern: str
     #: Schedule ball ids that are motion-only — see :class:`Pattern`'s own
     #: field (the ONE place a compiler sets this to anything but ``()``:
@@ -777,8 +776,8 @@ class Schedule:
 
     def dwell_for(self, ball_id: int) -> float:
         """The Dwell (s) schedule ball ``ball_id`` spends in the Cup between
-        its Catch and its next Throw: the admissible box's ``dwell_s`` stamp
-        for that ball's cells. :attr:`dwell_s` unless this is a high-low
+        its Catch and its next Throw (until 2026-11-06 also the ``dwell_s``
+        stamp of the Admissible box's cells for that ball). :attr:`dwell_s` unless this is a high-low
         Columns, where the LOW ball dwells longer (:func:`columns_ball_timing`)."""
         if self.dwell_by_ball:
             return float(self.dwell_by_ball[int(ball_id)])
@@ -1103,7 +1102,7 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
     limits 300/5000/150000): the real ``segments.plan_segment`` ACCEPTS the
     cross-site catch-with-throw (peak leg jerk 149 210 mm/s³ against the
     150 000 cap — no headroom, but this is a single terminal event with
-    ``u = y_d`` fixed, not a box-swept command the learner re-aims, so the
+    ``u = y_d`` fixed, not a command the learner re-aims, so the
     tight margin is acceptable here and nowhere else).
 
     **The one-ball PARITY RULE (owner decision, 2026-10-23 — columns_1ball_fed
@@ -1141,9 +1140,10 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
     behaviour: the only throw stays at its own site, ``shadow_landing`` stays
     ``False`` — there is nothing held to land on.
 
-    The executor bypasses the learner and the admissible box entirely for a
-    ``shadow_landing`` throw (``u = y_d`` exactly, no clip): the box is swept
-    per pattern for SAME-site throws, this is a cross-site one, and precision
+    The executor bypasses the learner and the online lateral bound entirely
+    for a ``shadow_landing`` throw (``u = y_d`` exactly, no clip; until
+    2026-11-06 the offline box was swept only for SAME-site throws and this is
+    a cross-site one), and precision
     buys nothing when the ball is landing on a ball already at rest — see
     ``executor.SkillExecutor._command_u``.
 
@@ -1189,7 +1189,7 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
     every CATCH still splices on the previous release (``base = t_land -
     tau_i = t_throw + beta``). A low ball whose transit would be ``<= 0`` is
     refused by name. The Schedule is labelled :data:`COLUMNS_HIGHLOW` (its
-    own admissible-box cells) and carries ``dwell_by_ball`` /
+    own pattern label; formerly its own admissible-box cells) and carries ``dwell_by_ball`` /
     ``flight_by_ball``; its scalars are the HIGH ball's. Equal Apexes compile
     today's schedule bit for bit, label ``'columns'`` included.
 
@@ -1383,9 +1383,10 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
                         transit_s=tau, dwell_s=float(pattern.dwell_s),
                         t0_abs_s=t0, pattern='columns',
                         phantom_balls=pattern.phantom_balls)
-    # High-low (JP-9): its own box label, so a plain Columns at one of these
-    # Apexes can never select a cell swept for the other ball's seed and
-    # timing (`admissible.PATTERNS`); per-ball timing rides on the Schedule.
+    # High-low (JP-9): its own pattern label, so a plain Columns at one of these
+    # Apexes can never be planned with the other ball's seed and timing
+    # (until 2026-11-06: select a cell swept for them, `admissible.PATTERNS`);
+    # per-ball timing rides on the Schedule.
     return Schedule(skills=tuple(skills), flight_s=t_f, beat_s=beta,
                     transit_s=tau, dwell_s=float(pattern.dwell_s),
                     t0_abs_s=t0, pattern=COLUMNS_HIGHLOW,
@@ -2088,7 +2089,7 @@ def compile_reload(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
     skills = [_shifted(s, t0) for s in skills]
     # NOT a 'reload' label — see the field docstring on `Schedule.pattern`:
     # every THROW this schedule dispatches is kinematically an ordinary
-    # self-toss/hop throw (or, fixed-role, the oval_1ball box), and that is the box actually swept.
+    # self-toss/hop throw (or, fixed-role, the oval_1ball pattern), and that label is the one planned.
     return Schedule(skills=tuple(skills), flight_s=t_f, beat_s=period,
                     transit_s=t_f, dwell_s=float(pattern.dwell_s), t0_abs_s=t0,
                     pattern=_one_ball_label(pattern))

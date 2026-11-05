@@ -4,10 +4,11 @@ Given a target landing ``y_d``, the current state ``x`` and a memory of past
 (``x``, ``u``, ``y``) rows, :func:`command` returns the next commanded
 ``u`` -- a local, kernel-weighted affine correction of the identity prior
 ``u = y_d`` (paper arXiv:2608.26800v2, eq. 17, S18/S19, 21). This module is
-the closed form only: it does not apply an :class:`AdmissibleBox` (that is
-the executor's job -- since 2026-10-13 the box bounds the EXPECTED landing,
-:func:`predict` of the sent command, via :func:`local_model`; the apex is
-still clipped as a command) and it does not touch a memory's storage (that
+the closed form only: it does not bound the command (that is the
+executor's job -- until 2026-11-06 an offline Admissible box bounded the
+EXPECTED landing, :func:`predict` of the sent command, via
+:func:`local_model`; since then the per-Throw online check, I-ADMIT-1,
+does) and it does not touch a memory's storage (that
 is ``memory.Memory``).
 
 Centring (paper eq. S18, verbatim, confirmed by the R3 hyperparameter probe
@@ -78,9 +79,9 @@ Failure modes of this law, enumerated:
 * **Outliers inside the gate** (closer than 3 h_y = 150 mm lateral / 0.3 m
   apex) carry full fit weight: one row moves ``d`` by up to ~150/k mm for k
   throws. The apex band, the quarantine convention, the lateral authority
-  clip and the admissible box (on the EXPECTED landing laterally, on the
-  command for the apex -- executor, 2026-10-13) bound what reaches the
-  platform.
+  clip and the online check (I-ADMIT-1: the EXPECTED landing laterally,
+  the command for the apex -- executor; until 2026-11-06 the offline
+  Admissible box did this) bound what reaches the platform.
 * **Gate asymmetry.** The gate is centred on ``y_d``, so a plant biased by
   ~3 bandwidths loses its tail rows on one side. That is the cold-start
   regime in which the old kernel's weights (< e^-9 each against gamma)
@@ -301,10 +302,10 @@ def _local_fit(x, Xs, Us, Ys, d2s, cfg: LearnerConfig):
 
 def command(x, y_d, X, U, Y, cfg: LearnerConfig = None) -> np.ndarray:
     """The next commanded ``u`` (3,) -- plan § 2.5 steps 1-4 as amended in the
-    module docstring (step 5, applying the
-    :class:`~jugglebot.motion.skills.admissible.AdmissibleBox`, is the
-    caller's job -- since 2026-10-13 it bounds the EXPECTED landing laterally,
-    via :func:`local_model`, and the apex command).
+    module docstring (step 5, bounding the
+    command, is the caller's job -- the online check, I-ADMIT-1; until
+    2026-11-06 an offline Admissible box did it, on the EXPECTED landing
+    laterally via :func:`local_model` and on the apex command).
 
     ``x`` (4,) is the query state (site xy, seat-offset xy); ``y_d`` (3,) the
     target (landing xy, apex); ``X``/``U``/``Y`` are ``(n, 4)``/``(n, 3)``/
@@ -352,8 +353,9 @@ def predict(x, u, X, U, Y, cfg: LearnerConfig = None, y_d=None) -> np.ndarray:
     -- landing xy offset, apex; SI, the same shape as a ``Y`` row -- when
     commanded ``u`` from state ``x`` (2026-10-13, wave 2 unit A: the catch
     prior is this, not ``y_d``, because the command that reaches the platform
-    is bounded by the lateral authority and the admissible box -- which
-    since 2026-10-13 bounds THIS prediction laterally, so the two agree --
+    is bounded by the lateral authority and the online check (until
+    2026-11-06 the offline Admissible box, which bounded THIS prediction
+    laterally, so the two agreed) --
     and the ball lands where the plant takes THAT command, not at the
     target).
 
@@ -415,10 +417,11 @@ def local_model(x, y_d, X, U, Y, cfg: LearnerConfig = None):
     ``y_hat(u) = d + D (u - u_bar)`` is exactly :func:`predict` ``(x, u,
     ..., y_d=y_d)``; ``D`` (3, 3) is ``Theta[:, 4:7]``, ``d`` (3,) is
     ``Theta[:, 7]``. Exposed (2026-10-13, wave 3 unit H) so the executor can
-    bound the EXPECTED landing by the admissible box: it clips ``y_hat`` into
-    the box and pulls the command back through the EXACT inverse of the
-    lateral block of ``D`` -- not :func:`command`'s ``eta``-damped step, which
-    by construction never reaches the box edge. Same neighbourhood and fit
+    bound the EXPECTED landing (until 2026-11-06 by the offline Admissible
+    box: it clipped ``y_hat`` into the box and pulled the command back
+    through the EXACT inverse of the lateral block of ``D`` -- not
+    :func:`command`'s ``eta``-damped step, which by construction never
+    reached the box edge). Same neighbourhood and fit
     weights as :func:`command` (:func:`_neighbourhood`, :func:`_local_fit`),
     so the A2 invariant holds unchanged.
 

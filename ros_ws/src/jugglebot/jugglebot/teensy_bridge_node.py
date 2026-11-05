@@ -1507,8 +1507,9 @@ class TeensyBridgeNode(Node):
         # matches the wire scale before arming K > 0).
         self.declare_parameter('hand_torque_ff_gain', 0.0)
         # Hand-jam detector + recovery (motion/hand_jam.py). Bridge parameters,
-        # not YAML, for now: a YAML edit + regen changes the admissible-box
-        # gate hash and forces a ~22 min re-sweep per configuration. Each is
+        # not YAML, for now (until 2026-11-06 a YAML edit + regen changed the
+        # Admissible box's gate hash and forced a ~22 min re-sweep; the box is
+        # gone, the placement stands unreviewed). Each is
         # validated together in `_hand_jam_load_config`.
         _hj_defaults = hj.JamConfig()
         for _hj_name in hj.JamConfig.ROS_PARAMS:

@@ -1373,7 +1373,7 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
     :func:`_pose_augment` then appends its blocks (leg-jerk objective, C-CUP-4
     rows, the optional dz block) after every pre-existing column, so with
     ``pose=None`` not one byte of the program moves (the T-U2 parity fixtures
-    and the admissible box's pinned values are what guard that).
+    are what guard that; until 2026-11-06 the Admissible box's pinned values did too).
 
     Decision variables are the cup's per-axis jerk over ``n_steps`` knots,
     stacked axis-major. Every term below has a one-to-one counterpart in

@@ -266,8 +266,8 @@ class BallTracker:
         # A human-thrown ball keeps its id through catch and re-throw, so its
         # fit segments flights (`FlightFit` class doc; 2026-11-03, JB-113). An
         # announced ball gets a new id per throw and never segments. A
-        # constructor default, not a YAML key: `hardware_config.py` is a box-
-        # gated file, and this knob does not touch the robot's own throws.
+        # constructor default, not a YAML key: `hardware_config.py` was a box-
+        # gated file (until 2026-11-06), and this knob does not touch the robot's own throws.
         # None turns segmentation off (pools every flight, the old behaviour).
         self.flight_fit_new_flight_rise_mm = (
             None if flight_fit_new_flight_rise_mm is None

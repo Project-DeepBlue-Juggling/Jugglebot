@@ -3,8 +3,8 @@
 `SkillNode._checker` plans a segment with `check_only` and installs
 nothing; this phase WIRES it: every `SkillExecutor(...)` the node builds gets
 `checker=self._checker` and `early_command=<admissibility_early_command>`
-through `_online_kwargs`. (P3b: goal ACCEPTANCE is now decided by nomination,
-not the box; see test_skill_node_nominate.py.)
+through `_online_kwargs`. (Goal ACCEPTANCE is decided by nomination;
+see test_skill_node_nominate.py.)
 """
 from __future__ import annotations
 
@@ -18,14 +18,12 @@ from std_srvs.srv import Trigger
 from jugglebot import skill_node as sn
 
 from tests.ros.test_skill_node import (
-    _columns_goal, _freshen, _good_box_path, _node_with_client,
+    _columns_goal, _freshen, _node_with_client,
     _prelevel_ready, _self_toss_goal, _status)
 
 
 def _start_columns(node, tmp_path):
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_columns_goal(separation_mm=100.0))
     assert resp.success is True, resp.message
     return node._executor
@@ -60,8 +58,6 @@ def test_a_self_toss_executor_gets_the_checker_and_the_early_switch():
     assert resp.success is True, resp.message
     assert node._executor.checker == node._checker
     assert node._executor.early_command is True
-    # P3b: no box rides on the executor (acceptance is the nomination's).
-    assert node._executor.boxes is None
 
 
 def test_every_executor_construction_site_hands_the_online_kwargs():

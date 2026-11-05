@@ -2331,7 +2331,7 @@ def test_a_bump_with_no_matching_catch_in_the_record_is_terminal():
 # ONE live switch: skill_node's `planner_mode` parameter rides on every
 # InstallSegment request and trajectory_node plans THAT segment with it; the
 # node's own SegmentConfig.planner_mode only answers a request that carries
-# none (''), so the box selected and the plan flown cannot disagree.
+# none (''), so the nomination made and the plan flown cannot disagree.
 
 def _fresh_catch_throw(node, at, mode):
     req = _catch_throw_req(at + 0.5, at + 1.0)

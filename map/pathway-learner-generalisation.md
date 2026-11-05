@@ -18,4 +18,4 @@ links: []
 destination: A global plant model with a physics-keyed residual replaces the local-linear Memory and the offline Admissible box, so any Site, Apex, Dwell or yaw can be commanded and changed mid-Pattern.
 ---
 
-Plans `plans/active/learner-generalisation.md` (P1-P5 not started) and `plans/active/box-sweep-same-site-fidelity.md` (sequenced here because P3 decides the box's fate).
+Plans `plans/active/learner-generalisation.md` (P3a, P3b and P3c built on branch `p3-online-admissibility`, 2026-11-06, held for the owner's merge; P1, P2, P4, P5 not started) and `plans/archived/box-sweep-same-site-fidelity.md` (archived 2026-11-06 as superseded: P3c retired the box).

@@ -63,7 +63,7 @@ def probe():
 
 @pytest.fixture(scope='module')
 def cell(probe):
-    limits = probe.asw._limits(*_OLD_LIMITS)
+    limits = probe.asw.sitting_limits(*_OLD_LIMITS)
     c = probe.Cell(_SITE_MM, _APEX, limits, StewartGeometry(),
                    sg.SegmentConfig(planner_mode='pose'))
     assert c.ok, c.code
@@ -342,6 +342,17 @@ def test_a_learner_value_error_still_refuses_on_the_online_path(cell):
     assert chk.calls == [] and 'finite' in x.end_message
 
 
+def test_a_learner_value_error_refuses_with_no_checker_too(cell):
+    """The same refusal on the checker-less path (the sim and tests without a
+    checker): a Learner that cannot produce a finite command ends the Attempt
+    by name before any install. Pinned until 2026-11-06 by the box-era
+    `test_a_learner_value_error_ends_the_attempt_like_an_empty_box`."""
+    _s, inst, x, _l, _st = _run_catch(
+        cell, None, learner=_Learner([0.0, 0.0, _APEX], raise_value_error=True))
+    assert x.end_code == ex.NO_ADMISSIBLE_COMMAND and inst.calls == []
+    assert 'finite' in x.end_message
+
+
 def test_a_shadow_landing_carried_throw_bypasses_the_checker(cell):
     chk = _ScriptedChecker()
     learner = _Learner([0.030, 0.0, 1.2])
@@ -386,8 +397,7 @@ def env_spy(monkeypatch):
 _P1, _P2 = st.columns_sites(100.0)
 
 
-def _throw_run(checker, learner=None, entry_hop=False, shadow=False,
-               boxes=None):
+def _throw_run(checker, learner=None, entry_hop=False, shadow=False):
     sk = Skill(kind=sg.THROW, ball_id=0, site=_P1, t_abs_s=10.4,
                window_s=0.4, y_d=(np.zeros(2), _APEX),
                target=_P2 if (entry_hop or shadow) else _P1,
@@ -396,8 +406,7 @@ def _throw_run(checker, learner=None, entry_hop=False, shadow=False,
                    flight_s=sc.flight_s(_APEX), beat_s=1.0, transit_s=0.6,
                    dwell_s=0.27, t0_abs_s=10.0)
     inst = _Installer()
-    x = ex.SkillExecutor(sch, inst, learner=learner, checker=checker,
-                         boxes=boxes)
+    x = ex.SkillExecutor(sch, inst, learner=learner, checker=checker)
     lines = x.tick(sk.dispatch_s())
     return inst, x, lines
 
@@ -428,22 +437,14 @@ def test_the_envelope_is_evaluated_on_a_launch_throw_and_no_check_is_solved(
     assert any('passed the envelope' in ln for ln in lines)
 
 
-def test_a_hop_entry_takes_the_envelope_not_the_box_and_no_check(env_spy):
-    """The hop's apex-only clip to the same-site box is REPLACED online: a
-    box whose apex ceiling is 0.90 does not clip the learner's 0.93."""
+def test_a_hop_entry_takes_the_envelope_and_no_apex_clip_and_no_check(env_spy):
+    """The hop's apex-only clip to a same-site box is retired (P3c); online
+    the learner's 0.93 apex is commanded as is, judged by the envelope
+    only."""
     spy = env_spy()
     chk = _ScriptedChecker()
-    box = adm.AdmissibleBox(
-        site_pair=(_P1.name, _P1.name), apex_band_m=(0.9, 1.0),
-        landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.3, 0.90),
-        pattern='self_toss', release_site_xy_mm=tuple(_P1.cup_mm[:2]),
-        target_site_xy_mm=tuple(_P1.cup_mm[:2]),
-        limits={'leg_vel_mmps': 1.0, 'leg_acc_mmps2': 1.0,
-                'leg_jerk_mmps3': 1.0, 'hand_acc_rps2': 1.0},
-        gate_hash='0123456789ab', swept_at='2026-11-06', dwell_s=0.27,
-        planner_mode='pose', carry_zvd=False)
     inst, x, _l = _throw_run(chk, learner=_Learner([0.0, 0.0, 0.93]),
-                             entry_hop=True, boxes=[box])
+                             entry_hop=True)
     assert len(spy.calls) == 1 and chk.calls == []
     assert inst.calls[0][1].flight_s == pytest.approx(sc.flight_s(0.93))
 
@@ -526,29 +527,42 @@ def test_an_envelope_refused_carried_candidate_and_model_end_the_attempt(
 
 
 # ---------------------------------------------------------------------------
-# (4) checker=None keeps the box path
+# (4) checker=None: the candidate is commanded as is (the box path is retired)
 # ---------------------------------------------------------------------------
 
-def test_no_checker_keeps_the_box_path_and_a_checker_ignores_the_box(env_spy):
-    box = adm.AdmissibleBox(
-        site_pair=(_P1.name, _P1.name), apex_band_m=(0.9, 1.0),
-        landing_xy_m=((-0.002, 0.002), (-0.05, 0.05)), apex_m=(0.3, 1.5),
-        pattern='self_toss', release_site_xy_mm=tuple(_P1.cup_mm[:2]),
-        target_site_xy_mm=tuple(_P1.cup_mm[:2]),
-        limits={'leg_vel_mmps': 1.0, 'leg_acc_mmps2': 1.0,
-                'leg_jerk_mmps3': 1.0, 'hand_acc_rps2': 1.0},
-        gate_hash='0123456789ab', swept_at='2026-11-06', dwell_s=0.27,
-        planner_mode='pose', carry_zvd=False)
+def test_no_checker_commands_the_candidate_as_is_and_a_checker_judges_it(
+        env_spy):
+    """Without a checker the Learner's authority-clipped candidate IS the
+    command: no clip, no envelope, no refusal (the box that used to clip it to
+    +2 mm is retired, P3c). With a checker the same candidate is judged by
+    the online check (a passing one is commanded unchanged here too)."""
     spy = env_spy()
     learner = _Learner([0.010, 0.0, _APEX])
-    inst, _x, _l = _throw_run(None, learner=learner, boxes=[box])
-    np.testing.assert_allclose(inst.calls[0][1].target_mm,
-                               _P1.catch_site_mm() + [2.0, 0.0, 0.0])
-    assert spy.calls == []                      # no envelope on the box path
-    inst, _x, _l = _throw_run(_ScriptedChecker(), learner=learner,
-                              boxes=[box])
+    inst, x, _l = _throw_run(None, learner=learner)
+    assert not x.attempt_ended, x.end_message
     np.testing.assert_allclose(inst.calls[0][1].target_mm,
                                _P1.catch_site_mm() + [10.0, 0.0, 0.0])
+    assert inst.calls[0][1].flight_s == pytest.approx(sc.flight_s(_APEX))
+    assert spy.calls == []                      # no envelope without a checker
+    inst, _x, _l = _throw_run(_ScriptedChecker(), learner=learner)
+    np.testing.assert_allclose(inst.calls[0][1].target_mm,
+                               _P1.catch_site_mm() + [10.0, 0.0, 0.0])
+
+
+def test_no_checker_applies_the_lateral_authority_to_the_candidate():
+    """The one bound that survives without a checker: the per-axis lateral
+    authority about ``y_d``."""
+    sk = Skill(kind=sg.THROW, ball_id=0, site=_P1, t_abs_s=10.4,
+               window_s=0.4, y_d=(np.zeros(2), _APEX), target=_P1)
+    sch = Schedule(pattern='self_toss', skills=(sk,),
+                   flight_s=sc.flight_s(_APEX), beat_s=1.0, transit_s=0.6,
+                   dwell_s=0.27, t0_abs_s=10.0)
+    inst = _Installer()
+    x = ex.SkillExecutor(sch, inst, learner=_Learner([0.080, -0.080, _APEX]),
+                         lateral_authority_m=0.020)
+    x.tick(sk.dispatch_s())
+    np.testing.assert_allclose(inst.calls[0][1].target_mm,
+                               _P1.catch_site_mm() + [20.0, -20.0, 0.0])
 
 
 # ---------------------------------------------------------------------------
@@ -1072,7 +1086,7 @@ def test_a_hop_catch_model_command_passes_its_real_check(probe):
     carried Throw back to Q. The model command
     (y_d, no Learner) passes the reflected stand-in's check; the pre-fix
     stand-in (the landing moved to Q on this clock) was refused."""
-    limits = probe.asw._limits(*_HOP_P4_LIMITS)
+    limits = probe.asw.sitting_limits(*_HOP_P4_LIMITS)
     c = probe.Cell((125.0, 0.0), _APEX, limits, StewartGeometry(),
                    sg.SegmentConfig(planner_mode='pose'))
     assert c.ok, c.code

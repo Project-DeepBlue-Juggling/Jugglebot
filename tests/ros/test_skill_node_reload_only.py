@@ -15,7 +15,7 @@ import pytest
 
 from jugglebot_interfaces.srv import InstallSegment
 from tests.ros.test_skill_node import (_bb_announcement, _bb_ready, _finish_bridge,
-                                       _freshen, _goal, _good_box_path,
+                                       _freshen, _goal,
                                        _node_with_client, _prelevel_ready,
                                        _reload_ready, _response)
 
@@ -28,8 +28,7 @@ def _start(node, tmp_path):
              seated=False)   # accept possession check: a reload needs an EMPTY cup
     _prelevel_ready(node)
     reload_client, throw_client = _reload_ready(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_goal('reload'))
     return resp, reload_client, throw_client
 
@@ -84,8 +83,7 @@ def test_reload_only_announced_schedule_ends_at_the_decay_rest(tmp_path):
 def test_reload_only_skips_the_throw_only_nomination(tmp_path):
     """Nothing is thrown, so an apex the nomination refuses for a throw (1.4 m
     needs more Hand acceleration than the 4500 rev/s^2 limit, which refuses a
-    self-toss before any motion) does not refuse this (P3b; was the box
-    coverage check)."""
+    self-toss before any motion) does not refuse this (P3b)."""
     node, _client = _node_with_client(response=_response())
     node._params['apex_m'] = 1.4
     resp, _, _ = _start(node, tmp_path)

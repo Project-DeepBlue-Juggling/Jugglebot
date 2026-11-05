@@ -391,7 +391,7 @@ def test_tracker_returns_none_while_the_ball_is_not_airborne():
 # ── R3: the self-toss learner run (plan § 4 R3 "Sim validation") ───────────
 #
 # A SMALL smoke run only -- one seed, a handful of throws -- exercising the
-# real learner + Memory + AdmissibleBox + observer/observations chain
+# real learner + Memory + online-check + observer/observations chain
 # end-to-end without paying for the gate's own 25-throw x 5-seed sweep (that
 # one runs manually via ``python sim/skills_gate.py --learn``, same split as
 # the columns gate above).  MEASURED (2026-09-13, this test, seed 0, 5
@@ -414,7 +414,7 @@ def test_a_small_self_toss_learner_run_enters_the_apex_band():
     """From a cold memory, a handful of self-toss throws land the APEX error
     inside the R3 band (42 mm — the plan's 20 ms of flight, converted at the
     operating point, 2026-09-18) well within the 5-throw entry criterion, with
-    no drops -- the same learner, memory, admissible-box and
+    no drops -- the same learner, memory, online-check and
     observer/observations wiring the full 25-throw x 5-seed gate uses,
     exercised cheaply."""
     cfg, res = _small_self_toss_run()
@@ -441,13 +441,11 @@ def test_a_small_self_toss_learner_run_enters_the_apex_band():
 def test_a_small_self_toss_learner_run_enters_the_xy_band():
     """The xy half of the R3 band (20 mm) within the 5-throw entry criterion.
 
-    Was a strict xfail until 2026-09-21 ("the dense apex-scoped box admits no
-    y landing correction at 0.9 m, so xy cannot enter the band until that
-    planner margin ring is fixed and the box re-swept" — plan R3 item (k)).
-    Both halves have now landed: the cup-contact contract fixed the margin
-    ring the chained catch was failing, and the box re-swept against it admits
-    ±40 mm of lateral at 0.9 m, so the learner has the xy authority this test
-    was waiting for (measured here, seed 0: 37 mm at throw 1, 7 mm by
+    Was a strict xfail until 2026-09-21 (the retired Admissible box then
+    admitted no y landing correction at 0.9 m, so xy could not enter the band
+    until the planner's margin ring was fixed -- plan R3 item (k)). The
+    cup-contact contract fixed that ring, so the learner has the xy authority
+    this test was waiting for (measured here, seed 0: 37 mm at throw 1, 7 mm by
     throw 3)."""
     cfg, res = _small_self_toss_run()
     assert res['throws_to_band_xy'] is not None
@@ -460,23 +458,21 @@ def test_a_small_self_toss_learner_run_enters_the_xy_band():
 # ``SelfTossGateConfig(pattern='hop', ...)`` generalises the R3 self-toss
 # harness above to the hop's two-site tuple (P1<->P2, 250 mm separation) --
 # SAME small-run shape (one seed, a handful of throws), exercising the
-# identical learner/Memory/AdmissibleBox/observer chain, now through the
-# 'hop' boxes (config/generated/admissible_box.yaml, site pairs (P1,P2)/
-# (P2,P1)) instead of the self-toss (P1,P1) one.  The full 5-seed x
+# identical learner/Memory/online-check/observer chain, now through the
+# hop's two-Site tuple (P1,P2)/(P2,P1) instead of the self-toss (P1,P1) one.  The full 5-seed x
 # 25-throw sweep runs manually (``python sim/skills_gate.py --learn
 # --pattern hop``), same split as the self-toss smoke test above.
 
-def _small_hop_run(box=False):
+def _small_hop_run():
     cfg = SelfTossGateConfig(pattern='hop', separation_mm=250.0,
                              target_throws=5, band_entry_throws=5,
-                             max_attempts=15, box=box)
+                             max_attempts=15)
     return cfg, SkillsGate(cfg).run_self_toss_seed(0, policy='A')
 
 
 def test_a_small_hop_learner_run_catches_every_throw_with_zero_drops():
     """The U7a gate criterion itself (plan R4 / prompt: "0 drops") holds from
-    a cold memory, through the hop's wider site tuple and its own swept
-    boxes -- the same 5-throw smoke shape the self-toss run above uses,
+    a cold memory, through the hop's wider site tuple -- the same 5-throw smoke shape the self-toss run above uses,
     generalised rather than duplicated (:func:`_sites_for`,
     ``run_self_toss_attempt``/``run_self_toss_seed`` take the pattern's site
     tuple, not a single hardcoded site)."""
@@ -490,73 +486,12 @@ def test_a_small_hop_learner_run_catches_every_throw_with_zero_drops():
     assert res['plan_wall_ms']['n'] > 0
 
 
-# ── JB-32: a biased plant exercises the forward-clip rule end to end ───────
+# ── JB-32: the gate's plant landing bias knob ──────────────────────────────
 #
-# `executor._forward_clip_xy` clips the learner's EXPECTED landing, so it only
-# does anything once the fit has real support AND a box is wired. The columns
-# runs pass `boxes=None` (no clip); the self-toss / hop learner runs wire both,
-# so `plant_landing_bias_mm` is read there. PROBED 2026-11-02 (seed 0, 5
-# throws): the hop's narrow x box (+-2 mm) already clips at bias (0, 0)
-# because of the measured +11 % launch-speed bias, so "no clip at zero bias"
-# holds on the WIDE self-toss box only; on the hop the knob is pinned by the
-# pre-clip expected landing growing with the bias.
-
-_EDGE = re.compile(r'BOX-EXPECTED-LANDING skill (\d+): .* puts y_hat '
-                   r'\(([+-][\d.]+), ([+-][\d.]+)\) -> .* on the box edge')
-
-
-def _box_lines(res):
-    return [ln for ln in res['executor_lines'] if 'BOX-EXPECTED-LANDING' in ln]
-
-
-def _clip_lines(res):
-    return [ln for ln in _box_lines(res)
-            if 'on the box edge' in ln or 'BOX-EXPECTED-LANDING-UNMET' in ln]
-
-
-def _preclip_x_by_skill(res):
-    """Pre-clip expected-landing x (mm) per skill index, from the edge lines
-    only: an UNMET line carries the POST-clip y_hat, in another format."""
-    out = {}
-    for ln in _box_lines(res):
-        m = _EDGE.search(ln)
-        if m:
-            out.setdefault(int(m.group(1)), float(m.group(2)))
-    return out
-
-
-#: The hop box these biased runs were written against: the +/-10 mm hop cell of
-#: the pre-2026-11-02 box. The re-sweep at hand acc 4500 widened the cell the
-#: sim's hop flies to +/-20 mm, where a +30 mm plant bias lands inside the box
-#: and the clip rightly never fires; the test is about the clip rule, so it keeps
-#: its frozen geometry (logbook/2026-11-01-hand-limit-4500-and-stroke-floor.md).
-_PRE_H4500_BOX = os.path.join(os.path.dirname(__file__), '..', 'fixtures',
-                              'admissible_box_pre_h4500.yaml')
-
-
-def _stamped_pre_h4500_box(tmp_dir):
-    """The frozen fixture predates the carry_zvd stamp; select() matches the
-    flag exactly and an unstamped box matches no mode, so stamp every cell
-    carry_zvd=False (the yaml default the gate flies) in a tmp copy."""
-    import yaml
-    with open(_PRE_H4500_BOX) as fh:
-        doc = yaml.safe_load(fh)
-    for b in doc['boxes']:
-        b.setdefault('carry_zvd', False)
-    out = os.path.join(str(tmp_dir), 'admissible_box_pre_h4500_stamped.yaml')
-    with open(out, 'w') as fh:
-        yaml.safe_dump(doc, fh)
-    return out
-
-
-def _biased_hop_run(bias, tmp_dir):
-    cfg = SelfTossGateConfig(pattern='hop', separation_mm=250.0,
-                             target_throws=5, band_entry_throws=5,
-                             max_attempts=15, plant_landing_bias_mm=bias,
-                             box=True,   # the box path (online twin: test_skills_gate_online.py)
-                             admissible_box_path=_stamped_pre_h4500_box(tmp_dir))
-    return SkillsGate(cfg).run_self_toss_seed(0, policy='A')
-
+# (The forward-clip tests that rode this knob -- `_forward_clip_xy`, the
+# `BOX-EXPECTED-LANDING` lines, the frozen pre-h4500 box fixture -- went with
+# the Admissible box, 2026-11-06 (P3c); the online twin of the biased-plant run
+# is tests/sim/test_skills_gate_online.py.)
 
 def test_plant_landing_bias_release_adds_the_lateral_speed_for_the_bias():
     """vz = 4000 mm/s commanded, bias (+30, 0): flight 2 vz / g at the
@@ -578,82 +513,18 @@ def test_plant_landing_bias_release_adds_the_lateral_speed_for_the_bias():
         sg._measured_release_bias(down))
 
 
-def test_a_biased_plant_fires_the_forward_clip_in_a_small_hop_run(tmp_path):
-    """+30 mm x plant bias: the fit's expected landing leaves the hop box,
-    the clip fires (`on the box edge` / `UNMET`), the run completes, and at
-    a skill both runs clipped, its pre-clip expected landing is further out
-    than at zero bias."""
-    biased = _biased_hop_run((30.0, 0.0), tmp_path)
-    assert biased['n_throws_collected'] == 5
-    assert _clip_lines(biased)
-    base = _biased_hop_run((0.0, 0.0), tmp_path)
-    # Compare the SAME skill in both runs (notes are once per skill, and the
-    # learner moves between Throws, so the first line of each run can belong
-    # to different Throws).
-    xb, x0 = _preclip_x_by_skill(biased), _preclip_x_by_skill(base)
-    shared = sorted(set(xb) & set(x0))
-    assert shared, (sorted(xb), sorted(x0))
-    assert xb[shared[0]] > x0[shared[0]] + 1.0
-
-
 @pytest.mark.parametrize('argv', [
     ['--learn', '--pattern', 'columns', '--plant-bias-xy', '30', '0'],
     ['--plant-bias-xy', '30', '0'],
     ['--reload', '--plant-bias-xy', '30', '0'],
 ])
 def test_plant_bias_is_refused_where_nothing_reads_it(argv, capsys):
-    """The columns, reload and plain gate runs pass boxes=None: a bias given
+    """The columns, reload and plain gate runs do not read the bias: a bias given
     there would be silently ignored, so the CLI refuses it (JB-32 audit)."""
     with pytest.raises(SystemExit) as e:
         sg.main(argv)
     assert e.value.code == 2
     assert '--plant-bias-xy only applies' in capsys.readouterr().err
-
-
-def test_an_unbiased_wide_box_self_toss_run_never_needs_the_forward_clip():
-    """Bias (0, 0) on the wide self-toss box: every expected landing is
-    inside, so no edge / UNMET line (the "inside" lines do appear: the fit
-    has support, the rule ran)."""
-    cfg = SelfTossGateConfig(target_throws=5, band_entry_throws=5,
-                             max_attempts=15, box=True)
-    res = SkillsGate(cfg).run_self_toss_seed(0, policy='A')
-    assert _box_lines(res)
-    assert not _clip_lines(res)
-
-
-def test_a_small_hop_learner_run_commands_below_the_old_apex_floor():
-    """The 0.85 m apex floor this test used to pin (2026-09-24: "a hop cannot
-    reach that low, so it clips at 0.85 m") was a SWEEP artefact, not the
-    plant: the per-apex ladder varied every cell's TIMING with the commanded
-    flight, so a command below the pattern apex shortened the transit and
-    refused on jerk. Since the R5 ladder fix (2026-09-30, `tools/
-    admissible_sweep.py` `pattern_flight_s`: the schedule's instants are the
-    PATTERN's, only the carried throw follows the command) the hop's 0.90 m
-    band admits commanded apexes down to ~0.73 m (`config/generated/
-    admissible_box.yaml`, swept at 300/5000/200000), so the same +11 % speed
-    bias self-toss corrects by commanding ~0.73 m is now correctable on the
-    hop too. This test pins the shape that changed: the learner's commanded
-    apex goes BELOW the old 0.85 floor and never leaves the box's own apex
-    bounds. Whether the small run enters the band within five throws is
-    reported, not asserted -- the 25-throw runs in `sim/skills_gate.py --learn
-    --pattern hop` are the convergence gate.  MEASURED (seed 0, 2026-09-30,
-    this test, box swept at 300/5000/200000): min commanded apex 0.8346 m
-    against the box's [0.729, 0.992] m, `entered_band` False in the small run
-    (the command is still descending at the fifth throw)."""
-    cfg, res = _small_hop_run(box=True)   # online twin: test_skills_gate_online.py
-    from jugglebot.motion.skills import admissible as adm
-    boxes = sg._load_admissible_boxes()
-    box = adm.select(boxes, 'hop', ('P1', 'P2'), cfg.apex_m,
-                     release_site_xy_mm=(-125.0, 0.0), target_site_xy_mm=(125.0, 0.0),
-                     dwell_s=cfg.dwell_s,
-                     planner_mode=SegmentConfig().planner_mode)
-    assert box is not None and not box.empty
-    lo, hi = box.apex_m
-    commanded = [t['u'][2] for t in res['throws']]
-    assert min(commanded) < 0.85 - 1e-6, commanded
-    assert all(lo - 1e-9 <= u <= hi + 1e-9 for u in commanded), (commanded, lo, hi)
-    print('HOP-SMALL-RUN entered_band=%r throws_to_band_apex=%r min_u_apex=%.4f box=(%.3f, %.3f)'
-          % (res['entered_band'], res['throws_to_band_apex'], min(commanded), lo, hi))
 
 
 # ── Two-ball-oval P1: the fixed-role one-ball oval ──────────────────────────
@@ -676,7 +547,7 @@ def _small_oval_run(tmp_path, monkeypatch):
 def test_oval_1ball_schedule_is_every_throw_from_T_and_every_catch_at_C():
     """The compiled choreography the gate flies: fixed roles, ONE folded
     window per cycle (a CATCH at C carrying the next THROW from T), the
-    schedule labelled 'oval_1ball' (the box key the executor reads)."""
+    schedule labelled 'oval_1ball'."""
     cfg = SelfTossGateConfig(pattern='oval_1ball', separation_mm=150.0)
     t_site, c_site = sg._sites_for(cfg)
     assert (t_site.name, c_site.name) == ('P1', 'P2')
@@ -696,12 +567,11 @@ def test_oval_1ball_schedule_is_every_throw_from_T_and_every_catch_at_C():
 
 def test_a_small_oval_learner_run_flies_the_choreography_and_keys_memory_on_T(
         tmp_path, monkeypatch):
-    """Accept code path: ``compile_one_ball(roles='fixed')`` -> executor box
-    key ('oval_1ball', (P1, P2)) -> carried release at T.  The learner's
-    memory rows' x[0:2] is T's xy (the release site), never C's.  If this
-    fails for an executor reason (box key miss on the committed YAML before
-    the oval cell is swept, release at the caught xy) the failure text is
-    the report -- nothing is mocked around it."""
+    """Accept code path: ``compile_one_ball(roles='fixed')`` -> executor
+    -> carried release at T.  The learner's memory rows' x[0:2] is T's xy
+    (the release site), never C's.  If this fails for an executor reason
+    (release at the caught xy) the failure text is the report -- nothing is
+    mocked around it."""
     cfg, res, mem_dir = _small_oval_run(tmp_path, monkeypatch)
     assert res['pattern'] == 'oval_1ball'
     assert res['separation_mm'] == pytest.approx(150.0)
@@ -720,8 +590,7 @@ def test_a_small_oval_learner_run_flies_the_choreography_and_keys_memory_on_T(
 # harness's own operating point (300/5000/200000, hand 3500) and band, driven
 # through ``SkillsGate.run_columns_attempt``/``run_columns_seed`` instead of
 # the one-ball ``run_self_toss_attempt``/``_seed``: both balls, one shared
-# memory, the columns Stop, ``boxes=None`` (the committed 'columns' box
-# entries are EMPTY/NaN, swept before this rung), ``resend_max_per_catch=0``
+# memory, the columns Stop, no checker clip, ``resend_max_per_catch=0``
 # (owner decision 2026-09-29). SAME small-run shape as the self-toss/hop
 # smoke tests above -- one seed, a handful of throws -- the full 5-seed x
 # >=30-throw sweep runs manually (``python sim/skills_gate.py --learn
@@ -1198,26 +1067,16 @@ def test_the_gate_config_validates_planner_mode_and_threads_it_to_the_planner():
 
 
 def test_a_small_oval_run_under_the_pose_planner(tmp_path, monkeypatch):
-    """One short ``oval_1ball`` run with ``planner_mode='pose'``: the box file
-    is the committed box's ``oval_1ball`` cells (the P3 re-sweep of 2026-10-24
-    carries them under BOTH planners, stamped), the executor selects under
-    'pose' and ``plan_segment`` plans the carried throw with the pose-level
-    planner. A level-only file would be refused by name instead
-    (``test_adm_select`` pins that), so a pass here proves the mode reached
-    BOTH the box select and the planner."""
-    boxes = [b for b in sg._load_admissible_boxes() if b.pattern == 'oval_1ball']
-    assert any(b.planner_mode == 'pose' for b in boxes), \
-        'no pose-stamped oval_1ball cell in the committed box file'
-    from jugglebot.motion.skills import admissible as adm
-    box_path = tmp_path / 'pose_box.yaml'
-    adm.dump(str(box_path), boxes)
+    """One short ``oval_1ball`` run with ``planner_mode='pose'``:
+    ``plan_segment`` plans the carried throw with the pose-level planner and
+    the run completes (the mode reached the planner)."""
     mem_dir = tmp_path / 'oval_mem'
     mem_dir.mkdir()
     monkeypatch.setattr(sg.tempfile, 'mkdtemp', lambda *a, **k: str(mem_dir))
     cfg = SelfTossGateConfig(pattern='oval_1ball', separation_mm=150.0,
                              dwell_s=0.65, apex_m=0.95, planner_mode='pose',
                              target_throws=3, band_entry_throws=3,
-                             max_attempts=8, admissible_box_path=str(box_path))
+                             max_attempts=8)
     res = SkillsGate(cfg).run_self_toss_seed(0, policy='A')
     assert res['n_throws_collected'] == 3, (res['end_codes'], res['refusals'])
     assert res['drops'] == 0

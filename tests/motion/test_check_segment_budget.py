@@ -91,7 +91,7 @@ def _probe():
 def test_a_check_request_fits_the_wall_clock_and_cpu_budget():
     lb = _probe()
     geom = StewartGeometry()
-    limits = lb.asw._limits(600.0, 8000.0, 200000.0, 4500.0)
+    limits = lb.asw.sitting_limits(600.0, 8000.0, 200000.0, 4500.0)
     cfg = sg.SegmentConfig(planner_mode='pose')
     solver = sw.WorkerSegmentSolver(env=dict(os.environ))
     try:

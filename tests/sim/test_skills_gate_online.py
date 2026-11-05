@@ -1,11 +1,9 @@
-"""P3a: the sim gate's ONLINE admissibility path (the default for
-every `--learn` run) and the `--box` A/B path that keeps today's behaviour.
+"""P3a: the sim gate's ONLINE admissibility path (the only path since P3c
+2026-11-06 retired the `--box` A/B and the Admissible box behind it).
 
-Twins of the three box-path gate tests in test_skills_gate.py (which still
-run the box path, now passed `box=True`): a biased-plant small hop run, an
-unbiased self-throw (`self_toss`) run and the small hop learner run, judged by the ONLINE
-check's own evidence (`ADMISSIBILITY` lines) instead of `BOX-EXPECTED-LANDING`
-ones. Recipe: 5 throws, band entry 5, 15 attempts, seed 0, as the box twins.
+Biased-plant small hop run, an unbiased self-throw (`self_toss`) run and the
+small hop learner run, judged by the ONLINE check's own evidence
+(`ADMISSIBILITY` lines). Recipe: 5 throws, band entry 5, 15 attempts, seed 0.
 """
 from __future__ import annotations
 
@@ -20,10 +18,6 @@ from jugglebot.motion.skills import executor as ex                 # noqa: E402
 
 def _adm_lines(res):
     return [ln for ln in res['executor_lines'] if 'ADMISSIBILITY' in ln]
-
-
-def _box_lines(res):
-    return [ln for ln in res['executor_lines'] if 'BOX-EXPECTED-LANDING' in ln]
 
 
 def _hop_cfg(**kw):
@@ -82,15 +76,13 @@ def test_a_biased_plant_small_hop_run_is_checked_and_installs_nothing_refused(
     out, INFEASIBLE -- this gate's self-toss/hop attempts run with NO
     lateral authority, so nothing clamps either. (Before the reflection the
     model command was refused UNVERIFIED on a stand-in moved 250 mm to the
-    other Site.) The run collects its throws by cheap reset, leaves no
-    box-clip lines, and EVERY carried-catch install follows an OK verdict for
+    other Site.) The run collects its throws by cheap reset, and EVERY carried-catch install follows an OK verdict for
     that ball: a refused command is never sent."""
     log = _spy_checks_and_installs(monkeypatch)
     res = SkillsGate(_hop_cfg(plant_landing_bias_mm=(30.0, 0.0))
                      ).run_self_toss_seed(0, policy='A')
     assert res['n_throws_collected'] == 5
     assert _adm_lines(res)
-    assert not _box_lines(res)
     assert set(res['end_codes']) <= {'', 'NO_ADMISSIBLE_COMMAND'}
     # The refusal is real (the check said no and the attempt ended) ...
     assert 'NO_ADMISSIBLE_COMMAND' in res['end_codes']
@@ -131,7 +123,7 @@ def test_a_small_hop_learner_run_commands_apexes_the_envelope_admitted(
     """The online twin of the apex-bound test: every apex the learner
     commanded went through `_envelope_verdict` (or the checker) and was
     admitted. The envelope is the closed-form throw envelope, so this is the
-    online path's own bound instead of the box's apex band."""
+    online path's own bound."""
     admitted = set()
     real = ex.SkillExecutor._envelope_verdict
 
@@ -159,30 +151,9 @@ def test_a_small_hop_learner_run_commands_apexes_the_envelope_admitted(
     assert all(a in admitted for a in commanded), (commanded, sorted(admitted))
 
 
-# ── the --box A/B path ──────────────────────────────────────────────────────
+# ── the online kwargs ───────────────────────────────────────────────────────
 
-def test_the_box_flag_restores_the_box_path_with_no_checker(monkeypatch):
-    called = []
-    real = sg._make_checker
-    monkeypatch.setattr(sg, '_make_checker',
-                        lambda *a, **k: called.append(1) or real(*a, **k))
-    res = SkillsGate(_hop_cfg(plant_landing_bias_mm=(30.0, 0.0), box=True)
-                     ).run_self_toss_seed(0, policy='A')
-    assert called == []
-    assert res['n_throws_collected'] == 5
-    assert set(res['end_codes']) == {''}
-    assert _box_lines(res) and not _adm_lines(res)
-
-
-def test_the_cli_exposes_the_box_flag():
-    with pytest.raises(SystemExit) as e:
-        sg.main(['--help'])
-    assert e.value.code == 0
-
-
-def test_online_kwargs_are_empty_under_the_box_flag():
-    cfg = SelfTossGateConfig(box=True)
-    assert sg._online_kwargs(cfg, None, None, None, None) == {}
+def test_online_kwargs_carry_the_checker():
     cfg = SelfTossGateConfig()
     assert 'checker' in sg._online_kwargs(cfg, sg._InstallCtx(None), None,
                                           None, None)

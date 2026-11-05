@@ -31,9 +31,9 @@ for _v in ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS'):
     os.environ[_v] = '1'
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 sys.path.insert(0, ROOT); sys.path.insert(0, os.path.join(ROOT, 'ros_ws', 'src', 'jugglebot'))
-sys.path.insert(0, os.path.join(ROOT, 'tools'))
+sys.path.insert(0, os.path.join(ROOT, 'tools', 'probes'))
 import numpy as np                                                    # noqa: E402
-import admissible_sweep as asw                                        # noqa: E402
+import planner_cells as asw                                        # noqa: E402
 from jugglebot.motion import unified_cycle as uc                      # noqa: E402
 from jugglebot.motion.geometry import StewartGeometry                 # noqa: E402
 from jugglebot.motion.skills import segments as sg, sites as st, schedule as sc, admissible as ab  # noqa: E402
@@ -64,7 +64,7 @@ class Cell:
         self.partner = st.Site('Q', np.array([-site_xy_mm[0], -site_xy_mm[1], st.CATCH_CUP_Z_MM]))
         self.T = sc.flight_s(apex_m)
         self.limits, self.geom, self.cfg = limits, geom, cfg
-        self.ok, self.code, self.seed, self.takeoff = asw._throw_cell(
+        self.ok, self.code, self.seed, self.takeoff = asw.throw_cell(
             self.partner, self.partner, self.T, asw.SINGLE_SITE_LAUNCH_S, limits, geom, cfg)
 
     def solve(self, off_mm, cmd_flight_s=None):
@@ -189,7 +189,7 @@ def main(argv=None):
                     help='use this PATTERN apex for every row (the corpus has only the commanded apex); '
                          'default: the row\'s commanded apex, which shortens the transit and is conservative')
     a = ap.parse_args(argv)
-    geom = StewartGeometry(); limits = asw._limits(*a.limits); cfg = sg.SegmentConfig(planner_mode=a.mode)
+    geom = StewartGeometry(); limits = asw.sitting_limits(*a.limits); cfg = sg.SegmentConfig(planner_mode=a.mode)
     out = dict(limits=a.limits, mode=a.mode)
     if not a.skip_a and os.path.exists(a.csv):
         out['corpus'] = part_a(a, limits, geom, cfg)

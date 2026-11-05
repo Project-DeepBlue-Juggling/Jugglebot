@@ -50,9 +50,9 @@ for _v in ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS',
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'ros_ws', 'src', 'jugglebot'))
-sys.path.insert(0, os.path.join(ROOT, 'tools'))
+sys.path.insert(0, os.path.join(ROOT, 'tools', 'probes'))
 import numpy as np                                                    # noqa: E402
-import admissible_sweep as asw                                        # noqa: E402
+import planner_cells as asw                                        # noqa: E402
 from jugglebot.motion.geometry import StewartGeometry                 # noqa: E402
 from jugglebot.motion.skills import executor as ex                    # noqa: E402
 from jugglebot.motion.skills import schedule as sc                    # noqa: E402
@@ -161,7 +161,7 @@ class Chain:
         self.partner = st.Site('Q', np.array([-62.5, 0.0, st.CATCH_CUP_Z_MM]))
         self.T = sc.flight_s(a.apex)
         self.tau = sc.transit_s(self.T, DWELL)
-        ok, code, _seed, takeoff = asw._throw_cell(
+        ok, code, _seed, takeoff = asw.throw_cell(
             self.partner, self.partner, self.T, asw.SINGLE_SITE_LAUNCH_S, limits, geom,
             cfg)
         if not ok:
@@ -172,7 +172,7 @@ class Chain:
         self.seq = 0
         first = solver.solve(sw.SegmentSolveRequest(
             seq=self._next(), record=None,
-            seed_rest=asw._rest_state(self.partner.rest_site_mm()), kind=sg.THROW,
+            seed_rest=asw.rest_state(self.partner.rest_site_mm()), kind=sg.THROW,
             terminal=sg.ThrowTerminal(site_mm=self.partner.throw_site_mm(),
                                       target_mm=self.partner.throw_site_mm(),
                                       flight_s=self.T, t_release_s=self.t_rel),
@@ -228,7 +228,7 @@ def main(argv=None):
     ap.add_argument('--note', default='')
     a = ap.parse_args(argv)
     geom = StewartGeometry()
-    limits = asw._limits(*a.limits)
+    limits = asw.sitting_limits(*a.limits)
     cfg = sg.SegmentConfig(planner_mode=a.mode)
     env0 = environment()
     cpus = [int(c) for c in a.cpus.split(',') if c.strip()] or None

@@ -249,8 +249,8 @@ class SegmentConfig:
     #: ``trajectory_op.planner_mode``.  Only :func:`_plan_catch_throw` reads
     #: it — every other segment shape is the level program in both modes.  The
     #: LIVE value is skill_node's ``planner_mode`` parameter, carried on every
-    #: ``InstallSegment`` request (the same parameter selects the admissible
-    #: box cell, which is stamped with the mode it was swept under); this field
+    #: ``InstallSegment`` request (the same parameter drives the nomination and the online check; until
+    #: 2026-11-06 it also selected the Admissible box cell); this field
     #: is what the emitter plans with when a request carries none.
     planner_mode: str = uc.PLANNER_MODE_DEFAULT
     #: carry-ring-zvd P1c (JB-102): the pose planner's ZVD ring rows
@@ -258,7 +258,7 @@ class SegmentConfig:
     #: ``PoseConfig()``'s own default (``trajectory_op.carry_zvd``); a bool
     #: overrides it through ``CycleGoals.pose_cfg``.  Like ``planner_mode`` the
     #: LIVE value is skill_node's ``carry_zvd`` parameter, carried on every
-    #: ``InstallSegment`` request and stamped on the admissible box cell; this
+    #: ``InstallSegment`` request (until 2026-11-06 also stamped on the Admissible box cell); this
     #: field is what the emitter plans with when a request carries none.
     #: Inert in level mode and for every segment but :func:`_plan_catch_throw`.
     carry_zvd: Optional[bool] = None
@@ -298,8 +298,8 @@ class Segment:
     #: release is not the terminal knot once the SETTLE tail is on), and the
     #: alternative — a second, raw solve of "the same window" in the caller —
     #: silently omitted the pre-release hold, the settle site and the hold
-    #: knots in four copies of ``tools/admissible_sweep.py`` (2026-09-30: every
-    #: chained box cell since the hold landed was seeded from a launch the
+    #: knots in four copies of the (retired) ``tools/admissible_sweep.py``
+    #: (2026-09-30: every chained box cell since the hold landed was seeded from a launch the
     #: machine does not fly, and one copy crashed the hop sweep on a seed the
     #: production solve had accepted).
     release_state: Optional[uc.CycleState] = None
@@ -344,7 +344,7 @@ def hold_axis_site(landing_mm, hold_tilt, z_mm: float) -> np.ndarray:
 
 
 #: The yaml default of the live ``carry_zvd`` switch (``trajectory_op.carry_zvd``);
-#: skill_node's parameter and the executor's box selection start from it.
+#: skill_node's parameter (and, until 2026-11-06, the executor's box selection) starts from it.
 CARRY_ZVD_DEFAULT = bool(hw.JB_TRAJ_CARRY_ZVD)
 
 
@@ -360,8 +360,8 @@ def _pose_cfg(cfg: 'SegmentConfig'):
 def _planner_mode(cfg: 'SegmentConfig') -> str:
     """``cfg.planner_mode`` validated against ``unified_cycle.PLANNER_MODES`` —
     the ONE place a segment reads it, so a typo refuses here by name rather
-    than planning the level program under a label the box was never swept
-    for."""
+    than planning the level program under a label the nomination never planned
+    with (until 2026-11-06: the box was never swept for)."""
     mode = str(cfg.planner_mode)
     if mode not in uc.PLANNER_MODES:
         raise ValueError('SegmentConfig.planner_mode must be one of %r, got %r'

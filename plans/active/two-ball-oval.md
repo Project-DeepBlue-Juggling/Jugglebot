@@ -43,6 +43,8 @@ related_code:
 
 # Two-ball oval
 
+> 2026-11-06 (learner-generalisation P3c, branch p3-online-admissibility, pending the owner's merge): the Admissible box, its sweep (`tools/admissible_sweep.py`, `admissible_sweep_run.py`) and `admissible.select` are retired. Wherever this plan says to sweep or re-sweep the box, check a `gate_hash`, or lists the box among a phase's files, that is history; goal acceptance is now the nomination (`skills/check`, `skills/nominate`, the GUI Juggle panel's report, `python sim/skills_gate.py --nominate ...`, I-ADMIT-2) and each commanded Throw is checked online (I-ADMIT-1).
+
 Branch: `main` in `~/Desktop/Jugglebot` (merged from `skill-stack` / `two-ball-oval` 2026-10-23; the oval worktree is retired; the `two-ball-oval` branch is kept at `main`'s tip, but work continues on `main` directly, fly after a FULL launch restart).
 Design record: the wayfinder map was at `.scratch/two-ball-oval/` in the retired oval worktree (gitignored, may no longer exist; the
 58 decisions it holds are restated here in § 1.3 so the plan stands alone). Runbook for the first

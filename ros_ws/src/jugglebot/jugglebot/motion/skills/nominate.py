@@ -101,14 +101,14 @@ from jugglebot.motion.skills.executor import (SkillExecutor, _previous_release,
 
 THROW, CATCH, REST = sc.THROW, sc.CATCH, sc.REST
 
-# ── seeds and limits (moved here from tools/admissible_sweep.py) ────────────
+# ── seeds and limits (moved here from the retired admissible sweep) ────────────
 
 
 def rest_state(cup_mm) -> uc.CycleState:
     """A plan seed at rest at ``cup_mm`` -- identical construction to
     ``tests/motion/test_skills_segments.py::_rest_state`` and
-    ``tools/probes/skills_sizing_sweep.py::_rest_state``.  Moved from
-    ``tools/admissible_sweep.py`` (which imports it back as ``_rest_state``)."""
+    ``tools/probes/skills_sizing_sweep.py::_rest_state``.  Moved here from the
+    retired ``tools/admissible_sweep.py`` (2026-11-06)."""
     rcfg = cr.RealizeConfig()
     slider_mm = float(cup_mm[2]) - rcfg.cup_z_base_mm
     rev = ((slider_mm - rcfg.slider_rev_zero_mm) / 1000.0) * cr.HAND_REV_PER_M
@@ -118,7 +118,8 @@ def rest_state(cup_mm) -> uc.CycleState:
 
 def sitting_limits(leg_vel, leg_acc, leg_jerk, hand_acc) -> TrajectoryLimits:
     """The planner's limits at a Sitting's leg vel / acc / jerk and Hand acc.
-    Moved from ``tools/admissible_sweep.py`` (imported back as ``_limits``)."""
+    Moved here from the retired ``tools/admissible_sweep.py``
+    (2026-11-06)."""
     return TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=float(leg_vel), leg_acc_mmps2=float(leg_acc),
         leg_jerk_mmps3=float(leg_jerk), hand_acc_rps2=float(hand_acc))
@@ -135,8 +136,8 @@ def default_limits() -> TrajectoryLimits:
 # ── constants ────────────────────────────────────────────────────────────────
 
 #: The commanded-flight ladder's two edges and its centre.  ORIGIN:
-#: ``tools/admissible_sweep.py`` ``SINGLE_APEX_FLIGHT_FRAC`` = (-0.20 ..
-#: +0.10), the ladder the box was swept on; a nomination plans its edges and
+#: the retired ``tools/admissible_sweep.py`` ``SINGLE_APEX_FLIGHT_FRAC`` =
+#: (-0.20 .. +0.10), the ladder the Admissible box was swept on; a nomination plans its edges and
 #: the nominal (the margin is smooth between them, logbook 2026-11-04).
 RUNGS = (-0.20, 0.0, 0.10)
 
