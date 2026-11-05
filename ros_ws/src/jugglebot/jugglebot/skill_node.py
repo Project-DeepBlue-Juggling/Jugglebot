@@ -103,7 +103,9 @@ from jugglebot.motion.skills.schedule import (COLUMNS_HIGHLOW,
                                               schedule_has_shadow_landing,
                                               transit_s)
 from jugglebot.motion.skills import magazine_target as mt
-from jugglebot.motion.skills.magazine_throw import MAGAZINE, MagazineTerminal
+from jugglebot.motion.skills.magazine_throw import (MAGAZINE,
+                                                    MAGAZINE_NEEDS_REST,
+                                                    MagazineTerminal)
 from jugglebot.motion.skills.segments import CATCH, REST, THROW
 from jugglebot.motion.skills import segments as sk_seg
 from jugglebot.motion.skills.sites import (CATCH_CUP_Z_MM, REST_CUP_Z_MM,
@@ -112,6 +114,7 @@ from jugglebot.motion.skills.sites import (CATCH_CUP_Z_MM, REST_CUP_Z_MM,
 from jugglebot.motion.tilt_map import find_repo_root
 from jugglebot.robot_frame import RobotFrame, rotation_angle_deg
 from jugglebot.motion.trajectory import ballistics_bc
+from jugglebot.motion.trajectory import feasibility as feas
 from jugglebot.motion.trajectory import tilt_geometry as tg
 from jugglebot.motion.trajectory import cup_cycle
 from jugglebot.motion.trajectory.limits import TrajectoryLimits
@@ -154,6 +157,22 @@ _WIRE_KIND = {THROW: InstallSegment.Request.KIND_THROW,
 #: (InstallSegment.srv), so this is a "the service died" backstop, not a
 #: nominal-latency budget.
 _SERVICE_WAIT_S = 2.0
+
+#: P3a: the codes a `check_only` reply carries when the CHECK itself could not
+#: be evaluated (a transport / guard refusal on trajectory_node's side), as
+#: opposed to a planner verdict. Spelled with the names trajectory_node uses:
+#: its guard ladder (`_GUARD_LATCHED`, `feas.WRONG_MODE`, `feas.STALE_STATE`),
+#: `_PLANNER_MODE`, `_CHECK_NOT_SUPPORTED`, and the solver worker's own
+#: `SOLVER_UNAVAILABLE` / `SKIPPED_LATE`. (An unknown segment kind, `UNREACHABLE`
+#: on the node, cannot be sent from `_WIRE_KIND`, and the string is also a
+#: planner code, so it is deliberately not listed.)
+_CHECK_NOT_EVALUATED_CODES = frozenset((
+    'GUARD_LATCHED', feas.WRONG_MODE, feas.STALE_STATE, 'PLANNER_MODE',
+    'CHECK_NOT_SUPPORTED', 'SOLVER_UNAVAILABLE', 'SKIPPED_LATE',
+    # Origin refusals that are timing or shape faults, not verdicts on the
+    # command: the check could not be posed, so the refusal names them
+    # instead of blaming the command.
+    ex.WINDOW_TOO_SHORT, MAGAZINE_NEEDS_REST, ex.MAGAZINE_NOT_CHECKABLE))
 
 #: SkillExecutor.tick cadence. The plan's dispatch-lead arithmetic
 #: (`schedule._MIN_WINDOW_S`, `executor.LEAD_KNOTS`) is quantised to the 40 Hz
@@ -1118,6 +1137,9 @@ class SkillNode(Node):
         # (`trajectory_op.carry_zvd`); settable between attempts only.
         self.declare_parameter('carry_zvd', sk_seg.CARRY_ZVD_DEFAULT)
         self._carry_zvd()
+        # P3a: let a carried catch's command be checked early (up to 0.30 s
+        # before its dispatch) instead of at dispatch; read at goal start.
+        self.declare_parameter('admissibility_early_command', True)
         self.declare_parameter('n_throws', _DEFAULT_N_THROWS)
         # The records ledger (JB-35, `jugglebot/records.py`): the file each
         # juggling Attempt's end is offered to. '' (the default) = disabled,
@@ -2394,42 +2416,7 @@ class SkillNode(Node):
                 'DEBUG %s: this CATCH was refused on purpose (nothing was '
                 'sent to trajectory/install_segment)'
                 % _DEBUG_FORCE_CATCH_REFUSAL_PARAM, 0.0)
-        req = InstallSegment.Request()
-        req.kind = _WIRE_KIND[kind]
-        req.ball_id = int(ball_id)
-        # ONE live switch: the SAME value the admissible box was selected
-        # under rides every request, and trajectory_node plans with it.
-        req.planner_mode = self._planner_mode()
-        req.carry_zvd = self._carry_zvd()
-        if kind == THROW:
-            req.t_event_s = float(terminal.t_release_s)
-            req.site_mm = [float(v) for v in terminal.site_mm]
-            req.target_mm = [float(v) for v in terminal.target_mm]
-            req.flight_s = float(terminal.flight_s)
-        elif kind == MAGAZINE:
-            req.t_event_s = float(terminal.t_release_s)
-            req.site_mm = [float(v) for v in terminal.release_site_mm]
-            req.target_mm = [float(v) for v in terminal.target_mm]
-            req.flight_s = float(terminal.flight_s)
-            req.rest_site_mm = [float(v) for v in terminal.rest_site_mm]
-        elif kind == CATCH:
-            req.t_event_s = float(terminal.t_land_s)
-            req.site_mm = [float(v) for v in terminal.landing_mm]
-            req.landing_vel_mm_s = [float(v) for v in terminal.landing_vel_mm_s]
-            req.rest_site_mm = [float(v) for v in terminal.rest_site_mm]
-            req.hold_tilt_set, req.hold_tilt_rad = _wire_tilt_out(terminal.hold_tilt)
-            req.receive_tilt_set, req.receive_tilt_rad = _wire_tilt_out(
-                terminal.receive_tilt)
-            tt = terminal.then_throw
-            if tt is not None:
-                req.t_release_s = float(tt.t_release_s)
-                req.release_site_mm = [float(v) for v in tt.site_mm]
-                req.target_mm = [float(v) for v in tt.target_mm]
-                req.flight_s = float(tt.flight_s)
-        else:
-            req.t_event_s = float(terminal.t_rest_s)
-            req.rest_site_mm = [float(v) for v in terminal.rest_site_mm]
-            req.rest_tilt_set, req.rest_tilt_rad = _wire_tilt_out(terminal.tilt)
+        req = self._segment_request(kind, terminal, ball_id=ball_id)
 
         if not self._install_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
             self.get_logger().error('trajectory/install_segment unavailable')
@@ -2491,11 +2478,103 @@ class SkillNode(Node):
                              ball_id=ball_id)
         return result
 
+    def _segment_request(self, kind, terminal, *, ball_id):
+        """The ONE builder of an `InstallSegment.Request` for a segment kind:
+        shared by `_installer` (an install) and `_checker` (a P3a check)."""
+        req = InstallSegment.Request()
+        req.kind = _WIRE_KIND[kind]
+        req.ball_id = int(ball_id)
+        # ONE live switch: the SAME value the admissible box was selected
+        # under rides every request, and trajectory_node plans with it.
+        req.planner_mode = self._planner_mode()
+        req.carry_zvd = self._carry_zvd()
+        if kind == THROW:
+            req.t_event_s = float(terminal.t_release_s)
+            req.site_mm = [float(v) for v in terminal.site_mm]
+            req.target_mm = [float(v) for v in terminal.target_mm]
+            req.flight_s = float(terminal.flight_s)
+        elif kind == MAGAZINE:
+            req.t_event_s = float(terminal.t_release_s)
+            req.site_mm = [float(v) for v in terminal.release_site_mm]
+            req.target_mm = [float(v) for v in terminal.target_mm]
+            req.flight_s = float(terminal.flight_s)
+            req.rest_site_mm = [float(v) for v in terminal.rest_site_mm]
+        elif kind == CATCH:
+            req.t_event_s = float(terminal.t_land_s)
+            req.site_mm = [float(v) for v in terminal.landing_mm]
+            req.landing_vel_mm_s = [float(v) for v in terminal.landing_vel_mm_s]
+            req.rest_site_mm = [float(v) for v in terminal.rest_site_mm]
+            req.hold_tilt_set, req.hold_tilt_rad = _wire_tilt_out(terminal.hold_tilt)
+            req.receive_tilt_set, req.receive_tilt_rad = _wire_tilt_out(
+                terminal.receive_tilt)
+            tt = terminal.then_throw
+            if tt is not None:
+                req.t_release_s = float(tt.t_release_s)
+                req.release_site_mm = [float(v) for v in tt.site_mm]
+                req.target_mm = [float(v) for v in tt.target_mm]
+                req.flight_s = float(tt.flight_s)
+        else:
+            req.t_event_s = float(terminal.t_rest_s)
+            req.rest_site_mm = [float(v) for v in terminal.rest_site_mm]
+            req.rest_tilt_set, req.rest_tilt_rad = _wire_tilt_out(terminal.tilt)
+        return req
+
+    def _checker(self, kind, terminal, t_abs_s, *, ball_id) -> 'adm.CommandVerdict':
+        """P3a: PLAN the segment on trajectory_node and install nothing
+        (`check_only`), returning an `admissible.CommandVerdict`.
+
+        Handed to every executor as `checker=` (`_online_kwargs`).
+        The debug forced-catch-refusal hook of `_installer` deliberately does
+        not apply here (it fakes an install refusal, not a planner verdict)."""
+        req = self._segment_request(kind, terminal, ball_id=ball_id)
+        req.check_only = True
+        nan = math.nan
+        if not self._install_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
+            self.get_logger().error('trajectory/install_segment unavailable')
+            return adm.CommandVerdict(ok=False, margin=nan,
+                                      code='SERVICE_UNAVAILABLE',
+                                      evaluated=False)
+        resp = self._wait_future(self._install_cli.call_async(req))
+        if resp is None:
+            return adm.CommandVerdict(ok=False, margin=nan,
+                                      code='SERVICE_TIMEOUT', evaluated=False)
+        code = str(resp.code)
+        margin = float(resp.margin)
+        if code in _CHECK_NOT_EVALUATED_CODES:
+            return adm.CommandVerdict(ok=False, margin=margin, code=code,
+                                      evaluated=False)
+        if bool(resp.accepted) and not str(resp.message).startswith(
+                ex.CHECK_OK_PREFIX):
+            # Version skew: an older trajectory_node ignores `check_only`
+            # and may have INSTALLED the segment. Fail closed.
+            self.get_logger().error(
+                'the emitter answered an install reply to a check_only '
+                'request: rebuild jugglebot_interfaces and jugglebot and '
+                'relaunch the whole stack')
+            return adm.CommandVerdict(ok=False, margin=nan,
+                                      code='CHECK_NOT_HONOURED',
+                                      evaluated=False)
+        if bool(resp.accepted):
+            ok = margin >= 0.0     # NaN compares False: no report = not ok
+            return adm.CommandVerdict(ok=ok, margin=margin,
+                                      code='OK' if ok else 'MARGIN',
+                                      evaluated=True)
+        return adm.CommandVerdict(ok=False, margin=margin, code=code,
+                                  evaluated=True)
+
     def _bump_kwargs(self) -> dict:
         """``SkillExecutor`` kwargs for the catch bump: the goal's per-pattern
         switch (``_start_pattern``) and the service-backed bumper."""
         return dict(catch_bump_enabled=bool(getattr(self, '_bump_enabled', False)),
                     bumper=self._bumper)
+
+    def _online_kwargs(self) -> dict:
+        """``SkillExecutor`` kwargs for the P3a online admissibility check:
+        the service-backed `_checker` and the `admissibility_early_command`
+        parameter (read at construction, i.e. at goal start)."""
+        return dict(checker=self._checker,
+                    early_command=bool(self.get_parameter(
+                        'admissibility_early_command').value))
 
     def _bumper(self, idx, ball_id, delta_xy_mm, t_catch_abs_s,
                 t_dispatch_s) -> 'sk_bump.BumpResult':
@@ -4233,6 +4312,9 @@ class SkillNode(Node):
             return SimpleNamespace(success=False, message=msg)
 
         try:
+            # P3a: the executor now ALSO checks every command online (`_checker`);
+            # the box load and its coverage/limits refusals below still gate goal
+            # ACCEPTANCE in this phase (the nomination check of the next phase replaces them).
             boxes = adm.load(_ADMISSIBLE_BOX_PATH)
             adm.check_limits(boxes, self._live_limits())
         except adm.AdmissibleError as exc:
@@ -4417,6 +4499,9 @@ class SkillNode(Node):
             return SimpleNamespace(success=False, message=msg)
 
         try:
+            # P3a: the executor now ALSO checks every command online (`_checker`);
+            # the box load and its coverage/limits refusals below still gate goal
+            # ACCEPTANCE in this phase (the nomination check of the next phase replaces them).
             boxes = adm.load(_ADMISSIBLE_BOX_PATH)
             adm.check_limits(boxes, self._live_limits())
         except adm.AdmissibleError as exc:
@@ -4510,6 +4595,7 @@ class SkillNode(Node):
         self._executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
             **self._bump_kwargs(),
+            **self._online_kwargs(),
             catch_aim_source=self._catch_aim_source(),
             planner_mode=self._planner_mode(),
             carry_zvd=self._carry_zvd(),
@@ -4987,6 +5073,9 @@ class SkillNode(Node):
             return SimpleNamespace(success=False, message=msg)
 
         try:
+            # P3a: the executor now ALSO checks every command online (`_checker`);
+            # the box load and its coverage/limits refusals below still gate goal
+            # ACCEPTANCE in this phase (the nomination check of the next phase replaces them).
             boxes = adm.load(_ADMISSIBLE_BOX_PATH)
             adm.check_limits(boxes, self._live_limits())
         except adm.AdmissibleError as exc:
@@ -5121,6 +5210,7 @@ class SkillNode(Node):
         self._executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
             **self._bump_kwargs(),
+            **self._online_kwargs(),
             catch_aim_source=self._catch_aim_source(),
             planner_mode=self._planner_mode(),
             carry_zvd=self._carry_zvd(),
@@ -5394,6 +5484,9 @@ class SkillNode(Node):
             sites=sites, apex_m=float(self.get_parameter('apex_m').value),
             dwell_s=dwell_s, n_throws=0)
         try:
+            # P3a: the executor now ALSO checks every command online (`_checker`);
+            # the box load and its coverage/limits refusals below still gate goal
+            # ACCEPTANCE in this phase (the nomination check of the next phase replaces them).
             boxes = adm.load(_ADMISSIBLE_BOX_PATH)
         except adm.AdmissibleError as exc:
             msg = 'admissible box refused: %s' % (exc,)
@@ -5537,6 +5630,7 @@ class SkillNode(Node):
             self._executor = SkillExecutor(
                 bridge, self._installer, tracker=self._tracker,
                 **self._bump_kwargs(),
+                **self._online_kwargs(),
                 catch_aim_source=self._catch_aim_source(),
                 planner_mode=self._planner_mode(),
                 carry_zvd=self._carry_zvd(),
@@ -5551,6 +5645,7 @@ class SkillNode(Node):
             bridge_executor = SkillExecutor(
                 bridge, self._installer, tracker=self._tracker,
                 **self._bump_kwargs(),
+                **self._online_kwargs(),
                 catch_aim_source=self._catch_aim_source(),
                 planner_mode=self._planner_mode(),
                 carry_zvd=self._carry_zvd(),
@@ -5837,6 +5932,7 @@ class SkillNode(Node):
             executor = SkillExecutor(
                 schedule, self._installer, tracker=self._tracker,
                 **self._bump_kwargs(),
+                **self._online_kwargs(),
                 catch_aim_source=self._catch_aim_source(),
                 planner_mode=self._planner_mode(),
                 carry_zvd=self._carry_zvd(),
@@ -5986,6 +6082,7 @@ class SkillNode(Node):
         executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
             **self._bump_kwargs(),
+            **self._online_kwargs(),
             catch_aim_source=self._catch_aim_source(),
             planner_mode=self._planner_mode(),
             carry_zvd=self._carry_zvd(),
@@ -6168,6 +6265,7 @@ class SkillNode(Node):
         executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
             **self._bump_kwargs(),
+            **self._online_kwargs(),
             catch_aim_source=self._catch_aim_source(),
             planner_mode=self._planner_mode(),
             carry_zvd=self._carry_zvd(),
@@ -6745,6 +6843,11 @@ class SkillNode(Node):
                    _DEFAULT_SITE_Y_MM))
         else:
             lines.append('site OK')
+        lines.append(
+            'admissibility: online check on the command path (margin 0.9, '
+            'early_command=%s); the box still gates goal acceptance'
+            % (str(bool(self.get_parameter(
+                'admissibility_early_command').value)).lower(),))
         response.success = ok
         response.message = '; '.join(lines)
         if ok:

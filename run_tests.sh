@@ -33,7 +33,10 @@
 # runs in a worker process so the 40 Hz emitter is never starved: the test
 # asserts emitter-grid lateness p99 < 5 ms through the worker AND that the same
 # solve in-process starves the grid — a wall-clock contract that has to fail the
-# commit that puts the solve back on the emitter's interpreter). The guard below
+# commit that puts the solve back on the emitter's interpreter);
+# tests/motion/test_check_segment_budget.py on 2026-11-06 (the command-time
+# admissibility check runs once per beat in that worker: its wall-clock and CPU
+# budget have to fail the commit that makes it costlier). The guard below
 # still handles an empty phase 2.
 #
 # `--full` is MANDATORY before any hardware sitting and at plan-phase closure,

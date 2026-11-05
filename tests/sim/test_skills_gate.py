@@ -466,10 +466,10 @@ def test_a_small_self_toss_learner_run_enters_the_xy_band():
 # 25-throw sweep runs manually (``python sim/skills_gate.py --learn
 # --pattern hop``), same split as the self-toss smoke test above.
 
-def _small_hop_run():
+def _small_hop_run(box=False):
     cfg = SelfTossGateConfig(pattern='hop', separation_mm=250.0,
                              target_throws=5, band_entry_throws=5,
-                             max_attempts=15)
+                             max_attempts=15, box=box)
     return cfg, SkillsGate(cfg).run_self_toss_seed(0, policy='A')
 
 
@@ -553,6 +553,7 @@ def _biased_hop_run(bias, tmp_dir):
     cfg = SelfTossGateConfig(pattern='hop', separation_mm=250.0,
                              target_throws=5, band_entry_throws=5,
                              max_attempts=15, plant_landing_bias_mm=bias,
+                             box=True,   # the box path (online twin: test_skills_gate_online.py)
                              admissible_box_path=_stamped_pre_h4500_box(tmp_dir))
     return SkillsGate(cfg).run_self_toss_seed(0, policy='A')
 
@@ -614,7 +615,7 @@ def test_an_unbiased_wide_box_self_toss_run_never_needs_the_forward_clip():
     inside, so no edge / UNMET line (the "inside" lines do appear: the fit
     has support, the rule ran)."""
     cfg = SelfTossGateConfig(target_throws=5, band_entry_throws=5,
-                             max_attempts=15)
+                             max_attempts=15, box=True)
     res = SkillsGate(cfg).run_self_toss_seed(0, policy='A')
     assert _box_lines(res)
     assert not _clip_lines(res)
@@ -639,7 +640,7 @@ def test_a_small_hop_learner_run_commands_below_the_old_apex_floor():
     this test, box swept at 300/5000/200000): min commanded apex 0.8346 m
     against the box's [0.729, 0.992] m, `entered_band` False in the small run
     (the command is still descending at the fifth throw)."""
-    cfg, res = _small_hop_run()
+    cfg, res = _small_hop_run(box=True)   # online twin: test_skills_gate_online.py
     from jugglebot.motion.skills import admissible as adm
     boxes = sg._load_admissible_boxes()
     box = adm.select(boxes, 'hop', ('P1', 'P2'), cfg.apex_m,

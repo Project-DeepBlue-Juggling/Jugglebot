@@ -56,6 +56,13 @@ scheduled catches) at apex 0.9 m, separation 100 mm, dwell 0.30 s, ZERO drops,
 on five fixed seeds (0..4), at sitting limits 300/5000/200000 (leg), hand
 3500 rev/s^2; the whole five-seed sweep under 5 minutes.
 
+**P3a online admissibility (2026-11-06)**: every ``--learn`` run hands its
+executor ``checker=`` (:func:`_make_checker`, ``ex.check_segment`` on the
+installer's own record/seed/clock), so commands are checked online and the
+log carries ``ADMISSIBILITY`` / ``ADMISSIBILITY-EARLY`` lines. ``--box``
+restores the pre-P3a box path (no checker) for the A/B until the box is
+retired; the plain and ``--reload`` runs have no learner and are unchanged.
+
 Run headless (default); writes a JSON report under ``temp/reports/``.
 Pure Python + MuJoCo; no ROS2.
 
@@ -684,6 +691,39 @@ def _make_installer(ictx: _InstallCtx, seg_cfg, limits, geom, *,
     return installer
 
 
+def _make_checker(ictx: _InstallCtx, seg_cfg, limits, geom):
+    """The ``checker(kind, terminal, t_now_s, *, ball_id) ->
+    admissible.CommandVerdict`` twin of :func:`_make_installer` (P3a, the
+    sim's stand-in for ``skill_node._checker``): ``ex.check_segment`` over
+    the SAME live record / seed / warm start / clock the installer would use
+    for the same call, installing nothing and touching no state.
+    ``ok = planned and margin >= 0``; a plan with a negative margin is code
+    ``'MARGIN'``; any other refusal carries its own code.  ``evaluated`` is
+    True throughout (the sim has no service to time out)."""
+    def checker(kind, terminal, t_now_s, *, ball_id):
+        res = ex.check_segment(
+            ictx.record, ictx.seed_rest, kind, terminal, t_now_s,
+            cfg=seg_cfg, limits=limits, geom=geom, warm_start=ictx.warm_start,
+            reserve_fresh_lead=True)
+        margin = float(res.margin)
+        if res.planned:
+            ok = bool(margin >= 0.0)     # NaN compares False: not ok
+            return adm.CommandVerdict(ok=ok, margin=margin,
+                                      code='OK' if ok else 'MARGIN',
+                                      evaluated=True)
+        return adm.CommandVerdict(ok=False, margin=margin, code=str(res.code),
+                                  evaluated=True)
+    return checker
+
+
+def _online_kwargs(cfg, ictx, seg_cfg, limits, geom) -> dict:
+    """``SkillExecutor`` kwargs of the P3a online check: ``checker=`` unless
+    ``cfg.box`` (the ``--box`` A/B path) asks for today's box-only path."""
+    if getattr(cfg, 'box', False):
+        return {}
+    return dict(checker=_make_checker(ictx, seg_cfg, limits, geom))
+
+
 #: Process-wide tally of the sim bumper's outcomes (I-CATCH-5 evidence):
 #: ``{'accepted': n, 'declined': {code: n}}``.  Printed in the gate's summary
 #: lines; ``reset_bump_stats()`` zeroes it (tests do, before a trial).
@@ -1042,6 +1082,13 @@ class SelfTossGateConfig:
     #: converging learner needs; hitting it is itself a reportable finding.
     max_attempts: int = 60
     admissible_box_path: str = None
+    #: ``--box``: restore the PRE-P3a command path (the box clip / box
+    #: refusals, no online checker) for the A/B until the box is retired.
+    #: False (default) = the ONLINE path: every run that has a learner hands
+    #: its executor the :func:`_make_checker` twin (boxes still load where
+    #: they always did, as the node still loads them at goal accept; the
+    #: executor ignores them once a checker is set).
+    box: bool = False
     report_path: str = None
     #: R5 columns FEED trial (owner ask, 2026-09-30): when BOTH are set,
     #: :meth:`SkillsGate.run_columns_attempt` spawns ball 1 on an oblique
@@ -1879,6 +1926,7 @@ class SkillsGate:
             **_bump_kwargs(sched, ictx, self.limits, geom),
             catch_aim_source=self.cfg.catch_aim_source,
             learner=learner, boxes=boxes,
+            **_online_kwargs(self.cfg, ictx, self.seg_cfg, self.limits, geom),
             planner_mode=self.seg_cfg.planner_mode,
             carry_zvd=bool(self.seg_cfg.carry_zvd),
             observer=observer, on_experience=lambda exp: (
@@ -2331,6 +2379,7 @@ class SkillsGate:
             **_bump_kwargs(sched, ictx, self.limits, geom),
             catch_aim_source=self.cfg.catch_aim_source,
             learner=learner, boxes=None, resend_max_per_catch=0,
+            **_online_kwargs(self.cfg, ictx, self.seg_cfg, self.limits, geom),
             observer=observer,
             on_experience=lambda exp: (
                 memory.append(exp), throws_out.append(exp)),
@@ -2836,6 +2885,7 @@ class SkillsGate:
             **_bump_kwargs(sched, ictx, self.limits, geom),
             catch_aim_source=self.cfg.catch_aim_source,
             learner=learner, boxes=None, resend_max_per_catch=0,
+            **_online_kwargs(self.cfg, ictx, self.seg_cfg, self.limits, geom),
             observer=observer,
             on_experience=lambda exp: (
                 memory.append(exp), throws_out.append(exp)),
@@ -3500,6 +3550,13 @@ def main(argv=None) -> int:
                         'the refine path this gate asserts), schedule (open '
                         'loop from the commanded throw state), or '
                         'schedule_hand')
+    p.add_argument('--box', action='store_true',
+                   help='learner runs: restore the pre-P3a command path (the '
+                        'admissible-box clip/refusals, no online checker) for '
+                        'the A/B. Default is the ONLINE path: the executor '
+                        'checks every command with executor.check_segment '
+                        '(ADMISSIBILITY log lines); a refused command ends '
+                        'the attempt NO_ADMISSIBLE_COMMAND')
     p.add_argument('--learn', action='store_true',
                    help='run the R3/R4/R5 sim-validation learner run (plan '
                         '§ 4 R3; R4 Unit U7a; R5 Unit G) instead of the R2 '
@@ -3672,7 +3729,8 @@ def main(argv=None) -> int:
                                   pattern=args.pattern,
                                   planner_mode=args.planner_mode,
                                   carry_zvd=(args.carry_zvd == 'true'),
-                                  separation_mm=separation_mm)
+                                  separation_mm=separation_mm,
+                                  box=bool(args.box))
         if args.angle_deg:
             if args.pattern != 'columns':
                 p.error('--angle-deg only applies to --pattern columns')

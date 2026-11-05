@@ -56,6 +56,7 @@ from jugglebot.motion.skills.segments import (CATCH, REST, THROW, CatchTerminal,
                                               SegmentConfig, ThrowAfterCatch,
                                               ThrowTerminal)
 from jugglebot.motion.trajectory import ballistics_bc
+from jugglebot.motion.trajectory import throw_envelope
 from jugglebot.motion.trajectory.feasibility import STALE_STATE
 from jugglebot.motion.trajectory import cup_realize as cr
 from jugglebot.motion.trajectory import tilt_geometry as tg
@@ -102,6 +103,10 @@ ORIGIN_TOO_LATE = 'ORIGIN_TOO_LATE'
 REBASE_DISCONTINUOUS = 'REBASE_DISCONTINUOUS'
 #: The window from the splice knot to the skill's event is shorter than a plan.
 WINDOW_TOO_SHORT = 'WINDOW_TOO_SHORT'
+#: :func:`check_segment` refuses a MAGAZINE by name (P3a): the magazine throw
+#: is formulaic from a stopped machine, has no gate margin to report and no
+#: Learner command to check.
+MAGAZINE_NOT_CHECKABLE = 'MAGAZINE_NOT_CHECKABLE'
 #: The tracker has no landing for the ball this CATCH is for.
 NO_LANDING = 'NO_LANDING'
 #: A ``ValueError`` escaped a terminal build — the same code ``_svc_plan_cycle``
@@ -116,6 +121,42 @@ UNREACHABLE = 'UNREACHABLE'
 #: platform a command it can stand behind, so the throw is refused before any
 #: solve is attempted rather than handed a NaN or an out-of-envelope target.
 NO_ADMISSIBLE_COMMAND = 'NO_ADMISSIBLE_COMMAND'
+
+#: P3a EARLY COMMAND (the eager form of the online check, the early start in
+#: the P3a logbook entry's Discussion, ``learner-generalisation`` P3a; :meth:`SkillExecutor._early_command`).
+#: How far BEFORE its dispatch tick a CATCH-with-throw's command may be
+#: computed and checked: 0.30 s = the p99 of ONE check under flown-like
+#: starvation (L1h 190 ms / L2h 209 ms wall, the loaded-box measurement in
+#: logbook/2026-11-06-learner-generalisation-p3a-command-time-admissibility-check.md, 2026-11-06, on
+#: this Jetson through a real ``WorkerSegmentSolver``,
+#: ``tools/probes/admissible_obviation/loaded_budget.py``) plus one beat-quantum
+#: of margin. It is also the staleness bound of the catch aim the early
+#: Learner state ``x[2:4]`` is read from.
+EARLY_COMMAND_MAX_S = 0.30
+#: The early resolution is SENT only if the dispatch-time candidate (the same
+#: Learner query with the dispatch-time ``x``) is within this LATERAL distance
+#: (m, xy norm) of the early candidate: 1 mm = 1/20 of the ~20 mm shot-to-shot
+#: landing sd (plan § 1.3), so the command sent differs from the synchronous
+#: path's by less than the plant's own scatter can resolve (that logbook entry's Discussion).
+EARLY_COMMAND_TOL_M = 0.001
+#: ... and within this APEX difference (m): 2 mm of apex, the same 1/20
+#: fraction against the larger apex scatter (same Discussion).
+EARLY_COMMAND_APEX_TOL_M = 0.002
+
+#: P3a stand-in rule (ii): a same-site fold whose carried Throw goes to
+#: ANOTHER Site (the hop) is checked by REFLECTING the dispatched Segment
+#: through the origin of the platform xy frame -- valid only when the two
+#: Sites are point-symmetric about it, release Site xy == -target Site xy
+#: within this many mm (:meth:`SkillExecutor._standin_rule`). 1 mm: Sites are
+#: compiled from one separation (``sites.columns_sites`` puts them at
+#: +-separation/2 exactly), so a real pair is symmetric to rounding; anything
+#: off by a millimetre is a different geometry and gets rule (iii).
+STANDIN_SYMMETRY_TOL_MM = 1.0
+
+#: :meth:`SkillExecutor._standin_rule` answers.
+_STANDIN_SAME = 'same'          # (i) the target is this Catch's own Site
+_STANDIN_REFLECT = 'reflect'    # (ii) point-symmetric hop: reflect
+_STANDIN_NONE = 'none'          # (iii) no faithful stand-in: envelope only
 
 #: The wire-read budget — :data:`LEAD_KNOTS`, :data:`LEAD_S`,
 #: :data:`WIRE_READ_KNOTS`, :data:`HANDOFF_LEAD_KNOTS`, :data:`HANDOFF_LEAD_S`,
@@ -892,6 +933,27 @@ class _NoAdmissibleCommand(Exception):
     for a throw -- an empty admissible box, or the learner's fit diverging to
     a non-finite command. Caught by :meth:`SkillExecutor._dispatch` and turned
     into a :data:`NO_ADMISSIBLE_COMMAND` refusal; never escapes this module."""
+
+
+@dataclasses.dataclass(frozen=True)
+class _EarlyCommand:
+    """One CATCH-with-throw's EARLY resolution
+    (:meth:`SkillExecutor._early_command`), held until its dispatch.
+
+    ``skill`` is the schedule entry it was computed for (compared by
+    identity at the dispatch: a survivor-tail cut renumbers the
+    undispatched tail, and an entry must never reach another skill).
+    ``u_cand`` is the Learner's CANDIDATE at the early instant (``None``
+    when the Learner refused it there) -- the dispatch compares candidate
+    against candidate, never against the resolved command. Exactly one of
+    ``resolution`` (``admissible.Resolution``) and ``refusal`` is set when
+    ``u_cand`` is."""
+
+    skill: Skill
+    t_check_s: float
+    u_cand: Optional[Tuple[np.ndarray, float]]
+    resolution: Optional['adm.Resolution'] = None
+    refusal: Optional[_NoAdmissibleCommand] = None
 
 
 #: The release-to-catch RISE (m), signed: positive when the catch plane sits
@@ -1711,6 +1773,189 @@ def _rebase_fresh_rest(seg, seed: uc.CycleState, t0_before_solve: float,
     return cut_plan, cut_meta, t0, k_cut, held, None
 
 
+@dataclasses.dataclass(frozen=True)
+class _Origin:
+    """Where a segment of ``kind`` would be planned from — what
+    :func:`_segment_origin` derives for :func:`install_segment` and
+    :func:`check_segment` alike.  ``refusal`` is ``(code, message)`` when the
+    origin itself refuses (``WINDOW_TOO_SHORT``), else ``None``."""
+
+    fresh: bool
+    reserved: bool
+    seed: Optional[uc.CycleState]
+    t0: float
+    k_s: int
+    t_origin: float
+    post_release: bool
+    refusal: Optional[Tuple[str, str]] = None
+
+
+def _magazine_splice_refusal(record: Optional[PlanRecord], kind: str,
+                             t_now_s: float, lead_s: float, fresh: bool
+                             ) -> Optional[Tuple[str, str]]:
+    """``(MAGAZINE_NEEDS_REST, message)`` when a splice would touch a MAGAZINE
+    (the new segment's or the installed one's), else ``None``."""
+    if not fresh and (kind == mt.MAGAZINE or record.meta.kind == mt.MAGAZINE):
+        # The magazine throw is formulaic from a STOPPED machine and its meta
+        # has no `cup_plan` to splice against (`magazine_throw` module
+        # docstring) — nothing splices onto it and it splices onto nothing.
+        return (mt.MAGAZINE_NEEDS_REST,
+                'a MAGAZINE throw is planned from rest and nothing splices '
+                'onto one; the installed %s plan runs until %.3f s (now %.3f s '
+                '+ %.3f s lead) — wait for its terminal rest'
+                % (record.meta.kind, record.end_s, t_now_s, lead_s))
+    return None
+
+
+def _segment_origin(record: Optional[PlanRecord],
+                    seed_rest: Optional[uc.CycleState], kind: str, terminal,
+                    t_now_s: float, lead_s: float, fresh: bool,
+                    reserve_fresh_lead: bool) -> _Origin:
+    """The fresh-vs-splice seed / origin derivation, ONE spelling for
+    :func:`install_segment` and :func:`check_segment` (P3a: a check must plan
+    from exactly the seed the install will use).  ``lead_s`` is resolved and
+    ``fresh`` decided by the caller.  Raises ``ValueError`` (no seed for a
+    fresh origin, a malformed terminal) and whatever the planner's seed
+    readers raise, for the caller to convert; the order of every check is the
+    install's own, so the refusals are the same ones in the same order."""
+    if fresh:
+        if seed_rest is not None:
+            seed = seed_rest
+        elif record is not None:
+            seed = _rest_seed(record)
+        else:
+            raise ValueError(
+                'no record and no seed_rest — a fresh origin needs the '
+                'machine state to plan from, and nothing here can invent it')
+        # `reserve_fresh_lead` (see install_segment's docstring): an
+        # event-bearing fresh origin sits `lead_s` after dispatch, exactly
+        # where a splice's `k_s` would, so the solve has the schedule's own
+        # budget and knot 0 is still ahead of the wire when it lands. A REST
+        # keeps `t0 = t_now_s` and the rebase rule.
+        reserved = bool(reserve_fresh_lead) and kind != REST
+        t0 = t_now_s + (lead_s if reserved else 0.0)
+        t_origin = t0
+        refusal = None
+        if reserved:
+            window_s = _event_abs_s(kind, terminal) - t_origin
+            if window_s < MIN_WINDOW_S - 1e-12:
+                refusal = (
+                    WINDOW_TOO_SHORT,
+                    'a %.3f s window from the reserved fresh origin '
+                    '(dispatch + %.3f s lead) to the %s is under the '
+                    '%d-knot floor (%.3f s) — the gate has no stencil to '
+                    'measure a jerk in'
+                    % (window_s, lead_s, kind, MIN_WINDOW_KNOTS,
+                       MIN_WINDOW_S))
+        return _Origin(True, reserved, seed, t0, 0, t_origin, False, refusal)
+    dt = float(record.plan.dt)
+    t0 = float(record.t0_s)
+    k_s, post_release = splice_knot_for(record, kind, terminal,
+                                        t_now_s, lead_s)
+    t_origin = t0 + k_s * dt
+    window_s = _event_abs_s(kind, terminal) - t_origin
+    if window_s < MIN_WINDOW_S - 1e-12:
+        return _Origin(False, False, None, t0, k_s, t_origin, post_release, (
+            WINDOW_TOO_SHORT,
+            'a %.3f s window from the splice (knot %d) to the %s is '
+            'under the %d-knot floor (%.3f s) — the gate has no stencil '
+            'to measure a jerk in'
+            % (window_s, k_s, kind, MIN_WINDOW_KNOTS, MIN_WINDOW_S)))
+    seed = (uc.release_state_at_knot(record.plan, record.meta, k_s)
+            if post_release
+            else uc.state_at_knot(record.plan, record.meta, k_s))
+    return _Origin(False, False, seed, t0, k_s, t_origin, post_release)
+
+
+@dataclasses.dataclass(frozen=True)
+class CheckResult:
+    """What one :func:`check_segment` evaluation found — never an exception.
+
+    ``planned`` = ``sg.plan_segment`` returned a gated segment; ``code`` is
+    ``'OK'`` then (the caller judges ``margin``), else the refusal code;
+    ``margin`` is :func:`~jugglebot.motion.skills.admissible.margin` of the
+    segment's gate report (or of the refusal's report; ``nan`` without one);
+    ``plan_wall_s`` is the planner's own wall time (``0.0`` on a refusal)."""
+
+    planned: bool
+    code: str
+    message: str
+    margin: float
+    plan_wall_s: float
+
+
+#: Start of :func:`check_segment`'s success message: ``skill_node._checker``
+#: reads it as proof the emitter ran a CHECK and not an install.
+CHECK_OK_PREFIX = 'checked '
+
+
+def check_segment(record: Optional[PlanRecord],
+                  seed_rest: Optional[uc.CycleState],
+                  kind: str, terminal, t_now_s: float, *,
+                  lead_s: Optional[float] = None,
+                  cfg: Optional[SegmentConfig] = None,
+                  limits=None, geom=None, warm_start=None,
+                  reserve_fresh_lead: bool = False) -> CheckResult:
+    """Plan + gate ``terminal`` from the seed :func:`install_segment` would use
+    for the same inputs, and report the gate margin — P3a's command-time
+    admissibility check (`motion/skills/INVARIANTS.md` I-ADMIT-1).  PURE: no lateness check, no record, no
+    splice, no rebase; ``record`` and every input are left untouched.
+
+    Same arguments and the same meaning as :func:`install_segment` (the
+    terminal's event is ABSOLUTE on ``t_now_s``'s clock); the fresh-vs-splice
+    decision, the snap to the head's release and the seed are
+    :func:`_segment_origin`, shared with the install, so its
+    ``WINDOW_TOO_SHORT`` / ``MAGAZINE_NEEDS_REST`` refusals come back here
+    with the same codes.  A MAGAZINE kind is refused
+    :data:`MAGAZINE_NOT_CHECKABLE`.  A
+    :class:`~jugglebot.motion.unified_cycle.CycleInfeasible` returns its code
+    with the margin of its report; a ``ValueError`` from a malformed terminal
+    returns :data:`UNREACHABLE`, as the install does.
+    """
+    cfg = SegmentConfig() if cfg is None else cfg
+    t_now_s = float(t_now_s)
+    lead_s = (sch.install_lead_s(kind) if lead_s is None else float(lead_s))
+    nan = float('nan')
+    if kind == mt.MAGAZINE:
+        return CheckResult(False, MAGAZINE_NOT_CHECKABLE,
+                           'a MAGAZINE throw is formulaic from rest and is not '
+                           'checked', nan, 0.0)
+    if limits is None:
+        from jugglebot.motion.trajectory.limits import TrajectoryLimits
+        gate_limits = TrajectoryLimits.from_config(hw)
+    else:
+        gate_limits = limits
+    fresh = record is None or (t_now_s + lead_s) >= record.end_s
+    refusal = _magazine_splice_refusal(record, kind, t_now_s, lead_s, fresh)
+    if refusal is not None:
+        return CheckResult(False, refusal[0], refusal[1], nan, 0.0)
+    try:
+        org = _segment_origin(record, seed_rest, kind, terminal, t_now_s,
+                              lead_s, fresh, reserve_fresh_lead)
+        if org.refusal is not None:
+            return CheckResult(False, org.refusal[0], org.refusal[1], nan,
+                               0.0)
+        seg = sg.plan_segment(
+            kind, org.seed,
+            _terminal_on_segment_clock(kind, terminal, org.t_origin),
+            cfg, limits, geom, warm_start=warm_start)
+    except uc.CycleInfeasible as exc:
+        return CheckResult(False, exc.code, exc.outcome(),
+                           adm.margin(exc.report, gate_limits), 0.0)
+    except ValueError as exc:
+        return CheckResult(False, UNREACHABLE, str(exc), nan, 0.0)
+    m = adm.margin(seg.meta.report, gate_limits)
+    if org.fresh:
+        origin = 'a fresh origin'
+    else:
+        origin = 'the splice at knot %d%s' % (
+            org.k_s, ' (post-release)' if org.post_release else '')
+    return CheckResult(True, 'OK',
+                       CHECK_OK_PREFIX + '%s from %s: margin %.3f' % (
+                           kind, origin, m),
+                       m, float(seg.meta.plan_wall_s))
+
+
 def install_segment(record: Optional[PlanRecord],
                     seed_rest: Optional[uc.CycleState],
                     kind: str, terminal, t_now_s: float, *,
@@ -1869,66 +2114,18 @@ def install_segment(record: Optional[PlanRecord],
     # splice base and the planned window is the schedule's (2026-10-16).
     lead_s = (sch.install_lead_s(kind) if lead_s is None else float(lead_s))
     fresh = record is None or (t_now_s + lead_s) >= record.end_s
-    post_release = False
-    if not fresh and (kind == mt.MAGAZINE or record.meta.kind == mt.MAGAZINE):
-        # The magazine throw is formulaic from a STOPPED machine and its meta
-        # has no `cup_plan` to splice against (`magazine_throw` module
-        # docstring) — nothing splices onto it and it splices onto nothing.
-        return record, InstallResult(
-            False, mt.MAGAZINE_NEEDS_REST,
-            'a MAGAZINE throw is planned from rest and nothing splices onto '
-            'one; the installed %s plan runs until %.3f s (now %.3f s + %.3f s '
-            'lead) — wait for its terminal rest'
-            % (record.meta.kind, record.end_s, t_now_s, lead_s), 0.0), None
+    refusal = _magazine_splice_refusal(record, kind, t_now_s, lead_s, fresh)
+    if refusal is not None:
+        return record, InstallResult(False, refusal[0], refusal[1], 0.0), None
 
     try:
-        if fresh:
-            if seed_rest is not None:
-                seed = seed_rest
-            elif record is not None:
-                seed = _rest_seed(record)
-            else:
-                raise ValueError(
-                    'no record and no seed_rest — a fresh origin needs the '
-                    'machine state to plan from, and nothing here can invent it')
-            # `reserve_fresh_lead` (see the docstring): an event-bearing
-            # fresh origin sits `lead_s` after dispatch, exactly where a
-            # splice's `k_s` would, so the solve has the schedule's own budget
-            # and knot 0 is still ahead of the wire when it lands. A REST
-            # keeps `t0 = t_now_s` and the rebase rule below.
-            reserved = bool(reserve_fresh_lead) and kind != REST
-            t0 = t_now_s + (lead_s if reserved else 0.0)
-            k_s = 0
-            t_origin = t0
-            if reserved:
-                window_s = _event_abs_s(kind, terminal) - t_origin
-                if window_s < MIN_WINDOW_S - 1e-12:
-                    return record, InstallResult(
-                        False, WINDOW_TOO_SHORT,
-                        'a %.3f s window from the reserved fresh origin '
-                        '(dispatch + %.3f s lead) to the %s is under the '
-                        '%d-knot floor (%.3f s) — the gate has no stencil to '
-                        'measure a jerk in'
-                        % (window_s, lead_s, kind, MIN_WINDOW_KNOTS,
-                           MIN_WINDOW_S), 0.0), None
-        else:
-            dt = float(record.plan.dt)
-            t0 = float(record.t0_s)
-            k_s, post_release = splice_knot_for(record, kind, terminal,
-                                                t_now_s, lead_s)
-            t_origin = t0 + k_s * dt
-            window_s = _event_abs_s(kind, terminal) - t_origin
-            if window_s < MIN_WINDOW_S - 1e-12:
-                return record, InstallResult(
-                    False, WINDOW_TOO_SHORT,
-                    'a %.3f s window from the splice (knot %d) to the %s is '
-                    'under the %d-knot floor (%.3f s) — the gate has no stencil '
-                    'to measure a jerk in'
-                    % (window_s, k_s, kind, MIN_WINDOW_KNOTS, MIN_WINDOW_S),
-                    0.0), None
-            seed = (uc.release_state_at_knot(record.plan, record.meta, k_s)
-                    if post_release
-                    else uc.state_at_knot(record.plan, record.meta, k_s))
+        org = _segment_origin(record, seed_rest, kind, terminal, t_now_s,
+                              lead_s, fresh, reserve_fresh_lead)
+        if org.refusal is not None:
+            return record, InstallResult(
+                False, org.refusal[0], org.refusal[1], 0.0), None
+        seed, t0, k_s, t_origin = org.seed, org.t0, org.k_s, org.t_origin
+        reserved, post_release = org.reserved, org.post_release
 
         if kind == mt.MAGAZINE:
             seg = mt.plan_magazine(
@@ -2142,6 +2339,17 @@ class SkillExecutor:
     :meth:`_advance_release_evidence` reads it for the SAME reason
     (``EVIDENCE_EMPTY`` is release evidence, ``EVIDENCE_SEATED`` is caught
     evidence — one sensor, two questions, no second callable).
+
+    **P3a: the command-time admissibility check -- optional, gated by
+    ``checker``.** ``checker(kind, terminal, t_abs_s, *, ball_id) ->
+    admissible.CommandVerdict`` has ``installer``'s call shape and plans +
+    gates a terminal WITHOUT installing it (the node's ``check_only``
+    InstallSegment, the sim gate's ``check_segment`` twin). With a
+    ``checker`` the command is the ONLINE one (:meth:`_resolve_catch_command`
+    for a CATCH carrying a throw, :meth:`_resolve_throw_envelope` for a plain
+    THROW and the hop entry) and ``boxes`` is NOT consulted for it. No
+    ``checker`` ⇒ the admissible-box path exactly as before (the sim A/B
+    until P3c).
     """
 
     def __init__(self, schedule: Schedule,
@@ -2156,6 +2364,8 @@ class SkillExecutor:
                  resend_t_tol_s: float = 0.010,
                  resend_max_per_catch: int = 2,
                  learner=None, boxes=None,
+                 checker: Optional[Callable[..., 'adm.CommandVerdict']] = None,
+                 early_command: bool = True,
                  lateral_authority_m: Optional[float] = None,
                  catch_outward_authority_m: Optional[float] = None,
                  catch_inward_authority_m: Optional[float] = None,
@@ -2239,6 +2449,18 @@ class SkillExecutor:
         self.resend_max_per_catch = int(resend_max_per_catch)
         self.learner = learner
         self.boxes = boxes
+        #: P3a: the online admissibility check (class docstring). ``None`` =
+        #: the admissible-box path, bit-identical to before P3a.
+        self.checker = checker
+        #: P3a: with a checker, compute and check a CATCH-with-throw's command
+        #: in the idle slot BEFORE its dispatch (:meth:`_early_command`, the
+        #: tick rule); ``False`` = always at the dispatch instant (the A/B).
+        self.early_command = bool(early_command)
+        #: ``idx -> _EarlyCommand``: the early resolution of the NEXT
+        #: CATCH-with-throw, consumed (popped) by its dispatch's
+        #: :meth:`_resolve_catch_command`. At most one entry per skill: its
+        #: presence is also the "already tried early" mark.
+        self._early_by_idx: Dict[int, _EarlyCommand] = {}
         #: The segment planner ('level' | 'pose', ``uc.PLANNER_MODES``) this
         #: session runs: ``skill_node`` sets it from its ``planner_mode``
         #: parameter; it selects the admissible box (a box is stamped with the
@@ -2456,7 +2678,8 @@ class SkillExecutor:
     def _command_u(self, idx: int, site, target, y_d,
                    seat_offset_m=None,
                    shadow_landing: bool = False,
-                   entry_hop: bool = False) -> Tuple[np.ndarray, float]:
+                   entry_hop: bool = False,
+                   online_release_mm=None) -> Tuple[np.ndarray, float]:
         """The commanded ``u = (landing_xy_m, apex_m)`` for the ball this
         skill releases — computed ONCE (at ``idx``'s first dispatch) and
         cached, so a CATCH re-send's later calls return the SAME command
@@ -2550,6 +2773,16 @@ class SkillExecutor:
         throw would get is added to the hop's own ``y_d``. It still writes NO
         memory row (the pooling argument above stands) and still bypasses the
         cross-site box except for an apex-only clip to the same-site box.
+
+        **P3a online path (``self.checker`` set).** No box is looked up. A
+        plain THROW and the hop entry (``online_release_mm`` = the release
+        the THROW terminal uses) get the ENVELOPE-only resolution
+        (:meth:`_resolve_throw_envelope`); the hop's apex-only box clip is
+        replaced by it. A CATCH's carried throw never reaches the online
+        branch here: :meth:`_catch_terminal` fills the cache first
+        (:meth:`_resolve_catch_command`), and a call that arrives without
+        that (``online_release_mm`` None, cache empty) refuses -- fail
+        closed, never an unchecked command.
         """
         if idx in self._u_cache:
             _x, u_dy, u_apex = self._u_cache[idx]
@@ -2564,6 +2797,22 @@ class SkillExecutor:
                      float(off[0]), float(off[1])])
         if shadow_landing:
             u_dy, u_apex = dy, apex
+            self._u_cache[idx] = (x, u_dy, u_apex)
+            return u_dy, u_apex
+        if self.checker is not None:
+            if online_release_mm is None:
+                raise _NoAdmissibleCommand(
+                    'ADMISSIBILITY skill %d: the online check has no release '
+                    'to evaluate (internal: the command was asked for outside '
+                    'a THROW terminal or a CATCH dispatch) -- refusing an '
+                    'unchecked command' % (idx,))
+            if entry_hop:
+                u_cand = self._hop_command(idx, site, dy, apex, x)
+            else:
+                u_cand = self._learner_candidate(idx, site, target, dy, apex,
+                                                 x, online=True)
+            u_dy, u_apex = self._resolve_throw_envelope(
+                idx, online_release_mm, target, u_cand, (dy, apex))
             self._u_cache[idx] = (x, u_dy, u_apex)
             return u_dy, u_apex
         if entry_hop:
@@ -2610,24 +2859,9 @@ class SkillExecutor:
                     'a learner command may not reach the platform unclipped'
                     % (self.schedule.pattern, (site.name, target.name),
                        reason))
-        if self.learner is None:
-            u_dy, u_apex = dy, apex
-        else:
+        u_dy, u_apex = self._learner_candidate(idx, site, target, dy, apex, x)
+        if self.learner is not None:
             y_d_si = np.array([dy[0], dy[1], apex])
-            try:
-                u = np.asarray(self.learner.command(x, y_d_si), dtype=float
-                               ).reshape(3)
-            except ValueError as exc:
-                raise _NoAdmissibleCommand(
-                    'the learner could not produce a finite command for site '
-                    '%r (target %r): %s' % (site.name, target.name, exc)
-                ) from exc
-            u_dy, u_apex = u[:2].copy(), float(u[2])
-            if self.lateral_authority_m is not None:
-                a = abs(self.lateral_authority_m)
-                u_dy = np.asarray(dy, dtype=float) + np.clip(
-                    u_dy - np.asarray(dy, dtype=float), -a, a)
-            self._learned_u.add(idx)
         if box is not None:
             try:
                 u_dy_cmd_clip, u_apex = adm.clip((u_dy, u_apex), box)
@@ -2654,6 +2888,479 @@ class SkillExecutor:
             return
         self._resend_notes.add(key)
         self._pending_notes.append(line)
+
+    def _learner_candidate(self, idx: int, site, target, dy, apex: float, x,
+                           online: bool = False, mark_learned: bool = True
+                           ) -> Tuple[np.ndarray, float]:
+        """The Learner's command for ``(x, y_d)``, lateral-authority-clipped
+        about ``dy`` -- what :meth:`_command_u` computes BEFORE any box (and
+        the P3a online path's CANDIDATE). No Learner -> ``y_d`` exactly. A
+        ``ValueError`` from the Learner (and, on the ``online`` path, a
+        non-finite answer) refuses: :class:`_NoAdmissibleCommand`. Marks
+        ``idx`` as learned (:attr:`_learned_u`) when the Learner answered,
+        unless ``mark_learned`` is False (the early command's side-effect-free
+        query, :meth:`_early_command`)."""
+        dy = np.asarray(dy, dtype=float).reshape(2)
+        if self.learner is None:
+            return dy, float(apex)
+        y_d_si = np.array([dy[0], dy[1], float(apex)])
+        try:
+            u = np.asarray(self.learner.command(x, y_d_si), dtype=float
+                           ).reshape(3)
+            if online and not np.all(np.isfinite(u)):
+                raise ValueError('non-finite command %r' % (u,))
+        except ValueError as exc:
+            raise _NoAdmissibleCommand(
+                'the learner could not produce a finite command for site '
+                '%r (target %r): %s' % (site.name, target.name, exc)
+            ) from exc
+        u_dy, u_apex = u[:2].copy(), float(u[2])
+        if self.lateral_authority_m is not None:
+            a = abs(self.lateral_authority_m)
+            u_dy = dy + np.clip(u_dy - dy, -a, a)
+        if mark_learned:
+            self._learned_u.add(idx)
+        return u_dy, u_apex
+
+    # ── P3a: the online (command-time) admissibility check ──
+
+    @staticmethod
+    def _envelope_verdict(release_mm, target_mm, u_apex: float
+                          ) -> Optional['adm.CommandVerdict']:
+        """C-HAND-3 on the REAL Throw ``release_mm -> target_mm`` commanded
+        at Apex ``u_apex``: ``throw_envelope.evaluate`` on the commanded flight
+        time and the closed-form ballistic release speed (m/s). ``None`` when
+        the envelope admits it, else the refusal verdict (``ENVELOPE:<bound>``,
+        margin nan, evaluated -- no solve was spent).
+
+        The takeoff is ``ballistics_bc.launch_velocity``: the planner's own
+        release equality (``cup_cycle.takeoff_velocity``, its SI twin, the
+        same ``(p1 - p0)/T - g T / 2``) pins ``meta.release_vel_mm_s`` to it,
+        so this is the speed the hand will be commanded to, exactly as the
+        sweep's ``_throw_cell`` reads it off the planned segment."""
+        try:
+            flight = float(sch.flight_s(float(u_apex)))
+            v = ballistics_bc.launch_velocity(release_mm, target_mm, flight)
+            speed_mps = float(np.linalg.norm(v)) / 1000.0
+        except (ValueError, ZeroDivisionError, FloatingPointError):
+            return adm.CommandVerdict(False, float('nan'), 'ENVELOPE:INPUT',
+                                      True)
+        verdict = throw_envelope.evaluate(flight, speed_mps)
+        if verdict.ok:
+            return None
+        return adm.CommandVerdict(False, float('nan'),
+                                  'ENVELOPE:%s' % (verdict.bound,), True)
+
+    def _admissibility_line(self, idx: int, u_cand, res: 'adm.Resolution',
+                            envelope_only: bool = False) -> str:
+        """The ONE ``ADMISSIBILITY`` line a resolution leaves in the log: the
+        candidate and its margin when it passed, else what refused it and
+        the command it was resolved to (with that command's margin)."""
+        cxy = np.asarray(u_cand[0], dtype=float).reshape(2)
+        head = ('ADMISSIBILITY skill %d: u=(%+.1f, %+.1f) mm apex %.3f'
+                % (idx, cxy[0] * 1e3, cxy[1] * 1e3, float(u_cand[1])))
+        v = res.verdicts[0]
+        if res.how == 'candidate':
+            return head + (' passed the envelope' if envelope_only
+                           else ' passed m=%.3f' % (v.margin,))
+        uxy = np.asarray(res.u[0], dtype=float).reshape(2)
+        final = res.verdicts[-1] if res.how == 'stepped' else res.verdicts[1]
+        return (head + ' refused %s m=%.3f -> %s (%+.1f, %+.1f) mm apex %.3f '
+                'm=%.3f' % (v.code, v.margin,
+                            'stepped to' if res.how == 'stepped'
+                            else 'model command',
+                            uxy[0] * 1e3, uxy[1] * 1e3, float(res.u[1]),
+                            final.margin))
+
+    def _resolve_throw_envelope(self, idx: int, release_mm, target_site,
+                                u_cand, u_model) -> Tuple[np.ndarray, float]:
+        """P3a, a plain THROW from rest and the hop entry: the ENVELOPE alone
+        (closed form, no worker call -- the launch cell's leg margin is 1.0,
+        and a solve before a fresh-origin THROW would shorten its launch
+        window by the solve time). The candidate's Throw (``release_mm`` ->
+        the commanded target) is admitted -> it; else the model command's ->
+        it; else :class:`_NoAdmissibleCommand`. One ``ADMISSIBILITY`` line."""
+        def _env(u):
+            return self._envelope_verdict(
+                release_mm, self._commanded_target_mm(target_site, u),
+                float(u[1]))
+
+        u_cand = (np.asarray(u_cand[0], dtype=float).reshape(2),
+                  float(u_cand[1]))
+        u_model = (np.asarray(u_model[0], dtype=float).reshape(2),
+                   float(u_model[1]))
+        ok = adm.CommandVerdict(True, float('nan'), 'OK', True)
+        v = _env(u_cand)
+        if v is None:
+            res = adm.Resolution(u_cand, 'candidate', 1, (ok,))
+        else:
+            if (np.array_equal(u_cand[0], u_model[0])
+                    and u_cand[1] == u_model[1]):
+                raise _NoAdmissibleCommand(
+                    'ADMISSIBILITY skill %d: the model command (%.1f, %.1f) '
+                    'mm apex %.3f m is refused %s'
+                    % (idx, u_model[0][0] * 1e3, u_model[0][1] * 1e3,
+                       u_model[1], v.code))
+            v0 = _env(u_model)
+            if v0 is not None:
+                raise _NoAdmissibleCommand(
+                    'ADMISSIBILITY skill %d: candidate (%.1f, %.1f) mm apex '
+                    '%.3f m refused %s and the model command (%.1f, %.1f) mm '
+                    'apex %.3f m refused %s'
+                    % (idx, u_cand[0][0] * 1e3, u_cand[0][1] * 1e3,
+                       u_cand[1], v.code, u_model[0][0] * 1e3,
+                       u_model[0][1] * 1e3, u_model[1], v0.code))
+            res = adm.Resolution(u_model, 'model', 2, (v, ok))
+        self._box_note_once(idx, 'ADMISSIBILITY', self._admissibility_line(
+            idx, u_cand, res, envelope_only=True))
+        return res.u[0], float(res.u[1])
+
+    def _fold_release_mm(self, skill: Skill, landing: Landing) -> np.ndarray:
+        """Where a CATCH's carried throw releases for the (clamped)
+        ``landing``: the caught xy at the site's release z on a same-site
+        fold, the release site exactly on a carried one (the rule
+        :meth:`_catch_terminal` documents; one copy, read by it and by the
+        online check)."""
+        rel_site = release_site_of(skill)
+        if rel_site is skill.site:
+            return np.array([float(landing.pos_mm[0]),
+                             float(landing.pos_mm[1]),
+                             float(rel_site.throw_site_mm()[2])])
+        return np.asarray(rel_site.throw_site_mm(), dtype=float)
+
+    def _catch_rest_mm(self, skill: Skill, landing: Landing) -> np.ndarray:
+        """A CATCH terminal's rest site for the (clamped) ``landing``
+        (:meth:`_catch_terminal`'s held-axis note)."""
+        if skill.rest_site_mm is not None:
+            return sg.hold_axis_site(landing.pos_mm, skill.hold_tilt,
+                                     float(skill.rest_site_mm[2]))
+        return release_site_of(skill).rest_site_mm()
+
+    def _resolve_catch_command(self, idx: int, skill: Skill, landing: Landing,
+                               t_abs_s: float) -> Tuple[np.ndarray, float]:
+        """P3a: compute the CANDIDATE command for CATCH ``idx``'s carried
+        throw and resolve it against the online check at wall time
+        ``t_abs_s``; fill :attr:`_u_cache` and return ``(u_dy, u_apex)``.
+
+        THE SEAM for the early (eager) command: it takes only ``(idx, skill,
+        landing, t)``, writes nothing but the cache, the learned flag and
+        one note, and is idempotent (a filled cache returns at once), so an
+        earlier tick can call it and the dispatch's :meth:`_catch_terminal`
+        then finds the cache full. ``landing`` must be the CLAMPED landing
+        (:meth:`_clamp_lateral_to_schedule`'s output -- the one the terminal
+        is built from): the release, the Learner state ``x[2:4]`` and the
+        stand-in's timing are all derived from it here, without the
+        :attr:`_carried_release_mm` records :meth:`_catch_terminal` writes.
+
+        * candidate = the Learner's command, lateral-authority-clipped
+          (:meth:`_learner_candidate`); no Learner -> ``y_d``. Model command
+          = ``y_d`` (identity prior).
+        * ``verdict_fn(u)``: (1) the envelope on the REAL carried Throw built
+          from ``u`` (this release, the commanded target incl. the fly-back,
+          ``flight_s(u_apex)``) -- a refusal costs no solve; (2) the
+          STAND-IN: this CATCH's own terminal (timing, landing velocity, rest
+          site, tilts) with ``landing_mm`` moved to where ``u`` is PREDICTED
+          to land (the target's catch point + ``y_hat_xy(u)`` from
+          ``learner.local_model``, identity when there is none, clamped by
+          the lateral authority about that catch's schedule landing) and its
+          carried Throw aimed by ``u`` (a same-site fold releases from the
+          stand-in landing xy, a carried fold from the release site) -- rule
+          (i) of :meth:`_catch_standin`; the hop REFLECTS this Segment (ii),
+          and a cross-site Throw with no faithful stand-in is admitted on the
+          envelope alone, with no checker call (iii, :meth:`_standin_rule`); (3)
+          ``self.checker(CATCH, standin, t_abs_s, ball_id=...)``. A checker
+          that raises is an UNEVALUATED check (fail closed).
+        * ``admissible.resolve_command`` -> the command; ``AdmissibleError``
+          -> :class:`_NoAdmissibleCommand` (``NO_ADMISSIBLE_COMMAND``).
+
+        **Early command** (:meth:`_early_command`). When an early resolution
+        is held for this skill, the candidate is still recomputed here with
+        the DISPATCH-time ``x`` (one Learner query, no solve). Within
+        :data:`EARLY_COMMAND_TOL_M` laterally and
+        :data:`EARLY_COMMAND_APEX_TOL_M` in apex of the EARLY candidate, the
+        early resolution is used (an early refusal is re-raised here, so the
+        END line, code and instant are the dispatch's); otherwise it is
+        discarded and the dispatch-time candidate is checked synchronously.
+        Either way the cache's ``x`` is the dispatch-time ``x`` and its ``u``
+        the command sent. One ``ADMISSIBILITY-EARLY`` note says which.
+        """
+        if idx in self._u_cache:
+            _x, u_dy, u_apex = self._u_cache[idx]
+            return u_dy, u_apex
+        tt = skill.then_throw
+        rel_site = release_site_of(skill)
+        release_mm, x = self._catch_command_state(skill, landing)
+        dy, apex = tt.y_d
+        dy = np.asarray(dy, dtype=float).reshape(2)
+        apex = float(apex)
+        early = self._early_by_idx.pop(idx, None)
+        if early is not None and early.skill is not skill:
+            early = None
+        u_cand = self._learner_candidate(idx, rel_site, tt.target, dy, apex,
+                                         x, online=True)
+        res = None
+        if early is not None:
+            use, line = self._early_at_dispatch(idx, early, u_cand,
+                                                float(t_abs_s))
+            if use:
+                if early.refusal is not None:
+                    raise early.refusal
+                res, u_cand = early.resolution, early.u_cand
+            self._pending_notes.append(line)
+        if res is None:
+            res = self._catch_resolution(idx, skill, landing, t_abs_s,
+                                         release_mm, x, u_cand)
+        if self._standin_rule(skill) == _STANDIN_NONE:
+            line = ('ADMISSIBILITY skill %d: no stand-in for a cross-site '
+                    'Throw (%s -> %s): envelope only'
+                    % (idx, skill.site.name, tt.target.name))
+            if res.how != 'candidate':
+                line += ' -- ' + self._admissibility_line(
+                    idx, u_cand, res).split(': ', 1)[1]
+        else:
+            line = self._admissibility_line(idx, u_cand, res)
+        self._box_note_once(idx, 'ADMISSIBILITY', line)
+        u_dy = np.asarray(res.u[0], dtype=float).reshape(2).copy()
+        u_apex = float(res.u[1])
+        self._u_cache[idx] = (x, u_dy, u_apex)
+        return u_dy, u_apex
+
+    def _catch_command_state(self, skill: Skill, landing: Landing
+                             ) -> Tuple[np.ndarray, np.ndarray]:
+        """``(release_mm, x)`` for CATCH ``skill``'s carried throw from the
+        CLAMPED ``landing``: where it releases (:meth:`_fold_release_mm`) and
+        the Learner state ``x = (release site xy, seat offset xy)`` in m (a
+        same-site fold's seat offset is its release, a carried fold's is the
+        caught xy -- :meth:`_seat_offset_m`'s rule, derived here without the
+        records :meth:`_catch_terminal` writes). Pure."""
+        rel_site = release_site_of(skill)
+        carried = rel_site is not skill.site
+        release_mm = self._fold_release_mm(skill, landing)
+        seat_xy = (np.asarray(landing.pos_mm, dtype=float)[:2] if carried
+                   else release_mm[:2])
+        seat_off = (seat_xy - np.asarray(skill.site.cup_mm, dtype=float)[:2]
+                    ) / 1000.0
+        x = np.array([float(rel_site.cup_mm[0]) / 1000.0,
+                     float(rel_site.cup_mm[1]) / 1000.0,
+                     float(seat_off[0]), float(seat_off[1])])
+        return release_mm, x
+
+    def _early_at_dispatch(self, idx: int, early: _EarlyCommand, u_cand,
+                           t_abs_s: float) -> Tuple[bool, str]:
+        """``(use, note)``: may the held early resolution of CATCH ``idx`` be
+        used for the dispatch-time candidate ``u_cand``? Candidate against
+        CANDIDATE (:attr:`_EarlyCommand.u_cand`), within
+        :data:`EARLY_COMMAND_TOL_M` (xy norm) and
+        :data:`EARLY_COMMAND_APEX_TOL_M`. Pure."""
+        ms = (float(t_abs_s) - float(early.t_check_s)) * 1e3
+        if early.u_cand is None:
+            return False, ('ADMISSIBILITY-EARLY skill %d: the early check %.0f '
+                           'ms before dispatch had no candidate (the Learner '
+                           'refused it there) -> re-checked at dispatch'
+                           % (idx, ms))
+        d_xy = (np.asarray(u_cand[0], dtype=float).reshape(2)
+                - np.asarray(early.u_cand[0], dtype=float).reshape(2))
+        d_apex = float(u_cand[1]) - float(early.u_cand[1])
+        moved = ('(%+.1f, %+.1f) mm apex %+.1f mm'
+                 % (d_xy[0] * 1e3, d_xy[1] * 1e3, d_apex * 1e3))
+        within = (np.all(np.isfinite(d_xy)) and math.isfinite(d_apex)
+                  and float(np.hypot(d_xy[0], d_xy[1])) <= EARLY_COMMAND_TOL_M
+                  and abs(d_apex) <= EARLY_COMMAND_APEX_TOL_M)
+        if not within:
+            return False, ('ADMISSIBILITY-EARLY skill %d: candidate moved %s '
+                           'since the early check -> re-checked at dispatch'
+                           % (idx, moved))
+        return True, ('ADMISSIBILITY-EARLY skill %d: checked %.0f ms before '
+                      'dispatch; candidate moved %s since (tolerance %.1f mm, '
+                      'apex %.1f mm) -> the early resolution is sent'
+                      % (idx, ms, moved, EARLY_COMMAND_TOL_M * 1e3,
+                         EARLY_COMMAND_APEX_TOL_M * 1e3))
+
+    def _catch_resolution(self, idx: int, skill: Skill, landing: Landing,
+                          t_abs_s: float, release_mm, x, u_cand
+                          ) -> 'adm.Resolution':
+        """Resolve CATCH ``idx``'s candidate ``u_cand`` against the online
+        check at ``t_abs_s`` (:meth:`_resolve_catch_command`'s bullet list:
+        the envelope, the stand-in, ``self.checker``). Writes NOTHING on the
+        executor -- the checker call is its only effect -- so the early
+        command can call it. ``AdmissibleError`` ->
+        :class:`_NoAdmissibleCommand`."""
+        tt = skill.then_throw
+        rel_site = release_site_of(skill)
+        dy, apex = tt.y_d
+        dy = np.asarray(dy, dtype=float).reshape(2)
+        apex = float(apex)
+        u_model = (dy.copy(), apex)
+        rel_cup_xy = np.asarray(rel_site.cup_mm, dtype=float)[:2]
+        r_real_mm = release_mm[:2] - rel_cup_xy
+        rule = self._standin_rule(skill)
+        y_hat_xy = self._forward_model_xy(x, np.array([dy[0], dy[1], apex]))
+
+        def _aim_mm(u, r_mm):
+            return (self._commanded_target_mm(tt.target, u)
+                    + self._flyback_for_offset_mm(r_mm, tt.y_d, float(u[1])))
+
+        def verdict_fn(u):
+            env = self._envelope_verdict(release_mm, _aim_mm(u, r_real_mm),
+                                         float(u[1]))
+            if env is not None:
+                return env
+            if rule == _STANDIN_NONE:      # (iii): the envelope alone
+                return adm.CommandVerdict(True, float('nan'), 'OK', True)
+            try:
+                return self.checker(
+                    CATCH, self._catch_standin(skill, landing, u, y_hat_xy),
+                    t_abs_s, ball_id=skill.ball_id)
+            except Exception as exc:   # fail closed: unevaluated, by name
+                return adm.CommandVerdict(
+                    False, float('nan'),
+                    'CHECK_RAISED:%s: %s' % (type(exc).__name__, exc), False)
+
+        try:
+            return adm.resolve_command(verdict_fn, u_cand, u_model)
+        except adm.AdmissibleError as exc:
+            raise _NoAdmissibleCommand(
+                'ADMISSIBILITY skill %d: %s' % (idx, exc)) from exc
+
+    def _standin_rule(self, skill: Skill) -> str:
+        """Which stand-in CATCH ``skill``'s carried Throw is checked on, by
+        where its ball is NEXT caught (the Throw's target Site). Pure.
+
+        (i) :data:`_STANDIN_SAME` -- the target IS this Catch's Site
+            (self-toss, Columns, the oval's carried fold): the stand-in is
+            this Segment with the landing moved to the predicted landing.
+        (ii) :data:`_STANDIN_REFLECT` -- a same-site fold whose Throw goes to
+            the OTHER Site of a point-symmetric pair (the hop: release Site
+            xy == -target Site xy within :data:`STANDIN_SYMMETRY_TOL_MM`).
+        (iii) :data:`_STANDIN_NONE` -- anything else (asymmetric Sites, a
+            carried fold aimed off its catch Site): no faithful stand-in
+            exists from the streaming seed, so the envelope alone admits it.
+        """
+        tt = skill.then_throw
+        if tt.target.name == skill.site.name:
+            return _STANDIN_SAME
+        rel_site = release_site_of(skill)
+        if rel_site is skill.site:
+            asym = (np.asarray(rel_site.cup_mm, dtype=float)[:2]
+                    + np.asarray(tt.target.cup_mm, dtype=float)[:2])
+            if float(np.max(np.abs(asym))) <= STANDIN_SYMMETRY_TOL_MM:
+                return _STANDIN_REFLECT
+        return _STANDIN_NONE
+
+    def _catch_standin(self, skill: Skill, landing: Landing, u,
+                       y_hat_xy) -> CatchTerminal:
+        """THE stand-in terminal for checking command ``u`` on CATCH
+        ``skill`` (CLAMPED ``landing``; ``y_hat_xy`` = :meth:`_forward_model_xy`)
+        -- the one builder the synchronous and the early path share. Pure.
+        Rule (iii) has none (:meth:`_standin_rule`); asking raises.
+
+        Every stand-in is the DISPATCHED Catch's own Segment -- its Site,
+        clock (``t_land``, ``t_release``), arrival velocity, rest site and
+        tilts, planned from the streaming seed -- with only the landing
+        (and the release that rides it on a same-site fold) and the carried
+        Throw's aim changed, because only that Segment has a seed the
+        streaming plan actually provides.
+
+        (i) target == this Site: ``landing_mm`` = the target's catch point +
+            ``y_hat_xy(u)``, clamped by the lateral authority about the next
+            Catch's schedule landing (target + ``y_d``); the Throw aimed by
+            ``u``; a same-site fold releases from the stand-in landing xy, a
+            carried fold from its release Site.
+        (ii) the hop (point-symmetric Sites): the ball's next Catch is at the
+            TARGET + ``y_hat``, seeded from THIS Segment's release. Reflected
+            through the origin of the platform xy frame, that Catch IS this
+            Segment's shape with the offsets negated: ``landing_mm`` = this
+            Site's catch point - ``y_hat_xy(u)`` (clamped about this Site -
+            ``y_d``, the reflection of the next Catch's schedule landing;
+            the outward unit reflects with it, so the clamp commutes with
+            the reflection), the Throw aimed at the commanded target with the
+            lateral command reflected (``-u_dy``, same apex), its release
+            riding the stand-in landing xy. Why not the target Site
+            directly: that keeps this Catch's clock, seed and arrival
+            velocity (pointing along the hop) and moves the landing 2 x the
+            half-separation -- a Segment no pattern flies (the planner
+            refused it UNVERIFIED in the 2026-11-06 sim hop run). The
+            reflection is exact for the QP's geometry only where the leg
+            layout is symmetric under a half turn, so it is a stand-in in the
+            same sense the two-ball one is (one period early); the Segment
+            that flies keeps its 100 % install-time gate. It is the seeding
+            convention the offline sweep and the probe already use for
+            Columns (the partner's release at the mirrored Site).
+        """
+        tt = skill.then_throw
+        rule = self._standin_rule(skill)
+        if rule == _STANDIN_NONE:
+            raise ValueError('no stand-in for a cross-site Throw (%s -> %s)'
+                             % (skill.site.name, tt.target.name))
+        rel_site = release_site_of(skill)
+        carried = rel_site is not skill.site
+        rel_cup_xy = np.asarray(rel_site.cup_mm, dtype=float)[:2]
+        dy = np.asarray(tt.y_d[0], dtype=float).reshape(2)
+        apex = float(tt.y_d[1])
+        u_xy = np.asarray(u[0], dtype=float).reshape(2)
+        y_hat = np.asarray(y_hat_xy(u), dtype=float).reshape(2) * 1000.0
+        if rule == _STANDIN_REFLECT:
+            site_pt = np.asarray(skill.site.catch_site_mm(), dtype=float)
+            pos = site_pt + np.array([-y_hat[0], -y_hat[1], 0.0])
+            centre_xy = site_pt[:2] - dy * 1000.0
+            out_u = self._outward_unit_at(skill.site)
+            aim_u = (-u_xy, float(u[1]))
+        else:
+            target_pt = np.asarray(tt.target.catch_site_mm(), dtype=float)
+            pos = target_pt + np.array([y_hat[0], y_hat[1], 0.0])
+            centre_xy = self._commanded_target_mm(tt.target, (dy, apex))[:2]
+            out_u = self._outward_unit_at(tt.target)
+            aim_u = (u_xy, float(u[1]))
+        if self.lateral_authority_m is not None:
+            clipped, _a, _o, _i = self._lateral_clip_mm(pos[:2] - centre_xy,
+                                                        out_u)
+            pos[:2] = centre_xy + clipped
+        if carried:
+            s_release = np.asarray(rel_site.throw_site_mm(), dtype=float)
+        else:
+            s_release = np.array([pos[0], pos[1],
+                                  float(rel_site.throw_site_mm()[2])])
+        then = ThrowAfterCatch(
+            t_release_s=float(tt.t_release_abs_s), site_mm=s_release,
+            target_mm=(self._commanded_target_mm(tt.target, aim_u)
+                       + self._flyback_for_offset_mm(
+                           s_release[:2] - rel_cup_xy, tt.y_d, float(u[1]))),
+            flight_s=sch.flight_s(float(u[1])))
+        return CatchTerminal(landing_mm=pos,
+                             landing_vel_mm_s=landing.vel_mm_s,
+                             t_land_s=float(landing.t_land_abs_s),
+                             rest_site_mm=self._catch_rest_mm(skill, landing),
+                             then_throw=then, hold_tilt=skill.hold_tilt,
+                             receive_tilt=skill.receive_tilt)
+
+    def _forward_model_xy(self, x, y_d_si):
+        """``u -> y_hat_xy(u)`` (metres), the Learner's own forward model at
+        ``(x, y_d)`` evaluated exactly as :meth:`_forward_clip_xy` does
+        (``d[:2] + D[:2, :] (u - u_bar)``, at ``u``'s own apex). No Learner,
+        no ``local_model``, thin support (``None``), a fit that raises or a
+        non-finite prediction -> the identity, ``y_hat = u``."""
+        def _identity(u):
+            return np.asarray(u[0], dtype=float).reshape(2)
+
+        local_model = (None if self.learner is None
+                       else getattr(self.learner, 'local_model', None))
+        if local_model is None:
+            return _identity
+        try:
+            fit = local_model(x, y_d_si)
+            if fit is None:
+                return _identity
+            u_bar, D, d = (np.asarray(v, dtype=float) for v in fit)
+            u_bar, D, d = u_bar.reshape(3), D.reshape(3, 3), d.reshape(3)
+        except Exception:
+            return _identity
+
+        def _y_hat(u):
+            u3 = np.array([float(np.asarray(u[0])[0]),
+                           float(np.asarray(u[0])[1]), float(u[1])])
+            y = d[:2] + D[:2, :] @ (u3 - u_bar)
+            return y if np.all(np.isfinite(y)) else _identity(u)
+        return _y_hat
 
     def _forward_clip_xy(self, idx: int, x, y_d_si, dy, u_dy, u_apex, box,
                          u_dy_cmd_clip) -> np.ndarray:
@@ -2827,7 +3534,9 @@ class SkillExecutor:
             d_dy = np.clip(d_dy, -a, a)
         u_dy = dy + d_dy
         u_apex = float(u[2])
-        if self.boxes is not None:
+        # P3a: with a checker the online envelope check replaces this
+        # apex-only box clip (:meth:`_command_u`'s online branch).
+        if self.checker is None and self.boxes is not None:
             box = adm.select(self.boxes, self.schedule.pattern,
                              (site.name, site.name), apex,
                              release_site_xy_mm=site.cup_mm[:2],
@@ -2875,7 +3584,9 @@ class SkillExecutor:
         u_dy, u_apex = self._command_u(idx, skill.site, skill.target,
                                        skill.y_d,
                                        shadow_landing=skill.shadow_landing,
-                                       entry_hop=skill.entry_hop)
+                                       entry_hop=skill.entry_hop,
+                                       online_release_mm=(
+                                           skill.site.throw_site_mm()))
         return ThrowTerminal(
             site_mm=skill.site.throw_site_mm(),
             target_mm=self._commanded_target_mm(skill.target, (u_dy, u_apex)),
@@ -2886,7 +3597,13 @@ class SkillExecutor:
         ``skill``'s site -- the direction a catch re-aim lengthens the transit
         to the next catch. ``None`` for a one-site pattern (no 'outward') or
         coincident sites."""
-        here = np.asarray(skill.site.cup_mm, dtype=float)[:2]
+        return self._outward_unit_at(skill.site)
+
+    def _outward_unit_at(self, site) -> Optional[np.ndarray]:
+        """:meth:`_outward_unit` for a SITE (the P3a stand-in clamps a
+        predicted landing at the carried throw's target site, which no skill
+        in hand catches at yet)."""
+        here = np.asarray(site.cup_mm, dtype=float)[:2]
         others = {}
         for sk in self.schedule.skills:
             if sk.kind not in (THROW, CATCH):
@@ -2894,7 +3611,7 @@ class SkillExecutor:
             # A folded CATCH's release site counts: outward is away from where
             # the loaded carry ends, whether or not a standalone THROW survives.
             for s_ in (sk.site, release_site_of(sk)):
-                if s_.name != skill.site.name:
+                if s_.name != site.name:
                     others[s_.name] = np.asarray(s_.cup_mm, dtype=float)[:2]
         if not others:
             return None
@@ -2903,14 +3620,17 @@ class SkillExecutor:
         return d / n if n > 1e-6 else None
 
     def _clamp_lateral_to_schedule(self, idx: int, skill: Skill,
-                                   landing: Landing) -> Landing:
+                                   landing: Landing,
+                                   note: bool = True) -> Landing:
         """:meth:`_clamp_lateral_inner` plus the DEBUG catch-time offset
         (:attr:`catch_time_offset_s`) -- the one funnel every catch plan's
         touch-down time passes (dispatch, hand-corrected and tracker
         re-sends), so the offset is part of the plan as DISPATCHED and a
         later re-send compares like with like (never a late re-aim by the
-        offset).  ``0.0`` returns the inner result untouched."""
-        out = self._clamp_lateral_inner(idx, skill, landing)
+        offset).  ``0.0`` returns the inner result untouched.  ``note=False``
+        queues no ``AIM-LATERAL-CLAMPED`` line and spends no once-key (the
+        early command's side-effect-free read, :meth:`_early_command`)."""
+        out = self._clamp_lateral_inner(idx, skill, landing, note=note)
         off = self.catch_time_offset_s
         if off:
             out = Landing(pos_mm=out.pos_mm, vel_mm_s=out.vel_mm_s,
@@ -2919,7 +3639,7 @@ class SkillExecutor:
         return out
 
     def _clamp_lateral_inner(self, idx: int, skill: Skill,
-                             landing: Landing) -> Landing:
+                             landing: Landing, note: bool = True) -> Landing:
         """Clamp ``landing``'s lateral (x, y) to within
         :attr:`lateral_authority_m` of the schedule's commanded landing for
         this catch (:meth:`_predicted_landing`'s ``pos_mm[:2]`` — the prior a
@@ -2985,33 +3705,16 @@ class SkillExecutor:
         predicted = self._predicted_landing(idx, skill)
         if predicted is None:
             return landing
-        a_mm = abs(self.lateral_authority_m) * 1000.0
         sched_xy = np.asarray(predicted.pos_mm, dtype=float)[:2]
         landing_xy = np.asarray(landing.pos_mm, dtype=float)[:2]
         offset = landing_xy - sched_xy
         out_u = self._outward_unit(skill)
-        out_mm = in_mm = None
-        if out_u is None:
-            # One-site pattern: no 'inward'/'outward' -- today's per-axis box.
-            clipped = np.clip(offset, -a_mm, a_mm)
-        else:
-            # Two-site pattern (2026-10-13): split the offset along the
-            # outward unit and across it. ALONG: [-inward, +outward]; ACROSS:
-            # the lateral authority per axis (the banking budget). With the
-            # sites on one axis (every pattern flown) and inward == outward
-            # == lateral this is exactly the old per-axis box.
-            out_mm = (a_mm if self.catch_outward_authority_m is None
-                      else min(self.catch_outward_authority_m * 1000.0, a_mm))
-            in_mm = (a_mm if self.catch_inward_authority_m is None
-                     else self.catch_inward_authority_m * 1000.0)
-            along = float(np.dot(offset, out_u))
-            across = offset - along * out_u
-            clipped = (min(max(along, -in_mm), out_mm) * out_u
-                       + np.clip(across, -a_mm, a_mm))
+        clipped, a_mm, out_mm, in_mm = self._lateral_clip_mm(offset, out_u)
         clamped_xy = sched_xy + clipped
         bite_mm = np.abs(landing_xy - clamped_xy)
         key = (idx, 'AIM-LATERAL-CLAMPED')
-        if float(np.max(bite_mm)) > 1.0 and key not in self._resend_notes:
+        if (note and float(np.max(bite_mm)) > 1.0
+                and key not in self._resend_notes):
             self._resend_notes.add(key)
             axis = int(np.argmax(np.abs(offset)))
             along = None if out_u is None else float(np.dot(offset, out_u))
@@ -3038,8 +3741,37 @@ class SkillExecutor:
                       t_land_abs_s=landing.t_land_abs_s,
                       from_fit=landing.from_fit)
 
+    def _lateral_clip_mm(self, offset, out_u):
+        """The catch-aim clamp's arithmetic (:meth:`_clamp_lateral_inner`),
+        pure: ``offset`` (mm, about the schedule landing) clipped by the
+        lateral authority, split along ``out_u`` (the outward unit, ``None``
+        for a one-site pattern). Returns ``(clipped, a_mm, out_mm, in_mm)``
+        (the last two ``None`` for a one-site pattern). Requires
+        :attr:`lateral_authority_m` set."""
+        a_mm = abs(self.lateral_authority_m) * 1000.0
+        out_mm = in_mm = None
+        if out_u is None:
+            # One-site pattern: no 'inward'/'outward' -- today's per-axis box.
+            clipped = np.clip(offset, -a_mm, a_mm)
+        else:
+            # Two-site pattern (2026-10-13): split the offset along the
+            # outward unit and across it. ALONG: [-inward, +outward]; ACROSS:
+            # the lateral authority per axis (the banking budget). With the
+            # sites on one axis (every pattern flown) and inward == outward
+            # == lateral this is exactly the old per-axis box.
+            out_mm = (a_mm if self.catch_outward_authority_m is None
+                      else min(self.catch_outward_authority_m * 1000.0, a_mm))
+            in_mm = (a_mm if self.catch_inward_authority_m is None
+                     else self.catch_inward_authority_m * 1000.0)
+            along = float(np.dot(offset, out_u))
+            across = offset - along * out_u
+            clipped = (min(max(along, -in_mm), out_mm) * out_u
+                       + np.clip(across, -a_mm, a_mm))
+        return clipped, a_mm, out_mm, in_mm
+
     def _catch_terminal(self, idx: int, skill: Skill,
-                        landing: Landing) -> CatchTerminal:
+                        landing: Landing,
+                        t_abs_s: Optional[float] = None) -> CatchTerminal:
         """A CATCH's terminal, plus the throw it carries when the schedule
         folded one onto it (``schedule.ThenThrow``).
 
@@ -3122,6 +3854,17 @@ class SkillExecutor:
         default every pre-R4 CATCH still gets. ``receive_tilt`` (R5, the
         BB-fed columns feed catch) passes ``skill.receive_tilt`` straight
         through the same way — ``None`` for every catch that does not set it.
+
+        **P3a (``self.checker`` set).** The carried throw's command is the
+        ONLINE one: on the first call for ``idx`` (cache empty) it is resolved
+        by :meth:`_resolve_catch_command` at ``t_abs_s`` -- the DISPATCH
+        instant, which :meth:`_dispatch` passes. Every later call (the
+        learned-prior fallback, both re-sends) finds the cache filled and
+        never re-checks; a first call without ``t_abs_s`` refuses (fail
+        closed). With :attr:`early_command` the check may already have run
+        before the dispatch (:meth:`_early_command`); the dispatch's
+        :meth:`_resolve_catch_command` decides whether that resolution is
+        used.
         """
         landing = self._clamp_lateral_to_schedule(idx, skill, landing)
         then_throw = None
@@ -3133,17 +3876,23 @@ class SkillExecutor:
             # for, because how far this release sits off its site is half of
             # the learner's state vector (:meth:`_command_u`'s ``x[2:4]``).
             rel_site = release_site_of(skill)
-            if rel_site is skill.site:
-                release_mm = np.array([float(landing.pos_mm[0]),
-                                       float(landing.pos_mm[1]),
-                                       float(rel_site.throw_site_mm()[2])])
-            else:
+            release_mm = self._fold_release_mm(skill, landing)
+            if rel_site is not skill.site:
                 # CARRIED fold: the release is AT the release site exactly,
                 # whatever the landing; the catch offset is the carry's entry.
-                release_mm = np.asarray(rel_site.throw_site_mm(), dtype=float)
                 self._carried_catch_xy_mm[idx] = np.asarray(
                     landing.pos_mm, dtype=float)[:2].copy()
             self._carried_release_mm[idx] = release_mm
+            if (self.checker is not None and not tt.shadow_landing
+                    and idx not in self._u_cache):
+                if t_abs_s is None:
+                    raise _NoAdmissibleCommand(
+                        'ADMISSIBILITY skill %d: the online check needs the '
+                        'dispatch instant (internal: a first command asked '
+                        'for outside the dispatch) -- refusing an unchecked '
+                        'command' % (idx,))
+                self._resolve_catch_command(idx, skill, landing,
+                                            float(t_abs_s))
             u_dy, u_apex = self._command_u(
                 idx, rel_site, tt.target, tt.y_d,
                 seat_offset_m=self._seat_offset_m(idx),
@@ -3154,7 +3903,8 @@ class SkillExecutor:
                 target_mm=(self._commanded_target_mm(tt.target, (u_dy, u_apex))
                            + self._offset_flyback_mm(idx, tt.y_d, u_apex)),
                 flight_s=sch.flight_s(u_apex))
-        if skill.rest_site_mm is not None:
+        # The rest site (one copy, :meth:`_catch_rest_mm`, which the P3a
+        # stand-in reads too). When `skill.rest_site_mm` is set:
             # HELD-AXIS CATCH (R4 reload): `skill.rest_site_mm` was computed
             # ONCE at compile time, from the ANNOUNCED landing --
             # `_clamp_lateral_to_schedule` above (a dispatch or a live re-send
@@ -3180,10 +3930,7 @@ class SkillExecutor:
             # 17 and 18, 2026-10-19). A dispatch with no re-aim (`landing`
             # still the skill's own compile-time value) recomputes to the SAME
             # point, so this is a no-op there.
-            rest_mm = sg.hold_axis_site(landing.pos_mm, skill.hold_tilt,
-                                        float(skill.rest_site_mm[2]))
-        else:
-            rest_mm = release_site_of(skill).rest_site_mm()
+        rest_mm = self._catch_rest_mm(skill, landing)
         return CatchTerminal(landing_mm=landing.pos_mm,
                              landing_vel_mm_s=landing.vel_mm_s,
                              t_land_s=float(landing.t_land_abs_s),
@@ -3265,7 +4012,15 @@ class SkillExecutor:
         ``g`` is clamped to [0.5, 2.0]: outside that band the apex command
         is not a plant gain but a refusal in the making (the box clips it),
         and a wild ``1/g`` must not steer the aim."""
-        r_mm = self._release_offset_m(idx) * 1000.0
+        return self._flyback_for_offset_mm(
+            self._release_offset_m(idx) * 1000.0, y_d, u_apex)
+
+    @staticmethod
+    def _flyback_for_offset_mm(r_mm, y_d, u_apex: float) -> np.ndarray:
+        """:meth:`_offset_flyback_mm` for an explicit release offset ``r_mm``
+        (xy, mm, off the RELEASE site) -- the P3a stand-in's release is not
+        recorded in :attr:`_carried_release_mm`."""
+        r_mm = np.asarray(r_mm, dtype=float).reshape(2)
         if float(np.max(np.abs(r_mm))) == 0.0:
             return np.zeros(3)
         apex_d = float(y_d[1])
@@ -3782,6 +4537,156 @@ class SkillExecutor:
 
     # ── the tick ──
 
+    @staticmethod
+    def _finalise_floor_s(pend: _PendingOutcome) -> float:
+        """The EARLIEST instant ``pend`` can finalise, whatever the tracker
+        does next: :meth:`_outcome_window`'s close with the anchor at its
+        floor (the scheduled landing; a later fit only defers it) and the
+        open at its floor (the release). <= ``_outcome_window(pend)[1]``
+        always, so a test against it cannot be invalidated by a fit that
+        moves the observed landing earlier."""
+        t_sched = float(pend.t_land_scheduled_s)
+        close = t_sched + CAUGHT_WINDOW_S
+        if pend.t_seat_close_s is not None:
+            close = min(close, float(pend.t_seat_close_s))
+        return min(max(float(pend.t_release_s), close),
+                   SkillExecutor._outcome_window(pend)[1])
+
+    def _early_command(self, t_abs_s: float) -> None:
+        """P3a EARLY COMMAND (the P3a logbook entry's Discussion): compute AND check the NEXT
+        undispatched CATCH-with-throw's command in the idle slot before its
+        dispatch, when and only when that cannot change the command. Runs
+        from :meth:`tick` before the dispatch loop, while the attempt runs,
+        with a :attr:`checker` wired and :attr:`early_command` on. All of:
+
+        (a) ``idx`` is the lowest undispatched index (every earlier skill is
+            dispatched; the executor is single-threaded, so the last install
+            has RETURNED and the worker is idle), it is a CATCH with a
+            ``then_throw`` that is not ``shadow_landing``, and no LATER
+            undispatched skill is due before it (the dispatch loop skips a
+            not-yet-due skill, so it would dispatch first and move the
+            record);
+        (b) no pending outcome can finalise before the dispatch tick
+            (:meth:`_finalise_floor_s` + the decide lag >= the dispatch
+            instant): memory rows are appended only when an outcome
+            finalises (``on_experience``), so the Learner's memory now is the
+            memory it will have at dispatch -- and on the dispatch tick
+            :meth:`_advance_outcomes` runs AFTER the dispatch loop;
+        (c) a landing from a SIDE-EFFECT-FREE read: the prior
+            (:meth:`_prior_landing`; :meth:`_predicted_landing` under
+            :data:`AIM_SCHEDULE_HAND`, which is what :meth:`_catch_aim` aims
+            that source at before its measured ratio) -- never
+            :meth:`_catch_aim` (it latches ``_fit_latch_by_idx``, adds to
+            ``_hand_corrected``, and its tracker read queues identity notes)
+            -- clamped through the same funnel with ``note=False``;
+        (d) ``dispatch - EARLY_COMMAND_MAX_S <= t_abs_s < dispatch``, where
+            the dispatch instant is the tick the loop will dispatch on,
+            ``dispatch_s() - dispatch_lookahead_s``;
+        (e) the dispatch is a PINNED splice: the skill follows a release and
+            carries ``schedule.HANDOFF_LEAD_S`` (``_assign_leads``), so
+            :func:`_snap_to_release` splices it at the head's release knot
+            whatever the instant and the early check plans the SAME Segment
+            shape. Any other carried catch (a feed catch, the first catch
+            after a REST or a THROW from rest) keeps the synchronous check:
+            early, it would plan from an earlier, unsnapped knot with a
+            longer window -- a different Segment.
+
+        The record may still move between the check and the dispatch (a
+        tracker re-send or bump of the live catch). Accepted (decision recorded in
+        the P3a logbook entry, 2026-11-06): the stand-in is not a claim about the dispatch-time
+        record but a model of this ball's NEXT catch, which will be seeded by
+        a partner release that does not exist yet, so the streaming release
+        state at the check instant and at the dispatch instant are two
+        equally valid samples of "a partner release with some re-aim
+        offset"; the Segment actually installed is still gated in full by
+        the install-time ``validate_cycle`` on the real record.
+
+        Then the candidate is computed exactly as the dispatch would
+        (:meth:`_catch_command_state`, :meth:`_learner_candidate` without
+        marking :attr:`_learned_u`) and resolved by :meth:`_catch_resolution`
+        at ``t_abs_s``; the outcome (resolution, refusal, or a Learner that
+        refused) is held in :attr:`_early_by_idx` -- NOTHING else on the
+        executor is written (no cache, no learned mark, no note). At most one
+        early resolution per skill, hence per tick. The dispatch then decides
+        (:meth:`_resolve_catch_command`).
+
+        What it changes on the machine: only WHEN the check runs (the tick
+        blocks for it in the idle slot instead of at the dispatch) and the
+        catch aim the early Learner state ``x[2:4]`` is read from -- the
+        prior, up to 0.30 s earlier than the dispatch's aim. The seat offset
+        has kernel bandwidth ``h_seat`` = 1.0 m, so a 30 mm aim difference
+        moves the candidate far below the 1 mm tolerance, and any move above
+        it is caught by the dispatch-time comparison and re-checked.
+        """
+        if self.checker is None or not self.early_command:
+            return
+        skills = self.schedule.skills
+        idx = next((i for i in range(len(skills)) if i not in self.dispatched),
+                   None)
+        if idx is None:
+            return
+        skill = skills[idx]
+        tt = skill.then_throw
+        if (skill.kind != CATCH or tt is None or tt.shadow_landing
+                or idx in self._early_by_idx or idx in self._u_cache):
+            return
+        # (e) PINNED splices only: the skill carries the handoff lead, which
+        # `schedule._assign_leads` gives exactly to a skill whose base is at
+        # or before the last release (its inline `follows_release`; no
+        # predicate function exists, so its output is read here).
+        if abs(float(skill.lead_s) - HANDOFF_LEAD_S) > 1e-9:
+            return
+        t_dispatch = float(skill.dispatch_s()) - self.dispatch_lookahead_s
+        if not (t_dispatch - EARLY_COMMAND_MAX_S <= t_abs_s < t_dispatch):
+            return                                               # (d)
+        for j in range(idx + 1, len(skills)):                    # (a)
+            if (j not in self.dispatched
+                    and float(skills[j].dispatch_s()) < float(
+                        skill.dispatch_s())):
+                return
+        lag = (MISSED_CATCH_DECIDE_LAG_S if self.seat_window is not None
+               else 0.0)
+        for pend in self._pending_outcomes:                      # (b)
+            if self._finalise_floor_s(pend) + lag < t_dispatch:
+                return
+        try:
+            if self.catch_aim_source == AIM_SCHEDULE_HAND:       # (c)
+                prior = self._predicted_landing(idx, skill)
+            else:
+                prior, _label = self._prior_landing(idx, skill)
+            if prior is None:
+                return
+            self._early_resolve(idx, skill, tt, prior, t_abs_s)
+        except Exception:
+            # An early read must never be the place an error first surfaces:
+            # store no early entry, so the dispatch computes and checks the
+            # command synchronously and reports it through its own handling.
+            return
+
+    def _early_resolve(self, idx, skill, tt, prior, t_abs_s) -> None:
+        """The computing half of :meth:`_early_command` (stores the entry)."""
+        landing = self._clamp_lateral_to_schedule(idx, skill, prior,
+                                                  note=False)
+        release_mm, x = self._catch_command_state(skill, landing)
+        dy, apex = tt.y_d
+        try:
+            u_cand = self._learner_candidate(
+                idx, release_site_of(skill), tt.target,
+                np.asarray(dy, dtype=float).reshape(2), float(apex), x,
+                online=True, mark_learned=False)
+        except _NoAdmissibleCommand:
+            self._early_by_idx[idx] = _EarlyCommand(skill, t_abs_s, None)
+            return
+        try:
+            res = self._catch_resolution(idx, skill, landing, t_abs_s,
+                                         release_mm, x, u_cand)
+        except _NoAdmissibleCommand as exc:
+            self._early_by_idx[idx] = _EarlyCommand(skill, t_abs_s, u_cand,
+                                                    refusal=exc)
+            return
+        self._early_by_idx[idx] = _EarlyCommand(skill, t_abs_s, u_cand,
+                                                resolution=res)
+
     def tick(self, t_abs_s: float) -> List[str]:
         """Dispatch everything due by ``t_abs_s``; return the log lines.
 
@@ -3846,6 +4751,12 @@ class SkillExecutor:
                     'the plan before the refused command walks into '
                     'MAX_DEVIATION' % (t_abs_s, LANE_REFUSED))
             else:
+                # P3a early command: BEFORE the dispatch loop, so it only ever
+                # sees a skill the loop will NOT dispatch this tick (its rule
+                # (d) is strictly before the dispatch instant), and AFTER the
+                # mode / lane checks, so a check is never spent on an attempt
+                # this tick is ending.
+                self._early_command(t_abs_s)
                 for idx, skill in enumerate(self.schedule.skills):
                     if idx in self.dispatched:
                         continue
@@ -4194,7 +5105,8 @@ class SkillExecutor:
                             % (t_abs_s, NO_LANDING, ball_label(skill.ball_id),
                                deadline)],
                            False)
-                terminal = self._catch_terminal(idx, skill, landing)
+                terminal = self._catch_terminal(idx, skill, landing,
+                                                t_abs_s=t_abs_s)
             elif skill.kind == THROW:
                 terminal = self._throw_terminal(idx, skill)
             else:

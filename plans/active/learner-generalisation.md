@@ -3,18 +3,18 @@ title: Learner generalisation — a global plant model, a physics-keyed residual
 created: 2026-10-18
 status: active
 owner: Harrison
-last_updated: 2026-11-05
+last_updated: 2026-11-06
 pathway: learner-generalisation
 scope: >-
   Replace the local-linear memory with a global plant model (apex gain, lateral offset, centre-pull, per-ball
   offset) plus a physics-keyed fixed-Jacobian residual and evidence-scaled authority, retire the offline
   AdmissibleBox sweep for online admissibility, and add a per-beat event stream so any throw site, apex,
   dwell or yaw can be commanded and changed mid-pattern. Re-ordered 2026-11-05 (owner): P3a the
-  command-time check with a two-solve bound, P3b the nomination-time check that names the nearest viable
+  command-time check with a three-evaluation bound, P3b the nomination-time check that names the nearest viable
   configuration, P3c the box retirement, then P1 learner core, P2 characterisation sitting, P4 event
   stream, P5 close-out.
 steps:
-  - {id: P3a, title: Command-time admissibility check, kind: phase, status: not_started, effort: m, hardware: none}
+  - {id: P3a, title: Command-time admissibility check, kind: phase, status: in_progress, effort: m, hardware: none}
   - {id: P3b, title: Nomination-time check and the nearest viable configuration, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: P3c, title: Box retirement, kind: phase, status: not_started, effort: s, hardware: none}
   - {id: P1, title: Learner core, kind: phase, status: not_started, effort: m, hardware: none}
@@ -112,7 +112,8 @@ sittings; 6 release-site x values, all on the x axis (x₁ = 0 in every row).
   box and called nowhere on the live skill path. The committed box is tiny: 4 of 6 `columns` boxes
   empty (apex 0.825–0.925); the 0.925–0.975 band is x ∈ [−2, +4] mm, y ∈ [−8, +20] mm. Re-swept (sep
   125, dwell 0.27): margin 0.9 → 0/98 cells pass at apex 0.90, 36/98 at 0.95; margin 1.0 → 47/98, 70/98.
-- Online: plan + check of one extra segment ≈ 9 ms dev box (≈ 35 ms loaded Jetson [INF]), × up to 6
+- Online: plan + check of one extra segment ≈ 9 ms dev box (≈ 35 ms loaded Jetson [INF]; measured 2026-11-06: 36 ms idle, 101 / 190 ms p50 / p99
+  install-shaped under starvation, § 2.5 As built), × up to 6
   candidates (model command + ≤ 5 bisection steps; the feasible set is a slab in x containing the
   identity); P3 measures it. A beat at apex 0.95 / dwell 0.27 is 0.575 s; the handoff install window
   has ~120–160 ms headroom and the solver worker serves one request at a time, so the check runs OFF
@@ -251,7 +252,7 @@ optimiser is exactly affine in the landing offset, and the planned pose/hand arr
 three solves are within 0.12-0.6 mm of the real solve inside +-20 mm. (c) The pose planner's gate margin
 `m = min_k (0.9 L_k - peak_k) / (0.9 L_k)` is smooth in the offset (slope at most 0.007 per mm, quadratic along
 a ray to 0.012); the level planner's is rough. (d) One plan + gate costs 9.8 ms on the dev box (about 23 ms on
-the idle Jetson by the gate's 2.3x ratio; 35 ms loaded is the 2026-10-18 estimate, unmeasured). (e) The
+the idle Jetson by the gate's 2.3x ratio; 35 ms loaded is the 2026-10-18 estimate; both superseded by the 2026-11-06 measurement, see As built). (e) The
 two-solve fallback below repaired 15 of 15 refused candidates at the old working point (predicted margins
 matched the real ones to 0.003); all 3101 non-hop Learner-corpus commands pass at the P4 point.
 
@@ -266,6 +267,21 @@ off 1 mm, and CONFIRM with one real solve. Two real solves is the bound; never a
 command itself failing → REFUSE (`NO_ADMISSIBLE_COMMAND` retained); the hand parks holding the ball
 (rest-terminal: safe by construction). The box's third gate (the following catch) is the next beat's own
 check. Budget and gate: § 4 P3a, a `serial` wall-clock test like `tests/motion/test_validate_cycle_budget.py`.
+
+**As built (P3a, 2026-11-06; `INVARIANTS.md` I-ADMIT-1).** Measured on this Jetson: one CHECK through the worker
+is 35.6 ms wall / 33.7 ms CPU idle (the budget test's idle runs; the n = 300 harness row reads 36.7 / 34.6;
+the 23 ms estimate in (d) was low by about 1.5x); the same plan + gate as an
+install request is 46 ms idle, 49 ms with the unpowered launch and bag up, and 101 / 190 ms (p50 / p99) when a
+software-rendered browser page shares the box, the starvation level flown launch logs show; the flown Columns
+handoff slack is p50 211-218 ms, p1 141-148 ms. Consequences: (1) the check plans a STAND-IN for this ball's next
+Catch (the dispatched catch-with-throw with its landing at the command's predicted landing, from the install's own
+seed; a hop uses the point reflection of the dispatched Segment), through `check_only` on
+`trajectory/install_segment`; (2) the step uses the refused candidate's REAL margin (it equals the affinely
+predicted one to 0.003), so no affine map is built and a refused candidate costs three evaluations (candidate,
+model command, confirm), never more; (3) the check STARTS EARLY: for a handoff Catch, as soon as no Learner row
+can still arrive before the dispatch (about 150 ms ahead at apex 0.95 / dwell 0.27), and the dispatch uses the
+early result only if its own candidate agrees within 1 mm; (4) the throw envelope is evaluated in closed form on
+every commanded Throw; a launch THROW and the hop entry take it alone. A per-beat nominal solve was not built.
 
 **Nomination-time check (P3b, D8).** When a Pattern goal is accepted (and from `skills/check`): compile the
 Schedule and plan every nominal Segment at the identity command and at the commanded-flight ladder's edges
@@ -319,7 +335,7 @@ reproduces today's compiled columns schedule segment for segment.
 
 | Phase | Scope | Status | Date | Risk | Validates |
 |-------|-------|--------|------|------|-----------|
-| P3a | Command-time admissibility check, two solves max, `throw_envelope.evaluate` re-homed | NOT STARTED | | High (safety content moves) | Loaded-Jetson p99 within slack; sim gate green with no box |
+| P3a | Command-time admissibility check (three evaluations max, early start), `throw_envelope.evaluate` re-homed | IN PROGRESS (code complete 2026-11-06, held on branch `p3-online-admissibility`; merge and live rehearsal owed) | 2026-11-06 | High (safety content moves) | Loaded-Jetson p99 within slack; sim gate green with no box |
 | P3b | Nomination-time check and the nearest viable configuration | NOT STARTED | | Medium (goal acceptance, GUI) | Every refusal at once; nearest viable named; moving-site Patterns checkable |
 | P3c | Box retirement per § 6.4 | NOT STARTED | | Low | Census counts to zero |
 | P1 | Learner core: `plant_model.py`, `learner.py`, `memory.py` v2 + migration, replay probe | NOT STARTED | | Medium (changes every commanded u) | Cold-start apex error < 15 mm at a held-out site |
@@ -331,7 +347,24 @@ Order per D7 (supersedes D5's P1 → P3 → P4): P3a → P3b → P3c → P1 → 
 oval ramp and blocks nothing here. P3a, P3b, P3c, P1 and P4 need no hardware; P2 and P5 do.
 
 ## 4. Implementation phases (detailed)
-### Phase 3a: Command-time admissibility check — NOT STARTED
+### Phase 3a: Command-time admissibility check — IN PROGRESS
+
+**Outcome (2026-11-06).** Built on branch `p3-online-admissibility` (worktree `~/Desktop/Jugglebot-p3`), held for
+the owner's merge; the commits carry `Logbook-Entry: 2026-11-06-learner-generalisation-p3a-command-time-admissibility-check`
+and the entry (`logbook/2026-11-06-learner-generalisation-p3a-command-time-admissibility-check.md`) has the
+measurement, the Discussion and the test recipes. Against the gate: `./run_tests.sh --full` green (2026-11-06 06:04, 8341 passed, 52 skipped + 10 serial; baseline
+2026-11-06 00:14 at d7bb6d48, `./run_tests.sh`: 8219 passed, 50 skipped + 6 serial; 106 new tests, the rest of
+the increase came with main 6261a15e); the sim gate passes with the box bypassed (self-throw, hop, Columns,
+plain);
+`NO_ADMISSIBLE_COMMAND` is preserved. The p99 gate is NOT met by a check at the dispatch instant: one check is 36 ms idle and
+101 / 190 ms (p50 / p99, install-shaped) under Sitting-like starvation against a Columns handoff slack of p1
+141-148 ms. With the early start (a head start of about 150 ms at apex 0.95 / dwell 0.27) the whole check is
+hidden in the light bracket and the median under starvation; its p99 there can still spill past the dispatch, so
+the gate is met for the median, not the tail (§ 7). NOT met: the loaded-Jetson rehearsal of `skills/check`
+on the new code, which needs the merge and a `colcon build --packages-select jugglebot_interfaces jugglebot`
+(the rehearsal of the main code is recorded as the baseline). Status stays in progress until that and the owner's
+answer on the early-start default (§ 7). P3b cleared to start on the branch.
+
 
 Modified: `admissible.py` (§ 2.5: the check, the affine margin step, the confirm), `executor.py::_command_u`
 (calls the check in the solver worker; the box clip path goes), `solver_worker.py` (a check request kind
@@ -340,7 +373,7 @@ can be A/B'd in sim.
 
 - **Probe FIRST, then the budget.** `tools/probes/admissible_obviation/online_check_replay.py` is the
   prototype of the check and the two-solve step; the production function reproduces its verdicts on the
-  same candidates (a pinned test). Loaded-Jetson budget of one plan + gate and of the two-solve path
+  same candidates (a pinned test). Loaded-Jetson budget of one plan + gate and of the three-evaluation path
   measured before the `serial` budget test is written (bag recording and GUI up, p50 / p99 / max).
 - Control walk (CLAUDE.md rule): the command enters the same slot as today (~0.12 s before the partner's
   release) and the installed segment is still gated by install-time `validate_cycle` and the Teensy guard; the
@@ -495,8 +528,10 @@ sweep tool and YAML. Each phase reverts independently; the migration never rewri
   or tracker: P2(c). Release-timing lag stays out of the learner until P2(d) telemetry exists.
 - The 10 % margin: DECIDED 2026-11-05 (D9), kept as the online acceptance criterion; a measured
   per-limit-class overrun from bags is a follow-up Item, not P3.
-- P3a's loaded-Jetson cost is still an estimate (23 ms idle by the gate's 2.3x ratio, 35 ms loaded [INF]);
-  the first P3a step measures it.
+- P3a's cost is MEASURED (2026-11-06, § 2.5 "As built"). Open for the owner: whether the early start
+  (`admissibility_early_command`, on by default) or the plan's literal slot is flown first; what buys the
+  remaining slack when a check spills past the dispatch (more handoff lead, `cpu_partition`, a cheaper check);
+  a `--kind check` run of `loaded_budget.py` under a launch (the loaded brackets are install-shaped).
 - The carried oval release may show the release-contact discontinuity that limited Lee et al.'s
   shower/box plateau (release_kind separation is the first defence, a per-kind model term the
   second). Whether the oval's seam-dz ablation needs release-velocity terms inside f₀ beyond L2's
