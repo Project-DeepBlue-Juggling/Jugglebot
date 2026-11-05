@@ -20,6 +20,7 @@ Outputs go under `temp/probes/admissible_obviation/`. BLAS is pinned to one thre
 | `affine_check.py` | The QP's final active set and iteration count over the whole 17x17 offset grid; then an affine prediction of the planned pose/hand arrays from three solves, gated with `validate_cycle`, against the real solve. |
 | `boundary_replay.py` | Replays a boundary-only rectangle search (bisection on a centred square's half-width, perimeter cells only, then per-edge growth) against the dense grids from `family_run.py`: soundness (perimeter pass but interior fail?) and cells touched. No new solves. |
 | `online_check_replay.py` | Two tests of the proposed online check: (A) replays every Learner-corpus command through the real catch-with-throw plan + gate (hop-site rows skipped: wrong cell shape; `--pattern-apex` separates the pattern timing from the commanded apex, which the corpus does not record); (B) for refused candidates on rays, the two-solve fallback: nominal margin plus the affinely predicted margin at the candidate, interpolate the zero, back off 1 mm, confirm with one real solve. |
+| `loaded_budget.py` | Wall-clock budget of ONE columns catch-with-throw plan + gate through a real `WorkerSegmentSolver` child (`--kind install` = the production request, `--kind check` = the P3a CHECK request, also records the gate margin), a back-to-back burst (the refused path), a 25 ms grid thread's lateness in the caller, load/governor/temperature facts, and the worker's cpu / context-switch counters. One run per load condition label: L0 idle, L1 Sitting-loaded (L1n no browser, L1h headless browser page), L2 plus a parallel gate, L3 the launch's `cpu_partition` (`--cpus 4,5`). |
 | `semantic_gate_hash.py` | Prototype of a parse-tree hash of the eight gated files with docstrings stripped, beside the committed text `gate_hash`; shows a comment edit no longer flips it. |
 | `research_optimisation.md` | Literature report (optimisation / verification side): multi-parametric QP, sensitivity, level-set estimation, Lipschitz certificates, incremental re-verification. 12 ranked avenues, references, experiments. |
 | `research_robotics.md` | Literature report (robotics / systems side): what juggling, catching and table-tennis robots do about throw admissibility; capability maps, mutually reachable sets, learned feasibility, safe exploration. 8 ranked avenues, references, experiments. |
@@ -57,3 +58,35 @@ python tools/probes/admissible_obviation/online_check_replay.py [--limits 350 50
 **The corpus, replayed through the online check** (`online_check_replay.py` part A, 11-12 ms per row here; 175 hop-site rows skipped as the wrong cell shape; the 3101 others replayed as the columns catch-with-throw at the row's site with the partner's nominal release as the seed, an approximation of the live seed): at the P4 point 3099 pass the 10 % margin and 2 fall in the margin band when the row's commanded apex is also used as the pattern timing (conservative: a shorter transit), and all 3101 pass with the pattern apex at 0.95 (margin p1 0.18, median 0.31). At the OLD point the same replay refuses most rows that in fact flew (`LIMIT_VEL` 1754, `MARGIN` 835 of 3101 with the commanded apex as timing), and still refuses most with the pattern apex fixed at 0.95 (`OK` 1092, `MARGIN` 532, `LIMIT_VEL` 1477), so the replay is not a faithful twin of the old-point flights: the corpus lacks each row's pattern apex, dwell and seed state, and the gated planner files have changed since those rows flew. The P4 numbers are the ones the recommendation rests on.
 
 **Learner corpus** (`temp/learn/jugglebot/memory.csv`, 3276 rows): |u| median 9-10 mm per axis; 28.8 % of rows sit at the old 20 mm clamp; none reach 30 mm.
+
+## Loaded-box budget (2026-11-06, this Jetson)
+
+`loaded_budget.py --kind install`, n = 300 each, one plan + gate through the worker
+(wall p50 / p99 / max ms; worker cpu p50 / p99 ms):
+
+| Label | Condition | Wall | CPU |
+|-------|-----------|------|-----|
+| L0 | idle | 46.2 / 49.1 / 51.1 | 43.2 / 45.8 |
+| L1n | launch + bag, no browser client | 48.6 / 51.6 / 73.8 | 45.0 / 46.8 |
+| L1h | launch + bag + headless Chromium page (WebGL in software) | 100.6 / 190.2 / 265.0 | 52.1 / 59.4 |
+| L2h | L1h + a niced parallel test gate | 122.1 / 208.6 / 229.5 | 52.6 / 59.8 |
+| L3h | L1h with the launch's `cpu_partition` (worker on cpus 4,5) | 81.0 / 143.9 / 202.9 | 50.6 / 55.3 |
+
+CPU time barely moves (43-53 ms p50); wall time does, so the cost of a check is
+starvation, not work. L1h's page renders WebGL in software and takes 1.3-2.3 cores:
+heavier than an operator's tab. The flown launch logs of 2026-11-03/04 show the
+solver worker starved at least that much (CATCH install wall p50 79-85 ms against cpu
+p50 60-62 ms, ivcsw p99 154-172). `--kind install` is an upper bound for a CHECK;
+an idle `--kind check` smoke (n = 20) read wall p50 35.9 ms, cpu p50 34.2 ms. The
+budget gate is `tests/motion/test_check_segment_budget.py`.
+
+```
+python tools/probes/admissible_obviation/loaded_budget.py --label L0 --n 300
+python tools/probes/admissible_obviation/loaded_budget.py --label L1n --n 300   # launch + bag up
+python tools/probes/admissible_obviation/loaded_budget.py --label L1h --n 300   # + headless browser page
+python tools/probes/admissible_obviation/loaded_budget.py --label L2h --n 300   # + niced parallel gate
+python tools/probes/admissible_obviation/loaded_budget.py --label L3h --n 300 --cpus 4,5
+python tools/probes/admissible_obviation/loaded_budget.py --label C --kind check --n 300
+```
+
+JSON lands in `temp/probes/admissible_obviation/loaded_budget_<label>_<stamp>.json`.
