@@ -4052,8 +4052,9 @@ class SkillExecutor:
         the cup out from under it.
 
         **Excluded END codes.** :data:`LANE_REFUSED` (the firmware is HOLDING
-        a refused lane; the node's forced hand-less hold is the safe end) and
-        :data:`ABORTED_MODE_CHANGED` (the operator has taken the platform).
+        a refused lane; the node's forced hand-less hold is the safe end),
+        :data:`ABORTED_MODE_CHANGED` (the operator has taken the platform) and
+        :data:`ABORTED_FAULT` (a machine fault or a latched guard).
         """
         if self._closing_state or not self.attempt_ended:
             return
