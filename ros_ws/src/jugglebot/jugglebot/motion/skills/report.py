@@ -83,6 +83,12 @@ class ThrowReport:
     #: excluded from the operator's tally (:func:`end_line`, :func:`summarise`)
     #: and its line says so (2026-10-23, owner: the 47/48 read of the 48-run).
     stop: bool = False
+    #: The goal ended on a Stop and this flight's FINAL Catch could not be
+    #: verified (JB-169, owner option 4 of JB-172): ``caught`` is ``None``
+    #: and the row is in neither side of the tally -- not a catch, not a
+    #: miss -- like the Stop it ended beside. A real final miss is booked
+    #: here, never as a catch.
+    unverified: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -165,6 +171,9 @@ def throw_line(r: ThrowReport) -> Tuple[str, str]:
     verdict = {True: 'CAUGHT', False: 'MISSED', None: 'released'}[r.caught]
     if r.stop:
         verdict = 'STOP (landed on the held ball, by design; not counted)'
+    elif r.unverified:
+        verdict = ('FINAL CATCH UNVERIFIABLE (the goal ended on a Stop; '
+                   'not counted)')
     parts = ['throw %d/%d %s' % (r.throw_no, r.n_throws, verdict)]
     if r.apex_m is not None:
         parts.append('apex %.3f m' % (r.apex_m,))
@@ -254,8 +263,13 @@ def start_line(label: str, n_throws: int, apex_m: float, *,
 def end_line(label: str, end_code: str, end_message: str,
              reports: Sequence[ThrowReport],
              end_kind: str = '',
-             shadow_landing_stop: bool = False) -> Tuple[str, str]:
+             shadow_landing_stop: bool = False,
+             final_catch_unverifiable: bool = False) -> Tuple[str, str]:
     """``(severity, text)`` for the attempt's last line.
+
+    ``final_catch_unverifiable`` (JB-169): the goal ended on a Stop and its
+    final Catch was booked unverifiable; the line says so and the tally
+    leaves that Catch out.
 
     INFO when it completed or the operator stopped it, ERROR when anything
     else ended it — with the reason in a few words (:func:`short_refusal`).
@@ -274,10 +288,14 @@ def end_line(label: str, end_code: str, end_message: str,
     # rides beside it, so a run that ENDED on a real miss says so.
     thrown, caught = summarise(reports)
     tally = '%d/%d caught' % (caught, thrown)
+    if final_catch_unverifiable or any(r.unverified for r in reports):
+        # JB-169: the goal ended on a Stop and its final Catch is in neither
+        # side of the count above.
+        tally += ' · ended on a Stop, final Catch unverifiable'
     # The ranges share the count's base: the Stop's "landing" is a ball
     # striking the held ball by design, so its landing and release errors
     # would otherwise set the worst figure of a clean run (audit 2026-10-23).
-    counted = [r for r in reports if not r.stop]
+    counted = [r for r in reports if not r.stop and not r.unverified]
     apexes = [r.apex_m for r in counted if r.apex_m is not None]
     if apexes:
         tally += ' · apex %.2f–%.2f m' % (min(apexes), max(apexes))
@@ -312,5 +330,5 @@ def summarise(reports: List[ThrowReport]) -> Tuple[int, int]:
     """``(throws, caught)`` for the Juggle result — from the reports, never
     from log text.  The columns Stop (:attr:`ThrowReport.stop`) is neither a
     throw nor a catch here: it was never a catch attempt."""
-    counted = [r for r in reports if not r.stop]
+    counted = [r for r in reports if not r.stop and not r.unverified]
     return len(counted), sum(1 for r in counted if r.caught)

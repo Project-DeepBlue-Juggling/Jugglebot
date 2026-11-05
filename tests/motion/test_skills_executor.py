@@ -51,6 +51,7 @@ Plan: ``plans/archived/two-ball-skill-stack.md`` § 2.4 (R2 unit D1).
 from __future__ import annotations
 
 import dataclasses
+import types
 
 import numpy as np
 from types import SimpleNamespace
@@ -8148,3 +8149,210 @@ def test_goal_13_rest_resplice_with_a_323_ms_solve_is_no_longer_too_late(
         t_install_s=t_inst)
     assert res2.code != ex.SPLICE_TOO_LATE, res2.message
     assert res2.splice_k == k_s or not res2.accepted
+
+
+# ---------------------------------------------------------------------------
+# JB-169 (owner option 4 of JB-172): a goal that ends on a Stop books its
+# FINAL Catch as unverifiable when the cup reads EMPTY over a live window.
+#
+# These tests drive a REAL ``sc.compile_columns`` schedule. The first version
+# of this change used a hand-built fixture whose last skill was the final
+# CATCH; a real compile ends ``CATCH (carrying the Stop), CATCH, REST`` and the
+# predicate "the last skill" never fired on it. Do not copy a fixture that has
+# no closing REST.
+# ---------------------------------------------------------------------------
+
+def _is_final_stop_catch(schedule, idx):
+    """The executor's predicate, called without building an executor."""
+    host = types.SimpleNamespace(schedule=schedule)
+    return ex.SkillExecutor._ends_on_stop_final_catch(
+        host, idx, schedule.skills[idx])
+
+
+def _real_columns(n_throws=6):
+    return sc.compile_columns(
+        sc.Pattern(sites=si.columns_sites(R5_SEPARATION_MM),
+                   apex_m=R5_APEX_M, dwell_s=R5_DWELL_S,
+                   n_throws=n_throws), T0_ABS)
+
+
+@pytest.mark.parametrize('n_throws', [6, 20])
+def test_the_final_stop_catch_predicate_is_true_for_the_last_catch_only(
+        n_throws):
+    sched = _real_columns(n_throws)
+    assert sc.schedule_has_shadow_landing(sched)
+    assert sched.skills[-1].kind == sg.REST        # the real tail has a REST
+    catches = [i for i, sk in enumerate(sched.skills) if sk.kind == sg.CATCH]
+    assert sched.skills[catches[-2]].then_throw is not None   # carries the Stop
+    hits = [i for i in range(len(sched.skills))
+            if _is_final_stop_catch(sched, i)]
+    assert hits == [catches[-1]]
+
+
+def test_the_predicate_is_false_where_no_stop_ends_the_goal():
+    s = si.columns_sites(R5_SEPARATION_MM)
+    one = sc.compile_one_ball(sc.OneBallPattern(
+        sites=(s[0],), apex_m=R5_APEX_M, dwell_s=R5_DWELL_S, n_throws=5),
+        T0_ABS)
+    oval = sc.compile_one_ball(sc.OneBallPattern(
+        sites=s, apex_m=R5_APEX_M, dwell_s=R5_DWELL_S, n_throws=5,
+        roles='fixed'), T0_ABS)
+    single = sc.compile_columns(sc.Pattern(
+        sites=s, apex_m=R5_APEX_M, dwell_s=R5_DWELL_S, n_throws=1), T0_ABS)
+    phantom = sc.compile_columns(sc.Pattern(
+        sites=s, apex_m=R5_APEX_M, dwell_s=R5_DWELL_S, n_throws=3,
+        phantom_balls=(1,)), T0_ABS)
+    for sched in (one, oval, single, phantom):
+        assert not any(_is_final_stop_catch(sched, i)
+                       for i in range(len(sched.skills)))
+
+
+def _run_real_goal(sched, limits, geom, seat_window, observer,
+                   t_after_last_landing=2.5):
+    """Tick ``sched`` through the real install chain, returning
+    ``(executor, lines, dispatched_when_unverifiable_logged)``."""
+    sites_ = tuple(sk.site for sk in sched.skills[:2])
+    arrival = np.array([0.0, 0.0, -0.5 * 9806.0 * sched.flight_s])
+    landings = {}
+    for sk in sched.skills:
+        if sk.kind == sg.CATCH:
+            landings.setdefault(sk.ball_id, []).append(_fit_landing(
+                pos_mm=sk.site.catch_site_mm(), vel_mm_s=arrival.copy(),
+                t_land_abs_s=float(sk.t_abs_s)))
+    clock = {'t': T0_ABS - 1.0}
+
+    def tracker(ball_id):
+        for land in landings.get(ball_id, ()):
+            if land.t_land_abs_s > clock['t'] - 0.05:
+                return land
+        return None
+
+    state = {'record': None}
+
+    def installer(kind, terminal, t_now_s, ball_id=0):
+        rec = state['record']
+        seed = (_rest_state(sched.skills[0].site.rest_site_mm())
+                if rec is None else None)
+        new_rec, res, _seg = ex.install_segment(
+            rec, seed, kind, terminal, t_now_s, limits=limits, geom=geom)
+        assert res.accepted, '%s: %s' % (res.code, res.message)
+        state['record'] = new_rec
+        return res
+
+    execu = ex.SkillExecutor(sched, installer, tracker=tracker,
+                             observer=observer, observations=lambda t: _obs(),
+                             on_experience=lambda e: None,
+                             seat_window=seat_window)
+    last_land = max(sk.t_abs_s for sk in sched.skills if sk.kind == sg.CATCH)
+    lines, at_verdict = [], []
+    t = clock['t']
+    while t < last_land + t_after_last_landing:
+        clock['t'] = t
+        new = execu.tick(t)
+        lines.extend(new)
+        if any('CATCH-EVIDENCE-UNVERIFIABLE' in ln for ln in new):
+            at_verdict.append(set(execu.dispatched))
+        t += DT / 10.0
+    return execu, lines, at_verdict
+
+
+def _windows(empty_landings, seated_n=5):
+    """A ``seat_window`` that is LIVE and never SEATED over the windows that
+    contain one of ``empty_landings`` and LIVE with ``seated_n`` SEATED
+    samples everywhere else."""
+    def seat_window(t0, t1):
+        n = int(round((t1 - t0) * 100))
+        if any(t0 < lnd < t1 for lnd in empty_landings):
+            return ex.SeatWindow(n_valid=n, n_seated=0, max_gap_s=0.01)
+        return ex.SeatWindow(n_valid=n, n_seated=seated_n, max_gap_s=0.01,
+                             t_first_seated_s=t0 + 0.05)
+    return seat_window
+
+
+def _seated_but(t_empty_from):
+    """Per-tick possession: SEATED, except EMPTY from ``t_empty_from`` on and
+    for 0.45 s after every release (so each release confirms)."""
+    def observer(ball_id, t):
+        return bp.EVIDENCE_EMPTY if t >= t_empty_from else ex.CAUGHT_EVIDENCE
+    return observer
+
+
+def test_a_real_columns_goal_ends_unverifiable_not_missed(limits_r5, geom):
+    sched = _real_columns(6)
+    L = float(sched.skills[-2].t_abs_s)
+    rest_idx = len(sched.skills) - 1
+    x, lines, at_verdict = _run_real_goal(
+        sched, limits_r5, geom, _windows([L]), _seated_but(L - 0.3))
+    text = '\n'.join(lines)
+    assert x.end_code == '' and not x.attempt_ended, x.end_code
+    assert ex.MISSED_CATCH not in text and 'MISSED-BALL' not in text
+    assert 'CATCH-EVIDENCE-UNVERIFIABLE' in text
+    assert x.final_catch_unverifiable == len(sched.skills) - 2
+    # The closing REST was already installed before the verdict (its
+    # dispatch_s is landing + 0.125 s, the verdict landing + 0.53 s) and is
+    # dispatched either way: this end moves nothing.
+    assert at_verdict and rest_idx in at_verdict[0]
+    assert rest_idx in x.dispatched and x.done
+    final = [r for r in x.reports if r.unverified]
+    assert len(final) == 1 and final[0].caught is None
+    assert _rp.summarise(x.reports)[0] == sum(
+        1 for r in x.reports if not r.stop and not r.unverified)
+
+
+def test_a_real_columns_goal_with_a_seated_final_window_is_the_normal_veto(
+        limits_r5, geom):
+    sched = _real_columns(6)
+    L = float(sched.skills[-2].t_abs_s)
+    x, lines, _v = _run_real_goal(
+        sched, limits_r5, geom, _windows([]), _seated_but(L - 0.3))
+    text = '\n'.join(lines)
+    assert 'CATCH-EVIDENCE-UNVERIFIABLE' not in text
+    assert x.final_catch_unverifiable is None and x.end_code == ''
+    assert all(not r.unverified for r in x.reports)
+
+
+def test_a_non_final_catch_of_a_real_columns_goal_is_still_a_miss(
+        limits_r5, geom):
+    sched = _real_columns(6)
+    catches = [i for i, sk in enumerate(sched.skills) if sk.kind == sg.CATCH]
+    non_final = catches[-4]                      # a plain-window catch mid-run
+    L_mid = float(sched.skills[non_final].t_abs_s)
+    x, lines, _v = _run_real_goal(
+        sched, limits_r5, geom, _windows([L_mid]), _seated_but(1e18))
+    text = '\n'.join(lines)
+    assert x.end_code == ex.MISSED_CATCH, text
+    assert 'CATCH-EVIDENCE-UNVERIFIABLE' not in text
+    assert x.final_catch_unverifiable is None
+
+
+def test_a_real_one_ball_goal_final_catch_is_still_a_miss(limits_r5, geom):
+    s = si.columns_sites(R5_SEPARATION_MM)
+    sched = sc.compile_one_ball(sc.OneBallPattern(
+        sites=(s[0],), apex_m=R5_APEX_M, dwell_s=R5_DWELL_S, n_throws=4),
+        T0_ABS)
+    L = float(max(sk.t_abs_s for sk in sched.skills if sk.kind == sg.CATCH))
+    x, lines, _v = _run_real_goal(
+        sched, limits_r5, geom, _windows([L]), _seated_but(L - 0.3))
+    text = '\n'.join(lines)
+    assert x.end_code == ex.MISSED_CATCH, text
+    assert 'CATCH-EVIDENCE-UNVERIFIABLE' not in text
+    assert x.final_catch_unverifiable is None
+
+
+def test_a_real_columns_final_window_that_is_not_live_abstains_as_before(
+        limits_r5, geom):
+    sched = _real_columns(6)
+    L = float(sched.skills[-2].t_abs_s)
+
+    def gappy(t0, t1):
+        n = int(round((t1 - t0) * 100))
+        if t0 < L < t1:
+            return ex.SeatWindow(n_valid=n, n_seated=0, max_gap_s=0.2)
+        return ex.SeatWindow(n_valid=n, n_seated=5, max_gap_s=0.01,
+                             t_first_seated_s=t0 + 0.05)
+    x, lines, _v = _run_real_goal(
+        sched, limits_r5, geom, gappy, _seated_but(L - 0.3))
+    text = '\n'.join(lines)
+    assert 'window NOT LIVE' in text
+    assert 'CATCH-EVIDENCE-UNVERIFIABLE' not in text
+    assert x.final_catch_unverifiable is None and x.end_code == ''

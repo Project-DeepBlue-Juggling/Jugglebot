@@ -1,0 +1,32 @@
+---
+title: "JB-169: a goal that ends on a Stop books its final Catch as unverifiable instead of MISSED_CATCH"
+type: bugfix
+date: 2026-11-06
+status: complete
+phase: "JB-169"
+files_changed:
+  - ros_ws/src/jugglebot/jugglebot/motion/skills/executor.py
+  - ros_ws/src/jugglebot/jugglebot/motion/skills/report.py
+  - ros_ws/src/jugglebot/jugglebot/skill_node.py
+  - tests/motion/test_skills_executor.py
+  - tests/motion/test_skills_report.py
+  - tests/ros/test_skill_node.py
+  - logbook/2026-11-06-jb169-final-catch-unverifiable-on-stop.md
+  - logbook/INDEX.md
+subsystem: skills
+---
+
+# JB-169: full-length Columns goal ended MISSED_CATCH on its final Catch
+
+**What.** On 2026-11-04 18:45 (goal 3, 48/48, skill 50 of 50) and 2026-10-28 09:49 (skill 35 of 35) a clean full-length goal ended `MISSED_CATCH` because the cup read EMPTY over the final Catch's window. That window closes at landing + 0.50 s; the Stop (Ball 2's carried Throw) lands after it, so the first SEATED read is outside the window and the bag cannot say whether the ball seated. This is the owner's temporary answer (JB-172, option 4: "book the end as 'ended on a Stop, final Catch unverifiable'"), pending the Tracker rule (option 3, judge by the Tracker), which is not built.
+
+**Change (a label fix, no motion).**
+- `executor.py`: `_register_catch` computes `ends_on_stop` once (plain CATCH, no carried Throw, the schedule's last CATCH with only RESTs after it, `schedule_has_shadow_landing`). In `_advance_catch_evidence`, a LIVE window with `n_seated == 0` on such a Catch logs `CATCH-EVIDENCE-UNVERIFIABLE ...`, sets `final_catch_unverifiable = catch_idx`, and sets no `end_code`, no `attempt_ended`, no `lost_ball_line`, no survivor tail. The ball's pending OUTCOME rows are kept and marked `final_unverifiable`; one that then finalises with no SEATED reading reports `caught=None, unverified=True` (OUTCOME line `caught=unverifiable (...not counted)`), still writes its learner row (admission is not by the Catch verdict; `Experience.caught` stays the latch, False), and a SEATED sample still vetoes as before. A BLIND, not-LIVE or SEATED window behaves as today; a final Catch of a schedule with no Stop, or a non-final Catch, still ends `MISSED_CATCH` (survivor behaviour unchanged).
+- `report.py`: `ThrowReport.unverified` (the smallest new value; neither caught nor missed nor counted, like `stop`); `summarise` and the `end_line` tally exclude it, so a 48/48 goal stays 48/48 and the end line gains ` · ended on a Stop, final Catch unverifiable`; `end_line(final_catch_unverifiable=)`.
+- `skill_node.py`: `_log_attempt_end` passes the executor's attribute. `end_code` stays empty, so the Juggle outcome is `COMPLETED` and `records.category` reads `completed`; no interface field added (no colcon rebuild). `INVARIANTS.md` does not state the MISSED_CATCH rule, so nothing to update there.
+
+**Review correction (2026-11-06, same day).** The first version's predicate required the final Catch to be the schedule's LAST SKILL, which never holds on a real compile (`... CATCH carrying the Stop, CATCH, REST`); its hand-built test fixture had no closing REST and hid it, so do not copy that fixture. The predicate is now: plain CATCH, no carried Throw, no CATCH or THROW after it (only RESTs), and `schedule_has_shadow_landing`. Which `compile_*` variants qualify (checked by calling the predicate on real compiles, `/tmp/jb169_variants.py`): `compile_columns` n_throws >= 2 (n = 6, 20, high-low `apex_m_ball_b`, turned `columns_sites(.., angle)`, `feed=`, `hop_entry=True`) fires on the last CATCH only. No Stop, so a miss stays a miss: `compile_columns` n_throws = 1, the one-ball columns (`phantom_balls`, the Stop is the phantom's, so `schedule_has_shadow_landing` is False), hence also `compile_reload_columns` and `compile_rest_columns` (both end in that phantom compile), `compile_one_ball` self-toss, hop and the fixed-role oval.
+
+**Motion walk, redone with the real REST.** A real columns tail is skill 49 CATCH (carries the Stop), 50 plain CATCH at landing L, 51 REST. The REST's `dispatch_s()` is L + 0.125 s (REST t = L + 0.65 s, window 0.3 s, lead 0.225 s); the verdict fires at L + 0.50 + 0.03 s, 0.40 s later. `tick` runs the dispatch loop before `_advance_catch_evidence`, so the REST is installed before the verdict. On the flown goal 3 of 2026-11-04 18:45 (`~/.ros/log/2026-11-04-18-45-46-408268-jetson-337712/launch.log`): the final CATCH splice, line 2325 (`CATCH skill 50`, t_land 479.527); the REST installed at lines 2350-2351 (`install_segment REST Ball 1`, `REST skill 51: fresh origin`, at 479.616, 0.09 s after landing); the verdict at line 2353 (`END MISSED_CATCH`, 480.068, 0.45 s after the REST). So today's `attempt_ended` came AFTER the REST was already installed and flown: it moved nothing, and the unverifiable end is motion-identical to it, and to a clean full-length goal (2026-11-03 22:29), whose REST path it now takes. After the verdict nothing is left to dispatch, `stop_terminals` has no pending release (`[]`), `_maybe_hold_pending_event` and `_maybe_cancel_bb_throw` are no-ops (the last release was long past). Closing decay: `_plan_closing` (only entered after an END) takes the last accepted install: the REST (`rest_tilt` None, level) or, if the REST were somehow still undispatched, the final CATCH (`hold_tilt` None): not tilted, so no decay is planned either way. If the REST were still undispatched at the verdict (it is not on a real compile), the old end skipped it and this one dispatches it as a clean goal does. The test asserts the REST is in `dispatched` when the UNVERIFIABLE line is logged.
+
+**Verification.** Red checks, 2026-11-06: (1) with `executor.py`, `report.py`, `skill_node.py` restored to HEAD the unit's tests fail; (2) with the first version's predicate (`idx == len(skills) - 1`) restored, `test_the_final_stop_catch_predicate_is_true_for_the_last_catch_only[6]`/`[20]` and `test_a_real_columns_goal_ends_unverifiable_not_missed` fail (3 failed); green with the corrected predicate. The main tests drive real `sc.compile_columns(n_throws=6)` through the real install chain, plus a real one-ball compile for the no-Stop miss. Scoped run, 2026-11-06, `pytest -q tests/motion/test_skills_executor.py tests/ros/test_skill_node.py tests/motion/test_skills_report.py tests/motion/test_records.py tests/sim/test_logbook_front_matter.py tests/sim/test_docs_links.py`: **774 passed in 94.97 s** (the scoped run, not the gate). Not run: `./run_tests.sh`; nothing flown.

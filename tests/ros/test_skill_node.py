@@ -2056,6 +2056,34 @@ def test_a_clean_columns_finish_logs_the_d2_stop_line(tmp_path):
     assert 'rests on the platform' in text
 
 
+def test_a_columns_goal_that_ended_on_a_stop_says_its_final_catch_is_unverifiable(
+        tmp_path):
+    """JB-169: the executor booked the final Catch unverifiable
+    (`final_catch_unverifiable` set, `end_code` empty): the end line is the
+    clean D2 'done' INFO line (never ENDED, never ERROR) and says so; without
+    the flag it does not."""
+    node, _client = _node_with_client()
+    _columns_fed(node, tmp_path, plant_id='test_columns_jb169_unverifiable')
+    executor = node._executor
+    executor.attempt_ended = False
+    executor.end_code = ''
+    node._logger = MagicMock()
+    node.get_logger = lambda: node._logger
+
+    executor.final_catch_unverifiable = 49
+    node._log_attempt_end(executor)
+
+    assert node._logger.error.call_count == 0
+    text = node._logger.info.call_args[0][0]
+    assert 'one ball held' in text and 'ENDED' not in text
+    assert 'ended on a Stop, final Catch unverifiable' in text
+
+    node._logger.reset_mock()
+    executor.final_catch_unverifiable = None
+    node._log_attempt_end(executor)
+    assert 'unverifiable' not in node._logger.info.call_args[0][0]
+
+
 def test_a_dropped_survivor_that_finishes_carries_the_drop_code_through():
     """D3 fix (2026-09-30): `DROPPED_SURVIVOR_STOPPED` deliberately leaves
     `attempt_ended` False the whole time (so `tick` keeps dispatching the

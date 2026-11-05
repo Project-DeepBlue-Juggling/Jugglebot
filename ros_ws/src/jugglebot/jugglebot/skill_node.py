@@ -3763,7 +3763,9 @@ class SkillNode(Node):
             end_kind=executor.end_kind,
             shadow_landing_stop=(not executor.end_code
                                  and schedule_has_shadow_landing(
-                                     executor.schedule)))
+                                     executor.schedule)),
+            final_catch_unverifiable=isinstance(
+                getattr(executor, 'final_catch_unverifiable', None), int))
         self._log_at(severity, text)
 
     def _maybe_signal_goal_done(self) -> None:

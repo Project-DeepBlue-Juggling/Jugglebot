@@ -1096,6 +1096,13 @@ class _PendingOutcome:
     #: caught, and must not reach the learner's memory. See
     #: :meth:`SkillExecutor._finalise_outcome`.
     shadow_landing: bool = False
+    #: Set by :meth:`SkillExecutor._advance_catch_evidence` on every pending
+    #: row of the ball whose FINAL Catch it booked unverifiable (the goal
+    #: ended on a Stop, the cup EMPTY over a live window; JB-169). A row that
+    #: then finalises without a SEATED reading reports ``unverified`` -- not
+    #: caught, not missed, not counted -- while its landing is still the
+    #: Throw's real flight and its learner row is written as usual.
+    final_unverifiable: bool = False
     #: A fed columns schedule's HOP ENTRY throw (owner decision, 2026-10-05,
     #: R5 sitting-6 prep — read straight off
     #: :attr:`~jugglebot.motion.skills.schedule.Skill.entry_hop` at
@@ -1179,6 +1186,13 @@ class _PendingCatch:
     #: latch every feed line printed ``--`` (2026-10-22 19:50 sitting).
     #: Report-only; nothing aims or dispatches from it.
     last_fit_landing: Optional[Landing] = None
+    #: This is the LAST CATCH (plain, only RESTs after it) of a schedule that
+    #: holds a columns Stop (a shadow landing): the goal ends on the Stop, and
+    #: the cup sensor cannot say whether this Catch seated (JB-169, owner
+    #: option 4 of JB-172). Computed ONCE at registration
+    #: (:meth:`SkillExecutor._ends_on_stop_final_catch`); an EMPTY live window
+    #: then books the Catch as unverifiable instead of :data:`MISSED_CATCH`.
+    ends_on_stop: bool = False
 
 
 #: Where, around the tracker's crossing, the cup strike is searched for
@@ -2317,6 +2331,10 @@ class SkillExecutor:
         self.dispatched = set()          #: indices of ``schedule.skills``
         self.results = []                #: (index, Skill, InstallResult)
         self.attempt_ended = False
+        #: Skill index of the final CATCH booked unverifiable because the
+        #: goal ended on a Stop (JB-169), else ``None``. Not an END: it sets
+        #: no ``end_code`` and no ``attempt_ended``.
+        self.final_catch_unverifiable: Optional[int] = None
         self.end_code = ''
         #: D2 (2026-10-19): level the platform after an END that leaves it
         #: tilted -- see :meth:`_plan_closing`.  ``False`` restores the
@@ -4456,7 +4474,32 @@ class SkillExecutor:
             ball_id=skill.ball_id, catch_idx=idx, t_land_scheduled_s=L,
             t_open_s=t_open, t_close_s=t_close,
             is_feed=skill.landing_prior is not None,
-            last_fit_landing=self._fit_latch_by_idx.get(idx)))
+            last_fit_landing=self._fit_latch_by_idx.get(idx),
+            ends_on_stop=self._ends_on_stop_final_catch(idx, skill)))
+
+    def _ends_on_stop_final_catch(self, idx: int, skill: Skill) -> bool:
+        """True iff CATCH ``idx`` is a plain CATCH (no carried Throw), the
+        schedule's LAST CATCH with only REST skills after it, and the
+        schedule holds a columns Stop
+        (:func:`~jugglebot.motion.skills.schedule.schedule_has_shadow_landing`):
+        the goal ends on the Stop and this Catch's seat cannot be read apart
+        from the Stop's landing (JB-169). A real columns compile ends
+        ``... CATCH (carrying the Stop), CATCH (this one), REST``: the closing
+        REST follows the final Catch, so "last skill" would never be true.
+        Any other schedule's last Catch -- an oval, a one-ball goal, a
+        one-ball columns whose Stop is the phantom's -- has no Stop and its
+        final miss stays a miss.
+
+        The trailing REST is dispatched by :meth:`tick` at its own
+        ``dispatch_s()`` (final landing + 0.125 s on a columns compile), before
+        this verdict at landing + 0.53 s, so the label change leaves the
+        dispatch unchanged; a REST still undispatched at the verdict would now
+        dispatch as on a clean goal."""
+        if skill.kind != CATCH or skill.then_throw is not None:
+            return False
+        if any(sk.kind != REST for sk in self.schedule.skills[idx + 1:]):
+            return False
+        return sch.schedule_has_shadow_landing(self.schedule)
 
     def _note_catch_aim(self, ball_id: int, catch_idx: int,
                         t_land_abs_s: float, reaim: bool = False) -> None:
@@ -4755,6 +4798,29 @@ class SkillExecutor:
                        t_open_rel, t_close_rel, window.n_valid, expected,
                        window.n_seated, 1000.0 * float(window.max_gap_s),
                        first))
+                continue
+            if (pend.ends_on_stop and self._ends_on_stop_final_catch(
+                    pend.catch_idx, self.schedule.skills[pend.catch_idx])):
+                # JB-169 (owner option 4 of JB-172): the goal ended on a Stop
+                # and the cup read EMPTY over a live window of this FINAL
+                # Catch. The window closes at landing + 0.50 s, before the
+                # Stop's own landing seats, and the bag cannot tell whether
+                # the ball seated -- so book it unverifiable: neither caught
+                # nor missed, no END, rows kept (and marked, so they are not
+                # counted), no survivor tail. A real final miss is recorded as
+                # unverified, never as a catch.
+                self.final_catch_unverifiable = pend.catch_idx
+                for row in self._pending_outcomes:
+                    if row.ball_id == pend.ball_id:
+                        row.final_unverifiable = True
+                lines.append(
+                    '%.3f CATCH-EVIDENCE-UNVERIFIABLE the CATCH of %s '
+                    '(skill %d): the goal ended on a Stop -- cup EMPTY on all '
+                    '%d valid samples over [%+.2f, %+.2f] s of its scheduled '
+                    'landing -- final Catch unverifiable, neither caught nor '
+                    'missed'
+                    % (t_abs_s, ball_label(pend.ball_id), pend.catch_idx,
+                       window.n_valid, t_open_rel, t_close_rel))
                 continue
             # The lost ball's evidence is read BEFORE the schedule is cut to the
             # survivor (_install_survivor_tail) and before its rows are dropped.
@@ -5298,6 +5364,13 @@ class SkillExecutor:
         settle = None if t_seat_s is None else float(t_seat_s) - float(t_c)
         return float(t_c) - float(t_cross_s), settle
 
+    @staticmethod
+    def _row_unverified(pend: _PendingOutcome) -> bool:
+        """The row's Catch was booked unverifiable (the goal ended on a Stop,
+        JB-169) and no SEATED reading turned up in the row's own window."""
+        return (bool(getattr(pend, 'final_unverifiable', False))
+                and not pend.caught_seen)
+
     def _report(self, pend: _PendingOutcome, *, row: bool,
                 no_row_reason: str = '',
                 apex_m: Optional[float] = None) -> None:
@@ -5327,9 +5400,12 @@ class SkillExecutor:
         caught = (False if pend.shadow_landing
                  else (bool(pend.caught_seen) if self.observer is not None
                        else None))
+        unverified = self._row_unverified(pend)
+        if unverified:
+            caught = None
         self.reports.append(ThrowReport(
             throw_no=pend.throw_no, n_throws=self.n_throws,
-            ball_id=pend.ball_id, caught=caught,
+            ball_id=pend.ball_id, caught=caught, unverified=unverified,
             row=bool(row), no_row_reason=no_row_reason,
             apex_m=None if apex_m is None else float(apex_m),
             landing_err_mm=landing_err, release_err_s=release_err,
@@ -5433,6 +5509,10 @@ class SkillExecutor:
         shadow = (' (Stop: landed on the held ball, by design; not counted)'
                   if pend.shadow_landing else '')
         hop = ' (hop entry, no learner row)' if pend.entry_hop else ''
+        if self._row_unverified(pend):
+            caught = 'unverifiable'
+            shadow = (' (the goal ended on a Stop; final Catch unverifiable, '
+                      'not counted)')
         if offset_in_force:
             hop += ' (no learner row: catch_time_offset in force)'
         return ['%.3f OUTCOME %s: y=(%.4f, %.4f) m apex=%.4f m '

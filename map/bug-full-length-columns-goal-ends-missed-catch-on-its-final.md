@@ -2,9 +2,9 @@
 id: JB-169
 kind: bug
 title: Full-length Columns goal ends MISSED_CATCH on its final Catch although the ball was caught
-status: inbox
+status: complete
 created: '2026-11-04'
-updated: '2026-11-05T18:57:21Z'
+updated: '2026-11-05T19:19:11Z'
 owners: []
 priority: medium
 effort: s
@@ -16,6 +16,7 @@ area: skill-stack
 blocked_by: []
 links:
 - logbook/2026-11-04-jb149-probe-sitting-and-jb139-close.md
+- logbook/2026-11-06-jb169-final-catch-unverifiable-on-stop.md
 filed_by: claude
 ---
 

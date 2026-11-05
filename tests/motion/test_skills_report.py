@@ -193,3 +193,36 @@ def test_the_stop_throw_line_says_stop_not_missed_and_is_info():
     assert sev == 'INFO'
     assert 'STOP (landed on the held ball, by design; not counted)' in text
     assert 'MISSED' not in text
+
+
+# ── JB-169: a goal that ends on a Stop books its final Catch unverifiable ──
+
+def test_an_unverifiable_final_catch_is_neither_caught_nor_missed_nor_counted():
+    reports = [_r(throw_no=1), _r(throw_no=2),
+               _r(throw_no=3, caught=None, unverified=True),
+               _r(throw_no=4, caught=False, stop=True)]
+    assert rp.summarise(reports) == (2, 2)          # 2/2, not 3/3 and not 2/3
+    sev, text = rp.end_line('columns', '', '', reports,
+                            shadow_landing_stop=True)
+    assert sev == 'INFO' and '2/2 caught' in text
+    assert 'ended on a Stop, final Catch unverifiable' in text
+    assert 'ENDED' not in text and 'MISSED' not in text
+
+
+def test_the_unverifiable_flag_alone_says_so_even_with_no_row_for_it():
+    sev, text = rp.end_line('columns', '', '', [_r(throw_no=1)],
+                            shadow_landing_stop=True,
+                            final_catch_unverifiable=True)
+    assert sev == 'INFO' and '1/1 caught' in text
+    assert 'final Catch unverifiable' in text
+    _, plain = rp.end_line('columns', '', '', [_r(throw_no=1)],
+                           shadow_landing_stop=True)
+    assert 'unverifiable' not in plain
+
+
+def test_the_unverifiable_throw_line_is_info_and_does_not_read_caught_or_missed():
+    sev, text = rp.throw_line(_r(caught=None, unverified=True))
+    assert sev == 'INFO'
+    assert 'FINAL CATCH UNVERIFIABLE (the goal ended on a Stop; not counted)' \
+        in text
+    assert 'CAUGHT' not in text and 'MISSED' not in text
