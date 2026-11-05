@@ -4,7 +4,7 @@ kind: feature
 title: 'P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30'
 status: in_progress
 created: '2026-11-03'
-updated: '2026-11-03T21:54:15Z'
+updated: '2026-11-05T12:29:19Z'
 owners: []
 priority: high
 effort: m
@@ -28,7 +28,7 @@ P4 ramp of plan `plans/active/two-ball-oval.md`: the first Sitting at the P4 wor
 - why: P4 ramp of plan two-ball-oval.md: the first flight at the 600 / 8000 working point with the legs at 20 A (box gate_hash 2605fc1bd25e); five Columns canary Attempts show nothing regressed, then the one-ball oval dwell ladder finds the shortest dwell that holds.
 - do:
   - Fly this row FIRST, before every other robot row: since cf35526c every goal runs at 600 / 8000 and 20 A. The 2026-11-03 Sitting flew 1 of the 5 canary Attempts (20/20, peak leg iq 11.7 A) and the oval to dwell 0.35 without a pass (debrief 2026-11-04: carried throws land long, the carry's deceleration ends 25-30 ms before release).
-  - Before arming: confirm the launch log shows BridgeIdentity FW 38 (proto 11), the box line gate_hash 2605fc1bd25e, and the Sitting limits 600 / 8000 / 200000 (none of the three was in the 2026-11-03 launch log; read them from the GUI or `ros2 param get` and note where they came from).
+  - Before arming: confirm the launch log shows BridgeIdentity FW 39 (proto 11), the box line gate_hash 2605fc1bd25e, and the Sitting limits 600 / 8000 / 200000 (none of the three was in the 2026-11-03 launch log; read them from the GUI or `ros2 param get` and note where they came from).
   - Rehearse before arming: cup empty, Ball Butler unpowered, send `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.40, num_cycles: 4}" --feedback` once. The accept message may name only the cup and Ball Butler refusals (no box, dwell or limit refusal) and nothing moves.
   - Columns canary: GUI Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21. Five Attempts (the 2026-11-03 one does not count toward this Sitting's five).
   - Watch the leg current throughout: cancel the goal if any leg iq sample reaches 19 A (1 A under the 20 A clamp; proposed 2026-11-03, owner to confirm; the 2026-11-03 peak was 11.7 A).
@@ -50,3 +50,4 @@ P4 ramp of plan `plans/active/two-ball-oval.md`: the first Sitting at the P4 wor
 - 2026-11-04: Flown at the Sitting of 2026-11-03 (22:29), not passed: Columns canary 1 of 5 Attempts flown (COMPLETED 20/20, no leg LIMIT end, peak leg iq 11.7 A on leg 2, 0 LIMIT_VEL/ACC refusals, 1 LIMIT_JERK re-aim refusal 510456 vs 200000 that did not matter); one-ball oval best 16/16 at dwell 0.40, 0.35 best 2/2, 0.30 not flown.
   - Dominant end MISSED_CATCH: carried throws land long (+76 mm raw at 0.40, +122 at 0.35; +48 from rest), the carry's deceleration ending 25-30 ms before release with the ~6 Hz Platform ring swinging forward at separation; learner pinned at its 30 mm authority from goal 4. 3 ends were firmware scheduler STOPs on a clean host stream.
   - Next: one Attempt at dwell 0.50 first, then the same 0.40 / 0.35 ladder (owner 2026-11-04).
+- 2026-11-05: Unplanned oval_1ball Apex 0.95 Dwell 0.65 (unfed, flag off) 2026-11-05: 25/26 caught, landed x 0 +/- 16 mm, y -6.5 +/- 20 mm, apex 0.98 +/- 0.05; Throw 26 (apex 0.54) cut by MAX_DEVIATION, not a plan outlier. Long-dwell baseline only (excess +13 mm/s mocap); ladder 0.50/0.40/0.35 and the 30-Catch gate still unflown.

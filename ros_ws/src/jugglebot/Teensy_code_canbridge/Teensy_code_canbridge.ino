@@ -183,6 +183,19 @@ static void send_heartbeat_t2j() {
     p.rx_age_max_us = age_max;
     p.rx_age_le25 = age_b[0]; p.rx_age_le50 = age_b[1]; p.rx_age_le70 = age_b[2]; p.rx_age_gt70 = age_b[3];
   }
+  // FW 40 / PROTOCOL 12 (JB-174): downlink loss accounting. Cumulative since
+  // boot; the host differences them against its own sent count.
+  {
+    const UdpStats us = udp_link_stats();
+    p.dn_rx_setpoints  = us.rx_setpoints;
+    p.dn_seq_gaps      = us.seq_gaps;
+    p.dn_crc_errors    = us.crc_errors;
+  }
+  p.dn_queue_dropped = udp_link_stream_queue_dropped();
+  p.sched_frames     = interp_sched_frames();
+  p.sp_seq_drops     = interp_sp_seq_drops();
+  p.sp_no_hand       = interp_sp_no_hand();
+  p.sp_no_sched      = interp_sp_no_sched();
   if (interp_sched_hold_latched()) p.flags |= HF::SCHED_HOLD_LATCHED;   // bit 15
   // bit 14: the hand torque feedforward saturated at ±HAND_TORQUE_FF_CLAMP_NM on
   // at least one on-wire tick since the previous heartbeat (read-and-clear).

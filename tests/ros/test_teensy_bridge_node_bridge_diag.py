@@ -527,3 +527,141 @@ def test_rearm_resets_the_gap_trackers_so_the_disarmed_interval_is_no_gap():
         if _gc_was:
             _gc.enable()
         _teardown(teensy, client, node)
+
+
+def _c1_warn_text(c1_second):
+    from tests.ros._bridge_harness import _build_paired_node, _teardown
+    from teensy_link.gap_monitor import GapStats
+    teensy, client, node = _build_paired_node(boot_state_read=False)
+    try:
+        lines = []
+        node.get_logger().warning = lambda m, *a, **k: lines.append(str(m))
+        node._mpc_active = True
+        node._gap_snap = (GapStats(40, 42.1, 30.0), GapStats(900, 19.0, 19.0))
+        node._note_sched_sample(_sched_hb(10, 25, 4_000, (4, 0, 0, 0)), 1)
+        node._note_sched_sample(
+            _sched_hb(10, 25, 4_000, (4, 0, 0, 0), c1=c1_second), 2)
+        node._warn_on_sched_stop(3, now=100.0)
+        node._warn_on_sched_stop(4, now=101.0)
+        assert len(lines) == 1
+        return lines[0]
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_sched_stop_with_c1_delta_names_the_hand_c1_path_and_its_derived_deadline():
+    """2026-11-05: a hand_c1_stops rise means the Hand C1 stop (cover + short
+    grace), not the 70 ms lane cover; the deadline is derived, never literal."""
+    from teensy_link.gap_monitor import HAND_C1_COVER_MS
+    m = _c1_warn_text(1)
+    assert 'Hand C1 stop (fast upstroke)' in m
+    assert "the Hand's cover ended at %.0f ms with no newer frame" % HAND_C1_COVER_MS in m
+    assert 'below the ~%.0f ms cover' % HAND_C1_COVER_MS in m
+    assert '~70 ms' not in m
+    assert 'hand_c1_stops +1' in m and 'fw_sched' in m
+
+
+def test_sched_stop_without_c1_delta_keeps_the_lane_cover_text():
+    m = _c1_warn_text(0)
+    assert 'Hand C1' not in m
+    assert 'below the ~70 ms cover' in m and 'hand_c1_stops +0' in m
+
+
+# ── JB-174 (FW 40 / PROTOCOL 12): downlink loss accounting ──────────────────
+
+def _dn_hb(rx, dropped=0, gaps=0, crc=0, frames=None, seq_drops=0, no_hand=0,
+           no_sched=0):
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        dn_rx_setpoints=rx, dn_queue_dropped=dropped, dn_seq_gaps=gaps,
+        dn_crc_errors=crc, sched_frames=rx if frames is None else frames,
+        sp_seq_drops=seq_drops, sp_no_hand=no_hand, sp_no_sched=no_sched)
+
+
+def _run_dn_episode(node, losses_at=()):
+    """Arm, stream 40 heartbeats of 4 setpoints each, disarm, settle. A
+    heartbeat index in ``losses_at`` loses one setpoint in the firmware queue."""
+    sent, rx, dropped, gen, t = 0, 5000, 0, 0, 100.0
+    node._mpc_active = False
+    gen += 1
+    node._note_downlink_sample(_dn_hb(rx, dropped, gaps=dropped), gen, sent, now=t)
+    node._mpc_active = True
+    for i in range(40):
+        gen += 1
+        t += 0.1
+        sent += 4
+        rx += 4
+        if i in losses_at:
+            rx -= 1
+            dropped += 1
+        node._note_downlink_sample(_dn_hb(rx, dropped, gaps=dropped), gen, sent, now=t)
+    node._mpc_active = False
+    for _ in range(8):
+        gen += 1
+        t += 0.1
+        node._note_downlink_sample(_dn_hb(rx, dropped, gaps=dropped), gen, sent, now=t)
+
+
+def test_downlink_summary_is_one_info_line_per_clean_streaming_episode():
+    from tests.ros._bridge_harness import _build_paired_node, _teardown
+    teensy, client, node = _build_paired_node(boot_state_read=False)
+    try:
+        infos, warns = [], []
+        node.get_logger().info = lambda m, *a, **k: infos.append(str(m))
+        node.get_logger().warning = lambda m, *a, **k: warns.append(str(m))
+        _run_dn_episode(node)
+        lines = [m for m in infos if m.startswith('downlink summary')]
+        assert lines == ['downlink summary: 156 setpoints sent in 4.5 s, lost 0, '
+                         'queue_dropped +0, seq_gaps +0, crc_errors +0, seq_drops +0']
+        assert not [m for m in warns if 'downlink summary' in m]
+        assert node._dn_loss.lost == 0
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_downlink_summary_warns_with_the_loss_and_the_queue_overwrites():
+    """The pre-FW 40 shape: a setpoint overwritten in the firmware's socket
+    queue shows as lost, queue_dropped and a sequence gap, all by the same
+    count."""
+    from tests.ros._bridge_harness import _build_paired_node, _teardown
+    teensy, client, node = _build_paired_node(boot_state_read=False)
+    try:
+        infos, warns = [], []
+        node.get_logger().info = lambda m, *a, **k: infos.append(str(m))
+        node.get_logger().warning = lambda m, *a, **k: warns.append(str(m))
+        _run_dn_episode(node, losses_at=(7, 23))
+        lines = [m for m in warns if m.startswith('downlink summary')]
+        assert len(lines) == 1
+        assert lines[0].startswith(
+            'downlink summary: 156 setpoints sent in 4.5 s, lost 2, '
+            'queue_dropped +2, seq_gaps +2, crc_errors +0, seq_drops +0')
+        assert not [m for m in infos if m.startswith('downlink summary')]
+        assert node._dn_loss.lost == 2
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_sched_stop_warn_carries_the_downlink_ledger():
+    """A STOP WARN on a clean host stream now says whether a setpoint went
+    missing in the same second (the JB-149 / JB-166 question)."""
+    from tests.ros._bridge_harness import _build_paired_node, _teardown
+    from teensy_link.gap_monitor import GapStats
+    teensy, client, node = _build_paired_node(boot_state_read=False)
+    try:
+        lines = []
+        node.get_logger().warning = lambda m, *a, **k: lines.append(str(m))
+        node._mpc_active = True
+        node._gap_snap = (GapStats(40, 42.1, 30.0), GapStats(900, 19.0, 19.0))
+        node._note_sched_sample(_sched_hb(10, 25, 4_000, (4, 0, 0, 0)), 1)
+        node._note_sched_sample(_sched_hb(10, 28, 23_600, (4, 0, 0, 0)), 2)
+        node._note_downlink_sample(_dn_hb(1000), 1, 400, now=100.0)
+        node._note_downlink_sample(_dn_hb(1003, dropped=1, gaps=1), 2, 404, now=100.1)
+        node._warn_on_sched_stop(44, now=100.0)
+        node._warn_on_sched_stop(46, now=101.0)
+        assert len(lines) == 1
+        assert ('; downlink last 1 heartbeats: sent +4 received +3 lost +0 '
+                '(total 0) queue_dropped +1 seq_gaps +1 no_hand +0 no_sched +0'
+                ) in lines[0]
+    finally:
+        _teardown(teensy, client, node)
+

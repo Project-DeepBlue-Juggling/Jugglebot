@@ -914,7 +914,15 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # le70/gt70, age = bridge now - the frame's t_start at queue entry). A WIRE
 # change: PROTOCOL_VERSION 10 -> 11, so an FW 37 board is DARK to this host
 # (and vice versa) until the lockstep flash. No lane behaviour changes.
-EXPECTED_BRIDGE_FW_VERSION = 38
+# 38 -> 39 (2026-11-05, JB-166): Hand C1 stop grace 6 -> 14 ms. Behavioural
+# only: no wire change, PROTOCOL_VERSION stays 11.
+# 39 -> 40 (2026-11-06, JB-174): the stream socket's receive queue goes from
+# the library default of ONE packet to 8, and HeartbeatT2J grows 158 -> 190 B
+# with the downlink ledger (dn_rx_setpoints, dn_queue_dropped, dn_seq_gaps,
+# dn_crc_errors, sched_frames, sp_seq_drops, sp_no_hand, sp_no_sched). A WIRE
+# change: PROTOCOL_VERSION 11 -> 12, so an FW 39 board is DARK to this host (and
+# vice versa) until the lockstep flash. No lane behaviour changes.
+EXPECTED_BRIDGE_FW_VERSION = 40
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

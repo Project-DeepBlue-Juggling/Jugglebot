@@ -4,7 +4,7 @@ kind: bug
 title: '40 Hz setpoint stream starved past the firmware''s 70 ms cover during CATCH-solve bursts: 3 LANE_REFUSED ends on 2026-11-02'
 status: in_progress
 created: '2026-11-02'
-updated: '2026-11-04T08:01:15Z'
+updated: '2026-11-05T13:23:05Z'
 owners:
 - jugglebot-50
 priority: high
@@ -22,6 +22,7 @@ links:
 - logbook/2026-11-03-jb149-opt-in-cures.md
 - logbook/2026-11-04-sitting-debrief.md
 - logbook/2026-11-04-jb149-probe-sitting-and-jb139-close.md
+- logbook/2026-11-06-jb174-stream-socket-queue.md
 filed_by: claude
 ---
 
@@ -97,9 +98,16 @@ Recommendation: 1, flown at the next Sitting with the instrumentation, then 2 or
 - verdict: pass
 - notes: First two attempts ended with MISSED_CATCH. Third attempt finished cleanly
 
+## Sitting result (2026-11-05 22:54)
+
+- verdict: pending
+- notes: 2026-11-05 session had a few attempts end in LANE_REFUSED, including one instance where there was a ~simultaneous MAX_DEVIATION error. "Pending" only because this is merely a reporting of data (perhaps we ought to add a new 'outcome' option for this?)
+
 ## Progress
 
 - 2026-11-03: Both probes landed 2026-11-03 (owner call on JB-155 plus the Sitting-findings follow-up): opt-in host GC and sched probe, and FW 38 / PROTOCOL 11 heartbeat sched counters, frame-age stats and the STOP WARN third verdict. Body rewritten: two classes (host gap on 11-02, clean-host STOP on 11-03). Sitting row written; flash and colcon build owed before it (detail below)
 - 2026-11-03: Opt-in cures landed 2026-11-03, both default off: gc_freeze:=true and cpu_partition:=true (option 2), ready to A/B once the probe row shows class 1; the overlapping stall probe from 11-02 was dropped for gc_probe (logbook 2026-11-03-jb149-opt-in-cures).
 - 2026-11-04: 2026-11-03 Sitting (22:29, P4 ramp): REFUTED again for the 2 LANE_REFUSED and 1 GUARD_LATCHED ends: forward gap 37-47 ms, loop gap <= 20 ms, emit max 34 ms, bridge frame age max 24.8 ms, the firmware's expired/superseded/stale counters did not move; each end was a firmware scheduler STOP with a clean host stream (cause firmware-side, unknown).
 - 2026-11-04: Probe Sitting 2026-11-04 18:45 (gc_probe on, FW 38): row PASSED, record complete. No LANE_REFUSED, no STOP inside an Attempt; max GC pause 2.1 ms; rx_age max 27 ms, gt70 0. Third Sitting with no host-side support. gc_probe now on by default at launch; the row is a ride-along until a LANE_REFUSED is caught under it.
+- 2026-11-05: Row PASSED 2026-11-05 22:46 (first LANE_REFUSED under gc_probe). 1 of 5 STOPs host-side: 60.0 ms gen-2 GC pause in teensy_bridge_node (launch L1615, 421.040), forward 99.5 / loop 77.5 ms, expired +1; the only GC pause > 5 ms all Sitting. Other 4 host-clean (emit <= 28 ms, GC 0, seq_gaps 0). Next: A/B gc_freeze:=true (bridge node first).
+- 2026-11-06: 2026-11-06: the clean-host class is missing frames. Firmware counted 1.3-1.5 % fewer frames than the host sent in three bags; each clean STOP needs one missing frame (both lanes when the next is > 20 ms old, Hand C1 when > 6 ms). Likely cause: the stream socket one-packet queue, fixed in FW 40 (JB-174); its Sitting row is the test. GC caused 1 of 5 STOPs; gc_freeze A/B still owed.

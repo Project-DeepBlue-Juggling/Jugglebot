@@ -4,7 +4,7 @@ kind: feature
 title: Install the host hold within one tick of a firmware scheduler STOP so a guard latch becomes a recoverable LANE_REFUSED
 status: inbox
 created: '2026-11-04'
-updated: '2026-11-04T17:51:06Z'
+updated: '2026-11-05T12:29:17Z'
 owners: []
 priority: medium
 effort: m
@@ -37,3 +37,7 @@ Where the host learns of a STOP today: `skill_node` reads `sched_refused` only f
 4. Leave it: the Teensy guard stays the authority and a latch costs one operator CLEAR_ERRORS.
 
 Recommendation: 1, then 2 if the probe shows the latch would have been a LANE_REFUSED inside one tick.
+
+## Progress
+
+- 2026-11-05: Probe done 2026-11-05 (option 1): STOP -> hold 130-340 / 300 / 320 / 275 ms; WARN lag from 10 Hz link_status 0-130 ms, then 110-210 ms END -> hold installed. Guard latched before the hold in 2 of 4 (L1399 by 170 ms, L2361 by 51 ms). Publishing on change helps; the END -> install leg is the larger term.

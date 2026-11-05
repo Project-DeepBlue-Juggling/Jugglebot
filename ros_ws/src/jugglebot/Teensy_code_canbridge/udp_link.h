@@ -53,8 +53,10 @@ struct UdpStats {
   uint32_t crc_errors;     // frames dropped on CRC/magic/version/length
   uint32_t seq_gaps;       // detected downlink sequence discontinuities
   uint32_t drain_cap_hits; // RX drain hit UDP_RX_DRAIN_BUDGET with a frame still queued
+  uint32_t rx_setpoints;   // FW 40: valid SETPOINT datagrams dispatched (before the interp's seq/NaN guards)
 };
 UdpStats udp_link_stats();
+uint32_t udp_link_stream_queue_dropped();   // FW 40: stream-socket packets overwritten in the RX queue
 
 // Last measured Jetson round-trip (us) and jitter estimate. Reported by the
 // time-of-day RPC round-trip (the natural request/response we already perform).

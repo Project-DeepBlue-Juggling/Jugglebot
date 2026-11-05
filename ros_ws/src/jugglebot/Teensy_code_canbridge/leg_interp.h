@@ -216,6 +216,9 @@ bool     interp_sched_hold_latched();            // either group refusing a disc
 void     interp_sched_promo_max(uint8_t group, float* dp, float* dv, float* da);   // session max
 uint32_t interp_sched_promo_over(uint8_t group);
 uint32_t interp_sched_frames();      // accepted as scheduled (cumulative)
+uint32_t interp_sp_seq_drops();      // FW 40: setpoints dropped by the monotonic-seq guard (cumulative)
+uint32_t interp_sp_no_hand();        // FW 40: setpoints parsed with HAS_HAND clear (cumulative)
+uint32_t interp_sp_no_sched();       // FW 40: setpoints parsed with HAS_SCHED clear (cumulative)
 uint32_t interp_sched_demoted();     // HAS_SCHED played as legacy
 uint32_t interp_sched_expired();     // cover already over at promotion
 uint32_t interp_sched_stops();       // cover exhaustions (C2 stop or FW 37 hand C1 stop)

@@ -2,9 +2,9 @@
 id: JB-160
 kind: bug
 title: MAX_DEVIATION latched on 40-90 ms stale Hand telemetry without MOTOR_FB_STALE firing first
-status: inbox
+status: complete
 created: '2026-11-03'
-updated: '2026-11-03T21:54:30Z'
+updated: '2026-11-05T12:29:20Z'
 owners: []
 priority: high
 effort: m
@@ -19,6 +19,7 @@ links:
 - map/bug-teensy-guard-max-deviation-latched-on-the-hand-8-4-rev-mid.md
 - map/bug-40-hz-setpoint-stream-starved-past-the-firmware-s-70-ms.md
 - logbook/2026-11-04-sitting-debrief.md
+- logbook/2026-11-05-sitting-debrief.md
 filed_by: sitting-debrief 2026-11-03
 ---
 
@@ -54,3 +55,4 @@ Read the `hand_capture` CSV of 12:35:23. In the frozen windows, do the `telem` r
 ## Progress
 
 - 2026-11-04: 2026-11-03 Sitting (22:29, P4 ramp): the two Hand MAX_DEVIATION latches (goals 3, 15) were preceded by a firmware scheduler STOP, not by stale telemetry: the Hand capture shows the command frozen and the encoder stopped; the deviation grew from the host plan moving on.
+- 2026-11-05: Closed 2026-11-05: refuted twice (11-03 Night Shift read, 11-05 Sitting). Both 11-05 MAX_DEVIATION trips were the refused plan base vs a Hand at rest on its held setpoint, telemetry source gaps <= 10 ms (max 10.07), fb within 0.02 rev of the capture. The class is JB-98 / JB-166 (C1 stop, latched hold, refused frames).

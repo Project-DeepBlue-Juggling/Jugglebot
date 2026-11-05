@@ -4,7 +4,7 @@ kind: bug
 title: Teensy guard MAX_DEVIATION latched on the hand (+8.4 rev) mid-oval; recover_lane found nothing, re-dispatch rejected WRONG_MODE
 status: inbox
 created: '2026-10-28'
-updated: '2026-11-03T21:54:29Z'
+updated: '2026-11-05T12:29:18Z'
 owners: []
 priority: high
 effort: m
@@ -69,3 +69,4 @@ Two questions:
 - 2026-11-02: Sitting 2026-11-02: three LANE_REFUSED ends, all past the firmware's 70 ms cover (two bridge-process stalls 79.6/101.3 ms, one emitter stall 81.7 ms), two then tripped the Hand guard. Class now owned by JB-149.
 - 2026-11-03: 2026-11-03 Sitting: one more latch, L2528 (+3.012 rev, Hand at 9.34 rev vs 9.395 command, telem frozen 40/90/30 ms, 60 ms setpoint echo gap). Filed as JB-160 with the numbers; same starvation class.
 - 2026-11-04: 2026-11-03 Sitting (22:29, P4 ramp): two more Hand MAX_DEVIATION latches (goal 3 dev -3.057 rev during the CARRY approach; goal 15 +7.660 rev 68 ms after a LANE_REFUSED END). Both follow a firmware scheduler STOP: the Hand is held where it stands while the host plan walks on, and the host hold lands 130-214 ms after the END.
+- 2026-11-05: 2026-11-05 L1400/L2365: +3.91 / +4.96 rev, 131 / 225 ms after a C1 stop mid-upstroke (Hand held at 1.51 / 4.42 rev, refused plan base 5.42 / 9.37). Mechanism = latched hold + refused frames (leg_interp.cpp:1454, FW 22), not coast: Hand velocity 0 at the trip. Fix belongs with JB-166 / the hold ordering.

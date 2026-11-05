@@ -126,7 +126,8 @@ from teensy_link.rpc import HandMoveToUnavailable, RpcTimeout
 from teensy_link.fault_logic import LinkLossLatch
 from jugglebot import stream_tuning as _tuning
 from teensy_link.gap_monitor import (
-    EMPTY_STATS, SCHED_COVER_MS, EpisodeLatch, GapTracker)
+    EMPTY_STATS, HAND_C1_COVER_MS, SCHED_COVER_MS, DownlinkLossTracker,
+    EpisodeLatch, GapTracker)
 from teensy_link.setpoint_pump import SetpointPump, FLAG_HAS_HAND, HAND_FF_GAIN_MAX
 from teensy_link.encoder_search import (
     EncoderSearch, AxisStatus, AXIS_STATE_ENCODER_INDEX_SEARCH,
@@ -844,6 +845,16 @@ _RX_AGE_BUCKETS = ('rx_age_le25', 'rx_age_le50', 'rx_age_le70', 'rx_age_gt70')
 _RX_AGE_NONE = -2 ** 31
 _SCHED_HIST_LEN = 11            # 10 heartbeat windows (~1 s) + the baseline
 _SCHED_DISARM_EDGE_S = 0.5      # a STOP this soon after the 1->0 fall is "at" it
+# JB-174 (FW 40 / PROTOCOL_VERSION 12): the firmware's downlink ledger. Until
+# FW 39 the stream socket held ONE packet, so a host heartbeat landing in the
+# same 1 ms firmware tick as a setpoint overwrote it (about 1.5 % of setpoints,
+# measured in three Sittings), and no uplinked number could count it. These are
+# cumulative since the bridge booted; `setpoints_lost` is the host's sent count
+# minus dn_rx_setpoints (DownlinkLossTracker).
+_DN_FW_COUNTERS = ('dn_rx_setpoints', 'dn_queue_dropped', 'dn_seq_gaps',
+                   'dn_crc_errors', 'sched_frames', 'sp_seq_drops',
+                   'sp_no_hand', 'sp_no_sched')
+_DN_SETTLE_HEARTBEATS = 5       # after streaming ends, before the summary line
 
 # Bits 16-22 carry the report-only per-axis ODrive heartbeat-staleness mask
 # (bit 16+i = axis i's CAN heartbeat older than CAN_HEARTBEAT_STALE_US = 0.5 s;
@@ -1732,6 +1743,18 @@ class TeensyBridgeNode(Node):
         self._sched_hist_gen = None
         self._sched_prev_armed = False
         self._sched_fall_mono = None
+        # JB-174 (FW 40 / PROTOCOL 12): downlink loss accounting. The host's
+        # sent count is sampled on the RX thread when a heartbeat lands (so at
+        # most a frame or two is in flight), the tracker and the ring are fed
+        # from the 10 Hz link_status timer, and one summary line is logged each
+        # time streaming ends.
+        self._latest_heartbeat_sent = 0
+        self._dn_loss = DownlinkLossTracker()
+        self._dn_hist = deque(maxlen=_SCHED_HIST_LEN)
+        self._dn_hist_gen = None
+        self._dn_prev_armed = False
+        self._dn_episode = None     # (t0, sent, lost, counters) at the arm edge
+        self._dn_settle = 0         # heartbeats left before the summary
         # 2026-11-01 observability (JB-98): forwarding-thread gap monitors. The
         # emitter's max_emit_gap_ms cannot see a stall of THIS process; these
         # can. fwd = spacing of successful sends; loop = spacing of
@@ -2656,8 +2679,14 @@ class TeensyBridgeNode(Node):
             hb = HeartbeatT2J.unpack(payload)
         except Exception:  # noqa: BLE001 — never let a bad frame kill the RX thread
             return
+        # JB-174: the sent count as of THIS heartbeat's arrival (RX thread), so
+        # the loss figure compares like with like. The pump is built after the
+        # subscription, hence the getattr.
+        pump = getattr(self, '_sp_pump', None)
+        sent = int(pump.frames_built) if pump is not None else 0
         with self._lock:
             self._latest_heartbeat = hb
+            self._latest_heartbeat_sent = sent
             self._heartbeat_gen += 1
 
     def _on_telemetry(self, msg_type, seq, payload, addr):
@@ -6049,9 +6078,86 @@ class TeensyBridgeNode(Node):
         bsum = [sum(w[2][i] for w in windows) for i in range(4)]
         age = ('none' if not ages else '%.1f ms' % (max(ages) / 1e3))
         return ('fw_sched last %d heartbeats: %s; frame age at bridge receipt '
-                'max %s, <=25 ms %d, <=50 ms %d, <=70 ms %d, >70 ms %d'
+                'max %s, <=25 ms %d, <=50 ms %d, <=70 ms %d, >70 ms %d%s'
                 % (len(windows), deltas, age, bsum[0], bsum[1], bsum[2],
-                   bsum[3]))
+                   bsum[3], self._downlink_summary()))
+
+    def _note_downlink_sample(self, hb, hb_gen, hb_sent, now=None) -> None:
+        """Feed the downlink loss tracker and ring, once per NEW heartbeat, and
+        log one summary line each time streaming ends (JB-174, FW 40).
+
+        Advisory only: runs on the 10 Hz link_status timer and writes to the
+        logger and /link_status, never to a gate. The summary waits
+        ``_DN_SETTLE_HEARTBEATS`` after ``mpc_active`` falls so the last frames
+        in flight are counted, and a re-arm inside that wait flushes it first.
+        """
+        if hb is None or hb_gen == self._dn_hist_gen:
+            return
+        self._dn_hist_gen = hb_gen
+        counters = tuple(int(getattr(hb, k, 0)) for k in _DN_FW_COUNTERS)
+        lost = self._dn_loss.update(int(hb_sent), counters[0])
+        entry = (int(hb_sent), lost, counters)
+        self._dn_hist.append(entry)
+        t = time.monotonic() if now is None else float(now)
+        armed = bool(self._mpc_active)
+        if armed and not self._dn_prev_armed:
+            if self._dn_episode is not None:
+                self._log_downlink_episode(entry, t)
+            self._dn_episode = (t,) + entry
+            self._dn_settle = 0
+        elif not armed and self._dn_prev_armed:
+            self._dn_settle = _DN_SETTLE_HEARTBEATS
+        elif not armed and self._dn_settle > 0:
+            self._dn_settle -= 1
+            if self._dn_settle == 0 and self._dn_episode is not None:
+                self._log_downlink_episode(entry, t)
+        self._dn_prev_armed = armed
+
+    def _log_downlink_episode(self, entry, t) -> None:
+        """One line per streaming episode: INFO when nothing was lost, WARN
+        otherwise. The Sitting row of JB-174 reads these lines."""
+        t0, sent0, lost0, c0 = self._dn_episode
+        self._dn_episode = None
+        sent, lost, c = entry
+        if sent - sent0 <= 0:
+            return
+        d = {k: (b - a) & 0xFFFFFFFF for k, a, b in zip(_DN_FW_COUNTERS, c0, c)}
+        text = ('downlink summary: %d setpoints sent in %.1f s, lost %d, '
+                'queue_dropped +%d, seq_gaps +%d, crc_errors +%d, seq_drops +%d'
+                % (sent - sent0, t - t0, lost - lost0, d['dn_queue_dropped'],
+                   d['dn_seq_gaps'], d['dn_crc_errors'], d['sp_seq_drops']))
+        if (lost - lost0 or d['dn_queue_dropped'] or d['dn_seq_gaps']
+                or d['dn_crc_errors'] or d['sp_seq_drops']):
+            self.get_logger().warning(
+                text + ' (a setpoint that left this node did not reach the '
+                'firmware scheduler: queue_dropped = overwritten in the '
+                'firmware socket queue, seq_gaps with queue_dropped +0 = lost '
+                'before the firmware socket)')
+        else:
+            self.get_logger().info(text)
+
+    def _downlink_summary(self) -> str:
+        """The downlink ledger over the held heartbeats (~1 s) for the STOP
+        WARN. '' with < 2 samples (and against a pre-FW 40 heartbeat)."""
+        h = self._dn_hist
+        if len(h) < 2:
+            return ''
+        (s0, l0, c0), (s1, l1, c1) = h[0], h[-1]
+        d = {k: (b - a) & 0xFFFFFFFF for k, a, b in zip(_DN_FW_COUNTERS, c0, c1)}
+        return ('; downlink last %d heartbeats: sent +%d received +%d lost +%d '
+                '(total %d) queue_dropped +%d seq_gaps +%d no_hand +%d '
+                'no_sched +%d'
+                % (len(h) - 1, s1 - s0, d['dn_rx_setpoints'], l1 - l0, l1,
+                   d['dn_queue_dropped'], d['dn_seq_gaps'], d['sp_no_hand'],
+                   d['sp_no_sched']))
+
+    def _sched_c1_delta(self) -> int:
+        """``hand_c1_stops`` rise over the held fw_sched samples (0 with < 2)."""
+        h = self._sched_hist
+        if len(h) < 2:
+            return 0
+        i = _SCHED_FW_COUNTERS.index('sched_hand_c1_stops')
+        return (h[-1][0][i] - h[0][0][i]) & 0xFFFFFFFF
 
     def _warn_on_sched_stop(self, total: int, now=None) -> None:
         """WARN (<= 1/s) when the firmware's ``sched_stops`` rises while armed,
@@ -6098,8 +6204,12 @@ class TeensyBridgeNode(Node):
         self._sched_stops_warn_mono = t
         fwd, loop = self._gap_snap
         open_ms = self._fwd_gap.open_gap_ms(time.monotonic())
-        clean = (fwd.n > 0 and fwd.max_ms < SCHED_COVER_MS
-                 and loop.max_ms < SCHED_COVER_MS and open_ms < SCHED_COVER_MS)
+        # A Hand C1 stop (FW 37, fast upstroke) fires at the 50 ms cover + the
+        # short C1 grace, not at the 70 ms lane cover: judge against that.
+        c1 = self._sched_c1_delta() > 0
+        cover_ms = HAND_C1_COVER_MS if c1 else SCHED_COVER_MS
+        clean = (fwd.n > 0 and fwd.max_ms < cover_ms
+                 and loop.max_ms < cover_ms and open_ms < cover_ms)
         where = ('at the disarm edge (mpc_active 1->0)' if edge
                  else 'while streaming')
         if clean:
@@ -6111,7 +6221,7 @@ class TeensyBridgeNode(Node):
                 'dropped as expired: link or net task; small ages = stamps or '
                 'the ISR)'
                 % (fwd.max_ms, fwd.p99_ms, open_ms, loop.max_ms,
-                   SCHED_COVER_MS))
+                   cover_ms))
         else:
             verdict = (
                 'the lane cover (~%.0f ms) expired. Candidates: emitter gap '
@@ -6120,8 +6230,12 @@ class TeensyBridgeNode(Node):
                 '%.1f), bridge loop gap %.1f ms. Loop gap near the forward gap '
                 '= bridge stall; loop gap small = the stream itself was late '
                 '(see /trajectory/status max_emit_gap_ms)'
-                % (SCHED_COVER_MS, fwd.max_ms, fwd.p99_ms, open_ms,
+                % (cover_ms, fwd.max_ms, fwd.p99_ms, open_ms,
                    loop.max_ms))
+        if c1:
+            verdict = (
+                'Hand C1 stop (fast upstroke): the Hand\'s cover ended at '
+                '%.0f ms with no newer frame; ' % HAND_C1_COVER_MS) + verdict
         fw = self._sched_fw_summary()
         self.get_logger().warning(
             'firmware scheduler STOP (+%d, total %d) %s: %s%s'
@@ -6155,6 +6269,7 @@ class TeensyBridgeNode(Node):
             with self._lock:
                 hb = self._latest_heartbeat
                 hb_gen = self._heartbeat_gen
+                hb_sent = self._latest_heartbeat_sent
                 diag = dict(self._latest_diag)
                 diag_mono = dict(self._latest_diag_mono)
             age_us = self._link_age_us()
@@ -6180,6 +6295,7 @@ class TeensyBridgeNode(Node):
                                   >> _T2J_HB_STALE_SHIFT)
                 self._track_hb_stale_episodes(hb_stale_mask)
                 self._note_sched_sample(hb, hb_gen)
+                self._note_downlink_sample(hb, hb_gen, hb_sent)
                 self._warn_on_sched_stop(int(hb.sched_stops))
 
             msg = DiagnosticStatus()
@@ -6571,6 +6687,16 @@ class TeensyBridgeNode(Node):
                                     else str(int(hb.rx_age_max_us)))),
                     *[KeyValue(key=k, value=str(int(getattr(hb, k))))
                       for k in _RX_AGE_BUCKETS],
+                    # FW 40 / PROTOCOL 12 (JB-174): the firmware's downlink
+                    # ledger (cumulative since the bridge booted) and the
+                    # host's verdict on it. setpoints_lost = setpoints this
+                    # node sent that never reached the firmware dispatcher,
+                    # since this node first heard the bridge; 0 is the
+                    # invariant, and so is dn_queue_dropped.
+                    *[KeyValue(key=k, value=str(int(getattr(hb, k))))
+                      for k in _DN_FW_COUNTERS],
+                    KeyValue(key='setpoints_lost',
+                             value=str(self._dn_loss.lost)),
                     # /recover_lane's progress (2026-10-13): idle|in_progress|
                     # done|failed, and the stage last entered (none|converge|
                     # rest|disarm|arm|confirm). trajectory_node and skill_node

@@ -2,9 +2,9 @@
 id: JB-171
 kind: ticket
 title: 'JB-167 STOP to hold latency: probe it first, publish link_status on change, raise it to 40 Hz, or leave the guard as the authority?'
-status: open
+status: complete
 created: '2026-11-05'
-updated: '2026-11-04T17:51:17Z'
+updated: '2026-11-04T21:21:47Z'
 owners: []
 priority: medium
 effort: xs
@@ -32,3 +32,7 @@ Recommendation: 1, then 2.
 - 1: a night unit that writes the latency table into JB-167.
 - 2 or 3: a unit with a Sitting row; the hold path sits next to the guard, so it flies before it merges.
 - 4: JB-167 parks.
+
+## Answer
+
+agreed

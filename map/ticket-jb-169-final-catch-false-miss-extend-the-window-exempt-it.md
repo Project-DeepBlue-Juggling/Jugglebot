@@ -2,9 +2,9 @@
 id: JB-172
 kind: ticket
 title: 'JB-169 final-Catch false miss: extend the window, exempt it, judge it by the Tracker, book it unverifiable, or test the cup sensor first?'
-status: open
+status: complete
 created: '2026-11-05'
-updated: '2026-11-04T17:52:41Z'
+updated: '2026-11-04T21:20:22Z'
 owners: []
 priority: medium
 effort: xs
@@ -33,3 +33,7 @@ Recommendation: 4 now (an honest record, no lost detection), and 5 when a Sittin
 - 1, 2 or 4: a night unit in `executor.py` with a test that ends a full-length Columns goal on a Stop.
 - 3: a larger unit that needs thresholds from you.
 - 5: a Sitting row.
+
+## Answer
+
+4 now. The real final solution is 3, but we don't need to go to that much effort right now. 4 is a good temporary solution

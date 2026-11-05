@@ -434,6 +434,12 @@ static constexpr float   HAND_C1_S = 1.0f + ((float)HAND_C1_STOP_GRACE_US * 1e-6
 
 // Counters (census idiom: cumulative, single writer, consumer differences).
 static volatile uint32_t s_sched_frames       = 0;   // net task: accepted as scheduled
+// FW 40 (JB-174) downlink accounting, net task, cumulative. With udp_link's
+// rx_setpoints these close the ledger from datagram to schedule queue:
+// rx_setpoints = seq drops + NaN drops + legacy plays + future drops + sched_frames.
+static volatile uint32_t s_sp_seq_drops       = 0;   // stale or duplicate seq, dropped by the monotonic guard
+static volatile uint32_t s_sp_no_hand         = 0;   // parsed with HAS_HAND clear (a hand-less plan, or a lost flag)
+static volatile uint32_t s_sp_no_sched        = 0;   // parsed with HAS_SCHED clear (played with arrival semantics)
 static volatile uint32_t s_sched_demoted      = 0;   // net task: HAS_SCHED played as legacy
 static volatile uint32_t s_sched_future_drops = 0;   // net task: stamp > SCHED_MAX_FUTURE_US ahead
 static volatile uint32_t s_sched_q_overflow   = 0;   // net task: queue full, oldest stamp dropped
@@ -844,7 +850,7 @@ void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len) {
   // therefore false-drop EVERY setpoint that follows a heartbeat. The test MUST be
   // strictly-greater via a SIGNED int16 wrap difference, tracking the last-ACCEPTED
   // setpoint seq only: (int16_t)(seq - s_last_sp_seq) <= 0 ⇒ stale/dup ⇒ drop.
-  if (s_have_sp_seq && (int16_t)(seq - s_last_sp_seq) <= 0) return;
+  if (s_have_sp_seq && (int16_t)(seq - s_last_sp_seq) <= 0) { ++s_sp_seq_drops; return; }
 
   JbUdp::SetpointPayload sp;
   memcpy(&sp, payload, sizeof(sp));
@@ -853,6 +859,8 @@ void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len) {
   const bool has_hand_flag = (sp.flags & 0x4u) != 0;   // HAS_HAND (v6 wire, bit 2)
   const bool has_v2_flag    = (sp.flags & SP_FLAG_HAS_V2) != 0;      // HAS_V2 (v8, bit 4)
   const bool has_sched_flag = (sp.flags & SP_FLAG_HAS_SCHED) != 0;   // HAS_SCHED (v8, bit 5)
+  if (!has_hand_flag)  ++s_sp_no_hand;    // FW 40 census (JB-174), counted before any drop below
+  if (!has_sched_flag) ++s_sp_no_sched;
 
   // ── isfinite trust-boundary drop ────────────────────────────────────────────
   // A NaN/Inf field survives BOTH the lead clamp and the stroke clamp (a NaN fails
@@ -1906,6 +1914,7 @@ void interp_reset() {
   s_sq_n = 0;
   for (uint8_t gi = 0; gi < 2; ++gi) s_sg[gi] = SchedGroup{};
   s_sched_frames = 0; s_sched_demoted = 0; s_sched_future_drops = 0; s_sched_q_overflow = 0;
+  s_sp_seq_drops = 0; s_sp_no_hand = 0; s_sp_no_sched = 0;
   s_sched_expired = 0; s_sched_superseded = 0; s_sched_stale = 0; s_sched_stops = 0; s_sched_hand_c1_stops = 0;
   s_sched_stop_capped = 0; s_sched_refused = 0; s_sched_resumes = 0; s_sched_slew_rearms = 0;
   s_rx_age_max_us = INT32_MIN;
@@ -2136,6 +2145,9 @@ void     interp_sched_promo_max(uint8_t g, float* dp, float* dv, float* da) {
 }
 uint32_t interp_sched_promo_over(uint8_t g) { return s_sg[(g > 1) ? 1 : g].promo_over; }
 uint32_t interp_sched_frames()   { return s_sched_frames; }
+uint32_t interp_sp_seq_drops()   { return s_sp_seq_drops; }
+uint32_t interp_sp_no_hand()     { return s_sp_no_hand; }
+uint32_t interp_sp_no_sched()    { return s_sp_no_sched; }
 uint32_t interp_sched_demoted()  { return s_sched_demoted; }
 uint32_t interp_sched_expired()  { return s_sched_expired; }
 uint32_t interp_sched_stops()    { return s_sched_stops; }

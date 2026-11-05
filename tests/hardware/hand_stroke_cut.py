@@ -13,7 +13,7 @@ firmware twin ``tools/probes/teensy_link_profiling/hermite_xref/teensy_interp.py
 ``leg_interp.cpp`` line for line and is pinned against the firmware header by
 ``tests/firmware/``. What this module adds is only the SEQUENCING of the hand
 group after its last frame (``_sched_advance``): the frame's span 1, its span 2,
-then at cover end + HAND_C1_STOP_GRACE_US (6 ms) the FW 37 decision on the
+then at cover end + HAND_C1_STOP_GRACE_US (14 ms at FW 39; 6 ms at FW 37) the FW 37 decision on the
 CONTINUED velocity: above HAND_C1_STOP_MIN_UP_VEL_RPS (50 rev/s, strict) the C1
 stop from that state, otherwise the rest of the 20 ms grace and the C2 stop.
 """

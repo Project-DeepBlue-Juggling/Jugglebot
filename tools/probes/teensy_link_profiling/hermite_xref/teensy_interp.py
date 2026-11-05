@@ -141,7 +141,7 @@ STREAM_STOP_LEG_JERK_RPS3 = 25000.0
 STREAM_STOP_HAND_ACCEL_RPS2 = 4500.0
 STREAM_STOP_HAND_JERK_RPS3 = 350000.0
 HAND_C1_STOP_MIN_UP_VEL_RPS = 50.0             # FW 37 hand C1 stop (JB-145), canbridge_config.h
-HAND_C1_STOP_GRACE_US = 6000                   # FW 37 short grace on the fast upstroke
+HAND_C1_STOP_GRACE_US = 14000                  # FW 39 (was 6000 at FW 37) short grace on the fast upstroke
 HAND_C1_DECIDE_US = SCHED_COVER_US + HAND_C1_STOP_GRACE_US
 HAND_C1_S = 1.0 + HAND_C1_STOP_GRACE_US * 1e-6 / SEGMENT_T_S
 # FW 22 hand acceleration torque feedforward (U2b) — canbridge_config.h / trajectory_op.stream_hand_*
