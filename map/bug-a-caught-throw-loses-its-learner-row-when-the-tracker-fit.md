@@ -1,7 +1,7 @@
 ---
 id: JB-176
 kind: bug
-title: A caught Throw loses its learner row when the Tracker fit has moved to the ball's next flight (+1 beat)
+title: A row holding its own fit logs a false 'no evidence or row' refusal when the Tracker moves to the ball's next flight
 status: complete
 created: '2026-11-05'
 updated: '2026-11-05T19:57:59Z'
@@ -36,5 +36,5 @@ Read from the 2026-11-05 22:46 bag and launch log: the hypothesis is half right,
 - Right: each refused fit is the same ball's next flight. Finalise falls 0.115-0.131 s after the next release.
 - Wrong: Throws 4, 5, 6 and 8 did get rows (`memory row appended` is logged 2-29 ms before each refusal line). Only Throw 3 lost its row.
 - So the line "no evidence or row from it" is false on those four: the row already held its own fit.
-- Throw 3 lost its row because the Tracker never confirmed its flight, which is now JB-181.
+- Throw 3's row loss has a different cause, tracked as JB-181 (a hypothesis there).
 - The fix here is only the misleading line and the inflated `n_rejected`. The identity gate is correct and stays as it is.

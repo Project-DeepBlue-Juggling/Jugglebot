@@ -5135,8 +5135,8 @@ class SkillExecutor:
         ``memory.APEX_RATIO_BAND`` at finalise.
 
         The row is one-way in the sense that matters: once it has a landing
-        it never loses one, and after the crossing it never gains a different
-        one — so the verdict window :meth:`_outcome_window` derives from it
+        it never loses one, and after this ball's next release it never gains
+        a different one — so the verdict window :meth:`_outcome_window` derives from it
         stops moving at the landing instead of following the ball into its
         next flight.
         """

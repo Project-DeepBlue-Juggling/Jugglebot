@@ -27,3 +27,5 @@ tags:
 **Not this.** Throw 3's missing row has a different cause (no fit of its own, the Tracker never confirmed its flight): JB-181.
 
 **Verification.** 2026-11-06. The new `test_a_row_with_its_own_fit_logs_no_refusal_for_the_next_flights_fit` failed with the executor hunk temporarily reverted (copy saved, two lines sed-edited back, `pytest -q tests/motion/test_skills_executor.py -k "own_fit or no_fit_still"`: 1 failed, 1 passed) and passes with it restored. Scoped run: `pytest -q tests/motion/test_skills_executor.py tests/motion/test_skills_report.py tests/sim/test_logbook_front_matter.py tests/sim/test_docs_links.py tests/sim/test_glossary_avoid_words.py`, **327 passed in 9.29 s** (scoped run, not the full gate).
+
+The once-per-throw key is restored, not removed, so `_advance_release_evidence` could in principle log its own line for that throw. It resolves within the grace after the release, well before the next flight's fit, so no such line is expected.
