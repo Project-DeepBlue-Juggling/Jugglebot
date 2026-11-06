@@ -2,9 +2,9 @@
 id: JB-179
 kind: ticket
 title: 'JB-167: publish on change saves at most 100 ms because the STOP arrives in a 10 Hz heartbeat: wait for FW 40, build it anyway, add a firmware edge heartbeat, shorten END to hold, or leave it?'
-status: open
+status: complete
 created: '2026-11-06'
-updated: '2026-11-05T19:54:35Z'
+updated: '2026-11-06T12:01:39Z'
 owners: []
 priority: medium
 effort: xs
@@ -36,3 +36,7 @@ Recommendation: 1, then 4 and 3 if the STOPs survive FW 40.
 - 2 or 4: a night unit. 2 gets a Sitting row.
 - 3: your Session.
 - 5: JB-167 parks.
+
+## Answer
+
+FW 40 is built now. Check how this Item fits into the current architecture.
