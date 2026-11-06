@@ -8051,6 +8051,38 @@ def test_fault_just_after_the_verdict_rewrites_the_code_once(sites):
     assert d.x._fault_settle_until_s is None   # the settle is spent
 
 
+@pytest.mark.parametrize('dispatched_first', [False, True])
+def test_fault_relabel_cancels_a_waiting_decay_but_never_adds_an_install(
+        sites, dispatched_first):
+    """JB-175 x I-PLAN-9: a provisional MISSED_CATCH with the closing decay
+    pending. (a) A fault seen while the decay still WAITS re-labels the end
+    and `_advance_closing` cancels the decay. (b) A decay already dispatched
+    during the provisional end stays installed (nothing recalls a REST); the
+    re-label adds no further install. White-box: the provisional end is set
+    on a refused-CATCH fixture (the decay machinery is the same)."""
+    state = {'obs': _obs()}
+    sch, inst, x, t_end = _end_at_the_catch(
+        sites, observations=lambda t: state['obs'])
+    x.end_code = ex.MISSED_CATCH
+    x._fault_settle_until_s = t_end + 1e6
+    decay = sch.skills[2]
+    if dispatched_first:
+        x.tick(decay.dispatch_s())
+        assert len(inst.calls) == 3 and inst.calls[2][0] == sg.REST
+    else:
+        x.tick(decay.dispatch_s() - 0.5)
+        assert len(inst.calls) == 2 and x.closing_due_s() is not None
+    n = len(inst.calls)
+    state['obs'] = _obs(machine_fault=True)
+    x.tick(decay.dispatch_s() + 0.1)
+    assert x.end_code == ex.ABORTED_FAULT
+    cancelled = any('DECAY-ON-END cancelled' in t for _s, t in x.notices)
+    assert cancelled is (not dispatched_first)
+    x.tick(decay.dispatch_s() + 1.0)
+    assert len(inst.calls) == n
+    assert x.closing_due_s() is None
+
+
 def test_missed_catch_stands_when_the_fault_lands_after_the_settle(sites):
     d = _FaultDriver(sites)
     d.fault_at = d.t_decide + getattr(ex, 'MISSED_CATCH_FAULT_SETTLE_S', 0.4) + 0.1
