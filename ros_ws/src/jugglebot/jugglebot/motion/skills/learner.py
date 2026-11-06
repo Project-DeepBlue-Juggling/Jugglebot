@@ -1,452 +1,333 @@
-"""``motion/skills/learner`` -- the memory-based command learner (plan § 2.5).
+"""``motion/skills/learner`` -- the Learner: global plant model + residual memory + evidence cap
+(plan ``plans/active/learner-generalisation.md`` §§ 2.2-2.4; L1, L2, L3).
 
-Given a target landing ``y_d``, the current state ``x`` and a memory of past
-(``x``, ``u``, ``y``) rows, :func:`command` returns the next commanded
-``u`` -- a local, kernel-weighted affine correction of the identity prior
-``u = y_d`` (paper arXiv:2608.26800v2, eq. 17, S18/S19, 21). This module is
-the closed form only: it does not bound the command (that is the
-executor's job -- until 2026-11-06 an offline Admissible box bounded the
-EXPECTED landing, :func:`predict` of the sent command, via
-:func:`local_model`; since then the per-Throw online check, I-ADMIT-1,
-does) and it does not touch a memory's storage (that
-is ``memory.Memory``).
+Given a target landing ``y_d`` and a :class:`ThrowContext` (the physics of the Throw about to be
+commanded), :meth:`Learner.command` returns the command ``u``::
 
-Centring (paper eq. S18, verbatim, confirmed by the R3 hyperparameter probe
--- the plan text alone does not state it): ``delta_x_i = x_i - x`` is about
-the QUERY state, never a weighted mean; ``delta_u_i = u_i - u_bar`` is about
-the kernel-weighted mean command of step 2. The paper's ``Theta_0 = [0, I,
-u_bar]`` comes from the identity prior ``f0(x, u) = u`` (``df0/dx = 0``,
-``df0/du = I``, ``f0(x, u_bar) = u_bar``); this module shifts that prior by
-the neighbourhood's mean residual, ``Theta_0 = [0, I, u_bar + r_bar]``
-(2026-10-12, :func:`_local_fit`). A cold memory still returns the identity
-prior exactly -- the shift exists only where support rows exist.
+    model command   u_m = f0^-1(y_d)                                  (plant_model.PlantModel)
+    residual        r_hat = sum w_i (y_i - f0(u_i)) / sum w_i         (L2, over the k most recent
+                    w_i = exp(-d_i^2),                                 support rows with the SAME
+                    d^2 = |dp|^2/h_p^2 + |dv|^2/h_v^2 (+ ddwell^2/h_d^2)   ball_id and release_kind)
+    trust           alpha = sum w / (sum w + w0)
+    command         u = f0^-1(y_d - alpha r_hat), then |u - u_m| <= c_max (1 - exp(-sum w / w0))
+                    per lateral axis and in apex                       (L3, the cap about the MODEL)
 
-Units: SI throughout (metres, seconds) -- ``gamma`` is unit-dependent (it
-competes with ``sum_i v_i * (u_i - u_bar)^2`` in m^2 in the ridge), so a
-caller must never rescale ``x``/``u``/``y`` without re-tuning ``gamma``/``eta``.
+``dp`` is over the release Site xy and release height (:func:`_kernel_pos`: the release position
+net of the catch offset), ``dv`` over the planned release velocity (xyz) of the
+MODEL command (the caller computes it from f0^-1(y_d) with ``ballistics_bc.launch_velocity``;
+the Learner's own answer would be circular). Support = rows with ``d^2 <= support_d2`` (9, the
+old law's gate). Empty memory -> exactly ``y_d`` (the reported model is the identity, plan T-R2);
+empty support -> exactly the model command.
 
-**The forward model never sees a sample chosen by its own outcome** (A2,
-2026-10-04). Invariant: which rows enter the local fit, and the weight each
-carries IN THE FIT, must not depend on how close the row's observed outcome
-``y_i`` came to the target ``y_d`` -- except through a gross gate far outside
-the plant's scatter. Enforcement point: :func:`_neighbourhood` (selection)
-and :func:`_local_fit` (fit weights). Pinned by ``test_learner.py``'s
-real-memory and frozen-learner tests.
+The old local-linear law (anchor, ridge fit of (C, D, d), damped step) is DELETED (owner decision
+D1): after f0 the u -> y map is the identity plus a residual, so the fixed-Jacobian step is the
+whole law. The old law survives frozen for the replay probe only, in
+``tools/probes/learner_replay_old_law.py``.
 
-Why, by mechanism. The fit's intercept ``d`` is the model's belief of where
-the plant lands from ``u_bar``; the step is ``y_d - d``. The paper's law
-(eq. 17) takes the k NEAREST rows in the joint (state, OUTCOME) metric and
-weights the fit by the same kernel. Once more than k rows share a state --
-159 self-tosses at P1 by 2026-10-02 -- "the k nearest" are the k rows whose
-balls happened to land closest to the target: an order statistic of the
-NOISE (landing sd ~23 mm against a command spread of ~1.4 mm). Their mean
-landing is ``y_d`` by construction, so ``d ~= y_d``, the step vanishes and
-the command freezes at whatever ``u_bar`` the history left it. Replayed on
-the real memory: ``d_y = -1.0`` mm against a plant that lands ~+10 mm beyond
-its command, step +0.9 mm, command ``u_y = +4.1`` mm -- the wrong sign; R4's
-smaller memory (fewer than k rows per state, so no truncation) gave -5.4 mm.
-The slope ``D`` was NOT the cause: with u nearly constant the data's
-information on it is ~3e-5 against gamma = 1e-2, so ``D`` is the identity
-prior to 1 % either way. The soft kernel is the same defect class in a
-milder form: weighting the fit by ``exp(-|y_i - y_d|^2/h_y^2)`` drags ``d``
-toward ``y_d`` by ~30 % at this scatter, and further on a 16-row sample.
+The constants come from the P1 replay probe (``tools/probes/learner_replay.py``, 2026-11-06,
+3276-row corpus; ``temp/probes/learner_replay/SUMMARY.md``): the L2 surface is flat (969-1003 mm^2
+summed MSE over 243 settings), best k = 8, h_v = 0.15, w0 = 4, h_p anywhere in 0.02-0.10, the
+dwell term irrelevant (k and w0 nonetheless take the plan's start values 16 and 2: the predictor
+optimum is within noise, and the closed loop needs the trust; see ``LearnerConfig.k``); L2's proposed apex corrections have p99 12.9 mm and max 18.0 mm in command
+space, so an apex c_max of 20 mm covers them.
 
-The law as implemented (plan § 2.5, steps 1 and 3 changed; 2 and 4 as the
-paper):
+Rows enter the residual memory only if the plant model ACCEPTED them (its inlier rule): the
+probe's pools are the accepted rows; a 300 mm outlier must not steer r_hat for k throws.
 
-1. Support: rows with the paper's joint ``d2_i <= support_d2`` (3 bandwidths).
-   Neighbourhood: the ``k`` MOST RECENT support rows (row order = append
-   order). Time is independent of a throw's noise, so this sample is not
-   selected on the outcome. Fewer than ``k_min`` support rows -> the
-   identity prior, exactly as for a cold memory.
-2. Anchor ``u_bar``: kernel mean of the neighbourhood's commands with the
-   paper's joint weights ``w_i = exp(-d2_i)`` -- the inverse lookup "commands
-   whose throws landed near the target". The outcome may choose WHERE the
-   step starts from; that is what keeps a near-deterministic plant converging
-   in a handful of throws.
-3. Forward fit ``(C, D, d)``: eq. S19 with STATE-only weights
-   ``v_i = exp(-|x_i - x|^2/h_x^2)`` -- the outcome never decides what the
-   plant is believed to do at ``u_bar``.
-4. Unchanged (eq. 21).
+Queries (:meth:`model_command`, :meth:`command`, :meth:`predict`, :meth:`local_model`,
+:meth:`evidence`) are READ-ONLY: the executor's early command calls them on a tick that must not
+change state. Only :meth:`observe` changes state.
 
-Failure modes of this law, enumerated:
+Errors: any non-finite input raises ``ValueError`` naming it (a ThrowContext's ``dwell_s`` may be
+NaN, meaning unknown: it then contributes nothing to ``d^2``); nothing else escapes.
 
-* **Window lag.** A plant change is absorbed over ~k throws at its state,
-  not instantly; the old law did not absorb one at all once frozen.
-* **Window noise.** ``d`` is a k-row mean: command jitter ~ s / (sqrt(k) *
-  (1 + eta)), ~4-5 mm at s = 23 mm, k = 16 (synthetic loop, 8 seeds) --
-  ~0.4 mm added to a 23 mm landing sd, against an unbounded frozen bias.
-* **Outliers inside the gate** (closer than 3 h_y = 150 mm lateral / 0.3 m
-  apex) carry full fit weight: one row moves ``d`` by up to ~150/k mm for k
-  throws. The apex band, the quarantine convention, the lateral authority
-  clip and the online check (I-ADMIT-1: the EXPECTED landing laterally,
-  the command for the apex -- executor; until 2026-11-06 the offline
-  Admissible box did this) bound what reaches the platform.
-* **Gate asymmetry.** The gate is centred on ``y_d``, so a plant biased by
-  ~3 bandwidths loses its tail rows on one side. That is the cold-start
-  regime in which the old kernel's weights (< e^-9 each against gamma)
-  already collapsed onto the prior (R3 probe finding 1); unchanged.
-* **Order dependence.** The window follows row order: a caller must pass
-  rows oldest-first (``Memory`` does: append-only file, read in order).
-* **Wasted slots.** Support rows at a different state (low ``v``) still
-  occupy the window; a small effective sample leans the fit on the prior,
-  the conservative direction.
-* **Mixed operating points inside the gate** (e.g. apex targets < 0.3 m
-  apart) share one affine fit; the joint-weighted anchor separates them and
-  ``D`` is identified exactly when their commands are spread apart (the
-  identity prior otherwise). Residual: the plant's non-affinity across them.
-* **Thin state support inside the gate** (support rows present, but all at
-  a different state, so ``sum v`` falls toward ``gamma``): the ridge pulls
-  the fit onto its prior. Until 2026-10-12 that prior was "apex = command",
-  ~75 mm wrong for this plant, and the command walked UP toward ``y_d``
-  (sitting 7b rows 465/467, sum v 0.03/0.02: u_apex 0.891/0.901 against a
-  supported 0.865-0.882; the second ball's catch was refused LIMIT_JERK).
-  Closed twice: the seat-offset half of ``x`` no longer partitions the
-  memory (``LearnerConfig.h_seat``), and the prior carries the window's
-  mean residual (:func:`_local_fit`), so thin support degrades to "what
-  this site's rows say the plant does". Replayed on the real memory: the
-  two rows return 0.874; well-supported rows move <= 1.9 mm in apex from
-  the prior shift alone.
-* **No row near the query** now returns the identity prior instead of
-  raising on an underflowed weight sum (the gate guarantees every weight is
-  >= e^-support_d2). A non-finite result still raises by name.
-
-Pure Python + numpy. No ROS2 imports (the ``motion/`` rule).
+Pure Python + numpy. No ROS2 imports (the ``motion/`` rule). ``memory.py`` is not imported: an
+Experience is duck-typed on its v2 field names.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import math
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 
-__all__ = ['LearnerConfig', 'command', 'predict']
+from jugglebot.motion.skills.plant_model import PlantModel, _ball_id, _finite_vec
+
+__all__ = ['RELEASE_KINDS', 'SUPPORT_D2', 'ThrowContext', 'LearnerConfig', 'Learner']
+
+#: The categorical release kinds; L2 requires an exact match (plan § 2.3).
+RELEASE_KINDS = ('free_cup', 'carried')
+#: Support gate on the kernel distance d^2 (the old law's ``support_d2``: 3 bandwidths).
+SUPPORT_D2 = 9.0
+
+
+@dataclasses.dataclass(frozen=True)
+class ThrowContext:
+    """The physics of one Throw, as the Learner keys its memory on. SI units.
+
+    ``site_xy_m`` is the RELEASE Site's cup xy (its x is f0's ``site_x``); ``release_m`` where the
+    ball leaves; ``release_vel_mps`` the planned release velocity of the MODEL command;
+    ``dwell_s`` (NaN = unknown); ``seat_offset_m`` is the catch offset (kept for the row).
+
+    The kernel measures position on the release SITE's xy and the release height
+    (:func:`_kernel_pos`), i.e. the release position net of the catch offset: a same-Site fold
+    releases where the ball was caught (Site + offset), a carried fold and a launch Throw at
+    the Site exactly. The offset is the Catch aim, which follows the tracker's in-flight
+    estimate; a command that moved with it would (a) partition the memory by where each ball
+    happened to land, the failure the old law closed on 2026-10-12 with its 1 m ``h_seat``
+    (sitting 7b), and (b) change between the early admissibility check and the dispatch
+    (measured 2026-11-06 on the 3276-row corpus with the offset IN the kernel: a 10 mm aim
+    shift moved the command by more than the 1 mm early-command tolerance on 29 % of
+    queries). Construction validates every field (``ValueError`` by name); arrays are tuples."""
+
+    site_xy_m: Tuple[float, float]
+    release_m: Tuple[float, float, float]
+    release_vel_mps: Tuple[float, float, float]
+    dwell_s: float
+    ball_id: int
+    release_kind: str
+    seat_offset_m: Tuple[float, float] = (0.0, 0.0)
+
+    def __post_init__(self) -> None:
+        for name, n in (('site_xy_m', 2), ('release_m', 3), ('release_vel_mps', 3),
+                        ('seat_offset_m', 2)):
+            object.__setattr__(self, name, tuple(float(v) for v in
+                                                 _finite_vec(getattr(self, name), n, name)))
+        object.__setattr__(self, 'dwell_s', _dwell(self.dwell_s))
+        object.__setattr__(self, 'ball_id', _ball_id(self.ball_id))
+        object.__setattr__(self, 'release_kind', _kind(self.release_kind))
+
+
+def _dwell(value) -> float:
+    try:
+        v = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('dwell_s must be a number or NaN, got %r (%s)' % (value, exc))
+    if math.isinf(v):
+        raise ValueError('dwell_s must be finite or NaN (unknown), got %r' % (v,))
+    return v
+
+
+def _kind(value) -> str:
+    if not isinstance(value, str) or value not in RELEASE_KINDS:
+        raise ValueError('release_kind must be one of %r, got %r' % (RELEASE_KINDS, value))
+    return value
 
 
 @dataclasses.dataclass(frozen=True)
 class LearnerConfig:
-    """Hyperparameters pinned by the R3 probe (owner decision, 2026-09-13;
-    ``probe_learner.py``, logbook slug
-    ``2026-09-13-skill-stack-r3-learner-single-site``). SI units.
-    """
+    """Constants of L2 and L3. Origin: the P1 replay probe (``tools/probes/learner_replay.py``,
+    2026-11-06, 3276-row corpus, 243-setting sweep) unless stated. SI units."""
 
-    #: Neighbours considered (probe stage-1/2 sweep over hard-case scatter+bias):
-    #: the k MOST RECENT support rows since 2026-10-04 (module docstring).
+    #: Most recent support rows used. The plan's start value (§ 2.3), NOT the probe's k = 8: the
+    #: probe scored each law as a PREDICTOR on rows flown under the old law, where the (k, w0)
+    #: surface is flat within noise (969-1003 mm^2 over 243 settings), so its k = 8 / w0 = 4 optimum
+    #: could not see the closed loop. In the loop a persistent offset f0 does not carry is
+    #: corrected only by alpha <= k / (k + w0), leaving (1 - alpha) of it for ever (k 8 / w0 4: a
+    #: third; measured 2026-11-06 in the P1 L1 synthetic loop). k 16 / w0 2: alpha up to 0.889,
+    #: still inside the flat part of the surface.
     k: int = 16
-    #: Below this many SUPPORT rows (``d2 <= support_d2``), return the
-    #: identity prior untouched.
-    k_min: int = 2
-    #: State kernel bandwidth (m) on the SITE half of ``x`` (``x[0:2]``).
-    #: Sites are >= 62.5 mm apart, so 10 mm keeps every site's rows separate
-    #: (the support gate's 3 bandwidths = 30 mm).
-    h_x: float = 0.01
-    #: State kernel bandwidth (m) on the SEAT-OFFSET half of ``x``
-    #: (``x[2:4]``, the carried release's xy off its site). INERT by design
-    #: (2026-10-12, U1): a row at the far corner of the lateral authority
-    #: from the query (2 x 20 mm per axis, 56.6 mm) keeps
-    #: ``exp(-(0.0566/1)^2) = 0.997`` of a matched row's weight (at the
-    #: 30 mm authority of 2026-11-02, JB-139: 84.9 mm, 0.993; still inert). Until then
-    #: the offset shared ``h_x`` and partitioned the memory into 10 mm cells;
-    #: a throw from a sparsely visited corner found support rows only at
-    #: ``v ~ e^-7`` and the fit fell to the identity prior (sitting 7b rows
-    #: 465/467: u_apex 0.891/0.901 against 0.865-0.882, the second's catch
-    #: refused LIMIT_JERK). The pre-registered test on the real memory found
-    #: no offset effect above noise on any channel (landing x/y, apex):
-    #: |t| <= 2.5 and <= 0.4 sd for a full 20 mm offset. The offset still
-    #: enters the fit's ``delta_x`` regressor, so a real slope remains
-    #: learnable -- across the whole site instead of per cell. If a later
-    #: measurement finds one, this is the knob to shrink, to the measured
-    #: scale.
-    h_seat: float = 1.0
-    #: Target kernel bandwidth (m, m, m) -- must stay >= the cold-start error
-    #: (probe finding 1) or the weights underflow before any correction lands.
-    #:
-    #: The third entry became an APEX bandwidth on 2026-09-18, when the
-    #: learner's third channel stopped being a flight time. 0.10 m is ~3x the
-    #: measured apex scatter at a fixed command (+-0.02-0.04 m, 2026-09-17),
-    #: so a neighbour is a throw aimed at a comparable height rather than any
-    #: throw at all: the retired 0.2 s was 1.5x the ENTIRE explored command
-    #: range (0.569-0.6996 s), which made every row a neighbour and the
-    #: "local" fit a global one over noise.
-    h_y: Tuple[float, float, float] = (0.05, 0.05, 0.10)
-    #: Ridge-toward-prior weight (paper eq. S19); unit-dependent, see module docstring.
-    gamma: float = 1e-2
-    #: Ridge-toward-mean weight on the command solve (paper eq. 21).
-    eta: float = 0.2
-    #: Support gate on the joint metric ``d2`` (dimensionless, 3 bandwidths).
-    #: A row beyond it carries < e^-9 = 1.2e-4 of a matched row's kernel
-    #: weight -- where the paper's kernel already stopped carrying the fit
-    #: against ``gamma`` (k * e^-9 = 2e-3 < 1e-2) -- and lands 6.5 measured
-    #: landing sd (23 mm, 2026-10-02) from the target laterally, so the gate
-    #: rejects other flights and other operating points without ranking rows
-    #: inside the noise (module docstring).
-    support_d2: float = 9.0
+    #: Release-position bandwidth [m] (probe: 0.02-0.10 within 0.03 mm of each other).
+    h_p: float = 0.05
+    #: Release-velocity bandwidth [m/s] (probe sweep best).
+    h_v: float = 0.15
+    #: Dwell bandwidth [s]; inf = the term is inert (probe: no effect on the corpus, which cannot
+    #: size it; the field stays so a later Sitting can).
+    h_d: float = math.inf
+    #: Trust pseudo-count: alpha = sum w / (sum w + w0); cap factor 1 - exp(-sum w / w0). The
+    #: plan's start value 2 (the probe's predictor optimum 4 is within noise of it; see ``k``: the
+    #: closed loop needs the trust). At full evidence the cap factor is 1 - e^-8 = 0.9997, so the
+    #: cap reaches c_max (at k 8 / w0 4 it topped out at 0.865 c_max).
+    w0: float = 2.0
+    #: Lateral cap about the model command [m] (the node passes ``learner_lateral_authority_mm``;
+    #: 30 mm is the owner's JB-139 value, newer than the plan's 40 mm start).
+    c_max_xy_m: float = 0.030
+    #: Apex cap about the model command [m] (probe: L2 apex corrections p99 12.9, max 18.0 mm).
+    c_max_apex_m: float = 0.020
+    #: Support gate on d^2 (the old law's gate value).
+    support_d2: float = SUPPORT_D2
 
-    def __post_init__(self):
-        if not (isinstance(self.k, int) and isinstance(self.k_min, int)):
-            raise ValueError('k and k_min must be ints, got k=%r k_min=%r'
-                              % (self.k, self.k_min))
-        if not (self.k_min >= 1 and self.k >= self.k_min):
-            raise ValueError('must have k >= k_min >= 1, got k=%r k_min=%r'
-                              % (self.k, self.k_min))
-        if not (math.isfinite(self.h_x) and self.h_x > 0.0):
-            raise ValueError('h_x must be finite and > 0, got %r' % (self.h_x,))
-        if not (math.isfinite(self.h_seat) and self.h_seat > 0.0):
-            raise ValueError('h_seat must be finite and > 0, got %r'
-                              % (self.h_seat,))
-        h_y = tuple(float(v) for v in self.h_y)
-        if len(h_y) != 3 or not all(math.isfinite(v) and v > 0.0 for v in h_y):
-            raise ValueError('h_y must be a 3-tuple of finite positive floats, '
-                              'got %r' % (self.h_y,))
-        object.__setattr__(self, 'h_y', h_y)
-        if not (math.isfinite(self.gamma) and self.gamma > 0.0):
-            raise ValueError('gamma must be finite and > 0, got %r' % (self.gamma,))
-        if not (math.isfinite(self.eta) and self.eta > 0.0):
-            raise ValueError('eta must be finite and > 0, got %r' % (self.eta,))
-        if not (math.isfinite(self.support_d2) and self.support_d2 > 0.0):
-            raise ValueError('support_d2 must be finite and > 0, got %r'
-                              % (self.support_d2,))
+    def __post_init__(self) -> None:
+        if not isinstance(self.k, int) or isinstance(self.k, bool) or self.k < 1:
+            raise ValueError('LearnerConfig.k must be an int >= 1, got %r' % (self.k,))
+        for name in ('h_p', 'h_v', 'w0', 'support_d2'):
+            v = getattr(self, name)
+            if not (isinstance(v, (int, float)) and math.isfinite(v) and v > 0):
+                raise ValueError('LearnerConfig.%s must be finite and > 0, got %r' % (name, v))
+        if not (isinstance(self.h_d, (int, float)) and not math.isnan(self.h_d) and self.h_d > 0):
+            raise ValueError('LearnerConfig.h_d must be > 0 (inf = inert), got %r' % (self.h_d,))
+        for name in ('c_max_xy_m', 'c_max_apex_m'):
+            v = getattr(self, name)
+            if not (isinstance(v, (int, float)) and math.isfinite(v) and v >= 0):
+                raise ValueError('LearnerConfig.%s must be finite and >= 0, got %r' % (name, v))
 
 
-def _vec(value, n: int, name: str) -> np.ndarray:
-    arr = np.asarray(value, dtype=float)
-    if arr.shape != (n,):
-        raise ValueError('%s must be a %d-vector, got shape %s'
-                          % (name, n, np.shape(value)))
-    if not np.all(np.isfinite(arr)):
-        raise ValueError('%s must be finite, got %r' % (name, arr.tolist()))
-    return arr
+def _kernel_pos(site_xy_m, release_m) -> np.ndarray:
+    """The position the residual kernel measures distance on: the release Site's xy and the
+    release height. See :class:`ThrowContext`."""
+    return np.array([float(site_xy_m[0]), float(site_xy_m[1]), float(release_m[2])])
 
 
-def _leading_matrix(value, n_cols: int, name: str) -> np.ndarray:
-    """Validate ``value`` as ``(n, n_cols)`` for any ``n >= 0`` and return it."""
-    arr = np.asarray(value, dtype=float)
-    if arr.ndim != 2 or arr.shape[1] != n_cols:
-        raise ValueError('%s must have shape (n, %d), got %s'
-                          % (name, n_cols, np.shape(value)))
-    return arr
+class _Rows(object):
+    """Append-only row arrays with amortised growth (rows held in observe order). ``rel`` is
+    the KERNEL position (:func:`_kernel_pos`), not the raw release position."""
+
+    def __init__(self) -> None:
+        self.n = 0
+        cap = 64
+        self.rel = np.zeros((cap, 3))
+        self.vel = np.zeros((cap, 3))
+        self.dwell = np.zeros(cap)
+        self.u = np.zeros((cap, 3))
+        self.y = np.zeros((cap, 3))
+        self.site_x = np.zeros(cap)
+        self.ball = np.zeros(cap, dtype=int)
+        self.kind = np.zeros(cap, dtype=int)
+        self.accepted = np.zeros(cap, dtype=bool)
+
+    def append(self, rel, vel, dwell, u, y, site_x, ball, kind, accepted) -> None:
+        if self.n == len(self.dwell):
+            for name in ('rel', 'vel', 'dwell', 'u', 'y', 'site_x', 'ball', 'kind', 'accepted'):
+                a = getattr(self, name)
+                b = np.zeros((2 * a.shape[0],) + a.shape[1:], dtype=a.dtype)
+                b[:a.shape[0]] = a
+                setattr(self, name, b)
+        i = self.n
+        self.rel[i], self.vel[i], self.dwell[i] = rel, vel, dwell
+        self.u[i], self.y[i], self.site_x[i] = u, y, site_x
+        self.ball[i], self.kind[i], self.accepted[i] = ball, kind, accepted
+        self.n += 1
 
 
-def _matrix(value, n_rows: int, n_cols: int, name: str) -> np.ndarray:
-    arr = np.asarray(value, dtype=float)
-    if arr.ndim != 2 or arr.shape[0] != n_rows or arr.shape[1] != n_cols:
-        raise ValueError('%s must have shape (%d, %d), got %s'
-                          % (name, n_rows, n_cols, np.shape(value)))
-    return arr
+class Learner(object):
+    """The Learner (L1 + L2 + L3). ``model`` is the plant model it owns and updates."""
 
+    #: Lets the executor tell this context API (``command(ctx, y_d)``) from the old
+    #: ``command(x, y_d)`` duck-typed test fakes.
+    takes_context = True
 
-def _state_d2(X, x, cfg: LearnerConfig) -> np.ndarray:
-    """Each row's squared STATE distance from the query, in bandwidths:
-    ``h_x`` on the site half, ``h_seat`` on the seat-offset half. The one
-    definition both the support gate and the fit's state kernel use."""
-    h = np.array([cfg.h_x, cfg.h_x, cfg.h_seat, cfg.h_seat])
-    return (((X - x) / h) ** 2).sum(axis=1)
+    def __init__(self, model: Optional[PlantModel] = None,
+                 config: Optional[LearnerConfig] = None) -> None:
+        self.model = PlantModel() if model is None else model
+        if not isinstance(self.model, PlantModel):
+            raise ValueError('model must be a PlantModel, got %r' % (self.model,))
+        self.config = LearnerConfig() if config is None else config
+        if not isinstance(self.config, LearnerConfig):
+            raise ValueError('config must be a LearnerConfig, got %r' % (self.config,))
+        self._rows = _Rows()
 
+    @property
+    def n_rows(self) -> int:
+        """Rows observed (accepted by the plant model or not)."""
+        return self._rows.n
 
-def _neighbourhood(x, y_d, X, Y, cfg: LearnerConfig):
-    """``(idx, d2)``: the neighbourhood rows (oldest-first indices into
-    ``X``/``Y``, at most ``cfg.k``) and every row's joint ``d2``.
+    # ------------------------------------------------------------------ state change
+    def observe(self, exp) -> bool:
+        """Learn from one v2 ``Experience`` (duck-typed: ``site_xy_m``, ``release_m``,
+        ``release_vel_mps``, ``dwell_s``, ``u``, ``y``, ``ball_id``, ``release_kind``). Updates
+        the plant model and appends the row. Returns whether the plant model accepted it (only
+        accepted rows enter the residual memory). Validates everything before changing state."""
+        try:
+            site = _finite_vec(exp.site_xy_m, 2, 'site_xy_m')
+            rel = _finite_vec(exp.release_m, 3, 'release_m')
+            vel = _finite_vec(exp.release_vel_mps, 3, 'release_vel_mps')
+            dwell = _dwell(exp.dwell_s)
+            u = _finite_vec(exp.u, 3, 'u')
+            y = _finite_vec(exp.y, 3, 'y')
+            ball = _ball_id(exp.ball_id)
+            kind = RELEASE_KINDS.index(_kind(exp.release_kind))
+        except AttributeError as exc:
+            raise ValueError('the experience lacks a v2 field: %s' % (exc,))
+        accepted = self.model.observe(u, y, site[0], ball)
+        self._rows.append(_kernel_pos(site, rel), vel, dwell, u, y, site[0], ball, kind, accepted)
+        return accepted
 
-    THE enforcement point of "never select on the outcome": ``y_i`` enters
-    only through the ``d2 <= support_d2`` gate, never through a rank. The
-    window is the most recent ``k`` support rows (row order = append order).
-    """
-    h_y = np.asarray(cfg.h_y, dtype=float)
-    d2 = _state_d2(X, x, cfg) + (((Y - y_d) / h_y) ** 2).sum(axis=1)
-    support = np.flatnonzero(d2 <= cfg.support_d2)
-    return support[-cfg.k:], d2
+    # ------------------------------------------------------------------ read-only queries
+    def _ctx(self, ctx) -> ThrowContext:
+        if not isinstance(ctx, ThrowContext):
+            raise ValueError('ctx must be a ThrowContext, got %r' % (type(ctx).__name__,))
+        return ctx
 
+    def _residual(self, ctx: ThrowContext) -> Tuple[np.ndarray, float, int]:
+        """(alpha r_hat (3,), sum w, rows used) at ``ctx``; zeros when the support is empty."""
+        cfg = self.config
+        R = self._rows
+        n = R.n
+        if n == 0:
+            return np.zeros(3), 0.0, 0
+        kind = RELEASE_KINDS.index(ctx.release_kind)
+        pool = np.flatnonzero(R.accepted[:n] & (R.ball[:n] == ctx.ball_id) & (R.kind[:n] == kind))
+        if pool.size == 0:
+            return np.zeros(3), 0.0, 0
+        dp = R.rel[pool] - _kernel_pos(ctx.site_xy_m, ctx.release_m)
+        dv = R.vel[pool] - np.asarray(ctx.release_vel_mps)
+        d2 = (dp * dp).sum(1) / cfg.h_p ** 2 + (dv * dv).sum(1) / cfg.h_v ** 2
+        if math.isfinite(cfg.h_d) and math.isfinite(ctx.dwell_s):
+            dd = R.dwell[pool] - ctx.dwell_s
+            d2 = d2 + np.where(np.isfinite(dd), dd * dd, 0.0) / cfg.h_d ** 2
+        idx = np.flatnonzero(d2 <= cfg.support_d2)[-cfg.k:]    # the k most RECENT support rows
+        if idx.size == 0:
+            return np.zeros(3), 0.0, 0
+        sup = pool[idx]
+        w = np.exp(-d2[idx])
+        th = self.model.theta()
+        # residual against the CURRENT reported f0 (the probe's th_q), vectorised forward map
+        r = R.y[sup] - self.model.forward_rows(R.u[sup], R.site_x[sup], ctx.ball_id)
+        sw = float(w.sum())
+        r_hat = (w[:, None] * r).sum(0) / sw
+        corr = (sw / (sw + cfg.w0)) * r_hat
+        if not (np.all(np.isfinite(corr)) and math.isfinite(sw)):
+            raise ValueError('the learner residual is not finite (%r) over %d rows; theta %r'
+                             % (corr.tolist(), sup.size, th.tolist()))
+        return corr, sw, int(sup.size)
 
-def _local_fit(x, Xs, Us, Ys, d2s, cfg: LearnerConfig):
-    """``(u_bar, Theta)`` over the neighbourhood rows (plan § 2.5 steps 2-3).
+    def evidence(self, ctx: ThrowContext) -> Tuple[float, int]:
+        """(sum of kernel weights, rows used) at ``ctx``; (0.0, 0) at empty support."""
+        _, sw, n = self._residual(self._ctx(ctx))
+        return sw, n
 
-    ``u_bar`` is the paper's joint-kernel mean of the commands (eq. 17), the
-    anchor of the step. ``Theta = [C, D, d]`` (3, 8) is eq. S19 weighted by
-    the STATE kernel only, so the intercept ``d`` -- where the plant is
-    believed to land from ``u_bar`` -- is not dragged toward ``y_d`` by
-    rows chosen for having landed there (module docstring).
+    def model_command(self, ctx: ThrowContext, y_d) -> np.ndarray:
+        """f0^-1(y_d): the command the plant model alone gives (exactly ``y_d`` when empty)."""
+        ctx = self._ctx(ctx)
+        return self.model.inverse(y_d, ctx.site_xy_m[0], ctx.ball_id)
 
-    The ridge prior ``Theta0`` is the identity SHIFTED by the neighbourhood's
-    mean residual ``r_bar = mean(y_i - u_i)``: ``f0(x, u) = u + r_bar``, so
-    ``d0 = u_bar + r_bar`` (2026-10-12, U1). Where the state kernel carries
-    the fit (``sum v >> gamma``) the prior is invisible; where it does not --
-    support rows that are all at a different state -- the fit falls back to
-    what those rows say the plant does, not to "apex = command", which this
-    plant misses by ~75 mm. ``r_bar`` is UNWEIGHTED over the window, so the
-    outcome never weights it (the A2 invariant: the window itself is chosen
-    by recency inside the gate).
-    """
-    kk = Xs.shape[0]
-    w = np.exp(-d2s)
-    sw = w.sum()
-    u_bar = (w[:, None] * Us).sum(axis=0) / sw if sw > 0.0 else None
-    if u_bar is None or not np.all(np.isfinite(u_bar)):  # step 2 (eq. 17)
-        raise ValueError(
-            'the learner command is not finite (neighbourhood weight sum %r, '
-            'u_bar %r over %d rows)'
-            % (float(sw), None if u_bar is None else u_bar.tolist(), kk))
+    def command(self, ctx: ThrowContext, y_d) -> np.ndarray:
+        """The Learner's command (3,) [m]: the model command corrected by the residual memory,
+        capped about the model command by the evidence (L3)."""
+        ctx = self._ctx(ctx)
+        y_d = _finite_vec(y_d, 3, 'y_d')
+        u_m = self.model.inverse(y_d, ctx.site_xy_m[0], ctx.ball_id)
+        corr, sw, n = self._residual(ctx)
+        if n == 0:
+            return u_m
+        u = self.model.inverse(y_d - corr, ctx.site_xy_m[0], ctx.ball_id)
+        f = 1.0 - math.exp(-sw / self.config.w0)
+        lim = np.array([self.config.c_max_xy_m, self.config.c_max_xy_m, self.config.c_max_apex_m]) * f
+        u = u_m + np.clip(u - u_m, -lim, lim)
+        if not np.all(np.isfinite(u)):
+            raise ValueError('the learner command is not finite (%r)' % (u.tolist(),))
+        return u
 
-    v = np.exp(-_state_d2(Xs, x, cfg))                  # state kernel only
-    delta_x = Xs - x                                    # about the QUERY state (eq. S18)
-    delta_u = Us - u_bar                                # about the weighted mean
-    Z = np.vstack([delta_x.T, delta_u.T, np.ones((1, kk))])   # (8, kk)
-    r_bar = (Ys - Us).mean(axis=0)                      # the residual prior (docstring)
-    Theta0 = np.hstack([np.zeros((3, 4)), np.eye(3), (u_bar + r_bar)[:, None]])  # (3, 8)
-    A = (Z * v) @ Z.T + cfg.gamma * np.eye(8)            # Z V Z^T + gamma I -- SPD, gamma > 0
-    B = (Ys.T * v) @ Z.T + cfg.gamma * Theta0            # Y V Z^T + gamma Theta0
-    Theta = np.linalg.solve(A, B.T).T                    # step 3 (eq. S19)
-    return u_bar, Theta
+    def predict(self, ctx: ThrowContext, u, y_d=None) -> np.ndarray:
+        """Expected landing (3,) [m] of command ``u`` at ``ctx``: f0(u) + alpha r_hat (uncapped;
+        what the Catch aim prior uses). ``y_d`` is accepted for the executor's call shape and
+        unused (the query physics is the context's)."""
+        ctx = self._ctx(ctx)
+        y = self.model.forward(u, ctx.site_xy_m[0], ctx.ball_id) + self._residual(ctx)[0]
+        if not np.all(np.isfinite(y)):
+            raise ValueError('the learner prediction is not finite (%r)' % (y.tolist(),))
+        return y
 
-
-def command(x, y_d, X, U, Y, cfg: LearnerConfig = None) -> np.ndarray:
-    """The next commanded ``u`` (3,) -- plan § 2.5 steps 1-4 as amended in the
-    module docstring (step 5, bounding the
-    command, is the caller's job -- the online check, I-ADMIT-1; until
-    2026-11-06 an offline Admissible box did it, on the EXPECTED landing
-    laterally via :func:`local_model` and on the apex command).
-
-    ``x`` (4,) is the query state (site xy, seat-offset xy); ``y_d`` (3,) the
-    target (landing xy, apex); ``X``/``U``/``Y`` are ``(n, 4)``/``(n, 3)``/
-    ``(n, 3)`` memory rows, OLDEST-FIRST: the neighbourhood is the most
-    recent ``cfg.k`` rows inside the support gate, so row order is part of
-    the input. Fewer than ``cfg.k_min`` rows in the memory, or inside the
-    gate, returns a COPY of ``y_d`` exactly -- the identity prior; the caller
-    may mutate the result freely.
-
-    Determinism: a pure function of its arguments (no RNG, no clock).
-
-    Raises ``ValueError`` when the command is not finite (e.g. a non-finite
-    memory row inside the gate). There is no fallback: a command that cannot
-    be computed refuses the skill by name rather than reaching a terminal as
-    NaN.
-    """
-    if cfg is None:
-        cfg = LearnerConfig()
-    x = _vec(x, 4, 'x')
-    y_d = _vec(y_d, 3, 'y_d')
-    X = _leading_matrix(X, 4, 'X')
-    n = X.shape[0]
-    U = _matrix(U, n, 3, 'U')
-    Y = _matrix(Y, n, 3, 'Y')
-
-    if n < cfg.k_min:
-        return y_d.copy()
-    idx, d2 = _neighbourhood(x, y_d, X, Y, cfg)          # step 1
-    if idx.size < cfg.k_min:
-        return y_d.copy()
-    u_bar, Theta = _local_fit(x, X[idx], U[idx], Y[idx], d2[idx], cfg)
-
-    D = Theta[:, 4:7]
-    d = Theta[:, 7]
-    u_star = u_bar + np.linalg.solve(                    # step 4 (eq. 21)
-        D.T @ D + cfg.eta * np.eye(3), D.T @ (y_d - d))
-    if not np.all(np.isfinite(u_star)):
-        raise ValueError('the learner command is not finite (%r) over %d '
-                         'neighbourhood rows' % (u_star.tolist(), idx.size))
-    return u_star
-
-
-def predict(x, u, X, U, Y, cfg: LearnerConfig = None, y_d=None) -> np.ndarray:
-    """The FORWARD model: where the plant is expected to land ``y_hat`` (3,)
-    -- landing xy offset, apex; SI, the same shape as a ``Y`` row -- when
-    commanded ``u`` from state ``x`` (2026-10-13, wave 2 unit A: the catch
-    prior is this, not ``y_d``, because the command that reaches the platform
-    is bounded by the lateral authority and the online check (until
-    2026-11-06 the offline Admissible box, which bounded THIS prediction
-    laterally, so the two agreed) --
-    and the ball lands where the plant takes THAT command, not at the
-    target).
-
-    Anchor choice. The fit is the SAME local affine fit ``(C, D, d)`` that
-    :func:`command` builds (:func:`_neighbourhood` + :func:`_local_fit`),
-    centred on the same query: state ``x`` and, for the support gate, the
-    target ``y_d`` the command was solving for. So the prediction is the
-    forward half of exactly the model that produced the throw's command:
-    ``y_hat = d + D (u - u_bar)`` (the ``C delta_x`` term is zero at the
-    query state). A caller that passes the throw's own ``y_d`` gets that
-    fit modulo rows appended since the command was computed. ``y_d=None``
-    centres the gate on ``u`` itself ("assume it lands where commanded" --
-    the gate is 3 bandwidths, 150 mm laterally, so the two choices select
-    the same rows unless the plant is biased by more than ~100 mm).
-
-    The A2 invariant holds unchanged: the neighbourhood and the fit weights
-    are :func:`command`'s, so no row is chosen or weighted by how close its
-    outcome came to anything.
-
-    Thin support (fewer than ``cfg.k_min`` rows in the memory or inside the
-    gate) returns a COPY of ``u`` -- the identity prior, "the plant does what
-    it is told" -- and never raises for it. A non-finite ``x``/``u``/``y_d``
-    or a non-finite fit still raises ``ValueError`` by name (the caller
-    decides its fallback; the executor falls back to ``y_d``).
-
-    Determinism: a pure function of its arguments.
-    """
-    if cfg is None:
-        cfg = LearnerConfig()
-    x = _vec(x, 4, 'x')
-    u = _vec(u, 3, 'u')
-    y_q = u if y_d is None else _vec(y_d, 3, 'y_d')
-    X = _leading_matrix(X, 4, 'X')
-    n = X.shape[0]
-    U = _matrix(U, n, 3, 'U')
-    Y = _matrix(Y, n, 3, 'Y')
-
-    if n < cfg.k_min:
-        return u.copy()
-    idx, d2 = _neighbourhood(x, y_q, X, Y, cfg)
-    if idx.size < cfg.k_min:
-        return u.copy()
-    u_bar, Theta = _local_fit(x, X[idx], U[idx], Y[idx], d2[idx], cfg)
-    D = Theta[:, 4:7]
-    d = Theta[:, 7]
-    y_hat = d + D @ (u - u_bar)
-    if not np.all(np.isfinite(y_hat)):
-        raise ValueError('the learner prediction is not finite (%r) over %d '
-                         'neighbourhood rows' % (y_hat.tolist(), idx.size))
-    return y_hat
-
-
-def local_model(x, y_d, X, U, Y, cfg: LearnerConfig = None):
-    """The local affine model ``(u_bar, D, d)`` that :func:`command` and
-    :func:`predict` both use at query ``(x, y_d)`` -- or ``None`` on thin
-    support (fewer than ``cfg.k_min`` rows in the memory or inside the gate,
-    where both of those return the identity prior).
-
-    ``y_hat(u) = d + D (u - u_bar)`` is exactly :func:`predict` ``(x, u,
-    ..., y_d=y_d)``; ``D`` (3, 3) is ``Theta[:, 4:7]``, ``d`` (3,) is
-    ``Theta[:, 7]``. Exposed (2026-10-13, wave 3 unit H) so the executor can
-    bound the EXPECTED landing (until 2026-11-06 by the offline Admissible
-    box: it clipped ``y_hat`` into the box and pulled the command back
-    through the EXACT inverse of the lateral block of ``D`` -- not
-    :func:`command`'s ``eta``-damped step, which by construction never
-    reached the box edge). Same neighbourhood and fit
-    weights as :func:`command` (:func:`_neighbourhood`, :func:`_local_fit`),
-    so the A2 invariant holds unchanged.
-
-    Returns copies the caller may mutate. Raises ``ValueError`` on a
-    non-finite input or fit (as :func:`command` does). Determinism: a pure
-    function of its arguments.
-    """
-    if cfg is None:
-        cfg = LearnerConfig()
-    x = _vec(x, 4, 'x')
-    y_d = _vec(y_d, 3, 'y_d')
-    X = _leading_matrix(X, 4, 'X')
-    n = X.shape[0]
-    U = _matrix(U, n, 3, 'U')
-    Y = _matrix(Y, n, 3, 'Y')
-
-    if n < cfg.k_min:
-        return None
-    idx, d2 = _neighbourhood(x, y_d, X, Y, cfg)
-    if idx.size < cfg.k_min:
-        return None
-    u_bar, Theta = _local_fit(x, X[idx], U[idx], Y[idx], d2[idx], cfg)
-    D = Theta[:, 4:7].copy()
-    d = Theta[:, 7].copy()
-    if not (np.all(np.isfinite(D)) and np.all(np.isfinite(d))):
-        raise ValueError('the learner local model is not finite over %d '
-                         'neighbourhood rows' % (idx.size,))
-    return np.asarray(u_bar, dtype=float).copy(), D, d
+    def local_model(self, ctx: ThrowContext, y_d):
+        """The affine forward map ``(u_bar, D, d)`` with ``predict(ctx, u) == d + D (u - u_bar)``:
+        u_bar = the model command, D = diag(1, 1, K), d = f0(u_bar) + alpha r_hat. Never None."""
+        ctx = self._ctx(ctx)
+        u_bar = self.model.inverse(y_d, ctx.site_xy_m[0], ctx.ball_id)
+        K = float(self.model.theta()[0])
+        D = np.diag([1.0, 1.0, K])
+        d = self.model.forward(u_bar, ctx.site_xy_m[0], ctx.ball_id) + self._residual(ctx)[0]
+        if not np.all(np.isfinite(d)):
+            raise ValueError('the learner local model is not finite (%r)' % (d.tolist(),))
+        return u_bar, D, d

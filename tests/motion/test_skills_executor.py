@@ -1954,8 +1954,13 @@ def test_outcome_y_is_exact_and_rows_land_in_schedule_order(sites):
     assert np.allclose(exp0.y[:2], want_xy0)
     assert exp0.y[2] == pytest.approx(want_apex0)
     assert exp0.caught is True
-    assert np.allclose(exp0.x, [p1.cup_mm[0] / 1000.0, p1.cup_mm[1] / 1000.0,
-                                0.0, 0.0])
+    # schema v2 (P1, 2026-11-06): the release Site and a zero seat offset,
+    # a plain THROW from rest is a free cup released at its Site
+    assert np.allclose(exp0.site_xy_m, [p1.cup_mm[0] / 1000.0,
+                                        p1.cup_mm[1] / 1000.0])
+    assert np.allclose(exp0.seat_offset_m, [0.0, 0.0])
+    assert np.allclose(exp0.release_m, p1.throw_site_mm() / 1000.0)
+    assert exp0.release_kind == 'free_cup'
     assert np.allclose(exp0.u, [0.0, 0.0, APEX_M])         # no learner: identity
 
 
@@ -5102,9 +5107,10 @@ def test_the_learner_state_carries_the_release_offset_of_a_carried_throw():
     static ``u -> y`` map could not represent, and ~23 % of every offset came
     back as an opposite-sign landing error (the offset is flown back as
     lateral velocity; an 11 % fast launch over an 11 % longer flight delivers
-    ~1.23x of it). The learner's local affine fit has a ``delta_x`` slope term
-    for exactly this (``learner`` step 3, ``Z = [delta_x; delta_u; 1]``); the
-    offset half's kernel bandwidth is ``LearnerConfig.h_seat`` (2026-10-12)."""
+    ~1.23x of it). Until 2026-11-06 the old Learner's local affine fit had a
+    ``delta_x`` slope term for exactly this and a 1 m kernel bandwidth on the
+    offset half (2026-10-12); the P1 Learner keys its kernel on the release
+    Site instead and the offset is closed by the fly-back."""
     sched, x, _rows = _offset_dispatch((0.0, 20.0, 0.0))
     site = sched.skills[1].site
     throw_idx = 1
@@ -6558,6 +6564,7 @@ def test_the_row_finalises_one_decide_lag_after_its_close_with_a_history(sites):
 
 from jugglebot.motion.skills import learner as lr  # noqa: E402
 from jugglebot.motion.skills import memory as mem  # noqa: E402
+from jugglebot.motion.skills import plant_model as pm  # noqa: E402
 
 
 class _PredictingLearner(_FakeLearner):
@@ -6603,34 +6610,52 @@ def _run_catch(sch, **kwargs):
 
 def test_a_pinned_learner_memory_aims_the_catch_at_the_predicted_landing(
         sites, tmp_path):
-    """(a) A REAL memory whose P2 rows were all commanded at the -4 mm pin
-    and landed +20 mm beyond it (toward the target's inward side). The
-    learner wants ~-17 mm, the 4 mm authority pins the sent command at -4,
-    and the dispatch prior is the predicted +16 mm -- not y_d."""
+    """(a) A REAL memory whose P2 rows were all commanded at -4 mm and
+    landed +16 mm (toward the target's inward side), replayed through a real
+    P1 ``Learner`` whose lateral cap is 4 mm: the Learner wants ~-18 mm, more than
+    the cap, the sent command sits AT the cap about the model command, and
+    the dispatch prior is the Learner's predicted landing of that command --
+    not y_d. (Ported 2026-11-06 from the old memory-delegate law; the
+    numbers now come from the Learner itself.)"""
     p1, p2 = sites
-    m = mem.Memory(str(tmp_path / 'plant' / 'memory.csv'))
-    x_p2 = np.array([p2.cup_mm[0] / 1000.0, p2.cup_mm[1] / 1000.0, 0.0, 0.0])
-    for i in range(16):
-        m.append(mem.Experience(
-            x=x_p2, u=np.array([-0.004, 0.0, APEX_M]),
-            y=np.array([0.016, 0.0, APEX_M]), t_abs_s=1e9 + i, ball_id=0,
-            caught=True))
-    cfg = lr.LearnerConfig()
-    learner = SimpleNamespace(
-        command=lambda x, y_d: m.command(x, y_d, cfg),
-        predict=lambda x, u, y_d: m.predict(x, u, cfg, y_d=y_d))
     sch = _cross_schedule(sites)
+    probe = ex.SkillExecutor(sch, _FakeInstaller())
+    c0, _um = probe._throw_context(sch.skills[0], p2, p2.throw_site_mm(), p1,
+                                   sch.skills[0].y_d, (0.0, 0.0))
+    m = mem.Memory(str(tmp_path / 'plant' / 'memory_v2.csv'))
+    # A plant model held at its identity prior (prior sd ~0 on the offsets):
+    # the +20 mm is then a residual only the memory sees, as the old law's
+    # was, so the 4 mm cap binds.
+    learner = lr.Learner(
+        model=pm.PlantModel(pm.PlantModelConfig(prior_sd_b_m=1e-6,
+                                                prior_sd_s_per_m=1e-6)),
+        config=lr.LearnerConfig(c_max_xy_m=0.004))
+    for i in range(16):
+        e = mem.Experience(
+            site_xy_m=c0.site_xy_m, release_m=c0.release_m,
+            release_vel_mps=c0.release_vel_mps, dwell_s=c0.dwell_s,
+            seat_offset_m=(0.0, 0.0), u=np.array([-0.004, 0.0, APEX_M]),
+            y=np.array([0.016, 0.0, APEX_M]), t_abs_s=1e9 + i, ball_id=0,
+            release_kind='free_cup', caught=True)
+        m.append(e)
+        learner.observe(e)
     terminal, lines, x = _run_catch(sch, learner=learner,
                                     lateral_authority_m=0.004,
                                     catch_inward_authority_m=0.035)
-    # the throw command really was pinned at -4 mm
-    _x, u_dy, _apex = x._u_cache[0]
-    assert u_dy[0] == pytest.approx(-0.004)
+    # the throw command really was pinned at the 4 mm cap (about the model
+    # command; at 16 rows the evidence factor is 1 - e^-8)
+    _x, u_dy, u_apex = x._u_cache[0]
+    ctx = x._ctx_cache[0]
+    um = learner.model_command(ctx, np.array([0.0, 0.0, APEX_M]))
+    assert u_dy[0] - um[0] == pytest.approx(-0.004, abs=1e-5)
+    y_hat = learner.predict(x._latest_ctx(0, ctx),
+                            np.array([u_dy[0], u_dy[1], u_apex]))
+    assert y_hat[0] > 0.005                       # not the y_d prior
     assert np.allclose(terminal.landing_mm[:2],
-                       p1.catch_site_mm()[:2] + np.array([16.0, 0.0]),
+                       p1.catch_site_mm()[:2] + 1000.0 * y_hat[:2],
                        atol=0.5)
     assert terminal.t_land_s == pytest.approx(
-        float(sch.skills[0].t_abs_s) + sc.flight_s(APEX_M), abs=1e-3)
+        float(sch.skills[0].t_abs_s) + sc.flight_s(float(y_hat[2])), abs=1e-6)
     assert any('source=schedule:learned' in ln for ln in lines)
 
 

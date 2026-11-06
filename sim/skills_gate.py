@@ -128,6 +128,7 @@ from jugglebot.motion.skills import admissible as adm              # noqa: E402
 from jugglebot.motion.skills import bump as bmp                    # noqa: E402
 from jugglebot.motion.skills import learner as lr                  # noqa: E402
 from jugglebot.motion.skills import memory as mem                  # noqa: E402
+from jugglebot.motion.skills import plant_model as pm             # noqa: E402
 from jugglebot.motion.skills import schedule as sk                 # noqa: E402
 from jugglebot.motion.skills import sites                          # noqa: E402
 from jugglebot.motion.skills import executor as ex                 # noqa: E402
@@ -937,32 +938,33 @@ def _plant_landing_bias_release(bias_mm):
     return _release
 
 
-class _MemoryLearner:
-    """Adapts ``memory.Memory`` to the ``learner`` duck-type ``SkillExecutor``
-    wants (``command(x, y_d) -> u``, no ``cfg`` argument) by binding one
-    ``learner.LearnerConfig`` for the run — the R3 hyperparameters are fixed
-    per gate run, not re-supplied per throw."""
+#: Policy A's cold-start floor: single-throw attempts until the memory holds
+#: this many rows (the old law's ``LearnerConfig.k_min`` default, 2; the P1
+#: Learner has no such floor, so the gate keeps its own -- the policy and
+#: every pass criterion are unchanged by the P1 Learner, 2026-11-06).
+POLICY_A_MIN_ROWS = 2
 
-    def __init__(self, memory_obj: mem.Memory, cfg: lr.LearnerConfig):
-        self._memory = memory_obj
-        self._cfg = cfg
 
-    def command(self, x, y_d):
-        return self._memory.command(x, y_d, self._cfg)
+def _make_learner(memory_obj: mem.Memory, cfg: lr.LearnerConfig) -> lr.Learner:
+    """The P1 Learner exactly as ``skill_node._make_learner`` builds it: a
+    fresh ``PlantModel`` + ``Learner(cfg)`` with ``memory_obj``'s rows replayed
+    through ``observe`` in file order. Built per attempt from the seed's
+    memory, so an attempt's Learner holds every row the seed has written
+    (each attempt's ``on_experience`` appends AND observes, :func:`_on_row`)."""
+    learner = lr.Learner(pm.PlantModel(), cfg)
+    for exp in memory_obj.rows():
+        learner.observe(exp)
+    return learner
 
-    def predict(self, x, u, y_d=None):
-        # 2026-10-13 (wave 2 unit A): the executor's catch prior is the
-        # learner's EXPECTED landing for the command it actually sent
-        # (``executor._learned_prior_landing``); without this the sim gate
-        # would keep aiming its catches at ``y_d`` and stop mirroring the
-        # live path. Same positional shape skill_node binds: (x, u, y_d).
-        return self._memory.predict(x, u, self._cfg, y_d=y_d)
 
-    def local_model(self, x, y_d):
-        # The sim gate's learner exposes the same local fit skill_node binds
-        # (the executor's online check plans its stand-in at the predicted
-        # landing, ``executor._forward_model_xy``).
-        return self._memory.local_model(x, y_d, self._cfg)
+def _on_row(memory_obj: mem.Memory, learner: lr.Learner, throws_out: list):
+    """``on_experience`` for one attempt: append to the memory first (a row
+    it refuses raises, as before), then the Learner observes it."""
+    def _cb(exp):
+        memory_obj.append(exp)
+        learner.observe(exp)
+        throws_out.append(exp)
+    return _cb
 
 
 def _make_observer(plant):
@@ -1892,7 +1894,7 @@ class SkillsGate:
                                     on_release=identity.announce)
         observer = _make_observer(plant)
         observations = _make_observations(observer)
-        learner = _MemoryLearner(memory, learner_cfg)
+        learner = _make_learner(memory, learner_cfg)
         executor = ex.SkillExecutor(
             sched, installer, tracker=identity.tracker,
             **_bump_kwargs(sched, ictx, self.limits, geom),
@@ -1901,8 +1903,7 @@ class SkillsGate:
             **_online_kwargs(self.cfg, ictx, self.seg_cfg, self.limits, geom),
             planner_mode=self.seg_cfg.planner_mode,
             carry_zvd=bool(self.seg_cfg.carry_zvd),
-            observer=observer, on_experience=lambda exp: (
-                memory.append(exp), throws_out.append(exp)),
+            observer=observer, on_experience=_on_row(memory, learner, throws_out),
             observations=observations,
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
 
@@ -1929,7 +1930,7 @@ class SkillsGate:
         -- self-toss's single site is unchanged, a hop alternates P1/P2).
 
         Policy **A**: single-throw attempts (``n_throws=1``, THROW -> CATCH ->
-        REST) until the memory holds ``learner_cfg.k_min`` rows, then chained.
+        REST) until the memory holds :data:`POLICY_A_MIN_ROWS` rows, then chained.
         Policy **B**: chained from the very first throw.  Both retain the
         memory across every reset -- only the plant and the executor are cold
         each attempt.  Unchanged by ``pattern``: the memory's ``x`` carries
@@ -1945,7 +1946,7 @@ class SkillsGate:
         pattern_sites = _sites_for(cfg)
         noise = JuggleNoise(cfg.noise, seed=seed)
         tmp_dir = tempfile.mkdtemp(prefix='skills_gate_learn_seed%d_' % seed)
-        memory = mem.Memory(os.path.join(tmp_dir, 'memory.csv'))
+        memory = mem.Memory(os.path.join(tmp_dir, 'memory_v2.csv'))
         assert len(memory) == 0, 'a fresh tmp path must be a cold memory'
 
         throws: list = []
@@ -1962,7 +1963,7 @@ class SkillsGate:
 
         while len(throws) < cfg.target_throws and attempts < cfg.max_attempts:
             remaining = cfg.target_throws - len(throws)
-            if policy == 'A' and len(memory) < cfg.learner_cfg.k_min:
+            if policy == 'A' and len(memory) < POLICY_A_MIN_ROWS:
                 n_throws = 1
             else:
                 n_throws = max(1, remaining)
@@ -2073,7 +2074,7 @@ class SkillsGate:
         toward site 1 (A's site), not site 0 itself. The vertical
         (non-FEED) spawn above is NOT swapped -- A still rests at site 0,
         B still feeds site 1, exactly as before the FEED option existed.
-        The learner (:class:`_MemoryLearner`)
+        The learner (:func:`_make_learner`)
         replaces the identity prior; there is NO checker on this run:
         the learner's authority-clipped command reaches the planner as is
         (``executor._command_u``, no-checker path), so a genuinely bad command
@@ -2330,7 +2331,7 @@ class SkillsGate:
         ictx = _InstallCtx(rest0)
         installer = _make_installer(ictx, self.seg_cfg, self.limits, geom,
                                     on_release=on_release)
-        learner = _MemoryLearner(memory, learner_cfg)
+        learner = _make_learner(memory, learner_cfg)
         # ``_make_observer`` takes ``ball_id`` as an argument (unlike
         # ``_make_observations``, which hardcodes ball 0) -- it is already
         # correct for columns' two simultaneous balls without change. This
@@ -2347,8 +2348,7 @@ class SkillsGate:
             learner=learner, resend_max_per_catch=0,
             **_online_kwargs(self.cfg, ictx, self.seg_cfg, self.limits, geom),
             observer=observer,
-            on_experience=lambda exp: (
-                memory.append(exp), throws_out.append(exp)),
+            on_experience=_on_row(memory, learner, throws_out),
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
 
         # A generous, bounded timeout -- the real exit is ``executor.done``
@@ -2372,7 +2372,7 @@ class SkillsGate:
         first throw (there is no policy-A single-throw stage here: a
         columns schedule needs ball B already in flight from the first
         instant, so there is no "cold, one throw" shape to gate on
-        ``learner_cfg.k_min`` the way a single-ball self-toss has).
+        :data:`POLICY_A_MIN_ROWS` the way a single-ball self-toss has).
 
         Each attempt's schedule carries the columns Stop (owner decision D2)
         as its LAST throw, which produces no experience row (see
@@ -2395,7 +2395,7 @@ class SkillsGate:
         noise = JuggleNoise(cfg.noise, seed=seed)
         tmp_dir = tempfile.mkdtemp(
             prefix='skills_gate_columns_learn_seed%d_' % seed)
-        memory = mem.Memory(os.path.join(tmp_dir, 'memory.csv'))
+        memory = mem.Memory(os.path.join(tmp_dir, 'memory_v2.csv'))
         assert len(memory) == 0, 'a fresh tmp path must be a cold memory'
 
         throws: list = []
@@ -2556,7 +2556,7 @@ class SkillsGate:
         noise = JuggleNoise(cfg.noise, seed=seed)
         tmp_dir = tempfile.mkdtemp(
             prefix='skills_gate_columns1ballfed_seed%d_' % seed)
-        memory = mem.Memory(os.path.join(tmp_dir, 'memory.csv'))
+        memory = mem.Memory(os.path.join(tmp_dir, 'memory_v2.csv'))
         assert len(memory) == 0, 'a fresh tmp path must be a cold memory'
 
         throws: list = []
@@ -2844,7 +2844,7 @@ class SkillsGate:
         ictx = _InstallCtx(rest0)
         installer = _make_installer(ictx, self.seg_cfg, self.limits, geom,
                                     on_release=on_release)
-        learner = _MemoryLearner(memory, learner_cfg)
+        learner = _make_learner(memory, learner_cfg)
         observer = _make_observer(plant)
         executor = ex.SkillExecutor(
             sched, installer, tracker=identity.tracker,
@@ -2853,8 +2853,7 @@ class SkillsGate:
             learner=learner, resend_max_per_catch=0,
             **_online_kwargs(self.cfg, ictx, self.seg_cfg, self.limits, geom),
             observer=observer,
-            on_experience=lambda exp: (
-                memory.append(exp), throws_out.append(exp)),
+            on_experience=_on_row(memory, learner, throws_out),
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
 
         # A generous, bounded timeout -- the real exit is `executor.done`
@@ -2898,7 +2897,7 @@ class SkillsGate:
         noise = JuggleNoise(cfg.noise, seed=seed)
         tmp_dir = tempfile.mkdtemp(
             prefix='skills_gate_columns1ball_seed%d_' % seed)
-        memory = mem.Memory(os.path.join(tmp_dir, 'memory.csv'))
+        memory = mem.Memory(os.path.join(tmp_dir, 'memory_v2.csv'))
         assert len(memory) == 0, 'a fresh tmp path must be a cold memory'
 
         throws: list = []
@@ -3602,7 +3601,7 @@ def main(argv=None) -> int:
                    help='--nominate only: skip the nearest-viable search')
     p.add_argument('--policy', choices=('A', 'B'), default='A',
                    help='--learn only: A = single-throw attempts until '
-                        'k_min rows then chained (the gated policy); B = '
+                        'POLICY_A_MIN_ROWS (2) rows then chained (the gated policy); B = '
                         'chained from the first throw (reported alongside)')
     p.add_argument('--reload', action='store_true',
                    help='run the R4 reload gate (Unit U3, brief step 5): a '

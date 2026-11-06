@@ -17,7 +17,7 @@ steps:
   - {id: P3a, title: Command-time admissibility check, kind: phase, status: in_progress, effort: m, hardware: none}
   - {id: P3b, title: Nomination-time check and the nearest viable configuration, kind: phase, status: in_progress, effort: m, hardware: none}
   - {id: P3c, title: Box retirement, kind: phase, status: complete, effort: s, hardware: none}
-  - {id: P1, title: Learner core, kind: phase, status: not_started, effort: m, hardware: none}
+  - {id: P1, title: Learner core, kind: phase, status: complete, effort: m, hardware: none}
   - {id: P2, title: The characterisation sitting, kind: phase, status: not_started, effort: m, hardware: robot}
   - {id: P4, title: BeatEvent stream and the columns wrapper, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: P5, title: Close-out, kind: phase, status: not_started, effort: s, hardware: none}
@@ -27,7 +27,7 @@ related_logbook:
 related_config:
   - config/generated/admissible_box.yaml (RETIRED 2026-11-06 at P3c, with gate_hash and the dwell-in-key)
 related_code:
-  - ros_ws/src/jugglebot/jugglebot/motion/skills/{learner,memory,admissible,schedule,executor}.py (learner::command, memory::Memory, admissible::margin/resolve_command (the box API AdmissibleBox/select/check_limits/gate_hash was retired at P3c), nominate::nominate, schedule::compile_columns, executor::SkillExecutor._command_u)
+  - ros_ws/src/jugglebot/jugglebot/motion/skills/{learner,memory,admissible,schedule,executor}.py (learner::Learner + plant_model::PlantModel, memory::Memory (schema v2), admissible::margin/resolve_command (the box API AdmissibleBox/select/check_limits/gate_hash was retired at P3c), nominate::nominate, schedule::compile_columns, executor::SkillExecutor._command_u)
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/feasibility.py::validate_cycle
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/throw_envelope.py::evaluate
   - ros_ws/src/jugglebot/jugglebot/skill_node.py, sim/skills_gate.py, tools/probes/planner_cells.py (the cells of the retired tools/admissible_sweep.py), temp/learn/jugglebot/memory.csv
@@ -185,61 +185,70 @@ Unchanged: install-time planner and `validate_cycle` (also on re-sends), splice/
 `skills/check` ladder and frame check, the Teensy `MAX_DEVIATION` guard, rest-terminal segments. All
 new code is pure Python under `motion/skills/`, no new dependency.
 
-### 2.2 L1 — global plant model f₀ (new `motion/skills/plant_model.py`)
+### 2.2 L1 — global plant model f₀ (`motion/skills/plant_model.py`; AS BUILT 2026-11-06)
 
-Parameters θ (≤ 8, SI): K (apex gain, = 1.085; the speed gain k_v = √K = 1.042 is derived); b = (b_x,
-b_y) lateral offset [m]; s (centre-pull slope per m of release-site x, applied to axis 0 ONLY until
-P2(b) says it is radial); Δ_b per-ball lateral offset [m] (ball 0 the reference, Δ₀ ≡ 0).
-
-```
-forward:  ŷ_apex = K · u_apex                  ŷ_xy = u_xy + b + (s · x_site, 0) + Δ_ball
-inverse:  u_apex = y_d,apex / K                u_xy = y_d,xy − b − (s · x_site, 0) − Δ_ball
-```
-
-Fit: recursive least squares with forgetting λ (start 0.995 per throw ≈ a 200-throw memory; a P1
-probe output), one update per observed row, every row regardless of site or pattern. Initialised
-from the corpus fit K = 1.085, b = (+9.9, +15.0) mm, s ≈ −0.06 per m, Δ₁ ≈ (+16, +16) mm, fit date
-recorded. A parameter whose RLS covariance exceeds a threshold falls back to its prior (K → 1, b → 0,
-s → 0, Δ_unseen-ball → 0): the identity prior survives for anything never seen. θ is global because
-these belong to the hand, tracker and ball, not the site: cold-start error at a new site falls from
-the full plant bias (apex ~73 mm, lateral ~15–20 mm) to the model residual (apex ~10 mm, lateral ≈
-shot noise).
-
-### 2.3 L2 — residual memory keyed on physics (`learner.py` rewrite; `memory.py` schema v2)
-
-Row: (x, u, y, t, ball_id, release_kind). x = (release position xyz [m]; planned release velocity
-[m/s] from the planned release knot, (0, 0, v_z) vertical, (v_x, 0, v_z) for an oval; dwell [s]).
-Categorical, exact match required: ball_id, release_kind ∈ {free_cup, carried}. Over the k most
-recent rows inside support:
+Parameters θ (SI): K (apex gain); b = (b_x, b_y) lateral offset [m]; s (centre-pull slope per m of
+release-Site x, axis 0 ONLY until P2(b) says it is radial); Δ_b per-ball lateral offset (built, switched
+OFF: the corpus cannot separate ball from Site, P2(c) does).
 
 ```
-w_i  = exp(−d_i²),   d² = ‖Δp‖²/h_p² + ‖Δv‖²/h_v² + Δdwell²/h_d²
+forward:  ŷ_apex = K · u_apex                  ŷ_xy = u_xy + b + (s · x_site, 0) [+ Δ_ball]
+inverse:  u_apex = y_d,apex / K                u_xy = y_d,xy − b − (s · x_site, 0) [− Δ_ball]
+```
+
+Fit: recursive least squares, one update per accepted row, every row regardless of Site or Pattern. θ is
+a function of the ROWS ONLY: the recursion starts at the identity (K 1 ± 0.10, b 0 ± 30 mm, s 0 ± 0.30/m)
+and is replayed over the memory at load; nothing else is persisted. K and b forget at λ = 0.99; s never
+does (one factor on every parameter wound s up over single-Site stretches). A parameter reports its prior
+while its posterior sd exceeds half its prior sd, and the axis-0 offset is decided per query on the
+predictive sd of b_x + s·x, so an empty memory is exactly the identity and a Site far from the data gets
+no offset. Inlier rule, relative to the model: within 100 mm laterally of the prediction and apex ratio
+within max(9 % of K, 3 sd_K). On the 3276-row corpus K = 1.079–1.081 (per Sitting 1.070–1.095), b = (+5.9,
++1.4) mm, s = −0.074/m; cold-start apex error at a new Site falls from 74 mm to 13 mm (mean, Sites with any
+earlier row). The lateral offsets are NOT global (−2 to +18 mm by Site): L2 carries them. The 2026-10-18
+"initialise from the corpus fit" was dropped (it contradicts the identity at an empty memory). Record:
+`logbook/2026-11-06-learner-generalisation-p1-learner-core.md`.
+
+### 2.3 L2 — residual memory keyed on physics (`learner.py`, `memory.py` schema v2; AS BUILT 2026-11-06)
+
+Row (schema v2, `temp/learn/<plant>/memory_v2.csv`): release Site xy, release position xyz [m], planned
+release velocity of the MODEL command [m/s], dwell [s] (nan = unknown), seat offset, u, y, t, ball_id,
+release_kind ∈ {free_cup, carried}, caught, migrated. The Learner is asked through a `ThrowContext` carrying
+the same key. Exact match required on ball_id and release_kind. Over the k = 16 most recent matching rows
+inside support (d² ≤ 9):
+
+```
+w_i  = exp(−d_i²),   d² = ‖Δp‖²/h_p² + ‖Δv‖²/h_v²        (h_p 0.05 m, h_v 0.15 m/s; the dwell term is inert)
+                     p = (release Site xy, release height): the release position NET of the catch offset
 r̂(x) = Σ w_i (y_i − f₀(x_i, u_i)) / Σ w_i
-α    = Σ w_i / (Σ w_i + w₀)                 (trust; a decaying-gain analogue)
+α    = Σ w_i / (Σ w_i + w₀)                                (w₀ = 2)
 u    = f₀⁻¹( y_d − α · r̂(x) )
 ```
 
-Start h_p = 0.05 m, h_v = 0.3 m/s, h_d = 0.1 s, w₀ ≈ 2 (P1 probe outputs). After f₀ the u→y map is
-identity plus residual, so this IS the fixed-Jacobian step (D1): no 3×3 D fit, no ū anchor, no damped
-LM step. A non-finite quantity raises by name and refuses the skill (kept). Empty support →
-u = f₀⁻¹(y_d), never a stale remote command. In columns the layer is nearly silent (1–2 mm headroom);
-in the oval it carries what the carried release does that f₀ does not know. Columns ↔ oval sharing
-is by construction: one model, one memory, rows separated by release_kind and release velocity.
-Schema-v2 migration (`tools/migrate_memory_schema_v2.py`, run once, logged): v_z from apex plus
-release-to-catch rise (closed-form ballistics), v_x = 0, dwell from the sitting log, release_kind =
-free_cup, rows marked `migrated=1`.
+The catch offset is not in the kernel: it follows the tracker's in-flight estimate, and a command that
+moved with it partitioned the memory (the 2026-10-12 `h_seat` fix) and changed between the early
+admissibility check and the dispatch. After f₀ the u→y map is identity plus residual, so this IS the
+fixed-Jacobian step (D1). A non-finite
+quantity raises ValueError by name and refuses the skill. Empty support → u = f₀⁻¹(y_d). On the corpus the
+layer buys about a millimetre over f₀ alone (2.4 / 0.5 / 1.8 mm on the oval); it is what holds a per-Site
+lateral offset. k and w₀ are the 2026-10-18 start values, kept because the closed loop needs the trust (at
+the replay's flat optimum, 8 and 4, a third of a persistent offset is never corrected). A v1 `memory.csv`
+with no v2 file beside it refuses the goal with the migration command; `tools/migrate_memory_schema_v2.py`
+writes a NEW file (release velocity recomputed in closed form from the row's Site signature: the oval's T
+Site is `carried`, the hop's Sites cross, the rest vertical; dwell unknown; `migrated = 1`). The owner runs
+it once per plant at merge.
 
-### 2.4 L3 — evidence-scaled authority (replaces the fixed 20 mm clamp)
+### 2.4 L3 — evidence-scaled authority (replaces the fixed clamp; AS BUILT 2026-11-06)
 
 ```
 |u − f₀⁻¹(y_d)| ≤ cap(x) = c_max · (1 − exp(−Σ w_i / w₀))     (lateral and apex, each its own c_max)
 ```
 
-c_max is the widened authority of D3: start 40 mm lateral (the owner raises it, each change logged);
-the apex c_max is a P1 probe output. Zero evidence → the pure model; dense evidence → full c_max. The
-cap is RELATIVE TO THE MODEL, not y_d, so the 10–15 mm global offset no longer eats the authority and
-the censoring (20 % of inlier rows) disappears without raising c_max alone. Actuator safety is NOT this
-layer (D3): every u still passes L0, install-time `validate_cycle` and the Teensy guard.
+c_max is 30 mm laterally (the node's `learner_lateral_authority_mm`, the owner's JB-139 value) and 20 mm in
+apex (the residual's corrections on the corpus: p99 12.9 mm, max 18.0 mm). Zero evidence → the pure model.
+The cap is RELATIVE TO THE MODEL, not y_d: the share of rows pinned at the authority falls from 28.8 % (old
+clamp) to 0.5 %. The model command is also what the command-time check falls back toward (P3a). Actuator
+safety is NOT this layer (D3): every u still passes L0, install-time `validate_cycle` and the Teensy guard.
 
 ### 2.5 L0 — online admissibility (`admissible.py` rewrite; the sweep retires)
 
@@ -348,7 +357,7 @@ reproduces today's compiled columns schedule segment for segment.
 | P3a | Command-time admissibility check (three evaluations max, early start), `throw_envelope.evaluate` re-homed | IN PROGRESS (code complete 2026-11-06, held on branch `p3-online-admissibility`; merge and live rehearsal owed) | 2026-11-06 | High (safety content moves) | Loaded-Jetson p99 within slack; sim gate green with no box |
 | P3b | Nomination-time check and the nearest viable configuration | IN PROGRESS (code complete 2026-11-06, held on branch `p3-online-admissibility`; merge and live rehearsal owed) | 2026-11-06 | Medium (goal acceptance, GUI) | Every refusal at once; nearest viable named; moving-site Patterns checkable |
 | P3c | Box retirement per § 6.4 | COMPLETE (on branch `p3-online-admissibility`, held for the owner's merge) | 2026-11-06 | Low | Census counts to zero |
-| P1 | Learner core: `plant_model.py`, `learner.py`, `memory.py` v2 + migration, replay probe | NOT STARTED | | Medium (changes every commanded u) | Cold-start apex error < 15 mm at a held-out site |
+| P1 | Learner core: `plant_model.py`, `learner.py`, `memory.py` v2 + migration, replay probe | COMPLETE (on branch `p3-online-admissibility`, held for the owner's merge; the memory migration is run at merge) | 2026-11-06 | Medium (changes every commanded u) | Cold-start apex error 12.9 mm (gate < 15 mm) at Sites with earlier data |
 | P2 | Characterisation sitting (D6): θ structure, yaw frame, telemetry | NOT STARTED | | Medium (hardware) | Aim vs offset; radial vs x; frame; Δ_b |
 | P4 | BeatEvent stream, columns wrapper, next-beat rule, dwell out of node params | NOT STARTED | | High (schedule path, ~20 test files) | Golden test; sim mid-pattern change |
 | P5 | Close-out: columns ↔ oval shared memory on hardware, INVARIANTS rows, archive | NOT STARTED | | Low | No aliasing; invariants pinned |
@@ -445,22 +454,28 @@ runbook rows; the headroom report of D10 lives in `tools/probes/admissible_obvia
   is not installed), both in the logbook. Gate: second count zero per retired symbol; `--full` green;
   `docs/runbook.md` regenerated without the box rows. Depends: P3a, P3b.
 
-### Phase 1: Learner core — NOT STARTED
+### Phase 1: Learner core — COMPLETE
 
-New: `plant_model.py`, `tools/probes/learner_replay.py` (output under `temp/probes/`),
-`tools/migrate_memory_schema_v2.py`. Modified: `learner.py`, `memory.py` (v1 file refused by name),
-`executor.py::_command_u` (the clamp path becomes cap(x)), `sim/skills_gate.py` (`--learn`).
+New: `plant_model.py`, `tools/probes/learner_replay.py` (+ `learner_replay_old_law.py`, the frozen old law;
+`learner_replay_production.py`, the replay through the production classes),
+`tools/migrate_memory_schema_v2.py`. Rewritten: `learner.py`, `memory.py` (schema v2, `memory_v2.csv`; a v1
+file with no v2 file beside it refuses the goal by name). Modified: `executor.py` (`_throw_context`; the
+Learner's cap about the model command replaces the fixed clamp; the model command is what the command-time
+check falls back toward; v2 rows), `skill_node.py` (`_make_learner`), `sim/skills_gate.py` (`--learn`).
 
-- **Probe FIRST.** `learner_replay.py` replays the corpus chronologically through the old and new
-  law: first-throw error at each site's first appearance (cold start) and steady-state error. It
-  outputs λ, h_p, h_v, h_d, w₀ and the apex c_max with provenance.
-- Control walk: the new u enters the same slot as the old one (~0.12 s before the partner's release,
-  behind the same rest-terminal segment); a larger first-throw correction (apex ≈ 8 % from K) moves
-  the release speed, still gated by `validate_cycle` and the throw envelope; no feedforward path or
-  timing is touched.
-- Gate: cold-start apex error < 15 mm at a held-out site (today ~73 mm) and lateral no worse than
-  today; `sim/skills_gate.py --learn` still passes; `./run_tests.sh` green, `--full` before merge.
-  The oval's rung 1 may use the learner once P1 lands (D5). Depends: none (P3a-c land first per D7).
+**Outcome (2026-11-06, on branch `p3-online-admissibility`, held for the owner's merge).** The probe ran
+first and changed the law in six places, the audit in a seventh (§§ 2.2-2.4 are the as-built text; the reasons are in
+`logbook/2026-11-06-learner-generalisation-p1-learner-core.md`). Gate: cold-start apex error 12.9 mm
+against 74.5 mm for the identity prior, a mean over the 9 first Throws at Sites with any earlier row
+(2026-11-06, `OPENBLAS_NUM_THREADS=1 python tools/probes/learner_replay_production.py --csv
+temp/learn/jugglebot/memory.csv --limit 3276`: 3276 rows, 8.8 s); lateral cold start 28.0 against 33.1 mm
+RMS; steady state 19.8 / 19.5 / 13.9 mm RMS against the old law's 19.9 / 19.7 / 14.4; rows at the authority
+0.49 % against 28.8 %. `sim/skills_gate.py --no-viewer --learn --pattern {self_toss,hop,columns}` and the
+plain run: PASS, exit 0 (2026-11-06). Tests: 2026-11-06, `./run_tests.sh --full`: 8352 passed, 51
+skipped + 10 serial, RESULT PASS.
+Owed at merge: the migration run on each live memory (`python tools/migrate_memory_schema_v2.py --memory
+temp/learn/<plant>/memory.csv --out temp/learn/<plant>/memory_v2.csv`); the first learned Throws on
+hardware (T-H2, T-H3). Depends: none (P3a-c landed first per D7).
 
 ### Phase 2: The characterisation sitting — NOT STARTED
 
@@ -574,6 +589,7 @@ sweep tool and YAML. Each phase reverts independently; the migration never rewri
   shower/box plateau (release_kind separation is the first defence, a per-kind model term the
   second). Whether the oval's seam-dz ablation needs release-velocity terms inside f₀ beyond L2's
   velocity state is settled with the oval session at P1 close.
-- The apex c_max, λ, h_p, h_v, h_d and w₀ are P1 probe outputs; their values are not decided here.
+- The apex c_max, λ, h_p, h_v, h_d and w₀: DECIDED at P1 (2026-11-06, §§ 2.2-2.4), each from the replay
+  probe or the closed-loop tests; listed for the owner's review in the P1 logbook entry.
 - Ball 1's +16 mm (Δ₁) is attributed to the ball but perfectly confounded with site x₀ = −0.0625; it
   could be site × ball. P2(c) separates it.

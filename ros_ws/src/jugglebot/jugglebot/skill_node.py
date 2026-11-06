@@ -82,6 +82,7 @@ from jugglebot.motion.skills import nominate as nom
 from jugglebot.motion.skills import bump as sk_bump
 from jugglebot.motion.skills import executor as ex
 from jugglebot.motion.skills import learner as lr
+from jugglebot.motion.skills import plant_model as pm
 from jugglebot.motion.skills import report as rp
 from jugglebot.motion.skills.executor import (InstallResult, Landing,
                                               Observations, SeatWindow,
@@ -142,6 +143,19 @@ _BALL_TRACKING_CONFIRMED = 1
 # None for a genuinely detached deployment, where the memory paths below
 # cannot be resolved and a self-toss/hop Juggle goal refuses.
 _REPO_ROOT = find_repo_root(__file__)
+
+
+def _single_site_x(pattern) -> Optional[float]:
+    """The x (m) of ``pattern``'s Site when it has exactly one (the goal's
+    first Throw's release Site, for the Learner's start line); ``None``
+    otherwise (``PlantModel.summary`` then omits the per-Site offset)."""
+    sites = tuple(getattr(pattern, 'sites', ()) or ())
+    if len(sites) != 1:
+        return None
+    try:
+        return float(sites[0].cup_mm[0]) / 1000.0
+    except (AttributeError, TypeError, ValueError, IndexError):
+        return None
 
 #: A FED Columns (`_install_columns_schedule`) always compiles with the hop
 #: entry (owner decision 2026-10-05). The ONE flag the compile and
@@ -733,6 +747,12 @@ def _frame_offset_check(platform_samples, commanded_samples, now, *,
               % (offset_mm, dx_mm, dy_mm, window_s, plat_spread_mm, limit_mm))
     return FrameCheckResult(True, offset_mm <= limit_mm, offset_mm, dx_mm,
                             dy_mm, detail, plat_spread_mm)
+
+
+#: Guards the check-and-build of a goal's Learner (``SkillNode._make_learner``):
+#: goal-start sites and the announcement / feed callbacks run on different
+#: threads of the MultiThreadedExecutor.
+_LEARNER_LOCK = threading.Lock()
 
 
 class SkillNode(Node):
@@ -4509,6 +4529,10 @@ class SkillNode(Node):
             return SimpleNamespace(success=False, message=msg)
         try:
             memory = Memory(memory_path(_REPO_ROOT, plant_id))
+            # The Learner is built and its memory replayed HERE, at goal
+            # start before anything moves (~1 s on the 3276-row corpus), never
+            # on an announcement or feed callback (`_make_learner` memoises).
+            self._make_learner(memory, site_x=_single_site_x(pattern))
         except (ValueError, OSError, csv.Error) as exc:
             msg = 'memory refused: %s' % (exc,)
             self.get_logger().debug(msg)
@@ -4663,6 +4687,10 @@ class SkillNode(Node):
 
         try:
             memory = Memory(memory_path(_REPO_ROOT, plant_id))
+            # The Learner is built and its memory replayed HERE, at goal
+            # start before anything moves (~1 s on the 3276-row corpus), never
+            # on an announcement or feed callback (`_make_learner` memoises).
+            self._make_learner(memory, site_x=_single_site_x(pattern))
         except (ValueError, OSError, csv.Error) as exc:
             msg = 'memory refused: %s' % (exc,)
             self.get_logger().debug(msg)
@@ -4726,13 +4754,7 @@ class SkillNode(Node):
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
 
-        learner_cfg = lr.LearnerConfig()
-        learner = SimpleNamespace(
-            command=lambda x, y_d: memory.command(x, y_d, learner_cfg),
-            predict=lambda x, u, y_d: memory.predict(
-                x, u, learner_cfg, y_d=y_d),
-            local_model=lambda x, y_d: memory.local_model(
-                x, y_d, learner_cfg))
+        learner = self._make_learner(memory)
         self._sched_refused_at_start = self._sched_refused
         self._force_hold = False
         self._hold_forced_code = ''
@@ -4751,7 +4773,7 @@ class SkillNode(Node):
             catch_outward_authority_m=self._catch_outward_authority_m(),
             catch_inward_authority_m=self._catch_inward_authority_m(),
             observer=self._ball_evidence, observations=self._observations,
-            on_experience=self._bind_on_experience(memory),
+            on_experience=self._bind_on_experience(memory, learner),
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
             seat_window=self._seat_window,
             contact_probe=self._contact_time,
@@ -5109,7 +5131,7 @@ class SkillNode(Node):
         ``hop``, same compiler either way
         (:func:`~jugglebot.motion.skills.schedule.compile_one_ball`)):
         THROW -> CATCH -> ... -> REST, the learner on, memory at
-        ``temp/learn/<plant_id>/memory.csv``.
+        ``temp/learn/<plant_id>/memory_v2.csv`` (schema v2 since 2026-11-06).
 
         Order: refuse fast on anything that does not need the platform to
         move (running / repo root / pattern / nomination) BEFORE
@@ -5150,6 +5172,10 @@ class SkillNode(Node):
         # has already moved.
         try:
             memory = Memory(memory_path(_REPO_ROOT, plant_id))
+            # The Learner is built and its memory replayed HERE, at goal
+            # start before anything moves (~1 s on the 3276-row corpus), never
+            # on an announcement or feed callback (`_make_learner` memoises).
+            self._make_learner(memory, site_x=_single_site_x(pattern))
         except (ValueError, OSError, csv.Error) as exc:
             msg = 'memory refused: %s' % (exc,)
             self.get_logger().debug(msg)
@@ -5221,13 +5247,7 @@ class SkillNode(Node):
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
 
-        learner_cfg = lr.LearnerConfig()
-        learner = SimpleNamespace(
-            command=lambda x, y_d: memory.command(x, y_d, learner_cfg),
-            predict=lambda x, u, y_d: memory.predict(
-                x, u, learner_cfg, y_d=y_d),
-            local_model=lambda x, y_d: memory.local_model(
-                x, y_d, learner_cfg))
+        learner = self._make_learner(memory)
 
         # A new schedule reuses small ball ids: drop any flight latch an
         # earlier (possibly early-ended) attempt left for them, so a catch
@@ -5257,7 +5277,7 @@ class SkillNode(Node):
             catch_outward_authority_m=self._catch_outward_authority_m(),
             catch_inward_authority_m=self._catch_inward_authority_m(),
             observer=self._ball_evidence, observations=self._observations,
-            on_experience=self._bind_on_experience(memory),
+            on_experience=self._bind_on_experience(memory, learner),
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
             seat_window=self._seat_window,
             contact_probe=self._contact_time,
@@ -5519,6 +5539,10 @@ class SkillNode(Node):
             dwell_s=dwell_s, n_throws=0)
         try:
             memory = Memory(memory_path(_REPO_ROOT, plant_id))
+            # The Learner is built and its memory replayed HERE, at goal
+            # start before anything moves (~1 s on the 3276-row corpus), never
+            # on an announcement or feed callback (`_make_learner` memoises).
+            self._make_learner(memory, site_x=_single_site_x(pattern))
         except (ValueError, OSError, csv.Error) as exc:
             msg = 'memory refused: %s' % (exc,)
             self.get_logger().debug(msg)
@@ -5947,13 +5971,7 @@ class SkillNode(Node):
                     t_release_s=throw_time_s, preexisting=preexisting,
                     thrower=announced_source(msg.thrower_name)),)
                 self._advance_correlation_locked(self._now_s())
-            learner_cfg = lr.LearnerConfig()
-            learner = SimpleNamespace(
-                command=lambda x, y_d: ctx.memory.command(x, y_d, learner_cfg),
-                predict=lambda x, u, y_d: ctx.memory.predict(
-                    x, u, learner_cfg, y_d=y_d),
-                local_model=lambda x, y_d: ctx.memory.local_model(
-                    x, y_d, learner_cfg))
+            learner = self._make_learner(ctx.memory)
             executor = SkillExecutor(
                 schedule, self._installer, tracker=self._tracker,
                 **self._bump_kwargs(),
@@ -5969,7 +5987,7 @@ class SkillNode(Node):
                 catch_outward_authority_m=self._catch_outward_authority_m(),
                 catch_inward_authority_m=self._catch_inward_authority_m(),
                 observer=self._ball_evidence, observations=self._observations,
-                on_experience=self._bind_on_experience(ctx.memory),
+                on_experience=self._bind_on_experience(ctx.memory, learner),
                 dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
                 seat_window=self._seat_window,
                 contact_probe=self._contact_time,
@@ -6097,13 +6115,7 @@ class SkillNode(Node):
                 thrower=announced_source(msg.thrower_name)),)
             self._advance_correlation_locked(self._now_s())
 
-        learner_cfg = lr.LearnerConfig()
-        learner = SimpleNamespace(
-            command=lambda x, y_d: ctx.memory.command(x, y_d, learner_cfg),
-            predict=lambda x, u, y_d: ctx.memory.predict(
-                x, u, learner_cfg, y_d=y_d),
-            local_model=lambda x, y_d: ctx.memory.local_model(
-                x, y_d, learner_cfg))
+        learner = self._make_learner(ctx.memory)
         executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
             **self._bump_kwargs(),
@@ -6119,7 +6131,7 @@ class SkillNode(Node):
             catch_outward_authority_m=self._catch_outward_authority_m(),
             catch_inward_authority_m=self._catch_inward_authority_m(),
             observer=self._ball_evidence, observations=self._observations,
-            on_experience=self._bind_on_experience(ctx.memory),
+            on_experience=self._bind_on_experience(ctx.memory, learner),
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
             seat_window=self._seat_window,
             contact_probe=self._contact_time,
@@ -6280,13 +6292,7 @@ class SkillNode(Node):
                        _site1.name, _off[0], _off[1], _a_state))
             return
 
-        learner_cfg = lr.LearnerConfig()
-        learner = SimpleNamespace(
-            command=lambda x, y_d: ctx.memory.command(x, y_d, learner_cfg),
-            predict=lambda x, u, y_d: ctx.memory.predict(
-                x, u, learner_cfg, y_d=y_d),
-            local_model=lambda x, y_d: ctx.memory.local_model(
-                x, y_d, learner_cfg))
+        learner = self._make_learner(ctx.memory)
         executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
             **self._bump_kwargs(),
@@ -6302,7 +6308,7 @@ class SkillNode(Node):
             catch_outward_authority_m=self._catch_outward_authority_m(),
             catch_inward_authority_m=self._catch_inward_authority_m(),
             observer=self._ball_evidence, observations=self._observations,
-            on_experience=self._bind_on_experience(ctx.memory),
+            on_experience=self._bind_on_experience(ctx.memory, learner),
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
             seat_window=self._seat_window,
             contact_probe=self._contact_time,
@@ -6362,10 +6368,58 @@ class SkillNode(Node):
             % (ball_label(1), float(feed.t_land_abs_s) - now,
                n_after, '' if n_after == 1 else 's'))
 
-    def _bind_on_experience(self, memory: Memory):
+    def _make_learner(self, memory: Memory, site_x: Optional[float] = None):
+        """THE Learner for ``memory`` (P1, 2026-11-06): a fresh
+        ``plant_model.PlantModel`` + ``learner.Learner`` with its lateral cap
+        from ``learner_lateral_authority_mm``, the memory's rows replayed
+        through ``observe`` in file order, then ONE INFO line (the plant
+        model's summary at ``site_x``, the goal's single Site when it has
+        one, and the replay's accepted / rejected counts).
+
+        Memoised ON the ``memory`` object (attribute ``_jb_learner``), under
+        a lock: the goal-start site builds it, every executor of the same
+        goal (the announcement and feed callbacks included, on other threads
+        of the MultiThreadedExecutor) gets the same, already replayed
+        Learner, which ``_bind_on_experience`` keeps current. Keyed on the
+        object, not on a node-level slot, so a later goal that builds its own
+        ``Memory`` and is then refused can never evict the running goal's
+        Learner (a callback would otherwise rebuild it, about 1 s of replay
+        on a callback thread, and the two executors would hold different
+        Learners). A row the Learner cannot use (``observe`` raising
+        ``ValueError``: e.g. a non-positive commanded apex in a hand-edited
+        file) is skipped and counted, never a refused goal: one bad row must
+        not ground a plant."""
+        with _LEARNER_LOCK:
+            held = getattr(memory, '_jb_learner', None)
+            if held is not None:
+                return held
+            model = pm.PlantModel()
+            learner = lr.Learner(model, lr.LearnerConfig(c_max_xy_m=float(
+                self.get_parameter('learner_lateral_authority_mm').value)
+                / 1000.0))
+            accepted = rejected = unusable = 0
+            for exp in memory.rows():
+                try:
+                    if learner.observe(exp):
+                        accepted += 1
+                    else:
+                        rejected += 1
+                except ValueError:
+                    unusable += 1
+            memory._jb_learner = learner
+            self.get_logger().info(
+                'learner: %s; rows %d (accepted %d, rejected %d, unusable %d)'
+                % (model.summary(site_x), accepted + rejected + unusable,
+                   accepted, rejected, unusable))
+            return learner
+
+    def _bind_on_experience(self, memory: Memory, learner=None):
         """``on_experience`` callable bound to ``memory`` (plan § 2.5 step 6):
         appends the row (file I/O, orchestrator thread only — never the 40 Hz
-        emitter, plan § 0) and logs it, one line per throw."""
+        emitter, plan § 0) and logs it, one line per throw; then (P1) the
+        ``learner`` observes it. Append FIRST: a row the memory refuses is
+        logged and never observed, so the Learner never knows a row the file
+        does not hold."""
         def _on_experience(exp):
             # `Memory.append` REFUSES a row outside `APEX_RATIO_BAND`
             # (2026-09-16) — the executor drops such a row first, so this is
@@ -6380,8 +6434,18 @@ class SkillNode(Node):
                     % (exc, exp.u.tolist(), exp.y.tolist()))
                 return
             self.get_logger().debug(
-                'memory row appended: x=%s u=%s y=%s caught=%s'
-                % (exp.x.tolist(), exp.u.tolist(), exp.y.tolist(), exp.caught))
+                'memory row appended: site=%s release=%s seat=%s kind=%s '
+                'u=%s y=%s caught=%s'
+                % (exp.site_xy_m.tolist(), exp.release_m.tolist(),
+                   exp.seat_offset_m.tolist(), exp.release_kind,
+                   exp.u.tolist(), exp.y.tolist(), exp.caught))
+            if learner is None:
+                return
+            try:
+                learner.observe(exp)
+            except ValueError as exc:
+                self.get_logger().error(
+                    'learner REFUSED an appended row (not observed): %s' % (exc,))
         return _on_experience
 
     def _stop_attempt(self) -> str:

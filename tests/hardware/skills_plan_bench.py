@@ -98,7 +98,6 @@ import sys
 import tempfile
 import time
 from datetime import datetime
-from types import SimpleNamespace
 
 _HERE = os.path.dirname(os.path.abspath(__file__))              # tests/hardware
 _REPO = os.path.dirname(os.path.dirname(_HERE))                 # repo root
@@ -117,6 +116,7 @@ from jugglebot.motion.trajectory.cup_realize import RealizeConfig  # noqa: E402
 from jugglebot.motion.trajectory.limits import TrajectoryLimits    # noqa: E402
 from jugglebot.motion.skills import executor as ex                # noqa: E402
 from jugglebot.motion.skills import learner as lr                  # noqa: E402
+from jugglebot.motion.skills import plant_model as pm              # noqa: E402
 from jugglebot.motion.skills import schedule as sc                # noqa: E402
 from jugglebot.motion.skills import segments as sg                # noqa: E402
 from jugglebot.motion.skills import sites as si                   # noqa: E402
@@ -157,10 +157,10 @@ SELF_TOSS_SITE_X_MM = -50.0
 SELF_TOSS_SITE_Y_MM = 0.0
 SELF_TOSS_LEG_JERK_MMPS3 = 200000.0
 #: Cold-start policy A (brief_common.md § "Owner decisions"): single-throw
-#: attempts until the memory holds ``learner.LearnerConfig.k_min`` (2) rows.
-#: One throw per rehearsal attempt is what lets ``--attempts 3`` (the default)
-#: cross that floor and exercise the learner's post-prior command by the third
-#: attempt, entirely offline.
+#: attempts. (Until 2026-11-06 the old law needed ``k_min`` (2) rows before it
+#: left the identity; the P1 Learner's plant model moves from the first row.)
+#: One throw per rehearsal attempt lets ``--attempts 3`` (the default)
+#: exercise the learner's command changes across attempts, entirely offline.
 SELF_TOSS_DEFAULT_N_THROWS = 1
 
 #: The plan's own R3 sim-validation plant-error model (plan § R3 "Sim
@@ -1082,16 +1082,20 @@ def _build_self_toss_context(args, limits):
     site = si.Site('P1', np.array([site_x, site_y, si.CATCH_CUP_Z_MM]))
 
     tmp_dir = tempfile.mkdtemp(prefix='skills_bench_selftoss_')
-    mem_path = os.path.join(tmp_dir, 'memory.csv')
+    mem_path = os.path.join(tmp_dir, 'memory_v2.csv')
     memory = Memory(mem_path)
     print('self-toss memory (fresh, this run only): %s' % (mem_path,))
-    learner_cfg = lr.LearnerConfig()
-    learner = SimpleNamespace(command=lambda x, y_d: memory.command(x, y_d, learner_cfg))
+    # P1 (2026-11-06): the real Learner (plant model + residual memory), as
+    # skill_node's `_make_learner` builds it; the fresh memory is empty, so
+    # there is nothing to replay.
+    learner = lr.Learner(pm.PlantModel(), lr.LearnerConfig())
 
     def on_experience(exp):
         memory.append(exp)
-        print('memory row %d: x=%s u=%s y=%s caught=%s'
-              % (len(memory), exp.x.tolist(), exp.u.tolist(), exp.y.tolist(),
+        learner.observe(exp)
+        print('memory row %d: site=%s seat=%s u=%s y=%s caught=%s'
+              % (len(memory), exp.site_xy_m.tolist(),
+                 exp.seat_offset_m.tolist(), exp.u.tolist(), exp.y.tolist(),
                  exp.caught))
 
     return site, learner, on_experience, memory
@@ -1658,7 +1662,7 @@ def build_parser():
     ap.add_argument('--n-throws', type=int, default=None,
                     help='throws per attempt (default %d for columns, %d for '
                          'self-toss -- cold-start policy A, one throw per '
-                         'attempt until the memory crosses k_min)'
+                         'attempt)'
                         % (DEFAULT_N_THROWS, SELF_TOSS_DEFAULT_N_THROWS))
     ap.add_argument('--jitter-mm', type=float, default=DEFAULT_JITTER_MM,
                     help='arm B catch jitter (mm, default %.1f); arm A forces '

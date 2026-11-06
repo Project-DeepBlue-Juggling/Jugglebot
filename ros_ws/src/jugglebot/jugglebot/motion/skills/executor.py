@@ -35,6 +35,7 @@ from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.skills import admissible as adm
 from jugglebot.motion.skills import bump as bmp
+from jugglebot.motion.skills import learner as lrn
 from jugglebot.motion.skills import magazine_throw as mt
 from jugglebot.motion.skills import segments as sg
 from jugglebot.motion.skills import schedule as sch
@@ -1155,6 +1156,14 @@ class _PendingOutcome:
     #: reported exactly like any other throw's, just tagged so an operator
     #: can tell it was the hop entry.
     entry_hop: bool = False
+    #: The Learner's :class:`~jugglebot.motion.skills.learner.ThrowContext`
+    #: of this release (P1, 2026-11-06), as it was queried, with its
+    #: release position and seat offset refreshed to the LATEST ones at
+    #: registration (as :attr:`x` ``[2:4]``): the schema-v2 row
+    #: :meth:`SkillExecutor._finalise_outcome` writes is built from it.
+    #: ``None`` (no row) only for a release with no context (a shadow
+    #: landing, or a context that could not be built for an old-API learner).
+    ctx: Optional['lrn.ThrowContext'] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2285,6 +2294,13 @@ class SkillExecutor:
     would have to be the smaller of the two for every skill.
 
     **R3: the learner and outcome capture -- both optional.**
+    Since P1 (2026-11-06) the live ``learner`` is a
+    :class:`~jugglebot.motion.skills.learner.Learner` (``takes_context``):
+    every query takes a :class:`~jugglebot.motion.skills.learner.ThrowContext`
+    built by :meth:`_throw_context`, its command is capped about its MODEL
+    command by the Learner itself, and that model command is the fallback of
+    the online check. The older duck type below (``takes_context`` absent)
+    is still served exactly as before, with the 4-wide ``x``.
     ``learner`` (an object exposing ``command(x, y_d) -> (3,)``, e.g. a
     ``memory.Memory`` bound to its ``LearnerConfig`` via a lambda at the call
     site; optionally ``predict(x, u, y_d)`` for the catch prior and
@@ -2559,6 +2575,10 @@ class SkillExecutor:
         #: ``then_throw``) so a catch re-send's second, third, ... call reuses
         #: the first dispatch's command rather than recomputing it.
         self._u_cache = {}
+        #: Per-skill-index Learner context (:meth:`_throw_context`), filled
+        #: beside :attr:`_u_cache` with the context the command was asked
+        #: with (the dispatch-time one): the prior's and the row's query.
+        self._ctx_cache: Dict[int, lrn.ThrowContext] = {}
         #: The :attr:`_u_cache` keys whose command came from a LEARNER query
         #: (the ordinary learner path, or the hop's read-only borrow) -- the
         #: releases :meth:`_prior_landing` may ask the learner's forward
@@ -2669,18 +2689,20 @@ class SkillExecutor:
         is flown back as lateral velocity, and a launch 11 % fast over a
         flight 11 % long delivers ~1.23x of it), and the learner chased its
         own tail into a limit cycle on 2 of 5 seeds — the landing walking
-        50 mm off the site and back over ~12 throws. The learner's local
-        affine fit already has the term for it: its regressor is
-        ``Z = [delta_x; delta_u; 1]`` (``learner`` step 3), so a ``dy/dx``
-        slope is fitted from the same neighbours — no memory-schema change
-        (``x`` has been 4-wide since R3). Since 2026-10-12 the offset half
-        has its own kernel bandwidth, ``LearnerConfig.h_seat = 1.0 m``, so it
-        no longer partitions the memory (the offset's effect on the outcome
-        tested within noise; ``learner`` module docstring).
+        50 mm off the site and back over ~12 throws. Until 2026-11-06 the
+        old Learner's local affine fit carried a ``dy/dx`` slope for it and,
+        from 2026-10-12, gave the offset half of ``x`` a 1 m kernel bandwidth
+        so it no longer partitioned the memory. The P1 Learner
+        (``learner.Learner``) keeps that second rule by construction: its
+        kernel measures position on the release Site's xy and the release
+        height, never on the offset (``learner._kernel_pos``); the offset's
+        flight is closed by the fly-back (:meth:`_offset_flyback_mm`), not
+        learned.
 
-        **Lateral command (no checker).** The Learner's command is clipped
-        per axis to :attr:`lateral_authority_m` about ``dy``
-        (:meth:`_learner_candidate`) and that is the command: no ``learner`` ⇒
+        **Lateral command (no checker).** A context Learner's command (P1)
+        is capped about its MODEL command by the Learner itself; an old-API
+        Learner's is clipped per axis to :attr:`lateral_authority_m` about
+        ``dy`` (:meth:`_learner_candidate`); that is the command: no ``learner`` ⇒
         ``u = y_d`` exactly (R2 behaviour). A ``ValueError`` or non-finite
         answer from the Learner raises :class:`_NoAdmissibleCommand`; the
         caller converts that to a :data:`NO_ADMISSIBLE_COMMAND` refusal before
@@ -2748,29 +2770,43 @@ class SkillExecutor:
             u_dy, u_apex = dy, apex
             self._u_cache[idx] = (x, u_dy, u_apex)
             return u_dy, u_apex
+        if self.checker is not None and online_release_mm is None:
+            raise _NoAdmissibleCommand(
+                'ADMISSIBILITY skill %d: the online check has no release '
+                'to evaluate (internal: the command was asked for outside '
+                'a THROW terminal or a CATCH dispatch) -- refusing an '
+                'unchecked command' % (idx,))
+        release_mm = (np.asarray(online_release_mm, dtype=float).reshape(3)
+                      if online_release_mm is not None
+                      else self._release_pos_mm(idx))
+        # The Learner's context and its MODEL command (P1). The hop never
+        # refuses on it (its query falls back to ``y_d``); everything else
+        # refuses as a Learner ValueError always has.
+        ctx, u_model = self._context_or_refuse(
+            idx, self.schedule.skills[idx], site, release_mm, target,
+            (dy, apex), off, never_refuse=entry_hop)
+        if ctx is not None:
+            self._ctx_cache[idx] = ctx
         if self.checker is not None:
-            if online_release_mm is None:
-                raise _NoAdmissibleCommand(
-                    'ADMISSIBILITY skill %d: the online check has no release '
-                    'to evaluate (internal: the command was asked for outside '
-                    'a THROW terminal or a CATCH dispatch) -- refusing an '
-                    'unchecked command' % (idx,))
             if entry_hop:
-                u_cand = self._hop_command(idx, site, dy, apex, x)
+                u_cand = self._hop_command(idx, site, dy, apex, x, ctx=ctx)
             else:
                 u_cand = self._learner_candidate(idx, site, target, dy, apex,
-                                                 x, online=True)
+                                                 x, online=True, ctx=ctx)
             u_dy, u_apex = self._resolve_throw_envelope(
-                idx, online_release_mm, target, u_cand, (dy, apex))
+                idx, release_mm, target, u_cand, u_model)
             self._u_cache[idx] = (x, u_dy, u_apex)
             return u_dy, u_apex
         if entry_hop:
-            u_dy, u_apex = self._hop_command(idx, site, dy, apex, x)
+            u_dy, u_apex = self._hop_command(idx, site, dy, apex, x, ctx=ctx)
             self._u_cache[idx] = (x, u_dy, u_apex)
             return u_dy, u_apex
-        # No checker: the Learner's authority-clipped candidate IS the
-        # command (no Learner: ``y_d``); nothing clips or refuses it here.
-        u_dy, u_apex = self._learner_candidate(idx, site, target, dy, apex, x)
+        # No checker: the Learner's candidate IS the command (no Learner:
+        # ``y_d``; an old-API Learner's is authority-clipped about ``y_d``,
+        # a context Learner's is capped about its model command by itself);
+        # nothing clips or refuses it here.
+        u_dy, u_apex = self._learner_candidate(idx, site, target, dy, apex, x,
+                                               ctx=ctx)
         u_dy = np.asarray(u_dy, dtype=float).reshape(2)
         u_apex = float(u_apex)
         self._u_cache[idx] = (x, u_dy, u_apex)
@@ -2785,12 +2821,139 @@ class SkillExecutor:
         self._resend_notes.add(key)
         self._pending_notes.append(line)
 
+    @property
+    def _takes_context(self) -> bool:
+        """Whether :attr:`learner` speaks the P1 context API
+        (``learner.takes_context``): ``command(ctx, y_d)``,
+        ``model_command(ctx, y_d)``, ``predict(ctx, u, y_d)``,
+        ``local_model(ctx, y_d)``. False for no Learner and for the old
+        ``command(x, y_d)`` duck type, which is served unchanged."""
+        return (self.learner is not None
+                and bool(getattr(self.learner, 'takes_context', False)))
+
+    def _aim_target_mm(self, target_site, rel_site, release_mm, y_d, u
+                       ) -> np.ndarray:
+        """Where the Throw commanded ``u`` from ``release_mm`` is AIMED (mm):
+        the commanded target plus the fly-back of the release's offset off
+        its release Site (zero for a release at its Site) -- the target the
+        THROW terminal, the carried throw and the envelope check all use."""
+        r_mm = (np.asarray(release_mm, dtype=float)[:2]
+                - np.asarray(rel_site.cup_mm, dtype=float)[:2])
+        return (self._commanded_target_mm(target_site, u)
+                + self._flyback_for_offset_mm(r_mm, y_d, float(u[1])))
+
+    def _throw_context(self, skill: Skill, rel_site, release_mm, target_site,
+                       y_d, seat_offset_m
+                       ) -> Tuple['lrn.ThrowContext', Tuple[np.ndarray, float]]:
+        """THE one builder of the Learner's context for the Throw ``skill``
+        releases, and that Throw's MODEL command: ``(ctx, (u_dy, u_apex))``.
+
+        Fields (SI): ``site_xy_m`` = the RELEASE Site's cup xy;
+        ``release_m`` = ``release_mm`` (where the ball leaves); the planned
+        release velocity of the MODEL command (``ballistics_bc.launch_velocity``
+        from the release to the model command's aim, :meth:`_aim_target_mm`,
+        over ``flight_s(model apex)`` -- the closed form the envelope check
+        uses); ``dwell_s`` = ``schedule.dwell_for(ball_id)`` (NaN when the
+        Schedule cannot say); ``ball_id``; ``release_kind`` = ``'carried'``
+        iff :func:`_is_carried`, else ``'free_cup'``; ``seat_offset_m``.
+
+        The circle (the model command needs the context, the context needs
+        the model command's velocity) is broken ONCE, never iterated: the
+        context is built with the velocity of ``y_d`` (the identity),
+        ``learner.model_command`` is asked on it, and the velocity is rebuilt
+        from that model command. The model command is ``y_d`` exactly with no
+        context Learner (no Learner, or the old duck type), whose context
+        still carries the row. Raises ``ValueError`` (by name) when a field
+        or the Learner's answer is not finite. Read-only."""
+        dy = np.asarray(y_d[0], dtype=float).reshape(2)
+        apex = float(y_d[1])
+        y_dd = (dy, apex)
+        release_mm = np.asarray(release_mm, dtype=float).reshape(3)
+
+        def _vel_mps(u):
+            flight = float(sch.flight_s(float(u[1])))
+            return np.asarray(ballistics_bc.launch_velocity(
+                release_mm, self._aim_target_mm(target_site, rel_site,
+                                                release_mm, y_dd, u),
+                flight), dtype=float) / 1000.0
+
+        try:
+            dwell = float(self.schedule.dwell_for(skill.ball_id))
+        except (AttributeError, TypeError, ValueError, KeyError, IndexError):
+            dwell = float('nan')
+        if math.isinf(dwell):
+            dwell = float('nan')
+        ctx = lrn.ThrowContext(
+            site_xy_m=np.asarray(rel_site.cup_mm, dtype=float)[:2] / 1000.0,
+            release_m=release_mm / 1000.0,
+            release_vel_mps=_vel_mps(y_dd),
+            dwell_s=dwell, ball_id=skill.ball_id,
+            release_kind='carried' if _is_carried(skill) else 'free_cup',
+            seat_offset_m=np.asarray(seat_offset_m, dtype=float).reshape(2))
+        if not self._takes_context:
+            return ctx, (dy.copy(), apex)
+        um = np.asarray(self.learner.model_command(
+            ctx, np.array([dy[0], dy[1], apex])), dtype=float).reshape(3)
+        if not np.all(np.isfinite(um)):
+            raise ValueError('non-finite model command %r' % (um.tolist(),))
+        u_model = (um[:2].copy(), float(um[2]))
+        ctx = dataclasses.replace(ctx, release_vel_mps=_vel_mps(u_model))
+        return ctx, u_model
+
+    def _context_or_refuse(self, idx: int, skill: Skill, rel_site, release_mm,
+                           target_site, y_d, seat_offset_m,
+                           never_refuse: bool = False):
+        """:meth:`_throw_context`, with its failure handled: a context
+        Learner's ``ValueError`` refuses (:class:`_NoAdmissibleCommand`, as
+        its ``command`` always has) unless ``never_refuse`` (the hop, which
+        falls back to ``y_d``); otherwise ``(None, y_d)`` -- an old-API
+        Learner's command never depended on the context, so the release
+        flies and writes no row (:meth:`_finalise_outcome`).
+
+        Without a context Learner the context is ONLY the row's key, so NO
+        failure of building it may reach the dispatch: any exception (not
+        only ``ValueError``; a duck-typed schedule or site in a test, a
+        geometry this builder was never written for) degrades to "no
+        context, no row", exactly the pre-P1 behaviour of that path. With a
+        context Learner anything other than ``ValueError`` is a defect and
+        propagates."""
+        try:
+            return self._throw_context(skill, rel_site, release_mm,
+                                       target_site, y_d, seat_offset_m)
+        except ValueError as exc:
+            if self._takes_context and not never_refuse:
+                raise _NoAdmissibleCommand(
+                    'the learner could not produce a finite command for site '
+                    '%r (target %r): %s' % (rel_site.name, target_site.name,
+                                            exc)) from exc
+        except Exception:  # noqa: BLE001 -- see the docstring
+            if self._takes_context:
+                raise
+        dy = np.asarray(y_d[0], dtype=float).reshape(2)
+        return None, (dy.copy(), float(y_d[1]))
+
+    def _latest_ctx(self, idx: int, ctx: 'lrn.ThrowContext'
+                    ) -> 'lrn.ThrowContext':
+        """``ctx`` with its release position and seat offset refreshed to
+        the LATEST ones planned for ``idx`` (:meth:`_release_pos_mm`,
+        :meth:`_seat_offset_m`) -- what the row and the forward prior ask
+        about, as ``x[2:4]`` always was. The velocity stays the query's."""
+        return dataclasses.replace(
+            ctx, release_m=self._release_pos_mm(idx) / 1000.0,
+            seat_offset_m=self._seat_offset_m(idx))
+
     def _learner_candidate(self, idx: int, site, target, dy, apex: float, x,
-                           online: bool = False, mark_learned: bool = True
+                           online: bool = False, mark_learned: bool = True,
+                           ctx: Optional['lrn.ThrowContext'] = None
                            ) -> Tuple[np.ndarray, float]:
-        """The Learner's command for ``(x, y_d)``, lateral-authority-clipped
-        about ``dy`` -- what :meth:`_command_u` computes BEFORE any check (and
-        the P3a online path's CANDIDATE). No Learner -> ``y_d`` exactly. A
+        """The Learner's command for ``(x, y_d)`` -- what :meth:`_command_u`
+        computes BEFORE any check (and the P3a online path's CANDIDATE). A
+        context Learner (:attr:`_takes_context`) is asked
+        ``command(ctx, y_d)`` and its answer is used AS IS: it is already
+        capped about its model command by the Learner (L3), so the fixed
+        lateral clip is not applied on top. An old-API Learner is asked
+        ``command(x, y_d)`` and its answer is lateral-authority-clipped about
+        ``dy``. No Learner -> ``y_d`` exactly. A
         ``ValueError`` from the Learner (and, on the ``online`` path, a
         non-finite answer) refuses: :class:`_NoAdmissibleCommand`. Marks
         ``idx`` as learned (:attr:`_learned_u`) when the Learner answered,
@@ -2800,18 +2963,27 @@ class SkillExecutor:
         if self.learner is None:
             return dy, float(apex)
         y_d_si = np.array([dy[0], dy[1], float(apex)])
+        context = self._takes_context
         try:
-            u = np.asarray(self.learner.command(x, y_d_si), dtype=float
-                           ).reshape(3)
-            if online and not np.all(np.isfinite(u)):
-                raise ValueError('non-finite command %r' % (u,))
+            if context:
+                if ctx is None:
+                    raise ValueError('no throw context (internal)')
+                u = np.asarray(self.learner.command(ctx, y_d_si),
+                               dtype=float).reshape(3)
+                if not np.all(np.isfinite(u)):
+                    raise ValueError('non-finite command %r' % (u,))
+            else:
+                u = np.asarray(self.learner.command(x, y_d_si), dtype=float
+                               ).reshape(3)
+                if online and not np.all(np.isfinite(u)):
+                    raise ValueError('non-finite command %r' % (u,))
         except ValueError as exc:
             raise _NoAdmissibleCommand(
                 'the learner could not produce a finite command for site '
                 '%r (target %r): %s' % (site.name, target.name, exc)
             ) from exc
         u_dy, u_apex = u[:2].copy(), float(u[2])
-        if self.lateral_authority_m is not None:
+        if not context and self.lateral_authority_m is not None:
             a = abs(self.lateral_authority_m)
             u_dy = dy + np.clip(u_dy - dy, -a, a)
         if mark_learned:
@@ -2948,9 +3120,11 @@ class SkillExecutor:
         stand-in's timing are all derived from it here, without the
         :attr:`_carried_release_mm` records :meth:`_catch_terminal` writes.
 
-        * candidate = the Learner's command, lateral-authority-clipped
-          (:meth:`_learner_candidate`); no Learner -> ``y_d``. Model command
-          = ``y_d`` (identity prior).
+        * candidate = the Learner's command (:meth:`_learner_candidate`: a
+          context Learner's own capped command, an old-API one's
+          lateral-authority-clipped about ``y_d``); no Learner -> ``y_d``.
+          Model command = ``learner.model_command(ctx, y_d)`` for a context
+          Learner (:meth:`_catch_context`), else ``y_d`` (identity prior).
         * ``verdict_fn(u)``: (1) the envelope on the REAL carried Throw built
           from ``u`` (this release, the commanded target incl. the fly-back,
           ``flight_s(u_apex)``) -- a refusal costs no solve; (2) the
@@ -2992,8 +3166,9 @@ class SkillExecutor:
         early = self._early_by_idx.pop(idx, None)
         if early is not None and early.skill is not skill:
             early = None
+        ctx, u_model = self._catch_context(idx, skill, release_mm, x)
         u_cand = self._learner_candidate(idx, rel_site, tt.target, dy, apex,
-                                         x, online=True)
+                                         x, online=True, ctx=ctx)
         res = None
         if early is not None:
             use, line = self._early_at_dispatch(idx, early, u_cand,
@@ -3005,7 +3180,8 @@ class SkillExecutor:
             self._pending_notes.append(line)
         if res is None:
             res = self._catch_resolution(idx, skill, landing, t_abs_s,
-                                         release_mm, x, u_cand)
+                                         release_mm, x, u_cand,
+                                         u_model=u_model, ctx=ctx)
         if self._standin_rule(skill) == _STANDIN_NONE:
             line = ('ADMISSIBILITY skill %d: no stand-in for a cross-site '
                     'Throw (%s -> %s): envelope only'
@@ -3018,8 +3194,21 @@ class SkillExecutor:
         self._note_once(idx, 'ADMISSIBILITY', line)
         u_dy = np.asarray(res.u[0], dtype=float).reshape(2).copy()
         u_apex = float(res.u[1])
+        if ctx is not None:
+            self._ctx_cache[idx] = ctx
         self._u_cache[idx] = (x, u_dy, u_apex)
         return u_dy, u_apex
+
+    def _catch_context(self, idx: int, skill: Skill, release_mm, x):
+        """``(ctx, u_model)`` for CATCH ``skill``'s carried throw released
+        at ``release_mm`` with seat offset ``x[2:4]``
+        (:meth:`_catch_command_state`): :meth:`_throw_context` through
+        :meth:`_context_or_refuse` (a context Learner's ValueError refuses).
+        Read-only."""
+        tt = skill.then_throw
+        return self._context_or_refuse(
+            idx, skill, release_site_of(skill), release_mm, tt.target,
+            tt.y_d, np.asarray(x, dtype=float)[2:4])
 
     def _catch_command_state(self, skill: Skill, landing: Landing
                              ) -> Tuple[np.ndarray, np.ndarray]:
@@ -3073,11 +3262,16 @@ class SkillExecutor:
                          EARLY_COMMAND_APEX_TOL_M * 1e3))
 
     def _catch_resolution(self, idx: int, skill: Skill, landing: Landing,
-                          t_abs_s: float, release_mm, x, u_cand
+                          t_abs_s: float, release_mm, x, u_cand,
+                          u_model=None,
+                          ctx: Optional['lrn.ThrowContext'] = None
                           ) -> 'adm.Resolution':
         """Resolve CATCH ``idx``'s candidate ``u_cand`` against the online
         check at ``t_abs_s`` (:meth:`_resolve_catch_command`'s bullet list:
-        the envelope, the stand-in, ``self.checker``). Writes NOTHING on the
+        the envelope, the stand-in, ``self.checker``). ``u_model`` is the
+        MODEL command a refused candidate steps toward (``None`` -> ``y_d``,
+        the identity prior); ``ctx`` the context Learner's query for the
+        stand-in's forward model (:meth:`_forward_model_xy`). Writes NOTHING on the
         executor -- the checker call is its only effect -- so the early
         command can call it. ``AdmissibleError`` ->
         :class:`_NoAdmissibleCommand`."""
@@ -3086,11 +3280,16 @@ class SkillExecutor:
         dy, apex = tt.y_d
         dy = np.asarray(dy, dtype=float).reshape(2)
         apex = float(apex)
-        u_model = (dy.copy(), apex)
+        if u_model is None:
+            u_model = (dy.copy(), apex)
+        else:
+            u_model = (np.asarray(u_model[0], dtype=float).reshape(2).copy(),
+                       float(u_model[1]))
         rel_cup_xy = np.asarray(rel_site.cup_mm, dtype=float)[:2]
         r_real_mm = release_mm[:2] - rel_cup_xy
         rule = self._standin_rule(skill)
-        y_hat_xy = self._forward_model_xy(x, np.array([dy[0], dy[1], apex]))
+        y_hat_xy = self._forward_model_xy(x, np.array([dy[0], dy[1], apex]),
+                                          ctx=ctx)
 
         def _aim_mm(u, r_mm):
             return (self._commanded_target_mm(tt.target, u)
@@ -3229,9 +3428,11 @@ class SkillExecutor:
                              then_throw=then, hold_tilt=skill.hold_tilt,
                              receive_tilt=skill.receive_tilt)
 
-    def _forward_model_xy(self, x, y_d_si):
+    def _forward_model_xy(self, x, y_d_si,
+                          ctx: Optional['lrn.ThrowContext'] = None):
         """``u -> y_hat_xy(u)`` (metres), the Learner's own forward model at
-        ``(x, y_d)`` evaluated as the retired box clip did
+        ``(x, y_d)`` (a context Learner: ``local_model(ctx, y_d)``, ``ctx``
+        None -> the identity) evaluated as the retired box clip did
         (``d[:2] + D[:2, :] (u - u_bar)``, at ``u``'s own apex). No Learner,
         no ``local_model``, thin support (``None``), a fit that raises or a
         non-finite prediction -> the identity, ``y_hat = u``."""
@@ -3242,8 +3443,10 @@ class SkillExecutor:
                        else getattr(self.learner, 'local_model', None))
         if local_model is None:
             return _identity
+        if self._takes_context and ctx is None:
+            return _identity
         try:
-            fit = local_model(x, y_d_si)
+            fit = local_model(ctx if self._takes_context else x, y_d_si)
             if fit is None:
                 return _identity
             u_bar, D, d = (np.asarray(v, dtype=float) for v in fit)
@@ -3258,31 +3461,47 @@ class SkillExecutor:
             return y if np.all(np.isfinite(y)) else _identity(u)
         return _y_hat
 
-    def _hop_command(self, idx: int, site, dy, apex, x):
+    def _hop_command(self, idx: int, site, dy, apex, x,
+                     ctx: Optional['lrn.ThrowContext'] = None):
         """The hop entry's command: ``y_d`` plus the learner's P1 column
         correction (read-only; see :meth:`_command_u`'s ``entry_hop`` note).
 
         Frame check (2026-10-11): ``dy`` is a landing offset relative to the
         TARGET site's catch point (:meth:`_commanded_target_mm`), and the hop's
         ``y_d`` is ``(0, apex)`` exactly like a column throw's, so the query
-        ``learner.command(x, y_d)`` -- ``x`` = (release-site xy, zero seat
-        offset: the hop is released from rest, while a carried column throw
-        queries with its real seat offset) -- is a NEIGHBOURING question to a
-        column throw's from that site, and its ``delta = u - y_d`` is the same
-        quantity.
+        ``learner.command(x, y_d)`` of an old-API Learner -- ``x`` =
+        (release-site xy, zero seat offset: the hop is released from rest,
+        while a carried column throw queries with its real seat offset) -- is
+        a NEIGHBOURING question to a column throw's from that site, and its
+        ``delta = u - y_d`` is the same quantity. A context Learner (P1) is
+        asked for its MODEL command instead (``model_command(ctx, y_d)``):
+        the global gain is the correction the hop used to borrow from the
+        column's rows.
 
         Lateral part: clipped to ``lateral_authority_m`` about ``dy`` (the hop's
         cross-site lateral target stays where it is). Apex part: unclipped
         (until 2026-11-06 it was clipped to the SAME-site box's apex range; the
         online envelope resolution replaces that). A learner that
         raises or returns non-finite falls back to ``u = y_d`` -- never a
-        refusal."""
+        refusal.
+
+        A context Learner (P1): the hop commands its MODEL command
+        ``learner.model_command(ctx, y_d)`` -- the plant model's global gain
+        and offsets are the correction it used to borrow from the column
+        context -- with the same lateral clip about ``dy`` and still no row.
+        ``ctx`` None (it could not be built) falls back to ``y_d``."""
         if self.learner is None:
             return dy, apex
         y_d_si = np.array([dy[0], dy[1], apex])
         try:
-            u = np.asarray(self.learner.command(x, y_d_si),
-                           dtype=float).reshape(3)
+            if self._takes_context:
+                if ctx is None:
+                    raise ValueError('no throw context')
+                u = np.asarray(self.learner.model_command(ctx, y_d_si),
+                               dtype=float).reshape(3)
+            else:
+                u = np.asarray(self.learner.command(x, y_d_si),
+                               dtype=float).reshape(3)
             if not np.all(np.isfinite(u)):
                 raise ValueError('non-finite learner command')
         except Exception as exc:  # fallback to the old bypass, never refuse
@@ -3965,8 +4184,19 @@ class SkillExecutor:
         u = np.array([float(u_dy[0]), float(u_dy[1]), float(u_apex)])
         dy = np.asarray(y_d[0], dtype=float).reshape(2)
         y_d_si = np.array([dy[0], dy[1], float(y_d[1])])
+        if self._takes_context:
+            ctx = self._ctx_cache.get(release_idx)
+            if ctx is None:
+                return None
         try:
-            y_hat = np.asarray(predict(x, u, y_d_si), dtype=float).reshape(3)
+            if self._takes_context:
+                # The row's question: the cached context with the LATEST
+                # release position and seat offset (:meth:`_latest_ctx`).
+                query = self._latest_ctx(release_idx, ctx)
+            else:
+                query = x
+            y_hat = np.asarray(predict(query, u, y_d_si),
+                               dtype=float).reshape(3)
             if not np.all(np.isfinite(y_hat)):
                 return None
             flight_s = float(sch.flight_s(float(y_hat[2])))
@@ -4360,10 +4590,15 @@ class SkillExecutor:
         What it changes on the machine: only WHEN the check runs (the tick
         blocks for it in the idle slot instead of at the dispatch) and the
         catch aim the early Learner state ``x[2:4]`` is read from -- the
-        prior, up to 0.30 s earlier than the dispatch's aim. The seat offset
-        has kernel bandwidth ``h_seat`` = 1.0 m, so a 30 mm aim difference
-        moves the candidate far below the 1 mm tolerance, and any move above
-        it is caught by the dispatch-time comparison and re-checked.
+        prior, up to 0.30 s earlier than the dispatch's aim. The Learner's
+        kernel does not measure the seat offset (old law: bandwidth
+        ``h_seat`` = 1.0 m; P1 Learner: position keyed on the release Site,
+        ``learner._kernel_pos``), so the aim reaches the candidate only
+        through the fly-back's lateral release velocity: measured 2026-11-06
+        on the 3276-row corpus, a 10 mm aim difference moves the P1
+        candidate by at most 0.37 mm and a 30 mm one by 0.88 mm at p95
+        (1.18 mm max), against the 1 mm tolerance; any move above it is
+        caught by the dispatch-time comparison and re-checked.
         """
         if self.checker is None or not self.early_command:
             return
@@ -4417,16 +4652,18 @@ class SkillExecutor:
         release_mm, x = self._catch_command_state(skill, landing)
         dy, apex = tt.y_d
         try:
+            ctx, u_model = self._catch_context(idx, skill, release_mm, x)
             u_cand = self._learner_candidate(
                 idx, release_site_of(skill), tt.target,
                 np.asarray(dy, dtype=float).reshape(2), float(apex), x,
-                online=True, mark_learned=False)
+                online=True, mark_learned=False, ctx=ctx)
         except _NoAdmissibleCommand:
             self._early_by_idx[idx] = _EarlyCommand(skill, t_abs_s, None)
             return
         try:
             res = self._catch_resolution(idx, skill, landing, t_abs_s,
-                                         release_mm, x, u_cand)
+                                         release_mm, x, u_cand,
+                                         u_model=u_model, ctx=ctx)
         except _NoAdmissibleCommand as exc:
             self._early_by_idx[idx] = _EarlyCommand(skill, t_abs_s, u_cand,
                                                     refusal=exc)
@@ -5045,6 +5282,12 @@ class SkillExecutor:
         # must keep saying so.
         x = np.asarray(x, dtype=float).copy()
         x[2:4] = self._seat_offset_m(idx)
+        ctx = self._ctx_cache.get(idx)
+        if ctx is not None:
+            try:
+                ctx = self._latest_ctx(idx, ctx)
+            except ValueError:      # a non-finite release: no row, by name
+                ctx = None
         target_xy_mm = np.asarray(target.catch_site_mm(), dtype=float)[:2]
         self._n_registered += 1
         t_land_scheduled = t_release + sch.flight_s(u_apex)
@@ -5058,7 +5301,7 @@ class SkillExecutor:
                                        t_land_scheduled, t_next_release),
             throw_no=self._n_registered,
             release_z_mm=float(release_site_of(skill).throw_site_mm()[2]),
-            shadow_landing=shadow_landing, entry_hop=entry_hop))
+            shadow_landing=shadow_landing, entry_hop=entry_hop, ctx=ctx))
 
     def _register_catch(self, idx: int, skill: Skill,
                         t_land_scheduled_s: float) -> None:
@@ -6076,14 +6319,27 @@ class SkillExecutor:
         # memory a bad throw that was not. Same no-row treatment; the report
         # and OUTCOME line still carry the observed landing and say why.
         offset_in_force = self.catch_time_offset_s != 0.0
+        # The schema-v2 row (P1) is built from the context stored at
+        # registration (release position and seat offset the LATEST ones).
+        # A release with no context (one that could not be built for an
+        # old-API Learner) writes no row and says so.
+        no_ctx = pend.ctx is None
         if (not pend.shadow_landing and not pend.entry_hop
-                and not offset_in_force):
-            exp = Experience(x=pend.x, u=pend.u, y=y, t_abs_s=pend.t_release_s,
-                             ball_id=pend.ball_id, caught=bool(caught))
+                and not offset_in_force and not no_ctx):
+            c = pend.ctx
+            exp = Experience(
+                site_xy_m=c.site_xy_m, release_m=c.release_m,
+                release_vel_mps=c.release_vel_mps, dwell_s=c.dwell_s,
+                seat_offset_m=c.seat_offset_m, u=pend.u, y=y,
+                t_abs_s=pend.t_release_s, ball_id=pend.ball_id,
+                release_kind=c.release_kind, caught=bool(caught))
             self.on_experience(exp)
         if offset_in_force:
             self._report(pend, row=False, apex_m=apex_obs_m,
                          no_row_reason='catch_time_offset in force')
+        elif no_ctx and not pend.shadow_landing and not pend.entry_hop:
+            self._report(pend, row=False, apex_m=apex_obs_m,
+                         no_row_reason='no learner context for this release')
         else:
             self._report(pend, row=True, apex_m=apex_obs_m)
         phase = ('' if pend.t_seat_s is None

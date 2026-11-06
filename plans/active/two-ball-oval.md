@@ -159,6 +159,9 @@ and whether this cup can carry a ball 150 mm in 0.30 s is what the plan finds ou
     *Amended 2026-10-21 (owner):* `dwell_s` travels on the Juggle goal (it was a node parameter); the GUI pre-fills it per pattern from the box's swept dwell (columns/hop/self_toss 0.27, oval 0.65), editable; the node parameter is the fallback when the goal sends 0. The 22:53 sitting's oval was refused for a 0.27 node dwell against the 0.65 box.
   - *44* — "shared `plant_id`" → oval sittings use a **separate `plant_id`**: T = P1 = (−75, 0) is the same
     `x[0:2]` as every columns / self_toss P1 row and `h_seat` does not separate them.
+    *Superseded 2026-11-06 (learner-generalisation P1, on branch `p3-online-admissibility`):* memory rows carry
+    a release kind and the Learner matches on it exactly, so carried and vertical Throws no longer pool;
+    `INVARIANTS.md` I-LEARN-1 is the rule (shared-memory behaviour on hardware is that plan's P5).
   - *48* — `CATCH_CLOSING_SPEED` 50 % → 25 % → **20 %** of the 0.7× target, held-axis catches exempt (cup stationary
     at touch-down by design). Achieved ratios: p50 0.58 over 479 windows, columns cells 0.44–0.48, BB feed
     0.42, hop landing 0.47–0.49, hop carry 0.349, near-hard capture 0.114, the oval 0.533. Origin of 20 %: the lowest catch ratio ever flown and installed is the sitting-6 (2026-10-06) high catch at the historical 930 mm plane (arrival −5520 mm/s, realised −960 vs target −3864 mm/s = 0.248), replayed by `tests/ros/test_install_segment.py` (pinned at 930 mm on purpose); 0.20 sits below it with margin and 1.75× above the 0.114 near-hard capture catch; the first re-base to 0.25 refused that replay.

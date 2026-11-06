@@ -641,9 +641,16 @@ def test_the_executor_gets_the_inward_authority_and_a_forward_model():
     assert resp.success is True, resp.message
     assert node._executor.catch_inward_authority_m == pytest.approx(0.035)
     assert node._executor.lateral_authority_m == pytest.approx(0.030)
+    # P1 (2026-11-06): the Learner takes a ThrowContext; cold = identity
+    from jugglebot.motion.skills import learner as lr
+    ctx = lr.ThrowContext(site_xy_m=(0.0, 0.0), release_m=(0.0, 0.0, 0.86),
+                          release_vel_mps=(0.0, 0.0, 4.2), dwell_s=0.27,
+                          ball_id=0, release_kind='free_cup')
     y_hat = node._executor.learner.predict(
-        np.zeros(4), np.array([0.001, 0.0, 0.9]), np.array([0.0, 0.0, 0.9]))
+        ctx, np.array([0.001, 0.0, 0.9]), np.array([0.0, 0.0, 0.9]))
     np.testing.assert_allclose(y_hat, [0.001, 0.0, 0.9])   # cold: identity
+    # and its lateral cap is the node's learner_lateral_authority_mm
+    assert node._executor.learner.config.c_max_xy_m == pytest.approx(0.030)
 
 
 def test_the_hold_tilt_max_deg_parameter_defaults_to_the_planner_ceiling():
@@ -923,7 +930,7 @@ def test_an_unreadable_memory_file_is_refused_not_raised(tmp_path):
     node._on_traj_status(_status())
     pre = _prelevel_ready(node)
     node._params['plant_id'] = 'dir_not_file'
-    (tmp_path / 'temp' / 'learn' / 'dir_not_file' / 'memory.csv').mkdir(
+    (tmp_path / 'temp' / 'learn' / 'dir_not_file' / 'memory_v2.csv').mkdir(
         parents=True)
     with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_self_toss_goal())
@@ -2258,9 +2265,12 @@ def test_a_refused_memory_row_is_logged_and_never_raises():
                              '0.9000 m')
 
     on_experience = node._bind_on_experience(_RefusingMemory())
-    exp = Experience(x=np.zeros(4), u=np.array([0.0, 0.0, 0.8569]),
+    exp = Experience(site_xy_m=np.zeros(2), release_m=[0.0, 0.0, 0.86],
+                     release_vel_mps=[0.0, 0.0, 4.1], dwell_s=float('nan'),
+                     seat_offset_m=np.zeros(2),
+                     u=np.array([0.0, 0.0, 0.8569]),
                      y=np.array([0.0, 0.0, 2.2317]), t_abs_s=1.0, ball_id=0,
-                     caught=True)
+                     release_kind='free_cup', caught=True)
     on_experience(exp)                       # must not raise
     assert len(errors) == 1
     assert 'memory row REFUSED (not appended)' in errors[0]
@@ -4216,7 +4226,11 @@ class TestOperatorLines:
             assert (node._juggle_goal(_columns_goal(separation_mm=100.0))
                    == sn.GoalResponse.ACCEPT)
         # P3b: the accept nomination's `nomination OK` line is DEBUG, so the
-        # operator console still sees exactly one INFO start line.
+        # operator console still sees exactly one INFO start line -- plus,
+        # since P1 (2026-11-06), the Learner's one goal-start line.
+        assert (len(info) == 2 and info[0].startswith('learner: plant model')
+                and ' rows 0 (accepted 0, rejected 0, unusable 0)' in info[0]), info
+        info = info[1:]
         assert len(info) == 1 and info[0].startswith('columns started: '), info
         # the goal's effective dwell and separation ride the line (the
         # hold-rung probe parses them rather than inferring from goal order)
@@ -7196,3 +7210,140 @@ def test_jb21_window_exists_the_moment_inflight_is_true(tmp_path):
     inflight, window = cli.in_flight
     assert inflight is True
     assert window is not None
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# P1 (learner-generalisation, 2026-11-06): ONE `_make_learner(memory)` --
+# PlantModel + Learner, the memory replayed, one INFO line; the v2 memory file
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _v2_row(i, u_apex=0.9, y_apex=0.95, kind='free_cup'):
+    import numpy as np
+    from jugglebot.motion.skills.memory import Experience
+    return Experience(site_xy_m=[-0.05, 0.0], release_m=[-0.05, 0.0, 0.86],
+                      release_vel_mps=[0.0, 0.0, 4.2], dwell_s=0.27,
+                      seat_offset_m=[0.0, 0.0], u=[0.0, 0.0, u_apex],
+                      y=[0.002, 0.0, y_apex], t_abs_s=float(i), ball_id=0,
+                      release_kind=kind, caught=True)
+
+
+def test_make_learner_replays_the_rows_in_file_order_and_logs_one_line(
+        tmp_path):
+    from jugglebot.motion.skills.memory import Memory
+    node, _client = _node_with_client()
+    memory = Memory(str(tmp_path / 'memory_v2.csv'))
+    for i in range(6):
+        memory.append(_v2_row(i))
+    memory.append(_v2_row(6, u_apex=0.9, y_apex=0.5))    # a K outlier
+    info = []
+    node.get_logger().info = info.append
+    learner = node._make_learner(memory, site_x=-0.05)
+    assert learner.takes_context and learner.n_rows == 7
+    assert learner.model.n_accepted == 6 and learner.model.n_rejected == 1
+    assert len(info) == 1, info
+    assert info[0].startswith('learner: plant model: ')
+    assert info[0].endswith('; rows 7 (accepted 6, rejected 1, unusable 0)'), info[0]
+    assert 'applied axis-0 offset at x' in info[0]      # site_x passed
+    assert learner.config.c_max_xy_m == pytest.approx(0.030)
+    # memoised on the memory object: the same Learner, no second replay/line
+    assert node._make_learner(memory) is learner and len(info) == 1
+    # a new memory (a new goal) builds a new one
+    assert node._make_learner(Memory(str(tmp_path / 'm2' /
+                                         'memory_v2.csv'))) is not learner
+    assert len(info) == 2 and info[1].endswith('rows 0 (accepted 0, '
+                                               'rejected 0, unusable 0)')
+    # ... and does NOT evict the first memory's Learner (audit 2026-11-06: a
+    # node-level slot let a later, refused goal's Memory replace the running
+    # goal's Learner, which a feed callback then rebuilt on its own thread).
+    assert node._make_learner(memory) is learner and len(info) == 2
+
+
+def test_make_learner_skips_and_counts_a_row_the_learner_cannot_use(tmp_path):
+    """One unusable row (``observe`` raising ValueError) must not ground the
+    plant: it is skipped, counted in the goal-start line, and every other row
+    is still replayed."""
+    from jugglebot.motion.skills.memory import Memory
+    node, _client = _node_with_client()
+    memory = Memory(str(tmp_path / 'memory_v2.csv'))
+    for i in range(4):
+        memory.append(_v2_row(i))
+    rows = memory.rows()
+
+    class _BadRow(object):
+        def __getattr__(self, name):
+            if name == 'u':
+                return (0.0, 0.0, -1.0)         # a non-positive commanded apex
+            return getattr(rows[0], name)
+    memory.rows = lambda: list(rows[:2]) + [_BadRow()] + list(rows[2:])
+    info = []
+    node.get_logger().info = info.append
+    learner = node._make_learner(memory)
+    assert learner.n_rows == 4
+    assert info[0].endswith('; rows 5 (accepted 4, rejected 0, unusable 1)'), info[0]
+
+
+def test_on_experience_appends_then_observes(tmp_path):
+    from jugglebot.motion.skills.memory import Memory
+    node, _client = _node_with_client()
+    memory = Memory(str(tmp_path / 'memory_v2.csv'))
+    learner = node._make_learner(memory)
+    on_experience = node._bind_on_experience(memory, learner)
+    on_experience(_v2_row(1))
+    assert len(memory) == 1 and learner.n_rows == 1
+    assert len(Memory(str(tmp_path / 'memory_v2.csv'))) == 1
+
+
+def test_a_row_the_memory_refuses_is_not_observed(tmp_path):
+    from jugglebot.motion.skills.memory import Memory
+    node, _client = _node_with_client()
+    errors = []
+    node.get_logger().error = errors.append
+    memory = Memory(str(tmp_path / 'memory_v2.csv'))
+    learner = node._make_learner(memory)
+    on_experience = node._bind_on_experience(memory, learner)
+    on_experience(_v2_row(1, u_apex=0.9, y_apex=3.0))   # outside the band
+    assert len(memory) == 0
+    assert learner.n_rows == 0                          # never observed
+    assert len(errors) == 1 and 'memory row REFUSED' in errors[0]
+
+
+def test_a_v1_memory_without_a_v2_file_refuses_the_goal_naming_the_migration(
+        tmp_path):
+    """The live plant's v1 ``memory.csv`` and no ``memory_v2.csv``: the
+    goal is refused BEFORE anything moves, and the message names the
+    migration command (a silent cold start beside an unmigrated corpus is
+    the failure this prevents)."""
+    node, _c = _node_with_client()
+    node._on_traj_status(_status())
+    pre = _prelevel_ready(node)
+    node._params['plant_id'] = 'v1_only'
+    d = tmp_path / 'temp' / 'learn' / 'v1_only'
+    d.mkdir(parents=True)
+    (d / 'memory.csv').write_text(
+        'x0,x1,x2,x3,u0,u1,u2_apex_m,y0,y1,y2_apex_m,t_abs_s,ball_id,caught\n')
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_self_toss_goal())
+    assert resp.success is False
+    assert 'memory refused' in resp.message
+    assert 'tools/migrate_memory_schema_v2.py' in resp.message
+    assert pre.calls == []
+    assert node._executor is None
+
+
+def test_a_goal_with_no_memory_starts_cold_on_the_identity(tmp_path):
+    node, _c = _node_with_client()
+    node._on_traj_status(_status())
+    _prelevel_ready(node)
+    node._params['plant_id'] = 'brand_new'
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_self_toss_goal())
+    assert resp.success is True, resp.message
+    learner = node._executor.learner
+    assert learner.n_rows == 0 and 'K' in learner.model.at_prior()
+    from jugglebot.motion.skills import learner as lr
+    ctx = lr.ThrowContext(site_xy_m=(0.0, 0.0), release_m=(0.0, 0.0, 0.86),
+                          release_vel_mps=(0.0, 0.0, 4.2), dwell_s=0.27,
+                          ball_id=0, release_kind='free_cup')
+    import numpy as np
+    y_d = np.array([0.0, 0.0, 0.9])
+    np.testing.assert_allclose(learner.command(ctx, y_d), y_d)

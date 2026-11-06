@@ -579,9 +579,10 @@ def test_a_small_oval_learner_run_flies_the_choreography_and_keys_memory_on_T(
     assert res['drops'] == 0 and res['makes'] == 5
     from jugglebot.motion.skills import memory as mem
     t_xy_m = np.asarray(sg._sites_for(cfg)[0].cup_mm[:2], dtype=float) / 1000.0
-    memory = mem.Memory(str(mem_dir / 'memory.csv'))
+    memory = mem.Memory(str(mem_dir / 'memory_v2.csv'))
     assert len(memory) >= 5
-    assert np.allclose(memory._X[:, :2], t_xy_m, atol=1e-6), memory._X[:, :2]
+    site_xy = np.array([e.site_xy_m for e in memory.rows()])
+    assert np.allclose(site_xy, t_xy_m, atol=1e-6), site_xy
 
 
 # ── R5: the columns learner run (Unit G, plan § R5) ─────────────────────────
@@ -1002,7 +1003,7 @@ def test_the_one_ball_columns_phantom_produces_no_learner_rows_or_announcement()
             return monkeypatch_target(self, ball_id, t_release_s, **kw)
         sg._IdentityTracker.announce = spying_announce
         tmp_memory = sg.mem.Memory(
-            sg.os.path.join(sg.tempfile.mkdtemp(), 'memory.csv'))
+            sg.os.path.join(sg.tempfile.mkdtemp(), 'memory_v2.csv'))
         end_code, loop, ictx, b_skills = gate.run_columns_1ball_attempt(
             n_throws=4, memory=tmp_memory, learner_cfg=sg.lr.LearnerConfig(),
             noise=sg.JuggleNoise(cfg.noise, seed=0),
