@@ -823,7 +823,17 @@ def test_interpolation_output():
 # Test 20: Normal interpolation unchanged within MAX_EXTRAP_DT_S
 # ---------------------------------------------------------------------------
 
-def test_normal_interpolation_unchanged():
+def _interpolate_at_frozen_age(guard, monkeypatch, age_s):
+    """Run one interpolation step with the clock frozen so the base is exactly
+    ``age_s`` old (immune to scheduling delay under load). Only this step is
+    frozen; the caller's finite-difference setup still uses real time."""
+    t0 = time.perf_counter()
+    monkeypatch.setattr(time, "perf_counter", lambda: t0)
+    guard._mpc_base_timestamp = t0 - age_s
+    guard._interpolate_and_send(guard.dt_target)
+
+
+def test_normal_interpolation_unchanged(monkeypatch):
     """Within MAX_EXTRAP_DT_S, interpolation is plain linear extrapolation."""
     guard, ipc = _make_guard()
     _enable(guard, ipc)
@@ -843,9 +853,7 @@ def test_normal_interpolation_unchanged():
 
     # Backdate by 20ms (well within 40ms normal window)
     dt_test = 0.020
-    guard._mpc_base_timestamp = time.perf_counter() - dt_test
-
-    guard._interpolate_and_send(guard.dt_target)
+    _interpolate_at_frozen_age(guard, monkeypatch, dt_test)
 
     # Expected: base_pos + vel * dt (plain linear)
     expected = guard._mpc_base_pos_rev + guard._mpc_base_vel_rps * dt_test
@@ -1179,7 +1187,7 @@ def test_stroke_clamp_workspace_status():
 # Test 30: Cubic interpolation with jerk
 # ---------------------------------------------------------------------------
 
-def test_cubic_interpolation_with_jerk():
+def test_cubic_interpolation_with_jerk(monkeypatch):
     """Cubic interpolation with known constant jerk is more accurate than quadratic.
 
     Sends 3 MPC commands with linearly increasing acceleration (constant jerk),
@@ -1217,9 +1225,8 @@ def test_cubic_interpolation_with_jerk():
 
     # Interpolate at a known dt and verify cubic term is present
     dt_test = 0.010  # 10 ms
-    guard._mpc_base_timestamp = time.perf_counter() - dt_test
     ipc.sent_telemetry.clear()
-    guard._interpolate_and_send(guard.dt_target)
+    _interpolate_at_frozen_age(guard, monkeypatch, dt_test)
 
     # Compute expected positions with and without jerk
     dt2 = dt_test * dt_test
@@ -1230,8 +1237,7 @@ def test_cubic_interpolation_with_jerk():
                  + (1.0/6.0) * guard._mpc_base_jerk_rps3 * (dt2 * dt_test))
 
     # Actual should match cubic, not quadratic.
-    # Tolerance is 1e-5 rev to absorb wall-clock jitter between
-    # timestamp-set and the perf_counter() inside _interpolate_and_send.
+    # Clock is frozen for the interpolation step, so the age is exact.
     np.testing.assert_allclose(
         guard._commanded_pos_rev, pos_cubic, atol=1e-5,
         err_msg="Interpolation should match cubic formula")
