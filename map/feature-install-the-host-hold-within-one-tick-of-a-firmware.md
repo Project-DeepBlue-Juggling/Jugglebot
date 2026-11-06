@@ -38,6 +38,24 @@ Where the host learns of a STOP today: `skill_node` reads `sched_refused` only f
 
 Recommendation: 1, then 2 if the probe shows the latch would have been a LANE_REFUSED inside one tick.
 
+## Findings (2026-11-06)
+
+Correction to the Options of 2026-11-05: option 2 cannot do what it said. The firmware reports a STOP only through `sched_stops`, `sched_refused` and the `SCHED_HOLD_LATCHED` flag in its heartbeat, and the heartbeat is 10 Hz (`HEARTBEAT_HZ` in `config/generated/udp_protocol.py`). The 100 Hz `TELEMETRY` frame does not carry them.
+
+| Leg | Today | With publish on change |
+|---|---|---|
+| STOP to the next heartbeat | 0-100 ms | 0-100 ms, unchanged |
+| Heartbeat to `/link_status` | 0-100 ms (timer phase) | about 0 |
+| `/link_status` to the END | up to 25 ms (one tick) | up to 25 ms |
+| END to hold installed | 110-210 ms (probe) | 110-210 ms, unchanged |
+
+- Publishing on change saves at most 100 ms, about 50 ms on average.
+- The probe's two guard latches beat the hold by 170 ms and 51 ms, so at best it turns one of those two around.
+- The Option 2 recommendation was conditional on the probe showing a LANE_REFUSED inside one tick. It does not.
+- JB-174's FW 40 may remove most of these STOPs, since each clean STOP fits one missing setpoint frame.
+
+No code was written for this Item tonight.
+
 ## Progress
 
 - 2026-11-05: Probe done 2026-11-05 (option 1): STOP -> hold 130-340 / 300 / 320 / 275 ms; WARN lag from 10 Hz link_status 0-130 ms, then 110-210 ms END -> hold installed. Guard latched before the hold in 2 of 4 (L1399 by 170 ms, L2361 by 51 ms). Publishing on change helps; the END -> install leg is the larger term.

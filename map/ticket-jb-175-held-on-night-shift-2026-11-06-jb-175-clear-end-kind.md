@@ -2,9 +2,9 @@
 id: JB-178
 kind: ticket
 title: 'JB-175 held on night-shift/2026-11-06-JB-175: clear end_kind on the re-labelled end and merge, merge as is, or drop?'
-status: open
+status: complete
 created: '2026-11-06'
-updated: '2026-11-05T18:29:57Z'
+updated: '2026-11-05T22:56:17Z'
 owners: []
 priority: medium
 effort: xs
@@ -42,3 +42,7 @@ Recommendation: 1. The Item exists to stop that line blaming the Catch.
 - 1: the next night applies it, re-gates and merges.
 - 2: the next night re-gates and merges.
 - 3: JB-175 goes back to open.
+
+## Answer
+
+I agree with your recommendation
