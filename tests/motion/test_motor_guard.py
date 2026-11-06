@@ -873,7 +873,7 @@ def test_normal_interpolation_unchanged(monkeypatch):
 # Test 21: Velocity decays during decay window
 # ---------------------------------------------------------------------------
 
-def test_extrapolation_vel_decays():
+def test_extrapolation_vel_decays(monkeypatch):
     """After MAX_EXTRAP_DT_S, vel_ff decays linearly toward zero."""
     guard, ipc = _make_guard()
     _enable(guard, ipc)
@@ -889,13 +889,12 @@ def test_extrapolation_vel_decays():
 
     # Backdate to midpoint of decay window: MAX_EXTRAP_DT_S + 0.5 * EXTRAP_DECAY_DT_S
     dt_test = MAX_EXTRAP_DT_S + 0.5 * EXTRAP_DECAY_DT_S
-    guard._mpc_base_timestamp = time.perf_counter() - dt_test
-
     # Simulate motors having tracked during the backdated interval so the
     # tracking clamp doesn't interfere with the extrapolation math under test.
     guard._motor_fb_pos_rev = guard._mpc_base_pos_rev + test_vel * dt_test
 
-    guard._interpolate_and_send(guard.dt_target)
+    # Clock frozen so the age is exactly dt_test (same value as the feedback above).
+    _interpolate_at_frozen_age(guard, monkeypatch, dt_test)
 
     # At midpoint, decay_frac = 0.5 → vel_ff should be ~50% of original
     expected_vel = test_vel * 0.5
@@ -1320,7 +1319,7 @@ def test_jerk_reset_on_disable():
 # Test 33: Decay boundary continuity with jerk
 # ---------------------------------------------------------------------------
 
-def test_decay_boundary_continuity():
+def test_decay_boundary_continuity(monkeypatch):
     """Position and velocity are continuous at the MAX_EXTRAP_DT_S boundary.
 
     With non-zero jerk, the cubic normal path and the decay path must agree
@@ -1353,23 +1352,20 @@ def test_decay_boundary_continuity():
 
     # Sample just inside the normal window (epsilon before boundary)
     eps = 1e-6
-    guard._mpc_base_timestamp = time.perf_counter() - (MAX_EXTRAP_DT_S - eps)
     ipc.sent_telemetry.clear()
-    guard._interpolate_and_send(guard.dt_target)
+    _interpolate_at_frozen_age(guard, monkeypatch, MAX_EXTRAP_DT_S - eps)
     pos_before = guard._commanded_pos_rev.copy()
     vel_before = guard._commanded_vel_ff_rps.copy()
 
     # Sample just outside the normal window (epsilon after boundary)
-    guard._mpc_base_timestamp = time.perf_counter() - (MAX_EXTRAP_DT_S + eps)
-    guard._interpolate_and_send(guard.dt_target)
+    _interpolate_at_frozen_age(guard, monkeypatch, MAX_EXTRAP_DT_S + eps)
     pos_after = guard._commanded_pos_rev.copy()
     vel_after = guard._commanded_vel_ff_rps.copy()
 
     # Position and velocity should be nearly identical across the boundary.
     # Velocity tolerance is slightly wider because the decay branch scales
-    # velocity by (1 - dt_over / EXTRAP_DECAY_DT_S), so even a few
-    # microseconds of wall-clock jitter between samples produces a small
-    # slope-dependent difference (~vel_boundary / EXTRAP_DECAY_DT_S * dt_jitter).
+    # velocity by (1 - dt_over / EXTRAP_DECAY_DT_S), so the 2*eps
+    # age difference between samples produces a small slope-dependent difference (~vel_boundary / EXTRAP_DECAY_DT_S * eps).
     np.testing.assert_allclose(
         pos_before, pos_after, atol=1e-4,
         err_msg="Position discontinuity at decay boundary")
@@ -1964,8 +1960,6 @@ def main():
         ("17. Vel_ff finite-difference", test_vel_ff_finite_difference),
         ("18. IPC heartbeat E-stop", test_ipc_heartbeat_estop),
         ("19. Interpolation output", test_interpolation_output),
-        ("20. Normal interpolation unchanged", test_normal_interpolation_unchanged),
-        ("21. Extrapolation vel decays", test_extrapolation_vel_decays),
         ("22. Hold after full decay", test_extrapolation_hold_after_decay),
         ("23. Extrapolation bounded", test_extrapolation_bounded),
         ("24. Stroke clamp", test_stroke_clamp),
@@ -1976,14 +1970,10 @@ def main():
         ("28. NaN sender vel_ff fallback", test_vel_ff_nan_sender_fallback),
         ("29. Stroke clamp promotes workspace status",
          test_stroke_clamp_workspace_status),
-        ("30. Cubic interpolation with jerk",
-         test_cubic_interpolation_with_jerk),
         ("31. Jerk zero on first command",
          test_jerk_zero_on_first_command),
         ("32. Jerk reset on disable",
          test_jerk_reset_on_disable),
-        ("33. Decay boundary continuity",
-         test_decay_boundary_continuity),
         ("34. Hermite interpolation with cmd_next",
          test_hermite_interpolation_with_cmd_next),
         ("35. Hermite no overshoot",
