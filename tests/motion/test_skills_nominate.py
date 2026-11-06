@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import dataclasses
 
+import numpy as np
 import pytest
 
 from jugglebot.motion.skills import nominate as nm
@@ -85,9 +86,21 @@ def test_columns_at_p4_plans_every_segment_and_matches_the_p3a_probe_cell():
         assert _refused(rep, 0, frac).margin == pytest.approx(1.0, abs=TOL)
     w = rep.worst()
     assert (w.idx, w.flight_frac, w.binding) == (5, -0.20, 'jerk')
-    assert rep.summary().startswith(
+    # JB-185: a plain nomination (the goal accept's) walks no second figure and
+    # prints the pre-JB-185 line byte for byte ...
+    assert rep.aim_verdicts == [] and rep.aim_solves == 0
+    assert rep.summary() == (
         'nomination OK: columns apex 0.95 m, separation 125 mm, dwell 0.27 s, '
         'pose; worst margin 0.335 (jerk, CATCH Ball 2 at P1, rung -20 %)')
+    # ... and asking for it adds the second figure to the SAME cached report
+    both = nm.nominate(C('columns', 0.95, 125.0, 0.27), P4, search=False,
+                       aim=nm.LAUNCH_AIM)
+    assert both is rep
+    assert both.summary().startswith(
+        'nomination OK: columns apex 0.95 m, separation 125 mm, dwell 0.27 s, '
+        'pose; worst margin 0.335 at the nominal Sites '
+        '(jerk, CATCH Ball 2 at P1, rung -20 %), ')
+    assert 'with the Catch re-aim at its limit' in both.summary()
 
 
 # ── the PHASE GATE: the 2026-10-31 high-low finding ─────────────────────────
@@ -340,7 +353,7 @@ def test_cache_returns_the_same_report_without_solving(monkeypatch):
     again = nm.nominate(config, nm.sitting_limits(600, 8000, 200000, 4500))
     assert again is first and calls == []
     other = nm.nominate(config, GATE, search=False)
-    assert other is not first and len(calls) == other.solves == 12
+    assert other is not first and len(calls) == other.solves == 12 and other.aim_solves == 0
 
 
 def test_a_refused_cached_report_searches_once(monkeypatch):
@@ -429,3 +442,180 @@ def test_a_seed_refused_on_the_envelope_is_labelled_with_the_envelope(monkeypatc
     assert (v0.idx, v0.code) == (0, 'ENVELOPE:FORCED')
     assert v1.seed == 'release of skill 0 (itself refused ENVELOPE:FORCED)'
     assert v1.solved and v1.code == 'ENVELOPE:FORCED'
+
+
+# ── JB-185: the re-aim figure is display only ────────────────────────────────
+#
+# Recipe (2026-11-06, Jetson, venv python 3.8, ONE BLAS thread):
+#   OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python -m pytest \
+#       tests/motion/test_skills_nominate.py -q -p no:cacheprovider
+# Pinned figures are the probe's at 600 / 8000 / 200000, Hand 4500 (to 1e-3).
+
+_AIM_GRID = [
+    (C('columns', 0.95, 125.0, 0.27), P4),                 # accepted
+    (C('columns', 1.0, 170.0, 0.27), P4),                  # accepted, thin
+    (C('hop', 0.90, 250.0, 0.27), P4),
+    (C('oval_1ball', 0.95, 150.0, 0.30), P4),              # refused, searched
+    (C('columns_highlow', 1.0, 125.0, 0.27, apex_m_ball2=0.9), GATE),  # refused
+    (C('self_toss', 0.60, 0.0, 0.27), P4),                 # no Leg motion
+]
+
+
+def _outcome(rep):
+    """Everything acceptance, the refusal lines and the search are made of,
+    margins left out (the QP is deterministic only to ~1e-12 run to run, so
+    they are compared with a tolerance below)."""
+    return (rep.ok, rep.refusals, rep.nearest, rep.solves,
+            [(v.idx, v.flight_frac, v.code, v.leg, v.t_s, v.seed)
+             for v in rep.verdicts])
+
+
+@pytest.mark.parametrize('config, limits', _AIM_GRID,
+                         ids=[c.pattern + '-%g-%g' % (c.apex_m, c.separation_mm)
+                              for c, _ in _AIM_GRID])
+def test_reaim_figure_never_changes_accept_refuse_search_or_margins(config, limits):
+    """Acceptance, every refusal line, the nearest-viable search and the
+    nominal verdicts (margins bit for bit) are the same with the re-aim
+    figure on (default) and off (``aim=None``, the pre-JB-185 path)."""
+    nm.clear_cache()
+    off = nm.nominate(config, limits)
+    nm.clear_cache()
+    on = nm.nominate(config, limits, aim=nm.LAUNCH_AIM)
+    assert _outcome(on) == _outcome(off)
+    assert [v.margin for v in on.verdicts] == pytest.approx(
+        [v.margin for v in off.verdicts], abs=1e-9, nan_ok=True)
+    if on.ok:
+        assert on.summary().split('; worst margin')[0] \
+            == off.summary().split('; worst margin')[0]
+    else:
+        assert on.summary() == off.summary() and on.aim_verdicts == []
+
+
+def test_reaim_figure_is_a_floor_below_the_nominal_and_rounds_out_the_line():
+    nm.clear_cache()
+    rep = nm.nominate(C('columns', 1.0, 170.0, 0.27), P4, search=False,
+                      aim=nm.LAUNCH_AIM)
+    assert rep.ok
+    assert rep.worst().margin == pytest.approx(0.211, abs=1e-3)
+    assert rep.aim_worst().margin == pytest.approx(0.016, abs=1e-3)
+    assert rep.aim_worst().margin < rep.worst().margin
+    assert not rep.aim_below_zero()
+    assert NEGATIVE not in rep.summary()
+    assert rep.aim_solves == 2 * 6 and rep.solves == 18   # worst rung only, 2 signs
+    # the plain wording of the operator's line
+    assert ('worst margin 0.211 at the nominal Sites (jerk, CATCH Ball 1 at P2, '
+            'rung -20 %), 0.016 with the Catch re-aim at its limit (') in rep.summary()
+
+
+NEGATIVE = nm.AIM_NEGATIVE_TEXT
+
+
+def test_reaim_below_zero_is_still_accepted_and_says_so():
+    """Columns Apex 0.80 / Sep. 100 / Dwell 0.27 at the generated launch limits
+    (the JB-185 sim case): nominal 0.060 (accepted, as before), re-aim figure
+    negative, the one added sentence names the consequence."""
+    nm.clear_cache()
+    rep = nm.nominate(C('columns', 0.80, 100.0, 0.27), search=False,
+                      aim=nm.LAUNCH_AIM)
+    assert rep.ok and rep.refusals == []
+    assert rep.worst().margin == pytest.approx(0.060, abs=1e-3)
+    assert rep.aim_worst().margin < 0.0 and rep.aim_below_zero()
+    assert rep.summary().endswith('. ' + NEGATIVE)
+    assert 'An Attempt may end mid-Pattern on an admissibility refusal.' in rep.summary()
+
+
+def test_one_site_pattern_plans_no_second_walk():
+    """Self-toss (no outward direction, no Leg motion): the line is the old
+    one, nothing was walked twice."""
+    nm.clear_cache()
+    rep = nm.nominate(C('self_toss', 0.60, 0.0, 0.27), P4, search=False,
+                      aim=nm.LAUNCH_AIM)
+    assert rep.ok and rep.aim_verdicts == [] and rep.aim_solves == 0
+    assert rep.summary().startswith(
+        'nomination OK: self_toss apex 0.60 m, dwell 0.27 s, pose; worst margin 1.000 (')
+    assert 'at the nominal Sites' not in rep.summary()
+
+
+def test_aim_authority_is_the_launch_table_and_the_clamp_is_the_executors():
+    """No copied literals: the default authorities ARE
+    ``executor.LAUNCH_LATERAL_AUTHORITY_MM`` and the displacement is what
+    ``SkillExecutor._lateral_clip_mm`` returns for the corner ask: OUTWARD
+    ``catch_outward_authority_mm`` along the Site's outward unit, ACROSS the
+    lateral authority; the Learner's shift is the lateral box."""
+    from jugglebot.motion.skills import executor as ex
+    t = ex.LAUNCH_LATERAL_AUTHORITY_MM
+    assert nm.LAUNCH_AIM == nm.AimAuthority(
+        t['learner_lateral_authority_mm'], t['catch_outward_authority_mm'],
+        t['catch_inward_authority_mm'])
+    sched = nm.compile_schedule(C('columns', 0.95, 125.0, 0.27))
+    sh = nm._AimShifts(sched, nm.LAUNCH_AIM, +1)
+    p1 = sched.skills[1].site
+    from jugglebot.motion.skills.executor import SkillExecutor
+    u = SkillExecutor._outward_unit_at(sh.stub, p1)
+    d = sh.catch_mm(p1)
+    assert float(d[:2] @ u) == pytest.approx(t['catch_outward_authority_mm'])
+    assert abs(float(d[0] * -u[1] + d[1] * u[0])) == pytest.approx(
+        t['learner_lateral_authority_mm'])
+    # the two signs are mirror corners across the axis
+    d2 = nm._AimShifts(sched, nm.LAUNCH_AIM, -1).catch_mm(p1)
+    assert float(d2[:2] @ u) == pytest.approx(float(d[:2] @ u))
+    assert float(d2[0] * -u[1] + d2[1] * u[0]) == pytest.approx(
+        -float(d[0] * -u[1] + d[1] * u[0]))
+    assert np.allclose(sh.learner_mm(p1)[:2],
+                       np.clip((u + np.array([-u[1], u[0]])) * 1e6,
+                               -t['learner_lateral_authority_mm'],
+                               t['learner_lateral_authority_mm']))
+
+
+def test_the_aim_figure_is_not_part_of_the_cache_key_and_never_walks_twice(monkeypatch):
+    """The plain nomination (goal accept) and the aim nomination share ONE
+    cached report; a second ask for the same authorities solves nothing, a
+    different authority re-walks only the figure; `has_aim_for` is a pure read."""
+    nm.clear_cache()
+    cfg = C('columns', 0.95, 125.0, 0.27)
+    a = nm.nominate(cfg, P4, search=False, aim=nm.LAUNCH_AIM)
+    other = nm.AimAuthority(30.0, 0.0, 35.0)
+    assert a.has_aim_for(nm.LAUNCH_AIM) and not a.has_aim_for(other)
+    calls = []
+    real = nm.sg.plan_segment
+    monkeypatch.setattr(nm.sg, 'plan_segment',
+                        lambda *x, **k: calls.append(1) or real(*x, **k))
+    assert nm.nominate(cfg, P4, search=False) is a
+    assert nm.nominate(cfg, P4, search=False, aim=nm.LAUNCH_AIM) is a
+    assert calls == []
+    worst_before = a.aim_worst().margin
+    assert nm.nominate(cfg, P4, search=False, aim=other) is a and calls
+    assert a.has_aim_for(other) and a.aim_worst().margin > worst_before
+
+
+def test_accept_path_performs_zero_second_walk_solves(monkeypatch):
+    """Counting every `plan_segment` call: a plain `nominate` of an accepted
+    config makes exactly the nominal walk's `solves` (12 at the gate limits),
+    `aim_solves` stays 0, and a repeat is free."""
+    nm.clear_cache()
+    calls = []
+    real = nm.sg.plan_segment
+    monkeypatch.setattr(nm.sg, 'plan_segment',
+                        lambda *x, **k: calls.append(1) or real(*x, **k))
+    rep = nm.nominate(C('columns', 0.95, 125.0, 0.27), P4, search=False)
+    assert rep.ok and len(calls) == rep.solves and rep.aim_solves == 0
+    n = len(calls)
+    nm.nominate(C('columns', 0.95, 125.0, 0.27), P4, search=False)
+    assert len(calls) == n
+
+
+def test_worst_rung_walk_equals_the_full_walk_on_the_probe_cases():
+    """The choice behind AIM_FULL_WALK = False: on the four cases probed
+    (2026-11-06) the one-rung walk returns the full walk's figure."""
+    assert nm.AIM_FULL_WALK is False
+    lim = nm.default_limits()
+    for cfg, limits in ((C('columns', 1.0, 170.0, 0.27), P4),
+                        (C('columns', 0.80, 100.0, 0.27), lim)):
+        nm.clear_cache()
+        rep = nm.nominate(cfg, limits, search=False)
+        figs = []
+        for full in (False, True):
+            nm.add_aim_figure(rep, limits, nm._default_geom(), nm.RUNGS,
+                              nm.LAUNCH_AIM, full=full)
+            figs.append(rep.aim_worst().margin)
+        assert figs[0] == pytest.approx(figs[1], abs=0.01)

@@ -801,11 +801,7 @@ def _make_bumper(ictx: _InstallCtx, limits, geom):
 #: re-aim went through UNCLAMPED where the robot clips it to the 20 mm learner
 #: authority (30 mm since JB-139, 2026-11-02); with them set the gate makes 2 per seed again (1 before; the
 #: ``LIMIT_JERK`` ends JB-27 saw after 08ec3fe6 no longer reproduce on main).
-LAUNCH_LATERAL_AUTHORITY_MM = {
-    'learner_lateral_authority_mm': 30.0,
-    'catch_outward_authority_mm': 10.0,
-    'catch_inward_authority_mm': 35.0,
-}
+LAUNCH_LATERAL_AUTHORITY_MM = ex.LAUNCH_LATERAL_AUTHORITY_MM   # the table lives in executor.py
 
 
 def _launch_authority_kwargs() -> dict:

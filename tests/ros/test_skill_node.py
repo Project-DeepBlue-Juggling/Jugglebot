@@ -4239,6 +4239,26 @@ class TestOperatorLines:
         assert info[0].endswith(' · dwell %.2f s · sep 100 mm'
                                 % sn._DEFAULT_DWELL_S), info
 
+    def test_a_self_toss_start_line_names_its_site(self, tmp_path):
+        # JB-190: the Site is a node parameter set by hand between goals; at
+        # the P2 Sitting (2026-11-06) seven goals flew at x = -50 instead of
+        # 0 and no console line said so. Columns' start line is unchanged
+        # (the test above pins its ending).
+        node, _client = _node_with_client(
+            response=_response(t_release_mono=50.0))
+        node._on_traj_status(_status())
+        _prelevel_ready(node)
+        node.set_parameters([_MockParameter(60.0, name='site_y_mm')])
+        info = []
+        node.get_logger().info = info.append
+        with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+            assert (node._juggle_goal(_self_toss_goal())
+                    == sn.GoalResponse.ACCEPT)
+        start = [ln for ln in info if ' started: ' in ln]
+        assert len(start) == 1, info
+        assert start[0].endswith(
+            ' · site (%g, 60) mm' % sn._DEFAULT_SITE_X_MM), start
+
     def test_a_refused_goal_is_one_error_line(self):
         node, _client = _node_with_client(frame=False)
         node.set_parameters(

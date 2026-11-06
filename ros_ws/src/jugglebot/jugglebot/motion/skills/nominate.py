@@ -79,6 +79,7 @@ import collections
 import dataclasses
 import math
 import time
+from types import SimpleNamespace
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -95,7 +96,8 @@ from jugglebot.motion.skills import admissible as adm
 from jugglebot.motion.skills import schedule as sc
 from jugglebot.motion.skills import segments as sg
 from jugglebot.motion.skills import sites as st
-from jugglebot.motion.skills.executor import (SkillExecutor, _previous_release,
+from jugglebot.motion.skills.executor import (LAUNCH_LATERAL_AUTHORITY_MM,
+                                              SkillExecutor, _previous_release,
                                               _terminal_on_segment_clock,
                                               release_site_of)
 
@@ -399,16 +401,138 @@ def _ball(sk) -> str:
     return sc.ball_label(sk.ball_id)
 
 
+@dataclasses.dataclass(frozen=True)
+class AimAuthority:
+    """The lateral authorities (mm) the live stack moves a Catch aim and a
+    Throw's landing by: ``lateral_mm`` = ``learner_lateral_authority_mm``,
+    ``outward_mm`` / ``inward_mm`` = ``catch_outward_authority_mm`` /
+    ``catch_inward_authority_mm``.  The default (:data:`LAUNCH_AIM`) is
+    ``executor.LAUNCH_LATERAL_AUTHORITY_MM``; skill_node passes its live
+    parameter values."""
+    lateral_mm: float
+    outward_mm: float
+    inward_mm: float
+
+    @classmethod
+    def from_params(cls, table) -> 'AimAuthority':
+        return cls(lateral_mm=float(table['learner_lateral_authority_mm']),
+                   outward_mm=float(table['catch_outward_authority_mm']),
+                   inward_mm=float(table['catch_inward_authority_mm']))
+
+
+LAUNCH_AIM = AimAuthority.from_params(LAUNCH_LATERAL_AUTHORITY_MM)
+
+#: The across signs the re-aim figure walks (one Schedule walk each, at the
+#: rungs :data:`AIM_FULL_WALK` picks).  Both signs: the
+#: worse one depends on the Leg layout (Sep. 170: 0.084 vs 0.059).  ``(1,)``
+#: halves the extra cost and is no longer a floor on the 2026-11-06 Sitting.
+AIM_ACROSS_SIGNS = (1, -1)
+
+#: Walk the re-aim figure at EVERY rung (True) or only at the commanded-flight
+#: rung where the nominal worst margin sits (False).  See the comment where it
+#: is settled.  CHOSEN (2026-11-06): the worst rung only.  Probe, figure from
+#: the full 3-rung walk vs the worst-rung walk (both across signs), launch
+#: Sitting limits: Columns Apex 1.00 Sep. 170 0.0161 / 0.0161; Columns Apex
+#: 1.00 Sep. 120 0.1777 / 0.1777; columns_turned 90 deg Apex 1.00 Sep. 120
+#: 0.1487 / 0.1487; Columns Apex 0.80 Sep. 100 (launch default limits)
+#: -0.2354 / -0.2354 (all within 0.01, i.e. identical).  Cost: 12 solves and
+#: ~0.39 s instead of 36 and ~1.2 s on an idle box.  The assumption (the rung
+#: that is worst nominally is worst re-aimed) is a probe result, not a proof:
+#: set True to walk every rung again.
+AIM_FULL_WALK = False
+
+#: What the second (re-aim) figure reads in the operator's line, and the
+#: sentence added when it is below zero.
+AIM_FIGURE_TEXT = 'with the Catch re-aim at its limit'
+AIM_NEGATIVE_TEXT = ('An Attempt may end mid-Pattern on an admissibility '
+                     'refusal.')
+
+
+class _AimShifts:
+    """The worst-case displacements of one Schedule, from the executor's OWN
+    routines (``_outward_unit_at``, ``_lateral_clip_mm``) on a stub carrying
+    the :class:`AimAuthority`: no copied clamp arithmetic.
+
+    **The corner.**  Every Catch aim sits at the clamp's corner: OUTWARD by
+    ``outward_mm`` along the unit away from the other Site, and ACROSS by
+    ``lateral_mm`` per axis, the across sign taking the opposite world side at
+    the two Sites (``across_sign`` +1 / -1 picks which).  Why outward: it
+    lengthens the transit to the next Catch (the 2026-10-12 finding behind
+    ``catch_outward_authority_mm``): with the Sites ``S`` apart and outward
+    ``o`` at each end the Platform goes ``S + 2 o`` (170 -> 190 mm at 10 mm),
+    and peak Leg speed, acceleration and jerk all grow with the transit; inward
+    shortens it.  Why across, opposed: the two ends displaced to opposite
+    sides lengthen the transit by ``hypot(S + 2 o, 2 c) - S - 2 o`` more and
+    add a transverse move the Legs also pay for (a probe at Sep. 170 read
+    0.095 outward only, 0.084 / 0.059 with the two opposed across signs;
+    inward and same-side across were all higher).  The sign that is worst
+    depends on the Leg layout, hence two walks.  The Learner shifts a Throw's
+    landing to the same corner (per axis, as ``_command_u`` clips); the
+    Catch then sees THAT ball (its arrival velocity is the one for the
+    shifted landing) while aiming only as far as the clamp lets it.  The
+    Learner's APEX correction is a flight-time change of the kind the rungs
+    already walk (-20 / +10 %), so it is not walked twice.  NOT searched: the
+    sign of the Learner shift that is worst for one Throw's release velocity
+    (the same corner is taken for all), unequal corners per Catch (2^n), and
+    the tracker's velocity and timing error."""
+
+    def __init__(self, schedule, aim: AimAuthority, across_sign: int = 1):
+        self.aim = aim
+        self.across_sign = 1 if across_sign >= 0 else -1
+        self.stub = SimpleNamespace(
+            schedule=schedule,
+            lateral_authority_m=aim.lateral_mm / 1000.0,
+            catch_outward_authority_m=aim.outward_mm / 1000.0,
+            catch_inward_authority_m=aim.inward_mm / 1000.0)
+        self.any_outward = any(
+            SkillExecutor._outward_unit_at(self.stub, sk.site) is not None
+            for sk in schedule.skills if sk.kind in (THROW, CATCH))
+
+    def _corner(self, site):
+        """``(outward unit, ask)``: ``ask`` is an unboundedly outward-and-
+        across offset for the clamps to cut down to the corner."""
+        u = SkillExecutor._outward_unit_at(self.stub, site)
+        if u is None:
+            return None, None
+        perp = np.array([-u[1], u[0]])
+        return u, (u + self.across_sign * perp) * 1.0e6
+
+    def catch_mm(self, site) -> np.ndarray:
+        """The Catch aim's displacement at ``site`` (the executor's clamp
+        applied to the corner ask), xyz mm."""
+        u, ask = self._corner(site)
+        out = np.zeros(3)
+        if u is not None:
+            clipped, _a, _o, _i = SkillExecutor._lateral_clip_mm(
+                self.stub, ask, u)
+            out[:2] = clipped
+        return out
+
+    def learner_mm(self, site) -> np.ndarray:
+        """The Learner's shift of a Throw aimed at ``site`` (per-axis box, as
+        ``_command_u`` clips), xyz mm."""
+        u, ask = self._corner(site)
+        out = np.zeros(3)
+        if u is not None:
+            a = self.aim.lateral_mm
+            out[:2] = np.clip(ask, -a, a)
+        return out
+
+
 def plan_nominal(schedule, limits, geom, cfg, flight_frac: float = 0.0, *,
                  stop_after: Optional[int] = None,
                  counter: Optional[list] = None,
-                 proxy_seeds: bool = True) -> List[SegmentVerdict]:
+                 proxy_seeds: bool = True,
+                 shifts: Optional[_AimShifts] = None) -> List[SegmentVerdict]:
     """Walk ``schedule.nominal_segments(schedule)`` keeping the chain of
     release states, planning each Segment with ``segments.plan_segment`` at
     commanded flight ``flight_s(apex) * (1 + flight_frac)`` (the schedule's
     timing and every incoming ball stay at the pattern flight).  One verdict
     per Skill, in dispatch order; ``stop_after`` ends the walk after that
-    Skill index; ``counter[0]`` counts solves."""
+    Skill index; ``counter[0]`` counts solves.  ``shifts`` (default None =
+    every Catch at its nominal Site, THE nomination) walks the same Segments
+    with the worst-case re-aim of :class:`_AimShifts`; it never decides
+    acceptance."""
     verdicts: List[SegmentVerdict] = []
     segs: Dict[int, object] = {}         # idx -> planned Segment (ok or MARGIN)
     good_by_shape: Dict[tuple, object] = {}
@@ -487,14 +611,17 @@ def plan_nominal(schedule, limits, geom, cfg, flight_frac: float = 0.0, *,
         # ── the terminal ──
         try:
             if sk.kind == THROW:
-                frac = _cmd_frac(flight_frac, sk.shadow_landing or sk.entry_hop)
+                bypass = bool(sk.shadow_landing or sk.entry_hop)
+                frac = _cmd_frac(flight_frac, bypass)
                 cmd_flight = sc.flight_s(float(sk.y_d[1])) * (1.0 + frac)
                 term = sg.ThrowTerminal(
                     site_mm=sk.site.throw_site_mm(),
-                    target_mm=_commanded_target_mm(sk.target, sk.y_d),
+                    target_mm=(_commanded_target_mm(sk.target, sk.y_d)
+                               + _learner_shift(shifts, sk.target, bypass)),
                     flight_s=cmd_flight, t_release_s=float(sk.t_abs_s))
             else:
-                pos_mm, vel_mm_s, t_land, note = _landing(schedule, ns.idx, sk)
+                pos_mm, vel_mm_s, t_land, note = _landing(schedule, ns.idx, sk,
+                                                          shifts)
                 if note:
                     v.message = note
                 then = None
@@ -510,7 +637,9 @@ def plan_nominal(schedule, limits, geom, cfg, flight_frac: float = 0.0, *,
                     cmd_flight = sc.flight_s(float(tt.y_d[1])) * (1.0 + frac)
                     then = sg.ThrowAfterCatch(
                         t_release_s=float(tt.t_release_abs_s), site_mm=release_mm,
-                        target_mm=_commanded_target_mm(tt.target, tt.y_d),
+                        target_mm=(_commanded_target_mm(tt.target, tt.y_d)
+                                   + _learner_shift(shifts, tt.target,
+                                                    bool(tt.shadow_landing))),
                         flight_s=cmd_flight)
                 if sk.rest_site_mm is not None:
                     rest_mm = sg.hold_axis_site(pos_mm, sk.hold_tilt,
@@ -592,16 +721,30 @@ def _proxy_release(src, limits, geom, cfg, counter):
     return seg.release_state
 
 
-def _landing(schedule, idx, sk):
+def _learner_shift(shifts, target_site, bypass: bool) -> np.ndarray:
+    """The Learner's worst-case shift of a Throw's commanded landing (zero for
+    the nominal walk and for a Stop / hop-entry Throw, which bypass it)."""
+    if shifts is None or bypass:
+        return np.zeros(3)
+    return shifts.learner_mm(target_site)
+
+
+def _landing(schedule, idx, sk, shifts: Optional[_AimShifts] = None):
     """``(pos_mm, vel_mm_s, t_land_abs_s, note)`` at the identity command.
     Always built: from the Skill's landing prior, else from the producing
     release in the Schedule, else (a ball in flight before t0) by bend 1's
     synthesis.  A Pattern that needs a live landing (``reload``) is refused
-    ``NOT_NOMINATED`` by name before any walk."""
+    ``NOT_NOMINATED`` by name before any walk.
+
+    With ``shifts`` the Catch AIM is displaced by the executor's outward
+    clamp (:meth:`_AimShifts.catch_mm`) and, where the producing Throw is
+    walked, the ball itself arrives from the Learner-shifted landing."""
     if sk.landing_prior is not None:
         lp = sk.landing_prior
-        return (np.asarray(lp.pos_mm, dtype=float),
-                np.asarray(lp.vel_mm_s, dtype=float),
+        pos = np.asarray(lp.pos_mm, dtype=float)
+        if shifts is not None:
+            pos = pos + shifts.catch_mm(sk.site)
+        return (pos, np.asarray(lp.vel_mm_s, dtype=float),
                 float(lp.t_land_abs_s), 'landing prior')
     prev = _previous_release(schedule, idx, sk.ball_id)
     if prev is None:
@@ -612,6 +755,8 @@ def _landing(schedule, idx, sk):
         pos = np.asarray(sk.site.catch_site_mm(), dtype=float)
         lv = bal.launch_velocity(np.asarray(sk.site.throw_site_mm(), dtype=float),
                                  pos, flight)
+        if shifts is not None:
+            pos = pos + shifts.catch_mm(sk.site)
         return (pos, bal.arrival_velocity(lv, flight), float(sk.t_abs_s),
                 'pre-t0 ball: identity self-toss assumed')
     _site, t_release, y_d, target, ridx = prev
@@ -622,7 +767,17 @@ def _landing(schedule, idx, sk):
     # the identity command all three are throw_site_mm().
     rel_mm = np.asarray(release_site_of(schedule.skills[ridx]).throw_site_mm(),
                         dtype=float)
-    lv = bal.launch_velocity(rel_mm, pos, flight)
+    producer = schedule.skills[ridx]
+    bypass = bool((producer.shadow_landing or producer.entry_hop)
+                  if producer.kind == THROW
+                  else (producer.then_throw is not None
+                        and producer.then_throw.shadow_landing))
+    # the ball's actual landing (the Learner-shifted one) fixes its arrival
+    # velocity; the Catch aims at the schedule landing moved by the clamp
+    ball_pos = pos + _learner_shift(shifts, target, bypass)
+    lv = bal.launch_velocity(rel_mm, ball_pos, flight)
+    if shifts is not None:
+        pos = pos + shifts.catch_mm(sk.site)
     return pos, bal.arrival_velocity(lv, flight), t_release + flight, ''
 
 
@@ -650,10 +805,38 @@ class NominationReport:
     search_wall_s: float = 0.0
     search_note: str = ''
     search_trace: List[tuple] = dataclasses.field(default_factory=list)
+    #: The re-aim figure (JB-185, owner option C): the SAME Segments walked at
+    #: every rung with the worst-case Catch re-aim (:class:`_AimShifts`).
+    #: DISPLAY ONLY: ``ok``, ``refusals`` and the nearest-viable search are
+    #: decided on ``verdicts`` alone.  Empty when it was not computed (a
+    #: refused nomination, a one-Site Pattern, ``aim=None``).
+    aim_verdicts: List[SegmentVerdict] = dataclasses.field(default_factory=list)
+    aim_wall_s: float = 0.0
+    aim_solves: int = 0
+    #: ``dataclasses.astuple(AimAuthority)`` the figure above was walked for
+    #: (None = not computed): a printed figure is only honest for the
+    #: authorities it was walked with.
+    aim_for: Optional[tuple] = None
 
     def worst(self) -> Optional[SegmentVerdict]:
         vs = [v for v in self.verdicts if v.solved and not math.isnan(v.margin)]
         return min(vs, key=lambda v: v.margin) if vs else None
+
+    def aim_worst(self) -> Optional[SegmentVerdict]:
+        """The worst margin with the Catch re-aim at its limit, or None."""
+        vs = [v for v in self.aim_verdicts
+              if v.solved and not math.isnan(v.margin)]
+        return min(vs, key=lambda v: v.margin) if vs else None
+
+    def aim_below_zero(self) -> bool:
+        """True when an Attempt could end on an admissibility refusal at the
+        re-aim limit: a margin below zero, or a Segment the planner refused
+        with no margin at all (unreachable, no seed, envelope)."""
+        if not self.aim_verdicts:
+            return False
+        w = self.aim_worst()
+        return (w is None or not w.margin >= 0.0
+                or any(not v.ok for v in self.aim_verdicts))
 
     def config_text(self) -> str:
         c = self.config
@@ -669,7 +852,13 @@ class NominationReport:
         s += ', %s%s' % (c.planner_mode, ', carry_zvd' if c.carry_zvd else '')
         return s
 
-    def summary(self) -> str:
+    def has_aim_for(self, aim: Optional['AimAuthority']) -> bool:
+        """True when this report carries the re-aim figure walked for
+        exactly ``aim`` (a pure read: never walks)."""
+        return (aim is not None and bool(self.aim_verdicts)
+                and self.aim_for == dataclasses.astuple(aim))
+
+    def summary(self, show_aim: bool = True) -> str:
         """ONE line: ``nomination OK: <config>; worst margin 0.310 (jerk, CATCH
         Ball 2 at P2, rung +10 %)`` or ``nomination REFUSED: <config>; 3
         refusals; nearest viable: separation 100 mm (or dwell 0.22 s,
@@ -681,9 +870,25 @@ class NominationReport:
                 where = ' (%s, %s %s at %s, rung %+d %%)' % (
                     w.binding, w.kind, w.ball, w.site,
                     int(round(w.flight_frac * 100)))
-            return ('nomination OK: %s; worst margin %.3f%s'
+            if not (show_aim and self.aim_verdicts):
+                return ('nomination OK: %s; worst margin %.3f%s'
+                        % (self.config_text(),
+                           w.margin if w else float('nan'), where))
+            a = self.aim_worst()
+            a_where = ''
+            if a is not None:
+                a_where = ' (%s, %s %s at %s, rung %+d %%)' % (
+                    a.binding, a.kind, a.ball, a.site,
+                    int(round(a.flight_frac * 100)))
+            line = ('nomination OK: %s; worst margin %.3f at the nominal Sites%s,'
+                    ' %s %s%s'
                     % (self.config_text(), w.margin if w else float('nan'),
-                       where))
+                       where,
+                       '%.3f' % a.margin if a else 'unplannable',
+                       AIM_FIGURE_TEXT, a_where))
+            if self.aim_below_zero():
+                line += '. ' + AIM_NEGATIVE_TEXT
+            return line
         n = len(self.refusals)
         s = 'nomination REFUSED: %s; %d refusal%s' % (
             self.config_text(), n, '' if n == 1 else 's')
@@ -759,13 +964,22 @@ def clear_cache() -> None:
 
 def nominate(config: NominationConfig, limits: Optional[TrajectoryLimits] = None,
              geom: Optional[StewartGeometry] = None, *, rungs=RUNGS,
-             search: bool = True) -> NominationReport:
+             search: bool = True,
+             aim: Optional[AimAuthority] = None) -> NominationReport:
     """Nominate ``config`` at ``limits`` (default: the generated launch
     constants) and, when refused and ``search``, find the nearest viable
     configuration.  Cached (LRU of :data:`CACHE_SIZE`, keyed on the config,
     every limits field and the rungs; the config fixes the planner config) for
     the default geometry only: a second call returns the SAME report object
-    without solving, and a refused report searches once."""
+    without solving, and a refused report searches once.
+
+    ``aim`` (default ``None`` = NOT computed: the nomination costs exactly
+    what it did before JB-185, and is what the goal accept calls) walks the
+    DISPLAY-ONLY re-aim figure (:attr:`NominationReport.aim_verdicts`, see
+    :func:`add_aim_figure`) onto an accepted, cached report that does not yet
+    carry it for these authorities.  It is NOT part of the cache key (the
+    nominal walk is shared, never repeated) and never reaches ``ok``,
+    ``refusals`` or the search."""
     limits = default_limits() if limits is None else limits
     geom = _default_geom() if geom is None else geom
     use_cache = geom is _default_geom()
@@ -783,11 +997,46 @@ def nominate(config: NominationConfig, limits: Optional[TrajectoryLimits] = None
             and config.pattern not in NOT_NOMINATED_PATTERNS
             and NOTHING_TO_PLAN not in rep.refusals):
         _search_nearest(rep, limits, geom, rungs)
+    if aim is not None and rep.ok and not rep.has_aim_for(aim):
+        add_aim_figure(rep, limits, geom, rungs, aim)
     return rep
 
 
+def add_aim_figure(rep: NominationReport, limits, geom, rungs,
+                   aim: AimAuthority, *, full: bool = AIM_FULL_WALK) -> None:
+    """Walk the JB-185 re-aim figure onto an ACCEPTED ``rep`` (display only;
+    ``rep.ok`` / ``refusals`` / ``verdicts`` are not touched).  Only where
+    there is an outward direction (a one-Site Pattern has none).  The goal
+    accept never calls this: only ``nominate(..., aim=...)`` (the
+    ``skills/nominate`` service) does."""
+    t0 = time.perf_counter()
+    schedule = compile_schedule(rep.config)
+    cfg = segment_config(rep.config)
+    walk_rungs = tuple(rungs)
+    w = rep.worst()
+    if not full and w is not None:
+        walk_rungs = (w.flight_frac,)
+    counter = [0]
+    verdicts: List[SegmentVerdict] = []
+    for sign in AIM_ACROSS_SIGNS:
+        shifts = _AimShifts(schedule, aim, sign)
+        if not shifts.any_outward:
+            break
+        verdicts.extend(walk_schedule(schedule, limits, geom, cfg, walk_rungs,
+                                      counter=counter, shifts=shifts))
+    rep.aim_solves = counter[0]
+    rep.aim_wall_s = time.perf_counter() - t0
+    # The report is read unlocked. `aim_for` is published LAST: a reader that
+    # races a re-walk for new authorities then sees either the old figure with
+    # the old `aim_for`, or the new figure with the old `aim_for` (so
+    # `has_aim_for` is False and the figure is not printed), never a figure
+    # labelled with authorities it was not walked for.
+    rep.aim_verdicts = verdicts
+    rep.aim_for = dataclasses.astuple(aim)
+
+
 def walk_schedule(schedule, limits, geom, cfg, rungs=RUNGS, *,
-                  counter=None) -> List[SegmentVerdict]:
+                  counter=None, shifts=None) -> List[SegmentVerdict]:
     """Every Skill of ``schedule`` planned at every rung: THE nomination
     criterion (a Schedule is viable iff no verdict here is ``not ok``).
 
@@ -799,7 +1048,7 @@ def walk_schedule(schedule, limits, geom, cfg, rungs=RUNGS, *,
     verdicts: List[SegmentVerdict] = []
     for f in rungs:
         verdicts.extend(plan_nominal(schedule, limits, geom, cfg, f,
-                                     counter=counter))
+                                     counter=counter, shifts=shifts))
     return verdicts
 
 
@@ -822,8 +1071,10 @@ def _nominate_once(config, limits, geom, rungs) -> NominationReport:
         # Nothing was walked (empty rungs, or a Schedule with no non-REST
         # Skill): never vacuously viable.
         refusals = [NOTHING_TO_PLAN] + refusals
-    return NominationReport(config, not refusals, verdicts, refusals, [],
-                            time.perf_counter() - t0, counter[0])
+    t1 = time.perf_counter()
+    rep = NominationReport(config, not refusals, verdicts, refusals, [],
+                           t1 - t0, counter[0])
+    return rep
 
 
 def _first_refusal(rep) -> Optional[SegmentVerdict]:

@@ -472,3 +472,57 @@ def test_nominate_request_dwell_is_used_and_zero_is_the_pattern_default():
     without = _nominate_req(node, 'oval_1ball,separation_mm=150')
     assert 'dwell 0.65 s' in with_dwell.message
     assert 'dwell 0.27 s' in without.message
+
+
+def test_the_service_walks_the_aim_figure_and_the_accept_only_prints_it():
+    """JB-185 (owner option C), cost-neutral accept: `_nominate` hands the
+    nomination the LIVE authorities only when asked (`with_aim`, the
+    `skills/nominate` service); the goal accept's nominate never walks the
+    second figure (zero aim solves) but prints both when the service already
+    primed the cache for the CURRENT authorities."""
+    nom.clear_cache()
+    node, _client = _ready_node('aim')
+    node._params['catch_outward_authority_mm'] = 6.0
+    node._params['catch_inward_authority_mm'] = -3.0
+    assert node._nomination_aim() == sn.nom.AimAuthority(30.0, 6.0, 0.0)
+    node._params['catch_outward_authority_mm'] = 10.0
+    node._params['catch_inward_authority_mm'] = 35.0
+    seen = []
+    real = nom.nominate
+
+    def spy(config, limits=None, *a, **kw):
+        seen.append(kw.get('aim'))
+        return real(config, limits, *a, **kw)
+    cfg = node._nomination_config('hop', 0.9, 250.0, 0.27)
+    with patch.object(sn.nom, 'nominate', spy):
+        plain = node._nominate(cfg)                    # the accept's call
+        assert seen == [None] and plain.report.aim_solves == 0
+        assert ' at the nominal Sites' not in plain.summary
+        both = node._nominate(cfg, with_aim=True)      # the service's call
+        assert seen[-1] == sn.nom.AimAuthority(30.0, 10.0, 35.0)
+        assert both.ok and ' at the nominal Sites' in both.summary
+        assert 'with the Catch re-aim at its limit' in both.summary
+        # accept again: no walk, both figures printed from the primed cache
+        solves = both.report.aim_solves
+        again = node._nominate(cfg)
+        assert seen[-1] is None and again.report.aim_solves == solves
+        assert 'with the Catch re-aim at its limit' in again.summary
+        # a changed live authority: the stale figure is NOT printed
+        node._params['catch_outward_authority_mm'] = 5.0
+        stale = node._nominate(cfg)
+        assert ' at the nominal Sites' not in stale.summary
+
+
+def test_accept_never_walks_the_aim_figure_and_the_service_does_not_while_busy():
+    nom.clear_cache()
+    node, _client = _ready_node('aim_accept')
+    walked = []
+    with patch.object(sn.nom, 'add_aim_figure',
+                      lambda *a, **k: walked.append(1)):
+        sn.SkillNode._nominate_at_accept(node, 'hop', 0.9, 250.0, 0.27)
+    assert walked == []
+    node._goal_starting = True       # a goal is starting: the service skips it
+    with patch.object(sn.nom, 'add_aim_figure',
+                      lambda *a, **k: walked.append(1)):
+        res = _nominate_req(node, 'hop,apex_m=0.9,separation_mm=250')
+    assert walked == [] and 'unavailable' in res.message

@@ -369,6 +369,21 @@ AIM_SOURCES = (AIM_SCHEDULE, AIM_SCHEDULE_HAND, AIM_TRACKER)
 #: (\S+)`` regexes read it whole.
 AIM_SCHEDULE_LEARNED = 'schedule:learned'
 
+#: The launch's lateral authorities, in mm, as ``skill_node`` declares them
+#: (``learner_lateral_authority_mm`` / ``catch_outward_authority_mm`` /
+#: ``catch_inward_authority_mm``; ``jugglebot_launch.py`` passes none of them,
+#: so these declared defaults ARE what the robot runs). THE one pure-Python
+#: copy: ``sim/skills_gate.py`` and the goal-accept nomination
+#: (``nominate.AimAuthority``) read it, and
+#: ``tests/sim/test_skills_gate.py::test_gate_lateral_authorities_match_the_launch``
+#: parses ``skill_node.py`` and fails if its ``declare_parameter`` defaults
+#: drift from it (``skill_node`` imports rclpy, so it cannot import this).
+LAUNCH_LATERAL_AUTHORITY_MM = {
+    'learner_lateral_authority_mm': 30.0,
+    'catch_outward_authority_mm': 10.0,
+    'catch_inward_authority_mm': 35.0,
+}
+
 
 def _aim_dependent_refusal(code) -> bool:
     """True for a refusal the CATCH's AIM could have caused -- a limit or an

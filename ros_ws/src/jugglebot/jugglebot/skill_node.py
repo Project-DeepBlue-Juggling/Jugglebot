@@ -4303,7 +4303,18 @@ class SkillNode(Node):
                 % (config.pattern, ex.REJECTED_SITE_OUTSIDE_WORKSPACE,
                    '; '.join(out), lim_mm, config.separation_mm))
 
-    def _nominate(self, config) -> SimpleNamespace:
+    def _nomination_aim(self) -> nom.AimAuthority:
+        """The LIVE lateral authorities the nomination's re-aim figure walks
+        (JB-185, display only): the same three parameters every
+        ``SkillExecutor(...)`` build of this node is handed, so the printed figure
+        follows ``ros2 param set`` exactly."""
+        return nom.AimAuthority(
+            lateral_mm=abs(float(self.get_parameter(
+                'learner_lateral_authority_mm').value)),
+            outward_mm=self._catch_outward_authority_m() * 1000.0,
+            inward_mm=self._catch_inward_authority_m() * 1000.0)
+
+    def _nominate(self, config, *, with_aim: bool = False) -> SimpleNamespace:
         """Nominate ``config`` at the live limits -- the goal-accept and
         ``skills/nominate`` / ``skills/check`` entry. Returns
         ``SimpleNamespace(ok, summary, lines, report, seconds)``; never moves
@@ -4318,14 +4329,32 @@ class SkillNode(Node):
         t0 = time.perf_counter()
         try:
             with self._nominate_lock:
-                report = nom.nominate(config, self._nomination_limits())
+                # JB-185: the re-aim figure is walked ONLY when the caller
+                # asks (`skills/nominate`, never an Attempt); the goal accept
+                # (with_aim False) costs what it did before it and prints the
+                # figure only when a service call already walked it for the
+                # CURRENT authorities.
+                aim = self._nomination_aim()
+                # Re-read under the lock: a goal that began starting while
+                # this call waited must not queue behind the second walk.
+                # (A goal that starts once the walk is under way waits for
+                # it: about 0.4 s on an idle box. Outcomes are unaffected.)
+                walk_aim = with_aim and not self._goal_starting
+                report = nom.nominate(config, self._nomination_limits(),
+                                      aim=aim if walk_aim else None)
+                # a cached report may carry a figure walked for OTHER
+                # authorities: print it only for the current ones
+                stale_aim = (bool(getattr(report, 'aim_verdicts', None))
+                             and not report.has_aim_for(aim))
         except Exception as exc:  # noqa: BLE001 -- a goal / call must be answered
             msg = 'nomination failed: %s: %s' % (type(exc).__name__, exc)
             self.get_logger().error(msg)
             return SimpleNamespace(ok=False, summary=msg, lines=[msg],
                                    report=None,
                                    seconds=time.perf_counter() - t0)
-        return SimpleNamespace(ok=bool(report.ok), summary=report.summary(),
+        return SimpleNamespace(ok=bool(report.ok),
+                               summary=(report.summary(False) if stale_aim
+                                        else report.summary()),
                                lines=list(report.lines()), report=report,
                                seconds=time.perf_counter() - t0)
 
@@ -6630,13 +6659,23 @@ class SkillNode(Node):
             # reads them instead of inferring from goal order.
             # A trailing field only (the parsers search, never anchor the
             # end): Ball 2's Apex of a columns_highlow goal.
+            # JB-190: a one-ball self_toss prints the Site it throws at (the
+            # node's `site_x_mm` / `site_y_mm`, set by hand between goals and
+            # shown nowhere else before the first Memory row). Trailing, and
+            # on that pattern only, so every other start line is unchanged.
+            site = ''
+            if attempt['pattern'] == 'self_toss':
+                site = ' · site (%g, %g) mm' % (
+                    float(self.get_parameter('site_x_mm').value),
+                    float(self.get_parameter('site_y_mm').value))
             self.get_logger().info(
                 '%s · dwell %.2f s · sep %g mm%s'
                 % (start, attempt['dwell_s'], attempt['separation_mm'],
                    (' · angle %g deg' % attempt['angle_deg'])
                    if attempt.get('angle_deg') is not None else '')
                    + (' · apex2 %.2f m' % attempt['apex_m_ball2']
-                      if 'apex_m_ball2' in attempt else ''))
+                      if 'apex_m_ball2' in attempt else '')
+                   + site)
         else:
             self.get_logger().info('jugglebot/juggle ACCEPTED: %s'
                                    % (result.message,))
@@ -6807,10 +6846,13 @@ class SkillNode(Node):
             response.success = False
             response.message = refusal
             return response
+        # `_refuse_if_running` above answered 'unavailable' for any live or
+        # starting goal, so this branch only runs with no Attempt: the one
+        # place the second (re-aim) figure is walked (JB-185).
         res = self._nominate(self._nomination_config(
             pattern, apex_m, separation_mm, dwell_s,
             apex_m_ball2=apex_m_ball2, angle_deg=angle_deg,
-            feed_site=feed_site))
+            feed_site=feed_site), with_aim=True)
         response.success = res.ok
         response.message = '\n'.join([res.summary] + (
             [] if res.ok else list(res.lines)))
