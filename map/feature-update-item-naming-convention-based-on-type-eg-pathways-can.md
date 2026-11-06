@@ -2,10 +2,11 @@
 id: JB-118
 kind: feature
 title: Update item naming convention based on type (eg. Pathways can be "PWAY-<N>" and Plans can be "PLAN-<N>" etc.
-status: complete
+status: in_progress
 created: '2026-10-30'
-updated: '2026-11-01T01:04:55Z'
-owners: []
+updated: '2026-11-06T23:32:36Z'
+owners:
+- jugglebot-61
 priority: medium
 effort: m
 hardware: none
@@ -35,3 +36,4 @@ A question ticket carries this to the owner; the answer under its `## Answer` re
 ## Progress
 
 - 2026-11-01: Answered by JB-131 (display only, one JB-n sequence kept); shipped in the map app (fork cc2f3d4, deployed 2026-11-01): a kind pill beside every Item ID, JB-n in reports links to the drawer.
+- 2026-11-07: Reopened by the owner: reverses the JB-131 answer. Going with option 3, per-kind prefixes with per-kind counters, with every Item-ID reference to JB rewritten; implementation plan in draft.
