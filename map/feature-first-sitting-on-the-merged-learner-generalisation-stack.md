@@ -4,7 +4,7 @@ kind: feature
 title: 'First Sitting on the merged learner-generalisation stack: live admissibility check, nomination and the first learned Throws'
 status: inbox
 created: '2026-11-06'
-updated: '2026-11-06T02:02:16Z'
+updated: '2026-11-06T02:33:03Z'
 owners: []
 priority: high
 effort: s
@@ -43,3 +43,8 @@ The no-motion phases of plan `learner-generalisation.md` (P3a, P3b, P3c, P1, P4)
 - pass: both service calls answer and nominate reads viable; the Sep. 100 Attempt reads `COMPLETED (20/20 caught)` with no Attempt ended by an `ADMISSIBILITY` refusal (end `NO_ADMISSIBLE_COMMAND`); at Sep. 170 each ball's first Throw has a Tracker Apex within 40 mm of the commanded Apex (the identity prior missed by about 75 mm).
 - record: the launch log and bag paths, N from the `learner:` line, the nominate reply and its time, the count of `ADMISSIBILITY-EARLY` lines ending `the early resolution is sent` against `re-checked at dispatch`, each ball's first five Tracker Apexes at Sep. 170, caught of thrown per Attempt.
 - minutes: 25
+
+## Sitting result (2026-11-06 13:33)
+
+- verdict: pass
+- notes: Great result! Row 2 ended prematurely a few times due to ball mid-air collisions (unsurprising given the narrow separation gap). Row 3 was terminated with an E-stop because the aggressive lateral movements ripped Legs 1 and 2 out of their (magnetic) base joints. Thankfully no actual damage was incurred. In the same Sitting, after fixing the legs and re-levelling, I tried sep. 125 and 135, both passing with the only drops being mid-air collisions or otherwise messy throws. No attempt ended with a software hangup.
