@@ -4,7 +4,7 @@ kind: bug
 title: 'Mid-air ball collisions end half of two-ball Columns Attempts at Apex 1.00: closest approach about 70 mm at Sep. 100, 125 and 135'
 status: inbox
 created: '2026-11-06'
-updated: '2026-11-06T03:05:27Z'
+updated: '2026-11-06T05:58:23Z'
 owners: []
 priority: medium
 diagnosis: confirmed
@@ -12,6 +12,7 @@ area: skill-stack
 blocked_by: []
 links:
 - logbook/2026-11-06-sitting-debrief.md
+- logbook/2026-11-06-sitting-debrief-2.md
 filed_by: claude
 ---
 
@@ -25,3 +26,10 @@ At the Sitting of 2026-11-06 four of eight two-ball Columns Attempts (Apex 1.00,
 
 ## Wanted
 - Know what sets the lateral drift of a flight (release velocity error, Platform ring, tilt at release) well enough to say which separation gives a usable collision rate at Apex 1.00, or to reduce the drift. P2 of plan `learner-generalisation.md` (the characterisation Sitting) records the release telemetry this needs.
+
+## Progress
+
+- 2026-11-06: 2026-11-06 afternoon: collisions confirmed again (closest approach 70 to 77 mm, both balls kink) in 8 of 23 MISSED_CATCH ends over 35 endurance goals (Sep. 125 to 133, Apex 0.95 to 1.05) and 2 of 5 at the P2 Sitting (Sep.
+- 2026-11-06: 120, pair turned 90 degrees). About 1.2 collision ends per 100 Throws; Sep. 133 was no better than 125 (small n). 5 of 7 collision-like events at P2 did not end the Attempt.
+- 2026-11-06: A cause candidate, measured: two-ball Throws land pulled toward the partner Site by 0.18 of the Site coordinate (11 mm at Sep. 120), the same along x and along a pair turned 90 degrees, so the two columns lean together; one-ball Throws show none. Platform tilt at release sets the lateral scatter (r 0.78 x, 0.62 y in one-ball goals).
+- 2026-11-06: Evidence: `temp/probes/sitting_debrief_2026-11-06b/unit_B_D.md`, `unit_A_C.md`.

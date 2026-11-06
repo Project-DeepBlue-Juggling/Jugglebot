@@ -6,7 +6,7 @@ owner: Harrison
 last_updated: 2026-11-06
 pathway: learner-generalisation
 scope: >-
-  Replace the local-linear memory with a global plant model (apex gain, lateral offset, centre-pull, per-ball
+  Replace the local-linear memory with a global plant model (apex gain, lateral offset, a slope on release-Site x (not a centre pull, P2), per-ball
   offset) plus a physics-keyed fixed-Jacobian residual and evidence-scaled authority, retire the offline
   AdmissibleBox sweep for online admissibility, and add a per-beat event stream so any throw site, apex,
   dwell or yaw can be commanded and changed mid-pattern. Re-ordered 2026-11-05 (owner): P3a the
@@ -15,15 +15,16 @@ scope: >-
   stream, P5 close-out.
 steps:
   - {id: P3a, title: Command-time admissibility check, kind: phase, status: complete, effort: m, hardware: none}
-  - {id: P3b, title: Nomination-time check and the nearest viable configuration, kind: phase, status: in_progress, effort: m, hardware: none}
+  - {id: P3b, title: Nomination-time check and the nearest viable configuration, kind: phase, status: complete, effort: m, hardware: none}
   - {id: P3c, title: Box retirement, kind: phase, status: complete, effort: s, hardware: none}
   - {id: P1, title: Learner core, kind: phase, status: complete, effort: m, hardware: none}
-  - {id: P2, title: The characterisation sitting, kind: phase, status: in_progress, effort: m, hardware: robot}
+  - {id: P2, title: The characterisation sitting, kind: phase, status: complete, effort: m, hardware: robot}
   - {id: P4, title: BeatEvent stream and the columns wrapper, kind: phase, status: complete, effort: m, hardware: none}
   - {id: P5, title: Close-out, kind: phase, status: not_started, effort: s, hardware: none}
 related_logbook:
   - 2026-10-18-learner-generalisation-investigation.md
   - 2026-11-04-admissible-box-sweep-obviation-investigation.md
+  - 2026-11-06-sitting-debrief-2.md
 related_config:
   - config/generated/admissible_box.yaml (RETIRED 2026-11-06 at P3c, with gate_hash and the dwell-in-key)
 related_code:
@@ -187,8 +188,8 @@ new code is pure Python under `motion/skills/`, no new dependency.
 
 ### 2.2 L1 — global plant model f₀ (`motion/skills/plant_model.py`; AS BUILT 2026-11-06)
 
-Parameters θ (SI): K (apex gain); b = (b_x, b_y) lateral offset [m]; s (centre-pull slope per m of
-release-Site x, axis 0 ONLY until P2(b) says it is radial); Δ_b per-ball lateral offset (built, switched
+Parameters θ (SI): K (apex gain); b = (b_x, b_y) lateral offset [m]; s (slope per m of release-Site x on
+axis 0 ONLY; NOT a centre pull, see the P2 pin below); Δ_b per-ball lateral offset (built, switched
 OFF: the corpus cannot separate ball from Site, P2(c) does).
 
 ```
@@ -208,6 +209,13 @@ within max(9 % of K, 3 sd_K). On the 3276-row corpus K = 1.079–1.081 (per Sitt
 earlier row). The lateral offsets are NOT global (−2 to +18 mm by Site): L2 carries them. The 2026-10-18
 "initialise from the corpus fit" was dropped (it contradicts the identity at an empty memory). Record:
 `logbook/2026-11-06-learner-generalisation-p1-learner-core.md`.
+
+**P2 pin (Sitting 2026-11-06, JB-187; `logbook/2026-11-06-sitting-debrief-2.md`).** b is a fixed distance, not an aim
+angle; Δ_b stays OFF; s stays on Robot x only (leave-one-Site-out 6.2 mm x only, 7.3 radial, 7.0 separate; one-ball
+s_y +0.067 ± 0.059 per m); b's frame is not identified, so b stays in the Robot frame. `s` is NOT a centre pull of
+the Site: one-ball Throws show none (s_x −0.073 ± 0.061). Two-ball Throws land pulled toward the PARTNER Site by
+−0.18 per m of Site coordinate (about 11 mm at Sep. 120), along the pair at any angle, and it is an arrival
+transient (the first Throw of an Attempt has none). It is not a term of f₀ (JB-192; § 7).
 
 ### 2.3 L2 — residual memory keyed on physics (`learner.py`, `memory.py` schema v2; AS BUILT 2026-11-06)
 
@@ -321,7 +329,9 @@ dispatch).
 BeatEvent(throw_site, catch_site, apex_m, dwell_s, yaw_rad=0.0, ball_id=0, release_kind='free_cup')
 # one Throw: where the cup releases it, where the ball is caught next, how high, and how long the
 # ball was held before it. release_kind: 'free_cup' | 'carried' (refused by compile_beats until the
-# oval's compiler targets it). yaw_rad != 0 is refused by name (BEAT_YAW_NOT_SUPPORTED) until P2.
+# oval's compiler targets it). yaw_rad != 0 is refused by name (BEAT_YAW_NOT_SUPPORTED); P2 chose its frame:
+# Sites rotate about the Platform origin in the Robot frame; b and the one-ball s stay in the Robot frame; the
+# arrival pull turns with the Pattern and is not in f0, so yaw stays refused until it is fixed or carried (§ 7).
 ```
 
 A Pattern is a finite tuple of BeatEvents. `columns_events(pattern, hop_entry)` is the Columns generator,
@@ -375,10 +385,10 @@ open-ended streams (the Stop must be known at compile; nomination plans the whol
 | Phase | Scope | Status | Date | Risk | Validates |
 |-------|-------|--------|------|------|-----------|
 | P3a | Command-time admissibility check (three evaluations max, early start), `throw_envelope.evaluate` re-homed | COMPLETE (merged to `main` 2026-11-06; flown the same day: 100 of 100 early checks reused, no refusal) | 2026-11-06 | High (safety content moves) | Loaded-Jetson p99 within slack; sim gate green with no box |
-| P3b | Nomination-time check and the nearest viable configuration | IN PROGRESS (merged and flown 2026-11-06, every goal accepted; the printed margin is higher than the live plan's, JB-185, an owner decision) | 2026-11-06 | Medium (goal acceptance, GUI) | Every refusal at once; nearest viable named; moving-site Patterns checkable |
+| P3b | Nomination-time check and the nearest viable configuration | COMPLETE (merged and flown 2026-11-06, every goal accepted; JB-185 closed by option C: the worst-corner margin is printed beside the nominal one, acceptance unchanged) | 2026-11-06 | Medium (goal acceptance, GUI) | Every refusal at once; nearest viable named; moving-site Patterns checkable |
 | P3c | Box retirement per § 6.4 | COMPLETE (merged to `main` 2026-11-06) | 2026-11-06 | Low | Census counts to zero |
 | P1 | Learner core: `plant_model.py`, `learner.py`, `memory.py` v2 + migration, replay probe | COMPLETE (merged to `main` 2026-11-06; every plant's memory migrated to `memory_v2.csv` the same day) | 2026-11-06 | Medium (changes every commanded u) | Cold-start apex error 12.9 mm (gate < 15 mm) at Sites with earlier data |
-| P2 | Characterisation sitting (D6): θ structure, yaw frame, telemetry | IN PROGRESS (Runbook written 2026-11-06, Sitting row JB-187; not flown) | | Medium (hardware) | Aim vs offset; radial vs x; frame; Δ_b |
+| P2 | Characterisation sitting (D6): θ structure, yaw frame, telemetry | COMPLETE (flown 2026-11-06 15:53, JB-187 passed; the four decisions keep today's structure, § 2.2) | | Medium (hardware) | Aim vs offset; radial vs x; frame; Δ_b |
 | P4 | BeatEvent stream, columns wrapper, next-beat rule, dwell out of node params | COMPLETE (merged to `main` 2026-11-06; no live operator channel, by decision) | 2026-11-06 | High (schedule path, ~20 test files) | Golden test (227 compiles identical); sim mid-pattern change |
 | P5 | Close-out: columns ↔ oval shared memory on hardware, INVARIANTS rows, archive | NOT STARTED | | Low | No aliasing; invariants pinned |
 
@@ -396,7 +406,7 @@ were reused at dispatch (lead 174 to 324 ms, median 291; candidate moved 0.0 mm 
 P3b: every goal was accepted (about 2 s uncached), `skills/check` and `skills/nominate` answered before power; no
 refusal occurred, so the nearest-viable message was not exercised on hardware. Its printed margin was 0.194 at
 Sep. 170 against 0.075 on the live checks (it plans at the nominal Sites, without the re-aim travel): JB-185, an
-owner decision, so P3b stays in progress. P1 hardware tests: T-H3 met (Columns 20/20 at Sep. 125 and at
+owner decision, so P3b stayed in progress (closed the same day by option C, see the Close paragraph under Phase 3b). P1 hardware tests: T-H3 met (Columns 20/20 at Sep. 125 and at
 Sep. 135); T-H2 supported on a thin sample (first Throws at new Sites within 15.4 mm of the commanded Apex at
 Sep. 135, four Throws, 5 mm from known Sites; within 5.2 mm at Sep. 170, two Throws); the Learner's correction
 never reached its authority. Sep. 170 separated Legs 1 and 2 from their magnetic base joints (JB-184; owner
@@ -443,7 +453,9 @@ can be A/B'd in sim.
   `NO_ADMISSIBLE_COMMAND` preserved for a failing model command; `./run_tests.sh --full` green;
   loaded-Jetson dress rehearsal of `skills/check`. Depends: none (D7).
 
-### Phase 3b: Nomination-time check and the nearest viable configuration — IN PROGRESS
+### Phase 3b: Nomination-time check and the nearest viable configuration — COMPLETE
+
+**Close (2026-11-06).** JB-185 closed by option C (owner): acceptance unchanged on the nominal margin, the nomination also reports the worst margin with every Catch aim at the executor's clamp corner (Columns Apex 1.00 Sep. 170: 0.211 nominal, 0.016 at the corner; `logbook/2026-11-06-nomination-reaim-figure.md`). The P2 Sitting's 346 live checks read 0.04 to 0.07 under the nomination in every two-ball goal.
 
 **Outcome (2026-11-06).** Built on branch `p3-online-admissibility`, held for the owner's merge; commits carry
 `Logbook-Entry: 2026-11-06-learner-generalisation-p3b-nomination-check` and the entry
@@ -517,9 +529,11 @@ Owed at merge: the migration run on each live memory (`python tools/migrate_memo
 temp/learn/<plant>/memory.csv --out temp/learn/<plant>/memory_v2.csv`); the first learned Throws on
 hardware (T-H2, T-H3). Depends: none (P3a-c landed first per D7).
 
-### Phase 2: The characterisation sitting — IN PROGRESS
+### Phase 2: The characterisation sitting — COMPLETE
 
-> Runbook written 2026-11-06: `tests/hardware/session_learner_characterisation.md`, Sitting row JB-187 (not flown). As written it differs from the text below in three ways. (a) flies five Apexes, 0.70 to 1.05, as one-ball `self_toss` goals at the centre Site; the nomination admits more, and 1.05 is the cap because a Hand stall stop at 1.10 fits the stroke by 0.08 rev only. (b) is one-ball `self_toss` at Sites 60 mm off centre on y and on x, plus the Columns pair at Sep. 120 turned to 90 degrees with the same pair along x as the same-day control. Every row goes to the `jugglebot` plant and is told apart by time, Site and release (schema v2), so no per-rung `plant_id` is set. (d) needs nothing built: the log's `release +N ms` and the bag's Hand state are read at the debrief. Every rung nominated offline on 2026-11-06; the before-power steps of the Runbook are its rehearsal on the loaded box.
+**Result (Sitting 2026-11-06 15:53, JB-187 passed; `logbook/2026-11-06-sitting-debrief-2.md`).** (a) offset is a distance (Apex slope −22 ± 17 mm/m x, +8 ± 16 y); K one number over 0.70 to 1.00 (1.084 to 1.090), 1.067 at 1.05 (Hand 4 % under command). (b) s stays on x; b's frame not identified, so Robot. (c) Δ_b OFF (balls B and C differ 10 / 12 mm, under 2 SE). (d) release telemetry: the release-time error does not move the Apex; the Platform's tilt at release tracks the ball's lateral velocity (r 0.78 / 0.62) and that tilt is commanded, the planner flying back the previous Catch offset. Found beyond the rules: the two-ball pull is an arrival transient (JB-192) and the flyback gain is 1.2 to 1.4 times too strong (JB-193). The Site flown for goals 1 to 7 was x = −50, not 0 (Runbook step 2 not applied, JB-190). § 2.2 and § 2.6 carry the pins.
+
+> Runbook written 2026-11-06: `tests/hardware/session_learner_characterisation.md`, Sitting row JB-187 (flown 15:53 the same day). As written it differs from the text below in three ways. (a) flies five Apexes, 0.70 to 1.05, as one-ball `self_toss` goals at the centre Site; the nomination admits more, and 1.05 is the cap because a Hand stall stop at 1.10 fits the stroke by 0.08 rev only. (b) is one-ball `self_toss` at Sites 60 mm off centre on y and on x, plus the Columns pair at Sep. 120 turned to 90 degrees with the same pair along x as the same-day control. Every row goes to the `jugglebot` plant and is told apart by time, Site and release (schema v2), so no per-rung `plant_id` is set. (d) needs nothing built: the log's `release +N ms` and the bag's Hand state are read at the debrief. Every rung nominated offline on 2026-11-06; the before-power steps of the Runbook are its rehearsal on the loaded box.
 
 > Note 2026-11-06: the box named in (a) is retired (P3c); the Apex range of (a) is now whatever the goal-accept nomination admits. After the Sitting of 2026-11-06 keep (b)'s Sites and the rotated pair inside what has flown (transits up to 156 mm at 600 / 8000; a 187 mm transit separated two Legs, JB-184).
 
@@ -566,7 +580,7 @@ criterion), not the event stream. Depends: P1, P3a-c.
 
 ### Phase 5: Close-out — NOT STARTED
 
-Columns ↔ oval shared memory verified on hardware (rows separated, θ shared); `INVARIANTS.md` rows
+Standing between the plan and its close: the arrival pull (probe the Carry creep offline, one Dwell A/B hardware check, then fix at source or add the term, § 7), the per-beat rotation that depends on it, an operator channel for a mid-Pattern change, and the oval. Columns ↔ oval shared memory verified on hardware (rows separated, θ shared); `INVARIANTS.md` rows
 (authority bound, online admissibility, next-beat rule); `/archive-plan`. Depends: P4, oval carried throws.
 
 ## 5. Testing plan
@@ -636,9 +650,13 @@ sweep tool and YAML. Each phase reverts independently; the migration never rewri
 
 ## 7. Open questions
 
-- Whether the −0.06/m centre pull is a leg-geometry tracking error (rotates with the pattern) or a
-  mocap/feed frame offset (does not): P2(b). Whether the +1 %/corpus apex drift is wear (ball), hand
-  or tracker: P2(c). Release-timing lag stays out of the learner until P2(d) telemetry exists.
+- ANSWERED at P2 (2026-11-06): the −0.06/m "centre pull" is not a Site property; see § 2.2. Whether the +1 %/corpus apex drift is wear (ball), hand
+  or tracker: P2(c) found no ball effect. Release-timing lag stays out of the learner: P2(d) found the release-time error (+9 ms mean, sd 7.5 ms) has no effect on Apex.
+- OPEN (JB-192, gates `yaw_rad`): the two-ball arrival pull c·(Site − arrived_from)/2, c = −0.150 ± 0.010,
+  beats today's s·x on 382 held-out Attempts (6.5 ± 2.8 mm²) but is a scalar that over-corrects by about 6 mm
+  at Apex 1.10 and is not yet in f₀, by decision (half may be a planner Carry creep of 5 to 6 mm, half the
+  ring of the carry-ring-zvd plan; `arrived_from` needs schema v3 and never defaults to zero). Options: fix at
+  source; learn it; both. Cheapest hardware check: Columns Sep. 125, Apex 0.93, Dwell 0.27 / 0.40 alternating, bag.
 - The 10 % margin: DECIDED 2026-11-05 (D9), kept as the online acceptance criterion; a measured
   per-limit-class overrun from bags is a follow-up Item, not P3.
 - P3a's cost is MEASURED (2026-11-06, § 2.5 "As built"). Open for the owner: whether the early start

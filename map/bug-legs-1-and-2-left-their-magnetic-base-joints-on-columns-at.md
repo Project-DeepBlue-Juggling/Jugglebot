@@ -4,7 +4,7 @@ kind: bug
 title: 'Legs 1 and 2 left their magnetic base joints on Columns at Sep. 170: acceptance bounds Leg kinematics only and does not see the bridge feedforward cap'
 status: inbox
 created: '2026-11-06'
-updated: '2026-11-06T03:05:25Z'
+updated: '2026-11-06T05:58:30Z'
 owners: []
 priority: high
 hardware: none
@@ -15,6 +15,7 @@ area: legs
 blocked_by: []
 links:
 - logbook/2026-11-06-sitting-debrief.md
+- logbook/2026-11-06-sitting-debrief-2.md
 filed_by: claude
 ---
 
@@ -34,3 +35,7 @@ At the Sitting of 2026-11-06 a two-ball Columns goal at Apex 1.00, Sep. 170, Dwe
 
 ## What would reopen this
 - A second separation, or a wish to fly Columns wider than Sep. 135 at Apex 1.00. Numbers for choosing a bound are in `logbook/2026-11-06-sitting-debrief.md`.
+
+## Progress
+
+- 2026-11-06: 2026-11-06 P2 Sitting: two-ball goals at Sep. 120 planned Leg peaks of 321 to 371 mm/s and 3656 to 5488 mm/s^2 (goal 17, L9651), above the previous clean envelope (361 / 4672) and under the separating transit (486 / 6296). Owner: base joints stayed attached throughout. The Runbook's offline prediction (264 / 3011) read low: it did not include the Catch re-aim.

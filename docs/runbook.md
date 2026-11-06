@@ -6,7 +6,7 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 5 blocks (208 min) · Bench leg 1 block (30 min) · Bench hand 1 block (30 min)
+Rigs: Robot 5 blocks (168 min) · Bench leg 1 block (30 min) · Bench hand 1 block (30 min)
 
 ## Setup 0: before power
 
@@ -16,7 +16,7 @@ Rigs: Robot 5 blocks (208 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Robot  (5 blocks, 208 min)
+## Robot  (5 blocks, 168 min)
 
 ### Block 1: armed  (1 row, 1 min)
 
@@ -27,7 +27,7 @@ Rigs: Robot 5 blocks (208 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - pass: a LANE_REFUSED end is on record with GC_PROBE lines from both stream nodes within 1 s of its STOP WARN, and that WARN carries its verdict, fw_sched counters and frame ages.
 - record: the launch log path and the line of each LANE_REFUSED end; none = say so.
 
-### Block 2: level, armed, bb-fed  (4 rows, 82 min)
+### Block 2: level, armed, bb-fed  (3 rows, 42 min)
 
 #### JB-161 Ball 2's first throw after the feed catch lands about 180 mm outward along the separation axis  (10 min, high, unattached)
 - why: the hypothesis is that a feed catch whose lateral aim was clamped seats the ball off-centre and the first Throw carries a lateral kick. A fresh plant_id aims the feed catch by the identity prior, so the clamp never engages: if the outward first throw disappears the clamped aim is implicated, if it persists the clamp is cleared. Either outcome is data.
@@ -59,16 +59,6 @@ Rigs: Robot 5 blocks (208 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
   - Afterwards `ros2 param set /skill_node columns_angle_deg 0`.
 - pass: 20 consecutive Catches in one Attempt at each angle, flown with Throws 21 (the 21st throw is the Stop throw, so `COMPLETED (20/20 caught)`; with Throws 20 it reads 19/19); landing scatter, per ball and per axis, with the mean within 15 mm and the sd within 10 mm of the straight control (proposed 2026-11-03, owner to confirm; the old "within 3 mm" was below the control's own run-to-run sd of 18-31 mm); no HAND_LIMIT line.
 - record: caught of thrown per angle, each angle's plant_id, landing scatter against the control, Ball 2's first-throw landing (x, y) mm per Attempt (JB-161: 5 of 7 landed outward at 90 deg on 2026-11-03), the bag path; commit docs/records.md.
-
-#### JB-187 P2 characterisation Sitting: Apex sweep, off-centre Sites, ball swap and a turned pair, to pin the Learner's plant model  (40 min, high, learner-generalisation)
-- why: pins the plant model's structure (fixed offset or aim angle, radial centre pull, per-ball offset) and the frame for turning a Pattern, which the rest of the Learner generalisation Pathway waits on.
-- do:
-  - Follow `tests/hardware/session_learner_characterisation.md`, steps 1 to 17. Steps 1 and 2 are before power and move nothing; step 14 is a nomination that needs Ball Butler up.
-  - Blocks A to C are one-ball `Self-toss` goals (Throws 20) with the ball placed in the cup by hand: five Apexes at the centre Site, four Sites 60 mm off centre, then two more balls. The Site is set with `ros2 param set /skill_node site_x_mm` and `site_y_mm`.
-  - Block D is `Columns — turned` at Angle 90, Sep. 120, Apex 1.00, then plain `Columns` at Sep. 120. Ball Butler is needed only here.
-  - Apex never above 1.05. Stop on any `ADMISSIBILITY` refusal, a Hand current sample at 55.0 A, or anything wrong at the base joints.
-- pass: every one-ball step has 20 Throws flown (one Attempt, or two shorter ones), steps 15 and 16 have about 20 caught Throws per Site, and no Attempt ended on an `ADMISSIBILITY` refusal. Type the result as pending: the three decisions are computed at the debrief.
-- record: the launch log and bag paths, the clock time and step number of each Start, which ball (A, B or C) flew in each Attempt, any Attempt repeated and why, anything seen at the base joints.
 
 ### Block 3: armed, bb-fed  (1 row, 15 min)
 
@@ -167,6 +157,7 @@ Rigs: Robot 5 blocks (208 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - JB-166 [Robot] Firmware scheduler STOP fires on a clean host stream and ends the Attempt: no ## Sitting section
 - JB-167 [Robot] Install the host hold within one tick of a firmware scheduler STOP so a guard latch becomes a recoverable LANE_REFUSED: no ## Sitting section
 - JB-168 [Robot] Learner context cannot tell a Throw from rest from a carried Throw: no ## Sitting section
+- JB-191 [Robot] Two-ball Columns runs end on a missed Catch of Ball 2 with no collision: 13 of 23 ends, mean run 22 Throws: no ## Sitting section
 - JB-2 [Robot] Design change: the Hand should be Idle, not Parked Closed-loop, while Active: no ## Sitting section
 - JB-24 [Robot] 10 % jitter-margin class of LIMIT_* refusals: no ## Sitting section
 - JB-26 [Robot] Platform Teensy truncates the persisted levelling offset to int16 milliradians: no ## Sitting section

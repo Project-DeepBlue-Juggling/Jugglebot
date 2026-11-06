@@ -2,9 +2,9 @@
 id: JB-187
 kind: feature
 title: 'P2 characterisation Sitting: Apex sweep, off-centre Sites, ball swap and a turned pair, to pin the Learner''s plant model'
-status: inbox
+status: complete
 created: '2026-11-06'
-updated: '2026-11-06T05:10:16Z'
+updated: '2026-11-06T05:58:19Z'
 owners: []
 priority: high
 effort: m
@@ -16,6 +16,7 @@ blocked_by: []
 links:
 - plans/active/learner-generalisation.md
 - tests/hardware/session_learner_characterisation.md
+- logbook/2026-11-06-sitting-debrief-2.md
 parent: learner-generalisation
 filed_by: claude
 ---
@@ -45,3 +46,7 @@ P2 of plan `learner-generalisation.md`: the Sitting that pins the structure of t
 
 - verdict: pass
 - notes: All tests passed with flying colours except for row 12, which incurred a hand CURRENT_LIMIT_VIOLATION. I am not sure why this was triggered, as all balls are functionally identical. Repeating the attempt with the same ball raised no issues. Base joints stayed attached throughout.
+
+## Progress
+
+- 2026-11-06: Passed at the Sitting of 2026-11-06 15:53: 11 of 12 one-ball goals 20/20, 346 live admissibility checks, 0 refusals, base joints stayed attached. Decisions: lateral offset is a fixed distance, centre pull stays on x only, per-ball offset stays off, b stays in the Robot frame. Blocks A and the y Sites flew at x = -50 (step 2 was not applied); the analysis used the Sites flown.

@@ -4,7 +4,7 @@ kind: bug
 title: 'ABORTED_NO_RELEASE: three goals ended because the throw never left the hand (new 2026-10-28 21:02)'
 status: inbox
 created: '2026-10-28'
-updated: '2026-10-31T18:56:12Z'
+updated: '2026-11-06T05:58:26Z'
 owners: []
 priority: high
 effort: m
@@ -16,6 +16,7 @@ area: hand
 blocked_by: []
 links:
 - 2026-10-28-jb76-solve-tail-is-environment-starvation-instrumented
+- logbook/2026-11-06-sitting-debrief-2.md
 parent: two-ball-oval
 filed_by: claude (JB-76 21:02 Sitting read-out)
 ---
@@ -27,3 +28,7 @@ filed_by: claude (JB-76 21:02 Sitting read-out)
 Needs the bag (`~/Desktop/rosbags/2026-10-28_21-02*`) read for hand telemetry at those three instants: hand stroke commanded and executed, ball sensor, cup state.
 
 Launch log: `~/.ros/log/2026-10-28-21-02-48-831501-jetson-3765883/launch.log`.
+
+## Progress
+
+- 2026-11-06: Two ABORTED_NO_RELEASE ends on 2026-11-06 were not release failures. P2 goal 19 (L11050): the Hand stroke was normal and the cup read empty for the whole stroke; the ball was lost at the Catch before. Endurance 14:55 goal 9 (L9001-L9014): the release had been cancelled by an earlier END. The end code names the wrong thing; the three 2026-10-28 ends were not re-examined.
