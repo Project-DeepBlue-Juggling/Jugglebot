@@ -6,7 +6,7 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 6 blocks (198 min) · Bench leg 1 block (30 min) · Bench hand 1 block (30 min)
+Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 block (30 min)
 
 ## Setup 0: before power
 
@@ -16,7 +16,7 @@ Rigs: Robot 6 blocks (198 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Robot  (6 blocks, 198 min)
+## Robot  (6 blocks, 233 min)
 
 ### Block 1: armed  (1 row, 1 min)
 
@@ -27,7 +27,7 @@ Rigs: Robot 6 blocks (198 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - pass: a LANE_REFUSED end is on record with GC_PROBE lines from both stream nodes within 1 s of its STOP WARN, and that WARN carries its verdict, fw_sched counters and frame ages.
 - record: the launch log path and the line of each LANE_REFUSED end; none = say so.
 
-### Block 2: level, armed, bb-fed  (3 rows, 42 min)
+### Block 2: level, armed, bb-fed  (4 rows, 77 min)
 
 #### JB-161 Ball 2's first throw after the feed catch lands about 180 mm outward along the separation axis  (10 min, high, unattached)
 - why: the hypothesis is that a feed catch whose lateral aim was clamped seats the ball off-centre and the first Throw carries a lateral kick. A fresh plant_id aims the feed catch by the identity prior, so the clamp never engages: if the outward first throw disappears the clamped aim is implicated, if it persists the clamp is cleared. Either outcome is data.
@@ -59,6 +59,17 @@ Rigs: Robot 6 blocks (198 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
   - Afterwards `ros2 param set /skill_node columns_angle_deg 0`.
 - pass: 20 consecutive Catches in one Attempt at each angle, flown with Throws 21 (the 21st throw is the Stop throw, so `COMPLETED (20/20 caught)`; with Throws 20 it reads 19/19); landing scatter, per ball and per axis, with the mean within 15 mm and the sd within 10 mm of the straight control (proposed 2026-11-03, owner to confirm; the old "within 3 mm" was below the control's own run-to-run sd of 18-31 mm); no HAND_LIMIT line.
 - record: caught of thrown per angle, each angle's plant_id, landing scatter against the control, Ball 2's first-throw landing (x, y) mm per Attempt (JB-161: 5 of 7 landed outward at 90 deg on 2026-11-03), the bag path; commit docs/records.md.
+
+#### JB-192 Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for  (35 min, high, learner-generalisation)
+- why: tells whether the pull toward the partner Site depends on the Apex or on the time from arrival to release, which no flight so far could separate, so the fix is aimed at the right cause (the arrival ring or the Apex).
+- do:
+  - GUI Juggle panel, `Columns`, Apex 0.93, Sep. 125, Throws 21, Ball Butler feeding, bag recording. Fly Dwell 0.27, then Dwell 0.32, alternating, three Attempts of each (about 30 caught Throws per Dwell).
+  - Attempts often end early on a collision or a missed Catch: repeat that Dwell until about 30 caught Throws are in, at most five Attempts per Dwell.
+  - Both goals are inside what has flown. Rehearsed offline at the Sitting limits (600 mm/s, 8000 mm/s^2, 200000 mm/s^3, Hand 4500 rev/s^2, planner `pose`): Dwell 0.27 plans Leg peaks of 310 mm/s and 4076 mm/s^2, Dwell 0.32 plans 353 mm/s and 5180 mm/s^2; up to 371 mm/s and 5488 mm/s^2 flew on 2026-11-06 with the base joints attached. Columns has not flown at a Dwell other than 0.27 before.
+  - Dwell 0.32 has no headroom with the Catch re-aim at its limit (margin -0.015), so an Attempt may end on an `ADMISSIBILITY` refusal: note the line and repeat. Stop the row if it happens three times.
+  - Not in this row, and why: Dwell 0.40 (the first design) is refused at goal accept. Dwell 0.35 is accepted, but plans 6207 mm/s^2, within 2 % of the 6296 mm/s^2 that separated Legs 1 and 2 (JB-184, in a longer transit). Fly 0.35 only as your own decision, watching the base joints.
+- pass: about 30 caught Throws have flown at each Dwell and no Leg joint let go. Type the result as pending. The debrief computes, per Dwell, the Platform's velocity toward the partner Site at each release (from the bag) and the landing pull against the real release, and compares the two Dwells: a 5 Hz ring predicts a clear change over 0.05 s, an Apex effect predicts none.
+- record: the launch log and bag paths, the clock time of each Start with its Dwell, how many Attempts each Dwell took and why each ended early, any refusal text, and anything seen at the base joints.
 
 ### Block 3: armed, bb-fed  (1 row, 15 min)
 

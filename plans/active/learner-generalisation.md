@@ -395,12 +395,14 @@ flown.** Archive with `/archive-plan` only after items 1 to 4 are flown and item
 
 1. **The arrival pull (JB-192).** Two-ball Throws land pulled toward the partner Site; measured against the real
    release it is almost all a lateral launch velocity the Platform does not deliver after an arrival (§ 7).
-   - Precondition: none for the hardware check. For the bookkeeping fixes F1 (refresh the pending Memory row's
-     release after each accepted re-aim) and F2 (restore the release record when a re-send is refused; both
-     tracked by JB-194): the owner's go-ahead, because they touch the executor and what the Memory records. F1 is a precondition of the
-     "learn it" branch below (an arrival term is fitted against `rel`, which today holds the dispatch aim).
-   - Hardware check: Columns Sep. 125, Apex 0.93, Dwell 0.27 and 0.40 alternating, three Attempts each, bag
-     recorded; it tells a dependence on Apex from one on the time from arrival to release.
+   - Precondition: none. The bookkeeping fixes F1 and F2 landed 2026-11-06 (JB-194,
+     `logbook/2026-11-06-memory-release-record-fixes.md`): Memory rows from then on hold the release that flew,
+     which the "learn it" branch below needs (an arrival term is fitted against `rel`).
+   - Hardware check (the `## Sitting` section of JB-192, rehearsed offline 2026-11-06): Columns Sep. 125,
+     Apex 0.93, Dwell 0.27 against 0.32 alternating, about 30 caught Throws each, bag recorded. Dwell 0.40 (the
+     first design) is refused at goal accept, and 0.35 plans 6207 mm/s^2, within 2 % of the transit that
+     separated Legs 1 and 2 (JB-184), so it is not in the row. A 5 Hz ring predicts a clear change in the
+     Platform's velocity at release over 0.05 s; an Apex effect predicts none.
    - Decision after it (owner): suppress the ring at its source (`carry-ring-zvd.md`), learn an arrival term (a
      schema v3 `arrived_from` Memory column, stored rows reconstructed, never defaulted to zero; a scalar c
      over-corrects by about 6 mm at Apex 1.10), or both.
@@ -496,7 +498,7 @@ reverts independently; the migration never rewrites `memory.csv` in place.
   caught position, 92 of 98 carried Throws re-aimed, and the asymmetric 10 / 35 mm catch clamp sets its mean);
   against the real release the pull is almost all velocity: the Platform delivers +4.2 / +0.4 of the +16.6 / +13.3
   mm/s lateral launch asked for (plain / turned) after an arrival. The Memory's `rel` is the dispatch aim, not the
-  re-aimed release: a bookkeeping gap, fixes F1 / F2 proposed and not applied. Detail:
+  re-aimed release: a bookkeeping gap, fixed 2026-11-06 (F1 / F2, JB-194; rows from then on hold the release that flew). Detail:
   `logbook/2026-11-06-arrival-pull-and-hand-dropout-probes.md` (the probe's own report is local and gitignored: `temp/probes/sitting_debrief_2026-11-06b/unit_creep.md`).
 - P3a's cost is MEASURED (2026-11-06, § 2.5 "As built"). Open for the owner: whether the early start
   (`admissibility_early_command`, on by default) or the plan's literal slot is flown first; what buys the
