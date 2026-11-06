@@ -3,13 +3,16 @@
 A hardware Item (``hardware: bench-leg | bench-hand | robot``) says what it needs from the
 next Sitting in a body section headed exactly ``## Sitting``: a bullet list
 with fixed keys (``setup``, ``why``, ``do``, ``pass``, ``record``, ``minutes``,
-optional ``branch``). ``render_runbook`` turns every open hardware Item's
+optional ``branch`` and ``first``). ``render_runbook`` turns every open hardware Item's
 section into ``docs/runbook.md``, the Next Sitting Runbook. The generator never
 invents a ``do:`` step: an Item without a valid section is listed under
 "Needs a Sitting section" with the parse errors, never as a row.
 
 Rows are grouped by rig first (robot, bench leg, bench hand: a Sitting is on one
-rig), then by setup set within a rig.
+rig), then by setup set within a rig. Within a rig the order is priority weight per minute;
+a row whose section carries ``first: <reason>`` is flown before every scored row (several
+pinned rows keep the score order among themselves), and its setup set opens the rig's first
+block.
 
 A result typed in the map app lands on the Item as ``## Sitting result (<date>)`` or, since
 2026-11-03, ``## Sitting result (<date> HH:MM)`` (24-hour local clock, the time it was saved);
@@ -29,7 +32,7 @@ from mapkit.items import INBOX_KINDS, Item, load_items, open_questions
 
 SETUPS = ("level", "tilt", "armed", "bb-fed", "bridge-cycled")
 REQUIRED_KEYS = ("setup", "why", "do", "pass", "record", "minutes")
-OPTIONAL_KEYS = ("branch",)
+OPTIONAL_KEYS = ("branch", "first")
 HARDWARE = ("robot", "bench-leg", "bench-hand")  # also the rig display order
 RIG_LABELS = {"robot": "Robot", "bench-leg": "Bench leg", "bench-hand": "Bench hand"}
 OPEN_STATUSES = ("inbox", "backlog", "in_progress")
@@ -50,6 +53,7 @@ class SittingSpec:
     record: str
     minutes: int
     branch: Optional[str] = None
+    first: Optional[str] = None  # why this row is flown before every scored row
 
 
 @dataclass
@@ -133,12 +137,15 @@ def parse_sitting(body: str) -> Tuple[Optional[SittingSpec], List[str]]:
             minutes = int(text)
         else:
             errors.append("minutes must be a positive integer, got '%s'" % text)
+    if "first" in vals and not " ".join(vals["first"]).strip():
+        errors.append("first needs a reason (one line saying why this row is flown first)")
     if errors:
         return None, errors
     branch = " ".join(vals["branch"]).strip().strip("`") if vals.get("branch") else None
+    first = " ".join(vals["first"]).strip() if vals.get("first") else None
     return SittingSpec(setup=setup, why=" ".join(vals["why"]), do=list(vals["do"]),
                        pass_=" ".join(vals["pass"]), record=" ".join(vals["record"]),
-                       minutes=minutes, branch=branch or None), []
+                       minutes=minutes, branch=branch or None, first=first or None), []
 
 
 def _score(priority: str, spec: SittingSpec) -> float:
@@ -152,15 +159,16 @@ def _bid(item: Item) -> str:
 def collect(repo_root: str) -> Dict:
     """Gather the Runbook's content from ``<repo>/map/``.
 
-    Keys: ``rows`` (valid hardware Items by score desc, then ID), ``needs_section``
+    Keys: ``rows`` (valid hardware Items: those pinned with ``first:`` ahead of the rest,
+    then by score desc, then ID), ``needs_section``
     ``(id, title, errors, hardware)``, ``questions`` ``(ticket id, title, parent id)`` for open
     question tickets under a hardware Item, and ``blocks``: rows grouped by their
     exact setup set within a rig (never mixing rigs), and ``rigs``: ``(hardware,
     blocks)`` in rig order for rigs with at least one row. The greedy pass walks rows in score order; a row joins the
     block already opened for its setup set (a Sitting sets up once per set, so a
     later row never reopens a set) and opens a new block only for a set not seen
-    yet. Blocks are thus ordered by rig, then by their best row's score, rows within
-    a block by score.
+    yet. Blocks are thus ordered by rig, then by their best row (a pinned row beats any
+    score), rows within a block pinned first, then by score.
     """
     items = load_items(os.path.join(repo_root, "map"))
     hw = [i for i in items if i.kind in INBOX_KINDS and i.meta.get("hardware") in HARDWARE
@@ -176,7 +184,7 @@ def collect(repo_root: str) -> Dict:
         rows.append(RunbookRow(_bid(i), "%s-%s" % (i.kind, i.slug), i.title,
                                str(i.meta.get("parent") or ""), pri, spec, _score(pri, spec),
                                str(i.meta.get("hardware"))))
-    rows.sort(key=lambda r: (-r.score, r.item_id))
+    rows.sort(key=lambda r: (0 if r.spec.first else 1, -r.score, r.item_id))
     needs.sort()
     questions: List[Tuple[str, str, str]] = []
     for i in items:
@@ -243,6 +251,8 @@ def render_runbook(repo_root: str) -> str:
                         "- why: %s" % r.spec.why, "- do:"]
                 out += ["  - %s" % s for s in r.spec.do]
                 out += ["- pass: %s" % r.spec.pass_, "- record: %s" % r.spec.record]
+                if r.spec.first:
+                    out.append("- first: %s" % r.spec.first)
                 if r.spec.branch:
                     out.append("- branch: `%s`" % r.spec.branch)
                 out.append("")

@@ -37,6 +37,8 @@ related_code:
 
 # Pattern progression: Columns to Centre and orbit
 
+> 2026-11-06 (learner-generalisation P3c, branch p3-online-admissibility, pending the owner's merge): the Admissible box, its sweep (`tools/admissible_sweep.py`, `admissible_sweep_run.py`) and `admissible.select` are retired. Wherever this plan says to sweep or re-sweep the box, check a `gate_hash`, or lists the box among a phase's files, that is history; goal acceptance is now the nomination (`skills/check`, `skills/nominate`, the GUI Juggle panel's report, `python sim/skills_gate.py --nominate ...`, I-ADMIT-2) and each commanded Throw is checked online (I-ADMIT-1).
+
 Branch `main`. The schedulable form of Pathway item JB-116 (its body carries the ten steps); this plan adds no design. Catalogue: `docs/patterns.md` (JP-1 to JP-18). Design record for the ordering: `logbook/2026-10-30-pattern-progression-plan.md` and the Opus review it cites.
 
 ## 1. Context

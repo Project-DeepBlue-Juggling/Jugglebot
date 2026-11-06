@@ -13,7 +13,10 @@
 >   `tools/admissible_sweep.py` at the LIVE sitting limits into
 >   `config/generated/admissible_box.yaml`) — replaces the closed-form quintic
 >   reach frontier this doc's § "requested displacement" section describes
->   (was I-CATCH-3).
+>   (was I-CATCH-3). **Retired 2026-11-06** (learner-generalisation P3c): the
+>   box, its sweep and the YAML are deleted; the job is now a per-Throw online
+>   check (`INVARIANTS.md` I-ADMIT-1) and goal acceptance by nomination
+>   (I-ADMIT-2, `motion/skills/nominate.py`).
 > - **The lateral authority clamp** (`motion/skills/executor.py::
 >   SkillExecutor._clamp_lateral_to_schedule`, contract C-CATCH-2 in
 >   `motion/skills/INVARIANTS.md`) — replaces the "unrequested excursion"

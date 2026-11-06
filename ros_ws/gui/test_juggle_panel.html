@@ -15,6 +15,7 @@
     &defaults=ok|fail|slow&relay=ok|old|reject|refuse|timeout
     &cup=held|empty|unknown&pattern=columns&apex=0.8&sep=&n=6&param=ok|refuse|timeout
     &scene=running|ended|aborted|refused|dispatch|invalid
+    &nominate=ok|refused|pending|missing     (fake skills/nominate reply; default ok)
 -->
 <head>
 <meta charset="utf-8">
@@ -110,6 +111,12 @@
         <option value="timeout">never answers</option>
       </select>
     </fieldset>
+    <fieldset><legend>Nomination (skills/nominate)</legend>
+      <select id="s-nominate">
+        <option value="ok">viable</option><option value="refused">refused (3 lines)</option>
+        <option value="pending">never answers (checking)</option><option value="missing">service missing</option>
+      </select>
+    </fieldset>
     <fieldset><legend>Inject skills/attempt</legend>
       <button id="i-start">juggle_start</button><button id="i-end-ok">end COMPLETED</button>
       <button id="i-end-stop">end STOPPED</button><button id="i-end-abort">end ABORTED</button>
@@ -196,6 +203,21 @@ setJugglePanelTransport({
             if (mode === 'refuse') return Promise.resolve({ results: [{ successful: false, reason: 'columns_angle_deg: refused while a goal is active' }] });
             lastParams[prm.name] = Number((prm.value || {}).double_value);
             return new Promise((res) => setTimeout(() => res({ results: [{ successful: true, reason: '' }] }), 80));
+        }
+        if (name === 'skills/nominate') {
+            const mode = $('s-nominate').value;
+            log('call ' + name + '  data="' + req.data + '"  → ' + mode);
+            if (mode === 'pending') return new Promise(() => {});
+            if (mode === 'missing') return Promise.reject(new Error('Service skills/nominate does not exist'));
+            if (mode === 'refused') {
+                return new Promise((res) => setTimeout(() => res({ success: false, message:
+                    'nomination REFUSED: columns_highlow apex 1.00 / 0.90 m, separation 125 mm, dwell 0.27 s: 3 refusals; nearest viable: separation 100 mm\n'
+                    + 'CATCH Ball 2 at P2 -> P2, rung -20 %: LIMIT_VEL leg 2 at t=0.188 s, margin -0.04 (vel)\n'
+                    + 'THROW Ball 1 at P1 -> P2, rung +10 %: LIMIT_ACC leg 4 at t=0.512 s, margin -0.11 (acc)\n'
+                    + 'CARRY Ball 2 at P2 -> P1, rung 0 %: MARGIN below floor, worst margin 0.02 (jerk), no leg or knot time is recorded for a margin refusal' }), 150));
+            }
+            return new Promise((res) => setTimeout(() => res({ success: true, message:
+                'nomination OK: columns apex 0.95 m, separation 125 mm, dwell 0.27 s: worst margin 0.34 (acc, CATCH Ball 1 at P1, rung +10 %)' }), 150));
         }
         if (name === 'jugglebot/juggle_request') {
             const relay = $('s-relay').value;
@@ -292,6 +314,7 @@ $('i-refused').onclick = () => attempt('juggle_refused', { pattern: $('juggle-pa
 if (q.get('defaults')) $('s-defaults').value = q.get('defaults');
 if (q.get('relay')) $('s-relay').value = q.get('relay');
 if (q.get('param')) $('s-param').value = q.get('param');
+if (q.get('nominate')) $('s-nominate').value = q.get('nominate');
 if (q.get('feed')) $('d-feed').value = q.get('feed');
 if (q.get('width')) document.documentElement.style.setProperty('--minimap-width', q.get('width') + 'px');
 

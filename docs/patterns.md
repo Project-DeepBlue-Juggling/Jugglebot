@@ -1,6 +1,6 @@
 # Pattern catalogue
 
-Every juggling Pattern Jugglebot flies, aims at or has on the table carries a catalogue ID **JP-n** (owner decision 2026-10-30). The ID is the handle for conversation, runbooks, plans and map items; the **machine label** is the identifier the code, the admissible box and [the records ledger](records.md) use, and the two never substitute for each other. Rules:
+Every juggling Pattern Jugglebot flies, aims at or has on the table carries a catalogue ID **JP-n** (owner decision 2026-10-30). The ID is the handle for conversation, runbooks, plans and map items; the **machine label** is the identifier the code, the nomination and [the records ledger](records.md) use, and the two never substitute for each other. Rules:
 
 - A JP number is allocated once and never reused or renumbered, even if the Pattern is dropped.
 - A Pattern with several machine labels (one ball, fed, phantom) keeps ONE JP number; the labels are listed.

@@ -15,11 +15,11 @@ What one cell is
   launch ``--launch`` s), gated at ``admissible.MARGIN_FRAC`` of the limits.
 * The folded CATCH-with-throw window built from that throw's release seed:
   one ball = land at ``T``, release at ``T + dwell`` (the production fold,
-  ``admissible_sweep._oval_window``); two balls = land at
+  ``planner_cells.oval_window``); two balls = land at
   ``tau = (T - dwell) / 2``, release at ``tau + dwell`` (``T = d + 2 tau``; this
   two-ball fold is the PROBE's construction -- no production two-ball compiler
   exists yet).
-* A chain check: one ball = ``admissible_sweep._catch_cell_report`` from the
+* A chain check: one ball = ``planner_cells.catch_cell_report`` from the
   fold's release; two balls = the same fold again from the fold's release.
 * ``ok`` = the planner accepted every piece AND each is inside the margin.
   ``code`` names the first refusal (``INFEASIBLE`` = the QP has no solution;
@@ -101,7 +101,7 @@ for _p in (ROOT, os.path.join(ROOT, 'ros_ws', 'src', 'jugglebot'),
         sys.path.insert(0, _p)
 
 import numpy as np                                    # noqa: E402
-import admissible_sweep as A                          # noqa: E402
+import planner_cells as A                          # noqa: E402
 import jugglebot.hardware_config as hw                # noqa: E402
 from jugglebot.motion.trajectory import cup_cycle as cc  # noqa: E402
 
@@ -147,7 +147,7 @@ def limits_for(point, explicit, hand):
     v, a, j, ceil = WORKING_POINTS[point] if explicit is None else (tuple(explicit) + (None,))[:4]
     # with_sitting_limits clamps to the config CEILINGS (acc 5000 today), so a
     # P4 point is written onto the dataclass afterwards, ceiling included.
-    L = A._limits(float(hw.JB_TRAJ_LEG_VEL_LIMIT_MMPS), float(hw.JB_TRAJ_LEG_ACC_LIMIT_MMPS2),
+    L = A.sitting_limits(float(hw.JB_TRAJ_LEG_VEL_LIMIT_MMPS), float(hw.JB_TRAJ_LEG_ACC_LIMIT_MMPS2),
                   float(hw.JB_TRAJ_LEG_JERK_LIMIT_MMPS3), HAND_CFG)
     L = dataclasses.replace(L, leg_vel_mmps=float(v), leg_acc_mmps2=float(a), leg_jerk_mmps3=float(j))
     if ceil is not None:
@@ -191,7 +191,7 @@ def fold(seed, cs, rs, ts, t_land, v_arr, t_rel, T, L, cfg):
         code, m, msg = _refusal(e, L)
         return False, code, m, None, msg
     rep = fz.validate_cycle(seg.plan, L, GEOM)
-    ok = A._within_margin(seg.meta.report, L)
+    ok = A.within_margin(seg.meta.report, L)
     return ok, ('OK' if ok else 'MARGIN'), metrics(rep, L), seg, ''
 
 
@@ -270,16 +270,16 @@ def run(balls, dwell, apex, L, hand, pre, post, sep, mode, launch, args):
     T = sc.flight_s(apex)
     out = dict(balls=balls, dwell=dwell, apex=apex, point=args.point_label, hand=hand, pre=pre,
                post=post, mode=mode, ablate=','.join(_PATCH['ablate']) or 'none', T=round(T, 3))
-    cs, rs, ts = A._oval_window(st_, sc_, apex, dwell)
+    cs, rs, ts = A.oval_window(st_, sc_, apex, dwell)
     term = sg.ThrowTerminal(site_mm=rs.throw_site_mm(), target_mm=cs.throw_site_mm(), flight_s=T,
                             t_release_s=launch)
     try:
-        tseg = sg.plan_segment(sg.THROW, A._rest_state(rs.rest_site_mm()), term, cfg, L, GEOM)
+        tseg = sg.plan_segment(sg.THROW, A.rest_state(rs.rest_site_mm()), term, cfg, L, GEOM)
     except (uc.CycleInfeasible, cc.CupCycleInfeasible) as e:
         code, m, msg = _refusal(e, L)
         out.update(ok=False, code='THROW:' + code, win=m, msg=msg)
         return out
-    if not A._within_margin(tseg.meta.report, L):
+    if not A.within_margin(tseg.meta.report, L):
         out.update(ok=False, code='THROW:MARGIN', win=metrics(tseg.meta.report, L))
         return out
     seed, tk = tseg.release_state, tseg.takeoff_vel_mm_s
@@ -297,7 +297,7 @@ def run(balls, dwell, apex, L, hand, pre, post, sep, mode, launch, args):
         out['release'] = release_model(seg, rs, ts, T, args.delay_ms, args.lag_ms, args.sep_ms)
     if ok:
         if balls == 1:
-            ok2, code2, r2 = A._catch_cell_report(ts, seg.release_state, seg.takeoff_vel_mm_s, T, T,
+            ok2, code2, r2 = A.catch_cell_report(ts, seg.release_state, seg.takeoff_vel_mm_s, T, T,
                                                   (0., 0.), L, GEOM, cfg)
             out['chain'] = dict(ok=bool(ok2), code=str(code2), m=metrics(r2, L))
         else:

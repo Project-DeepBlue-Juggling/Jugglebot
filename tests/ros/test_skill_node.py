@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import re
 import threading
 import time
 from types import SimpleNamespace
@@ -44,16 +45,13 @@ from jugglebot import ball_possession
 from jugglebot import skill_node as sn
 import jugglebot.hardware_config as hw
 
-#: The session leg velocity and acceleration every box fixture and the status
-#: fixture below carry: the shipped launch defaults, which the committed
-#: `config/generated/admissible_box.yaml` is swept at (pinned by
-#: test_skills_admissible), because `check_limits` refuses a live limit the box
-#: was not swept at. Read from the generated config, so a working-point move
+#: The session leg velocity and acceleration the status fixture below carries:
+#: the shipped launch defaults (the working point the nominations plan at).
+#: Read from the generated config, so a working-point move
 #: (350 / 5000 from 2026-10-04, 600 / 8000 since the P4 commit, 2026-11-03)
 #: needs no edit here.
 _SESSION_LEG_VEL_MMPS = hw.JB_TRAJ_LEG_VEL_LIMIT_MMPS
 _SESSION_LEG_ACC_MMPS2 = hw.JB_TRAJ_LEG_ACC_LIMIT_MMPS2
-from jugglebot.motion.skills import admissible as adm
 from jugglebot.motion.skills import executor as ex
 from jugglebot.motion.skills.executor import CAUGHT_WINDOW_S
 from jugglebot.motion.skills import schedule as sc
@@ -125,12 +123,9 @@ def _pose_at(x, y):
 
 
 def _status(**overrides):
-    """A `trajectory/status` message at the admissible box's swept limits
-    (`config/generated/admissible_box.yaml`: the shipped launch defaults, 600/8000/200000
-    since the P4 re-sweep 2026-11-03, 350/5000/200000 from 2026-10-04; 300 from 2026-09-30 — the session leg jerk ramped from 150000 to the YAML
-    ceiling; the launch default stays 150000 until the ramp is logged, which
-    is why the runsheet sets the limits before `skills/check`) — the LIVE
-    limits `_run_one_ball` reads."""
+    """A `trajectory/status` message at the shipped launch defaults (600/8000/200000
+    since the P4 working point 2026-11-03) — the LIVE limits `_run_one_ball`
+    reads and the nomination plans at."""
     st = TrajectoryStatus()
     st.leg_vel_limit_mmps = _SESSION_LEG_VEL_MMPS
     st.leg_acc_limit_mmps2 = _SESSION_LEG_ACC_MMPS2
@@ -250,12 +245,10 @@ def _node_with_client(response=None, ready=True, hand=True, frame=True,
     node._obs_clock = lambda: _OBS_CLOCK_FROZEN_S
     client = _RecordingClient(response=response, ready=ready)
     node._install_cli = client
-    # The live sitting limits the box was swept at (`_status()`: 300/5000/
-    # 200000 since the R5 ramp, 2026-09-30). A node that has heard no
-    # `trajectory/status` falls back to the YAML launch default (150000) and
-    # refuses every 200 k box by name -- exactly what the robot does until the
-    # runsheet's `set_limits` row runs, and not what a test about anything
-    # else is asking. A test that IS about the mismatch overrides the status.
+    # The live sitting limits (`_status()`: the shipped launch defaults). A
+    # node that has heard no `trajectory/status` plans at its fallback limits,
+    # which is not what a test about anything else is asking. A test that IS
+    # about the limits overrides the status.
     node._on_traj_status(_status())
     if hand:
         _hand_at(node)
@@ -333,10 +326,8 @@ def _columns_goal(**overrides):
     return _goal('columns', **overrides)
 
 
-#: The columns point `config/generated/admissible_box.yaml` is swept at --
-#: separation 125 / apex 0.95 since 2026-10-04 (R5 sitting 3). Tests that
-#: start a columns goal against the REAL box (no `_good_box_path` fixture)
-#: use this; the fixture-backed tests keep their own 100 mm / 0.9 m boxes.
+#: The columns point flown at R5 sitting 3 (2026-10-04): separation 125 /
+#: apex 0.95. Tests that start a columns goal at the flown point use this.
 _FLOWN_COLUMNS = dict(separation_mm=125.0, apex_m=0.95)
 
 
@@ -398,9 +389,7 @@ def test_columns_compiles_a_schedule_at_the_owner_operating_point(tmp_path):
 
 def test_a_second_start_while_running_is_refused(tmp_path):
     node, _client = _node_with_client()
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         assert node._start_pattern(
             _columns_goal(separation_mm=100.0)).success is True
         resp2 = node._start_pattern(_columns_goal(separation_mm=100.0))
@@ -411,9 +400,7 @@ def test_a_second_start_while_running_is_refused(tmp_path):
 def test_stop_ends_the_attempt(tmp_path):
     node, _client = _node_with_client()
     _reload_ready(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         node._start_pattern(_columns_goal(separation_mm=100.0))
     assert node._executor is not None
     resp = node._stop_attempt()
@@ -449,8 +436,7 @@ def test_stop_keeps_ticking_until_a_pending_flight_finalises_then_appends_its_ro
     plant_id = 'test_stop_mid_flight'
     node._params['plant_id'] = plant_id
 
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         assert node._start_pattern(_self_toss_goal()).success is True
         # Freshen the R3 ladder AFTER start (item 6/7 wiring is per-tick, not
         # a start-time check) so the dispatch below is not itself refused by
@@ -511,130 +497,69 @@ def test_stop_with_no_attempt_is_a_harmless_success():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# self_toss (R3 items 4/5) — the box/limits gate and the compiled schedule
+# self_toss (R3 items 4/5) — the nomination gate and the compiled schedule
 # ═════════════════════════════════════════════════════════════════════════════
 
-def test_self_toss_is_refused_when_the_box_file_is_missing(tmp_path):
+
+def test_self_toss_is_accepted_by_a_nomination_alone(tmp_path):
+    """Goal acceptance is a nomination (a real plan at the live limits); no
+    file on disk gates it."""
     node, _client = _node_with_client()
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', str(tmp_path / 'nope.yaml')):
+    _prelevel_ready(node)
+    node._params['plant_id'] = 'test_no_gate_file_%s' % id(node)
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_self_toss_goal())
+    assert resp.success is True, resp.message
+    assert node._executor is not None
+
+
+
+def test_a_hop_is_refused_when_the_live_limits_cannot_fly_it():
+    """Acceptance judges the LIVE Sitting limits (the latest
+    `trajectory/status`), before any motion: at a 100 mm/s leg velocity the
+    hop's nominal Segments refuse."""
+    node, _client = _node_with_client()
+    node._on_traj_status(_status(leg_vel_limit_mmps=100.0))
+    pre = _prelevel_ready(node)
+    resp = node._start_pattern(_hop_goal())
     assert resp.success is False
-    assert 'admissible box refused' in resp.message
+    assert resp.message.startswith('nomination REFUSED: hop')
+    assert any('LIMIT_VEL' in l for l in node._last_nomination_lines)
+    assert pre.calls == []
     assert node._executor is None
 
 
-def test_self_toss_is_refused_on_a_limits_mismatch(tmp_path):
-    box_path = tmp_path / 'admissible_box.yaml'
-    box = adm.AdmissibleBox(
-        site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95),
-        landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
-        pattern='self_toss', release_site_xy_mm=(-50.0, 0.0),
-        target_site_xy_mm=(-50.0, 0.0),
-        limits={'leg_vel_mmps': 1.0, 'leg_acc_mmps2': 1.0,
-               'leg_jerk_mmps3': 1.0, 'hand_acc_rps2': 1.0},
-        gate_hash=adm.gate_hash(), swept_at='2026-09-13')
-    adm.dump(str(box_path), [box])
-    node, _client = _node_with_client()
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', str(box_path)):
-        resp = node._start_pattern(_self_toss_goal())
+def test_a_columns_dwell_at_or_above_the_flight_is_refused_as_a_compile_line():
+    """The dwell a
+    schedule cannot compile (dwell >= flight) is a `COMPILE` refusal naming
+    the dwell, before any motion (a hop's dwell has no such bound: it was
+    viable at 2.0 s when probed 2026-11-06)."""
+    node, _client = _node_with_client(response=_response())
+    node._params['plant_id'] = 'test_dwell_compile_%s' % id(node)
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=True)
+    reload_client, throw_client = _reload_ready(node)
+    pre = _prelevel_ready(node)
+    resp = node._start_pattern(_columns_goal(separation_mm=100.0, dwell_s=2.0))
     assert resp.success is False
-    assert 'admissible box refused' in resp.message
-    assert 'leg_vel_mmps' in resp.message
-    assert node._executor is None
-
-
-def test_the_committed_box_is_swept_at_the_node_default_dwell():
-    """The dwell half of the launch/box contract (2026-10-05; the limits and
-    gate half is tests/motion/test_skills_admissible.py): every committed box
-    carries ``skill_node``'s default ``dwell_s``, so a launch with the default
-    parameters is not refused ``LimitsMismatch: ... dwell_s ...`` at its first
-    goal. Changing the default dwell means a re-sweep in the same commit."""
-    import os
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
-                        'config', 'generated', 'admissible_box.yaml')
-    boxes = adm.load(path)
-    assert boxes
-    # The oval cells are the one exception by design (two-ball-oval P1,
-    # 2026-10-18): ``dwell_s`` joined the ``select()`` key so a cell swept at
-    # the rung's dwell (0.65, decision 16 amended) coexists with the 0.27
-    # cells and is REFUSED BY NAME at the default dwell -- the runsheet sets
-    # ``dwell_s`` for an oval sitting (row 12a). Every other family still
-    # carries the node default so the default launch is not refused.
-    oval = [box for box in boxes if box.pattern in ('oval_1ball', 'oval')]
-    assert oval, 'the committed box has no oval cell'
-    # rung 2 (2026-10-23) swept the oval at 0.55 / 0.50 as well as 0.65;
-    # P3 tail (2026-10-24) added the 0.45 cell under the pose planner;
-    # 0.40 / 0.35 added 2026-10-31 (re-swept 2026-10-31: hold 0, hand prime 10.45, floor 0.06);
-    # 0.30 added at the P4 working point (2026-11-03, separation 150, pose).
-    assert any(box.dwell_s == pytest.approx(0.65) for box in oval)
-    for box in oval:
-        assert any(box.dwell_s == pytest.approx(d) for d in (0.65, 0.55, 0.50, 0.45, 0.40, 0.35, 0.30)), (
-            box.site_pair, box.pattern, box.dwell_s)
-    # High-low Columns (JP-9, 2026-10-31) is the second exception by design:
-    # the high ball's cells carry the default dwell, the low ball's cells its
-    # LONGER dwell (``schedule.columns_ball_timing``), and the goal's box check
-    # looks each ball's cell up at that ball's own dwell -- so the default
-    # launch is still not refused.  Every low cell must sit above the default.
-    highlow = [box for box in boxes if box.pattern == 'columns_highlow']
-    assert highlow, 'the committed box has no high-low Columns cell'
-    assert any(box.dwell_s == pytest.approx(sn._DEFAULT_DWELL_S) for box in highlow)
-    for box in highlow:
-        assert box.dwell_s >= sn._DEFAULT_DWELL_S - 1e-9, (
-            box.site_pair, box.pattern, box.dwell_s)
-    for box in boxes:
-        if box.pattern in ('oval_1ball', 'oval', 'columns_highlow'):
-            continue
-        assert box.dwell_s == pytest.approx(sn._DEFAULT_DWELL_S), (
-            box.site_pair, box.pattern, box.dwell_s)
-
-
-def test_self_toss_is_refused_on_a_dwell_mismatch(tmp_path):
-    """R5 (D4, 2026-09-30): a box swept at a different dwell than the LIVE
-    session dwell (``skill_node``'s ``dwell_s`` parameter) refuses by name --
-    the columns cell's admitted set is dwell-shaped (a shorter dwell widens
-    the transit and loosens the catch-with-throw gate), so a stale-dwell box
-    must not be silently selected."""
-    box_path = tmp_path / 'admissible_box.yaml'
-    box = adm.AdmissibleBox(
-        site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95),
-        landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
-        pattern='self_toss', release_site_xy_mm=(-50.0, 0.0),
-        target_site_xy_mm=(-50.0, 0.0),
-        limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': _SESSION_LEG_ACC_MMPS2,
-               'leg_jerk_mmps3': 200000.0,
-               # The node's live hand limit IS this constant (`_live_limits`;
-               # set_limits has no hand field) — 3900 since 2026-10-02.
-               'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
-        gate_hash=adm.gate_hash(), swept_at='2026-09-13',
-        dwell_s=0.20, planner_mode='pose', carry_zvd=False)                            # != the node's default 0.30
-    adm.dump(str(box_path), [box])
-    node, _client = _node_with_client()
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', str(box_path)):
-        resp = node._start_pattern(_self_toss_goal())
-    assert resp.success is False
-    # Since the dwell joined the select() key (plan two-ball-oval § 2.6) the
-    # mismatch is named by the box-coverage refusal, not check_limits.
-    assert 'no admissible box covers' in resp.message
-    assert 'dwell_s' in resp.message
-    assert node._executor is None
+    assert 'nomination REFUSED' in resp.message and 'dwell 2.00 s' in resp.message
+    assert any(l.startswith('COMPILE') and 'dwell' in l
+               for l in node._last_nomination_lines), node._last_nomination_lines
+    assert pre.calls == []
+    _assert_no_bb_and_no_motion(node, reload_client, throw_client)
 
 
 def test_self_toss_is_refused_with_no_status_received_yet():
-    """The live-limits fallback (`_live_limits`) reads the YAML module
-    defaults when `trajectory/status` has never arrived (its own documented
-    "0.0 = field absent" sentinel) — which do not match the real box's swept
-    sitting limits, so the start refuses rather than silently gating against
-    the wrong machine."""
+    """With no `trajectory/status` heard, `_live_limits` falls back to the YAML
+    launch defaults (the "0.0 = field absent" sentinel) and the nomination
+    runs against them and is viable; the start is then refused by the next
+    rung of the ladder (no live commanded position yet): no motion on a
+    machine state nobody has confirmed."""
     node, _client = _node_with_client()
     resp = node._start_pattern(_self_toss_goal())
     assert resp.success is False
-    # Since 2026-09-16 the YAML launch defaults ARE the swept sitting limits
-    # (300/5000/200000 since 2026-09-30, owner decision), so the box no longer refuses here;
-    # the start is still refused, by the next rung of the ladder (no live
-    # commanded position yet). Either refusal is the contract: no motion on
-    # a machine state nobody has confirmed.
-    assert ('admissible box refused' in resp.message
-            or 'stale' in resp.message)
+    assert 'stale' in resp.message
+    assert 'nomination' not in resp.message
 
 
 def test_a_new_schedule_drops_the_previous_attempts_flight_latches(tmp_path):
@@ -643,9 +568,7 @@ def test_a_new_schedule_drops_the_previous_attempts_flight_latches(tmp_path):
     node, _client = _node_with_client()
     with node._correlation_lock:
         node._correlation[0] = ('stale-latch',)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         node._start_pattern(_columns_goal(separation_mm=100.0))
     assert 0 not in node._correlation
 
@@ -657,8 +580,8 @@ def test_the_learner_lateral_authority_parameter_defaults_to_thirty():
     amplitude-aware banking (`plans/archived/cup-contact-contract.md` § 6);
     owner 2026-09-23 set 20 mm after the first unpinned sitting — 40 mm
     dropped balls on the 25-throw chains at 0.9 m, 20 mm was stable at both
-    apexes. Owner 2026-11-02 (JB-139): 30 mm, with the box re-swept to
-    +/-30 mm in the same commit -- Ball 2's stable ~+22 mm landing bias held
+    apexes. Owner 2026-11-02 (JB-139): 30 mm, with the Admissible box
+    (since retired) re-swept to +/-30 mm in the same commit -- Ball 2's stable ~+22 mm landing bias held
     the learner pinned at 20. This is the executor's clamp."""
     node, _client = _node_with_client()
     assert node.get_parameter('learner_lateral_authority_mm').value == 30.0
@@ -718,9 +641,16 @@ def test_the_executor_gets_the_inward_authority_and_a_forward_model():
     assert resp.success is True, resp.message
     assert node._executor.catch_inward_authority_m == pytest.approx(0.035)
     assert node._executor.lateral_authority_m == pytest.approx(0.030)
+    # P1 (2026-11-06): the Learner takes a ThrowContext; cold = identity
+    from jugglebot.motion.skills import learner as lr
+    ctx = lr.ThrowContext(site_xy_m=(0.0, 0.0), release_m=(0.0, 0.0, 0.86),
+                          release_vel_mps=(0.0, 0.0, 4.2), dwell_s=0.27,
+                          ball_id=0, release_kind='free_cup')
     y_hat = node._executor.learner.predict(
-        np.zeros(4), np.array([0.001, 0.0, 0.9]), np.array([0.0, 0.0, 0.9]))
+        ctx, np.array([0.001, 0.0, 0.9]), np.array([0.0, 0.0, 0.9]))
     np.testing.assert_allclose(y_hat, [0.001, 0.0, 0.9])   # cold: identity
+    # and its lateral cap is the node's learner_lateral_authority_mm
+    assert node._executor.learner.config.c_max_xy_m == pytest.approx(0.030)
 
 
 def test_the_hold_tilt_max_deg_parameter_defaults_to_the_planner_ceiling():
@@ -774,9 +704,7 @@ def test_columns_feed_site_p2_restores_the_flown_layout(tmp_path):
     node.set_parameters([_MockParameter('P2', name='columns_feed_site')])
     _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
     _reload_ready(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         assert (node._juggle_goal(_columns_goal(separation_mm=100.0))
                == sn.GoalResponse.ACCEPT)
     assert node._reload_ctx.site.name == 'P2'
@@ -862,9 +790,7 @@ def test_columns_entry_hop_bridge_rest_holds_at_the_feed_site(tmp_path):
     _reload_ready(node)
     node._params['plant_id'] = 'test_columns_entry_hop_bridge'
     _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_columns_goal(separation_mm=100.0))
     assert resp.success is True, resp.message
     assert node._reload_ctx.site.name == 'P1'
@@ -908,32 +834,20 @@ def test_the_installed_fed_columns_schedule_marks_throw_0_as_the_hop_entry(
     assert [i for i, s in enumerate(skills) if s.entry_hop] == [0]
 
 
-def test_self_toss_refuses_an_uncovered_apex_before_any_motion(tmp_path):
-    """THE LATENT DEFECT this closes (found 2026-09-14): the only swept box
-    covers apex 0.85-0.95 m; requesting 0.5 m (uncovered) must refuse BEFORE
-    `_prelevel` ever calls `trajectory/go_to_pose` -- no platform motion for
-    an apex nothing was swept for."""
-    box_path = tmp_path / 'admissible_box.yaml'
-    box = adm.AdmissibleBox(
-        site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95),
-        landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
-        pattern='self_toss', release_site_xy_mm=(-50.0, 0.0),
-        target_site_xy_mm=(-50.0, 0.0),
-        limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': _SESSION_LEG_ACC_MMPS2,
-               'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
-        gate_hash=adm.gate_hash(), swept_at='2026-09-13',
-        dwell_s=sn._DEFAULT_DWELL_S, planner_mode='pose', carry_zvd=False)
-    adm.dump(str(box_path), [box])
+
+def test_self_toss_refuses_an_unflyable_apex_before_any_motion():
+    """The latent defect this guarded (found 2026-09-14): an apex nothing
+    certified must refuse BEFORE `_prelevel` ever calls
+    `trajectory/go_to_pose`. Since P3b the certificate is the nomination: a
+    1.4 m apex needs 4951 rev/s^2 of Hand against the 4500 limit, so it is
+    refused with the parameter value and the refusal line, no motion."""
     node, _client = _node_with_client()
-    node._on_traj_status(_status())
     prelevel_client = _prelevel_ready(node)
-    node._params['apex_m'] = 0.5
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', str(box_path)):
-        resp = node._start_pattern(_self_toss_goal())
+    node._params['apex_m'] = 1.4
+    resp = node._start_pattern(_self_toss_goal())
     assert resp.success is False
-    assert 'no admissible box covers' in resp.message
-    assert '0.500' in resp.message
-    assert '0.850' in resp.message and '0.950' in resp.message
+    assert resp.message.startswith('nomination REFUSED: self_toss apex 1.40 m')
+    assert any('HAND_LIMIT_ACC' in l for l in node._last_nomination_lines)
     assert node._executor is None
     assert prelevel_client.calls == []
 
@@ -950,7 +864,6 @@ def test_self_toss_compiles_a_schedule_at_the_owner_operating_point():
     assert schedule.skills[0].kind == 'REST'   # the opening floor lift
     np.testing.assert_allclose(schedule.skills[0].site.cup_mm[:2], [-50.0, 0.0])
     assert any(s.kind == 'THROW' for s in schedule.skills)
-    assert any(b.site_pair == ('P1', 'P1') for b in node._executor.boxes)
     assert node._executor.learner is not None
     assert callable(node._executor.learner.command)
     assert callable(node._executor.on_experience)
@@ -976,20 +889,21 @@ def test_self_toss_while_running_is_refused():
     assert 'already running' in resp2.message
 
 
-def test_a_site_off_the_swept_box_is_refused_before_the_platform_moves():
-    """Finding 5, R3 audit (2026-09-13): the admissible box carries no site
-    xy, so a `site_x_mm`/`site_y_mm` off the swept default (-50, 0) mm must
-    be refused before `_prelevel` ever moves the platform."""
+
+def test_a_site_off_the_default_is_nominated_not_pinned():
+    """Finding 5, R3 audit (2026-09-13) pinned a `site_x_mm` off the
+    default (-50, 0) because the retired box carried no site xy. The
+    nomination plans whatever Site it is given, so the pin is gone: the same goal is judged by
+    the plan at the NODE's Site (the nominated Pattern is the executed one)."""
     node, _c = _node_with_client()
-    node._on_traj_status(_status())
-    pre = _prelevel_ready(node)
-    node._params['plant_id'] = 'sketch_site_off_box'
+    _prelevel_ready(node)
+    node._params['plant_id'] = 'site_off_default_%s' % id(node)
     node._params['site_x_mm'] = 0.0
     resp = node._start_pattern(_self_toss_goal())
-    assert resp.success is False
-    assert 'site' in resp.message and 'swept default' in resp.message
-    assert pre.calls == []
-    assert node._executor is None
+    assert 'swept default' not in resp.message
+    assert resp.success is True, resp.message
+    np.testing.assert_allclose(
+        node._executor.schedule.skills[0].site.cup_mm[:2], [0.0, 0.0])
 
 
 def test_a_bad_plant_id_is_refused_before_the_platform_moves(tmp_path):
@@ -1016,7 +930,7 @@ def test_an_unreadable_memory_file_is_refused_not_raised(tmp_path):
     node._on_traj_status(_status())
     pre = _prelevel_ready(node)
     node._params['plant_id'] = 'dir_not_file'
-    (tmp_path / 'temp' / 'learn' / 'dir_not_file' / 'memory.csv').mkdir(
+    (tmp_path / 'temp' / 'learn' / 'dir_not_file' / 'memory_v2.csv').mkdir(
         parents=True)
     with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_self_toss_goal())
@@ -1125,9 +1039,7 @@ def test_a_refusal_ends_the_attempt(tmp_path):
                           message='not in TRAJECTORY mode'))
     _reload_ready(node)
     _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         node._start_pattern(_columns_goal(separation_mm=100.0))
     first = node._executor.schedule.skills[0]
     node._executor.tick(first.dispatch_s())
@@ -1602,7 +1514,8 @@ def test_ball_evidence_observer_delegates_to_observations():
 # skills/check (item 8)
 # ═════════════════════════════════════════════════════════════════════════════
 
-def test_check_reports_every_ladder_refusal_and_the_box_status_at_once():
+
+def test_check_reports_every_ladder_refusal_and_the_nomination_status_at_once():
     node, _client = _node_with_client(hand=False)
     resp = node._svc_check(Trigger.Request(), Trigger.Response())
     assert resp.success is False
@@ -1611,7 +1524,7 @@ def test_check_reports_every_ladder_refusal_and_the_box_status_at_once():
                 'REJECTED_HAND_STALE', 'REJECTED_BALL_UNKNOWN'):
         assert code in resp.message
     assert 'REJECTED_HAND_NOT_PARKED' not in resp.message   # retired 2026-09-16
-    assert 'box' in resp.message
+    assert 'nomination self_toss' in resp.message
 
 
 def test_check_reports_the_hand_position_without_gating_on_it():
@@ -1632,50 +1545,48 @@ def test_check_reports_the_hand_position_without_gating_on_it():
     assert '%.2f s to home it' % (sn.floor_lift_s(0.0001),) in resp.message
 
 
-def test_check_reports_ok_when_everything_is_fresh_and_the_box_is_valid():
+
+def test_check_reports_ok_when_everything_is_fresh_and_the_nominations_are_viable():
     node, _client = _node_with_client()
     node._on_traj_status(_status())
     _freshen(node)
     resp = node._svc_check(Trigger.Request(), Trigger.Response())
     assert resp.success is True
     assert 'ladder OK' in resp.message
-    assert 'box OK' in resp.message
+    assert 'nomination self_toss: OK' in resp.message
+    assert 'nomination hop: OK' in resp.message
+    assert 'nomination oval_1ball:' in resp.message
 
 
-def test_check_reports_box_refused_when_the_apex_param_is_uncovered(tmp_path):
-    """`skills/check` must judge the SAME (site pair, apex band) predicate a
-    live throw is judged by -- not merely "a box file exists"."""
-    box_path = tmp_path / 'admissible_box.yaml'
-    box = adm.AdmissibleBox(
-        site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95),
-        landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
-        pattern='self_toss', release_site_xy_mm=(-50.0, 0.0),
-        target_site_xy_mm=(-50.0, 0.0),
-        limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': _SESSION_LEG_ACC_MMPS2,
-               'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
-        gate_hash=adm.gate_hash(), swept_at='2026-09-13',
-        dwell_s=sn._DEFAULT_DWELL_S, planner_mode='pose', carry_zvd=False)
-    adm.dump(str(box_path), [box])
+
+def test_check_reports_a_refused_nomination_when_the_apex_param_is_unflyable():
+    """`skills/check` judges the SAME nomination a goal is judged by (the
+    node parameters)."""
     node, _client = _node_with_client()
     node._on_traj_status(_status())
     _freshen(node)
-    node._params['apex_m'] = 0.5
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', str(box_path)):
-        resp = node._svc_check(Trigger.Request(), Trigger.Response())
+    node._params['apex_m'] = 1.4
+    resp = node._svc_check(Trigger.Request(), Trigger.Response())
     assert resp.success is False
     assert 'ladder OK' in resp.message
-    assert 'box REFUSED' in resp.message
-    assert '0.500' in resp.message
+    assert 'nomination self_toss: REFUSED' in resp.message
+    assert 'apex 1.40' in resp.message
 
 
-def test_check_reports_box_refused_when_the_file_is_missing(tmp_path):
+
+def test_check_needs_no_box_file(tmp_path):
     node, _client = _node_with_client()
     _freshen(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', str(tmp_path / 'nope.yaml')):
-        resp = node._svc_check(Trigger.Request(), Trigger.Response())
-    assert resp.success is False
+    resp = node._svc_check(Trigger.Request(), Trigger.Response())
+    assert resp.success is True
     assert 'ladder OK' in resp.message
-    assert 'box REFUSED' in resp.message
+    assert 'nomination self_toss: OK' in resp.message
+    assert 'nomination hop: OK' in resp.message
+    # The one refusal `skills/check` may print and still succeed: the oval at
+    # the default `separation_mm` parameter (250 mm), which is informational.
+    assert resp.message.count('REFUSED') == 1
+    assert 'nomination oval_1ball: REFUSED' in resp.message
+    assert '(informational: the oval is optional)' in resp.message
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1752,7 +1663,7 @@ def test_check_lists_the_frame_offset_as_a_refusal_when_unevaluable_with_authori
 
 def test_check_reports_frame_check_ok_when_within_limit_with_authority():
     """Authority > 0 and the offset is within the 5 mm limit: reported as a
-    clean line, same shape as the ladder/box/site 'OK' lines beside it."""
+    clean line, same shape as the ladder/site 'OK' lines beside it."""
     node, _client = _node_with_client(frame=False)
     node.set_parameters(
         [_MockParameter(40.0, name='learner_lateral_authority_mm')])
@@ -1774,16 +1685,13 @@ def test_default_parameters_refuse_every_start_path_with_no_frame_data(tmp_path)
     catches it ahead of a powered `start_*` call (UH-3, 2026-09-06)."""
     node, _client = _node_with_client(frame=False)
     node._on_traj_status(_status())
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp_toss = node._start_pattern(_self_toss_goal())
     assert resp_toss.success is False
     assert 'REJECTED_FRAME_OFFSET' in resp_toss.message
 
     node2, _client2 = _node_with_client(frame=False)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp_columns = node2._start_pattern(_columns_goal(separation_mm=100.0))
     assert resp_columns.success is False
     assert 'REJECTED_FRAME_OFFSET' in resp_columns.message
@@ -1968,9 +1876,7 @@ def test_stop_waits_for_an_in_progress_tick(tmp_path):
     timer thread."""
     node, _c = _node_with_client()
     _reload_ready(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         node._start_pattern(_columns_goal(separation_mm=100.0))
     real_lock = node._tick_lock
     assert real_lock.acquire(blocking=False)   # simulate a tick mid-install
@@ -2398,9 +2304,12 @@ def test_a_refused_memory_row_is_logged_and_never_raises():
                              '0.9000 m')
 
     on_experience = node._bind_on_experience(_RefusingMemory())
-    exp = Experience(x=np.zeros(4), u=np.array([0.0, 0.0, 0.8569]),
+    exp = Experience(site_xy_m=np.zeros(2), release_m=[0.0, 0.0, 0.86],
+                     release_vel_mps=[0.0, 0.0, 4.1], dwell_s=float('nan'),
+                     seat_offset_m=np.zeros(2),
+                     u=np.array([0.0, 0.0, 0.8569]),
                      y=np.array([0.0, 0.0, 2.2317]), t_abs_s=1.0, ball_id=0,
-                     caught=True)
+                     release_kind='free_cup', caught=True)
     on_experience(exp)                       # must not raise
     assert len(errors) == 1
     assert 'memory row REFUSED (not appended)' in errors[0]
@@ -2532,9 +2441,7 @@ def test_columns_returns_a_displaced_hand_to_rest_via_the_opening_rest_bridge(
     _hand_at(node, rev=sn.REST_HAND_REV + 8.3103)
     node._params['plant_id'] = 'test_columns_opening_rest_sized'
 
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_columns_goal(separation_mm=100.0))
     assert resp.success is True, resp.message
     rest0 = node._executor.schedule.skills[0]
@@ -2547,9 +2454,7 @@ def test_columns_returns_a_displaced_hand_to_rest_via_the_opening_rest_bridge(
 def test_columns_starts_with_the_hand_at_home(tmp_path):
     node, _client = _node_with_client()
 
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_columns_goal(separation_mm=100.0))
     assert resp.success is True, resp.message
     assert node._executor is not None
@@ -2571,8 +2476,7 @@ def _running_self_toss(node, tmp_path):
     object itself: `_on_tick` retires a finished one off the node."""
     _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
     _prelevel_ready(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)):
-        resp = node._start_pattern(_self_toss_goal())
+    resp = node._start_pattern(_self_toss_goal())
     assert resp.success is True, resp.message
     return node._executor
 
@@ -2646,8 +2550,7 @@ def _latched_link_status(sched_refused, latched):
 def _try_self_toss_start(node, tmp_path):
     _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
     _prelevel_ready(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)):
-        return node._start_pattern(_self_toss_goal())
+    return node._start_pattern(_self_toss_goal())
 
 
 def test_a_latched_lane_refuses_the_next_goal(tmp_path):
@@ -2779,9 +2682,7 @@ def test_frame_check_within_limit_starts_columns_with_authority(tmp_path):
     node.set_parameters(
         [_MockParameter(40.0, name='learner_lateral_authority_mm')])
     _frame_ready(node, plat_x=3.0, plat_y=0.0, cmd_x=0.0, cmd_y=0.0)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_columns_goal(separation_mm=100.0))
     assert resp.success is True
 
@@ -2791,9 +2692,7 @@ def test_frame_check_over_limit_refuses_columns_with_the_number(tmp_path):
     node.set_parameters(
         [_MockParameter(40.0, name='learner_lateral_authority_mm')])
     _frame_ready(node, plat_x=2.1, plat_y=31.1, cmd_x=0.0, cmd_y=0.0)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_columns_goal(separation_mm=100.0))
     assert resp.success is False
     assert 'REJECTED_FRAME_OFFSET' in resp.message
@@ -2812,9 +2711,7 @@ def test_frame_check_with_zero_authority_starts_and_logs_the_offset(tmp_path):
     _frame_ready(node, plat_x=2.1, plat_y=31.1, cmd_x=0.0, cmd_y=0.0)
     lines = []
     node.get_logger().debug = lambda m: lines.append(m)   # detail: DEBUG since console phase 2
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_columns_goal(separation_mm=100.0))
     assert resp.success is True
     frame_lines = [ln for ln in lines if ln.startswith('frame check:')]
@@ -2829,9 +2726,7 @@ def test_frame_check_cannot_evaluate_refuses_naming_the_missing_input(tmp_path):
     node, _client = _node_with_client(frame=False)
     node.set_parameters(
         [_MockParameter(40.0, name='learner_lateral_authority_mm')])
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_columns_goal(separation_mm=100.0))
     assert resp.success is False
     assert 'REJECTED_FRAME_OFFSET' in resp.message
@@ -2848,9 +2743,7 @@ def test_frame_check_refuses_when_the_commanded_position_is_moving(tmp_path):
                                          float(hw.GEOM_INITIAL_HEIGHT_MM)))
     node._commanded_xy_hist.append((now - 0.5, 0.0, 0.0))
     node._commanded_xy_hist.append((now, 2.0, 0.0))  # 2 mm > 1 mm tolerance
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_columns_goal(separation_mm=100.0))
     assert resp.success is False
     assert 'REJECTED_FRAME_OFFSET' in resp.message
@@ -2893,7 +2786,7 @@ def test_a_slow_test_run_cannot_age_the_prelevel_sample():
     """JB-141: `_prelevel_ready` stamped the commanded position on the real
     `time.perf_counter()` and `_prelevel` judged it against
     `_TRAJ_STATUS_STALE_S` (1.0 s) on the same, so a loaded full gate (Night
-    Shift 2026-11-02, a MuJoCo unit on the box) refused two self-toss tests
+    Shift 2026-11-02, a MuJoCo unit on the machine) refused two self-toss tests
     'commanded_position is stale'. The sleep stands in for the load: it
     fails without the `_commanded_clock` injection and passes with it."""
     node, _client = _node_with_client()
@@ -3019,85 +2912,6 @@ def test_an_over_limit_or_unevaluable_check_keeps_the_earlier_correction():
 # R4 reload (brief step 1: skill_node's BB orchestration)
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _good_box_path(tmp_path, *, apex_band_m=(0.85, 0.95), hop=False,
-                   columns=False, oval=False, oval_half_m=0.02,
-                   oval_dwell_s=None):
-    """A P1/P1 self_toss box at the LIVE gate hash and the session's
-    operating limits (300/5000/200000/3500 since the R5 200 k ramp, 2026-09-30) — mirrors
-    `test_self_toss_refuses_an_uncovered_apex_before_any_motion`'s box
-    exactly, so a reload test's shared refusal chain (identical to the
-    self-toss path up to `_start_reload`) passes without depending on
-    `config/generated/admissible_box.yaml`, which a concurrent sweep may be
-    mid-rewrite of (brief_common.md: "a background sweep is writing
-    config/generated/admissible_box.yaml (do not touch it or tools/)")."""
-    box_path = tmp_path / 'admissible_box.yaml'
-    # `dwell_s=sn._DEFAULT_DWELL_S` (0.30): `check_limits` now enforces the live
-    # session dwell against the box's own stamp too (R5, D4, 2026-09-30) --
-    # every box this file hands the node must carry the SAME dwell the node
-    # itself compiles with, or every caller of this helper refuses
-    # `LimitsMismatch: ... dwell_s ...` before it reaches whatever the test
-    # actually means to exercise (measured: unstamped boxes here broke 50
-    # tests across this file the moment the node started passing `dwell_s`).
-    box = adm.AdmissibleBox(
-        site_pair=('P1', 'P1'), apex_band_m=apex_band_m,
-        landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
-        pattern='self_toss', release_site_xy_mm=(-50.0, 0.0),
-        target_site_xy_mm=(-50.0, 0.0),
-        limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': _SESSION_LEG_ACC_MMPS2,
-               'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
-        gate_hash=adm.gate_hash(), swept_at='2026-09-13',
-        dwell_s=sn._DEFAULT_DWELL_S, planner_mode='pose', carry_zvd=False)
-    boxes = [box]
-    if hop:
-        # The 250 mm hop's two boxes as the 2026-09-23 sweep produced them
-        # (release/target xy at +-125 mm), so a check/start at the node's
-        # separation default finds them without the committed yaml.
-        for rel, tgt, names in (((-125.0, 0.0), (125.0, 0.0), ('P1', 'P2')),
-                                ((125.0, 0.0), (-125.0, 0.0), ('P2', 'P1'))):
-            boxes.append(adm.AdmissibleBox(
-                site_pair=names, apex_band_m=apex_band_m,
-                landing_xy_m=((-0.02, 0.02), (-0.02, 0.02)), apex_m=(0.85, 0.90),
-                pattern='hop', release_site_xy_mm=rel, target_site_xy_mm=tgt,
-                limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': _SESSION_LEG_ACC_MMPS2,
-                       'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
-                gate_hash=adm.gate_hash(), swept_at='2026-09-13',
-                dwell_s=sn._DEFAULT_DWELL_S, planner_mode='pose', carry_zvd=False))
-    if columns:
-        # R5 (owner decision D1, 2026-09-30): `compile_columns` folds each
-        # ball into its own SAME-site chain, so it needs (P1,P1)/(P2,P2) --
-        # `columns_sites(100.0)`'s own xy (+-50 mm), not the 250 mm hop
-        # separation above.
-        for name, xy in (('P1', (-50.0, 0.0)), ('P2', (50.0, 0.0))):
-            boxes.append(adm.AdmissibleBox(
-                site_pair=(name, name), apex_band_m=apex_band_m,
-                landing_xy_m=((-0.02, 0.02), (-0.02, 0.02)), apex_m=(0.85, 0.95),
-                pattern='columns', release_site_xy_mm=xy, target_site_xy_mm=xy,
-                limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': _SESSION_LEG_ACC_MMPS2,
-                       'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
-                gate_hash=adm.gate_hash(), swept_at='2026-09-13',
-                dwell_s=sn._DEFAULT_DWELL_S, planner_mode='pose', carry_zvd=False))
-    if oval:
-        # The one-ball oval (plan two-ball-oval): ONE box, T -> C at
-        # separation 150 mm (columns_sites(150) = P1 (-75, 0), P2 (+75, 0)),
-        # box label 'oval_1ball' (the fed variant flies the same cell).
-        # `oval_half_m` is the landing half-extent (workspace-rule tests
-        # vary it); `oval_dwell_s` the stamp (dwell-mismatch tests vary it).
-        boxes.append(adm.AdmissibleBox(
-            site_pair=('P1', 'P2'), apex_band_m=apex_band_m,
-            landing_xy_m=((-oval_half_m, oval_half_m),
-                          (-oval_half_m, oval_half_m)), apex_m=(0.85, 0.95),
-            pattern='oval_1ball', release_site_xy_mm=(-75.0, 0.0),
-            target_site_xy_mm=(75.0, 0.0),
-            limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': _SESSION_LEG_ACC_MMPS2,
-                   'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
-            gate_hash=adm.gate_hash(), swept_at='2026-09-13',
-            dwell_s=sn._DEFAULT_DWELL_S if oval_dwell_s is None
-            else oval_dwell_s,
-            planner_mode='pose', carry_zvd=False))
-    adm.dump(str(box_path), boxes)
-    return str(box_path)
-
-
 def _bb_throw_response(*, success=True, message='ok', predicted_tof_s=0.7,
                        throw_delay_s=3.0):
     resp = BallButlerThrow.Response()
@@ -3206,8 +3020,7 @@ def _start_reload(node, tmp_path, **reload_kw):
              seated=False)
     _prelevel_ready(node)
     _reload_ready(node, **reload_kw)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_self_toss_goal())
     if (resp.success and node._reload_ctx is not None
             and node._reload_ctx.phase == 'await_bb_idle'):
@@ -3235,8 +3048,7 @@ def test_reload_installs_the_bridge_rest_then_calls_bb_reload_and_throw(tmp_path
              seated=False)  # a reload opens with the catch: EMPTY cup
     prelevel_client = _prelevel_ready(node)
     reload_client, throw_client = _reload_ready(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_self_toss_goal())
     assert resp.success is True, resp.message
     # C1 (2026-09-28): bb/reload is asked BEFORE bb/throw_at_target, but the
@@ -3292,8 +3104,7 @@ def test_reload_with_a_ball_already_in_hand_skips_bb_reload(tmp_path):
     _prelevel_ready(node)
     reload_client, throw_client = _reload_ready(node)
     _bb_ready(node, after_check=False)          # BB idle, ball in hand, fresh
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_self_toss_goal())
     assert resp.success is True, resp.message
     assert reload_client.calls == []
@@ -3319,8 +3130,7 @@ def test_reload_does_not_fire_on_the_idle_from_before_the_ball_check(tmp_path):
     _prelevel_ready(node)
     reload_client, throw_client = _reload_ready(node)
     _bb_ready(node, ball_in_hand=False, after_check=False)   # empty hand
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_self_toss_goal())
     assert resp.success is True, resp.message
     assert len(reload_client.calls) == 1
@@ -3349,8 +3159,7 @@ def test_a_stale_bb_heartbeat_is_not_evidence_of_a_ball(tmp_path):
     reload_client, throw_client = _reload_ready(node)
     _bb_ready(node, after_check=False)
     node._bb_heartbeat_mono -= sn._BB_HEARTBEAT_FRESH_S + 0.1
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_self_toss_goal())
     assert resp.success is True, resp.message
     assert len(reload_client.calls) == 1
@@ -3462,7 +3271,6 @@ def test_reload_carries_hold_tilt_on_the_catch_after_the_announcement(tmp_path):
                                [-50.0, 0.0, sn.CATCH_CUP_Z_MM])
     assert any(s.kind == 'THROW' for s in schedule.skills)
     assert node._executor.learner is not None
-    assert node._executor.boxes is not None
     # The FlightLatch for the reload ball (schedule id 0) is queued from the
     # announcement's OWN throw_time, exactly as `_maybe_announce` does for
     # our own releases.
@@ -3682,7 +3490,7 @@ def test_the_reload_wait_times_out_aborted_no_announcement(tmp_path):
 def test_stop_during_a_reload_wait_clears_the_context():
     node, _client = _node_with_client()
     node._reload_ctx = SimpleNamespace(
-        pattern=None, boxes=None, memory=None,
+        pattern=None, memory=None,
         deadline_mono=time.perf_counter() + 10.0)
     resp = node._stop_attempt()
     assert resp.success is True
@@ -3704,8 +3512,7 @@ def _reload_armed_await_bb_idle(node, tmp_path):
              seated=False)  # a reload opens with the catch: EMPTY cup
     _prelevel_ready(node)
     reload_client, throw_client = _reload_ready(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_self_toss_goal())
     assert resp.success is True, resp.message
     assert node._reload_ctx is not None
@@ -3880,7 +3687,7 @@ def test_c3_throw_rejected_bad_state_ends_the_attempt_same_tick(tmp_path):
 def test_c3_an_ok_outcome_is_ignored():
     node, _client = _node_with_client()
     node._reload_ctx = SimpleNamespace(
-        phase='await_announcement', pattern=None, boxes=None, memory=None,
+        phase='await_announcement', pattern=None, memory=None,
         deadline_mono=time.perf_counter() + 10.0)
     node._on_bb_throw_outcome(String(data='OK (axis=n/a, detail1=0)'))
     assert node._reload_ctx is not None
@@ -3970,8 +3777,7 @@ def test_c4_after_a_bb_refusal_ends_the_next_goal_is_not_refused(tmp_path):
     assert node._executor is None
     assert node._reload_ctx is None
     _cup(node, seated=True)   # a self-toss throws a held ball (accept check)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp2 = node._start_pattern(_self_toss_goal())
     assert resp2.success is True, resp2.message
     assert 'already running' not in resp2.message
@@ -4052,9 +3858,7 @@ class TestJuggleAction:
 
     def test_goal_callback_accepts_a_valid_pattern(self, tmp_path):
         node, _client = _node_with_client()
-        with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                          _good_box_path(tmp_path, columns=True)), \
-             patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
             assert (node._juggle_goal(_columns_goal(separation_mm=100.0))
                    == sn.GoalResponse.ACCEPT)
         assert node._executor is not None
@@ -4066,9 +3870,7 @@ class TestJuggleAction:
 
     def test_goal_callback_rejects_a_second_goal_while_the_first_runs(self, tmp_path):
         node, _client = _node_with_client()
-        with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                          _good_box_path(tmp_path, columns=True)), \
-             patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
             assert (node._juggle_goal(_columns_goal(separation_mm=100.0))
                    == sn.GoalResponse.ACCEPT)
             assert (node._juggle_goal(_columns_goal(separation_mm=100.0))
@@ -4092,9 +3894,7 @@ class TestJuggleAction:
         node._params['plant_id'] = 'test_columns_reload_lift'
         _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
         _reload_ready(node)
-        with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                          _good_box_path(tmp_path, columns=True)), \
-             patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
             assert (node._juggle_goal(_columns_goal(separation_mm=100.0))
                    == sn.GoalResponse.ACCEPT)
         assert node._executor is not None
@@ -4131,9 +3931,8 @@ class TestJuggleAction:
         node, _client = _node_with_client()
         _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
         _prelevel_ready(node)
-        with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)):
-            assert (node._juggle_goal(_self_toss_goal())
-                   == sn.GoalResponse.ACCEPT)
+        assert (node._juggle_goal(_self_toss_goal())
+               == sn.GoalResponse.ACCEPT)
         node._stop_attempt()
         node._on_tick()
         assert node._executor is None
@@ -4170,9 +3969,7 @@ class TestJuggleAction:
 
         node._frame_check_error = frame_check_with_a_concurrent_tick
         node._goal_done_event.set()          # the previous goal's, as live
-        with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                          _good_box_path(tmp_path, columns=True)), \
-             patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
             assert (node._juggle_goal(_goal(pattern, separation_mm=100.0))
                    == sn.GoalResponse.ACCEPT)
         assert not node._goal_done_event.is_set(), (
@@ -4202,9 +3999,8 @@ class TestJuggleAction:
         node, _client = _node_with_client()
         _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
         _prelevel_ready(node)
-        with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)):
-            assert (node._juggle_goal(_self_toss_goal(num_cycles=num_cycles))
-                   == sn.GoalResponse.ACCEPT)
+        assert (node._juggle_goal(_self_toss_goal(num_cycles=num_cycles))
+               == sn.GoalResponse.ACCEPT)
         [(name, _msg, values)] = self._attempt_events(node)
         assert name == sn.ATTEMPT_START
         assert values['pattern'] == 'self_toss'
@@ -4226,9 +4022,8 @@ class TestJuggleAction:
         node, _client = _node_with_client()
         _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
         _prelevel_ready(node)
-        with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)):
-            assert (node._juggle_goal(_self_toss_goal())
-                   == sn.GoalResponse.ACCEPT)
+        assert (node._juggle_goal(_self_toss_goal())
+               == sn.GoalResponse.ACCEPT)
         node._stop_attempt()
         node._on_tick()
         gh = MagicMock(is_cancel_requested=False)
@@ -4252,9 +4047,8 @@ class TestJuggleAction:
             node._params['records_path'] = str(records_path)
         _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
         _prelevel_ready(node)
-        with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)):
-            assert (node._juggle_goal(_self_toss_goal())
-                   == sn.GoalResponse.ACCEPT)
+        assert (node._juggle_goal(_self_toss_goal())
+               == sn.GoalResponse.ACCEPT)
         node._stop_attempt()
         node._on_tick()
         gh = MagicMock(is_cancel_requested=False)
@@ -4290,9 +4084,8 @@ class TestJuggleAction:
         node._params['records_path'] = str(path)
         _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
         _prelevel_ready(node)
-        with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)):
-            assert (node._juggle_goal(_self_toss_goal())
-                   == sn.GoalResponse.ACCEPT)
+        assert (node._juggle_goal(_self_toss_goal())
+               == sn.GoalResponse.ACCEPT)
         keys = [k for k, _v in node._goal_record_params]
         assert keys == ['apex_m', 'dwell_s', 'planner']
         node._params['planner_mode'] = 'level'      # changed mid-attempt
@@ -4354,9 +4147,8 @@ class TestJuggleAction:
         node, _client = _node_with_client()
         _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
         _prelevel_ready(node)
-        with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)):
-            assert (node._juggle_goal(_self_toss_goal())
-                   == sn.GoalResponse.ACCEPT)
+        assert (node._juggle_goal(_self_toss_goal())
+               == sn.GoalResponse.ACCEPT)
         gh = MagicMock(is_cancel_requested=False)
         holder = {}
 
@@ -4394,94 +4186,55 @@ class TestJuggleAction:
         node._on_traj_status(_status())
         _prelevel_ready(node)
         node._params['plant_id'] = 'test_hop_' + str(id(node))
-        box_path = tmp_path / 'admissible_box.yaml'
-        boxes = [
-            adm.AdmissibleBox(
-                site_pair=pair, apex_band_m=(0.85, 0.95),
-                landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
-                pattern='hop', release_site_xy_mm=rel, target_site_xy_mm=tgt,
-                limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': _SESSION_LEG_ACC_MMPS2,
-                       'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
-                gate_hash=adm.gate_hash(), swept_at='2026-09-13',
-                dwell_s=sn._DEFAULT_DWELL_S, planner_mode='pose', carry_zvd=False)
-            for pair, rel, tgt in [(('P1', 'P2'), (-50.0, 0.0), (50.0, 0.0)),
-                                   (('P2', 'P1'), (50.0, 0.0), (-50.0, 0.0))]]
-        adm.dump(str(box_path), boxes)
-        with patch.object(sn, '_ADMISSIBLE_BOX_PATH', str(box_path)), \
-             patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
             resp = node._start_pattern(_hop_goal(separation_mm=100.0))
         assert resp.success is True, resp.message
         assert node._executor.schedule.pattern == 'hop'
         sites = {sk.site.name for sk in node._executor.schedule.skills}
         assert sites == {'P1', 'P2'}
 
-    def test_hop_refusal_names_the_separation_mismatch_not_just_the_apex(
-            self, tmp_path):
-        """R4 sitting 3 (owner-reported): a 0.95 m hop refused with "no
-        admissible box covers site pair(s) ... at apex 0.950 m" even though a
-        swept box DID cover that apex -- it was swept at the node's default
-        separation_mm=250 (release/target sites at +-125 mm) while the goal
-        asked for separation_mm=100 (+-50 mm). A bands-only message hides that
-        the apex band WAS satisfied and points the operator at the wrong
-        knob; the refusal must name the site-geometry mismatch instead
-        (`.scratch/r4-throw-precision/issues/04-plain-language-refusal-messages.md`)."""
+    def test_hop_refusal_names_the_parameter_and_the_nearest_viable_value(
+            self):
+        """R4 sitting 3 (owner-reported): a refusal that names only the apex
+        points the operator at the wrong knob. The nomination's one-line
+        refusal carries the configuration it judged (separation included) and
+        the nearest viable value of the parameter to change: a 270 mm hop is
+        refused and the message names separation 270 mm and a smaller viable
+        separation (`.scratch/r4-throw-precision/issues/04-plain-language-
+        refusal-messages.md`)."""
         node, _client = _node_with_client()
-        node._on_traj_status(_status())
         _prelevel_ready(node)
-        node._params['plant_id'] = 'test_hop_sep_mismatch_' + str(id(node))
-        box_path = _good_box_path(tmp_path, hop=True)
-        with patch.object(sn, '_ADMISSIBLE_BOX_PATH', box_path), \
-             patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-            resp = node._start_pattern(
-                _hop_goal(separation_mm=100.0, apex_m=0.95))
+        resp = node._start_pattern(_hop_goal(separation_mm=270.0, apex_m=0.9))
         assert resp.success is False
-        assert 'no admissible box covers' in resp.message
-        # the swept sites (+-125 mm) and the live sites (+-50 mm) must both
-        # be named, along with the swept (250 mm) and requested (100 mm)
-        # separations -- an operator changing separation_mm must be able to
-        # see that THAT is the mismatch, not the apex.
-        assert '125.0' in resp.message and '-125.0' in resp.message
-        assert '50.0' in resp.message and '-50.0' in resp.message
-        assert '250.0' in resp.message
-        assert '100.0' in resp.message
-        assert 'separation_mm' in resp.message
-        assert node._executor is None
-
+        assert 'separation 270 mm' in resp.message
+        assert re.search(r'nearest viable: .*separation \d+ mm', resp.message), \
+            resp.message
 
 
 def test_the_separation_default_is_the_swept_hop_separation():
     """The GUI relay sends 0 for every numeric goal field ("the node's
     default"), so the node's `separation_mm` default IS the separation a
-    GUI-started hop flies. It must be the one the hop boxes were swept at
-    (250 mm, owner decision D2 2026-09-23) — at 100 mm there is no hop box
-    and the goal is refused before anything moves (R4 runsheet finding,
-    2026-09-24)."""
+    GUI-started hop flies. It must be the hop separation of the flown design
+    (250 mm, owner decision D2 2026-09-23)."""
     node, _client = _node_with_client()
     assert float(node.get_parameter('separation_mm').value) == 250.0
     assert sn._DEFAULT_SEPARATION_MM == 250.0
 
 
-def test_check_reports_the_hop_boxes_at_the_node_separation(tmp_path):
-    """`skills/check` validates the HOP's boxes (both directions, at the
-    node's separation) — not only the self-toss box — so a missing hop box
-    surfaces at the dry-run check rather than as a goal rejection (R4
-    runsheet finding, 2026-09-24)."""
+
+def test_check_nominates_the_hop_at_the_node_separation():
+    """`skills/check` nominates the HOP at the node's separation, so an unflyable hop
+    surfaces at the dry-run check rather than as a goal rejection."""
     node, _client = _node_with_client()
     node._on_traj_status(_status())
     _freshen(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path, hop=True)):
-        resp = node._svc_check(Trigger.Request(), Trigger.Response())
-    hop_lines = [l for l in resp.message.split('; ') if 'hop box' in l]
-    assert len(hop_lines) == 2, resp.message
-    assert all('hop box OK' in l for l in hop_lines), resp.message
-    assert 'P1->P2 at 250.0 mm' in resp.message and 'P2->P1 at 250.0 mm' in resp.message
-    # ... and a box file WITHOUT hop boxes is a refusal at the check, not a
-    # goal rejection later.
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)):
-        resp2 = node._svc_check(Trigger.Request(), Trigger.Response())
+    resp = node._svc_check(Trigger.Request(), Trigger.Response())
+    [hop] = [l for l in resp.message.split('; ') if l.startswith('nomination hop')]
+    assert hop.startswith('nomination hop: OK') and 'separation 250 mm' in hop
+    node._on_traj_status(_status(leg_vel_limit_mmps=100.0))
+    resp2 = node._svc_check(Trigger.Request(), Trigger.Response())
     assert resp2.success is False
-    assert 'hop box REFUSED' in resp2.message
-
+    assert 'nomination hop: REFUSED' in resp2.message
 
 
 # ── the operator's lines (console phase 2, `motion/skills/report.py`) ─────
@@ -4508,17 +4261,42 @@ class TestOperatorLines:
         _reload_ready(node)
         info = []
         node.get_logger().info = info.append
-        with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                          _good_box_path(tmp_path, columns=True)), \
-             patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
             assert (node._juggle_goal(_columns_goal(separation_mm=100.0))
                    == sn.GoalResponse.ACCEPT)
+        # P3b: the accept nomination's `nomination OK` line is DEBUG, so the
+        # operator console still sees exactly one INFO start line -- plus,
+        # since P1 (2026-11-06), the Learner's one goal-start line.
+        assert (len(info) == 2 and info[0].startswith('learner: plant model')
+                and ' rows 0 (accepted 0, rejected 0, unusable 0)' in info[0]), info
+        info = info[1:]
         assert len(info) == 1 and info[0].startswith('columns started: '), info
         # the goal's effective dwell and separation ride the line (the
         # hold-rung probe parses them rather than inferring from goal order)
-        # (the goal carries no dwell, so the node parameter is the fallback)
+        # (the goal carries no dwell, so the default dwell is the fallback;
+        # `dwell_s` is no longer a node parameter since 2026-11-06)
         assert info[0].endswith(' · dwell %.2f s · sep 100 mm'
                                 % sn._DEFAULT_DWELL_S), info
+
+    def test_a_self_toss_start_line_names_its_site(self, tmp_path):
+        # JB-190: the Site is a node parameter set by hand between goals; at
+        # the P2 Sitting (2026-11-06) seven goals flew at x = -50 instead of
+        # 0 and no console line said so. Columns' start line is unchanged
+        # (the test above pins its ending).
+        node, _client = _node_with_client(
+            response=_response(t_release_mono=50.0))
+        node._on_traj_status(_status())
+        _prelevel_ready(node)
+        node.set_parameters([_MockParameter(60.0, name='site_y_mm')])
+        info = []
+        node.get_logger().info = info.append
+        with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+            assert (node._juggle_goal(_self_toss_goal())
+                    == sn.GoalResponse.ACCEPT)
+        start = [ln for ln in info if ' started: ' in ln]
+        assert len(start) == 1, info
+        assert start[0].endswith(
+            ' · site (%g, 60) mm' % sn._DEFAULT_SITE_X_MM), start
 
     def test_a_refused_goal_is_one_error_line(self):
         node, _client = _node_with_client(frame=False)
@@ -4547,9 +4325,8 @@ class TestOperatorLines:
         node, _client = _node_with_client()
         _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
         _prelevel_ready(node)
-        with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)):
-            assert (node._juggle_goal(_self_toss_goal())
-                   == sn.GoalResponse.ACCEPT)
+        assert (node._juggle_goal(_self_toss_goal())
+               == sn.GoalResponse.ACCEPT)
         info, warn = [], []
         node.get_logger().info = info.append
         node.get_logger().warning = warn.append
@@ -4571,9 +4348,7 @@ class TestOperatorLines:
     def test_ending_a_live_attempt_leaves_its_one_line_to_retirement(self, tmp_path):
         node, _client = _node_with_client()
         _reload_ready(node)
-        with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                          _good_box_path(tmp_path, columns=True)), \
-             patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
             assert (node._juggle_goal(_columns_goal(separation_mm=100.0))
                    == sn.GoalResponse.ACCEPT)
         errors = []
@@ -4698,9 +4473,7 @@ def _columns_bb_started(node, tmp_path, plant_id=None):
     node._params['plant_id'] = plant_id or ('test_columns_feed_' + str(id(node)))
     _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
     _reload_ready(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_columns_goal(separation_mm=100.0))
     assert resp.success is True, resp.message
     _bb_ready(node)
@@ -4886,8 +4659,7 @@ def test_columns_feed_bb_bias_mm_leaves_self_toss_reload_untouched(tmp_path):
              seated=False)  # a reload opens with the catch: EMPTY cup
     _prelevel_ready(node)
     _reload_client, throw_client = _reload_ready(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_self_toss_goal())
     assert resp.success is True, resp.message
     bridge_rest = node._executor.schedule.skills[0]
@@ -4911,9 +4683,7 @@ def test_columns_feed_bb_bias_mm_leaves_columns_1ball_reload_untouched(tmp_path)
     _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
              seated=False)  # a reload opens with the catch: EMPTY cup
     _reload_client, throw_client = _reload_ready(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_columns_1ball_goal(separation_mm=100.0))
     assert resp.success is True, resp.message
     a_site = node._reload_ctx.site
@@ -4974,15 +4744,13 @@ def test_columns_1ball_reload_false_compiles_a_phantom_schedule_immediately(
     node, _client = _node_with_client()
     node._params['plant_id'] = 'test_columns_1ball_' + str(id(node))
     _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_columns_1ball_goal(separation_mm=100.0))
     assert resp.success is True, resp.message
     assert node._reload_ctx is None       # no feed wait armed -- no real B
     assert node._executor is not None
     schedule = node._executor.schedule
-    assert schedule.pattern == 'columns'       # the box-lookup contract
+    assert schedule.pattern == 'columns'       # a plain-columns schedule
     assert schedule.phantom_balls == (1,)
     assert schedule.is_phantom(1) is True
     assert schedule.is_phantom(0) is False
@@ -5003,9 +4771,7 @@ def test_columns_1ball_reload_false_opens_on_a_rest_from_the_activate_park(
     node, _client = _node_with_client()
     node._params['plant_id'] = 'test_columns_1ball_park_' + str(id(node))
     _freshen(node, pos_meas=0.0, pos_cmd=0.0)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_columns_1ball_goal(separation_mm=100.0))
     assert resp.success is True, resp.message
     schedule = node._executor.schedule
@@ -5026,7 +4792,7 @@ def test_columns_1ball_reload_false_opens_on_a_rest_from_the_activate_park(
 #: tests/ros/test_skill_node_magazine.py).
 _ACCEPTED_CUP_CELLS = [
     (pattern, ev) for pattern, row in sn._CUP_RULE.items()
-    if pattern not in ('magazine', 'columns_turned')   # turned: its own box
+    if pattern not in ('magazine', 'columns_turned')   # turned: its own tests
     for ev, decision in row.items()
     if decision in (sn.RELOAD_FIRST, sn.THROW_FIRST)]
 
@@ -5037,7 +4803,7 @@ def test_every_pattern_entry_opens_on_a_rest(tmp_path, pattern, evidence):
     goal starts, the first skill it puts on the machine is a REST -- the one
     skill that may be planned from wherever the machine is (parked hand,
     off-site, tilted) and that leaves it level, homed and at the site, which
-    is the only start every gate (the sim gate, the box sweep) certifies a
+    is the only start every gate (the sim gate) certifies a
     THROW or CATCH from. `columns_1ball` with a SEATED cup was the one
     entry that broke it, and it cost a sitting: 9 attempts, 0 throws.
 
@@ -5051,20 +4817,15 @@ def test_every_pattern_entry_opens_on_a_rest(tmp_path, pattern, evidence):
              seated=(evidence == ball_possession.EVIDENCE_SEATED))
     _prelevel_ready(node)       # self_toss/hop pre-level; unused by columns
     _reload_ready(node)         # a SEATED columns / an EMPTY cup uses BB
-    # the fixture's hop boxes are the 250 mm sweep's; the others sit at 100 mm
+    # the hop flies at its 250 mm default; the others sit at 100 mm
     separation_mm = (250.0 if pattern == 'hop'
-                     else 150.0 if pattern.startswith('oval_1ball') else 100.0)
-    box_path = _good_box_path(tmp_path, hop=True, columns=True, oval=True)
+                     else 75.0 if pattern.startswith('oval_1ball') else 100.0)
     goal_kw = {}
     if pattern == 'columns_highlow':
         # JP-9: Ball 2's Apex is the node parameter; its cells are its own.
         node._params['apex_m_ball2'] = 0.85
         goal_kw = dict(apex_m=0.9)
-        sub = tmp_path / 'highlow'
-        sub.mkdir()
-        box_path = _highlow_box_path(sub, 0.9, 0.85)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', box_path), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_goal(pattern, separation_mm=separation_mm,
                                          **goal_kw))
     assert resp.success is True, resp.message
@@ -5073,8 +4834,7 @@ def test_every_pattern_entry_opens_on_a_rest(tmp_path, pattern, evidence):
         '%s with a %s cup puts a %s on the machine first' % (pattern, evidence,
                                                              first.kind))
     # 'columns_turned' is `_run_columns` on a rotated pair (same REST-first
-    # tail as 'columns'); the fixture box has no P1@<angle> cells, so its
-    # box coverage is the sweep's job (tests/motion/test_turned_columns_box.py).
+    # tail as 'columns').
     covered = {'self_toss', 'hop', 'columns', 'columns_1ball',
                'columns_1ball_fed', 'columns_turned', 'columns_highlow',
                'oval_1ball', 'oval_1ball_fed', 'reload'}
@@ -5095,9 +4855,7 @@ def test_columns_1ball_reload_true_starts_the_plain_reload_choreography(
     _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
              seated=False)  # a reload opens with the catch: EMPTY cup
     reload_client, throw_client = _reload_ready(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_columns_1ball_goal(separation_mm=100.0))
     assert resp.success is True, resp.message
     assert node._reload_ctx is not None
@@ -5124,9 +4882,7 @@ def test_columns_1ball_announcement_installs_the_merged_schedule(tmp_path):
     _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
              seated=False)  # a reload opens with the catch: EMPTY cup
     _reload_ready(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_columns_1ball_goal(separation_mm=100.0))
     assert resp.success is True, resp.message
     a_site = node._reload_ctx.site
@@ -5175,9 +4931,7 @@ def test_columns_1balls_phantom_first_visit_never_refuses_no_ball_or_no_release(
     node, _client = _node_with_client(response=_response())
     node._params['plant_id'] = 'test_columns_1ball_dispatch_' + str(id(node))
     _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_columns_1ball_goal(separation_mm=100.0,
                                                        num_cycles=2))
     assert resp.success is True, resp.message
@@ -5245,9 +4999,7 @@ def test_columns_1ball_fed_reload_true_arms_the_fed_choreography_with_empty_cup_
     _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
              seated=False)  # a reload opens with the catch: EMPTY cup
     _reload_ready(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_columns_1ball_fed_goal(separation_mm=100.0))
     assert resp.success is True, resp.message
     assert node._reload_ctx is not None
@@ -5317,7 +5069,7 @@ def test_main_spins_the_client_node_on_its_own_executor_thread(monkeypatch):
     by_exec = {ex_: th for th, ex_ in spun}
     main_ex = next(e for e in by_exec if 'num_threads' in e.kw)
     client_ex = next(e for e in by_exec if 'num_threads' not in e.kw)
-    assert main_ex.kw['num_threads'] == 4
+    assert main_ex.kw['num_threads'] == 5
     assert len(client_ex.nodes) == 1 and client_ex.nodes[0]._name == 'skill_node_clients'
     assert main_ex.nodes[0] is not client_ex.nodes[0]
     # its own thread, not the main one
@@ -5406,8 +5158,7 @@ def test_bb_no_response_text_is_neutral_and_first_end_wins(tmp_path):
     orig_end = node._end_attempt
     node._end_attempt = lambda code, msg, **kw: (seen.append((code, msg)),
                                                  orig_end(code, msg, **kw))
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_self_toss_goal())
     assert resp.success is True, resp.message
     _bb_ready(node)
@@ -5592,9 +5343,7 @@ def test_bb_cancel_columns_feed_swap_during_the_throw_call_does_not_cancel_it(tm
     node._params['plant_id'] = 'test_columns_race_' + str(id(node))
     _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
     _reload_client, throw_client = _reload_ready(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_columns_goal(separation_mm=100.0))
     assert resp.success is True, resp.message
     ctx = node._reload_ctx
@@ -5971,8 +5720,7 @@ def test_accept_possession_self_toss_with_a_seated_cup_throws_first_whatever_the
     _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
              seated=True)
     _prelevel_ready(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         assert (node._juggle_goal(_self_toss_goal())
                 == sn.GoalResponse.ACCEPT)
     assert node._reload_ctx is None
@@ -5996,9 +5744,7 @@ def test_accept_possession_an_empty_cup_makes_a_throwing_pattern_reload_first(
     node._params['plant_id'] = 'test_empty_reload_first_%s_%s' % (pattern,
                                                                   id(node))
     separation_mm = 250.0 if pattern == 'hop' else 100.0
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, hop=True, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         assert (node._juggle_goal(_goal(pattern, separation_mm=separation_mm))
                 == sn.GoalResponse.ACCEPT)
     assert node._attempt_label.endswith(' (reload)'), node._attempt_label
@@ -6041,9 +5787,7 @@ def test_accept_columns_empty_cup_opens_with_the_reload_of_a(tmp_path):
     _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
              seated=False)
     node._params['plant_id'] = 'test_columns_empty_a_%s' % id(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         assert (node._juggle_goal(_columns_goal(separation_mm=100.0))
                 == sn.GoalResponse.ACCEPT)
     assert node._attempt_label.endswith(' (reload)'), node._attempt_label
@@ -6223,9 +5967,7 @@ def test_accept_possession_check_reports_unknown_with_no_hand_telemetry():
 def test_the_catch_bump_is_on_for_a_columns_goal(tmp_path):
     from jugglebot.motion.skills import bump as sk_bump
     node, _client = _node_with_client()
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         assert node._start_pattern(
             _columns_goal(separation_mm=100.0)).success is True
     assert node._executor.catch_bump_enabled is True
@@ -6243,15 +5985,12 @@ def test_the_catch_bump_is_off_for_self_toss_hop_and_reload(tmp_path, goal_name)
         _prelevel_ready(node)
         _reload_ready(node)
         goal = _self_toss_goal()
-        box = _good_box_path(tmp_path)
     else:
         node, _c = _node_with_client(response=_response(t_release_mono=50.0))
         node._on_traj_status(_status())
         _prelevel_ready(node)
         goal = _self_toss_goal() if goal_name == 'self_toss' else _hop_goal()
-        box = _good_box_path(tmp_path, hop=(goal_name == 'hop'))
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', box), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(goal)
     assert resp.success is True, resp.message
     assert node._executor.catch_bump_enabled is False
@@ -6288,13 +6027,11 @@ def _oval_node(plant_tag):
 
 
 def test_oval_1ball_seated_cup_accepts_and_compiles_fixed_roles(tmp_path):
-    """SEATED -> throw first; the schedule is the fixed-role oval (box label
+    """SEATED -> throw first; the schedule is the fixed-role oval (pattern
     oval_1ball, every THROW at P1 = T, every catch at P2 = C)."""
     node = _oval_node('accept')
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, oval=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_goal('oval_1ball', separation_mm=150.0))
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_goal('oval_1ball', separation_mm=75.0))
     assert resp.success is True, resp.message
     sched = node._executor.schedule
     assert sched.pattern == 'oval_1ball'
@@ -6309,188 +6046,187 @@ def test_oval_1ball_fed_empty_cup_reloads_at_T_and_seated_is_refused(tmp_path):
              seated=False)
     _prelevel_ready(node)
     node._params['plant_id'] = 'test_oval_fed_%s' % id(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, oval=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_goal('oval_1ball_fed', separation_mm=150.0))
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_goal('oval_1ball_fed', separation_mm=75.0))
     assert resp.success is True, resp.message
     assert node._reload_ctx is not None
     assert node._reload_ctx.site.name == 'P1'          # BB feeds T = sites[0]
     node2, _c = _node_with_client()
     reload2, throw2 = _reload_ready(node2)
     _cup(node2, seated=True)
-    resp = node2._start_pattern(_goal('oval_1ball_fed', separation_mm=150.0))
+    resp = node2._start_pattern(_goal('oval_1ball_fed', separation_mm=75.0))
     assert resp.success is False and ex.REJECTED_BALL_IN_HAND in resp.message
     _assert_no_bb_and_no_motion(node2, reload2, throw2)
 
 
-def test_oval_site_outside_workspace_is_refused_by_name_through_accept(tmp_path):
-    """|site| 75 + half-extent 80 = 155 > 150 mm (no margin since the
-    2026-10-18 amendment of decision 38): refused by the
-    REAL accept path with the code and the numbers. (Fails before the check
-    existed: the same goal was ACCEPTED -- recorded in report_node.md.)"""
+
+def test_oval_site_outside_workspace_is_refused_by_name_through_accept():
+    """A separation that puts a Site outside the 150 mm cup-cycle workspace is
+    refused by the REAL accept path with the code and the numbers. P3b rule
+    (decided without the owner, 2026-11-06; open question 3 in
+    logbook/2026-11-06-learner-generalisation-p3b-nomination-check.md):
+    half-extent ZERO, so the Sites at
+    +-155 mm (separation 310) are refused, the Sites at +-75 mm are not.
+    Refused BEFORE any solve: a counting stub of `nominate` sees zero calls."""
     node = _oval_node('ws')
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, oval=True, oval_half_m=0.08)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_goal('oval_1ball', separation_mm=150.0))
+    calls = []
+    with patch.object(sn.nom, 'nominate',
+                      lambda *a, **k: calls.append(a)):
+        resp = node._start_pattern(_goal('oval_1ball', separation_mm=310.0))
+    assert calls == []
     assert resp.success is False
     assert ex.REJECTED_SITE_OUTSIDE_WORKSPACE in resp.message
-    assert '155.0' in resp.message and '150.0' in resp.message
+    assert '155.0' in resp.message and '150' in resp.message
     assert node._executor is None
 
 
-def test_oval_at_exact_workspace_equality_is_accepted(tmp_path):
+
+def test_oval_at_exact_workspace_equality_passes_the_workspace_rule():
+    """Sites exactly ON the bound (separation 300: |site| 150 = 150 mm) are
+    inside the zero-half-extent rule; whether the nomination then flies the
+    oval there is the planner's call (it does not at 300 mm)."""
     node = _oval_node('ws_eq')
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, oval=True, oval_half_m=0.075)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_goal('oval_1ball', separation_mm=150.0))
-    assert resp.success is True, resp.message
+    calls = []
+    real = sn.nom.nominate
+    with patch.object(sn.nom, 'nominate',
+                      lambda *a, **k: calls.append(a) or real(*a, **k)):
+        resp = node._start_pattern(_goal('oval_1ball', separation_mm=300.0))
+    assert ex.REJECTED_SITE_OUTSIDE_WORKSPACE not in resp.message, resp.message
+    assert len(calls) >= 1          # it got as far as the nomination
 
 
-def test_accept_reports_a_missing_box_and_an_outside_site_together(tmp_path):
-    """Every refusal at once: hop at 250 mm with the (P1,P2) box wide enough
-    (30 mm half-extent) to leave the workspace and NO (P2,P1) box -> one message naming both."""
+
+def test_accept_reports_every_refusal_of_the_nomination_at_once():
+    """Every refusal at once: a 270 mm hop is refused with MORE than one
+    refusal line (each Segment that fails), all kept on the node and all in
+    the one WARN line, while the goal message is the one-line summary."""
     node, _client = _node_with_client()
-    node._on_traj_status(_status())
     _prelevel_ready(node)
-    node._params['plant_id'] = 'test_both_%s' % id(node)
-    box_path = _good_box_path(tmp_path, hop=True)
-    import dataclasses
-    # (P1,P2) widened to 30 mm half-extent: 125 + 30 = 155 > 150 (no margin
-    # since 2026-10-18; the 20 mm fixture now sits inside the bound).
-    boxes = [dataclasses.replace(b, landing_xy_m=((-0.03, 0.03), (-0.03, 0.03)))
-             if b.site_pair == ('P1', 'P2') and b.pattern == 'hop' else b
-             for b in adm.load(box_path) if b.site_pair != ('P2', 'P1')]
-    adm.dump(box_path, boxes)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', box_path), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_hop_goal(separation_mm=250.0, apex_m=0.9))
+    rec = _rec_logger(node)
+    resp = node._start_pattern(_hop_goal(separation_mm=270.0, apex_m=0.9))
     assert resp.success is False
-    assert 'no admissible box covers' in resp.message
-    assert ex.REJECTED_SITE_OUTSIDE_WORKSPACE in resp.message
+    assert len(node._last_nomination_lines) >= 2
+    [(sev, warn)] = [(s, m) for s, m in rec.lines
+                     if m.startswith('nomination refused hop')]
+    assert sev == 'WARN'
+    assert all(l in warn for l in node._last_nomination_lines)
+    assert '\n' not in resp.message
 
 
-def test_oval_refuses_a_box_swept_at_another_dwell_naming_dwell_s(tmp_path):
+
+def test_oval_refusal_names_the_dwell_and_the_nearest_viable_value():
+    """The nomination's summary carries the configuration it judged (dwell 0.27 s)
+    and the nearest viable configuration."""
     node = _oval_node('dwell')
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, oval=True, oval_dwell_s=0.27)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        node._params['dwell_s'] = 0.65
-        resp = node._start_pattern(_goal('oval_1ball', separation_mm=150.0))
+    resp = node._start_pattern(_goal('oval_1ball', separation_mm=150.0))
     assert resp.success is False
-    assert 'dwell_s' in resp.message
-    assert '0.27' in resp.message and '0.65' in resp.message
+    assert 'dwell 0.27 s' in resp.message
+    assert 'nearest viable' in resp.message
     assert node._executor is None
 
 
 def test_goal_dwell_wins_over_the_node_param_for_the_oval_selection(tmp_path):
-    """2026-10-21 (owner): dwell_s travels on the goal. The node param is the
-    columns 0.27, the oval box is stamped 0.65: a goal sending 0.65 selects it
+    """2026-10-21 (owner): dwell_s travels on the goal. The Pattern default is the
+    columns 0.27, a goal sending 0.65 is planned at 0.65
     (the 22:53 sitting's refusal), and the resolved dwell is on the start event."""
     node = _oval_node('goal_dwell')
-    assert node._params['dwell_s'] == pytest.approx(0.27)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, oval=True, oval_dwell_s=0.65)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(
             _goal('oval_1ball', separation_mm=150.0, dwell_s=0.65))
     assert resp.success is True, resp.message
     assert resp.attempt['dwell_s'] == pytest.approx(0.65)
 
 
-def test_goal_dwell_zero_falls_back_to_the_node_param(tmp_path):
+def test_dwell_s_is_not_a_node_parameter():
+    """P4 B3a (D-P4-6): dwell is the Pattern's, not the node's. The parameter
+    is undeclared, so `ros2 param set /skill_node dwell_s` refuses by name."""
+    node = _oval_node('dwell_undeclared')
+    assert 'dwell_s' not in node._params
+    assert sn._pattern_default_dwell_s('oval_1ball') == pytest.approx(0.27)
+
+
+def test_goal_dwell_zero_means_the_pattern_default(tmp_path):
     node = _oval_node('goal_dwell0')
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, oval=True, oval_dwell_s=0.65)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        node._params['dwell_s'] = 0.27
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         refused = node._start_pattern(_goal('oval_1ball', separation_mm=150.0))
-        node._params['dwell_s'] = 0.65
         ok = node._start_pattern(_goal('oval_1ball', separation_mm=150.0,
-                                       dwell_s=0.0))
-    assert refused.success is False and 'dwell_s' in refused.message
-    assert '0.27' in refused.message and '0.65' in refused.message
-    assert 'on the goal' in refused.message      # points at the goal, not the param
+                                       dwell_s=0.65))
+    assert refused.success is False and 'dwell 0.27 s' in refused.message
     assert ok.success is True, ok.message
     assert ok.attempt['dwell_s'] == pytest.approx(0.65)
 
 
-def test_check_prints_the_oval_box_line_and_the_workspace_result(tmp_path):
+
+def test_check_prints_the_oval_nomination_line_and_the_workspace_result():
     node, _client = _node_with_client()
     node._on_traj_status(_status())
     _freshen(node)
+    node._params['separation_mm'] = 75.0
+    resp = node._svc_check(Trigger.Request(), Trigger.Response())
+    [line] = [l for l in resp.message.split('; ')
+              if l.startswith('nomination oval_1ball')]
+    assert line.startswith('nomination oval_1ball: OK')
+    assert 'separation 75 mm' in line
+    assert resp.success is True
+    # a refused oval is INFORMATIONAL (the pattern is optional: a node that
+    # never flies it is not failed by it) ...
     node._params['separation_mm'] = 150.0
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, hop=True, oval=True)):
-        resp = node._svc_check(Trigger.Request(), Trigger.Response())
-    [line] = [l for l in resp.message.split('; ') if l.startswith('oval box')]
-    assert 'oval_1ball P1->P2 at 150.0 mm' in line
-    assert 'apex 0.85-0.95 m' in line and 'dwell' in line
-    assert 'oval workspace OK' in resp.message
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, hop=True, oval=True,
-                                     oval_half_m=0.08)):
-        resp = node._svc_check(Trigger.Request(), Trigger.Response())
-    assert resp.success is False
-    assert 'oval box REFUSED: ' + ex.REJECTED_SITE_OUTSIDE_WORKSPACE in resp.message
-
-
-def test_check_names_dwell_s_when_the_loaded_cell_dwell_differs(tmp_path):
-    """Runsheet row 12a: the node dwell (0.65) differs from the box stamp
-    (0.27) -> skills/check prints the oval line and box line from the NODE's
-    dwell_s and carries describe_miss's dwell_s text."""
-    node, _client = _node_with_client()
-    node._on_traj_status(_status())
-    _freshen(node)
-    node._params['separation_mm'] = 150.0
-    node._params['dwell_s'] = 0.65
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, hop=True, oval=True,
-                                     oval_dwell_s=0.27)):
-        resp = node._svc_check(Trigger.Request(), Trigger.Response())
-    [line] = [l for l in resp.message.split('; ') if l.startswith('oval box')]
-    assert 'dwell 0.650 s' in line
-    assert 'dwell_s' in line and '0.27' in line and '0.65' in line
-
-
-def test_hop_at_the_125_plus_20_operating_point_passes_the_workspace_rule(tmp_path):
-    """Decision 38 amended 2026-10-18: 125 mm sites + 20 mm half-extent =
-    145 <= 150 is accepted (the 20 mm margin refused it)."""
-    node, _client = _node_with_client()
-    node._on_traj_status(_status())
-    _prelevel_ready(node)
-    node._params['plant_id'] = 'test_hop125_%s' % id(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, hop=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_hop_goal(separation_mm=250.0, apex_m=0.9))
-    assert ex.REJECTED_SITE_OUTSIDE_WORKSPACE not in resp.message, resp.message
-
-
-def test_hop_at_135_plus_20_is_refused_by_the_workspace_rule(tmp_path):
-    node, _client = _node_with_client()
-    node._on_traj_status(_status())
-    _prelevel_ready(node)
-    node._params['plant_id'] = 'test_hop135_%s' % id(node)
-    # boxes swept at +-135 mm (the 270 mm separation), 20 mm half-extent
-    box_path = _good_box_path(tmp_path, hop=True)
-    import dataclasses
-    moved = []
-    for b in adm.load(box_path):
-        if b.pattern == 'hop':
-            sgn = 1.0 if b.release_site_xy_mm[0] > 0 else -1.0
-            b = dataclasses.replace(b, release_site_xy_mm=(135.0 * sgn, 0.0),
-                                    target_site_xy_mm=(-135.0 * sgn, 0.0))
-        moved.append(b)
-    adm.dump(box_path, moved)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', box_path), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_hop_goal(separation_mm=270.0, apex_m=0.9))
+    resp = node._svc_check(Trigger.Request(), Trigger.Response())
+    assert 'nomination oval_1ball: REFUSED' in resp.message
+    assert 'informational' in resp.message
+    assert resp.success is True
+    # ... but a Site outside the workspace fails the check, as before.
+    node._params['separation_mm'] = 310.0
+    resp = node._svc_check(Trigger.Request(), Trigger.Response())
     assert resp.success is False
     assert ex.REJECTED_SITE_OUTSIDE_WORKSPACE in resp.message
-    assert '155.0' in resp.message and '150.0' in resp.message
+
+
+
+def test_check_oval_line_carries_the_pattern_default_dwell():
+    """`skills/check` nominates at the Pattern's default dwell (0.27; the node
+    parameter was retired, D-P4-6), and the oval line says so."""
+    node, _client = _node_with_client()
+    node._on_traj_status(_status())
+    _freshen(node)
+    node._params['separation_mm'] = 150.0
+    assert 'dwell_s' not in node._params
+    resp = node._svc_check(Trigger.Request(), Trigger.Response())
+    [line] = [l for l in resp.message.split('; ')
+              if l.startswith('nomination oval_1ball')]
+    assert 'dwell 0.27 s' in line
+
+
+def test_hop_at_250_separation_is_accepted_by_the_nomination():
+    """The 250 mm hop (Sites at +-125 mm, inside the 150 mm workspace with
+    half-extent zero) at apex 0.9 is viable at the launch limits and
+    accepted."""
+    node, _client = _node_with_client()
+    node._on_traj_status(_status())
+    _prelevel_ready(node)
+    node._params['plant_id'] = 'test_hop250_%s' % id(node)
+    resp = node._start_pattern(_hop_goal(separation_mm=250.0, apex_m=0.9))
+    assert resp.success is True, resp.message
+
+
+def test_hop_at_135_passes_the_zero_half_extent_workspace_rule():
+    """Was `135 + 20 > 150` refused by name. P3b rule (decided without the
+    owner, 2026-11-06; open question 3 in the P3b logbook entry):
+    half-extent ZERO, so Sites at +-135 mm (separation 270) are inside the
+    150 mm workspace and the workspace code is NOT in the refusal; the
+    NOMINATION still refuses this hop (the planner cannot fly it at the live
+    limits) and says so in its own words."""
+    node, _client = _node_with_client()
+    _prelevel_ready(node)
+    calls = []
+    real = sn.nom.nominate
+    with patch.object(sn.nom, 'nominate',
+                      lambda *a, **k: calls.append(a) or real(*a, **k)):
+        resp = node._start_pattern(_hop_goal(separation_mm=270.0, apex_m=0.9))
+    assert len(calls) >= 1          # inside the workspace: the solve ran
+    assert resp.success is False
+    assert ex.REJECTED_SITE_OUTSIDE_WORKSPACE not in resp.message
+    assert resp.message.startswith('nomination REFUSED: hop')
 
 
 def test_stop_mid_carry_logs_why_only_the_after_rest_was_offered():
@@ -6525,9 +6261,7 @@ def _chain_a_started(node, tmp_path, plan_capture=None):
              seated=False)
     _prelevel_ready(node)
     _reload_ready(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_columns_goal(separation_mm=100.0))
     assert resp.success is True, resp.message
     assert node._reload_ctx.kind == 'reload'
@@ -6673,9 +6407,7 @@ def test_columns_chain_runs_the_seated_columns_tail(tmp_path):
     seated_node._params['plant_id'] = 'test_columns_tail_seated'
     _freshen(seated_node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
     _reload_ready(seated_node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = seated_node._start_pattern(_columns_goal(separation_mm=100.0))
     assert resp.success is True, resp.message
     assert len(seen_seated) == 1
@@ -7007,9 +6739,7 @@ def test_the_debug_force_catch_refusal_is_refused_while_a_goal_is_active(
         tmp_path):
     node, _client = _node_with_client(response=_response())
     log = _logged(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         assert node._start_pattern(
             _columns_goal(separation_mm=100.0)).success is True
     assert node._executor is not None
@@ -7170,8 +6900,7 @@ def test_the_contact_probe_finds_the_hand_velocity_kick_in_its_window():
 
 
 # ── planner_mode on the install wire (two-ball-oval P3, 2026-10-23) ────────
-# ONE live switch (this node's `planner_mode` parameter) selects the box AND
-# rides on every InstallSegment request; trajectory_node plans with it.
+# ONE live switch (this node's `planner_mode` parameter) rides on every InstallSegment request; trajectory_node plans with it.
 
 def _p3_terminals():
     from jugglebot.motion.skills.segments import (
@@ -7203,17 +6932,15 @@ def test_every_install_request_carries_the_planner_mode_parameter():
 
 
 def test_planner_mode_cannot_change_while_a_goal_is_active(tmp_path):
-    """Audit finding 2026-10-24: the executor's box selection is frozen at goal
+    """Audit finding 2026-10-24: the goal's nomination is frozen at goal
     accept while every InstallSegment request re-reads the live parameter, so a
     mid-goal `ros2 param set /skill_node planner_mode pose` would solve the
-    remaining installs under a planner the box was not selected under. Refused
+    remaining installs under a planner the nomination was not made under. Refused
     by name while a goal is active (the same guard as the debug param); the
     same value re-set is a no-op and allowed; between attempts it applies."""
     node, _client = _node_with_client(response=_response())
     log = _logged(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         assert node._start_pattern(
             _columns_goal(separation_mm=100.0)).success is True
     assert node._executor is not None
@@ -7249,9 +6976,9 @@ def test_every_install_request_carries_the_carry_zvd_parameter():
 
 
 def test_carry_zvd_cannot_change_while_a_goal_is_active(tmp_path):
-    """Same class as planner_mode: the executor's box selection is frozen at
-    goal accept, so a mid-goal flip would solve the remaining installs under a
-    flag the box was not selected for."""
+    """Same class as planner_mode: the goal's nomination is frozen at goal
+    accept, so a mid-goal flip would solve the remaining installs under a
+    flag the nomination was not made for."""
     node, _client = _node_with_client()
     node._params['carry_zvd'] = False
     node._attempt_running = lambda: True
@@ -7265,73 +6992,32 @@ def test_carry_zvd_cannot_change_while_a_goal_is_active(tmp_path):
         [_MockParameter('yes', name='carry_zvd')])[0].successful is False
 
 
-def _zvd_stamped_box(carry_zvd):
-    box = _self_toss_box('pose')
-    return adm.AdmissibleBox(
-        **{**{f: getattr(box, f) for f in (
-            'site_pair', 'apex_band_m', 'landing_xy_m', 'apex_m', 'pattern',
-            'release_site_xy_mm', 'target_site_xy_mm', 'limits', 'gate_hash',
-            'swept_at', 'dwell_s', 'planner_mode')}, 'carry_zvd': carry_zvd})
-
-
-def test_a_box_swept_under_the_other_carry_zvd_flag_is_refused_by_name(tmp_path):
-    box_path = tmp_path / 'admissible_box.yaml'
-    adm.dump(str(box_path), [_zvd_stamped_box(False)])
+def test_carry_zvd_is_part_of_the_nomination():
+    """The carry ZVD flag shapes the plan, so it rides the nomination config
+    and its summary (it was once a stamp on a retired box)."""
     node, _client = _node_with_client()
-    node._on_traj_status(_status())
     node._params['planner_mode'] = 'pose'
     node._params['carry_zvd'] = True
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', str(box_path)):
-        resp = node._start_pattern(_self_toss_goal())
-    assert resp.success is False
-    assert 'carry_zvd' in resp.message
-    assert node._executor is None
-    # the matching flag passes the box select
+    cfg = node._nomination_config('self_toss', 0.9, 250.0, 0.27)
+    assert cfg.carry_zvd is True and cfg.planner_mode == 'pose'
+    assert 'carry_zvd' in node._nominate(cfg).summary
     node._params['carry_zvd'] = False
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', str(box_path)):
-        resp = node._start_pattern(_self_toss_goal())
-    assert 'no admissible box covers' not in resp.message
-    assert 'carry_zvd' not in resp.message
+    cfg = node._nomination_config('self_toss', 0.9, 250.0, 0.27)
+    assert cfg.carry_zvd is False
+    assert 'carry_zvd' not in node._nominate(cfg).summary
 
 
-def _self_toss_box(planner_mode):
-    return adm.AdmissibleBox(
-        site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95),
-        landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
-        pattern='self_toss', release_site_xy_mm=(-50.0, 0.0),
-        target_site_xy_mm=(-50.0, 0.0),
-        limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': _SESSION_LEG_ACC_MMPS2,
-               'leg_jerk_mmps3': 200000.0,
-               'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
-        gate_hash=adm.gate_hash(), swept_at='2026-10-23',
-        dwell_s=sn._DEFAULT_DWELL_S, planner_mode=planner_mode, carry_zvd=False)
-
-
-def test_a_level_box_is_refused_by_name_under_the_pose_planner(tmp_path):
-    box_path = tmp_path / 'admissible_box.yaml'
-    adm.dump(str(box_path), [_self_toss_box('level')])
+def test_the_planner_mode_is_part_of_the_nomination():
+    """The planner mode shapes the plan: it rides the nomination config and
+    its summary (it was once a stamp on a retired box)."""
     node, _client = _node_with_client()
-    node._on_traj_status(_status())
+    node._params['planner_mode'] = 'level'
+    cfg = node._nomination_config('self_toss', 0.9, 250.0, 0.27)
+    assert cfg.planner_mode == 'level'
+    assert ', level' in node._nominate(cfg).summary
     node._params['planner_mode'] = 'pose'
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', str(box_path)):
-        resp = node._start_pattern(_self_toss_goal())
-    assert resp.success is False
-    assert 'planner_mode' in resp.message
-    assert node._executor is None
-
-
-def test_a_pose_box_passes_the_box_select_under_the_pose_planner(tmp_path):
-    box_path = tmp_path / 'admissible_box.yaml'
-    adm.dump(str(box_path), [_self_toss_box('pose')])
-    node, _client = _node_with_client()
-    node._on_traj_status(_status())
-    node._params['planner_mode'] = 'pose'
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', str(box_path)):
-        resp = node._start_pattern(_self_toss_goal())
-    # Refused later for an unrelated reason (no live prelevel/commanded state
-    # in this fixture) -- but NOT by the box select.
-    assert 'no admissible box covers' not in resp.message
-    assert 'planner_mode' not in resp.message
+    cfg = node._nomination_config('self_toss', 0.9, 250.0, 0.27)
+    assert ', pose' in node._nominate(cfg).summary
 
 
 # ── columns_turned (JP-10, 2026-10-30) ─────────────────────────────────────
@@ -7397,37 +7083,10 @@ def test_columns_turned_feed_site_is_the_one_nearest_ball_butler():
 
 # ── columns_highlow (JP-9, map JB-107): Ball 2's own Apex ──────────────────
 
-def _highlow_box_path(tmp_path, apex_a, apex_b, dwell_s=sn._DEFAULT_DWELL_S,
-                      separation_mm=100.0):
-    """`_good_box_path(columns=True)` plus the four high-low cells (both Site
-    assignments) at the goal's Apexes, each stamped with its ball's Dwell."""
-    from jugglebot.motion.skills import schedule as sc_
-    from jugglebot.motion.skills import sites as st_
-    path = _good_box_path(tmp_path, columns=True)
-    boxes = adm.load(path)
-    proto = boxes[0]
-    timing = sc_.columns_ball_timing(max(apex_a, apex_b), min(apex_a, apex_b),
-                                     dwell_s)
-    for site in st_.columns_sites(separation_mm):
-        xy = (float(site.cup_mm[0]), float(site.cup_mm[1]))
-        for apex, dwell in ((max(apex_a, apex_b), timing.dwells[0]),
-                            (min(apex_a, apex_b), timing.dwells[1])):
-            boxes.append(dataclasses.replace(
-                proto, site_pair=(site.name, site.name),
-                apex_band_m=(apex - 0.025, apex + 0.025),
-                apex_m=(apex - 0.1, apex + 0.1),
-                pattern=sc_.COLUMNS_HIGHLOW, release_site_xy_mm=xy,
-                target_site_xy_mm=xy, dwell_s=dwell, planner_mode='pose'))
-    adm.dump(path, boxes)
-    return path
-
-
 def test_columns_highlow_refuses_unset_equal_and_level_all_at_once(tmp_path):
     node, _client = _node_with_client(response=_response())
     node._params['planner_mode'] = 'level'
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _highlow_box_path(tmp_path, 1.0, 0.9)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         r = node._start_pattern(_goal('columns_highlow', apex_m=1.0,
                                       separation_mm=100.0))
         assert r.success is False
@@ -7441,7 +7100,7 @@ def test_columns_highlow_refuses_unset_equal_and_level_all_at_once(tmp_path):
     assert node._executor is None
 
 
-def test_columns_highlow_accepts_with_its_cells_and_names_the_missing_ones(
+def test_columns_highlow_accepts_with_its_nomination(
         tmp_path):
     node, _client = _node_with_client(response=_response())
     node._params['plant_id'] = 'test_highlow_accept_' + str(id(node))
@@ -7449,20 +7108,9 @@ def test_columns_highlow_accepts_with_its_cells_and_names_the_missing_ones(
              seated=True)
     _reload_ready(node)
     node._params['apex_m_ball2'] = 0.9
-    # Plain-columns cells only: refused by name, per ball, before any motion.
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        r = node._start_pattern(_goal('columns_highlow', apex_m=1.0,
-                                      separation_mm=100.0))
-    assert r.success is False
-    assert 'columns_highlow Ball 1 refused' in r.message
-    assert 'columns_highlow Ball 2 refused' in r.message
-    sub = tmp_path / 'hl'
-    sub.mkdir()
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _highlow_box_path(sub, 1.0, 0.9)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    # No cells exist any more: the nomination of the high-low Pattern decides
+    # (the refused case at 125 mm is in test_skill_node_nominate.py).
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         r = node._start_pattern(_goal('columns_highlow', apex_m=1.0,
                                       separation_mm=100.0))
     assert r.success is True, r.message
@@ -7483,9 +7131,7 @@ def test_plain_columns_ignores_apex_m_ball2(tmp_path):
              seated=True)
     _reload_ready(node)
     node._params['apex_m_ball2'] = 0.8
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         r = node._start_pattern(_columns_goal(separation_mm=100.0))
     assert r.success is True, r.message
     assert 'apex_m_ball2' not in r.attempt
@@ -7594,8 +7240,7 @@ def _fire_with_slow_throw_client(node, tmp_path, wait_s):
         node, clock, wait_s, ready=True,
         response=_bb_throw_response(success=True, throw_delay_s=3.0))
     node._bb_throw_cli = cli
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_self_toss_goal())
     assert resp.success is True, resp.message
     assert node._reload_ctx.phase == 'await_bb_idle'
@@ -7630,3 +7275,140 @@ def test_jb21_window_exists_the_moment_inflight_is_true(tmp_path):
     inflight, window = cli.in_flight
     assert inflight is True
     assert window is not None
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# P1 (learner-generalisation, 2026-11-06): ONE `_make_learner(memory)` --
+# PlantModel + Learner, the memory replayed, one INFO line; the v2 memory file
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _v2_row(i, u_apex=0.9, y_apex=0.95, kind='free_cup'):
+    import numpy as np
+    from jugglebot.motion.skills.memory import Experience
+    return Experience(site_xy_m=[-0.05, 0.0], release_m=[-0.05, 0.0, 0.86],
+                      release_vel_mps=[0.0, 0.0, 4.2], dwell_s=0.27,
+                      seat_offset_m=[0.0, 0.0], u=[0.0, 0.0, u_apex],
+                      y=[0.002, 0.0, y_apex], t_abs_s=float(i), ball_id=0,
+                      release_kind=kind, caught=True)
+
+
+def test_make_learner_replays_the_rows_in_file_order_and_logs_one_line(
+        tmp_path):
+    from jugglebot.motion.skills.memory import Memory
+    node, _client = _node_with_client()
+    memory = Memory(str(tmp_path / 'memory_v2.csv'))
+    for i in range(6):
+        memory.append(_v2_row(i))
+    memory.append(_v2_row(6, u_apex=0.9, y_apex=0.5))    # a K outlier
+    info = []
+    node.get_logger().info = info.append
+    learner = node._make_learner(memory, site_x=-0.05)
+    assert learner.takes_context and learner.n_rows == 7
+    assert learner.model.n_accepted == 6 and learner.model.n_rejected == 1
+    assert len(info) == 1, info
+    assert info[0].startswith('learner: plant model: ')
+    assert info[0].endswith('; rows 7 (accepted 6, rejected 1, unusable 0)'), info[0]
+    assert 'applied axis-0 offset at x' in info[0]      # site_x passed
+    assert learner.config.c_max_xy_m == pytest.approx(0.030)
+    # memoised on the memory object: the same Learner, no second replay/line
+    assert node._make_learner(memory) is learner and len(info) == 1
+    # a new memory (a new goal) builds a new one
+    assert node._make_learner(Memory(str(tmp_path / 'm2' /
+                                         'memory_v2.csv'))) is not learner
+    assert len(info) == 2 and info[1].endswith('rows 0 (accepted 0, '
+                                               'rejected 0, unusable 0)')
+    # ... and does NOT evict the first memory's Learner (audit 2026-11-06: a
+    # node-level slot let a later, refused goal's Memory replace the running
+    # goal's Learner, which a feed callback then rebuilt on its own thread).
+    assert node._make_learner(memory) is learner and len(info) == 2
+
+
+def test_make_learner_skips_and_counts_a_row_the_learner_cannot_use(tmp_path):
+    """One unusable row (``observe`` raising ValueError) must not ground the
+    plant: it is skipped, counted in the goal-start line, and every other row
+    is still replayed."""
+    from jugglebot.motion.skills.memory import Memory
+    node, _client = _node_with_client()
+    memory = Memory(str(tmp_path / 'memory_v2.csv'))
+    for i in range(4):
+        memory.append(_v2_row(i))
+    rows = memory.rows()
+
+    class _BadRow(object):
+        def __getattr__(self, name):
+            if name == 'u':
+                return (0.0, 0.0, -1.0)         # a non-positive commanded apex
+            return getattr(rows[0], name)
+    memory.rows = lambda: list(rows[:2]) + [_BadRow()] + list(rows[2:])
+    info = []
+    node.get_logger().info = info.append
+    learner = node._make_learner(memory)
+    assert learner.n_rows == 4
+    assert info[0].endswith('; rows 5 (accepted 4, rejected 0, unusable 1)'), info[0]
+
+
+def test_on_experience_appends_then_observes(tmp_path):
+    from jugglebot.motion.skills.memory import Memory
+    node, _client = _node_with_client()
+    memory = Memory(str(tmp_path / 'memory_v2.csv'))
+    learner = node._make_learner(memory)
+    on_experience = node._bind_on_experience(memory, learner)
+    on_experience(_v2_row(1))
+    assert len(memory) == 1 and learner.n_rows == 1
+    assert len(Memory(str(tmp_path / 'memory_v2.csv'))) == 1
+
+
+def test_a_row_the_memory_refuses_is_not_observed(tmp_path):
+    from jugglebot.motion.skills.memory import Memory
+    node, _client = _node_with_client()
+    errors = []
+    node.get_logger().error = errors.append
+    memory = Memory(str(tmp_path / 'memory_v2.csv'))
+    learner = node._make_learner(memory)
+    on_experience = node._bind_on_experience(memory, learner)
+    on_experience(_v2_row(1, u_apex=0.9, y_apex=3.0))   # outside the band
+    assert len(memory) == 0
+    assert learner.n_rows == 0                          # never observed
+    assert len(errors) == 1 and 'memory row REFUSED' in errors[0]
+
+
+def test_a_v1_memory_without_a_v2_file_refuses_the_goal_naming_the_migration(
+        tmp_path):
+    """The live plant's v1 ``memory.csv`` and no ``memory_v2.csv``: the
+    goal is refused BEFORE anything moves, and the message names the
+    migration command (a silent cold start beside an unmigrated corpus is
+    the failure this prevents)."""
+    node, _c = _node_with_client()
+    node._on_traj_status(_status())
+    pre = _prelevel_ready(node)
+    node._params['plant_id'] = 'v1_only'
+    d = tmp_path / 'temp' / 'learn' / 'v1_only'
+    d.mkdir(parents=True)
+    (d / 'memory.csv').write_text(
+        'x0,x1,x2,x3,u0,u1,u2_apex_m,y0,y1,y2_apex_m,t_abs_s,ball_id,caught\n')
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_self_toss_goal())
+    assert resp.success is False
+    assert 'memory refused' in resp.message
+    assert 'tools/migrate_memory_schema_v2.py' in resp.message
+    assert pre.calls == []
+    assert node._executor is None
+
+
+def test_a_goal_with_no_memory_starts_cold_on_the_identity(tmp_path):
+    node, _c = _node_with_client()
+    node._on_traj_status(_status())
+    _prelevel_ready(node)
+    node._params['plant_id'] = 'brand_new'
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_self_toss_goal())
+    assert resp.success is True, resp.message
+    learner = node._executor.learner
+    assert learner.n_rows == 0 and 'K' in learner.model.at_prior()
+    from jugglebot.motion.skills import learner as lr
+    ctx = lr.ThrowContext(site_xy_m=(0.0, 0.0), release_m=(0.0, 0.0, 0.86),
+                          release_vel_mps=(0.0, 0.0, 4.2), dwell_s=0.27,
+                          ball_id=0, release_kind='free_cup')
+    import numpy as np
+    y_d = np.array([0.0, 0.0, 0.9])
+    np.testing.assert_allclose(learner.command(ctx, y_d), y_d)

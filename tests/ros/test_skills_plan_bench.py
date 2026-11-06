@@ -640,22 +640,6 @@ def test_build_self_toss_schedule_honours_an_explicit_site():
     assert all(sk.site is other for sk in sched.skills)
 
 
-def test_self_toss_leg_jerk_matches_the_swept_admissible_box():
-    """The box `config/generated/admissible_box.yaml` was swept UNDER a
-    specific leg-jerk ceiling (`admissible.check_limits`'s job at runtime); if
-    this constant silently drifted from that sweep, every self-toss rehearsal
-    would clip against the WRONG envelope with no loud complaint until a live
-    `check_limits` call — this pins the two together offline."""
-    box_path = os.path.join(_REPO, 'config', 'generated', 'admissible_box.yaml')
-    if not os.path.exists(box_path):
-        pytest.skip('admissible_box.yaml not generated in this checkout')
-    from jugglebot.motion.skills import admissible as adm
-    boxes = adm.load(box_path)
-    p1p1 = next(b for b in boxes if b.site_pair == ('P1', 'P1'))
-    assert p1p1.limits['leg_jerk_mmps3'] == pytest.approx(
-        spb.SELF_TOSS_LEG_JERK_MMPS3)
-
-
 # ── biased_landing — the analytic R3 plant-error model ─────────────────────
 
 def test_biased_landing_is_deterministic():
@@ -833,7 +817,8 @@ def test_self_toss_rehearsal_grows_memory_and_the_learner_changes_the_command(
         tmp_path, r3_catch_plane):
     """Three cold-start attempts (n_throws=1 each, policy A), ONE memory
     shared across them: by the third attempt the memory holds >= LearnerConfig
-    .k_min (2) rows, so the commanded (landing offset, flight) must differ
+    rows (P1, 2026-11-06: the plant model moves from the first row; until
+    then the old law needed k_min = 2), so the commanded (landing offset, flight) must differ
     from the identity prior (0, 0, flight) — the whole point of wiring the
     learner + memory into this rehearsal (R3-g brief). Matches the manual
     rehearsal 2026-09-13 (`--rehearse --pattern self-toss --arm A --attempts
@@ -846,9 +831,13 @@ def test_self_toss_rehearsal_grows_memory_and_the_learner_changes_the_command(
 
     from jugglebot.motion.skills.memory import Memory
     from jugglebot.motion.skills import learner as lr
-    memory = Memory(str(tmp_path / 'memory.csv'))
-    cfg = lr.LearnerConfig()
-    learner = types.SimpleNamespace(command=lambda x, y_d: memory.command(x, y_d, cfg))
+    from jugglebot.motion.skills import plant_model as pm
+    memory = Memory(str(tmp_path / 'memory_v2.csv'))
+    learner = lr.Learner(pm.PlantModel(), lr.LearnerConfig())
+
+    def on_experience(exp):
+        memory.append(exp)
+        learner.observe(exp)
 
     clock = {'t': 0.0}
 
@@ -864,14 +853,18 @@ def test_self_toss_rehearsal_grows_memory_and_the_learner_changes_the_command(
         rows, meta = spb.rehearse_attempt(
             a, n_throws=1, jitter_mm=0.0, limits=limits, geom=geom, run_t0=0.0,
             now_fn=now_fn, sleep_fn=sleep_fn, state=shared, pattern='self-toss',
-            site=site, learner=learner, boxes=None, on_experience=memory.append)
+            site=site, learner=learner, on_experience=on_experience)
         assert not meta['ended_early'], (a, meta['end_code'])
-        commands.append(memory.arrays()[1][-1].copy())    # this attempt's u
+        commands.append(memory.arrays()[0][-1].copy())    # this attempt's u
 
-    assert len(memory) == 3
+    assert len(memory) == 3 and learner.n_rows == 3
     identity_u = commands[0]
-    assert commands[1] == pytest.approx(identity_u)        # still cold (1 row)
-    assert not np.allclose(commands[2], identity_u)        # warm (>= k_min rows)
+    # cold: the identity prior exactly (empty memory -> u = y_d)
+    assert commands[0] == pytest.approx(np.array([0.0, 0.0, commands[0][2]]))
+    # P1 (2026-11-06): the plant model moves from the FIRST row (the old
+    # law's k_min = 2 floor is gone), so the warm command differs by the
+    # third attempt at the latest
+    assert not np.allclose(commands[2], identity_u)
 
 
 # ── R4: the jugglebot/juggle action replaces the deleted skills/start_columns

@@ -3,7 +3,7 @@ title: Carry ring suppression — zero-residual-vibration rows on the pose carry
 created: 2026-11-04
 status: active
 owner: Harrison
-last_updated: 2026-11-05
+last_updated: 2026-11-06
 pathway: two-ball-oval
 scope: >-
   The one-ball oval's carried Throws land +76 mm (dwell 0.40) and +122 mm (0.35) long because the pose STEADY
@@ -30,6 +30,8 @@ related_code:
 ---
 
 # Carry ring suppression (ZVD on the pose carry)
+
+> 2026-11-06 (learner-generalisation P3c, branch p3-online-admissibility, pending the owner's merge): the Admissible box, its sweep (`tools/admissible_sweep.py`, `admissible_sweep_run.py`) and `admissible.select` are retired. Wherever this plan says to sweep or re-sweep the box, check a `gate_hash`, or lists the box among a phase's files, that is history; goal acceptance is now the nomination (`skills/check`, `skills/nominate`, the GUI Juggle panel's report, `python sim/skills_gate.py --nominate ...`, I-ADMIT-2) and each commanded Throw is checked online (I-ADMIT-1).
 
 Map Item: JB-102 (`map/feature-pre-release-hold-rung-release-from-a-moving-platform-hold-0.md`), under the
 two-ball-oval Pathway. This plan is the root-cause fix ranked first by the 2026-11-04 offline investigation;
@@ -93,7 +95,7 @@ scope here (§ 6).
   `.../scratchpad/ring/` (fitmode.py) as starting points; they are not committed and rot at reboot, so the
   committed probe absorbs what it needs.
 - **Gate:** the two estimators agree on frequency within +/-10 % and the encoder fit predicts the 2026-11-03
-  carried excess at 0.40 and 0.35 within 15 mm/s. **If not:** fly the identification row (dwell 0.40, hold 0
+  carried excess at 0.40 and 0.35 within 15 mm/s. **If not:** fly the identification row (dwell 0.40, hold 0 (identification row dropped 2026-11-06: profiled steps excite no ring; the mode is re-fitted from the Sitting bag, see the P3 row.)
   then hold 0.050, 30 Throws each, mocap and encoders) as JB-102's `## Sitting` section before P1 lands.
 - Also report the mocap / encoder excess ratio (~1.8 on 2026-11-03): if the structural part (compliance
   beyond the motors) has a different frequency from the servo part, the rows need two modes (§ 5 risk 1).
@@ -108,7 +110,7 @@ scope here (§ 6).
 
 - The two estimators do not agree: free decay is not evaluable (the composed command is never acceleration-quiet through a hold; 2 and 4 usable windows), and the encoder and mocap frequencies differ by ~20 % on both days with non-overlapping IQRs. That is the § 5 risk-1 signature (structure rings below the motors), but one mode versus two is not settled.
 - The encoder fit over-predicts the 2026-11-03 separation excess by +69.5 (0.40) and +58.3 mm/s (0.35); Model A by +66 / +54. Model A matches the mocap excess (+127 vs +122 at 0.35), so the debrief's landing-bias validation was a mocap-like match. y is unidentified (carry acceleration 345 mm/s^2 rms against ~3000 in x).
-- **Decision (orchestrator, owner can overturn):** proceed with P1 and P2 at the provisional 4.9 Hz / zeta 0.20 / 20 ms now in the yaml, and fly the identification row at the P3 Sitting before the A/B. Reason: the ZVD rows' +/-15 % band centred at 4.9 Hz spans 4.2-5.6 Hz, covering both the mocap (4.45) and encoder (5.4) frequencies, whereas the old 6.0 Hz sits outside the band for the mode the ball sees; and nothing in P1 or P2 is wasted by a later re-fit (values are config, the box is swept under the flag).
+- **Decision (orchestrator, owner can overturn):** proceed with P1 and P2 at the provisional 4.9 Hz / zeta 0.20 / 20 ms now in the yaml, and fly the identification row at the P3 Sitting before the A/B. Reason: the ZVD rows' +/-15 % band centred at 4.9 Hz spans 4.2-5.6 Hz, covering both the mocap (4.45) and encoder (5.4) frequencies, whereas the old 6.0 Hz sits outside the band for the mode the ball sees; and nothing in P1 or P2 is wasted by a later re-fit (values are config, the box is swept under the flag). (identification row dropped 2026-11-06: profiled steps excite no ring; the mode is re-fitted from the Sitting bag, see the P3 row.)
 
 ### P1: The ZVD contract and rows behind a flag
 
@@ -230,17 +232,17 @@ JB-102's `## Sitting` section, written when P2 commits. Outline:
 
 | Step | Status | Note |
 |---|---|---|
-| P0 | done (gate FAILED) | Mode 5.4 Hz encoder / 4.45 Hz mocap, zeta 0.14-0.28, delay 17-22 ms; yaml 4.9 / 0.20 / 0.020 provisional; identification row scheduled at the P3 Sitting |
+| P0 | done (gate FAILED) | Mode 5.4 Hz encoder / 4.45 Hz mocap, zeta 0.14-0.28, delay 17-22 ms; yaml 4.9 / 0.20 / 0.020 provisional; identification row scheduled at the P3 Sitting, dropped 2026-11-06 |
 | P1 | done | Landed uncommitted with the P2 box: flag-off byte-identical, residual ~0 nominal, budget 47.6 ms core of 50; 0.35 x1.15 bound is an open owner decision |
 | P2 | done (gate 1 PASS, gate 2 FAIL) | Box e8d303ae93bc, 195 cells; oval 0.40 / Apex 1.00 keeps 30 mm; Columns canary cell empty with the rows on (RING 18522 / 18522); shipped as swept, fallback is an owner decision (Questions) |
-| P3 | in progress | 2026-11-05 22:46 Sitting: A arm flag-off only (9/9, 3/3, 0/0, each ended by a firmware STOP: 2 Hand C1 stops, 1 bridge GC pause); B arm never set, no A/B data. Re-fly under FW 39 (Hand C1 grace raised). Identification step dropped from the row: 20 mm profiled steps excite no ring; whole-bag forced fit x 5.47 enc / 4.68 mocap Hz, y 4.06 / 4.24 Hz, zeta x 0.26-0.36, y 0.14-0.17, delay 15-21 ms; provisional 4.9 / 0.20 / 0.020 kept. Gains the identification row first (JB-102 `## Sitting`); Columns canary flies with the flag off |
+| P3 | in progress | 2026-11-05 22:46 Sitting: A arm flag-off only (9/9, 3/3, 0/0, each ended by a firmware STOP: 2 Hand C1 stops, 1 bridge GC pause); B arm never set, no A/B data. Re-fly under FW 40 (Hand C1 grace 14 ms); not the next Sitting (owner, 2026-11-06). Identification step dropped from the row: 20 mm profiled steps excite no ring; whole-bag forced fit x 5.47 enc / 4.68 mocap Hz, y 4.06 / 4.24 Hz, zeta x 0.26-0.36, y 0.14-0.17, delay 15-21 ms; provisional 4.9 / 0.20 / 0.020 kept.; Columns canary flies with the flag off |
 
 ## 8. Questions
 
-Owner decision needed (asked 2026-11-05, unanswered). Gate 2 failed: with the rows on the Columns window at Dwell 0.27 is infeasible (RING), and the pre-registered fallback (decision 2) was written for a gate-1 failure, not this one. Shipped meanwhile: the box as swept, P3 oval A/B with the rows on, Columns canary flag off.
+**Decision (owner, 2026-11-06): (a), and it stands until JB-184 has a bound.** The rows are an oval tool and stay off on Columns. Reason: offline nomination accepts Columns with the rows at Apex 1.00 and above (Sep. 125, Dwell 0.27), so feasibility no longer rules it out, but planned Leg acceleration rises 3535 to 5655 mm/s^2 at Sep. 125 and 3968 to 6276 at Sep. 135, against 6296 where Legs 1 and 2 separated, and nothing bounds Leg tension. The ring is about half of JB-192's 9 mm pull, so the gain on Columns is small. The original question, kept as the record: Gate 2 failed: with the rows on the Columns window at Dwell 0.27 is infeasible (RING), and the pre-registered fallback (decision 2) was written for a gate-1 failure, not this one. Shipped meanwhile: the box as swept, P3 oval A/B with the rows on, Columns canary flag off.
 
 - (a) **Accept:** Columns under Dwell about 0.30 flies flag off; the rows are an oval / carry tool. This reverses decision 5 in effect.
-- (b) **Soft-penalty fallback** (decision 2) and a second re-sweep (about 3.5 h; must avoid the 04:45 Night Shift).
+- (b) **Soft-penalty fallback** (decision 2) and a second re-sweep (about 3.5 h; must avoid the 04:45 Night Shift). The sweep was retired on 2026-11-06, so this cost is gone.
 - (c) **A principled scope rule:** the rows are assembled only when the window can hold them (for example carry knots at least one damped mode period); `RING` is replaced by "rows not assembled", with the stamp recording it.
 - (d) Something else.
 

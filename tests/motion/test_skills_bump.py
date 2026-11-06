@@ -243,14 +243,15 @@ def _schedule(sites) -> Schedule:
                     beat_s=0.578, transit_s=0.278, dwell_s=DWELL_S, t0_abs_s=T0_ABS)
 
 
-def _live(sites, limits, geom, enabled=True):
+def _live(sites, limits, geom, enabled=True, on_experience=None):
     p1, _p2 = sites
     box = {'seed': _rest_state(p1.rest_site_mm())}
     sch = _schedule(sites)
     land = {'l': ex.Landing(pos_mm=sites[1].catch_site_mm(), vel_mm_s=LAND_VEL,
                             t_land_abs_s=T_LAND, from_fit=True)}
     x = ex.SkillExecutor(sch, _installer_over(box, limits, geom),
-                         tracker=lambda b: land['l'], catch_bump_enabled=enabled)
+                         tracker=lambda b: land['l'], catch_bump_enabled=enabled,
+                         on_experience=on_experience)
     x.tick(sch.skills[0].dispatch_s())
     x.tick(sch.skills[1].dispatch_s())
     assert x._live_catch is not None and box['rec'].meta.catches
@@ -282,6 +283,37 @@ def test_an_accepted_executor_bump_records_the_realised_release_not_delta(
     assert x._resend_counts[1] == 1
     assert np.allclose(x._live_catch[1].landing_mm[:2],
                        sites[1].catch_site_mm()[:2] + (20.0, 0.0))
+
+
+def test_an_accepted_bump_moves_the_pending_memory_rows_release(
+        sites, limits, geom):
+    """JB-194 F1 on the BUMP path: the carried Throw's Memory row was
+    registered at the Catch's dispatch; an accepted bump moves the release by
+    b(t_rel), and the pending row must record that release (rel and seat),
+    not the dispatch aim. The release velocity (the Learner's kernel key)
+    stays the query's."""
+    x, box, _land = _live(sites, limits, geom, on_experience=lambda e: None)
+    rec = box['rec']
+    pend, = [p for p in x._pending_outcomes
+             if p.t_release_s == pytest.approx(T_LAND + DWELL_S)]
+    rel0 = np.asarray(pend.ctx.release_m, dtype=float).copy()
+    vel0 = np.asarray(pend.ctx.release_vel_mps, dtype=float).copy()
+    moved = ex.Landing(pos_mm=sites[1].catch_site_mm() + np.array([20.0, 0.0, 0.0]),
+                       vel_mm_s=LAND_VEL, t_land_abs_s=T_LAND, from_fit=True)
+    t = T_LAND - 0.45
+    d = x.catch_bump(rec.plan, rec.meta, rec.t0_s, t, limits, geom, landing=moved)
+    assert d.reason == 'OK', d
+    x.commit_catch_bump(d, t)
+    b_rel = np.asarray(d.result.release_offset_xy_mm, dtype=float)
+    assert float(np.hypot(*b_rel)) > 1.0
+    np.testing.assert_allclose(np.asarray(pend.ctx.release_m)[:2] - rel0[:2],
+                               b_rel / 1000.0, atol=1e-12)
+    assert pend.ctx.release_m[2] == rel0[2]
+    np.testing.assert_allclose(pend.ctx.release_m,
+                               x._carried_release_mm[1] / 1000.0, atol=1e-12)
+    np.testing.assert_allclose(pend.ctx.seat_offset_m, x._seat_offset_m(1))
+    np.testing.assert_allclose(pend.x[2:4], x._seat_offset_m(1))
+    np.testing.assert_allclose(pend.ctx.release_vel_mps, vel0)
 
 
 def test_executor_fences_off_freeze_and_the_window_retry_rule(sites, limits, geom):

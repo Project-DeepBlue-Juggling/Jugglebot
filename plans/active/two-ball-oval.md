@@ -43,6 +43,8 @@ related_code:
 
 # Two-ball oval
 
+> 2026-11-06 (learner-generalisation P3c, branch p3-online-admissibility, pending the owner's merge): the Admissible box, its sweep (`tools/admissible_sweep.py`, `admissible_sweep_run.py`) and `admissible.select` are retired. Wherever this plan says to sweep or re-sweep the box, check a `gate_hash`, or lists the box among a phase's files, that is history; goal acceptance is now the nomination (`skills/check`, `skills/nominate`, the GUI Juggle panel's report, `python sim/skills_gate.py --nominate ...`, I-ADMIT-2) and each commanded Throw is checked online (I-ADMIT-1).
+
 Branch: `main` in `~/Desktop/Jugglebot` (merged from `skill-stack` / `two-ball-oval` 2026-10-23; the oval worktree is retired; the `two-ball-oval` branch is kept at `main`'s tip, but work continues on `main` directly, fly after a FULL launch restart).
 Design record: the wayfinder map was at `.scratch/two-ball-oval/` in the retired oval worktree (gitignored, may no longer exist; the
 58 decisions it holds are restated here in § 1.3 so the plan stands alone). Runbook for the first
@@ -155,8 +157,12 @@ and whether this cup can carry a ball 150 mm in 0.30 s is what the plan finds ou
     refused the flown columns and hop); code `REJECTED_SITE_OUTSIDE_WORKSPACE`, every pattern.
   - *39* — `dwell_s` a REQUIRED `select` / `describe_miss` keyword; `check_limits` validates file-level limits.
     *Amended 2026-10-21 (owner):* `dwell_s` travels on the Juggle goal (it was a node parameter); the GUI pre-fills it per pattern from the box's swept dwell (columns/hop/self_toss 0.27, oval 0.65), editable; the node parameter is the fallback when the goal sends 0. The 22:53 sitting's oval was refused for a 0.27 node dwell against the 0.65 box.
+    *Amended 2026-11-06 (learner-generalisation P4, on branch `p3-online-admissibility`):* `dwell_s` is no longer a `skill_node` parameter at all; a goal that sends 0 gets the default dwell (0.27 s), and the box named here was retired at P3c.
   - *44* — "shared `plant_id`" → oval sittings use a **separate `plant_id`**: T = P1 = (−75, 0) is the same
     `x[0:2]` as every columns / self_toss P1 row and `h_seat` does not separate them.
+    *Superseded 2026-11-06 (learner-generalisation P1, on branch `p3-online-admissibility`):* memory rows carry
+    a release kind and the Learner matches on it exactly, so carried and vertical Throws no longer pool;
+    `INVARIANTS.md` I-LEARN-1 is the rule (shared-memory behaviour on hardware is that plan's P5).
   - *48* — `CATCH_CLOSING_SPEED` 50 % → 25 % → **20 %** of the 0.7× target, held-axis catches exempt (cup stationary
     at touch-down by design). Achieved ratios: p50 0.58 over 479 windows, columns cells 0.44–0.48, BB feed
     0.42, hop landing 0.47–0.49, hop carry 0.349, near-hard capture 0.114, the oval 0.533. Origin of 20 %: the lowest catch ratio ever flown and installed is the sitting-6 (2026-10-06) high catch at the historical 930 mm plane (arrival −5520 mm/s, realised −960 vs target −3864 mm/s = 0.248), replayed by `tests/ros/test_install_segment.py` (pinned at 930 mm on purpose); 0.20 sits below it with margin and 1.75× above the 0.114 near-hard capture catch; the first re-base to 0.25 refused that replay.

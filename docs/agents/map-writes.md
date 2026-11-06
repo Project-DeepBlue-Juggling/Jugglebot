@@ -59,8 +59,9 @@ A hardware Item (`hardware: bench-leg | bench-hand | robot`) says what it needs 
 | `record:` | what to write down (required) |
 | `minutes:` | positive integer (required) |
 | `branch:` | a held Night Shift branch name (optional) |
+| `first:` | one line saying why this row must be flown before every other row (optional; rare) |
 
-`python -m mapkit runbook` (and `gen`) turns every valid section into `docs/runbook.md`, the Next Sitting Runbook, ordered by priority weight (high 3, medium 2, low 1; double with a `branch:`) per minute and grouped by setup set. The generator never invents a `do:` step: an Item with a missing or malformed section is listed under "Needs a Sitting section" with the parse errors. Results typed in the app land on the Item as `## Sitting result (<date>)`, or since 2026-11-03 `## Sitting result (<date> HH:MM)` with the local time saved (verdict pass, fail or pending, notes; `pending` = flown, but the pass needs the logs, and `/sitting-debrief` derives the verdict). Parser and generator: `mapkit/sitting.py`; pinned by `tests/sim/test_sitting_sections.py`.
+`python -m mapkit runbook` (and `gen`) turns every valid section into `docs/runbook.md`, the Next Sitting Runbook, ordered by priority weight (high 3, medium 2, low 1; double with a `branch:`) per minute and grouped by setup set. A row with `first:` is the exception (2026-11-06): it is listed before every scored row and its setup set opens the rig's first block, because priority per minute cannot say "every other row depends on this one". Use it only for that dependency, and give the reason; an empty `first:` is a parse error. The generator never invents a `do:` step: an Item with a missing or malformed section is listed under "Needs a Sitting section" with the parse errors. Results typed in the app land on the Item as `## Sitting result (<date>)`, or since 2026-11-03 `## Sitting result (<date> HH:MM)` with the local time saved (verdict pass, fail or pending, notes; `pending` = flown, but the pass needs the logs, and `/sitting-debrief` derives the verdict). Parser and generator: `mapkit/sitting.py`; pinned by `tests/sim/test_sitting_sections.py`.
 
 ## Rules
 

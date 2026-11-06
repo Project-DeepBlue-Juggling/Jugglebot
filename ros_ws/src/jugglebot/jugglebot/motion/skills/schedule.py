@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -204,10 +204,9 @@ def apex_m(flight_s_: float) -> float:
     is consistent with — ``t_f = 2·sqrt(2·apex_m / g)`` run backward, i.e.
     ``apex_m = g · (t_f / 2)² / 2``, the SAME ``g`` (:data:`_G_SI`) so a
     round trip through both functions is exact to float precision.  Lets a
-    caller that only has a flight time — an admissible box swept over an
-    explicit flight grid before 2026-09-18
-    (:func:`~jugglebot.motion.skills.admissible.load`) — recover the apex the
-    command is expressed in."""
+    caller that only has a flight time — as the retired Admissible box did
+    before 2026-09-18, when it was swept over an explicit flight grid —
+    recover the apex the command is expressed in."""
     if not float(flight_s_) > 0.0:
         raise ValueError('flight_s must be > 0, got %r' % (flight_s_,))
     return _G_SI * (float(flight_s_) / 2.0) ** 2 / 2.0
@@ -296,7 +295,7 @@ def transit_s(flight_s_: float, dwell_s: float) -> float:
     return (float(flight_s_) - float(dwell_s)) / 2.0
 
 
-#: The ``Schedule.pattern`` label (and admissible-box pattern) of a Columns
+#: The ``Schedule.pattern`` label (and nomination pattern; formerly the admissible-box pattern) of a Columns
 #: whose two balls fly to DIFFERENT Apexes (JP-9, goal ``columns_highlow``).
 COLUMNS_HIGHLOW = 'columns_highlow'
 
@@ -340,8 +339,9 @@ def columns_ball_timing(apex_a_m: float, apex_b_m: float,
     Equal Apexes are today's arithmetic EXACTLY (no float re-association):
     both balls take the high branch, ``d`` and ``transit_s(t_f, d)``
     unchanged, which is what keeps an equal-Apex schedule bit-identical.
-    The sweep (``tools/admissible_sweep.py``) reads this same function, so a
-    low ball's ``dwell_s`` stamp and the executor's select agree to the bit.
+    The nomination (``motion/skills/nominate.py``) and the executor read this
+    same function, so the planned low ball's dwell and the executed one agree
+    to the bit.
     """
     t = (flight_s(apex_a_m), flight_s(apex_b_m))
     t_hi = max(t)
@@ -583,7 +583,7 @@ class Skill:
     #: self-toss. Mutually exclusive with ``shadow_landing`` (THROW 0 can
     #: never be the columns Stop's cross-site last throw — that needs
     #: ``n_throws >= 2`` and ``i == n - 1``, never ``i == 0``). The
-    #: executor bypasses the learner AND the admissible box for this throw
+    #: executor bypasses the learner AND the online check's lateral bound for this throw
     #: (``u = y_d`` exactly) and writes no memory row — the same bypass
     #: mechanism ``shadow_landing`` uses, but none of its other semantics
     #: (this throw's ``caught`` reads normally; it is not landing on a ball
@@ -721,6 +721,110 @@ class Pattern:
         return float(self.apex_m)
 
 
+# ── The per-beat event stream (learner-generalisation P4, D-P4-1) ────────────
+#
+# A Pattern is compiled through a STREAM of Throws, one :class:`BeatEvent`
+# each: :func:`columns_events` writes Columns' stream, :func:`compile_beats`
+# turns any stream into the Schedule, :func:`next_beat` is the rule a beat
+# whose flight or Dwell differs from the opening one must pass, and
+# :func:`columns_change` rewrites a Columns stream's tail.  A stream is a
+# FINITE tuple whose last event is the Stop: nomination plans the whole
+# Schedule at accept, so the Stop is known at compile time.
+
+#: :func:`next_beat`'s answer codes and :func:`compile_beats` /
+#: :func:`columns_change`'s refusal names (every ValueError they raise for a
+#: beat starts with one of these).
+BEAT_OK = 'OK'
+#: A non-zero :attr:`BeatEvent.yaw_rad` (dormant until the per-beat yaw lands).
+BEAT_YAW_NOT_SUPPORTED = 'BEAT_YAW_NOT_SUPPORTED'
+#: The Dwell before the Throw is under :data:`MIN_WINDOW_S` (the carried
+#: Throw's window floor).
+BEAT_DWELL_TOO_SHORT = 'BEAT_DWELL_TOO_SHORT'
+#: The transit before the in-flight ball's Catch is under ``tau_min``.
+BEAT_NO_TRANSIT = 'BEAT_NO_TRANSIT'
+#: The transit after the in-flight ball's NEXT release is under ``tau_min``.
+BEAT_NEXT_NO_TRANSIT = 'BEAT_NEXT_NO_TRANSIT'
+#: The opening pair does not share one cycle (``|f_1 + d_1 - 2 beta0| > 1e-9``).
+BEAT_MISMATCH = 'BEAT_MISMATCH'
+#: ``release_kind='carried'`` (the oval's carried Throw; compile_oval's P5).
+BEAT_CARRIED_NOT_SUPPORTED = 'BEAT_CARRIED_NOT_SUPPORTED'
+#: :func:`columns_change` asked for a Throw it cannot change (see there).
+BEAT_CHANGE_RANGE = 'BEAT_CHANGE_RANGE'
+#: A stream whose structure the compiler does not build (ball order, Sites,
+#: hop entry, the Stop's target, an empty stream).
+BEAT_STREAM_INVALID = 'BEAT_STREAM_INVALID'
+#: :meth:`Schedule.with_events` on a Schedule with no :class:`BeatSource`.
+BEAT_NOT_SUPPORTED = 'BEAT_NOT_SUPPORTED'
+
+#: The two values :attr:`BeatEvent.release_kind` may take.
+RELEASE_KINDS = ('free_cup', 'carried')
+
+
+@dataclasses.dataclass(frozen=True)
+class BeatEvent:
+    """One Throw of a beat stream (:func:`compile_beats`).
+
+    ``dwell_s`` is the Dwell of THIS ball before this Throw (touch-down to
+    release); for event 0 (the launch from rest, window ``launch_s``) it is
+    the Dwell ball 0 would have, which with event 1's sets the opening Beat
+    ``beta0 = (f_0 + d_0) / 2``.  ``ball_id`` is the schedule ball id (event
+    ``i`` is ball ``i % 2``).  ``yaw_rad`` is DORMANT: any non-zero value is
+    refused by name (``-0.0`` is zero).  ``release_kind='carried'`` is
+    accepted here and refused by :func:`compile_beats` by name.
+    """
+
+    throw_site: Site
+    catch_site: Site
+    apex_m: float
+    dwell_s: float
+    yaw_rad: float = 0.0
+    ball_id: int = 0
+    release_kind: str = 'free_cup'
+
+    def __post_init__(self):
+        if not (isinstance(self.throw_site, Site)
+                and isinstance(self.catch_site, Site)):
+            raise ValueError('%s: throw_site and catch_site must be Sites, '
+                             'got %r, %r' % (BEAT_STREAM_INVALID,
+                                             self.throw_site, self.catch_site))
+        if not (math.isfinite(float(self.apex_m))
+                and float(self.apex_m) > 0.0):
+            raise ValueError('%s: apex_m must be finite and > 0, got %r'
+                             % (BEAT_STREAM_INVALID, self.apex_m))
+        if not math.isfinite(float(self.dwell_s)):
+            raise ValueError('%s: dwell_s must be finite, got %r'
+                             % (BEAT_STREAM_INVALID, self.dwell_s))
+        if float(self.yaw_rad) != 0.0:
+            raise ValueError(
+                '%s: yaw_rad %r -- a per-beat yaw is dormant until it lands '
+                '(P2); only 0.0 is accepted' % (BEAT_YAW_NOT_SUPPORTED,
+                                                 self.yaw_rad))
+        if self.release_kind not in RELEASE_KINDS:
+            raise ValueError('%s: release_kind must be one of %r, got %r'
+                             % (BEAT_STREAM_INVALID, RELEASE_KINDS,
+                                self.release_kind))
+
+
+@dataclasses.dataclass(frozen=True)
+class BeatSource:
+    """What a Schedule was compiled from (:attr:`Schedule.source`): the beat
+    stream and every other :func:`compile_beats` argument, so the Schedule
+    can be recompiled with a changed stream (:meth:`Schedule.with_events`).
+
+    ``inflight`` is the Throw that put ball 1 in the air before ``t0`` (its
+    Apex and Dwell are the opening pair's second half; a one-Throw stream has
+    no event 1 to read them from)."""
+
+    events: Tuple[BeatEvent, ...]
+    launch_s: float
+    rest_tail_s: float
+    phantom_balls: Tuple[int, ...]
+    t0_abs_s: Optional[float]
+    feed: Optional[LandingPrior]
+    hop_entry: bool
+    inflight: Optional[BeatEvent] = None
+
+
 @dataclasses.dataclass(frozen=True)
 class Schedule:
     """An ordered, immutable timeline of skills. The executor tracks which of
@@ -743,17 +847,16 @@ class Schedule:
     #: :meth:`SkillExecutor._command_u` (only a THROW does), and every THROW
     #: it schedules afterward is kinematically an ordinary self-toss/hop
     #: throw (same site, same apex/dwell, a fresh-origin THROW 0 from a level
-    #: rest then dwell-carried throws) — so the box already swept for that
-    #: pattern is the CORRECT one, and a ``'reload'`` label would only send
-    #: every such throw to a box that does not exist (no sweep runs at R4;
-    #: `tools/` is out of scope for this unit).  Read by the admissible-box
-    #: selection at dispatch
-    #: (:mod:`~jugglebot.motion.skills.admissible`), which a box is swept
-    #: per-pattern for.  REQUIRED, no default (R4 audit call, 2026-09-23):
-    #: a schedule with no stated pattern is a schedule the executor cannot
-    #: safely look a box up for, and a defaulted label would let a hand-built
-    #: schedule silently borrow another pattern's swept box -- the same class
-    #: of defect as a box swept for one apex being reused at another.
+    #: rest then dwell-carried throws) — so that pattern's own label is the CORRECT
+    #: one, and a ``'reload'`` label would only send every such throw to a
+    #: pattern the planner has no treatment for (until 2026-11-06: a box that
+    #: does not exist, no sweep ran at R4).  Read per-pattern at dispatch
+    #: (:mod:`~jugglebot.motion.skills.admissible`), for which the (retired)
+    #: Admissible box was swept per pattern.  REQUIRED, no default (R4 audit
+    #: call, 2026-09-23): a schedule with no stated pattern is a schedule the
+    #: executor cannot safely key per-pattern behaviour on, and a defaulted
+    #: label would let a hand-built schedule silently borrow another
+    #: pattern's treatment (until 2026-11-06, another pattern's swept box).
     pattern: str
     #: Schedule ball ids that are motion-only — see :class:`Pattern`'s own
     #: field (the ONE place a compiler sets this to anything but ``()``:
@@ -774,11 +877,36 @@ class Schedule:
     #: :attr:`beat_s` = the one Beat both balls share.
     dwell_by_ball: Tuple[float, ...] = ()
     flight_by_ball: Tuple[float, ...] = ()
+    #: The :class:`BeatSource` this Schedule was compiled from
+    #: (:func:`compile_beats`; every :func:`compile_columns` Schedule), or
+    #: None when it cannot be recompiled from a stream (every other compiler,
+    #: :func:`compile_reload_columns` / :func:`compile_rest_columns`
+    #: included: their lead-in is not in the stream).  A recipe, not
+    #: compiled output: it takes no part in equality, and a Schedule derived
+    #: by editing ``skills`` (a survivor tail) must clear it.
+    source: Optional[BeatSource] = dataclasses.field(
+        default=None, compare=False, repr=False)
+
+    def with_events(self, events) -> 'Schedule':
+        """This Schedule recompiled from ``events`` with every other
+        :attr:`source` argument unchanged (:func:`compile_beats`; raises what
+        it raises).  ``BEAT_NOT_SUPPORTED`` when there is no source."""
+        src = self.source
+        if src is None:
+            raise ValueError(
+                '%s: this Schedule (pattern %r) has no beat source -- only a '
+                'compile_beats / compile_columns Schedule can be recompiled '
+                'from a changed stream' % (BEAT_NOT_SUPPORTED, self.pattern))
+        return compile_beats(tuple(events), launch_s=src.launch_s,
+                             rest_tail_s=src.rest_tail_s,
+                             phantom_balls=src.phantom_balls,
+                             t0_abs_s=src.t0_abs_s, feed=src.feed,
+                             hop_entry=src.hop_entry, inflight=src.inflight)
 
     def dwell_for(self, ball_id: int) -> float:
         """The Dwell (s) schedule ball ``ball_id`` spends in the Cup between
-        its Catch and its next Throw: the admissible box's ``dwell_s`` stamp
-        for that ball's cells. :attr:`dwell_s` unless this is a high-low
+        its Catch and its next Throw (until 2026-11-06 also the ``dwell_s``
+        stamp of the Admissible box's cells for that ball). :attr:`dwell_s` unless this is a high-low
         Columns, where the LOW ball dwells longer (:func:`columns_ball_timing`)."""
         if self.dwell_by_ball:
             return float(self.dwell_by_ball[int(ball_id)])
@@ -943,19 +1071,69 @@ def _assign_leads(skills):
     stated on the SEGMENT's geometry, not on the kind, so a pattern that puts a
     standalone catch after a throw gets the handoff lead too.
     """
-    out = []
+    # The splice rule itself lives in :func:`splices_at_release`, read through
+    # :func:`_splice_sources` -- ONE definition shared with
+    # :func:`nominal_segments` (P3b), so the Segment a nomination seeds from a
+    # release is exactly the Segment that gets the handoff lead here.
+    return [dataclasses.replace(
+                sk, lead_s=(HANDOFF_LEAD_S if src is not None
+                            else install_lead_s(sk.kind)))
+            for sk, src in _splice_sources(skills)]
+
+
+def splices_at_release(sk: Skill, last_release_s: Optional[float]) -> bool:
+    """True when ``sk``'s Segment splices AT the release ``last_release_s``
+    (the latest release the head already carries, wall clock), i.e. its splice
+    base ``t_abs_s - window_s`` falls at or before that release (1e-9 s
+    tolerance).  ``None`` (nothing released yet) -> False.
+
+    The ONE statement of the rule :func:`_assign_leads` gives the handoff lead
+    by and :func:`nominal_segments` seeds a Segment from a release by."""
+    if last_release_s is None:
+        return False
+    base = float(sk.t_abs_s) - float(sk.window_s)
+    return base <= float(last_release_s) + 1e-9
+
+
+def _splice_sources(skills):
+    """Yield ``(skill, source_idx)`` in order: ``source_idx`` is the index of
+    the skill whose release (the LATEST release before this skill, ties to the
+    later skill) ``skill`` splices at by :func:`splices_at_release`, or None
+    when it does not splice at a release."""
     last_release_s = None
-    for sk in skills:
-        base = float(sk.t_abs_s) - float(sk.window_s)
-        follows_release = (last_release_s is not None
-                           and base <= last_release_s + 1e-9)
-        out.append(dataclasses.replace(
-            sk, lead_s=(HANDOFF_LEAD_S if follows_release
-                        else install_lead_s(sk.kind))))
+    last_release_idx = None
+    for i, sk in enumerate(skills):
+        yield sk, (last_release_idx if splices_at_release(sk, last_release_s)
+                   else None)
         for t_rel in _release_instants(sk):
-            last_release_s = (t_rel if last_release_s is None
-                              else max(last_release_s, t_rel))
-    return out
+            if last_release_s is None or t_rel >= last_release_s:
+                last_release_s, last_release_idx = t_rel, i
+
+
+@dataclasses.dataclass(frozen=True)
+class NominalSegment:
+    """One Skill of a compiled Schedule as the Segment it puts on the machine
+    (:func:`nominal_segments`)."""
+    idx: int
+    skill: Skill
+    kind: str
+    #: index of the earlier Skill whose RELEASE this Segment splices at
+    #: (:func:`splices_at_release`, the rule :func:`_assign_leads` gives the
+    #: handoff lead by), or None when the Segment starts from rest.
+    seed_from: Optional[int]
+
+
+def nominal_segments(schedule: 'Schedule') -> List[NominalSegment]:
+    """One :class:`NominalSegment` per Skill of ``schedule``, in dispatch
+    order (the P3b nomination walker's iterator, ``motion/skills/nominate``).
+
+    ``seed_from`` comes from :func:`_splice_sources`, the same iterator
+    :func:`_assign_leads` reads: a Segment gets :data:`HANDOFF_LEAD_S` iff its
+    ``seed_from`` is not None.  REST Skills are yielded too (kind REST, for
+    counting); the walker does not gate them (see ``nominate``'s docstring).
+    """
+    return [NominalSegment(i, sk, sk.kind, src)
+            for i, (sk, src) in enumerate(_splice_sources(schedule.skills))]
 
 
 def schedule_has_shadow_landing(schedule: Schedule) -> bool:
@@ -987,10 +1165,112 @@ def schedule_has_shadow_landing(schedule: Schedule) -> bool:
                for sk in schedule.skills)
 
 
+def _check_clock(name: str, t0_abs_s, feed, hop_entry: bool) -> None:
+    """The clock-argument refusals :func:`compile_columns` has always made
+    (``name`` = the compiler the caller called)."""
+    if (t0_abs_s is None) == (feed is None):
+        raise ValueError(
+            '%s takes exactly one of t0_abs_s (a free clock '
+            'instant) or feed (R5: ball B\'s observed arrival, from which '
+            't0 is derived) — got t0_abs_s=%r feed=%r'
+            % (name, t0_abs_s, feed))
+    if hop_entry and feed is None:
+        raise ValueError(
+            "hop_entry=True requires feed (a free-t0_abs_s schedule has no "
+            "real feed ball to park THROW 0 for)")
+
+
+def _columns_timing_checked(apex_a_m: float, apex_b_m: float,
+                            dwell_s: float) -> ColumnsTiming:
+    """:func:`columns_ball_timing` plus the two refusals Columns has always
+    made on it (a Dwell that leaves no transit; a high-low low ball with no
+    transit), with their exact messages."""
+    timing = columns_ball_timing(apex_a_m, apex_b_m, dwell_s)
+    t_f = timing.high_flight
+    tau = transit_s(t_f, dwell_s)
+    flight_of = timing.flights
+    if not tau > 0.0:
+        raise ValueError(
+            'dwell %.4f s >= flight %.4f s leaves no transit — the ball would '
+            'have to land before the other hand finishes its dwell'
+            % (dwell_s, t_f))
+    apex_of = (apex_a_m, apex_b_m)
+    for b in (0, 1):
+        if not timing.transits[b] > 0.0:
+            raise ValueError(
+                'high-low Columns: %s (Apex %.3f m, flight %.4f s) has no '
+                'transit -- its flight is %.4f s shorter than the high '
+                "ball's, which eats the high ball's whole %.4f s transit "
+                '(Dwell %.4f s); raise its Apex or shorten the Dwell'
+                % (ball_label(b), apex_of[b], flight_of[b],
+                   t_f - flight_of[b], tau, dwell_s))
+    return timing
+
+
+def columns_events(pattern: Pattern,
+                   hop_entry: bool = False) -> Tuple[BeatEvent, ...]:
+    """Columns' beat stream: one :class:`BeatEvent` per Throw of
+    :func:`compile_columns` (D-P4-1).
+
+    Throw ``i`` is ball ``i % 2``, released from (and, but for the Stop,
+    caught back at) ``sites[i % 2]``, to that ball's Apex
+    (:meth:`Pattern.apex_for`), after that ball's Dwell
+    (:func:`columns_ball_timing`: the high ball keeps the commanded Dwell).
+    The one-ball PARITY RULE is applied here (a phantom pattern may get one
+    more Throw, :func:`compile_columns`); the Stop (last Throw, ``n >= 2``)
+    is caught at the OTHER Site, ``sites[n % 2]``; under the hop entry Throw
+    0 is released from ``sites[1]``.  Raises today's pattern-level
+    ValueErrors with their exact messages (no transit, high-low no transit,
+    ``n_throws < 1``).
+    """
+    timing = _columns_timing_checked(pattern.apex_for(0), pattern.apex_for(1),
+                                     pattern.dwell_s)
+    n = int(pattern.n_throws)
+    if n < 1:
+        raise ValueError('n_throws must be >= 1, got %r' % (pattern.n_throws,))
+    # The one-ball parity rule (compile_columns' docstring): the Stop must be
+    # a phantom's throw.
+    if (n >= 2 and pattern.phantom_balls
+            and ((n - 1) % 2) not in tuple(pattern.phantom_balls)):
+        n += 1
+    sites2 = (pattern.sites[0], pattern.sites[1])
+    events = []
+    for i in range(n):
+        ball_i = i % 2
+        site_i = sites2[ball_i]
+        # The Stop (D2, 2026-09-30, R5 rescope — E1'): the LAST throw lands
+        # at the OTHER site, where the second-to-last ball is caught and held
+        # (`sites2[n % 2]`); `n == 1` has no such ball and stays a self-toss.
+        is_stop_throw = (i == n - 1 and n >= 2)
+        # The hop entry (owner decision, 2026-10-05): THROW 0 only, released
+        # from the FEED site; it still lands at its own site.
+        is_hop_throw = (hop_entry and i == 0)
+        events.append(BeatEvent(
+            throw_site=sites2[1] if is_hop_throw else site_i,
+            catch_site=sites2[n % 2] if is_stop_throw else site_i,
+            apex_m=pattern.apex_for(ball_i), dwell_s=timing.dwells[ball_i],
+            ball_id=ball_i))
+    return tuple(events)
+
+
+def _columns_inflight(pattern: Pattern) -> BeatEvent:
+    """The Throw that put ball 1 (B) in the air before ``t0``: caught at
+    ``sites[1]``, ball B's Apex and Dwell (the opening pair's second half)."""
+    timing = columns_ball_timing(pattern.apex_for(0), pattern.apex_for(1),
+                                 pattern.dwell_s)
+    return BeatEvent(throw_site=pattern.sites[1], catch_site=pattern.sites[1],
+                     apex_m=pattern.apex_for(1), dwell_s=timing.dwells[1],
+                     ball_id=1)
+
+
 def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
                     feed: Optional[LandingPrior] = None,
                     hop_entry: bool = False) -> Schedule:
-    """The columns pattern's schedule (plan § 1.2 / § 2.4).
+    """The columns pattern's schedule (plan § 1.2 / § 2.4):
+    ``compile_beats(columns_events(pattern, hop_entry), ...)`` (P4, D-P4-1).
+    The compiler itself -- the timing rule, the fold, the leads, the
+    dispatch order, the wall-clock shift -- is :func:`compile_beats`'s
+    docstring; what is Columns' own is here.
 
     **Exactly one of ``t0_abs_s``/``feed`` (R5, owner decision D1,
     2026-09-30).** ``t0_abs_s`` is the pre-R5 free clock instant (still used
@@ -1053,7 +1333,7 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
     limits 300/5000/150000): the real ``segments.plan_segment`` ACCEPTS the
     cross-site catch-with-throw (peak leg jerk 149 210 mm/s³ against the
     150 000 cap — no headroom, but this is a single terminal event with
-    ``u = y_d`` fixed, not a box-swept command the learner re-aims, so the
+    ``u = y_d`` fixed, not a command the learner re-aims, so the
     tight margin is acceptable here and nowhere else).
 
     **The one-ball PARITY RULE (owner decision, 2026-10-23 — columns_1ball_fed
@@ -1091,9 +1371,10 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
     behaviour: the only throw stays at its own site, ``shadow_landing`` stays
     ``False`` — there is nothing held to land on.
 
-    The executor bypasses the learner and the admissible box entirely for a
-    ``shadow_landing`` throw (``u = y_d`` exactly, no clip): the box is swept
-    per pattern for SAME-site throws, this is a cross-site one, and precision
+    The executor bypasses the learner and the online lateral bound entirely
+    for a ``shadow_landing`` throw (``u = y_d`` exactly, no clip; until
+    2026-11-06 the offline box was swept only for SAME-site throws and this is
+    a cross-site one), and precision
     buys nothing when the ball is landing on a ball already at rest — see
     ``executor.SkillExecutor._command_u``.
 
@@ -1139,20 +1420,378 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
     every CATCH still splices on the previous release (``base = t_land -
     tau_i = t_throw + beta``). A low ball whose transit would be ``<= 0`` is
     refused by name. The Schedule is labelled :data:`COLUMNS_HIGHLOW` (its
-    own admissible-box cells) and carries ``dwell_by_ball`` /
+    own pattern label; formerly its own admissible-box cells) and carries ``dwell_by_ball`` /
     ``flight_by_ball``; its scalars are the HIGH ball's. Equal Apexes compile
     today's schedule bit for bit, label ``'columns'`` included.
 
+    The Schedule holds ``n_throws + 2`` skills and carries
+    :attr:`Schedule.source` (its stream, :func:`columns_events`), so it can be
+    recompiled with a changed tail (:func:`columns_change`,
+    :meth:`Schedule.with_events`).
+    """
+    # The clock refusals come first, before any pattern refusal (the order
+    # `compile_columns` has always raised in).
+    _check_clock('compile_columns', t0_abs_s, feed, hop_entry)
+    events = columns_events(pattern, hop_entry=hop_entry)
+    return compile_beats(events, launch_s=pattern.launch_s,
+                         rest_tail_s=pattern.rest_tail_s,
+                         phantom_balls=pattern.phantom_balls,
+                         t0_abs_s=t0_abs_s, feed=feed, hop_entry=hop_entry,
+                         inflight=_columns_inflight(pattern))
+
+
+@dataclasses.dataclass(frozen=True)
+class BeatDecision:
+    """:func:`next_beat`'s answer.  ``t_release_s`` / ``transit_s`` are filled
+    for a refusal too (the numbers the refusal is about)."""
+    ok: bool
+    code: str
+    detail: str
+    t_release_s: float
+    transit_s: float
+
+
+def next_beat(t_catch_own_s: float, t_catch_inflight_s: float,
+              event: BeatEvent, *, next_dwell_s: Optional[float] = None,
+              tau_min_s: float = MIN_WINDOW_S) -> BeatDecision:
+    """The next-beat rule (D-P4-2), pure: may ``event``'s ball, caught at
+    ``t_catch_own_s``, be thrown after ``event.dwell_s`` while the OTHER ball
+    is in flight to its Catch at ``t_catch_inflight_s``?
+
+    ``t_r = t_catch_own + d``; ``tau = t_catch_inflight - t_r`` (the transit
+    the Cup has from this release to the in-flight ball's Catch).  Refusals,
+    in this order: ``BEAT_YAW_NOT_SUPPORTED``; ``BEAT_DWELL_TOO_SHORT``
+    (``d < MIN_WINDOW_S``, the carried Throw's window floor);
+    ``BEAT_NO_TRANSIT`` (``tau < tau_min_s``); ``BEAT_NEXT_NO_TRANSIT`` (given
+    ``next_dwell_s``, the in-flight ball's standing Dwell: the transit after
+    ITS next release, ``t_r + f - (t_catch_inflight + next_dwell_s)``, is
+    under ``tau_min_s`` -- this Throw would land before the beat after it can
+    be made).  Every comparison is strict and has no tolerance: a value
+    exactly AT a floor passes, one float below it is refused.  ``tau_min_s``
+    defaults to :data:`MIN_WINDOW_S`, the 4-knot floor :func:`_check_window`
+    holds every CATCH window to.  Planner feasibility of the transit is NOT
+    in this function (the nomination walker's and the command-time check's).
+    """
+    d = float(event.dwell_s)
+    t_r = float(t_catch_own_s) + d
+    t_in = float(t_catch_inflight_s)
+    tau = t_in - t_r
+    tau_min = float(tau_min_s)
+
+    def no(code, detail):
+        return BeatDecision(False, code, detail, t_r, tau)
+
+    if float(event.yaw_rad) != 0.0:
+        return no(BEAT_YAW_NOT_SUPPORTED,
+                  'yaw_rad %r: a per-beat yaw is dormant' % (event.yaw_rad,))
+    if d < MIN_WINDOW_S:
+        return no(BEAT_DWELL_TOO_SHORT,
+                  'dwell %.4f s is under the %d-knot window floor %.4f s'
+                  % (d, MIN_WINDOW_KNOTS, MIN_WINDOW_S))
+    if tau < tau_min:
+        return no(BEAT_NO_TRANSIT,
+                  'transit %.4f s (in-flight Catch %.4f s - release %.4f s) '
+                  'is under tau_min %.4f s' % (tau, t_in, t_r, tau_min))
+    if next_dwell_s is not None:
+        f = flight_s(event.apex_m)
+        tau_next = t_r + f - (t_in + float(next_dwell_s))
+        if tau_next < tau_min:
+            return no(BEAT_NEXT_NO_TRANSIT,
+                      'the transit after the in-flight ball\'s next release '
+                      '(this Catch %.4f s - that release %.4f s + %.4f s '
+                      'dwell) is %.4f s, under tau_min %.4f s'
+                      % (t_r + f, t_in, float(next_dwell_s), tau_next,
+                         tau_min))
+    return BeatDecision(True, BEAT_OK, '', t_r, tau)
+
+
+def _same_site(a: Site, b: Site) -> bool:
+    return a is b or (a.name == b.name
+                      and bool(np.array_equal(a.cup_mm, b.cup_mm)))
+
+
+@dataclasses.dataclass(frozen=True)
+class _BeatTimes:
+    """The event table of a beat stream on its own clock (``t_r[0] = 0``)."""
+    timing: ColumnsTiming       # the OPENING pair's (Schedule scalars)
+    dwell_cmd: float            # the opening's commanded (high-ball) Dwell
+    tau: float                  # transit_s(high flight, dwell_cmd)
+    t_init: float               # ball 1's pre-existing flight lands
+    init_window: float
+    t_r: Tuple[float, ...]      # release of event i
+    t_c: Tuple[float, ...]      # catch of event i's ball (the Stop's too)
+    windows: Tuple[float, ...]  # CATCH i's window, i <= n - 2
+    window_legacy: Tuple[bool, ...]
+    first_deviation: Optional[int]
+
+
+def _opening(events, inflight):
+    """``(pre, timing, dwell_cmd)``: the event that put ball 1 in the air
+    (``inflight``, else derived from event 1), the opening pair's
+    :class:`ColumnsTiming` and commanded Dwell.  Raises the legacy timing
+    refusals, ``BEAT_STREAM_INVALID`` and ``BEAT_MISMATCH``."""
+    n = len(events)
+    if n >= 2:
+        e1 = events[1]
+        derived = BeatEvent(throw_site=e1.throw_site,
+                            catch_site=e1.throw_site, apex_m=e1.apex_m,
+                            dwell_s=e1.dwell_s, ball_id=1,
+                            release_kind=e1.release_kind)
+        if inflight is None:
+            pre = derived
+        else:
+            if not (float(inflight.apex_m) == float(e1.apex_m)
+                    and float(inflight.dwell_s) == float(e1.dwell_s)
+                    and _same_site(inflight.catch_site, e1.throw_site)):
+                raise ValueError(
+                    '%s: inflight (Apex %r, Dwell %r, caught at %s) is not '
+                    'event 1\'s ball (Apex %r, Dwell %r, released at %s)'
+                    % (BEAT_MISMATCH, inflight.apex_m, inflight.dwell_s,
+                       inflight.catch_site.name, e1.apex_m, e1.dwell_s,
+                       e1.throw_site.name))
+            pre = inflight
+    else:
+        if inflight is None:
+            raise ValueError(
+                '%s: a one-Throw stream needs inflight= (ball 1\'s '
+                'pre-existing flight: its Apex and Dwell)'
+                % (BEAT_STREAM_INVALID,))
+        pre = inflight
+    e0 = events[0]
+    f0, f1 = flight_s(e0.apex_m), flight_s(pre.apex_m)
+    d0, d1 = float(e0.dwell_s), float(pre.dwell_s)
+    # The high ball keeps the commanded Dwell (columns_ball_timing).
+    dwell_cmd = d0 if f0 >= f1 else d1
+    timing = _columns_timing_checked(float(e0.apex_m), float(pre.apex_m),
+                                     dwell_cmd)
+    beta0 = (f0 + d0) / 2.0
+    if abs(f1 + d1 - 2.0 * beta0) > 1e-9:
+        raise ValueError(
+            '%s: the opening pair is not on one cycle -- ball 0 flight %.6f '
+            '+ dwell %.6f = %.9f s, ball 1 flight %.6f + dwell %.6f = %.9f s'
+            % (BEAT_MISMATCH, f0, d0, f0 + d0, f1, d1, f1 + d1))
+    return pre, timing, dwell_cmd
+
+
+def _beat_times(events, pre, timing, dwell_cmd,
+                general: bool = False) -> _BeatTimes:
+    """The event table (D-P4-1's rule, literal):
+
+        t_r(0) = 0;  ball 1's pre-existing flight lands at f_1 - beta0
+        t_r(i) = t_c(the previous catch of ball i) + d_i        (i >= 1)
+        t_c(i) = t_r(i) + flight_s(apex_i)
+        window of CATCH i = t_c(i) - t_r(i + 1)
+
+    BIT-IDENTITY: while an event's inputs are the opening values (its Dwell
+    is its ball's opening Dwell, the catch it follows was itself computed
+    the legacy way) the legacy expressions are used (``i * beta``,
+    ``t_throw + flight_of[ball]``, ``tau_of[ball]``), so a 2-periodic stream
+    compiles to today's floats bit for bit; the recursion applies from the
+    first deviation on.  ``general=True`` (tests only) takes the recursion
+    everywhere: equal to the legacy table to ~1e-15 s, not bit for bit.
+    """
+    n = len(events)
+    beta = timing.beat
+    flight_of = timing.flights
+    dwell_of = timing.dwells
+    tau_of = timing.transits
+    tau = transit_s(timing.high_flight, dwell_cmd)
+    t0_rel = 0.0
+    if general:
+        beta0 = (flight_s(events[0].apex_m) + float(events[0].dwell_s)) / 2.0
+        t_init = flight_s(pre.apex_m) - beta0
+        init_window = t_init
+    else:
+        t_init = t0_rel + tau_of[1]
+        init_window = tau_of[1]
+    t_r, t_c, lr, lc = [], [], [], []
+    for i, ev in enumerate(events):
+        b = i % 2
+        f_i = flight_s(ev.apex_m)
+        if i == 0:
+            prev_c, prev_leg = None, True
+        elif i == 1:
+            prev_c, prev_leg = t_init, not general
+        else:
+            prev_c, prev_leg = t_c[i - 2], lc[i - 2]
+        leg_r = (not general) and prev_leg and (
+            i == 0 or float(ev.dwell_s) == dwell_of[b])
+        if i == 0:
+            r = t0_rel + i * beta
+        elif leg_r:
+            r = t0_rel + i * beta
+        else:
+            r = prev_c + float(ev.dwell_s)
+        leg_c = leg_r and f_i == flight_of[b]
+        c = (r + flight_of[b]) if leg_c else (r + f_i)
+        t_r.append(r)
+        t_c.append(c)
+        lr.append(leg_r)
+        lc.append(leg_c)
+    windows, wleg = [], []
+    for i in range(n - 1):
+        leg = lc[i] and lr[i + 1]
+        windows.append(tau_of[i % 2] if leg else t_c[i] - t_r[i + 1])
+        wleg.append(leg)
+    dev = next((i for i in range(n) if not (lr[i] and lc[i])), None)
+    return _BeatTimes(timing=timing, dwell_cmd=dwell_cmd, tau=tau,
+                      t_init=t_init, init_window=init_window,
+                      t_r=tuple(t_r), t_c=tuple(t_c), windows=tuple(windows),
+                      window_legacy=tuple(wleg), first_deviation=dev)
+
+
+def _check_next_beat(events, bt: _BeatTimes, i: int) -> None:
+    """Event ``i`` against :func:`next_beat` (raises ValueError naming the
+    code, the Throw and the numbers)."""
+    ev = events[i]
+    own = bt.t_init if i == 1 else bt.t_c[i - 2]
+    nxt = float(events[i + 1].dwell_s) if i + 1 < len(events) else None
+    dec = next_beat(own, bt.t_c[i - 1], ev, next_dwell_s=nxt)
+    if not dec.ok:
+        raise ValueError(
+            '%s: Throw %d (%s, Apex %.3f m, Dwell %.4f s): %s'
+            % (dec.code, i, ball_label(ev.ball_id), float(ev.apex_m),
+               float(ev.dwell_s), dec.detail))
+
+
+def _validate_stream(events, pre, hop_entry: bool) -> None:
+    """The stream structure :func:`compile_beats` builds (BEAT_STREAM_INVALID /
+    BEAT_CARRIED_NOT_SUPPORTED)."""
+    n = len(events)
+    for i, ev in enumerate(tuple(events) + (pre,)):
+        if not isinstance(ev, BeatEvent):
+            raise ValueError('%s: event %d is not a BeatEvent: %r'
+                             % (BEAT_STREAM_INVALID, i, ev))
+        if ev.release_kind == 'carried':
+            raise ValueError(
+                '%s: event %d has release_kind=\'carried\' -- the carried '
+                'Throw (the oval) is compile_oval\'s, not this compiler\'s'
+                % (BEAT_CARRIED_NOT_SUPPORTED, i))
+    for i, ev in enumerate(events):
+        if int(ev.ball_id) != i % 2:
+            raise ValueError('%s: event %d is ball %d; this compiler '
+                             'alternates two balls (event i is ball i %% 2)'
+                             % (BEAT_STREAM_INVALID, i, int(ev.ball_id)))
+        if i >= 1:
+            caught = pre.catch_site if i == 1 else events[i - 2].catch_site
+            if not _same_site(ev.throw_site, caught):
+                raise ValueError(
+                    '%s: Throw %d is released at %s but its ball was caught '
+                    'at %s (a free-cup Throw leaves where it was caught)'
+                    % (BEAT_STREAM_INVALID, i, ev.throw_site.name,
+                       caught.name))
+    if int(pre.ball_id) != 1:
+        raise ValueError('%s: inflight must be ball 1, got %d'
+                         % (BEAT_STREAM_INVALID, int(pre.ball_id)))
+    cross0 = not _same_site(events[0].throw_site, events[0].catch_site)
+    if cross0 != bool(hop_entry):
+        raise ValueError(
+            '%s: Throw 0 is released at %s and caught at %s, but hop_entry=%r '
+            '(a cross-site launch is the hop entry and only it)'
+            % (BEAT_STREAM_INVALID, events[0].throw_site.name,
+               events[0].catch_site.name, hop_entry))
+    if n >= 2 and not _same_site(events[-1].catch_site,
+                                 events[-2].catch_site):
+        raise ValueError(
+            '%s: the Stop (Throw %d) must land at %s, where Throw %d\'s ball '
+            'is caught and held, not at %s'
+            % (BEAT_STREAM_INVALID, n - 1, events[-2].catch_site.name, n - 2,
+               events[-1].catch_site.name))
+
+
+def _fold_by_window(skills):
+    """:func:`_fold_catch_throw_pairs` for a stream whose Dwells differ per
+    Throw: a CATCH is paired with the first later THROW of the same ball at
+    the same Site whose splice base (``t_abs_s - window_s``: a carried
+    Throw's window IS its Dwell) is that CATCH's touch-down (1e-9 s)."""
+    out = []
+    folded = set()
+    for i, sk in enumerate(skills):
+        if i in folded:
+            continue
+        if sk.kind != CATCH:
+            out.append(sk)
+            continue
+        pair = None
+        for j in range(i + 1, len(skills)):
+            other = skills[j]
+            if (other.kind == THROW and other.ball_id == sk.ball_id
+                    and other.site is sk.site
+                    and abs((other.t_abs_s - other.window_s)
+                            - sk.t_abs_s) <= 1e-9):
+                pair = (j, other)
+                break
+        if pair is None:
+            out.append(sk)
+            continue
+        j, throw = pair
+        folded.add(j)
+        out.append(dataclasses.replace(sk, then_throw=ThenThrow(
+            t_release_abs_s=throw.t_abs_s, y_d=throw.y_d, target=throw.target,
+            shadow_landing=throw.shadow_landing, release_site=None)))
+    return out
+
+
+def compile_beats(events, *, launch_s: float, rest_tail_s: float,
+                  phantom_balls: Tuple[int, ...] = (),
+                  t0_abs_s: Optional[float] = None,
+                  feed: Optional[LandingPrior] = None,
+                  hop_entry: bool = False,
+                  inflight: Optional[BeatEvent] = None) -> Schedule:
+    """The Schedule of a beat stream (P4, D-P4-1): one :class:`BeatEvent`
+    per Throw, the last one the Stop.  :func:`compile_columns` is
+    ``compile_beats(columns_events(pattern), ...)``.
+
+    ``t0_abs_s`` / ``feed`` / ``hop_entry`` are :func:`compile_columns`'s
+    (exactly one of the first two; ``feed`` sets ``t0 = feed.t_land_abs_s -
+    tau_1``).  ``inflight`` is the Throw that put ball 1 in the air before
+    ``t0`` (None = derived from event 1; a one-Throw stream must give it).
+
+    **Timing** (:func:`_beat_times`): the opening pair (event 0 and ball 1's
+    pre-existing flight) sets the Beat, ``beta0 = (f_0 + d_0) / 2``, and must
+    share one cycle (``BEAT_MISMATCH``); Throw ``i >= 1`` is released one
+    Dwell after its ball's previous Catch, and caught one flight later.
+    THROW 0's window is ``launch_s``; a carried THROW's is its Dwell; a
+    CATCH's is the transit after the release that precedes it.  Every event
+    from the first deviation from the opening values on must pass
+    :func:`next_beat` (the ValueError names the code, the Throw and the
+    numbers); a 2-periodic stream compiles bit for bit as before.  The
+    Schedule's scalars (``flight_s``, ``beat_s``, ``transit_s``, ``dwell_s``,
+    the per-ball tuples, the ``'columns'`` / :data:`COLUMNS_HIGHLOW` label)
+    are the OPENING pair's.
+
+    **The Stop** (last event, ``n >= 2``) carries ``shadow_landing`` and must
+    land where the previous Throw's ball is held.  Under ``hop_entry`` THROW
+    0 carries ``entry_hop`` (its release Site differs from its catch Site).
+    Refused by name: ``release_kind='carried'``
+    (``BEAT_CARRIED_NOT_SUPPORTED``) and any other structure this compiler
+    does not build (``BEAT_STREAM_INVALID``).
+
+    THE SCHEDULE IS BUILT ON ITS OWN CLOCK (t = 0 at the first throw) AND
+    SHIFTED TO t0_abs_s ONCE, AT THE END. Pairing a catch with its throw, the
+    handoff lead (:func:`_assign_leads`) and the dispatch-order check compare
+    instants to 1e-9 s. On a ROS wall clock (~1.79e9 s) a double resolves
+    only ~2.4e-7 s, so those comparisons failed at random: MEASURED 2026-09-13
+    on the robot and offline, a 20-throw schedule compiled at t0 =
+    1789263419.5 held 24 skills (two pairs unfolded, each a THROW spliced one
+    knot after a rest-terminal catch -> LIMIT_JERK) and every other handoff
+    on LEAD_S instead of HANDOFF_LEAD_S (every SPLICE_TOO_LATE of the R2 gate
+    sitting), against the correct 22 at t0 = 10 (logbook
+    2026-09-13-skill-stack-r2-gate-sittings).
+
     **Every same-site (CATCH, THROW) pair of one ball is emitted as ONE CATCH
-    skill carrying ``then_throw``** (:func:`_fold_catch_throw_pairs`), so the
-    schedule holds ``1 + (n_throws − 1) + 1 + 1 = n_throws + 2`` skills: the
-    launch THROW from rest, ``n_throws − 1`` catch-with-throws, the last
-    (standalone) CATCH, and the REST. The event times are untouched.
+    skill carrying ``then_throw``** (:func:`_fold_catch_throw_pairs`; a
+    stream whose Dwells differ per Throw pairs by window,
+    :func:`_fold_by_window`), so the schedule holds ``1 + (n − 1) + 1 + 1 =
+    n + 2`` skills: the launch THROW from rest, ``n − 1`` catch-with-throws,
+    the last (standalone) CATCH, and the REST. Skill ``k`` (``1 <= k <= n -
+    1``) is the CATCH that carries Throw ``k``. The event times are
+    untouched.
 
     **Why the dispatch instant of a catch-with-throw lands ON the previous
     release.** Its ``window_s`` is the transit, so its dispatch is
     ``t_land − transit − lead``, and ``t_land − transit`` IS the previous
-    release instant — that is what :func:`transit_s` measures (a throw to the
+    release instant — that is what the transit measures (a throw to the
     OTHER hand's next catch), so it holds for every catch in the pattern by
     construction rather than by arithmetic coincidence. The splice knot
     ``splice_knot`` then returns is therefore the release knot itself or one of
@@ -1164,68 +1803,45 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
     :data:`HANDOFF_LEAD_S` (:func:`_assign_leads`) and spends the
     :data:`HANDOFF_LEAD_EXTRA_KNOTS` extra knots on the solve rather than on moving the seam.
     """
-    if (t0_abs_s is None) == (feed is None):
-        raise ValueError(
-            'compile_columns takes exactly one of t0_abs_s (a free clock '
-            'instant) or feed (R5: ball B\'s observed arrival, from which '
-            't0 is derived) — got t0_abs_s=%r feed=%r' % (t0_abs_s, feed))
-    if hop_entry and feed is None:
-        raise ValueError(
-            "hop_entry=True requires feed (a free-t0_abs_s schedule has no "
-            "real feed ball to park THROW 0 for)")
-    # Per-ball timing (JP-9 high-low, `columns_ball_timing`): with equal
-    # Apexes (`apex_m_ball_b` None or == apex_m) every per-ball value below is
-    # today's scalar EXACTLY, so the schedule is bit-identical.
-    timing = columns_ball_timing(pattern.apex_for(0), pattern.apex_for(1),
-                                 pattern.dwell_s)
+    _check_clock('compile_beats', t0_abs_s, feed, hop_entry)
+    events = tuple(events)
+    if not events:
+        raise ValueError('%s: an empty stream has no Throw'
+                         % (BEAT_STREAM_INVALID,))
+    source = BeatSource(events=events, launch_s=launch_s,
+                        rest_tail_s=rest_tail_s, phantom_balls=phantom_balls,
+                        t0_abs_s=t0_abs_s, feed=feed, hop_entry=hop_entry,
+                        inflight=inflight)
+    pre, timing, dwell_cmd = _opening(events, inflight)
+    _validate_stream(events, pre, hop_entry)
+    # One Site object per place, so the fold's identity test (`other.site is
+    # sk.site`) cannot miss two equal Sites built apart.
+    canon = []
+
+    def site_of(s):
+        for c in canon:
+            if _same_site(c, s):
+                return c
+        canon.append(s)
+        return s
+
+    pre_site = site_of(pre.catch_site)
+    throw_sites = []
+    catch_sites = []
+    for ev in events:
+        throw_sites.append(site_of(ev.throw_site))
+        catch_sites.append(site_of(ev.catch_site))
     t_f = timing.high_flight
     beta = timing.beat
-    tau = transit_s(t_f, pattern.dwell_s)
-    flight_of = timing.flights
     dwell_of = timing.dwells
-    tau_of = timing.transits
-    if not tau > 0.0:
-        raise ValueError(
-            'dwell %.4f s >= flight %.4f s leaves no transit — the ball would '
-            'have to land before the other hand finishes its dwell'
-            % (pattern.dwell_s, t_f))
-    for b in (0, 1):
-        if not tau_of[b] > 0.0:
-            raise ValueError(
-                'high-low Columns: %s (Apex %.3f m, flight %.4f s) has no '
-                'transit -- its flight is %.4f s shorter than the high '
-                "ball's, which eats the high ball's whole %.4f s transit "
-                '(Dwell %.4f s); raise its Apex or shorten the Dwell'
-                % (ball_label(b), pattern.apex_for(b), flight_of[b],
-                   t_f - flight_of[b], tau, pattern.dwell_s))
+    bt = _beat_times(events, pre, timing, dwell_cmd)
+    tau = bt.tau
     if feed is not None:
-        t0_abs_s = float(feed.t_land_abs_s) - tau_of[1]
-    n = int(pattern.n_throws)
-    if n < 1:
-        raise ValueError('n_throws must be >= 1, got %r' % (pattern.n_throws,))
-    # The one-ball parity rule (docstring): the Stop must be a phantom's throw.
-    if (n >= 2 and pattern.phantom_balls
-            and ((n - 1) % 2) not in tuple(pattern.phantom_balls)):
-        n += 1
-    site0, site1 = pattern.sites
-    sites2 = (site0, site1)
-
-    # THE SCHEDULE IS BUILT ON ITS OWN CLOCK (t = 0 at the first throw) AND
-    # SHIFTED TO t0_abs_s ONCE, AT THE END. Pairing a catch with its throw
-    # (`_fold_catch_throw_pairs`), assigning the handoff lead (`_assign_leads`)
-    # and the dispatch-order check below all compare instants to 1e-9 s. On a
-    # ROS wall clock (~1.79e9 s) a double resolves only ~2.4e-7 s, so those
-    # comparisons failed at random: MEASURED 2026-09-13 on the robot and offline,
-    # a 20-throw schedule compiled at t0 = 1789263419.5 held 24 skills (two pairs
-    # unfolded, each a THROW spliced one knot after a rest-terminal catch ->
-    # LIMIT_JERK) and every other handoff on LEAD_S instead of HANDOFF_LEAD_S
-    # (every SPLICE_TOO_LATE of the R2 gate sitting), against the correct 22 at
-    # t0 = 10. Every test, the sim gate and the rehearsal ran near t = 0, which
-    # is why none of them saw it (logbook 2026-09-13-skill-stack-r2-gate-sittings).
-    t0_rel = 0.0
+        t0_abs_s = float(feed.t_land_abs_s) - timing.transits[1]
+    n = len(events)
 
     skills = []
-    _check_window('initial CATCH', tau_of[1])
+    _check_window('initial CATCH', bt.init_window)
     # `feed.t_land_abs_s` is already the ORIGINAL absolute instant (the
     # same "not the relative one `_shifted` would double-shift" note as
     # `compile_reload`'s own CATCH), so it rides through unshifted —
@@ -1238,12 +1854,12 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
     # dwell window at all — a `t0_abs_s` schedule's initial catch has no real
     # arrival to pin against (its own self-toss/hop landing is already
     # vertical or near it) and keeps the auto-banked default, `None`.
-    skills.append(Skill(kind=CATCH, ball_id=1, site=site1,
-                        t_abs_s=t0_rel + tau_of[1], window_s=tau_of[1],
+    skills.append(Skill(kind=CATCH, ball_id=1, site=pre_site,
+                        t_abs_s=bt.t_init, window_s=bt.init_window,
                         landing_prior=feed,
                         receive_tilt=((0.0, 0.0) if feed is not None else None)))
 
-    _check_window('THROW 0 (the launch from rest)', pattern.launch_s)
+    _check_window('THROW 0 (the launch from rest)', launch_s)
     if n >= 2:
         # Every throw after the first is carried by the catch one dwell before
         # it, so the dwell is the span from that catch's touch-down to its
@@ -1253,48 +1869,43 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
             _check_window('dwell (touch-down to the throw the catch carries)',
                           b)
 
-    for i in range(n):
+    # The next-beat rule on every Throw from the first deviation on, BEFORE any
+    # Skill is built: Throw i's rule checks the window of CATCH i - 1, which a
+    # Skill would otherwise be built with first (a negative window raises
+    # Skill's own unnamed ValueError).  A stream with no deviation is the
+    # legacy table, held to `_check_window` below exactly as before.
+    dev = bt.first_deviation
+    if dev is not None:
+        for i in range(max(1, dev), n):
+            _check_next_beat(events, bt, i)
+    for i, ev in enumerate(events):
         ball_i = i % 2
-        site_i = sites2[ball_i]
-        t_throw = t0_rel + i * beta
-        window = pattern.launch_s if i == 0 else dwell_of[ball_i]
-        # The Stop (D2, 2026-09-30, R5 rescope — E1', see the docstring): the
-        # LAST throw targets the OTHER site — the one the second-to-last ball
-        # is caught and held at (`sites2[n % 2]`, always the other of the two
-        # since consecutive throws alternate) — instead of its own. Every
-        # earlier throw is an ordinary self-toss, target = its own site.
-        # `n == 1` has no second-to-last ball to aim at, so it is excluded
-        # (`i == n - 1 and n >= 2`) and the only throw stays a self-toss.
+        window = launch_s if i == 0 else float(ev.dwell_s)
+        # The Stop (D2): the LAST throw (n >= 2) carries shadow_landing; its
+        # cross-site target is the stream's (`columns_events`).
         is_stop_throw = (i == n - 1 and n >= 2)
-        target_i = sites2[n % 2] if is_stop_throw else site_i
-        # The hop entry (owner decision, 2026-10-05 — see the docstring):
-        # THROW 0 only, and only for a fed schedule (`hop_entry`). It is released from
-        # the FEED site (`sites2[1]`) rather than its own self-toss site
-        # (`site_i`, still `sites2[0]` here) -- `target_i` is untouched by
-        # this (it is already `site_i` == `sites2[0]` for i == 0, since
-        # `is_stop_throw` can never be True at i == 0), so the ball still
-        # lands at `sites[0]` exactly as the self-toss entry would.
         is_hop_throw = (hop_entry and i == 0)
-        release_site_i = sites2[1] if is_hop_throw else site_i
-        throw_sk = Skill(kind=THROW, ball_id=ball_i, site=release_site_i,
-                         t_abs_s=t_throw, window_s=window,
-                         y_d=(np.zeros(2), pattern.apex_for(ball_i)),
-                         target=target_i,
-                         shadow_landing=is_stop_throw, entry_hop=is_hop_throw)
-        skills.append(throw_sk)
+        skills.append(Skill(kind=THROW, ball_id=ball_i, site=throw_sites[i],
+                            t_abs_s=bt.t_r[i], window_s=window,
+                            y_d=(np.zeros(2), float(ev.apex_m)),
+                            target=catch_sites[i],
+                            shadow_landing=is_stop_throw,
+                            entry_hop=is_hop_throw))
         if i <= n - 2:
-            _check_window('CATCH %d' % i, tau_of[ball_i])
-            # `site=target_i`, not `site_i`: the catch must sit where the
-            # ball actually LANDS. Identical to `site_i` for every throw
-            # except the hop entry's THROW 0, where the two differ by
-            # construction (release at the feed site, landing at its own).
-            skills.append(Skill(kind=CATCH, ball_id=ball_i, site=target_i,
-                                t_abs_s=t_throw + flight_of[ball_i],
-                                window_s=tau_of[ball_i]))
+            if bt.window_legacy[i]:
+                _check_window('CATCH %d' % i, bt.windows[i])
+            # `site=target`, not the release site: the catch sits where the
+            # ball actually LANDS (they differ for the hop entry's THROW 0).
+            skills.append(Skill(kind=CATCH, ball_id=ball_i,
+                                site=catch_sites[i], t_abs_s=bt.t_c[i],
+                                window_s=bt.windows[i]))
 
     skills.sort(key=lambda s: s.t_abs_s)
-    skills = _fold_catch_throw_pairs(
-        skills, float(pattern.dwell_s) if timing.equal else dwell_of)
+    if dev is None:
+        skills = _fold_catch_throw_pairs(
+            skills, float(dwell_cmd) if timing.equal else dwell_of)
+    else:
+        skills = _fold_by_window(skills)
 
     catches = [s for s in skills if s.kind == CATCH]
     last_catch = max(catches, key=lambda s: s.t_abs_s)
@@ -1302,11 +1913,11 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
     # last CATCH's own touch-down plus the fresh-origin margin, at that
     # catch's site — unchanged by the Stop, because nothing has to travel
     # there any more (the last throw is already aimed at it).
-    rest_t = closing_rest_t_abs(float(last_catch.t_abs_s), pattern.rest_tail_s)
-    _check_window('closing REST', pattern.rest_tail_s)
+    rest_t = closing_rest_t_abs(float(last_catch.t_abs_s), rest_tail_s)
+    _check_window('closing REST', rest_tail_s)
     skills.append(Skill(kind=REST, ball_id=last_catch.ball_id,
                         site=last_catch.site, t_abs_s=rest_t,
-                        window_s=pattern.rest_tail_s))
+                        window_s=rest_tail_s))
 
     skills = _assign_leads(skills)
 
@@ -1330,18 +1941,112 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
     skills = [_shifted(s, t0) for s in skills]
     if timing.equal:
         return Schedule(skills=tuple(skills), flight_s=t_f, beat_s=beta,
-                        transit_s=tau, dwell_s=float(pattern.dwell_s),
+                        transit_s=tau, dwell_s=float(dwell_cmd),
                         t0_abs_s=t0, pattern='columns',
-                        phantom_balls=pattern.phantom_balls)
-    # High-low (JP-9): its own box label, so a plain Columns at one of these
-    # Apexes can never select a cell swept for the other ball's seed and
-    # timing (`admissible.PATTERNS`); per-ball timing rides on the Schedule.
+                        phantom_balls=phantom_balls, source=source)
+    # High-low (JP-9): its own pattern label, so a plain Columns at one of these
+    # Apexes can never be planned with the other ball's seed and timing
+    # (until 2026-11-06: select a cell swept for them, `admissible.PATTERNS`);
+    # per-ball timing rides on the Schedule.
     return Schedule(skills=tuple(skills), flight_s=t_f, beat_s=beta,
-                    transit_s=tau, dwell_s=float(pattern.dwell_s),
+                    transit_s=tau, dwell_s=float(dwell_cmd),
                     t0_abs_s=t0, pattern=COLUMNS_HIGHLOW,
-                    phantom_balls=pattern.phantom_balls,
+                    phantom_balls=phantom_balls,
                     dwell_by_ball=tuple(dwell_of),
-                    flight_by_ball=tuple(flight_of))
+                    flight_by_ball=tuple(timing.flights), source=source)
+
+
+def columns_change(events, j: int, *, apex_m: Optional[float] = None,
+                   apex_m_ball_b: Optional[float] = None,
+                   dwell_s: Optional[float] = None) -> Tuple[BeatEvent, ...]:
+    """A Columns stream with Throws ``j ..`` changed (D-P4-3); the input is
+    not modified.
+
+    Events ``0 .. j-1`` are returned untouched (the same objects).  Events
+    ``j ..`` take the new Apexes and the Dwells :func:`columns_ball_timing`
+    gives for them (the high ball keeps the commanded Dwell).  ``apex_m`` is
+    ball A's (id 0) new Apex; ``apex_m_ball_b`` ball B's, ``None`` meaning
+    "the same as ``apex_m``" when ``apex_m`` is given (:class:`Pattern`'s
+    convention) and "unchanged" otherwise; ``dwell_s`` the new commanded
+    Dwell (``None`` = unchanged).  Unchanged values are read off Throws
+    ``j - 2`` and ``j - 1`` (one per ball).
+
+    A changed flight or Dwell moves the Beat; left alone, the balls' phase
+    would stay at the OLD Beat for ever.  So ONE transition event, ``j + 1``
+    (ball ``b'``; Throw ``j`` is ball ``b``), carries the Dwell
+
+        d'(b') + (beta' - beta_old) + [(f'(b') - f'(b)) - (f_old(b') - f_old(b))]
+
+    which re-centres the rhythm: from Throw ``j + 1`` on every release is one
+    new Beat after the last, so every transit from the one before Throw
+    ``j + 1`` on is the new uniform one.  The bracket is zero whenever both
+    balls' flights change together (equal Apexes, a Dwell-only change); it
+    is the change in the flight difference between the balls, and without it
+    a high-low change would not re-centre.
+
+    Refused by name, the input standing: ``BEAT_CHANGE_RANGE`` for ``j < 2``
+    (Throws 0 and 1 are the opening pair: changing them changes the Beat
+    every earlier instant hangs on, ``t0`` included), for ``j > n - 1``
+    (past the Stop), and when Throws ``j - 2`` and ``j - 1`` are not on one
+    Beat (an earlier change is still re-centring: change at least four Throws
+    after it); ``j = n - 1`` changes the Stop alone and is accepted.  Every
+    Throw from the first changed one on must pass :func:`next_beat`
+    (ValueError with its code and the numbers).
+
+    ``compile_beats(columns_change(events, j, ...))`` keeps Skills ``0 ..
+    j - 1`` of the unchanged compile field-identical: Skill ``j`` (the CATCH
+    carrying Throw ``j``) is the first that can differ.
+    """
+    events = tuple(events)
+    n = len(events)
+    j = int(j)
+    if not 2 <= j <= n - 1:
+        raise ValueError(
+            '%s: Throw %d cannot be changed in a %d-Throw stream (Throws 0 '
+            'and 1 are the opening pair; the last Throw is %d)'
+            % (BEAT_CHANGE_RANGE, j, n, n - 1))
+    ea, eb = events[j - 2], events[j - 1]
+    fa, fb = flight_s(ea.apex_m), flight_s(eb.apex_m)
+    da, db = float(ea.dwell_s), float(eb.dwell_s)
+    if abs((fa + da) - (fb + db)) > 1e-9:
+        raise ValueError(
+            '%s: Throws %d and %d are not on one Beat (flight + dwell %.9f vs '
+            '%.9f s): an earlier change is still re-centring'
+            % (BEAT_CHANGE_RANGE, j - 2, j - 1, fa + da, fb + db))
+    beta_old = (fa + da) / 2.0
+    cur_apex = {int(ea.ball_id): float(ea.apex_m),
+                int(eb.ball_id): float(eb.apex_m)}
+    cur_flight = {int(ea.ball_id): fa, int(eb.ball_id): fb}
+    d_cmd_old = da if fa >= fb else db
+    a0 = float(apex_m) if apex_m is not None else cur_apex[0]
+    if apex_m_ball_b is not None:
+        a1 = float(apex_m_ball_b)
+    elif apex_m is not None:
+        a1 = float(apex_m)
+    else:
+        a1 = cur_apex[1]
+    d_new = float(dwell_s) if dwell_s is not None else d_cmd_old
+    timing = columns_ball_timing(a0, a1, d_new)
+    beta_new = timing.beat
+    b = int(events[j].ball_id)
+    out = list(events[:j])
+    for k in range(j, n):
+        ev = events[k]
+        bk = int(ev.ball_id)
+        dk = timing.dwells[bk]
+        if k == j + 1:
+            dk = (dk + (beta_new - beta_old)
+                  + ((timing.flights[bk] - timing.flights[b])
+                     - (cur_flight[bk] - cur_flight[b])))
+        out.append(dataclasses.replace(ev, apex_m=(a0, a1)[bk], dwell_s=dk))
+    out = tuple(out)
+    # The next-beat rule on every changed Throw (the opening is untouched).
+    pre, timing0, dwell_cmd0 = _opening(out, None)
+    bt = _beat_times(out, pre, timing0, dwell_cmd0)
+    if bt.first_deviation is not None:
+        for i in range(max(1, bt.first_deviation), n):
+            _check_next_beat(out, bt, i)
+    return out
 
 
 #: Duration (s) of the OPENING REST that lifts the hand from the ACTIVATE park
@@ -2038,7 +2743,7 @@ def compile_reload(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
     skills = [_shifted(s, t0) for s in skills]
     # NOT a 'reload' label — see the field docstring on `Schedule.pattern`:
     # every THROW this schedule dispatches is kinematically an ordinary
-    # self-toss/hop throw (or, fixed-role, the oval_1ball box), and that is the box actually swept.
+    # self-toss/hop throw (or, fixed-role, the oval_1ball pattern), and that label is the one planned.
     return Schedule(skills=tuple(skills), flight_s=t_f, beat_s=period,
                     transit_s=t_f, dwell_s=float(pattern.dwell_s), t0_abs_s=t0,
                     pattern=_one_ball_label(pattern))

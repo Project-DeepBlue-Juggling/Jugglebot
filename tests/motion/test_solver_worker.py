@@ -148,6 +148,63 @@ def test_a_real_throw_then_catch_round_trips_identically_to_in_process(
     assert rep2.warm_start is not None
 
 
+def test_a_check_request_round_trips_equal_to_in_process_check_segment(
+        solver, limits, geom, sites):
+    """P3a CHECK: the worker runs ``executor.check_segment`` on the same inputs
+    and ships its verdict field by field; nothing is installed.  A normal
+    (install) reply carries ``margin`` nan and is otherwise unchanged."""
+    t0 = _t0()
+    rq = _throw_req(1, t0, limits, geom, sites)
+    rep = solver.solve(rq)
+    assert rep.result.accepted, rep.result.message
+    assert math.isnan(rep.margin)                       # an install reply
+    assert rq.check is False
+    for seq, off in ((2, 0.0), (3, 400.0)):             # planned, refused
+        base = _catch_req(seq, t0, rep.new_record, rep.warm_start, limits,
+                          geom, sites)
+        term = dataclasses.replace(
+            base.terminal,
+            landing_mm=base.terminal.landing_mm + np.array([off, 0.0, 0.0]))
+        rqc = dataclasses.replace(base, terminal=term, check=True)
+        chk = ex.check_segment(
+            rqc.record, rqc.seed_rest, rqc.kind, rqc.terminal, rqc.t_now_s,
+            lead_s=rqc.lead_s, cfg=rqc.cfg, limits=limits, geom=geom,
+            warm_start=rqc.warm_start, reserve_fresh_lead=False)
+        for name, got in (('worker', solver.solve(rqc)),
+                          ('in-process', sw.InProcessSegmentSolver().solve(rqc))):
+            assert got.seq == seq, name
+            assert got.result.accepted == chk.planned, name
+            assert got.result.code == chk.code, name
+            assert got.result.message == chk.message, name
+            if math.isnan(chk.margin):
+                assert math.isnan(got.margin), name
+            else:
+                assert got.margin == chk.margin, name
+            assert got.new_record is None and got.warm_start is None, name
+            assert got.release_t_s is None, name
+            assert got.result.splice_k == -1, name
+        assert chk.planned == (off == 0.0), chk
+    worker_rep = solver.solve(dataclasses.replace(
+        _catch_req(4, t0, rep.new_record, rep.warm_start, limits, geom, sites),
+        check=True))
+    assert worker_rep.solve_s > 0.0 and worker_rep.cpu_s > 0.0
+    assert worker_rep.vcsw >= 0 and worker_rep.ivcsw >= 0
+
+
+def test_a_late_check_is_skipped_late_whatever_its_kind(solver, limits, geom,
+                                                         sites):
+    """The REST -> SOLVER_UNAVAILABLE mapping is an INSTALL rule; a CHECK that
+    misses its deadline is SKIPPED_LATE even for kind REST."""
+    p1, _ = sites
+    rq = dataclasses.replace(
+        _throw_req(10, _t0(), limits, geom, sites),
+        kind=sg.REST, terminal=sg.RestTerminal(rest_site_mm=p1.rest_site_mm(),
+                                               t_rest_s=_t0() + 0.5),
+        deadline_s=time.perf_counter() - 0.01, check=True)
+    rep = solver.solve(rq)
+    assert rep.result.code == sw.SKIPPED_LATE and not rep.result.accepted
+
+
 def test_a_worker_reply_carries_its_own_cpu_time_and_context_switches(
         limits, geom, sites):
     """JB-76's starvation probe: ``cpu_s`` is the worker's CPU time over the

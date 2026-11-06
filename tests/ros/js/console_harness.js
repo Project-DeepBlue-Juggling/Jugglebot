@@ -69,6 +69,45 @@ const ring = [];
 for (let i = 0; i < L.RING_CAP + 123; i++) L.pushCapped(ring, { t: i, level: 20, name: 'n', msg: String(i) });
 out.ring = { len: ring.length, first: ring[0].msg, last: ring[ring.length - 1].msg, cap: L.RING_CAP };
 cv.initConsoleView();
+// ---- window label + pinned startup lines (JB-163) ----
+{
+    const on = { DEBUG: true, INFO: true, WARN: true, ERROR: true, FATAL: true };
+    const st = L.newLive();
+    const fw = { t: 1, level: 20, name: 'bridge', msg: 'BRIDGE_FW_CHECK: OK - can-bridge v38' };
+    L.pushLive(st, fw);
+    for (let i = 0; i < L.RING_CAP + 10; i++) L.pushLive(st, { t: 2 + i, level: 20, name: 'n', msg: String(i) });
+    const all = L.liveLines(st);
+    out.pin = { len: all.length, first: all[0].msg, dropped: st.dropped, ringLen: st.ring.length,
+                find: L.filterIndices(all, on, 'v38'),
+                infoOff: L.filterIndices(all, { ...on, INFO: false }, 'v38'),
+                isPinned: [L.isPinned(fw), L.isPinned({ msg: 'x' }), L.isPinned(null)] };
+    const mid = L.newLive();   // time order: a pinned line arriving mid-stream sits between its neighbours
+    L.pushLive(mid, { t: 1, level: 20, name: 'n', msg: 'a' });
+    L.pushLive(mid, { t: 2, level: 20, name: 'n', msg: 'PLATFORM_FW_CHECK: OK' });
+    L.pushLive(mid, { t: 3, level: 20, name: 'n', msg: 'b' });
+    out.pinOrder = L.liveLines(mid).map((l) => l.msg);
+    const pb = L.newLive();
+    for (let i = 0; i < L.PIN_CAP + 7; i++) L.pushLive(pb, { t: i, level: 20, name: 'n', msg: 'X_FW_CHECK ' + i });
+    out.pinBound = { len: pb.pinned.length, first: pb.pinned[0].msg, dropped: pb.dropped, cap: L.PIN_CAP };
+    out.winFresh = L.windowLabel(L.newLive(), 3600);
+    out.winDropped = L.windowLabel(st, 3600);
+    out.winPinCap = L.windowLabel(pb, 3600);      // pinned cap dropped, ring never did
+    const small = (pin) => {                      // ring cap 3 over 5 lines t=10..14 keeps t=12..14
+        const s = L.newLive();
+        if (pin !== undefined) L.pushLive(s, { t: pin, level: 20, name: 'n', msg: 'A_FW_CHECK' });
+        for (let i = 0; i < 5; i++) L.pushLive(s, { t: 10 + i, level: 20, name: 'n', msg: 'm' + i }, 3);
+        return s;
+    };
+    out.winRingOnly = L.windowLabel(small(), 3600);
+    out.winPinOld = L.windowLabel(small(1), 3600);
+    const tie = L.newLive();
+    L.pushLive(tie, { t: 5, level: 20, name: 'n', msg: 'm' });
+    L.pushLive(tie, { t: 5, level: 20, name: 'n', msg: 'B_FW_CHECK' });
+    out.winTie = { label: L.windowLabel(small(12), 3600), order: L.liveLines(tie).map((l) => l.msg) };
+    out.winRingT = L.formatTime(12).slice(0, 8);
+    out.winDroppedExpect = L.formatTime(st.ring[0].t).slice(0, 8);
+    out.winFreshExpect = L.formatTime(3600).slice(0, 8);
+}
 out.viewHost = els.get('console-container').innerHTML.includes('console-search');
 
 // ---- replay hit selection ----

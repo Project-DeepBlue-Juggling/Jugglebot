@@ -29,3 +29,7 @@ On 2026-11-05 (launch log L2589-2615) a Hand SPINOUT disarm at 503.68 fell 0.03 
 ## Wanted
 - If the guard latched or the Hand was disarmed during the window, the end code is the fault and the Catch is booked unverifiable, not a miss.
 - Distinct from JB-169 (final Catch of a Columns goal ending in a Stop); JB-172 option 4 would not cover this. Related: JB-147 (the SPINOUT).
+
+## Progress
+
+- 2026-11-06: Night Shift 2026-11-06: held on night-shift/2026-11-06-JB-175: gate (b), one audit finding open (the re-labelled end keeps end_kind CATCH); unblocked by the owner's answer

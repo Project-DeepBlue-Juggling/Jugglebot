@@ -6,7 +6,7 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 5 blocks (173 min) · Bench leg 1 block (30 min) · Bench hand 1 block (30 min)
+Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 block (30 min)
 
 ## Setup 0: before power
 
@@ -16,9 +16,9 @@ Rigs: Robot 5 blocks (173 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Robot  (5 blocks, 173 min)
+## Robot  (6 blocks, 233 min)
 
-### Block 1: armed  (2 rows, 6 min)
+### Block 1: armed  (1 row, 1 min)
 
 #### JB-149 40 Hz setpoint stream starved past the firmware's 70 ms cover during CATCH-solve bursts: 3 LANE_REFUSED ends on 2026-11-02  (1 min, high, unattached)
 - why: catch the next LANE_REFUSED with the GC probe running; three Sittings (2026-11-03 12:30 and 22:29, 2026-11-04 18:45) found no host-side cause, so only an end caught under the probe can rule the host out at the moment of failure.
@@ -27,14 +27,7 @@ Rigs: Robot 5 blocks (173 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - pass: a LANE_REFUSED end is on record with GC_PROBE lines from both stream nodes within 1 s of its STOP WARN, and that WARN carries its verdict, fw_sched counters and frame ages.
 - record: the launch log path and the line of each LANE_REFUSED end; none = say so.
 
-#### JB-174 Count scheduled-stream holes and downlink datagram loss in the can-bridge heartbeat  (5 min, high, unattached)
-- why: confirm that the FW 40 stream-socket queue fix takes downlink setpoint loss from about 1.5 % to zero (three Sittings measured 1.3 to 1.5 %).
-- do:
-  - Confirm the launch log reads `can-bridge v40`. Launch and arm as usual, then leave the robot holding the Active pose for 5 minutes before the first goal. Fly the rest of the Sitting as normal. The bridge logs one `downlink summary` line each time streaming ends.
-- pass: every `downlink summary` line of the Sitting reads lost 0 and queue_dropped +0, over at least 10,000 setpoints in total (seq_gaps is recorded, not judged).
-- record: the launch log path and its `downlink summary` lines.
-
-### Block 2: level, armed, bb-fed  (3 rows, 42 min)
+### Block 2: level, armed, bb-fed  (4 rows, 77 min)
 
 #### JB-161 Ball 2's first throw after the feed catch lands about 180 mm outward along the separation axis  (10 min, high, unattached)
 - why: the hypothesis is that a feed catch whose lateral aim was clamped seats the ball off-centre and the first Throw carries a lateral kick. A fresh plant_id aims the feed catch by the identity prior, so the clamp never engages: if the outward first throw disappears the clamped aim is implicated, if it persists the clamp is cleared. Either outcome is data.
@@ -46,9 +39,9 @@ Rigs: Robot 5 blocks (173 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - record: the plant_id, Ball 2's first-throw landing (x, y) mm and its aim from the install line, the feed-catch aim line (clamped or not), how the Attempt ended, the bag path.
 
 #### JB-107 JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m  (12 min, medium, pattern-progression-columns-to-centre-and-orbit)
-- why: P5 of plan pattern-progression.md: two Apexes in one Pattern (JP-9). The Rung flies 1.00 over 0.90 at separation 100; since the 2026-10-31 re-sweep (Hand prime 10.45, box gate_hash 961808ee2d20) 1.05 over 0.95 is admissible at both Sites too, but a 1.05 launch waits for the faster hand current capture (plan D-c).
+- why: P5 of plan pattern-progression.md: two Apexes in one Pattern (JP-9). The Rung flies 1.00 over 0.90 at separation 100; since the 2026-10-31 re-sweep (Hand prime 10.45) 1.05 over 0.95 is admissible at both Sites too, but a 1.05 launch waits for the faster hand current capture (plan D-c).
 - do:
-  - Rehearse before arming: cup empty, Ball Butler unpowered, `ros2 param set /skill_node apex_m_ball2 0.90`, send the goal below once. The accept message may name only the cup and Ball Butler refusals (no box, planner or apex2 refusal) and nothing moves.
+  - Rehearse before arming: cup empty, Ball Butler unpowered, `ros2 param set /skill_node apex_m_ball2 0.90`, send the goal below once. The accept message may name only the cup and Ball Butler refusals (no nomination refusal) and nothing moves.
   - GUI: Juggle panel `Columns — high-low`, Apex 1.00, Apex 2 0.90, Sep. 100, Dwell 0.27, Throws 21 (Start writes apex_m_ball2 to the node first). Terminal fallback: `ros2 param set /skill_node apex_m_ball2 0.90` (refused while a goal runs), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_highlow, apex_m: 1.00, separation_mm: 100.0, dwell_s: 0.27, num_cycles: 21}" --feedback`.
   - Watch the hand current at every launch; cancel the goal if any hand iq sample reaches 55.0 A (the hand current limit is 60 A since 2026-11-01, was 50 A with a 50.0 A watch).
   - Afterwards `ros2 param set /skill_node apex_m_ball2 0.0`.
@@ -58,7 +51,7 @@ Rigs: Robot 5 blocks (173 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 #### JB-108 JP-10 Turned columns: the columns pair at fixed angles about +z, under pose  (20 min, medium, pattern-progression-columns-to-centre-and-orbit)
 - why: P3 of plan pattern-progression.md: two-ball Columns off the x axis under the pose planner, one plant_id per angle (set explicitly in the steps below), which answers JB-38 P2(b) (does the lateral bias rotate with the pair).
 - do:
-  - Rehearse before arming: cup empty, Ball Butler unpowered, `ros2 param set /skill_node columns_angle_deg 45`, send the goal below once. The accept message may name only the cup and Ball Butler refusals (no box, planner or angle refusal) and nothing moves. Repeat at 90.
+  - Rehearse before arming: cup empty, Ball Butler unpowered, `ros2 param set /skill_node columns_angle_deg 45`, send the goal below once. The accept message may name only the cup and Ball Butler refusals (no nomination refusal) and nothing moves. Repeat at 90.
   - Fly a straight `Columns` control first if this Sitting has not flown one (GUI Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21).
   - GUI: Juggle panel `Columns — turned`, Angle 45, Apex 0.95, Sep. 125, Dwell 0.27, Throws 21 (Start writes columns_angle_deg to the node first). Terminal fallback: `ros2 param set /skill_node columns_angle_deg 45` (refused while a goal runs), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_turned, apex_m: 0.95, separation_mm: 125.0, dwell_s: 0.27, num_cycles: 21}" --feedback`. Only the 0.925 to 0.975 Apex band is admissible at 45 deg.
   - Angle 90 (or `ros2 param set /skill_node columns_angle_deg 90`), then the same goal at Apex 0.95 (0.90 is also admissible at 90 deg).
@@ -67,13 +60,24 @@ Rigs: Robot 5 blocks (173 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - pass: 20 consecutive Catches in one Attempt at each angle, flown with Throws 21 (the 21st throw is the Stop throw, so `COMPLETED (20/20 caught)`; with Throws 20 it reads 19/19); landing scatter, per ball and per axis, with the mean within 15 mm and the sd within 10 mm of the straight control (proposed 2026-11-03, owner to confirm; the old "within 3 mm" was below the control's own run-to-run sd of 18-31 mm); no HAND_LIMIT line.
 - record: caught of thrown per angle, each angle's plant_id, landing scatter against the control, Ball 2's first-throw landing (x, y) mm per Attempt (JB-161: 5 of 7 landed outward at 90 deg on 2026-11-03), the bag path; commit docs/records.md.
 
+#### JB-192 Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for  (35 min, high, learner-generalisation)
+- why: tells whether the pull toward the partner Site depends on the Apex or on the time from arrival to release, which no flight so far could separate, so the fix is aimed at the right cause (the arrival ring or the Apex).
+- do:
+  - GUI Juggle panel, `Columns`, Apex 0.93, Sep. 125, Throws 21, Ball Butler feeding, bag recording. Fly Dwell 0.27, then Dwell 0.32, alternating, three Attempts of each (about 30 caught Throws per Dwell).
+  - Attempts often end early on a collision or a missed Catch: repeat that Dwell until about 30 caught Throws are in, at most five Attempts per Dwell.
+  - Both goals are inside what has flown. Rehearsed offline at the Sitting limits (600 mm/s, 8000 mm/s^2, 200000 mm/s^3, Hand 4500 rev/s^2, planner `pose`): Dwell 0.27 plans Leg peaks of 310 mm/s and 4076 mm/s^2, Dwell 0.32 plans 353 mm/s and 5180 mm/s^2; up to 371 mm/s and 5488 mm/s^2 flew on 2026-11-06 with the base joints attached. Columns has not flown at a Dwell other than 0.27 before.
+  - Dwell 0.32 has no headroom with the Catch re-aim at its limit (margin -0.015), so an Attempt may end on an `ADMISSIBILITY` refusal: note the line and repeat. Stop the row if it happens three times.
+  - Not in this row, and why: Dwell 0.40 (the first design) is refused at goal accept. Dwell 0.35 is accepted, but plans 6207 mm/s^2, within 2 % of the 6296 mm/s^2 that separated Legs 1 and 2 (JB-184, in a longer transit). Fly 0.35 only as your own decision, watching the base joints.
+- pass: about 30 caught Throws have flown at each Dwell and no Leg joint let go. Type the result as pending. The debrief computes, per Dwell, the Platform's velocity toward the partner Site at each release (from the bag) and the landing pull against the real release, and compares the two Dwells: a 5 Hz ring predicts a clear change over 0.05 s, an Apex effect predicts none.
+- record: the launch log and bag paths, the clock time of each Start with its Dwell, how many Attempts each Dwell took and why each ended early, any refusal text, and anything seen at the base joints.
+
 ### Block 3: armed, bb-fed  (1 row, 15 min)
 
 #### JB-147 Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT)  (15 min, high, unattached)
-- why: the torque loss happened at 13-54 A so the 60 A limit does not explain the SPINOUTs and a 70 A brake is harder; this run measures whether the SPINOUT rate moves with the drive now at 70/80 A (K and limits unchanged). NOT under FW 39 (Hand C1 grace 14 ms): Apex 1.35 overruns the stroke clip by 0.93 rev on a release-knot C1 stop; wait for JB-174's hole counters before flying this row.
+- why: the torque loss happened at 13-54 A so the 60 A limit does not explain the SPINOUTs and a 70 A brake is harder; this run measures whether the SPINOUT rate moves with the drive now at 70/80 A (K and limits unchanged). Flown at Apex 1.10: nomination refuses 1.35 at accept (nearest viable 1.25), and with the Hand C1 grace at 14 ms a release-knot stop overruns the stroke clip above 1.10 (-0.50 rev at 1.25). Flying higher needs a grace decision first.
 - do:
   - Re-home the Hand first: the ODrive GUI save on 2026-11-03 (limits 70/80 A, thermistor 60/70 C) reset the zero (JB-146 class).
-  - Fly Columns, Sep. 125, Apex 1.35, Throws 21, twice, with `hand_capture` on (the 21st throw is the Stop throw, so a full Attempt reads 20/20).
+  - Fly Columns, Sep. 125, Apex 1.10, Throws 21, twice, with `hand_capture` on (the 21st throw is the Stop throw, so a full Attempt reads 20/20).
   - Stop at the FIRST SPINOUT_DETECTED or Hand iq over 66 A.
 - pass: no SPINOUT_DETECTED in either run.
 - record: per run the catches; the SPINOUT count with the Hand position, velocity and iq at the torque loss from the capture; the peak brake iq; whether the 70 A limit was in effect (an iq setpoint beyond 60 A).
@@ -93,36 +97,48 @@ Rigs: Robot 5 blocks (173 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 ### Block 5: armed, bb-fed, bridge-cycled  (2 rows, 95 min)
 
 #### JB-102 Pre-release hold rung: release from a moving Platform (hold 0.100 → 0)  (45 min, high, two-ball-oval)
-- why: carry-ring-zvd P0 could not identify the Platform mode from the bags on disk (the encoder and mocap fits disagree, 5.4 vs 4.45 Hz), so the mode is identified on the robot first and the ZVD rows (provisional 4.9 Hz / 0.20 / 20 ms) are then flown A/B against the flag-off carry. Needs bridge FW 39 (Hand C1 grace 14 ms, BridgeIdentity receipt in the launch log); under FW 39 only Apex <= 1.10 flies (release-knot C1 stop vs the clip) until JB-174 lands; this row is Apex 1.00.
+- why: the ZVD rows (mode provisional 4.9 Hz / 0.20 / 20 ms) have never flown. This A/B flies them against the flag-off carry on the oval, where carried Throws land about +59 mm long at Dwell 0.40. `gc_freeze` is on for both arms, its first flight (JB-149). The Platform mode is re-fitted afterwards from this Sitting's bag.
 - do:
-  - Before arming: confirm the colcon build is done (`cd ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot`, then re-source; InstallSegment.srv changed) and the launch log shows the new box line gate_hash e8d303ae93bc. The launch log shows bridge FW 39. Run `ros2 param get /skill_node carry_zvd` and confirm it reads false.
-  - Identification: no step row (2026-11-05 showed 20 mm profiled steps excite no resolvable ring); the mode comes from `python tools/probes/platform_mode_fit.py <bag>` on the Sitting's own bag afterwards (forced-response fit).
+  - Before arming: launch with `gc_freeze:=true`. The launch log must show `can-bridge v40` and a `JB-149 gc_freeze ON` line from both `teensy_bridge_node` and `trajectory_node`. Run `ros2 param get /skill_node carry_zvd` and confirm it reads false.
   - A arm (flag off, the existing behaviour): `ros2 param set /skill_node plant_id zvd-oval-<date>` and read it back, then one Attempt of `{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.40, num_cycles: 32}` (cup empty, Ball Butler loaded).
   - Empty the Cup after every ended Attempt before re-sending a fed goal (two REJECTED_BALL_IN_HAND on 2026-11-05); after clear_errors re-enter TRAJECTORY before the next goal (one WRONG_MODE).
-  - B arm: `ros2 param set /skill_node carry_zvd true` (refused while a goal runs) and read it back with `ros2 param get /skill_node carry_zvd`; the goal start line must show carry_zvd. Fly the same oval goal at dwell 0.40 on the same plant. Then dwell 0.35 (`dwell_s: 0.35`, same other keys) with the flag on, only if 0.40 holds.
-  - Columns canary with the flag OFF (the swept box has no Columns cell with the rows on): before it run `ros2 param set /skill_node carry_zvd false` and read it back with `ros2 param get /skill_node carry_zvd`; two Attempts: GUI Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21.
-  - Afterwards re-fit the mode on this bag: `python tools/probes/platform_mode_fit.py <bag>` (the step responses give the free-decay estimate P0 could not get).
+  - B arm: `ros2 param set /skill_node carry_zvd true` (refused while a goal runs) and read it back with `ros2 param get /skill_node carry_zvd`; the goal start line must show carry_zvd. Fly the same oval goal at dwell 0.40 on the same plant. Then dwell 0.35 (`dwell_s: 0.35`, same other keys) with the flag on, only if 0.40 holds. Offline at nominal aims the rows plan Leg peaks of 277 mm/s and 3270 mm/s^2 at 0.40, 316 and 5120 at 0.35 (worst flown clean 5488; Legs 1 and 2 separated at 6296).
+  - Columns canary with the flag OFF (owner 2026-11-06: the rows are an oval tool, off on Columns until JB-184 has a bound): before it run `ros2 param set /skill_node carry_zvd false` and read it back with `ros2 param get /skill_node carry_zvd`; two Attempts: GUI Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21.
+  - Afterwards re-fit the mode on this bag: `python tools/probes/platform_mode_fit.py <bag>` (forced-response fit, x and y).
 - pass: at Dwell 0.40 with the flag on, the carried minus from-rest raw landing bias is within +/-10 mm, the carried per-Throw sd is under 17.5 mm, and 30 consecutive Catches land in one Attempt; no CUP_SEATING_CONE or leg LIMIT end; the Columns canary (flag off) is unchanged (each Attempt COMPLETED, no new refusal).
-- record: raw x per Throw (landed minus u) split from-rest / carried, per arm; encoder and mocap excess at separation per arm; RING refusals (the RING refusal text if any oval install is refused); install-line leg peaks; the platform_mode_fit.py result on the identification bag (x and y); the bag and launch log paths.
+- record: raw x per Throw (landed minus u) split from-rest / carried, per arm; encoder and mocap excess at separation per arm; RING refusals (the RING refusal text if any oval install is refused); install-line leg peaks; the platform_mode_fit.py result on this bag (x and y); the bag and launch log paths.
 
 #### JB-162 P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30  (50 min, high, two-ball-oval)
-- why: P4 ramp of plan two-ball-oval.md: the first flight at the 600 / 8000 working point with the legs at 20 A (box gate_hash 2605fc1bd25e); five Columns canary Attempts show nothing regressed, then the one-ball oval dwell ladder finds the shortest dwell that holds.
+- why: P4 ramp of plan two-ball-oval.md: the first flight at the 600 / 8000 working point with the legs at 20 A; five Columns canary Attempts show nothing regressed, then the one-ball oval dwell ladder finds the shortest dwell that holds.
 - do:
   - Fly this row FIRST, before every other robot row: since cf35526c every goal runs at 600 / 8000 and 20 A. The 2026-11-03 Sitting flew 1 of the 5 canary Attempts (20/20, peak leg iq 11.7 A) and the oval to dwell 0.35 without a pass (debrief 2026-11-04: carried throws land long, the carry's deceleration ends 25-30 ms before release).
-  - Before arming: confirm the launch log shows BridgeIdentity FW 39 (proto 11), the box line gate_hash 2605fc1bd25e, and the Sitting limits 600 / 8000 / 200000 (none of the three was in the 2026-11-03 launch log; read them from the GUI or `ros2 param get` and note where they came from).
-  - Rehearse before arming: cup empty, Ball Butler unpowered, send `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.40, num_cycles: 4}" --feedback` once. The accept message may name only the cup and Ball Butler refusals (no box, dwell or limit refusal) and nothing moves.
+  - Before arming: confirm the launch log shows BridgeIdentity FW 40 (proto 12) and the Sitting limits 600 / 8000 / 200000 (neither was in the 2026-11-03 launch log; read them from the GUI or `ros2 param get` and note where they came from).
+  - Rehearse before arming: cup empty, Ball Butler unpowered, send `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.40, num_cycles: 4}" --feedback` once. The accept message may name only the cup and Ball Butler refusals (no nomination refusal) and nothing moves.
   - Columns canary: GUI Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21. Five Attempts (the 2026-11-03 one does not count toward this Sitting's five).
   - Watch the leg current throughout: cancel the goal if any leg iq sample reaches 19 A (1 A under the 20 A clamp; proposed 2026-11-03, owner to confirm; the 2026-11-03 peak was 11.7 A).
   - One-ball oval, on its own plant: `ros2 param set /skill_node plant_id p4-oval-<date>` (refused while a goal runs) and read it back from the goal start line.
   - FIRST one Attempt at dwell 0.50: `{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.50, num_cycles: 32}` (cup empty, Ball Butler loaded). It separates the new leg point from the dwell: dwell 0.50 landed 46 +/- 10 mm long at 350 / 5000 on 2026-10-31; about the same here clears P4 of the long bias.
   - Then re-fly the 2026-11-03 ladder unchanged (owner 2026-11-04): dwell 0.40 at Apex 1.00 (oval_1ball_fed, then oval_1ball), then dwell 0.35 at Apex 1.00 after one Attempt with no leg LIMIT, guard or HAND_LIMIT end.
-  - Fly dwell 0.30 at Apex 1.10, not 1.00, and only if 0.35 holds: the box leaves 1 mm of +x landing room at 1.00 / 0.30 and 25 mm at 1.10 / 0.30.
+  - Fly dwell 0.30 at Apex 1.10, not 1.00, and only if 0.35 holds: the retired box left 1 mm of +x landing room at 1.00 / 0.30 and 25 mm at 1.10 / 0.30 (read the nomination at the live limits before flying).
 - pass: the five Columns Attempts each read `COMPLETED (20/20 caught)` with no leg LIMIT end and peak leg iq under 20 A; then the one-ball oval sustains 30 consecutive Catches in one Attempt at the shortest dwell flown (plan P4 gate).
 - record: caught of thrown and the end code per Attempt; the CATCH leg-velocity refusal count across the canary (JB-24 expects none at 600 mm/s); peak leg iq per leg per Attempt from the bag (the 20 A measurement); the shortest dwell reaching 30; the raw long bias per dwell (landed minus the command u), from rest and carried; the LIMIT_JERK refusal count; the oval plant_id; the bag and launch log paths; commit docs/records.md.
 
+### Block 6: level, armed  (1 row, 30 min)
+
+#### JB-195 Leg encoder dropouts of 80 to 99 ms continue at the clock beat: trial encoder_msg_rate_ms 9 on Leg 4, then all Legs  (30 min, medium, unattached)
+- why: tests the Hand's 9 ms cure on the axis where zero episodes by chance is about 5e-4, far stronger than the Hand's own trial, and decides whether all six Legs change.
+- do:
+  - Before the launch: set Leg 4 only, `axis0.config.can.encoder_msg_rate_ms` from 10 to 9, and save, the way you set the Hand (`tools/odrive_fleet_reflash.py --only 4 --set axis0.config.can.encoder_msg_rate_ms=9` also does this and reads it back from the drive's saved config; it is untried for this setting). The drive reboots on the save and loses its zero.
+  - Launch. Check the log says `homing: 7 axes homed` before arming; if it does not, stop and do not arm. The Hand trial ran this way with no bridge power-cycle and no symptom (one run).
+  - Before arming, read `/cache_diag`: `enc_frames_4` and `enc_frames_6` should climb by about 111 per s, the others by about 100. Otherwise the setting is not in; stop.
+  - Arm and level, start no goal, and hold for 20 minutes with the bag recording. There is nothing to watch live.
+  - Stop and note it on any Leg fault or guard latch. To undo: set Leg 4 back to 10, save, and launch again so the homing runs.
+- pass: type the result as pending. At the debrief, from the bag's `/cache_diag`: `age_max_us_4` never exceeds 25 ms over the 20 minutes, while at least one other Leg shows a window over 50 ms (the in-run control). One Leg 4 window over 50 ms refutes the cure for the Legs; no window over 50 ms on any other Leg voids the result. Leg 4's frame-loss spacing should fall to about 62 s from 124 to 130 s.
+- record: the launch log and bag paths, the clock time of arming, and whether Leg 4 was left at 9 or put back.
+
 ## Bench leg  (1 block, 30 min)
 
-### Block 6: bridge-cycled  (1 row, 30 min)
+### Block 7: bridge-cycled  (1 row, 30 min)
 
 #### JB-73 Hand ODrive state can silently diverge from what the can-bridge commanded  (30 min, low, unattached)
 - why: confirm FW 35's suppress-edge hold flush leaves the bench leg at the last transmitted command instead of input_pos + vel_ff/pos_gain, and measure the current step it costs.
@@ -135,12 +151,12 @@ Rigs: Robot 5 blocks (173 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 
 ## Bench hand  (1 block, 30 min)
 
-### Block 7: armed, bridge-cycled  (1 row, 30 min)
+### Block 8: armed, bridge-cycled  (1 row, 30 min)
 
 #### JB-145 Hand stall stop near a release cannot fit the stroke: the 20 ms grace plus the C2 stop carry the Hand past the clip  (30 min, medium, unattached)
 - why: FW 37 (owner call JB-154, option 2; grace 6 ms at FW 37, 14 ms at FW 39) stops a fast upward Hand inside the stroke when the stream dies; it has never run on hardware, and the stroke_cut bench stage exercises exactly that path with no ball.
 - do:
-  - Launch down. Confirm the bridge identity reads FW 39 (proto 11). Bench Hand on the bridge, bridge rebooted after re-cabling, Hand homed and parked at or below 0.9 rev, Cup empty, E-stop in hand.
+  - Launch down. Confirm the bridge identity reads FW 40 (proto 12). Bench Hand on the bridge, bridge rebooted after re-cabling, Hand homed and parked at or below 0.9 rev, Cup empty, E-stop in hand.
   - From the repo root in the venv: `python tests/hardware/hand_stream_bench.py --stage stroke_cut --close-loop --repeat 3` (upstroke, 3 runs at the defaults: peak 70 rev/s, entry near 63 rev/s at the 14 ms grace, modelled hold 3.18 rev; FW 37 at 6 ms was 56.8 rev/s and 2.62 rev).
   - Only if those runs settle comfortably: `python tests/hardware/hand_stream_bench.py --stage stroke_cut --cut-at-vel 64 --close-loop` (C1 entry about 73 rev/s, modelled hold 5.06 rev; 6 ms was 4.45 rev).
   - Controls: `--cut-mode downstroke --close-loop` (C2 stop, hold about 4.27 rev) and `--cut-mode slow --close-loop` (full 20 ms grace then C2, hold about 2.54 rev).
@@ -158,12 +174,13 @@ Rigs: Robot 5 blocks (173 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - JB-114 [Robot] Hand end-of-stroke bumper, and first the planner's own brake shape: let the ceiling, not the Hand, cap the Apex: no ## Sitting section
 - JB-117 [Bench hand] Hand brake and hold currents sit far below the throw envelope's model (brake -14 to -20 A measured vs 35 to 40 A predicted; hold 1.5 vs 2.6 A): Kt, moving mass or friction is mis-modelled: no ## Sitting section
 - JB-120 [Robot] A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve: no ## Sitting section
-- JB-137 [Robot] Hand ODrive feedback starvation: 701 ms heartbeat dropout left the encoder 100 ms stale, the 2.0 rev lead clamp pinned the throw to stale+2.0, guard MAX_DEVIATION +3.707 fired correctly (turned-90 at 16/16): no ## Sitting section
 - JB-138 [Robot] Hand iq reached 53.3 A on a 45 deg turned hop launch, over the 50 A watch the high-low row names: no ## Sitting section
 - JB-148 [Robot] One-off 2 m Throws: raised Hand limits and an overshoot protection the speed-scaled margin cannot give: no ## Sitting section
 - JB-166 [Robot] Firmware scheduler STOP fires on a clean host stream and ends the Attempt: no ## Sitting section
 - JB-167 [Robot] Install the host hold within one tick of a firmware scheduler STOP so a guard latch becomes a recoverable LANE_REFUSED: no ## Sitting section
 - JB-168 [Robot] Learner context cannot tell a Throw from rest from a carried Throw: no ## Sitting section
+- JB-186 [Robot] Mid-air ball collisions end half of two-ball Columns Attempts at Apex 1.00: closest approach about 70 mm at Sep. 100, 125 and 135: no ## Sitting section
+- JB-191 [Robot] Two-ball Columns runs end on a missed Catch of Ball 2 with no collision: 13 of 23 ends, mean run 22 Throws: no ## Sitting section
 - JB-2 [Robot] Design change: the Hand should be Idle, not Parked Closed-loop, while Active: no ## Sitting section
 - JB-24 [Robot] 10 % jitter-margin class of LIMIT_* refusals: no ## Sitting section
 - JB-26 [Robot] Platform Teensy truncates the persisted levelling offset to int16 milliradians: no ## Sitting section

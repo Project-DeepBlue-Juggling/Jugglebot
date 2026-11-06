@@ -9,8 +9,8 @@ every accepted dwell 0.65..0.45; the cone refuses at 0.40.
 
 Cell: columns_sites(--sep), apex --apex (T = flight_s), limits 350/5000/200000
 mm/s, mm/s^2, mm/s^3 and hand 3900; the oval window from
-``admissible_sweep._oval_window`` (catch C, release T, land C), solved with
-``_hop_throw_cell`` + ``_folded_catch_cell`` (production planner paths).
+``planner_cells.oval_window`` (catch C, release T, land C), solved with
+``hop_throw_cell`` + ``folded_catch_cell`` (production planner paths).
 "where" of a jerk peak = (leg, t) found by re-validating the same plan with a
 1 mm/s^3 jerk limit and reading ``peak_leg_index / peak_leg_t_s``.
 
@@ -44,7 +44,7 @@ Run (repo root, venv):
          [--sep 150] [--apex 0.95] [--mode asis|patched|both] [--controls]
          [--planner-mode level|pose]
          [--out temp/probes/oval_dwell_sweep_<date>.json]
-Imports only the planner modules + tools/admissible_sweep; writes only --out.
+Imports only the planner modules + tools/probes/planner_cells; writes only --out.
 """
 from __future__ import annotations
 
@@ -63,13 +63,13 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path[:0] = [ROOT, os.path.join(ROOT, "tools")]
 
 import numpy as np  # noqa: E402
-import admissible_sweep as A  # noqa: E402
+import planner_cells as A  # noqa: E402
 import jugglebot.motion.trajectory.cup_realize as cr  # noqa: E402
 import jugglebot.motion.trajectory.feasibility as fz  # noqa: E402
 import jugglebot.motion.skills.segments as sg  # noqa: E402
 
 geom = A.StewartGeometry()
-limits = A._limits(350, 5000, 200000, 3900)
+limits = A.sitting_limits(350, 5000, 200000, 3900)
 cfg = A.sg.SegmentConfig()
 low = dataclasses.replace(limits, leg_vel_mmps=1e9, leg_acc_mmps2=1e9, leg_jerk_mmps3=1.0)
 
@@ -140,18 +140,18 @@ def bank_stats(c):
 def cell(kind, dwell, patch, site_t, site_c, T):
     caps.clear(); tcalls.clear(); st['patch'] = patch
     if kind == 'oval':
-        cs, rs, ts_ = A._oval_window(site_t, site_c, A.sc.apex_m(T), dwell)
+        cs, rs, ts_ = A.oval_window(site_t, site_c, A.sc.apex_m(T), dwell)
     elif kind == 'hop':       # columns cross-site hop: catch@C, release@C, land@T
         cs, rs, ts_ = site_c, site_c, site_t
     else:
         cs, rs, ts_ = site_c, site_c, site_c
     res = dict(kind=kind, dwell=dwell, patch=patch)
-    ok, code, seed, tk = A._hop_throw_cell(rs, cs, T, 0.4, limits, geom, cfg)
+    ok, code, seed, tk = A.hop_throw_cell(rs, cs, T, 0.4, limits, geom, cfg)
     res['throw'] = (ok, str(code))
     if not ok:
         return res
     caps.clear(); tcalls.clear()
-    ok, code, reps = A._folded_catch_cell(cs, rs, ts_, seed, tk, T, dwell, (0.0, 0.0),
+    ok, code, reps = A.folded_catch_cell(cs, rs, ts_, seed, tk, T, dwell, (0.0, 0.0),
                                           limits, geom, cfg, pattern_flight_s=T)
     res.update(ok=bool(ok), code=str(code))
     rr = [r for r in reps if r is not None]

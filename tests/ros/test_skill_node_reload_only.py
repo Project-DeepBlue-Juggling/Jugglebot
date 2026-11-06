@@ -15,7 +15,7 @@ import pytest
 
 from jugglebot_interfaces.srv import InstallSegment
 from tests.ros.test_skill_node import (_bb_announcement, _bb_ready, _finish_bridge,
-                                       _freshen, _goal, _good_box_path,
+                                       _freshen, _goal,
                                        _node_with_client, _prelevel_ready,
                                        _reload_ready, _response)
 
@@ -28,8 +28,7 @@ def _start(node, tmp_path):
              seated=False)   # accept possession check: a reload needs an EMPTY cup
     _prelevel_ready(node)
     reload_client, throw_client = _reload_ready(node)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_goal('reload'))
     return resp, reload_client, throw_client
 
@@ -81,21 +80,21 @@ def test_reload_only_announced_schedule_ends_at_the_decay_rest(tmp_path):
     assert decay.site.name == 'P1'
 
 
-def test_reload_only_skips_the_throw_only_box_coverage_check(tmp_path):
-    """Nothing is thrown, so an apex the committed box does not cover (which
-    refuses a self-toss reload before any motion) does not refuse this."""
+def test_reload_only_skips_the_throw_only_nomination(tmp_path):
+    """Nothing is thrown, so an apex the nomination refuses for a throw (1.4 m
+    needs more Hand acceleration than the 4500 rev/s^2 limit, which refuses a
+    self-toss before any motion) does not refuse this (P3b)."""
     node, _client = _node_with_client(response=_response())
-    node._params['apex_m'] = 0.3
+    node._params['apex_m'] = 1.4
     resp, _, _ = _start(node, tmp_path)
     assert resp.success is True, resp.message
     node2, _client2 = _node_with_client(response=_response())
-    node2._params['apex_m'] = 0.3
+    node2._params['apex_m'] = 1.4
     node2._params['plant_id'] = 'test_reload_only_contrast_' + str(id(node2))
     _freshen(node2, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
              seated=False)
     _prelevel_ready(node2)
     _reload_ready(node2)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp2 = node2._start_pattern(_goal('self_toss'))
-    assert resp2.success is False and 'admissible box' in resp2.message
+    assert resp2.success is False and 'nomination REFUSED' in resp2.message

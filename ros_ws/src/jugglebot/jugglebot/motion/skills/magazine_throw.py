@@ -101,7 +101,7 @@ from jugglebot.motion.trajectory import tilt_geometry as tg
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
 
 #: The skill kind.  Defined HERE, not in ``segments.KINDS``: ``segments.py`` is
-#: one of the admissible-box gated files, and this kind never enters a box.
+#: one of the files the (retired 2026-11-06) Admissible box's hash gated, and this kind never entered a box.
 MAGAZINE = 'MAGAZINE'
 
 # ── refusal codes (raised as uc.CycleInfeasible(code, reasons)) ─────────────

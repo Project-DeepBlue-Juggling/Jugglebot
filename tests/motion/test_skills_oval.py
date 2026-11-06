@@ -17,7 +17,6 @@ from types import SimpleNamespace
 
 import dataclasses
 
-from jugglebot.motion.skills import admissible as adm
 from jugglebot.motion.skills import bump as bmp
 from jugglebot.motion.skills import executor as ex
 from jugglebot.motion.skills import schedule as sc
@@ -212,22 +211,6 @@ def test_oval_forward_prior_queries_the_row_state():
     assert seen, 'the forward prediction never ran'
     want = [t.cup_mm[0] / 1000.0, t.cup_mm[1] / 1000.0, 0.0, 0.020]
     assert seen[-1].tolist() == pytest.approx(want, abs=1e-12)
-
-
-def test_oval_box_key_is_T_then_C(monkeypatch):
-    t, c = st.columns_sites(SEP)
-    calls = []
-
-    def spy(boxes, pattern, site_pair, apex_m, *, release_site_xy_mm,
-            target_site_xy_mm, **_kw):
-        calls.append((pattern, tuple(site_pair), tuple(release_site_xy_mm),
-                      tuple(target_site_xy_mm)))
-        return None
-    monkeypatch.setattr(adm, 'select', spy)
-    _offset_dispatch((0.0, 20.0, 0.0), sites=(t, c), roles='fixed', boxes=[])
-    assert ('oval_1ball', ('P1', 'P2'), tuple(t.cup_mm[:2]),
-            tuple(c.cup_mm[:2])) in calls
-    assert all(cl[1] == ('P1', 'P2') for cl in calls), calls
 
 
 def test_oval_next_catch_prior_flies_from_T():
