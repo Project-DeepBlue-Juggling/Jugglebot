@@ -197,7 +197,7 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 
 ## Questions a Sitting can answer
 
-- JB-179 JB-167: publish on change saves at most 100 ms because the STOP arrives in a 10 Hz heartbeat: wait for FW 40, build it anyway, add a firmware edge heartbeat, shorten END to hold, or leave it? (parent JB-167)
+- none
 
 ## Close-out
 
