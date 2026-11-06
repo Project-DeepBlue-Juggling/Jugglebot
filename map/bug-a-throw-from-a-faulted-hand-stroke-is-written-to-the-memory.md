@@ -2,17 +2,21 @@
 id: JB-189
 kind: bug
 title: A Throw from a faulted Hand stroke is written to the Memory as caught
-status: inbox
+status: complete
 created: '2026-11-06'
-updated: '2026-11-06T05:58:58Z'
+updated: '2026-11-06T18:16:09Z'
 owners: []
 priority: low
+effort: s
 hardware: none
+owner: none
+radius: local
 diagnosis: confirmed
 area: learner
 blocked_by: []
 links:
 - logbook/2026-11-06-sitting-debrief-2.md
+- logbook/2026-11-07-jb189-no-memory-row-from-a-faulted-stroke.md
 parent: learner-generalisation
 filed_by: claude
 ---

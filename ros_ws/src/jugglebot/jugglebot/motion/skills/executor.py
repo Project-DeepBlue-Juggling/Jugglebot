@@ -2776,6 +2776,11 @@ class SkillExecutor:
         #: is provisional (:data:`MISSED_CATCH_FAULT_SETTLE_S`), else ``None``.
         #: :attr:`done` waits on it.
         self._fault_settle_until_s: Optional[float] = None
+        #: JB-189: the FIRST wall-clock instant a fault (``machine_fault`` or
+        #: ``guard_latched``) was seen.  Bookkeeping only: it gates no hold,
+        #: REST, decay or dispatch -- :meth:`_finalise_outcome` reads it to
+        #: write no Memory row for a Throw released inside the fault's settle.
+        self._fault_seen_s: Optional[float] = None
         #: catch idx -> last converged tracked landing (every catch; popped
         #: when its pending catch resolves); the dispatch aim runs
         #: BEFORE :meth:`_register_catch`, so its fit is parked here and
@@ -4922,6 +4927,7 @@ class SkillExecutor:
         lines = []
         if not self.attempt_ended:
             obs = None if self.observations is None else self.observations(t_abs_s)
+            self._note_fault(obs, t_abs_s)
             if obs is not None and obs.machine_fault:
                 self.attempt_ended = True
                 self.end_code = ABORTED_FAULT
@@ -5018,12 +5024,25 @@ class SkillExecutor:
             # ordering ("before `_advance_release_evidence`") only matters
             # while the attempt runs, which is the branch above.
             lines.extend(self._advance_catch_evidence(t_abs_s))
+        if (self.attempt_ended and self.observations is not None
+                and self._fault_seen_s is None and self._pending_outcomes
+                and self._fault_settle_until_s is None
+                and not self._closing_waiting()):
+            # JB-189: nobody below reads the fault flags this tick; look once
+            # so a fault AFTER the end still reaches the pending rows.
+            self._note_fault(self.observations(t_abs_s), t_abs_s)
         if self.attempt_ended and self._fault_settle_until_s is not None:
             lines.extend(self._advance_fault_settle(t_abs_s))
         if self.attempt_ended:
             lines.extend(self._advance_closing(t_abs_s))
         lines.extend(self._advance_outcomes(t_abs_s))
         return lines
+
+    def _note_fault(self, obs, t_abs_s: float) -> None:
+        """JB-189: latch the first instant a fault is seen (bookkeeping)."""
+        if (obs is not None and self._fault_seen_s is None
+                and (obs.machine_fault or obs.guard_latched)):
+            self._fault_seen_s = t_abs_s
 
     def _advance_fault_settle(self, t_abs_s: float) -> List[str]:
         """JB-175: while a :data:`MISSED_CATCH` end is provisional, a fault
@@ -5035,6 +5054,7 @@ class SkillExecutor:
         already dropped stay dropped (the safe direction for the learner).
         """
         obs = None if self.observations is None else self.observations(t_abs_s)
+        self._note_fault(obs, t_abs_s)
         if (obs is not None and (obs.machine_fault or obs.guard_latched)
                 and self.end_code == MISSED_CATCH):
             self._fault_settle_until_s = None
@@ -5186,6 +5206,7 @@ class SkillExecutor:
             return []
         lines: List[str] = []
         obs = None if self.observations is None else self.observations(t_abs_s)
+        self._note_fault(obs, t_abs_s)
         why = ''
         if obs is not None:
             if obs.machine_fault or obs.guard_latched:
@@ -7022,6 +7043,23 @@ class SkillExecutor:
         landing_xy_m = ((np.asarray(pend.best_landing.pos_mm, dtype=float)[:2]
                         - pend.target_xy_mm) / 1000.0)
         y = np.array([landing_xy_m[0], landing_xy_m[1], apex_obs_m])
+        # JB-189: a Throw released inside the fault's settle (the fault is
+        # SEEN up to MISSED_CATCH_FAULT_SETTLE_S after it happens) may have
+        # been cut short by what caused it -- write no row.  A release more
+        # than the settle before the first sighting left a sound stroke and
+        # keeps its row.  The report's `caught` is untouched.
+        if (self._fault_seen_s is not None
+                and pend.t_release_s + MISSED_CATCH_FAULT_SETTLE_S
+                >= self._fault_seen_s):
+            reason = ('a fault was seen %.3f s after the release (the '
+                      'stroke may have been cut short)'
+                      % (self._fault_seen_s - pend.t_release_s))
+            self._report(pend, row=False, apex_m=apex_obs_m,
+                         no_row_reason=reason)
+            return ['%.3f OUTCOME %s: no row: %s (y=(%.4f, %.4f) m '
+                    'apex=%.4f m)'
+                    % (finalise_at, ball_label(pend.ball_id), reason,
+                       y[0], y[1], y[2])]
         # The LATCH, not a fresh sample: by ``finalise_at`` a chained catch has
         # often already re-thrown the ball, so the cup at this instant says
         # nothing about whether it was caught (see :meth:`_outcome_window`).

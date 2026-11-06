@@ -7891,6 +7891,71 @@ def test_a_catch_time_offset_run_writes_no_learner_row(sites, offset_s):
         assert 'catch_time_offset in force' in x.reports[0].no_row_reason
 
 
+def _fault_row_run(sites, fault_after_release_s, *, kind='machine_fault',
+                   with_obs=True):
+    """JB-189: one Throw, a fault flag that rises ``fault_after_release_s``
+    after the release (None: never). Returns (executor, rows, OUTCOME line)."""
+    p1, _p2 = sites
+    t_land = ROS_T0 + FLIGHT_S
+    sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
+    land = _fit_landing(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
+                        t_land_abs_s=t_land)
+    t_fault = (None if fault_after_release_s is None
+               else ROS_T0 + fault_after_release_s)
+
+    def obs(t):
+        up = t_fault is not None and t >= t_fault
+        return ex.Observations(
+            mocap_fresh=True, hand_fresh=True, levelled=True,
+            ball_evidence=ex.CAUGHT_EVIDENCE, in_trajectory_mode=True,
+            machine_fault=up and kind == 'machine_fault',
+            guard_latched=up and kind == 'guard_latched')
+
+    rows = []
+    x = ex.SkillExecutor(sch, _FakeInstaller(), tracker=lambda b: land,
+                         observer=lambda b, t: ex.CAUGHT_EVIDENCE,
+                         on_experience=rows.append,
+                         observations=obs if with_obs else None)
+    t = sch.skills[0].dispatch_s() - 0.01
+    t_end = t_land + ex.CAUGHT_WINDOW_S + 0.05
+    lines = []
+    while t < t_end:
+        lines.extend(x.tick(t))
+        t += 0.02
+    outcome = [ln for ln in lines if 'OUTCOME' in ln]
+    assert len(outcome) == 1 and len(x.reports) == 1
+    return x, rows, outcome[0]
+
+
+@pytest.mark.parametrize('kind', ['machine_fault', 'guard_latched'])
+def test_a_fault_inside_the_settle_after_release_writes_no_memory_row(
+        sites, kind):
+    """JB-189: the Throw may have been cut short by what faulted the Hand."""
+    x, rows, outcome = _fault_row_run(sites, 0.1, kind=kind)
+    assert rows == []
+    rep = x.reports[0]
+    assert not rep.row and 'fault was seen' in rep.no_row_reason
+    assert 'no row: a fault was seen' in outcome
+    assert rep.caught is True                  # the verdict is not rewritten
+
+
+def test_a_fault_more_than_the_settle_after_release_keeps_the_row(sites):
+    x, rows, outcome = _fault_row_run(
+        sites, ex.MISSED_CATCH_FAULT_SETTLE_S + 0.1)
+    assert len(rows) == 1 and x.reports[0].row
+    assert 'no row' not in outcome
+
+
+def test_no_fault_row_is_written_and_none_without_observations(sites):
+    for kw in ({}, {'with_obs': False}):
+        x, rows, outcome = _fault_row_run(sites, None, **kw)
+        assert len(rows) == 1 and x.reports[0].row
+        assert 'no row' not in outcome and 'caught=True' in outcome
+    # a fault flag is ignored when no observations are wired
+    x, rows, _o = _fault_row_run(sites, 0.1, with_obs=False)
+    assert len(rows) == 1 and x._fault_seen_s is None
+
+
 # ---------------------------------------------------------------------------
 # REST re-splice budget scales with the window (2026-10-31, goal 13)
 # ---------------------------------------------------------------------------
