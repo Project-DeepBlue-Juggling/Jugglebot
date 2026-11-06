@@ -2,17 +2,22 @@
 id: JB-186
 kind: bug
 title: 'Mid-air ball collisions end half of two-ball Columns Attempts at Apex 1.00: closest approach about 70 mm at Sep. 100, 125 and 135'
-status: inbox
+status: in_progress
 created: '2026-11-06'
-updated: '2026-11-06T05:58:23Z'
+updated: '2026-11-06T12:02:58Z'
 owners: []
 priority: medium
-diagnosis: confirmed
+effort: l
+hardware: robot
+owner: decision
+radius: cross-cutting
+diagnosis: hypothesis
 area: skill-stack
 blocked_by: []
 links:
 - logbook/2026-11-06-sitting-debrief.md
 - logbook/2026-11-06-sitting-debrief-2.md
+- logbook/2026-11-06-sitting-debrief-3.md
 filed_by: claude
 ---
 
@@ -33,3 +38,4 @@ At the Sitting of 2026-11-06 four of eight two-ball Columns Attempts (Apex 1.00,
 - 2026-11-06: 120, pair turned 90 degrees). About 1.2 collision ends per 100 Throws; Sep. 133 was no better than 125 (small n). 5 of 7 collision-like events at P2 did not end the Attempt.
 - 2026-11-06: A cause candidate, measured: two-ball Throws land pulled toward the partner Site by 0.18 of the Site coordinate (11 mm at Sep. 120), the same along x and along a pair turned 90 degrees, so the two columns lean together; one-ball Throws show none. Platform tilt at release sets the lateral scatter (r 0.78 x, 0.62 y in one-ball goals).
 - 2026-11-06: Evidence: `temp/probes/sitting_debrief_2026-11-06b/unit_B_D.md`, `unit_A_C.md`.
+- 2026-11-06: 2026-11-06 20:20 Sitting (Apex 1.00, Sep. 120, Hand at 9 ms): 2 of 4 ends are collisions, goals 1 and 3, both Ball 1: closest approach 71 and 72 mm, both balls kink 257 to 318 mm/s at z about 1390, 1.25 to 1.33 s before the end. Aim asked +160 to +191 mm, +10 applied; no authority would have saved them. Same signature at every Sep. flown so far.

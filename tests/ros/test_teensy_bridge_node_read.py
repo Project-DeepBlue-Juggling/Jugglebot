@@ -677,7 +677,7 @@ def _send_hb_stale(teensy, node, stale_axes):
 
 def test_hb_stale_short_episode_is_silent_until_it_clears(bridge):
     """A typical (0.9-1.9 s) episode must not warn while it is running — its
-    length and its co-dropped encoder count only exist once it ends."""
+    length only exists once it ends."""
     from unittest.mock import MagicMock
     teensy, node = bridge
     _send_hb_stale(teensy, node, 0b0000010)      # leg 1
@@ -692,11 +692,12 @@ def test_hb_stale_short_episode_is_silent_until_it_clears(bridge):
 
 def test_hb_stale_episode_warns_once_on_the_clearing_edge(bridge):
     """ONE WARN per episode, on the clearing edge, naming the axis, the measured
-    episode length, the co-dropped encoder count and the axis's episode tally."""
+    episode length and the axis's episode tally. A 1.0 s episode gets no encoder
+    count: the census is 1 Hz (see the long-episode test below)."""
     from unittest.mock import MagicMock
     teensy, node = bridge
-    # A census at onset, then 25 more encoder frames across a ~1.0 s episode
-    # (nominal 100 Hz ⇒ ~100 expected, so ~75 co-dropped — the 2026-09-17 shape).
+    # A census at onset, then 25 more frames across a ~1.0 s episode: a difference
+    # of one or two 1 Hz snapshots, which is what printed `0/80` on 2026-11-06.
     node._latest_enc_frames = [1000] * p.NUM_AXES
     _send_hb_stale(teensy, node, 0b0001000)      # leg 3
     node._publish_link_status()
@@ -711,7 +712,8 @@ def test_hb_stale_episode_warns_once_on_the_clearing_edge(bridge):
     assert len(infos) == 1, _messages(node._logger.info)
     assert not _messages(node._logger.warning)
     assert 'leg 3' in infos[0] and 'episode 1' in infos[0]
-    assert re.search(r'25/10\d encoder frames', infos[0]), infos[0]
+    assert 'too short for an encoder count' in infos[0], infos[0]
+    assert '25' not in infos[0].split('heartbeat gap')[1].split('(')[1], infos[0]
     warns = [m for m in _messages(node._logger.debug)
              if 'dropout episode ENDED' in m]
     assert len(warns) == 1, _messages(node._logger.debug)
@@ -721,7 +723,8 @@ def test_hb_stale_episode_warns_once_on_the_clearing_edge(bridge):
     # the 1.0 s the test backdated).
     ms = int(re.search(r'(\d+) ms stale', w).group(1))
     assert 1000 <= ms <= 1100, w
-    assert '25 encoder frames' in w and 'nominal' in w and 'co-dropped' in w
+    assert 'too short for the 1 Hz encoder count' in w
+    assert 'nominal' not in w and 'co-dropped' not in w
     assert 'episode 1 for this axis' in w
     assert 'not a fault' in w
     assert node._hb_stale_episodes[3] == 1
@@ -733,8 +736,30 @@ def test_hb_stale_episode_warns_once_on_the_clearing_edge(bridge):
     assert not any('dropout episode' in m for m in _messages(node._logger.debug))
 
 
+def test_hb_stale_long_episode_reports_a_measured_rate_not_a_nominal(bridge):
+    """An episode several census windows long gets a rate from the count, with
+    no nominal: the Hand sends 111 per s since 2026-11-06, which a 100 Hz
+    nominal read as no loss at all until 11 % of its frames had gone."""
+    from unittest.mock import MagicMock
+    teensy, node = bridge
+    node._latest_enc_frames = [1000] * p.NUM_AXES
+    _send_hb_stale(teensy, node, 0b1000000)      # the hand
+    node._publish_link_status()
+    node._hb_stale_since[6] = time.monotonic() - 4.0
+    node._latest_enc_frames = [1000 + 200] * p.NUM_AXES
+    node._logger = MagicMock()
+    _send_hb_stale(teensy, node, 0)
+    node._publish_link_status()
+    infos = [m for m in _messages(node._logger.info) if 'heartbeat gap' in m]
+    assert len(infos) == 1, _messages(node._logger.info)
+    assert re.search(r'200 encoder frames, (49|50) per s', infos[0]), infos[0]
+    dbg = [m for m in _messages(node._logger.debug) if 'dropout episode ENDED' in m]
+    assert len(dbg) == 1 and '200 encoder frames in the window' in dbg[0], dbg
+    assert 'nominal' not in dbg[0] and 'co-dropped' not in dbg[0], dbg
+
+
 def test_hb_stale_episode_prints_encoder_age_max(bridge):
-    """2026-11-01: '0 co-dropped' is a frame COUNT and hid a 100 ms stale
+    """2026-11-01: a frame COUNT ('0 co-dropped', since removed) hid a 100 ms stale
     encoder; the episode lines must carry the axis's encoder age max."""
     from unittest.mock import MagicMock
     teensy, node = bridge
@@ -757,7 +782,7 @@ def test_hb_stale_episode_prints_encoder_age_max(bridge):
 def test_hb_stale_episode_warn_says_so_when_no_census_is_available(bridge):
     """A pre-FW-23 bridge (or a session with no /cache_diag yet) still gets the
     episode line — it says the encoder census is unavailable rather than
-    inventing a co-dropped count."""
+    inventing a count."""
     from unittest.mock import MagicMock
     teensy, node = bridge
     node._latest_enc_frames = None

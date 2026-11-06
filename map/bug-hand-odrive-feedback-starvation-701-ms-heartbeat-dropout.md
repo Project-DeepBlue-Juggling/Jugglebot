@@ -2,9 +2,9 @@
 id: JB-137
 kind: bug
 title: 'Hand ODrive feedback starvation: 701 ms heartbeat dropout left the encoder 100 ms stale, the 2.0 rev lead clamp pinned the throw to stale+2.0, guard MAX_DEVIATION +3.707 fired correctly (turned-90 at 16/16)'
-status: in_progress
+status: complete
 created: '2026-11-01'
-updated: '2026-11-06T09:45:57Z'
+updated: '2026-11-06T11:53:38Z'
 owners: []
 priority: high
 effort: m
@@ -18,6 +18,7 @@ links:
 - map/bug-teensy-guard-max-deviation-latched-on-the-hand-8-4-rev-mid.md
 - map/bug-max-deviation-latched-on-40-90-ms-stale-hand-telemetry.md
 - logbook/2026-11-06-sitting-debrief-2.md
+- logbook/2026-11-06-sitting-debrief-3.md
 filed_by: claude
 ---
 
@@ -64,3 +65,4 @@ Found at the 2026-11-01 Sitting, turned-90 goal at 16/16 (launch log L4695): a 7
 - 2026-11-06: Cause found offline: a clock beat. Each drive's 10 ms encoder schedule drifts into one 6 to 30 us phase of the bridge's 2 ms setpoint tick; recurrence 120 to 270 s per axis, 78 episodes in 5 bags, only while the stream runs. Withdrawn: bus load, RX overflow, poller, encoder or current fault, electrical. 89 short episodes are bag artefacts.
 - 2026-11-06: Proposed, not applied: Hand encoder_msg_rate_ms 10 to 9 (worst gap 80-100 ms to about 18 ms). Test: Hand parked, stream 20+ min, age_max_us_6 under about 25 ms; one episode over 50 ms refutes it. Unknown: which side drops the frame; a passive CAN sniffer settles it before claiming entirely stopped. Firmware dither is the alternative.
 - 2026-11-06: Owner answers 2026-11-06: the Hand drive hard limit of 80 A is correct as found; the Hand was up (at the top) at the fault; no change to the wiring.
+- 2026-11-06: Passed at the Sitting of 2026-11-06 20:20, Hand at encoder_msg_rate_ms 9 (saved, kept): age_max_us_6 peak 23.1 ms over the 1303 s hold, all six Legs over 50 ms, no Hand fault or clamp in four goals. Frame loss recurs at half the period, 17 of 17, with 0 runs against 5 of 16 at 10 ms (p = 0.018). 0.60 % of frames are still lost; 11 gaps of 20 to 33 ms, all parked.

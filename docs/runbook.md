@@ -94,20 +94,7 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - pass: the bag replays through `tools/probes/human_throw_bench.py` with the robot-spot landing sd and the phantom rate reported.
 - record: the bag path, the lighting change, and the bench report path.
 
-### Block 5: level, armed  (1 row, 30 min)
-
-#### JB-137 Hand ODrive feedback starvation: 701 ms heartbeat dropout left the encoder 100 ms stale, the 2.0 rev lead clamp pinned the throw to stale+2.0, guard MAX_DEVIATION +3.707 fired correctly (turned-90 at 16/16)  (30 min, high, unattached)
-- why: tests the one-setting cure for the Hand feedback dropouts (a clock beat between the drive's 10 ms encoder frames and the bridge's 2 ms setpoint tick); if it holds, the dropout behind the 2026-11-06 CURRENT_LIMIT_VIOLATION cannot recur on the Hand.
-- do:
-  - Before the launch: on the Hand drive (odrivetool over USB, or the ODrive GUI) set `axis0.config.can.encoder_msg_rate_ms` from 10 to 9 and save. Change nothing else. The drive reboots on the save, so power-cycle the can-bridge, launch, and home the Hand as after any Hand drive save.
-  - Arm and level, start no goal, and leave the robot holding for 20 minutes with the bag recording. The setpoint stream runs during an armed hold, which is all the test needs. There is nothing to watch live.
-  - Then one GUI `Self-toss` goal, Apex 1.00, Dwell 0.27, Throws 20, as a check that Throws are unchanged.
-  - Stop and note it on any Hand fault or guard latch. To undo: set the value back to 10, save, power-cycle the bridge, home the Hand.
-  - Two things not to be misled by. The Hand's backup `config/ODrive config Files/odrive_pro_hand_config.json` still says 10, so re-applying it undoes the trial (it is updated at the debrief if 9 is kept). The launch log's heartbeat-dropout lines count `co-dropped` frames against 100 per second and misread a drive sending 111; ignore that count for the Hand.
-- pass: type the result as pending. At the debrief, from the bag's `/cache_diag`: the Hand's `age_max_us_6` never exceeds 25 ms over the 20 minutes, while at least one Leg shows a window over 50 ms (the in-run control, expected every 120 to 270 s per Leg). One Hand window over 50 ms refutes the model. If no Leg shows a window over 50 ms the stream did not run and the Hand result is void. The `Self-toss` goal runs 20/20 with no `Hand lead clamp ENGAGED` line.
-- record: the launch log and bag paths, the clock times of arming and of the goal, and whether the setting was left at 9 or put back.
-
-### Block 6: armed, bb-fed, bridge-cycled  (2 rows, 95 min)
+### Block 5: armed, bb-fed, bridge-cycled  (2 rows, 95 min)
 
 #### JB-102 Pre-release hold rung: release from a moving Platform (hold 0.100 → 0)  (45 min, high, two-ball-oval)
 - why: the ZVD rows (mode provisional 4.9 Hz / 0.20 / 20 ms) have never flown. This A/B flies them against the flag-off carry on the oval, where carried Throws land about +59 mm long at Dwell 0.40. `gc_freeze` is on for both arms, its first flight (JB-149). The Platform mode is re-fitted afterwards from this Sitting's bag.
@@ -135,6 +122,19 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
   - Fly dwell 0.30 at Apex 1.10, not 1.00, and only if 0.35 holds: the retired box left 1 mm of +x landing room at 1.00 / 0.30 and 25 mm at 1.10 / 0.30 (read the nomination at the live limits before flying).
 - pass: the five Columns Attempts each read `COMPLETED (20/20 caught)` with no leg LIMIT end and peak leg iq under 20 A; then the one-ball oval sustains 30 consecutive Catches in one Attempt at the shortest dwell flown (plan P4 gate).
 - record: caught of thrown and the end code per Attempt; the CATCH leg-velocity refusal count across the canary (JB-24 expects none at 600 mm/s); peak leg iq per leg per Attempt from the bag (the 20 A measurement); the shortest dwell reaching 30; the raw long bias per dwell (landed minus the command u), from rest and carried; the LIMIT_JERK refusal count; the oval plant_id; the bag and launch log paths; commit docs/records.md.
+
+### Block 6: level, armed  (1 row, 30 min)
+
+#### JB-195 Leg encoder dropouts of 80 to 99 ms continue at the clock beat: trial encoder_msg_rate_ms 9 on Leg 4, then all Legs  (30 min, medium, unattached)
+- why: tests the Hand's 9 ms cure on the axis where zero episodes by chance is about 5e-4, far stronger than the Hand's own trial, and decides whether all six Legs change.
+- do:
+  - Before the launch: set Leg 4 only, `axis0.config.can.encoder_msg_rate_ms` from 10 to 9, and save, the way you set the Hand (`tools/odrive_fleet_reflash.py --only 4 --set axis0.config.can.encoder_msg_rate_ms=9` also does this and reads it back from the drive's saved config; it is untried for this setting). The drive reboots on the save and loses its zero.
+  - Launch. Check the log says `homing: 7 axes homed` before arming; if it does not, stop and do not arm. The Hand trial ran this way with no bridge power-cycle and no symptom (one run).
+  - Before arming, read `/cache_diag`: `enc_frames_4` and `enc_frames_6` should climb by about 111 per s, the others by about 100. Otherwise the setting is not in; stop.
+  - Arm and level, start no goal, and hold for 20 minutes with the bag recording. There is nothing to watch live.
+  - Stop and note it on any Leg fault or guard latch. To undo: set Leg 4 back to 10, save, and launch again so the homing runs.
+- pass: type the result as pending. At the debrief, from the bag's `/cache_diag`: `age_max_us_4` never exceeds 25 ms over the 20 minutes, while at least one other Leg shows a window over 50 ms (the in-run control). One Leg 4 window over 50 ms refutes the cure for the Legs; no window over 50 ms on any other Leg voids the result. Leg 4's frame-loss spacing should fall to about 62 s from 124 to 130 s.
+- record: the launch log and bag paths, the clock time of arming, and whether Leg 4 was left at 9 or put back.
 
 ## Bench leg  (1 block, 30 min)
 
@@ -179,6 +179,7 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - JB-166 [Robot] Firmware scheduler STOP fires on a clean host stream and ends the Attempt: no ## Sitting section
 - JB-167 [Robot] Install the host hold within one tick of a firmware scheduler STOP so a guard latch becomes a recoverable LANE_REFUSED: no ## Sitting section
 - JB-168 [Robot] Learner context cannot tell a Throw from rest from a carried Throw: no ## Sitting section
+- JB-186 [Robot] Mid-air ball collisions end half of two-ball Columns Attempts at Apex 1.00: closest approach about 70 mm at Sep. 100, 125 and 135: no ## Sitting section
 - JB-191 [Robot] Two-ball Columns runs end on a missed Catch of Ball 2 with no collision: 13 of 23 ends, mean run 22 Throws: no ## Sitting section
 - JB-2 [Robot] Design change: the Hand should be Idle, not Parked Closed-loop, while Active: no ## Sitting section
 - JB-24 [Robot] 10 % jitter-margin class of LIMIT_* refusals: no ## Sitting section

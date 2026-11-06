@@ -897,6 +897,9 @@ _HB_STALE_WARN_REPEAT_S = 5.0
 # frame type with it would have E-STOPPED, so an episode reaching it is
 # qualitatively different from the 0.9-1.9 s population.
 _HB_STALE_ONSET_WARN_S = 2.0
+# Shortest episode whose encoder frame count means anything: the census that
+# supplies the count is 1 Hz, so a shorter difference is mostly its sampling.
+_HB_STALE_ENC_COUNT_MIN_MS = 3000.0
 
 # HandSensor.flags bits (T→J, hand ball-present sensor) — generated single
 # source: p.HandSensorFlags. An older bridge never sends the frame
@@ -1659,7 +1662,7 @@ class TeensyBridgeNode(Node):
         self._hb_stale_ms_max: list = [0] * _NUM_AXES
         self._hb_stale_onset_warn_t: list = [None] * _NUM_AXES
         # Latest per-axis enc_frames census (FW 23 CacheDiag), kept so an
-        # episode's co-dropped encoder count can be differenced across it.
+        # episode's encoder count can be differenced across it.
         self._latest_enc_frames: list | None = None
         # Latest per-axis encoder AGE max (us, /cache_diag 1 s window) and its
         # max over the current hb-stale episode: a frame COUNT hid 100 ms stalls.
@@ -7906,15 +7909,22 @@ class TeensyBridgeNode(Node):
                 self._hb_stale_enc_at_onset[i] = None
                 if (enc_at_onset is not None and enc_now is not None
                         and i < len(enc_now)):
-                    # enc_frames is cumulative-since-boot at a nominal 100 Hz,
-                    # so the SHORTFALL against the episode's duration is the
-                    # co-dropped encoder count — the number that says this is
-                    # frame loss and not a heartbeat-only artefact.
-                    got = max(0, enc_now[i] - enc_at_onset)
-                    expect = int(round(100.0 * episode_ms * 1e-3))
-                    enc_txt = (f'{got} encoder frames in the window vs ~{expect} '
-                               f'nominal ({max(0, expect - got)} co-dropped)')
-                    enc_short = f'{got}/{expect} encoder frames'
+                    # enc_frames is a cumulative count from a 1 Hz census, so a
+                    # difference over a short episode is 0, 1 or 2 snapshots of
+                    # it, not a measurement (2026-11-06: `0/80 encoder frames`
+                    # on a Hand that was sending 111 per s). Only an episode
+                    # several windows long gets a rate; no nominal is assumed,
+                    # because the drives' periods differ (Hand 9 ms). /cache_diag
+                    # is the record for a short episode.
+                    if episode_ms >= _HB_STALE_ENC_COUNT_MIN_MS:
+                        got = max(0, enc_now[i] - enc_at_onset)
+                        rate = got / (episode_ms * 1e-3)
+                        enc_txt = (f'{got} encoder frames in the window '
+                                   f'({rate:.0f} per s)')
+                        enc_short = f'{got} encoder frames, {rate:.0f} per s'
+                    else:
+                        enc_txt = 'too short for the 1 Hz encoder count'
+                        enc_short = 'too short for an encoder count'
                     age_ms = self._hb_stale_age_max_us[i] / 1e3
                     if age_now is not None:
                         enc_txt += f'; encoder age max {age_ms:.0f} ms'
