@@ -128,6 +128,7 @@ from jugglebot import stream_tuning as _tuning
 from teensy_link.gap_monitor import (
     EMPTY_STATS, HAND_C1_COVER_MS, SCHED_COVER_MS, DownlinkLossTracker,
     EpisodeLatch, GapTracker)
+from teensy_link.hand_feedback_watch import HandFeedbackWatch
 from teensy_link.setpoint_pump import SetpointPump, FLAG_HAS_HAND, HAND_FF_GAIN_MAX
 from teensy_link.encoder_search import (
     EncoderSearch, AxisStatus, AXIS_STATE_ENCODER_INDEX_SEARCH,
@@ -1984,6 +1985,9 @@ class TeensyBridgeNode(Node):
         # Default '' = off (no writer, no thread, hot-path cost is one None test).
         self.declare_parameter('hand_capture_dir', '')
         self._hand_capture = None
+        # Hand feedback-starvation episode lines (JB-137 diagnostic; no actuation).
+        self._hand_fb_watch = HandFeedbackWatch()
+        self._hfw_last_frames = None
         self._hand_capture_start(self.get_parameter('hand_capture_dir').value)
         # JB-149: opt-in GC pause probe (default off: nothing installed).
         self._gc_probe = None
@@ -2689,6 +2693,15 @@ class TeensyBridgeNode(Node):
             self._latest_heartbeat = hb
             self._latest_heartbeat_sent = sent
             self._heartbeat_gen += 1
+        # JB-137 diagnostic: must never raise into the receive path.
+        try:
+            watch = getattr(self, '_hand_fb_watch', None)
+            if watch is not None:
+                for line in watch.on_heartbeat(int(hb.lead_clamp_mask),
+                                               time.time()):
+                    self.get_logger().warning(line)
+        except Exception:  # noqa: BLE001 -- a diagnostic only
+            pass
 
     def _on_telemetry(self, msg_type, seq, payload, addr):
         try:
@@ -2707,6 +2720,25 @@ class TeensyBridgeNode(Node):
         # executor timer: an executor thread blocked for seconds (`_park_hand`,
         # a cold-start verb) must not blind it. Non-blocking by contract.
         self._hand_jam_feed(tm)
+        # JB-137: episode lines for Hand feedback starvation. A few compares
+        # per frame; logs only on an episode edge. 'streaming' = the setpoint
+        # pump built frames since the previous Telemetry frame.
+        # Must never raise into the receive path (it would skip the capture
+        # below on every frame).
+        try:
+            pump = getattr(self, '_sp_pump', None)
+            if (pump is not None
+                    and getattr(self, '_hand_fb_watch', None) is not None):
+                fb = pump.frames_built
+                streaming = (self._hfw_last_frames is not None
+                             and fb != self._hfw_last_frames)
+                self._hfw_last_frames = fb
+                for line in self._hand_fb_watch.on_telemetry(
+                        tm.t_teensy_us, tm.pos_rev[_HAND_AXIS],
+                        tm.vel_rps[_HAND_AXIS], time.time(), streaming):
+                    self.get_logger().warning(line)
+        except Exception:  # noqa: BLE001 -- a diagnostic only
+            pass
         cap = self._hand_capture  # TEMPORARY (JB-147 diagnostic capture)
         if cap is not None:
             cap.offer('telem', t_src_us=tm.t_teensy_us, pos=tm.pos_rev[_HAND_AXIS],
