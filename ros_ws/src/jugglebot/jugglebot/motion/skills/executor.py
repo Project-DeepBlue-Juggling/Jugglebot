@@ -6448,7 +6448,8 @@ class SkillExecutor:
                        window.n_seated, 1000.0 * float(window.max_gap_s),
                        first))
                 continue
-            if (pend.ends_on_stop and self._ends_on_stop_final_catch(
+            if (pend.ends_on_stop and not self.attempt_ended
+                    and self._ends_on_stop_final_catch(
                     pend.catch_idx, self.schedule.skills[pend.catch_idx])):
                 # JB-169 (owner option 4 of JB-172): the goal ended on a Stop
                 # and the cup read EMPTY over a live window of this FINAL
@@ -7032,9 +7033,10 @@ class SkillExecutor:
     @staticmethod
     def _row_unverified(pend: _PendingOutcome) -> bool:
         """The row's Catch was booked unverifiable (the goal ended on a Stop,
-        JB-169) and no SEATED reading turned up in the row's own window."""
-        return (bool(getattr(pend, 'final_unverifiable', False))
-                and not pend.caught_seen)
+        JB-169). The flag alone decides: a SEATED read after the verdict is
+        the Stop's own seat (the 2026-11-04 goal: 480.203, inside Ball 1's
+        row window ending 480.227), not evidence about this Catch."""
+        return bool(getattr(pend, 'final_unverifiable', False))
 
     def _report(self, pend: _PendingOutcome, *, row: bool,
                 no_row_reason: str = '',
@@ -7150,7 +7152,10 @@ class SkillExecutor:
         # columns Stop's cross-site last throw (D2, E1', 2026-09-30) -- the
         # cup already reads SEATED throughout from the PREVIOUS ball it is
         # holding, which is evidence about that ball, not this one.
-        caught = False if pend.shadow_landing else bool(pend.caught_seen)
+        # A booked-unverifiable row (JB-169) is neither: the Stop's own seat
+        # must never write a Memory row with caught=True.
+        caught = (False if pend.shadow_landing or pend.final_unverifiable
+                  else bool(pend.caught_seen))
         # NO memory row for a shadow-landed throw: `u = y_d` exactly
         # (`_command_u`'s bypass) so there is nothing for the learner to fit
         # against, and the command never came off a Learner this segment shape

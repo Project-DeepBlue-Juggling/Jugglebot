@@ -4373,6 +4373,30 @@ class TestOperatorLines:
         assert result.per_throw == [rp.throw_line(caught)[1],
                                     rp.throw_line(missed)[1]]
 
+    def test_the_ledger_counts_an_unverifiable_final_catch_the_result_does_not(
+            self, tmp_path):
+        """JB-180 option 2: `_offer_record` gets N/N (the unverified final
+        Catch on both sides) while the Juggle Result keeps N-1/N-1."""
+        import dataclasses
+        node, _client = _node_with_client()
+        _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+        _prelevel_ready(node)
+        assert (node._juggle_goal(_self_toss_goal())
+               == sn.GoalResponse.ACCEPT)
+        info, warn = [], []
+        node.get_logger().info = info.append
+        node.get_logger().warning = warn.append
+        final = dataclasses.replace(_throw_report(3, None), unverified=True)
+        node._executor.reports.extend(
+            [_throw_report(1, True), _throw_report(2, True), final])
+        node._stop_attempt()
+        node._on_tick()
+        offered = []
+        node._offer_record = lambda *a, **k: (offered.append(a) or (False, ''))
+        result = node._juggle_execute(MagicMock(is_cancel_requested=False))
+        assert (result.throws, result.caught) == (2, 2)
+        assert len(offered) == 1 and offered[0][1:3] == (3, 3), offered
+
     def test_ending_a_live_attempt_leaves_its_one_line_to_retirement(self, tmp_path):
         node, _client = _node_with_client()
         _reload_ready(node)

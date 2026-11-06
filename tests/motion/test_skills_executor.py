@@ -8119,7 +8119,7 @@ def test_the_predicate_is_false_where_no_stop_ends_the_goal():
 
 
 def _run_real_goal(sched, limits, geom, seat_window, observer,
-                   t_after_last_landing=2.5):
+                   t_after_last_landing=2.5, on_experience=None):
     """Tick ``sched`` through the real install chain, returning
     ``(executor, lines, dispatched_when_unverifiable_logged)``."""
     sites_ = tuple(sk.site for sk in sched.skills[:2])
@@ -8152,7 +8152,7 @@ def _run_real_goal(sched, limits, geom, seat_window, observer,
 
     execu = ex.SkillExecutor(sched, installer, tracker=tracker,
                              observer=observer, observations=lambda t: _obs(),
-                             on_experience=lambda e: None,
+                             on_experience=on_experience or (lambda e: None),
                              seat_window=seat_window)
     last_land = max(sk.t_abs_s for sk in sched.skills if sk.kind == sg.CATCH)
     lines, at_verdict = [], []
@@ -8208,6 +8208,64 @@ def test_a_real_columns_goal_ends_unverifiable_not_missed(limits_r5, geom):
     assert len(final) == 1 and final[0].caught is None
     assert _rp.summarise(x.reports)[0] == sum(
         1 for r in x.reports if not r.stop and not r.unverified)
+
+
+def _empty_then_seated_after(t_empty_from, t_seated_from):
+    """EMPTY from ``t_empty_from``, SEATED again from ``t_seated_from`` (the
+    Stop's own seat, after the final Catch's verdict)."""
+    def observer(ball_id, t):
+        if t_empty_from <= t < t_seated_from:
+            return bp.EVIDENCE_EMPTY
+        return ex.CAUGHT_EVIDENCE
+    return observer
+
+
+def test_a_seat_after_the_unverifiable_verdict_does_not_turn_the_row_caught(
+        limits_r5, geom):
+    """JB-169 fix 1 (the 2026-11-04 shape): the Stop's own seat lands inside
+    the final row's window AFTER the verdict. The booked row stays
+    unverifiable (`caught` None, uncounted) and no Experience is caught."""
+    sched = _real_columns(6)
+    L = float(sched.skills[-2].t_abs_s)
+    exps = []
+    x, lines, _v = _run_real_goal(
+        sched, limits_r5, geom, _windows([L]),
+        _empty_then_seated_after(L - 0.3, L + 0.56),
+        on_experience=exps.append)
+    text = '\n'.join(lines)
+    assert 'CATCH-EVIDENCE-UNVERIFIABLE' in text
+    final = [r for r in x.reports if r.unverified]
+    assert len(final) == 1 and final[0].caught is None
+    assert _rp.summarise(x.reports)[0] == sum(
+        1 for r in x.reports if not r.stop and not r.unverified)
+    assert 'caught=unverifiable' in text
+    # The last Experience written is the final flight's: never caught=True.
+    assert exps and exps[-1].caught is False
+
+
+def test_a_final_catch_after_an_unrelated_end_is_not_booked_unverifiable(
+        limits_r5, geom, monkeypatch):
+    """JB-169 fix 2: the rule runs only when no other END has fired. An END
+    (here LANE_REFUSED, forced just before the final Catch's verdict) leaves
+    the Catch on the path it took before the rule: not booked, no flag."""
+    sched = _real_columns(6)
+    L = float(sched.skills[-2].t_abs_s)
+    orig_tick = ex.SkillExecutor.tick
+
+    def tick(self, t):
+        if t >= L + 0.3 and not self.attempt_ended:
+            self.attempt_ended = True
+            self.end_code = ex.LANE_REFUSED
+            self.end_message = 'forced'
+        return orig_tick(self, t)
+
+    monkeypatch.setattr(ex.SkillExecutor, 'tick', tick)
+    x, lines, _v = _run_real_goal(
+        sched, limits_r5, geom, _windows([L]), _seated_but(L - 0.3))
+    text = '\n'.join(lines)
+    assert 'CATCH-EVIDENCE-UNVERIFIABLE' not in text
+    assert x.final_catch_unverifiable is None
+    assert all(not r.unverified for r in x.reports)
 
 
 def test_a_real_columns_goal_with_a_seated_final_window_is_the_normal_veto(

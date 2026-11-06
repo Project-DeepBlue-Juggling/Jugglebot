@@ -87,7 +87,9 @@ class ThrowReport:
     #: verified (JB-169, owner option 4 of JB-172): ``caught`` is ``None``
     #: and the row is in neither side of the tally -- not a catch, not a
     #: miss -- like the Stop it ended beside. A real final miss is booked
-    #: here, never as a catch.
+    #: here, never as a catch. The operator's tally (:func:`summarise`) leaves
+    #: it out; the records ledger counts it as thrown AND caught
+    #: (:func:`record_counts`; owner's decision in JB-180, option 2).
     unverified: bool = False
 
 
@@ -329,6 +331,19 @@ def end_line(label: str, end_code: str, end_message: str,
 def summarise(reports: List[ThrowReport]) -> Tuple[int, int]:
     """``(throws, caught)`` for the Juggle result — from the reports, never
     from log text.  The columns Stop (:attr:`ThrowReport.stop`) is neither a
-    throw nor a catch here: it was never a catch attempt."""
+    throw nor a catch here: it was never a catch attempt. An ``unverified``
+    final Catch (JB-169) is in neither side either; the records ledger counts
+    it instead (:func:`record_counts`, owner's decision in JB-180)."""
     counted = [r for r in reports if not r.stop and not r.unverified]
     return len(counted), sum(1 for r in counted if r.caught)
+
+
+def record_counts(reports: List[ThrowReport]) -> Tuple[int, int]:
+    """``(throws, caught)`` for the records ledger: :func:`summarise`'s count
+    with every ``unverified`` final Catch added to BOTH sides. Owner's
+    decision in JB-180 (option 2): a goal that ended on a Stop whose final
+    Catch the bag cannot verify reads N/N in the ledger. The Juggle result,
+    feedback and end line keep :func:`summarise`."""
+    throws, caught = summarise(reports)
+    n = sum(1 for r in reports if r.unverified and not r.stop)
+    return throws + n, caught + n

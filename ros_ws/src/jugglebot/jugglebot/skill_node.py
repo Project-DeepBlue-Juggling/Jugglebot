@@ -6789,8 +6789,11 @@ class SkillNode(Node):
         result.throws, result.caught = rp.summarise(self._goal_reports)
         result.per_throw = list(self._goal_outcome_lines)
         pattern = str(goal_handle.request.pattern)
+        # The ledger counts an unverifiable final Catch (JB-180, option 2);
+        # the Result above and the end line keep the operator's tally.
+        rec_throws, rec_caught = rp.record_counts(self._goal_reports)
         beaten, record_catches = self._offer_record(
-            pattern, result.throws, result.caught, outcome)
+            pattern, rec_throws, rec_caught, outcome)
         self._publish_attempt_event(
             ATTEMPT_END, outcome,
             DiagnosticStatus.OK if outcome in ('COMPLETED', 'STOPPED')

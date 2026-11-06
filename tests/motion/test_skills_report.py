@@ -209,6 +209,16 @@ def test_an_unverifiable_final_catch_is_neither_caught_nor_missed_nor_counted():
     assert 'ENDED' not in text and 'MISSED' not in text
 
 
+def test_record_counts_adds_every_unverified_row_to_both_sides():
+    reports = [_r(throw_no=1), _r(throw_no=2, caught=False),
+               _r(throw_no=3, caught=None, unverified=True),
+               _r(throw_no=4, caught=False, stop=True)]
+    assert rp.summarise(reports) == (2, 1)           # operator tally: unchanged
+    assert rp.record_counts(reports) == (3, 2)       # ledger: unverified counts
+    assert rp.record_counts(reports[:2]) == rp.summarise(reports[:2])
+    assert rp.record_counts([]) == (0, 0)
+
+
 def test_the_unverifiable_flag_alone_says_so_even_with_no_row_for_it():
     sev, text = rp.end_line('columns', '', '', [_r(throw_no=1)],
                             shadow_landing_stop=True,
