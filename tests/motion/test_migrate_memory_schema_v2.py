@@ -147,8 +147,11 @@ def test_committed_corpus(tool, tmp_path):
         r = csv.reader(fh)
         assert next(r) == mem.HEADER
         v2 = list(r)
-    # 3276 data rows, the v1 loader's own drops = 0 -> 3276 written.
-    assert len(v1) == 3276 and len(v2) == 3276
+    # 3365 data rows (3276 through 2026-11-03 plus the 89 of the 2026-11-04 Sitting,
+    # committed 2026-11-06), the v1 loader's own drops = 0 -> 3365 written. The v1
+    # file is frozen from here: since the 2026-11-06 merge the Learner appends to
+    # memory_v2.csv only, so this count does not move again.
+    assert len(v1) == 3365 and len(v2) == 3365
     ix = {n: i for i, n in enumerate(mem.HEADER)}
     carried = [i for i, row in enumerate(v2) if row[ix['release_kind']] == 'carried']
     assert len(carried) == 977
@@ -160,4 +163,4 @@ def test_committed_corpus(tool, tmp_path):
         for c1, c2 in zip(['u0', 'u1', 'u2_apex_m', 'y0', 'y1', 'y2_apex_m'],
                           ['u0', 'u1', 'u2_apex_m', 'y0', 'y1', 'y2_apex_m']):
             assert b[ix[c2]] == '%.17g' % float(a[mem.HEADER_V1.index(c1)])
-    assert len(mem.Memory(str(out))) == 3276
+    assert len(mem.Memory(str(out))) == 3365
