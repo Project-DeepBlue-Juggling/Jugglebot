@@ -2,9 +2,9 @@
 id: JB-197
 kind: ticket
 title: 'JB-169 held again on night-shift/2026-11-06-JB-169: limit the ledger count to a completed goal with a landing and merge, limit it to a completed goal only, merge as is, or drop?'
-status: open
+status: complete
 created: '2026-11-07'
-updated: '2026-11-06T19:19:12Z'
+updated: '2026-11-06T22:51:13Z'
 owners: []
 priority: medium
 effort: xs
@@ -40,3 +40,7 @@ Recommendation: 1. It keeps the N/N you asked for on the goals that raised this,
 - 1 or 2: the next night applies them, re-gates and merges.
 - 3: the next night re-gates and merges.
 - 4: JB-169 goes back to open.
+
+## Answer
+
+Go ahead with your recommendation.
