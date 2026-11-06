@@ -374,13 +374,21 @@ open-ended streams (the Stop must be known at compile; nomination plans the whol
 
 | Phase | Scope | Status | Date | Risk | Validates |
 |-------|-------|--------|------|------|-----------|
-| P3a | Command-time admissibility check (three evaluations max, early start), `throw_envelope.evaluate` re-homed | IN PROGRESS (code complete 2026-11-06, held on branch `p3-online-admissibility`; merge and live rehearsal owed) | 2026-11-06 | High (safety content moves) | Loaded-Jetson p99 within slack; sim gate green with no box |
-| P3b | Nomination-time check and the nearest viable configuration | IN PROGRESS (code complete 2026-11-06, held on branch `p3-online-admissibility`; merge and live rehearsal owed) | 2026-11-06 | Medium (goal acceptance, GUI) | Every refusal at once; nearest viable named; moving-site Patterns checkable |
-| P3c | Box retirement per § 6.4 | COMPLETE (on branch `p3-online-admissibility`, held for the owner's merge) | 2026-11-06 | Low | Census counts to zero |
-| P1 | Learner core: `plant_model.py`, `learner.py`, `memory.py` v2 + migration, replay probe | COMPLETE (on branch `p3-online-admissibility`, held for the owner's merge; the memory migration is run at merge) | 2026-11-06 | Medium (changes every commanded u) | Cold-start apex error 12.9 mm (gate < 15 mm) at Sites with earlier data |
+| P3a | Command-time admissibility check (three evaluations max, early start), `throw_envelope.evaluate` re-homed | IN PROGRESS (code complete 2026-11-06, merged to `main` 2026-11-06; live rehearsal owed, Sitting row JB-183) | 2026-11-06 | High (safety content moves) | Loaded-Jetson p99 within slack; sim gate green with no box |
+| P3b | Nomination-time check and the nearest viable configuration | IN PROGRESS (code complete 2026-11-06, merged to `main` 2026-11-06; live rehearsal owed, Sitting row JB-183) | 2026-11-06 | Medium (goal acceptance, GUI) | Every refusal at once; nearest viable named; moving-site Patterns checkable |
+| P3c | Box retirement per § 6.4 | COMPLETE (merged to `main` 2026-11-06) | 2026-11-06 | Low | Census counts to zero |
+| P1 | Learner core: `plant_model.py`, `learner.py`, `memory.py` v2 + migration, replay probe | COMPLETE (merged to `main` 2026-11-06; every plant's memory migrated to `memory_v2.csv` the same day) | 2026-11-06 | Medium (changes every commanded u) | Cold-start apex error 12.9 mm (gate < 15 mm) at Sites with earlier data |
 | P2 | Characterisation sitting (D6): θ structure, yaw frame, telemetry | NOT STARTED | | Medium (hardware) | Aim vs offset; radial vs x; frame; Δ_b |
-| P4 | BeatEvent stream, columns wrapper, next-beat rule, dwell out of node params | COMPLETE (on branch `p3-online-admissibility`, held for the owner's merge; no live operator channel, by decision) | 2026-11-06 | High (schedule path, ~20 test files) | Golden test (227 compiles identical); sim mid-pattern change |
+| P4 | BeatEvent stream, columns wrapper, next-beat rule, dwell out of node params | COMPLETE (merged to `main` 2026-11-06; no live operator channel, by decision) | 2026-11-06 | High (schedule path, ~20 test files) | Golden test (227 compiles identical); sim mid-pattern change |
 | P5 | Close-out: columns ↔ oval shared memory on hardware, INVARIANTS rows, archive | NOT STARTED | | Low | No aliasing; invariants pinned |
+
+**Merge (2026-11-06, owner's ask).** The branch `p3-online-admissibility` was merged to `main` as `e0edc2ea`
+(one conflict, `logbook/INDEX.md`; 2026-11-06 12:46, `./run_tests.sh --full` on the merged tree: 8754 passed, 51
+skipped + 10 serial, RESULT PASS). The same day: `colcon build --packages-select jugglebot_interfaces
+jugglebot` in the live checkout, and `tools/migrate_memory_schema_v2.py` run for every plant under
+`temp/learn/` (the live `jugglebot` memory: 3365 of 3365 rows carried, the Learner accepts 3334). The phase
+Outcomes below say "held on a branch" because they were written before the merge. Still owed: the loaded-box
+rehearsal and the first learned Throws, both in the Sitting row of JB-183.
 
 Order per D7 (supersedes D5's P1 → P3 → P4): P3a → P3b → P3c → P1 → P4; P2 (D6) sits between P1 and the
 oval ramp and blocks nothing here. P3a, P3b, P3c, P1 and P4 need no hardware; P2 and P5 do.

@@ -88,6 +88,28 @@ def test_order_and_blocks(repo):
     assert data["needs_section"] == [] and data["questions"] == []
 
 
+def test_first_pins_a_row_ahead_of_the_score_order(repo):
+    """``first: <reason>`` (2026-11-06): the row is flown before every scored row and its
+    setup set opens the rig's first block; without the key the order is score only."""
+    _item(repo, "bug", "row7", _sec("bb-fed", "60", "- first: the others fly on it\n"), id="JB-7",
+          title="Row 7", priority="low", hardware="robot", parent="pw")  # score 1/60, last unpinned
+    data = sitting.collect(str(repo))
+    assert [r.item_id for r in data["rows"]] == ["JB-7", "JB-1", "JB-2", "JB-4", "JB-5", "JB-3", "JB-6"]
+    assert [[r.item_id for r in b] for b in data["blocks"]] == [
+        ["JB-7", "JB-4"], ["JB-1", "JB-6"], ["JB-2", "JB-3"], ["JB-5"]]
+    assert data["rows"][0].spec.first == "the others fly on it"
+    text = sitting.render_runbook(str(repo))
+    assert "### Block 1: bb-fed  (2 rows, 65 min)" in text
+    assert "- first: the others fly on it" in text
+
+
+def test_first_without_a_reason_is_a_parse_error():
+    spec, errs = sitting.parse_sitting(_sec(extra="- first:\n"))
+    assert spec is None and any("first needs a reason" in e for e in errs)
+    spec, errs = sitting.parse_sitting(_sec())
+    assert errs == [] and spec.first is None
+
+
 def test_needs_section_and_hardware_none_ignored(repo):
     _item(repo, "bug", "nosec", id="JB-7", title="No sec", hardware="robot", priority="high")
     _item(repo, "bug", "soft", _sec(), id="JB-8", title="Soft", hardware="none")
