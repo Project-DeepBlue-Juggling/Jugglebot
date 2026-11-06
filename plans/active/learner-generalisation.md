@@ -25,6 +25,7 @@ related_logbook:
   - 2026-10-18-learner-generalisation-investigation.md
   - 2026-11-04-admissible-box-sweep-obviation-investigation.md
   - 2026-11-06-sitting-debrief-2.md
+  - 2026-11-06-arrival-pull-and-hand-dropout-probes.md
 related_config:
   - config/generated/admissible_box.yaml (RETIRED 2026-11-06 at P3c, with gate_hash and the dwell-in-key)
 related_code:
@@ -45,99 +46,39 @@ thresholds without a measured origin) stay normative. Companion: `plans/active/t
 site-specific structure" was withdrawn when the corpus regression showed the error is global).
 
 ## 1. Context
+
+Compressed 2026-11-06 (the plan stays open; § 4 Phase 5). The corpus regression, the old law, the gate costs and
+the literature are recorded in full in `logbook/2026-10-18-learner-generalisation-investigation.md`; the box
+obviation measurements in `logbook/2026-11-04-admissible-box-sweep-obviation-investigation.md`.
+
 ### 1.1 The problem (owner, 2026-10-16)
 
-Every new parameter set (apex, site xy, dwell, yaw) needs a ~30 min offline AdmissibleBox sweep
-(hashed against 8 files and an exact dwell) and is then learned from scratch. Wanted: command ANY
-(throw site, catch site, apex, dwell, yaw) inside a checked kinematic range, attempt it at once (first
-attempts may miss), converge in a handful of throws, share what was learned across nearby parameters
-and related patterns (columns, the oval), and change parameters mid-pattern; feasibility is in scope
-(owner, 2026-10-17).
+Every new parameter set (apex, site xy, dwell, yaw) needed a ~30 min offline AdmissibleBox sweep (hashed against
+8 files and an exact dwell) and was then learned from scratch. Wanted: command ANY (throw site, catch site, apex,
+dwell, yaw) inside a checked kinematic range, attempt it at once (first attempts may miss), converge in a handful
+of throws, share what was learned across nearby parameters and related patterns (columns, the oval), and change
+parameters mid-pattern; feasibility is in scope (owner, 2026-10-17).
 
-### 1.2 Today's learner (`learner.py` / `memory.py` / `executor.py` at 8f9496ff)
+### 1.2 to 1.6 What motivated the design (numbers a later reader needs)
 
-- Rows (x, u, y): x = (release-site xy, carried-release offset xy); u = (landing offset xy from the
-  target site, apex above the catch plane); y = the same, from the tracker's converged fit [m].
-  Law (revised 2026-10-04): the k = 16 most RECENT rows inside a joint support gate (h_x = 0.01 m,
-  h_y = (0.05, 0.05, 0.10) m, support_d2 = 9); ū = exp(−d²)-weighted mean command; local-linear fit
-  y ≈ C·δx + D·δu + d ridged toward [0, I, ū] (γ = 1e-2); one damped step
-  u = ū + (DᵀD + ηI)⁻¹Dᵀ(y_d − d), η = 0.2; clip to the AdmissibleBox; lateral clamp 20 mm. Empty
-  neighbourhood → identity prior u = y_d.
-- NOT in x: target site, apex (only via y_d gating), dwell, pattern, yaw, ball id, release kind: every
-  new site starts cold (h_x = 10 mm), two patterns sharing a release xy POOL rows, dwell is one
-  pattern-wide node parameter. One row per throw; throw N's command uses rows up to ~N−2 (computed
-  ~0.12 s before the partner's release). Memory persists in `temp/learn/jugglebot/memory.csv`
-  (846 rows, tracked since 8f9496ff).
-
-### 1.3 What the 846-row corpus says
-
-Regression on 825 rows (12 dropped for |y−u| > 100 mm, 9 for apex ratio outside [1.0, 1.2]); 17
-sittings; 6 release-site x values, all on the x axis (x₁ = 0 in every row).
-
-- **Apex:** y₂ = 1.085·u₂ (K = k_v² = 1.0851 ± 0.0015 SE; k_v = 1.042); residual 9.8 mm against 73 mm for
-  identity; same at all 6 sites (means 1.077–1.089) and apex levels (0.81–0.94 m); drift +0.0006/day
-  (SE 0.00016), ≈ +1 % over the corpus. Gain and constant offset are nearly degenerate over this
-  range (offset-only residual 10.2 mm); within-cell slope 1.078 ± 0.027 favours a gain.
-- **Lateral:** shot-to-shot sd ≈ 20 mm per axis; u₁ sits at the −20 mm clamp in 20 % of inlier rows (64–83 %
-  at some sites). Systematic: shared offset +9.9 mm (x) / +15.0 mm (y), SE ≈ 2 mm (≡ 3.0 / 4.6 mrad if
-  aim); axis-0 pull toward centre e₀ ≈ +9 mm − (0.06…0.09)·x₀ (slope −0.091 early, −0.040 later);
-  sitting drift ≈ ±0.8 mm/day. Ball 1 (thrown only at x = −0.0625) lands ≈ +16 mm in both axes against
-  ball 0 (within-sitting +15.2 / +18.1 mm), perfectly confounded with site x₀ = −0.0625 (P2(c)
-  separates it): the y-bias there is attributed to ball 1 (ball-0 rows alone: per-site constants
-  explain nothing in y, R² 0.004).
-- **Out-of-sample lateral RMSE (ax0 / ax1, mm).** Leave-one-site-out: identity 24.8/26.9, pooled
-  constant 23.8/23.1, const + x₀ slope 22.1/23.5, u-gain families (M2/M3; closed-loop shrinkage, not
-  plant) 22.1–22.5/22.2–22.4, physical K·u + aim 22.6/22.4, per-site-constant ORACLE (fit on the
-  held-out site) 21.5/21.3. Chronological split (sittings 0–9 → 10–16): identity 23.0/29.4, pooled
-  23.0/23.8, const + x₀ slope 22.5/23.7, u-gain families 22.0–22.9/21.9–22.4, physical K·u + aim
-  22.1/22.3, per-site constants from earlier data 29.2/22.1; forward chaining (axis 0): global
-  22.4–22.7 vs per-site 23.8. Reading: the apex gain is a clean global parameter (73 → 10 mm);
-  laterally a global constant + x₀ slope is within ~1 mm of the per-site oracle on LOSO (axis 0) and
-  beats per-site constants chronologically (axis 0: 22.0–22.9 vs 29.2 mm); on axis 1 no lateral model
-  beats the pooled constant beyond noise (x₀ slope 23.5 vs 23.1 LOSO; per-site vs pooled −18 ± 19 mm²
-  forward-chained); the ball term has no out-of-sample row (ball 1 exists at one site). A local memory
-  has 1–2 mm of lateral headroom.
-- **Not identifiable from this corpus:** aim angle vs geometric offset (apex spread 3 %, sd 24 mm;
-  fitted apex slopes −131/+110 mm/m, SE 62–73, are 10× what aim allows and of opposite sign →
-  noise); release-timing lag (no hand-velocity signal); any y-axis site dependence; anything beyond
-  linear in x₀; whether the drift is wear, hardware or ball swap.
-
-### 1.4 The feasibility gate
-
-- `validate_cycle` (`feasibility.py`) is vectorised: 4.73 ms per 40-knot segment on the idle Jetson
-  (its docstring; min of 30), 2.02 ms on the dev box. It checks stroke, leg length, Jacobian condition, runway, leg
-  and hand vel/acc/jerk/step, C2 and the cup-contact floor; NOT splice/timing (`install_segment`), NOT
-  `throw_envelope.evaluate`. "40–134 ms" is the whole loaded install solve (p50 76 ms, max 134 ms).
-- The AdmissibleBox adds a 1–2 segment look-ahead, a 10 % margin (`MARGIN_FRAC` 0.9), the learner's
-  clip target and `throw_envelope.evaluate` (1.3 µs), the only safety content living solely in the
-  box and called nowhere on the live skill path. The committed box is tiny: 4 of 6 `columns` boxes
-  empty (apex 0.825–0.925); the 0.925–0.975 band is x ∈ [−2, +4] mm, y ∈ [−8, +20] mm. Re-swept (sep
-  125, dwell 0.27): margin 0.9 → 0/98 cells pass at apex 0.90, 36/98 at 0.95; margin 1.0 → 47/98, 70/98.
-- Online: plan + check of one extra segment ≈ 9 ms dev box (≈ 35 ms loaded Jetson [INF]; measured 2026-11-06: 36 ms idle, 101 / 190 ms p50 / p99
-  install-shaped under starvation, § 2.5 As built), × up to 6
-  candidates (model command + ≤ 5 bisection steps; the feasible set is a slab in x containing the
-  identity); P3 measures it. A beat at apex 0.95 / dwell 0.27 is 0.575 s; the handoff install window
-  has ~120–160 ms headroom and the solver worker serves one request at a time, so the check runs OFF
-  the dispatch critical path. Ruled out: an analytic lateral-quintic pre-check (UNSOUND, reads 40–60 %
-  of the limits where the planner already refuses) and a boundary learned from sweep output (discarded).
-
-### 1.5 Literature — taken and left
-
-Lee et al. 2026 (arXiv:2608.26800): memory keyed on (x, y_d), x omitting release site, duration and
-height; generalisation came from the identity prior and literally identical skills (2–3 extra runs per
-pattern change); height/site/duration changes were never tested. Ploeger & Peters 2026
-(arXiv:2606.16978): release-velocity residual on a ballistic inverse, Jacobian I by construction, step
-u_{n+1} = u_n − α_n e_n; first success at 1.2 ± 0.4 (3 balls) / 2.2 ± 0.4 (5 balls) attempts; noise floor
-≈ 22 mm; no context, so no generalisation. From SafeOpt-MC (Berkenkamp) only the Lipschitz-cap filter.
-
-### 1.6 The oval plan's demands (`plans/active/two-ball-oval.md`, as of 488bec36; now on `main`)
-
-Sites fixed (T = P1 x = −75 mm, C = P2 x = +75 mm); one release-to-release STEADY window carries the
-ball T→C→T. Its learner keys rows by release site T ("release at T exactly" works around a keyless
-memory; sharing with columns is aliasing on the T key). Its seam-dz ablation ships "only with
-ballistics + learner prior that include the platform's release velocity". Decisions touching this
-plan: 38/39/41 (`dwell_s` joins the `select()` key), 42–45 (learner key and aim), 49 (`compile_oval`
-at its P5); none on yaw, variable heights or mid-pattern change.
+- **The old learner (at 8f9496ff):** local-linear fit over the k = 16 most recent rows in a joint support gate,
+  one damped step, AdmissibleBox clip, lateral clamp 20 mm, identity prior at an empty neighbourhood; rows keyed by
+  release xy only. Frozen as `tools/probes/learner_replay_old_law.py`.
+- **The 846-row corpus (825 inliers, 17 sittings, 6 release-site x values, x₁ = 0 in every row):** apex
+  y₂ = 1.085·u₂ (K = 1.0851 ± 0.0015), residual 9.8 mm against 73 mm for identity, at every site and apex; lateral
+  shot-to-shot sd ≈ 20 mm per axis, u₁ at the −20 mm clamp in 20 % of inlier rows; Ball 1's +16 mm confounded
+  with site x₀ = −0.0625. Out of sample a global constant + x₀ slope is within ~1 mm of the per-site oracle
+  laterally; a local memory has 1–2 mm of lateral headroom. Not identifiable from it: aim vs offset, release-timing
+  lag, any y-axis site dependence (these became P2).
+- **The gate:** `validate_cycle` is vectorised (4.73 ms per 40-knot segment, idle Jetson); the box held the only
+  live-path-absent safety content (`throw_envelope.evaluate`) and was tiny (4 of 6 `columns` boxes empty). Ruled
+  out: an analytic lateral-quintic pre-check (UNSOUND as a gate).
+- **Literature:** Lee et al. 2026 (arXiv:2608.26800) generalised only through the identity prior; Ploeger & Peters
+  2026 (arXiv:2606.16978) a release-velocity residual with Jacobian I (noise floor ≈ 22 mm); from SafeOpt-MC only
+  the Lipschitz-cap filter.
+- **The oval (`two-ball-oval.md`):** Sites T x = −75 mm, C x = +75 mm, a carried T→C→T window; its decisions
+  38/39/41 (dwell in the box key), 42–45 (learner key and aim) and 49 (`compile_oval` at its P5) touch this plan
+  (§ 6.3).
 
 ### 1.7 Owner decisions (2026-10-18; italics are the owner's words, the rest the recorded decision)
 
@@ -215,7 +156,9 @@ angle; Δ_b stays OFF; s stays on Robot x only (leave-one-Site-out 6.2 mm x only
 s_y +0.067 ± 0.059 per m); b's frame is not identified, so b stays in the Robot frame. `s` is NOT a centre pull of
 the Site: one-ball Throws show none (s_x −0.073 ± 0.061). Two-ball Throws land pulled toward the PARTNER Site by
 −0.18 per m of Site coordinate (about 11 mm at Sep. 120), along the pair at any angle, and it is an arrival
-transient (the first Throw of an Attempt has none). It is not a term of f₀ (JB-192; § 7).
+transient (the first Throw of an Attempt has none). It is not a term of f₀ (JB-192; § 7). Measured against the
+real release (offline probe, 2026-11-06) it is almost all lateral launch velocity, not position, and not a planner
+defect (§ 7).
 
 ### 2.3 L2 — residual memory keyed on physics (`learner.py`, `memory.py` schema v2; AS BUILT 2026-11-06)
 
@@ -260,34 +203,26 @@ safety is NOT this layer (D3): every u still passes L0, install-time `validate_c
 
 ### 2.5 L0 — online admissibility (`admissible.py` rewrite; the sweep retires)
 
-**Measured facts (2026-11-04, `tools/probes/admissible_obviation/`, dev box, tree at gate_hash 2605fc1bd25e):**
-(a) at the P4 working point the landing room is at the sweep's own +-30 mm grid edge in 82 of 113 committed
-cells, equal to the Learner's authority, so the clip never binds there; the true columns pose 0.95 boundary is
-at 68-96 mm. (b) Every one of 441 grid solves of the catch-with-throw ends in ONE Goldfarb-Idnani iteration
-with the SAME single active constraint (both planners, both working points): inside a flight time the QP
-optimiser is exactly affine in the landing offset, and the planned pose/hand arrays predicted affinely from
-three solves are within 0.12-0.6 mm of the real solve inside +-20 mm. (c) The pose planner's gate margin
-`m = min_k (0.9 L_k - peak_k) / (0.9 L_k)` is smooth in the offset (slope at most 0.007 per mm, quadratic along
-a ray to 0.012); the level planner's is rough. (d) One plan + gate costs 9.8 ms on the dev box (about 23 ms on
-the idle Jetson by the gate's 2.3x ratio; 35 ms loaded is the 2026-10-18 estimate; both superseded by the 2026-11-06 measurement, see As built). (e) The
-two-solve fallback below repaired 15 of 15 refused candidates at the old working point (predicted margins
-matched the real ones to 0.003); all 3101 non-hop Learner-corpus commands pass at the P4 point.
+**Measured facts (2026-11-04; `logbook/2026-11-04-admissible-box-sweep-obviation-investigation.md`, probes in
+`tools/probes/admissible_obviation/`):** every one of 441 grid solves of the catch-with-throw ends in ONE
+Goldfarb-Idnani iteration with the SAME single active constraint, so inside a flight time the QP optimiser is
+exactly affine in the landing offset (affine predictions within 0.12-0.6 mm of the real solve inside +-20 mm); the
+pose planner's gate margin `m = min_k (0.9 L_k - peak_k) / (0.9 L_k)` is smooth in the offset (the level
+planner's is rough); the two-solve fallback below repaired 15 of 15 refused candidates (predicted margins matched
+the real ones to 0.003); all 3101 non-hop Learner-corpus commands pass at the P4 point.
 
-**Command-time check (P3a).** At command time (~0.12 s before the partner's release, in the solver worker,
-off the dispatch path): plan the catch-with-throw at the Learner's candidate `u` from the streaming
-segment's release state (the real seed, not the sweep's nominal one), gate at `MARGIN_FRAC` 0.9 (D2, D9) and
-run `throw_envelope.evaluate` on the carried throw's release speed (C-HAND-3, re-homed from the sweep). Pass:
-install as today. Fail: read the margin of the nominal plan `m0` (the plan at the model command, solved once
-per beat) and the margin `m_u` of the affinely PREDICTED plan at `u` (gate only, no solve, ~2 ms), move
-the command along the line toward the model command to the predicted zero, `s = m0 / (m0 - m_u)`, backed
-off 1 mm, and CONFIRM with one real solve. Two real solves is the bound; never a bisection loop. The model
-command itself failing → REFUSE (`NO_ADMISSIBLE_COMMAND` retained); the hand parks holding the ball
-(rest-terminal: safe by construction). The box's third gate (the following catch) is the next beat's own
-check. Budget and gate: § 4 P3a, a `serial` wall-clock test like `tests/motion/test_validate_cycle_budget.py`.
+**Command-time check (P3a).** At command time (in the solver worker, off the dispatch path): plan the
+catch-with-throw at the Learner's candidate `u` from the streaming segment's release state (the real seed, not the
+sweep's nominal one), gate at `MARGIN_FRAC` 0.9 (D2, D9) and run `throw_envelope.evaluate` (C-HAND-3, re-homed
+from the sweep). Pass: install as today. Fail: move the command along the line toward the model command to the
+margin's zero, `s = m0 / (m0 - m_u)`, backed off 1 mm, and CONFIRM with one real solve; never a bisection loop.
+The model command itself failing → REFUSE (`NO_ADMISSIBLE_COMMAND` retained); the hand parks holding the ball
+(rest-terminal: safe by construction). The box's third gate (the following catch) is the next beat's own check.
+Budget: a `serial` wall-clock test like `tests/motion/test_validate_cycle_budget.py`.
 
 **As built (P3a, 2026-11-06; `INVARIANTS.md` I-ADMIT-1).** Measured on this Jetson: one CHECK through the worker
 is 35.6 ms wall / 33.7 ms CPU idle (the budget test's idle runs; the n = 300 harness row reads 36.7 / 34.6;
-the 23 ms estimate in (d) was low by about 1.5x); the same plan + gate as an
+the 2026-11-04 estimate of 23 ms was low by about 1.5x); the same plan + gate as an
 install request is 46 ms idle, 49 ms with the unpowered launch and bag up, and 101 / 190 ms (p50 / p99) when a
 software-rendered browser page shares the box, the starvation level flown launch logs show; the flown Columns
 handoff slack is p50 211-218 ms, p1 141-148 ms. Consequences: (1) the check plans a STAND-IN for this ball's next
@@ -303,10 +238,10 @@ every commanded Throw; a launch THROW and the hop entry take it alone. A per-bea
 **Nomination-time check (P3b, D8).** When a Pattern goal is accepted (and from `skills/check`): compile the
 Schedule and plan every nominal Segment at the identity command and at the commanded-flight ladder's edges
 (-20 % / +10 %), report every refusal at once with the refusing gate and leg, and when the configuration is
-refused search one parameter at a time toward viability (apex first, then dwell or separation) by bisection
-on the margin (as built: a search on the operator's grid, see "As built (P3b)" below) and report the nearest viable configuration ("1.05 at separation 125 refused by leg jerk on the
-cross-site catch; 1.00 at 125, or 1.05 at 100, is viable"). Seconds of solving. This is the only form a
-configuration check can take for the moving-site Patterns (JP-5, JP-11, JP-12, JP-14).
+refused search one parameter at a time toward viability (apex, then separation, then dwell) and report the nearest
+viable configuration ("1.05 at separation 125 refused by leg jerk on the cross-site catch; 1.00 at 125, or 1.05 at
+100, is viable"). This is the only form a configuration check can take for the moving-site Patterns (JP-5, JP-11,
+JP-12, JP-14).
 
 **As built (P3b, 2026-11-06; `INVARIANTS.md` I-ADMIT-2).** `motion/skills/nominate.py` walks the compiled
 Schedule (`schedule.nominal_segments`), not the sweep's idealised cells, so a Pattern whose Sites move needs no
@@ -373,12 +308,12 @@ open-ended streams (the Stop must be known at compile; nomination plans the whol
 
 | Quantity | Source | Status |
 |----------|--------|--------|
-| K, b, s (x₀ slope, axis 0) | corpus (§ 1.3) | identified; initialises θ |
-| Δ₁ (ball 1) | corpus, attributed to ball 1 | perfectly confounded with site x₀ = −0.0625; P2(c) separates it |
-| Aim angle vs geometric offset | P2(a) apex sweep | NOT identifiable from corpus (apex spread 3 %) |
-| s radial vs x-only; y-axis site dependence; b frame- vs geometry-fixed | P2(b) off-axis sites, rotated pair | NOT identifiable (x₁ = 0 in every row); gates yaw |
-| Δ_b for further balls; drift (+1 %/corpus apex) | P2(c) ball swap | one ball pair only; refit rule on hardware change pinned at P2 |
-| Release-timing lag (≈ a_hand·δt) | P2(d) telemetry | NOT identifiable (no hand-velocity signal) |
+| K, b, s (x₀ slope, axis 0) | corpus (§ 1.2 to 1.6) | identified; initialises θ |
+| Δ₁ (ball 1) | corpus, attributed to ball 1 | perfectly confounded with site x₀ = −0.0625; P2(c) separates it. P2: Δ_b OFF (balls differ 10 / 12 mm, under 2 SE) |
+| Aim angle vs geometric offset | P2(a) apex sweep | NOT identifiable from corpus (apex spread 3 %). P2: a distance, not an aim |
+| s radial vs x-only; y-axis site dependence; b frame- vs geometry-fixed | P2(b) off-axis sites, rotated pair | NOT identifiable (x₁ = 0 in every row); gates yaw. P2: s on x only; b's frame not identified, Robot frame kept (§ 2.2) |
+| Δ_b for further balls; drift (+1 %/corpus apex) | P2(c) ball swap | one ball pair only; refit rule on hardware change pinned at P2. P2: no ball effect found |
+| Release-timing lag (≈ a_hand·δt) | P2(d) telemetry | NOT identifiable (no hand-velocity signal). P2: the release-time error does not move the Apex |
 
 ## 3. Implementation phase summary
 
@@ -390,220 +325,131 @@ open-ended streams (the Stop must be known at compile; nomination plans the whol
 | P1 | Learner core: `plant_model.py`, `learner.py`, `memory.py` v2 + migration, replay probe | COMPLETE (merged to `main` 2026-11-06; every plant's memory migrated to `memory_v2.csv` the same day) | 2026-11-06 | Medium (changes every commanded u) | Cold-start apex error 12.9 mm (gate < 15 mm) at Sites with earlier data |
 | P2 | Characterisation sitting (D6): θ structure, yaw frame, telemetry | COMPLETE (flown 2026-11-06 15:53, JB-187 passed; the four decisions keep today's structure, § 2.2) | | Medium (hardware) | Aim vs offset; radial vs x; frame; Δ_b |
 | P4 | BeatEvent stream, columns wrapper, next-beat rule, dwell out of node params | COMPLETE (merged to `main` 2026-11-06; no live operator channel, by decision) | 2026-11-06 | High (schedule path, ~20 test files) | Golden test (227 compiles identical); sim mid-pattern change |
-| P5 | Close-out: columns ↔ oval shared memory on hardware, INVARIANTS rows, archive | NOT STARTED | | Low | No aliasing; invariants pinned |
+| P5 | Close-out: the arrival pull, per-beat yaw, a mid-Pattern change on the robot, columns ↔ oval shared memory on hardware, INVARIANTS rows; archive only after they have flown (§ 4 Phase 5) | NOT STARTED | | Medium (hardware) | Each item's criterion in § 4 Phase 5; no aliasing; invariants pinned |
 
-**Merge (2026-11-06, owner's ask).** The branch `p3-online-admissibility` was merged to `main` as `e0edc2ea`
-(one conflict, `logbook/INDEX.md`; 2026-11-06 12:46, `./run_tests.sh --full` on the merged tree: 8754 passed, 51
-skipped + 10 serial, RESULT PASS). The same day: `colcon build --packages-select jugglebot_interfaces
-jugglebot` in the live checkout, and `tools/migrate_memory_schema_v2.py` run for every plant under
-`temp/learn/` (the live `jugglebot` memory: 3365 of 3365 rows carried, the Learner accepts 3334). The phase
-Outcomes below say "held on a branch" because they were written before the merge.
+Merged to `main` 2026-11-06 as `e0edc2ea` and every plant's memory migrated to schema v2 the same day
+(`logbook/2026-11-06-learner-generalisation-merge-and-runbook-first-key.md`). First powered run: Sitting 2026-11-06
+13:19, JB-183 (`logbook/2026-11-06-sitting-debrief.md`: P3a 100 of 100 early checks reused, the early start stays on
+by default; T-H3 met; T-H2 supported on a thin sample; Sep. 170 separated Legs 1 and 2, JB-184, owner: no new
+bound). P2 flown 15:53 the same day, JB-187 (`logbook/2026-11-06-sitting-debrief-2.md`).
 
-**First powered run (Sitting 2026-11-06 13:19, JB-183; `logbook/2026-11-06-sitting-debrief.md`).** Eight
-two-ball Columns Attempts at Apex 1.00, Dwell 0.27, Sep. 100 / 170 / 125 / 135. P3a: 100 of 100 early checks
-were reused at dispatch (lead 174 to 324 ms, median 291; candidate moved 0.0 mm on every one), no
-`ADMISSIBILITY` refusal, no Attempt ended by the check; the early start stays on by default. P3a is COMPLETE.
-P3b: every goal was accepted (about 2 s uncached), `skills/check` and `skills/nominate` answered before power; no
-refusal occurred, so the nearest-viable message was not exercised on hardware. Its printed margin was 0.194 at
-Sep. 170 against 0.075 on the live checks (it plans at the nominal Sites, without the re-aim travel): JB-185, an
-owner decision, so P3b stayed in progress (closed the same day by option C, see the Close paragraph under Phase 3b). P1 hardware tests: T-H3 met (Columns 20/20 at Sep. 125 and at
-Sep. 135); T-H2 supported on a thin sample (first Throws at new Sites within 15.4 mm of the commanded Apex at
-Sep. 135, four Throws, 5 mm from known Sites; within 5.2 mm at Sep. 170, two Throws); the Learner's correction
-never reached its authority. Sep. 170 separated Legs 1 and 2 from their magnetic base joints (JB-184; owner
-decision 2026-11-06: no new bound). Four of the six early ends were ball collisions (JB-186).
-
-Order per D7 (supersedes D5's P1 → P3 → P4): P3a → P3b → P3c → P1 → P4; P2 (D6) sits between P1 and the
-oval ramp and blocks nothing here. P3a, P3b, P3c, P1 and P4 need no hardware; P2 and P5 do.
+Order per D7 (supersedes D5's P1 → P3 → P4): P3a → P3b → P3c → P1 → P4, P2 between P1 and the oval ramp. Only P5
+remains, and it needs hardware.
 
 ## 4. Implementation phases (detailed)
+
+Complete phases are kept to their outcome and a pointer; the build narrative, gate runs and test recipes are in
+each phase's logbook entry.
+
 ### Phase 3a: Command-time admissibility check — COMPLETE
 
-**Outcome (2026-11-06).** Built on branch `p3-online-admissibility` (worktree `~/Desktop/Jugglebot-p3`), held for
-the owner's merge; the commits carry `Logbook-Entry: 2026-11-06-learner-generalisation-p3a-command-time-admissibility-check`
-and the entry (`logbook/2026-11-06-learner-generalisation-p3a-command-time-admissibility-check.md`) has the
-measurement, the Discussion and the test recipes. Against the gate: `./run_tests.sh --full` green (2026-11-06 06:04, 8341 passed, 52 skipped + 10 serial; baseline
-2026-11-06 00:14 at d7bb6d48, `./run_tests.sh`: 8219 passed, 50 skipped + 6 serial; 106 new tests, the rest of
-the increase came with main 6261a15e); the sim gate passes with the box bypassed (self-throw, hop, Columns,
-plain);
-`NO_ADMISSIBLE_COMMAND` is preserved. The p99 gate is NOT met by a check at the dispatch instant: one check is 36 ms idle and
-101 / 190 ms (p50 / p99, install-shaped) under Sitting-like starvation against a Columns handoff slack of p1
-141-148 ms. With the early start (a head start of about 150 ms at apex 0.95 / dwell 0.27) the whole check is
-hidden in the light bracket and the median under starvation; its p99 there can still spill past the dispatch, so
-the gate is met for the median, not the tail (§ 7). NOT met: the loaded-Jetson rehearsal of `skills/check`
-on the new code, which needs the merge and a `colcon build --packages-select jugglebot_interfaces jugglebot`
-(the rehearsal of the main code is recorded as the baseline). Status stays in progress until that and the owner's
-answer on the early-start default (§ 7). P3b cleared to start on the branch.
-
-
-Modified: `admissible.py` (§ 2.5: the check, the affine margin step, the confirm), `executor.py::_command_u`
-(calls the check in the solver worker; the box clip path goes), `solver_worker.py` (a check request kind
-beside the solve), `skill_node.py`, `sim/skills_gate.py`. The box stays loadable until P3c so the two paths
-can be A/B'd in sim.
-
-- **Probe FIRST, then the budget.** `tools/probes/admissible_obviation/online_check_replay.py` is the
-  prototype of the check and the two-solve step; the production function reproduces its verdicts on the
-  same candidates (a pinned test). Loaded-Jetson budget of one plan + gate and of the three-evaluation path
-  measured before the `serial` budget test is written (bag recording and GUI up, p50 / p99 / max).
-- Control walk (CLAUDE.md rule): the command enters the same slot as today (~0.12 s before the partner's
-  release) and the installed segment is still gated by install-time `validate_cycle` and the Teensy guard; the
-  only behavioural change is that a candidate the old box would have clipped is now either confirmed by a
-  real solve or moved along the line to the model command. No feedforward or timing path is touched.
-- `throw_envelope.evaluate` re-homed onto this path with its own test (T-U8).
-- Gate: p99 of the check below the measured handoff slack; sim gate green with the box bypassed;
-  `NO_ADMISSIBLE_COMMAND` preserved for a failing model command; `./run_tests.sh --full` green;
-  loaded-Jetson dress rehearsal of `skills/check`. Depends: none (D7).
+As built: § 2.5 "As built (P3a)", `INVARIANTS.md` I-ADMIT-1. Record:
+`logbook/2026-11-06-learner-generalisation-p3a-command-time-admissibility-check.md`. The p99 gate is met for the
+median under starvation, not the tail (the early start hides the check; its p99 can still spill past the dispatch,
+§ 7). Flown 2026-11-06: 100 of 100 early checks reused, no refusal.
 
 ### Phase 3b: Nomination-time check and the nearest viable configuration — COMPLETE
 
-**Close (2026-11-06).** JB-185 closed by option C (owner): acceptance unchanged on the nominal margin, the nomination also reports the worst margin with every Catch aim at the executor's clamp corner (Columns Apex 1.00 Sep. 170: 0.211 nominal, 0.016 at the corner; `logbook/2026-11-06-nomination-reaim-figure.md`). The P2 Sitting's 346 live checks read 0.04 to 0.07 under the nomination in every two-ball goal.
-
-**Outcome (2026-11-06).** Built on branch `p3-online-admissibility`, held for the owner's merge; commits carry
-`Logbook-Entry: 2026-11-06-learner-generalisation-p3b-nomination-check` and the entry
-(`logbook/2026-11-06-learner-generalisation-p3b-nomination-check.md`) has the probe, the Discussion and the
-tests. Against the gate: the high-low finding of 2026-10-31 is reproduced as a nomination report at that day's
-limits (350 / 5000 / 200000, Hand 4500): 1.00 / 0.90 and 1.05 / 0.95 refused at separation 125, the report naming
-separation 100 (pinned in `tests/motion/test_skills_nominate.py`, through the node and from
-`sim/skills_gate.py --nominate`); a refused oval dwell names the first viable dwell (0.30 -> 0.35 at the P4
-point; 0.35 -> 0.40 at 350 / 5000 with `carry_zvd`); a nomination is 0.6 s on this Jetson and 2-3 s when it
-refuses and searches (up to 5 s inside the node on a busy box); `./run_tests.sh --full` green (2026-11-06 07:23, 8459 passed, 51 skipped + 10 serial;
-baseline 2026-11-06 06:16 at 53cd976b, `./run_tests.sh`: 8344 passed, 51 skipped + 7 serial; 115 new tests). NOT met: the loaded-Jetson rehearsal on the live stack (needs the
-merge and a colcon build). Goal acceptance no longer reads the box. Status stays in progress until the
-rehearsal. P3c cleared to start on the branch.
-
-
-Modified: `skill_node.py` (goal acceptance and `skills/check`), `schedule.py` (a "nominal segments of this
-Schedule" iterator), `nominate.py` (new: the walker and the grid search; as built), the GUI Juggle panel (shows the report),
-`sim/skills_gate.py` (`--nominate` dry run).
-
-- Plans every nominal Segment at the identity command and the ladder edges; reports every refusal at once
-  (gate, leg, knot time) in the existing `skills/check` style; on refusal searches apex, then separation, then dwell on the operator's grid (four steps each; as built), i.e. apex, then dwell or
-  separation, on the margin to the nearest viable configuration and names it.
-- Gate: the eight high-low cells of 2026-10-31 (empty at separation 125, viable at 100) reproduced as a
-  nomination report naming separation 100; a refused oval dwell names the first viable dwell; seconds on the
-  loaded Jetson; `--full` green. Depends: P3a (shares the check).
+As built: § 2.5 "As built (P3b)", I-ADMIT-2. Record: `logbook/2026-11-06-learner-generalisation-p3b-nomination-check.md`.
+The nearest-viable message has not yet been exercised on hardware (no goal was refused). JB-185 closed by option C
+(owner): acceptance unchanged on the nominal margin; the worst margin with every Catch aim at the executor's clamp
+corner is printed beside it (Columns Apex 1.00 Sep. 170: 0.211 nominal, 0.016 at the corner;
+`logbook/2026-11-06-nomination-reaim-figure.md`).
 
 ### Phase 3c: Box retirement — COMPLETE
 
-**Outcome (2026-11-06).** Done on branch `p3-online-admissibility`, held for the owner's merge; commits carry
-`Logbook-Entry: 2026-11-06-learner-generalisation-p3c-box-retirement`
-(`logbook/2026-11-06-learner-generalisation-p3c-box-retirement.md` has the census at start and end). Deleted
-per § 6.4: the box API in `admissible.py`, the executor's box path, `skill_node`'s box plumbing, the sim
-gate's `--box`, `tools/admissible_sweep.py` and `tools/admissible_sweep_run.py`, the committed YAML and its
-five fixtures; the sweep's planner cells live on in `tools/probes/planner_cells.py` and `margin_rays.py` is
-the kept headroom report (D10). Gate: no living use of a retired symbol remains (census in the entry); `./run_tests.sh --full` green
-(2026-11-06 09:17, 8326 passed, 51 skipped + 10 serial; baseline 2026-11-06 07:23, same command: 8459 / 51 + 10;
-the difference is the deleted box and sweep tests net of the new ones); the sim gate passes on its only path;
-`docs/runbook.md` regenerated without box rows; `plans/archived/box-sweep-same-site-fidelity.md`
-archived as superseded. "Admissible box" is still a GLOSSARY term (owner's call). P1 cleared to start.
-
-
-Deleted per § 6.4: `tools/admissible_sweep.py`, `tools/admissible_sweep_run.py`,
-`config/generated/admissible_box.yaml`, `gate_hash`, `check_limits`, `select`, the dwell-in-key and the
-runbook rows; the headroom report of D10 lives in `tools/probes/admissible_obviation/margin_rays.py`.
-
-- Census: ~35 production call sites, ~20 test files, ~10 doc files is the 2026-10-18 estimate; count at
-  P3c start and end (`grep -rn` over `AdmissibleBox|select(|check_limits|gate_hash|admissible_box`; `rg`
-  is not installed), both in the logbook. Gate: second count zero per retired symbol; `--full` green;
-  `docs/runbook.md` regenerated without the box rows. Depends: P3a, P3b.
+Deleted per § 6.4; census at start and end, and the gate run, in
+`logbook/2026-11-06-learner-generalisation-p3c-box-retirement.md`. The headroom report of D10 lives in
+`tools/probes/admissible_obviation/margin_rays.py`; the sweep's planner cells in `tools/probes/planner_cells.py`.
+"Admissible box" stays a GLOSSARY term (owner's call).
 
 ### Phase 1: Learner core — COMPLETE
 
-New: `plant_model.py`, `tools/probes/learner_replay.py` (+ `learner_replay_old_law.py`, the frozen old law;
-`learner_replay_production.py`, the replay through the production classes),
-`tools/migrate_memory_schema_v2.py`. Rewritten: `learner.py`, `memory.py` (schema v2, `memory_v2.csv`; a v1
-file with no v2 file beside it refuses the goal by name). Modified: `executor.py` (`_throw_context`; the
-Learner's cap about the model command replaces the fixed clamp; the model command is what the command-time
-check falls back toward; v2 rows), `skill_node.py` (`_make_learner`), `sim/skills_gate.py` (`--learn`).
-
-**Outcome (2026-11-06, on branch `p3-online-admissibility`, held for the owner's merge).** The probe ran
-first and changed the law in six places, the audit in a seventh (§§ 2.2-2.4 are the as-built text; the reasons are in
-`logbook/2026-11-06-learner-generalisation-p1-learner-core.md`). Gate: cold-start apex error 12.9 mm
-against 74.5 mm for the identity prior, a mean over the 9 first Throws at Sites with any earlier row
-(2026-11-06, `OPENBLAS_NUM_THREADS=1 python tools/probes/learner_replay_production.py --csv
-temp/learn/jugglebot/memory.csv --limit 3276`: 3276 rows, 8.8 s); lateral cold start 28.0 against 33.1 mm
-RMS; steady state 19.8 / 19.5 / 13.9 mm RMS against the old law's 19.9 / 19.7 / 14.4; rows at the authority
-0.49 % against 28.8 %. `sim/skills_gate.py --no-viewer --learn --pattern {self_toss,hop,columns}` and the
-plain run: PASS, exit 0 (2026-11-06). Tests: 2026-11-06, `./run_tests.sh --full`: 8352 passed, 51
-skipped + 10 serial, RESULT PASS.
-Owed at merge: the migration run on each live memory (`python tools/migrate_memory_schema_v2.py --memory
-temp/learn/<plant>/memory.csv --out temp/learn/<plant>/memory_v2.csv`); the first learned Throws on
-hardware (T-H2, T-H3). Depends: none (P3a-c landed first per D7).
+As built: §§ 2.2 to 2.4, I-LEARN-1. Record: `logbook/2026-11-06-learner-generalisation-p1-learner-core.md` (the
+probe changed the law in six places, the audit in a seventh). Gate: cold-start apex error 12.9 mm against 74.5 mm
+for the identity prior; rows at the authority 0.49 % against 28.8 %.
 
 ### Phase 2: The characterisation sitting — COMPLETE
 
-**Result (Sitting 2026-11-06 15:53, JB-187 passed; `logbook/2026-11-06-sitting-debrief-2.md`).** (a) offset is a distance (Apex slope −22 ± 17 mm/m x, +8 ± 16 y); K one number over 0.70 to 1.00 (1.084 to 1.090), 1.067 at 1.05 (Hand 4 % under command). (b) s stays on x; b's frame not identified, so Robot. (c) Δ_b OFF (balls B and C differ 10 / 12 mm, under 2 SE). (d) release telemetry: the release-time error does not move the Apex; the Platform's tilt at release tracks the ball's lateral velocity (r 0.78 / 0.62) and that tilt is commanded, the planner flying back the previous Catch offset. Found beyond the rules: the two-ball pull is an arrival transient (JB-192) and the flyback gain is 1.2 to 1.4 times too strong (JB-193). The Site flown for goals 1 to 7 was x = −50, not 0 (Runbook step 2 not applied, JB-190). § 2.2 and § 2.6 carry the pins.
-
-> Runbook written 2026-11-06: `tests/hardware/session_learner_characterisation.md`, Sitting row JB-187 (flown 15:53 the same day). As written it differs from the text below in three ways. (a) flies five Apexes, 0.70 to 1.05, as one-ball `self_toss` goals at the centre Site; the nomination admits more, and 1.05 is the cap because a Hand stall stop at 1.10 fits the stroke by 0.08 rev only. (b) is one-ball `self_toss` at Sites 60 mm off centre on y and on x, plus the Columns pair at Sep. 120 turned to 90 degrees with the same pair along x as the same-day control. Every row goes to the `jugglebot` plant and is told apart by time, Site and release (schema v2), so no per-rung `plant_id` is set. (d) needs nothing built: the log's `release +N ms` and the bag's Hand state are read at the debrief. Every rung nominated offline on 2026-11-06; the before-power steps of the Runbook are its rehearsal on the loaded box.
-
-> Note 2026-11-06: the box named in (a) is retired (P3c); the Apex range of (a) is now whatever the goal-accept nomination admits. After the Sitting of 2026-11-06 keep (b)'s Sites and the rotated pair inside what has flown (transits up to 156 mm at 600 / 8000; a 187 mm transit separated two Legs, JB-184).
-
-> Note 2026-11-01: P2(b) (does the lateral bias rotate with the pair) was NOT answered by the turned-Columns rung flown today. No 20-run at 45 or 90 deg, no tracker landing on any miss, and no per-angle `plant_id` was set, so every row went to the one `jugglebot` memory (keyed by release-site xy, I-LEARN-1). Also seen: Ball 2's learner command sat at the (-20, -20) mm clamp corner in 37 of 40 straight rows (JB-139).
-
-New: `tests/hardware/session_learner_characterisation.md`, dress-rehearsed on the loaded Jetson
-against the LIVE `/robot_state`, every refusal reported at once.
-
-- (a) Apex sweep at one site: 5 levels spanning what a ONE-OFF re-swept AdmissibleBox (the sweep's
-  five apex levels at `MARGIN_FRAC` 0.9; the last offline sweep before P3 retires it; ~30 min, run
-  once, logged with provenance) admits (the corpus flew 0.81–0.94 m); no bypass of the admissibility
-  gate (orchestrator decision 2026-10-18, pending owner confirmation). ≥ 20 throws each. Rule:
-  apex slope of the lateral offset < 2 SE from zero → geometric-offset model, else aim model; if (a)
-  cannot separate, ship the geometric-offset model (fewer parameters).
-- (b) Off-axis sites y = ±60 mm and a 90°-rotated pair: is s radial, and does b rotate with the
-  pattern (geometry-fixed) or stay (frame-fixed)? Rule: rotated vs fixed-frame fit by out-of-sample RMSE.
-- (c) Ball swap at one site, 3 balls × 20 throws → Δ_b. (d) Telemetry per row: hand velocity and
-  acceleration at the commanded release knot, and the tracker's release-time estimate.
-
-Outputs: θ structure pinned in § 2.2, memory re-seeded, yaw frame chosen. Depends: P1; `--full`
-before the sitting. At each framing pivot: *"if your physical intuition disagrees with my framing,
-that's load-bearing signal — say so."*
+Flown 2026-11-06 15:53 (JB-187 passed) from `tests/hardware/session_learner_characterisation.md`
+(`logbook/2026-11-06-learner-characterisation-runbook.md`); results in `logbook/2026-11-06-sitting-debrief-2.md`.
+(a) the offset is a distance; K one number over Apex 0.70 to 1.00 (1.084 to 1.090), 1.067 at 1.05. (b) s stays
+on x; b stays in the Robot frame. (c) Δ_b OFF. (d) the release-time error does not move the Apex. Found beyond
+the rules: the two-ball arrival pull (JB-192; § 7) and a flyback 1.2 to 1.4 times too strong (JB-193). §§ 2.2 and
+2.6 carry the pins. For any later Sitting keep Sites and turned pairs inside what has flown (transits up to 156 mm
+at 600 / 8000; a 187 mm transit separated two Legs, JB-184).
 
 ### Phase 4: BeatEvent stream and the columns wrapper — COMPLETE
 
-Modified: `schedule.py` (`BeatEvent`, `compile_beats`, `columns_events`, `next_beat`, `columns_change`,
-`Schedule.source`; `compile_columns` is the wrapper), `executor.py` (`request_beat_change`), `nominate.py`
-(`walk_schedule`, the one nomination criterion), `skill_node.py` and the GUI (dwell is no longer a node
-parameter), `sim/skills_gate.py` (`--beat-change`). Yaw per P2 (refused by name).
-
-**Outcome (2026-11-06, on branch `p3-online-admissibility`, held for the owner's merge).** § 2.6 is the
-as-built text; `logbook/2026-11-06-learner-generalisation-p4-beat-event-stream.md` has the reasons. Gate:
-golden, 227 compiles identical (2026-11-06, `python tools/probes/columns_golden.py --check`); sim
-mid-pattern changes (2026-11-06 12:26, `OPENBLAS_NUM_THREADS=1 python sim/skills_gate.py --no-viewer
---beat-change throw=6,apex=1.00` | `throw=6,apex=1.00,dwell=0.30` | `throw=6,dwell=0.9`, five seeds, 20
-Throws): the Apex change and the Apex-and-Dwell change fly from Throw 8, PASS, exit 0; the no-transit
-change is refused `BEAT_NO_TRANSIT`, the Attempt unchanged, PASS, exit 0; a Dwell change 0.27 -> 0.32 s is
-refused by the planner walk (11:58 run; exit 1 by design: the requested change did not fly). Tests:
-2026-11-06, `./run_tests.sh --full`: 8748 passed, 51 skipped + 10 serial, RESULT PASS.
-NOT built, by decision: a live operator channel on the node, open-ended streams. Recorded for the owner: a
-standing Columns that nominates at a 0.06 margin (Apex 0.80 m at the sim's limits) fails every sim seed at
-an install, and a change to it behaves the same: the nomination's fidelity at a thin margin (P3b's
-criterion), not the event stream. Depends: P1, P3a-c.
+As built: § 2.6, I-BEAT-1. Record: `logbook/2026-11-06-learner-generalisation-p4-beat-event-stream.md`. Gate:
+golden, 227 compiles identical; sim mid-pattern Apex and Apex-and-Dwell changes fly from Throw 8, a no-transit
+change is refused `BEAT_NO_TRANSIT`. NOT built, by decision: a live operator channel on the node, open-ended
+streams. A change is only as good as the nomination, which is thin at a 0.06 margin (the entry's finding).
 
 ### Phase 5: Close-out — NOT STARTED
 
-Standing between the plan and its close: the arrival pull (probe the Carry creep offline, one Dwell A/B hardware check, then fix at source or add the term, § 7), the per-beat rotation that depends on it, an operator channel for a mid-Pattern change, and the oval. Columns ↔ oval shared memory verified on hardware (rows separated, θ shared); `INVARIANTS.md` rows
-(authority bound, online admissibility, next-beat rule); `/archive-plan`. Depends: P4, oval carried throws.
+What stands between the plan and its Destination ("any Site, Apex, Dwell or yaw can be commanded and changed
+mid-Pattern"): the arrival pull, the per-beat rotation that depends on it, a mid-Pattern change on the robot, the
+oval on the shared Memory, and the INVARIANTS rows. **2026-11-06, owner: the plan stays open until these have
+flown.** Archive with `/archive-plan` only after items 1 to 4 are flown and item 5 is landed.
+
+1. **The arrival pull (JB-192).** Two-ball Throws land pulled toward the partner Site; measured against the real
+   release it is almost all a lateral launch velocity the Platform does not deliver after an arrival (§ 7).
+   - Precondition: none for the hardware check. For the bookkeeping fixes F1 (refresh the pending Memory row's
+     release after each accepted re-aim) and F2 (restore the release record when a re-send is refused; both
+     tracked by JB-194): the owner's go-ahead, because they touch the executor and what the Memory records. F1 is a precondition of the
+     "learn it" branch below (an arrival term is fitted against `rel`, which today holds the dispatch aim).
+   - Hardware check: Columns Sep. 125, Apex 0.93, Dwell 0.27 and 0.40 alternating, three Attempts each, bag
+     recorded; it tells a dependence on Apex from one on the time from arrival to release.
+   - Decision after it (owner): suppress the ring at its source (`carry-ring-zvd.md`), learn an arrival term (a
+     schema v3 `arrived_from` Memory column, stored rows reconstructed, never defaulted to zero; a scalar c
+     over-corrects by about 6 mm at Apex 1.10), or both.
+   - Done: the decision recorded and flown; on two-ball Columns the pull toward the partner, fitted as in the P2
+     debrief against the real release, is within 2 SE of the one-ball fit (proposed criterion, owner to confirm).
+     With F1 applied, the Memory rows' `rel` equals the commanded Cup at release to about the 0.4 mm tilt lever.
+2. **Per-beat rotation of the Pattern (`yaw_rad`).** Item: JB-109 (JP-11 Rotating columns, an Idea).
+   - Precondition: item 1 decided and flown (fixed at source, or the term carried in a frame that turns with the
+     Pattern: Robot-frame Site keys cannot learn it on a pair whose angle changes each beat). Today `yaw_rad != 0`
+     is refused by name (`BEAT_YAW_NOT_SUPPORTED`).
+   - Work: lift the refusal in `BeatEvent` and in I-BEAT-1; Sites rotate about the Platform origin in the Robot
+     frame (P2's choice, § 2.6).
+   - Done: a Columns goal with a per-beat yaw is nominated and flown on the robot, and its lateral landing error
+     is not distinguishable from the same pair flown unturned in the same Sitting (the P2(b) control design;
+     proposed criterion, owner to confirm).
+3. **A change mid-Pattern on the robot.** No Item. `SkillExecutor.request_beat_change` exists and nothing calls it.
+   - Precondition: an operator channel on `skill_node` whose planner walk runs off the node's tick (the walk is
+     tens of ms of Python against 100 to 200 ms of handoff slack; the caller holds the lock the tick holds,
+     I-BEAT-1), rehearsed on the loaded box first with every refusal reported at once.
+   - Done (proposed criterion, owner to confirm): on the robot, an Apex change and an Apex-and-Dwell change fly mid-Attempt from the first changeable
+     Throw, as the sim gate does, and a refused change names its code and leaves the Attempt unchanged.
+4. **The oval on the shared Memory (T-H4).** Item: the oval's P5 (`two-ball-oval.md`, Pathway JB-40); no Item for
+   the shared-Memory check itself.
+   - Precondition: `compile_oval` targets `compile_beats` (carried events are refused by name until then).
+   - Done: Columns and the oval fly on one Memory on hardware; rows stay separated by `release_kind` (no carried
+     row in a `free_cup` query's support) and θ is shared. This also discharges I-LEARN-1's "verified at the
+     plan's P5" clause.
+5. **The INVARIANTS rows** (checked 2026-11-06 against `motion/skills/INVARIANTS.md`, read only).
+   - Present: I-LEARN-1 (key, exact match on ball and release kind, the evidence-scaled cap about the MODEL
+     command, identity at an empty memory), I-ADMIT-1 (the per-Throw check), I-ADMIT-2 (nomination), I-BEAT-1
+     (the recompiled stream; the next-beat rule is its clause (c)).
+   - Missing: a row for D3: the lateral authority is a Learner bound, never an actuator bound, and widening c_max
+     is safe only while install-time `validate_cycle` and the Teensy `MAX_DEVIATION` guard stay on the path
+     (§ 6.1). Today the cap is one sentence inside I-LEARN-1.
+   - Stale: I-BEAT-1's "`yaw_rad != 0` MUST be refused by name until the plan's P2" (P2 flew and kept the refusal;
+     the gate is now item 1). I-BOX-1 is not stale: it is already marked RETIRED 2026-11-06 (P3c).
+   - Done (proposed, owner to confirm): the missing row added and the stale clause re-pointed, each in the commit that lands its piece.
 
 ## 5. Testing plan
 
-`./run_tests.sh` after each `*.py`/`*.yaml` change; `--full` before each hardware sitting, at each
-phase closure and pre-commit under `sim/`. No pass counts are claimed here (logbook: the triple).
+`./run_tests.sh` after each `*.py`/`*.yaml` change; `--full` before each hardware Sitting, at each phase closure
+and pre-commit under `controller/` or `sim/`. No pass counts are claimed here (logbook: the triple).
 
-- **Unit.** T-U1 f₀ round trip f₀(f₀⁻¹(y)) = y to 1e-12, Δ₀ = 0. T-U2 RLS recovers a synthetic θ and
-  tracks a +1 %/corpus drift; high covariance → prior. T-U3 α monotone in evidence, → 0 at empty
-  support; exact match on ball_id and release_kind. T-U4 |u − f₀⁻¹(y_d)| ≤ cap(x); zero evidence →
-  exactly the model command. T-U5 non-finite input raises by name. T-U6 v1 file refused by name;
-  migration idempotent. T-U7 L0: ≤ 5 bisection steps; model failure → `NO_ADMISSIBLE_COMMAND`. T-U8
-  `throw_envelope.evaluate` on the live path (spy). T-U9 next-beat accept/reject table. T-U10 yaw ≠ 0
-  refused by name until P2.
-- **Integration.** T-I1 `learner_replay.py` old vs new law (P1 gate numbers; fewer rows at the clamp
-  than the 20 % baseline). T-I2 `sim/skills_gate.py --learn` converges; sim mid-pattern change. T-I3
-  `serial` wall-clock budget of the command-time check, loaded. T-I4 loaded-Jetson dress rehearsal.
-- **Hardware (E-stop ready).** T-H1 the P2 sitting. T-H2 a first learned throw at a new site/apex
-  inside the checked range lands within the model residual and converges in a handful of throws
-  (§ 1.1). T-H3 the R5 columns pattern re-flown on the new stack before the oval ramp. T-H4 P5
-  shared-memory check with the oval.
-- **Regression.** T-R1 golden columns schedule via the wrapper. T-R2 identity prior at empty memory
-  preserved. T-R3 every retired symbol absent (P3 post-count zero).
+- **Landed with P1 to P4** (unit T-U1 to T-U10, integration T-I1 to T-I4, regression T-R1 to T-R3): named and
+  traced in each phase's logbook entry and in the INVARIANTS rows' test column.
+- **Hardware (E-stop ready).** T-H1 the P2 Sitting: flown. T-H2 a first learned Throw at a new Site lands within
+  the model residual: supported on a thin sample (2026-11-06). T-H3 the R5 Columns re-flown on the new stack:
+  met. **T-H4 (open, P5 item 4)** the shared-Memory check with the oval. P5 items 1 to 3 carry their own
+  hardware criteria (§ 4 Phase 5).
 
 ## 6. Notes for collaborators
 ### 6.1 Safety-critical invariants
@@ -615,50 +461,43 @@ c_max is safe only while both stay on the path. Every refusal is by name; the 10
 
 ### 6.2 Consequences of D4
 
-Dwell stops being a node parameter (oval decisions 39/41 and LimitsMismatch-on-dwell become moot);
-the next-beat rule is new design; two sessions touch `schedule.py`; yaw is dormant until P2; the blast
-radius is the compilers, executor, node goal acceptance, GUI, sim gate and ~20 test files (golden test).
-As built (2026-11-06): all of the above held; `compile_oval` at its P5 targets `compile_beats` (a carried
-event is refused by name until then).
+Dwell stopped being a node parameter (oval decisions 39/41 and LimitsMismatch-on-dwell are moot); the next-beat
+rule is new design; the blast radius was the compilers, executor, node goal acceptance, GUI, sim gate and ~20 test
+files (golden test). `compile_oval` at its P5 targets `compile_beats` (a carried event is refused by name until then).
 
-### 6.3 For the oval session (the `two-ball-oval` branch is merged into `main` since 2026-10-23 and kept at its tip; work happens on `main`)
+### 6.3 For the oval session (`two-ball-oval.md`, on `main`)
 
-- `compile_oval` at its P5 targets `BeatEvent` (§ 2.6). Its rungs 1–4 proceed unchanged on the
-  compiled path; its first learned throw uses the P1 learner once P1 lands (D5); the P2 sitting (D6)
-  precedes its ramp sitting.
-- Its decisions 39 and 41 (`dwell_s` in the `select()` key, dwell a node parameter) become moot once
-  P4 lands; decisions 42–45 (rows keyed by release site T) are superseded by L2 keying on release
-  position, velocity and release_kind. Its seam-dz ablation: whether L1 + L2's velocity state unblock
-  it or it needs release-velocity terms inside f₀ is settled at P1 close (§ 7).
+- `compile_oval` at its P5 targets `BeatEvent` (§ 2.6); its first learned Throw uses the P1 Learner.
+- Its decisions 42–45 (rows keyed by release site T) are superseded by L2 keying on release position, velocity
+  and release_kind. Its seam-dz ablation: whether L1 + L2's velocity state unblock it or it needs
+  release-velocity terms inside f₀ is settled at P1 close (§ 7).
 - Both sessions edit `schedule.py`: `git fetch && git status -sb` before work and any push.
 
 ### 6.4 Deletion ledger for the box (P3)
 
-| Retired | Replaced by |
-|---------|-------------|
-| `tools/admissible_sweep.py` and the ~30 min offline sweep | L0 online check |
-| `config/generated/admissible_box.yaml`; `gate_hash` (8 files + exact dwell, 34 test lines) | none |
-| dwell-in-key, `select` coverage, empty-box refusal, runbook rows 3/3a/3b | online check refuses the real candidate |
-| `check_limits` limits/dwell compares; `AdmissibleBox` clip in the learner | limits precondition and ladder stay; L3 cap(x) + L0 |
-
-Census (~35 production call sites, ~20 test files, ~10 doc files) is counted at P3 start and end, not
-now (§ 4 P3). DONE 2026-11-06 (P3c): the counts are in the P3c logbook entry; the "Replaced by" column above
-is as built, with `motion/skills/nominate.py` (goal acceptance) beside the online check. Unchanged per § 2.1, plus the clamp (as a learner bound) and `throw_envelope.evaluate`.
-
-**Files affected and rollback.** New and modified files are listed per phase in § 4; deleted (P3): the
-sweep tool and YAML. Each phase reverts independently; the migration never rewrites `memory.csv` in place.
+Retired at P3c (2026-11-06): the offline sweep and its tools, the committed box YAML, `gate_hash`, the dwell-in-key,
+`select`, `check_limits` and the runbook rows; replaced by the online check (L0) and `motion/skills/nominate.py`.
+The ledger and the census are in `logbook/2026-11-06-learner-generalisation-p3c-box-retirement.md`. Each phase
+reverts independently; the migration never rewrites `memory.csv` in place.
 
 ## 7. Open questions
 
-- ANSWERED at P2 (2026-11-06): the −0.06/m "centre pull" is not a Site property; see § 2.2. Whether the +1 %/corpus apex drift is wear (ball), hand
-  or tracker: P2(c) found no ball effect. Release-timing lag stays out of the learner: P2(d) found the release-time error (+9 ms mean, sd 7.5 ms) has no effect on Apex.
-- OPEN (JB-192, gates `yaw_rad`): the two-ball arrival pull c·(Site − arrived_from)/2, c = −0.150 ± 0.010,
-  beats today's s·x on 382 held-out Attempts (6.5 ± 2.8 mm²) but is a scalar that over-corrects by about 6 mm
-  at Apex 1.10 and is not yet in f₀, by decision (half may be a planner Carry creep of 5 to 6 mm, half the
-  ring of the carry-ring-zvd plan; `arrived_from` needs schema v3 and never defaults to zero). Options: fix at
-  source; learn it; both. Cheapest hardware check: Columns Sep. 125, Apex 0.93, Dwell 0.27 / 0.40 alternating, bag.
-- The 10 % margin: DECIDED 2026-11-05 (D9), kept as the online acceptance criterion; a measured
-  per-limit-class overrun from bags is a follow-up Item, not P3.
+- ANSWERED or DECIDED (detail where named): the −0.06/m "centre pull" is not a Site property (P2, § 2.2); the
+  +1 %/corpus apex drift shows no ball effect (P2(c)); release-timing lag stays out of the Learner (P2(d): the
+  release-time error, +9 ms mean, sd 7.5 ms, has no effect on Apex); Ball 1's +16 mm is not a ball term (P2(c):
+  Δ_b OFF); the 10 % margin is kept as the online acceptance criterion (D9, 2026-11-05; a measured
+  per-limit-class overrun from bags is a follow-up Item); the apex c_max, λ, h_p, h_v, h_d and w₀ were decided at
+  P1 from the replay probe or the closed-loop tests (§§ 2.2-2.4; listed for the owner's review in the P1 entry).
+- OPEN (JB-192, gates `yaw_rad`; P5 item 1): the two-ball arrival pull c·(Site − arrived_from)/2,
+  c = −0.150 ± 0.010, beats today's s·x on 382 held-out Attempts (6.5 ± 2.8 mm²), over-corrects by about 6 mm at
+  Apex 1.10 as a scalar, and is not in f₀, by decision (`arrived_from` needs schema v3, never defaulted to zero).
+  **Reframed 2026-11-06 (offline probe; the planner-defect hypothesis is withdrawn):** no planner defect (the
+  planned Cup reaches the requested release to 0.00 mm); the release offset is by design (the release follows the
+  caught position, 92 of 98 carried Throws re-aimed, and the asymmetric 10 / 35 mm catch clamp sets its mean);
+  against the real release the pull is almost all velocity: the Platform delivers +4.2 / +0.4 of the +16.6 / +13.3
+  mm/s lateral launch asked for (plain / turned) after an arrival. The Memory's `rel` is the dispatch aim, not the
+  re-aimed release: a bookkeeping gap, fixes F1 / F2 proposed and not applied. Detail:
+  `logbook/2026-11-06-arrival-pull-and-hand-dropout-probes.md` (the probe's own report is local and gitignored: `temp/probes/sitting_debrief_2026-11-06b/unit_creep.md`).
 - P3a's cost is MEASURED (2026-11-06, § 2.5 "As built"). Open for the owner: whether the early start
   (`admissibility_early_command`, on by default) or the plan's literal slot is flown first; what buys the
   remaining slack when a check spills past the dispatch (more handoff lead, `cpu_partition`, a cheaper check);
@@ -667,7 +506,3 @@ sweep tool and YAML. Each phase reverts independently; the migration never rewri
   shower/box plateau (release_kind separation is the first defence, a per-kind model term the
   second). Whether the oval's seam-dz ablation needs release-velocity terms inside f₀ beyond L2's
   velocity state is settled with the oval session at P1 close.
-- The apex c_max, λ, h_p, h_v, h_d and w₀: DECIDED at P1 (2026-11-06, §§ 2.2-2.4), each from the replay
-  probe or the closed-loop tests; listed for the owner's review in the P1 logbook entry.
-- Ball 1's +16 mm (Δ₁) is attributed to the ball but perfectly confounded with site x₀ = −0.0625; it
-  could be site × ball. P2(c) separates it.

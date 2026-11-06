@@ -4,7 +4,7 @@ kind: bug
 title: 'Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for'
 status: inbox
 created: '2026-11-06'
-updated: '2026-11-06T06:13:44Z'
+updated: '2026-11-06T07:55:46Z'
 owners: []
 priority: high
 hardware: none
@@ -40,3 +40,8 @@ Columns Sep. 125, Apex 0.93, alternating Dwell 0.27 and 0.40 (three Attempts eac
 
 ## Links
 Evidence: `temp/probes/sitting_debrief_2026-11-06b/unit_transit.md`, `unit_B_D.md`. Related: JB-186 (collisions), plan `learner-generalisation.md`, `logbook/2026-11-06-sitting-debrief-2.md`.
+
+## Progress
+
+- 2026-11-06: Offline probe, planner defect ruled out: the release follows the caught position by design (asymmetric clamp predicts 5.3 mm, observed 6.0). Against the release that flew the pull is +1.1 / +1.3 mm position and -10.7 / -11.1 mm velocity (plan +16.6 / +13.3 mm/s, delivered +4.2 / +0.4). Position half withdrawn. JB-194 filed. (detail in the logbook).
+- 2026-11-06: Fix at source now means the ring after arrival (carry-ring-zvd) or the lateral launch delivery, not the planner; the planner-defect branch is closed. Cheapest next offline check: regress ball lateral v on planned v, encoder v at release and tilt, split RESEND and BUMP. The Dwell A/B hardware check stands.

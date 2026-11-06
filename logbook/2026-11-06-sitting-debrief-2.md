@@ -297,3 +297,7 @@ Learner.
 - The Hand anchor and the 70 / 80 A gap (owner decisions above).
 - Per-beat rotation of a Pattern and a live operator channel for a mid-Pattern change wait on the arrival pull;
   the oval is separate.
+
+## Follow-up, same day
+
+The position half of the arrival pull recorded above (a commanded Carry creep that might be a planner defect) was withdrawn by an offline probe the same evening: the release follows the caught position by design, and against the release that flew the pull is almost all velocity. The same probe found the Memory's `rel` records the dispatch aim, and the Hand dropouts were traced to a clock beat. See `logbook/2026-11-06-arrival-pull-and-hand-dropout-probes.md`.

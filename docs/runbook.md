@@ -6,7 +6,7 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 5 blocks (168 min) · Bench leg 1 block (30 min) · Bench hand 1 block (30 min)
+Rigs: Robot 6 blocks (198 min) · Bench leg 1 block (30 min) · Bench hand 1 block (30 min)
 
 ## Setup 0: before power
 
@@ -16,7 +16,7 @@ Rigs: Robot 5 blocks (168 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Robot  (5 blocks, 168 min)
+## Robot  (6 blocks, 198 min)
 
 ### Block 1: armed  (1 row, 1 min)
 
@@ -83,7 +83,20 @@ Rigs: Robot 5 blocks (168 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - pass: the bag replays through `tools/probes/human_throw_bench.py` with the robot-spot landing sd and the phantom rate reported.
 - record: the bag path, the lighting change, and the bench report path.
 
-### Block 5: armed, bb-fed, bridge-cycled  (2 rows, 95 min)
+### Block 5: level, armed  (1 row, 30 min)
+
+#### JB-137 Hand ODrive feedback starvation: 701 ms heartbeat dropout left the encoder 100 ms stale, the 2.0 rev lead clamp pinned the throw to stale+2.0, guard MAX_DEVIATION +3.707 fired correctly (turned-90 at 16/16)  (30 min, high, unattached)
+- why: tests the one-setting cure for the Hand feedback dropouts (a clock beat between the drive's 10 ms encoder frames and the bridge's 2 ms setpoint tick); if it holds, the dropout behind the 2026-11-06 CURRENT_LIMIT_VIOLATION cannot recur on the Hand.
+- do:
+  - Before the launch: on the Hand drive (odrivetool over USB, or the ODrive GUI) set `axis0.config.can.encoder_msg_rate_ms` from 10 to 9 and save. Change nothing else. The drive reboots on the save, so power-cycle the can-bridge, launch, and home the Hand as after any Hand drive save.
+  - Arm and level, start no goal, and leave the robot holding for 20 minutes with the bag recording. The setpoint stream runs during an armed hold, which is all the test needs. There is nothing to watch live.
+  - Then one GUI `Self-toss` goal, Apex 1.00, Dwell 0.27, Throws 20, as a check that Throws are unchanged.
+  - Stop and note it on any Hand fault or guard latch. To undo: set the value back to 10, save, power-cycle the bridge, home the Hand.
+  - Two things not to be misled by. The Hand's backup `config/ODrive config Files/odrive_pro_hand_config.json` still says 10, so re-applying it undoes the trial (it is updated at the debrief if 9 is kept). The launch log's heartbeat-dropout lines count `co-dropped` frames against 100 per second and misread a drive sending 111; ignore that count for the Hand.
+- pass: type the result as pending. At the debrief, from the bag's `/cache_diag`: the Hand's `age_max_us_6` never exceeds 25 ms over the 20 minutes, while at least one Leg shows a window over 50 ms (the in-run control, expected every 120 to 270 s per Leg). One Hand window over 50 ms refutes the model. If no Leg shows a window over 50 ms the stream did not run and the Hand result is void. The `Self-toss` goal runs 20/20 with no `Hand lead clamp ENGAGED` line.
+- record: the launch log and bag paths, the clock times of arming and of the goal, and whether the setting was left at 9 or put back.
+
+### Block 6: armed, bb-fed, bridge-cycled  (2 rows, 95 min)
 
 #### JB-102 Pre-release hold rung: release from a moving Platform (hold 0.100 → 0)  (45 min, high, two-ball-oval)
 - why: carry-ring-zvd P0 could not identify the Platform mode from the bags on disk (the encoder and mocap fits disagree, 5.4 vs 4.45 Hz), so the mode is identified on the robot first and the ZVD rows (provisional 4.9 Hz / 0.20 / 20 ms) are then flown A/B against the flag-off carry. Needs bridge FW 39 (Hand C1 grace 14 ms, BridgeIdentity receipt in the launch log); under FW 39 only Apex <= 1.10 flies (release-knot C1 stop vs the clip) until JB-174 lands; this row is Apex 1.00.
@@ -115,7 +128,7 @@ Rigs: Robot 5 blocks (168 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 
 ## Bench leg  (1 block, 30 min)
 
-### Block 6: bridge-cycled  (1 row, 30 min)
+### Block 7: bridge-cycled  (1 row, 30 min)
 
 #### JB-73 Hand ODrive state can silently diverge from what the can-bridge commanded  (30 min, low, unattached)
 - why: confirm FW 35's suppress-edge hold flush leaves the bench leg at the last transmitted command instead of input_pos + vel_ff/pos_gain, and measure the current step it costs.
@@ -128,7 +141,7 @@ Rigs: Robot 5 blocks (168 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 
 ## Bench hand  (1 block, 30 min)
 
-### Block 7: armed, bridge-cycled  (1 row, 30 min)
+### Block 8: armed, bridge-cycled  (1 row, 30 min)
 
 #### JB-145 Hand stall stop near a release cannot fit the stroke: the 20 ms grace plus the C2 stop carry the Hand past the clip  (30 min, medium, unattached)
 - why: FW 37 (owner call JB-154, option 2; grace 6 ms at FW 37, 14 ms at FW 39) stops a fast upward Hand inside the stroke when the stream dies; it has never run on hardware, and the stroke_cut bench stage exercises exactly that path with no ball.
@@ -151,7 +164,6 @@ Rigs: Robot 5 blocks (168 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - JB-114 [Robot] Hand end-of-stroke bumper, and first the planner's own brake shape: let the ceiling, not the Hand, cap the Apex: no ## Sitting section
 - JB-117 [Bench hand] Hand brake and hold currents sit far below the throw envelope's model (brake -14 to -20 A measured vs 35 to 40 A predicted; hold 1.5 vs 2.6 A): Kt, moving mass or friction is mis-modelled: no ## Sitting section
 - JB-120 [Robot] A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve: no ## Sitting section
-- JB-137 [Robot] Hand ODrive feedback starvation: 701 ms heartbeat dropout left the encoder 100 ms stale, the 2.0 rev lead clamp pinned the throw to stale+2.0, guard MAX_DEVIATION +3.707 fired correctly (turned-90 at 16/16): no ## Sitting section
 - JB-138 [Robot] Hand iq reached 53.3 A on a 45 deg turned hop launch, over the 50 A watch the high-low row names: no ## Sitting section
 - JB-148 [Robot] One-off 2 m Throws: raised Hand limits and an overshoot protection the speed-scaled margin cannot give: no ## Sitting section
 - JB-166 [Robot] Firmware scheduler STOP fires on a clean host stream and ends the Attempt: no ## Sitting section
