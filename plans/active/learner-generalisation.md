@@ -14,7 +14,7 @@ scope: >-
   configuration, P3c the box retirement, then P1 learner core, P2 characterisation sitting, P4 event
   stream, P5 close-out.
 steps:
-  - {id: P3a, title: Command-time admissibility check, kind: phase, status: in_progress, effort: m, hardware: none}
+  - {id: P3a, title: Command-time admissibility check, kind: phase, status: complete, effort: m, hardware: none}
   - {id: P3b, title: Nomination-time check and the nearest viable configuration, kind: phase, status: in_progress, effort: m, hardware: none}
   - {id: P3c, title: Box retirement, kind: phase, status: complete, effort: s, hardware: none}
   - {id: P1, title: Learner core, kind: phase, status: complete, effort: m, hardware: none}
@@ -374,8 +374,8 @@ open-ended streams (the Stop must be known at compile; nomination plans the whol
 
 | Phase | Scope | Status | Date | Risk | Validates |
 |-------|-------|--------|------|------|-----------|
-| P3a | Command-time admissibility check (three evaluations max, early start), `throw_envelope.evaluate` re-homed | IN PROGRESS (code complete 2026-11-06, merged to `main` 2026-11-06; live rehearsal owed, Sitting row JB-183) | 2026-11-06 | High (safety content moves) | Loaded-Jetson p99 within slack; sim gate green with no box |
-| P3b | Nomination-time check and the nearest viable configuration | IN PROGRESS (code complete 2026-11-06, merged to `main` 2026-11-06; live rehearsal owed, Sitting row JB-183) | 2026-11-06 | Medium (goal acceptance, GUI) | Every refusal at once; nearest viable named; moving-site Patterns checkable |
+| P3a | Command-time admissibility check (three evaluations max, early start), `throw_envelope.evaluate` re-homed | COMPLETE (merged to `main` 2026-11-06; flown the same day: 100 of 100 early checks reused, no refusal) | 2026-11-06 | High (safety content moves) | Loaded-Jetson p99 within slack; sim gate green with no box |
+| P3b | Nomination-time check and the nearest viable configuration | IN PROGRESS (merged and flown 2026-11-06, every goal accepted; the printed margin is higher than the live plan's, JB-185, an owner decision) | 2026-11-06 | Medium (goal acceptance, GUI) | Every refusal at once; nearest viable named; moving-site Patterns checkable |
 | P3c | Box retirement per § 6.4 | COMPLETE (merged to `main` 2026-11-06) | 2026-11-06 | Low | Census counts to zero |
 | P1 | Learner core: `plant_model.py`, `learner.py`, `memory.py` v2 + migration, replay probe | COMPLETE (merged to `main` 2026-11-06; every plant's memory migrated to `memory_v2.csv` the same day) | 2026-11-06 | Medium (changes every commanded u) | Cold-start apex error 12.9 mm (gate < 15 mm) at Sites with earlier data |
 | P2 | Characterisation sitting (D6): θ structure, yaw frame, telemetry | NOT STARTED | | Medium (hardware) | Aim vs offset; radial vs x; frame; Δ_b |
@@ -387,14 +387,26 @@ open-ended streams (the Stop must be known at compile; nomination plans the whol
 skipped + 10 serial, RESULT PASS). The same day: `colcon build --packages-select jugglebot_interfaces
 jugglebot` in the live checkout, and `tools/migrate_memory_schema_v2.py` run for every plant under
 `temp/learn/` (the live `jugglebot` memory: 3365 of 3365 rows carried, the Learner accepts 3334). The phase
-Outcomes below say "held on a branch" because they were written before the merge. Still owed: the loaded-box
-rehearsal and the first learned Throws, both in the Sitting row of JB-183.
+Outcomes below say "held on a branch" because they were written before the merge.
+
+**First powered run (Sitting 2026-11-06 13:19, JB-183; `logbook/2026-11-06-sitting-debrief.md`).** Eight
+two-ball Columns Attempts at Apex 1.00, Dwell 0.27, Sep. 100 / 170 / 125 / 135. P3a: 100 of 100 early checks
+were reused at dispatch (lead 174 to 324 ms, median 291; candidate moved 0.0 mm on every one), no
+`ADMISSIBILITY` refusal, no Attempt ended by the check; the early start stays on by default. P3a is COMPLETE.
+P3b: every goal was accepted (about 2 s uncached), `skills/check` and `skills/nominate` answered before power; no
+refusal occurred, so the nearest-viable message was not exercised on hardware. Its printed margin was 0.194 at
+Sep. 170 against 0.075 on the live checks (it plans at the nominal Sites, without the re-aim travel): JB-185, an
+owner decision, so P3b stays in progress. P1 hardware tests: T-H3 met (Columns 20/20 at Sep. 125 and at
+Sep. 135); T-H2 supported on a thin sample (first Throws at new Sites within 15.4 mm of the commanded Apex at
+Sep. 135, four Throws, 5 mm from known Sites; within 5.2 mm at Sep. 170, two Throws); the Learner's correction
+never reached its authority. Sep. 170 separated Legs 1 and 2 from their magnetic base joints (JB-184; owner
+decision 2026-11-06: no new bound). Four of the six early ends were ball collisions (JB-186).
 
 Order per D7 (supersedes D5's P1 → P3 → P4): P3a → P3b → P3c → P1 → P4; P2 (D6) sits between P1 and the
 oval ramp and blocks nothing here. P3a, P3b, P3c, P1 and P4 need no hardware; P2 and P5 do.
 
 ## 4. Implementation phases (detailed)
-### Phase 3a: Command-time admissibility check — IN PROGRESS
+### Phase 3a: Command-time admissibility check — COMPLETE
 
 **Outcome (2026-11-06).** Built on branch `p3-online-admissibility` (worktree `~/Desktop/Jugglebot-p3`), held for
 the owner's merge; the commits carry `Logbook-Entry: 2026-11-06-learner-generalisation-p3a-command-time-admissibility-check`
@@ -506,6 +518,8 @@ temp/learn/<plant>/memory.csv --out temp/learn/<plant>/memory_v2.csv`); the firs
 hardware (T-H2, T-H3). Depends: none (P3a-c landed first per D7).
 
 ### Phase 2: The characterisation sitting — NOT STARTED
+
+> Note 2026-11-06: the box named in (a) is retired (P3c); the Apex range of (a) is now whatever the goal-accept nomination admits. After the Sitting of 2026-11-06 keep (b)'s Sites and the rotated pair inside what has flown (transits up to 156 mm at 600 / 8000; a 187 mm transit separated two Legs, JB-184).
 
 > Note 2026-11-01: P2(b) (does the lateral bias rotate with the pair) was NOT answered by the turned-Columns rung flown today. No 20-run at 45 or 90 deg, no tracker landing on any miss, and no per-angle `plant_id` was set, so every row went to the one `jugglebot` memory (keyed by release-site xy, I-LEARN-1). Also seen: Ball 2's learner command sat at the (-20, -20) mm clamp corner in 37 of 40 straight rows (JB-139).
 

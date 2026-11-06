@@ -6,7 +6,7 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 5 blocks (198 min) · Bench leg 1 block (30 min) · Bench hand 1 block (30 min)
+Rigs: Robot 5 blocks (168 min) · Bench leg 1 block (30 min) · Bench hand 1 block (30 min)
 
 ## Setup 0: before power
 
@@ -16,20 +16,18 @@ Rigs: Robot 5 blocks (198 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Robot  (5 blocks, 198 min)
+## Robot  (5 blocks, 168 min)
 
-### Block 1: level, armed, bb-fed  (4 rows, 67 min)
+### Block 1: armed  (1 row, 1 min)
 
-#### JB-183 First Sitting on the merged learner-generalisation stack: live admissibility check, nomination and the first learned Throws  (25 min, high, learner-generalisation)
-- why: first powered run of the live admissibility check, goal acceptance by nomination and the generalising Learner; it closes P3a and P3b and flies T-H2 and T-H3.
+#### JB-149 40 Hz setpoint stream starved past the firmware's 70 ms cover during CATCH-solve bursts: 3 LANE_REFUSED ends on 2026-11-02  (1 min, high, unattached)
+- why: catch the next LANE_REFUSED with the GC probe running; three Sittings (2026-11-03 12:30 and 22:29, 2026-11-04 18:45) found no host-side cause, so only an end caught under the probe can rule the host out at the moment of failure.
 - do:
-  - Before power, launch up with the bag recording and the GUI open: `ros2 service call /skills/check std_srvs/srv/Trigger`, then `ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: 'columns,apex_m=1.00,separation_mm=100,dwell_s=0.27,num_cycles=21'}"`. Nothing moves. The nominate reply must read viable.
-  - Armed and level. GUI: Juggle panel `Columns`, Apex 1.00, Sep. 100, Dwell 0.27, Throws 21. One Attempt. At Start the launch log prints `learner: ...; rows N (accepted, rejected, unusable)`: N must be 3365 or more, which shows the migrated memory loaded.
-  - New Sites. GUI: `Columns`, Apex 1.00, Sep. 170, Dwell 0.27, Throws 21. One Attempt. If Start is refused, the message names the nearest viable configuration: fly that instead and write it down.
-  - If an Attempt ends on an `ADMISSIBILITY` refusal or a refused goal names `memory_v2.csv`, stop this row and note the line; do not fly the other rows on a guess.
-- pass: both service calls answer and nominate reads viable; the Sep. 100 Attempt reads `COMPLETED (20/20 caught)` with no Attempt ended by an `ADMISSIBILITY` refusal (end `NO_ADMISSIBLE_COMMAND`); at Sep. 170 each ball's first Throw has a Tracker Apex within 40 mm of the commanded Apex (the identity prior missed by about 75 mm).
-- record: the launch log and bag paths, N from the `learner:` line, the nominate reply and its time, the count of `ADMISSIBILITY-EARLY` lines ending `the early resolution is sent` against `re-checked at dispatch`, each ball's first five Tracker Apexes at Sep. 170, caught of thrown per Attempt.
-- first: every other row flies on the merged stack, so no other result is readable until this row has passed
+  - Nothing extra: `gc_probe` is on by default at launch since 2026-11-04 (do not pass `gc_probe:=false`). If an Attempt ends LANE_REFUSED, note the time.
+- pass: a LANE_REFUSED end is on record with GC_PROBE lines from both stream nodes within 1 s of its STOP WARN, and that WARN carries its verdict, fw_sched counters and frame ages.
+- record: the launch log path and the line of each LANE_REFUSED end; none = say so.
+
+### Block 2: level, armed, bb-fed  (3 rows, 42 min)
 
 #### JB-161 Ball 2's first throw after the feed catch lands about 180 mm outward along the separation axis  (10 min, high, unattached)
 - why: the hypothesis is that a feed catch whose lateral aim was clamped seats the ball off-centre and the first Throw carries a lateral kick. A fresh plant_id aims the feed catch by the identity prior, so the clamp never engages: if the outward first throw disappears the clamped aim is implicated, if it persists the clamp is cleared. Either outcome is data.
@@ -61,22 +59,6 @@ Rigs: Robot 5 blocks (198 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
   - Afterwards `ros2 param set /skill_node columns_angle_deg 0`.
 - pass: 20 consecutive Catches in one Attempt at each angle, flown with Throws 21 (the 21st throw is the Stop throw, so `COMPLETED (20/20 caught)`; with Throws 20 it reads 19/19); landing scatter, per ball and per axis, with the mean within 15 mm and the sd within 10 mm of the straight control (proposed 2026-11-03, owner to confirm; the old "within 3 mm" was below the control's own run-to-run sd of 18-31 mm); no HAND_LIMIT line.
 - record: caught of thrown per angle, each angle's plant_id, landing scatter against the control, Ball 2's first-throw landing (x, y) mm per Attempt (JB-161: 5 of 7 landed outward at 90 deg on 2026-11-03), the bag path; commit docs/records.md.
-
-### Block 2: armed  (2 rows, 6 min)
-
-#### JB-149 40 Hz setpoint stream starved past the firmware's 70 ms cover during CATCH-solve bursts: 3 LANE_REFUSED ends on 2026-11-02  (1 min, high, unattached)
-- why: catch the next LANE_REFUSED with the GC probe running; three Sittings (2026-11-03 12:30 and 22:29, 2026-11-04 18:45) found no host-side cause, so only an end caught under the probe can rule the host out at the moment of failure.
-- do:
-  - Nothing extra: `gc_probe` is on by default at launch since 2026-11-04 (do not pass `gc_probe:=false`). If an Attempt ends LANE_REFUSED, note the time.
-- pass: a LANE_REFUSED end is on record with GC_PROBE lines from both stream nodes within 1 s of its STOP WARN, and that WARN carries its verdict, fw_sched counters and frame ages.
-- record: the launch log path and the line of each LANE_REFUSED end; none = say so.
-
-#### JB-174 Count scheduled-stream holes and downlink datagram loss in the can-bridge heartbeat  (5 min, high, unattached)
-- why: confirm that the FW 40 stream-socket queue fix takes downlink setpoint loss from about 1.5 % to zero (three Sittings measured 1.3 to 1.5 %).
-- do:
-  - Confirm the launch log reads `can-bridge v40`. Launch and arm as usual, then leave the robot holding the Active pose for 5 minutes before the first goal. Fly the rest of the Sitting as normal. The bridge logs one `downlink summary` line each time streaming ends.
-- pass: every `downlink summary` line of the Sitting reads lost 0 and queue_dropped +0, over at least 10,000 setpoints in total (seq_gaps is recorded, not judged).
-- record: the launch log path and its `downlink summary` lines.
 
 ### Block 3: armed, bb-fed  (1 row, 15 min)
 
