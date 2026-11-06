@@ -26,7 +26,7 @@ Details, processes and timing: [Architecture](architecture.md).
 
 ## Segments and feasibility
 
-Every segment is rest-terminal and is planned from the live state at the splice knot, so the joined trajectory is C2 there. A segment is installed only if it passes the robot's segment gates (`ros_ws/src/jugglebot/jugglebot/motion/trajectory/feasibility.py`; invariants in `ros_ws/src/jugglebot/jugglebot/motion/skills/INVARIANTS.md`) and lies inside the admissible box (`config/generated/admissible_box.yaml`, produced by `tools/admissible_sweep.py`). An infeasible segment is refused with the gate's code and the attempt ends on the previous segment's rest tail.
+Every segment is rest-terminal and is planned from the live state at the splice knot, so the joined trajectory is C2 there. A segment is installed only if it passes the robot's segment gates (`ros_ws/src/jugglebot/jugglebot/motion/trajectory/feasibility.py`; invariants in `ros_ws/src/jugglebot/jugglebot/motion/skills/INVARIANTS.md`) and was nominated (goal acceptance plans every Segment of the Pattern's short Schedule with the real planner and gate at the live limits, I-ADMIT-2) with each commanded Throw checked online (I-ADMIT-1); until 2026-11-06 it had to lie inside the offline admissible box (`config/generated/admissible_box.yaml`, `tools/admissible_sweep.py`), retired at learner-generalisation P3c. An infeasible segment is refused with the gate's code and the attempt ends on the previous segment's rest tail.
 
 ## Learner
 
@@ -38,7 +38,7 @@ Perception is QTM mocap via `mocap_node` (about 300 frames/s) feeding the ball t
 
 ## Safety
 
-The leg-path safety authority is the can-bridge Teensy's `MAX_DEVIATION` guard and fault machine; nothing on the Jetson is in that loop. The Jetson-side gates (feasibility, the admissible box) keep plans sane but are not safety. See [CAN Bridge safety](../can_bridge/safety.md) and [control flow](../can_bridge/control.md).
+The leg-path safety authority is the can-bridge Teensy's `MAX_DEVIATION` guard and fault machine; nothing on the Jetson is in that loop. The Jetson-side gates (feasibility, the nomination and the online check) keep plans sane but are not safety. See [CAN Bridge safety](../can_bridge/safety.md) and [control flow](../can_bridge/control.md).
 
 ## What is still on this site
 

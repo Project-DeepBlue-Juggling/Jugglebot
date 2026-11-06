@@ -21,7 +21,7 @@ import sys
 import pytest
 
 from jugglebot.motion.skills import schedule as sch
-from jugglebot.motion.skills.memory import _FLOAT_FMT, _HEADER
+from jugglebot.motion.skills.memory import HEADER_V1 as _HEADER, _FLOAT_FMT
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _SCRIPT_PATH = os.path.join(_PROJECT_ROOT, 'tools', 'migrate_memory_catch_plane.py')

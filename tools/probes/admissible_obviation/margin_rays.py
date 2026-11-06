@@ -23,7 +23,7 @@ and the code.
 Part of the admissible-box sweep obviation investigation
 (``logbook/2026-11-04-admissible-box-sweep-obviation-investigation.md``).
 Offline, no hardware, no ROS: imports the production planner + gate exactly as
-``tools/admissible_sweep.py`` does. Outputs go under ``temp/probes/admissible_obviation/``.
+``tools/probes/planner_cells.py`` does. Outputs go under ``temp/probes/admissible_obviation/``.
 BLAS is pinned to one thread (the sweep's determinism rule).
 """
 
@@ -32,9 +32,9 @@ for v in ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS'):
     os.environ[v] = '1'
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 sys.path.insert(0, ROOT); sys.path.insert(0, os.path.join(ROOT, 'ros_ws', 'src', 'jugglebot'))
-sys.path.insert(0, os.path.join(ROOT, 'tools'))
+sys.path.insert(0, os.path.join(ROOT, 'tools', 'probes'))
 import numpy as np
-import admissible_sweep as asw
+import planner_cells as asw
 from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.skills import segments as sg, sites as st, schedule as sc, admissible as ab
@@ -47,7 +47,7 @@ ap.add_argument('--limits', type=float, nargs=4, default=[600.0, 8000.0, 200000.
 ap.add_argument('--rmax', type=float, default=40.0); ap.add_argument('--step', type=float, default=1.0)
 args = ap.parse_args(); mode, apex, out = args.mode, args.apex, args.out
 geom = StewartGeometry()
-limits = asw._limits(*args.limits)
+limits = asw.sitting_limits(*args.limits)
 cfg = sg.SegmentConfig(planner_mode=mode)
 s0, s1 = st.columns_sites(125.0, 0.0)
 T = sc.flight_s(apex)
@@ -81,11 +81,11 @@ def catch_throw(site, seed, takeoff, off):
     except uc.CycleInfeasible as exc:
         return dict(code=exc.code, m=margin(exc.report), peaks=peaks(exc.report), ok=False)
     r = seg.meta.report
-    return dict(code='OK' if asw._within_margin(r, limits) else 'MARGIN', m=margin(r), peaks=peaks(r),
-                ok=asw._within_margin(r, limits))
+    return dict(code='OK' if asw.within_margin(r, limits) else 'MARGIN', m=margin(r), peaks=peaks(r),
+                ok=asw.within_margin(r, limits))
 
 def launch(site, off):
-    seed = asw._rest_state(site.rest_site_mm())
+    seed = asw.rest_state(site.rest_site_mm())
     target = site.throw_site_mm() + np.array([off[0], off[1], 0.0])
     term = sg.ThrowTerminal(site_mm=site.throw_site_mm(), target_mm=target, flight_s=T, t_release_s=asw.SINGLE_SITE_LAUNCH_S)
     try:
@@ -93,10 +93,10 @@ def launch(site, off):
     except uc.CycleInfeasible as exc:
         return dict(code=exc.code, m=margin(exc.report), peaks=peaks(exc.report), ok=False)
     r = seg.meta.report
-    return dict(code='OK' if asw._within_margin(r, limits) else 'MARGIN', m=margin(r), peaks=peaks(r),
-                ok=asw._within_margin(r, limits))
+    return dict(code='OK' if asw.within_margin(r, limits) else 'MARGIN', m=margin(r), peaks=peaks(r),
+                ok=asw.within_margin(r, limits))
 
-ok, code, seed, takeoff = asw._throw_cell(s0, s0, T, asw.SINGLE_SITE_LAUNCH_S, limits, geom, cfg)
+ok, code, seed, takeoff = asw.throw_cell(s0, s0, T, asw.SINGLE_SITE_LAUNCH_S, limits, geom, cfg)
 res = dict(mode=mode, apex=apex, T=T, seed_ok=ok, seed_code=code, rays=[], limits=args.limits)
 t0 = time.perf_counter()
 if ok:

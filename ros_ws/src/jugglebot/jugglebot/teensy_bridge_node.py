@@ -128,6 +128,7 @@ from jugglebot import stream_tuning as _tuning
 from teensy_link.gap_monitor import (
     EMPTY_STATS, HAND_C1_COVER_MS, SCHED_COVER_MS, DownlinkLossTracker,
     EpisodeLatch, GapTracker)
+from teensy_link.hand_feedback_watch import HandFeedbackWatch
 from teensy_link.setpoint_pump import SetpointPump, FLAG_HAS_HAND, HAND_FF_GAIN_MAX
 from teensy_link.encoder_search import (
     EncoderSearch, AxisStatus, AXIS_STATE_ENCODER_INDEX_SEARCH,
@@ -896,6 +897,9 @@ _HB_STALE_WARN_REPEAT_S = 5.0
 # frame type with it would have E-STOPPED, so an episode reaching it is
 # qualitatively different from the 0.9-1.9 s population.
 _HB_STALE_ONSET_WARN_S = 2.0
+# Shortest episode whose encoder frame count means anything: the census that
+# supplies the count is 1 Hz, so a shorter difference is mostly its sampling.
+_HB_STALE_ENC_COUNT_MIN_MS = 3000.0
 
 # HandSensor.flags bits (T→J, hand ball-present sensor) — generated single
 # source: p.HandSensorFlags. An older bridge never sends the frame
@@ -1507,8 +1511,9 @@ class TeensyBridgeNode(Node):
         # matches the wire scale before arming K > 0).
         self.declare_parameter('hand_torque_ff_gain', 0.0)
         # Hand-jam detector + recovery (motion/hand_jam.py). Bridge parameters,
-        # not YAML, for now: a YAML edit + regen changes the admissible-box
-        # gate hash and forces a ~22 min re-sweep per configuration. Each is
+        # not YAML, for now (until 2026-11-06 a YAML edit + regen changed the
+        # Admissible box's gate hash and forced a ~22 min re-sweep; the box is
+        # gone, the placement stands unreviewed). Each is
         # validated together in `_hand_jam_load_config`.
         _hj_defaults = hj.JamConfig()
         for _hj_name in hj.JamConfig.ROS_PARAMS:
@@ -1657,7 +1662,7 @@ class TeensyBridgeNode(Node):
         self._hb_stale_ms_max: list = [0] * _NUM_AXES
         self._hb_stale_onset_warn_t: list = [None] * _NUM_AXES
         # Latest per-axis enc_frames census (FW 23 CacheDiag), kept so an
-        # episode's co-dropped encoder count can be differenced across it.
+        # episode's encoder count can be differenced across it.
         self._latest_enc_frames: list | None = None
         # Latest per-axis encoder AGE max (us, /cache_diag 1 s window) and its
         # max over the current hb-stale episode: a frame COUNT hid 100 ms stalls.
@@ -1983,6 +1988,9 @@ class TeensyBridgeNode(Node):
         # Default '' = off (no writer, no thread, hot-path cost is one None test).
         self.declare_parameter('hand_capture_dir', '')
         self._hand_capture = None
+        # Hand feedback-starvation episode lines (JB-137 diagnostic; no actuation).
+        self._hand_fb_watch = HandFeedbackWatch()
+        self._hfw_last_frames = None
         self._hand_capture_start(self.get_parameter('hand_capture_dir').value)
         # JB-149: opt-in GC pause probe (default off: nothing installed).
         self._gc_probe = None
@@ -2688,6 +2696,15 @@ class TeensyBridgeNode(Node):
             self._latest_heartbeat = hb
             self._latest_heartbeat_sent = sent
             self._heartbeat_gen += 1
+        # JB-137 diagnostic: must never raise into the receive path.
+        try:
+            watch = getattr(self, '_hand_fb_watch', None)
+            if watch is not None:
+                for line in watch.on_heartbeat(int(hb.lead_clamp_mask),
+                                               time.time()):
+                    self.get_logger().warning(line)
+        except Exception:  # noqa: BLE001 -- a diagnostic only
+            pass
 
     def _on_telemetry(self, msg_type, seq, payload, addr):
         try:
@@ -2706,6 +2723,25 @@ class TeensyBridgeNode(Node):
         # executor timer: an executor thread blocked for seconds (`_park_hand`,
         # a cold-start verb) must not blind it. Non-blocking by contract.
         self._hand_jam_feed(tm)
+        # JB-137: episode lines for Hand feedback starvation. A few compares
+        # per frame; logs only on an episode edge. 'streaming' = the setpoint
+        # pump built frames since the previous Telemetry frame.
+        # Must never raise into the receive path (it would skip the capture
+        # below on every frame).
+        try:
+            pump = getattr(self, '_sp_pump', None)
+            if (pump is not None
+                    and getattr(self, '_hand_fb_watch', None) is not None):
+                fb = pump.frames_built
+                streaming = (self._hfw_last_frames is not None
+                             and fb != self._hfw_last_frames)
+                self._hfw_last_frames = fb
+                for line in self._hand_fb_watch.on_telemetry(
+                        tm.t_teensy_us, tm.pos_rev[_HAND_AXIS],
+                        tm.vel_rps[_HAND_AXIS], time.time(), streaming):
+                    self.get_logger().warning(line)
+        except Exception:  # noqa: BLE001 -- a diagnostic only
+            pass
         cap = self._hand_capture  # TEMPORARY (JB-147 diagnostic capture)
         if cap is not None:
             cap.offer('telem', t_src_us=tm.t_teensy_us, pos=tm.pos_rev[_HAND_AXIS],
@@ -7873,15 +7909,22 @@ class TeensyBridgeNode(Node):
                 self._hb_stale_enc_at_onset[i] = None
                 if (enc_at_onset is not None and enc_now is not None
                         and i < len(enc_now)):
-                    # enc_frames is cumulative-since-boot at a nominal 100 Hz,
-                    # so the SHORTFALL against the episode's duration is the
-                    # co-dropped encoder count — the number that says this is
-                    # frame loss and not a heartbeat-only artefact.
-                    got = max(0, enc_now[i] - enc_at_onset)
-                    expect = int(round(100.0 * episode_ms * 1e-3))
-                    enc_txt = (f'{got} encoder frames in the window vs ~{expect} '
-                               f'nominal ({max(0, expect - got)} co-dropped)')
-                    enc_short = f'{got}/{expect} encoder frames'
+                    # enc_frames is a cumulative count from a 1 Hz census, so a
+                    # difference over a short episode is 0, 1 or 2 snapshots of
+                    # it, not a measurement (2026-11-06: `0/80 encoder frames`
+                    # on a Hand that was sending 111 per s). Only an episode
+                    # several windows long gets a rate; no nominal is assumed,
+                    # because the drives' periods differ (Hand 9 ms). /cache_diag
+                    # is the record for a short episode.
+                    if episode_ms >= _HB_STALE_ENC_COUNT_MIN_MS:
+                        got = max(0, enc_now[i] - enc_at_onset)
+                        rate = got / (episode_ms * 1e-3)
+                        enc_txt = (f'{got} encoder frames in the window '
+                                   f'({rate:.0f} per s)')
+                        enc_short = f'{got} encoder frames, {rate:.0f} per s'
+                    else:
+                        enc_txt = 'too short for the 1 Hz encoder count'
+                        enc_short = 'too short for an encoder count'
                     age_ms = self._hb_stale_age_max_us[i] / 1e3
                     if age_now is not None:
                         enc_txt += f'; encoder age max {age_ms:.0f} ms'

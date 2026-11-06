@@ -41,3 +41,4 @@ From the 2026-11-04 18:45 bag (`/hand_telemetry`, `/balls`) and launch.log, Nigh
 ## Progress
 
 - 2026-11-05: 2026-11-05 L2615 MISSED_CATCH is a different class: Hand SPINOUT disarm at 503.68 inside the Catch window, verdict 503.767 after the lane latched; not a false miss, and JB-172 option 4 (no Stop) would not cover it. Separate bug filed for fault-preempted Catch verdicts.
+- 2026-11-06: Night Shift 2026-11-06: held on night-shift/2026-11-06-JB-169: gate (b), 3 audit findings open (a false CAUGHT from the Stop's seat is the main one); unblocked by the owner's answer

@@ -2,11 +2,10 @@
 id: JB-175
 kind: bug
 title: A Hand or guard fault inside a Catch's judging window ends the Attempt MISSED_CATCH instead of the fault
-status: in_progress
+status: complete
 created: '2026-11-05'
-updated: '2026-11-05T18:29:56Z'
-owners:
-- night-shift
+updated: '2026-11-05T18:02:53Z'
+owners: []
 priority: medium
 effort: s
 hardware: none
@@ -18,6 +17,7 @@ blocked_by: []
 links:
 - map/bug-full-length-columns-goal-ends-missed-catch-on-its-final.md
 - map/bug-hand-overshoot-at-apex-1-35-saturated-the-stepped-brake-at.md
+- logbook/2026-11-06-jb175-fault-preempts-catch-verdict.md
 filed_by: claude
 ---
 

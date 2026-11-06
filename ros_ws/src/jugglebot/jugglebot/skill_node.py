@@ -28,7 +28,7 @@ the cup decides. Cancelling the goal ends the current attempt
 segment is rest-terminal (``segments``' invariant), so ending an attempt
 needs no motion command of its own: whatever is streaming already ends at
 rest, and a released ball's outcome keeps finalising after the attempt ends.
-``skills/check`` reports every current ladder refusal plus the box/limits
+``skills/check`` reports every current ladder refusal plus the nomination
 status in one call, for a dress-rehearsal runsheet.
 """
 
@@ -38,7 +38,7 @@ import collections
 import csv
 import dataclasses
 import math
-import os
+import re
 import threading
 import time
 import traceback
@@ -65,20 +65,24 @@ from jugglebot_interfaces.msg import (BallButlerHeartbeat, BallState,
                                       BallStateArray,
                                       HandTelemetryMessage, RigidBodyPoses,
                                       ThrowAnnouncement, TrajectoryStatus)
-from jugglebot_interfaces.srv import BallButlerThrow, GoToPose, InstallSegment
+from jugglebot_interfaces.srv import (BallButlerThrow, GoToPose,
+                                      InstallSegment, SetString)
 
 import jugglebot.hardware_config as hw
 import jugglebot.protocol_config as proto
 from jugglebot import ball_possession
+from jugglebot import juggle_request as jr
 from jugglebot import mocap_status as mocap_st
 from jugglebot import records as rec
 from jugglebot import throw_identity as ti
 from jugglebot.motion import blas_threads
 from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.skills import admissible as adm
+from jugglebot.motion.skills import nominate as nom
 from jugglebot.motion.skills import bump as sk_bump
 from jugglebot.motion.skills import executor as ex
 from jugglebot.motion.skills import learner as lr
+from jugglebot.motion.skills import plant_model as pm
 from jugglebot.motion.skills import report as rp
 from jugglebot.motion.skills.executor import (InstallResult, Landing,
                                               Observations, SeatWindow,
@@ -103,7 +107,9 @@ from jugglebot.motion.skills.schedule import (COLUMNS_HIGHLOW,
                                               schedule_has_shadow_landing,
                                               transit_s)
 from jugglebot.motion.skills import magazine_target as mt
-from jugglebot.motion.skills.magazine_throw import MAGAZINE, MagazineTerminal
+from jugglebot.motion.skills.magazine_throw import (MAGAZINE,
+                                                    MAGAZINE_NEEDS_REST,
+                                                    MagazineTerminal)
 from jugglebot.motion.skills.segments import CATCH, REST, THROW
 from jugglebot.motion.skills import segments as sk_seg
 from jugglebot.motion.skills.sites import (CATCH_CUP_Z_MM, REST_CUP_Z_MM,
@@ -112,6 +118,7 @@ from jugglebot.motion.skills.sites import (CATCH_CUP_Z_MM, REST_CUP_Z_MM,
 from jugglebot.motion.tilt_map import find_repo_root
 from jugglebot.robot_frame import RobotFrame, rotation_angle_deg
 from jugglebot.motion.trajectory import ballistics_bc
+from jugglebot.motion.trajectory import feasibility as feas
 from jugglebot.motion.trajectory import tilt_geometry as tg
 from jugglebot.motion.trajectory import cup_cycle
 from jugglebot.motion.trajectory.limits import TrajectoryLimits
@@ -133,12 +140,30 @@ _BALL_TRACKING_CONFIRMED = 1
 # The repo root, found the same way reload_coordinator_node._REPO_ROOT is
 # (tilt_map.find_repo_root's MARKER walk, never a fixed __file__ depth — see
 # that function's docstring for why a fixed walk breaks under colcon install).
-# None for a genuinely detached deployment, where the admissible box / memory
-# paths below cannot be resolved and a self-toss/hop Juggle goal refuses.
+# None for a genuinely detached deployment, where the memory paths below
+# cannot be resolved and a self-toss/hop Juggle goal refuses.
 _REPO_ROOT = find_repo_root(__file__)
-_ADMISSIBLE_BOX_PATH = (os.path.join(_REPO_ROOT, 'config', 'generated',
-                                     'admissible_box.yaml')
-                       if _REPO_ROOT else None)
+
+
+def _single_site_x(pattern) -> Optional[float]:
+    """The x (m) of ``pattern``'s Site when it has exactly one (the goal's
+    first Throw's release Site, for the Learner's start line); ``None``
+    otherwise (``PlantModel.summary`` then omits the per-Site offset)."""
+    sites = tuple(getattr(pattern, 'sites', ()) or ())
+    if len(sites) != 1:
+        return None
+    try:
+        return float(sites[0].cup_mm[0]) / 1000.0
+    except (AttributeError, TypeError, ValueError, IndexError):
+        return None
+
+#: A FED Columns (`_install_columns_schedule`) always compiles with the hop
+#: entry (owner decision 2026-10-05). The ONE flag the compile and
+#: `_nomination_config` both read, so the nominated Schedule is the flown one:
+#: the fed Columns Patterns (`nominate.COLUMNS_FED`) nominate with
+#: ``entry='hop'``; `columns_1ball` (a REST-first `compile_rest_columns`) and
+#: the one-ball patterns do not.
+_FED_COLUMNS_HOP_ENTRY = True
 
 # ``sk_seg`` kind string -> ``InstallSegment.Request`` wire constant. Built from
 # the module's own KIND_* names below (not restated as bare ints), same
@@ -154,6 +179,22 @@ _WIRE_KIND = {THROW: InstallSegment.Request.KIND_THROW,
 #: (InstallSegment.srv), so this is a "the service died" backstop, not a
 #: nominal-latency budget.
 _SERVICE_WAIT_S = 2.0
+
+#: P3a: the codes a `check_only` reply carries when the CHECK itself could not
+#: be evaluated (a transport / guard refusal on trajectory_node's side), as
+#: opposed to a planner verdict. Spelled with the names trajectory_node uses:
+#: its guard ladder (`_GUARD_LATCHED`, `feas.WRONG_MODE`, `feas.STALE_STATE`),
+#: `_PLANNER_MODE`, `_CHECK_NOT_SUPPORTED`, and the solver worker's own
+#: `SOLVER_UNAVAILABLE` / `SKIPPED_LATE`. (An unknown segment kind, `UNREACHABLE`
+#: on the node, cannot be sent from `_WIRE_KIND`, and the string is also a
+#: planner code, so it is deliberately not listed.)
+_CHECK_NOT_EVALUATED_CODES = frozenset((
+    'GUARD_LATCHED', feas.WRONG_MODE, feas.STALE_STATE, 'PLANNER_MODE',
+    'CHECK_NOT_SUPPORTED', 'SOLVER_UNAVAILABLE', 'SKIPPED_LATE',
+    # Origin refusals that are timing or shape faults, not verdicts on the
+    # command: the check could not be posed, so the refusal names them
+    # instead of blaming the command.
+    ex.WINDOW_TOO_SHORT, MAGAZINE_NEEDS_REST, ex.MAGAZINE_NOT_CHECKABLE))
 
 #: SkillExecutor.tick cadence. The plan's dispatch-lead arithmetic
 #: (`schedule._MIN_WINDOW_S`, `executor.LEAD_KNOTS`) is quantised to the 40 Hz
@@ -361,11 +402,9 @@ _ROBOT_FRAME_STALE_WARN_S = 10.0
 #: the two-site pattern parameter defaults: apex 0.9 m and dwell 0.30 s are the
 #: owner's R2 operating point (2026-09-12); separation 250 mm is the owner's
 #: R4 target (plan § 0, 2026-09-16, BallButler experience; decision D2
-#: 2026-09-23: "sweep 250 first, fly 250 first") and the ONLY separation the
-#: hop boxes in config/generated/admissible_box.yaml are swept at — the GUI
+#: 2026-09-23: "sweep 250 first, fly 250 first") — the GUI
 #: relay sends 0 for every numeric goal field ("use the node's default"), so
-#: this constant IS the separation a GUI-started hop flies.  A 100 mm hop has
-#: no box and is refused NO_ADMISSIBLE_COMMAND before anything moves.
+#: this constant IS the separation a GUI-started hop flies.
 _DEFAULT_APEX_M = 0.9
 _DEFAULT_SEPARATION_MM = 250.0
 #: 0.30 -> 0.27 on 2026-10-04 (R5 sitting 3): with two balls in columns the
@@ -376,10 +415,17 @@ _DEFAULT_SEPARATION_MM = 250.0
 #: acceleration-bound at dwell 0.30 (4507-4813 mm/s^2 against 4500) and
 #: jerk-bound at 0.25 (205-226 k against 180 k -- the catch-with-throw has
 #: 50 ms less to re-level for its throw), and passes all three at 0.27.
-#: The admissible box is swept at this dwell; `check_limits` refuses a
-#: live dwell it was not swept for, so this constant and the YAML move
-#: together.
 _DEFAULT_DWELL_S = 0.27
+
+
+def _pattern_default_dwell_s(pattern_name: str) -> float:
+    """The dwell (s) a goal with ``dwell_s == 0`` gets for ``pattern_name``.
+
+    One value for every Pattern, exactly what the retired ``dwell_s`` node
+    parameter defaulted to: the GUI pre-fills the oval Patterns with 0.65 on
+    the goal itself, so a bare goal has always planned them at 0.27.
+    """
+    return _DEFAULT_DWELL_S
 _DEFAULT_N_THROWS = 4
 
 #: The columns schedule's first skill installs this long after a columns
@@ -389,9 +435,8 @@ _START_LEAD_S = 1.0
 
 #: the self-toss-pattern parameter defaults (R3 owner decisions,
 #: brief_common.md § "Owner decisions"): one site, P1 = (-50, 0) mm — the SAME
-#: point `columns_sites(100.0)`'s P1 names, so a box swept for site pair
-#: ('P1', 'P1') at that xy (`config/generated/admissible_box.yaml`) matches
-#: without a second geometry definition.
+#: point `columns_sites(100.0)`'s P1 names, without a second geometry
+#: definition.
 _DEFAULT_SITE_X_MM = -50.0
 _DEFAULT_SITE_Y_MM = 0.0
 _DEFAULT_SITE_NAME = 'P1'
@@ -714,8 +759,22 @@ def _frame_offset_check(platform_samples, commanded_samples, now, *,
                             dy_mm, detail, plat_spread_mm)
 
 
+#: Guards the check-and-build of a goal's Learner (``SkillNode._make_learner``):
+#: goal-start sites and the announcement / feed callbacks run on different
+#: threads of the MultiThreadedExecutor.
+_LEARNER_LOCK = threading.Lock()
+
+
 class SkillNode(Node):
-    """Schedule-driven skill dispatch shell (plan § 2.4)."""
+    """Schedule-driven skill dispatch shell (plan § 2.4).
+
+    Dwell is NOT a node parameter (plan `online-admissibility` § 2.6, design
+    D-P4-6): it is a property of the Pattern. A goal's ``dwell_s == 0`` means
+    the Pattern's default dwell (:func:`_pattern_default_dwell_s`), and a
+    ``skills/nominate`` request may carry ``dwell_s=``. The ``dwell_s``
+    parameter was retired, so ``ros2 param set /skill_node dwell_s ...`` now
+    fails as an undeclared parameter -- the intended by-name refusal.
+    """
 
     def __init__(self, robot_name: str = _DEFAULT_PLANT_ID):
         super().__init__('skill_node')
@@ -902,6 +961,11 @@ class SkillNode(Node):
         # pre-2026-09-18 behaviour on a bridge that does not publish the key.
         self._sched_refused = -1
         self._sched_refused_mono = 0.0
+        # JB-175: the bridge's Teensy guard `fault_state` off `/link_status`
+        # (the orchestrator's own latch read: not NONE/UNKNOWN/'' = latched)
+        # and its perf stamp. Never observed / absent key = not latched.
+        self._guard_fault_state = ''
+        self._guard_fault_state_mono = 0.0
         self._sched_refused_at_start = -1
         # The latch itself (`/link_status` `sched_hold_latched`, heartbeat
         # flags bit 15; -1 = never observed) and when `sched_refused` last
@@ -932,7 +996,7 @@ class SkillNode(Node):
         self._hold_forced_code = ''
         # R4 reload (C1, 2026-09-28 rework of brief step 1): the reload
         # context spanning the WHOLE reload wait — `None` outside one, else
-        # a `SimpleNamespace(phase=..., pattern=..., boxes=..., memory=...,
+        # a `SimpleNamespace(phase=..., pattern=..., memory=...,
         # deadline_mono=..., site=..., bridge=...)`.  Three phases, one
         # object mutated in place (never replaced — `is` identity checks
         # elsewhere rely on it):
@@ -996,6 +1060,17 @@ class SkillNode(Node):
         # group).
         self._reload_ctx = None
         self._reload_lock = threading.Lock()
+        # Goal-accept nomination (P3b): one solve at a time (the module cache
+        # is shared) and the last refusal's lines, kept for `skills/nominate`
+        # callers / the log; only ever read as a snapshot.
+        self._nominate_lock = threading.Lock()
+        # A goal accept is `starting` from its running test to its return: the
+        # nomination (1-5 s) sits between that test and `_executor` being set,
+        # and the Juggle group is reentrant, so a second goal could otherwise
+        # pass `_refuse_if_running` meanwhile. `_refuse_if_running` counts it.
+        self._goal_start_lock = threading.Lock()
+        self._goal_starting = False
+        self._last_nomination_lines: List[str] = []
         # Ball Butler throw CANCEL (R5 sitting 7 decision 5, 2026-10-13): the
         # perf_counter instant of the release of the last `bb/throw_at_target`
         # Ball Butler accepted for this node, or None. Set by
@@ -1098,26 +1173,26 @@ class SkillNode(Node):
         # pattern builds the straight pair); refused live while a goal is
         # active (`_on_set_parameters`), like `planner_mode`.
         self.declare_parameter('columns_angle_deg', 0.0)
-        self.declare_parameter('dwell_s', _DEFAULT_DWELL_S)
         # Ball 2's own Apex (m) for the `columns_highlow` goal ONLY (JP-9, map
         # JB-107; the Juggle goal has no second Apex field). 0.0 = unset, which
         # that goal refuses by name; every other goal ignores it. Refused while
         # a goal is active (`_on_set_parameters`), like `planner_mode`.
         self.declare_parameter('apex_m_ball2', 0.0)
         # The segment planner this session runs ('level' | 'pose', two-ball-oval
-        # P3): selects the admissible box (boxes are stamped with the planner
-        # they were swept under) and rides on the executor. Settable live
+        # P3): rides on the executor. Settable live
         # (`ros2 param set /skill_node planner_mode pose`, validated in
         # `_on_set_parameters`); a bad launch override is refused at start.
         self.declare_parameter('planner_mode', uc.PLANNER_MODE_DEFAULT)
         self._planner_mode()
         # carry-ring-zvd P1c (JB-102): the pose planner's ZVD ring rows, ONE
-        # live switch exactly like `planner_mode`: selects the admissible box
-        # (stamped with the flag it was swept under; inert in level mode) and
+        # live switch exactly like `planner_mode`: inert in level mode, and
         # rides on every InstallSegment request. Default from the yaml
         # (`trajectory_op.carry_zvd`); settable between attempts only.
         self.declare_parameter('carry_zvd', sk_seg.CARRY_ZVD_DEFAULT)
         self._carry_zvd()
+        # P3a: let a carried catch's command be checked early (up to 0.30 s
+        # before its dispatch) instead of at dispatch; read at goal start.
+        self.declare_parameter('admissibility_early_command', True)
         self.declare_parameter('n_throws', _DEFAULT_N_THROWS)
         # The records ledger (JB-35, `jugglebot/records.py`): the file each
         # juggling Attempt's end is offered to. '' (the default) = disabled,
@@ -1154,9 +1229,9 @@ class SkillNode(Node):
         # apexes — 20 mm was the launch default. Owner 2026-11-02 (JB-139):
         # 30 mm. Ball 2's Columns throw lands ~(+22, +17) mm off its aim, a
         # stable plant bias since 2026-10-04, and the learner sat pinned at
-        # 20; shipped in the SAME commit as the box swept to +/-30 mm
-        # (tools/admissible_sweep.py OFFSETS_MM; the 250 mm hop's grid stops
-        # at +/-25, the accept-time workspace bound). This knob also sets the
+        # 20; shipped in the SAME commit as the offline Admissible box swept to
+        # +/-30 mm (that box was retired 2026-11-06; the Throw's online check,
+        # I-ADMIT-1, bounds the landing now). This knob also sets the
         # tracker catch's ACROSS-axis clamp and the one-site catch clamp
         # (executor._clamp_lateral_to_schedule), hence cup_cycle.
         # CAPTURE_MAX_OFFSET_M = hypot(inward 35, 30).
@@ -1201,7 +1276,7 @@ class SkillNode(Node):
         # the learner's lateral THROW command and the hop keep
         # learner_lateral_authority_mm). Owner decision 2026-10-13: the
         # catch prior is now the learner's forward prediction of the
-        # (box-clipped) command sent, and sitting 7's P1 landings sat +27 mm
+        # (then box-clipped; now online-checked) command sent, and sitting 7's P1 landings sat +27 mm
         # inward of y_d, so a 20 mm clamp would cut the prior short. Inward
         # moves shorten the transit to the next catch. One-site patterns
         # ignore it.
@@ -1472,6 +1547,18 @@ class SkillNode(Node):
             callback_group=self._sub_cbgroup)
 
         self.create_service(Trigger, 'skills/check', self._svc_check)
+        # `skills/nominate` (P3b): a dry-run nomination of a Juggle request,
+        # in the `jugglebot/juggle_request` grammar. Its OWN
+        # MutuallyExclusiveCallbackGroup: a solve takes seconds and must not
+        # sit behind a goal accept (`_juggle_cbgroup`) or the tick
+        # (`_cbgroup`), nor starve the subscriptions (`_sub_cbgroup`); mutual
+        # exclusion serialises debounced GUI calls (the second hits the
+        # cache). It never touches the executor, and while an Attempt runs it
+        # answers 'unavailable' WITHOUT solving (a solve would contend for the
+        # GIL with the tick that drives every dispatch).
+        self._nominate_cbgroup = MutuallyExclusiveCallbackGroup()
+        self.create_service(SetString, 'skills/nominate', self._svc_nominate,
+                            callback_group=self._nominate_cbgroup)
 
         # The Juggle action's OWN callback group (R4 owner decision D3, U5):
         # a goal accept (`_juggle_goal` -> `_start_pattern`) and an accepted
@@ -1787,8 +1874,8 @@ class SkillNode(Node):
 
     def _planner_mode(self) -> str:
         """The validated ``planner_mode`` parameter (``uc.PLANNER_MODES``).
-        Refuses by name: a typo would silently select the other planner's
-        admissible box, so there is no fall-back."""
+        Refuses by name: a typo would silently select the other planner,
+        so there is no fall-back."""
         value = str(self.get_parameter('planner_mode').value)
         if value not in uc.PLANNER_MODES:
             raise ValueError('planner_mode=%r is not one of %s'
@@ -1796,8 +1883,7 @@ class SkillNode(Node):
         return value
 
     def _carry_zvd(self) -> bool:
-        """The validated ``carry_zvd`` parameter (a bool; the box stamp and
-        every InstallSegment request read it here, never the yaml directly)."""
+        """The validated ``carry_zvd`` parameter (a bool; every InstallSegment request read it here, never the yaml directly)."""
         value = self.get_parameter('carry_zvd').value
         if not isinstance(value, bool):
             raise ValueError('carry_zvd=%r is not a bool' % (value,))
@@ -1910,6 +1996,10 @@ class SkillNode(Node):
                 except (TypeError, ValueError):
                     pass
                 continue
+            if key == 'fault_state':
+                self._guard_fault_state = str(kv.value).strip()
+                self._guard_fault_state_mono = now
+                continue
             if key != 'sched_refused':
                 continue
             try:
@@ -1996,6 +2086,17 @@ class SkillNode(Node):
                 or (now - self._sched_refused_mono) >= _TRAJ_STATUS_STALE_S):
             return False
         return self._sched_refused > self._sched_refused_at_start
+
+    def _guard_latched(self, now: float) -> bool:
+        """JB-175: is the Teensy guard latched (`/link_status` `fault_state`
+        not NONE/UNKNOWN/'') on a FRESH sample? Same staleness rule as
+        `_hand_lane_refused`; absent or stale reads as not latched (fail
+        open: a bridge without the key must not end every attempt)."""
+        if (self._guard_fault_state_mono <= 0.0
+                or (now - self._guard_fault_state_mono)
+                >= _TRAJ_STATUS_STALE_S):
+            return False
+        return self._guard_fault_state not in ('NONE', 'UNKNOWN', '')
 
     def _on_bb_heartbeat(self, msg) -> None:
         """Cache Ball Butler's own state (R4 reload C1, 2026-09-28) —
@@ -2231,6 +2332,12 @@ class SkillNode(Node):
                         and self._traj_status.gravity_correction_loaded)
         in_trajectory_mode = bool(status_fresh
                                   and self._traj_status.mode == 'TRAJECTORY')
+        # JB-175: the orchestrator publishes control mode 'ERROR' only on a
+        # real FAULT (`state_machine`: a guard-only latch keeps the streaming
+        # mode, an operator disarm blanks it to ''), so on a FRESH status it
+        # names the fault that `in_trajectory_mode` would call a mode change.
+        machine_fault = bool(status_fresh
+                             and self._traj_status.mode == 'ERROR')
         hand_fresh = (self._hand_telemetry_mono > 0.0
                      and (self._hand_clock() - self._hand_telemetry_mono)
                      < _HAND_STATE_STALE_S)
@@ -2271,9 +2378,11 @@ class SkillNode(Node):
             mocap_fresh=mocap_fresh, hand_fresh=hand_fresh,
             levelled=levelled, ball_evidence=self._possession_evidence_stable,
             in_trajectory_mode=in_trajectory_mode,
+            machine_fault=machine_fault,
             # `/link_status` stamps `_sched_refused_mono` on the raw
             # perf clock, so its judge reads that clock, not `_obs_clock`.
             hand_lane_refused=self._hand_lane_refused(time.perf_counter()),
+            guard_latched=self._guard_latched(time.perf_counter()),
             robot_frame_known=self._robot_frame is not None,
             # Accept-time only: the per-attempt frame is FROZEN at the snapshot,
             # so a mid-attempt unsettle (a transient marker loss clearing the
@@ -2394,42 +2503,7 @@ class SkillNode(Node):
                 'DEBUG %s: this CATCH was refused on purpose (nothing was '
                 'sent to trajectory/install_segment)'
                 % _DEBUG_FORCE_CATCH_REFUSAL_PARAM, 0.0)
-        req = InstallSegment.Request()
-        req.kind = _WIRE_KIND[kind]
-        req.ball_id = int(ball_id)
-        # ONE live switch: the SAME value the admissible box was selected
-        # under rides every request, and trajectory_node plans with it.
-        req.planner_mode = self._planner_mode()
-        req.carry_zvd = self._carry_zvd()
-        if kind == THROW:
-            req.t_event_s = float(terminal.t_release_s)
-            req.site_mm = [float(v) for v in terminal.site_mm]
-            req.target_mm = [float(v) for v in terminal.target_mm]
-            req.flight_s = float(terminal.flight_s)
-        elif kind == MAGAZINE:
-            req.t_event_s = float(terminal.t_release_s)
-            req.site_mm = [float(v) for v in terminal.release_site_mm]
-            req.target_mm = [float(v) for v in terminal.target_mm]
-            req.flight_s = float(terminal.flight_s)
-            req.rest_site_mm = [float(v) for v in terminal.rest_site_mm]
-        elif kind == CATCH:
-            req.t_event_s = float(terminal.t_land_s)
-            req.site_mm = [float(v) for v in terminal.landing_mm]
-            req.landing_vel_mm_s = [float(v) for v in terminal.landing_vel_mm_s]
-            req.rest_site_mm = [float(v) for v in terminal.rest_site_mm]
-            req.hold_tilt_set, req.hold_tilt_rad = _wire_tilt_out(terminal.hold_tilt)
-            req.receive_tilt_set, req.receive_tilt_rad = _wire_tilt_out(
-                terminal.receive_tilt)
-            tt = terminal.then_throw
-            if tt is not None:
-                req.t_release_s = float(tt.t_release_s)
-                req.release_site_mm = [float(v) for v in tt.site_mm]
-                req.target_mm = [float(v) for v in tt.target_mm]
-                req.flight_s = float(tt.flight_s)
-        else:
-            req.t_event_s = float(terminal.t_rest_s)
-            req.rest_site_mm = [float(v) for v in terminal.rest_site_mm]
-            req.rest_tilt_set, req.rest_tilt_rad = _wire_tilt_out(terminal.tilt)
+        req = self._segment_request(kind, terminal, ball_id=ball_id)
 
         if not self._install_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
             self.get_logger().error('trajectory/install_segment unavailable')
@@ -2455,7 +2529,7 @@ class SkillNode(Node):
                 and int(req.kind) == InstallSegment.Request.KIND_CATCH
                 and float(req.t_release_s) > 0.0):
             # The emitter solved the FOLDED catch under a different planner
-            # than the box was selected under: never expected (it plans with
+            # than the nomination / online check planned under: never expected (it plans with
             # the request's).  Only the folded CATCH+throw can be solved under
             # `pose`; a LAUNCH / REST / plain CATCH in a pose session reports
             # `level` by design (I-PLAN-13 b) and is not a mismatch.
@@ -2491,11 +2565,103 @@ class SkillNode(Node):
                              ball_id=ball_id)
         return result
 
+    def _segment_request(self, kind, terminal, *, ball_id):
+        """The ONE builder of an `InstallSegment.Request` for a segment kind:
+        shared by `_installer` (an install) and `_checker` (a P3a check)."""
+        req = InstallSegment.Request()
+        req.kind = _WIRE_KIND[kind]
+        req.ball_id = int(ball_id)
+        # ONE live switch: the SAME value the nomination and the online check
+        # plan under rides every request, and trajectory_node plans with it.
+        req.planner_mode = self._planner_mode()
+        req.carry_zvd = self._carry_zvd()
+        if kind == THROW:
+            req.t_event_s = float(terminal.t_release_s)
+            req.site_mm = [float(v) for v in terminal.site_mm]
+            req.target_mm = [float(v) for v in terminal.target_mm]
+            req.flight_s = float(terminal.flight_s)
+        elif kind == MAGAZINE:
+            req.t_event_s = float(terminal.t_release_s)
+            req.site_mm = [float(v) for v in terminal.release_site_mm]
+            req.target_mm = [float(v) for v in terminal.target_mm]
+            req.flight_s = float(terminal.flight_s)
+            req.rest_site_mm = [float(v) for v in terminal.rest_site_mm]
+        elif kind == CATCH:
+            req.t_event_s = float(terminal.t_land_s)
+            req.site_mm = [float(v) for v in terminal.landing_mm]
+            req.landing_vel_mm_s = [float(v) for v in terminal.landing_vel_mm_s]
+            req.rest_site_mm = [float(v) for v in terminal.rest_site_mm]
+            req.hold_tilt_set, req.hold_tilt_rad = _wire_tilt_out(terminal.hold_tilt)
+            req.receive_tilt_set, req.receive_tilt_rad = _wire_tilt_out(
+                terminal.receive_tilt)
+            tt = terminal.then_throw
+            if tt is not None:
+                req.t_release_s = float(tt.t_release_s)
+                req.release_site_mm = [float(v) for v in tt.site_mm]
+                req.target_mm = [float(v) for v in tt.target_mm]
+                req.flight_s = float(tt.flight_s)
+        else:
+            req.t_event_s = float(terminal.t_rest_s)
+            req.rest_site_mm = [float(v) for v in terminal.rest_site_mm]
+            req.rest_tilt_set, req.rest_tilt_rad = _wire_tilt_out(terminal.tilt)
+        return req
+
+    def _checker(self, kind, terminal, t_abs_s, *, ball_id) -> 'adm.CommandVerdict':
+        """P3a: PLAN the segment on trajectory_node and install nothing
+        (`check_only`), returning an `admissible.CommandVerdict`.
+
+        Handed to every executor as `checker=` (`_online_kwargs`).
+        The debug forced-catch-refusal hook of `_installer` deliberately does
+        not apply here (it fakes an install refusal, not a planner verdict)."""
+        req = self._segment_request(kind, terminal, ball_id=ball_id)
+        req.check_only = True
+        nan = math.nan
+        if not self._install_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
+            self.get_logger().error('trajectory/install_segment unavailable')
+            return adm.CommandVerdict(ok=False, margin=nan,
+                                      code='SERVICE_UNAVAILABLE',
+                                      evaluated=False)
+        resp = self._wait_future(self._install_cli.call_async(req))
+        if resp is None:
+            return adm.CommandVerdict(ok=False, margin=nan,
+                                      code='SERVICE_TIMEOUT', evaluated=False)
+        code = str(resp.code)
+        margin = float(resp.margin)
+        if code in _CHECK_NOT_EVALUATED_CODES:
+            return adm.CommandVerdict(ok=False, margin=margin, code=code,
+                                      evaluated=False)
+        if bool(resp.accepted) and not str(resp.message).startswith(
+                ex.CHECK_OK_PREFIX):
+            # Version skew: an older trajectory_node ignores `check_only`
+            # and may have INSTALLED the segment. Fail closed.
+            self.get_logger().error(
+                'the emitter answered an install reply to a check_only '
+                'request: rebuild jugglebot_interfaces and jugglebot and '
+                'relaunch the whole stack')
+            return adm.CommandVerdict(ok=False, margin=nan,
+                                      code='CHECK_NOT_HONOURED',
+                                      evaluated=False)
+        if bool(resp.accepted):
+            ok = margin >= 0.0     # NaN compares False: no report = not ok
+            return adm.CommandVerdict(ok=ok, margin=margin,
+                                      code='OK' if ok else 'MARGIN',
+                                      evaluated=True)
+        return adm.CommandVerdict(ok=False, margin=margin, code=code,
+                                  evaluated=True)
+
     def _bump_kwargs(self) -> dict:
         """``SkillExecutor`` kwargs for the catch bump: the goal's per-pattern
         switch (``_start_pattern``) and the service-backed bumper."""
         return dict(catch_bump_enabled=bool(getattr(self, '_bump_enabled', False)),
                     bumper=self._bumper)
+
+    def _online_kwargs(self) -> dict:
+        """``SkillExecutor`` kwargs for the P3a online admissibility check:
+        the service-backed `_checker` and the `admissibility_early_command`
+        parameter (read at construction, i.e. at goal start)."""
+        return dict(checker=self._checker,
+                    early_command=bool(self.get_parameter(
+                        'admissibility_early_command').value))
 
     def _bumper(self, idx, ball_id, delta_xy_mm, t_catch_abs_s,
                 t_dispatch_s) -> 'sk_bump.BumpResult':
@@ -3609,11 +3775,12 @@ class SkillNode(Node):
                         successful=False,
                         reason='planner_mode must be one of %s'
                         % list(uc.PLANNER_MODES))
-                # Between attempts only: the executor's box selection is frozen
+                # Between attempts only: the executor's planner choice is frozen
                 # at goal accept while every InstallSegment request re-reads the
                 # live value, so a mid-goal flip would solve the remaining
-                # installs under a planner the box (and the learner's clipping)
-                # was not selected under — the twin the stamp exists to close.
+                # installs under a planner the online check was not made under
+                # (until 2026-11-06: the box and the learner's clipping were not
+                # selected under — the twin the stamp existed to close).
                 # Runsheet P3-3 ("applies from the NEXT goal") by construction.
                 if (self._attempt_running()
                         and str(param.value) != self._planner_mode()):
@@ -3633,7 +3800,7 @@ class SkillNode(Node):
                     return SetParametersResult(
                         successful=False, reason='carry_zvd must be a bool')
                 # Between attempts only, for the same reason as planner_mode:
-                # the executor's box selection is frozen at goal accept.
+                # the executor's planner choice is frozen at goal accept.
                 if (self._attempt_running()
                         and bool(param.value) != self._carry_zvd()):
                     self.get_logger().warning(
@@ -3804,7 +3971,7 @@ class SkillNode(Node):
         # segment, then a timer collecting the miss report), so it is
         # "running" until _magazine_finish clears its context.
         if (self._executor is None and not reloading
-                and self._magazine_ctx is None):
+                and self._magazine_ctx is None and not self._goal_starting):
             return None
         response.success = False
         response.message = ('an attempt is already running — cancel the '
@@ -3862,8 +4029,8 @@ class SkillNode(Node):
     #: sitting 4's ``columns_1ball_fed`` (the other half: ball B real and
     #: fed by Ball Butler, ball A phantom — `_run_columns(...,
     #: phantom_a=True)`). NEITHER becomes a `Schedule.pattern` value of its
-    #: own: `compile_columns` always labels it 'columns' (the admissible box
-    #: has no 'columns_1ball'/'columns_1ball_fed' kind, and none is swept —
+    #: own: `compile_columns` always labels it 'columns' (the nomination
+    #: has no separate 'columns_1ball'/'columns_1ball_fed' pattern kind —
     #: see `_run_columns_1ball`'s docstring and `_run_columns`'s own
     #: ``phantom_a`` paragraph), so this tuple names two more GOAL-facing
     #: strings than `Schedule.pattern` has values. ``magazine`` (one
@@ -3932,10 +4099,21 @@ class SkillNode(Node):
                 success=False,
                 message=('refused: pattern %r is not one of %s'
                          % (pattern, self._PATTERNS)))
-        refused = self._refuse_if_running(SimpleNamespace(success=None,
-                                                          message=None))
-        if refused is not None:
-            return refused
+        # The running test and the `starting` mark are ONE atomic step.
+        with self._goal_start_lock:
+            refused = self._refuse_if_running(SimpleNamespace(success=None,
+                                                              message=None))
+            if refused is not None:
+                return refused
+            self._goal_starting = True
+        try:
+            return self._start_pattern_body(goal, pattern)
+        finally:
+            self._goal_starting = False
+
+    def _start_pattern_body(self, goal, pattern) -> SimpleNamespace:
+        """:meth:`_start_pattern`'s ladder after the atomic running test
+        (the ``_goal_starting`` mark is held by the caller)."""
         refused = self._refuse_if_lane_latched(SimpleNamespace(success=None,
                                                                message=None))
         if refused is not None:
@@ -3955,30 +4133,19 @@ class SkillNode(Node):
         apex_m = (float(goal.apex_m) or float(self.get_parameter('apex_m').value))
         separation_mm = (float(goal.separation_mm)
                          or float(self.get_parameter('separation_mm').value))
-        # One dwell per goal (2026-10-21, owner): the goal's, else the param.
-        dwell_s = (float(goal.dwell_s) or float(self.get_parameter('dwell_s').value))
+        # One dwell per goal (2026-10-21, owner): the goal's, else the Pattern's default.
+        dwell_s = (float(goal.dwell_s) or _pattern_default_dwell_s(pattern))
         n_throws = (int(goal.num_cycles)
                    or int(self.get_parameter('n_throws').value))
         turned_angle_deg = 0.0
         if pattern == 'columns_turned':
             # No-motion refusals by name, before anything is built. The level
             # planner is direction-sensitive (owner, 2026-10-30): every
-            # turned cell is swept under `pose` only.
-            if self._planner_mode() != 'pose':
-                return SimpleNamespace(
-                    success=False,
-                    message=('refused: columns_turned is pose-planner only '
-                             "(planner_mode=%r) -- set planner_mode to "
-                             "'pose' between attempts"
-                             % (self._planner_mode(),)))
+            # turned cell is planned under `pose` only.
             turned_angle_deg = float(self.get_parameter('columns_angle_deg').value)
-            if not math.isfinite(turned_angle_deg) or turned_angle_deg == 0.0:
-                return SimpleNamespace(
-                    success=False,
-                    message=('refused: columns_turned needs a non-zero '
-                             'columns_angle_deg (got %r) -- angle 0 is plain '
-                             "Columns, use the 'columns' goal"
-                             % (turned_angle_deg,)))
+            refusal = self._turned_refusal(turned_angle_deg)
+            if refusal is not None:
+                return SimpleNamespace(success=False, message=refusal)
 
         # Fresh bookkeeping for THIS goal (U5): the executor's OUTCOME lines
         # accumulate here across the whole attempt (`_on_tick`), for the
@@ -4001,12 +4168,22 @@ class SkillNode(Node):
         # builds (`_bump_kwargs`) — the columns family only.
         self._bump_enabled = sk_bump.bump_enabled_for(pattern)
         # Which segment planner this goal runs under is NOT a second operator
-        # line (the one-start-line contract, TestOperatorLines): the box select
+        # line (the one-start-line contract, TestOperatorLines): the nomination
         # and every InstallSegment request carry it, every install log line
         # names the mode solved, and `skills/check` prints it.
 
         apex_m_ball2 = None
-        if pattern == 'columns':
+        result = None
+        if pattern == 'columns_highlow':
+            apex_m_ball2 = float(self.get_parameter('apex_m_ball2').value)
+            result = self._highlow_refusal(apex_m, apex_m_ball2)
+        if result is None and pattern not in ('magazine', 'reload'):
+            result = self._nominate_at_accept(
+                pattern, apex_m, separation_mm, dwell_s,
+                apex_m_ball2=apex_m_ball2, angle_deg=turned_angle_deg)
+        if result is not None:
+            pass   # refused (columns_highlow's own ladder or the nomination)
+        elif pattern == 'columns':
             result = self._run_columns(apex_m, separation_mm, dwell_s,
                                        n_throws, reload_a=reload)
         elif pattern == 'columns_turned':
@@ -4014,12 +4191,9 @@ class SkillNode(Node):
                                        n_throws, reload_a=reload,
                                        angle_deg=turned_angle_deg)
         elif pattern == 'columns_highlow':
-            apex_m_ball2 = float(self.get_parameter('apex_m_ball2').value)
-            result = self._highlow_refusal(apex_m, apex_m_ball2)
-            if result is None:
-                result = self._run_columns(apex_m, separation_mm, dwell_s,
-                                           n_throws, reload_a=reload,
-                                           apex_m_ball2=apex_m_ball2)
+            result = self._run_columns(apex_m, separation_mm, dwell_s,
+                                       n_throws, reload_a=reload,
+                                       apex_m_ball2=apex_m_ball2)
         elif pattern == 'columns_1ball_fed':
             # `reload` is True here by construction (the cup rule: EMPTY ->
             # RELOAD_FIRST, SEATED refused), so ball A is phantom and ball B
@@ -4062,12 +4236,198 @@ class SkillNode(Node):
                 self._goal_armed = True
         return result
 
+    # ── nomination (P3b): goal acceptance is a real plan, not a box lookup ──
+
+    def _nomination_limits(self) -> TrajectoryLimits:
+        """The planner's :class:`TrajectoryLimits` at the LIVE Sitting limits:
+        :meth:`_live_limits` (leg vel / acc / jerk off the latest
+        ``trajectory/status``, Hand acc from the YAML) converted by
+        :func:`nominate.sitting_limits` -- ``TrajectoryLimits.from_config(hw)
+        .with_sitting_limits(...)``, the very chain ``trajectory_node.
+        _svc_set_limits`` (``self._limits.with_sitting_limits``, seeded by
+        ``TrajectoryLimits.from_config(hw)`` at construction) and this node's
+        own first-cycle check (:meth:`_install_columns_schedule`) build with,
+        so a nomination judges the limits the planner will really run."""
+        ll = self._live_limits()
+        return nom.sitting_limits(ll.leg_vel_mmps, ll.leg_acc_mmps2,
+                                  ll.leg_jerk_mmps3, ll.hand_acc_limit_rps2)
+
+    def _nomination_config(self, pattern, apex_m, separation_mm, dwell_s, *,
+                           apex_m_ball2=None, angle_deg=0.0, feed_site=None):
+        """The :class:`nominate.NominationConfig` for one goal: the goal /
+        resolved fields plus the node parameters that shape the plan
+        (``planner_mode``, ``carry_zvd``, ``columns_feed_site``,
+        ``site_x_mm`` / ``site_y_mm``). ``feed_site`` = the fed Site's name
+        when the caller already picked it (a turned pair's geometric pick);
+        else ``columns_feed_site``."""
+        return nom.NominationConfig(
+            pattern=pattern, apex_m=float(apex_m),
+            separation_mm=float(separation_mm), dwell_s=float(dwell_s),
+            apex_m_ball2=(None if apex_m_ball2 is None
+                          else float(apex_m_ball2)),
+            angle_deg=float(angle_deg),
+            planner_mode=self._planner_mode(), carry_zvd=self._carry_zvd(),
+            entry=('hop' if _FED_COLUMNS_HOP_ENTRY
+                   and pattern in nom.COLUMNS_FED else 't0'),
+            feed_site=(feed_site if feed_site is not None
+                       else self._columns_feed_site_name()),
+            self_toss_site_xy_mm=(float(self.get_parameter('site_x_mm').value),
+                                  float(self.get_parameter('site_y_mm').value)))
+
+    def _turned_feed_site_name(self, separation_mm, angle_deg):
+        """``(name, error)``: the fed Site's name for a turned pair (the one
+        nearest Ball Butler, :meth:`_columns_turned_feed_index`), or an error
+        text when Ball Butler's position is unknown. A ``columns_sites``
+        ValueError is left to the nomination's ``COMPILE`` line."""
+        try:
+            sites = columns_sites(separation_mm, angle_deg)
+        except ValueError:
+            return 'P1', None
+        idx = self._columns_turned_feed_index(sites)
+        if idx is None:
+            return None, ('columns_turned refused: Ball Butler\'s position '
+                          'is unknown (no bb/base_frame_pose or robot_frame '
+                          'this launch), so the fed Site cannot be chosen by '
+                          'geometry')
+        return sites[idx].name, None
+
+    def _turned_refusal(self, angle_deg) -> Optional[str]:
+        """The ``columns_turned`` goal's own no-motion refusals by name (pose
+        planner only; a non-zero angle), or ``None``. The level planner is
+        direction-sensitive (owner, 2026-10-30)."""
+        if self._planner_mode() != 'pose':
+            return ('refused: columns_turned is pose-planner only '
+                    "(planner_mode=%r) -- set planner_mode to "
+                    "'pose' between attempts" % (self._planner_mode(),))
+        if not math.isfinite(angle_deg) or angle_deg == 0.0:
+            return ('refused: columns_turned needs a non-zero '
+                    'columns_angle_deg (got %r) -- angle 0 is plain '
+                    "Columns, use the 'columns' goal" % (angle_deg,))
+        return None
+
+    def _workspace_refusal(self, config) -> Optional[str]:
+        """``REJECTED_SITE_OUTSIDE_WORKSPACE`` when any Site of ``config``
+        lies outside ``CupCycleConfig().workspace_xy_m`` with half-extent ZERO
+        (:func:`nominate.workspace_ok`; decided without the owner, 2026-11-06,
+        open question 3 in the P3b logbook entry: no box
+        half-extent any more -- the per-Throw online check refuses or steps
+        back a command the planner cannot reach), else ``None``. A
+        ``columns_sites`` ValueError is not a workspace question: the
+        nomination reports it as ``COMPILE``."""
+        if nom.workspace_ok(config):
+            return None
+        try:
+            sites = columns_sites(
+                config.separation_mm,
+                config.angle_deg if config.pattern == 'columns_turned' else 0.0)
+        except ValueError:
+            return None
+        lim_mm = float(cup_cycle.CupCycleConfig().workspace_xy_m) * 1000.0
+        out = ['%s at (%.1f, %.1f) mm is %.1f mm from the origin'
+               % (s_.name, s_.cup_mm[0], s_.cup_mm[1],
+                  math.hypot(s_.cup_mm[0], s_.cup_mm[1]))
+               for s_ in sites
+               if math.hypot(s_.cup_mm[0], s_.cup_mm[1]) > lim_mm + 1e-9]
+        return ('%s refused: %s -- %s, beyond the %.0f mm cup-cycle '
+                'workspace (separation %.1f mm)'
+                % (config.pattern, ex.REJECTED_SITE_OUTSIDE_WORKSPACE,
+                   '; '.join(out), lim_mm, config.separation_mm))
+
+    def _nomination_aim(self) -> nom.AimAuthority:
+        """The LIVE lateral authorities the nomination's re-aim figure walks
+        (JB-185, display only): the same three parameters every
+        ``SkillExecutor(...)`` build of this node is handed, so the printed figure
+        follows ``ros2 param set`` exactly."""
+        return nom.AimAuthority(
+            lateral_mm=abs(float(self.get_parameter(
+                'learner_lateral_authority_mm').value)),
+            outward_mm=self._catch_outward_authority_m() * 1000.0,
+            inward_mm=self._catch_inward_authority_m() * 1000.0)
+
+    def _nominate(self, config, *, with_aim: bool = False) -> SimpleNamespace:
+        """Nominate ``config`` at the live limits -- the goal-accept and
+        ``skills/nominate`` / ``skills/check`` entry. Returns
+        ``SimpleNamespace(ok, summary, lines, report, seconds)``; never moves
+        anything. A Site outside the workspace is refused first, by name,
+        without a solve. Serialised by ``_nominate_lock`` (the module cache
+        is shared and a second concurrent solve of the same config would be
+        wasted work). ``report`` is ``None`` for a workspace refusal."""
+        ws = self._workspace_refusal(config)
+        if ws is not None:
+            return SimpleNamespace(ok=False, summary=ws, lines=[ws],
+                                   report=None, seconds=0.0)
+        t0 = time.perf_counter()
+        try:
+            with self._nominate_lock:
+                # JB-185: the re-aim figure is walked ONLY when the caller
+                # asks (`skills/nominate`, never an Attempt); the goal accept
+                # (with_aim False) costs what it did before it and prints the
+                # figure only when a service call already walked it for the
+                # CURRENT authorities.
+                aim = self._nomination_aim()
+                # Re-read under the lock: a goal that began starting while
+                # this call waited must not queue behind the second walk.
+                # (A goal that starts once the walk is under way waits for
+                # it: about 0.4 s on an idle box. Outcomes are unaffected.)
+                walk_aim = with_aim and not self._goal_starting
+                report = nom.nominate(config, self._nomination_limits(),
+                                      aim=aim if walk_aim else None)
+                # a cached report may carry a figure walked for OTHER
+                # authorities: print it only for the current ones
+                stale_aim = (bool(getattr(report, 'aim_verdicts', None))
+                             and not report.has_aim_for(aim))
+        except Exception as exc:  # noqa: BLE001 -- a goal / call must be answered
+            msg = 'nomination failed: %s: %s' % (type(exc).__name__, exc)
+            self.get_logger().error(msg)
+            return SimpleNamespace(ok=False, summary=msg, lines=[msg],
+                                   report=None,
+                                   seconds=time.perf_counter() - t0)
+        return SimpleNamespace(ok=bool(report.ok),
+                               summary=(report.summary(False) if stale_aim
+                                        else report.summary()),
+                               lines=list(report.lines()), report=report,
+                               seconds=time.perf_counter() - t0)
+
+    def _nominate_at_accept(self, pattern, apex_m, separation_mm, dwell_s, *,
+                            apex_m_ball2=None, angle_deg=0.0
+                            ) -> Optional[SimpleNamespace]:
+        """THE goal-acceptance decision (P3b, owner D8): nominate the
+        resolved configuration (the Pattern's nominal Segments planned and
+        gated for real at the LIVE Sitting limits) before anything moves.
+        ``None`` = viable (the caller goes on to the start ladder); else the
+        refused ``SimpleNamespace(success=False, message=<one line>)`` --
+        ``message`` is ``report.summary()`` (nearest viable configuration
+        included) and every refusal line is logged and kept in
+        ``_last_nomination_lines``. Replaces the three accept-time box blocks
+        and the self-toss site pin."""
+        feed_site = None
+        if pattern == 'columns_turned':
+            feed_site, err = self._turned_feed_site_name(separation_mm,
+                                                         angle_deg)
+            if err:
+                self.get_logger().debug(err)
+                return SimpleNamespace(success=False, message=err)
+        config = self._nomination_config(
+            pattern, apex_m, separation_mm, dwell_s,
+            apex_m_ball2=apex_m_ball2, angle_deg=angle_deg,
+            feed_site=feed_site)
+        res = self._nominate(config)
+        self._last_nomination_lines = list(res.lines)
+        if res.ok:
+            self.get_logger().debug(
+                '%s in %.1f s (%d solves)'
+                % (res.summary, res.seconds, res.report.solves))
+            return None
+        self.get_logger().warning(
+            'nomination refused %s: %s' % (pattern, ' | '.join(res.lines)))
+        return SimpleNamespace(success=False, message=res.summary)
+
     def _highlow_refusal(self, apex_m: float,
                          apex_m_ball2: float) -> Optional[SimpleNamespace]:
         """The ``columns_highlow`` goal's own no-motion refusals (JP-9), or
         ``None``: Ball 2's Apex unset (``apex_m_ball2`` 0) or equal to Ball
         1's (that is plain ``columns``), and the ``level`` planner (high-low
-        cells are swept under ``pose`` only; the level planner is
+        is planned and flown under ``pose`` only; the level planner is
         direction-sensitive -- owner, 2026-10-30)."""
         problems = []
         if not apex_m_ball2 > 0.0:
@@ -4077,7 +4437,7 @@ class SkillNode(Node):
             problems.append('apex_m_ball2 %.3f m equals the goal Apex -- that '
                             'is plain columns' % (apex_m_ball2,))
         if self._planner_mode() != 'pose':
-            problems.append('planner_mode is %r -- columns_highlow is swept '
+            problems.append('planner_mode is %r -- columns_highlow is planned '
                             'and flown under pose only' % (self._planner_mode(),))
         if not problems:
             return None
@@ -4140,17 +4500,18 @@ class SkillNode(Node):
         aim is therefore walked `columns_feed_aim_toward_a_mm` (20 mm
         default) from the feed site TOWARD A's site (`_columns_feed_aim_
         site`), which clears at 80/83/73 % vel/acc/jerk with the refusing
-        cliff 30 mm further away on the far side. The catch SITE (box
-        lookup, OUTCOME lines) stays keyed to the feed site's own name —
+        cliff 30 mm further away on the far side. The catch SITE (OUTCOME
+        lines) stays keyed to the feed site's own name —
         only Ball Butler's aim point moves.
 
-        No-motion refusal ladder, `_run_one_ball`'s own order (box/memory
-        before anything moves, then the hand-homing/frame checks): box +
-        BOTH columns boxes ((P1,P1) and (P2,P2) — `compile_columns` folds
-        each ball into its own same-site chain, so each needs its own swept
-        pair, `_run_one_ball`'s "refuse before any motion" rule applied
-        here for the identical reason) + memory, THEN the opening REST's
-        sizing (`_opening_rest_period`) and the frame check.
+        Acceptance (is this configuration flyable at the live limits?) was
+        decided BEFORE this runs, by `_start_pattern`'s nomination
+        (`_nominate_at_accept`); the offline box no longer gates a goal and
+        no box rides on the executors. What remains here is the no-motion
+        ladder, `_run_one_ball`'s own order: the Pattern (built by
+        `nominate.build_pattern`, the very Pattern the nomination planned),
+        memory, THEN the opening REST's sizing (`_opening_rest_period`) and
+        the frame check.
 
         ``phantom_a`` (B2, R5 sitting 4, ``columns_1ball_fed``, default
         ``False``): ball A (schedule id 0, this method's own ``a_site``) is
@@ -4177,13 +4538,12 @@ class SkillNode(Node):
         with the BALL: ball A (``apex_m``) cycles at ``a_site`` and ball B
         (``apex_m_ball2``) at the FEED Site, so which physical Site flies high
         follows ``columns_feed_site`` (default 'P1' = feed: Ball 2's Apex at
-        P1, Ball 1's at P2). The box check is per Site, each at its own
-        ball's Apex and Dwell (``schedule.columns_ball_timing``), against the
-        ``columns_highlow`` cells, which are swept for BOTH assignments.
+        P1, Ball 1's at P2). The nomination plans each Site at its own
+        ball's Apex and Dwell (``schedule.columns_ball_timing``).
         """
-        if _ADMISSIBLE_BOX_PATH is None:
-            msg = ('cannot find the repo root from %r -- the admissible box '
-                  '/ memory paths cannot be resolved' % (__file__,))
+        if _REPO_ROOT is None:
+            msg = ('cannot find the repo root from %r -- the memory path '
+                   'cannot be resolved' % (__file__,))
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
         plant_id = str(self.get_parameter('plant_id').value)
@@ -4224,47 +4584,31 @@ class SkillNode(Node):
         entry_tag = ('hop entry: %s thrown from %s to %s, cup parked for '
                     '%s -- ' % (ball_label(0), feed_site.name, a_site.name,
                                 ball_label(1)))
+        # ONE builder for the node and the nomination (P3b): the Pattern a
+        # nomination planned is this Pattern, Sites / Apexes / Dwell and all.
+        # Acceptance is decided by `_start_pattern`'s nomination (the offline
+        # box no longer gates a goal); the executor's own online check
+        # (`_checker`) covers every command, so no box rides on it.
+        columns_name = ('columns_1ball_fed' if phantom_a
+                        else 'columns_highlow' if apex_m_ball2 is not None
+                        else 'columns_turned' if angle_deg != 0.0
+                        else 'columns')
         try:
-            pattern = Pattern(sites=(a_site, feed_site), apex_m=apex_m,
-                             dwell_s=dwell_s, n_throws=n_throws,
-                             phantom_balls=((0,) if phantom_a else ()),
-                             apex_m_ball_b=apex_m_ball2)
+            pattern = nom.build_pattern(
+                self._nomination_config(
+                    columns_name, apex_m, separation_mm, dwell_s,
+                    apex_m_ball2=apex_m_ball2, angle_deg=angle_deg,
+                    feed_site=feed_site.name), n_throws)
         except ValueError as exc:
             msg = 'columns pattern refused: %s' % (exc,)
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
-
-        try:
-            boxes = adm.load(_ADMISSIBLE_BOX_PATH)
-            adm.check_limits(boxes, self._live_limits())
-        except adm.AdmissibleError as exc:
-            msg = 'admissible box refused: %s' % (exc,)
-            self.get_logger().debug(msg)
-            return SimpleNamespace(success=False, message=msg)
-
-        if apex_m_ball2 is None:
-            msg = self._box_coverage_refusal(
-                boxes, 'columns',
-                [((site.name, site.name), site.cup_mm[:2], site.cup_mm[:2],
-                  (site,)) for site in sites], apex_m, dwell_s, what='columns')
-        else:
-            # High-low: each Site's cell at ITS ball's Apex and Dwell.
-            timing = columns_ball_timing(apex_m, apex_m_ball2, dwell_s)
-            msg = '; '.join(m for m in (
-                self._box_coverage_refusal(
-                    boxes, COLUMNS_HIGHLOW,
-                    [((site.name, site.name), site.cup_mm[:2],
-                      site.cup_mm[:2], (site,))],
-                    apex_b, timing.dwells[b],
-                    what='columns_highlow %s' % (ball_label(b),))
-                for b, site, apex_b in ((0, a_site, apex_m),
-                                        (1, feed_site, apex_m_ball2))) if m)
-        if msg:
-            self.get_logger().debug(msg)
-            return SimpleNamespace(success=False, message=msg)
-
         try:
             memory = Memory(memory_path(_REPO_ROOT, plant_id))
+            # The Learner is built and its memory replayed HERE, at goal
+            # start before anything moves (~1 s on the 3276-row corpus), never
+            # on an announcement or feed callback (`_make_learner` memoises).
+            self._make_learner(memory, site_x=_single_site_x(pattern))
         except (ValueError, OSError, csv.Error) as exc:
             msg = 'memory refused: %s' % (exc,)
             self.get_logger().debug(msg)
@@ -4297,7 +4641,7 @@ class SkillNode(Node):
         # Everything the shared tail (`_start_columns_feed`) needs, built
         # ONCE here so the SEATED path and the two-feed chain cannot drift.
         plan = SimpleNamespace(
-            site=bridge_site, lift_s=lift_s, boxes=boxes, memory=memory,
+            site=bridge_site, lift_s=lift_s, memory=memory,
             aim_site=feed_aim_site, columns_pattern=pattern,
             holds_ball=not phantom_a, entry_tag=entry_tag)
         if not reload_a:
@@ -4330,7 +4674,7 @@ class SkillNode(Node):
             return SimpleNamespace(success=False, message=msg)
         return self._start_reload(
             SimpleNamespace(success=None, message=None), site=a_reload_site,
-            lift_s=lift_s, pattern=a_pattern, boxes=boxes, memory=memory,
+            lift_s=lift_s, pattern=a_pattern, memory=memory,
             kind='reload', then_columns=plan)
 
     def _start_columns_feed(self, plan, *, chain_ctx=None):
@@ -4349,7 +4693,7 @@ class SkillNode(Node):
         either way, from the one ``plan`` `_run_columns` built."""
         return self._start_reload(
             SimpleNamespace(success=None, message=None), site=plan.site,
-            lift_s=plan.lift_s, boxes=plan.boxes, memory=plan.memory,
+            lift_s=plan.lift_s, memory=plan.memory,
             kind='columns', aim_site=plan.aim_site,
             columns_pattern=plan.columns_pattern,
             holds_ball=plan.holds_ball, chain_ctx=chain_ctx)
@@ -4372,12 +4716,10 @@ class SkillNode(Node):
         Site pick mirrors `_run_columns`'s own (`_columns_feed_site_name`)
         -- not because anything is fed here, but so an operator sees the
         same two named sites an ordinary columns attempt would use. The
-        admissible-box lookup is `_run_columns`'s own 'columns' check on
-        BOTH site pairs: this IS columns motion (`compile_columns`,
-        unchanged in MOTION), and no box was ever swept for a
-        'columns_1ball' kind -- none needs to be, because `compile_columns`
-        always labels its own `Schedule.pattern` 'columns', phantom or not
-        (the box-lookup contract `SkillExecutor._command_u` reads).
+        nomination (`_nominate_at_accept`, before this runs) plans the
+        ``columns_1ball`` Pattern itself: this IS columns motion
+        (`compile_columns`, unchanged in MOTION), its `Schedule.pattern`
+        label stays 'columns', phantom or not.
 
         Start: the derived ``reload`` (EMPTY cup) reuses the self-toss reload choreography
         verbatim for ball A ALONE (`_start_reload`, ``kind='columns_1ball'``)
@@ -4395,9 +4737,9 @@ class SkillNode(Node):
         2026-10-05 -- without the REST, THROW 0 was planned from the
         ACTIVATE park and refused on every attempt).
         """
-        if _ADMISSIBLE_BOX_PATH is None:
-            msg = ('cannot find the repo root from %r -- the admissible box '
-                  '/ memory paths cannot be resolved' % (__file__,))
+        if _REPO_ROOT is None:
+            msg = ('cannot find the repo root from %r -- the memory path '
+                   'cannot be resolved' % (__file__,))
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
         plant_id = str(self.get_parameter('plant_id').value)
@@ -4410,32 +4752,21 @@ class SkillNode(Node):
         else:
             phantom_site, a_site = sites[1], sites[0]
         try:
-            pattern = Pattern(sites=(a_site, phantom_site), apex_m=apex_m,
-                             dwell_s=dwell_s, n_throws=n_throws,
-                             phantom_balls=(1,))
+            pattern = nom.build_pattern(
+                self._nomination_config(
+                    'columns_1ball', apex_m, separation_mm, dwell_s,
+                    feed_site=phantom_site.name), n_throws)
         except ValueError as exc:
             msg = 'columns_1ball pattern refused: %s' % (exc,)
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
 
         try:
-            boxes = adm.load(_ADMISSIBLE_BOX_PATH)
-            adm.check_limits(boxes, self._live_limits())
-        except adm.AdmissibleError as exc:
-            msg = 'admissible box refused: %s' % (exc,)
-            self.get_logger().debug(msg)
-            return SimpleNamespace(success=False, message=msg)
-
-        msg = self._box_coverage_refusal(
-            boxes, 'columns',
-            [((site.name, site.name), site.cup_mm[:2], site.cup_mm[:2],
-              (site,)) for site in sites], apex_m, dwell_s, what='columns_1ball')
-        if msg:
-            self.get_logger().debug(msg)
-            return SimpleNamespace(success=False, message=msg)
-
-        try:
             memory = Memory(memory_path(_REPO_ROOT, plant_id))
+            # The Learner is built and its memory replayed HERE, at goal
+            # start before anything moves (~1 s on the 3276-row corpus), never
+            # on an announcement or feed callback (`_make_learner` memoises).
+            self._make_learner(memory, site_x=_single_site_x(pattern))
         except (ValueError, OSError, csv.Error) as exc:
             msg = 'memory refused: %s' % (exc,)
             self.get_logger().debug(msg)
@@ -4463,7 +4794,7 @@ class SkillNode(Node):
         if reload:
             return self._start_reload(
                 SimpleNamespace(success=None, message=None), site=a_site,
-                lift_s=lift_s, boxes=boxes, memory=memory,
+                lift_s=lift_s, memory=memory,
                 kind='columns_1ball', columns_pattern=pattern)
 
         # The phantom's first catch takes the FED start's aim point (the
@@ -4499,31 +4830,26 @@ class SkillNode(Node):
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
 
-        learner_cfg = lr.LearnerConfig()
-        learner = SimpleNamespace(
-            command=lambda x, y_d: memory.command(x, y_d, learner_cfg),
-            predict=lambda x, u, y_d: memory.predict(
-                x, u, learner_cfg, y_d=y_d),
-            local_model=lambda x, y_d: memory.local_model(
-                x, y_d, learner_cfg))
+        learner = self._make_learner(memory)
         self._sched_refused_at_start = self._sched_refused
         self._force_hold = False
         self._hold_forced_code = ''
         self._executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
             **self._bump_kwargs(),
+            **self._online_kwargs(),
             catch_aim_source=self._catch_aim_source(),
             planner_mode=self._planner_mode(),
             carry_zvd=self._carry_zvd(),
             resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio,
-            learner=learner, boxes=boxes,
+            learner=learner,
             lateral_authority_m=float(self.get_parameter(
                 'learner_lateral_authority_mm').value) / 1000.0,
             catch_outward_authority_m=self._catch_outward_authority_m(),
             catch_inward_authority_m=self._catch_inward_authority_m(),
             observer=self._ball_evidence, observations=self._observations,
-            on_experience=self._bind_on_experience(memory),
+            on_experience=self._bind_on_experience(memory, learner),
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
             seat_window=self._seat_window,
             contact_probe=self._contact_time,
@@ -4543,8 +4869,7 @@ class SkillNode(Node):
                 extra='(%s -> %s phantom)' % (a_site.name, phantom_site.name)))
 
     def _live_limits(self):
-        """The sitting limits `admissible.check_limits` judges the loaded box
-        against: LEG limits off the latest `trajectory/status`
+        """The sitting limits the nomination judges (`_nomination_limits`): LEG limits off the latest `trajectory/status`
         (`leg_*_limit_*`), falling back to the YAML module default on a field
         that reads 0.0 — the message's own documented "field absent" sentinel
         (`TrajectoryStatus.msg`) — and the HAND accel cap, which the status
@@ -4872,55 +5197,6 @@ class SkillNode(Node):
             time.sleep(min(1.0 / _TICK_HZ, max(0.0, end_at - time.perf_counter())))
         return ''
 
-    def _box_coverage_refusal(self, boxes, label: str, items, apex_m: float,
-                              dwell_s: float, what: str = None) -> str:
-        """One accept-time message naming EVERY box refusal at once, or ''.
-
-        ``items`` = ``(pair, release_xy_mm, target_xy_mm, sites)``. Two
-        refusals, both collected before returning: no box covers the request
-        (``adm.describe_miss`` names the cause, ``dwell_s`` included) and a
-        site that cannot host the selected box inside the cup-cycle workspace
-        (``adm.check_site_workspace``, ``REJECTED_SITE_OUTSIDE_WORKSPACE``,
-        plan two-ball-oval § 2.6). The workspace bound is
-        ``CupCycleConfig().workspace_xy_m`` -- the config the planner and the
-        sweep read."""
-        what = what or label
-        workspace_xy_m = cup_cycle.CupCycleConfig().workspace_xy_m
-        planner_mode = self._planner_mode()
-        carry_zvd = self._carry_zvd()
-        missing, outside = [], []
-        for pair, rel, tgt, pair_sites in items:
-            rel = (float(rel[0]), float(rel[1]))
-            tgt = (float(tgt[0]), float(tgt[1]))
-            box = adm.select(boxes, label, pair, apex_m,
-                             release_site_xy_mm=rel, target_site_xy_mm=tgt,
-                             dwell_s=dwell_s, planner_mode=planner_mode,
-                             carry_zvd=carry_zvd)
-            if box is None:
-                missing.append('%r: %s' % (pair, adm.describe_miss(
-                    boxes, label, pair, apex_m, release_site_xy_mm=rel,
-                    target_site_xy_mm=tgt, dwell_s=dwell_s,
-                    planner_mode=planner_mode, carry_zvd=carry_zvd)))
-                continue
-            reason = adm.check_site_workspace(pair_sites, box, workspace_xy_m)
-            if reason:
-                outside.append('%r: %s' % (pair, reason))
-        parts = []
-        if missing:
-            parts.append('%s refused: no admissible box covers site pair(s) '
-                         '-- %s' % (what, '; '.join(missing)))
-        if outside:
-            parts.append('%s refused: %s -- %s'
-                         % (what, ex.REJECTED_SITE_OUTSIDE_WORKSPACE,
-                            '; '.join(outside)))
-        msg = '; '.join(parts)
-        # admissible.py's dwell text names the node parameter; the goal now
-        # carries the dwell (the param is only the 0 => fallback).
-        return msg.replace(
-            'set the node dwell_s parameter to a swept value',
-            'send a swept dwell_s on the goal (the GUI Dwell field; 0 falls '
-            'back to the node dwell_s parameter)')
-
     def _run_one_ball(self, kind: str, apex_m: float, separation_mm: float,
                       dwell_s: float, n_throws: int,
                       reload: bool) -> SimpleNamespace:
@@ -4931,94 +5207,38 @@ class SkillNode(Node):
         ``hop``, same compiler either way
         (:func:`~jugglebot.motion.skills.schedule.compile_one_ball`)):
         THROW -> CATCH -> ... -> REST, the learner on, memory at
-        ``temp/learn/<plant_id>/memory.csv``.
+        ``temp/learn/<plant_id>/memory_v2.csv`` (schema v2 since 2026-11-06).
 
         Order: refuse fast on anything that does not need the platform to
-        move (running / repo root / pattern / box+limits) BEFORE
+        move (running / repo root / pattern / nomination) BEFORE
         `_prelevel` (item 7) moves anything, then compile the schedule —
         pre-levelling is the last check before compilation, per the R3
         carried note ("a healthy launch rests the cup at the gravity-level
         counter-tilt").
         """
-        if _ADMISSIBLE_BOX_PATH is None:
-            msg = ('cannot find the repo root from %r — the admissible box '
-                  '/ memory paths cannot be resolved' % (__file__,))
+        if _REPO_ROOT is None:
+            msg = ('cannot find the repo root from %r -- the memory path '
+                   'cannot be resolved' % (__file__,))
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
 
         plant_id = str(self.get_parameter('plant_id').value)
 
-        if kind == 'self_toss':
-            site_x_mm = float(self.get_parameter('site_x_mm').value)
-            site_y_mm = float(self.get_parameter('site_y_mm').value)
-            # Finding 5, R3 audit (2026-09-13): the self-toss goal always
-            # names the site 'P1', but the ADMISSIBLE BOX it was swept
-            # against (`_ADMISSIBLE_BOX_PATH`, keyed on `(site.name,
-            # target.name)`) carries no site xy at all — a box swept at the
-            # default (-50, 0) mm site is silently applied to whatever xy
-            # the caller passes. Refuse before anything else (no platform
-            # motion, no box/pattern object built yet) rather than let an
-            # off-box site reach `_command_u`'s clip with the wrong box.
-            if (abs(site_x_mm - _DEFAULT_SITE_X_MM) > 1e-9
-                    or abs(site_y_mm - _DEFAULT_SITE_Y_MM) > 1e-9):
-                msg = (
-                    'self-toss refused: site (%.3f, %.3f) mm != the swept '
-                    'default (%.3f, %.3f) mm — the admissible box carries no '
-                    'site xy, so a box swept at the default site cannot be '
-                    'applied here' % (site_x_mm, site_y_mm, _DEFAULT_SITE_X_MM,
-                                      _DEFAULT_SITE_Y_MM))
-                self.get_logger().debug(msg)
-                return SimpleNamespace(success=False, message=msg)
-            sites = (Site(_DEFAULT_SITE_NAME,
-                          np.array([site_x_mm, site_y_mm, CATCH_CUP_Z_MM])),)
-        else:  # 'hop' / 'oval_1ball' / 'oval_1ball_fed'
-            sites = columns_sites(separation_mm)
-        # The box label: the fed oval flies the same cell as the plain one
-        # (the caller passes the sibling's label, as columns_1ball_fed does
-        # 'columns'). sites[0] = T (near Ball Butler), sites[1] = C.
-        is_oval = kind in ('oval_1ball', 'oval_1ball_fed')
-        box_kind = 'oval_1ball' if is_oval else kind
-
+        # ONE builder for the node and the nomination (P3b): the Site(s) and
+        # the Pattern are exactly what the nomination planned, including the
+        # self-toss Site at the node's `site_x_mm` / `site_y_mm` (the old
+        # swept-default pin is gone with the box: a nomination plans whatever
+        # Site it is given). sites[0] = T (near Ball Butler), sites[1] = C
+        # for the oval.
         try:
-            pattern = OneBallPattern(sites=sites, apex_m=apex_m,
-                                     dwell_s=dwell_s, n_throws=n_throws,
-                                     roles='fixed' if is_oval else 'alternate')
+            pattern = nom.build_pattern(
+                self._nomination_config(kind, apex_m, separation_mm, dwell_s),
+                n_throws)
         except ValueError as exc:
             msg = '%s pattern refused: %s' % (kind, exc)
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
-
-        try:
-            boxes = adm.load(_ADMISSIBLE_BOX_PATH)
-            adm.check_limits(boxes, self._live_limits())
-        except adm.AdmissibleError as exc:
-            msg = 'admissible box refused: %s' % (exc,)
-            self.get_logger().debug(msg)
-            return SimpleNamespace(success=False, message=msg)
-        # No box covers the requested apex -> refuse BEFORE any motion
-        # (before `_prelevel`), rather than let `_command_u` discover this
-        # only once the learner is already asking for a command (the latent
-        # defect this closes: a box swept for one apex silently reused at
-        # another). One pair for self_toss (P1,P1); two for hop (each
-        # direction the ball actually crosses, `compile_one_ball`'s own
-        # release/target rule — `sites[i % n]` -> `sites[(i+1) % n]`).
-        n_sites = len(sites)
-        if is_oval:
-            # Fixed roles: every throw T -> C, one box pair (the C -> T
-            # direction is never flown).
-            pairs = [(sites[0].name, sites[1].name)]
-        else:
-            pairs = sorted({(sites[i % n_sites].name,
-                             sites[(i + 1) % n_sites].name)
-                            for i in range(n_sites)})
-        by_name = {s_.name: s_ for s_ in sites}
-        items = [(pair, by_name[pair[0]].cup_mm[:2], by_name[pair[1]].cup_mm[:2],
-                  (by_name[pair[0]], by_name[pair[1]])) for pair in pairs]
-        msg = self._box_coverage_refusal(boxes, box_kind, items, apex_m,
-                                         dwell_s, what=kind)
-        if msg:
-            self.get_logger().debug(msg)
-            return SimpleNamespace(success=False, message=msg)
+        sites = pattern.sites
 
         # Finding 11, R3 audit (2026-09-13): built here, before `_prelevel`
         # actually moves the platform, and guarded — `memory_path` raises
@@ -5028,6 +5248,10 @@ class SkillNode(Node):
         # has already moved.
         try:
             memory = Memory(memory_path(_REPO_ROOT, plant_id))
+            # The Learner is built and its memory replayed HERE, at goal
+            # start before anything moves (~1 s on the 3276-row corpus), never
+            # on an announcement or feed callback (`_make_learner` memoises).
+            self._make_learner(memory, site_x=_single_site_x(pattern))
         except (ValueError, OSError, csv.Error) as exc:
             msg = 'memory refused: %s' % (exc,)
             self.get_logger().debug(msg)
@@ -5065,7 +5289,7 @@ class SkillNode(Node):
 
         # R4 reload (owner decision D4, brief step 1): everything above is
         # shared with the ordinary self-toss/hop (same site(s)/pattern, same
-        # box + memory) — only how the schedule gets COMPILED differs,
+        # memory) — only how the schedule gets COMPILED differs,
         # because the reload's real schedule cannot be built until Ball
         # Butler's announcement supplies the receive tilt. `reload` is derived
         # from the cup decision (`_accept_cup_decision`) (the deleted per-node reload parameter it replaced is
@@ -5074,7 +5298,7 @@ class SkillNode(Node):
             return self._start_reload(
                 SimpleNamespace(success=None, message=None), site=sites[0],
                 lift_s=float(pattern.floor_lift_s), pattern=pattern,
-                boxes=boxes, memory=memory)
+                memory=memory)
 
         now = self.get_clock().now().nanoseconds / 1e9
         try:
@@ -5099,13 +5323,7 @@ class SkillNode(Node):
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
 
-        learner_cfg = lr.LearnerConfig()
-        learner = SimpleNamespace(
-            command=lambda x, y_d: memory.command(x, y_d, learner_cfg),
-            predict=lambda x, u, y_d: memory.predict(
-                x, u, learner_cfg, y_d=y_d),
-            local_model=lambda x, y_d: memory.local_model(
-                x, y_d, learner_cfg))
+        learner = self._make_learner(memory)
 
         # A new schedule reuses small ball ids: drop any flight latch an
         # earlier (possibly early-ended) attempt left for them, so a catch
@@ -5123,18 +5341,19 @@ class SkillNode(Node):
         self._executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
             **self._bump_kwargs(),
+            **self._online_kwargs(),
             catch_aim_source=self._catch_aim_source(),
             planner_mode=self._planner_mode(),
             carry_zvd=self._carry_zvd(),
             resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio,
-            learner=learner, boxes=boxes,
+            learner=learner,
             lateral_authority_m=float(self.get_parameter(
                 'learner_lateral_authority_mm').value) / 1000.0,
             catch_outward_authority_m=self._catch_outward_authority_m(),
             catch_inward_authority_m=self._catch_inward_authority_m(),
             observer=self._ball_evidence, observations=self._observations,
-            on_experience=self._bind_on_experience(memory),
+            on_experience=self._bind_on_experience(memory, learner),
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
             seat_window=self._seat_window,
             contact_probe=self._contact_time,
@@ -5376,16 +5595,15 @@ class SkillNode(Node):
         `compile_reload` from Ball Butler's announcement), with
         ``n_throws=0`` so the compiled schedule ends at its DECAY REST
         (`schedule.compile_reload`). What `_run_one_ball` checks for its
-        throws does NOT apply — no admissible-box coverage or apex check,
-        no site-xy pin — because nothing the learner commands flies; the
-        boxes and memory still ride the ctx because
-        `_install_announced_reload` builds every reload executor with them
-        (never consulted without a THROW). Same order otherwise: every
+        throws does NOT apply — no nomination (`_start_pattern` skips it for
+        ``reload``) — because nothing the learner commands flies; memory rides
+        the ctx because `_install_announced_reload` builds every reload executor
+        with it. Same order otherwise: every
         no-motion refusal, then the opening-REST sizing, the frame check,
         and `_prelevel` as the last thing before the bridge streams."""
-        if _ADMISSIBLE_BOX_PATH is None:
-            msg = ('cannot find the repo root from %r — the admissible box '
-                   '/ memory paths cannot be resolved' % (__file__,))
+        if _REPO_ROOT is None:
+            msg = ('cannot find the repo root from %r -- the memory path '
+                   'cannot be resolved' % (__file__,))
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
         plant_id = str(self.get_parameter('plant_id').value)
@@ -5396,13 +5614,11 @@ class SkillNode(Node):
             sites=sites, apex_m=float(self.get_parameter('apex_m').value),
             dwell_s=dwell_s, n_throws=0)
         try:
-            boxes = adm.load(_ADMISSIBLE_BOX_PATH)
-        except adm.AdmissibleError as exc:
-            msg = 'admissible box refused: %s' % (exc,)
-            self.get_logger().debug(msg)
-            return SimpleNamespace(success=False, message=msg)
-        try:
             memory = Memory(memory_path(_REPO_ROOT, plant_id))
+            # The Learner is built and its memory replayed HERE, at goal
+            # start before anything moves (~1 s on the 3276-row corpus), never
+            # on an announcement or feed callback (`_make_learner` memoises).
+            self._make_learner(memory, site_x=_single_site_x(pattern))
         except (ValueError, OSError, csv.Error) as exc:
             msg = 'memory refused: %s' % (exc,)
             self.get_logger().debug(msg)
@@ -5426,10 +5642,10 @@ class SkillNode(Node):
         return self._start_reload(
             SimpleNamespace(success=None, message=None), site=sites[0],
             lift_s=float(pattern.floor_lift_s), pattern=pattern,
-            boxes=boxes, memory=memory)
+            memory=memory)
 
     def _start_reload(self, response, *, site: Site, lift_s: float,
-                      boxes, memory: Memory,
+                      memory: Memory,
                       pattern: Optional[OneBallPattern] = None,
                       kind: str = 'reload',
                       aim_site: Optional[Site] = None,
@@ -5449,12 +5665,12 @@ class SkillNode(Node):
         answered, drawing `THROW_REJECTED_BAD_STATE` on every attempt).
 
         Called from `_run_one_ball`, after every no-motion refusal, the
-        box/memory build and `_prelevel` — see that method's R4 branch.
-        ``site``/``lift_s``/``pattern``/``boxes``/``memory`` are exactly
+        memory build and `_prelevel` — see that method's R4 branch.
+        ``site``/``lift_s``/``pattern``/``memory`` are exactly
         what the ordinary self-toss path would compile with; the reload's
         own DECAY REST hands off into the SAME one-ball pattern
         (`schedule.compile_reload`'s docstring), so it needs the identical
-        box/memory the tail throws will be judged and learned against.
+        memory the tail throws will be judged and learned against.
 
         R5 (owner decision D1, 2026-09-30): also called from
         `_run_columns` with ``kind='columns'`` — the SAME bridge-then-BB-
@@ -5539,6 +5755,7 @@ class SkillNode(Node):
             self._executor = SkillExecutor(
                 bridge, self._installer, tracker=self._tracker,
                 **self._bump_kwargs(),
+                **self._online_kwargs(),
                 catch_aim_source=self._catch_aim_source(),
                 planner_mode=self._planner_mode(),
                 carry_zvd=self._carry_zvd(),
@@ -5553,6 +5770,7 @@ class SkillNode(Node):
             bridge_executor = SkillExecutor(
                 bridge, self._installer, tracker=self._tracker,
                 **self._bump_kwargs(),
+                **self._online_kwargs(),
                 catch_aim_source=self._catch_aim_source(),
                 planner_mode=self._planner_mode(),
                 carry_zvd=self._carry_zvd(),
@@ -5650,7 +5868,7 @@ class SkillNode(Node):
         # the one AFTER BB's own reload/check cycle, never the one before it.
         new_ctx = SimpleNamespace(
                 kind=kind, phase='await_bb_idle', pattern=pattern,
-                columns_pattern=columns_pattern, boxes=boxes,
+                columns_pattern=columns_pattern,
                 memory=memory, site=site, aim_site=aim_site, bridge=bridge,
                 reload_sent=reload_sent, bb_left_idle=False,
                 announced=False,
@@ -5829,28 +6047,23 @@ class SkillNode(Node):
                     t_release_s=throw_time_s, preexisting=preexisting,
                     thrower=announced_source(msg.thrower_name)),)
                 self._advance_correlation_locked(self._now_s())
-            learner_cfg = lr.LearnerConfig()
-            learner = SimpleNamespace(
-                command=lambda x, y_d: ctx.memory.command(x, y_d, learner_cfg),
-                predict=lambda x, u, y_d: ctx.memory.predict(
-                    x, u, learner_cfg, y_d=y_d),
-                local_model=lambda x, y_d: ctx.memory.local_model(
-                    x, y_d, learner_cfg))
+            learner = self._make_learner(ctx.memory)
             executor = SkillExecutor(
                 schedule, self._installer, tracker=self._tracker,
                 **self._bump_kwargs(),
+                **self._online_kwargs(),
                 catch_aim_source=self._catch_aim_source(),
                 planner_mode=self._planner_mode(),
                 carry_zvd=self._carry_zvd(),
                 resend_max_per_catch=self._catch_resend_max(),
                 launch_ratio=self._launch_ratio,
-                learner=learner, boxes=ctx.boxes,
+                learner=learner,
                 lateral_authority_m=float(self.get_parameter(
                     'learner_lateral_authority_mm').value) / 1000.0,
                 catch_outward_authority_m=self._catch_outward_authority_m(),
                 catch_inward_authority_m=self._catch_inward_authority_m(),
                 observer=self._ball_evidence, observations=self._observations,
-                on_experience=self._bind_on_experience(ctx.memory),
+                on_experience=self._bind_on_experience(ctx.memory, learner),
                 dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
                 seat_window=self._seat_window,
                 contact_probe=self._contact_time,
@@ -5978,28 +6191,23 @@ class SkillNode(Node):
                 thrower=announced_source(msg.thrower_name)),)
             self._advance_correlation_locked(self._now_s())
 
-        learner_cfg = lr.LearnerConfig()
-        learner = SimpleNamespace(
-            command=lambda x, y_d: ctx.memory.command(x, y_d, learner_cfg),
-            predict=lambda x, u, y_d: ctx.memory.predict(
-                x, u, learner_cfg, y_d=y_d),
-            local_model=lambda x, y_d: ctx.memory.local_model(
-                x, y_d, learner_cfg))
+        learner = self._make_learner(ctx.memory)
         executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
             **self._bump_kwargs(),
+            **self._online_kwargs(),
             catch_aim_source=self._catch_aim_source(),
             planner_mode=self._planner_mode(),
             carry_zvd=self._carry_zvd(),
             resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio,
-            learner=learner, boxes=ctx.boxes,
+            learner=learner,
             lateral_authority_m=float(self.get_parameter(
                 'learner_lateral_authority_mm').value) / 1000.0,
             catch_outward_authority_m=self._catch_outward_authority_m(),
             catch_inward_authority_m=self._catch_inward_authority_m(),
             observer=self._ball_evidence, observations=self._observations,
-            on_experience=self._bind_on_experience(ctx.memory),
+            on_experience=self._bind_on_experience(ctx.memory, learner),
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
             seat_window=self._seat_window,
             contact_probe=self._contact_time,
@@ -6109,7 +6317,7 @@ class SkillNode(Node):
                    else 'holding %s' % (ball_label(0),))
         try:
             schedule = compile_columns(ctx.columns_pattern, feed=feed,
-                                       hop_entry=True)
+                                       hop_entry=_FED_COLUMNS_HOP_ENTRY)
         except ValueError as exc:
             # The claim already holds `_reload_ctx`, so this attempt must be
             # ended here, not left to time out.
@@ -6160,28 +6368,23 @@ class SkillNode(Node):
                        _site1.name, _off[0], _off[1], _a_state))
             return
 
-        learner_cfg = lr.LearnerConfig()
-        learner = SimpleNamespace(
-            command=lambda x, y_d: ctx.memory.command(x, y_d, learner_cfg),
-            predict=lambda x, u, y_d: ctx.memory.predict(
-                x, u, learner_cfg, y_d=y_d),
-            local_model=lambda x, y_d: ctx.memory.local_model(
-                x, y_d, learner_cfg))
+        learner = self._make_learner(ctx.memory)
         executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
             **self._bump_kwargs(),
+            **self._online_kwargs(),
             catch_aim_source=self._catch_aim_source(),
             planner_mode=self._planner_mode(),
             carry_zvd=self._carry_zvd(),
             resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio,
-            learner=learner, boxes=ctx.boxes,
+            learner=learner,
             lateral_authority_m=float(self.get_parameter(
                 'learner_lateral_authority_mm').value) / 1000.0,
             catch_outward_authority_m=self._catch_outward_authority_m(),
             catch_inward_authority_m=self._catch_inward_authority_m(),
             observer=self._ball_evidence, observations=self._observations,
-            on_experience=self._bind_on_experience(ctx.memory),
+            on_experience=self._bind_on_experience(ctx.memory, learner),
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
             seat_window=self._seat_window,
             contact_probe=self._contact_time,
@@ -6241,10 +6444,58 @@ class SkillNode(Node):
             % (ball_label(1), float(feed.t_land_abs_s) - now,
                n_after, '' if n_after == 1 else 's'))
 
-    def _bind_on_experience(self, memory: Memory):
+    def _make_learner(self, memory: Memory, site_x: Optional[float] = None):
+        """THE Learner for ``memory`` (P1, 2026-11-06): a fresh
+        ``plant_model.PlantModel`` + ``learner.Learner`` with its lateral cap
+        from ``learner_lateral_authority_mm``, the memory's rows replayed
+        through ``observe`` in file order, then ONE INFO line (the plant
+        model's summary at ``site_x``, the goal's single Site when it has
+        one, and the replay's accepted / rejected counts).
+
+        Memoised ON the ``memory`` object (attribute ``_jb_learner``), under
+        a lock: the goal-start site builds it, every executor of the same
+        goal (the announcement and feed callbacks included, on other threads
+        of the MultiThreadedExecutor) gets the same, already replayed
+        Learner, which ``_bind_on_experience`` keeps current. Keyed on the
+        object, not on a node-level slot, so a later goal that builds its own
+        ``Memory`` and is then refused can never evict the running goal's
+        Learner (a callback would otherwise rebuild it, about 1 s of replay
+        on a callback thread, and the two executors would hold different
+        Learners). A row the Learner cannot use (``observe`` raising
+        ``ValueError``: e.g. a non-positive commanded apex in a hand-edited
+        file) is skipped and counted, never a refused goal: one bad row must
+        not ground a plant."""
+        with _LEARNER_LOCK:
+            held = getattr(memory, '_jb_learner', None)
+            if held is not None:
+                return held
+            model = pm.PlantModel()
+            learner = lr.Learner(model, lr.LearnerConfig(c_max_xy_m=float(
+                self.get_parameter('learner_lateral_authority_mm').value)
+                / 1000.0))
+            accepted = rejected = unusable = 0
+            for exp in memory.rows():
+                try:
+                    if learner.observe(exp):
+                        accepted += 1
+                    else:
+                        rejected += 1
+                except ValueError:
+                    unusable += 1
+            memory._jb_learner = learner
+            self.get_logger().info(
+                'learner: %s; rows %d (accepted %d, rejected %d, unusable %d)'
+                % (model.summary(site_x), accepted + rejected + unusable,
+                   accepted, rejected, unusable))
+            return learner
+
+    def _bind_on_experience(self, memory: Memory, learner=None):
         """``on_experience`` callable bound to ``memory`` (plan § 2.5 step 6):
         appends the row (file I/O, orchestrator thread only — never the 40 Hz
-        emitter, plan § 0) and logs it, one line per throw."""
+        emitter, plan § 0) and logs it, one line per throw; then (P1) the
+        ``learner`` observes it. Append FIRST: a row the memory refuses is
+        logged and never observed, so the Learner never knows a row the file
+        does not hold."""
         def _on_experience(exp):
             # `Memory.append` REFUSES a row outside `APEX_RATIO_BAND`
             # (2026-09-16) — the executor drops such a row first, so this is
@@ -6259,8 +6510,18 @@ class SkillNode(Node):
                     % (exc, exp.u.tolist(), exp.y.tolist()))
                 return
             self.get_logger().debug(
-                'memory row appended: x=%s u=%s y=%s caught=%s'
-                % (exp.x.tolist(), exp.u.tolist(), exp.y.tolist(), exp.caught))
+                'memory row appended: site=%s release=%s seat=%s kind=%s '
+                'u=%s y=%s caught=%s'
+                % (exp.site_xy_m.tolist(), exp.release_m.tolist(),
+                   exp.seat_offset_m.tolist(), exp.release_kind,
+                   exp.u.tolist(), exp.y.tolist(), exp.caught))
+            if learner is None:
+                return
+            try:
+                learner.observe(exp)
+            except ValueError as exc:
+                self.get_logger().error(
+                    'learner REFUSED an appended row (not observed): %s' % (exc,))
         return _on_experience
 
     def _stop_attempt(self) -> str:
@@ -6428,13 +6689,23 @@ class SkillNode(Node):
             # reads them instead of inferring from goal order.
             # A trailing field only (the parsers search, never anchor the
             # end): Ball 2's Apex of a columns_highlow goal.
+            # JB-190: a one-ball self_toss prints the Site it throws at (the
+            # node's `site_x_mm` / `site_y_mm`, set by hand between goals and
+            # shown nowhere else before the first Memory row). Trailing, and
+            # on that pattern only, so every other start line is unchanged.
+            site = ''
+            if attempt['pattern'] == 'self_toss':
+                site = ' · site (%g, %g) mm' % (
+                    float(self.get_parameter('site_x_mm').value),
+                    float(self.get_parameter('site_y_mm').value))
             self.get_logger().info(
                 '%s · dwell %.2f s · sep %g mm%s'
                 % (start, attempt['dwell_s'], attempt['separation_mm'],
                    (' · angle %g deg' % attempt['angle_deg'])
                    if attempt.get('angle_deg') is not None else '')
                    + (' · apex2 %.2f m' % attempt['apex_m_ball2']
-                      if 'apex_m_ball2' in attempt else ''))
+                      if 'apex_m_ball2' in attempt else '')
+                   + site)
         else:
             self.get_logger().info('jugglebot/juggle ACCEPTED: %s'
                                    % (result.message,))
@@ -6537,9 +6808,92 @@ class SkillNode(Node):
             goal_handle.abort()
         return result
 
+    def _svc_nominate(self, request, response):
+        """``skills/nominate`` (P3b): a dry-run nomination of a Juggle
+        request, in the ``jugglebot/juggle_request`` grammar plus the two
+        optional keys ``apex_m_ball2=`` and ``columns_angle_deg=`` (each
+        overrides the node parameter of the same name for THIS nomination
+        only; nothing is written). Blank / 0 fields fall back to the node
+        parameters (a zero ``dwell_s`` the Pattern's default dwell) exactly as a
+        goal's zero fields do. Reply: ``success`` =
+        viable, ``message`` = the one-line summary, then one refusal line per
+        line. Never moves anything, never touches ``_executor``, runs while
+        own callback group. While an Attempt is running (the predicate
+        :meth:`_refuse_if_running` uses) it answers at once WITHOUT
+        nominating and without reading the cache: a 1-5 s in-process solve
+        would contend for the GIL with the tick. The cup / lane checks are
+        NOT part of it: they are plant state, not configuration."""
+        busy = self._refuse_if_running(SimpleNamespace(success=None,
+                                                       message=None))
+        if busy is not None:
+            response.success = False
+            response.message = ('nomination unavailable: an Attempt is '
+                                'running (ask again when it has ended)')
+            self.get_logger().debug(response.message)
+            return response
+        try:
+            pattern, vals = jr.parse_juggle_request(
+                request.data, extra_keys=jr.NOMINATE_EXTRA_FIELDS)
+        except ValueError as exc:
+            response.success = False
+            response.message = ('nominate request refused: %s in %r'
+                                % (exc, request.data))
+            return response
+        if pattern not in self._PATTERNS:
+            response.success = False
+            response.message = ('refused: pattern %r is not one of %s'
+                                % (pattern, self._PATTERNS))
+            return response
+        if pattern in nom.NOT_NOMINATED_PATTERNS:
+            response.success = True
+            response.message = ('%s: not nominated (%s); goal acceptance '
+                                'does not nominate it'
+                                % (pattern, nom.NOT_NOMINATED_PATTERNS[pattern]))
+            return response
+        apex_m = (vals.get('apex_m', 0.0)
+                  or float(self.get_parameter('apex_m').value))
+        separation_mm = (vals.get('separation_mm', 0.0)
+                         or float(self.get_parameter('separation_mm').value))
+        dwell_s = (vals.get('dwell_s', 0.0)
+                   or _pattern_default_dwell_s(pattern))
+        apex_m_ball2 = None
+        angle_deg = 0.0
+        feed_site = None
+        refusal = None
+        if pattern == 'columns_highlow':
+            apex_m_ball2 = (vals.get('apex_m_ball2', 0.0)
+                            or float(self.get_parameter('apex_m_ball2').value))
+            res_ = self._highlow_refusal(apex_m, apex_m_ball2)
+            refusal = None if res_ is None else res_.message
+        elif pattern == 'columns_turned':
+            angle_deg = (vals.get('columns_angle_deg', 0.0)
+                         or float(self.get_parameter('columns_angle_deg').value))
+            refusal = self._turned_refusal(angle_deg)
+            if refusal is None:
+                feed_site, refusal = self._turned_feed_site_name(
+                    separation_mm, angle_deg)
+        if refusal is not None:
+            response.success = False
+            response.message = refusal
+            return response
+        # `_refuse_if_running` above answered 'unavailable' for any live or
+        # starting goal, so this branch only runs with no Attempt: the one
+        # place the second (re-aim) figure is walked (JB-185).
+        res = self._nominate(self._nomination_config(
+            pattern, apex_m, separation_mm, dwell_s,
+            apex_m_ball2=apex_m_ball2, angle_deg=angle_deg,
+            feed_site=feed_site), with_aim=True)
+        response.success = res.ok
+        response.message = '\n'.join([res.summary] + (
+            [] if res.ok else list(res.lines)))
+        self.get_logger().debug(
+            'skills/nominate %r: %s (%.1f s)' % (request.data, res.summary,
+                                                 res.seconds))
+        return response
+
     def _svc_check(self, request, response):
         """``skills/check`` (item 8): every current R3 precondition-ladder
-        refusal at once, plus the admissible-box/limits status and the
+        refusal at once, plus the nomination status and the
         session-start frame check (`_frame_check_error`, plan
         `cup-contact-contract.md` § 1) — the dress-rehearsal runsheet calls
         this before any powered attempt (Rigor: "make gates report every
@@ -6619,134 +6973,44 @@ class SkillNode(Node):
                        else 'cannot evaluate — %s' % (frame_result.detail,)))
             else:
                 lines.append('frame check OK: %s' % (frame_result.detail,))
-        if _ADMISSIBLE_BOX_PATH is None:
-            ok = False
-            lines.append('box REFUSED: cannot find the repo root from %r'
-                         % (__file__,))
-        else:
-            try:
-                boxes = adm.load(_ADMISSIBLE_BOX_PATH)
-                adm.check_limits(boxes, self._live_limits())
-            except adm.AdmissibleError as exc:
-                ok = False
-                lines.append('box REFUSED: %s' % (exc,))
+        # Goal ACCEPTANCE is decided by nomination (P3b): the Pattern's nominal
+        # Segments planned and gated for real at the live Sitting limits, no
+        # offline box. One line per configuration this check has always
+        # reported (self-toss at the node's Site, the hop at the node's
+        # separation, the oval at the node parameters), every refusal at once.
+        check_apex_m = float(self.get_parameter('apex_m').value)
+        sep_mm = float(self.get_parameter('separation_mm').value)
+        lines.append('planner_mode: %s' % self._planner_mode())
+        lines.append('carry_zvd: %s' % str(self._carry_zvd()).lower())
+        running = self._refuse_if_running(SimpleNamespace(success=None,
+                                                          message=None))
+        if running is not None:
+            # A solve would contend for the GIL with the tick (as in
+            # `skills/nominate`): say so, leave `ok` to the other lines.
+            lines.append('nomination: not evaluated (an Attempt is running)')
+        for name in (() if running is not None
+                     else ('self_toss', 'hop', 'oval_1ball')):
+            res = self._nominate(self._nomination_config(
+                name, check_apex_m, sep_mm, _pattern_default_dwell_s(name)))
+            line = re.sub(r'^nomination (OK|REFUSED)',
+                          r'nomination %s: \1' % name, res.summary)
+            if res.ok:
+                lines.append(line)
+            elif name == 'oval_1ball' and res.report is not None:
+                # The oval is optional (as it was under the retired box: "not swept ...
+                # informational"): a node that never flies it must not be
+                # failed by it. A Site OUTSIDE the workspace still fails
+                # (that was a refusal before too).
+                lines.append(line + ' (informational: the oval is optional)')
             else:
-                # Per (site pair, apex band) -- the same predicate `select`
-                # judges a live throw by, not just "a box exists somewhere".
-                by_pair: Dict[Tuple[str, str], List[Tuple[float, float]]] = {}
-                for b in boxes:
-                    by_pair.setdefault(b.site_pair, []).append(b.apex_band_m)
-                parts = ['%s %s' % (p, ', '.join(
-                            '%.2f-%.2f' % (lo, hi) for lo, hi in sorted(bands)))
-                        for p, bands in sorted(by_pair.items())]
-                check_apex_m = float(self.get_parameter('apex_m').value)
-                check_dwell_s = float(self.get_parameter('dwell_s').value)
-                check_mode = self._planner_mode()
-                check_zvd = self._carry_zvd()
-                lines.append('planner_mode: %s' % check_mode)
-                lines.append('carry_zvd: %s' % str(check_zvd).lower())
-                pair = (_DEFAULT_SITE_NAME, _DEFAULT_SITE_NAME)
-                default_xy = (_DEFAULT_SITE_X_MM, _DEFAULT_SITE_Y_MM)
-                if adm.select(boxes, 'self_toss', pair, check_apex_m,
-                              release_site_xy_mm=default_xy,
-                              target_site_xy_mm=default_xy,
-                              dwell_s=check_dwell_s, planner_mode=check_mode, carry_zvd=check_zvd) is None:
-                    ok = False
-                    lines.append(
-                        'box REFUSED: no box covers %r at apex %.3f m (%s): %s'
-                        % (pair, check_apex_m, '; '.join(parts),
-                           adm.describe_miss(
-                               boxes, 'self_toss', pair, check_apex_m,
-                               release_site_xy_mm=default_xy,
-                               target_site_xy_mm=default_xy,
-                               dwell_s=check_dwell_s, planner_mode=check_mode, carry_zvd=check_zvd)))
-                else:
-                    lines.append('box OK: %s' % ('; '.join(parts),))
-                # The HOP's boxes at the node's separation, both directions —
-                # the pattern a GUI Start actually flies (R4 runsheet finding,
-                # 2026-09-24: this line only ever checked self_toss, so a
-                # missing hop box surfaced as a goal rejection, never here).
-                sep_mm = float(self.get_parameter('separation_mm').value)
-                try:
-                    hop_sites = columns_sites(sep_mm)
-                except ValueError as exc:
-                    ok = False
-                    lines.append('hop box REFUSED: %s' % (exc,))
-                else:
-                    for a, b in ((hop_sites[0], hop_sites[1]),
-                                 (hop_sites[1], hop_sites[0])):
-                        if adm.select(boxes, 'hop', (a.name, b.name),
-                                      check_apex_m,
-                                      release_site_xy_mm=a.cup_mm[:2],
-                                      target_site_xy_mm=b.cup_mm[:2],
-                                      dwell_s=check_dwell_s, planner_mode=check_mode, carry_zvd=check_zvd) is None:
-                            ok = False
-                            lines.append(
-                                'hop box REFUSED: no hop box covers %s->%s at '
-                                'separation %.1f mm, apex %.3f m: %s'
-                                % (a.name, b.name, sep_mm, check_apex_m,
-                                   adm.describe_miss(
-                                       boxes, 'hop', (a.name, b.name),
-                                       check_apex_m,
-                                       release_site_xy_mm=a.cup_mm[:2],
-                                       target_site_xy_mm=b.cup_mm[:2],
-                                       dwell_s=check_dwell_s, planner_mode=check_mode, carry_zvd=check_zvd)))
-                        else:
-                            lines.append('hop box OK: %s->%s at %.1f mm'
-                                         % (a.name, b.name, sep_mm))
-                    # The one-ball OVAL's box (fixed roles: T -> C only), same
-                    # key a goal is judged by, plus the accept-time workspace
-                    # rule. Informational when no oval cell is swept: the
-                    # pattern is optional and a missing cell must not fail
-                    # the check of a node that never flies it.
-                    t_site, c_site = hop_sites[0], hop_sites[1]
-                    oval_box = adm.select(
-                        boxes, 'oval_1ball', (t_site.name, c_site.name),
-                        check_apex_m, release_site_xy_mm=t_site.cup_mm[:2],
-                        target_site_xy_mm=c_site.cup_mm[:2],
-                        dwell_s=check_dwell_s, planner_mode=check_mode, carry_zvd=check_zvd)
-                    if oval_box is None:
-                        lines.append(
-                            'oval box not swept: no oval_1ball box covers '
-                            '%s->%s at separation %.1f mm, apex %.3f m, '
-                            'dwell %.3f s (informational): %s'
-                            % (t_site.name, c_site.name, sep_mm,
-                               check_apex_m, check_dwell_s,
-                               adm.describe_miss(
-                                   boxes, 'oval_1ball',
-                                   (t_site.name, c_site.name), check_apex_m,
-                                   release_site_xy_mm=t_site.cup_mm[:2],
-                                   target_site_xy_mm=c_site.cup_mm[:2],
-                                   dwell_s=check_dwell_s, planner_mode=check_mode, carry_zvd=check_zvd)))
-                    else:
-                        ws_reason = adm.check_site_workspace(
-                            (t_site, c_site), oval_box,
-                            cup_cycle.CupCycleConfig().workspace_xy_m)
-                        lines.append(
-                            'oval box OK: oval_1ball %s->%s at %.1f mm, apex '
-                            '%.2f-%.2f m, dwell %.3f s'
-                            % (t_site.name, c_site.name, sep_mm,
-                               oval_box.apex_band_m[0], oval_box.apex_band_m[1],
-                               check_dwell_s))
-                        if ws_reason:
-                            ok = False
-                            lines.append('oval box REFUSED: %s: %s'
-                                         % (ex.REJECTED_SITE_OUTSIDE_WORKSPACE,
-                                            ws_reason))
-                        else:
-                            lines.append('oval workspace OK')
-        site_x_mm = float(self.get_parameter('site_x_mm').value)
-        site_y_mm = float(self.get_parameter('site_y_mm').value)
-        if (abs(site_x_mm - _DEFAULT_SITE_X_MM) > 1e-9
-                or abs(site_y_mm - _DEFAULT_SITE_Y_MM) > 1e-9):
-            ok = False
-            lines.append(
-                'site REFUSED: (%.3f, %.3f) mm != the swept default '
-                '(%.3f, %.3f) mm — the admissible box carries no site xy'
-                % (site_x_mm, site_y_mm, _DEFAULT_SITE_X_MM,
-                   _DEFAULT_SITE_Y_MM))
-        else:
-            lines.append('site OK')
+                ok = False
+                lines.append(line)
+        lines.append(
+            'admissibility: acceptance is decided by nomination (a real plan '
+            'of the Pattern at the live limits); online check on the command '
+            'path (margin 0.9, early_command=%s)'
+            % (str(bool(self.get_parameter(
+                'admissibility_early_command').value)).lower(),))
         response.success = ok
         response.message = '; '.join(lines)
         if ok:
@@ -6793,7 +7057,10 @@ def main(args=None):
     # thread per fire), so response delivery is moved OFF this pool: every
     # waited client lives on `node._client_node`, spun below on its own
     # SingleThreadedExecutor in a daemon thread. num_threads stays 4.
-    executor = MultiThreadedExecutor(num_threads=4)
+    # 2026-11-06 (P3b): a FIFTH for `skills/nominate`'s own callback group --
+    # a nomination solve takes seconds on its thread and must not cost the
+    # other four (tick / Juggle / subscriptions / install responses) one.
+    executor = MultiThreadedExecutor(num_threads=5)
     executor.add_node(node)
     client_executor = SingleThreadedExecutor()
     client_executor.add_node(node._client_node)

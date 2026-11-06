@@ -179,6 +179,7 @@ _FROZEN = 'FROZEN'
 #   target the suppressed legs cannot follow (which is what re-trips the guard).
 _GUARD_LATCHED = 'GUARD_LATCHED'
 _PLANNER_MODE = 'PLANNER_MODE'   # InstallSegment refusal: unknown request.planner_mode
+_CHECK_NOT_SUPPORTED = 'CHECK_NOT_SUPPORTED'   # InstallSegment refusal: check_only on KIND_BUMP
 
 
 # Control modes in which the node streams a hold. STANDBY is the armed-hold state
@@ -974,8 +975,8 @@ class TrajectoryNode(Node):
         # `planner_mode` ('level' | 'pose', two-ball-oval P3) is ONLY the
         # DEFAULT for an InstallSegment request that carries none (''): the
         # LIVE switch is skill_node's `planner_mode` parameter, which rides on
-        # every request (it selects the admissible box AND the plan, so the two
-        # cannot disagree). Deliberately NOT live-settable here -- a second
+        # every request (it drives the nomination / online check AND the plan, so the
+        # two cannot disagree). Deliberately NOT live-settable here -- a second
         # live knob would be an unenforced twin of that one.
         self.declare_parameter('planner_mode',
                                str(sk_seg.SegmentConfig().planner_mode))
@@ -4652,7 +4653,25 @@ class TrajectoryNode(Node):
             tilt=_wire_tilt(request.rest_tilt_rad, request.rest_tilt_set))
 
     def _svc_install_segment(self, request, response):
-        """``trajectory/install_segment``: install ONE rest-terminal skill
+        """``trajectory/install_segment`` (the registered callback). A thin
+        wrapper over :meth:`_svc_install_segment_impl`: a ``check_only``
+        request must not move the install bookkeeping, so the two attributes
+        :meth:`_reject_segment` writes (``_cycle_plan_wall_ms``,
+        ``_last_rejection``) are snapshotted and restored around it -- the
+        guard ladder's own refusals included. Any other request is passed
+        straight through."""
+        if not bool(getattr(request, 'check_only', False)):
+            return self._svc_install_segment_impl(request, response)
+        plan_wall_ms = self._cycle_plan_wall_ms
+        last_rejection = self._last_rejection
+        try:
+            return self._svc_install_segment_impl(request, response)
+        finally:
+            self._cycle_plan_wall_ms = plan_wall_ms
+            self._last_rejection = last_rejection
+
+    def _svc_install_segment_impl(self, request, response):
+        """The body of ``trajectory/install_segment``: install ONE rest-terminal skill
         segment — the ONE install path of the skill stack (plan § 2.1/§ 2.4),
         and — since the FSM deletion (R4, 2026-09-24, which retired
         ``trajectory/plan_cycle`` / ``_svc_plan_cycle`` / ``PlanCycle.srv``
@@ -4683,6 +4702,7 @@ class TrajectoryNode(Node):
         response.t_release_mono = 0.0
         response.planner_mode = ''
         response.carry_zvd = False
+        response.margin = math.nan      # P3a: set only by a check_only reply
         # KIND_BUMP (I-CATCH-5): every guard refusal below is TERMINAL for a
         # bump (the attempt is ending; a 40 Hz retry would only spam this
         # service); `_svc_bump_catch` sets its own outcomes explicitly.
@@ -4710,6 +4730,14 @@ class TrajectoryNode(Node):
             return self._reject_segment(
                 response, feas.STALE_STATE,
                 'robot_state telemetry stale — cannot install a segment', t_wall)
+        check_only = bool(request.check_only)
+        if is_bump and check_only:
+            # P3a: a bump is not a segment -- there is nothing to plan, so
+            # there is nothing to check. Refused by name, nothing solved.
+            return self._reject_segment(
+                response, _CHECK_NOT_SUPPORTED,
+                'check_only is not defined for KIND_BUMP (nothing solved)',
+                t_wall)
         if is_bump:
             return self._svc_bump_catch(request, response, t_wall, epoch0)
         try:
@@ -4726,8 +4754,8 @@ class TrajectoryNode(Node):
         # (not a `builtin_interfaces/Time`), so the crossing is the same sum
         # `_ros_time_to_perf` does without that message's two-field unpack.
         # The planner this ONE install is solved with: the request's (skill_node's
-        # live parameter -- the same value the admissible box was selected
-        # under), else the node's default for a pre-P3 / hand-built client.
+        # live parameter -- the same value the nomination and online check
+        # plan under), else the node's default for a pre-P3 / hand-built client.
         # Refused by name BEFORE any solve; per install only (the node's own
         # `_segment_cfg` is never mutated).
         req_mode = str(request.planner_mode)
@@ -4744,7 +4772,7 @@ class TrajectoryNode(Node):
                 'planner_mode %r is not one of %s (nothing solved)'
                 % (req_mode, list(uc.PLANNER_MODES)), t_wall)
         # carry-ring-zvd P1c (JB-102): the ZVD ring-row flag rides with the
-        # planner (the same skill_node parameter stamped the box cell). A bool
+        # planner (the same skill_node parameter selected the nomination and online check). A bool
         # cannot say "absent", so the request's flag is honoured whenever the
         # request names a planner (req_mode != ''); a request with none is the
         # pre-P3 / hand-built client and plans with the node's default
@@ -4935,6 +4963,10 @@ class TrajectoryNode(Node):
                         deadline_s,
                         sk_exec.splice_cliff_s(record, splice_k_pre)
                         - sk_solver.REPLY_TRANSIT_ALLOW_S)
+        if check_only:
+            return self._check_segment_reply(
+                request, response, t_wall, kind, record, seed_rest, terminal,
+                t_now_s, lead_s, seg_cfg, deadline_s)
         self._solve_seq += 1
         # Live-hold guard (`_on_set_parameters`): a solve in flight is "a goal
         # active" for the pre_release_hold_s refusal. The cfg it planned with
@@ -5082,6 +5114,56 @@ class TrajectoryNode(Node):
                                         kind, terminal, new_record, seg_cfg),
                                     carry_zvd=self._solved_carry_zvd(
                                         kind, terminal, new_record, seg_cfg))
+
+    def _check_segment_reply(self, request, response, t_wall, kind, record,
+                             seed_rest, terminal, t_now_s, lead_s, seg_cfg,
+                             deadline_s):
+        """P3a ``check_only``: PLAN the resolved segment, install nothing.
+
+        Reached from ``_svc_install_segment`` after the request is fully
+        resolved (guards, terminal, record / seed, lead, deadline), so a check
+        sees exactly the inputs an install would. It never touches ``_cycle``,
+        ``_active_plan``, ``_segment_warm_start``, the install epoch, the
+        stream or any latch, and never reaches the continuity / hold-superseded
+        / reply-transit / ``_install`` paths: the solver worker's CHECK request
+        (``check=True``) returns a verdict, not a record. It still counts as a
+        solve in flight (the live-hold parameter fence).
+
+        A worker refusal (SOLVER_UNAVAILABLE, SKIPPED_LATE) is passed through
+        under its OWN code: a check has no wire cliff of its own, so SKIPPED_LATE
+        is NOT mapped onto ORIGIN_TOO_LATE / SPLICE_TOO_LATE as an install's
+        is.
+        """
+        self._solve_seq += 1
+        self._solves_in_flight += 1
+        try:
+            reply = self._segment_solver.solve(sk_solver.SegmentSolveRequest(
+                seq=self._solve_seq, record=record, seed_rest=seed_rest,
+                kind=kind, terminal=terminal, t_now_s=t_now_s,
+                lead_s=lead_s, cfg=seg_cfg,
+                limits=self._limits, geom=self._geom,
+                warm_start=self._segment_warm_start,
+                reserve_fresh_lead=True, deadline_s=deadline_s,
+                check=True))
+        finally:
+            self._solves_in_flight -= 1
+        result = reply.result
+        margin = float(getattr(reply, 'margin', math.nan))
+        response.accepted = bool(result.accepted)
+        response.code = str(result.code)
+        response.message = str(result.message)
+        response.margin = margin
+        response.plan_wall_ms = (time.perf_counter() - t_wall) * 1e3
+        # `_cycle_plan_wall_ms` / `_last_rejection` are install bookkeeping:
+        # a check must not move what the status line reports for installs.
+        self.get_logger().info(
+            'check_segment %s %s: %s code=%s margin=%.3f, plan %.1f ms, '
+            'solve %.1f ms%s'
+            % (kind, ball_label(int(request.ball_id)),
+               'planned' if response.accepted else 'refused',
+               response.code, margin, response.plan_wall_ms,
+               float(reply.solve_s) * 1e3, _solve_cpu_suffix(reply)))
+        return response
 
     def _svc_bump_catch(self, request, response, t_wall: float, epoch0):
         """``KIND_BUMP``: re-aim the ACTIVE record's catch as a platform-xy

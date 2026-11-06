@@ -65,7 +65,7 @@ for _p in (_ROOT, os.path.join(_ROOT, 'ros_ws', 'src', 'jugglebot')):
         sys.path.insert(0, _p)
 
 from jugglebot.motion.skills import schedule as sch                # noqa: E402
-from jugglebot.motion.skills.memory import _FLOAT_FMT, _HEADER     # noqa: E402
+from jugglebot.motion.skills.memory import HEADER_V1 as _HEADER, _FLOAT_FMT  # noqa: E402
 
 #: Index of ``y2_apex_m`` in :data:`jugglebot.motion.skills.memory._HEADER`
 #: -- the one column this tool rewrites.

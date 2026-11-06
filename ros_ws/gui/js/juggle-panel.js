@@ -41,10 +41,13 @@
  * raises an amber warning (a stale relay silently flies the node defaults
  * instead of the typed values — the fix is a colcon build).
  *
- * Dwell IS a goal field (owner 2026-10-21): the admissible box is swept AT a
- * dwell per pattern (columns/hop/self_toss 0.27, oval 0.65), a different dwell
- * is refused, so PATTERN_POINTS pre-fills it per pattern (editable) and the
- * request carries `dwell_s=`; blank = skill_node's dwell_s parameter.
+ * Dwell IS a goal field (owner 2026-10-21): the Admissible box was swept AT a
+ * dwell per pattern (columns/hop/self_toss 0.27, oval 0.65) and refused a
+ * different one (retired 2026-11-06; the nomination plans at the dwell
+ * now), so PATTERN_POINTS pre-fills it per pattern (editable) and the
+ * request carries `dwell_s=`; blank = the Pattern's default dwell, 0.27 s
+ * (`dwell_s` is no longer a skill_node parameter since 2026-11-06,
+ * learner-generalisation P4: dwell belongs to the Pattern's beat events).
  *
  * Two goals ride on a NODE PARAMETER, not a goal field (pattern-progression
  * P2/P4, 2026-10-31): `columns_turned` reads `columns_angle_deg` and
@@ -80,6 +83,16 @@ const STATUS_CLEAR_MS = 8000;
 const T_SVC_REQUEST = 10000;
 const T_SVC_STOP = 5000;
 const T_SVC_PARAMS = 3000;
+/** Nomination solves the whole pattern's schedules plus a parameter search on
+ *  the node, so it gets longer than a dispatch ack before it is called
+ *  unavailable. */
+const T_SVC_NOMINATE = 20000;
+/** Pattern select / field edits settle this long before a nomination is asked. */
+const NOMINATE_DEBOUNCE_MS = 400;
+/** skill_node's nomination service (SetString: the SAME data string Start
+ *  sends; reply message = summary line, then one refusal per line).  Relative
+ *  name like skills/attempt and jugglebot/juggle_request. */
+const NOMINATE_SERVICE = 'skills/nominate';
 /** Param-fetch retry while connected and skill_node isn't answering yet
  *  (it starts after rosbridge): a few fast tries, then slow. */
 const PARAM_RETRY_FAST_MS = 5000;
@@ -102,7 +115,7 @@ const SET_PARAM_SERVICE_TYPE = 'rcl_interfaces/srv/SetParameters';
 const PARAMETER_DOUBLE = 3;   // rcl_interfaces/msg/ParameterType
 /** columns_feed_site is display-only: it decides which site each columns
  *  ball flies at (skill_node._run_columns / _run_columns_1ball). */
-const PARAM_NAMES = ['apex_m', 'separation_mm', 'dwell_s', 'n_throws', 'columns_feed_site'];
+const PARAM_NAMES = ['apex_m', 'separation_mm', 'n_throws', 'columns_feed_site'];
 
 const LS_SPEED_KEY = 'jugglebot-juggle-diagram-speed';
 const SPEEDS = [0.5, 1, 0.25];
@@ -153,18 +166,18 @@ export const JUGGLE_PATTERNS = [
     { value: 'columns_turned', label: 'Columns — turned', kind: 'columns', sites: 2, phantom: null,
       param: 'columns_angle_deg',
       blurb: 'Two-ball Columns with the site pair turned about the Platform +z by the '
-             + 'Angle field (45 or 90 deg are swept); the fed site is the one nearest Ball Butler.' },
+             + 'Angle field (45 or 90 deg are the angles flown); the fed site is the one nearest Ball Butler.' },
     // Pattern-progression P4 (JP-9): Ball 1 at Apex, Ball 2 at `apex_m_ball2`;
     // the Beat follows the high ball and the low ball dwells longer.
     { value: 'columns_highlow', label: 'Columns — high-low', kind: 'columns', sites: 2, phantom: null,
       param: 'apex_m_ball2',
       blurb: 'Two-ball Columns with Ball 1 at Apex and Ball 2 at Apex 2 (1.00 over 0.90 at '
-             + '100 mm is the swept pair); the diagram timing follows the higher ball.' },
+             + '100 mm is the pair flown); the diagram timing follows the higher ball.' },
 ];
 
 /**
  * Operator-typed fields.  The bounds are TYPO GUARDS, not authority: the
- * admissible box in skill_node is what decides whether a value flies.  They
+ * nomination and online check in skill_node decide whether a value flies.  They
  * catch the unit slips that matter (apex typed in mm reads as a 900 m
  * throw) and the 0 that would silently mean "node default" on the wire.
  */
@@ -186,21 +199,21 @@ const FIELDS = {
     },
     dwell_s: {
         label: 'Dwell', unit: 's', integer: false, max: 3, param: 'dwell_s',
-        tip: 'dwell_s — dwell at a site, seconds. The admissible box is swept AT a dwell '
-            + 'per pattern (PATTERN_POINTS); a different dwell is refused. Blank = skill_node\'s dwell_s.',
+        tip: 'dwell_s — dwell at a site, seconds. Each pattern has a default dwell '
+            + '(PATTERN_POINTS); the nomination plans at the dwell given. Blank = the default dwell, 0.27 s.',
         tooBig: 'dwell is in SECONDS',
     },
     // Parameter-backed fields (one pattern each; hidden otherwise, REQUIRED there).
     columns_angle_deg: {
         label: 'Angle', unit: '°', integer: false, max: 359, param: 'columns_angle_deg',
         tip: 'columns_angle_deg — the Columns pair turned about +z, degrees, written to '
-            + 'skill_node before Start. Required; the box is swept at 45 and 90.',
+            + 'skill_node before Start. Required; 45 and 90 are the angles flown.',
         tooBig: 'angle is in DEGREES (under 360)',
     },
     apex_m_ball2: {
         label: 'Apex 2', unit: 'm', integer: false, max: 3, param: 'apex_m_ball2',
         tip: 'apex_m_ball2 — Ball 2\'s apex, metres, written to skill_node before Start. '
-            + 'Required and different from Apex; 1.00 over 0.90 at 100 mm is the swept pair.',
+            + 'Required and different from Apex; 1.00 over 0.90 at 100 mm is the pair flown.',
         tooBig: 'apex is in METRES',
     },
 };
@@ -216,12 +229,12 @@ const POINT_KEYS = ['apex_m', 'separation_mm', 'dwell_s'].concat(PARAM_FIELD_KEY
  * with whenever the pattern is selected (an operator edit after that wins
  * until the pattern changes again).  Root cause (R5 sitting 7b): blank
  * fields flew skill_node's single 0.9 m / 250 mm default and a typed value
- * stuck across pattern switches, but the admissible box is swept at
+ * stuck across pattern switches, but the Admissible box (retired 2026-11-06) was swept at
  * DIFFERENT points per pattern -- columns at 125 mm / apex 0.95 (its
  * 0.875-0.925 band is empty), hop only at 250 mm, self-toss up to 0.95 --
  * so inputs were refused (or columns_1ball silently flew 250 mm).
- * `box` = the admissible_box.yaml pattern kind the point must sit inside;
- * tests/ros/test_gui_juggle_defaults.py pins every row to the committed box.
+ * `box` = the pattern kind of the retired admissible_box.yaml the point had
+ * to sit inside (the key is kept as data).
  */
 export const PATTERN_POINTS = {
     self_toss:         { box: 'self_toss', apex_m: 0.9,  separation_mm: null, dwell_s: 0.27 },
@@ -231,8 +244,7 @@ export const PATTERN_POINTS = {
     columns_1ball_fed: { box: 'columns',   apex_m: 0.95, separation_mm: 125, dwell_s: 0.27 },
     oval_1ball:        { box: 'oval_1ball', apex_m: 0.95, separation_mm: 150, dwell_s: 0.65 },
     oval_1ball_fed:    { box: 'oval_1ball', apex_m: 0.95, separation_mm: 150, dwell_s: 0.65 },
-    // Swept 2026-10-31 (see config/generated/admissible_box.yaml gate_hash; the
-    // box was re-swept the same day, 82 cells): turned cells at 125 mm, bands
+    // Swept 2026-10-31 (82 cells of the retired Admissible box): turned cells at 125 mm, bands
     // 0.925-0.975 at 45 deg and 0.875-0.975 at 90 deg; high-low cells only at
     // 100 mm, the 1.00 / 0.90 pair admissible at both sites; the 1.05 / 0.95
     // pair's LOW cells are admissible since the re-sweep (they were empty).
@@ -257,6 +269,11 @@ function applyPatternPoint(value) {
 // derived from them shows "?" instead of a number.
 const NOMINAL = { apex_m: 0.9, dwell_s: 0.27, separation_mm: 250 };
 
+// The dwell a goal with a blank Dwell field gets: skill_node's `_DEFAULT_DWELL_S`
+// (dwell is not a node parameter since 2026-11-06, so it is no longer fetched;
+// tests/ros/test_gui_juggle_defaults.py pins the two constants equal).
+export const DEFAULT_DWELL_S = 0.27;
+
 // ====================================================================
 // State
 // ====================================================================
@@ -276,7 +293,7 @@ for (const k of FIELD_KEYS) fields[k] = { raw: '', value: null, error: null };
 applyPatternPoint(ui.pattern);
 
 /** skill_node's live parameters (display only — see the module header). */
-let defaults = null;            // { apex_m, separation_mm, dwell_s, n_throws, columns_feed_site } | null
+let defaults = null;            // { apex_m, separation_mm, n_throws, columns_feed_site } | null
 let defaultsState = 'unknown';  // unknown | loading | ok | failed
 let paramsInFlight = false;
 let paramRetryTimer = null;
@@ -291,6 +308,9 @@ let magazineMiss = null;        // { text, cls } — latest MAGAZINE_MISS, until
 let last = null;                // { kind: 'end'|'refused', ... }
 let crossCheck = null;          // { pattern, typed, t }
 let warn = null;                // stale-relay mismatch text
+let nom = null;                 // { state: checking|ok|err|unavailable, summary, lines } | null
+let nomTimer = null;
+let nomSeq = 0;                 // request counter: a reply for an older request is dropped
 
 let speed = 0.5;
 try {
@@ -475,6 +495,7 @@ function buildRequestData(p) {
 function effective(key) {
     if (fields[key].value != null) return fields[key].value;
     const spec = FIELDS[key];
+    if (key === 'dwell_s') return DEFAULT_DWELL_S;
     if (defaults && defaults[spec.param] != null) return defaults[spec.param];
     return null;
 }
@@ -512,10 +533,9 @@ function fetchDefaults() {
             const vals = (res && res.values) || [];
             const d = {};
             PARAM_NAMES.forEach((n, i) => { d[n] = paramValue(vals[i]); });
-            // A reply that answers none of the four numeric names is not a
+            // A reply that answers none of the three numeric names is not a
             // skill_node we understand — show "node default", not zeros.
-            if (d.apex_m == null && d.separation_mm == null && d.dwell_s == null
-                && d.n_throws == null) {
+            if (d.apex_m == null && d.separation_mm == null && d.n_throws == null) {
                 throw new Error('no known parameters in the reply');
             }
             defaults = d;
@@ -586,12 +606,8 @@ function setParamThenDispatch(p, data, cc) {
     busy = true;
     warn = null;
     setTransient('Setting ' + p.param + ' = ' + wireNum(value, false) + '…', '');
-    ros.withTimeout(transport.callService(SET_PARAM_SERVICE, SET_PARAM_SERVICE_TYPE, {
-        parameters: [{ name: p.param, value: { type: PARAMETER_DOUBLE, double_value: value } }],
-    }), T_SVC_PARAMS, 'skill_node set_parameters')
-        .then((res) => {
-            const r = res && res.results && res.results[0];
-            if (!r || !r.successful) throw new Error((r && r.reason) || 'parameter not set');
+    writeParam(p)
+        .then(() => {
             dispatchJuggle(data, cc);   // its own latch, ack and cooldown
         })
         .catch((err) => {
@@ -600,6 +616,85 @@ function setParamThenDispatch(p, data, cc) {
             clearTimeout(cooldownTimer);
             cooldownTimer = setTimeout(() => { busy = false; sync(); }, JUGGLE_COOLDOWN_MS);
             armTransientClear();
+            sync();
+        });
+}
+
+/** Write pattern `p`'s parameter-backed field to skill_node (one double).
+ *  Resolves on success; rejects with the node's reason, a timeout or a
+ *  transport error.  Shared by Start and the nomination, so both judge the
+ *  same parameter. */
+function writeParam(p) {
+    const value = fields[p.param].value;
+    return ros.withTimeout(transport.callService(SET_PARAM_SERVICE, SET_PARAM_SERVICE_TYPE, {
+        parameters: [{ name: p.param, value: { type: PARAMETER_DOUBLE, double_value: value } }],
+    }), T_SVC_PARAMS, 'skill_node set_parameters')
+        .then((res) => {
+            const r = res && res.results && res.results[0];
+            if (!r || !r.successful) throw new Error((r && r.reason) || 'parameter not set');
+        });
+}
+
+// ====================================================================
+// Nomination (advisory: never blocks Start, never an error toast)
+// ====================================================================
+
+/** Drop whatever nomination is pending or in flight (its reply is stale). */
+function cancelNominate() {
+    clearTimeout(nomTimer);
+    nomSeq++;
+}
+
+/** The request changed (pattern, field, defaults): show "checking" and, once
+ *  the edits settle, ask skill_node whether the request is admissible. */
+function scheduleNominate() {
+    cancelNominate();
+    if (!gate.connected || running || busy || firstFieldError(patternOf(ui.pattern))) {
+        nom = null;   // nothing to judge, or judging would write parameters under a live goal
+        sync();
+        return;
+    }
+    nom = { state: 'checking', summary: 'checking nomination…', lines: [] };
+    sync();
+    const seq = nomSeq;
+    nomTimer = setTimeout(() => runNominate(seq), NOMINATE_DEBOUNCE_MS);
+}
+
+/** Start's request string plus the parameter-backed fields.  A nomination must
+ *  not mutate node parameters while the operator is still editing, so instead
+ *  of writing them (as Start does) it carries them as optional request keys
+ *  that override the node parameters for that nomination only.  A blank
+ *  field omits its key. */
+function buildNominateData(p) {
+    let data = buildRequestData(p);
+    if (p.param && fields[p.param].value != null) {
+        data += ',' + p.param + '=' + wireNum(fields[p.param].value, false);
+    }
+    return data;
+}
+
+function runNominate(seq) {
+    if (seq !== nomSeq) return;
+    const p = patternOf(ui.pattern);
+    const data = buildNominateData(p);
+    ros.withTimeout(new Promise((r) => r(transport.callService(NOMINATE_SERVICE, SETSTRING, { data }))),
+        T_SVC_NOMINATE, 'nomination')
+        .then((res) => {
+            if (seq !== nomSeq) return;   // the fields moved while this was out
+            const text = String((res && res.message) || '').trim();
+            const rows = text ? text.split('\n').map((l) => l.trim()).filter((l) => l) : [];
+            const ok = !!(res && res.success);
+            // "nomination unavailable: ..." (an Attempt is running) is not a verdict on the configuration.
+            const neutral = /^nomination unavailable/i.test(text);
+            nom = { state: neutral ? 'unavailable' : (ok ? 'ok' : 'err'),
+                summary: rows.length ? rows[0] : (ok ? 'nomination OK' : 'nomination REFUSED'),
+                lines: rows.slice(1) };
+            sync();
+        })
+        .catch((err) => {
+            if (seq !== nomSeq) return;
+            nom = { state: 'unavailable', lines: [],
+                summary: 'nomination unavailable (' + (err && err.message ? err.message : err) + ')' };
             sync();
         });
 }
@@ -628,6 +723,7 @@ function onReloadConfirm() {
 
 /** Shared Start / reload / magazine dispatch (one latch, one cooldown, one ack path). */
 function dispatchJuggle(data, cc) {
+    cancelNominate();   // a late nomination must not write parameters under the goal
     busy = true;
     warn = null;
     crossCheck = cc;
@@ -1144,7 +1240,7 @@ function buildField(key) {
     input.addEventListener('input', () => {
         fields[key].raw = input.value;
         Object.assign(fields[key], parseField(key, input.value));
-        sync();
+        scheduleNominate();
     });
     input.addEventListener('keydown', (ev) => {
         if (ev.key === 'Escape') {
@@ -1177,7 +1273,7 @@ export function buildJugglePanel(container) {
             dom.fields[k].input.value = '';
         }
         applyPatternPoint(ui.pattern);   // back to the pattern's certified point
-        sync();
+        scheduleNominate();
     });
     const badge = el('span', 'badge jp-badge', '—');
     badge.id = 'juggle-badge';
@@ -1195,7 +1291,7 @@ export function buildJugglePanel(container) {
     select.addEventListener('change', () => {
         ui.pattern = select.value;
         applyPatternPoint(ui.pattern);
-        sync();
+        scheduleNominate();
     });
     // Cup preview (not a control): the node decides from the cup sensor.
     const cupPreview = el('span', 'jp-reload jp-cup-preview');
@@ -1253,13 +1349,23 @@ export function buildJugglePanel(container) {
     const warnEl = el('div', 'jp-warn');
     warnEl.id = 'juggle-warn';
 
-    container.append(head, row, main, timing, summary, actions, attempt, warnEl);
+    const nomBox = el('div', 'jp-nom');
+    nomBox.id = 'juggle-nomination';
+    nomBox.hidden = true;
+    const nomSum = el('div', 'jp-nom-sum');
+    nomSum.id = 'juggle-nomination-summary';
+    const nomLines = el('div', 'jp-nom-lines');
+    nomLines.id = 'juggle-nomination-lines';
+    nomBox.append(nomSum, nomLines);
+
+    container.append(head, row, main, nomBox, timing, summary, actions, attempt, warnEl);
 
     dom = {
         root: container, title, clear, badge, select, cupPreview,
         svg: diag.svg, diagTitle: diag.title, diagStatic: diag.stat, hand: diag.hand,
         handStem: diag.handStem, balls: diag.balls, speedT: diag.speedT,
         fields: fieldDom, timing, start, reloadBtn, magazine, stop, status, summary, attempt, warn: warnEl,
+        nom: nomBox, nomSum, nomLines, nomKey: '',
     };
     document.addEventListener('visibilitychange', ensureAnim);
     sync();
@@ -1304,6 +1410,7 @@ export function renderJugglePanel(g) {
         || (gate.expanded && !wasExpanded))) {
         fetchDefaults();
     }
+    if (gate.connected !== wasConnected) scheduleNominate();   // connect: judge the pre-filled point; drop on disconnect
     sync();
 }
 
@@ -1405,7 +1512,7 @@ function sync() {
         if (PARAM_FIELD_KEYS.includes(k)) {
             setHidden(f.label, !applies); setHidden(f.input, !applies); setHidden(f.unit, !applies);
         }
-        const dv = defaults ? defaults[spec.param] : null;
+        const dv = k === 'dwell_s' ? DEFAULT_DWELL_S : (defaults ? defaults[spec.param] : null);
         let ph;
         if (!applies) ph = 'n/a';
         else if (PARAM_FIELD_KEYS.includes(k)) ph = 'required';
@@ -1493,6 +1600,20 @@ function sync() {
     setText(dom.attempt, a.text);
     setClassSet(dom.attempt, 'jp-attempt', a.cls);
     setTitle(dom.attempt, a.tip);
+
+    // Nomination block (advisory): summary line + one wrapped line per refusal.
+    setHidden(dom.nom, !nom);
+    if (nom) {
+        setText(dom.nomSum, nom.summary);
+        setClassSet(dom.nomSum, 'jp-nom-sum', nom.state);
+        setTitle(dom.nomSum, nom.summary);
+    }
+    const nomKey = nom ? nom.lines.join('\n') : '';
+    if (dom.nomKey !== nomKey) {
+        dom.nomKey = nomKey;
+        dom.nomLines.innerHTML = '';
+        if (nom) for (const l of nom.lines) dom.nomLines.appendChild(el('div', 'jp-nom-line', l));
+    }
 
     setText(dom.warn, warn || '');
     setHidden(dom.warn, !warn);

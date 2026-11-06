@@ -1,10 +1,35 @@
-"""``motion/skills/memory`` -- append-only throw memory (plan § 2.2 / § 2.5).
+"""``motion/skills/memory`` -- append-only throw memory, schema v2.
 
-An :class:`Experience` is one throw's (state, command, observed outcome)
-triple; a :class:`Memory` is the append-only CSV of them a site's learner
-queries. File I/O (``Memory.__init__``'s load, ``Memory.append``'s write)
-happens on the orchestrator thread ONCE PER THROW (plan § 0: "no ... blocking
-I/O ... on the 40 Hz emitter" -- never call either from the emitter thread).
+An :class:`Experience` is one throw's (release state, command, observed
+outcome) record; a :class:`Memory` is the append-only CSV of them the
+Learner is fed from. The Memory only LOADS, HOLDS and APPENDS rows: the
+law that reads them lives in ``learner.Learner`` (which takes each row
+through ``observe``).
+
+**Why v2** (``plans/active/learner-generalisation.md`` section 2.3): the
+residual memory is keyed on the throw's RELEASE position, release velocity
+and release kind, not on the old (site xy, seat offset) 4-vector, which
+cannot tell an oval's carried release from a free-cup one at the same Site.
+So a row now stores ``site_xy_m``, ``release_m`` (3), ``release_vel_mps``
+(3), ``dwell_s`` (nan = unknown), ``seat_offset_m``, ``u``, ``y``,
+``t_abs_s``, ``ball_id``, ``release_kind``, ``caught`` and ``migrated``
+(1 = the release geometry was reconstructed from a v1 row by
+``tools/migrate_memory_schema_v2.py``, 0 = recorded live).
+
+**File and load rules** (each refusal is a ValueError an operator can act on;
+the node turns it into "memory refused: ..." and rejects the goal):
+
+* ``<root>/temp/learn/<plant_id>/memory_v2.csv`` present: its header must
+  equal :data:`HEADER` exactly (a v1 or legacy header inside it is refused
+  by name).
+* v2 absent and the v1 ``memory.csv`` beside it present: REFUSED, naming the
+  migration command with both paths -- never a silent cold start beside an
+  unmigrated corpus.
+* neither present: an empty memory (a new plant_id starts cold).
+
+Rows that fail to parse are dropped with a logged warning and counted in
+:attr:`Memory.n_dropped`. File I/O (load, ``append``) happens on the
+orchestrator thread ONCE PER THROW, never on the 40 Hz emitter.
 
 Pure Python + numpy. No ROS2 imports (the ``motion/`` rule).
 """
@@ -19,12 +44,17 @@ import os
 
 import numpy as np
 
-from jugglebot.motion.skills import learner as lr
-
 __all__ = ['Experience', 'Memory', 'APEX_RATIO_BAND', 'apex_in_band',
-           'memory_path']
+           'memory_path', 'legacy_memory_path', 'HEADER', 'HEADER_V1',
+           'LEGACY_FLIGHT_HEADER', 'SCHEMA_VERSION', 'RELEASE_KINDS']
 
 _LOG = logging.getLogger(__name__)
+
+#: The memory file schema this module reads and writes.
+SCHEMA_VERSION = 2
+
+#: The two release kinds a row can carry (``executor._is_carried``).
+RELEASE_KINDS = ('free_cup', 'carried')
 
 #: The PHYSICAL band an observed apex ``y[2]`` may occupy, as a multiple of
 #: the commanded apex ``u[2]``, for the row to be a row about THIS throw.
@@ -86,20 +116,26 @@ def apex_in_band(u_apex: float, y_apex: float) -> bool:
     return lo * u <= y <= hi * u
 
 
-#: Column order of the CSV -- x (4), u (3), y (3), t_abs_s, ball_id, caught.
-#:
-#: The apex columns are NAMED (``u2_apex_m`` / ``y2_apex_m``) because the
-#: third component changed MEANING on 2026-09-18 -- it was a flight time in
-#: seconds (``u2`` / ``y2``) -- and a file whose numbers mean something else
-#: parses perfectly. :meth:`Memory._load` refuses any other header, so the
-#: name in the file is the schema check.
-_HEADER = ['x0', 'x1', 'x2', 'x3', 'u0', 'u1', 'u2_apex_m',
-           'y0', 'y1', 'y2_apex_m', 't_abs_s', 'ball_id', 'caught']
+#: v2 column order: site (2), release (3), release velocity (3), dwell,
+#: seat offset (2), u (3), y (3), then the bookkeeping columns. The apex
+#: columns are NAMED (``u2_apex_m`` / ``y2_apex_m``) because a file whose
+#: numbers mean something else parses perfectly: the header is the schema
+#: check (see the v1 history in :data:`HEADER_V1`).
+HEADER = ['site_x', 'site_y', 'rel_x', 'rel_y', 'rel_z',
+          'vel_x', 'vel_y', 'vel_z', 'dwell_s', 'seat_x', 'seat_y',
+          'u0', 'u1', 'u2_apex_m', 'y0', 'y1', 'y2_apex_m',
+          't_abs_s', 'ball_id', 'release_kind', 'caught', 'migrated']
+
+#: The FROZEN schema-v1 header (``x`` = site xy + seat offset xy). Kept for
+#: the migration tools only: nothing in this module reads or writes it.
+HEADER_V1 = ['x0', 'x1', 'x2', 'x3', 'u0', 'u1', 'u2_apex_m',
+             'y0', 'y1', 'y2_apex_m', 't_abs_s', 'ball_id', 'caught']
 
 #: The pre-2026-09-18 header, whose ``u2``/``y2`` were flight times (s).
-_LEGACY_FLIGHT_HEADER = ['x0', 'x1', 'x2', 'x3', 'u0', 'u1', 'u2',
-                         'y0', 'y1', 'y2', 't_abs_s', 'ball_id', 'caught']
-_N_NUMERIC = 11  # x(4) + u(3) + y(3) + t_abs_s(1); ball_id/caught parsed separately
+LEGACY_FLIGHT_HEADER = ['x0', 'x1', 'x2', 'x3', 'u0', 'u1', 'u2',
+                        'y0', 'y1', 'y2', 't_abs_s', 'ball_id', 'caught']
+
+_N_NUMERIC_HEAD = 17    # site(2) rel(3) vel(3) dwell seat(2) u(3) y(3)
 
 #: ``repr``-exact float formatting -- a round-tripped ROS-epoch ``t_abs_s``
 #: (~1.79e9 s) must come back bit-identical, not merely close.
@@ -116,91 +152,131 @@ def _finite_vec(value, n: int, name: str) -> np.ndarray:
     return arr
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, eq=False)
 class Experience:
-    """One throw's record (plan § 2.2). SI units.
+    """One throw's record (schema v2). SI units.
 
-    ``x`` (4,) = (site xy, seat-offset xy of the ball just caught); ``u`` (3,)
-    = commanded (landing xy [m], APEX above the catch plane [m]); ``y`` (3,)
-    = the SAME three quantities observed, all read off the tracker's
-    converged gravity-fixed fit; ``t_abs_s`` the CAN wall-clock time;
-    ``ball_id`` the tracked ball; ``caught`` whether the resulting catch
-    succeeded.
+    ``site_xy_m`` (2) the release Site's cup xy; ``release_m`` (3) where the
+    ball left; ``release_vel_mps`` (3) the PLANNED release velocity of the
+    model command; ``dwell_s`` the dwell (nan = unknown, the only field
+    allowed to be non-finite); ``seat_offset_m`` (2) of the ball just caught;
+    ``u`` (3) = commanded (landing xy [m], APEX above the release plane [m]);
+    ``y`` (3) = the same three quantities observed; ``t_abs_s`` the CAN
+    wall-clock time; ``ball_id``; ``release_kind`` in :data:`RELEASE_KINDS`;
+    ``caught``; ``migrated`` (reconstructed from a v1 row).
 
-    **Command and outcome are the same physical quantity** (2026-09-18, after
-    Lee et al. § 4C): the third component was a flight TIME until then, and a
-    time is measured from the commanded release knot, which the physical
-    release lags by 0.02-0.14 s throw to throw, through a crossing estimate
-    itself extrapolated to +-40 ms. Both biases drove the learner ~20 % low
-    in apex while its own metric read on target. An apex is invariant to the
-    release instant and to filter lag, and repeats to +-0.02-0.04 m at a
-    fixed command (2026-09-17).
+    Command and outcome are the same physical quantity (an apex, invariant
+    to the release instant and filter lag: 2026-09-18).
     """
 
-    x: np.ndarray
+    site_xy_m: np.ndarray
+    release_m: np.ndarray
+    release_vel_mps: np.ndarray
+    dwell_s: float
+    seat_offset_m: np.ndarray
     u: np.ndarray
     y: np.ndarray
     t_abs_s: float
     ball_id: int
+    release_kind: str
     caught: bool
+    migrated: bool = False
 
     def __post_init__(self):
-        object.__setattr__(self, 'x', _finite_vec(self.x, 4, 'x'))
-        object.__setattr__(self, 'u', _finite_vec(self.u, 3, 'u'))
-        object.__setattr__(self, 'y', _finite_vec(self.y, 3, 'y'))
+        for name, n in (('site_xy_m', 2), ('release_m', 3),
+                        ('release_vel_mps', 3), ('seat_offset_m', 2),
+                        ('u', 3), ('y', 3)):
+            object.__setattr__(self, name,
+                               _finite_vec(getattr(self, name), n, name))
+        dwell_s = float(self.dwell_s)
+        if math.isinf(dwell_s):
+            raise ValueError('dwell_s must be finite or nan, got %r'
+                              % (self.dwell_s,))
+        object.__setattr__(self, 'dwell_s', dwell_s)
         t_abs_s = float(self.t_abs_s)
         if not math.isfinite(t_abs_s):
             raise ValueError('t_abs_s must be finite, got %r' % (self.t_abs_s,))
         object.__setattr__(self, 't_abs_s', t_abs_s)
         object.__setattr__(self, 'ball_id', int(self.ball_id))
+        if self.release_kind not in RELEASE_KINDS:
+            raise ValueError('release_kind must be one of %r, got %r'
+                              % (RELEASE_KINDS, self.release_kind))
         object.__setattr__(self, 'caught', bool(self.caught))
+        object.__setattr__(self, 'migrated', bool(self.migrated))
 
 
-def memory_path(root: str, plant_id: str) -> str:
-    """``<root>/temp/learn/<plant_id>/memory.csv``.
-
-    ``plant_id`` must be exactly one safe path segment -- no separators, no
-    ``.``/``..``, non-empty -- since it becomes a directory name under a path
-    a caller controls (a ROS param at R4+).
-    """
+def _check_plant_id(plant_id) -> None:
     if (not isinstance(plant_id, str) or not plant_id
             or plant_id in ('.', '..')
             or os.sep in plant_id or (os.altsep and os.altsep in plant_id)
             or '/' in plant_id):
         raise ValueError('plant_id must be one safe path segment (non-empty, '
                           'no "/" and not "." or "..") got %r' % (plant_id,))
+
+
+def memory_path(root: str, plant_id: str) -> str:
+    """``<root>/temp/learn/<plant_id>/memory_v2.csv`` (the schema-v2 file).
+
+    ``plant_id`` must be exactly one safe path segment.
+    """
+    _check_plant_id(plant_id)
+    return os.path.join(root, 'temp', 'learn', plant_id, 'memory_v2.csv')
+
+
+def legacy_memory_path(root: str, plant_id: str) -> str:
+    """``<root>/temp/learn/<plant_id>/memory.csv`` (the schema-v1 file)."""
+    _check_plant_id(plant_id)
     return os.path.join(root, 'temp', 'learn', plant_id, 'memory.csv')
 
 
+def _row_for(exp: Experience):
+    return ([_FLOAT_FMT % v for v in exp.site_xy_m]
+            + [_FLOAT_FMT % v for v in exp.release_m]
+            + [_FLOAT_FMT % v for v in exp.release_vel_mps]
+            + [_FLOAT_FMT % exp.dwell_s]
+            + [_FLOAT_FMT % v for v in exp.seat_offset_m]
+            + [_FLOAT_FMT % v for v in exp.u]
+            + [_FLOAT_FMT % v for v in exp.y]
+            + [_FLOAT_FMT % exp.t_abs_s, str(exp.ball_id), exp.release_kind,
+               str(exp.caught), '1' if exp.migrated else '0'])
+
+
+def format_row(exp: Experience):
+    """The CSV fields of ``exp`` in :data:`HEADER` order (shared with the
+    migration tool so both write byte-identical rows)."""
+    return _row_for(exp)
+
+
 class Memory:
-    """Append-only kNN memory for one site's learner (plan § 2.2 / § 2.5).
+    """Append-only row store (schema v2) the Learner is fed from.
 
     Loads ``path`` (if present) at construction; a malformed row (wrong
-    column count, unparsable, non-finite) is DROPPED with a ``logging``
-    warning naming the line number -- never fatal, so one corrupted row does
-    not lose an entire session's memory. Rows are kept in file / call order.
+    column count, unparsable, non-finite, unknown release kind, apex outside
+    :data:`APEX_RATIO_BAND`) is DROPPED with a ``logging`` warning naming the
+    line, counted in :attr:`n_dropped`, never fatal. Rows keep file / call
+    order. A row outside the apex band is refused on ``append`` too.
 
-    **A row outside :data:`APEX_RATIO_BAND` is not a row about its own
-    throw** and is refused on BOTH paths -- dropped at load (so an already
-    written contaminated memory, such as the ten ``temp/learn/*-20260916``
-    files, cannot poison the next sitting even if it is read again) and raised
-    on ``append`` (so the executor's own band check, ``executor.
-    _finalise_outcome``, is belt and braces rather than the only guard).
-
-    ``append`` and construction do file I/O; the plan's determinism rule
-    means both must run on the orchestrator thread, once per throw -- never
-    on the 40 Hz emitter thread.
+    If ``path`` is ``<dir>/memory_v2.csv`` and it is absent while
+    ``<dir>/memory.csv`` (schema v1) exists, construction raises ValueError
+    naming the migration command.
     """
 
     def __init__(self, path: str):
         self._path = path
-        self._X = np.zeros((0, 4))
-        self._U = np.zeros((0, 3))
-        self._Y = np.zeros((0, 3))
+        self._rows = []
+        self.n_dropped = 0
         self._load()
 
     def _load(self) -> None:
         if not os.path.exists(self._path):
+            legacy = os.path.join(os.path.dirname(self._path), 'memory.csv')
+            if (os.path.basename(self._path) == 'memory_v2.csv'
+                    and os.path.exists(legacy)):
+                raise ValueError(
+                    'found a schema-v1 memory at %s and no memory_v2.csv: '
+                    'run `python tools/migrate_memory_schema_v2.py --memory '
+                    '%s --out %s` (it writes a new file and never changes '
+                    'the v1 one)' % (legacy, legacy, self._path))
             return
         with open(self._path, newline='') as handle:
             reader = csv.reader(handle)
@@ -210,60 +286,68 @@ class Memory:
             self._check_header(header)
             for lineno, row in enumerate(reader, start=2):
                 exp = self._parse_row(row, lineno)
-                if exp is not None:
-                    self._append_arrays(exp)
+                if exp is None:
+                    self.n_dropped += 1
+                else:
+                    self._rows.append(exp)
 
     def _check_header(self, header) -> None:
-        """Refuse a file written to a different schema -- the numbers of a
-        pre-2026-09-18 memory parse cleanly and mean a flight TIME, so the
-        header is the only thing that can tell the two apart."""
         cols = [str(c).strip() for c in header]
-        if cols == _HEADER:
+        if cols == HEADER:
             return
-        if cols == _LEGACY_FLIGHT_HEADER:
+        if cols == HEADER_V1:
+            raise ValueError(
+                '%s is a schema-v1 memory (header x0..x3): run `python '
+                'tools/migrate_memory_schema_v2.py --memory %s --out <v2 '
+                'path>` and load the v2 file' % (self._path, self._path))
+        if cols == LEGACY_FLIGHT_HEADER:
             raise ValueError(
                 '%s was written with the pre-2026-09-18 flight-time schema '
                 '(u2/y2 are seconds, not the apex metres this learner now '
                 'commands): move it aside as temp/learn/_quarantine_<date>/ '
                 'rather than loading it' % (self._path,))
         raise ValueError('%s has header %r, expected %r'
-                          % (self._path, cols, _HEADER))
+                          % (self._path, cols, HEADER))
 
     def _parse_row(self, row, lineno: int):
         try:
-            if len(row) != len(_HEADER):
+            if len(row) != len(HEADER):
                 raise ValueError('expected %d columns, got %d'
-                                  % (len(_HEADER), len(row)))
-            vals = [float(v) for v in row[:_N_NUMERIC]]
-            if not all(math.isfinite(v) for v in vals):
-                raise ValueError('non-finite numeric field')
-            x, u, y = vals[0:4], vals[4:7], vals[7:10]
-            t_abs_s = vals[10]
-            ball_id = int(row[11])
-            caught = row[12].strip().lower() in ('true', '1')
+                                  % (len(HEADER), len(row)))
+            vals = [float(v) for v in row[:_N_NUMERIC_HEAD]]
+            t_abs_s = float(row[17])
+            ball_id = int(row[18])
+            kind = row[19].strip()
+            caught = row[20].strip().lower() in ('true', '1')
+            migrated = row[21].strip().lower() in ('true', '1')
+            u, y = vals[11:14], vals[14:17]
             if not apex_in_band(u[2], y[2]):
                 raise ValueError(
                     'observed apex %.4f m outside [%.4f, %.4f] of the '
                     'commanded %.4f m -- this row is another flight'
                     % (y[2], APEX_RATIO_BAND[0] * u[2],
                        APEX_RATIO_BAND[1] * u[2], u[2]))
-            return Experience(x=x, u=u, y=y, t_abs_s=t_abs_s, ball_id=ball_id,
-                               caught=caught)
+            return Experience(
+                site_xy_m=vals[0:2], release_m=vals[2:5],
+                release_vel_mps=vals[5:8], dwell_s=vals[8],
+                seat_offset_m=vals[9:11], u=u, y=y, t_abs_s=t_abs_s,
+                ball_id=ball_id, release_kind=kind, caught=caught,
+                migrated=migrated)
         except (ValueError, TypeError) as exc:
             _LOG.warning('%s: dropping malformed row at line %d: %s',
                           self._path, lineno, exc)
             return None
 
-    def _append_arrays(self, exp: Experience) -> None:
-        self._X = np.vstack([self._X, exp.x])
-        self._U = np.vstack([self._U, exp.u])
-        self._Y = np.vstack([self._Y, exp.y])
-
     def append(self, exp: Experience) -> None:
-        """Append one row: writes the header on first create, flushes, and
-        updates the in-memory arrays -- in call order."""
+        """Append one row (v2 only): writes the header on first create,
+        flushes, and keeps the row in call order."""
         if not isinstance(exp, Experience):
             raise ValueError('append expects an Experience, got %r' % (exp,))
+        if os.path.basename(self._path) == 'memory.csv':
+            raise ValueError(
+                'refusing to append a schema-v2 row to %s: memory.csv is the '
+                'schema-v1 file name (open memory_v2.csv, `memory_path`)'
+                % (self._path,))
         if not apex_in_band(exp.u[2], exp.y[2]):
             raise ValueError(
                 'refusing a row whose observed apex %.4f m is outside '
@@ -278,43 +362,32 @@ class Memory:
         with open(self._path, 'a', newline='') as handle:
             writer = csv.writer(handle)
             if write_header:
-                writer.writerow(_HEADER)
-            writer.writerow(
-                [_FLOAT_FMT % v for v in exp.x]
-                + [_FLOAT_FMT % v for v in exp.u]
-                + [_FLOAT_FMT % v for v in exp.y]
-                + [_FLOAT_FMT % exp.t_abs_s, str(exp.ball_id), str(exp.caught)])
+                writer.writerow(HEADER)
+            writer.writerow(_row_for(exp))
             handle.flush()
-        self._append_arrays(exp)
+        self._rows.append(exp)
 
     def __len__(self) -> int:
-        return self._X.shape[0]
+        return len(self._rows)
+
+    @property
+    def path(self) -> str:
+        return self._path
+
+    def rows(self):
+        """The ``Experience`` objects in file / call order (a new list)."""
+        return list(self._rows)
 
     def arrays(self):
-        """The current ``(X, U, Y)`` arrays, shapes ``(n, 4)``/``(n, 3)``/``(n, 3)``."""
-        return self._X, self._U, self._Y
+        """``(U, Y)`` arrays, shapes ``(n, 3)``."""
+        n = len(self._rows)
+        return (np.array([e.u for e in self._rows]).reshape(n, 3),
+                np.array([e.y for e in self._rows]).reshape(n, 3))
 
-    def command(self, x, y_d, cfg: lr.LearnerConfig = None) -> np.ndarray:
-        """``learner.command`` over this memory's current arrays."""
-        if cfg is None:
-            cfg = lr.LearnerConfig()
-        return lr.command(x, y_d, self._X, self._U, self._Y, cfg)
+    @property
+    def ball_ids(self) -> np.ndarray:
+        return np.array([e.ball_id for e in self._rows], dtype=int)
 
-    def predict(self, x, u, cfg: lr.LearnerConfig = None,
-                y_d=None) -> np.ndarray:
-        """``learner.predict`` over this memory's current arrays: the landing
-        (xy offset, apex; SI) the plant is expected to deliver for command
-        ``u`` from state ``x`` -- ``u`` itself below the learner's support."""
-        if cfg is None:
-            cfg = lr.LearnerConfig()
-        return lr.predict(x, u, self._X, self._U, self._Y, cfg, y_d=y_d)
-
-    def local_model(self, x, y_d, cfg: lr.LearnerConfig = None):
-        """``learner.local_model`` over this memory's current arrays: the
-        local affine fit ``(u_bar, D, d)`` behind ``command``/``predict`` at
-        query state ``x`` and target ``y_d``, or ``None`` below the learner's
-        support (2026-10-13, wave 3 unit H: the executor runs the admissible
-        box on the fit's EXPECTED landing, not on the command)."""
-        if cfg is None:
-            cfg = lr.LearnerConfig()
-        return lr.local_model(x, y_d, self._X, self._U, self._Y, cfg)
+    @property
+    def release_kinds(self) -> np.ndarray:
+        return np.array([e.release_kind for e in self._rows], dtype=object)

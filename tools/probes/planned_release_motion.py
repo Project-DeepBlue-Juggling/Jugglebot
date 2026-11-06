@@ -49,7 +49,7 @@ from jugglebot.motion.skills import executor as ex            # noqa: E402
 from jugglebot.motion.skills import schedule as sc            # noqa: E402
 from jugglebot.motion.skills import segments as sg            # noqa: E402
 from jugglebot.motion.skills import sites as si               # noqa: E402
-import admissible_sweep as aw                                 # noqa: E402
+import planner_cells as aw                                 # noqa: E402
 
 DT = float(hw.JB_TRAJ_KNOT_DT_S)
 #: How many knots after the release the HOLD verdict is measured over — the
@@ -60,7 +60,7 @@ HOLD_CHECK_KNOTS = int(uc.post_release_hold_knots())
 geom = StewartGeometry()
 # The launch's own sitting limits (leg 300 mm/s, 5000 mm/s^2, 150000 mm/s^3;
 # hand 3500 rev/s^2) — the operating point of the 2026-09-27 sitting.
-limits = aw._limits(300.0, 5000.0, 150000.0, 3500.0)
+limits = aw.sitting_limits(300.0, 5000.0, 150000.0, 3500.0)
 
 _OUT = []
 
@@ -108,7 +108,7 @@ def run(sites, n_throws, landing_offset_mm, label, apex=0.9, dwell=0.30,
 
     def installer(kind, terminal, t_now_s, ball_id=0):
         rec = state['record']
-        seed = aw._rest_state(sites[0].rest_site_mm()) if rec is None else None
+        seed = aw.rest_state(sites[0].rest_site_mm()) if rec is None else None
         new_rec, res, seg = ex.install_segment(rec, seed, kind, terminal,
                                               t_now_s, cfg=cfg, limits=limits,
                                               geom=geom)

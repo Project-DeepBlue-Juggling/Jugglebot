@@ -26,8 +26,7 @@ touch-down skid bound (default 175 mm/s) pose reads 0.50: 53,341; 0.45: 73,949
 
 Level mode's byte-identity is NOT asserted here: it is pinned where it was
 already pinned — ``test_cup_cycle.py``'s T-U2 parity fixtures (``plan_window``
-with ``pose=None``) and the admissible box's value-equal re-sweep
-(``test_skills_admissible.py``).
+with ``pose=None``) (until 2026-11-06 also the Admissible box's value-equal re-sweep).
 """
 
 from __future__ import annotations

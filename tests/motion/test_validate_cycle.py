@@ -1069,7 +1069,7 @@ def test_contact_knots_none_adds_nothing_to_reasons(geom):
 # ═══════════════════════════════════════════════════════════════════════════
 
 #: R3's single-site operating point — the SAME numbers as
-#: ``test_cup_contact_contract.py`` (``tools/admissible_sweep.py``'s
+#: ``test_cup_contact_contract.py`` (the retired ``tools/admissible_sweep.py``'s
 #: SINGLE_SITE_LEG_JERK_MMPS3 / ``test_skills_segments.py``'s LEG_VEL/LEG_ACC/
 #: HAND_ACC). Duplicated rather than cross-imported — test files here are not
 #: a package, and ``test_cup_contact_contract.py``'s own fixtures build

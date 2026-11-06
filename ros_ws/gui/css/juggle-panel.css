@@ -328,6 +328,29 @@
 }
 .jp-warn[hidden] { display: none; }
 
+/* ---- Nomination block (advisory report under the fields) ---- */
+
+.jp-nom {
+    font-size: var(--font-size-xs);
+    line-height: 1.4;
+    color: var(--text-secondary);
+}
+.jp-nom[hidden] { display: none; }
+.jp-nom-sum { font-weight: 600; overflow-wrap: anywhere; }
+.jp-nom-sum.ok          { color: var(--accent-green); }
+.jp-nom-sum.err         { color: var(--accent-red); }
+.jp-nom-sum.checking,
+.jp-nom-sum.unavailable { color: var(--text-muted); font-weight: 400; font-style: italic; }
+/* One refusal per line, wrapped in full (never clamped or truncated). */
+.jp-nom-line {
+    padding-left: 8px;
+    border-left: 2px solid var(--accent-red);
+    margin-top: 2px;
+    font-family: var(--font-mono);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
 /* ---- Compact (collapsed minimap) ---- */
 
 .jp-root.jp-compact { padding: 6px 8px 8px; gap: 5px; }

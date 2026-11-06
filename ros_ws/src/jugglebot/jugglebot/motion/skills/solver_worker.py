@@ -30,6 +30,17 @@ Measured on 600 real CATCH solves through a worker: emitter lateness max 1.69 ms
 * Hang = an outstanding request unanswered :data:`SOLVER_HANG_S` after its send:
   SIGKILL, reap, ONE restart per episode (an episode ends on any solve reply),
   then DOWN ("worker failed twice; relaunch trajectory_node").
+* A CHECK request (``SegmentSolveRequest.check``, P3a's command-time
+  admissibility check) runs ``executor.check_segment`` instead of
+  ``install_segment``: the same seed derivation, plan and gate, but no lateness
+  check, no record and no splice.  It takes the same socket, the same
+  one-in-flight rule, the same deadline / ``SKIPPED_LATE`` / hang handling and
+  the same cpu / context-switch accounting; its reply carries
+  ``result = InstallResult(accepted=planned, code, message, plan_wall_s)``,
+  ``new_record = warm_start = release_t_s = None`` and the gate ``margin``
+  (``nan`` on every non-CHECK reply).  A CHECK that misses its deadline answers
+  ``SKIPPED_LATE`` whatever its kind (the REST -> ``SOLVER_UNAVAILABLE`` mapping
+  is an INSTALL rule).
 
 :class:`InProcessSegmentSolver` is a TEST DOUBLE ONLY.
 """
@@ -87,7 +98,8 @@ _MODULE = 'jugglebot.motion.skills.solver_worker'
 
 @dataclasses.dataclass(frozen=True)
 class SegmentSolveRequest:
-    """One ``executor.install_segment`` call, with its inputs by value."""
+    """One ``executor.install_segment`` call (``executor.check_segment`` when
+    ``check``), with its inputs by value."""
 
     seq: int
     record: Any            # Optional[executor.PlanRecord]
@@ -102,6 +114,8 @@ class SegmentSolveRequest:
     warm_start: Any        # Optional[SolverState]
     reserve_fresh_lead: bool
     deadline_s: float      # ABSOLUTE perf time after which a result is useless
+    #: P3a: plan + gate only (``executor.check_segment``); nothing installed.
+    check: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -129,6 +143,9 @@ class SegmentSolveReply:
     cpu_s: float = math.nan
     vcsw: int = -1
     ivcsw: int = -1
+    #: A CHECK reply's gate margin (``admissible.margin``); ``nan`` on an
+    #: install reply and on a check without a gate report.
+    margin: float = math.nan
 
 
 def _refusal(req_seq: int, code: str, message: str, solve_s: float = 0.0,
@@ -150,9 +167,34 @@ def _solve_now(req: SegmentSolveRequest, t_install_s) -> Tuple[Any, Any, Any]:
         reserve_fresh_lead=req.reserve_fresh_lead)
 
 
+def _check_now(req: SegmentSolveRequest) -> Any:
+    from jugglebot.motion.skills import executor as ex
+    return ex.check_segment(
+        req.record, req.seed_rest, req.kind, req.terminal, req.t_now_s,
+        lead_s=req.lead_s, cfg=req.cfg, limits=req.limits, geom=req.geom,
+        warm_start=req.warm_start, reserve_fresh_lead=req.reserve_fresh_lead)
+
+
+def _run(req: SegmentSolveRequest, t_install_s) -> Any:
+    """A CHECK request's :class:`executor.CheckResult`, else the install's
+    ``(new_record, result, segment)``."""
+    if req.check:
+        return _check_now(req)
+    return _solve_now(req, t_install_s)
+
+
 def _reply_from(req: SegmentSolveRequest, out, solve_s: float,
                 t_inst_s: float, cpu_s: float = math.nan, vcsw: int = -1,
                 ivcsw: int = -1) -> SegmentSolveReply:
+    if req.check:
+        from jugglebot.motion.skills import executor as ex
+        res = ex.InstallResult(accepted=bool(out.planned), code=out.code,
+                               message=out.message,
+                               plan_wall_s=out.plan_wall_s)
+        return SegmentSolveReply(
+            seq=req.seq, new_record=None, result=res, warm_start=None,
+            release_t_s=None, solve_s=solve_s, t_inst_s=t_inst_s, cpu_s=cpu_s,
+            vcsw=vcsw, ivcsw=ivcsw, margin=float(out.margin))
     new_record, res, seg = out
     return SegmentSolveReply(
         seq=req.seq, new_record=new_record, result=res,
@@ -173,7 +215,8 @@ class InProcessSegmentSolver:
     the GIL and the 40 Hz emitter wakes up to 200 ms late).  Production uses
     :class:`WorkerSegmentSolver`; a test pins that.  It exists so the mocked
     ``tests/ros`` suite keeps its meaning: it looks up
-    ``executor.install_segment`` and ``time.perf_counter`` AT CALL TIME and
+    ``executor.install_segment`` (``executor.check_segment`` for a CHECK) and
+    ``time.perf_counter`` AT CALL TIME and
     passes ``t_install_s=time.perf_counter`` with NO transit allowance, so
     existing monkeypatches of either behave exactly as before and the path is
     bit-identical to the pre-worker node.
@@ -184,7 +227,7 @@ class InProcessSegmentSolver:
 
     def solve(self, req: SegmentSolveRequest) -> SegmentSolveReply:
         t0 = time.perf_counter()
-        out = _solve_now(req, time.perf_counter)
+        out = _run(req, time.perf_counter)
         return _reply_from(req, out, time.perf_counter() - t0, math.inf)
 
     def poll_health(self) -> None:
@@ -359,7 +402,7 @@ def worker_main(fd: int, sched: Optional[tuple] = None) -> int:
                     return seen[-1]
 
                 try:
-                    out = _solve_now(req, t_install_s)
+                    out = _run(req, t_install_s)
                     solve_s = time.perf_counter() - t_rx
                     cpu_s = time.process_time() - cpu0
                     ru1 = resource.getrusage(resource.RUSAGE_SELF)
@@ -667,7 +710,9 @@ class WorkerSegmentSolver:
             self._lock.release()
 
     def _late(self, req, why: str) -> SegmentSolveReply:
-        if req.kind == 'REST':
+        # The REST mapping is an INSTALL rule (a REST carries no event, so its
+        # lateness is not a timing code); a CHECK answers SKIPPED_LATE.
+        if req.kind == 'REST' and not req.check:
             return self._unavailable(req, 'solver did not answer a REST by its '
                                      'deadline (%s)' % why)
         return _refusal(req.seq, SKIPPED_LATE,
@@ -701,7 +746,8 @@ class WorkerSegmentSolver:
                 self._fail('worker closed its socket mid-solve')
                 return self._unavailable(req, 'worker died mid-solve')
             if rep is not None and rep.seq == req.seq:
-                if (req.kind == 'REST' and not rep.result.accepted
+                if (req.kind == 'REST' and not req.check
+                        and not rep.result.accepted
                         and rep.result.code == SKIPPED_LATE):
                     return self._late(req, 'worker skipped it')
                 return rep

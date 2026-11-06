@@ -1157,7 +1157,7 @@ class TestJuggleRelay:
 
     def test_goal_carries_dwell_s_and_omitted_dwell_is_the_zero_sentinel(self, orch):
         """2026-10-21 (owner): dwell_s travels on the goal; omitted = 0 = the
-        node's dwell_s parameter."""
+        skill node's default dwell (a node parameter until 2026-11-06)."""
         res, sent = self._dispatch(orch, 'oval_1ball,separation_mm=150,dwell_s=0.65')
         assert res.success is True
         assert sent[0].dwell_s == 0.65

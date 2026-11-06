@@ -62,7 +62,6 @@ from jugglebot import ball_possession as bp
 from jugglebot.motion import levelling
 from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.geometry import StewartGeometry
-from jugglebot.motion.skills import admissible as adm
 from jugglebot.motion.skills import executor as ex
 from jugglebot.motion.skills import segments as sg
 from jugglebot.motion.skills import schedule as sc
@@ -81,7 +80,7 @@ LAUNCH_S = 0.4
 SEPARATION_MM = 100.0
 #: The R5 operating point (plan § 0, catch-high sitting 6, 2026-10-05):
 #: apex 0.95 m, dwell 0.27 s, separation 125 mm, leg 350/5000/200000, hand
-#: acc 3900 rev/s^2 -- the committed box's own point, re-swept there after
+#: acc 3900 rev/s^2 -- the point the (since retired) committed box was swept at, re-swept there after
 #: ``sites.CATCH_CUP_Z_MM`` moved 830 -> 930 mm. A handful of tests below
 #: need only a FEASIBLE schedule to exercise executor/learner/attribution
 #: logic (not a check of the R2/R3 point itself); those move here rather
@@ -1513,7 +1512,7 @@ def test_lateral_authority_moves_the_tracker_clamp_and_the_learner_clamp_togethe
 
 
 # ---------------------------------------------------------------------------
-# R3 — the learner's command, the admissible box, and outcome capture
+# R3 — the learner's command and outcome capture
 # ---------------------------------------------------------------------------
 #
 # ``executor.CATCH_FREEZE_S`` is 0.175 s as landed (``LEAD_S`` + one knot).
@@ -1538,27 +1537,6 @@ class _FakeLearner:
         if self._raise:
             raise ValueError('neighbourhood weights underflowed to 0')
         return np.array(y_d if self._u is None else self._u, dtype=float)
-
-
-def _box(xy=((-0.05, 0.05), (-0.05, 0.05)), apex=(0.3, 1.5), empty=False,
-         site_pair=('P1', 'P1'), apex_band_m=(0.8, 1.0), pattern='self_toss',
-         release_xy_mm=(-50.0, 0.0), target_xy_mm=(-50.0, 0.0)):
-    """R4 (2026-09-23): every caller in this file uses ``sites[0]`` (P1, at
-    (-50, 0) mm -- ``SEPARATION_MM = 100.0``) for both ends of ``site_pair``,
-    so those are the xy defaults -- ``executor._command_u`` now passes the
-    LIVE site's own ``cup_mm[:2]`` to ``adm.select``, and a box whose stamped
-    xy disagreed would refuse regardless of ``site_pair`` / ``apex_band_m``."""
-    if empty:
-        xy = ((float('nan'), float('nan')), (float('nan'), float('nan')))
-        apex = (float('nan'), float('nan'))
-    return adm.AdmissibleBox(
-        site_pair=site_pair, apex_band_m=apex_band_m, landing_xy_m=xy,
-        apex_m=apex, pattern=pattern, release_site_xy_mm=release_xy_mm,
-        target_site_xy_mm=target_xy_mm,
-        limits={'leg_vel_mmps': 1.0, 'leg_acc_mmps2': 1.0,
-               'leg_jerk_mmps3': 1.0, 'hand_acc_rps2': 1.0},
-        gate_hash='0123456789ab', swept_at='2026-09-13',
-        dwell_s=0.30, planner_mode='pose', carry_zvd=False)   # the dwell every schedule in this file compiles at
 
 
 def _schedule_with_then_throw(sites):
@@ -1921,92 +1899,10 @@ def test_an_end_to_end_self_toss_schedule_fails_today_without_the_scheduled_disp
     assert len(dispatched_kinds) == len(sched.skills) == 7
 
 
-def test_an_out_of_box_command_is_clipped(sites):
-    sch = _schedule(sites)
-    inst = _FakeInstaller()
-    learner = _FakeLearner(u=[100.0, 100.0, 5.0])
-    boxes = [_box(site_pair=(sites[0].name, sites[0].name))]
-    x = ex.SkillExecutor(sch, inst, learner=learner, boxes=boxes)
-    x.tick(sch.skills[0].dispatch_s())
-    _kind, terminal, _t, _b = inst.calls[0]
-    want_target = sites[0].catch_site_mm() + np.array([50.0, 50.0, 0.0])
-    assert np.allclose(terminal.target_mm, want_target)
-    # Clipped to the box's apex ceiling, then converted to the planner's flight.
-    assert terminal.flight_s == pytest.approx(sc.flight_s(1.5))
-
-
-def test_an_empty_box_ends_the_attempt_before_any_install(sites):
-    sch = _schedule(sites)
-    inst = _FakeInstaller()
-    boxes = [_box(empty=True, site_pair=(sites[0].name, sites[0].name))]
-    x = ex.SkillExecutor(sch, inst, boxes=boxes)
-    lines = x.tick(sch.skills[0].dispatch_s())
-    assert x.attempt_ended and x.end_code == ex.NO_ADMISSIBLE_COMMAND
-    assert inst.calls == []
-    assert 'EMPTY' in lines[0]
-
-
-def test_a_learner_with_no_box_for_its_site_pair_is_refused(sites):
-    """Finding 5, R3 audit (2026-09-13): a ``boxes`` sequence that carries no
-    box for ``(site.name, target.name)`` -- distinct from an EMPTY box for a
-    pair that IS present -- must also refuse before any solve, or a
-    learner's unclipped command reaches the platform with no admissible-
-    region clip applied at all. The learner itself must never be called
-    either: the box check runs before it."""
-    sch = _schedule(sites)
-    inst = _FakeInstaller()
-    learner = _FakeLearner(u=[100.0, 100.0, 5.0])
-    x = ex.SkillExecutor(sch, inst, learner=learner, boxes=[])
-    lines = x.tick(sch.skills[0].dispatch_s())
-    assert x.attempt_ended and x.end_code == ex.NO_ADMISSIBLE_COMMAND
-    assert inst.calls == []
-    assert learner.calls == []
-    assert 'no admissible box' in lines[0]
-
-
-def test_a_learner_with_a_box_swept_for_a_different_apex_is_refused(sites):
-    """THE LATENT DEFECT this closes (found 2026-09-14): a box exists for the
-    right site pair, but its ``apex_band_m`` was swept for a DIFFERENT apex
-    (0.85-0.95 m) than this schedule's own nominal flight implies (a 0.5 m
-    apex self-toss, flight = ``sc.flight_s(0.5)`` ~= 0.639 s). Before the fix,
-    ``_command_u`` looked the box up by site pair ALONE and would have
-    silently clipped this throw's flight UP into the 0.85-0.95 m band. After
-    the fix it must refuse NO_ADMISSIBLE_COMMAND before any solve, naming the
-    apex and the swept bands."""
-    p1, _p2 = sites
-    sch = _single_throw_schedule(p1, 0, T0_ABS + LAUNCH_S, apex=0.5)
-    inst = _FakeInstaller()
-    learner = _FakeLearner(u=[0.0, 0.0, 0.5])
-    boxes = [_box(site_pair=(p1.name, p1.name), apex_band_m=(0.85, 0.95))]
-    x = ex.SkillExecutor(sch, inst, learner=learner, boxes=boxes)
-    lines = x.tick(sch.skills[0].dispatch_s())
-    assert x.attempt_ended and x.end_code == ex.NO_ADMISSIBLE_COMMAND
-    assert inst.calls == []
-    assert learner.calls == []
-    assert '0.85' in lines[0] and '0.95' in lines[0]
-    assert '0.500' in lines[0]  # the apex, 3 dp
-
-
-def test_a_learner_with_a_box_covering_the_nominal_apex_is_used(sites):
-    """The companion case: a schedule whose nominal apex IS covered by a
-    swept band uses that box (and clips into it) rather than refusing."""
-    p1, _p2 = sites
-    sch = _single_throw_schedule(p1, 0, T0_ABS + LAUNCH_S, apex=0.5)
-    inst = _FakeInstaller()
-    learner = _FakeLearner(u=[100.0, 100.0, 5.0])
-    boxes = [_box(site_pair=(p1.name, p1.name), apex_band_m=(0.4, 0.6))]
-    x = ex.SkillExecutor(sch, inst, learner=learner, boxes=boxes)
-    x.tick(sch.skills[0].dispatch_s())
-    _kind, terminal, _t, _b = inst.calls[0]
-    want_target = p1.catch_site_mm() + np.array([50.0, 50.0, 0.0])
-    assert np.allclose(terminal.target_mm, want_target)
-    assert terminal.flight_s == pytest.approx(sc.flight_s(1.5))
-
-
-def test_a_learner_value_error_ends_the_attempt_like_an_empty_box(sites):
+def test_a_learner_value_error_ends_the_attempt_with_no_admissible_command(sites):
     """R3-a interface (owner amendment): ``learner.command`` raises
     ``ValueError`` rather than returning a non-finite command; the executor
-    treats it exactly like an empty box — one refusal code, nothing solved."""
+    refuses it with one code (NO_ADMISSIBLE_COMMAND) — nothing solved."""
     sch = _schedule(sites)
     inst = _FakeInstaller()
     learner = _FakeLearner(raise_value_error=True)
@@ -2059,8 +1955,13 @@ def test_outcome_y_is_exact_and_rows_land_in_schedule_order(sites):
     assert np.allclose(exp0.y[:2], want_xy0)
     assert exp0.y[2] == pytest.approx(want_apex0)
     assert exp0.caught is True
-    assert np.allclose(exp0.x, [p1.cup_mm[0] / 1000.0, p1.cup_mm[1] / 1000.0,
-                                0.0, 0.0])
+    # schema v2 (P1, 2026-11-06): the release Site and a zero seat offset,
+    # a plain THROW from rest is a free cup released at its Site
+    assert np.allclose(exp0.site_xy_m, [p1.cup_mm[0] / 1000.0,
+                                        p1.cup_mm[1] / 1000.0])
+    assert np.allclose(exp0.seat_offset_m, [0.0, 0.0])
+    assert np.allclose(exp0.release_m, p1.throw_site_mm() / 1000.0)
+    assert exp0.release_kind == 'free_cup'
     assert np.allclose(exp0.u, [0.0, 0.0, APEX_M])         # no learner: identity
 
 
@@ -2593,17 +2494,16 @@ def test_a_shadow_landed_throw_is_never_read_caught(sites):
     assert 'landed on the held ball' not in ordinary_outcome
 
 
-def _hop_setup(sites, learner, boxes=None, lateral_authority_m=None,
-               target_is_p2=True):
+def _hop_setup(sites, learner, lateral_authority_m=None, target_is_p2=True):
     """A one-THROW hop schedule (release P1, target P2 -- the sitting-7 shape,
-    y_d = (0, APEX_M)) plus an executor wired with ``learner``/``boxes``."""
+    y_d = (0, APEX_M)) plus an executor wired with ``learner``."""
     p1, p2 = sites
     sch = _single_throw_schedule(p1, ball_id=0, t_release=T0_ABS + LAUNCH_S)
     hop_skill = dataclasses.replace(sch.skills[0], entry_hop=True,
                                     target=p2 if target_is_p2 else p1)
     sch = dataclasses.replace(sch, skills=(hop_skill,))
     inst = _FakeInstaller()
-    x = ex.SkillExecutor(sch, inst, learner=learner, boxes=boxes,
+    x = ex.SkillExecutor(sch, inst, learner=learner,
                          lateral_authority_m=lateral_authority_m)
     lines = x.tick(sch.skills[0].dispatch_s())
     return sch, inst, x, lines
@@ -2670,19 +2570,6 @@ def test_an_entry_hop_lateral_correction_is_clipped_to_the_authority(sites):
     assert terminal.flight_s == pytest.approx(sc.flight_s(0.871), abs=1e-9)
 
 
-def test_an_entry_hop_apex_is_clipped_to_the_same_site_box(sites):
-    """The apex part is bounded by the (P1, P1) box's apex range; the hop's
-    cross-site lateral is not boxed."""
-    p1, _p2 = sites
-    learner = _FakeLearner(u=[0.5, 0.0, 5.0])
-    boxes = [_box(site_pair=(p1.name, p1.name), apex=(0.8, 1.0))]
-    sch, inst, x, lines = _hop_setup(sites, learner, boxes=boxes)
-    _kind, terminal, _t, _b = inst.calls[0]
-    assert terminal.flight_s == pytest.approx(sc.flight_s(1.0), abs=1e-9)
-    assert terminal.target_mm[0] == pytest.approx(
-        sites[1].catch_site_mm()[0] + 500.0)
-
-
 def test_a_shadow_landing_throw_still_bypasses_the_learner(sites):
     """`shadow_landing` keeps its plain bypass (2026-10-11 change is hop only)."""
     p1, p2 = sites
@@ -2691,8 +2578,7 @@ def test_a_shadow_landing_throw_still_bypasses_the_learner(sites):
     sch = dataclasses.replace(sch, skills=(sk,))
     inst = _FakeInstaller()
     learner = _FakeLearner(u=[0.5, 0.5, 5.0])
-    x = ex.SkillExecutor(sch, inst, learner=learner,
-                         boxes=[_box(site_pair=(p1.name, p1.name))])
+    x = ex.SkillExecutor(sch, inst, learner=learner)
     x.tick(sch.skills[0].dispatch_s())
     assert learner.calls == []
     _kind, terminal, _t, _b = inst.calls[0]
@@ -4168,6 +4054,67 @@ def test_a_chained_re_throw_cannot_contaminate_its_own_previous_row(sites):
     assert launch_rows[0].caught is True
 
 
+def _drive_row_then_next_flight(sites, *, own_fit):
+    """Real compiled THROW -> CATCH-with-re-throw schedule. The tracker serves
+    the row's own fit (only when ``own_fit``), then the same ball's NEXT
+    flight (321 mm off, a beat later) which the identity gate refuses, all
+    BEFORE the re-release. Returns ``(lines, pend, first, second)``."""
+    sch = _schedule_with_then_throw(sites)
+    p1, _p2 = sites
+    t_throw = sch.skills[0].t_abs_s
+    t_land = t_throw + FLIGHT_S
+    t_rethrow = sch.skills[1].then_throw.t_release_abs_s
+    first = _land(p1, t_land + 0.04, dx_mm=8.0, t_release=t_throw)
+    second = _land(p1, t_rethrow + FLIGHT_S, dx_mm=321.0, t_release=t_rethrow)
+    t_switch = t_land + 0.10
+    assert t_switch < t_rethrow
+    clock = {'t': t_throw}
+
+    def tracker(_ball_id):
+        if clock['t'] < t_switch:
+            return first if own_fit else None
+        return second
+
+    x = ex.SkillExecutor(sch, _FakeInstaller(), tracker=tracker,
+                         observer=lambda _b, _t: 'EMPTY',
+                         on_experience=lambda _e: None)
+    lines, pend = [], None
+    t = sch.skills[0].dispatch_s() - 0.01
+    while t < t_rethrow - 0.05:
+        clock['t'] = t
+        lines.extend(x.tick(t))
+        for cand in x._pending_outcomes:
+            if cand.t_release_s == pytest.approx(t_throw):
+                pend = cand
+        t += 0.025
+    assert pend is not None
+    return lines, pend, first, second
+
+
+def test_a_row_with_its_own_fit_logs_no_refusal_for_the_next_flights_fit(sites):
+    """JB-176: once the row holds its own fit, the gate still refuses the next
+    flight's fit (it never becomes a landing) but says nothing and does not
+    touch the rejected bookkeeping -- "no evidence or row from it" was false."""
+    lines, pend, first, _second = _drive_row_then_next_flight(
+        sites, own_fit=True)
+    assert pend.best_landing is first
+    assert pend.n_rejected == 0
+    assert pend.rejected_reason == '' and pend.rejected_apex_m is None
+    assert not [ln for ln in lines if 'TRACKER-IDENTITY-REFUSED throw' in ln]
+
+
+def test_a_row_with_no_fit_still_logs_the_refusal_and_takes_no_landing(sites):
+    """The Throw 3 shape: no fit of its own, then the next flight's fit. The
+    refusal line is true here and the bookkeeping stands; no landing taken."""
+    lines, pend, _first, _second = _drive_row_then_next_flight(
+        sites, own_fit=False)
+    assert pend.best_landing is None
+    assert pend.n_rejected >= 1
+    assert pend.rejected_reason.startswith('not this release')
+    refused = [ln for ln in lines if 'TRACKER-IDENTITY-REFUSED throw' in ln]
+    assert len(refused) == 1                       # once per throw
+
+
 def test_an_out_of_band_estimate_is_refused_at_admission(sites):
     """The band is applied at ADMISSION as well as at finalise, so a garbage
     estimate can never become the row's landing — and therefore can never
@@ -5128,8 +5075,8 @@ def test_a_hop_catch_releases_from_the_caught_position_too(limits_r5, geom):
     window's feasibility edge for BOTH planners (probe 2026-10-30: level OK at
     15, both refuse INFEASIBLE at 16 and 20; pose OK at 0-14 and -15, and at
     +15 ends ``UNVERIFIED`` with equality residual 8.0e-03), and it is outside
-    the swept hop box (x +-1 mm at apex 0.9, dwell 0.27), so the executor's
-    clip never dispatches it live.  The invariant is planner-agnostic."""
+    the hop box swept until 2026-11-06 (x +-1 mm at apex 0.9, dwell 0.27), so
+    the executor's clip never dispatched it live.  The invariant is planner-agnostic."""
     p1, p2 = si.columns_sites(250.0)
     for dx, mode in ((15.0, 'level'), (10.0, 'pose')):
         sched, execu, records, landings = _carried_chain(
@@ -5184,7 +5131,7 @@ def test_a_landing_on_the_site_leaves_the_carried_release_bit_identical(
 # ---------------------------------------------------------------------------
 
 def _offset_dispatch(landing_offset_mm, authority_m=0.020, sites=None,
-                     roles='alternate', boxes=None, learner=None):
+                     roles='alternate', learner=None):
     """Dispatch a two-throw self-toss against a FAKE installer with every
     tracker landing offset by ``landing_offset_mm``; return
     ``(schedule, executor, rows)`` with ``rows`` the Experience sink.
@@ -5207,7 +5154,7 @@ def _offset_dispatch(landing_offset_mm, authority_m=0.020, sites=None,
         sched, _FakeInstaller(),
         tracker=lambda ball_id: landings[min(landings)],
         catch_aim_source=ex.AIM_TRACKER, lateral_authority_m=authority_m,
-        on_experience=rows.append, boxes=boxes, learner=learner)
+        on_experience=rows.append, learner=learner)
     for sk in sched.skills:
         x.tick(sk.dispatch_s())
     return sched, x, rows
@@ -5222,9 +5169,10 @@ def test_the_learner_state_carries_the_release_offset_of_a_carried_throw():
     static ``u -> y`` map could not represent, and ~23 % of every offset came
     back as an opposite-sign landing error (the offset is flown back as
     lateral velocity; an 11 % fast launch over an 11 % longer flight delivers
-    ~1.23x of it). The learner's local affine fit has a ``delta_x`` slope term
-    for exactly this (``learner`` step 3, ``Z = [delta_x; delta_u; 1]``); the
-    offset half's kernel bandwidth is ``LearnerConfig.h_seat`` (2026-10-12)."""
+    ~1.23x of it). Until 2026-11-06 the old Learner's local affine fit had a
+    ``delta_x`` slope term for exactly this and a 1 m kernel bandwidth on the
+    offset half (2026-10-12); the P1 Learner keys its kernel on the release
+    Site instead and the offset is closed by the fly-back."""
     sched, x, _rows = _offset_dispatch((0.0, 20.0, 0.0))
     site = sched.skills[1].site
     throw_idx = 1
@@ -5268,6 +5216,117 @@ def test_the_experience_row_carries_the_LATEST_release_offset():
     assert x._pending_outcomes[-1].x[3] == pytest.approx(0.008, abs=1e-12)
     assert x._u_cache[catch_idx][0][3] == pytest.approx(0.020, abs=1e-12), \
         'the cached QUERY state is what the learner was asked, unchanged'
+
+
+def _reaim_carried(refuse_reaim, reaim_offset_mm=(0.0, 15.0, 0.0)):
+    """JB-194's production path: a one-Site self-toss whose carried CATCH is
+    dispatched on a fit AT the Site, then re-aimed by the tracker's
+    ``_resend_live_catch`` to a fit ``reaim_offset_mm`` off it, the re-send
+    ACCEPTED or REFUSED by the installer. Returns ``(schedule, executor,
+    rows, catch_idx, next_catch_idx, lines, before)`` where ``before`` holds what the
+    executor recorded just before the re-send (release, next Catch's
+    priors)."""
+    site = si.columns_sites(SEPARATION_MM)[0]
+    sched = sc.compile_one_ball(
+        sc.OneBallPattern(sites=(site,), apex_m=0.9, dwell_s=0.30,
+                          n_throws=2, roles='alternate'), t0_abs_s=T0_ABS)
+    catch_idx = _carried_catch_idx(sched)
+    skill = sched.skills[catch_idx]
+    nxt = [j for j in range(catch_idx + 1, len(sched.skills))
+           if sched.skills[j].kind == sg.CATCH][0]
+    box = {'pos': np.asarray(skill.site.catch_site_mm(), dtype=float),
+           'refuse': False}
+
+    def tracker(_ball_id):
+        return _fit_landing(pos_mm=box['pos'].copy(), vel_mm_s=LAND_VEL.copy(),
+                            t_land_abs_s=float(skill.t_abs_s))
+
+    def installer(kind, terminal, t_now_s, ball_id=None):
+        if box['refuse']:
+            return ex.InstallResult(False, 'LIMIT_JERK', 'nope', 0.0)
+        return ex.InstallResult(True, 'OK', 'ok', 0.0, splice_k=0)
+
+    rows = []
+    x = ex.SkillExecutor(sched, installer, tracker=tracker,
+                         catch_aim_source=ex.AIM_TRACKER,
+                         lateral_authority_m=0.030, on_experience=rows.append)
+    for sk in sched.skills[:catch_idx + 1]:
+        x.tick(sk.dispatch_s())
+    assert x._live_catch is not None and x._live_catch[0] == catch_idx
+    before = dict(release=x._release_pos_mm(catch_idx).copy(),
+                  predicted=x._predicted_landing(nxt, sched.skills[nxt]),
+                  prior=x._prior_landing(nxt, sched.skills[nxt])[0])
+    box['pos'] = box['pos'] + np.asarray(reaim_offset_mm, dtype=float)
+    box['refuse'] = bool(refuse_reaim)
+    lines = x.tick(sched.skills[catch_idx].dispatch_s() + 0.05)
+    return sched, x, rows, catch_idx, nxt, lines, before
+
+
+def _finalised_row(x, rows, catch_idx):
+    """Finalise the carried Throw's pending row as a caught, fitted flight
+    and return the Experience ``_finalise_outcome`` hands to the Memory."""
+    t_rel = float(x.schedule.skills[catch_idx].then_throw.t_release_abs_s)
+    pend, = [p for p in x._pending_outcomes
+             if p.t_release_s == pytest.approx(t_rel)]
+    pend.best_landing = _fit_landing(
+        pos_mm=np.asarray(x.schedule.skills[catch_idx].site.catch_site_mm(),
+                          dtype=float),
+        vel_mm_s=LAND_VEL.copy(), t_land_abs_s=float(pend.t_land_scheduled_s))
+    pend.caught_seen = True
+    x._finalise_outcome(pend, float(pend.t_land_scheduled_s) + 1.0)
+    row, = rows
+    return row
+
+
+def test_an_accepted_tracker_re_aim_moves_the_memory_rows_release(tmp_path):
+    """JB-194 F1: the Memory row records the release the Throw USED. The row
+    is registered at the Catch's dispatch; an ACCEPTED re-send afterwards
+    moves the release the plan flies (the caught xy, I-CARRY-1), so the
+    pending row must follow it. Before 2026-11-06 it kept the dispatch aim
+    (the Site, on all 92 re-aimed P2 rows). Release z, the release velocity
+    (the Learner's kernel key) and the cached command do not move."""
+    sched, x, rows, ci, _nxt, lines, before = _reaim_carried(False)
+    assert any(' RESEND skill %d' % ci in ln for ln in lines), lines
+    site = sched.skills[ci].site
+    np.testing.assert_allclose(before['release'][:2], site.cup_mm[:2],
+                               atol=1e-9)
+    u_before = x._u_cache[ci]
+    ctx_q = x._ctx_cache[ci]
+    row = _finalised_row(x, rows, ci)
+    want_rel = np.array([site.cup_mm[0], site.cup_mm[1] + 15.0,
+                         site.throw_site_mm()[2]]) / 1000.0
+    np.testing.assert_allclose(row.release_m, want_rel, atol=1e-12)
+    np.testing.assert_allclose(row.seat_offset_m, [0.0, 0.015], atol=1e-12)
+    np.testing.assert_allclose(row.release_vel_mps, ctx_q.release_vel_mps)
+    np.testing.assert_allclose(row.u, [u_before[1][0], u_before[1][1],
+                                       u_before[2]])
+    # what the Memory file stores: rel_x/rel_y/seat_x/seat_y are the re-aim
+    memory = mem.Memory(str(tmp_path / 'memory_v2.csv'))
+    memory.append(row)
+    back, = mem.Memory(str(tmp_path / 'memory_v2.csv')).rows()
+    np.testing.assert_allclose(back.release_m, want_rel, atol=1e-6)
+
+
+def test_a_refused_re_send_leaves_the_row_and_the_next_catch_prior_as_installed():
+    """JB-194 F1 + F2: a REFUSED re-send leaves the installed plan flying the
+    earlier release, so (F2) the release record goes back to it -- the next
+    Catch of this ball builds its dispatch prior from the release that flies,
+    not from the refused aim (23 of 98 P2 rows had one) -- and (F1) the row
+    keeps the last ACCEPTED release."""
+    sched, x, rows, ci, nxt, lines, before = _reaim_carried(True)
+    assert any('RESEND-REFUSED' in ln for ln in lines), lines
+    after_pred = x._predicted_landing(nxt, sched.skills[nxt])
+    after_prior = x._prior_landing(nxt, sched.skills[nxt])[0]
+    for a, b in ((after_pred, before['predicted']),
+                 (after_prior, before['prior'])):
+        assert np.array_equal(a.pos_mm, b.pos_mm)
+        assert np.array_equal(a.vel_mm_s, b.vel_mm_s)
+        assert a.t_land_abs_s == b.t_land_abs_s
+    assert np.array_equal(x._release_pos_mm(ci), before['release'])
+    row = _finalised_row(x, rows, ci)
+    np.testing.assert_allclose(row.release_m[:2],
+                               before['release'][:2] / 1000.0, atol=1e-12)
+    np.testing.assert_allclose(row.seat_offset_m, [0.0, 0.0], atol=1e-12)
 
 
 def test_a_landing_on_the_site_leaves_the_learner_state_bit_identical():
@@ -6678,6 +6737,7 @@ def test_the_row_finalises_one_decide_lag_after_its_close_with_a_history(sites):
 
 from jugglebot.motion.skills import learner as lr  # noqa: E402
 from jugglebot.motion.skills import memory as mem  # noqa: E402
+from jugglebot.motion.skills import plant_model as pm  # noqa: E402
 
 
 class _PredictingLearner(_FakeLearner):
@@ -6723,34 +6783,52 @@ def _run_catch(sch, **kwargs):
 
 def test_a_pinned_learner_memory_aims_the_catch_at_the_predicted_landing(
         sites, tmp_path):
-    """(a) A REAL memory whose P2 rows were all commanded at the -4 mm pin
-    and landed +20 mm beyond it (toward the target's inward side). The
-    learner wants ~-17 mm, the 4 mm authority pins the sent command at -4,
-    and the dispatch prior is the predicted +16 mm -- not y_d."""
+    """(a) A REAL memory whose P2 rows were all commanded at -4 mm and
+    landed +16 mm (toward the target's inward side), replayed through a real
+    P1 ``Learner`` whose lateral cap is 4 mm: the Learner wants ~-18 mm, more than
+    the cap, the sent command sits AT the cap about the model command, and
+    the dispatch prior is the Learner's predicted landing of that command --
+    not y_d. (Ported 2026-11-06 from the old memory-delegate law; the
+    numbers now come from the Learner itself.)"""
     p1, p2 = sites
-    m = mem.Memory(str(tmp_path / 'plant' / 'memory.csv'))
-    x_p2 = np.array([p2.cup_mm[0] / 1000.0, p2.cup_mm[1] / 1000.0, 0.0, 0.0])
-    for i in range(16):
-        m.append(mem.Experience(
-            x=x_p2, u=np.array([-0.004, 0.0, APEX_M]),
-            y=np.array([0.016, 0.0, APEX_M]), t_abs_s=1e9 + i, ball_id=0,
-            caught=True))
-    cfg = lr.LearnerConfig()
-    learner = SimpleNamespace(
-        command=lambda x, y_d: m.command(x, y_d, cfg),
-        predict=lambda x, u, y_d: m.predict(x, u, cfg, y_d=y_d))
     sch = _cross_schedule(sites)
+    probe = ex.SkillExecutor(sch, _FakeInstaller())
+    c0, _um = probe._throw_context(sch.skills[0], p2, p2.throw_site_mm(), p1,
+                                   sch.skills[0].y_d, (0.0, 0.0))
+    m = mem.Memory(str(tmp_path / 'plant' / 'memory_v2.csv'))
+    # A plant model held at its identity prior (prior sd ~0 on the offsets):
+    # the +20 mm is then a residual only the memory sees, as the old law's
+    # was, so the 4 mm cap binds.
+    learner = lr.Learner(
+        model=pm.PlantModel(pm.PlantModelConfig(prior_sd_b_m=1e-6,
+                                                prior_sd_s_per_m=1e-6)),
+        config=lr.LearnerConfig(c_max_xy_m=0.004))
+    for i in range(16):
+        e = mem.Experience(
+            site_xy_m=c0.site_xy_m, release_m=c0.release_m,
+            release_vel_mps=c0.release_vel_mps, dwell_s=c0.dwell_s,
+            seat_offset_m=(0.0, 0.0), u=np.array([-0.004, 0.0, APEX_M]),
+            y=np.array([0.016, 0.0, APEX_M]), t_abs_s=1e9 + i, ball_id=0,
+            release_kind='free_cup', caught=True)
+        m.append(e)
+        learner.observe(e)
     terminal, lines, x = _run_catch(sch, learner=learner,
                                     lateral_authority_m=0.004,
                                     catch_inward_authority_m=0.035)
-    # the throw command really was pinned at -4 mm
-    _x, u_dy, _apex = x._u_cache[0]
-    assert u_dy[0] == pytest.approx(-0.004)
+    # the throw command really was pinned at the 4 mm cap (about the model
+    # command; at 16 rows the evidence factor is 1 - e^-8)
+    _x, u_dy, u_apex = x._u_cache[0]
+    ctx = x._ctx_cache[0]
+    um = learner.model_command(ctx, np.array([0.0, 0.0, APEX_M]))
+    assert u_dy[0] - um[0] == pytest.approx(-0.004, abs=1e-5)
+    y_hat = learner.predict(x._latest_ctx(0, ctx),
+                            np.array([u_dy[0], u_dy[1], u_apex]))
+    assert y_hat[0] > 0.005                       # not the y_d prior
     assert np.allclose(terminal.landing_mm[:2],
-                       p1.catch_site_mm()[:2] + np.array([16.0, 0.0]),
+                       p1.catch_site_mm()[:2] + 1000.0 * y_hat[:2],
                        atol=0.5)
     assert terminal.t_land_s == pytest.approx(
-        float(sch.skills[0].t_abs_s) + sc.flight_s(APEX_M), abs=1e-3)
+        float(sch.skills[0].t_abs_s) + sc.flight_s(float(y_hat[2])), abs=1e-6)
     assert any('source=schedule:learned' in ln for ln in lines)
 
 
@@ -7031,209 +7109,6 @@ def test_a_non_aim_refusal_of_the_learned_prior_does_not_fall_back(sites):
     assert ex._aim_dependent_refusal("REJECTED_CYCLE_INFEASIBLE")
     assert not ex._aim_dependent_refusal("WINDOW_TOO_SHORT")
     assert not ex._aim_dependent_refusal("")
-
-
-# ---------------------------------------------------------------------------
-# Wave 3 unit H (owner rule, 2026-10-13): the admissible box bounds the
-# learner's EXPECTED landing laterally, not its lateral command. A learner
-# here is an exact AFFINE plant model ``y = d + D (u - u_bar)`` exposing the
-# same three entries skill_node binds (command / predict / local_model), so
-# every number below is closed-form. Throw: P1, y_d = (0, 0, APEX_M); box
-# x in [-4, +2] mm (the columns P1 box's x range), y wide, apex wide.
-# ---------------------------------------------------------------------------
-
-_ETA = lr.LearnerConfig().eta
-_COLUMNS_X_BOX = ((-0.004, 0.002), (-0.05, 0.05))
-
-
-class _AffineLearner:
-    def __init__(self, D, d, u_bar=(0.0, 0.0, APEX_M), local_model=True):
-        self.u_bar = np.asarray(u_bar, dtype=float)
-        self.D = np.asarray(D, dtype=float)
-        self.d = np.asarray(d, dtype=float)
-        if not local_model:
-            self.local_model = None
-
-    def command(self, x, y_d):
-        D = self.D
-        return self.u_bar + np.linalg.solve(
-            D.T @ D + _ETA * np.eye(3), D.T @ (np.asarray(y_d) - self.d))
-
-    def predict(self, x, u, y_d=None):
-        return self.d + self.D @ (np.asarray(u, dtype=float) - self.u_bar)
-
-    def local_model(self, x, y_d):
-        return self.u_bar.copy(), self.D.copy(), self.d.copy()
-
-
-def _lean_d(dx_m, dy_m=0.0, dapex=0.0):
-    return np.array([dx_m, dy_m, APEX_M + dapex])
-
-
-def _forward_clip_run(sites, learner, authority_m=0.020, xy=_COLUMNS_X_BOX,
-                      apex=(0.3, 1.5), y_d_xy=None):
-    sch = _schedule(sites)
-    if y_d_xy is not None:
-        sch = dataclasses.replace(sch, skills=(dataclasses.replace(
-            sch.skills[0], y_d=(np.asarray(y_d_xy, dtype=float), APEX_M)),)
-            + tuple(sch.skills[1:]))
-    inst = _FakeInstaller()
-    boxes = [_box(xy=xy, apex=apex, site_pair=(sites[0].name, sites[0].name))]
-    x = ex.SkillExecutor(sch, inst, learner=learner, boxes=boxes,
-                         lateral_authority_m=authority_m)
-    lines = list(x.tick(sch.skills[0].dispatch_s()))
-    lines += x.tick(sch.skills[0].dispatch_s() + 0.001)   # a re-tick: no repeats
-    assert inst.calls and inst.calls[0][0] == sg.THROW
-    _x, u_dy, u_apex = x._u_cache[0]
-    return np.asarray(u_dy), float(u_apex), lines, inst.calls[0][1], x
-
-
-def _today_command_clip(learner, authority_m, xy):
-    """The pre-2026-10-13 rule, for the explicit before/after contrast."""
-    u = learner.command(None, np.array([0.0, 0.0, APEX_M]))
-    u_xy = np.clip(u[:2], -authority_m, authority_m)
-    return np.array([np.clip(u_xy[0], *xy[0]), np.clip(u_xy[1], *xy[1])])
-
-
-def test_box_forward_clip_identity_learner_is_todays_command_clip(sites):
-    """Thin support (``local_model`` -> None, command = y_d): an in-box y_d
-    passes, no BOX lines."""
-    learner = SimpleNamespace(
-        command=lambda x, y_d: np.array(y_d, dtype=float),
-        predict=lambda x, u, y_d: np.array(u, dtype=float),
-        local_model=lambda x, y_d: None)
-    u_dy, u_apex, lines, _t, _x = _forward_clip_run(sites, learner)
-    assert np.allclose(u_dy, [0.0, 0.0]) and u_apex == pytest.approx(APEX_M)
-    assert not any('BOX-' in ln for ln in lines)
-
-
-def test_box_forward_clip_y_d_outside_the_box_is_clipped_as_today(sites):
-    """The feed-aim shape: y_d = +20 mm, identity (thin) learner -> +2 mm,
-    exactly the command clip."""
-    learner = SimpleNamespace(
-        command=lambda x, y_d: np.array(y_d, dtype=float),
-        predict=lambda x, u, y_d: np.array(u, dtype=float),
-        local_model=lambda x, y_d: None)
-    u_dy, _a, lines, _t, _x = _forward_clip_run(sites, learner,
-                                                y_d_xy=(0.020, 0.0))
-    assert u_dy == pytest.approx([0.002, 0.0])
-    assert not any('BOX-' in ln for ln in lines)
-
-
-def test_box_forward_clip_sitting_7_lean_keeps_the_authority_command(sites):
-    """d = +27 mm lean, authority 20: the learner wants -22.5, the authority
-    gives -20, the expected landing +7 mm is outside [-4, +2], the authority
-    binds -> the command STAYS -20 (today's rule clipped it to -4), one
-    UNMET line, no refusal."""
-    learner = _AffineLearner(np.eye(3), _lean_d(0.027))
-    assert learner.command(None, [0, 0, APEX_M])[0] == pytest.approx(
-        -0.027 / (1.0 + _ETA))
-    u_dy, _a, lines, terminal, x = _forward_clip_run(sites, learner)
-    assert u_dy == pytest.approx([-0.020, 0.0])
-    assert _today_command_clip(learner, 0.020, _COLUMNS_X_BOX) == \
-        pytest.approx([-0.004, 0.0])
-    assert not x.attempt_ended
-    want = sites[0].catch_site_mm() + np.array([-20.0, 0.0, 0.0])
-    assert np.allclose(terminal.target_mm, want)
-    unmet = [ln for ln in lines if 'BOX-EXPECTED-LANDING-UNMET' in ln]
-    assert len(unmet) == 1 and 'y_hat=(+7.0, +0.0) mm' in unmet[0]
-
-
-def test_box_forward_clip_inside_prediction_passes_the_command(sites):
-    """d = +10 mm: u* = -8.3 mm, y_hat = +1.7 mm inside -> unchanged (today:
-    -4 mm). The apex is still COMMAND-clipped: a fit landing 60 mm low asks
-    for +50 mm of apex, the box's apex ceiling APEX_M holds it."""
-    learner = _AffineLearner(np.eye(3), _lean_d(0.010, dapex=-0.060))
-    u_star = learner.command(None, [0, 0, APEX_M])
-    u_dy, u_apex, lines, terminal, _x = _forward_clip_run(
-        sites, learner, apex=(0.3, APEX_M))
-    assert u_dy == pytest.approx(u_star[:2])
-    assert u_dy[0] == pytest.approx(-0.010 / 1.2)
-    assert _today_command_clip(learner, 0.020, _COLUMNS_X_BOX)[0] == \
-        pytest.approx(-0.004)
-    assert u_star[2] == pytest.approx(APEX_M + 0.050)
-    assert u_apex == pytest.approx(APEX_M)
-    assert terminal.flight_s == pytest.approx(sc.flight_s(APEX_M))
-    inside = [ln for ln in lines if 'BOX-EXPECTED-LANDING' in ln]
-    assert len(inside) == 1 and 'inside' in inside[0]
-
-
-def test_box_forward_clip_pulls_the_expected_landing_onto_the_edge(sites):
-    """Authority room (40 mm), a COUPLED lateral gain and an apex coupling:
-    the pulled-back command puts predict(x, u') exactly on the x edge."""
-    D = np.array([[1.2, 0.1, 0.02], [0.05, 0.9, 0.0], [0.0, 0.0, 1.0]])
-    learner = _AffineLearner(D, _lean_d(0.027, 0.003))
-    u_dy, u_apex, lines, _t, _x = _forward_clip_run(sites, learner,
-                                                    authority_m=0.040)
-    y_new = learner.predict(None, [u_dy[0], u_dy[1], u_apex])
-    assert y_new[0] == pytest.approx(0.002, abs=1e-9)
-    # the damped command alone stopped short of the edge
-    u_star = learner.command(None, [0, 0, APEX_M])
-    assert learner.predict(None, u_star)[0] > 0.002
-    assert np.all(np.abs(u_dy) <= 0.040 + 1e-12)
-    edge = [ln for ln in lines if 'BOX-EXPECTED-LANDING' in ln]
-    assert len(edge) == 1 and 'on the box edge' in edge[0]
-
-
-def test_box_forward_clip_reapplies_the_authority_after_the_pull_back(sites):
-    """Same plant, 25 mm authority: the edge needs ~-26.7 mm, the authority
-    re-clips it to -25 and the landing stays outside (UNMET)."""
-    D = np.eye(3)
-    learner = _AffineLearner(D, _lean_d(0.0287))
-    u_dy, _a, lines, _t, _x = _forward_clip_run(sites, learner,
-                                                authority_m=0.025)
-    assert u_dy[0] == pytest.approx(-0.025)
-    assert any('BOX-EXPECTED-LANDING-UNMET' in ln for ln in lines)
-
-
-def test_box_forward_clip_ill_conditioned_gain_falls_back(sites):
-    """A fit that says the landing barely responds (gain 0.1 < floor 0.5) is
-    not inverted: the command clip, BOX-FORWARD-CLIP-FALLBACK once."""
-    D = np.diag([0.1, 0.1, 1.0])
-    learner = _AffineLearner(D, _lean_d(0.027))
-    u_dy, _a, lines, _t, _x = _forward_clip_run(sites, learner)
-    assert u_dy == pytest.approx([-0.004, 0.0])
-    fb = [ln for ln in lines if 'BOX-FORWARD-CLIP-FALLBACK' in ln]
-    assert len(fb) == 1 and 'below the floor' in fb[0]
-    assert ex.BOX_FORWARD_GAIN_FLOOR == 0.5
-
-
-def test_box_forward_clip_without_local_model_warns_and_clips_command(sites):
-    learner = SimpleNamespace(
-        command=_AffineLearner(np.eye(3), _lean_d(0.027)).command,
-        predict=lambda x, u, y_d: np.array(u, dtype=float))
-    u_dy, _a, lines, _t, _x = _forward_clip_run(sites, learner)
-    assert u_dy == pytest.approx([-0.004, 0.0])
-    warn = [ln for ln in lines if 'BOX-FORWARD-CLIP-UNAVAILABLE' in ln]
-    assert len(warn) == 1 and '(WARN)' in warn[0]
-
-
-def test_box_forward_clip_with_a_real_memory_matches_predict(sites, tmp_path):
-    """End to end on a REAL ``memory.Memory`` biased +27 mm: the pulled-back
-    command's ``learner.predict`` sits on the box edge (40 mm authority)."""
-    p1 = sites[0]
-    m = mem.Memory(str(tmp_path / 'plant' / 'memory.csv'))
-    x_p1 = np.array([p1.cup_mm[0] / 1000.0, p1.cup_mm[1] / 1000.0, 0.0, 0.0])
-    rng = np.random.default_rng(0)
-    for i in range(16):
-        u = np.array([rng.uniform(-0.03, 0.0), rng.uniform(-0.01, 0.01),
-                      APEX_M])
-        m.append(mem.Experience(x=x_p1, u=u, y=u + np.array([0.027, 0, 0]),
-                                t_abs_s=1e9 + i, ball_id=0, caught=True))
-    cfg = lr.LearnerConfig()
-    X, U, Y = m.arrays()
-    learner = SimpleNamespace(
-        command=lambda x, y_d: m.command(x, y_d, cfg),
-        predict=lambda x, u, y_d: m.predict(x, u, cfg, y_d=y_d),
-        local_model=lambda x, y_d: lr.local_model(x, y_d, *m.arrays(), cfg))
-    u_dy, u_apex, lines, _t, x = _forward_clip_run(sites, learner,
-                                                   authority_m=0.040)
-    xq = x._u_cache[0][0]
-    y_hat = m.predict(xq, [u_dy[0], u_dy[1], u_apex], cfg,
-                      y_d=[0.0, 0.0, APEX_M])
-    assert y_hat[0] == pytest.approx(0.002, abs=1e-9)   # the +x edge
-    assert -0.05 <= y_hat[1] <= 0.05
-    assert any('on the box edge' in ln for ln in lines)
 
 
 # ---------------------------------------------------------------------------
@@ -8017,64 +7892,100 @@ def test_a_catch_time_offset_run_writes_no_learner_row(sites, offset_s):
         assert 'catch_time_offset in force' in x.reports[0].no_row_reason
 
 
-# ── High-low Columns (JP-9): the box is selected by the THROWN ball's Dwell ──
+def _fault_row_run(sites, fault_after_release_s, *, kind='machine_fault',
+                   with_obs=True):
+    """JB-189: one Throw, a fault flag that rises ``fault_after_release_s``
+    after the release (None: never). Returns (executor, rows, OUTCOME line)."""
+    p1, _p2 = sites
+    t_land = ROS_T0 + FLIGHT_S
+    sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
+    land = _fit_landing(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
+                        t_land_abs_s=t_land)
+    t_fault = (None if fault_after_release_s is None
+               else ROS_T0 + fault_after_release_s)
 
-def _highlow_cells(p_hi, p_lo, timing, apex_hi=1.05, apex_lo=0.95):
-    out = []
-    for site, apex, dwell in ((p_hi, apex_hi, timing.dwells[0]),
-                              (p_lo, apex_lo, timing.dwells[1])):
-        xy = (float(site.cup_mm[0]), float(site.cup_mm[1]))
-        out.append(dataclasses.replace(
-            _box(site_pair=(site.name, site.name),
-                 apex_band_m=(apex - 0.025, apex + 0.025),
-                 pattern=sc.COLUMNS_HIGHLOW, release_xy_mm=xy,
-                 target_xy_mm=xy), dwell_s=dwell))
-    return out
+    def obs(t):
+        up = t_fault is not None and t >= t_fault
+        return ex.Observations(
+            mocap_fresh=True, hand_fresh=True, levelled=True,
+            ball_evidence=ex.CAUGHT_EVIDENCE, in_trajectory_mode=True,
+            machine_fault=up and kind == 'machine_fault',
+            guard_latched=up and kind == 'guard_latched')
 
-
-def test_high_low_selects_each_balls_cell_by_its_own_dwell():
-    """Ball A (1.05, at P2) is stamped with the commanded Dwell, ball B (0.95,
-    at P1) with its longer one. `_box_dwell_s` reads the skill's ball, so every
-    THROW command finds its ball's cell; a box carrying only the commanded
-    Dwell for the low ball (today's single `schedule.dwell_s` key) is refused
-    -- which is the select defect a scalar dwell would have had."""
-    p1, p2 = si.columns_sites(125.0)
-    pat = sc.Pattern(sites=(p2, p1), apex_m=1.05, apex_m_ball_b=0.95,
-                     dwell_s=0.27, n_throws=6)
-    sch = sc.compile_columns(pat, t0_abs_s=T0_ABS)
-    timing = sc.columns_ball_timing(1.05, 0.95, 0.27)
-    boxes = _highlow_cells(p2, p1, timing)
-    x = ex.SkillExecutor(sch, _FakeInstaller(), learner=_FakeLearner(),
-                         boxes=boxes)
-    seen = set()
-    for idx, sk in enumerate(sch.skills):
-        tt = sk.then_throw
-        if tt is None or tt.shadow_landing:
-            continue
-        assert x._box_dwell_s(idx) == timing.dwells[sk.ball_id]
-        _dy, u_apex = x._command_u(idx, sk.site, tt.target, tt.y_d)
-        assert u_apex == pytest.approx(tt.y_d[1])
-        seen.add(sk.ball_id)
-    assert seen == {0, 1}
-    # The low ball's cell stamped at the COMMANDED dwell: no cell for ball B.
-    wrong = [boxes[0], dataclasses.replace(boxes[1], dwell_s=0.27)]
-    x2 = ex.SkillExecutor(sch, _FakeInstaller(), learner=_FakeLearner(),
-                          boxes=wrong)
-    low = next(i for i, s in enumerate(sch.skills)
-               if s.ball_id == 1 and s.then_throw is not None
-               and not s.then_throw.shadow_landing)
-    with pytest.raises(ex._NoAdmissibleCommand, match='dwell'):
-        x2._command_u(low, sch.skills[low].site, sch.skills[low].then_throw.target,
-                      sch.skills[low].then_throw.y_d)
+    rows = []
+    x = ex.SkillExecutor(sch, _FakeInstaller(), tracker=lambda b: land,
+                         observer=lambda b, t: ex.CAUGHT_EVIDENCE,
+                         on_experience=rows.append,
+                         observations=obs if with_obs else None)
+    t = sch.skills[0].dispatch_s() - 0.01
+    t_end = t_land + ex.CAUGHT_WINDOW_S + 0.05
+    lines = []
+    while t < t_end:
+        lines.extend(x.tick(t))
+        t += 0.02
+    outcome = [ln for ln in lines if 'OUTCOME' in ln]
+    assert len(outcome) == 1 and len(x.reports) == 1
+    return x, rows, outcome[0]
 
 
-def test_equal_apex_box_dwell_is_the_schedule_dwell():
-    p1, p2 = si.columns_sites(125.0)
-    sch = sc.compile_columns(sc.Pattern(sites=(p2, p1), apex_m=0.95,
-                                        dwell_s=0.27, n_throws=4),
-                             t0_abs_s=T0_ABS)
-    x = ex.SkillExecutor(sch, _FakeInstaller())
-    assert {x._box_dwell_s(i) for i in range(len(sch.skills))} == {sch.dwell_s}
+@pytest.mark.parametrize('kind', ['machine_fault', 'guard_latched'])
+def test_a_fault_inside_the_settle_after_release_writes_no_memory_row(
+        sites, kind):
+    """JB-189: the Throw may have been cut short by what faulted the Hand."""
+    x, rows, outcome = _fault_row_run(sites, 0.1, kind=kind)
+    assert rows == []
+    rep = x.reports[0]
+    assert not rep.row and 'fault was seen' in rep.no_row_reason
+    assert 'no row: a fault was seen' in outcome
+    assert rep.caught is True                  # the verdict is not rewritten
+
+
+def test_a_fault_more_than_the_settle_after_release_keeps_the_row(sites):
+    x, rows, outcome = _fault_row_run(
+        sites, ex.MISSED_CATCH_FAULT_SETTLE_S + 0.1)
+    assert len(rows) == 1 and x.reports[0].row
+    assert 'no row' not in outcome
+
+
+def test_no_fault_row_is_written_and_none_without_observations(sites):
+    for kw in ({}, {'with_obs': False}):
+        x, rows, outcome = _fault_row_run(sites, None, **kw)
+        assert len(rows) == 1 and x.reports[0].row
+        assert 'no row' not in outcome and 'caught=True' in outcome
+    # a fault flag is ignored when no observations are wired
+    x, rows, _o = _fault_row_run(sites, 0.1, with_obs=False)
+    assert len(rows) == 1 and x._fault_seen_s is None
+
+
+def test_a_fault_first_seen_after_a_fault_free_end_writes_no_memory_row(sites):
+    """JB-189: the Attempt ends WITHOUT a fault (mode change just after the
+    release), then ``machine_fault`` rises at release + 0.1 s while the OUTCOME
+    row is pending: the standalone read in ``tick`` latches it, no row."""
+    p1, _p2 = sites
+    t_land = ROS_T0 + FLIGHT_S
+    sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
+    land = _fit_landing(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
+                        t_land_abs_s=t_land)
+
+    def obs(t):
+        return ex.Observations(
+            mocap_fresh=True, hand_fresh=True, levelled=True,
+            ball_evidence=ex.CAUGHT_EVIDENCE,
+            in_trajectory_mode=t < ROS_T0 + 0.03,
+            machine_fault=t >= ROS_T0 + 0.1, guard_latched=False)
+
+    rows = []
+    x = ex.SkillExecutor(sch, _FakeInstaller(), tracker=lambda b: land,
+                         observer=lambda b, t: ex.CAUGHT_EVIDENCE,
+                         on_experience=rows.append, observations=obs)
+    t = sch.skills[0].dispatch_s() - 0.01
+    t_end = t_land + ex.CAUGHT_WINDOW_S + 0.05
+    while t < t_end:
+        x.tick(t)
+        t += 0.02
+    assert rows == []
+    assert x._fault_seen_s is not None
+    assert x._fault_seen_s >= ROS_T0 + 0.1
 
 
 # ---------------------------------------------------------------------------
@@ -8356,3 +8267,208 @@ def test_a_real_columns_final_window_that_is_not_live_abstains_as_before(
     assert 'window NOT LIVE' in text
     assert 'CATCH-EVIDENCE-UNVERIFIABLE' not in text
     assert x.final_catch_unverifiable is None and x.end_code == ''
+
+
+# ── JB-175: a fault inside a Catch's judging window is a fault, not a miss ──
+#
+# 2026-11-05 (launch.log L2589-2615): a Hand SPINOUT disarm fell 0.03 s before
+# skill 5's window closed; the verdict fired 0.127 s BEFORE the first
+# `trajectory/status` carrying mode ERROR reached the node, so the Attempt read
+# "the Catch produced no ball".  `machine_fault` + a provisional MISSED_CATCH.
+
+def _lone_feed_catch_schedule(sites):
+    """`_feed_catch_schedule` minus the survivor catch (ball A's), so the
+    empty-cup verdict ENDS the attempt instead of cutting to a survivor."""
+    sch, L, R, _t = _feed_catch_schedule(sites)
+    keep = tuple(sk for i, sk in enumerate(sch.skills) if i in (0, 1, 4))
+    import dataclasses
+    return dataclasses.replace(sch, skills=keep), L, R
+
+
+class _FaultDriver:
+    def __init__(self, sites, fault_at=None, mode_off_at=None):
+        self.sch, self.L, self.R = _lone_feed_catch_schedule(sites)
+        self.fault_at, self.mode_off_at = fault_at, mode_off_at
+        self.guard_at = None            # /link_status fault_state latched
+        self.lane_at = None             # sched_refused moved
+        self.t_decide = (self.R + ex.MISSED_CATCH_CLOSE_AFTER_RELEASE_S
+                         + ex.MISSED_CATCH_DECIDE_LAG_S)
+        self.seat = lambda t0, t1: ex.SeatWindow(
+            n_valid=int(round((t1 - t0) * 100)), n_seated=0, max_gap_s=0.01)
+        self.x = ex.SkillExecutor(
+            self.sch, _FakeInstaller(), tracker=None,
+            observer=_observer_confirms_a_only, observations=self._obs,
+            on_experience=lambda e: None, seat_window=self.seat)
+        self.lines = []
+
+    def _obs(self, t):
+        fault = self.fault_at is not None and t >= self.fault_at
+        off = fault or (self.mode_off_at is not None and t >= self.mode_off_at)
+        # filtered to the dataclass's fields so a guard on the OLD code fails
+        # on behaviour, not on a TypeError for a field that does not exist
+        want = dict(
+            machine_fault=fault, in_trajectory_mode=not off,
+            guard_latched=self.guard_at is not None and t >= self.guard_at,
+            hand_lane_refused=(self.lane_at is not None
+                               and t >= self.lane_at))
+        keep = {k: v for k, v in want.items()
+                if k in ex.Observations.__dataclass_fields__}
+        return _obs(**keep)
+
+    def run(self, t_from, t_to, dt=0.02):
+        t = t_from
+        while t <= t_to + 1e-9:
+            self.lines.extend(self.x.tick(t))
+            t += dt
+        return t
+
+
+def test_fault_visible_before_the_verdict_is_aborted_fault_not_missed(sites):
+    d = _FaultDriver(sites)
+    d.fault_at = d.t_decide - 0.1
+    d.run(d.sch.skills[0].dispatch_s() - 0.01, d.t_decide + 0.1)
+    assert d.x.end_code == ex.ABORTED_FAULT
+    text = '\n'.join(d.lines)
+    assert ex.MISSED_CATCH not in text and 'MISSED-BALL' not in text
+    assert 'CATCH-EVIDENCE-UNVERIFIABLE' in text
+    assert d.x._pending_catches == []
+    # the ball's OUTCOME rows are NOT dropped by an unverifiable window
+    assert any(p.ball_id == 1 for p in d.x._pending_outcomes)
+
+
+def test_fault_just_after_the_verdict_rewrites_the_code_once(sites):
+    d = _FaultDriver(sites)
+    d.fault_at = d.t_decide + 0.12            # the 0.127 s of 2026-11-05
+    d.run(d.sch.skills[0].dispatch_s() - 0.01, d.t_decide - 0.001)
+    assert d.x.end_code is None or d.x.end_code == ''
+    d.lines.append('--verdict--')
+    d.x.tick(d.t_decide)
+    assert d.x.end_code == ex.MISSED_CATCH and d.x.attempt_ended
+    assert d.x.end_kind == ex.CATCH
+    assert not d.x.done                        # held through the settle
+    d.run(d.t_decide + 0.02, d.t_decide + 0.5)
+    assert d.x.end_code == ex.ABORTED_FAULT
+    assert d.x.end_kind == ''                  # no "at the CATCH" (JB-178)
+    assert 'pre-empted' in d.x.end_message
+    rewrites = [ln for ln in d.lines if 'END %s (was' % ex.ABORTED_FAULT in ln]
+    assert len(rewrites) == 1 and 'stay dropped' in rewrites[0]
+    assert d.x._fault_settle_until_s is None   # the settle is spent
+
+
+@pytest.mark.parametrize('dispatched_first', [False, True])
+def test_fault_relabel_cancels_a_waiting_decay_but_never_adds_an_install(
+        sites, dispatched_first):
+    """JB-175 x I-PLAN-9: a provisional MISSED_CATCH with the closing decay
+    pending. (a) A fault seen while the decay still WAITS re-labels the end
+    and `_advance_closing` cancels the decay. (b) A decay already dispatched
+    during the provisional end stays installed (nothing recalls a REST); the
+    re-label adds no further install. White-box: the provisional end is set
+    on a refused-CATCH fixture (the decay machinery is the same)."""
+    state = {'obs': _obs()}
+    sch, inst, x, t_end = _end_at_the_catch(
+        sites, observations=lambda t: state['obs'])
+    x.end_code = ex.MISSED_CATCH
+    x._fault_settle_until_s = t_end + 1e6
+    decay = sch.skills[2]
+    if dispatched_first:
+        x.tick(decay.dispatch_s())
+        assert len(inst.calls) == 3 and inst.calls[2][0] == sg.REST
+    else:
+        x.tick(decay.dispatch_s() - 0.5)
+        assert len(inst.calls) == 2 and x.closing_due_s() is not None
+    n = len(inst.calls)
+    state['obs'] = _obs(machine_fault=True)
+    x.tick(decay.dispatch_s() + 0.1)
+    assert x.end_code == ex.ABORTED_FAULT
+    cancelled = any('DECAY-ON-END cancelled' in t for _s, t in x.notices)
+    assert cancelled is (not dispatched_first)
+    x.tick(decay.dispatch_s() + 1.0)
+    assert len(inst.calls) == n
+    assert x.closing_due_s() is None
+
+
+def test_missed_catch_stands_when_the_fault_lands_after_the_settle(sites):
+    d = _FaultDriver(sites)
+    d.fault_at = d.t_decide + getattr(ex, 'MISSED_CATCH_FAULT_SETTLE_S', 0.4) + 0.1
+    d.run(d.sch.skills[0].dispatch_s() - 0.01, d.t_decide + 1.5)
+    assert d.x.end_code == ex.MISSED_CATCH
+    assert not any(ex.ABORTED_FAULT in ln for ln in d.lines)
+
+
+def test_a_genuine_miss_with_no_fault_ends_as_before_and_done_waits_the_settle(sites):
+    d = _FaultDriver(sites)
+    d.run(d.sch.skills[0].dispatch_s() - 0.01, d.t_decide - 0.001)
+    d.x.tick(d.t_decide)
+    assert d.x.end_code == ex.MISSED_CATCH and d.x.attempt_ended
+    # held through the settle (outcomes cleared first so only the settle holds)
+    d.x._pending_outcomes = []
+    d.x.tick(d.t_decide + getattr(ex, 'MISSED_CATCH_FAULT_SETTLE_S', 0.4) - 0.05)
+    assert not d.x.done
+    d.x.tick(d.t_decide + getattr(ex, 'MISSED_CATCH_FAULT_SETTLE_S', 0.4) + 0.02)
+    assert d.x.done and d.x.end_code == ex.MISSED_CATCH
+    assert d.x.end_kind == ex.CATCH
+
+
+def test_operator_disarm_without_a_fault_stays_aborted_mode_changed(sites):
+    d = _FaultDriver(sites)
+    d.mode_off_at = d.sch.skills[0].dispatch_s() + 0.05
+    d.run(d.sch.skills[0].dispatch_s() - 0.01, d.t_decide + 0.5)
+    assert d.x.end_code == ex.ABORTED_MODE_CHANGED
+    assert not any(ex.ABORTED_FAULT in ln for ln in d.lines)
+
+
+def test_guard_only_latch_before_the_verdict_is_aborted_fault(sites):
+    """A GUARD-ONLY fault keeps the streaming mode (no `machine_fault`);
+    `/link_status` fault_state is the signal."""
+    d = _FaultDriver(sites)
+    d.guard_at = d.t_decide - 0.1
+    d.run(d.sch.skills[0].dispatch_s() - 0.01, d.t_decide + 0.1)
+    assert d.x.end_code == ex.ABORTED_FAULT
+    text = '\n'.join(d.lines)
+    assert ex.MISSED_CATCH not in text
+    assert 'CATCH-EVIDENCE-UNVERIFIABLE' in text and 'guard latched' in text
+    assert any(p.ball_id == 1 for p in d.x._pending_outcomes)
+
+
+def test_guard_latch_just_after_the_verdict_rewrites_naming_the_guard(sites):
+    d = _FaultDriver(sites)
+    d.guard_at = d.t_decide + 0.013          # bag: 503.780 vs verdict 503.767
+    d.run(d.sch.skills[0].dispatch_s() - 0.01, d.t_decide - 0.001)
+    d.x.tick(d.t_decide)
+    assert d.x.end_code == ex.MISSED_CATCH
+    d.run(d.t_decide + 0.02, d.t_decide + 0.3)
+    assert d.x.end_code == ex.ABORTED_FAULT
+    assert 'guard latched' in d.x.end_message
+
+
+def test_a_guard_latch_never_pre_empts_lane_refused(sites):
+    """Both true on one tick: LANE_REFUSED wins (its END arms the forced hold)
+    and a later latch never rewrites it."""
+    d = _FaultDriver(sites)
+    t_both = d.sch.skills[0].dispatch_s() + 0.05
+    d.lane_at = d.guard_at = t_both
+    d.run(d.sch.skills[0].dispatch_s() - 0.01, t_both + 0.6)
+    assert d.x.end_code == ex.LANE_REFUSED
+    assert not any(ex.ABORTED_FAULT in ln for ln in d.lines)
+
+
+def test_fault_first_seen_inside_the_verdict_still_ends_the_attempt(sites):
+    """The tick's own observation is clean but the evidence pass's reads a
+    fault: the row is dropped UNVERIFIABLE AND the attempt ENDS (never carries
+    on with no verdict)."""
+    d = _FaultDriver(sites)
+    d.run(d.sch.skills[0].dispatch_s() - 0.01, d.t_decide - 0.001)
+    calls = []
+    clean = d.x.observations
+
+    def flip(t):
+        calls.append(t)
+        o = clean(t)
+        if len(calls) >= 2:
+            return _obs(machine_fault=True, in_trajectory_mode=False)
+        return o
+    d.x.observations = flip
+    lines = d.x.tick(d.t_decide)
+    assert d.x.attempt_ended and d.x.end_code == ex.ABORTED_FAULT
+    assert any('CATCH-EVIDENCE-UNVERIFIABLE' in ln for ln in lines)
+    assert not any('MISSED-BALL' in ln for ln in lines)

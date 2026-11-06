@@ -56,6 +56,13 @@ scheduled catches) at apex 0.9 m, separation 100 mm, dwell 0.30 s, ZERO drops,
 on five fixed seeds (0..4), at sitting limits 300/5000/200000 (leg), hand
 3500 rev/s^2; the whole five-seed sweep under 5 minutes.
 
+**P3a online admissibility (2026-11-06)**: every ``--learn`` run hands its
+executor ``checker=`` (:func:`_make_checker`, ``ex.check_segment`` on the
+installer's own record/seed/clock), so commands are checked online and the
+log carries ``ADMISSIBILITY`` / ``ADMISSIBILITY-EARLY`` lines (the offline
+box and its ``--box`` A/B were retired 2026-11-06, P3c); the plain and
+``--reload`` runs have no learner and are unchanged.
+
 Run headless (default); writes a JSON report under ``temp/reports/``.
 Pure Python + MuJoCo; no ROS2.
 
@@ -74,7 +81,7 @@ stream loop (``_stream_chain``, extracted from ``run_trial`` at this rung so
 neither caller carries a second copy of it) and of the shared
 tracker/installer closures (``_make_tracker`` / ``_make_installer``), not a
 second gate file -- a self-toss run and a columns run differ only in their
-schedule, limits and the R3-only learner/box/observer wiring, which is a
+schedule, limits and the R3-only learner/observer wiring, which is a
 few hundred lines of genuinely new orchestration (cheap-reset attempts,
 per-throw error scoring, the monotone-decay verdict) with nowhere smaller to
 land than beside the loop it drives. **R4 (Unit U7a)** generalises that SAME
@@ -121,6 +128,7 @@ from jugglebot.motion.skills import admissible as adm              # noqa: E402
 from jugglebot.motion.skills import bump as bmp                    # noqa: E402
 from jugglebot.motion.skills import learner as lr                  # noqa: E402
 from jugglebot.motion.skills import memory as mem                  # noqa: E402
+from jugglebot.motion.skills import plant_model as pm             # noqa: E402
 from jugglebot.motion.skills import schedule as sk                 # noqa: E402
 from jugglebot.motion.skills import sites                          # noqa: E402
 from jugglebot.motion.skills import executor as ex                 # noqa: E402
@@ -162,11 +170,11 @@ _SESSION_LEG_JERK_MMPS3 = 200000.0
 # catch-and-throw fold peaked at 101 % of 3500 in BOTH feed layouts (the
 # 2026-09-30 pass was the same knife edge landing on the right side), so the
 # session cap moved to the YAML ceiling; config/hardware_config.yaml
-# `hand_acc_limit_rps2` is 3900 since the same day and the box is re-swept at it.
+# `hand_acc_limit_rps2` is 3900 since the same day.
 # Owner, 2026-11-01 (Sitting debrief): 4500, with the hand current limit 50 ->
 # 60 A (70 A since 2026-11-02, JB-147; acc limit unchanged). Now IMPORTED from the YAML launch value (the hand has no set_limits
 # field, so the launch value IS the sitting value) so this can never again sit
-# under a box re-swept at a raised limit (adm.LimitsMismatch).
+# under the live limit.
 _SESSION_HAND_ACC_RPS2 = float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)
 
 #: Worst |mirror - plan| (rev) the HAND / LEG reconstruction bands allow --
@@ -280,20 +288,25 @@ class SkillsGateConfig:
     #: assertions) only exists on that path, and an open-loop run is
     #: requested explicitly with ``--catch-aim-source schedule``.
     catch_aim_source: str = ex.AIM_TRACKER
-    #: The segment planner this run plans with AND selects boxes under
+    #: The segment planner this run plans with
     #: ('level' | 'pose', ``uc.PLANNER_MODES``; two-ball-oval P3): the gate's
     #: twin of skill_node's live ``planner_mode`` parameter. Validated in
     #: :class:`SkillsGate`.
     planner_mode: str = uc.PLANNER_MODE_DEFAULT
     #: The pose planner's ZVD ring rows (carry-ring-zvd P1c, JB-102): the
     #: gate's twin of skill_node's live ``carry_zvd`` parameter. Plans with it
-    #: (``SegmentConfig.carry_zvd``) AND selects boxes under it; inert (and
+    #: (``SegmentConfig.carry_zvd``); inert (and
     #: stamped false) under ``planner_mode='level'``.
     carry_zvd: bool = CARRY_ZVD_DEFAULT
     noise: NoiseConfig = dataclasses.field(
         default_factory=lambda: NoiseConfig(bb_throw_noise_frac=0.0,
                                             tracking_noise_mm=0.5))
     report_path: str = None
+    #: P4 (D-P4-7): a parsed ``--beat-change`` (:func:`parse_beat_change`:
+    #: ``{'throw': K, 'apex': A, 'dwell': D, 'apex2': B}``, any subset past
+    #: ``throw``), requested ONCE at the first tick after Throw K-1's release.
+    #: ``None`` = the plain gate, every number unchanged.
+    beat_change: Optional[dict] = None
 
 
 @dataclasses.dataclass
@@ -332,10 +345,16 @@ class SkillsTrialResult:
     #: vacuously True when there was no Stop to check).
     final_cup_ok: bool = False
     passed: bool = False
+    #: ``--beat-change`` runs only: the request, its outcome and the P4
+    #: criteria (:func:`_beat_criteria`).  ``None`` (a plain run) is left out
+    #: of the report so a plain report is unchanged field for field.
+    beat: Optional[dict] = None
 
     def to_dict(self) -> dict:
         d = dataclasses.asdict(self)
         d['flags_seen'] = [hex(f) for f in self.flags_seen]
+        if d.get('beat') is None:
+            d.pop('beat', None)
         return d
 
 
@@ -684,6 +703,36 @@ def _make_installer(ictx: _InstallCtx, seg_cfg, limits, geom, *,
     return installer
 
 
+def _make_checker(ictx: _InstallCtx, seg_cfg, limits, geom):
+    """The ``checker(kind, terminal, t_now_s, *, ball_id) ->
+    admissible.CommandVerdict`` twin of :func:`_make_installer` (P3a, the
+    sim's stand-in for ``skill_node._checker``): ``ex.check_segment`` over
+    the SAME live record / seed / warm start / clock the installer would use
+    for the same call, installing nothing and touching no state.
+    ``ok = planned and margin >= 0``; a plan with a negative margin is code
+    ``'MARGIN'``; any other refusal carries its own code.  ``evaluated`` is
+    True throughout (the sim has no service to time out)."""
+    def checker(kind, terminal, t_now_s, *, ball_id):
+        res = ex.check_segment(
+            ictx.record, ictx.seed_rest, kind, terminal, t_now_s,
+            cfg=seg_cfg, limits=limits, geom=geom, warm_start=ictx.warm_start,
+            reserve_fresh_lead=True)
+        margin = float(res.margin)
+        if res.planned:
+            ok = bool(margin >= 0.0)     # NaN compares False: not ok
+            return adm.CommandVerdict(ok=ok, margin=margin,
+                                      code='OK' if ok else 'MARGIN',
+                                      evaluated=True)
+        return adm.CommandVerdict(ok=False, margin=margin, code=str(res.code),
+                                  evaluated=True)
+    return checker
+
+
+def _online_kwargs(cfg, ictx, seg_cfg, limits, geom) -> dict:
+    """``SkillExecutor`` kwargs of the P3a online check: ``checker=``."""
+    return dict(checker=_make_checker(ictx, seg_cfg, limits, geom))
+
+
 #: Process-wide tally of the sim bumper's outcomes (I-CATCH-5 evidence):
 #: ``{'accepted': n, 'declined': {code: n}}``.  Printed in the gate's summary
 #: lines; ``reset_bump_stats()`` zeroes it (tests do, before a trial).
@@ -752,11 +801,7 @@ def _make_bumper(ictx: _InstallCtx, limits, geom):
 #: re-aim went through UNCLAMPED where the robot clips it to the 20 mm learner
 #: authority (30 mm since JB-139, 2026-11-02); with them set the gate makes 2 per seed again (1 before; the
 #: ``LIMIT_JERK`` ends JB-27 saw after 08ec3fe6 no longer reproduce on main).
-LAUNCH_LATERAL_AUTHORITY_MM = {
-    'learner_lateral_authority_mm': 30.0,
-    'catch_outward_authority_mm': 10.0,
-    'catch_inward_authority_mm': 35.0,
-}
+LAUNCH_LATERAL_AUTHORITY_MM = ex.LAUNCH_LATERAL_AUTHORITY_MM   # the table lives in executor.py
 
 
 def _launch_authority_kwargs() -> dict:
@@ -789,26 +834,20 @@ def _bump_kwargs(sched, ictx: _InstallCtx, limits, geom) -> dict:
 
 #: The R3 operating point's site: P1 = (-50, 0) mm -- the same site
 #: ``sites.columns_sites(100.0)`` names ``P1`` (half of a 100 mm separation),
-#: so the admissible box swept for site pair ``('P1', 'P1')`` applies without
-#: a second site definition.
+#: without a second site definition.
 _SELF_TOSS_SEPARATION_MM = 100.0
 
-#: The rung-1 oval's site separation (plan two-ball-oval decision 18): the
-#: oval box is swept at this separation.
+#: The rung-1 oval's site separation (plan two-ball-oval decision 18).
 _OVAL_SEPARATION_MM = 150.0
 
-#: The rung-1 oval's dwell (decision 16 amended 2026-10-18): the oval box cell
-#: is swept at 0.65 s -- at 0.50 s the production pre-release hold makes the
+#: The rung-1 oval's dwell (decision 16 amended 2026-10-18): the oval
+#: was designed at 0.65 s -- at 0.50 s the production pre-release hold makes the
 #: carry read 32.1 deg against the 30 deg cone (45 deg since 2026-10-19, which
 #: 32.1 passes; the dwell was not re-chosen against it). ``--learn --pattern oval_1ball``
 #: plans at it unless ``--dwell-s`` overrides.
 _OVAL_DWELL_S = 0.65
 
-#: The R4 hop operating point's separation -- P1/P2 = (+-125, 0) mm, matching
-#: the 'hop' boxes swept into ``config/generated/admissible_box.yaml`` (site
-#: pair ``(P1, P2)``/``(P2, P1)``, ``release_site_xy_mm``/``target_site_xy_mm``
-#: stamped at exactly +-125.0 mm -- ``admissible.select`` refuses on a
-#: mismatch, so this constant and the sweep's must agree to the mm).
+#: The R4 hop operating point's separation -- P1/P2 = (+-125, 0) mm.
 _HOP_SEPARATION_MM = 250.0
 
 #: Ball Butler's horizontal bearing at the feed site (R5 sitting 2,
@@ -906,32 +945,33 @@ def _plant_landing_bias_release(bias_mm):
     return _release
 
 
-class _MemoryLearner:
-    """Adapts ``memory.Memory`` to the ``learner`` duck-type ``SkillExecutor``
-    wants (``command(x, y_d) -> u``, no ``cfg`` argument) by binding one
-    ``learner.LearnerConfig`` for the run — the R3 hyperparameters are fixed
-    per gate run, not re-supplied per throw."""
+#: Policy A's cold-start floor: single-throw attempts until the memory holds
+#: this many rows (the old law's ``LearnerConfig.k_min`` default, 2; the P1
+#: Learner has no such floor, so the gate keeps its own -- the policy and
+#: every pass criterion are unchanged by the P1 Learner, 2026-11-06).
+POLICY_A_MIN_ROWS = 2
 
-    def __init__(self, memory_obj: mem.Memory, cfg: lr.LearnerConfig):
-        self._memory = memory_obj
-        self._cfg = cfg
 
-    def command(self, x, y_d):
-        return self._memory.command(x, y_d, self._cfg)
+def _make_learner(memory_obj: mem.Memory, cfg: lr.LearnerConfig) -> lr.Learner:
+    """The P1 Learner exactly as ``skill_node._make_learner`` builds it: a
+    fresh ``PlantModel`` + ``Learner(cfg)`` with ``memory_obj``'s rows replayed
+    through ``observe`` in file order. Built per attempt from the seed's
+    memory, so an attempt's Learner holds every row the seed has written
+    (each attempt's ``on_experience`` appends AND observes, :func:`_on_row`)."""
+    learner = lr.Learner(pm.PlantModel(), cfg)
+    for exp in memory_obj.rows():
+        learner.observe(exp)
+    return learner
 
-    def predict(self, x, u, y_d=None):
-        # 2026-10-13 (wave 2 unit A): the executor's catch prior is the
-        # learner's EXPECTED landing for the command it actually sent
-        # (``executor._learned_prior_landing``); without this the sim gate
-        # would keep aiming its catches at ``y_d`` and stop mirroring the
-        # live path. Same positional shape skill_node binds: (x, u, y_d).
-        return self._memory.predict(x, u, self._cfg, y_d=y_d)
 
-    def local_model(self, x, y_d):
-        # 2026-10-13 (wave 3 unit H): the admissible box bounds the learner's
-        # EXPECTED landing (``executor._forward_clip_xy``), so the sim gate's
-        # learner exposes the same local fit skill_node binds.
-        return self._memory.local_model(x, y_d, self._cfg)
+def _on_row(memory_obj: mem.Memory, learner: lr.Learner, throws_out: list):
+    """``on_experience`` for one attempt: append to the memory first (a row
+    it refuses raises, as before), then the Learner observes it."""
+    def _cb(exp):
+        memory_obj.append(exp)
+        learner.observe(exp)
+        throws_out.append(exp)
+    return _cb
 
 
 def _make_observer(plant):
@@ -968,7 +1008,7 @@ class SelfTossGateConfig:
     """The R3/R4 sim-validation operating point (plan § 4 R3, R4 Unit U7a) —
     a SEPARATE config from :class:`SkillsGateConfig`: this run's limits
     (leg jerk ``_SESSION_LEG_JERK_MMPS3`` = 200 000 since the R5 ramp was HELD on
-    2026-09-30 and ``config/generated/admissible_box.yaml`` was re-swept at it —
+    2026-09-30 —
     150 000 until then, when the fed columns rehearsal refused ``LIMIT_JERK`` at
     100-103 % of a cap the sitting no longer flies) share the columns gate's R2
     point, and its noise model adds the measured plant bias on top
@@ -982,7 +1022,7 @@ class SelfTossGateConfig:
     (``schedule.OneBallPattern``). Both run through the SAME
     :meth:`SkillsGate.run_self_toss_attempt`/``run_self_toss_seed``/
     :func:`run_learn` — a hop is not a third copy of the loop, only a wider
-    site tuple and a different ``pattern``/box lookup key
+    site tuple and a different ``pattern``
     (``executor.SkillExecutor._command_u`` reads ``self.schedule.pattern``,
     which ``schedule.compile_one_ball`` sets from the sites tuple's length)."""
 
@@ -993,12 +1033,11 @@ class SelfTossGateConfig:
     pattern: str = 'self_toss'
     #: ``sites.columns_sites(separation_mm)`` -- the R3 default is
     #: ``_SELF_TOSS_SEPARATION_MM`` (100 mm); a hop run sets this to
-    #: ``_HOP_SEPARATION_MM`` (250 mm) to match the swept 'hop' boxes.
+    #: ``_HOP_SEPARATION_MM`` (250 mm) for the hop operating point.
     separation_mm: float = _SELF_TOSS_SEPARATION_MM
     #: JP-10 (``columns_turned``): rotate the columns Site pair about the
     #: origin by this many degrees (``sites.columns_sites(.., angle_deg)``;
-    #: the Sites are then named ``P1@<angle>``/``P2@<angle>``, so the box
-    #: swept with ``admissible_sweep --angle-deg`` is the one selected).
+    #: the Sites are then named ``P1@<angle>``/``P2@<angle>``).
     #: 0.0 = the straight pair, bit-identical to before.
     angle_deg: float = 0.0
     leg_vel_mmps: float = _SESSION_LEG_VEL_MMPS
@@ -1014,14 +1053,14 @@ class SelfTossGateConfig:
     #: assertions) only exists on that path, and an open-loop run is
     #: requested explicitly with ``--catch-aim-source schedule``.
     catch_aim_source: str = ex.AIM_TRACKER
-    #: The segment planner this run plans with AND selects boxes under
+    #: The segment planner this run plans with
     #: ('level' | 'pose', ``uc.PLANNER_MODES``; two-ball-oval P3): the gate's
     #: twin of skill_node's live ``planner_mode`` parameter. Validated in
     #: :class:`SkillsGate`.
     planner_mode: str = uc.PLANNER_MODE_DEFAULT
     #: The pose planner's ZVD ring rows (carry-ring-zvd P1c, JB-102): the
     #: gate's twin of skill_node's live ``carry_zvd`` parameter. Plans with it
-    #: (``SegmentConfig.carry_zvd``) AND selects boxes under it; inert (and
+    #: (``SegmentConfig.carry_zvd``); inert (and
     #: stamped false) under ``planner_mode='level'``.
     carry_zvd: bool = CARRY_ZVD_DEFAULT
     #: ``SegmentConfig.pre_release_hold_s`` override in [0, 0.25] s (twin of
@@ -1041,7 +1080,6 @@ class SelfTossGateConfig:
     #: Safety cap on cheap resets (owner decision 6) — far above what a
     #: converging learner needs; hitting it is itself a reportable finding.
     max_attempts: int = 60
-    admissible_box_path: str = None
     report_path: str = None
     #: R5 columns FEED trial (owner ask, 2026-09-30): when BOTH are set,
     #: :meth:`SkillsGate.run_columns_attempt` spawns ball 1 on an oblique
@@ -1107,9 +1145,8 @@ class SelfTossGateConfig:
     #: ``release_bias`` hook, :func:`_plant_landing_bias_release`). Distinct
     #: from `feed_bb_bias_mm` / `reload_bias_mm` (Ball Butler / announcement
     #: biases). Gives the learner's fit a consistent lateral error to gain
-    #: support on, so the executor's forward clip (`_forward_clip_xy`) fires
-    #: end to end. Read by the self-toss/hop learner runs (the only ones
-    #: with a learner AND boxes); the columns runs pass `boxes=None`.
+    #: support on. Read by the self-toss/hop learner runs (the only ones
+    #: with a learner AND the online check); the columns runs have no checker.
     plant_landing_bias_mm: Tuple[float, float] = (0.0, 0.0)
     #: 2026-10-19 (capture-move Unit 3): ``--reload`` only. The ball is
     #: PHYSICALLY spawned to land this (x, y) mm away from the synthetic
@@ -1189,16 +1226,6 @@ def _sites_for(cfg: 'SelfTossGateConfig') -> tuple:
         return (s0,)
     raise ValueError("cfg.pattern must be 'self_toss', 'hop' or 'oval_1ball', "
                      "got %r" % (cfg.pattern,))
-
-
-def _load_admissible_boxes(path: str = None) -> list:
-    """``List[AdmissibleBox]`` from ``config/generated/admissible_box.yaml``
-    (or ``path``) — the sequence shape ``SkillExecutor.boxes`` wants
-    (``admissible.select`` resolves ``(site pair, apex band)`` from it)."""
-    if path is None:
-        path = os.path.join(_repo_root, 'config', 'generated',
-                            'admissible_box.yaml')
-    return adm.load(path)
 
 
 #: The ACTIVATE park is documented (and requested) as "hand 0 rev", which
@@ -1338,6 +1365,273 @@ def _wall_ms_stats(wall_s) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# P4 (D-P4-7): a mid-pattern beat change on the plain two-ball Columns gate
+# ---------------------------------------------------------------------------
+
+#: Tolerance (s) between a physical release tick and the Schedule's release
+#: instant: the stream loop pops a release on the first 2 ms tick at or after
+#: the installed instant (``TICK_S``), plus 1 ms for float noise.
+BEAT_RELEASE_TOL_S = TICK_S + 1.0e-3
+#: Tolerance (s) between a measured touch-down-to-release span and the
+#: Schedule's Dwell (after the constant make-latency offset,
+#: :func:`_beat_criteria`): the measured pre-change scatter is +-11 ms, a
+#: Dwell change under test is >= 30 ms.
+BEAT_DWELL_SPAN_TOL_S = 0.025
+#: Throws in the short fresh stream the gate's ``beat_checker`` plans.
+BEAT_CHECK_N_THROWS = 8
+
+_BEAT_SPEC_KEYS = ('throw', 'apex', 'dwell', 'apex2')
+
+
+def parse_beat_change(spec: str) -> dict:
+    """``--beat-change`` grammar: comma-separated ``key=value``; keys
+    ``throw`` (int >= 3, required), ``apex`` (m), ``dwell`` (s) and
+    ``apex2`` (m, ball 2's new Apex); at least one of apex / dwell / apex2.
+    Raises ``ValueError`` naming the problem."""
+    out = {}
+    for part in str(spec).split(','):
+        key, eq, val = part.strip().partition('=')
+        if not eq or key not in _BEAT_SPEC_KEYS:
+            raise ValueError('bad --beat-change item %r (grammar: throw=K,'
+                             'apex=A,dwell=D,apex2=B)' % (part,))
+        if key in out:
+            raise ValueError('--beat-change key %r given twice' % key)
+        try:
+            out[key] = int(val) if key == 'throw' else float(val)
+        except ValueError:
+            raise ValueError('--beat-change %s=%r is not a number' % (key, val))
+    if 'throw' not in out:
+        raise ValueError('--beat-change needs throw=K')
+    if out['throw'] < 3:
+        raise ValueError('--beat-change throw=%d: K must be >= 3 (the request '
+                         'is made after Throw K-1 is released; Throws 0 and 1 '
+                         'are the opening pair)' % out['throw'])
+    if not any(k in out for k in ('apex', 'dwell', 'apex2')):
+        raise ValueError('--beat-change needs at least one of apex=, dwell=, '
+                         'apex2=')
+    for k in ('apex', 'dwell', 'apex2'):
+        if k in out and not (math.isfinite(out[k]) and out[k] > 0.0):
+            raise ValueError('--beat-change %s must be finite and > 0' % k)
+    return out
+
+
+def _beat_request_kwargs(spec: dict) -> dict:
+    """The ``columns_change`` / ``request_beat_change`` keywords of ``spec``."""
+    kw = {}
+    if 'apex' in spec:
+        kw['apex_m'] = float(spec['apex'])
+    if 'apex2' in spec:
+        kw['apex_m_ball_b'] = float(spec['apex2'])
+    if 'dwell' in spec:
+        kw['dwell_s'] = float(spec['dwell'])
+    return kw
+
+
+def _release_times(sched: 'sk.Schedule') -> list:
+    """Every release instant of ``sched``, in time order: entry ``n`` is
+    Throw ``n``'s (Throw n is the n-th release of a Columns stream)."""
+    return sorted(t for s in sched.skills for t in sk._release_instants(s))
+
+
+def _expected_first_changeable(executor, t_now: float):
+    """The first Throw a change requested at ``t_now`` may take, recomputed
+    from the live Schedule and the dispatched set (NOT by calling
+    ``executor.first_changeable_throw``): the lowest ``j >= 2`` whose
+    carrying Skill ``j`` (the CATCH with a ``then_throw``, same ball as event
+    ``j``) and every Skill after it is not yet dispatched, and whose
+    early-command window has not opened (``dispatch_s - lookahead -
+    EARLY_COMMAND_MAX_S - BEAT_CHANGE_GUARD_S > t_now``).  ``None`` = too
+    late."""
+    sched = executor.schedule
+    src = sched.source
+    skills = sched.skills
+    for j in range(2, min(len(src.events), len(skills))):
+        s = skills[j]
+        if (s.kind != CATCH or s.then_throw is None
+                or int(s.ball_id) != int(src.events[j].ball_id)):
+            continue
+        if any(k in executor.dispatched for k in range(j, len(skills))):
+            continue
+        opens = (float(s.dispatch_s()) - float(executor.dispatch_lookahead_s)
+                 - ex.EARLY_COMMAND_MAX_S - ex.BEAT_CHANGE_GUARD_S)
+        if opens > float(t_now):
+            return j
+    return None
+
+
+def _make_beat_checker(cfg, limits, geom, seg_cfg, executor_box: list):
+    """The ``beat_checker(candidate, first_changed_idx)`` of a ``--beat-change``
+    run: plans the changed neighbourhood with the nomination walker
+    (``nominate.walk_schedule``: every rung, the criterion a goal is accepted
+    by) at the gate's limits; returns the first refusal's line, or ``None``.
+
+    The neighbourhood is a SHORT FRESH Columns stream (``BEAT_CHECK_N_THROWS``
+    Throws at the standing parameters, changed from Throw 2 on through
+    ``schedule.columns_change``), so the cost does not grow with K.  This is
+    a NOMINAL check of the transition, not of the running seed: it walks the
+    nominal release chain from rest, not the machine's actual state at the
+    request instant.  It is cross-checked against the candidate: the changed
+    Throws' Apex and Dwell in the short stream must equal the candidate's."""
+    from jugglebot.motion.skills import nominate as nom
+    spec_kw = _beat_request_kwargs(cfg.beat_change)
+
+    def checker(cand, first):
+        site0, site1 = sites.columns_sites(cfg.separation_mm, cfg.angle_deg)
+        pat = sk.Pattern(sites=(site0, site1), apex_m=cfg.apex_m,
+                         dwell_s=cfg.dwell_s, n_throws=BEAT_CHECK_N_THROWS,
+                         apex_m_ball_b=cfg.apex_m_ball2)
+        base = sk.compile_columns(pat, nom.DUMMY_T0_S)
+        try:
+            ev = sk.columns_change(base.source.events, 2, **spec_kw)
+            short = base.with_events(ev)
+        except ValueError as exc:
+            return 'neighbourhood does not compile: %s' % exc
+        old = executor_box[0].schedule.source.events
+        new = cand.source.events
+        jc = next((i for i in range(len(old))
+                   if (abs(old[i].apex_m - new[i].apex_m) > 1e-12
+                       or abs(old[i].dwell_s - new[i].dwell_s) > 1e-12)), None)
+        if jc is not None:
+            for off in range(min(4, len(new) - jc, len(ev) - 2)):
+                a, b = new[jc + off], ev[2 + off]
+                if (abs(a.apex_m - b.apex_m) > 1e-9
+                        or abs(a.dwell_s - b.dwell_s) > 1e-9):
+                    return ('neighbourhood disagrees with the candidate at '
+                            'changed Throw %d (apex %.4f vs %.4f, dwell %.4f '
+                            'vs %.4f)' % (jc + off, a.apex_m, b.apex_m,
+                                          a.dwell_s, b.dwell_s))
+        # The SAME criterion a goal is accepted by (every rung of
+        # ``nominate.RUNGS``, margin included), never a weaker one.
+        for v in nom.walk_schedule(short, limits, geom, seg_cfg):
+            if not v.ok:
+                return v.line()
+        return None
+
+    return checker
+
+
+def _beat_criteria(*, spec: dict, sched0: 'sk.Schedule', result,
+                   sched_after: 'sk.Schedule', expected_j, trace: dict) -> dict:
+    """Score a ``--beat-change`` run: pure over recorded data, so the tests
+    can corrupt the data and watch each criterion fail.
+
+    ``trace`` is :meth:`SkillsGate._stream_chain`'s: ``releases`` (one dict
+    per physical release in time order: ``t``, ``z0_mm``, ``zmax_mm``,
+    ``ball``) and ``captures`` (``(t, ball)``).  Every expectation is built
+    here from ``sched0`` and the gate's OWN ``expected_j`` -- never from the
+    Schedule the executor ended with, which would agree with a wrongly
+    placed change.
+
+    Apex is compared as the ratio measured / commanded (the sim plant has a
+    gain: its hand does not deliver exactly the commanded takeoff speed): the
+    gain is the median ratio before the change, and every Throw must sit
+    within ``APEX_BAND_MM`` (the gate's apex tolerance) of ``gain x
+    commanded``."""
+    out = dict(spec=dict(spec))
+    refused_expected = (result is not None and not result.ok)
+    if result is None:
+        out.update(requested=False, ok=False)
+        return out
+    out.update(requested=True, request_ok=bool(result.ok),
+               code=str(result.code), detail=str(result.detail),
+               from_throw=result.from_throw, expected_from=expected_j)
+    if refused_expected:
+        out['change_refused_by_name'] = bool(
+            result.code in _SCHEDULE_REFUSAL_CODES
+            and sched_after is sched0)
+        out['ok'] = out['change_refused_by_name']
+        return out
+    kw = _beat_request_kwargs(spec)
+    j = expected_j
+    applied = bool(result.ok and j is not None
+                   and result.from_throw == j and sched_after is not sched0)
+    out['change_applied'] = applied
+    if j is None:
+        out.update(change_one_beat_later=False, release_instants_ok=False,
+                   ok=False)
+        return out
+    try:
+        ref = sched0.with_events(
+            sk.columns_change(sched0.source.events, j, **kw))
+    except ValueError as exc:
+        # The executor ACCEPTED a change the gate's own recompile refuses.
+        out.update(change_one_beat_later=False, release_instants_ok=False,
+                   reference_compile_error=str(exc), ok=False)
+        return out
+    ev_old, ev_new = sched0.source.events, ref.source.events
+    rel_old, rel_new = _release_times(sched0), _release_times(ref)
+    recs = trace['releases']
+    n_rec = len(recs)
+    meas = [(r['zmax_mm'] - r['z0_mm']) for r in recs]
+    exp_mm = [1000.0 * float(ev_new[n].apex_m) for n in range(n_rec)]
+    pre = [meas[n] / exp_mm[n] for n in range(min(j, n_rec))]
+    gain = float(np.median(pre)) if pre else float('nan')
+    apex_err = [abs(meas[n] - gain * exp_mm[n]) for n in range(n_rec)]
+    pre_rel_err = [abs(recs[n]['t'] - rel_old[n]) for n in range(min(j, n_rec))]
+    apex_ok = bool(n_rec == len(ev_new) and apex_err
+                   and max(apex_err) <= APEX_BAND_MM)
+    out['change_one_beat_later'] = bool(
+        apex_ok and pre_rel_err and max(pre_rel_err) <= BEAT_RELEASE_TOL_S)
+    rel_err = [abs(recs[n]['t'] - rel_new[n]) for n in range(n_rec)]
+    out['release_instants_ok'] = bool(
+        n_rec == len(rel_new) and rel_err
+        and max(rel_err) <= BEAT_RELEASE_TOL_S)
+    # touch-down -> release spans: the capture of the throwing ball just
+    # before its release (Throw n is ball n % 2).
+    spans = {}
+    for n in range(1, n_rec):
+        b = int(recs[n]['ball'])
+        caps = [t for (t, cb) in trace['captures']
+                if cb == b and t <= recs[n]['t'] + 1e-9]
+        if caps:
+            spans[n] = recs[n]['t'] - caps[-1]
+    # The plant's contact make fires a constant few ms after the scheduled
+    # touch-down (MEASURED 2026-11-06, plain run: spans 0.282..0.304 s against
+    # a 0.270 s Dwell, before any change), so, like the apex gain, the
+    # offset is the median over the Throws BEFORE the change and the
+    # criterion is on the span minus that offset.
+    pre_off = [s - float(ev_new[n].dwell_s) for n, s in spans.items()
+               if n < j]
+    span_off = float(np.median(pre_off)) if pre_off else 0.0
+    dwell_err = {n: abs(s - float(ev_new[n].dwell_s) - span_off)
+                 for n, s in spans.items()}
+    out['span_offset_s'] = span_off
+    out['dwell_span_err_s'] = (max(dwell_err.values()) if dwell_err
+                               else float('nan'))
+    if j + 1 in dwell_err:
+        out['transition_span_s'] = spans[j + 1]
+        out['transition_dwell_s'] = float(ev_new[j + 1].dwell_s)
+    out['dwell_spans_ok'] = bool(dwell_err and max(dwell_err.values())
+                                 <= BEAT_DWELL_SPAN_TOL_S)
+    out['apex_gain'] = gain
+    out['apex_measured_mm'] = [round(m, 1) for m in meas]
+    out['apex_expected_mm'] = [round(e, 1) for e in exp_mm]
+    out['apex_err_max_mm'] = max(apex_err) if apex_err else float('nan')
+    out['release_err_max_s'] = max(rel_err) if rel_err else float('nan')
+    out['dwell_spans_s'] = {str(n): round(s, 4) for n, s in spans.items()}
+    out['transition'] = dict(
+        throw=j + 1 if j + 1 < len(ev_new) else None,
+        dwell_s=(float(ev_new[j + 1].dwell_s) if j + 1 < len(ev_new)
+                 else None),
+        old_dwell_s=(float(ev_old[j + 1].dwell_s) if j + 1 < len(ev_old)
+                     else None))
+    ok = (applied and out['change_one_beat_later']
+          and out['release_instants_ok'])
+    if 'dwell' in spec:
+        ok = ok and out['dwell_spans_ok']
+    out['ok'] = bool(ok)
+    return out
+
+
+#: The codes a refused change may carry for ``change_refused_by_name``:
+#: ``schedule.py``'s ``BEAT_*`` constants other than ``BEAT_OK``.
+_SCHEDULE_REFUSAL_CODES = frozenset(
+    getattr(sk, n) for n in dir(sk)
+    if n.startswith('BEAT_') and n != 'BEAT_OK'
+    and isinstance(getattr(sk, n), str))
+
+
+# ---------------------------------------------------------------------------
 # The gate
 # ---------------------------------------------------------------------------
 
@@ -1474,19 +1768,36 @@ class SkillsGate:
         tracker = _make_tracker(plant, ball_state)
         ictx = _InstallCtx(rest0)
         installer = _make_installer(ictx, self.seg_cfg, self.limits, geom)
+        # P4 (``--beat-change``): the executor is built WITH the gate's
+        # planner-walk checker (``request_beat_change`` refuses
+        # BEAT_NO_CHECKER without one); a plain run passes nothing extra.
+        beat_kw = {}
+        executor_box = []
+        if cfg.beat_change is not None:
+            beat_kw['beat_checker'] = _make_beat_checker(
+                cfg, self.limits, geom, self.seg_cfg, executor_box)
         executor = ex.SkillExecutor(
             sched, installer, tracker=tracker,
             **_bump_kwargs(sched, ictx, self.limits, geom),
             catch_aim_source=self.cfg.catch_aim_source,
-            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
+            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S, **beat_kw)
+        executor_box.append(executor)
 
         # 4. Stream (the one loop -- ``_stream_chain``).
         t_end = t_land_final + QUIET_TAIL_S
+        stream_kw = {}
+        beat_state = None
+        if cfg.beat_change is not None:
+            beat_state = self._beat_hooks(executor, sched)
+            stream_kw = dict(
+                on_tick=beat_state['on_tick'],
+                live_final=lambda: _columns_final_removal(executor.schedule),
+                trace=beat_state['trace'])
         loop = self._stream_chain(
             plant=plant, geom=geom, rcfg=self.rcfg, noise=noise,
             executor=executor, ictx=ictx, ball_state=ball_state, t_end=t_end,
             final_removal=(t_land_final, ball_final),
-            final_target_xy_mm=final_target_xy_mm)
+            final_target_xy_mm=final_target_xy_mm, **stream_kw)
 
         pump_clean = bool(loop['pump_rejects'] == 0
                           and loop['accepted'] == loop['emitted']
@@ -1533,7 +1844,45 @@ class SkillsGate:
         res.passed = bool(pump_clean and mirror_ok and flags_ok
                           and all_installed and caught_all and no_drops
                           and final_cup_ok)
+        if beat_state is not None:
+            beat = _beat_criteria(
+                spec=cfg.beat_change, sched0=sched,
+                result=beat_state['result'], sched_after=executor.schedule,
+                expected_j=beat_state['expected_j'],
+                trace=beat_state['trace'])
+            beat['t_request_s'] = beat_state['t_request']
+            res.beat = beat
+            res.passed = bool(res.passed and beat.get('ok', False))
         return res
+
+    def _beat_hooks(self, executor, sched0: 'sk.Schedule') -> dict:
+        """The ``--beat-change`` request, made ONCE at the first tick after
+        Throw K-1's release instant (``K = spec['throw']``): the gate
+        recomputes the first changeable Throw itself
+        (:func:`_expected_first_changeable`), then calls
+        ``executor.request_beat_change``.  Returns the state dict the trial
+        scores (``result``, ``expected_j``, ``t_request``, ``trace``) and the
+        ``on_tick`` hook."""
+        spec = self.cfg.beat_change
+        kw = _beat_request_kwargs(spec)
+        rel = _release_times(sched0)
+        if not 3 <= spec['throw'] <= len(rel) - 1:
+            raise ValueError('--beat-change throw=%d is outside this '
+                             '%d-Throw stream (3 .. %d)'
+                             % (spec['throw'], len(rel), len(rel) - 1))
+        t_trigger = rel[spec['throw'] - 1]
+        state = dict(result=None, expected_j=None, t_request=None,
+                     trace=dict(releases=[], captures=[]))
+
+        def on_tick(t):
+            if state['result'] is not None or t < t_trigger:
+                return
+            state['t_request'] = float(t)
+            state['expected_j'] = _expected_first_changeable(executor, t)
+            state['result'] = executor.request_beat_change(t, **kw)
+
+        state['on_tick'] = on_tick
+        return state
 
     # ── the one stream loop (shared with the R3 self-toss learner run) ─────
 
@@ -1541,14 +1890,16 @@ class SkillsGate:
                       ball_state, t_end, release_bias=None,
                       final_removal=None, final_target_xy_mm=None,
                       stop_check=None, pending_spawn=None, identity=None,
-                      lines_out=None):
+                      lines_out=None, on_tick=None, live_final=None,
+                      trace=None):
         """The emitter/pump/wire/mirror/executor.tick loop (module
         docstring) -- run by every caller against a live ``PlanRecord``
         (``ictx``) and the executor dispatching one ``Schedule``.
 
         ``lines_out`` (list or ``None``): every log line ``executor.tick``
         returns is appended (JB-32: the gate's only view of the executor's
-        ``BOX-EXPECTED-LANDING`` notes).
+        ``BOX-EXPECTED-LANDING`` notes, which the online check replaced
+        2026-11-06).
 
         ``identity`` (:class:`_IdentityTracker` or ``None``): when given,
         ``identity.tick(t, ball_state)`` runs every sim tick BEFORE
@@ -1558,6 +1909,17 @@ class SkillsGate:
         message precedes the node's dispatch on the same clock. ``None``
         (the R2/R4 callers that do not use the identity-aware tracker)
         changes nothing from before this parameter existed.
+
+        P4 (``--beat-change``, all three default ``None`` = the loop as it
+        was): ``on_tick(t)`` runs every tick just BEFORE ``executor.tick(t)``
+        (where the gate makes its one beat-change request);
+        ``live_final()`` -> ``(t_land_final, ball_final, target_xy_mm)`` is
+        re-read whenever ``executor.schedule`` is replaced, moving
+        ``final_removal``, ``final_target_xy_mm`` and ``t_end`` with the
+        live Schedule instead of the opening one; ``trace`` (a dict) collects
+        ``releases`` (per physical release: ``t``, ``ball``, ``z0_mm``,
+        ``zmax_mm`` -- the ball's height gain over its release point) and
+        ``captures`` (``(t, ball)``).
 
         ``ball_state`` is ``{ball_id: {'estimator', 'airborne',
         'next_obs_t', 'expect_held', 'lost_since'}}`` -- the per-ball
@@ -1626,10 +1988,25 @@ class SkillsGate:
         removed_final = final_removal is None
         final_cup_err_mm = float('nan')
         t_wall = time.time()
+        live_sched = executor.schedule
+        open_flight = {}
+        if trace is not None:
+            trace.setdefault('releases', [])
+            trace.setdefault('captures', [])
 
         while plant.data.time < t_end and (stop_check is None
                                            or not stop_check()):
             t = plant.data.time
+
+            if on_tick is not None:
+                on_tick(t)
+            if live_final is not None and executor.schedule is not live_sched:
+                live_sched = executor.schedule
+                shadow_live = live_final()
+                if shadow_live is not None:
+                    t_land_live, ball_live, final_target_xy_mm = shadow_live
+                    final_removal = (t_land_live, ball_live)
+                    t_end = t_land_live + QUIET_TAIL_S
 
             if pending_spawn is not None and t >= pending_spawn[0] - 1e-9:
                 spawn_t, spawn_pos, spawn_vel, spawn_ball = pending_spawn
@@ -1740,6 +2117,13 @@ class SkillsGate:
                     ictx.pending_releases.pop(0)
                 bstate = ball_state[b_id]
                 if plant.has_ball and plant.get_ball_state(b_id).held:
+                    if trace is not None:
+                        z_rel = float(
+                            plant.get_ball_state(b_id).position_mm[2])
+                        rec = dict(t=float(t), ball=int(b_id), z0_mm=z_rel,
+                                   zmax_mm=z_rel)
+                        trace['releases'].append(rec)
+                        open_flight[int(b_id)] = rec
                     _, v_noisy = noise.perturb_throw(
                         site_mm, vel_mm_s, target_mm - site_mm)
                     if release_bias is not None:
@@ -1752,10 +2136,17 @@ class SkillsGate:
                 bstate['next_obs_t'] = t
 
             for b, bstate in ball_state.items():
+                if trace is not None and int(b) in open_flight:
+                    open_flight[int(b)]['zmax_mm'] = max(
+                        open_flight[int(b)]['zmax_mm'],
+                        float(plant.get_ball_state(b).position_mm[2]))
                 if plant.check_and_capture(b):
                     makes += 1
                     bstate['expect_held'] = True
                     bstate['airborne'] = False
+                    if trace is not None:
+                        trace['captures'].append((float(t), int(b)))
+                        open_flight.pop(int(b), None)
                 if bstate['expect_held']:
                     bs = plant.get_ball_state(b)
                     if not bs.held:
@@ -1784,6 +2175,7 @@ class SkillsGate:
                     final_cup_err_mm = float(np.linalg.norm(
                         np.asarray(cup_f[:2], dtype=float)
                         - np.asarray(final_target_xy_mm, dtype=float)))
+                open_flight.pop(int(final_removal[1]), None)
                 plant.ball_manager.ball(final_removal[1]).reset()
                 ball_state[final_removal[1]]['airborne'] = False
                 ball_state[final_removal[1]]['expect_held'] = False
@@ -1812,7 +2204,7 @@ class SkillsGate:
 
     def run_self_toss_attempt(self, *, pattern_sites, n_throws: int,
                               memory: mem.Memory, learner_cfg: lr.LearnerConfig,
-                              boxes: list, noise: JuggleNoise,
+                              noise: JuggleNoise,
                               throws_out: list, reports_out: list = None,
                               lines_out: list = None
                               ) -> Tuple[str, dict, '_InstallCtx']:
@@ -1821,7 +2213,7 @@ class SkillsGate:
         ACTIVATE park (owner decision 6, "resets are cheap"): reset + spawn
         at ``pattern_sites[0]``, ``schedule.compile_one_ball``, stream it
         through the one chain (:meth:`_stream_chain`) with the R3
-        learner/box/observer/observations wired in.  ``throws_out`` accumulates
+        learner/observer/observations wired in.  ``throws_out`` accumulates
         every finalised :class:`~jugglebot.motion.skills.memory.Experience`
         this attempt produces (in schedule order); the memory itself is
         appended to as a side effect of ``on_experience`` (below), so it
@@ -1873,16 +2265,16 @@ class SkillsGate:
                                     on_release=identity.announce)
         observer = _make_observer(plant)
         observations = _make_observations(observer)
-        learner = _MemoryLearner(memory, learner_cfg)
+        learner = _make_learner(memory, learner_cfg)
         executor = ex.SkillExecutor(
             sched, installer, tracker=identity.tracker,
             **_bump_kwargs(sched, ictx, self.limits, geom),
             catch_aim_source=self.cfg.catch_aim_source,
-            learner=learner, boxes=boxes,
+            learner=learner,
+            **_online_kwargs(self.cfg, ictx, self.seg_cfg, self.limits, geom),
             planner_mode=self.seg_cfg.planner_mode,
             carry_zvd=bool(self.seg_cfg.carry_zvd),
-            observer=observer, on_experience=lambda exp: (
-                memory.append(exp), throws_out.append(exp)),
+            observer=observer, on_experience=_on_row(memory, learner, throws_out),
             observations=observations,
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
 
@@ -1909,7 +2301,7 @@ class SkillsGate:
         -- self-toss's single site is unchanged, a hop alternates P1/P2).
 
         Policy **A**: single-throw attempts (``n_throws=1``, THROW -> CATCH ->
-        REST) until the memory holds ``learner_cfg.k_min`` rows, then chained.
+        REST) until the memory holds :data:`POLICY_A_MIN_ROWS` rows, then chained.
         Policy **B**: chained from the very first throw.  Both retain the
         memory across every reset -- only the plant and the executor are cold
         each attempt.  Unchanged by ``pattern``: the memory's ``x`` carries
@@ -1923,10 +2315,9 @@ class SkillsGate:
             raise ValueError("policy must be 'A' or 'B', got %r" % (policy,))
         cfg: SelfTossGateConfig = self.cfg
         pattern_sites = _sites_for(cfg)
-        boxes = _load_admissible_boxes(cfg.admissible_box_path)
         noise = JuggleNoise(cfg.noise, seed=seed)
         tmp_dir = tempfile.mkdtemp(prefix='skills_gate_learn_seed%d_' % seed)
-        memory = mem.Memory(os.path.join(tmp_dir, 'memory.csv'))
+        memory = mem.Memory(os.path.join(tmp_dir, 'memory_v2.csv'))
         assert len(memory) == 0, 'a fresh tmp path must be a cold memory'
 
         throws: list = []
@@ -1943,14 +2334,14 @@ class SkillsGate:
 
         while len(throws) < cfg.target_throws and attempts < cfg.max_attempts:
             remaining = cfg.target_throws - len(throws)
-            if policy == 'A' and len(memory) < cfg.learner_cfg.k_min:
+            if policy == 'A' and len(memory) < POLICY_A_MIN_ROWS:
                 n_throws = 1
             else:
                 n_throws = max(1, remaining)
             attempts += 1
             end_code, loop, ictx = self.run_self_toss_attempt(
                 pattern_sites=pattern_sites, n_throws=n_throws, memory=memory,
-                learner_cfg=cfg.learner_cfg, boxes=boxes, noise=noise,
+                learner_cfg=cfg.learner_cfg, noise=noise,
                 throws_out=throws, reports_out=reports,
                 lines_out=executor_lines)
             end_codes.append(end_code)
@@ -2054,16 +2445,11 @@ class SkillsGate:
         toward site 1 (A's site), not site 0 itself. The vertical
         (non-FEED) spawn above is NOT swapped -- A still rests at site 0,
         B still feeds site 1, exactly as before the FEED option existed.
-        The learner (:class:`_MemoryLearner`)
-        replaces the identity prior; the box lookup is BYPASSED
-        (``boxes=None``): the committed 'columns' box entries are
-        EMPTY/NaN as swept for this rung (``config/generated/
-        admissible_box.yaml``, gate hash stale against a concurrent planner
-        sweep besides) -- with ``boxes=None`` the learner's raw command
-        reaches the planner unclipped (``executor._command_u``: the
-        box-refusal branch only runs when ``self.boxes is not None``), so a
-        genuinely bad command is caught by the PLANNER's own refusal, not
-        silently clipped into a box nobody swept. ``resend_max_per_catch=0``
+        The learner (:func:`_make_learner`)
+        replaces the identity prior; there is NO checker on this run:
+        the learner's authority-clipped command reaches the planner as is
+        (``executor._command_u``, no-checker path), so a genuinely bad command
+        is caught by the PLANNER's own refusal. ``resend_max_per_catch=0``
         for this two-site pattern (owner decision 2026-09-29): a catch
         re-send of an ordinary (non-carried) pair releases from the RE-AIMED
         cup position (``executor._catch_terminal``), and the fly-back that
@@ -2316,7 +2702,7 @@ class SkillsGate:
         ictx = _InstallCtx(rest0)
         installer = _make_installer(ictx, self.seg_cfg, self.limits, geom,
                                     on_release=on_release)
-        learner = _MemoryLearner(memory, learner_cfg)
+        learner = _make_learner(memory, learner_cfg)
         # ``_make_observer`` takes ``ball_id`` as an argument (unlike
         # ``_make_observations``, which hardcodes ball 0) -- it is already
         # correct for columns' two simultaneous balls without change. This
@@ -2330,10 +2716,10 @@ class SkillsGate:
             sched, installer, tracker=identity.tracker,
             **_bump_kwargs(sched, ictx, self.limits, geom),
             catch_aim_source=self.cfg.catch_aim_source,
-            learner=learner, boxes=None, resend_max_per_catch=0,
+            learner=learner, resend_max_per_catch=0,
+            **_online_kwargs(self.cfg, ictx, self.seg_cfg, self.limits, geom),
             observer=observer,
-            on_experience=lambda exp: (
-                memory.append(exp), throws_out.append(exp)),
+            on_experience=_on_row(memory, learner, throws_out),
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
 
         # A generous, bounded timeout -- the real exit is ``executor.done``
@@ -2357,7 +2743,7 @@ class SkillsGate:
         first throw (there is no policy-A single-throw stage here: a
         columns schedule needs ball B already in flight from the first
         instant, so there is no "cold, one throw" shape to gate on
-        ``learner_cfg.k_min`` the way a single-ball self-toss has).
+        :data:`POLICY_A_MIN_ROWS` the way a single-ball self-toss has).
 
         Each attempt's schedule carries the columns Stop (owner decision D2)
         as its LAST throw, which produces no experience row (see
@@ -2380,7 +2766,7 @@ class SkillsGate:
         noise = JuggleNoise(cfg.noise, seed=seed)
         tmp_dir = tempfile.mkdtemp(
             prefix='skills_gate_columns_learn_seed%d_' % seed)
-        memory = mem.Memory(os.path.join(tmp_dir, 'memory.csv'))
+        memory = mem.Memory(os.path.join(tmp_dir, 'memory_v2.csv'))
         assert len(memory) == 0, 'a fresh tmp path must be a cold memory'
 
         throws: list = []
@@ -2541,7 +2927,7 @@ class SkillsGate:
         noise = JuggleNoise(cfg.noise, seed=seed)
         tmp_dir = tempfile.mkdtemp(
             prefix='skills_gate_columns1ballfed_seed%d_' % seed)
-        memory = mem.Memory(os.path.join(tmp_dir, 'memory.csv'))
+        memory = mem.Memory(os.path.join(tmp_dir, 'memory_v2.csv'))
         assert len(memory) == 0, 'a fresh tmp path must be a cold memory'
 
         throws: list = []
@@ -2829,16 +3215,16 @@ class SkillsGate:
         ictx = _InstallCtx(rest0)
         installer = _make_installer(ictx, self.seg_cfg, self.limits, geom,
                                     on_release=on_release)
-        learner = _MemoryLearner(memory, learner_cfg)
+        learner = _make_learner(memory, learner_cfg)
         observer = _make_observer(plant)
         executor = ex.SkillExecutor(
             sched, installer, tracker=identity.tracker,
             **_bump_kwargs(sched, ictx, self.limits, geom),
             catch_aim_source=self.cfg.catch_aim_source,
-            learner=learner, boxes=None, resend_max_per_catch=0,
+            learner=learner, resend_max_per_catch=0,
+            **_online_kwargs(self.cfg, ictx, self.seg_cfg, self.limits, geom),
             observer=observer,
-            on_experience=lambda exp: (
-                memory.append(exp), throws_out.append(exp)),
+            on_experience=_on_row(memory, learner, throws_out),
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
 
         # A generous, bounded timeout -- the real exit is `executor.done`
@@ -2882,7 +3268,7 @@ class SkillsGate:
         noise = JuggleNoise(cfg.noise, seed=seed)
         tmp_dir = tempfile.mkdtemp(
             prefix='skills_gate_columns1ball_seed%d_' % seed)
-        memory = mem.Memory(os.path.join(tmp_dir, 'memory.csv'))
+        memory = mem.Memory(os.path.join(tmp_dir, 'memory_v2.csv'))
         assert len(memory) == 0, 'a fresh tmp path must be a cold memory'
 
         throws: list = []
@@ -3175,7 +3561,7 @@ class SkillsGate:
         """One seed of the R4 reload gate (Unit U3, brief step 5): a SINGLE
         attempt -- no cheap-reset chaining like :meth:`run_self_toss_seed`,
         because this gate is about the reload CHOREOGRAPHY capturing the
-        externally-thrown ball, not learner convergence (no learner/boxes
+        externally-thrown ball, not learner convergence (no learner/checker
         are wired -- the pattern's continuation throws run open-loop, ``u =
         y_d``, the R2-and-earlier behaviour). PASS = the schedule's one
         reload CATCH is a make (kinematic capture) with zero pump rejects
@@ -3232,6 +3618,8 @@ class SkillsGate:
             },
             'trials': [r.to_dict() for r in results],
         }
+        if self.cfg.beat_change is not None:
+            report['beat_change'] = dict(self.cfg.beat_change)
         path = self.cfg.report_path
         if path is None:
             out_dir = os.path.join(_repo_root, 'temp', 'reports')
@@ -3336,7 +3724,7 @@ def run_reload_gate(cfg: SelfTossGateConfig = None,
     ``SelfTossGateConfig`` (the R3 self-toss operating point: apex 0.9 m,
     dwell 0.30 s, sitting limits 300/5000/200000/3500) -- the reload's own
     tail throws are kinematically ordinary self-toss throws at the SAME
-    site (`compile_reload`'s own docstring), so this is the right box/limit
+    site (`compile_reload`'s own docstring), so this is the right limit
     point for them, not a third one."""
     cfg = SelfTossGateConfig() if cfg is None else cfg
     gate = SkillsGate(cfg)
@@ -3451,6 +3839,67 @@ def _print_table(rep: dict) -> None:
     print('[skills_gate] %s' % _bump_stats_line())
 
 
+#: ``--nominate`` per-pattern defaults (apex m, separation mm, dwell s): the
+#: sim gate's ``--learn`` branch, the GUI Juggle panel's ``PATTERN_POINTS``.
+_NOMINATE_DEFAULTS = {
+    'self_toss':         (0.9, _SELF_TOSS_SEPARATION_MM, 0.27),
+    'hop':               (0.9, _HOP_SEPARATION_MM, 0.27),
+    'columns':           (0.95, 125.0, 0.27),
+    'columns_1ball':     (0.95, 125.0, 0.27),
+    'columns_1ball_fed': (0.95, 125.0, 0.27),
+    'columns_turned':    (0.95, 125.0, 0.27),
+    'columns_highlow':   (1.0, 100.0, 0.27),
+    'oval_1ball':        (0.95, _OVAL_SEPARATION_MM, _OVAL_DWELL_S),
+    'oval_1ball_fed':    (0.95, _OVAL_SEPARATION_MM, _OVAL_DWELL_S),
+}
+_NOMINATE_DEFAULTS_HELP = '; '.join(
+    '%s %g/%g/%g' % ((k,) + v) for k, v in _NOMINATE_DEFAULTS.items()
+) + '; columns_highlow apex-ball2 0.9; columns_turned angle 45'
+_PATTERN_CHOICES = tuple(_NOMINATE_DEFAULTS)
+
+
+def _main_nominate(p, args) -> int:
+    """``--nominate``: print the nomination verdict, exit 0 viable / 1 refused."""
+    from jugglebot.motion.skills import nominate as nom
+    bad = [n for n, on in (('--learn', args.learn), ('--reload', args.reload),
+                           ('--seeds', args.seeds is not None),
+                           ('--viewer', args.viewer)) if on]
+    if bad:
+        p.error('--nominate runs no simulation; it cannot combine with '
+                + ', '.join(bad))
+    pattern = args.pattern or 'columns'
+    if pattern not in _NOMINATE_DEFAULTS:
+        p.error('--pattern %s is not nominable' % pattern)
+    apex, sep, dwell = _NOMINATE_DEFAULTS[pattern]
+    if args.apex_ball2 is not None and pattern != 'columns_highlow':
+        p.error('--apex-ball2 only applies to --pattern columns_highlow')
+    ball2 = (args.apex_ball2 if args.apex_ball2 is not None else 0.9
+             ) if pattern == 'columns_highlow' else None
+    angle = args.angle_deg
+    if pattern == 'columns_turned' and not angle:
+        angle = 45.0
+    if angle and pattern != 'columns_turned':
+        p.error('--angle-deg only applies to --pattern columns_turned '
+                'under --nominate')
+    cfg = nom.NominationConfig(
+        pattern=pattern,
+        apex_m=float(args.apex_m if args.apex_m is not None else apex),
+        separation_mm=float(args.separation_mm if args.separation_mm
+                            is not None else sep),
+        dwell_s=float(args.dwell_s if args.dwell_s is not None else dwell),
+        apex_m_ball2=ball2, angle_deg=float(angle),
+        planner_mode=args.planner_mode,
+        carry_zvd=(args.carry_zvd == 'true'),
+        n_throws=args.n_throws)
+    limits = (nom.sitting_limits(*args.limits) if args.limits is not None
+              else nom.default_limits())
+    rep = nom.nominate(cfg, limits, search=not args.no_search)
+    print(rep.summary())
+    for line in rep.lines():
+        print(line)
+    return 0 if rep.ok else 1
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     p.add_argument('--seeds', type=int, nargs='+', default=None,
@@ -3463,8 +3912,7 @@ def main(argv=None) -> int:
     p.add_argument('--report', default=None)
     p.add_argument('--angle-deg', type=float, default=0.0,
                    help='JP-10: turn the columns Site pair by this angle '
-                        '(deg) about the origin; needs a box swept with '
-                        'admissible_sweep --angle-deg (pose planner)')
+                        '(deg) about the origin (pose planner)')
     p.add_argument('--separation-mm', type=float, default=None,
                    help='site separation (default: the operating point -- '
                         '100 mm columns/self_toss, 250 mm --learn --pattern hop)')
@@ -3481,14 +3929,11 @@ def main(argv=None) -> int:
                         'criterion wants >= 30, plan § R5)')
     p.add_argument('--planner-mode', choices=uc.PLANNER_MODES,
                    default=uc.PLANNER_MODE_DEFAULT,
-                   help='the segment planner this run plans with and selects '
-                        'admissible boxes under (level | pose); the box '
-                        'file must carry cells swept under it')
+                   help='the segment planner this run plans with (level | pose)')
     p.add_argument('--carry-zvd', choices=('true', 'false'),
                    default=str(CARRY_ZVD_DEFAULT).lower(),
                    help="the pose planner's ZVD ring rows (carry-ring-zvd); "
-                        'plans with it and selects boxes stamped with it '
-                        '(inert under --planner-mode level)')
+                        'plans with it (inert under --planner-mode level)')
     p.add_argument('--pre-release-hold-s', type=float, default=None,
                    help='--learn only: override SegmentConfig.pre_release_hold_s '
                         '(s, in [0, 0.25]; default = the production value)')
@@ -3504,14 +3949,32 @@ def main(argv=None) -> int:
                    help='run the R3/R4/R5 sim-validation learner run (plan '
                         '§ 4 R3; R4 Unit U7a; R5 Unit G) instead of the R2 '
                         'identity-prior columns gate')
-    p.add_argument('--pattern', choices=('self_toss', 'hop', 'columns', 'oval_1ball'),
-                   default='self_toss',
-                   help='--learn only: self_toss (R3, 1 site, P1), hop '
-                        '(R4, 2 sites, P1<->P2, Unit U7a) or columns (R5, '
-                        'both sites + the Stop, Unit G, --policy ignored)')
+    p.add_argument('--pattern', choices=_PATTERN_CHOICES, default=None,
+                   help='--learn: self_toss (R3, 1 site, P1; the default), '
+                        'hop (R4, 2 sites, P1<->P2, Unit U7a), columns (R5, '
+                        'both sites + the Stop, Unit G, --policy ignored) or '
+                        'oval_1ball; --nominate: any of the nominable '
+                        'patterns (default columns)')
+    p.add_argument('--nominate', action='store_true',
+                   help='P3b: run the admissibility NOMINATION for the '
+                        'pattern / goal given by --pattern --apex-m '
+                        '[--apex-ball2] --separation-mm --dwell-s '
+                        '[--angle-deg] --planner-mode --carry-zvd and print '
+                        'its verdict (summary line, then the refusal lines '
+                        'and the nearest viable configuration); exit 0 viable, '
+                        '1 refused. No simulation, no ROS, no viewer. Flags '
+                        'not given default per pattern (apex / separation mm '
+                        '/ dwell s): ' + _NOMINATE_DEFAULTS_HELP)
+    p.add_argument('--limits', type=float, nargs=4, default=None,
+                   metavar=('VEL', 'ACC', 'JERK', 'HAND_ACC'),
+                   help='--nominate only: leg vel mm/s, leg acc mm/s^2, leg '
+                        'jerk mm/s^3 and Hand acc rev/s^2 to judge against '
+                        "(default: hardware_config's working point)")
+    p.add_argument('--no-search', action='store_true',
+                   help='--nominate only: skip the nearest-viable search')
     p.add_argument('--policy', choices=('A', 'B'), default='A',
                    help='--learn only: A = single-throw attempts until '
-                        'k_min rows then chained (the gated policy); B = '
+                        'POLICY_A_MIN_ROWS (2) rows then chained (the gated policy); B = '
                         'chained from the first throw (reported alongside)')
     p.add_argument('--reload', action='store_true',
                    help='run the R4 reload gate (Unit U3, brief step 5): a '
@@ -3572,7 +4035,7 @@ def main(argv=None) -> int:
                         'SelfTossGateConfig.plant_landing_bias_mm -- every '
                         'release LANDS this (x, y) mm from its aimed '
                         'landing, so the learner fit gains support and the '
-                        'executor forward clip (BOX-EXPECTED-LANDING) fires '
+                        'executor online check (I-ADMIT-1; formerly the forward clip) fires '
                         '(default 0 0: no behaviour change)')
     p.add_argument('--correlator', choices=('fixed', 'head'), default=None,
                    help='--learn only: which tracker-correlation rule '
@@ -3582,13 +4045,16 @@ def main(argv=None) -> int:
                         'association fix. \'head\': the pre-fix exclusion '
                         'rule -- the negative control that must reproduce '
                         'WINDOW_TOO_SHORT on fed columns.')
+    p.add_argument('--beat-change', default=None, metavar='SPEC',
+                   help='plain two-ball Columns gate only (P4, D-P4-7): '
+                        'change the running pattern\'s beat once, requested '
+                        'when Throw K-1 is released. SPEC = throw=K,apex=A | '
+                        'throw=K,dwell=D | throw=K,apex=A,dwell=D (optional '
+                        'apex2=B for ball 2); K >= 3')
     p.add_argument('--dwell-s', type=float, default=None,
                    help='--learn only: override SelfTossGateConfig.dwell_s '
                         '(default 0.25). Use this to pin the dwell this run '
-                        'plans at to the admissible box\'s OWN swept dwell '
-                        '(config/generated/admissible_box.yaml\'s dwell_s) '
-                        'when the two differ and a box-dwell mismatch '
-                        'matters to the caller.')
+                        'plans at.')
     p.add_argument('--one-ball', action='store_true',
                    help='--learn --pattern columns only (B2b): run the '
                         'columns_1ball trial -- ball A real, ball B a '
@@ -3611,6 +4077,27 @@ def main(argv=None) -> int:
                         'mutually exclusive with --one-ball')
     args = p.parse_args(argv)
 
+    beat_spec = None
+    if args.beat_change is not None:
+        bad = [n for n, on in (
+            ('--nominate', args.nominate), ('--learn', args.learn),
+            ('--reload', args.reload), ('--one-ball', args.one_ball),
+            ('--one-ball-fed', args.one_ball_fed),
+            ('--feed-angle-deg', args.feed_angle_deg is not None)) if on]
+        if bad:
+            p.error('--beat-change runs the plain two-ball Columns gate only; '
+                    'it cannot combine with ' + ', '.join(bad))
+        try:
+            beat_spec = parse_beat_change(args.beat_change)
+        except ValueError as exc:
+            p.error(str(exc))
+    if args.nominate:
+        return _main_nominate(p, args)
+    if args.limits is not None or args.no_search:
+        p.error('--limits / --no-search only apply to --nominate')
+    if args.pattern is None:
+        args.pattern = 'self_toss'
+
     if args.apex_ball2 is not None and (
             args.reload or args.learn or args.one_ball or args.one_ball_fed
             or args.feed_angle_deg is not None):
@@ -3619,7 +4106,7 @@ def main(argv=None) -> int:
     if args.plant_bias_xy is not None and (not args.learn
                                            or args.pattern == 'columns'):
         # The columns, reload and plain gate runs build their executor with
-        # boxes=None, so the field is never read there (JB-32 audit).
+        # no checker, so the field is never read there (JB-32 audit).
         p.error('--plant-bias-xy only applies to --learn --pattern '
                 'self_toss, hop or oval_1ball')
 
@@ -3739,6 +4226,13 @@ def main(argv=None) -> int:
         cfg.apex_m = float(args.apex_m)
     if args.apex_ball2 is not None:
         cfg.apex_m_ball2 = float(args.apex_ball2)
+    if beat_spec is not None:
+        if beat_spec['throw'] > cfg.n_throws - 1:
+            p.error('--beat-change throw=%d needs a stream of at least %d '
+                    'Throws (--n-throws is %d)'
+                    % (beat_spec['throw'], beat_spec['throw'] + 1,
+                       cfg.n_throws))
+        cfg.beat_change = beat_spec
 
     rep = run_gate(cfg, viewer_speed=(args.viewer_speed if args.viewer
                                       else None))

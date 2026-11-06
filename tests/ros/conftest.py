@@ -638,6 +638,8 @@ class InstallSegment:
             self.planner_mode = ''
             # carry-ring-zvd P1c (JB-102).
             self.carry_zvd = False
+            # P3a: plan only, install nothing (rosidl default false).
+            self.check_only = False
 
     Response = _make_service(
         resp_fields={'accepted': False, 'code': '', 'message': '',
@@ -648,7 +650,8 @@ class InstallSegment:
                      'carry_zvd': False,
                      'terminal': False,
                      'release_offset_xy_mm': [0.0, 0.0],
-                     'launch_bias_xy_mm_s': [0.0, 0.0]}).Response
+                     'launch_bias_xy_mm_s': [0.0, 0.0],
+                     'margin': float('nan')}).Response
 
 
 class TimedTarget:

@@ -73,7 +73,7 @@
       },
       "can": {
         "bus_voltage_msg_rate_ms": 500,
-        "encoder_msg_rate_ms": 10,
+        "encoder_msg_rate_ms": 9,
         "error_msg_rate_ms": 20,
         "heartbeat_msg_rate_ms": 100,
         "input_torque_scale": 1000,

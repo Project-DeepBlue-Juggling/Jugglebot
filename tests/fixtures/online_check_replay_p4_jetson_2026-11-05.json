@@ -1,0 +1,458 @@
+{
+ "limits": [
+  600.0,
+  8000.0,
+  200000.0,
+  4500.0
+ ],
+ "mode": "pose",
+ "corpus": {
+  "rows": 3276,
+  "pattern_apex": null,
+  "distinct_cells": 87,
+  "verdict": {
+   "SKIPPED_HOP_SITE": 175,
+   "OK": 3099,
+   "MARGIN": 2
+  },
+  "seed_failures": {},
+  "margin_p01": 0.055232281437232335,
+  "margin_p50": 0.2433843003903053,
+  "wall_s": 137.06839260598645,
+  "ms_per_row": 41.84016868314605
+ },
+ "two_solve": [
+  {
+   "apex": 0.95,
+   "r": 10.0,
+   "ang": 0,
+   "candidate_code": "OK",
+   "candidate_m": 0.3332659469989755,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 0.95,
+   "r": 10.0,
+   "ang": 45,
+   "candidate_code": "OK",
+   "candidate_m": 0.35164122887278054,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 0.95,
+   "r": 10.0,
+   "ang": 90,
+   "candidate_code": "OK",
+   "candidate_m": 0.3878048398859429,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 0.95,
+   "r": 10.0,
+   "ang": 135,
+   "candidate_code": "OK",
+   "candidate_m": 0.42057044673041566,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 0.95,
+   "r": 10.0,
+   "ang": 180,
+   "candidate_code": "OK",
+   "candidate_m": 0.43073519808470884,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 0.95,
+   "r": 10.0,
+   "ang": 225,
+   "candidate_code": "OK",
+   "candidate_m": 0.41234671867011075,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 0.95,
+   "r": 10.0,
+   "ang": 270,
+   "candidate_code": "OK",
+   "candidate_m": 0.3761867573647865,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 0.95,
+   "r": 10.0,
+   "ang": 315,
+   "candidate_code": "OK",
+   "candidate_m": 0.34343482674453224,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 0.95,
+   "r": 20.0,
+   "ang": 0,
+   "candidate_code": "OK",
+   "candidate_m": 0.2845498861079615,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 0.95,
+   "r": 20.0,
+   "ang": 45,
+   "candidate_code": "OK",
+   "candidate_m": 0.3212835476270116,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 0.95,
+   "r": 20.0,
+   "ang": 90,
+   "candidate_code": "OK",
+   "candidate_m": 0.3936183930507147,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 0.95,
+   "r": 20.0,
+   "ang": 135,
+   "candidate_code": "OK",
+   "candidate_m": 0.45916463586260475,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 0.95,
+   "r": 20.0,
+   "ang": 180,
+   "candidate_code": "OK",
+   "candidate_m": 0.4794920086919783,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 0.95,
+   "r": 20.0,
+   "ang": 225,
+   "candidate_code": "OK",
+   "candidate_m": 0.44270098223426346,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 0.95,
+   "r": 20.0,
+   "ang": 270,
+   "candidate_code": "OK",
+   "candidate_m": 0.37038014463052354,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 0.95,
+   "r": 20.0,
+   "ang": 315,
+   "candidate_code": "OK",
+   "candidate_m": 0.3048884439042057,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 0.95,
+   "r": 30.0,
+   "ang": 0,
+   "candidate_code": "OK",
+   "candidate_m": 0.24933847056083516,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 0.95,
+   "r": 30.0,
+   "ang": 45,
+   "candidate_code": "OK",
+   "candidate_m": 0.2909254948078482,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 0.95,
+   "r": 30.0,
+   "ang": 90,
+   "candidate_code": "OK",
+   "candidate_m": 0.3994322855040471,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 0.95,
+   "r": 30.0,
+   "ang": 135,
+   "candidate_code": "OK",
+   "candidate_m": 0.49777704053491306,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 0.95,
+   "r": 30.0,
+   "ang": 180,
+   "candidate_code": "OK",
+   "candidate_m": 0.5282656989442215,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 0.95,
+   "r": 30.0,
+   "ang": 225,
+   "candidate_code": "OK",
+   "candidate_m": 0.4730586278929443,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 0.95,
+   "r": 30.0,
+   "ang": 270,
+   "candidate_code": "OK",
+   "candidate_m": 0.36456349716378583,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 0.95,
+   "r": 30.0,
+   "ang": 315,
+   "candidate_code": "OK",
+   "candidate_m": 0.2663602126659221,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 1.05,
+   "r": 10.0,
+   "ang": 0,
+   "candidate_code": "OK",
+   "candidate_m": 0.43387578652557734,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 1.05,
+   "r": 10.0,
+   "ang": 45,
+   "candidate_code": "OK",
+   "candidate_m": 0.4443011481336256,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 1.05,
+   "r": 10.0,
+   "ang": 90,
+   "candidate_code": "OK",
+   "candidate_m": 0.47871448452452314,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 1.05,
+   "r": 10.0,
+   "ang": 135,
+   "candidate_code": "OK",
+   "candidate_m": 0.5170775517043698,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 1.05,
+   "r": 10.0,
+   "ang": 180,
+   "candidate_code": "OK",
+   "candidate_m": 0.523326521905591,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 1.05,
+   "r": 10.0,
+   "ang": 225,
+   "candidate_code": "OK",
+   "candidate_m": 0.5079975435098474,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 1.05,
+   "r": 10.0,
+   "ang": 270,
+   "candidate_code": "OK",
+   "candidate_m": 0.48042680008191213,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 1.05,
+   "r": 10.0,
+   "ang": 315,
+   "candidate_code": "OK",
+   "candidate_m": 0.4534790911785179,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 1.05,
+   "r": 20.0,
+   "ang": 0,
+   "candidate_code": "OK",
+   "candidate_m": 0.3800648183713131,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 1.05,
+   "r": 20.0,
+   "ang": 45,
+   "candidate_code": "OK",
+   "candidate_m": 0.4011445766915434,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 1.05,
+   "r": 20.0,
+   "ang": 90,
+   "candidate_code": "OK",
+   "candidate_m": 0.4697877277671119,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 1.05,
+   "r": 20.0,
+   "ang": 135,
+   "candidate_code": "OK",
+   "candidate_m": 0.546592737875585,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 1.05,
+   "r": 20.0,
+   "ang": 180,
+   "candidate_code": "OK",
+   "candidate_m": 0.5611274084556563,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 1.05,
+   "r": 20.0,
+   "ang": 225,
+   "candidate_code": "OK",
+   "candidate_m": 0.5305686629389419,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 1.05,
+   "r": 20.0,
+   "ang": 270,
+   "candidate_code": "OK",
+   "candidate_m": 0.4754784441941066,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 1.05,
+   "r": 20.0,
+   "ang": 315,
+   "candidate_code": "OK",
+   "candidate_m": 0.4191986514891536,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 1.05,
+   "r": 30.0,
+   "ang": 0,
+   "candidate_code": "OK",
+   "candidate_m": 0.32466068450494634,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 1.05,
+   "r": 30.0,
+   "ang": 45,
+   "candidate_code": "OK",
+   "candidate_m": 0.3562253696068845,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 1.05,
+   "r": 30.0,
+   "ang": 90,
+   "candidate_code": "OK",
+   "candidate_m": 0.45925908957725786,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 1.05,
+   "r": 30.0,
+   "ang": 135,
+   "candidate_code": "OK",
+   "candidate_m": 0.5745676774381283,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 1.05,
+   "r": 30.0,
+   "ang": 180,
+   "candidate_code": "OK",
+   "candidate_m": 0.5998637469004158,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 1.05,
+   "r": 30.0,
+   "ang": 225,
+   "candidate_code": "OK",
+   "candidate_m": 0.5542785242875317,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 1.05,
+   "r": 30.0,
+   "ang": 270,
+   "candidate_code": "OK",
+   "candidate_m": 0.47172521936003536,
+   "real_solves": 1,
+   "result": "candidate passes"
+  },
+  {
+   "apex": 1.05,
+   "r": 30.0,
+   "ang": 315,
+   "candidate_code": "OK",
+   "candidate_m": 0.3830757137720147,
+   "real_solves": 1,
+   "result": "candidate passes"
+  }
+ ]
+}

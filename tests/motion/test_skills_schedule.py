@@ -1703,8 +1703,8 @@ def test_compile_reload_dispatch_is_monotone_non_decreasing(site):
 def test_compile_reload_pattern_label_reuses_the_swept_self_toss_hop_box(site):
     """``Schedule.pattern`` must stay ``'self_toss'``/``'hop'`` — NOT a third
     label — because every THROW a reload schedules is kinematically an
-    ordinary self-toss/hop throw and that is the box actually swept
-    (`tools/admissible_sweep.py` sweeps no 'reload' box at R4)."""
+    ordinary self-toss/hop throw and that label is the one planned
+    (until 2026-11-06 the box actually swept; no 'reload' box was ever swept)."""
     landing_mm, landing_vel, t_land_abs, pattern, t0 = _reload_args(site)
     schedule = sc.compile_reload(landing_mm, landing_vel, t_land_abs, pattern, t0)
     assert schedule.pattern == 'self_toss'
@@ -2161,3 +2161,87 @@ def test_high_low_refuses_a_low_ball_with_no_transit_by_name():
 def test_pattern_refuses_a_non_positive_ball_b_apex():
     with pytest.raises(ValueError, match='apex_m_ball_b'):
         _hl_pattern(0.95, 0.0)
+
+
+# ── P3b: the shared splice predicate and the nominal-Segment iterator ───────
+
+def test_splices_at_release_is_base_at_or_before_the_release():
+    """``splices_at_release``: the ONE rule ``_assign_leads`` (handoff lead)
+    and ``nominal_segments`` (seed from a release) share.  Base =
+    ``t_abs_s - window_s``; at or before the release (1e-9 s) splices, after
+    it does not, and nothing released yet never splices."""
+    site = st.columns_sites(100.0)[0]
+    sk = sc.Skill(kind=sc.CATCH, ball_id=0, site=site, t_abs_s=10.0,
+                  window_s=0.4)
+    assert not sc.splices_at_release(sk, None)
+    assert sc.splices_at_release(sk, 9.6)
+    assert sc.splices_at_release(sk, 9.6 - 0.5e-9)
+    assert sc.splices_at_release(sk, 9.7)
+    assert not sc.splices_at_release(sk, 9.6 - 1e-6)
+
+
+def _p3b_schedules():
+    cols = st.columns_sites(125.0)
+    pat = sc.Pattern(sites=cols, apex_m=0.95, dwell_s=0.27, n_throws=5)
+    hl = sc.Pattern(sites=cols, apex_m=1.0, dwell_s=0.27, n_throws=5,
+                    apex_m_ball_b=0.9)
+    one = st.columns_sites(150.0)
+    return {
+        'columns': sc.compile_columns(pat, t0_abs_s=10.0),
+        'columns_hop_entry': sc.compile_columns(pat, feed=_feed_for(cols, pat),
+                                                hop_entry=True),
+        'columns_highlow': sc.compile_columns(hl, t0_abs_s=10.0),
+        'columns_1ball': sc.compile_columns(dataclasses.replace(
+            pat, phantom_balls=(1,)), t0_abs_s=10.0),
+        'hop': sc.compile_one_ball(sc.OneBallPattern(
+            sites=cols, apex_m=0.9, dwell_s=0.27, n_throws=5), 10.0),
+        'oval': sc.compile_one_ball(sc.OneBallPattern(
+            sites=one, apex_m=0.95, dwell_s=0.65, n_throws=3, roles='fixed'), 10.0),
+        'self_toss': sc.compile_one_ball(sc.OneBallPattern(
+            sites=(cols[0],), apex_m=0.9, dwell_s=0.27, n_throws=3), 10.0),
+    }
+
+
+@pytest.mark.parametrize('name', sorted(_p3b_schedules()))
+def test_nominal_segments_seed_from_exactly_where_the_handoff_lead_goes(name):
+    """Every Skill once, in order; ``seed_from`` set iff the compiled Skill
+    carries ``HANDOFF_LEAD_S`` (one predicate, so a drift between the walker's
+    seed and the dispatch lead is impossible -- this pins that they are the
+    same rule), and ``seed_from`` names an EARLIER Skill that releases at or
+    after this Segment's base."""
+    schedule = _p3b_schedules()[name]
+    walk = sc.nominal_segments(schedule)
+    assert [ns.idx for ns in walk] == list(range(len(schedule.skills)))
+    assert [ns.skill for ns in walk] == list(schedule.skills)
+    assert [ns.kind for ns in walk] == [s.kind for s in schedule.skills]
+    assert any(ns.seed_from is not None for ns in walk)
+    for ns in walk:
+        handoff = abs(ns.skill.lead_s - sc.HANDOFF_LEAD_S) < 1e-12
+        assert (ns.seed_from is not None) == handoff, (name, ns.idx)
+        if ns.seed_from is not None:
+            assert ns.seed_from < ns.idx
+            (t_rel,) = sc._release_instants(schedule.skills[ns.seed_from])
+            base = ns.skill.t_abs_s - ns.skill.window_s
+            assert base <= t_rel + 1e-9
+
+
+def test_columns_nominal_segments_chain_each_catch_to_the_previous_release(cols):
+    """Columns: THROW 0 from rest, every CATCH seeded from the Skill just
+    before it (the release it splices at), the REST from rest."""
+    schedule = sc.compile_columns(_pattern(cols, n_throws=5), t0_abs_s=10.0)
+    walk = sc.nominal_segments(schedule)
+    assert walk[0].kind == sc.THROW and walk[0].seed_from is None
+    assert walk[-1].kind == sc.REST and walk[-1].seed_from is None
+    for ns in walk[1:-1]:
+        assert ns.kind == sc.CATCH and ns.seed_from == ns.idx - 1
+
+
+def test_assign_leads_reads_the_shared_predicate(monkeypatch, cols):
+    """``_assign_leads`` has no private copy of the rule: patching
+    ``splices_at_release`` moves every lead (fail-before for a re-inlined
+    copy)."""
+    pattern = _pattern(cols, n_throws=3)
+    monkeypatch.setattr(sc, 'splices_at_release', lambda sk, t: False)
+    schedule = sc.compile_columns(pattern, t0_abs_s=10.0)
+    assert all(s.lead_s != sc.HANDOFF_LEAD_S for s in schedule.skills)
+    assert all(ns.seed_from is None for ns in sc.nominal_segments(schedule))

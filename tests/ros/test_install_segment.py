@@ -2331,7 +2331,7 @@ def test_a_bump_with_no_matching_catch_in_the_record_is_terminal():
 # ONE live switch: skill_node's `planner_mode` parameter rides on every
 # InstallSegment request and trajectory_node plans THAT segment with it; the
 # node's own SegmentConfig.planner_mode only answers a request that carries
-# none (''), so the box selected and the plan flown cannot disagree.
+# none (''), so the nomination made and the plan flown cannot disagree.
 
 def _fresh_catch_throw(node, at, mode):
     req = _catch_throw_req(at + 0.5, at + 1.0)
@@ -2445,3 +2445,155 @@ def test_the_solve_cpu_suffix_rides_inside_the_solve_phrase():
     assert tn._solve_cpu_suffix(rep) == ' (cpu 65.2 ms, ivcsw 12, vcsw 3)'
     assert tn._solve_cpu_suffix(SimpleNamespace(cpu_s=math.nan)) == ''
     assert tn._solve_cpu_suffix(SimpleNamespace()) == ''
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# P3a: `check_only` -- plan, install nothing
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _node_state(node):
+    """Everything a check must leave alone, as identity / value snapshots."""
+    return dict(cycle=node._cycle, active=node._active_plan,
+                warm=node._segment_warm_start, epoch=node._install_epoch,
+                handoff=node._handoff, streaming=node._streaming,
+                plan_t0=node._plan_t0, in_flight=node._solves_in_flight)
+
+
+def _assert_state_untouched(before, node):
+    after = _node_state(node)
+    for key in ('cycle', 'active', 'warm', 'handoff'):
+        assert after[key] is before[key], key
+    for key in ('epoch', 'streaming', 'plan_t0', 'in_flight'):
+        assert after[key] == before[key], key
+
+
+def test_a_check_on_a_streaming_record_plans_and_installs_nothing():
+    node = _solver_node(_FakeSolver())
+    with _frozen_perf() as at:
+        r1 = node._svc_install_segment(_throw_req(at + 0.6),
+                                       InstallSegment.Response())
+        assert r1.accepted is True, r1.message
+        plan1, meta1, _ = node._cycle
+        origin = at - 0.2
+        node._cycle = (plan1, meta1, origin)
+        node._plan_t0 = origin
+        _refresh(node)
+        before = _node_state(node)
+        wall_before = node._cycle_plan_wall_ms
+        req = _catch_req(at + 0.7)
+        req.check_only = True
+        resp = node._svc_install_segment(req, InstallSegment.Response())
+        # The same request as an install would have been accepted (and does
+        # install, below): a check is not a weaker planner.
+        _assert_state_untouched(before, node)
+        assert node._cycle_plan_wall_ms == wall_before
+        assert node._segment_solver.requests[-1].check is True
+        assert resp.accepted is True, resp.message
+        assert resp.code == feas.OK
+        assert math.isfinite(resp.margin)
+        # nothing was installed: install fields stay at their defaults
+        assert resp.splice_k == -1 and resp.t0_mono == 0.0
+        # and the identical request WITHOUT the flag still installs, margin NaN
+        _refresh(node)
+        req2 = _catch_req(at + 0.7)
+        inst = node._svc_install_segment(req2, InstallSegment.Response())
+    assert inst.accepted is True, inst.message
+    assert math.isnan(inst.margin)
+    assert node._active_plan is not before['active']
+    assert node._segment_solver.requests[-1].check is False
+
+
+def test_a_check_counts_as_a_solve_in_flight():
+    seen = []
+
+    def reply(req, inner):
+        seen.append(node._solves_in_flight)
+        return inner.solve(req)
+
+    node = _solver_node(_FakeSolver(reply))
+    with _frozen_perf() as at:
+        req = _throw_req(at + 0.6)
+        req.check_only = True
+        node._svc_install_segment(req, InstallSegment.Response())
+    assert seen == [1]
+    assert node._solves_in_flight == 0
+
+
+def test_a_refused_check_still_leaves_the_node_untouched_and_passes_the_code():
+    late = lambda req, _inner: sk_solver._refusal(  # noqa: E731
+        req.seq, sk_solver.SKIPPED_LATE, 'deadline passed')
+    node = _solver_node(_FakeSolver(late))
+    before = _node_state(node)
+    with _frozen_perf() as at:
+        req = _throw_req(at + 0.6)
+        req.check_only = True
+        resp = node._svc_install_segment(req, InstallSegment.Response())
+    # a check has no wire cliff of its own: NOT remapped to ORIGIN_TOO_LATE
+    assert resp.accepted is False
+    assert resp.code == sk_solver.SKIPPED_LATE
+    assert math.isnan(resp.margin)
+    _assert_state_untouched(before, node)
+
+
+def test_the_guard_ladder_refuses_a_check_with_a_nan_margin():
+    from std_msgs.msg import String
+    node = _perf_node()
+    node._on_control_mode(String(data='STANDBY'))
+    before = _node_state(node)
+    with _frozen_perf() as at:
+        req = _throw_req(at + 0.6)
+        req.check_only = True
+        resp = node._svc_install_segment(req, InstallSegment.Response())
+    assert resp.accepted is False
+    assert resp.code == feas.WRONG_MODE
+    assert math.isnan(resp.margin)
+    _assert_state_untouched(before, node)
+
+
+def test_a_check_leaves_the_install_bookkeeping_but_a_real_refusal_moves_it():
+    """The ``check_only`` wrapper is conditional: a guard refusal of a CHECK
+    leaves ``_cycle_plan_wall_ms`` / ``_last_rejection`` as they were; the
+    same refusal of a real install overwrites them."""
+    from std_msgs.msg import String
+    node = _perf_node()
+    node._on_control_mode(String(data='STANDBY'))
+    node._cycle_plan_wall_ms = 123.0
+    node._last_rejection = 'sentinel'
+    with _frozen_perf() as at:
+        req = _throw_req(at + 0.6)
+        req.check_only = True
+        resp = node._svc_install_segment(req, InstallSegment.Response())
+        assert resp.code == feas.WRONG_MODE
+        assert node._cycle_plan_wall_ms == 123.0
+        assert node._last_rejection == 'sentinel'
+        resp = node._svc_install_segment(_throw_req(at + 0.6),
+                                         InstallSegment.Response())
+    assert resp.accepted is False and resp.code == feas.WRONG_MODE
+    assert node._last_rejection != 'sentinel'
+    assert node._last_rejection == resp.message
+    assert node._cycle_plan_wall_ms != 123.0
+
+
+def test_a_default_request_is_unchanged_and_replies_a_nan_margin():
+    node = _perf_node()
+    with _frozen_perf() as at:
+        resp = node._svc_install_segment(_throw_req(at + 0.6),
+                                         InstallSegment.Response())
+    assert resp.accepted is True, resp.message
+    assert math.isnan(resp.margin)
+    assert node._cycle is not None
+
+
+def test_check_only_on_a_bump_is_refused_by_name_and_solves_nothing():
+    solver = _FakeSolver()
+    node = _solver_node(solver)
+    before = _node_state(node)
+    req = InstallSegment.Request()
+    req.kind = req.KIND_BUMP
+    req.check_only = True
+    resp = node._svc_install_segment(req, InstallSegment.Response())
+    assert resp.accepted is False
+    assert resp.code == tn._CHECK_NOT_SUPPORTED
+    assert math.isnan(resp.margin)
+    assert solver.requests == []
+    _assert_state_untouched(before, node)

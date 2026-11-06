@@ -98,7 +98,6 @@ import sys
 import tempfile
 import time
 from datetime import datetime
-from types import SimpleNamespace
 
 _HERE = os.path.dirname(os.path.abspath(__file__))              # tests/hardware
 _REPO = os.path.dirname(os.path.dirname(_HERE))                 # repo root
@@ -115,9 +114,9 @@ from jugglebot.motion.geometry import StewartGeometry             # noqa: E402
 from jugglebot.motion.trajectory import ballistics_bc as bal       # noqa: E402
 from jugglebot.motion.trajectory.cup_realize import RealizeConfig  # noqa: E402
 from jugglebot.motion.trajectory.limits import TrajectoryLimits    # noqa: E402
-from jugglebot.motion.skills import admissible as adm              # noqa: E402
 from jugglebot.motion.skills import executor as ex                # noqa: E402
 from jugglebot.motion.skills import learner as lr                  # noqa: E402
+from jugglebot.motion.skills import plant_model as pm              # noqa: E402
 from jugglebot.motion.skills import schedule as sc                # noqa: E402
 from jugglebot.motion.skills import segments as sg                # noqa: E402
 from jugglebot.motion.skills import sites as si                   # noqa: E402
@@ -138,8 +137,7 @@ _WIRE_KIND = {sg.THROW: KIND_THROW, sg.CATCH: KIND_CATCH, sg.REST: KIND_REST}
 #: 200000 / hand 3500; since 2026-10-04 (R5 sitting 3, `logbook/2026-10-04-
 #: skill-stack-r5-sitting-3.md`) the columns geometry is apex 0.95 /
 #: separation 125 / dwell 0.27 at leg velocity 350 and hand 3900, which is
-#: what `config/generated/admissible_box.yaml` is swept at and what the
-#: sitting-4 runsheet sets with `set_limits` -- the bench must rehearse the
+#: the point the sitting-4 runsheet set with `set_limits` -- the bench must rehearse the
 #: point the robot will fly, not the one it flew in September.
 APEX_M = 0.95
 SEPARATION_MM = 125.0
@@ -152,18 +150,17 @@ SESSION_HAND_ACC_RPS2 = 3900.0
 #: The owner's R3 single-site self-toss operating point (brief_common.md § 0
 #: "Owner decisions", 2026-09-13): site P1 = the SAME (-50, 0) mm point
 #: ``columns_sites(100.0)`` names, apex/dwell/hand-acc unchanged from R2 — only
-#: the leg jerk ceiling moves, to 200 000 mm/s^3 since the R5 ramp (2026-09-30; the box swept in
-#: ``config/generated/admissible_box.yaml`` for site pair ('P1', 'P1') is
-#: swept at this jerk; a mismatch is caught loudly by ``admissible.
-#: check_limits`` rather than silently clipping against the wrong envelope).
+#: the leg jerk ceiling moves, to 200 000 mm/s^3 since the R5 ramp (2026-09-30).
+#: (Until 2026-11-06 a test pinned this to the Admissible box's swept jerk; the
+#: box is retired, and the bench now plans at these limits directly.)
 SELF_TOSS_SITE_X_MM = -50.0
 SELF_TOSS_SITE_Y_MM = 0.0
 SELF_TOSS_LEG_JERK_MMPS3 = 200000.0
 #: Cold-start policy A (brief_common.md § "Owner decisions"): single-throw
-#: attempts until the memory holds ``learner.LearnerConfig.k_min`` (2) rows.
-#: One throw per rehearsal attempt is what lets ``--attempts 3`` (the default)
-#: cross that floor and exercise the learner's post-prior command by the third
-#: attempt, entirely offline.
+#: attempts. (Until 2026-11-06 the old law needed ``k_min`` (2) rows before it
+#: left the identity; the P1 Learner's plant model moves from the first row.)
+#: One throw per rehearsal attempt lets ``--attempts 3`` (the default)
+#: exercise the learner's command changes across attempts, entirely offline.
 SELF_TOSS_DEFAULT_N_THROWS = 1
 
 #: The plan's own R3 sim-validation plant-error model (plan § R3 "Sim
@@ -916,14 +913,14 @@ def git_head() -> str:
 def rehearse_attempt(attempt: int, *, n_throws: int, jitter_mm: float,
                      limits, geom, run_t0: float, now_fn=time.perf_counter,
                      sleep_fn=time.sleep, state=None, pattern: str = 'columns',
-                     site: si.Site = None, learner=None, boxes=None,
+                     site: si.Site = None, learner=None,
                      on_experience=None, apex_m: float = APEX_M) -> tuple:
     """One rehearsed attempt, per ``probe_gate_rehearsal.py`` (verified
     2026-09-13). Returns ``(rows, meta)``.
 
     ``pattern='self-toss'`` (R3-g) runs ``schedule.compile_one_ball`` through
-    the SAME install chain — warm start, epoch clock, learner/box hooks — with
-    ``learner``/``boxes``/``on_experience`` wired into the
+    the SAME install chain — warm start, epoch clock, learner hooks — with
+    ``learner``/``on_experience`` wired into the
     :class:`~jugglebot.motion.skills.executor.SkillExecutor` exactly as
     ``SkillNode._run_one_ball`` wires them (R4, 2026-09-24: renamed from the
     deleted ``skills/start_self_toss`` Trigger service's ``_svc_start_self_
@@ -1061,7 +1058,7 @@ def rehearse_attempt(attempt: int, *, n_throws: int, jitter_mm: float,
         tracker = make_tracker(schedule, jitter_mm=jitter_mm, seed=attempt,
                                now_fn=now_fn)
     exe = ex.SkillExecutor(schedule, installer, tracker=tracker,
-                           learner=learner, boxes=boxes,
+                           learner=learner,
                            on_experience=on_experience,
                            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
     sched_rows, ended, end_code, _abort = drive_executor(
@@ -1074,47 +1071,34 @@ def rehearse_attempt(attempt: int, *, n_throws: int, jitter_mm: float,
 
 
 def _build_self_toss_context(args, limits):
-    """``(site, learner, boxes, on_experience, memory)`` for ``--pattern
-    self-toss`` — the R3 owner site, the admissible box loaded from
-    ``config/generated/admissible_box.yaml`` (unclipped, with a printed note,
-    when the file is missing or was swept under different limits — a bench
-    rehearsal should still run, just without the box's safety net offline),
-    and a FRESH, throwaway ``Memory`` under a temp directory (never the real
+    """``(site, learner, on_experience, memory)`` for ``--pattern
+    self-toss`` — the R3 owner site (no Admissible box any more: the executor
+    runs without a checker, so a learner command is the authority-clipped
+    candidate, 2026-11-06), and a FRESH, throwaway ``Memory`` under a temp directory (never the real
     session's ``temp/learn/<plant_id>/``, so re-running this bench can never
     perturb or be perturbed by a real hardware session's memory)."""
     site_x = SELF_TOSS_SITE_X_MM if args.site_x_mm is None else args.site_x_mm
     site_y = SELF_TOSS_SITE_Y_MM if args.site_y_mm is None else args.site_y_mm
     site = si.Site('P1', np.array([site_x, site_y, si.CATCH_CUP_Z_MM]))
 
-    box_path = os.path.join(_REPO, 'config', 'generated', 'admissible_box.yaml')
-    boxes = []
-    if os.path.exists(box_path):
-        try:
-            loaded = adm.load(box_path)
-            adm.check_limits(loaded, limits)
-            boxes = loaded
-        except adm.AdmissibleError as exc:
-            print('note: admissible box at %s not usable (%s) -- learner '
-                  'throws are REFUSED (NO_ADMISSIBLE_COMMAND: no box to '
-                  'clip into)' % (box_path, exc))
-    else:
-        print('note: %s does not exist -- learner throws are REFUSED '
-              '(NO_ADMISSIBLE_COMMAND: no box to clip into)' % (box_path,))
-
     tmp_dir = tempfile.mkdtemp(prefix='skills_bench_selftoss_')
-    mem_path = os.path.join(tmp_dir, 'memory.csv')
+    mem_path = os.path.join(tmp_dir, 'memory_v2.csv')
     memory = Memory(mem_path)
     print('self-toss memory (fresh, this run only): %s' % (mem_path,))
-    learner_cfg = lr.LearnerConfig()
-    learner = SimpleNamespace(command=lambda x, y_d: memory.command(x, y_d, learner_cfg))
+    # P1 (2026-11-06): the real Learner (plant model + residual memory), as
+    # skill_node's `_make_learner` builds it; the fresh memory is empty, so
+    # there is nothing to replay.
+    learner = lr.Learner(pm.PlantModel(), lr.LearnerConfig())
 
     def on_experience(exp):
         memory.append(exp)
-        print('memory row %d: x=%s u=%s y=%s caught=%s'
-              % (len(memory), exp.x.tolist(), exp.u.tolist(), exp.y.tolist(),
+        learner.observe(exp)
+        print('memory row %d: site=%s seat=%s u=%s y=%s caught=%s'
+              % (len(memory), exp.site_xy_m.tolist(),
+                 exp.seat_offset_m.tolist(), exp.u.tolist(), exp.y.tolist(),
                  exp.caught))
 
-    return site, learner, boxes, on_experience, memory
+    return site, learner, on_experience, memory
 
 
 def run_rehearse(args) -> int:
@@ -1131,9 +1115,9 @@ def run_rehearse(args) -> int:
     if args.arm == 'A' and args.jitter_mm != DEFAULT_JITTER_MM:
         print('note: arm A forces jitter to 0.0 mm (the flag is ignored)')
 
-    site = learner = boxes = on_experience = memory = None
+    site = learner = on_experience = memory = None
     if self_toss:
-        site, learner, boxes, on_experience, memory = _build_self_toss_context(
+        site, learner, on_experience, memory = _build_self_toss_context(
             args, limits)
 
     # The rehearsal runs on a WALL-CLOCK-SIZED clock: perf_counter shifted to the
@@ -1152,7 +1136,7 @@ def run_rehearse(args) -> int:
         rows, meta = rehearse_attempt(
             a, n_throws=args.n_throws, jitter_mm=jitter, limits=limits,
             geom=geom, run_t0=run_t0, now_fn=now_fn, state=shared,
-            pattern=args.pattern, site=site, learner=learner, boxes=boxes,
+            pattern=args.pattern, site=site, learner=learner,
             on_experience=on_experience, apex_m=args.apex_m)
         all_rows.extend(rows)
         attempts_meta.append(meta)
@@ -1487,8 +1471,8 @@ def run_live_action(args) -> int:
     mirror ``SkillNode._installer`` field-for-field and deliberately bypass
     skill_node entirely, for the R2/R3 gate's per-install plan-time telemetry
     — see :func:`rehearse_attempt`'s § 1b comment). This is the ONLY path
-    that exercises skill_node's own opening REST/pre-level and its box-
-    coverage refusal ladder, and the ONLY path ``--pattern hop`` runs
+    that exercises skill_node's own opening REST/pre-level and its nomination
+    refusal ladder, and the ONLY path ``--pattern hop`` runs
     through (this bench has no local ``hop`` schedule compiler — ``columns``/
     ``self-toss`` do, via :func:`build_schedule`/:func:`build_self_toss_
     schedule`, for --dry-run/--rehearse/the plain live path).
@@ -1613,7 +1597,7 @@ def run_skills_check(node) -> tuple:
     driver's own P1-P7 (which gate ``trajectory/install_segment``'s own
     preconditions on ``trajectory_node``): ``skills/check`` reports the R3
     precondition LADDER (mocap / hand / level / ball-evidence) plus the
-    admissible-box / limits status on ``skill_node`` itself, so a dress
+    nomination / limits status on ``skill_node`` itself, so a dress
     rehearsal must see BOTH refusal surfaces in one pass (Workflow Rules:
     "make gates report every refusal at once"). ``rclpy`` is imported lazily —
     this function is only ever called from the live ``--check`` path.
@@ -1659,11 +1643,8 @@ def build_parser():
     ap.add_argument('--apex-m', type=float, default=APEX_M,
                     help='self-toss apex (m); default %.2f. The 2026-09-14 '
                          'apex ladder rehearses each rung (0.5-0.9 m) with '
-                         'it -- the admissible box is selected by apex, so a '
-                         'rung with no swept box is refused '
-                         '(NO_ADMISSIBLE_COMMAND) by this bench\'s own '
-                         'executor, the same check skill_node runs before '
-                         'any motion' % APEX_M)
+                         'it -- skill_node nominates the rung before any '
+                         'motion and refuses one it cannot plan' % APEX_M)
     ap.add_argument('--site-x-mm', type=float, default=None,
                     help='self-toss site x, platform frame mm (default %.1f, '
                          'the owner P1)' % (SELF_TOSS_SITE_X_MM,))
@@ -1681,7 +1662,7 @@ def build_parser():
     ap.add_argument('--n-throws', type=int, default=None,
                     help='throws per attempt (default %d for columns, %d for '
                          'self-toss -- cold-start policy A, one throw per '
-                         'attempt until the memory crosses k_min)'
+                         'attempt)'
                         % (DEFAULT_N_THROWS, SELF_TOSS_DEFAULT_N_THROWS))
     ap.add_argument('--jitter-mm', type=float, default=DEFAULT_JITTER_MM,
                     help='arm B catch jitter (mm, default %.1f); arm A forces '
@@ -1744,10 +1725,10 @@ def main(argv=None) -> int:
                                       max_age_s=args.max_age_s)
             skills_ok, skills_msg = run_skills_check(node)
             pre.append({
-                'id': 'S1', 'name': 'skills/check (R3 ladder + admissible box)',
+                'id': 'S1', 'name': 'skills/check (R3 ladder + nomination)',
                 'ok': skills_ok, 'detail': skills_msg,
                 'fix': ('fix the named row skills/check reports (mocap / hand '
-                        '/ level / ball-evidence / box), or start skill_node '
+                        '/ level / ball-evidence / nomination), or start skill_node '
                         'if the service is unavailable'),
             })
             print_checks('PRECONDITIONS (--check)', pre)

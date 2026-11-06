@@ -98,6 +98,7 @@ The most Catches in one continuous Attempt on the robot (never the sim), per Pat
 | 2026-10-28 21:04 | 59 | 57 | drop (ABORTED_NO_RELEASE) |  |  |
 | 2026-11-02 18:20 | 58 | 58 | other (LANE_REFUSED) |  | apex_m=0.95; separation_mm=125; dwell_s=0.27; planner=pose |
 | 2026-11-02 18:21 | 65 | 64 | compute (LIMIT_VEL) |  | apex_m=0.95; separation_mm=125; dwell_s=0.27; planner=pose |
+| 2026-11-06 14:59 | 73 | 73 | other (LANE_REFUSED) |  | apex_m=1; separation_mm=125; dwell_s=0.27; planner=pose |
 
 <!-- pattern: columns_highlow balls: 2 -->
 ### Columns — high-low
@@ -119,3 +120,5 @@ The most Catches in one continuous Attempt on the robot (never the sim), per Pat
 | 2026-11-01 22:17 | 4 | 4 | drop (MISSED_CATCH) |  | apex_m=0.95; separation_mm=125; dwell_s=0.27; turned_angle_deg=90; planner=pose |
 | 2026-11-01 22:18 | 16 | 16 | other (GUARD_LATCHED) |  | apex_m=0.95; separation_mm=125; dwell_s=0.27; turned_angle_deg=90; planner=pose |
 | 2026-11-03 12:59 | 19 | 19 | completed (COMPLETED) |  | apex_m=0.95; separation_mm=125; dwell_s=0.27; turned_angle_deg=45; planner=pose |
+| 2026-11-06 16:03 | 20 | 20 | completed (COMPLETED) |  | apex_m=1; separation_mm=120; dwell_s=0.27; turned_angle_deg=90; planner=pose |
+| 2026-11-06 16:04 | 35 | 35 | drop (MISSED_CATCH) |  | apex_m=1; separation_mm=120; dwell_s=0.27; turned_angle_deg=90; planner=pose |
