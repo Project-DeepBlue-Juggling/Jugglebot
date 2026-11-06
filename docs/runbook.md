@@ -74,10 +74,10 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 ### Block 3: armed, bb-fed  (1 row, 15 min)
 
 #### JB-147 Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT)  (15 min, high, unattached)
-- why: the torque loss happened at 13-54 A so the 60 A limit does not explain the SPINOUTs and a 70 A brake is harder; this run measures whether the SPINOUT rate moves with the drive now at 70/80 A (K and limits unchanged). NOT under FW 39 (Hand C1 grace 14 ms): Apex 1.35 overruns the stroke clip by 0.93 rev on a release-knot C1 stop; wait for JB-174's hole counters before flying this row.
+- why: the torque loss happened at 13-54 A so the 60 A limit does not explain the SPINOUTs and a 70 A brake is harder; this run measures whether the SPINOUT rate moves with the drive now at 70/80 A (K and limits unchanged). Flown at Apex 1.10: nomination refuses 1.35 at accept (nearest viable 1.25), and with the Hand C1 grace at 14 ms a release-knot stop overruns the stroke clip above 1.10 (-0.50 rev at 1.25). Flying higher needs a grace decision first.
 - do:
   - Re-home the Hand first: the ODrive GUI save on 2026-11-03 (limits 70/80 A, thermistor 60/70 C) reset the zero (JB-146 class).
-  - Fly Columns, Sep. 125, Apex 1.35, Throws 21, twice, with `hand_capture` on (the 21st throw is the Stop throw, so a full Attempt reads 20/20).
+  - Fly Columns, Sep. 125, Apex 1.10, Throws 21, twice, with `hand_capture` on (the 21st throw is the Stop throw, so a full Attempt reads 20/20).
   - Stop at the FIRST SPINOUT_DETECTED or Hand iq over 66 A.
 - pass: no SPINOUT_DETECTED in either run.
 - record: per run the catches; the SPINOUT count with the Hand position, velocity and iq at the torque loss from the capture; the peak brake iq; whether the 70 A limit was in effect (an iq setpoint beyond 60 A).
@@ -110,23 +110,22 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 ### Block 6: armed, bb-fed, bridge-cycled  (2 rows, 95 min)
 
 #### JB-102 Pre-release hold rung: release from a moving Platform (hold 0.100 → 0)  (45 min, high, two-ball-oval)
-- why: carry-ring-zvd P0 could not identify the Platform mode from the bags on disk (the encoder and mocap fits disagree, 5.4 vs 4.45 Hz), so the mode is identified on the robot first and the ZVD rows (provisional 4.9 Hz / 0.20 / 20 ms) are then flown A/B against the flag-off carry. Needs bridge FW 39 (Hand C1 grace 14 ms, BridgeIdentity receipt in the launch log); under FW 39 only Apex <= 1.10 flies (release-knot C1 stop vs the clip) until JB-174 lands; this row is Apex 1.00.
+- why: the ZVD rows (mode provisional 4.9 Hz / 0.20 / 20 ms) have never flown. This A/B flies them against the flag-off carry on the oval, where carried Throws land about +59 mm long at Dwell 0.40. `gc_freeze` is on for both arms, its first flight (JB-149). The Platform mode is re-fitted afterwards from this Sitting's bag.
 - do:
-  - Before arming: confirm the colcon build is done (`cd ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot`, then re-source; InstallSegment.srv changed) and the launch log shows bridge FW 39. Run `ros2 param get /skill_node carry_zvd` and confirm it reads false.
-  - Identification: no step row (2026-11-05 showed 20 mm profiled steps excite no resolvable ring); the mode comes from `python tools/probes/platform_mode_fit.py <bag>` on the Sitting's own bag afterwards (forced-response fit).
+  - Before arming: launch with `gc_freeze:=true`. The launch log must show `can-bridge v40` and a `JB-149 gc_freeze ON` line from both `teensy_bridge_node` and `trajectory_node`. Run `ros2 param get /skill_node carry_zvd` and confirm it reads false.
   - A arm (flag off, the existing behaviour): `ros2 param set /skill_node plant_id zvd-oval-<date>` and read it back, then one Attempt of `{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.40, num_cycles: 32}` (cup empty, Ball Butler loaded).
   - Empty the Cup after every ended Attempt before re-sending a fed goal (two REJECTED_BALL_IN_HAND on 2026-11-05); after clear_errors re-enter TRAJECTORY before the next goal (one WRONG_MODE).
-  - B arm: `ros2 param set /skill_node carry_zvd true` (refused while a goal runs) and read it back with `ros2 param get /skill_node carry_zvd`; the goal start line must show carry_zvd. Fly the same oval goal at dwell 0.40 on the same plant. Then dwell 0.35 (`dwell_s: 0.35`, same other keys) with the flag on, only if 0.40 holds.
-  - Columns canary with the flag OFF (the P2 sweep, since retired, found no Columns cell with the rows on): before it run `ros2 param set /skill_node carry_zvd false` and read it back with `ros2 param get /skill_node carry_zvd`; two Attempts: GUI Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21.
-  - Afterwards re-fit the mode on this bag: `python tools/probes/platform_mode_fit.py <bag>` (the step responses give the free-decay estimate P0 could not get).
+  - B arm: `ros2 param set /skill_node carry_zvd true` (refused while a goal runs) and read it back with `ros2 param get /skill_node carry_zvd`; the goal start line must show carry_zvd. Fly the same oval goal at dwell 0.40 on the same plant. Then dwell 0.35 (`dwell_s: 0.35`, same other keys) with the flag on, only if 0.40 holds. Offline at nominal aims the rows plan Leg peaks of 277 mm/s and 3270 mm/s^2 at 0.40, 316 and 5120 at 0.35 (worst flown clean 5488; Legs 1 and 2 separated at 6296).
+  - Columns canary with the flag OFF (owner 2026-11-06: the rows are an oval tool, off on Columns until JB-184 has a bound): before it run `ros2 param set /skill_node carry_zvd false` and read it back with `ros2 param get /skill_node carry_zvd`; two Attempts: GUI Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21.
+  - Afterwards re-fit the mode on this bag: `python tools/probes/platform_mode_fit.py <bag>` (forced-response fit, x and y).
 - pass: at Dwell 0.40 with the flag on, the carried minus from-rest raw landing bias is within +/-10 mm, the carried per-Throw sd is under 17.5 mm, and 30 consecutive Catches land in one Attempt; no CUP_SEATING_CONE or leg LIMIT end; the Columns canary (flag off) is unchanged (each Attempt COMPLETED, no new refusal).
-- record: raw x per Throw (landed minus u) split from-rest / carried, per arm; encoder and mocap excess at separation per arm; RING refusals (the RING refusal text if any oval install is refused); install-line leg peaks; the platform_mode_fit.py result on the identification bag (x and y); the bag and launch log paths.
+- record: raw x per Throw (landed minus u) split from-rest / carried, per arm; encoder and mocap excess at separation per arm; RING refusals (the RING refusal text if any oval install is refused); install-line leg peaks; the platform_mode_fit.py result on this bag (x and y); the bag and launch log paths.
 
 #### JB-162 P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30  (50 min, high, two-ball-oval)
 - why: P4 ramp of plan two-ball-oval.md: the first flight at the 600 / 8000 working point with the legs at 20 A; five Columns canary Attempts show nothing regressed, then the one-ball oval dwell ladder finds the shortest dwell that holds.
 - do:
   - Fly this row FIRST, before every other robot row: since cf35526c every goal runs at 600 / 8000 and 20 A. The 2026-11-03 Sitting flew 1 of the 5 canary Attempts (20/20, peak leg iq 11.7 A) and the oval to dwell 0.35 without a pass (debrief 2026-11-04: carried throws land long, the carry's deceleration ends 25-30 ms before release).
-  - Before arming: confirm the launch log shows BridgeIdentity FW 39 (proto 11) and the Sitting limits 600 / 8000 / 200000 (neither was in the 2026-11-03 launch log; read them from the GUI or `ros2 param get` and note where they came from).
+  - Before arming: confirm the launch log shows BridgeIdentity FW 40 (proto 12) and the Sitting limits 600 / 8000 / 200000 (neither was in the 2026-11-03 launch log; read them from the GUI or `ros2 param get` and note where they came from).
   - Rehearse before arming: cup empty, Ball Butler unpowered, send `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.40, num_cycles: 4}" --feedback` once. The accept message may name only the cup and Ball Butler refusals (no nomination refusal) and nothing moves.
   - Columns canary: GUI Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21. Five Attempts (the 2026-11-03 one does not count toward this Sitting's five).
   - Watch the leg current throughout: cancel the goal if any leg iq sample reaches 19 A (1 A under the 20 A clamp; proposed 2026-11-03, owner to confirm; the 2026-11-03 peak was 11.7 A).
@@ -157,7 +156,7 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 #### JB-145 Hand stall stop near a release cannot fit the stroke: the 20 ms grace plus the C2 stop carry the Hand past the clip  (30 min, medium, unattached)
 - why: FW 37 (owner call JB-154, option 2; grace 6 ms at FW 37, 14 ms at FW 39) stops a fast upward Hand inside the stroke when the stream dies; it has never run on hardware, and the stroke_cut bench stage exercises exactly that path with no ball.
 - do:
-  - Launch down. Confirm the bridge identity reads FW 39 (proto 11). Bench Hand on the bridge, bridge rebooted after re-cabling, Hand homed and parked at or below 0.9 rev, Cup empty, E-stop in hand.
+  - Launch down. Confirm the bridge identity reads FW 40 (proto 12). Bench Hand on the bridge, bridge rebooted after re-cabling, Hand homed and parked at or below 0.9 rev, Cup empty, E-stop in hand.
   - From the repo root in the venv: `python tests/hardware/hand_stream_bench.py --stage stroke_cut --close-loop --repeat 3` (upstroke, 3 runs at the defaults: peak 70 rev/s, entry near 63 rev/s at the 14 ms grace, modelled hold 3.18 rev; FW 37 at 6 ms was 56.8 rev/s and 2.62 rev).
   - Only if those runs settle comfortably: `python tests/hardware/hand_stream_bench.py --stage stroke_cut --cut-at-vel 64 --close-loop` (C1 entry about 73 rev/s, modelled hold 5.06 rev; 6 ms was 4.45 rev).
   - Controls: `--cut-mode downstroke --close-loop` (C2 stop, hold about 4.27 rev) and `--cut-mode slow --close-loop` (full 20 ms grace then C2, hold about 2.54 rev).

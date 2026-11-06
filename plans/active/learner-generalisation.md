@@ -403,7 +403,7 @@ flown.** Archive with `/archive-plan` only after items 1 to 4 are flown and item
      first design) is refused at goal accept, and 0.35 plans 6207 mm/s^2, within 2 % of the transit that
      separated Legs 1 and 2 (JB-184), so it is not in the row. A 5 Hz ring predicts a clear change in the
      Platform's velocity at release over 0.05 s; an Apex effect predicts none.
-   - Decision after it (owner): suppress the ring at its source (`carry-ring-zvd.md`), learn an arrival term (a
+   - Decision after it (owner): suppress the ring at its source (`carry-ring-zvd.md`; since 2026-11-06 the rows stay off on Columns until JB-184 has a bound, so this branch needs that bound first), learn an arrival term (a
      schema v3 `arrived_from` Memory column, stored rows reconstructed, never defaulted to zero; a scalar c
      over-corrects by about 6 mm at Apex 1.10), or both.
    - Done: the decision recorded and flown; on two-ball Columns the pull toward the partner, fitted as in the P2

@@ -4,7 +4,7 @@ kind: bug
 title: 'Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for'
 status: inbox
 created: '2026-11-06'
-updated: '2026-11-06T08:27:16Z'
+updated: '2026-11-06T09:17:24Z'
 owners: []
 priority: high
 hardware: robot
@@ -60,3 +60,4 @@ Evidence: `temp/probes/sitting_debrief_2026-11-06b/unit_transit.md`, `unit_B_D.m
 - 2026-11-06: Fix at source now means the ring after arrival (carry-ring-zvd) or the lateral launch delivery, not the planner; the planner-defect branch is closed. Cheapest next offline check: regress ball lateral v on planned v, encoder v at release and tilt, split RESEND and BUMP. The Dwell A/B hardware check stands.
 - 2026-11-06: Dwell A/B rehearsed offline (nominate, Sitting limits, pose): Apex 0.93 Sep. 125 Dwell 0.27 accepted (margin 0.337, re-aim 0.121, Legs 310 mm/s 4076 mm/s^2); Dwell 0.40 REFUSED (21 refusals), 0.35 accepted (0.110, re-aim -0.298, 384 mm/s 6207 mm/s^2). Long arm set to 0.35.
 - 2026-11-06: Runbook row set to Dwell 0.27 against 0.32 (both inside the flown envelope: 353 mm/s, 5180 mm/s^2 at 0.32). 0.35 is left out: it plans 6207 mm/s^2, within 2 % of the 6296 that separated Legs 1 and 2 (JB-184). The debrief reads the Platform's velocity at release from the bag, a sharper measure than landings over 0.05 s.
+- 2026-11-06: 2026-11-06: owner decision on carry-ring-zvd section 8: the ZVD rows stay off on Columns until JB-184 has a bound. This row's own goals (Apex 0.93, Dwell 0.27 and 0.32) are RING refused with the rows on anyway, so the suppress-at-source branch needs both a bound and a window that holds the rows.

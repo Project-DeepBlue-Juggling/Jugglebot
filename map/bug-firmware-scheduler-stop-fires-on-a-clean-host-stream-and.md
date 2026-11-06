@@ -4,7 +4,7 @@ kind: bug
 title: Firmware scheduler STOP fires on a clean host stream and ends the Attempt
 status: inbox
 created: '2026-11-04'
-updated: '2026-11-06T05:58:25Z'
+updated: '2026-11-06T09:17:23Z'
 owners: []
 priority: high
 effort: m
@@ -34,3 +34,4 @@ Filed by the 2026-11-04 debrief of the 2026-11-03 22:29 Sitting (JB-162).
 - 2026-11-05: the 3 Hand-only STOPs are FW 37 C1 stops (sched_stops +1 = hand_c1_stops +1, legs never stopped), Hand frozen mid-upstroke at 52-100 rev/s, resume refused (8 rev/s tolerance). Drop counters 0, frame ages <= 27.6 ms, every numbered frame sent, no host stamp hole: one hand frame lost in the downlink is the only candidate. Stops 316-334 ms after first CATCH install.
 - 2026-11-06: 2026-11-06: every refusing clean-host STOP in three bags fits one missing setpoint frame (census shortfall 1.3-1.5 %); the 2026-11-03 night ends included two Hand C1 stops. FW 40 (JB-174) deepens the stream socket queue 1 -> 8 and counts downlink loss; if its Sitting row passes, this Item reduces to the refused resume.
 - 2026-11-06: 2026-11-06 endurance Sittings: 25 firmware scheduler STOPs on a clean host stream in 51 minutes, none refused the lane or ended a run; three sat at disarm edges or beside a Hand fault (14:55 log L7017 within 10 ms of a Hand SPINOUT).
+- 2026-11-06: C1 stops still fire under FW 40 with lost 0. 14:55 launch, L7017: streaming live, forward gap 60 ms, Hand command froze at 78 rev/s mid-upstroke, then torque loss and SPINOUT, Hand coasted to 8.75 rev. About 1 in 1175 Throw upstrokes. The queue fix removed lost frames, not host-side gaps. Hand C1 grace stays 14 ms (owner, logbook 2026-11-06-hand-c1-grace-stays-14-ms).
