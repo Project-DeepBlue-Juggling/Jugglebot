@@ -8040,9 +8040,11 @@ def test_fault_just_after_the_verdict_rewrites_the_code_once(sites):
     d.lines.append('--verdict--')
     d.x.tick(d.t_decide)
     assert d.x.end_code == ex.MISSED_CATCH and d.x.attempt_ended
+    assert d.x.end_kind == ex.CATCH
     assert not d.x.done                        # held through the settle
     d.run(d.t_decide + 0.02, d.t_decide + 0.5)
     assert d.x.end_code == ex.ABORTED_FAULT
+    assert d.x.end_kind == ''                  # no "at the CATCH" (JB-178)
     assert 'pre-empted' in d.x.end_message
     rewrites = [ln for ln in d.lines if 'END %s (was' % ex.ABORTED_FAULT in ln]
     assert len(rewrites) == 1 and 'stay dropped' in rewrites[0]
@@ -8068,6 +8070,7 @@ def test_a_genuine_miss_with_no_fault_ends_as_before_and_done_waits_the_settle(s
     assert not d.x.done
     d.x.tick(d.t_decide + getattr(ex, 'MISSED_CATCH_FAULT_SETTLE_S', 0.4) + 0.02)
     assert d.x.done and d.x.end_code == ex.MISSED_CATCH
+    assert d.x.end_kind == ex.CATCH
 
 
 def test_operator_disarm_without_a_fault_stays_aborted_mode_changed(sites):

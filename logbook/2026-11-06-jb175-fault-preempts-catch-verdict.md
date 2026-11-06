@@ -39,3 +39,5 @@ Readers of the end code treated: `executor.py` (`CLOSING_EXCLUDED_END_CODES`, cl
 - Scoped run: 2026-11-06, `pytest -q tests/motion/test_skills_executor.py tests/ros/test_skill_node.py tests/motion/test_skills_report.py tests/motion/test_records.py tests/sim/test_logbook_front_matter.py tests/sim/test_docs_links.py`: 774 passed in 89.91 s (after the guard-latch change).
 - New tests fail with the production hunk reverted (`git apply -R` of the `ros_ws` diff, then re-applied): 6 failed, as expected.
 - The full gate (`./run_tests.sh --full`) runs on the committed tip and its result is in the Night Shift report `docs/night-shift/2026-11-06.md`.
+
+- Owner answer on JB-178 (2026-11-07): the provisional MISSED_CATCH to ABORTED_FAULT re-label also clears `end_kind` (set to `''`), so the operator line no longer reads "ENDED (ABORTED_FAULT) at the CATCH"; display only, no hold, REST, decay or dispatch reads it. Pinned by `test_fault_just_after_the_verdict_rewrites_the_code_once` (fails with the line removed, 2026-11-07) and the no-fault test keeps `end_kind == CATCH`.

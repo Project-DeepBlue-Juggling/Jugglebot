@@ -5041,6 +5041,7 @@ class SkillExecutor:
             was = self.end_code
             cause = fault_cause(obs)
             self.end_code = ABORTED_FAULT
+            self.end_kind = ''      # operator line only: no "at the CATCH"
             self.end_message = ('the machine faulted (%s) -- the fault '
                                 'pre-empted the CATCH verdict' % cause)
             return [
