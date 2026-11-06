@@ -26,5 +26,4 @@ Lead-clamp episodes: `grep -n -i "lead.\?clamp"` over `skill_node.py` and `execu
 - 2026-11-07, `pytest -q tests/motion/test_skills_executor.py -k "settle_after_release or more_than_the_settle or no_fault_row"`: 4 passed.
 - 2026-11-07, same command with the `_finalise_outcome` condition temporarily disabled (`False and ...`): the two no-row tests failed; with it widened to any fault (settle bound removed): the keep-row test failed. Restored afterwards.
 - 2026-11-07, `pytest -q tests/motion/test_skills_executor.py tests/ros/test_skill_node.py tests/motion/test_memory.py`: 716 passed in 135.33 s.
-
-Not covered by a test: a fault first seen after the Attempt ended through the new standalone read (the tests end the Attempt on the fault itself).
+- 2026-11-07, `pytest -q tests/motion/test_skills_executor.py` (adds `test_a_fault_first_seen_after_a_fault_free_end_writes_no_memory_row`, which covers the standalone read in `tick`: Attempt ends on a mode change, `machine_fault` rises at release + 0.1 s): 288 passed in 9.52 s.

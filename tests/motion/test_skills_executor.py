@@ -7956,6 +7956,37 @@ def test_no_fault_row_is_written_and_none_without_observations(sites):
     assert len(rows) == 1 and x._fault_seen_s is None
 
 
+def test_a_fault_first_seen_after_a_fault_free_end_writes_no_memory_row(sites):
+    """JB-189: the Attempt ends WITHOUT a fault (mode change just after the
+    release), then ``machine_fault`` rises at release + 0.1 s while the OUTCOME
+    row is pending: the standalone read in ``tick`` latches it, no row."""
+    p1, _p2 = sites
+    t_land = ROS_T0 + FLIGHT_S
+    sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
+    land = _fit_landing(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
+                        t_land_abs_s=t_land)
+
+    def obs(t):
+        return ex.Observations(
+            mocap_fresh=True, hand_fresh=True, levelled=True,
+            ball_evidence=ex.CAUGHT_EVIDENCE,
+            in_trajectory_mode=t < ROS_T0 + 0.03,
+            machine_fault=t >= ROS_T0 + 0.1, guard_latched=False)
+
+    rows = []
+    x = ex.SkillExecutor(sch, _FakeInstaller(), tracker=lambda b: land,
+                         observer=lambda b, t: ex.CAUGHT_EVIDENCE,
+                         on_experience=rows.append, observations=obs)
+    t = sch.skills[0].dispatch_s() - 0.01
+    t_end = t_land + ex.CAUGHT_WINDOW_S + 0.05
+    while t < t_end:
+        x.tick(t)
+        t += 0.02
+    assert rows == []
+    assert x._fault_seen_s is not None
+    assert x._fault_seen_s >= ROS_T0 + 0.1
+
+
 # ---------------------------------------------------------------------------
 # REST re-splice budget scales with the window (2026-10-31, goal 13)
 # ---------------------------------------------------------------------------

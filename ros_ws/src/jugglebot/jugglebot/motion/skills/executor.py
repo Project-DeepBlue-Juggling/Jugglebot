@@ -6165,6 +6165,8 @@ class SkillExecutor:
                                               changed releases
         _closing_idx, _closing_catch_idx      unset: a closing Attempt is
                                               refused (BEAT_CLOSING)
+        _fault_seen_s                         attempt-scoped, not index-keyed
+                                              (the executor is built per Attempt)
         n_throws                              equal (checked first: the change
                                               keeps the Throw count)
         _n_registered, reports                prefix-only (registered Throws)
