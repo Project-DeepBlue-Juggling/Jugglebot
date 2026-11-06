@@ -4,7 +4,7 @@ kind: feature
 title: 'P2 characterisation Sitting: Apex sweep, off-centre Sites, ball swap and a turned pair, to pin the Learner''s plant model'
 status: inbox
 created: '2026-11-06'
-updated: '2026-11-06T03:35:07Z'
+updated: '2026-11-06T05:10:16Z'
 owners: []
 priority: high
 effort: m
@@ -40,3 +40,8 @@ P2 of plan `learner-generalisation.md`: the Sitting that pins the structure of t
 - pass: every one-ball step has 20 Throws flown (one Attempt, or two shorter ones), steps 15 and 16 have about 20 caught Throws per Site, and no Attempt ended on an `ADMISSIBILITY` refusal. Type the result as pending: the three decisions are computed at the debrief.
 - record: the launch log and bag paths, the clock time and step number of each Start, which ball (A, B or C) flew in each Attempt, any Attempt repeated and why, anything seen at the base joints.
 - minutes: 40
+
+## Sitting result (2026-11-06 16:10)
+
+- verdict: pass
+- notes: All tests passed with flying colours except for row 12, which incurred a hand CURRENT_LIMIT_VIOLATION. I am not sure why this was triggered, as all balls are functionally identical. Repeating the attempt with the same ball raised no issues. Base joints stayed attached throughout.
