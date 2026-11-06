@@ -1161,6 +1161,7 @@ class SkillNode(Node):
         #: the operator's lines (`_start_pattern`).
         self._goal_reports = []
         self._attempt_label = ''
+        self._attempt_fed = False        # JB-190: end line says "entered by a Feed"
         # Magazine program state (U2c): the latest bb/base_frame_pose
         # (origin_mm, R, stamp_ros_s) and the live miss-report context.
         self._bb_base_pose = None
@@ -3142,8 +3143,9 @@ class SkillNode(Node):
         self._maybe_cancel_bb_throw(end_code)
         if not executor_reports:
             severity, text = rp.end_line(
-                self._attempt_label or 'attempt', end_code,
-                '' if message == end_code else message, self._goal_reports)
+                self._end_label() or 'attempt', end_code,
+                '' if message == end_code else message, self._goal_reports,
+                fed=self._attempt_fed)
             self._log_at(severity, text)
 
     def _check_reload_timeout(self) -> None:
@@ -3909,6 +3911,14 @@ class SkillNode(Node):
             self._goal_reports.append(report)
             self._goal_outcome_lines.append(text)
 
+    def _end_label(self) -> str:
+        """The label an END line prints (JB-190): the bare pattern, so a
+        search for `<pattern> ENDED` finds a goal a Feed entered too; the
+        Feed is said at the line's tail (`report.end_line(fed=)`)."""
+        if self._attempt_fed:
+            return self._attempt_label[:-len(' (reload)')]
+        return self._attempt_label
+
     def _log_attempt_end(self, executor) -> None:
         """The attempt's last line (`report.end_line`), as its executor
         retires -- unless this is the reload's opening REST retiring while
@@ -3924,13 +3934,14 @@ class SkillNode(Node):
             if self._reload_ctx is not None:
                 return
         severity, text = rp.end_line(
-            self._attempt_label or executor.schedule.pattern,
+            self._end_label() or executor.schedule.pattern,
             executor.end_code,
             executor.end_message, self._goal_reports,
             end_kind=executor.end_kind,
             shadow_landing_stop=(not executor.end_code
                                  and schedule_has_shadow_landing(
-                                     executor.schedule)))
+                                     executor.schedule)),
+            fed=self._attempt_fed)
         self._log_at(severity, text)
 
     def _maybe_signal_goal_done(self) -> None:
@@ -4159,7 +4170,8 @@ class SkillNode(Node):
         with self._reload_lock:
             self._goal_armed = False
             self._goal_done_event.clear()
-        self._attempt_label = pattern + (' (reload)' if reload and pattern != 'reload'
+        self._attempt_fed = bool(reload and pattern != 'reload')
+        self._attempt_label = pattern + (' (reload)' if self._attempt_fed
                                          else '')
         # The late catch re-aim BUMP's per-pattern switch (I-CATCH-5, owner
         # 2026-10-16): fixed at goal accept for every executor this attempt

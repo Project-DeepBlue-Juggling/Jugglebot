@@ -1,0 +1,29 @@
+---
+title: "JB-190: the end line of a goal entered by a Feed is searchable by its pattern"
+type: bugfix
+date: 2026-11-07
+status: complete
+phase: "Night Shift 2026-11-07 JB-190"
+related_entries:
+  - 2026-11-07-jb189-no-memory-row-from-a-faulted-stroke.md
+files_changed:
+  - ros_ws/src/jugglebot/jugglebot/motion/skills/report.py
+  - ros_ws/src/jugglebot/jugglebot/skill_node.py
+  - tests/motion/test_skills_report.py
+  - tests/ros/test_skill_node.py
+  - logbook/2026-11-07-jb190-feed-goal-end-line-searchable.md
+  - logbook/INDEX.md
+---
+
+## What and why
+
+Sitting 2026-11-06 P2 log L9214 printed `columns_turned (reload) ENDED (MISSED_CATCH)`; a search for `columns_turned ENDED` or `columns_turned done` missed it, so the goal looked as if it had no end. (The Item's other half, the Site in the start line, was fixed earlier.)
+
+Change (operator text only): `report.end_line` takes `fed: bool = False`. The node keeps `_attempt_fed` beside `_attempt_label` (set at goal accept: a Feed entered the goal and the pattern is not `reload`) and passes the bare pattern (`_end_label()`) plus `fed=` at both end-line call sites. A fed goal's `done:`, `stopped by the operator:` and `ENDED (...)` lines now start with the bare pattern and end with ` · entered by a Feed`, after the tally. START lines keep `(reload)`: `tools/probes/hold_rung_bias.py` and `feed_lateral_miss.py` read it there.
+
+Nothing reads the text to choose a path. `grep` of `ros_ws/src/jugglebot/` (py, js, html) for `ENDED`, `(reload)` and `_attempt_label`: the only other `_attempt_label` readers are log-text uses in `skill_node.py` (the start line, a throw line, one reload message); `records.py`'s `_ENDED_RE` parses the records file's own "How it ended" cell, not the log; no `.js` or `.html` hit. `_END` in `hold_rung_bias.py` (optional `(reload)` group, tail `(.*)`) still matches the new line; its `caught` regex finds the tally before the suffix, and its `(reload)` flag comes from the start line only.
+
+## Verification
+
+- 2026-11-07, `pytest -q tests/motion/test_skills_report.py tests/ros/test_skill_node.py tests/motion/test_feed_lateral_miss_probe.py`: 424 passed in 128.59 s.
+- 2026-11-07, same new tests with `report.py` and `skill_node.py` reverted to HEAD (`git checkout`, patch re-applied afterwards): the new report test failed (`TypeError`, no `fed` keyword) and the three node end-line tests failed (old text).

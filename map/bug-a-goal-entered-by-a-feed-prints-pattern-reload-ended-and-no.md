@@ -2,9 +2,9 @@
 id: JB-190
 kind: bug
 title: A goal entered by a Feed prints `<pattern> (reload) ENDED` and no `done` line, and `Self-toss` does not print its Site at the start
-status: in_progress
+status: complete
 created: '2026-11-06'
-updated: '2026-11-06T06:28:52Z'
+updated: '2026-11-06T18:39:28Z'
 owners: []
 priority: low
 effort: xs
@@ -16,6 +16,7 @@ area: skill-stack
 blocked_by: []
 links:
 - logbook/2026-11-06-sitting-debrief-2.md
+- logbook/2026-11-07-jb190-feed-goal-end-line-searchable.md
 filed_by: claude
 ---
 
