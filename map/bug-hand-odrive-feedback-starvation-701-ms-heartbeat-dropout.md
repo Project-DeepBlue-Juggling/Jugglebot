@@ -4,7 +4,7 @@ kind: bug
 title: 'Hand ODrive feedback starvation: 701 ms heartbeat dropout left the encoder 100 ms stale, the 2.0 rev lead clamp pinned the throw to stale+2.0, guard MAX_DEVIATION +3.707 fired correctly (turned-90 at 16/16)'
 status: in_progress
 created: '2026-11-01'
-updated: '2026-11-06T07:55:48Z'
+updated: '2026-11-06T09:45:57Z'
 owners: []
 priority: high
 effort: m
@@ -47,6 +47,11 @@ Found at the 2026-11-01 Sitting, turned-90 goal at 16/16 (launch log L4695): a 7
 - pass: type the result as pending. At the debrief, from the bag's `/cache_diag`: the Hand's `age_max_us_6` never exceeds 25 ms over the 20 minutes, while at least one Leg shows a window over 50 ms (the in-run control, expected every 120 to 270 s per Leg). One Hand window over 50 ms refutes the model. If no Leg shows a window over 50 ms the stream did not run and the Hand result is void. The `Self-toss` goal runs 20/20 with no `Hand lead clamp ENGAGED` line.
 - record: the launch log and bag paths, the clock times of arming and of the goal, and whether the setting was left at 9 or put back.
 - minutes: 30
+
+## Sitting result (2026-11-06 20:45)
+
+- verdict: pending
+- notes: No visible issues to my eye!
 
 ## Progress
 
