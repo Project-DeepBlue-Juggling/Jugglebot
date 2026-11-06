@@ -2,9 +2,9 @@
 id: JB-200
 kind: ticket
 title: 'JB-193 cause withdrawn, an x-only excess of about 0.4 mm remains: close it, fly the 40-Throw check, or put a marker on the Cup?'
-status: open
+status: complete
 created: '2026-11-07'
-updated: '2026-11-06T20:09:37Z'
+updated: '2026-11-06T22:55:38Z'
 owners: []
 priority: medium
 effort: xs
@@ -37,3 +37,7 @@ Recommendation: 2, as a rider on a Sitting that is already flying one-ball goals
 - 1: the next night closes JB-193.
 - 2: the next night writes its `## Sitting` section and re-rates it `robot`.
 - 3: a hardware step for you, then a read of the next bag.
+
+## Answer
+
+Agreed. Let's go for another Sitting.
