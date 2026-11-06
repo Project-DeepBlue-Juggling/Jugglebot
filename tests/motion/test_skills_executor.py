@@ -5217,6 +5217,117 @@ def test_the_experience_row_carries_the_LATEST_release_offset():
         'the cached QUERY state is what the learner was asked, unchanged'
 
 
+def _reaim_carried(refuse_reaim, reaim_offset_mm=(0.0, 15.0, 0.0)):
+    """JB-194's production path: a one-Site self-toss whose carried CATCH is
+    dispatched on a fit AT the Site, then re-aimed by the tracker's
+    ``_resend_live_catch`` to a fit ``reaim_offset_mm`` off it, the re-send
+    ACCEPTED or REFUSED by the installer. Returns ``(schedule, executor,
+    rows, catch_idx, next_catch_idx, lines, before)`` where ``before`` holds what the
+    executor recorded just before the re-send (release, next Catch's
+    priors)."""
+    site = si.columns_sites(SEPARATION_MM)[0]
+    sched = sc.compile_one_ball(
+        sc.OneBallPattern(sites=(site,), apex_m=0.9, dwell_s=0.30,
+                          n_throws=2, roles='alternate'), t0_abs_s=T0_ABS)
+    catch_idx = _carried_catch_idx(sched)
+    skill = sched.skills[catch_idx]
+    nxt = [j for j in range(catch_idx + 1, len(sched.skills))
+           if sched.skills[j].kind == sg.CATCH][0]
+    box = {'pos': np.asarray(skill.site.catch_site_mm(), dtype=float),
+           'refuse': False}
+
+    def tracker(_ball_id):
+        return _fit_landing(pos_mm=box['pos'].copy(), vel_mm_s=LAND_VEL.copy(),
+                            t_land_abs_s=float(skill.t_abs_s))
+
+    def installer(kind, terminal, t_now_s, ball_id=None):
+        if box['refuse']:
+            return ex.InstallResult(False, 'LIMIT_JERK', 'nope', 0.0)
+        return ex.InstallResult(True, 'OK', 'ok', 0.0, splice_k=0)
+
+    rows = []
+    x = ex.SkillExecutor(sched, installer, tracker=tracker,
+                         catch_aim_source=ex.AIM_TRACKER,
+                         lateral_authority_m=0.030, on_experience=rows.append)
+    for sk in sched.skills[:catch_idx + 1]:
+        x.tick(sk.dispatch_s())
+    assert x._live_catch is not None and x._live_catch[0] == catch_idx
+    before = dict(release=x._release_pos_mm(catch_idx).copy(),
+                  predicted=x._predicted_landing(nxt, sched.skills[nxt]),
+                  prior=x._prior_landing(nxt, sched.skills[nxt])[0])
+    box['pos'] = box['pos'] + np.asarray(reaim_offset_mm, dtype=float)
+    box['refuse'] = bool(refuse_reaim)
+    lines = x.tick(sched.skills[catch_idx].dispatch_s() + 0.05)
+    return sched, x, rows, catch_idx, nxt, lines, before
+
+
+def _finalised_row(x, rows, catch_idx):
+    """Finalise the carried Throw's pending row as a caught, fitted flight
+    and return the Experience ``_finalise_outcome`` hands to the Memory."""
+    t_rel = float(x.schedule.skills[catch_idx].then_throw.t_release_abs_s)
+    pend, = [p for p in x._pending_outcomes
+             if p.t_release_s == pytest.approx(t_rel)]
+    pend.best_landing = _fit_landing(
+        pos_mm=np.asarray(x.schedule.skills[catch_idx].site.catch_site_mm(),
+                          dtype=float),
+        vel_mm_s=LAND_VEL.copy(), t_land_abs_s=float(pend.t_land_scheduled_s))
+    pend.caught_seen = True
+    x._finalise_outcome(pend, float(pend.t_land_scheduled_s) + 1.0)
+    row, = rows
+    return row
+
+
+def test_an_accepted_tracker_re_aim_moves_the_memory_rows_release(tmp_path):
+    """JB-194 F1: the Memory row records the release the Throw USED. The row
+    is registered at the Catch's dispatch; an ACCEPTED re-send afterwards
+    moves the release the plan flies (the caught xy, I-CARRY-1), so the
+    pending row must follow it. Before 2026-11-06 it kept the dispatch aim
+    (the Site, on all 92 re-aimed P2 rows). Release z, the release velocity
+    (the Learner's kernel key) and the cached command do not move."""
+    sched, x, rows, ci, _nxt, lines, before = _reaim_carried(False)
+    assert any(' RESEND skill %d' % ci in ln for ln in lines), lines
+    site = sched.skills[ci].site
+    np.testing.assert_allclose(before['release'][:2], site.cup_mm[:2],
+                               atol=1e-9)
+    u_before = x._u_cache[ci]
+    ctx_q = x._ctx_cache[ci]
+    row = _finalised_row(x, rows, ci)
+    want_rel = np.array([site.cup_mm[0], site.cup_mm[1] + 15.0,
+                         site.throw_site_mm()[2]]) / 1000.0
+    np.testing.assert_allclose(row.release_m, want_rel, atol=1e-12)
+    np.testing.assert_allclose(row.seat_offset_m, [0.0, 0.015], atol=1e-12)
+    np.testing.assert_allclose(row.release_vel_mps, ctx_q.release_vel_mps)
+    np.testing.assert_allclose(row.u, [u_before[1][0], u_before[1][1],
+                                       u_before[2]])
+    # what the Memory file stores: rel_x/rel_y/seat_x/seat_y are the re-aim
+    memory = mem.Memory(str(tmp_path / 'memory_v2.csv'))
+    memory.append(row)
+    back, = mem.Memory(str(tmp_path / 'memory_v2.csv')).rows()
+    np.testing.assert_allclose(back.release_m, want_rel, atol=1e-6)
+
+
+def test_a_refused_re_send_leaves_the_row_and_the_next_catch_prior_as_installed():
+    """JB-194 F1 + F2: a REFUSED re-send leaves the installed plan flying the
+    earlier release, so (F2) the release record goes back to it -- the next
+    Catch of this ball builds its dispatch prior from the release that flies,
+    not from the refused aim (23 of 98 P2 rows had one) -- and (F1) the row
+    keeps the last ACCEPTED release."""
+    sched, x, rows, ci, nxt, lines, before = _reaim_carried(True)
+    assert any('RESEND-REFUSED' in ln for ln in lines), lines
+    after_pred = x._predicted_landing(nxt, sched.skills[nxt])
+    after_prior = x._prior_landing(nxt, sched.skills[nxt])[0]
+    for a, b in ((after_pred, before['predicted']),
+                 (after_prior, before['prior'])):
+        assert np.array_equal(a.pos_mm, b.pos_mm)
+        assert np.array_equal(a.vel_mm_s, b.vel_mm_s)
+        assert a.t_land_abs_s == b.t_land_abs_s
+    assert np.array_equal(x._release_pos_mm(ci), before['release'])
+    row = _finalised_row(x, rows, ci)
+    np.testing.assert_allclose(row.release_m[:2],
+                               before['release'][:2] / 1000.0, atol=1e-12)
+    np.testing.assert_allclose(row.seat_offset_m, [0.0, 0.0], atol=1e-12)
+
+
 def test_a_landing_on_the_site_leaves_the_learner_state_bit_identical():
     """Determinism (plan § 0): an un-re-aimed catch queries the learner with
     EXACTLY the state it did before this unit — ``(site xy, 0, 0)`` by value

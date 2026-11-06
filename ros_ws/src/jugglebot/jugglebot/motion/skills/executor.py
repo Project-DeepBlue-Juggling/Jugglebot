@@ -1281,6 +1281,11 @@ class _PendingOutcome:
     #: ``None`` (no row) only for a release with no context (a shadow
     #: landing, or a context that could not be built for an old-API learner).
     ctx: Optional['lrn.ThrowContext'] = None
+    #: The schedule index of the RELEASING skill (the THROW, or the CATCH
+    #: carrying this Throw), so an accepted re-aim of that Catch can refresh
+    #: :attr:`x` ``[2:4]`` and :attr:`ctx` to the release the Throw now uses
+    #: (:meth:`SkillExecutor._refresh_pending_release`, JB-194).
+    release_idx: int = -1
 
 
 @dataclasses.dataclass(frozen=True)
@@ -4085,7 +4090,8 @@ class SkillExecutor:
         so its position is read back from :attr:`_carried_release_mm`.
 
         The recorded value is the one chosen at that catch's LATEST call —
-        its dispatch, or the last re-send that refined its landing. A prior
+        its dispatch, or the last ACCEPTED re-send or bump that refined its
+        landing (a refused re-send restores it, JB-194). A prior
         built between the dispatch and a later re-send therefore uses a
         release that the re-send can still move, by at most the re-aim delta
         (<= :attr:`lateral_authority_m`, 30 mm): a <= 35 mm/s launch-velocity
@@ -5401,8 +5407,12 @@ class SkillExecutor:
         it by at most the re-aim delta (<= :attr:`lateral_authority_m`,
         20 mm at the R4 launch default), and the row should describe the
         throw that actually flew, not the one first asked for. The two agree
-        exactly whenever this catch was never re-sent, and a re-send after
-        this registration is not chased — the row is written once.
+        exactly whenever this catch was never re-sent. An ACCEPTED re-aim
+        after this registration (re-send or bump) refreshes the pending row
+        (:meth:`_refresh_pending_release`, JB-194, 2026-11-06): rows written
+        before that date hold the DISPATCH aim in ``rel_x``/``rel_y`` and
+        ``seat_x``/``seat_y`` on a re-aimed Catch, rows after it the release
+        the Throw used.
 
         **B2's phantom ball (``schedule.is_phantom``) registers nothing,
         checked first and unconditionally** — the invariant ("a phantom
@@ -5461,7 +5471,40 @@ class SkillExecutor:
                                        t_land_scheduled, t_next_release),
             throw_no=self._n_registered,
             release_z_mm=float(release_site_of(skill).throw_site_mm()[2]),
-            shadow_landing=shadow_landing, entry_hop=entry_hop, ctx=ctx))
+            shadow_landing=shadow_landing, entry_hop=entry_hop, ctx=ctx,
+            release_idx=idx))
+
+    def _refresh_pending_release(self, idx: int) -> None:
+        """After an ACCEPTED re-aim of CATCH ``idx`` (JB-194): the pending
+        row of the Throw it carries takes the release and seat offset now
+        recorded for ``idx`` -- what :meth:`_register_outcome` would read if
+        it ran now -- so the Memory row records the release the Throw used.
+        The release velocity stays the query's (:meth:`_latest_ctx`). Writes
+        no command: the plan was built and installed before this runs."""
+        for pend in self._pending_outcomes:
+            if pend.release_idx != idx:
+                continue
+            x = np.asarray(pend.x, dtype=float).copy()
+            x[2:4] = self._seat_offset_m(idx)
+            pend.x = x
+            if pend.ctx is not None:
+                try:
+                    pend.ctx = self._latest_ctx(idx, pend.ctx)
+                except ValueError:  # a non-finite release: no row, by name
+                    pend.ctx = None
+
+    def _restore_release_record(self, idx: int, saved) -> None:
+        """Put back :attr:`_carried_release_mm` / :attr:`_carried_catch_xy_mm`
+        for ``idx`` as they were before a re-send that was then REFUSED
+        (JB-194): :meth:`_catch_terminal` writes them before the install,
+        and the installed plan still flies the earlier release. ``saved`` is
+        ``(release, catch_xy)``, ``None`` for a record that was absent."""
+        for rec, val in zip((self._carried_release_mm,
+                             self._carried_catch_xy_mm), saved):
+            if val is None:
+                rec.pop(idx, None)
+            else:
+                rec[idx] = val
 
     def _register_catch(self, idx: int, skill: Skill,
                         t_land_scheduled_s: float) -> None:
@@ -6987,6 +7030,8 @@ class SkillExecutor:
                 >= t_land_eff - CUP_CONTACT_WINDOW_LEAD_S):
             return self._resend_declined(
                 t_abs_s, idx, 'CONTACT-WINDOW', moved_mm, dt_s)
+        saved = (self._carried_release_mm.get(idx),
+                 self._carried_catch_xy_mm.get(idx))
         new_terminal = self._catch_terminal(idx, skill, landing)
         clamp_lines = self._pending_notes
         self._pending_notes = []
@@ -6995,7 +7040,9 @@ class SkillExecutor:
         self.results.append((idx, skill, res))
         if not res.accepted:
             # The committed catch stands — a refused re-aim is strictly
-            # better than no catch, so the attempt continues.
+            # better than no catch, so the attempt continues. Its release
+            # record goes back to the installed one (JB-194).
+            self._restore_release_record(idx, saved)
             self._live_catch = (idx, terminal, t_abs_s)
             self._note_reaim_refused(idx, res.code)
             return clamp_lines + [
@@ -7003,6 +7050,7 @@ class SkillExecutor:
                     'Δt=%+.3f s — %s'
                     % (t_abs_s, res.code, idx, r, dt_s, res.message)]
         self._live_catch = (idx, new_terminal, t_abs_s)
+        self._refresh_pending_release(idx)
         self._note_catch_aim(skill.ball_id, idx,
                              _event_abs_s(CATCH, new_terminal), reaim=True)
         return clamp_lines + ['%.3f CATCH-AIM skill %d: source=%s r=%.3f Δt=%+.3f s '
@@ -7192,6 +7240,8 @@ class SkillExecutor:
             if cliff_est - t_abs_s < RESEND_PINNED_BUDGET_FLOOR_S - 1e-12:
                 return clamp_lines + self._resend_declined(
                     t_abs_s, idx, 'PINNED-BUDGET', moved_mm, moved_s)
+        saved = (self._carried_release_mm.get(idx),
+                 self._carried_catch_xy_mm.get(idx))
         new_terminal = self._catch_terminal(idx, skill, landing)
         clamp_lines += self._pending_notes
         self._pending_notes = []
@@ -7200,6 +7250,8 @@ class SkillExecutor:
         self.results.append((idx, skill, res))
         self._resend_counts[idx] = self._resend_counts.get(idx, 0) + 1
         if not res.accepted:
+            # The installed plan still flies the earlier release (JB-194).
+            self._restore_release_record(idx, saved)
             # The committed catch stands — a refused RE-aim is strictly better
             # than no catch, so the attempt continues. And it is TERMINAL for
             # this catch (2026-09-20): a re-solve refused on a limit only gets
@@ -7216,6 +7268,7 @@ class SkillExecutor:
                     'this catch' % (t_abs_s, res.code, idx, moved_mm, moved_s,
                                     res.message)]
         self._live_catch = (idx, new_terminal, t_abs_s)
+        self._refresh_pending_release(idx)
         self._note_catch_aim(skill.ball_id, idx,
                              _event_abs_s(CATCH, new_terminal), reaim=True)
         return clamp_lines + [
@@ -7373,6 +7426,7 @@ class SkillExecutor:
             tt = terminal.then_throw
             if decision.release_mm is not None:
                 self._carried_release_mm[idx] = decision.release_mm
+                self._refresh_pending_release(idx)
                 if tt is not None:
                     tt = dataclasses.replace(tt, site_mm=decision.release_mm)
             new_terminal = dataclasses.replace(terminal, landing_mm=landing_mm,

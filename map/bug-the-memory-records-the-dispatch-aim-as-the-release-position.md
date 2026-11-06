@@ -2,18 +2,22 @@
 id: JB-194
 kind: bug
 title: The Memory records the dispatch aim as the release position, and a refused re-send leaves the release record at the refused aim
-status: inbox
+status: complete
 created: '2026-11-06'
-updated: '2026-11-06T07:55:35Z'
+updated: '2026-11-06T08:48:29Z'
 owners: []
 priority: medium
+effort: s
 hardware: none
+owner: none
+radius: subsystem
 diagnosis: confirmed
 area: skill-stack
 blocked_by: []
 links:
 - map/bug-two-ball-throws-land-about-9-mm-toward-the-partner-site-an.md
 - logbook/2026-11-06-arrival-pull-and-hand-dropout-probes.md
+- logbook/2026-11-06-memory-release-record-fixes.md
 parent: learner-generalisation
 filed_by: claude
 ---
@@ -35,3 +39,7 @@ The Memory row for a carried Throw is written once, at dispatch, from the aim th
 ## Decision wanted
 
 The owner's go-ahead, because F1 and F2 change what the Memory records and the next Catch's prior. Rows written before the fix carry the dispatch aim in `rel`; the cut-over date goes in the row docstring and the logbook.
+
+## Progress
+
+- 2026-11-06: Fixed 2026-11-06 (owner go-ahead): the pending row is refreshed after each accepted re-aim or bump, and a refused re-send restores the release record to the last accepted release. No command changes with the first; three tests fail on the parent and pass. Rows before this date hold the dispatch aim on a re-aimed Catch.
