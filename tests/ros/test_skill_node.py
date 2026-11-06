@@ -4234,7 +4234,8 @@ class TestOperatorLines:
         assert len(info) == 1 and info[0].startswith('columns started: '), info
         # the goal's effective dwell and separation ride the line (the
         # hold-rung probe parses them rather than inferring from goal order)
-        # (the goal carries no dwell, so the node parameter is the fallback)
+        # (the goal carries no dwell, so the default dwell is the fallback;
+        # `dwell_s` is no longer a node parameter since 2026-11-06)
         assert info[0].endswith(' · dwell %.2f s · sep 100 mm'
                                 % sn._DEFAULT_DWELL_S), info
 
@@ -6066,11 +6067,10 @@ def test_oval_refusal_names_the_dwell_and_the_nearest_viable_value():
 
 
 def test_goal_dwell_wins_over_the_node_param_for_the_oval_selection(tmp_path):
-    """2026-10-21 (owner): dwell_s travels on the goal. The node param is the
+    """2026-10-21 (owner): dwell_s travels on the goal. The Pattern default is the
     columns 0.27, a goal sending 0.65 is planned at 0.65
     (the 22:53 sitting's refusal), and the resolved dwell is on the start event."""
     node = _oval_node('goal_dwell')
-    assert node._params['dwell_s'] == pytest.approx(0.27)
     with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(
             _goal('oval_1ball', separation_mm=150.0, dwell_s=0.65))
@@ -6078,14 +6078,20 @@ def test_goal_dwell_wins_over_the_node_param_for_the_oval_selection(tmp_path):
     assert resp.attempt['dwell_s'] == pytest.approx(0.65)
 
 
-def test_goal_dwell_zero_falls_back_to_the_node_param(tmp_path):
+def test_dwell_s_is_not_a_node_parameter():
+    """P4 B3a (D-P4-6): dwell is the Pattern's, not the node's. The parameter
+    is undeclared, so `ros2 param set /skill_node dwell_s` refuses by name."""
+    node = _oval_node('dwell_undeclared')
+    assert 'dwell_s' not in node._params
+    assert sn._pattern_default_dwell_s('oval_1ball') == pytest.approx(0.27)
+
+
+def test_goal_dwell_zero_means_the_pattern_default(tmp_path):
     node = _oval_node('goal_dwell0')
     with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        node._params['dwell_s'] = 0.27
         refused = node._start_pattern(_goal('oval_1ball', separation_mm=150.0))
-        node._params['dwell_s'] = 0.65
         ok = node._start_pattern(_goal('oval_1ball', separation_mm=150.0,
-                                       dwell_s=0.0))
+                                       dwell_s=0.65))
     assert refused.success is False and 'dwell 0.27 s' in refused.message
     assert ok.success is True, ok.message
     assert ok.attempt['dwell_s'] == pytest.approx(0.65)
@@ -6118,18 +6124,18 @@ def test_check_prints_the_oval_nomination_line_and_the_workspace_result():
 
 
 
-def test_check_oval_line_carries_the_node_dwell():
-    """Runsheet row 12a: `skills/check` nominates from the NODE's dwell_s
-    (0.65 here), and the oval line says so."""
+def test_check_oval_line_carries_the_pattern_default_dwell():
+    """`skills/check` nominates at the Pattern's default dwell (0.27; the node
+    parameter was retired, D-P4-6), and the oval line says so."""
     node, _client = _node_with_client()
     node._on_traj_status(_status())
     _freshen(node)
     node._params['separation_mm'] = 150.0
-    node._params['dwell_s'] = 0.65
+    assert 'dwell_s' not in node._params
     resp = node._svc_check(Trigger.Request(), Trigger.Response())
     [line] = [l for l in resp.message.split('; ')
               if l.startswith('nomination oval_1ball')]
-    assert 'dwell 0.65 s' in line
+    assert 'dwell 0.27 s' in line
 
 
 def test_hop_at_250_separation_is_accepted_by_the_nomination():

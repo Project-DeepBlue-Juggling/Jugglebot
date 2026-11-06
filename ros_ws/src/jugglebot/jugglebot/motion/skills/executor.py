@@ -144,6 +144,108 @@ EARLY_COMMAND_TOL_M = 0.001
 #: fraction against the larger apex scatter (same Discussion).
 EARLY_COMMAND_APEX_TOL_M = 0.002
 
+# ── P4: a per-beat change of a running Columns stream (D-P4-4) ──────────────
+#
+# :meth:`SkillExecutor.request_beat_change` swaps the running Schedule for one
+# recompiled from a changed beat stream (``schedule.columns_change`` +
+# ``Schedule.with_events``), from the FIRST CHANGEABLE Throw on: "one beat
+# later; the in-flight ball lands as thrown".  Every answer is a
+# :class:`BeatChange`; a refused request changes nothing.
+#
+# THREADING: ``request_beat_change`` is not called from ``tick`` and takes no
+# lock of its own.  A caller MUST hold the same lock its ``tick`` holds (the
+# skill node's tick lock): the request reads the dispatched set and swaps
+# ``self.schedule``, and a tick interleaved with it would dispatch against a
+# half-changed executor.  No node channel calls it yet (I-BEAT-1).
+
+#: Margin (s) past the early-command window a Skill must still be from its
+#: dispatch for its Throw to be changeable: 0.050 s = two ticks of the skill
+#: node's 40 Hz tick (``skill_node._TICK_HZ``), so the change can never land
+#: on the tick that opens the window (:meth:`SkillExecutor._early_command`) or
+#: the one after it.
+BEAT_CHANGE_GUARD_S = 0.050
+#: :class:`BeatChange` codes.  The compiler's refusals keep schedule.py's own
+#: ``BEAT_*`` names (every ValueError :func:`~jugglebot.motion.skills.
+#: schedule.columns_change` / :func:`~jugglebot.motion.skills.schedule.
+#: compile_beats` raises for a beat STARTS with its code, ``<CODE>: ...``).
+BEAT_CHANGE_OK = sch.BEAT_OK
+#: The running Schedule has no beat source (reload / rest / survivor tail).
+BEAT_NOT_SUPPORTED = sch.BEAT_NOT_SUPPORTED
+#: The Attempt is ending, ended, closing or a Stop was asked for.
+BEAT_CLOSING = 'BEAT_CLOSING'
+#: The request changes nothing (compared by value).
+BEAT_NO_CHANGE = 'BEAT_NO_CHANGE'
+#: No changeable Throw is left (see :meth:`SkillExecutor.first_changeable_throw`).
+BEAT_TOO_LATE = 'BEAT_TOO_LATE'
+#: The candidate differs from the running Schedule before its first
+#: changeable Skill, or has another Skill count (defence in depth: the
+#: compiler pins that it cannot happen).
+BEAT_PREFIX_CHANGED = 'BEAT_PREFIX_CHANGED'
+#: No ``beat_checker`` is bound: a changed tail is never admitted unplanned.
+BEAT_NO_CHECKER = 'BEAT_NO_CHECKER'
+#: The injected ``beat_checker`` (the planner walk) refused the candidate.
+BEAT_PLANNER_REFUSED = 'BEAT_PLANNER_REFUSED'
+#: The injected ``beat_checker`` raised: refused, never propagated.
+BEAT_CHECKER_ERROR = 'BEAT_CHECKER_ERROR'
+#: A compiler ValueError whose message carries no ``BEAT_*`` prefix (a
+#: defect in that contract; refused all the same).
+BEAT_COMPILE_REFUSED = 'BEAT_COMPILE_REFUSED'
+#: The executor holds state at or past the first changed Skill, or the
+#: candidate's Throw count differs (defence in depth:
+#: :meth:`SkillExecutor.first_changeable_throw` rules both out). Refused
+#: BEFORE anything is changed, never asserted after the swap.
+BEAT_STATE_CONFLICT = 'BEAT_STATE_CONFLICT'
+
+
+@dataclasses.dataclass(frozen=True)
+class BeatChange:
+    """The answer to :meth:`SkillExecutor.request_beat_change`: ``ok`` and
+    ``code`` (:data:`BEAT_CHANGE_OK` or a refusal name), the operator's
+    ``detail``, and ``from_throw``, the first changed Throw's index (``None``
+    when no changeable Throw was found)."""
+
+    ok: bool
+    code: str
+    detail: str
+    from_throw: Optional[int]
+
+
+def _same_value(a, b) -> bool:
+    """Field-for-field VALUE equality of Schedule objects (Skills, Sites,
+    ThenThrows, BeatEvents, numpy arrays, tuples) -- ``==`` on these
+    dataclasses compares numpy arrays and raises on distinct-but-equal
+    Sites.  Floats compare exactly."""
+    if a is b:
+        return True
+    if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+        try:
+            return bool(np.array_equal(np.asarray(a), np.asarray(b)))
+        except Exception:  # noqa: BLE001 -- unequal shapes / types
+            return False
+    if dataclasses.is_dataclass(a) and not isinstance(a, type):
+        if type(a) is not type(b):
+            return False
+        return all(_same_value(getattr(a, f.name), getattr(b, f.name))
+                   for f in dataclasses.fields(a))
+    if isinstance(a, (tuple, list)):
+        if not isinstance(b, (tuple, list)) or len(a) != len(b):
+            return False
+        return all(_same_value(x, y) for x, y in zip(a, b))
+    try:
+        return bool(a == b)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _beat_code(message: str) -> str:
+    """The ``BEAT_*`` code a compiler ValueError message starts with, or
+    :data:`BEAT_COMPILE_REFUSED` when it carries none."""
+    head = str(message).split(':', 1)[0].strip()
+    if head.startswith('BEAT_') and head.replace('_', '').isalpha() \
+            and head.isupper():
+        return head
+    return BEAT_COMPILE_REFUSED
+
 #: P3a stand-in rule (ii): a same-site fold whose carried Throw goes to
 #: ANOTHER Site (the hop) is checked by REFLECTING the dispatched Segment
 #: through the origin of the platform xy frame -- valid only when the two
@@ -2376,8 +2478,24 @@ class SkillExecutor:
                                                   Optional[float]]] = None,
                  catch_time_offset_s: float = 0.0,
                  planner_mode: str = uc.PLANNER_MODE_DEFAULT,
-                 carry_zvd: bool = sg.CARRY_ZVD_DEFAULT):
+                 carry_zvd: bool = sg.CARRY_ZVD_DEFAULT,
+                 beat_checker: Optional[Callable[[Schedule, int],
+                                                 Optional[str]]] = None):
         self.schedule = schedule
+        #: P4 (D-P4-4): ``beat_checker(candidate_schedule, first_changed_idx)
+        #: -> None | refusal str``, consulted by :meth:`request_beat_change`
+        #: on a compiled candidate before it replaces :attr:`schedule` (the
+        #: planner walk; the sim binds ``nominate``).  ``None`` = no walk.
+        self.beat_checker = beat_checker
+        #: The lowest first-changed Skill index of every ACCEPTED beat change
+        #: (``None`` = the stream runs as compiled).  :meth:`_throw_context`
+        #: reads the Skill's own dwell from here on (deliverable C).
+        self._beat_from_idx: Optional[int] = None
+        #: The identity band's beat after a change (:meth:`_identity_beat_s`;
+        #: ``None`` = ``schedule.beat_s``, bit-identical to before P4).
+        self._identity_beat: Optional[float] = None
+        #: Set by :meth:`stop_terminals`: the caller is stopping the Attempt.
+        self._stop_requested = False
         #: ``contact_probe(t0, t1)`` -> wall stamp of the first hand
         #: velocity KICK (cup struck by the ball) inside ``[t0, t1]``, or
         #: ``None`` (no kick / the history does not cover the span).  For the
@@ -2842,8 +2960,38 @@ class SkillExecutor:
         return (self._commanded_target_mm(target_site, u)
                 + self._flyback_for_offset_mm(r_mm, y_d, float(u[1])))
 
+    def _context_dwell_s(self, skill: Skill, idx: Optional[int]) -> float:
+        """The Dwell (s) the Learner's context carries for the Throw
+        ``skill`` releases (P4 deliverable C).
+
+        THE RULE.  While the stream runs as compiled (no accepted
+        :meth:`request_beat_change`; every Schedule without a ``source``)
+        it is ``schedule.dwell_for(ball_id)``, exactly as before P4 (NaN
+        when the Schedule cannot say).  After an accepted change, a Skill at
+        or past the first changed index (``idx >= _beat_from_idx``) that is a
+        CATCH carrying its Throw gets the Skill's OWN dwell,
+        ``then_throw.t_release_abs_s - t_abs_s``: the Schedule's scalars stay
+        the opening pair's, so ``dwell_for`` would name the old Dwell.  A
+        THROW from rest keeps ``dwell_for`` (a Columns change never reaches
+        THROW 0: ``columns_change`` refuses Throws 0 and 1).  Why not the
+        Skill's own dwell everywhere: for an unchanged Columns stream it
+        agrees with ``dwell_for`` only to float rounding, and the rows of
+        every unchanged stream stay bit for bit what they were."""
+        if (self._beat_from_idx is not None and idx is not None
+                and int(idx) >= self._beat_from_idx
+                and skill.kind == CATCH and skill.then_throw is not None):
+            return (float(skill.then_throw.t_release_abs_s)
+                    - float(skill.t_abs_s))
+        try:
+            dwell = float(self.schedule.dwell_for(skill.ball_id))
+        except (AttributeError, TypeError, ValueError, KeyError, IndexError):
+            dwell = float('nan')
+        if math.isinf(dwell):
+            dwell = float('nan')
+        return dwell
+
     def _throw_context(self, skill: Skill, rel_site, release_mm, target_site,
-                       y_d, seat_offset_m
+                       y_d, seat_offset_m, idx: Optional[int] = None
                        ) -> Tuple['lrn.ThrowContext', Tuple[np.ndarray, float]]:
         """THE one builder of the Learner's context for the Throw ``skill``
         releases, and that Throw's MODEL command: ``(ctx, (u_dy, u_apex))``.
@@ -2853,8 +3001,9 @@ class SkillExecutor:
         release velocity of the MODEL command (``ballistics_bc.launch_velocity``
         from the release to the model command's aim, :meth:`_aim_target_mm`,
         over ``flight_s(model apex)`` -- the closed form the envelope check
-        uses); ``dwell_s`` = ``schedule.dwell_for(ball_id)`` (NaN when the
-        Schedule cannot say); ``ball_id``; ``release_kind`` = ``'carried'``
+        uses); ``dwell_s`` = :meth:`_context_dwell_s` (``skill``'s index
+        ``idx``; ``schedule.dwell_for(ball_id)`` for an unchanged stream,
+        NaN when the Schedule cannot say); ``ball_id``; ``release_kind`` = ``'carried'``
         iff :func:`_is_carried`, else ``'free_cup'``; ``seat_offset_m``.
 
         The circle (the model command needs the context, the context needs
@@ -2877,12 +3026,7 @@ class SkillExecutor:
                                                 release_mm, y_dd, u),
                 flight), dtype=float) / 1000.0
 
-        try:
-            dwell = float(self.schedule.dwell_for(skill.ball_id))
-        except (AttributeError, TypeError, ValueError, KeyError, IndexError):
-            dwell = float('nan')
-        if math.isinf(dwell):
-            dwell = float('nan')
+        dwell = self._context_dwell_s(skill, idx)
         ctx = lrn.ThrowContext(
             site_xy_m=np.asarray(rel_site.cup_mm, dtype=float)[:2] / 1000.0,
             release_m=release_mm / 1000.0,
@@ -2919,7 +3063,8 @@ class SkillExecutor:
         propagates."""
         try:
             return self._throw_context(skill, rel_site, release_mm,
-                                       target_site, y_d, seat_offset_m)
+                                       target_site, y_d, seat_offset_m,
+                                       idx=idx)
         except ValueError as exc:
             if self._takes_context and not never_refuse:
                 raise _NoAdmissibleCommand(
@@ -4447,7 +4592,7 @@ class SkillExecutor:
         prior there is nothing to gate against: accept as before."""
         if landing is None:
             return None
-        band_s = tracked_landing_band_s(getattr(self.schedule, 'beat_s', None))
+        band_s = tracked_landing_band_s(self._identity_beat_s())
         if skill.landing_prior is not None:
             band_s = min(EXTERNAL_LANDING_TIME_BAND_S, band_s)
         else:
@@ -4498,7 +4643,7 @@ class SkillExecutor:
             return None, None
         sched_xy = (np.asarray(pend.target_xy_mm, dtype=float)[:2]
                     + 1000.0 * np.asarray(pend.u, dtype=float)[:2])
-        band_s = tracked_landing_band_s(getattr(self.schedule, 'beat_s', None))
+        band_s = tracked_landing_band_s(self._identity_beat_s())
         if band_cap_s is not None:
             band_s = min(band_s, float(band_cap_s))
         refusal = tracked_landing_refusal(
@@ -5432,6 +5577,9 @@ class SkillExecutor:
         release is the THROW after the DECAY REST, at a level site
         (``schedule.compile_reload``).
         """
+        # P4: a caller asking for the stop terminals is stopping the Attempt
+        # (:meth:`request_beat_change` refuses BEAT_CLOSING from here on).
+        self._stop_requested = True
         accepted = {idx for idx, _sk, res in self.results if res.accepted}
         pending = []
         for idx in accepted:
@@ -5541,8 +5689,386 @@ class SkillExecutor:
         rest = Skill(kind=REST, ball_id=y_skill.ball_id, site=y_skill.site,
                     t_abs_s=rest_t, window_s=sg.REST_TAIL_S)
         new_tail = sch._assign_leads(prefix + [stripped, rest])
+        # ``source=None``: a truncated Schedule is no longer the compile of
+        # its beat stream (``Schedule.source``'s contract), so a later
+        # :meth:`request_beat_change` refuses BEAT_NOT_SUPPORTED instead of
+        # recompiling the dropped ball's Throws back in (P4, D-P4-4).
         self.schedule = dataclasses.replace(self.schedule,
-                                            skills=tuple(new_tail))
+                                            skills=tuple(new_tail),
+                                            source=None)
+
+    # ── P4: a per-beat change of a running Columns stream (D-P4-4) ──
+
+    def _identity_beat_s(self) -> Optional[float]:
+        """The beat the two-ball identity band is a third of
+        (:func:`tracked_landing_band_s`): ``schedule.beat_s`` while the stream
+        runs as compiled (bit-identical to before P4); after an accepted beat
+        change the shortest release-to-release spacing it has seen (the
+        Schedule's scalar stays the OPENING pair's, and a shorter new Beat
+        would otherwise leave the band past half the spacing to the
+        neighbouring ball's landing)."""
+        if self._identity_beat is not None:
+            return self._identity_beat
+        return getattr(self.schedule, 'beat_s', None)
+
+    def _skill_untouched(self, k: int) -> bool:
+        """True when nothing about Skill ``k`` has been dispatched, computed,
+        cached or committed: no dispatch, no result, no command
+        (:attr:`_u_cache`, :attr:`_learned_u`), no context
+        (:attr:`_ctx_cache`), no early resolution (:attr:`_early_by_idx`), no
+        catch state (:attr:`_fit_latch_by_idx`, :attr:`_resend_counts`,
+        :attr:`_carried_release_mm`, :attr:`_carried_catch_xy_mm`,
+        :attr:`_hand_corrected`, :attr:`_bump_refused_mm`, the live catch, a
+        pending catch or outcome naming it)."""
+        if k in self.dispatched or any(i == k for i, _s, _r in self.results):
+            return False
+        for keyed in (self._u_cache, self._learned_u, self._ctx_cache,
+                      self._early_by_idx, self._fit_latch_by_idx,
+                      self._resend_counts, self._carried_release_mm,
+                      self._carried_catch_xy_mm, self._hand_corrected,
+                      self._bump_refused_mm):
+            if k in keyed:
+                return False
+        if self._live_catch is not None and int(self._live_catch[0]) == k:
+            return False
+        if any(p.catch_idx == k for p in self._pending_catches):
+            return False
+        if any(getattr(p, 'catch_idx', None) == k
+               for p in self._pending_outcomes):
+            return False
+        return True
+
+    def first_changeable_throw(self, t_now_s: float) -> Optional[int]:
+        """The first Throw a beat change requested at ``t_now_s`` may change,
+        or ``None`` (BEAT_TOO_LATE).
+
+        THE RULE: the lowest Throw index ``j >= 2`` (Throws 0 and 1 are the
+        opening pair, ``schedule.columns_change``) whose carrying Skill --
+        Skill ``j``, the CATCH carrying Throw ``j`` (B1's pinned
+        first-changed Skill rule) -- and every Skill after it are untouched
+        (:meth:`_skill_untouched`: not dispatched, no
+        :attr:`_early_by_idx` / :attr:`_u_cache` / :attr:`_learned_u` /
+        :attr:`_ctx_cache` entry, ...), and whose early-command window has
+        not opened: ``dispatch_s() - dispatch_lookahead_s -
+        EARLY_COMMAND_MAX_S - BEAT_CHANGE_GUARD_S > t_now_s``
+        (:meth:`_early_command`'s rule (d) opens the window at ``dispatch_s()
+        - dispatch_lookahead_s - EARLY_COMMAND_MAX_S``).  This IS "one beat
+        later; the in-flight ball lands as thrown": a Throw already released
+        or committed (its command computed, early or at dispatch) flies as
+        it was; the change takes the next Throw whose command nobody has
+        asked for yet, with two ticks of margin."""
+        src = getattr(self.schedule, 'source', None)
+        if src is None:
+            return None
+        skills = self.schedule.skills
+        n = len(src.events)
+        t_now = float(t_now_s)
+        for j in range(2, min(n, len(skills))):
+            sk = skills[j]
+            if (sk.kind != CATCH or sk.then_throw is None
+                    or int(sk.ball_id) != int(src.events[j].ball_id)):
+                continue                 # not Throw j's carrying Skill
+            if not all(self._skill_untouched(k)
+                       for k in range(j, len(skills))):
+                continue
+            opens = (float(sk.dispatch_s()) - self.dispatch_lookahead_s
+                     - EARLY_COMMAND_MAX_S - BEAT_CHANGE_GUARD_S)
+            if opens > t_now:
+                return j
+        return None
+
+    def _beat_closing_reason(self) -> str:
+        """Why the Attempt can no longer take a beat change ('' = it can):
+        :attr:`attempt_ended` (a refusal, an END named by the node, the
+        operator's Stop / cancel), :attr:`end_code` (an END already named
+        while a survivor tail runs), :attr:`_closing_state` (the D2 closing
+        decay is decided), :attr:`_stop_requested` (:meth:`stop_terminals`
+        was asked for the stop REST)."""
+        if self.attempt_ended:
+            return 'the Attempt has ended (%s)' % (self.end_code or 'ENDED')
+        if self.end_code:
+            return 'an END is named (%s)' % self.end_code
+        if self._closing_state:
+            return 'the Attempt is closing (%s)' % self._closing_state
+        if self._stop_requested:
+            return 'a Stop has been requested'
+        return ''
+
+    def request_beat_change(self, t_now_s: float, *,
+                            apex_m: Optional[float] = None,
+                            apex_m_ball_b: Optional[float] = None,
+                            dwell_s: Optional[float] = None) -> BeatChange:
+        """Change the running Columns stream's Apex(es) and/or Dwell from the
+        first changeable Throw on (:meth:`first_changeable_throw`), by
+        swapping :attr:`schedule` for its recompile
+        (``schedule.columns_change`` + ``Schedule.with_events``).  The
+        arguments follow ``columns_change`` (``apex_m_ball_b=None`` with
+        ``apex_m`` given = the same Apex for both balls).
+
+        Refused by name, in this order, and a refused request changes
+        NOTHING (:attr:`schedule` stays the same object):
+        :data:`BEAT_NOT_SUPPORTED` (no ``schedule.source``: reload / rest /
+        survivor-tail Schedules); :data:`BEAT_CLOSING`
+        (:meth:`_beat_closing_reason`); :data:`BEAT_NO_CHECKER` (no
+        :attr:`beat_checker` bound -- see below); :data:`BEAT_NO_CHANGE` (nothing
+        asked); ``schedule.BEAT_STREAM_INVALID`` (a value that is not a
+        finite positive number); :data:`BEAT_TOO_LATE`; the compiler's own
+        code (the ``BEAT_*`` its ValueError starts with, the message as
+        ``detail``); :data:`BEAT_NO_CHANGE` again (the stream from the first
+        changeable Throw on is the same by VALUE);
+        :data:`BEAT_PREFIX_CHANGED`; :data:`BEAT_STATE_CONFLICT`
+        (:meth:`_beat_state_conflict`); :data:`BEAT_PLANNER_REFUSED` /
+        :data:`BEAT_CHECKER_ERROR` (the injected :attr:`beat_checker`).
+        Nothing but a :class:`BeatChange` comes back: no exception escapes.
+
+        **The planner walk is MANDATORY (fail-safe by default).**  The
+        compiler's next-beat rule only refuses a transit under the 4-knot
+        window floor (``MIN_WINDOW_S``, 0.1 s), against about 0.3 s flown, so
+        without the walker an infeasible tail would be ACCEPTED here and end
+        the Attempt mid-pattern at command time.  The invariant: a changed
+        tail reaches the machine only after a planner walk.  This method is
+        its ONE enforcement point: with no :attr:`beat_checker` every
+        request is refused :data:`BEAT_NO_CHECKER`.
+
+        Accepted: ``self.schedule = candidate``, the index-keyed state
+        brought in line (table in the body), one INFO notice (the operator
+        channel, :attr:`notices`), ``BeatChange(True, 'OK', line, j)``.
+        Not called from :meth:`tick`: the caller owns the instant, and must
+        hold the same lock its tick holds."""
+        t_now = float(t_now_s)
+        sched = self.schedule
+
+        def refuse(code, detail, j=None):
+            return BeatChange(False, code, detail, j)
+
+        src = getattr(sched, 'source', None)
+        if src is None:
+            return refuse(BEAT_NOT_SUPPORTED,
+                          'this Schedule (pattern %r) has no beat source: a '
+                          'reload, rest or survivor-tail Schedule cannot '
+                          'change its beat' % (getattr(sched, 'pattern', '?'),))
+        why = self._beat_closing_reason()
+        if why:
+            return refuse(BEAT_CLOSING, why)
+        if self.beat_checker is None:
+            return refuse(BEAT_NO_CHECKER,
+                          'a change of a running stream is admitted only '
+                          'after the changed tail has been planned: construct '
+                          'the executor with beat_checker=... (the planner '
+                          'walk; the sim binds nominate)')
+        if apex_m is None and apex_m_ball_b is None and dwell_s is None:
+            return refuse(BEAT_NO_CHANGE, 'no Apex or Dwell was asked for')
+        for name, val in (('apex_m', apex_m), ('apex_m_ball_b', apex_m_ball_b),
+                          ('dwell_s', dwell_s)):
+            if val is None:
+                continue
+            try:
+                good = math.isfinite(float(val)) and float(val) > 0.0
+            except (TypeError, ValueError):
+                good = False
+            if not good:
+                return refuse(sch.BEAT_STREAM_INVALID,
+                              '%s must be finite and > 0, got %r' % (name, val))
+        j = self.first_changeable_throw(t_now)
+        if j is None:
+            return refuse(BEAT_TOO_LATE,
+                          'no changeable Throw left at %.3f: every remaining '
+                          'Throw is committed or inside its early-command '
+                          'window (+%.3f s guard)' % (t_now,
+                                                      BEAT_CHANGE_GUARD_S))
+        events = tuple(src.events)
+        try:
+            new_events = sch.columns_change(events, j, apex_m=apex_m,
+                                            apex_m_ball_b=apex_m_ball_b,
+                                            dwell_s=dwell_s)
+        except ValueError as exc:
+            return refuse(_beat_code(str(exc)), str(exc), j)
+        if all(_same_value(a.throw_site, b.throw_site)
+               and _same_value(a.catch_site, b.catch_site)
+               and abs(float(a.apex_m) - float(b.apex_m)) <= 1e-12
+               and abs(float(a.dwell_s) - float(b.dwell_s)) <= 1e-12
+               for a, b in zip(events[j:], new_events[j:])):
+            return refuse(BEAT_NO_CHANGE,
+                          'the stream from Throw %d on is unchanged' % j, j)
+        try:
+            cand = sched.with_events(new_events)
+        except ValueError as exc:
+            return refuse(_beat_code(str(exc)), str(exc), j)
+        old_sk, new_sk = sched.skills, cand.skills
+        if len(new_sk) != len(old_sk):
+            return refuse(BEAT_PREFIX_CHANGED,
+                          'the candidate has %d Skills, the running Schedule '
+                          '%d' % (len(new_sk), len(old_sk)), j)
+        first = next((k for k in range(len(old_sk))
+                      if not _same_value(old_sk[k], new_sk[k])), None)
+        if first is None:
+            return refuse(BEAT_NO_CHANGE,
+                          'the recompiled Schedule is the running one', j)
+        if first < j:
+            return refuse(BEAT_PREFIX_CHANGED,
+                          'Skill %d differs (before the first changeable '
+                          'Skill %d)' % (first, j), j)
+        conflict = self._beat_state_conflict(cand, first)
+        if conflict:
+            return refuse(BEAT_STATE_CONFLICT, conflict, j)
+        if self.beat_checker is not None:
+            try:
+                verdict = self.beat_checker(cand, first)
+            except Exception as exc:  # noqa: BLE001 -- refused, never raised
+                return refuse(BEAT_CHECKER_ERROR,
+                              '%s: %s' % (type(exc).__name__, exc), j)
+            if verdict is not None:
+                return refuse(BEAT_PLANNER_REFUSED, str(verdict), j)
+        line = self._beat_change_line(t_now, j, events, new_events,
+                                      apex_m, apex_m_ball_b, dwell_s)
+        self._apply_beat_change(cand, first)
+        self._notice('INFO', line)
+        return BeatChange(True, BEAT_CHANGE_OK, line, j)
+
+    @staticmethod
+    def _beat_change_line(t_now, j, events, new_events, apex_m,
+                          apex_m_ball_b, dwell_s) -> str:
+        """``[t] BEAT CHANGE from throw j: apex a -> b m, dwell c -> d s
+        (transition dwell x s on throw j+1)`` -- the commanded values as
+        ``columns_change`` reads and defaults them (a high-low pair prints
+        as ``A/B``)."""
+        ea, eb = events[j - 2], events[j - 1]
+        cur = {int(ea.ball_id): float(ea.apex_m),
+               int(eb.ball_id): float(eb.apex_m)}
+        fa, fb = sch.flight_s(ea.apex_m), sch.flight_s(eb.apex_m)
+        d_old = float(ea.dwell_s) if fa >= fb else float(eb.dwell_s)
+        a0 = float(apex_m) if apex_m is not None else cur[0]
+        a1 = (float(apex_m_ball_b) if apex_m_ball_b is not None
+              else float(apex_m) if apex_m is not None else cur[1])
+        d_new = float(dwell_s) if dwell_s is not None else d_old
+
+        def _apex(x0, x1):
+            return ('%.3f' % x0 if abs(x0 - x1) <= 1e-12
+                    else '%.3f/%.3f' % (x0, x1))
+
+        if j + 1 < len(new_events):
+            trans = ('transition dwell %.4f s on throw %d'
+                     % (float(new_events[j + 1].dwell_s), j + 1))
+        else:
+            trans = 'no transition: throw %d is the Stop' % j
+        return ('%.3f BEAT CHANGE from throw %d: apex %s -> %s m, dwell '
+                '%.3f -> %.3f s (%s)' % (t_now, j, _apex(cur[0], cur[1]),
+                                         _apex(a0, a1), d_old, d_new, trans))
+
+    def _apply_beat_change(self, cand: Schedule, first: int) -> None:
+        """Install the accepted candidate (:meth:`request_beat_change`).
+        ``first`` is the first Skill that differs; every Skill before it is
+        field-identical (checked by the caller) and every Skill from it on
+        is untouched (:meth:`first_changeable_throw`). "Checked first" =
+        :meth:`_beat_state_conflict`, a named refusal before this is called.
+
+        The index-keyed state of ``__init__``, one by one:
+
+        ====================================  ==================================
+        attribute                             why it is safe
+        ====================================  ==================================
+        dispatched, results                   prefix-only (checked first)
+        _u_cache, _learned_u, _ctx_cache      prefix-only (checked first)
+        _early_by_idx                         prefix-only (checked first)
+        _fit_latch_by_idx, _resend_counts     prefix-only (checked first)
+        _carried_release_mm,                  prefix-only (checked first)
+        _carried_catch_xy_mm
+        _hand_corrected, _bump_refused_mm     prefix-only (checked first)
+        _live_catch                           prefix-only (checked first)
+        _resend_notes ((idx, reason)),        CLEARED at >= first (once-per
+        _identity_refused (('catch', idx))    notes; a new Skill may re-note)
+        _pending_catches                      prefix-only: a dispatched CATCH's
+                                              own release and its other-ball
+                                              landing are Skills < first
+                                              (checked first)
+        _pending_outcomes                     RE-DERIVED: ``t_next_release_s``
+                                              / ``t_seat_close_s`` of Throws
+                                              first-2, first-1 read the
+                                              changed releases
+        _closing_idx, _closing_catch_idx      unset: a closing Attempt is
+                                              refused (BEAT_CLOSING)
+        n_throws                              equal (checked first: the change
+                                              keeps the Throw count)
+        _n_registered, reports                prefix-only (registered Throws)
+        _identity_refused (('throw', n))      throw numbers of released balls
+        _beat_from_idx                        min(first, previous)
+        _identity_beat                        min(beat, new release spacing)
+        ====================================  ==================================
+        """
+        # Everything that could fail is computed BEFORE the first mutation
+        # (audit 2026-11-06): the checks live in :meth:`_beat_state_conflict`
+        # and are refusals, so nothing here asserts and the swap comes last.
+        old_beat = self._identity_beat_s()
+        updates = []
+        for pend in self._pending_outcomes:
+            k = next((i for i in range(first)
+                      if int(cand.skills[i].ball_id) == int(pend.ball_id)
+                      and float(pend.t_release_s) in
+                      sch._release_instants(cand.skills[i])), None)
+            if k is None:
+                continue
+            nxt = _next_release(cand, k, pend.ball_id)
+            updates.append((pend, nxt,
+                            _seat_close(cand, pend.ball_id,
+                                        pend.t_land_scheduled_s, nxt)))
+        rel = sorted(t for sk in cand.skills
+                     for t in sch._release_instants(sk))
+        gaps = [b - a for a, b in zip(rel, rel[1:]) if b - a > 1e-9]
+        beats = [b for b in [old_beat] + gaps
+                 if b is not None and math.isfinite(float(b))]
+        identity_beat = min(beats) if beats else None
+        resend_notes = {key for key in self._resend_notes
+                        if int(key[0]) < first}
+        identity_refused = {
+            key for key in self._identity_refused
+            if not (key[0] == 'catch' and int(key[1]) >= first)}
+        # ---- commit: plain assignments only ----
+        self._resend_notes = resend_notes
+        self._identity_refused = identity_refused
+        for pend, nxt, close in updates:
+            pend.t_next_release_s = nxt
+            pend.t_seat_close_s = close
+        self._beat_from_idx = (first if self._beat_from_idx is None
+                               else min(self._beat_from_idx, first))
+        self._identity_beat = identity_beat
+        self.schedule = cand
+
+    def _beat_state_conflict(self, cand: Schedule,
+                             first: int) -> Optional[str]:
+        """None, or why the executor's index-keyed state forbids replacing
+        the Schedule from Skill ``first`` on (the "prefix-only" rows of
+        :meth:`_apply_beat_change`'s table): a refusal
+        (:data:`BEAT_STATE_CONFLICT`) BEFORE anything changes, never an
+        assert after the swap. Reads only."""
+        for keyed, name in ((self.dispatched, 'dispatched'),
+                            ({i for i, _s, _r in self.results}, 'results'),
+                            (self._u_cache, '_u_cache'),
+                            (self._learned_u, '_learned_u'),
+                            (self._ctx_cache, '_ctx_cache'),
+                            (self._early_by_idx, '_early_by_idx'),
+                            (self._fit_latch_by_idx, '_fit_latch_by_idx'),
+                            (self._resend_counts, '_resend_counts'),
+                            (self._carried_release_mm, '_carried_release_mm'),
+                            (self._carried_catch_xy_mm,
+                             '_carried_catch_xy_mm'),
+                            (self._hand_corrected, '_hand_corrected'),
+                            (self._bump_refused_mm, '_bump_refused_mm'),
+                            ({p.catch_idx for p in self._pending_catches},
+                             '_pending_catches')):
+            late = sorted(int(k) for k in keyed if int(k) >= first)
+            if late:
+                return ('beat change from Skill %d: %s holds %r'
+                        % (first, name, late))
+        if self._live_catch is not None and int(self._live_catch[0]) >= first:
+            return ('beat change from Skill %d: the live catch is Skill %d'
+                    % (first, int(self._live_catch[0])))
+        n_throws = sum(1 for sk in cand.skills
+                       if sk.kind == THROW
+                       or (sk.kind == CATCH and sk.then_throw is not None))
+        if n_throws != self.n_throws:
+            return ('the candidate has %d Throws, the running Schedule %d'
+                    % (n_throws, self.n_throws))
+        return None
 
     def _report_feed(self, pend: _PendingCatch, t_seat_s: float) -> None:
         """Queue the ``feed`` line for a Ball Butler feed catch that seated.

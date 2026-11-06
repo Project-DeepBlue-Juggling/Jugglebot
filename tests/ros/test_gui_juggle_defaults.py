@@ -150,3 +150,16 @@ def test_param_backed_goals_write_the_node_parameter_before_dispatch():
     assert "const FIELD_KEYS = GOAL_FIELD_KEYS.concat(PARAM_FIELD_KEYS);" in JS
     # the juggle_start echo closes the stale-relay cross-check for both
     assert "f.angle_deg" in JS and "f.apex_m_ball2" in JS
+
+
+def test_dwell_is_not_fetched_as_a_node_parameter_and_blank_means_the_node_default():
+    """Dwell left skill_node's parameters at learner-generalisation P4 (2026-11-06): the panel
+    must not ask the node for it, and the dwell it shows for a blank field is the node's own
+    default for a goal that sends ``dwell_s = 0``."""
+    import jugglebot.skill_node as sn
+    names = re.search(r"const PARAM_NAMES = \[(.*?)\];", JS).group(1)
+    assert "'dwell_s'" not in names
+    default = float(re.search(r"export const DEFAULT_DWELL_S = ([\d.]+);", JS).group(1))
+    assert default == sn._DEFAULT_DWELL_S
+    body = re.search(r"function effective\(key\) \{(.*?)\n\}", JS, re.S).group(1)
+    assert "key === 'dwell_s'" in body and 'DEFAULT_DWELL_S' in body

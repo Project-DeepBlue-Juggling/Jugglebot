@@ -416,6 +416,16 @@ _DEFAULT_SEPARATION_MM = 250.0
 #: jerk-bound at 0.25 (205-226 k against 180 k -- the catch-with-throw has
 #: 50 ms less to re-level for its throw), and passes all three at 0.27.
 _DEFAULT_DWELL_S = 0.27
+
+
+def _pattern_default_dwell_s(pattern_name: str) -> float:
+    """The dwell (s) a goal with ``dwell_s == 0`` gets for ``pattern_name``.
+
+    One value for every Pattern, exactly what the retired ``dwell_s`` node
+    parameter defaulted to: the GUI pre-fills the oval Patterns with 0.65 on
+    the goal itself, so a bare goal has always planned them at 0.27.
+    """
+    return _DEFAULT_DWELL_S
 _DEFAULT_N_THROWS = 4
 
 #: The columns schedule's first skill installs this long after a columns
@@ -756,7 +766,15 @@ _LEARNER_LOCK = threading.Lock()
 
 
 class SkillNode(Node):
-    """Schedule-driven skill dispatch shell (plan § 2.4)."""
+    """Schedule-driven skill dispatch shell (plan § 2.4).
+
+    Dwell is NOT a node parameter (plan `online-admissibility` § 2.6, design
+    D-P4-6): it is a property of the Pattern. A goal's ``dwell_s == 0`` means
+    the Pattern's default dwell (:func:`_pattern_default_dwell_s`), and a
+    ``skills/nominate`` request may carry ``dwell_s=``. The ``dwell_s``
+    parameter was retired, so ``ros2 param set /skill_node dwell_s ...`` now
+    fails as an undeclared parameter -- the intended by-name refusal.
+    """
 
     def __init__(self, robot_name: str = _DEFAULT_PLANT_ID):
         super().__init__('skill_node')
@@ -1150,7 +1168,6 @@ class SkillNode(Node):
         # pattern builds the straight pair); refused live while a goal is
         # active (`_on_set_parameters`), like `planner_mode`.
         self.declare_parameter('columns_angle_deg', 0.0)
-        self.declare_parameter('dwell_s', _DEFAULT_DWELL_S)
         # Ball 2's own Apex (m) for the `columns_highlow` goal ONLY (JP-9, map
         # JB-107; the Juggle goal has no second Apex field). 0.0 = unset, which
         # that goal refuses by name; every other goal ignores it. Refused while
@@ -4086,8 +4103,8 @@ class SkillNode(Node):
         apex_m = (float(goal.apex_m) or float(self.get_parameter('apex_m').value))
         separation_mm = (float(goal.separation_mm)
                          or float(self.get_parameter('separation_mm').value))
-        # One dwell per goal (2026-10-21, owner): the goal's, else the param.
-        dwell_s = (float(goal.dwell_s) or float(self.get_parameter('dwell_s').value))
+        # One dwell per goal (2026-10-21, owner): the goal's, else the Pattern's default.
+        dwell_s = (float(goal.dwell_s) or _pattern_default_dwell_s(pattern))
         n_throws = (int(goal.num_cycles)
                    or int(self.get_parameter('n_throws').value))
         turned_angle_deg = 0.0
@@ -6728,7 +6745,8 @@ class SkillNode(Node):
         optional keys ``apex_m_ball2=`` and ``columns_angle_deg=`` (each
         overrides the node parameter of the same name for THIS nomination
         only; nothing is written). Blank / 0 fields fall back to the node
-        parameters exactly as a goal's zero fields do. Reply: ``success`` =
+        parameters (a zero ``dwell_s`` the Pattern's default dwell) exactly as a
+        goal's zero fields do. Reply: ``success`` =
         viable, ``message`` = the one-line summary, then one refusal line per
         line. Never moves anything, never touches ``_executor``, runs while
         own callback group. While an Attempt is running (the predicate
@@ -6768,7 +6786,7 @@ class SkillNode(Node):
         separation_mm = (vals.get('separation_mm', 0.0)
                          or float(self.get_parameter('separation_mm').value))
         dwell_s = (vals.get('dwell_s', 0.0)
-                   or float(self.get_parameter('dwell_s').value))
+                   or _pattern_default_dwell_s(pattern))
         apex_m_ball2 = None
         angle_deg = 0.0
         feed_site = None
@@ -6889,7 +6907,6 @@ class SkillNode(Node):
         # reported (self-toss at the node's Site, the hop at the node's
         # separation, the oval at the node parameters), every refusal at once.
         check_apex_m = float(self.get_parameter('apex_m').value)
-        check_dwell_s = float(self.get_parameter('dwell_s').value)
         sep_mm = float(self.get_parameter('separation_mm').value)
         lines.append('planner_mode: %s' % self._planner_mode())
         lines.append('carry_zvd: %s' % str(self._carry_zvd()).lower())
@@ -6902,7 +6919,7 @@ class SkillNode(Node):
         for name in (() if running is not None
                      else ('self_toss', 'hop', 'oval_1ball')):
             res = self._nominate(self._nomination_config(
-                name, check_apex_m, sep_mm, check_dwell_s))
+                name, check_apex_m, sep_mm, _pattern_default_dwell_s(name)))
             line = re.sub(r'^nomination (OK|REFUSED)',
                           r'nomination %s: \1' % name, res.summary)
             if res.ok:

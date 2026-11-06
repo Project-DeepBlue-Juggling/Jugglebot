@@ -172,7 +172,7 @@ def test_the_nomination_runs_once_per_goal_and_never_for_magazine_or_reload(
         assert node._start_pattern(_hop_goal(separation_mm=250.0)).success
         assert [c.pattern for c in calls] == ['hop']
         assert calls[0].separation_mm == 250.0 and calls[0].dwell_s == pytest.approx(
-            float(node.get_parameter('dwell_s').value))
+            sn._pattern_default_dwell_s('hop'))
         node2, _ = _ready_node('plumb2', seated=False)
         _reload_ready(node2)
         node2._start_pattern(_goal('reload'))
@@ -462,3 +462,13 @@ def test_the_nomination_entry_matches_the_flown_compile(pattern, entry):
     # the one flag both the compile (`_install_columns_schedule`) and the
     # config read
     assert sn._FED_COLUMNS_HOP_ENTRY is True
+
+
+def test_nominate_request_dwell_is_used_and_zero_is_the_pattern_default():
+    """P4 B3a: `skills/nominate` takes `dwell_s=` in the request; absent = the
+    Pattern default (the node parameter is retired)."""
+    node, _ = _ready_node('nomdwell')
+    with_dwell = _nominate_req(node, 'oval_1ball,separation_mm=150,dwell_s=0.65')
+    without = _nominate_req(node, 'oval_1ball,separation_mm=150')
+    assert 'dwell 0.65 s' in with_dwell.message
+    assert 'dwell 0.27 s' in without.message

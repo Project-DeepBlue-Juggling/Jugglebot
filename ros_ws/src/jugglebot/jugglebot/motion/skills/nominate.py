@@ -786,6 +786,23 @@ def nominate(config: NominationConfig, limits: Optional[TrajectoryLimits] = None
     return rep
 
 
+def walk_schedule(schedule, limits, geom, cfg, rungs=RUNGS, *,
+                  counter=None) -> List[SegmentVerdict]:
+    """Every Skill of ``schedule`` planned at every rung: THE nomination
+    criterion (a Schedule is viable iff no verdict here is ``not ok``).
+
+    One function so goal acceptance (:func:`nominate`) and anything else that
+    admits a Schedule by nomination -- the change of a running stream
+    (``SkillExecutor(beat_checker=...)``, I-BEAT-1) -- cannot drift apart: a
+    change checked at rung 0 only would admit what a goal at the same
+    parameters is refused for."""
+    verdicts: List[SegmentVerdict] = []
+    for f in rungs:
+        verdicts.extend(plan_nominal(schedule, limits, geom, cfg, f,
+                                     counter=counter))
+    return verdicts
+
+
 def _nominate_once(config, limits, geom, rungs) -> NominationReport:
     t0 = time.perf_counter()
     if config.pattern in NOT_NOMINATED_PATTERNS:
@@ -798,10 +815,8 @@ def _nominate_once(config, limits, geom, rungs) -> NominationReport:
                                 time.perf_counter() - t0, 0)
     cfg = segment_config(config)
     counter = [0]
-    verdicts: List[SegmentVerdict] = []
-    for f in rungs:
-        verdicts.extend(plan_nominal(schedule, limits, geom, cfg, f,
-                                     counter=counter))
+    verdicts = walk_schedule(schedule, limits, geom, cfg, rungs,
+                             counter=counter)
     refusals = _collapse([v for v in verdicts if not v.ok])
     if not any(v.kind != REST for v in verdicts):
         # Nothing was walked (empty rungs, or a Schedule with no non-REST

@@ -302,6 +302,11 @@ class SkillsGateConfig:
         default_factory=lambda: NoiseConfig(bb_throw_noise_frac=0.0,
                                             tracking_noise_mm=0.5))
     report_path: str = None
+    #: P4 (D-P4-7): a parsed ``--beat-change`` (:func:`parse_beat_change`:
+    #: ``{'throw': K, 'apex': A, 'dwell': D, 'apex2': B}``, any subset past
+    #: ``throw``), requested ONCE at the first tick after Throw K-1's release.
+    #: ``None`` = the plain gate, every number unchanged.
+    beat_change: Optional[dict] = None
 
 
 @dataclasses.dataclass
@@ -340,10 +345,16 @@ class SkillsTrialResult:
     #: vacuously True when there was no Stop to check).
     final_cup_ok: bool = False
     passed: bool = False
+    #: ``--beat-change`` runs only: the request, its outcome and the P4
+    #: criteria (:func:`_beat_criteria`).  ``None`` (a plain run) is left out
+    #: of the report so a plain report is unchanged field for field.
+    beat: Optional[dict] = None
 
     def to_dict(self) -> dict:
         d = dataclasses.asdict(self)
         d['flags_seen'] = [hex(f) for f in self.flags_seen]
+        if d.get('beat') is None:
+            d.pop('beat', None)
         return d
 
 
@@ -1358,6 +1369,273 @@ def _wall_ms_stats(wall_s) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# P4 (D-P4-7): a mid-pattern beat change on the plain two-ball Columns gate
+# ---------------------------------------------------------------------------
+
+#: Tolerance (s) between a physical release tick and the Schedule's release
+#: instant: the stream loop pops a release on the first 2 ms tick at or after
+#: the installed instant (``TICK_S``), plus 1 ms for float noise.
+BEAT_RELEASE_TOL_S = TICK_S + 1.0e-3
+#: Tolerance (s) between a measured touch-down-to-release span and the
+#: Schedule's Dwell (after the constant make-latency offset,
+#: :func:`_beat_criteria`): the measured pre-change scatter is +-11 ms, a
+#: Dwell change under test is >= 30 ms.
+BEAT_DWELL_SPAN_TOL_S = 0.025
+#: Throws in the short fresh stream the gate's ``beat_checker`` plans.
+BEAT_CHECK_N_THROWS = 8
+
+_BEAT_SPEC_KEYS = ('throw', 'apex', 'dwell', 'apex2')
+
+
+def parse_beat_change(spec: str) -> dict:
+    """``--beat-change`` grammar: comma-separated ``key=value``; keys
+    ``throw`` (int >= 3, required), ``apex`` (m), ``dwell`` (s) and
+    ``apex2`` (m, ball 2's new Apex); at least one of apex / dwell / apex2.
+    Raises ``ValueError`` naming the problem."""
+    out = {}
+    for part in str(spec).split(','):
+        key, eq, val = part.strip().partition('=')
+        if not eq or key not in _BEAT_SPEC_KEYS:
+            raise ValueError('bad --beat-change item %r (grammar: throw=K,'
+                             'apex=A,dwell=D,apex2=B)' % (part,))
+        if key in out:
+            raise ValueError('--beat-change key %r given twice' % key)
+        try:
+            out[key] = int(val) if key == 'throw' else float(val)
+        except ValueError:
+            raise ValueError('--beat-change %s=%r is not a number' % (key, val))
+    if 'throw' not in out:
+        raise ValueError('--beat-change needs throw=K')
+    if out['throw'] < 3:
+        raise ValueError('--beat-change throw=%d: K must be >= 3 (the request '
+                         'is made after Throw K-1 is released; Throws 0 and 1 '
+                         'are the opening pair)' % out['throw'])
+    if not any(k in out for k in ('apex', 'dwell', 'apex2')):
+        raise ValueError('--beat-change needs at least one of apex=, dwell=, '
+                         'apex2=')
+    for k in ('apex', 'dwell', 'apex2'):
+        if k in out and not (math.isfinite(out[k]) and out[k] > 0.0):
+            raise ValueError('--beat-change %s must be finite and > 0' % k)
+    return out
+
+
+def _beat_request_kwargs(spec: dict) -> dict:
+    """The ``columns_change`` / ``request_beat_change`` keywords of ``spec``."""
+    kw = {}
+    if 'apex' in spec:
+        kw['apex_m'] = float(spec['apex'])
+    if 'apex2' in spec:
+        kw['apex_m_ball_b'] = float(spec['apex2'])
+    if 'dwell' in spec:
+        kw['dwell_s'] = float(spec['dwell'])
+    return kw
+
+
+def _release_times(sched: 'sk.Schedule') -> list:
+    """Every release instant of ``sched``, in time order: entry ``n`` is
+    Throw ``n``'s (Throw n is the n-th release of a Columns stream)."""
+    return sorted(t for s in sched.skills for t in sk._release_instants(s))
+
+
+def _expected_first_changeable(executor, t_now: float):
+    """The first Throw a change requested at ``t_now`` may take, recomputed
+    from the live Schedule and the dispatched set (NOT by calling
+    ``executor.first_changeable_throw``): the lowest ``j >= 2`` whose
+    carrying Skill ``j`` (the CATCH with a ``then_throw``, same ball as event
+    ``j``) and every Skill after it is not yet dispatched, and whose
+    early-command window has not opened (``dispatch_s - lookahead -
+    EARLY_COMMAND_MAX_S - BEAT_CHANGE_GUARD_S > t_now``).  ``None`` = too
+    late."""
+    sched = executor.schedule
+    src = sched.source
+    skills = sched.skills
+    for j in range(2, min(len(src.events), len(skills))):
+        s = skills[j]
+        if (s.kind != CATCH or s.then_throw is None
+                or int(s.ball_id) != int(src.events[j].ball_id)):
+            continue
+        if any(k in executor.dispatched for k in range(j, len(skills))):
+            continue
+        opens = (float(s.dispatch_s()) - float(executor.dispatch_lookahead_s)
+                 - ex.EARLY_COMMAND_MAX_S - ex.BEAT_CHANGE_GUARD_S)
+        if opens > float(t_now):
+            return j
+    return None
+
+
+def _make_beat_checker(cfg, limits, geom, seg_cfg, executor_box: list):
+    """The ``beat_checker(candidate, first_changed_idx)`` of a ``--beat-change``
+    run: plans the changed neighbourhood with the nomination walker
+    (``nominate.walk_schedule``: every rung, the criterion a goal is accepted
+    by) at the gate's limits; returns the first refusal's line, or ``None``.
+
+    The neighbourhood is a SHORT FRESH Columns stream (``BEAT_CHECK_N_THROWS``
+    Throws at the standing parameters, changed from Throw 2 on through
+    ``schedule.columns_change``), so the cost does not grow with K.  This is
+    a NOMINAL check of the transition, not of the running seed: it walks the
+    nominal release chain from rest, not the machine's actual state at the
+    request instant.  It is cross-checked against the candidate: the changed
+    Throws' Apex and Dwell in the short stream must equal the candidate's."""
+    from jugglebot.motion.skills import nominate as nom
+    spec_kw = _beat_request_kwargs(cfg.beat_change)
+
+    def checker(cand, first):
+        site0, site1 = sites.columns_sites(cfg.separation_mm, cfg.angle_deg)
+        pat = sk.Pattern(sites=(site0, site1), apex_m=cfg.apex_m,
+                         dwell_s=cfg.dwell_s, n_throws=BEAT_CHECK_N_THROWS,
+                         apex_m_ball_b=cfg.apex_m_ball2)
+        base = sk.compile_columns(pat, nom.DUMMY_T0_S)
+        try:
+            ev = sk.columns_change(base.source.events, 2, **spec_kw)
+            short = base.with_events(ev)
+        except ValueError as exc:
+            return 'neighbourhood does not compile: %s' % exc
+        old = executor_box[0].schedule.source.events
+        new = cand.source.events
+        jc = next((i for i in range(len(old))
+                   if (abs(old[i].apex_m - new[i].apex_m) > 1e-12
+                       or abs(old[i].dwell_s - new[i].dwell_s) > 1e-12)), None)
+        if jc is not None:
+            for off in range(min(4, len(new) - jc, len(ev) - 2)):
+                a, b = new[jc + off], ev[2 + off]
+                if (abs(a.apex_m - b.apex_m) > 1e-9
+                        or abs(a.dwell_s - b.dwell_s) > 1e-9):
+                    return ('neighbourhood disagrees with the candidate at '
+                            'changed Throw %d (apex %.4f vs %.4f, dwell %.4f '
+                            'vs %.4f)' % (jc + off, a.apex_m, b.apex_m,
+                                          a.dwell_s, b.dwell_s))
+        # The SAME criterion a goal is accepted by (every rung of
+        # ``nominate.RUNGS``, margin included), never a weaker one.
+        for v in nom.walk_schedule(short, limits, geom, seg_cfg):
+            if not v.ok:
+                return v.line()
+        return None
+
+    return checker
+
+
+def _beat_criteria(*, spec: dict, sched0: 'sk.Schedule', result,
+                   sched_after: 'sk.Schedule', expected_j, trace: dict) -> dict:
+    """Score a ``--beat-change`` run: pure over recorded data, so the tests
+    can corrupt the data and watch each criterion fail.
+
+    ``trace`` is :meth:`SkillsGate._stream_chain`'s: ``releases`` (one dict
+    per physical release in time order: ``t``, ``z0_mm``, ``zmax_mm``,
+    ``ball``) and ``captures`` (``(t, ball)``).  Every expectation is built
+    here from ``sched0`` and the gate's OWN ``expected_j`` -- never from the
+    Schedule the executor ended with, which would agree with a wrongly
+    placed change.
+
+    Apex is compared as the ratio measured / commanded (the sim plant has a
+    gain: its hand does not deliver exactly the commanded takeoff speed): the
+    gain is the median ratio before the change, and every Throw must sit
+    within ``APEX_BAND_MM`` (the gate's apex tolerance) of ``gain x
+    commanded``."""
+    out = dict(spec=dict(spec))
+    refused_expected = (result is not None and not result.ok)
+    if result is None:
+        out.update(requested=False, ok=False)
+        return out
+    out.update(requested=True, request_ok=bool(result.ok),
+               code=str(result.code), detail=str(result.detail),
+               from_throw=result.from_throw, expected_from=expected_j)
+    if refused_expected:
+        out['change_refused_by_name'] = bool(
+            result.code in _SCHEDULE_REFUSAL_CODES
+            and sched_after is sched0)
+        out['ok'] = out['change_refused_by_name']
+        return out
+    kw = _beat_request_kwargs(spec)
+    j = expected_j
+    applied = bool(result.ok and j is not None
+                   and result.from_throw == j and sched_after is not sched0)
+    out['change_applied'] = applied
+    if j is None:
+        out.update(change_one_beat_later=False, release_instants_ok=False,
+                   ok=False)
+        return out
+    try:
+        ref = sched0.with_events(
+            sk.columns_change(sched0.source.events, j, **kw))
+    except ValueError as exc:
+        # The executor ACCEPTED a change the gate's own recompile refuses.
+        out.update(change_one_beat_later=False, release_instants_ok=False,
+                   reference_compile_error=str(exc), ok=False)
+        return out
+    ev_old, ev_new = sched0.source.events, ref.source.events
+    rel_old, rel_new = _release_times(sched0), _release_times(ref)
+    recs = trace['releases']
+    n_rec = len(recs)
+    meas = [(r['zmax_mm'] - r['z0_mm']) for r in recs]
+    exp_mm = [1000.0 * float(ev_new[n].apex_m) for n in range(n_rec)]
+    pre = [meas[n] / exp_mm[n] for n in range(min(j, n_rec))]
+    gain = float(np.median(pre)) if pre else float('nan')
+    apex_err = [abs(meas[n] - gain * exp_mm[n]) for n in range(n_rec)]
+    pre_rel_err = [abs(recs[n]['t'] - rel_old[n]) for n in range(min(j, n_rec))]
+    apex_ok = bool(n_rec == len(ev_new) and apex_err
+                   and max(apex_err) <= APEX_BAND_MM)
+    out['change_one_beat_later'] = bool(
+        apex_ok and pre_rel_err and max(pre_rel_err) <= BEAT_RELEASE_TOL_S)
+    rel_err = [abs(recs[n]['t'] - rel_new[n]) for n in range(n_rec)]
+    out['release_instants_ok'] = bool(
+        n_rec == len(rel_new) and rel_err
+        and max(rel_err) <= BEAT_RELEASE_TOL_S)
+    # touch-down -> release spans: the capture of the throwing ball just
+    # before its release (Throw n is ball n % 2).
+    spans = {}
+    for n in range(1, n_rec):
+        b = int(recs[n]['ball'])
+        caps = [t for (t, cb) in trace['captures']
+                if cb == b and t <= recs[n]['t'] + 1e-9]
+        if caps:
+            spans[n] = recs[n]['t'] - caps[-1]
+    # The plant's contact make fires a constant few ms after the scheduled
+    # touch-down (MEASURED 2026-11-06, plain run: spans 0.282..0.304 s against
+    # a 0.270 s Dwell, before any change), so, like the apex gain, the
+    # offset is the median over the Throws BEFORE the change and the
+    # criterion is on the span minus that offset.
+    pre_off = [s - float(ev_new[n].dwell_s) for n, s in spans.items()
+               if n < j]
+    span_off = float(np.median(pre_off)) if pre_off else 0.0
+    dwell_err = {n: abs(s - float(ev_new[n].dwell_s) - span_off)
+                 for n, s in spans.items()}
+    out['span_offset_s'] = span_off
+    out['dwell_span_err_s'] = (max(dwell_err.values()) if dwell_err
+                               else float('nan'))
+    if j + 1 in dwell_err:
+        out['transition_span_s'] = spans[j + 1]
+        out['transition_dwell_s'] = float(ev_new[j + 1].dwell_s)
+    out['dwell_spans_ok'] = bool(dwell_err and max(dwell_err.values())
+                                 <= BEAT_DWELL_SPAN_TOL_S)
+    out['apex_gain'] = gain
+    out['apex_measured_mm'] = [round(m, 1) for m in meas]
+    out['apex_expected_mm'] = [round(e, 1) for e in exp_mm]
+    out['apex_err_max_mm'] = max(apex_err) if apex_err else float('nan')
+    out['release_err_max_s'] = max(rel_err) if rel_err else float('nan')
+    out['dwell_spans_s'] = {str(n): round(s, 4) for n, s in spans.items()}
+    out['transition'] = dict(
+        throw=j + 1 if j + 1 < len(ev_new) else None,
+        dwell_s=(float(ev_new[j + 1].dwell_s) if j + 1 < len(ev_new)
+                 else None),
+        old_dwell_s=(float(ev_old[j + 1].dwell_s) if j + 1 < len(ev_old)
+                     else None))
+    ok = (applied and out['change_one_beat_later']
+          and out['release_instants_ok'])
+    if 'dwell' in spec:
+        ok = ok and out['dwell_spans_ok']
+    out['ok'] = bool(ok)
+    return out
+
+
+#: The codes a refused change may carry for ``change_refused_by_name``:
+#: ``schedule.py``'s ``BEAT_*`` constants other than ``BEAT_OK``.
+_SCHEDULE_REFUSAL_CODES = frozenset(
+    getattr(sk, n) for n in dir(sk)
+    if n.startswith('BEAT_') and n != 'BEAT_OK'
+    and isinstance(getattr(sk, n), str))
+
+
+# ---------------------------------------------------------------------------
 # The gate
 # ---------------------------------------------------------------------------
 
@@ -1494,19 +1772,36 @@ class SkillsGate:
         tracker = _make_tracker(plant, ball_state)
         ictx = _InstallCtx(rest0)
         installer = _make_installer(ictx, self.seg_cfg, self.limits, geom)
+        # P4 (``--beat-change``): the executor is built WITH the gate's
+        # planner-walk checker (``request_beat_change`` refuses
+        # BEAT_NO_CHECKER without one); a plain run passes nothing extra.
+        beat_kw = {}
+        executor_box = []
+        if cfg.beat_change is not None:
+            beat_kw['beat_checker'] = _make_beat_checker(
+                cfg, self.limits, geom, self.seg_cfg, executor_box)
         executor = ex.SkillExecutor(
             sched, installer, tracker=tracker,
             **_bump_kwargs(sched, ictx, self.limits, geom),
             catch_aim_source=self.cfg.catch_aim_source,
-            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
+            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S, **beat_kw)
+        executor_box.append(executor)
 
         # 4. Stream (the one loop -- ``_stream_chain``).
         t_end = t_land_final + QUIET_TAIL_S
+        stream_kw = {}
+        beat_state = None
+        if cfg.beat_change is not None:
+            beat_state = self._beat_hooks(executor, sched)
+            stream_kw = dict(
+                on_tick=beat_state['on_tick'],
+                live_final=lambda: _columns_final_removal(executor.schedule),
+                trace=beat_state['trace'])
         loop = self._stream_chain(
             plant=plant, geom=geom, rcfg=self.rcfg, noise=noise,
             executor=executor, ictx=ictx, ball_state=ball_state, t_end=t_end,
             final_removal=(t_land_final, ball_final),
-            final_target_xy_mm=final_target_xy_mm)
+            final_target_xy_mm=final_target_xy_mm, **stream_kw)
 
         pump_clean = bool(loop['pump_rejects'] == 0
                           and loop['accepted'] == loop['emitted']
@@ -1553,7 +1848,45 @@ class SkillsGate:
         res.passed = bool(pump_clean and mirror_ok and flags_ok
                           and all_installed and caught_all and no_drops
                           and final_cup_ok)
+        if beat_state is not None:
+            beat = _beat_criteria(
+                spec=cfg.beat_change, sched0=sched,
+                result=beat_state['result'], sched_after=executor.schedule,
+                expected_j=beat_state['expected_j'],
+                trace=beat_state['trace'])
+            beat['t_request_s'] = beat_state['t_request']
+            res.beat = beat
+            res.passed = bool(res.passed and beat.get('ok', False))
         return res
+
+    def _beat_hooks(self, executor, sched0: 'sk.Schedule') -> dict:
+        """The ``--beat-change`` request, made ONCE at the first tick after
+        Throw K-1's release instant (``K = spec['throw']``): the gate
+        recomputes the first changeable Throw itself
+        (:func:`_expected_first_changeable`), then calls
+        ``executor.request_beat_change``.  Returns the state dict the trial
+        scores (``result``, ``expected_j``, ``t_request``, ``trace``) and the
+        ``on_tick`` hook."""
+        spec = self.cfg.beat_change
+        kw = _beat_request_kwargs(spec)
+        rel = _release_times(sched0)
+        if not 3 <= spec['throw'] <= len(rel) - 1:
+            raise ValueError('--beat-change throw=%d is outside this '
+                             '%d-Throw stream (3 .. %d)'
+                             % (spec['throw'], len(rel), len(rel) - 1))
+        t_trigger = rel[spec['throw'] - 1]
+        state = dict(result=None, expected_j=None, t_request=None,
+                     trace=dict(releases=[], captures=[]))
+
+        def on_tick(t):
+            if state['result'] is not None or t < t_trigger:
+                return
+            state['t_request'] = float(t)
+            state['expected_j'] = _expected_first_changeable(executor, t)
+            state['result'] = executor.request_beat_change(t, **kw)
+
+        state['on_tick'] = on_tick
+        return state
 
     # ── the one stream loop (shared with the R3 self-toss learner run) ─────
 
@@ -1561,7 +1894,8 @@ class SkillsGate:
                       ball_state, t_end, release_bias=None,
                       final_removal=None, final_target_xy_mm=None,
                       stop_check=None, pending_spawn=None, identity=None,
-                      lines_out=None):
+                      lines_out=None, on_tick=None, live_final=None,
+                      trace=None):
         """The emitter/pump/wire/mirror/executor.tick loop (module
         docstring) -- run by every caller against a live ``PlanRecord``
         (``ictx``) and the executor dispatching one ``Schedule``.
@@ -1579,6 +1913,17 @@ class SkillsGate:
         message precedes the node's dispatch on the same clock. ``None``
         (the R2/R4 callers that do not use the identity-aware tracker)
         changes nothing from before this parameter existed.
+
+        P4 (``--beat-change``, all three default ``None`` = the loop as it
+        was): ``on_tick(t)`` runs every tick just BEFORE ``executor.tick(t)``
+        (where the gate makes its one beat-change request);
+        ``live_final()`` -> ``(t_land_final, ball_final, target_xy_mm)`` is
+        re-read whenever ``executor.schedule`` is replaced, moving
+        ``final_removal``, ``final_target_xy_mm`` and ``t_end`` with the
+        live Schedule instead of the opening one; ``trace`` (a dict) collects
+        ``releases`` (per physical release: ``t``, ``ball``, ``z0_mm``,
+        ``zmax_mm`` -- the ball's height gain over its release point) and
+        ``captures`` (``(t, ball)``).
 
         ``ball_state`` is ``{ball_id: {'estimator', 'airborne',
         'next_obs_t', 'expect_held', 'lost_since'}}`` -- the per-ball
@@ -1647,10 +1992,25 @@ class SkillsGate:
         removed_final = final_removal is None
         final_cup_err_mm = float('nan')
         t_wall = time.time()
+        live_sched = executor.schedule
+        open_flight = {}
+        if trace is not None:
+            trace.setdefault('releases', [])
+            trace.setdefault('captures', [])
 
         while plant.data.time < t_end and (stop_check is None
                                            or not stop_check()):
             t = plant.data.time
+
+            if on_tick is not None:
+                on_tick(t)
+            if live_final is not None and executor.schedule is not live_sched:
+                live_sched = executor.schedule
+                shadow_live = live_final()
+                if shadow_live is not None:
+                    t_land_live, ball_live, final_target_xy_mm = shadow_live
+                    final_removal = (t_land_live, ball_live)
+                    t_end = t_land_live + QUIET_TAIL_S
 
             if pending_spawn is not None and t >= pending_spawn[0] - 1e-9:
                 spawn_t, spawn_pos, spawn_vel, spawn_ball = pending_spawn
@@ -1761,6 +2121,13 @@ class SkillsGate:
                     ictx.pending_releases.pop(0)
                 bstate = ball_state[b_id]
                 if plant.has_ball and plant.get_ball_state(b_id).held:
+                    if trace is not None:
+                        z_rel = float(
+                            plant.get_ball_state(b_id).position_mm[2])
+                        rec = dict(t=float(t), ball=int(b_id), z0_mm=z_rel,
+                                   zmax_mm=z_rel)
+                        trace['releases'].append(rec)
+                        open_flight[int(b_id)] = rec
                     _, v_noisy = noise.perturb_throw(
                         site_mm, vel_mm_s, target_mm - site_mm)
                     if release_bias is not None:
@@ -1773,10 +2140,17 @@ class SkillsGate:
                 bstate['next_obs_t'] = t
 
             for b, bstate in ball_state.items():
+                if trace is not None and int(b) in open_flight:
+                    open_flight[int(b)]['zmax_mm'] = max(
+                        open_flight[int(b)]['zmax_mm'],
+                        float(plant.get_ball_state(b).position_mm[2]))
                 if plant.check_and_capture(b):
                     makes += 1
                     bstate['expect_held'] = True
                     bstate['airborne'] = False
+                    if trace is not None:
+                        trace['captures'].append((float(t), int(b)))
+                        open_flight.pop(int(b), None)
                 if bstate['expect_held']:
                     bs = plant.get_ball_state(b)
                     if not bs.held:
@@ -1805,6 +2179,7 @@ class SkillsGate:
                     final_cup_err_mm = float(np.linalg.norm(
                         np.asarray(cup_f[:2], dtype=float)
                         - np.asarray(final_target_xy_mm, dtype=float)))
+                open_flight.pop(int(final_removal[1]), None)
                 plant.ball_manager.ball(final_removal[1]).reset()
                 ball_state[final_removal[1]]['airborne'] = False
                 ball_state[final_removal[1]]['expect_held'] = False
@@ -3247,6 +3622,8 @@ class SkillsGate:
             },
             'trials': [r.to_dict() for r in results],
         }
+        if self.cfg.beat_change is not None:
+            report['beat_change'] = dict(self.cfg.beat_change)
         path = self.cfg.report_path
         if path is None:
             out_dir = os.path.join(_repo_root, 'temp', 'reports')
@@ -3672,6 +4049,12 @@ def main(argv=None) -> int:
                         'association fix. \'head\': the pre-fix exclusion '
                         'rule -- the negative control that must reproduce '
                         'WINDOW_TOO_SHORT on fed columns.')
+    p.add_argument('--beat-change', default=None, metavar='SPEC',
+                   help='plain two-ball Columns gate only (P4, D-P4-7): '
+                        'change the running pattern\'s beat once, requested '
+                        'when Throw K-1 is released. SPEC = throw=K,apex=A | '
+                        'throw=K,dwell=D | throw=K,apex=A,dwell=D (optional '
+                        'apex2=B for ball 2); K >= 3')
     p.add_argument('--dwell-s', type=float, default=None,
                    help='--learn only: override SelfTossGateConfig.dwell_s '
                         '(default 0.25). Use this to pin the dwell this run '
@@ -3698,6 +4081,20 @@ def main(argv=None) -> int:
                         'mutually exclusive with --one-ball')
     args = p.parse_args(argv)
 
+    beat_spec = None
+    if args.beat_change is not None:
+        bad = [n for n, on in (
+            ('--nominate', args.nominate), ('--learn', args.learn),
+            ('--reload', args.reload), ('--one-ball', args.one_ball),
+            ('--one-ball-fed', args.one_ball_fed),
+            ('--feed-angle-deg', args.feed_angle_deg is not None)) if on]
+        if bad:
+            p.error('--beat-change runs the plain two-ball Columns gate only; '
+                    'it cannot combine with ' + ', '.join(bad))
+        try:
+            beat_spec = parse_beat_change(args.beat_change)
+        except ValueError as exc:
+            p.error(str(exc))
     if args.nominate:
         return _main_nominate(p, args)
     if args.limits is not None or args.no_search:
@@ -3833,6 +4230,13 @@ def main(argv=None) -> int:
         cfg.apex_m = float(args.apex_m)
     if args.apex_ball2 is not None:
         cfg.apex_m_ball2 = float(args.apex_ball2)
+    if beat_spec is not None:
+        if beat_spec['throw'] > cfg.n_throws - 1:
+            p.error('--beat-change throw=%d needs a stream of at least %d '
+                    'Throws (--n-throws is %d)'
+                    % (beat_spec['throw'], beat_spec['throw'] + 1,
+                       cfg.n_throws))
+        cfg.beat_change = beat_spec
 
     rep = run_gate(cfg, viewer_speed=(args.viewer_speed if args.viewer
                                       else None))

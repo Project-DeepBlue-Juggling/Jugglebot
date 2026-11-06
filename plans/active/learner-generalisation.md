@@ -19,7 +19,7 @@ steps:
   - {id: P3c, title: Box retirement, kind: phase, status: complete, effort: s, hardware: none}
   - {id: P1, title: Learner core, kind: phase, status: complete, effort: m, hardware: none}
   - {id: P2, title: The characterisation sitting, kind: phase, status: not_started, effort: m, hardware: robot}
-  - {id: P4, title: BeatEvent stream and the columns wrapper, kind: phase, status: not_started, effort: m, hardware: none}
+  - {id: P4, title: BeatEvent stream and the columns wrapper, kind: phase, status: complete, effort: m, hardware: none}
   - {id: P5, title: Close-out, kind: phase, status: not_started, effort: s, hardware: none}
 related_logbook:
   - 2026-10-18-learner-generalisation-investigation.md
@@ -315,29 +315,49 @@ the gate (sound only for refusal), full explicit mpQP region enumeration (one re
 interval / Taylor-model proofs, warm-started or GPU QP solvers (the QP is one iteration; the cost is Python
 dispatch).
 
-### 2.6 L4 — the per-beat event stream (`schedule.py`; D4)
+### 2.6 L4 — the per-beat event stream (`schedule.py`; D4; AS BUILT 2026-11-06)
 
 ```python
-BeatEvent(throw_site: xyz, catch_site: xyz, apex_m, dwell_s, yaw_rad, ball_id, release_kind)
-# release_kind: 'free_cup' | 'carried'
+BeatEvent(throw_site, catch_site, apex_m, dwell_s, yaw_rad=0.0, ball_id=0, release_kind='free_cup')
+# one Throw: where the cup releases it, where the ball is caught next, how high, and how long the
+# ball was held before it. release_kind: 'free_cup' | 'carried' (refused by compile_beats until the
+# oval's compiler targets it). yaw_rad != 0 is refused by name (BEAT_YAW_NOT_SUPPORTED) until P2.
 ```
 
-A pattern is a generator of BeatEvents; `compile_columns` (later `compile_oval`) become thin
-wrappers; dwell leaves the node parameters. Yaw is DORMANT (sites rotate about z; refused by name)
-until P2 pins whether the lateral bias is frame-fixed or geometry-fixed. Next-beat rule (the
-design-bearing part): with ball b in flight its catch, t_c(b) = t_r(b) + t_f(b), and site are fixed;
-a new event E is accepted only if its throw can be planned so the hand is free by that catch:
+A Pattern is a finite tuple of BeatEvents. `columns_events(pattern, hop_entry)` is the Columns generator,
+`compile_beats(events, launch_s, rest_tail_s, phantom_balls, t0_abs_s | feed, hop_entry)` the one compiler,
+and `compile_columns` the thin wrapper over both: 227 golden compiles (fixture
+`tests/fixtures/columns_schedule_golden_2026-11-06.json`, generator `tools/probes/columns_golden.py`)
+reproduce today's Schedules bit for bit. The launch window, the Stop (the stream's last event) and the hop
+entry (a fed stream's first) belong to the stream, not to an event. Dwell left the node parameters: a goal
+carries it (0 = the default, 0.27 s). Timing, the literal rule:
 
 ```
-t_r(E) = t_c(previous catch) + d_E                   release after the event's own dwell
-τ_E    = t_c(b) − t_r(E)  ≥  τ_min(T_E → C_b)        transit planner-feasible (validate_cycle)
-t_f(n) = d_n + 2 τ_n                                 uniform-beat identity, re-derived per beat
+t_r(E) = t_c(previous catch of E's ball) + d_E        release after the event's own dwell
+t_c(E) = t_r(E) + flight(apex_E)
+window of the Catch of E = t_c(E) − t_r(next event)    the transit after the release before it
 ```
 
-Parameter changes take effect one beat later: the in-flight ball lands as thrown and E governs the
-next throw. A rejected event keeps the previous parameters and names the refusal; exact boundary
-conditions are pinned against `compile_columns` at P4 start. Golden test: the columns wrapper
-reproduces today's compiled columns schedule segment for segment.
+For a stream that repeats with period two (every Columns flown) this is today's `i·β`, computed with
+today's expressions; the recursion applies from the first deviating event. **Next-beat rule**
+(`next_beat`, pure): an event is refused by name when its dwell is under the 4-knot window floor
+(`BEAT_DWELL_TOO_SHORT`), when the transit to the in-flight ball's Catch is under τ_min (`BEAT_NO_TRANSIT`),
+or when the transit after the in-flight ball's NEXT release would be (`BEAT_NEXT_NO_TRANSIT`); τ_min is
+that same 4-knot floor. Whether the planner can make the transit is the nomination walker's question on
+the compiled candidate, not this function's.
+
+**Changing a running stream.** `columns_change(events, j, apex_m, apex_m_ball_b, dwell_s)` changes events
+j.. and gives ONE transition event, j + 1, the dwell `d′ + (β′ − β_old)` (plus a per-ball flight term for
+high-low) that re-centres the rhythm; left alone the transits would alternate for ever (Apex 1.0 → 0.9 at
+Dwell 0.27: 0.317 / 0.270 s against a uniform 0.293 s). `SkillExecutor.request_beat_change(t, apex_m,
+apex_m_ball_b, dwell_s)` applies it from the first Throw whose carrying Skill is neither dispatched nor
+inside its early-command window (one beat later; the ball in the air lands as thrown), only if every
+earlier Skill is field-identical in the recompiled Schedule and only after the bound `beat_checker` (the
+nomination walker on the changed neighbourhood) has passed it; a refusal keeps the previous Schedule and
+names the code. NOT built: a live operator channel on the node (the walk costs tens of ms of Python in a
+node whose tick has 100–200 ms of handoff slack, and it could not be rehearsed on the loaded box), and
+open-ended streams (the Stop must be known at compile; nomination plans the whole Schedule). Record:
+`logbook/2026-11-06-learner-generalisation-p4-beat-event-stream.md`.
 
 ### 2.7 Identifiability table
 
@@ -359,7 +379,7 @@ reproduces today's compiled columns schedule segment for segment.
 | P3c | Box retirement per § 6.4 | COMPLETE (on branch `p3-online-admissibility`, held for the owner's merge) | 2026-11-06 | Low | Census counts to zero |
 | P1 | Learner core: `plant_model.py`, `learner.py`, `memory.py` v2 + migration, replay probe | COMPLETE (on branch `p3-online-admissibility`, held for the owner's merge; the memory migration is run at merge) | 2026-11-06 | Medium (changes every commanded u) | Cold-start apex error 12.9 mm (gate < 15 mm) at Sites with earlier data |
 | P2 | Characterisation sitting (D6): θ structure, yaw frame, telemetry | NOT STARTED | | Medium (hardware) | Aim vs offset; radial vs x; frame; Δ_b |
-| P4 | BeatEvent stream, columns wrapper, next-beat rule, dwell out of node params | NOT STARTED | | High (schedule path, ~20 test files) | Golden test; sim mid-pattern change |
+| P4 | BeatEvent stream, columns wrapper, next-beat rule, dwell out of node params | COMPLETE (on branch `p3-online-admissibility`, held for the owner's merge; no live operator channel, by decision) | 2026-11-06 | High (schedule path, ~20 test files) | Golden test (227 compiles identical); sim mid-pattern change |
 | P5 | Close-out: columns ↔ oval shared memory on hardware, INVARIANTS rows, archive | NOT STARTED | | Low | No aliasing; invariants pinned |
 
 Order per D7 (supersedes D5's P1 → P3 → P4): P3a → P3b → P3c → P1 → P4; P2 (D6) sits between P1 and the
@@ -499,12 +519,26 @@ Outputs: θ structure pinned in § 2.2, memory re-seeded, yaw frame chosen. Depe
 before the sitting. At each framing pivot: *"if your physical intuition disagrees with my framing,
 that's load-bearing signal — say so."*
 
-### Phase 4: BeatEvent stream and the columns wrapper — NOT STARTED
+### Phase 4: BeatEvent stream and the columns wrapper — COMPLETE
 
-Modified: `schedule.py` (`BeatEvent`, next-beat rule, `compile_columns` wrapper), `executor.py`
-pattern handling, node goal acceptance, GUI pattern controls, `sim/skills_gate.py`; yaw per P2.
-Gate: golden test; a sim mid-pattern change of apex and of dwell takes effect one beat later; the
-next-beat refusal exercised; `--full` green. Coordination per § 6.3. Depends: P1, P3a-c.
+Modified: `schedule.py` (`BeatEvent`, `compile_beats`, `columns_events`, `next_beat`, `columns_change`,
+`Schedule.source`; `compile_columns` is the wrapper), `executor.py` (`request_beat_change`), `nominate.py`
+(`walk_schedule`, the one nomination criterion), `skill_node.py` and the GUI (dwell is no longer a node
+parameter), `sim/skills_gate.py` (`--beat-change`). Yaw per P2 (refused by name).
+
+**Outcome (2026-11-06, on branch `p3-online-admissibility`, held for the owner's merge).** § 2.6 is the
+as-built text; `logbook/2026-11-06-learner-generalisation-p4-beat-event-stream.md` has the reasons. Gate:
+golden, 227 compiles identical (2026-11-06, `python tools/probes/columns_golden.py --check`); sim
+mid-pattern changes (2026-11-06 12:26, `OPENBLAS_NUM_THREADS=1 python sim/skills_gate.py --no-viewer
+--beat-change throw=6,apex=1.00` | `throw=6,apex=1.00,dwell=0.30` | `throw=6,dwell=0.9`, five seeds, 20
+Throws): the Apex change and the Apex-and-Dwell change fly from Throw 8, PASS, exit 0; the no-transit
+change is refused `BEAT_NO_TRANSIT`, the Attempt unchanged, PASS, exit 0; a Dwell change 0.27 -> 0.32 s is
+refused by the planner walk (11:58 run; exit 1 by design: the requested change did not fly). Tests:
+2026-11-06, `./run_tests.sh --full`: 8748 passed, 51 skipped + 10 serial, RESULT PASS.
+NOT built, by decision: a live operator channel on the node, open-ended streams. Recorded for the owner: a
+standing Columns that nominates at a 0.06 margin (Apex 0.80 m at the sim's limits) fails every sim seed at
+an install, and a change to it behaves the same: the nomination's fidelity at a thin margin (P3b's
+criterion), not the event stream. Depends: P1, P3a-c.
 
 ### Phase 5: Close-out — NOT STARTED
 
@@ -546,6 +580,8 @@ c_max is safe only while both stay on the path. Every refusal is by name; the 10
 Dwell stops being a node parameter (oval decisions 39/41 and LimitsMismatch-on-dwell become moot);
 the next-beat rule is new design; two sessions touch `schedule.py`; yaw is dormant until P2; the blast
 radius is the compilers, executor, node goal acceptance, GUI, sim gate and ~20 test files (golden test).
+As built (2026-11-06): all of the above held; `compile_oval` at its P5 targets `compile_beats` (a carried
+event is refused by name until then).
 
 ### 6.3 For the oval session (the `two-ball-oval` branch is merged into `main` since 2026-10-23 and kept at its tip; work happens on `main`)
 

@@ -45,7 +45,9 @@
  * dwell per pattern (columns/hop/self_toss 0.27, oval 0.65) and refused a
  * different one (retired 2026-11-06; the nomination plans at the dwell
  * now), so PATTERN_POINTS pre-fills it per pattern (editable) and the
- * request carries `dwell_s=`; blank = skill_node's dwell_s parameter.
+ * request carries `dwell_s=`; blank = the Pattern's default dwell, 0.27 s
+ * (`dwell_s` is no longer a skill_node parameter since 2026-11-06,
+ * learner-generalisation P4: dwell belongs to the Pattern's beat events).
  *
  * Two goals ride on a NODE PARAMETER, not a goal field (pattern-progression
  * P2/P4, 2026-10-31): `columns_turned` reads `columns_angle_deg` and
@@ -113,7 +115,7 @@ const SET_PARAM_SERVICE_TYPE = 'rcl_interfaces/srv/SetParameters';
 const PARAMETER_DOUBLE = 3;   // rcl_interfaces/msg/ParameterType
 /** columns_feed_site is display-only: it decides which site each columns
  *  ball flies at (skill_node._run_columns / _run_columns_1ball). */
-const PARAM_NAMES = ['apex_m', 'separation_mm', 'dwell_s', 'n_throws', 'columns_feed_site'];
+const PARAM_NAMES = ['apex_m', 'separation_mm', 'n_throws', 'columns_feed_site'];
 
 const LS_SPEED_KEY = 'jugglebot-juggle-diagram-speed';
 const SPEEDS = [0.5, 1, 0.25];
@@ -198,7 +200,7 @@ const FIELDS = {
     dwell_s: {
         label: 'Dwell', unit: 's', integer: false, max: 3, param: 'dwell_s',
         tip: 'dwell_s — dwell at a site, seconds. Each pattern has a default dwell '
-            + '(PATTERN_POINTS); the nomination plans at the dwell given. Blank = skill_node\'s dwell_s.',
+            + '(PATTERN_POINTS); the nomination plans at the dwell given. Blank = the default dwell, 0.27 s.',
         tooBig: 'dwell is in SECONDS',
     },
     // Parameter-backed fields (one pattern each; hidden otherwise, REQUIRED there).
@@ -267,6 +269,11 @@ function applyPatternPoint(value) {
 // derived from them shows "?" instead of a number.
 const NOMINAL = { apex_m: 0.9, dwell_s: 0.27, separation_mm: 250 };
 
+// The dwell a goal with a blank Dwell field gets: skill_node's `_DEFAULT_DWELL_S`
+// (dwell is not a node parameter since 2026-11-06, so it is no longer fetched;
+// tests/ros/test_gui_juggle_defaults.py pins the two constants equal).
+export const DEFAULT_DWELL_S = 0.27;
+
 // ====================================================================
 // State
 // ====================================================================
@@ -286,7 +293,7 @@ for (const k of FIELD_KEYS) fields[k] = { raw: '', value: null, error: null };
 applyPatternPoint(ui.pattern);
 
 /** skill_node's live parameters (display only — see the module header). */
-let defaults = null;            // { apex_m, separation_mm, dwell_s, n_throws, columns_feed_site } | null
+let defaults = null;            // { apex_m, separation_mm, n_throws, columns_feed_site } | null
 let defaultsState = 'unknown';  // unknown | loading | ok | failed
 let paramsInFlight = false;
 let paramRetryTimer = null;
@@ -488,6 +495,7 @@ function buildRequestData(p) {
 function effective(key) {
     if (fields[key].value != null) return fields[key].value;
     const spec = FIELDS[key];
+    if (key === 'dwell_s') return DEFAULT_DWELL_S;
     if (defaults && defaults[spec.param] != null) return defaults[spec.param];
     return null;
 }
@@ -525,10 +533,9 @@ function fetchDefaults() {
             const vals = (res && res.values) || [];
             const d = {};
             PARAM_NAMES.forEach((n, i) => { d[n] = paramValue(vals[i]); });
-            // A reply that answers none of the four numeric names is not a
+            // A reply that answers none of the three numeric names is not a
             // skill_node we understand — show "node default", not zeros.
-            if (d.apex_m == null && d.separation_mm == null && d.dwell_s == null
-                && d.n_throws == null) {
+            if (d.apex_m == null && d.separation_mm == null && d.n_throws == null) {
                 throw new Error('no known parameters in the reply');
             }
             defaults = d;
@@ -1505,7 +1512,7 @@ function sync() {
         if (PARAM_FIELD_KEYS.includes(k)) {
             setHidden(f.label, !applies); setHidden(f.input, !applies); setHidden(f.unit, !applies);
         }
-        const dv = defaults ? defaults[spec.param] : null;
+        const dv = k === 'dwell_s' ? DEFAULT_DWELL_S : (defaults ? defaults[spec.param] : null);
         let ph;
         if (!applies) ph = 'n/a';
         else if (PARAM_FIELD_KEYS.includes(k)) ph = 'required';
