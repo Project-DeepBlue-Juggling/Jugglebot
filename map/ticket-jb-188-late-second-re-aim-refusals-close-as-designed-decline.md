@@ -2,9 +2,9 @@
 id: JB-199
 kind: ticket
 title: 'JB-188 late second re-aim refusals: close as designed, decline them in the pre-solve fence, or read why the turned pair''s first ask is later?'
-status: open
+status: complete
 created: '2026-11-07'
-updated: '2026-11-06T19:54:19Z'
+updated: '2026-11-06T22:53:36Z'
 owners: []
 priority: medium
 effort: xs
@@ -37,3 +37,7 @@ Recommendation: 3 if you plan to fly the turned pair again, otherwise 1. Option 
 - 1: the next night closes JB-188.
 - 2: an offline unit with a replay of one refused re-aim, which also names the binding row.
 - 3: a Night Shift unit that reads the 15:53 bag and writes findings.
+
+## Answer
+
+Agreed. Investigate why the turned pair's first ask is later.
