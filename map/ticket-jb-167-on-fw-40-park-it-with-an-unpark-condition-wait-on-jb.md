@@ -2,9 +2,9 @@
 id: JB-198
 kind: ticket
 title: 'JB-167 on FW 40: park it with an unpark condition, wait on JB-149''s watch, add a firmware edge heartbeat, or stop the firmware adopting a refused frame?'
-status: open
+status: complete
 created: '2026-11-07'
-updated: '2026-11-06T19:54:18Z'
+updated: '2026-11-06T22:52:36Z'
 owners: []
 priority: medium
 effort: xs
@@ -40,3 +40,7 @@ Recommendation: 1. If the unpark condition fires, take 3 first, since 4 weakens 
 - 1: the next night parks JB-167 with that condition.
 - 2: it stays open, waiting on JB-149.
 - 3 or 4: a safety-bearing plan for your Session, with a `## Sitting` section.
+
+## Answer
+
+Agreed. Park it until the unpark condition fires.
