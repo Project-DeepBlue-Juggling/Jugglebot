@@ -4,9 +4,13 @@ kind: bug
 title: Hand stalls at the 70 A clamp mid-dive, probably on a Ball under the Cup, and the next launch comes up slow
 status: inbox
 created: '2026-11-07'
-updated: '2026-11-07T06:21:55Z'
+updated: '2026-11-07T18:11:53Z'
 owners: []
 priority: medium
+effort: m
+hardware: robot
+owner: hands
+radius: local
 diagnosis: hypothesis
 area: hand
 blocked_by: []

@@ -4,9 +4,15 @@ kind: bug
 title: live_session matches node filenames in any process argv, not running nodes
 status: inbox
 created: '2026-11-07'
-updated: '2026-11-07T12:07:10Z'
+updated: '2026-11-07T18:11:53Z'
 owners: []
 priority: medium
+effort: s
+hardware: none
+owner: none
+radius: subsystem
+diagnosis: confirmed
+area: tests-tooling
 blocked_by: []
 links:
 - tools/lib/live_session.sh
