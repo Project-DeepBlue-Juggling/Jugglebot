@@ -185,6 +185,7 @@ Rigs: Robot 5 blocks (218 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - JB-168 [Robot] Learner context cannot tell a Throw from rest from a carried Throw: no ## Sitting section
 - JB-186 [Robot] Mid-air ball collisions end half of two-ball Columns Attempts at Apex 1.00: closest approach about 70 mm at Sep. 100, 125 and 135: no ## Sitting section
 - JB-191 [Robot] Two-ball Columns runs end on a missed Catch of Ball 2 with no collision: 13 of 23 ends, mean run 22 Throws: no ## Sitting section
+- JB-193 [Robot] The flyback over-corrects a Catch offset by 1.2 to 1.4 times: each landing error returns at -0.3 to -0.45 on the next Throw: no ## Sitting section
 - JB-2 [Robot] Design change: the Hand should be Idle, not Parked Closed-loop, while Active: no ## Sitting section
 - JB-24 [Robot] 10 % jitter-margin class of LIMIT_* refusals: no ## Sitting section
 - JB-26 [Robot] Platform Teensy truncates the persisted levelling offset to int16 milliradians: no ## Sitting section
@@ -203,7 +204,7 @@ Rigs: Robot 5 blocks (218 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 
 ## Questions a Sitting can answer
 
-- none
+- JB-205 JB-193's 40-Throw check needs a landing offset no parameter commands: build one, fly the ride-along without it, or close JB-193? (parent JB-193)
 
 ## Close-out
 
