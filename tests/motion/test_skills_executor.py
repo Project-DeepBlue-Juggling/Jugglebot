@@ -8263,9 +8263,46 @@ def test_a_final_catch_after_an_unrelated_end_is_not_booked_unverifiable(
     x, lines, _v = _run_real_goal(
         sched, limits_r5, geom, _windows([L]), _seated_but(L - 0.3))
     text = '\n'.join(lines)
+    # Pre-rule path: the forced END stays LANE_REFUSED (not MISSED_CATCH, not
+    # a clean goal), the final Catch is dropped, never booked.
+    assert x.end_code == ex.LANE_REFUSED and x.attempt_ended
     assert 'CATCH-EVIDENCE-UNVERIFIABLE' not in text
     assert x.final_catch_unverifiable is None
     assert all(not r.unverified for r in x.reports)
+    assert _rp.record_counts(x.reports, x.end_code) == _rp.summarise(
+        x.reports)
+
+
+def _turned_columns(angle_deg=30.0, n_throws=6):
+    return sc.compile_columns(
+        sc.Pattern(sites=si.columns_sites(R5_SEPARATION_MM, angle_deg),
+                   apex_m=R5_APEX_M, dwell_s=R5_DWELL_S,
+                   n_throws=n_throws), T0_ABS)
+
+
+def test_a_turned_columns_tail_books_the_same_final_catch(limits_r5, geom):
+    """JB-197: `_ends_on_stop_final_catch` reads no `rest_tilt`/`hold_tilt`.
+    A turned `columns_sites` (Banking on the final skills) reaches the same
+    predicate hit and the same unverifiable booking as the straight pair."""
+    straight, turned = _real_columns(6), _turned_columns()
+    # The turn really banks the final skills' sites (not the straight ones).
+    assert (turned.skills[-2].site.catch_site_mm()
+            != straight.skills[-2].site.catch_site_mm()).any()
+    cs = [i for i, sk in enumerate(turned.skills) if sk.kind == sg.CATCH]
+    assert [i for i in range(len(turned.skills))
+            if _is_final_stop_catch(turned, i)] == [cs[-1]]
+    L = float(turned.skills[-2].t_abs_s)
+    x, lines, _v = _run_real_goal(
+        turned, limits_r5, geom, _windows([L]), _seated_but(L - 0.3))
+    text = '\n'.join(lines)
+    assert x.end_code == '' and not x.attempt_ended, x.end_code
+    assert 'CATCH-EVIDENCE-UNVERIFIABLE' in text
+    assert ex.MISSED_CATCH not in text
+    assert x.final_catch_unverifiable == len(turned.skills) - 2
+    final = [r for r in x.reports if r.unverified]
+    assert len(final) == 1 and final[0].caught is None
+    assert (_rp.record_counts(x.reports, 'COMPLETED')[0]
+            == _rp.summarise(x.reports)[0] + 1)
 
 
 def test_a_real_columns_goal_with_a_seated_final_window_is_the_normal_veto(

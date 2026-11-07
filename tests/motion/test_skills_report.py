@@ -242,6 +242,25 @@ def test_record_counts_adds_every_unverified_row_to_both_sides():
     assert rp.record_counts([]) == (0, 0)
 
 
+def test_record_counts_adds_only_a_completed_goals_row_with_a_landing():
+    base = [_r(throw_no=1), _r(throw_no=2)]
+    ok = _r(throw_no=3, caught=None, unverified=True)
+    assert rp.record_counts(base + [ok], 'COMPLETED') == (3, 3)
+    # An aborted goal (fault, Stop, mode change before the row finalised).
+    for code in ('', 'STOPPED', 'LANE_REFUSED', 'MISSED_CATCH'):
+        assert rp.record_counts(base + [ok], code) == (2, 2), code
+    # No landing estimate, no Memory row (Apex outside the band, JB-189's
+    # refusal): the plain count even on a COMPLETED goal.
+    for bad in (_r(throw_no=3, caught=None, unverified=True,
+                   landing_err_mm=None, row=False,
+                   no_row_reason='no landing estimate was ever observed'),
+                _r(throw_no=3, caught=None, unverified=True, row=False,
+                   no_row_reason='apex outside the band'),
+                _r(throw_no=3, caught=None, unverified=True,
+                   landing_err_mm=None)):
+        assert rp.record_counts(base + [bad], 'COMPLETED') == (2, 2)
+
+
 def test_the_unverifiable_flag_alone_says_so_even_with_no_row_for_it():
     sev, text = rp.end_line('columns', '', '', [_r(throw_no=1)],
                             shadow_landing_stop=True,

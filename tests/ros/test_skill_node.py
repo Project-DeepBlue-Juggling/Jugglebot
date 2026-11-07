@@ -4391,11 +4391,36 @@ class TestOperatorLines:
             [_throw_report(1, True), _throw_report(2, True), final])
         node._stop_attempt()
         node._on_tick()
+        node._goal_end_code = ''     # a goal that ended COMPLETED (JB-197)
         offered = []
         node._offer_record = lambda *a, **k: (offered.append(a) or (False, ''))
         result = node._juggle_execute(MagicMock(is_cancel_requested=False))
         assert (result.throws, result.caught) == (2, 2)
-        assert len(offered) == 1 and offered[0][1:3] == (3, 3), offered
+        assert len(offered) == 1 and offered[0][1:4] == (3, 3, 'COMPLETED'), (
+            offered)
+
+    def test_an_aborted_goal_keeps_the_plain_count_in_the_ledger(self, tmp_path):
+        """JB-197: only a COMPLETED goal adds the unverifiable final Catch to
+        the ledger; a goal that ended with an end code keeps the plain count."""
+        import dataclasses
+        node, _client = _node_with_client()
+        _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+        _prelevel_ready(node)
+        assert (node._juggle_goal(_self_toss_goal())
+               == sn.GoalResponse.ACCEPT)
+        node.get_logger().info = lambda *_a, **_k: None
+        node.get_logger().warning = lambda *_a, **_k: None
+        node.get_logger().error = lambda *_a, **_k: None
+        final = dataclasses.replace(_throw_report(3, None), unverified=True)
+        node._executor.reports.extend(
+            [_throw_report(1, True), _throw_report(2, True), final])
+        node._stop_attempt()
+        node._on_tick()
+        node._goal_end_code = 'ABORTED_X'
+        offered = []
+        node._offer_record = lambda *a, **k: (offered.append(a) or (False, ''))
+        node._juggle_execute(MagicMock(is_cancel_requested=False))
+        assert len(offered) == 1 and offered[0][1:4] == (2, 2, 'ABORTED_X')
 
     def test_ending_a_live_attempt_leaves_its_one_line_to_retirement(self, tmp_path):
         node, _client = _node_with_client()

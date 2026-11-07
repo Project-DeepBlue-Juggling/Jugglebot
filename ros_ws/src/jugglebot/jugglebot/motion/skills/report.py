@@ -347,12 +347,22 @@ def summarise(reports: List[ThrowReport]) -> Tuple[int, int]:
     return len(counted), sum(1 for r in counted if r.caught)
 
 
-def record_counts(reports: List[ThrowReport]) -> Tuple[int, int]:
+def record_counts(reports: List[ThrowReport],
+                  end_code: str = 'COMPLETED') -> Tuple[int, int]:
     """``(throws, caught)`` for the records ledger: :func:`summarise`'s count
-    with every ``unverified`` final Catch added to BOTH sides. Owner's
-    decision in JB-180 (option 2): a goal that ended on a Stop whose final
-    Catch the bag cannot verify reads N/N in the ledger. The Juggle result,
-    feedback and end line keep :func:`summarise`."""
+    with an ``unverified`` final Catch added to BOTH sides. Owner's decision
+    in JB-180 (option 2), narrowed by JB-197: a goal that ended on a Stop
+    whose final Catch the bag cannot verify reads N/N in the ledger, but only
+    when (1) the goal ended ``COMPLETED`` (``end_code``; an abort in the 0.5 s
+    before the row finalised keeps the plain count) and (2) the row carries a
+    landing: ``row`` is True (a Memory row was written, which needs a landing
+    estimate, an Apex inside the band and JB-189's admission) and
+    ``landing_err_mm`` is set. The Juggle result, feedback and end line keep
+    :func:`summarise`."""
     throws, caught = summarise(reports)
-    n = sum(1 for r in reports if r.unverified and not r.stop)
+    if end_code != 'COMPLETED':
+        return throws, caught
+    n = sum(1 for r in reports
+            if r.unverified and not r.stop and r.row
+            and r.landing_err_mm is not None)
     return throws + n, caught + n
