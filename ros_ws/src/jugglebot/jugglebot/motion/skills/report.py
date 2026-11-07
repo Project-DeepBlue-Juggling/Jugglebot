@@ -88,8 +88,10 @@ class ThrowReport:
     #: and the row is in neither side of the tally -- not a catch, not a
     #: miss -- like the Stop it ended beside. A real final miss is booked
     #: here, never as a catch. The operator's tally (:func:`summarise`) leaves
-    #: it out; the records ledger counts it as thrown AND caught
-    #: (:func:`record_counts`; owner's decision in JB-180, option 2).
+    #: it out; the records ledger counts it as thrown AND caught, but only
+    #: on a COMPLETED goal whose row has a landing, i.e. a Memory row was
+    #: written (:func:`record_counts`; owner's decisions in JB-180 option 2
+    #: and JB-197).
     unverified: bool = False
 
 

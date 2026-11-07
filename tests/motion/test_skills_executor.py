@@ -8281,11 +8281,12 @@ def _turned_columns(angle_deg=30.0, n_throws=6):
 
 
 def test_a_turned_columns_tail_books_the_same_final_catch(limits_r5, geom):
-    """JB-197: `_ends_on_stop_final_catch` reads no `rest_tilt`/`hold_tilt`.
-    A turned `columns_sites` (Banking on the final skills) reaches the same
-    predicate hit and the same unverifiable booking as the straight pair."""
+    """JB-197: a `columns_sites` pair ROTATED about +z (30 deg) reaches the
+    same predicate hit and the same unverifiable booking as the straight
+    pair. This rotates the Sites only; it asserts no tilt (the tilted tail is
+    the next test)."""
     straight, turned = _real_columns(6), _turned_columns()
-    # The turn really banks the final skills' sites (not the straight ones).
+    # The rotation really moves the final skills' sites (not the straight ones).
     assert (turned.skills[-2].site.catch_site_mm()
             != straight.skills[-2].site.catch_site_mm()).any()
     cs = [i for i, sk in enumerate(turned.skills) if sk.kind == sg.CATCH]
@@ -8303,6 +8304,44 @@ def test_a_turned_columns_tail_books_the_same_final_catch(limits_r5, geom):
     assert len(final) == 1 and final[0].caught is None
     assert (_rp.record_counts(x.reports, 'COMPLETED')[0]
             == _rp.summarise(x.reports)[0] + 1)
+
+
+def test_a_tilted_columns_tail_books_the_same_final_catch(limits_r5, geom):
+    """JB-197: a real Columns tail with a non-zero tilt really on the final
+    CATCH (`receive_tilt`) and the closing REST (`rest_tilt`) books exactly as
+    the untilted `test_a_real_columns_goal_ends_unverifiable_not_missed`:
+    `_ends_on_stop_final_catch` reads no tilt. The tilt is small on purpose:
+    `hold_tilt` on this Catch is refused (CATCH_AXIS, it follows a release)
+    and 0.06/-0.04 rad `receive_tilt` is refused (LIMIT_VEL 357.6 > 350)."""
+    base = _real_columns(6)
+    cat_idx, rest_idx = len(base.skills) - 2, len(base.skills) - 1
+    assert base.skills[cat_idx].kind == sg.CATCH
+    assert base.skills[rest_idx].kind == sg.REST
+    assert base.skills[cat_idx].receive_tilt is None
+    assert base.skills[rest_idx].rest_tilt is None
+    skills = list(base.skills)
+    skills[cat_idx] = dataclasses.replace(
+        skills[cat_idx], receive_tilt=(0.02, -0.01))
+    skills[rest_idx] = dataclasses.replace(
+        skills[rest_idx], rest_tilt=(0.02, -0.01))
+    sched = dataclasses.replace(base, skills=tuple(skills))
+    # The tilt really is on those two skills (and only there).
+    assert sched.skills[cat_idx].receive_tilt == (0.02, -0.01)
+    assert sched.skills[rest_idx].rest_tilt == (0.02, -0.01)
+    assert [i for i, sk in enumerate(sched.skills)
+            if sk.receive_tilt is not None or sk.rest_tilt is not None] == [
+                cat_idx, rest_idx]
+    assert _is_final_stop_catch(sched, cat_idx)
+    L = float(sched.skills[-2].t_abs_s)
+    x, lines, _v = _run_real_goal(
+        sched, limits_r5, geom, _windows([L]), _seated_but(L - 0.3))
+    text = '\n'.join(lines)
+    assert x.end_code == '' and not x.attempt_ended, x.end_code
+    assert ex.MISSED_CATCH not in text and 'MISSED-BALL' not in text
+    assert 'CATCH-EVIDENCE-UNVERIFIABLE' in text
+    assert x.final_catch_unverifiable == cat_idx
+    final = [r for r in x.reports if r.unverified]
+    assert len(final) == 1 and final[0].caught is None
 
 
 def test_a_real_columns_goal_with_a_seated_final_window_is_the_normal_veto(
