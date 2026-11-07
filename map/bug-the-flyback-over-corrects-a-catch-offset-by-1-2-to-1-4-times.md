@@ -2,13 +2,13 @@
 id: JB-193
 kind: bug
 title: 'The flyback over-corrects a Catch offset by 1.2 to 1.4 times: each landing error returns at -0.3 to -0.45 on the next Throw'
-status: inbox
+status: backlog
 created: '2026-11-06'
-updated: '2026-11-06T20:09:35Z'
+updated: '2026-11-07T17:49:28Z'
 owners: []
 priority: medium
 effort: xs
-hardware: none
+hardware: robot
 owner: decision
 radius: local
 diagnosis: hypothesis
@@ -157,3 +157,16 @@ If x instead shows about 5.7, it is a small-Tilt plant gain, and the Hop result 
 ### Verification
 
 (2026-11-07, `/tmp/probe_JB193_*.py` against bag `2026-11-06_15-53-05` and launch logs since 2026-09-28: 222 and 115 Throws matched; Fit landing minus row y sd 1.1 and 1.7 mm.) Probes deleted after the run; no repo change, gate not run.
+
+## The 40-Throw check has no command (2026-11-08)
+
+JB-200 chose the check. Its section 7 candidate asks for commanded landing offsets of +20 and -20 mm from rest, and no parameter on `skill_node` sets one.
+
+- `self_toss` releases and lands on one Site (`site_x_mm`, `site_y_mm`), so a Throw from rest flies at about zero Tilt.
+- The Learner's `u` moves the commanded landing, but `u` is not an operator input.
+
+So there is no `## Sitting` section yet: a `do:` step nobody can fly would be invented. The question is in the ticket filed tonight.
+
+## Progress
+
+- 2026-11-08: Night Shift 2026-11-08: re-rated robot on JB-200; no Sitting row yet because no parameter commands a landing offset (detail below)
