@@ -3915,7 +3915,7 @@ class SkillNode(Node):
         """The label an END line prints (JB-190): the bare pattern, so a
         search for `<pattern> ENDED` finds a goal a Feed entered too; the
         Feed is said at the line's tail (`report.end_line(fed=)`)."""
-        if self._attempt_fed:
+        if self._attempt_fed and self._attempt_label.endswith(' (reload)'):
             return self._attempt_label[:-len(' (reload)')]
         return self._attempt_label
 

@@ -123,7 +123,8 @@ _RESEND_RE = re.compile(
     r'RESEND-SKIPPED NO-CONVERGED-FIT skill 1: the tracker landing is '
     r'(?P<mm>[\d.]+) mm / (?P<dt>-?[\d.]+) s from the committed aim')
 _REJECTED_NO_BALL_RE = re.compile(
-    r'self_toss \(reload\) ENDED \(REJECTED_NO_BALL\)')
+    r'self_toss(?: \(reload\) ENDED \(REJECTED_NO_BALL\)'
+    r'| ENDED \(REJECTED_NO_BALL\))')
 
 #: How far past a feed's own CATCH-AIM line to search for its outcome /
 #: resend line when it is the LAST feed in the log (no next feed's line to

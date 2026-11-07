@@ -4401,6 +4401,29 @@ class TestOperatorLines:
         assert errors == ['hop ENDED (%s) · 0/0 caught · entered by a Feed'
                           % (code,)]
 
+    def test_a_fed_goals_executor_retire_end_line_carries_the_suffix(self):
+        # JB-190 audit: `_log_attempt_end` (the executor-retire end line) is
+        # the other end-line call site; drive it with `_attempt_fed` True.
+        node, _client = _node_with_client()
+        node._attempt_label = 'hop (reload)'
+        node._attempt_fed = True
+        errors = []
+        node.get_logger().error = errors.append
+        node._log_attempt_end(SimpleNamespace(
+            attempt_ended=True, end_code='MISSED_CATCH', end_message='',
+            end_kind='', schedule=SimpleNamespace(pattern='hop')))
+        assert len(errors) == 1, errors
+        assert errors[0].startswith('hop ENDED (MISSED_CATCH)'), errors
+        assert errors[0].endswith(' · entered by a Feed'), errors
+
+    def test_end_label_cuts_only_a_real_reload_suffix(self):
+        node, _client = _node_with_client()
+        node._attempt_fed = True
+        node._attempt_label = 'reload'
+        assert node._end_label() == 'reload'
+        node._attempt_label = 'hop (reload)'
+        assert node._end_label() == 'hop'
+
     def test_the_reload_bridge_rest_retiring_is_not_the_end(self):
         node, _client = _node_with_client()
         node._reload_ctx = SimpleNamespace(announced=False)
