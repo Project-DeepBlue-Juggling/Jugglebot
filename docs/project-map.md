@@ -99,15 +99,21 @@ _Status: closed (complete)._
 
 **Destination:** The map shows each item's history, takes new items from the Robot tab mid-sitting, finds anything by text, and surfaces stale items and a red nightly without leaving the GUI.
 
-**Progress:** 7 of 7 stops done
+**Progress:** 7 of 14 stops done
 
-**Next:** —
+**Next:** P0 Plan and owner decisions ([item-id-per-kind.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/item-id-per-kind.md))
 
 **Owners:** harrison
 
 **Remaining:**
 
-- —
+- P0 Plan and owner decisions ([item-id-per-kind.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/item-id-per-kind.md)) — in progress
+- P1 Expand mapkit and the Night Shift tools to both ID forms ([item-id-per-kind.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/item-id-per-kind.md))
+- P2 Expand the map app to both ID forms (fork repo) ([item-id-per-kind.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/item-id-per-kind.md))
+- P3 The sweeper and the classified census ([item-id-per-kind.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/item-id-per-kind.md))
+- P4 Cutover in one commit ([item-id-per-kind.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/item-id-per-kind.md))
+- P5 Contract: retire the old form, guard test, normative docs ([item-id-per-kind.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/item-id-per-kind.md))
+- P6 Out-of-tree residue and close ([item-id-per-kind.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/item-id-per-kind.md))
 
 **Attached inbox items:**
 
@@ -164,7 +170,7 @@ _Status: closed (complete)._
 | Project map and shared dictionary | — | — | — | closed |
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug Ball Butler yaw-settle gate aborts settled throws (THROW_ABORTED_NOT_SETTLED false positives); feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
 | Learner generalisation | — | P5 Close-out | bug The flyback over-corrects a Catch offset by 1.2 to 1.4 times: each landing error returns at -0.3 to -0.45 on the next Throw; bug Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for; feature Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z | P3a Command-time admissibility check; P3b Nomination-time check and the nearest viable configuration; P3c Box retirement; P1 Learner core; P2 The characterisation sitting; P4 BeatEvent stream and the columns wrapper; Box sweep fidelity for same-site families (plan what the executor dispatches) |
-| Map improvements | — | — | bug item_uuid(slug) collides across kinds that share a slug; bug Map app allocates JB ids from its own clone and collides with mapkit when both file within minutes; feature Add a data-only verdict to the Sitting result box (pass / fail / pending / data) | P0 Plan and its Feature; P1 mapkit ids module and checks; P2 Backfill and the uniqueness test; P3 mapkit resolution, creation, display and the commands; P4 App server: allocate, resolve, repair (fork repo); P5 App frontend: show and deep-link (fork repo); P6 Normative docs |
+| Map improvements | P0 Plan and owner decisions | — | P1 Expand mapkit and the Night Shift tools to both ID forms; P2 Expand the map app to both ID forms (fork repo); P3 The sweeper and the classified census; P4 Cutover in one commit; P5 Contract: retire the old form, guard test, normative docs; P6 Out-of-tree residue and close; bug item_uuid(slug) collides across kinds that share a slug; bug Map app allocates JB ids from its own clone and collides with mapkit when both file within minutes; feature Add a data-only verdict to the Sitting result box (pass / fail / pending / data) | P0 Plan and its Feature; P1 mapkit ids module and checks; P2 Backfill and the uniqueness test; P3 mapkit resolution, creation, display and the commands; P4 App server: allocate, resolve, repair (fork repo); P5 App frontend: show and deep-link (fork repo); P6 Normative docs |
 | Pattern progression: Columns to Centre and orbit | — | P3 JP-10 turned Columns | P5 JP-9 high-low Columns; P6 Per-Beat Sites dependency owned by JB-38; P7 JP-5 polygon walk; P8 JP-11 rotating Columns; P9 Centre and orbit compile; P10 JP-14 Centre and orbit; idea JP-10 Turned columns: the columns pair at fixed angles about +z, under pose; idea JP-11 Rotating columns: the pair turns a few degrees every Beat; idea JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm; idea JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites; idea JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m | P1 Launch current check; P2 Turned Columns on the compiled path; P4 Per-Site Apex |
 | Two-ball skill stack | — | — | — | closed |
 | Wave camera on CAN3 | — | — | — | closed |
@@ -211,7 +217,6 @@ Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/bench-hand/robot; Owner none/deci
 | JB-107 | idea | [JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-9-high-low-columns-ball-1-at-apex-1-05-m-ball-2-at-0-95-m.md) | in_progress | medium | m | robot | hands | subsystem | skill-stack | Pattern progression: Columns to Centre and orbit | filed 2026-10-30 |
 | JB-115 | bug | [Launch THROW with the ball aboard may demand more than the 50 A hand current limit from Apex about 0.99 (envelope arithmetic, unverified): check hand current in a columns bag](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-launch-throw-with-the-ball-aboard-may-demand-more-than-the.md) | backlog | medium | xs | none | hands | subsystem | hand | — | filed 2026-10-30 |
 | JB-102 | feature | [Pre-release hold rung: release from a moving Platform (hold 0.100 → 0)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-pre-release-hold-rung-release-from-a-moving-platform-hold-0.md) | in_progress | high | m | robot | hands | normative | skill-stack | Two-ball oval | filed 2026-10-30 |
-| JB-118 | feature | [Update item naming convention based on type (eg. Pathways can be "PWAY-<N>" and Plans can be "PLAN-<N>" etc.](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-update-item-naming-convention-based-on-type-eg-pathways-can.md) | in_progress | medium | m | none | decision | cross-cutting | map-app | — | filed 2026-10-30 |
 | JB-120 | bug | [A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-admissible-box-gate-passes-a-cell-whose-solve-exceeds-hand.md) | in_progress | high | m | robot | none | subsystem | skill-stack | Two-ball oval | filed 2026-10-31 |
 | JB-134 | bug | [Ball Butler yaw-settle gate aborts settled throws (THROW_ABORTED_NOT_SETTLED false positives)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-ball-butler-yaw-settle-gate-aborts-settled-throws-throw.md) | inbox | low | s | robot | hands | local | ball-butler | Ball Butler | filed 2026-11-01 |
 | JB-138 | bug | [Hand iq reached 53.3 A on a 45 deg turned hop launch, over the 50 A watch the high-low row names](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-hand-iq-reached-53-3-a-on-a-45-deg-turned-hop-launch-over.md) | inbox | medium | s | robot | hands | subsystem | hand | — | filed 2026-11-01 |
