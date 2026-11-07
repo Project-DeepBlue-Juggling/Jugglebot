@@ -123,6 +123,16 @@ class CatchingConeHeartbeatMsg:
 
 
 @dataclass
+class HandFanStatusMsg:
+    mode: str = ''
+    fan_on: bool = False
+    reading_valid: bool = False
+    on_above_c: float = 0.0
+    off_below_c: float = 0.0
+    motor_temp_c: float = 0.0
+
+
+@dataclass
 class WaveCameraHeartbeatMsg:
     connected: bool = False
     state: int = 0
@@ -559,6 +569,10 @@ SetFloat = _make_service(
 )
 SetHandGains = _make_service(
     req_fields={'pos_gain': 35.0, 'vel_gain': 0.007, 'vel_integrator_gain': 0.07},
+    resp_fields={'success': False, 'message': ''},
+)
+SetHandFan = _make_service(
+    req_fields={'mode': '', 'on_above_c': 0.0, 'off_below_c': 0.0},
     resp_fields={'success': False, 'message': ''},
 )
 SetString = _make_service(
@@ -1072,6 +1086,7 @@ _create_mock_module('jugglebot_interfaces.msg', {
     'CatchEvent': CatchEventMsg,
     'CatchingConeHeartbeat': CatchingConeHeartbeatMsg,
     'CatchTimingResult': CatchTimingResultMsg,
+    'HandFanStatus': HandFanStatusMsg,
     'WaveCameraHeartbeat': WaveCameraHeartbeatMsg,
     'WaveRecordEvent': WaveRecordEventMsg,
     'HandTelemetryMessage': HandTelemetryMessage,
@@ -1094,6 +1109,7 @@ _create_mock_module('jugglebot_interfaces.srv', {
     'GetTiltReadingService': GetTiltReadingService,
     'ODriveCommandService': ODriveCommandService,
     'SetFloat': SetFloat,
+    'SetHandFan': SetHandFan,
     'SetHandGains': SetHandGains,
     'SetString': SetString,
     'BallButlerThrow': BallButlerThrow,

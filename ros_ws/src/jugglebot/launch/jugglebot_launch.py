@@ -768,6 +768,7 @@ def generate_launch_description():
             # Wave camera adapter (ADR-0014): the record start/stop instants
             # are what lines recorded footage up with this bag, so they are
             # bagged; the heartbeat and diag give the sync/fault context.
+            '/hand_fan/status',
             '/camera/heartbeat',
             '/camera/record_event',
             '/camera_diag',

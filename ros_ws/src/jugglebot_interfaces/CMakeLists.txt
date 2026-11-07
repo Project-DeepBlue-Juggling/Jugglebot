@@ -43,10 +43,12 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/CatchTimingResult.msg"
   "msg/WaveCameraHeartbeat.msg"
   "msg/WaveRecordEvent.msg"
+  "msg/HandFanStatus.msg"
   "msg/TrajectoryStatus.msg"
   "msg/TargetFeedback.msg"
 
   "srv/GetRobotGeometry.srv"
+  "srv/SetHandFan.srv"
   "srv/ActivateOrDeactivate.srv"
   "srv/SetFloat.srv"
   "srv/SetString.srv"

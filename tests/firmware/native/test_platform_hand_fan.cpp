@@ -21,6 +21,8 @@ namespace {
 constexpr float ON_C = 35.0f;
 constexpr float OFF_C = 34.0f;
 constexpr uint32_t TIMEOUT_MS = 5000;
+constexpr float MIN_C = 5.0f;
+constexpr float MAX_C = 60.0f;
 
 struct Frame {
   uint8_t buf[8];
@@ -33,7 +35,30 @@ Frame temps(float fet_c, float motor_c) {
   return f;
 }
 
-HandFan::Controller make() { return HandFan::Controller(ON_C, OFF_C, TIMEOUT_MS); }
+HandFan::Controller make() { return HandFan::Controller(ON_C, OFF_C, TIMEOUT_MS, MIN_C, MAX_C); }
+
+// The command bytes the can-bridge's Relay::hand_fan_set sends for 30.00 / 28.50 C.
+// tests/firmware/native/test_platform_relay.cpp asserts the same bytes from the other side.
+constexpr uint8_t CMD_ON_30_00_28_50[8] = {1, 0xB8, 0x0B, 0x22, 0x0B, 0, 0, 0};
+
+Frame command(uint8_t mode, int on_centi, int off_centi) {
+  Frame f{};
+  f.buf[0] = mode;
+  f.buf[1] = static_cast<uint8_t>(on_centi & 0xFF);
+  f.buf[2] = static_cast<uint8_t>((on_centi >> 8) & 0xFF);
+  f.buf[3] = static_cast<uint8_t>(off_centi & 0xFF);
+  f.buf[4] = static_cast<uint8_t>((off_centi >> 8) & 0xFF);
+  return f;
+}
+
+bool send(HandFan::Controller &c, uint8_t mode, int on_centi, int off_centi) {
+  const Frame f = command(mode, on_centi, off_centi);
+  return c.on_command_frame(f.buf, 8, false);
+}
+
+int16_t i16_at(const uint8_t *s, int at) {
+  return static_cast<int16_t>(uint16_t(s[at]) | (uint16_t(s[at + 1]) << 8));
+}
 
 void feed(HandFan::Controller &c, float motor_c, uint32_t now_ms) {
   const Frame f = temps(20.0f, motor_c);
@@ -132,4 +157,94 @@ TEST_CASE("a NaN reading cannot start the fan") {
   auto c = make();
   feed(c, std::numeric_limits<float>::quiet_NaN(), 0);
   CHECK_FALSE(c.update(0));
+}
+
+TEST_CASE("FORCE_ON and FORCE_OFF ignore the temperature, and AUTO then decides from a current reading") {
+  auto c = make();
+  CHECK(send(c, HandFan::MODE_FORCE_ON, 3500, 3400));
+  CHECK(c.update(0));  // no frame ever heard: forced still means forced
+
+  feed(c, 40.0f, 100);
+  CHECK(send(c, HandFan::MODE_FORCE_OFF, 3500, 3400));
+  CHECK_FALSE(c.update(100));
+
+  CHECK(send(c, HandFan::MODE_AUTO, 3500, 3400));
+  CHECK(c.update(100));  // the 40 C reading was tracked while forced off
+}
+
+TEST_CASE("forced modes outlast the reading timeout") {
+  auto c = make();
+  CHECK(send(c, HandFan::MODE_FORCE_ON, 3500, 3400));
+  feed(c, 20.0f, 0);
+  CHECK(c.update(TIMEOUT_MS * 10));
+}
+
+TEST_CASE("runtime thresholds move the AUTO decision") {
+  auto c = make();
+  feed(c, 32.0f, 0);
+  CHECK_FALSE(c.update(0));
+  CHECK(send(c, HandFan::MODE_AUTO, 3000, 2850));
+  feed(c, 32.0f, 100);
+  CHECK(c.update(100));
+}
+
+TEST_CASE("a command the Platform refuses changes nothing") {
+  auto c = make();
+  feed(c, 34.5f, 0);
+  CHECK_FALSE(send(c, 3, 3000, 2800));        // unknown mode
+  CHECK_FALSE(send(c, HandFan::MODE_FORCE_ON, 2800, 2800));  // no gap
+  CHECK_FALSE(send(c, HandFan::MODE_FORCE_ON, 2800, 3000));  // inverted
+  CHECK_FALSE(send(c, HandFan::MODE_FORCE_ON, 6001, 3000));  // above the top bound
+  CHECK_FALSE(send(c, HandFan::MODE_FORCE_ON, 3000, 499));   // below the bottom bound
+  const Frame f = command(HandFan::MODE_FORCE_ON, 3000, 2800);
+  CHECK_FALSE(c.on_command_frame(f.buf, 7, false));
+  CHECK_FALSE(c.on_command_frame(f.buf, 8, true));
+
+  uint8_t s[8];
+  c.encode_status(s);
+  CHECK(s[0] == HandFan::MODE_AUTO);
+  CHECK(i16_at(s, 2) == 3500);
+  CHECK(i16_at(s, 4) == 3400);
+  CHECK_FALSE(c.update(0));
+}
+
+TEST_CASE("the can-bridge's command bytes decode as sent") {
+  auto c = make();
+  CHECK(c.on_command_frame(CMD_ON_30_00_28_50, 8, false));
+  uint8_t s[8];
+  c.encode_status(s);
+  CHECK(s[0] == HandFan::MODE_FORCE_ON);
+  CHECK(i16_at(s, 2) == 3000);
+  CHECK(i16_at(s, 4) == 2850);
+}
+
+TEST_CASE("status frame layout, which rpc_args.decode_hand_fan_status reads") {
+  auto c = make();
+  uint8_t s[8];
+
+  c.encode_status(s);
+  const uint8_t no_reading[8] = {0, 0x00, 0xAC, 0x0D, 0x48, 0x0D, 0x00, 0x00};
+  CHECK(std::memcmp(s, no_reading, 8) == 0);
+
+  feed(c, 41.25f, 0);
+  c.update(0);
+  c.encode_status(s);
+  const uint8_t on_at_41_25[8] = {0, 0x03, 0xAC, 0x0D, 0x48, 0x0D, 0x1D, 0x10};
+  CHECK(std::memcmp(s, on_at_41_25, 8) == 0);
+
+  c.update(TIMEOUT_MS + 1);  // the reading has gone stale
+  c.encode_status(s);
+  CHECK(s[1] == 0x00);
+  CHECK(i16_at(s, 6) == 0);
+}
+
+TEST_CASE("a status temperature saturates instead of overflowing the i16") {
+  auto c = make();
+  uint8_t s[8];
+  feed(c, 1000.0f, 0);
+  c.encode_status(s);
+  CHECK(i16_at(s, 6) == 32767);
+  feed(c, -1000.0f, 1);
+  c.encode_status(s);
+  CHECK(i16_at(s, 6) == -32768);
 }

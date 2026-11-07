@@ -70,6 +70,35 @@ def test_can_callback_feeds_the_controller_with_the_remote_flag():
         _function_body("canSniff"))
 
 
+def test_command_is_applied_and_always_answered():
+    """The status reply is how the host sees a refused command."""
+    body = _function_body("canSniff")
+    assert re.search(
+        r"msg\.id\s*==\s*HAND_FAN_CMD_ID\s*\)\s*\{\s*"
+        r"handFan\.on_command_frame\(msg\.buf,\s*msg\.len,\s*msg\.flags\.remote\);\s*"
+        r"updateHandFan\(\);\s*sendHandFanStatus\(\);", body)
+
+
+def test_defaults_sit_inside_the_runtime_bounds():
+    """A default the board would refuse if sent back to it at runtime is a config error."""
+    assert (hc.TEENSY_HAND_FAN_THRESHOLD_MIN_C <= hc.TEENSY_HAND_FAN_OFF_BELOW_C
+            < hc.TEENSY_HAND_FAN_ON_ABOVE_C <= hc.TEENSY_HAND_FAN_THRESHOLD_MAX_C)
+
+
+def test_status_interval_lets_a_bag_record_every_stretch():
+    assert 0 < hc.TEENSY_HAND_FAN_STATUS_INTERVAL_MS <= 5000
+
+
+def test_the_bridge_forwards_the_status_frame():
+    """Off the list, the frame is counted as a bad axis and dropped, silently."""
+    path = os.path.join(_REPO, "ros_ws", "src", "jugglebot", "Teensy_code_canbridge",
+                        "can_buses.h")
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    start = text.index("inline bool is_platform_reply_id")
+    assert "PlatformCanId::HAND_FAN_STATUS" in text[start:text.index("}", start)]
+
+
 def test_loop_drives_the_fan():
     assert "updateHandFan()" in _function_body("loop")
 

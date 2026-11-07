@@ -132,6 +132,7 @@ from udp_protocol import (  # noqa: E402, F401
     ArgSdoWrite,
     ResultTimeOfDay,
     ArgBbThrow,
+    ArgHandFanSet,
     ArgRobotState,
     ResultAxisVersions,  # GET_AXIS_VERSIONS result blob
     ResultBbAxisVersions,  # GET_BB_AXIS_VERSIONS result blob (FW 20, additive)

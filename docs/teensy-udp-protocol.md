@@ -136,6 +136,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `BB_FW_INFO` | 0x0060 | Ball Butler FW-over-CAN: read the running FW_VERSION (relay → CAN1 0x7D6 op 0x05) |
 | `HAND_MOVE_TO` | 0x0061 | Hand-only TRAP_TRAJ move to a caller target (ACTIVATE's axis-6 ladder); deferred reply at arrival / timeout / supersede |
 | `WAVE_CMD` | 0x0062 | Wave camera: send one WAVE_CMD intent frame on the cone bus |
+| `HAND_FAN_SET` | 0x0063 | Relay: set the Platform Teensy's Hand fan mode and thresholds |
 
 ### RpcStatus
 
@@ -856,6 +857,16 @@ wraps the generated Python. `AXIS_ALL = 0xFF` broadcasts to all legs.
 | `levelling_complete` | u8 | Platform levelling complete |
 | `pose_offset_tiltX` | f32 | Levelling pose offset, tilt about X (rad) |
 | `pose_offset_tiltY` | f32 | Levelling pose offset, tilt about Y (rad) |
+
+### ArgHandFanSet (`HAND_FAN_SET`)
+
+**9 bytes**. Python struct fmt: `<Bff`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `mode` | u8 | 0 AUTO, 1 FORCE_ON, 2 FORCE_OFF |
+| `on_above_c` | f32 | Hand motor thermistor above this turns the fan on in AUTO (deg C) |
+| `off_below_c` | f32 | Hand motor thermistor below this turns the fan off in AUTO (deg C) |
 
 ### ArgPlatformFwBegin (`PLATFORM_FW_BEGIN, BB_FW_BEGIN`)
 

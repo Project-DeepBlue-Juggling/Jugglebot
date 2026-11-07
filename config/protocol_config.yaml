@@ -92,6 +92,11 @@ can_ids:
     STATE_UPDATE:   0x6E0
     TILT_READING:   0x7DE
     TRAFFIC_REPORT: 0x7DF
+    # Hand fan runtime control (2026-11-07, Platform FW 9): host -> Platform via the
+    # bridge's typed HAND_FAN_SET relay; the status frame is uplinked verbatim as a
+    # PLATFORM_FRAME. Wire layout: Teensy_code_platform/hand_fan.h.
+    HAND_FAN_CMD:    0x6E1
+    HAND_FAN_STATUS: 0x6E2
     # Over-CAN firmware update (2026-09-09): host -> Platform via the bridge's typed
     # relay on FW_UPDATE_CMD; the Platform answers on FW_UPDATE_REPLY, which the
     # bridge uplinks verbatim as a PLATFORM_FRAME. The USB port is damaged.

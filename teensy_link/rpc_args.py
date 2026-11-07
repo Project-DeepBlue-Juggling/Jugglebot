@@ -16,6 +16,7 @@ against the firmware in ``tests/teensy_link/test_rpc_args.py``.
 from __future__ import annotations
 
 import struct
+from collections import namedtuple
 
 from . import protocol as p
 from .protocol import (
@@ -31,6 +32,7 @@ from .protocol import (
     ArgSdoWrite,
     ResultTimeOfDay,
     ArgBbThrow,
+    ArgHandFanSet,
     ArgRobotState,
     ResultAxisVersions,
     ResultBbAxisVersions,
@@ -58,6 +60,7 @@ __all__ = [
     "encode_set_absolute_position", "encode_clear_errors", "encode_reboot",
     "encode_encoder_search", "encode_home", "encode_activate", "encode_deactivate",
     "encode_sdo_read", "encode_sdo_write", "encode_state_write",
+    "ArgHandFanSet", "HAND_FAN_MODES", "HandFanStatus", "encode_hand_fan_set", "decode_hand_fan_status",
     "decode_hand_cmd_echo",
     "encode_bb_throw", "ResultBbThrow", "decode_bb_throw_result", "encode_bb_reload", "encode_bb_reset",
     "encode_bb_calibrate_loc", "encode_bb_cancel",
@@ -379,6 +382,38 @@ def encode_wave_cmd(desired: int, cmd_seq: int, flags: int = 0,
 # homing write preserves levelling and vice versa); the firmware encodes the
 # 0x6E0 frame itself (least-privilege — never a Jetson-supplied raw frame).
 
+#: HAND_FAN_SET modes, by the name the hand_fan/set service takes. The numbers are
+#: the wire values in Teensy_code_platform/hand_fan.h.
+HAND_FAN_MODES = {"auto": 0, "on": 1, "off": 2}
+
+HandFanStatus = namedtuple(
+    "HandFanStatus",
+    ("mode", "fan_on", "reading_valid", "on_above_c", "off_below_c", "motor_temp_c"))
+
+
+def encode_hand_fan_set(mode: str, on_above_c: float, off_below_c: float) -> bytes:
+    """HAND_FAN_SET: set the Platform Teensy's Hand fan mode and AUTO thresholds.
+    The firmware validates and encodes the CAN frame; ``KeyError`` on an unknown mode."""
+    return ArgHandFanSet(
+        mode=HAND_FAN_MODES[mode],
+        on_above_c=float(on_above_c),
+        off_below_c=float(off_below_c),
+    ).pack()
+
+
+def decode_hand_fan_status(data: bytes) -> HandFanStatus:
+    """Decode a HAND_FAN_STATUS frame (layout: Teensy_code_platform/hand_fan.h).
+    ``ValueError`` on a wrong length or a mode this host does not know."""
+    if len(data) != 8:
+        raise ValueError(f"HAND_FAN_STATUS is 8 bytes, got {len(data)}")
+    mode_id, flags, on_centi, off_centi, motor_centi = struct.unpack("<BBhhh", data)
+    for name, value in HAND_FAN_MODES.items():
+        if value == mode_id:
+            return HandFanStatus(name, bool(flags & 0x01), bool(flags & 0x02),
+                                 on_centi / 100.0, off_centi / 100.0, motor_centi / 100.0)
+    raise ValueError(f"unknown Hand fan mode {mode_id}")
+
+
 def encode_state_write(is_homed: bool, levelling_complete: bool,
                        pose_offset_tiltX: float = 0.0,
                        pose_offset_tiltY: float = 0.0) -> bytes:
@@ -451,7 +486,8 @@ PLATFORM_FW_VERSION_UNVERSIONED = 0
 #: 8 (2026-11-07) = Hand cooling fan, driven from the Hand ODrive's temperature
 #: broadcast. Receive-only on CAN; every host-visible path is unchanged, so a
 #: board on 7 is still fully usable and only lacks the fan control.
-PLATFORM_FW_VERSION_EXPECTED = 8
+#: 9 (2026-11-07) = Hand fan runtime control and status frame, over can-bridge FW 41.
+PLATFORM_FW_VERSION_EXPECTED = 9
 
 
 def decode_platform_fw_version(data: bytes) -> int:
@@ -925,7 +961,10 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # dn_crc_errors, sched_frames, sp_seq_drops, sp_no_hand, sp_no_sched). A WIRE
 # change: PROTOCOL_VERSION 11 -> 12, so an FW 39 board is DARK to this host (and
 # vice versa) until the lockstep flash. No lane behaviour changes.
-EXPECTED_BRIDGE_FW_VERSION = 40
+# 40 -> 41 (2026-11-07): the additive HAND_FAN_SET relay and the HAND_FAN_STATUS
+# uplink. No wire change to anything existing, PROTOCOL_VERSION stays 12, and an
+# FW 40 board only answers HAND_FAN_SET with ERR_UNKNOWN_METHOD.
+EXPECTED_BRIDGE_FW_VERSION = 41
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────
@@ -1005,6 +1044,7 @@ METHOD = {
     RpcMethod.SDO_WRITE: ArgSdoWrite,
     RpcMethod.BB_THROW: ArgBbThrow,
     RpcMethod.STATE_WRITE: ArgRobotState,
+    RpcMethod.HAND_FAN_SET: ArgHandFanSet,
     # HAND_TRAJ_CMD / HAND_SOURCE_SET removed at PROTOCOL_VERSION 7 (2026-09-11,
     # skill-stack R1) with the hand-mastery latch and stroke-engine conduit they
     # served — the bridge is the one hand master and the lane follows the

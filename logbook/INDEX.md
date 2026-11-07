@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-08 | resolved | hand cooling fan | **Hand fan runtime control for A/B tests (Platform FW 9, can-bridge FW 41): mode and thresholds set in RAM, status recorded in the bags; built and tested, not flashed** | [2026-11-08-hand-fan-runtime-control](2026-11-08-hand-fan-runtime-control.md) |
 | 2026-11-07 | resolved | hand cooling fan | **Hand cooling fan on the Platform Teensy (FW 8): pin 2, on above 35 C and off below 34 C from the Hand ODrive's temperature broadcast; built and tested, not flashed** | [2026-11-07-hand-cooling-fan-platform-fw8](2026-11-07-hand-cooling-fan-platform-fw8.md) |
 | 2026-11-07 | resolved | map-improvements | **Per-kind Item IDs P2: the map app (fork repo) reads and links both ID forms; no Item changes ID** | [2026-11-07-item-id-per-kind-p2-map-app-both-forms.md](2026-11-07-item-id-per-kind-p2-map-app-both-forms.md) |
 | 2026-11-07 | resolved | map-improvements | **Per-kind Item IDs P1: mapkit and the Night Shift tools read and write both ID forms; three silent failures become loud; no Item changes ID** | [2026-11-07-item-id-per-kind-p1-dual-form-mapkit-night-shift.md](2026-11-07-item-id-per-kind-p1-dual-form-mapkit-night-shift.md) |

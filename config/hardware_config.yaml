@@ -1704,6 +1704,12 @@ teensy_operational:
   hand_fan_on_above_c: 35.0             # Hand motor thermistor above this turns the fan on {deg C}
   hand_fan_off_below_c: 34.0            # Hand motor thermistor below this turns the fan off {deg C}
   hand_fan_temp_timeout_ms: 5000        # No usable reading for this long turns the fan off {ms}
+  hand_fan_status_interval_ms: 1000     # Status frame period, so the bags always record the fan {ms}
+  # Bounds on thresholds set at runtime. The top is the Hand ODrive's motor_thermistor
+  # temp_limit_lower: a fan that only starts once the ODrive is derating is not a useful
+  # setting, and FORCE_OFF already covers a test with no fan at all.
+  hand_fan_threshold_min_c: 5.0         # Lowest settable off threshold {deg C}
+  hand_fan_threshold_max_c: 60.0        # Highest settable on threshold {deg C}
 
 # ============================================================
 # 10. Motion Capture

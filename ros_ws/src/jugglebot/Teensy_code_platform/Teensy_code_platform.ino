@@ -19,8 +19,8 @@
  *  axis-6 writer: this board neither transmits to CAN node 6 nor subscribes to
  *  its encoder (FW 8 listens to node 6's temperature broadcast for the Hand fan,
  *  which is receive-only and carries no motion).  This board's TX set is the inclinometer frame (0x7DE), the
- *  RobotState reply (0x6E0), the firmware-update reply (0x6F1) and the traffic
- *  report (0x7DF) — nothing else.  The stroke engine (Trajectory.h, the 0x6D0
+ *  RobotState reply (0x6E0), the firmware-update reply (0x6F1), the traffic
+ *  report (0x7DF) and, since FW 9, the Hand fan status (0x6E2) — nothing else.  The stroke engine (Trajectory.h, the 0x6D0
  *  TRAJ_CMD decode, the 0x0C9 hand-encoder cache) was deleted with it.
  *
  *  NOTE on CAN IDs:
@@ -150,10 +150,15 @@
  *        whenever this board is not driving the pin).  Runs from the Hand ODrive's
  *        motor thermistor broadcast alone, so it works with no ROS2 and no Jetson;
  *        see hand_fan.h for the rule.  Receive-only on CAN: the TX set and every
- *        other path are unchanged.
+ *        other path are unchanged.  Never flashed; superseded by 9 the same day.
+ *    9 = 2026-11-07.  HAND FAN RUNTIME CONTROL, for A/B tests.  0x6E1 sets the mode
+ *        (AUTO / FORCE_ON / FORCE_OFF) and thresholds in RAM, so every reboot returns
+ *        to AUTO at the defaults.  0x6E2 is a new status frame at 1 Hz, on every
+ *        command and on every fan change.  Needs can-bridge FW 41 for both; on an
+ *        older bridge AUTO still works.  No motion path touched.
  */
 constexpr char     FW_NAME[]  = "jugglebot-platform";
-constexpr uint16_t FW_VERSION = 8;   // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
+constexpr uint16_t FW_VERSION = 9;   // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
                                      //      feedforward, C-HAND-2).
                                      // 2→3: 2026-08-18 hand END-STOP correction — BEHAVIOURAL.
                                      //      Geometry::HAND_MOTOR_HARD_STOP_REVS 11.1 → 10.8 rev
@@ -190,6 +195,8 @@ constexpr uint16_t FW_VERSION = 8;   // 1→2: 2026-07-29 throwDecelToTorque (po
                                      //      axis-6 writer (I-FW-15).
                                      // 7→8: 2026-11-07 Hand cooling fan (hand_fan.h), driven
                                      //      from the Hand ODrive's temperature broadcast.
+                                     // 8→9: 2026-11-07 Hand fan runtime control and status
+                                     //      (0x6E1 / 0x6E2), RAM only.
 
 /*----------------------------------------------------------------------------*/
 /*                                CAN BUS SET‑UP                              */
@@ -213,6 +220,8 @@ constexpr uint32_t stateUpdateID   = PlatformCanId::STATE_UPDATE;
 constexpr uint32_t FW_UPD_CMD_ID   = PlatformCanId::FW_UPDATE_CMD;    // host → this board
 constexpr uint32_t FW_UPD_REPLY_ID = PlatformCanId::FW_UPDATE_REPLY;  // this board → host
 constexpr uint32_t HAND_TEMPS_ID = (uint32_t(NodeId::JUGGLEBOT_HAND) << 5) | ODriveCmd::get_temps;
+constexpr uint32_t HAND_FAN_CMD_ID    = PlatformCanId::HAND_FAN_CMD;     // host → this board
+constexpr uint32_t HAND_FAN_STATUS_ID = PlatformCanId::HAND_FAN_STATUS;  // this board → host
 
 /*----------------------------------------------------------------------------*/
 /*                            TRAFFIC MONITOR                                 */
@@ -272,14 +281,31 @@ static_assert(TeensyOp::HAND_FAN_OFF_BELOW_C < TeensyOp::HAND_FAN_ON_ABOVE_C,
               "the Hand fan thresholds need a gap, or the fan chatters at the threshold");
 
 HandFan::Controller handFan(TeensyOp::HAND_FAN_ON_ABOVE_C, TeensyOp::HAND_FAN_OFF_BELOW_C,
-                            TeensyOp::HAND_FAN_TEMP_TIMEOUT_MS);
+                            TeensyOp::HAND_FAN_TEMP_TIMEOUT_MS,
+                            TeensyOp::HAND_FAN_THRESHOLD_MIN_C, TeensyOp::HAND_FAN_THRESHOLD_MAX_C);
 bool handFanRunning = false;
+uint32_t lastHandFanStatusMs = 0;
+
+void sendHandFanStatus() {
+  CAN_message_t m;
+  m.id = HAND_FAN_STATUS_ID;
+  m.len = HandFan::STATUS_FRAME_LEN;
+  handFan.encode_status(m.buf);
+  can1.write(m);
+  lastHandFanStatusMs = millis();
+}
 
 void updateHandFan() {
-  const bool want = handFan.update(millis());
-  if (want == handFanRunning) return;
-  digitalWrite(HAND_FAN_PIN, want ? HIGH : LOW);
-  handFanRunning = want;
+  const uint32_t now = millis();
+  const bool want = handFan.update(now);
+  const bool changed = (want != handFanRunning);
+  if (changed) {
+    digitalWrite(HAND_FAN_PIN, want ? HIGH : LOW);
+    handFanRunning = want;
+  }
+  if (changed || (now - lastHandFanStatusMs) >= TeensyOp::HAND_FAN_STATUS_INTERVAL_MS) {
+    sendHandFanStatus();
+  }
 }
 
 /*----------------------------------------------------------------------------*/
@@ -975,6 +1001,13 @@ void canSniff(const CAN_message_t &msg) {
   /* — Hand fan: the Hand ODrive's temperature broadcast — */
   if (msg.id == HAND_TEMPS_ID) {
     handFan.on_temps_frame(msg.buf, msg.len, msg.flags.remote, millis());
+  }
+
+  /* — Hand fan runtime control: always answered, so the host sees a refusal — */
+  if (msg.id == HAND_FAN_CMD_ID) {
+    handFan.on_command_frame(msg.buf, msg.len, msg.flags.remote);
+    updateHandFan();
+    sendHandFanStatus();
   }
 
   /* ── firmware update over CAN  ID 0x6F0 ──────────────────────────

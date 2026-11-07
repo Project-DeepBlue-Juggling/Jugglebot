@@ -293,6 +293,9 @@ namespace TeensyOp {
   constexpr float HAND_FAN_ON_ABOVE_C = 35.0f;
   constexpr float HAND_FAN_OFF_BELOW_C = 34.0f;
   constexpr uint32_t HAND_FAN_TEMP_TIMEOUT_MS = 5000u;
+  constexpr uint32_t HAND_FAN_STATUS_INTERVAL_MS = 1000u;
+  constexpr float HAND_FAN_THRESHOLD_MIN_C = 5.0f;
+  constexpr float HAND_FAN_THRESHOLD_MAX_C = 60.0f;
 }
 
 // ==========================================================================
