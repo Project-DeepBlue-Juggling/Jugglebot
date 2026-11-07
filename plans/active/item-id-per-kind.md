@@ -16,7 +16,7 @@ steps:
   - {id: P0, title: Plan and owner decisions, kind: phase, status: complete, date: 2026-11-07, effort: xs, hardware: none}
   - {id: P1, title: Expand mapkit and the Night Shift tools to both ID forms, kind: phase, status: complete, date: 2026-11-07, effort: m, hardware: none}
   - {id: P2, title: Expand the map app to both ID forms (fork repo), kind: phase, status: complete, date: 2026-11-07, effort: m, hardware: none}
-  - {id: P3, title: The sweeper and the classified census, kind: phase, status: not_started, effort: m, hardware: none}
+  - {id: P3, title: The sweeper and the classified census, kind: phase, status: complete, date: 2026-11-08, effort: m, hardware: none}
   - {id: P4, title: Cutover in one commit, kind: phase, status: not_started, effort: s, hardware: none}
   - {id: P5, title: 'Contract: retire the old form, guard test, normative docs', kind: phase, status: not_started, effort: s, hardware: none}
   - {id: P6, title: Out-of-tree residue and close, kind: phase, status: not_started, effort: xs, hardware: none}
@@ -204,7 +204,7 @@ node to its source, which reports stale until the `colcon build` in P4.
 | P0 | Plan, decisions D-1 to D-5, GLOSSARY round, ADR-0015 | COMPLETE | 2026-11-07 | Low | T-R0 |
 | P1 | mapkit and Night Shift tools read and write both forms; JB stays the allocated form | COMPLETE | 2026-11-07 | Low: no ID changes | T-U1 to T-U8, T-I0 |
 | P2 | Fork server and frontend take both forms; deployed | COMPLETE | 2026-11-07 | Medium: live app | T-U9 to T-U11, T-I1 |
-| P3 | `tools/id_sweep.py`, classification of every token, dry-run report | NOT STARTED | | Low: writes nothing | T-U12 to T-U14, T-R1 |
+| P3 | `tools/id_sweep.py`, classification of every token, dry-run report | COMPLETE | 2026-11-08 | Low: writes nothing | T-U12 to T-U14, T-R1 |
 | P4 | One commit: crosswalk, every `id:`, every citation, regenerated outputs | NOT STARTED | | **High: repo-wide** | T-R2 to T-R6, T-I2 to T-I4, T-H1 |
 | P5 | Dual form removed, guard test, normative docs | NOT STARTED | | Low | T-U15, T-R7 |
 | P6 | Memory, fork text, remote branches, close JB-118 | NOT STARTED | | Low | T-R8 |
@@ -295,7 +295,7 @@ A last good version older than P2 cannot read per-kind IDs, so P4 waits until th
 
 **Outcome (2026-11-07).** The fork's server and frontend resolve, link and search both ID forms; no Jugglebot code changed, no Item changed ID, and `mapkit/legacy_ids.csv` is not created. T-U9, T-U10 and T-U11 landed tests first. Fork gate (2026-11-07, scratch clone, `MAPKIT_SRC` at the 863d07da worktree): `python -m pytest -q` 110 passed in 76.24 s (2026-11-07 22:58, temp/logs/id-p2-fork-gate-2.log); `cd frontend && npx vitest run` 339 passed, 1 skipped; `npm run build` rc 0; `bash scripts/contract_check.sh` rc 0. Deploy: deployed 2026-11-07 23:04 with `python3 tools/night_shift_deploy.py --date 2026-11-07 --result temp/id-migration/p2-deploy-result.json`, result `app deploy: DEPLOYED; 0ea6d9e8 -> 67232aab; healthy`; the live clone moved to the fork commit 67232aa, the unit stayed active with no restart loop, health 200, and a 20-endpoint GET capture before and after (`temp/id-migration/p2-live-before/`, `p2-live-after/`) differed only in the capture timestamp and the built asset hashes; `GET /api/v1/tasks/BUG-118` is 404 on the legacy tree, as expected. T-I1 (the phone check) is stop point 1. Audit: 0 blocking, 3 behaviour, 3 narrative; ASCII-only digits and the startup guard applied. Baseline `./run_tests.sh` of the untouched tree (2026-11-07 22:05): 9053 passed, 61 skipped, 1 failed (`tests/ros/test_trajectory_node.py::test_guard_latch_descent_falls_back_to_stop_then_descent`, load-sensitive, passes alone in 0.51 s, outside this plan). Record: `logbook/2026-11-07-item-id-per-kind-p2-map-app-both-forms.md`.
 
-### P3 — The sweeper and the classified census — NOT STARTED
+### P3 — The sweeper and the classified census — COMPLETE (2026-11-08)
 
 **Files:** `tools/id_sweep.py`, `tools/id_sweep_overrides.tsv`, `tests/sim/test_id_sweep.py`.
 
@@ -310,6 +310,7 @@ matching a deliberately broad pattern, `(?i)(?<![a-z0-9])jb(?![a-z])`, and assig
 | `placeholder`, `loose` | Taken from the overrides file only, keyed by file and line content |
 | `abbreviation` | Leave: `JB_*`, `jb_*`, `MAGIC`, `defer jb`, the robot's name |
 | `frozen` | Leave: filename and stem references, `Logbook-Entry:` values, `plant_id` keys, scheme-history text |
+| `code_literal` | Leave at P4: dual-form-reading literals in `mapkit/` and `tools/night_shift*`; P5 retires the class |
 
 **A token that matches no rule is an error and the sweep refuses to run.** Nothing defaults to "leave" or to "rewrite",
 so a form nobody anticipated stops the sweep instead of slipping through. An unknown number (today JB-800 and JB-900,
@@ -318,14 +319,18 @@ both test fixtures) is likewise an error until classified.
 **Output, written to `temp/id-sweep/`:** a CSV of every token (file, line, class, before, after) and a summary
 per class and directory, for owner review of the `frozen` and `abbreviation` classes before any write. The same report
 lists: every citation of JB-90..93, JB-96..99, JB-118 and JB-119 for the renumber review; every Item line that
-breaks a readability cap after rewriting; and the test fixtures (`test_mapkit_ids.py` 78, `test_sitting_sections.py`
+breaks a readability cap after rewriting; and the test fixtures (13 synthetic-repo test files, list in `FIXTURE_FILES`; `test_mapkit_ids.py` 78, `test_sitting_sections.py`
 57, `test_mapkit_item_ids_cli.py` 52, `test_night_shift_report.py` 30), whose IDs assert parser behaviour and so are
 hand-converted, not looked up.
 
 **Option text.** JB-118's and JB-131's illustrative `BUG-13`, `PWAY-12` would become live links to real or missing
 Items in the drawer, so P4 puts those examples in backticks, which the linkifier ignores by rule.
 
+**Outcome (2026-11-08).** `tools/id_sweep.py` classifies every broad-pattern token and refuses an unclassified one; `code_literal` was added and `fixture` widened to 13 files (stop point 3). Scoped `tests/sim/test_id_sweep.py` (2026-11-08): 23 passed, 1 skipped in 14.84 s (2026-11-08 00:32, `python -m pytest -q tests/sim/test_id_sweep.py`, temp/logs/id-p3-recheck.log). Real-tree T-R1 (`ID_SWEEP_REAL_TREE=1`, 2026-11-08): 2 passed in 56.52 s (2026-11-08 00:32, `ID_SWEEP_REAL_TREE=1 python -m pytest -q tests/sim/test_id_sweep.py -k real`). Census (2026-11-08, `python tools/id_sweep.py --census`): 8,010 tokens classified, 0 unclassified, 316 per-kind counted apart, 64 files skipped by suffix (2026-11-08 00:52, `python tools/id_sweep.py --census`, after rebasing onto the Hand-fan commits 9f7267df; the pre-rebase tree at 00:33 gave 6,953 and 258, and the added tokens are all classified without a rewrite: the dry run is unchanged at 4,103 spans). Dry run (2026-11-08, provisional crosswalk): rc 0, 4,103 spans in 667 files, 0 refused, 0 readability-cap breaks, tree unchanged (2026-11-08 00:36, `python tools/id_sweep.py --apply --dry-run --crosswalk temp/id-sweep/dry-run/provisional-crosswalk.csv --overrides tools/id_sweep_overrides.tsv`); the second-pass no-op was shown on a copy of the tree by unit 2 (`--verify` rc 0). Gate (`./run_tests.sh`): 9101 passed, 63 skipped in 551.55 s parallel and 7 passed serial, rc 0 (2026-11-08 01:05, `./run_tests.sh` on the tree rebased onto 9f7267df, temp/logs/id-p3-gate2.log; the pre-rebase tree passed 9077 at 00:40). Audit: 0 blocking, 5 behaviour, all applied. Nothing in the tree was rewritten. Record: `logbook/2026-11-08-item-id-per-kind-p3-sweeper-and-census.md`.
+
 ### P4 — Cutover in one commit — NOT STARTED
+
+**From P3.** The sweeper reads a crosswalk CSV with columns `old_id,new_id,kind,stem`; `mapkit/legacy_ids.csv` must carry at least these. Hand-edits the sweep does not do: `docs/agents/map-writes.md:74` ("avoid JB-68..70"); the 7 regexes in `test_sitting_debrief_protocol.py`, which move with `sitting-debrief.md`; backticks on the two option-text examples; the branch globs in `.claude/commands/night-shift.md` and `sitting-debrief.md`. Regenerate the UDP protocol outputs (`python config/generate_config.py`) and re-run the xlang tests, since generator descriptions feed three generated files. Stop point 3 (the owner's read of `temp/id-migration/p3-owner-report.md`) precedes any write.
 
 **From P2.** After the renumber, old bare-number bookmarks (`?item=12`) that become ambiguous show the drawer's generic error (no chooser; a small follow-up renders `children`). Typed `?item=JB-12` links 404 until D-3's `legacy()` lands. The fork has a `TODO(P4)` in `store._node` for refusing a legacy ID on a write. Stop point 2 reads the deploy-state record, not a commit key: the last-good record is the `dist.last-good` directory plus the live clone's HEAD before the deploy.
 
