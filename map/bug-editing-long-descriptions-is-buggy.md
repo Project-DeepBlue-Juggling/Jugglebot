@@ -21,3 +21,7 @@ filed_by: harrison
 The whole edit panel scrolls to the top as soon as a character is entered into the editor, making long Descriptions impossible to edit while seeing what you're typing
 
 Filed from the Robot tab at 2026-11-02T20:47:05+11:00.
+
+## Review (2026-11-07)
+
+Open to the Night Shift through the app's night clone. A headless test may not reproduce a scroll bug, so a fix here needs the owner's eyes after the deploy; the report row should say so.
