@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-07 | complete | night-shift | **`/sitting-debrief` brings a passed branch up to date with `main` and re-runs the audit, full suite and gate before merging; the flown branch stays on the remote as it was** | [2026-11-07-sitting-debrief-updates-the-branch.md](2026-11-07-sitting-debrief-updates-the-branch.md) |
 | 2026-11-07 | complete | night-shift | **Night Shift reach widened: the firmware freeze never matched a file and now does, `mapkit` and the map app open to the night, tests run with no network, and the runner deploys the app at the end of each night with automatic rollback** | [2026-11-07-night-shift-out-of-reach-opened.md](2026-11-07-night-shift-out-of-reach-opened.md) |
 | 2026-11-07 | complete | night-shift (seventh live night) | **Night Shift 2026-11-07: 3 merged (JB-175, JB-189, JB-182), 2 held (JB-169, JB-190), 3 questioned (JB-167, JB-188, JB-193)** | [2026-11-07-night-shift.md](2026-11-07-night-shift.md) |
 | 2026-11-07 | complete | JB-182 | **Four motor_guard interpolation tests now freeze the clock for the interpolation step, so load can no longer move the asserted position; no production change, tolerances untouched.** | [2026-11-07-jb182-motor-guard-test-frozen-clock.md](2026-11-07-jb182-motor-guard-test-frozen-clock.md) |

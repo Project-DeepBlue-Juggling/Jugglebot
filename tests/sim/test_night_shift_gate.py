@@ -511,6 +511,33 @@ def test_a_branch_cannot_switch_off_the_frozen_tests(repo):
     assert_hold(run(repo), "f")
 
 
+def test_the_debriefs_update_then_gate_reaches_a_merge(repo):
+    """/sitting-debrief section 3: a robot Item whose base moved. The night's results are for
+    the old tip and no longer count; new results on the updated tip, against the base it was
+    updated to, merge with the hardware condition waived and nothing else."""
+    write_bug(repo, hardware="robot")
+    commit(repo, "map: rate JB-7")
+    night_tip = tip(repo)
+    night_log, night_audit = gate_log(repo, sha=night_tip), audit(repo, sha=night_tip)
+    _git(repo, "checkout", "-q", "main")
+    (repo / "src" / "other.py").write_text("Y = 1\n")
+    commit(repo, "a day's work")
+    _git(repo, "push", "-q", "origin", "main")
+    base = _git(repo, "rev-parse", "main")
+    _git(repo, "checkout", "-q", BRANCH)
+
+    stale = gate.evaluate(str(repo), base, BRANCH, "JB-7", night_log, night_audit, ("c",))
+    assert stale.verdict == "HOLD" and "does not contain base" in stale.reasons[0]
+
+    _git(repo, "merge", "-q", "--no-edit", base)
+    still = gate.evaluate(str(repo), base, BRANCH, "JB-7", night_log, night_audit, ("c",))
+    assert still.verdict == "HOLD" and letters(still) == ["a", "b", "c"]
+
+    fresh = gate.evaluate(str(repo), base, BRANCH, "JB-7", gate_log(repo), audit(repo), ("c",))
+    assert fresh.verdict == "MERGE" and fresh.waived == ["c"], fresh.reasons
+    assert "MERGE (c waived)" in fresh.to_text()
+
+
 def test_the_debriefs_remote_branch_name_matches_the_nights_log(repo):
     """/sitting-debrief names the branch origin/<name>; the night's log has the local name."""
     _git(repo, "push", "-q", "origin", BRANCH)
