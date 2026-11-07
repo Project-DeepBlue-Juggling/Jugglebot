@@ -4,7 +4,7 @@ kind: bug
 title: Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT)
 status: in_progress
 created: '2026-11-02'
-updated: '2026-11-07T05:19:08Z'
+updated: '2026-11-07T06:22:26Z'
 owners:
 - jugglebot-3d
 priority: high
@@ -91,18 +91,6 @@ In every block the faulting launches sit at or above the p90 of that block's mea
 - FW 36 stall guard (JB-146): never fired (`diag_flags` 2 in all 31,389 rows).
 - Torque feedforward clamp: not reached (`cmd_tor_ff` -0.184..+0.138 N m, 0 rows at the 0.234 clamp).
 
-## Sitting
-
-- setup: armed, bb-fed
-- why: the torque loss happened at 13-54 A so the 60 A limit does not explain the SPINOUTs and a 70 A brake is harder; this run measures whether the SPINOUT rate moves with the drive now at 70/80 A (K and limits unchanged). Flown at Apex 1.10: nomination refuses 1.35 at accept (nearest viable 1.25), and with the Hand C1 grace at 14 ms a release-knot stop overruns the stroke clip above 1.10 (-0.50 rev at 1.25). Flying higher needs a grace decision first.
-- do:
-  - Re-home the Hand first: the ODrive GUI save on 2026-11-03 (limits 70/80 A, thermistor 60/70 C) reset the zero (JB-146 class).
-  - Fly Columns, Sep. 125, Apex 1.10, Throws 21, twice, with `hand_capture` on (the 21st throw is the Stop throw, so a full Attempt reads 20/20).
-  - Stop at the FIRST SPINOUT_DETECTED or Hand iq over 66 A.
-- pass: no SPINOUT_DETECTED in either run.
-- record: per run the catches; the SPINOUT count with the Hand position, velocity and iq at the torque loss from the capture; the peak brake iq; whether the 70 A limit was in effect (an iq setpoint beyond 60 A).
-- minutes: 15
-
 ## Sitting result (2026-11-03)
 
 - verdict: fail
@@ -116,9 +104,35 @@ In every block the faulting launches sit at or above the p90 of that block's mea
 - verdict: pass
 - notes: Several attempts all either succeeded or ended due to messy throws or mid-air collisions being unrecoverable.
 
+## SPINOUT at the 2026-11-07 Sitting
+
+**Do not close JB-147 on the 2026-11-07 pass (owner, 2026-11-07): the root cause comes first.** The pass covers only the four Apex 1.10 Attempts, and the same fault fired later in that Sitting. Launch log `~/.ros/log/2026-11-07-16-15-21-645789-jetson-2503132/launch.log`, capture `temp/hand_capture/hand_capture_20261107_161525.csv`, 100 Hz.
+
+| goal (log line) | catches | peak brake iq (A) | peak brake decel (rev/s^2) | SPINOUT |
+|---|---|---|---|---|
+| L600 | 9/9 | -24.7 | 4045 | 0 |
+| L963 | 12/12 | -23.6 | 3853 | 0 |
+| L1360 | 20/20 | -28.2 | 3891 | 0 |
+| L1970 | 19/20 | -29.0 | 4147 | 0 |
+
+**L8157, 16:31:20, `columns_turned` Apex 0.95, the same torque-loss signature:**
+
+- At -36 A, far under the 70 A limit, deceleration fell from about 2000 to 83 rev/s^2 in 20 ms, 30 to 50 ms after peak speed.
+- The Hand then hit the top stop: +59 to -49 rev/s in 10 ms at 10.74 rev, against a commanded top of 9.50 rev.
+- It was the fastest launch (137 rev/s, commanded 134, block median 123) and the hardest brake (5416 rev/s^2) of all 397. No surviving launch reached 4300.
+
+**What the row did not settle:**
+
+- **Does the fault rate move at 70/80 A?** Not shown. No brake in the four Attempts passed 29 A. Zero SPINOUTs in 69 launches was 43 % likely at the Apex 0.95 rate of 2026-11-03 and 5 % at its Apex 1.35 rate.
+- **Sitting-wide rate:** 1 in 397 against 3 in 407 for the comparable blocks of 2026-11-03 at 60 A, too few to separate (Fisher p = 0.62).
+- **Was the 70 A limit live?** Yes, setpoint -69.93 A at L963, but that was the JB-202 stall at zero speed, not a brake.
+
+**Next:** the encoder or magnet slip and offset candidates in the Diagnosis above are still untested. The flown row is removed from this Item so the Runbook does not ask to fly it again; the next row waits until a root-cause hypothesis says what to measure.
+
 ## Progress
 
 - 2026-11-02: Landed 8ffeba66: 70 A code limit, stream STOP 4500, C-HAND-6 speed-scaled top margin (K 4.75e-5), plus the opt-in hand_capture:=true for diagnosing the overshoot. Cause of the overshoot still open; fly with the capture on.
 - 2026-11-03: Failed at the Sitting of 2026-11-03: 7 of 9 Apex 1.35-1.50 attempts ended SPINOUT_DETECTED (L5380, 6358, 6906, 7374, 7616, 7853, 8106), tops to 10.855 rev vs clip 10.501. Capture shows torque lost 10-20 ms into the brake at 13-54 A, not saturation: overshoot hypothesis withdrawn (detail below).
 - 2026-11-04: 2026-11-03 Sitting (22:29, P4 ramp): REFUTED for the three firmware-STOP ends (goals 3, 9, 15): the Hand braked on its profile at -23..-24 A, no SPINOUT_DETECTED all Sitting, peak |iq_set| 54.1 A vs the 70 A clamp. Withdrawn for that class; the Apex 1.35 overshoot it was filed for was not exercised.
 - 2026-11-05: 2026-11-05 L2596: SPINOUT after a C1-stop brake: decel 4826 -> ~500 rev/s^2 within 10 ms of the brake peak, 25 ms into the brake, at 4.4 rev / 20 rev/s, iq -41 A (limit 70, not saturated). Same torque-loss signature as 11-03, far from the clip; Hand rested at 5.0 rev. 1 of 3 C1 brakes at -40 A went SPINOUT.
+- 2026-11-07: 2026-11-07 Sitting: Apex 1.10 row passed (4 Attempts, 69 launches, 0 SPINOUT, brakes at most 29 A), but L8157 at Apex 0.95 is the same torque loss at -36 A into the top stop. Stays open until the root cause is known (owner). Flown row removed (detail below).

@@ -6,7 +6,7 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 block (30 min)
+Rigs: Robot 5 blocks (218 min) · Bench leg 1 block (30 min) · Bench hand 1 block (30 min)
 
 ## Setup 0: before power
 
@@ -16,7 +16,7 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Robot  (6 blocks, 233 min)
+## Robot  (5 blocks, 218 min)
 
 ### Block 1: armed  (1 row, 1 min)
 
@@ -71,18 +71,7 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - pass: about 30 caught Throws have flown at each Dwell and no Leg joint let go. Type the result as pending. The debrief computes, per Dwell, the Platform's velocity toward the partner Site at each release (from the bag) and the landing pull against the real release, and compares the two Dwells: a 5 Hz ring predicts a clear change over 0.05 s, an Apex effect predicts none.
 - record: the launch log and bag paths, the clock time of each Start with its Dwell, how many Attempts each Dwell took and why each ended early, any refusal text, and anything seen at the base joints.
 
-### Block 3: armed, bb-fed  (1 row, 15 min)
-
-#### JB-147 Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT)  (15 min, high, unattached)
-- why: the torque loss happened at 13-54 A so the 60 A limit does not explain the SPINOUTs and a 70 A brake is harder; this run measures whether the SPINOUT rate moves with the drive now at 70/80 A (K and limits unchanged). Flown at Apex 1.10: nomination refuses 1.35 at accept (nearest viable 1.25), and with the Hand C1 grace at 14 ms a release-knot stop overruns the stroke clip above 1.10 (-0.50 rev at 1.25). Flying higher needs a grace decision first.
-- do:
-  - Re-home the Hand first: the ODrive GUI save on 2026-11-03 (limits 70/80 A, thermistor 60/70 C) reset the zero (JB-146 class).
-  - Fly Columns, Sep. 125, Apex 1.10, Throws 21, twice, with `hand_capture` on (the 21st throw is the Stop throw, so a full Attempt reads 20/20).
-  - Stop at the FIRST SPINOUT_DETECTED or Hand iq over 66 A.
-- pass: no SPINOUT_DETECTED in either run.
-- record: per run the catches; the SPINOUT count with the Hand position, velocity and iq at the torque loss from the capture; the peak brake iq; whether the 70 A limit was in effect (an iq setpoint beyond 60 A).
-
-### Block 4: level  (1 row, 15 min)
+### Block 3: level  (1 row, 15 min)
 
 #### JB-113 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them  (15 min, medium, unattached)
 - why: re-measure the human-throw bench with the robot in place (moving Platform markers, a ball in the Cup, the robot blocking camera views) and the owner's throws at better lighting.
@@ -94,7 +83,7 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - pass: the bag replays through `tools/probes/human_throw_bench.py` with the robot-spot landing sd and the phantom rate reported.
 - record: the bag path, the lighting change, and the bench report path.
 
-### Block 5: armed, bb-fed, bridge-cycled  (2 rows, 95 min)
+### Block 4: armed, bb-fed, bridge-cycled  (2 rows, 95 min)
 
 #### JB-102 Pre-release hold rung: release from a moving Platform (hold 0.100 → 0)  (45 min, high, two-ball-oval)
 - why: the ZVD rows (mode provisional 4.9 Hz / 0.20 / 20 ms) have never flown. This A/B flies them against the flag-off carry on the oval, where carried Throws land about +59 mm long at Dwell 0.40. `gc_freeze` is on for both arms, its first flight (JB-149). The Platform mode is re-fitted afterwards from this Sitting's bag.
@@ -123,7 +112,7 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - pass: the five Columns Attempts each read `COMPLETED (20/20 caught)` with no leg LIMIT end and peak leg iq under 20 A; then the one-ball oval sustains 30 consecutive Catches in one Attempt at the shortest dwell flown (plan P4 gate).
 - record: caught of thrown and the end code per Attempt; the CATCH leg-velocity refusal count across the canary (JB-24 expects none at 600 mm/s); peak leg iq per leg per Attempt from the bag (the 20 A measurement); the shortest dwell reaching 30; the raw long bias per dwell (landed minus the command u), from rest and carried; the LIMIT_JERK refusal count; the oval plant_id; the bag and launch log paths; commit docs/records.md.
 
-### Block 6: level, armed  (1 row, 30 min)
+### Block 5: level, armed  (1 row, 30 min)
 
 #### JB-195 Leg encoder dropouts of 80 to 99 ms continue at the clock beat: trial encoder_msg_rate_ms 9 on Leg 4, then all Legs  (30 min, medium, unattached)
 - why: tests the Hand's 9 ms cure on the axis where zero episodes by chance is about 5e-4, far stronger than the Hand's own trial, and decides whether all six Legs change.
@@ -138,7 +127,7 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 
 ## Bench leg  (1 block, 30 min)
 
-### Block 7: bridge-cycled  (1 row, 30 min)
+### Block 6: bridge-cycled  (1 row, 30 min)
 
 #### JB-73 Hand ODrive state can silently diverge from what the can-bridge commanded  (30 min, low, unattached)
 - why: confirm FW 35's suppress-edge hold flush leaves the bench leg at the last transmitted command instead of input_pos + vel_ff/pos_gain, and measure the current step it costs.
@@ -151,7 +140,7 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 
 ## Bench hand  (1 block, 30 min)
 
-### Block 8: armed, bridge-cycled  (1 row, 30 min)
+### Block 7: armed, bridge-cycled  (1 row, 30 min)
 
 #### JB-145 Hand stall stop near a release cannot fit the stroke: the 20 ms grace plus the C2 stop carry the Hand past the clip  (30 min, medium, unattached)
 - why: FW 37 (owner call JB-154, option 2; grace 6 ms at FW 37, 14 ms at FW 39) stops a fast upward Hand inside the stroke when the stream dies; it has never run on hardware, and the stroke_cut bench stage exercises exactly that path with no ball.
@@ -176,6 +165,7 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - JB-120 [Robot] A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve: no ## Sitting section
 - JB-134 [Robot] Ball Butler yaw-settle gate aborts settled throws (THROW_ABORTED_NOT_SETTLED false positives): no ## Sitting section
 - JB-138 [Robot] Hand iq reached 53.3 A on a 45 deg turned hop launch, over the 50 A watch the high-low row names: no ## Sitting section
+- JB-147 [Robot] Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT): no ## Sitting section
 - JB-148 [Robot] One-off 2 m Throws: raised Hand limits and an overshoot protection the speed-scaled margin cannot give: no ## Sitting section
 - JB-166 [Robot] Firmware scheduler STOP fires on a clean host stream and ends the Attempt: no ## Sitting section
 - JB-167 [Robot] Install the host hold within one tick of a firmware scheduler STOP so a guard latch becomes a recoverable LANE_REFUSED: no ## Sitting section
