@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-08 | complete | night-shift | **Night Shift 2026-11-08: 6 merged, 2 held, 3 questioned; JB-184 reopened by two more Leg separations** | [2026-11-08-night-shift](2026-11-08-night-shift.md) |
 | 2026-11-08 | resolved | night-shift | **JB-87 slice: bridge heartbeat masks read the generated enum; UDP protocol doc added to the docs nav (Item stays open)** | [2026-11-08-jb87-heartbeat-masks-and-docs-nav](2026-11-08-jb87-heartbeat-masks-and-docs-nav.md) |
 | 2026-11-08 | resolved | night-shift | **Rosbridge service pool names the server, not the executor, when the last ready poll loses to the deadline (JB-209)** | [2026-11-08-rosbridge-pool-timeout-names-the-server](2026-11-08-rosbridge-pool-timeout-names-the-server.md) |
 | 2026-11-08 | resolved | map-app | **Typing in a long Description no longer jumps the Item drawer to the top (JB-151; only a real browser can confirm it)** | [2026-11-08-drawer-description-editor-scroll-reset](2026-11-08-drawer-description-editor-scroll-reset.md) |
