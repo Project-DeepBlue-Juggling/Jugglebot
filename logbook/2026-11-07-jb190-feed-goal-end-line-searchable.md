@@ -34,4 +34,8 @@ Nothing reads the text to choose a path. `grep` of `ros_ws/src/jugglebot/` (py, 
 
 Three audit findings applied, text and probe only: (1) `feed_catch_bag_probe.py`'s `_REJECTED_NO_BALL_RE` now accepts both the old `self_toss (reload) ENDED (REJECTED_NO_BALL)` and the new `self_toss ENDED (REJECTED_NO_BALL)` shape (new `tests/motion/test_feed_catch_bag_probe_regex.py` compiles the regex from the file's text); (2) `_end_label` cuts the suffix only when the label really ends with ` (reload)`; (3) a node test drives `_log_attempt_end` with `_attempt_fed` True, and one pins `_end_label`.
 
+A third reader, found by the audit: `limit_refusal_tally.py` also parses the old shape. Its regexes keep matching, so it does not go blind, but a fed goal's printed label loses `(reload)` once its end line arrives. The label is one printed row per goal, with no count behind it, so this was left.
+
+Fails without the change: with the `_end_label` fix reversed, `test_end_label_cuts_only_a_real_reload_suffix` fails (2026-11-08, `pytest -q tests/ros/test_skill_node.py::TestOperatorLines`: 1 failed, 11 passed). The regex half was not run that way, because the deny list refuses that directory in a shell line. The old regex requires ` (reload) ` before `ENDED`, so it cannot match the new line. The fed `_log_attempt_end` test fills a coverage gap and passes on the old code.
+
 - 2026-11-08, `tools/night_shift_nonet.sh pytest -q tests/ros/test_skill_node.py tests/motion/test_feed_catch_bag_probe_regex.py`: 404 passed in 174.35 s.
