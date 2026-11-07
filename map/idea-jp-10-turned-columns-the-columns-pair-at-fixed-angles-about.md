@@ -4,7 +4,7 @@ kind: idea
 title: 'JP-10 Turned columns: the columns pair at fixed angles about +z, under pose'
 status: in_progress
 created: '2026-10-30'
-updated: '2026-11-03T02:49:02Z'
+updated: '2026-11-07T05:42:33Z'
 owners:
 - jugglebot-f5
 priority: medium
@@ -61,6 +61,11 @@ It proves the rotational symmetry on hardware that lets the admissible box key o
 
 - verdict: fail
 - notes: At 45 deg: first attempt completed all throws. Second and Third attempts ended with mid-air collisions between the balls. Final attempt ended successfully with all 20 catches At 90 deg: every ended with a ball hitting the top of the Platform and bouncing off in such a way as to be uncatchable
+
+## Sitting result (2026-11-07 16:42)
+
+- verdict: fail
+- notes: plant_id: columns45 - first attempt ended due to a mid-air collision. Second passed with all throws caught. Third ended with a mis-caught ball. plant_id: columns90 - Forgot to change angle in GUI plant_id: columns90-2 - first attempt ended with mid-air collision. Most attempts ended with Ball2 hitting the top of the Platform. No attempt lasted more than about 5 throws.
 
 ## Progress
 
