@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-07 | resolved | map-improvements | **Per-kind Item IDs P2: the map app (fork repo) reads and links both ID forms; no Item changes ID** | [2026-11-07-item-id-per-kind-p2-map-app-both-forms.md](2026-11-07-item-id-per-kind-p2-map-app-both-forms.md) |
 | 2026-11-07 | resolved | map-improvements | **Per-kind Item IDs P1: mapkit and the Night Shift tools read and write both ID forms; three silent failures become loud; no Item changes ID** | [2026-11-07-item-id-per-kind-p1-dual-form-mapkit-night-shift.md](2026-11-07-item-id-per-kind-p1-dual-form-mapkit-night-shift.md) |
 | 2026-11-07 | resolved | map-improvements | **Per-kind Item IDs P0: GLOSSARY gains Kind, Item ID and Ticket are rewritten after a grilling round, ADR-0015 records the reversal; no Item changes ID** | [2026-11-07-item-id-per-kind-p0-glossary-and-adr.md](2026-11-07-item-id-per-kind-p0-glossary-and-adr.md) |
 | 2026-11-07 | complete | night-shift | **Next Sitting Runbook no longer says to latch `hand_source`: the latch was removed on 2026-09-11** | [2026-11-07-runbook-drops-hand-source-latch.md](2026-11-07-runbook-drops-hand-source-latch.md) |

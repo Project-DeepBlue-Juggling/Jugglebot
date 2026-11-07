@@ -15,7 +15,7 @@ scope: >-
 steps:
   - {id: P0, title: Plan and owner decisions, kind: phase, status: complete, date: 2026-11-07, effort: xs, hardware: none}
   - {id: P1, title: Expand mapkit and the Night Shift tools to both ID forms, kind: phase, status: complete, date: 2026-11-07, effort: m, hardware: none}
-  - {id: P2, title: Expand the map app to both ID forms (fork repo), kind: phase, status: not_started, effort: m, hardware: none}
+  - {id: P2, title: Expand the map app to both ID forms (fork repo), kind: phase, status: complete, date: 2026-11-07, effort: m, hardware: none}
   - {id: P3, title: The sweeper and the classified census, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: P4, title: Cutover in one commit, kind: phase, status: not_started, effort: s, hardware: none}
   - {id: P5, title: 'Contract: retire the old form, guard test, normative docs', kind: phase, status: not_started, effort: s, hardware: none}
@@ -203,7 +203,7 @@ node to its source, which reports stale until the `colcon build` in P4.
 |---|---|---|---|---|---|
 | P0 | Plan, decisions D-1 to D-5, GLOSSARY round, ADR-0015 | COMPLETE | 2026-11-07 | Low | T-R0 |
 | P1 | mapkit and Night Shift tools read and write both forms; JB stays the allocated form | COMPLETE | 2026-11-07 | Low: no ID changes | T-U1 to T-U8, T-I0 |
-| P2 | Fork server and frontend take both forms; deployed | NOT STARTED | | Medium: live app | T-U9 to T-U11, T-I1 |
+| P2 | Fork server and frontend take both forms; deployed | COMPLETE | 2026-11-07 | Medium: live app | T-U9 to T-U11, T-I1 |
 | P3 | `tools/id_sweep.py`, classification of every token, dry-run report | NOT STARTED | | Low: writes nothing | T-U12 to T-U14, T-R1 |
 | P4 | One commit: crosswalk, every `id:`, every citation, regenerated outputs | NOT STARTED | | **High: repo-wide** | T-R2 to T-R6, T-I2 to T-I4, T-H1 |
 | P5 | Dual form removed, guard test, normative docs | NOT STARTED | | Low | T-U15, T-R7 |
@@ -275,7 +275,7 @@ Departures from the text above: `night_shift_candidate.sh` exits 1 on any unpars
 
 Deferred: D-3 `legacy()` read/refuse needs the csv columns defined (P4); the fork calls `allocate` without `kind=` and keys `by_short` on an int (P2, before P4 lands the csv); the `night-shift/*-JB-n` globs in `.claude/commands/night-shift.md` and `sitting-debrief.md` (P4/P5); the gate does not check that `--branch`'s ID matches `--item` (not added).
 
-### P2 — Expand the map app to both ID forms (fork repo) — NOT STARTED
+### P2 — Expand the map app to both ID forms (fork repo) — COMPLETE (2026-11-07)
 
 **Precondition:** P1 on `main` and pulled into `~/map-live/Jugglebot`, since the app imports mapkit from that clone.
 
@@ -288,10 +288,12 @@ Deferred: D-3 `legacy()` read/refuse needs the csv columns defined (P4); the for
 keeps JB-81's behaviour for the case it served. The kind pill stays until the owner sees the new IDs in place; its
 removal is a one-line follow-up if it reads as redundant.
 
-**Deploy:** `deploy-jetson.sh`. Done when the owner opens an Item by `JB-n` on the phone and nothing has changed.
+**Deploy:** `tools/night_shift_deploy.py` by hand (it saves `dist.last-good`, restarts the one unit, health-checks `/api/v1/health` and rolls back on failure; `deploy-jetson.sh` is provisioning with no rollback and is not the deploy path). Done when the owner opens an Item by `JB-n` on the phone and nothing has changed.
 
 **Rollback hazard.** `tools/night_shift_deploy.py` returns the app to its last good version after a failed night deploy.
 A last good version older than P2 cannot read per-kind IDs, so P4 waits until that record includes P2 (§ 4 P4).
+
+**Outcome (2026-11-07).** The fork's server and frontend resolve, link and search both ID forms; no Jugglebot code changed, no Item changed ID, and `mapkit/legacy_ids.csv` is not created. T-U9, T-U10 and T-U11 landed tests first. Fork gate (2026-11-07, scratch clone, `MAPKIT_SRC` at the 863d07da worktree): `python -m pytest -q` 110 passed in 76.24 s (2026-11-07 22:58, temp/logs/id-p2-fork-gate-2.log); `cd frontend && npx vitest run` 339 passed, 1 skipped; `npm run build` rc 0; `bash scripts/contract_check.sh` rc 0. Deploy: deployed 2026-11-07 23:04 with `python3 tools/night_shift_deploy.py --date 2026-11-07 --result temp/id-migration/p2-deploy-result.json`, result `app deploy: DEPLOYED; 0ea6d9e8 -> 67232aab; healthy`; the live clone moved to the fork commit 67232aa, the unit stayed active with no restart loop, health 200, and a 20-endpoint GET capture before and after (`temp/id-migration/p2-live-before/`, `p2-live-after/`) differed only in the capture timestamp and the built asset hashes; `GET /api/v1/tasks/BUG-118` is 404 on the legacy tree, as expected. T-I1 (the phone check) is stop point 1. Audit: 0 blocking, 3 behaviour, 3 narrative; ASCII-only digits and the startup guard applied. Baseline `./run_tests.sh` of the untouched tree (2026-11-07 22:05): 9053 passed, 61 skipped, 1 failed (`tests/ros/test_trajectory_node.py::test_guard_latch_descent_falls_back_to_stop_then_descent`, load-sensitive, passes alone in 0.51 s, outside this plan). Record: `logbook/2026-11-07-item-id-per-kind-p2-map-app-both-forms.md`.
 
 ### P3 — The sweeper and the classified census — NOT STARTED
 
@@ -324,6 +326,8 @@ hand-converted, not looked up.
 Items in the drawer, so P4 puts those examples in backticks, which the linkifier ignores by rule.
 
 ### P4 — Cutover in one commit — NOT STARTED
+
+**From P2.** After the renumber, old bare-number bookmarks (`?item=12`) that become ambiguous show the drawer's generic error (no chooser; a small follow-up renders `children`). Typed `?item=JB-12` links 404 until D-3's `legacy()` lands. The fork has a `TODO(P4)` in `store._node` for refusing a legacy ID on a write. Stop point 2 reads the deploy-state record, not a commit key: the last-good record is the `dist.last-good` directory plus the live clone's HEAD before the deploy.
 
 **Why one commit.** Between a partial flip and its completion every `JB-n` in the tree is unresolvable or wrong, and
 the auto-pull timers publish `main` to three clones every two minutes. One commit means one revert.
