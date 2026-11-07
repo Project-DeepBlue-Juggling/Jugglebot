@@ -164,8 +164,8 @@ Proposed flow, with the canonical string as identity:
 map/*.md  id: BUG-61
    |
 mapkit/ids.py   PREFIXES {kind: prefix}
-                parse("bug61") -> "BUG-61" (str), or None
-                allocate(kind) -> 1 + max(that kind)
+                parse_ref("bug61") -> "BUG-61" (str), or None
+                allocate(kind="bug") -> 1 + max(that kind)
                 resolve(bare "61") -> the one match, or IdError listing all kinds (reads only)
                 legacy("JB-149") -> "BUG-61"   via mapkit/legacy_ids.csv, frozen at P4
    |-- every consumer above takes the string; nothing does arithmetic on an ID
@@ -202,7 +202,7 @@ node to its source, which reports stale until the `colcon build` in P4.
 | Phase | Scope | Status | Date | Risk | Validates |
 |---|---|---|---|---|---|
 | P0 | Plan, decisions D-1 to D-5, GLOSSARY round, ADR-0015 | COMPLETE | 2026-11-07 | Low | T-R0 |
-| P1 | mapkit and Night Shift tools read and write both forms; JB stays the allocated form | NOT STARTED | | Low: no ID changes | T-U1 to T-U8 |
+| P1 | mapkit and Night Shift tools read and write both forms; JB stays the allocated form | NOT STARTED | | Low: no ID changes | T-U1 to T-U8, T-I0 |
 | P2 | Fork server and frontend take both forms; deployed | NOT STARTED | | Medium: live app | T-U9 to T-U11, T-I1 |
 | P3 | `tools/id_sweep.py`, classification of every token, dry-run report | NOT STARTED | | Low: writes nothing | T-U12 to T-U14, T-R1 |
 | P4 | One commit: crosswalk, every `id:`, every citation, regenerated outputs | NOT STARTED | | **High: repo-wide** | T-R2 to T-R6, T-I2 to T-I4, T-H1 |
@@ -245,8 +245,13 @@ IDs. P5 removes the sentence and adds `JB-<n>` to `_Avoid_`.
 `tools/night_shift_preflight.py`, `tools/night_shift_candidate.sh`, `tools/night_shift_deploy.py`, and their tests in `tests/sim/`.
 
 **Scope.**
-- `ids.py`: `PREFIXES = {"bug": "BUG", ...}`. `parse` and `canonical` return the canonical string. `format_id(kind, n)`.
-  `allocate(kind)` scopes the max to that prefix. Both `JB-<n>` and the new forms are canonical during the expansion.
+- `ids.py`: `PREFIXES = {"bug": "BUG", ...}`. New names `parse_ref` and `canonical_ref` return the canonical string, and
+  `format_ref(kind, n)` builds one. `allocate` gains a `kind` keyword that scopes the max to that prefix. Both `JB-<n>` and
+  the new forms are canonical during the expansion.
+- **The names the live app imports keep their signature and meaning until P5:** `parse`, `canonical` and `format_id` stay
+  int-based, and `allocate(repo_root, ref, items)` keeps working (`server/store.py`, `server/idrepair.py`). The app imports
+  mapkit from `~/map-live/Jugglebot`, which pulls every 2 minutes, so changing them here would break the live app before
+  P2 can deploy. P2 moves the fork to the new names, and P5 retires the old ones.
 - **The allocator's form is decided by the tree:** `mapkit/legacy_ids.csv` absent means allocate `JB-<n>`, present means
   allocate per kind. The switch therefore travels with the P4 commit into every clone at the moment it arrives, and a
   revert switches back, with no flag to keep in step across three clones.
@@ -345,7 +350,7 @@ the auto-pull timers publish `main` to three clones every two minutes. One commi
 
 **The contract, in the project's three parts:**
 - **Document:** `DOCUMENTATION_GUIDE.md` § 2.10 and § 3 name the format and the one-time exception below. `GLOSSARY.md` loses its temporary sentence on **Item ID**, and `JB-<n>` joins that entry's `_Avoid_`.
-- **Enforcement point:** `mapkit/ids.py`, the only place prefixes exist. `_LOOSE`/`_CANON` drop `JB`; `legacy()` stays per D-3.
+- **Enforcement point:** `mapkit/ids.py`, the only place prefixes exist. `_LOOSE`/`_CANON` drop `JB`, the int-based `parse`, `canonical` and `format_id` go, and `legacy()` stays per D-3.
 - **Test:** `tests/sim/test_no_legacy_item_ids.py` runs the sweeper's classifier over `git ls-files` and fails naming file and line for any token outside the `abbreviation` and `frozen` classes, with a per-file count pinned for `frozen`. It is in the default gate and permanent, so a held branch or a habit that reintroduces `JB-12` fails at commit.
 
 **Normative docs (run `/audit --unstaged` once, at the end of this phase):** `CLAUDE.md` project-map paragraph, `docs/agents/map-writes.md`, `docs/agents/issue-tracker.md`, `docs/night-shift/README.md`, `.claude/commands/{inbox,work-inbox,night-shift,sitting-debrief,archive-plan,investigate,log}.md`.
@@ -362,7 +367,7 @@ Auto-memory (12 files, 366 hits) rewritten with the same crosswalk, `MEMORY.md` 
 
 | ID | Validates | Pass criterion |
 |---|---|---|
-| T-U1 | `parse`/`canonical`/`format_id` per kind | All five prefixes, any case, hyphen optional; `BUG-0`, `BUG-01`, `FEAT3x`, `XB-3` rejected |
+| T-U1 | `parse_ref`/`canonical_ref`/`format_ref` per kind | All five prefixes, any case, hyphen optional; `BUG-0`, `BUG-01`, `FEAT3x`, `XB-3` rejected |
 | T-U2 | `allocate` is per kind | Filing a bug leaves `FEAT`'s next number unchanged; max spans tree and `origin/main`; 1 on an empty kind |
 | T-U3 | Allocator form follows the tree | No crosswalk file: `JB-n`. Crosswalk present: per kind. Removing it switches back |
 | T-U4 | `resolve` | Stem, slug, ID order; stem-vs-ID disagreement errors; bare `12` returns the one match or lists all; bare on a write refused; after P4, `JB-149` resolves on a read and is refused on a write, both naming the new ID (D-3) |
@@ -396,6 +401,7 @@ Auto-memory (12 files, 366 hits) rewritten with the same crosswalk, `MEMORY.md` 
 
 | ID | Validates | Pass criterion |
 |---|---|---|
+| T-I0 | P1 does not break the live app | The fork's `pytest -q` with `MAPKIT_SRC` at the P1 tree, and `bash scripts/contract_check.sh`, pass with no fork change, before P1 is pushed |
 | T-I1 | App on both forms | Fork deployed before P4: opening, searching and filing work on `JB-n`; a phone-filed Item appears on `main` |
 | T-I2 | App after the flip | Tile, drawer link, `?item=BUG-12`, search, Night Shift view and Next Sitting tab all resolve; a phone-filed Item gets a per-kind ID on `main` |
 | T-I3 | Night Shift dry run | `tools/night_shift.sh --dry-run` passes preflight with the same candidate set and order as before the flip |
