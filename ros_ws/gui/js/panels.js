@@ -171,6 +171,8 @@ const FLAGS = [
     { id: 'flag-mocap-aligned', type: 'error', labelOk: 'Robot frame OK',  labelFail: 'Robot frame UNKNOWN' },
     // Row 5
     { id: 'flag-ball-held',    type: 'pill', label: 'Ball in Hand' },
+    // Written by hand-fan-panel.js from hand_fan/status; read-only.
+    { id: 'flag-hand-fan',     type: 'pill', label: 'Hand Motor Fan' },
 ];
 
 export function initFlagsGrid() {

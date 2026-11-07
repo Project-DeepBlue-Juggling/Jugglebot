@@ -73,6 +73,7 @@ import { initCameraPresets } from './camera-presets.js';
 import { initTrailSettingsUi } from './trail-settings-ui.js';
 import { initTrails, getTrailFeed } from './trails-scene.js';
 import { initCameraPanel, cameraPanelOnHeartbeat, setCameraPanelDisconnected } from './camera-panel.js';
+import { initHandFanPanel, handFanPanelOnStatus, setHandFanPanelDisconnected } from './hand-fan-panel.js';
 import { initRecordsPanel, attachRecordsMenu } from './records-panel.js';
 import { loadViewToggles, setViewToggle, toggleState } from './view-toggles.js';
 
@@ -143,6 +144,7 @@ function init() {
     // 3b. Init the Wave camera record panel (overlay right of the collapsed
     //     minimap; DOM-only until camera/heartbeat arrives).
     initCameraPanel();
+    initHandFanPanel();
 
     // 3c. Init the records panel (JB-35; HTTP only, so it shows while disconnected too).
     initRecordsPanel();
@@ -344,6 +346,8 @@ export function blankDisconnectedState() {
     // Wave camera record panel: the heartbeat is gone with the graph, so
     // blank it rather than freeze a recording readout.
     setCameraPanelDisconnected();
+    // Hand fan: same reasoning, never freeze an ON/OFF that may no longer be true.
+    setHandFanPanelDisconnected();
 }
 
 /**
@@ -410,6 +414,9 @@ function subscribeAll() {
 
     // Wave camera adapter heartbeat (10Hz, no throttle) - record panel
     ros.subscribe('camera/heartbeat', 'jugglebot_interfaces/msg/WaveCameraHeartbeat', cameraPanelOnHeartbeat, 0);
+
+    // Hand fan status (1 Hz, no throttle) - SYSTEM indicator and Platform Control toggle
+    ros.subscribe('hand_fan/status', 'jugglebot_interfaces/msg/HandFanStatus', handFanPanelOnStatus, 0);
 
     // Orchestrator state (on change)
     ros.subscribe('orchestrator_state', 'std_msgs/msg/String', onOrchestratorState, 0);
@@ -1232,7 +1239,7 @@ const GUI_SUBSCRIBED_TOPICS = new Set([
     'profile', 'link_status', 'udp_diag', 'clock_diag', 'hand_telemetry',
     'gui/mocap_data', 'balls',
     'gui/rigid_body_poses',
-    'robot_frame', 'mocap/status',
+    'robot_frame', 'mocap/status', 'hand_fan/status',
     'leg_setpoint_echo', 'control_mode_topic', 'motion/diagnostics',
     'bb/calibration_result', 'bb/calibration_attempt', 'cone/heartbeat', 'cone/timing_result',
     'skills/attempt', 'camera/heartbeat', 'rosout',
