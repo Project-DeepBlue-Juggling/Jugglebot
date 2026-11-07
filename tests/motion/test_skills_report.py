@@ -132,6 +132,29 @@ def test_end_lines_by_how_the_attempt_ended():
                  '150k mm/s³ · ' + tally)
 
 
+def test_a_fed_goals_end_lines_lead_with_the_bare_pattern_and_say_the_feed_last():
+    # JB-190: the pattern's own name must be searchable on every end line.
+    reports = [_r(throw_no=1, apex_m=0.9, caught=False)]
+    sfx = ' · entered by a Feed'
+    for code, msg, kind, head in (
+            ('', '', '', 'columns_turned done: '),
+            ('STOPPED', '', '', 'columns_turned stopped by the operator: '),
+            ('MISSED_CATCH', '', 'CATCH', 'columns_turned ENDED (MISSED_CATCH)'),
+            ('LIMIT_JERK', 'REJECTED_CYCLE_INFEASIBLE(LIMIT_JERK: peak leg '
+             'jerk 152393 mm/s³ > 150000)', 'REST',
+             'columns_turned ENDED (LIMIT_JERK)')):
+        _sev, plain = rp.end_line('columns_turned', code, msg, reports,
+                                  end_kind=kind)
+        _sev, fed = rp.end_line('columns_turned', code, msg, reports,
+                                end_kind=kind, fed=True)
+        assert fed.startswith(head), fed
+        assert fed.endswith(sfx) and fed[:-len(sfx)] == plain
+        assert not plain.endswith(sfx)
+    _sev, shadow = rp.end_line('columns_turned', '', '', reports,
+                               shadow_landing_stop=True, fed=True)
+    assert shadow.startswith('columns_turned done ') and shadow.endswith(sfx)
+
+
 def test_an_attempt_with_no_throws_still_ends_with_a_count():
     assert rp.end_line('reload', 'ABORTED_BB_NOT_READY', 'Ball Butler never '
                        'became ready', []) == (

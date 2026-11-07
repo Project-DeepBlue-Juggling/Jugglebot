@@ -28,7 +28,7 @@ EnvironmentFile=-%h/.config/jugglebot/night-shift.env
 # live-session wait. If both run long, this 5 h cap wins: systemd's SIGTERM takes
 # the whole cgroup (claude and its agents included) and the runner records
 # INTERNAL_ERROR "terminated by signal" in last_run.json.
-TimeoutStartSec=5h
+TimeoutStartSec=8h
 # This Jetson also runs the robot. Nice it so a morning Sitting is not starved.
 Nice=10
 IOSchedulingClass=idle

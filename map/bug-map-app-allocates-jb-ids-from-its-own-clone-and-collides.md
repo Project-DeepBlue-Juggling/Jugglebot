@@ -2,9 +2,9 @@
 id: JB-100
 kind: bug
 title: Map app allocates JB ids from its own clone and collides with mapkit when both file within minutes
-status: inbox
+status: complete
 created: '2026-10-28'
-updated: '2026-10-28T10:53:35Z'
+updated: '2026-11-07T18:11:27Z'
 owners: []
 priority: medium
 effort: s
@@ -14,7 +14,8 @@ radius: subsystem
 diagnosis: confirmed
 area: map-app
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-08-map-app-next-id-origin-test.md
 parent: map-improvements
 filed_by: claude
 ---

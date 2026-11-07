@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Night Shift candidate branch (plans/active/night-shift.md section 4 P4, T-U6).
 #
-# What: stack every held Night Shift branch (origin/night-shift/<date>-JB-n) whose Item
+# What: stack every held Night Shift branch (origin/night-shift/<date>-<ID>, the ID in
+# either form: JB-n or per kind, BUG-n FEAT-n IDEA-n PWAY-n TKT-n) whose Item
 # carries a `## Sitting` section into ONE branch, night-shift/sitting-<date>.
 # Why: the owner checks out a single branch at a Sitting, not one per Item. A branch
 # that conflicts with the stack is reported as a HOLD row and skipped, so one bad
@@ -12,11 +13,16 @@
 #     under <repo>/temp/candidate-<date>/ which is removed at the end, even on error;
 #   - the candidate branch is a BUILD PRODUCT: if it exists locally it is reset to BASE;
 #   - a conflicting merge is aborted and the script goes on;
-#   - never force-pushes: a rejected push prints PUSH_REJECTED and exits 1.
+#   - never force-pushes: a rejected push prints PUSH_REJECTED and exits 1;
+#   - branches stack in branch-date order, then by ID prefix and number;
+#   - a held branch is never dropped silently: a night-shift/* branch whose name does
+#     not parse is an UNPARSED row, and an ID whose prefix names another kind than its
+#     Item's is a SKIP row; either makes the exit 1 (the rest still stacks).
 #
 # Usage: night_shift_candidate.sh --date YYYY-MM-DD [--repo DIR] [--base origin/main]
 #                                 [--push] [--remote origin]
-# Exit: 0 when nothing failed (HOLD and SKIP rows are not failures), 1 otherwise.
+# Exit: 0 when nothing failed (HOLD and SKIP rows are not failures, except the
+# prefix/kind SKIP), 1 otherwise, UNPARSED included.
 # A second --push on the same date is rejected (the local branch is rebuilt from
 # BASE, never force-pushed): delete the remote candidate first
 # (`git push origin --delete night-shift/sitting-<date>`) or pick a new date.
@@ -60,14 +66,15 @@ cleanup
 mkdir -p "$(dirname "$WT")" "$(dirname "$OUT")"
 git -C "$REPO" worktree add -q -B "$CAND" "$WT" "$BASE" || { echo "worktree add failed" >&2; exit 1; }
 
-# Does BASE hold an Item JB-n, and does its body have a ## Sitting section?
-# Prints FOUND, NOSECTION or NOITEM.
+# Does BASE hold the Item with this ID, and does its body have a ## Sitting section?
+# Prints FOUND, NOSECTION, NOITEM or "MISMATCH <prefix kind> <item kind>".
 item_state() {
   REPO="$REPO" BASE="$BASE" JB="$1" "$PYTHON" - <<'PY'
 import os, subprocess, sys
 repo, base, jb = os.environ["REPO"], os.environ["BASE"], os.environ["JB"]
 sys.path.insert(0, repo)
 from mapkit.frontmatter import split_frontmatter
+from mapkit.ids import KIND_OF_PREFIX, mismatch, split_ref
 from mapkit.sitting import has_sitting_section
 def git(*a):
     return subprocess.run(["git", "-C", repo] + list(a), stdout=subprocess.PIPE,
@@ -80,24 +87,48 @@ for name in git("ls-tree", "--name-only", base, "map/").split():
     except Exception:
         continue
     if str(meta.get("id", "")) == jb:
-        print("FOUND" if has_sitting_section(body) else "NOSECTION")
+        kind = str(meta.get("kind", ""))
+        if mismatch(jb, kind):
+            print("MISMATCH %s %s" % (KIND_OF_PREFIX[split_ref(jb)[0]], kind))
+        else:
+            print("FOUND" if has_sitting_section(body) else "NOSECTION")
         sys.exit(0)
 print("NOITEM")
 PY
 }
 
-mapfile -t BRANCHES < <(git -C "$REPO" for-each-ref --format='%(refname:short)' \
-    "refs/remotes/$REMOTE/night-shift/*-JB-*" | grep -v '/sitting-' \
-  | awk '{n=$0; sub(/.*-JB-/,"",n); print n" "$0}' | sort -n | cut -d' ' -f2-)
+# The ID prefixes come from mapkit (one source): "JB|BUG|FEAT|IDEA|PWAY|TKT".
+PREFIXES="$("$PYTHON" -c 'import sys; sys.path.insert(0, sys.argv[1]); from mapkit.ids import ALL_PREFIXES; print("|".join(ALL_PREFIXES))' "$REPO")"
+[[ "$PREFIXES" =~ ^[A-Z|]+$ ]] || { echo "cannot read the ID prefixes from $REPO/mapkit/ids.py" >&2; exit 1; }
+NAME_RE="^$REMOTE/night-shift/([0-9]{4}-[0-9]{2}-[0-9]{2})-(($PREFIXES)-([1-9][0-9]*))\$"
 
-for br in "${BRANCHES[@]:-}"; do
-  [[ -n "$br" ]] || continue
-  jb="JB-${br##*-JB-}"
+# Every night-shift/* branch but the candidates; each one parses or is an UNPARSED row.
+mapfile -t ALL < <(git -C "$REPO" for-each-ref --format='%(refname:short)' \
+    "refs/remotes/$REMOTE/night-shift/")
+KEYED=()
+for br in "${ALL[@]:-}"; do
+  [[ -n "$br" && "$br" != "$REMOTE/night-shift/sitting-"* ]] || continue
+  if [[ "$br" =~ $NAME_RE ]]; then
+    KEYED+=("${BASH_REMATCH[1]} ${BASH_REMATCH[3]} ${BASH_REMATCH[4]} ${BASH_REMATCH[2]} $br")
+  else
+    row "UNPARSED $br is not night-shift/<date>-<ID> (ID prefixes $PREFIXES)"; rc=1
+  fi
+done
+# date, then prefix, then number: same-date JB-n branches keep their numeric order
+mapfile -t BRANCHES < <(printf '%s\n' "${KEYED[@]:-}" | grep -v '^$' \
+  | sort -k1,1 -k2,2 -k3,3n | cut -d' ' -f4-)
+
+for entry in "${BRANCHES[@]:-}"; do
+  [[ -n "$entry" ]] || continue
+  jb="${entry%% *}"; br="${entry#* }"
   state="$(item_state "$jb")"
   case "$state" in
     FOUND) ;;
+    MISMATCH*) read -r _ pkind ikind <<<"$state"
+      row "SKIP $br $jb names a $pkind, but its Item is a $ikind"; skipped=$((skipped+1)); rc=1; continue ;;
     NOSECTION) row "SKIP $br $jb has no ## Sitting section"; skipped=$((skipped+1)); continue ;;
-    *) row "SKIP $br no Item $jb on $BASE"; skipped=$((skipped+1)); continue ;;
+    NOITEM) row "SKIP $br no Item $jb on $BASE"; skipped=$((skipped+1)); continue ;;
+    *) row "ERROR $br item_state failed for $jb: ${state:-no output}"; rc=1; continue ;;
   esac
   if git -C "$WT" merge --no-ff -q -m "candidate(sitting-$DATE): $jb from $br" "$br" >/dev/null 2>&1; then
     row "MERGED $br $jb"; merged=$((merged+1))

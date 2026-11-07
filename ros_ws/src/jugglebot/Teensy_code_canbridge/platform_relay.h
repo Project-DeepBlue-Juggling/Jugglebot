@@ -44,6 +44,12 @@ uint16_t state_read();
 // mirroring Teensy_code_platform.ino createStateCANMessage). No reply. Returns RpcStatus.
 uint16_t state_write(const JbUdp::RpcArgs::ArgRobotState& s);
 
+// HAND_FAN_SET (FW 41): validate, then encode the HAND_FAN_CMD frame. ERR_BAD_ARGS on an
+// unknown mode, a non-finite threshold, or thresholds outside
+// TeensyOp::HAND_FAN_THRESHOLD_MIN_C..MAX_C or without a gap. Layout:
+// Teensy_code_platform/hand_fan.h. The reply is the Platform's HAND_FAN_STATUS frame.
+uint16_t hand_fan_set(const JbUdp::RpcArgs::ArgHandFanSet& a);
+
 // ── Platform firmware-over-CAN (2026-09-09) ──────────────────────────────────
 // The Platform Teensy's USB port is damaged, so its firmware now arrives over
 // CAN3 through this same typed seam. Four ops on PlatformCanId::FW_UPDATE_CMD

@@ -2,9 +2,9 @@
 id: JB-196
 kind: ticket
 title: 'JB-190 held on night-shift/2026-11-07-JB-190: apply the audit''s 3 fixes and merge, apply only the probe regex, merge as is, or drop?'
-status: open
+status: complete
 created: '2026-11-07'
-updated: '2026-11-06T18:58:00Z'
+updated: '2026-11-06T22:54:26Z'
 owners: []
 priority: low
 effort: xs
@@ -40,3 +40,7 @@ Recommendation: 1.
 - 1 or 2: the next night applies them, re-gates and merges.
 - 3: the next night re-gates and merges.
 - 4: JB-190 goes back to open.
+
+## Answer
+
+Agreed.

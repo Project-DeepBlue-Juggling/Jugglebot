@@ -69,6 +69,8 @@ static uint16_t g_version_len = 8;            // version_fill_blob returned leng
 static bool    g_hand_ver_have = false;
 static uint8_t g_hand_ver_raw[8] = {0};
 static int      g_tilt_calls = 0, g_state_read_calls = 0, g_state_write_calls = 0;
+static int      g_hand_fan_calls = 0;
+static JbUdp::RpcArgs::ArgHandFanSet g_hand_fan_args{};
 static int      g_bb_fw_calls = 0;            // Relay::bb_fw_* stub call count
 static uint16_t g_bb_fw_method = 0;           // which bb_fw_* stub ran (the RpcMethod it serves)
 static Relay::BbFwGate g_bb_fw_gate{};        // the gate rpc.cpp sampled + passed in
@@ -83,6 +85,7 @@ static void drv_reset() {
   g_mpc_active = false;
   g_version_len = 8;
   g_tilt_calls = g_state_read_calls = g_state_write_calls = 0;
+  g_hand_fan_calls = 0;
   g_hand_ver_have = false; memset(g_hand_ver_raw, 0, 8);
   g_bb_fw_calls = 0; g_bb_fw_method = 0; g_bb_fw_gate = Relay::BbFwGate{};
 }
@@ -136,6 +139,7 @@ namespace Relay {
 uint16_t tilt_read()  { g_tilt_calls++; return JbUdp::RpcStatus::OK; }
 uint16_t state_read() { g_state_read_calls++; return JbUdp::RpcStatus::OK; }
 uint16_t state_write(const JbUdp::RpcArgs::ArgRobotState&) { g_state_write_calls++; return JbUdp::RpcStatus::OK; }
+uint16_t hand_fan_set(const JbUdp::RpcArgs::ArgHandFanSet& a) { g_hand_fan_calls++; g_hand_fan_args = a; return JbUdp::RpcStatus::OK; }
 // Platform firmware-over-CAN (FW 19). Link stubs only — the real gating
 // (mpc_active ⇒ ERR_REJECTED, n outside 1..5 ⇒ ERR_BAD_ARGS, the CAN3 gate) lives
 // in platform_relay.cpp and is exercised through test_platform_relay.cpp.
@@ -538,6 +542,25 @@ TEST_CASE("BB_CANCEL (FW 30): BB present → one payloadless CANCEL_CMD on CAN1;
   bb_state.heartbeat_seen = false;    // BB not present
   CHECK(call_noarg(RpcMethod::BB_CANCEL) == RpcStatus::ERR_BUS_DOWN);
   CHECK(g_bb_sent == 0);
+}
+
+TEST_CASE("HAND_FAN_SET (FW 41): routes typed args to the relay, refuses a short payload") {
+  reset_all();
+  JbUdp::RpcArgs::ArgHandFanSet a{};
+  a.mode = 1;
+  a.on_above_c = 30.0f;
+  a.off_below_c = 28.5f;
+  CHECK(call(RpcMethod::HAND_FAN_SET, a) == RpcStatus::OK);
+  CHECK(g_hand_fan_calls == 1);
+  CHECK(g_hand_fan_args.mode == 1);
+  CHECK(g_hand_fan_args.on_above_c == doctest::Approx(30.0f));
+  CHECK(g_hand_fan_args.off_below_c == doctest::Approx(28.5f));
+
+  uint8_t result[64];
+  uint16_t res_len = 0;
+  CHECK(Rpc::dispatch(RpcMethod::HAND_FAN_SET, reinterpret_cast<const uint8_t*>(&a), sizeof(a) - 1,
+                      result, res_len) == RpcStatus::ERR_BAD_ARGS);
+  CHECK(g_hand_fan_calls == 1);
 }
 
 TEST_CASE("WAVE_CMD (FW 33): args verbatim as one DLC-8 0x7E2 frame on the cone bus; gate/arg refusals") {

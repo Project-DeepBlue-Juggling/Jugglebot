@@ -260,7 +260,7 @@ bool can_hand_cmd_echo_pop(HandCmdEchoRec& out);  // true + clears the dirty fla
 // compiling can_buses.cpp (which pulls FlexCAN_T4) on the host.
 inline bool is_platform_reply_id(uint32_t id) {
   return id == PlatformCanId::STATE_UPDATE || id == PlatformCanId::TILT_READING ||
-         id == PlatformCanId::FW_UPDATE_REPLY;
+         id == PlatformCanId::FW_UPDATE_REPLY || id == PlatformCanId::HAND_FAN_STATUS;
 }
 
 // True iff `id` is a Ball Butler relay-reply id on CAN1 (0x7D7 FW_UPDATE_REPLY,

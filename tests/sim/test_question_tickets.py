@@ -120,3 +120,18 @@ def test_frontier_ignores_question_tickets(tmp_path):
     q = _q(tmp_path, "bug-foo")
     assert [t.slug for t in tickets.frontier(str(tmp_path), "p")] == ["t"]
     assert q.slug not in [t.slug for t in tickets.frontier(str(tmp_path), "p")]
+
+
+def test_question_tickets_match_a_per_kind_parent_id(tmp_path):
+    """P1 consumer, plan § 2.3: a question whose parent is named by ``BUG-2`` is found by stem, slug and ID."""
+    _tree(tmp_path)
+    for name, new in (("bug-foo.md", "BUG-2"), ("pathway-p.md", "PWAY-1")):
+        it = load_item(str(tmp_path / "map" / name))
+        it.meta["id"] = new
+        write_item(it.path, it.meta, it.body)
+    q = _q(tmp_path, "BUG-2")
+    items = load_items(str(tmp_path / "map"))
+    assert q.meta["parent"] == "bug-foo"
+    for form in ("bug-foo", "foo", "BUG-2"):
+        assert [t.slug for t in question_tickets(items, form)] == [q.slug]
+    assert question_tickets(items, "FEAT-2") == []

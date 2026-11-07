@@ -4,7 +4,7 @@ kind: bug
 title: '40 Hz setpoint stream starved past the firmware''s 70 ms cover during CATCH-solve bursts: 3 LANE_REFUSED ends on 2026-11-02'
 status: in_progress
 created: '2026-11-02'
-updated: '2026-11-05T13:23:05Z'
+updated: '2026-11-07T05:46:03Z'
 owners:
 - jugglebot-50
 priority: high
@@ -102,6 +102,11 @@ Recommendation: 1, flown at the next Sitting with the instrumentation, then 2 or
 
 - verdict: pending
 - notes: 2026-11-05 session had a few attempts end in LANE_REFUSED, including one instance where there was a ~simultaneous MAX_DEVIATION error. "Pending" only because this is merely a reporting of data (perhaps we ought to add a new 'outcome' option for this?)
+
+## Sitting result (2026-11-07 16:46)
+
+- verdict: pending
+- notes: LANE_REFUSED hit at 2026-11-07 around 16:43
 
 ## Progress
 

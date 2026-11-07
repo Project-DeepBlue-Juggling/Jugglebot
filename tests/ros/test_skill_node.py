@@ -4414,21 +4414,67 @@ class TestOperatorLines:
     def test_ending_with_no_executor_logs_the_end_line_itself(self):
         node, _client = _node_with_client()
         node._attempt_label = 'self_toss (reload)'
+        node._attempt_fed = True
         errors = []
         node.get_logger().error = errors.append
         node._end_attempt('ABORTED_BB_NOT_READY',
                           'Ball Butler never became ready')
-        assert errors == ['self_toss (reload) ENDED (ABORTED_BB_NOT_READY): '
-                          'Ball Butler never became ready · 0/0 caught']
+        assert errors == ['self_toss ENDED (ABORTED_BB_NOT_READY): '
+                          'Ball Butler never became ready · 0/0 caught'
+                          ' · entered by a Feed']
+
+    def test_a_fed_goals_end_line_is_searchable_by_pattern_and_a_plain_ones_has_no_suffix(self):
+        # JB-190: P2 L9214 printed "columns_turned (reload) ENDED" and a
+        # search for "columns_turned ENDED" missed it.
+        node, _client = _node_with_client()
+        node._attempt_label = 'columns_turned (reload)'
+        node._attempt_fed = True
+        errors = []
+        node.get_logger().error = errors.append
+        node._end_attempt('MISSED_CATCH', '')
+        assert len(errors) == 1 and errors[0].startswith('columns_turned ENDED ')
+        assert errors[0].endswith(' · entered by a Feed')
+        node2, _c = _node_with_client()
+        node2._attempt_label = 'columns_turned'
+        node2._attempt_fed = False
+        errors2 = []
+        node2.get_logger().error = errors2.append
+        node2._end_attempt('MISSED_CATCH', '')
+        assert errors2 == ['columns_turned ENDED (MISSED_CATCH) · 0/0 caught']
 
     def test_a_code_only_end_is_not_said_twice(self):
         node, _client = _node_with_client()
         node._attempt_label = 'hop (reload)'
+        node._attempt_fed = True
         errors = []
         node.get_logger().error = errors.append
         code = 'REJECTED_BB(BB calibration not yet received)'
         node._end_attempt(code, code)
-        assert errors == ['hop (reload) ENDED (%s) · 0/0 caught' % (code,)]
+        assert errors == ['hop ENDED (%s) · 0/0 caught · entered by a Feed'
+                          % (code,)]
+
+    def test_a_fed_goals_executor_retire_end_line_carries_the_suffix(self):
+        # JB-190 audit: `_log_attempt_end` (the executor-retire end line) is
+        # the other end-line call site; drive it with `_attempt_fed` True.
+        node, _client = _node_with_client()
+        node._attempt_label = 'hop (reload)'
+        node._attempt_fed = True
+        errors = []
+        node.get_logger().error = errors.append
+        node._log_attempt_end(SimpleNamespace(
+            attempt_ended=True, end_code='MISSED_CATCH', end_message='',
+            end_kind='', schedule=SimpleNamespace(pattern='hop')))
+        assert len(errors) == 1, errors
+        assert errors[0].startswith('hop ENDED (MISSED_CATCH)'), errors
+        assert errors[0].endswith(' · entered by a Feed'), errors
+
+    def test_end_label_cuts_only_a_real_reload_suffix(self):
+        node, _client = _node_with_client()
+        node._attempt_fed = True
+        node._attempt_label = 'reload'
+        assert node._end_label() == 'reload'
+        node._attempt_label = 'hop (reload)'
+        assert node._end_label() == 'hop'
 
     def test_the_reload_bridge_rest_retiring_is_not_the_end(self):
         node, _client = _node_with_client()

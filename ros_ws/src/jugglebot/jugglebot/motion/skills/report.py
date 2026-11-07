@@ -266,12 +266,18 @@ def end_line(label: str, end_code: str, end_message: str,
              reports: Sequence[ThrowReport],
              end_kind: str = '',
              shadow_landing_stop: bool = False,
-             final_catch_unverifiable: bool = False) -> Tuple[str, str]:
+             final_catch_unverifiable: bool = False,
+             fed: bool = False) -> Tuple[str, str]:
     """``(severity, text)`` for the attempt's last line.
 
     ``final_catch_unverifiable`` (JB-169): the goal ended on a Stop and its
     final Catch was booked unverifiable; the line says so and the tally
     leaves that Catch out.
+
+    ``fed`` (JB-190): the goal was entered by a Feed. The line then starts
+    with the bare pattern (so ``<pattern> ENDED`` / ``<pattern> done`` finds
+    it) and carries `` · entered by a Feed`` at the very end, after the
+    tally; the start line keeps its ``(reload)`` label.
 
     INFO when it completed or the operator stopped it, ERROR when anything
     else ended it — with the reason in a few words (:func:`short_refusal`).
@@ -288,6 +294,7 @@ def end_line(label: str, end_code: str, end_message: str,
     # The Stop throw is not a catch attempt (ThrowReport.stop): the tally is
     # over the throws the cup was asked to catch.  The end code below still
     # rides beside it, so a run that ENDED on a real miss says so.
+    suffix = ' · entered by a Feed' if fed else ''
     thrown, caught = summarise(reports)
     tally = '%d/%d caught' % (caught, thrown)
     if final_catch_unverifiable or any(r.unverified for r in reports):
@@ -314,18 +321,20 @@ def end_line(label: str, end_code: str, end_message: str,
             return ('INFO',
                     '%s done (one ball held, the last ball rests on the '
                     'platform — not resumable, cone delivery is a later '
-                    'rung): %s' % (label, tally))
-        return 'INFO', '%s done: %s' % (label, tally)
+                    'rung): %s%s' % (label, tally, suffix))
+        return 'INFO', '%s done: %s%s' % (label, tally, suffix)
     if end_code == 'STOPPED':
-        return 'INFO', '%s stopped by the operator: %s' % (label, tally)
+        return 'INFO', '%s stopped by the operator: %s%s' % (label, tally,
+                                                           suffix)
     at = ' at the %s' % (end_kind,) if end_kind else ''
     reason = short_refusal(end_message) if end_message else ''
     if reason.startswith(end_code + ': '):
         reason = reason[len(end_code) + 2:]      # the code is already said
     if not reason or reason == end_code:
-        return 'ERROR', '%s ENDED (%s)%s · %s' % (label, end_code, at, tally)
-    return 'ERROR', '%s ENDED (%s)%s: %s · %s' % (label, end_code, at, reason,
-                                                  tally)
+        return 'ERROR', '%s ENDED (%s)%s · %s%s' % (label, end_code, at, tally,
+                                                     suffix)
+    return 'ERROR', '%s ENDED (%s)%s: %s · %s%s' % (label, end_code, at, reason,
+                                                    tally, suffix)
 
 
 def summarise(reports: List[ThrowReport]) -> Tuple[int, int]:

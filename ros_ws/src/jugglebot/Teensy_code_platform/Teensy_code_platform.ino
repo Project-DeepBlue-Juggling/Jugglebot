@@ -12,12 +12,15 @@
  *    • TIME‑SYNC layer (ID 0x7DD)
  *      – Maintains wall‑time offset (Jetson wall‑time − micros64())
  *      – Prints jitter stats once per second
+ *    • Hand cooling fan (see hand_fan.h): reads the Hand ODrive's broadcast
+ *      Get_Temperature frame and drives the fan MOSFET's gate
  *
  *  INVARIANT I-FW-15 (since FW 7, skill-stack R1).  The can-bridge is the SOLE
  *  axis-6 writer: this board neither transmits to CAN node 6 nor subscribes to
- *  its encoder.  This board's TX set is the inclinometer frame (0x7DE), the
- *  RobotState reply (0x6E0), the firmware-update reply (0x6F1) and the traffic
- *  report (0x7DF) — nothing else.  The stroke engine (Trajectory.h, the 0x6D0
+ *  its encoder (FW 8 listens to node 6's temperature broadcast for the Hand fan,
+ *  which is receive-only and carries no motion).  This board's TX set is the inclinometer frame (0x7DE), the
+ *  RobotState reply (0x6E0), the firmware-update reply (0x6F1), the traffic
+ *  report (0x7DF) and, since FW 9, the Hand fan status (0x6E2) — nothing else.  The stroke engine (Trajectory.h, the 0x6D0
  *  TRAJ_CMD decode, the 0x0C9 hand-encoder cache) was deleted with it.
  *
  *  NOTE on CAN IDs:
@@ -31,6 +34,7 @@
 #include <SCL3300.h>
 #include "hardware_config.h"  // Auto-generated from config/hardware_config.yaml
 #include "protocol_config.h"  // Auto-generated from config/protocol_config.yaml
+#include "hand_fan.h"
 
 #define DEBUG_TRAFFIC 0    // 0 = silent, 1 = Serial print report CAN traffic frames
 #define DEBUG_TIME_SYNC 0  // 0 = silent, 1 = Serial print periodic messages showing how tight the clocks are synced
@@ -141,9 +145,20 @@
  *        protected (there is no longer a throw to reboot into the middle of;
  *        `ST_BUSY` is retired but its number stays reserved).  Plan:
  *        plans/active/two-ball-skill-stack.md § 4 R1.
+ *    8 = 2026-11-07.  HAND COOLING FAN.  Pin TeensyOp::HAND_FAN_PIN drives the gate of
+ *        an N-channel low-side MOSFET (HIGH = on; the gate pull-down holds it off
+ *        whenever this board is not driving the pin).  Runs from the Hand ODrive's
+ *        motor thermistor broadcast alone, so it works with no ROS2 and no Jetson;
+ *        see hand_fan.h for the rule.  Receive-only on CAN: the TX set and every
+ *        other path are unchanged.  Never flashed; superseded by 9 the same day.
+ *    9 = 2026-11-07.  HAND FAN RUNTIME CONTROL, for A/B tests.  0x6E1 sets the mode
+ *        (AUTO / FORCE_ON / FORCE_OFF) and thresholds in RAM, so every reboot returns
+ *        to AUTO at the defaults.  0x6E2 is a new status frame at 1 Hz, on every
+ *        command and on every fan change.  Needs can-bridge FW 41 for both; on an
+ *        older bridge AUTO still works.  No motion path touched.
  */
 constexpr char     FW_NAME[]  = "jugglebot-platform";
-constexpr uint16_t FW_VERSION = 7;   // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
+constexpr uint16_t FW_VERSION = 9;   // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
                                      //      feedforward, C-HAND-2).
                                      // 2→3: 2026-08-18 hand END-STOP correction — BEHAVIOURAL.
                                      //      Geometry::HAND_MOTOR_HARD_STOP_REVS 11.1 → 10.8 rev
@@ -178,6 +193,10 @@ constexpr uint16_t FW_VERSION = 7;   // 1→2: 2026-07-29 throwDecelToTorque (po
                                      //      Inclinometer / time-sync / RobotState / firmware
                                      //      update unchanged. The can-bridge is now the sole
                                      //      axis-6 writer (I-FW-15).
+                                     // 7→8: 2026-11-07 Hand cooling fan (hand_fan.h), driven
+                                     //      from the Hand ODrive's temperature broadcast.
+                                     // 8→9: 2026-11-07 Hand fan runtime control and status
+                                     //      (0x6E1 / 0x6E2), RAM only.
 
 /*----------------------------------------------------------------------------*/
 /*                                CAN BUS SET‑UP                              */
@@ -200,6 +219,9 @@ constexpr uint32_t timeSyncID      = SharedCanId::TIME_SYNC;
 constexpr uint32_t stateUpdateID   = PlatformCanId::STATE_UPDATE;
 constexpr uint32_t FW_UPD_CMD_ID   = PlatformCanId::FW_UPDATE_CMD;    // host → this board
 constexpr uint32_t FW_UPD_REPLY_ID = PlatformCanId::FW_UPDATE_REPLY;  // this board → host
+constexpr uint32_t HAND_TEMPS_ID = (uint32_t(NodeId::JUGGLEBOT_HAND) << 5) | ODriveCmd::get_temps;
+constexpr uint32_t HAND_FAN_CMD_ID    = PlatformCanId::HAND_FAN_CMD;     // host → this board
+constexpr uint32_t HAND_FAN_STATUS_ID = PlatformCanId::HAND_FAN_STATUS;  // this board → host
 
 /*----------------------------------------------------------------------------*/
 /*                            TRAFFIC MONITOR                                 */
@@ -240,6 +262,51 @@ struct platformTilt {
   float tiltX;
   float tiltY;
 };
+
+/*----------------------------------------------------------------------------*/
+/*                             HAND COOLING FAN                               */
+/*----------------------------------------------------------------------------*/
+/*  N-channel low-side MOSFET with a gate pull-down: HIGH = fan on, and the fan is
+ *  off whenever the pin is undriven (board off, reset, boot).  During a firmware
+ *  COMMIT the main loop has stopped, so the pin holds its last state until the
+ *  reset releases it. */
+/*  This section sits below the structs above on purpose: the .ino preprocessor puts
+ *  every function prototype ahead of the first function it finds, and sendTiltData
+ *  and createStateCANMessage need platformTilt and RobotState declared by then. */
+constexpr uint8_t HAND_FAN_PIN = uint8_t(TeensyOp::HAND_FAN_PIN);
+static_assert(HAND_FAN_PIN != 10 && HAND_FAN_PIN != 11 && HAND_FAN_PIN != 12 && HAND_FAN_PIN != 13
+                  && HAND_FAN_PIN != 22 && HAND_FAN_PIN != 23,
+              "hand_fan_pin collides with the SCL3300's SPI or this board's CAN");
+static_assert(TeensyOp::HAND_FAN_OFF_BELOW_C < TeensyOp::HAND_FAN_ON_ABOVE_C,
+              "the Hand fan thresholds need a gap, or the fan chatters at the threshold");
+
+HandFan::Controller handFan(TeensyOp::HAND_FAN_ON_ABOVE_C, TeensyOp::HAND_FAN_OFF_BELOW_C,
+                            TeensyOp::HAND_FAN_TEMP_TIMEOUT_MS,
+                            TeensyOp::HAND_FAN_THRESHOLD_MIN_C, TeensyOp::HAND_FAN_THRESHOLD_MAX_C);
+bool handFanRunning = false;
+uint32_t lastHandFanStatusMs = 0;
+
+void sendHandFanStatus() {
+  CAN_message_t m;
+  m.id = HAND_FAN_STATUS_ID;
+  m.len = HandFan::STATUS_FRAME_LEN;
+  handFan.encode_status(m.buf);
+  can1.write(m);
+  lastHandFanStatusMs = millis();
+}
+
+void updateHandFan() {
+  const uint32_t now = millis();
+  const bool want = handFan.update(now);
+  const bool changed = (want != handFanRunning);
+  if (changed) {
+    digitalWrite(HAND_FAN_PIN, want ? HIGH : LOW);
+    handFanRunning = want;
+  }
+  if (changed || (now - lastHandFanStatusMs) >= TeensyOp::HAND_FAN_STATUS_INTERVAL_MS) {
+    sendHandFanStatus();
+  }
+}
 
 /*----------------------------------------------------------------------------*/
 /*                        ──  TIME–SYNC  LAYER ──                             */
@@ -931,6 +998,18 @@ void canSniff(const CAN_message_t &msg) {
     TimeSync::handleSyncFrame(msg);
   }
 
+  /* — Hand fan: the Hand ODrive's temperature broadcast — */
+  if (msg.id == HAND_TEMPS_ID) {
+    handFan.on_temps_frame(msg.buf, msg.len, msg.flags.remote, millis());
+  }
+
+  /* — Hand fan runtime control: always answered, so the host sees a refusal — */
+  if (msg.id == HAND_FAN_CMD_ID) {
+    handFan.on_command_frame(msg.buf, msg.len, msg.flags.remote);
+    updateHandFan();
+    sendHandFanStatus();
+  }
+
   /* ── firmware update over CAN  ID 0x6F0 ──────────────────────────
    * See § FIRMWARE UPDATE OVER CAN.  Returns early: the id has no other
    * meaning on this board, and a BEGIN/DATA burst has no business walking
@@ -958,6 +1037,11 @@ void setup() {
    * "the board rebooted" evidence into "the board rebooted INTO v<N>". */
   Serial.printf("[boot] %s v%u\n", FW_NAME, (unsigned)FW_VERSION);
 
+  /* Hand fan off before anything that can block: the inclinometer wait below never
+   * returns if the SCL3300 is absent. */
+  pinMode(HAND_FAN_PIN, OUTPUT);
+  digitalWrite(HAND_FAN_PIN, LOW);
+
   /* CAN bus */
   can1.begin();
   can1.setBaudRate(CAN_BITRATE);
@@ -983,6 +1067,7 @@ void loop() {
   can1.events();   // dispatch CAN callbacks
   reportStatus();  // traffic monitor
   FwUpdate::tick();  // time out an abandoned firmware-update session
+  updateHandFan();   // apply the fan decision (fed from canSniff)
 
   #if DEBUG_TIME_SYNC
     TimeSync::maybePrintStats();  // console jitter read‑out, if desired.

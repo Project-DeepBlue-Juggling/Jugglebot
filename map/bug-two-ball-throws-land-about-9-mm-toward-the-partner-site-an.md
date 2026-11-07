@@ -4,10 +4,15 @@ kind: bug
 title: 'Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for'
 status: inbox
 created: '2026-11-06'
-updated: '2026-11-06T09:17:24Z'
+updated: '2026-11-07T18:11:54Z'
 owners: []
 priority: high
+effort: m
 hardware: robot
+owner: hands
+radius: subsystem
+diagnosis: hypothesis
+area: skill-stack
 blocked_by: []
 links:
 - map/bug-mid-air-ball-collisions-end-half-of-two-ball-columns.md
@@ -53,6 +58,11 @@ Evidence: `temp/probes/sitting_debrief_2026-11-06b/unit_transit.md`, `unit_B_D.m
 - pass: about 30 caught Throws have flown at each Dwell and no Leg joint let go. Type the result as pending. The debrief computes, per Dwell, the Platform's velocity toward the partner Site at each release (from the bag) and the landing pull against the real release, and compares the two Dwells: a 5 Hz ring predicts a clear change over 0.05 s, an Apex effect predicts none.
 - record: the launch log and bag paths, the clock time of each Start with its Dwell, how many Attempts each Dwell took and why each ended early, any refusal text, and anything seen at the base joints.
 - minutes: 35
+
+## Sitting result (2026-11-07 16:26)
+
+- verdict: fail
+- notes: 0.32 Dwell: first attempt led to legs 1 and 2 being pulled from their base supports. All subsequent attempts failed with NO_ADMISSIBLE_COMMAND for Ball 2's first throw. Tried again with Dwell 0.3, with an identical outcome (first attempt pulled the legs off, subsequent attempts failed early with NO_ADMISSIBLE_COMMAND)
 
 ## Progress
 

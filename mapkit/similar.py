@@ -104,8 +104,8 @@ def screen(items: Iterable[Item], title: str,
            exclude: Optional[str] = None) -> Tuple[Optional[Match], List[Match]]:
     """``(duplicate, similar)`` for a title about to be filed.
 
-    ``duplicate`` is the open Item with the same normalised title (the oldest
-    ID when several), else None. ``similar`` is every other near Item, closest
+    ``duplicate`` is the open Item with the same normalised title (the earliest filed
+    when several: ``created``, then ID, then stem), else None. ``similar`` is every other near Item, closest
     first, at most :data:`MAX_SHOWN`; an exact match on a closed Item lands
     here. ``exclude`` is a stem to skip (an Item being renamed).
     """
@@ -116,7 +116,7 @@ def screen(items: Iterable[Item], title: str,
             continue
         m = compare(it, title)
         if m.exact and not m.closed:
-            if dup is None or _id_num(m.item) < _id_num(dup.item):
+            if dup is None or _filing_key(m.item) < _filing_key(dup.item):
                 dup = m
         elif m.exact or _near(m):
             near.append(m)
@@ -128,9 +128,13 @@ def _score(m: Match) -> float:
     return max(m.ratio, m.overlap, m.contain if m.shared >= CONTAIN_SHARED_MIN else 0.0)
 
 
-def _id_num(item: Item) -> float:
-    sid = item.short_id
-    return float(sid.split("-")[1]) if sid else float("inf")
+def _filing_key(item: Item) -> tuple:
+    """Filing order: (created, ID, stem). The ID is the same-day tie-break, as the lowest JB
+    number was before; it is a (prefix, number) pair, never compared bare across kinds."""
+    from mapkit import ids  # ids imports items, not similar
+    return (str(item.meta.get("created") or "9999"),
+            ids.split_ref(item.meta.get("id")) or ("~", 0),
+            "%s-%s" % (item.kind, item.slug))
 
 
 def as_dict(m: Match) -> dict:

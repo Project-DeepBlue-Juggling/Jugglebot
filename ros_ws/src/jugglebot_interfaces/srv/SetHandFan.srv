@@ -1,0 +1,8 @@
+# Set the Platform Teensy's Hand fan. Held in RAM: its next reboot returns to auto at
+# the configured defaults.
+string mode            # auto, on or off
+float32 on_above_c     # AUTO on threshold (deg C); 0 keeps the current value
+float32 off_below_c    # AUTO off threshold (deg C); 0 keeps the current value
+---
+bool success
+string message

@@ -302,3 +302,219 @@ def test_check_stays_strict_about_a_malformed_item(tmp_path):
     from mapkit.items import ItemError
     with pytest.raises(ItemError):
         ids.check(str(work))
+
+
+# --- item-id-per-kind P1: both forms canonical during the expansion -----------
+# Plan plans/active/item-id-per-kind.md § 2.1 and § 5. Nothing here changes an
+# ID: the per-kind tree is a tmp_path repo holding a dummy legacy_ids.csv.
+_KIND_PREFIX = (("bug", "BUG"), ("feature", "FEAT"), ("idea", "IDEA"),
+                ("pathway", "PWAY"), ("ticket", "TKT"))
+
+
+def _crosswalk(work):
+    """Make ``work`` a per-kind tree: the crosswalk file's presence is the switch."""
+    (work / "mapkit").mkdir(exist_ok=True)
+    path = work / "mapkit" / "legacy_ids.csv"
+    path.write_text("legacy,id\n")
+    return path
+
+
+def test_fork_contract_old_names_frozen_on_jb_inputs(tmp_path):
+    """T-I0 (mapkit side): parse, canonical, format_id and allocate keep their
+    2026-11-07 signature and results on every ``JB-<n>`` input, byte for byte;
+    the live app (``server/store.py``, ``server/idrepair.py``) imports them until P5."""
+    parse_table = [  # (text, allow_bare) -> int or None, recorded from 83082eac
+        (("JB-12", False), 12), (("jb12", False), 12), (("Jb-12", False), 12),
+        ((" jb-12 ", False), 12), (("JB-01", False), 1), (("JB-0", False), None),
+        (("12", False), None), (("12", True), 12), (("012", True), 12), (("0", True), None),
+        (("XB-3", True), None), (("JB-", True), None), (("jb-8a", True), None),
+        (("", True), None), (("BUG-12", False), None), (("bug12", True), None),
+        (("FEAT-3", True), None), (("TKT-1", False), None)]
+    for (text, bare), want in parse_table:
+        assert ids.parse(text, allow_bare=bare) == want, (text, bare)
+        assert ids.parse(text, bare) == want, (text, bare)  # positional, as the fork may call it
+    canon_table = [("JB-3", 3), ("JB-149", 149), ("JB-01", None), ("jb-3", None), ("JB3", None),
+                   (3, None), (None, None), ("JB-0", None), ("BUG-3", None), ("FEAT-12", None)]
+    for value, want in canon_table:
+        assert ids.canonical(value) == want, value
+    assert [ids.format_id(n) for n in (1, 7, 149)] == ["JB-1", "JB-7", "JB-149"]
+    for bad in (0, -1, True, "3", 2.0):
+        with pytest.raises(ValueError):
+            ids.format_id(bad)
+    work, _ = _repo(tmp_path)
+    _item(work, "bug", "a", id="JB-3")
+    _item(work, "feature", "b", id="JB-5")
+    items = _items(work)
+    assert ids.allocate(str(work), ids.DEFAULT_REF, items) == "JB-6"  # the fork's positional call
+    assert ids.allocate(str(work), items=items) == "JB-6"
+    assert ids.allocate(str(work)) == "JB-6"
+    assert [i.short_id for i in items] == ["JB-3", "JB-5"]
+    _item(work, "bug", "c", id="JB-5")
+    assert list(ids.duplicates(_items(work))) == ["JB-5"]
+
+
+def test_prefixes_cover_every_kind():
+    """T-U1: one prefix per Item kind, exactly the § 2.1 table."""
+    from mapkit.items import KINDS
+    assert ids.PREFIXES == dict(_KIND_PREFIX)
+    assert set(ids.PREFIXES) == set(KINDS)
+
+
+def test_parse_ref_canonical_ref_format_ref_per_kind():
+    """T-U1: all five prefixes and JB, any case, hyphen optional; BUG-0, BUG-01,
+    FEAT3x and XB-3 rejected; stored forms are canonical and case-sensitive."""
+    for kind, prefix in _KIND_PREFIX + ((None, "JB"),):
+        want = "%s-12" % prefix
+        for text in (want, prefix.lower() + "-12", prefix.lower() + "12",
+                     prefix.title() + "-12", " %s12 " % prefix):
+            assert ids.parse_ref(text) == want, text
+        assert ids.canonical_ref(want) == want
+        for loose in (prefix.lower() + "-12", prefix + "12", prefix + "-012"):
+            assert ids.canonical_ref(loose) is None, loose
+        if kind is not None:
+            assert ids.format_ref(kind, 12) == want
+    for bad in ("BUG-0", "BUG-01", "FEAT3x", "XB-3", "BUG-", "12", "", "BUGS-3",
+                "bug-12-x", "xBUG-9", "FEATURE-3", "JB-01"):
+        assert ids.parse_ref(bad) is None, bad
+    for bad in ("BUG-0", 12, None, "XB-3", "FEAT-8a"):
+        assert ids.canonical_ref(bad) is None, bad
+    assert ids.split_ref("TKT-31") == ("TKT", 31) and ids.split_ref("JB-149") == ("JB", 149)
+    assert ids.split_ref("tkt-31") is None
+    for kind, n in (("bug", 0), ("bug", True), ("bug", -2), ("jb", 3), ("Bug", 3), ("feat", 1)):
+        with pytest.raises(ValueError):
+            ids.format_ref(kind, n)
+
+
+def test_short_id_and_malformed_accept_both_forms(tmp_path):
+    """T-U5: a per-kind ID is a well-formed short_id, not a malformed one."""
+    (tmp_path / "map").mkdir()
+    _item(tmp_path, "bug", "new", id="BUG-3")
+    _item(tmp_path, "feature", "old", id="JB-3")
+    _item(tmp_path, "idea", "loose", id="idea-3")
+    items = load_items(str(tmp_path / "map"))
+    assert [i.short_id for i in items] == ["BUG-3", "JB-3", None]
+    assert [i.slug for i in ids.malformed(items)] == ["loose"]
+
+
+def test_duplicates_are_per_id_not_per_number(tmp_path):
+    """T-U5: BUG-3 and FEAT-3 (and JB-3) are three IDs, not one duplicate."""
+    (tmp_path / "map").mkdir()
+    _item(tmp_path, "bug", "a", id="BUG-3")
+    _item(tmp_path, "feature", "b", id="FEAT-3")
+    _item(tmp_path, "idea", "c", id="JB-3")
+    assert ids.duplicates(load_items(str(tmp_path / "map"))) == {}
+    _item(tmp_path, "bug", "d", id="BUG-3")
+    d = ids.duplicates(load_items(str(tmp_path / "map")))
+    assert list(d) == ["BUG-3"] and [i.slug for i in d["BUG-3"]] == ["a", "d"]
+
+
+def test_mismatch_flags_a_prefix_that_contradicts_the_kind(tmp_path):
+    """T-U5: mismatch flags BUG-3 on a feature; JB-<n> matches every kind;
+    ``ids --check`` reports the class and fails on it."""
+    for kind, prefix in _KIND_PREFIX:
+        assert not ids.mismatch("%s-3" % prefix, kind)
+        assert not ids.mismatch("JB-3", kind)
+        others = [p for k, p in _KIND_PREFIX if k != kind]
+        assert all(ids.mismatch("%s-3" % p, kind) for p in others)
+    assert not ids.mismatch("bug-3", "feature")  # not canonical: the malformed class's
+    assert not ids.mismatch(None, "bug")
+    from mapkit.__main__ import main
+    work, _ = _repo(tmp_path)
+    _item(work, "feature", "f", id="BUG-3")
+    _item(work, "bug", "b", id="BUG-4")
+    p = ids.check(str(work))
+    assert len(p["mismatch"]) == 1 and p["mismatch"][0].startswith("feature-f")
+    assert "BUG-3" in p["mismatch"][0] and "feature" in p["mismatch"][0]
+    assert p["malformed"] == [] and p["duplicate"] == []
+    assert main(["ids", "--check", "--repo", str(work)]) == 1
+
+
+def test_allocator_form_follows_the_tree(tmp_path):
+    """T-U3: no crosswalk file -> JB-<n> whatever ``kind`` says; crosswalk present
+    -> per kind; removing it switches back."""
+    work, _ = _repo(tmp_path)
+    _item(work, "bug", "a", id="JB-4")
+    _item(work, "bug", "b", id="BUG-2")
+    assert not ids.per_kind(str(work))
+    assert ids.allocate(str(work)) == "JB-5"
+    assert ids.allocate(str(work), kind="bug") == "JB-5"
+    cw = _crosswalk(work)
+    assert ids.per_kind(str(work))
+    assert ids.allocate(str(work), kind="bug") == "BUG-3"
+    cw.unlink()
+    assert ids.allocate(str(work), kind="bug") == "JB-5"
+
+
+def test_allocate_per_kind_scopes_the_max(tmp_path):
+    """T-U2: filing a bug leaves FEAT's next number unchanged; the max spans the
+    tree and origin/main; 1 on an empty kind; a per-kind tree refuses no kind."""
+    work, _ = _repo(tmp_path)
+    _crosswalk(work)
+    _item(work, "bug", "a", id="BUG-7")
+    _item(work, "feature", "f", id="FEAT-2")
+    _commit_push(work, "pub")
+    _git(work, "rm", "-q", "map/bug-a.md")  # gone locally, still on origin/main
+    _item(work, "bug", "b", id="BUG-3")
+    assert ids.allocate(str(work), kind="feature") == "FEAT-3"
+    assert ids.allocate(str(work), kind="bug") == "BUG-8"
+    _item(work, "bug", "c", id="BUG-8")  # filing a bug ...
+    assert ids.allocate(str(work), kind="feature") == "FEAT-3"  # ... moves no other kind
+    assert ids.allocate(str(work), ids.DEFAULT_REF, _items(work), kind="bug") == "BUG-9"
+    for kind in ("idea", "pathway", "ticket"):
+        assert ids.allocate(str(work), kind=kind) == ids.format_ref(kind, 1)
+    with pytest.raises(ValueError, match="kind"):
+        ids.allocate(str(work))
+    with pytest.raises(ValueError):
+        ids.allocate(str(work), kind="jb")
+
+
+def test_repair_and_assign_missing_stay_within_the_kind(tmp_path):
+    """T-U5: two BUG-3 repair within the kind; a backfill numbers per kind."""
+    work, _ = _repo(tmp_path)
+    _crosswalk(work)
+    _item(work, "bug", "pub", created="2026-10-05", id="BUG-3")
+    _item(work, "feature", "f", id="FEAT-9")
+    _commit_push(work, "pub")
+    _item(work, "bug", "local", created="2026-10-01", id="BUG-3")
+    _item(work, "idea", "none")
+    assert ids.repair(str(work)) == [("BUG-3", "BUG-4", "bug-local")]
+    assert ids.assign_missing(str(work)) == [("IDEA-1", "idea-none")]
+
+
+def test_resolve_takes_both_forms_and_lists_a_shared_bare_number(tmp_path):
+    """T-U4: stem, slug, ID order; both forms resolve; bare digits on a read
+    return the one match or list every match; bare on a write is refused."""
+    (tmp_path / "map").mkdir()
+    _item(tmp_path, "bug", "cone", id="BUG-12")
+    _item(tmp_path, "feature", "fan", id="FEAT-12")
+    _item(tmp_path, "idea", "solo", id="IDEA-4")
+    _item(tmp_path, "pathway", "old", id="JB-149", destination="d", status="active")
+    items = load_items(str(tmp_path / "map"))
+    r = lambda t, **k: ids.stem(ids.resolve(items, t, **k))  # noqa: E731
+    assert r("BUG-12") == r("bug12") == r("Bug-12") == "bug-cone"
+    assert r("FEAT-12") == r("feat12") == "feature-fan"
+    assert r("JB-149") == r("jb149") == "pathway-old"
+    assert r("4", allow_bare=True) == "idea-solo"
+    assert r("149", allow_bare=True) == "pathway-old"
+    with pytest.raises(ids.IdError, match="BUG-12.*FEAT-12") as exc:
+        ids.resolve(items, "12", allow_bare=True)
+    assert [ids.stem(i) for i in exc.value.matches] == ["bug-cone", "feature-fan"]
+    with pytest.raises(ids.IdError, match="write commands need"):
+        ids.resolve(items, "4")
+    with pytest.raises(ids.IdError, match="no Item"):
+        ids.resolve(items, "TKT-12")
+
+
+def test_resolve_refuses_a_stem_that_is_another_items_id(tmp_path):
+    """T-U4 / § 2.1: ``bug-12`` is a legal stem shape and a typed ID; when the
+    stem and the ID name different Items, resolve errors instead of guessing."""
+    (tmp_path / "map").mkdir()
+    _item(tmp_path, "bug", "12", id="BUG-40")   # stem bug-12
+    _item(tmp_path, "bug", "other", id="BUG-12")
+    _item(tmp_path, "idea", "3", id="IDEA-3")   # stem idea-3 IS IDEA-3: no conflict
+    items = load_items(str(tmp_path / "map"))
+    with pytest.raises(ids.IdError, match="stem of bug-12.*ID of bug-other"):
+        ids.resolve(items, "bug-12")
+    assert ids.stem(ids.resolve(items, "BUG-12")) == "bug-other"  # not a stem: case-sensitive
+    assert ids.stem(ids.resolve(items, "idea-3")) == "idea-3"
+    assert ids.stem(ids.resolve(items, "bug-other")) == "bug-other"

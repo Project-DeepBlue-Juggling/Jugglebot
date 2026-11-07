@@ -11,6 +11,7 @@ export const ALLOWLIST = Object.freeze([
   '/cone/heartbeat',
   '/cone/timing_result',
   '/control_mode_topic',
+  '/hand_fan/status',
   '/hand_telemetry',
   '/leg_setpoint_echo',
   '/link_status',

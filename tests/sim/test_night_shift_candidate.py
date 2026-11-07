@@ -175,3 +175,86 @@ def test_rerun_rebuilds_from_base_not_stacked_twice(fx):
     assert r.returncode == 0, r.stderr
     second = fx.merges("night-shift/sitting-2026-10-31")
     assert len(first) == len(second) == 2
+
+
+# --- item-id-per-kind P1 (plan section 5, T-U8): both ID forms, loud on the unparseable ---
+
+def _push_branch(fx, name, path, content):
+    _git("checkout", "-q", "-b", name, "main", cwd=fx.seed, env=fx.env)
+    (fx.seed / path).write_text(content)
+    fx.commit("work " + name)
+    _git("push", "-q", "origin", name, cwd=fx.seed, env=fx.env)
+    _git("checkout", "-q", "main", cwd=fx.seed, env=fx.env)
+
+
+def _add_items(fx, *rows):
+    """rows: (id, kind, slug); every one carries a ## Sitting section."""
+    for sid, kind, slug in rows:
+        (fx.seed / "map" / ("%s-%s.md" % (kind, slug))).write_text(
+            "---\nid: %s\nkind: %s\ntitle: %s\nstatus: inbox\n---\n\nBody.\n\n%s"
+            % (sid, kind, slug, _SECTION))
+    fx.commit("add items")
+    _git("push", "-q", "origin", "main", cwd=fx.seed, env=fx.env)
+    _git("pull", "-q", "--ff-only", "origin", "main", cwd=fx.clone, env=fx.env)
+
+
+def _drop_remote_branches(fx):
+    for ref in _git("for-each-ref", "--format=%(refname:short)", "refs/heads/night-shift",
+                    cwd=fx.origin, env=fx.env).split():
+        _git("push", "-q", "origin", "--delete", ref, cwd=fx.seed, env=fx.env)
+    _git("fetch", "-q", "--prune", "origin", cwd=fx.clone, env=fx.env)
+
+
+def test_per_kind_branch_is_stacked_in_date_order(fx):
+    """T-U8 (silent failure 2): a night-shift/<date>-BUG-n branch is stacked, by branch date.
+
+    On the unfixed script the `*-JB-*` glob dropped every per-kind branch with no row
+    and exit 0. Order is branch date, then the number: 10-30 JB-1, JB-2, 11-06 JB-190,
+    11-07 BUG-3. A prefix that contradicts its Item's kind is a SKIP row and exit 1.
+    """
+    _add_items(fx, ("BUG-3", "bug", "per-kind"), ("JB-190", "bug", "legacy"),
+               ("FEAT-4", "bug", "wrong-prefix"))
+    _push_branch(fx, "night-shift/2026-11-07-BUG-3", "src/c.txt", "c\n")
+    _push_branch(fx, "night-shift/2026-11-06-JB-190", "src/d.txt", "d\n")
+    _push_branch(fx, "night-shift/2026-11-06-FEAT-4", "src/e.txt", "e\n")
+    _git("fetch", "-q", "origin", cwd=fx.clone, env=fx.env)
+    r = fx.run("--date", "2026-11-08")
+    out = r.stdout
+    assert "MERGED origin/night-shift/2026-11-07-BUG-3 BUG-3" in out
+    assert "MERGED origin/night-shift/2026-11-06-JB-190 JB-190" in out
+    assert ("SKIP origin/night-shift/2026-11-06-FEAT-4 FEAT-4 names a feature, "
+            "but its Item is a bug") in out
+    merged = [ln.split()[2] for ln in out.splitlines() if ln.startswith("MERGED")]
+    assert merged == ["JB-1", "JB-2", "JB-190", "BUG-3"]
+    assert "candidate: 4 merged, 0 held, 3 skipped" in out
+    assert r.returncode == 1
+
+
+def test_only_unparseable_branches_exit_nonzero(fx):
+    """T-U8: night-shift/* branches exist but none parses -> exit 1 naming each, never empty-and-0."""
+    _drop_remote_branches(fx)
+    _push_branch(fx, "night-shift/garbage", "src/g.txt", "g\n")
+    _git("fetch", "-q", "origin", cwd=fx.clone, env=fx.env)
+    r = fx.run("--date", "2026-11-08")
+    assert r.returncode == 1, r.stdout
+    assert "UNPARSED origin/night-shift/garbage" in r.stdout
+
+
+def test_no_branches_at_all_is_zero(fx):
+    """T-U8: an empty ledger is not an error."""
+    _drop_remote_branches(fx)
+    r = fx.run("--date", "2026-11-08")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "candidate: 0 merged, 0 held, 0 skipped" in r.stdout
+
+
+def test_a_crashing_item_lookup_is_an_error_not_a_quiet_skip(fx):
+    """A crash in the ``item_state`` helper must exit 1 with an ERROR row, never "SKIP no Item" and 0."""
+    (fx.seed / "mapkit" / "sitting.py").write_text("raise RuntimeError('boom')\n")
+    fx.commit("break sitting")
+    _git("push", "-q", "origin", "main", cwd=fx.seed, env=fx.env)
+    _git("pull", "-q", "--ff-only", "origin", "main", cwd=fx.clone, env=fx.env)
+    r = fx.run("--date", "2026-11-08")
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "ERROR origin/night-shift/2026-10-30-JB-1 item_state failed for JB-1" in r.stdout
+    assert "no Item JB-1" not in r.stdout

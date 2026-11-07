@@ -339,6 +339,10 @@ ENUMS = {
         # frame. Idempotent: a re-dispatch resends the same cmd_seq, which the
         # adapter treats as a keepalive. The uplink rides CONE_FRAME (no new MsgType).
         ("WAVE_CMD",     0x0062, "Wave camera: send one WAVE_CMD intent frame on the cone bus"),
+        # ADDITIVE (2026-11-07, can-bridge FW 41, no PROTOCOL_VERSION bump): a host on
+        # an older board gets ERR_UNKNOWN_METHOD. The reply is the Platform's
+        # HAND_FAN_STATUS frame, uplinked as a PLATFORM_FRAME.
+        ("HAND_FAN_SET", 0x0063, "Relay: set the Platform Teensy's Hand fan mode and thresholds"),
     ],
     "RpcStatus": [
         ("OK",            0x0000, "Success"),
@@ -1856,6 +1860,13 @@ RPC_ARGS = [
         Field("levelling_complete", "u8", 1, "Platform levelling complete"),
         Field("pose_offset_tiltX", "f32", 1, "Levelling pose offset, tilt about X (rad)"),
         Field("pose_offset_tiltY", "f32", 1, "Levelling pose offset, tilt about Y (rad)"),
+    ]),
+    # HAND_FAN_SET (FW 41, additive). The firmware validates and encodes the
+    # HAND_FAN_CMD frame itself (least-privilege, as STATE_WRITE above).
+    RpcArg("ArgHandFanSet", "HAND_FAN_SET", [
+        Field("mode",        "u8",  1, "0 AUTO, 1 FORCE_ON, 2 FORCE_OFF"),
+        Field("on_above_c",  "f32", 1, "Hand motor thermistor above this turns the fan on in AUTO (deg C)"),
+        Field("off_below_c", "f32", 1, "Hand motor thermistor below this turns the fan off in AUTO (deg C)"),
     ]),
     # (ArgHandTraj / ArgHandSource lived here until PROTOCOL_VERSION 7
     # (2026-09-11, skill-stack R1). Both went with their methods: the hand is no

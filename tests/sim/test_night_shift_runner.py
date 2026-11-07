@@ -55,11 +55,13 @@ if [[ "$prompt" == *--dry-run* && "${FAKE_CLAUDE_NO_REPORT:-0}" != 1 ]]; then
   echo "# dry run" >"$reports/dry-$date.md"
 fi
 [[ "${FAKE_CLAUDE_COMMIT_MAIN:-0}" == 1 ]] && git -C "$PWD" commit -q --allow-empty -m x
+[[ -n "${FAKE_CLAUDE_START:-}" ]] && { nohup "$FAKE_CLAUDE_START" >/dev/null 2>&1 & disown; sleep 0.3; }
 if [[ "${FAKE_CLAUDE_REPORT:-0}" == 1 && "$prompt" != *--dry-run* ]]; then
   date="$(date +%F)"   # a resumed leg's prompt carries no date
   [[ "$prompt" =~ ^/night-shift\ ([0-9-]+) ]] && date="${BASH_REMATCH[1]}"
   mkdir -p docs/night-shift
-  printf '# Night Shift %s\n\n## Nightly\nGREEN\n\n## Cost\nunits: 0\n' "$date" >"docs/night-shift/$date.md"
+  summary=""; [[ "${FAKE_CLAUDE_SUMMARY:-0}" == 1 ]] && summary=$'**Summary.** merged 0\n\n'
+  printf '# Night Shift %s\n\n%s## Nightly\nGREEN\n\n## Cost\nunits: 0\n' "$date" "$summary" >"docs/night-shift/$date.md"
   git add docs/night-shift && git commit -q -m "docs(night-shift): report $date" && git push -q origin main
 fi
 if [[ -n "${FAKE_CLAUDE_CLOSE_ITEM:-}" ]]; then
@@ -162,6 +164,7 @@ class NS:
             "NIGHT_SHIFT_REPORTS": str(self.reports),
             "NIGHT_SHIFT_SKIP_ENV": "1",
             "NIGHT_SHIFT_PYTHON": sys.executable,
+            "NIGHT_SHIFT_APP": "0",   # no test reaches the real app; its own tests turn it on
             "ANTHROPIC_API_KEY": "test",
             "LIVE_SESSION_RE": "nsguard_absent_" + uuid.uuid4().hex,
             "FAKE_CLAUDE_LOG": str(self.log),
@@ -682,3 +685,133 @@ def test_service_working_directory_exists_before_the_pre_step():
     unit = (REPO / "tools" / "systemd" / "jugglebot-night-shift.service").read_text()
     assert "WorkingDirectory=%h\n" in unit
     assert "WorkingDirectory=%h/night-shift" not in unit
+
+
+# --- the map app: the clone, the prompt, the deploy step ---------------------
+FAKE_DEPLOY = r"""#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+result = args[args.index("--result") + 1]
+with open(os.environ["FAKE_DEPLOY_LOG"], "a") as fh:
+    fh.write(" ".join(args) + "\n")
+status = os.environ.get("FAKE_DEPLOY_STATUS", "DEPLOYED")
+if status != "NO_RESULT":
+    json.dump({"status": status, "line": "app deploy: %s; fake" % status}, open(result, "w"))
+"""
+
+
+def _app_on(ns, tmp, app_origin=True):
+    env = {}
+    fake = tmp / "fake_deploy.py"
+    fake.write_text(FAKE_DEPLOY)
+    env["NIGHT_SHIFT_DEPLOY_TOOL"] = str(fake)
+    env["FAKE_DEPLOY_LOG"] = str(tmp / "deploy.log")
+    env["NIGHT_SHIFT_APP"] = "1"
+    env["NIGHT_SHIFT_APP_CLONE"] = str(tmp / "app-clone")
+    env["NIGHT_SHIFT_APP_LIVE"] = str(tmp / "app-live")
+    env["NIGHT_SHIFT_DATA_LIVE"] = str(tmp / "data-live")
+    env["NIGHT_SHIFT_APP_URL"] = "http://127.0.0.1:1"   # nothing listens: unhealthy before the night
+    bare = tmp / "app-origin.git"
+    if app_origin:
+        seed = tmp / "app-seed"
+        seed.mkdir()
+        _git("init", "-q", cwd=seed, env=ns.env)
+        _git("checkout", "-q", "-b", "main", cwd=seed, env=ns.env)
+        (seed / "a.txt").write_text("a\n")
+        _git("add", "-A", cwd=seed, env=ns.env)
+        _git("commit", "-q", "-m", "seed", cwd=seed, env=ns.env)
+        _git("clone", "-q", "--bare", str(seed), str(bare), env=ns.env)
+    env["NIGHT_SHIFT_APP_ORIGIN"] = str(bare)
+    return env
+
+
+def _prompt(ns):
+    return next(l for l in ns.log.read_text().splitlines() if l.startswith("ARG /night-shift"))
+
+
+def test_app_off_passes_none_and_never_deploys(ns):
+    r = ns.run(FAKE_CLAUDE_REPORT=1)
+    _check(r, "OK", 0)
+    assert "--app-clone none" in _prompt(ns)
+    doc = json.loads((ns.reports / "last_run.json").read_text())
+    assert doc["app_clone"] == "off" and doc["deploy_status"] is None
+
+
+def test_app_clone_prepared_and_named_in_the_prompt(ns, tmp_path):
+    env = _app_on(ns, tmp_path)
+    r = ns.run(FAKE_CLAUDE_REPORT=1, **env)
+    _check(r, "OK", 0)
+    assert "--app-clone %s" % (tmp_path / "app-clone") in _prompt(ns)
+    doc = json.loads((ns.reports / "last_run.json").read_text())
+    assert doc["app_clone"] == "ready" and len(doc["app_night_start"]) == 40
+
+
+def test_app_clone_failure_is_not_fatal(ns, tmp_path):
+    env = _app_on(ns, tmp_path, app_origin=False)
+    r = ns.run(FAKE_CLAUDE_REPORT=1, **env)
+    _check(r, "OK", 0)
+    assert "--app-clone none" in _prompt(ns)
+    assert json.loads((ns.reports / "last_run.json").read_text())["app_clone"] == "clone failed"
+
+
+def test_deploy_line_lands_before_the_cost_line(ns, tmp_path):
+    env = _app_on(ns, tmp_path)
+    r = ns.run(FAKE_CLAUDE_REPORT=1, FAKE_DEPLOY_STATUS="DEPLOYED", **env)
+    _check(r, "OK", 0)
+    doc = json.loads((ns.reports / "last_run.json").read_text())
+    assert doc["deploy_status"] == "DEPLOYED" and "deploy DEPLOYED" in doc["detail"]
+    report = (ns.clone / "docs" / "night-shift" / ("%s.md" % date.today().isoformat())).read_text().splitlines()
+    assert report[-2] == "app deploy: DEPLOYED; fake"
+    assert report[-1].startswith("total API cost:")
+    args = (tmp_path / "deploy.log").read_text()
+    assert "--main-clone %s" % ns.clone in args and "--app-live %s" % (tmp_path / "app-live") in args
+    assert "--pre-night-healthy 0" in args and doc["app_healthy_before"] == "0"
+
+
+def test_a_dry_run_leaves_the_app_clone_alone(ns, tmp_path):
+    env = _app_on(ns, tmp_path)
+    r = ns.run(NIGHT_SHIFT_DRY_RUN=1, **env)
+    _check(r, "DRY_OK", 0)
+    assert not (tmp_path / "app-clone").exists()
+    assert "--app-clone none" in _prompt(ns)
+    assert json.loads((ns.reports / "last_run.json").read_text())["app_clone"] == "dry"
+
+
+def test_failed_deploy_is_flagged_in_the_summary(ns, tmp_path):
+    env = _app_on(ns, tmp_path)
+    r = ns.run(FAKE_CLAUDE_REPORT=1, FAKE_CLAUDE_SUMMARY=1, FAKE_DEPLOY_STATUS="ROLLED_BACK_APP", **env)
+    _check(r, "OK", 0)
+    text = (ns.clone / "docs" / "night-shift" / ("%s.md" % date.today().isoformat())).read_text()
+    assert "**Summary.** merged 0 **App deploy: ROLLED_BACK_APP, see the last lines of Cost.**" in text
+
+
+def test_deploy_runs_even_when_claude_fails(ns, tmp_path):
+    env = _app_on(ns, tmp_path)
+    r = ns.run(FAKE_CLAUDE_EXIT=3, **env)
+    assert "CLAUDE_FAILED" in r.stdout
+    assert (tmp_path / "deploy.log").exists()
+    assert json.loads((ns.reports / "last_run.json").read_text())["deploy_status"] == "DEPLOYED"
+
+
+def test_deploy_without_a_result_is_named(ns, tmp_path):
+    env = _app_on(ns, tmp_path)
+    r = ns.run(FAKE_CLAUDE_REPORT=1, FAKE_DEPLOY_STATUS="NO_RESULT", **env)
+    _check(r, "OK", 0)
+    assert json.loads((ns.reports / "last_run.json").read_text())["deploy_status"] == "FAILED_NEEDS_SESSION"
+
+
+def test_deploy_skipped_during_a_sitting_and_on_a_dry_run(ns, tmp_path):
+    env = _app_on(ns, tmp_path)
+    r = ns.run(NIGHT_SHIFT_DRY_RUN=1, **env)
+    _check(r, "DRY_OK", 0)
+    assert not (tmp_path / "deploy.log").exists()
+    # A Sitting that starts while claude runs: the guard matches only after claude exits.
+    sentinel = "nsguard_deploy_" + uuid.uuid4().hex
+    fake_guard = tmp_path / "sitting.sh"
+    fake_guard.write_text("#!/usr/bin/env bash\nexec -a %s sleep 120\n" % sentinel)
+    fake_guard.chmod(0o755)
+    r = ns.run(FAKE_CLAUDE_REPORT=1, FAKE_CLAUDE_START=str(fake_guard), LIVE_SESSION_RE=sentinel, **env)
+    subprocess.run(["pkill", "-f", sentinel])
+    _check(r, "OK", 0)
+    assert not (tmp_path / "deploy.log").exists()
+    assert json.loads((ns.reports / "last_run.json").read_text())["deploy_status"] == "SKIPPED_LIVE_SESSION"

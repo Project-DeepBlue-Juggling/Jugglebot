@@ -4,8 +4,9 @@ kind: bug
 title: Full-length Columns goal ends MISSED_CATCH on its final Catch although the ball was caught
 status: complete
 created: '2026-11-04'
-updated: '2026-11-05T19:19:11Z'
-owners: []
+updated: '2026-11-06T19:19:21Z'
+owners:
+- night-shift
 priority: medium
 effort: s
 hardware: none
@@ -42,3 +43,4 @@ From the 2026-11-04 18:45 bag (`/hand_telemetry`, `/balls`) and launch.log, Nigh
 
 - 2026-11-05: 2026-11-05 L2615 MISSED_CATCH is a different class: Hand SPINOUT disarm at 503.68 inside the Catch window, verdict 503.767 after the lane latched; not a false miss, and JB-172 option 4 (no Stop) would not cover it. Separate bug filed for fault-preempted Catch verdicts.
 - 2026-11-06: Night Shift 2026-11-06: held on night-shift/2026-11-06-JB-169: gate (b), 3 audit findings open (a false CAUGHT from the Stop's seat is the main one); unblocked by the owner's answer
+- 2026-11-07: Night Shift 2026-11-07: held again on night-shift/2026-11-06-JB-169: gate (b), the ledger count reaches a Catch with no evidence and an aborted goal; unblocked by the owner's answer

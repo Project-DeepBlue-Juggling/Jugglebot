@@ -78,7 +78,7 @@ def test_misordered_sections():
 def test_bad_first_tokens():
     for bad in ("`JB-3` | x | y", "[JB-3] | x | y", "bug-x | x | y", "JB-3x | x | y"):
         errs = report_errors(_swap(VALID, "JB-12 | Fix the thing | The thing is fixed. | abc1234", bad))
-        assert len(errs) == 1 and "bare JB-n" in errs[0], bad
+        assert len(errs) == 1 and "bare Item ID" in errs[0], bad
 
 
 def test_table_header_and_rule_are_layout_not_rows():
@@ -89,7 +89,7 @@ def test_table_header_and_rule_are_layout_not_rows():
     # a data row that is not an Item fails, even inside a table
     errs = report_errors(_swap(VALID, "| JB-16 |", "| row |")) if "| JB-16 |" in VALID else \
         report_errors(_swap(VALID, "JB-16 | needs hardware", "| nothing | here |"))
-    assert len(errs) == 1 and "bare JB-n" in errs[0]
+    assert len(errs) == 1 and "bare Item ID" in errs[0]
 
 
 def test_legacy_pipe_rows_still_pass():
@@ -132,3 +132,12 @@ def test_held_table_without_respond_in_still_passes_as_history():
     old = _swap(old, "| answer JB-14 | JB-14 |", "| answer JB-14 |")
     old = _swap(old, "| a Sitting | none |", "| a Sitting |")
     assert report_errors(old) == []
+
+
+def test_item_rows_accept_per_kind_ids_and_still_reject_garbage():
+    """P1 consumer, plan § 2.3: a bare per-kind ID is a legal Item cell; garbage stays loud."""
+    for good in ("BUG-12", "FEAT-3", "IDEA-1", "PWAY-4", "TKT-31", "JB-12"):
+        assert report_errors(_swap(VALID, "JB-12 | Fix the thing", good + " | Fix the thing")) == [], good
+    for bad in ("BUG-x", "BUG-", "`BUG-3`", "bug-3", "FOO-3", "BUG-03x"):
+        errs = report_errors(_swap(VALID, "JB-12 | Fix the thing", bad + " | Fix the thing"))
+        assert len(errs) == 1 and "bare Item ID" in errs[0], bad

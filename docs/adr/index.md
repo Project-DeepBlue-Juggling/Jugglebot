@@ -89,6 +89,9 @@ They're grouped here by topic for skimming; the canonical order is numeric.
 - [ADR-0010](0010-onboard-clock-sufficient.md) — On-board crystal is sufficient; no external clock module
 - [ADR-0012](0012-hermite-interpolator-port.md) — Port the Hermite/Taylor interpolator verbatim from `motor_guard.py`
 
+### Project tooling
+- [ADR-0015](0015-per-kind-item-ids.md) — Each kind of Item has its own ID prefix and its own counter
+
 ## Where to record tactical / implementation decisions
 
 The overnight autonomous implementation pass on the can-bridge firmware also
