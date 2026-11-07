@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-08 | resolved | map-app | **Typing in a long Description no longer jumps the Item drawer to the top (JB-151; only a real browser can confirm it)** | [2026-11-08-drawer-description-editor-scroll-reset](2026-11-08-drawer-description-editor-scroll-reset.md) |
 | 2026-11-08 | resolved | map-app | **Map app test: the next Item ID counts an origin/main Item the checkout has not pulled (JB-100; test only, no production change)** | [2026-11-08-map-app-next-id-origin-test](2026-11-08-map-app-next-id-origin-test.md) |
 | 2026-11-08 | resolved | hand cooling fan | **Hand fan GUI controls: read-only pill in System, On/Off toggle in Platform Control, Auto offered while forced** | [2026-11-08-hand-fan-gui-controls](2026-11-08-hand-fan-gui-controls.md) |
 | 2026-11-08 | resolved | hand cooling fan | **Hand fan runtime control for A/B tests (Platform FW 9, can-bridge FW 41): mode and thresholds set in RAM, status recorded in the bags; flashed 2026-11-08, fan switching not yet exercised** | [2026-11-08-hand-fan-runtime-control](2026-11-08-hand-fan-runtime-control.md) |

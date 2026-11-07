@@ -2,9 +2,9 @@
 id: JB-151
 kind: bug
 title: Editing long Descriptions is buggy
-status: inbox
+status: complete
 created: '2026-11-02'
-updated: '2026-11-02T18:15:07Z'
+updated: '2026-11-07T18:11:28Z'
 owners: []
 priority: medium
 effort: s
@@ -14,7 +14,8 @@ radius: local
 diagnosis: unknown
 area: map-app
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-08-drawer-description-editor-scroll-reset.md
 filed_by: harrison
 ---
 
