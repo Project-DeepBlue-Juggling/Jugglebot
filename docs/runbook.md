@@ -6,7 +6,7 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 5 blocks (218 min) · Bench leg 1 block (30 min) · Bench hand 1 block (30 min)
+Rigs: Robot 5 blocks (218 min) · Bench leg 1 block (30 min) · Bench hand 1 block (60 min)
 
 ## Setup 0: before power
 
@@ -137,20 +137,34 @@ Rigs: Robot 5 blocks (218 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - pass: in every rate-0 gap the leg settles within 0.01 rev of the last transmitted command (FW 33: 0.05-0.056 rev), MOTOR_FB_STALE self-clears when frames return, no MAX_DEVIATION latch, and the iq step at the suppress edge stays under about 10 A with no visible jolt (else switch to the pre-registered vel_ff ramp, logbook 2026-11-01-jb73-suppress-edge-hold-flush).
 - record: per gap the settle offset (rev), the last vel_ff, the ODrive iq step at the edge, and the run directory.
 
-## Bench hand  (1 block, 30 min)
+## Bench hand  (1 block, 60 min)
 
-### Block 7: armed, bridge-cycled  (1 row, 30 min)
+### Block 7: armed, bridge-cycled  (2 rows, 60 min)
+
+#### JB-203 Measure the Hand's commutation angle error through a hard brake on the bench Hand (FOC scope)  (30 min, high, unattached)
+- why: this proves `hand_foc_scope.py` works on the real drive and measures the angle error through a clean 4500 rev/s^2 brake, the baseline any reading of JB-147's torque loss needs.
+- do:
+  - Launch down. Bench Hand on the bridge, bridge rebooted after re-cabling, ODrive USB to the Jetson through the isolator, Hand homed and parked at or below 0.9 rev, Cup empty, E-stop in hand. Measure where the bench top stop is in rev.
+  - With the Hand still: `python tools/probes/hand_foc_scope.py probe --label bench`. Stop here if it prints NO-GO.
+  - Rung A, only if the stop is at or above 7.2 rev. Second terminal: `python tools/probes/hand_foc_scope.py capture --count 3 --label bench_70`.
+  - First terminal: `python tests/hardware/hand_stream_bench.py --stage stroke_cut --close-loop --repeat 3 --stroke-peak-vel 70 --cut-at-vel 55 --stroke-accel 2000 --stroke-top 6.0`. If a capture prints TIMED OUT, run the stage again.
+  - Repeat rung A once with `capture --preset power --count 1 --label bench_70_power` and the stage at `--repeat 1`.
+  - Rung B, only if the stop is at or above 9.5 rev and rung A settled cleanly: the same pair with `--label bench_100` and `--stroke-peak-vel 100 --cut-at-vel 85 --stroke-accel 2000 --stroke-top 7.9`.
+  - Stop at the first fault. Ctrl-C on the capture is safe; never Ctrl-C the stage mid-stroke. Recovery is `hand_stream_bench.py --clear-errors`.
+- pass: the probe prints GO; three captures fire on the brake with the whole brake inside the window; the stage reports no fault, no sched_refused and the same counter deltas as its model. The angle reading itself is a result, not a criterion.
+- record: the probe's sample rate, window, field strength and working offset; the bench top stop in rev; each capture's path and its angle-by-speed, torque-loss and phase-jump lines; the power capture's ratio, where about 1.0 confirms the voltage scaling; the stage's verdict lines; any fault.
 
 #### JB-145 Hand stall stop near a release cannot fit the stroke: the 20 ms grace plus the C2 stop carry the Hand past the clip  (30 min, medium, unattached)
 - why: FW 37 (owner call JB-154, option 2; grace 6 ms at FW 37, 14 ms at FW 39) stops a fast upward Hand inside the stroke when the stream dies; it has never run on hardware, and the stroke_cut bench stage exercises exactly that path with no ball.
 - do:
   - Launch down. Confirm the bridge identity reads FW 40 (proto 12). Bench Hand on the bridge, bridge rebooted after re-cabling, Hand homed and parked at or below 0.9 rev, Cup empty, E-stop in hand.
-  - From the repo root in the venv: `python tests/hardware/hand_stream_bench.py --stage stroke_cut --close-loop --repeat 3` (upstroke, 3 runs at the defaults: peak 70 rev/s, entry near 63 rev/s at the 14 ms grace, modelled hold 3.18 rev; FW 37 at 6 ms was 56.8 rev/s and 2.62 rev).
-  - Only if those runs settle comfortably: `python tests/hardware/hand_stream_bench.py --stage stroke_cut --cut-at-vel 64 --close-loop` (C1 entry about 73 rev/s, modelled hold 5.06 rev; 6 ms was 4.45 rev).
+  - Measure where the bench top stop is in rev. The defaults need it at or above 9.7 rev (stroke top 8.5, worst stop 8.66, plus the stage's 1.0 rev margin), and the stage only checks the production 10.501 clip. If it is lower, stop: this row needs a shorter stroke plan first.
+  - From the repo root in the venv: `python tests/hardware/hand_stream_bench.py --stage stroke_cut --close-loop --repeat 3` (upstroke, 3 runs at the defaults: peak 70 rev/s, entry near 63 rev/s at the 14 ms grace, modelled hold 3.18 rev from a 0.2 rev park and 3.88 from 0.9, and the stage prints its own; FW 37 at 6 ms was 56.8 rev/s and 2.62 rev).
+  - Only if those runs settle comfortably: `python tests/hardware/hand_stream_bench.py --stage stroke_cut --cut-at-vel 64 --close-loop` (C1 entry about 73 rev/s, modelled hold 5.06 rev from a 0.2 rev park and 5.76 from 0.9; 6 ms was 4.45 rev).
   - Controls: `--cut-mode downstroke --close-loop` (C2 stop, hold about 4.27 rev) and `--cut-mode slow --close-loop` (full 20 ms grace then C2, hold about 2.54 rev).
   - Never Ctrl-C mid-stroke: a disarm while moving leaves the Hand up to 2 rev above the last command. Recovery is `--clear-errors`.
 - pass: every upstroke run scores S1-S5 in the stage's verdict line: commanded peak at most the modelled hold + 0.1 rev and under 10.0 rev, sched_hand_c1_stops +1 and sched_stops +1 per run, no fault and no sched_refused, encoder settled within 0.05 rev of the hold within 150 ms; both controls show C1 count +0 with their hold within 0.1 rev of the model.
-- record: each run's verdict line (cut frame, entry speed, modelled and measured hold, encoder overshoot, settle time, counter deltas), the peak Iq at the stop entry, any guard or latch event, the temp/logs CSV paths, and the bench Hand rig's actual current cap (not written down anywhere; the stage assumes 10 A).
+- record: each run's verdict line (cut frame, entry speed, modelled and measured hold, encoder overshoot, settle time, counter deltas), the peak Iq at the stop entry, any guard or latch event, the temp/logs CSV paths, and the bench top stop in rev. The bench Hand's current cap is the same as production (owner, 2026-11-07), so the stage's 10 A assumption is void and its drive may follow the 4500 rev/s^2 stop more closely than modelled.
 
 ## Needs a Sitting section
 

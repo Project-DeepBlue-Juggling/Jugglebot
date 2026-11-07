@@ -4,7 +4,7 @@ kind: bug
 title: Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT)
 status: in_progress
 created: '2026-11-02'
-updated: '2026-11-07T06:22:26Z'
+updated: '2026-11-07T06:39:18Z'
 owners:
 - jugglebot-3d
 priority: high
@@ -17,6 +17,7 @@ area: hand
 blocked_by: []
 links:
 - logbook/2026-11-04-sitting-debrief.md
+- map/feature-measure-the-hand-s-commutation-angle-error-through-a-hard.md
 filed_by: jugglebot-3d
 ---
 
@@ -136,3 +137,4 @@ In every block the faulting launches sit at or above the p90 of that block's mea
 - 2026-11-04: 2026-11-03 Sitting (22:29, P4 ramp): REFUTED for the three firmware-STOP ends (goals 3, 9, 15): the Hand braked on its profile at -23..-24 A, no SPINOUT_DETECTED all Sitting, peak |iq_set| 54.1 A vs the 70 A clamp. Withdrawn for that class; the Apex 1.35 overshoot it was filed for was not exercised.
 - 2026-11-05: 2026-11-05 L2596: SPINOUT after a C1-stop brake: decel 4826 -> ~500 rev/s^2 within 10 ms of the brake peak, 25 ms into the brake, at 4.4 rev / 20 rev/s, iq -41 A (limit 70, not saturated). Same torque-loss signature as 11-03, far from the clip; Hand rested at 5.0 rev. 1 of 3 C1 brakes at -40 A went SPINOUT.
 - 2026-11-07: 2026-11-07 Sitting: Apex 1.10 row passed (4 Attempts, 69 launches, 0 SPINOUT, brakes at most 29 A), but L8157 at Apex 0.95 is the same torque loss at -36 A into the top stop. Stays open until the root cause is known (owner). Flown row removed (detail below).
+- 2026-11-07: 2026-11-07: JB-203 filed with hand_foc_scope.py: an 8 kHz current-loop capture to measure a commutation angle error on the bench Hand, first step toward the root cause.
