@@ -814,12 +814,12 @@ _T2J_FLAG_ALL_AXIS_HB_OK = 0x4
 # bit3: firmware-side mpc_active (udp_protocol HeartbeatFlagsT2J.MPC_ACTIVE) —
 # the arm-took verification bit. Surfaced on /link_status as 'teensy_mpc_active'
 # (ARMING_CONTRACT A5) so a host-armed / firmware-not-armed split is visible.
-_T2J_FLAG_MPC_ACTIVE = 0x8
+_T2J_FLAG_MPC_ACTIVE = int(p.HeartbeatT2JFlags.MPC_ACTIVE)
 # Bits 4-5 carry the cone (CAN2) BusHealth value (generated single source:
 # p.HeartbeatT2JFlags.CONE_HEALTH_MASK / p.HEARTBEAT_CONE_HEALTH_SHIFT).
 # BusHealth.UNKNOWN == 0, so a flash older than the cone-health uplink reads
 # as UNKNOWN — surfacing it is backward-compatible with an unflashed bridge.
-_T2J_CONE_HEALTH_MASK = 0x30
+_T2J_CONE_HEALTH_MASK = int(p.HeartbeatT2JFlags.CONE_HEALTH_MASK)
 _T2J_CONE_HEALTH_SHIFT = 4
 # Bit 6 was the FW 17 hand-mastery latch (HAND_SOURCE_STREAMED); retired at
 # PROTOCOL_VERSION 7 (2026-09-11, skill-stack R1) with the latch itself — the

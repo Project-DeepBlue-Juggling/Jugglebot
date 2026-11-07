@@ -2,9 +2,9 @@
 id: JB-87
 kind: feature
 title: Retire dead wire fields and literal flag masks; put teensy-udp-protocol.md in the docs nav
-status: inbox
+status: in_progress
 created: '2026-10-28'
-updated: '2026-10-28T07:27:03Z'
+updated: '2026-11-07T19:01:34Z'
 owners: []
 priority: low
 effort: s
@@ -34,3 +34,7 @@ Night Shift can merge: the `mkdocs.yml` nav entry and the two heartbeat masks (n
 Night Shift builds and holds: removing `suppress_announcement`, because `.action` is in `jugglebot_interfaces`.
 
 A day Session: the `HAND_LANE_REFUSED` rename, which touches the frozen `INVARIANTS.md`. The next firmware commit: the `gpio_poll.cpp` comment. Close this Item when all four are done.
+
+## Progress
+
+- 2026-11-08: Night Shift 2026-11-08: the heartbeat masks and the docs nav entry are done; still open are the action field, the rename and the firmware comment

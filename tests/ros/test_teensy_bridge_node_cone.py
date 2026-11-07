@@ -214,3 +214,13 @@ def test_truncated_udp_payload_ignored(bridge):
         int(MsgType.CONE_FRAME),
         _cone_frame(catching_cone.HEARTBEAT_ID, _heartbeat_data()))
     assert _wait_until(lambda: node._cone_hb_received)
+
+
+def test_heartbeat_flag_masks_come_from_generated_protocol():
+    """The node's T2J heartbeat masks read the generated enum (JB-87); plain ints."""
+    from jugglebot import teensy_bridge_node as tbn
+
+    assert tbn._T2J_FLAG_MPC_ACTIVE == p.HeartbeatT2JFlags.MPC_ACTIVE
+    assert tbn._T2J_CONE_HEALTH_MASK == p.HeartbeatT2JFlags.CONE_HEALTH_MASK
+    assert type(tbn._T2J_FLAG_MPC_ACTIVE) is int
+    assert type(tbn._T2J_CONE_HEALTH_MASK) is int

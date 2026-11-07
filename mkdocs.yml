@@ -70,6 +70,7 @@ nav:
     - Overview: can_bridge/index.md
     - Control Flow: can_bridge/control.md
     - Safety Mechanisms: can_bridge/safety.md
+    - UDP Protocol: teensy-udp-protocol.md
     - Knot-Rate Analysis: knot-rate-analysis.md
   - Hardware Analysis:
     - Overview: analysis/index.md
