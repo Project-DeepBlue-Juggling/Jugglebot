@@ -356,7 +356,8 @@ def test_pool_blames_the_server_not_the_executor_when_a_later_poll_is_dropped():
     """The executor ran the first readiness check (server not visible), then
     the deadline beats a later poll. The executor demonstrably ran, so the
     error names the server. Deterministic: the stand-in runs the first
-    scheduled task and drops every later one."""
+    scheduled task and drops every later one. The 0.5 s budget is wide so a
+    stalled box still reaches a second poll before the deadline."""
     scheduled = []
 
     def schedule(task):
@@ -369,7 +370,7 @@ def test_pool_blames_the_server_not_the_executor_when_a_later_poll_is_dropped():
     pool = ServiceClientPool(node, schedule)
 
     with pytest.raises(TimeoutError, match='never became visible'):
-        pool.call('/svc', 'pkg/srv/T', 'cls', 'req', 0.05)
+        pool.call('/svc', 'pkg/srv/T', 'cls', 'req', 0.5)
 
     assert len(scheduled) >= 2
     assert node.clients[0].sent == []

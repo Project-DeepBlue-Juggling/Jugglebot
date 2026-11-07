@@ -21,7 +21,7 @@ tags:
 
 **Why.** The wrong message points the diagnosis at the executor when the server was the absent party. This is the GUI service path, not the motion path.
 
-**Test.** `test_pool_blames_the_server_not_the_executor_when_a_later_poll_is_dropped`: an executor stand-in runs the first scheduled task and drops the rest, 0.05 s timeout, asserts the "never became visible" text and that nothing was sent. `test_pool_never_sends_a_request_its_caller_abandoned` still pins "never ran the send".
+**Test.** `test_pool_blames_the_server_not_the_executor_when_a_later_poll_is_dropped`: an executor stand-in runs the first scheduled task and drops the rest, 0.5 s timeout, asserts the "never became visible" text and that nothing was sent. `test_pool_never_sends_a_request_its_caller_abandoned` still pins "never ran the send".
 
 ## Verification
 

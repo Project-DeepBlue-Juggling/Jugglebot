@@ -250,9 +250,9 @@ class ServiceClientPool:
             ran, sent = _run_on_executor_and_wait(
                 self._run_on_executor, send, deadline)
             if not ran and ever_ran:
-                # The executor ran an earlier check, so it is alive: the
-                # deadline simply beat this poll, and the server never
-                # became visible.
+                # The executor ran an earlier check, so it is evidently alive
+                # (one that wedged since reads the same): the deadline beat
+                # this poll, and the server never became visible.
                 raise TimeoutError(
                     f'service call to {service!r} timed out after '
                     f'{timeout_sec} s: the server never became visible to '
