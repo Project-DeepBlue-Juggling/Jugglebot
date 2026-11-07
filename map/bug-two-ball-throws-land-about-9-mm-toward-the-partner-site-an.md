@@ -4,10 +4,15 @@ kind: bug
 title: 'Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for'
 status: inbox
 created: '2026-11-06'
-updated: '2026-11-07T05:26:54Z'
+updated: '2026-11-07T18:11:54Z'
 owners: []
 priority: high
+effort: m
 hardware: robot
+owner: hands
+radius: subsystem
+diagnosis: hypothesis
+area: skill-stack
 blocked_by: []
 links:
 - map/bug-mid-air-ball-collisions-end-half-of-two-ball-columns.md
