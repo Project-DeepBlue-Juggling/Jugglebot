@@ -4,7 +4,7 @@ kind: bug
 title: Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT)
 status: in_progress
 created: '2026-11-02'
-updated: '2026-11-05T12:29:44Z'
+updated: '2026-11-07T05:19:08Z'
 owners:
 - jugglebot-3d
 priority: high
@@ -110,6 +110,11 @@ In every block the faulting launches sit at or above the p90 of that block's mea
   - At 1.35, the hand isn't using the full stroke. It looks like there's at least 3-4cm extra at the top of the stroke. One attempt ended with LANE_REFUSED. The last attempt ended with SPINOUT_DETECTED, despite no obvious cause for this to my eye (no visible collision with the end stop, no sudden sounds).
   - At 1.45, the first attempt ended with a messy throw being uncatchable. Second ended with SPINOUT_DETECTED, for which it sounded like the hand hit the end-stop (or something?). Third attempt ended the same way, but with no audible collision between the hand and the end-stop.
   - At 1.50, the first attempt had a non-audible SPINOUT_DETECTED, while the second attempt ended with the same error but I could hear the collision between the hand and the end-stop. Third attempt ended the same as the second (audbily).
+
+## Sitting result (2026-11-07 16:19)
+
+- verdict: pass
+- notes: Several attempts all either succeeded or ended due to messy throws or mid-air collisions being unrecoverable.
 
 ## Progress
 
