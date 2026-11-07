@@ -33,7 +33,7 @@ Four times in the captures, the Hand stopped dead mid-dive and pressed down at t
 ## Open questions
 
 - Is it always a Ball? A Ball's diameter would fit a stop 2 to 2.5 rev above the floor, but nobody has confirmed one on 2026-11-06.
-- During the 2026-11-06 stalls the command sat exactly 2.00 rev below the Hand, which looks like a lag clamp. I found no matching constant with a quick grep of the firmware and did not trace it.
+- During the 2026-11-06 stalls the command sat exactly 2.00 rev below the Hand. That matches the firmware's +/-2.0 rev Hand lead clamp named in the `hand_stream_bench.py` docstring, so it is a consequence of the stall and not a separate fault.
 - No guard acted. As filed in JB-146, the FW 36 stall guard covers the ACTIVATE and HAND_MOVE_TO ladder, and it needs 300 ms.
 
 Sources: `~/.ros/log/2026-11-07-16-15-21-645789-jetson-2503132/launch.log`, `temp/hand_capture/hand_capture_20261107_161525.csv`, and the 2026-11-06 captures 151412 and 153512. Found while checking JB-147.
