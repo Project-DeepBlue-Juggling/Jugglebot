@@ -245,14 +245,24 @@ class ServiceClientPool:
             return self._send_if_ready(
                 service, service_type, service_class, request)
 
+        ever_ran = False
         while True:
             ran, sent = _run_on_executor_and_wait(
                 self._run_on_executor, send, deadline)
+            if not ran and ever_ran:
+                # The executor ran an earlier check, so it is alive: the
+                # deadline simply beat this poll, and the server never
+                # became visible.
+                raise TimeoutError(
+                    f'service call to {service!r} timed out after '
+                    f'{timeout_sec} s: the server never became visible to '
+                    f"rosbridge's client")
             if not ran:
                 raise TimeoutError(
                     f'service call to {service!r} timed out after '
                     f'{timeout_sec} s: the rosbridge executor thread never '
                     f'ran the send')
+            ever_ran = True
             if sent is not None:
                 break
             if time.monotonic() + SERVICE_READY_POLL_S >= deadline:

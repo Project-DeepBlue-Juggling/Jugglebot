@@ -2,9 +2,9 @@
 id: JB-209
 kind: bug
 title: rosbridge service pool blames the executor when the last ready poll loses the race to its deadline
-status: inbox
+status: complete
 created: '2026-11-08'
-updated: '2026-11-07T18:12:14Z'
+updated: '2026-11-07T18:47:02Z'
 owners: []
 priority: low
 effort: xs
@@ -14,7 +14,8 @@ radius: local
 diagnosis: confirmed
 area: tests-tooling
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-08-rosbridge-pool-timeout-names-the-server.md
 filed_by: claude
 ---
 

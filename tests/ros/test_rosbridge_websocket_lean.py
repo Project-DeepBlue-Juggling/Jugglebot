@@ -352,6 +352,29 @@ def test_pool_times_out_without_sending_when_the_server_never_appears(executor):
     assert node.clients[0].sent == []
 
 
+def test_pool_blames_the_server_not_the_executor_when_a_later_poll_is_dropped():
+    """The executor ran the first readiness check (server not visible), then
+    the deadline beats a later poll. The executor demonstrably ran, so the
+    error names the server. Deterministic: the stand-in runs the first
+    scheduled task and drops every later one."""
+    scheduled = []
+
+    def schedule(task):
+        scheduled.append(task)
+        if len(scheduled) == 1:
+            task()
+
+    node = _PoolNode(executor=None, behaviour={
+        '/svc': {'not_ready_checks': 10 ** 9}})
+    pool = ServiceClientPool(node, schedule)
+
+    with pytest.raises(TimeoutError, match='never became visible'):
+        pool.call('/svc', 'pkg/srv/T', 'cls', 'req', 0.05)
+
+    assert len(scheduled) >= 2
+    assert node.clients[0].sent == []
+
+
 def test_pool_times_out_with_no_response_and_unregisters_on_the_executor_thread(executor):
     """A reply that never comes raises the same 'timed out after ... with no
     response' text the bags were grepped for, and the pending request is
