@@ -118,7 +118,7 @@ python tests/hardware/single_leg_test.py --test all
 
 ### ROS2 (on Jetson)
 ```bash
-cd ros_ws && colcon build --packages-select jugglebot
+cd ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot
 source install/setup.bash
 ros2 launch jugglebot jugglebot_launch.py
 ```

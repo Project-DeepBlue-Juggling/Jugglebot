@@ -79,6 +79,15 @@
 # status but OK re-raises it (ticker_reraised in last_run.json), so a failed
 # night never swallows a RED nightly.
 #
+# The map app: the night works on its own clone of the app ($NIGHT_SHIFT_APP_CLONE,
+# never ~/map-live), prepared here (a failure there is not fatal, the prompt says
+# `--app-clone none` and the app's Items are skipped). After claude has exited, on
+# any outcome, a real run calls tools/night_shift_deploy.py, which puts the app's
+# main live and takes back what breaks it (owner, 2026-11-07; the tool's docstring
+# has the decision). Never during a Sitting: SKIPPED_LIVE_SESSION, and the next
+# night picks it up. Its result is one line at the end of the report (before the
+# cost line) and `deploy_status` / `deploy_line` in last_run.json.
+#
 # Single-writer rule: this script never runs a git command that writes in
 # $NIGHT_SHIFT_LIVE_REPO (~/Desktop/Jugglebot, where a live Session may be
 # working); its one git read there is `remote get-url origin`, and only when the
@@ -97,7 +106,10 @@
 # NIGHT_SHIFT_WAIT_NIGHTLY_S (3600), NIGHT_SHIFT_WAIT_NIGHTLY_POLL_S (60),
 # NIGHT_SHIFT_IGNORE_SESSION (0; hand runs only), NIGHT_SHIFT_SKIP_ENV (0; tests),
 # NIGHT_SHIFT_PYTHON (the venv python if present, else python3), NIGHT_SHIFT_CLAUDE
-# (the claude binary; default: PATH, then the newest ~/.nvm install).
+# (the claude binary; default: PATH, then the newest ~/.nvm install),
+# NIGHT_SHIFT_APP (1; 0 = no app clone, no deploy), NIGHT_SHIFT_APP_DEPLOY (1; 0 =
+# the clone but no deploy), NIGHT_SHIFT_APP_CLONE, NIGHT_SHIFT_APP_ORIGIN,
+# NIGHT_SHIFT_APP_LIVE, NIGHT_SHIFT_DATA_LIVE, NIGHT_SHIFT_DEPLOY_TOOL (tests).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -134,6 +146,15 @@ else
 fi
 HOLD_FILE="$LIVE/temp/night-shift.hold"
 NIGHTLY_DIR="$LIVE/temp/reports/nightly"
+APP_ENABLED="${NIGHT_SHIFT_APP:-1}"
+APP_DEPLOY="${NIGHT_SHIFT_APP_DEPLOY:-1}"
+APP_CLONE="${NIGHT_SHIFT_APP_CLONE:-$HOME/night-shift/jugglebot-map}"
+APP_ORIGIN="${NIGHT_SHIFT_APP_ORIGIN:-https://github.com/Project-DeepBlue-Juggling/jugglebot-map.git}"
+APP_LIVE="${NIGHT_SHIFT_APP_LIVE:-$HOME/map-live/jugglebot-map}"
+DATA_LIVE="${NIGHT_SHIFT_DATA_LIVE:-$HOME/map-live/Jugglebot}"
+DEPLOY_TOOL="${NIGHT_SHIFT_DEPLOY_TOOL:-$SCRIPT_DIR/night_shift_deploy.py}"
+DEPLOY_TIMEOUT_S="${NIGHT_SHIFT_DEPLOY_TIMEOUT_S:-2400}"
+APP_URL="${NIGHT_SHIFT_APP_URL:-http://127.0.0.1:8765}"
 
 DATE="$(date +%F)"
 STARTED="$(date -Iseconds)"
@@ -145,7 +166,8 @@ DRY=""
 unset NS_COST NS_TURNS NS_DENIALS NS_SPAWNED NS_CLAUDE_EXIT NS_HEAD_BEFORE \
   NS_HEAD_AFTER NS_BRANCH_AFTER NS_UNPUSHED NS_REPORT NS_CANDIDATES \
   NS_NIGHTLY_LINE NS_PREFLIGHT NS_RESULT NS_MAIN_COMMITS NS_TICKER_RERAISED NS_COST_RECORDED \
-  NS_AUTH NS_COST_API
+  NS_AUTH NS_COST_API NS_APP_CLONE_STATE NS_APP_NIGHT_START NS_DEPLOY_STATUS NS_DEPLOY_LINE \
+  NS_APP_HEALTHY_BEFORE
 STATUS_WRITTEN=0
 TICKER_CLAIMED=0
 
@@ -173,11 +195,22 @@ record_cost_dry() {
   [[ -n "${NS_COST:-}" && -s "$NS_REPORT" ]] || { export NS_COST_RECORDED=no-report; return 0; }
   cost_line >>"$NS_REPORT" && export NS_COST_RECORDED=file || export NS_COST_RECORDED=write-failed
 }
+# The deploy's line goes before the cost line, so the cost stays last. A deploy that
+# ended badly also says so in the Summary line, where the owner reads first.
+append_deploy_line() {
+  [[ -n "${NS_DEPLOY_LINE:-}" ]] || return 0
+  printf '%s\n' "$NS_DEPLOY_LINE" >>"$NS_REPORT" || return 1
+  case "${NS_DEPLOY_STATUS:-}" in
+    NOOP|DEPLOYED) ;;
+    *) sed -i "0,/^\*\*Summary\.\*\*.*/s//& **App deploy: ${NS_DEPLOY_STATUS:-unknown}, see the last lines of Cost.**/" "$NS_REPORT" ;;
+  esac
+}
 record_cost_main() {
-  if [[ -z "${NS_COST:-}" ]]; then export NS_COST_RECORDED=no-cost; return 0; fi
+  if [[ -z "${NS_COST:-}" && -z "${NS_DEPLOY_LINE:-}" ]]; then export NS_COST_RECORDED=no-cost; return 0; fi
   if [[ ! -s "$NS_REPORT" ]]; then export NS_COST_RECORDED=no-report; return 0; fi
   local rel="docs/night-shift/$DATE.md"
-  if cost_line >>"$NS_REPORT" \
+  if append_deploy_line \
+     && { [[ -z "${NS_COST:-}" ]] || cost_line >>"$NS_REPORT"; } \
      && git -C "$CLONE" add -- "$rel" \
      && git -C "$CLONE" commit -q -m "docs(night-shift): total API cost $DATE" \
           -m "Logbook-Entry: $DATE-night-shift" -- "$rel" \
@@ -242,6 +275,11 @@ out = {
     "cost_recorded": e("NS_COST_RECORDED"),
     "auth": e("NS_AUTH"),
     "cost_api_usd": num("NS_COST_API", float),
+    "app_clone": e("NS_APP_CLONE_STATE"),
+    "app_night_start": e("NS_APP_NIGHT_START"),
+    "app_healthy_before": e("NS_APP_HEALTHY_BEFORE"),
+    "deploy_status": e("NS_DEPLOY_STATUS"),
+    "deploy_line": e("NS_DEPLOY_LINE"),
 }
 tmp = sys.argv[1] + ".tmp"
 with open(tmp, "w") as fh:
@@ -272,6 +310,7 @@ finish() {         # finish STATUS DETAIL: the only way out after argument parsi
       detail="$detail (ticker re-raise FAILED)"
     fi
   fi
+  [[ -n "${NS_DEPLOY_STATUS:-}" ]] && detail="$detail; deploy $NS_DEPLOY_STATUS"
   write_status "$status" "$detail"
   case "$status" in
     OK|DRY_OK|HELD|DEFERRED|OVERLAP|NOTHING_NEW) exit 0 ;;
@@ -489,13 +528,56 @@ if [[ -z "$CLAUDE_BIN" ]]; then
 fi
 [[ -n "$CLAUDE_BIN" && -x "$CLAUDE_BIN" ]] || finish CLAUDE_MISSING "no claude on PATH, \$NIGHT_SHIFT_CLAUDE or under ~/.nvm"
 export PATH="$(dirname "$CLAUDE_BIN"):$PATH"
+
+# The app's own clone (node is on PATH from here). Never fatal: the board has plenty
+# else to work, so a failure only takes the app's Items off tonight's list.
+prepare_app_clone() {
+  [[ -d "$APP_CLONE/.git" ]] || git clone -q --branch main "$APP_ORIGIN" "$APP_CLONE" 2>/dev/null \
+    || { NS_APP_CLONE_STATE="clone failed"; return 1; }
+  local b p
+  b="$(git -C "$APP_CLONE" symbolic-ref -q --short HEAD 2>/dev/null || echo DETACHED)"
+  p="$(git -C "$APP_CLONE" status --porcelain 2>&1)"
+  if [[ "$b" != main || -n "$p" ]]; then
+    NS_APP_CLONE_STATE="dirty: branch=$b $(head -n3 <<<"$p" | tr '\n' ';')"; return 1
+  fi
+  git -C "$APP_CLONE" fetch -q origin 2>/dev/null && git -C "$APP_CLONE" merge -q --ff-only origin/main 2>/dev/null \
+    || { NS_APP_CLONE_STATE="pull failed"; return 1; }
+  NS_APP_NIGHT_START="$(git -C "$APP_CLONE" rev-parse origin/main)"
+  local lock="$APP_CLONE/frontend/package-lock.json" stamp="$APP_CLONE/frontend/node_modules/.night-shift-lock"
+  local want; want="$(sha256sum "$lock" 2>/dev/null | cut -d' ' -f1)"
+  if [[ -n "$want" && "$(cat "$stamp" 2>/dev/null)" != "$want" ]]; then
+    (cd "$APP_CLONE/frontend" && timeout --kill-after=30 900 npm ci >>"$REPORTS/app-npm-$DATE.log" 2>&1) \
+      || { NS_APP_CLONE_STATE="npm ci failed"; return 1; }
+    printf '%s\n' "$want" >"$stamp"
+  fi
+  NS_APP_CLONE_STATE=ready
+}
+APP_CLONE_ARG=none
+if [[ "$APP_ENABLED" != 1 ]]; then
+  NS_APP_CLONE_STATE=off
+elif [[ -n "$DRY" ]]; then
+  # A dry run changes nothing: it reads the clone if there is one.
+  NS_APP_CLONE_STATE=dry
+  [[ -d "$APP_CLONE/.git" ]] && APP_CLONE_ARG="$APP_CLONE"
+else
+  prepare_app_clone 8>&- && APP_CLONE_ARG="$APP_CLONE"
+  # The deploy may only revert what broke the app tonight, so it needs to know how the
+  # app was doing before tonight. A service the owner stopped is not the night's doing.
+  if curl -fsS -m 10 "$APP_URL/api/v1/health" >/dev/null 2>&1; then
+    NS_APP_HEALTHY_BEFORE=1
+  else
+    NS_APP_HEALTHY_BEFORE=0
+  fi
+fi
+export NS_APP_CLONE_STATE NS_APP_NIGHT_START NS_APP_HEALTHY_BEFORE
+
 if [[ -n "$DRY" ]]; then
   export NS_REPORT="$REPORTS/dry-$DATE.md"
   rm -f "$NS_REPORT"   # a stale report must not pass for tonight's
 else
   export NS_REPORT="$CLONE/docs/night-shift/$DATE.md"
 fi
-PROMPT="/night-shift $DATE --candidates $CANDIDATES --reports $REPORTS --nightly \"$NS_NIGHTLY_LINE\" --nightly-report $NIGHTLY_COPY --deadline $DEADLINE${DRY:+ --dry-run}"
+PROMPT="/night-shift $DATE --candidates $CANDIDATES --reports $REPORTS --nightly \"$NS_NIGHTLY_LINE\" --nightly-report $NIGHTLY_COPY --deadline $DEADLINE --app-clone $APP_CLONE_ARG${DRY:+ --dry-run}"
 CLAUDE_JSON="$REPORTS/$DATE.claude.json"
 CLAUDE_ERR="$REPORTS/$DATE.claude.err"
 cd "$CLONE" || finish INTERNAL_ERROR "cannot cd $CLONE"
@@ -583,6 +665,47 @@ else
 fi
 export NS_CLAUDE_EXIT="$claude_rc"
 export_posthoc_git
+
+# ── 10b. The app deploy: the last step of the night, whatever claude's outcome ──
+# Before the outcome is judged, because a night that dies after merging still has
+# commits to put live or take back. A Sitting holding the box outranks all of it:
+# a frontend build is minutes of CPU on the box running the control loops.
+deploy_step() {
+  [[ -z "$DRY" && "$APP_ENABLED" == 1 && "$APP_DEPLOY" == 1 ]] || return 0
+  if [[ "$IGNORE_SESSION" != 1 ]] && declare -F live_session >/dev/null && live_session; then
+    export NS_DEPLOY_STATUS=SKIPPED_LIVE_SESSION
+    export NS_DEPLOY_LINE="app deploy: SKIPPED_LIVE_SESSION; a Sitting holds the box, the next night picks it up"
+    return 0
+  fi
+  local result="$REPORTS/deploy-$DATE.json"
+  rm -f "$result"
+  timeout --kill-after=60 "$DEPLOY_TIMEOUT_S" "$PYTHON" "$DEPLOY_TOOL" --date "$DATE" --result "$result" \
+    --app-night-start "${NS_APP_NIGHT_START:-}" --main-night-start "$NS_HEAD_BEFORE" \
+    --pre-night-healthy "${NS_APP_HEALTHY_BEFORE:-unknown}" --base-url "$APP_URL" \
+    --app-live "$APP_LIVE" --data-live "$DATA_LIVE" --app-clone "$APP_CLONE" --main-clone "$CLONE" \
+    >>"$REPORTS/deploy-$DATE.log" 2>&1 8>&-
+  local rc=$? parsed
+  parsed="$("$PYTHON" -c 'import json,sys
+d=json.load(open(sys.argv[1]));print(d["status"]);print(str(d.get("line","")).replace("\n"," ")[:900])' "$result" 2>/dev/null)"
+  if [[ -z "$parsed" ]]; then
+    export NS_DEPLOY_STATUS=FAILED_NEEDS_SESSION
+    export NS_DEPLOY_LINE="app deploy: FAILED_NEEDS_SESSION; the deploy tool wrote no result (rc=$rc), see deploy-$DATE.log"
+    return 0
+  fi
+  NS_DEPLOY_STATUS="$(head -n1 <<<"$parsed")"
+  NS_DEPLOY_LINE="$(tail -n1 <<<"$parsed")"
+  export NS_DEPLOY_STATUS NS_DEPLOY_LINE
+  # A revert or reopen was pushed from a worktree: the clone's main must follow, or
+  # the cost commit is rejected and the clone starts tomorrow behind.
+  case "$NS_DEPLOY_STATUS" in
+    ROLLED_BACK*|DOWN|FAILED_NEEDS_SESSION)
+      if [[ "$(git -C "$CLONE" symbolic-ref -q --short HEAD 2>/dev/null)" == main ]]; then
+        git -C "$CLONE" fetch -q origin 2>/dev/null && git -C "$CLONE" merge -q --ff-only origin/main 2>/dev/null
+      fi ;;
+  esac
+  export_posthoc_git
+}
+deploy_step
 
 if leg_timed_out "$claude_rc" "$claude_start" "$TIMEOUT_S"; then
   finish CLAUDE_TIMEOUT "killed after ${TIMEOUT_S}s; unpushed: ${NS_UNPUSHED:-none}"

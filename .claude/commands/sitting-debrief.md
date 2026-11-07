@@ -100,9 +100,12 @@ so held software work is never dropped):
 1. The hardware pass overrides ONLY the gate's hardware condition. Re-run the gate with the
    night's own artefacts (the tip has not moved, so they still match):
    ```
-   python tools/night_shift_gate.py --repo . --base origin/main --branch origin/night-shift/<d>-JB-n --item JB-n \
+   rm -rf temp/gate-base && mkdir -p temp/gate-base
+   git archive origin/main tools/night_shift_gate.py mapkit | tar -x -C temp/gate-base
+   python temp/gate-base/tools/night_shift_gate.py --repo . --base origin/main --branch origin/night-shift/<d>-JB-n --item JB-n \
        --gate-log ~/night-shift/Jugglebot/temp/reports/night-shift/gate-JB-n.log \
-       --audit ~/night-shift/Jugglebot/temp/reports/night-shift/audit-JB-n.md --waive c
+       --audit ~/night-shift/Jugglebot/temp/reports/night-shift/audit-JB-n.md --waive c \
+       [--app-log ~/night-shift/Jugglebot/temp/reports/night-shift/app-JB-n.log]   # when the branch touches mapkit/
    ```
    Anything but `MERGE (c waived)` (a red or missing gate log, open audit findings, a
    normative radius, an open question, a forbidden path, a changed `owner` rating: condition
@@ -136,7 +139,8 @@ so held software work is never dropped):
    (after section 3's merges, which were done on `main`; if you find yourself on the candidate
    branch at the start, switch before section 3).
 2. If any merged branch touched `ros_ws/`: `cd ros_ws && colcon build --packages-select
-   jugglebot` (the interfaces and launch need the rebuild before the next Sitting) and say so.
+   jugglebot_interfaces jugglebot` (both, always: `jugglebot` alone installs new node code over an
+   old interface, and the mismatch only shows at the first service call) and say so.
 3. `git add docs/records.md` if it changed (skill_node writes it live during the Sitting; it
    is committed at every Sitting close-out).
 

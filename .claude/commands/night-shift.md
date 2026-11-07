@@ -1,5 +1,5 @@
 ---
-description: The Night Shift orchestrator protocol - unattended work on every open Item in the Night Shift clone, merged to main only through tools/night_shift_gate.py, the rest held on branches, one committed report. Invoked by tools/night_shift.sh as /night-shift <date> --candidates F --reports D --nightly "LINE" --nightly-report F --deadline HH:MM [--dry-run]. Not for interactive use in ~/Desktop/Jugglebot.
+description: The Night Shift orchestrator protocol - unattended work on every open Item in the Night Shift clone, merged to main only through tools/night_shift_gate.py, the rest held on branches, one committed report. Invoked by tools/night_shift.sh as /night-shift <date> --candidates F --reports D --nightly "LINE" --nightly-report F --deadline HH:MM --app-clone DIR|none [--dry-run]. Not for interactive use in ~/Desktop/Jugglebot.
 ---
 
 # Night Shift
@@ -19,17 +19,28 @@ Arguments: `$ARGUMENTS`
 - `--nightly "LINE"`: the nightly ticker line (`CLAIMED GREEN ...`, `CLAIMED RED ...`,
   `UNCLAIMED ...` on a dry run). `--nightly-report F`: a copy of the nightly's `latest.md`.
 - `--deadline HH:MM`: local time after which you start no new Item.
+- `--app-clone DIR|none`: the map app's night clone, on its `main`, clean, with `node_modules`
+  ready (§ 2m). `none`: the runner could not prepare it, so every Item that needs the app is
+  Skipped `app clone unavailable tonight`.
 - `--dry-run`: read and classify only; write `D/dry-<date>.md`; change nothing, commit
   nothing, push nothing, spawn no agents.
 
 ## 0. Invariants (every one is enforced somewhere; break none)
 
 1. **Never touch `~/Desktop/Jugglebot` or `~/map-live`.** Not a read, not a `git` command,
-   not a path in a command line. The permission deny list refuses it; do not try.
+   not a path in a command line. The permission deny list refuses it; do not try. The app's
+   night clone (`--app-clone`) is yours; the live app is the runner's, and it deploys after
+   you exit. You never deploy, and never restart anything.
 2. **No hardware.** No `pio`, `ros2`, `colcon`, `tests/hardware/`, `tools/probes/`,
-   `teensy_link_bridge`, serial devices, `systemctl`, `sudo`. The bridge is powered and its
-   UDP link is single-owner; the robot is not powered. A refused tool call is the deny
-   list doing its job: note it and move on, never work around it.
+   `tools/teensy_link_bridge.py`, serial devices, `systemctl`, `sudo`, and never run
+   `teensy_bridge_node` or a `teensy_link` client outside a test. The bridge is powered and
+   its UDP link is single-owner; the robot is not powered. Reading, grepping and diffing
+   those modules is fine. **Every test command, yours and every unit's, runs under
+   `tools/night_shift_nonet.sh`**: a network namespace with loopback only, so a test cannot
+   reach the board whatever it does (the tests use loopback already and lose nothing). A
+   refused tool call is the deny list doing its job: note it and move on, never work around
+   it. The Wave camera's native tests run through `tests/firmware/test_wave_native.py`;
+   `pio test` itself stays refused because its default environment is the ESP32.
 3. **`main` is sacred.** No force-push, no history rewrite, no `reset --hard` of a pushed
    ref, no commit on `main` that did not come through the merge gate or is not a report,
    logbook or `map:` commit named in this protocol. A merge that does not fast-forward
@@ -113,6 +124,8 @@ a HOLD writes the same rating on `main` (2j), so base and branch agree at a late
 | bug or feature, `hardware: none`, `owner: none`, `effort` xs or s | one unit (2d), gate (2e), audit (2f), gate script (2g) | Merged or Held |
 | bug or feature, `hardware: none`, `owner: none`, `effort` m or larger | one unit on the first self-contained slice if one is obvious from the body; else Skipped `too large for one unit` | Held (Progress headline) or Skipped |
 | `owner: decision` (any kind) | research the question; write `## Options (<date>)` into the body (2-4 options, one line each, a recommendation); file one question ticket (2h); no code | Questioned (Held if a branch exists) |
+| `area: map-app`, or the fix is in the map app | § 2m | Merged, Held or Skipped |
+| bug or feature that needs a change under `ros_ws/src/jugglebot_interfaces/` | one unit as row 1, on a branch; do not expect a merge: the gate holds it at (f), because the suite mocks that package and only a real two-package colcon build can show the node and interface agree. Say so in the Item's Progress headline | Held, `Respond in` `none`, unblock `a day Session merges after the two-package build` |
 | `hardware: bench-leg`, `bench-hand` or `robot`, or `owner: hands` | work the software part only if the body names one that is testable offline (then as row 1); always write or complete the Item's `## Sitting` section when the body gives enough to fill `do:` and `pass:` honestly (P4 format; never invent a step) | Held `needs a Sitting` or Skipped |
 | idea | write `## Feasibility (<date>)` (what it would take, effort, hardware, one risk); if rated xs or s with `hardware: none` and `owner: none`, build it as row 1 | Merged, Held or Skipped `feasibility noted` |
 | ticket `type: question` already complete (`## Answer` present) whose parent has a held branch `night-shift/<old-date>-JB-n` | RESUME (2l): the answer says what to do with the branch | Merged, Held again, or closed out |
@@ -132,7 +145,7 @@ tests; confirm each new test fails without the change; write the logbook entry (
 form, `logbook/<date>-<slug>.md`, type by change, `status: complete`, `files_changed`,
 Verification with the scoped triple) and its `logbook/INDEX.md` row (newest first, row
 format as the existing rows); do not commit; do not write under `map/`; do not run
-`./run_tests.sh`; stay under about 80 tool calls and report the file list, the scoped
+`./run_tests.sh`; run every test command under `tools/night_shift_nonet.sh`; stay under about 80 tool calls and report the file list, the scoped
 pytest line, and anything left undone. `Agent` with `model: sonnet` unless the one-line
 Opus reason applies. When it returns: `git status --porcelain` must list only files the
 brief allowed; anything else is reverted.
@@ -141,7 +154,7 @@ brief allowed; anything else is reverted.
 
 ```
 printf 'HEAD=%s\nBRANCH=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse --abbrev-ref HEAD)" > D/gate-JB-n.log
-./run_tests.sh --full >> D/gate-JB-n.log 2>&1; echo "EXIT=$?" >> D/gate-JB-n.log
+tools/night_shift_nonet.sh ./run_tests.sh --full >> D/gate-JB-n.log 2>&1; echo "EXIT=$?" >> D/gate-JB-n.log
 ```
 
 The unit's work must be committed BEFORE the gate runs (the gate log's `HEAD=` must equal
@@ -154,7 +167,10 @@ after the gate, ever). If the branch ends up HELD, `main` keeps the Item `in_pro
 should produce. Commit:
 `git add -A && git commit -q -F -` with subject `<type>(<area>): <what> (JB-n)` (`fix`,
 `feat`, `docs`, `test`, `refactor`), a body of two or three lines, then the trailers
-`Logbook-Entry: <slug>` and `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+`Logbook-Entry: <slug>`, `Night-Shift: <date>` and `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+`Night-Shift:` goes on every commit of an Item's work, in both repos: it is how the runner's
+deploy proves a commit is tonight's before it may revert one, and an unmarked commit makes it
+leave everything for a Session.
 A rating change alone is `map: rate JB-n <title>` with no trailer.
 
 ### 2f. The audit
@@ -176,15 +192,21 @@ Behaviour-affecting findings open: <n>
 ### 2g. The gate script
 
 ```
-git show origin/main:tools/night_shift_gate.py > D/night_shift_gate.py
-python D/night_shift_gate.py --repo . --base origin/main --branch night-shift/<date>-JB-n \
-    --item JB-n --gate-log D/gate-JB-n.log --audit D/audit-JB-n.md
+rm -rf D/gate-base && mkdir -p D/gate-base
+git archive origin/main tools/night_shift_gate.py mapkit | tar -x -C D/gate-base
+python D/gate-base/tools/night_shift_gate.py --repo . --base origin/main --branch night-shift/<date>-JB-n \
+    --item JB-n --gate-log D/gate-JB-n.log --audit D/audit-JB-n.md [--app-log D/app-JB-n.log]
 ```
 
-The gate is always `origin/main`'s copy, never the branch's: a branch that edits the gate
-would otherwise decide its own verdict (the gate's forbidden paths also freeze `tools/night_shift*`,
-`tools/lib/`, `.claude/`, `mapkit/`, `run_tests.sh` and the gate's tests, so the copy and the
-branch's `mapkit` it imports are the same code). Exit 0 and `MERGE` -> 2i. Exit 1 and `HOLD <reasons>` -> 2j. Any other exit -> Held
+The gate is always `origin/main`'s copy, with `origin/main`'s `mapkit` beside it, never the
+branch's: a branch that edits either would otherwise decide its own verdict. The gate checks
+this itself, byte for byte, and HOLDs if it is not the base's copy. No `PYTHONPATH`: the
+extract finds its own `mapkit`. A branch that touches `mapkit/` also needs the app's suite
+run against it first, because `pull.sh` restarts the live app within about 30 s of a `mapkit/`
+change landing on `main`: with `--app-clone` on its `main` and this branch checked out here,
+`tools/night_shift_nonet.sh tools/night_shift_app_suite.sh --app <app-clone> --mapkit . --log D/app-JB-n.log`,
+then `--app-log` above; without it condition (h) holds. With `--app-clone none`, such a branch
+is Held `app clone unavailable`. Exit 0 and `MERGE` -> 2i. Exit 1 and `HOLD <reasons>` -> 2j. Any other exit -> Held
 `gate script error` with the stderr.
 
 ### 2h. A question ticket
@@ -275,7 +297,8 @@ ticket's `## Answer` as the order for the night:
 2. **Apply** (the answer names fixes, or accepts the audit's): make the named changes as
    in 2d (a unit, `model: sonnet`), commit, then 2e-2g as for any branch. Merge on 2i.
 3. **Merge as is**: re-run 2e on the merged tip and 2f/2g; merge on `MERGE`.
-4. **Drop**: `git push -q origin --delete night-shift/<old-date>-JB-n`; on `main`, in one
+4. **Drop**: leave the remote branch (the deny list refuses deleting one; the report's row
+   names it for the owner to delete); on `main`, in one
    write, remove the `- branch:` line from the Item's `## Sitting` section (if any) and
    `night-shift` from its `owners` (a `mapkit.items.load_item` / `write_item` snippet, as in
    2j step 2), then `set-status JB-n open --note "<one line>" --commit --no-push`, the map
@@ -285,6 +308,50 @@ ticket's `## Answer` as the order for the night:
 
 A re-held Item keeps its branch name; the Held row's `Branch` cell stays
 `night-shift/<old-date>-JB-n`.
+
+A hold at condition (f) cannot be resumed at night, whatever the answer: the path stays
+forbidden and a HOLD is never promoted. Such a row says `a day Session merges it` and its
+`Respond in` is `none`, so no ticket asks a question the night could not act on.
+
+### 2m. An Item in the map app
+
+The app is its own repo with its own clone (`--app-clone`, never `~/map-live`): FastAPI under
+`server/`, React under `frontend/`. Read its `CLAUDE.md` first (Python 3.8, every response field
+present, no upstream names). Items stay in Jugglebot's `map/`; only the code is over there.
+
+1. An Item whose latest Progress note says `App deploy failed` was merged, broke the live app
+   and was reverted: Skipped `deploy failed, awaiting a Session`. Do not retry it.
+2. Rate first, on `main`, through the map-write check: the gate reads an app Item's rating from
+   Jugglebot's `origin/main`, because the app holds no Items and a branch there cannot carry one.
+3. Branch in the app clone: `git -C <app-clone> checkout -q main`, pull `--ff-only`, then
+   `checkout -q -b night-shift/<date>-JB-n`. The unit works there (2d, with the logbook entry
+   still in the Jugglebot clone, uncommitted until step 7), and commits nothing itself.
+4. Commit in the app clone: subject `<type>(<area>): <what> (JB-n)`, because the deploy's
+   rollback finds the Items to reopen from those subjects; trailers `Logbook-Entry: <slug>` and
+   `Night-Shift: <date>`.
+5. Suite: `tools/night_shift_nonet.sh tools/night_shift_app_suite.sh --app <app-clone> --mapkit . --log D/app-JB-n.log`,
+   then one audit on `git -C <app-clone> diff origin/main...HEAD` (2f), writing `D/audit-app-JB-n.md`.
+   An edit after the suite re-runs the suite.
+6. Gate: `python D/gate-base/tools/night_shift_gate.py --repo . --app-repo <app-clone> --base origin/main --branch night-shift/<date>-JB-n --item JB-n --gate-log D/app-JB-n.log --audit D/audit-app-JB-n.md`
+   (extract `D/gate-base` as in 2g). `MERGE`: `git -C <app-clone> checkout -q main`, merge the
+   branch as in 2i, `git -C <app-clone> push -q origin main` on its own line. Nothing goes live: the runner deploys after you exit.
+   `HOLD`: `git -C <app-clone> push -q -u origin night-shift/<date>-JB-n`, then 2j from its step 2
+   (there is no Jugglebot branch to push); the Held row's Branch cell reads
+   `jugglebot-map:night-shift/<date>-JB-n`.
+7. On a merge, in the Jugglebot clone on `main`: `python -m mapkit item set-status JB-n complete --link logbook/<entry>.md`
+   (no `--commit`, which would stage only the Item and leave the entry behind), `git add -A`, and
+   commit as `map: close JB-n <title>` with the `Logbook-Entry:` and `Night-Shift:` trailers; the
+   map-write check (§ 0 rule 10), push. The report's Commits cell names the app commit with
+   `jugglebot-map:<sha>`. If the fix's correctness is something only eyes can judge (a layout, a
+   scroll, a focus jump), say so in the row: the tests passing is not proof it looks right.
+8. **An Item that spans both repos** (a `mapkit/` change and an app change): build both branches,
+   run the suite with the app branch checked out and the Jugglebot branch checked out (so
+   `--mapkit .` tests the pair), then run both gates, each with its own audit
+   (`D/audit-JB-n.md` here, `D/audit-app-JB-n.md` there; a gate matches every `Audited HEAD`
+   line to its own tip). Merge only if BOTH say `MERGE`, Jugglebot's first. If either holds,
+   neither merges and both branches are pushed.
+9. `git -C <app-clone> checkout -q main` before the next Item; it must be clean. Carried holds
+   (2h) include `git -C <app-clone> ls-remote --heads origin 'night-shift/*'`.
 
 ## 3. The report
 
@@ -302,8 +369,9 @@ The `## Nightly` section: the `--nightly` line verbatim; on RED the failures fro
 nightly report (test id and one line each). The `## Cost` section: `total_cost_usd` is
 not visible to you; write the units run (count and models), the Items touched, and the
 wall-clock from `date` at start and end, one `key: value` line each, and make it the LAST
-section with no trailing text: after you exit the runner appends `total API cost: USD <n>` to it as its own docs
-commit on `main` (and records the figure in `last_run.json`).
+section with no trailing text: after you exit the runner deploys the app and appends the
+`app deploy: <status> ...` and `total API cost: USD <n>` lines to it as its own docs commit on
+`main` (and records both in `last_run.json`); a deploy that went badly also adds a flag to your Summary line.
 
 `## Unaddressed Sitting results`: every `## Sitting result (<date>)` section (optionally `(<date> HH:MM)`; the date part decides) on an Item
 (`grep -l '## Sitting result' map/*.md`) whose date is newer than the newest

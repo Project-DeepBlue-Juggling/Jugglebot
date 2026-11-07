@@ -12,7 +12,7 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 
 - Power-cycle the can-bridge after any re-cabling (sticky presence set trips CAN_BUS_DOWN).
 - Latch `hand_source` before arming (it resets to LEGACY on every bridge reboot).
-- Run `colcon build --packages-select jugglebot` and re-source before the Sitting (the install tree is stale until then).
+- Run `colcon build --packages-up-to jugglebot` and re-source before the Sitting (the install tree is stale until then; this builds the interfaces too, which a changed interface needs).
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
@@ -174,6 +174,7 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - JB-114 [Robot] Hand end-of-stroke bumper, and first the planner's own brake shape: let the ceiling, not the Hand, cap the Apex: no ## Sitting section
 - JB-117 [Bench hand] Hand brake and hold currents sit far below the throw envelope's model (brake -14 to -20 A measured vs 35 to 40 A predicted; hold 1.5 vs 2.6 A): Kt, moving mass or friction is mis-modelled: no ## Sitting section
 - JB-120 [Robot] A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve: no ## Sitting section
+- JB-134 [Robot] Ball Butler yaw-settle gate aborts settled throws (THROW_ABORTED_NOT_SETTLED false positives): no ## Sitting section
 - JB-138 [Robot] Hand iq reached 53.3 A on a 45 deg turned hop launch, over the 50 A watch the high-low row names: no ## Sitting section
 - JB-148 [Robot] One-off 2 m Throws: raised Hand limits and an overshoot protection the speed-scaled margin cannot give: no ## Sitting section
 - JB-166 [Robot] Firmware scheduler STOP fires on a clean host stream and ends the Attempt: no ## Sitting section
@@ -190,6 +191,7 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - JB-53 [Robot] Wave camera: optical frame calibration maps the START tick to a recorded frame: no ## Sitting section
 - JB-83 [Robot] can-bridge CAN3 analog drive path has a load-dependent hardware fault (the Jugglebot loom stays on CAN2): no ## Sitting section
 - JB-85 [Robot] Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z: no ## Sitting section
+- JB-86 [Robot] RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball: no ## Sitting section
 - JB-95 [Robot] Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load): no ## Sitting section
 - JB-96 [Robot] Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff: no ## Sitting section
 - JB-97 [Robot] ABORTED_NO_RELEASE: three goals ended because the throw never left the hand (new 2026-10-28 21:02): no ## Sitting section

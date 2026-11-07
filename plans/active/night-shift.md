@@ -3,7 +3,7 @@ title: Night Shift - unattended overnight work on the board, and the Next Sittin
 created: 2026-10-30
 status: active
 owner: Harrison
-last_updated: 2026-10-31
+last_updated: 2026-11-07
 pathway: night-shift
 branch: main
 scope: >-
@@ -107,7 +107,7 @@ Report layout (`docs/night-shift/<date>.md`), eight sections in this order: `# N
 
 Candidate record (`candidates.json`, written by the preflight, read by the orchestrator and diffed against last night's): `{"date": "2026-10-31", "items": [{"id": "JB-21", "stem": "bug-...", "status": "inbox", "updated": "...", "effort": "s", "hardware": "none", "owner": "none", "radius": "subsystem", "diagnosis": "confirmed"}]}`. "Nothing new" means the same `id` set with the same `updated` stamps and no open question ticket answered since the last run.
 
-Merge gate rule (code, not judgment): MERGE requires all of (a) the full suite gate exit 0 on the branch, logged with the tip it ran on; (b) an audit report for that tip with no behaviour-affecting finding left open; (c) the Item rated `hardware: none` on the branch, and not lowered relative to `main` by the branch itself; (d) `radius` rated and not `normative`, likewise not lowered; (e) no open `question` ticket whose `parent` is the Item; (g) a rated `owner` on `main` not changed by the branch (its own letter since 2026-10-31, owner decision, so `--waive c` can never clear it); (f) the branch touches none of `Teensy_code_canbridge/`, `config/**/*.yaml`, `GLOSSARY.md`, `CLAUDE.md`, `DOCUMENTATION_GUIDE.md`, nor the safety layer itself (`tools/night_shift*`, `tools/lib/`, `tools/systemd/`, `tools/nightly_*`, `.claude/`, `mapkit/`, `run_tests.sh`, `pyproject.toml`, the gate's and guard's tests). Anything else is HOLD with every failing reason listed. The orchestrator runs `origin/main`'s copy of the gate, never the branch's. `/sitting-debrief` re-runs the gate with `--waive c` before merging a branch the owner passed at a Sitting (audit finding, 2026-10-31).
+Merge gate rule (code, not judgment): MERGE requires all of (a) the full suite gate exit 0 on the branch, logged with the tip it ran on; (b) an audit report for that tip with no behaviour-affecting finding left open; (c) the Item rated `hardware: none` on the branch, and not lowered relative to `main` by the branch itself; (d) `radius` rated and not `normative`, likewise not lowered; (e) no open `question` ticket whose `parent` is the Item; (g) a rated `owner` on `main` not changed by the branch (its own letter since 2026-10-31, owner decision, so `--waive c` can never clear it); (f) the branch touches none of the four firmware trees under `ros_ws/src/jugglebot/` (WaveCamera's `test/` excepted), `motion/skills/INVARIANTS.md`, `ros_ws/src/jugglebot_interfaces/`, `config/`, `GLOSSARY.md`, `CLAUDE.md`, `DOCUMENTATION_GUIDE.md`, nor the safety layer itself (`tools/night_shift*`, `tools/lib/`, `tools/systemd/`, `tools/nightly_*`, `.claude/`, `run_tests.sh`, `pyproject.toml`, the gate's and guard's tests); (h) a branch touching `mapkit/` has a green run of the map app's suite against that tip. Anything else is HOLD with every failing reason listed. The orchestrator runs an extract of `origin/main`'s gate and `mapkit`, never the branch's, and the gate refuses itself if either differs from the base. Branches of the map app go through `--app-repo` with their own forbidden list (§ 7). `/sitting-debrief` re-runs the gate with `--waive c` before merging a branch the owner passed at a Sitting (audit finding, 2026-10-31).
 
 ### What stays the same
 
@@ -195,6 +195,19 @@ Hardware:
 Regression:
 - T-R1 the nightly's status line, ticker and `latest.md` are byte-identical in form after the guard refactor (fixture run of `nightly_suite.sh` with a fake `run_tests.sh`).
 - T-R2 `/work-inbox` unchanged for interactive use (its tests pass).
+
+## 7. The out-of-reach Items opened (2026-11-07, owner)
+
+Ten Items had been Skipped `out of reach` for up to six nights. The review (`logbook/2026-11-07-night-shift-out-of-reach-opened.md`) opened most of them and, on the way, found the firmware freeze had never matched a file. What changed:
+
+- **Freeze fixed.** Condition (f) names the real firmware paths and now covers `config/` whole, the invariants and `jugglebot_interfaces`; a test fails if any pattern matches no tracked file or a firmware tree is not frozen.
+- **`mapkit/` unfrozen** (reverses the 2026-10-31 "stays for the first nights", which named this revisit). Safe because the gate runs from an extract of the base and checks that byte for byte, the frozen gate tests run against the branch's `mapkit`, and condition (h) runs the app's suite first.
+- **Bridge denies narrowed** to the spellings that RUN the node or client. Every test command runs under `tools/night_shift_nonet.sh`, a loopback-only network namespace: the real protection, since a deny rule only reads spelling.
+- **The map app has a night clone**, `~/night-shift/jugglebot-map`, prepared by the runner, gated by `tools/night_shift_app_suite.sh` (its CI) and `--app-repo`. `~/map-live` stays denied.
+- **The night's last step deploys the app** (`tools/night_shift_deploy.py`, run by the runner after claude exits, never during a Sitting). Owner's choice over a manual morning deploy. Going back to the last good commit is automatic; a revert, a new commit that reopens the Items, needs proof tonight's work is the cause (healthy before the night, data clone caught up, rollback worked, every commit marked `Night-Shift: <date>`). Without proof the app stays on the last good commit and a Session decides.
+- **`jugglebot_interfaces` is build-and-hold:** a day Session merges after the two-package build, because the suite mocks that package. The debrief and `CLAUDE.md` now say `--packages-select jugglebot_interfaces jugglebot`, and the Runbook says `--packages-up-to jugglebot`, the same two packages, because `mapkit` source may not name a ROS package (`test_mapkit_no_ros`).
+
+Verdicts: JB-158, JB-151, JB-100, JB-67, JB-177, JB-133, JB-54 open; JB-87 split in its body; JB-86 re-rated `robot` (it removes a floor from live REST segments); JB-134 stays closed, re-rated `robot`, waiting on its trigger.
 
 ## 6. Notes for Collaborators
 

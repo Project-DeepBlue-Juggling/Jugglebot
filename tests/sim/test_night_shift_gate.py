@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -100,10 +101,17 @@ def repo(tmp_path):
         (root / name).write_text("# %s\n" % name)
     (root / "config").mkdir()
     (root / "config" / "hardware_config.yaml").write_text("a: 1\n")
-    (root / "Teensy_code_canbridge").mkdir()
-    (root / "Teensy_code_canbridge" / "x.ino").write_text("// x\n")
+    fw = root / "ros_ws" / "src" / "jugglebot" / "Teensy_code_canbridge"
+    fw.mkdir(parents=True)
+    (fw / "x.ino").write_text("// x\n")
     (root / "docs").mkdir()
     (root / "docs" / "CLAUDE.md").write_text("# docs copy\n")
+    # The gate running must be the base's own, so the base carries the real one and its mapkit.
+    (root / "tools").mkdir()
+    shutil.copy(TOOL, str(root / "tools" / "night_shift_gate.py"))
+    shutil.copytree(os.path.join(ROOT, "mapkit"), str(root / "mapkit"),
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    (root / ".gitignore").write_text("__pycache__/\n")
     commit(root, "seed")
     _git(tmp_path, "clone", "-q", "--bare", str(root), str(tmp_path / "origin.git"))
     _git(root, "remote", "add", "origin", str(tmp_path / "origin.git"))
@@ -292,13 +300,23 @@ def test_e_unparseable_map_file_holds(repo):
 
 # --- (f) forbidden paths ----------------------------------------------------
 @pytest.mark.parametrize("path", [
-    "Teensy_code_canbridge/x.ino", "config/hardware_config.yaml",
-    "config/sub/deep.yaml", "GLOSSARY.md", "CLAUDE.md", "DOCUMENTATION_GUIDE.md",
+    "ros_ws/src/jugglebot/Teensy_code_canbridge/x.ino",
+    "ros_ws/src/jugglebot/Teensy_code_platform/x.ino",
+    "ros_ws/src/jugglebot/CatchingCone_code/x.cpp",
+    "ros_ws/src/jugglebot/WaveCamera_ESP_code/src/x.cpp",
+    "ros_ws/src/jugglebot/WaveCamera_ESP_code/include/x.h",
+    "ros_ws/src/jugglebot/WaveCamera_ESP_code/platformio.ini",
+    "ros_ws/src/jugglebot/jugglebot/motion/skills/INVARIANTS.md",
+    "ros_ws/src/jugglebot_interfaces/srv/InstallSegment.srv",
+    "config/hardware_config.yaml", "config/generate_udp_protocol.py",
+    "config/generated/udp_protocol.py", "config/sub/deep.yaml", "GLOSSARY.md", "CLAUDE.md", "DOCUMENTATION_GUIDE.md",
     "tools/night_shift.sh", "tools/night_shift_gate.py", "tools/night_shift_preflight.py",
     "tools/night_shift_candidate.sh", "tools/night_shift_settings.json",
     "tools/lib/live_session.sh", "tools/systemd/jugglebot-night-shift.timer",
     "tools/nightly_suite.sh", ".claude/commands/night-shift.md", ".claude/settings.json",
-    "mapkit/items.py", "tests/sim/test_night_shift_gate.py",
+    "tools/night_shift_deploy.py", "tools/night_shift_nonet.sh",
+    "tools/night_shift_app_suite.sh", "tests/sim/test_night_shift_gate.py",
+    "tests/conftest.py", "tests/sim/conftest.py", "conftest.py", "pytest.ini", "tox.ini", "setup.cfg",
     "tests/sim/test_live_session_guard.py", "tests/sim/test_question_tickets.py",
     "tests/sim/test_sitting_debrief.py", "run_tests.sh", "pyproject.toml",
 ])
@@ -321,9 +339,10 @@ def test_f_rename_away_from_forbidden_path_holds(repo):
 
 
 def test_f_lookalike_paths_merge(repo):
-    for path in ("docs/CLAUDE.md", "config/notes.md", "tools/nightly.py", "tools/other.py",
+    for path in ("docs/CLAUDE.md", "docs/config/notes.md", "tools/nightly.py", "tools/other.py",
                  "tests/sim/test_mapkit_items_extra.py", "docs/run_tests.sh",
-                 "src/mapkit/x.py"):
+                 "src/mapkit/x.py", "ros_ws/src/jugglebot/WaveCamera_ESP_code/test/x.cpp",
+                 "ros_ws/src/jugglebot/jugglebot/skill_node.py", "tests/fixtures/wave.json"):
         p = repo / path
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("edited\n")
@@ -333,12 +352,297 @@ def test_f_lookalike_paths_merge(repo):
 
 def test_forbidden_paths_pinned():
     assert gate.FORBIDDEN_PATHS == (
-        "Teensy_code_canbridge/*", "tools/night_shift*", "tools/lib/*", "tools/systemd/*",
-        "tools/nightly_*", ".claude/*", "mapkit/*", "tests/sim/test_night_shift_*",
+        "ros_ws/src/jugglebot/Teensy_code_canbridge/*",
+        "ros_ws/src/jugglebot/Teensy_code_platform/*",
+        "ros_ws/src/jugglebot/CatchingCone_code/*",
+        "ros_ws/src/jugglebot/WaveCamera_ESP_code/src/*",
+        "ros_ws/src/jugglebot/WaveCamera_ESP_code/include/*",
+        "ros_ws/src/jugglebot/WaveCamera_ESP_code/platformio.ini",
+        "ros_ws/src/jugglebot/jugglebot/motion/skills/INVARIANTS.md",
+        "ros_ws/src/jugglebot_interfaces/*", "config/*", "tools/night_shift*", "tools/lib/*",
+        "tools/systemd/*", "tools/nightly_*", ".claude/*", "tests/sim/test_night_shift_*",
         "tests/sim/test_live_session_guard.py", "tests/sim/test_question_tickets.py",
         "tests/sim/test_sitting_*", "run_tests.sh", "pyproject.toml", "GLOSSARY.md",
-        "CLAUDE.md", "DOCUMENTATION_GUIDE.md", "config/*.yaml")
+        "CLAUDE.md", "DOCUMENTATION_GUIDE.md", "tests/conftest.py", "tests/sim/conftest.py",
+        "conftest.py", "pytest.ini", "tox.ini", "setup.cfg")
     assert gate.WAIVABLE == ("c",)
+
+
+def test_every_forbidden_path_matches_a_tracked_file():
+    """A pattern matching nothing freezes nothing, silently. Until 2026-11-07 the firmware
+    entry was ``Teensy_code_canbridge/*``, 0 of the 71 firmware files, and the pin above
+    held the same wrong string, so only a check against the real tree can catch it."""
+    import fnmatch
+    tracked = subprocess.run(["git", "-C", ROOT, "ls-files"], check=True, capture_output=True,
+                             text=True).stdout.splitlines()
+    assert len(tracked) > 1000
+    dead = [e for e in gate.FORBIDDEN_PATHS if not any(fnmatch.fnmatchcase(p, e) for p in tracked)]
+    # These catch a file being CREATED: a test-collection config that could drop the frozen
+    # gate tests from condition (a). Absent today is what they are for.
+    assert set(dead) <= {"conftest.py", "pytest.ini", "tox.ini", "setup.cfg"}
+
+
+def test_every_firmware_tree_is_frozen():
+    """A new firmware tree (anything with a platformio.ini) must be added to the freeze."""
+    import fnmatch
+    tracked = subprocess.run(["git", "-C", ROOT, "ls-files"], check=True, capture_output=True,
+                             text=True).stdout.splitlines()
+    inis = [p for p in tracked if os.path.basename(p) == "platformio.ini"]
+    assert inis
+    for ini in inis:
+        assert any(fnmatch.fnmatchcase(ini, e) for e in gate.FORBIDDEN_PATHS), ini
+
+
+# --- the gate running must be the base's own --------------------------------
+def test_mapkit_edit_alone_passes_f_but_needs_the_app_log(repo):
+    (repo / "mapkit" / "extra.py").write_text("X = 1\n")
+    commit(repo)
+    res = run(repo)
+    assert_hold(res, "h")
+    assert res.checked["f"] is True
+
+
+def _app_log(root, sha=None, exit_code=0, with_head=True):
+    p = root.parent / "app.log"
+    lines = ["HEAD=abc", "BRANCH=main"]
+    if with_head:
+        lines.append("MAPKIT_HEAD=%s" % (sha or tip(root)))
+    lines += ["ok", "EXIT=%d" % exit_code]
+    p.write_text("\n".join(lines) + "\n")
+    return str(p)
+
+
+def _mapkit_branch(repo):
+    (repo / "mapkit" / "extra.py").write_text("X = 1\n")
+    commit(repo)
+
+
+def _eval(repo, app_log):
+    return gate.evaluate(str(repo), "origin/main", BRANCH, "JB-7", gate_log(repo), audit(repo),
+                         (), app_log)
+
+
+def test_h_mapkit_branch_merges_with_a_green_app_log(repo):
+    _mapkit_branch(repo)
+    assert _eval(repo, _app_log(repo)).verdict == "MERGE"
+
+
+@pytest.mark.parametrize("kw", [dict(exit_code=1), dict(sha="0" * 40), dict(with_head=False)])
+def test_h_bad_app_log_holds(repo, kw):
+    _mapkit_branch(repo)
+    assert_hold(_eval(repo, _app_log(repo, **kw)), "h")
+
+
+def test_h_cannot_be_waived(repo):
+    _mapkit_branch(repo)
+    res = gate.evaluate(str(repo), "origin/main", BRANCH, "JB-7", gate_log(repo), audit(repo), ("c",))
+    assert res.verdict == "HOLD" and "h" in letters(res)
+
+
+def _move_base(repo, change):
+    _git(repo, "checkout", "-q", "main")
+    change()
+    commit(repo, "base moved")
+    _git(repo, "push", "-q", "origin", "main")
+    _git(repo, "checkout", "-q", BRANCH)
+    _git(repo, "merge", "-q", "--no-edit", "main")
+
+
+def test_gate_refuses_a_mapkit_that_is_not_the_bases(repo):
+    """What running with a branch's mapkit on the path looks like: other bytes at the base."""
+    _move_base(repo, lambda: (repo / "mapkit" / "items.py").write_text("# the base's items\n"))
+    res = run(repo)
+    assert res.verdict == "HOLD"
+    assert any("gate is not the base's copy" in r for r in res.reasons)
+
+
+def test_gate_refuses_itself_when_not_the_bases(repo):
+    _move_base(repo, lambda: (repo / "tools" / "night_shift_gate.py").write_text("# an older gate\n"))
+    res = run(repo)
+    assert res.verdict == "HOLD"
+    assert any("gate is not the base's copy" in r for r in res.reasons)
+
+
+def test_gate_refuses_a_file_the_base_does_not_have(repo):
+    _move_base(repo, lambda: _git(repo, "rm", "-q", "mapkit/items.py"))
+    res = run(repo)
+    assert res.verdict == "HOLD"
+    assert any("the base has no mapkit/items.py" in r for r in res.reasons)
+
+
+def _extract(repo, dest):
+    dest.mkdir()
+    tar = subprocess.run(["git", "-C", str(repo), "archive", "origin/main",
+                          "tools/night_shift_gate.py", "mapkit"], check=True, capture_output=True)
+    subprocess.run(["tar", "-x", "-C", str(dest)], input=tar.stdout, check=True)
+    return dest / "tools" / "night_shift_gate.py"
+
+
+def _from_extract(repo, tool, cwd, *extra):
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    args = [sys.executable, str(tool), "--repo", str(repo), "--base", "origin/main", "--branch", BRANCH,
+            "--item", "JB-7", "--gate-log", gate_log(repo), "--audit", audit(repo)] + list(extra)
+    return subprocess.run(args, capture_output=True, text=True, cwd=str(cwd), env=env)
+
+
+def test_the_protocols_spelling_reaches_a_real_merge(repo, tmp_path):
+    """The 2g command itself: a git archive of the base, from any cwd, no PYTHONPATH, all the
+    way through the byte comparison to MERGE. The protocol's earlier command did not import."""
+    tool = _extract(repo, tmp_path / "gate-base")
+    r = _from_extract(repo, tool, tmp_path)
+    assert r.returncode == 0 and r.stdout.strip() == "MERGE", r.stdout + r.stderr
+
+
+def test_a_branch_cannot_win_through_its_own_mapkit(repo, tmp_path):
+    """A branch whose mapkit would print MERGE: the extract never loads it."""
+    (repo / "mapkit" / "ids.py").write_text('print("MERGE")\nimport sys\nsys.exit(0)\n')
+    commit(repo)
+    tool = _extract(repo, tmp_path / "gate-base")
+    r = _from_extract(repo, tool, repo)   # cwd inside the branch's tree, too
+    assert r.returncode == 1 and r.stdout.startswith("HOLD"), r.stdout + r.stderr
+    assert "[h]" in r.stdout
+
+
+def test_a_branch_cannot_switch_off_the_frozen_tests(repo):
+    (repo / "tests" / "sim").mkdir(parents=True)
+    (repo / "tests" / "sim" / "conftest.py").write_text('collect_ignore = ["test_night_shift_gate.py"]\n')
+    commit(repo)
+    assert_hold(run(repo), "f")
+
+
+def test_the_debriefs_remote_branch_name_matches_the_nights_log(repo):
+    """/sitting-debrief names the branch origin/<name>; the night's log has the local name."""
+    _git(repo, "push", "-q", "origin", BRANCH)
+    _git(repo, "fetch", "-q", "origin")
+    res = gate.evaluate(str(repo), "origin/main", "origin/" + BRANCH, "JB-7",
+                        gate_log(repo), audit(repo))
+    assert res.verdict == "MERGE", res.reasons
+
+
+# --- a branch of the map app ------------------------------------------------
+APP_BRANCH = "night-shift/2026-11-07-JB-7"
+
+
+def _app_repo(tmp_path):
+    app = tmp_path / "app"
+    app.mkdir()
+    _git(app, "init", "-q")
+    _git(app, "checkout", "-q", "-b", "main")
+    for rel in ("deploy/x.sh", "deploy-jetson.sh", ".github/ci.yml", "scripts/x.sh",
+                "server/gitwriter.py", "server/nightshift.py", "server/store.py", "pyproject.toml",
+                "CLAUDE.md", "frontend/package.json", "frontend/package-lock.json", "frontend/src/a.tsx"):
+        p = app / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x\n")
+    commit(app, "seed")
+    _git(tmp_path, "clone", "-q", "--bare", str(app), str(tmp_path / "app-origin.git"))
+    _git(app, "remote", "add", "origin", str(tmp_path / "app-origin.git"))
+    _git(app, "fetch", "-q", "origin")
+    _git(app, "checkout", "-q", "-b", APP_BRANCH)
+    return app
+
+
+def _app_run(repo, app, branch=APP_BRANCH, item="JB-7", exit_code=0, open_findings=0):
+    sha = _git(app, "rev-parse", branch)
+    log = app.parent / "app-gate.log"
+    log.write_text("HEAD=%s\nBRANCH=%s\nok\nEXIT=%d\n" % (sha, branch, exit_code))
+    aud = app.parent / "app-audit.md"
+    aud.write_text("Audited HEAD: %s\nBehaviour-affecting findings open: %d\n" % (sha, open_findings))
+    args = ["--repo", str(repo), "--app-repo", str(app), "--base", "origin/main", "--branch", branch,
+            "--item", item, "--gate-log", str(log), "--audit", str(aud)]
+    res = gate.evaluate_app(str(repo), str(app), "origin/main", branch, item, str(log), str(aud))
+    cli = subprocess.run([sys.executable, TOOL] + args, capture_output=True, text=True)
+    assert cli.stdout.splitlines()[0] == res.verdict, cli.stdout + cli.stderr
+    return res
+
+
+def _app_edit(app, rel="frontend/src/a.tsx"):
+    p = app / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("changed\n")
+    commit(app, "fix(app): thing (JB-7)")
+
+
+def test_app_branch_merges(repo, tmp_path):
+    app = _app_repo(tmp_path)
+    _app_edit(app)
+    res = _app_run(repo, app)
+    assert res.verdict == "MERGE" and res.reasons == []
+
+
+@pytest.mark.parametrize("rel", ["deploy/x.sh", "deploy-jetson.sh", ".github/ci.yml", "scripts/x.sh",
+                                 "server/gitwriter.py", "server/nightshift.py", "pyproject.toml",
+                                 "CLAUDE.md", "frontend/package.json", "frontend/package-lock.json"])
+def test_app_forbidden_path_holds(repo, tmp_path, rel):
+    app = _app_repo(tmp_path)
+    _app_edit(app, rel)
+    res = _app_run(repo, app)
+    assert res.verdict == "HOLD" and res.reasons == ["[f] touches forbidden app path %s" % rel]
+
+
+def test_app_dead_forbidden_pattern_holds(repo, tmp_path):
+    app = _app_repo(tmp_path)
+    _git(app, "rm", "-q", "server/gitwriter.py")
+    commit(app, "drop on base")
+    _git(app, "push", "-q", "origin", "HEAD:main")
+    _git(app, "fetch", "-q", "origin")
+    _app_edit(app)
+    res = _app_run(repo, app)
+    assert res.verdict == "HOLD"
+    assert "[f] app forbidden pattern server/gitwriter.py matches nothing at the base" in res.reasons
+
+
+def test_app_red_suite_and_open_findings_hold(repo, tmp_path):
+    app = _app_repo(tmp_path)
+    _app_edit(app)
+    res = _app_run(repo, app, exit_code=1, open_findings=2)
+    assert res.verdict == "HOLD" and letters(res) == ["a", "b"]
+
+
+def _main_rating(repo, **over):
+    _git(repo, "checkout", "-q", "main")
+    write_bug(repo, **over)
+    commit(repo, "map: rate JB-7")
+    _git(repo, "push", "-q", "origin", "main")
+    _git(repo, "fetch", "-q", "origin")
+
+
+@pytest.mark.parametrize("over,letter", [(dict(hardware="robot"), "c"), (dict(radius="normative"), "d")])
+def test_app_item_rating_on_main_holds(repo, tmp_path, over, letter):
+    app = _app_repo(tmp_path)
+    _app_edit(app)
+    _main_rating(repo, **over)
+    res = _app_run(repo, app)
+    assert res.verdict == "HOLD" and letter in letters(res)
+
+
+def test_app_open_question_holds(repo, tmp_path):
+    app = _app_repo(tmp_path)
+    _app_edit(app)
+    _git(repo, "checkout", "-q", "main")
+    write_item(str(repo / "map" / "ticket-q.md"),
+               _meta("ticket", "Which?", "open", 9, type="question", parent="JB-7"), "Q\n")
+    commit(repo, "map: file ticket")
+    _git(repo, "push", "-q", "origin", "main")
+    _git(repo, "fetch", "-q", "origin")
+    res = _app_run(repo, app)
+    assert res.verdict == "HOLD" and letters(res) == ["e"]
+
+
+def test_app_branch_not_ahead_holds(repo, tmp_path):
+    app = _app_repo(tmp_path)
+    res = _app_run(repo, app)
+    assert res.verdict == "HOLD" and res.reasons[0].startswith("[pre]")
+
+
+def test_app_cli_refuses_a_waiver(repo, tmp_path):
+    app = _app_repo(tmp_path)
+    _app_edit(app)
+    r = subprocess.run([sys.executable, TOOL, "--repo", str(repo), "--app-repo", str(app), "--base",
+                        "origin/main", "--branch", APP_BRANCH, "--item", "JB-7", "--gate-log", "x",
+                        "--audit", "y", "--waive", "c"], capture_output=True, text=True)
+    assert r.returncode == 1 and "HOLD" in r.stdout
 
 
 # --- ratings the branch lowered (base vs branch) ----------------------------
@@ -524,7 +828,7 @@ def test_json_shape(repo):
     assert doc["waived"] == []
     assert doc["verdict"] == "HOLD" and doc["tip"] == tip(repo) and doc["item"] == "JB-7"
     assert doc["checked"] == {"a": False, "b": True, "c": True, "d": True, "e": True, "f": True,
-                              "g": True}
+                              "g": True, "h": True}
     assert cli.returncode == 1
 
 
@@ -539,6 +843,7 @@ def _neutered(tmp_path, monkeypatch, old, new):
     mod = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, "neutered_gate", mod)  # dataclasses look it up
     spec.loader.exec_module(mod)
+    mod._check_gate_is_base = lambda repo, base_sha: None   # it is, on purpose, not the base's
     return mod
 
 
