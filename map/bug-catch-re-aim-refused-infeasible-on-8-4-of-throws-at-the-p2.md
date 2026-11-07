@@ -2,9 +2,9 @@
 id: JB-188
 kind: bug
 title: Catch re-aim refused INFEASIBLE on 8.4 % of Throws at the P2 Sitting, 15 of 69 on the turned pair
-status: inbox
+status: backlog
 created: '2026-11-06'
-updated: '2026-11-06T19:54:17Z'
+updated: '2026-11-07T18:11:52Z'
 owners: []
 priority: medium
 effort: xs
@@ -82,3 +82,67 @@ Source: launch.log of the 15:53 Sitting (`~/.ros/log/2026-11-06-15-53-05-334499-
 - Rating: effort small, hardware none, diagnosis done to the window variable; binding row unnamed.
 - No limit change proposed. A cheaper route, if the 8 % refusal count is ever a nuisance, is to decline in the pre-solve fence (no cap count, no solve cost). That is a design choice for the owner, not made here.
 - Not done: Robot-frame direction of the ask versus the turned axis, a QP replay.
+
+## Findings (2026-11-08)
+
+Sources: bag `/home/jetson/Desktop/rosbags/2026-11-06_15-53-05` (`/balls`: per-Ball throw_time, first confirmed, first `landing_from_fit`) and the 15:53 `launch.log`. Code read at origin/main (`executor.py` `_resend_live_catch`, `_resend_splice_instant`). Probe scripts deleted.
+
+### Verdict
+- The premise does not hold in this bag. The turned pair's first ask is NOT later than plain Columns: ask to landing is 0.628 s against 0.633 s, and the splice to landing is 0.317 s for both.
+- The 0.324 against 0.459 s gap compares turned with one-ball self_toss. It is a splice-rule difference (pinned versus raw), not Fit convergence.
+
+### Stages per Catch of a Hand-thrown Ball (seconds, medians)
+| Stage | Columns (n) | Turned (n) |
+|---|---|---|
+| (a) release to Tracker confirm | 0.046 (59) | 0.048 (72) |
+| (b) release to first converged Fit | 0.161 (59) | 0.161 (72) |
+| catch dispatched, after release | 0.133 (59) | 0.134 (72) |
+| (c) first Fit to first ask | 0.106 (50) | 0.115 (70) |
+| (d) release to first ask | 0.265 (50) | 0.273 (70) |
+| first ask to landing | 0.633 (50) | 0.626 (70) |
+| release to landing (flight) | 0.904 (59) | 0.903 (72) |
+
+- Turned minus Columns is +0.008 s at (d), not +0.13 s. The spreads overlap (p25 to p75: 0.244 to 0.288 against 0.262 to 0.292).
+- Flight is identical, so there is no Apex or Dwell difference to normalise.
+- Ball 1 against Ball 2 turned: 35 each, first-ask offset median 20.0 against 19.2 mm. No Ball effect.
+
+### Why the splice window differs from one-ball
+- A first ask while the Hand's other Throw is still ahead splices PINNED at that release (`_resend_splice_instant`). Splice to landing is then `t_land - t_rel`.
+- Measured `t_land - t_rel`: Columns 0.317 s (n=57), turned 0.317 s (n=72). First asks pinned: 46 of 46 and 67 of 70.
+- Self_toss (one ball) has no such release, so it splices raw at ask + 0.225 s: first ask to landing 0.701 s (n=221), splice about 0.476 s.
+- So 0.317 against 0.459 is the two-ball beat (release 0.575 s after the Ball's own release), a property of the schedule.
+
+### What does differ: second asks
+| Set | Catches with a first ask | Second asks | Refused |
+|---|---|---|---|
+| Columns | 51 | 3 | 3 |
+| Turned | 72 | 27 | 25 |
+
+- The refused count covers every code. Launch log, turned: INFEASIBLE 15, WINDOW_TOO_SHORT 8, LIMIT_JERK 2, SINGULAR 1, UNVERIFIED 1; 27 lines, of which 2 are first asks. Columns: LIMIT_JERK 3. Recounted by the orchestrator.
+- The second ask is never pinned: its splice is ask + 0.225 s, leaving 0.167 s median (turned, n=27), in the refusing band.
+- Why turned asks again more often is NOT explained. Hypothesis only: after the first re-aim the Fit still drifts more than the 10 mm tolerance in the turned frame.
+- Tested and ruled out: first ask at the 30 mm authority clamp (17 of 50 against 17 of 70), Ball (15 and 12 of 35), first-ask size (2-ask 19.2 mm against 1-ask 20.0 mm).
+- Fit drift first to last, x median 27.1 against 24.9 mm. It does not separate them.
+- Gap: the bag does not say why the unsaturated turned Catches (19 of 53, against 3 of 33) ask twice. The Fit drift is in the tracker frame and the aim is in the Robot frame, so I did not trust a per-axis comparison.
+
+### Cost in Catch authority (measured, log summary lines)
+| Turned, by re-aim outcome | n | Landing radius median, max |
+|---|---|---|
+| One re-aim, no second ask | 40 | 25.0, 64.6 mm |
+| Second ask refused | 26 | 25.1, 41.2 mm |
+| Two re-aims accepted | 2 | 27.5, 44.1 mm |
+
+- All 68 caught. No measurable cost: a refused second ask leaves the Hand on the accepted first re-aim, which lands as well as one that never asked.
+- Columns: one re-aim 31.0 mm (n=26 caught), two re-aims 27.5 mm (n=23). A 3.5 mm median, small and unproven.
+
+### Recommendation
+- Change nothing in timing or limits. The "later first ask" is not real, and the refusals are free.
+- Correct JB-188's wording: the turned pair is not later, it asks twice more often. If the count is a nuisance, the cheap route is the pre-solve fence (no cap count). I do not propose it; the control consequence at 40 Hz is not walked here and no cost justifies it.
+
+### Rating and not done
+- Rating: effort small, hardware none, diagnosis done for the premise; the cause of the extra second asks is open.
+- Not done: Robot-frame per-axis Fit drift (needs the tracker-to-robot transform), a QP replay, and the stage split of (c) into Fit-published against gate-opened (the log does not record the gate opening; the bag has Fit publication and the ask time only).
+
+## Progress
+
+- 2026-11-08: Night Shift 2026-11-08: the turned pair's first ask is not later; it asks twice more often, at no measurable cost (detail below)
