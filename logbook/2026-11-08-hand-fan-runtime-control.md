@@ -1,5 +1,5 @@
 ---
-title: "Hand fan runtime control for A/B tests (Platform FW 9, can-bridge FW 41): mode and thresholds set in RAM, status recorded in the bags; built and tested, not flashed"
+title: "Hand fan runtime control for A/B tests (Platform FW 9, can-bridge FW 41): mode and thresholds set in RAM, status recorded in the bags; flashed 2026-11-08, fan switching not yet exercised"
 type: feature
 date: 2026-11-08
 status: complete
@@ -54,4 +54,15 @@ Gate (`./run_tests.sh`, run 2026-11-08, on this tree before this section was fil
 
 After filling this in: `pytest -q tests/sim/test_logbook_front_matter.py tests/sim/test_docs_links.py` (run 2026-11-08), the two tests that read this file.
 
-Images: `pio run -e teensy40` and `pio run -e teensy41` (2026-11-08) both SUCCESS. Not run on hardware. The MOSFET's 3.3 V gate drive is still unchecked: no part number yet.
+Images: `pio run -e teensy40` and `pio run -e teensy41` (2026-11-08) both SUCCESS. The MOSFET's 3.3 V gate drive is still unchecked: no part number yet.
+
+## Flash (2026-11-08)
+
+Flashed the same night, from eee4323d, launch down. Each board is confirmed by its own report, not by the upload:
+
+- **Can-bridge:** `pio run -e teensy41 -t upload` SUCCESS; BridgeIdentity sniff reads `fw_version 41`, `protocol 12`.
+- **Platform Teensy:** `pio run -e teensy40 -t upload` over CAN, 73728 B, 0 rewinds, CRC verified; the tool reads `FW version: 7 -> 9`.
+- **The status path, end to end:** a UDP listen with the launch down read 6 HAND_FAN_STATUS frames in 6.5 s at a 1.0 s period: mode auto, fan off, reading valid, 35/34 C, motor 18.71 C. So the Hand ODrive's broadcast reaches the Platform Teensy, and its status reaches the host through the bridge.
+- **Build:** `colcon build --packages-select jugglebot_interfaces jugglebot` finished both packages; `HandFanStatus` and `SetHandFan` import from the install.
+
+**Not yet exercised:** `hand_fan/set` against the real board, pin 2 driving the fan, and the AUTO switch at 35 C. The motor at 18.71 C has not reached the threshold.
