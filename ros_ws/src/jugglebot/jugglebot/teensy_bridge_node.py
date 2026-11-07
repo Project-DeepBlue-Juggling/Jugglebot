@@ -1041,6 +1041,14 @@ def _decode_axis_errors(active: int, disarm: int) -> str:
 # heartbeat and get bounced with ERR_BUS_DOWN — leaving the legs standing. Waiting a
 # couple of heartbeat periods lets the disarm land first. Bounded — never hangs.
 _SHUTDOWN_DISARM_SETTLE_S = 2.0 / float(p.HEARTBEAT_HZ)   # ≈ 0.2 s at 10 Hz
+# A forced Hand fan goes back to AUTO on shutdown (owner, 2026-11-08), so a fan
+# switched on by hand stops once the motor cools instead of running until the
+# Platform Teensy next reboots. One fast RPC, no wait for the status echo; the worst
+# case (no bridge) is timeout x (1 + retries), inside the launch's SIGTERM window
+# (tests/ros/test_bridge_launch_sigterm.py counts it).
+_SHUTDOWN_HAND_FAN_RPC_TIMEOUT_S = 0.3
+_SHUTDOWN_HAND_FAN_RPC_RETRIES = 1
+_SHUTDOWN_HAND_FAN_BUDGET_S = _SHUTDOWN_HAND_FAN_RPC_TIMEOUT_S * (1 + _SHUTDOWN_HAND_FAN_RPC_RETRIES)
 # Cap the shutdown DEACTIVATE so a stalled descent can't blow the ~8 s teardown
 # budget. A healthy profiled stow reaches STOW+IDLE in ~2-4 s; this only bounds the
 # stall case (DeactivateMonitor declares FAILED at timeout_s, the poll loop breaks).
@@ -10262,6 +10270,40 @@ class TeensyBridgeNode(Node):
     # Shutdown
     # ═══════════════════════════════════════════════════════════
 
+    def _shutdown_hand_fan_auto(self):
+        """Return a forced Hand fan to AUTO, keeping the Platform Teensy's current
+        thresholds. Acts only when the newest status frame says the fan is forced: in
+        AUTO there is nothing to undo, and with no status seen (no bridge, or a
+        Platform Teensy older than FW 9) a command could not land. Best-effort and
+        bounded at _SHUTDOWN_HAND_FAN_BUDGET_S; never raises."""
+        try:
+            with self._platform_reply_cv:
+                data = self._hand_fan_status_frame
+            status = self._hand_fan_status
+            if data is not None:
+                try:
+                    status = rpc_args.decode_hand_fan_status(data)
+                except ValueError:
+                    pass
+            if status is None or status.mode == 'auto':
+                return
+            ok, msg, _ = self._call_rpc(
+                RpcMethod.HAND_FAN_SET,
+                rpc_args.encode_hand_fan_set('auto', status.on_above_c, status.off_below_c),
+                timeout=_SHUTDOWN_HAND_FAN_RPC_TIMEOUT_S,
+                retries=_SHUTDOWN_HAND_FAN_RPC_RETRIES)
+            if ok:
+                self.get_logger().info(
+                    f'shutdown: Hand fan {status.mode} -> auto (on above '
+                    f'{status.on_above_c:.2f}, off below {status.off_below_c:.2f} C)')
+            else:
+                self.get_logger().warning(
+                    f'shutdown: Hand fan left forced {status.mode}, HAND_FAN_SET failed: '
+                    f'{msg}. It stays forced until the Platform Teensy reboots or '
+                    'hand_fan/set is called.')
+        except Exception as e:  # noqa: BLE001 — best-effort during teardown
+            self.get_logger().error(f'shutdown Hand fan reset error: {e}')
+
     def _shutdown_stow(self):
         """Profiled controlled-lower to STOW + IDLE on a clean shutdown — the Teensy-side
         analogue of can_node.on_shutdown's ``_gently_move_to_setpoint(0.0,
@@ -10382,6 +10424,9 @@ class TeensyBridgeNode(Node):
                 self._set_mpc_active(False)
             except Exception:  # noqa: BLE001
                 self._mpc_active = False
+        # 1b. HAND FAN back to AUTO if it was forced. Before the stow: a few ms on a
+        # healthy link, and a stow that runs long cannot then starve it of its slot.
+        self._shutdown_hand_fan_auto()
         # 2. SETTLE + 3. STOW over the still-live link (RX + heartbeat threads keep
         # the telemetry cache + DEACTIVATE RPC alive; the setpoint stream is quiesced above so no
         # setpoint fights the descent). The settle is gated on actually stowing so a

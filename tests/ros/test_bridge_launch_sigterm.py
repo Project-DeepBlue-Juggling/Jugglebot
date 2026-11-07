@@ -2,7 +2,8 @@
 than its own bounded shutdown Stow, so the node can log the Stow's outcome.
 
 launch's default is 5 s; the node's Stow is bounded at
-``_SHUTDOWN_DEACTIVATE_TIMEOUT_S`` plus ``_SHUTDOWN_DISARM_SETTLE_S``. On 2026-10-31
+``_SHUTDOWN_DEACTIVATE_TIMEOUT_S`` plus ``_SHUTDOWN_DISARM_SETTLE_S``, plus the
+Hand fan reset ``_SHUTDOWN_HAND_FAN_BUDGET_S`` that runs before it. On 2026-10-31
 two shutdowns were SIGTERM-killed at 5 s (13:06 and 13:13 launch logs). The descent
 itself is ODrive/firmware-owned and finishes even if the node dies; the window is
 about the record, and about not killing the node while it still has work to do.
@@ -35,6 +36,7 @@ def test_bridge_sigterm_window_covers_the_shutdown_stow(name):
     kw = _bridge_kwargs(LAUNCH / name)
     assert "sigterm_timeout" in kw, "%s: teensy_bridge_node has no sigterm_timeout" % name
     window = float(ast.literal_eval(kw["sigterm_timeout"]))
-    budget = tbn._SHUTDOWN_DEACTIVATE_TIMEOUT_S + tbn._SHUTDOWN_DISARM_SETTLE_S
+    budget = (tbn._SHUTDOWN_DEACTIVATE_TIMEOUT_S + tbn._SHUTDOWN_DISARM_SETTLE_S
+              + tbn._SHUTDOWN_HAND_FAN_BUDGET_S)
     assert window >= budget + MARGIN_S, (window, budget)
     assert window <= 15.0, "a stuck node must still be killed promptly on Ctrl+C"

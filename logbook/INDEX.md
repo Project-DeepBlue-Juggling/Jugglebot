@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-08 | resolved | hand cooling fan | **A forced Hand fan returns to AUTO when the launch shuts down, so a fan switched ON by hand stops once the motor is below the off threshold** | [2026-11-08-hand-fan-auto-on-shutdown](2026-11-08-hand-fan-auto-on-shutdown.md) |
 | 2026-11-08 | complete | night-shift | **Night Shift 2026-11-08: 6 merged, 2 held, 3 questioned; JB-184 reopened by two more Leg separations** | [2026-11-08-night-shift](2026-11-08-night-shift.md) |
 | 2026-11-08 | resolved | night-shift | **JB-87 slice: bridge heartbeat masks read the generated enum; UDP protocol doc added to the docs nav (Item stays open)** | [2026-11-08-jb87-heartbeat-masks-and-docs-nav](2026-11-08-jb87-heartbeat-masks-and-docs-nav.md) |
 | 2026-11-08 | resolved | night-shift | **Rosbridge service pool names the server, not the executor, when the last ready poll loses to the deadline (JB-209)** | [2026-11-08-rosbridge-pool-timeout-names-the-server](2026-11-08-rosbridge-pool-timeout-names-the-server.md) |
