@@ -50,6 +50,7 @@ Evidence: `temp/probes/sitting_debrief_2026-11-06b/unit_transit.md`, `unit_B_D.m
 - setup: level, armed, bb-fed
 - why: tells whether the pull toward the partner Site depends on the Apex or on the time from arrival to release, which no flight so far could separate, so the fix is aimed at the right cause (the arrival ring or the Apex).
 - do:
+  - **Stop before flying this row (Night Shift, 2026-11-08):** on 2026-11-07 it separated Legs 1 and 2 at Dwell 0.32 and at Dwell 0.30, and the flown plans read 404 / 5872 against the 353 / 5180 below. The owner's decision is open on JB-184.
   - GUI Juggle panel, `Columns`, Apex 0.93, Sep. 125, Throws 21, Ball Butler feeding, bag recording. Fly Dwell 0.27, then Dwell 0.32, alternating, three Attempts of each (about 30 caught Throws per Dwell).
   - Attempts often end early on a collision or a missed Catch: repeat that Dwell until about 30 caught Throws are in, at most five Attempts per Dwell.
   - Both goals are inside what has flown. Rehearsed offline at the Sitting limits (600 mm/s, 8000 mm/s^2, 200000 mm/s^3, Hand 4500 rev/s^2, planner `pose`): Dwell 0.27 plans Leg peaks of 310 mm/s and 4076 mm/s^2, Dwell 0.32 plans 353 mm/s and 5180 mm/s^2; up to 371 mm/s and 5488 mm/s^2 flew on 2026-11-06 with the base joints attached. Columns has not flown at a Dwell other than 0.27 before.
