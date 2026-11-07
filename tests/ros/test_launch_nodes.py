@@ -124,6 +124,8 @@ RECORDED_TOPICS = [
     # aligns recorded footage with the rest of the bag, and it exists nowhere
     # else after the session. /camera/heartbeat and /camera_diag carry the
     # sync and fault context that says whether that instant can be trusted.
+    # The Hand fan's mode and state, so a bag says which arm of an A/B test it is.
+    '/hand_fan/status',
     '/camera/heartbeat',
     '/camera/record_event',
     '/camera_diag',

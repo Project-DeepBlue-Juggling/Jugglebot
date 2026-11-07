@@ -11,6 +11,17 @@ orchestrator's: `total_cost_usd` only exists once the orchestrator has exited, s
 cost <date>` commit (dropped, never rebased, if `main` moved meanwhile; `cost_recorded` in
 `last_run.json` says which). A dry run's report gets the same line as a plain file write.
 
+The line before it is also the runner's: `app deploy: <status> ...`, from
+`tools/night_shift_deploy.py`, the night's last step, which puts the map app's `main` live and
+takes back what breaks it. `NOOP` and `DEPLOYED` are healthy. `ROLLED_BACK_APP`,
+`ROLLED_BACK_MAPKIT` and `ROLLED_BACK_BOTH` mean tonight's work broke the app and was reverted
+with new commits, with the Items reopened. `FAILED_NEEDS_SESSION`, `ROLLBACK_FAILED` and `DOWN`
+need a Session, and `SKIPPED_*` means nothing was touched. Any of those adds a flag to the
+**Summary.** line. Going back to the last good commit needs no proof; a revert needs proof that
+tonight's work is the cause, and without it nothing is reverted. The check sees failed builds,
+server crashes, API and page errors, missing assets and a page that renders nothing; it cannot
+see a feature that works badly. Map data errors are named in the line and are not a failure.
+
 ## Layout
 
 Eight sections, this order, every heading present even when empty (`none`). Every Item is
@@ -60,6 +71,7 @@ Item section (a hint goes in a header cell). One **Summary.** line between the t
 units: <n> (<models, which Items>)
 items touched: <n>
 wall clock: <start> to <end>
+app deploy: <status> ... (runner)
 total API cost: USD <n> (runner, total_cost_usd)
 ```
 

@@ -13,6 +13,7 @@
 #include <cmath>               // std::isfinite (STATE_WRITE pose-offset validation)
 #include "udp_protocol.h"
 #include "protocol_config.h"   // PlatformCanId (STATE_UPDATE 0x6E0, TILT_READING 0x7DE)
+#include "hardware_config.h"   // TeensyOp::HAND_FAN_THRESHOLD_MIN_C / _MAX_C
 #include "odrive_protocol.h"   // ODrive::CanFrame
 #include "can_buses.h"         // can_jugglebot_tx / can_bb_tx / TxCls, jugglebot_commands_allowed
 
@@ -74,6 +75,29 @@ uint16_t state_write(const JbUdp::RpcArgs::ArgRobotState& s) {
   f.buf[2] = (uint8_t)((x >> 8) & 0xFF);
   f.buf[3] = (uint8_t)(y & 0xFF);
   f.buf[4] = (uint8_t)((y >> 8) & 0xFF);
+  f.buf[5] = f.buf[6] = f.buf[7] = 0;
+  return send_gated(f);
+}
+
+uint16_t hand_fan_set(const JbUdp::RpcArgs::ArgHandFanSet& a) {
+  if (a.mode > 2) return JbUdp::RpcStatus::ERR_BAD_ARGS;
+  // Trust boundary, as state_write: the range check below also keeps the int16
+  // casts defined, and NaN fails it because every comparison with NaN is false.
+  if (!(a.off_below_c >= TeensyOp::HAND_FAN_THRESHOLD_MIN_C &&
+        a.on_above_c <= TeensyOp::HAND_FAN_THRESHOLD_MAX_C &&
+        a.off_below_c < a.on_above_c))
+    return JbUdp::RpcStatus::ERR_BAD_ARGS;
+
+  const int16_t on_centi = (int16_t)std::lround(a.on_above_c * 100.0f);
+  const int16_t off_centi = (int16_t)std::lround(a.off_below_c * 100.0f);
+  ODrive::CanFrame f;
+  f.id = PlatformCanId::HAND_FAN_CMD;
+  f.len = 8;
+  f.buf[0] = a.mode;
+  f.buf[1] = (uint8_t)(on_centi & 0xFF);
+  f.buf[2] = (uint8_t)((on_centi >> 8) & 0xFF);
+  f.buf[3] = (uint8_t)(off_centi & 0xFF);
+  f.buf[4] = (uint8_t)((off_centi >> 8) & 0xFF);
   f.buf[5] = f.buf[6] = f.buf[7] = 0;
   return send_gated(f);
 }

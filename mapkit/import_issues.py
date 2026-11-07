@@ -109,7 +109,7 @@ def import_issues(repo_root: str, map_number: int, pathway: str,
             "https://github.com/%s/issues/%d" % (REPO_SLUG, b) for b in outside]
         from mapkit import ids  # local: ids imports items, which this module's readers avoid
         meta = {
-            "id": ids.allocate(repo_root),  # written files count, so each import gets the next
+            "id": ids.allocate(repo_root, kind="ticket"),  # written files count, so each import gets the next
             "kind": "ticket",
             "title": iss["title"],
             "type": _label_type(iss.get("labels")),

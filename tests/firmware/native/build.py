@@ -38,6 +38,7 @@ NATIVE_DIR = Path(__file__).resolve().parent
 SHIM_DIR = NATIVE_DIR / "hal_shims"
 REPO_ROOT = NATIVE_DIR.parents[2]
 FIRMWARE_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "Teensy_code_canbridge"
+PLATFORM_HAND_FAN = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "Teensy_code_platform" / "hand_fan.h"
 # All runtime build artifacts live under temp/ (gitignored), per the repo rule.
 CACHE_DIR = REPO_ROOT / "temp" / "firmware_native"
 
@@ -101,6 +102,13 @@ _BINARIES = {
     "test_gpio_poll": (
         NATIVE_DIR / "test_gpio_poll.cpp",
         ["axis_state", "ball_butler_state", "fake_hal"],
+    ),
+    # The Platform Teensy's Hand fan decision: a pure header, so nothing to link.
+    # The driver includes it by relative path, not through INCLUDES, because that
+    # directory's generated headers share their names with the can-bridge's.
+    "test_platform_hand_fan": (
+        NATIVE_DIR / "test_platform_hand_fan.cpp",
+        [],
     ),
     # Cold-start move ladders. Each driver #includes ONE real
     # module .cpp (defining its own *_active) + supplies the two sibling predicates
@@ -191,6 +199,7 @@ def _source_hash() -> str:
     for d in (NATIVE_DIR, SHIM_DIR):
         files += sorted(p for p in d.glob("*") if p.is_file() and p.suffix in (".h", ".cpp"))
     files += sorted(p for p in FIRMWARE_DIR.glob("*") if p.suffix in (".h", ".cpp", ".ino"))
+    files.append(PLATFORM_HAND_FAN)
     for p in sorted(set(files)):
         h.update(p.name.encode())
         h.update(p.read_bytes())

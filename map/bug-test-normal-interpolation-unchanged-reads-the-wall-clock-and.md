@@ -2,13 +2,20 @@
 id: JB-182
 kind: bug
 title: test_normal_interpolation_unchanged reads the wall clock and failed one full gate under load
-status: inbox
+status: complete
 created: '2026-11-06'
-updated: '2026-11-05T19:55:24Z'
+updated: '2026-11-06T19:21:40Z'
 owners: []
 priority: low
+effort: xs
+hardware: none
+owner: none
+radius: local
+diagnosis: confirmed
+area: tests-tooling
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-07-jb182-motor-guard-test-frozen-clock.md
 filed_by: claude
 ---
 

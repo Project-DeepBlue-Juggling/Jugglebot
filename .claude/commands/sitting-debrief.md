@@ -27,7 +27,8 @@ close-out the Runbook promises, unchanged from `/sitting-wrapup`.
   changes you did not make, or `origin/main` ahead of local, means **pause and say what you
   see** before any git write. Never `git stash`, never `git branch -f`, never a force-push.
 - A failed merge leaves the branch held with the conflict named; it is never resolved by
-  guesswork and never by taking either side wholesale.
+  guesswork and never by taking either side wholesale. The one exception is the three
+  paperwork files listed in section 3, step 1, whose right answer is mechanical.
 - Nothing here powers hardware. The Sitting is over.
 
 ## 1. Analyse the data (before any paperwork)
@@ -97,29 +98,88 @@ For each result with verdict `pass` (typed, or a `pending` resolved to pass) AND
 `git branch -r --list 'origin/night-shift/*-JB-n'` before treating the pass as a plain check,
 so held software work is never dropped):
 
-1. The hardware pass overrides ONLY the gate's hardware condition. Re-run the gate with the
-   night's own artefacts (the tip has not moved, so they still match):
+The branch was gated against an older `main`, and `main` moves many times a day, so it is brought
+up to date and gated again before it merges (owner, 2026-11-07). A Sitting pass says the flown
+code works; only this says it still works beside what has landed since. Budget about 10 minutes
+of full suite per branch, plus an audit. Do not start while a launch is up: the suite loads the box.
+Be on `main` first: `git checkout main` if the Sitting left the checkout on the candidate branch.
+Shell variables do not survive between tool calls, so `BASE` is written to a file and every block below
+reads it back. Never recompute it after a merge: it must stay the base this Item's suite ran on.
+
+1. **Update, in a throwaway worktree.** The branch stays as it is on the remote, because that is
+   what flew. Later Items build on earlier ones, because the base is local `main`:
    ```
-   python tools/night_shift_gate.py --repo . --base origin/main --branch origin/night-shift/<d>-JB-n --item JB-n \
-       --gate-log ~/night-shift/Jugglebot/temp/reports/night-shift/gate-JB-n.log \
-       --audit ~/night-shift/Jugglebot/temp/reports/night-shift/audit-JB-n.md --waive c
+   mkdir -p temp/reports/debrief && git rev-parse main > temp/reports/debrief/base-JB-n
+   BASE=$(cat temp/reports/debrief/base-JB-n)
+   git worktree remove --force temp/debrief-JB-n 2>/dev/null; git worktree prune
+   git worktree add -q -B night-shift/<d>-JB-n temp/debrief-JB-n origin/night-shift/<d>-JB-n
+   git -C temp/debrief-JB-n merge --no-edit $BASE
+   ```
+   A held branch nearly always conflicts here, on files only the paperwork touches. These three,
+   and no others, have a mechanical answer (the exception to section 0's rule):
+   - the Item's own `map/<stem>.md`: `main`'s copy, which holds the Sitting result. First read the
+     branch's copy: anything its body adds that `main` lacks goes into the Item on `main` when you
+     close it, under a `## From the branch (<date>)` heading;
+   - `logbook/INDEX.md`: keep both sides' rows, dropping only the conflict markers;
+   - generated pages (`docs/project-map.md`, `docs/runbook.md`, `docs/glossary.md`, `plans/*/INDEX.md`):
+     `main`'s copy, then `python -m mapkit gen` in the worktree.
+
+   Take `main`'s copy by naming the commit, `git -C temp/debrief-JB-n checkout $BASE -- <paths>`, never
+   `--ours` or `--theirs`: in this merge direction `--ours` is the branch. Anything else conflicting:
+   `git -C temp/debrief-JB-n merge --abort` and treat it as the conflict below. Otherwise finish with
+   `git -C temp/debrief-JB-n add -A`, then `git -C temp/debrief-JB-n diff --cached --quiet || git -C temp/debrief-JB-n commit --no-edit`
+   (a clean merge has already committed).
+   Never edit the flown code here. If `origin/main` was already inside the branch and `BASE` adds
+   nothing (`git merge` says up to date), the tip has not moved: step 3 can use the night's gate log
+   and audit from `~/night-shift/Jugglebot/temp/reports/night-shift/`.
+2. **Audit, then the full suite, on the updated tip.** The gate only accepts results for that tip.
+   Save the diff first and check it is not empty, because an audit of an empty diff finds nothing and
+   the gate cannot tell: `git -C temp/debrief-JB-n diff "$(cat temp/reports/debrief/base-JB-n)...HEAD" > temp/reports/debrief/diff-JB-n.patch`.
+   Empty means the branch adds nothing: stop and say so. One `audit-reporter` agent (`model: sonnet`) on
+   that file; you write its result to `temp/reports/debrief/audit-JB-n.md`, findings marked as in the
+   night's 2f and ending with `Audited HEAD: <sha>` and `Behaviour-affecting findings open: <n>`.
+   Narrative findings are recorded, not applied. A behaviour-affecting one keeps the branch held and
+   skips the suite. Then, with Foxy and the venv sourced, and with `run_in_background` because the
+   suite can outlast a foreground call (wait for the `EXIT=` line):
+   ```
+   cd temp/debrief-JB-n
+   printf 'HEAD=%s\nBRANCH=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse --abbrev-ref HEAD)" > ../reports/debrief/gate-JB-n.log
+   tools/night_shift_nonet.sh ./run_tests.sh --full >> ../reports/debrief/gate-JB-n.log 2>&1; echo "EXIT=$?" >> ../reports/debrief/gate-JB-n.log
+   cd ../..
+   ```
+   A branch that touches `mapkit/` also needs the app's suite against it (condition (h)):
+   `tools/night_shift_nonet.sh tools/night_shift_app_suite.sh --app ~/night-shift/jugglebot-map --mapkit temp/debrief-JB-n --log temp/reports/debrief/app-JB-n.log`.
+3. **The gate.** The hardware pass overrides ONLY the gate's hardware condition, and the gate is
+   an extract of the base, never the working tree:
+   ```
+   BASE=$(cat temp/reports/debrief/base-JB-n)
+   rm -rf temp/gate-base && mkdir -p temp/gate-base
+   git archive $BASE tools/night_shift_gate.py mapkit | tar -x -C temp/gate-base
+   python temp/gate-base/tools/night_shift_gate.py --repo . --base $BASE --branch night-shift/<d>-JB-n --item JB-n --gate-log temp/reports/debrief/gate-JB-n.log --audit temp/reports/debrief/audit-JB-n.md --waive c [--app-log temp/reports/debrief/app-JB-n.log]
    ```
    Anything but `MERGE (c waived)` (a red or missing gate log, open audit findings, a
    normative radius, an open question, a forbidden path, a changed `owner` rating: condition
    (g), which no waiver clears) keeps the branch held with the
-   reasons in the summary; the Sitting result stays on the Item.
-2. ```
-   git fetch -q origin
-   git merge -q --ff-only origin/night-shift/<d>-JB-n || git merge -q --no-ff -m "merge(sitting <date>): JB-n <title>" origin/night-shift/<d>-JB-n
+   reasons in the summary; the Sitting result stays on the Item. A forbidden path is a day merge,
+   made by the owner's say-so in this Session and named in the summary as not gated.
+4. **Merge.** `main` is still at the base unless the auto-pull moved it:
    ```
+   git merge -q --ff-only night-shift/<d>-JB-n
+   ```
+   If `main` moved and `git diff --name-only "$(cat temp/reports/debrief/base-JB-n)" main` lists only `map/`, `docs/`, `logbook/` and
+   `plans/` paths, no code changed under the result:
+   `git merge -q --no-ff -m "merge(sitting <date>): JB-n <title>" night-shift/<d>-JB-n`.
+   If code moved, go back to step 1 once. If it moves again, the branch stays held: `main kept moving`.
+5. **Clean up**, whatever the outcome: `git worktree remove --force temp/debrief-JB-n` and
+   `git branch -D night-shift/<d>-JB-n`. That deletes the local copy only; the remote branch stays.
 
-- A conflict: `git merge --abort`; the Item stays `in_progress`, the branch stays held, and
+- A conflict outside step 1's three: `git -C temp/debrief-JB-n merge --abort`; the Item stays `in_progress`, the branch stays held, and
   the summary names the conflicting files. Go on to the next Item (per-Item merges are what
   keep one failure from blocking the rest; never merge the candidate branch
   `night-shift/sitting-<date>` itself, it is a build product).
 - A merge that lands: close the Item with the Sitting as evidence:
   `python -m mapkit item set-status JB-n complete --note "Passed at the Sitting of <date>: <one line from the notes>" --link logbook/<date>-sitting-debrief.md`
-  (no `--commit`; its paths ride in the debrief commit below).
+  plus `--link` for the branch's own logbook entry (no `--commit`; its paths ride in the debrief commit below).
 - A `fail` verdict: the Item stays `in_progress`; append the headline of the notes as a
   Progress line (`set-status JB-n in_progress --note "Failed at the Sitting of <date>: <headline>"`,
   no `--commit`); its branch stays held and its `## Sitting` section is re-read on the next
@@ -132,11 +192,11 @@ so held software work is never dropped):
 ## 4. Return the live checkout and rebuild
 
 1. `git status -sb` must read `## main...origin/main` plus only the files this command changed.
-   If the Sitting left the checkout on `night-shift/sitting-<date>`, `git checkout main` first
-   (after section 3's merges, which were done on `main`; if you find yourself on the candidate
-   branch at the start, switch before section 3).
+   If the checkout is somehow still on `night-shift/sitting-<date>`, `git checkout main`
+   (section 3 began by switching, because its merges happen on `main`).
 2. If any merged branch touched `ros_ws/`: `cd ros_ws && colcon build --packages-select
-   jugglebot` (the interfaces and launch need the rebuild before the next Sitting) and say so.
+   jugglebot_interfaces jugglebot` (both, always: `jugglebot` alone installs new node code over an
+   old interface, and the mismatch only shows at the first service call) and say so.
 3. `git add docs/records.md` if it changed (skill_node writes it live during the Sitting; it
    is committed at every Sitting close-out).
 
@@ -150,13 +210,15 @@ so held software work is never dropped):
    `logbook/INDEX.md` row.
 3. `python -m mapkit gen` (the Runbook page `docs/runbook.md` drops the passed rows and keeps
    the failed ones; the project-map page follows the status changes).
-4. `./run_tests.sh` (a merged branch already passed the full gate on its own; the merged
+4. `./run_tests.sh` (each merged branch passed the full gate on its updated tip; the merged
    result gets the per-commit gate here, the nightly covers the rest tonight). Red: stop, say
-   which test, do not commit.
+   which test, do not commit, and name the merged SHAs: they are on local `main`, unpushed, and
+   stay there for the owner to decide. Never reset them away.
 5. One commit: `docs(sitting): debrief <date> - <n> passed, <m> merged, <k> held` with the
    trailers `Logbook-Entry: <date>-sitting-debrief` and
    `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`; `git fetch && git status -sb`
-   again; `git push origin main`. Then push nothing else.
+   again; `git push origin main`. Then push nothing else. If `origin/main` has moved and the push is
+   rejected: section 0 applies, so pause and say what you see, with the merged SHAs named.
 
 ## 6. Finish
 
@@ -166,4 +228,5 @@ Say, in three lines: results read (passed / failed), merged and closed (with SHA
 Pinned by `tests/sim/test_sitting_debrief_protocol.py`: this file names every step the
 Runbook's `## Close-out` promises (results read, per-Item merge, return to `main`, rebuild if
 `ros_ws` changed, `docs/records.md`, follow-ups filed, the logbook entry, `mapkit gen`, the
-single-writer check, no force-push, the gate re-run with `--waive c`).
+single-writer check, no force-push, the branch brought up to date and the suite, audit and gate
+re-run on it with `--waive c`).

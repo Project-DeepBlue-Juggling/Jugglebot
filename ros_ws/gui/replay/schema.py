@@ -112,6 +112,7 @@ SUBSCRIBED: Tuple[str, ...] = (
     "/cone/heartbeat",
     "/cone/timing_result",
     "/control_mode_topic",
+    "/hand_fan/status",         # Hand fan indicator and toggle (2026-11-08)
     "/hand_telemetry",
     "/leg_setpoint_echo",
     "/link_status",

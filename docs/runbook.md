@@ -6,17 +6,16 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 block (30 min)
+Rigs: Robot 5 blocks (218 min) · Bench leg 1 block (30 min) · Bench hand 1 block (60 min)
 
 ## Setup 0: before power
 
 - Power-cycle the can-bridge after any re-cabling (sticky presence set trips CAN_BUS_DOWN).
-- Latch `hand_source` before arming (it resets to LEGACY on every bridge reboot).
-- Run `colcon build --packages-select jugglebot` and re-source before the Sitting (the install tree is stale until then).
+- Run `colcon build --packages-up-to jugglebot` and re-source before the Sitting (the install tree is stale until then; this builds the interfaces too, which a changed interface needs).
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Robot  (6 blocks, 233 min)
+## Robot  (5 blocks, 218 min)
 
 ### Block 1: armed  (1 row, 1 min)
 
@@ -71,18 +70,7 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - pass: about 30 caught Throws have flown at each Dwell and no Leg joint let go. Type the result as pending. The debrief computes, per Dwell, the Platform's velocity toward the partner Site at each release (from the bag) and the landing pull against the real release, and compares the two Dwells: a 5 Hz ring predicts a clear change over 0.05 s, an Apex effect predicts none.
 - record: the launch log and bag paths, the clock time of each Start with its Dwell, how many Attempts each Dwell took and why each ended early, any refusal text, and anything seen at the base joints.
 
-### Block 3: armed, bb-fed  (1 row, 15 min)
-
-#### JB-147 Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT)  (15 min, high, unattached)
-- why: the torque loss happened at 13-54 A so the 60 A limit does not explain the SPINOUTs and a 70 A brake is harder; this run measures whether the SPINOUT rate moves with the drive now at 70/80 A (K and limits unchanged). Flown at Apex 1.10: nomination refuses 1.35 at accept (nearest viable 1.25), and with the Hand C1 grace at 14 ms a release-knot stop overruns the stroke clip above 1.10 (-0.50 rev at 1.25). Flying higher needs a grace decision first.
-- do:
-  - Re-home the Hand first: the ODrive GUI save on 2026-11-03 (limits 70/80 A, thermistor 60/70 C) reset the zero (JB-146 class).
-  - Fly Columns, Sep. 125, Apex 1.10, Throws 21, twice, with `hand_capture` on (the 21st throw is the Stop throw, so a full Attempt reads 20/20).
-  - Stop at the FIRST SPINOUT_DETECTED or Hand iq over 66 A.
-- pass: no SPINOUT_DETECTED in either run.
-- record: per run the catches; the SPINOUT count with the Hand position, velocity and iq at the torque loss from the capture; the peak brake iq; whether the 70 A limit was in effect (an iq setpoint beyond 60 A).
-
-### Block 4: level  (1 row, 15 min)
+### Block 3: level  (1 row, 15 min)
 
 #### JB-113 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them  (15 min, medium, unattached)
 - why: re-measure the human-throw bench with the robot in place (moving Platform markers, a ball in the Cup, the robot blocking camera views) and the owner's throws at better lighting.
@@ -94,7 +82,7 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - pass: the bag replays through `tools/probes/human_throw_bench.py` with the robot-spot landing sd and the phantom rate reported.
 - record: the bag path, the lighting change, and the bench report path.
 
-### Block 5: armed, bb-fed, bridge-cycled  (2 rows, 95 min)
+### Block 4: armed, bb-fed, bridge-cycled  (2 rows, 95 min)
 
 #### JB-102 Pre-release hold rung: release from a moving Platform (hold 0.100 → 0)  (45 min, high, two-ball-oval)
 - why: the ZVD rows (mode provisional 4.9 Hz / 0.20 / 20 ms) have never flown. This A/B flies them against the flag-off carry on the oval, where carried Throws land about +59 mm long at Dwell 0.40. `gc_freeze` is on for both arms, its first flight (JB-149). The Platform mode is re-fitted afterwards from this Sitting's bag.
@@ -123,7 +111,7 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - pass: the five Columns Attempts each read `COMPLETED (20/20 caught)` with no leg LIMIT end and peak leg iq under 20 A; then the one-ball oval sustains 30 consecutive Catches in one Attempt at the shortest dwell flown (plan P4 gate).
 - record: caught of thrown and the end code per Attempt; the CATCH leg-velocity refusal count across the canary (JB-24 expects none at 600 mm/s); peak leg iq per leg per Attempt from the bag (the 20 A measurement); the shortest dwell reaching 30; the raw long bias per dwell (landed minus the command u), from rest and carried; the LIMIT_JERK refusal count; the oval plant_id; the bag and launch log paths; commit docs/records.md.
 
-### Block 6: level, armed  (1 row, 30 min)
+### Block 5: level, armed  (1 row, 30 min)
 
 #### JB-195 Leg encoder dropouts of 80 to 99 ms continue at the clock beat: trial encoder_msg_rate_ms 9 on Leg 4, then all Legs  (30 min, medium, unattached)
 - why: tests the Hand's 9 ms cure on the axis where zero episodes by chance is about 5e-4, far stronger than the Hand's own trial, and decides whether all six Legs change.
@@ -138,7 +126,7 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 
 ## Bench leg  (1 block, 30 min)
 
-### Block 7: bridge-cycled  (1 row, 30 min)
+### Block 6: bridge-cycled  (1 row, 30 min)
 
 #### JB-73 Hand ODrive state can silently diverge from what the can-bridge commanded  (30 min, low, unattached)
 - why: confirm FW 35's suppress-edge hold flush leaves the bench leg at the last transmitted command instead of input_pos + vel_ff/pos_gain, and measure the current step it costs.
@@ -149,20 +137,34 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - pass: in every rate-0 gap the leg settles within 0.01 rev of the last transmitted command (FW 33: 0.05-0.056 rev), MOTOR_FB_STALE self-clears when frames return, no MAX_DEVIATION latch, and the iq step at the suppress edge stays under about 10 A with no visible jolt (else switch to the pre-registered vel_ff ramp, logbook 2026-11-01-jb73-suppress-edge-hold-flush).
 - record: per gap the settle offset (rev), the last vel_ff, the ODrive iq step at the edge, and the run directory.
 
-## Bench hand  (1 block, 30 min)
+## Bench hand  (1 block, 60 min)
 
-### Block 8: armed, bridge-cycled  (1 row, 30 min)
+### Block 7: armed, bridge-cycled  (2 rows, 60 min)
+
+#### JB-203 Measure the Hand's commutation angle error through a hard brake on the bench Hand (FOC scope)  (30 min, high, unattached)
+- why: this proves `hand_foc_scope.py` works on the real drive and measures the angle error through a clean 4500 rev/s^2 brake, the baseline any reading of JB-147's torque loss needs.
+- do:
+  - Launch down. Bench Hand on the bridge, bridge rebooted after re-cabling, ODrive USB to the Jetson through the isolator, Hand homed and parked at or below 0.9 rev, Cup empty, E-stop in hand. Measure where the bench top stop is in rev.
+  - With the Hand still: `python tools/probes/hand_foc_scope.py probe --label bench`. Stop here if it prints NO-GO.
+  - Rung A, only if the stop is at or above 7.2 rev. Second terminal: `python tools/probes/hand_foc_scope.py capture --count 3 --label bench_70`.
+  - First terminal: `python tests/hardware/hand_stream_bench.py --stage stroke_cut --close-loop --repeat 3 --stroke-peak-vel 70 --cut-at-vel 55 --stroke-accel 2000 --stroke-top 6.0`. If a capture prints TIMED OUT, run the stage again.
+  - Repeat rung A once with `capture --preset power --count 1 --label bench_70_power` and the stage at `--repeat 1`.
+  - Rung B, only if the stop is at or above 9.5 rev and rung A settled cleanly: the same pair with `--label bench_100` and `--stroke-peak-vel 100 --cut-at-vel 85 --stroke-accel 2000 --stroke-top 7.9`.
+  - Stop at the first fault. Ctrl-C on the capture is safe; never Ctrl-C the stage mid-stroke. Recovery is `hand_stream_bench.py --clear-errors`.
+- pass: the probe prints GO; three captures fire on the brake with the whole brake inside the window; the stage reports no fault, no sched_refused and the same counter deltas as its model. The angle reading itself is a result, not a criterion.
+- record: the probe's sample rate, window, field strength and working offset; the bench top stop in rev; each capture's path and its angle-by-speed, torque-loss and phase-jump lines; the power capture's ratio, where about 1.0 confirms the voltage scaling; the stage's verdict lines; any fault.
 
 #### JB-145 Hand stall stop near a release cannot fit the stroke: the 20 ms grace plus the C2 stop carry the Hand past the clip  (30 min, medium, unattached)
 - why: FW 37 (owner call JB-154, option 2; grace 6 ms at FW 37, 14 ms at FW 39) stops a fast upward Hand inside the stroke when the stream dies; it has never run on hardware, and the stroke_cut bench stage exercises exactly that path with no ball.
 - do:
   - Launch down. Confirm the bridge identity reads FW 40 (proto 12). Bench Hand on the bridge, bridge rebooted after re-cabling, Hand homed and parked at or below 0.9 rev, Cup empty, E-stop in hand.
-  - From the repo root in the venv: `python tests/hardware/hand_stream_bench.py --stage stroke_cut --close-loop --repeat 3` (upstroke, 3 runs at the defaults: peak 70 rev/s, entry near 63 rev/s at the 14 ms grace, modelled hold 3.18 rev; FW 37 at 6 ms was 56.8 rev/s and 2.62 rev).
-  - Only if those runs settle comfortably: `python tests/hardware/hand_stream_bench.py --stage stroke_cut --cut-at-vel 64 --close-loop` (C1 entry about 73 rev/s, modelled hold 5.06 rev; 6 ms was 4.45 rev).
+  - Measure where the bench top stop is in rev. The defaults need it at or above 9.7 rev (stroke top 8.5, worst stop 8.66, plus the stage's 1.0 rev margin), and the stage only checks the production 10.501 clip. If it is lower, stop: this row needs a shorter stroke plan first.
+  - From the repo root in the venv: `python tests/hardware/hand_stream_bench.py --stage stroke_cut --close-loop --repeat 3` (upstroke, 3 runs at the defaults: peak 70 rev/s, entry near 63 rev/s at the 14 ms grace, modelled hold 3.18 rev from a 0.2 rev park and 3.88 from 0.9, and the stage prints its own; FW 37 at 6 ms was 56.8 rev/s and 2.62 rev).
+  - Only if those runs settle comfortably: `python tests/hardware/hand_stream_bench.py --stage stroke_cut --cut-at-vel 64 --close-loop` (C1 entry about 73 rev/s, modelled hold 5.06 rev from a 0.2 rev park and 5.76 from 0.9; 6 ms was 4.45 rev).
   - Controls: `--cut-mode downstroke --close-loop` (C2 stop, hold about 4.27 rev) and `--cut-mode slow --close-loop` (full 20 ms grace then C2, hold about 2.54 rev).
   - Never Ctrl-C mid-stroke: a disarm while moving leaves the Hand up to 2 rev above the last command. Recovery is `--clear-errors`.
 - pass: every upstroke run scores S1-S5 in the stage's verdict line: commanded peak at most the modelled hold + 0.1 rev and under 10.0 rev, sched_hand_c1_stops +1 and sched_stops +1 per run, no fault and no sched_refused, encoder settled within 0.05 rev of the hold within 150 ms; both controls show C1 count +0 with their hold within 0.1 rev of the model.
-- record: each run's verdict line (cut frame, entry speed, modelled and measured hold, encoder overshoot, settle time, counter deltas), the peak Iq at the stop entry, any guard or latch event, the temp/logs CSV paths, and the bench Hand rig's actual current cap (not written down anywhere; the stage assumes 10 A).
+- record: each run's verdict line (cut frame, entry speed, modelled and measured hold, encoder overshoot, settle time, counter deltas), the peak Iq at the stop entry, any guard or latch event, the temp/logs CSV paths, and the bench top stop in rev. The bench Hand's current cap is the same as production (owner, 2026-11-07), so the stage's 10 A assumption is void and its drive may follow the 4500 rev/s^2 stop more closely than modelled.
 
 ## Needs a Sitting section
 
@@ -174,13 +176,16 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - JB-114 [Robot] Hand end-of-stroke bumper, and first the planner's own brake shape: let the ceiling, not the Hand, cap the Apex: no ## Sitting section
 - JB-117 [Bench hand] Hand brake and hold currents sit far below the throw envelope's model (brake -14 to -20 A measured vs 35 to 40 A predicted; hold 1.5 vs 2.6 A): Kt, moving mass or friction is mis-modelled: no ## Sitting section
 - JB-120 [Robot] A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve: no ## Sitting section
+- JB-134 [Robot] Ball Butler yaw-settle gate aborts settled throws (THROW_ABORTED_NOT_SETTLED false positives): no ## Sitting section
 - JB-138 [Robot] Hand iq reached 53.3 A on a 45 deg turned hop launch, over the 50 A watch the high-low row names: no ## Sitting section
+- JB-147 [Robot] Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT): no ## Sitting section
 - JB-148 [Robot] One-off 2 m Throws: raised Hand limits and an overshoot protection the speed-scaled margin cannot give: no ## Sitting section
 - JB-166 [Robot] Firmware scheduler STOP fires on a clean host stream and ends the Attempt: no ## Sitting section
 - JB-167 [Robot] Install the host hold within one tick of a firmware scheduler STOP so a guard latch becomes a recoverable LANE_REFUSED: no ## Sitting section
 - JB-168 [Robot] Learner context cannot tell a Throw from rest from a carried Throw: no ## Sitting section
 - JB-186 [Robot] Mid-air ball collisions end half of two-ball Columns Attempts at Apex 1.00: closest approach about 70 mm at Sep. 100, 125 and 135: no ## Sitting section
 - JB-191 [Robot] Two-ball Columns runs end on a missed Catch of Ball 2 with no collision: 13 of 23 ends, mean run 22 Throws: no ## Sitting section
+- JB-193 [Robot] The flyback over-corrects a Catch offset by 1.2 to 1.4 times: each landing error returns at -0.3 to -0.45 on the next Throw: no ## Sitting section
 - JB-2 [Robot] Design change: the Hand should be Idle, not Parked Closed-loop, while Active: no ## Sitting section
 - JB-24 [Robot] 10 % jitter-margin class of LIMIT_* refusals: no ## Sitting section
 - JB-26 [Robot] Platform Teensy truncates the persisted levelling offset to int16 milliradians: no ## Sitting section
@@ -190,6 +195,7 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - JB-53 [Robot] Wave camera: optical frame calibration maps the START tick to a recorded frame: no ## Sitting section
 - JB-83 [Robot] can-bridge CAN3 analog drive path has a load-dependent hardware fault (the Jugglebot loom stays on CAN2): no ## Sitting section
 - JB-85 [Robot] Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z: no ## Sitting section
+- JB-86 [Robot] RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball: no ## Sitting section
 - JB-95 [Robot] Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load): no ## Sitting section
 - JB-96 [Robot] Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff: no ## Sitting section
 - JB-97 [Robot] ABORTED_NO_RELEASE: three goals ended because the throw never left the hand (new 2026-10-28 21:02): no ## Sitting section
@@ -198,7 +204,7 @@ Rigs: Robot 6 blocks (233 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 
 ## Questions a Sitting can answer
 
-- none
+- JB-205 JB-193's 40-Throw check needs a landing offset no parameter commands: build one, fly the ride-along without it, or close JB-193? (parent JB-193)
 
 ## Close-out
 

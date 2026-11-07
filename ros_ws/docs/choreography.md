@@ -158,6 +158,12 @@
 - **subscribers:** _none_
 - **type:** `jugglebot_interfaces.msg.RigidBodyPoses`
 
+### `hand_fan/status`
+
+- **publishers:** `teensy_bridge_node`
+- **subscribers:** _none_
+- **type:** `jugglebot_interfaces.msg.HandFanStatus`
+
 ### `hand_telemetry`
 
 - **publishers:** `teensy_bridge_node`
@@ -436,6 +442,12 @@
 - **clients:** `orchestrator_node`
 - **type:** `jugglebot_interfaces.srv.GetTiltReadingService`
 
+### `hand_fan/set`
+
+- **servers:** `teensy_bridge_node`
+- **clients:** _none_
+- **type:** `jugglebot_interfaces.srv.SetHandFan`
+
 ### `hand_jam_dry_run`
 
 - **servers:** `teensy_bridge_node`
@@ -624,6 +636,8 @@ broken wire cannot hide among them.
 - `deactivate` — service with no clients
 - `gui/mocap_data` — topic with no subscribers
 - `gui/rigid_body_poses` — topic with no subscribers
+- `hand_fan/set` — service with no clients
+- `hand_fan/status` — topic with no subscribers
 - `hand_jam_dry_run` — service with no clients
 - `hand_move_to` — service with no clients
 - `home` — service with no clients

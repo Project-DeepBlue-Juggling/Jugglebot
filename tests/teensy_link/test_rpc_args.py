@@ -164,6 +164,32 @@ def test_wave_cmd_exact_bytes():
     assert len(blob) == 8
 
 
+def test_hand_fan_set_exact_bytes():
+    blob = ra.encode_hand_fan_set("on", 30.0, 28.5)
+    assert blob == struct.pack("<Bff", 1, 30.0, 28.5)
+    assert len(blob) == 9
+
+
+def test_hand_fan_set_refuses_an_unknown_mode():
+    with pytest.raises(KeyError):
+        ra.encode_hand_fan_set("high", 35.0, 34.0)
+
+
+def test_hand_fan_status_decodes_the_platform_layout():
+    # The same bytes tests/firmware/native/test_platform_hand_fan.cpp asserts
+    # hand_fan.h sends: AUTO, fan on, reading valid, 35.00 / 34.00, 41.25 C.
+    status = ra.decode_hand_fan_status(
+        bytes([0, 0x03, 0xAC, 0x0D, 0x48, 0x0D, 0x1D, 0x10]))
+    assert status == ra.HandFanStatus("auto", True, True, 35.0, 34.0, 41.25)
+
+
+def test_hand_fan_status_refuses_a_bad_frame():
+    with pytest.raises(ValueError):
+        ra.decode_hand_fan_status(bytes(7))
+    with pytest.raises(ValueError):
+        ra.decode_hand_fan_status(bytes([9]) + bytes(7))
+
+
 def test_bb_payloadless_commands_are_empty():
     # RELOAD/RESET/CALIBRATE_LOC ride a 0-byte args payload — matches NOP shape.
     # The Teensy ignores any trailing bytes on these methods anyway, but the

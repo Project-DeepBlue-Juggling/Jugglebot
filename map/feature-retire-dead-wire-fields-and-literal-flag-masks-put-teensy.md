@@ -26,3 +26,11 @@ Small hygiene residue, one chore item. The `.action` edit needs a colcon rebuild
 - `gpio_poll.cpp:71-74` still says PROVISIONAL.
 
 Source entries: [logbook/2026-06-08-bb-cutover-bench.md](logbook/2026-06-08-bb-cutover-bench.md), [logbook/2026-06-29-canbridge-phase0-native-harness.md](logbook/2026-06-29-canbridge-phase0-native-harness.md), [logbook/2026-09-21-agent-skills-config-and-docs-link-contract.md](logbook/2026-09-21-agent-skills-config-and-docs-link-contract.md), [logbook/2026-10-13-skill-stack-r5-wave-2-after-sitting-7.md](logbook/2026-10-13-skill-stack-r5-wave-2-after-sitting-7.md)
+
+## Split (2026-11-07)
+
+Night Shift can merge: the `mkdocs.yml` nav entry and the two heartbeat masks (now at `teensy_bridge_node.py:815` and `:820`, named constants that should read `p.HeartbeatT2JFlags`).
+
+Night Shift builds and holds: removing `suppress_announcement`, because `.action` is in `jugglebot_interfaces`.
+
+A day Session: the `HAND_LANE_REFUSED` rename, which touches the frozen `INVARIANTS.md`. The next firmware commit: the `gpio_poll.cpp` comment. Close this Item when all four are done.

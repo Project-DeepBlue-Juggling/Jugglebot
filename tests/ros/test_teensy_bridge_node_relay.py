@@ -20,6 +20,7 @@ import struct
 from teensy_link import RpcMethod, RpcStatus, MsgType, PlatformFrame
 from teensy_link import rpc_args
 from teensy_link import protocol as p
+import jugglebot.protocol_config as proto
 
 from tests.ros._bridge_harness import _build_paired_node, _platform_frame, _teardown
 
@@ -223,4 +224,122 @@ def test_relay_lock_serializes_rmw_against_concurrent_relay():
         node._relay_lock.release()
     finally:
         node.relay_write_robot_state = orig
+        _teardown(teensy, client, node)
+
+
+# ── Hand fan ─────────────────────────────────────────────────────────────────
+_FAN_STATUS_ID = proto.CAN_ID_PLATFORM_HAND_FAN_STATUS
+
+
+def _fan_status_bytes(mode_id, flags, on_c, off_c, motor_c):
+    return struct.pack("<BBhhh", mode_id, flags, round(on_c * 100), round(off_c * 100),
+                       round(motor_c * 100))
+
+
+def _answer_fan_set(teensy, kept=None):
+    """Answer HAND_FAN_SET with a status frame echoing the command, or with ``kept``
+    to model a Platform that refused it."""
+    calls = []
+
+    def handler(req_id, args):
+        mode_id, on_c, off_c = struct.unpack("<Bff", args)
+        calls.append((mode_id, on_c, off_c))
+        data = kept if kept is not None else _fan_status_bytes(mode_id, 0x03, on_c, off_c, 30.0)
+        teensy.send_to_jetson(int(MsgType.PLATFORM_FRAME), _platform_frame(_FAN_STATUS_ID, data))
+        return (int(RpcStatus.OK), b"")
+
+    teensy.on_rpc(int(RpcMethod.HAND_FAN_SET), handler)
+    return calls
+
+
+def test_set_hand_fan_sends_the_mode_and_confirms_from_the_status_frame():
+    teensy, client, node = _node()
+    try:
+        calls = _answer_fan_set(teensy)
+        ok, msg = node.set_hand_fan("on", 30.0, 28.5)
+        assert ok, msg
+        assert calls == [(1, 30.0, 28.5)]
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_set_hand_fan_zero_thresholds_keep_the_configured_defaults():
+    teensy, client, node = _node()
+    try:
+        calls = _answer_fan_set(teensy)
+        ok, msg = node.set_hand_fan("off")
+        assert ok, msg
+        assert calls == [(2, 35.0, 34.0)]
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_set_hand_fan_zero_thresholds_keep_the_board_values_once_it_has_reported():
+    teensy, client, node = _node()
+    try:
+        calls = _answer_fan_set(teensy)
+        node._hand_fan_status_frame = _fan_status_bytes(0, 0, 30.0, 28.0, 25.0)
+        node._hand_fan_status_tick()
+        ok, msg = node.set_hand_fan("auto")
+        assert ok, msg
+        assert calls == [(0, 30.0, 28.0)]
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_set_hand_fan_refuses_bad_requests_without_sending():
+    teensy, client, node = _node()
+    try:
+        calls = _answer_fan_set(teensy)
+        assert node.set_hand_fan("high")[0] is False
+        assert node.set_hand_fan("auto", 30.0, 30.0)[0] is False
+        assert node.set_hand_fan("auto", 61.0, 30.0)[0] is False
+        assert node.set_hand_fan("auto", 30.0, 4.0)[0] is False
+        assert calls == []
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_set_hand_fan_reports_a_platform_that_kept_its_old_values():
+    teensy, client, node = _node()
+    try:
+        _answer_fan_set(teensy, kept=_fan_status_bytes(0, 0, 35.0, 34.0, 25.0))
+        ok, msg = node.set_hand_fan("on")
+        assert ok is False
+        assert "refused" in msg
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_set_hand_fan_reports_no_status_as_a_platform_needing_the_firmware():
+    teensy, client, node = _node()
+    try:
+        teensy.on_rpc(int(RpcMethod.HAND_FAN_SET), lambda req_id, args: (int(RpcStatus.OK), b""))
+        ok, msg = node.set_hand_fan("on")
+        assert ok is False
+        assert "FW 9" in msg
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_a_status_frame_is_published_once_and_a_malformed_one_is_dropped():
+    teensy, client, node = _node()
+    try:
+        published = []
+        node.hand_fan_status_pub.publish = published.append
+
+        node._hand_fan_status_frame = _fan_status_bytes(1, 0x03, 30.0, 28.5, 41.25)
+        node._hand_fan_status_tick()
+        node._hand_fan_status_tick()
+        assert len(published) == 1
+        assert published[0].mode == "on"
+        assert published[0].fan_on is True
+        assert published[0].reading_valid is True
+        assert published[0].on_above_c == 30.0
+        assert published[0].motor_temp_c == 41.25
+
+        node._hand_fan_status_frame = bytes([9]) + bytes(7)
+        node._hand_fan_status_tick()
+        assert len(published) == 1
+    finally:
         _teardown(teensy, client, node)

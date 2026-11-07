@@ -22,3 +22,7 @@ filed_by: claude
 ---
 
 The CAN adapter design s7 calls for one JSON fixture of frame vectors that the ESP32 firmware tests and the node tests both consume (the clapboard precedent). Not written; the vectors live in `tests/ros/test_wave_camera.py` until it is.
+
+## Review (2026-11-07)
+
+The ESP32 code is now in this repo (`ros_ws/src/jugglebot/WaveCamera_ESP_code/`), so "both repos" above is stale and one commit can land both consumers. Its 80 native cases run in the gate since 2026-11-07 through `tests/firmware/test_wave_native.py`. `src/`, `include/` and `platformio.ini` are frozen; `test/` is open, and that is all this Item needs.

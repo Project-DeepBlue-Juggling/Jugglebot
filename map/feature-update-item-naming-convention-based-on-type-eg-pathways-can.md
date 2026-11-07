@@ -2,10 +2,11 @@
 id: JB-118
 kind: feature
 title: Update item naming convention based on type (eg. Pathways can be "PWAY-<N>" and Plans can be "PLAN-<N>" etc.
-status: complete
+status: promoted
 created: '2026-10-30'
-updated: '2026-11-01T01:04:55Z'
-owners: []
+updated: '2026-11-07T06:49:37Z'
+owners:
+- jugglebot-61
 priority: medium
 effort: m
 hardware: none
@@ -13,8 +14,11 @@ owner: decision
 radius: cross-cutting
 area: map-app
 blocked_by: []
-links: []
+links:
+- plans/active/item-id-per-kind.md
 filed_by: harrison
+parent: map-improvements
+promoted_to: item-id-per-kind.md
 ---
 
 Having everything share a JB- prefix is a little confusing
@@ -35,3 +39,6 @@ A question ticket carries this to the owner; the answer under its `## Answer` re
 ## Progress
 
 - 2026-11-01: Answered by JB-131 (display only, one JB-n sequence kept); shipped in the map app (fork cc2f3d4, deployed 2026-11-01): a kind pill beside every Item ID, JB-n in reports links to the drawer.
+- 2026-11-07: Reopened by the owner: reverses the JB-131 answer. Going with option 3, per-kind prefixes with per-kind counters, with every Item-ID reference to JB rewritten; implementation plan in draft.
+- 2026-11-07: Plan plans/active/item-id-per-kind.md written with the owner's four decisions: TKT for Tickets, filenames kept, old IDs translate on reads and refuse on writes, plans left out. Promoted so no Night Shift picks up a phase.
+- 2026-11-07: P0 complete: GLOSSARY gains Kind, rewrites Item ID and Ticket after a grilling round; ADR-0015 records the reversal. No Item has changed ID yet. P1 is next.

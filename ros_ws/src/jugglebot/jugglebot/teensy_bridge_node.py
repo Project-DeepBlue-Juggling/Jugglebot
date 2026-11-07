@@ -66,6 +66,7 @@ from jugglebot_interfaces.msg import (
     BallButlerHeartbeat,
     CatchEvent,
     CatchingConeHeartbeat,
+    HandFanStatus,
     HandTelemetryMessage,
     MotorStateSingle,
     RobotState,
@@ -76,6 +77,7 @@ from jugglebot_interfaces.msg import (
 from jugglebot_interfaces.srv import (
     ODriveCommandService,
     SetFloat,
+    SetHandFan,
     SetHandGains,
     SetString,
     ActivateOrDeactivate,
@@ -1876,6 +1878,8 @@ class TeensyBridgeNode(Node):
         # 0x6E0 write echo (bench-probe gate; see _await_platform_reply).
         self._platform_reply_cv = threading.Condition()
         self._platform_replies = {}    # can_id -> (data: bytes, dlc: int)
+        self._hand_fan_status_frame = None   # newest HAND_FAN_STATUS bytes, unpublished
+        self._hand_fan_status = None         # last decoded rpc_args.HandFanStatus
         # Concurrency hardening: serialize whole relay round-trips. Two concurrent
         # relay ops (e.g. a boot/reconnect STATE_READ racing a home's STATE_WRITE)
         # would otherwise (a) clear + await the same can_id's latched reply and
@@ -2189,6 +2193,9 @@ class TeensyBridgeNode(Node):
         # camera/heartbeat at 10 Hz (connected=False before the first frame),
         # camera/record_event per START/STOP/AUTO_STOP/REFUSED, and a 1 Hz
         # camera_diag DiagnosticStatus carrying the WAVE_INFO pages.
+        # hand_fan/status: the Platform Teensy's 1 Hz fan frame, so a bag says which
+        # arm of an A/B test each stretch belongs to.
+        self.hand_fan_status_pub = self.create_publisher(HandFanStatus, 'hand_fan/status', 10)
         self.wave_heartbeat_pub = self.create_publisher(
             WaveCameraHeartbeat, 'camera/heartbeat', 10)
         self.wave_record_event_pub = self.create_publisher(
@@ -2340,6 +2347,12 @@ class TeensyBridgeNode(Node):
         # stream (its RPC can block up to 0.2 s and must never stall the
         # default group's 100 Hz timers).
         self._wave_cbgroup = ReentrantCallbackGroup()
+        # hand_fan/set waits (bounded) for the Platform's status frame, so like the
+        # Wave services it must not sit in the default group with the 100 Hz timers.
+        self._hand_fan_cbgroup = ReentrantCallbackGroup()
+        self.create_service(SetHandFan, 'hand_fan/set', self._svc_hand_fan_set,
+                            callback_group=self._hand_fan_cbgroup)
+        self.create_timer(self._HAND_FAN_PUBLISH_PERIOD_S, self._hand_fan_status_tick)
         self.create_service(Trigger, 'camera/record_start', self._svc_wave_record_start,
                             callback_group=self._wave_cbgroup)
         self.create_service(Trigger, 'camera/record_stop', self._svc_wave_record_stop,
@@ -2868,6 +2881,8 @@ class TeensyBridgeNode(Node):
         data = bytes(pf.data[:pf.dlc])
         with self._platform_reply_cv:
             self._platform_replies[int(pf.can_id)] = (data, int(pf.dlc))
+            if int(pf.can_id) == proto.CAN_ID_PLATFORM_HAND_FAN_STATUS:
+                self._hand_fan_status_frame = data
             self._platform_reply_cv.notify_all()
 
     def _on_hand_cmd_echo(self, msg_type, seq, payload, addr):
@@ -7207,6 +7222,97 @@ class TeensyBridgeNode(Node):
     # few times to harden that durability.
     _REBOOT_CLEAR_ATTEMPTS = 3
     _REBOOT_CLEAR_RETRY_S = 0.2
+
+    _HAND_FAN_PUBLISH_PERIOD_S = 0.25   # picks up the 1 Hz frame and fan changes promptly
+    _HAND_FAN_ACK_TIMEOUT_S = 0.5
+
+    def _hand_fan_status_tick(self):
+        """Publish a new HAND_FAN_STATUS frame, and log any change of mode, fan state
+        or thresholds so the launch log carries the A/B arms too. The frame is latched
+        on the RX thread; a malformed one is dropped."""
+        with self._platform_reply_cv:
+            data = self._hand_fan_status_frame
+            self._hand_fan_status_frame = None
+        if data is None:
+            return
+        try:
+            status = rpc_args.decode_hand_fan_status(data)
+        except ValueError as e:
+            self.get_logger().warning(f'hand fan status dropped: {e}',
+                                      throttle_duration_sec=5.0)
+            return
+        previous = self._hand_fan_status
+        self._hand_fan_status = status
+        if previous is None or status[:2] != previous[:2] or status[3:5] != previous[3:5]:
+            self.get_logger().info(
+                f'hand fan: mode={status.mode} fan_on={status.fan_on} '
+                f'on_above={status.on_above_c:.2f} off_below={status.off_below_c:.2f} '
+                f'motor={status.motor_temp_c:.2f} C')
+        msg = HandFanStatus()
+        msg.mode = status.mode
+        msg.fan_on = status.fan_on
+        msg.reading_valid = status.reading_valid
+        msg.on_above_c = float(status.on_above_c)
+        msg.off_below_c = float(status.off_below_c)
+        msg.motor_temp_c = float(status.motor_temp_c)
+        self.hand_fan_status_pub.publish(msg)
+
+    def set_hand_fan(self, mode, on_above_c=0.0, off_below_c=0.0):
+        """Set the Platform Teensy's Hand fan and confirm from its status frame.
+        A threshold of 0 keeps the current value, from the newest status frame or
+        else the configured default. Returns (ok, message)."""
+        if mode not in rpc_args.HAND_FAN_MODES:
+            return False, f"unknown mode {mode!r}: use auto, on or off"
+        current = self._hand_fan_status
+        keep_on = current.on_above_c if current else hw.TEENSY_HAND_FAN_ON_ABOVE_C
+        keep_off = current.off_below_c if current else hw.TEENSY_HAND_FAN_OFF_BELOW_C
+        on_c = float(on_above_c) if on_above_c else keep_on
+        off_c = float(off_below_c) if off_below_c else keep_off
+        if not (hw.TEENSY_HAND_FAN_THRESHOLD_MIN_C <= off_c < on_c
+                <= hw.TEENSY_HAND_FAN_THRESHOLD_MAX_C):
+            return False, (f'thresholds need {hw.TEENSY_HAND_FAN_THRESHOLD_MIN_C} <= off '
+                           f'< on <= {hw.TEENSY_HAND_FAN_THRESHOLD_MAX_C} C, got '
+                           f'on_above={on_c} off_below={off_c}')
+
+        can_id = proto.CAN_ID_PLATFORM_HAND_FAN_STATUS
+        with self._relay_lock:   # serialize the whole relay round-trip
+            with self._platform_reply_cv:
+                self._platform_replies.pop(int(can_id), None)
+            ok, message, _ = self._call_rpc(
+                RpcMethod.HAND_FAN_SET, rpc_args.encode_hand_fan_set(mode, on_c, off_c))
+            if not ok:
+                return False, f'{message} (HAND_FAN_SET needs can-bridge FW 41)'
+            # The 1 Hz frame can land between the pop and the command taking effect, so
+            # keep reading until one matches or the time runs out.
+            deadline = time.monotonic() + self._HAND_FAN_ACK_TIMEOUT_S
+            status = None
+            while True:
+                remaining = deadline - time.monotonic()
+                data = self._await_platform_reply(can_id, 8, max(remaining, 0.0))
+                if data is not None:
+                    try:
+                        status = rpc_args.decode_hand_fan_status(data)
+                    except ValueError:
+                        status = None
+                    if (status is not None and status.mode == mode
+                            and abs(status.on_above_c - on_c) < 0.01
+                            and abs(status.off_below_c - off_c) < 0.01):
+                        return True, (f'mode={mode} fan_on={status.fan_on} on_above={on_c:.2f} '
+                                      f'off_below={off_c:.2f} motor={status.motor_temp_c:.2f} C')
+                    with self._platform_reply_cv:
+                        self._platform_replies.pop(int(can_id), None)
+                if remaining <= 0.0:
+                    break
+        if status is not None:
+            return False, f'Platform Teensy kept {status}: command refused or still applying'
+        return False, 'no HAND_FAN_STATUS within timeout (Platform Teensy needs FW 9)'
+
+    def _svc_hand_fan_set(self, req, res):
+        """hand_fan/set: mode auto, on or off, and optional AUTO thresholds, in RAM on
+        the Platform Teensy until it next reboots."""
+        res.success, res.message = self.set_hand_fan(
+            req.mode, req.on_above_c, req.off_below_c)
+        return self._log_service_outcome('hand_fan/set', res)
 
     def _await_platform_reply(self, can_id, expected_dlc, timeout):
         """Block (calling thread) for a fresh PLATFORM_FRAME on ``can_id`` with the

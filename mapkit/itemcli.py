@@ -237,7 +237,7 @@ def _unique_slug(map_dir: str, base: str) -> str:
 
 
 def _ref_or_stem(items: List[Item], text: str) -> str:
-    """A typed reference (``JB-3`` or a stem/slug) -> the stem stored on disk."""
+    """A typed reference (``JB-3`` or ``BUG-3`` or a stem/slug) -> the stem stored on disk."""
     try:
         return ids.stem(ids.resolve(items, text))
     except ids.IdError as exc:
@@ -281,7 +281,7 @@ def new_item(repo_root: str, kind: str, title: str, parent: Optional[str] = None
                            + "\n  ".join(m.describe() for m in near))
     upstream = ids.upstream_ref(repo_root)  # the ref the push loop rebases onto
     meta: Dict[str, object] = {
-        "id": ids.allocate(repo_root, upstream, items=items), "kind": kind, "title": title,
+        "id": ids.allocate(repo_root, upstream, items=items, kind=kind), "kind": kind, "title": title,
         "status": _DEFAULT_STATUS.get(kind, "inbox"), "created": _today(), "updated": _now(),
         "owners": [], "priority": priority, "blocked_by": [], "links": [],
     }
@@ -303,7 +303,7 @@ def new_item(repo_root: str, kind: str, title: str, parent: Optional[str] = None
             raise ItemCliError("parent %r is a %s, not a pathway" % (parent, pw.kind))
         meta["parent"] = pw.slug
     for l in links or []:
-        ref = _ref_or_stem(items, l) if ids.parse(l) is not None else l
+        ref = _ref_or_stem(items, l) if ids.typed_ref(l) is not None else l
         if ref not in meta["links"]:
             meta["links"].append(ref)
     if kind in ("idea", "feature", "bug"):
@@ -462,7 +462,7 @@ def list_items(repo_root: str, pathway: Optional[str] = None, kind: Optional[str
     today = today or datetime.date.today()
     out = []
     items = load_items(os.path.join(repo_root, MAP_DIR))
-    if pathway and ids.parse(pathway, allow_bare=True) is not None:
+    if pathway and (ids.typed_ref(pathway) is not None or pathway.strip().isdigit()):
         pathway = _pathway(items, pathway).slug
     for i in items:
         if kind and i.kind != kind:

@@ -98,6 +98,7 @@ class RpcMethod(IntEnum):
     BB_FW_INFO = 96  # Ball Butler FW-over-CAN: read the running FW_VERSION (relay → CAN1 0x7D6 op 0x05)
     HAND_MOVE_TO = 97  # Hand-only TRAP_TRAJ move to a caller target (ACTIVATE's axis-6 ladder); deferred reply at arrival / timeout / supersede
     WAVE_CMD = 98  # Wave camera: send one WAVE_CMD intent frame on the cone bus
+    HAND_FAN_SET = 99  # Relay: set the Platform Teensy's Hand fan mode and thresholds
 
 class RpcStatus(IntEnum):
     OK = 0  # Success
@@ -1257,6 +1258,27 @@ class ArgRobotState:
         vals = _ARG_ROBOT_STATE_STRUCT.unpack(data[:10])
         it = iter(vals)
         return cls(next(it), next(it), next(it), next(it))
+
+# ArgHandFanSet (HAND_FAN_SET)
+ARG_HAND_FAN_SET_FMT = '<Bff'
+ARG_HAND_FAN_SET_SIZE = 9
+_ARG_HAND_FAN_SET_STRUCT = struct.Struct(ARG_HAND_FAN_SET_FMT)
+assert _ARG_HAND_FAN_SET_STRUCT.size == 9
+
+@dataclass
+class ArgHandFanSet:
+    mode: int = 0
+    on_above_c: float = 0.0
+    off_below_c: float = 0.0
+
+    def pack(self) -> bytes:
+        return _ARG_HAND_FAN_SET_STRUCT.pack(self.mode, self.on_above_c, self.off_below_c)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ArgHandFanSet':
+        vals = _ARG_HAND_FAN_SET_STRUCT.unpack(data[:9])
+        it = iter(vals)
+        return cls(next(it), next(it), next(it))
 
 # ArgPlatformFwBegin (PLATFORM_FW_BEGIN, BB_FW_BEGIN)
 ARG_PLATFORM_FW_BEGIN_FMT = '<I'

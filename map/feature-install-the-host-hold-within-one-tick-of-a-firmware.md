@@ -2,9 +2,9 @@
 id: JB-167
 kind: feature
 title: Install the host hold within one tick of a firmware scheduler STOP so a guard latch becomes a recoverable LANE_REFUSED
-status: inbox
+status: backlog
 created: '2026-11-04'
-updated: '2026-11-05T12:29:17Z'
+updated: '2026-11-07T17:49:27Z'
 owners: []
 priority: medium
 effort: m
@@ -56,6 +56,83 @@ Correction to the Options of 2026-11-05: option 2 cannot do what it said. The fi
 
 No code was written for this Item tonight.
 
+## Findings (2026-11-07)
+
+Verdict: FW 40 did not change the race. The firmware already holds a stopped lane itself; the guard latch comes from the host plan still streaming frames the firmware refuses, and the host hold cannot beat a guard that trips in tens of ms.
+
+### 1. What a STOP does today (FW 40, main)
+
+Source: `leg_interp.cpp` block comment at 362-408, `sched_apply` 725-752, Hand guard 1455-1500, `canbridge_config.h` 499-544.
+
+| Step | Owner |
+|---|---|
+| Last frame's 50 ms cover ends, span-2 cubic continues for the grace (legs 20 ms, Hand 14 ms if rising over 50 rev/s) | firmware |
+| Grace out: C2 stop (Hand: C1 stop) to rest, then HOLD | firmware |
+| Next frame within tolerance (Hand 0.05 rev, 8 rev/s): resumes | firmware, no host action |
+| Next frame discontinuous while armed: REFUSED, lane latched, `sched_refused` +1 | firmware |
+| Refused frame becomes the base command, so the guard measures the walk-away | firmware |
+
+- Hand guard: `MAX_DEVIATION_HAND_REV` 2.5 rev, counts only anchors fresher than 30 ms.
+- Leg guard: 1.0 rev.
+- By design a refusal "fails loud": the guard is meant to trip if the plan keeps walking.
+
+### 1b. The host side
+
+- The host learns of a refusal only through `sched_refused` on the 10 Hz `/link_status` (`skill_node.py` `_on_link_status` 1966, `_hand_lane_refused` 2074).
+- `_on_tick` then ends the Attempt LANE_REFUSED and sets `_force_hold` (3665-3671). `trajectory/hold` builds a hand-less plan (`trajectory_node._svc_hold`), so no further Hand frame is sent.
+- A STOP that resumes cleanly never reaches this path; only a refusal does.
+- Race: the firmware holds from the STOP on. The danger window is refusal to hold installed: the plan keeps walking and the refused base command widens the deviation.
+
+### 1c. Why the host hold cannot win (hypothesis, arithmetic only)
+
+- Hand command speeds at a STOP were 52-100 rev/s (JB-166 Progress).
+- At 50 rev/s the 2.5 rev band fills in about 50 ms. At 78 rev/s, about 32 ms.
+- Measured STOP to hold: 130-340 ms; END to hold installed: 110-210 ms; guard beat the hold in 2 of 4 (by 170 ms and 51 ms) (JB-167 probe, 2026-11-05).
+- Publish on change saves at most 100 ms (about 50 ms mean). That is under the END to hold term alone.
+- A same-tick install would still leave `trajectory/hold` service time. It cannot turn a 32-50 ms guard budget into a win.
+- Not measured: the hold's service latency split. Option 4 of the ticket (read where 110-210 ms goes) is still open.
+
+### 2. How often since FW 39 / FW 40
+
+FW 40 flashed 2026-11-06 00:52 and has flown (debrief `can-bridge v40`, JB-174 closed pass: lost 0, queue_dropped +0, 12613 setpoints).
+
+| Sitting | STOPs | Refused ends / guard latches from a STOP |
+|---|---|---|
+| 2026-11-06 first debrief | 9 WARNs, 2 at Attempt start | no LANE_REFUSED end (JB-149 row) |
+| 2026-11-06 endurance (14:55) | 25 on a clean stream in 51 min | none refused the lane (JB-166 Progress); 2 LANE_REFUSED ends were GC pauses in `trajectory_node` (58-64 ms) |
+| 2026-11-06 20:20 | 3, none in a goal | none |
+
+- Hand C1 stops still fire under FW 40 with lost 0: about 1 per 1175 Throw upstrokes, host gaps (14:55 L7017, forward gap 60 ms). The 14 ms grace stays (owner, `2026-11-06-hand-c1-grace-stays-14-ms`).
+- No guard latch in these Sittings is attributed to the STOP-to-hold race. The FW 40-era fault ends the debriefs name were drive faults (SPINOUT, CURRENT_LIMIT_VIOLATION); one end is labelled GUARD_LATCHED (JB-175) with no STOP timing given, so it is unclassified.
+- Not read: raw logs. The debriefs do not give a per-STOP guard split, so "none" is as far as the entries go.
+- No Runbook row exists for JB-167 (`docs/runbook.md` lists it as needing a section). The only row touching STOPs is JB-149's, a one-minute watch for a LANE_REFUSED under `gc_probe`.
+
+### 3. Where the Item sits
+
+Needed in a smaller form, or waiting on JB-149's watch row. The 2026-11-03 STOP supply (one missing frame, 1.3-1.5 %) is gone; the remainder is host gaps from GC pauses, which JB-149's `gc_freeze` trial addresses.
+
+Options:
+1. Wait: the JB-149 `gc_freeze` arm and the next LANE_REFUSED end under `gc_probe` decide whether any STOP-to-guard latch still occurs. Touches nothing on the robot path.
+2. Publish on change anyway: saves about 50 ms mean, cannot beat a 32-50 ms guard. Not recommended; the code no longer supports the case for it.
+3. Firmware edge heartbeat on a STOP (ticket option 3): about 1 ms to the host, plus a host change. Still leaves the hold service time. Touches firmware and the host hold path; owner Session, safety-bearing.
+4. Firmware stops adopting a refused frame as base command, or freezes it while the host hold lands (hypothesis, not in the ticket). Removes the race at its source but reverses the "fails loud" design, so the guard would no longer trip on a walking plan. Safety-bearing; offline replay first.
+5. Park: the guard stays the authority, a latch costs one CLEAR_ERRORS, and STOPs that refuse have not recurred since FW 40.
+
+Recommendation: 5 now, with option 1 as the unpark condition (a LANE_REFUSED or guard latch within 300 ms of a STOP on a Sitting on FW 40, with `lost 0`). If that appears, take option 3 first, since 4 weakens the guard.
+
+### Gaps
+
+- No STOP-to-hold latency was re-measured on FW 40; the 110-210 ms is from 2026-11-05 data (FW 38/39).
+- GC-pause LANE_REFUSED ends on FW 40 (73 and 62 Throw runs) did recover through the host hold without a latch; the debriefs do not say how long it took.
+
+## Parked (2026-11-08)
+
+Parked on the owner's answer in JB-198. The guard stays the authority and a latch costs one CLEAR_ERRORS.
+
+- **Unpark when:** a Sitting on FW 40 or later shows a LANE_REFUSED or a guard latch within 300 ms of a STOP, with `lost 0`.
+- **Then:** take the firmware edge heartbeat first, because stopping the firmware adopting a refused frame weakens the guard.
+
 ## Progress
 
 - 2026-11-05: Probe done 2026-11-05 (option 1): STOP -> hold 130-340 / 300 / 320 / 275 ms; WARN lag from 10 Hz link_status 0-130 ms, then 110-210 ms END -> hold installed. Guard latched before the hold in 2 of 4 (L1399 by 170 ms, L2361 by 51 ms). Publishing on change helps; the END -> install leg is the larger term.
+- 2026-11-08: Night Shift 2026-11-08: parked on the owner's answer in JB-198 until a LANE_REFUSED or guard latch within 300 ms of a STOP on FW 40 with lost 0 (detail below)

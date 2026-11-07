@@ -98,6 +98,7 @@ namespace RpcMethod {
   constexpr uint16_t BB_FW_INFO = 0x0060u;  // Ball Butler FW-over-CAN: read the running FW_VERSION (relay → CAN1 0x7D6 op 0x05)
   constexpr uint16_t HAND_MOVE_TO = 0x0061u;  // Hand-only TRAP_TRAJ move to a caller target (ACTIVATE's axis-6 ladder); deferred reply at arrival / timeout / supersede
   constexpr uint16_t WAVE_CMD = 0x0062u;  // Wave camera: send one WAVE_CMD intent frame on the cone bus
+  constexpr uint16_t HAND_FAN_SET = 0x0063u;  // Relay: set the Platform Teensy's Hand fan mode and thresholds
 }
 namespace RpcStatus {
   constexpr uint16_t OK = 0x0000u;  // Success
@@ -685,6 +686,13 @@ struct ArgRobotState {
   float pose_offset_tiltY;  // Levelling pose offset, tilt about Y (rad)
 };
 static_assert(sizeof(ArgRobotState) == 10, "ArgRobotState size drift");
+// ArgHandFanSet (HAND_FAN_SET)
+struct ArgHandFanSet {
+  uint8_t mode;  // 0 AUTO, 1 FORCE_ON, 2 FORCE_OFF
+  float on_above_c;  // Hand motor thermistor above this turns the fan on in AUTO (deg C)
+  float off_below_c;  // Hand motor thermistor below this turns the fan off in AUTO (deg C)
+};
+static_assert(sizeof(ArgHandFanSet) == 9, "ArgHandFanSet size drift");
 // ArgPlatformFwBegin (PLATFORM_FW_BEGIN, BB_FW_BEGIN)
 struct ArgPlatformFwBegin {
   uint32_t image_len;  // Total image length in bytes
@@ -722,6 +730,7 @@ constexpr uint16_t ARG_WAVE_CMD_SIZE = 8u;
 constexpr uint16_t ARG_BB_THROW_SIZE = 20u;
 constexpr uint16_t RESULT_BB_THROW_SIZE = 4u;
 constexpr uint16_t ARG_ROBOT_STATE_SIZE = 10u;
+constexpr uint16_t ARG_HAND_FAN_SET_SIZE = 9u;
 constexpr uint16_t ARG_PLATFORM_FW_BEGIN_SIZE = 4u;
 constexpr uint16_t ARG_PLATFORM_FW_DATA_SIZE = 8u;
 constexpr uint16_t ARG_PLATFORM_FW_VERIFY_SIZE = 4u;

@@ -475,6 +475,10 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       ArgRobotState a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
       return Relay::state_write(a);
     }
+    case RpcMethod::HAND_FAN_SET: {
+      RpcArgs::ArgHandFanSet a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
+      return Relay::hand_fan_set(a);
+    }
 
     // ── Firmware version pull ──────────────────────────────────────
     // Synchronous: returns the bridge-LOCAL Get_Version cache (filled by the

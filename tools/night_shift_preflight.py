@@ -13,7 +13,9 @@ Candidates (Pathways are never candidates):
 
 Order (the order the orchestrator works them): bugs with `diagnosis: confirmed`,
 then other bugs, then features, then tickets, then ideas; within a group priority
-high > medium > low (missing = low), then `created` oldest first, then Item ID.
+high > medium > low (missing = low), then `created` oldest first, then Item ID (the
+number within its prefix; JB-<n> or per kind), then stem. An Item whose ID is missing,
+malformed or names another kind is an error (exit 2), never a sort-last fallback.
 
 Exit codes: 0 NEW, 3 NOTHING_NEW, 2 error (nothing written). The --out file is
 always written (atomically) on 0 and 3.
@@ -30,10 +32,11 @@ import json
 import os
 import subprocess
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from mapkit.ids import KIND_OF_PREFIX, PREFIXES, mismatch, split_ref  # noqa: E402
 from mapkit.items import Item, ItemError, load_items  # noqa: E402
 
 EXIT_NEW = 0
@@ -62,14 +65,33 @@ def _group(item: Item) -> int:
     return {"feature": 2, "ticket": 3, "idea": 4}[item.kind]
 
 
-def _id_num(item: Item) -> int:
-    sid = item.short_id or ""
-    return int(sid[3:]) if sid.startswith("JB-") and sid[3:].isdigit() else 10 ** 9
+def _filing_key(item: Item) -> Tuple[str, str, int, str]:
+    """Filing order: ``created``, then the ID within its prefix, then the stem.
+
+    A group holds one kind, so within it the per-kind number is filing order exactly
+    as ``JB-<n>`` is (P4 renumbers by rank within the kind). A malformed or
+    kind-contradicting ID raises (preflight exits 2) instead of sorting last behind a
+    sentinel, which is how per-kind IDs once tied silently. A MISSING ID is legal
+    (``ids --check`` calls it informational): it sorts after every ID of its
+    ``created`` day, then by stem.
+    """
+    stem = "%s-%s" % (item.kind, item.slug)
+    raw = item.meta.get("id")
+    if raw in (None, ""):
+        return (str(item.meta.get("created") or ""), "~", 0, stem)
+    sp = split_ref(raw)
+    if sp is None:
+        raise ItemError("%s: id %r is not a canonical Item ID (want JB-<n> or %s-<n>)"
+                        % (stem, raw, PREFIXES.get(item.kind, "?")))
+    if mismatch(raw, item.kind):
+        raise ItemError("%s: id %s names a %s, but the Item is a %s"
+                        % (stem, raw, KIND_OF_PREFIX[sp[0]], item.kind))
+    return (str(item.meta.get("created") or ""), sp[0], sp[1], stem)
 
 
 def _sort_key(item: Item):
-    return (_group(item), _PRIORITY_RANK.get(item.meta.get("priority"), 2),
-            str(item.meta.get("created") or ""), _id_num(item), item.slug)
+    return ((_group(item), _PRIORITY_RANK.get(item.meta.get("priority"), 2))
+            + _filing_key(item))
 
 
 def _entry(item: Item, rank: int) -> Dict[str, Any]:

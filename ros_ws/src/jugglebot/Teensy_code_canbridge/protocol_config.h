@@ -107,6 +107,8 @@ namespace PlatformCanId {
   constexpr uint32_t STATE_UPDATE = 0x6E0;
   constexpr uint32_t TILT_READING = 0x7DE;
   constexpr uint32_t TRAFFIC_REPORT = 0x7DF;
+  constexpr uint32_t HAND_FAN_CMD = 0x6E1;
+  constexpr uint32_t HAND_FAN_STATUS = 0x6E2;
   constexpr uint32_t FW_UPDATE_CMD = 0x6F0;
   constexpr uint32_t FW_UPDATE_REPLY = 0x6F1;
 }

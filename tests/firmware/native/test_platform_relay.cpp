@@ -156,9 +156,63 @@ TEST_CASE("relay sends fail-fast when CAN3 is down (never command a dead bus)") 
   CHECK(fake_sent_count() == 0);
 }
 
-TEST_CASE("is_platform_reply_id classifies exactly the three relay reply ids") {
+TEST_CASE("hand_fan_set encodes the HAND_FAN_CMD frame the Platform's hand_fan.h decodes") {
+  fake_reset();
+  fake_set_commands_allowed(true);
+
+  JbUdp::RpcArgs::ArgHandFanSet a{};
+  a.mode = 1;
+  a.on_above_c = 30.0f;
+  a.off_below_c = 28.5f;
+  CHECK(Relay::hand_fan_set(a) == JbUdp::RpcStatus::OK);
+
+  REQUIRE(fake_sent_count() == 1);
+  const SentFrame& f = fake_sent_at(0);
+  CHECK(f.id == PlatformCanId::HAND_FAN_CMD);
+  CHECK(f.len == 8);
+  // The same bytes tests/firmware/native/test_platform_hand_fan.cpp feeds the Platform.
+  const uint8_t expected[8] = {1, 0xB8, 0x0B, 0x22, 0x0B, 0, 0, 0};
+  for (int i = 0; i < 8; ++i) CHECK(f.buf[i] == expected[i]);
+}
+
+TEST_CASE("hand_fan_set refuses bad arguments before anything reaches CAN") {
+  fake_reset();
+  fake_set_commands_allowed(true);
+
+  const auto refused = [](uint8_t mode, float on_c, float off_c) {
+    JbUdp::RpcArgs::ArgHandFanSet a{};
+    a.mode = mode;
+    a.on_above_c = on_c;
+    a.off_below_c = off_c;
+    return Relay::hand_fan_set(a) == JbUdp::RpcStatus::ERR_BAD_ARGS;
+  };
+  CHECK(refused(3, 35.0f, 34.0f));          // unknown mode
+  CHECK(refused(0, NAN, 34.0f));
+  CHECK(refused(0, 35.0f, NAN));
+  CHECK(refused(0, INFINITY, 34.0f));
+  CHECK(refused(0, 35.0f, -INFINITY));
+  CHECK(refused(0, 34.0f, 34.0f));          // no gap
+  CHECK(refused(0, 33.0f, 34.0f));          // inverted
+  CHECK(refused(0, 60.5f, 34.0f));          // above TeensyOp::HAND_FAN_THRESHOLD_MAX_C
+  CHECK(refused(0, 35.0f, 4.5f));           // below TeensyOp::HAND_FAN_THRESHOLD_MIN_C
+  CHECK(fake_sent_count() == 0);
+}
+
+TEST_CASE("hand_fan_set fails fast on a dead bus") {
+  fake_reset();
+  fake_set_commands_allowed(false);
+  JbUdp::RpcArgs::ArgHandFanSet a{};
+  a.on_above_c = 35.0f;
+  a.off_below_c = 34.0f;
+  CHECK(Relay::hand_fan_set(a) == JbUdp::RpcStatus::ERR_BUS_DOWN);
+  CHECK(fake_sent_count() == 0);
+}
+
+TEST_CASE("is_platform_reply_id classifies exactly the four relay reply ids") {
   CHECK(is_platform_reply_id(PlatformCanId::STATE_UPDATE));   // 0x6E0
   CHECK(is_platform_reply_id(PlatformCanId::TILT_READING));   // 0x7DE
+  CHECK(is_platform_reply_id(PlatformCanId::HAND_FAN_STATUS));  // 0x6E2
+  CHECK_FALSE(is_platform_reply_id(PlatformCanId::HAND_FAN_CMD));  // the bridge's own TX
   CHECK_FALSE(is_platform_reply_id(0x6D0u));  // the RETIRED hand-traj id (skill-stack R1) — never a reply, never reused
   CHECK_FALSE(is_platform_reply_id(ODrive::arb_id(0, ODriveCmd::heartbeat_message)));  // a leg frame
   CHECK_FALSE(is_platform_reply_id(0x000u));

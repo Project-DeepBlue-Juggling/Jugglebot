@@ -564,7 +564,13 @@ def test_wire_layout_frozen(gen):
     # dn_crc_errors, sched_frames, sp_seq_drops, sp_no_hand, sp_no_sched).
     # Previous digest (scheduled-lane observability):
     #   e184b76e3d3c82ea08a24ff64e002452a4bf85388c59c6695dc55d062497426f
-    _EXPECTED = "46ffadacb138cd393108ff2ff7d1d43ef845fb878e76bedf675e0a384dbda485"
+    # Re-pinned for the ADDITIVE HAND_FAN_SET RPC (2026-11-07, can-bridge FW 41): one
+    # new arg struct ArgHandFanSet (u8 mode + f32 on_above_c + f32 off_below_c, 9 B)
+    # behind one new RpcMethod 0x0063. No existing message, arg or MsgType changed, so
+    # PROTOCOL_VERSION stays 12 and an FW <= 40 board answers 0x63 with
+    # ERR_UNKNOWN_METHOD. Previous digest (downlink loss accounting):
+    #   46ffadacb138cd393108ff2ff7d1d43ef845fb878e76bedf675e0a384dbda485
+    _EXPECTED = "c7006d2abae2d2fd723da7f35ea61e9569f6a2a1650aa6312ec73ed1f080a576"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "
