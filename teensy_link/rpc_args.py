@@ -448,7 +448,10 @@ PLATFORM_FW_VERSION_UNVERSIONED = 0
 #: the one hand master. Inclinometer, time-sync slave and 0x6E0 cold-start
 #: state are unchanged; a board on 6 still answers STATE_READ/TILT_READ
 #: identically, so this skew is advisory only, not a dark link.
-PLATFORM_FW_VERSION_EXPECTED = 7
+#: 8 (2026-11-07) = Hand cooling fan, driven from the Hand ODrive's temperature
+#: broadcast. Receive-only on CAN; every host-visible path is unchanged, so a
+#: board on 7 is still fully usable and only lacks the fan control.
+PLATFORM_FW_VERSION_EXPECTED = 8
 
 
 def decode_platform_fw_version(data: bytes) -> int:

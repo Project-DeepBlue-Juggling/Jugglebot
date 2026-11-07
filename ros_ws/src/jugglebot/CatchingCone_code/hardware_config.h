@@ -289,6 +289,10 @@ namespace TeensyOp {
   constexpr uint32_t REPORT_INTERVAL_MS = 500u;
   constexpr uint32_t SAFETY_GAP_US = 20000u;
   constexpr uint32_t TIME_SYNC_ALPHA_SHIFT = 3u;
+  constexpr uint32_t HAND_FAN_PIN = 2u;
+  constexpr float HAND_FAN_ON_ABOVE_C = 35.0f;
+  constexpr float HAND_FAN_OFF_BELOW_C = 34.0f;
+  constexpr uint32_t HAND_FAN_TEMP_TIMEOUT_MS = 5000u;
 }
 
 // ==========================================================================

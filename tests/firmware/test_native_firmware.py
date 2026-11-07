@@ -129,6 +129,14 @@ def test_native_gpio_poll_binary_passes(binaries):
         f"normative ball-sensor signal semantics:\n{r.stdout}\n{r.stderr}")
 
 
+def test_native_platform_hand_fan_binary_passes(binaries):
+    """The Platform Teensy's shipped Hand fan logic (hand_fan.h): thresholds and their
+    gap, motor thermistor not FET, unusable frames ignored, off after the timeout."""
+    r = _run(binaries["test_platform_hand_fan"])
+    assert r.returncode == 0, (
+        f"native test_platform_hand_fan FAILED:\n{r.stdout}\n{r.stderr}")
+
+
 def test_native_leg_activate_binary_passes(binaries):
     """The compiled leg_activate.cpp passes every behaviour assertion
     (ACTIVATE: request validation — dead-bus/E-STOP/concurrent-move/no-present-leg/
