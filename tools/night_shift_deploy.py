@@ -78,7 +78,11 @@ RENDER_PATHS = ("/night-shift", "/next-sitting")
 _ASSET = re.compile(r'(?:src|href)="(/assets/[^"]+)"')
 _ROOT_EMPTY = re.compile(r'<div id="root">\s*</div>')
 _ROOT = re.compile(r'<div id="root">')
-_JB = re.compile(r"\bJB-(\d+)\b")
+#: Item ID prefixes, both forms (item-id-per-kind). Kept here, not imported from
+#: ``mapkit.ids.ALL_PREFIXES``: a rollback must run even when the mapkit it is undoing is
+#: broken. ``test_items_in_knows_every_mapkit_prefix`` pins the two together.
+ID_PREFIXES = ("JB", "BUG", "FEAT", "IDEA", "PWAY", "TKT")
+_ITEM_ID = re.compile(r"\b(%s)-(\d+)\b" % "|".join(ID_PREFIXES))
 TRAILER = "Logbook-Entry: %s-night-shift"
 #: Never restored by a mapkit revert: the entries stay as history, Items are reopened by
 #: name, and the generated pages are regenerated.
@@ -326,12 +330,13 @@ def all_marked(commits: List[Tuple[str, str, bool, str]], date: str) -> bool:
 
 
 def items_in(commits: List[Tuple[str, str, bool, str]]) -> List[str]:
+    """Every Item ID the commit subjects name, either form, first-seen order."""
     found: List[str] = []
     for c in commits:
-        for n in _JB.findall(c[1]):
-            jb = "JB-%s" % n
-            if jb not in found:
-                found.append(jb)
+        for prefix, n in _ITEM_ID.findall(c[1]):
+            sid = "%s-%s" % (prefix, n)
+            if sid not in found:
+                found.append(sid)
     return found
 
 

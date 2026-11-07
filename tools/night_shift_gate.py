@@ -10,12 +10,12 @@ unreadable file is a HOLD.
 
 Usage:
   python tools/night_shift_gate.py --repo R --base origin/main \\
-      --branch night-shift/<date>-JB-n --item JB-n \\
+      --branch night-shift/<date>-<ID> --item <ID> \\
       --gate-log PATH --audit PATH [--app-log PATH] [--waive c] [--json]
 
   # A branch of the map app (its own repo, its own clone):
   python tools/night_shift_gate.py --repo R --base origin/main --app-repo A \\
-      --branch night-shift/<date>-JB-n --item JB-n --gate-log PATH --audit PATH
+      --branch night-shift/<date>-<ID> --item <ID> --gate-log PATH --audit PATH
 
 Run from an extract of the base, never from the working tree (protocol 2g):
 ``git archive origin/main tools/night_shift_gate.py mapkit | tar -x -C D/gate-base``.
@@ -35,8 +35,11 @@ letter is a usage error (HOLD). A ``gate error`` is never waived.
 
 Preconditions ``[pre]`` (a failure here is HOLD and the conditions are not
 evaluated): the branch and the base resolve; the branch contains the base and
-is at least one commit ahead of it; ``--item`` parses as ``JB-<n>`` and exactly
-one file under ``map/`` ON THE BRANCH carries that ``id:`` and loads as an Item;
+is at least one commit ahead of it; ``--item`` parses as an Item ID in either form
+(``JB-<n>``, or per kind ``BUG-``/``FEAT-``/``IDEA-``/``PWAY-``/``TKT-<n>``; IDs compare as
+whole strings, so ``BUG-3`` is never ``FEAT-3``) and exactly one file under ``map/``
+ON THE BRANCH carries that ``id:`` and loads as an Item, whose kind the ID's prefix
+names (``JB-<n>`` names every kind; a contradiction is a HOLD naming both);
 exactly one file under ``map/`` at the BASE carries it too (a branch cannot
 create the Item it merges); and the gate running is the base's own: this file
 and every ``mapkit`` module it loaded are byte-identical to the base (a file the
@@ -114,7 +117,7 @@ from typing import Dict, List, Optional, Tuple
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mapkit.frontmatter import FrontmatterError, split_frontmatter  # noqa: E402
-from mapkit.ids import parse as parse_id  # noqa: E402
+from mapkit.ids import KIND_OF_PREFIX, mismatch, split_ref, typed_ref  # noqa: E402
 from mapkit.items import METRIC_ENUMS, Item, ItemError, load_item  # noqa: E402
 
 #: Paths a Night Shift branch may never touch (plan § 2 "Merge gate rule" (f)),
@@ -275,8 +278,17 @@ def _map_files(repo: str, branch: str) -> Dict[str, Optional[str]]:
 
 
 # --- preconditions -----------------------------------------------------------
-def _find_item(files: Dict[str, Optional[str]], n: int, where: str = "on the branch") -> Tuple[str, str]:
-    """``(name, text)`` of the one map file whose ``id:`` is JB-<n>."""
+def _item_ref(item: str) -> str:
+    """``--item`` as a canonical ID string, or ``[pre]``."""
+    ref = typed_ref(item)
+    if ref is None:
+        raise PreconditionError("--item %r is not an Item ID (JB-<n>, or BUG-, FEAT-, IDEA-, "
+                                "PWAY- or TKT-<n>)" % item)
+    return ref
+
+
+def _find_item(files: Dict[str, Optional[str]], ref: str, where: str = "on the branch") -> Tuple[str, str]:
+    """``(name, text)`` of the one map file whose ``id:`` is ``ref``, a kind its prefix names."""
     matches = []
     for name, text in sorted(files.items()):
         if text is None:
@@ -286,14 +298,18 @@ def _find_item(files: Dict[str, Optional[str]], n: int, where: str = "on the bra
         except FrontmatterError:
             continue
         v = meta.get("id")
-        if isinstance(v, str) and parse_id(v) == n:
-            matches.append((name, text))
+        if typed_ref(v) == ref:
+            matches.append((name, text, meta.get("kind")))
     if not matches:
-        raise PreconditionError("no map/ file %s carries id JB-%d" % (where, n))
+        raise PreconditionError("no map/ file %s carries id %s" % (where, ref))
     if len(matches) > 1:
-        raise PreconditionError("id JB-%d is carried by %d files %s: %s"
-                                % (n, len(matches), where, ", ".join(m[0] for m in matches)))
-    return matches[0]
+        raise PreconditionError("id %s is carried by %d files %s: %s"
+                                % (ref, len(matches), where, ", ".join(m[0] for m in matches)))
+    name, text, kind = matches[0]
+    if mismatch(ref, str(kind)):
+        raise PreconditionError("id %s names a %s, but map/%s is a %s (%s)"
+                                % (ref, KIND_OF_PREFIX[split_ref(ref)[0]], name, kind, where))
+    return name, text
 
 
 def _load_branch_item(name: str, text: str) -> Item:
@@ -309,12 +325,14 @@ def _load_branch_item(name: str, text: str) -> Item:
                                     % (name, str(exc).replace(path, name)))
 
 
-def _base_meta(repo: str, base_sha: str, n: int) -> Dict[str, object]:
+def _base_meta(repo: str, base_sha: str, ref: str) -> Dict[str, object]:
     """The Item's frontmatter at the base; ``[pre] Item not on base`` when absent."""
     try:
-        _, text = _find_item(_map_files(repo, base_sha), n, "at the base")
+        _, text = _find_item(_map_files(repo, base_sha), ref, "at the base")
     except PreconditionError as exc:
-        raise PreconditionError("Item not on base: %s" % exc)
+        if str(exc).startswith("no map/ file"):
+            raise PreconditionError("Item not on base: %s" % exc)
+        raise
     return split_frontmatter(text)[0]
 
 
@@ -335,13 +353,11 @@ def _preconditions(repo: str, base: str, branch: str, item: str) -> Tuple[str, s
         raise PreconditionError("branch %r does not contain base %r" % (branch, base))
     if tip == base_sha:
         raise PreconditionError("branch %r is not ahead of base %r" % (branch, base))
-    n = parse_id(item)
-    if n is None:
-        raise PreconditionError("--item %r is not a JB-<n> ID" % item)
+    ref = _item_ref(item)
     files = _map_files(repo, tip)
-    name, text = _find_item(files, n)
+    name, text = _find_item(files, ref)
     it = _load_branch_item(name, text)
-    return tip, base_sha, it, files, _base_meta(repo, base_sha, n)
+    return tip, base_sha, it, files, _base_meta(repo, base_sha, ref)
 
 
 def _loaded_gate_files() -> List[Tuple[str, str]]:
@@ -492,16 +508,16 @@ def _item_names(it: Item) -> List[str]:
     return names
 
 
-def _names_item(parent: object, it: Item, n: int) -> bool:
+def _names_item(parent: object, it: Item, ref: str) -> bool:
     if not isinstance(parent, str) or not parent.strip():
         return False
     p = parent.strip()
     if p.endswith(".md"):
         p = p[:-3]
-    return p in _item_names(it) or parse_id(p) == n
+    return p in _item_names(it) or typed_ref(p) == ref
 
 
-def _check_e(it: Item, n: int, files: Dict[str, Optional[str]]) -> List[str]:
+def _check_e(it: Item, ref: str, files: Dict[str, Optional[str]]) -> List[str]:
     out = []
     for name, text in sorted(files.items()):
         if text is None:
@@ -518,7 +534,7 @@ def _check_e(it: Item, n: int, files: Dict[str, Optional[str]]) -> List[str]:
             continue
         if str(meta.get("status", "")).strip().lower() in _QUESTION_CLOSED:
             continue
-        if _names_item(meta.get("parent"), it, n):
+        if _names_item(meta.get("parent"), it, ref):
             out.append("[e] open question ticket %s (map/%s)" % (meta.get("id") or name[:-3], name))
     return out
 
@@ -596,15 +612,13 @@ def evaluate_app(repo: str, app_repo: str, base: str, branch: str, item: str,
             raise PreconditionError("app branch %r does not contain base %r" % (branch, base))
         if tip == base_sha:
             raise PreconditionError("app branch %r is not ahead of base %r" % (branch, base))
-        n = parse_id(item)
-        if n is None:
-            raise PreconditionError("--item %r is not a JB-<n> ID" % item)
+        ref = _item_ref(item)
         item_ref = _rev(repo, "origin/main")
         if item_ref is None:
             raise PreconditionError("origin/main does not resolve in %r" % repo)
         _check_gate_is_base(repo, item_ref)
         files = _map_files(repo, item_ref)
-        name, text = _find_item(files, n, "on Jugglebot's origin/main")
+        name, text = _find_item(files, ref, "on Jugglebot's origin/main")
         it = _load_branch_item(name, text)
         meta = split_frontmatter(text)[0]
     except PreconditionError as exc:
@@ -619,7 +633,7 @@ def evaluate_app(repo: str, app_repo: str, base: str, branch: str, item: str,
         "b": lambda: _check_b(app_repo, tip, audit),
         "c": lambda: _check_c(it, meta),
         "d": lambda: _check_d(it, meta),
-        "e": lambda: _check_e(it, n, files),
+        "e": lambda: _check_e(it, ref, files),
         "f": lambda: _check_f_app(app_repo, base_sha, tip),
     }
     errored = False
@@ -659,13 +673,13 @@ def evaluate(repo: str, base: str, branch: str, item: str,
         res.reasons = ["[pre] gate error: %s: %s" % (type(exc).__name__, exc)]
         return res
     res.tip = tip
-    n = parse_id(item)
+    ref = _item_ref(item)  # cannot raise: the preconditions parsed it
     checks = {
         "a": lambda: _check_a(repo, tip, branch, gate_log),
         "b": lambda: _check_b(repo, tip, audit),
         "c": lambda: _check_c(it, base_meta),
         "d": lambda: _check_d(it, base_meta),
-        "e": lambda: _check_e(it, n, files),
+        "e": lambda: _check_e(it, ref, files),
         "f": lambda: _check_f(repo, base_sha, tip),
         "g": lambda: _check_g(it, base_meta),
         "h": lambda: _check_h(repo, base_sha, tip, app_log),

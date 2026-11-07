@@ -134,3 +134,77 @@ def test_head_is_git_sha_or_null(tmp_path, monkeypatch):
     sha = subprocess.run(["git", "-C", str(tmp_path), "rev-parse", "HEAD"], env=env,
                          stdout=subprocess.PIPE, universal_newlines=True).stdout.strip()
     assert pf.build_record(str(tmp_path), "d")["head"] == sha
+
+
+# --- item-id-per-kind P1 (plan section 5, T-U7): filing order under both ID forms ---
+
+def _bug(root, sid, slug, created="2026-10-01", kind="bug", **extra):
+    meta = {"id": sid, "kind": kind, "title": "T " + slug, "status": "inbox",
+            "created": created, "updated": "2026-10-01T00:00:00Z", "priority": "low"}
+    meta.update(extra)
+    write_item(str(root / "map" / ("%s-%s.md" % (kind, slug))), meta, "Body\n")
+
+
+def test_per_kind_ids_keep_filing_order_not_a_sentinel(tmp_path):
+    """T-U7 (silent failure 1): a per-kind ID must not reach the old ``10**9`` fallback.
+
+    On the unfixed preflight every ``BUG-<n>`` keyed ``10**9``, so a same-day tie fell
+    through to slug order: ``bug-a-ten`` (BUG-10) ran before ``bug-z-two`` (BUG-2).
+    Filing order is ``created``, then the number within the kind, then the stem.
+    """
+    (tmp_path / "map").mkdir()
+    _bug(tmp_path, "BUG-10", "a-ten")
+    _bug(tmp_path, "BUG-2", "z-two")
+    _bug(tmp_path, "BUG-3", "m-early", created="2026-09-01")
+    _bug(tmp_path, "FEAT-2", "f-early", created="2026-09-01", kind="feature")
+    assert _ids(pf.build_record(str(tmp_path), "d")) == ["BUG-3", "BUG-2", "BUG-10", "FEAT-2"]
+
+
+def test_order_identical_under_both_forms(tmp_path):
+    """T-U7: renumbering per kind (rank by old number within the kind) keeps the order."""
+    rows = [("bug", "z-a", "2026-10-01"), ("bug", "a-b", "2026-10-01"),
+            ("feature", "f-a", "2026-10-01"), ("bug", "q-c", "2026-09-01"),
+            ("feature", "f-b", "2026-10-01"), ("idea", "i-a", "2026-10-01")]
+    orders = []
+    for form in ("jb", "per-kind"):
+        root = tmp_path / form
+        (root / "map").mkdir(parents=True)
+        seen = {}
+        for n, (kind, slug, created) in enumerate(rows, 1):
+            seen[kind] = seen.get(kind, 0) + 1
+            sid = ("JB-%d" % n if form == "jb"
+                   else "%s-%d" % ({"bug": "BUG", "feature": "FEAT", "idea": "IDEA"}[kind],
+                                   seen[kind]))
+            _bug(root, sid, slug, created=created, kind=kind)
+        orders.append([e["stem"] for e in pf.build_record(str(root), "d")["items"]])
+    assert orders[0] == orders[1]
+    assert orders[0][:3] == ["bug-q-c", "bug-z-a", "bug-a-b"]
+
+
+@pytest.mark.parametrize("bad", ["BUG-01", "XB-3", "FEAT-4"])
+def test_unusable_id_is_loud_not_a_sentinel(tmp_path, bad):
+    """T-U7: a malformed or kind-contradicting ID stops the preflight (exit 2)."""
+    (tmp_path / "map").mkdir()
+    _bug(tmp_path, "BUG-1", "fine")
+    _bug(tmp_path, bad, "broken")
+    with pytest.raises(pf.ItemError, match="bug-broken"):
+        pf.build_record(str(tmp_path), "d")
+    out = str(tmp_path / "c.json")
+    r = _run("--repo", str(tmp_path), "--out", out)
+    assert r.returncode == 2 and "bug-broken" in r.stdout and not os.path.exists(out)
+
+
+def test_id_less_item_sorts_after_every_id_of_its_day_and_does_not_raise(tmp_path):
+    """T-U7: ``ids --check`` calls a missing ID informational, so preflight keys it, never aborts.
+
+    Key ``(created, "~", 0, stem)``: after every ID-bearing Item of the same ``created``,
+    before a later day, ties broken by stem.
+    """
+    (tmp_path / "map").mkdir()
+    _bug(tmp_path, "BUG-9", "nine")
+    _bug(tmp_path, None, "aa-no-id")
+    _bug(tmp_path, "BUG-2", "two")
+    _bug(tmp_path, None, "zz-no-id")
+    _bug(tmp_path, "BUG-1", "later", created="2026-10-02")
+    got = [e["stem"] for e in pf.build_record(str(tmp_path), "d")["items"]]
+    assert got == ["bug-two", "bug-nine", "bug-aa-no-id", "bug-zz-no-id", "bug-later"]

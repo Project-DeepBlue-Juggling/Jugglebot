@@ -5,7 +5,7 @@ Identity is the filename; the slug is the filename without ``<kind>-`` and
 the filename prefix, a status outside its kind's set, a missing required
 field, and malformed typed fields. Non-markdown files are ignored. Dates
 (``created``) become ISO ``YYYY-MM-DD`` strings and ``updated`` an ISO
-timestamp string; files are never rewritten. The short ``id:`` (``JB-<n>``,
+timestamp string; files are never rewritten. The short ``id:`` (``JB-<n>`` or ``<PREFIX>-<n>``,
 ``mapkit/ids.py``) is deliberately NOT validated here: a malformed value must
 never hide an Item; the gate and ``mapkit ids --check`` report it.
 ``item_uuid(slug)`` is ``uuid5(ITEM_NAMESPACE, slug)``, stable across runs and
@@ -95,7 +95,7 @@ class Item:
 
     @property
     def short_id(self) -> Optional[str]:
-        """The canonical ``JB-<n>`` ID, or None when absent or malformed."""
+        """The canonical ID in either form (``JB-<n>`` or ``<PREFIX>-<n>``), or None when absent or malformed."""
         from mapkit.ids import short_id  # local: ids imports this module
         return short_id(self)
 
@@ -130,7 +130,7 @@ def has_answer(body: str) -> bool:
 
 
 def question_tickets(items: List[Item], parent_item: str) -> List[Item]:
-    """The question tickets whose ``parent`` names ``parent_item`` (stem, slug or ``JB-n``), any status."""
+    """The question tickets whose ``parent`` names ``parent_item`` (stem, slug or ID), any status."""
     names = set([parent_item.strip()])
     for i in items:
         if i.kind == "ticket":

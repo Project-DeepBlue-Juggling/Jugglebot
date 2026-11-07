@@ -14,7 +14,7 @@ scope: >-
   Jugglebot abbreviation (JB_OP_*, the UDP preamble) is out of scope and must not change.
 steps:
   - {id: P0, title: Plan and owner decisions, kind: phase, status: complete, date: 2026-11-07, effort: xs, hardware: none}
-  - {id: P1, title: Expand mapkit and the Night Shift tools to both ID forms, kind: phase, status: not_started, effort: m, hardware: none}
+  - {id: P1, title: Expand mapkit and the Night Shift tools to both ID forms, kind: phase, status: complete, date: 2026-11-07, effort: m, hardware: none}
   - {id: P2, title: Expand the map app to both ID forms (fork repo), kind: phase, status: not_started, effort: m, hardware: none}
   - {id: P3, title: The sweeper and the classified census, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: P4, title: Cutover in one commit, kind: phase, status: not_started, effort: s, hardware: none}
@@ -202,7 +202,7 @@ node to its source, which reports stale until the `colcon build` in P4.
 | Phase | Scope | Status | Date | Risk | Validates |
 |---|---|---|---|---|---|
 | P0 | Plan, decisions D-1 to D-5, GLOSSARY round, ADR-0015 | COMPLETE | 2026-11-07 | Low | T-R0 |
-| P1 | mapkit and Night Shift tools read and write both forms; JB stays the allocated form | NOT STARTED | | Low: no ID changes | T-U1 to T-U8, T-I0 |
+| P1 | mapkit and Night Shift tools read and write both forms; JB stays the allocated form | COMPLETE | 2026-11-07 | Low: no ID changes | T-U1 to T-U8, T-I0 |
 | P2 | Fork server and frontend take both forms; deployed | NOT STARTED | | Medium: live app | T-U9 to T-U11, T-I1 |
 | P3 | `tools/id_sweep.py`, classification of every token, dry-run report | NOT STARTED | | Low: writes nothing | T-U12 to T-U14, T-R1 |
 | P4 | One commit: crosswalk, every `id:`, every citation, regenerated outputs | NOT STARTED | | **High: repo-wide** | T-R2 to T-R6, T-I2 to T-I4, T-H1 |
@@ -238,7 +238,7 @@ IDs. P5 removes the sentence and adds `JB-<n>` to `_Avoid_`.
 
 **ADR.** `docs/adr/0015-per-kind-item-ids.md` records the reversal, since this plan's reasoning will be archived.
 
-### P1 — Expand mapkit and the Night Shift tools to both ID forms — NOT STARTED
+### P1 — Expand mapkit and the Night Shift tools to both ID forms — COMPLETE (2026-11-07)
 
 **Files:** `mapkit/ids.py`, `mapkit/items.py`, `mapkit/itemcli.py`, `mapkit/tickets.py`, `mapkit/import_issues.py`,
 `mapkit/night_shift_report.py`, `mapkit/gen_docs.py`, `mapkit/sitting.py`, `tools/night_shift_gate.py`,
@@ -257,7 +257,7 @@ IDs. P5 removes the sentence and adds `JB-<n>` to `_Avoid_`.
   revert switches back, with no flag to keep in step across three clones.
 - `resolve`: the stem-vs-ID ambiguity error (§ 2.1); bare digits on a read return the single match or list every match.
 - Night Shift: the gate's `parse_id` sites (`:226`, `:275`, `:404`, `:464`) compare strings and gain a check that the
-  ID's prefix matches the Item's kind. `_id_num` becomes a filing-order key on `created` then stem, so it cannot fall
+  ID's prefix matches the Item's kind. `_id_num` becomes a filing-order key on `created`, then the ID as (prefix, number), then stem, so it cannot fall
   through silently. `night_shift_candidate.sh` matches both forms and sorts by branch date, and it exits non-zero
   when `night-shift/*` branches exist and none parses.
 
@@ -268,6 +268,12 @@ it could edit these same modules unattended; P1 lands in one day Session, and it
 **Line numbers here are a 2026-11-07 snapshot.** The Night Shift safety layer was being changed the same day by
 another Session (`tools/night_shift*`, `mapkit/sitting.py`, `tests/sim/test_night_shift_*`), so P1 starts with a
 fresh `git grep` of the consumers in § 2.3 rather than from this list.
+
+**Outcome (2026-11-07).** `mapkit` and the four Night Shift tools read and write both ID forms; the allocator still returns `JB-<n>` because its form follows `mapkit/legacy_ids.csv`, which does not exist, and no Item changed ID. The live app's names (`parse`, `canonical`, `format_id`, `allocate(repo_root, ref, items)`) are unchanged and fork check T-I0 passed on both sides (103 passed in 89.54 s, 2026-11-07, `python -m pytest -q` from `~/map-live/jugglebot-map` with `MAPKIT_SRC` at the worktree; `contract_check.sh` rc=0). Final gate (`./run_tests.sh`, run 2026-11-07 21:31, `temp/logs/id-p1-gate2.log`): 9054 passed, 61 skipped in 534.21 s parallel and 7 passed serial, rc=0; the pre-fixer gate passed 9051 parallel and 7 serial. Record: `logbook/2026-11-07-item-id-per-kind-p1-dual-form-mapkit-night-shift.md`.
+
+Departures from the text above: `night_shift_candidate.sh` exits 1 on any unparseable `night-shift/*` branch and on an `item_state` helper crash, stricter than "when none parses", because a silent SKIP in the held-branch ledger is the failure class this phase closes (all five remote branches parse); `night_shift_deploy.py` keeps a local `ID_PREFIXES` tuple pinned to `mapkit.ids.ALL_PREFIXES` by a test, because a rollback must not import the mapkit it is undoing; the preflight key is `(created, prefix, number, stem)`, and an Item with no `id:` keys `(created, "~", 0, stem)` instead of raising. The § 2.3 snapshot missed `similar.py`, `itemcli.py` (`:301 :306 :465 :488`), `import_issues.py:112` and `sitting.py`, and the gate sites had moved to `:289 :338 :501 :599 :662`.
+
+Deferred: D-3 `legacy()` read/refuse needs the csv columns defined (P4); the fork calls `allocate` without `kind=` and keys `by_short` on an int (P2, before P4 lands the csv); the `night-shift/*-JB-n` globs in `.claude/commands/night-shift.md` and `sitting-debrief.md` (P4/P5); the gate does not check that `--branch`'s ID matches `--item` (not added).
 
 ### P2 — Expand the map app to both ID forms (fork repo) — NOT STARTED
 

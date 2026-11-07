@@ -888,3 +888,89 @@ def test_neutered_path_check_would_merge(repo, tmp_path, monkeypatch):
     log, aud = gate_log(repo), audit(repo)
     assert mod.evaluate(str(repo), "origin/main", BRANCH, "JB-7", log, aud).verdict == "MERGE"
     assert gate.evaluate(str(repo), "origin/main", BRANCH, "JB-7", log, aud).verdict == "HOLD"
+
+
+# --- item-id-per-kind P1 (plan section 5, T-U6): both ID forms, prefix must match kind ---
+
+def _write_with_id(root, sid, kind="bug", rel=BUG, title="Wobble", **extra):
+    fields = dict(hardware="none", radius="local", effort="s", owner="none")
+    if kind == "bug":
+        fields["diagnosis"] = "confirmed"
+    fields.update(extra)
+    meta = dict([("id", sid)] + list(_meta(kind, title, "in_progress", None, **fields).items()))
+    write_item(str(root / rel), meta, "Body\n")
+
+
+def _rebase_on(root, *writes):
+    """Write ``(sid, kind, rel)`` Items on main, push, and rebuild BRANCH one src commit ahead."""
+    _git(root, "checkout", "-q", "main")
+    for sid, kind, rel in writes:
+        _write_with_id(root, sid, kind, rel)
+    commit(root, "map: per-kind ids on main")
+    _git(root, "push", "-q", "origin", "main")
+    _git(root, "fetch", "-q", "origin")
+    _git(root, "checkout", "-q", "-B", BRANCH, "main")
+    (root / "src" / "thing.py").write_text("X = 2\n")
+    commit(root, "fix(thing): X is two")
+
+
+FEAT = "map/feature-tilt.md"
+
+
+def test_per_kind_item_merges(repo):
+    """T-U6: a per-kind Item passes the gate, typed loosely or canonically (sites _find_item, evaluate)."""
+    _rebase_on(repo, ("BUG-7", "bug", BUG))
+    assert run(repo, item="BUG-7").verdict == "MERGE"
+    assert run(repo, item="bug7").verdict == "MERGE"
+
+
+def test_same_number_other_kind_is_another_item(repo):
+    """T-U6: BUG-7 and FEAT-7 are two Items: each --item finds its own file, never the other's."""
+    _rebase_on(repo, ("BUG-7", "bug", BUG), ("FEAT-7", "feature", FEAT))
+    res = run(repo, item="FEAT-7")
+    assert res.verdict == "MERGE", res.reasons
+    assert run(repo, item="BUG-7").verdict == "MERGE"
+    res = run(repo, item="BUG-3")
+    assert_hold(res, "pre")
+    assert "no map/ file on the branch carries id BUG-3" in res.reasons[0]
+
+
+def test_prefix_contradicting_kind_holds_naming_both(repo):
+    """T-U6: an ID whose prefix names another kind than its Item's is a [pre] HOLD naming both."""
+    _rebase_on(repo, ("FEAT-7", "bug", BUG))
+    res = run(repo, item="FEAT-7")
+    assert_hold(res, "pre")
+    assert "FEAT-7 names a feature, but map/bug-wobble.md is a bug" in res.reasons[0], res.reasons
+
+
+def test_e_question_parent_compares_whole_ids(repo):
+    """T-U6 (the :501 site): an open question for FEAT-7 does not hold BUG-7; one for BUG-7 does."""
+    _rebase_on(repo, ("BUG-7", "bug", BUG), ("FEAT-7", "feature", FEAT))
+    meta = dict([("id", "TKT-8")] + list(_meta("ticket", "Which way?", "open", None,
+                                                 parent="FEAT-7", type="question").items()))
+    write_item(str(repo / "map" / "ticket-which-way.md"), meta, "Question?\n")
+    commit(repo, "map: file ticket TKT-8")
+    assert run(repo, item="BUG-7").verdict == "MERGE"
+    assert_hold(run(repo, item="FEAT-7"), "e")
+    meta["parent"] = "bug7"
+    write_item(str(repo / "map" / "ticket-which-way.md"), meta, "Question?\n")
+    commit(repo, "map: re-parent TKT-8")
+    assert_hold(run(repo, item="BUG-7"), "e")
+
+
+def test_legacy_padded_jb_item_still_resolves(repo):
+    """T-U6: hard constraint, JB inputs behave as before, ``jb-07`` included (legacy ``parse``)."""
+    assert run(repo, item="jb-07").verdict == "MERGE"
+
+
+def test_app_gate_takes_per_kind_ids_and_refuses_a_mismatch(repo, tmp_path):
+    """T-U6 (the evaluate_app site): the app gate reads the Item in either form, and a
+    prefix that contradicts the kind is a [pre] HOLD."""
+    _rebase_on(repo, ("BUG-7", "bug", BUG), ("BUG-9", "feature", FEAT))
+    app = _app_repo(tmp_path)
+    _app_edit(app)
+    res = _app_run(repo, app, item="BUG-7")
+    assert res.verdict == "MERGE", res.reasons
+    res = _app_run(repo, app, item="BUG-9")
+    assert res.verdict == "HOLD"
+    assert "BUG-9 names a bug, but map/feature-tilt.md is a feature" in res.reasons[0], res.reasons

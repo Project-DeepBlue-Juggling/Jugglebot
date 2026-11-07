@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-07 | resolved | map-improvements | **Per-kind Item IDs P1: mapkit and the Night Shift tools read and write both ID forms; three silent failures become loud; no Item changes ID** | [2026-11-07-item-id-per-kind-p1-dual-form-mapkit-night-shift.md](2026-11-07-item-id-per-kind-p1-dual-form-mapkit-night-shift.md) |
 | 2026-11-07 | resolved | map-improvements | **Per-kind Item IDs P0: GLOSSARY gains Kind, Item ID and Ticket are rewritten after a grilling round, ADR-0015 records the reversal; no Item changes ID** | [2026-11-07-item-id-per-kind-p0-glossary-and-adr.md](2026-11-07-item-id-per-kind-p0-glossary-and-adr.md) |
 | 2026-11-07 | complete | night-shift | **Next Sitting Runbook no longer says to latch `hand_source`: the latch was removed on 2026-09-11** | [2026-11-07-runbook-drops-hand-source-latch.md](2026-11-07-runbook-drops-hand-source-latch.md) |
 | 2026-11-07 | in-progress | JB-147 / JB-203 | **Hand FOC scope: a read-only tool that measures the commutation angle error through a brake from the ODrive's RAM oscilloscope, with its bench row JB-203; never yet run on a drive; JB-145's row now asks for the bench top stop.** | [2026-11-07-hand-foc-scope.md](2026-11-07-hand-foc-scope.md) |

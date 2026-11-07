@@ -364,3 +364,51 @@ def test_rerunning_item_push_never_amends_a_published_commit(tmp_path):
     assert _out(work, "log", "--format=%H").split().count(sha) == 1  # the published commit survives
     assert _out(work, "rev-parse", "HEAD") == _out(remote, "rev-parse", "main")  # and the push landed
     assert _out(work, "log", "-1", "--format=%s").strip() == "map: regenerate project-map page"
+
+
+# --- per-kind IDs (plan item-id-per-kind, P1 unit 3) ----------------------------
+def _per_kind_tree(root):
+    _tree(root)
+    for name, new in (("pathway-p.md", "PWAY-1"), ("bug-cone-margin.md", "BUG-2"),
+                      ("ticket-q.md", "TKT-3"), ("idea-12.md", "IDEA-4")):
+        it = load_item(str(root / "map" / name))
+        it.meta["id"] = new
+        write_item(it.path, it.meta, it.body)
+
+
+def test_link_and_pathway_filter_take_per_kind_ids(tmp_path):
+    """T-U4/T-U5 (P1 unit 3): ``--link BUG-2`` was stored as plain text; ``--pathway PWAY-1`` ignored.
+
+    The is-an-ID test at itemcli ``new_item`` links and ``list_items`` pathway
+    used the JB-only ``ids.parse``, so a per-kind reference fell through silently.
+    """
+    _per_kind_tree(tmp_path)
+    got = itemcli.list_items(str(tmp_path), pathway="PWAY-1")
+    assert {i.slug for i in got} >= {"q"}
+    assert [i.slug for i in itemcli.list_items(str(tmp_path), pathway="1")] == [i.slug for i in got]
+    it = itemcli.new_item(str(tmp_path), "bug", "Cup skids", links=["BUG-2", "bug2", "logbook/x.md"],
+                          allow_similar=True)
+    assert it.meta["links"] == ["bug-cone-margin", "logbook/x.md"]
+
+
+def test_new_item_allocates_in_its_own_kind_when_the_tree_is_per_kind(tmp_path):
+    """T-U2/T-U3 (P1 unit 3): ``item new`` passes ``kind=`` to allocate; no csv keeps global ``JB-n``."""
+    _per_kind_tree(tmp_path)
+    (tmp_path / "mapkit").mkdir()
+    (tmp_path / "mapkit" / "legacy_ids.csv").write_text("legacy,new\n")
+    a = itemcli.new_item(str(tmp_path), "bug", "Cup skids")
+    b = itemcli.new_item(str(tmp_path), "feature", "Wider stroke")
+    assert a.short_id == "BUG-3" and b.short_id == "FEAT-1"
+    assert open(a.path).read().startswith("---\nid: BUG-3\nkind: bug\n")
+    (tmp_path / "mapkit" / "legacy_ids.csv").unlink()
+    c = itemcli.new_item(str(tmp_path), "idea", "Brand new thing")
+    assert c.short_id.startswith("JB-")
+
+
+def test_padded_lower_case_jb_input_still_resolves_at_link_and_pathway(tmp_path):
+    """P1 consumer (plan 2.3): ``jb-02`` named JB-2 before the expansion; ``--link`` and ``--pathway`` keep that."""
+    _tree(tmp_path)
+    it = itemcli.new_item(str(tmp_path), "bug", "Cup skids", links=["jb-02"], allow_similar=True)
+    assert it.meta["links"] == ["bug-cone-margin"]
+    by_id = itemcli.list_items(str(tmp_path), pathway="JB-1")
+    assert by_id and [i.slug for i in itemcli.list_items(str(tmp_path), pathway="jb-01")] == [i.slug for i in by_id]

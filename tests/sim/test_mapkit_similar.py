@@ -117,3 +117,30 @@ def test_cli_exit_code_and_flag(repo, capsys):
     args = parser.parse_args(["item", "new", "bug", RECORDS[:-1], "--repo", str(repo),
                               "--allow-similar"])
     assert args.func(args) == 0
+
+
+def test_oldest_duplicate_is_by_filing_order_across_per_kind_ids(tmp_path):
+    """P1 consumer, plan § 2.3: per-kind numbers are not comparable across kinds.
+
+    FEAT-3 is filed AFTER BUG-12 but has the smaller number; ``_id_num`` ordered
+    by number alone would name FEAT-3 "oldest". Order is (created, ID, stem).
+    """
+    (tmp_path / "map").mkdir()
+    _write(tmp_path, "bug", "first", "BUG-12", "Cup skids on the cone")
+    _write(tmp_path, "feature", "second", "FEAT-3", "Cup skids on the cone")
+    path = tmp_path / "map" / "feature-second.md"
+    it = load_items(str(tmp_path / "map"))
+    f = next(i for i in it if i.slug == "second")
+    f.meta["created"] = "2026-10-05"
+    write_item(str(path), f.meta, f.body)
+    dup, _near = similar.screen(_items(tmp_path), "Cup skids on the cone")
+    assert dup is not None and dup.item.slug == "first"
+
+
+def test_same_day_jb_duplicate_names_the_lowest_number(tmp_path):
+    """Same-day JB duplicates: the ID breaks the tie, so the live app's refusal names JB-50 as before."""
+    (tmp_path / "map").mkdir()
+    _write(tmp_path, "bug", "zz", "JB-50", "Cup skids on the cone")
+    _write(tmp_path, "bug", "aa", "JB-60", "Cup skids on the cone")
+    dup, _near = similar.screen(_items(tmp_path), "Cup skids on the cone")
+    assert dup is not None and dup.item.short_id == "JB-50"

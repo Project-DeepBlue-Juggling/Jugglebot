@@ -109,3 +109,13 @@ def test_slug_collision(tmp_path):
     written = import_issues(str(tmp_path), 21, "p", fetch, now=NOW)
     assert [w.name for w in written] == ["ticket-same-title.md",
                                          "ticket-same-title-2.md"]
+
+
+def test_import_allocates_ticket_ids_per_kind_when_the_tree_is_per_kind(tmp_path):
+    """T-U2 (P1 unit 3): import-issues passes ``kind='ticket'``; a per-kind tree numbers TKT-n."""
+    _setup(tmp_path)
+    (tmp_path / "mapkit").mkdir()
+    (tmp_path / "mapkit" / "legacy_ids.csv").write_text("legacy,new\n")
+    import_issues(str(tmp_path), 21, "p", fake_fetch, now=NOW)
+    got = sorted(i.short_id for i in load_items(str(tmp_path / "map")) if i.kind == "ticket")
+    assert got == ["TKT-1", "TKT-2", "TKT-3"]

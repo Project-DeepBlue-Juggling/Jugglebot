@@ -2,7 +2,7 @@
 
 The report is ``docs/night-shift/<date>.md`` (layout in
 ``docs/night-shift/README.md``). The map app renders it (GFM, tables included)
-and links each Item by its bare ``JB-n``, so a row that names an Item any other
+and links each Item by its bare Item ID (``JB-n`` or ``BUG-/FEAT-/IDEA-/PWAY-/TKT-n``), so a row that names an Item any other
 way is an error here. Item sections are GFM tables since 2026-11-01 (owner:
 readability); a table's header row and its ``|---|`` rule are layout, not rows,
 and the older bare ``JB-n | ...`` lines still pass. Pure functions, stdlib only.
@@ -26,7 +26,7 @@ SECTIONS = (
 ITEM_ROW_SECTIONS = ("Merged to main", "Held", "Questions for the Operator", "Skipped",
                      "Unaddressed Sitting results")
 _TITLE = re.compile(r"^# Night Shift \d{4}-\d{2}-\d{2}$")
-_BARE_ID = re.compile(r"^JB-\d+$")
+_BARE_ID = re.compile(r"^(?:JB|BUG|FEAT|IDEA|PWAY|TKT)-[1-9]\d*$|^JB-\d+$")
 RESPOND_IN = "Respond in"
 _RULE_CELL = re.compile(r"^:?-{3,}:?$")
 
@@ -74,7 +74,7 @@ def _respond_in_errors(rows: List[str]) -> List[str]:
         cs = cells(r)
         cell = cs[col] if col < len(cs) else ""
         if cell != "none" and not _BARE_ID.match(cell):
-            errs.append("'## Held' row's Respond in must be a bare JB-m or 'none': %r" % r)
+            errs.append("'## Held' row's Respond in must be a bare Item ID (JB-m or BUG-/FEAT-/IDEA-/PWAY-/TKT-m) or 'none': %r" % r)
     return errs
 
 
@@ -116,6 +116,6 @@ def report_errors(text: str) -> List[str]:
                 continue
             first_tok = first.split()[0] if first.split() else ""
             if not _BARE_ID.match(first_tok):
-                errs.append("'## %s' row must start with a bare JB-n: %r" % (s, row))
+                errs.append("'## %s' row must start with a bare Item ID (JB-n or BUG-/FEAT-/IDEA-/PWAY-/TKT-n): %r" % (s, row))
     errs.extend(_respond_in_errors(parsed.get("Held", [])))
     return errs

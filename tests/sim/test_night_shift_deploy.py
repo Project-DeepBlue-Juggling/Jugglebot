@@ -85,8 +85,9 @@ Body.
 
 
 class Rig:
-    def __init__(self, tmp):
+    def __init__(self, tmp, item_file="bug-wobble.md", item_text=ITEM):
         self.tmp = tmp
+        self.item_file = item_file
         self.result = tmp / "result.json"
         self.page = '<div id="root"></div>'
         # the app
@@ -127,7 +128,7 @@ class Rig:
         (self.main_seed / "logbook").mkdir()
         (self.main_seed / "logbook" / "INDEX.md").write_text("| row |\n")
         (self.main_seed / "map").mkdir()
-        (self.main_seed / "map" / "bug-wobble.md").write_text(ITEM)
+        (self.main_seed / "map" / item_file).write_text(item_text)
         (self.main_seed / ".gitignore").write_text("__pycache__/\n")
         git(self.main_seed, "add", "-A")
         git(self.main_seed, "commit", "-q", "-m", "seed")
@@ -251,7 +252,7 @@ class Rig:
         return git(self.app_live, "rev-parse", "HEAD")
 
     def item(self):
-        return self.origin_file(self.main_origin, "map/bug-wobble.md")
+        return self.origin_file(self.main_origin, "map/" + self.item_file)
 
 
 @pytest.fixture
@@ -677,3 +678,47 @@ def test_a_real_browser_tells_a_mounted_page_from_a_white_screen(rig):
                 'throw new Error("boom")</script></body>')
     ok, detail = deploy.check(rig.base_url, 0.0, browser)
     assert not ok and "empty root" in detail
+
+
+# --- item-id-per-kind P1 (plan section 5, T-U8): a rollback names Items in either ID form ---
+
+def test_items_in_finds_both_forms_in_subjects():
+    """T-U8: ``items_in`` reads JB-n and every per-kind prefix; look-alikes are not Items."""
+    subjects = ["fix(app): JB-7 and BUG-3", "feat(mapkit): thing (FEAT-12)",
+                "fix: IDEA-2, PWAY-4, TKT-31; BUG-3 again", "JB_OP_X XBUG-9 BUG-3x bug-5 FEAT"]
+    commits = [("sha%d" % i, s, True, DATE) for i, s in enumerate(subjects)]
+    assert deploy.items_in(commits) == ["JB-7", "BUG-3", "FEAT-12", "IDEA-2", "PWAY-4", "TKT-31"]
+
+
+def test_items_in_knows_every_mapkit_prefix():
+    """T-U8: the deploy keeps its own prefix list (a rollback must not import the mapkit it may be
+    undoing), so this pins it to ``mapkit.ids.ALL_PREFIXES``."""
+    from mapkit.ids import ALL_PREFIXES
+    assert set(deploy.ID_PREFIXES) == set(ALL_PREFIXES)
+
+
+FEAT_ITEM = ITEM.replace("id: JB-7", "id: FEAT-12").replace("kind: bug", "kind: feature") \
+    .replace("diagnosis: confirmed\n", "")
+
+
+@pytest.fixture
+def feat_rig(tmp_path):
+    r = Rig(tmp_path, item_file="feature-tilt.md", item_text=FEAT_ITEM)
+    yield r
+    r.close()
+
+
+def test_a_rollback_reopens_a_per_kind_item(feat_rig):
+    """T-U8 (silent failure 3): a reverted commit naming FEAT-12 reports and reopens FEAT-12.
+
+    On the unfixed deploy ``_JB`` matched only ``JB-<n>``, so ``items_in`` returned [] and
+    the rollback reopened nothing and named nothing.
+    """
+    rig = feat_rig
+    before = rig.live_head()
+    rig.app_commit("broken", msg="fix(app): thing (FEAT-12)")
+    res = rig.run()
+    _assert_app_reverted(rig, res, before)
+    assert res.get("items_reopened") == ["FEAT-12"] and res.get("reopen_failed") == []
+    assert "status: in_progress" in rig.item()
+    assert "reopened: FEAT-12" in res["line"]
