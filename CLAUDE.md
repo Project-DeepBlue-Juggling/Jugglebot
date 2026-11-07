@@ -49,7 +49,7 @@ Before using or reading one of these words, read its entry in `GLOSSARY.md`.
 **Learning**: Learner, Memory
 **Tooling**: Emit gap
 **Process**: Sitting, Attempt, Session, Rung, Phase, Rung gate, Suite gate, Ladder, Runbook, Night Shift, Next Sitting Runbook
-**Project map**: Pathway, Destination, Item, Item ID, Inbox, Idea, Feature, Bug, Ticket, Step, Reference document
+**Project map**: Pathway, Destination, Item, Kind, Item ID, Inbox, Idea, Feature, Bug, Ticket, Step, Reference document
 <!-- glossary-terms:end -->
 
 **Engineering logbook & planning:**

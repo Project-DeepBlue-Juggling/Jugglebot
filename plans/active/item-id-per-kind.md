@@ -13,7 +13,7 @@ scope: >-
   the text that cannot change (commit messages and trailers), and pins the result with a guard test. JB as the
   Jugglebot abbreviation (JB_OP_*, the UDP preamble) is out of scope and must not change.
 steps:
-  - {id: P0, title: Plan and owner decisions, kind: phase, status: in_progress, effort: xs, hardware: none}
+  - {id: P0, title: Plan and owner decisions, kind: phase, status: complete, date: 2026-11-07, effort: xs, hardware: none}
   - {id: P1, title: Expand mapkit and the Night Shift tools to both ID forms, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: P2, title: Expand the map app to both ID forms (fork repo), kind: phase, status: not_started, effort: m, hardware: none}
   - {id: P3, title: The sweeper and the classified census, kind: phase, status: not_started, effort: m, hardware: none}
@@ -201,7 +201,7 @@ node to its source, which reports stale until the `colcon build` in P4.
 
 | Phase | Scope | Status | Date | Risk | Validates |
 |---|---|---|---|---|---|
-| P0 | Plan, decisions D-1 to D-4, GLOSSARY round | IN PROGRESS | 2026-11-07 | Low | T-R0 |
+| P0 | Plan, decisions D-1 to D-5, GLOSSARY round, ADR-0015 | COMPLETE | 2026-11-07 | Low | T-R0 |
 | P1 | mapkit and Night Shift tools read and write both forms; JB stays the allocated form | NOT STARTED | | Low: no ID changes | T-U1 to T-U8 |
 | P2 | Fork server and frontend take both forms; deployed | NOT STARTED | | Medium: live app | T-U9 to T-U11, T-I1 |
 | P3 | `tools/id_sweep.py`, classification of every token, dry-run report | NOT STARTED | | Low: writes nothing | T-U12 to T-U14, T-R1 |
@@ -211,10 +211,10 @@ node to its source, which reports stale until the `colcon build` in P4.
 
 ## 4. Implementation Phases
 
-### P0 — Plan and owner decisions — IN PROGRESS (started 2026-11-07)
+### P0 — Plan and owner decisions — COMPLETE (2026-11-07)
 
 **Files:** this plan, `map/feature-update-item-naming-convention-based-on-type-eg-pathways-can.md` (JB-118, attached
-to Map improvements, `promoted_to:` this plan), `plans/active/INDEX.md`, `docs/project-map.md`.
+to Map improvements, `promoted_to:` this plan), `plans/active/INDEX.md`, `docs/project-map.md`, `GLOSSARY.md`, `docs/adr/0015-per-kind-item-ids.md`.
 
 **Decisions, taken by the owner 2026-11-07:**
 
@@ -228,8 +228,15 @@ to Map improvements, `promoted_to:` this plan), `plans/active/INDEX.md`, `docs/p
   lookup, and 538 commit message lines will go on citing the old form.
 - **D-4, `PLAN-n`: out of scope.** JB-118's title also mentions plans, which option 3 does not cover. Plans have immutable short filenames and no consumer needs a number (`map-item-ids.md` decision 7).
 
-**GLOSSARY.** The **Item ID** entry names `JB-<n>` and "one sequence across every kind", so it will be wrong. It
-changes through `grilling` + `domain-modeling`, in this phase, since the glossary may run ahead of the code.
+- **D-5, question Tickets: `TKT`.** A separate prefix would split one kind across two counters and let an ID disagree
+  with the Ticket's type.
+
+**GLOSSARY, settled in a grilling round 2026-11-07.** **Item ID** now describes the per-kind form, **Kind** is a new term, and
+**Ticket** is corrected to cover the 29 question Tickets. The glossary runs ahead with one temporary sentence naming the retired
+`JB-<n>`, which stays off `_Avoid_` for now because the Night Shift reads the glossary as normative and still has to write those
+IDs. P5 removes the sentence and adds `JB-<n>` to `_Avoid_`.
+
+**ADR.** `docs/adr/0015-per-kind-item-ids.md` records the reversal, since this plan's reasoning will be archived.
 
 ### P1 — Expand mapkit and the Night Shift tools to both ID forms — NOT STARTED
 
@@ -337,7 +344,7 @@ the auto-pull timers publish `main` to three clones every two minutes. One commi
 **Precondition:** at least one Night Shift and one nightly clean on the new form, so that P4 is still one revert away while it is young.
 
 **The contract, in the project's three parts:**
-- **Document:** `DOCUMENTATION_GUIDE.md` § 2.10 and § 3 name the format and the one-time exception below.
+- **Document:** `DOCUMENTATION_GUIDE.md` § 2.10 and § 3 name the format and the one-time exception below. `GLOSSARY.md` loses its temporary sentence on **Item ID**, and `JB-<n>` joins that entry's `_Avoid_`.
 - **Enforcement point:** `mapkit/ids.py`, the only place prefixes exist. `_LOOSE`/`_CANON` drop `JB`; `legacy()` stays per D-3.
 - **Test:** `tests/sim/test_no_legacy_item_ids.py` runs the sweeper's classifier over `git ls-files` and fails naming file and line for any token outside the `abbreviation` and `frozen` classes, with a per-file count pinned for `frozen`. It is in the default gate and permanent, so a held branch or a habit that reintroduces `JB-12` fails at commit.
 

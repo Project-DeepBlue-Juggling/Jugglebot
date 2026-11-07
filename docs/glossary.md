@@ -440,9 +440,15 @@ One file in `map/`: a Pathway, Idea, Feature, Bug or Ticket. Plans are not Items
 
 _Avoid: task, card_
 
+**Kind**
+
+Which of the five an Item is: Pathway, Idea, Feature, Bug or Ticket. It never changes, and it sets the Item ID's prefix.
+
+_Avoid: type (a Ticket's type is a different thing)_
+
 **Item ID**
 
-An Item's short name, `JB-<n>`: one sequence across every kind of Item, given when the Item is filed and never reused. It changes only before the Item is published, or to repair a duplicate. Plans, Steps and logbook entries have none.
+An Item's short name: its Kind's prefix and a number, such as `BUG-12`, `FEAT-7`, `IDEA-3`, `PWAY-2` or `TKT-31`. Each Kind counts its own Items, so `BUG-12` and `FEAT-12` are different Items and a number alone names nothing. It is given when the Item is filed and never reused, and changes only before the Item is published, or to repair a duplicate. Plans, Steps and logbook entries have none. Items carry the retired `JB-<n>` until the cutover (JB-118).
 
 _Avoid: ticket number, issue number (for an Item ID; a GitHub Issue's own #n is a different thing)_
 
@@ -470,7 +476,7 @@ _Avoid: issue (for a defect), defect (in Item titles)_
 
 **Ticket**
 
-A wayfinder Item under a Pathway: one question of type research, prototype, grilling or task, claimed by adding an owner and resolved by an appended Answer.
+A unit of work or a decision attached to another Item. A wayfinder Ticket sits under a Pathway and is of type research, prototype, grilling or task, claimed by adding an owner and resolved by an appended Answer. A question Ticket sits under the Bug, Feature or Idea it blocks and waits for the owner's Answer.
 
 **Step**
 
