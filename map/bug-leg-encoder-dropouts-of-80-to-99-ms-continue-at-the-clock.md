@@ -4,7 +4,7 @@ kind: bug
 title: 'Leg encoder dropouts of 80 to 99 ms continue at the clock beat: trial encoder_msg_rate_ms 9 on Leg 4, then all Legs'
 status: inbox
 created: '2026-11-06'
-updated: '2026-11-06T11:54:21Z'
+updated: '2026-11-08T00:13:23Z'
 owners: []
 priority: medium
 effort: s
@@ -43,3 +43,6 @@ Still unknown: which side drops the frame (a passive CAN sniffer settles it), wh
 - record: the launch log and bag paths, the clock time of arming, and whether Leg 4 was left at 9 or put back.
 - minutes: 30
 
+## Progress
+
+- 2026-11-08: Leg 4 flew at encoder_msg_rate_ms 9 through the whole 2026-11-07 launch (owner set it before; in-run, not the parked hold the row asks for): Leg 4 peak 17.1 ms, 0 of 2396 /cache_diag windows over 25 ms over 40 min; Legs 0-3 and 5 peak 99-100 ms, 20-30 windows over 25 ms; Hand 18.1 ms, 0. Frame-loss spacing not measured. Row and status left to the owner.

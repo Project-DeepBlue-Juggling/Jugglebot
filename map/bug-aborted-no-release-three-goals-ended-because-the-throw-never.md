@@ -4,7 +4,7 @@ kind: bug
 title: 'ABORTED_NO_RELEASE: three goals ended because the throw never left the hand (new 2026-10-28 21:02)'
 status: inbox
 created: '2026-10-28'
-updated: '2026-11-06T05:58:26Z'
+updated: '2026-11-08T00:13:26Z'
 owners: []
 priority: high
 effort: m
@@ -32,3 +32,4 @@ Launch log: `~/.ros/log/2026-10-28-21-02-48-831501-jetson-3765883/launch.log`.
 ## Progress
 
 - 2026-11-06: Two ABORTED_NO_RELEASE ends on 2026-11-06 were not release failures. P2 goal 19 (L11050): the Hand stroke was normal and the cup read empty for the whole stroke; the ball was lost at the Catch before. Endurance 14:55 goal 9 (L9001-L9014): the release had been cancelled by an earlier END. The end code names the wrong thing; the three 2026-10-28 ends were not re-examined.
+- 2026-11-08: 2026-11-07 L2489 matches the 2026-11-06 reading: Throw 19/21 was a missed Catch (ball_held 0 for 0.9 s), reported as ABORTED_NO_RELEASE.

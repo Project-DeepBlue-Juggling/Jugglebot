@@ -4,7 +4,7 @@ kind: bug
 title: Catch re-aim refused INFEASIBLE on 8.4 % of Throws at the P2 Sitting, 15 of 69 on the turned pair
 status: backlog
 created: '2026-11-06'
-updated: '2026-11-07T18:11:52Z'
+updated: '2026-11-08T00:13:25Z'
 owners: []
 priority: medium
 effort: xs
@@ -146,3 +146,4 @@ Sources: bag `/home/jetson/Desktop/rosbags/2026-11-06_15-53-05` (`/balls`: per-B
 ## Progress
 
 - 2026-11-08: Night Shift 2026-11-08: the turned pair's first ask is not later; it asks twice more often, at no measurable cost (detail below)
+- 2026-11-08: 2026-11-07: RESEND-REFUSED INFEASIBLE on 24 of 282 Throws (8.5 %); turned Columns 22 of 143 (15 %).

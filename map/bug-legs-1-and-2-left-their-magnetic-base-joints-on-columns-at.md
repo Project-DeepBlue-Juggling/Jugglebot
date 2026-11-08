@@ -4,7 +4,7 @@ kind: bug
 title: 'Legs 1 and 2 left their magnetic base joints on Columns at Sep. 170: acceptance bounds Leg kinematics only and does not see the bridge feedforward cap'
 status: backlog
 created: '2026-11-06'
-updated: '2026-11-07T19:12:26Z'
+updated: '2026-11-08T00:13:23Z'
 owners: []
 priority: high
 effort: m
@@ -114,3 +114,5 @@ Method: encoder FK of `/robot_state` (production `leg_lengths_to_pose`) against 
 
 - 2026-11-06: 2026-11-06 P2 Sitting: two-ball goals at Sep. 120 planned Leg peaks of 321 to 371 mm/s and 3656 to 5488 mm/s^2 (goal 17, L9651), above the previous clean envelope (361 / 4672) and under the separating transit (486 / 6296). Owner: base joints stayed attached throughout. The Runbook's offline prediction (264 / 3011) read low: it did not include the Catch re-aim.
 - 2026-11-08: Night Shift 2026-11-08: the reopen rule fired: two more separations on 2026-11-07 at 5872 and 5968 mm/s^2; options and findings below, no limit added
+- 2026-11-08: Debrief 2026-11-07: three separations that day, not two: Dwell 0.32 (856.52), Dwell 0.30 (1028.45) and high-low Sep. 125 L15545 (16:46:43, unnoticed until the debrief, owner confirmed). That re-seat left the Platform tilted 1.3-1.75 deg, the likely cause of the four hop misses. Owner plans a hardware modification against separation first; no bound.
+- 2026-11-08: 2026-11-07 numbers: plan peaks do not separate (5872 and 5968 separated, 5936 flew 12 transits, 7104 held 3). Lead, not a bound (n 4): each separation came 0.5-1.2 s after a transit whose executed command reached 8974-14450 mm/s^2 on Leg 1, at a later arrival; L15097 flew on at 8316. The Base walked 0-9.4 mm per Attempt.

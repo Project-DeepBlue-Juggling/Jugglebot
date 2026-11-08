@@ -4,7 +4,7 @@ kind: bug
 title: 'Mid-air ball collisions end half of two-ball Columns Attempts at Apex 1.00: closest approach about 70 mm at Sep. 100, 125 and 135'
 status: in_progress
 created: '2026-11-06'
-updated: '2026-11-06T12:02:58Z'
+updated: '2026-11-08T00:13:25Z'
 owners: []
 priority: medium
 effort: l
@@ -39,3 +39,4 @@ At the Sitting of 2026-11-06 four of eight two-ball Columns Attempts (Apex 1.00,
 - 2026-11-06: A cause candidate, measured: two-ball Throws land pulled toward the partner Site by 0.18 of the Site coordinate (11 mm at Sep. 120), the same along x and along a pair turned 90 degrees, so the two columns lean together; one-ball Throws show none. Platform tilt at release sets the lateral scatter (r 0.78 x, 0.62 y in one-ball goals).
 - 2026-11-06: Evidence: `temp/probes/sitting_debrief_2026-11-06b/unit_B_D.md`, `unit_A_C.md`.
 - 2026-11-06: 2026-11-06 20:20 Sitting (Apex 1.00, Sep. 120, Hand at 9 ms): 2 of 4 ends are collisions, goals 1 and 3, both Ball 1: closest approach 71 and 72 mm, both balls kink 257 to 318 mm/s at z about 1390, 1.25 to 1.33 s before the end. Aim asked +160 to +191 mm, +10 applied; no authority would have saved them. Same signature at every Sep. flown so far.
+- 2026-11-08: 2026-11-07: 7 collisions in about 300 Throws (2.3 per 100), closest approach 31-74 mm with both balls kinking 200-1550 mm/s, including 2 in 13 Throws at high-low Sep. 100 and 2 at turned 90 deg.
