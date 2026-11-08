@@ -4,18 +4,19 @@ The ID lives in frontmatter ``id:`` only, as the first key, written as a
 canonical string with no padding. The filename stem stays the stored
 cross-reference; the ID is for people and commands.
 
-Two forms are canonical during the per-kind expansion (P1 to P5): the legacy
-global ``JB-<n>`` and the per-kind ``<PREFIX>-<n>`` of :data:`PREFIXES`
-(``BUG-12``, ``FEAT-7``, ``IDEA-3``, ``PWAY-2``, ``TKT-31``). The string is the
-identity: ``BUG-3`` and ``FEAT-3`` are two IDs. :func:`parse_ref`,
-:func:`canonical_ref` and :func:`format_ref` speak both forms; the int-based
-:func:`parse`, :func:`canonical` and :func:`format_id` are ``JB-<n>`` only and
-keep their meaning until P5, because the live map app imports them.
+This module is the only place the ID format exists (``DOCUMENTATION_GUIDE.md``
+section 2.10 states it): ``<PREFIX>-<n>`` with the prefix of the Item's kind
+(:data:`PREFIXES`: ``BUG-12``, ``FEAT-7``, ``IDEA-3``, ``PWAY-2``, ``TKT-31``),
+canonical upper-case and unpadded; typed forms are loose (``bug12``,
+``Bug-12``). The string is the identity: ``BUG-3`` and ``FEAT-3`` are two IDs.
 
-* :func:`allocate` -- 1 + max over the working tree's IDs and those on a ref
-  (default ``origin/main``, read with ``git grep``; no network). The tree
-  decides the form (:func:`per_kind`): without ``mapkit/legacy_ids.csv`` it is
-  one global ``JB-<n>`` sequence, with it one sequence per kind.
+The retired global form of 2026-10-26 to 2026-11-08 is known only to the frozen
+crosswalk :data:`LEGACY_IDS` (D-3): :func:`legacy` reads it and
+:func:`legacy_ref` looks a typed old ID up in it, so an old ID resolves on a
+read and is refused on a write, and no code here names its prefix.
+
+* :func:`allocate` -- 1 + max over the working tree's IDs of one kind and those
+  on a ref (default ``origin/main``, read with ``git grep``; no network).
 * :func:`duplicates` / :func:`check` -- the uniqueness, format and
   immutability checks (the loader deliberately does NOT validate ``id``: a
   malformed value must never hide an Item or break ``mapkit gen``).
@@ -27,9 +28,8 @@ keep their meaning until P5, because the live map app imports them.
   line.
 * :func:`resolve` -- stem, then slug, then ID; bare digits only when the
   caller is a read command (``allow_bare``), and then every Item carrying that
-  number in any form is listed when there is more than one.
-* :func:`mismatch` -- an ID whose prefix contradicts its Item's kind
-  (``JB-<n>`` matches every kind).
+  number under any prefix is listed when there is more than one.
+* :func:`mismatch` -- an ID whose prefix contradicts its Item's kind.
 """
 from __future__ import annotations
 
@@ -43,27 +43,23 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 from mapkit.items import Item, ItemError, load_items, load_items_lenient, write_item
 
-PREFIX = "JB"  # the legacy global form; still canonical until P5
 PREFIXES: Dict[str, str] = {"bug": "BUG", "feature": "FEAT", "idea": "IDEA",
                             "pathway": "PWAY", "ticket": "TKT"}
 KIND_OF_PREFIX: Dict[str, str] = {p: k for k, p in PREFIXES.items()}
-ALL_PREFIXES: Tuple[str, ...] = (PREFIX,) + tuple(PREFIXES.values())
+ALL_PREFIXES: Tuple[str, ...] = tuple(PREFIXES.values())
 DEFAULT_REF = "origin/main"
 RENUMBER_SUBJECT = "map: renumber"
 MAP_DIR = "map"
-LEGACY_IDS = "mapkit/legacy_ids.csv"  # the P4 crosswalk; present = per-kind tree
+LEGACY_IDS = "mapkit/legacy_ids.csv"  # the frozen P4 crosswalk: old ID -> new ID (D-3)
 
-_CANON = re.compile(r"^%s-([1-9][0-9]*)$" % PREFIX)
-_LOOSE = re.compile(r"^%s-?([0-9]+)$" % PREFIX, re.IGNORECASE)
 _BARE = re.compile(r"^[0-9]+$")
 _ANY = "|".join(ALL_PREFIXES)
 _CANON_REF = re.compile(r"^(%s)-([1-9][0-9]*)$" % _ANY)
 _LOOSE_REF = re.compile(r"^(%s)-?([1-9][0-9]*)$" % _ANY, re.IGNORECASE)
+#: Any typed ID shape, prefix unknown: letters, an optional hyphen, a number
+#: that may be padded. Only :func:`legacy_ref` uses it, as the key to the crosswalk.
+_ANY_SHAPE = re.compile(r"^([A-Za-z]+)-?0*([1-9][0-9]*)$")
 _INF = float("inf")
-
-
-class CrosswalkError(ValueError):
-    """The tree cannot yield a crosswalk (not a pure legacy tree, or the file is frozen)."""
 
 
 class IdError(LookupError):
@@ -79,7 +75,7 @@ class IdError(LookupError):
 
 
 class LegacyIdError(IdError):
-    """A write named an old ``JB-<n>``; ``new_id`` is what it is called now (D-3)."""
+    """A write named an old ID the crosswalk knows; ``new_id`` is what it is called now (D-3)."""
 
     def __init__(self, message: str, new_id: str) -> None:
         super().__init__(message)
@@ -92,11 +88,6 @@ def _positive(n: object) -> int:
     return n
 
 
-def format_id(n: int) -> str:
-    """``JB-<n>``. Legacy form, kept for the live app until P5."""
-    return "%s-%d" % (PREFIX, _positive(n))
-
-
 def format_ref(kind: str, n: int) -> str:
     """The per-kind ID of Item kind ``kind`` and number ``n``: ``("bug", 12)`` -> ``BUG-12``."""
     if kind not in PREFIXES:
@@ -105,10 +96,10 @@ def format_ref(kind: str, n: int) -> str:
 
 
 def canonical_ref(value: object) -> Optional[str]:
-    """``value`` itself when it is a canonical ID in either form, else None.
+    """``value`` itself when it is a canonical ID, else None.
 
-    Case-sensitive and unpadded: ``BUG-12`` and ``JB-149`` pass; ``bug-12``,
-    ``BUG12``, ``BUG-01`` and a YAML int do not.
+    Case-sensitive and unpadded: ``BUG-12`` passes; ``bug-12``, ``BUG12``,
+    ``BUG-01``, an unknown prefix and a YAML int do not.
     """
     if not isinstance(value, str):
         return None
@@ -124,10 +115,10 @@ def split_ref(value: object) -> Optional[Tuple[str, int]]:
 
 
 def parse_ref(text: str) -> Optional[str]:
-    """A typed ID in either form -> its canonical string, else None.
+    """A typed ID -> its canonical string, else None.
 
-    Loose as typing is: any case, hyphen optional (``bug12``, ``Bug-12``,
-    ``jb149``). Never a bare number (that is :func:`resolve`'s read-only
+    Loose as typing is: any case, hyphen optional (``bug12``, ``Bug-12``).
+    Never an old ID (that is :func:`legacy_ref`'s), never a bare number (that is :func:`resolve`'s read-only
     case) and never a padded one (``BUG-01``). Note ``bug-12`` is also a legal
     stem shape; :func:`resolve` handles that collision.
     """
@@ -140,36 +131,17 @@ def parse_ref(text: str) -> Optional[str]:
 def mismatch(item_id: object, kind: str) -> bool:
     """True when canonical ``item_id``'s prefix names a kind other than ``kind``.
 
-    ``JB-<n>`` matches every kind; a non-canonical value is not this class
-    (it is :func:`malformed`'s), so it returns False.
+    A non-canonical value is not this class (it is :func:`malformed`'s), so it
+    returns False.
     """
     sp = split_ref(item_id)
-    if sp is None or sp[0] == PREFIX:
+    if sp is None:
         return False
     return KIND_OF_PREFIX[sp[0]] != kind
 
 
-def canonical(value: object) -> Optional[int]:
-    """The number of a canonical ``JB-<n>`` string; None for anything else."""
-    if not isinstance(value, str):
-        return None
-    m = _CANON.match(value)
-    return int(m.group(1)) if m else None
-
-
-def parse(text: str, allow_bare: bool = False) -> Optional[int]:
-    """A typed ID (``JB-12``, ``jb12``, ``jb-12``; bare ``12`` if allowed) -> 12."""
-    t = text.strip()
-    m = _LOOSE.match(t)
-    digits = m.group(1) if m else (t if allow_bare and _BARE.match(t) else None)
-    if digits is None:
-        return None
-    n = int(digits)
-    return n if n >= 1 else None
-
-
 def short_id(item: Item) -> Optional[str]:
-    """The Item's canonical ID in either form (unchanged for every ``JB-<n>``), else None."""
+    """The Item's canonical ID, else None."""
     return canonical_ref(item.meta.get("id"))
 
 
@@ -213,7 +185,7 @@ def _ref_matches(repo_root: str, ref: str, pattern: str) -> Dict[str, List[Tuple
 def ref_ids(repo_root: str, ref: str = DEFAULT_REF) -> Dict[str, str]:
     """``{stem: id value}`` for the Items on ``ref``; ``{}`` if the ref is absent.
 
-    Only the frontmatter ``id:`` key counts: a column-0 ``id: JB-n`` in an
+    Only the frontmatter ``id:`` key counts: a column-0 ``id: BUG-n`` in an
     Item's body (a fenced example) lies after the closing ``---`` and is skipped.
     """
     hits = _ref_matches(repo_root, ref, "^id: ")
@@ -308,47 +280,31 @@ def file_ids(repo_root: str) -> List[str]:
     return out
 
 
-def _max_number(values: Iterable[object], prefix: str = PREFIX) -> int:
+def _max_number(values: Iterable[object], prefix: str) -> int:
     """The highest number among canonical IDs carrying ``prefix``; 0 for none."""
     nums = [split_ref(v) for v in values]
     return max([sp[1] for sp in nums if sp is not None and sp[0] == prefix] + [0])
 
 
-def per_kind(repo_root: str) -> bool:
-    """The tree's allocator form: :data:`LEGACY_IDS` present means per kind.
-
-    The file arrives with the renumber commit (P4) and leaves with its revert,
-    so every clone switches with its own tree and no flag has to be kept in step.
-    """
-    return os.path.isfile(os.path.join(repo_root, LEGACY_IDS))
-
-
 def allocate(repo_root: str, ref: str = DEFAULT_REF,
              items: Optional[List[Item]] = None, kind: Optional[str] = None) -> str:
-    """1 + max over the tree's IDs (every ``map/*.md`` frontmatter, loadable or not),
-    ``ref``'s and :data:`DEFAULT_REF`'s (both read: a feature branch's upstream may lag or lead
-    ``origin/main``, and a higher max is never wrong).
+    """The next ID of ``kind``: 1 + max over that kind's IDs in the tree (every
+    ``map/*.md`` frontmatter, loadable or not), ``ref``'s and :data:`DEFAULT_REF`'s
+    (both read: a feature branch's upstream may lag or lead ``origin/main``, and a
+    higher max is never wrong).
 
-    Without :data:`LEGACY_IDS` the sequence is the global ``JB-<n>`` one, exactly
-    as before the expansion, and ``kind`` (validated if given) does not change
-    the result. With it the max is scoped to ``kind``'s prefix and ``kind`` is
-    required: allocating ``JB-<n>`` into a per-kind tree would be silent.
+    ``kind`` is required (keyword, so the signature the map app calls is
+    unchanged); each kind counts its own Items.
     """
-    if kind is not None and kind not in PREFIXES:
-        raise ValueError("no ID prefix for kind %r (kinds: %s)" % (kind, ", ".join(PREFIXES)))
-    if per_kind(repo_root):
-        if kind is None:
-            raise ValueError("%s is present, so IDs are per kind: allocate needs kind="
-                             % LEGACY_IDS)
-        prefix = PREFIXES[kind]
-    else:
-        prefix = PREFIX
+    if kind not in PREFIXES:
+        raise ValueError("allocate needs kind= one of %s, not %r" % (", ".join(PREFIXES), kind))
+    prefix = PREFIXES[kind]
     items = load_lenient(repo_root) if items is None else items
     top = max(_max_number((i.meta.get("id") for i in items), prefix),
               _max_number(file_ids(repo_root), prefix))
     for r in {ref, DEFAULT_REF}:
         top = max(top, _max_number(ref_ids(repo_root, r).values(), prefix))
-    return format_id(top + 1) if prefix == PREFIX else format_ref(kind, top + 1)  # type: ignore[arg-type]
+    return format_ref(kind, top + 1)
 
 
 def duplicates(items: List[Item]) -> Dict[str, List[Item]]:
@@ -480,71 +436,50 @@ CROSSWALK_COLUMNS = ("old_id", "new_id", "kind", "stem")
 
 
 def legacy(repo_root: str) -> Dict[str, str]:
-    """``{old JB-<n>: new ID}`` from :data:`LEGACY_IDS`; ``{}`` when the file is absent."""
+    """``{old ID: new ID}`` from :data:`LEGACY_IDS`; ``{}`` when the file is absent.
+
+    The file is frozen and its ``old_id`` column is the only record of the
+    retired form, so it outlives that form: commit messages, bookmarks and old
+    logs cite old IDs forever. A malformed file raises :class:`ItemError` naming
+    the line (wrong header, a missing or empty cell, a ``new_id`` that is not a
+    canonical ID of the row's kind, an ``old_id`` listed twice), never a bare
+    ``KeyError`` from deep in a command.
+    """
     path = os.path.join(repo_root, LEGACY_IDS)
     if not os.path.isfile(path):
         return {}
+    out: Dict[str, str] = {}
     with open(path, newline="", encoding="utf-8") as fh:
-        return {d["old_id"]: d["new_id"] for d in csv.DictReader(fh)}
+        rows = csv.reader(fh)
+        head = next(rows, None)
+        if head is None or tuple(head) != CROSSWALK_COLUMNS:
+            raise ItemError("%s:1: header %r, want %s" % (LEGACY_IDS, head, ",".join(CROSSWALK_COLUMNS)))
+        for n, row in enumerate(rows, 2):
+            if len(row) != len(CROSSWALK_COLUMNS) or not all(c.strip() for c in row):
+                raise ItemError("%s:%d: want %d non-empty cells, got %r"
+                                % (LEGACY_IDS, n, len(CROSSWALK_COLUMNS), row))
+            old, new, kind = row[0], row[1], row[2]
+            sp = split_ref(new)
+            if sp is None or KIND_OF_PREFIX[sp[0]] != kind:
+                raise ItemError("%s:%d: new_id %r is not a canonical ID of kind %r" % (LEGACY_IDS, n, new, kind))
+            if old in out:
+                raise ItemError("%s:%d: old_id %s listed twice" % (LEGACY_IDS, n, old))
+            out[old] = new
+    return out
 
 
-def make_crosswalk(repo_root: str, out: Optional[str] = None) -> str:
-    """Write the old-to-new ID crosswalk (``out``, default :data:`LEGACY_IDS`); return its path.
+def legacy_ref(text: object, crosswalk: Dict[str, str]) -> Optional[str]:
+    """The new ID a typed old ID names in ``crosswalk`` (:func:`legacy`), else None.
 
-    Input must be a pure legacy tree: every ``map/*.md`` parses, carries a
-    canonical ``JB-<n>``, no two share one, and none is per-kind yet. An
-    existing file at the target is refused (the crosswalk is frozen once made).
-    Rows: kind in :data:`PREFIXES` order, ascending old number; the new number
-    is the rank within the kind. Byte-deterministic.
+    Any spelling of the old ID (owner, 2026-11-08): case and the hyphen are
+    free and padding is ignored, so an old ID typed in lower case, unhyphenated
+    or zero-padded finds the row of its canonical spelling. The crosswalk's keys are the only knowledge of the
+    old form; a current ID (``BUG-12``) is in no row and gets None.
     """
-    path = os.path.join(repo_root, LEGACY_IDS) if out is None else out
-    if os.path.exists(path):
-        raise CrosswalkError("%s exists: the crosswalk is frozen once generated; never regenerate it" % path)
-    items, skipped = load_items_lenient(os.path.join(repo_root, MAP_DIR))
-    problems: List[str] = ["%s does not parse (%s)" % (os.path.basename(p), m) for p, m in skipped]
-    for i in missing(items):
-        problems.append("%s has no id" % stem(i))
-    for i in items:
-        raw = i.meta.get("id")
-        if raw in (None, ""):
-            continue
-        if canonical(raw) is None:
-            problems.append("%s: id %r is not a canonical JB-<n>%s" % (
-                stem(i), raw, " (already per kind)" if short_id(i) else ""))
-    for k, v in sorted(duplicates(items).items()):
-        problems.append("%s is held by %s" % (k, ", ".join(stem(i) for i in v)))
-    if problems:
-        raise CrosswalkError("not a pure legacy tree, no crosswalk written: " + "; ".join(problems))
-    rows = []
-    for kind in PREFIXES:
-        of_kind = sorted((i for i in items if i.kind == kind), key=lambda i: canonical(i.meta["id"]))
-        for rank, i in enumerate(of_kind, 1):
-            rows.append((i.meta["id"], format_ref(kind, rank), kind, stem(i)))
-    stray = [i for i in items if i.kind not in PREFIXES]
-    if stray:
-        raise CrosswalkError("no ID prefix for kind of %s" % ", ".join(stem(i) for i in stray))
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with open(path, "w", newline="", encoding="utf-8") as fh:
-        w = csv.writer(fh, lineterminator="\n")
-        w.writerow(CROSSWALK_COLUMNS)
-        w.writerows(rows)
-    return path
-
-
-def typed_ref(t: object) -> Optional[str]:
-    """The canonical ID string a typed or stored value names, either form, else None.
-
-    :func:`parse_ref`, plus the legacy parser's padded ``jb-01`` so every ``JB`` input
-    resolves exactly as it did before the expansion. Never a number (a number compare
-    made ``BUG-3 == FEAT-3``); a non-string is None.
-    """
-    if not isinstance(t, str):
+    if not isinstance(text, str) or not crosswalk:
         return None
-    ref = parse_ref(t)
-    if ref is None:
-        n = parse(t)
-        ref = format_id(n) if n is not None else None
-    return ref
+    m = _ANY_SHAPE.match(text.strip())
+    return crosswalk.get("%s-%s" % (m.group(1).upper(), m.group(2))) if m else None
 
 
 def _bare_number(t: str) -> Optional[int]:
@@ -553,7 +488,7 @@ def _bare_number(t: str) -> Optional[int]:
 
 def resolve(items: List[Item], text: str, allow_bare: bool = False,
             legacy: Optional[Dict[str, str]] = None) -> Item:
-    """Exact stem, then slug, then ID, in either ID form.
+    """Exact stem, then slug, then ID.
 
     Errors (:class:`IdError`, with ``matches``) rather than guesses when two
     readings disagree: a stem that is another Item's typed ID (``bug-12`` is
@@ -562,24 +497,24 @@ def resolve(items: List[Item], text: str, allow_bare: bool = False,
     there they match the number in every form, so a number shared across kinds
     lists every holder instead of picking one.
 
-    ``legacy`` is the crosswalk (:func:`legacy`, D-3): a typed ``JB-<n>`` that
-    no Item holds but the crosswalk maps resolves, on a read (``allow_bare``),
-    to the Item holding the new ID; on a write it raises naming the new ID.
-    Absent or empty, behaviour is unchanged.
+    ``legacy`` is the crosswalk (:func:`legacy`, D-3): an old ID in any
+    spelling (:func:`legacy_ref`) that is no Item's stem or current ID
+    resolves, on a read (``allow_bare``), to the Item holding the new ID; on a
+    write it raises :class:`LegacyIdError` naming the new ID. Absent or empty,
+    an old ID is simply no Item.
     """
     t = text.strip()
     if t.endswith(".md"):
         t = t[:-3]
-    ref = typed_ref(t)
+    ref = parse_ref(t)
     by_ref = [i for i in items if ref is not None and short_id(i) == ref]
-    new_ref = legacy.get(ref) if (legacy and ref is not None and not by_ref
-                                  and ref.startswith(PREFIX + "-")
-                                  and not any(stem(i) == t for i in items)) else None
+    new_ref = legacy_ref(t, legacy) if (legacy and not by_ref
+                                        and not any(stem(i) == t for i in items)) else None
     if new_ref is not None:
         holder = [i for i in items if short_id(i) == new_ref]
         if not allow_bare:
             raise LegacyIdError("%s is now %s%s; writes take the new ID" % (
-                ref, new_ref, " (%s)" % stem(holder[0]) if holder else ""), new_ref)
+                t, new_ref, " (%s)" % stem(holder[0]) if holder else ""), new_ref)
         ref = new_ref
         by_ref = holder
     for i in items:
@@ -615,7 +550,7 @@ def resolve(items: List[Item], text: str, allow_bare: bool = False,
     if by_id:
         return by_id[0]
     hint = ("" if allow_bare or not _BARE.match(t)
-            else " (write commands need a prefixed ID, e.g. %s-12 or BUG-12)" % PREFIX)
+            else " (write commands need a prefixed ID, e.g. BUG-12)")
     raise IdError("no Item %r%s" % (text, hint))
 
 
@@ -627,16 +562,12 @@ def _run(args: argparse.Namespace) -> int:
             for sid, st in assign_missing(root, args.ref):
                 print("%s %s" % (sid, st))
             return 0
-        if args.make_crosswalk:
-            path = make_crosswalk(root, args.out)
-            print("wrote %s" % os.path.relpath(path, root))
-            return 0
         if args.repair:
             for old, new, st in repair(root, args.ref):
                 print("%s -> %s %s" % (old, new, st))
             return 0
         problems = check(root, args.ref)
-    except (ItemError, CrosswalkError) as exc:
+    except ItemError as exc:
         print("mapkit: %s" % exc, file=sys.stderr)
         return 2
     bad = 0
@@ -656,9 +587,6 @@ def register(subparsers) -> None:
     g.add_argument("--check", action="store_true", help="report problems (default)")
     g.add_argument("--assign-missing", action="store_true", help="number ID-less Items, oldest first")
     g.add_argument("--repair", action="store_true", help="renumber the loser of each duplicate")
-    g.add_argument("--make-crosswalk", action="store_true",
-                   help="write the old-to-new ID crosswalk (P4; refused if the file exists)")
-    p.add_argument("--out", default=None, help="--make-crosswalk target (default %s)" % LEGACY_IDS)
     p.add_argument("--ref", default=DEFAULT_REF, help="published ref (default origin/main)")
     p.add_argument("--repo", default=".", help="repo root (default .)")
     p.set_defaults(func=_run)

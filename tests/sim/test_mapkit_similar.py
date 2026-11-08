@@ -139,7 +139,7 @@ def test_oldest_duplicate_is_by_filing_order_across_per_kind_ids(tmp_path):
     assert dup is not None and dup.item.slug == "first"
 
 
-def test_same_day_jb_duplicate_names_the_lowest_number(tmp_path):
+def test_same_day_duplicate_names_the_lowest_number(tmp_path):
     """Same-day duplicates: the ID breaks the tie, so the live app's refusal names BUG-1 as before."""
     (tmp_path / "map").mkdir()
     _write(tmp_path, "bug", "zz", "BUG-1", "Cup skids on the cone")

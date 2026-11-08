@@ -35,11 +35,11 @@ letter is a usage error (HOLD). A ``gate error`` is never waived.
 
 Preconditions ``[pre]`` (a failure here is HOLD and the conditions are not
 evaluated): the branch and the base resolve; the branch contains the base and
-is at least one commit ahead of it; ``--item`` parses as an Item ID in either form
-(``JB-<n>``, or per kind ``BUG-``/``FEAT-``/``IDEA-``/``PWAY-``/``TKT-<n>``; IDs compare as
+is at least one commit ahead of it; ``--item`` parses as an Item ID
+(``BUG-``/``FEAT-``/``IDEA-``/``PWAY-``/``TKT-<n>``, never an old ID; IDs compare as
 whole strings, so ``BUG-3`` is never ``FEAT-3``) and exactly one file under ``map/``
 ON THE BRANCH carries that ``id:`` and loads as an Item, whose kind the ID's prefix
-names (``JB-<n>`` names every kind; a contradiction is a HOLD naming both);
+names (a contradiction is a HOLD naming both);
 exactly one file under ``map/`` at the BASE carries it too (a branch cannot
 create the Item it merges); and the gate running is the base's own: this file
 and every ``mapkit`` module it loaded are byte-identical to the base (a file the
@@ -117,7 +117,7 @@ from typing import Dict, List, Optional, Tuple
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mapkit.frontmatter import FrontmatterError, split_frontmatter  # noqa: E402
-from mapkit.ids import KIND_OF_PREFIX, mismatch, split_ref, typed_ref  # noqa: E402
+from mapkit.ids import KIND_OF_PREFIX, mismatch, parse_ref, split_ref  # noqa: E402
 from mapkit.items import METRIC_ENUMS, Item, ItemError, load_item  # noqa: E402
 
 #: Paths a Night Shift branch may never touch (plan § 2 "Merge gate rule" (f)),
@@ -280,9 +280,9 @@ def _map_files(repo: str, branch: str) -> Dict[str, Optional[str]]:
 # --- preconditions -----------------------------------------------------------
 def _item_ref(item: str) -> str:
     """``--item`` as a canonical ID string, or ``[pre]``."""
-    ref = typed_ref(item)
+    ref = parse_ref(item)
     if ref is None:
-        raise PreconditionError("--item %r is not an Item ID (JB-<n>, or BUG-, FEAT-, IDEA-, "
+        raise PreconditionError("--item %r is not an Item ID (BUG-, FEAT-, IDEA-, "
                                 "PWAY- or TKT-<n>)" % item)
     return ref
 
@@ -298,7 +298,7 @@ def _find_item(files: Dict[str, Optional[str]], ref: str, where: str = "on the b
         except FrontmatterError:
             continue
         v = meta.get("id")
-        if typed_ref(v) == ref:
+        if parse_ref(v) == ref:
             matches.append((name, text, meta.get("kind")))
     if not matches:
         raise PreconditionError("no map/ file %s carries id %s" % (where, ref))
@@ -514,7 +514,7 @@ def _names_item(parent: object, it: Item, ref: str) -> bool:
     p = parent.strip()
     if p.endswith(".md"):
         p = p[:-3]
-    return p in _item_names(it) or typed_ref(p) == ref
+    return p in _item_names(it) or parse_ref(p) == ref
 
 
 def _check_e(it: Item, ref: str, files: Dict[str, Optional[str]]) -> List[str]:

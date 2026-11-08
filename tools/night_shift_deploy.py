@@ -78,10 +78,10 @@ RENDER_PATHS = ("/night-shift", "/next-sitting")
 _ASSET = re.compile(r'(?:src|href)="(/assets/[^"]+)"')
 _ROOT_EMPTY = re.compile(r'<div id="root">\s*</div>')
 _ROOT = re.compile(r'<div id="root">')
-#: Item ID prefixes, both forms (item-id-per-kind). Kept here, not imported from
+#: Item ID prefixes (item-id-per-kind). Kept here, not imported from
 #: ``mapkit.ids.ALL_PREFIXES``: a rollback must run even when the mapkit it is undoing is
 #: broken. ``test_items_in_knows_every_mapkit_prefix`` pins the two together.
-ID_PREFIXES = ("JB", "BUG", "FEAT", "IDEA", "PWAY", "TKT")
+ID_PREFIXES = ("BUG", "FEAT", "IDEA", "PWAY", "TKT")
 _ITEM_ID = re.compile(r"\b(%s)-(\d+)\b" % "|".join(ID_PREFIXES))
 TRAILER = "Logbook-Entry: %s-night-shift"
 #: Never restored by a mapkit revert: the entries stay as history, Items are reopened by
@@ -393,13 +393,13 @@ def revert_mapkit(a: argparse.Namespace, wt: str, why: str) -> Tuple[List[str], 
 def reopen(wt: str, items: List[str], date: str) -> List[str]:
     """Move each Item back to in_progress with a note; an Item that fails is named, not fatal."""
     failed = []
-    for jb in items:
-        rc, out = run([sys.executable, "-m", "mapkit", "item", "set-status", jb, "in_progress",
+    for item_id in items:
+        rc, out = run([sys.executable, "-m", "mapkit", "item", "set-status", item_id, "in_progress",
                        "--owner", "night-shift", "--note", REOPEN_NOTE % date, "--force",
                        "--commit", "--no-push"], cwd=wt)
         if rc != 0:
-            log("reopen %s failed: %s" % (jb, out.strip()[-200:]))
-            failed.append(jb)
+            log("reopen %s failed: %s" % (item_id, out.strip()[-200:]))
+            failed.append(item_id)
     return failed
 
 
@@ -431,14 +431,14 @@ def land_on_main(a: argparse.Namespace, do_mapkit: bool, items: List[str], why: 
         todo = list(items)
         if do_mapkit:
             reverted, closed, left = revert_mapkit(a, wt, why)
-            todo += [jb for jb in closed if jb not in todo]
+            todo += [item_id for item_id in closed if item_id not in todo]
         failed = reopen(wt, todo, a.date)
         push_main(wt)
     if reverted:
         result["reverted_mapkit"] = reverted
     if left:
         result["left_alone"] = left
-    result["items_reopened"] = [jb for jb in todo if jb not in failed]
+    result["items_reopened"] = [item_id for item_id in todo if item_id not in failed]
     result["reopen_failed"] = failed
 
 

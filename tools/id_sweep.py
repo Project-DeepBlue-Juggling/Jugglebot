@@ -427,9 +427,21 @@ def _numbers(tok: Token, rule: Rule) -> List[int]:
     return [int(x) for x in _NUM.findall(_span(tok, rule))]
 
 
+#: The retired global form. Since P5 ``mapkit.ids`` no longer knows it, so the sweeper
+#: (frozen, kept until P6 for held branches that predate the renumber) carries its own.
+OLD_PREFIX = "JB"
+_OLD_CANON = re.compile(r"^%s-([1-9][0-9]*)$" % OLD_PREFIX)
+
+
+def _old_number(value: object) -> Optional[int]:
+    """The number of a canonical old-form ID string; None for anything else."""
+    m = _OLD_CANON.match(value) if isinstance(value, str) else None
+    return int(m.group(1)) if m else None
+
+
 def known_numbers(root: str) -> Set[int]:
     """Item numbers of every ``JB-<n>`` frontmatter ID in ``map/``."""
-    return {n for n in (ids.canonical(v) for v in ids.file_ids(root)) if n}
+    return {n for n in (_old_number(v) for v in ids.file_ids(root)) if n}
 
 
 # --------------------------------------------------------------- overrides
@@ -754,11 +766,11 @@ def read_crosswalk(path: str) -> Tuple[Dict[int, str], List[str]]:
             return {}, ["%s: crosswalk lacks column(s) %s" % (path, ", ".join(missing))]
         for i, d in enumerate(r, 2):
             old, new, kind = d["old_id"] or "", d["new_id"] or "", d["kind"] or ""
-            n = ids.canonical(old)
+            n = _old_number(old)
             sp = ids.split_ref(new)
             if n is None:
                 errors.append("%s:%d: old_id %r is not a canonical JB-<n>" % (path, i, old))
-            elif sp is None or sp[0] == ids.PREFIX or ids.PREFIXES.get(kind) != sp[0]:
+            elif sp is None or sp[0] == OLD_PREFIX or ids.PREFIXES.get(kind) != sp[0]:
                 errors.append("%s:%d: new_id %r is not a canonical %s ID" % (path, i, new, kind or "?"))
             elif n in xw or new in seen_new:
                 errors.append("%s:%d: duplicate %s" % (path, i, old if n in xw else new))

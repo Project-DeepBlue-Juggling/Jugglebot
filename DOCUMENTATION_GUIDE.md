@@ -438,7 +438,15 @@ logbook.
 - **The glossary may run ahead of the code.** A term is adopted here first and
   the identifiers follow in their own commit (a rename is a grep-counted
   refactor, not a docs edit). Historical logbook entries and archived plans
-  are never rewritten to match.
+  are never rewritten to match. **One dated exception, 2026-11-08: Item IDs**
+  ([ADR-0015](docs/adr/0015-per-kind-item-ids.md)). Every citation of an
+  Item ID was rewritten once to its per-kind ID, by token substitution only,
+  through the frozen crosswalk `mapkit/legacy_ids.csv`, with the commit listed
+  in `.git-blame-ignore-revs`; the old scheme's own text (its placeholders and
+  the files about the scheme) was left as written. Why: an old ID that no
+  longer resolves defeats the entry that cites it. Cost accepted: such an
+  entry's text no longer matches its date in that one token. It sets no
+  precedent for any other rename.
 - **Changing it**: through the `grilling` + `domain-modeling` skills (mattpocock-skills plugin;
   they load together), which resolves a term with the owner before writing
   it. Consumer-side rules for
@@ -486,7 +494,7 @@ loader. Set them with `python -m mapkit item new ... --effort s --area gui` or
 `hardware: none` AND `owner: none` (AND `diagnosis: confirmed` for a bug); "on the way past" is the same
 `area` as the current work with `effort` <= `s`.
 
-Every item carries `id: <ID>` as its first key: a short, stable name for prose, commits and the CLI, allocated by `mapkit/ids.py` at filing and changed only before publication (an unpushed Item is renumbered by amending its `map: file` commit) or by a `map: renumber` commit that repairs a published duplicate (`plans/archived/map-item-ids.md`). An Item is never deleted: one no longer wanted is set to `dropped`, so its ID is never reissued (allocation is one past the highest ID present). Any kind may carry `links:` (logbook entries, plans, other items), `owners:`, `priority:` and `blocked_by:`, whose targets are filename stems (`ticket-<slug>`, `<kind>-<slug>`) or a plan's bare filename; `updated:` is the ISO timestamp every write that changes the item bumps (the app's conflict token; a save that changes nothing is skipped). Staleness (`python -m mapkit items --stale`) is dated from the newest dated `## Progress` line, else `created`, never from `updated`.
+Every item carries `id: <ID>` as its first key: a short, stable name for prose, commits and the CLI. **The Item ID format** (this paragraph is its one statement; `mapkit/ids.py` is the one implementation and `tests/sim/test_no_legacy_item_ids.py` the guard): the prefix of the Item's kind and a number, `BUG-n`, `FEAT-n`, `IDEA-n`, `PWAY-n` or `TKT-n`, each kind counting its own Items, so `BUG-3` and `FEAT-3` are two Items and a bare number names none. Stored and written forms are canonical: upper-case, no padding (`BUG-12`, never `bug-12` or `BUG-012`). Typed forms are loose: any case, hyphen optional (`bug12`, `Bug-12`). The retired global form (2026-10-26 to 2026-11-08) is never written; an old ID typed in any spelling still resolves on a read and is refused on a write, naming its new ID, through the frozen crosswalk `mapkit/legacy_ids.csv` ([ADR-0015](docs/adr/0015-per-kind-item-ids.md)). The ID is allocated by `mapkit/ids.py` at filing and changed only before publication (an unpushed Item is renumbered by amending its `map: file` commit) or by a `map: renumber` commit that repairs a published duplicate (`plans/archived/map-item-ids.md`). An Item is never deleted: one no longer wanted is set to `dropped`, so its ID is never reissued (allocation is one past the highest ID of its kind present). Any kind may carry `links:` (logbook entries, plans, other items), `owners:`, `priority:` and `blocked_by:`, whose targets are filename stems (`ticket-<slug>`, `<kind>-<slug>`) or a plan's bare filename; `updated:` is the ISO timestamp every write that changes the item bumps (the app's conflict token; a save that changes nothing is skipped). Staleness (`python -m mapkit items --stale`) is dated from the newest dated `## Progress` line, else `created`, never from `updated`.
 **Status sets:** pathway `active | complete | dropped`; ticket `open |
 complete | dropped`; idea, feature and bug `inbox | backlog | in_progress |
 complete | dropped | promoted`.
@@ -523,7 +531,7 @@ One-glance reference for what goes in the `---` YAML block of each artifact.
 | **plan (active)** | `title`, `created`, `status: active`, `pathway`, `branch`, `scope`, `last_updated`, `steps` | `owner`, `kind: reference`, `related_logbook`, `related_config`, `related_code` | `status`, step `status` |
 | **plan (parked)** | `title`, `created`, `status: parked   # YYYY-MM-DD — why`, `parked`, `parked_why`, `unpark`, plus the active-plan fields | same as active | `status` |
 | **plan (archived)** | `title`, `created`, `status`, `archived` | `completed`, else same as active | `completed` / `superseded` |
-| **map item** | `id` (`<ID>`, first key), `kind`, `title`, `status`, `created`; pathway adds `destination`, ticket adds `parent`, `type` | `filed_by`, `promoted_to`, `priority`, the six metrics (§ 2.10), `links`, `blocked_by` (filename stems `<kind>-<slug>` or a plan's bare filename), `owners`, `rank` | `kind`, per-kind `status` (§ 2.10), ticket `type` |
+| **map item** | `id` (`<ID>`: `BUG-n`, `FEAT-n`, `IDEA-n`, `PWAY-n` or `TKT-n`, § 2.10; first key), `kind`, `title`, `status`, `created`; pathway adds `destination`, ticket adds `parent`, `type` | `filed_by`, `promoted_to`, `priority`, the six metrics (§ 2.10), `links`, `blocked_by` (filename stems `<kind>-<slug>` or a plan's bare filename), `owners`, `rank` | `kind`, per-kind `status` (§ 2.10), ticket `type` |
 | **slash command** | `description` | `disable-model-invocation` | — |
 | **agent** | `name`, `description` | — | — |
 

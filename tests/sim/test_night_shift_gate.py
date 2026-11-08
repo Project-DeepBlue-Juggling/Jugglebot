@@ -959,10 +959,13 @@ def test_e_question_parent_compares_whole_ids(repo):
     assert_hold(run(repo, item="BUG-7"), "e")
 
 
-def test_legacy_padded_jb_item_still_resolves(repo):  # legacy form: retired at P5
-    """T-U6: hard constraint, JB inputs behave as before, ``jb-07`` included (legacy ``parse``)."""
-    _rebase_on(repo, ("JB-7", "bug", BUG))
-    assert run(repo, item="jb-07").verdict == "MERGE"
+def test_old_form_item_is_a_pre_hold(repo):
+    """T-U6: an old-form ``--item`` (any spelling; fictional prefix here) is no Item ID: [pre] HOLD."""
+    _rebase_on(repo, ("BUG-7", "bug", BUG))
+    for text in ("OLD-7", "old-07", "old7"):
+        res = run(repo, item=text)
+        assert_hold(res, "pre")
+        assert "is not an Item ID" in res.reasons[0], res.reasons
 
 
 def test_app_gate_takes_per_kind_ids_and_refuses_a_mismatch(repo, tmp_path):

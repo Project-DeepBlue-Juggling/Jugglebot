@@ -205,28 +205,30 @@ def _drop_remote_branches(fx):
     _git("fetch", "-q", "--prune", "origin", cwd=fx.clone, env=fx.env)
 
 
-def test_per_kind_branch_is_stacked_in_date_order(fx):  # legacy form: retired at P5
+def test_per_kind_branch_is_stacked_in_date_order(fx):
     """T-U8 (silent failure 2): a night-shift/<date>-BUG-n branch is stacked, by branch date.
 
-    On the unfixed script the `*-JB-*` glob dropped every per-kind branch with no row
-    and exit 0. Order is branch date, then the number: 10-30 BUG-1, BUG-2, 11-06 JB-190,
-    11-07 BUG-5. A prefix that contradicts its Item's kind is a SKIP row and exit 1.
+    On the unfixed script the old-form-only glob dropped every per-kind branch with no row
+    and exit 0. Order is branch date, then the number: 10-30 BUG-1, BUG-2, 11-07 BUG-5.
+    A prefix that contradicts its Item's kind is a SKIP row and exit 1; a branch named with an
+    old-form (here fictional) prefix does not parse and is an UNPARSED row, never merged.
     """
-    _add_items(fx, ("BUG-5", "bug", "per-kind"), ("JB-190", "bug", "legacy"),
+    _add_items(fx, ("BUG-5", "bug", "per-kind"), ("OLD-190", "bug", "old-form"),
                ("FEAT-4", "bug", "wrong-prefix"))
     _push_branch(fx, "night-shift/2026-11-07-BUG-5", "src/c.txt", "c\n")
-    _push_branch(fx, "night-shift/2026-11-06-JB-190", "src/d.txt", "d\n")
+    _push_branch(fx, "night-shift/2026-11-06-OLD-190", "src/d.txt", "d\n")
     _push_branch(fx, "night-shift/2026-11-06-FEAT-4", "src/e.txt", "e\n")
     _git("fetch", "-q", "origin", cwd=fx.clone, env=fx.env)
     r = fx.run("--date", "2026-11-08")
     out = r.stdout
     assert "MERGED origin/night-shift/2026-11-07-BUG-5 BUG-5" in out
-    assert "MERGED origin/night-shift/2026-11-06-JB-190 JB-190" in out
+    assert "UNPARSED origin/night-shift/2026-11-06-OLD-190" in out
+    assert "MERGED origin/night-shift/2026-11-06-OLD-190" not in out
     assert ("SKIP origin/night-shift/2026-11-06-FEAT-4 FEAT-4 names a feature, "
             "but its Item is a bug") in out
     merged = [ln.split()[2] for ln in out.splitlines() if ln.startswith("MERGED")]
-    assert merged == ["BUG-1", "BUG-2", "JB-190", "BUG-5"]
-    assert "candidate: 4 merged, 0 held, 3 skipped" in out
+    assert merged == ["BUG-1", "BUG-2", "BUG-5"]
+    assert "candidate: 3 merged, 0 held, 3 skipped" in out
     assert r.returncode == 1
 
 

@@ -682,15 +682,15 @@ def test_a_real_browser_tells_a_mounted_page_from_a_white_screen(rig):
 
 # --- item-id-per-kind P1 (plan section 5, T-U8): a rollback names Items in either ID form ---
 
-def test_items_in_finds_both_forms_in_subjects():  # legacy form: retired at P5
-    """T-U8: ``items_in`` reads JB-n and every per-kind prefix; look-alikes are not Items."""
-    subjects = ["fix(app): JB-7 and BUG-3", "feat(mapkit): thing (FEAT-12)",
-                "fix: IDEA-2, PWAY-4, TKT-31; BUG-3 again", "JB_OP_X XBUG-9 BUG-3x bug-5 FEAT"]
+def test_items_in_finds_every_per_kind_prefix_in_subjects():
+    """T-U8: ``items_in`` reads every per-kind prefix; look-alikes and old-form IDs are not Items."""
+    subjects = ["fix(app): OLD-7 and BUG-3", "feat(mapkit): thing (FEAT-12)",
+                "fix: IDEA-2, PWAY-4, TKT-31; BUG-3 again", "OLD_OP_X XBUG-9 BUG-3x bug-5 FEAT"]
     commits = [("sha%d" % i, s, True, DATE) for i, s in enumerate(subjects)]
-    assert deploy.items_in(commits) == ["JB-7", "BUG-3", "FEAT-12", "IDEA-2", "PWAY-4", "TKT-31"]
+    assert deploy.items_in(commits) == ["BUG-3", "FEAT-12", "IDEA-2", "PWAY-4", "TKT-31"]
 
 
-def test_items_in_knows_every_mapkit_prefix():  # legacy form: retired at P5
+def test_items_in_knows_every_mapkit_prefix():
     """T-U8: the deploy keeps its own prefix list (a rollback must not import the mapkit it may be
     undoing), so this pins it to ``mapkit.ids.ALL_PREFIXES``."""
     from mapkit.ids import ALL_PREFIXES
@@ -711,7 +711,7 @@ def feat_rig(tmp_path):
 def test_a_rollback_reopens_a_per_kind_item(feat_rig):
     """T-U8 (silent failure 3): a reverted commit naming FEAT-12 reports and reopens FEAT-12.
 
-    On the unfixed deploy ``_JB`` matched only ``JB-<n>``, so ``items_in`` returned [] and
+    On the unfixed deploy the old-form-only pattern matched no per-kind ID, so ``items_in`` returned [] and
     the rollback reopened nothing and named nothing.
     """
     rig = feat_rig

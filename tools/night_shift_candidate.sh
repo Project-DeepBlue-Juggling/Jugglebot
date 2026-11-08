@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Night Shift candidate branch (plans/active/night-shift.md section 4 P4, T-U6).
 #
-# What: stack every held Night Shift branch (origin/night-shift/<date>-<ID>, the ID in
-# either form: JB-n or per kind, BUG-n FEAT-n IDEA-n PWAY-n TKT-n) whose Item
+# What: stack every held Night Shift branch (origin/night-shift/<date>-<ID>, the Item
+# ID: BUG-n FEAT-n IDEA-n PWAY-n TKT-n) whose Item
 # carries a `## Sitting` section into ONE branch, night-shift/sitting-<date>.
 # Why: the owner checks out a single branch at a Sitting, not one per Item. A branch
 # that conflicts with the stack is reported as a HOLD row and skipped, so one bad
@@ -69,9 +69,9 @@ git -C "$REPO" worktree add -q -B "$CAND" "$WT" "$BASE" || { echo "worktree add 
 # Does BASE hold the Item with this ID, and does its body have a ## Sitting section?
 # Prints FOUND, NOSECTION, NOITEM or "MISMATCH <prefix kind> <item kind>".
 item_state() {
-  REPO="$REPO" BASE="$BASE" JB="$1" "$PYTHON" - <<'PY'
+  REPO="$REPO" BASE="$BASE" ITEM_ID="$1" "$PYTHON" - <<'PY'
 import os, subprocess, sys
-repo, base, jb = os.environ["REPO"], os.environ["BASE"], os.environ["JB"]
+repo, base, item_id = os.environ["REPO"], os.environ["BASE"], os.environ["ITEM_ID"]
 sys.path.insert(0, repo)
 from mapkit.frontmatter import split_frontmatter
 from mapkit.ids import KIND_OF_PREFIX, mismatch, split_ref
@@ -86,10 +86,10 @@ for name in git("ls-tree", "--name-only", base, "map/").split():
         meta, body = split_frontmatter(git("show", base + ":" + name))
     except Exception:
         continue
-    if str(meta.get("id", "")) == jb:
+    if str(meta.get("id", "")) == item_id:
         kind = str(meta.get("kind", ""))
-        if mismatch(jb, kind):
-            print("MISMATCH %s %s" % (KIND_OF_PREFIX[split_ref(jb)[0]], kind))
+        if mismatch(item_id, kind):
+            print("MISMATCH %s %s" % (KIND_OF_PREFIX[split_ref(item_id)[0]], kind))
         else:
             print("FOUND" if has_sitting_section(body) else "NOSECTION")
         sys.exit(0)
@@ -97,7 +97,7 @@ print("NOITEM")
 PY
 }
 
-# The ID prefixes come from mapkit (one source): "JB|BUG|FEAT|IDEA|PWAY|TKT".
+# The ID prefixes come from mapkit (one source): "BUG|FEAT|IDEA|PWAY|TKT".
 PREFIXES="$("$PYTHON" -c 'import sys; sys.path.insert(0, sys.argv[1]); from mapkit.ids import ALL_PREFIXES; print("|".join(ALL_PREFIXES))' "$REPO")"
 [[ "$PREFIXES" =~ ^[A-Z|]+$ ]] || { echo "cannot read the ID prefixes from $REPO/mapkit/ids.py" >&2; exit 1; }
 NAME_RE="^$REMOTE/night-shift/([0-9]{4}-[0-9]{2}-[0-9]{2})-(($PREFIXES)-([1-9][0-9]*))\$"
@@ -120,22 +120,22 @@ mapfile -t BRANCHES < <(printf '%s\n' "${KEYED[@]:-}" | grep -v '^$' \
 
 for entry in "${BRANCHES[@]:-}"; do
   [[ -n "$entry" ]] || continue
-  jb="${entry%% *}"; br="${entry#* }"
-  state="$(item_state "$jb")"
+  item_id="${entry%% *}"; br="${entry#* }"
+  state="$(item_state "$item_id")"
   case "$state" in
     FOUND) ;;
     MISMATCH*) read -r _ pkind ikind <<<"$state"
-      row "SKIP $br $jb names a $pkind, but its Item is a $ikind"; skipped=$((skipped+1)); rc=1; continue ;;
-    NOSECTION) row "SKIP $br $jb has no ## Sitting section"; skipped=$((skipped+1)); continue ;;
-    NOITEM) row "SKIP $br no Item $jb on $BASE"; skipped=$((skipped+1)); continue ;;
-    *) row "ERROR $br item_state failed for $jb: ${state:-no output}"; rc=1; continue ;;
+      row "SKIP $br $item_id names a $pkind, but its Item is a $ikind"; skipped=$((skipped+1)); rc=1; continue ;;
+    NOSECTION) row "SKIP $br $item_id has no ## Sitting section"; skipped=$((skipped+1)); continue ;;
+    NOITEM) row "SKIP $br no Item $item_id on $BASE"; skipped=$((skipped+1)); continue ;;
+    *) row "ERROR $br item_state failed for $item_id: ${state:-no output}"; rc=1; continue ;;
   esac
-  if git -C "$WT" merge --no-ff -q -m "candidate(sitting-$DATE): $jb from $br" "$br" >/dev/null 2>&1; then
-    row "MERGED $br $jb"; merged=$((merged+1))
+  if git -C "$WT" merge --no-ff -q -m "candidate(sitting-$DATE): $item_id from $br" "$br" >/dev/null 2>&1; then
+    row "MERGED $br $item_id"; merged=$((merged+1))
   else
     files="$(git -C "$WT" diff --name-only --diff-filter=U | paste -sd, - | sed 's/,/, /g')"
     git -C "$WT" merge --abort >/dev/null 2>&1
-    row "HOLD $br $jb conflict: ${files:-unknown}"; held=$((held+1))
+    row "HOLD $br $item_id conflict: ${files:-unknown}"; held=$((held+1))
   fi
 done
 

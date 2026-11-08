@@ -410,7 +410,7 @@ _Avoid: runsheet, script_
 
 **Night Shift**
 
-The unattended Claude Code run on the Jetson after the nightly suite, in its own clone, that works every open Item it can finish alone, merges only through the merge gate, holds the rest on `night-shift/<date>-JB-n` branches and commits one report. Never a Sitting and never a Session: nobody is present.
+The unattended Claude Code run on the Jetson after the nightly suite, in its own clone, that works every open Item it can finish alone, merges only through the merge gate, holds the rest on `night-shift/<date>-<ID>` branches and commits one report. Never a Sitting and never a Session: nobody is present.
 
 _Avoid: nightly (that is the 04:00 test suite), cron job, bot_
 
@@ -448,9 +448,9 @@ _Avoid: type (a Ticket's type is a different thing)_
 
 **Item ID**
 
-An Item's short name: its Kind's prefix and a number, such as `BUG-12`, `FEAT-7`, `IDEA-3`, `PWAY-2` or `TKT-31`. Each Kind counts its own Items, so `BUG-12` and `FEAT-12` are different Items and a number alone names nothing. It is given when the Item is filed and never reused, and changes only before the Item is published, or to repair a duplicate. Plans, Steps and logbook entries have none. Items carry the retired `JB-<n>` until the cutover (FEAT-34).
+An Item's short name: its Kind's prefix and a number, such as `BUG-12`, `FEAT-7`, `IDEA-3`, `PWAY-2` or `TKT-31`. Each Kind counts its own Items, so `BUG-12` and `FEAT-12` are different Items and a number alone names nothing. It is given when the Item is filed and never reused, and changes only before the Item is published, or to repair a duplicate. Plans, Steps and logbook entries have none.
 
-_Avoid: ticket number, issue number (for an Item ID; a GitHub Issue's own #n is a different thing)_
+_Avoid: ticket number, issue number (for an Item ID; a GitHub Issue's own #n is a different thing); `JB-<n>` (the retired global form)_
 
 **Inbox**
 

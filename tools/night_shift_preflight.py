@@ -14,7 +14,7 @@ Candidates (Pathways are never candidates):
 Order (the order the orchestrator works them): bugs with `diagnosis: confirmed`,
 then other bugs, then features, then tickets, then ideas; within a group priority
 high > medium > low (missing = low), then `created` oldest first, then Item ID (the
-number within its prefix; JB-<n> or per kind), then stem. An Item whose ID is missing,
+number within its prefix), then stem. An Item whose ID is missing,
 malformed or names another kind is an error (exit 2), never a sort-last fallback.
 
 Exit codes: 0 NEW, 3 NOTHING_NEW, 2 error (nothing written). The --out file is
@@ -68,8 +68,8 @@ def _group(item: Item) -> int:
 def _filing_key(item: Item) -> Tuple[str, str, int, str]:
     """Filing order: ``created``, then the ID within its prefix, then the stem.
 
-    A group holds one kind, so within it the per-kind number is filing order exactly
-    as ``JB-<n>`` is (P4 renumbers by rank within the kind). A malformed or
+    A group holds one kind, so within it the per-kind number is filing order (the
+    2026-11-08 renumber kept each kind's filing order). A malformed or
     kind-contradicting ID raises (preflight exits 2) instead of sorting last behind a
     sentinel, which is how per-kind IDs once tied silently. A MISSING ID is legal
     (``ids --check`` calls it informational): it sorts after every ID of its
@@ -81,7 +81,7 @@ def _filing_key(item: Item) -> Tuple[str, str, int, str]:
         return (str(item.meta.get("created") or ""), "~", 0, stem)
     sp = split_ref(raw)
     if sp is None:
-        raise ItemError("%s: id %r is not a canonical Item ID (want JB-<n> or %s-<n>)"
+        raise ItemError("%s: id %r is not a canonical Item ID (want %s-<n>)"
                         % (stem, raw, PREFIXES.get(item.kind, "?")))
     if mismatch(raw, item.kind):
         raise ItemError("%s: id %s names a %s, but the Item is a %s"

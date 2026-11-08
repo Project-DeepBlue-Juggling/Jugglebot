@@ -84,7 +84,7 @@ def frontier(repo_root: str, pathway: str) -> List[Item]:
 
 
 def _load_ticket(repo_root: str, slug: str) -> Item:
-    """A ticket by stem, slug or ``jb`` ID (write forms: no bare digits)."""
+    """A ticket by stem, slug or prefixed ID (write forms: no bare digits)."""
     from mapkit.itemcli import ItemCliError, find_item  # local: itemcli is the CLI layer
     try:
         item = find_item(repo_root, slug)
@@ -96,7 +96,7 @@ def _load_ticket(repo_root: str, slug: str) -> Item:
 
 
 def _label(item: Item) -> str:
-    """``JB-9 <slug>`` (or the slug alone for an ID-less ticket): subjects and echo."""
+    """``TKT-9 <slug>`` (or the slug alone for an ID-less ticket): subjects and echo."""
     return ("%s %s" % (item.short_id, item.slug)) if item.short_id else item.slug
 
 

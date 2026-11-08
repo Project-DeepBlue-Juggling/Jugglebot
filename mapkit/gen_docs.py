@@ -39,7 +39,7 @@ def _item_link(item: Item, text: Optional[str] = None) -> str:
 
 
 def _tag(item: Item) -> str:
-    """``JB-12 `` (with the trailing space) or nothing for an ID-less Item."""
+    """``BUG-12 `` (with the trailing space) or nothing for an ID-less Item."""
     return (item.short_id + " ") if item.short_id else ""
 
 

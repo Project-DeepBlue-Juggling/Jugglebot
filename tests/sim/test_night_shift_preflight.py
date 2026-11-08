@@ -161,25 +161,20 @@ def test_per_kind_ids_keep_filing_order_not_a_sentinel(tmp_path):
     assert _ids(pf.build_record(str(tmp_path), "d")) == ["BUG-3", "BUG-2", "BUG-10", "FEAT-2"]
 
 
-def test_order_identical_under_both_forms(tmp_path):  # legacy form: retired at P5
-    """T-U7: renumbering per kind (rank by old number within the kind) keeps the order."""
+def test_order_is_created_then_the_number_within_a_kind(tmp_path):
+    """T-U7: per-kind IDs restart at 1 per kind; the order is created, then kind and number, then stem."""
     rows = [("bug", "z-a", "2026-10-01"), ("bug", "a-b", "2026-10-01"),
             ("feature", "f-a", "2026-10-01"), ("bug", "q-c", "2026-09-01"),
             ("feature", "f-b", "2026-10-01"), ("idea", "i-a", "2026-10-01")]
-    orders = []
-    for form in ("jb", "per-kind"):
-        root = tmp_path / form
-        (root / "map").mkdir(parents=True)
-        seen = {}
-        for n, (kind, slug, created) in enumerate(rows, 1):
-            seen[kind] = seen.get(kind, 0) + 1
-            sid = ("JB-%d" % n if form == "jb"
-                   else "%s-%d" % ({"bug": "BUG", "feature": "FEAT", "idea": "IDEA"}[kind],
-                                   seen[kind]))
-            _bug(root, sid, slug, created=created, kind=kind)
-        orders.append([e["stem"] for e in pf.build_record(str(root), "d")["items"]])
-    assert orders[0] == orders[1]
-    assert orders[0][:3] == ["bug-q-c", "bug-z-a", "bug-a-b"]
+    (tmp_path / "map").mkdir(parents=True)
+    seen = {}
+    for kind, slug, created in rows:
+        seen[kind] = seen.get(kind, 0) + 1
+        sid = "%s-%d" % ({"bug": "BUG", "feature": "FEAT", "idea": "IDEA"}[kind], seen[kind])
+        _bug(tmp_path, sid, slug, created=created, kind=kind)
+    order = [e["stem"] for e in pf.build_record(str(tmp_path), "d")["items"]]
+    assert order[:3] == ["bug-q-c", "bug-z-a", "bug-a-b"]
+    assert sorted(order) == sorted("%s-%s" % (k, s_) for k, s_, _c in rows)
 
 
 @pytest.mark.parametrize("bad", ["BUG-01", "XB-3", "FEAT-4"])

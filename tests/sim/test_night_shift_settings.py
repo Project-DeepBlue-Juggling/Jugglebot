@@ -177,7 +177,7 @@ def app(tmp_path, monkeypatch):
     _git(root, "init", "-q")
     _git(root, "add", "-A")
     _git(root, "commit", "-q", "-m", "seed")
-    mapkit = tmp_path / "jb"
+    mapkit = tmp_path / "mapkit_clone"
     mapkit.mkdir()
     _git(mapkit, "init", "-q")
     _git(mapkit, "commit", "-q", "--allow-empty", "-m", "seed")

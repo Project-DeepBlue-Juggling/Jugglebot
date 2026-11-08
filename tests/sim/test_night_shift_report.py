@@ -134,10 +134,21 @@ def test_held_table_without_respond_in_still_passes_as_history():
     assert report_errors(old) == []
 
 
-def test_item_rows_accept_per_kind_ids_and_still_reject_garbage():  # legacy form: retired at P5
+def test_item_rows_accept_per_kind_ids_and_still_reject_garbage():
     """P1 consumer, plan § 2.3: a bare per-kind ID is a legal Item cell; garbage stays loud."""
-    for good in ("BUG-12", "FEAT-3", "IDEA-1", "PWAY-4", "TKT-31", "JB-12"):
+    for good in ("BUG-12", "FEAT-3", "IDEA-1", "PWAY-4", "TKT-31"):
         assert report_errors(_swap(VALID, "BUG-12 | Fix the thing", good + " | Fix the thing")) == [], good
-    for bad in ("BUG-x", "BUG-", "`BUG-3`", "bug-3", "FOO-3", "BUG-03x"):
+    for bad in ("BUG-x", "BUG-", "`BUG-3`", "bug-3", "FOO-3", "BUG-03x", "OLD-12", "old-12"):
         errs = report_errors(_swap(VALID, "BUG-12 | Fix the thing", bad + " | Fix the thing"))
         assert len(errs) == 1 and "bare Item ID" in errs[0], bad
+
+
+def test_bare_id_prefixes_are_mapkit_ids_all_prefixes():
+    """``_BARE_ID`` keeps its prefixes literal (the checker stays stdlib-only); this pins
+    them to the one enforcement point, ``mapkit.ids.ALL_PREFIXES`` (item-id-per-kind P5)."""
+    from mapkit.ids import ALL_PREFIXES
+    from mapkit.night_shift_report import _BARE_ID
+    inner = re.search(r"\(\?:([A-Z|]+)\)", _BARE_ID.pattern).group(1)
+    assert set(inner.split("|")) == set(ALL_PREFIXES)
+    for p in ALL_PREFIXES:
+        assert _BARE_ID.match("%s-12" % p) and not _BARE_ID.match("%s-012" % p)

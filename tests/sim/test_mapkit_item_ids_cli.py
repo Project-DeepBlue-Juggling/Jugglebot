@@ -44,33 +44,24 @@ def _write(root, kind, slug, sid=None, **extra):
     write_item(str(root / "map" / ("%s-%s.md" % (kind, slug))), meta, "Body\n")
 
 
-def _legacy_tree(root):
-    """The pre-cutover tree: global ``JB-n`` IDs, no crosswalk file."""
+def _tree(root):
+    """The live tree: per-kind IDs and a crosswalk file with a FICTIONAL old prefix.
+
+    Numbers are distinct across kinds so the bare-digit tests still find one Item;
+    the crosswalk rows are ``OLD-n`` for each Item (the code knows no real old prefix).
+    """
     (root / "map").mkdir(parents=True, exist_ok=True)
     (root / "docs").mkdir(exist_ok=True)
     (root / "GLOSSARY.md").write_text("# G\n\n## Language\n\n### Robot\n\n**Hand**: The cup.\n")
     for b in ("active", "parked", "archived"):
         (root / "plans" / b).mkdir(parents=True, exist_ok=True)
-    _write(root, "pathway", "p", "JB-1")
-    _write(root, "bug", "cone-margin", "JB-2")
-    _write(root, "ticket", "q", "JB-3")
-    _write(root, "idea", "12", "JB-4")  # an all-digit slug
-
-
-def _tree(root):
-    """The live tree: per-kind IDs and the crosswalk file (its presence is the switch).
-
-    Numbers are distinct across kinds so the bare-digit tests still find one Item;
-    the crosswalk rows are the old ``JB-n`` of each Item.
-    """
-    _legacy_tree(root)
-    rows = (("JB-1", "PWAY-1", "pathway", "pathway-p"), ("JB-2", "BUG-2", "bug", "bug-cone-margin"),
-            ("JB-3", "TKT-3", "ticket", "ticket-q"), ("JB-4", "IDEA-4", "idea", "idea-12"))
-    for _old, new, _kind, stem in rows:
-        ids.set_id(load_item(str(root / "map" / (stem + ".md"))), new)
+    rows = (("OLD-1", "PWAY-1", "pathway", "p"), ("OLD-2", "BUG-2", "bug", "cone-margin"),
+            ("OLD-3", "TKT-3", "ticket", "q"), ("OLD-4", "IDEA-4", "idea", "12"))  # idea-12: an all-digit slug
+    for _old, new, kind, slug in rows:
+        _write(root, kind, slug, new)
     (root / "mapkit").mkdir(exist_ok=True)
     (root / "mapkit" / "legacy_ids.csv").write_text(
-        "old_id,new_id,kind,stem\n" + "".join(",".join(row) + "\n" for row in rows))
+        "old_id,new_id,kind,stem\n" + "".join("%s,%s,%s,%s-%s\n" % (o, n, k, k, sl) for o, n, k, sl in rows))
 
 
 def _repo(tmp_path, name="work"):
@@ -388,7 +379,7 @@ def test_link_and_pathway_filter_take_per_kind_ids(tmp_path):
     """T-U4/T-U5 (P1 unit 3): ``--link BUG-2`` was stored as plain text; ``--pathway PWAY-1`` ignored.
 
     The is-an-ID test at itemcli ``new_item`` links and ``list_items`` pathway
-    used the JB-only ``ids.parse``, so a per-kind reference fell through silently.
+    used the old-form-only ``ids.parse``, so a per-kind reference fell through silently.
     """
     _tree(tmp_path)
     got = itemcli.list_items(str(tmp_path), pathway="PWAY-1")
@@ -399,8 +390,8 @@ def test_link_and_pathway_filter_take_per_kind_ids(tmp_path):
     assert it.meta["links"] == ["bug-cone-margin", "logbook/x.md"]
 
 
-def test_new_item_allocates_in_its_own_kind_when_the_tree_is_per_kind(tmp_path):  # legacy form: retired at P5
-    """T-U2/T-U3 (P1 unit 3): ``item new`` passes ``kind=`` to allocate; no csv keeps global ``JB-n``."""
+def test_new_item_allocates_in_its_own_kind(tmp_path):
+    """T-U2/T-U3 (P1 unit 3): ``item new`` passes ``kind=`` to allocate; always per kind, file or no file."""
     _tree(tmp_path)
     a = itemcli.new_item(str(tmp_path), "bug", "Cup skids")
     b = itemcli.new_item(str(tmp_path), "feature", "Wider stroke")
@@ -408,64 +399,93 @@ def test_new_item_allocates_in_its_own_kind_when_the_tree_is_per_kind(tmp_path):
     assert open(a.path).read().startswith("---\nid: BUG-3\nkind: bug\n")
     (tmp_path / "mapkit" / "legacy_ids.csv").unlink()
     c = itemcli.new_item(str(tmp_path), "idea", "Brand new thing")
-    assert c.short_id.startswith("JB-")
+    assert c.short_id == "IDEA-5"
 
 
-def test_padded_lower_case_jb_input_still_resolves_at_link_and_pathway(tmp_path):  # legacy form: retired at P5
-    """P1 consumer (plan 2.3): ``jb-02`` named JB-2 before the expansion; ``--link`` and ``--pathway`` keep that."""
-    _legacy_tree(tmp_path)
-    it = itemcli.new_item(str(tmp_path), "bug", "Cup skids", links=["jb-02"], allow_similar=True)
-    assert it.meta["links"] == ["bug-cone-margin"]
-    by_id = itemcli.list_items(str(tmp_path), pathway="JB-1")
-    assert by_id and [i.slug for i in itemcli.list_items(str(tmp_path), pathway="jb-01")] == [i.slug for i in by_id]
+def test_old_id_spellings_at_link_and_pathway(tmp_path):
+    """Any spelling of an old ID: ``--pathway`` reads it as the new Pathway; ``--link`` refuses naming the new ID."""
+    _tree(tmp_path)
+    by_id = itemcli.list_items(str(tmp_path), pathway="PWAY-1")
+    assert by_id
+    for text in ("OLD-1", "old-01", "old1", "OLD-001"):
+        assert [i.slug for i in itemcli.list_items(str(tmp_path), pathway=text)] == [i.slug for i in by_id]
+    for text in ("OLD-2", "old-02", "old2"):
+        with pytest.raises(itemcli.ItemCliError, match="BUG-2"):
+            itemcli.new_item(str(tmp_path), "bug", "Cup skids", links=[text], allow_similar=True)
+    assert not (tmp_path / "map" / "bug-cup-skids.md").exists()  # the refusal wrote nothing
 
 
-# --- P4 unit 1 (D-3): a legacy JB-<n> after the cutover ---------------------
-def _cutover_tree(root):
-    """_legacy_tree() renumbered per kind, crosswalk in place (JB-1 p, JB-2 bug, JB-3 ticket, JB-4 idea)."""
-    _legacy_tree(root)
-    ids.make_crosswalk(str(root))
-    for stem, new in (("pathway-p", "PWAY-1"), ("bug-cone-margin", "BUG-1"),
-                      ("ticket-q", "TKT-1"), ("idea-12", "IDEA-1")):
-        ids.set_id(load_item(str(root / "map" / (stem + ".md"))), new)
-
-
-def test_legacy_id_reads_translate_with_a_stderr_line(tmp_path, capsys):  # legacy form: retired at P5
+# --- P4 unit 1 (D-3): an old ID after the cutover ---------------------------
+def test_legacy_id_reads_translate_with_a_stderr_line(tmp_path, capsys):
     from mapkit.__main__ import main
-    _cutover_tree(tmp_path)
+    _tree(tmp_path)
     capsys.readouterr()
-    assert main(["items", "--pathway", "JB-1", "--repo", str(tmp_path)]) == 0
+    assert main(["items", "--pathway", "OLD-1", "--repo", str(tmp_path)]) == 0
     cap = capsys.readouterr()
-    assert "JB-1 -> PWAY-1" in cap.err.splitlines()
+    assert "OLD-1 -> PWAY-1" in cap.err.splitlines()
     assert "cone-margin" in cap.out
-    assert main(["show", "JB-1", "--repo", str(tmp_path)]) == 0
-    assert "JB-1 -> PWAY-1" in capsys.readouterr().err.splitlines()
+    assert main(["show", "OLD-1", "--repo", str(tmp_path)]) == 0
+    assert "OLD-1 -> PWAY-1" in capsys.readouterr().err.splitlines()
+    assert main(["show", "old1", "--repo", str(tmp_path)]) == 0
+    assert "old1 -> PWAY-1" in capsys.readouterr().err.splitlines()
     assert main(["items", "--pathway", "PWAY-1", "--repo", str(tmp_path)]) == 0
     assert capsys.readouterr().err == ""  # the new ID prints no translation
 
 
-def test_legacy_id_writes_refuse_and_name_the_new_id(tmp_path, capsys):  # legacy form: retired at P5
+def test_legacy_id_writes_refuse_and_name_the_new_id(tmp_path, capsys):
     from mapkit.__main__ import main
-    _cutover_tree(tmp_path)
+    _tree(tmp_path)
     bug = tmp_path / "map" / "bug-cone-margin.md"
     before = bug.read_text()
     capsys.readouterr()
-    assert main(["item", "set-status", "JB-2", "backlog", "--repo", str(tmp_path)]) == 2
-    assert "JB-2 is now BUG-1 (bug-cone-margin)" in capsys.readouterr().err
-    assert main(["item", "rate", "jb2", "--effort", "s", "--repo", str(tmp_path)]) == 2
-    assert "BUG-1" in capsys.readouterr().err
-    assert main(["item", "set-status", "BUG-1", "backlog", "--repo", str(tmp_path)]) == 0
+    assert main(["item", "set-status", "OLD-2", "backlog", "--repo", str(tmp_path)]) == 2
+    assert "OLD-2 is now BUG-2 (bug-cone-margin)" in capsys.readouterr().err
+    assert main(["item", "rate", "old2", "--effort", "s", "--repo", str(tmp_path)]) == 2
+    assert "BUG-2" in capsys.readouterr().err
+    assert bug.read_text() == before  # both refusals changed nothing
+    assert main(["item", "set-status", "BUG-2", "backlog", "--repo", str(tmp_path)]) == 0
     assert bug.read_text() != before
     with pytest.raises(ids.LegacyIdError, match="PWAY-1"):  # _run_new turns IdError into exit 2
-        itemcli.new_item(str(tmp_path), "bug", "Another thing", parent="JB-1", allow_similar=True)
-    with pytest.raises(itemcli.ItemCliError, match="TKT-1"):
-        itemcli.new_item(str(tmp_path), "bug", "Third thing", links=["JB-3"], allow_similar=True)
-    with pytest.raises(itemcli.ItemCliError, match="BUG-1"):
+        itemcli.new_item(str(tmp_path), "bug", "Another thing", parent="OLD-1", allow_similar=True)
+    with pytest.raises(itemcli.ItemCliError, match="TKT-3"):
+        itemcli.new_item(str(tmp_path), "bug", "Third thing", links=["OLD-3"], allow_similar=True)
+    with pytest.raises(itemcli.ItemCliError, match="BUG-2"):
         itemcli.new_item(str(tmp_path), "ticket", "Q two", ticket_type="question",
-                         parent="JB-2", allow_similar=True)
+                         parent="OLD-2", allow_similar=True)
+    assert main(["item", "new", "bug", "Via cli", "--parent", "OLD-1", "--repo", str(tmp_path)]) == 2
 
 
-def test_unknown_legacy_id_is_the_normal_not_found(tmp_path):  # legacy form: retired at P5
-    _cutover_tree(tmp_path)
+def test_unknown_legacy_id_is_the_normal_not_found(tmp_path):
+    _tree(tmp_path)
     with pytest.raises(itemcli.ItemCliError, match="no Item"):
-        itemcli.find_item(str(tmp_path), "JB-99")
+        itemcli.find_item(str(tmp_path), "OLD-99")
+
+
+@pytest.mark.parametrize("argv", [
+    ["item", "set-status", "OLD-2", "complete"],
+    ["item", "set-status", "bug-nonexistent", "complete"],
+    ["item", "new", "bug", "A new title", "--link", "OLD-2"],
+    ["items", "--pathway", "OLD-1"],
+    ["show", "OLD-1"],
+])
+def test_a_malformed_crosswalk_is_one_error_line_not_a_traceback(tmp_path, capsys, argv):
+    """P5 audit 1 (P4 audit B3): ``ids.legacy`` raises ItemError naming file and line on a
+    malformed crosswalk; every command reports it as one ``mapkit:`` line, exit 2, writing nothing."""
+    from mapkit.__main__ import main
+    _tree(tmp_path)
+    (tmp_path / "mapkit" / "legacy_ids.csv").write_text("old,new\nOLD-2,BUG-2\n")
+    before = sorted(p.name for p in (tmp_path / "map").iterdir())
+    assert main(argv + ["--repo", str(tmp_path)]) == 2
+    err = capsys.readouterr().err
+    assert "mapkit/legacy_ids.csv:1:" in err and "Traceback" not in err
+    assert sorted(p.name for p in (tmp_path / "map").iterdir()) == before
+
+
+def test_items_with_an_unknown_pathway_id_is_one_error_line(tmp_path, capsys):
+    """Found during P5: ``items --pathway <unknown ID>`` raised ItemCliError out of
+    ``_run_items`` (which caught only ItemError) as a traceback, exit 1."""
+    from mapkit.__main__ import main
+    _tree(tmp_path)
+    assert main(["items", "--pathway", "PWAY-999", "--repo", str(tmp_path)]) == 2
+    err = capsys.readouterr().err
+    assert "no pathway 'PWAY-999'" in err and "Traceback" not in err

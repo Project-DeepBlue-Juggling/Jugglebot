@@ -292,7 +292,7 @@ The written, step-by-step procedure an operator follows at a Sitting.
 _Avoid_: runsheet, script
 
 **Night Shift**:
-The unattended Claude Code run on the Jetson after the nightly suite, in its own clone, that works every open Item it can finish alone, merges only through the merge gate, holds the rest on `night-shift/<date>-JB-n` branches and commits one report. Never a Sitting and never a Session: nobody is present.
+The unattended Claude Code run on the Jetson after the nightly suite, in its own clone, that works every open Item it can finish alone, merges only through the merge gate, holds the rest on `night-shift/<date>-<ID>` branches and commits one report. Never a Sitting and never a Session: nobody is present.
 _Avoid_: nightly (that is the 04:00 test suite), cron job, bot
 
 **Next Sitting Runbook**:
@@ -318,8 +318,8 @@ Which of the five an Item is: Pathway, Idea, Feature, Bug or Ticket. It never ch
 _Avoid_: type (a Ticket's type is a different thing)
 
 **Item ID**:
-An Item's short name: its Kind's prefix and a number, such as `BUG-12`, `FEAT-7`, `IDEA-3`, `PWAY-2` or `TKT-31`. Each Kind counts its own Items, so `BUG-12` and `FEAT-12` are different Items and a number alone names nothing. It is given when the Item is filed and never reused, and changes only before the Item is published, or to repair a duplicate. Plans, Steps and logbook entries have none. Items carry the retired `JB-<n>` until the cutover (FEAT-34).
-_Avoid_: ticket number, issue number (for an Item ID; a GitHub Issue's own #n is a different thing)
+An Item's short name: its Kind's prefix and a number, such as `BUG-12`, `FEAT-7`, `IDEA-3`, `PWAY-2` or `TKT-31`. Each Kind counts its own Items, so `BUG-12` and `FEAT-12` are different Items and a number alone names nothing. It is given when the Item is filed and never reused, and changes only before the Item is published, or to repair a duplicate. Plans, Steps and logbook entries have none.
+_Avoid_: ticket number, issue number (for an Item ID; a GitHub Issue's own #n is a different thing); `JB-<n>` (the retired global form)
 
 **Inbox**:
 The Items whose status is `inbox`: filed and not yet triaged. Triage means leaving the inbox, independently of whether the Item is attached to a Pathway.

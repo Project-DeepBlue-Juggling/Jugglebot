@@ -49,11 +49,11 @@ def _load(path: str) -> Item:
 
 
 def find_item(repo_root: str, slug: str, allow_bare: bool = False) -> Item:
-    """Resolve a stem (``bug-x``), a bare slug (``x``) or an ID (``JB-12``, ``jb12``).
+    """Resolve a stem (``bug-x``), a bare slug (``x``) or an ID (``BUG-12``, ``bug12``).
 
     One resolver for every command (``mapkit.ids.resolve``: stem, then slug,
     then ID). Bare digits (``12``) are an ID only when ``allow_bare`` (read
-    commands); a write needs the ``jb`` prefix or a stem. The exact-stem path
+    commands); a write needs the prefix or a stem. The exact-stem path
     is tried first and loads one file, so a malformed unrelated Item never
     blocks a write by stem.
     """
@@ -66,7 +66,7 @@ def find_item(repo_root: str, slug: str, allow_bare: bool = False) -> Item:
         items = load_items(map_dir)
     except ItemError as exc:
         raise ItemCliError(str(exc))
-    legacy = ids.legacy(repo_root)
+    legacy = _legacy(repo_root)
     try:
         item = ids.resolve(items, stem, allow_bare=allow_bare, legacy=legacy)
     except ids.LegacyIdError as exc:
@@ -77,20 +77,35 @@ def find_item(repo_root: str, slug: str, allow_bare: bool = False) -> Item:
     return item
 
 
+def _legacy(repo_root: str) -> Dict[str, str]:
+    """The crosswalk (``ids.legacy``); a malformed one is this command's error, named by
+    file and line, never a traceback (P4 audit B3)."""
+    try:
+        return ids.legacy(repo_root)
+    except ItemError as exc:
+        raise ItemCliError(str(exc))
+
+
 def _note_translation(text: str, item: Item, legacy: Dict[str, str]) -> None:
-    """D-3: a read that took an old ``JB-<n>`` says what it is called now (stderr)."""
-    ref = ids.typed_ref(text.strip())
-    if ref is not None and legacy.get(ref) is not None and legacy[ref] == item.meta.get("id"):
-        print("%s -> %s" % (ref, legacy[ref]), file=sys.stderr)
+    """D-3: a read that took an old ID says what it is called now (stderr)."""
+    new = ids.legacy_ref(text, legacy)
+    if new is not None and new == item.meta.get("id"):
+        print("%s -> %s" % (text.strip(), new), file=sys.stderr)
+
+
+def _typed_id(text: str, legacy: Dict[str, str]) -> bool:
+    """Is ``text`` an ID, current or old? An old one must reach :func:`ids.resolve`,
+    which refuses it on a write, never be stored as if it were a stem."""
+    return ids.parse_ref(text) is not None or ids.legacy_ref(text, legacy) is not None
 
 
 def label(item: Item) -> str:
-    """``JB-12 bug-x`` (``- bug-x`` when ID-less): every write's echo starts with it."""
+    """``BUG-12 bug-x`` (``- bug-x`` when ID-less): every write's echo starts with it."""
     return "%s %s-%s" % (item.short_id or "-", item.kind, item.slug)
 
 
 def _subject(verb: str, item: Item) -> str:
-    """``map: <verb> JB-12 <title>``; the ID is omitted while an Item has none."""
+    """``map: <verb> BUG-12 <title>``; the ID is omitted while an Item has none."""
     sid = item.short_id
     return "map: %s %s%s" % (verb, (sid + " ") if sid else "", item.title)
 
@@ -249,9 +264,9 @@ def _unique_slug(map_dir: str, base: str) -> str:
 
 
 def _ref_or_stem(items: List[Item], text: str, legacy: Optional[Dict[str, str]] = None) -> str:
-    """A typed reference (``JB-3`` or ``BUG-3`` or a stem/slug) -> the stem stored on disk.
+    """A typed reference (``BUG-3`` or a stem/slug) -> the stem stored on disk.
 
-    A write: an old ``JB-<n>`` the crosswalk knows is refused, naming the new ID.
+    A write: an old ID the crosswalk knows is refused, naming the new ID.
     """
     try:
         return ids.stem(ids.resolve(items, text, legacy=legacy))
@@ -272,7 +287,7 @@ def new_item(repo_root: str, kind: str, title: str, parent: Optional[str] = None
     not set; the message lists the matches.
 
     With ``commit`` and ``push``: pull ``--ff-only``, write, gen, commit
-    ``map: file <kind> JB-n <title>``, then up to :data:`PUSH_ROUNDS` rounds of
+    ``map: file <kind> <ID> <title>``, then up to :data:`PUSH_ROUNDS` rounds of
     ``pull --rebase --autostash`` -> repair this Item's ID if a rebase brought
     in the same one (``map: renumber`` commit) -> push. A rejected push goes
     round again; git refuses non-fast-forward pushes, so the check before the
@@ -294,7 +309,7 @@ def new_item(repo_root: str, kind: str, title: str, parent: Optional[str] = None
     if near and not allow_similar:
         raise ItemCliError("similar Items exist, not filed (check them; --allow-similar files anyway):\n  "
                            + "\n  ".join(m.describe() for m in near))
-    legacy = ids.legacy(repo_root)
+    legacy = _legacy(repo_root)
     upstream = ids.upstream_ref(repo_root)  # the ref the push loop rebases onto
     meta: Dict[str, object] = {
         "id": ids.allocate(repo_root, upstream, items=items, kind=kind), "kind": kind, "title": title,
@@ -316,12 +331,12 @@ def new_item(repo_root: str, kind: str, title: str, parent: Optional[str] = None
     elif parent:
         pw = next((i for i in items if i.kind == "pathway" and i.slug == parent), None)
         if pw is None:
-            pw = ids.resolve(items, parent, legacy=legacy)  # a write: ``jb`` ID or stem, never bare digits
+            pw = ids.resolve(items, parent, legacy=legacy)  # a write: prefixed ID or stem, never bare digits
         if pw.kind != "pathway":
             raise ItemCliError("parent %r is a %s, not a pathway" % (parent, pw.kind))
         meta["parent"] = pw.slug
     for l in links or []:
-        ref = _ref_or_stem(items, l, legacy) if ids.typed_ref(l) is not None else l
+        ref = _ref_or_stem(items, l, legacy) if _typed_id(l, legacy) else l
         if ref not in meta["links"]:
             meta["links"].append(ref)
     if kind in ("idea", "feature", "bug"):
@@ -480,8 +495,9 @@ def list_items(repo_root: str, pathway: Optional[str] = None, kind: Optional[str
     today = today or datetime.date.today()
     out = []
     items = load_items(os.path.join(repo_root, MAP_DIR))
-    if pathway and (ids.typed_ref(pathway) is not None or pathway.strip().isdigit()):
-        pathway = _pathway(items, pathway, ids.legacy(repo_root)).slug
+    legacy = _legacy(repo_root) if pathway else {}
+    if pathway and (_typed_id(pathway, legacy) or pathway.strip().isdigit()):
+        pathway = _pathway(items, pathway, legacy).slug
     for i in items:
         if kind and i.kind != kind:
             continue
@@ -501,7 +517,7 @@ def list_items(repo_root: str, pathway: Optional[str] = None, kind: Optional[str
 def _pathway(items: List[Item], text: str, legacy: Optional[Dict[str, str]] = None) -> Item:
     """A Pathway by slug, stem or ID (bare digits allowed: read commands only).
 
-    An old ``JB-<n>`` the crosswalk knows reads as its new ID (one stderr line, D-3).
+    An old ID the crosswalk knows reads as its new ID (one stderr line, D-3).
     """
     pw = next((i for i in items if i.kind == "pathway" and i.slug == text), None)
     if pw is None:
@@ -518,7 +534,7 @@ def _pathway(items: List[Item], text: str, legacy: Optional[Dict[str, str]] = No
 
 def show(repo_root: str, pathway: str) -> Dict[str, object]:
     items = load_items(os.path.join(repo_root, MAP_DIR))
-    pw = _pathway(items, pathway, ids.legacy(repo_root))
+    pw = _pathway(items, pathway, _legacy(repo_root))
     pathway = pw.slug
     plan_rows = []
     for p in derive.pathway_plans(pw, load_plans(repo_root)):
@@ -654,7 +670,7 @@ def _run_items(args) -> int:
     try:
         rows = [_row(i) for i in list_items(_repo(args), args.pathway, args.kind,
                                             args.status, args.open, stale)]
-    except ItemError as exc:
+    except (ItemError, ItemCliError) as exc:
         print("mapkit: %s" % exc, file=sys.stderr)
         return 2
     if stale:

@@ -4,7 +4,7 @@ Every command that moves a `map/` item follows this page instead of copying step
 
 ## Naming an Item
 
-Every Item has a short ID `<ID>` (frontmatter `id:`, one global sequence; plan `plans/archived/map-item-ids.md`). Every command below takes the ID (`BUG-12`, `bug12`, `bug-12`, any case), the stem (`bug-x`) or the bare slug (`x`); resolution is stem, then slug, then ID. **Bare digits (`12`) are accepted by read commands only** (`items`, `show`): on a write they are an error, because GitHub issue numbers live alongside and a one-digit typo in one sequence lands on another real Item. Every write prints `<ID> <stem> ... <title>`; check it names the Item you meant. Stored references (`parent`, `blocked_by`, `links`) stay stems: an ID typed into `item new --parent` / `--link` is stored as the stem.
+Every Item has a short ID `<ID>` (frontmatter `id:`, one sequence per kind; format in `DOCUMENTATION_GUIDE.md` § 2.10). Every command below takes the ID (`BUG-12`, `bug12`, `bug-12`, any case), the stem (`bug-x`) or the bare slug (`x`); resolution is stem, then slug, then ID. **Bare digits (`12`) are accepted by read commands only** (`items`, `show`): on a write they are an error, because GitHub issue numbers live alongside and a one-digit typo in one sequence lands on another real Item. Every write prints `<ID> <stem> ... <title>`; check it names the Item you meant. Stored references (`parent`, `blocked_by`, `links`) stay stems: an ID typed into `item new --parent` / `--link` is stored as the stem. An old ID from before 2026-11-08, in any spelling, reads as its new ID with one stderr line and is refused on a write, naming the new ID.
 
 ## Reads (silent, short)
 

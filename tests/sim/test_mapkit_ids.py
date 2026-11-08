@@ -1,16 +1,18 @@
-"""mapkit.ids: format, allocate, duplicates, check, repair, assign_missing, resolve.
+"""mapkit.ids: format, allocate, duplicates, check, repair, assign_missing, resolve, the frozen crosswalk.
 
 Each git test builds a working clone of a bare remote under tmp_path, so
 ``origin/main`` is a real published ref. No ports; safe under xdist.
 """
 from __future__ import annotations
 
+import csv
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from mapkit import ids
-from mapkit.items import load_item, load_items, write_item
+from mapkit.items import ItemError, load_item, load_items, write_item
 
 
 @pytest.fixture(autouse=True)
@@ -62,24 +64,6 @@ def _commit_push(work, msg):
 def _items(work):
     return load_items(str(work / "map"))
 
-
-# --- format ----------------------------------------------------------------
-def test_format_and_parse():  # legacy form: retired at P5
-    assert ids.format_id(7) == "JB-7"
-    for bad in (0, -1, True):
-        with pytest.raises(ValueError):
-            ids.format_id(bad)
-    for text in ("JB-12", "jb12", "Jb-12", " jb-12 "):
-        assert ids.parse(text) == 12
-    assert ids.parse("12") is None and ids.parse("12", allow_bare=True) == 12
-    for bad in ("JB-0", "XB-3", "JB-", "jb-8a", ""):
-        assert ids.parse(bad, allow_bare=True) is None
-
-
-def test_canonical_rejects_loose_forms():  # legacy form: retired at P5
-    assert ids.canonical("JB-3") == 3
-    for bad in ("JB-01", "jb-3", "JB3", 3, None, "JB-0"):
-        assert ids.canonical(bad) is None
 
 
 def test_malformed_id_still_loads(tmp_path):
@@ -310,58 +294,66 @@ def test_repair_and_assign_missing_survive_a_malformed_sibling(tmp_path):
 def test_check_stays_strict_about_a_malformed_item(tmp_path):
     work, _ = _repo(tmp_path)
     _broken(work)
-    from mapkit.items import ItemError
     with pytest.raises(ItemError):
         ids.check(str(work))
 
 
-# --- item-id-per-kind P1: both forms canonical during the expansion -----------
-# Plan plans/active/item-id-per-kind.md § 2.1 and § 5. Nothing here changes an
-# ID: the per-kind tree is a tmp_path repo holding a dummy legacy_ids.csv.
+
+# --- item-id-per-kind: per-kind IDs only (P5) ----------------------------------
+# Plan plans/active/item-id-per-kind.md § 2.1 and § 5. The retired global form is
+# known only to the frozen crosswalk; synthetic crosswalks here use a FICTIONAL old
+# prefix (OLD) so the code is proved to hold no knowledge of the real one.
 _KIND_PREFIX = (("bug", "BUG"), ("feature", "FEAT"), ("idea", "IDEA"),
                 ("pathway", "PWAY"), ("ticket", "TKT"))
+_REPO_ROOT = str(Path(__file__).resolve().parents[2])
+_XW_HEADER = "old_id,new_id,kind,stem\n"
 
 
 def _crosswalk(work):
-    """Make ``work`` a per-kind tree: the crosswalk file's presence is the switch."""
+    """Put a header-only crosswalk file in ``work`` (allocation no longer reads it)."""
     (work / "mapkit").mkdir(exist_ok=True)
     path = work / "mapkit" / "legacy_ids.csv"
-    path.write_text("old_id,new_id,kind,stem\n")
+    path.write_text(_XW_HEADER)
     return path
 
 
-def test_fork_contract_old_names_frozen_on_jb_inputs(tmp_path):  # legacy form: retired at P5
-    """T-I0 (mapkit side): parse, canonical, format_id and allocate keep their
-    2026-11-07 signature and results on every ``JB-<n>`` input, byte for byte;
-    the live app (``server/store.py``, ``server/idrepair.py``) imports them until P5."""
-    parse_table = [  # (text, allow_bare) -> int or None, recorded from 83082eac
-        (("JB-12", False), 12), (("jb12", False), 12), (("Jb-12", False), 12),
-        ((" jb-12 ", False), 12), (("JB-01", False), 1), (("JB-0", False), None),
-        (("12", False), None), (("12", True), 12), (("012", True), 12), (("0", True), None),
-        (("XB-3", True), None), (("JB-", True), None), (("jb-8a", True), None),
-        (("", True), None), (("BUG-12", False), None), (("bug12", True), None),
-        (("FEAT-3", True), None), (("TKT-1", False), None)]
-    for (text, bare), want in parse_table:
-        assert ids.parse(text, allow_bare=bare) == want, (text, bare)
-        assert ids.parse(text, bare) == want, (text, bare)  # positional, as the fork may call it
-    canon_table = [("JB-3", 3), ("JB-149", 149), ("JB-01", None), ("jb-3", None), ("JB3", None),
-                   (3, None), (None, None), ("JB-0", None), ("BUG-3", None), ("FEAT-12", None)]
-    for value, want in canon_table:
-        assert ids.canonical(value) == want, value
-    assert [ids.format_id(n) for n in (1, 7, 149)] == ["JB-1", "JB-7", "JB-149"]
-    for bad in (0, -1, True, "3", 2.0):
-        with pytest.raises(ValueError):
-            ids.format_id(bad)
-    work, _ = _repo(tmp_path)
-    _item(work, "bug", "a", id="JB-3")
-    _item(work, "feature", "b", id="JB-5")
-    items = _items(work)
-    assert ids.allocate(str(work), ids.DEFAULT_REF, items) == "JB-6"  # the fork's positional call
-    assert ids.allocate(str(work), items=items) == "JB-6"
-    assert ids.allocate(str(work)) == "JB-6"
-    assert [i.short_id for i in items] == ["JB-3", "JB-5"]
-    _item(work, "bug", "c", id="JB-5")
-    assert list(ids.duplicates(_items(work))) == ["JB-5"]
+def _write_xw(root, rows, header=_XW_HEADER):
+    """Write ``rows`` (4-tuples or raw lists) as the crosswalk CSV under ``root``."""
+    (root / "mapkit").mkdir(parents=True, exist_ok=True)
+    path = root / "mapkit" / "legacy_ids.csv"
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        fh.write(header)
+        csv.writer(fh, lineterminator="\n").writerows(rows)
+    return path
+
+
+_SYNTH_XW = [("OLD-2", "BUG-1", "bug", "bug-b-early"),
+             ("OLD-9", "BUG-2", "bug", "bug-b-late"),
+             ("OLD-3", "FEAT-1", "feature", "feature-f-a"),
+             ("OLD-5", "IDEA-1", "idea", "idea-i-a"),
+             ("OLD-1", "PWAY-1", "pathway", "pathway-pw"),
+             ("OLD-7", "TKT-1", "ticket", "ticket-t-a")]
+
+
+def _perkind_tree(tmp_path):
+    """Six per-kind Items plus the synthetic crosswalk naming them."""
+    (tmp_path / "map").mkdir(parents=True, exist_ok=True)
+    _item(tmp_path, "idea", "i-a", id="IDEA-1")
+    _item(tmp_path, "bug", "b-late", id="BUG-2")
+    _item(tmp_path, "bug", "b-early", id="BUG-1")
+    _item(tmp_path, "pathway", "pw", id="PWAY-1", destination="d", status="active")
+    _item(tmp_path, "ticket", "t-a", id="TKT-1")
+    _item(tmp_path, "feature", "f-a", id="FEAT-1")
+    _write_xw(tmp_path, _SYNTH_XW)
+    return tmp_path
+
+
+def test_removed_names_are_absent():
+    """The global-form API is gone, not merely unused."""
+    for name in ("PREFIX", "format_id", "canonical", "parse", "typed_ref", "per_kind",
+                 "make_crosswalk", "CrosswalkError"):
+        assert not hasattr(ids, name), name
+    assert ids.ALL_PREFIXES == ("BUG", "FEAT", "IDEA", "PWAY", "TKT")
 
 
 def test_prefixes_cover_every_kind():
@@ -371,10 +363,10 @@ def test_prefixes_cover_every_kind():
     assert set(ids.PREFIXES) == set(KINDS)
 
 
-def test_parse_ref_canonical_ref_format_ref_per_kind():  # legacy form: retired at P5
-    """T-U1: all five prefixes and JB, any case, hyphen optional; BUG-0, BUG-01,
-    FEAT3x and XB-3 rejected; stored forms are canonical and case-sensitive."""
-    for kind, prefix in _KIND_PREFIX + ((None, "JB"),):
+def test_parse_ref_canonical_ref_format_ref_per_kind():
+    """T-U1: all five prefixes, any case, hyphen optional; BUG-0, BUG-01,
+    FEAT3x and a foreign prefix rejected; stored forms are canonical and case-sensitive."""
+    for kind, prefix in _KIND_PREFIX:
         want = "%s-12" % prefix
         for text in (want, prefix.lower() + "-12", prefix.lower() + "12",
                      prefix.title() + "-12", " %s12 " % prefix):
@@ -382,51 +374,55 @@ def test_parse_ref_canonical_ref_format_ref_per_kind():  # legacy form: retired 
         assert ids.canonical_ref(want) == want
         for loose in (prefix.lower() + "-12", prefix + "12", prefix + "-012"):
             assert ids.canonical_ref(loose) is None, loose
-        if kind is not None:
-            assert ids.format_ref(kind, 12) == want
+        assert ids.format_ref(kind, 12) == want
     for bad in ("BUG-0", "BUG-01", "FEAT3x", "XB-3", "BUG-", "12", "", "BUGS-3",
-                "bug-12-x", "xBUG-9", "FEATURE-3", "JB-01"):
+                "bug-12-x", "xBUG-9", "FEATURE-3", "OLD-12", "old12", "OLD-012"):
         assert ids.parse_ref(bad) is None, bad
-    for bad in ("BUG-0", 12, None, "XB-3", "FEAT-8a"):
+    for bad in ("BUG-0", 12, None, "XB-3", "FEAT-8a", "OLD-12"):
         assert ids.canonical_ref(bad) is None, bad
-    assert ids.split_ref("TKT-31") == ("TKT", 31) and ids.split_ref("JB-149") == ("JB", 149)
+    assert ids.split_ref("TKT-31") == ("TKT", 31) and ids.split_ref("OLD-149") is None
     assert ids.split_ref("tkt-31") is None
-    for kind, n in (("bug", 0), ("bug", True), ("bug", -2), ("jb", 3), ("Bug", 3), ("feat", 1)):
+    for kind, n in (("bug", 0), ("bug", True), ("bug", -2), ("bogus", 3), ("Bug", 3), ("feat", 1)):
         with pytest.raises(ValueError):
             ids.format_ref(kind, n)
 
 
-def test_short_id_and_malformed_accept_both_forms(tmp_path):  # legacy form: retired at P5
-    """T-U5: a per-kind ID is a well-formed short_id, not a malformed one."""
+def test_short_id_and_malformed_are_per_kind_only(tmp_path):
+    """T-U5: a per-kind ID is a well-formed short_id; a loose or foreign-prefix one is malformed."""
     (tmp_path / "map").mkdir()
     _item(tmp_path, "bug", "new", id="BUG-3")
-    _item(tmp_path, "feature", "old", id="JB-3")
+    _item(tmp_path, "feature", "other", id="FEAT-3")
     _item(tmp_path, "idea", "loose", id="idea-3")
+    _item(tmp_path, "pathway", "foreign", id="OLD-3", destination="d", status="active")
     items = load_items(str(tmp_path / "map"))
-    assert [i.short_id for i in items] == ["BUG-3", "JB-3", None]
-    assert [i.slug for i in ids.malformed(items)] == ["loose"]
+    assert [i.short_id for i in items] == ["BUG-3", "FEAT-3", None, None]
+    assert sorted(i.slug for i in ids.malformed(items)) == ["foreign", "loose"]
 
 
-def test_duplicates_are_per_id_not_per_number(tmp_path):  # legacy form: retired at P5
-    """T-U5: BUG-3 and FEAT-3 (and JB-3) are three IDs, not one duplicate."""
+def test_duplicates_are_per_id_not_per_number(tmp_path):
+    """T-U5: BUG-3, FEAT-3 and IDEA-3 are three IDs, not one duplicate."""
     (tmp_path / "map").mkdir()
     _item(tmp_path, "bug", "a", id="BUG-3")
     _item(tmp_path, "feature", "b", id="FEAT-3")
-    _item(tmp_path, "idea", "c", id="JB-3")
+    _item(tmp_path, "idea", "c", id="IDEA-3")
     assert ids.duplicates(load_items(str(tmp_path / "map"))) == {}
     _item(tmp_path, "bug", "d", id="BUG-3")
     d = ids.duplicates(load_items(str(tmp_path / "map")))
     assert list(d) == ["BUG-3"] and [i.slug for i in d["BUG-3"]] == ["a", "d"]
 
 
-def test_mismatch_flags_a_prefix_that_contradicts_the_kind(tmp_path):  # legacy form: retired at P5
-    """T-U5: mismatch flags BUG-3 on a feature; JB-<n> matches every kind;
+def test_mismatch_flags_a_prefix_that_contradicts_the_kind(tmp_path):
+    """T-U5: mismatch flags BUG-3 on a feature; no prefix is a wildcard; a
+    foreign-prefix value is the malformed class's, not this one;
     ``ids --check`` reports the class and fails on it."""
     for kind, prefix in _KIND_PREFIX:
         assert not ids.mismatch("%s-3" % prefix, kind)
-        assert not ids.mismatch("JB-3", kind)
         others = [p for k, p in _KIND_PREFIX if k != kind]
         assert all(ids.mismatch("%s-3" % p, kind) for p in others)
+        assert not ids.mismatch("OLD-3", kind)  # not canonical: malformed's, never a wildcard
+    # no prefix matches every kind
+    for _, prefix in _KIND_PREFIX:
+        assert sum(not ids.mismatch("%s-3" % prefix, k) for k, _ in _KIND_PREFIX) == 1
     assert not ids.mismatch("bug-3", "feature")  # not canonical: the malformed class's
     assert not ids.mismatch(None, "bug")
     from mapkit.__main__ import main
@@ -440,25 +436,34 @@ def test_mismatch_flags_a_prefix_that_contradicts_the_kind(tmp_path):  # legacy 
     assert main(["ids", "--check", "--repo", str(work)]) == 1
 
 
-def test_allocator_form_follows_the_tree(tmp_path):  # legacy form: retired at P5
-    """T-U3: no crosswalk file -> JB-<n> whatever ``kind`` says; crosswalk present
-    -> per kind; removing it switches back."""
+@pytest.mark.parametrize("with_crosswalk", [False, True])
+def test_allocate_needs_a_kind_with_or_without_a_crosswalk(tmp_path, with_crosswalk):
+    """T-U3: always per kind. No ``kind=`` is a ValueError naming the kinds, whether or
+    not the crosswalk file exists; a foreign-prefix ``id:`` reserves nothing; every
+    result carries one of the five prefixes."""
     work, _ = _repo(tmp_path)
-    _item(work, "bug", "a", id="JB-4")
+    if with_crosswalk:
+        _crosswalk(work)
+    _item(work, "bug", "a", id="OLD-4")
     _item(work, "bug", "b", id="BUG-2")
-    assert not ids.per_kind(str(work))
-    assert ids.allocate(str(work)) == "JB-5"
-    assert ids.allocate(str(work), kind="bug") == "JB-5"
-    cw = _crosswalk(work)
-    assert ids.per_kind(str(work))
+    with pytest.raises(ValueError, match="kind.*bug"):
+        ids.allocate(str(work))
+    with pytest.raises(ValueError):
+        ids.allocate(str(work), ids.DEFAULT_REF, _items(work))
+    with pytest.raises(ValueError):
+        ids.allocate(str(work), kind="bogus")
+    with pytest.raises(ValueError):
+        ids.allocate(str(work), kind=None)
     assert ids.allocate(str(work), kind="bug") == "BUG-3"
-    cw.unlink()
-    assert ids.allocate(str(work), kind="bug") == "JB-5"
+    for kind in ids.PREFIXES:
+        got = ids.allocate(str(work), kind=kind)
+        assert got.split("-")[0] in ids.ALL_PREFIXES
+        assert ids.split_ref(got) is not None
 
 
 def test_allocate_per_kind_scopes_the_max(tmp_path):
     """T-U2: filing a bug leaves FEAT's next number unchanged; the max spans the
-    tree and origin/main; 1 on an empty kind; a per-kind tree refuses no kind."""
+    tree and origin/main; 1 on an empty kind; no kind is refused."""
     work, _ = _repo(tmp_path)
     _crosswalk(work)
     _item(work, "bug", "a", id="BUG-7")
@@ -476,7 +481,7 @@ def test_allocate_per_kind_scopes_the_max(tmp_path):
     with pytest.raises(ValueError, match="kind"):
         ids.allocate(str(work))
     with pytest.raises(ValueError):
-        ids.allocate(str(work), kind="jb")
+        ids.allocate(str(work), kind="bogus")
 
 
 def test_repair_and_assign_missing_stay_within_the_kind(tmp_path):
@@ -492,25 +497,25 @@ def test_repair_and_assign_missing_stay_within_the_kind(tmp_path):
     assert ids.assign_missing(str(work)) == [("IDEA-1", "idea-none")]
 
 
-def test_resolve_takes_both_forms_and_lists_a_shared_bare_number(tmp_path):  # legacy form: retired at P5
-    """T-U4: stem, slug, ID order; both forms resolve; bare digits on a read
+def test_resolve_takes_typed_per_kind_ids_and_lists_a_shared_bare_number(tmp_path):
+    """T-U4: stem, slug, ID order; typed per-kind IDs resolve; bare digits on a read
     return the one match or list every match; bare on a write is refused."""
     (tmp_path / "map").mkdir()
     _item(tmp_path, "bug", "cone", id="BUG-12")
     _item(tmp_path, "feature", "fan", id="FEAT-12")
     _item(tmp_path, "idea", "solo", id="IDEA-4")
-    _item(tmp_path, "pathway", "old", id="JB-149", destination="d", status="active")
+    _item(tmp_path, "pathway", "big", id="PWAY-149", destination="d", status="active")
     items = load_items(str(tmp_path / "map"))
     r = lambda t, **k: ids.stem(ids.resolve(items, t, **k))  # noqa: E731
     assert r("BUG-12") == r("bug12") == r("Bug-12") == "bug-cone"
     assert r("FEAT-12") == r("feat12") == "feature-fan"
-    assert r("JB-149") == r("jb149") == "pathway-old"
+    assert r("PWAY-149") == r("pway149") == "pathway-big"
     assert r("4", allow_bare=True) == "idea-solo"
-    assert r("149", allow_bare=True) == "pathway-old"
+    assert r("149", allow_bare=True) == "pathway-big"
     with pytest.raises(ids.IdError, match="BUG-12.*FEAT-12") as exc:
         ids.resolve(items, "12", allow_bare=True)
     assert [ids.stem(i) for i in exc.value.matches] == ["bug-cone", "feature-fan"]
-    with pytest.raises(ids.IdError, match="write commands need"):
+    with pytest.raises(ids.IdError, match="write commands need.*e.g. BUG-12"):
         ids.resolve(items, "4")
     with pytest.raises(ids.IdError, match="no Item"):
         ids.resolve(items, "TKT-12")
@@ -531,155 +536,148 @@ def test_resolve_refuses_a_stem_that_is_another_items_id(tmp_path):
     assert ids.stem(ids.resolve(items, "bug-other")) == "bug-other"
 
 
-# --- P4 unit 1: the crosswalk generator and D-3 legacy resolution ----------
-_XW_HEADER = "old_id,new_id,kind,stem\n"
-
-
-def _legacy_tree(tmp_path):
-    """Six legacy Items, mixed kinds, deliberately out of file order."""
-    (tmp_path / "map").mkdir(parents=True, exist_ok=True)
-    _item(tmp_path, "idea", "i-a", id="JB-5")
-    _item(tmp_path, "bug", "b-late", id="JB-9")
-    _item(tmp_path, "bug", "b-early", id="JB-2")
-    _item(tmp_path, "pathway", "pw", id="JB-1", destination="d", status="active")
-    _item(tmp_path, "ticket", "t-a", id="JB-7")
-    _item(tmp_path, "feature", "f-a", id="JB-3")
-    return tmp_path
-
-
-def test_make_crosswalk_writes_exact_bytes(tmp_path):  # legacy form: retired at P5
-    """Rows grouped by kind in PREFIXES order, ascending old number, gapless ranks."""
-    root = _legacy_tree(tmp_path)
-    path = ids.make_crosswalk(str(root))
-    assert path == str(root / "mapkit" / "legacy_ids.csv")
-    assert (root / "mapkit" / "legacy_ids.csv").read_bytes() == (
-        _XW_HEADER
-        + "JB-2,BUG-1,bug,bug-b-early\n"
-        + "JB-9,BUG-2,bug,bug-b-late\n"
-        + "JB-3,FEAT-1,feature,feature-f-a\n"
-        + "JB-5,IDEA-1,idea,idea-i-a\n"
-        + "JB-1,PWAY-1,pathway,pathway-pw\n"
-        + "JB-7,TKT-1,ticket,ticket-t-a\n").encode()
-
-
-def test_make_crosswalk_is_deterministic(tmp_path):  # legacy form: retired at P5
-    root = _legacy_tree(tmp_path / "a")
-    root2 = _legacy_tree(tmp_path / "b")
-    ids.make_crosswalk(str(root))
-    ids.make_crosswalk(str(root2))
-    assert (root / ids.LEGACY_IDS).read_bytes() == (root2 / ids.LEGACY_IDS).read_bytes()
-
-
-@pytest.mark.parametrize("what,match", [
-    ("exists", "frozen"),
-    ("per_kind", "BUG-4"),
-    ("no_id", "bug-none"),
-    ("dup", "JB-2"),
-    ("bad_id", "bug-bad"),
-    ("unparseable", "bug-broken"),
-])
-def test_make_crosswalk_refuses(tmp_path, what, match):  # legacy form: retired at P5
-    root = _legacy_tree(tmp_path)
-    if what == "exists":
-        (root / "mapkit").mkdir()
-        (root / ids.LEGACY_IDS).write_text(_XW_HEADER)
-    elif what == "per_kind":
-        _item(root, "bug", "pk", id="BUG-4")
-    elif what == "no_id":
-        _item(root, "bug", "none")
-    elif what == "dup":
-        _item(root, "idea", "dupe", id="JB-2")
-    elif what == "bad_id":
-        _item(root, "bug", "bad", id="JB-01")
-    else:
-        (root / "map" / "bug-broken.md").write_text("---\nid: JB-40\nkind: bug\n")
-    before = (root / ids.LEGACY_IDS).exists()
-    with pytest.raises(ids.CrosswalkError, match=match):
-        ids.make_crosswalk(str(root))
-    assert (root / ids.LEGACY_IDS).exists() == before
-
-
-def test_make_crosswalk_cli(tmp_path, capsys):
-    from mapkit.__main__ import main
-    root = _legacy_tree(tmp_path)
-    assert main(["ids", "--make-crosswalk", "--repo", str(root)]) == 0
-    assert (root / ids.LEGACY_IDS).is_file()
-    assert main(["ids", "--make-crosswalk", "--repo", str(root)]) != 0  # frozen
-    assert "frozen" in capsys.readouterr().err
-
-
-def test_make_crosswalk_round_trips_through_the_sweeper(tmp_path):
-    import os
-    import sys
-    tools = os.path.join(os.path.dirname(__file__), "..", "..", "tools")
-    sys.path.insert(0, os.path.abspath(tools))
-    import id_sweep
-    root = _legacy_tree(tmp_path)
-    ids.make_crosswalk(str(root))
-    xw, errors = id_sweep.read_crosswalk(str(root / ids.LEGACY_IDS))
-    assert errors == []
-    assert xw == {2: "BUG-1", 9: "BUG-2", 3: "FEAT-1", 5: "IDEA-1", 1: "PWAY-1", 7: "TKT-1"}
-
-
-def test_legacy_is_empty_without_the_file_and_full_with_it(tmp_path):  # legacy form: retired at P5
-    root = _legacy_tree(tmp_path)
+# --- the frozen crosswalk and D-3 legacy resolution --------------------------
+def test_legacy_is_empty_without_the_file_and_full_with_it(tmp_path):
+    root = _perkind_tree(tmp_path)
+    assert ids.legacy(str(tmp_path / "nowhere")) == {}
+    (root / "mapkit" / "legacy_ids.csv").unlink()
     assert ids.legacy(str(root)) == {}
-    ids.make_crosswalk(str(root))
-    assert ids.legacy(str(root)) == {"JB-2": "BUG-1", "JB-9": "BUG-2", "JB-3": "FEAT-1",
-                                     "JB-5": "IDEA-1", "JB-1": "PWAY-1", "JB-7": "TKT-1"}
+    _write_xw(root, _SYNTH_XW)
+    assert ids.legacy(str(root)) == {"OLD-2": "BUG-1", "OLD-9": "BUG-2", "OLD-3": "FEAT-1",
+                                     "OLD-5": "IDEA-1", "OLD-1": "PWAY-1", "OLD-7": "TKT-1"}
 
 
-def _perkind_tree(tmp_path):
-    """The crosswalk's per-kind twin of :func:`_legacy_tree`, csv in place."""
-    root = _legacy_tree(tmp_path)
-    ids.make_crosswalk(str(root))
-    for kind, slug, new in (("idea", "i-a", "IDEA-1"), ("bug", "b-late", "BUG-2"),
-                            ("bug", "b-early", "BUG-1"), ("pathway", "pw", "PWAY-1"),
-                            ("ticket", "t-a", "TKT-1"), ("feature", "f-a", "FEAT-1")):
-        p = load_item(str(root / "map" / ("%s-%s.md" % (kind, slug))))
-        ids.set_id(p, new)
-    return root
+@pytest.mark.parametrize("what,header,rows,line,match", [
+    ("header", "old_id,new_id\n", [], 1, "header"),
+    ("empty-file", "", [], 1, "header"),
+    ("short-row", _XW_HEADER, [("OLD-1", "BUG-1", "bug")], 2, "4 non-empty cells"),
+    ("long-row", _XW_HEADER, [("OLD-1", "BUG-1", "bug", "bug-x", "extra")], 2, "4 non-empty cells"),
+    ("empty-cell", _XW_HEADER, [("OLD-1", "BUG-1", "bug", "")], 2, "4 non-empty cells"),
+    ("wrong-kind", _XW_HEADER, [("OLD-1", "BUG-1", "feature", "feature-x")], 2, "not a canonical ID of kind"),
+    ("non-canonical", _XW_HEADER, [("OLD-1", "BUG-01", "bug", "bug-x")], 2, "not a canonical ID of kind"),
+    ("foreign-new", _XW_HEADER, [("OLD-1", "OLD-2", "bug", "bug-x")], 2, "not a canonical ID of kind"),
+    ("duplicate-old", _XW_HEADER,
+     [("OLD-1", "BUG-1", "bug", "bug-x"), ("OLD-1", "BUG-2", "bug", "bug-y")], 3, "listed twice"),
+])
+def test_legacy_refuses_a_malformed_file_naming_file_and_line(tmp_path, what, header, rows, line, match):
+    _write_xw(tmp_path, rows, header=header)
+    with pytest.raises(ItemError) as exc:
+        ids.legacy(str(tmp_path))
+    msg = str(exc.value)
+    assert msg.startswith("mapkit/legacy_ids.csv:%d:" % line), msg
+    assert match in msg, msg
 
 
-def test_check_is_clean_on_a_per_kind_tree_with_the_crosswalk(tmp_path):  # legacy form: retired at P5
+def test_legacy_ref_takes_any_spelling_of_an_old_id():
+    lg = {"OLD-12": "BUG-1", "OLD-3": "FEAT-1"}
+    for text in ("OLD-12", "old-12", "old12", "OLD-012", "Old12", " old-12 ", "OLD0012"):
+        assert ids.legacy_ref(text, lg) == "BUG-1", text
+    assert ids.legacy_ref("old3", lg) == "FEAT-1"
+    for text in ("OLD-13", "OLD-0", "OLD-", "12", "", "BUG-1", "bug1", "OLD-12x", "XYZ-12"):
+        assert ids.legacy_ref(text, lg) is None, text
+    # a current ID is in no row, even when the crosswalk is full of them as values
+    assert ids.legacy_ref("BUG-1", lg) is None
+    assert ids.legacy_ref("OLD-12", {}) is None
+    assert ids.legacy_ref("OLD-12", None) is None
+    for not_text in (None, 12, b"OLD-12", ["OLD-12"]):
+        assert ids.legacy_ref(not_text, lg) is None
+
+
+def test_legacy_ref_knows_no_prefix_of_its_own():
+    """Whatever letters the crosswalk's keys carry are the old form."""
+    assert ids.legacy_ref("zq-5", {"ZQ-5": "TKT-2"}) == "TKT-2"
+    assert ids.legacy_ref("OLD-5", {"ZQ-5": "TKT-2"}) is None
+
+
+def test_check_is_clean_on_a_per_kind_tree_with_the_crosswalk(tmp_path):
     from mapkit.__main__ import main
     root = _perkind_tree(tmp_path)
     p = ids.check(str(root), items=load_items(str(root / "map")))
     assert p["duplicate"] == p["malformed"] == p["mismatch"] == []
     assert main(["ids", "--check", "--repo", str(root), "--ref", "HEAD"]) in (0, 1)  # no git: ref absent
-    assert ids.legacy(str(root))["JB-9"] == "BUG-2"
+    assert ids.legacy(str(root))["OLD-9"] == "BUG-2"
 
 
-def test_resolve_legacy_reads_translate_and_writes_refuse(tmp_path):  # legacy form: retired at P5
+def test_resolve_legacy_reads_translate_and_writes_refuse(tmp_path):
     root = _perkind_tree(tmp_path)
     items = load_items(str(root / "map"))
     lg = ids.legacy(str(root))
-    assert ids.stem(ids.resolve(items, "JB-9", allow_bare=True, legacy=lg)) == "bug-b-late"
-    assert ids.stem(ids.resolve(items, "jb9", allow_bare=True, legacy=lg)) == "bug-b-late"
-    with pytest.raises(ids.IdError, match=r"JB-9 is now BUG-2 \(bug-b-late\); writes take the new ID"):
-        ids.resolve(items, "JB-9", legacy=lg)
+    for spelling in ("OLD-9", "old-9", "old9", "OLD-009"):
+        assert ids.stem(ids.resolve(items, spelling, allow_bare=True, legacy=lg)) == "bug-b-late"
+        with pytest.raises(ids.LegacyIdError,
+                           match=r"%s is now BUG-2 \(bug-b-late\); writes take the new ID" % spelling) as exc:
+            ids.resolve(items, spelling, legacy=lg)
+        assert exc.value.new_id == "BUG-2"
     assert ids.stem(ids.resolve(items, "BUG-2", legacy=lg)) == "bug-b-late"
     assert ids.stem(ids.resolve(items, "bug-b-late", legacy=lg)) == "bug-b-late"
     with pytest.raises(ids.IdError, match="no Item"):
-        ids.resolve(items, "JB-77", allow_bare=True, legacy=lg)
+        ids.resolve(items, "OLD-77", allow_bare=True, legacy=lg)
     with pytest.raises(ids.IdError, match="no Item"):
-        ids.resolve(items, "JB-77", legacy=lg)
+        ids.resolve(items, "OLD-77", legacy=lg)
 
 
-def test_resolve_without_a_legacy_map_is_unchanged(tmp_path):  # legacy form: retired at P5
+def test_resolve_without_a_legacy_map_is_no_item(tmp_path):
     root = _perkind_tree(tmp_path)
     items = load_items(str(root / "map"))
     for kw in ({}, {"legacy": None}, {"legacy": {}}):
         with pytest.raises(ids.IdError, match="no Item"):
-            ids.resolve(items, "JB-9", allow_bare=True, **kw)
+            ids.resolve(items, "OLD-9", allow_bare=True, **kw)
+        with pytest.raises(ids.IdError, match="no Item"):
+            ids.resolve(items, "OLD-9", **kw)
 
 
-def test_make_crosswalk_custom_out_path(tmp_path):  # legacy form: retired at P5
+def test_ids_cli_no_longer_has_make_crosswalk(tmp_path):
     from mapkit.__main__ import main
-    root = _legacy_tree(tmp_path / "t")
-    out = tmp_path / "elsewhere" / "xw.csv"
-    assert main(["ids", "--make-crosswalk", "--out", str(out), "--repo", str(root)]) == 0
-    assert out.read_text().startswith(_XW_HEADER + "JB-2,BUG-1,")
-    assert not (root / ids.LEGACY_IDS).exists()          # the real switch is untouched
-    assert not ids.per_kind(str(root))
-    assert main(["ids", "--make-crosswalk", "--out", str(out), "--repo", str(root)]) == 2  # exists
+    for argv in (["ids", "--make-crosswalk", "--repo", str(tmp_path)],
+                 ["ids", "--out", str(tmp_path / "x.csv"), "--repo", str(tmp_path)]):
+        with pytest.raises(SystemExit) as exc:
+            main(argv)
+        assert exc.value.code == 2
+    assert not (tmp_path / "x.csv").exists()
+
+
+# --- real data: the frozen file is the record of the retired form ------------
+def test_the_real_crosswalk_loads_clean():
+    lg = ids.legacy(_REPO_ROOT)
+    assert len(lg) == 212
+    for old, new in lg.items():
+        assert ids.canonical_ref(new) == new, (old, new)
+
+
+def test_every_real_old_id_is_refused_as_an_id_and_found_as_a_legacy_one():
+    lg = ids.legacy(_REPO_ROOT)
+    assert lg
+    for old, new in lg.items():
+        spellings = (old, old.lower(), old.replace("-", ""), old.lower().replace("-", ""))
+        for s in spellings:
+            assert ids.parse_ref(s) is None, s
+            assert ids.canonical_ref(s) is None, s
+            assert ids.split_ref(s) is None, s
+            assert ids.legacy_ref(s, lg) == new, s
+        assert ids.legacy_ref(new, lg) is None, new
+        assert ids.parse_ref(new) == new
+        assert not ids.mismatch(old, "bug")
+    assert {o.split("-")[0] for o in lg}.isdisjoint(ids.ALL_PREFIXES)
+
+
+def test_a_real_old_id_is_no_item_without_the_crosswalk(tmp_path):
+    lg = ids.legacy(_REPO_ROOT)
+    (tmp_path / "map").mkdir()
+    _item(tmp_path, "bug", "a", id="BUG-1")
+    items = load_items(str(tmp_path / "map"))
+    for old in lg:
+        for kw in ({}, {"legacy": None}, {"legacy": {}}):
+            with pytest.raises(ids.IdError, match="no Item"):
+                ids.resolve(items, old, allow_bare=True, **kw)
+            with pytest.raises(ids.IdError, match="no Item"):
+                ids.resolve(items, old.lower(), **kw)
+
+
+def test_a_real_old_id_on_an_item_is_malformed_and_never_allocated_over(tmp_path):
+    old = sorted(ids.legacy(_REPO_ROOT))[0]
+    work, _ = _repo(tmp_path)
+    _item(work, "bug", "a", id=old)
+    items = _items(work)
+    assert [i.short_id for i in items] == [None]
+    assert ids.malformed(items) == items
+    assert ids.allocate(str(work), kind="bug") == "BUG-1"

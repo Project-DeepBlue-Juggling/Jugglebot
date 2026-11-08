@@ -5,7 +5,7 @@ and ``mapkit item new`` all call :func:`screen` before writing anything.
 
 * **Duplicate** -- the same title as an open Item once case, punctuation and
   spacing are ignored (:func:`normalize`). Always refused: the 2026-10-30
-  Robot-tab retries filed one bug four times (JB-103..106) because each POST
+  Robot-tab retries filed one bug four times (four IDs, three since reused) because each POST
   outlived the client's timeout under load and a retry had no way to know.
 * **Similar** -- a near title, or the same title as a closed Item (a recurrence is
   legitimate, but reopening may be the better move). Refused unless the caller
@@ -129,8 +129,8 @@ def _score(m: Match) -> float:
 
 
 def _filing_key(item: Item) -> tuple:
-    """Filing order: (created, ID, stem). The ID is the same-day tie-break, as the lowest JB
-    number was before; it is a (prefix, number) pair, never compared bare across kinds."""
+    """Filing order: (created, ID, stem). The ID is the same-day tie-break, as the lowest
+    number was before the per-kind IDs; it is a (prefix, number) pair, never compared bare across kinds."""
     from mapkit import ids  # ids imports items, not similar
     return (str(item.meta.get("created") or "9999"),
             ids.split_ref(item.meta.get("id")) or ("~", 0),
