@@ -22,7 +22,7 @@ Your reading (TKT-51, Option 2) is done and reverses the question. The turned pa
 
 ## Options
 
-1. Close BUG-75. A refused second ask costs nothing measurable: the Hand stays on the accepted first re-aim, and all 68 such turned Catches were caught at 25 mm median radius.
+1. Close BUG-75. A refused second ask costs nothing measurable: the Hand stays on the accepted first re-aim, and the 26 turned Catches after a refused second ask were all caught at 25.1 mm median radius, against 25.0 mm with no second ask.
 2. Enable the BUMP on `columns_turned`. It needs the matching-record capture you required on 2026-10-16, then a replay, then a Sitting. It changes flown motion.
 3. Keep the refusals, and stop counting them as a problem by moving the check to the pre-solve fence so they do not spend a solve.
 
