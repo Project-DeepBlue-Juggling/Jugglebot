@@ -4,7 +4,7 @@ kind: bug
 title: 'Firmware scheduler STOPs a streamed lane while frames arrive on time and the host stream is clean: LANE_REFUSED ends, cause unseen'
 status: in_progress
 created: '2026-11-02'
-updated: '2026-11-08T03:30:00Z'
+updated: '2026-11-08T05:00:00Z'
 owners:
 - jugglebot-50
 priority: high
@@ -137,3 +137,4 @@ Recommendation: 1, flown at the next Sitting with the instrumentation, then 2 or
 - 2026-11-05: Row PASSED 2026-11-05 22:46 (first LANE_REFUSED under gc_probe). 1 of 5 STOPs host-side: 60.0 ms gen-2 GC pause in teensy_bridge_node (launch L1615, 421.040), forward 99.5 / loop 77.5 ms, expired +1; the only GC pause > 5 ms all Sitting. Other 4 host-clean (emit <= 28 ms, GC 0, seq_gaps 0). Next: A/B gc_freeze:=true (bridge node first).
 - 2026-11-06: 2026-11-06: the clean-host class is missing frames. Firmware counted 1.3-1.5 % fewer frames than the host sent in three bags; each clean STOP needs one missing frame (both lanes when the next is > 20 ms old, Hand C1 when > 6 ms). Likely cause: the stream socket one-packet queue, fixed in FW 40 (FEAT-41); its Sitting row is the test. GC caused 1 of 5 STOPs; gc_freeze A/B still owed.
 - 2026-11-08: Reframed (owner): 2026-11-07 Sitting, row passed literally (both LANE_REFUSED ends under gc_probe). Starvation and lost frames refuted for both ends (lost 0 of 83,340); 20 of 23 STOPs had a clean host and on-time frames. Next is the firmware STOP record, FEAT-46 (detail above).
+- 2026-11-08: Owner decision: the Hand hold coming 113 ms after a C1 stop stays as is (the fail-loud guard rule is kept; the host cannot react inside 11 ms). Revisit after FEAT-46 shows why STOPs happen; 1 of 23 STOPs on 2026-11-07 became a Fault.

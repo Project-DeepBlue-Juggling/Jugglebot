@@ -4,7 +4,7 @@ kind: bug
 title: Nomination's re-aim figure read -0.049 while the live Feed-Catch Segment was refused at -0.208 (Dwell 0.32)
 status: inbox
 created: '2026-11-08'
-updated: '2026-11-08T00:13:46Z'
+updated: '2026-11-08T03:03:16Z'
 owners: []
 priority: medium
 hardware: none
@@ -26,3 +26,7 @@ At the Sitting of 2026-11-07 (Columns Apex 0.93 Sep. 125) the goal was accepted 
 ## Not settled
 - Whether the fed schedule's first Segments are walked at all, or whether the splice timing of a late Feed re-aim adds the rest.
 - Figure only: acceptance never uses it, so this is about what the operator is told, not a guard.
+
+## Progress
+
+- 2026-11-08: 2026-11-08 owner decision: fix this before anything else on the Feed clamp. The clamped Feed Catch aim (25 of 32 Attempts on 2026-11-07) costs about 0.11 of margin; above Dwell 0.27 it refused every later Attempt. Then check whether Feed misses lean one way (columns_feed_bb_bias_mm). Acceptance stays nominal.

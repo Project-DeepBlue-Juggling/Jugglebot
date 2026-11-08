@@ -4,7 +4,7 @@ kind: bug
 title: 10 % jitter-margin class of LIMIT_* refusals
 status: inbox
 created: '2026-10-24'
-updated: '2026-11-03T21:54:18Z'
+updated: '2026-11-08T03:03:15Z'
 owners: []
 priority: medium
 effort: m
@@ -17,6 +17,7 @@ blocked_by: []
 links:
 - plans/archived/skill-stack-dress-rehearsals-and-residue.md
 - logbook/2026-11-04-sitting-debrief.md
+- logbook/2026-11-07-sitting-debrief.md
 parent: two-ball-oval
 filed_by: claude
 ---
@@ -55,3 +56,4 @@ A question ticket carries this to the owner; the answer under its `## Answer` re
 - 2026-11-03: 2026-11-03 Sitting: the 3 leg trips (L3236, L3706, L8981) were first-install CATCHes exceeding by +0.5/+1.9/+1.6 % with ~315 ms of deadline unused; the y_d fallback made 2 of 3 worse. CATCH installs run at median 93.8 % p90 98.6 % of leg vel; a 365 mm/s limit would have cleared 13 of 14 refusals. Owner decision, not made.
 - 2026-11-03: P4 working point (two-ball-oval P4, logbook 2026-11-03-p4-working-point-600-8000-20a) raises the leg velocity limit 350 -> 600 mm/s, well past the 365 mm/s that would have cleared 13 of the 14 refusals, so these refusals are expected to be absorbed; confirmation is the P4 ramp Sitting's columns canary (count CATCH leg-vel refusals). The jitter-margin option itself stays undecided.
 - 2026-11-04: 2026-11-03 Sitting at 600/8000 (P4): 0 LIMIT_VEL and 0 LIMIT_ACC refusals across the Sitting, so the CATCH leg-velocity class did not recur. One LIMIT_JERK refusal on a CATCH re-aim RESEND (peak leg jerk 510456 vs 200000, leg 0, canary throw 20); the first plan stood and the ball was caught.
+- 2026-11-08: 2026-11-08 owner decision: two more refusals on 2026-11-07, both LIMIT_JERK Catch installs (203,074 and 200,003 against 200,000; 2 of 48 goals). No gate tolerance: add them to the tally; option 2 (absorb jitter in the re-aim) is the preferred fix if the class grows.

@@ -4,7 +4,7 @@ kind: bug
 title: 'Leg encoder dropouts of 80 to 99 ms continue at the clock beat: trial encoder_msg_rate_ms 9 on Leg 4, then all Legs'
 status: in_progress
 created: '2026-11-06'
-updated: '2026-11-08T02:16:46Z'
+updated: '2026-11-08T03:03:17Z'
 owners: []
 priority: medium
 effort: s
@@ -48,3 +48,4 @@ Still unknown: which side drops the frame (a passive CAN sniffer settles it), wh
 
 - 2026-11-08: Leg 4 flew at encoder_msg_rate_ms 9 through the whole 2026-11-07 launch (owner set it before; in-run, not the parked hold the row asks for): Leg 4 peak 17.1 ms, 0 of 2396 /cache_diag windows over 25 ms over 40 min; Legs 0-3 and 5 peak 99-100 ms, 20-30 windows over 25 ms; Hand 18.1 ms, 0. Frame-loss spacing not measured. Row and status left to the owner.
 - 2026-11-08: 2026-11-08: owner chose all drives at once. All six Legs and the Hand set to odd-ms CAN rates over USB (encoder and iq 9, error 19, heartbeat and temperature 99, bus voltage 499), verified from flash; 88740cf7. Leg 4 in-run 2026-11-07: 0 of 2396 windows over 25 ms. Next: the debrief reads every Leg's census.
+- 2026-11-08: 2026-11-08 owner decisions: Hand lead-clamp anchor unchanged (the beat that starved the encoder is cured; Hand worst gap 23 ms, under the 30 ms gate); revisit only if Hand lead clamp ENGAGED appears in a Throw. Hand limits stay 70 soft / 80 A hard; revisit on another hard-max trip.
