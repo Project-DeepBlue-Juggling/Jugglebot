@@ -4,7 +4,7 @@ kind: bug
 title: CTRL+ENTER to save the result of a 'Next Sitting' entry
 status: in_progress
 created: '2026-11-03'
-updated: '2026-11-07T18:11:49Z'
+updated: '2026-11-08T17:57:52Z'
 owners:
 - night-shift
 priority: medium
@@ -24,3 +24,4 @@ Filed from the Robot tab at 2026-11-03T12:31:53+11:00.
 ## Progress
 
 - 2026-11-08: Night Shift 2026-11-08: held on jugglebot-map:night-shift/2026-11-08-BUG-60: gate (b), a failed save still clears the row's verdict and notes; unblocked by the owner's answer
+- 2026-11-09: Night Shift 2026-11-09: held again on jugglebot-map:night-shift/2026-11-08-BUG-60: (b) 3 new audit findings; unblocked by the owner's answer
