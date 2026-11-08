@@ -54,6 +54,15 @@ The bridge counts only encoder and heartbeat frames, so the error, iq, temperatu
 - Drives: `python tools/odrive_fleet_reflash.py --include-hand --set ...` (the six rates), run 2026-11-08 13:01. All seven drives (Legs 0 to 5, then the Hand) were backed up, written, saved, rebooted and read back from flash: verify OK on all seven. Leg 4's and the Hand's encoder rates were already 9. Log: `temp/logs/odrive_can_rates_2026-11-08.log`. Backups: `temp/odrive_configs/20261108_130126/`.
 - Tests: `pytest -q tests/motion/test_odrive_fleet_reflash.py`, run 2026-11-08: 77 passed. Default gate: see the commit message.
 
+## Where the rule is written down
+
+At the owner's request, so future collaborators know the off-by-one values are deliberate:
+- **The decision:** `docs/adr/0016-odd-ms-odrive-can-rates.md`, listed in the ADR index and the docs site.
+- **Beside the values:** `config/ODrive config Files/README.md`, since JSON cannot carry a comment.
+- **The enforcing test's docstring** points at the ADR.
+
+Named tests (`pytest -q` on test_odrive_fleet_reflash, test_docs_links, test_glossary_avoid_words and test_mapkit_docs, run 2026-11-08): 96 passed. A strict `mkdocs build` was not run, because mkdocs is not installed in the venv.
+
 ## Before the next launch
 
 Every drive rebooted, so every encoder zero is gone. Check the launch log for `homing: 7 axes homed` before arming. That was enough after the Hand's save on 2026-11-06, without a bridge power-cycle.

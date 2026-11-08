@@ -77,6 +77,7 @@ They're grouped here by topic for skimming; the canonical order is numeric.
 - [ADR-0013](0013-three-can-buses.md) — Three subsystem-isolated CAN buses on the can-bridge Teensy
 - [ADR-0014](0014-wave-camera-on-can3.md) — The Wave camera adapter is a cone-role device on CAN3, kept recording by a streamed intent
 - [ADR-0008](0008-time-sync-master-on-can-bridge.md) — Time-sync master moves from the Jetson to the can-bridge Teensy
+- [ADR-0016](0016-odd-ms-odrive-can-rates.md) — Every cyclic ODrive CAN message runs at an odd number of milliseconds (9, 19, 99, 499), so it cannot phase-lock to the 2 ms setpoint tick
 
 ### Jetson ↔ Teensy link
 - [ADR-0005](0005-ethernet-over-usb-serial.md) — Ethernet (not USB serial) for the Jetson↔Teensy link

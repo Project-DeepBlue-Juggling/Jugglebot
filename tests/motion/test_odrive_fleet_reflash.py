@@ -832,7 +832,8 @@ def test_backup_configs_use_odd_ms_can_rates(tool, path):
     An even period is a whole multiple of the can-bridge's 2 ms setpoint tick, so
     a drive's frame phase drifts into the lossy window and stays there, losing
     every frame for 0.6 to 3 s. An odd period alternates between two phases 1 ms
-    apart, so at most every other frame can be lost. 0 = message off."""
+    apart, so at most every other frame can be lost. 0 = message off. The
+    decision and its evidence: docs/adr/0016-odd-ms-odrive-can-rates.md."""
     with open(path) as handle:
         flat = tool.flatten_config(json.load(handle))
     rates = {k: v for k, v in flat.items() if k.endswith('_msg_rate_ms')}
