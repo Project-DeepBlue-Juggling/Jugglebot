@@ -2,13 +2,16 @@
 id: FEAT-47
 kind: feature
 title: Add "Total Drops To Date" counter
-status: inbox
+status: backlog
 created: '2026-11-08'
-updated: '2026-11-08T10:40:25Z'
+updated: '2026-11-08T17:57:50Z'
 owners: []
 priority: medium
 effort: m
 hardware: none
+owner: decision
+radius: subsystem
+area: gui
 blocked_by: []
 links: []
 filed_by: harrison
@@ -21,3 +24,17 @@ It would be neat to see the counter atop "Records" in the GUI, with it increment
 This Item will require going back through all  Sitting logs to date to find drops, but that should be achievable with enough Sonnet agents, and it only needs to be done once.
 
 Filed from the Robot tab at 2026-11-08T21:40:24+11:00.
+
+## Options (2026-11-09)
+
+The live count is cheap (the records ledger has Throws and Catches per Attempt). The history is about 1200 launch logs and 570 bags since January, in several log formats.
+
+1. Live counter only, from the first Attempt after it lands.
+2. Live counter plus a one-off base figure from the launch logs' Attempt end lines, and the page says the date it counts from.
+3. Live counter plus the full history, by agents over older logs and bags.
+
+Recommendation: 2. The definition's edge cases are in the ticket.
+
+## Progress
+
+- 2026-11-09: Night Shift 2026-11-09: rated, options written; awaiting the owner's answer
