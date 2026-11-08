@@ -2,9 +2,9 @@
 id: JB-207
 kind: ticket
 title: 'JB-201 held on jugglebot-map:night-shift/2026-11-08-JB-201: apply the audit''s small fixes and merge, also guard mouseenter, merge as is, or drop?'
-status: open
+status: complete
 created: '2026-11-08'
-updated: '2026-11-07T18:12:13Z'
+updated: '2026-11-08T00:12:32Z'
 owners: []
 priority: medium
 effort: xs
@@ -41,3 +41,7 @@ Recommendation: 1.
 - 1 or 2: the next night applies them, re-gates and merges.
 - 3: the next night re-gates and merges.
 - 4: JB-201 goes back to open.
+
+## Answer
+
+Agreed.
