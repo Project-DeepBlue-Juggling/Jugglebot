@@ -4,12 +4,12 @@ kind: bug
 title: 'Legs 1 and 2 left their magnetic base joints on Columns at Sep. 170: acceptance bounds Leg kinematics only and does not see the bridge feedforward cap'
 status: backlog
 created: '2026-11-06'
-updated: '2026-11-08T00:13:23Z'
+updated: '2026-11-08T17:57:52Z'
 owners: []
 priority: high
 effort: m
-hardware: none
-owner: decision
+hardware: robot
+owner: hands
 radius: cross-cutting
 diagnosis: hypothesis
 area: legs
@@ -116,3 +116,4 @@ Method: encoder FK of `/robot_state` (production `leg_lengths_to_pose`) against 
 - 2026-11-08: Night Shift 2026-11-08: the reopen rule fired: two more separations on 2026-11-07 at 5872 and 5968 mm/s^2; options and findings below, no limit added
 - 2026-11-08: Debrief 2026-11-07: three separations that day, not two: Dwell 0.32 (856.52), Dwell 0.30 (1028.45) and high-low Sep. 125 L15545 (16:46:43, unnoticed until the debrief, owner confirmed). That re-seat left the Platform tilted 1.3-1.75 deg, the likely cause of the four hop misses. Owner plans a hardware modification against separation first; no bound.
 - 2026-11-08: 2026-11-07 numbers: plan peaks do not separate (5872 and 5968 separated, 5936 flew 12 transits, 7104 held 3). Lead, not a bound (n 4): each separation came 0.5-1.2 s after a transit whose executed command reached 8974-14450 mm/s^2 on Leg 1, at a later arrival; L15097 flew on at 8316. The Base walked 0-9.4 mm per Attempt.
+- 2026-11-09: Night Shift 2026-11-09: TKT-52 answered: the owner is holding the joints mechanically (option 4); the next flown Columns at Dwell 0.30 or 0.32 shows whether Legs still separate
