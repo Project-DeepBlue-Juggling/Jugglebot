@@ -4,12 +4,12 @@ kind: bug
 title: 'The flyback over-corrects a Catch offset by 1.2 to 1.4 times: each landing error returns at -0.3 to -0.45 on the next Throw'
 status: backlog
 created: '2026-11-06'
-updated: '2026-11-07T17:49:28Z'
+updated: '2026-11-08T17:58:50Z'
 owners: []
 priority: medium
-effort: xs
+effort: s
 hardware: robot
-owner: decision
+owner: none
 radius: local
 diagnosis: hypothesis
 area: learner

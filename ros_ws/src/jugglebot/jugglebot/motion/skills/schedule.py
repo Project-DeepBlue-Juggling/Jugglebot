@@ -2257,8 +2257,24 @@ class OneBallPattern:
     #: oval (plan two-ball-oval § 2.1): EVERY throw from ``sites[0]`` (T) to
     #: ``sites[1]`` (C), the loaded cup carried C -> T; needs exactly 2 sites.
     roles: str = 'alternate'
+    #: BUG-80: a commanded landing offset (x, y) in METRES, Robot frame, added
+    #: to EVERY Throw's ``y_d`` (:func:`_append_one_ball_pattern`, so the
+    #: reload's tail carries it too). Default zero = today's schedule, bit for
+    #: bit. One Site only (``self_toss``): a hop or oval Throw is cross-Site
+    #: and refuses a non-zero offset here. The range check against the Site's
+    #: aim authority is the node's (``nominate.landing_offset_refusal``).
+    landing_offset_m: Tuple[float, float] = (0.0, 0.0)
 
     def __post_init__(self):
+        off = tuple(float(v) + 0.0 for v in self.landing_offset_m)   # -0.0 -> 0.0
+        if len(off) != 2 or not all(math.isfinite(v) for v in off):
+            raise ValueError('landing_offset_m must be two finite metres, got '
+                             '%r' % (self.landing_offset_m,))
+        object.__setattr__(self, 'landing_offset_m', off)
+        if any(off) and (self.roles != 'alternate' or len(self.sites) != 1):
+            raise ValueError(
+                'a landing offset is for a one-Site self-toss only, got %d '
+                'sites and roles %r' % (len(self.sites), self.roles))
         if self.roles not in ('alternate', 'fixed'):
             raise ValueError(
                 "roles must be 'alternate' or 'fixed', got %r"
@@ -2393,7 +2409,7 @@ def compile_one_ball(pattern: OneBallPattern, t0_abs_s: float) -> Schedule:
     skills, t_f, period = _append_one_ball_pattern(
         skills, t0_rel + lift_s, pattern.sites, pattern.apex_m,
         pattern.dwell_s, n, pattern.launch_s, pattern.rest_tail_s,
-        pattern.roles)
+        pattern.roles, landing_offset_m=pattern.landing_offset_m)
 
     skills = _assign_leads(skills)
     _check_dispatch_monotone(skills)
@@ -2407,7 +2423,8 @@ def compile_one_ball(pattern: OneBallPattern, t0_abs_s: float) -> Schedule:
 
 def _append_one_ball_pattern(skills, rest_end_t_rel: float, sites, apex_m: float,
                              dwell_s: float, n_throws: int, launch_s: float,
-                             rest_tail_s: float, roles: str = 'alternate'):
+                             rest_tail_s: float, roles: str = 'alternate',
+                             landing_offset_m: Tuple[float, float] = (0.0, 0.0)):
     """Append the one-ball pattern's THROW/CATCH events to ``skills`` (already
     ending in a REST at ``rest_end_t_rel``, on the SAME relative clock),
     fold same-site (CATCH, THROW) pairs, and append the closing REST.
@@ -2447,7 +2464,9 @@ def _append_one_ball_pattern(skills, rest_end_t_rel: float, sites, apex_m: float
         window = launch_s if i == 0 else dwell_s
         skills.append(Skill(kind=THROW, ball_id=0, site=site_i,
                             t_abs_s=t_throw, window_s=window,
-                            y_d=(np.zeros(2), apex_m), target=target_i))
+                            y_d=(np.array(landing_offset_m, dtype=float),
+                                 apex_m),
+                            target=target_i))
         # Unlike columns (whose LAST throw's landing is deliberately left
         # unscheduled for R5's cone delivery), a one-ball schedule has
         # nowhere else for the ball to go: EVERY throw gets a catch, and the
@@ -2734,7 +2753,7 @@ def compile_reload(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
         skills, t_f, period = _append_one_ball_pattern(
             skills, decay_end_rel, pattern.sites, pattern.apex_m,
             pattern.dwell_s, n, pattern.launch_s, pattern.rest_tail_s,
-            pattern.roles)
+            pattern.roles, landing_offset_m=pattern.landing_offset_m)
 
     skills = _assign_leads(skills)
     _check_dispatch_monotone(skills)

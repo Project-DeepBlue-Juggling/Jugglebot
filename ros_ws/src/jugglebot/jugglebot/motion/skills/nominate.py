@@ -157,6 +157,15 @@ _ONE_PERIOD_PATTERNS = ('self_toss', 'oval_1ball', 'oval_1ball_fed')
 COLUMNS_FED = ('columns', 'columns_turned', 'columns_highlow',
                 'columns_1ball_fed')
 
+#: BUG-80: the Patterns a commanded landing offset (skill_node params
+#: ``landing_offset_x_mm`` / ``landing_offset_y_mm``) applies to. Only the
+#: one-Site self-toss: the check it serves is a Throw from rest, and a hop or
+#: oval Throw is cross-Site. Every other Pattern, the two-ball ones included,
+#: REFUSES a non-zero offset by name (:func:`landing_offset_refusal`) rather
+#: than flying without it: a goal that ignored the parameter would look like
+#: the offset experiment while being an ordinary Attempt.
+LANDING_OFFSET_PATTERNS = ('self_toss',)
+
 #: skill_node's self-toss Site (``_DEFAULT_SITE_NAME`` / ``_DEFAULT_SITE_X_MM``
 #: / ``_DEFAULT_SITE_Y_MM``), the site the self-toss pin compares against.
 SELF_TOSS_SITE_NAME = 'P1'
@@ -204,6 +213,9 @@ class NominationConfig:
     feed_site: str = 'P1'
     #: the self-toss Site's xy (skill_node params ``site_x_mm`` / ``site_y_mm``)
     self_toss_site_xy_mm: Tuple[float, float] = SELF_TOSS_SITE_XY_MM
+    #: BUG-80: the commanded landing offset (x, y) mm, Robot frame; ``self_toss``
+    #: only (:func:`landing_offset_refusal`, :func:`build_pattern`).
+    landing_offset_mm: Tuple[float, float] = (0.0, 0.0)
     #: 't0': compile with a dummy t0 (the design).  'hop': what skill_node
     #: dispatches for a FED Columns (``compile_columns(feed=..., hop_entry=
     #: True)``) with a VERTICAL identity feed at the fed Site.
@@ -222,6 +234,42 @@ def short_n_throws(pattern: str) -> int:
     self-toss / oval (-> 3)."""
     per = 1 if pattern in _ONE_PERIOD_PATTERNS else 2
     return 1 + 2 * per
+
+
+def landing_offset_refusal(x_mm, y_mm, authority_mm: float,
+                           pattern: Optional[str] = None) -> Optional[str]:
+    """BUG-80: why the commanded landing offset ``(x_mm, y_mm)`` is refused,
+    or ``None`` when it may fly.  ``(0, 0)`` is always ``None``, on every
+    Pattern.
+
+    **The bound is the live ``learner_lateral_authority_mm``, per axis**
+    (``authority_mm``): the per-axis box a Learner command is capped to and a
+    one-Site Catch aim is clamped to, so an offset cannot ask for a landing
+    further off its Site than the stack is already allowed to move one.  At
+    authority 0 (lateral pinned) every non-zero offset is refused.  ``pattern``
+    None checks the range alone (the parameter callback); a name also checks
+    it against :data:`LANDING_OFFSET_PATTERNS` (goal accept, ``skills/nominate``).
+    Pure; the text names the parameter so the operator can act on it."""
+    try:
+        x, y = float(x_mm), float(y_mm)
+    except (TypeError, ValueError):
+        return ('landing_offset_x_mm / landing_offset_y_mm must be numbers, '
+                'got (%r, %r)' % (x_mm, y_mm))
+    if not (math.isfinite(x) and math.isfinite(y)):
+        return ('landing_offset_x_mm / landing_offset_y_mm must be finite, '
+                'got (%r, %r)' % (x, y))
+    if x == 0.0 and y == 0.0:
+        return None
+    if abs(x) > authority_mm or abs(y) > authority_mm:
+        return ("landing offset (%+.1f, %+.1f) mm leaves the Site's aim range: "
+                'each axis is bounded by learner_lateral_authority_mm = '
+                '%.1f mm' % (x, y, authority_mm))
+    if pattern is not None and pattern not in LANDING_OFFSET_PATTERNS:
+        return ('refused: landing offset (%+.1f, %+.1f) mm is for a %s goal '
+                'only, not %r -- set landing_offset_x_mm and '
+                'landing_offset_y_mm back to 0.0 first'
+                % (x, y, ' / '.join(LANDING_OFFSET_PATTERNS), pattern))
+    return None
 
 
 def _feed_index(sites, feed_site: str) -> int:
@@ -257,6 +305,9 @@ def build_pattern(config: NominationConfig, n_throws: Optional[int] = None):
     p = config.pattern
     n = int(n_throws if n_throws is not None
             else (config.n_throws or short_n_throws(p)))
+    if any(config.landing_offset_mm) and p not in LANDING_OFFSET_PATTERNS:
+        raise ValueError('a landing offset is for %s only, not %r'
+                         % (' / '.join(LANDING_OFFSET_PATTERNS), p))
     if p in COLUMNS_FED:
         sites = st.columns_sites(config.separation_mm,
                                  config.angle_deg if p == 'columns_turned' else 0.0)
@@ -284,7 +335,10 @@ def build_pattern(config: NominationConfig, n_throws: Optional[int] = None):
     is_oval = p in ('oval_1ball', 'oval_1ball_fed')
     return sc.OneBallPattern(sites=sites, apex_m=config.apex_m,
                              dwell_s=config.dwell_s, n_throws=n,
-                             roles='fixed' if is_oval else 'alternate')
+                             roles='fixed' if is_oval else 'alternate',
+                             landing_offset_m=(
+                                 float(config.landing_offset_mm[0]) / 1000.0,
+                                 float(config.landing_offset_mm[1]) / 1000.0))
 
 
 #: The dummy ``t0`` a nomination compiles at (any instant: nothing is wall-
@@ -847,6 +901,8 @@ class NominationReport:
         if c.pattern != 'self_toss':
             s += ', separation %.0f mm' % c.separation_mm
         s += ', dwell %.2f s' % c.dwell_s
+        if any(c.landing_offset_mm):
+            s += ', landing offset (%+.1f, %+.1f) mm' % tuple(c.landing_offset_mm)
         if c.pattern == 'columns_turned':
             s += ', angle %.0f deg' % c.angle_deg
         s += ', %s%s' % (c.planner_mode, ', carry_zvd' if c.carry_zvd else '')
