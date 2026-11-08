@@ -2,9 +2,9 @@
 id: JB-206
 kind: ticket
 title: 'JB-158 held on jugglebot-map:night-shift/2026-11-08-JB-158: apply the audit''s 3 fixes and merge, apply only the lost-notes fix, merge as is, or drop?'
-status: open
+status: complete
 created: '2026-11-08'
-updated: '2026-11-07T18:12:12Z'
+updated: '2026-11-08T00:16:27Z'
 owners: []
 priority: medium
 effort: xs
@@ -40,3 +40,7 @@ Recommendation: 1. Notes typed during a Sitting are the one thing here that cann
 - 1 or 2: the next night applies them, re-gates and merges.
 - 3: the next night re-gates, merges and files the bug.
 - 4: JB-158 goes back to open.
+
+## Answer
+
+Agreed.
