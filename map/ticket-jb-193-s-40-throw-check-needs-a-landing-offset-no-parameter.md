@@ -2,9 +2,9 @@
 id: JB-205
 kind: ticket
 title: 'JB-193''s 40-Throw check needs a landing offset no parameter commands: build one, fly the ride-along without it, or close JB-193?'
-status: open
+status: complete
 created: '2026-11-08'
-updated: '2026-11-07T17:49:29Z'
+updated: '2026-11-08T00:15:47Z'
 owners: []
 priority: medium
 effort: xs
@@ -33,3 +33,7 @@ Recommendation: 3 unless JB-192 or JB-186 need the same lateral picture, then 1.
 - 1: the next night builds it and writes the Sitting row.
 - 2: the next night writes the Sitting row for the ride-along.
 - 3: the next night closes JB-193.
+
+## Answer
+
+I prefer Option 1, especially as this is likely to help with other Items.
