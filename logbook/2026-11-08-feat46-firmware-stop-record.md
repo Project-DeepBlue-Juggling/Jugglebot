@@ -1,5 +1,5 @@
 ---
-title: "FEAT-46: can-bridge FW 42 / PROTOCOL 13 uplinks a STOP record per lane group, and the bridge classifies each STOP as a stamp gap, a mapping step, a frame queued but not promoted, or none of these (built and tested, NOT flashed)"
+title: "FEAT-46: can-bridge FW 42 / PROTOCOL 13 uplinks a STOP record per lane group, and the bridge classifies each STOP as a stamp gap, a mapping step, a frame queued but not promoted, or none of these (flashed 2026-11-08 14:41, live check owed at the next Sitting)"
 type: feature
 date: 2026-11-08
 status: in-progress
@@ -53,4 +53,4 @@ Host: `teensy_link/stop_record.py` decodes both slots and classifies (`classify_
 - 2026-11-08, `python -m pytest tests/firmware/test_udp_protocol_xlang.py tests/firmware/test_bridge_fw_version_xref.py tests/teensy_link/ tests/ros/test_teensy_bridge_node_bridge_diag.py tests/ros/test_teensy_bridge_node_read.py -q -n 4`: 657 passed.
 - Gate: `./run_tests.sh` result in the commit message.
 
-NOT flashed and no colcon build: the parent session does both. Until the lockstep flash an FW 41 board is DARK to this host.
+Flashed 2026-11-08 14:41 (launch down) by the parent session: `pio run -e teensy41 -t upload` SUCCESS, 289,792 B hex. Receipt: `tools/teensy_link_bridge.py --duration 15` decoded 6,225 frames with 0 decode errors against the PROTOCOL 13 (380 B) heartbeat, which an FW 41 board cannot produce. `colcon build --packages-select jugglebot_interfaces jugglebot` done. Full gate (2026-11-08, `./run_tests.sh --full`): 9234 passed, 44 skipped + 10 serial passed, RESULT PASS. The status stays in-progress until a real STOP at a Sitting prints its record line.

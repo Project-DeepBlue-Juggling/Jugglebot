@@ -4,7 +4,7 @@ kind: feature
 title: 'Firmware STOP record: report why a scheduler cover ended (frame stamps, arrivals, queue, time-base steps)'
 status: in_progress
 created: '2026-11-08'
-updated: '2026-11-08T03:00:27Z'
+updated: '2026-11-08T03:56:38Z'
 owners: []
 priority: high
 effort: m
@@ -67,3 +67,4 @@ Firmware and a HeartbeatT2J or new-message wire change, so a `PROTOCOL_VERSION` 
 ## Progress
 
 - 2026-11-08: FW 42 / PROTOCOL 13 STOP record built and tested (pio build OK, native + host tests), NOT flashed: HeartbeatT2J 190->380 B carries one record per lane group; the bridge logs one classified line per record (stamp gap / mapping step / queued, not promoted / none of these). Needs the flash, a colcon build and a Sitting.
+- 2026-11-08: 2026-11-08 14:41: FW 42 flashed (launch down), receipt 6,225 frames, 0 decode errors at PROTOCOL 13; colcon built; full gate PASS. Live check: the first STOP at the next Sitting must print its classified STOP record line.
