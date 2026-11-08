@@ -206,7 +206,7 @@ Rigs: Robot 5 blocks (218 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 
 ## Questions a Sitting can answer
 
-- JB-205 JB-193's 40-Throw check needs a landing offset no parameter commands: build one, fly the ride-along without it, or close JB-193? (parent JB-193)
+- none
 
 ## Close-out
 
