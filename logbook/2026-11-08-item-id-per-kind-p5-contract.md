@@ -97,6 +97,6 @@ The old form is refused, not merely unused. Nothing under `ros_ws/`, `controller
 
 ## Open Questions
 
-- Restart 2 (P5 mapkit loaded) and T-I2 on the P5 mapkit: recorded after the push.
+- Restart 2 DONE 2026-11-08 15:23: data clone at a467a0f6 (P5), `systemctl --user restart jugglebot-map.service`, health 200 in 4 s, NRestarts 0. T-I2 on the P5 mapkit (`bash temp/id-migration/p5-ti2.sh`): BUG-14 and bug14 200; the old ID of BUG-14 in four spellings (canonical, lower case, unhyphenated, zero-padded) 200 with the same uuid; FEAT-34 and its old ID 200; PATCH with the old ID 422 naming BUG-14; unknown 404; all identical to the run on the P4 mapkit. The p2-capture of 20 endpoints gives the same codes as before the fork deploy.
 - Tonight's Night Shift is the joint P4 and P5 check (`docs/night-shift/2026-11-09.md`).
 - P6 list: see `plans/active/item-id-per-kind.md` P6, "From P5".
