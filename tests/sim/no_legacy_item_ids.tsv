@@ -58,8 +58,10 @@ frozen	logbook/2026-11-07-item-id-per-kind-p2-map-app-both-forms.md	4
 frozen	logbook/2026-11-07-jb182-motor-guard-test-frozen-clock.md	1
 frozen	logbook/2026-11-07-jb189-no-memory-row-from-a-faulted-stroke.md	2
 frozen	logbook/2026-11-07-jb190-feed-goal-end-line-searchable.md	2
+frozen	logbook/2026-11-08-feat46-firmware-stop-record.md	1
 frozen	logbook/2026-11-08-item-id-per-kind-p3-sweeper-and-census.md	9
 frozen	logbook/2026-11-08-item-id-per-kind-p4-cutover.md	22
+frozen	logbook/2026-11-08-item-id-per-kind-p5-contract.md	11
 frozen	logbook/INDEX.md	127
 frozen	logbook/artifacts/2026-10-28-jb34-synthesis.md	4
 frozen	map/bug-40-hz-setpoint-stream-starved-past-the-firmware-s-70-ms.md	7
@@ -112,7 +114,7 @@ frozen	map/idea-personal-best-window.md	1
 frozen	map/idea-the-records-should-be-sorted-by-number-of-balls-from-least-t.md	1
 frozen	map/ticket-item-prefixes-a-kind-label-in-the-display-only-per-kind.md	1
 frozen	mapkit/legacy_ids.csv	250
-frozen	plans/active/item-id-per-kind.md	119
+frozen	plans/active/item-id-per-kind.md	120
 frozen	plans/active/pattern-progression.md	2
 frozen	plans/archived/map-item-ids.md	51
 frozen	ros_ws/src/jugglebot/Teensy_code_canbridge/leg_interp.cpp	1

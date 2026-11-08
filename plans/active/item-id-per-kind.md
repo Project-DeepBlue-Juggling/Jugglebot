@@ -18,7 +18,7 @@ steps:
   - {id: P2, title: Expand the map app to both ID forms (fork repo), kind: phase, status: complete, date: 2026-11-07, effort: m, hardware: none}
   - {id: P3, title: The sweeper and the classified census, kind: phase, status: complete, date: 2026-11-08, effort: m, hardware: none}
   - {id: P4, title: Cutover in one commit, kind: phase, status: complete, date: 2026-11-08, effort: s, hardware: none}
-  - {id: P5, title: 'Contract: retire the old form, guard test, normative docs', kind: phase, status: not_started, effort: s, hardware: none}
+  - {id: P5, title: 'Contract: retire the old form, guard test, normative docs', kind: phase, status: complete, date: 2026-11-08, effort: s, hardware: none}
   - {id: P6, title: Out-of-tree residue and close, kind: phase, status: not_started, effort: xs, hardware: none}
 related_logbook:
   - 2026-11-01-jb118-kind-pill-beside-item-ids.md
@@ -206,7 +206,7 @@ node to its source, which reports stale until the `colcon build` in P4.
 | P2 | Fork server and frontend take both forms; deployed | COMPLETE | 2026-11-07 | Medium: live app | T-U9 to T-U11, T-I1 |
 | P3 | `tools/id_sweep.py`, classification of every token, dry-run report | COMPLETE | 2026-11-08 | Low: writes nothing | T-U12 to T-U14, T-R1 |
 | P4 | One commit: crosswalk, every `id:`, every citation, regenerated outputs | COMPLETE (2026-11-08): T-R2 to T-R6 and T-I3 run | 2026-11-08 | **High: repo-wide** | T-R2 to T-R6, T-I2 to T-I4, T-H1 |
-| P5 | Dual form removed, guard test, normative docs | NOT STARTED | | Low | T-U15, T-R7 |
+| P5 | Dual form removed, guard test, normative docs | COMPLETE (2026-11-08) | 2026-11-08 | Low | T-U15, T-R7 |
 | P6 | Memory, fork text, remote branches, close JB-118 | NOT STARTED | | Low | T-R8 |
 
 ## 4. Implementation Phases
@@ -361,7 +361,7 @@ the auto-pull timers publish `main` to three clones every two minutes. One commi
 
 **Outcome (2026-11-08).** All 212 Items carry per-kind IDs (bug 87, feature 46, idea 18, pathway 9, ticket 52, each gapless from 1) and every reference was rewritten through the frozen crosswalk `mapkit/legacy_ids.csv` (212 rows, sha256 `b91e9195f1d68475bcdb537b7ab4163e4f8dc30ee220f352270f808317c7384e`): 4531 spans in 688 files, 0 refused, 0 cap breaks (2026-11-08, `python tools/id_sweep.py --apply`). The proofs run as scripts in `tools/probes/id_cutover/` (2026-11-08 12:25): T-R2 PASS (696 files, 0 differences), T-R3 PASS (60 `.py`, 96 changed strings, 0 unexplained), T-R5 PASS (0 code lines changed; `MAGIC` and `PROTOCOL_VERSION` equal), T-R6 PASS (0 unallowed, 212 = 212 = 212). T-R4 compares the `.hex`, not the `.elf`, which differs between clean builds; the second image is the Platform Teensy (`Teensy_code_platform`, env `teensy40`), since the can-bridge tree has no `teensy40` env. The fork gained `Store._legacy_ref`: an old ID reads through and a write answers 422 naming the new ID, behind a `getattr` guard (D-3). The sweeper gained two rule fixes and a `cutover-self` freeze; `.gitignore` gained `!mapkit/legacy_ids.csv`. Stop point 5 needs the owner's check of the app after the flip (T-I2), T-H1 at the next launch after `colcon build`, and the deletion of the four merged old-name `night-shift/*` branches. Record: `logbook/2026-11-08-item-id-per-kind-p4-cutover.md`.
 
-### P5 — Contract: retire the old form, guard test, normative docs — NOT STARTED
+### P5 — Contract: retire the old form, guard test, normative docs — COMPLETE (2026-11-08)
 
 **From P4.** The dual form is still live and marked: 28 tests in the mapkit and Night Shift test files carry `# legacy form: retired at P5` (residue lists in `logbook/2026-11-08-item-id-per-kind-p4-cutover.md`), as do the `code_literal` set (81 tokens in `mapkit/` and `tools/night_shift*`) and `typed_ref`'s old-form branch. The GLOSSARY lines wait for this phase (Q4), and `docs/agents/map-writes.md:7` still says "one global sequence". The guard must also catch the lower-case and padded old forms, which T-R6 does not grep, and `legacy()` should turn a malformed crosswalk into an `ItemError`. The four merged old-name `night-shift/*` branches and two fork held branches are the owner's to delete or merge, and T-H1 is pending the next launch after `colcon build`. The precondition below (one clean Night Shift and one clean nightly) is unchanged.
 
@@ -376,7 +376,11 @@ the auto-pull timers publish `main` to three clones every two minutes. One commi
 
 **A rule this overrides.** `DOCUMENTATION_GUIDE.md` § 2.9 says historical logbook entries and archived plans are never rewritten to match a rename. The owner's instruction on 2026-11-07 is that every Item ID reference changes, so P4 rewrites them. The guide gains a narrow, dated exception so the rule survives: Item IDs only, one time, token substitution only, with a crosswalk and a blame-ignore entry, because an unresolvable `JB-149` in an entry defeats the entry. The cost accepted is that an entry's text no longer matches what was written on its date, in that one token.
 
+**Outcome (2026-11-08).** P5 landed as three parts: `mapkit/ids.py` is the one enforcement point and names no old prefix (the callers and the Night Shift tools go through it; `legacy()` stays, validating the frozen crosswalk); `tests/sim/test_no_legacy_item_ids.py` is a classifier-backed guard in the default gate, with the old scheme's history allowlisted by class and pinned per file in `tests/sim/no_legacy_item_ids.tsv`; and `DOCUMENTATION_GUIDE.md` and the GLOSSARY state the format. The owner replaced the Precondition above with same-day checks (a full gate, a Night Shift dry run and a write-path probe; `logbook/2026-11-08-item-id-per-kind-p5-contract.md` Discussion 1), so tonight's Night Shift is the first real write-path night on P4 and P5 together. Owner answers: Q2 any spelling reads, writes refuse; Q3 the history layer lives in the guard; Q4 fork first, then the P5 mapkit at a second restart. Fork 13e1c0c works on both mapkits and was deployed before the data clone moved to P5; restart 2 follows the push. Final gate: `./run_tests.sh --full` (2026-11-08, rebased tree) 9249 passed, 53 skipped, serial 10 passed.
+
 ### P6 — Out-of-tree residue and close — NOT STARTED
+
+**From P5.** The sweeper stays in `tools/` until no held branch predates P4, then its classifier moves into the guard's module (the guard imports `tools/id_sweep.py` today). The fork's `_legacy_new` keeps a P4 `typed_ref` fallback that goes at P6 with the fork README, CLAUDE.md and its JB test and frontend text. Auto-memory is rewritten. FEAT-34 closes in the same commit as its fix. Restart 2's result is recorded here if not already in P5. `/archive-plan` last.
 
 Auto-memory (12 files, 366 hits) rewritten with the same crosswalk, `MEMORY.md` included; fork `README.md` and `CLAUDE.md`; old remote branch names gone (owner); sweeper retired from `tools/` once no held branch predates P4, with its classifier kept as the guard's module; logbook entry; JB-118 closes in the same commit, under its new ID; `/archive-plan`.
 
