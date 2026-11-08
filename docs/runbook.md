@@ -6,7 +6,7 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 5 blocks (184 min) · Bench leg 1 block (30 min) · Bench hand 1 block (60 min)
+Rigs: Robot 5 blocks (214 min) · Bench leg 1 block (30 min) · Bench hand 1 block (60 min)
 
 ## Setup 0: before power
 
@@ -15,7 +15,7 @@ Rigs: Robot 5 blocks (184 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Robot  (5 blocks, 184 min)
+## Robot  (5 blocks, 214 min)
 
 ### Block 1: armed  (2 rows, 2 min)
 
@@ -66,19 +66,19 @@ Rigs: Robot 5 blocks (184 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - pass: 20 consecutive Catches in one Attempt at each angle, flown with Throws 21 (the 21st throw is the Stop throw, so `COMPLETED (20/20 caught)`; with Throws 20 it reads 19/19); landing scatter, per ball and per axis, with the mean within 15 mm and the sd within 10 mm of the straight control (proposed 2026-11-03, owner to confirm; the old "within 3 mm" was below the control's own run-to-run sd of 18-31 mm); no HAND_LIMIT line.
 - record: caught of thrown per angle, each angle's plant_id, landing scatter against the control, Ball 2's first-throw landing (x, y) mm per Attempt (BUG-63: 5 of 7 landed outward at 90 deg on 2026-11-03), the bag path; commit docs/records.md.
 
-### Block 3: level  (1 row, 15 min)
+### Block 3: level, armed  (2 rows, 60 min)
 
-#### IDEA-16 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them  (15 min, medium, unattached)
-- why: re-measure the human-throw bench with the robot in place (moving Platform markers, a ball in the Cup, the robot blocking camera views) and the owner's throws at better lighting.
+#### BUG-80 The flyback over-corrects a Catch offset by 1.2 to 1.4 times: each landing error returns at -0.3 to -0.45 on the next Throw  (30 min, medium, learner-generalisation)
+- why: separates a Tilt gain from an effect of the catch-and-rethrow fold on Robot x; only a goal's first Throw flies a commanded offset's Tilt (a fold releases at the caught xy, about 0.4 mrad against 5.0), so the check is 40 single-Throw Attempts from rest.
 - do:
-  - Improve the lighting; launch, home and Level the Platform; do NOT arm. Rest one ball in the Cup.
-  - `ros2 param set /ball_tracker_node detect_human_throws true`.
-  - Juggle a three-ball cascade for about 60 s with one hand beside the Cup at its usual catch height, at a steady height; then 60 s of single passes into the space just above the Cup.
-  - Afterwards `ros2 param set /ball_tracker_node detect_human_throws false`.
-- pass: the bag replays through `tools/probes/human_throw_bench.py` with the robot-spot landing sd and the phantom rate reported.
-- record: the bag path, the lighting change, and the bench report path.
-
-### Block 4: level, armed  (1 row, 30 min)
+  - Before power, launch up from the branch with the bag recording: `ros2 param set /skill_node plant_id bug80-<date>` (a name no Memory file has) and read it back, so these rows stay out of the live Memory. Then `ros2 param set /skill_node landing_offset_x_mm 20.0` and `ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: 'self_toss,apex_m=1.00'}"`. Nothing moves. The reply must read viable and name `landing offset (+20.0, +0.0) mm`.
+  - Leave the Site at its default (-50, 0). Place the ball in the Cup by hand. The Cup must read seated at accept: an empty Cup makes the first skill a Ball Butler Feed, whose Throw is a fold and does not count.
+  - Block x, 20 Attempts of one Throw each, signs alternating, 10 of each. Between Attempts, `ros2 param set /skill_node landing_offset_x_mm 20.0` (next time `-20.0`), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: self_toss, apex_m: 1.00, num_cycles: 1}" --feedback`. The parameter is refused while a goal is active. After a drop, place the ball back by hand and repeat that sign.
+  - `ros2 param set /skill_node landing_offset_x_mm 0.0`, then block y: the same 20 Attempts on `landing_offset_y_mm`.
+  - Restore and read back all three: `ros2 param set /skill_node landing_offset_x_mm 0.0`, `ros2 param set /skill_node landing_offset_y_mm 0.0`, `ros2 param set /skill_node plant_id jugglebot`.
+- pass: from the bag, the slope of ball lateral velocity on commanded Tilt on x is within 4.4 +/- 0.5 mm/s per mrad, n 20 per axis, which puts the excess on the fold; about 5.7 on x instead is a small-Tilt plant gain and the Hop result needs explaining next. Type the result as pending: the slope is computed at the debrief.
+- record: the bag and launch log paths, the number of Attempts flown per axis and sign, each repeat and why, any refusal text, and any Attempt whose first skill was not the Throw of the held ball.
+- branch: `night-shift/2026-11-09-BUG-80`
 
 #### BUG-82 Leg encoder dropouts of 80 to 99 ms continue at the clock beat: trial encoder_msg_rate_ms 9 on Leg 4, then all Legs  (30 min, medium, unattached)
 - why: tests the Hand's 9 ms cure on the axis where zero episodes by chance is about 5e-4, far stronger than the Hand's own trial, and decides whether all six Legs change.
@@ -90,6 +90,18 @@ Rigs: Robot 5 blocks (184 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
   - Stop and note it on any Leg fault or guard latch. To undo: set Leg 4 back to 10, save, and launch again so the homing runs.
 - pass: type the result as pending. At the debrief, from the bag's `/cache_diag`: `age_max_us_4` never exceeds 25 ms over the 20 minutes, while at least one other Leg shows a window over 50 ms (the in-run control). One Leg 4 window over 50 ms refutes the cure for the Legs; no window over 50 ms on any other Leg voids the result. Leg 4's frame-loss spacing should fall to about 62 s from 124 to 130 s.
 - record: the launch log and bag paths, the clock time of arming, and whether Leg 4 was left at 9 or put back.
+
+### Block 4: level  (1 row, 15 min)
+
+#### IDEA-16 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them  (15 min, medium, unattached)
+- why: re-measure the human-throw bench with the robot in place (moving Platform markers, a ball in the Cup, the robot blocking camera views) and the owner's throws at better lighting.
+- do:
+  - Improve the lighting; launch, home and Level the Platform; do NOT arm. Rest one ball in the Cup.
+  - `ros2 param set /ball_tracker_node detect_human_throws true`.
+  - Juggle a three-ball cascade for about 60 s with one hand beside the Cup at its usual catch height, at a steady height; then 60 s of single passes into the space just above the Cup.
+  - Afterwards `ros2 param set /ball_tracker_node detect_human_throws false`.
+- pass: the bag replays through `tools/probes/human_throw_bench.py` with the robot-spot landing sd and the phantom rate reported.
+- record: the bag path, the lighting change, and the bench report path.
 
 ### Block 5: armed, bb-fed, bridge-cycled  (2 rows, 95 min)
 
@@ -183,7 +195,6 @@ Rigs: Robot 5 blocks (184 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - BUG-74 [Robot] Mid-air ball collisions end half of two-ball Columns Attempts at Apex 1.00: closest approach about 70 mm at Sep. 100, 125 and 135: no ## Sitting section
 - BUG-78 [Robot] Two-ball Columns runs end on a missed Catch of Ball 2 with no collision: 13 of 23 ends, mean run 22 Throws: no ## Sitting section
 - BUG-79 [Robot] Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for: no ## Sitting section
-- BUG-80 [Robot] The flyback over-corrects a Catch offset by 1.2 to 1.4 times: each landing error returns at -0.3 to -0.45 on the next Throw: no ## Sitting section
 - BUG-84 [Robot] Hand stalls at the 70 A clamp mid-dive, probably on a Ball under the Cup, and the next launch comes up slow: no ## Sitting section
 - FEAT-1 [Robot] Design change: the Hand should be Idle, not Parked Closed-loop, while Active: no ## Sitting section
 - FEAT-12 [Robot] Wave camera: optical frame calibration maps the START tick to a recorded frame: no ## Sitting section

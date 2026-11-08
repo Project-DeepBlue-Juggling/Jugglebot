@@ -2,14 +2,15 @@
 id: BUG-80
 kind: bug
 title: 'The flyback over-corrects a Catch offset by 1.2 to 1.4 times: each landing error returns at -0.3 to -0.45 on the next Throw'
-status: backlog
+status: in_progress
 created: '2026-11-06'
-updated: '2026-11-07T17:49:28Z'
-owners: []
+updated: '2026-11-08T22:16:43Z'
+owners:
+- night-shift
 priority: medium
-effort: xs
+effort: s
 hardware: robot
-owner: decision
+owner: none
 radius: local
 diagnosis: hypothesis
 area: learner
@@ -167,6 +168,21 @@ TKT-47 chose the check. Its section 7 candidate asks for commanded landing offse
 
 So there is no `## Sitting` section yet: a `do:` step nobody can fly would be invented. The question is in the ticket filed tonight.
 
+## Sitting
+- setup: level, armed
+- why: separates a Tilt gain from an effect of the catch-and-rethrow fold on Robot x; only a goal's first Throw flies a commanded offset's Tilt (a fold releases at the caught xy, about 0.4 mrad against 5.0), so the check is 40 single-Throw Attempts from rest.
+- do:
+  - Before power, launch up from the branch with the bag recording: `ros2 param set /skill_node plant_id bug80-<date>` (a name no Memory file has) and read it back, so these rows stay out of the live Memory. Then `ros2 param set /skill_node landing_offset_x_mm 20.0` and `ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: 'self_toss,apex_m=1.00'}"`. Nothing moves. The reply must read viable and name `landing offset (+20.0, +0.0) mm`.
+  - Leave the Site at its default (-50, 0). Place the ball in the Cup by hand. The Cup must read seated at accept: an empty Cup makes the first skill a Ball Butler Feed, whose Throw is a fold and does not count.
+  - Block x, 20 Attempts of one Throw each, signs alternating, 10 of each. Between Attempts, `ros2 param set /skill_node landing_offset_x_mm 20.0` (next time `-20.0`), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: self_toss, apex_m: 1.00, num_cycles: 1}" --feedback`. The parameter is refused while a goal is active. After a drop, place the ball back by hand and repeat that sign.
+  - `ros2 param set /skill_node landing_offset_x_mm 0.0`, then block y: the same 20 Attempts on `landing_offset_y_mm`.
+  - Restore and read back all three: `ros2 param set /skill_node landing_offset_x_mm 0.0`, `ros2 param set /skill_node landing_offset_y_mm 0.0`, `ros2 param set /skill_node plant_id jugglebot`.
+- pass: from the bag, the slope of ball lateral velocity on commanded Tilt on x is within 4.4 +/- 0.5 mm/s per mrad, n 20 per axis, which puts the excess on the fold; about 5.7 on x instead is a small-Tilt plant gain and the Hop result needs explaining next. Type the result as pending: the slope is computed at the debrief.
+- record: the bag and launch log paths, the number of Attempts flown per axis and sign, each repeat and why, any refusal text, and any Attempt whose first skill was not the Throw of the held ball.
+- minutes: 30
+- branch: night-shift/2026-11-09-BUG-80
+
 ## Progress
 
 - 2026-11-08: Night Shift 2026-11-08: re-rated robot on TKT-47; no Sitting row yet because no parameter commands a landing offset (detail below)
+- 2026-11-09: Night Shift 2026-11-09: held on night-shift/2026-11-09-BUG-80: landing offset built, gate passed; unblocked by the 40-Throw Sitting
