@@ -232,6 +232,30 @@ uint32_t interp_sched_q_overflow();  // queue full, oldest stamp dropped
 // (rx_age = now − t_start at queue entry): window max (INT32_MIN = no stamped
 // frame this window) and counts at ≤25 / ≤50 / ≤70 / >70 ms. Heartbeat task only.
 void     interp_sched_rx_age_take(int32_t* max_us, uint16_t* buckets4);
+// FW 42 (FEAT-46): the STOP record — why a scheduler cover ended. One slot per
+// group (0 legs, 1 hand), overwritten by each STOP of that group; the net task
+// fills the next-frame part when the group's next frame is queued. Relative
+// times are int32 us, saturated: *_start_rel / *_arrive_rel / tb_rel against
+// the STOP entry (micros64 domain), *_origin_rel = t_origin_us − entry_wall_us.
+constexpr uint8_t STOP_REC_RING = 4;
+constexpr uint8_t STOP_REC_HAND_C1    = 0x01;   // == JbUdp::StopRecordFlags::HAND_C1
+constexpr uint8_t STOP_REC_NEXT_VALID = 0x02;   // == JbUdp::StopRecordFlags::NEXT_VALID
+constexpr uint8_t STOP_REC_TB_VALID   = 0x04;   // == JbUdp::StopRecordFlags::TB_VALID
+struct InterpStopRecord {
+  uint32_t seq;            // 0 = no record since boot (one counter across both groups)
+  uint32_t overwritten;    // records replaced before any take() saw them (cumulative)
+  uint64_t entry_wall_us;  // the STOP entry mapped to the wall clock at the STOP
+  int32_t  play_start_rel_us;
+  int32_t  q_head_rel_us;  // INT32_MAX = nothing queued for the group
+  int32_t  ring_origin_rel_us[STOP_REC_RING];   // newest first
+  int32_t  ring_start_rel_us[STOP_REC_RING];
+  int32_t  ring_arrive_rel_us[STOP_REC_RING];
+  int32_t  next_origin_rel_us, next_start_rel_us, next_arrive_rel_us;
+  int32_t  tb_rel_us, tb_delta_us;
+  uint8_t  flags, ring_n, q_depth;
+};
+// Copy the group's latest record (PRIMASK) and mark it uplinked. Heartbeat task.
+void interp_stop_record_take(uint8_t group, InterpStopRecord* out);
 // a_cmd — the ANALYTIC acceleration (rev/s^2) of the hand curve the lane emitted
 // on the last tick: span Hermite, C2 stop, recovery slew profile, 0 at hold /
 // NaN backstop / lane idle. Written once per tick by the ISR (single float).

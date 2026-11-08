@@ -326,6 +326,43 @@ def test_sched_stop_rise_while_armed_warns_once_per_second():
         _teardown(teensy, client, node)
 
 
+def test_stop_record_logs_one_classified_line_per_record():
+    """FEAT-46: each new firmware STOP record gets one WARN line, classified,
+    when its next-frame part is filled (or 1 s after it appears), and only once."""
+    from teensy_link import protocol as p
+    from tests.ros._bridge_harness import _build_paired_node, _teardown
+    teensy, client, node = _build_paired_node(boot_state_read=False)
+    try:
+        lines = []
+        node.get_logger().warning = lambda m, *a, **k: lines.append(str(m))
+        hb = p.HeartbeatT2J()
+        node._log_stop_records(hb, now=100.0)          # no record yet: silent
+        assert not lines
+        # Legs record #5: the playing frame and a successor stamped 150 ms
+        # after it (a stamp gap), next frame already queued.
+        hb.sr_seq = (5, 0)
+        hb.sr_play_start_rel_us = (-70_000, 0)
+        hb.sr_ring_n = (2, 0)
+        hb.sr_ring_origin_rel_us = (80_000, -70_000) + (0,) * 6
+        hb.sr_ring_start_rel_us = (80_000, -70_000) + (0,) * 6
+        hb.sr_ring_arrive_rel_us = (-60_000, -90_000) + (0,) * 6
+        hb.sr_q_depth = (1, 0)
+        hb.sr_q_head_rel_us = (80_000, 0)
+        hb.sr_flags = (int(p.StopRecordFlags.NEXT_VALID), 0)
+        hb.sr_next_origin_rel_us = (100_000, 0)
+        hb.sr_next_start_rel_us = (100_000, 0)
+        hb.sr_next_arrive_rel_us = (5_000, 0)
+        hb = p.HeartbeatT2J.unpack(hb.pack())
+        node._log_stop_records(hb, now=100.1)
+        assert len(lines) == 1
+        assert lines[0].startswith('firmware STOP record #5 legs (C2): stamp gap;'), lines[0]
+        assert '+150.0 ms after the playing one' in lines[0]
+        node._log_stop_records(hb, now=100.2)          # the same record: silent
+        assert len(lines) == 1
+    finally:
+        _teardown(teensy, client, node)
+
+
 def test_sched_stop_warn_names_both_candidates_and_prints_both_maxima():
     """2026-11-01: the STOP text must not blame the emitter alone (trip 0 was a
     bridge-node stall) and must print the forward and loop gap maxima."""

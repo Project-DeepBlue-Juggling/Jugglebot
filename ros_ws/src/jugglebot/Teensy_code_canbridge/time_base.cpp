@@ -28,6 +28,19 @@ uint64_t micros64() {
 static volatile int64_t  s_wall_offset_us  = 0;   // now_wall_us = micros64() + offset
 static volatile bool     s_have_offset     = false;
 static volatile uint64_t s_last_anchor_us  = 0;   // micros64() at the last accepted anchor (freshness)
+// FW 42 (FEAT-46): the last applied offset change > TB_JUMP_NOTE_US. Written in
+// set_wall_anchor's critical section, read under PRIMASK.
+static uint64_t s_tb_jump_local_us = 0;
+static int64_t  s_tb_jump_delta_us = 0;
+static bool     s_tb_jump_valid    = false;
+
+bool time_base_last_jump(uint64_t* t_local_us, int64_t* delta_us) {
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  const bool v = s_tb_jump_valid;
+  if (v) { *t_local_us = s_tb_jump_local_us; *delta_us = s_tb_jump_delta_us; }
+  __set_PRIMASK(pm);
+  return v;
+}
 
 uint64_t now_wall_us() {
   // s_wall_offset_us is 64-bit and slewed by the time-sync task while the ISR
@@ -66,7 +79,7 @@ static uint32_t s_anchor_seq       = 0;
 void set_wall_anchor(uint64_t jetson_wall_us) {
   const int64_t local = (int64_t)micros64();
   const int64_t offset = (int64_t)jetson_wall_us - local;
-  int64_t diff = 0;
+  int64_t diff = 0, prev_offset = 0;
   bool first = false, stepped = false;
   // Atomic read-modify-write of the 64-bit offset (the ISR reads it via now_wall_us).
   const uint32_t pm = __get_PRIMASK(); __disable_irq();
@@ -76,6 +89,7 @@ void set_wall_anchor(uint64_t jetson_wall_us) {
     first = true;
     stepped = true;               // the first anchor IS a step (of the whole epoch)
   } else {
+    prev_offset = s_wall_offset_us;
     diff = offset - s_wall_offset_us;
     if (diff > TIME_STEP_THRESHOLD_US || diff < -TIME_STEP_THRESHOLD_US) {
       // Large error → boot / re-acquisition after a sync gap. Step: slewing this
@@ -85,6 +99,15 @@ void set_wall_anchor(uint64_t jetson_wall_us) {
     } else {
       // Small drift → slew via the IIR (smooth, monotonic).
       s_wall_offset_us += diff >> TIME_OFFSET_IIR_SHIFT;
+    }
+    // FW 42 (FEAT-46): note an applied change > 1 ms for the STOP record. Two
+    // stores inside the section that already exists; the first anchor is not a
+    // change of mapping (nothing was scheduled before it).
+    const int64_t applied = s_wall_offset_us - prev_offset;
+    if (applied > TB_JUMP_NOTE_US || applied < -TB_JUMP_NOTE_US) {
+      s_tb_jump_local_us = (uint64_t)local;
+      s_tb_jump_delta_us = applied;
+      s_tb_jump_valid = true;
     }
   }
   s_last_anchor_us = (uint64_t)local;

@@ -964,7 +964,12 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # 40 -> 41 (2026-11-07): the additive HAND_FAN_SET relay and the HAND_FAN_STATUS
 # uplink. No wire change to anything existing, PROTOCOL_VERSION stays 12, and an
 # FW 40 board only answers HAND_FAN_SET with ERR_UNKNOWN_METHOD.
-EXPECTED_BRIDGE_FW_VERSION = 41
+# 41 -> 42 (2026-11-08, FEAT-46): the firmware STOP record. HeartbeatT2J grows
+# 190 -> 380 B with one record per lane group (sr_*: the playing t_start, the
+# queue, the last four queued frames, the next one, the last time-base change).
+# A WIRE change: PROTOCOL_VERSION 12 -> 13, so an FW 41 board is DARK to this
+# host (and vice versa) until the lockstep flash. Observability only.
+EXPECTED_BRIDGE_FW_VERSION = 42
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

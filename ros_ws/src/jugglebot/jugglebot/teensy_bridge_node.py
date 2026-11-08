@@ -132,6 +132,7 @@ from teensy_link.gap_monitor import (
     EpisodeLatch, GapTracker)
 from teensy_link.hand_feedback_watch import HandFeedbackWatch
 from teensy_link.setpoint_pump import SetpointPump, FLAG_HAS_HAND, HAND_FF_GAIN_MAX
+from teensy_link.stop_record import StopRecordLog
 from teensy_link.encoder_search import (
     EncoderSearch, AxisStatus, AXIS_STATE_ENCODER_INDEX_SEARCH,
 )
@@ -1750,6 +1751,8 @@ class TeensyBridgeNode(Node):
         self._mpc_active = False
         # FEAT-31 follow-up: firmware sched_stops baseline / WARN rate limit.
         self._sched_stops_seen = None
+        # FEAT-46 (FW 42): one line per firmware STOP record, classified.
+        self._stop_record_log = StopRecordLog()
         self._sched_stops_warn_mono = 0.0
         # BUG-58 (FW 38 / PROTOCOL 11): the last ~1 s of heartbeat samples of the
         # firmware scheduled-lane counters + frame-age windows, for the STOP WARN,
@@ -6301,6 +6304,20 @@ class TeensyBridgeNode(Node):
             % (total - prev, total, where, verdict,
                ('. ' + fw) if fw else ''))
 
+    def _log_stop_records(self, hb, now=None) -> None:
+        """FEAT-46: log each new firmware STOP record once, classified (stamp
+        gap / mapping step / queued, not promoted / none of these, with the
+        numbers), when its next-frame part arrives or 1 s after the record
+        first appears. The STOP WARN above stays as it is; this line follows
+        it. Advisory only, on the 10 Hz link_status timer; never raises."""
+        t = time.monotonic() if now is None else float(now)
+        try:
+            lines = self._stop_record_log.update(hb, t)
+        except Exception:  # noqa: BLE001 -- a diagnostic must not kill the timer
+            return
+        for line in lines:
+            self.get_logger().warning('firmware ' + line)
+
     def _update_gap_snapshot(self) -> None:
         """Snapshot the forwarding-gap monitors (10 Hz timer) and WARN once per
         episode when the forward or loop gap exceeds the firmware STOP cover."""
@@ -6356,6 +6373,7 @@ class TeensyBridgeNode(Node):
                 self._note_sched_sample(hb, hb_gen)
                 self._note_downlink_sample(hb, hb_gen, hb_sent)
                 self._warn_on_sched_stop(int(hb.sched_stops))
+                self._log_stop_records(hb)
 
             msg = DiagnosticStatus()
             msg.name = 'teensy/link'

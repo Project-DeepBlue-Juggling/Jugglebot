@@ -42,6 +42,7 @@ static int  g_last_tx_class    = -1;
 void fake_reset() {
   g_wall_us = 0; g_mono_us = 0; g_udp_last_rx_us = 0;
   g_time_synced = true;
+  fake_clear_time_jump();
   g_homing = g_activate = g_deactivate = false;
   g_commands_allowed = true;
   g_send_fail_index = -1;
@@ -65,6 +66,19 @@ uint64_t micros64()    { return g_mono_us; }
 
 void fake_set_time_synced(bool synced) { g_time_synced = synced; }
 bool time_synced() { return g_time_synced; }   // HAL: time_base.h
+
+// HAL: time_base.h (FW 42, FEAT-46) — the last wall-offset change > 1 ms.
+static bool     g_tb_jump_valid = false;
+static uint64_t g_tb_jump_t_us  = 0;
+static int64_t  g_tb_jump_d_us  = 0;
+void fake_set_time_jump(uint64_t t_local_us, int64_t delta_us) {
+  g_tb_jump_valid = true; g_tb_jump_t_us = t_local_us; g_tb_jump_d_us = delta_us;
+}
+void fake_clear_time_jump() { g_tb_jump_valid = false; g_tb_jump_t_us = 0; g_tb_jump_d_us = 0; }
+bool time_base_last_jump(uint64_t* t_local_us, int64_t* delta_us) {
+  if (g_tb_jump_valid) { *t_local_us = g_tb_jump_t_us; *delta_us = g_tb_jump_d_us; }
+  return g_tb_jump_valid;
+}
 
 // ── Jetson link freshness ────────────────────────────────────────────────────
 void     fake_set_udp_last_rx_us(uint64_t t_us) { g_udp_last_rx_us = t_us; }

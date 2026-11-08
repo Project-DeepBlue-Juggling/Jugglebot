@@ -6,7 +6,7 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 5 blocks (183 min) · Bench leg 1 block (30 min) · Bench hand 1 block (60 min)
+Rigs: Robot 5 blocks (184 min) · Bench leg 1 block (30 min) · Bench hand 1 block (60 min)
 
 ## Setup 0: before power
 
@@ -15,9 +15,9 @@ Rigs: Robot 5 blocks (183 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Robot  (5 blocks, 183 min)
+## Robot  (5 blocks, 184 min)
 
-### Block 1: armed  (1 row, 1 min)
+### Block 1: armed  (2 rows, 2 min)
 
 #### BUG-58 Firmware scheduler STOPs a streamed lane while frames arrive on time and the host stream is clean: LANE_REFUSED ends, cause unseen  (1 min, high, unattached)
 - why: catch the next LANE_REFUSED with the GC probe running; three Sittings (2026-11-03 12:30 and 22:29, 2026-11-04 18:45) found no host-side cause, so only an end caught under the probe can rule the host out at the moment of failure.
@@ -25,6 +25,13 @@ Rigs: Robot 5 blocks (183 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
   - Nothing extra: `gc_probe` is on by default at launch since 2026-11-04 (do not pass `gc_probe:=false`). If an Attempt ends LANE_REFUSED, note the time.
 - pass: a LANE_REFUSED end is on record with GC_PROBE lines from both stream nodes within 1 s of its STOP WARN, and that WARN carries its verdict, fw_sched counters and frame ages.
 - record: the launch log path and the line of each LANE_REFUSED end; none = say so.
+
+#### FEAT-46 Firmware STOP record: report why a scheduler cover ended (frame stamps, arrivals, queue, time-base steps)  (1 min, high, unattached)
+- why: FW 42 uplinks a STOP record per lane group, and the bridge classifies each one, so the next STOP on a clean host stream says whether a stamp gap, a mapping step or an unpromoted frame ended the cover.
+- do:
+  - nothing extra: a ride-along on any armed Attempt, after the FW 42 flash and the colcon build (the launch log's BridgeIdentity line reads fw_version 42).
+- pass: every firmware scheduler STOP WARN in the launch log is followed by its `firmware STOP record #<n> <group>` line carrying a classification.
+- record: each STOP record line's verdict and numbers (successor stamp gap, map shift, queue head, time-base change) and the `overwritten` count.
 
 ### Block 2: level, armed, bb-fed  (3 rows, 42 min)
 

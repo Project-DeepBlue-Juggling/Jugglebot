@@ -67,7 +67,8 @@ def test_protocol_version_is_unchanged_by_the_additive_method():
     # later BB absolute release (ArgBbThrow.release_wall_us, FW 29, 2026-10-12);
     # 10→11 the HeartbeatT2J growth of the FW 38 scheduled-lane census (BUG-58);
     # 11→12 its growth by the FW 40 downlink ledger (FEAT-41).
-    assert int(p.PROTOCOL_VERSION) == 12
+    # 12→13 its growth by the FW 42 STOP record (FEAT-46).
+    assert int(p.PROTOCOL_VERSION) == 13
 
 
 def test_arg_blob_exact_bytes():

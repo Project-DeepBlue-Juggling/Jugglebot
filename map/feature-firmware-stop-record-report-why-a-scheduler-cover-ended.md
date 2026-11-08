@@ -2,12 +2,13 @@
 id: FEAT-46
 kind: feature
 title: 'Firmware STOP record: report why a scheduler cover ended (frame stamps, arrivals, queue, time-base steps)'
-status: inbox
+status: in_progress
 created: '2026-11-08'
-updated: '2026-11-08T00:28:19Z'
+updated: '2026-11-08T03:00:27Z'
 owners: []
 priority: high
 effort: m
+hardware: robot
 owner: decision
 radius: normative
 area: firmware
@@ -53,3 +54,16 @@ None of these is a conclusion. The data so far cannot tell them apart.
 ## Cost
 
 Firmware and a HeartbeatT2J or new-message wire change, so a `PROTOCOL_VERSION` bump and a flash. Behaviour unchanged: observability only. A host-side half (log each frame's stamp spacing at send) is cheap and could land first.
+
+## Sitting
+
+- setup: armed
+- why: FW 42 uplinks a STOP record per lane group, and the bridge classifies each one, so the next STOP on a clean host stream says whether a stamp gap, a mapping step or an unpromoted frame ended the cover.
+- do: nothing extra: a ride-along on any armed Attempt, after the FW 42 flash and the colcon build (the launch log's BridgeIdentity line reads fw_version 42).
+- pass: every firmware scheduler STOP WARN in the launch log is followed by its `firmware STOP record #<n> <group>` line carrying a classification.
+- record: each STOP record line's verdict and numbers (successor stamp gap, map shift, queue head, time-base change) and the `overwritten` count.
+- minutes: 1
+
+## Progress
+
+- 2026-11-08: FW 42 / PROTOCOL 13 STOP record built and tested (pio build OK, native + host tests), NOT flashed: HeartbeatT2J 190->380 B carries one record per lane group; the bridge logs one classified line per record (stamp gap / mapping step / queued, not promoted / none of these). Needs the flash, a colcon build and a Sitting.

@@ -249,7 +249,11 @@ def test_protocol_version_frozen(gen, proto):
     Bumping it is an INCOMPATIBLE-wire change that requires reflashing the whole
     fleet — this makes the bump deliberate and keeps all three artifacts in lockstep."""
     spec_ver = _spec_const(gen, "PROTOCOL_VERSION")
-    assert spec_ver == 12, (  # 11→12: downlink loss accounting (can-bridge FW 40,
+    assert spec_ver == 13, (  # 12→13: the firmware STOP record (can-bridge FW 42,
+                              # 2026-11-08, FEAT-46) — HeartbeatT2J GROWS 190→380 B by
+                              # one record per lane group (sr_* fields); darkness vs any
+                              # FW ≤ 41 board is intended.
+                              # 11→12: downlink loss accounting (can-bridge FW 40,
                               # 2026-11-06, FEAT-41) — HeartbeatT2J GROWS 158→190 B by
                               # eight cumulative u32 (dn_rx_setpoints, dn_queue_dropped,
                               # dn_seq_gaps, dn_crc_errors, sched_frames, sp_seq_drops,
@@ -570,7 +574,12 @@ def test_wire_layout_frozen(gen):
     # PROTOCOL_VERSION stays 12 and an FW <= 40 board answers 0x63 with
     # ERR_UNKNOWN_METHOD. Previous digest (downlink loss accounting):
     #   46ffadacb138cd393108ff2ff7d1d43ef845fb878e76bedf675e0a384dbda485
-    _EXPECTED = "c7006d2abae2d2fd723da7f35ea61e9569f6a2a1650aa6312ec73ed1f080a576"
+    # Re-pinned for the INCOMPATIBLE firmware STOP record (2026-11-08, can-bridge
+    # FW 42, FEAT-46, PROTOCOL_VERSION 12→13): HeartbeatT2J GROWS 190→380 B by one
+    # record per lane group (sr_seq .. sr_q_depth) and the StopRecordFlags enum.
+    # Previous digest (HAND_FAN_SET):
+    #   c7006d2abae2d2fd723da7f35ea61e9569f6a2a1650aa6312ec73ed1f080a576
+    _EXPECTED = "da1ae9be7eedddfb4ec60776c35309531c4f6783d4c4b96bb6d251c8817724ed"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

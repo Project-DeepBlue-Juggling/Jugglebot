@@ -66,6 +66,7 @@ from udp_protocol import (  # noqa: E402, F401
     HandSensorFlags,  # HAND_SENSOR flag bits (raw/debounced held, valid, stale, time_synced)
     ClockDiagFlags,  # CLOCK_DIAG flag bits (stepped, first anchor, freq-sample validity)
     RingDiagFlags,  # RING_DIAG flag bits (arrival-clock seeded, reseeded this window)
+    StopRecordFlags,  # HeartbeatT2J.sr_flags bits (Hand C1, next frame valid, time-base change valid; FW 42)
     # Framing
     crc16_ccitt,
     encode_frame,

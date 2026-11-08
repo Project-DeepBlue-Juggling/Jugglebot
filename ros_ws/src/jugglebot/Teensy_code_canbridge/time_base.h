@@ -75,6 +75,15 @@ bool time_synced();
 // SLEWS via the IIR for smooth, monotonic small-drift correction.
 void set_wall_anchor(uint64_t jetson_wall_us);
 
+// FW 42 (FEAT-46): the last wall-offset change larger than TB_JUMP_NOTE_US, step
+// or slew (the first anchor's whole-epoch step excluded). `t_local_us` is the
+// micros64() of the anchor that applied it, `delta_us` the new offset minus the
+// old. Returns false (outputs untouched) until one has happened. ISR-safe
+// (PRIMASK read). Observability only: the scheduler STOP record copies it so a
+// mapping step just before a STOP is visible on the wire.
+constexpr int64_t TB_JUMP_NOTE_US = 1'000;
+bool time_base_last_jump(uint64_t* t_local_us, int64_t* delta_us);
+
 // ── Per-anchor clock-discipline diagnostics (FW 11, CLOCK_DIAG 0x8F) ─────────
 //  set_wall_anchor() has always computed the pre-slew offset error and thrown it
 //  away, so the ONE quantity that says how well this clock is actually

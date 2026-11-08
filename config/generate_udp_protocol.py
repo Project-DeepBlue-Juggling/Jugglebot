@@ -104,7 +104,7 @@ class Message:
 # ───────────────────────────────────────────────────────────────────────────
 
 CONSTANTS = [
-    ("PROTOCOL_VERSION", 12,     "u8",  "Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed; 7→8: 2026-09-14 hand C2 (can-bridge FW 22) — Setpoint GROWS 208→240 B: v2[7] (exact u2-knot velocity, flags bit4 HAS_V2) + hand_ff_gain (K, clamped [0,1.5] at ingest), flags bit5 HAS_SCHED plays the frame on its t_origin_us stamp instead of on UDP arrival; HeartbeatT2J GROWS by the scheduled-playback promotion-continuity diagnostics and flags bits 14 HAND_TORQUE_CLAMP / 15 SCHED_HOLD_LATCHED. Growing a struct is as incompatible as shrinking one: darkness against any FW ≤ 21 board is the INTENDED failure. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design) 8→9: 2026-09-15 axis-silence watchdog (can-bridge FW 23) — HeartbeatT2J GROWS by can_fault_leg/can_fault_age_ms/can_fault_count (the CAN_BUS_DOWN trip latch: WHICH leg went silent, how stale it was, how many trips this boot) and gains flags bits 16-22 HB_STALE_MASK (per-axis ODrive heartbeat staleness at CAN_HEARTBEAT_STALE_US = 0.5 s, report-only); CacheDiag GROWS by hb_frames[7], the per-axis heartbeat-frame census beside enc_frames. Both structs grow, so this is an incompatible wire change: darkness against any FW ≤ 22 board is the INTENDED failure. 9→10: 2026-10-12 BB absolute release (can-bridge FW 29) — ArgBbThrow.delay_s (f32, relative, converted to absolute ON RECEIPT, so Jetson dispatch latency moved the release 1:1) is replaced by release_wall_us (u64, absolute, the bridge wall clock = Jetson CLOCK_REALTIME), the arg GROWS 16→20 B, BB_THROW gains ResultBbThrow (lead at receipt) and three named refusals ERR_RELEASE_PAST/TOO_SOON/TOO_FAR. A delay_s read as an epoch would throw at the wrong instant, so darkness against any FW ≤ 28 board is the INTENDED failure; 10→11: 2026-11-03 scheduled-lane observability (can-bridge FW 38, BUG-58) — HeartbeatT2J GROWS 126→158 B: five more cumulative scheduled-lane counters (sched_superseded, sched_stale, sched_hand_c1_stops, sched_future_drops, sched_q_overflow) and a per-heartbeat-window frame-age census measured in the net task at queue entry (rx_age_max_us + four buckets at 25/50/70 ms, age = bridge monotonic now − the frame's t_start). Two LANE_REFUSED ends on 2026-11-03 had a clean host stream, so the cover was expiring between the bridge's send and the firmware's promotion, where no uplinked number could see it. A 126 B heartbeat decoded as 158 B (or the reverse) would misread every counter, so darkness against any FW ≤ 37 board is the INTENDED failure; 11→12: 2026-11-06 downlink loss accounting (can-bridge FW 40, FEAT-41) — HeartbeatT2J GROWS 158→190 B by eight cumulative u32 counters (dn_rx_setpoints, dn_queue_dropped, dn_seq_gaps, dn_crc_errors, sched_frames, sp_seq_drops, sp_no_hand, sp_no_sched). The stream socket's one-packet receive queue was overwriting about 1.5 % of setpoints and nothing uplinked could count it. A 158 B heartbeat decoded as 190 B (or the reverse) would misread or reject the frame, so darkness against any FW ≤ 39 board is the INTENDED failure."),
+    ("PROTOCOL_VERSION", 13,     "u8",  "Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed; 7→8: 2026-09-14 hand C2 (can-bridge FW 22) — Setpoint GROWS 208→240 B: v2[7] (exact u2-knot velocity, flags bit4 HAS_V2) + hand_ff_gain (K, clamped [0,1.5] at ingest), flags bit5 HAS_SCHED plays the frame on its t_origin_us stamp instead of on UDP arrival; HeartbeatT2J GROWS by the scheduled-playback promotion-continuity diagnostics and flags bits 14 HAND_TORQUE_CLAMP / 15 SCHED_HOLD_LATCHED. Growing a struct is as incompatible as shrinking one: darkness against any FW ≤ 21 board is the INTENDED failure. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design) 8→9: 2026-09-15 axis-silence watchdog (can-bridge FW 23) — HeartbeatT2J GROWS by can_fault_leg/can_fault_age_ms/can_fault_count (the CAN_BUS_DOWN trip latch: WHICH leg went silent, how stale it was, how many trips this boot) and gains flags bits 16-22 HB_STALE_MASK (per-axis ODrive heartbeat staleness at CAN_HEARTBEAT_STALE_US = 0.5 s, report-only); CacheDiag GROWS by hb_frames[7], the per-axis heartbeat-frame census beside enc_frames. Both structs grow, so this is an incompatible wire change: darkness against any FW ≤ 22 board is the INTENDED failure. 9→10: 2026-10-12 BB absolute release (can-bridge FW 29) — ArgBbThrow.delay_s (f32, relative, converted to absolute ON RECEIPT, so Jetson dispatch latency moved the release 1:1) is replaced by release_wall_us (u64, absolute, the bridge wall clock = Jetson CLOCK_REALTIME), the arg GROWS 16→20 B, BB_THROW gains ResultBbThrow (lead at receipt) and three named refusals ERR_RELEASE_PAST/TOO_SOON/TOO_FAR. A delay_s read as an epoch would throw at the wrong instant, so darkness against any FW ≤ 28 board is the INTENDED failure; 10→11: 2026-11-03 scheduled-lane observability (can-bridge FW 38, BUG-58) — HeartbeatT2J GROWS 126→158 B: five more cumulative scheduled-lane counters (sched_superseded, sched_stale, sched_hand_c1_stops, sched_future_drops, sched_q_overflow) and a per-heartbeat-window frame-age census measured in the net task at queue entry (rx_age_max_us + four buckets at 25/50/70 ms, age = bridge monotonic now − the frame's t_start). Two LANE_REFUSED ends on 2026-11-03 had a clean host stream, so the cover was expiring between the bridge's send and the firmware's promotion, where no uplinked number could see it. A 126 B heartbeat decoded as 158 B (or the reverse) would misread every counter, so darkness against any FW ≤ 37 board is the INTENDED failure; 11→12: 2026-11-06 downlink loss accounting (can-bridge FW 40, FEAT-41) — HeartbeatT2J GROWS 158→190 B by eight cumulative u32 counters (dn_rx_setpoints, dn_queue_dropped, dn_seq_gaps, dn_crc_errors, sched_frames, sp_seq_drops, sp_no_hand, sp_no_sched). The stream socket's one-packet receive queue was overwriting about 1.5 % of setpoints and nothing uplinked could count it. A 158 B heartbeat decoded as 190 B (or the reverse) would misread or reject the frame, so darkness against any FW ≤ 39 board is the INTENDED failure; 12→13: 2026-11-08 firmware STOP record (can-bridge FW 42, FEAT-46) — HeartbeatT2J GROWS 190→380 B by one STOP record per lane group (legs, Hand): the playing frame's t_start, the queue depth and head, the last four queued frames' stamp / mapped t_start / arrival, the next frame's, and the last wall-offset change > 1 ms, plus a count of records overwritten before uplink. 20 of 23 STOPs on 2026-11-07 had on-time frames and no counter moving, so a stamp gap, a mapping step and an unpromoted frame could not be told apart. A 190 B heartbeat decoded as 380 B (or the reverse) would reject the frame, so darkness against any FW ≤ 41 board is the INTENDED failure."),
     # BB_THROW absolute-release lead bounds (2026-10-12, PROTOCOL_VERSION 10). The
     # can-bridge refuses a release whose lead at receipt (release_wall_us −
     # now_wall_us) is outside [MIN, MAX] with a NAMED status, before CAN1 sees a
@@ -172,6 +172,7 @@ ENUM_WIDTH = {
     "HandSensorFlags": "u8",
     "ClockDiagFlags": "u8",
     "RingDiagFlags": "u8",
+    "StopRecordFlags": "u8",
 }
 
 ENUMS = {
@@ -412,6 +413,13 @@ ENUMS = {
         ("VALID",          0x04, "bit2: not UNKNOWN (fresh, gated good reply)"),
         ("STALE",          0x08, "bit3: no good reply within the staleness window"),
         ("TIME_SYNCED",    0x10, "bit4: bridge wall anchor set at the reply"),
+    ],
+    "StopRecordFlags": [
+        # HeartbeatT2J.sr_flags[g] (FEAT-46, can-bridge FW 42). Per STOP record
+        # slot g (0 = legs, 1 = Hand).
+        ("HAND_C1",    0x01, "bit0: the record is a Hand C1 stop (FW 37: cover + the short C1 grace), not a C2 cover + grace stop"),
+        ("NEXT_VALID", 0x02, "bit1: the sr_next_* fields hold the first frame queued for this group after the STOP; clear = none has arrived yet"),
+        ("TB_VALID",   0x04, "bit2: sr_tb_rel_us / sr_tb_delta_us hold the last wall-offset change larger than 1 ms (step or slew) since boot; clear = none yet, both read 0"),
     ],
     "ClockDiagFlags": [
         # ClockDiag.flags. Each bit answers a question a consumer MUST ask before
@@ -682,6 +690,35 @@ MESSAGES = [
             Field("sp_seq_drops",        "u32", 1, "Setpoints dropped by the monotonic-sequence guard as stale or duplicate (cumulative)"),
             Field("sp_no_hand",          "u32", 1, "Setpoints parsed with HAS_HAND clear: a hand-less plan on the wire, or a lost flag (cumulative)"),
             Field("sp_no_sched",         "u32", 1, "Setpoints parsed with HAS_SCHED clear, played with arrival semantics (cumulative)"),
+            # ── STOP record (v13, can-bridge FW 42, FEAT-46) ─────────────────────
+            # One slot per lane group, index g: 0 = legs, 1 = Hand (the ring
+            # arrays hold group g at [4g .. 4g+3], newest first). Each firmware
+            # scheduler STOP (cover + grace, or the Hand C1 stop) overwrites its
+            # group's slot; the heartbeat re-sends the latest record every time,
+            # and the net task fills the sr_next_* part when the group's next
+            # frame is queued. Relative times are int32 us, saturated beyond
+            # +-35.8 min: *_start_rel / *_arrive_rel against the STOP entry on
+            # the bridge monotonic clock (the playing frame's t_start + 70 ms,
+            # or + 64 ms for a Hand C1 stop), *_origin_rel = the frame's
+            # t_origin_us minus sr_entry_wall_us. So start_rel - origin_rel is
+            # the wall-offset change between that frame's queueing and the STOP
+            # (0 when the mapping held still). Observability only.
+            Field("sr_seq",                "u32", 2, "STOP record sequence number (one counter for both slots, so records order across groups; 0 = no record since boot)"),
+            Field("sr_overwritten",        "u32", 2, "Records in this slot replaced by a newer STOP before any heartbeat carried them (cumulative)"),
+            Field("sr_entry_wall_us",      "u64", 2, "STOP entry instant mapped to the bridge wall clock (us, the Jetson CLOCK_REALTIME epoch) through the offset at the STOP"),
+            Field("sr_play_start_rel_us",  "i32", 2, "The playing frame's t_start minus the STOP entry (us; -70000 for a C2 stop, -64000 for a Hand C1 stop by construction)"),
+            Field("sr_q_head_rel_us",      "i32", 2, "The earliest frame queued for this group at the STOP: its t_start minus the STOP entry (us; INT32_MAX when none is queued). <= 0 = a due frame sat unpromoted"),
+            Field("sr_ring_origin_rel_us", "i32", 8, "Last 4 frames queued for the group before the STOP (newest first, [4g..4g+3]): t_origin_us minus sr_entry_wall_us (us)"),
+            Field("sr_ring_start_rel_us",  "i32", 8, "Same frames: mapped t_start minus the STOP entry (us)"),
+            Field("sr_ring_arrive_rel_us", "i32", 8, "Same frames: bridge monotonic time at queueing minus the STOP entry (us)"),
+            Field("sr_next_origin_rel_us", "i32", 2, "First frame queued for the group after the STOP (valid iff StopRecordFlags.NEXT_VALID): t_origin_us minus sr_entry_wall_us (us)"),
+            Field("sr_next_start_rel_us",  "i32", 2, "That frame's mapped t_start minus the STOP entry (us)"),
+            Field("sr_next_arrive_rel_us", "i32", 2, "That frame's queueing time minus the STOP entry (us)"),
+            Field("sr_tb_rel_us",          "i32", 2, "The last wall-offset change > 1 ms before the STOP: its bridge monotonic time minus the STOP entry (us; valid iff TB_VALID)"),
+            Field("sr_tb_delta_us",        "i32", 2, "That change: new offset minus old offset (us, saturated; a step is > 20 ms, a slew at most 1.25 ms)"),
+            Field("sr_flags",              "u8",  2, "StopRecordFlags bitset: HAND_C1 | NEXT_VALID | TB_VALID"),
+            Field("sr_ring_n",             "u8",  2, "Valid ring entries for the group (0..4)"),
+            Field("sr_q_depth",            "u8",  2, "Frames queued for the group at the STOP (after that tick's promotion)"),
         ],
     ),
     Message(

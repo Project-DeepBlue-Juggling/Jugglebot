@@ -473,6 +473,102 @@ static inline void rx_age_note(int64_t age_us) {
                   : (age_us <= RX_AGE_EDGE_US[2]) ? 2 : 3;
   if (s_rx_age_bucket[b] != 0xFFFFu) ++s_rx_age_bucket[b];
 }
+// ═══ FW 42 (FEAT-46) STOP RECORD — why a scheduler cover ended ═══════════════
+// WHY. At the 2026-11-07 Sitting 20 of 23 STOPs had a clean host stream, frames
+// at most 35.7 ms old on arrival, no lost downlink and every drop counter at 0.
+// The cover runs from each frame's t_start (its stamp mapped through the wall
+// offset at queueing), so on-time frames and a STOP leave three candidates: a
+// stamp gap (successive t_origin_us more than a knot apart), a mapping step (the
+// offset moved, so an on-time frame maps elsewhere) or a due frame that sat in
+// the queue unpromoted. The record keeps, per group, what tells them apart.
+// COST. The net task notes each queued frame into a 4-entry ring per group
+// inside the queue's existing IRQ-off section (three stores, O(1)) and fills a
+// pending record's next-frame part there; the ISR builds a record only on the
+// tick a STOP is declared (a 4-deep queue scan + a 4-entry ring copy, no
+// allocation, no call that blocks); the heartbeat task copies a slot under
+// PRIMASK. Nothing in any lane reads any of it: observability only.
+// ENCODING. int32 us relative to the STOP entry, saturated to
+// [INT32_MIN+1, INT32_MAX-1] (INT32_MAX in q_head_rel = nothing queued), so a
+// value is exact within ±35.8 min of the STOP. The ring holds the last four
+// frames queued at the ISR's capture; a frame queued between the entry instant
+// and that tick (≤ one 2 ms tick) shows as a ring entry with arrive_rel > 0, and
+// "next" is the first frame queued after the capture.
+struct SrNote { uint64_t origin_us; int64_t start_us; int64_t arrive_us; };
+static SrNote           s_sr_ring[2][STOP_REC_RING];
+static uint8_t          s_sr_ring_head[2]    = { 0, 0 };   // next write index
+static uint8_t          s_sr_ring_cnt[2]     = { 0, 0 };
+static InterpStopRecord s_sr[2];
+static int64_t          s_sr_entry_mono[2]   = { 0, 0 };
+static bool             s_sr_pending_next[2] = { false, false };
+static bool             s_sr_uplinked[2]     = { true, true };
+static uint32_t         s_sr_seq             = 0;
+
+static inline int32_t sr_sat32(int64_t v) {
+  return (v > (int64_t)INT32_MAX - 1) ? (INT32_MAX - 1) : (v < (int64_t)INT32_MIN + 1) ? (INT32_MIN + 1) : (int32_t)v;
+}
+
+// Net task, IRQs already off (the queue insertion section): O(1).
+static inline void sr_note_frame(uint8_t gi, uint64_t origin, int64_t t_start, int64_t arrive) {
+  SrNote& n = s_sr_ring[gi][s_sr_ring_head[gi]];
+  n.origin_us = origin; n.start_us = t_start; n.arrive_us = arrive;
+  s_sr_ring_head[gi] = (uint8_t)((s_sr_ring_head[gi] + 1u) % STOP_REC_RING);
+  if (s_sr_ring_cnt[gi] < STOP_REC_RING) ++s_sr_ring_cnt[gi];
+  if (s_sr_pending_next[gi]) {
+    InterpStopRecord& r = s_sr[gi];
+    const int64_t e = s_sr_entry_mono[gi];
+    r.next_origin_rel_us = sr_sat32((int64_t)(origin - r.entry_wall_us));
+    r.next_start_rel_us  = sr_sat32(t_start - e);
+    r.next_arrive_rel_us = sr_sat32(arrive - e);
+    r.flags |= STOP_REC_NEXT_VALID;
+    s_sr_pending_next[gi] = false;
+  }
+}
+
+// ISR, on the tick a STOP is declared. `entry` = the STOP entry instant (the
+// playing frame's t_start + cover + grace, or + the C1 decision time).
+static void sr_capture(uint8_t gi, bool c1, int64_t entry, int64_t play_t_start) {
+  InterpStopRecord& r = s_sr[gi];
+  uint32_t ow = r.overwritten;
+  if (r.seq != 0 && !s_sr_uplinked[gi]) ++ow;
+  const int64_t off = (int64_t)now_wall_us() - (int64_t)micros64();   // adjacent: the wall offset now
+  r = InterpStopRecord{};
+  r.overwritten = ow;
+  if (++s_sr_seq == 0) s_sr_seq = 1;   // 0 means "no record"
+  r.seq = s_sr_seq;
+  r.entry_wall_us = (uint64_t)(entry + off);
+  r.play_start_rel_us = sr_sat32(play_t_start - entry);
+  r.flags = c1 ? STOP_REC_HAND_C1 : 0;
+  uint8_t depth = 0;
+  int64_t head = INT64_MAX;
+  const uint8_t n = s_sq_n;
+  for (uint8_t k = 0; k < n; ++k) {
+    if (gi == SG_LEGS || s_sq[k].has_hand) {
+      ++depth;
+      if (s_sq[k].t_start_us < head) head = s_sq[k].t_start_us;
+    }
+  }
+  r.q_depth = depth;
+  r.q_head_rel_us = depth ? sr_sat32(head - entry) : INT32_MAX;
+  const uint8_t cnt = s_sr_ring_cnt[gi];
+  r.ring_n = cnt;
+  for (uint8_t j = 0; j < cnt; ++j) {
+    const SrNote& nt = s_sr_ring[gi][(uint8_t)((s_sr_ring_head[gi] + STOP_REC_RING - 1u - j) % STOP_REC_RING)];
+    r.ring_origin_rel_us[j] = sr_sat32((int64_t)(nt.origin_us - r.entry_wall_us));
+    r.ring_start_rel_us[j]  = sr_sat32(nt.start_us - entry);
+    r.ring_arrive_rel_us[j] = sr_sat32(nt.arrive_us - entry);
+  }
+  uint64_t tb_t = 0;
+  int64_t  tb_d = 0;
+  if (time_base_last_jump(&tb_t, &tb_d)) {
+    r.tb_rel_us   = sr_sat32((int64_t)tb_t - entry);
+    r.tb_delta_us = sr_sat32(tb_d);
+    r.flags |= STOP_REC_TB_VALID;
+  }
+  s_sr_entry_mono[gi]   = entry;
+  s_sr_pending_next[gi] = true;
+  s_sr_uplinked[gi]     = false;
+}
+
 // a_cmd (U2b's input): ISR-written once per tick.
 static volatile float    s_hand_a_cmd         = 0.0f;
 static float             s_leg_a_cmd[NUM_LEGS];
@@ -685,6 +781,7 @@ static void sched_advance(SchedGroup& g, uint8_t first, uint8_t last, int64_t no
       g.phase = SCHED_STOP;
       ++s_sched_stops;
       ++s_sched_hand_c1_stops;
+      sr_capture(SG_HAND, true, g.t0_us, g.frame_t_start_us);   // FW 42 STOP record
     }
   }
   if (g.phase == SCHED_PLAY && (now - g.t0_us) >= SCHED_EXHAUST_US) {
@@ -697,6 +794,7 @@ static void sched_advance(SchedGroup& g, uint8_t first, uint8_t last, int64_t no
     g.t0_us += SCHED_EXHAUST_US;
     g.phase = SCHED_STOP;
     ++s_sched_stops;
+    sr_capture(first == HAND_AXIS ? SG_HAND : SG_LEGS, false, g.t0_us, g.frame_t_start_us);   // FW 42 STOP record
   }
   if (g.phase == SCHED_STOP && (float)((double)(now - g.t0_us) * 1e-6) >= g.stop_D) {
     for (uint8_t i = first; i < last; ++i) {
@@ -965,7 +1063,12 @@ void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len) {
         while (pos > 0 && s_sq[pos - 1].t_start_us > t_start) { s_sq[pos] = s_sq[pos - 1]; --pos; }
         s_sq[pos] = f;
         ++n;
+        placed = true;
       }
+    }
+    if (placed) {   // FW 42 STOP record: the per-group ring of queued frames (+ a pending next)
+      sr_note_frame(SG_LEGS, sp.t_origin_us, t_start, mono);
+      if (has_hand_flag) sr_note_frame(SG_HAND, sp.t_origin_us, t_start, mono);
     }
     s_sq_n = n;
     __set_PRIMASK(pmq);
@@ -1919,6 +2022,12 @@ void interp_reset() {
   s_sched_stop_capped = 0; s_sched_refused = 0; s_sched_resumes = 0; s_sched_slew_rearms = 0;
   s_rx_age_max_us = INT32_MIN;
   s_rx_age_bucket[0] = s_rx_age_bucket[1] = s_rx_age_bucket[2] = s_rx_age_bucket[3] = 0;
+  for (uint8_t gi = 0; gi < 2; ++gi) {   // FW 42 STOP record
+    s_sr[gi] = InterpStopRecord{};
+    s_sr_ring_head[gi] = 0; s_sr_ring_cnt[gi] = 0;
+    s_sr_entry_mono[gi] = 0; s_sr_pending_next[gi] = false; s_sr_uplinked[gi] = true;
+  }
+  s_sr_seq = 0;
   s_hand_a_cmd = 0.0f;
   s_hand_ff_ks = s_hand_ff_fade = s_hand_ff_bias = 0.0f;
   s_hand_tau_cmd = 0.0f; s_hand_tau_max_abs = 0.0f;
@@ -2157,6 +2266,13 @@ uint32_t interp_sched_superseded()   { return s_sched_superseded; }
 uint32_t interp_sched_stale()        { return s_sched_stale; }
 uint32_t interp_sched_future_drops() { return s_sched_future_drops; }
 uint32_t interp_sched_q_overflow()   { return s_sched_q_overflow; }
+void interp_stop_record_take(uint8_t group, InterpStopRecord* out) {
+  const uint8_t gi = group ? SG_HAND : SG_LEGS;
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  *out = s_sr[gi];
+  if (s_sr[gi].seq != 0) s_sr_uplinked[gi] = true;
+  __set_PRIMASK(pm);
+}
 void interp_sched_rx_age_take(int32_t* max_us, uint16_t* buckets4) {
   const uint32_t pm = __get_PRIMASK(); __disable_irq();
   const int32_t m = s_rx_age_max_us;

@@ -149,7 +149,7 @@ def test_v6_decode_rejects_a_version5_frame():
     # checked before the CRC), and total: EVERY frame from a v5 peer dies here.
     frame = bytearray(p.encode_frame(int(p.MsgType.SETPOINT), 3,
                                      p.Setpoint().pack()))
-    assert frame[2] == p.PROTOCOL_VERSION == 12
+    assert frame[2] == p.PROTOCOL_VERSION == 13
     frame[2] = 5
     body = bytes(frame[:-2])
     frame[-2:] = struct.pack('<H', p.crc16_ccitt(body))   # valid CRC, old version
@@ -322,7 +322,7 @@ def test_heartbeat_t2j_fw38_sched_census_roundtrip_and_tail_layout():
                             rx_age_le25=29, rx_age_le50=31, rx_age_le70=37,
                             rx_age_gt70=0xFFFF)
         blob = hb.pack()
-        assert len(blob) == p.HEARTBEAT_T2J_SIZE == 190
+        assert len(blob) == p.HEARTBEAT_T2J_SIZE == 380
         d = p.HeartbeatT2J.unpack(blob)
         assert (d.sched_demoted, d.sched_superseded, d.sched_stale,
                 d.sched_hand_c1_stops, d.sched_future_drops,
@@ -347,7 +347,7 @@ def test_heartbeat_t2j_fw40_downlink_ledger_roundtrip_and_tail_layout():
                         sp_seq_drops=67, sp_no_hand=71,
                         sp_no_sched=0xFFFFFFFF)
     blob = hb.pack()
-    assert len(blob) == p.HEARTBEAT_T2J_SIZE == 190
+    assert len(blob) == p.HEARTBEAT_T2J_SIZE == 380
     d = p.HeartbeatT2J.unpack(blob)
     assert (d.dn_rx_setpoints, d.dn_queue_dropped, d.dn_seq_gaps,
             d.dn_crc_errors, d.sched_frames, d.sp_seq_drops, d.sp_no_hand,
@@ -490,8 +490,9 @@ def test_clock_diag_is_additive_protocol_version_unchanged():
     """
     # The frames that existed before FW 11 keep their exact sizes.
     assert p.PROFILE_SIZE == 76
-    assert p.HEARTBEAT_T2J_SIZE == 190   # 73 until v8 (2026-09-14) appended the FW 22 promotion
-                                     # diagnostics; 190 at v12 (2026-11-06, FW 40, FEAT-41) which
+    assert p.HEARTBEAT_T2J_SIZE == 380   # 73 until v8 (2026-09-14) appended the FW 22 promotion
+                                     # diagnostics; 380 at v13 (2026-11-08, FW 42, FEAT-46: the
+                                     # STOP record); 190 at v12 (2026-11-06, FW 40, FEAT-41) which
                                      # appended the downlink ledger (eight u32);
                                      # 158 at v11 (2026-11-03, FW 38, BUG-58) which
                                      # appended the scheduled-lane census + frame-age window;
@@ -674,8 +675,9 @@ def test_cache_diag_is_additive_protocol_version_unchanged():
     # most likely to be disturbed by an edit in the same region of the spec.
     assert p.CLOCK_DIAG_SIZE == 49
     assert p.PROFILE_SIZE == 76
-    assert p.HEARTBEAT_T2J_SIZE == 190   # 73 until v8 (2026-09-14) appended the FW 22 promotion
-                                     # diagnostics; 190 at v12 (2026-11-06, FW 40, FEAT-41) which
+    assert p.HEARTBEAT_T2J_SIZE == 380   # 73 until v8 (2026-09-14) appended the FW 22 promotion
+                                     # diagnostics; 380 at v13 (2026-11-08, FW 42, FEAT-46: the
+                                     # STOP record); 190 at v12 (2026-11-06, FW 40, FEAT-41) which
                                      # appended the downlink ledger (eight u32);
                                      # 158 at v11 (2026-11-03, FW 38, BUG-58) which
                                      # appended the scheduled-lane census + frame-age window;
@@ -901,8 +903,9 @@ def test_ring_diag_is_additive_protocol_version_unchanged():
     assert p.CACHE_DIAG_SIZE == 157   # 129 until v9 added hb_frames[7] (FW 23)
     assert p.CLOCK_DIAG_SIZE == 49
     assert p.PROFILE_SIZE == 76
-    assert p.HEARTBEAT_T2J_SIZE == 190   # 73 until v8 (2026-09-14) appended the FW 22 promotion
-                                     # diagnostics; 190 at v12 (2026-11-06, FW 40, FEAT-41) which
+    assert p.HEARTBEAT_T2J_SIZE == 380   # 73 until v8 (2026-09-14) appended the FW 22 promotion
+                                     # diagnostics; 380 at v13 (2026-11-08, FW 42, FEAT-46: the
+                                     # STOP record); 190 at v12 (2026-11-06, FW 40, FEAT-41) which
                                      # appended the downlink ledger (eight u32);
                                      # 158 at v11 (2026-11-03, FW 38, BUG-58) which
                                      # appended the scheduled-lane census + frame-age window;

@@ -253,6 +253,15 @@ def test_the_bump_history_records_what_this_version_carries():
                  'sp_no_sched'):
         assert name in m40.group(1), name
     assert 'no lane behaviour change' in m40.group(1), m40.group(1)
+    # FW 42 — FEAT-46 firmware STOP record.  HeartbeatT2J GROWS, so the bump
+    # IS a wire change (PROTOCOL 12→13), and nothing in a lane reads it.
+    m42 = re.search(r'^// 41→42:(.*)$', text, re.M)
+    assert m42 is not None, "FW 42 history line missing"
+    assert 'FEAT-46' in m42.group(1) and 'STOP RECORD' in m42.group(1), m42.group(1)
+    assert 'HeartbeatT2J GROWS 190→380' in m42.group(1), m42.group(1)
+    assert 'PROTOCOL_VERSION 12→13' in m42.group(1), m42.group(1)
+    assert 'time_base_last_jump' in m42.group(1), m42.group(1)
+    assert 'no lane behaviour change' in m42.group(1), m42.group(1)
 
 
 def test_the_version_this_release_pins_is_actually_uplinked():

@@ -196,6 +196,37 @@ static void send_heartbeat_t2j() {
   p.sp_seq_drops     = interp_sp_seq_drops();
   p.sp_no_hand       = interp_sp_no_hand();
   p.sp_no_sched      = interp_sp_no_sched();
+  // FW 42 / PROTOCOL 13 (FEAT-46): the latest STOP record per group (0 legs,
+  // 1 Hand), re-sent every heartbeat; the take marks it uplinked. Copied out
+  // through a local because the payload struct is packed.
+  for (uint8_t g = 0; g < 2; ++g) {
+    InterpStopRecord r;
+    interp_stop_record_take(g, &r);
+    p.sr_seq[g]                = r.seq;
+    p.sr_overwritten[g]        = r.overwritten;
+    p.sr_entry_wall_us[g]      = r.entry_wall_us;
+    p.sr_play_start_rel_us[g]  = r.play_start_rel_us;
+    p.sr_q_head_rel_us[g]      = r.q_head_rel_us;
+    for (uint8_t j = 0; j < STOP_REC_RING; ++j) {
+      p.sr_ring_origin_rel_us[g * STOP_REC_RING + j] = r.ring_origin_rel_us[j];
+      p.sr_ring_start_rel_us[g * STOP_REC_RING + j]  = r.ring_start_rel_us[j];
+      p.sr_ring_arrive_rel_us[g * STOP_REC_RING + j] = r.ring_arrive_rel_us[j];
+    }
+    p.sr_next_origin_rel_us[g] = r.next_origin_rel_us;
+    p.sr_next_start_rel_us[g]  = r.next_start_rel_us;
+    p.sr_next_arrive_rel_us[g] = r.next_arrive_rel_us;
+    p.sr_tb_rel_us[g]          = r.tb_rel_us;
+    p.sr_tb_delta_us[g]        = r.tb_delta_us;
+    p.sr_flags[g]              = r.flags;
+    p.sr_ring_n[g]             = r.ring_n;
+    p.sr_q_depth[g]            = r.q_depth;
+  }
+  static_assert(sizeof(p.sr_ring_start_rel_us) == 2 * STOP_REC_RING * sizeof(int32_t),
+                "HeartbeatT2J's STOP record ring is 2 groups x STOP_REC_RING");
+  static_assert(JbUdp::StopRecordFlags::HAND_C1 == STOP_REC_HAND_C1 &&
+                JbUdp::StopRecordFlags::NEXT_VALID == STOP_REC_NEXT_VALID &&
+                JbUdp::StopRecordFlags::TB_VALID == STOP_REC_TB_VALID,
+                "StopRecordFlags on the wire must match leg_interp's bits");
   if (interp_sched_hold_latched()) p.flags |= HF::SCHED_HOLD_LATCHED;   // bit 15
   // bit 14: the hand torque feedforward saturated at ±HAND_TORQUE_FF_CLAMP_NM on
   // at least one on-wire tick since the previous heartbeat (read-and-clear).
