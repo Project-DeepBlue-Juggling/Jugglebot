@@ -430,7 +430,7 @@ Auto-memory (12 files, 366 hits) rewritten with the same crosswalk, `MEMORY.md` 
 
 | ID | Validates | Pass criterion |
 |---|---|---|
-| T-H1 | Stack boots after the rebuild | Launch at the next Sitting: bridge handshake on can-bridge FW 41 / PROTOCOL 12 and Platform FW 9 (flashed 2026-11-08, `logbook/2026-11-08-hand-fan-runtime-control.md`) with no flash, install-skew reports clean, `/robot_state` live. No motion test is warranted, since T-R3 to T-R5 prove no motion code changed |
+| T-H1 | Stack boots after the rebuild | Launch at the next Sitting: bridge handshake on can-bridge FW 41 / PROTOCOL 12 and Platform FW 9 (flashed 2026-11-08, `logbook/2026-11-08-hand-fan-runtime-control.md`) with no flash, install-skew reports clean, `/robot_state` live. No motion test is warranted, since T-R3 to T-R5 prove no motion code changed. **PASSED 2026-11-08** (owner, an unrecorded Sitting after the `colcon build`: FW 41 / PROTOCOL 12 / Platform FW 9, install-skew clean, `/robot_state` live) |
 
 ## 6. Notes for Collaborators
 
