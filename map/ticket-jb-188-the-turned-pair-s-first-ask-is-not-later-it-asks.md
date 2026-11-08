@@ -2,9 +2,9 @@
 id: JB-208
 kind: ticket
 title: 'JB-188: the turned pair''s first ask is not later, it asks twice more often at no measurable cost: close it, read why it asks twice, or decline those asks in the fence?'
-status: open
+status: complete
 created: '2026-11-08'
-updated: '2026-11-07T18:12:13Z'
+updated: '2026-11-08T00:18:18Z'
 owners: []
 priority: medium
 effort: xs
@@ -39,3 +39,7 @@ Recommendation: 1. Nothing here costs a Catch, and no limit or timing change is 
 - 1: the next night closes JB-188.
 - 2: the next night runs the bag read.
 - 3: the next night builds it on a branch, held for your decision on its control walk.
+
+## Answer
+
+Let's go with Option 2. Once we have that information, we can decide how to best proceed
