@@ -2,9 +2,9 @@
 id: TKT-56
 kind: ticket
 title: 'BUG-75: the turned pair''s refusals come from the BUMP being off for it: close it, enable the BUMP on columns_turned after a capture, or fence the asks?'
-status: open
+status: complete
 created: '2026-11-09'
-updated: '2026-11-08T17:58:26Z'
+updated: '2026-11-08T21:43:32Z'
 owners: []
 priority: medium
 effort: xs
@@ -33,3 +33,7 @@ Recommendation: 1. Nothing is lost today. Choose 2 only if the turned pair ever 
 - 1: the next night closes BUG-75.
 - 2: a Sitting row for the capture, then a branch.
 - 3: a held branch, with the control walk the fence needs.
+
+## Answer
+
+I'm inclined towards Option 2, to make the turned Columns pattern as similar as possible to our other patterns. What does the matching-record capture process involve?
