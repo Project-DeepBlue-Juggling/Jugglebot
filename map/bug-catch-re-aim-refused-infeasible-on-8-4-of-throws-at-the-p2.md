@@ -4,7 +4,7 @@ kind: bug
 title: Catch re-aim refused INFEASIBLE on 8.4 % of Throws at the P2 Sitting, 15 of 69 on the turned pair
 status: backlog
 created: '2026-11-06'
-updated: '2026-11-08T00:13:25Z'
+updated: '2026-11-08T17:58:25Z'
 owners: []
 priority: medium
 effort: xs
@@ -143,7 +143,37 @@ Sources: bag `/home/jetson/Desktop/rosbags/2026-11-06_15-53-05` (`/balls`: per-B
 - Rating: effort small, hardware none, diagnosis done for the premise; the cause of the extra second asks is open.
 - Not done: Robot-frame per-axis Fit drift (needs the tracker-to-robot transform), a QP replay, and the stage split of (c) into Fit-published against gate-opened (the log does not record the gate opening; the bag has Fit publication and the ask time only).
 
+## Findings (2026-11-09)
+
+Your Option 2 on TKT-51. Sources: bag `/home/jetson/Desktop/rosbags/2026-11-06_15-53-05`, the 15:53 `launch.log`, `executor.py`, `bump.py`, `skill_node.py` at origin/main. Throwaway scripts, deleted.
+
+### Verdict
+- **The premise was wrong.** Columns asks a second time as often as the turned pair. Last night's "3 against 27" counted only `RESEND` lines and missed the Columns second asks, which go to the BUMP.
+- **What differs is the route.** `BUMP_ENABLED_PATTERNS` (`bump.py`) is `columns` and `columns_1ball_fed`, so the turned pair's second asks fall through to the raw QP re-solve.
+- Nothing in the Fit separates them.
+
+### Second asks, both routes counted
+| Set | Catches | Catches with 2+ re-aims | Second ask by QP re-solve | BUMP installed |
+|---|---|---|---|---|
+| Columns | 65 | 27 | 3 (all LIMIT_JERK) | 29, none refused |
+| Turned | 79 | 27 | 27, of which 25 refused | 0 (route off) |
+
+### Fit drift between the asks, Robot frame
+| Set | n | Gap, median s | Along pair, abs median mm | Across pair, abs median mm |
+|---|---|---|---|---|
+| Columns | 27 | 0.275 | 6.1 | 11.7 |
+| Turned | 27 | 0.228 | 6.3 | 6.5 |
+
+- The drift has the same sign in the Robot frame on both axes whatever the pair axis, so it is frame-fixed, not a pair-axis effect.
+- The ask test is per-axis at 10 mm or 10 ms. A norm test would fire more on the turned pair, not less. Cadence and the 30 mm clamp do not separate them either.
+
+### Not done
+- No replay of the BUMP on turned Catches, so whether it would cut the refusals is inference.
+- Your 2026-10-16 condition for other Patterns (a matching-record capture passing the replay) has no capture for `columns_turned` in the files read.
+- The 2026-11-07 log and the one-ball goals were not recounted.
+
 ## Progress
 
 - 2026-11-08: Night Shift 2026-11-08: the turned pair's first ask is not later; it asks twice more often, at no measurable cost (detail below)
 - 2026-11-08: 2026-11-07: RESEND-REFUSED INFEASIBLE on 24 of 282 Throws (8.5 %); turned Columns 22 of 143 (15 %).
+- 2026-11-09: Night Shift 2026-11-09: the turned pair does not ask twice more often; its second asks take the re-solve because the BUMP is off for it; awaiting the owner's answer
