@@ -1253,9 +1253,14 @@ class SkillNode(Node):
         self.declare_parameter('apex_m_ball2', 0.0)
         # BUG-80: a commanded landing offset for a `self_toss` goal, mm, Robot
         # frame, added to every Throw's commanded landing (default 0 = today).
-        # Bounded per axis by `learner_lateral_authority_mm`; a non-zero value
-        # refuses any other Pattern by name (`nominate.landing_offset_refusal`),
-        # and it is refused while a goal is active (`_on_set_parameters`).
+        # The offset is bounded per axis by `learner_lateral_authority_mm`, but
+        # the Catch clamp and the Learner cap are centred on it, so the reach
+        # from the Site is offset plus authority. A non-zero value refuses any
+        # other Pattern by name (`nominate.landing_offset_refusal`), and it is
+        # refused while a goal is active (`_on_set_parameters`). Only a goal's
+        # FIRST Throw flies the offset's Tilt (a same-Site fold releases at
+        # the caught xy): for a from-rest check, fly single-Throw goals
+        # (`num_cycles: 1`) and set this between them.
         self.declare_parameter('landing_offset_x_mm', 0.0)
         self.declare_parameter('landing_offset_y_mm', 0.0)
         # The segment planner this session runs ('level' | 'pose', two-ball-oval

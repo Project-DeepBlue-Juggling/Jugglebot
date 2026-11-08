@@ -164,6 +164,15 @@ COLUMNS_FED = ('columns', 'columns_turned', 'columns_highlow',
 #: REFUSES a non-zero offset by name (:func:`landing_offset_refusal`) rather
 #: than flying without it: a goal that ignored the parameter would look like
 #: the offset experiment while being an ordinary Attempt.
+#:
+#: Only the FIRST Throw of a goal flies the offset's Tilt. A same-Site fold
+#: releases at the caught xy (``executor._fold_release_mm``) and aims at the
+#: commanded target plus the fly-back (``executor._aim_target_mm``), so from
+#: Throw 2 on the release is about Site + d, the aim about Site + d, and the
+#: net displacement is d * (1 - 1/g): 0.40 mrad at g = 1.08 and d = 20 mm
+#: against 5.04 mrad from rest at Apex 1.0. The from-rest check is therefore
+#: single-Throw goals (``num_cycles: 1``) with the parameter set between them.
+#: Alternating signs inside one goal would be a fold, the thing it excludes.
 LANDING_OFFSET_PATTERNS = ('self_toss',)
 
 #: skill_node's self-toss Site (``_DEFAULT_SITE_NAME`` / ``_DEFAULT_SITE_X_MM``
@@ -243,9 +252,13 @@ def landing_offset_refusal(x_mm, y_mm, authority_mm: float,
     Pattern.
 
     **The bound is the live ``learner_lateral_authority_mm``, per axis**
-    (``authority_mm``): the per-axis box a Learner command is capped to and a
-    one-Site Catch aim is clamped to, so an offset cannot ask for a landing
-    further off its Site than the stack is already allowed to move one.  At
+    (``authority_mm``), applied to the offset itself.  It does NOT bound how
+    far a landing can be asked off the Site: the Catch clamp
+    (``executor._clamp_lateral_inner``) and the Learner's cap are both
+    centred on ``y_d``, so they ride with the offset and the reach from the
+    Site is offset plus authority per axis, up to twice the authority (60 mm
+    at the default 30 mm authority).  A 20 mm offset reaches about 50 mm,
+    about 14 mrad of Tilt, inside the 30 mrad Hops already fly.  At
     authority 0 (lateral pinned) every non-zero offset is refused.  ``pattern``
     None checks the range alone (the parameter callback); a name also checks
     it against :data:`LANDING_OFFSET_PATTERNS` (goal accept, ``skills/nominate``).

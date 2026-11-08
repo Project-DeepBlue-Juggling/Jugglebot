@@ -204,6 +204,67 @@ def test_the_catch_prior_and_clamp_centre_move_with_the_offset():
     assert predicted.pos_mm[1] == pytest.approx(catch_point[1] - 10.0, abs=1e-9)
 
 
+def test_the_reach_from_the_site_is_offset_plus_authority():
+    """The Catch clamp is centred on ``y_d``: a landing far past the offset is
+    clipped at Site + offset + authority, not at Site + authority (what
+    ``nominate.landing_offset_refusal``'s docstring states)."""
+    schedule = nm.compile_schedule(_config(offset_mm=(20.0, 0.0)))
+
+    def installer(*_a, **_k):
+        raise AssertionError('nothing may install in this test')
+    execu = ex.SkillExecutor(schedule, installer, lateral_authority_m=0.03)
+    idx = next(i for i, s in enumerate(schedule.skills) if s.kind == sc.CATCH)
+    skill = schedule.skills[idx]
+    prior = execu._predicted_landing(idx, skill)
+    catch_point = _site().catch_site_mm()
+    far = ex.Landing(pos_mm=catch_point + np.array([200.0, 0.0, 0.0]),
+                     vel_mm_s=prior.vel_mm_s, t_land_abs_s=prior.t_land_abs_s)
+    clamped = execu._clamp_lateral_to_schedule(idx, skill, far, note=False)
+    assert clamped.pos_mm[0] == pytest.approx(catch_point[0] + 50.0, abs=1e-9)
+
+
+def test_only_the_first_throw_of_a_goal_flies_the_offsets_tilt():
+    """From rest the Throw flies the whole offset (5.04 mrad at Apex 1.0 for
+    20 mm). A same-Site fold releases at the caught xy and aims at the same
+    commanded target, so a cold fold's net displacement is zero and at a
+    plant gain of 1.08 it is d * (1 - 1/g) = 1.48 mm, 0.40 mrad: why the
+    from-rest check is single-Throw goals."""
+    schedule = nm.compile_schedule(_config(offset_mm=(20.0, 0.0)))
+
+    def installer(*_a, **_k):
+        raise AssertionError('nothing may install in this test')
+    execu = ex.SkillExecutor(schedule, installer)
+    first = _terminal(schedule)
+    v_first = cc.takeoff_velocity(np.asarray(first.site_mm) / 1000.0,
+                                  np.asarray(first.target_mm) / 1000.0,
+                                  float(first.flight_s))
+    assert abs(float(tg.tilt_to_throw(v_first)[1])) * 1e3 == pytest.approx(5.04, abs=0.02)
+
+    idx = next(i for i, s in enumerate(schedule.skills)
+               if s.kind == sc.CATCH and s.then_throw is not None)
+    skill = schedule.skills[idx]
+    landing = execu._predicted_landing(idx, skill)
+    release = execu._fold_release_mm(skill, landing)
+    assert release[0] == pytest.approx(landing.pos_mm[0], abs=1e-9)
+    tt = skill.then_throw
+    aim_cold = execu._aim_target_mm(tt.target, ex.release_site_of(skill), release,
+                                    tt.y_d, (tt.y_d[0], float(tt.y_d[1])))
+    assert aim_cold[:2] - release[:2] == pytest.approx([0.0, 0.0], abs=1e-9)
+    gain = 1.08
+    aim_g = execu._aim_target_mm(tt.target, ex.release_site_of(skill), release,
+                                 tt.y_d, (tt.y_d[0], float(tt.y_d[1]) / gain))
+    assert aim_g[0] - release[0] == pytest.approx(20.0 * (1.0 - 1.0 / gain), abs=1e-9)
+
+
+def test_a_single_throw_goal_has_no_fold():
+    """``n_throws=1``: REST, THROW, CATCH (nothing carried), REST."""
+    schedule = nm.compile_schedule(dataclasses.replace(
+        _config(offset_mm=(20.0, 0.0)), n_throws=1))
+    assert [s.kind for s in schedule.skills] == [sc.REST, sc.THROW, sc.CATCH, sc.REST]
+    assert all(s.then_throw is None for s in schedule.skills)
+    assert schedule.skills[1].y_d[0].tolist() == [0.02, 0.0]
+
+
 # ── the reload tail is the same shared tail ──────────────────────────────────
 
 def test_a_self_toss_reload_carries_the_offset_too():

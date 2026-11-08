@@ -68,6 +68,20 @@ def test_a_set_offset_moves_every_throw_and_is_named_in_the_record(tmp_path):
     assert ('landing_offset_x_mm', '20') in node._goal_record_params
 
 
+def test_a_single_throw_goal_flies_one_throw_with_no_fold(tmp_path):
+    """The from-rest check's goal: ``num_cycles: 1`` through the real goal
+    path compiles REST, THROW, CATCH (nothing carried), REST at the offset."""
+    node, _ = _ready_node('single')
+    node._params['landing_offset_x_mm'] = 20.0
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_self_toss_goal(apex_m=1.0, num_cycles=1))
+    assert resp.success is True, resp.message
+    skills = node._executor.schedule.skills
+    assert [s.kind for s in skills if s.kind in (sc.THROW, sc.CATCH)] == [sc.THROW, sc.CATCH]
+    assert all(s.then_throw is None for s in skills)
+    assert _throw_y_ds(node)[0].tolist() == [0.02, 0.0]
+
+
 def test_a_columns_goal_refuses_a_non_zero_offset_by_name(tmp_path):
     node, _client = _ready_node('columns')
     node._params['landing_offset_y_mm'] = -15.0
