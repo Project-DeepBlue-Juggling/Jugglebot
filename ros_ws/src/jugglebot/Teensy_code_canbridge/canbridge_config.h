@@ -604,8 +604,9 @@ constexpr float HAND_MOTOR_MAX_POSITION =
 
 // ── Hand stall guard on the cold-start ladder (FW 36, BUG-56) ────────────────
 // Owner rule (2026-11-02): "no motion with high current for >= 300 ms aborts the
-// move". Evaluated every activate_step() tick (HOMING_RATE_HZ = 100 Hz, the same
-// rate the Hand ODrive sends Get_Iq: iq_msg_rate_ms 10 in odrive_pro_hand_config)
+// move". Evaluated every activate_step() tick (HOMING_RATE_HZ = 100 Hz; the Hand
+// ODrive sends Get_Iq a little faster, iq_msg_rate_ms 9 in odrive_pro_hand_config
+// since 2026-11-08, odd so it cannot phase-lock to the 2 ms tick, BUG-82)
 // on axis 6 while the ACTIVATE / HAND_MOVE_TO ladder targets it. All three terms
 // must hold on every tick of the window; any tick that breaks one restarts it.
 //

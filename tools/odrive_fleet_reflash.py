@@ -69,7 +69,8 @@ successful ``save_configuration()`` from one that silently refused (an armed
 axis, for instance). Only a post-reboot read proves NVM took it.
 
 The hand drive (CAN node 6, ``NODE_ID_JUGGLEBOT_HAND``) is discovered, recorded,
-and then left strictly alone — it runs a different config file
+and then left strictly alone by the erase path (``--set --include-hand`` below is
+the one explicit exception) — it runs a different config file
 (``odrive_pro_hand_config.json``: ONBOARD_ENCODER0, not INC_ENCODER0).
 
 Per-motor calibration values — ``commutation_mapper.config.index_offset``,
@@ -119,13 +120,20 @@ Usage
         --set axis0.config.motor.current_hard_max=30 \\
         --set axis0.config.motor.current_soft_max=20
 
+    # the same no-erase write on the legs AND the Hand (Hand last)
+    python tools/odrive_fleet_reflash.py --dry-run --include-hand \\
+        --set axis0.config.can.error_msg_rate_ms=19
+
     # one drive only; or resume a partial run off the recorded map
     python tools/odrive_fleet_reflash.py --only 3
     python tools/odrive_fleet_reflash.py --map temp/odrive_configs/<ts>/fleet_map.json
 
 ``--set KEY=VALUE`` (repeatable) is the no-erase mode, for changing a few named
-properties without touching the rest of the config. Per LEG drive only (the hand
-at node 6 is never written; ``--only`` still narrows the set): discover and
+properties without touching the rest of the config. Per LEG drive by default
+(``--only`` narrows the set); ``--include-hand`` adds the Hand at node 6, written
+last, for properties that are common to both drive types (the CAN message rates
+of 2026-11-08 were the first use). It is the only way this script writes the
+Hand, and only with ``--set``. Discover and
 record the map, back each drive up, then validate EVERYTHING before the first
 write -- every axis IDLE, every KEY an existing read-write endpoint of the
 0.6.11 flat-endpoint list, every VALUE parseable to that endpoint's type,
@@ -1158,8 +1166,15 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                         help='no-erase mode: write this property on the leg drives, save, '
                              'reboot and verify from NVM (repeatable). Mutually exclusive '
                              'with --config and the erase/calibration flags')
+    parser.add_argument('--include-hand', action='store_true',
+                        help='--set only: also write the same properties to the Hand drive '
+                             '(node {}), after the legs. The erase path never touches the '
+                             'Hand'.format(proto.NODE_ID_JUGGLEBOT_HAND))
     raw = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(raw)
+    if args.include_hand and not args.set:
+        parser.error('--include-hand only works with --set (the erase path never '
+                     'touches the Hand)')
     if args.set:
         clashes = []
         if any(tok == '--config' or tok.startswith('--config=') for tok in raw):
@@ -1204,6 +1219,20 @@ def resolve_targets(node_by_serial: Dict[str, int], only: Optional[str]) -> List
     # Deduplicated: a drive listed twice would be processed twice, and the
     # second pass would run against the handle the first pass's reboot killed.
     return sorted(set(wanted))
+
+
+HAND_NODE_ID: int = proto.NODE_ID_JUGGLEBOT_HAND
+
+
+def add_hand_target(targets: List[int], serial_of: Dict[int, str]) -> List[int]:
+    """``--set --include-hand``: the leg targets, then the Hand last.
+
+    Last so a refusal or failure on a leg is seen before the Hand reboots. The
+    Hand must be attached: asking for it and silently skipping it would leave
+    the drives out of step with the backup JSON."""
+    if HAND_NODE_ID not in serial_of:
+        raise SystemExit('--include-hand: the Hand (node {}) is not on USB'.format(HAND_NODE_ID))
+    return [n for n in targets if n != HAND_NODE_ID] + [HAND_NODE_ID]
 
 
 def load_fleet_map(path: str) -> Dict[str, int]:
@@ -1309,12 +1338,19 @@ def main_set(args: argparse.Namespace) -> int:
     backup_dir = args.backup_dir or os.path.join(
         DEFAULT_BACKUP_ROOT, datetime.now().strftime('%Y%m%d_%H%M%S'))
     os.makedirs(backup_dir, exist_ok=True)
-    print('--set mode: no erase, no calibration, no motion. Legs only; the hand is never written.')
+    if args.include_hand:
+        print('--set mode: no erase, no calibration, no motion. Legs, then the Hand '
+              '(--include-hand).')
+    else:
+        print('--set mode: no erase, no calibration, no motion. Legs only; the hand is never '
+              'written.')
     for key, raw in sets.items():
         print('  {} = {}'.format(key, raw))
     print('backup dir    : {}'.format(os.path.relpath(backup_dir, _PROJECT_ROOT)))
 
     api, by_serial, targets, serial_of = record_fleet(args, backup_dir, '--set')
+    if args.include_hand:
+        targets = add_hand_target(targets, serial_of)
 
     # Phase A: back up and validate EVERY drive before the first write.
     results = [read_set_state(api, by_serial[serial_of[n]], n, sets, endpoints, backup_dir)
@@ -1350,6 +1386,10 @@ def main_set(args: argparse.Namespace) -> int:
     print('\nREMINDER: the drives REBOOTED, so their encoder zero is gone. Power-cycle or '
           'reboot the can-bridge before the next launch so it re-homes the legs; a '
           'bridge that still believes the legs are homed is the BUG-56 hazard.')
+    if HAND_NODE_ID in [res.node_id for res in results]:
+        print('The HAND rebooted too: its zero is gone. Before arming, the launch log must '
+              'show every axis homed ("homing: 7 axes homed"); never park or move the Hand '
+              'on the old zero (the 2026-11-02 overheat).')
     failed = [res.node_id for res in results if not res.ok]
     if failed:
         print('\nverify FAILED on node(s) {}'.format(failed), file=sys.stderr)

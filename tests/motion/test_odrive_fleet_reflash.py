@@ -741,3 +741,101 @@ def test_leg_snapshot_carries_the_2026_11_03_current_limits(tool, leg_config):
     assert flat[SOFT] <= flat[HARD]
     # the inverter ceiling must stay above the motor hard limit
     assert flat['config.inverter0.current_hard_max'] > flat[HARD]
+
+
+# ---------------------------------------------------------------------------
+# --set --include-hand (2026-11-08, the odd-ms CAN rates, BUG-82)
+# ---------------------------------------------------------------------------
+
+RATE = 'axis0.config.can.error_msg_rate_ms'
+
+
+def _fleet_with_rate(per_node=None):
+    drives = _fleet(per_node)
+    for d in drives:
+        d.nvm[RATE] = 20
+        d.ram[RATE] = 20
+    return drives
+
+
+def _record_save_order(drives):
+    order = []
+    for d in drives:
+        real = d.save_configuration
+
+        def save(real=real, d=d):
+            order.append(d.serial)
+            real()
+        d.save_configuration = save
+    return order
+
+
+def test_include_hand_writes_the_hand_last_and_verifies_it(tool, monkeypatch, tmp_path, capsys):
+    drives = _fleet_with_rate()
+    order = _record_save_order(drives)
+    _install_fleet(tool, monkeypatch, drives)
+    assert _run(tool, tmp_path, '--include-hand', '--set', RATE + '=19') == 0
+    for d in drives:
+        assert d.writes == [(RATE, 19)] and d.saves == 1 and d.nvm[RATE] == 19
+        assert d.nvm[NODE] == int(d.serial[1:]) and not d.erased
+    assert order == ['S0', 'S1', 'S2', 'S3', 'S4', 'S5', 'S6'], 'Hand last'
+    assert len(list(tmp_path.glob('pre_set_node*_S*.json'))) == 7
+    out = capsys.readouterr().out
+    assert 'HAND rebooted' in out and 'homing: 7 axes homed' in out
+
+
+def test_without_include_hand_the_hand_is_still_never_written(tool, monkeypatch, tmp_path, capsys):
+    drives = _fleet_with_rate()
+    _install_fleet(tool, monkeypatch, drives)
+    assert _run(tool, tmp_path, '--set', RATE + '=19') == 0
+    assert drives[6].writes == [] and drives[6].saves == 0
+    assert 'HAND rebooted' not in capsys.readouterr().out
+
+
+def test_include_hand_refuses_a_non_idle_hand_before_any_write(tool, monkeypatch, tmp_path):
+    drives = _fleet_with_rate({6: {'state': 8}})
+    _install_fleet(tool, monkeypatch, drives)
+    with pytest.raises(SystemExit) as excinfo:
+        _run(tool, tmp_path, '--include-hand', '--set', RATE + '=19')
+    assert 'nothing was written' in str(excinfo.value)
+    assert all(d.writes == [] and d.saves == 0 for d in drives)
+
+
+def test_include_hand_refuses_when_the_hand_is_not_on_usb(tool, monkeypatch, tmp_path):
+    drives = _fleet_with_rate()[:6]
+    _install_fleet(tool, monkeypatch, drives)
+    with pytest.raises(SystemExit) as excinfo:
+        _run(tool, tmp_path, '--include-hand', '--expect', '6', '--set', RATE + '=19')
+    assert 'not on USB' in str(excinfo.value)
+    assert all(d.writes == [] and d.saves == 0 for d in drives)
+
+
+def test_include_hand_dry_run_writes_nothing(tool, monkeypatch, tmp_path, capsys):
+    drives = _fleet_with_rate()
+    _install_fleet(tool, monkeypatch, drives)
+    assert _run(tool, tmp_path, '--dry-run', '--include-hand', '--set', RATE + '=19') == 0
+    assert all(d.writes == [] and d.saves == 0 for d in drives)
+    assert 'node 6 (USB S6)' in capsys.readouterr().out
+
+
+def test_include_hand_needs_set(tool):
+    for argv in (['--include-hand'], ['--include-hand', '--no-calibration']):
+        with pytest.raises(SystemExit) as excinfo:
+            tool.parse_args(argv)
+        assert excinfo.value.code == 2
+
+
+@pytest.mark.parametrize('path', [_LEG_CONFIG, _HAND_CONFIG])
+def test_backup_configs_use_odd_ms_can_rates(tool, path):
+    """Every cyclic CAN message runs at an ODD number of ms (BUG-82, 2026-11-08).
+
+    An even period is a whole multiple of the can-bridge's 2 ms setpoint tick, so
+    a drive's frame phase drifts into the lossy window and stays there, losing
+    every frame for 0.6 to 3 s. An odd period alternates between two phases 1 ms
+    apart, so at most every other frame can be lost. 0 = message off."""
+    with open(path) as handle:
+        flat = tool.flatten_config(json.load(handle))
+    rates = {k: v for k, v in flat.items() if k.endswith('_msg_rate_ms')}
+    assert len(rates) >= 6, rates
+    even = {k: v for k, v in rates.items() if v != 0 and v % 2 == 0}
+    assert not even, even

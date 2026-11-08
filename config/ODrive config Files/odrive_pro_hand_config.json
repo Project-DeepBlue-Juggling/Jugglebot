@@ -72,16 +72,16 @@
         "vel": 6.36619758605957
       },
       "can": {
-        "bus_voltage_msg_rate_ms": 500,
+        "bus_voltage_msg_rate_ms": 499,
         "encoder_msg_rate_ms": 9,
-        "error_msg_rate_ms": 20,
-        "heartbeat_msg_rate_ms": 100,
+        "error_msg_rate_ms": 19,
+        "heartbeat_msg_rate_ms": 99,
         "input_torque_scale": 1000,
         "input_vel_scale": 100,
-        "iq_msg_rate_ms": 10,
+        "iq_msg_rate_ms": 9,
         "node_id": 6,
         "powers_msg_rate_ms": 0,
-        "temperature_msg_rate_ms": 100,
+        "temperature_msg_rate_ms": 99,
         "torques_msg_rate_ms": 0,
         "version_msg_rate_ms": 0
       },

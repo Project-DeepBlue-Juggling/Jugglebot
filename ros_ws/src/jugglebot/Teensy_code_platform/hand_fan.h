@@ -5,7 +5,7 @@
  *  code. The sketch owns the pin, the clock and the CAN writes.
  *
  *  INPUT. The Hand ODrive broadcasts Get_Temperature by itself (cyclic message,
- *  `temperature_msg_rate_ms: 100` in config/ODrive config Files/odrive_pro_hand_config.json),
+ *  `temperature_msg_rate_ms: 99` in config/ODrive config Files/odrive_pro_hand_config.json),
  *  so AUTO needs neither ROS2, nor the Jetson, nor the can-bridge to request anything.
  *  Payload: f32 LE FET temperature @0, f32 LE motor thermistor @4, both deg C.
  *
