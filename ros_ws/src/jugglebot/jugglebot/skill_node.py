@@ -759,6 +759,73 @@ def _frame_offset_check(platform_samples, commanded_samples, now, *,
                             dy_mm, detail, plat_spread_mm)
 
 
+@dataclasses.dataclass(frozen=True)
+class PlatformAttitude:
+    """The mocap Platform body's attitude in the robot frame, REPORT ONLY.
+
+    Added 2026-11-08 (owner, after the 2026-11-07 Sitting): a re-seat after a
+    Leg left its base joint put the Platform about 14 mm and 2.7 deg off, and
+    the position-only frame check passed it; the tilt caused four hop misses.
+    This is never compared with the commanded attitude (``commanded_position``
+    carries no orientation) and refuses nothing: the useful number is the
+    change since the previous check of the same launch."""
+    tilt_deg: float     # angle between the body's z axis and the robot frame's z
+    about_x_deg: float  # tilt components (small-angle, from the body z axis)
+    about_y_deg: float
+    yaw_deg: float      # heading of the body's x axis about the robot frame's z
+    samples: int
+
+
+def _platform_attitude(quat_samples, now, robot_to_world_R=None, *,
+                       window_s: float = _FRAME_CHECK_WINDOW_S,
+                       min_samples: int = _FRAME_CHECK_MIN_SAMPLES):
+    """Pure: the mean Platform body attitude over the last ``window_s``.
+
+    ``quat_samples``: iterables of ``(mono_s, qx, qy, qz, qw)`` (the body's
+    orientation in the world, ROS order), on the same clock as ``now``.
+    ``robot_to_world_R``: the attempt's snapshot rotation (``None`` =
+    identity). Returns a `PlatformAttitude`, or ``None`` when fewer than
+    ``min_samples`` finite samples lie in the window."""
+    q = np.array([s[1:5] for s in quat_samples if (now - s[0]) <= window_s],
+                 dtype=float).reshape(-1, 4)
+    q = q[np.all(np.isfinite(q), axis=1)]
+    if len(q) < min_samples:
+        return None
+    q = q * np.sign(q @ q[0])[:, None]        # one hemisphere before averaging
+    x, y, z, w = q.mean(axis=0) / np.linalg.norm(q.mean(axis=0))
+    body_to_world = np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+    R = (body_to_world if robot_to_world_R is None
+         else np.asarray(robot_to_world_R, dtype=float).T @ body_to_world)
+    zx, zy, zz = R[:, 2]
+    return PlatformAttitude(
+        tilt_deg=math.degrees(math.acos(max(-1.0, min(1.0, zz)))),
+        about_x_deg=math.degrees(math.atan2(-zy, zz)),
+        about_y_deg=math.degrees(math.atan2(zx, zz)),
+        yaw_deg=math.degrees(math.atan2(R[1, 0], R[0, 0])),
+        samples=int(len(q)))
+
+
+def _attitude_line(att, previous=None) -> str:
+    """The report-only log sentence for a `PlatformAttitude` (``None`` = not
+    measurable), with the change since ``previous`` when there is one."""
+    if att is None:
+        return ('Platform attitude: not measurable (too few mocap Platform '
+                'orientation samples in the window); report only')
+    line = ('Platform attitude (mocap body, robot frame, report only): tilt '
+            '%.2f deg (about x %+.2f, about y %+.2f), yaw %+.2f deg'
+            % (att.tilt_deg, att.about_x_deg, att.about_y_deg, att.yaw_deg))
+    if previous is None:
+        return line + '; first check this launch'
+    return line + ('; since the previous check this launch: about x %+.2f, '
+                   'about y %+.2f, yaw %+.2f deg'
+                   % (att.about_x_deg - previous.about_x_deg,
+                      att.about_y_deg - previous.about_y_deg,
+                      att.yaw_deg - previous.yaw_deg))
+
+
 #: Guards the check-and-build of a goal's Learner (``SkillNode._make_learner``):
 #: goal-start sites and the announcement / feed callbacks run on different
 #: threads of the MultiThreadedExecutor.
@@ -917,6 +984,11 @@ class SkillNode(Node):
         # `rigid_body_poses` at `hw.TRACKING_MOCAP_DT_S` (200 Hz) and
         # `commanded_position` on the 5 Hz status timer.
         self._platform_mocap_xyz = collections.deque(maxlen=400)
+        # The same body's orientation, for the report-only attitude line
+        # (`_platform_attitude`, 2026-11-08); kept apart so the xyz tuples the
+        # offset check and its tests read keep their shape.
+        self._platform_mocap_quat = collections.deque(maxlen=400)
+        self._platform_attitude_prev = None
         self._commanded_xy_hist = collections.deque(maxlen=40)
         # the ONLY clock the frame-check family reads (both buffers' stamps
         # in `_on_mocap` / `_on_commanded_position`, and the check's ``now``
@@ -1929,9 +2001,13 @@ class SkillNode(Node):
         for body in msg.bodies:
             if body.name == 'Platform':
                 p = body.pose.pose.position
+                t_frame = self._frame_clock()
                 self._platform_mocap_xyz.append(
-                    (self._frame_clock(), float(p.x), float(p.y),
+                    (t_frame, float(p.x), float(p.y),
                      float(p.z) + float(hw.GEOM_INITIAL_HEIGHT_MM)))
+                o = body.pose.pose.orientation
+                self._platform_mocap_quat.append(
+                    (t_frame, float(o.x), float(o.y), float(o.z), float(o.w)))
                 break
 
     def _on_commanded_position(self, msg) -> None:
@@ -5092,6 +5168,27 @@ class SkillNode(Node):
                 'someone moved it' % (age_s,))
         return ''
 
+    def _log_platform_attitude(self) -> None:
+        """REPORT ONLY (owner, 2026-11-08): log the Platform body's attitude
+        in the robot frame and its change since the previous check of this
+        launch. Refuses nothing and never raises into the check: a bad sample
+        or an unexpected frame object only costs this line."""
+        try:
+            frame = self._snapshot_frame()
+            R = None if frame.is_identity() else frame.R
+            att = _platform_attitude(tuple(self._platform_mocap_quat),
+                                     self._frame_clock(), R)
+        except Exception as exc:  # noqa: BLE001 — report-only, never fatal
+            att, line = None, ('Platform attitude: not measurable (%s); '
+                               'report only' % (exc,))
+        else:
+            line = _attitude_line(att, self._platform_attitude_prev)
+        # Its own prefix: 'frame check:' lines are the offset line, and
+        # consumers count exactly one per check.
+        self.get_logger().debug(line)
+        if att is not None:
+            self._platform_attitude_prev = att
+
     def _frame_check_error(self) -> str:
         """The session-start frame check (plan `cup-contact-contract.md`
         § 1): ALWAYS logs the offset — or why it could not be measured, so
@@ -5130,6 +5227,7 @@ class SkillNode(Node):
         else:
             self.get_logger().debug(
                 'frame check: cannot evaluate — %s' % (result.detail,))
+        self._log_platform_attitude()
         if result.evaluable and result.within_limit:
             self._mocap_to_schedule_mm = (float(result.dx_mm),
                                           float(result.dy_mm))

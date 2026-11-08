@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-08 | resolved | frame check | **Frame check reports the Platform's tilt and yaw in the robot frame and their change since the previous check (report only); it would have shown the 2026-11-07 bad re-seat** | [2026-11-08-frame-check-platform-attitude](2026-11-08-frame-check-platform-attitude.md) |
 | 2026-11-08 | resolved | can-bridge clock beat | **All seven Jugglebot ODrives on odd-ms CAN rates (encoder and iq 9, error 19, heartbeat and temperature 99, bus voltage 499), verified from flash; the fleet tool's --set gains --include-hand** | [2026-11-08-odrive-odd-can-rates](2026-11-08-odrive-odd-can-rates.md) |
 | 2026-11-08 | resolved | hand cooling fan | **A forced Hand fan returns to AUTO when the launch shuts down, so a fan switched ON by hand stops once the motor is below the off threshold** | [2026-11-08-hand-fan-auto-on-shutdown](2026-11-08-hand-fan-auto-on-shutdown.md) |
 | 2026-11-08 | complete | night-shift | **Night Shift 2026-11-08: 6 merged, 2 held, 3 questioned; BUG-72 reopened by two more Leg separations** | [2026-11-08-night-shift](2026-11-08-night-shift.md) |
