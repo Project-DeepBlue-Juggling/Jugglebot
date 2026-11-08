@@ -3948,7 +3948,9 @@ class SkillNode(Node):
                         'REFUSED %s=%r: %s (param NOT applied)'
                         % (param.name, param.value, refusal))
                     return SetParametersResult(successful=False, reason=refusal)
-                if (self._attempt_running()
+                # _goal_starting too: goal accept reads this parameter twice (the
+                # check and the record, then the Pattern), and the two must agree.
+                if ((self._attempt_running() or self._goal_starting)
                         and float(param.value) != (cur_x if is_x else cur_y)):
                     self.get_logger().warning(
                         'REFUSED %s=%r: a goal is active (param NOT applied) '

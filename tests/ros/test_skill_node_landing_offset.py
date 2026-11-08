@@ -119,6 +119,18 @@ def test_the_offset_cannot_change_while_a_goal_runs():
     assert _set(node, 'landing_offset_x_mm', 20.0).successful is True
 
 
+def test_the_offset_cannot_change_while_a_goal_is_being_accepted():
+    """Goal accept reads the parameter for the range check and the record, then
+    again for the Pattern: a set between the two would fly one value and record
+    another. No executor exists yet in that window, so _attempt_running is False."""
+    node, _ = _node_with_client()
+    node._attempt_running = lambda: False
+    node._goal_starting = True
+    assert _set(node, 'landing_offset_x_mm', 20.0).successful is False
+    node._goal_starting = False
+    assert _set(node, 'landing_offset_x_mm', 20.0).successful is True
+
+
 def test_a_value_past_the_lateral_authority_is_refused():
     node, _ = _node_with_client()
     node._params['learner_lateral_authority_mm'] = 30.0
