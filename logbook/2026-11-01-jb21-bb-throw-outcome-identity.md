@@ -1,5 +1,5 @@
 ---
-title: "bb/throw_outcome carries the throw's identity: a release_wall_s suffix, matched by skill_node (JB-21)"
+title: "bb/throw_outcome carries the throw's identity: a release_wall_s suffix, matched by skill_node (BUG-2)"
 type: bugfix
 date: 2026-11-01
 status: complete
@@ -21,7 +21,7 @@ tags:
   - bb-throw-outcome
 ---
 
-# bb/throw_outcome carries the throw's identity (JB-21)
+# bb/throw_outcome carries the throw's identity (BUG-2)
 
 ## What and why
 
@@ -43,11 +43,11 @@ Tradeoff accepted: a window (not exact equality) because the consumer cannot kno
 
 ## Audit findings applied (2026-11-03)
 
-The Night Shift audit left two behaviour-affecting findings; the owner decided to apply both (ticket JB-153, option 1).
+The Night Shift audit left two behaviour-affecting findings; the owner decided to apply both (ticket TKT-30, option 1).
 
 - **Release window bound and clock read (WARNING).** `WINDOW_AFTER_S` is now 2.5 s (was 0.75 s), and `_fire_reload_throw` re-reads the ROS clock right after `wait_for_service` returns (`window_now`) and centres the window on that instant. Before, the window was centred on a clock read taken before the wait and the service round trip, so a round trip over ~0.8 s dropped a genuine verdict and a genuine NOT_SETTLED was never retried. The window is now `[t-0.25, t+2.5]` around `window_now + delay_s`; throws are whole beats (seconds) apart, so it still separates them.
 - **No gap between the inflight flag and the window (NOTE).** `_reload_throw_inflight` is now set True in the same `_reload_lock` block that records `_bb_throw_release_window` (and sets `_bb_throw_dispatched`), so from `_on_bb_throw_outcome`'s view the window exists the moment the flag is True. Every end path already clears both together. The flag is also still set at the executor swaps, as before.
-- The rebase onto main also broke two of the branch's own tests (the retry they referred to was retired by JB-25; the window width assert): `..._does_not_spend_the_retry` became `..._does_not_end_the_attempt` and the width assert follows the new bound.
+- The rebase onto main also broke two of the branch's own tests (the retry they referred to was retired by BUG-6; the window width assert): `..._does_not_spend_the_retry` became `..._does_not_end_the_attempt` and the width assert follows the new bound.
 
 Verification: new tests `test_jb21_window_opens_after_wait_for_service_not_before` and `test_jb21_window_exists_the_moment_inflight_is_true` (tests/ros/test_skill_node.py). 2026-11-03, `pytest -q -p no:cacheprovider tests/ros/test_skill_node.py -k jb21_window` on the pre-fix code: 2 failed (verdict dropped; `inflight` False in flight). After the fix: see the scoped run below.
 2026-11-03, `pytest -q -p no:cacheprovider tests/ros/test_skill_node.py tests/ros/test_ball_butler_node.py tests/ros/test_throw_identity.py tests/sim/test_logbook_front_matter.py tests/sim/test_docs_links.py`: 477 passed in 101.92 s. The default gate is the merge gate's.

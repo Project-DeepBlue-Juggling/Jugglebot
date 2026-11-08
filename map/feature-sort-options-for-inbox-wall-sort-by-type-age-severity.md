@@ -1,5 +1,5 @@
 ---
-id: JB-77
+id: FEAT-26
 kind: feature
 title: 'Sort options for Inbox wall (sort by: type, age, severity)'
 status: complete

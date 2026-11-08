@@ -1,9 +1,9 @@
 ---
-title: "JB-190: the end line of a goal entered by a Feed is searchable by its pattern"
+title: "BUG-77: the end line of a goal entered by a Feed is searchable by its pattern"
 type: bugfix
 date: 2026-11-07
 status: complete
-phase: "Night Shift 2026-11-07 JB-190"
+phase: "Night Shift 2026-11-07 BUG-77"
 related_entries:
   - 2026-11-07-jb189-no-memory-row-from-a-faulted-stroke.md
 files_changed:
@@ -30,7 +30,7 @@ Nothing reads the text to choose a path. `grep` of `ros_ws/src/jugglebot/` (py, 
 - 2026-11-07, `pytest -q tests/motion/test_skills_report.py tests/ros/test_skill_node.py tests/motion/test_feed_lateral_miss_probe.py`: 424 passed in 128.59 s.
 - 2026-11-07, same new tests with `report.py` and `skill_node.py` reverted to HEAD (`git checkout`, patch re-applied afterwards): the new report test failed (`TypeError`, no `fed` keyword) and the three node end-line tests failed (old text).
 
-## Audit follow-up (2026-11-08, JB-196)
+## Audit follow-up (2026-11-08, TKT-43)
 
 Three audit findings applied, text and probe only: (1) `feed_catch_bag_probe.py`'s `_REJECTED_NO_BALL_RE` now accepts both the old `self_toss (reload) ENDED (REJECTED_NO_BALL)` and the new `self_toss ENDED (REJECTED_NO_BALL)` shape (new `tests/motion/test_feed_catch_bag_probe_regex.py` compiles the regex from the file's text); (2) `_end_label` cuts the suffix only when the label really ends with ` (reload)`; (3) a node test drives `_log_attempt_end` with `_attempt_fed` True, and one pins `_end_label`.
 

@@ -1,5 +1,5 @@
 ---
-title: "JB-92: the View menu's per-Pattern entries drop the redundant 'Records: ' prefix; the 'Records' section heading is the one place the word appears"
+title: "IDEA-7: the View menu's per-Pattern entries drop the redundant 'Records: ' prefix; the 'Records' section heading is the one place the word appears"
 type: feature
 date: 2026-11-01
 status: complete
@@ -18,7 +18,7 @@ tags:
   - night-shift
 ---
 
-# JB-92: View menu entries no longer repeat "Records: "
+# IDEA-7: View menu entries no longer repeat "Records: "
 
 **What.** `menuEntries` in `ros_ws/gui/js/records-model.js` labelled each View-menu checkbox `Records: <Pattern>`, directly under a `scene-menu-heading` that already reads `Records` (`records-panel.js`, the heading text was already literally "Records" and is unchanged). The label is now just `<Pattern>` (`Hop`, `Self-throw`, `Columns`). Storage key, Pattern ids and checked state are untouched. The `records-panel.js` header comment was updated to match.
 

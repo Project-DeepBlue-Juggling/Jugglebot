@@ -1,5 +1,5 @@
 ---
-title: "JB-79: test_hand_step_violation_not_sent flaked (assert 2 == 1) because the pump's step gate is a wall-clock velocity bound and the test slept on the real clock; the pump clock is now frozen in the two step-violation tests"
+title: "BUG-23: test_hand_step_violation_not_sent flaked (assert 2 == 1) because the pump's step gate is a wall-clock velocity bound and the test slept on the real clock; the pump clock is now frozen in the two step-violation tests"
 type: bugfix
 date: 2026-11-01
 status: complete
@@ -20,7 +20,7 @@ tags:
   - xdist
 ---
 
-# JB-79: the un-injected clock behind `assert 2 == 1`
+# BUG-23: the un-injected clock behind `assert 2 == 1`
 
 **What.** Since 2026-09-17 `SetpointPump`'s per-step gate is a velocity bound: it rejects iff `|du| > v_max * max(dt, knot_dt)`, with `dt` read from `time.monotonic` against the last ACCEPTED frame (the pump takes an injectable `clock`). `test_hand_step_violation_not_sent` sent a baseline, did a real `time.sleep(0.02)`, then a hand jump of `max_step_hand_rev + 0.1` = 5.1 rev. The hand budget is 200 rev/s, so any stall of the baseline-to-jump interval past 25.5 ms (the 20 ms sleep plus four-worker load) widens the budget over 5.1 rev and the pump correctly ACCEPTS the frame: `n_after == n_before` reads `2 == 1`. The pump is right and the test was wrong: it depended on wall time while asserting a time-dependent gate. `test_step_violation_not_sent` (legs, 0.9 rev jump, 12 rev/s so a 75 ms stall) is the same defect with 3x more margin; fixed the same way.
 

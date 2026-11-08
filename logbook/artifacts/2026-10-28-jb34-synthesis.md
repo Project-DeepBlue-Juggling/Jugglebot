@@ -1,7 +1,7 @@
-> Discussion artefact of 2026-10-28 (JB-34 logbook backfill survey), kept verbatim below. Owner changes: E2 declined (the skills/check live-state rehearsal is not filed);
-> status value is `resolved` everywhere, never `superseded`; everything else approved as recommended. The filed items are JB-82 to JB-87 (see the logbook entry).
+> Discussion artefact of 2026-10-28 (IDEA-2 logbook backfill survey), kept verbatim below. Owner changes: E2 declined (the skills/check live-state rehearsal is not filed);
+> status value is `resolved` everywhere, never `superseded`; everything else approved as recommended. The filed items are BUG-26, BUG-27, BUG-28, FEAT-27, BUG-29, FEAT-28 (see the logbook entry).
 
-# JB-34 synthesis: the logbook backfill as a proposal
+# IDEA-2 synthesis: the logbook backfill as a proposal
 
 Inputs: `merged.csv` (228 rows from 7 surveyors) and the seven `out/*.notes.md` files, plus 26 targeted
 checks against the repo on 2026-10-28. Nothing is filed. This is the discussion artefact for the owner.
@@ -62,8 +62,8 @@ Residue:
 - The Guard measures the Hand's deviation against the raw plan, not the post-slew command (`leg_interp.cpp`).
 - RETARGET sends `Set_Traj_Vel_Limit` (0x011) and `Set_Input_Pos` (0x00C) in the same tick. 0x00C wins arbitration, so the move can be planned at the old cruise speed.
 
-**Recommendation: FOLD into JB-73** (vel_ff held after MOTOR_FB_STALE). It is the same class: ODrive-side Hand state that drifts from what the can-bridge believes it commanded. Retitle JB-73 to *"Hand ODrive state can silently diverge from what the can-bridge commanded"*, keep priority medium, and keep vel_ff as the first instance.
-Trade-off: JB-73 is small and concrete today, and folding turns it into an enumeration. The alternative is a separate bug at medium.
+**Recommendation: FOLD into BUG-19** (vel_ff held after MOTOR_FB_STALE). It is the same class: ODrive-side Hand state that drifts from what the can-bridge believes it commanded. Retitle BUG-19 to *"Hand ODrive state can silently diverge from what the can-bridge commanded"*, keep priority medium, and keep vel_ff as the first instance.
+Trade-off: BUG-19 is small and concrete today, and folding turns it into an enumeration. The alternative is a separate bug at medium.
 
 **B. Bridge link ownership and the shutdown Stow** (can-bridge, safety-bearing). Entry: 07-12 cone-sync-udp-link-contention.
 Residue:
@@ -77,7 +77,7 @@ Trade-off: if the owner trusts the firmware deferred-stow, the Stow half is beni
 **C. CAN3 drive-path hardware fault** (can-bridge hardware). Entries: 07-31 can3-drive-path-fault, plus STALE 06-30 and 07-05.
 Residue:
 - The load-dependent analog fault was never repaired, and the firmware still runs the bus swap "until the CAN3 path is repaired".
-- CAN3 now carries the Cone and, since 2026-10-25, the wave camera, so the faulty bus gained load. Whether JB-52 (CLIP_MISSING on first start) relates is unchecked.
+- CAN3 now carries the Cone and, since 2026-10-25, the wave camera, so the faulty bus gained load. Whether BUG-13 (CLIP_MISSING on first start) relates is unchecked.
 
 **Recommendation: FILE as bug**: *"can-bridge CAN3 analog drive path has a load-dependent hardware fault (the Jugglebot loom stays on CAN2)"*. Priority low, no pathway.
 Trade-off: DROP, and keep it as the standing memory and firmware-comment fact it already is.
@@ -98,7 +98,7 @@ Residue:
 
 **Recommendation: FILE as bug**: *"RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball"*. Priority low, Pathway **two-ball-oval**.
 - DROP the apex-edge tie-break, the CHAIN_CATCH margin ring and `t_bridge_us` (R3-era; no recurrence since the R5 gate).
-- The closing-REST LIMIT_JERK is already JB-24.
+- The closing-REST LIMIT_JERK is already BUG-5.
 - The rehearsal is an owner question (g2).
 
 **F. Wire, interface and docs hygiene** (trivial). Entries: 06-08 bb-cutover-bench, 06-29 canbridge-phase0, 09-21 agent-skills-config, 10-13 wave-2 item 7.
@@ -117,7 +117,7 @@ Residue:
 - F3, F4, yaw-homing and the aim refit are already rows of `plans/archived/skill-stack-dress-rehearsals-and-residue.md` § 2.
 
 **Recommendation: FILE as bug**: *"Ball Butler over-CAN flash calls the retired Jugglebot-skills worktree"*. Priority medium, because it blocks the next Ball Butler flash. Pathway **ball-butler**. The fix is in the BallButler repo, `platformio.ini:44,94` and `bb_link_check.py:13,25`.
-FOLD F3, F4, yaw-homing and the refit: they stay as residue-plan rows. JB-25, JB-21 and JB-30 already cover the rest.
+FOLD F3, F4, yaw-homing and the refit: they stay as residue-plan rows. BUG-6, BUG-2 and FEAT-5 already cover the rest.
 
 **H. Hand ball sensor tuning** (Hand/can-bridge). Entries: 07-29 gpio-poller, 07-29 gui-pill-runbook, 07-29 endpoint-id.
 Residue: the ~240 ms `REPLY_STALE_US` dead-sensor window was never measured, and the `gpio_poll` off setting is not persistent.
@@ -126,7 +126,7 @@ Residue: the ~240 ms `REPLY_STALE_US` dead-sensor window was never measured, and
 
 **I. Launch CPU and the emitter gap**. Entries: 09-14 rosbridge-cpu-leak, 10-10 mocap-frame-queue, 05-22 mpc-compute-bound (lesson only).
 
-**Recommendation: FOLD into JB-76, JB-23 and JB-31**. Add `mocap_node` priority/pinning and the `TRACKING_MAX_FRAMES` revisit to JB-76's next steps, unless they are already there.
+**Recommendation: FOLD into BUG-21, BUG-4 and FEAT-6**. Add `mocap_node` priority/pinning and the `TRACKING_MAX_FRAMES` revisit to BUG-21's next steps, unless they are already there.
 
 **J. Oval cup-seating cone angle gap**. Entry: 10-19 cup-seating-cone-refuses-columns-stroke-braking. The offline replica reads 16.5-21.7° at the knot after the Catch, while hardware read 31.6-41.7°. The gap is unexplained.
 
@@ -174,7 +174,7 @@ Not flipped:
 
 1. Should flips use `resolved` everywhere, or should `superseded` be added to the README ladder (a normative-doc edit, so audited) and used for the 39 superseded rows?
 2. Theme E: should the `skills/check` live-state rehearsal (planning each Pattern's first Skills from `/robot_state`) be filed as a feature on two-ball-oval, or left alone?
-3. Theme A: fold into JB-73 and retitle it to the class, or file a separate bug?
+3. Theme A: fold into BUG-19 and retitle it to the class, or file a separate bug?
 4. Theme B: is the firmware deferred-stow a sufficient backstop, so that only the single-owner interlock is filed?
 5. Theme C: file the CAN3 drive-path fault as a low bug, or keep it as a memory fact only?
 6. Theme G: fix the Ball Butler flash path now (a two-line BallButler edit) instead of filing it?

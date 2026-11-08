@@ -110,4 +110,4 @@ Bench check: `tests/hardware/session_anomaly_fixes.md` § CHECK CCATCH-5. Requir
   (per-install rather than rolling-window on the SpaceMouse / reactive-catch path)
   is untouched and still open.
 
-> Closed 2026-10-28: fix in force at trajectory_node.py:854 (planner.build_catch); FSM caller later deleted at fsm-final (JB-34 survey).
+> Closed 2026-10-28: fix in force at trajectory_node.py:854 (planner.build_catch); FSM caller later deleted at fsm-final (IDEA-2 survey).

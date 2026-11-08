@@ -136,7 +136,7 @@ No erase, no restore, no calibration, no motion. ``--dry-run`` prints the
 before -> after plan and writes nothing. Mutually exclusive with ``--config`` and
 the erase-path flags. **The reboot drops each leg's encoder zero**: power-cycle
 or reboot the can-bridge before the next launch so it re-homes the legs (a
-bridge that still believes they are homed is the JB-146 hazard).
+bridge that still believes they are homed is the BUG-56 hazard).
 ``axis0.config.can.node_id`` cannot be set this way.
 
 ``--map`` is the fix for the one state this script can otherwise not reason
@@ -1349,7 +1349,7 @@ def main_set(args: argparse.Namespace) -> int:
             print('    ! {}'.format(line), file=sys.stderr)
     print('\nREMINDER: the drives REBOOTED, so their encoder zero is gone. Power-cycle or '
           'reboot the can-bridge before the next launch so it re-homes the legs; a '
-          'bridge that still believes the legs are homed is the JB-146 hazard.')
+          'bridge that still believes the legs are homed is the BUG-56 hazard.')
     failed = [res.node_id for res in results if not res.ok]
     if failed:
         print('\nverify FAILED on node(s) {}'.format(failed), file=sys.stderr)

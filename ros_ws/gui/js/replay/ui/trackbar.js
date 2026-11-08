@@ -83,7 +83,7 @@ export function createTrackbar(deps) {
     let pendingScrub = null;                      // latest bar-drag time, flushed once per frame (latest wins)
     let lastFull = { t0: 0, t1: 0 };
     let unsubMode = null, unsubMarker = null;
-    let markT = null;                             // hover marker time (JB-135), set by mode 'marker' events; null = none
+    let markT = null;                             // hover marker time (FEAT-35), set by mode 'marker' events; null = none
 
     const engine = () => (mode.engine ? mode.engine() : null);
 

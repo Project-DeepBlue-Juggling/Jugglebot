@@ -1,5 +1,5 @@
 ---
-id: JB-120
+id: BUG-42
 kind: bug
 title: 'A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve'
 status: in_progress
@@ -65,11 +65,11 @@ Flown 2026-11-03 (passed on the Hand criterion, see Progress); renamed from `## 
 - 7 of 7 refusals are the first install of a catch seeded from a BUMPED predecessor (0 of about 59 unbumped seeds).
 - Offline `plan_segment` plus `apply_catch_bump` reproduces the peaks within 3 pct: the peak sits on span 1 of the post-release hold.
 - The branch fallback was not flown and could not have helped; the box is blind to bumped seeds.
-- Branch `night-shift/2026-11-01-JB-120` stays held (the limit decision is below).
+- Branch `night-shift/2026-11-01-BUG-42` stays held (the limit decision is below).
 
 **Owner decision 2026-11-01 (debrief).** HAND_LIMIT_ACC 3900 -> 4500 rev/s^2 and hand_curr_limit_a 50 -> 60 A (4500 needs ~57 A at the modelled Kt/J; owner open to 70-80 A later, heating manageable; the hand ODrive hard max is 70 A); box re-swept under the new limits.
 
-The structural fix is FILED here as the next step, not built: the bump decision also plans the next catch and declines or shrinks the bump if that solve refuses; late re-sends fall under the same rule. JB-117 bench hold-and-step measures the real authority.
+The structural fix is FILED here as the next step, not built: the bump decision also plans the next catch and declines or shrinks the bump if that solve refuses; late re-sends fall under the same rule. BUG-41 bench hold-and-step measures the real authority.
 
 ## Sitting result (2026-11-02)
 
@@ -90,14 +90,14 @@ The structural fix is FILED here as the next step, not built: the bump decision 
 - No cheap gate exists: only the next catch's own solve (33-93 ms) predicts the Hand peak, too slow for the 25-50 ms bump window, so no live caller passes a gate yet and the live path is unchanged.
 - Owner call 2026-11-03: land unwired. Offline, every bumped seed up to 30 mm now plans at or under 82 pct of the 4500 limit.
 - Trigger to wire it (option B, an offline bump envelope per box cell): a HAND_LIMIT_ACC after a Bump at the 4500 limit.
-- The fallback branch night-shift/2026-11-01-JB-120 was dropped per JB-152. Logbook 2026-11-03-jb120-bump-gated-by-the-next-catch.
+- The fallback branch night-shift/2026-11-01-BUG-42 was dropped per TKT-29. Logbook 2026-11-03-jb120-bump-gated-by-the-next-catch.
 
 ## Progress
 
-- 2026-11-01: Night Shift 2026-11-01: held on night-shift/2026-11-01-JB-120: hardware robot; audit open on HAND_LIMIT_C2 admitted by the new HAND_LIMIT_ prefix and no both-refused test; unblocked by the Sitting in the section below plus the owner's call on the C2 finding (detail below)
+- 2026-11-01: Night Shift 2026-11-01: held on night-shift/2026-11-01-BUG-42: hardware robot; audit open on HAND_LIMIT_C2 admitted by the new HAND_LIMIT_ prefix and no both-refused test; unblocked by the Sitting in the section below plus the owner's call on the C2 finding (detail below)
 - 2026-11-01: Sitting: 6 Columns ENDs HAND_LIMIT_ACC 3910.6-4096.8 vs 3900; 7 of 7 refusals follow a BUMPED predecessor (0 of ~59 unbumped); reproduced offline within 3 pct. Branch fallback not flown, could not help. Owner keeps 3900; branch stays held (detail below)
 - 2026-11-01: Owner decision (debrief): HAND_LIMIT_ACC 3900 -> 4500 rev/s^2, hand_curr_limit_a 50 -> 60 A, box re-swept; the structural bump fix (plan the next catch at bump time) stays FILED here, not built (detail in the findings section).
 - 2026-11-02: Failed at the Sitting of 2026-11-02: HAND_LIMIT_ACC 4509 at 49/51 after a 30.5 mm bump; all 3 refusals of both Sittings follow the 3 largest inward bumps (22.2-30.5 mm), 0 of 329 unbumped. New cause found and fixed: the bump kept the pre-bump C-HAND-5 brake seed (offline 4696 -> 3407). Structural fix stays filed.
-- 2026-11-03: Passed at the Sitting of 2026-11-03 on the Hand criterion: 0 HAND_LIMIT_ACC after 71 bumps, peak Hand acc 3794 rev/s^2 = 84% of 4500 (L2532). 15 leg LIMIT_VEL/JERK refusals and 3 Hand faults in the block belong to JB-24 and JB-147. Held branch dropped (JB-152 option 3); Item stays open for the structural bump fix.
-- 2026-11-03: Structural fix landed UNWIRED (I-CATCH-7, bump_with_next_catch_gate); owner call: land unwired, wire option B if a HAND_LIMIT_ACC after a Bump fires at 4500; fallback branch dropped per JB-152 (detail below)
+- 2026-11-03: Passed at the Sitting of 2026-11-03 on the Hand criterion: 0 HAND_LIMIT_ACC after 71 bumps, peak Hand acc 3794 rev/s^2 = 84% of 4500 (L2532). 15 leg LIMIT_VEL/JERK refusals and 3 Hand faults in the block belong to BUG-5 and BUG-57. Held branch dropped (TKT-29 option 3); Item stays open for the structural bump fix.
+- 2026-11-03: Structural fix landed UNWIRED (I-CATCH-7, bump_with_next_catch_gate); owner call: land unwired, wire option B if a HAND_LIMIT_ACC after a Bump fires at 4500; fallback branch dropped per TKT-29 (detail below)
 - 2026-11-05: FW 37 C1 stop first live firings 2026-11-05 (3x, mid-launch, none near a release); behaves as coded (hold within 0.03 rev of the formula). The planned-release case is still unverified.

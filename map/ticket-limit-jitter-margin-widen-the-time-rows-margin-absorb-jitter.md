@@ -1,5 +1,5 @@
 ---
-id: JB-127
+id: TKT-23
 kind: ticket
 title: 'LIMIT_* jitter margin: widen the time rows'' margin, absorb jitter in the re-send, raise a Sitting limit, or tally the class at hold 0 first?'
 status: complete
@@ -18,7 +18,7 @@ parent: bug-limit-refusal-jitter-margin
 type: question
 ---
 
-JB-24: landing-time jitter of plus or minus 20-30 ms against the 10 percent planning margin, with the Sitting limits for acceleration and jerk on their YAML ceilings, makes `LIMIT_*` refusals the likely dominant miss class (sitting-4 analysis in `plans/archived/two-ball-skill-stack.md`, the wave-3 tally); the owner's options (a)-(d) from sitting 4 are still undecided and a longer Dwell costs transit.
+BUG-5: landing-time jitter of plus or minus 20-30 ms against the 10 percent planning margin, with the Sitting limits for acceleration and jerk on their YAML ceilings, makes `LIMIT_*` refusals the likely dominant miss class (sitting-4 analysis in `plans/archived/two-ball-skill-stack.md`, the wave-3 tally); the owner's options (a)-(d) from sitting 4 are still undecided and a longer Dwell costs transit.
 
 Night Shift 2026-11-01 cannot choose a margin or a limit for the robot; the options below are drafted into the Item's `## Options (2026-11-01)` section.
 

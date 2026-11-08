@@ -170,7 +170,7 @@ def test_multi_axis_independent_outcomes():
     assert 1 in m.failed
 
 
-# ── per-home epoch (can-bridge FW 34, JB-72) ─────────────────────────────────
+# ── per-home epoch (can-bridge FW 34, BUG-18) ─────────────────────────────────
 # The 2026-10-27 bench home (axis 0, ~0.8 s to the stop) false-timed-out with
 # saw_running=False although the firmware set the reference. A home that goes
 # OK -> RUNNING -> OK between two observed Diagnostics is indistinguishable from

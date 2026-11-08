@@ -1,5 +1,5 @@
 ---
-id: JB-185
+id: BUG-73
 kind: bug
 title: 'Nomination margin is higher than the live plan''s: it plans at nominal Sites without the re-aim travel (0.194 nominated, 0.075 live at Sep. 170)'
 status: complete

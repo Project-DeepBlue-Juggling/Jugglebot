@@ -1,5 +1,5 @@
 ---
-id: JB-108
+id: IDEA-11
 kind: idea
 title: 'JP-10 Turned columns: the columns pair at fixed angles about +z, under pose'
 status: in_progress
@@ -39,23 +39,23 @@ It proves the rotational symmetry on hardware that lets the admissible box key o
 ## Sitting
 
 - setup: level, armed, bb-fed
-- why: P3 of plan pattern-progression.md: two-ball Columns off the x axis under the pose planner, one plant_id per angle (set explicitly in the steps below), which answers JB-38 P2(b) (does the lateral bias rotate with the pair).
+- why: P3 of plan pattern-progression.md: two-ball Columns off the x axis under the pose planner, one plant_id per angle (set explicitly in the steps below), which answers PWAY-2 P2(b) (does the lateral bias rotate with the pair).
 - do:
   - Rehearse before arming: cup empty, Ball Butler unpowered, `ros2 param set /skill_node columns_angle_deg 45`, send the goal below once. The accept message may name only the cup and Ball Butler refusals (no nomination refusal) and nothing moves. Repeat at 90.
   - Fly a straight `Columns` control first if this Sitting has not flown one (GUI Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21).
   - GUI: Juggle panel `Columns — turned`, Angle 45, Apex 0.95, Sep. 125, Dwell 0.27, Throws 21 (Start writes columns_angle_deg to the node first). Terminal fallback: `ros2 param set /skill_node columns_angle_deg 45` (refused while a goal runs), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_turned, apex_m: 0.95, separation_mm: 125.0, dwell_s: 0.27, num_cycles: 21}" --feedback`. Only the 0.925 to 0.975 Apex band is admissible at 45 deg.
   - Angle 90 (or `ros2 param set /skill_node columns_angle_deg 90`), then the same goal at Apex 0.95 (0.90 is also admissible at 90 deg).
-  - Set the plant per angle before each angle's first goal (never set on 2026-11-01 or 2026-11-03, so JB-38 P2(b) is unanswered): `ros2 param set /skill_node plant_id <name>` with a distinct name per angle, for example `turned45` and `turned90`, refused while a goal runs; read it back from the goal start line (`plant_id=...`) and write it in the record.
+  - Set the plant per angle before each angle's first goal (never set on 2026-11-01 or 2026-11-03, so PWAY-2 P2(b) is unanswered): `ros2 param set /skill_node plant_id <name>` with a distinct name per angle, for example `turned45` and `turned90`, refused while a goal runs; read it back from the goal start line (`plant_id=...`) and write it in the record.
   - Afterwards `ros2 param set /skill_node columns_angle_deg 0`.
 - pass: 20 consecutive Catches in one Attempt at each angle, flown with Throws 21 (the 21st throw is the Stop throw, so `COMPLETED (20/20 caught)`; with Throws 20 it reads 19/19); landing scatter, per ball and per axis, with the mean within 15 mm and the sd within 10 mm of the straight control (proposed 2026-11-03, owner to confirm; the old "within 3 mm" was below the control's own run-to-run sd of 18-31 mm); no HAND_LIMIT line.
-- record: caught of thrown per angle, each angle's plant_id, landing scatter against the control, Ball 2's first-throw landing (x, y) mm per Attempt (JB-161: 5 of 7 landed outward at 90 deg on 2026-11-03), the bag path; commit docs/records.md.
+- record: caught of thrown per angle, each angle's plant_id, landing scatter against the control, Ball 2's first-throw landing (x, y) mm per Attempt (BUG-63: 5 of 7 landed outward at 90 deg on 2026-11-03), the bag path; commit docs/records.md.
 - minutes: 20
 
 ## Sitting 2026-11-01 findings
 
 - 45 deg: three MISSED_CATCH on an empty cup, two after TRACKER-IDENTITY-REFUSED, one after a half-speed launch (2341 vs 4268 mm/s); one leg LIMIT_VEL 361 > 350 at 0/1.
 - Hand iq 53.3 A at L3521 (over the 50 A watch). Tracker apex 1.01-1.04 m turned vs 0.93-0.96 straight.
-- No per-angle `plant_id` was set, and no tracker landing on any miss, so JB-38 P2(b) is not answered.
+- No per-angle `plant_id` was set, and no tracker landing on any miss, so PWAY-2 P2(b) is not answered.
 
 ## Sitting result (2026-11-03)
 
@@ -70,5 +70,5 @@ It proves the rotational symmetry on hardware that lets the admissible box key o
 ## Progress
 
 - 2026-10-31: P2 of plan pattern-progression.md done offline: goal columns_turned, parameter columns_angle_deg, 12 pose box cells at 45 and 90 deg (45 deg admits only Apex 0.925-0.975, 90 deg 0.875-0.975). Next: the JP-10 Rung (P3) at a Sitting. Logbook 2026-10-31-pattern-progression-p2-turned-columns.md.
-- 2026-11-01: Sitting: gate NOT met. 45 deg best 2/2, 90 deg best 16/16 (GUARD_LATCHED, JB-137); hand iq 53.3 A on a 45 deg hop launch (JB-138); JB-38 P2(b) NOT answered (detail below)
-- 2026-11-03: Failed at the Sitting of 2026-11-03: 45 deg COMPLETED 19/19 twice of 5, 90 deg 0 of 7 (best 12/12), Ball 2 lands 37-50 mm outward at 90 deg vs 10 mm outward authority; plant_id not set per angle so JB-38 P2(b) unanswered; a 14th goal rejected at angle 135. 19 in 19 is a records row.
+- 2026-11-01: Sitting: gate NOT met. 45 deg best 2/2, 90 deg best 16/16 (GUARD_LATCHED, BUG-50); hand iq 53.3 A on a 45 deg hop launch (BUG-51); PWAY-2 P2(b) NOT answered (detail below)
+- 2026-11-03: Failed at the Sitting of 2026-11-03: 45 deg COMPLETED 19/19 twice of 5, 90 deg 0 of 7 (best 12/12), Ball 2 lands 37-50 mm outward at 90 deg vs 10 mm outward authority; plant_id not set per angle so PWAY-2 P2(b) unanswered; a 14th goal rejected at angle 135. 19 in 19 is a records row.

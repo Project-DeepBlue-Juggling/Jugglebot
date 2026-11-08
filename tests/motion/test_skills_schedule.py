@@ -2049,7 +2049,7 @@ def test_parity_rule_phantom_n1_unchanged(cols):
     assert _stop_skills(sched) == []
 
 
-# ── High-low Columns (JP-9, map JB-107): per-ball Apex ─────────────────────
+# ── High-low Columns (JP-9, map IDEA-10): per-ball Apex ─────────────────────
 
 def _hl_pattern(apex_a, apex_b, dwell=0.27, n=8, **kw):
     p1, p2 = st.columns_sites(125.0)

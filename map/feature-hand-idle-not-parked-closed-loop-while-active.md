@@ -1,5 +1,5 @@
 ---
-id: JB-2
+id: FEAT-1
 kind: feature
 title: 'Design change: the Hand should be Idle, not Parked Closed-loop, while Active'
 status: inbox
@@ -36,7 +36,7 @@ Safety-bearing: plan it in `plans/` before touching code. `CONTEXT.md` deliberat
 
 Night Shift 2026-11-02 drafted these for the owner; a question ticket carries them and its `## Answer` re-opens this Item.
 
-1. Keep today's behaviour (Closed-loop Park at ACTIVATE) and close the Item: the opening REST's seed and the firmware resume envelope stay as flown since R1; the cost is the Hand holding position while Active (hold current about 1.5 A measured, JB-117) and its heating.
+1. Keep today's behaviour (Closed-loop Park at ACTIVATE) and close the Item: the opening REST's seed and the firmware resume envelope stay as flown since R1; the cost is the Hand holding position while Active (hold current about 1.5 A measured, BUG-41) and its heating.
 2. Idle after ACTIVATE, with an explicit arm rung at the start of every Attempt (request Closed-loop, TRAP_TRAJ to the Park, confirm by telemetry, refuse the Attempt loudly otherwise) and back to Idle at the Attempt's end. The transition the body asks for; the largest change, planned in `plans/` first.
 3. Idle on a timeout only: ACTIVATE keeps today's Closed-loop Park, the Hand drops to Idle after N seconds without an Attempt, and the next Attempt start re-arms it through the same rung as option 2. The common path is unchanged.
 4. Operator toggle: a GUI control that Idles or arms the Hand while Active, with the Attempt start refusing on an Idle Hand.

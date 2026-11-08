@@ -1,5 +1,5 @@
 ---
-id: JB-177
+id: FEAT-42
 kind: feature
 title: Add a data-only verdict to the Sitting result box (pass / fail / pending / data)
 status: inbox
@@ -18,7 +18,7 @@ parent: map-improvements
 filed_by: claude
 ---
 
-JB-149's 2026-11-05 22:54 result was a pure report of observations with no pass criterion, and `pending` means the pass needs the logs, so the owner had no honest option.
+BUG-58's 2026-11-05 22:54 result was a pure report of observations with no pass criterion, and `pending` means the pass needs the logs, so the owner had no honest option.
 
 ## Wanted
 - Add `data` to `mapkit.sitting.VERDICTS` (mapkit/sitting.py), `parse_sitting_results`, and the app's result box (jugglebot-map fork).

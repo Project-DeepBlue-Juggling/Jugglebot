@@ -46,7 +46,7 @@ tags: [safety, performance, kinematics, dynamics, testing, docs]
 
 # Hand limit 4500 at 60 A, and the HAND_STROKE between-knot floor
 
-Code half of `2026-11-01-sitting-debrief.md`, which attributed the three largest end classes of the Sitting (HAND_STROKE 7, HAND_LIMIT_ACC 6, and the starved-bridge latches) to causes other than the Items that tracked them. Items: JB-136 (fix landed), JB-120 (decision), JB-98 and JB-137 (instrumented), JB-23.
+Code half of `2026-11-01-sitting-debrief.md`, which attributed the three largest end classes of the Sitting (HAND_STROKE 7, HAND_LIMIT_ACC 6, and the starved-bridge latches) to causes other than the Items that tracked them. Items: BUG-49 (fix landed), BUG-42 (decision), BUG-34 and BUG-50 (instrumented), BUG-4.
 
 ## Summary
 
@@ -56,13 +56,13 @@ Code half of `2026-11-01-sitting-debrief.md`, which attributed the three largest
 | Hand limit | `hand_acc_limit_rps2` 3900 -> 4500, `hand_curr_limit_a` 50 -> 60 A | decel-FF headroom bound 4710.6 at 60 A |
 | Instrumentation | forward and loop gap in the bridge, `/link_status` fields, one WARN per episode | 3 new bridge tests, 6 gap_monitor tests |
 | Observability | peaks on every accepted install line, one more digit in LIMIT_* text, identical-aim fallback skipped, `bump_seed_replay.py` | 6 of 6 replayed peaks within 2 % of the log |
-| Box | re-swept at 4500 | 82 cells (82 before), 32 changed vs the pre-tonight box, gate_hash 15c6d0ff8a84; hop cells traded landing x for apex band (JB-143); hop cells traded landing x for apex band (JB-143) |
+| Box | re-swept at 4500 | 82 cells (82 before), 32 changed vs the pre-tonight box, gate_hash 15c6d0ff8a84; hop cells traded landing x for apex band (BUG-54); hop cells traded landing x for apex band (BUG-54) |
 
 ## Discussion
 
-**Why raise the limit instead of fixing the bump seed (accepted tradeoff).** All six HAND_LIMIT_ACC ends were first installs seeded from a BUMPED predecessor with a span-1 peak of 4000-4100 (JB-120). The structural fix (a bump that does not hand the successor a hot seed) is filed, not built. The owner decided to raise the limit to the decel-feedforward headroom bound. The runway `v^2/(2a)` shrinks by 1/1.154, so the QP can brake later and harder, which is what admits the bump-seeded successor. The cost is a higher authority demand on the Hand (below) and the loss of REGEN margin in the throw envelope. The seed defect is still there; the limit now hides it with 4500 vs 4100 of margin rather than removing it.
+**Why raise the limit instead of fixing the bump seed (accepted tradeoff).** All six HAND_LIMIT_ACC ends were first installs seeded from a BUMPED predecessor with a span-1 peak of 4000-4100 (BUG-42). The structural fix (a bump that does not hand the successor a hot seed) is filed, not built. The owner decided to raise the limit to the decel-feedforward headroom bound. The runway `v^2/(2a)` shrinks by 1/1.154, so the QP can brake later and harder, which is what admits the bump-seeded successor. The cost is a higher authority demand on the Hand (below) and the loss of REGEN margin in the throw envelope. The seed defect is still there; the limit now hides it with 4500 vs 4100 of margin rather than removing it.
 
-**Why 60 A.** At 4500 the ball-free hand needs 0.297 N m = 53.8 A (42.4 A from the torque feedforward, about 11.4 A from the loop). That cannot fit under 50 A, so the limit and the current go up together. The owner was open to 60-80 A; 70-80 A is not available because the drive's `current_hard_max` is 70 A, so soft = hard trips on any overshoot (JB-138 measured 53.3 A against the 50 A soft limit). 60 A leaves a 10 A margin.
+**Why 60 A.** At 4500 the ball-free hand needs 0.297 N m = 53.8 A (42.4 A from the torque feedforward, about 11.4 A from the loop). That cannot fit under 50 A, so the limit and the current go up together. The owner was open to 60-80 A; 70-80 A is not available because the drive's `current_hard_max` is 70 A, so soft = hard trips on any overshoot (BUG-51 measured 53.3 A against the 50 A soft limit). 60 A leaves a 10 A margin.
 
 **Why the HAND_STROKE rows sample the stroke level, not the box floor.** Every refusal was the hop-start skill-2 CATCH in the middle of a 25 ms span: the cup QP bounded the slider at knots 1..n only, while the gate samples the continuum. Rebuilt offline, the knot minimum sat on the 0.0614 rev box floor while the cubic at t = 0.488 s dipped to 0.0078 rev (a*dt^2/8 at about 680 rev/s^2); the hardware seed went 0.012 further, to -0.004.
 
@@ -132,9 +132,9 @@ Hardware facts and open decisions:
 | ODrive backup JSON | still `current_soft_max 50` (a transcription configure overrides; not edited) |
 | `stream_stop_hand_accel_rps2` 3500 | left: stops at max(3500, entry accel), so a 4500 entry is honoured; changing it needs a flash |
 | Firmware FF clamp 0.234 N m | left; reaching 0.85*60*Kt = 0.281 needs a flash |
-| Ball-aboard ascent wants 69 A vs 60 A | JB-115 gap still open (JB-117 measured brake currents about half the model, so probably pessimistic) |
+| Ball-aboard ascent wants 69 A vs 60 A | BUG-40 gap still open (BUG-41 measured brake currents about half the model, so probably pessimistic) |
 
-### 3. Instrumentation (JB-98, JB-137)
+### 3. Instrumentation (BUG-34, BUG-50)
 
 - `teensy_link/gap_monitor.py`: `GapTracker` (rolling 1 s max and p99, idle cutoff), `EpisodeLatch`, `GapStats`, `SCHED_COVER_MS = 70` (2x25 + 20; the only Python mirror, firmware source not in this checkout).
 - `/link_status` gains `max_forward_gap_ms`, `forward_gap_p99_ms`, `max_loop_gap_ms` (1 s window, 10 Hz).
@@ -165,22 +165,22 @@ Hardware facts and open decisions:
 | 2026-11-02 | `./run_tests.sh --full` (first, 08:17-08:24) | 7947 passed, 3 failed + 1 serial failed; the pose budget at 50.4 ms > 50.0 (above) |
 | 2026-11-02 | `OPENBLAS_NUM_THREADS=1 python -m pytest tests/motion/test_cup_cycle.py test_validate_cycle.py test_validate_cycle_vectorised.py test_pose_planner.py test_cup_cycle_row_labels.py test_unified_cycle_budget.py test_unified_cycle.py test_skills_segments.py -q -p no:cacheprovider` (floor-only, ceiling opt-in) | 351 passed, 2 skipped in 34.24 s |
 | 2026-11-02 | box-history tests re-anchored on the frozen `tests/fixtures/admissible_box_pre_h4500.yaml` (no assertion loosened) plus `test_h4500_resweep_kept_cells_and_columns_values_and_changed_only_hand_acc` | in the gate run below |
-| (gate) | `./run_tests.sh --full` | 2026-11-02, on the commit merged onto origin/main (Night Shift JB-32/JB-135 included): **PASS**, parallel 7961 passed, 53 skipped in 386.22 s; serial 8 passed in 30.61 s (total 423 s). The first merged run failed JB-32's new `test_a_biased_plant_fires_the_forward_clip_in_a_small_hop_run`: the sim's hop cell widened to +/-20 mm, so a +30 mm bias no longer leaves the box; the test now runs on `tests/fixtures/admissible_box_pre_h4500.yaml` (frozen geometry) and reproduces its original clip exactly |
+| (gate) | `./run_tests.sh --full` | 2026-11-02, on the commit merged onto origin/main (Night Shift FEAT-7/FEAT-35 included): **PASS**, parallel 7961 passed, 53 skipped in 386.22 s; serial 8 passed in 30.61 s (total 423 s). The first merged run failed FEAT-7's new `test_a_biased_plant_fires_the_forward_clip_in_a_small_hop_run`: the sim's hop cell widened to +/-20 mm, so a +30 mm bias no longer leaves the box; the test now runs on `tests/fixtures/admissible_box_pre_h4500.yaml` (frozen geometry) and reproduces its original clip exactly |
 
 Not sourced: a clean-HEAD A/B of the bridge tests (no stash allowed in the shared tree); the serial budget tests (`test_unified_cycle_budget.py`, `test_validate_cycle_budget.py`) failed at load 24 under xdist and must be judged from the serial tail of the gate run; the offline sim `skills_gate.py --learn` run (PASS 3/3) predates the fix and was not re-run.
 
 ## Outcome
 
-Landed, awaiting the sweep and gate results above. Not yet shown on hardware: that 4500 at 60 A admits the bump-seeded successor in flight, that no HAND_STROKE end recurs, and the ball-aboard ascent current (69 A wanted vs 60 A, JB-115). Hand-jam and the 55 A watch (JB-107, JB-138) are the first things to read after the next Sitting.
+Landed, awaiting the sweep and gate results above. Not yet shown on hardware: that 4500 at 60 A admits the bump-seeded successor in flight, that no HAND_STROKE end recurs, and the ball-aboard ascent current (69 A wanted vs 60 A, BUG-40). Hand-jam and the 55 A watch (IDEA-10, BUG-51) are the first things to read after the next Sitting.
 
 ## Open Questions
 
-- **JB-143, the hop cells (owner decision).** The re-swept box keeps 82 cells; 32 changed. Columns, turned and high-low cells are unchanged or wider. The hop cells gained apex band at the bottom, and the apex 0.92-0.97 hop cell (the one Columns at 0.95 flies) shrank in landing x from +/-10 to +/-4 mm. Cause: `_flight_band_and_rect` grows the band while the zero-offset throw passes, then fits one rectangle over the whole band; at 4500 the 0.65-0.73 s flights pass at zero offset but fail HAND_LIMIT_C2 at large x. At the operating flights every grid offset passes, so it is a selection artefact.
+- **BUG-54, the hop cells (owner decision).** The re-swept box keeps 82 cells; 32 changed. Columns, turned and high-low cells are unchanged or wider. The hop cells gained apex band at the bottom, and the apex 0.92-0.97 hop cell (the one Columns at 0.95 flies) shrank in landing x from +/-10 to +/-4 mm. Cause: `_flight_band_and_rect` grows the band while the zero-offset throw passes, then fits one rectangle over the whole band; at 4500 the 0.65-0.73 s flights pass at zero offset but fail HAND_LIMIT_C2 at large x. At the operating flights every grid offset passes, so it is a selection artefact.
 - **Audit residue accepted (2026-11-02, `/audit --unstaged`, no blocking findings).** The gap tracker builds its percentile under the lock (about 50-100 us against a 70 ms cover); a 70 ms to 1 s pause between goals can raise one advisory gap WARN. Applied: the executor fallback-skip comment says "normally identical", the probe constant is labelled as the Sitting-time cap, and `_peaks_suffix` has a test.
 
 - Stale 3900 claims owned elsewhere: `plans/active/two-ball-oval.md` line 72 (dated history, kept; line 557 was corrected in 2e35db2d); `sites.py` L54 notes release plane 880 needed 4416 rev/s^2, now under 4500, so the refused release-plane raise may reopen.
 - Tests with explicit `hand_acc_rps2=3900.0` that touch the box (`test_skills_executor.py` `limits_r5`, `test_skills_admissible.py:1659`, `test_install_segment.py:2151`, others) may need the live value after the sweep; re-pin, never loosen.
 - Owner/flash decisions: FF clamp 0.234 -> 0.281 N m; raising `current_hard_max` before any soft limit past about 65 A; the ODrive backup JSON; the hand motor datasheet peak.
 - The ceiling rows are dormant: reopen if a top reversal above 3930 rev/s^2 is ever planned (the gate refuses it today) or if the pose core budget gains >= 2 ms of room.
-- The bump seed itself (JB-120 structural fix) is filed, not built.
+- The bump seed itself (BUG-42 structural fix) is filed, not built.
 - Colcon rebuild needed for `ros_ws` (`cd ros_ws && colcon build --packages-select jugglebot`); `teensy_link` is live-tree.

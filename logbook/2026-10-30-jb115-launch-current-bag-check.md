@@ -1,5 +1,5 @@
 ---
-title: "JB-115 bag check: the loaded launch does not clip the 50 A hand limit in the 2026-10-28 Columns bags (peak 39.9 A), but the bags never flew the Apex the claim is about; the filing's error was an Apex-frame mix-up"
+title: "BUG-40 bag check: the loaded launch does not clip the 50 A hand limit in the 2026-10-28 Columns bags (peak 39.9 A), but the bags never flew the Apex the claim is about; the filing's error was an Apex-frame mix-up"
 type: investigation
 date: 2026-10-30
 status: complete
@@ -20,11 +20,11 @@ tags:
   - patterns
 ---
 
-# JB-115 bag check: hand current at the loaded launch
+# BUG-40 bag check: hand current at the loaded launch
 
 ## What
 
-Offline, read-only check of bug JB-115 (the R0 study's side finding: by the throw envelope's B3 constants the launch THROW with the ball aboard asks for 53.6 A at Apex 1.05 and crosses 50 A at about 0.99, which the ball-free 3900 rev/s2 gate cannot see). Two bags: `~/Desktop/rosbags/2026-10-28_14-29-37` (the 49/49 Columns record) and `2026-10-28_21-02-49`. One-off probes in the session scratchpad (decode, analyse, fit, split, summ; `mcap_ros2` decode of `/hand_telemetry`, the setpoint echo and the throw announcements).
+Offline, read-only check of bug BUG-40 (the R0 study's side finding: by the throw envelope's B3 constants the launch THROW with the ball aboard asks for 53.6 A at Apex 1.05 and crosses 50 A at about 0.99, which the ball-free 3900 rev/s2 gate cannot see). Two bags: `~/Desktop/rosbags/2026-10-28_14-29-37` (the 49/49 Columns record) and `2026-10-28_21-02-49`. One-off probes in the session scratchpad (decode, analyse, fit, split, summ; `mcap_ros2` decode of `/hand_telemetry`, the setpoint echo and the throw announcements).
 
 ## Result
 
@@ -34,7 +34,7 @@ Offline, read-only check of bug JB-115 (the R0 study's side finding: by the thro
 
 ## Discussion
 
-The hypothesis was reframed, not rescued. The filing compared R0's Apex, which is measured from the release (`schedule.flight_s`), with the goal `apex_m`, which is above the Catch plane 30 mm lower, and assumed the Learner had corrected commands up toward 1.047. In the bags the per-Throw commands sat about 0.05 m BELOW the 0.95 goal (release-relative median 0.865, about 0.90 above the Catch plane). R0's 50 A crossing at release-relative 0.99 is therefore a planned Catch-plane Apex of about 1.02, which Columns has never flown. Two frames for one word is a trap worth remembering whenever R0 or JB-114 numbers meet a goal Apex.
+The hypothesis was reframed, not rescued. The filing compared R0's Apex, which is measured from the release (`schedule.flight_s`), with the goal `apex_m`, which is above the Catch plane 30 mm lower, and assumed the Learner had corrected commands up toward 1.047. In the bags the per-Throw commands sat about 0.05 m BELOW the 0.95 goal (release-relative median 0.865, about 0.90 above the Catch plane). R0's 50 A crossing at release-relative 0.99 is therefore a planned Catch-plane Apex of about 1.02, which Columns has never flown. Two frames for one word is a trap worth remembering whenever R0 or IDEA-17 numbers meet a goal Apex.
 
 Extrapolating the flown strokes to the 3509 rev/s2 launch peak brackets 50 A rather than deciding it: about 35 A by regression of iq on acceleration (a lower bound, the slope is diluted by 10 ms timing jitter), 37 to 46 A scaling the median sampled peak, 51 to 56 A scaling the worst sampled stroke. B3 predicts 39.4 A at the flown 2542 rev/s2 and the largest samples read 38.4 to 39.9 A, so the model is not refuted and may run 10 to 20 % high. The instrument cannot say more: `/hand_telemetry` carries iq at about 100 Hz forwarded on change (median 9.9 ms, p95 18 ms inside a stroke), so a one-sample peak can read up to 20 % low; `/robot_state` has `iq_setpoint`, which would show a clamp at exactly 50.0, but at 10 Hz.
 
@@ -42,7 +42,7 @@ Side finding, filed as its own bug: the brake draws far less than the envelope's
 
 ## What decides it
 
-A Sitting with a launch at planned Catch-plane Apex 1.00 to 1.05 and a faster current capture: hand `iq_setpoint` on `/hand_telemetry`, or a 250 Hz Diagnostic on axis 6 (firmware). Stop rule: any `iq_setpoint` sample at 50.0 A. This is decision D-c of `plans/active/pattern-progression.md`; JB-115 goes back to backlog with this result.
+A Sitting with a launch at planned Catch-plane Apex 1.00 to 1.05 and a faster current capture: hand `iq_setpoint` on `/hand_telemetry`, or a 250 Hz Diagnostic on axis 6 (firmware). Stop rule: any `iq_setpoint` sample at 50.0 A. This is decision D-c of `plans/active/pattern-progression.md`; BUG-40 goes back to backlog with this result.
 
 ## Verification
 

@@ -1,5 +1,5 @@
 ---
-id: JB-158
+id: BUG-60
 kind: bug
 title: CTRL+ENTER to save the result of a 'Next Sitting' entry
 status: in_progress
@@ -23,4 +23,4 @@ Filed from the Robot tab at 2026-11-03T12:31:53+11:00.
 
 ## Progress
 
-- 2026-11-08: Night Shift 2026-11-08: held on jugglebot-map:night-shift/2026-11-08-JB-158: gate (b), a failed save still clears the row's verdict and notes; unblocked by the owner's answer
+- 2026-11-08: Night Shift 2026-11-08: held on jugglebot-map:night-shift/2026-11-08-BUG-60: gate (b), a failed save still clears the row's verdict and notes; unblocked by the owner's answer

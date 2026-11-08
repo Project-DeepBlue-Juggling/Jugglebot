@@ -17,7 +17,7 @@ passes this same gate.
 :func:`bump_with_next_catch_gate` (reached through :func:`bump_record`) is the
 one enforcement point of I-CATCH-7.
 
-I-CATCH-7: the next catch gates the bump (JB-120, 2026-11-03)
+I-CATCH-7: the next catch gates the bump (BUG-42, 2026-11-03)
 -------------------------------------------------------------
 A bump moves the carried release (site + ``b(t_rel)``, velocity + ``v_b``, the
 C-HAND-5 brake seed), and catch N+1 is solved from exactly that state
@@ -163,7 +163,7 @@ BUMP_HANDOFF = 'BUMP_HANDOFF'
 #: Node-side: the active record no longer holds this catch (a later install
 #: superseded it, or nothing is streaming): terminal.
 BUMP_NO_RECORD = 'BUMP-NO-RECORD'
-#: I-CATCH-7 (JB-120): no step of the shrink ladder leaves a seed the next catch's
+#: I-CATCH-7 (BUG-42): no step of the shrink ladder leaves a seed the next catch's
 #: gate accepts: non-terminal, joins the executor's shrink-retry rule.
 BUMP_NEXT_CATCH = 'BUMP-NEXT-CATCH'
 #: Tag on an accepted bump's message when a step below the requested Δ was applied.

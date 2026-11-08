@@ -17,7 +17,8 @@ import night_shift_preflight as pf  # noqa: E402
 
 
 def _item(root, n, kind, slug, status="inbox", body="Body\n", **extra):
-    meta = {"id": "JB-%d" % n, "kind": kind, "title": "T " + slug, "status": status,
+    pre = {"bug": "BUG", "feature": "FEAT", "idea": "IDEA", "ticket": "TKT"}[kind]
+    meta = {"id": "%s-%d" % (pre, n), "kind": kind, "title": "T " + slug, "status": status,
             "created": "2026-10-01", "updated": "2026-10-01T00:00:00Z"}
     if kind == "ticket":
         meta.update({"parent": "p", "type": "task"})
@@ -28,18 +29,18 @@ def _item(root, n, kind, slug, status="inbox", body="Body\n", **extra):
 def _tree(root, question=False):
     (root / "map").mkdir(parents=True)
     write_item(str(root / "map" / "pathway-p.md"),
-               {"id": "JB-1", "kind": "pathway", "title": "P", "status": "active",
+               {"id": "PWAY-1", "kind": "pathway", "title": "P", "status": "active",
                 "created": "2026-10-01", "destination": "goal"}, "Body\n")
-    _item(root, 2, "idea", "i1", priority="high")
-    _item(root, 3, "feature", "f1", status="backlog", priority="low")
-    _item(root, 4, "bug", "b-unconf", priority="high", diagnosis="hypothesis")
-    _item(root, 5, "bug", "b-conf", priority="low", diagnosis="confirmed")
-    _item(root, 6, "ticket", "t-task", status="open")
+    _item(root, 1, "idea", "i1", priority="high")
+    _item(root, 1, "feature", "f1", status="backlog", priority="low")
+    _item(root, 1, "bug", "b-unconf", priority="high", diagnosis="hypothesis")
+    _item(root, 2, "bug", "b-conf", priority="low", diagnosis="confirmed")
+    _item(root, 1, "ticket", "t-task", status="open")
     if question:  # mapkit learns the `question` type in a later step; see _with_question
-        _item(root, 7, "ticket", "t-q", status="complete", type="question")
-    _item(root, 8, "bug", "b-done", status="complete")
-    _item(root, 9, "idea", "i-drop", status="dropped")
-    _item(root, 10, "bug", "b-early", priority="low", created="2026-09-01")
+        _item(root, 2, "ticket", "t-q", status="complete", type="question")
+    _item(root, 3, "bug", "b-done", status="complete")
+    _item(root, 2, "idea", "i-drop", status="dropped")
+    _item(root, 4, "bug", "b-early", priority="low", created="2026-09-01")
 
 
 @pytest.fixture
@@ -57,7 +58,7 @@ def test_candidates_and_order(tmp_path, _with_question):
     _tree(tmp_path, question=True)
     rec = pf.build_record(str(tmp_path), "2026-10-31")
     # confirmed bug, other bugs (high first, then low by created), feature, tickets, idea
-    assert _ids(rec) == ["JB-5", "JB-4", "JB-10", "JB-3", "JB-6", "JB-7", "JB-2"]
+    assert _ids(rec) == ["BUG-2", "BUG-1", "BUG-4", "FEAT-1", "TKT-1", "TKT-2", "IDEA-1"]
     assert [e["rank"] for e in rec["items"]] == [1, 2, 3, 4, 5, 6, 7]
     first = rec["items"][0]
     assert first["stem"] == "bug-b-conf" and first["diagnosis"] == "confirmed"
@@ -70,18 +71,18 @@ def test_compare(tmp_path, _with_question):
     _tree(tmp_path, question=True)
     prev = pf.build_record(str(tmp_path), "d1")
     assert pf.compare(prev, pf.build_record(str(tmp_path), "d2"))["nothing_new"]
-    _item(tmp_path, 11, "feature", "new")
+    _item(tmp_path, 2, "feature", "new")
     c = pf.compare(prev, pf.build_record(str(tmp_path), "d2"))
-    assert c["added"] == ["JB-11"] and not c["nothing_new"]
+    assert c["added"] == ["FEAT-2"] and not c["nothing_new"]
     os.remove(str(tmp_path / "map" / "feature-new.md"))
-    _item(tmp_path, 2, "idea", "i1", priority="high", updated="2026-10-02T00:00:00Z",
+    _item(tmp_path, 1, "idea", "i1", priority="high", updated="2026-10-02T00:00:00Z",
           body="Edited\n")
     c = pf.compare(prev, pf.build_record(str(tmp_path), "d2"))
-    assert c["changed"] == ["JB-2"] and not c["added"]
-    _item(tmp_path, 2, "idea", "i1", priority="high", body="Body\n")
-    _item(tmp_path, 3, "feature", "f1", status="complete", priority="low")
+    assert c["changed"] == ["IDEA-1"] and not c["added"]
+    _item(tmp_path, 1, "idea", "i1", priority="high", body="Body\n")
+    _item(tmp_path, 1, "feature", "f1", status="complete", priority="low")
     c = pf.compare(prev, pf.build_record(str(tmp_path), "d2"))
-    assert c["removed"] == ["JB-3"]
+    assert c["removed"] == ["FEAT-1"]
     c = pf.compare(None, prev)
     assert c["added"] == sorted(_ids(prev)) and not c["removed"]
 
@@ -97,11 +98,11 @@ def test_cli(tmp_path):
     r = _run("--repo", str(tmp_path), "--out", out1, "--date", "2026-10-31")
     assert r.returncode == 0 and r.stdout.startswith("NEW items=6 added=6")
     text = open(out1).read()
-    assert text.endswith("\n") and json.loads(text)["items"][0]["id"] == "JB-5"
+    assert text.endswith("\n") and json.loads(text)["items"][0]["id"] == "BUG-2"
     r = _run("--repo", str(tmp_path), "--out", out2, "--previous", out1)
     assert r.returncode == 3 and r.stdout.strip() == "NOTHING_NEW items=6"
     assert os.path.exists(out2) and not os.path.exists(out2 + ".tmp")
-    _item(tmp_path, 2, "idea", "i1", priority="high", updated="2026-10-05T00:00:00Z",
+    _item(tmp_path, 1, "idea", "i1", priority="high", updated="2026-10-05T00:00:00Z",
           body="Edited\n")
     r = _run("--repo", str(tmp_path), "--out", out2, "--previous", out1)
     assert r.returncode == 0 and "changed=1" in r.stdout
@@ -160,7 +161,7 @@ def test_per_kind_ids_keep_filing_order_not_a_sentinel(tmp_path):
     assert _ids(pf.build_record(str(tmp_path), "d")) == ["BUG-3", "BUG-2", "BUG-10", "FEAT-2"]
 
 
-def test_order_identical_under_both_forms(tmp_path):
+def test_order_identical_under_both_forms(tmp_path):  # legacy form: retired at P5
     """T-U7: renumbering per kind (rank by old number within the kind) keeps the order."""
     rows = [("bug", "z-a", "2026-10-01"), ("bug", "a-b", "2026-10-01"),
             ("feature", "f-a", "2026-10-01"), ("bug", "q-c", "2026-09-01"),

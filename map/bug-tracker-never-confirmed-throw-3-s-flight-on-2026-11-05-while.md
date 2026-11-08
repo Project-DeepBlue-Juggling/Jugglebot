@@ -1,5 +1,5 @@
 ---
-id: JB-181
+id: BUG-70
 kind: bug
 title: Tracker never confirmed Throw 3's flight on 2026-11-05 while the previous track kept running past its Catch, so that Throw has no learner row
 status: inbox
@@ -18,7 +18,7 @@ links: []
 filed_by: claude
 ---
 
-Found by the Night Shift on 2026-11-06 while reading JB-176's bag (2026-11-05 22:46, the first fed Attempt). Throw 3 got no learner row because the Tracker never confirmed its flight, not because of the identity gate.
+Found by the Night Shift on 2026-11-06 while reading BUG-69's bag (2026-11-05 22:46, the first fed Attempt). Throw 3 got no learner row because the Tracker never confirmed its flight, not because of the identity gate.
 
 ## Findings
 

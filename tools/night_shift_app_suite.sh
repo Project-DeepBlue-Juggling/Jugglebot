@@ -2,7 +2,7 @@
 # tools/night_shift_app_suite.sh: the map app's CI, run locally, as a gate log.
 #
 #   tools/night_shift_app_suite.sh --app ~/night-shift/jugglebot-map \
-#       --mapkit ~/night-shift/Jugglebot --log D/app-JB-n.log
+#       --mapkit ~/night-shift/Jugglebot --log D/app-<ID>.log
 #
 # The same steps as the app's .github/workflows/ci.yml: server tests, the name
 # check, lint, typecheck, vitest, build, then the live contract check, all against

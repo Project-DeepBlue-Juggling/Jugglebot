@@ -1,9 +1,9 @@
 ---
-title: "JB-113: two human-only Sittings scored against the tracker's human-throw detector; tracks carry across throws (stale-fit cause unconfirmed), phantoms 12.5 and 27 per minute (upper bounds), usable landing estimate 0.3 s ahead on 24 of 42 and 41 of 71, landing scatter 75-130 mm sd at the robot-spot hand; the pattern prior gates association and pre-positions the cup, never the final aim (owner)"
+title: "IDEA-16: two human-only Sittings scored against the tracker's human-throw detector; tracks carry across throws (stale-fit cause unconfirmed), phantoms 12.5 and 27 per minute (upper bounds), usable landing estimate 0.3 s ahead on 24 of 42 and 41 of 71, landing scatter 75-130 mm sd at the robot-spot hand; the pattern prior gates association and pre-positions the cup, never the final aim (owner)"
 type: investigation
 date: 2026-11-02
 status: complete
-phase: "JB-113 human-partner cascade, perception first rung"
+phase: "IDEA-16 human-partner cascade, perception first rung"
 subsystem: tracking
 files_changed:
   - tools/probes/human_throw_bench.py
@@ -13,7 +13,7 @@ files_changed:
   - logbook/INDEX.md
 ---
 
-# JB-113: the human-throw bench
+# IDEA-16: the human-throw bench
 
 **Data.** The owner flew two human-only Sittings on 2026-11-02 with the robot moved aside
 and `detect_human_throws=False` (so `/balls` is empty; the raw `/mocap_data` is what counts):
@@ -80,7 +80,7 @@ lighting, one hand to manage); the bench re-measures that at the next data Sitti
 2. Phantom rejection and the gate against the bench (retention re-measured after 1).
 3. The predicted-Throw announcement (the Pattern prior) through the announced-ball path.
 4. Offline reach check: the Cup re-aiming over plus or minus 150-300 mm in the last 0.5-0.8 s.
-5. A data Sitting with the robot in place, unarmed (JB-113's `## Sitting` section).
+5. A data Sitting with the robot in place, unarmed (IDEA-16's `## Sitting` section).
 
 **Verification.** No reader imports the probe (`grep -rn human_throw_bench` hits only its
 README row, this entry and the Item). Docs and map tests: see the commit message.

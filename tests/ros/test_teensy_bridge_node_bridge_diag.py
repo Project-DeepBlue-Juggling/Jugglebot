@@ -304,7 +304,7 @@ def test_both_rows_are_published_unconditionally_together():
 
 
 def test_sched_stop_rise_while_armed_warns_once_per_second():
-    """JB-95: firmware sched_stops rising while armed -> one rate-limited WARN."""
+    """FEAT-31: firmware sched_stops rising while armed -> one rate-limited WARN."""
     from tests.ros._bridge_harness import _build_paired_node, _teardown
     teensy, client, node = _build_paired_node(boot_state_read=False)
     try:
@@ -359,7 +359,7 @@ def _sched_hb(expired, refused, age_max, buckets, superseded=0, stale=0,
 
 
 def test_sched_stop_with_clean_host_maxima_names_a_firmware_side_expiry():
-    """JB-149: both host maxima (and the open gap) below the 70 ms cover is the
+    """BUG-58: both host maxima (and the open gap) below the 70 ms cover is the
     third verdict, and the WARN carries the firmware's counter deltas and frame
     ages over the held heartbeats (the 2026-11-03 LANE_REFUSED shape: forward
     gap 42 ms, loop 19 ms, yet the firmware STOPped)."""
@@ -427,7 +427,7 @@ def test_sched_stop_verdict_is_not_clean_when_a_maximum_or_the_open_gap_reaches_
 
 
 def test_sched_stop_at_the_disarm_edge_warns_once_per_fall():
-    """JB-149: a STOP that lands as mpc_active falls 1->0 (same sample, or the
+    """BUG-58: a STOP that lands as mpc_active falls 1->0 (same sample, or the
     next heartbeats up to 0.5 s later, since the host flag falls before the
     firmware reports the stop) WARNs once, past the 1 s rate limit; later
     disarmed STOPs stay silent."""
@@ -498,7 +498,7 @@ def test_rearm_resets_the_gap_trackers_so_the_disarmed_interval_is_no_gap():
     import time as _t
     teensy, client, node = _build_paired_node(boot_state_read=False)
     # A gen2 collection in this test process takes 130-190 ms on the loaded
-    # Jetson (JB-149 probe, 2026-11-02) and froze the loop thread past the
+    # Jetson (BUG-58 probe, 2026-11-02) and froze the loop thread past the
     # 100 ms bound whenever file order put one here; the assertion is about
     # the reset, not GC pauses, so collections are held off for its duration.
     _gc_was = _gc.isenabled()
@@ -567,7 +567,7 @@ def test_sched_stop_without_c1_delta_keeps_the_lane_cover_text():
     assert 'below the ~70 ms cover' in m and 'hand_c1_stops +0' in m
 
 
-# ── JB-174 (FW 40 / PROTOCOL 12): downlink loss accounting ──────────────────
+# ── FEAT-41 (FW 40 / PROTOCOL 12): downlink loss accounting ──────────────────
 
 def _dn_hb(rx, dropped=0, gaps=0, crc=0, frames=None, seq_drops=0, no_hand=0,
            no_sched=0):
@@ -643,7 +643,7 @@ def test_downlink_summary_warns_with_the_loss_and_the_queue_overwrites():
 
 def test_sched_stop_warn_carries_the_downlink_ledger():
     """A STOP WARN on a clean host stream now says whether a setpoint went
-    missing in the same second (the JB-149 / JB-166 question)."""
+    missing in the same second (the BUG-58 / BUG-66 question)."""
     from tests.ros._bridge_harness import _build_paired_node, _teardown
     from teensy_link.gap_monitor import GapStats
     teensy, client, node = _build_paired_node(boot_state_read=False)

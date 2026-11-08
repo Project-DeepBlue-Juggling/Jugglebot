@@ -318,7 +318,7 @@ export function createReplayMode(deps) {
         store: () => store,
         digester: () => digester,
         on(evt, cb) { listeners[evt].add(cb); return () => listeners[evt].delete(cb); },
-        /** Hover marker (JB-135): a view (the CONSOLE list) names a log time; the trackbar draws a thin line there.
+        /** Hover marker (FEAT-35): a view (the CONSOLE list) names a log time; the trackbar draws a thin line there.
          *  t = epoch seconds on the trackbar's clock, or null to clear. Transient: nothing is stored or persisted. */
         setMarker(t) { emit('marker', Number.isFinite(t) ? t : null); },
     };

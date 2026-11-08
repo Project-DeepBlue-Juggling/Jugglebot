@@ -12,8 +12,8 @@
  * tab's motion controls.  Ctrl+Enter (Cmd+Enter) files from any control in the form.  The draft (kind/title/note) is kept in localStorage under
  * DRAFT_KEY on every keystroke, restored on open, cleared on a successful filing.
  * Optional pill rows `effort` / `hardware` (none preselected; click a chosen pill again to
- * clear it) are POSTed as `effort` / `hardware` only when chosen (item metrics, JB-88 spec).
- * A pointer-down outside the form and the "+" closes it like Esc (JB-80), draft kept.
+ * clear it) are POSTed as `effort` / `hardware` only when chosen (item metrics, BUG-30 spec).
+ * A pointer-down outside the form and the "+" closes it like Esc (BUG-24), draft kept.
  * The same keyboard isolation covers the "+" button itself (Space on it must not reach the
  * chart pause or the replay trackbar).  While a request is in flight Esc, Cancel and the "+"
  * toggle leave the form open, so a late failure is visible; if the form is hidden anyway the
@@ -257,7 +257,7 @@ async function file() {
 
 btn.addEventListener('click', () => { if (form.hidden) openForm(); else dismiss(); });
 cancelBtn.addEventListener('click', dismiss);
-// JB-80: a click anywhere outside the open form closes it, like Esc/Cancel (busy-guarded by
+// BUG-24: a click anywhere outside the open form closes it, like Esc/Cancel (busy-guarded by
 // dismiss(); the draft stays in localStorage, so reopening restores it).  Capture phase so a
 // handler that stops propagation elsewhere cannot hide the click.
 document.addEventListener('pointerdown', (e) => { if (isOutsideClick(e.target)) dismiss(); }, true);
@@ -279,7 +279,7 @@ form.addEventListener('keydown', (e) => {
     e.stopPropagation();
     if (e.key === 'Escape') { e.preventDefault(); dismiss(); }
     // Ctrl+Enter / Cmd+Enter files from any control, as in the map app's new-item form
-    // (JB-78). preventDefault stops a text field's own Enter-submit firing a second time;
+    // (BUG-22). preventDefault stops a text field's own Enter-submit firing a second time;
     // file() ignores a press while a request is in flight.
     else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); file(); }
 });

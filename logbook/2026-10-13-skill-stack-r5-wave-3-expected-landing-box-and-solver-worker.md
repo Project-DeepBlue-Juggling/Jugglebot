@@ -155,4 +155,4 @@ All 2026-10-13; scoped runs by the units in the shared main tree:
 
 **Follow-up (2026-10-13 night).** Sitting 8 met the R5 gate (`2026-10-13-skill-stack-r5-sitting-8-gate-met.md`). Verification step 2 measured over 2741 windows: `max_emit_gap_ms` p99 29.94 ms (target < 30: MET overall, 32.5 inside the gate attempt) and max 47.04 ms (target < 35: NOT MET; L2 baseline 34.3 / 45.7). Solve/plan split recorded (solve p50 103.7 / p99 192.2 / max 357.1 ms); worker RSS never logged. The lane-latch rehearsal (rows 17a-20) is pending; the remaining items are rows in `plans/active/skill-stack-dress-rehearsals-and-residue.md` § 2.
 
-> Closed 2026-10-28: wave 3 flown; forward-clip sim run tracked as JB-32, other solves as JB-31 (JB-34 survey).
+> Closed 2026-10-28: wave 3 flown; forward-clip sim run tracked as FEAT-7, other solves as FEAT-6 (IDEA-2 survey).

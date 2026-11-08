@@ -1,5 +1,5 @@
 ---
-id: JB-40
+id: PWAY-4
 kind: pathway
 title: Two-ball oval
 status: active

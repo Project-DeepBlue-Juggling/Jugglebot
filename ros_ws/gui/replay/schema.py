@@ -124,7 +124,7 @@ SUBSCRIBED: Tuple[str, ...] = (
     "/rigid_body_poses",
     "/robot_frame",             # latched software robot frame: places the Stewart model in the world-anchored scene (2026-10-19)
     "/robot_state",
-    "/rosout",                  # ROS log: the CONSOLE view of the topics panel, read-only (JB-130)
+    "/rosout",                  # ROS log: the CONSOLE view of the topics panel, read-only (TKT-25)
     "/skills/attempt",
     "/udp_diag",
 )

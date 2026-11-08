@@ -1,9 +1,9 @@
 ---
-title: "JB-113: a human-thrown ball's flight fit now forgets the previous flight at the re-throw (carried-track hypothesis confirmed); usable landing 0.3 s ahead 24 -> 37 of 42 passes, 41 -> 51 of 71 cascade throws, phantoms unchanged"
+title: "IDEA-16: a human-thrown ball's flight fit now forgets the previous flight at the re-throw (carried-track hypothesis confirmed); usable landing 0.3 s ahead 24 -> 37 of 42 passes, 41 -> 51 of 71 cascade throws, phantoms unchanged"
 type: bugfix
 date: 2026-11-03
 status: complete
-phase: "JB-113 human-partner cascade, perception first rung"
+phase: "IDEA-16 human-partner cascade, perception first rung"
 subsystem: tracking
 files_changed:
   - ros_ws/src/jugglebot/jugglebot/tracking/flight_fit.py
@@ -50,7 +50,7 @@ mm) that put no samples, or too few, above the 1080 mm freeze floor. The fit nev
 on them, so the Kalman fallback answers, and for a ball carried through a hand it is poor
 (0 of 10 usable). The floor protects the Cup's push and catch; a human ball's push happens in
 a hand near z 450. Lowering the floor for human balls is a design choice, now the first
-JB-113 Next item.
+IDEA-16 Next item.
 
 **Verification.** `pytest -q ros_ws/src/jugglebot/jugglebot/tracking/tests/test_flight_fit.py
 ros_ws/src/jugglebot/jugglebot/tracking/tests/test_matcher.py` (2026-11-03): 23 passed.

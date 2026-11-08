@@ -508,4 +508,4 @@ zero offset) is a real narrowing, not a grid artefact — Carried, R4 (below).
 
 **2026-09-23:** status `open` → `tuned` at the plan's archival — the unpinning, the box re-sweep, the sim gate and the full-tier run listed as TODO above all landed (entries 2026-09-21 and 2026-09-23 ×2); the two Carried items (the seam tilt-rate pin, the QP/gate wall-clock bar) are now on `plans/active/two-ball-skill-stack.md` § 0's R4 carry-in list.
 
-> Closed 2026-10-28: closed by 2026-10-22-hop-reaims-refused-mid-transit-tilt-rate-seam-and-the-new-cup (JB-34 survey).
+> Closed 2026-10-28: closed by 2026-10-22-hop-reaims-refused-mid-transit-tilt-rate-seam-and-the-new-cup (IDEA-2 survey).

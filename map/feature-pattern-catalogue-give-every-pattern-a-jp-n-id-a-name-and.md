@@ -1,5 +1,5 @@
 ---
-id: JB-105
+id: FEAT-33
 kind: feature
 title: 'Pattern catalogue: give every Pattern a JP-n ID, a name and its machine label'
 status: complete

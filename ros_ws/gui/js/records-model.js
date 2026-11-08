@@ -1,5 +1,5 @@
 /**
- * records-model.js — the DOM-free half of the records panel (JB-35).
+ * records-model.js — the DOM-free half of the records panel (IDEA-3).
  *
  * Input is GET /api/records (gui_server.py -> records.to_json of the repo's
  * docs/records.md): { rule, patterns: [{ pattern, label, balls, history,
@@ -28,7 +28,7 @@ export function recordRows(json, hidden) {
             balls: Number(p.balls) || 0,
             score: r ? r.catches + '/' + r.throws : '—',
             date: r ? String(r.when_local).slice(0, 10) : '',
-            // Hover: how the record's Attempt ended, then its run parameters (JB-90).
+            // Hover: how the record's Attempt ended, then its run parameters (FEAT-29).
             // Score and date are already on the row itself (owner, 2026-11-01).
             title: r
                 ? ('Ended: ' + r.category + ' (' + r.end_code + ')\n' + paramsText(r.params))
@@ -39,7 +39,7 @@ export function recordRows(json, hidden) {
     return rows;
 }
 
-/** Unit suffix of a ledger params key -> the unit shown after the value (JB-90). */
+/** Unit suffix of a ledger params key -> the unit shown after the value (FEAT-29). */
 const PARAM_UNITS = [['_mm', 'mm'], ['_deg', '°'], ['_m', 'm'], ['_s', 's']];
 /** Keys whose generic "strip the unit, capitalise" label would read badly. */
 const PARAM_LABELS = { apex_m_ball2: ['Ball 2 apex', 'm'] };
@@ -56,7 +56,7 @@ export function paramLabel(key) {
 }
 
 /**
- * The hover line for a record's run parameters (JB-90): the ledger's `params`
+ * The hover line for a record's run parameters (FEAT-29): the ledger's `params`
  * ({key: value-string}, insertion order, records.py to_json) as
  * "Apex 0.95 m · Separation 125 mm · Dwell 0.27 s". A record set before the
  * ledger kept them (v1 rows, `{}` or absent) says so instead of showing nothing.
@@ -73,7 +73,7 @@ export function paramsText(params) {
 
 /**
  * Whether the Records panel must sit right of the collapsed State Machine card
- * (JB-103). It sits hard left, under the connection indicator, and moves right
+ * (BUG-38). It sits hard left, under the connection indicator, and moves right
  * only when the card (bottom-anchored, growing up) reaches its vertical band.
  * Only vertical extents are compared: moving the panel sideways never changes
  * them, so the decision cannot oscillate. `gapPx` keeps the two from touching.
@@ -85,7 +85,7 @@ export function dodgesMinimap(recordsRect, minimapRect, collapsed, gapPx) {
 }
 
 /**
- * Rows grouped by ball count, fewest first (JB-93): [{ balls, title, rows }].
+ * Rows grouped by ball count, fewest first (IDEA-8): [{ balls, title, rows }].
  * Ties keep ledger order; a ball count with no visible row yields no section.
  */
 export function recordSections(rows) {

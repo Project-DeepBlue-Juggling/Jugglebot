@@ -1,9 +1,9 @@
 ---
-title: "JB-147 diagnostic: an opt-in, temporary full-rate Hand capture to CSV (`hand_capture:=true`), every telemetry, diagnostic and command-echo sample with its own stamp"
+title: "BUG-57 diagnostic: an opt-in, temporary full-rate Hand capture to CSV (`hand_capture:=true`), every telemetry, diagnostic and command-echo sample with its own stamp"
 type: feature
 date: 2026-11-02
 status: complete
-phase: "JB-147 diagnosis"
+phase: "BUG-57 diagnosis"
 subsystem: teensy_link
 related_entries:
   - 2026-11-02-hand-release-step.md
@@ -17,10 +17,10 @@ files_changed:
   - logbook/INDEX.md
 ---
 
-# JB-147: a temporary full-rate Hand capture
+# BUG-57: a temporary full-rate Hand capture
 
 **Why.**
-- JB-147's overshoot (one launch at 168 rev/s against ~151 planned, Apex
+- BUG-57's overshoot (one launch at 168 rev/s against ~151 planned, Apex
   1.35) could not be explained from `/hand_telemetry`.
 - That topic is a 100 Hz timer that resamples the latest cached values, all
   stamped with Jetson time.
@@ -42,9 +42,9 @@ files_changed:
 - `tools/probes/hand_capture_view.py` prints the merged table around the
   fastest Hand moment (or a window) and can save a PNG.
 
-**Removal.** Every block is marked `TEMPORARY (JB-147 diagnostic capture)`.
+**Removal.** Every block is marked `TEMPORARY (BUG-57 diagnostic capture)`.
 Delete them, plus `hand_capture.py`, its test, the viewer and its README row,
-once JB-147 is diagnosed.
+once BUG-57 is diagnosed.
 
 **Verification.**
 - 2026-11-02, `python -m pytest tests/ros tests/motion/test_hand_jam.py -q -n 3
@@ -56,7 +56,7 @@ once JB-147 is diagnosed.
   alone it gave 2 passed.
 
 **Update 2026-11-02 late: ON by default.** The owner asked for the capture to
-run by default until it has served JB-147: the launch argument `hand_capture`
+run by default until it has served BUG-57: the launch argument `hand_capture`
 now defaults to `true`. Flip it back to `false`, or remove the whole TEMPORARY
-set, when JB-147 closes. Gate (2026-11-02, `./run_tests.sh`): 8018 passed, 54
+set, when BUG-57 closes. Gate (2026-11-02, `./run_tests.sh`): 8018 passed, 54
 skipped + 5 serial, RESULT PASS.

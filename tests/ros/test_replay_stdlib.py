@@ -32,7 +32,7 @@ ALLOW = {"argparse", "functools", "gzip", "http", "json", "os", "re", "shutil",
          "subprocess", "sys", "threading", "time", "typing", "urllib", "datetime",
          "glob", "struct", "errno", "io", "pathlib", "collections", "__future__",
          "replay", "gui_server", "socketserver", "signal", "logging", "tempfile",
-         "importlib"}  # importlib: gui_server loads jugglebot/records.py by path (JB-35)
+         "importlib"}  # importlib: gui_server loads jugglebot/records.py by path (IDEA-3)
 
 
 def test_import_pulls_no_third_party_modules():

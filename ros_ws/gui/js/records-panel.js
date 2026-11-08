@@ -1,13 +1,13 @@
 /**
- * records-panel.js — "Jugglebot records" overlay (JB-35): one line per
+ * records-panel.js — "Jugglebot records" overlay (IDEA-3): one line per
  * Pattern (label, catches/throws, date) under #connection-status.
  *
  * Source: GET /api/records (the repo's docs/records.md, which skill_node
  * rewrites when a record is beaten).  Fetched on init and again on every
  * skills/attempt juggle_end (state-minimap.js minimapOnSkillAttempt forwards
  * it here); a juggle_end with record_beaten '1' flashes that Pattern's row.
- * A row's hover (title) carries the record's run parameters (JB-90).
- * Placement (JB-103): hard left under the connection indicator; it moves right
+ * A row's hover (title) carries the record's run parameters (FEAT-29).
+ * Placement (BUG-38): hard left under the connection indicator; it moves right
  * of the collapsed State Machine card only while the card reaches its band
  * (placePanel, re-run when the panel, the card or the pane resizes).
  * The View menu (#scene-menu-dropdown) gets one "<Pattern>" checkbox under a "Records" heading
@@ -50,7 +50,7 @@ function render() {
     placePanel();
 }
 
-/** JB-103: dodge the collapsed State Machine card only when they would overlap. */
+/** BUG-38: dodge the collapsed State Machine card only when they would overlap. */
 function placePanel() {
     const el = document.getElementById('records-panel');
     const card = document.getElementById('state-minimap');

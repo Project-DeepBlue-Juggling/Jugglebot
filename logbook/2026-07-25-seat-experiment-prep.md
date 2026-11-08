@@ -284,4 +284,4 @@ which the runbook states so "everything got smaller" is not a false expectation.
   (three places) as that session's honest finding; a correction pointer was added at
   its primary claim site rather than rewriting another session's record.
 
-> Closed 2026-10-28: superseded by plans/archived/catch-reach-degenerate-overshoot.md (JB-34 survey).
+> Closed 2026-10-28: superseded by plans/archived/catch-reach-degenerate-overshoot.md (IDEA-2 survey).

@@ -1,4 +1,4 @@
-"""Throw identity on the ``bb/throw_outcome`` String (JB-21).
+"""Throw identity on the ``bb/throw_outcome`` String (BUG-2).
 
 Pure Python, no ROS import: ``ball_butler_node`` (producer) and ``skill_node``
 (consumer) both import it, and the tests drive it directly.

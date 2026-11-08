@@ -448,7 +448,7 @@ _Avoid: type (a Ticket's type is a different thing)_
 
 **Item ID**
 
-An Item's short name: its Kind's prefix and a number, such as `BUG-12`, `FEAT-7`, `IDEA-3`, `PWAY-2` or `TKT-31`. Each Kind counts its own Items, so `BUG-12` and `FEAT-12` are different Items and a number alone names nothing. It is given when the Item is filed and never reused, and changes only before the Item is published, or to repair a duplicate. Plans, Steps and logbook entries have none. Items carry the retired `JB-<n>` until the cutover (JB-118).
+An Item's short name: its Kind's prefix and a number, such as `BUG-12`, `FEAT-7`, `IDEA-3`, `PWAY-2` or `TKT-31`. Each Kind counts its own Items, so `BUG-12` and `FEAT-12` are different Items and a number alone names nothing. It is given when the Item is filed and never reused, and changes only before the Item is published, or to repair a duplicate. Plans, Steps and logbook entries have none. Items carry the retired `JB-<n>` until the cutover (FEAT-34).
 
 _Avoid: ticket number, issue number (for an Item ID; a GitHub Issue's own #n is a different thing)_
 

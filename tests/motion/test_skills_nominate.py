@@ -86,8 +86,8 @@ def test_columns_at_p4_plans_every_segment_and_matches_the_p3a_probe_cell():
         assert _refused(rep, 0, frac).margin == pytest.approx(1.0, abs=TOL)
     w = rep.worst()
     assert (w.idx, w.flight_frac, w.binding) == (5, -0.20, 'jerk')
-    # JB-185: a plain nomination (the goal accept's) walks no second figure and
-    # prints the pre-JB-185 line byte for byte ...
+    # BUG-73: a plain nomination (the goal accept's) walks no second figure and
+    # prints the pre-BUG-73 line byte for byte ...
     assert rep.aim_verdicts == [] and rep.aim_solves == 0
     assert rep.summary() == (
         'nomination OK: columns apex 0.95 m, separation 125 mm, dwell 0.27 s, '
@@ -444,7 +444,7 @@ def test_a_seed_refused_on_the_envelope_is_labelled_with_the_envelope(monkeypatc
     assert v1.solved and v1.code == 'ENVELOPE:FORCED'
 
 
-# ── JB-185: the re-aim figure is display only ────────────────────────────────
+# ── BUG-73: the re-aim figure is display only ────────────────────────────────
 #
 # Recipe (2026-11-06, Jetson, venv python 3.8, ONE BLAS thread):
 #   OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python -m pytest \
@@ -476,7 +476,7 @@ def _outcome(rep):
 def test_reaim_figure_never_changes_accept_refuse_search_or_margins(config, limits):
     """Acceptance, every refusal line, the nearest-viable search and the
     nominal verdicts (margins bit for bit) are the same with the re-aim
-    figure on (default) and off (``aim=None``, the pre-JB-185 path)."""
+    figure on (default) and off (``aim=None``, the pre-BUG-73 path)."""
     nm.clear_cache()
     off = nm.nominate(config, limits)
     nm.clear_cache()
@@ -512,7 +512,7 @@ NEGATIVE = nm.AIM_NEGATIVE_TEXT
 
 def test_reaim_below_zero_is_still_accepted_and_says_so():
     """Columns Apex 0.80 / Sep. 100 / Dwell 0.27 at the generated launch limits
-    (the JB-185 sim case): nominal 0.060 (accepted, as before), re-aim figure
+    (the BUG-73 sim case): nominal 0.060 (accepted, as before), re-aim figure
     negative, the one added sentence names the consequence."""
     nm.clear_cache()
     rep = nm.nominate(C('columns', 0.80, 100.0, 0.27), search=False,

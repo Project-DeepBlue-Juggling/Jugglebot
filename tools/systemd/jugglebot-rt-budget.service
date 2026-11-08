@@ -1,4 +1,4 @@
-# JB-95: give the user.slice cpu cgroup a real-time runtime budget.
+# FEAT-31: give the user.slice cpu cgroup a real-time runtime budget.
 #
 # Why: this kernel (5.10-tegra) is built with CONFIG_RT_GROUP_SCHED=y. Every
 # launch process lives in the cpu cgroup /user.slice, whose cpu.rt_runtime_us is
@@ -21,7 +21,7 @@
 # when it does and creates the cpu cgroup when it does not.
 # Install: tools/systemd/README.md, section "Real-time budget for the solver worker".
 [Unit]
-Description=Jugglebot: RT bandwidth for user.slice (CONFIG_RT_GROUP_SCHED; JB-95)
+Description=Jugglebot: RT bandwidth for user.slice (CONFIG_RT_GROUP_SCHED; FEAT-31)
 Wants=user.slice
 After=user.slice systemd-user-sessions.service
 Before=user@1000.service

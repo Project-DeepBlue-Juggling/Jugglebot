@@ -1,7 +1,7 @@
 ---
-id: JB-180
+id: TKT-42
 kind: ticket
-title: 'JB-169 held on night-shift/2026-11-06-JB-169: apply the audit''s 2 fixes and merge, also count the final Catch in the records, merge as is, or drop?'
+title: 'BUG-67 held on night-shift/2026-11-06-BUG-67: apply the audit''s 2 fixes and merge, also count the final Catch in the records, merge as is, or drop?'
 status: complete
 created: '2026-11-06'
 updated: '2026-11-05T22:53:51Z'
@@ -18,7 +18,7 @@ parent: bug-full-length-columns-goal-ends-missed-catch-on-its-final
 type: question
 ---
 
-JB-169 is built on night-shift/2026-11-06-JB-169 as you answered in JB-172: a Columns goal's final Catch on a Stop is booked unverifiable, not `MISSED_CATCH`, with no motion change. The audit left three findings open, so the merge gate held it.
+BUG-67 is built on night-shift/2026-11-06-BUG-67 as you answered in TKT-38: a Columns goal's final Catch on a Stop is booked unverifiable, not `MISSED_CATCH`, with no motion change. The audit left three findings open, so the merge gate held it.
 
 ## The open findings
 
@@ -39,7 +39,7 @@ Recommendation: 1.
 
 - 1 or 2: the next night applies them, re-gates and merges.
 - 3: the next night re-gates and merges.
-- 4: JB-169 goes back to open.
+- 4: BUG-67 goes back to open.
 
 ## Answer
 

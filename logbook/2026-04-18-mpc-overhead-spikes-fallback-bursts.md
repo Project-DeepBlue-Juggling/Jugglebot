@@ -191,4 +191,4 @@ prediction as a one-tick discontinuity. The Fix B `hold_extrap` arm
 addresses the post-cascade case, not the singleton case. Tracked
 separately under the walk-forward singleton-emission investigation.
 
-> Closed 2026-10-28: superseded: MPC chain removed 2026-09-01 (JB-34 survey).
+> Closed 2026-10-28: superseded: MPC chain removed 2026-09-01 (IDEA-2 survey).

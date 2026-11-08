@@ -1,5 +1,5 @@
 ---
-title: "Sittings 2026-11-06 (afternoon) debrief: the P2 characterisation Sitting passed (JB-187); the two-ball pull toward the partner Site is an arrival transient and not a Site property, so the arrival term is not added; the Hand fault was JB-137's mechanism again; four endurance launches ended Columns runs at a mean of 22 Throws"
+title: "Sittings 2026-11-06 (afternoon) debrief: the P2 characterisation Sitting passed (FEAT-44); the two-ball pull toward the partner Site is an arrival transient and not a Site property, so the arrival term is not added; the Hand fault was BUG-50's mechanism again; four endurance launches ended Columns runs at a mean of 22 Throws"
 type: investigation
 date: 2026-11-06
 status: complete
@@ -35,9 +35,9 @@ reports behind every number here (`unit_A_C.md`, `unit_B_D.md`, `unit_transit.md
 
 | Row | Verdict | Evidence |
 |---|---|---|
-| JB-187 (P2 characterisation Sitting) | pass (owner, typed 16:10; confirmed at the debrief) | 19 goals flown at 15:53. 11 of 12 one-ball goals read 20/20; the twelfth ended on a Hand fault (below) and its repeat read 20/20. 346 live `ADMISSIBILITY` checks, 0 refusals. Base joints stayed attached (owner). Every clause of the Runbook is met, two with a departure noted below. |
+| FEAT-44 (P2 characterisation Sitting) | pass (owner, typed 16:10; confirmed at the debrief) | 19 goals flown at 15:53. 11 of 12 one-ball goals read 20/20; the twelfth ended on a Hand fault (below) and its repeat read 20/20. 346 live `ADMISSIBILITY` checks, 0 refusals. Base joints stayed attached (owner). Every clause of the Runbook is met, two with a departure noted below. |
 | The four P2 decisions | taken, all "keep today's structure" | See Decisions. |
-| JB-185 (nomination margin) | closed by option C | `logbook/2026-11-06-nomination-reaim-figure.md`. |
+| BUG-73 (nomination margin) | closed by option C | `logbook/2026-11-06-nomination-reaim-figure.md`. |
 
 Goals in brief (launch-log goal lines in `context.md`): goals 1 to 5 were the one-ball Apex sweep (0.90, 1.00,
 0.80, 1.05, 0.70; 20 Throws each, all 20/20); 6 to 9 the off-centre Sites; 10 to 12 the ball swap (goal 10 ended
@@ -61,10 +61,10 @@ checks sent the early resolution; 343 left the candidate unmoved. Lowest live ma
 10290). The live minimum sat 0.04 to 0.07 below the nomination's worst margin in every two-ball goal; in one-ball
 goals the nomination reads 1.000 and the live minimum 0.45 to 0.66. Planned Leg peaks in the two-ball goals were
 320 to 371 mm/s and 3656 to 5488 mm/s^2: above the previous clean envelope (361 / 4672) in goal 17 (speed) and in
-goals 15 and 17 (acceleration), far under the separating transit of Sep. 170 (486 / 6296, JB-184). The Runbook's
+goals 15 and 17 (acceleration), far under the separating transit of Sep. 170 (486 / 6296, BUG-72). The Runbook's
 offline prediction (264 / 3011) read low because it did not include the Catch re-aim. `RESEND-REFUSED` read
 0.197 per Throw (68 of 346); 29 of them INFEASIBLE (8.4 % against 2.3 % at the 13:19 Sitting); 15 of those on the
-69 turned-pair Throws. Refused Throws did not land worse. Filed as JB-188.
+69 turned-pair Throws. Refused Throws did not land worse. Filed as BUG-75.
 
 **The Site departure.** Seven one-ball goals (1 to 7) flew at Site x = -50 mm, the launch default. The Runbook's
 step 2 (two `ros2 param set` lines before power) was not applied, and step 8 set only y. The Memory rows carry the
@@ -72,7 +72,7 @@ Site (`site=[-0.05, 0.0]` for goals 1 to 5, `[-0.05, +0.06]` and `[-0.05, -0.06]
 prints no Site, so it was invisible until the first row. Cause on the Runbook side: this Sitting's author put a
 state-changing step among the before-power checks, and its blocks did not each set both coordinates. The design
 survived: y varies at x = -50, x varies at y = 0, and the centre Site flew with balls B and C only (goals 10 to
-12). Filed as JB-190 (print the Site in the started line).
+12). Filed as BUG-77 (print the Site in the started line).
 
 **The Hand fault (goal 10).** Not the ball and not a planned current. The Hand's encoder frames fell to about
 10 Hz for 0.6 s (six frozen runs of 83 to 94 ms, 1254.765 to 1255.356) while its current frames kept arriving.
@@ -81,7 +81,7 @@ there and held the transmitted command at the anchor plus 2.0 rev (the bag echo 
 clamp formula gives 1.913 to 1.883). The Hand followed the clamped command, then met a 1.2 rev step as the clamp
 released: iq setpoint 69.9 A (the 70 A soft limit), measured 81.3 A, over the 80 A hard maximum. The drive
 tripped CURRENT_LIMIT_VIOLATION; the unpowered Hand coasted to 10.734 rev, past the 10.701 rev stop, at 8 rev/s
-or less. `lead_clamp_mask` read 64 (bit 6) in the heartbeat at 1255.439. This is the JB-137 mechanism a second
+or less. `lead_clamp_mask` read 64 (bit 6) in the heartbeat at 1255.439. This is the BUG-50 mechanism a second
 time, ending through the drive's hard limit instead of MAX_DEVIATION: every firmware guard sat outside the 30 to
 150 ms gap by design (MAX_DEVIATION counts only anchors 30 ms or fresher, MOTOR_FB_STALE needs 150 ms, the fresh
 residual of 1.3 rev was under the 2.5 rev guard). Normal Throws run at 23 A median and 32.5 A maximum at launch
@@ -128,7 +128,7 @@ it needs a Memory column (`arrived_from`, schema v3), and the 2203 stored two-ba
 their residual memory would keep the -9 mm pull while f0 applied it again, a double count of about 9 mm at every
 Columns Site. Cost of waiting (inference): the residual memory keeps absorbing the pull at the Sites it has
 flown, and a new pair geometry would start about 9 mm off. The question is recorded as the open question that gates
-`yaw_rad` and is filed as JB-192.
+`yaw_rad` and is filed as BUG-79.
 
 **The `yaw_rad` frame.** The Sites rotate about the Platform origin in the Robot frame (as `sites.py` does for
 `columns_angle_deg`). `b` and the one-ball `s` stay in the Robot frame, unrotated. The arrival pull is along the
@@ -142,7 +142,7 @@ until the pull is fixed at its source or carried by a term.
   +8 +- 16 mm/m (y), under 2 SE. The apparent x trend is time drift (+7 mm per 100 s). The aim model differs from
   the fixed one by 1.9 mm over the whole Apex range, below the level SEs, so by the pre-set rule (ship the model
   with fewer parameters) it stays a distance. K is one number over 0.70 to 1.00 (1.084 to 1.090). At 1.05 it
-  drops to 1.067 +- 0.004 with the Hand's peak speed 4 % under its command: a Hand effect (JB-147 family), not a
+  drops to 1.067 +- 0.004 with the Hand's peak speed 4 % under its command: a Hand effect (BUG-57 family), not a
   model term.
 - **B, the centre pull stays on Robot x only.** See the error figures above; the one-ball `s_y` has the wrong sign
   for a radial pull.
@@ -157,7 +157,7 @@ until the pull is fixed at its source or carried by a term.
 against the previous landing: slope 0.87, r +0.93) and the planner Banks to fly the offset back. The flyback
 returns 1.19 mm per mm, against 0.87 mm of release offset, so each landing error returns at -0.3 to -0.45 of itself
 on the next Throw (lag-1 slope -0.30 measured, corpus -0.45 x and -0.24 y). It damps. It is a flyback gain about
-1.2 to 1.4 times too strong, a planner matter and not a plant-model term; filed as JB-193. The lateral scatter is
+1.2 to 1.4 times too strong, a planner matter and not a plant-model term; filed as BUG-80. The lateral scatter is
 set by the Platform tilt at release (ball lateral velocity against tilt r 0.78 x, 0.62 y). Release-time error (+9 ms
 mean, sd 7.5 ms) has no effect on Apex (r 0.00).
 
@@ -169,7 +169,7 @@ mean, sd 7.5 ms) has no effect on Apex (r 0.00).
    the Hand then follows the plan blind for up to 150 ms); stop the Hand with a C1-style stop when a launch goes
    blind; slew back to the plan when the clamp releases; or keep today's behaviour with the ODrive trip as the
    backstop.
-2. The 70 / 80 A gap. Against: this event overshot the clipped setpoint by 11.3 A (JB-138: 3.3 A at 50 A). For:
+2. The 70 / 80 A gap. Against: this event overshot the clipped setpoint by 11.3 A (BUG-51: 3.3 A at 50 A). For:
    normal Throws never come within 37 A of the soft limit, the trip did what a hard maximum is for, and the cause
    sits upstream in the clamp step. Whether a powered Hand would have avoided the top stop cannot be told without
    a replay of the ODrive loop. The live hard maximum is not readable from the log (the JSON backup says 80 A).
@@ -194,12 +194,12 @@ Survey of the 35 endurance goals (all `columns`, Dwell 0.27, 101 Throws asked, A
 | Lane refused after a stream gap (GC pause) | 2 | 73, 62 |
 | Refused or aborted before the first Throw | 5 | 0 |
 
-- **JB-186 is confirmed at a larger sample, but collisions are a quarter of the ends, not half.** The eight
+- **BUG-74 is confirmed at a larger sample, but collisions are a quarter of the ends, not half.** The eight
   confirmed collisions show a closest approach of 70 to 77 mm (ball 74 mm) with both tracks kinking 170 to 800 mm/s;
   Sep. 125, 130 and 133 alike. The wider gap did not help (Sep. 125: 4.8 ends per 100 Throws; Sep. 133: 8.4; small
   n, the 133 runs follow a power cut). At the P2 Sitting 2 of 5 two-ball ends were collisions; 5 of 7 collision-like
   events did not end the Attempt.
-- **Smooth missed Catches of Ball 2 are the largest class** (new Item JB-191): 21 of the 23 MISSED_CATCH first ENDs
+- **Smooth missed Catches of Ball 2 are the largest class** (new Item BUG-78): 21 of the 23 MISSED_CATCH first ENDs
   are the Catch of Ball 2, though both balls' Throws land equally well (lateral RMS 29.6 and 31.9 mm). In 9 of the
   13 smooth ends the last fit was within 40 mm of the aim and the cup read EMPTY: a bounce-out, a false EMPTY or a
   late fit, not resolved (it needs `/hand_telemetry`). At the P2 Sitting three of five ends were this class, each
@@ -207,8 +207,8 @@ Survey of the 35 endurance goals (all `columns`, Dwell 0.27, 101 Throws asked, A
 - **The two longest runs ended on a garbage-collection pause**: 73 and 62 Throws, both LANE_REFUSED after a 58 to
   64 ms generation-2 pause in `trajectory_node` (forward gap 72 to 78 ms, bridge loop gap 25 to 28 ms: the stream
   was late, the bridge was not starved). `gc_freeze` is default off and the launch lines do not say whether it was
-  passed (JB-149).
-- Fault ends carry a mode name: four of five read WRONG_MODE, ABORTED_MODE_CHANGED or GUARD_LATCHED (JB-175). Two
+  passed (BUG-58).
+- Fault ends carry a mode name: four of five read WRONG_MODE, ABORTED_MODE_CHANGED or GUARD_LATCHED (BUG-68). Two
   bus power cuts (the owner's E-stop button, inferred) interrupted the afternoon.
 - **The Learner over long runs.** 593 new rows. No drift (slopes within +-0.2 mm per Throw over runs of 52 to 70
   rows); Apex error RMS settles from 28.4 mm (Throws 1 to 5) to 14.7 mm (Throws 31 to 80); the lateral error is a
@@ -217,16 +217,16 @@ Survey of the 35 endurance goals (all `columns`, Dwell 0.27, 101 Throws asked, A
 
 Two other ABORTED_NO_RELEASE ends were not release failures: P2 goal 19 (launch.log 11050: the cup read empty for
 the whole stroke, the ball was lost at the Catch before; the rising Cup may have struck it, not told apart at
-100 Hz) and endurance 14:55 goal 9 (the release was cancelled by an earlier END). JB-97 carries both.
+100 Hz) and endurance 14:55 goal 9 (the release was cancelled by an earlier END). BUG-33 carries both.
 
 ## Fix
 
 No change to the plant model, the planner, the firmware or any limit. Code that did land, each with its own entry:
-the nomination's worst-corner figure (`logbook/2026-11-06-nomination-reaim-figure.md`, closes JB-185) and the host
-Hand feedback watch (`logbook/2026-11-06-hand-feedback-watch.md`, a diagnostic for JB-137). Paperwork: JB-187 and
-JB-185 closed; JB-188 to JB-193 filed (below); plan `learner-generalisation.md` updated (P2 and P3b complete,
-section 2.2 pinned, the `yaw_rad` frame, section 7); progress notes written to JB-137, JB-186, JB-166, JB-97,
-JB-161, JB-115, JB-184.
+the nomination's worst-corner figure (`logbook/2026-11-06-nomination-reaim-figure.md`, closes BUG-73) and the host
+Hand feedback watch (`logbook/2026-11-06-hand-feedback-watch.md`, a diagnostic for BUG-50). Paperwork: FEAT-44 and
+BUG-73 closed; BUG-75 to BUG-80 filed (below); plan `learner-generalisation.md` updated (P2 and P3b complete,
+section 2.2 pinned, the `yaw_rad` frame, section 7); progress notes written to BUG-50, BUG-74, BUG-66, BUG-33,
+BUG-63, BUG-40, BUG-72.
 
 **Memory is now tracked.** `temp/learn/jugglebot/memory_v2.csv` is tracked in git and committed at each debrief
 (owner decision 2026-11-06); `.gitignore` un-ignores it. `memory.csv` stays frozen as the migration test's fixture
@@ -236,24 +236,24 @@ JB-161, JB-115, JB-184.
 
 Five Progress notes could not be written to their Items because other owners hold them. Texts as intended:
 
-- **JB-149.** "2026-11-06 endurance Sittings: the two longest Columns runs (73 and 62 Throws) both ended
+- **BUG-58.** "2026-11-06 endurance Sittings: the two longest Columns runs (73 and 62 Throws) both ended
   LANE_REFUSED after a 58 to 64 ms generation-2 garbage collection in `trajectory_node` (forward gap 72 to 78 ms,
   bridge loop gap 25 to 28 ms: the stream was late, the bridge was not starved). 14:55 log L3519-L3527 and
   L11162-L11174. `gc_freeze` is opt-in and default off; whether those launches passed it is not in the log."
-- **JB-175.** "2026-11-06: fault ends carry a mode name instead of the fault. Four of five drive-fault ends in the
+- **BUG-68.** "2026-11-06: fault ends carry a mode name instead of the fault. Four of five drive-fault ends in the
   endurance Sittings read WRONG_MODE, ABORTED_MODE_CHANGED or GUARD_LATCHED, and the P2 Hand
   CURRENT_LIMIT_VIOLATION read ABORTED_MODE_CHANGED with 3/3 caught. A spurious MISSED-BALL line follows the fault
   in 14:55 goal 4 (L6528). The MISSED_CATCH mislabel itself was not seen."
-- **JB-147.** "2026-11-06: the coast signature reproduced from a known cause (P2 goal 10: drive disarmed on
+- **BUG-57.** "2026-11-06: the coast signature reproduced from a known cause (P2 goal 10: drive disarmed on
   CURRENT_LIMIT_VIOLATION 25 to 37 ms after release, Hand coasted to 10.734 rev, past the 10.701 stop).
   Endurance: two Hand SPINOUT latches (14:55 L6493, L7014, the second within 10 ms of a C1 stop) and three
   HAND_JAM stalls at +2.38 to +2.52 rev at iq -65 to -71 A. At Apex 1.05 the Hand's peak speed ran 4 % under its
   command (K 1.067 against 1.087)."
-- **JB-108.** "2026-11-06 P2 Sitting: `columns_turned` at 90 degrees, Apex 1.00, Sep. 120 flown three times under
+- **IDEA-11.** "2026-11-06 P2 Sitting: `columns_turned` at 90 degrees, Apex 1.00, Sep. 120 flown three times under
   the merged Learner: 20/20 (completed), 35/35 then a collision, 14/14 then a collision. Live admissibility
   margin 0.31 to 0.34 against 0.378 nominated. The two-ball pull toward the partner Site turns with the pair
   (-0.19 per m along y)."
-- **JB-169.** "2026-11-06 endurance Sittings: no goal reached its final Catch, so not tested. Related: 9 mid-run
+- **BUG-67.** "2026-11-06 endurance Sittings: no goal reached its final Catch, so not tested. Related: 9 mid-run
   MISSED_CATCH ends have the last fit within 40 mm of the aim and the cup reading EMPTY (14:55 to 15:46 goals 7,
   8, 16, 17, 18, 24, 26, 28, 33); the cup trace in `/hand_telemetry` was not read."
 
@@ -261,19 +261,19 @@ Five Progress notes could not be written to their Items because other owners hol
 
 | Item | Priority | What |
 |---|---|---|
-| JB-188 | medium | Catch re-aim refused INFEASIBLE on 8.4 % of Throws at the P2 Sitting, 15 of 69 on the turned pair |
-| JB-189 | low | A Throw from a faulted Hand stroke is written to the Memory as caught |
-| JB-190 | low | A goal entered by a Feed prints `(reload) ENDED` and no `done` line; the Site is not printed at the start |
-| JB-191 | high | Two-ball Columns runs end on a missed Catch of Ball 2 with no collision: 13 of 23 ends, mean run 22 Throws |
-| JB-192 | high | Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for (gates `yaw_rad`) |
-| JB-193 | medium | The flyback over-corrects a Catch offset by 1.2 to 1.4 times: each landing error returns at -0.3 to -0.45 on the next Throw |
+| BUG-75 | medium | Catch re-aim refused INFEASIBLE on 8.4 % of Throws at the P2 Sitting, 15 of 69 on the turned pair |
+| BUG-76 | low | A Throw from a faulted Hand stroke is written to the Memory as caught |
+| BUG-77 | low | A goal entered by a Feed prints `(reload) ENDED` and no `done` line; the Site is not printed at the start |
+| BUG-78 | high | Two-ball Columns runs end on a missed Catch of Ball 2 with no collision: 13 of 23 ends, mean run 22 Throws |
+| BUG-79 | high | Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for (gates `yaw_rad`) |
+| BUG-80 | medium | The flyback over-corrects a Catch offset by 1.2 to 1.4 times: each landing error returns at -0.3 to -0.45 on the next Throw |
 
 ## Verification
 
 The numbers come from the launch logs and bags named at the top; each unit report states its scripts and greps.
 Gate on the debrief's tree:
 
-Full gate, run 2026-11-06 17:20 to 17:28 on the complete change set of this debrief (`./run_tests.sh --full`): **8792 passed, 52 skipped, 2 failed** in 453 s, plus the serial tail **10 passed**. Both failures were document currency tests, not code (`tests/sim/test_map_items_rated.py`: Item JB-190 moved to in_progress without its `owner` and `radius` ratings; `tests/sim/test_plans_index.py::test_index_is_current[active]`: the plan's `scope:` line was edited after `python -m mapkit gen`). Both were fixed (rated, regenerated) with no code edit after the gate, and the document tests were re-run: (2026-11-06 17:30, `python -m pytest tests/sim/test_map_items_rated.py tests/sim/test_plans_index.py tests/sim/test_logbook_front_matter.py tests/sim/test_docs_links.py tests/sim/test_glossary_avoid_words.py tests/sim/test_sitting_debrief_protocol.py tests/sim/test_sitting_sections.py tests/sim/test_night_shift_gate.py -q`: **304 passed, 48 skipped**; `python -m pytest tests/sim -k "mapkit or map_items" -q`: **310 passed, 48 skipped**).
+Full gate, run 2026-11-06 17:20 to 17:28 on the complete change set of this debrief (`./run_tests.sh --full`): **8792 passed, 52 skipped, 2 failed** in 453 s, plus the serial tail **10 passed**. Both failures were document currency tests, not code (`tests/sim/test_map_items_rated.py`: Item BUG-77 moved to in_progress without its `owner` and `radius` ratings; `tests/sim/test_plans_index.py::test_index_is_current[active]`: the plan's `scope:` line was edited after `python -m mapkit gen`). Both were fixed (rated, regenerated) with no code edit after the gate, and the document tests were re-run: (2026-11-06 17:30, `python -m pytest tests/sim/test_map_items_rated.py tests/sim/test_plans_index.py tests/sim/test_logbook_front_matter.py tests/sim/test_docs_links.py tests/sim/test_glossary_avoid_words.py tests/sim/test_sitting_debrief_protocol.py tests/sim/test_sitting_sections.py tests/sim/test_night_shift_gate.py -q`: **304 passed, 48 skipped**; `python -m pytest tests/sim -k "mapkit or map_items" -q`: **310 passed, 48 skipped**).
 
 ## Outcome
 
@@ -290,9 +290,9 @@ Learner.
   then one hardware check (Columns Sep. 125, Apex 0.93, alternating Dwell 0.27 and 0.40, three Attempts each,
   bag recorded; the check is a proposal, not on the Runbook). The learn option needs the `arrived_from` column
   and a migration that reconstructs it for stored rows and never defaults it to zero.
-- Why do Ball 2's Catches end runs more than Ball 1's (JB-191)? The cup trace from `/hand_telemetry` for the nine
+- Why do Ball 2's Catches end runs more than Ball 1's (BUG-78)? The cup trace from `/hand_telemetry` for the nine
   EMPTY-with-a-good-fit Catches has not been read.
-- Why is the turned pair's re-aim QP infeasible more often (JB-188)?
+- Why is the turned pair's re-aim QP infeasible more often (BUG-75)?
 - What causes the Hand encoder frame loss (selective by message; Leg 0 showed the same cadence)?
 - The Hand anchor and the 70 / 80 A gap (owner decisions above).
 - Per-beat rotation of a Pattern and a live operator channel for a mid-Pattern change wait on the arrival pull;

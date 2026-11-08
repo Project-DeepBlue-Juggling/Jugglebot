@@ -299,4 +299,4 @@ Bench validation produced a complete, internally consistent friction characteris
 
 6. **What if the bench's load isn't representative of platform legs?** — the bench fit assumes the bench's static load (~0.17 A) represents what platform legs experience. On platform, gravity contribution depends on platform pose; the constant load offset will be replaced by a kinematics-derived per-leg gravity term. The Stribeck shape (τ_c, τ_s, ω_s, b) should generalise.
 
-> Closed 2026-10-28: superseded by plans/archived/friction-ff-motor-guard-integration.md (JB-34 survey).
+> Closed 2026-10-28: superseded by plans/archived/friction-ff-motor-guard-integration.md (IDEA-2 survey).

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Records panel (``ros_ws/gui/js/records-panel.js`` + ``records-model.js``, JB-35).
+"""Records panel (``ros_ws/gui/js/records-panel.js`` + ``records-model.js``, IDEA-3).
 
 ``tests/ros/js/records_panel_harness.js`` runs the real DOM-free model under
 node and prints JSON this file asserts on: the row model from the
@@ -68,7 +68,7 @@ def test_one_row_per_pattern_in_ledger_order(out):
 
 
 def test_sections_group_by_ball_count_ascending_with_titles(out):
-    # JB-93: ledger order is c2,a1,t3,b2,d1; sections come fewest balls first, ties keep ledger order.
+    # IDEA-8: ledger order is c2,a1,t3,b2,d1; sections come fewest balls first, ties keep ledger order.
     assert out["sections"] == [
         {"balls": 1, "title": "1 ball", "rows": ["a1", "d1"]},
         {"balls": 2, "title": "2 balls", "rows": ["c2", "b2"]},

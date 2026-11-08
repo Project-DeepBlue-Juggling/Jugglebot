@@ -133,7 +133,7 @@ def test_end_lines_by_how_the_attempt_ended():
 
 
 def test_a_fed_goals_end_lines_lead_with_the_bare_pattern_and_say_the_feed_last():
-    # JB-190: the pattern's own name must be searchable on every end line.
+    # BUG-77: the pattern's own name must be searchable on every end line.
     reports = [_r(throw_no=1, apex_m=0.9, caught=False)]
     sfx = ' · entered by a Feed'
     for code, msg, kind, head in (
@@ -218,7 +218,7 @@ def test_the_stop_throw_line_says_stop_not_missed_and_is_info():
     assert 'MISSED' not in text
 
 
-# ── JB-169: a goal that ends on a Stop books its final Catch unverifiable ──
+# ── BUG-67: a goal that ends on a Stop books its final Catch unverifiable ──
 
 def test_an_unverifiable_final_catch_is_neither_caught_nor_missed_nor_counted():
     reports = [_r(throw_no=1), _r(throw_no=2),
@@ -249,7 +249,7 @@ def test_record_counts_adds_only_a_completed_goals_row_with_a_landing():
     # An aborted goal (fault, Stop, mode change before the row finalised).
     for code in ('', 'STOPPED', 'LANE_REFUSED', 'MISSED_CATCH'):
         assert rp.record_counts(base + [ok], code) == (2, 2), code
-    # No landing estimate, no Memory row (Apex outside the band, JB-189's
+    # No landing estimate, no Memory row (Apex outside the band, BUG-76's
     # refusal): the plain count even on a COMPLETED goal.
     for bad in (_r(throw_no=3, caught=None, unverified=True,
                    landing_err_mm=None, row=False,

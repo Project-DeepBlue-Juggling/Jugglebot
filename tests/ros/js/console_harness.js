@@ -69,7 +69,7 @@ const ring = [];
 for (let i = 0; i < L.RING_CAP + 123; i++) L.pushCapped(ring, { t: i, level: 20, name: 'n', msg: String(i) });
 out.ring = { len: ring.length, first: ring[0].msg, last: ring[ring.length - 1].msg, cap: L.RING_CAP };
 cv.initConsoleView();
-// ---- window label + pinned startup lines (JB-163) ----
+// ---- window label + pinned startup lines (BUG-64) ----
 {
     const on = { DEBUG: true, INFO: true, WARN: true, ERROR: true, FATAL: true };
     const st = L.newLive();
@@ -120,7 +120,7 @@ out.hit = {
     next_mid: L.nextHit(rl, hits, 3.4), next_on: L.nextHit(rl, hits, 3), next_end: L.nextHit(rl, hits, 5),
     none: [L.currentHit(rl, [], 3), L.prevHit(rl, [], 3), L.nextHit(rl, [], 3)],
 };
-// ---- JB-135: hover marker ----
+// ---- FEAT-35: hover marker ----
 const row = (t) => ({ closest: (sel) => (sel === '.console-line' ? { dataset: { t } } : null) });
 out.hover = {
     row: L.hoverTime(row('12.5')), nan: L.hoverTime(row('abc')), missing: L.hoverTime(row(undefined)),

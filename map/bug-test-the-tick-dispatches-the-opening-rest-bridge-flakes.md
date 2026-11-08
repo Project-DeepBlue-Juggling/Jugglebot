@@ -1,5 +1,5 @@
 ---
-id: JB-165
+id: BUG-65
 kind: bug
 title: 'test_the_tick_dispatches_the_opening_rest_bridge flakes under a loaded full gate: the mocap and status freshness clock is not frozen'
 status: complete
@@ -19,7 +19,7 @@ links:
 filed_by: night-shift-2026-11-04
 ---
 
-Night Shift 2026-11-04: the JB-159 full gate failed once on `tests/ros/test_skill_node.py::test_the_tick_dispatches_the_opening_rest_bridge_through_the_mocked_client` (`assert 0 == 1`, no install). The test passes 5 of 5 alone and in its whole file (388 passed), and the nightly was GREEN.
+Night Shift 2026-11-04: the BUG-61 full gate failed once on `tests/ros/test_skill_node.py::test_the_tick_dispatches_the_opening_rest_bridge_through_the_mocked_client` (`assert 0 == 1`, no install). The test passes 5 of 5 alone and in its whole file (388 passed), and the nightly was GREEN.
 
 ## Mechanism (reproduced 2026-11-04)
 
@@ -29,4 +29,4 @@ Night Shift 2026-11-04: the JB-159 full gate failed once on `tests/ros/test_skil
 
 ## Fix
 
-The JB-141 shape: one injectable `_obs_clock` (production `time.perf_counter`, unchanged) stamps and judges these three caches, and the fixture freezes it. Production behaviour is unchanged.
+The BUG-53 shape: one injectable `_obs_clock` (production `time.perf_counter`, unchanged) stamps and judges these three caches, and the fixture freezes it. Production behaviour is unchanged.

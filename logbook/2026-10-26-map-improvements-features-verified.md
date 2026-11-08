@@ -44,7 +44,7 @@ All of these checks were run on the Jetson on 2026-10-26.
 - **Done page:** 3 complete Pathways, newest first, each with its dates, and 26 closed items grouped by Pathway. The kind filter works, and a click opens the drawer.
 - **Search:** "toss" returns Throw, labelled "avoid: toss". Keystroke to results takes 55-58 ms after b576a6c; it was about 107 ms before, almost all of it the 100 ms debounce.
 - **History:** the Wave camera Pathway lists its logbook document and 4 commits, and the GitHub links return 200. Before b576a6c, 14 of 152 document rows were "missing"; now 0 are.
-- **Stale:** Now / Next / Later rings exactly the set that `python -m mapkit items --stale` prints (JB-1, JB-2, JB-3), and the Key lists "stale".
+- **Stale:** Now / Next / Later rings exactly the set that `python -m mapkit items --stale` prints (BUG-1, FEAT-1, FEAT-2), and the Key lists "stale".
 - **Nightly chip:** it reads GREEN, and its tooltip matches `/api/v1/nightly`.
 - **Console:** zero errors on every page.
 - **Quick capture:** the GUI was served from this tree and routed to a throwaway server whose git origin was a scratch bare repo.

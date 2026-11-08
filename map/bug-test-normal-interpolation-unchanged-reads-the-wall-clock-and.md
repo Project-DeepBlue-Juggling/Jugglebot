@@ -1,5 +1,5 @@
 ---
-id: JB-182
+id: BUG-71
 kind: bug
 title: test_normal_interpolation_unchanged reads the wall clock and failed one full gate under load
 status: complete

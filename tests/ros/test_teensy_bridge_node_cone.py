@@ -217,7 +217,7 @@ def test_truncated_udp_payload_ignored(bridge):
 
 
 def test_heartbeat_flag_masks_come_from_generated_protocol():
-    """The node's T2J heartbeat masks read the generated enum (JB-87); plain ints."""
+    """The node's T2J heartbeat masks read the generated enum (FEAT-28); plain ints."""
     from jugglebot import teensy_bridge_node as tbn
 
     assert tbn._T2J_FLAG_MPC_ACTIVE == p.HeartbeatT2JFlags.MPC_ACTIVE

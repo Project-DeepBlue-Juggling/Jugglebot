@@ -354,4 +354,4 @@ neighbours; the 75 ms production margin was not touched.
 * 2026-09-28 14:48, `./run_tests.sh --full` on the post-audit tree (`temp/logs/run_tests_r4b_full2_20260928_1447.log`)
   → **PASS: 5516 passed, 8 skipped, 1 xfailed in 277.30 s; serial 6 passed in 19.69 s** — the phase's closing gate.
 
-> Closed 2026-10-28: closed by 2026-09-29-skill-stack-r4-gate-met (JB-34 survey).
+> Closed 2026-10-28: closed by 2026-09-29-skill-stack-r4-gate-met (IDEA-2 survey).

@@ -62,7 +62,7 @@ def _git_env(tmp_path, monkeypatch):
 
 
 ITEM = """---
-id: JB-7
+id: BUG-7
 kind: bug
 title: Wobble
 status: complete
@@ -211,14 +211,14 @@ class Rig:
         self.stop_pulling()
         self.server.shutdown()
 
-    def app_commit(self, *files, msg="fix(app): thing (JB-7)", remove=(), mark=True):
+    def app_commit(self, *files, msg="fix(app): thing (BUG-7)", remove=(), mark=True):
         for rel in files:
             (self.app_seed / rel).write_text("x\n")
         for rel in remove:
             os.unlink(str(self.app_seed / rel))
         commit(self.app_seed, msg, mark=mark)
 
-    def main_commit(self, *files, msg="feat(mapkit): thing (JB-7)", mark=True):
+    def main_commit(self, *files, msg="feat(mapkit): thing (BUG-7)", mark=True):
         git(self.main_seed, "pull", "-q", "--ff-only", "origin", "main")
         for rel in files:
             p = self.main_seed / rel
@@ -322,10 +322,10 @@ def test_broken_commit_is_rolled_back_reverted_and_its_item_reopened(rig):
     rig.app_commit("broken")
     res = rig.run()
     _assert_app_reverted(rig, res, before)
-    assert res["items_reopened"] == ["JB-7"] and res["reopen_failed"] == []
+    assert res["items_reopened"] == ["BUG-7"] and res["reopen_failed"] == []
     assert "status: in_progress" in rig.item()
     assert "App deploy failed %s" % DATE in rig.item()
-    assert "reopened: JB-7" in res["line"]
+    assert "reopened: BUG-7" in res["line"]
 
 
 def test_a_file_the_commit_deleted_comes_back(rig):
@@ -377,7 +377,7 @@ def _nothing_reverted(rig, app_tip, main_tip, res):
 
 def test_a_day_commit_in_the_night_window_is_never_reverted(rig):
     before = rig.live_head()
-    rig.app_commit("broken", msg="fix(app): a day Session's work (JB-7)", mark=False)
+    rig.app_commit("broken", msg="fix(app): a day Session's work (BUG-7)", mark=False)
     app_tip, main_tip = rig.origin_tip(rig.app_origin), rig.origin_tip(rig.main_origin)
     res = rig.run()
     assert res["status"] == "FAILED_NEEDS_SESSION"
@@ -391,9 +391,9 @@ def test_an_older_undeployed_commit_does_not_get_tonights_blamed(rig):
     night's start. Tonight's Y is good but deploys on top of X and fails. Reverting Y and
     telling the owner not to retry it would be the wrong commit, and X would still be there."""
     before = rig.live_head()
-    rig.app_commit("broken", msg="fix(app): X (JB-5)")
+    rig.app_commit("broken", msg="fix(app): X (BUG-5)")
     start = rig.origin_tip(rig.app_origin)
-    rig.app_commit("feature", msg="fix(app): Y (JB-7)")
+    rig.app_commit("feature", msg="fix(app): Y (BUG-7)")
     app_tip, main_tip = rig.origin_tip(rig.app_origin), rig.origin_tip(rig.main_origin)
     res = rig.run(app_start=start)
     assert res["status"] == "FAILED_NEEDS_SESSION"
@@ -436,7 +436,7 @@ def test_already_down_with_nothing_new_reverts_nothing(rig):
 
 
 def test_an_unmarked_mapkit_commit_is_not_reverted(rig):
-    rig.main_commit("mapkit/broken", msg="feat(mapkit): a day Session's work (JB-7)", mark=False)
+    rig.main_commit("mapkit/broken", msg="feat(mapkit): a day Session's work (BUG-7)", mark=False)
     app_tip, main_tip = rig.origin_tip(rig.app_origin), rig.origin_tip(rig.main_origin)
     res = rig.run()
     assert res["status"] == "DOWN"
@@ -492,7 +492,7 @@ def _mapkit_night(rig):
     (rig.main_seed / "tests" / "test_new_mapkit.py").write_text("x\n")
     (rig.main_seed / "logbook" / "entry.md").write_text("the entry\n")
     (rig.main_seed / "logbook" / "INDEX.md").write_text("| fix |\n| row |\n")
-    commit(rig.main_seed, "feat(mapkit): thing (JB-7)")
+    commit(rig.main_seed, "feat(mapkit): thing (BUG-7)")
     (rig.main_seed / "logbook" / "INDEX.md").write_text("| report |\n| fix |\n| row |\n")
     commit(rig.main_seed, "docs(night-shift): report %s" % DATE, mark=False)
 
@@ -505,7 +505,7 @@ def test_mapkit_breaking_the_app_is_undone_on_a_real_night(rig):
     assert rig.origin_file(rig.main_origin, "tests/test_new_mapkit.py") is None   # main stays green
     assert rig.origin_file(rig.main_origin, "logbook/entry.md") == "the entry\n"  # history stays
     assert rig.origin_file(rig.main_origin, "logbook/INDEX.md").startswith("| report |")
-    assert res["items_reopened"] == ["JB-7"] and "status: in_progress" in rig.item()
+    assert res["items_reopened"] == ["BUG-7"] and "status: in_progress" in rig.item()
     log = git(rig.tmp, "--git-dir", str(rig.main_origin), "log", "-2", "--format=%B", "main")
     assert "revert(night-shift): mapkit change broke the map app" in log
     assert "Logbook-Entry: %s-night-shift" % DATE in log
@@ -535,7 +535,7 @@ def test_both_broken_are_both_reverted(rig):
 
 def test_only_mapkit_is_reverted_when_the_app_commits_cannot_be_proved(rig):
     rig.main_commit("mapkit/broken")
-    rig.app_commit("feature", msg="fix(app): a day Session's work (JB-5)", mark=False)
+    rig.app_commit("feature", msg="fix(app): a day Session's work (BUG-5)", mark=False)
     app_tip = rig.origin_tip(rig.app_origin)
     res = rig.run()
     assert res["status"] == "ROLLED_BACK_MAPKIT"
@@ -556,7 +556,7 @@ def test_a_main_the_owner_just_wrote_to_is_rebased_onto(rig, monkeypatch):
         return failed
     monkeypatch.setattr(deploy, "reopen", answer_arrives)
     res = rig.run()
-    assert res["status"] == "ROLLED_BACK_APP" and res["items_reopened"] == ["JB-7"]
+    assert res["status"] == "ROLLED_BACK_APP" and res["items_reopened"] == ["BUG-7"]
     assert "status: in_progress" in rig.item()
     assert rig.origin_file(rig.main_origin, "map/answer.txt") == "answer\n"
 
@@ -609,7 +609,7 @@ def test_a_deploy_killed_halfway_is_undone_next_run(rig):
     """New server code with an old build, and old == new, would otherwise never be rebuilt."""
     old = rig.live_head()
     (rig.app_seed / "version").write_text("2\n")
-    commit(rig.app_seed, "fix(app): version two (JB-7)")
+    commit(rig.app_seed, "fix(app): version two (BUG-7)")
     new = rig.origin_tip(rig.app_origin)
     live = deploy.Live(deploy.parse_args(["--date", DATE, "--result", "x", "--app-live", str(rig.app_live),
                                           "--state-dir", str(rig.tmp / "state")]))
@@ -682,7 +682,7 @@ def test_a_real_browser_tells_a_mounted_page_from_a_white_screen(rig):
 
 # --- item-id-per-kind P1 (plan section 5, T-U8): a rollback names Items in either ID form ---
 
-def test_items_in_finds_both_forms_in_subjects():
+def test_items_in_finds_both_forms_in_subjects():  # legacy form: retired at P5
     """T-U8: ``items_in`` reads JB-n and every per-kind prefix; look-alikes are not Items."""
     subjects = ["fix(app): JB-7 and BUG-3", "feat(mapkit): thing (FEAT-12)",
                 "fix: IDEA-2, PWAY-4, TKT-31; BUG-3 again", "JB_OP_X XBUG-9 BUG-3x bug-5 FEAT"]
@@ -690,14 +690,14 @@ def test_items_in_finds_both_forms_in_subjects():
     assert deploy.items_in(commits) == ["JB-7", "BUG-3", "FEAT-12", "IDEA-2", "PWAY-4", "TKT-31"]
 
 
-def test_items_in_knows_every_mapkit_prefix():
+def test_items_in_knows_every_mapkit_prefix():  # legacy form: retired at P5
     """T-U8: the deploy keeps its own prefix list (a rollback must not import the mapkit it may be
     undoing), so this pins it to ``mapkit.ids.ALL_PREFIXES``."""
     from mapkit.ids import ALL_PREFIXES
     assert set(deploy.ID_PREFIXES) == set(ALL_PREFIXES)
 
 
-FEAT_ITEM = ITEM.replace("id: JB-7", "id: FEAT-12").replace("kind: bug", "kind: feature") \
+FEAT_ITEM = ITEM.replace("id: BUG-7", "id: FEAT-12").replace("kind: bug", "kind: feature") \
     .replace("diagnosis: confirmed\n", "")
 
 

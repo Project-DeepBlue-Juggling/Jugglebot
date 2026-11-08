@@ -1,5 +1,5 @@
 ---
-title: "GUI: the Records panel sits hard left and dodges the collapsed State Machine card only when they would overlap (JB-103)"
+title: "GUI: the Records panel sits hard left and dodges the collapsed State Machine card only when they would overlap (BUG-38)"
 type: bugfix
 date: 2026-11-01
 status: complete
@@ -19,7 +19,7 @@ tags:
   - ux
 ---
 
-# JB-103: Records panel snaps left
+# BUG-38: Records panel snaps left
 
 **What.** With the State Machine card collapsed (bottom-left, 210 px wide, growing up from the
 command strip), the Records panel was fixed 210 px + two gaps in from the left, so it floated in

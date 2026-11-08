@@ -195,4 +195,4 @@ Platform banner instead); `ros_ws/docs/hand_throw_envelope.md`'s numeric tables 
 stale pending R2's re-derivation; the `hand-geometry-correction` worktree is removed once
 the sitting closes R1.
 
-> Closed 2026-10-28: closed by plans/archived/two-ball-skill-stack.md (JB-34 survey).
+> Closed 2026-10-28: closed by plans/archived/two-ball-skill-stack.md (IDEA-2 survey).

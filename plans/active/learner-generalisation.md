@@ -151,12 +151,12 @@ earlier row). The lateral offsets are NOT global (−2 to +18 mm by Site): L2 ca
 "initialise from the corpus fit" was dropped (it contradicts the identity at an empty memory). Record:
 `logbook/2026-11-06-learner-generalisation-p1-learner-core.md`.
 
-**P2 pin (Sitting 2026-11-06, JB-187; `logbook/2026-11-06-sitting-debrief-2.md`).** b is a fixed distance, not an aim
+**P2 pin (Sitting 2026-11-06, FEAT-44; `logbook/2026-11-06-sitting-debrief-2.md`).** b is a fixed distance, not an aim
 angle; Δ_b stays OFF; s stays on Robot x only (leave-one-Site-out 6.2 mm x only, 7.3 radial, 7.0 separate; one-ball
 s_y +0.067 ± 0.059 per m); b's frame is not identified, so b stays in the Robot frame. `s` is NOT a centre pull of
 the Site: one-ball Throws show none (s_x −0.073 ± 0.061). Two-ball Throws land pulled toward the PARTNER Site by
 −0.18 per m of Site coordinate (about 11 mm at Sep. 120), along the pair at any angle, and it is an arrival
-transient (the first Throw of an Attempt has none). It is not a term of f₀ (JB-192; § 7). Measured against the
+transient (the first Throw of an Attempt has none). It is not a term of f₀ (BUG-79; § 7). Measured against the
 real release (offline probe, 2026-11-06) it is almost all lateral launch velocity, not position, and not a planner
 defect (§ 7).
 
@@ -195,7 +195,7 @@ it once per plant at merge.
 |u − f₀⁻¹(y_d)| ≤ cap(x) = c_max · (1 − exp(−Σ w_i / w₀))     (lateral and apex, each its own c_max)
 ```
 
-c_max is 30 mm laterally (the node's `learner_lateral_authority_mm`, the owner's JB-139 value) and 20 mm in
+c_max is 30 mm laterally (the node's `learner_lateral_authority_mm`, the owner's BUG-52 value) and 20 mm in
 apex (the residual's corrections on the corpus: p99 12.9 mm, max 18.0 mm). Zero evidence → the pure model.
 The cap is RELATIVE TO THE MODEL, not y_d: the share of rows pinned at the authority falls from 28.8 % (old
 clamp) to 0.5 %. The model command is also what the command-time check falls back toward (P3a). Actuator
@@ -320,18 +320,18 @@ open-ended streams (the Stop must be known at compile; nomination plans the whol
 | Phase | Scope | Status | Date | Risk | Validates |
 |-------|-------|--------|------|------|-----------|
 | P3a | Command-time admissibility check (three evaluations max, early start), `throw_envelope.evaluate` re-homed | COMPLETE (merged to `main` 2026-11-06; flown the same day: 100 of 100 early checks reused, no refusal) | 2026-11-06 | High (safety content moves) | Loaded-Jetson p99 within slack; sim gate green with no box |
-| P3b | Nomination-time check and the nearest viable configuration | COMPLETE (merged and flown 2026-11-06, every goal accepted; JB-185 closed by option C: the worst-corner margin is printed beside the nominal one, acceptance unchanged) | 2026-11-06 | Medium (goal acceptance, GUI) | Every refusal at once; nearest viable named; moving-site Patterns checkable |
+| P3b | Nomination-time check and the nearest viable configuration | COMPLETE (merged and flown 2026-11-06, every goal accepted; BUG-73 closed by option C: the worst-corner margin is printed beside the nominal one, acceptance unchanged) | 2026-11-06 | Medium (goal acceptance, GUI) | Every refusal at once; nearest viable named; moving-site Patterns checkable |
 | P3c | Box retirement per § 6.4 | COMPLETE (merged to `main` 2026-11-06) | 2026-11-06 | Low | Census counts to zero |
 | P1 | Learner core: `plant_model.py`, `learner.py`, `memory.py` v2 + migration, replay probe | COMPLETE (merged to `main` 2026-11-06; every plant's memory migrated to `memory_v2.csv` the same day) | 2026-11-06 | Medium (changes every commanded u) | Cold-start apex error 12.9 mm (gate < 15 mm) at Sites with earlier data |
-| P2 | Characterisation sitting (D6): θ structure, yaw frame, telemetry | COMPLETE (flown 2026-11-06 15:53, JB-187 passed; the four decisions keep today's structure, § 2.2) | | Medium (hardware) | Aim vs offset; radial vs x; frame; Δ_b |
+| P2 | Characterisation sitting (D6): θ structure, yaw frame, telemetry | COMPLETE (flown 2026-11-06 15:53, FEAT-44 passed; the four decisions keep today's structure, § 2.2) | | Medium (hardware) | Aim vs offset; radial vs x; frame; Δ_b |
 | P4 | BeatEvent stream, columns wrapper, next-beat rule, dwell out of node params | COMPLETE (merged to `main` 2026-11-06; no live operator channel, by decision) | 2026-11-06 | High (schedule path, ~20 test files) | Golden test (227 compiles identical); sim mid-pattern change |
 | P5 | Close-out: the arrival pull, per-beat yaw, a mid-Pattern change on the robot, columns ↔ oval shared memory on hardware, INVARIANTS rows; archive only after they have flown (§ 4 Phase 5) | NOT STARTED | | Medium (hardware) | Each item's criterion in § 4 Phase 5; no aliasing; invariants pinned |
 
 Merged to `main` 2026-11-06 as `e0edc2ea` and every plant's memory migrated to schema v2 the same day
 (`logbook/2026-11-06-learner-generalisation-merge-and-runbook-first-key.md`). First powered run: Sitting 2026-11-06
-13:19, JB-183 (`logbook/2026-11-06-sitting-debrief.md`: P3a 100 of 100 early checks reused, the early start stays on
-by default; T-H3 met; T-H2 supported on a thin sample; Sep. 170 separated Legs 1 and 2, JB-184, owner: no new
-bound). P2 flown 15:53 the same day, JB-187 (`logbook/2026-11-06-sitting-debrief-2.md`).
+13:19, FEAT-43 (`logbook/2026-11-06-sitting-debrief.md`: P3a 100 of 100 early checks reused, the early start stays on
+by default; T-H3 met; T-H2 supported on a thin sample; Sep. 170 separated Legs 1 and 2, BUG-72, owner: no new
+bound). P2 flown 15:53 the same day, FEAT-44 (`logbook/2026-11-06-sitting-debrief-2.md`).
 
 Order per D7 (supersedes D5's P1 → P3 → P4): P3a → P3b → P3c → P1 → P4, P2 between P1 and the oval ramp. Only P5
 remains, and it needs hardware.
@@ -351,7 +351,7 @@ median under starvation, not the tail (the early start hides the check; its p99 
 ### Phase 3b: Nomination-time check and the nearest viable configuration — COMPLETE
 
 As built: § 2.5 "As built (P3b)", I-ADMIT-2. Record: `logbook/2026-11-06-learner-generalisation-p3b-nomination-check.md`.
-The nearest-viable message has not yet been exercised on hardware (no goal was refused). JB-185 closed by option C
+The nearest-viable message has not yet been exercised on hardware (no goal was refused). BUG-73 closed by option C
 (owner): acceptance unchanged on the nominal margin; the worst margin with every Catch aim at the executor's clamp
 corner is printed beside it (Columns Apex 1.00 Sep. 170: 0.211 nominal, 0.016 at the corner;
 `logbook/2026-11-06-nomination-reaim-figure.md`).
@@ -371,13 +371,13 @@ for the identity prior; rows at the authority 0.49 % against 28.8 %.
 
 ### Phase 2: The characterisation sitting — COMPLETE
 
-Flown 2026-11-06 15:53 (JB-187 passed) from `tests/hardware/session_learner_characterisation.md`
+Flown 2026-11-06 15:53 (FEAT-44 passed) from `tests/hardware/session_learner_characterisation.md`
 (`logbook/2026-11-06-learner-characterisation-runbook.md`); results in `logbook/2026-11-06-sitting-debrief-2.md`.
 (a) the offset is a distance; K one number over Apex 0.70 to 1.00 (1.084 to 1.090), 1.067 at 1.05. (b) s stays
 on x; b stays in the Robot frame. (c) Δ_b OFF. (d) the release-time error does not move the Apex. Found beyond
-the rules: the two-ball arrival pull (JB-192; § 7) and a flyback 1.2 to 1.4 times too strong (JB-193). §§ 2.2 and
+the rules: the two-ball arrival pull (BUG-79; § 7) and a flyback 1.2 to 1.4 times too strong (BUG-80). §§ 2.2 and
 2.6 carry the pins. For any later Sitting keep Sites and turned pairs inside what has flown (transits up to 156 mm
-at 600 / 8000; a 187 mm transit separated two Legs, JB-184).
+at 600 / 8000; a 187 mm transit separated two Legs, BUG-72).
 
 ### Phase 4: BeatEvent stream and the columns wrapper — COMPLETE
 
@@ -393,23 +393,23 @@ mid-Pattern"): the arrival pull, the per-beat rotation that depends on it, a mid
 oval on the shared Memory, and the INVARIANTS rows. **2026-11-06, owner: the plan stays open until these have
 flown.** Archive with `/archive-plan` only after items 1 to 4 are flown and item 5 is landed.
 
-1. **The arrival pull (JB-192).** Two-ball Throws land pulled toward the partner Site; measured against the real
+1. **The arrival pull (BUG-79).** Two-ball Throws land pulled toward the partner Site; measured against the real
    release it is almost all a lateral launch velocity the Platform does not deliver after an arrival (§ 7).
-   - Precondition: none. The bookkeeping fixes F1 and F2 landed 2026-11-06 (JB-194,
+   - Precondition: none. The bookkeeping fixes F1 and F2 landed 2026-11-06 (BUG-81,
      `logbook/2026-11-06-memory-release-record-fixes.md`): Memory rows from then on hold the release that flew,
      which the "learn it" branch below needs (an arrival term is fitted against `rel`).
-   - Hardware check (the `## Sitting` section of JB-192, rehearsed offline 2026-11-06): Columns Sep. 125,
+   - Hardware check (the `## Sitting` section of BUG-79, rehearsed offline 2026-11-06): Columns Sep. 125,
      Apex 0.93, Dwell 0.27 against 0.32 alternating, about 30 caught Throws each, bag recorded. Dwell 0.40 (the
      first design) is refused at goal accept, and 0.35 plans 6207 mm/s^2, within 2 % of the transit that
-     separated Legs 1 and 2 (JB-184), so it is not in the row. A 5 Hz ring predicts a clear change in the
+     separated Legs 1 and 2 (BUG-72), so it is not in the row. A 5 Hz ring predicts a clear change in the
      Platform's velocity at release over 0.05 s; an Apex effect predicts none.
-   - Decision after it (owner): suppress the ring at its source (`carry-ring-zvd.md`; since 2026-11-06 the rows stay off on Columns until JB-184 has a bound, so this branch needs that bound first), learn an arrival term (a
+   - Decision after it (owner): suppress the ring at its source (`carry-ring-zvd.md`; since 2026-11-06 the rows stay off on Columns until BUG-72 has a bound, so this branch needs that bound first), learn an arrival term (a
      schema v3 `arrived_from` Memory column, stored rows reconstructed, never defaulted to zero; a scalar c
      over-corrects by about 6 mm at Apex 1.10), or both.
    - Done: the decision recorded and flown; on two-ball Columns the pull toward the partner, fitted as in the P2
      debrief against the real release, is within 2 SE of the one-ball fit (proposed criterion, owner to confirm).
      With F1 applied, the Memory rows' `rel` equals the commanded Cup at release to about the 0.4 mm tilt lever.
-2. **Per-beat rotation of the Pattern (`yaw_rad`).** Item: JB-109 (JP-11 Rotating columns, an Idea).
+2. **Per-beat rotation of the Pattern (`yaw_rad`).** Item: IDEA-12 (JP-11 Rotating columns, an Idea).
    - Precondition: item 1 decided and flown (fixed at source, or the term carried in a frame that turns with the
      Pattern: Robot-frame Site keys cannot learn it on a pair whose angle changes each beat). Today `yaw_rad != 0`
      is refused by name (`BEAT_YAW_NOT_SUPPORTED`).
@@ -424,7 +424,7 @@ flown.** Archive with `/archive-plan` only after items 1 to 4 are flown and item
      I-BEAT-1), rehearsed on the loaded box first with every refusal reported at once.
    - Done (proposed criterion, owner to confirm): on the robot, an Apex change and an Apex-and-Dwell change fly mid-Attempt from the first changeable
      Throw, as the sim gate does, and a refused change names its code and leaves the Attempt unchanged.
-4. **The oval on the shared Memory (T-H4).** Item: the oval's P5 (`two-ball-oval.md`, Pathway JB-40); no Item for
+4. **The oval on the shared Memory (T-H4).** Item: the oval's P5 (`two-ball-oval.md`, Pathway PWAY-4); no Item for
    the shared-Memory check itself.
    - Precondition: `compile_oval` targets `compile_beats` (carried events are refused by name until then).
    - Done: Columns and the oval fly on one Memory on hardware; rows stay separated by `release_kind` (no carried
@@ -490,7 +490,7 @@ reverts independently; the migration never rewrites `memory.csv` in place.
   Δ_b OFF); the 10 % margin is kept as the online acceptance criterion (D9, 2026-11-05; a measured
   per-limit-class overrun from bags is a follow-up Item); the apex c_max, λ, h_p, h_v, h_d and w₀ were decided at
   P1 from the replay probe or the closed-loop tests (§§ 2.2-2.4; listed for the owner's review in the P1 entry).
-- OPEN (JB-192, gates `yaw_rad`; P5 item 1): the two-ball arrival pull c·(Site − arrived_from)/2,
+- OPEN (BUG-79, gates `yaw_rad`; P5 item 1): the two-ball arrival pull c·(Site − arrived_from)/2,
   c = −0.150 ± 0.010, beats today's s·x on 382 held-out Attempts (6.5 ± 2.8 mm²), over-corrects by about 6 mm at
   Apex 1.10 as a scalar, and is not in f₀, by decision (`arrived_from` needs schema v3, never defaulted to zero).
   **Reframed 2026-11-06 (offline probe; the planner-defect hypothesis is withdrawn):** no planner defect (the
@@ -498,7 +498,7 @@ reverts independently; the migration never rewrites `memory.csv` in place.
   caught position, 92 of 98 carried Throws re-aimed, and the asymmetric 10 / 35 mm catch clamp sets its mean);
   against the real release the pull is almost all velocity: the Platform delivers +4.2 / +0.4 of the +16.6 / +13.3
   mm/s lateral launch asked for (plain / turned) after an arrival. The Memory's `rel` is the dispatch aim, not the
-  re-aimed release: a bookkeeping gap, fixed 2026-11-06 (F1 / F2, JB-194; rows from then on hold the release that flew). Detail:
+  re-aimed release: a bookkeeping gap, fixed 2026-11-06 (F1 / F2, BUG-81; rows from then on hold the release that flew). Detail:
   `logbook/2026-11-06-arrival-pull-and-hand-dropout-probes.md` (the probe's own report is local and gitignored: `temp/probes/sitting_debrief_2026-11-06b/unit_creep.md`).
 - P3a's cost is MEASURED (2026-11-06, § 2.5 "As built"). Open for the owner: whether the early start
   (`admissibility_early_command`, on by default) or the plan's literal slot is flown first; what buys the

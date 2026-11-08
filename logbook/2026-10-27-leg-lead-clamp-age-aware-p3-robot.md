@@ -73,12 +73,12 @@ Oracle check: on the 2026-10-24 `11-34-29` bag (FW 30) the scan finds the known 
 
 ## Findings outside the gate (filed, not fixed)
 
-- **JB-75: `SETPOINT_STALE` latch 117 ms after the first arm.** Sequence: armed at .376, latched at .493, first `/leg_setpoint_echo` sample at .412.
+- **BUG-20: `SETPOINT_STALE` latch 117 ms after the first arm.** Sequence: armed at .376, latched at .493, first `/leg_setpoint_echo` sample at .412.
   - An earlier latch was already reported at node start (1793102384.89, output disarmed) and was cleared at 385.95. It was most likely left over from the P2 bench session on this un-power-cycled bridge; the source is not established.
   - The bridge had not been power-cycled since the P2 reflash, so Runbook row LC-1 was skipped. Uptime was 5523 s at launch, and leg 0's census still held the P2 bench leg's counts (clamp 361, stale 4071).
   - Mechanism: `s_last_setpoint_us` survives across arms, so on a bridge that has streamed before, the 10 Hz staleness check can land between the arm and the first new setpoint.
   - This predates FW 31 and has nothing to do with the clamp. It fails safe; clear_errors recovered it, and the re-arm at 563.2 held for the rest of the Sitting.
-- **JB-76: `SPLICE_TOO_LATE` ended 5 of 10 goals.** These were Jetson-side CATCH solves (median 168 ms, p90 276 ms, max 380 ms) against the 250 ms deadline, a tail that has grown since 2026-10-23. The bridge is not involved.
+- **BUG-21: `SPLICE_TOO_LATE` ended 5 of 10 goals.** These were Jetson-side CATCH solves (median 168 ms, p90 276 ms, max 380 ms) against the 250 ms deadline, a tail that has grown since 2026-10-23. The bridge is not involved.
 - **Leg 0's stale census did not move during the Sitting**, including its 1.7 s heartbeat-dropout episode at 827–829.
   - This is not evidence of a defect. Stale ticks and dropped frames are loosely coupled: leg 2 counted 605 stale ticks with "0 co-dropped" frames, so delivery is bursty.
   - Leg 0's clamp counter also stayed at 0, and the staircase scan reads `/leg_cmd_executed` independently of the census.
@@ -86,4 +86,4 @@ Oracle check: on the 2026-10-24 `11-34-29` bag (FW 30) the scan finds the known 
 
 ## Outcome
 
-The plan is complete and archived. Its gate opens `two-ball-oval.md` runbook § 9, the P3 re-gate, and P4's `leg_curr_limit_a` 15 → 30, as far as this prerequisite goes. JB-76 still stands in front of any 30-catch run.
+The plan is complete and archived. Its gate opens `two-ball-oval.md` runbook § 9, the P3 re-gate, and P4's `leg_curr_limit_a` 15 → 30, as far as this prerequisite goes. BUG-21 still stands in front of any 30-catch run.

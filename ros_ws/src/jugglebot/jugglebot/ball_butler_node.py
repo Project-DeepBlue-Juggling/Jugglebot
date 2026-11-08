@@ -722,7 +722,7 @@ class BallButlerNode(Node):
         as ``NAME (axis=..., detail1=...)``), so a consumer compares against a
         named firmware code rather than pattern-matching a sentence.
 
-        JB-21: the String ends with `` release_wall_s=<%.6f>`` (the goal's
+        BUG-2: the String ends with `` release_wall_s=<%.6f>`` (the goal's
         absolute release instant, `throw_identity.tag_message`) so a consumer
         can tell WHICH throw the verdict reports; the leading token and the
         text up to it are untouched, and a goal with no release (0) is

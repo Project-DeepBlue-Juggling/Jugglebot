@@ -34,7 +34,7 @@ function formatCameraState(s) {
     return `position: ${xyz(s.position)}, target: ${xyz(s.target)}`;
 }
 
-/** Hand the current view to the operator (JB-88).  The GUI is served over
+/** Hand the current view to the operator (BUG-30).  The GUI is served over
  *  plain http from the Jetson's LAN address, which is not a secure context,
  *  so navigator.clipboard is usually absent — fall back to a prompt whose
  *  text is pre-selected for Ctrl+C.  Always logged to the console too. */

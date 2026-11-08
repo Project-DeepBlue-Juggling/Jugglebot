@@ -1,9 +1,9 @@
 ---
-title: "JB-76: the CATCH solve tail is the launch starving its own solver worker (65 ms of CPU takes 150 ms of wall on a 5.5-of-6-core box); instrumented, measured in one Sitting, low-priority prefixes as the first fix; second Sitting: refusals 42 % -> 1.3 %, wall/CPU 2.18 -> 1.97; fix 2: the tracker's OpenBLAS pool capped; third Sitting: wall/CPU 1.27, CATCH wall p50 95 ms, oval 50/50 record; JB-76 CLOSED, residue filed"
+title: "BUG-21: the CATCH solve tail is the launch starving its own solver worker (65 ms of CPU takes 150 ms of wall on a 5.5-of-6-core box); instrumented, measured in one Sitting, low-priority prefixes as the first fix; second Sitting: refusals 42 % -> 1.3 %, wall/CPU 2.18 -> 1.97; fix 2: the tracker's OpenBLAS pool capped; third Sitting: wall/CPU 1.27, CATCH wall p50 95 ms, oval 50/50 record; BUG-21 CLOSED, residue filed"
 type: investigation
 date: 2026-10-28
 status: resolved
-phase: "JB-76 - SPLICE_TOO_LATE solve tail"
+phase: "BUG-21 - SPLICE_TOO_LATE solve tail"
 related_plan:
   - two-ball-oval.md
 related_entries:
@@ -28,11 +28,11 @@ tags:
   - jetson-load
 ---
 
-# JB-76: the solve tail is the launch starving its own solver
+# BUG-21: the solve tail is the launch starving its own solver
 
 ## What
 
-JB-76: on 2026-10-27, SPLICE_TOO_LATE ended 5 of 10 goals. This entry is the offline deep dive, plus the instrumentation the next Sitting needs to name the cause.
+BUG-21: on 2026-10-27, SPLICE_TOO_LATE ended 5 of 10 goals. This entry is the offline deep dive, plus the instrumentation the next Sitting needs to name the cause.
 
 ## Findings
 
@@ -161,7 +161,7 @@ Flown with the recorder (`temp/probes/profile_20261028-142931/`, 317 s; launch l
 
 **The symptom is mostly gone; the cause is not.** The refusal rate fell thirty-fold because the wall tail moved under the ~150 ms re-aim cliff, but the worker is still descheduled for about half its wall time: the pass mark ("wall/CPU well under 2.18") was missed at 1.97. The box still runs at 537 of 600 % during goals with all six cores saturated for seconds at a time. The roughly 0.4 core released during goals by rosbridge (77 → 46 %) and `ball_butler_node` (36 → 25 %) shows up as only 18 points less box load (555 → 537): the nice-0 processes absorbed part of it (tracker +19, `skill_node` +6) and the rest went unused, while the worker's own share of the run queue barely moved. The largest of those is `ball_tracker_node`: 36 % idle, **148 % during goals**, which a single-threaded Python node cannot reach, so it is the uncapped OpenBLAS pool (the launch's `_planner_blas_env` covers only the three planner callers). `skill_node` went 61 → 68 % idle and 78 → 84 % during goals; `mocap_node` and `teensy_bridge_node` are unchanged. The nice-10 set now yields: `ball_butler_node` 36 → 25 % during goals, rosbridge 77 → 46 %.
 
-Two things this Sitting could not show. The nice values themselves: `profile_session.py`'s ps snapshot had no `ni` column (fixed in this commit; the only direct trace is the bag's recorded command line `nice -n 10 ros2 bag record ...`), so the four prefixes are verified by `tests/ros/test_launch_priority.py` and by the yielding pattern above, not by a read of the running processes. And a pattern-controlled comparison: columns CATCH solves may be lighter than oval ones, so a second scanned Sitting with an oval goal is needed before JB-76 closes. Secondary indicators were null: zero mocap overflows in either Sitting, no SETPOINT_STALE, no E-stop, no hand fault.
+Two things this Sitting could not show. The nice values themselves: `profile_session.py`'s ps snapshot had no `ni` column (fixed in this commit; the only direct trace is the bag's recorded command line `nice -n 10 ros2 bag record ...`), so the four prefixes are verified by `tests/ros/test_launch_priority.py` and by the yielding pattern above, not by a read of the running processes. And a pattern-controlled comparison: columns CATCH solves may be lighter than oval ones, so a second scanned Sitting with an oval goal is needed before BUG-21 closes. Secondary indicators were null: zero mocap overflows in either Sitting, no SETPOINT_STALE, no E-stop, no hand fault.
 
 **Working read-out for the operator.** Fix 1 plus the copies bought roughly 35 ms of CATCH wall p50 and removed the refusals at today's load; a heavier Sitting (oval, two balls, more GUI panels) will push the tail back over the cliff because the box is still over 5.3 cores busy. The next lever is the tracker's thread cap.
 
@@ -206,7 +206,7 @@ Recorder `temp/probes/profile_20261028-210241/` (439 s; launch log `~/.ros/log/2
 
 The CPU p50 rise to 74 ms is goal mix, not a regression: split by the goal in force at each solve, columns CATCHes cost 65 ms (60 at 14:29, a columns-only Sitting) and oval ones 81 ms (92 at 09:49, the same per-pattern split on that log: `oval_1ball` CATCH CPU p50 91.8 ms, `oval_1ball_fed` 94.8 ms). The tracker cap is the largest single saving, about 0.8 core during goals, and `skill_node` fell too (its 300 Hz subscriptions now compete with one fewer busy pool). The three residual SPLICE_TOO_LATE refusals were oval CATCHes at 136–148 ms wall on 83–88 ms of CPU (wall/CPU 1.6–1.7): CPU above the oval median against the ~150 ms unpinned re-aim cliff, with starvation now a minority of the gap. Three further non-terminal `BUMP-DECLINED SPLICE_TOO_LATE` lines were 12–16 mm landing nudges declined because the wire advanced two knots between dispatch and node (a short-plan wire race), and the 12 raw `SPLICE_TOO_LATE` grep hits are these six events logged twice each. No goal ended on it.
 
-**JB-76 closed (owner, 2026-10-28 evening).** The root cause, the launch starving its own solver worker, is removed: 2.18 → 1.27 with oval goals in the scan. The close criterion's second clause (zero SPLICE_TOO_LATE refusals) was missed by three events whose cause is now solve CPU against the budget, which is a different and smaller item, filed as the first residue bug below.
+**BUG-21 closed (owner, 2026-10-28 evening).** The root cause, the launch starving its own solver worker, is removed: 2.18 → 1.27 with oval goals in the scan. The close criterion's second clause (zero SPLICE_TOO_LATE refusals) was missed by three events whose cause is now solve CPU against the budget, which is a different and smaller item, filed as the first residue bug below.
 
 **Flame graphs (py-spy, 100 Hz, 439 s; shares are of each node's samples, cores are estimates from pidstat × non-idle share).** Blocked threads (`thread.py:78` queue.get, `executors.py:593` wait set) are counted as idle.
 
@@ -218,7 +218,7 @@ The CPU p50 rise to 74 ms is goal mix, not a regression: split by the goal in fo
 
 ## What remains, and where it lives (2026-10-28 evening)
 
-1. ~~Fly a scanned Sitting~~ done three times today; JB-76 closed on the 21:02 read-out.
+1. ~~Fly a scanned Sitting~~ done three times today; BUG-21 closed on the 21:02 read-out.
 2. ~~Tracker thread cap~~ fix 2, verified live (148 → 66 %).
 3. **Worker real-time priority** (owner's pick for the next lever): make CATCH wall ≈ CPU regardless of box load by taking the solver worker out of the fair-share queue (`SCHED_FIFO`, bounded at ~100 ms CPU per solve, fail-open to CFS when the rtprio limit is 0). Needs a one-time `sudo` edit of the rtprio limit. Filed as its own feature item.
 4. The nice-0 CPU trims from the flame graphs (skill_node executor ≈ 0.5 core, mocap_node publish/construction ≈ 0.28, tracker message plumbing ≈ 0.28), filed as one feature item with the file:line anchors above. `teensy_bridge_node` (79 % in every Sitting) and rosbridge (70 % during goals) were not sampled and are the next py-spy targets.

@@ -1,5 +1,5 @@
 ---
-id: JB-88
+id: BUG-30
 kind: bug
 title: Change default camera position in 3D scene.
 status: complete

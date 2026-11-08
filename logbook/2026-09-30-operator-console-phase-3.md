@@ -153,4 +153,4 @@ the whole clean shutdown (`2026-09-29-skill-node-log-severity-crash` § Notes).
 - A Stop prints `attempt stopped` straight away, then the end line when the rest tail
   finishes. That is kept deliberately as the button's acknowledgement.
 
-> Closed 2026-10-28: closed by plans/archived/two-ball-skill-stack.md (JB-34 survey).
+> Closed 2026-10-28: closed by plans/archived/two-ball-skill-stack.md (IDEA-2 survey).

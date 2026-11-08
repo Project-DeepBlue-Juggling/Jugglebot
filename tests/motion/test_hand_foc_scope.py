@@ -1,4 +1,4 @@
-"""Offline pins for tools/probes/hand_foc_scope.py (JB-147): the angle recovery, the
+"""Offline pins for tools/probes/hand_foc_scope.py (BUG-57): the angle recovery, the
 trigger, the probe verdict, the read-only contract and the endpoints it relies on."""
 from __future__ import annotations
 

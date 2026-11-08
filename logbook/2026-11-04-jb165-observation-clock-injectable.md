@@ -1,5 +1,5 @@
 ---
-title: "The ladder's mocap and trajectory-status freshness reads an injectable clock; the opening-REST tick load flake closed (JB-165)"
+title: "The ladder's mocap and trajectory-status freshness reads an injectable clock; the opening-REST tick load flake closed (BUG-65)"
 type: bugfix
 date: 2026-11-04
 status: complete
@@ -19,9 +19,9 @@ tags:
   - clock-injection
 ---
 
-# JB-165: the observation clock, the fourth twin
+# BUG-65: the observation clock, the fourth twin
 
-**What.** The JB-159 full gate (Night Shift 2026-11-04) failed once on `test_the_tick_dispatches_the_opening_rest_bridge_through_the_mocked_client` (`assert 0 == 1`). Alone it passed 5 of 5, and its file passed 388 of 388. `SkillNode._observations` judged mocap (0.5 s) and trajectory-status (1.0 s) freshness on the raw `time.perf_counter()`, and `_start_pattern` (about 0.4 s idle) sits between the fixture's `_freshen` and the tick. A `/tmp` probe that ages `perf_counter` by 0.6 s before the tick reproduced it: `in_trajectory_mode` goes False and the tick ends `ABORTED_MODE_CHANGED` with no install.
+**What.** The BUG-61 full gate (Night Shift 2026-11-04) failed once on `test_the_tick_dispatches_the_opening_rest_bridge_through_the_mocked_client` (`assert 0 == 1`). Alone it passed 5 of 5, and its file passed 388 of 388. `SkillNode._observations` judged mocap (0.5 s) and trajectory-status (1.0 s) freshness on the raw `time.perf_counter()`, and `_start_pattern` (about 0.4 s idle) sits between the fixture's `_freshen` and the tick. A `/tmp` probe that ages `perf_counter` by 0.6 s before the tick reproduced it: `in_trajectory_mode` goes False and the tick ends `ABORTED_MODE_CHANGED` with no install.
 
 **Fix.** One injectable `SkillNode._obs_clock` (production `time.perf_counter`, unchanged) stamps `_traj_status_mono`, `_mocap_mono` and `_last_install_mono` and is the `now` `_observations` judges them with. All three share one clock, so `plan_superseded`'s status-vs-install comparison stays in one domain. `_hand_lane_refused` keeps the raw perf clock: its `_sched_refused_mono` is stamped by the `/link_status` handler on that clock. The fixture `_node_with_client` freezes `_obs_clock`, as it does the hand, frame and commanded clocks. No window was widened, and production behaviour is unchanged.
 

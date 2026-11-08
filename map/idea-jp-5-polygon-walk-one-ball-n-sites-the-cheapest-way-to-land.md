@@ -1,5 +1,5 @@
 ---
-id: JB-106
+id: IDEA-9
 kind: idea
 title: 'JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites'
 status: inbox

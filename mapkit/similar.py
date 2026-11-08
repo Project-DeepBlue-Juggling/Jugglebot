@@ -17,10 +17,10 @@ and ``mapkit item new`` all call :func:`screen` before writing anything.
   short reword of a long, sentence-length title).
 
 Thresholds were set on the 103-Item map of 2026-10-30: no existing pair
-reaches any bar (closest: JB-40 / JB-41 at ratio 0.61; JB-66 / JB-64 at
-overlap 0.38; JB-43 / JB-68 at containment 0.75 with only 3 shared words),
-while reworded copies of JB-103 score overlap 0.55-0.60, its truncated twin
-ratio 0.99, and a short reword of JB-101 containment 0.88 (7 of 8 words).
+reaches any bar (closest: PWAY-4 / PWAY-5 at ratio 0.61; BUG-16 / BUG-14 at
+overlap 0.38; BUG-9 / FEAT-21 at containment 0.75 with only 3 shared words),
+while reworded copies of BUG-38 score overlap 0.55-0.60, its truncated twin
+ratio 0.99, and a short reword of BUG-37 containment 0.88 (7 of 8 words).
 Lexical only: a reword that shares no words (``panel`` for ``window``) is
 not caught.
 """

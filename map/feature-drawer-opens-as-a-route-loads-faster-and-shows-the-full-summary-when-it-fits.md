@@ -1,5 +1,5 @@
 ---
-id: JB-46
+id: FEAT-8
 kind: feature
 title: 'Drawer: open as a route so Back works, load faster, show the full summary when it fits the window'
 status: complete

@@ -486,7 +486,7 @@ def test_a_small_hop_learner_run_catches_every_throw_with_zero_drops():
     assert res['plan_wall_ms']['n'] > 0
 
 
-# ── JB-32: the gate's plant landing bias knob ──────────────────────────────
+# ── FEAT-7: the gate's plant landing bias knob ──────────────────────────────
 #
 # (The forward-clip tests that rode this knob -- `_forward_clip_xy`, the
 # `BOX-EXPECTED-LANDING` lines, the frozen pre-h4500 box fixture -- went with
@@ -520,7 +520,7 @@ def test_plant_landing_bias_release_adds_the_lateral_speed_for_the_bias():
 ])
 def test_plant_bias_is_refused_where_nothing_reads_it(argv, capsys):
     """The columns, reload and plain gate runs do not read the bias: a bias given
-    there would be silently ignored, so the CLI refuses it (JB-32 audit)."""
+    there would be silently ignored, so the CLI refuses it (FEAT-7 audit)."""
     with pytest.raises(SystemExit) as e:
         sg.main(argv)
     assert e.value.code == 2
@@ -1098,7 +1098,7 @@ def test_the_gate_config_validates_pre_release_hold_and_threads_it_to_the_planne
 
 
 def test_gate_lateral_authorities_match_the_launch():
-    """JB-27/JB-128: the sim gate's lateral authorities are the ones the robot
+    """BUG-8/TKT-24: the sim gate's lateral authorities are the ones the robot
     runs. ``jugglebot_launch.py`` passes none, so ``skill_node``'s
     ``declare_parameter`` defaults are the launch values; parse them (rclpy
     cannot be imported here) and require the gate's table to equal them."""

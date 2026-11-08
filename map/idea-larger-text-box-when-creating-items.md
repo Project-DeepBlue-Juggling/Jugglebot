@@ -1,5 +1,5 @@
 ---
-id: JB-91
+id: IDEA-6
 kind: idea
 title: Larger text box when creating items
 status: complete

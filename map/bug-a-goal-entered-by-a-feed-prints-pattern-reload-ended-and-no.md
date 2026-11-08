@@ -1,5 +1,5 @@
 ---
-id: JB-190
+id: BUG-77
 kind: bug
 title: A goal entered by a Feed prints `<pattern> (reload) ENDED` and no `done` line, and `Self-toss` does not print its Site at the start
 status: complete
@@ -37,4 +37,4 @@ Two log gaps found at the debrief of 2026-11-06.
 ## Progress
 
 - 2026-11-06: The Site half is fixed 2026-11-06: a one-ball goal's start line now ends with its Site (skill_node, test in tests/ros/test_skill_node.py TestOperatorLines). Still open: the end line of a goal entered by a Feed.
-- 2026-11-07: Night Shift 2026-11-07: held on night-shift/2026-11-07-JB-190: gate (b), a probe regex reads the old end line; unblocked by the owner's answer
+- 2026-11-07: Night Shift 2026-11-07: held on night-shift/2026-11-07-BUG-77: gate (b), a probe regex reads the old end line; unblocked by the owner's answer

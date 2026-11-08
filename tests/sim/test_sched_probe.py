@@ -1,4 +1,4 @@
-"""JB-149: tools/probes/sched_probe.py parsers, CSV round trip, report windows."""
+"""BUG-58: tools/probes/sched_probe.py parsers, CSV round trip, report windows."""
 from __future__ import annotations
 
 import importlib.util

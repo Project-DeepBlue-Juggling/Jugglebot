@@ -288,4 +288,4 @@ independently, in either order**, because the message is additive: no
   `JBBallDetect::CHECK_INTERVAL_MS` and `ENABLED`, both load-bearing here.
 - `logbook/2026-07-29-hand-sensor-fw-version-surfacing.md` — Phase 0.
 
-> Closed 2026-10-28: closed by plans/archived/hand-ball-sensor.md (JB-34 survey).
+> Closed 2026-10-28: closed by plans/archived/hand-ball-sensor.md (IDEA-2 survey).

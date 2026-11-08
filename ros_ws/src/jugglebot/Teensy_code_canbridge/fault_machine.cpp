@@ -123,7 +123,7 @@ static volatile bool s_reboot_in_progress = false;   // suppression latch armed
 static uint64_t      s_reboot_deadline_us = 0;        // 64-bit; access via atomic_*_u64
 static bool          s_reboot_saw_stale   = false;    // legs went stale since arming
 
-// ── Arm-edge stamp (FW 34, JB-75) ────────────────────────────────────────────
+// ── Arm-edge stamp (FW 34, BUG-20) ────────────────────────────────────────────
 // micros64() at the most recent s_mpc_active false→true edge. The setpoint-
 // staleness check measures from max(last setpoint, this stamp), so the first
 // fault tick after an arm measures from the ARM and not from the last setpoint
@@ -454,7 +454,7 @@ static void evaluate_guard() {
   // Setpoint staleness (the hard link-fault trigger). The `MPC_` prefix this
   // constant carried until FW 18 was historical: the producer is the trajectory
   // node's 40 Hz Setpoint stream, and has been since the MPC chain was removed.
-  // FW 34 (JB-75): the age runs from max(last setpoint, arm edge). A dead stream
+  // FW 34 (BUG-20): the age runs from max(last setpoint, arm edge). A dead stream
   // after an arm still trips SETPOINT_STALENESS_US after the ARM; a live stream
   // that dies mid-Attempt still trips that long after its last frame. Both stamps
   // are read BEFORE now: a setpoint or arm landing between the reads would
@@ -643,7 +643,7 @@ static void evaluate_guard() {
   // s_stowing=false and re-latches s_stow_pending). A guard E-STOP still latches and
   // holds AFTER the stow completes — it simply does not pre-empt the descent.
   bool allow = false;
-  bool hold_flush = false;   // JB-73 (FW 35): the disable is a MOTOR_FB_STALE suppression ONLY
+  bool hold_flush = false;   // BUG-19 (FW 35): the disable is a MOTOR_FB_STALE suppression ONLY
   if (s_stowing) {
     allow = true;   // stow descent integrates its own position; not encoder-gated
   } else {

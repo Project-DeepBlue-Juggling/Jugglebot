@@ -421,4 +421,4 @@ re-attitude the numbers do not support, or on where BB can stand.
 - The columns operating point: 0.90 m is MARGIN at 100 mm on the re-modelled cell; the sweep
   tables decide between 0.85 m and a margin decision.
 
-> Closed 2026-10-28: closed by plans/archived/two-ball-skill-stack.md (JB-34 survey).
+> Closed 2026-10-28: closed by plans/archived/two-ball-skill-stack.md (IDEA-2 survey).

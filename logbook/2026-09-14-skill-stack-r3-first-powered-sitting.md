@@ -377,4 +377,4 @@ sitting flew a clean run against the runsheet's pre-registered gates; a
 second powered sitting is needed once Filed items 1 and 3 have owner
 decisions (or are explicitly deferred past the next sitting).
 
-> Closed 2026-10-28: residue folded into the existing JB-73 (hand guard deviation basis) (JB-34 survey).
+> Closed 2026-10-28: residue folded into the existing BUG-19 (hand guard deviation basis) (IDEA-2 survey).

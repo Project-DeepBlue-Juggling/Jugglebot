@@ -287,7 +287,7 @@ def test_an_accepted_executor_bump_records_the_realised_release_not_delta(
 
 def test_an_accepted_bump_moves_the_pending_memory_rows_release(
         sites, limits, geom):
-    """JB-194 F1 on the BUMP path: the carried Throw's Memory row was
+    """BUG-81 F1 on the BUMP path: the carried Throw's Memory row was
     registered at the Catch's dispatch; an accepted bump moves the release by
     b(t_rel), and the pending row must record that release (rel and seat),
     not the dispatch aim. The release velocity (the Learner's kernel key)
@@ -763,7 +763,7 @@ def test_s2_l1489_the_bumped_successor_plans_inside_the_hand_limit(geom, monkeyp
     assert exc.value.code == 'HAND_LIMIT_ACC'
 
 
-# ── I-CATCH-7 (JB-120): the executor logs and commits the next-catch gate's call ──
+# ── I-CATCH-7 (BUG-42): the executor logs and commits the next-catch gate's call ──
 
 def test_a_shrunk_bump_commits_the_applied_delta_and_logs_requested_and_applied(
         sites, limits, geom):

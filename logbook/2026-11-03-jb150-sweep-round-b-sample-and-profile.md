@@ -3,7 +3,7 @@ title: "Admissible sweep round b compares a rotating 3-family sample; admissible
 type: optimization
 date: 2026-11-03
 status: complete
-phase: "JB-150 cheaper speed-ups"
+phase: "FEAT-38 cheaper speed-ups"
 files_changed:
   - tools/admissible_sweep_run.py
   - tests/motion/test_admissible_sweep_run.py
@@ -11,7 +11,7 @@ files_changed:
 subsystem: tools
 ---
 
-# JB-150: round-b sample and a profile
+# FEAT-38: round-b sample and a profile
 
 **What.** The a/b sweep flow lived only in uncommitted shell scripts (`temp/sweeps/sweep_h4500.sh`, the peer's `h70/` jobs files): enumerate 26 families (30 in the h70 set), run all of them twice, 6 at a time, BLAS 1 thread, `cmp` a vs b per file, merge round a in the committed box's order. `tools/admissible_sweep_run.py` now owns that flow. Round a is the same invocations (the h70 jobs file's 30 argument lists match the runner's `families('h70')` as multisets of flag groups), so round-a outputs are the old path's. Round b re-runs a SAMPLE: `start = int(gate_hash,16) % n`, then every `n//N`-th family (default N=3), so each distinct gated tree samples a different triple (live hash 242c56b683b5 gives oval055_pose, ovalx045_pose, oval065_level). `--sample all` restores the full round b; `--sample N` changes the count. A mismatch exits 1 and nothing is merged. Sampled names and verdicts go to stdout, `<out>/round_b_verdict.json`; the box YAML has no metadata block and is not given one (the loader's top-level schema is closed over `swept_at/gate_hash/limits/boxes`).
 

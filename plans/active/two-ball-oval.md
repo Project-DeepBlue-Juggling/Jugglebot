@@ -237,7 +237,7 @@ keeps the columns residue (SPLICE_TOO_LATE, emit gap); the columns canary at P4 
 through; `bb-calibration-one-attempt.md` (archived 2026-10-19) owned the calibration sweep the runbook's row 6a
 reads.
 
-**Open question (JB-34 survey, 2026-10-28):** the offline replica reads a cup-seating-cone angle of 16.5-21.7 degrees at the knot after the Catch, while hardware read 31.6-41.7 degrees; the gap is unexplained (`logbook/2026-10-19-cup-seating-cone-refuses-columns-stroke-braking.md`). P4 already moved to `pose` mode partly because `level` stays CUP_SEATING_CONE-refused.
+**Open question (IDEA-2 survey, 2026-10-28):** the offline replica reads a cup-seating-cone angle of 16.5-21.7 degrees at the knot after the Catch, while hardware read 31.6-41.7 degrees; the gap is unexplained (`logbook/2026-10-19-cup-seating-cone-refuses-columns-stroke-braking.md`). P4 already moved to `pose` mode partly because `level` stays CUP_SEATING_CONE-refused.
 
 ## 2. Architecture
 
@@ -301,7 +301,7 @@ the level program in both modes, and `CycleMeta.planner_mode` names what was sol
 
 ### 2.6 Admissible box, workspace, dwell
 
-> Finding 2026-11-01 (JB-120): the admissible box is swept from unbumped release seeds and has no bump model; the Hand is still certified at 100 % in the sweep. At the 2026-11-01 Sitting 7 of 7 HAND_LIMIT_ACC refusals (3910.6-4096.8 vs 3900) were the first install of a catch seeded from a BUMPED predecessor (0 of about 59 unbumped seeds). Offline, `plan_segment` plus `apply_catch_bump` reproduces the peaks within 3 %: the peak sits on span 1 of the post-release hold and rises with the bump's x shift above about 4 mm. "Inside the box" is therefore true and cannot see this class; the fix is a successor-feasibility check in the bump decision, not a box edge.
+> Finding 2026-11-01 (BUG-42): the admissible box is swept from unbumped release seeds and has no bump model; the Hand is still certified at 100 % in the sweep. At the 2026-11-01 Sitting 7 of 7 HAND_LIMIT_ACC refusals (3910.6-4096.8 vs 3900) were the first install of a catch seeded from a BUMPED predecessor (0 of about 59 unbumped seeds). Offline, `plan_segment` plus `apply_catch_bump` reproduces the peaks within 3 %: the peak sits on span 1 of the post-release hold and rises with the bump's x shift above about 4 mm. "Inside the box" is therefore true and cannot see this class; the fix is a successor-feasibility check in the bump decision, not a box edge.
 
 `PATTERNS` gains `oval_1ball` and `oval`; `oval_1ball_fed` / `oval_fed` use the sibling box;
 `dwell_s` joins the `select()` key so the ladder's cells (0.50 / 0.40 / 0.30) coexist in one
@@ -476,10 +476,10 @@ Where the idea lives now: a note inside P3 (below). Code never started; nothing 
   frames, twice with the iq setpoint on the 15 A clamp, once mid-carry) are a PREREQUISITE plan `leg-lead-clamp-age-aware.md` (MET 2026-10-27), and P4/P5 aim at the
   first plannable dwell. P3 stays `in_progress` until the re-gate Sitting (runbook § 9) is flown after the prerequisite.
 - **2026-10-28:** re-gate still UNFLOWN; every Sitting 10-24..10-28 ran `level`. It flies the DEFAULT launch (CFS solver worker): `level` column then `pose` column in one launch (runbook § 9; `num_cycles: 50`, gate still ≥ 30 attempts; `ball_held` flicker with the ball thrown is logged, not a fail; `CLAMP_DUTY` warnings recorded, not a stop).
-  Prerequisites all met: lead-clamp plan 2026-10-27, JB-76 closed 2026-10-28. Three pinned readings: `level` 0.50 refs 35/35, 35/35, 50/50; leg-current refs 7.49 / 10.05 A unchanged; the 22:26 FIFO read CATCH wall/CPU 1.01.
-  History: the JB-95 SCHED_FIFO worker stalled the setpoint stream 60-96 ms per CATCH solve (GIL-coupled preemption, inferred; past the 70 ms firmware cover) and tripped the hand guard on 3 of 5 goals at 22:26, so it is off by default (`solver_rt_priority` 0, checked at P3R-1); JB-98 keeps only the unexplained 21:02 trip as a WATCH item.
+  Prerequisites all met: lead-clamp plan 2026-10-27, BUG-21 closed 2026-10-28. Three pinned readings: `level` 0.50 refs 35/35, 35/35, 50/50; leg-current refs 7.49 / 10.05 A unchanged; the 22:26 FIFO read CATCH wall/CPU 1.01.
+  History: the FEAT-31 SCHED_FIFO worker stalled the setpoint stream 60-96 ms per CATCH solve (GIL-coupled preemption, inferred; past the 70 ms firmware cover) and tripped the hand guard on 3 of 5 goals at 22:26, so it is off by default (`solver_rt_priority` 0, checked at P3R-1); BUG-34 keeps only the unexplained 21:02 trip as a WATCH item.
   Power-cycle the bridge first. Next = the re-gate Sitting.
-- **2026-10-30 re-gate FLOWN, GO (owner; runbook § 9.1, bag `2026-10-30_16-17-11`, entry `logbook/2026-10-30-two-ball-oval-p3-regate-go-and-dwell-headroom.md`):** one CFS launch, `level` 0.50 50/50 then `pose` 0.50 50/50 (+6/6). Against the same-launch `level` column `pose` had legs 1/2 peak 6.59 / 9.45 A vs 7.38 / 9.96 A, `ball_held` unbroken 55/55, touch-down v_x median -73 mm/s (bound 175, 0 carries over; 10-24 read -507), same landing scatter (sd 14-16 mm). `pose` 0.45 caught 40/40, then the goal ended at throw 41 on one 80 ms emitter gap (firmware STOP, hand `MAX_DEVIATION`: the JB-98 reframe, not the planner). Owner: the default flips to `pose`, every family re-swept under `pose`, sim gate, one columns check Sitting (flip, re-sweep and sim gate landed 2026-10-30; the columns check Sitting remains); P3R-4's leg-current reference is the same-launch `level` column; a pre-release-hold rung (P4.0) is scheduled ahead of the P4 working-point commit; the next CPU lever is JB-94.
+- **2026-10-30 re-gate FLOWN, GO (owner; runbook § 9.1, bag `2026-10-30_16-17-11`, entry `logbook/2026-10-30-two-ball-oval-p3-regate-go-and-dwell-headroom.md`):** one CFS launch, `level` 0.50 50/50 then `pose` 0.50 50/50 (+6/6). Against the same-launch `level` column `pose` had legs 1/2 peak 6.59 / 9.45 A vs 7.38 / 9.96 A, `ball_held` unbroken 55/55, touch-down v_x median -73 mm/s (bound 175, 0 carries over; 10-24 read -507), same landing scatter (sd 14-16 mm). `pose` 0.45 caught 40/40, then the goal ended at throw 41 on one 80 ms emitter gap (firmware STOP, hand `MAX_DEVIATION`: the BUG-34 reframe, not the planner). Owner: the default flips to `pose`, every family re-swept under `pose`, sim gate, one columns check Sitting (flip, re-sweep and sim gate landed 2026-10-30; the columns check Sitting remains); P3R-4's leg-current reference is the same-launch `level` column; a pre-release-hold rung (P4.0) is scheduled ahead of the P4 working-point commit; the next CPU lever is FEAT-30.
 
 ### P4 — Working point and the dwell ladder — IN PROGRESS (working-point commit 2026-11-03) (premise amended 2026-10-24, 2026-10-30)
 
@@ -504,13 +504,13 @@ Where the idea lives now: a note inside P3 (below). Code never started; nothing 
   (owner, 2026-10-30).
 - **Prerequisite:** `leg-lead-clamp-age-aware.md` (the frame-drop lead-clamp amplifier) is flown and
   passed before the clamp raise below — a 15 A staircase on one leg today becomes a 20 A one. **MET 2026-10-27** (plan
-  archived; `logbook/2026-10-27-leg-lead-clamp-age-aware-p3-robot.md`). JB-76 (`SPLICE_TOO_LATE` ending half the goals)
+  archived; `logbook/2026-10-27-leg-lead-clamp-age-aware-p3-robot.md`). BUG-21 (`SPLICE_TOO_LATE` ending half the goals)
   still stands in front of any 30-catch run.
-- **P4.0 pre-release hold rung (owner 2026-10-30, map JB-102) - FLOWN 2026-10-31, model WITHDRAWN, hold default 0.** Runbook § 11, bag `2026-10-31_13-14-00`, entry `logbook/2026-10-31-hold-ladder-sitting-the-hold-model-was-wrong.md` (the 10-30 prep entry stays the prep record).
+- **P4.0 pre-release hold rung (owner 2026-10-30, map FEAT-32) - FLOWN 2026-10-31, model WITHDRAWN, hold default 0.** Runbook § 11, bag `2026-10-31_13-14-00`, entry `logbook/2026-10-31-hold-ladder-sitting-the-hold-model-was-wrong.md` (the 10-30 prep entry stays the prep record).
   - **Result:** the prep model predicted that a shorter hold lands the ball SHORT (Platform tracking delay 45 + 30 ms). It lands LONG, monotone in the hold, nothing dropped: against the 0.100 control (+9.9 mm short) hold 0.075 is 17.3 mm long, 0.050 is 39.5 mm long, and hold 0 a further 28.4 mm long of 0.050 at the 1.05/0.50 cell. Hold 0 flew 30/30 with the tightest spread of the Sitting (9.8 mm), leg acceleration down 44 percent.
   - **Withdrawn model:** the Platform tracks the executed command within about 15 ms (not 75), ball separation is +21..+33 ms after the announced release in every rung (independent of the hold), and the composition sign is right. The landing is set by a roughly 6 Hz underdamped Platform ring excited by the carry deceleration; the hold only moves the ring phase at release. About half the 0.050 rung's shift is unexplained; apex is under-delivered by +72..+95 mm at every hold (plant residual, hold-independent).
   - **Decision (owner 2026-10-31):** `pre_release_hold_s` default 0.000; the learner absorbs the roughly 30 mm long bias.
-  - **JB-102 reframed:** do NOT build delay-aware composition as specified (it would predict short and add forward velocity). Remaining design options: identify the 6 Hz mode and compose through it; soften (jerk-limit) the carry deceleration; end the deceleration an integer number of ring periods before release. Damping the mode in the leg loop reopens the frozen gain hunt and is the owner's call.
+  - **FEAT-32 reframed:** do NOT build delay-aware composition as specified (it would predict short and add forward velocity). Remaining design options: identify the 6 Hz mode and compose through it; soften (jerk-limit) the carry deceleration; end the deceleration an integer number of ring periods before release. Damping the mode in the leg loop reopens the frozen gain hunt and is the owner's call.
   - **Two-ball destination:** the door cells at hold 0 need the Platform ring modelled or excited less; the prep table's delay-aware release rows no longer apply.
 - **Offline item:** reproduce the 10-17 "0.30 at apex 1.0 under P4" result on today's code (skid bound, C-CUP-4,
   `pose`) and promote the headroom probe (`tools/probes/oval_dwell_sweep.py` plus the scratch cells script) to
@@ -563,7 +563,7 @@ Where the idea lives now: a note inside P3 (below). Code never started; nothing 
   it. The carry is the first LOADED translation — the first rung's stop rules (ball leaves the cup
   twice in one region, FET > 60 °C, a leg on the current clamp > 50 ms, lane recovery failed) are
   in the runbook. 20 A operating / 30 A trip is the owner's choice 2026-11-03 (a 10 A margin to the trip, as the Hand's 70/80; ~30 A had been judged safe 2026-10-12); the 0.40 rung's bag
-  is the measurement. The hand cap 3900 was NOT raisable at 50 A; raised to 4500 with 60 A on 2026-11-01 (debrief; see JB-120, hand_throw_envelope.md).
+  is the measurement. The hand cap 3900 was NOT raisable at 50 A; raised to 4500 with 60 A on 2026-11-01 (debrief; see BUG-42, hand_throw_envelope.md).
 - **Non-obvious choices**: the first rung flies at dwell 0.65 (pre-release hold; the cone moved to 45° since b28b129f so 0.50 passes the planner and cone offline (32.1° < 45°) but is NOT dispatchable until the oval box cells at 0.55 and 0.50 are swept; rung 2 flew it 2026-10-23 once the cells were swept); symmetric sites (every one-sided probe placement produced edge
   artefacts); the catch stays level because the capture span is infeasible at two balls (probe,
   two runs); the mode switch exists so decision 24's as-is column stays producible; dwell is a

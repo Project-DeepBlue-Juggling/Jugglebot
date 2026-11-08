@@ -1,5 +1,5 @@
 ---
-id: JB-35
+id: IDEA-3
 kind: idea
 title: Personal best window
 status: complete

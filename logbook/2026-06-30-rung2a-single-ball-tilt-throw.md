@@ -252,4 +252,4 @@ tests/sim/test_juggle_tilt.py tests/sim/test_juggle_throw.py -q`, run 2026-06-30
 
 Commit SHA: a907528 (this rung's feature commit).
 
-> Closed 2026-10-28: superseded by plans/archived/bb-online-juggle-tilt-rearchitecture.md (JB-34 survey).
+> Closed 2026-10-28: superseded by plans/archived/bb-online-juggle-tilt-rearchitecture.md (IDEA-2 survey).

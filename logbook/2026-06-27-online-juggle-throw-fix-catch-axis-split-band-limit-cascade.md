@@ -185,4 +185,4 @@ The actual fix must break the **position → velocity amplification** in the thr
   `xfail(strict=True)` at 2 catches (band-limit cascade); this online runner
   reaches 5 against the same wall.
 
-> Closed 2026-10-28: superseded by plans/archived/bb-online-juggle-tilt-rearchitecture.md (JB-34 survey).
+> Closed 2026-10-28: superseded by plans/archived/bb-online-juggle-tilt-rearchitecture.md (IDEA-2 survey).

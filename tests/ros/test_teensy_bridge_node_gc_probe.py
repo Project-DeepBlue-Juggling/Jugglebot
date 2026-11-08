@@ -1,4 +1,4 @@
-"""JB-149: the bridge's opt-in ``gc_probe`` parameter installs the GC hook only
+"""BUG-58: the bridge's opt-in ``gc_probe`` parameter installs the GC hook only
 when true.  ROS 2 is mocked by tests/ros/conftest.py."""
 
 from __future__ import annotations

@@ -1,5 +1,5 @@
 ---
-id: JB-174
+id: FEAT-41
 kind: feature
 title: Count scheduled-stream holes and downlink datagram loss in the can-bridge heartbeat
 status: complete
@@ -22,7 +22,7 @@ links:
 filed_by: claude
 ---
 
-On 2026-11-05 three Hand-only STOPs ended Attempts with every host-side counter clean, so a Hand frame lost in the downlink is invisible today (JB-166, JB-149).
+On 2026-11-05 three Hand-only STOPs ended Attempts with every host-side counter clean, so a Hand frame lost in the downlink is invisible today (BUG-66, BUG-58).
 
 ## Evidence
 - Drop counters 0, frame ages at most 28 ms, every numbered frame sent (seq vs setpoints_sent constant), no host stamp hole.

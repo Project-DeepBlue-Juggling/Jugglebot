@@ -1,4 +1,4 @@
-"""rt_policy_probe.py - can this process become SCHED_FIFO? (JB-95)
+"""rt_policy_probe.py - can this process become SCHED_FIFO? (FEAT-31)
 
 Why it exists: the solver worker asks for SCHED_FIFO 10 and fails open to CFS.
 On this box (kernel 5.10-tegra, CONFIG_RT_GROUP_SCHED=y) two independent things

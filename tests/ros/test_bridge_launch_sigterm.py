@@ -1,4 +1,4 @@
-"""JB-82: both launch files give teensy_bridge_node a SIGINT->SIGTERM window longer
+"""BUG-26: both launch files give teensy_bridge_node a SIGINT->SIGTERM window longer
 than its own bounded shutdown Stow, so the node can log the Stow's outcome.
 
 launch's default is 5 s; the node's Stow is bounded at

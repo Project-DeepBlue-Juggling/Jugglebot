@@ -1,5 +1,5 @@
 ---
-id: JB-111
+id: IDEA-14
 kind: idea
 title: 'JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm'
 status: inbox

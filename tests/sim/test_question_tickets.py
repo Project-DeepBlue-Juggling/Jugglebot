@@ -15,8 +15,8 @@ def _git_env(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
 
 
-def _write(root, kind, slug, n, status="inbox", body="Body\n", **extra):
-    meta = {"id": "JB-%d" % n, "kind": kind, "title": "T " + slug, "status": status,
+def _write(root, kind, slug, sid, status="inbox", body="Body\n", **extra):
+    meta = {"id": sid, "kind": kind, "title": "T " + slug, "status": status,
             "created": "2026-10-01", "updated": "2026-10-01T00:00:00Z", "priority": "medium"}
     if kind == "ticket":
         meta["type"] = "task"
@@ -29,12 +29,15 @@ def _write(root, kind, slug, n, status="inbox", body="Body\n", **extra):
 def _tree(root):
     (root / "map").mkdir(parents=True)
     (root / "docs").mkdir()
+    # the live tree is per kind: the crosswalk's presence flips ids.allocate to kind=
+    (root / "mapkit").mkdir()
+    (root / "mapkit" / "legacy_ids.csv").write_text("old_id,new_id,kind,stem\n")
     (root / "GLOSSARY.md").write_text("# G\n\n## Language\n\n### Robot\n\n**Hand**: The cup.\n")
     for b in ("active", "parked", "archived"):
         (root / "plans" / b).mkdir(parents=True)
-    _write(root, "pathway", "p", 1, status="active")
-    _write(root, "bug", "foo", 2)
-    _write(root, "ticket", "t", 3, status="open", parent="p")
+    _write(root, "pathway", "p", "PWAY-1", status="active")
+    _write(root, "bug", "foo", "BUG-1")
+    _write(root, "ticket", "t", "TKT-1", status="open", parent="p")
 
 
 def _q(root, parent, title="Which way?"):
@@ -44,9 +47,9 @@ def _q(root, parent, title="Which way?"):
 
 def test_question_type_loads_and_unknown_fails(tmp_path):
     _tree(tmp_path)
-    _write(tmp_path, "ticket", "q", 4, status="open", parent="bug-foo", type="question")
+    _write(tmp_path, "ticket", "q", "TKT-2", status="open", parent="bug-foo", type="question")
     assert load_item(str(tmp_path / "map" / "ticket-q.md")).meta["type"] == "question"
-    _write(tmp_path, "ticket", "bad", 5, status="open", parent="p", type="riddle")
+    _write(tmp_path, "ticket", "bad", "TKT-3", status="open", parent="p", type="riddle")
     with pytest.raises(ItemError):
         load_item(str(tmp_path / "map" / "ticket-bad.md"))
 
@@ -64,7 +67,7 @@ def test_has_answer(body, want):
     assert has_answer(body) is want
 
 
-@pytest.mark.parametrize("parent", ["bug-foo", "foo", "JB-2"])
+@pytest.mark.parametrize("parent", ["bug-foo", "foo", "BUG-1"])
 def test_new_question_stores_parent_stem(tmp_path, parent):
     _tree(tmp_path)
     it = _q(tmp_path, parent)
@@ -76,7 +79,7 @@ def test_new_question_refuses_bad_parents(tmp_path):
     with pytest.raises(itemcli.ItemCliError, match="bug, feature or idea"):
         _q(tmp_path, "p")
     with pytest.raises(itemcli.ItemCliError, match="bug, feature or idea"):
-        _q(tmp_path, "JB-3")
+        _q(tmp_path, "TKT-1")
     with pytest.raises(itemcli.ItemCliError, match="not found"):
         _q(tmp_path, "bug-nope")
 
@@ -89,14 +92,14 @@ def test_non_question_ticket_keeps_pathway_rule(tmp_path):
 
 def test_question_tickets_and_open_questions_resolve_three_forms(tmp_path):
     _tree(tmp_path)
-    q1 = _q(tmp_path, "JB-2", "First question?")
+    q1 = _q(tmp_path, "BUG-1", "First question?")
     q2 = _q(tmp_path, "bug-foo", "Second question?")
     itemcli.set_status(str(tmp_path), q2.slug, "complete", push=False)
     items = load_items(str(tmp_path / "map"))
-    for form in ("bug-foo", "foo", "JB-2"):
+    for form in ("bug-foo", "foo", "BUG-1"):
         assert {t.slug for t in question_tickets(items, form)} == {q1.slug, q2.slug}
         assert [t.slug for t in open_questions(items, form)] == [q1.slug]
-    assert question_tickets(items, "JB-1") == []
+    assert question_tickets(items, "PWAY-1") == []
 
 
 def test_complete_without_answer_warns_but_succeeds(tmp_path, capsys):

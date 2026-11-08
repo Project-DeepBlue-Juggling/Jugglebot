@@ -1,5 +1,5 @@
 ---
-id: JB-75
+id: BUG-20
 kind: bug
 title: can-bridge SETPOINT_STALE latches on an arm edge when the last setpoint is from an earlier stream
 status: complete

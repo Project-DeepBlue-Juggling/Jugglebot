@@ -282,4 +282,4 @@ showed slower is worse).
 Commit SHA: 6308689 (feat(sim): Rung-2b OPTION-1 re-plan — two-point A↔B
 oscillation, tilt engaged, still a BREAK).
 
-> Closed 2026-10-28: superseded by plans/archived/two-ball-skill-stack.md (JB-34 survey).
+> Closed 2026-10-28: superseded by plans/archived/two-ball-skill-stack.md (IDEA-2 survey).

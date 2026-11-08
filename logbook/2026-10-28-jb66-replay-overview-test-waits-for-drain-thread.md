@@ -1,9 +1,9 @@
 ---
-title: "JB-66: the replay_overview requeue test faked backend state while the first pass's drain thread was still alive"
+title: "BUG-16: the replay_overview requeue test faked backend state while the first pass's drain thread was still alive"
 type: bugfix
 date: 2026-10-28
 status: resolved
-phase: "JB-66 - replay_overview test load flake"
+phase: "BUG-16 - replay_overview test load flake"
 files_changed:
   - tests/ros/test_replay_overview.py
 subsystem:

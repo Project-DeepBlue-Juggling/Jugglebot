@@ -419,4 +419,4 @@ instructions demand a free-hanging untouched mass and carry the bench-vs-platfor
 - `logbook/2026-04-27-friction-feedforward-bench-validation.md` — the source of the disputed 0.0624.
 - `tools/probes/bench_leg_plant_id.py` — carries the corrected `ω_v` derivation.
 
-> Closed 2026-10-28: closed by 2026-07-15-kt-first-measurement-and-tff-channel (JB-34 survey).
+> Closed 2026-10-28: closed by 2026-07-15-kt-first-measurement-and-tff-channel (IDEA-2 survey).

@@ -142,7 +142,7 @@ class BallTrackerNode(Node):
         self._mocap_had_stamps = False  # currently/ever in the stamped regime
 
         # The launch caps this node's OpenBLAS pool to one thread (2026-10-28,
-        # JB-76: the uncapped pool cost 148 % of a core live for 6x6 / (n, 2)
+        # BUG-21: the uncapped pool cost 148 % of a core live for 6x6 / (n, 2)
         # work). The cap has to be set before numpy is imported, so all this
         # can do is read back whether it landed and WARN if it did not.
         self._blas_threads, self._blas_source = blas_threads.check_blas_threads(

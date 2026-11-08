@@ -404,7 +404,7 @@
 }
 
 /* The slider's width scales with the bar (25 %, 180..280 px) so a narrow pane keeps the live buttons on fewer rows
-   (fixed 280 px wrapped them to three rows at a 1200 px window). 25 % (was 30 %) since JB-74 put the camera panel
+   (fixed 280 px wrapped them to three rows at a 1200 px window). 25 % (was 30 %) since FEAT-25 put the camera panel
    in the bar: camera + buttons then stay on ONE row down to a ~860 px viewer. Padding and the box both resolve %
    against the bar. */
 #command-overlay { --trail-bar-w: clamp(180px, 25%, 280px); }

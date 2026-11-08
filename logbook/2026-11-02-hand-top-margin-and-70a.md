@@ -1,9 +1,9 @@
 ---
-title: "JB-147: hand current limit 60 -> 70 A, stream STOP 3500 -> 4500 (FW 36), REGEN on bus power less copper loss, and C-HAND-6, a top-of-stroke margin for every rising seed (K 4.75e-5, the largest satisfiable fit; the owner's 200 rev/s fit has no solution)"
+title: "BUG-57: hand current limit 60 -> 70 A, stream STOP 3500 -> 4500 (FW 36), REGEN on bus power less copper loss, and C-HAND-6, a top-of-stroke margin for every rising seed (K 4.75e-5, the largest satisfiable fit; the owner's 200 rev/s fit has no solution)"
 type: bugfix
 date: 2026-11-02
 status: open
-phase: "JB-147 (owner decisions, 2026-11-02)"
+phase: "BUG-57 (owner decisions, 2026-11-02)"
 subsystem: motion
 related_entries:
   - 2026-11-02-hand-release-step.md
@@ -35,7 +35,7 @@ files_changed:
   - sim/skills_gate.py
 ---
 
-# JB-147: 70 A, a 4500 STOP, REGEN with copper loss, and a top margin
+# BUG-57: 70 A, a 4500 STOP, REGEN with copper loss, and a top margin
 
 **Summary.** At the first Apex 1.35 Columns goal (Sitting 2026-11-02 17:00),
 one launch overshot. The stepped brake (C-HAND-5) saturated at -60.4 A and the
@@ -47,7 +47,7 @@ Hand struck the top stop at 10.83 rev (SPINOUT). The owner decided:
    post-release ones.
 3. `stream_stop_hand_accel_rps2` 3500 → 4500 rev/s², so the firmware's stall
    stop is as hard as the planned brake. It rides in can-bridge FW 36 with
-   JB-146 (one bump, one flash).
+   BUG-56 (one bump, one flash).
 4. The REGEN envelope bound models the motor's copper loss.
 5. The margin is ONE constant `TOP_MARGIN_K_REV_S2`, fitted at 200 rev/s.
 
@@ -74,7 +74,7 @@ log time minus 1793599800 s.
   measured iq was +4.4 A. The brake did not start until the Hand passed its
   command, around 8.8 rev, and by then it was 71 rev/s faster than the
   command.
-- The "0.67 rev past the planned top" in JB-147 is truncated by the hard stop.
+- The "0.67 rev past the planned top" in BUG-57 is truncated by the hard stop.
   At 10.505 rev the Hand was still moving at about 76 rev/s under -60 A. At
   the 60 A decel-FF bound (4711 rev/s²), or the 3700 rev/s² seen in the
   position steps, it would have stopped at **11.1-11.3 rev**. That is an
@@ -218,8 +218,8 @@ have handed a stalled brake a gentler stop than the plan.
   above a clamped seed anyway (3590-3804 at Apex 1.42-1.45 under 3500), so
   that model was optimistic in the same place.
 - **Fixing the cause.** The 1.16 rev launch lag is the root and may be
-  specific to a launch off a deep Catch. Still open on JB-147 (higher-rate
-  capture, a firmware overspeed guard, the JB-114 bumper). The margin is
+  specific to a launch off a deep Catch. Still open on BUG-57 (higher-rate
+  capture, a firmware overspeed guard, the IDEA-17 bumper). The margin is
   defence in depth, not the fix for the lag.
 
 ### Accepted: the brake peak rises, and the box loses its top cells
@@ -291,12 +291,12 @@ All seven pass the gate. Launch peaks are unchanged. Apex 1.52, 1.55, 1.58,
       is now empty; level oval 0.45 at 1.10 is now admissible);
     - six high pose Columns cells. The Apex 1.25 cells (both Sites) and P1 at
       1.40 were selected with a 0 x 0 mm landing rectangle, and P2 1.30 / 1.40
-      cap the commanded Apex lower. That is the band-for-landing trade JB-143
-      replaces, so do not fly 1.25 or 1.40 Columns until JB-143's sweep lands.
+      cap the commanded Apex lower. That is the band-for-landing trade BUG-54
+      replaces, so do not fly 1.25 or 1.40 Columns until BUG-54's sweep lands.
 - Full tier (2026-11-02, `./run_tests.sh --full`, after rebasing onto
   f81984b2): 8014 passed, 56 skipped (parallel 396 s) + 8 passed (serial),
   with 2 failures:
-  - `test_item_bodies_are_readable` fails on JB-150, another session's Item,
+  - `test_item_bodies_are_readable` fails on FEAT-38, another session's Item,
     not this change.
   - f5's new `test_s2_l1489_the_bumped_successor_plans_inside_the_hand_limit`:
     its fail-before half (a stale seed must refuse) no longer refuses with the

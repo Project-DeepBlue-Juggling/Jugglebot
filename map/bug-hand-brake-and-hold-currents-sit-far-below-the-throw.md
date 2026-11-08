@@ -1,5 +1,5 @@
 ---
-id: JB-117
+id: BUG-41
 kind: bug
 title: 'Hand brake and hold currents sit far below the throw envelope''s model (brake -14 to -20 A measured vs 35 to 40 A predicted; hold 1.5 vs 2.6 A): Kt, moving mass or friction is mis-modelled'
 status: inbox
@@ -17,10 +17,10 @@ blocked_by: []
 links:
 - bug-launch-throw-with-the-ball-aboard-may-demand-more-than-the
 - idea-hand-end-of-stroke-bumper-and-first-the-planner-s-own-brake
-filed_by: claude (jugglebot-f5, JB-115 bag check 2026-10-30)
+filed_by: claude (jugglebot-f5, BUG-40 bag check 2026-10-30)
 ---
 
-Side finding of the JB-115 bag check (logbook `2026-10-30-jb115-launch-current-bag-check.md`), 2026-10-28 Columns bags 14:29 and 21:02.
+Side finding of the BUG-40 bag check (logbook `2026-10-30-jb115-launch-current-bag-check.md`), 2026-10-28 Columns bags 14:29 and 21:02.
 
 ## Finding
 
@@ -34,6 +34,6 @@ Friction helping the brake and the hold; a real Kt 1.4 to 1.7 times the configur
 
 ## Why it matters
 
-Every current prediction in JB-114 (the Apex climb to the ceiling: 37 A brake, 40 A launch) and in JB-115 uses these constants. If the drive is 1.4 times stronger than modelled, the ceiling has more margin than R0 says; if friction is doing the work, the brake authority on a cold or worn Hand is smaller than the model and the bumper question returns. Settle it with a bench hold-and-step on the Hand (measured iq against a known mass and acceleration) before the Apex Ladder.
+Every current prediction in IDEA-17 (the Apex climb to the ceiling: 37 A brake, 40 A launch) and in BUG-40 uses these constants. If the drive is 1.4 times stronger than modelled, the ceiling has more margin than R0 says; if friction is doing the work, the brake authority on a cold or worn Hand is smaller than the model and the bumper question returns. Settle it with a bench hold-and-step on the Hand (measured iq against a known mass and acceleration) before the Apex Ladder.
 
 Also: the `hand_overspeed_bag_probe.py` docstring says "zero torque feedforward on the streamed hand lane"; in these bags `tor_ff_cmd` reaches +0.126 / −0.146 N m, so that note is stale.

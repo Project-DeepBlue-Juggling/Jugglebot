@@ -1,5 +1,5 @@
 ---
-id: JB-123
+id: TKT-19
 kind: ticket
 title: 'Shutdown Stow: raise the launch''s sigterm_timeout so the 8 s Stow completes, or trust the firmware deferred-stow and keep only the UDP single-owner interlock?'
 status: complete
@@ -18,7 +18,7 @@ parent: bug-teensy-bridge-node-s-shutdown-stow-can-be-cut-off-by-the
 type: question
 ---
 
-JB-82 names two halves of one hazard: `teensy_bridge_node`'s on_shutdown Stow takes about 8 s while the launch escalates SIGINT to SIGTERM after 5 s (no `sigterm_timeout` in either launch file), and `teensy_link/` has no single-owner interlock on the UDP link. The body says the firmware deferred-stow is the only backstop and asks whether the owner trusts it. Night Shift 2026-11-01 drafted the options below into the Item's `## Options (2026-11-01)` section and cannot pick one without the owner.
+BUG-26 names two halves of one hazard: `teensy_bridge_node`'s on_shutdown Stow takes about 8 s while the launch escalates SIGINT to SIGTERM after 5 s (no `sigterm_timeout` in either launch file), and `teensy_link/` has no single-owner interlock on the UDP link. The body says the firmware deferred-stow is the only backstop and asks whether the owner trusts it. Night Shift 2026-11-01 drafted the options below into the Item's `## Options (2026-11-01)` section and cannot pick one without the owner.
 
 ## Options
 

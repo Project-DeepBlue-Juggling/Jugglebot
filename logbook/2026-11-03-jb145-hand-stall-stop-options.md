@@ -1,9 +1,9 @@
 ---
-title: "JB-145: can-bridge FW 37 stops a fast upward Hand inside the stroke when the scheduled stream runs dry (6 ms short grace, then a C1 entry at 4500 rev/s^2, jerk-limited ramp-out; built and native-tested, NOT flashed; bench-hand Sitting owed)"
+title: "BUG-55: can-bridge FW 37 stops a fast upward Hand inside the stroke when the scheduled stream runs dry (6 ms short grace, then a C1 entry at 4500 rev/s^2, jerk-limited ramp-out; built and native-tested, NOT flashed; bench-hand Sitting owed)"
 type: bugfix
 date: 2026-11-03
 status: in-progress
-phase: "JB-145 / JB-154 option 2"
+phase: "BUG-55 / TKT-31 option 2"
 subsystem: can-bridge
 related_entries:
   - 2026-11-02-hand-release-step.md
@@ -25,12 +25,12 @@ files_changed:
   - logbook/INDEX.md
 ---
 
-# JB-145: the Hand's stream stop fits the stroke (FW 37)
+# BUG-55: the Hand's stream stop fits the stroke (FW 37)
 
 **Summary.** If the scheduled setpoint stream runs dry near a Throw's release, FW 36 continued the
 last span's cubic for SCHED_GRACE_S (20 ms) and then ran the jerk-limited C2 stop, which cannot start
 below its entry acceleration. With the Hand at 150-190 rev/s upward that stop ended at 13-16 rev,
-against a 10.501 rev stroke clip and a 10.701 rev hard stop. FW 37 (owner decision JB-154, option 2):
+against a 10.501 rev stroke clip and a 10.701 rev hard stop. FW 37 (owner decision TKT-31, option 2):
 for the HAND lane only, when the cover ends with no newer frame the grace is shortened to
 HAND_C1_STOP_GRACE_US (6 ms, the same continuation of the span-2 cubic, so a frame landing inside it
 is promoted as before); if the continued Hand velocity is then upward above
@@ -41,7 +41,7 @@ ramped out at the stop jerk (350k rev/s^3) to rest and HOLD. Slow or downward Ha
 the 20 ms grace and the C2 stop; every leg lane is unchanged. The first FW 37 build (3ad356e5, never
 flashed) had no grace at all; the 6 ms grace is the owner's answer to its late-frame cost (below).
 
-**Problem.** JB-149 shows the trigger is real: three forward emit gaps over 70 ms on 2026-11-02, one
+**Problem.** BUG-58 shows the trigger is real: three forward emit gaps over 70 ms on 2026-11-02, one
 ending in a Hand MAX_DEVIATION of +9.9 rev. A stop that carries the Hand through the clip into the
 hard stop is a hazard whatever starves the stream.
 
@@ -59,7 +59,7 @@ hard stop is a hazard whatever starves the stream.
 Option 1 removes the main term (the grace, ~3 rev at 150 rev/s) but the C2 stop's jerk-limited entry
 from a = +2009 is still too slow at Apex 1.42. Keeping the jerk limit on the ramp-in fails Apex 1.42
 by 0.07 rev. Only the C1 step fits everywhere, with 2.9 rev (1.05) and 2.16 rev (1.42) of stop margin
-to the clip. Option 3 (fix the starvation, JB-149) stays worth doing but leaves the hazard in place
+to the clip. Option 3 (fix the starvation, BUG-58) stays worth doing but leaves the hazard in place
 for whatever starves the stream next.
 
 **The ramp-out is jerk-limited (a choice made here, not in the probe).** The probe's option 2 holds
@@ -92,7 +92,7 @@ The static_assert on HAND_C1_STOP_MIN_UP_VEL_RPS > v_r keeps the constant-decele
    more than 6 ms late.
 
 **The late-frame cost and the owner's grace decision (2026-11-03).** Tradeoff 2 is not rare: the
-2026-11-02 Sitting shows 16 forward emit gaps over 50 ms (JB-149), each one a late knot that FW 36
+2026-11-02 Sitting shows 16 forward emit gaps over 50 ms (BUG-58), each one a late knot that FW 36
 rode inside its 20 ms grace and the no-grace FW 37 would have refused (latched hold, aborted Throw)
 whenever it fell in the fast upward stroke. The owner kept the C1 stop at 4500 rev/s^2 and asked for
 the LONGEST grace the Apex 1.42 margin permits, on the 2 ms tick grid, with at least 0.30 rev left
@@ -117,7 +117,7 @@ continued acceleration and the ramp-out; with both, 8 ms leaves +0.23 rev. The 1
 (10.20 rev, +0.30) is knot +2, a Hand near the stroke top below the threshold that runs the FW 36
 grace + C2 path at every G: unchanged by this decision, and identical in the FW 36 lane. A late
 frame up to 2T + 6 ms = 56 ms after the previous frame's stamp now rides through the fast upstroke;
-frames 6-15 ms late there are still refused (the accepted residue; JB-149 is the cure for the rate).
+frames 6-15 ms late there are still refused (the accepted residue; BUG-58 is the cure for the rate).
 
 **Why the decision reads the continued velocity, not the knot v2.** Two reasons. (a) The C1 profile
 needs an entry speed above v_r = 28.9 rev/s; the static_assert ties the threshold (50) to v_r, so
@@ -240,7 +240,7 @@ First FW 37 build (3ad356e5, no grace), for the record: native 17 passed in 221.
 **Owed:** the flash (`pio run -e teensy41 -t upload`, launch down; receipt = BridgeIdentity FW 37) and
 a bench-hand Sitting that kills the stream mid-upstroke and checks the stop height and the hold,
 and that one late knot (under 6 ms past the cover end) during the upstroke rides through (see
-the JB-145 item's Sitting section once filed). Until then the live board is FW 36 and the launch logs
+the BUG-55 item's Sitting section once filed). Until then the live board is FW 36 and the launch logs
 the BRIDGE_FW_CHECK skew advisory (37 expected).
 
-**Flashed 2026-11-03 ~18:05** (session jugglebot-50, launch down, from the pushed tip 341950b5): `pio run -e teensy41 -t upload` -> SUCCESS 80.17 s; receipt: a read-only listener on PORT_STREAM saw 8 BridgeIdentity frames in 8 s, all `(fw_version=38, protocol_version=11)`, every frame decoding at PROTOCOL 11. The live checkout was rebuilt (`colcon build --packages-select jugglebot`, 2026-11-03, 1 package finished). The bench-hand Sitting row on JB-145 and the robot Sitting row on JB-149 remain the behaviour checks.
+**Flashed 2026-11-03 ~18:05** (session jugglebot-50, launch down, from the pushed tip 341950b5): `pio run -e teensy41 -t upload` -> SUCCESS 80.17 s; receipt: a read-only listener on PORT_STREAM saw 8 BridgeIdentity frames in 8 s, all `(fw_version=38, protocol_version=11)`, every frame decoding at PROTOCOL 11. The live checkout was rebuilt (`colcon build --packages-select jugglebot`, 2026-11-03, 1 package finished). The bench-hand Sitting row on BUG-55 and the robot Sitting row on BUG-58 remain the behaviour checks.

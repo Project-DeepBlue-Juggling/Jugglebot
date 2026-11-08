@@ -1,4 +1,4 @@
-// view-toggles.js — the View menu's scene-group toggles remembered across a page refresh (JB-89).
+// view-toggles.js — the View menu's scene-group toggles remembered across a page refresh (BUG-31).
 // Pure and DOM-free (main.js passes localStorage), so tests/ros/js/view_toggles_harness.js runs it
 // under node. One key, JSON {groupName: bool}; same failure policy as records-model.js
 // loadHidden/saveHidden: unreadable or blocked storage means "no saved choice", never an error.

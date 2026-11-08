@@ -322,7 +322,7 @@ actuator bound (owner decision D3); the actuator bounds are the planner check, i
    v1 file is?
 2. **theta from rows only** (no corpus-fit initialisation), **forget K and b only**, **the per-ball offset
    off**, **the dwell term inert**: each departs from the plan's § 2.2-2.3 text for the reason in Discussion.
-3. **The authority**: 30 mm laterally (the node parameter, the owner's JB-139 value; the plan's start was
+3. **The authority**: 30 mm laterally (the node parameter, the owner's BUG-52 value; the plan's start was
    40 mm) and 20 mm in apex (the residual's corrections on the corpus reach p99 12.9 mm, max 18.0 mm).
 4. **k = 16, w0 = 2** against the probe's flat optimum at 8 and 4: see Tradeoffs.
 5. **The gate is read as a mean** over first Throws at Sites with earlier data.

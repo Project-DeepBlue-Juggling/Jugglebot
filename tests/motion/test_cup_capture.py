@@ -188,7 +188,7 @@ def test_a_held_landing_captures_onto_the_refined_line_by_the_contact_window(off
 
 
 def test_a_capture_past_the_authority_is_refused_before_the_solve():
-    """Past ``CAPTURE_MAX_OFFSET_M`` (46.10 mm = hypot(35, 30) since JB-139,
+    """Past ``CAPTURE_MAX_OFFSET_M`` (46.10 mm = hypot(35, 30) since BUG-52,
     2026-11-02, 40.31 = hypot(35, 20) before; the widest the
     executor's clamp can emit) the refusal is ``CATCH_AXIS`` at ASSEMBLY — no
     solve — and the sentence names the offset, the cap, and the knots

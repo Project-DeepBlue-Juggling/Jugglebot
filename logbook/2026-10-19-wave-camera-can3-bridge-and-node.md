@@ -164,4 +164,4 @@ Added in this bring-up (owner decision after step 10): fault clearing. The fault
 
 Verification: `pytest tests/ros/test_teensy_bridge_node_wave.py tests/ros/test_wave_camera.py` (2026-10-25): **71 passed**; `pytest tests/ros/test_gui_record_panel.py` (2026-10-25): **15 passed**; `pytest tests/ros/test_choreography_map.py` after `python tools/gen_choreography_map.py` (2026-10-25): **29 passed**. Hardware, after colcon build and relaunch (2026-10-25 15:31, persistent rclpy client): `camera/clear_faults` returned **success, 'faults cleared (were: INTENT_TIMEOUT_AUTOSTOP, SYNC_STEP)' in 0.188 s**, a second call 'no faults were latched' (0.196 s), and the heartbeat then read faults 0x00. The record_start clear is covered by the node tests only: exercising it on hardware writes a clip.
 
-> Closed 2026-10-28: bring-up done 2026-10-25 (pathway-wave-camera-can3 complete); residue JB-52, JB-53, JB-54 (JB-34 survey).
+> Closed 2026-10-28: bring-up done 2026-10-25 (pathway-wave-camera-can3 complete); residue BUG-13, FEAT-12, FEAT-13 (IDEA-2 survey).

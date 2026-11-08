@@ -1,4 +1,4 @@
-"""The launch's scheduling-priority contract (JB-76, 2026-10-28).
+"""The launch's scheduling-priority contract (BUG-21, 2026-10-28).
 
 The Jetson runs this launch at 5.5 of 6 cores while juggling and the planner's
 solver worker was measured getting ~45 % of a core (65 ms of CPU in 150 ms of

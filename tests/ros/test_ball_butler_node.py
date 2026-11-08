@@ -811,7 +811,7 @@ class TestCancelThrow:
 
 
 class TestThrowOutcomeIdentity:
-    """JB-21: the relayed verdict ends with the throw's release instant."""
+    """BUG-2: the relayed verdict ends with the throw's release instant."""
 
     def _relay(self, node, release_wall_s, message):
         from types import SimpleNamespace

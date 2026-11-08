@@ -250,14 +250,14 @@ def test_protocol_version_frozen(gen, proto):
     fleet — this makes the bump deliberate and keeps all three artifacts in lockstep."""
     spec_ver = _spec_const(gen, "PROTOCOL_VERSION")
     assert spec_ver == 12, (  # 11→12: downlink loss accounting (can-bridge FW 40,
-                              # 2026-11-06, JB-174) — HeartbeatT2J GROWS 158→190 B by
+                              # 2026-11-06, FEAT-41) — HeartbeatT2J GROWS 158→190 B by
                               # eight cumulative u32 (dn_rx_setpoints, dn_queue_dropped,
                               # dn_seq_gaps, dn_crc_errors, sched_frames, sp_seq_drops,
                               # sp_no_hand, sp_no_sched); a grown heartbeat fails the
                               # exact-size decode ⇒ incompatible; darkness vs any
                               # FW ≤ 39 board is intended.
                               # 10→11: scheduled-lane observability (can-bridge FW 38,
-                              # 2026-11-03, JB-149) — HeartbeatT2J GROWS 126→158 B by
+                              # 2026-11-03, BUG-58) — HeartbeatT2J GROWS 126→158 B by
                               # five cumulative sched_* counters and the per-window
                               # frame-age census (rx_age_max_us + 4 buckets); a grown
                               # heartbeat misreads every counter ⇒ incompatible;
@@ -546,7 +546,7 @@ def test_wire_layout_frozen(gen):
     # ERR_UNKNOWN_METHOD. Previous digest (LegClampDiag only):
     #   b8f8027feb744910a7d13cb9a464bdb7783945cf7a8f1f5ea9623c68676e288d
     # Re-pinned for the ADDITIVE Diagnostic homing_epoch (2026-10-28, can-bridge
-    # FW 34, JB-72): pad[0] (u8, always zero) becomes homing_epoch, pad shrinks
+    # FW 34, BUG-18): pad[0] (u8, always zero) becomes homing_epoch, pad shrinks
     # 2 -> 1. Same 40 B payload and offsets. An older host ignores the byte, and a
     # newer host against an FW <= 33 board reads epoch 0 for ever, which never
     # reads newer, so HomingMonitor falls back to its saw_running gate. Both
@@ -554,12 +554,12 @@ def test_wire_layout_frozen(gen):
     # Previous digest (WAVE_CMD):
     #   2e17196c14b4b94fa7dd198609becd3a4ca30618d6fba7a92448eb0d56254cb3
     # Re-pinned for the INCOMPATIBLE scheduled-lane observability (2026-11-03,
-    # can-bridge FW 38, JB-149, PROTOCOL_VERSION 10→11): HeartbeatT2J GROWS
+    # can-bridge FW 38, BUG-58, PROTOCOL_VERSION 10→11): HeartbeatT2J GROWS
     # 126→158 B by five u32 sched_* counters, i32 rx_age_max_us and four u16
     # rx_age buckets. Previous digest (homing_epoch):
     #   b90f835978415dcfcc4e49643db9c2041ef6fdc7a518ebcf87e65cd8e50dd877
     # Re-pinned for the INCOMPATIBLE downlink loss accounting (2026-11-06,
-    # can-bridge FW 40, JB-174, PROTOCOL_VERSION 11→12): HeartbeatT2J GROWS
+    # can-bridge FW 40, FEAT-41, PROTOCOL_VERSION 11→12): HeartbeatT2J GROWS
     # 158→190 B by eight u32 (dn_rx_setpoints, dn_queue_dropped, dn_seq_gaps,
     # dn_crc_errors, sched_frames, sp_seq_drops, sp_no_hand, sp_no_sched).
     # Previous digest (scheduled-lane observability):

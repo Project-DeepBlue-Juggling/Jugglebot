@@ -421,4 +421,4 @@ here is **0.3 rev larger than the truth** — the worst case was 0.475 rev, not
 0.775. The `peak` measurements themselves are unchanged; only the reference
 moved. Left as written per the annotate-never-edit rule.
 
-> Closed 2026-10-28: superseded: Platform Teensy stroke engine retired at skill-stack R1 (JB-34 survey).
+> Closed 2026-10-28: superseded: Platform Teensy stroke engine retired at skill-stack R1 (IDEA-2 survey).

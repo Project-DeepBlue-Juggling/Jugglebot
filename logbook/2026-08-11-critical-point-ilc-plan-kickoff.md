@@ -80,4 +80,4 @@ message. `/audit --unstaged` ran before the commit (multi-document narrative
 gate, four narrative files); findings and dispositions are recorded in the
 commit message.
 
-> Closed 2026-10-28: superseded by plans/archived/critical-point-ilc.md (JB-34 survey).
+> Closed 2026-10-28: superseded by plans/archived/critical-point-ilc.md (IDEA-2 survey).

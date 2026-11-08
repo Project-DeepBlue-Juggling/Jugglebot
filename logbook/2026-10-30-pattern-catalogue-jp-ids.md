@@ -24,11 +24,11 @@ tags:
 
 ## What
 
-A new published page `docs/patterns.md` (nav entry "Patterns") registers every Pattern with a catalogue ID JP-n, its name, machine label(s), Site count, what moves, status (flown / destination / idea / unfiled) and where it lives. Flown: JP-1 Self-throw, JP-2 Hop, JP-3 Columns one ball, JP-4 Oval one ball, JP-6 Magazine throw, JP-7 Columns. Destination: JP-8 Oval. Ideas from the 2026-10-30 two-ball pattern exploration: JP-5, JP-9, JP-10, JP-11, JP-13, JP-14, JP-15, JP-17 (map JB-106 to JB-113). Unfiled: JP-12, JP-16, JP-18. Closes JB-105.
+A new published page `docs/patterns.md` (nav entry "Patterns") registers every Pattern with a catalogue ID JP-n, its name, machine label(s), Site count, what moves, status (flown / destination / idea / unfiled) and where it lives. Flown: JP-1 Self-throw, JP-2 Hop, JP-3 Columns one ball, JP-4 Oval one ball, JP-6 Magazine throw, JP-7 Columns. Destination: JP-8 Oval. Ideas from the 2026-10-30 two-ball pattern exploration: JP-5, JP-9, JP-10, JP-11, JP-13, JP-14, JP-15, JP-17 (map IDEA-9 to IDEA-16). Unfiled: JP-12, JP-16, JP-18. Closes FEAT-33.
 
 ## Why
 
-Owner, 2026-10-30: "We need to number/codify these patterns so that we can talk about them more easily", then "Yes to JP-n". A flat series parallel to JB-n, allocated once and never reused, keeps the conversation handle apart from the machine label the code, the admissible box and the records ledger key on (JB-33 settled that identifiers stay). The GLOSSARY Pattern entry does not yet point at the page; that edit goes through the grilling and domain-modeling skills.
+Owner, 2026-10-30: "We need to number/codify these patterns so that we can talk about them more easily", then "Yes to JP-n". A flat series parallel to JB-n, allocated once and never reused, keeps the conversation handle apart from the machine label the code, the admissible box and the records ledger key on (IDEA-1 settled that identifiers stay). The GLOSSARY Pattern entry does not yet point at the page; that edit goes through the grilling and domain-modeling skills.
 
 ## Verification
 

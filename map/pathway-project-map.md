@@ -1,5 +1,5 @@
 ---
-id: JB-39
+id: PWAY-3
 kind: pathway
 title: Project map and shared dictionary
 status: complete

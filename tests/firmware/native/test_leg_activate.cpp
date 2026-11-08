@@ -588,7 +588,7 @@ TEST_CASE("a second HAND_MOVE_TO retargets in flight: old answered SUPERSEDED, n
   CHECK(r[0].result.outcome == HAND_MOVE_ARRIVED);
 }
 
-// ── FW 36 hand stall guard (JB-146) ───────────────────────────────────────────
+// ── FW 36 hand stall guard (BUG-56) ───────────────────────────────────────────
 //  Owner rule: no motion with high current for >= 300 ms aborts the move. The
 //  2026-11-02 incident: ACTIVATE parked the hand into its stop (zero lost to an
 //  ODrive GUI save) and the position loop held ~70 A for 5.5 s to MOTOR_OVER_TEMP.

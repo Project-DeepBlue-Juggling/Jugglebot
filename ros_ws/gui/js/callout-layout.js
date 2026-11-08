@@ -1,5 +1,5 @@
 /**
- * callout-layout.js -- 1-D label layout for the chart hover callout pills (JB-159).
+ * callout-layout.js -- 1-D label layout for the chart hover callout pills (BUG-61).
  *
  * Why: each pill is placed at its own curve's y.  When two curves are closer
  * than one pill height (position and temperature, say) the pills stacked on

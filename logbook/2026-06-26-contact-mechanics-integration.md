@@ -197,4 +197,4 @@ worth modelling for catch/carry realism but were not the lever here.
 - Consider modelling the low-CoM powder ball for catch/carry realism (separate
   from the aim fix).
 
-> Closed 2026-10-28: superseded by plans/archived/bb-led-two-ball-juggle-demo.md (JB-34 survey).
+> Closed 2026-10-28: superseded by plans/archived/bb-led-two-ball-juggle-demo.md (IDEA-2 survey).

@@ -899,4 +899,4 @@ t=0.006 s` — a rounding hair below the seed, a gate without tolerance at its o
 hand IDLE they were moot tonight, but they refused the 14:29 session's lift too and need their own probe.
 Also open: how the latch flipped while armed.
 
-> Closed 2026-10-28: superseded by plans/archived/unified-7dof-planner.md (JB-34 survey).
+> Closed 2026-10-28: superseded by plans/archived/unified-7dof-planner.md (IDEA-2 survey).

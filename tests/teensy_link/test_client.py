@@ -342,7 +342,7 @@ def test_ephemeral_binds_do_not_set_reuseaddr(fake_teensy_and_client):
 
 
 def test_a_fixed_port_never_sets_reuseaddr():
-    """JB-82 (2026-11-01): production's fixed ports 5005/5006 no longer carry the
+    """BUG-26 (2026-11-01): production's fixed ports 5005/5006 no longer carry the
     option (it let a second process share the link silently); the kernel then
     refuses any second bind. Bound here on a free fixed loopback pair, never
     5005/5006. The refusal itself is pinned in test_single_owner.py."""

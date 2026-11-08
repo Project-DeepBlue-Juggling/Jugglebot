@@ -5,7 +5,7 @@ event streams with it:
 
 * **forward gaps**: wall-clock spacing of consecutive successful setpoint
   sends to the can-bridge Teensy. A forward gap longer than the firmware's STOP
-  cover (``SCHED_COVER_MS``) lets the lane's cover expire (JB-98).
+  cover (``SCHED_COVER_MS``) lets the lane's cover expire (BUG-34).
 * **loop gaps**: spacing of consecutive iterations of the forwarding loop
   itself (it polls at ~1 kHz when idle). A long loop gap means the bridge
   process/thread was starved, regardless of what the emitter did. Comparing the
@@ -91,7 +91,7 @@ class GapTracker:
         """Time since the last ``record`` (ms), 0.0 before the first one.
 
         ``snapshot`` only sees a gap once it CLOSES; a stream that is dead right
-        now reads as no gap at all. The STOP verdict (JB-149) needs the open gap
+        now reads as no gap at all. The STOP verdict (BUG-58) needs the open gap
         too before it may call the host stream clean.
         """
         with self._lock:
@@ -122,7 +122,7 @@ class EpisodeLatch:
 
 
 class DownlinkLossTracker:
-    """Setpoints the host sent that the firmware never dispatched (JB-174).
+    """Setpoints the host sent that the firmware never dispatched (FEAT-41).
 
     ``update(sent, rx)`` takes the host's sent count, sampled when a heartbeat
     arrived, and that heartbeat's cumulative ``dn_rx_setpoints`` (FW 40).

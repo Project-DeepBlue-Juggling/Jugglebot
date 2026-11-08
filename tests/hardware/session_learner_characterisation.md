@@ -1,7 +1,7 @@
 # Learner characterisation Sitting (P2 of `plans/active/learner-generalisation.md`)
 
 Written 2026-11-06, after the first powered run of the merged stack
-(`logbook/2026-11-06-sitting-debrief.md`). Runbook row: JB-187. About 40 minutes, robot armed and level,
+(`logbook/2026-11-06-sitting-debrief.md`). Runbook row: FEAT-44. About 40 minutes, robot armed and level,
 Ball Butler needed only for block D.
 
 **If your physical intuition disagrees with the framing below (what the lateral offset is, why the Throws
@@ -32,12 +32,12 @@ release time against the command on every `throw n/N CAUGHT ... release +N ms` l
   to 1.20 and at every Site below). There are no fast transits and no second ball to hit.
 - Apex stays at or under 1.05. The standing rule allows 1.10, but a Hand stall stop at 1.10 fits the stroke
   by only 0.08 rev (0.47 rev at 1.00; 2026-11-05 probe on the Hand stall-stop Item), and five levels from 0.70
-  to 1.05 answer block A's question almost as well. Higher Apexes are a Hand question (JB-147).
+  to 1.05 answer block A's question almost as well. Higher Apexes are a Hand question (BUG-57).
 - Block D is the only two-ball block: the Columns pair at Sep. 120 turned to 90 degrees. Its plan asks the
   Legs for 264 mm/s and 3011 mm/s^2 over 120 mm transits (same offline run). The Sitting of 2026-11-06 flew
   clean up to 361 mm/s, 4672 mm/s^2 and 156 mm transits; the transits that separated Legs 1 and 2 were
-  187 mm at 486 mm/s (JB-184). Block D is inside the clean set. Sep. 120 leaves 46 mm between the balls, so
-  some Attempts will end on a collision (JB-186); repeat until the row count is met.
+  187 mm at 486 mm/s (BUG-72). Block D is inside the clean set. Sep. 120 leaves 46 mm between the balls, so
+  some Attempts will end on a collision (BUG-74); repeat until the row count is met.
 - The plant stays `jugglebot`. The rows are told apart afterwards by their time (and by Site, `ball_id`
   and `release_kind`), so no `plant_id` is set. (A fresh plant would start from the identity prior and throw about 8 % high.)
 
@@ -126,5 +126,5 @@ only between goals (the node does not refuse a change while a goal runs). Read i
   how much of the offset comes from the transit.
 - Block C: mean landing and Apex per ball against the scatter within a ball.
 - Telemetry: the `release +N ms` values and the Hand velocity at release, per Throw, against the landing
-  error. This is also the first data for what sets the lateral drift behind the collisions (JB-186).
+  error. This is also the first data for what sets the lateral drift behind the collisions (BUG-74).
 - Outputs: the plant model's structure pinned in the plan's § 2.2, and the frame for a per-beat rotation.

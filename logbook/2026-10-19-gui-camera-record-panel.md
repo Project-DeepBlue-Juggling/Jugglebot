@@ -118,4 +118,4 @@ and blanks the panel in `blankDisconnectedState()`. `mm:ss` reuses
   return 200.
 - Not yet done: a browser check against a live heartbeat (CAN adapter design s10 row 8).
 
-> Closed 2026-10-28: closed by 2026-10-19-wave-camera-can3-bridge-and-node (JB-34 survey).
+> Closed 2026-10-28: closed by 2026-10-19-wave-camera-can3-bridge-and-node (IDEA-2 survey).

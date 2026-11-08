@@ -1,4 +1,4 @@
-"""JB-149 opt-in cures: gc_freeze and cpu_partition (both default OFF).
+"""BUG-58 opt-in cures: gc_freeze and cpu_partition (both default OFF).
 
 ROS 2 is mocked by tests/ros/conftest.py; the mock Node's declare_parameter
 returns the default, so a test turns a flag on by wrapping it with overrides.
@@ -189,7 +189,7 @@ def test_launch_exposes_both_args_default_false_and_passes_through():
                     defaults[c.args[0].value] = k.value.value
     assert defaults['gc_freeze'] == 'false'
     assert defaults['cpu_partition'] == 'false'
-    # the probe is ON at launch since 2026-11-04 (owner; JB-149 waits for a
+    # the probe is ON at launch since 2026-11-04 (owner; BUG-58 waits for a
     # LANE_REFUSED caught with it running)
     assert defaults['gc_probe'] == 'true'
     for flag in ('gc_freeze', 'cpu_partition'):

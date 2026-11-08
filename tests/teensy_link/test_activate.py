@@ -111,7 +111,7 @@ def test_active_errors_during_activate_fails():
 
 
 def test_stall_bit_fails_at_once_and_names_the_stall():
-    """FW 36 (JB-146): the bridge's stall guard IDLEd the axis -> FAILED with a
+    """FW 36 (BUG-56): the bridge's stall guard IDLEd the axis -> FAILED with a
     STALL reason now, not a 20 s timeout on a de-energised axis."""
     m = mon([6], target=0.0)
     m.step(0.0, {6: AxisStatus(axis_state=CL, pos_rev=0.49, vel_rps=-1.0)})   # bit clear

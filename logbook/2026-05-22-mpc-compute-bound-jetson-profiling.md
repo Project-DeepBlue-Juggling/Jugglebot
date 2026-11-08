@@ -302,4 +302,4 @@ compute-upgrade decision, and any `can_node` efficiency work are pending.
   and now** — a candidate `/investigate`, including the option of checking
   out `38d7415` and re-running the 7-move battery as an A/B.
 
-> Closed 2026-10-28: superseded: MPC chain removed 2026-09-01 (JB-34 survey).
+> Closed 2026-10-28: superseded: MPC chain removed 2026-09-01 (IDEA-2 survey).

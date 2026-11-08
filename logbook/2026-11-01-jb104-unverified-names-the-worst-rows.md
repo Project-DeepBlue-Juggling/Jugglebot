@@ -1,5 +1,5 @@
 ---
-title: "JB-104: the pose planner's UNVERIFIED refusal names the worst-violated equality and inequality rows (reason unchanged; labels built lazily on the refusal path); box re-swept value-identical, gate_hash fe8c52ba88b4"
+title: "BUG-39: the pose planner's UNVERIFIED refusal names the worst-violated equality and inequality rows (reason unchanged; labels built lazily on the refusal path); box re-swept value-identical, gate_hash fe8c52ba88b4"
 type: feature
 date: 2026-11-01
 status: complete
@@ -17,14 +17,14 @@ files_changed:
   - logbook/INDEX.md
 ---
 
-# JB-104: UNVERIFIED names the worst rows
+# BUG-39: UNVERIFIED names the worst rows
 
 **What.** At the feasibility edge the pose planner refused with
 `REJECTED_CYCLE_INFEASIBLE(UNVERIFIED: QP solution failed verification ...)`, which tells the
-operator nothing about what bound. JB-104 asked for a named `INFEASIBLE` with the binding row; the
+operator nothing about what bound. BUG-39 asked for a named `INFEASIBLE` with the binding row; the
 Night Shift found that `cup_cycle._verify` deliberately does not distinguish an infeasible request
 from a numerically degenerate one (2026-08-30, Phase 0: which refusal path fires is
-BLAS-dependent). The owner chose JB-126 option 1: keep `reason='UNVERIFIED'` and that
+BLAS-dependent). The owner chose TKT-22 option 1: keep `reason='UNVERIFIED'` and that
 non-distinction, and append the worst rows to the message.
 
 **Change.** `_verify`'s refusal message now ends `— worst rows: equality <i>: <name> (residual

@@ -1,4 +1,4 @@
-"""The records ledger (``jugglebot/records.py``, JB-35): the file format
+"""The records ledger (``jugglebot/records.py``, IDEA-3): the file format
 round-trips, the strictly-more rule, ball-count ordering, the end-code
 category map (pinned against the executor's own constants), the seed CSV
 rebuild, the malformed-file refusal and the atomic write."""
@@ -210,7 +210,7 @@ def test_seed_note_marks_reconstructed_and_fed_rows():
     assert seed_note('~/.ros/log/x/launch.log') == 'seed: log'
 
 
-# ── Ledger v2: the Parameters column (JB-90) ───────────────────────────────
+# ── Ledger v2: the Parameters column (FEAT-29) ───────────────────────────────
 
 _PARAMS = (('apex_m', '0.95'), ('separation_mm', '125'), ('dwell_s', '0.27'),
            ('planner', 'pose'))

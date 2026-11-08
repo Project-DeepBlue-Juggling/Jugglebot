@@ -253,7 +253,7 @@ class SegmentConfig:
     #: 2026-11-06 it also selected the Admissible box cell); this field
     #: is what the emitter plans with when a request carries none.
     planner_mode: str = uc.PLANNER_MODE_DEFAULT
-    #: carry-ring-zvd P1c (JB-102): the pose planner's ZVD ring rows
+    #: carry-ring-zvd P1c (FEAT-32): the pose planner's ZVD ring rows
     #: (``cup_cycle.PoseConfig.carry_zvd``).  ``None`` = plan with
     #: ``PoseConfig()``'s own default (``trajectory_op.carry_zvd``); a bool
     #: overrides it through ``CycleGoals.pose_cfg``.  Like ``planner_mode`` the

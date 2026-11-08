@@ -4,7 +4,7 @@ description: The Night Shift orchestrator protocol - unattended work on every op
 
 # Night Shift
 
-You are the Night Shift orchestrator (Pathway JB-119, `plans/active/night-shift.md`). It is
+You are the Night Shift orchestrator (Pathway PWAY-9, `plans/active/night-shift.md`). It is
 night, the owner is asleep, nobody will answer a question. You are running headless in the
 clone `~/night-shift/Jugglebot` on `main`, under an optional budget fuse, with the permission settings
 `tools/night_shift_settings.json` installed. `/work-inbox` is this protocol for one Item in an
@@ -75,7 +75,7 @@ Arguments: `$ARGUMENTS`
    leaves `inbox` on `main` must be fully rated (`effort`, `hardware`, `owner`, `radius`,
    `area`, and `diagnosis` on a bug), and an Item body has a per-block readability cap. The
    2026-11-01 night turned `main` red four times on its own `map:` pushes (a 540-character
-   block, a 536-character note, the first question tickets, JB-89 set `in_progress`
+   block, a 536-character note, the first question tickets, BUG-31 set `in_progress`
    unrated); every Session's suite gate and your own gate logs fail while it is red.
 
 ## 1. Start
@@ -91,27 +91,27 @@ Arguments: `$ARGUMENTS`
    mujoco"` works. If it does not, every gate will fail: write the report with status
    `NO_VENV` and stop.
 4. Dry run: do steps 2 and 3, then for each candidate write one line
-   `JB-n | <kind> | <rating> | <would do: unit | question | feasibility | skip (reason)>`
+   `<ID> | <kind> | <rating> | <would do: unit | question | feasibility | skip (reason)>`
    into `D/dry-<date>.md` under the report layout's headings (every section present,
    `## Merged to main` and `## Held` saying "dry run, nothing done"), and stop. Nothing
    else happens on a dry run.
 
 ## 2. The work loop
 
-Take the candidates in `rank` order. For each Item JB-n:
+Take the candidates in `rank` order. For each Item <ID>:
 
 ### 2a. Branch
 
 ```
 git checkout -q main && git pull -q --ff-only
-git checkout -q -b night-shift/<date>-JB-n
+git checkout -q -b night-shift/<date>-<ID>
 ```
 
 ### 2b. Read and rate
 
 Read the Item file, every `links:` target, and `python -m mapkit show <pathway>` if it has
 a parent. Metrics missing or wrong (the filer guessed; you now know) ->
-`python -m mapkit item rate JB-n --effort .. --hardware .. --owner .. --radius .. [--diagnosis ..] --area ..`
+`python -m mapkit item rate <ID> --effort .. --hardware .. --owner .. --radius .. [--diagnosis ..] --area ..`
 (no `--commit`; it rides in the branch). The rating you leave on the branch is what the gate
 reads for conditions (c), (d) and (g): rate honestly, a `hardware: robot` Item rated `none` to
 pass the gate is the one thing this protocol cannot survive. Keep the exact flags you used:
@@ -128,7 +128,7 @@ a HOLD writes the same rating on `main` (2j), so base and branch agree at a late
 | bug or feature that needs a change under `ros_ws/src/jugglebot_interfaces/` | one unit as row 1, on a branch; do not expect a merge: the gate holds it at (f), because the suite mocks that package and only a real two-package colcon build can show the node and interface agree. Say so in the Item's Progress headline | Held, `Respond in` `none`, unblock `a day Session merges after the two-package build` |
 | `hardware: bench-leg`, `bench-hand` or `robot`, or `owner: hands` | work the software part only if the body names one that is testable offline (then as row 1); always write or complete the Item's `## Sitting` section when the body gives enough to fill `do:` and `pass:` honestly (P4 format; never invent a step) | Held `needs a Sitting` or Skipped |
 | idea | write `## Feasibility (<date>)` (what it would take, effort, hardware, one risk); if rated xs or s with `hardware: none` and `owner: none`, build it as row 1 | Merged, Held or Skipped `feasibility noted` |
-| ticket `type: question` already complete (`## Answer` present) whose parent has a held branch `night-shift/<old-date>-JB-n` | RESUME (2l): the answer says what to do with the branch | Merged, Held again, or closed out |
+| ticket `type: question` already complete (`## Answer` present) whose parent has a held branch `night-shift/<old-date>-<ID>` | RESUME (2l): the answer says what to do with the branch | Merged, Held again, or closed out |
 | ticket `type: question` already complete (`## Answer` present), no held branch | re-open its parent Item's work: the answer is now an input; proceed by the parent's row | per the parent |
 | ticket `type: question` open | list it again under `## Questions for the Operator`; its parent is Skipped `awaiting answer` (a held parent stays in `## Held` with the ticket in `Respond in`, not re-worked) | Skipped |
 | other ticket (research, prototype, grilling, task) under a Pathway | research/task: one unit writing `## Findings` or the task's result; grilling/prototype: Skipped `needs the owner` | Held or Skipped |
@@ -136,7 +136,7 @@ a HOLD writes the same rating on `main` (2j), so base and branch agree at a late
 
 ### 2d. The unit
 
-Write the brief to `D/briefs/JB-n.md`: the Item body, the parent's Destination, the
+Write the brief to `D/briefs/<ID>.md`: the Item body, the parent's Destination, the
 linked files' names, the relevant rules from `CLAUDE.md` (Python 3.8 in `ros_ws/`, no ROS
 imports in pure-Python modules, tests parallel-safe via `tmp_path` and ephemeral ports,
 marker vocabulary `serial` + `nightly` only, grep before renaming, the (date, command,
@@ -153,25 +153,25 @@ brief allowed; anything else is reverted.
 ### 2e. The suite gate
 
 ```
-printf 'HEAD=%s\nBRANCH=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse --abbrev-ref HEAD)" > D/gate-JB-n.log
-tools/night_shift_nonet.sh ./run_tests.sh --full >> D/gate-JB-n.log 2>&1; echo "EXIT=$?" >> D/gate-JB-n.log
+printf 'HEAD=%s\nBRANCH=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse --abbrev-ref HEAD)" > D/gate-<ID>.log
+tools/night_shift_nonet.sh ./run_tests.sh --full >> D/gate-<ID>.log 2>&1; echo "EXIT=$?" >> D/gate-<ID>.log
 ```
 
 The unit's work must be committed BEFORE the gate runs (the gate log's `HEAD=` must equal
 the branch tip the gate script sees; an edit after the gate re-runs the gate), and the Item's
 closure goes INTO that commit, not after it: run
-`python -m mapkit item set-status JB-n complete --link logbook/<entry>.md` (no `--commit`)
+`python -m mapkit item set-status <ID> complete --link logbook/<entry>.md` (no `--commit`)
 before `git add -A`, so the tip the gate judges is the tip that merges (nothing is amended
 after the gate, ever). If the branch ends up HELD, `main` keeps the Item `in_progress`
 (2j step 2) while the branch carries the closure, which is exactly what merging it later
 should produce. Commit:
-`git add -A && git commit -q -F -` with subject `<type>(<area>): <what> (JB-n)` (`fix`,
+`git add -A && git commit -q -F -` with subject `<type>(<area>): <what> (<ID>)` (`fix`,
 `feat`, `docs`, `test`, `refactor`), a body of two or three lines, then the trailers
 `Logbook-Entry: <slug>`, `Night-Shift: <date>` and `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 `Night-Shift:` goes on every commit of an Item's work, in both repos: it is how the runner's
 deploy proves a commit is tonight's before it may revert one, and an unmarked commit makes it
 leave everything for a Session.
-A rating change alone is `map: rate JB-n <title>` with no trailer.
+A rating change alone is `map: rate <ID> <title>` with no trailer.
 
 ### 2f. The audit
 
@@ -180,8 +180,8 @@ Spawn the `audit-reporter` agent (Sonnet) on `git diff origin/main...HEAD` plus
 docstring, logbook wording, test metadata, naming) or behaviour-affecting (a code path,
 a value, a test that asserts the wrong thing, a missing edge case). Spawn the
 `audit-fixer` agent (Sonnet) with the narrative findings only; commit its edits as
-`chore(audit): JB-n narrative findings` (same trailers) and RE-RUN 2e. Write
-`D/audit-JB-n.md`: the findings, each marked `narrative applied` or `behaviour-affecting
+`chore(audit): <ID> narrative findings` (same trailers) and RE-RUN 2e. Write
+`D/audit-<ID>.md`: the findings, each marked `narrative applied` or `behaviour-affecting
 open`, ending with the two lines the gate parses:
 
 ```
@@ -194,8 +194,8 @@ Behaviour-affecting findings open: <n>
 ```
 rm -rf D/gate-base && mkdir -p D/gate-base
 git archive origin/main tools/night_shift_gate.py mapkit | tar -x -C D/gate-base
-python D/gate-base/tools/night_shift_gate.py --repo . --base origin/main --branch night-shift/<date>-JB-n \
-    --item JB-n --gate-log D/gate-JB-n.log --audit D/audit-JB-n.md [--app-log D/app-JB-n.log]
+python D/gate-base/tools/night_shift_gate.py --repo . --base origin/main --branch night-shift/<date>-<ID> \
+    --item <ID> --gate-log D/gate-<ID>.log --audit D/audit-<ID>.md [--app-log D/app-<ID>.log]
 ```
 
 The gate is always `origin/main`'s copy, with `origin/main`'s `mapkit` beside it, never the
@@ -204,7 +204,7 @@ this itself, byte for byte, and HOLDs if it is not the base's copy. No `PYTHONPA
 extract finds its own `mapkit`. A branch that touches `mapkit/` also needs the app's suite
 run against it first, because `pull.sh` restarts the live app within about 30 s of a `mapkit/`
 change landing on `main`: with `--app-clone` on its `main` and this branch checked out here,
-`tools/night_shift_nonet.sh tools/night_shift_app_suite.sh --app <app-clone> --mapkit . --log D/app-JB-n.log`,
+`tools/night_shift_nonet.sh tools/night_shift_app_suite.sh --app <app-clone> --mapkit . --log D/app-<ID>.log`,
 then `--app-log` above; without it condition (h) holds. With `--app-clone none`, such a branch
 is Held `app clone unavailable`. Exit 0 and `MERGE` -> 2i. Exit 1 and `HOLD <reasons>` -> 2j. Any other exit -> Held
 `gate script error` with the stderr.
@@ -213,7 +213,7 @@ is Held `app clone unavailable`. Exit 0 and `MERGE` -> 2i. Exit 1 and `HOLD <rea
 
 ```
 python -m mapkit item new ticket "<the question, one sentence ending in ?>" --type question \
-    --parent JB-n --priority <the Item's> --body-file D/briefs/JB-n-question.md \
+    --parent <ID> --priority <the Item's> --body-file D/briefs/<ID>-question.md \
     --effort xs --hardware none --owner decision --radius local --area <the parent's area>
 ```
 
@@ -221,7 +221,7 @@ Rated at filing: a ticket is not `inbox`, so `test_map_items_rated` requires eve
 The body: the context in two sentences, the options you drafted, what each answer would
 unblock, each paragraph under the readability cap. Every question ticket is filed on
 `main` through the map-write check (§ 0 rule 10: `--commit --no-push`, the map tests, then
-push; subject `map: file ticket JB-m <title>`, no trailer), never on an Item's branch: the
+push; subject `map: file ticket <question-ID> <title>`, no trailer), never on an Item's branch: the
 app writes the answer to `main`, and a branch copy would stay open and trip the gate's
 condition (e) at the re-gate (and add/add-conflict when the branch later merges `main`). The owner answers in the app
 under `## Answer`; the next night's preflight sees the ticket's `updated` move and
@@ -233,7 +233,7 @@ unblock is the owner's call (audit findings open, a design choice, a scope call)
 Skipped or Unfinished row skipped for `owner decision`, unless an open ticket already
 exists for it (the dispatch table's open-ticket row: list that one again, file no second). NOT for a Held or
 Skipped row whose only unblock is a Sitting (the Runbook's job), `out of reach` or `not
-reached`. A hold ticket is "JB-n held on night-shift/<date>-JB-n: apply the audit's N
+reached`. A hold ticket is "<ID> held on night-shift/<date>-<ID>: apply the audit's N
 fixes and merge, merge as is, or drop?", the body lists each open finding as an option
 with what it would change, and ends with your recommendation. Every such ticket is a row
 under `## Questions for the Operator` (so the app's answer box and Your-answer column
@@ -250,33 +250,33 @@ one tonight, unless only a Sitting unblocks it (`none`).
 1. The Item is already `complete` in the gated tip (2e). Nothing is amended.
 2. ```
    git checkout -q main && git pull -q --ff-only
-   git merge -q --ff-only night-shift/<date>-JB-n || git merge -q --no-ff -m "merge(night-shift): JB-n <title>" night-shift/<date>-JB-n
+   git merge -q --ff-only night-shift/<date>-<ID> || git merge -q --no-ff -m "merge(night-shift): <ID> <title>" night-shift/<date>-<ID>
    git push -q origin main
    ```
 3. Push rejected (someone pushed meanwhile): `git reset -q --hard origin/main` (local
    `main` back to the remote; nothing of yours was pushed), `git push -u origin
-   night-shift/<date>-JB-n`, and the Item is Held with reason `main moved during merge;
+   night-shift/<date>-<ID>`, and the Item is Held with reason `main moved during merge;
    re-gate needed` (status `in_progress`, 2j step 2). Never rebase the branch onto the
    moved `main` and merge untested.
-4. Report row under `## Merged to main`: `| JB-n | <title> | <what changed, a sentence or two> | <fix sha> (fix), <audit sha> (audit) |`.
+4. Report row under `## Merged to main`: `| <ID> | <title> | <what changed, a sentence or two> | <fix sha> (fix), <audit sha> (audit) |`.
 
 ### 2j. HOLD
 
-1. `git push -q -u origin night-shift/<date>-JB-n`.
+1. `git push -q -u origin night-shift/<date>-<ID>`.
 2. `git checkout -q main && git pull -q --ff-only`, then, with the SAME flags as 2b,
-   `python -m mapkit item rate JB-n --effort .. --hardware .. --owner .. --radius .. [--diagnosis ..] --area ..`
+   `python -m mapkit item rate <ID> --effort .. --hardware .. --owner .. --radius .. [--diagnosis ..] --area ..`
    (no `--commit`: it rides in the next write's commit), then
-   `python -m mapkit item set-status JB-n in_progress --owner night-shift --note "Night Shift <date>: held on night-shift/<date>-JB-n: <reasons, one line>; unblocked by <what>" --commit --no-push`,
+   `python -m mapkit item set-status <ID> in_progress --owner night-shift --note "Night Shift <date>: held on night-shift/<date>-<ID>: <reasons, one line>; unblocked by <what>" --commit --no-push`,
    then the map-write check (§ 0 rule 10) and `git push -q origin main`. The note stays one
    short line (the readability cap); detail goes in the branch's Item body. An Item already `in_progress`
    under another owner is not re-owned: the note only. If the Item is a hardware one with
-   a `## Sitting` section (or you wrote one), set its `- branch: night-shift/<date>-JB-n`
+   a `## Sitting` section (or you wrote one), set its `- branch: night-shift/<date>-<ID>`
    line in that section in the same write (edit the body with `mapkit.items.load_item` /
    `write_item` in a `python -` snippet before the `set-status`), so the Next Sitting
    Runbook row carries the branch and `/sitting-debrief` knows what to merge on a pass.
 3. If the unblock is the owner's call, file the hold question ticket (2h, on `main`, in
    the same push as the `set-status`); a Sitting-only hold files none.
-4. Report row under `## Held`: `| JB-n | <title> | night-shift/<date>-JB-n | (<letter>) <reason>. ... | <what unblocks it> | <JB-m or none> |`.
+4. Report row under `## Held`: `| <ID> | <title> | night-shift/<date>-<ID> | (<letter>) <reason>. ... | <what unblocks it> | <question-ID or none> |`.
    The last cell, `Respond in`, is the bare ID of the hold ticket, or `none` for a
    Sitting-only hold; the app adds a **Your answer** column beside it from that ticket.
 
@@ -288,10 +288,10 @@ If not, fix it now (push what is yours, revert what is not) and say so in the re
 ### 2l. RESUME an answered hold
 
 The ticket is complete and its parent has a held branch (find it with
-`git ls-remote --heads origin 'night-shift/*-JB-n'`; the newest date if several). Read the
+`git ls-remote --heads origin 'night-shift/*-<ID>'`; the newest date if several). Read the
 ticket's `## Answer` as the order for the night:
 
-1. `git fetch -q && git checkout -q night-shift/<old-date>-JB-n && git merge -q origin/main`
+1. `git fetch -q && git checkout -q night-shift/<old-date>-<ID> && git merge -q origin/main`
    (the gate needs the base inside the branch; the merge also brings the closed ticket).
    A conflict you cannot resolve mechanically: Held again, reason `resume merge conflict`.
 2. **Apply** (the answer names fixes, or accepts the audit's): make the named changes as
@@ -301,13 +301,13 @@ ticket's `## Answer` as the order for the night:
    names it for the owner to delete); on `main`, in one
    write, remove the `- branch:` line from the Item's `## Sitting` section (if any) and
    `night-shift` from its `owners` (a `mapkit.items.load_item` / `write_item` snippet, as in
-   2j step 2), then `set-status JB-n open --note "<one line>" --commit --no-push`, the map
+   2j step 2), then `set-status <ID> open --note "<one line>" --commit --no-push`, the map
    tests, push; report row under `## Skipped` (`dropped by the owner's answer`).
 5. An answer that does not decide (a question back, "later"): Held again under a NEW
    ticket (2h) quoting what is still unclear; the report row says so.
 
 A re-held Item keeps its branch name; the Held row's `Branch` cell stays
-`night-shift/<old-date>-JB-n`.
+`night-shift/<old-date>-<ID>`.
 
 A hold at condition (f) cannot be resumed at night, whatever the answer: the path stays
 forbidden and a HOLD is never promoted. Such a row says `a day Session merges it` and its
@@ -324,30 +324,30 @@ present, no upstream names). Items stay in Jugglebot's `map/`; only the code is 
 2. Rate first, on `main`, through the map-write check: the gate reads an app Item's rating from
    Jugglebot's `origin/main`, because the app holds no Items and a branch there cannot carry one.
 3. Branch in the app clone: `git -C <app-clone> checkout -q main`, pull `--ff-only`, then
-   `checkout -q -b night-shift/<date>-JB-n`. The unit works there (2d, with the logbook entry
+   `checkout -q -b night-shift/<date>-<ID>`. The unit works there (2d, with the logbook entry
    still in the Jugglebot clone, uncommitted until step 7), and commits nothing itself.
-4. Commit in the app clone: subject `<type>(<area>): <what> (JB-n)`, because the deploy's
+4. Commit in the app clone: subject `<type>(<area>): <what> (<ID>)`, because the deploy's
    rollback finds the Items to reopen from those subjects; trailers `Logbook-Entry: <slug>` and
    `Night-Shift: <date>`.
-5. Suite: `tools/night_shift_nonet.sh tools/night_shift_app_suite.sh --app <app-clone> --mapkit . --log D/app-JB-n.log`,
-   then one audit on `git -C <app-clone> diff origin/main...HEAD` (2f), writing `D/audit-app-JB-n.md`.
+5. Suite: `tools/night_shift_nonet.sh tools/night_shift_app_suite.sh --app <app-clone> --mapkit . --log D/app-<ID>.log`,
+   then one audit on `git -C <app-clone> diff origin/main...HEAD` (2f), writing `D/audit-app-<ID>.md`.
    An edit after the suite re-runs the suite.
-6. Gate: `python D/gate-base/tools/night_shift_gate.py --repo . --app-repo <app-clone> --base origin/main --branch night-shift/<date>-JB-n --item JB-n --gate-log D/app-JB-n.log --audit D/audit-app-JB-n.md`
+6. Gate: `python D/gate-base/tools/night_shift_gate.py --repo . --app-repo <app-clone> --base origin/main --branch night-shift/<date>-<ID> --item <ID> --gate-log D/app-<ID>.log --audit D/audit-app-<ID>.md`
    (extract `D/gate-base` as in 2g). `MERGE`: `git -C <app-clone> checkout -q main`, merge the
    branch as in 2i, `git -C <app-clone> push -q origin main` on its own line. Nothing goes live: the runner deploys after you exit.
-   `HOLD`: `git -C <app-clone> push -q -u origin night-shift/<date>-JB-n`, then 2j from its step 2
+   `HOLD`: `git -C <app-clone> push -q -u origin night-shift/<date>-<ID>`, then 2j from its step 2
    (there is no Jugglebot branch to push); the Held row's Branch cell reads
-   `jugglebot-map:night-shift/<date>-JB-n`.
-7. On a merge, in the Jugglebot clone on `main`: `python -m mapkit item set-status JB-n complete --link logbook/<entry>.md`
+   `jugglebot-map:night-shift/<date>-<ID>`.
+7. On a merge, in the Jugglebot clone on `main`: `python -m mapkit item set-status <ID> complete --link logbook/<entry>.md`
    (no `--commit`, which would stage only the Item and leave the entry behind), `git add -A`, and
-   commit as `map: close JB-n <title>` with the `Logbook-Entry:` and `Night-Shift:` trailers; the
+   commit as `map: close <ID> <title>` with the `Logbook-Entry:` and `Night-Shift:` trailers; the
    map-write check (§ 0 rule 10), push. The report's Commits cell names the app commit with
    `jugglebot-map:<sha>`. If the fix's correctness is something only eyes can judge (a layout, a
    scroll, a focus jump), say so in the row: the tests passing is not proof it looks right.
 8. **An Item that spans both repos** (a `mapkit/` change and an app change): build both branches,
    run the suite with the app branch checked out and the Jugglebot branch checked out (so
    `--mapkit .` tests the pair), then run both gates, each with its own audit
-   (`D/audit-JB-n.md` here, `D/audit-app-JB-n.md` there; a gate matches every `Audited HEAD`
+   (`D/audit-<ID>.md` here, `D/audit-app-<ID>.md` there; a gate matches every `Audited HEAD`
    line to its own tip). Merge only if BOTH say `MERGE`, Jugglebot's first. If either holds,
    neither merges and both branches are pushed.
 9. `git -C <app-clone> checkout -q main` before the next Item; it must be clean. Carried holds
@@ -358,7 +358,7 @@ present, no upstream names). Items stay in Jugglebot's `map/`; only the code is 
 After the last Item (or at the deadline, or when a unit returns and the budget is nearly
 spent): write `docs/night-shift/<date>.md` in the layout of `docs/night-shift/README.md`
 (the eight sections in order, the Item sections as GFM tables with a header row, every
-`JB-n` bare, the Held table's last column `Respond in` filled, a one-line **Summary.** under the title), and `logbook/<date>-night-shift.md`
+`<ID>` bare, the Held table's last column `Respond in` filled, a one-line **Summary.** under the title), and `logbook/<date>-night-shift.md`
 (short form: the counts, the nightly line, the cost, a link to the report) with its
 `logbook/INDEX.md` row. Commit on `main` as `docs(night-shift): report <date>` with the
 trailers (`Logbook-Entry: <date>-night-shift`), `git pull -q --rebase` ONLY if the push is
@@ -375,7 +375,7 @@ section with no trailing text: after you exit the runner deploys the app and app
 
 `## Unaddressed Sitting results`: every `## Sitting result (<date>)` section (optionally `(<date> HH:MM)`; the date part decides) on an Item
 (`grep -l '## Sitting result' map/*.md`) whose date is newer than the newest
-`logbook/*-sitting-debrief.md` (or the older `*-sitting-wrapup.md`) entry, one table row `| JB-n | <date> | <verdict> |`; none ->
+`logbook/*-sitting-debrief.md` (or the older `*-sitting-wrapup.md`) entry, one table row `| <ID> | <date> | <verdict> |`; none ->
 `none recorded`. The owner closes them with `/sitting-debrief <date>`; you never merge a Sitting's
 branches yourself (the gate's hardware condition is exactly what a Sitting result overrides,
 and only the owner's Session does that).

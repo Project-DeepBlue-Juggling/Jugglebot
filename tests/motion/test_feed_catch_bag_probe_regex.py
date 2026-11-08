@@ -1,5 +1,5 @@
 """The feed-catch bag probe's REJECTED_NO_BALL regex reads both the old
-`self_toss (reload) ENDED (...)` log shape and JB-190's
+`self_toss (reload) ENDED (...)` log shape and BUG-77's
 `self_toss ENDED (...) ... entered by a Feed` shape. Compiled from the
 file's own text so nothing hardware-side is imported."""
 from __future__ import annotations

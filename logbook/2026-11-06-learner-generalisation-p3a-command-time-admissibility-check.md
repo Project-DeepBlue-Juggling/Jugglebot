@@ -165,7 +165,7 @@ Reading the table:
 - **CPU time is flat** (43-53 ms across all five rows). The tail is the box preempting the worker, not a
   slower solve.
 - **`cpu_partition` buys about a quarter** (L3h against L1h: p50 101 -> 81 ms, p99 190 -> 144 ms). The
-  production default stays `false`; this is information for JB-149's decision.
+  production default stays `false`; this is information for BUG-58's decision.
 - **The 25 ms grid thread's max passed 10 ms in L1h, L2h and L3h** (10.4, 11.6, 12.3 ms; p99 2.8-4.6 ms).
   The lateness test's bars are p99 < 5 ms and max < 10 ms on a quiet box; under a browser's load the max
   bar is not met with or without the check.
@@ -296,7 +296,7 @@ dispatch-time aim. The memory row still records the dispatch-time state and the 
 The option put to the owner was to solve the nominal plan in an idle slot every beat so the refused path
 costs two solves on the critical path. With the numbers in hand that buys little and costs every beat:
 the pass path, which is 3099 of 3101 corpus commands at the P4 point, would still pay one solve at the
-dispatch, and the worker would run one more solve per beat while JB-149 (40 Hz stream starved past the
+dispatch, and the worker would run one more solve per beat while BUG-58 (40 Hz stream starved past the
 firmware's cover) is open. Starting the whole check early removes the pass path's cost and adds no solve.
 The refused path stays lazy: candidate, model command, confirm, with the same head start. This is a
 narrower reading of "the eager form" than the option's text and is flagged for the owner below.

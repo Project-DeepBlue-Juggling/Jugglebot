@@ -1,5 +1,5 @@
 ---
-id: JB-27
+id: BUG-8
 kind: bug
 title: Sim `--reload` gate LIMIT_JERK regression bisected to 08ec3fe6 (2026-09-30)
 status: complete
@@ -34,4 +34,4 @@ A question ticket carries this to the owner; the answer under its `## Answer` re
 
 ## Progress
 
-- 2026-11-01: JB-128 option 3, step 1: sim `--reload` gate now runs the launch's lateral authorities; 2 makes per seed; LIMIT_JERK ends no longer reproduce on main; no planner bisect needed
+- 2026-11-01: TKT-24 option 3, step 1: sim `--reload` gate now runs the launch's lateral authorities; 2 makes per seed; LIMIT_JERK ends no longer reproduce on main; no planner bisect needed

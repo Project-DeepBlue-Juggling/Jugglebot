@@ -329,39 +329,39 @@ def generate_launch_description():
                     'refusal. false — the operator arms manually via '
                     '/set_setpoint_output (probe-first bench flow).')
 
-    # TEMPORARY (JB-147 diagnostic capture): full-rate Hand CSV capture. Default
-    # ON while JB-147's overshoot is being diagnosed (owner, 2026-11-02): flip
-    # back to 'false' (or remove the whole TEMPORARY set) once JB-147 closes.
+    # TEMPORARY (BUG-57 diagnostic capture): full-rate Hand CSV capture. Default
+    # ON while BUG-57's overshoot is being diagnosed (owner, 2026-11-02): flip
+    # back to 'false' (or remove the whole TEMPORARY set) once BUG-57 closes.
     hand_capture = LaunchConfiguration('hand_capture')
     hand_capture_arg = DeclareLaunchArgument(
         'hand_capture', default_value='true',
-        description='TEMPORARY (JB-147): true -> teensy_bridge_node records every '
+        description='TEMPORARY (BUG-57): true -> teensy_bridge_node records every '
                     'received Hand sample to ~/Desktop/Jugglebot/temp/hand_capture/'
                     '*.csv (view with tools/probes/hand_capture_view.py).')
 
-    # JB-149: GC pause probe in both stream nodes. Default ON at launch since
+    # BUG-58: GC pause probe in both stream nodes. Default ON at launch since
     # 2026-11-04 (owner): it costs under 1 us/s per node, and the next
     # LANE_REFUSED has to be caught with it running. The node parameter itself
     # still defaults False, so tests and other launches install nothing.
     gc_probe = LaunchConfiguration('gc_probe')
     gc_probe_arg = DeclareLaunchArgument(
         'gc_probe', default_value='true',
-        description='JB-149: true (default) -> trajectory_node and teensy_bridge_node '
+        description='BUG-58: true (default) -> trajectory_node and teensy_bridge_node '
                     'log a 1 Hz GC_PROBE line (collections, max pause ms). '
                     'Diagnostic only; gc_probe:=false turns it off.')
 
-    # JB-149 opt-in cures for the 40 Hz stream stalls (both DEFAULT OFF; the
+    # BUG-58 opt-in cures for the 40 Hz stream stalls (both DEFAULT OFF; the
     # probe Sitting decides which, if either, becomes the default).
     gc_freeze = LaunchConfiguration('gc_freeze')
     gc_freeze_arg = DeclareLaunchArgument(
         'gc_freeze', default_value='false',
-        description='JB-149: true -> trajectory_node and teensy_bridge_node '
+        description='BUG-58: true -> trajectory_node and teensy_bridge_node '
                     'gc.collect()+gc.freeze() after init and raise the gc '
                     'thresholds (no gen2 pause over the 70 ms firmware cover).')
     cpu_partition = LaunchConfiguration('cpu_partition')
     cpu_partition_arg = DeclareLaunchArgument(
         'cpu_partition', default_value='false',
-        description='JB-149: true -> trajectory_node and teensy_bridge_node '
+        description='BUG-58: true -> trajectory_node and teensy_bridge_node '
                     'pin to cpus 0-3, the CATCH-solve worker to cpus 4-5.')
 
     # ── Core ROS2 nodes ──────────────────────────────────────────
@@ -404,7 +404,7 @@ def generate_launch_description():
 
     # ── Scheduling priority: the box is oversubscribed, so the fair-share ──
     #
-    # MEASURED 2026-10-28 (JB-76, logbook/2026-10-28-jb76-solve-tail-is-
+    # MEASURED 2026-10-28 (BUG-21, logbook/2026-10-28-jb76-solve-tail-is-
     # environment-starvation-instrumented.md): with this launch up the Jetson's
     # six cores run at 4.3 cores busy idle and 5.5 cores busy while juggling,
     # ~13 tasks runnable at any instant. The planner's solver worker then gets
@@ -424,7 +424,7 @@ def generate_launch_description():
     # always allowed.
     #
     # The solver worker CAN run SCHED_FIFO 10 (trajectory_node parameter
-    # `solver_rt_priority`; JB-95), pinned to CPUs 1-5 and fail-open to CFS,
+    # `solver_rt_priority`; FEAT-31), pinned to CPUs 1-5 and fail-open to CFS,
     # but it is OFF (0) by default since 2026-10-28: it stalled the setpoint
     # stream >70 ms and tripped the firmware STOP. Re-enable only with a CPU
     # partition (see logbook/2026-10-28-jb95-solver-worker-sched-fifo.md).
@@ -462,7 +462,7 @@ def generate_launch_description():
     # slow solves (1655.1 / 2021.2 / 2158.9 / 1461.5 / 1444.7 ms) sit in. Capped,
     # the solve is FLAT in box load.
     #
-    # Also on ball_tracker_node since 2026-10-28 (JB-76). The earlier reason for
+    # Also on ball_tracker_node since 2026-10-28 (BUG-21). The earlier reason for
     # leaving it out — "genuinely large-matrix work where a real thread pool
     # earns its keep" — did not match the code: the tracker's linear algebra is
     # 6x6 Kalman steps, an (n, 2) lstsq and 3-vector norms, and the live node
@@ -556,7 +556,7 @@ def generate_launch_description():
     # cap does — so it gets the same cap. See _planner_blas_env above and the
     # 2026-09-06 UH-3 entry.
     #
-    # records_path (JB-35): the records ledger `docs/records.md` in the repo
+    # records_path (IDEA-3): the records ledger `docs/records.md` in the repo
     # that produced THIS install (`_repo_root`, the same walk teensy_bridge's
     # PYTHONPATH uses below). skill_node offers every juggling Attempt's end to
     # it (jugglebot/records.py) and rewrites it only when a record is beaten.
@@ -600,16 +600,16 @@ def generate_launch_description():
             # declared default stays 0.0 (see teensy_bridge_node.py) as the
             # bare-launch fail-safe; this override is what a real launch runs.
             'hand_torque_ff_gain': 0.7,
-            # TEMPORARY (JB-147 diagnostic capture): '' = off.
+            # TEMPORARY (BUG-57 diagnostic capture): '' = off.
             'gc_probe': PythonExpression(["'", gc_probe, "' == 'true'"]),
-            'gc_freeze': PythonExpression(["'", gc_freeze, "' == 'true'"]),       # JB-149
+            'gc_freeze': PythonExpression(["'", gc_freeze, "' == 'true'"]),       # BUG-58
             'cpu_partition': PythonExpression(["'", cpu_partition, "' == 'true'"]),
             'hand_capture_dir': PythonExpression([
                 "'", os.path.expanduser('~/Desktop/Jugglebot/temp/hand_capture'),
                 "' if '", hand_capture, "' == 'true' else ''"]),
         }],
         additional_env={'PYTHONPATH': _bridge_pythonpath},
-        # JB-82 (2026-11-01): the shutdown Stow is bounded at _SHUTDOWN_DEACTIVATE_TIMEOUT_S = 6 s plus a
+        # BUG-26 (2026-11-01): the shutdown Stow is bounded at _SHUTDOWN_DEACTIVATE_TIMEOUT_S = 6 s plus a
         # ~0.2 s settle; launch's default 5 s SIGINT->SIGTERM would kill the node before it
         # can log the outcome (the descent itself is ODrive/firmware-owned and finishes
         # anyway). Pinned by tests/ros/test_bridge_launch_sigterm.py.
@@ -913,10 +913,10 @@ def generate_launch_description():
         teensy_ip_arg,
         enable_setpoint_output_arg,
         auto_arm_arg,
-        gc_probe_arg,  # JB-149 diagnostic
-        gc_freeze_arg,      # JB-149 opt-in cures (default off)
+        gc_probe_arg,  # BUG-58 diagnostic
+        gc_freeze_arg,      # BUG-58 opt-in cures (default off)
         cpu_partition_arg,
-        hand_capture_arg,  # TEMPORARY (JB-147 diagnostic capture)
+        hand_capture_arg,  # TEMPORARY (BUG-57 diagnostic capture)
         # Infrastructure (gui_server.py runs independently in the background)
         rosbridge_websocket_node,
         rosapi_node,

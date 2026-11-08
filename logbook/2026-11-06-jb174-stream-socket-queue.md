@@ -1,9 +1,9 @@
 ---
-title: "JB-174 / JB-149: the can-bridge stream socket held ONE packet, so about 1.5 % of setpoints never reached the scheduler; FW 40 / PROTOCOL 12 deepens the queue to 8 and uplinks a downlink ledger"
+title: "FEAT-41 / BUG-58: the can-bridge stream socket held ONE packet, so about 1.5 % of setpoints never reached the scheduler; FW 40 / PROTOCOL 12 deepens the queue to 8 and uplinks a downlink ledger"
 type: investigation
 date: 2026-11-06
 status: in-progress
-phase: "JB-174 downlink loss accounting"
+phase: "FEAT-41 downlink loss accounting"
 related_entries:
   - 2026-11-05-sitting-debrief.md
   - 2026-11-03-jb149-firmware-sched-counters.md
@@ -35,14 +35,14 @@ files_changed:
   - tests/teensy_link/test_protocol_codec.py
   - tests/teensy_link/test_v5_wire_regression.py
 subsystem: can-bridge
-tags: [udp, downlink, setpoint-stream, LANE_REFUSED, JB-149, JB-166, JB-174]
+tags: [udp, downlink, setpoint-stream, LANE_REFUSED, BUG-58, BUG-66, FEAT-41]
 ---
 
-# JB-174 / JB-149: the stream socket's one-packet queue was deleting setpoints
+# FEAT-41 / BUG-58: the stream socket's one-packet queue was deleting setpoints
 
 ## Summary
 
-The firmware STOPs "on a clean host stream" (JB-149's second class, JB-166) each need exactly one setpoint frame to be missing at the firmware, and frames are missing: in every bag that carries the FW 38 frame-age census the firmware counted 1.3 to 1.5 % fewer stamped frames than the host sent. The stream socket was still on QNEthernet's default receive queue of ONE packet, which a second datagram in the same 1 kHz `task_net` tick overwrites. The host sends two kinds of datagram to that socket (40 Hz SETPOINT, 10 Hz HEARTBEAT_J2T), so a heartbeat landing just after a setpoint deletes it. FW 40 gives the stream socket the queue of 8 the RPC socket got in FW 22 and uplinks a downlink ledger so the next loss is a number. Built, tested and flashed 2026-11-06; the confirming Sitting row (JB-174) is still owed.
+The firmware STOPs "on a clean host stream" (BUG-58's second class, BUG-66) each need exactly one setpoint frame to be missing at the firmware, and frames are missing: in every bag that carries the FW 38 frame-age census the firmware counted 1.3 to 1.5 % fewer stamped frames than the host sent. The stream socket was still on QNEthernet's default receive queue of ONE packet, which a second datagram in the same 1 kHz `task_net` tick overwrites. The host sends two kinds of datagram to that socket (40 Hz SETPOINT, 10 Hz HEARTBEAT_J2T), so a heartbeat landing just after a setpoint deletes it. FW 40 gives the stream socket the queue of 8 the RPC socket got in FW 22 and uplinks a downlink ledger so the next loss is a number. Built, tested and flashed 2026-11-06; the confirming Sitting row (FEAT-41) is still owed.
 
 ## Symptoms
 
@@ -77,17 +77,17 @@ The shortfall is the same holding at rest (1.11 % over 148 s) as juggling. The u
 
 ## Discussion
 
-**Withdrawn.** JB-149's body treated the clean-host STOPs as an unknown firmware-side cause (stamps, the ISR, or link latency). The frame-age census rules out latency, and the firmware's own cover rule plus the measured shortfall replace "unknown" with "one frame missing". The host-starvation hypothesis stays true for the gaps it was written for (2026-11-02, and L1602 here) and is not the cause of the other class.
+**Withdrawn.** BUG-58's body treated the clean-host STOPs as an unknown firmware-side cause (stamps, the ISR, or link latency). The frame-age census rules out latency, and the firmware's own cover rule plus the measured shortfall replace "unknown" with "one frame missing". The host-starvation hypothesis stays true for the gaps it was written for (2026-11-02, and L1602 here) and is not the cause of the other class.
 
 **What is established and what is not.** Established: the necessary condition (a missing frame per clean STOP) and the supply (1.3 to 1.5 % of frames uncounted, three Sittings). NOT established: that the one-packet queue is where they go. A uniform-phase estimate of setpoint-then-heartbeat inside one 1 ms tick gives about 0.5 % (10 Hz x 40 Hz x 0.5 ms), a third of the measurement. Sends may cluster (the heartbeat thread tends to get the GIL right after the forwarding thread's `sendto`), and part of the shortfall may be back-to-back setpoints after a host stall, where the overwritten one is harmless. The ledger settles it.
 
-**Pre-registered criterion.** JB-174's Sitting row: hold armed at rest for five minutes; pass is `lost 0` and `queue_dropped +0` on every `downlink summary` line. If `lost` stays near 1.5 % with `queue_dropped +0`, the queue was not the mechanism: `dn_seq_gaps` then says whether the datagrams reached the firmware socket at all, and the fallback is tolerance instead of prevention (one knot of emit lead, an owner decision with an offline replay first, because it moves splice timing).
+**Pre-registered criterion.** FEAT-41's Sitting row: hold armed at rest for five minutes; pass is `lost 0` and `queue_dropped +0` on every `downlink summary` line. If `lost` stays near 1.5 % with `queue_dropped +0`, the queue was not the mechanism: `dn_seq_gaps` then says whether the datagrams reached the firmware socket at all, and the fallback is tolerance instead of prevention (one knot of emit lead, an owner decision with an offline replay first, because it moves splice timing).
 
 **Why the queue and not the grace.** FW 39 widened the Hand C1 grace from 6 to 14 ms. That lets most single losses ride through (frame age exceeds 14 ms in 13 to 20 % of windows) at the price of Apex 1.10 as the ceiling. Removing the loss removes the trigger for both the C1 stop and the both-lane stop and costs nothing in the stroke budget.
 
 **Why the heartbeat and a PROTOCOL bump.** An additive message would have avoided the bump, but the counters belong with the `sched_*` family they close, the STOP WARN already differences the heartbeat ring, and a flash was needed for the queue anyway.
 
-**Not done here (stays on JB-174).** The per-group promotion stamp-hole counter (ISR code, safety-bearing) and the host per-frame ring.
+**Not done here (stays on FEAT-41).** The per-group promotion stamp-hole counter (ISR code, safety-bearing) and the host per-frame ring.
 
 ## Fix
 
@@ -103,11 +103,11 @@ The shortfall is the same holding at rest (1.11 % over 148 s) as juggling. The u
 - 2026-11-06, `pio run -e teensy41` in the commit's tree: **SUCCESS in 83.64 s**.
 - 2026-11-06 00:42, `./run_tests.sh -q` in the commit's tree, launch down, no other gate running: **RESULT: PASS** (parallel 441 s rc=0, serial 26 s rc=0, total 467 s).
 - 2026-11-06 00:52, `pio run -e teensy41 -t upload` (launch down, board was FW 39): **SUCCESS**, 287,744 bytes. Receipt, an 8 s listen with the commit's `teensy_link`: BridgeIdentity `fw_version` 40 in 8 of 8 frames, 80 of 80 HeartbeatT2J decoded at 190 B, all eight ledger counters 0 (no stream yet), host `seq_gaps` 0. The robot was unpowered, so the heartbeat read fault state ODRIVE_FATAL, as it did under FW 39 in the unpowered launch at 00:37; nothing here exercised a lane.
-- NOT yet verified: the loss figure under a live stream. That is the JB-174 Sitting row.
+- NOT yet verified: the loss figure under a live stream. That is the FEAT-41 Sitting row.
 
 ## Open
 
-- JB-174 Sitting row (five minutes armed at rest): the confirming measurement. Until it passes, the queue as the loss mechanism is a hypothesis.
-- JB-149: the gc_freeze A/B for `teensy_bridge_node` (the 60 ms pause) is independent of this and still owed.
-- The refused resume after a STOP (profiled rejoin) remains an owner decision on JB-149.
+- FEAT-41 Sitting row (five minutes armed at rest): the confirming measurement. Until it passes, the queue as the loss mechanism is a hypothesis.
+- BUG-58: the gc_freeze A/B for `teensy_bridge_node` (the 60 ms pause) is independent of this and still owed.
+- The refused resume after a STOP (profiled rejoin) remains an owner decision on BUG-58.
 - If the row passes, the FW 39 Apex 1.10 ceiling can be revisited (owner): the 14 ms grace was bought to survive losses that should no longer occur.

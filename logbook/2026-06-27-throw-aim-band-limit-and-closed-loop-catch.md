@@ -215,4 +215,4 @@ physics-driven**.
 - `probe_reach_debug.py`, `probe_catch1.py`, `probe_ball0.py` — closed-loop
   catch reach + ball-0 re-throw diagnostics.
 
-> Closed 2026-10-28: superseded by plans/archived/bb-online-juggle-tilt-rearchitecture.md (JB-34 survey).
+> Closed 2026-10-28: superseded by plans/archived/bb-online-juggle-tilt-rearchitecture.md (IDEA-2 survey).

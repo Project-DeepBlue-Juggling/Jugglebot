@@ -137,7 +137,7 @@ static bool     s_have_sp_seq = false;
 
 static volatile uint64_t s_last_setpoint_us = 0;
 static volatile bool     s_output_enabled = false;   // the fault machine owns this gate
-// ── JB-73 suppress-edge HOLD FLUSH (FW 35) ────────────────────────────────────
+// ── BUG-19 suppress-edge HOLD FLUSH (FW 35) ────────────────────────────────────
 // WHY. While output is suppressed the bridge transmits nothing, and the ODrive
 // HOLDS its last Set_Input_Pos INCLUDING vel_ff: in POSITION/PASSTHROUGH it
 // settles at input_pos + vel_ff/pos_gain (bench 2026-10-27: 0.05 rev past the
@@ -415,7 +415,7 @@ struct SchedGroup {
   int64_t  t0_us;             // PLAY: u0 play time; STOP: stop entry time
   int64_t  frame_t_start_us;  // t_start of the last loaded frame (stale-order guard)
   float    stop_D;            // C2 stop duration (s); for a C1 stop its total duration
-  bool     c1_stop;           // STOP is the FW 37 hand C1 stop (JB-145), not the C2 stop
+  bool     c1_stop;           // STOP is the FW 37 hand C1 stop (BUG-55), not the C2 stop
   float    p0[NUM_AXES], v0[NUM_AXES], p1[NUM_AXES], v1[NUM_AXES], p2[NUM_AXES], v2[NUM_AXES];
   float    ep[NUM_AXES], ev[NUM_AXES], ea[NUM_AXES];   // STOP entry state; HOLD position in ep
   float    hand_ff_gain;
@@ -434,7 +434,7 @@ static constexpr float   HAND_C1_S = 1.0f + ((float)HAND_C1_STOP_GRACE_US * 1e-6
 
 // Counters (census idiom: cumulative, single writer, consumer differences).
 static volatile uint32_t s_sched_frames       = 0;   // net task: accepted as scheduled
-// FW 40 (JB-174) downlink accounting, net task, cumulative. With udp_link's
+// FW 40 (FEAT-41) downlink accounting, net task, cumulative. With udp_link's
 // rx_setpoints these close the ledger from datagram to schedule queue:
 // rx_setpoints = seq drops + NaN drops + legacy plays + future drops + sched_frames.
 static volatile uint32_t s_sp_seq_drops       = 0;   // stale or duplicate seq, dropped by the monotonic guard
@@ -453,7 +453,7 @@ static volatile uint32_t s_sched_refused      = 0;   // ISR: discontinuous resum
 static volatile uint32_t s_sched_resumes      = 0;   // ISR: continuous resume out of a stop/hold
 static volatile uint32_t s_sched_slew_rearms  = 0;   // ISR: leg stream restart re-armed the recovery slew
 
-// FW 38 (JB-149): per-heartbeat-WINDOW frame-age census. rx_age = micros64() −
+// FW 38 (BUG-58): per-heartbeat-WINDOW frame-age census. rx_age = micros64() −
 // the frame's t_start at queue entry (net task, inside the queue's IRQ-off
 // section, so the heartbeat task's read-and-reset cannot tear it). Edges 25 / 50
 // / 70 ms: ≤ 25 one knot of lead eaten, ≤ 50 still promotable, ≤ 70 already past
@@ -505,7 +505,7 @@ static volatile uint32_t s_hand_tau_fade_ticks  = 0;       // on-wire ticks with
 // tick the hand frame stops reaching the wire, re-send the LAST transmitted
 // frame with torque 0 for HAND_TORQUE_DRAIN_TICKS ticks. pos and vel_ff are
 // bit-identical to that last frame, so the only command change is tau → 0 —
-// except on a MOTOR_FB_STALE suppress edge (JB-73, FW 35), where the hold flush
+// except on a MOTOR_FB_STALE suppress edge (BUG-19, FW 35), where the hold flush
 // zeroes the record's vel_ff first and the drain frames carry vel_ff = 0.
 static bool              s_hand_tx_prev = false;
 static float             s_hand_tx_pos = 0.0f, s_hand_tx_vel = 0.0f, s_hand_tx_tau = 0.0f;
@@ -600,7 +600,7 @@ static void stop_eval(float P, float V, float A, float D, float t, float& p, flo
   p = P + D * (V * (u - u3 + 0.5f * u4) + A * D * (0.5f * u2 - (2.0f / 3.0f) * u3 + 0.25f * u4));
 }
 
-// ═══ FW 37 — HAND C1 STOP (JB-145) ═══════════════════════════════════════════
+// ═══ FW 37 — HAND C1 STOP (BUG-55) ═══════════════════════════════════════════
 // INVARIANT. A hand cover that ends with no newer frame while the Hand moves UP
 // faster than HAND_C1_STOP_MIN_UP_VEL_RPS must stop inside the stroke. The grace
 // (20 ms of the span's own cubic, ~3 rev at 150 rev/s) plus a C2 stop that cannot
@@ -859,7 +859,7 @@ void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len) {
   const bool has_hand_flag = (sp.flags & 0x4u) != 0;   // HAS_HAND (v6 wire, bit 2)
   const bool has_v2_flag    = (sp.flags & SP_FLAG_HAS_V2) != 0;      // HAS_V2 (v8, bit 4)
   const bool has_sched_flag = (sp.flags & SP_FLAG_HAS_SCHED) != 0;   // HAS_SCHED (v8, bit 5)
-  if (!has_hand_flag)  ++s_sp_no_hand;    // FW 40 census (JB-174), counted before any drop below
+  if (!has_hand_flag)  ++s_sp_no_hand;    // FW 40 census (FEAT-41), counted before any drop below
   if (!has_sched_flag) ++s_sp_no_sched;
 
   // ── isfinite trust-boundary drop ────────────────────────────────────────────
@@ -948,7 +948,7 @@ void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len) {
     f.hand_ff_gain = hand_k;
     f.has_hand = has_hand_flag;
     const uint32_t pmq = __get_PRIMASK(); __disable_irq();
-    rx_age_note(mono - t_start);   // FW 38 frame-age census (JB-149)
+    rx_age_note(mono - t_start);   // FW 38 frame-age census (BUG-58)
     uint8_t n = s_sq_n;
     bool placed = false;
     for (uint8_t k = 0; k < n; ++k)
@@ -1186,7 +1186,7 @@ static void interp_isr() {
       if (s_output_enabled && leg_present(i)) can_jugglebot_tx(ODrive::encode_leg_setpoint(i, p, v, 0.0f), TxCls::LEGS);
     }
     s_stow_complete = all_done;
-    s_leg_tx_mask_prev = 0;   // JB-73: the Stow owns the legs; the ladder record is dead
+    s_leg_tx_mask_prev = 0;   // BUG-19: the Stow owns the legs; the ladder record is dead
     return;
   }
 
@@ -1739,7 +1739,7 @@ static void interp_isr() {
   // Cold-start interlock: suppress the whole streamed leg TX while a
   // firmware homing/activate/deactivate move is driving the same ODrives (see the
   // interlock note above). The target cache was written for all legs regardless.
-  uint8_t leg_tx_mask = 0;   // JB-73: legs whose frame goes out THIS tick
+  uint8_t leg_tx_mask = 0;   // BUG-19: legs whose frame goes out THIS tick
   if (s_output_enabled && !coldstart) {
     for (uint8_t i = 0; i < NUM_LEGS; ++i) {
       // Present-axis gate: never stream a 500 Hz setpoint to a node
@@ -1748,7 +1748,7 @@ static void interp_isr() {
       // nodes 1-5. The target cache above is written for all legs regardless.
       if (leg_present(i)) {
         can_jugglebot_tx(ODrive::encode_leg_setpoint(i, cmd_pos[i], cmd_vel[i], cmd_tor[i]), TxCls::LEGS);   // TxCls::LEGS — latest-wins, deferral counted, never retried
-        s_leg_tx_pos[i] = cmd_pos[i]; s_leg_tx_tor[i] = cmd_tor[i];   // JB-73: the record the hold flush re-sends
+        s_leg_tx_pos[i] = cmd_pos[i]; s_leg_tx_tor[i] = cmd_tor[i];   // BUG-19: the record the hold flush re-sends
         leg_tx_mask |= (uint8_t)(1u << i);
       }
     }
@@ -1793,7 +1793,7 @@ static void interp_isr() {
   // a cold-start move (those own the ODrives in their own input mode; they are
   // refused while mpc_active, so this is belt and braces); a dead bus refuses the
   // frame inside can_jugglebot_tx's presence gate.
-  // ── JB-73 hold flush (FW 35) — see s_hold_flush_ok. Legs: the last frame,
+  // ── BUG-19 hold flush (FW 35) — see s_hold_flush_ok. Legs: the last frame,
   // vel_ff 0, torque_ff kept. Hand: the record's vel_ff is zeroed, so the drain
   // below (tau != 0) carries the hold; on a tau == 0 session one hold frame goes
   // out here through the single hand encode site.
@@ -1972,7 +1972,7 @@ bool  interp_have_latched() { return s_have_latched; }
 // the next session, and no operator step is needed to restore it. TASK context
 // (fault_machine), single volatile byte, same class as the console writes.
 void interp_set_output_enabled(bool en, bool hold_flush) {
-  s_hold_flush_ok = !en && hold_flush;   // JB-73: FIRST, so the ISR never pairs a stale flag with the new gate
+  s_hold_flush_ok = !en && hold_flush;   // BUG-19: FIRST, so the ISR never pairs a stale flag with the new gate
   if (!en && s_output_enabled) s_hand_dev_guard_armed = true;   // disarm edge re-arms
   s_output_enabled = en;
 }

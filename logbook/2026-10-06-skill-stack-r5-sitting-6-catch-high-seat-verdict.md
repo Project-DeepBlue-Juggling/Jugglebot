@@ -317,4 +317,4 @@ re-arming) is untouched.
   each time; the calibration work is in another session's hands
   (`2026-10-06-bb-calibration-consensus-outcast.md`).
 
-> Closed 2026-10-28: closed by 2026-10-06-skill-stack-r5-catch-plane-830-and-leg-current-15a (JB-34 survey).
+> Closed 2026-10-28: closed by 2026-10-06-skill-stack-r5-catch-plane-830-and-leg-current-15a (IDEA-2 survey).

@@ -1,5 +1,5 @@
 ---
-id: JB-55
+id: FEAT-14
 kind: feature
 title: 'A Done view: complete Pathways and closed items, with their dates'
 status: complete

@@ -222,12 +222,12 @@ thread, `pytest -q -p no:cacheprovider`) and the gate below.
 
 - **"Admissible box" is still a GLOSSARY term** (and so in CLAUDE.md's generated term block). The glossary
   changes only through the grilling and domain-modeling skills.
-- **Items JB-120 and JB-150** (the box-gate bug; sweeps on the Win10 desktop) are held by a peer Session's
+- **Items BUG-42 and FEAT-38** (the box-gate bug; sweeps on the Win10 desktop) are held by a peer Session's
   claim, so the retirement note was not written on them and nothing was forced. Both look closable once
   this merges. No Item was closed by this phase: closing rides with the merge to main.
 - **Other Sessions' active plans** (`carry-ring-zvd.md`, `two-ball-oval.md`, `pattern-progression.md`) carry a
-  dated banner; their sweep sections are left as written. Four in-progress Items (JB-162, JB-102, JB-107,
-  JB-108) lost the box-hash step of their `## Sitting` sections; expect merge conflicts in `map/` if those
+  dated banner; their sweep sections are left as written. Four in-progress Items (FEAT-39, FEAT-32, IDEA-10,
+  IDEA-11) lost the box-hash step of their `## Sitting` sections; expect merge conflicts in `map/` if those
   Items moved on main meanwhile.
 - **Closed runsheets under `tests/hardware/`** keep their flown box and `gate_hash` rows as history; only
   `session_oval_rung1.md`, the one still to be flown, was changed.

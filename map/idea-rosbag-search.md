@@ -1,5 +1,5 @@
 ---
-id: JB-36
+id: IDEA-4
 kind: idea
 title: Rosbag search
 status: complete
@@ -32,4 +32,4 @@ A question ticket carries this to the owner; the answer under its `## Answer` re
 
 ## Progress
 
-- 2026-11-01: JB-130 option 2 as a CONSOLE view (ROS / UDP / CONSOLE) in the GUI, live and in replay, severity filter and search
+- 2026-11-01: TKT-25 option 2 as a CONSOLE view (ROS / UDP / CONSOLE) in the GUI, live and in replay, severity filter and search

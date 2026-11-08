@@ -21,9 +21,9 @@ tags:
 
 ## What changed
 
-The owner found JB-114 illegible in the app's drawer: it was filed as one 3,500-character paragraph. 49 of 115 Items had the same problem, as either a body paragraph over 500 characters or a Progress line over 400. Claude writers produced most of them, through `item new --body` and `set-status --note`.
+The owner found IDEA-17 illegible in the app's drawer: it was filed as one 3,500-character paragraph. 49 of 115 Items had the same problem, as either a body paragraph over 500 characters or a Progress line over 400. Claude writers produced most of them, through `item new --body` and `set-status --note`.
 
-- **Rule, one enforcement point**: `mapkit.items.readability_violations`. A paragraph or list item (with its continuation lines) is at most 500 characters, a `## Progress` line at most 400, and a body over 1,200 characters (Progress excluded) needs a `##` heading. Tables and fenced code are exempt. The caps were calibrated on the owner-approved JB-114 rewrite, which passes them with room to spare.
+- **Rule, one enforcement point**: `mapkit.items.readability_violations`. A paragraph or list item (with its continuation lines) is at most 500 characters, a `## Progress` line at most 400, and a body over 1,200 characters (Progress excluded) needs a `##` heading. Tables and fenced code are exempt. The caps were calibrated on the owner-approved IDEA-17 rewrite, which passes them with room to spare.
 - **Gate**: `tests/sim/test_map_items.py::test_item_bodies_are_readable` checks every committed Item. `/inbox` already runs that file before its push, so a filing fails before it reaches `main`. `test_readability_rule_clauses` pins each clause.
 - **Guidance**: `docs/agents/map-writes.md` § "Writing an Item body" covers sections, bullets and tables, `--body-file` for structured bodies, and a short Progress note whose detail goes in a dated `## <topic> (YYYY-MM-DD)` section. `/inbox` and `/work-inbox` point at it.
 - **Backfill**: five Sonnet agents restructured the 49 Items with no fact changed. Long Progress lines kept their dated headline and moved their detail into a dated section just above `## Progress`, so every Item's staleness clock is unchanged. That commit is separate (`map: restructure 49 Item bodies for readability`), so it can be reverted alone.

@@ -1,5 +1,5 @@
 ---
-id: JB-42
+id: PWAY-6
 kind: pathway
 title: Wave camera on CAN3
 status: complete

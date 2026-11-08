@@ -1,5 +1,5 @@
 ---
-title: "JB-84: Ball Butler over-CAN flash hook repointed from the retired Jugglebot-skills worktree to ~/Desktop/Jugglebot"
+title: "BUG-28: Ball Butler over-CAN flash hook repointed from the retired Jugglebot-skills worktree to ~/Desktop/Jugglebot"
 type: bugfix
 date: 2026-10-28
 status: resolved
@@ -24,7 +24,7 @@ tags:
 point at `~/Desktop/Jugglebot`; `tools/teensy_link_bridge.py` exists there. The
 accuracy-testing sitting script's `WS` default and the one runbook command in
 `LOCAL_CALIBRATION.md` got the same edit; the runbook's historical sentences naming the old
-worktree are left as written. Found by the JB-34 logbook survey (2026-09-30 r5-sitting-1
+worktree are left as written. Found by the IDEA-2 logbook survey (2026-09-30 r5-sitting-1
 residue), pushed to BallButler `main` 2026-10-28.
 
 ## Verification

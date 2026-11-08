@@ -23,7 +23,7 @@ tags:
 
 ## Summary
 
-`GLOSSARY.md` gains **Item ID** in the Project map group, right after **Item**. This closes Idea JB-63 and the last step of `plans/active/map-item-ids.md` P6. The term went through `grilling` + `domain-modeling` as `CLAUDE.md` requires, and the owner agreed every recommendation on 2026-10-27:
+`GLOSSARY.md` gains **Item ID** in the Project map group, right after **Item**. This closes Idea IDEA-5 and the last step of `plans/active/map-item-ids.md` P6. The term went through `grilling` + `domain-modeling` as `CLAUDE.md` requires, and the owner agreed every recommendation on 2026-10-27:
 
 - **Name:** Item ID. "Short ID" stays an allowed description, not an _Avoid_ word: it is the app's `short_id` field and a plain description of the same thing, not a competing concept.
 - **Definition:** it states the domain facts only.

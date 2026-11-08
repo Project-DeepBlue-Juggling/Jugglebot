@@ -1,4 +1,4 @@
-"""JB-149 opt-in cures for stream-side stalls (pure Python, no ROS).
+"""BUG-58 opt-in cures for stream-side stalls (pure Python, no ROS).
 
 Both are launch-flag controlled and DEFAULT OFF.
 

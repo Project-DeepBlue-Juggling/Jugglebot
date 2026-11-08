@@ -1,5 +1,5 @@
 ---
-id: JB-67
+id: BUG-17
 kind: bug
 title: item_uuid(slug) collides across kinds that share a slug
 status: inbox

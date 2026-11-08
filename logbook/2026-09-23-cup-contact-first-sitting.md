@@ -278,4 +278,4 @@ open leg-bus-frame-drops plan; the recovery fix removes its consequence, not its
   a stale velocity, so instrumenting the drop (per-axis frame age at the trip, in the
   latch snapshot) remains the next observability step.
 
-> Closed 2026-10-28: residue filed as JB-85 (kincal acceptance / frame offset) (JB-34 survey).
+> Closed 2026-10-28: residue filed as FEAT-27 (kincal acceptance / frame offset) (IDEA-2 survey).

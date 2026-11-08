@@ -152,7 +152,7 @@ class LearnerConfig:
     #: (2026-10-12, U1): a row at the far corner of the lateral authority
     #: from the query (2 x 20 mm per axis, 56.6 mm) keeps
     #: ``exp(-(0.0566/1)^2) = 0.997`` of a matched row's weight (at the
-    #: 30 mm authority of 2026-11-02, JB-139: 84.9 mm, 0.993; still inert). Until then
+    #: 30 mm authority of 2026-11-02, BUG-52: 84.9 mm, 0.993; still inert). Until then
     #: the offset shared ``h_x`` and partitioned the memory into 10 mm cells;
     #: a throw from a sparsely visited corner found support rows only at
     #: ``v ~ e^-7`` and the fit fell to the identity prior (sitting 7b rows

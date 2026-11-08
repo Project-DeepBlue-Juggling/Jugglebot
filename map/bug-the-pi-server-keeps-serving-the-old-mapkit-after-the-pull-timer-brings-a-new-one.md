@@ -1,5 +1,5 @@
 ---
-id: JB-49
+id: BUG-12
 kind: bug
 title: The Pi server keeps serving the old mapkit after the pull timer brings a new one
 status: complete

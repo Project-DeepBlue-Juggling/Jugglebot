@@ -14,7 +14,7 @@ prototypes validated 2026-09-13 (`pub_load.py`, `ws_client.py`,
 `run_load_probe.sh`, `leak_client.py`) into one committed, self-contained
 tool. Motivating logbook entry:
 `logbook/2026-09-14-rosbridge-cpu-leak-and-spin.md`; second motivating entry
-(JB-76, the census refresh):
+(BUG-21, the census refresh):
 `logbook/2026-10-28-jb76-solve-tail-is-environment-starvation-instrumented.md`.
 
 CONTAINMENT (safety rails, enforced in code — same pattern as
@@ -55,7 +55,7 @@ Subcommands:
       rosbridge server + the chosen websocket client. Reports mean server
       %CPU (after warm-up), publisher %CPU (summed), and the client's
       received Hz per topic (via `pidstat -u -p <server>,<publishers> 1 N`).
-      Clients: gui = the GUI as of JB-76 option 1 (decodes the 20 Hz gui/
+      Clients: gui = the GUI as of BUG-21 option 1 (decodes the 20 Hz gui/
       copies, no spy on the 300 Hz trio); gui-old = the pre-change GUI
       (decodes the 300 Hz originals at 50 ms, spies /bb/markers); nospy =
       gui minus the 100 Hz spies; none = server idle.
@@ -118,7 +118,7 @@ ALLOWED_NODES = {'rosbridge_cpu_probe', 'rosbridge_cpu_probe_pub',
                  'rosbridge_websocket', 'rosapi', 'rosapi_params'}
 
 # rosbridge subscribe sets mimicking the GUI (ros_ws/gui/js/main.js subscribeAll()
-# + runTopicDiscovery(), as of JB-76 option 1, 2026-10-28). Decoded
+# + runTopicDiscovery(), as of BUG-21 option 1, 2026-10-28). Decoded
 # subscriptions are (topic, type, throttle_ms); spies are cbor-raw at 200 ms.
 _DIAG = 'diagnostic_msgs/msg/DiagnosticStatus'
 _MOCAP = 'jugglebot_interfaces/msg/MocapDataMulti'
@@ -136,7 +136,7 @@ FULL_HI = [('/robot_state', 'jugglebot_interfaces/msg/RobotState', 50),
 # The mocap pair the GUI decodes: the 20 Hz gui/ copies now (throttle 0: the
 # copy's own rate is the throttle, and a 50 ms throttle on a 50 ms-period
 # stream beat against its jitter and halved the received rate to 10 Hz on this
-# replica, 2026-10-28), the 300 Hz originals at 50 ms before JB-76 option 1
+# replica, 2026-10-28), the 300 Hz originals at 50 ms before BUG-21 option 1
 # (rosbridge deserialises every incoming message BEFORE the throttle, so on
 # the originals the throttle saved nothing).
 GUI_MOCAP_NEW = [('/gui/mocap_data', _MOCAP, 0), ('/gui/rigid_body_poses', _RBP, 0)]
@@ -518,7 +518,7 @@ def _pub_loop(plan, end):
 
 def _client_subs(mode):
     """(topic, type, throttle_ms, compression) tuples the GUI client sends.
-    gui = main.js now (JB-76 option 1: decodes the 20 Hz gui/ copies, no spy
+    gui = main.js now (BUG-21 option 1: decodes the 20 Hz gui/ copies, no spy
     on the 300 Hz trio); gui-old = the pre-change set (decodes the 300 Hz
     originals at 50 ms and spies /bb/markers cbor-raw); nospy = gui without
     the 100 Hz spies. Every spy is cbor-raw 200 ms (ros-bridge.js

@@ -1,5 +1,5 @@
 ---
-id: JB-61
+id: PWAY-7
 kind: pathway
 title: 'Map improvements'
 status: active

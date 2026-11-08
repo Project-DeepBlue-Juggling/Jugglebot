@@ -140,12 +140,12 @@ def test_committed_pages_are_current(rel, render):
 
 
 def test_project_map_shows_ids_and_warns_on_a_duplicate(repo):
-    _item(repo, "idea", "spark2", title="Second spark", priority="low", parent="alpha", id="JB-5")
+    _item(repo, "idea", "spark2", title="Second spark", priority="low", parent="alpha", id="IDEA-1")
     text = gen_docs.render_project_map(str(repo))
-    assert re.search(r"^\| JB-5 \| idea \| \[Second spark\]", text, re.MULTILINE)
+    assert re.search(r"^\| IDEA-1 \| idea \| \[Second spark\]", text, re.MULTILINE)
     assert re.search(r"^\| — \| idea \| \[A spark\]", text, re.MULTILINE)  # ID-less: a dash
-    assert "- idea: JB-5 [Second spark]" in text
+    assert "- idea: IDEA-1 [Second spark]" in text
     assert "duplicate Item IDs" not in text
-    _item(repo, "bug", "twin", title="Twin", id="JB-5")
+    _item(repo, "idea", "twin", title="Twin", id="IDEA-1")
     text = gen_docs.render_project_map(str(repo))
-    assert "> **Warning: duplicate Item IDs** — JB-5: bug-twin, idea-spark2" in text
+    assert "> **Warning: duplicate Item IDs** — IDEA-1: idea-spark2, idea-twin" in text

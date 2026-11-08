@@ -1,9 +1,9 @@
 ---
-title: "JB-175: a fault inside a Catch's judging window ends the Attempt ABORTED_FAULT, not MISSED_CATCH"
+title: "BUG-68: a fault inside a Catch's judging window ends the Attempt ABORTED_FAULT, not MISSED_CATCH"
 type: bugfix
 date: 2026-11-06
 status: complete
-phase: "Night Shift 2026-11-06 JB-175"
+phase: "Night Shift 2026-11-06 BUG-68"
 related_entries:
   - 2026-11-05-sitting-debrief.md
 files_changed:
@@ -40,4 +40,4 @@ Readers of the end code treated: `executor.py` (`CLOSING_EXCLUDED_END_CODES`, cl
 - New tests fail with the production hunk reverted (`git apply -R` of the `ros_ws` diff, then re-applied): 6 failed, as expected.
 - The full gate (`./run_tests.sh --full`) runs on the committed tip and its result is in the Night Shift report `docs/night-shift/2026-11-06.md`.
 
-- Owner answer on JB-178 (2026-11-07): the provisional MISSED_CATCH to ABORTED_FAULT re-label also clears `end_kind` (set to `''`), so the operator line no longer reads "ENDED (ABORTED_FAULT) at the CATCH"; display only, no hold, REST, decay or dispatch reads it. Pinned by `test_fault_just_after_the_verdict_rewrites_the_code_once` (fails with the line removed, 2026-11-07) and the no-fault test keeps `end_kind == CATCH`.
+- Owner answer on TKT-40 (2026-11-07): the provisional MISSED_CATCH to ABORTED_FAULT re-label also clears `end_kind` (set to `''`), so the operator line no longer reads "ENDED (ABORTED_FAULT) at the CATCH"; display only, no hold, REST, decay or dispatch reads it. Pinned by `test_fault_just_after_the_verdict_rewrites_the_code_once` (fails with the line removed, 2026-11-07) and the no-fault test keeps `end_kind == CATCH`.

@@ -805,7 +805,7 @@ class NominationReport:
     search_wall_s: float = 0.0
     search_note: str = ''
     search_trace: List[tuple] = dataclasses.field(default_factory=list)
-    #: The re-aim figure (JB-185, owner option C): the SAME Segments walked at
+    #: The re-aim figure (BUG-73, owner option C): the SAME Segments walked at
     #: every rung with the worst-case Catch re-aim (:class:`_AimShifts`).
     #: DISPLAY ONLY: ``ok``, ``refusals`` and the nearest-viable search are
     #: decided on ``verdicts`` alone.  Empty when it was not computed (a
@@ -974,7 +974,7 @@ def nominate(config: NominationConfig, limits: Optional[TrajectoryLimits] = None
     without solving, and a refused report searches once.
 
     ``aim`` (default ``None`` = NOT computed: the nomination costs exactly
-    what it did before JB-185, and is what the goal accept calls) walks the
+    what it did before BUG-73, and is what the goal accept calls) walks the
     DISPLAY-ONLY re-aim figure (:attr:`NominationReport.aim_verdicts`, see
     :func:`add_aim_figure`) onto an accepted, cached report that does not yet
     carry it for these authorities.  It is NOT part of the cache key (the
@@ -1004,7 +1004,7 @@ def nominate(config: NominationConfig, limits: Optional[TrajectoryLimits] = None
 
 def add_aim_figure(rep: NominationReport, limits, geom, rungs,
                    aim: AimAuthority, *, full: bool = AIM_FULL_WALK) -> None:
-    """Walk the JB-185 re-aim figure onto an ACCEPTED ``rep`` (display only;
+    """Walk the BUG-73 re-aim figure onto an ACCEPTED ``rep`` (display only;
     ``rep.ok`` / ``refusals`` / ``verdicts`` are not touched).  Only where
     there is an outward direction (a one-Site Pattern has none).  The goal
     accept never calls this: only ``nominate(..., aim=...)`` (the

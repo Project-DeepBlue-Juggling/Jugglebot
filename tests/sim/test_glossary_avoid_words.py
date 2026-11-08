@@ -28,7 +28,7 @@ _PATHLIKE = re.compile(r"\S*/\S*|\S+\.(?:md|py|yaml|yml|json|action|msg|srv|ino|
 # `promoted_to:` hold an Item stem or pathway slug, and a bare `- <stem>` list
 # item under `blocked_by:` / `links:` holds a stem (`mapkit` stores stems, never
 # titles). A question ticket whose parent is `bug-sim-reload-...` must not fail
-# for the bug's own stem (JB-129, 2026-11-01). Body text is never exempted.
+# for the bug's own stem (BUG-45, 2026-11-01). Body text is never exempted.
 # A stem or slug always carries a hyphen or a digit; a single bare word
 # (`- reload` as a tag, say) is still scanned.
 _FRONT_REF = re.compile(r"^(?:(?:parent|promoted_to):\s*\S+|- (?=[A-Za-z0-9._-]*[-0-9])[A-Za-z0-9._-]+)\s*$")
@@ -108,7 +108,7 @@ def test_find_offenders_negative_case(tmp_path):
 
 
 def test_frontmatter_reference_lines_are_identifiers(tmp_path):
-    """JB-129 (2026-11-01): inside the frontmatter block a `parent:` /
+    """BUG-45 (2026-11-01): inside the frontmatter block a `parent:` /
     `promoted_to:` stem and a bare `- <stem>` list item are identifiers like
     the filenames above; a single bare word there is not a stem; body text,
     a body `- reload` bullet and a body `---` rule are scanned as before, and

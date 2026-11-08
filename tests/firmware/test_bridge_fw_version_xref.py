@@ -189,63 +189,63 @@ def test_the_bump_history_records_what_this_version_carries():
     assert 'WAVE_CMD' in m33.group(1) and 'WaveCameraCanId::CMD' in m33.group(1), m33.group(1)
     assert 'send_cone_frame' in m33.group(1) and 'ERR_BUS_DOWN' in m33.group(1), m33.group(1)
     assert 'NO WIRE CHANGE' in m33.group(1) and 'ERR_UNKNOWN_METHOD' in m33.group(1), m33.group(1)
-    # FW 35 — JB-73 suppress-edge hold flush.  The substance: a NEW TX on the
+    # FW 35 — BUG-19 suppress-edge hold flush.  The substance: a NEW TX on the
     # MOTOR_FB_STALE suppress edge (one vel_ff = 0 frame per lane at the last
     # input_pos), scoped to fb-stale only, and the bump is wire-invisible, so
     # only BRIDGE_FW_CHECK says whether it is aboard.
     m35 = re.search(r'^// 34→35:(.*)$', text, re.M)
     assert m35 is not None, "FW 35 history line missing"
-    assert 'JB-73' in m35.group(1) and 'MOTOR_FB_STALE' in m35.group(1), m35.group(1)
+    assert 'BUG-19' in m35.group(1) and 'MOTOR_FB_STALE' in m35.group(1), m35.group(1)
     assert 'vel_ff = 0' in m35.group(1) and 'torque_ff' in m35.group(1), m35.group(1)
     assert 'NO WIRE CHANGE' in m35.group(1), m35.group(1)
-    # FW 36 — JB-146 hand stall guard.  The substance: a SAFETY behaviour on the
+    # FW 36 — BUG-56 hand stall guard.  The substance: a SAFETY behaviour on the
     # cold-start ladder (the Hand is IDLEd after HAND_STALL_HOLD_US of high current
     # without motion; the legs carry on), named by a new HAND_MOVE_STALLED outcome
     # and a Diagnostic flags bit, both previously-zero values, so the bump is
     # wire-compatible and only BRIDGE_FW_CHECK says whether it is aboard.
     m36 = re.search(r'^// 35→36:(.*)$', text, re.M)
     assert m36 is not None, "FW 36 history line missing"
-    assert 'JB-146' in m36.group(1) and 'HAND_STALL_HOLD_US' in m36.group(1), m36.group(1)
+    assert 'BUG-56' in m36.group(1) and 'HAND_STALL_HOLD_US' in m36.group(1), m36.group(1)
     assert 'HAND_MOVE_STALLED' in m36.group(1) and 'bit2' in m36.group(1), m36.group(1)
     assert 'NO WIRE CHANGE' in m36.group(1), m36.group(1)
-    # FW 37 — JB-145 hand C1 stop.  The substance: the scheduled lane's stop for
+    # FW 37 — BUG-55 hand C1 stop.  The substance: the scheduled lane's stop for
     # a fast upward Hand (a short grace HAND_C1_STOP_GRACE_US, then a C1 entry at the
     # existing hand stop authority),
     # leg lanes and slow/downward Hands unchanged, and the bump is wire-invisible,
     # so only BRIDGE_FW_CHECK says whether it is aboard.
     m37 = re.search(r'^// 36→37:(.*)$', text, re.M)
     assert m37 is not None, "FW 37 history line missing"
-    assert 'JB-145' in m37.group(1) and 'HAND_C1_STOP_MIN_UP_VEL_RPS' in m37.group(1), m37.group(1)
+    assert 'BUG-55' in m37.group(1) and 'HAND_C1_STOP_MIN_UP_VEL_RPS' in m37.group(1), m37.group(1)
     assert 'SCHED_GRACE_S' in m37.group(1) and 'SCHED_STOP_ACCEL_HAND_RPS2' in m37.group(1), m37.group(1)
     assert 'HAND_C1_STOP_GRACE_US' in m37.group(1), m37.group(1)
     assert 'NO WIRE CHANGE' in m37.group(1), m37.group(1)
-    # FW 38 — JB-149 scheduled-lane observability.  The substance: the
+    # FW 38 — BUG-58 scheduled-lane observability.  The substance: the
     # scheduled-lane counters and a per-heartbeat frame-age census reach the
     # Jetson, HeartbeatT2J GROWS, so the bump IS a wire change (PROTOCOL 10→11)
     # and darkness against an older board is the intended failure.
     m38 = re.search(r'^// 37→38:(.*)$', text, re.M)
     assert m38 is not None, "FW 38 history line missing"
-    assert 'JB-149' in m38.group(1) and 'HeartbeatT2J GROWS 126→158' in m38.group(1), m38.group(1)
+    assert 'BUG-58' in m38.group(1) and 'HeartbeatT2J GROWS 126→158' in m38.group(1), m38.group(1)
     assert 'PROTOCOL_VERSION 10→11' in m38.group(1), m38.group(1)
     for name in ('sched_superseded', 'sched_stale', 'sched_hand_c1_stops',
                  'sched_future_drops', 'sched_q_overflow', 'rx_age_max_us',
                  'interp_sched_rx_age_take', 'SCHED_EXHAUST_US'):
         assert name in m38.group(1), name
     assert 'No behaviour change' in m38.group(1), m38.group(1)
-    # FW 39 — JB-166 hand C1 stop grace 6→14 ms.  The substance: the safety
+    # FW 39 — BUG-66 hand C1 stop grace 6→14 ms.  The substance: the safety
     # constant HAND_C1_STOP_GRACE_US moved, wire-invisible, so only
     # BRIDGE_FW_CHECK says whether it is aboard.
     m39 = re.search(r'^// 38→39:(.*)$', text, re.M)
     assert m39 is not None, "FW 39 history line missing"
-    assert 'JB-166' in m39.group(1) and 'HAND_C1_STOP_GRACE_US 6000→14000' in m39.group(1), m39.group(1)
+    assert 'BUG-66' in m39.group(1) and 'HAND_C1_STOP_GRACE_US 6000→14000' in m39.group(1), m39.group(1)
     assert 'NO WIRE CHANGE' in m39.group(1) and 'PROTOCOL_VERSION stays 11' in m39.group(1), m39.group(1)
-    # FW 40 — JB-174 stream-socket receive queue + downlink ledger.  The
+    # FW 40 — FEAT-41 stream-socket receive queue + downlink ledger.  The
     # substance: the queue depth that stops a heartbeat overwriting a setpoint,
     # and the counters that make any recurrence a number; HeartbeatT2J GROWS,
     # so the bump IS a wire change (PROTOCOL 11→12).
     m40 = re.search(r'^// 39→40:(.*)$', text, re.M)
     assert m40 is not None, "FW 40 history line missing"
-    assert 'JB-174' in m40.group(1) and 'STREAM_RX_QUEUE_CAPACITY = 8' in m40.group(1), m40.group(1)
+    assert 'FEAT-41' in m40.group(1) and 'STREAM_RX_QUEUE_CAPACITY = 8' in m40.group(1), m40.group(1)
     assert 'HeartbeatT2J GROWS 158→190' in m40.group(1), m40.group(1)
     assert 'PROTOCOL_VERSION 11→12' in m40.group(1), m40.group(1)
     for name in ('dn_rx_setpoints', 'dn_queue_dropped', 'dn_seq_gaps',

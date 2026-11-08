@@ -1,5 +1,5 @@
 ---
-id: JB-9
+id: TKT-6
 kind: ticket
 title: 'Per-kind rendering on the Front page, Now/Next/Later and the drawer: what a pathway, plan, phase, idea, feature and bug each show'
 type: grilling

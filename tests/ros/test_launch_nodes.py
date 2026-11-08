@@ -198,7 +198,7 @@ def test_consumer_wired_node_is_launched(launch_src, launch_description_body,
 # the FSM, along with their Node(...) blocks in the launch file.
 PLANNER_NODES = ['trajectory_node', 'skill_node']
 
-#: Capped nodes = the planner callers plus, since 2026-10-28 (JB-76),
+#: Capped nodes = the planner callers plus, since 2026-10-28 (BUG-21),
 #: ball_tracker_node: its linear algebra is 6x6 / (n, 2) / 3-vector scale and
 #: the uncapped pool cost 148 % of a core live for no latency benefit
 #: (measured offline, tracker_bag_replay.py on the 14:29 bag: 40-45 % CPU
@@ -245,7 +245,7 @@ def test_planner_node_caps_its_blas_thread_pool(launch_src, executable, var):
         f'{executable} has no additional_env — a planner caller with an '
         f'uncapped BLAS pool can gap the 40 Hz emitter past the can-bridge '
         f'250 ms SETPOINT_STALE watchdog under box load, and the uncapped '
-        f'tracker burned 148 % of a core live (JB-76, 2026-10-28).')
+        f'tracker burned 148 % of a core live (BUG-21, 2026-10-28).')
 
     inline = re.search(rf"'{var}'\s*:\s*'1'", block)
     if inline:

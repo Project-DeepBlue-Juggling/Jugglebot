@@ -239,4 +239,4 @@ That first matters at Phase 4.
 - `tests/motion/test_leg_torque_ff.py::test_yaml_kt_odrive_config_matches_the_flashed_odrive_json`
   — the flashed-mirror drift-test pattern this follows.
 
-> Closed 2026-10-28: closed by plans/archived/hand-ball-sensor.md (JB-34 survey).
+> Closed 2026-10-28: closed by plans/archived/hand-ball-sensor.md (IDEA-2 survey).

@@ -195,4 +195,4 @@ distinction is why moving the park to its own thread would not have helped and o
 - The stale-encoder-burst latches (three now) remain the leg-bus frame-drops plan's; the hand's
   deviation budget is consumed in 22 ms of feedback age at 112 rev/s.
 
-> Closed 2026-10-28: lateral learner shipped; end-stop push never recurred in a month of Sittings, dropped as stale (JB-34 survey).
+> Closed 2026-10-28: lateral learner shipped; end-stop push never recurred in a month of Sittings, dropped as stale (IDEA-2 survey).

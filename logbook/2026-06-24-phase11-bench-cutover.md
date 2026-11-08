@@ -690,4 +690,4 @@ was not separately characterised in U3-iv — that run measured the float32 resi
 onset, not the gate latency — so the ~100–200 ms estimate stands; carry it to U5 for
 a direct measurement.)*
 
-> Closed 2026-10-28: superseded by plans/archived/teensy-can-offload.md (JB-34 survey).
+> Closed 2026-10-28: superseded by plans/archived/teensy-can-offload.md (IDEA-2 survey).

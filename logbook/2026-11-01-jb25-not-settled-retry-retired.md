@@ -1,5 +1,5 @@
 ---
-title: "JB-25: the NOT_SETTLED retry in skill_node is retired; a Ball Butler THROW_ABORTED_NOT_SETTLED fails closed like every other non-OK token"
+title: "BUG-6: the NOT_SETTLED retry in skill_node is retired; a Ball Butler THROW_ABORTED_NOT_SETTLED fails closed like every other non-OK token"
 type: refactor
 date: 2026-11-01
 status: complete
@@ -14,14 +14,14 @@ files_changed:
   - logbook/INDEX.md
 ---
 
-# JB-25: the NOT_SETTLED retry is retired
+# BUG-6: the NOT_SETTLED retry is retired
 
 **What.** `skill_node._on_bb_throw_outcome` carried a once-per-attempt retry on Ball Butler's
 `THROW_ABORTED_NOT_SETTLED` (R5, 2026-09-30, for the 4-of-19 yaw-settle false positives that
 Sitting saw). It only fired while the `reload` ctx was still in `await_announcement`, and in the
 field the announcement swap retires that ctx before Ball Butler's terminal verdict arrives
 (bb-self-cancel finding F1, 2026-10-13), so the verdict always ended the attempt as
-`REJECTED_BB(THROW_ABORTED_NOT_SETTLED)`. The owner chose option 1 of JB-125: delete the branch,
+`REJECTED_BB(THROW_ABORTED_NOT_SETTLED)`. The owner chose option 1 of TKT-21: delete the branch,
 keep the fail-closed end. The hazard was the docstring: 40 lines describing a guarantee the field
 never got.
 

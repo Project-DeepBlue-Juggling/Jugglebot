@@ -562,4 +562,4 @@ sitting, by design: the operator runs robot-actuating commands from it.
 - `tests/hardware/session_hand_ball_sensor.md` — the runbook itself.
 - `tests/hardware/session_phase7_reload.md` — the pattern it follows.
 
-> Closed 2026-10-28: stale: sensor in production since 2026-08; runbook tuning rows live in tests/hardware/session_hand_ball_sensor.md (JB-34 survey).
+> Closed 2026-10-28: stale: sensor in production since 2026-08; runbook tuning rows live in tests/hardware/session_hand_ball_sensor.md (IDEA-2 survey).

@@ -337,4 +337,4 @@ to `tests/hardware/session_skills_r5_sitting3.md`.
 - The `self_toss` `reload` miss on throw 3/4 (+49/+48 mm) — a single instance, no pattern.
 - Leg heartbeat dropouts, same known load-gated class (`plans/active/leg-bus-frame-drops.md`).
 
-> Closed 2026-10-28: analysis done; the Feed LIMIT_JERK is tracked as JB-27, the holds_ball wire gap is filed as JB-86 (JB-34 survey).
+> Closed 2026-10-28: analysis done; the Feed LIMIT_JERK is tracked as BUG-8, the holds_ball wire gap is filed as BUG-29 (IDEA-2 survey).

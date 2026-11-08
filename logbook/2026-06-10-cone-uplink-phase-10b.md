@@ -126,4 +126,4 @@ the Ball Butler temporal-accuracy campaign (BallButler repo,
   procedure and gained the Jetson-host build shims (size wrapper +
   upload_command).
 
-> Closed 2026-10-28: bench verified in its own Verification section; +40 s anomaly fixed by 2026-06-10-cone-micros64-false-wrap (JB-34 survey).
+> Closed 2026-10-28: bench verified in its own Verification section; +40 s anomaly fixed by 2026-06-10-cone-micros64-false-wrap (IDEA-2 survey).

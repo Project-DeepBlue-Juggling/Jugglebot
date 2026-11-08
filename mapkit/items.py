@@ -333,7 +333,7 @@ def _progress_dates(body: str) -> List[datetime.date]:
     return out
 
 
-#: The readability rule for an Item body (owner, 2026-10-30, after JB-114 was
+#: The readability rule for an Item body (owner, 2026-10-30, after IDEA-17 was
 #: filed as one 3,500-character paragraph): every paragraph and every list
 #: item (with its continuation lines) at most BLOCK_CAP characters, every
 #: ``## Progress`` line at most PROGRESS_CAP, and a body over HEADINGLESS_CAP

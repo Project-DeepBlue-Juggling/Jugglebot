@@ -145,7 +145,7 @@ TILT_PIN = 'TILT_PIN'                    #: a tilt pin outside the 12° ceiling
 #: ``ValueError``, re-coded so an operator reads "shorten a hold / lengthen the
 #: window", not "aim outside the cone" (two-ball-oval P3).
 POSE_WINDOW = 'POSE_WINDOW'
-#: I-PLAN-16 (carry-ring-zvd, JB-102): with ``PoseConfig.carry_zvd`` on, the
+#: I-PLAN-16 (carry-ring-zvd, FEAT-32): with ``PoseConfig.carry_zvd`` on, the
 #: window has no solution that leaves the modelled Platform mode still at the
 #: release, while the same window without those rows solves —
 #: ``cup_cycle._refuse_ring``'s code, passed through unchanged.
@@ -1384,12 +1384,12 @@ RELEASE_BRAKE_FACTOR = 1.10
 RELEASE_BRAKE_MIN_G = 2.0
 
 
-#: The post-release top-of-stroke margin (C-HAND-6, JB-147) on by default.
+#: The post-release top-of-stroke margin (C-HAND-6, BUG-57) on by default.
 #: Off reproduces the C-HAND-5 box exactly (the probe's before/after switch).
 POST_RELEASE_TOP_MARGIN = True
 
 #: ``margin_rev(v) = clamp(K · v², MIN, MAX)``, ``v`` the slider speed (rev/s).
-#: K is calibrated on the JB-147 overshoot (logbook
+#: K is calibrated on the BUG-57 overshoot (logbook
 #: ``2026-11-02-hand-top-margin-and-70a``, § Discussion): a velocity error of
 #: 0.426·v at the step, removed by the drive's headroom above the planned brake
 #: (the decel-FF bound at 70 A, 5495.7 rev/s², minus the brake seed
@@ -1414,7 +1414,7 @@ def post_release_top_margin_rev(slider_speed_rps: float) -> float:
 
     C-HAND-6.  The stepped brake (C-HAND-5) plans the stop near the
     constant-deceleration ideal, so it uses nearly all the stroke above the
-    release; a launch that arrives FAST (JB-147: 168 rev/s against 152
+    release; a launch that arrives FAST (BUG-57: 168 rev/s against 152
     planned, the hand 1.16 rev behind its command at the release) then has
     only the drive's current headroom and the 0.34 rev between the planned
     top and the clip to stop in.  The margin lowers the top the brake plans

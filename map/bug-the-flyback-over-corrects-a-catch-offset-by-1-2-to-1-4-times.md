@@ -1,5 +1,5 @@
 ---
-id: JB-193
+id: BUG-80
 kind: bug
 title: 'The flyback over-corrects a Catch offset by 1.2 to 1.4 times: each landing error returns at -0.3 to -0.45 on the next Throw'
 status: backlog
@@ -144,7 +144,7 @@ Control walk at the 40 Hz tick, if one were ever wanted:
 
 ### 6. Other things found
 
-- At 15:53 the Memory row's `seat` was the dispatch value, not the flown release: `seat` on the previous landing is 0.027 against 0.83 for the commanded Cup. This is JB-194, fixed 19:50 that evening. Rows before that fix cannot size r.
+- At 15:53 the Memory row's `seat` was the dispatch value, not the flown release: `seat` on the previous landing is 0.027 against 0.83 for the commanded Cup. This is BUG-81, fixed 19:50 that evening. Rows before that fix cannot size r.
 - `r` on the previous landing is 0.77 to 0.83, not 1: the Cup does not reach the fit (re-send tolerance and refusals). In Columns it is 0.58 to 0.62.
 
 ### 7. `## Sitting` candidate (only if the owner wants the mechanism)
@@ -160,7 +160,7 @@ If x instead shows about 5.7, it is a small-Tilt plant gain, and the Hop result 
 
 ## The 40-Throw check has no command (2026-11-08)
 
-JB-200 chose the check. Its section 7 candidate asks for commanded landing offsets of +20 and -20 mm from rest, and no parameter on `skill_node` sets one.
+TKT-47 chose the check. Its section 7 candidate asks for commanded landing offsets of +20 and -20 mm from rest, and no parameter on `skill_node` sets one.
 
 - `self_toss` releases and lands on one Site (`site_x_mm`, `site_y_mm`), so a Throw from rest flies at about zero Tilt.
 - The Learner's `u` moves the commanded landing, but `u` is not an operator input.
@@ -169,4 +169,4 @@ So there is no `## Sitting` section yet: a `do:` step nobody can fly would be in
 
 ## Progress
 
-- 2026-11-08: Night Shift 2026-11-08: re-rated robot on JB-200; no Sitting row yet because no parameter commands a landing offset (detail below)
+- 2026-11-08: Night Shift 2026-11-08: re-rated robot on TKT-47; no Sitting row yet because no parameter commands a landing offset (detail below)

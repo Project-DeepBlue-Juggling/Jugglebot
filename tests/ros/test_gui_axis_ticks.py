@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Every GUI chart axis shows at least two ticks at every size and zoom (JB-101).
+"""Every GUI chart axis shows at least two ticks at every size and zoom (BUG-37).
 
 ``tests/ros/js/axis_ticks_harness.js`` runs the real ``ros_ws/gui/js/axis-ticks.js``
 under node against a replay of uPlot's step choice over a grid of plot sizes,

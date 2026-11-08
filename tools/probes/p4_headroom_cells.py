@@ -7,7 +7,7 @@ ball's launch velocity under the plant's tracking delay.
 Promoted 2026-10-30 from the P3 re-gate's scratch probe (``cells.py`` / ``summ.py``,
 ``logbook/2026-10-30-two-ball-oval-p3-regate-go-and-dwell-headroom.md``
 § Discussion "The headroom finding") ahead of the P4.0 pre-release hold rung
-(map JB-102).
+(map FEAT-32).
 
 What one cell is
 ----------------
@@ -69,7 +69,7 @@ Recipe (repo root, venv, ``OPENBLAS_NUM_THREADS=1``)
   # the 10-17 "0.30 at apex 1.0 under P4" reproduction, one + two balls, three holds
   python -I tools/probes/p4_headroom_cells.py --balls 1,2 --dwells 0.30 --apexes 1.0 \\
       --point p4 --pre 0.100,0.050,0 --release-model
-  # the JB-102 hold ladder at the next Sitting's cell
+  # the FEAT-32 hold ladder at the next Sitting's cell
   python -I tools/probes/p4_headroom_cells.py --balls 1 --dwells 0.45 --apexes 0.95 \\
       --point today --pre 0.100,0.075,0.050,0 --release-model
   # summarise earlier outputs

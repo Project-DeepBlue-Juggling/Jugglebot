@@ -1,5 +1,5 @@
 ---
-title: "GUI: default 3D camera view set to the owner-framed view; Scene menu gains Default and Copy view (JB-88)"
+title: "GUI: default 3D camera view set to the owner-framed view; Scene menu gains Default and Copy view (BUG-30)"
 type: feature
 date: 2026-10-31
 status: resolved
@@ -15,11 +15,11 @@ tags:
   - ux
 ---
 
-# GUI: default 3D camera view set to the owner-framed view; Scene menu gains Default and Copy view (JB-88)
+# GUI: default 3D camera view set to the owner-framed view; Scene menu gains Default and Copy view (BUG-30)
 
 ## Summary
 
-JB-88 asked for a different startup camera in the GUI's 3D scene, and noted that a
+BUG-30 asked for a different startup camera in the GUI's 3D scene, and noted that a
 readout tool would be needed: saved views live in the browser's localStorage, which
 the Jetson cannot read.
 

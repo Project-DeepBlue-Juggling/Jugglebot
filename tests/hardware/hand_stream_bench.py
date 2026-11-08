@@ -109,7 +109,7 @@ Stages (one per invocation; the runbook sequences them):
             — which no earlier stage could separate.
 
   stroke_cut
-            JB-145 bench-hand rung (FW >= 38; NO BALL): the FW 37 Hand C1 stop
+            BUG-55 bench-hand rung (FW >= 38; NO BALL): the FW 37 Hand C1 stop
             on the bench Hand. Unlike every stage above it streams v8
             HAS_SCHED frames (full knot set + knot_epoch_us, stamped one knot
             ahead), so they play on the SCHEDULED lane FW 37 changed. The
@@ -752,7 +752,7 @@ def evaluate_moving_gap(samples, p0, v0, fw_gap_s, reentry_step_rev,
                            f'`lead` delta across the stage')})
     return out
 
-# ── stroke_cut (JB-145): the FW 37 Hand C1 stop, exercised on the bench Hand ──
+# ── stroke_cut (BUG-55): the FW 37 Hand C1 stop, exercised on the bench Hand ──
 # Every scheduled frame is stamped SC_LEAD_S ahead of its send (knot u0 of
 # global frame g plays at t_wall0 + SC_LEAD_S + g*SEG_T), so ordinary 40 Hz
 # send jitter never ends a cover: a send may be up to SC_LEAD_S + 56 ms late

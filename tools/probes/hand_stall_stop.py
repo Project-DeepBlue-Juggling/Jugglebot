@@ -26,7 +26,7 @@ Neither fits the stroke, because the grace alone travels ~3 rev at 150 rev/s and
 the planned brake already uses the stroke above the release.  Re-run it when
 the stop limits, the grace or the cover change.
 
-OPTIONS (JB-145 / JB-154, which firmware change fits the stroke?)
+OPTIONS (BUG-55 / TKT-31, which firmware change fits the stroke?)
 -----------------------------------------------------------------
 FW 37 IMPLEMENTS OPTION 2 WITH A 6 ms GRACE (logbook
 ``2026-11-03-jb145-hand-stall-stop-options``, ``leg_interp.cpp::hand_c1_stop_eval``,

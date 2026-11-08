@@ -431,4 +431,4 @@ firmware.
   re-verify its reproduction against a post-Phase-2 tree rather than assume the
   pre-fix `+2.32°` excursion still exists to measure.
 
-> Closed 2026-10-28: Phases 0-3 shipped (plans/archived/levelling-frame-contract.md); int16 offset residue tracked as JB-26 (JB-34 survey).
+> Closed 2026-10-28: Phases 0-3 shipped (plans/archived/levelling-frame-contract.md); int16 offset residue tracked as BUG-7 (IDEA-2 survey).

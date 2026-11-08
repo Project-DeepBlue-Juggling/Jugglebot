@@ -1,5 +1,5 @@
 ---
-id: JB-65
+id: BUG-15
 kind: bug
 title: Move this '+' button
 status: complete

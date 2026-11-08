@@ -1,5 +1,5 @@
 // records_hover_place_harness.js — the REAL ros_ws/gui/js/records-model.js under node: the hover
-// parameters line (JB-90) and the State Machine dodge rule (JB-103). Sandbox built by
+// parameters line (FEAT-29) and the State Machine dodge rule (BUG-38). Sandbox built by
 // tests/ros/test_gui_records_hover_place.py. Prints one JSON object.
 import { recordRows, paramsText, paramLabel, dodgesMinimap } from './records-model.js';
 

@@ -3,7 +3,7 @@
 
 Serves static files from this directory on all interfaces and the
 ``/api/replay/`` rosbag-replay routes (replay/api.py), plus ``GET /api/records``
-(the records ledger, JB-35: ``to_json`` of the repo's ``docs/records.md``,
+(the records ledger, IDEA-3: ``to_json`` of the repo's ``docs/records.md``,
 parsed by ``ros_ws/src/jugglebot/jugglebot/records.py`` loaded BY PATH, so
 the ROS package is never imported). Pure stdlib, no ROS2 -
 start once and leave running. The browser reads recordings over HTTP Range; the

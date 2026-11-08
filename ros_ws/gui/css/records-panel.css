@@ -1,7 +1,7 @@
-/* Records panel (js/records-panel.js, JB-35): top-left of the viewer, under
+/* Records panel (js/records-panel.js, IDEA-3): top-left of the viewer, under
    #connection-status. The collapsed State Machine card is 210 px wide at
    left: var(--gap) (css/state-minimap.css) and grows UP from the command
-   strip. JB-103: the panel sits hard left, and records-panel.js adds
+   strip. BUG-38: the panel sits hard left, and records-panel.js adds
    .dodge-minimap (past the card's right edge) only while the card reaches the
    panel's vertical band; with the card expanded the panel sits past it. */
 #records-panel {

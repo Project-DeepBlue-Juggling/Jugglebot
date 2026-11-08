@@ -1537,7 +1537,7 @@ JS_MOCAP_ROWS = js_probe(
 
 
 def check_mocap_rows(v):
-    """JB-76 option 1: mocap_data / rigid_body_poses rows show the REPORTED
+    """BUG-21 option 1: mocap_data / rigid_body_poses rows show the REPORTED
     qtm_frame_hz (299.8 -> '300'), labelled via mocap/status; the observed
     gui/ copies are the real 20 Hz subscriptions (~20, not spied)."""
     for t in ("mocap_data", "rigid_body_poses"):

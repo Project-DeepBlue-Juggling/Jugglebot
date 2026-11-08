@@ -357,4 +357,4 @@ tilts every commanded pose by ~0.8° until re-measured; expect it to shrink to t
 fit's ~0.2° attitude floor. Then the tilt-map recapture (§ 6 step 6, expected much
 smaller), then the flying frame check at every z (§ 6 step 7, the § 8 acceptance).
 
-> Closed 2026-10-28: residue filed as JB-85 (kincal acceptance / frame offset) (JB-34 survey).
+> Closed 2026-10-28: residue filed as FEAT-27 (kincal acceptance / frame offset) (IDEA-2 survey).

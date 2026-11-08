@@ -1538,7 +1538,7 @@ TEST_CASE("FW 27: a stale hand does NOT suppress when the lane is idle or axis 6
   }
 }
 
-// ── FW 34 (JB-75): the setpoint age runs from the arm edge on a re-arm ──────────
+// ── FW 34 (BUG-20): the setpoint age runs from the arm edge on a re-arm ──────────
 // s_last_setpoint_us survives across arms (interp_reset() has no runtime caller),
 // so pre-FW 34 a 10 Hz fault tick landing between a re-arm and the first new
 // setpoint saw the PREVIOUS stream's age and latched SETPOINT_STALE (2026-10-27
@@ -1577,7 +1577,7 @@ static void jb75_rearm_after_old_stream() {
   fault_set_mpc_active(true);              // the re-arm edge
 }
 
-TEST_CASE("FW 34 (JB-75): a re-arm does not latch on the previous stream's age") {
+TEST_CASE("FW 34 (BUG-20): a re-arm does not latch on the previous stream's age") {
   SUBCASE("a fault tick before the first new setpoint holds output off, no latch") {
     jb75_rearm_after_old_stream();
     fake_advance(20'000);                  // inside the 16-37 ms window
@@ -1628,7 +1628,7 @@ TEST_CASE("FW 34 (JB-75): a re-arm does not latch on the previous stream's age")
 }
 
 // =============================================================================
-//  JB-73 (FW 35) — the fault machine asks for the suppress-edge hold flush ONLY
+//  BUG-19 (FW 35) — the fault machine asks for the suppress-edge hold flush ONLY
 //  for a MOTOR_FB_STALE suppression. End to end through the real interp: a
 //  streaming leg whose feedback goes stale gets ONE vel_ff = 0 frame at its last
 //  input_pos; a SETPOINT_STALE E-STOP from the same streaming state gets none.
@@ -1655,7 +1655,7 @@ static void arm_streaming_leg0() {
 static int16_t sent_vel(size_t i) { int16_t v; memcpy(&v, &fake_sent_at(i).buf[4], 2); return v; }
 }  // namespace jb73fm
 
-TEST_CASE("JB-73: MOTOR_FB_STALE suppression flushes one vel_ff = 0 hold frame; a guard E-STOP flushes nothing") {
+TEST_CASE("BUG-19: MOTOR_FB_STALE suppression flushes one vel_ff = 0 hold frame; a guard E-STOP flushes nothing") {
   using namespace jb73fm;
   SUBCASE("fb-stale: one hold frame per lane, then silence") {
     arm_streaming_leg0();

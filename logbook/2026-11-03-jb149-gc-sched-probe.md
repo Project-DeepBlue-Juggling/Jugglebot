@@ -1,5 +1,5 @@
 ---
-title: "JB-149 probe: opt-in GC pause timing in the stream nodes and a /proc scheduler sampler, to tell CPU preemption from a whole-process pause"
+title: "BUG-58 probe: opt-in GC pause timing in the stream nodes and a /proc scheduler sampler, to tell CPU preemption from a whole-process pause"
 type: feature
 date: 2026-11-03
 status: complete
@@ -19,12 +19,12 @@ files_changed:
 subsystem: tools
 ---
 
-# JB-149 probe (JB-155): GC pause vs CPU preemption
+# BUG-58 probe (TKT-32): GC pause vs CPU preemption
 
 **What.** Every forward gap over the firmware's 70 ms setpoint cover ended a goal in
 LANE_REFUSED (3 of 3, 2026-11-02), each inside a burst of CATCH solves whose wall time far
 exceeded CPU time. The logs cannot separate CPU preemption from a whole-process Python pause
-(GC or GIL). Owner choice (JB-155): probe first, no behaviour change.
+(GC or GIL). Owner choice (TKT-32): probe first, no behaviour change.
 
 - `jugglebot/gc_probe.py` (pure): `gc.callbacks` hook recording generation and pause per
   collection into a bounded deque; `summary()` drains it.

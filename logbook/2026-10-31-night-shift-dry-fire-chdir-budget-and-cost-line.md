@@ -70,6 +70,6 @@ classified in `dry-2026-10-31.md`, `cost_recorded: file`, clone clean on `main` 
 ticker untouched. One `permission_denials` entry: a read-only `grep` whose pattern contained
 the string `map-live` was refused by the `*map-live*` deny rule, so the clone's deny list is
 live under systemd (and over-broad for grep patterns; accepted). The dry report's own
-headline: three map Items (JB-100, JB-67, JB-91) can never merge because their fix is in
+headline: three map Items (BUG-36, BUG-17, IDEA-6) can never merge because their fix is in
 `mapkit/` or outside this repo, and 17 units at ~80 calls plus a full-tier gate each will
 not fit one night, so the `--deadline` rule, not the budget, ends the loop around rank 10.

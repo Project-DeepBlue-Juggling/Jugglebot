@@ -1,5 +1,5 @@
 ---
-id: JB-92
+id: IDEA-7
 kind: idea
 title: 'In ''View'' the selection text doesn''t need to repeat ''Records: '''
 status: complete

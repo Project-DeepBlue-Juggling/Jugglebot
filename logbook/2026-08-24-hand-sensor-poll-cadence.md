@@ -491,4 +491,4 @@ Deliberately deferred, each with what would settle it:
   reported as a **571 ms** poll, and a wall-anchor epoch change it reported as a
   **1.786e12 ms** one. `logbook/2026-08-24-cadence-crossrecording-closeout.md`.
 
-> Closed 2026-10-28: closed by 2026-08-24-cadence-crossrecording-closeout (JB-34 survey).
+> Closed 2026-10-28: closed by 2026-08-24-cadence-crossrecording-closeout (IDEA-2 survey).

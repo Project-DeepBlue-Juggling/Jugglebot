@@ -25,7 +25,7 @@ see a feature that works badly. Map data errors are named in the line and are no
 ## Layout
 
 Eight sections, this order, every heading present even when empty (`none`). Every Item is
-named by its bare ID `JB-n` (no backticks, no link) so the app's drawer links it. The Item
+named by its bare ID `<ID>` (no backticks, no link) so the app's drawer links it. The Item
 sections are GFM tables (the owner reads the report in the app and on GitHub, 2026-11-01):
 one row per Item, the Item's own words in a "what it is" column, the night's result in
 plain sentences, commits as bare short SHAs. A table's header row and its `|---|` rule are
@@ -44,17 +44,17 @@ Item section (a hint goes in a header cell). One **Summary.** line between the t
 ## Merged to main
 | Item | What it was | What changed | Commits |
 |---|---|---|---|
-| JB-n | <the Item's title> | <one or two sentences: what landed> | <fix sha> (fix), <audit sha> (audit) |
+| <ID> | <the Item's title> | <one or two sentences: what landed> | <fix sha> (fix), <audit sha> (audit) |
 
 ## Held
 | Item | What it is | Branch | Why the gate held it | What unblocks it | Respond in |
 |---|---|---|---|---|---|
-| JB-n | <title> | night-shift/<date>-JB-n | (<letter>) <reason>. ... | <the owner's call, the Sitting, the re-gate> | <JB-m, or none> |
+| <ID> | <title> | night-shift/<date>-<ID> | (<letter>) <reason>. ... | <the owner's call, the Sitting, the re-gate> | <question-ID, or none> |
 
 ## Questions for the Operator
 | Ticket | Question (answer in the app under its `## Answer`) | Blocks | Note |
 |---|---|---|---|
-| JB-m | <the question> | JB-n | <re-rating or context, or empty> |
+| <question-ID> | <the question> | <ID> | <re-rating or context, or empty> |
 
 ## Unfinished
 <branch> | <Progress headline>        (or `none`)
@@ -62,7 +62,7 @@ Item section (a hint goes in a header cell). One **Summary.** line between the t
 ## Skipped
 | Item | What it is | Why skipped |
 |---|---|---|
-| JB-n | <title> | <one sentence> |        (grouped by reason: Sittings first, then owner decisions, then out of reach, then not reached)
+| <ID> | <title> | <one sentence> |        (grouped by reason: Sittings first, then owner decisions, then out of reach, then not reached)
 
 ## Unaddressed Sitting results
 | Item | Result date | Verdict |            (P5; `none recorded` until then)
@@ -75,14 +75,14 @@ app deploy: <status> ... (runner)
 total API cost: USD <n> (runner, total_cost_usd)
 ```
 
-`Respond in` is how the owner answers a Held row: a bare `JB-m` naming the question ticket
+`Respond in` is how the owner answers a Held row: a bare `<question-ID>` naming the question ticket
 the night filed for it (every Held row waiting on the owner's call has one, also listed under
 `## Questions for the Operator`), or `none` for a hold that only a Sitting unblocks. The next
 night resumes the branch from the answer (`.claude/commands/night-shift.md` 2l).
 
 The map app adds a **Your answer** column to the `## Questions for the Operator` table and, from
 the `Respond in` cell, to the `## Held` table when it serves the report, read live from each
-ticket's `## Answer` (JB-132); the committed file never carries that column, so the
+ticket's `## Answer` (BUG-46); the committed file never carries that column, so the
 orchestrator does not write one. Reports from before 2026-11-02 have no `Respond in` column
 and are served and checked as they were.
 
@@ -92,7 +92,7 @@ with one classification line per candidate and commits nothing.
 ## Pinned by
 
 `tests/sim/test_night_shift_report.py` (T-U7): a report fixture parses into the eight
-sections; every Item row's first cell is a bare `JB-n` (table header and rule rows are
-skipped; the older bare `JB-n | ...` lines still pass); a Held table that has a `Respond in` column
-must fill it with a bare `JB-m` or `none` (older Held tables without the column still pass);
+sections; every Item row's first cell is a bare `<ID>` (table header and rule rows are
+skipped; the older bare `<ID> | ...` lines still pass); a Held table that has a `Respond in` column
+must fill it with a bare `<question-ID>` or `none` (older Held tables without the column still pass);
 every committed report under `docs/night-shift/` passes the checker.

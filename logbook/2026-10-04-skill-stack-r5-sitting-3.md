@@ -486,4 +486,4 @@ All runs 2026-10-04 unless stated. Console output by path under `temp/logs/`.
    (4 against the flashed 5): RED every night until that branch is bumped or the runner moves to
    this worktree.
 
-> Closed 2026-10-28: closed by plans/archived/two-ball-skill-stack.md (JB-34 survey).
+> Closed 2026-10-28: closed by plans/archived/two-ball-skill-stack.md (IDEA-2 survey).

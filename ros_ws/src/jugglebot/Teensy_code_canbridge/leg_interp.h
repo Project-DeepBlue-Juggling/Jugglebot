@@ -54,7 +54,7 @@ bool  interp_have_latched();
 
 // Enable/disable command output (the fault state machine / guard-mode gate).
 // When false the ISR computes but does not transmit to CAN3.
-// hold_flush (JB-73, FW 35): true ONLY when the disable is a MOTOR_FB_STALE
+// hold_flush (BUG-19, FW 35): true ONLY when the disable is a MOTOR_FB_STALE
 // suppression and nothing else (no E-STOP latch, fatal, bus-down, guard
 // DISABLED or FW 34 arm shut). On the first suppressed tick the ISR then
 // re-sends each lane's last transmitted frame once with vel_ff = 0 (same
@@ -222,13 +222,13 @@ uint32_t interp_sp_no_sched();       // FW 40: setpoints parsed with HAS_SCHED c
 uint32_t interp_sched_demoted();     // HAS_SCHED played as legacy
 uint32_t interp_sched_expired();     // cover already over at promotion
 uint32_t interp_sched_stops();       // cover exhaustions (C2 stop or FW 37 hand C1 stop)
-uint32_t interp_sched_hand_c1_stops();   // FW 37 hand C1 stops (JB-145), a subset of the above
+uint32_t interp_sched_hand_c1_stops();   // FW 37 hand C1 stops (BUG-55), a subset of the above
 uint32_t interp_sched_refused();     // discontinuous resumes refused while armed
 uint32_t interp_sched_superseded();  // due frames beaten by a newer due frame in the same tick
 uint32_t interp_sched_stale();       // frames older than the playing frame, not played
 uint32_t interp_sched_future_drops(); // stamps beyond SCHED_MAX_FUTURE_US, dropped at receipt
 uint32_t interp_sched_q_overflow();  // queue full, oldest stamp dropped
-// FW 38 (JB-149): read-and-reset the per-heartbeat-window frame-age census
+// FW 38 (BUG-58): read-and-reset the per-heartbeat-window frame-age census
 // (rx_age = now − t_start at queue entry): window max (INT32_MIN = no stamped
 // frame this window) and counts at ≤25 / ≤50 / ≤70 / >70 ms. Heartbeat task only.
 void     interp_sched_rx_age_take(int32_t* max_us, uint16_t* buckets4);

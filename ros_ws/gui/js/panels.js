@@ -1187,7 +1187,7 @@ export function registerTopic(topicName, topicType) {
 
 /**
  * Topics whose monitor rows are REPORTED by mocap_node, not observed by this GUI.
- * The three 300 Hz mocap-stream topics are no longer spied (JB-76 option 1,
+ * The three 300 Hz mocap-stream topics are no longer spied (BUG-21 option 1,
  * 2026-10-28: rosbridge deserialises every message, so a 200 ms-throttled spy
  * still cost the full ingest). One QTM stream feeds all three, so each row shows
  * the `qtm_frame_hz` value of mocap/status. The two 100 Hz topics (robot_state,

@@ -125,8 +125,13 @@ _FIXTURE_RE = "^(?:%s)$" % "|".join(re.escape(f) for f in FIXTURE_FILES)
 SWEEPER_FILES: Tuple[str, ...] = ("tools/id_sweep.py", "tools/id_sweep_overrides.tsv",
                                   "tests/sim/test_id_sweep.py")
 _SWEEPER_RE = "^(?:%s)$" % "|".join(re.escape(f) for f in SWEEPER_FILES)
+#: P4's own artefacts: the frozen crosswalk (every old ID, by design) and the cutover proof
+#: scripts, which name old IDs and old file names in their own text. Both are tracked after
+#: the renumber commit and so scanned; without this freeze --verify reads the crosswalk as
+#: unrewritten citations and --apply refuses the proofs' placeholders.
+_CUTOVER_RE = r"^(?:mapkit/legacy_ids\.csv|tools/probes/id_cutover/.*)$"
 #: Rules whose whole-file freeze the summary lists by name (owner veto, stop point 3).
-WHOLE_FILE_RULES = ("scheme-history-file", "sweeper-self")
+WHOLE_FILE_RULES = ("scheme-history-file", "sweeper-self", "cutover-self")
 _PATH_EXT = r"\.(?:md|log|csv|json|ndjson|txt|png|jpg|html|yaml|yml|py|sh|mcap|db3|cpp|h)\b"
 
 
@@ -181,6 +186,8 @@ RULES: Tuple[Rule, ...] = (
     Rule("frontmatter-id", "citation", _ID, path=r"^map/[^/]+\.md$", line=r"^id:\s*JB-"),
     # --- the sweeper's own source, tests and overrides
     Rule("sweeper-self", "frozen", r"(?s).*", path=_SWEEPER_RE),
+    # --- P4's crosswalk and cutover proofs (:data:`_CUTOVER_RE`)
+    Rule("cutover-self", "frozen", r"(?s).*", path=_CUTOVER_RE),
     # --- hand-converted fixtures (:data:`FIXTURE_FILES`)
     Rule("fixture-file", "fixture", r"(?s).*", path=_FIXTURE_RE),
     # --- JB meaning Jugglebot: identifiers (no Item number in them)
@@ -206,7 +213,7 @@ RULES: Tuple[Rule, ...] = (
     Rule("citation-after-pre-post", "citation", _ID, before=r"(?:^|[^A-Za-z0-9-])(?:pre|post|non)-$",
          not_path=_SYNTHETIC),
     # an Attempt label / launch-log directory such as ``Higher-throws-with-JB-144-update``
-    Rule("inside-hyphenated-name", "frozen", _ID + r"(?:-[A-Za-z0-9]+)*", before=r"[A-Za-z0-9]-$",
+    Rule("inside-hyphenated-name", "frozen", _ID + r"(?:-[A-Za-z0-9]+)*", before=r"[A-Za-z]-$",
          not_path=_SYNTHETIC),
     # --- lists and ranges (expanded by grammar, every instance reviewed)
     Rule("list-slash", "list", _ID + r"(?:/[0-9]+)+", not_path=_SYNTHETIC),
@@ -515,6 +522,14 @@ def classify_token(tok: Token, known: Set[int], spans=()) -> Tuple[Optional[Row]
     """(row, None) or (None, error) for one broad-pattern token."""
     ctx = tok.text.strip()[:160]
     rule = match_rule(tok)
+    if rule is not None and rule.cls in REWRITE_CLASSES:
+        # an override row that covers a token a rewrite rule would take is the owner's
+        # recorded "leave" (a synthetic or historical number): --verify must honour it,
+        # as ``rewrite_line`` already does
+        sp = _covering(tok, spans)
+        if sp is not None:
+            return Row(tok.file, tok.line, tok.col, sp[2].cls, "override", tok.token, tok.token,
+                       "", ctx), None
     if rule is None:
         sp = _covering(tok, spans)
         if sp is not None:

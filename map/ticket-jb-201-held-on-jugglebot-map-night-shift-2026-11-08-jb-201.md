@@ -1,7 +1,7 @@
 ---
-id: JB-207
+id: TKT-50
 kind: ticket
-title: 'JB-201 held on jugglebot-map:night-shift/2026-11-08-JB-201: apply the audit''s small fixes and merge, also guard mouseenter, merge as is, or drop?'
+title: 'BUG-83 held on jugglebot-map:night-shift/2026-11-08-BUG-83: apply the audit''s small fixes and merge, also guard mouseenter, merge as is, or drop?'
 status: complete
 created: '2026-11-08'
 updated: '2026-11-08T00:12:32Z'
@@ -18,7 +18,7 @@ parent: bug-arrow-keying-through-the-map-search-items-doesn-t-scroll
 type: question
 ---
 
-JB-201 is built on `jugglebot-map:night-shift/2026-11-08-JB-201`: arrow-keying through the search results now scrolls the active one into view. The audit found small edge cases in the new code, so the merge gate held it. Nothing is live.
+BUG-83 is built on `jugglebot-map:night-shift/2026-11-08-BUG-83`: arrow-keying through the search results now scrolls the active one into view. The audit found small edge cases in the new code, so the merge gate held it. Nothing is live.
 
 ## The open findings
 
@@ -40,7 +40,7 @@ Recommendation: 1.
 
 - 1 or 2: the next night applies them, re-gates and merges.
 - 3: the next night re-gates and merges.
-- 4: JB-201 goes back to open.
+- 4: BUG-83 goes back to open.
 
 ## Answer
 

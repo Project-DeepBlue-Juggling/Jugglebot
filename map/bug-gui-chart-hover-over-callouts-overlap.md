@@ -1,5 +1,5 @@
 ---
-id: JB-159
+id: BUG-61
 kind: bug
 title: GUI Chart hover-over callouts overlap
 status: complete
@@ -28,4 +28,4 @@ After the 2026-11-04 Night Shift work, this doesn't seem to be fixed? I hard-ref
 
 ## Progress
 
-- 2026-11-06: Owner confirmed in JB-170: the 2026-11-04 fix works; the reopen was an incorrect checkout
+- 2026-11-06: Owner confirmed in TKT-36: the 2026-11-04 fix works; the reopen was an incorrect checkout

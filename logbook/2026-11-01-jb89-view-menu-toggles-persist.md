@@ -1,5 +1,5 @@
 ---
-title: "GUI: the View menu's scene toggles persist across a page refresh (JB-89)"
+title: "GUI: the View menu's scene toggles persist across a page refresh (BUG-31)"
 type: bugfix
 date: 2026-11-01
 status: complete
@@ -21,7 +21,7 @@ tags:
   - night-shift
 ---
 
-# GUI: the View menu's scene toggles persist across a page refresh (JB-89)
+# GUI: the View menu's scene toggles persist across a page refresh (BUG-31)
 
 ## Summary
 

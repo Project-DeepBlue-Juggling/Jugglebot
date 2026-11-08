@@ -1,5 +1,5 @@
 ---
-title: "JB-32: the sim gate's learner runs take a biased plant, so the executor's forward clip fires end to end"
+title: "FEAT-7: the sim gate's learner runs take a biased plant, so the executor's forward clip fires end to end"
 type: feature
 date: 2026-11-02
 status: complete
@@ -13,7 +13,7 @@ files_changed:
   - logbook/INDEX.md
 ---
 
-# JB-32: biased plant for the forward-clip rule
+# FEAT-7: biased plant for the forward-clip rule
 
 **What.** `SelfTossGateConfig.plant_landing_bias_mm` (x, y mm, default 0,0) makes every release land
 that far from its aimed landing: `_plant_landing_bias_release` composes `_measured_release_bias`
@@ -55,4 +55,4 @@ instead of exiting 2).
 - 2026-11-02 (audit follow-up), `python -m pytest -q -p no:cacheprovider tests/sim/test_skills_gate.py -k "biased or landing_bias or unbiased or plant_bias"`: 6 passed in 57.95 s.
 - 2026-11-02, `python -m pytest -q -p no:cacheprovider tests/sim/test_skills_gate.py tests/motion/test_skills_executor.py -k "forward_clip or biased or landing_bias or small_ or unbiased"`: 21 passed, 1 failed (the 36.8 figure, fixed after) in 460.61 s; the fixed test alone, `-k landing_bias_release`: 1 passed.
 - 2026-11-02, `python -m pytest -q -p no:cacheprovider tests/sim/test_skills_gate.py tests/motion/test_skills_executor.py` (whole files): 322 passed in 526.30 s.
-- The `./run_tests.sh --full` tier that `sim/` changes require pre-commit is the Night Shift 2026-11-02 gate on this branch (`temp/reports/night-shift/gate-JB-32.log` in the clone; verdict in `docs/night-shift/2026-11-02.md`).
+- The `./run_tests.sh --full` tier that `sim/` changes require pre-commit is the Night Shift 2026-11-02 gate on this branch (`temp/reports/night-shift/gate-FEAT-7.log` in the clone; verdict in `docs/night-shift/2026-11-02.md`).

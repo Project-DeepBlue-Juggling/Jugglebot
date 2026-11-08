@@ -1,5 +1,5 @@
 ---
-id: JB-85
+id: FEAT-27
 kind: feature
 title: 'Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z'
 status: inbox

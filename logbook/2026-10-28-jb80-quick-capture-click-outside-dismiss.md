@@ -1,5 +1,5 @@
 ---
-title: "JB-80: a click outside the Robot tab's + File new change request form closes it without filing"
+title: "BUG-24: a click outside the Robot tab's + File new change request form closes it without filing"
 type: bugfix
 date: 2026-10-28
 status: resolved

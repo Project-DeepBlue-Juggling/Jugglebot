@@ -1,9 +1,9 @@
 ---
-title: "Sitting 2026-11-06 20:20 debrief: the Hand at encoder period 9 ms passes (JB-137 closed); its frame losses recur at half the period, which confirms the clock beat, but the losses are spread, not removed"
+title: "Sitting 2026-11-06 20:20 debrief: the Hand at encoder period 9 ms passes (BUG-50 closed); its frame losses recur at half the period, which confirms the clock beat, but the losses are spread, not removed"
 type: investigation
 date: 2026-11-06
 status: complete
-phase: "JB-137 9 ms trial"
+phase: "BUG-50 9 ms trial"
 related_plan: learner-generalisation.md
 related_issues: []
 files_changed:
@@ -30,10 +30,10 @@ Unit reports (gitignored): `temp/probes/sitting_debrief_2026-11-06c/unit_9ms.md`
 
 ## What was flown
 
-The JB-137 row: the Hand drive's `axis0.config.can.encoder_msg_rate_ms` from 10 to 9, saved (owner) and kept. Armed hold of
+The BUG-50 row: the Hand drive's `axis0.config.can.encoder_msg_rate_ms` from 10 to 9, saved (owner) and kept. Armed hold of
 1303 s with the stream running, then Columns. The check goal was four Columns goals (Apex 1.00, Dwell 0.27, Sep. 120)
 instead of the Runbook's `Self-toss`; the owner amended the clause to "no Hand fault, no `Hand lead clamp ENGAGED`".
-The can-bridge was not power-cycled (it needs the Jetson power-cycled; owner's choice). The JB-146 hazard behind that
+The can-bridge was not power-cycled (it needs the Jetson power-cycled; owner's choice). The BUG-56 hazard behind that
 step did not arise: the launch homed all seven axes after the save (L229, L268).
 
 | Row | Verdict | Evidence |
@@ -41,10 +41,10 @@ step did not arise: the launch homed all seven axes after the save (L229, L268).
 | Hand under 25 ms over the hold | pass | `age_max_us_6` peak 23.1 ms, 0 of 1299 windows over 25 ms |
 | A Leg over 50 ms (control) | pass | all six Legs, 4 to 8 episodes each, up to 99.1 ms |
 | No Hand fault or clamp in the goals | pass | 0 lines; `active_errors` 0 on all 8608 rows; `lead_clamp_mask` bit 6 0 in 14 673 samples |
-| Goal 1, 10/10 | collision (JB-186) | 71 mm, both balls kink, L944 |
-| Goal 2, 5/5 | Ball 2 deflected at Cup height (JB-191) | sideways 1.8 m/s within 30 ms, cup raw 0, L5477 |
-| Goal 3, 12/12 | collision (JB-186) | 72 mm, both balls kink, L5880 |
-| Goal 4, 7/7 | Ball 2 deflected at Cup height (JB-191) | sideways 0.3 m/s, fit 13 mm from the aim, cup raw 0, L6165 |
+| Goal 1, 10/10 | collision (BUG-74) | 71 mm, both balls kink, L944 |
+| Goal 2, 5/5 | Ball 2 deflected at Cup height (BUG-78) | sideways 1.8 m/s within 30 ms, cup raw 0, L5477 |
+| Goal 3, 12/12 | collision (BUG-74) | 72 mm, both balls kink, L5880 |
+| Goal 4, 7/7 | Ball 2 deflected at Cup height (BUG-78) | sideways 0.3 m/s, fit 13 mm from the aim, cup raw 0, L6165 |
 
 ## Discussion
 
@@ -91,16 +91,16 @@ only, no command or guard). `config/ODrive config Files/odrive_pro_hand_config.j
 
 ## Follow-ups and owner decisions
 
-JB-195 filed with its Runbook row: Leg 4 at 9 ms (P(zero by chance) about 5e-4), then all Legs if it passes. It carries
-the undecided items with their numbers: the Hand lead-clamp anchor and the 70 / 80 A gap. JB-191 narrowed: every smooth
+BUG-82 filed with its Runbook row: Leg 4 at 9 ms (P(zero by chance) about 5e-4), then all Legs if it passes. It carries
+the undecided items with their numbers: the Hand lead-clamp anchor and the 70 / 80 A gap. BUG-78 narrowed: every smooth
 no-collision end so far (15 of 15) is Ball 2, and all 4 Ball 1 ends are collisions; a false EMPTY is out for the two ends read here.
-JB-192's Dwell check was not flown and stays on the Runbook. Three firmware scheduler STOPs in this Sitting, none in a goal
-(L1329 after a 63.3 ms generation-2 collection in `teensy_bridge_node` during the hold, L6219, L6236; for JB-149 and JB-166,
+BUG-79's Dwell check was not flown and stays on the Runbook. Three firmware scheduler STOPs in this Sitting, none in a goal
+(L1329 after a 63.3 ms generation-2 collection in `teensy_bridge_node` during the hold, L6219, L6236; for BUG-58 and BUG-66,
 whose claims this entry does not write to). Memory: 30 new rows from 34 caught; the other four are Feed Throws, which write no row by design.
 
 ## Verification
 
-(2026-11-06, `./run_tests.sh`, finished 23:02: 8790 passed, 51 skipped, 4 failed, plus 7 serial passed.) All four failures were document checks on this debrief's own writes: JB-186 and JB-191 unrated on leaving the inbox, one over-long block in JB-195, one bare avoid-word in this entry. Each was fixed and no code changed after that run.
+(2026-11-06, `./run_tests.sh`, finished 23:02: 8790 passed, 51 skipped, 4 failed, plus 7 serial passed.) All four failures were document checks on this debrief's own writes: BUG-74 and BUG-78 unrated on leaving the inbox, one over-long block in BUG-82, one bare avoid-word in this entry. Each was fixed and no code changed after that run.
 
 (2026-11-06, `pytest -q tests/sim/test_map_items_rated.py tests/sim/test_map_items.py tests/sim/test_glossary_avoid_words.py tests/sim/test_mapkit_docs.py tests/sim/test_plans_index.py tests/sim/test_logbook_front_matter.py tests/sim/test_docs_links.py tests/sim/test_sitting_debrief_protocol.py`: 226 passed, 47 skipped.)
 

@@ -1,5 +1,5 @@
 ---
-id: JB-45
+id: BUG-11
 kind: bug
 title: Hover highlight flickers and drops out until the cursor leaves and re-enters
 status: complete

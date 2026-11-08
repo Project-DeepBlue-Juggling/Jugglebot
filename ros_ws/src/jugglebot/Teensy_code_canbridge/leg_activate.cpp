@@ -19,7 +19,7 @@
 //  request through a reply mailbox the net task drains, and retargets in flight
 //  on a second request. See leg_activate.h for why each of those three exists.
 //
-//  HAND STALL GUARD (FW 36, JB-146): every active tick, hand_stall_guard() drops a
+//  HAND STALL GUARD (FW 36, BUG-56): every active tick, hand_stall_guard() drops a
 //  hand that has sat at high current without moving for HAND_STALL_HOLD_US to IDLE
 //  (leg_activate.h; thresholds + physics in canbridge_config.h).
 // =============================================================================
@@ -69,7 +69,7 @@ static uint64_t s_t_start_us = 0;     // ladder start (overall timeout clock)
 static uint64_t s_t_phase_us = 0;     // current sub-phase entry (settle clock)
 static uint8_t  s_result[NUM_AXES] = { ACTIVATE_NONE };
 
-// ── Hand stall guard (FW 36, JB-146) — activate-task owned, s_stalled read by
+// ── Hand stall guard (FW 36, BUG-56) — activate-task owned, s_stalled read by
 //    the telemetry task (single-byte stores are atomic on Cortex-M7). ──────────
 static bool          s_stall_timing = false;   // the stall predicate held last tick
 static uint64_t      s_stall_t0_us  = 0;       // first tick of the current run

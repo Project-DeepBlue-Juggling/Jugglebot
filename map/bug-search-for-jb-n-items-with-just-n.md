@@ -1,5 +1,5 @@
 ---
-id: JB-81
+id: BUG-25
 kind: bug
 title: Search for JB-N items with just 'N'
 status: complete

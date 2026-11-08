@@ -1,5 +1,5 @@
 ---
-id: JB-62
+id: FEAT-20
 kind: feature
 title: Short, stable IDs for map items
 status: promoted

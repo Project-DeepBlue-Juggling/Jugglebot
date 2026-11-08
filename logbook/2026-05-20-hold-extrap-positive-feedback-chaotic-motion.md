@@ -402,4 +402,4 @@ remains) gets handled in the same session as the hardware validation.*
   hardware CSVs (especially `mpc_20260520_115857.csv` tick 71) should
   answer this before the fix lands on hardware.
 
-> Closed 2026-10-28: superseded: MPC chain removed 2026-09-01 (JB-34 survey).
+> Closed 2026-10-28: superseded: MPC chain removed 2026-09-01 (IDEA-2 survey).

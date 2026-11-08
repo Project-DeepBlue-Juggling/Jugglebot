@@ -1,5 +1,5 @@
 ---
-title: "Sitting 2026-11-04 18:45: JB-149 probe row passed (no host-side cause, no attempt-killing STOP); JB-139 closed (Ball 2 off the clamp); false final-Catch MISSED_CATCH filed"
+title: "Sitting 2026-11-04 18:45: BUG-58 probe row passed (no host-side cause, no attempt-killing STOP); BUG-52 closed (Ball 2 off the clamp); false final-Catch MISSED_CATCH filed"
 type: investigation
 date: 2026-11-04
 status: complete
@@ -20,7 +20,7 @@ subsystem: [ros, skills]
 tags: [sitting, hardware]
 ---
 
-# Sitting 2026-11-04 18:45: JB-149 probe row, JB-139 close-out
+# Sitting 2026-11-04 18:45: BUG-58 probe row, BUG-52 close-out
 
 **Sources.**
 - launch.log `~/.ros/log/2026-11-04-18-45-46-408268-jetson-337712/launch.log`
@@ -29,7 +29,7 @@ tags: [sitting, hardware]
 - Firmware: BRIDGE_FW_CHECK v38. Launched with `gc_probe:=true`.
 - Goals: three Columns goals at Sep. 125, Apex 0.95, Throws 50 (L486, L748, L1257).
 
-## JB-149: probe row PASS (owner's verdict confirmed; the record is complete)
+## BUG-58: probe row PASS (owner's verdict confirmed; the record is complete)
 
 | pass clause | result |
 |---|---|
@@ -47,9 +47,9 @@ tags: [sitting, hardware]
 - Firmware counters: `sched_expired`, `sched_stale` and `sched_future_drops` stayed 0. `sched_stops` went 32 -> 34.
 - No LANE_REFUSED end.
 
-**Reading.** Third Sitting with no host-side support (after 2026-11-03 12:30 and 22:29). The cure flags `gc_freeze` and `cpu_partition` have no class-1 event to A/B. JB-149 stays open: the attempt-killing STOP did not recur here, so its firmware-side cause is still unseen.
+**Reading.** Third Sitting with no host-side support (after 2026-11-03 12:30 and 22:29). The cure flags `gc_freeze` and `cpu_partition` have no class-1 event to A/B. BUG-58 stays open: the attempt-killing STOP did not recur here, so its firmware-side cause is still unseen.
 
-## JB-139: closed
+## BUG-52: closed
 
 Pass clause and result:
 - Ball 2's Throw command at the +/-30 mm clamp in under 10 % of rows per axis: **0 of 39 rows in x and 0 of 39 in y**.
@@ -58,7 +58,7 @@ Pass clause and result:
   - Ball 1: 0 of 38 rows at the clamp.
 - No CATCH_AXIS refusal past the capture cap: **none**.
 - Coverage: 77 BOX-EXPECTED-LANDING rows on the default memory (3,295 rows). The row asked for 20 Throws.
-- The one-ball Oval 60 mm authority request stays with the JB-102 carry-ring investigation (2026-11-04 debrief, owner question 3). It is not JB-139.
+- The one-ball Oval 60 mm authority request stays with the FEAT-32 carry-ring investigation (2026-11-04 debrief, owner question 3). It is not BUG-52.
 
 ## The three ends (all MISSED_CATCH; none a stream fault)
 
@@ -73,7 +73,7 @@ Pass clause and result:
   - The detector judged the final CATCH (Ball 1, skill 50 of 50) from 67 samples, all EMPTY, and ended the goal MISSED_CATCH (L2362).
   - The report line (L2361) prints "throw 50/50 STOP (landed on the held ball, by design; not counted)".
   - The same shape appears on 2026-10-28 09:49 (Ball 2, skill 35 of 35, 33/33).
-  - A clean full-length goal ends "columns done ... 20/20 caught" (2026-11-03 22:29). Filed as JB-169.
+  - A clean full-length goal ends "columns done ... 20/20 caught" (2026-11-03 22:29). Filed as BUG-67.
 
 **Catch re-aim limits (owner questions, not changed).**
 - 42 AIM-LATERAL-CLAMPED lines: 26 on the outward 10 mm side, 10 at the 30 mm y authority.
@@ -92,7 +92,7 @@ Pass clause and result:
   - The node parameter in `trajectory_node` / `teensy_bridge_node` still defaults False, so unit tests and any other launch install nothing.
   - `gc_probe:=false` turns it off.
 - `tests/ros/test_stream_tuning.py` pins the launch default.
-- JB-149's `## Sitting` section is now a 1-minute ride-along: no dedicated goal and no sampler. Its pass is a LANE_REFUSED end caught with GC_PROBE lines around its STOP.
+- BUG-58's `## Sitting` section is now a 1-minute ride-along: no dedicated goal and no sampler. Its pass is a LANE_REFUSED end caught with GC_PROBE lines around its STOP.
 
 ## Verification
 

@@ -139,7 +139,7 @@ GRAVITY = np.array([0.0, 0.0, -9.806])
 #: layouts; logbook 2026-10-02-skill-stack-r5-sitting-2), and to 4500 on
 #: 2026-11-01 (owner, Sitting debrief, with the hand current limit 50 -> 60 A),
 #: under the C-HAND-2 decel-FF headroom bound of 4710.6 rev/s² at 60 A (3925.5
-#: at 50 A; 5495.7 at 70 A since 2026-11-02, JB-147, limit unchanged). IMPORTED from the YAML's
+#: at 50 A; 5495.7 at 70 A since 2026-11-02, BUG-57, limit unchanged). IMPORTED from the YAML's
 #: ``hand_acc_limit_rps2`` rather than restated: the restated 3500 this used
 #: to be sat silently under the raised gate for one sweep on 2026-10-02 —
 #: the in-QP bound and ``validate_cycle``'s gate must be one number.
@@ -356,7 +356,7 @@ class CupCycleConfig:
     #: would.  See :func:`_capture_knots_needed`.
     capture_jerk_mps3: Optional[float] = None
 
-    # ---- the release step (C-HAND-5, JB-114 R0, owner 2026-11-01) ---------
+    # ---- the release step (C-HAND-5, IDEA-17 R0, owner 2026-11-01) ---------
     #: ``False`` (default) keeps the CasADi transcription's ``acc == g`` at the
     #: release knot, which forces the cup's acceleration to be CONTINUOUS
     #: through the release.  On the 25 ms knot grid that costs the launch its
@@ -440,7 +440,7 @@ class PoseConfig:
     #: Sides of the inscribed polygon the cone is written as (8: the ticket-09
     #: prototype's; the polygon is INSIDE the cone, so it is conservative).
     cone_sides: int = 8
-    #: I-PLAN-16 (carry-ring-zvd, JB-102): the ZVD rows on the modelled Platform
+    #: I-PLAN-16 (carry-ring-zvd, FEAT-32): the ZVD rows on the modelled Platform
     #: mode at the release knot (:func:`_zvd_rows`).  False = not assembled, the
     #: pose program byte for byte as before (``trajectory_op.carry_zvd``).
     carry_zvd: bool = bool(hw.JB_TRAJ_CARRY_ZVD)
@@ -1186,7 +1186,7 @@ HELD_AXIS_SEED_TOL = (1e-4, 1e-3, 1e-2)
 #:   ``catch_inward_authority_mm`` = 35 mm (owner decision
 #:   2026-10-19: the cap follows the clamp INCLUDING that branch).  Worst case
 #:   is 35 mm inward on one axis with 30 mm on the other (the lateral
-#:   authority went 20 -> 30 mm with JB-139, 2026-11-02; 40.31 mm before):
+#:   authority went 20 -> 30 mm with BUG-52, 2026-11-02; 40.31 mm before):
 #:   ``hypot(35, 30)`` = **46.10 mm**.
 #: * Its jerk, from the planner's own minimum-acceleration rest-to-rest
 #:   expression (``6·|e0| / (k(k−1)·dt³)``, see :func:`_capture_knots_needed`):
@@ -2404,7 +2404,7 @@ def _slider_rewrite(cols, rhss, col_tags, n: int, cp_dz, cv_dz, ca_dz,
 
 
 # ---------------------------------------------------------------------------
-# I-PLAN-16: the carry ZVD rows (carry-ring-zvd P1, JB-102)
+# I-PLAN-16: the carry ZVD rows (carry-ring-zvd P1, FEAT-32)
 # ---------------------------------------------------------------------------
 #
 # The legs carry no acceleration feedforward, so the Platform follows its
@@ -3127,7 +3127,7 @@ def _verify(prog: _Program, x: np.ndarray, feas_tol: float, active, iters: int):
     no caller should branch on which one fired.
 
     The message names the worst equality row and the worst inequality row
-    that exceed the bar (JB-104 / JB-126, 2026-11-01: operator readability
+    that exceed the bar (BUG-39 / TKT-22, 2026-11-01: operator readability
     only; the reason stays ``'UNVERIFIED'`` and the infeasible-vs-degenerate
     non-distinction above stands). The labels are derived lazily, here only,
     by :func:`_worst_rows_text`, so the success path pays nothing.

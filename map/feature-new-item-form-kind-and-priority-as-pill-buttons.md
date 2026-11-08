@@ -1,5 +1,5 @@
 ---
-id: JB-71
+id: FEAT-24
 kind: feature
 title: 'New-item form: Kind and Priority as pill buttons'
 status: complete

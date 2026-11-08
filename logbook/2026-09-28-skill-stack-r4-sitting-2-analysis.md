@@ -188,4 +188,4 @@ dump if it is not.
 * Audit (`/audit --unstaged`, one Sonnet reporter): no behaviour findings; two narrative notes
   applied (the test's fail-before figure names its seed; the left-IDLE sampling assumption).
 
-> Closed 2026-10-28: closed by 2026-09-29-skill-stack-r4-gate-met (JB-34 survey).
+> Closed 2026-10-28: closed by 2026-09-29-skill-stack-r4-gate-met (IDEA-2 survey).

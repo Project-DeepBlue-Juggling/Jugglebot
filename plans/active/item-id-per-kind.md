@@ -6,8 +6,8 @@ owner: Harrison
 last_updated: 2026-11-07
 pathway: map-improvements
 scope: >-
-  Replaces the single JB-<n> Item ID sequence with one prefix and one counter per Item kind (JB-118, option 3;
-  reverses the JB-131 answer). The change expands every parser to both forms, deploys the map app, then rewrites
+  Replaces the single JB-<n> Item ID sequence with one prefix and one counter per Item kind (FEAT-34, option 3;
+  reverses the TKT-26 answer). The change expands every parser to both forms, deploys the map app, then rewrites
   every Item-ID reference in the tree in one atomic commit driven by a classifying sweeper that refuses an
   unclassified token, proves the code paths unchanged (AST and firmware image identity), freezes a crosswalk for
   the text that cannot change (commit messages and trailers), and pins the result with a guard test. JB as the
@@ -17,7 +17,7 @@ steps:
   - {id: P1, title: Expand mapkit and the Night Shift tools to both ID forms, kind: phase, status: complete, date: 2026-11-07, effort: m, hardware: none}
   - {id: P2, title: Expand the map app to both ID forms (fork repo), kind: phase, status: complete, date: 2026-11-07, effort: m, hardware: none}
   - {id: P3, title: The sweeper and the classified census, kind: phase, status: complete, date: 2026-11-08, effort: m, hardware: none}
-  - {id: P4, title: Cutover in one commit, kind: phase, status: not_started, effort: s, hardware: none}
+  - {id: P4, title: Cutover in one commit, kind: phase, status: complete, date: 2026-11-08, effort: s, hardware: none}
   - {id: P5, title: 'Contract: retire the old form, guard test, normative docs', kind: phase, status: not_started, effort: s, hardware: none}
   - {id: P6, title: Out-of-tree residue and close, kind: phase, status: not_started, effort: xs, hardware: none}
 related_logbook:
@@ -205,7 +205,7 @@ node to its source, which reports stale until the `colcon build` in P4.
 | P1 | mapkit and Night Shift tools read and write both forms; JB stays the allocated form | COMPLETE | 2026-11-07 | Low: no ID changes | T-U1 to T-U8, T-I0 |
 | P2 | Fork server and frontend take both forms; deployed | COMPLETE | 2026-11-07 | Medium: live app | T-U9 to T-U11, T-I1 |
 | P3 | `tools/id_sweep.py`, classification of every token, dry-run report | COMPLETE | 2026-11-08 | Low: writes nothing | T-U12 to T-U14, T-R1 |
-| P4 | One commit: crosswalk, every `id:`, every citation, regenerated outputs | NOT STARTED | | **High: repo-wide** | T-R2 to T-R6, T-I2 to T-I4, T-H1 |
+| P4 | One commit: crosswalk, every `id:`, every citation, regenerated outputs | COMPLETE (2026-11-08): T-R2 to T-R6 and T-I3 run | 2026-11-08 | **High: repo-wide** | T-R2 to T-R6, T-I2 to T-I4, T-H1 |
 | P5 | Dual form removed, guard test, normative docs | NOT STARTED | | Low | T-U15, T-R7 |
 | P6 | Memory, fork text, remote branches, close JB-118 | NOT STARTED | | Low | T-R8 |
 
@@ -328,7 +328,7 @@ Items in the drawer, so P4 puts those examples in backticks, which the linkifier
 
 **Outcome (2026-11-08).** `tools/id_sweep.py` classifies every broad-pattern token and refuses an unclassified one; `code_literal` was added and `fixture` widened to 13 files (stop point 3). Scoped `tests/sim/test_id_sweep.py` (2026-11-08): 23 passed, 1 skipped in 14.84 s (2026-11-08 00:32, `python -m pytest -q tests/sim/test_id_sweep.py`, temp/logs/id-p3-recheck.log). Real-tree T-R1 (`ID_SWEEP_REAL_TREE=1`, 2026-11-08): 2 passed in 56.52 s (2026-11-08 00:32, `ID_SWEEP_REAL_TREE=1 python -m pytest -q tests/sim/test_id_sweep.py -k real`). Census (2026-11-08, `python tools/id_sweep.py --census`): 8,010 tokens classified, 0 unclassified, 316 per-kind counted apart, 64 files skipped by suffix (2026-11-08 00:52, `python tools/id_sweep.py --census`, after rebasing onto the Hand-fan commits 9f7267df; the pre-rebase tree at 00:33 gave 6,953 and 258, and the added tokens are all classified without a rewrite: the dry run is unchanged at 4,103 spans). Dry run (2026-11-08, provisional crosswalk): rc 0, 4,103 spans in 667 files, 0 refused, 0 readability-cap breaks, tree unchanged (2026-11-08 00:36, `python tools/id_sweep.py --apply --dry-run --crosswalk temp/id-sweep/dry-run/provisional-crosswalk.csv --overrides tools/id_sweep_overrides.tsv`); the second-pass no-op was shown on a copy of the tree by unit 2 (`--verify` rc 0). Gate (`./run_tests.sh`): 9101 passed, 63 skipped in 551.55 s parallel and 7 passed serial, rc 0 (2026-11-08 01:05, `./run_tests.sh` on the tree rebased onto 9f7267df, temp/logs/id-p3-gate2.log; the pre-rebase tree passed 9077 at 00:40). Audit: 0 blocking, 5 behaviour, all applied. Nothing in the tree was rewritten. Record: `logbook/2026-11-08-item-id-per-kind-p3-sweeper-and-census.md`.
 
-### P4 — Cutover in one commit — NOT STARTED
+### P4 — Cutover in one commit — COMPLETE (2026-11-08)
 
 **From P3.** The sweeper reads a crosswalk CSV with columns `old_id,new_id,kind,stem`; `mapkit/legacy_ids.csv` must carry at least these. Hand-edits the sweep does not do: `docs/agents/map-writes.md:74` ("avoid JB-68..70"); the 7 regexes in `test_sitting_debrief_protocol.py`, which move with `sitting-debrief.md`; backticks on the two option-text examples; the branch globs in `.claude/commands/night-shift.md` and `sitting-debrief.md`. Regenerate the UDP protocol outputs (`python config/generate_config.py`) and re-run the xlang tests, since generator descriptions feed three generated files. Stop point 3 (the owner's read of `temp/id-migration/p3-owner-report.md`) precedes any write.
 
@@ -346,7 +346,7 @@ the auto-pull timers publish `main` to three clones every two minutes. One commi
 6. `./run_tests.sh --full` green on the starting tree, and the firmware image hash recorded (`pio run -e teensy41`).
 
 **Sequence, in a scratchpad worktree from fresh `origin/main`:**
-1. Generate `mapkit/legacy_ids.csv` (`old_id,new_id,stem`), frozen from this point.
+1. Generate `mapkit/legacy_ids.csv` (`old_id,new_id,kind,stem`), frozen from this point.
 2. Run the sweeper; apply the overrides; hand-convert the fixtures from the P3 list.
 3. `python config/generate_config.py` (10 comment hits in `hardware_config.yaml`, 5 string hits in `generate_udp_protocol.py`, which reach `config/generated/`, the firmware's `udp_protocol.h` and `tools/probes/teensy_link_profiling/jetson/udp_protocol.py`).
 4. `python -m mapkit gen`.
@@ -359,7 +359,11 @@ the auto-pull timers publish `main` to three clones every two minutes. One commi
 
 **Control-system check.** Tokens under `ros_ws/`, `teensy_link/`, `sim/` and `config/` are 102 comments, 43 docstrings and 14 strings in `ros_ws` Python alone, plus 53 firmware comments. Walking one 40 Hz cycle from `trajectory_node` through :5557 and `teensy_bridge_node` to the can-bridge's 500 Hz interpolation: no numeric literal, name, branch or wire byte changes. The 14 `ros_ws` strings are parameter descriptions and log lines (`JB-149 gc_freeze ON`, `JB-147 hand capture ON`), all at init or on a parameter edge, none parsed by a probe or test per the survey; a string one or two characters longer has no timing effect. T-R3 and T-R4 are the proof, and this paragraph is not a substitute for them. The firmware needs no flash if its image is byte-identical; any difference is a stop, since it means an ID reached a string in the binary.
 
+**Outcome (2026-11-08).** All 212 Items carry per-kind IDs (bug 87, feature 46, idea 18, pathway 9, ticket 52, each gapless from 1) and every reference was rewritten through the frozen crosswalk `mapkit/legacy_ids.csv` (212 rows, sha256 `b91e9195f1d68475bcdb537b7ab4163e4f8dc30ee220f352270f808317c7384e`): 4531 spans in 688 files, 0 refused, 0 cap breaks (2026-11-08, `python tools/id_sweep.py --apply`). The proofs run as scripts in `tools/probes/id_cutover/` (2026-11-08 12:25): T-R2 PASS (696 files, 0 differences), T-R3 PASS (60 `.py`, 96 changed strings, 0 unexplained), T-R5 PASS (0 code lines changed; `MAGIC` and `PROTOCOL_VERSION` equal), T-R6 PASS (0 unallowed, 212 = 212 = 212). T-R4 compares the `.hex`, not the `.elf`, which differs between clean builds; the second image is the Platform Teensy (`Teensy_code_platform`, env `teensy40`), since the can-bridge tree has no `teensy40` env. The fork gained `Store._legacy_ref`: an old ID reads through and a write answers 422 naming the new ID, behind a `getattr` guard (D-3). The sweeper gained two rule fixes and a `cutover-self` freeze; `.gitignore` gained `!mapkit/legacy_ids.csv`. Stop point 5 needs the owner's check of the app after the flip (T-I2), T-H1 at the next launch after `colcon build`, and the deletion of the four merged old-name `night-shift/*` branches. Record: `logbook/2026-11-08-item-id-per-kind-p4-cutover.md`.
+
 ### P5 — Contract: retire the old form, guard test, normative docs — NOT STARTED
+
+**From P4.** The dual form is still live and marked: 28 tests in the mapkit and Night Shift test files carry `# legacy form: retired at P5` (residue lists in `logbook/2026-11-08-item-id-per-kind-p4-cutover.md`), as do the `code_literal` set (81 tokens in `mapkit/` and `tools/night_shift*`) and `typed_ref`'s old-form branch. The GLOSSARY lines wait for this phase (Q4), and `docs/agents/map-writes.md:7` still says "one global sequence". The guard must also catch the lower-case and padded old forms, which T-R6 does not grep, and `legacy()` should turn a malformed crosswalk into an `ItemError`. The four merged old-name `night-shift/*` branches and two fork held branches are the owner's to delete or merge, and T-H1 is pending the next launch after `colcon build`. The precondition below (one clean Night Shift and one clean nightly) is unchanged.
 
 **Precondition:** at least one Night Shift and one nightly clean on the new form, so that P4 is still one revert away while it is young.
 
@@ -426,7 +430,7 @@ Auto-memory (12 files, 366 hits) rewritten with the same crosswalk, `MEMORY.md` 
 
 | ID | Validates | Pass criterion |
 |---|---|---|
-| T-H1 | Stack boots after the rebuild | Launch at the next Sitting: bridge handshake on FW 40 / PROTOCOL 12 with no flash, install-skew reports clean, `/robot_state` live. No motion test is warranted, since T-R3 to T-R5 prove no motion code changed |
+| T-H1 | Stack boots after the rebuild | Launch at the next Sitting: bridge handshake on can-bridge FW 41 / PROTOCOL 12 and Platform FW 9 (flashed 2026-11-08, `logbook/2026-11-08-hand-fan-runtime-control.md`) with no flash, install-skew reports clean, `/robot_state` live. No motion test is warranted, since T-R3 to T-R5 prove no motion code changed |
 
 ## 6. Notes for Collaborators
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tally ``LIMIT_*`` refusals per goal from launch logs (JB-24 / JB-127).
+"""Tally ``LIMIT_*`` refusals per goal from launch logs (BUG-5 / TKT-23).
 
 Reads ``~/.ros/log/<launch>/launch.log`` for each launch directory given and,
 per Juggle goal (``New goal accepted`` .. ``finished with state``), counts:
@@ -13,10 +13,10 @@ per Juggle goal (``New goal accepted`` .. ``finished with state``), counts:
   (the learned aim refused, the catch dispatched at the nominal aim) and a
   fatal ``END <row> at skill N`` (the attempt is over).
 
-Then per-run totals across all launches given. It answers JB-127's option 4,
+Then per-run totals across all launches given. It answers TKT-23's option 4,
 "is the LIMIT_* class the dominant miss class?": first run 2026-11-01 over the
 2026-10-28, 10-30 and 10-31 Sittings (58 goals: 4 LIMIT-class ends, 3 of them
-the JB-120 HAND_LIMIT_ACC cell; 31 of 37 leg LIMIT_* refusals were re-sends).
+the BUG-42 HAND_LIMIT_ACC cell; 31 of 37 leg LIMIT_* refusals were re-sends).
 Logbook: ``logbook/2026-11-01-jb24-limit-refusal-tally.md``. The launch log does
 not record the Platform hold per goal: take it from the ``pre/post-release
 hold`` line (printed per launch) or the Sitting's logbook.

@@ -1,5 +1,5 @@
 ---
-id: JB-53
+id: FEAT-12
 kind: feature
 title: 'Wave camera: optical frame calibration maps the START tick to a recorded frame'
 status: inbox

@@ -120,7 +120,7 @@ def test_late_arrivals_and_dropped_frame_add_no_step_beyond_the_curve():
     P = _plan(1500.0, 12, 5.0)
     # Drop 23, not 17: frame 22's cover ends at 24T with the Hand moving DOWN, so the
     # grace rides it (the same drop as native test_leg_interp.cpp). At 18T the Hand
-    # moves up at ~72 rev/s, where FW 37 (JB-145) keeps only a 6 ms grace before its
+    # moves up at ~72 rev/s, where FW 37 (BUG-55) keeps only a 6 ms grace before its
     # C1 stop, which this arrival pattern (1-15 ms late) outlasts on some seeds
     # (test_sched_c2_twin.py pins both sides of that case).
     tw, t0, out = _run(P, 44, 100_000 + 40 * 25_000, K=0.5, drop=(23,),

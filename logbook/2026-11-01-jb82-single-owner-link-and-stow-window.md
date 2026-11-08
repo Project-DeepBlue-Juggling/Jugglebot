@@ -1,5 +1,5 @@
 ---
-title: "JB-82: the can-bridge UDP link is single-owner (no SO_REUSEADDR; a second process gets LinkBusyError), and the bridge node gets an 8 s SIGINT->SIGTERM window so its shutdown Stow can log its outcome"
+title: "BUG-26: the can-bridge UDP link is single-owner (no SO_REUSEADDR; a second process gets LinkBusyError), and the bridge node gets an 8 s SIGINT->SIGTERM window so its shutdown Stow can log its outcome"
 type: bugfix
 date: 2026-11-01
 status: complete
@@ -21,17 +21,17 @@ files_changed:
   - logbook/INDEX.md
 ---
 
-# JB-82: single-owner link and the shutdown Stow window
+# BUG-26: single-owner link and the shutdown Stow window
 
-**Symptom (from JB-82, filed 2026-10-28 by the logbook backfill).** Two halves of one hazard:
+**Symptom (from BUG-26, filed 2026-10-28 by the logbook backfill).** Two halves of one hazard:
 the launch escalates SIGINT to SIGTERM after 5 s while the bridge node's shutdown Stow is budgeted
 at about 8 s, and `TeensyLinkClient` lets a second process bind the same can-bridge UDP ports.
-The Night Shift drafted options into question ticket JB-123; the owner asked to discuss, then chose
+The Night Shift drafted options into question ticket TKT-19; the owner asked to discuss, then chose
 the split recommended below.
 
 ## Discussion
 
-**The premise was half wrong, which changed the choice.** JB-123 said a cut-off Stow "leaves the
+**The premise was half wrong, which changed the choice.** TKT-19 said a cut-off Stow "leaves the
 Platform wherever SIGTERM found it". Read against the code: the node sends the profiled DEACTIVATE
 about 0.2 s after Ctrl+C, and from then on the ODrives run the TRAP_TRAJ descent and the bridge
 firmware idles each leg on arrival (`leg_deactivate.cpp`: "The ODrive owns the trajectory"); no
@@ -47,10 +47,10 @@ was still unconfirmed 4.8 s after it began (normal 1.5 s), so the kill hid wheth
 
 **Timeout: 8 s, not 12.** The window exists so the node can record the Stow's outcome, which is
 bounded at `_SHUTDOWN_DEACTIVATE_TIMEOUT_S` (6 s) plus a 0.2 s settle; 8 s covers it with margin.
-12 s (JB-123 option 1) buys nothing more and makes Ctrl+C on a stuck node wait longer. Only the
+12 s (TKT-19 option 1) buys nothing more and makes Ctrl+C on a stuck node wait longer. Only the
 bridge node gets the window; every other node keeps launch's 5 s.
 
-**Interlock: drop `SO_REUSEADDR`, not a lock file.** JB-123 option 3 proposed an `fcntl.flock`
+**Interlock: drop `SO_REUSEADDR`, not a lock file.** TKT-19 option 3 proposed an `fcntl.flock`
 keyed by host:port. A lock file only stops programs that use our client; the kernel's own bind rule
 stops every program. Probed on the Jetson 2026-11-01 on spare ports (never 5005/5006): two UDP
 sockets share a port only when BOTH set `SO_REUSEADDR`; with our socket lacking it, the second bind

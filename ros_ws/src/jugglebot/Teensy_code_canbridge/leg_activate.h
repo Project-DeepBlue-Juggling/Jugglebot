@@ -84,7 +84,7 @@ void activate_step();
 bool    activate_active();             // an activate is pending or running
 uint8_t activate_result(uint8_t axis); // last ActivateResult for an axis (0..6, hand included)
 
-// ── Hand stall guard (FW 36, JB-146) ─────────────────────────────────────────
+// ── Hand stall guard (FW 36, BUG-56) ─────────────────────────────────────────
 //  While the ladder (ACTIVATE or HAND_MOVE_TO) targets the hand, every tick checks
 //  |iq_measured| >= HAND_STALL_IQ_A AND |vel| <= HAND_STALL_VEL_RPS; held for
 //  HAND_STALL_HOLD_US (300 ms) the hand is commanded IDLE (re-sent each tick until

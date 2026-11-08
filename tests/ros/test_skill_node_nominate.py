@@ -475,7 +475,7 @@ def test_nominate_request_dwell_is_used_and_zero_is_the_pattern_default():
 
 
 def test_the_service_walks_the_aim_figure_and_the_accept_only_prints_it():
-    """JB-185 (owner option C), cost-neutral accept: `_nominate` hands the
+    """BUG-73 (owner option C), cost-neutral accept: `_nominate` hands the
     nomination the LIVE authorities only when asked (`with_aim`, the
     `skills/nominate` service); the goal accept's nominate never walks the
     second figure (zero aim solves) but prints both when the service already

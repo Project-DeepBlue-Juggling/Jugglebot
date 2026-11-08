@@ -574,4 +574,4 @@ below can be confirmed from the source tree; every row needs the board.
 * **Promoting the per-class census to the wire** — a new additive MsgType in
   `config/generate_udp_protocol.py`, deliberately not taken here (see Discussion).
 
-> Closed 2026-10-28: stale: TX deferral cause closed by FW 10 16-mailbox fix; residue bounded, self-healing (JB-34 survey).
+> Closed 2026-10-28: stale: TX deferral cause closed by FW 10 16-mailbox fix; residue bounded, self-healing (IDEA-2 survey).

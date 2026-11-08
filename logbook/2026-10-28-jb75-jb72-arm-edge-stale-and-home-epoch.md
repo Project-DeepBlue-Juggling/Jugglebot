@@ -1,9 +1,9 @@
 ---
-title: "can-bridge FW 34: SETPOINT_STALE measures from the arm edge and output waits for a post-arm setpoint (JB-75); a per-home epoch in the Diagnostic attributes a fast home's result (JB-72), and the 2026-10-27 bench false-timeout was the bench driver dropping homing_result"
+title: "can-bridge FW 34: SETPOINT_STALE measures from the arm edge and output waits for a post-arm setpoint (BUG-20); a per-home epoch in the Diagnostic attributes a fast home's result (BUG-18), and the 2026-10-27 bench false-timeout was the bench driver dropping homing_result"
 type: investigation
 date: 2026-10-28
 status: in-progress
-phase: "JB-75 / JB-72 - can-bridge arm edge and homing attribution"
+phase: "BUG-20 / BUG-18 - can-bridge arm edge and homing attribution"
 related_entries:
   - 2026-10-27-leg-lead-clamp-age-aware-p3-robot.md
 files_changed:
@@ -35,18 +35,18 @@ tags:
   - firmware
 ---
 
-# can-bridge FW 34: arm-edge staleness (JB-75) and a per-home epoch (JB-72)
+# can-bridge FW 34: arm-edge staleness (BUG-20) and a per-home epoch (BUG-18)
 
 ## What
 
 Two can-bridge defects from the 2026-10-27 lead-clamp Sittings, fixed in one firmware bump (FW 33 -> 34, PROTOCOL_VERSION stays 10). Built, unit-tested natively and on the host. **Not flashed and not bench-verified**: the dongle reached the ROBOT's bridge (BridgeIdentity FW 33 / proto 10, all seven axes present and homed), not the single-leg bench rig, so the flash was left to the owner's session.
 
-- **JB-75.** `s_last_setpoint_us` survives across arms. On a bridge that streamed before, a 10 Hz fault tick landing between a re-arm and the first new setpoint (16-37 ms) saw the previous stream's age and latched SETPOINT_STALE.
-- **JB-72.** `HomingMonitor` trusted a terminal `homing_result` only after seeing RUNNING.
+- **BUG-20.** `s_last_setpoint_us` survives across arms. On a bridge that streamed before, a 10 Hz fault tick landing between a re-arm and the first new setpoint (16-37 ms) saw the previous stream's age and latched SETPOINT_STALE.
+- **BUG-18.** `HomingMonitor` trusted a terminal `homing_result` only after seeing RUNNING.
 
 ## Findings
 
-- **The JB-72 bench symptom had a simpler cause than the item says.** `tests/hardware/teensy_home_bench.py` built `AxisStatus` without `homing_result`, so the monitor read NONE for ever and *every* home on that driver false-timed-out (`temp/logs/lead-clamp-p2-home-2.log`: `saw_running=False` on a successful 0.8 s home).
+- **The BUG-18 bench symptom had a simpler cause than the item says.** `tests/hardware/teensy_home_bench.py` built `AxisStatus` without `homing_result`, so the monitor read NONE for ever and *every* home on that driver false-timed-out (`temp/logs/lead-clamp-p2-home-2.log`: `saw_running=False` on a successful 0.8 s home).
 - **The 1 Hz premise is also wrong for the Diagnostic.** The firmware forces a Diagnostic on every `homing_result` transition (telemetry.cpp, 100 Hz check), so production `_run_home`, which does pass the result, normally sees RUNNING. Its remaining exposure is narrower: a short home whose single forced RUNNING frame is lost on the UDP stream. A RUNNING->FAILED inside one homing tick is a third case, but that one already fails safe.
 - **A latent u64 wrap in the old staleness check.** `micros64() - interp_last_setpoint_us()` left the evaluation order unspecified. If the net task stamped a setpoint between the two reads, the stamp would sit after `now` and the age would wrap into a false trip. The window is tiny, and the new code reads both stamps before `now`.
 
@@ -81,7 +81,7 @@ As above. Also: the bench driver now passes `homing_result` + `homing_epoch`, pr
 - Wire check (2026-10-28, read-only sniff `scratchpad/F/sniff_bridge.py`, mpc_active=0): BridgeIdentity **FW 33 / proto 10**, axes 0-6 all `heartbeat_seen` and `homing_result=2`. That is the robot, not the single-leg bench rig, so **nothing was flashed**.
 - **Outstanding (hardware):** flash FW 34 on the bench bridge or the robot's bridge (owner's session, launch down), then:
   - re-run `python -u tests/hardware/teensy_home_bench.py` for one normal home and one from within ~1 rev of the stop, both `succeeded=[0]`;
-  - for JB-75, arm, stream, disarm, wait > 250 ms, re-arm with no latch, and check that a dead stream after an arm still latches at ~250 ms.
+  - for BUG-20, arm, stream, disarm, wait > 250 ms, re-arm with no latch, and check that a dead stream after an arm still latches at ~250 ms.
 
 ## Flash receipt (main session, 2026-10-28 12:50 AEDT)
 
@@ -89,11 +89,11 @@ Flashed from the merged tree (main `3e7cc38a`) with the launch down: `pio run -e
 SUCCESS in 51 s. Receipt: BridgeIdentity `(fw 34, protocol 10)`, Diagnostics for axes 0-6 present
 and fresh, homed state cleared by the reboot as usual (re-home at the next Sitting). The two
 on-robot checks above (fast home, arm-edge re-arm) are still outstanding and gate the close of
-JB-75 and JB-72.
+BUG-20 and BUG-18.
 
 ## On-robot verification (owner Sitting, 2026-10-28 14:00-14:40 AEDT) — PASSED
 
-- **Fast home (JB-72), bench leg (axis 0) on CAN2, launch down:** `python -u tests/hardware/teensy_home_bench.py 0`
+- **Fast home (BUG-18), bench leg (axis 0) on CAN2, launch down:** `python -u tests/hardware/teensy_home_bench.py 0`
   five times (`temp/logs/fw34-home-1..5.log`). Runs 1-3 started away from the stop (+0.05,
   +1.62, +1.33 rev), runs 4 and 5 started within 0.04 rev of it (-0.065, -0.082 rev) straight
   after the previous run, the case FW 33 false-timed-out on. All five: `succeeded=[0] failed={}`;
@@ -102,7 +102,7 @@ JB-75 and JB-72.
   the loom, so re-cabling to the bench leg tripped the axis-silence watchdog (CAN_BUS_DOWN,
   sticky `heartbeat_seen` presence set) and HOME answered ERR_BUS_DOWN until the bridge was
   rebooted with only the bench leg connected.
-- **Arm-edge re-arm (JB-75), robot, launch up** (`~/.ros/log/2026-10-28-14-29-37-005424-jetson-3516886/launch.log`):
+- **Arm-edge re-arm (BUG-20), robot, launch up** (`~/.ros/log/2026-10-28-14-29-37-005424-jetson-3516886/launch.log`):
   `setpoint output ARMED` at 14:30:26, 14:30:46, 14:31:01 and 14:31:34, each after a
   `DISARMED` (Activate / Deactivate cycles), so three re-arms on a bridge that had streamed;
   `grep -c SETPOINT_STALE` = 0, no `FAULT LATCHED`, no CAN_BUS_DOWN, no version mismatch.

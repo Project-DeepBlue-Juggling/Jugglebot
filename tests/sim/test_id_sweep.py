@@ -410,6 +410,35 @@ def test_f1_trailer_mention_in_prose_is_not_frozen_but_a_trailer_line_is(tmp_pat
     assert [c for _, c, _ in got[1:]] == ["frozen", "frozen"], got
 
 
+def _rule_for(text):
+    toks, _ = id_sweep.line_tokens("docs/x.md", 1, text)
+    return [(t.token, (id_sweep.match_rule(t).name if id_sweep.match_rule(t) else None)) for t in toks]
+
+
+def test_a_date_suffix_is_not_a_hyphenated_name_but_a_letter_hyphen_is():
+    # audit P4: ``-11-05-JB-163`` (after a digit-hyphen) was frozen as if it were a filename
+    got = _rule_for("delete `-11-05-JB-163` and Higher-throws-with-JB-144-update and gate-JB-141-run1")
+    by = dict(got)
+    assert by["JB-163"] != "inside-hyphenated-name", got
+    assert by["JB-144-update"] == "inside-hyphenated-name", got
+    assert by["JB-141-run1"] == "inside-hyphenated-name", got
+
+
+def test_an_identity_override_keeps_a_token_a_rewrite_rule_would_take():
+    # audit P4 N1/N2: a synthetic fixture range (``JB-1..5``) and a deleted-copies range
+    # are history, so --verify must honour an identity row over a range-dots/citation hit
+    line = "a clone with JB-1..5; a second pushes JB-6 and JB-7"
+    ovr = [id_sweep.Override("logbook/x.md", line, tok, tok, "loose") for tok in ("JB-1..5", "JB-6", "JB-7")]
+    idx = id_sweep.index_overrides(ovr)
+    toks, kinds = id_sweep.line_tokens("logbook/x.md", 1, line)
+    rows, errs = id_sweep.classify(toks, kinds, {1, 2, 3, 4, 5, 6, 7}, idx)
+    assert not errs, errs
+    assert [r.cls for r in rows if r.cls in id_sweep.REWRITE_CLASSES] == [], rows
+    # and without the rows the same line is still rewritable (the rules are unchanged)
+    rows, _ = id_sweep.classify(toks, kinds, {1, 2, 3, 4, 5, 6, 7}, None)
+    assert [r.cls for r in rows if r.cls in id_sweep.REWRITE_CLASSES], rows
+
+
 def test_f2_a_list_tail_that_cannot_be_rewritten_is_an_error(tmp_path, capsys):
     snap_files = {"docs/a.md": "ok JB-1\nsee JB-1, 2, 3.\n"}
     work = _seed(tmp_path, snap_files, items=ITEMS4)
@@ -511,3 +540,16 @@ def test_f6_a_letter_placeholder_in_a_filename_is_not_frozen_by_a_path_rule(tmp_
     cls = {t: c for t, c, _ in got}
     assert cls["JB-n-question"] == "placeholder" and cls["JB-<n>-question"] == "placeholder", got
     assert cls["jb1-thing"] == "frozen" and cls["jb-12-fix"] == "frozen"
+
+
+def test_the_crosswalk_and_the_cutover_proofs_are_frozen_like_the_sweeper(tmp_path, capsys):
+    """P4: once committed, mapkit/legacy_ids.csv (every old ID, by design) and the proof scripts
+    under tools/probes/id_cutover/ (they name old IDs and old file names in their own text) are
+    tracked and so scanned; without a whole-file freeze --verify reads the crosswalk as 212
+    unrewritten citations and --apply refuses the proofs' placeholders."""
+    files = {"mapkit/legacy_ids.csv": "old_id,new_id,kind,stem\nJB-1,BUG-1,bug,bug-one\n",
+             "tools/probes/id_cutover/t_x.py": "# allows gate-JB-141-run1.log and any JB-<n> here\n"}
+    work = _seed(tmp_path, files, items=ITEMS4)
+    for rel in files:
+        got = [(t, c, r) for t, c, r in _classes_of(work, capsys, rel) if c != "per_kind"]
+        assert got and all((c, r) == ("frozen", "cutover-self") for _, c, r in got), (rel, got)

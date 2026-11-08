@@ -1,5 +1,5 @@
 ---
-id: JB-184
+id: BUG-72
 kind: bug
 title: 'Legs 1 and 2 left their magnetic base joints on Columns at Sep. 170: acceptance bounds Leg kinematics only and does not see the bridge feedforward cap'
 status: backlog
@@ -68,7 +68,7 @@ Peak = largest `leg vel / acc` over every install line of the Attempt (buffer ma
 
 - The early-ended Attempts are not comparators: they ended before the big transits.
 - Rehearsal said 353 / 5180 for Dwell 0.32; flown plan 404 / 5872, which is 14 % and 13 % higher.
-- Rehearsal for 0.27 said 310 / 4076; flown 384 / 5120 (24 % and 26 % higher). Same cause as 2026-11-06: the Runbook rehearsal omits the Catch re-aim (measured as a gap, cause per JB-184's own note).
+- Rehearsal for 0.27 said 310 / 4076; flown 384 / 5120 (24 % and 26 % higher). Same cause as 2026-11-06: the Runbook rehearsal omits the Catch re-aim (measured as a gap, cause per BUG-72's own note).
 
 ### 2. When the joints let go (measured)
 
@@ -108,7 +108,7 @@ Method: encoder FK of `/robot_state` (production `leg_lengths_to_pose`) against 
 - Not shown: that planned peak is the cause. Separation came about 0.1 s after a transit ended at near-zero speed, which fits tension or arrival loading, not peak plan acceleration. Sep. 120 reached 5488 clean, 7 % under.
 - A bound would also bite goals the owner may want: any bound inside that 7 % gap refuses the 0.32 and 0.30 goals the owner asked for, which the existing Dwell 0.27 flies at 5120.
 - Walking one 40 Hz tick (hypothetical): a refusal at goal accept changes no per-tick Segment, so no feedforward effect. A bound applied as a planner clamp would change Segment timing and needs its own walk. I recommend no limit; the owner decides.
-- Per the reopen rule: two further separations since 2026-11-06, both at Dwell 0.30 / 0.32, so JB-184 qualifies for the reopen decision.
+- Per the reopen rule: two further separations since 2026-11-06, both at Dwell 0.30 / 0.32, so BUG-72 qualifies for the reopen decision.
 
 ## Progress
 

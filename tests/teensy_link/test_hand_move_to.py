@@ -65,8 +65,8 @@ def test_method_id_is_generated_and_shared_with_the_firmware():
 def test_protocol_version_is_unchanged_by_the_additive_method():
     # HAND_MOVE_TO itself bumped nothing (it landed at 9). The 9→10 bump is the
     # later BB absolute release (ArgBbThrow.release_wall_us, FW 29, 2026-10-12);
-    # 10→11 the HeartbeatT2J growth of the FW 38 scheduled-lane census (JB-149);
-    # 11→12 its growth by the FW 40 downlink ledger (JB-174).
+    # 10→11 the HeartbeatT2J growth of the FW 38 scheduled-lane census (BUG-58);
+    # 11→12 its growth by the FW 40 downlink ledger (FEAT-41).
     assert int(p.PROTOCOL_VERSION) == 12
 
 

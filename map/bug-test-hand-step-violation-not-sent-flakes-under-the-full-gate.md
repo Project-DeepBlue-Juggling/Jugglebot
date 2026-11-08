@@ -1,5 +1,5 @@
 ---
-id: JB-79
+id: BUG-23
 kind: bug
 title: test_hand_step_violation_not_sent flakes under the full gate (assert 2 == 1)
 status: complete
@@ -28,6 +28,6 @@ Seen 2026-10-28 in ./run_tests.sh (parallel phase) on an agent worktree whose di
 
 ## Diagnosis and rule
 
-- Same shape as JB-64 and JB-66 (a wall-clock wait or an un-injected clock under four-worker load).
+- Same shape as BUG-14 and BUG-16 (a wall-clock wait or an un-injected clock under four-worker load).
 - Hand-safety surface: never demote to nightly or widen a tolerance; find the clock.
 - Log: temp/logs/D_jb78_gate.log in that worktree (scratchpad wt-jb78).

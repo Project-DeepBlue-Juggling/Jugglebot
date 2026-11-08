@@ -869,7 +869,7 @@ class SkillNode(Node):
         # `_hand_clock` / `_frame_clock` / `_commanded_clock`, so a test
         # fixture can freeze it: a loaded test run must not be able to age a
         # fixture's status past `_TRAJ_STATUS_STALE_S` across a
-        # `_start_pattern` (load flake 2026-11-04, JB-165). One clock for all
+        # `_start_pattern` (load flake 2026-11-04, BUG-65). One clock for all
         # three, so `plan_superseded`'s status-vs-install comparison stays in
         # one domain. Production: `time.perf_counter`, unchanged.
         self._obs_clock = time.perf_counter
@@ -901,7 +901,7 @@ class SkillNode(Node):
         # magazine start hand `_live_commanded_position`) -- injectable, like
         # `_hand_clock` / `_frame_clock`, so a test fixture can freeze it: a
         # loaded test run must not be able to age a fixture's sample past
-        # `_TRAJ_STATUS_STALE_S` (load flake 2026-11-02, JB-141).
+        # `_TRAJ_STATUS_STALE_S` (load flake 2026-11-02, BUG-53).
         # Production: `time.perf_counter`, unchanged.
         self._commanded_clock = time.perf_counter
         # Session-start mocap-vs-commanded frame check (`_frame_check`, plan
@@ -923,7 +923,7 @@ class SkillNode(Node):
         # in `_frame_check`) -- injectable, like `_hand_clock`, so a test
         # fixture can freeze it: a loaded test run must not be able to age a
         # fixture's frame samples past `_FRAME_CHECK_WINDOW_S` (load flake
-        # 2026-10-26, JB-64). Production: `time.perf_counter`, unchanged.
+        # 2026-10-26, BUG-14). Production: `time.perf_counter`, unchanged.
         self._frame_clock = time.perf_counter
         # The measured mocap-to-schedule offset ``(dx_mm, dy_mm)`` the last
         # evaluable frame check produced (`_frame_check_error`), or ``None``
@@ -961,7 +961,7 @@ class SkillNode(Node):
         # pre-2026-09-18 behaviour on a bridge that does not publish the key.
         self._sched_refused = -1
         self._sched_refused_mono = 0.0
-        # JB-175: the bridge's Teensy guard `fault_state` off `/link_status`
+        # BUG-68: the bridge's Teensy guard `fault_state` off `/link_status`
         # (the orchestrator's own latch read: not NONE/UNKNOWN/'' = latched)
         # and its perf stamp. Never observed / absent key = not latched.
         self._guard_fault_state = ''
@@ -1103,7 +1103,7 @@ class SkillNode(Node):
         # once no ctx is armed: the bridge REST retires mid-wait). Guarded
         # by `_reload_lock`.
         self._bb_throw_dispatched = False
-        # JB-21: wall-clock window the release of the throw THIS attempt
+        # BUG-2: wall-clock window the release of the throw THIS attempt
         # asked Ball Butler for must fall in (`throw_identity.release_window`),
         # set by `_fire_reload_throw` just before its round trip and cleared
         # wherever `_bb_throw_dispatched` is. `_on_bb_throw_outcome` ignores a
@@ -1151,7 +1151,7 @@ class SkillNode(Node):
         #: The goal's catch-bump switch (`_start_pattern`, `sk_bump.bump_enabled_for`).
         self._bump_enabled = False
         self._goal_end_code = ''
-        #: The running goal's records-ledger parameters (JB-90): an ordered
+        #: The running goal's records-ledger parameters (FEAT-29): an ordered
         #: ((key, value), ...) captured at accept by `_start_pattern`, read by
         #: `_offer_record` when the attempt ends (never re-read from the node
         #: params: an operator may change them mid-attempt).
@@ -1161,7 +1161,7 @@ class SkillNode(Node):
         #: the operator's lines (`_start_pattern`).
         self._goal_reports = []
         self._attempt_label = ''
-        self._attempt_fed = False        # JB-190: end line says "entered by a Feed"
+        self._attempt_fed = False        # BUG-77: end line says "entered by a Feed"
         # Magazine program state (U2c): the latest bb/base_frame_pose
         # (origin_mm, R, stamp_ros_s) and the live miss-report context.
         self._bb_base_pose = None
@@ -1175,7 +1175,7 @@ class SkillNode(Node):
         # active (`_on_set_parameters`), like `planner_mode`.
         self.declare_parameter('columns_angle_deg', 0.0)
         # Ball 2's own Apex (m) for the `columns_highlow` goal ONLY (JP-9, map
-        # JB-107; the Juggle goal has no second Apex field). 0.0 = unset, which
+        # IDEA-10; the Juggle goal has no second Apex field). 0.0 = unset, which
         # that goal refuses by name; every other goal ignores it. Refused while
         # a goal is active (`_on_set_parameters`), like `planner_mode`.
         self.declare_parameter('apex_m_ball2', 0.0)
@@ -1185,7 +1185,7 @@ class SkillNode(Node):
         # `_on_set_parameters`); a bad launch override is refused at start.
         self.declare_parameter('planner_mode', uc.PLANNER_MODE_DEFAULT)
         self._planner_mode()
-        # carry-ring-zvd P1c (JB-102): the pose planner's ZVD ring rows, ONE
+        # carry-ring-zvd P1c (FEAT-32): the pose planner's ZVD ring rows, ONE
         # live switch exactly like `planner_mode`: inert in level mode, and
         # rides on every InstallSegment request. Default from the yaml
         # (`trajectory_op.carry_zvd`); settable between attempts only.
@@ -1195,7 +1195,7 @@ class SkillNode(Node):
         # before its dispatch) instead of at dispatch; read at goal start.
         self.declare_parameter('admissibility_early_command', True)
         self.declare_parameter('n_throws', _DEFAULT_N_THROWS)
-        # The records ledger (JB-35, `jugglebot/records.py`): the file each
+        # The records ledger (IDEA-3, `jugglebot/records.py`): the file each
         # juggling Attempt's end is offered to. '' (the default) = disabled,
         # so a bare node and the mocked-ROS tests never touch the committed
         # `docs/records.md`; `jugglebot_launch.py` points it at the repo's.
@@ -1227,7 +1227,7 @@ class SkillNode(Node):
         # first unpinned sitting (Block B): 40 mm dropped balls on the 25-throw
         # chains at 0.9 m (the learner's y command reached +29 mm against a
         # 17.6 mm plant scatter — two drops in 51), 20 mm was stable at both
-        # apexes — 20 mm was the launch default. Owner 2026-11-02 (JB-139):
+        # apexes — 20 mm was the launch default. Owner 2026-11-02 (BUG-52):
         # 30 mm. Ball 2's Columns throw lands ~(+22, +17) mm off its aim, a
         # stable plant bias since 2026-10-04, and the learner sat pinned at
         # 20; shipped in the SAME commit as the offline Admissible box swept to
@@ -2089,7 +2089,7 @@ class SkillNode(Node):
         return self._sched_refused > self._sched_refused_at_start
 
     def _guard_latched(self, now: float) -> bool:
-        """JB-175: is the Teensy guard latched (`/link_status` `fault_state`
+        """BUG-68: is the Teensy guard latched (`/link_status` `fault_state`
         not NONE/UNKNOWN/'') on a FRESH sample? Same staleness rule as
         `_hand_lane_refused`; absent or stale reads as not latched (fail
         open: a bridge without the key must not end every attempt)."""
@@ -2174,12 +2174,12 @@ class SkillNode(Node):
         ``THROW_ABORTED_NOT_SETTLED`` (Ball Butler's yaw-settle abort) FAILS
         CLOSED like every other non-``OK`` token: the attempt ends
         ``REJECTED_BB(THROW_ABORTED_NOT_SETTLED)``. A once-per-attempt retry
-        (R5, 2026-09-30) was retired 2026-11-01 (JB-25): it was dead in the
+        (R5, 2026-09-30) was retired 2026-11-01 (BUG-6): it was dead in the
         field, because the announcement swap retires the `reload` ctx before
         Ball Butler's terminal verdict arrives (bb-self-cancel finding F1).
         A yaw-settle false positive therefore costs one attempt.
 
-        JB-21 (2026-11-01, throw identity): the String may END with
+        BUG-2 (2026-11-01, throw identity): the String may END with
         `` release_wall_s=<epoch>`` (`throw_identity.tag_message`, the
         goal's absolute release instant). While a reload throw is in
         flight, a verdict whose suffix lies outside the window this attempt
@@ -2209,7 +2209,7 @@ class SkillNode(Node):
             ctx = self._reload_ctx
             reloading = ((ctx is not None and ctx.phase == 'await_announcement')
                          or self._reload_throw_inflight)
-            # JB-21: a verdict that carries the identity of a DIFFERENT throw
+            # BUG-2: a verdict that carries the identity of a DIFFERENT throw
             # (a late verdict from the previous attempt) is logged and
             # dropped -- never ends this attempt, never retries, never
             # clears the pending-release record. No suffix = today's path.
@@ -2333,7 +2333,7 @@ class SkillNode(Node):
                         and self._traj_status.gravity_correction_loaded)
         in_trajectory_mode = bool(status_fresh
                                   and self._traj_status.mode == 'TRAJECTORY')
-        # JB-175: the orchestrator publishes control mode 'ERROR' only on a
+        # BUG-68: the orchestrator publishes control mode 'ERROR' only on a
         # real FAULT (`state_machine`: a guard-only latch keeps the streaming
         # mode, an operator disarm blanks it to ''), so on a FRESH status it
         # names the fault that `in_trajectory_mode` would call a mode change.
@@ -3505,7 +3505,7 @@ class SkillNode(Node):
                 self._end_attempt('ABORTED_BB_THROW_UNAVAILABLE',
                                   'reload refused: bb/throw_at_target unavailable')
             return
-        # JB-21 (audit 2026-11-03): the identity window opens from a clock
+        # BUG-2 (audit 2026-11-03): the identity window opens from a clock
         # read taken HERE, after `wait_for_service` returned -- `now` above
         # predates a wait of up to `_SERVICE_WAIT_S`, and Ball Butler stamps
         # its release from ITS OWN `now` inside the handler, after the wait.
@@ -3531,7 +3531,7 @@ class SkillNode(Node):
             # This attempt has now asked Ball Butler for a throw: the
             # phantom-catch guard may attribute a BY_HOST verdict to it.
             self._bb_throw_dispatched = True
-            # JB-21: the identity the verdict must carry; `window_now` is
+            # BUG-2: the identity the verdict must carry; `window_now` is
             # wall time (the ROS clock, read after `wait_for_service`), the
             # same clock `ball_butler_node` stamps `goal.release_wall_s` on,
             # and `delay_s` is exactly what `req` asks it for. Set in the
@@ -3912,7 +3912,7 @@ class SkillNode(Node):
             self._goal_outcome_lines.append(text)
 
     def _end_label(self) -> str:
-        """The label an END line prints (JB-190): the bare pattern, so a
+        """The label an END line prints (BUG-77): the bare pattern, so a
         search for `<pattern> ENDED` finds a goal a Feed entered too; the
         Feed is said at the line's tail (`report.end_line(fed=)`)."""
         if self._attempt_fed and self._attempt_label.endswith(' (reload)'):
@@ -4059,7 +4059,7 @@ class SkillNode(Node):
     #: ``columns_turned`` (JP-10): Columns on the Site pair rotated by the
     #: ``columns_angle_deg`` parameter (pose planner only; box label
     #: ``columns``, Sites named ``P1@<angle>`` / ``P2@<angle>``).
-    #: ``columns_highlow`` (JP-9, map JB-107) is two-ball Columns with Ball 2
+    #: ``columns_highlow`` (JP-9, map IDEA-10) is two-ball Columns with Ball 2
     #: thrown to its own Apex (node parameter ``apex_m_ball2``); its schedule
     #: and box label is ``schedule.COLUMNS_HIGHLOW``.
     _PATTERNS = ('self_toss', 'hop', 'columns', 'columns_1ball',
@@ -4069,7 +4069,7 @@ class SkillNode(Node):
     def _record_params(self, pattern, apex_m, separation_mm, dwell_s,
                        turned_angle_deg, apex_m_ball2):
         """The ordered ((key, value), ...) the records ledger stores for this
-        goal (JB-90): only what shapes the run. Apex, dwell and the planner
+        goal (FEAT-29): only what shapes the run. Apex, dwell and the planner
         mode for every Pattern; the Site separation for all but the
         single-Site ``self_toss``; ``turned_angle_deg`` for columns_turned;
         ``apex_m_ball2`` for columns_highlow. Never raises (``()`` on any
@@ -4347,7 +4347,7 @@ class SkillNode(Node):
 
     def _nomination_aim(self) -> nom.AimAuthority:
         """The LIVE lateral authorities the nomination's re-aim figure walks
-        (JB-185, display only): the same three parameters every
+        (BUG-73, display only): the same three parameters every
         ``SkillExecutor(...)`` build of this node is handed, so the printed figure
         follows ``ros2 param set`` exactly."""
         return nom.AimAuthority(
@@ -4371,7 +4371,7 @@ class SkillNode(Node):
         t0 = time.perf_counter()
         try:
             with self._nominate_lock:
-                # JB-185: the re-aim figure is walked ONLY when the caller
+                # BUG-73: the re-aim figure is walked ONLY when the caller
                 # asks (`skills/nominate`, never an Attempt); the goal accept
                 # (with_aim False) costs what it did before it and prints the
                 # figure only when a service call already walked it for the
@@ -6701,7 +6701,7 @@ class SkillNode(Node):
             # reads them instead of inferring from goal order.
             # A trailing field only (the parsers search, never anchor the
             # end): Ball 2's Apex of a columns_highlow goal.
-            # JB-190: a one-ball self_toss prints the Site it throws at (the
+            # BUG-77: a one-ball self_toss prints the Site it throws at (the
             # node's `site_x_mm` / `site_y_mm`, set by hand between goals and
             # shown nowhere else before the first Memory row). Trailing, and
             # on that pattern only, so every other start line is unchanged.
@@ -6735,7 +6735,7 @@ class SkillNode(Node):
 
     def _offer_record(self, pattern: str, throws, caught,
                       end_code: str) -> Tuple[bool, str]:
-        """Offer a finished Attempt to the records ledger (JB-35,
+        """Offer a finished Attempt to the records ledger (IDEA-3,
         `jugglebot/records.py`). Returns (beaten, the Pattern's record Catches
         as a string, '' when not known). Disabled when `records_path` is ''
         and for a Feed (`reload`/`magazine` are not juggling). Never raises:
@@ -6801,9 +6801,9 @@ class SkillNode(Node):
         result.throws, result.caught = rp.summarise(self._goal_reports)
         result.per_throw = list(self._goal_outcome_lines)
         pattern = str(goal_handle.request.pattern)
-        # The ledger counts an unverifiable final Catch (JB-180, option 2);
+        # The ledger counts an unverifiable final Catch (TKT-42, option 2);
         # the Result above and the end line keep the operator's tally. Only a
-        # COMPLETED goal, and only a row with a landing (JB-197).
+        # COMPLETED goal, and only a row with a landing (TKT-44).
         rec_throws, rec_caught = rp.record_counts(self._goal_reports, outcome)
         beaten, record_catches = self._offer_record(
             pattern, rec_throws, rec_caught, outcome)
@@ -6894,7 +6894,7 @@ class SkillNode(Node):
             return response
         # `_refuse_if_running` above answered 'unavailable' for any live or
         # starting goal, so this branch only runs with no Attempt: the one
-        # place the second (re-aim) figure is walked (JB-185).
+        # place the second (re-aim) figure is walked (BUG-73).
         res = self._nominate(self._nomination_config(
             pattern, apex_m, separation_mm, dwell_s,
             apex_m_ball2=apex_m_ball2, angle_deg=angle_deg,

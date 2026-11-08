@@ -363,4 +363,4 @@ constant) and **no `jugglebot_interfaces` rebuild** (both new topics carry
 - Sibling commit: the `sim/toss_gate.py` asymmetry-map seed bugfix —
   `logbook/2026-07-29-toss-gate-asymmetry-seed.md`
 
-> Closed 2026-10-28: superseded by plans/archived/single-ball-toss.md (JB-34 survey).
+> Closed 2026-10-28: superseded by plans/archived/single-ball-toss.md (IDEA-2 survey).

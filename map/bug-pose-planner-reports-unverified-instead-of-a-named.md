@@ -1,5 +1,5 @@
 ---
-id: JB-104
+id: BUG-39
 kind: bug
 title: Pose planner reports UNVERIFIED instead of a named INFEASIBLE at the feasibility edge
 status: complete
@@ -57,4 +57,4 @@ A question ticket carries this to the owner; the answer under its `## Answer` re
 
 ## Progress
 
-- 2026-11-01: JB-126 option 1: UNVERIFIED keeps its reason and now names the worst-violated rows; box re-swept value-identical (fe8c52ba88b4)
+- 2026-11-01: TKT-22 option 1: UNVERIFIED keeps its reason and now names the worst-violated rows; box re-swept value-identical (fe8c52ba88b4)

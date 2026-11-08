@@ -245,4 +245,4 @@ two-point single-ball oscillation where tilt engages) before proceeding to Rung 
 
 Commit SHA: f745f29 (this rung's feature commit).
 
-> Closed 2026-10-28: superseded by plans/archived/two-ball-skill-stack.md (JB-34 survey).
+> Closed 2026-10-28: superseded by plans/archived/two-ball-skill-stack.md (IDEA-2 survey).

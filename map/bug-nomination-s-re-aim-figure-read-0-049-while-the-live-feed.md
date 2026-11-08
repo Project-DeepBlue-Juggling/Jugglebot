@@ -1,5 +1,5 @@
 ---
-id: JB-211
+id: BUG-87
 kind: bug
 title: Nomination's re-aim figure read -0.049 while the live Feed-Catch Segment was refused at -0.208 (Dwell 0.32)
 status: inbox

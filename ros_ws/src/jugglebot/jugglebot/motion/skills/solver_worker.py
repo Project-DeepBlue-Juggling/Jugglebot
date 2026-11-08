@@ -80,7 +80,7 @@ SOLVER_HANG_S = 2.0
 #: A worker alive but silent this long after spawn never reaches READY.
 READY_TIMEOUT_S = 10.0
 
-#: Default SCHED_FIFO priority the node asks for (JB-95): below every kernel IRQ
+#: Default SCHED_FIFO priority the node asks for (FEAT-31): below every kernel IRQ
 #: thread (FIFO 50) and migration (99).  0 = leave the worker on CFS.
 WORKER_RT_PRIORITY = 10
 #: CPUs the worker is pinned to once FIFO succeeded: CPU0 carries both NIC IRQs
@@ -132,7 +132,7 @@ class SegmentSolveReply:
     #: allowance.  Informational: the node applies its own splice fence at its
     #: own clock.  ``inf`` for the in-process double (no transit).
     t_inst_s: float
-    #: JB-76 starvation probe, measured over the same ``t_rx`` .. solve-end
+    #: BUG-21 starvation probe, measured over the same ``t_rx`` .. solve-end
     #: window as ``solve_s``: the worker's CPU seconds (``process_time``) and
     #: its voluntary / involuntary context switches (``getrusage``). Both are
     #: process-wide, so an un-capped BLAS pool's threads count too (the
@@ -238,7 +238,7 @@ class InProcessSegmentSolver:
 
 
 # ---------------------------------------------------------------------------
-# Real-time policy (JB-95)
+# Real-time policy (FEAT-31)
 # ---------------------------------------------------------------------------
 
 class SchedInfo(NamedTuple):
@@ -296,7 +296,7 @@ def apply_rt_policy(prio: int, cpus: Iterable[int] = WORKER_RT_CPUS, *,
                     ) -> SchedInfo:
     """Put the CALLING THREAD on SCHED_FIFO ``prio``, then pin it to ``cpus``.
 
-    INVARIANT (JB-95): fail-open and worker-only.  Any failure leaves the
+    INVARIANT (FEAT-31): fail-open and worker-only.  Any failure leaves the
     process on CFS exactly as before, with the reason in the result; the
     affinity is touched only AFTER FIFO succeeded, and if the pin then fails
     the policy is dropped back to SCHED_OTHER: a FIFO worker with an
@@ -455,7 +455,7 @@ class WorkerSegmentSolver:
         self._env_override = env
         self._log = log
         self._rt_priority = int(rt_priority)
-        # JB-149 cpu_partition: pin the worker process to these cores (None =
+        # BUG-58 cpu_partition: pin the worker process to these cores (None =
         # untouched).  Overrides WORKER_RT_CPUS when FIFO is also requested.
         self._cpus = None if cpus is None else sorted(int(c) for c in cpus)
         self._sched_info: Optional[SchedInfo] = None
@@ -807,7 +807,7 @@ def _main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument('--rt-prio', type=int, default=0,
                     help='try SCHED_FIFO at this priority (fail-open; 0 = off)')
     ap.add_argument('--cpus', default='',
-                    help='JB-149 cpu_partition: pin to these cores, e.g. 4,5 '
+                    help='BUG-58 cpu_partition: pin to these cores, e.g. 4,5 '
                          '(fail-open; also replaces the FIFO core set)')
     args = ap.parse_args(argv)
     cpus = [int(c) for c in args.cpus.split(',') if c]

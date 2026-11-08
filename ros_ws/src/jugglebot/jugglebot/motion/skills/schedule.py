@@ -324,7 +324,7 @@ class ColumnsTiming:
 def columns_ball_timing(apex_a_m: float, apex_b_m: float,
                         dwell_s: float) -> ColumnsTiming:
     """Two balls, one Hand, one Beat (JP-9 high-low Columns, owner-confirmed
-    framing 2026-10-30; map JB-107).
+    framing 2026-10-30; map IDEA-10).
 
     Ball ``i`` (Apex ``h_i``) flies ``t_i = flight_s(h_i)``. A steady Pattern
     throws every Beat ``beta`` and alternates the balls, so each ball is
@@ -695,7 +695,7 @@ class Pattern:
     #: ``_survivor_catch`` — see :meth:`Schedule.is_phantom`.
     phantom_balls: Tuple[int, ...] = ()
     #: Ball B's (schedule id 1, operator "Ball 2") own Apex (m) -- JP-9, the
-    #: high-low Columns (``columns_highlow``, map JB-107). ``None`` (every
+    #: high-low Columns (``columns_highlow``, map IDEA-10). ``None`` (every
     #: pattern before it) means "the same as :attr:`apex_m`", and so does a
     #: value EQUAL to it: :func:`compile_columns` then builds today's schedule
     #: bit for bit. :attr:`apex_m` stays ball A's (id 0, "Ball 1"). Per id,
@@ -2094,7 +2094,7 @@ REST_RETURN_HAND_VEL_LIMIT_RPS = 15.0
 
 #: Peak hand ACCELERATION (rev/s²) the same move is sized to.  This is the one
 #: bound with a firmware failure mode behind it, and the bridge firmware still
-#: has that failure mode at FW 34 (checked 2026-10-31: the JB-75 arm-edge
+#: has that failure mode at FW 34 (checked 2026-10-31: the BUG-20 arm-edge
 #: grace and post-arm output hold act only on an output-enable / arm edge,
 #: where the hand group is CLEARED and no continuity test runs at all; the
 #: opening REST of an attempt that follows an END on a still-armed wire meets

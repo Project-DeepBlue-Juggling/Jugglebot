@@ -3,7 +3,7 @@ title: "GUI chart hover callout pills no longer overlap: a pure 1-D label layout
 type: bugfix
 date: 2026-11-04
 status: complete
-phase: "JB-159"
+phase: "BUG-61"
 files_changed:
   - ros_ws/gui/js/callout-layout.js
   - ros_ws/gui/js/telemetry-charts.js
@@ -16,7 +16,7 @@ files_changed:
 subsystem: gui
 ---
 
-# JB-159: hover callout pills overlap
+# BUG-61: hover callout pills overlap
 
 **What.** Each hover pill was placed at its own curve's y. Curves closer than one pill height (position and temperature, say) stacked their pills and every pill behind the front one was invisible; uPlot's cursor points are off, so the pills are the readout. New pure module `ros_ws/gui/js/callout-layout.js` (`layoutCallouts(desired, h, plotH)`): sort by desired y, sweep down pushing each pill below the previous, sweep up from the bottom if the last overflows, stack from the top if they cannot fit. Order by y is preserved. `telemetry-charts.js` and `can-traffic.js` `updateCallouts` now compute every visible pill's y first, lay them out, then set `top`; pill height is measured (`offsetHeight`, 16 px fallback). Pill text is unchanged: only the vertical position moves, and a pill whose curve is off-scale is now held at the plot edge instead of drawn outside it.
 

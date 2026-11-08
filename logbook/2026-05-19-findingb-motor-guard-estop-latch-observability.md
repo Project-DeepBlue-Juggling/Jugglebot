@@ -630,4 +630,4 @@ the COMMIT gate.
   (candump + CDR), **not committed**, per CLAUDE.md empirical-probe
   discipline.
 
-> Closed 2026-10-28: superseded: motor_guard parked (JB-34 survey).
+> Closed 2026-10-28: superseded: motor_guard parked (IDEA-2 survey).

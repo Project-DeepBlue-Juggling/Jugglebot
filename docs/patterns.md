@@ -17,7 +17,7 @@ Terms are the glossary's: Site, Apex, Dwell, Beat, Hand, Cup, Columns, Hop, Oval
 | JP-2 | Hop | `hop` | 2 | the Cup crosses between the Sites once per throw; also the opener of a fed Columns Attempt | flown | [records](records.md) |
 | JP-3 | Columns, one ball | `columns_1ball`, `columns_1ball_fed` | 2 | the two-ball Columns motion with one ball real and one phantom | flown | [records](records.md) |
 | JP-4 | Oval, one ball | `oval_1ball`, `oval_1ball_fed` | 2 | the caught ball is carried back in the Cup to the throw Site inside the Dwell | flown | [records](records.md) |
-| JP-5 | Polygon walk | - | N | one ball hops around N Sites; the smallest Pattern whose Site changes every Beat | idea | [JB-106](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-5-polygon-walk-one-ball-n-sites-the-cheapest-way-to-land.md) |
+| JP-5 | Polygon walk | - | N | one ball hops around N Sites; the smallest Pattern whose Site changes every Beat | idea | [IDEA-9](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-5-polygon-walk-one-ball-n-sites-the-cheapest-way-to-land.md) |
 | JP-6 | Magazine throw | `magazine` | 1 | a hand-only rest-to-rest throw at a configured target (a human's hand included); the Platform is stationary | flown | [magazine_throw.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/ros_ws/src/jugglebot/jugglebot/motion/skills/magazine_throw.py) |
 
 ## Two balls, one Hand
@@ -28,26 +28,26 @@ All two-ball one-Hand Patterns share one timing identity: throws alternate every
 |---|---|---|---|---|---|---|
 | JP-7 | Columns | `columns` | 2 | vertical throws alternate between two fixed Sites | flown | [records](records.md) |
 | JP-8 | Oval | - | 2 | each ball is caught at one Site and carried to the other inside the Dwell | destination | [two-ball-oval plan](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/two-ball-oval.md) |
-| JP-9 | High-low columns | `columns_highlow` | 2 | Columns with Ball 1 at Apex 1.05 m and Ball 2 at 0.95 m; the low ball holds longer | idea | [JB-107](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-9-high-low-columns-ball-1-at-apex-1-05-m-ball-2-at-0-95-m.md) |
-| JP-10 | Turned columns | `columns_turned` | 2 | Columns with the Site pair at a fixed angle about +z (pose planner only) | idea | [JB-108](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-10-turned-columns-the-columns-pair-at-fixed-angles-about.md) |
-| JP-11 | Rotating columns | - | 2 per Beat | the Site pair turns a few degrees every Beat | idea | [JB-109](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-11-rotating-columns-the-pair-turns-a-few-degrees-every.md) |
+| JP-9 | High-low columns | `columns_highlow` | 2 | Columns with Ball 1 at Apex 1.05 m and Ball 2 at 0.95 m; the low ball holds longer | idea | [IDEA-10](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-9-high-low-columns-ball-1-at-apex-1-05-m-ball-2-at-0-95-m.md) |
+| JP-10 | Turned columns | `columns_turned` | 2 | Columns with the Site pair at a fixed angle about +z (pose planner only) | idea | [IDEA-11](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-10-turned-columns-the-columns-pair-at-fixed-angles-about.md) |
+| JP-11 | Rotating columns | - | 2 per Beat | the Site pair turns a few degrees every Beat | idea | [IDEA-12](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-11-rotating-columns-the-pair-turns-a-few-degrees-every.md) |
 | JP-12 | Walking columns | - | 2 per Beat | the Site pair translates, across its axis today, along it at the P4 working point | unfiled | this page |
-| JP-13 | Rising and sinking columns | - | 2 per Beat | the whole Pattern rides the Platform up and down in z; the planes stay fixed to the Platform centroid | idea | [JB-110](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-13-rising-and-sinking-columns-the-whole-pattern-rides-the.md) |
-| JP-14 | Centre and orbit | - | 1 + N | Ball 1 in a column at the centre, Ball 2 stepping around a circle of radius about 100 mm | idea | [JB-111](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-14-centre-and-orbit-ball-1-in-a-column-ball-2-on-a-circle.md) |
-| JP-15 | Over the top | - | 3 | Ball 1 straight up at the centre, Ball 2 arcing over it from side to side; the two-step case of JP-14, needs P4 | idea | [JB-112](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-15-over-the-top-ball-1-straight-up-ball-2-arcs-over-it.md) |
+| JP-13 | Rising and sinking columns | - | 2 per Beat | the whole Pattern rides the Platform up and down in z; the planes stay fixed to the Platform centroid | idea | [IDEA-13](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-13-rising-and-sinking-columns-the-whole-pattern-rides-the.md) |
+| JP-14 | Centre and orbit | - | 1 + N | Ball 1 in a column at the centre, Ball 2 stepping around a circle of radius about 100 mm | idea | [IDEA-14](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-14-centre-and-orbit-ball-1-in-a-column-ball-2-on-a-circle.md) |
+| JP-15 | Over the top | - | 3 | Ball 1 straight up at the centre, Ball 2 arcing over it from side to side; the two-step case of JP-14, needs P4 | idea | [IDEA-15](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-15-over-the-top-ball-1-straight-up-ball-2-arcs-over-it.md) |
 | JP-16 | Wide columns | - | 2 | Columns at 175 to 200 mm separation; needs the P4 working point | unfiled | this page |
 | JP-18 | Crossing columns | - | 2 | each ball thrown across to the other Site, so the balls cross in the air (a one-Hand shower); not yet probed | unfiled | this page |
 
 **Rung status, 2026-11-03 (second flight, both gates not met; both stay *idea* until a gate is met).**
 
-- JP-9 (JB-107): best 18 consecutive Catches at 1.00/0.90 and 15 at 1.05/0.95 over 11 Attempts; Tracker apex difference 119.2 mm and 89.7 mm against 100; launch iq at most 36.5 A. Five of 11 Attempts ended on Ball 2's first Throw landing about 180 mm outward. Ball 1 reached only 1.019 m when commanded 1.05.
-- JP-10 (JB-108): at 45 deg two of five Attempts COMPLETED 19/19 (a new record, with the Stop Throw); at 90 deg none of seven (best 12/12), Ball 2 landing 37-50 mm outward against a 10 mm outward authority. `plant_id` was still not set per angle.
+- JP-9 (IDEA-10): best 18 consecutive Catches at 1.00/0.90 and 15 at 1.05/0.95 over 11 Attempts; Tracker apex difference 119.2 mm and 89.7 mm against 100; launch iq at most 36.5 A. Five of 11 Attempts ended on Ball 2's first Throw landing about 180 mm outward. Ball 1 reached only 1.019 m when commanded 1.05.
+- JP-10 (IDEA-11): at 45 deg two of five Attempts COMPLETED 19/19 (a new record, with the Stop Throw); at 90 deg none of seven (best 12/12), Ball 2 landing 37-50 mm outward against a 10 mm outward authority. `plant_id` was still not set per angle.
 - With Throws 20 the 20th Throw is the Stop Throw, so a full Attempt reads 19/19; both Rungs now fly Throws 21 for a `COMPLETED (20/20 caught)` reading.
 
 ## With a human partner
 
 | ID | Name | Machine label | Sites | What moves | Status | Where |
 |---|---|---|---|---|---|---|
-| JP-17 | Cascade with a partner | - | robot 1, human 1 | a plain three-ball cascade, the owner's hand being the second Hand, the Platform held tilted toward them | idea | [JB-113](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-17-three-ball-cascade-with-the-owner-as-the-second-hand.md) |
+| JP-17 | Cascade with a partner | - | robot 1, human 1 | a plain three-ball cascade, the owner's hand being the second Hand, the Platform held tilted toward them | idea | [IDEA-16](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-17-three-ball-cascade-with-the-owner-as-the-second-hand.md) |
 
 The Feed (the goal label `reload`, the Ball Butler placing a ball in the Cup) is not a Pattern and has no JP number; the records ledger says the same.

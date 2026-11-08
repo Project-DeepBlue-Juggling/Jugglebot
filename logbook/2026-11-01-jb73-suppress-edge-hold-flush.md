@@ -1,5 +1,5 @@
 ---
-title: "JB-73: can-bridge FW 35 re-sends each lane's last frame once with vel_ff = 0 on the first tick of a MOTOR_FB_STALE suppression, so the ODrive holds AT the last command (built, native-tested and flashed; bench-leg Sitting pending)"
+title: "BUG-19: can-bridge FW 35 re-sends each lane's last frame once with vel_ff = 0 on the first tick of a MOTOR_FB_STALE suppression, so the ODrive holds AT the last command (built, native-tested and flashed; bench-leg Sitting pending)"
 type: bugfix
 date: 2026-11-01
 status: in-progress
@@ -19,12 +19,12 @@ files_changed:
   - logbook/INDEX.md
 ---
 
-# JB-73: the suppress-edge hold flush (FW 35)
+# BUG-19: the suppress-edge hold flush (FW 35)
 
 **Summary.** During a MOTOR_FB_STALE suppression the can-bridge stops transmitting setpoints, and
 the ODrive keeps its last `Set_Input_Pos` including vel_ff, so in POSITION/PASSTHROUGH a leg
 settles at input_pos + vel_ff/pos_gain: 0.05-0.056 rev (3.5-4 mm) past the last command on the
-bench leg on 2026-10-27, about 6 mm at the 3.5 rev/s vel_ff cap. The owner chose JB-124 option 1:
+bench leg on 2026-10-27, about 6 mm at the 3.5 rev/s vel_ff cap. The owner chose TKT-20 option 1:
 one final frame per lane at the suppress edge, vel_ff = 0. FW 35 does that; it is built,
 native-tested and flashed (2026-11-01).
 
@@ -97,4 +97,4 @@ per lane on the first suppressed tick and counts edges (`interp_hold_flush_edges
 
 ## Open Questions
 
-- The bench-leg Sitting (JB-73's `## Sitting`): leg within 0.01 rev of the last transmitted command after every rate-0 gap (FW 33 baseline 0.05-0.056 rev), plus the iq step at the edge against the fallback threshold above. The Hand path is covered by native tests only: the bench rig has no axis 6.
+- The bench-leg Sitting (BUG-19's `## Sitting`): leg within 0.01 rev of the last transmitted command after every rate-0 gap (FW 33 baseline 0.05-0.056 rev), plus the iq step at the edge against the fallback threshold above. The Hand path is covered by native tests only: the bench rig has no axis 6.

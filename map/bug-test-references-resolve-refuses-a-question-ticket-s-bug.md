@@ -1,5 +1,5 @@
 ---
-id: JB-129
+id: BUG-45
 kind: bug
 title: 'test_references_resolve refuses a question ticket''s bug parent: main red after the first six question tickets'
 status: complete
@@ -19,7 +19,7 @@ links:
 filed_by: night-shift
 ---
 
-`tests/sim/test_map_items.py::test_references_resolve` requires every Item's `parent` to be a pathway slug. The question-ticket design (Night Shift P2, 2026-10-31) hangs a `type: question` ticket off the bug, feature or idea it blocks, and `mapkit/itemcli.py` refuses a pathway or ticket parent there. The first six question tickets filed on 2026-11-01 (JB-123 to JB-128) were the first to exercise the rule on `main`, which went red on that test.
+`tests/sim/test_map_items.py::test_references_resolve` requires every Item's `parent` to be a pathway slug. The question-ticket design (Night Shift P2, 2026-10-31) hangs a `type: question` ticket off the bug, feature or idea it blocks, and `mapkit/itemcli.py` refuses a pathway or ticket parent there. The first six question tickets filed on 2026-11-01 (TKT-19 to TKT-24) were the first to exercise the rule on `main`, which went red on that test.
 
 ## Wanted
 

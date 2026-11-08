@@ -39,8 +39,8 @@ test, and a date and time on every Pending / Fail / Pass record of a repeated te
   and a save sends the local `HH:MM`. An older checkout without the `time` parameter still
   works (the time is dropped).
 - Rows for the next Sitting (owner's choice from two options): the five existing rows stay;
-  JB-147 flies Throws 21 (Throws 20 can only report 19 catches); JB-107 and JB-108 also record
-  Ball 2's first-throw landing per Attempt; a new 10-minute JB-161 row flies one high-low
+  BUG-57 flies Throws 21 (Throws 20 can only report 19 catches); IDEA-10 and IDEA-11 also record
+  Ball 2's first-throw landing per Attempt; a new 10-minute BUG-63 row flies one high-low
   Attempt with a fresh `plant_id`, so the feed catch is aimed by the identity prior and the
   -20 mm clamp never engages, which splits the clamped-aim seating hypothesis from the rest.
 

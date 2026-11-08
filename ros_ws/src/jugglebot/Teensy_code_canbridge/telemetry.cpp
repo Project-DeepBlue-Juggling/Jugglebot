@@ -12,7 +12,7 @@
 #include "can_buses.h"
 #include "ball_butler_state.h"   // bb_yaw — the BB YAW_ESTIMATE cache forwarded as BB_YAW_ESTIMATE (FW 28)
 #include "time_base.h"
-#include "leg_activate.h" // activate_stalled() — Diagnostic flags bit2, the FW 36 hand stall guard (JB-146)
+#include "leg_activate.h" // activate_stalled() — Diagnostic flags bit2, the FW 36 hand stall guard (BUG-56)
 #include "leg_homing.h"   // homing_result() — uplinked in the Diagnostic (see logbook 2026-07-05-canhub-hardening-18a-homing-result-uplink)
 #include "gpio_poll.h"    // gpio_poll_snapshot() — the hand ball-sensor cache uplinked as HAND_SENSOR
 #include "leg_interp.h"   // interp_hand_sent() (streamed-echo freshness key) + interp_last_tick_us() (echo stamp age-correction) — FW 17
@@ -94,7 +94,7 @@ static void send_diag(uint8_t axis) {
   // bus_current rides along like iq_measured: no change-detect term of its own —
   // iq_setpoint (>0.5 A) is its load proxy, the 1 Hz forced refresh covers drift.
   d.bus_current   = a.bus_current;
-  // Real firmware outcome + its per-home epoch (FW 34, JB-72), read as ONE pair:
+  // Real firmware outcome + its per-home epoch (FW 34, BUG-18), read as ONE pair:
   // the host trusts a terminal result only under an epoch newer than the one it
   // saw before its HOME, so the two must never come from different homes.
   homing_status(axis, &d.homing_result, &d.homing_epoch);

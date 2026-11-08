@@ -1,5 +1,5 @@
 ---
-title: "Map app: searching for a bare number ranks that JB-N item first (JB-81)"
+title: "Map app: searching for a bare number ranks that JB-N item first (BUG-25)"
 type: bugfix
 date: 2026-10-28
 status: resolved
@@ -17,9 +17,9 @@ tags:
 ## What changed
 
 The map app's search (`frontend/src/lib/search.ts` in the `jugglebot-map` fork) derived its
-exact-ID tier only from `JB-12` / `jb-12` / `jb12`. A query that is only digits (`12`, trimmed)
-now also sets the ID query, so the Item `JB-12` leads the result list exactly as a `JB-12` query
-does. The existing rule stands: `12` never ID-matches `JB-120`, and `1` never ID-matches `JB-12`
+exact-ID tier only from `TKT-9` / `jb-12` / `jb12`. A query that is only digits (`12`, trimmed)
+now also sets the ID query, so the Item `TKT-9` leads the result list exactly as a `TKT-9` query
+does. The existing rule stands: `12` never ID-matches `BUG-42`, and `1` never ID-matches `TKT-9`
 (title and body hits through the normal tiers are unaffected). `parseShortId` stays strict
 because the item-URL resolver depends on it. The search input passes all-digit queries through
 unchanged.

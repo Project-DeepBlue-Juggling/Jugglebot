@@ -1,5 +1,5 @@
 ---
-title: "JB-35 records ledger: docs/records.md, written live by skill_node at each Attempt's end, shown in a GUI panel"
+title: "IDEA-3 records ledger: docs/records.md, written live by skill_node at each Attempt's end, shown in a GUI panel"
 type: feature
 date: 2026-10-28
 status: in-progress
@@ -34,7 +34,7 @@ tags:
 
 ## Summary
 
-JB-35 built to the owner's 2026-10-28 design. A record is the most Catches in one
+IDEA-3 built to the owner's 2026-10-28 design. A record is the most Catches in one
 continuous Attempt on the robot, per Pattern, beaten only by strictly more Catches; each
 beaten record appends a row, so `docs/records.md` is a history, newest last, grouped by
 ball count then Pattern id, each heading marked `<!-- pattern: <id> balls: <n> -->`.
@@ -94,4 +94,4 @@ The hook fired twice on the first Sitting with the ledger live
 `records: NEW RECORD columns_1ball_fed -- 5 Catches in 5 Throws (COMPLETED)` at 14:31 and
 `records: NEW RECORD columns -- 49 Catches in 49 Throws (COMPLETED)` at 14:33 (beating the seeded
 47/48). Both rows landed in `docs/records.md` in the live checkout and are committed here; the
-GUI panel was restarted by the owner before the Sitting. JB-35 closes.
+GUI panel was restarted by the owner before the Sitting. IDEA-3 closes.

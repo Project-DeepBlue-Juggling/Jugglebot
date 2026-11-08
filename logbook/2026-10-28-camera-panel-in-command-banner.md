@@ -1,5 +1,5 @@
 ---
-title: "Robot tab: the Wave camera panel joins the command banner (left end), buttons centred to the Trail control, panel hidden in replay (JB-74)"
+title: "Robot tab: the Wave camera panel joins the command banner (left end), buttons centred to the Trail control, panel hidden in replay (FEAT-25)"
 type: feature
 date: 2026-10-28
 status: resolved
@@ -24,7 +24,7 @@ tags:
 
 ## Summary
 
-Owner ask JB-74. `#camera-panel` is no longer an absolute box above the strip beside the collapsed minimap. It is now the first child of `#command-overlay`, the bottom banner. The five command buttons now go into a new `#command-buttons` group (`commands.js` appends there, falling back to the overlay for the node harness). `margin: 0 auto` on the group centres it between the camera panel and the Trail control's reserved padding. The bar is now `space-between`, so a wrapped row holding only the camera panel stays at the left end; `.replay-lobby` centres itself with auto margins. `--trail-bar-w` went from 30 % to 25 %, so camera panel + buttons fit on one row down to a ~860 px viewer (measured at 888 px: an 18 px gap on each side of the group). On a narrow viewer, camera on row 1 with the status ellipsised (`min-width: 0`), buttons centred below, Trail clear. REC/STOP semantics, topics and the DOM-free core are unchanged.
+Owner ask FEAT-25. `#camera-panel` is no longer an absolute box above the strip beside the collapsed minimap. It is now the first child of `#command-overlay`, the bottom banner. The five command buttons now go into a new `#command-buttons` group (`commands.js` appends there, falling back to the overlay for the node harness). `margin: 0 auto` on the group centres it between the camera panel and the Trail control's reserved padding. The bar is now `space-between`, so a wrapped row holding only the camera panel stays at the left end; `.replay-lobby` centres itself with auto margins. `--trail-bar-w` went from 30 % to 25 %, so camera panel + buttons fit on one row down to a ~860 px viewer (measured at 888 px: an 18 px gap on each side of the group). On a narrow viewer, camera on row 1 with the status ellipsised (`min-width: 0`), buttons centred below, Trail clear. REC/STOP semantics, topics and the DOM-free core are unchanged.
 
 **Hide rule:** `css/replay.css` hides `#camera-panel` and `#command-buttons` on `#command-overlay.replay-active` / `.replay-lobby-on`, the same rule that used to hide the bare `.cmd-btn` children. It also hides the panel on `body.replay`, the fence's own class from `replay/fence.js`. So the panel is gone during review, and while disconnected it hides with the buttons, since the lobby says the GUI is disconnected. Before the first failed connect, it still reads "ROS disconnected" beside the disabled buttons.
 

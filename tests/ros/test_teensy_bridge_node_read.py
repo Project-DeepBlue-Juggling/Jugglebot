@@ -537,7 +537,7 @@ def test_can_bus_down_edge_names_leg_age_and_count_no_clear_errors(bridge):
 
 def test_can_bus_down_edge_names_the_hand_not_leg_6(bridge):
     """`can_fault_leg` is an AXIS id: 6 is the Hand. The edge ERROR must say
-    "hand", never "leg 6" (JB-1: two 2026-09-13 Hand latches were read as Leg
+    "hand", never "leg 6" (BUG-1: two 2026-09-13 Hand latches were read as Leg
     faults and sent the diagnosis to the wrong actuator)."""
     from unittest.mock import MagicMock
     teensy, node = bridge
@@ -1590,7 +1590,7 @@ def test_link_status_surfaces_the_latched_scheduled_hold(bridge):
 
 
 def test_link_status_surfaces_the_fw38_sched_census_and_frame_ages(bridge):
-    """FW 38 / PROTOCOL 11 (JB-149): every scheduled-lane counter and the
+    """FW 38 / PROTOCOL 11 (BUG-58): every scheduled-lane counter and the
     heartbeat window's frame-age census reach /link_status, so a bag holds the
     firmware side of every STOP; a window with no stamped frame reads 'none'."""
     teensy, node = bridge
@@ -1624,7 +1624,7 @@ def test_link_status_surfaces_the_fw38_sched_census_and_frame_ages(bridge):
 
 
 def test_link_status_surfaces_the_fw40_downlink_ledger(bridge):
-    """FW 40 / PROTOCOL 12 (JB-174): the firmware's downlink ledger reaches
+    """FW 40 / PROTOCOL 12 (FEAT-41): the firmware's downlink ledger reaches
     /link_status, with the host's own verdict beside it. No setpoint was sent
     here, so setpoints_lost is 0 whatever the firmware's counter says."""
     teensy, node = bridge

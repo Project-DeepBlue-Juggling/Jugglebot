@@ -392,4 +392,4 @@ operator**, in the order the runbook executes it:
 - `tests/hardware/session_anomaly_fixes.md` § SECTION TIER — the bench rows.
 - `tests/hardware/session_phase8_toss_hardware.md` § TIER — the T0–T4 tier decision.
 
-> Closed 2026-10-28: superseded: FSM toss stack deleted at tag fsm-final (JB-34 survey).
+> Closed 2026-10-28: superseded: FSM toss stack deleted at tag fsm-final (IDEA-2 survey).

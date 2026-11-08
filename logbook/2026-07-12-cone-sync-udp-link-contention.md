@@ -783,4 +783,4 @@ code, never off the incident, and they stand unchanged.
      belonged to the incoming operator report, not to a claim this entry published,
      so they are not retractions and are not listed here. -->
 
-> Closed 2026-10-28: residue filed as JB-82 (UDP link ownership) (JB-34 survey).
+> Closed 2026-10-28: residue filed as BUG-26 (UDP link ownership) (IDEA-2 survey).

@@ -1,4 +1,4 @@
-"""``GET /api/records`` (gui_server.py, JB-35): the records ledger as the GUI
+"""``GET /api/records`` (gui_server.py, IDEA-3): the records ledger as the GUI
 panel reads it -- ``records.to_json`` of the ``--records-path`` file, no-cache,
 the empty ledger when the file is missing, a 500 (never a guess) when it is
 malformed. Same ephemeral-port harness as the replay route tests."""

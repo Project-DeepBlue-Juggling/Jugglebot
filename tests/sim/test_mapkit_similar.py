@@ -1,7 +1,7 @@
 """Duplicate / near-duplicate Item titles (``mapkit.similar``) and the ``item new`` refusal.
 
-The fixture titles are the 2026-10-30 cases: JB-103 filed four times from the
-Robot tab (one truncated), and a short reword of the sentence-length JB-101.
+The fixture titles are the 2026-10-30 cases: BUG-3 filed four times from the
+Robot tab (one truncated), and a short reword of the sentence-length BUG-2.
 """
 from __future__ import annotations
 
@@ -31,11 +31,13 @@ def repo(tmp_path):
     for b in ("active", "parked", "archived"):
         (tmp_path / "plans" / b).mkdir(parents=True)
     (tmp_path / "GLOSSARY.md").write_text("# G\n\n## Language\n\n### Robot\n\n**Hand**: The cup.\n")
-    _write(tmp_path, "bug", "records", "JB-103", RECORDS)
-    _write(tmp_path, "bug", "ticks", "JB-101", TICKS)
-    _write(tmp_path, "pathway", "oval", "JB-40", "Two-ball oval")
-    _write(tmp_path, "pathway", "stack", "JB-41", "Two-ball skill stack", )
-    _write(tmp_path, "bug", "old", "JB-7", "Hand clock drifts", status="complete")
+    (tmp_path / "mapkit").mkdir()  # the live tree is per kind: the crosswalk flips allocate
+    (tmp_path / "mapkit" / "legacy_ids.csv").write_text("old_id,new_id,kind,stem\n")
+    _write(tmp_path, "bug", "records", "BUG-3", RECORDS)
+    _write(tmp_path, "bug", "ticks", "BUG-2", TICKS)
+    _write(tmp_path, "pathway", "oval", "PWAY-1", "Two-ball oval")
+    _write(tmp_path, "pathway", "stack", "PWAY-2", "Two-ball skill stack", )
+    _write(tmp_path, "bug", "old", "BUG-1", "Hand clock drifts", status="complete")
     return tmp_path
 
 
@@ -51,15 +53,15 @@ def _items(root):
 ])
 def test_same_title_as_an_open_item_is_a_duplicate(repo, title):
     dup, near = similar.screen(_items(repo), title)
-    assert dup is not None and dup.item.short_id == "JB-103" and dup.exact
-    assert all(m.item.short_id != "JB-103" for m in near)
+    assert dup is not None and dup.item.short_id == "BUG-3" and dup.exact
+    assert all(m.item.short_id != "BUG-3" for m in near)
 
 
 @pytest.mark.parametrize("title,expect", [
-    (RECORDS[:-1], "JB-103"),  # the truncated first filing ("floatin")
-    ("Records window stays floating when the state machine window is minimized", "JB-103"),
-    ("Minimizing the state machine window leaves Records floating", "JB-103"),
-    ("Chart shows a single tick mark at some zoom levels", "JB-101"),  # containment
+    (RECORDS[:-1], "BUG-3"),  # the truncated first filing ("floatin")
+    ("Records window stays floating when the state machine window is minimized", "BUG-3"),
+    ("Minimizing the state machine window leaves Records floating", "BUG-3"),
+    ("Chart shows a single tick mark at some zoom levels", "BUG-2"),  # containment
 ])
 def test_near_titles_are_similar_not_duplicates(repo, title, expect):
     dup, near = similar.screen(_items(repo), title)
@@ -68,7 +70,7 @@ def test_near_titles_are_similar_not_duplicates(repo, title, expect):
 
 
 @pytest.mark.parametrize("title", [
-    "Two-ball columns",              # shares two words with JB-40/41: below every bar
+    "Two-ball columns",              # shares two words with PWAY-1/2: below every bar
     "Records page loads slowly",
     "Wave camera drops the first clip",
 ])
@@ -79,7 +81,7 @@ def test_unrelated_titles_pass(repo, title):
 def test_same_title_as_a_closed_item_is_only_similar(repo):
     dup, near = similar.screen(_items(repo), "Hand clock drifts")
     assert dup is None
-    assert [(m.item.short_id, m.exact, m.closed) for m in near] == [("JB-7", True, True)]
+    assert [(m.item.short_id, m.exact, m.closed) for m in near] == [("BUG-1", True, True)]
 
 
 def test_exclude_skips_the_item_itself(repo):
@@ -89,22 +91,22 @@ def test_exclude_skips_the_item_itself(repo):
 def test_as_dict_is_the_wire_shape(repo):
     _, near = similar.screen(_items(repo), RECORDS[:-1])
     assert similar.as_dict(near[0]) == {
-        "short_id": "JB-103", "stem": "bug-records", "kind": "bug", "title": RECORDS,
+        "short_id": "BUG-3", "stem": "bug-records", "kind": "bug", "title": RECORDS,
         "status": "inbox", "exact": False, "score": near[0].ratio.__round__(2)}
 
 
 def test_item_new_refuses_a_duplicate_even_with_allow_similar(repo):
-    with pytest.raises(itemcli.ItemCliError, match="duplicate of JB-103"):
+    with pytest.raises(itemcli.ItemCliError, match="duplicate of BUG-3"):
         itemcli.new_item(str(repo), "idea", RECORDS.lower(), allow_similar=True)
     assert len(_items(repo)) == 5  # nothing written
 
 
 def test_item_new_refuses_similar_unless_allowed(repo):
-    with pytest.raises(itemcli.ItemCliError, match=r"similar Items exist.*\n  JB-103 \(inbox\)"):
+    with pytest.raises(itemcli.ItemCliError, match=r"similar Items exist.*\n  BUG-3 \(inbox\)"):
         itemcli.new_item(str(repo), "bug", RECORDS[:-1])
     assert len(_items(repo)) == 5
     it = itemcli.new_item(str(repo), "bug", RECORDS[:-1], allow_similar=True)
-    assert it.short_id == "JB-104"
+    assert it.short_id == "BUG-4"
 
 
 def test_cli_exit_code_and_flag(repo, capsys):
@@ -138,9 +140,9 @@ def test_oldest_duplicate_is_by_filing_order_across_per_kind_ids(tmp_path):
 
 
 def test_same_day_jb_duplicate_names_the_lowest_number(tmp_path):
-    """Same-day JB duplicates: the ID breaks the tie, so the live app's refusal names JB-50 as before."""
+    """Same-day duplicates: the ID breaks the tie, so the live app's refusal names BUG-1 as before."""
     (tmp_path / "map").mkdir()
-    _write(tmp_path, "bug", "zz", "JB-50", "Cup skids on the cone")
-    _write(tmp_path, "bug", "aa", "JB-60", "Cup skids on the cone")
+    _write(tmp_path, "bug", "zz", "BUG-1", "Cup skids on the cone")
+    _write(tmp_path, "bug", "aa", "BUG-2", "Cup skids on the cone")
     dup, _near = similar.screen(_items(tmp_path), "Cup skids on the cone")
-    assert dup is not None and dup.item.short_id == "JB-50"
+    assert dup is not None and dup.item.short_id == "BUG-1"

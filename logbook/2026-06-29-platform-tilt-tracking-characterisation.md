@@ -174,4 +174,4 @@ needs only small cup motion to aim, and even at the cycle rate it tracks ~unity.
   (date, command, result) triple — Phase 0 adds only a new standalone probe +
   docs (no production code touched), so the suite is unaffected.
 
-> Closed 2026-10-28: superseded by plans/archived/bb-online-juggle-tilt-rearchitecture.md (JB-34 survey).
+> Closed 2026-10-28: superseded by plans/archived/bb-online-juggle-tilt-rearchitecture.md (IDEA-2 survey).

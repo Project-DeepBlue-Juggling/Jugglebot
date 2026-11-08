@@ -117,4 +117,4 @@ archival notes cited plan sections by the wrong number) and two NOTE items (swee
 beat-table cells carried rounding-chain drift) — all narrative, all applied before the second full gate.
 Next: the R0 dead-layer deletion (plan § 6) as its own commit and entry.
 
-> Closed 2026-10-28: closed by plans/archived/two-ball-skill-stack.md (JB-34 survey).
+> Closed 2026-10-28: closed by plans/archived/two-ball-skill-stack.md (IDEA-2 survey).

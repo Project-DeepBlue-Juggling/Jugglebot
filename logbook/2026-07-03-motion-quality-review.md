@@ -152,4 +152,4 @@ sim-fidelity constraint at once, and the current cycle fails it by ~2×.
 - The whole-cycle planner: `controller/demo/juggle_planner.py::plan_cup_cycle`;
   the continuous-cycle reference runner: `sim/juggle_online.py::_plan_cycle`.
 
-> Closed 2026-10-28: superseded by plans/archived/bb-online-juggle-tilt-rearchitecture.md (JB-34 survey).
+> Closed 2026-10-28: superseded by plans/archived/bb-online-juggle-tilt-rearchitecture.md (IDEA-2 survey).

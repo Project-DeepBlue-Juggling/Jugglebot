@@ -650,7 +650,7 @@ class InstallSegment:
             self.t_dispatch_s = 0.0
             # two-ball-oval P3: '' = the emitter's SegmentConfig default.
             self.planner_mode = ''
-            # carry-ring-zvd P1c (JB-102).
+            # carry-ring-zvd P1c (FEAT-32).
             self.carry_zvd = False
             # P3a: plan only, install nothing (rosidl default false).
             self.check_only = False

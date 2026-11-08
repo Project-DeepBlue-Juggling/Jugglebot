@@ -1,5 +1,5 @@
 ---
-id: JB-10
+id: TKT-7
 kind: ticket
 title: Plan frontmatter extension, the phases list, and generating the three INDEX files
 type: grilling

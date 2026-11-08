@@ -1,6 +1,6 @@
 /**
  * axis-ticks.js — uPlot axis options that guarantee at least two labelled ticks
- * on every chart axis, at every size and zoom (JB-101). Imports nothing, so
+ * on every chart axis, at every size and zoom (BUG-37). Imports nothing, so
  * tests/ros/js/axis_ticks_harness.js runs it under node.
  *
  * Why one tick happened: uPlot picks the smallest step from its ladder whose

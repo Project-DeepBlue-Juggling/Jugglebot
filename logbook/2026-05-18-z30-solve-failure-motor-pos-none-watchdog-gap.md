@@ -609,4 +609,4 @@ correctly.
   `temp/reports/th_t2a1_candump_20260518_200207.log` (gitignored
   runtime artefacts).
 
-> Closed 2026-10-28: superseded by 2026-05-19-findingb-motor-guard-estop-latch-observability (JB-34 survey).
+> Closed 2026-10-28: superseded by 2026-05-19-findingb-motor-guard-estop-latch-observability (IDEA-2 survey).

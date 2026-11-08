@@ -1,5 +1,5 @@
 ---
-id: JB-57
+id: FEAT-16
 kind: feature
 title: Nightly status chip in the map header
 status: complete

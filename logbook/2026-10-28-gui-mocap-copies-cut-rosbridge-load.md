@@ -1,9 +1,9 @@
 ---
-title: "GUI takes 20 Hz gui/ copies of the mocap stream: rosbridge 102 % -> 62 % of a core on the replica (JB-76 load trim, option 1)"
+title: "GUI takes 20 Hz gui/ copies of the mocap stream: rosbridge 102 % -> 62 % of a core on the replica (BUG-21 load trim, option 1)"
 type: optimization
 date: 2026-10-28
 status: resolved
-phase: "JB-76 - SPLICE_TOO_LATE solve tail (load trim)"
+phase: "BUG-21 - SPLICE_TOO_LATE solve tail (load trim)"
 related_plan:
   - two-ball-oval.md
 related_entries:
@@ -38,7 +38,7 @@ tags:
 
 ## What
 
-The GUI's rosbridge was the largest single CPU consumer in the 2026-10-28 Sitting (86 % of a core live, demand over 100 %), and the solver worker it starves is JB-76. An offline replica of the GUI's subscription set fed from that Sitting's bag reproduced the number (98.5 %) and located it: 59 % of the ~1515 messages/s entering rosbridge are the 300 Hz mocap stream on `/mocap_data`, `/rigid_body_poses` and `/bb/markers`, and rosbridge deserialises every message *before* it applies a client's throttle, so the GUI's 50 ms throttle saved nothing (report: `temp/probes/rosbridge_cpu_2026-10-28/report.md`).
+The GUI's rosbridge was the largest single CPU consumer in the 2026-10-28 Sitting (86 % of a core live, demand over 100 %), and the solver worker it starves is BUG-21. An offline replica of the GUI's subscription set fed from that Sitting's bag reproduced the number (98.5 %) and located it: 59 % of the ~1515 messages/s entering rosbridge are the 300 Hz mocap stream on `/mocap_data`, `/rigid_body_poses` and `/bb/markers`, and rosbridge deserialises every message *before* it applies a client's throttle, so the GUI's 50 ms throttle saved nothing (report: `temp/probes/rosbridge_cpu_2026-10-28/report.md`).
 
 Fix, owner-approved 2026-10-28 (option 1 of the surveyed nine):
 
@@ -72,4 +72,4 @@ This reverses the 2026-09-14 rejection of source-decimated GUI copies. That reje
 
 ## Outcome
 
-Live effect (14:29 Sitting, with fix 1): rosbridge 86 → 56 % of a core, 0.3 core returned to the box, inside the replica's prediction of 60–65 % (the replica carried no nice). The CATCH wall/CPU ratio read there was 1.97 (from 2.18), so JB-76 stays open; the follow-up is in the JB-76 entry's § "The Sitting of 2026-10-28 14:29".
+Live effect (14:29 Sitting, with fix 1): rosbridge 86 → 56 % of a core, 0.3 core returned to the box, inside the replica's prediction of 60–65 % (the replica carried no nice). The CATCH wall/CPU ratio read there was 1.97 (from 2.18), so BUG-21 stays open; the follow-up is in the BUG-21 entry's § "The Sitting of 2026-10-28 14:29".

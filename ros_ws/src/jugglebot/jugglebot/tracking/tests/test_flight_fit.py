@@ -279,7 +279,7 @@ class TestReset:
 
 class TestFlightSegmentation:
     """`new_flight_rise_mm`: one fit = one flight for a ball the tracker keeps
-    through catch and re-throw (a human throw, JB-113, 2026-11-03). Landing
+    through catch and re-throw (a human throw, IDEA-16, 2026-11-03). Landing
     plane 830, freeze floor 1080, hand at 450, as on the 2026-11-02 bags."""
 
     LANDING_Z = 830.0

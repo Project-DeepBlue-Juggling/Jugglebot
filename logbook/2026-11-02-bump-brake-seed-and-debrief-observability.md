@@ -24,7 +24,7 @@ tags: [safety, performance, dynamics, testing]
 
 # Bump re-derives the C-HAND-5 brake seed, plus three debrief observability fixes
 
-Four non-threshold fixes found by the 2026-11-02 Sitting debrief (`2026-11-02-sitting-debrief.md`, which holds the evidence and the reasoning). Related item: JB-120. No limit, margin or guard value changed.
+Four non-threshold fixes found by the 2026-11-02 Sitting debrief (`2026-11-02-sitting-debrief.md`, which holds the evidence and the reasoning). Related item: BUG-42. No limit, margin or guard value changed.
 
 ## Summary
 
@@ -39,8 +39,8 @@ Four non-threshold fixes found by the 2026-11-02 Sitting debrief (`2026-11-02-si
 
 - Scoped run (2026-11-02): `python -m pytest tests/motion/test_skills_executor.py tests/motion/test_skills_report.py tests/ros/test_skill_node.py tests/ros/test_trajectory_node_console.py tests/ros/test_teensy_bridge_node_bridge_diag.py tests/ros/test_teensy_bridge_node_setpoint.py tests/teensy_link/test_gap_monitor.py -q` -> 752 passed.
 - (2026-11-02) `pytest -q tests/motion/test_skills_bump.py tests/motion/test_release_step.py` -> 35 passed.
-- Gate: `./run_tests.sh` (2026-11-02, in the debrief worktree on origin/main 4761e68e): 8004 passed, 54 skipped, 1 failed + 5 serial passed; the one failure was `tests/sim/test_glossary_avoid_words.py::test_no_avoid_words_in_live_docs` on an Avoid-word in the new JB-149 body, fixed (doc-only) and re-run with the named doc tests below. Named doc tests after the fix (2026-11-02, `python -m pytest -q tests/sim/test_glossary_avoid_words.py tests/sim/test_logbook_front_matter.py tests/sim/test_docs_links.py tests/sim/test_plans_index.py tests/sim/test_mapkit*.py`): 186 passed in 49.37 s
+- Gate: `./run_tests.sh` (2026-11-02, in the debrief worktree on origin/main 4761e68e): 8004 passed, 54 skipped, 1 failed + 5 serial passed; the one failure was `tests/sim/test_glossary_avoid_words.py::test_no_avoid_words_in_live_docs` on an Avoid-word in the new BUG-58 body, fixed (doc-only) and re-run with the named doc tests below. Named doc tests after the fix (2026-11-02, `python -m pytest -q tests/sim/test_glossary_avoid_words.py tests/sim/test_logbook_front_matter.py tests/sim/test_docs_links.py tests/sim/test_plans_index.py tests/sim/test_mapkit*.py`): 186 passed in 49.37 s
 
 ## Outcome
 
-Fix (a) removes the step-specific excess on bumped successors (the three HAND_LIMIT_ACC ends of the Sittings), not the pre-C-HAND-5 bump-seed effect; the structural backstop (Bump decision also plans Catch N+1 and shrinks or declines) is still open under JB-120. The next Sitting should re-check the bumped-successor peaks with the segment-own figure from (b).
+Fix (a) removes the step-specific excess on bumped successors (the three HAND_LIMIT_ACC ends of the Sittings), not the pre-C-HAND-5 bump-seed effect; the structural backstop (Bump decision also plans Catch N+1 and shrinks or declines) is still open under BUG-42. The next Sitting should re-check the bumped-successor peaks with the segment-own figure from (b).

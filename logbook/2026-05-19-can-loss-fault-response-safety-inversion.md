@@ -470,4 +470,4 @@ self-parks. Commit hashes: `d8bab95` (original fix) + `f551c97`
   (forensic decoder throwaway `/tmp/probe_caninv_decode.py`, not
   committed).
 
-> Closed 2026-10-28: superseded: can_node deleted (JB-34 survey).
+> Closed 2026-10-28: superseded: can_node deleted (IDEA-2 survey).

@@ -1,4 +1,4 @@
-"""JB-149 scheduler sampler: CPU preemption vs whole-process pause, from OUTSIDE.
+"""BUG-58 scheduler sampler: CPU preemption vs whole-process pause, from OUTSIDE.
 
 A live observer (reads /proc only; never commands anything).  Run beside the
 launch.  ``record`` samples, at 20 Hz, every launch python process
@@ -17,7 +17,7 @@ uses; emitted by trajectory_node's solver log):
 The log line is written when the solve ends, so the window is [t - W, t].
 GC line (jugglebot/gc_probe.py): ``<epoch> ... GC_PROBE <tag> n=.. max_ms=.. ... worst_wall=<epoch>``.
 
-Motivating Item: map/bug-40-hz-setpoint-stream-starved-past-the-firmware-s-70-ms.md (JB-149).
+Motivating Item: map/bug-40-hz-setpoint-stream-starved-past-the-firmware-s-70-ms.md (BUG-58).
 Logbook: logbook/2026-11-03-jb149-gc-sched-probe.md
 
 Usage (repo root)::

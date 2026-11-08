@@ -19,7 +19,7 @@ files_changed:
 
 **What.** The first live night turned `main` red four times with its own `map:` pushes: a
 540-character body block, a 536-character note, the first six question tickets (unrated, and
-tripping the parent and Avoid-word rules), and JB-89 set `in_progress` unrated (still red at
+tripping the parent and Avoid-word rules), and BUG-31 set `in_progress` unrated (still red at
 11:00, repaired in `2026-11-01-jb132-night-shift-answer-keys-and-column.md`). One cause: the
 protocol's `map:` writes on `main` pushed straight from the CLI (`--commit`) with no map test
 run in between, and nothing told the orchestrator to carry its branch-side rating to `main`.

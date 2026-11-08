@@ -261,7 +261,7 @@ class TestHumanThrowCarriedAcrossFlights:
     """A human-thrown ball is caught in a hand and thrown again without the
     tracker ever losing its marker, so ONE ball id serves both flights. Its
     flight fit must forget the first flight at the re-throw, or the landing
-    published for the second flight is the first flight's (JB-113, the
+    published for the second flight is the first flight's (IDEA-16, the
     2026-11-02 human-throw bags: 5 of 34 such throws usable at the 0.3 s
     deadline before the fix). Plane 830, freeze floor 1080, hand at 450."""
 

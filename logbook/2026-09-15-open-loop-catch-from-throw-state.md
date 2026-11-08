@@ -243,4 +243,4 @@ the operator flies this at the next sitting per the updated runsheet.
 * `schedule_hand` has not been flown. The apex ladder's K=0 vs K=0.7 A/B is
   the natural place to also A/B `schedule` vs `schedule_hand`.
 
-> Closed 2026-10-28: off-ladder status done; closed by plans/archived/two-ball-skill-stack.md (JB-34 survey).
+> Closed 2026-10-28: off-ladder status done; closed by plans/archived/two-ball-skill-stack.md (IDEA-2 survey).

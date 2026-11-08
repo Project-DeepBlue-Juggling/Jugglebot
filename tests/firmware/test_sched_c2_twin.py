@@ -71,7 +71,7 @@ class Driver:
         self.hand = []      # (now_us, p, v, a) raw hand ladder, from the first transmitted tick
         self.leg = []
         self.fb = 0.0
-        self.c1_entries = []   # tick times at which an FW 37 hand C1 stop began (JB-145)
+        self.c1_entries = []   # tick times at which an FW 37 hand C1 stop began (BUG-55)
 
     def send(self, k, recv_us, **kw):
         P, V, A = self.P, self.V, self.A
@@ -191,7 +191,7 @@ def test_a_single_dropped_frame_at_emit_lead_0_rides_the_grace_and_rejoins_the_p
 
 @pytest.mark.parametrize("late_ms", [1.0, 3.0, 5.0, 7.0, 8.0, 15.0, 17.0, 20.0])
 def test_a_single_dropped_frame_at_emit_lead_0_on_a_fast_upward_hand_rides_the_short_grace_or_meets_the_c1_stop(late_ms):
-    # FW 37 (JB-145): frame 15 covers [15T, 17T) and the Hand is moving up at
+    # FW 37 (BUG-55): frame 15 covers [15T, 17T) and the Hand is moving up at
     # ~103 rev/s at 17T. Frame 16 is dropped and frame 17 lands late_ms after 17T.
     # The span-2 cubic continues for HAND_C1_STOP_GRACE_US (14 ms at FW 39) and a frame
     # landing before the first tick past 17T + 14 ms is promoted as a normal PLAY
@@ -272,7 +272,7 @@ def test_stress_lead0_random_lateness_never_steps(late_hi_ms):
     decides, the emitted curve never steps beyond the stop jerk plus the resume
     tolerances, and every stop is accounted for.
 
-    FW 37 (JB-145; 14 ms grace since FW 39): a frame more than 25 + 14 ms late outlasts the previous cover
+    FW 37 (BUG-55; 14 ms grace since FW 39): a frame more than 25 + 14 ms late outlasts the previous cover
     and its short grace, and a Hand still moving up faster than
     HAND_C1_STOP_MIN_UP_VEL_RPS then stops at cover end + HAND_C1_STOP_GRACE_US
     with a C1 entry, so at 0-40 ms every stop that happens is a
@@ -338,7 +338,7 @@ def test_cover_exhaustion_runs_a_c2_stop_then_holds_and_refuses_a_step(last_fram
     jb = max(plan_jerk(A), ti.STREAM_STOP_HAND_JERK_RPS3) * 1.001
     p_d, v_d, _ = ti.span_eval(P[K + 1], V[K + 1], P[K + 2], V[K + 2], ti.HAND_C1_S)
     if v_d > ti.HAND_C1_STOP_MIN_UP_VEL_RPS:
-        # FW 37 (JB-145): a Hand still moving up fast at cover end + the short grace
+        # FW 37 (BUG-55): a Hand still moving up fast at cover end + the short grace
         # (the span-2 cubic continued) stops there with a C1 entry.
         t_d = T0_US + (K + 2) * T_US + ti.HAND_C1_STOP_GRACE_US
         assert it.sched_hand_c1_stops == 1 and g.c1_stop

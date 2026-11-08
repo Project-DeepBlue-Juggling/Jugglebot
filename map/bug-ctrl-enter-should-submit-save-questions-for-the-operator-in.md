@@ -1,5 +1,5 @@
 ---
-id: JB-132
+id: BUG-46
 kind: bug
 title: CTRL+Enter should submit/save "Questions for the Operator" in Night Shift Reports.
 status: complete

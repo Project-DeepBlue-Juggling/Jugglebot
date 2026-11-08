@@ -862,4 +862,4 @@ arm that shows it.
    `trajectory_node`.
 9. Four `tests/ros/test_unified_cycle_integration.py` tests are wall-clock load-sensitive (the τ-overrun class); they pass when the suite runs alone, as the gate does. Follow-up: freeze every τ source in them. Do not widen tolerances.
 
-> Closed 2026-10-28: superseded by plans/archived/unified-7dof-planner.md (JB-34 survey).
+> Closed 2026-10-28: superseded by plans/archived/unified-7dof-planner.md (IDEA-2 survey).

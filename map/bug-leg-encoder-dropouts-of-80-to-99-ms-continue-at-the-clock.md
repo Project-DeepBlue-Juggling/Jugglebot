@@ -1,5 +1,5 @@
 ---
-id: JB-195
+id: BUG-82
 kind: bug
 title: 'Leg encoder dropouts of 80 to 99 ms continue at the clock beat: trial encoder_msg_rate_ms 9 on Leg 4, then all Legs'
 status: inbox
@@ -20,11 +20,11 @@ links:
 filed_by: claude
 ---
 
-The Hand's cure held at the Sitting of 2026-11-06 20:20 (JB-137). All six Legs, still at 10 ms, kept their episodes in the same bag: 4 to 8 episodes over 50 ms in 1303 s, recurring every 111 to 254 s, up to 99.1 ms. The Legs' clamp anchor dead-reckons through such a gap and MOTOR_FB_STALE acts at 150 ms, and no Attempt end has been attributed to one so far (not searched for specifically): this widens a margin, it does not cure a known fault.
+The Hand's cure held at the Sitting of 2026-11-06 20:20 (BUG-50). All six Legs, still at 10 ms, kept their episodes in the same bag: 4 to 8 episodes over 50 ms in 1303 s, recurring every 111 to 254 s, up to 99.1 ms. The Legs' clamp anchor dead-reckons through such a gap and MOTOR_FB_STALE acts at 150 ms, and no Attempt end has been attributed to one so far (not searched for specifically): this widens a margin, it does not cure a known fault.
 
 Leg 4 goes first because it is the strongest test: 8 consecutive recurrences 124 to 130 s apart, so 20 minutes expects 7.6 episodes and zero by chance is about 5e-4 (the Hand's trial was about 8 %, on count alone). If it passes, all Legs go to 9: six Legs add 67 frames/s, +0.74 to 0.90 % of the bus. The Legs share one backup JSON (`config/ODrive config Files/odrive_pro_leg_config.json`), so it changes only when all six do.
 
-Carried decisions from JB-137, none applied. (1) The Hand lead-clamp anchor: port the Legs' FW 31 dead-reckoned anchor, stop, or slew back; a long dropout did not occur at 9 ms, but the design still allows the step. (2) The 70 / 80 A gap against the 11.3 A overshoot.
+Carried decisions from BUG-50, none applied. (1) The Hand lead-clamp anchor: port the Legs' FW 31 dead-reckoned anchor, stop, or slew back; a long dropout did not occur at 9 ms, but the design still allows the step. (2) The 70 / 80 A gap against the 11.3 A overshoot.
 
 Decided 2026-11-06, for the record. (3) Hand gaps of 20 to 33 ms against the 30 ms gate: owner kept 9 on 2026-11-06; 7 ms would make them 14 to 21 ms for +43 frames/s per axis. (4) Hand heartbeat and error frame rates: heartbeat gaps of 700 to 800 ms continue every 156 to 162 s; owner took the recommendation to wait and change one thing per trial.
 

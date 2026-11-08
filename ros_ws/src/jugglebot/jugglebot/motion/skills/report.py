@@ -84,14 +84,14 @@ class ThrowReport:
     #: and its line says so (2026-10-23, owner: the 47/48 read of the 48-run).
     stop: bool = False
     #: The goal ended on a Stop and this flight's FINAL Catch could not be
-    #: verified (JB-169, owner option 4 of JB-172): ``caught`` is ``None``
+    #: verified (BUG-67, owner option 4 of TKT-38): ``caught`` is ``None``
     #: and the row is in neither side of the tally -- not a catch, not a
     #: miss -- like the Stop it ended beside. A real final miss is booked
     #: here, never as a catch. The operator's tally (:func:`summarise`) leaves
     #: it out; the records ledger counts it as thrown AND caught, but only
     #: on a COMPLETED goal whose row has a landing, i.e. a Memory row was
-    #: written (:func:`record_counts`; owner's decisions in JB-180 option 2
-    #: and JB-197).
+    #: written (:func:`record_counts`; owner's decisions in TKT-42 option 2
+    #: and TKT-44).
     unverified: bool = False
 
 
@@ -272,11 +272,11 @@ def end_line(label: str, end_code: str, end_message: str,
              fed: bool = False) -> Tuple[str, str]:
     """``(severity, text)`` for the attempt's last line.
 
-    ``final_catch_unverifiable`` (JB-169): the goal ended on a Stop and its
+    ``final_catch_unverifiable`` (BUG-67): the goal ended on a Stop and its
     final Catch was booked unverifiable; the line says so and the tally
     leaves that Catch out.
 
-    ``fed`` (JB-190): the goal was entered by a Feed. The line then starts
+    ``fed`` (BUG-77): the goal was entered by a Feed. The line then starts
     with the bare pattern (so ``<pattern> ENDED`` / ``<pattern> done`` finds
     it) and carries `` · entered by a Feed`` at the very end, after the
     tally; the start line keeps its ``(reload)`` label.
@@ -300,7 +300,7 @@ def end_line(label: str, end_code: str, end_message: str,
     thrown, caught = summarise(reports)
     tally = '%d/%d caught' % (caught, thrown)
     if final_catch_unverifiable or any(r.unverified for r in reports):
-        # JB-169: the goal ended on a Stop and its final Catch is in neither
+        # BUG-67: the goal ended on a Stop and its final Catch is in neither
         # side of the count above.
         tally += ' · ended on a Stop, final Catch unverifiable'
     # The ranges share the count's base: the Stop's "landing" is a ball
@@ -343,8 +343,8 @@ def summarise(reports: List[ThrowReport]) -> Tuple[int, int]:
     """``(throws, caught)`` for the Juggle result — from the reports, never
     from log text.  The columns Stop (:attr:`ThrowReport.stop`) is neither a
     throw nor a catch here: it was never a catch attempt. An ``unverified``
-    final Catch (JB-169) is in neither side either; the records ledger counts
-    it instead (:func:`record_counts`, owner's decision in JB-180)."""
+    final Catch (BUG-67) is in neither side either; the records ledger counts
+    it instead (:func:`record_counts`, owner's decision in TKT-42)."""
     counted = [r for r in reports if not r.stop and not r.unverified]
     return len(counted), sum(1 for r in counted if r.caught)
 
@@ -353,12 +353,12 @@ def record_counts(reports: List[ThrowReport],
                   end_code: str = 'COMPLETED') -> Tuple[int, int]:
     """``(throws, caught)`` for the records ledger: :func:`summarise`'s count
     with an ``unverified`` final Catch added to BOTH sides. Owner's decision
-    in JB-180 (option 2), narrowed by JB-197: a goal that ended on a Stop
+    in TKT-42 (option 2), narrowed by TKT-44: a goal that ended on a Stop
     whose final Catch the bag cannot verify reads N/N in the ledger, but only
     when (1) the goal ended ``COMPLETED`` (``end_code``; an abort in the 0.5 s
     before the row finalised keeps the plain count) and (2) the row carries a
     landing: ``row`` is True (a Memory row was written, which needs a landing
-    estimate, an Apex inside the band and JB-189's admission) and
+    estimate, an Apex inside the band and BUG-76's admission) and
     ``landing_err_mm`` is set. The Juggle result, feedback and end line keep
     :func:`summarise`."""
     throws, caught = summarise(reports)

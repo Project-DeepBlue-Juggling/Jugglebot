@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""CONSOLE view (JB-130): the read-only /rosout log viewer in the topics panel.
+"""CONSOLE view (TKT-25): the read-only /rosout log viewer in the topics panel.
 
 Drives the REAL console-logic.js / console-view.js / udp-traffic.js under node with a fake DOM
 (tests/ros/js/console_harness.js).  Pins: three modes + persisted CONSOLE; severity chips and

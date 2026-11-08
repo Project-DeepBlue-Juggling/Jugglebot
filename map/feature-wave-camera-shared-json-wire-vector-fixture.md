@@ -1,5 +1,5 @@
 ---
-id: JB-54
+id: FEAT-13
 kind: feature
 title: 'Wave camera: a shared JSON wire-vector fixture for the adapter firmware and the node'
 status: inbox

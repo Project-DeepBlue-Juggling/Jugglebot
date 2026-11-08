@@ -64,7 +64,7 @@ def _items(work):
 
 
 # --- format ----------------------------------------------------------------
-def test_format_and_parse():
+def test_format_and_parse():  # legacy form: retired at P5
     assert ids.format_id(7) == "JB-7"
     for bad in (0, -1, True):
         with pytest.raises(ValueError):
@@ -76,7 +76,7 @@ def test_format_and_parse():
         assert ids.parse(bad, allow_bare=True) is None
 
 
-def test_canonical_rejects_loose_forms():
+def test_canonical_rejects_loose_forms():  # legacy form: retired at P5
     assert ids.canonical("JB-3") == 3
     for bad in ("JB-01", "jb-3", "JB3", 3, None, "JB-0"):
         assert ids.canonical(bad) is None
@@ -91,86 +91,92 @@ def test_malformed_id_still_loads(tmp_path):
 
 def test_write_item_puts_id_first(tmp_path):
     (tmp_path / "map").mkdir()
-    p = _item(tmp_path, "bug", "b", id="JB-4")
-    assert p.read_text().startswith("---\nid: JB-4\nkind: bug\n")
-    assert load_item(str(p)).short_id == "JB-4"
+    p = _item(tmp_path, "bug", "b", id="BUG-4")
+    assert p.read_text().startswith("---\nid: BUG-4\nkind: bug\n")
+    assert load_item(str(p)).short_id == "BUG-4"
 
 
 # --- allocate / duplicates --------------------------------------------------
 def test_allocate_empty_map_is_one(tmp_path):
     work, _ = _repo(tmp_path)
-    assert ids.allocate(str(work)) == "JB-1"
+    _crosswalk(work)
+    assert ids.allocate(str(work), kind="bug") == "BUG-1"
 
 
 def test_allocate_takes_max_over_tree_and_ref(tmp_path):
     work, _ = _repo(tmp_path)
-    _item(work, "bug", "a", id="JB-3")
+    _crosswalk(work)
+    _item(work, "bug", "a", id="BUG-3")
     _commit_push(work, "a")
     _git(work, "rm", "-q", "map/bug-a.md")  # gone locally, still on origin/main
-    _item(work, "idea", "b", id="JB-2")
-    assert ids.allocate(str(work)) == "JB-4"
-    _item(work, "idea", "c", id="JB-9")
-    assert ids.allocate(str(work)) == "JB-10"
+    _item(work, "bug", "b", id="BUG-2")
+    assert ids.allocate(str(work), kind="bug") == "BUG-4"
+    _item(work, "bug", "c", id="BUG-9")
+    assert ids.allocate(str(work), kind="bug") == "BUG-10"
 
 
 def test_duplicates_lists_every_member(tmp_path):
     (tmp_path / "map").mkdir()
     for s in ("a", "b", "c"):
-        _item(tmp_path, "bug", s, id="JB-1" if s != "c" else "JB-2")
+        _item(tmp_path, "bug", s, id="BUG-1" if s != "c" else "BUG-2")
     d = ids.duplicates(load_items(str(tmp_path / "map")))
-    assert list(d) == ["JB-1"] and [i.slug for i in d["JB-1"]] == ["a", "b"]
+    assert list(d) == ["BUG-1"] and [i.slug for i in d["BUG-1"]] == ["a", "b"]
 
 
 # --- repair -----------------------------------------------------------------
 def test_repair_renumbers_the_unpushed_item(tmp_path):
     work, _ = _repo(tmp_path)
-    _item(work, "bug", "pub", created="2026-10-05", id="JB-1")
+    _crosswalk(work)
+    _item(work, "bug", "pub", created="2026-10-05", id="BUG-1")
     _commit_push(work, "pub")
-    _item(work, "bug", "local", created="2026-10-01", id="JB-1")  # older, but unpublished
+    _item(work, "bug", "local", created="2026-10-01", id="BUG-1")  # older, but unpublished
     before = (work / "map" / "bug-local.md").read_text()
     rows = ids.repair(str(work))
-    assert rows == [("JB-1", "JB-2", "bug-local")]
+    assert rows == [("BUG-1", "BUG-2", "bug-local")]
     after = (work / "map" / "bug-local.md").read_text()
-    assert after == before.replace("id: JB-1", "id: JB-2")  # nothing else moved
+    assert after == before.replace("id: BUG-1", "id: BUG-2")  # nothing else moved
     assert not ids.duplicates(_items(work))
 
 
 def test_repair_between_two_published_later_created_loses(tmp_path):
     work, _ = _repo(tmp_path)
-    _item(work, "bug", "x", created="2026-10-02", id="JB-1")
-    _item(work, "bug", "y", created="2026-10-01", id="JB-2")
+    _crosswalk(work)
+    _item(work, "bug", "x", created="2026-10-02", id="BUG-1")
+    _item(work, "bug", "y", created="2026-10-01", id="BUG-2")
     _commit_push(work, "both")
-    # a merge left both holding JB-5 on the ref
+    # a merge left both holding BUG-5 on the ref
     for s, c in (("x", "2026-10-02"), ("y", "2026-10-01")):
-        _item(work, "bug", s, created=c, id="JB-5")
+        _item(work, "bug", s, created=c, id="BUG-5")
     _commit_push(work, "collide")
     rows = ids.repair(str(work))
-    assert rows == [("JB-5", "JB-6", "bug-x")]
+    assert rows == [("BUG-5", "BUG-6", "bug-x")]
 
 
 def test_repair_own_limits_to_the_writers_files(tmp_path):
     work, _ = _repo(tmp_path)
-    _item(work, "bug", "theirs", id="JB-1")
-    _item(work, "bug", "mine", created="2026-10-09", id="JB-1")
+    _crosswalk(work)
+    _item(work, "bug", "theirs", id="BUG-1")
+    _item(work, "bug", "mine", created="2026-10-09", id="BUG-1")
     assert ids.repair(str(work), own=["bug-theirs-not"]) == []
-    assert ids.repair(str(work), own=["bug-mine"]) == [("JB-1", "JB-2", "bug-mine")]
+    assert ids.repair(str(work), own=["bug-mine"]) == [("BUG-1", "BUG-2", "bug-mine")]
 
 
 # --- assign_missing ---------------------------------------------------------
 def test_assign_missing_order_and_untouched_fields(tmp_path):
     work, _ = _repo(tmp_path)
+    _crosswalk(work)
     _item(work, "bug", "z-old", created="2026-09-01")
     _item(work, "idea", "b-same-day-first", created="2026-10-01")
     _commit_push(work, "first")
     _item(work, "feature", "a-same-day-later", created="2026-10-01")
     _commit_push(work, "second")
     _item(work, "ticket", "unpushed", created="2026-10-01")
-    _item(work, "pathway", "has", created="2026-08-01", id="JB-3", destination="d",
+    _item(work, "pathway", "has", created="2026-08-01", id="PWAY-1", destination="d",
           status="active")
     snap = {p.name: p.read_text() for p in (work / "map").glob("*.md")}
     rows = ids.assign_missing(str(work))
-    assert rows == [("JB-4", "bug-z-old"), ("JB-5", "idea-b-same-day-first"),
-                    ("JB-6", "feature-a-same-day-later"), ("JB-7", "ticket-unpushed")]
+    assert rows == [("BUG-1", "bug-z-old"), ("IDEA-1", "idea-b-same-day-first"),
+                    ("FEAT-1", "feature-a-same-day-later"), ("TKT-1", "ticket-unpushed")]
     for p in (work / "map").glob("*.md"):
         text = p.read_text()
         sid = load_item(str(p)).short_id
@@ -182,19 +188,20 @@ def test_assign_missing_order_and_untouched_fields(tmp_path):
 # --- check ------------------------------------------------------------------
 def test_check_reports_each_class(tmp_path):
     work, _ = _repo(tmp_path)
-    _item(work, "bug", "a", id="JB-1")
-    _item(work, "bug", "renamed", id="JB-2")
-    _item(work, "bug", "handedit", id="JB-3")
+    _crosswalk(work)
+    _item(work, "bug", "a", id="BUG-1")
+    _item(work, "bug", "renamed", id="BUG-2")
+    _item(work, "bug", "handedit", id="BUG-3")
     _commit_push(work, "pub")
-    _item(work, "bug", "dup", id="JB-1")
-    _item(work, "bug", "bad", id="jb-9")
+    _item(work, "bug", "dup", id="BUG-1")
+    _item(work, "bug", "bad", id="bug-9")
     _item(work, "bug", "none")
-    _item(work, "bug", "handedit", id="JB-30")  # changed with no renumber commit
-    _item(work, "bug", "renamed", id="JB-20")
+    _item(work, "bug", "handedit", id="BUG-30")  # changed with no renumber commit
+    _item(work, "bug", "renamed", id="BUG-20")
     _git(work, "add", "map/bug-renamed.md")  # only this file rides the renumber commit
-    _git(work, "commit", "-q", "-m", "map: renumber JB-2 -> JB-20 T renamed")
+    _git(work, "commit", "-q", "-m", "map: renumber BUG-2 -> BUG-20 T renamed")
     p = ids.check(str(work))
-    assert p["duplicate"] == ["JB-1: bug-a, bug-dup"]
+    assert p["duplicate"] == ["BUG-1: bug-a, bug-dup"]
     assert len(p["malformed"]) == 1 and p["malformed"][0].startswith("bug-bad")
     assert len(p["changed"]) == 1 and p["changed"][0].startswith("bug-handedit")
     assert p["missing"] == ["bug-none"]
@@ -203,24 +210,25 @@ def test_check_reports_each_class(tmp_path):
 def test_cli_check_exit_codes(tmp_path):
     from mapkit.__main__ import main
     work, _ = _repo(tmp_path)
-    _item(work, "bug", "a", id="JB-1")
+    _crosswalk(work)
+    _item(work, "bug", "a", id="BUG-1")
     _item(work, "bug", "none")
     assert main(["ids", "--check", "--repo", str(work)]) == 0  # missing only: informational
-    _item(work, "bug", "b", id="JB-1")
+    _item(work, "bug", "b", id="BUG-1")
     assert main(["ids", "--repo", str(work)]) == 1
 
 
 # --- resolve ----------------------------------------------------------------
 def test_resolve_precedence_and_ambiguity(tmp_path):
     (tmp_path / "map").mkdir()
-    _item(tmp_path, "bug", "cone-margin", id="JB-4")
-    _item(tmp_path, "idea", "12", id="JB-5")       # an all-digit slug
-    _item(tmp_path, "feature", "x", id="JB-12")
-    _item(tmp_path, "bug", "shared", id="JB-7")
-    _item(tmp_path, "idea", "shared", id="JB-8")
+    _item(tmp_path, "bug", "cone-margin", id="BUG-4")
+    _item(tmp_path, "idea", "12", id="IDEA-5")     # an all-digit slug
+    _item(tmp_path, "feature", "x", id="FEAT-12")
+    _item(tmp_path, "bug", "shared", id="BUG-7")
+    _item(tmp_path, "idea", "shared", id="IDEA-8")
     items = load_items(str(tmp_path / "map"))
     r = lambda t, **k: ids.stem(ids.resolve(items, t, **k))  # noqa: E731
-    assert r("bug-cone-margin") == r("cone-margin") == r("JB-4") == r("jb4") == "bug-cone-margin"
+    assert r("bug-cone-margin") == r("cone-margin") == r("BUG-4") == r("bug4") == "bug-cone-margin"
     assert r("bug-cone-margin.md") == "bug-cone-margin"
     with pytest.raises(ids.IdError, match="write commands need"):
         ids.resolve(items, "4")
@@ -231,15 +239,15 @@ def test_resolve_precedence_and_ambiguity(tmp_path):
     with pytest.raises(ids.IdError, match="ambiguous"):
         ids.resolve(items, "shared")
     with pytest.raises(ids.IdError, match="no Item"):
-        ids.resolve(items, "JB-99")
+        ids.resolve(items, "BUG-99")
 
 
 def test_resolve_refuses_a_duplicated_id(tmp_path):
     (tmp_path / "map").mkdir()
-    _item(tmp_path, "bug", "a", id="JB-1")
-    _item(tmp_path, "bug", "b", id="JB-1")
+    _item(tmp_path, "bug", "a", id="BUG-1")
+    _item(tmp_path, "bug", "b", id="BUG-1")
     with pytest.raises(ids.IdError, match="--repair"):
-        ids.resolve(load_items(str(tmp_path / "map")), "JB-1")
+        ids.resolve(load_items(str(tmp_path / "map")), "BUG-1")
 
 
 def test_set_id_is_a_one_line_text_edit(tmp_path):
@@ -249,28 +257,29 @@ def test_set_id_is_a_one_line_text_edit(tmp_path):
     text = ("---\nkind: pathway\ntitle: 'Quoted: title'\nstatus: active\n"
             "created: '2026-10-01'\ndestination: >-\n  line one\n\n  id: not a key\n---\n\nBody\r\nCRLF\r\n")
     p.write_bytes(text.encode())
-    ids.set_id(load_item(str(p)), "JB-5")
-    assert p.read_bytes().decode() == "---\nid: JB-5\n" + text[4:]
-    ids.set_id(load_item(str(p)), "JB-6")  # renumber replaces, never duplicates
-    assert p.read_bytes().decode() == "---\nid: JB-6\n" + text[4:]
-    assert load_item(str(p)).short_id == "JB-6"
+    ids.set_id(load_item(str(p)), "PWAY-5")
+    assert p.read_bytes().decode() == "---\nid: PWAY-5\n" + text[4:]
+    ids.set_id(load_item(str(p)), "PWAY-6")  # renumber replaces, never duplicates
+    assert p.read_bytes().decode() == "---\nid: PWAY-6\n" + text[4:]
+    assert load_item(str(p)).short_id == "PWAY-6"
 
 
 def test_ref_ids_reads_only_the_frontmatter_key(tmp_path):
-    # A column-0 'id: JB-n' in a body (a fenced example) must not inflate allocate.
+    # A column-0 'id: BUG-n' in a body (a fenced example) must not inflate allocate.
     work, _ = _repo(tmp_path)
-    p = _item(work, "bug", "a", id="JB-2")
-    p.write_text(p.read_text() + "\n```yaml\nid: JB-900\n---\n```\n")
+    _crosswalk(work)
+    p = _item(work, "bug", "a", id="BUG-2")
+    p.write_text(p.read_text() + "\n```yaml\nid: BUG-900\n---\n```\n")
     _item(work, "bug", "noid")
     q = work / "map" / "bug-noid.md"
-    q.write_text(q.read_text() + "\nid: JB-800\n")
+    q.write_text(q.read_text() + "\nid: BUG-800\n")
     _commit_push(work, "bodies")
-    assert ids.ref_ids(str(work)) == {"bug-a": "JB-2"}
-    assert ids.allocate(str(work)) == "JB-3"
+    assert ids.ref_ids(str(work)) == {"bug-a": "BUG-2"}
+    assert ids.allocate(str(work), kind="bug") == "BUG-3"
 
 
 # --- build-review fix 4 (2026-10-26): one malformed Item never stops an ID write ----
-def _broken(root, name="bug-broken", sid="JB-9"):
+def _broken(root, name="bug-broken", sid="BUG-9"):
     path = root / "map" / (name + ".md")
     path.write_text("---\nid: %s\nkind: bug\nstatus: bogus\n---\n\nbody\n" % sid)
     return path
@@ -278,22 +287,24 @@ def _broken(root, name="bug-broken", sid="JB-9"):
 
 def test_allocate_skips_a_malformed_file_but_counts_its_id(tmp_path, capsys):
     work, _ = _repo(tmp_path)
-    _item(work, "bug", "ok", id="JB-2")
+    _crosswalk(work)
+    _item(work, "bug", "ok", id="BUG-2")
     _broken(work)
-    assert ids.allocate(str(work)) == "JB-10"
+    assert ids.allocate(str(work), kind="bug") == "BUG-10"
     assert "skipping unreadable Item map/bug-broken.md" in capsys.readouterr().err
 
 
 def test_repair_and_assign_missing_survive_a_malformed_sibling(tmp_path):
     work, _ = _repo(tmp_path)
-    _item(work, "bug", "a", id="JB-1")
-    _item(work, "bug", "b", id="JB-1", created="2026-10-05")
+    _crosswalk(work)
+    _item(work, "bug", "a", id="BUG-1")
+    _item(work, "bug", "b", id="BUG-1", created="2026-10-05")
     _item(work, "bug", "c")  # no id
-    _broken(work, sid="JB-7")
+    _broken(work, sid="BUG-7")
     rows = ids.repair(str(work))
-    assert [(r[0], r[2]) for r in rows] == [("JB-1", "bug-b")] and rows[0][1] == "JB-8"
-    assert ids.assign_missing(str(work)) == [("JB-9", "bug-c")]
-    assert "id: JB-7" in (work / "map" / "bug-broken.md").read_text()  # untouched
+    assert [(r[0], r[2]) for r in rows] == [("BUG-1", "bug-b")] and rows[0][1] == "BUG-8"
+    assert ids.assign_missing(str(work)) == [("BUG-9", "bug-c")]
+    assert "id: BUG-7" in (work / "map" / "bug-broken.md").read_text()  # untouched
 
 
 def test_check_stays_strict_about_a_malformed_item(tmp_path):
@@ -315,11 +326,11 @@ def _crosswalk(work):
     """Make ``work`` a per-kind tree: the crosswalk file's presence is the switch."""
     (work / "mapkit").mkdir(exist_ok=True)
     path = work / "mapkit" / "legacy_ids.csv"
-    path.write_text("legacy,id\n")
+    path.write_text("old_id,new_id,kind,stem\n")
     return path
 
 
-def test_fork_contract_old_names_frozen_on_jb_inputs(tmp_path):
+def test_fork_contract_old_names_frozen_on_jb_inputs(tmp_path):  # legacy form: retired at P5
     """T-I0 (mapkit side): parse, canonical, format_id and allocate keep their
     2026-11-07 signature and results on every ``JB-<n>`` input, byte for byte;
     the live app (``server/store.py``, ``server/idrepair.py``) imports them until P5."""
@@ -360,7 +371,7 @@ def test_prefixes_cover_every_kind():
     assert set(ids.PREFIXES) == set(KINDS)
 
 
-def test_parse_ref_canonical_ref_format_ref_per_kind():
+def test_parse_ref_canonical_ref_format_ref_per_kind():  # legacy form: retired at P5
     """T-U1: all five prefixes and JB, any case, hyphen optional; BUG-0, BUG-01,
     FEAT3x and XB-3 rejected; stored forms are canonical and case-sensitive."""
     for kind, prefix in _KIND_PREFIX + ((None, "JB"),):
@@ -385,7 +396,7 @@ def test_parse_ref_canonical_ref_format_ref_per_kind():
             ids.format_ref(kind, n)
 
 
-def test_short_id_and_malformed_accept_both_forms(tmp_path):
+def test_short_id_and_malformed_accept_both_forms(tmp_path):  # legacy form: retired at P5
     """T-U5: a per-kind ID is a well-formed short_id, not a malformed one."""
     (tmp_path / "map").mkdir()
     _item(tmp_path, "bug", "new", id="BUG-3")
@@ -396,7 +407,7 @@ def test_short_id_and_malformed_accept_both_forms(tmp_path):
     assert [i.slug for i in ids.malformed(items)] == ["loose"]
 
 
-def test_duplicates_are_per_id_not_per_number(tmp_path):
+def test_duplicates_are_per_id_not_per_number(tmp_path):  # legacy form: retired at P5
     """T-U5: BUG-3 and FEAT-3 (and JB-3) are three IDs, not one duplicate."""
     (tmp_path / "map").mkdir()
     _item(tmp_path, "bug", "a", id="BUG-3")
@@ -408,7 +419,7 @@ def test_duplicates_are_per_id_not_per_number(tmp_path):
     assert list(d) == ["BUG-3"] and [i.slug for i in d["BUG-3"]] == ["a", "d"]
 
 
-def test_mismatch_flags_a_prefix_that_contradicts_the_kind(tmp_path):
+def test_mismatch_flags_a_prefix_that_contradicts_the_kind(tmp_path):  # legacy form: retired at P5
     """T-U5: mismatch flags BUG-3 on a feature; JB-<n> matches every kind;
     ``ids --check`` reports the class and fails on it."""
     for kind, prefix in _KIND_PREFIX:
@@ -429,7 +440,7 @@ def test_mismatch_flags_a_prefix_that_contradicts_the_kind(tmp_path):
     assert main(["ids", "--check", "--repo", str(work)]) == 1
 
 
-def test_allocator_form_follows_the_tree(tmp_path):
+def test_allocator_form_follows_the_tree(tmp_path):  # legacy form: retired at P5
     """T-U3: no crosswalk file -> JB-<n> whatever ``kind`` says; crosswalk present
     -> per kind; removing it switches back."""
     work, _ = _repo(tmp_path)
@@ -481,7 +492,7 @@ def test_repair_and_assign_missing_stay_within_the_kind(tmp_path):
     assert ids.assign_missing(str(work)) == [("IDEA-1", "idea-none")]
 
 
-def test_resolve_takes_both_forms_and_lists_a_shared_bare_number(tmp_path):
+def test_resolve_takes_both_forms_and_lists_a_shared_bare_number(tmp_path):  # legacy form: retired at P5
     """T-U4: stem, slug, ID order; both forms resolve; bare digits on a read
     return the one match or list every match; bare on a write is refused."""
     (tmp_path / "map").mkdir()
@@ -518,3 +529,157 @@ def test_resolve_refuses_a_stem_that_is_another_items_id(tmp_path):
     assert ids.stem(ids.resolve(items, "BUG-12")) == "bug-other"  # not a stem: case-sensitive
     assert ids.stem(ids.resolve(items, "idea-3")) == "idea-3"
     assert ids.stem(ids.resolve(items, "bug-other")) == "bug-other"
+
+
+# --- P4 unit 1: the crosswalk generator and D-3 legacy resolution ----------
+_XW_HEADER = "old_id,new_id,kind,stem\n"
+
+
+def _legacy_tree(tmp_path):
+    """Six legacy Items, mixed kinds, deliberately out of file order."""
+    (tmp_path / "map").mkdir(parents=True, exist_ok=True)
+    _item(tmp_path, "idea", "i-a", id="JB-5")
+    _item(tmp_path, "bug", "b-late", id="JB-9")
+    _item(tmp_path, "bug", "b-early", id="JB-2")
+    _item(tmp_path, "pathway", "pw", id="JB-1", destination="d", status="active")
+    _item(tmp_path, "ticket", "t-a", id="JB-7")
+    _item(tmp_path, "feature", "f-a", id="JB-3")
+    return tmp_path
+
+
+def test_make_crosswalk_writes_exact_bytes(tmp_path):  # legacy form: retired at P5
+    """Rows grouped by kind in PREFIXES order, ascending old number, gapless ranks."""
+    root = _legacy_tree(tmp_path)
+    path = ids.make_crosswalk(str(root))
+    assert path == str(root / "mapkit" / "legacy_ids.csv")
+    assert (root / "mapkit" / "legacy_ids.csv").read_bytes() == (
+        _XW_HEADER
+        + "JB-2,BUG-1,bug,bug-b-early\n"
+        + "JB-9,BUG-2,bug,bug-b-late\n"
+        + "JB-3,FEAT-1,feature,feature-f-a\n"
+        + "JB-5,IDEA-1,idea,idea-i-a\n"
+        + "JB-1,PWAY-1,pathway,pathway-pw\n"
+        + "JB-7,TKT-1,ticket,ticket-t-a\n").encode()
+
+
+def test_make_crosswalk_is_deterministic(tmp_path):  # legacy form: retired at P5
+    root = _legacy_tree(tmp_path / "a")
+    root2 = _legacy_tree(tmp_path / "b")
+    ids.make_crosswalk(str(root))
+    ids.make_crosswalk(str(root2))
+    assert (root / ids.LEGACY_IDS).read_bytes() == (root2 / ids.LEGACY_IDS).read_bytes()
+
+
+@pytest.mark.parametrize("what,match", [
+    ("exists", "frozen"),
+    ("per_kind", "BUG-4"),
+    ("no_id", "bug-none"),
+    ("dup", "JB-2"),
+    ("bad_id", "bug-bad"),
+    ("unparseable", "bug-broken"),
+])
+def test_make_crosswalk_refuses(tmp_path, what, match):  # legacy form: retired at P5
+    root = _legacy_tree(tmp_path)
+    if what == "exists":
+        (root / "mapkit").mkdir()
+        (root / ids.LEGACY_IDS).write_text(_XW_HEADER)
+    elif what == "per_kind":
+        _item(root, "bug", "pk", id="BUG-4")
+    elif what == "no_id":
+        _item(root, "bug", "none")
+    elif what == "dup":
+        _item(root, "idea", "dupe", id="JB-2")
+    elif what == "bad_id":
+        _item(root, "bug", "bad", id="JB-01")
+    else:
+        (root / "map" / "bug-broken.md").write_text("---\nid: JB-40\nkind: bug\n")
+    before = (root / ids.LEGACY_IDS).exists()
+    with pytest.raises(ids.CrosswalkError, match=match):
+        ids.make_crosswalk(str(root))
+    assert (root / ids.LEGACY_IDS).exists() == before
+
+
+def test_make_crosswalk_cli(tmp_path, capsys):
+    from mapkit.__main__ import main
+    root = _legacy_tree(tmp_path)
+    assert main(["ids", "--make-crosswalk", "--repo", str(root)]) == 0
+    assert (root / ids.LEGACY_IDS).is_file()
+    assert main(["ids", "--make-crosswalk", "--repo", str(root)]) != 0  # frozen
+    assert "frozen" in capsys.readouterr().err
+
+
+def test_make_crosswalk_round_trips_through_the_sweeper(tmp_path):
+    import os
+    import sys
+    tools = os.path.join(os.path.dirname(__file__), "..", "..", "tools")
+    sys.path.insert(0, os.path.abspath(tools))
+    import id_sweep
+    root = _legacy_tree(tmp_path)
+    ids.make_crosswalk(str(root))
+    xw, errors = id_sweep.read_crosswalk(str(root / ids.LEGACY_IDS))
+    assert errors == []
+    assert xw == {2: "BUG-1", 9: "BUG-2", 3: "FEAT-1", 5: "IDEA-1", 1: "PWAY-1", 7: "TKT-1"}
+
+
+def test_legacy_is_empty_without_the_file_and_full_with_it(tmp_path):  # legacy form: retired at P5
+    root = _legacy_tree(tmp_path)
+    assert ids.legacy(str(root)) == {}
+    ids.make_crosswalk(str(root))
+    assert ids.legacy(str(root)) == {"JB-2": "BUG-1", "JB-9": "BUG-2", "JB-3": "FEAT-1",
+                                     "JB-5": "IDEA-1", "JB-1": "PWAY-1", "JB-7": "TKT-1"}
+
+
+def _perkind_tree(tmp_path):
+    """The crosswalk's per-kind twin of :func:`_legacy_tree`, csv in place."""
+    root = _legacy_tree(tmp_path)
+    ids.make_crosswalk(str(root))
+    for kind, slug, new in (("idea", "i-a", "IDEA-1"), ("bug", "b-late", "BUG-2"),
+                            ("bug", "b-early", "BUG-1"), ("pathway", "pw", "PWAY-1"),
+                            ("ticket", "t-a", "TKT-1"), ("feature", "f-a", "FEAT-1")):
+        p = load_item(str(root / "map" / ("%s-%s.md" % (kind, slug))))
+        ids.set_id(p, new)
+    return root
+
+
+def test_check_is_clean_on_a_per_kind_tree_with_the_crosswalk(tmp_path):  # legacy form: retired at P5
+    from mapkit.__main__ import main
+    root = _perkind_tree(tmp_path)
+    p = ids.check(str(root), items=load_items(str(root / "map")))
+    assert p["duplicate"] == p["malformed"] == p["mismatch"] == []
+    assert main(["ids", "--check", "--repo", str(root), "--ref", "HEAD"]) in (0, 1)  # no git: ref absent
+    assert ids.legacy(str(root))["JB-9"] == "BUG-2"
+
+
+def test_resolve_legacy_reads_translate_and_writes_refuse(tmp_path):  # legacy form: retired at P5
+    root = _perkind_tree(tmp_path)
+    items = load_items(str(root / "map"))
+    lg = ids.legacy(str(root))
+    assert ids.stem(ids.resolve(items, "JB-9", allow_bare=True, legacy=lg)) == "bug-b-late"
+    assert ids.stem(ids.resolve(items, "jb9", allow_bare=True, legacy=lg)) == "bug-b-late"
+    with pytest.raises(ids.IdError, match=r"JB-9 is now BUG-2 \(bug-b-late\); writes take the new ID"):
+        ids.resolve(items, "JB-9", legacy=lg)
+    assert ids.stem(ids.resolve(items, "BUG-2", legacy=lg)) == "bug-b-late"
+    assert ids.stem(ids.resolve(items, "bug-b-late", legacy=lg)) == "bug-b-late"
+    with pytest.raises(ids.IdError, match="no Item"):
+        ids.resolve(items, "JB-77", allow_bare=True, legacy=lg)
+    with pytest.raises(ids.IdError, match="no Item"):
+        ids.resolve(items, "JB-77", legacy=lg)
+
+
+def test_resolve_without_a_legacy_map_is_unchanged(tmp_path):  # legacy form: retired at P5
+    root = _perkind_tree(tmp_path)
+    items = load_items(str(root / "map"))
+    for kw in ({}, {"legacy": None}, {"legacy": {}}):
+        with pytest.raises(ids.IdError, match="no Item"):
+            ids.resolve(items, "JB-9", allow_bare=True, **kw)
+
+
+def test_make_crosswalk_custom_out_path(tmp_path):  # legacy form: retired at P5
+    from mapkit.__main__ import main
+    root = _legacy_tree(tmp_path / "t")
+    out = tmp_path / "elsewhere" / "xw.csv"
+    assert main(["ids", "--make-crosswalk", "--out", str(out), "--repo", str(root)]) == 0
+    assert out.read_text().startswith(_XW_HEADER + "JB-2,BUG-1,")
+    assert not (root / ids.LEGACY_IDS).exists()          # the real switch is untouched
+    assert not ids.per_kind(str(root))
+    assert main(["ids", "--make-crosswalk", "--out", str(out), "--repo", str(root)]) == 2  # exists

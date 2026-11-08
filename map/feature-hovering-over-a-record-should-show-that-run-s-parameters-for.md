@@ -1,5 +1,5 @@
 ---
-id: JB-90
+id: FEAT-29
 kind: feature
 title: Hovering over a record should show that run's parameters for that pattern (eg. dwell, height, separatation_gap, etc. - number of requested throws doesn't matter).
 status: complete

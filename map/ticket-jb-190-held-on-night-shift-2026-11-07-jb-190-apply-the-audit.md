@@ -1,7 +1,7 @@
 ---
-id: JB-196
+id: TKT-43
 kind: ticket
-title: 'JB-190 held on night-shift/2026-11-07-JB-190: apply the audit''s 3 fixes and merge, apply only the probe regex, merge as is, or drop?'
+title: 'BUG-77 held on night-shift/2026-11-07-BUG-77: apply the audit''s 3 fixes and merge, apply only the probe regex, merge as is, or drop?'
 status: complete
 created: '2026-11-07'
 updated: '2026-11-06T22:54:26Z'
@@ -18,7 +18,7 @@ parent: bug-a-goal-entered-by-a-feed-prints-pattern-reload-ended-and-no
 type: question
 ---
 
-JB-190 is built on night-shift/2026-11-07-JB-190: a goal entered by a Feed now ends on `columns_turned ENDED (...) ... · entered by a Feed`, so a search for the pattern finds it. The full gate passed on the tip, but the audit found one probe that reads the old shape, so the merge gate held it.
+BUG-77 is built on night-shift/2026-11-07-BUG-77: a goal entered by a Feed now ends on `columns_turned ENDED (...) ... · entered by a Feed`, so a search for the pattern finds it. The full gate passed on the tip, but the audit found one probe that reads the old shape, so the merge gate held it.
 
 ## The open findings
 
@@ -39,7 +39,7 @@ Recommendation: 1.
 
 - 1 or 2: the next night applies them, re-gates and merges.
 - 3: the next night re-gates and merges.
-- 4: JB-190 goes back to open.
+- 4: BUG-77 goes back to open.
 
 ## Answer
 

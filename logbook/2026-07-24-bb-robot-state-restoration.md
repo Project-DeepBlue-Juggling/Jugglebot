@@ -208,4 +208,4 @@ their last values — a chart gap tells the truth; a flatline lies.
 - GUI feed path: `ros_ws/gui/js/main.js` (`onRobotState` →
   `onTelemetryData`), `ros_ws/gui/js/telemetry-charts.js` stores 7/8.
 
-> Closed 2026-10-28: stale: BB telemetry path used every Sitting since; chart check never needed (owner call) (JB-34 survey).
+> Closed 2026-10-28: stale: BB telemetry path used every Sitting since; chart check never needed (owner call) (IDEA-2 survey).

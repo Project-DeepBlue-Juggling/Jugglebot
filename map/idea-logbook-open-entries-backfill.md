@@ -1,5 +1,5 @@
 ---
-id: JB-34
+id: IDEA-2
 kind: idea
 title: Backfill the open logbook entries into map items
 status: complete
@@ -21,4 +21,4 @@ filed_by: claude
 
 ## Progress
 
-- 2026-10-28: Survey of 228 entries 2026-10-28: 103 flipped to resolved, six items filed (JB-82..87), themes A/I/J folded; artefacts in logbook/artifacts/2026-10-28-jb34-*
+- 2026-10-28: Survey of 228 entries 2026-10-28: 103 flipped to resolved, six items filed (BUG-26, BUG-27, BUG-28, FEAT-27, BUG-29, FEAT-28), themes A/I/J folded; artefacts in logbook/artifacts/2026-10-28-jb34-*

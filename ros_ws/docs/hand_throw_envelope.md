@@ -332,7 +332,7 @@ Evaluated rather than assumed, because the crossing moves if the ball mass or
 
 Braking power peaks at release, where `ω` is largest. The bus does not see
 all of it: the motor's copper loss is dissipated in the winding first
-(2026-11-02, JB-147, owner decision):
+(2026-11-02, BUG-57, owner decision):
 
 ```
 P_bus(I, ω) = Kt·I·ω − c·R·I²
@@ -574,14 +574,14 @@ The measurements, with provenance:
 | re-derivation on the **unclamped** drive: per-tier *upper* bounds | 1.004e-5 / 1.025e-5 / 9.41e-6 / 9.63e-6 / **9.04e-6** kg·m² | bag `~/Desktop/rosbags/2026-08-23_19-14-54`, 15 throws, 5 tiers × 3, 2026-08-23 (`tools/probes/hand_decel_authority.py --bag …`) |
 | same bag, regression slope 0.9415 (R² 0.9999) | `J_ff/slope` = 1.009e-5; on wire torque `1/(2π·slope)` = 1.027e-5 kg·m² | same bag |
 | **declared** inertia the retired firmware shipped | 9.5e-6 kg·m² | `teensy_trajectory.throw_decel_reflected_inertia_kgm2` — deliberately low; the 2026-08-23 channels bound `J_true ≤ 9.04e-6` (encoder) and `≤ ~7.5e-6` (ball), i.e. it was **over-braking** when the firmware died |
-| hand deceleration **authority bound** (the decel-FF headroom line) | **5495.7 rev/s²** at 70 A since 2026-11-02, JB-147 (4710.6 at 60 A from 2026-11-01; 3925.5 at 50 A) | `decel_ff_current_headroom_frac 0.85` × `hand_curr_limit_a` × hand Kt 0.0055133 N·m/A ÷ (2π·J_ff 9.5e-6) = `throw_envelope.DECEL_FF_HEADROOM_RPS2`. `hand_acc_ceiling_rps2` = `hand_acc_limit_rps2` = 4500.0 sits under it (4500 under 4710.6 at 60 A; 3900 under 3925.5 before), and `cup_cycle.HAND_ACC_LIMIT_RPS2` imports the limit. The full-current line at the measured J 1.05e-5 is `DECEL_AUTHORITY_RPS2` = 5849.8 at 70 A (5014.1 at 60 A, 4178.4 at 50 A) |
+| hand deceleration **authority bound** (the decel-FF headroom line) | **5495.7 rev/s²** at 70 A since 2026-11-02, BUG-57 (4710.6 at 60 A from 2026-11-01; 3925.5 at 50 A) | `decel_ff_current_headroom_frac 0.85` × `hand_curr_limit_a` × hand Kt 0.0055133 N·m/A ÷ (2π·J_ff 9.5e-6) = `throw_envelope.DECEL_FF_HEADROOM_RPS2`. `hand_acc_ceiling_rps2` = `hand_acc_limit_rps2` = 4500.0 sits under it (4500 under 4710.6 at 60 A; 3900 under 3925.5 before), and `cup_cycle.HAND_ACC_LIMIT_RPS2` imports the limit. The full-current line at the measured J 1.05e-5 is `DECEL_AUTHORITY_RPS2` = 5849.8 at 70 A (5014.1 at 60 A, 4178.4 at 50 A) |
 
 **2026-11-01: hand current limit 50 → 60 A, hand acceleration limit 3900 → 4500
-rev/s² (owner decision, Sitting debrief; JB-120).** Recomputed from
+rev/s² (owner decision, Sitting debrief; BUG-42).** Recomputed from
 `throw_envelope` at the measured gain (`J_ff` 9.5e-6, `J` 1.05e-5, `J_ascent`
 1.306e-5 with the ball, Kt 0.0055133):
 
-| quantity | 50 A | 60 A | 70 A (2026-11-02, JB-147) |
+| quantity | 50 A | 60 A | 70 A (2026-11-02, BUG-57) |
 |---|---|---|---|
 | `DECEL_FF_HEADROOM_RPS2` (0.85 of the limit, `J_ff`) | 3925.5 | 4710.6 | **5495.7** |
 | `DECEL_AUTHORITY_RPS2` (full limit, measured `J`) | 4178.4 | 5014.1 | **5849.8** |
@@ -598,15 +598,15 @@ the copper loss out (§ B4) and binds at 7.467 m/s, so `DECEL_FF_HEADROOM` is th
 ceiling again.
 `END_STOP` (8.494 m/s) stays last, so the contract's headline holds; the order is
 pinned in `tests/motion/test_throw_envelope.py`. The loaded-ascent row is the
-JB-115 gap: the session limit applies to the hand with and without the ball,
+BUG-40 gap: the session limit applies to the hand with and without the ball,
 and the ball-aboard ascent at the limit wanted more than the drive limit at 50 and
 60 A; at 70 A it needs 69.0 A, and ACCEL_AUTHORITY (4569.3 rev/s²) clears the 4500
-limit, so the JB-115 gap closes at 70 A. The hand ODrive is set to `current_soft_max` 70 A /
+limit, so the BUG-40 gap closes at 70 A. The hand ODrive is set to `current_soft_max` 70 A /
 `current_hard_max` 80 A and motor thermistor limits 60 / 70 °C (owner
 2026-11-02, `config/ODrive config Files/odrive_pro_hand_config.json`); the
-launch now pushes `hand_curr_limit_a` (70 A since 2026-11-02, JB-147: the lossless REGEN would have
+launch now pushes `hand_curr_limit_a` (70 A since 2026-11-02, BUG-57: the lossless REGEN would have
 moved IN to 4.835 m/s, the copper-loss REGEN binds at 7.467; FF 6.768, DECEL 6.982, ACCEL 7.140 out by sqrt(70/60)) as the soft max at every
-configure. iq has been measured 3.3 A over the 50 A soft limit (JB-138).
+configure. iq has been measured 3.3 A over the 50 A soft limit (BUG-51).
 
 ⚠ Pre-2026-08-18 numbers were measured through the hand ODrive's −10.00 A
 braking clamp (`torque_soft_min`, fixed to a symmetric ±0.7 N·m on 2026-08-18)

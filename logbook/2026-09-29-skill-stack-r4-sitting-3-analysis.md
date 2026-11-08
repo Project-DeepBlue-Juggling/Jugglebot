@@ -313,4 +313,4 @@ and no code change follows from it in this entry.
   chase real error but with a biased trigger. De-biasing the early fit, or gating re-aims on a later
   or converged fit, would halve the noise in each re-aim decision — not attempted here.
 
-> Closed 2026-10-28: residue filed as JB-85 (tracker early-fit bias) (JB-34 survey).
+> Closed 2026-10-28: residue filed as FEAT-27 (tracker early-fit bias) (IDEA-2 survey).

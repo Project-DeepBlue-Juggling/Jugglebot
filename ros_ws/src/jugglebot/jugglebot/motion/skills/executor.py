@@ -571,7 +571,7 @@ REJECTED_SITE_OUTSIDE_WORKSPACE = 'REJECTED_SITE_OUTSIDE_WORKSPACE'
 #: ``obs.control_mode != RELOAD_CONTROL_MODE`` -> ``self._abort('MODE_CHANGED')``).
 ABORTED_MODE_CHANGED = 'ABORTED_MODE_CHANGED'
 #: The machine FAULTED (a Hand or leg disarm, a latched guard: the orchestrator
-#: published control mode ``ERROR``) while the attempt ran -- JB-175, 2026-11-06.
+#: published control mode ``ERROR``) while the attempt ran -- BUG-68, 2026-11-06.
 #: Distinct from :data:`ABORTED_MODE_CHANGED` (the operator took the platform,
 #: no fault) so the log names the true cause.  It also pre-empts a Catch's
 #: :data:`MISSED_CATCH` verdict: a window that closed on a faulted machine
@@ -755,7 +755,7 @@ MISSED_CATCH_MIN_VALID_FRAC = 0.8
 #: family already used elsewhere in this plan arc (0.05 s).
 MISSED_CATCH_MAX_GAP_S = 0.05
 
-#: A :data:`MISSED_CATCH` end is PROVISIONAL for this long (JB-175): a fault
+#: A :data:`MISSED_CATCH` end is PROVISIONAL for this long (BUG-68): a fault
 #: that reaches the executor just after the verdict re-labels the end
 #: :data:`ABORTED_FAULT`.  The fault is seen only through ``trajectory/status``
 #: (5 Hz) -- bag 2026-11-05_22-46-00: Hand disarm 503.683, orchestrator FAULT
@@ -884,7 +884,7 @@ TRACKED_LANDING_TIME_BAND_S = RELEASE_FIT_TOL_S
 
 #: Lateral identity bound (mm, per axis) on a tracker landing against the
 #: schedule's landing for the same release. Not the platform's lateral
-#: AUTHORITY (:attr:`SkillExecutor.lateral_authority_m`, 30 mm live since 2026-11-02, JB-139), which
+#: AUTHORITY (:attr:`SkillExecutor.lateral_authority_m`, 30 mm live since 2026-11-02, BUG-52), which
 #: decides how far a VALID estimate may move the catch: this decides whether
 #: the estimate is about this ball at all. Our own throws' lateral bias is
 #: +0.05..+0.12 m (:meth:`SkillExecutor._clamp_lateral_to_schedule`), Ball
@@ -1004,7 +1004,7 @@ class Observations:
 
 
 def fault_cause(obs: Observations) -> str:
-    """Which signal says the machine faulted (JB-175), for the log lines."""
+    """Which signal says the machine faulted (BUG-68), for the log lines."""
     if obs.machine_fault and obs.guard_latched:
         return 'control mode ERROR and the Teensy guard latched'
     if obs.guard_latched:
@@ -1302,7 +1302,7 @@ class _PendingOutcome:
     shadow_landing: bool = False
     #: Set by :meth:`SkillExecutor._advance_catch_evidence` on every pending
     #: row of the ball whose FINAL Catch it booked unverifiable (the goal
-    #: ended on a Stop, the cup EMPTY over a live window; JB-169). A row that
+    #: ended on a Stop, the cup EMPTY over a live window; BUG-67). A row that
     #: then finalises without a SEATED reading reports ``unverified`` -- not
     #: caught, not missed, not counted -- while its landing is still the
     #: Throw's real flight and its learner row is written as usual.
@@ -1333,7 +1333,7 @@ class _PendingOutcome:
     #: The schedule index of the RELEASING skill (the THROW, or the CATCH
     #: carrying this Throw), so an accepted re-aim of that Catch can refresh
     #: :attr:`x` ``[2:4]`` and :attr:`ctx` to the release the Throw now uses
-    #: (:meth:`SkillExecutor._refresh_pending_release`, JB-194).
+    #: (:meth:`SkillExecutor._refresh_pending_release`, BUG-81).
     release_idx: int = -1
 
 
@@ -1404,8 +1404,8 @@ class _PendingCatch:
     last_fit_landing: Optional[Landing] = None
     #: This is the LAST CATCH (plain, only RESTs after it) of a schedule that
     #: holds a columns Stop (a shadow landing): the goal ends on the Stop, and
-    #: the cup sensor cannot say whether this Catch seated (JB-169, owner
-    #: option 4 of JB-172). Computed ONCE at registration
+    #: the cup sensor cannot say whether this Catch seated (BUG-67, owner
+    #: option 4 of TKT-38). Computed ONCE at registration
     #: (:meth:`SkillExecutor._ends_on_stop_final_catch`); an EMPTY live window
     #: then books the Catch as unverifiable instead of :data:`MISSED_CATCH`.
     ends_on_stop: bool = False
@@ -2727,7 +2727,7 @@ class SkillExecutor:
         self.results = []                #: (index, Skill, InstallResult)
         self.attempt_ended = False
         #: Skill index of the final CATCH booked unverifiable because the
-        #: goal ended on a Stop (JB-169), else ``None``. Not an END: it sets
+        #: goal ended on a Stop (BUG-67), else ``None``. Not an END: it sets
         #: no ``end_code`` and no ``attempt_ended``.
         self.final_catch_unverifiable: Optional[int] = None
         self.end_code = ''
@@ -2790,11 +2790,11 @@ class SkillExecutor:
         #: (:class:`_PendingCatch`) -- empty, and never appended to, when
         #: :attr:`seat_window` is ``None``.
         self._pending_catches: List[_PendingCatch] = []
-        #: JB-175: wall-clock instant until which a :data:`MISSED_CATCH` end
+        #: BUG-68: wall-clock instant until which a :data:`MISSED_CATCH` end
         #: is provisional (:data:`MISSED_CATCH_FAULT_SETTLE_S`), else ``None``.
         #: :attr:`done` waits on it.
         self._fault_settle_until_s: Optional[float] = None
-        #: JB-189: the FIRST wall-clock instant a fault (``machine_fault`` or
+        #: BUG-76: the FIRST wall-clock instant a fault (``machine_fault`` or
         #: ``guard_latched``) was seen.  Bookkeeping only: it gates no hold,
         #: REST, decay or dispatch -- :meth:`_finalise_outcome` reads it to
         #: write no Memory row for a Throw released inside the fault's settle.
@@ -4039,7 +4039,7 @@ class SkillExecutor:
 
         **Bounds:** the release offset is bounded by the same lateral
         authority the landing is (:attr:`lateral_authority_m`, 30 mm at the
-        launch default since 2026-11-02, JB-139; 20 mm at R4), and the online ``validate_cycle`` gate remains the
+        launch default since 2026-11-02, BUG-52; 20 mm at R4), and the online ``validate_cycle`` gate remains the
         authority: a ``REJECTED_CYCLE_INFEASIBLE`` on a re-aimed carried throw
         is the expected surface.
 
@@ -4161,7 +4161,7 @@ class SkillExecutor:
 
         The recorded value is the one chosen at that catch's LATEST call —
         its dispatch, or the last ACCEPTED re-send or bump that refined its
-        landing (a refused re-send restores it, JB-194). A prior
+        landing (a refused re-send restores it, BUG-81). A prior
         built between the dispatch and a later re-send therefore uses a
         release that the re-send can still move, by at most the re-aim delta
         (<= :attr:`lateral_authority_m`, 30 mm): a <= 35 mm/s launch-velocity
@@ -5046,7 +5046,7 @@ class SkillExecutor:
                 and self._fault_seen_s is None and self._pending_outcomes
                 and self._fault_settle_until_s is None
                 and not self._closing_waiting()):
-            # JB-189: nobody below reads the fault flags this tick; look once
+            # BUG-76: nobody below reads the fault flags this tick; look once
             # so a fault AFTER the end still reaches the pending rows.
             self._note_fault(self.observations(t_abs_s), t_abs_s)
         if self.attempt_ended and self._fault_settle_until_s is not None:
@@ -5057,13 +5057,13 @@ class SkillExecutor:
         return lines
 
     def _note_fault(self, obs, t_abs_s: float) -> None:
-        """JB-189: latch the first instant a fault is seen (bookkeeping)."""
+        """BUG-76: latch the first instant a fault is seen (bookkeeping)."""
         if (obs is not None and self._fault_seen_s is None
                 and (obs.machine_fault or obs.guard_latched)):
             self._fault_seen_s = t_abs_s
 
     def _advance_fault_settle(self, t_abs_s: float) -> List[str]:
-        """JB-175: while a :data:`MISSED_CATCH` end is provisional, a fault
+        """BUG-68: while a :data:`MISSED_CATCH` end is provisional, a fault
         seen now re-labels it :data:`ABORTED_FAULT`.
 
         Changes ``end_code``, ``end_message`` and log lines ONLY -- the stop
@@ -5547,7 +5547,7 @@ class SkillExecutor:
         throw that actually flew, not the one first asked for. The two agree
         exactly whenever this catch was never re-sent. An ACCEPTED re-aim
         after this registration (re-send or bump) refreshes the pending row
-        (:meth:`_refresh_pending_release`, JB-194, 2026-11-06): rows written
+        (:meth:`_refresh_pending_release`, BUG-81, 2026-11-06): rows written
         before that date hold the DISPATCH aim in ``rel_x``/``rel_y`` and
         ``seat_x``/``seat_y`` on a re-aimed Catch, rows after it the release
         the Throw used.
@@ -5613,7 +5613,7 @@ class SkillExecutor:
             release_idx=idx))
 
     def _refresh_pending_release(self, idx: int) -> None:
-        """After an ACCEPTED re-aim of CATCH ``idx`` (JB-194): the pending
+        """After an ACCEPTED re-aim of CATCH ``idx`` (BUG-81): the pending
         row of the Throw it carries takes the release and seat offset now
         recorded for ``idx`` -- what :meth:`_register_outcome` would read if
         it ran now -- so the Memory row records the release the Throw used.
@@ -5634,7 +5634,7 @@ class SkillExecutor:
     def _restore_release_record(self, idx: int, saved) -> None:
         """Put back :attr:`_carried_release_mm` / :attr:`_carried_catch_xy_mm`
         for ``idx`` as they were before a re-send that was then REFUSED
-        (JB-194): :meth:`_catch_terminal` writes them before the install,
+        (BUG-81): :meth:`_catch_terminal` writes them before the install,
         and the installed plan still flies the earlier release. ``saved`` is
         ``(release, catch_xy)``, ``None`` for a record that was absent."""
         for rec, val in zip((self._carried_release_mm,
@@ -5708,7 +5708,7 @@ class SkillExecutor:
         schedule holds a columns Stop
         (:func:`~jugglebot.motion.skills.schedule.schedule_has_shadow_landing`):
         the goal ends on the Stop and this Catch's seat cannot be read apart
-        from the Stop's landing (JB-169). A real columns compile ends
+        from the Stop's landing (BUG-67). A real columns compile ends
         ``... CATCH (carrying the Stop), CATCH (this one), REST``: the closing
         REST follows the final Catch, so "last skill" would never be true.
         Any other schedule's last Catch -- an oval, a one-ball goal, a
@@ -6355,7 +6355,7 @@ class SkillExecutor:
         :data:`CATCH` so the operator line reads "... ENDED (MISSED_CATCH)
         at the CATCH: ...".
 
-        One exception (JB-169): a live EMPTY window on the final CATCH of a
+        One exception (BUG-67): a live EMPTY window on the final CATCH of a
         goal ending on a Stop (:meth:`_ends_on_stop_final_catch`) fires
         nothing: the Catch is booked unverifiable and the rows are kept.
         """
@@ -6372,7 +6372,7 @@ class SkillExecutor:
             if self.end_code == ABORTED_FAULT or (
                     fobs is not None
                     and (fobs.machine_fault or fobs.guard_latched)):
-                # JB-175: the machine faulted -- a cup read off a dead
+                # BUG-68: the machine faulted -- a cup read off a dead
                 # machine is no evidence either way.  No verdict, no
                 # lost_ball_line, and the ball's OUTCOME rows are KEPT.
                 lines.append(
@@ -6451,7 +6451,7 @@ class SkillExecutor:
             if (pend.ends_on_stop and not self.attempt_ended
                     and self._ends_on_stop_final_catch(
                     pend.catch_idx, self.schedule.skills[pend.catch_idx])):
-                # JB-169 (owner option 4 of JB-172): the goal ended on a Stop
+                # BUG-67 (owner option 4 of TKT-38): the goal ended on a Stop
                 # and the cup read EMPTY over a live window of this FINAL
                 # Catch. The window closes at landing + 0.50 s, before the
                 # Stop's own landing seats, and the bag cannot tell whether
@@ -6934,7 +6934,7 @@ class SkillExecutor:
                     # flight; the tracker moving on to the same ball's NEXT
                     # flight is expected, and the gate's refusal of it is
                     # neither a line ("no evidence or row" would be false)
-                    # nor a rejected-bookkeeping event (JB-176). The gate
+                    # nor a rejected-bookkeeping event (BUG-69). The gate
                     # still decides; its line goes to a scratch sink and the
                     # once-per-throw key is left as it was.
                     has_own_fit = pend.best_landing is not None
@@ -7033,7 +7033,7 @@ class SkillExecutor:
     @staticmethod
     def _row_unverified(pend: _PendingOutcome) -> bool:
         """The row's Catch was booked unverifiable (the goal ended on a Stop,
-        JB-169). The flag alone decides: a SEATED read after the verdict is
+        BUG-67). The flag alone decides: a SEATED read after the verdict is
         the Stop's own seat (the 2026-11-04 goal: 480.203, inside Ball 1's
         row window ending 480.227), not evidence about this Catch."""
         return bool(getattr(pend, 'final_unverifiable', False))
@@ -7127,7 +7127,7 @@ class SkillExecutor:
         landing_xy_m = ((np.asarray(pend.best_landing.pos_mm, dtype=float)[:2]
                         - pend.target_xy_mm) / 1000.0)
         y = np.array([landing_xy_m[0], landing_xy_m[1], apex_obs_m])
-        # JB-189: a Throw released inside the fault's settle (the fault is
+        # BUG-76: a Throw released inside the fault's settle (the fault is
         # SEEN up to MISSED_CATCH_FAULT_SETTLE_S after it happens) may have
         # been cut short by what caused it -- write no row.  A release more
         # than the settle before the first sighting left a sound stroke and
@@ -7152,7 +7152,7 @@ class SkillExecutor:
         # columns Stop's cross-site last throw (D2, E1', 2026-09-30) -- the
         # cup already reads SEATED throughout from the PREVIOUS ball it is
         # holding, which is evidence about that ball, not this one.
-        # A booked-unverifiable row (JB-169) is neither: the Stop's own seat
+        # A booked-unverifiable row (BUG-67) is neither: the Stop's own seat
         # must never write a Memory row with caught=True.
         caught = (False if pend.shadow_landing or pend.final_unverifiable
                   else bool(pend.caught_seen))
@@ -7308,7 +7308,7 @@ class SkillExecutor:
         if not res.accepted:
             # The committed catch stands — a refused re-aim is strictly
             # better than no catch, so the attempt continues. Its release
-            # record goes back to the installed one (JB-194).
+            # record goes back to the installed one (BUG-81).
             self._restore_release_record(idx, saved)
             self._live_catch = (idx, terminal, t_abs_s)
             self._note_reaim_refused(idx, res.code)
@@ -7517,7 +7517,7 @@ class SkillExecutor:
         self.results.append((idx, skill, res))
         self._resend_counts[idx] = self._resend_counts.get(idx, 0) + 1
         if not res.accepted:
-            # The installed plan still flies the earlier release (JB-194).
+            # The installed plan still flies the earlier release (BUG-81).
             self._restore_release_record(idx, saved)
             # The committed catch stands — a refused RE-aim is strictly better
             # than no catch, so the attempt continues. And it is TERMINAL for

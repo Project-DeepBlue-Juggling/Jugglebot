@@ -124,7 +124,7 @@ def _seeded_type_counters() -> Dict[int, int]:
 
 
 class LinkBusyError(OSError):
-    """Another process on this host already holds a can-bridge UDP port (JB-82).
+    """Another process on this host already holds a can-bridge UDP port (BUG-26).
 
     The link is single-owner: two processes bound to the same port would split the
     inbound stream (the kernel delivers each datagram to ONE socket) and could both

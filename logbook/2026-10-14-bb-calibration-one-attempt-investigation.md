@@ -132,4 +132,4 @@ Catalogue check: `pytest tests/sim/test_logbook*.py tests/sim/test_plans_index.p
 
 - **Correction (2026-10-15, Phase 0):** a third event sits in the 2026-10-13 window besides the power cycle and the QTM re-alignment: BB firmware 8 to 9 was flashed at 20:09 (BB repo 5e6eee8, CANCEL_CMD). Its diff touches no yaw, sweep, CALIBRATING or reporting code, so it is ruled out as a cause. The sweep end is firmware-fixed (120 deg target, reversal past 119 deg); the 3 to 5 deg shorter sweeps are reduced overshoot, a dynamics change at the power cycle. The pin is redesigned in the plan's Phase 0.
 
-> Closed 2026-10-28: closed by plans/archived/bb-calibration-one-attempt.md (archived 2026-10-19) (JB-34 survey).
+> Closed 2026-10-28: closed by plans/archived/bb-calibration-one-attempt.md (archived 2026-10-19) (IDEA-2 survey).

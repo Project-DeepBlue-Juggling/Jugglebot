@@ -69,4 +69,4 @@ in this change-set (stale `Last touched` cell; an unverifiable Python-version
 rider replaced with the measured claim; a quote pointer widened to the section
 that actually contains the quoted sentences).
 
-> Closed 2026-10-28: closed by plans/archived/bridge-temporal-trustworthiness.md (JB-34 survey).
+> Closed 2026-10-28: closed by plans/archived/bridge-temporal-trustworthiness.md (IDEA-2 survey).

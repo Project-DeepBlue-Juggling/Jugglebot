@@ -23,7 +23,7 @@ def test_button_lives_in_the_bar_and_form_exists_once():
 
 
 def test_button_sits_left_right_of_the_map_tab_and_says_what_it_does():
-    """JB-65 (owner): the control lives on the left, just right of the Map tab, not in the prefs group."""
+    """BUG-15 (owner): the control lives on the left, just right of the Map tab, not in the prefs group."""
     bar = HTML[HTML.index('id="app-tabs"'):HTML.index('id="map-pane"')]
     btn = bar.index('id="quick-capture-btn"')
     assert bar.index('id="tab-map"') < btn < bar.index('class="app-tabs-prefs"')
@@ -39,7 +39,7 @@ def test_form_keys_never_reach_the_robot_tab():
 
 
 def test_ctrl_or_cmd_enter_files_from_any_control():
-    # JB-78: the chord is handled in the form's own keydown (so it works from the kind
+    # BUG-22: the chord is handled in the form's own keydown (so it works from the kind
     # radios and the buttons too), calls the busy-guarded file(), and stops the
     # browser's implicit Enter-submit from filing a second time.
     i = JS.index("form.addEventListener('keydown'")
@@ -113,7 +113,7 @@ def test_post_timeout_warns_the_item_may_exist():
 
 
 def test_click_outside_the_open_form_dismisses_it_without_filing():
-    """JB-80: pointerdown outside form and toggle -> the busy-guarded dismiss(); never file()."""
+    """BUG-24: pointerdown outside form and toggle -> the busy-guarded dismiss(); never file()."""
     assert "document.addEventListener('pointerdown'" in JS
     i = JS.index("document.addEventListener('pointerdown'")
     line = JS[i:JS.index('\n', i)]
@@ -153,7 +153,7 @@ def test_pill_clicks_keep_the_form_isolated_and_the_dismiss_rules():
     assert "form.addEventListener('keydown'" in JS
     assert "!form.contains(target)" in JS
 def test_focus_moving_into_the_map_iframe_dismisses_the_open_form():
-    """JB-80 reopened: a click inside the Map <iframe> never reaches document's pointerdown;
+    """BUG-24 reopened: a click inside the Map <iframe> never reaches document's pointerdown;
     window blur with the iframe as activeElement is the only signal, deferred one tick
     (activeElement is stale while blur dispatches) and routed through the busy-guarded dismiss()."""
     i = JS.index("window.addEventListener('blur'")
@@ -185,7 +185,7 @@ def test_title_screen_409s_are_handled_and_only_similar_can_be_overridden():
 
 
 def test_description_is_multi_line():
-    """JB-91 (owner): the description assumes multi-line. A textarea never submits the form on a
+    """IDEA-6 (owner): the description assumes multi-line. A textarea never submits the form on a
     bare Enter, so Enter is a new line; Ctrl+Enter still files (the form-level keydown)."""
     assert '<textarea id="qc-note" rows="4"' in HTML
     assert '<input type="text" id="qc-note"' not in HTML

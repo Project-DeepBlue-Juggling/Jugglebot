@@ -1,7 +1,7 @@
 ---
-id: JB-210
+id: TKT-52
 kind: ticket
-title: 'JB-184 reopened by two more Leg separations on 2026-11-07: keep no bound and retire Dwell 0.30 and 0.32, bench-test a joint first, bound planned Leg acceleration, or hold the joints mechanically?'
+title: 'BUG-72 reopened by two more Leg separations on 2026-11-07: keep no bound and retire Dwell 0.30 and 0.32, bench-test a joint first, bound planned Leg acceleration, or hold the joints mechanically?'
 status: complete
 created: '2026-11-08'
 updated: '2026-11-08T00:20:40Z'
@@ -18,7 +18,7 @@ parent: bug-legs-1-and-2-left-their-magnetic-base-joints-on-columns-at
 type: question
 ---
 
-On 2026-11-06 you set no bound on transit aggressiveness, and said a second separation reopens that. It has happened twice: on 2026-11-07, Columns at Apex 0.93, Sep. 125 pulled Legs 1 and 2 out at Dwell 0.32 and again at Dwell 0.30. JB-192's row had called those goals inside what has flown.
+On 2026-11-06 you set no bound on transit aggressiveness, and said a second separation reopens that. It has happened twice: on 2026-11-07, Columns at Apex 0.93, Sep. 125 pulled Legs 1 and 2 out at Dwell 0.32 and again at Dwell 0.30. BUG-79's row had called those goals inside what has flown.
 
 ## What the log shows
 
@@ -30,7 +30,7 @@ On 2026-11-06 you set no bound on transit aggressiveness, and said a second sepa
 | 2026-11-06, Sep. 120 | 371 mm/s, 5488 mm/s^2 | held |
 | 2026-11-07, Dwell 0.27 | 384 mm/s, 5120 mm/s^2 | held |
 
-Both new separations began about 0.1 s after the third transit ended near rest, with shorter transits than Sep. 170. So a peak may not be the right measure. Full tables are on JB-184.
+Both new separations began about 0.1 s after the third transit ended near rest, with shorter transits than Sep. 170. So a peak may not be the right measure. Full tables are on BUG-72.
 
 ## Options
 
@@ -43,7 +43,7 @@ Recommendation: 1 and 2 together, with no limit value yet.
 
 ## What each answer unblocks
 
-- 1: the next night retires those Dwells from JB-192's row and writes the bench row if you also chose 2.
+- 1: the next night retires those Dwells from BUG-79's row and writes the bench row if you also chose 2.
 - 2: the next night writes the bench row.
 - 3: a safety-bearing plan for your Session, with the value you choose.
 - 4: a hardware step for you.

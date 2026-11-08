@@ -1,5 +1,5 @@
 ---
-id: JB-163
+id: BUG-64
 kind: bug
 title: CONSOLE search missing some entries?
 status: complete
@@ -42,5 +42,5 @@ Recommendation: 2 then 1. Both are small, and 2 makes any future miss legible. 3
 
 ## Progress
 
-- 2026-11-05: Night Shift 2026-11-05: held on night-shift/2026-11-05-JB-163: suite green, 3 audit findings open on the window label; unblocked by JB-173
-- 2026-11-06: Closed: the owner accepted the three label fixes in JB-173; applied and merged through the gate (see the logbook entry).
+- 2026-11-05: Night Shift 2026-11-05: held on night-shift/2026-11-05-BUG-64: suite green, 3 audit findings open on the window label; unblocked by TKT-39
+- 2026-11-06: Closed: the owner accepted the three label fixes in TKT-39; applied and merged through the gate (see the logbook entry).

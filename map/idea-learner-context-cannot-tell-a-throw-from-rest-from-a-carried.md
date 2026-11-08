@@ -1,5 +1,5 @@
 ---
-id: JB-168
+id: IDEA-18
 kind: idea
 title: Learner context cannot tell a Throw from rest from a carried Throw
 status: inbox

@@ -35,7 +35,7 @@ tags:
 
 # Night Shift reach widened
 
-**What.** The owner asked whether the report's ten `out of reach` Items should be opened. Eight open, JB-86 builds but holds, JB-134 stays closed. Six changes make that safe, plus a deploy at the end of each night (plan § 7).
+**What.** The owner asked whether the report's ten `out of reach` Items should be opened. Eight open, BUG-29 builds but holds, BUG-48 stays closed. Six changes make that safe, plus a deploy at the end of each night (plan § 7).
 
 **The bug found on the way.** The gate forbade `Teensy_code_canbridge/*`, but the firmware lives at `ros_ws/src/jugglebot/Teensy_code_canbridge/`: 0 of 71 files matched, so condition (f) never froze firmware. `test_forbidden_paths_pinned` pinned the same wrong string, and the (f) test built a fixture at the wrong path too, so both passed. No damage: none of the ten firmware-tree commits since 2026-11-01 is in a report's Merged table, and the seven held branches touch no firmware. Hardware ratings and the protocol's dispatch had kept firmware out by themselves. The deny list also missed `platformio run -t upload` ("platformio" does not contain "pio") and bare `pio test`, whose default environment is the ESP32.
 
@@ -57,13 +57,13 @@ The class fix: `test_every_forbidden_path_matches_a_tracked_file` and `test_ever
 
 **Why `jugglebot_interfaces` stays frozen.** Considered: allow `colcon build` in the clone. `tests/ros/conftest.py` mocks that package unconditionally, so the suite still would not test a node against its interface. A day Session runs the real build instead. Both Items it affects are low priority.
 
-**JB-86 was protected by accident.** It was rated `hardware: none` and only "out of reach" kept it from merging. `holds_ball=False` removes the cup-contact floor from a REST entirely, and live schedules send `False` (`schedule.py:2688`), so wiring it changes flown motion. rosidl also defaults a new bool to `false`, which would drop the floor for any sender that omits it. Re-rated `robot`, with the default noted on the Item.
+**BUG-29 was protected by accident.** It was rated `hardware: none` and only "out of reach" kept it from merging. `holds_ball=False` removes the cup-contact floor from a REST entirely, and live schedules send `False` (`schedule.py:2688`), so wiring it changes flown motion. rosidl also defaults a new bool to `false`, which would drop the floor for any sender that omits it. Re-rated `robot`, with the default noted on the Item.
 
 **An open question for the owner.** `/sitting-debrief` re-gates a branch with `--waive c`, and the gate requires the branch to contain the base, so once `main` moves at all it says `[pre] does not contain base`. That is older than this work and fails closed, and the audit surfaced it; changing it is a decision about what a Sitting pass means, so it is not changed here.
 
 **The namespace found a network dependency in a new test.** The full gate under `tools/night_shift_nonet.sh` passed everything except `test_wave_native`, which hit its 600 s limit at 60 s per case. A fresh build directory resolves Unity from the PlatformIO registry; that works while the registry cache is warm, so it passed alone and had passed earlier. With a cold cache and no network it hangs, reproduced 2026-11-07. Unity now lives in one stable directory, so only the first run ever needs the network. Every other test in the suite passed with no network.
 
-**What the deploy check cannot see.** A feature that works badly. A failed build, a server crash, API or page errors, missing assets and a white screen are all caught; the headless render tells a mounted page from an empty root (a throwing page was probed, 2026-11-07). JB-151-style behaviour still needs eyes.
+**What the deploy check cannot see.** A feature that works badly. A failed build, a server crash, API or page errors, missing assets and a white screen are all caught; the headless render tells a mounted page from an empty root (a throwing page was probed, 2026-11-07). BUG-59-style behaviour still needs eyes.
 
 ## Fix
 

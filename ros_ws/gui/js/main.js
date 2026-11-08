@@ -146,7 +146,7 @@ function init() {
     initCameraPanel();
     initHandFanPanel();
 
-    // 3c. Init the records panel (JB-35; HTTP only, so it shows while disconnected too).
+    // 3c. Init the records panel (IDEA-3; HTTP only, so it shows while disconnected too).
     initRecordsPanel();
 
     // 4. Init scene menu
@@ -448,7 +448,7 @@ function subscribeAll() {
     ros.subscribe('hand_telemetry', 'jugglebot_interfaces/msg/HandTelemetryMessage', onHandTelemetry, 100);
 
     // Mocap data — markers + connection/alignment status. Subscribes mocap_node's 20 Hz
-    // COPY (every 15th frame; JB-76 option 1, 2026-10-28), NOT the 300 Hz /mocap_data:
+    // COPY (every 15th frame; BUG-21 option 1, 2026-10-28), NOT the 300 Hz /mocap_data:
     // rosbridge deserialises every message before applying a client throttle, so the
     // throttle saved nothing. Replay still feeds the bag's /mocap_data here via the
     // alias in ros-bridge.js dispatchLocal(). Throttle 0: the copy's 20 Hz IS the
@@ -952,7 +952,7 @@ function initSceneMenu() {
         dropdown.innerHTML = '';
         let viewStore = null;
         try { viewStore = window.localStorage; } catch (_e) { /* blocked site data */ }
-        const viewSaved = loadViewToggles(viewStore);   // JB-89: View toggles survive a refresh
+        const viewSaved = loadViewToggles(viewStore);   // BUG-31: View toggles survive a refresh
         for (const [name, obj] of Object.entries(sceneGroups)) {
             const label = document.createElement('label');
             label.className = 'scene-toggle';
@@ -979,7 +979,7 @@ function initSceneMenu() {
         // Camera presets append below the scene-group toggles — run here
         // so they aren't wiped by the `dropdown.innerHTML = ''` above.
         initCameraPresets();
-        attachRecordsMenu(dropdown);   // "<Pattern>" row toggles under the "Records" heading (JB-35, JB-92)
+        attachRecordsMenu(dropdown);   // "<Pattern>" row toggles under the "Records" heading (IDEA-3, IDEA-7)
     }, 100);
 }
 
@@ -1286,7 +1286,7 @@ function runTopicDiscovery() {
             // Skip topics we already have full subscriptions for
             if (GUI_SUBSCRIBED_TOPICS.has(name)) continue;
 
-            // The 300 Hz mocap-stream topics are never spied (JB-76 option 1): their rows
+            // The 300 Hz mocap-stream topics are never spied (BUG-21 option 1): their rows
             // show mocap_node's reported rate. Registered above for display only.
             if (REPORTED_TOPICS.has(name)) continue;
 

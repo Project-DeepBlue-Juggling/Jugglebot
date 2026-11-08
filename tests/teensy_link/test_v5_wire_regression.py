@@ -155,8 +155,8 @@ def test_live_v6_decoder_rejects_every_recorded_v5_frame():
     # is checked before the CRC), for EVERY frame.
     fx = _fixture()
     assert p.PROTOCOL_VERSION == 12     # the premise of the darkness (11→12 at the FW 40 downlink
-                                    # ledger, JB-174, 2026-11-06; 10→11 at the FW 38 HeartbeatT2J
-                                    # growth, JB-149, 2026-11-03; 9→10 at the FW 29 BB absolute
+                                    # ledger, FEAT-41, 2026-11-06; 10→11 at the FW 38 HeartbeatT2J
+                                    # growth, BUG-58, 2026-11-03; 9→10 at the FW 29 BB absolute
                                     # release, 2026-10-12; 8→9 at the FW 23 axis-silence
                                     # watchdog, 2026-09-15; 7→8 at hand C2 / FW 22, 2026-09-14)
     for case in fx['cases']:

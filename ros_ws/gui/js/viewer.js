@@ -78,10 +78,10 @@ export function robotToThreeScaled(x, y, z) {
  * The startup camera view (Three.js scene coords, metres).  The single
  * source for initViewer() and the Scene menu's "Default" button.  To change
  * it: frame the view in the GUI, Scene menu → Camera → "Copy view", and paste
- * the printed object here (JB-88).
+ * the printed object here (BUG-30).
  */
 export const DEFAULT_CAMERA = Object.freeze({
-    // Owner-framed 2026-10-31 (JB-88).
+    // Owner-framed 2026-10-31 (BUG-30).
     position: Object.freeze({ x: -0.341, y: 1.584, z: -2.589 }),
     target:   Object.freeze({ x: -0.231, y: 0.763, z: 0.37 }),
 });

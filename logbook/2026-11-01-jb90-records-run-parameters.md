@@ -1,5 +1,5 @@
 ---
-title: "Records ledger v2: each record keeps the run's parameters, shown on hover in the GUI records panel (JB-90)"
+title: "Records ledger v2: each record keeps the run's parameters, shown on hover in the GUI records panel (FEAT-29)"
 type: feature
 date: 2026-11-01
 status: complete
@@ -24,9 +24,9 @@ tags:
   - records
 ---
 
-# JB-90: a record's run parameters on hover
+# FEAT-29: a record's run parameters on hover
 
-**What.** The ledger (`docs/records.md`, JB-35) kept when, Throws, Catches and the end code, and
+**What.** The ledger (`docs/records.md`, IDEA-3) kept when, Throws, Catches and the end code, and
 nothing about how the Attempt was configured. Owner's choice (2026-11-01): save the resolved goal
 values plus each Pattern's extras.
 
@@ -54,4 +54,4 @@ So: `colcon build --packages-select jugglebot` and restart `jugglebot-gui.servic
 
 - 2026-11-01, `pytest tests/motion/test_records.py tests/ros/test_gui_records_api.py tests/ros/test_gui_record_panel.py tests/ros/test_gui_records_panel.py tests/ros/test_replay_stdlib.py -q`: 83 passed.
 - 2026-11-01, `pytest tests/ros/test_skill_node.py tests/motion/test_records.py -q`: 433 passed in 63.7 s.
-- 2026-11-01, `pytest tests/ros/test_gui_records_hover_place.py -q` (the hover line): part of the 16 passed in the JB-103 entry.
+- 2026-11-01, `pytest tests/ros/test_gui_records_hover_place.py -q` (the hover line): part of the 16 passed in the BUG-38 entry.

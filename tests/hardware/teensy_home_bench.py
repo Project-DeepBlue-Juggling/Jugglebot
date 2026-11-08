@@ -46,7 +46,7 @@ import functools
 from pathlib import Path
 
 # Flush every print: piped through tee, block-buffered stdout made the driver look
-# frozen for the whole 35 s observer window (2026-10-27, JB-72).
+# frozen for the whole 35 s observer window (2026-10-27, BUG-18).
 print = functools.partial(print, flush=True)  # noqa: A001
 
 # The repo root THIS file lives in (was a hard-coded ~/Desktop/Jugglebot, which
@@ -95,7 +95,7 @@ def axis_status(axis):
         active_errors=int(d.active_errors),
         # The firmware outcome + per-home epoch. Before 2026-10-28 this driver
         # omitted both, so homing_result read NONE for ever, saw_running never set
-        # and EVERY home false-timed-out here (the 2026-10-27 JB-72 symptom).
+        # and EVERY home false-timed-out here (the 2026-10-27 BUG-18 symptom).
         homing_result=int(d.homing_result),
         homing_epoch=int(d.homing_epoch))
 

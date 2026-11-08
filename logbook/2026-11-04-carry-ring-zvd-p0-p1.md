@@ -1,5 +1,5 @@
 ---
-title: "Carry ring suppression P0 + P1 (JB-102): the Platform mode is not one number (encoder 5.4 Hz, mocap 4.45 Hz), so ZVD rows at a provisional 4.9 Hz land behind carry_zvd and the identification row moves to the A/B Sitting"
+title: "Carry ring suppression P0 + P1 (FEAT-32): the Platform mode is not one number (encoder 5.4 Hz, mocap 4.45 Hz), so ZVD rows at a provisional 4.9 Hz land behind carry_zvd and the identification row moves to the A/B Sitting"
 type: investigation
 date: 2026-11-04
 status: in-progress
@@ -31,7 +31,7 @@ subsystem: [motion, ros, config]
 tags: [dynamics, performance, testing]
 ---
 
-# Carry ring suppression P0 + P1 (JB-102)
+# Carry ring suppression P0 + P1 (FEAT-32)
 
 ## Summary
 

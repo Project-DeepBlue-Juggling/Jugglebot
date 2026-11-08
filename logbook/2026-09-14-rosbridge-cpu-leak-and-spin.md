@@ -328,4 +328,4 @@ are fixed in
 [2026-09-15-rosbridge-hung-call-and-close-teardown](2026-09-15-rosbridge-hung-call-and-close-teardown.md);
 the leak/spin fixes and measurements above are unaffected.
 
-> Closed 2026-10-28: launch CPU load owned by JB-76; rosbridge re-measured 2026-10-28-gui-mocap-copies-cut-rosbridge-load (JB-34 survey).
+> Closed 2026-10-28: launch CPU load owned by BUG-21; rosbridge re-measured 2026-10-28-gui-mocap-copies-cut-rosbridge-load (IDEA-2 survey).

@@ -34,6 +34,7 @@ keep their meaning until P5, because the live map app imports them.
 from __future__ import annotations
 
 import argparse
+import csv
 import os
 import re
 import subprocess
@@ -61,6 +62,10 @@ _LOOSE_REF = re.compile(r"^(%s)-?([1-9][0-9]*)$" % _ANY, re.IGNORECASE)
 _INF = float("inf")
 
 
+class CrosswalkError(ValueError):
+    """The tree cannot yield a crosswalk (not a pure legacy tree, or the file is frozen)."""
+
+
 class IdError(LookupError):
     """An unresolvable or ambiguous reference; the message says which.
 
@@ -71,6 +76,14 @@ class IdError(LookupError):
     def __init__(self, message: str, matches: Optional[List[Item]] = None) -> None:
         super().__init__(message)
         self.matches: List[Item] = list(matches or [])
+
+
+class LegacyIdError(IdError):
+    """A write named an old ``JB-<n>``; ``new_id`` is what it is called now (D-3)."""
+
+    def __init__(self, message: str, new_id: str) -> None:
+        super().__init__(message)
+        self.new_id = new_id
 
 
 def _positive(n: object) -> int:
@@ -463,6 +476,61 @@ def assign_missing(repo_root: str, ref: str = DEFAULT_REF) -> List[Tuple[str, st
     return rows
 
 
+CROSSWALK_COLUMNS = ("old_id", "new_id", "kind", "stem")
+
+
+def legacy(repo_root: str) -> Dict[str, str]:
+    """``{old JB-<n>: new ID}`` from :data:`LEGACY_IDS`; ``{}`` when the file is absent."""
+    path = os.path.join(repo_root, LEGACY_IDS)
+    if not os.path.isfile(path):
+        return {}
+    with open(path, newline="", encoding="utf-8") as fh:
+        return {d["old_id"]: d["new_id"] for d in csv.DictReader(fh)}
+
+
+def make_crosswalk(repo_root: str, out: Optional[str] = None) -> str:
+    """Write the old-to-new ID crosswalk (``out``, default :data:`LEGACY_IDS`); return its path.
+
+    Input must be a pure legacy tree: every ``map/*.md`` parses, carries a
+    canonical ``JB-<n>``, no two share one, and none is per-kind yet. An
+    existing file at the target is refused (the crosswalk is frozen once made).
+    Rows: kind in :data:`PREFIXES` order, ascending old number; the new number
+    is the rank within the kind. Byte-deterministic.
+    """
+    path = os.path.join(repo_root, LEGACY_IDS) if out is None else out
+    if os.path.exists(path):
+        raise CrosswalkError("%s exists: the crosswalk is frozen once generated; never regenerate it" % path)
+    items, skipped = load_items_lenient(os.path.join(repo_root, MAP_DIR))
+    problems: List[str] = ["%s does not parse (%s)" % (os.path.basename(p), m) for p, m in skipped]
+    for i in missing(items):
+        problems.append("%s has no id" % stem(i))
+    for i in items:
+        raw = i.meta.get("id")
+        if raw in (None, ""):
+            continue
+        if canonical(raw) is None:
+            problems.append("%s: id %r is not a canonical JB-<n>%s" % (
+                stem(i), raw, " (already per kind)" if short_id(i) else ""))
+    for k, v in sorted(duplicates(items).items()):
+        problems.append("%s is held by %s" % (k, ", ".join(stem(i) for i in v)))
+    if problems:
+        raise CrosswalkError("not a pure legacy tree, no crosswalk written: " + "; ".join(problems))
+    rows = []
+    for kind in PREFIXES:
+        of_kind = sorted((i for i in items if i.kind == kind), key=lambda i: canonical(i.meta["id"]))
+        for rank, i in enumerate(of_kind, 1):
+            rows.append((i.meta["id"], format_ref(kind, rank), kind, stem(i)))
+    stray = [i for i in items if i.kind not in PREFIXES]
+    if stray:
+        raise CrosswalkError("no ID prefix for kind of %s" % ", ".join(stem(i) for i in stray))
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh, lineterminator="\n")
+        w.writerow(CROSSWALK_COLUMNS)
+        w.writerows(rows)
+    return path
+
+
 def typed_ref(t: object) -> Optional[str]:
     """The canonical ID string a typed or stored value names, either form, else None.
 
@@ -483,7 +551,8 @@ def _bare_number(t: str) -> Optional[int]:
     return int(t) if _BARE.match(t) and int(t) >= 1 else None
 
 
-def resolve(items: List[Item], text: str, allow_bare: bool = False) -> Item:
+def resolve(items: List[Item], text: str, allow_bare: bool = False,
+            legacy: Optional[Dict[str, str]] = None) -> Item:
     """Exact stem, then slug, then ID, in either ID form.
 
     Errors (:class:`IdError`, with ``matches``) rather than guesses when two
@@ -492,12 +561,27 @@ def resolve(items: List[Item], text: str, allow_bare: bool = False) -> Item:
     ID held twice. Bare digits are an ID only on a read (``allow_bare``), and
     there they match the number in every form, so a number shared across kinds
     lists every holder instead of picking one.
+
+    ``legacy`` is the crosswalk (:func:`legacy`, D-3): a typed ``JB-<n>`` that
+    no Item holds but the crosswalk maps resolves, on a read (``allow_bare``),
+    to the Item holding the new ID; on a write it raises naming the new ID.
+    Absent or empty, behaviour is unchanged.
     """
     t = text.strip()
     if t.endswith(".md"):
         t = t[:-3]
     ref = typed_ref(t)
     by_ref = [i for i in items if ref is not None and short_id(i) == ref]
+    new_ref = legacy.get(ref) if (legacy and ref is not None and not by_ref
+                                  and ref.startswith(PREFIX + "-")
+                                  and not any(stem(i) == t for i in items)) else None
+    if new_ref is not None:
+        holder = [i for i in items if short_id(i) == new_ref]
+        if not allow_bare:
+            raise LegacyIdError("%s is now %s%s; writes take the new ID" % (
+                ref, new_ref, " (%s)" % stem(holder[0]) if holder else ""), new_ref)
+        ref = new_ref
+        by_ref = holder
     for i in items:
         if stem(i) == t:
             others = [j for j in by_ref if j is not i]
@@ -543,12 +627,16 @@ def _run(args: argparse.Namespace) -> int:
             for sid, st in assign_missing(root, args.ref):
                 print("%s %s" % (sid, st))
             return 0
+        if args.make_crosswalk:
+            path = make_crosswalk(root, args.out)
+            print("wrote %s" % os.path.relpath(path, root))
+            return 0
         if args.repair:
             for old, new, st in repair(root, args.ref):
                 print("%s -> %s %s" % (old, new, st))
             return 0
         problems = check(root, args.ref)
-    except ItemError as exc:
+    except (ItemError, CrosswalkError) as exc:
         print("mapkit: %s" % exc, file=sys.stderr)
         return 2
     bad = 0
@@ -568,6 +656,9 @@ def register(subparsers) -> None:
     g.add_argument("--check", action="store_true", help="report problems (default)")
     g.add_argument("--assign-missing", action="store_true", help="number ID-less Items, oldest first")
     g.add_argument("--repair", action="store_true", help="renumber the loser of each duplicate")
+    g.add_argument("--make-crosswalk", action="store_true",
+                   help="write the old-to-new ID crosswalk (P4; refused if the file exists)")
+    p.add_argument("--out", default=None, help="--make-crosswalk target (default %s)" % LEGACY_IDS)
     p.add_argument("--ref", default=DEFAULT_REF, help="published ref (default origin/main)")
     p.add_argument("--repo", default=".", help="repo root (default .)")
     p.set_defaults(func=_run)

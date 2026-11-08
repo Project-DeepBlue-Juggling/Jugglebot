@@ -1,4 +1,4 @@
-"""JB-149: the GC pause probe's pure helper (jugglebot/gc_probe.py)."""
+"""BUG-58: the GC pause probe's pure helper (jugglebot/gc_probe.py)."""
 from __future__ import annotations
 
 import gc

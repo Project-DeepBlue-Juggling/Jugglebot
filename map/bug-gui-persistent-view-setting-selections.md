@@ -1,5 +1,5 @@
 ---
-id: JB-89
+id: BUG-31
 kind: bug
 title: 'GUI: Persistent ''View'' setting selections'
 status: complete
@@ -32,5 +32,5 @@ The branch makes every View-menu scene toggle survive a page refresh (`ros_ws/gu
 
 ## Progress
 
-- 2026-11-01: Night Shift 2026-11-01: held on night-shift/2026-11-01-JB-89 (fix complete, Item closed on the branch, gate green): one audit finding open, the cross-tab stale snapshot on save; unblocked by the owner's call on it, then a re-gate (detail below)
+- 2026-11-01: Night Shift 2026-11-01: held on night-shift/2026-11-01-BUG-31 (fix complete, Item closed on the branch, gate green): one audit finding open, the cross-tab stale snapshot on save; unblocked by the owner's call on it, then a re-gate (detail below)
 - 2026-11-01: fixed in the interactive session 2026-11-01 (owner's calls on the open questions)

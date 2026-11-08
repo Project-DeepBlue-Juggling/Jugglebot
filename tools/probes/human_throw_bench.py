@@ -3,7 +3,7 @@
 
 Why this exists
 ---------------
-JB-113 (three-ball cascade with the owner as the second Hand) needs the robot to see a
+IDEA-16 (three-ball cascade with the owner as the second Hand) needs the robot to see a
 human Throw. `BallTracker` has a parabolic detector for that (`detect_human_throws`, off by
 default), but nothing had measured it: on 2026-09-15 it spawned 158 phantom tracks on a
 static marker and on 2026-09-30 it registered no lobs. On 2026-11-02 the owner flew two

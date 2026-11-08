@@ -1,4 +1,4 @@
-"""TEMPORARY (JB-147 diagnostic capture): tests for the opt-in Hand capture.
+"""TEMPORARY (BUG-57 diagnostic capture): tests for the opt-in Hand capture.
 
 Remove with the capture (see jugglebot/hand_capture.py).  No wall-clock asserts:
 the overflow test never starts the writer thread and uses the queue API directly.

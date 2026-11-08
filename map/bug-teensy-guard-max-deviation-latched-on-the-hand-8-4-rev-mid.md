@@ -1,5 +1,5 @@
 ---
-id: JB-98
+id: BUG-34
 kind: bug
 title: Teensy guard MAX_DEVIATION latched on the hand (+8.4 rev) mid-oval; recover_lane found nothing, re-dispatch rejected WRONG_MODE
 status: inbox
@@ -19,7 +19,7 @@ links:
 - map/bug-max-deviation-latched-on-40-90-ms-stale-hand-telemetry.md
 - logbook/2026-11-04-sitting-debrief.md
 parent: two-ball-oval
-filed_by: claude (JB-76 21:02 Sitting read-out)
+filed_by: claude (BUG-21 21:02 Sitting read-out)
 ---
 
 ## What happened
@@ -38,7 +38,7 @@ Two questions:
 
 ## Three more trips (2026-10-28)
 
-22:26 Sitting 2026-10-28: three more hand MAX_DEVIATION trips, all explained by JB-95.
+22:26 Sitting 2026-10-28: three more hand MAX_DEVIATION trips, all explained by FEAT-31.
 - Mechanism: FIFO worker stalled the stream past the 70 ms cover; firmware STOP, refused resume, plan walked away from the held hand (deviation = plan minus held hand, sign = plan direction).
 - The hand tracked its held command to 0.01 rev in every case; bridge state, thermal, jammed ball ruled out.
 - The 21:02 trip (+8.4 rev, upward stroke start) is NOT explained: no Jetson-side gap in that bag; the firmware sched_expired/superseded/stale counters (leg_interp.cpp:403-405) reach only the serial console.
@@ -50,8 +50,8 @@ Two questions:
 2026-10-30 reframe (P3 re-gate Sitting 16:17, bag 2026-10-30_16-17-11):
 - The O5 pose 0.45 goal ended at throw 41 by ONE 80 ms emitter wake gap during a 125.7 ms wall / 101.5 ms CPU CATCH solve (93 involuntary context switches) under the default CFS worker.
 - Result: firmware scheduler STOP, LANE_REFUSED, hand MAX_DEVIATION +6.56 rev, recovery failed.
-- Same signature as the JB-95 FIFO stall, so it very likely explains the unexplained 21:02 trip too.
-- JB-98 is now: the setpoint stream has a 70 ms firmware STOP cliff and the loaded box can stall past it.
+- Same signature as the FEAT-31 FIFO stall, so it very likely explains the unexplained 21:02 trip too.
+- BUG-34 is now: the setpoint stream has a 70 ms firmware STOP cliff and the loaded box can stall past it.
 - Stays open.
 
 ## Sitting 2026-11-01 findings
@@ -62,11 +62,11 @@ Two questions:
 
 ## Progress
 
-- 2026-10-28: 22:26 Sitting 2026-10-28: three more hand MAX_DEVIATION trips, all explained by JB-95 (detail in the section above)
+- 2026-10-28: 22:26 Sitting 2026-10-28: three more hand MAX_DEVIATION trips, all explained by FEAT-31 (detail in the section above)
 - 2026-10-30: 2026-10-30 reframe (P3 re-gate Sitting 16:17, bag 2026-10-30_16-17-11): the O5 pose 0.45 goal ended at throw 41 by ONE 80 ms emitter wake gap (detail in the section above)
 - 2026-10-31: 2026-10-31: two more LANE_REFUSED ends (goals 10 and 12, firmware STOP +2): solves 107-138 ms with about 100 involuntary context switches, emitter wake gap 48 ms, goal 10 also a 1198 ms leg-1 heartbeat gap; 17 firmware STOPs this launch against 7 on 10-30
-- 2026-11-01: Sitting: high-low trip (+8.967 rev) fits the STOP cliff but the stall was teensy_bridge_node, not the emitter; turned-90 trip is a different mechanism (JB-137); forwarder gap monitor being added; scheduling deferred by owner (detail below)
-- 2026-11-02: Sitting 2026-11-02: three LANE_REFUSED ends, all past the firmware's 70 ms cover (two bridge-process stalls 79.6/101.3 ms, one emitter stall 81.7 ms), two then tripped the Hand guard. Class now owned by JB-149.
-- 2026-11-03: 2026-11-03 Sitting: one more latch, L2528 (+3.012 rev, Hand at 9.34 rev vs 9.395 command, telem frozen 40/90/30 ms, 60 ms setpoint echo gap). Filed as JB-160 with the numbers; same starvation class.
+- 2026-11-01: Sitting: high-low trip (+8.967 rev) fits the STOP cliff but the stall was teensy_bridge_node, not the emitter; turned-90 trip is a different mechanism (BUG-50); forwarder gap monitor being added; scheduling deferred by owner (detail below)
+- 2026-11-02: Sitting 2026-11-02: three LANE_REFUSED ends, all past the firmware's 70 ms cover (two bridge-process stalls 79.6/101.3 ms, one emitter stall 81.7 ms), two then tripped the Hand guard. Class now owned by BUG-58.
+- 2026-11-03: 2026-11-03 Sitting: one more latch, L2528 (+3.012 rev, Hand at 9.34 rev vs 9.395 command, telem frozen 40/90/30 ms, 60 ms setpoint echo gap). Filed as BUG-62 with the numbers; same starvation class.
 - 2026-11-04: 2026-11-03 Sitting (22:29, P4 ramp): two more Hand MAX_DEVIATION latches (goal 3 dev -3.057 rev during the CARRY approach; goal 15 +7.660 rev 68 ms after a LANE_REFUSED END). Both follow a firmware scheduler STOP: the Hand is held where it stands while the host plan walks on, and the host hold lands 130-214 ms after the END.
-- 2026-11-05: 2026-11-05 L1400/L2365: +3.91 / +4.96 rev, 131 / 225 ms after a C1 stop mid-upstroke (Hand held at 1.51 / 4.42 rev, refused plan base 5.42 / 9.37). Mechanism = latched hold + refused frames (leg_interp.cpp:1454, FW 22), not coast: Hand velocity 0 at the trip. Fix belongs with JB-166 / the hold ordering.
+- 2026-11-05: 2026-11-05 L1400/L2365: +3.91 / +4.96 rev, 131 / 225 ms after a C1 stop mid-upstroke (Hand held at 1.51 / 4.42 rev, refused plan base 5.42 / 9.37). Mechanism = latched hold + refused frames (leg_interp.cpp:1454, FW 22), not coast: Hand velocity 0 at the trip. Fix belongs with BUG-66 / the hold ordering.

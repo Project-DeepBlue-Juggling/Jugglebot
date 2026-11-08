@@ -1,5 +1,5 @@
 ---
-id: JB-212
+id: FEAT-46
 kind: feature
 title: 'Firmware STOP record: report why a scheduler cover ended (frame stamps, arrivals, queue, time-base steps)'
 status: inbox
@@ -18,7 +18,7 @@ links:
 filed_by: claude
 ---
 
-The next step for JB-149. Filed 2026-11-08 at the owner's request after the debrief of the 2026-11-07 Sitting (logbook/2026-11-07-sitting-debrief.md).
+The next step for BUG-58. Filed 2026-11-08 at the owner's request after the debrief of the 2026-11-07 Sitting (logbook/2026-11-07-sitting-debrief.md).
 
 ## Why
 

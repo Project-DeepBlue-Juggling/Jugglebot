@@ -1,9 +1,9 @@
 ---
-title: "JB-146: can-bridge FW 36 stall guard: an ACTIVATE / HAND_MOVE_TO that holds the Hand at high current without motion for 300 ms commands it IDLE; the legs carry on"
+title: "BUG-56: can-bridge FW 36 stall guard: an ACTIVATE / HAND_MOVE_TO that holds the Hand at high current without motion for 300 ms commands it IDLE; the legs carry on"
 type: bugfix
 date: 2026-11-02
 status: open
-phase: "JB-146 (Sitting 2026-11-02 incident)"
+phase: "BUG-56 (Sitting 2026-11-02 incident)"
 subsystem: can-bridge
 related_entries:
   - 2026-11-02-hand-top-margin-and-70a.md
@@ -27,7 +27,7 @@ files_changed:
   - tests/teensy_link/test_hand_move_to.py
 ---
 
-# JB-146: the Hand stall guard (can-bridge FW 36)
+# BUG-56: the Hand stall guard (can-bridge FW 36)
 
 **What happened.** Sitting 2026-11-02, 16:52: an ODrive GUI save reset the
 Hand's zero. The next ACTIVATE parked the Hand into its stop, the position
@@ -53,7 +53,7 @@ ladder.
   at once. `teensy_bridge_node` logs the rising edge as a STALL error naming
   the zero reset. PROTOCOL_VERSION stays 10.
 - The same FW 36 build carries the stream STOP's Hand deceleration
-  3500 → 4500 rev/s² (JB-147, owner decision; see
+  3500 → 4500 rev/s² (BUG-57, owner decision; see
   `2026-11-02-hand-top-margin-and-70a`), so there is one bump and one flash.
 - Build: `pio run -e teensy41` 2026-11-02, text 251200 / data 35520 / bss
   111488. NOT flashed.

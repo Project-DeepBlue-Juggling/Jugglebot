@@ -18,7 +18,7 @@ plus a parallel gate, L3 the launch's ``cpu_partition``):
     the grid instant), the emitter's freedom from the solve.
 (d) Load average before and after, power mode, governors, frequencies, temperatures.
 (e) Per solve, the worker's own wall (``reply.solve_s``), CPU seconds and voluntary /
-    involuntary context switches (the JB-76 fields on ``SegmentSolveReply``): CPU near
+    involuntary context switches (the BUG-21 fields on ``SegmentSolveReply``): CPU near
     wall is a slow solve, CPU far below wall with involuntary switches is a starved one.
 
 Samples are paced (``--period``) so the worker goes idle between them, as it does

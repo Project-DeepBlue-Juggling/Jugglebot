@@ -1,5 +1,5 @@
 ---
-id: JB-133
+id: BUG-47
 kind: bug
 title: teensy_bridge_node does not exit after a rejected shutdown Stow; launch SIGTERM-killed it 4.8 s later (2026-10-31 13:06)
 status: backlog
@@ -22,14 +22,14 @@ On 2026-10-31 13:06 (launch log `~/.ros/log/2026-10-31-13-06-17-735496-jetson-11
 
 Reproduce offline first: a FakeTeensy that rejects DEACTIVATE, then `on_shutdown()` and the node's `main()` finally, timed. Candidates: the transport stop joining the RX or heartbeat thread, or an executor or service teardown.
 
-A second observation for the same look: at 13:13 the Stow was still unconfirmed 4.8 s after it began (normal 1.5 s). With the 8 s window from JB-82 the next such shutdown logs its outcome.
+A second observation for the same look: at 13:13 the Stow was still unconfirmed 4.8 s after it began (normal 1.5 s). With the 8 s window from BUG-26 the next such shutdown logs its outcome.
 
 ## Findings (2026-11-08)
 
 Not reproduced offline; no code changed. A throwaway test used the node harness with a FakeTeensy that rejects DEACTIVATE, on a latched fault, with the node stopping its own client.
 
 - `on_shutdown()` returned in 0.9 s against the 4.8 s seen. Per phase: wire disarm 0.0 s, `_shutdown_stow` 0.001 s, `client.stop()` 0.1 s, the fixed settle 0.2 s. About 0.6 s is unaccounted for, nowhere near 4.8 s.
-- A rejected Stow returns at once, before the monitor loop, so JB-82's 8 s window is never entered.
+- A rejected Stow returns at once, before the monitor loop, so BUG-26's 8 s window is never entered.
 - Ruled out as the delay: the transport join (capped at 1 s per thread), the Stow confirmation wait, and the RPC and ToD closes.
 
 ### Where the time probably went (hypothesis)

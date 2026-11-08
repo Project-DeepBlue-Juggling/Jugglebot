@@ -148,4 +148,4 @@ Changed `MPCParams(max_cpu_time=0.022, max_iter=100)` to `MPCParams(max_cpu_time
 
 <!-- To be filled in during /investigate outcome step. -->
 
-> Closed 2026-10-28: superseded: MPC chain removed 2026-09-01 (JB-34 survey).
+> Closed 2026-10-28: superseded: MPC chain removed 2026-09-01 (IDEA-2 survey).

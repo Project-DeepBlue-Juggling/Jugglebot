@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""View-menu scene toggles persist across a refresh (JB-89).
+"""View-menu scene toggles persist across a refresh (BUG-31).
 
 ``tests/ros/js/view_toggles_harness.js`` runs the real DOM-free
 ``ros_ws/gui/js/view-toggles.js`` under node; the source-text half pins that

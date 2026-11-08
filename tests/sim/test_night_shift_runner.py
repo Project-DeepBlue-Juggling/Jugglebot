@@ -83,7 +83,7 @@ def _git(*args, cwd=None, env=None):
 
 def _bug(root: Path, n: int, updated: str = "2026-10-20T00:00:00Z") -> None:
     write_item(str(root / "map" / ("bug-b%d.md" % n)),
-               {"id": "JB-%d" % n, "kind": "bug", "title": "Bug %d" % n,
+               {"id": "BUG-%d" % n, "kind": "bug", "title": "Bug %d" % n,
                 "status": "inbox", "created": "2026-10-20", "updated": updated,
                 "priority": "medium"}, "Body\n")
 
@@ -111,7 +111,7 @@ def template(tmp_path_factory):
         shutil.copy2(str(REPO / rel), str(src / rel))
     (src / "map").mkdir()
     write_item(str(src / "map" / "pathway-p.md"),
-               {"id": "JB-3", "kind": "pathway", "title": "P", "status": "active",
+               {"id": "PWAY-1", "kind": "pathway", "title": "P", "status": "active",
                 "created": "2026-10-20", "destination": "d"}, "Body\n")
     _bug(src, 1)
     _bug(src, 2)
@@ -594,7 +594,7 @@ def test_post_run_snapshot_is_tomorrows_baseline(ns):
     assert len(last["main_commits"]) == 1
     assert last["main_commits"][0].endswith(" close bug-b1")
     snapshot = json.loads((ns.reports / "candidates-last.json").read_text())
-    assert [i["id"] for i in snapshot["items"]] == ["JB-2"]
+    assert [i["id"] for i in snapshot["items"]] == ["BUG-2"]
     # The Item closed tonight is not news tomorrow.
     r = ns.run()
     _check(r, "NOTHING_NEW", 0)

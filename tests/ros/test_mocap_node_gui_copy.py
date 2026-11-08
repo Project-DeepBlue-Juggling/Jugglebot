@@ -1,4 +1,4 @@
-"""mocap_node's decimated GUI copies and the ``qtm_frame_hz`` status key (JB-76).
+"""mocap_node's decimated GUI copies and the ``qtm_frame_hz`` status key (BUG-21).
 
 rosbridge deserialises every message it ingests before the client's throttle
 applies, so the GUI takes ``gui/mocap_data`` and ``gui/rigid_body_poses`` (every

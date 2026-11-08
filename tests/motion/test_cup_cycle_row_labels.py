@@ -1,4 +1,4 @@
-"""Row labels in the ``UNVERIFIED`` refusal (JB-104 / JB-126, 2026-11-01).
+"""Row labels in the ``UNVERIFIED`` refusal (BUG-39 / TKT-22, 2026-11-01).
 
 ``cup_cycle._verify`` refuses a QP point whose equality residual or constraint
 violation is above the bar.  The reason stays ``'UNVERIFIED'`` (infeasible and

@@ -524,4 +524,4 @@ entry on account of Failure A.
   spectrum at hold, or is there a dominant fighting frequency?
 - Would a single-leg bench test (platform weight off) show the same hold fighting?
 
-> Closed 2026-10-28: superseded by plans/archived/motion-onset-deadtime-investigation.md (JB-34 survey).
+> Closed 2026-10-28: superseded by plans/archived/motion-onset-deadtime-investigation.md (IDEA-2 survey).

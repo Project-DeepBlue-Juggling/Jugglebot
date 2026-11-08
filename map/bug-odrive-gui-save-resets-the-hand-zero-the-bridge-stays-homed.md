@@ -1,5 +1,5 @@
 ---
-id: JB-146
+id: BUG-56
 kind: bug
 title: ODrive GUI save resets the Hand zero, the bridge stays homed, and ACTIVATE parks the Hand into its stop at full current
 status: complete

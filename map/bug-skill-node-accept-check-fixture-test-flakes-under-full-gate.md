@@ -1,5 +1,5 @@
 ---
-id: JB-64
+id: BUG-14
 kind: bug
 title: skill_node accept-check fixture test flakes under full-gate load
 status: complete

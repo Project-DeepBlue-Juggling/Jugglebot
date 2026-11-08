@@ -24,7 +24,7 @@ tags:
 
 Phase-end audit of `map-item-ids-p6-jugglebot`, behaviour findings fixed with tests:
 
-- **`item push` resolves its argument first.** `push_item` now goes through `find_item` (ID or stem) before any git call, so `item push JB-64` for an Item that does not exist refuses with the resolver's message instead of rebasing and pushing every unpushed commit and then failing on the load with a false "a local commit for JB-64 is waiting".
+- **`item push` resolves its argument first.** `push_item` now goes through `find_item` (ID or stem) before any git call, so `item push BUG-14` for an Item that does not exist refuses with the resolver's message instead of rebasing and pushing every unpushed commit and then failing on the load with a false "a local commit for BUG-14 is waiting".
 - **Undo advice is `git reset --soft HEAD~1`** (then delete the Item file and revert the docs page if unwanted). `--hard` with `--autostash` destroyed the operator's tracked edits. Changed in `_waiting_note`, `map-writes.md` and the test assertion.
 - **`_head_adds` amends only an unpublished commit** (HEAD not an ancestor of the upstream, else origin/main). Re-running `item push` after a success used to amend a commit the remote already had; it now takes the separate `map: regenerate` / `map: renumber` commit path.
 - **`/inbox --from-issue`** closes the GitHub issue as a new step 6, only after `item push` reports pushed (it used to close before the Avoid-word check and the push). Step 3 no longer claims `item new` pulls under `--commit --no-push`; the operator's preceding `git pull --ff-only` is the pull.

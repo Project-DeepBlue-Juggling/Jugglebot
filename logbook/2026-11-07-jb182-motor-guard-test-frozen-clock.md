@@ -1,15 +1,15 @@
 ---
-title: "JB-182: motor_guard interpolation tests read the wall clock; freeze it for the interpolation step"
+title: "BUG-71: motor_guard interpolation tests read the wall clock; freeze it for the interpolation step"
 type: bugfix
 date: 2026-11-07
 status: complete
-phase: "Night Shift 2026-11-07 JB-182"
+phase: "Night Shift 2026-11-07 BUG-71"
 files_changed:
   - tests/motion/test_motor_guard.py
   - logbook/2026-11-07-jb182-motor-guard-test-frozen-clock.md
 ---
 
-# JB-182: frozen clock for the motor_guard interpolation tests
+# BUG-71: frozen clock for the motor_guard interpolation tests
 
 `test_normal_interpolation_unchanged` failed one full gate on 2026-11-06 (a 0.19 mrev miss against atol=1e-4) and passed on the same commit the next run. It backdated `_mpc_base_timestamp` by `dt_test` and asserted linear interpolation at exactly `dt_test`, so any scheduling delay before the `perf_counter()` read inside `_interpolate_and_send` moved the answer. The safety claim (plain linear within the window) does not need real time.
 

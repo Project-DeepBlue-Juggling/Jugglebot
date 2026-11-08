@@ -639,7 +639,7 @@ def test_set_writes_saves_reboots_and_verifies_legs_only(tool, monkeypatch, tmp_
     assert hand.nvm[SOFT] == 10.0
 
     out = capsys.readouterr()
-    assert 'REBOOTED' in out.out and 'JB-146' in out.out and 'can-bridge' in out.out
+    assert 'REBOOTED' in out.out and 'BUG-56' in out.out and 'can-bridge' in out.out
     assert 'node 3 serial S3' in out.out and '10.0 -> 20.0' in out.out
     assert 'verify OK' in out.out
     assert (tmp_path / 'fleet_map.json').exists()

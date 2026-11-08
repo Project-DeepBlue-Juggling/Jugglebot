@@ -1,5 +1,5 @@
 ---
-id: JB-151
+id: BUG-59
 kind: bug
 title: Editing long Descriptions is buggy
 status: complete

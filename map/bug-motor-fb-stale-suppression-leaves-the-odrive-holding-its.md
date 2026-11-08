@@ -1,5 +1,5 @@
 ---
-id: JB-73
+id: BUG-19
 kind: bug
 title: Hand ODrive state can silently diverge from what the can-bridge commanded
 status: in_progress
@@ -31,7 +31,7 @@ Candidate fix: on the suppress edge, send one final setpoint with vel_ff = 0 at 
 
 A related reporting quirk: LEG_CMD (`axes[].target_pos_rev`) is written on every tick even while suppressed, so it shows commands that never reached the ODrive. Bench analysers must mask them, as `tools/probes/lead_clamp_gap_bench.py` now does.
 
-## Further instances (JB-34 survey, 2026-10-28)
+## Further instances (IDEA-2 survey, 2026-10-28)
 
 The class widened: ODrive-side Hand state that drifts from what the can-bridge believes it commanded. The vel_ff hold above is the first instance; the logbook survey added three more.
 
@@ -66,5 +66,5 @@ A question ticket carries this to the owner; the answer under its `## Answer` re
 
 ## Progress
 
-- 2026-11-01: FW 35 suppress-edge hold flush committed (JB-124 option 1), not flashed; bench-leg Sitting section added
+- 2026-11-01: FW 35 suppress-edge hold flush committed (TKT-20 option 1), not flashed; bench-leg Sitting section added
 - 2026-11-01: FW 35 flashed 16:15 (owner asked); BridgeIdentity reads FW 35 / PROTOCOL 10; bench-leg Sitting still to fly

@@ -42,7 +42,7 @@ float64[2] rest_tilt_rad       # REST only: the attitude (rx, ry) this REST ends
 float64[2] bump_delta_xy_mm    # BUMP only: the CLAMPED landing's xy minus the committed one (mm, platform frame)
 float64 t_dispatch_s           # BUMP only: the executor's dispatch instant (wall clock); k_wire = floor((t - t0)/dt) + WIRE_READ_KNOTS is derived from it, exactly as the executor did
 string planner_mode            # two-ball-oval P3: the planner formulation skill_node selected the box under ('level' | 'pose'); '' = the emitter's SegmentConfig default. Refused by name (code PLANNER_MODE) on any other value.
-bool carry_zvd                # carry-ring-zvd P1c (JB-102): the pose planner's ZVD ring rows (skill_node's live carry_zvd parameter, the same value the box cell was selected under); honoured whenever planner_mode is non-empty, inert in level mode
+bool carry_zvd                # carry-ring-zvd P1c (FEAT-32): the pose planner's ZVD ring rows (skill_node's live carry_zvd parameter, the same value the box cell was selected under); honoured whenever planner_mode is non-empty, inert in level mode
 bool check_only               # P3a (command-time admissibility check): PLAN this segment exactly as an install would (same guards, terminal, seed, lead, planner) but INSTALL NOTHING: no record, no splice, no stream or warm-start change. The reply's `accepted` then means "planned" (not "installed"), `code`/`message` are the planner/gate verdict and `margin` the gate margin. Default false = today's install, bit for bit. Refused by name for KIND_BUMP.
 ---
 bool accepted

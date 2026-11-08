@@ -1,5 +1,5 @@
 ---
-title: "JB-135: hovering a CONSOLE line in a replay draws a thin dashed marker on the trackbar at that line's time"
+title: "FEAT-35: hovering a CONSOLE line in a replay draws a thin dashed marker on the trackbar at that line's time"
 type: feature
 date: 2026-11-02
 status: complete
@@ -21,7 +21,7 @@ files_changed:
   - docs/project-map.md
 ---
 
-# JB-135: CONSOLE hover marks the trackbar
+# FEAT-35: CONSOLE hover marks the trackbar
 
 **What.** In a replay, hovering a CONSOLE row shows a thin dashed amber line (`--replay-hover-marker`,
 next to `--replay-playhead`) on the trackbar at that line's time, so the operator sees where in the

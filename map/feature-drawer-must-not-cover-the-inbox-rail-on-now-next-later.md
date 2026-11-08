@@ -1,5 +1,5 @@
 ---
-id: JB-47
+id: FEAT-9
 kind: feature
 title: Drawer must not cover the inbox rail on Now / Next / Later
 status: complete

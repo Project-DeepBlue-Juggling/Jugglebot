@@ -132,12 +132,12 @@ def test_plan_pathways_exist():
 
 
 def test_item_ids_unique():
-    # Plan map-item-ids.md, P2: every PRESENT id is the canonical JB-<n> and no
+    # Plan map-item-ids.md, P2: every PRESENT id is the canonical <ID> and no
     # two Items share one. Presence is test_every_item_has_an_id (P6).
     from mapkit import ids
 
     items = _items()
-    bad = ["%s: id %r is not JB-<n>" % (i.filename, i.meta.get("id"))
+    bad = ["%s: id %r is not <ID>" % (i.filename, i.meta.get("id"))
            for i in ids.malformed(items)]
     bad += ["%s shared by %s (python -m mapkit ids --repair)"
             % (k, ", ".join(i.filename for i in v))

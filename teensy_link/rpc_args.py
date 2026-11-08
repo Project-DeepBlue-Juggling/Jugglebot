@@ -324,7 +324,7 @@ HAND_MOVE_ARRIVED = 0      # status OK: at target, settled, handed off to PASSTH
 HAND_MOVE_SUPERSEDED = 1   # status OK: a newer HAND_MOVE_TO retargeted this move
 HAND_MOVE_TIMEOUT = 2      # ERR_TIMEOUT: 10 s elapsed, the hand was commanded IDLE
 HAND_MOVE_ABORTED = 3      # ERR_BUS_DOWN / ERR_REJECTED / ERR_TIMEOUT(TX): hand IDLE
-HAND_MOVE_STALLED = 4      # ERR_REJECTED: the FW 36 stall guard (JB-146) IDLEd the hand
+HAND_MOVE_STALLED = 4      # ERR_REJECTED: the FW 36 stall guard (BUG-56) IDLEd the hand
 HAND_MOVE_OUTCOME_NAMES = {
     HAND_MOVE_ARRIVED: "ARRIVED",
     HAND_MOVE_SUPERSEDED: "SUPERSEDED",
@@ -928,34 +928,34 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # the cone-role bus (CAN3 peripheral); ERR_BUS_DOWN when no cone-bus partner has
 # been heard. No wire change to any existing message; PROTOCOL_VERSION stays 10;
 # an FW <= 32 board answers WAVE_CMD with ERR_UNKNOWN_METHOD.
-# 33 -> 34 (2026-10-28, JB-75 + JB-72): SETPOINT_STALE measures from the arm edge
+# 33 -> 34 (2026-10-28, BUG-20 + BUG-18): SETPOINT_STALE measures from the arm edge
 # when that is newer than the last setpoint, and output stays shut until a
 # setpoint lands after the arm; the Diagnostic pad[0] byte becomes homing_epoch
 # (bumped per accepted HOME). Same payload size, PROTOCOL_VERSION stays 10.
-# 34 -> 35 (2026-11-01, JB-73): on the first tick of a MOTOR_FB_STALE
+# 34 -> 35 (2026-11-01, BUG-19): on the first tick of a MOTOR_FB_STALE
 # suppression the bridge re-sends each lane's last frame once with vel_ff = 0
 # (same input_pos, legs keep torque_ff), so the ODrive holds AT the last command
 # instead of input_pos + vel_ff/pos_gain. Behavioural only: no wire change,
 # PROTOCOL_VERSION stays 10.
-# 35 -> 36 (2026-11-02, JB-146): the ACTIVATE / HAND_MOVE_TO ladder's hand stall
+# 35 -> 36 (2026-11-02, BUG-56): the ACTIVATE / HAND_MOVE_TO ladder's hand stall
 # guard: |iq| >= 25 A with |vel| <= 0.5 rev/s for 300 ms commands the Hand IDLE
 # (the legs of an ACTIVATE carry on). Named as the HAND_MOVE_TO outcome
 # HAND_MOVE_STALLED (4) and the Diagnostic flags bit2; both previously-zero
 # values, so PROTOCOL_VERSION stays 10.
-# 36 -> 37 (2026-11-03, JB-145): a hand cover that ends with no newer frame while
+# 36 -> 37 (2026-11-03, BUG-55): a hand cover that ends with no newer frame while
 # the Hand moves up faster than 50 rev/s skips the 20 ms grace and stops at the
 # cover end (C1 entry, 4500 rev/s^2, jerk-limited ramp-out), so the stop fits
 # the stroke. Behavioural only: no wire change, PROTOCOL_VERSION stays 10.
-# 37 -> 38 (2026-11-03, JB-149): scheduled-lane observability. HeartbeatT2J
+# 37 -> 38 (2026-11-03, BUG-58): scheduled-lane observability. HeartbeatT2J
 # grows 126 -> 158 B with five more cumulative scheduled-lane counters
 # (sched_superseded / _stale / _hand_c1_stops / _future_drops / _q_overflow) and
 # a per-heartbeat-window frame-age census (rx_age_max_us + rx_age_le25/le50/
 # le70/gt70, age = bridge now - the frame's t_start at queue entry). A WIRE
 # change: PROTOCOL_VERSION 10 -> 11, so an FW 37 board is DARK to this host
 # (and vice versa) until the lockstep flash. No lane behaviour changes.
-# 38 -> 39 (2026-11-05, JB-166): Hand C1 stop grace 6 -> 14 ms. Behavioural
+# 38 -> 39 (2026-11-05, BUG-66): Hand C1 stop grace 6 -> 14 ms. Behavioural
 # only: no wire change, PROTOCOL_VERSION stays 11.
-# 39 -> 40 (2026-11-06, JB-174): the stream socket's receive queue goes from
+# 39 -> 40 (2026-11-06, FEAT-41): the stream socket's receive queue goes from
 # the library default of ONE packet to 8, and HeartbeatT2J grows 158 -> 190 B
 # with the downlink ledger (dn_rx_setpoints, dn_queue_dropped, dn_seq_gaps,
 # dn_crc_errors, sched_frames, sp_seq_drops, sp_no_hand, sp_no_sched). A WIRE

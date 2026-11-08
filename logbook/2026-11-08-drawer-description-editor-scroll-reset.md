@@ -1,5 +1,5 @@
 ---
-title: "Item drawer Description editor no longer scrolls the drawer to the top on each keystroke (JB-151)"
+title: "Item drawer Description editor no longer scrolls the drawer to the top on each keystroke (BUG-59)"
 type: bugfix
 date: 2026-11-08
 status: complete

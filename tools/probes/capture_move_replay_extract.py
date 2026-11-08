@@ -179,7 +179,7 @@ def echo_pose(u0):
 
 #: the executor's lateral aim authority on a one-site/reload catch (mm per axis);
 #: AIM-LATERAL-CLAMPED in the launch log names it. Mirrors
-#: ``skill_node`` ``learner_lateral_authority_mm`` as flown in the logs this replays (20; the default is 30 since 2026-11-02, JB-139).
+#: ``skill_node`` ``learner_lateral_authority_mm`` as flown in the logs this replays (20; the default is 30 since 2026-11-02, BUG-52).
 AIM_AUTHORITY_MM = 20.0
 
 

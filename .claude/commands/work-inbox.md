@@ -11,7 +11,7 @@ Take map items (`map/<kind>-<slug>.md`) and move them toward `complete` or
 
 `/work-inbox [id|stem ...] [--pathway <slug>] [--kind bug|feature|idea] [--dry-run]`
 
-Items are named by ID (`JB-12`, `jb12`) or stem; bare digits are refused on a write
+Items are named by ID (`BUG-12`, `bug12`) or stem; bare digits are refused on a write
 (`docs/agents/map-writes.md` § Naming an Item). Say the ID in every announcement.
 
 With no Items named: list `backlog` items first, then `inbox`, by priority then age

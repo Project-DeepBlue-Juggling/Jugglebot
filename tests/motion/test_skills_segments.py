@@ -1031,7 +1031,7 @@ def test_a_catch_inside_the_pre_release_hold_is_refused_in_plain_language(
     assert 'POSE_WINDOW' in out and 'no knots left' in out, out
 
 
-# -- carry_zvd on the segment config (carry-ring-zvd P1c, JB-102) ---------------
+# -- carry_zvd on the segment config (carry-ring-zvd P1c, FEAT-32) ---------------
 
 def test_segment_config_carry_zvd_becomes_the_goals_pose_cfg():
     """None = the planner's own PoseConfig() (the yaml default); a bool is the

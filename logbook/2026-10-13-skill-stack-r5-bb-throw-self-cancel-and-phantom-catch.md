@@ -93,4 +93,4 @@ Full gate: see the commit message's triple. Live verification is runbook row 16b
 
 **Follow-up (2026-10-13 night).** Sitting 8 met the R5 gate (`2026-10-13-skill-stack-r5-sitting-8-gate-met.md`) and verified the BB dispatch path live: 14/14 throws dispatched, 0 `ENDED_DURING_BB_DISPATCH`, 0 `THROW_ABORTED_BY_HOST`. F1-F4, the mocap finalisation worker, the BB yaw-homing check and the aim-correction refit trigger stay carried; the remaining items are rows in `plans/active/skill-stack-dress-rehearsals-and-residue.md` § 2.
 
-> Closed 2026-10-28: F1 JB-25, F2 JB-21, finalise worker JB-30; F3/F4 in residue plan section 2 (JB-34 survey).
+> Closed 2026-10-28: F1 BUG-6, F2 BUG-2, finalise worker FEAT-5; F3/F4 in residue plan section 2 (IDEA-2 survey).

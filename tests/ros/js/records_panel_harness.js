@@ -1,4 +1,4 @@
-// records_panel_harness.js — the REAL ros_ws/gui/js/records-model.js (JB-35 records panel, DOM-free half)
+// records_panel_harness.js — the REAL ros_ws/gui/js/records-model.js (IDEA-3 records panel, DOM-free half)
 // under node. Sandbox (tests/ros/test_gui_records_panel.py builds it): records-model.js copied verbatim,
 // this file, package.json {"type":"module"}. Prints one JSON object the test asserts on.
 import {

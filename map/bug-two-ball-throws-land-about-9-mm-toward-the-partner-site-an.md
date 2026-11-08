@@ -1,5 +1,5 @@
 ---
-id: JB-192
+id: BUG-79
 kind: bug
 title: 'Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for'
 status: inbox
@@ -44,16 +44,16 @@ The arrival term is not added to the plant model now. Half of it may be a planne
 Columns Sep. 125, Apex 0.93, alternating Dwell 0.27 and 0.40 (three Attempts each), bag recorded. It separates a dependence on Apex from one on the time from arrival to release.
 
 ## Links
-Evidence: `temp/probes/sitting_debrief_2026-11-06b/unit_transit.md`, `unit_B_D.md`. Related: JB-186 (collisions), plan `learner-generalisation.md`, `logbook/2026-11-06-sitting-debrief-2.md`.
+Evidence: `temp/probes/sitting_debrief_2026-11-06b/unit_transit.md`, `unit_B_D.md`. Related: BUG-74 (collisions), plan `learner-generalisation.md`, `logbook/2026-11-06-sitting-debrief-2.md`.
 
 ## Dwell A/B check (off the Runbook since 2026-11-08)
-Flown 2026-11-07 and taken off the Runbook by the owner until it is redesigned: at Apex 0.93 Sep. 125 Dwell 0.32 and 0.30 each separated Legs 1 and 2 (JB-184), and no planned Leg peak separates safe transits from unsafe ones, so a redesign needs a Dwell contrast inside what has flown on the executed command. Detail in `logbook/2026-11-07-sitting-debrief.md`.
+Flown 2026-11-07 and taken off the Runbook by the owner until it is redesigned: at Apex 0.93 Sep. 125 Dwell 0.32 and 0.30 each separated Legs 1 and 2 (BUG-72), and no planned Leg peak separates safe transits from unsafe ones, so a redesign needs a Dwell contrast inside what has flown on the executed command. Detail in `logbook/2026-11-07-sitting-debrief.md`.
 
 ## Progress
 
-- 2026-11-06: Offline probe, planner defect ruled out: the release follows the caught position by design (asymmetric clamp predicts 5.3 mm, observed 6.0). Against the release that flew the pull is +1.1 / +1.3 mm position and -10.7 / -11.1 mm velocity (plan +16.6 / +13.3 mm/s, delivered +4.2 / +0.4). Position half withdrawn. JB-194 filed. (detail in the logbook).
+- 2026-11-06: Offline probe, planner defect ruled out: the release follows the caught position by design (asymmetric clamp predicts 5.3 mm, observed 6.0). Against the release that flew the pull is +1.1 / +1.3 mm position and -10.7 / -11.1 mm velocity (plan +16.6 / +13.3 mm/s, delivered +4.2 / +0.4). Position half withdrawn. BUG-81 filed. (detail in the logbook).
 - 2026-11-06: Fix at source now means the ring after arrival (carry-ring-zvd) or the lateral launch delivery, not the planner; the planner-defect branch is closed. Cheapest next offline check: regress ball lateral v on planned v, encoder v at release and tilt, split RESEND and BUMP. The Dwell A/B hardware check stands.
 - 2026-11-06: Dwell A/B rehearsed offline (nominate, Sitting limits, pose): Apex 0.93 Sep. 125 Dwell 0.27 accepted (margin 0.337, re-aim 0.121, Legs 310 mm/s 4076 mm/s^2); Dwell 0.40 REFUSED (21 refusals), 0.35 accepted (0.110, re-aim -0.298, 384 mm/s 6207 mm/s^2). Long arm set to 0.35.
-- 2026-11-06: Runbook row set to Dwell 0.27 against 0.32 (both inside the flown envelope: 353 mm/s, 5180 mm/s^2 at 0.32). 0.35 is left out: it plans 6207 mm/s^2, within 2 % of the 6296 that separated Legs 1 and 2 (JB-184). The debrief reads the Platform's velocity at release from the bag, a sharper measure than landings over 0.05 s.
-- 2026-11-06: 2026-11-06: owner decision on carry-ring-zvd section 8: the ZVD rows stay off on Columns until JB-184 has a bound. This row's own goals (Apex 0.93, Dwell 0.27 and 0.32) are RING refused with the rows on anyway, so the suppress-at-source branch needs both a bound and a window that holds the rows.
+- 2026-11-06: Runbook row set to Dwell 0.27 against 0.32 (both inside the flown envelope: 353 mm/s, 5180 mm/s^2 at 0.32). 0.35 is left out: it plans 6207 mm/s^2, within 2 % of the 6296 that separated Legs 1 and 2 (BUG-72). The debrief reads the Platform's velocity at release from the bag, a sharper measure than landings over 0.05 s.
+- 2026-11-06: 2026-11-06: owner decision on carry-ring-zvd section 8: the ZVD rows stay off on Columns until BUG-72 has a bound. This row's own goals (Apex 0.93, Dwell 0.27 and 0.32) are RING refused with the rows on anyway, so the suppress-at-source branch needs both a bound and a window that holds the rows.
 - 2026-11-08: Failed at the Sitting of 2026-11-07: Dwell 0.32 and 0.30 each separated Legs 1 and 2 in their first Attempt; later Attempts refused the Segment after Ball 2's first Throw (Feed aim clamped -30 mm). No answer: pull n 34/5/4. Row off the Runbook until redesigned (owner): 'inside what has flown' compared nominal with live peaks, and no plan peak separates the events.

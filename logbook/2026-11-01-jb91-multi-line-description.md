@@ -1,5 +1,5 @@
 ---
-title: "JB-91: the item description is multi-line in both filing forms (GUI File new change request, map app + New)"
+title: "IDEA-6: the item description is multi-line in both filing forms (GUI File new change request, map app + New)"
 type: feature
 date: 2026-11-01
 status: complete
@@ -18,7 +18,7 @@ tags:
   - ux
 ---
 
-# JB-91: multi-line description when filing an Item
+# IDEA-6: multi-line description when filing an Item
 
 **What.** Owner idea (2026-10-28): the single-line description field in both filing forms
 should assume multi-line text. Both are now a 4-row textarea that the operator can stretch
@@ -30,7 +30,7 @@ vertically, labelled Description:
   label is now "Description").
 
 A textarea never submits its form on a bare Enter, so Enter adds a line. Ctrl+Enter / Cmd+Enter
-still files from any field: both forms' form-level keydown handlers already did that (JB-78).
+still files from any field: both forms' form-level keydown handlers already did that (BUG-22).
 Nothing changes downstream: both forms already sent the text as the Item body
 (`description`), which the map server writes verbatim, newlines included. The Title stays a
 single line, because it becomes the Item's slug.

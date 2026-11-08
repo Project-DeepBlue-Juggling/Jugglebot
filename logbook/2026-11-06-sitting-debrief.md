@@ -25,8 +25,8 @@ tags: [safety, dynamics, testing]
 # Sitting 2026-11-06 (13:19) debrief
 
 Launch log `~/.ros/log/2026-11-06-13-19-19-766420-jetson-1466025/launch.log`, bag
-`~/Desktop/rosbags/2026-11-06_13-19-19`. One Runbook row flown on purpose, JB-183 (the first powered run
-of P3a, P3b, P1 and P4 of plan `learner-generalisation.md`, merged that morning); JB-174 and JB-149 are
+`~/Desktop/rosbags/2026-11-06_13-19-19`. One Runbook row flown on purpose, FEAT-43 (the first powered run
+of P3a, P3b, P1 and P4 of plan `learner-generalisation.md`, merged that morning); FEAT-41 and BUG-58 are
 passive rows the same launch can answer. The three analysis reports and their scripts are kept under
 `temp/probes/sitting_debrief_2026-11-06/` (`unit_learner.md`, `unit_missed.md`, `unit_detach.md`).
 
@@ -34,9 +34,9 @@ passive rows the same launch can answer. The three analysis reports and their sc
 
 | Row | Verdict | Evidence |
 |---|---|---|
-| JB-183 | pass (owner, typed 13:33; confirmed at the debrief) | Clause 1: `skills/check` and `skills/nominate` answered before power (launch.log 369, 443). Clause 2 as written is NOT met: no Sep. 100 Attempt read 20/20 (they ended on collisions); no Attempt ended on an `ADMISSIBILITY` refusal. Clause 3: first Throws at Sep. 170 within 5.2 mm of the commanded Apex, two Throws only. Closed. |
-| JB-174 | pass (owner confirmed) | `can-bridge v40`; three `downlink summary` lines (launch.log 2495, 4086, 5136), 12613 setpoints, lost 0 and queue_dropped +0 on all; seq_gaps +3 in the arm period that ended in the E-stop. Closed. |
-| JB-149 | not exercised | No LANE_REFUSED end. Nine `firmware scheduler STOP` WARNs, two of them 0.2 s after an Attempt's Start (Attempts 2 and 6), neither ended an Attempt. |
+| FEAT-43 | pass (owner, typed 13:33; confirmed at the debrief) | Clause 1: `skills/check` and `skills/nominate` answered before power (launch.log 369, 443). Clause 2 as written is NOT met: no Sep. 100 Attempt read 20/20 (they ended on collisions); no Attempt ended on an `ADMISSIBILITY` refusal. Clause 3: first Throws at Sep. 170 within 5.2 mm of the commanded Apex, two Throws only. Closed. |
+| FEAT-41 | pass (owner confirmed) | `can-bridge v40`; three `downlink summary` lines (launch.log 2495, 4086, 5136), 12613 setpoints, lost 0 and queue_dropped +0 on all; seq_gaps +3 in the arm period that ended in the E-stop. Closed. |
+| BUG-58 | not exercised | No LANE_REFUSED end. Nine `firmware scheduler STOP` WARNs, two of them 0.2 s after an Attempt's Start (Attempts 2 and 6), neither ended an Attempt. |
 
 Attempts (all two-ball Columns, Apex 1.00, Dwell 0.27, Throws 21; goal and end lines of launch.log):
 
@@ -99,8 +99,8 @@ plans at the nominal Sites and the live Catch aims carried the 10 mm outward re-
 76 mm centre to centre (diameter 74 mm) near the Apex and both tracks jump 350 to 540 mm/s laterally at that
 instant; the completed Attempts had no approach under 92 mm and no jump above 30 mm/s. A Tracker identity swap
 at close range was not excluded with raw markers, but the victims' later tracks diverge by 400 to 900 mm.
-Closest approach was about 70 mm at every separation. Attempt 1 is not the JB-169 signature (the ball was
-deflected 0.14 s before landing; the completed Attempts read their final Catch as seated). JB-175 was not
+Closest approach was about 70 mm at every separation. Attempt 1 is not the BUG-67 signature (the ball was
+deflected 0.14 s before landing; the completed Attempts read their final Catch as seated). BUG-68 was not
 exercised: Attempt 4's first end precedes the fault by 0.93 s. The ENDED summary line names a later skill than
 the first failing Catch in Attempts 2, 3, 5 and 7.
 
@@ -124,11 +124,11 @@ matched it); planned Leg speed, the feedforward shortfall and transit length do.
 joint would decide between the readings.
 
 **Owner decision: no bound now.** The consequence was minor, and a limit set from one event risks being too
-conservative; the owner will be mindful of the Patterns requested. The numbers above are on JB-184 for the day
+conservative; the owner will be mindful of the Patterns requested. The numbers above are on BUG-72 for the day
 a bound is wanted. Making the nomination plan at the re-aim extremes would move the acceptance edge, so it is
-filed as an owner decision (JB-185) and not changed here.
+filed as an owner decision (BUG-73) and not changed here.
 
-**The pass.** JB-183's Sep. 100 clause was written as 20/20 and was not met. The owner judged the row passed:
+**The pass.** FEAT-43's Sep. 100 clause was written as 20/20 and was not met. The owner judged the row passed:
 the row exists to show the merged stack runs on the powered robot, the stack caused none of the ends, and
 Sep. 100 leaves 26 mm between two 74 mm balls. The new-Site evidence is thin (Sep. 135 is 5 mm from Sites the
 memory holds; Sep. 170 gave two Throws, one of them a model-only command), so T-H2 is recorded as supported,
@@ -136,9 +136,9 @@ not as closed beyond doubt.
 
 ## Fix
 
-No code change. Written back: JB-183 and JB-174 closed; JB-184 (Leg separation, owner decision recorded),
-JB-185 (nomination margin) and JB-186 (ball collisions) filed; plan `learner-generalisation.md`: P3a complete,
-the first powered run recorded, P3b in progress on JB-185, a note on P2. Earlier the same day the 89
+No code change. Written back: FEAT-43 and FEAT-41 closed; BUG-72 (Leg separation, owner decision recorded),
+BUG-73 (nomination margin) and BUG-74 (ball collisions) filed; plan `learner-generalisation.md`: P3a complete,
+the first powered run recorded, P3b in progress on BUG-73, a note on P2. Earlier the same day the 89
 uncommitted rows of `temp/learn/jugglebot/memory.csv` were committed at the owner's ask (`edd98bff`), which
 unblocks the auto-pull.
 
@@ -163,8 +163,8 @@ reason a Columns Attempt ends early.
 
 - What the base joints hold, axially and off-axis (bench pull-off test), and whether the bridge's 3.5 rev/s
   feedforward cap should rise (a firmware change) or the gate should know it. Owner decision; none taken.
-- Whether the nomination should plan at the re-aim extremes (JB-185).
-- What sets the 60 to 78 mm lateral drift of the colliding flights (JB-186); P2's release telemetry is the
+- Whether the nomination should plan at the re-aim extremes (BUG-73).
+- What sets the 60 to 78 mm lateral drift of the colliding flights (BUG-74); P2's release telemetry is the
   measurement.
 - The Destination says a Pattern can be changed mid-Pattern; no operator channel calls
   `request_beat_change` yet, and a per-beat rotation of the Pattern is refused until P2 chooses its frame.

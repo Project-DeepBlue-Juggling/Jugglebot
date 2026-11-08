@@ -28,12 +28,12 @@ to `current_soft_max` 70 A / `current_hard_max` 80 A and motor thermistor
 - The owner, earlier the same day: "Let's stick with a current limit of 60 A in
   our code for now until we've tested this thoroughly."
 - Configure pushes it to the drive's soft max at every launch, so a launch still
-  runs at 60 A; that is what capped the JB-147 brake at -60.4 A.
+  runs at 60 A; that is what capped the BUG-57 brake at -60.4 A.
 - The YAML change is comment-only: `hardware_config.py` is byte-identical, so
   the box gate_hash stays 1749cca8bc23 and no re-sweep is needed.
 
 **The GUI-save trap.** Saving these settings in the ODrive GUI rebooted the
-Hand ODrive and erased its homed zero (JB-146). Re-home after any GUI save.
+Hand ODrive and erased its homed zero (BUG-56). Re-home after any GUI save.
 
 **Verification.**
 - Readers of the JSON (2026-11-02): `pytest -q

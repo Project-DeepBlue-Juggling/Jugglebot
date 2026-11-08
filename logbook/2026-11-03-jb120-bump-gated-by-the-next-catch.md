@@ -1,12 +1,12 @@
 ---
-title: "A Bump is gated by the next Catch: shrunk in logged halvings or declined BUMP-NEXT-CATCH when the seed it leaves cannot be planned (I-CATCH-7, JB-120)"
+title: "A Bump is gated by the next Catch: shrunk in logged halvings or declined BUMP-NEXT-CATCH when the seed it leaves cannot be planned (I-CATCH-7, BUG-42)"
 type: investigation
 date: 2026-11-03
 status: in-progress
 phase: "pattern progression"
 related_plan: pattern-progression.md
 related_issues:
-  - JB-120
+  - BUG-42
 files_changed:
   - ros_ws/src/jugglebot/jugglebot/motion/skills/bump.py
   - ros_ws/src/jugglebot/jugglebot/motion/skills/executor.py
@@ -19,11 +19,11 @@ subsystem: [motion]
 tags: [safety, dynamics, testing]
 ---
 
-# A Bump is gated by the next Catch (I-CATCH-7, JB-120)
+# A Bump is gated by the next Catch (I-CATCH-7, BUG-42)
 
 ## Summary
 
-The structural step JB-120 filed: at Bump time, ask whether the next Catch can be planned from the seed the Bump leaves, and shrink or decline the Bump when it cannot. Built as `bump.bump_with_next_catch_gate` (the one enforcement point, reached through `bump_record` by both live callers) with an injected next-catch gate; the executor logs requested vs applied and commits the APPLIED landing. New invariant I-CATCH-7. **No live caller supplies a gate yet**: the only faithful gate found is the next Catch's own solve, and it does not fit the Bump's 25-50 ms dispatch-to-swap allowance. That placement is the owner's decision (Open Questions); with no gate the live path is I-CATCH-5 bit-for-bit. Related: `2026-11-02-bump-brake-seed-and-debrief-observability.md`, `2026-11-02-sitting-debrief.md`.
+The structural step BUG-42 filed: at Bump time, ask whether the next Catch can be planned from the seed the Bump leaves, and shrink or decline the Bump when it cannot. Built as `bump.bump_with_next_catch_gate` (the one enforcement point, reached through `bump_record` by both live callers) with an injected next-catch gate; the executor logs requested vs applied and commits the APPLIED landing. New invariant I-CATCH-7. **No live caller supplies a gate yet**: the only faithful gate found is the next Catch's own solve, and it does not fit the Bump's 25-50 ms dispatch-to-swap allowance. That placement is the owner's decision (Open Questions); with no gate the live path is I-CATCH-5 bit-for-bit. Related: `2026-11-02-bump-brake-seed-and-debrief-observability.md`, `2026-11-02-sitting-debrief.md`.
 
 ## Symptoms
 
@@ -45,11 +45,11 @@ Cost, measured on this Jetson (OMP/OpenBLAS 1 thread): `apply_catch_bump` with i
 
 ## Discussion
 
-**Why gate on the next Catch, not re-solve it at the unlearned aim.** The held branch (JB-152, dropped) retried the next Catch at the unlearned aim y_d. Offline the aim moves the peak by at most 0.7 points and the seed by about 12, so the retry was inert: it changed an input the peak does not depend on. The gate acts on the input that matters, the Bump that writes the seed, before it is committed; the y_d fallback acts after, when the seed is already flying.
+**Why gate on the next Catch, not re-solve it at the unlearned aim.** The held branch (TKT-29, dropped) retried the next Catch at the unlearned aim y_d. Offline the aim moves the peak by at most 0.7 points and the seed by about 12, so the retry was inert: it changed an input the peak does not depend on. The gate acts on the input that matters, the Bump that writes the seed, before it is committed; the y_d fallback acts after, when the seed is already flying.
 
 **Why no cheap surrogate gate.** The brief proposed a cheap check at Bump time (the vectorised `validate_cycle` runs under 10 ms). `validate_cycle` validates a plan, and the next window has no plan until its solve. The seed-level quantities do not predict the solve's peak in the sweep: the along-axis brake is -71.56 k mm/s^2 for every Bump, and the cross-axis part of `a_R` is non-monotone against the peak (x 379 mm/s^2 -> 3688; y 464 -> 2660; x 783 -> 3436). A threshold on them would be a fitted cap, the stopgap the debrief declined at 21.5 mm, and could be inert exactly as the y_d fallback was. Hypothesis withdrawn (below).
 
-**Why the solve is not wired live.** (1) Timing: `k_b = k_wire(dispatch) + 2` gives the node 25-50 ms from dispatch to swap; one gated solve (33-93 ms) alone turns the swap into `SPLICE_TOO_LATE`, and the shrink ladder can need four. (2) CPU: it adds a CATCH-solve burst inside the Catch window, where JB-149 already shows such bursts starving the 40 Hz setpoint stream past the firmware's 70 ms cover. Moving the solve to the executor before dispatch avoids (1) but not (2), and needs the executor to hold the record and build the next terminal early. So the enforcement point, the shrink rule, the logging and the invariant are built and tested with the real solve injected, and the live gate is an owner trade (Open Questions).
+**Why the solve is not wired live.** (1) Timing: `k_b = k_wire(dispatch) + 2` gives the node 25-50 ms from dispatch to swap; one gated solve (33-93 ms) alone turns the swap into `SPLICE_TOO_LATE`, and the shrink ladder can need four. (2) CPU: it adds a CATCH-solve burst inside the Catch window, where BUG-58 already shows such bursts starving the 40 Hz setpoint stream past the firmware's 70 ms cover. Moving the solve to the executor before dispatch avoids (1) but not (2), and needs the executor to hold the record and build the next terminal early. So the enforcement point, the shrink rule, the logging and the invariant are built and tested with the real solve injected, and the live gate is an owner trade (Open Questions).
 
 **Why halve rather than clip to a fitted bound.** Each step is a whole Bump of a smaller Δ: `b`, `ḃ`, `b̈` scale linearly, so every step is the same C2 shape, knots `0..k_b` stay bit-identical (asserted per step) and nothing streamed mixes two shapes. Halving needs no model of the peak, and it stops at a step the real gate accepted, not at a predicted bound. I-CATCH-5's "never scaled down" rule exists because a partial Bump is a SILENT clip; here the shrink is named on the line (`BUMP-SHRUNK step k: requested ... -> applied ...`), and the executor commits the applied landing and the realised `b(t_rel)`, so the learner row stays true (I-CATCH-5 (d)). The I-CATCH-5 row now names this one exception.
 
@@ -83,6 +83,6 @@ Cost, measured on this Jetson (OMP/OpenBLAS 1 thread): `apply_catch_bump` with i
 
 ## Open Questions
 
-1. The live gate (owner): (A) the executor solves the next Catch in the solver worker before dispatch (1-4 solves of 33-93 ms in the Catch window, the JB-149 CPU budget); (B) an offline-certified Bump envelope per box cell, a table lookup at Bump time (the box sweep gains a Δ axis); (C) leave it unwired: on main every swept bumped seed plans at or under 82 % of 4500.
+1. The live gate (owner): (A) the executor solves the next Catch in the solver worker before dispatch (1-4 solves of 33-93 ms in the Catch window, the BUG-58 CPU budget); (B) an offline-certified Bump envelope per box cell, a table lookup at Bump time (the box sweep gains a Δ axis); (C) leave it unwired: on main every swept bumped seed plans at or under 82 % of 4500.
 2. The shrink floor: 3 halvings stop at Δ/8 (2.5 mm for a 20 mm request, near `resend_pos_tol_mm`).
 3. Should a `BUMP-NEXT-CATCH` decline also suppress the learner row for that Catch (the Catch is then flown off the tracker's landing by the full Δ)?

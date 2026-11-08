@@ -90,4 +90,4 @@ tee'd files (`less -R` reads them). `tools/probes/selftoss_landing_decomposition
   throws/catches by substring-matching `OUTCOME` log lines (`skill_node.py` `_juggle_execute`), so
   outcomes must become data before their wording changes.
 
-> Closed 2026-10-28: closed by 2026-09-29-operator-console-phase-2 (JB-34 survey).
+> Closed 2026-10-28: closed by 2026-09-29-operator-console-phase-2 (IDEA-2 survey).

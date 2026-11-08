@@ -8,7 +8,7 @@ pathway: two-ball-oval
 scope: >-
   The one-ball oval's carried Throws land +76 mm (dwell 0.40) and +122 mm (0.35) long because the pose STEADY
   window's minimum-energy carry decelerates into the release knot and the Platform's ~6 Hz lateral mode is
-  still swinging forward at separation (JB-102; logbook/2026-11-04-sitting-debrief.md § Root cause). Identify
+  still swinging forward at separation (FEAT-32; logbook/2026-11-04-sitting-debrief.md § Root cause). Identify
   the mode from the bags already on disk, add zero-residual-vibration (ZVD) equality rows on the modelled
   Platform residual at the release knot in cup_cycle._pose_augment behind a config flag, re-sweep the box with
   the flag on, and fly it A/B on the oval. Closes when carried and from-rest Throws land within 10 mm of each
@@ -33,7 +33,7 @@ related_code:
 
 > 2026-11-06 (learner-generalisation P3c, branch p3-online-admissibility, pending the owner's merge): the Admissible box, its sweep (`tools/admissible_sweep.py`, `admissible_sweep_run.py`) and `admissible.select` are retired. Wherever this plan says to sweep or re-sweep the box, check a `gate_hash`, or lists the box among a phase's files, that is history; goal acceptance is now the nomination (`skills/check`, `skills/nominate`, the GUI Juggle panel's report, `python sim/skills_gate.py --nominate ...`, I-ADMIT-2) and each commanded Throw is checked online (I-ADMIT-1).
 
-Map Item: JB-102 (`map/feature-pre-release-hold-rung-release-from-a-moving-platform-hold-0.md`), under the
+Map Item: FEAT-32 (`map/feature-pre-release-hold-rung-release-from-a-moving-platform-hold-0.md`), under the
 two-ball-oval Pathway. This plan is the root-cause fix ranked first by the 2026-11-04 offline investigation;
 it sits beside two-ball-oval P4 (whose 30-Catch gate it unblocks) and ahead of P5 (two balls need dwell
 0.30-0.35, where the ring is largest).
@@ -96,7 +96,7 @@ scope here (§ 6).
   committed probe absorbs what it needs.
 - **Gate:** the two estimators agree on frequency within +/-10 % and the encoder fit predicts the 2026-11-03
   carried excess at 0.40 and 0.35 within 15 mm/s. **If not:** fly the identification row (dwell 0.40, hold 0 (identification row dropped 2026-11-06: profiled steps excite no ring; the mode is re-fitted from the Sitting bag, see the P3 row.)
-  then hold 0.050, 30 Throws each, mocap and encoders) as JB-102's `## Sitting` section before P1 lands.
+  then hold 0.050, 30 Throws each, mocap and encoders) as FEAT-32's `## Sitting` section before P1 lands.
 - Also report the mocap / encoder excess ratio (~1.8 on 2026-11-03): if the structural part (compliance
   beyond the motors) has a different frequency from the servo part, the rows need two modes (§ 5 risk 1).
 - Output: the values for `trajectory_op.platform_mode_*` and a short logbook entry.
@@ -177,7 +177,7 @@ Contract first (CLAUDE.md "contracts over patches"):
 
 ### P3: A/B Sitting on the oval
 
-JB-102's `## Sitting` section, written when P2 commits. Outline:
+FEAT-32's `## Sitting` section, written when P2 commits. Outline:
 - Setup armed, bb-fed, bridge cycled; the P4 working point; plant_id `zvd-oval-<date>`.
 - Oval dwell 0.40, Apex 1.00: one Attempt with `carry_zvd` off (learner on a fresh plant), one with it on.
   Then 0.35 with it on, if 0.40 holds.
@@ -212,7 +212,7 @@ JB-102's `## Sitting` section, written when P2 commits. Outline:
 
 1. **Two modes.** Mocap excess is ~1.8x encoder excess, so part of the motion is structural compliance
    beyond the motors. If P0 finds a second frequency, the rows grow to two modes (eight more rows) or the
-   design falls back to the servo mode plus leg acceleration feedforward (JB-102 option 4, owner decision:
+   design falls back to the servo mode plus leg acceleration feedforward (FEAT-32 option 4, owner decision:
    it reopens the superseded accel-FF arc).
 2. **Mode drift.** Load, temperature or a re-tune moves the frequency; ZVD tolerates about +/-15 %. P3's
    record re-fits the mode on every Sitting bag that flies the oval, which keeps a running check.
@@ -224,9 +224,9 @@ JB-102's `## Sitting` section, written when P2 commits. Outline:
 
 - The ~+22 mm offset seen on Throws from rest too (tilt error times v_z, the Hand stroke's reaction on the
   Platform, the composition at the level offset).
-- JB-161's two-ball Columns first-Throw outward landing: P0's probe will be pointed at those releases
+- BUG-63's two-ball Columns first-Throw outward landing: P0's probe will be pointed at those releases
   afterwards, as a separate check.
-- Learner-side compensation (JB-166's carried flag, the 60 mm authority, on hold).
+- Learner-side compensation (BUG-66's carried flag, the 60 mm authority, on hold).
 
 ## 7. Status
 
@@ -239,7 +239,7 @@ JB-102's `## Sitting` section, written when P2 commits. Outline:
 
 ## 8. Questions
 
-**Decision (owner, 2026-11-06): (a), and it stands until JB-184 has a bound.** The rows are an oval tool and stay off on Columns. Reason: offline nomination accepts Columns with the rows at Apex 1.00 and above (Sep. 125, Dwell 0.27), so feasibility no longer rules it out, but planned Leg acceleration rises 3535 to 5655 mm/s^2 at Sep. 125 and 3968 to 6276 at Sep. 135, against 6296 where Legs 1 and 2 separated, and nothing bounds Leg tension. The ring is about half of JB-192's 9 mm pull, so the gain on Columns is small. The original question, kept as the record: Gate 2 failed: with the rows on the Columns window at Dwell 0.27 is infeasible (RING), and the pre-registered fallback (decision 2) was written for a gate-1 failure, not this one. Shipped meanwhile: the box as swept, P3 oval A/B with the rows on, Columns canary flag off.
+**Decision (owner, 2026-11-06): (a), and it stands until BUG-72 has a bound.** The rows are an oval tool and stay off on Columns. Reason: offline nomination accepts Columns with the rows at Apex 1.00 and above (Sep. 125, Dwell 0.27), so feasibility no longer rules it out, but planned Leg acceleration rises 3535 to 5655 mm/s^2 at Sep. 125 and 3968 to 6276 at Sep. 135, against 6296 where Legs 1 and 2 separated, and nothing bounds Leg tension. The ring is about half of BUG-79's 9 mm pull, so the gain on Columns is small. The original question, kept as the record: Gate 2 failed: with the rows on the Columns window at Dwell 0.27 is infeasible (RING), and the pre-registered fallback (decision 2) was written for a gate-1 failure, not this one. Shipped meanwhile: the box as swept, P3 oval A/B with the rows on, Columns canary flag off.
 
 - (a) **Accept:** Columns under Dwell about 0.30 flies flag off; the rows are an oval / carry tool. This reverses decision 5 in effect.
 - (b) **Soft-penalty fallback** (decision 2) and a second re-sweep (about 3.5 h; must avoid the 04:45 Night Shift). The sweep was retired on 2026-11-06, so this cost is gone.

@@ -1,5 +1,5 @@
 ---
-id: JB-186
+id: BUG-74
 kind: bug
 title: 'Mid-air ball collisions end half of two-ball Columns Attempts at Apex 1.00: closest approach about 70 mm at Sep. 100, 125 and 135'
 status: in_progress

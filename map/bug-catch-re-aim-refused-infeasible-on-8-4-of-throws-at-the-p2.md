@@ -1,5 +1,5 @@
 ---
-id: JB-188
+id: BUG-75
 kind: bug
 title: Catch re-aim refused INFEASIBLE on 8.4 % of Throws at the P2 Sitting, 15 of 69 on the turned pair
 status: backlog
@@ -137,7 +137,7 @@ Sources: bag `/home/jetson/Desktop/rosbags/2026-11-06_15-53-05` (`/balls`: per-B
 
 ### Recommendation
 - Change nothing in timing or limits. The "later first ask" is not real, and the refusals are free.
-- Correct JB-188's wording: the turned pair is not later, it asks twice more often. If the count is a nuisance, the cheap route is the pre-solve fence (no cap count). I do not propose it; the control consequence at 40 Hz is not walked here and no cost justifies it.
+- Correct BUG-75's wording: the turned pair is not later, it asks twice more often. If the count is a nuisance, the cheap route is the pre-solve fence (no cap count). I do not propose it; the control consequence at 40 Hz is not walked here and no cost justifies it.
 
 ### Rating and not done
 - Rating: effort small, hardware none, diagnosis done for the premise; the cause of the extra second asks is open.

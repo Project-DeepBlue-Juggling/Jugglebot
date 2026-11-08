@@ -4092,7 +4092,7 @@ def _drive_row_then_next_flight(sites, *, own_fit):
 
 
 def test_a_row_with_its_own_fit_logs_no_refusal_for_the_next_flights_fit(sites):
-    """JB-176: once the row holds its own fit, the gate still refuses the next
+    """BUG-69: once the row holds its own fit, the gate still refuses the next
     flight's fit (it never becomes a landing) but says nothing and does not
     touch the rejected bookkeeping -- "no evidence or row from it" was false."""
     lines, pend, first, _second = _drive_row_then_next_flight(
@@ -5219,7 +5219,7 @@ def test_the_experience_row_carries_the_LATEST_release_offset():
 
 
 def _reaim_carried(refuse_reaim, reaim_offset_mm=(0.0, 15.0, 0.0)):
-    """JB-194's production path: a one-Site self-toss whose carried CATCH is
+    """BUG-81's production path: a one-Site self-toss whose carried CATCH is
     dispatched on a fit AT the Site, then re-aimed by the tracker's
     ``_resend_live_catch`` to a fit ``reaim_offset_mm`` off it, the re-send
     ACCEPTED or REFUSED by the installer. Returns ``(schedule, executor,
@@ -5279,7 +5279,7 @@ def _finalised_row(x, rows, catch_idx):
 
 
 def test_an_accepted_tracker_re_aim_moves_the_memory_rows_release(tmp_path):
-    """JB-194 F1: the Memory row records the release the Throw USED. The row
+    """BUG-81 F1: the Memory row records the release the Throw USED. The row
     is registered at the Catch's dispatch; an ACCEPTED re-send afterwards
     moves the release the plan flies (the caught xy, I-CARRY-1), so the
     pending row must follow it. Before 2026-11-06 it kept the dispatch aim
@@ -5308,7 +5308,7 @@ def test_an_accepted_tracker_re_aim_moves_the_memory_rows_release(tmp_path):
 
 
 def test_a_refused_re_send_leaves_the_row_and_the_next_catch_prior_as_installed():
-    """JB-194 F1 + F2: a REFUSED re-send leaves the installed plan flying the
+    """BUG-81 F1 + F2: a REFUSED re-send leaves the installed plan flying the
     earlier release, so (F2) the release record goes back to it -- the next
     Catch of this ball builds its dispatch prior from the release that flies,
     not from the refused aim (23 of 98 P2 rows had one) -- and (F1) the row
@@ -7894,7 +7894,7 @@ def test_a_catch_time_offset_run_writes_no_learner_row(sites, offset_s):
 
 def _fault_row_run(sites, fault_after_release_s, *, kind='machine_fault',
                    with_obs=True):
-    """JB-189: one Throw, a fault flag that rises ``fault_after_release_s``
+    """BUG-76: one Throw, a fault flag that rises ``fault_after_release_s``
     after the release (None: never). Returns (executor, rows, OUTCOME line)."""
     p1, _p2 = sites
     t_land = ROS_T0 + FLIGHT_S
@@ -7931,7 +7931,7 @@ def _fault_row_run(sites, fault_after_release_s, *, kind='machine_fault',
 @pytest.mark.parametrize('kind', ['machine_fault', 'guard_latched'])
 def test_a_fault_inside_the_settle_after_release_writes_no_memory_row(
         sites, kind):
-    """JB-189: the Throw may have been cut short by what faulted the Hand."""
+    """BUG-76: the Throw may have been cut short by what faulted the Hand."""
     x, rows, outcome = _fault_row_run(sites, 0.1, kind=kind)
     assert rows == []
     rep = x.reports[0]
@@ -7958,7 +7958,7 @@ def test_no_fault_row_is_written_and_none_without_observations(sites):
 
 
 def test_a_fault_first_seen_after_a_fault_free_end_writes_no_memory_row(sites):
-    """JB-189: the Attempt ends WITHOUT a fault (mode change just after the
+    """BUG-76: the Attempt ends WITHOUT a fault (mode change just after the
     release), then ``machine_fault`` rises at release + 0.1 s while the OUTCOME
     row is pending: the standalone read in ``tick`` latches it, no row."""
     p1, _p2 = sites
@@ -8063,7 +8063,7 @@ def test_goal_13_rest_resplice_with_a_323_ms_solve_is_no_longer_too_late(
 
 
 # ---------------------------------------------------------------------------
-# JB-169 (owner option 4 of JB-172): a goal that ends on a Stop books its
+# BUG-67 (owner option 4 of TKT-38): a goal that ends on a Stop books its
 # FINAL Catch as unverifiable when the cup reads EMPTY over a live window.
 #
 # These tests drive a REAL ``sc.compile_columns`` schedule. The first version
@@ -8222,7 +8222,7 @@ def _empty_then_seated_after(t_empty_from, t_seated_from):
 
 def test_a_seat_after_the_unverifiable_verdict_does_not_turn_the_row_caught(
         limits_r5, geom):
-    """JB-169 fix 1 (the 2026-11-04 shape): the Stop's own seat lands inside
+    """BUG-67 fix 1 (the 2026-11-04 shape): the Stop's own seat lands inside
     the final row's window AFTER the verdict. The booked row stays
     unverifiable (`caught` None, uncounted) and no Experience is caught."""
     sched = _real_columns(6)
@@ -8245,7 +8245,7 @@ def test_a_seat_after_the_unverifiable_verdict_does_not_turn_the_row_caught(
 
 def test_a_final_catch_after_an_unrelated_end_is_not_booked_unverifiable(
         limits_r5, geom, monkeypatch):
-    """JB-169 fix 2: the rule runs only when no other END has fired. An END
+    """BUG-67 fix 2: the rule runs only when no other END has fired. An END
     (here LANE_REFUSED, forced just before the final Catch's verdict) leaves
     the Catch on the path it took before the rule: not booked, no flag."""
     sched = _real_columns(6)
@@ -8281,7 +8281,7 @@ def _turned_columns(angle_deg=30.0, n_throws=6):
 
 
 def test_a_turned_columns_tail_books_the_same_final_catch(limits_r5, geom):
-    """JB-197: a `columns_sites` pair ROTATED about +z (30 deg) reaches the
+    """TKT-44: a `columns_sites` pair ROTATED about +z (30 deg) reaches the
     same predicate hit and the same unverifiable booking as the straight
     pair. This rotates the Sites only; it asserts no tilt (the tilted tail is
     the next test)."""
@@ -8307,7 +8307,7 @@ def test_a_turned_columns_tail_books_the_same_final_catch(limits_r5, geom):
 
 
 def test_a_tilted_columns_tail_books_the_same_final_catch(limits_r5, geom):
-    """JB-197: a real Columns tail with a non-zero tilt really on the final
+    """TKT-44: a real Columns tail with a non-zero tilt really on the final
     CATCH (`receive_tilt`) and the closing REST (`rest_tilt`) books exactly as
     the untilted `test_a_real_columns_goal_ends_unverifiable_not_missed`:
     `_ends_on_stop_final_catch` reads no tilt. The tilt is small on purpose:
@@ -8403,7 +8403,7 @@ def test_a_real_columns_final_window_that_is_not_live_abstains_as_before(
     assert x.final_catch_unverifiable is None and x.end_code == ''
 
 
-# ── JB-175: a fault inside a Catch's judging window is a fault, not a miss ──
+# ── BUG-68: a fault inside a Catch's judging window is a fault, not a miss ──
 #
 # 2026-11-05 (launch.log L2589-2615): a Hand SPINOUT disarm fell 0.03 s before
 # skill 5's window closed; the verdict fired 0.127 s BEFORE the first
@@ -8482,7 +8482,7 @@ def test_fault_just_after_the_verdict_rewrites_the_code_once(sites):
     assert not d.x.done                        # held through the settle
     d.run(d.t_decide + 0.02, d.t_decide + 0.5)
     assert d.x.end_code == ex.ABORTED_FAULT
-    assert d.x.end_kind == ''                  # no "at the CATCH" (JB-178)
+    assert d.x.end_kind == ''                  # no "at the CATCH" (TKT-40)
     assert 'pre-empted' in d.x.end_message
     rewrites = [ln for ln in d.lines if 'END %s (was' % ex.ABORTED_FAULT in ln]
     assert len(rewrites) == 1 and 'stay dropped' in rewrites[0]
@@ -8492,7 +8492,7 @@ def test_fault_just_after_the_verdict_rewrites_the_code_once(sites):
 @pytest.mark.parametrize('dispatched_first', [False, True])
 def test_fault_relabel_cancels_a_waiting_decay_but_never_adds_an_install(
         sites, dispatched_first):
-    """JB-175 x I-PLAN-9: a provisional MISSED_CATCH with the closing decay
+    """BUG-68 x I-PLAN-9: a provisional MISSED_CATCH with the closing decay
     pending. (a) A fault seen while the decay still WAITS re-labels the end
     and `_advance_closing` cancels the decay. (b) A decay already dispatched
     during the provisional end stays installed (nothing recalls a REST); the

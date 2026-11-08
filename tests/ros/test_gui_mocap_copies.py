@@ -1,4 +1,4 @@
-"""The GUI side of JB-76 option 1, pinned at source level (2026-10-28).
+"""The GUI side of BUG-21 option 1, pinned at source level (2026-10-28).
 
 Live, the GUI must take mocap_node's 20 Hz ``gui/`` copies and never the
 300 Hz originals (a decoded subscription OR a topic-monitor spy on

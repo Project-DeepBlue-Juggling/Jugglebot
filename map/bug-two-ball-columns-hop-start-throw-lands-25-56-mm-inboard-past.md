@@ -1,5 +1,5 @@
 ---
-id: JB-121
+id: BUG-43
 kind: bug
 title: Two-ball Columns hop-start throw lands 25-56 mm inboard, past the 35 mm catch authority
 status: complete
@@ -54,7 +54,7 @@ The 2026-10-31 hold analysis shows hold 0.100 lands about 10 mm short and shorte
 ## Sitting result (2026-11-02)
 
 - verdict: pass
-- notes: Should be marked off with the JB-120/139 tests
+- notes: Should be marked off with the BUG-42/BUG-52 tests
 
 ## Progress
 

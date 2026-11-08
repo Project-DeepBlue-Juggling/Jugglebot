@@ -1,5 +1,5 @@
 ---
-title: "Sitting 2026-11-03 (evening) debrief: P4 ramp not passed; the one-ball oval's carried Throws land 76-122 mm long because the carry decelerates into the release and the ~6 Hz Platform ring is still swinging forward; JB-161 refuted for the oval, JB-147 and JB-149 refuted for the firmware-STOP ends"
+title: "Sitting 2026-11-03 (evening) debrief: P4 ramp not passed; the one-ball oval's carried Throws land 76-122 mm long because the carry decelerates into the release and the ~6 Hz Platform ring is still swinging forward; BUG-63 refuted for the oval, BUG-57 and BUG-58 refuted for the firmware-STOP ends"
 type: investigation
 date: 2026-11-04
 status: in-progress
@@ -30,17 +30,17 @@ tags: [dynamics, safety, performance]
 
 # Sitting 2026-11-03 (evening) debrief
 
-Fourth run of `/sitting-debrief`, after `2026-11-03-sitting-debrief.md`. One Sitting, 22:29 to 22:42, the first flight at the P4 working point (legs 600 mm/s, 8000 mm/s^2, jerk 200000, 20 A; box gate_hash 2605fc1bd25e). Launch log `~/.ros/log/2026-11-03-22-29-00-754746-jetson-102791/launch.log`, bag `~/Desktop/rosbags/2026-11-03_22-29-00/2026-11-03_22-29-00_0.mcap`, Hand capture `temp/hand_capture/hand_capture_20261103_222904.csv`. Item: JB-162. Owner's typed result: `pending`. Owner observation: most misses landed too far in +x.
+Fourth run of `/sitting-debrief`, after `2026-11-03-sitting-debrief.md`. One Sitting, 22:29 to 22:42, the first flight at the P4 working point (legs 600 mm/s, 8000 mm/s^2, jerk 200000, 20 A; box gate_hash 2605fc1bd25e). Launch log `~/.ros/log/2026-11-03-22-29-00-754746-jetson-102791/launch.log`, bag `~/Desktop/rosbags/2026-11-03_22-29-00/2026-11-03_22-29-00_0.mcap`, Hand capture `temp/hand_capture/hand_capture_20261103_222904.csv`. Item: FEAT-39. Owner's typed result: `pending`. Owner observation: most misses landed too far in +x.
 
 ## Results
 
 | Item | Verdict | Evidence |
 |---|---|---|
-| JB-162 P4 ramp | not passed (owner confirmed) | Columns canary 1 of 5 flown, COMPLETED 20/20 (L1008), no leg LIMIT end, peak leg iq 11.7 A (leg 2; 0 samples at or above 15 A). One-ball oval: 24 goals, best 16/16 at dwell 0.40 (L2926-3355), dwell 0.35 best 2/2, 0.30 not flown. No fail condition observed. |
+| FEAT-39 P4 ramp | not passed (owner confirmed) | Columns canary 1 of 5 flown, COMPLETED 20/20 (L1008), no leg LIMIT end, peak leg iq 11.7 A (leg 2; 0 samples at or above 15 A). One-ball oval: 24 goals, best 16/16 at dwell 0.40 (L2926-3355), dwell 0.35 best 2/2, 0.30 not flown. No fail condition observed. |
 
 Ends over the 24 oval goals: MISSED_CATCH 17, LANE_REFUSED 2, GUARD_LATCHED 1, REJECTED_NO_BALL 3 (Ball Butler throw 6-17 % slow, the catch did not seat), REJECTED_FRAME_OFFSET 1 (Platform still settling, 2.19 mm against 2.0 mm). Leg refusals: 0 LIMIT_VEL, 0 LIMIT_ACC; one LIMIT_JERK on a CATCH re-aim resend in the canary (510456 against 200000, L983-984); the first plan stood and the ball was caught. The launch log carries no BridgeIdentity, gate_hash or Sitting-limits line, so the pre-arm checks are unconfirmed; the no-ball rehearsal goal was not sent. `docs/records.md` unchanged.
 
-Nothing merged and nothing held: JB-162 has no branch.
+Nothing merged and nothing held: FEAT-39 has no branch.
 
 ## Findings
 
@@ -61,15 +61,15 @@ The learner pushed the right way (u_x -18 -> -26 -> -30 mm) and was pinned at it
 
 ## Discussion
 
-- **Withdrawn: JB-161's feed-catch mechanism, for the oval.** The first Throw after the feed catch was the best Throw (+47.8 raw, caught 19 of 19), and the 7 clamped feed catches were each followed by a normal Throw 1. The killer is the first CARRIED Throw. JB-161's two-ball Columns case is not tested by this data; the carry-ring probe is its next check.
-- **Withdrawn: JB-147 (braking torque lost) and JB-149 (host starvation) for the STOP ends**, the second Sitting running for JB-149. The cause of the cover expiry is firmware-side and unknown; filed as its own bug rather than kept under JB-149's refuted title.
+- **Withdrawn: BUG-63's feed-catch mechanism, for the oval.** The first Throw after the feed catch was the best Throw (+47.8 raw, caught 19 of 19), and the 7 clamped feed catches were each followed by a normal Throw 1. The killer is the first CARRIED Throw. BUG-63's two-ball Columns case is not tested by this data; the carry-ring probe is its next check.
+- **Withdrawn: BUG-57 (braking torque lost) and BUG-58 (host starvation) for the STOP ends**, the second Sitting running for BUG-58. The cause of the cover expiry is firmware-side and unknown; filed as its own bug rather than kept under BUG-58's refuted title.
 - **Refuted: release timing (-7..+18 ms on caught and missed alike) and the learner pushing the wrong way.**
-- **Not settled: did P4 make the oval worse?** Dwell and the leg point changed together; the install peaks (leg vel at most 49 %, acc at most 33 % of 600 / 8000) would fit inside 350 / 5000. One Attempt at dwell 0.50 at 600 / 8000 separates them; it is now the first oval step of JB-162.
+- **Not settled: did P4 make the oval worse?** Dwell and the leg point changed together; the install peaks (leg vel at most 49 %, acc at most 33 % of 600 / 8000) would fit inside 350 / 5000. One Attempt at dwell 0.50 at 600 / 8000 separates them; it is now the first oval step of FEAT-39.
 - **Owner decisions 2026-11-04.**
   - (1) Next Sitting: dwell 0.50 first, then the same 0.40 / 0.35 ladder.
   - (2) Catch outward authority 10 -> 30 mm declined as a band-aid: it widens the net for a wrong Throw and lengthens the carry that rings.
   - (3) Learner authority 60 mm for the oval: on hold until the root-cause investigation reports. The scoping found that the Throw command already passes the box edge by the authority (the forward clip), so a re-sweep would not be needed. The single `learner_lateral_authority_mm` also bounds catch re-aims and the gated capture cap, so it would need a Throw-only parameter.
-  - (4) The planner root cause (JB-102): an Opus investigation the same morning, offline only, no code changed. Its report is summarised under Root cause.
+  - (4) The planner root cause (FEAT-32): an Opus investigation the same morning, offline only, no code changed. Its report is summarised under Root cause.
 
 ## Root cause (offline investigation, 2026-11-04)
 
@@ -89,7 +89,7 @@ The learner pushed the right way (u_x -18 -> -26 -> -30 mm) and was pinned at it
 - Feature: Install the host hold within one tick of a firmware scheduler STOP (owner decision: next to the Teensy guard).
 - Idea: Learner context cannot tell a Throw from rest from a carried Throw.
 
-Progress notes: JB-162 (Sitting section rewritten for the re-fly), JB-102, JB-161, JB-139, JB-24, JB-145, JB-147, JB-149, JB-98, JB-160.
+Progress notes: FEAT-39 (Sitting section rewritten for the re-fly), FEAT-32, BUG-63, BUG-52, BUG-5, BUG-55, BUG-57, BUG-58, BUG-34, BUG-62.
 
 ## Verification
 

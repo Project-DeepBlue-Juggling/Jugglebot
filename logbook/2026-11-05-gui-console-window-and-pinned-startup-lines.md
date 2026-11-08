@@ -3,7 +3,7 @@ title: "GUI CONSOLE shows its window (lines since HH:MM:SS, N dropped) and pins 
 type: feature
 date: 2026-11-05
 status: complete
-phase: "JB-163"
+phase: "BUG-64"
 files_changed:
   - ros_ws/gui/js/console-logic.js
   - ros_ws/gui/js/console-view.js
@@ -15,14 +15,14 @@ files_changed:
 subsystem: gui
 ---
 
-# JB-163: CONSOLE search missing BRIDGE_FW_CHECK / PLATFORM_FW_CHECK
+# BUG-64: CONSOLE search missing BRIDGE_FW_CHECK / PLATFORM_FW_CHECK
 
-**What.** Owner's report: searching "v38" or "v7" did not find the BRIDGE and PLATFORM firmware check lines. `matchesQuery` matches their text; the lines were simply not in the CONSOLE. Two pieces, built in the owner's order (JB-164: "do (2), then (1)"):
+**What.** Owner's report: searching "v38" or "v7" did not find the BRIDGE and PLATFORM firmware check lines. `matchesQuery` matches their text; the lines were simply not in the CONSOLE. Two pieces, built in the owner's order (TKT-35: "do (2), then (1)"):
 
 2. A window line above the list: `lines since HH:MM:SS (page subscribed), 0 dropped` while nothing has been evicted (the time is when the page started listening, so a check logged before it reads as outside the window), and `lines since HH:MM:SS, N dropped (ring full)` once the 5000-line ring has evicted (time = the oldest ring line). `windowLabel` in `console-logic.js`; element `#console-window`.
 1. Messages containing `_FW_CHECK` (the bridge's `BRIDGE_FW_CHECK:` and `PLATFORM_FW_CHECK:` lines, read from the bridge node source) go to a pinned set of at most `PIN_CAP` = 50 that the ring cap never evicts. `liveLines` merges pinned and ring in time order, so search, level chips and counts see them like any line. The identity lines were not pinned separately: only the `_FW_CHECK` texts were found as one-shot startup logs.
 
-**Audit fixes (2026-11-06, JB-173 answered "Agreed", option 1).** (a) `st.dropped` stays the total shown as "N dropped", but ring and pinned evictions are now counted separately (`droppedRing`, `droppedPinned`), and "(ring full)" shows only when `droppedRing > 0`; before, a pinned-cap overflow alone printed "(ring full)". (b) Once the ring has evicted and a pinned line is strictly older than `ring[0]`, the label appends ", startup lines pinned", since "lines since HH:MM:SS" would otherwise overstate the window; a pinned line with the same timestamp as `ring[0]` is inside the window and adds nothing. (c) Tests added for the pinned-cap-only label (PIN_CAP+7 lines, no "(ring full)"), ring-only eviction, pinned older than the window, and the equal-timestamp tie (label and `liveLines` order, pinned first).
+**Audit fixes (2026-11-06, TKT-39 answered "Agreed", option 1).** (a) `st.dropped` stays the total shown as "N dropped", but ring and pinned evictions are now counted separately (`droppedRing`, `droppedPinned`), and "(ring full)" shows only when `droppedRing > 0`; before, a pinned-cap overflow alone printed "(ring full)". (b) Once the ring has evicted and a pinned line is strictly older than `ring[0]`, the label appends ", startup lines pinned", since "lines since HH:MM:SS" would otherwise overstate the window; a pinned line with the same timestamp as `ring[0]` is inside the window and adds nothing. (c) Tests added for the pinned-cap-only label (PIN_CAP+7 lines, no "(ring full)"), ring-only eviction, pinned older than the window, and the equal-timestamp tie (label and `liveLines` order, pinned first).
 
 **Why / Discussion.** The owner's point: they searched during a Sitting that had only just begun, with far fewer than 5000 messages, so the 2026-11-03 miss was probably the late subscription (`/rosout` is volatile on Foxy, so a page that connects after the check never sees it), not eviction. Option 2 makes that case visible; option 1 only covers eviction and cannot recover a line that arrived before the page subscribed. The subscribe time is taken when the console view initialises (page load), not on a rosbridge reconnect, so a reconnect gap is not shown. GUI display only; nothing on a robot, control or telemetry path.
 

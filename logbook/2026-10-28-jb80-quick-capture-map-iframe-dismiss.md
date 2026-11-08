@@ -1,5 +1,5 @@
 ---
-title: "JB-80 reopened: the quick-capture form now also closes on a click inside the Map iframe"
+title: "BUG-24 reopened: the quick-capture form now also closes on a click inside the Map iframe"
 type: bugfix
 date: 2026-10-28
 status: resolved

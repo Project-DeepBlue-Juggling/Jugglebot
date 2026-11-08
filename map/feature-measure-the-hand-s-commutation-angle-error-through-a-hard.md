@@ -1,5 +1,5 @@
 ---
-id: JB-203
+id: FEAT-45
 kind: feature
 title: Measure the Hand's commutation angle error through a hard brake on the bench Hand (FOC scope)
 status: inbox
@@ -19,7 +19,7 @@ links:
 filed_by: jugglebot-b1
 ---
 
-The onboard encoder drives both commutation and position, so a slipped magnet moves the reported angle and position together and neither shows it. The 100 Hz `hand_capture` cannot show it either, because iq freezes before the disarm. JB-147's torque loss needs a measurement that can see an angle error directly.
+The onboard encoder drives both commutation and position, so a slipped magnet moves the reported angle and position together and neither shows it. The 100 Hz `hand_capture` cannot show it either, because iq freezes before the disarm. BUG-57's torque loss needs a measurement that can see an angle error directly.
 
 ## The measurement
 
@@ -44,7 +44,7 @@ Modelled from a 0.9 rev park with `plan_stroke_cut`. "Needed" is the stage's own
 ## Sitting
 
 - setup: armed, bridge-cycled
-- why: this proves `hand_foc_scope.py` works on the real drive and measures the angle error through a clean 4500 rev/s^2 brake, the baseline any reading of JB-147's torque loss needs.
+- why: this proves `hand_foc_scope.py` works on the real drive and measures the angle error through a clean 4500 rev/s^2 brake, the baseline any reading of BUG-57's torque loss needs.
 - do:
   - Launch down. Bench Hand on the bridge, bridge rebooted after re-cabling, ODrive USB to the Jetson through the isolator, Hand homed and parked at or below 0.9 rev, Cup empty, E-stop in hand. Measure where the bench top stop is in rev.
   - With the Hand still: `python tools/probes/hand_foc_scope.py probe --label bench`. Stop here if it prints NO-GO.
@@ -59,4 +59,4 @@ Modelled from a 0.9 rev park with `plan_stroke_cut`. "Needed" is the stage's own
 
 ## Next
 
-If the bench shows a clean baseline, `capture --trigger fault` can sit armed on the robot's Hand through a Sitting and catch JB-147's fault, which fired once in 397 launches on 2026-11-07. The probe measures how much of the window a trigger keeps before it, but a real disarm is the only test that the scope records through one.
+If the bench shows a clean baseline, `capture --trigger fault` can sit armed on the robot's Hand through a Sitting and catch BUG-57's fault, which fired once in 397 launches on 2026-11-07. The probe measures how much of the window a trigger keeps before it, but a real disarm is the only test that the scope records through one.

@@ -109,7 +109,7 @@ body > #app { height: calc(100vh - var(--app-tabs-height)); }
     padding: 4px 6px;
     font: inherit;
 }
-/* JB-91: the description is multi-line; it grows by hand, never sideways. */
+/* IDEA-6: the description is multi-line; it grows by hand, never sideways. */
 #quick-capture-form textarea { resize: vertical; min-height: 5em; }
 #quick-capture-form .qc-error { color: var(--accent-red, #e5534b); white-space: pre-line; }
 #quick-capture-form .qc-error:empty { display: none; }

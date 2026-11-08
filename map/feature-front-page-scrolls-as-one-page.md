@@ -1,5 +1,5 @@
 ---
-id: JB-68
+id: FEAT-21
 kind: feature
 title: Front page scrolls as one page
 status: complete

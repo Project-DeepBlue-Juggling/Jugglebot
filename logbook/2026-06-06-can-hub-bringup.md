@@ -163,4 +163,4 @@ Keep bringup diagnostics RX-only and trust `sync` as the first discriminator.
 - Full-load RX-drain validation once the ODrives are armed into CLOSED_LOOP, behind a
   no-erroneous-command safety plan (audit of all CAN3 TX paths + the output gate).
 
-> Closed 2026-10-28: closed by 2026-07-05-canhub-marginal-can3-diagnosis (JB-34 survey).
+> Closed 2026-10-28: closed by 2026-07-05-canhub-marginal-can3-diagnosis (IDEA-2 survey).

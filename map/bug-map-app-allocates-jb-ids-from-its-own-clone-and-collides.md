@@ -1,5 +1,5 @@
 ---
-id: JB-100
+id: BUG-36
 kind: bug
 title: Map app allocates JB ids from its own clone and collides with mapkit when both file within minutes
 status: complete

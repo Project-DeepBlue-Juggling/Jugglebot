@@ -75,7 +75,7 @@ static constexpr size_t RPC_RX_QUEUE_CAPACITY = 8;
 static_assert(RPC_RX_QUEUE_CAPACITY <= UDP_RX_DRAIN_BUDGET,
               "a queued RPC must be drained in the tick it arrives (no added latency)");
 
-// Stream socket receive queue (FW 40, 2026-11-06, JB-174). Until FW 39 the stream
+// Stream socket receive queue (FW 40, 2026-11-06, FEAT-41). Until FW 39 the stream
 // socket kept the library default of ONE packet. The host sends two kinds of
 // datagram to it — the 40 Hz SETPOINT stream and its own 10 Hz HEARTBEAT_J2T —
 // so whenever both landed inside one 1 kHz task_net tick the older one was
@@ -221,7 +221,7 @@ bool udp_send_rpc(uint8_t msg_type, const uint8_t* payload, uint16_t len) {
 }
 
 UdpStats udp_link_stats()      { return s_stats; }
-// FW 40 (JB-174): packets QNEthernet overwrote in the stream socket's receive
+// FW 40 (FEAT-41): packets QNEthernet overwrote in the stream socket's receive
 // queue since boot (its droppedReceiveCount). 0 is the invariant with the queue
 // at STREAM_RX_QUEUE_CAPACITY; non-zero means frames arrived faster than the
 // drain for a whole queue's worth. Under NetLock: the count is written by

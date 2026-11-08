@@ -1,5 +1,5 @@
 ---
-id: JB-21
+id: BUG-2
 kind: bug
 title: bb/throw_outcome carries no throw identity
 status: complete
@@ -28,10 +28,10 @@ The `bb/throw_outcome` message does not say which Throw it reports (bb-self-canc
 The branch appends ` release_wall_s=<epoch>` to `bb/throw_outcome` and `skill_node` drops a verdict whose release falls outside the window it asked for. The audit's open WARNING: the window's 0.75 s upper bound is measured from a clock read before `wait_for_service` and the round trip, so a genuine verdict is dropped once the round trip exceeds about 0.8 s and the attempt ends by its deadline instead of same-tick. Suggested: upper bound 2.5 s and a clock re-read after the wait.
 
 - A second NOTE: the window is recorded after `_reload_throw_inflight` goes True (a stale suffixed verdict in that gap takes the old path); a quick Stop and restart can overlap windows.
-- The gate log also carried a main-side readability failure (JB-120 body), fixed on main the same hour.
+- The gate log also carried a main-side readability failure (BUG-42 body), fixed on main the same hour.
 - Entry: logbook/2026-11-01-jb21-bb-throw-outcome-identity.md.
 
 ## Progress
 
-- 2026-11-01: Night Shift 2026-11-01: held on night-shift/2026-11-01-JB-21 (fix committed, Item closed on the branch): audit WARNING open on the release window bound; unblocked by the owner's call on it, then a re-gate (detail below)
-- 2026-11-03: Audit findings applied 2026-11-03 (2.5 s window re-read after wait_for_service; window set with the inflight flag); merged to main from night-shift/2026-11-01-JB-21
+- 2026-11-01: Night Shift 2026-11-01: held on night-shift/2026-11-01-BUG-2 (fix committed, Item closed on the branch): audit WARNING open on the release window bound; unblocked by the owner's call on it, then a re-gate (detail below)
+- 2026-11-03: Audit findings applied 2026-11-03 (2.5 s window re-read after wait_for_service; window set with the inflight flag); merged to main from night-shift/2026-11-01-BUG-2

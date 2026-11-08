@@ -1,5 +1,5 @@
 ---
-id: JB-69
+id: FEAT-22
 kind: feature
 title: Map pages update without a manual refresh
 status: complete

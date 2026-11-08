@@ -1,4 +1,4 @@
-"""JB-82: the can-bridge UDP link is single-owner, enforced by the kernel.
+"""BUG-26: the can-bridge UDP link is single-owner, enforced by the kernel.
 
 The client binds its fixed ports WITHOUT ``SO_REUSEADDR``. Probed on the Jetson
 2026-11-01 (logbook 2026-11-01-jb82-single-owner-link-and-stow-window): two UDP

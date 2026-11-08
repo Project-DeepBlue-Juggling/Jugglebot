@@ -538,4 +538,4 @@ All runs below are 2026-09-13 unless noted.
   runsheet+docs) are also still pending, as is the `project_two_ball_skill_
   stack.md` memory pointer update.
 
-> Closed 2026-10-28: R3 done (plans/archived/two-ball-skill-stack.md); banking saturation tracked as JB-22 (JB-34 survey).
+> Closed 2026-10-28: R3 done (plans/archived/two-ball-skill-stack.md); banking saturation tracked as BUG-3 (IDEA-2 survey).

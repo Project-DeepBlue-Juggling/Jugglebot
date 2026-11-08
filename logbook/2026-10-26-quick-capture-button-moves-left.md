@@ -1,5 +1,5 @@
 ---
-title: "Quick capture moves left of the bar as '+ File new change request' (JB-65); quick capture closed on its first live filing"
+title: "Quick capture moves left of the bar as '+ File new change request' (BUG-15); quick capture closed on its first live filing"
 type: bugfix
 date: 2026-10-26
 status: resolved
@@ -17,7 +17,7 @@ tags:
 
 ## Summary
 
-The owner's first filing from the live GUI was JB-65: "Move the button to the LHS, right of the 'Map' text, and make it say '+ File new change request'". It went from the "+" through the map app's `create`, which allocated its ID, and reached `main` as `022167af`. That filing is the check quick capture was waiting for, so `feature-quick-capture-files-a-map-item-from-the-robot-tab` closes here. It is also P4's last Done-check in `plans/active/map-item-ids.md`.
+The owner's first filing from the live GUI was BUG-15: "Move the button to the LHS, right of the 'Map' text, and make it say '+ File new change request'". It went from the "+" through the map app's `create`, which allocated its ID, and reached `main` as `022167af`. That filing is the check quick capture was waiting for, so `feature-quick-capture-files-a-map-item-from-the-robot-tab` closes here. It is also P4's last Done-check in `plans/active/map-item-ids.md`.
 
 The fix:
 - **Placement:** the button and its toast move out of the right-hand prefs group into their own `app-tabs-capture` group, just right of the Map tab.

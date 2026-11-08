@@ -1,4 +1,4 @@
-"""JB-149 opt-in GC pause probe (pure Python, no ROS imports).
+"""BUG-58 opt-in GC pause probe (pure Python, no ROS imports).
 
 Question it answers: is the whole-process Python pause behind the 40 Hz
 setpoint-stream stalls a garbage collection, or is it CPU preemption?  A

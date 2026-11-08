@@ -151,7 +151,7 @@ Today `lead_clamp_mask` rides the heartbeat at 10 Hz, which is what under-sample
   - **Firmware.** P1's open question became FW 32: the dead-reckoned shift grows by at most `LEG_ANCHOR_SHIFT_SLEW_REV` (vel_limit × tick = 0.024 rev) per tick. It is invisible to any stream at or below vel_limit and ramps an in-gap command discontinuity behind the clamp. The Wave camera merge carries it into FW 33 with `leg_interp.cpp` byte-identical.
   - **Replay.** It covers S1A/S1B/S2 plus the surviving 2026-08-15 windows: ax1 (FW 30 10.64 mm = recorded; FW 31/32 3.35 mm) and ax4 (no-harm, identical). ax5 and ax2 had no gap. Clean ticks are bit-identical to FW 30 in all five windows.
   - **Bench A/B (2026-10-27).** The 7th leg ran on CAN2 node 0 with ODrive SDO `encoder_msg_rate_ms` (endpoint 275), two runs per build, on the FW 30 and FW 33 images. In the 100 ms-rate gap, FW 30 staircases (8 transmitted ~10.7 mm steps) and FW 33 is smooth (0 clamp ticks of 350 stale). `MOTOR_FB_STALE` trips and clears in every dead gap, with nothing latched.
-  - **Filed, not fixed.** JB-72 (`HomingMonitor` false timeout on a short home) and JB-73 (the last vel_ff is held through suppression).
+  - **Filed, not fixed.** BUG-18 (`HomingMonitor` false timeout on a short home) and BUG-19 (the last vel_ff is held through suppression).
   - **P3 cleared to start.** Its flash step is now a receipt check (expect `fw_version` 33) plus the oval Sitting.
 
 ### P3 — Robot validation
@@ -168,8 +168,8 @@ Today `lead_clamp_mask` rides the heartbeat at 10 Hz, which is what under-sample
     absorbed with no clamp engagement.
   - **The fix in action.** Leg 2 crossed a 112 ms frame-age window at 3.7 rev/s. The FW 30 twin replays it as 251 clamp ticks
     and 20 mm steps; FW 33 recorded none (max step 2.33 mm per 10 ms sample). Peak `iq_setpoint` was 10 A.
-  - **Filed, not fixed.** JB-75 (`SETPOINT_STALE` latch on an arm edge: the last-setpoint stamp survives arms; the bridge was not
-    power-cycled after P2) and JB-76 (`SPLICE_TOO_LATE` ended 5 of 10 goals; CATCH solve p90 276 ms against the 250 ms deadline).
+  - **Filed, not fixed.** BUG-20 (`SETPOINT_STALE` latch on an arm edge: the last-setpoint stamp survives arms; the bridge was not
+    power-cycled after P2) and BUG-21 (`SPLICE_TOO_LATE` ended 5 of 10 goals; CATCH solve p90 276 ms against the 250 ms deadline).
     Leg 0's stale census stayed flat through its own dropout episode. That is ambiguous, not a defect: read it after a power-cycle.
 
 ## 5. Gate
@@ -225,10 +225,10 @@ That removes this prerequisite from `plans/active/two-ball-oval.md` (runbook § 
 
 **Residue, re-homed.**
 - Filed as map Bugs:
-  - JB-72: the `HomingMonitor` false timeout on a short home. P2's unexplained first-home 1.15 rev / `HOMING_OK` reading is most likely the same observer gap, and its log is empty.
-  - JB-73: the last `vel_ff` is held through `MOTOR_FB_STALE` suppression.
-  - JB-75: a `SETPOINT_STALE` latch on an arm edge.
-  - JB-76: `SPLICE_TOO_LATE` ends half the goals.
+  - BUG-18: the `HomingMonitor` false timeout on a short home. P2's unexplained first-home 1.15 rev / `HOMING_OK` reading is most likely the same observer gap, and its log is empty.
+  - BUG-19: the last `vel_ff` is held through `MOTOR_FB_STALE` suppression.
+  - BUG-20: a `SETPOINT_STALE` latch on an arm edge.
+  - BUG-21: `SPLICE_TOO_LATE` ends half the goals.
 - **Leg 0's stale census** stayed flat through its own dropout episode at P3. It is ambiguous rather than defective; read it after a bridge power-cycle (P3 entry).
 - **The bind-plus-gap exposure** (P1 tradeoff 3: a command discontinuity inside a gap) is an accepted trade, bounded since FW 32 by the slew. P3 shows zero engagement on the robot.
 - **Workstream B**, why the ODrives drop frames, stays in `plans/archived/leg-bus-frame-drops.md`.

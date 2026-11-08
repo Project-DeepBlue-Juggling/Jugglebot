@@ -208,4 +208,4 @@ seeded that session has been removed (work is now logged).
 - Band-limit numbers above from `tools/probes/juggle_cup_bandlimit.py`
   (run 2026-06-27).
 
-> Closed 2026-10-28: superseded by plans/archived/bb-online-juggle-tilt-rearchitecture.md (JB-34 survey).
+> Closed 2026-10-28: superseded by plans/archived/bb-online-juggle-tilt-rearchitecture.md (IDEA-2 survey).

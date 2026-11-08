@@ -1,4 +1,4 @@
-"""JB-95: ``trajectory_node``'s ``solver_rt_priority`` parameter reaches the
+"""FEAT-31: ``trajectory_node``'s ``solver_rt_priority`` parameter reaches the
 solver factory, and the solver's READY line (with its ``sched=`` receipt)
 comes out through ``_solver_log`` at INFO.  ROS is mocked (tests/ros/conftest)."""
 
@@ -99,7 +99,7 @@ def test_ready_info_line_carries_sched_through_solver_log(monkeypatch):
 
 
 def test_gc_probe_param_off_installs_nothing_on_installs_hook(monkeypatch):
-    """JB-149: ``gc_probe`` False -> no hook; True -> hook installed."""
+    """BUG-58: ``gc_probe`` False -> no hook; True -> hook installed."""
     import gc
     _capture_factory(monkeypatch)
     n0 = len(gc.callbacks)

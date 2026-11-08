@@ -172,4 +172,4 @@ read the ball's exit z-velocity after separation.
   that live in 3 places (here, sim hand `CATCH_VEL_RATIO`, hardware_config);
   the single-source contract is owned by the hand-generator overhaul.
 
-> Closed 2026-10-28: superseded by plans/archived/bb-led-two-ball-juggle-demo.md (JB-34 survey).
+> Closed 2026-10-28: superseded by plans/archived/bb-led-two-ball-juggle-demo.md (IDEA-2 survey).

@@ -723,7 +723,7 @@ jugglebot_odrive_defaults:
                                          # leg vs 51 N at 10 A (Kt 0.057 Nm/A, spool ~11.2 mm).
   hand_vel_limit_rps: 1000.0             # Hand velocity limit {rev/s}
   hand_curr_limit_a: 70.0                # Hand current limit {A}. 60.0 -> 70.0 (owner decision
-                                         # 2026-11-02, JB-147: an Apex 1.35 launch overshot to
+                                         # 2026-11-02, BUG-57: an Apex 1.35 launch overshot to
                                          # 168 rev/s, its stepped brake saturated at -60.4 A and the
                                          # hand ran into the top stop). History: 50 -> 60 on
                                          # 2026-11-01 (Sitting debrief, with hand_acc_limit_rps2
@@ -739,7 +739,7 @@ jugglebot_odrive_defaults:
                                          # to soft 70 / hard 80 A (owner 2026-11-02, config/ODrive
                                          # config Files/odrive_pro_hand_config.json), so 70 now
                                          # equals the drive's soft max. Measured iq overshoots the
-                                         # soft limit (53.3 A against 50 A, 2026-11-01, JB-138),
+                                         # soft limit (53.3 A against 50 A, 2026-11-01, BUG-51),
                                          # hence the 10 A gap to the hard max.
   hand_pos_gain: 35.0                    # Hand position gain
   hand_vel_gain: 0.007                   # Hand velocity gain
@@ -952,10 +952,10 @@ trajectory_op:
                                    # in-QP bound. 3500 (2026-08-30) -> 3900 (2026-10-02) -> 4500
                                    # (owner decision 2026-11-01 Sitting debrief: six Columns goals
                                    # ENDED HAND_LIMIT_ACC 3910.6-4096.8 on bump-seeded successor
-                                   # catches, JB-120; the structural bump fix is filed, not built).
+                                   # catches, BUG-42; the structural bump fix is filed, not built).
                                    # Raised TOGETHER with hand_curr_limit_a 50 -> 60 A: at 50 A the
                                    # authority bound below is 3925.5, under 4500 (70 A since
-                                   # 2026-11-02, JB-147; this limit unchanged).
+                                   # 2026-11-02, BUG-57; this limit unchanged).
   hand_acc_ceiling_rps2: 4500.0    # Hard set_limits clamp {rev/s^2}. Sits UNDER the C-HAND-2
                                    # decel-FF headroom bound 0.85 x hand_curr_limit_a x Kt 0.0055133
                                    # / (2 pi x J_ff 9.5e-6) = 5495.7 rev/s^2 at 70 A (since 2026-11-02;
@@ -965,7 +965,7 @@ trajectory_op:
                                    # ODrive can produce. At the MEASURED inertia 1.05e-5 the
                                    # ball-free hand needs 53.8 A at 4500 (77 % of 70 A); with the
                                    # ball aboard the loaded ascent authority is lower still
-                                   # (throw_envelope.ACCEL_AUTHORITY_RPS2), see JB-115.
+                                   # (throw_envelope.ACCEL_AUTHORITY_RPS2), see BUG-40.
   knot_dt_s: 0.025                 # Fixed 40 Hz knot spacing {s} (matches firmware SEGMENT_T_S; not runtime-configurable)
   emit_lead_knots: 0               # Emitter lookahead {knots} (C2FF, 2026-09-14): at tick k the emitter targets knot
                                    # time T = t_k + emit_lead_knots*knot_dt_s, stamped; FW 22 plays it on that stamp,
@@ -1140,7 +1140,7 @@ trajectory_op:
   pose_slider_margin_mm: 0.5       # With a free z band the hand's stroke-top box moves onto the
                                    # SLIDER (cup_z - dz); this margin {mm} keeps the tilt drop's
                                    # share of the stroke out of it. Inert at pose_z_band_mm 0.
-  carry_zvd: false                 # I-PLAN-16 (carry-ring-zvd, JB-102): zero-residual-vibration rows on
+  carry_zvd: false                 # I-PLAN-16 (carry-ring-zvd, FEAT-32): zero-residual-vibration rows on
                                    # every pose STEADY window - the modelled Platform mode (below) is
                                    # still at the release knot, with its derivative in frequency (ZVD).
                                    # A window that cannot meet them is refused RING. FALSE until the
@@ -1153,7 +1153,7 @@ trajectory_op:
                                    # across both days. 4.9 centres the ZVD +/-15 % band on both. y is NOT
                                    # identified (10x less excitation) and copies x. The P0 gate FAILED
                                    # (the fit over-predicts the encoder excess ~2x), so these are
-                                   # provisional until JB-102's identification row flies.
+                                   # provisional until FEAT-32's identification row flies.
   platform_mode_zeta: [0.20, 0.20] # Damping ratio per axis, same shape as platform_mode_hz (fits 0.14-0.28).
   platform_mode_delay_s: 0.020     # Mode input delay {s}: the mode is driven by a_cmd(t - delay)
                                    # (mocap 17-18 ms, encoder 21-22 ms, against /leg_cmd_executed stamps).
@@ -1166,7 +1166,7 @@ trajectory_op:
   # its own entry acceleration. Hand: see the 4500 paragraph below. Legs: 250 rev/s^2
   # (~17.6 m/s^2 at 0.0142 rev/mm) is the FW 21 Mode-3 decay's own deceleration
   # from 14 rev/s over 60 ms, now C2; 25000 rev/s^3 bounds its onset.
-  # Hand 3500 -> 4500 rev/s^2 (owner, 2026-11-02, JB-147, can-bridge FW 36): the
+  # Hand 3500 -> 4500 rev/s^2 (owner, 2026-11-02, BUG-57, can-bridge FW 36): the
   # session hand acceleration limit since 2026-11-01, so a stall mid-brake gets a
   # stop as hard as the brake the planner seeds (release_brake_accel_mm_s2 clamps
   # its seed at this constant; C-HAND-5/6). The jerk bound stays 350000 (~1.9x the
@@ -1649,7 +1649,7 @@ hand_throw_envelope:
                                         # `config/ODrive config Files/odrive_pro_hand_config.json`
                                         # (0.04000087454915047, the drive's own calibration
                                         # measurement, per phase). The REGEN bound's copper
-                                        # loss (2026-11-02, JB-147): the bus sees the braking
+                                        # loss (2026-11-02, BUG-57): the bus sees the braking
                                         # power LESS c*R*I^2, see throw_envelope.REGEN. A
                                         # transcription, never a command; a hot winding has
                                         # more R and so returns less, the safe direction.
@@ -1682,7 +1682,7 @@ hand_throw_envelope:
                                         # dc_bus_nominal_v this is the BURST fence the
                                         # envelope uses: 8.0 A x 45 V = 360 W, which the
                                         # owner has confirmed the rail tolerates as a burst.
-                                        # Since 2026-11-02 (JB-147) the fence compares the
+                                        # Since 2026-11-02 (BUG-57) the fence compares the
                                         # BUS power, mechanical braking power less the
                                         # copper loss (hand_phase_resistance_ohm), worst case
                                         # over every braking current up to the limit: at

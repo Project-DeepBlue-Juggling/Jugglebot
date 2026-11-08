@@ -673,7 +673,7 @@ function buildCanChart() {
                 ticks: { stroke: ticksStroke, width: 1, size: 4 },
                 font: '10px JetBrains Mono, monospace',
                 size: 24,
-                // JB-101: >= 2 ticks at every width and zoom (axis-ticks.js).
+                // BUG-37: >= 2 ticks at every width and zoom (axis-ticks.js).
                 incrs: TIME_INCRS,
                 space: timeTickSpace(50),
                 values: (u, splits) => timeTickLabels(splits),
@@ -702,7 +702,7 @@ function buildCanChart() {
                 stroke: axisStroke,
                 grid: { stroke: gridStroke, width: 1 },
                 ticks: { stroke: ticksStroke, width: 1 },
-                space: numTickSpace(30),   // JB-101
+                space: numTickSpace(30),   // BUG-37
                 font: '10px JetBrains Mono, monospace',
                 labelFont: '10px JetBrains Mono, monospace',
             },
@@ -829,7 +829,7 @@ function updateCallouts(u) {
         textNode.textContent = `${bus.label} ${Math.round(val)}`;
         shown.push({ el, yPx });
     }
-    // JB-159: spread pills of nearby curves so none hides another.
+    // BUG-61: spread pills of nearby curves so none hides another.
     const pillH = (shown.length && shown[0].el.offsetHeight) || 16;
     const plotH = u.bbox ? (u.bbox.height / window.devicePixelRatio) : u.over.clientHeight;
     const ys = layoutCallouts(shown.map((s) => s.yPx), pillH, plotH);

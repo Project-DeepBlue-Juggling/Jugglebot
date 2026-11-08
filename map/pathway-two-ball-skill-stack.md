@@ -1,5 +1,5 @@
 ---
-id: JB-41
+id: PWAY-5
 kind: pathway
 title: Two-ball skill stack
 status: complete

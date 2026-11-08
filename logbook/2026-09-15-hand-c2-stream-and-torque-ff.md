@@ -359,4 +359,4 @@ gain choice.
   ran with `--no-external`); the next plain `generate_config.py` run
   delivers them. Normal generator behaviour, not a defect.
 
-> Closed 2026-10-28: K>0 gate removed (2026-09-15-hand-torque-ff-gate-removed); vel_ff-after-stale tracked as JB-73 (JB-34 survey).
+> Closed 2026-10-28: K>0 gate removed (2026-09-15-hand-torque-ff-gate-removed); vel_ff-after-stale tracked as BUG-19 (IDEA-2 survey).

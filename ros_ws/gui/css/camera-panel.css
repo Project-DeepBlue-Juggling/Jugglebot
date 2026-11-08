@@ -4,7 +4,7 @@
    flex item before #command-buttons, which centres between it and the
    Trail control at the right end. It follows the banner (minimap shift,
    --command-strip-h) for free. Hidden with the command buttons in replay
-   and while disconnected: css/replay.css (JB-74, 2026-10-28).
+   and while disconnected: css/replay.css (FEAT-25, 2026-10-28).
    =================================================================== */
 
 #camera-panel {

@@ -207,7 +207,7 @@ def test_a_late_check_is_skipped_late_whatever_its_kind(solver, limits, geom,
 
 def test_a_worker_reply_carries_its_own_cpu_time_and_context_switches(
         limits, geom, sites):
-    """JB-76's starvation probe: ``cpu_s`` is the worker's CPU time over the
+    """BUG-21's starvation probe: ``cpu_s`` is the worker's CPU time over the
     ``solve_s`` window, and the context-switch counts are real counts, not
     the -1 sentinel. ``cpu_s`` is process-wide and exceeds ``solve_s`` when an
     un-capped BLAS pool computes in parallel (measured: 143 ms CPU in a 29 ms
@@ -475,7 +475,7 @@ def test_a_worker_that_never_reports_ready_is_failed_then_down(
 
 
 # ---------------------------------------------------------------------------
-# JB-95: SCHED_FIFO for the worker (fail-open, worker-only)
+# FEAT-31: SCHED_FIFO for the worker (fail-open, worker-only)
 # ---------------------------------------------------------------------------
 # The rlimit-EPERM branch is real on this box (`ulimit -r 0` ->
 # PermissionError errno 1, probed 2026-10-28).  The cgroup branch (rtprio fine,

@@ -44,7 +44,8 @@ def _write(root, kind, slug, sid=None, **extra):
     write_item(str(root / "map" / ("%s-%s.md" % (kind, slug))), meta, "Body\n")
 
 
-def _tree(root):
+def _legacy_tree(root):
+    """The pre-cutover tree: global ``JB-n`` IDs, no crosswalk file."""
     (root / "map").mkdir(parents=True, exist_ok=True)
     (root / "docs").mkdir(exist_ok=True)
     (root / "GLOSSARY.md").write_text("# G\n\n## Language\n\n### Robot\n\n**Hand**: The cup.\n")
@@ -54,6 +55,22 @@ def _tree(root):
     _write(root, "bug", "cone-margin", "JB-2")
     _write(root, "ticket", "q", "JB-3")
     _write(root, "idea", "12", "JB-4")  # an all-digit slug
+
+
+def _tree(root):
+    """The live tree: per-kind IDs and the crosswalk file (its presence is the switch).
+
+    Numbers are distinct across kinds so the bare-digit tests still find one Item;
+    the crosswalk rows are the old ``JB-n`` of each Item.
+    """
+    _legacy_tree(root)
+    rows = (("JB-1", "PWAY-1", "pathway", "pathway-p"), ("JB-2", "BUG-2", "bug", "bug-cone-margin"),
+            ("JB-3", "TKT-3", "ticket", "ticket-q"), ("JB-4", "IDEA-4", "idea", "idea-12"))
+    for _old, new, _kind, stem in rows:
+        ids.set_id(load_item(str(root / "map" / (stem + ".md"))), new)
+    (root / "mapkit").mkdir(exist_ok=True)
+    (root / "mapkit" / "legacy_ids.csv").write_text(
+        "old_id,new_id,kind,stem\n" + "".join(",".join(row) + "\n" for row in rows))
 
 
 def _repo(tmp_path, name="work"):
@@ -86,29 +103,29 @@ def _other_clone_files(tmp_path, remote, slug, sid):
 def test_reads_take_every_form_writes_refuse_bare_digits(tmp_path, capsys):
     _tree(tmp_path)
     root = str(tmp_path)
-    for text in ("JB-2", "jb2", "Jb-2", "bug-cone-margin", "cone-margin"):
+    for text in ("BUG-2", "bug2", "Bug-2", "bug-cone-margin", "cone-margin"):
         assert itemcli.find_item(root, text).slug == "cone-margin"
     assert itemcli.find_item(root, "2", allow_bare=True).slug == "cone-margin"
     with pytest.raises(itemcli.ItemCliError, match="write commands need"):
         itemcli.find_item(root, "2")
-    _write(tmp_path, "feature", "x", "JB-12")
+    _write(tmp_path, "feature", "x", "FEAT-12")
     assert itemcli.find_item(root, "12").kind == "idea"  # digits are only a slug to a write
     with pytest.raises(itemcli.ItemCliError, match="both the slug"):
         itemcli.find_item(root, "12", allow_bare=True)
     with pytest.raises(itemcli.ItemCliError, match="no Item"):
-        itemcli.find_item(root, "JB-99")
-    assert itemcli.show(root, "1")["slug"] == "p" and itemcli.show(root, "jb1")["id"] == "JB-1"
-    assert {i.slug for i in itemcli.list_items(root, pathway="JB-1")} >= {"p", "cone-margin"}
+        itemcli.find_item(root, "BUG-99")
+    assert itemcli.show(root, "1")["slug"] == "p" and itemcli.show(root, "pway1")["id"] == "PWAY-1"
+    assert {i.slug for i in itemcli.list_items(root, pathway="PWAY-1")} >= {"p", "cone-margin"}
 
 
 def test_set_status_by_id_echoes_id_stem_title_and_cites_it(tmp_path, capsys):
     from mapkit.__main__ import main
     _tree(tmp_path)
-    assert main(["item", "set-status", "jb-2", "backlog", "--repo", str(tmp_path)]) == 0
-    assert capsys.readouterr().out.splitlines()[0] == "JB-2 bug-cone-margin -> backlog T cone-margin"
+    assert main(["item", "set-status", "bug-2", "backlog", "--repo", str(tmp_path)]) == 0
+    assert capsys.readouterr().out.splitlines()[0] == "BUG-2 bug-cone-margin -> backlog T cone-margin"
     assert main(["item", "set-status", "2", "backlog", "--repo", str(tmp_path)]) == 2
     assert itemcli._subject("in_progress", load_item(str(tmp_path / "map" / "bug-cone-margin.md"))) \
-        == "map: in_progress JB-2 T cone-margin"
+        == "map: in_progress BUG-2 T cone-margin"
 
 
 def test_items_and_show_carry_the_id(tmp_path, capsys):
@@ -116,37 +133,37 @@ def test_items_and_show_carry_the_id(tmp_path, capsys):
     _tree(tmp_path)
     assert main(["items", "--json", "--repo", str(tmp_path)]) == 0
     rows = json.loads(capsys.readouterr().out)
-    assert {r["slug"]: r["id"] for r in rows}["cone-margin"] == "JB-2"
+    assert {r["slug"]: r["id"] for r in rows}["cone-margin"] == "BUG-2"
     assert main(["items", "--repo", str(tmp_path)]) == 0
-    assert any(l.split()[:3] == ["JB-2", "bug", "cone-margin"]
+    assert any(l.split()[:3] == ["BUG-2", "bug", "cone-margin"]
                for l in capsys.readouterr().out.splitlines())
-    assert main(["show", "JB-1", "--repo", str(tmp_path)]) == 0
+    assert main(["show", "PWAY-1", "--repo", str(tmp_path)]) == 0
     out = capsys.readouterr().out
-    assert out.startswith("JB-1 T p [active] (p)") and "JB-2" in out
+    assert out.startswith("PWAY-1 T p [active] (p)") and "BUG-2" in out
 
 
 def test_tickets_resolve_by_id_and_check_the_kind(tmp_path, capsys):
     work, _ = _repo(tmp_path)
-    tickets.claim(str(work), "JB-3", "al")
-    assert _out(work, "log", "-1", "--format=%s").strip() == "map: claim JB-3 q"
+    tickets.claim(str(work), "TKT-3", "al")
+    assert _out(work, "log", "-1", "--format=%s").strip() == "map: claim TKT-3 q"
     with pytest.raises(tickets.TicketError, match="not a ticket"):
-        tickets.claim(str(work), "JB-2", "al", push=False)
+        tickets.claim(str(work), "BUG-2", "al", push=False)
     from mapkit.__main__ import main
     assert main(["frontier", "p", "--repo", str(work)]) == 0  # claimed: frontier is empty
-    _write(work, "ticket", "r", "JB-5", rank=1)
+    _write(work, "ticket", "r", "TKT-5", rank=1)
     assert main(["frontier", "p", "--repo", str(work)]) == 0
-    assert capsys.readouterr().out.split("\t")[1] == "JB-5"
+    assert capsys.readouterr().out.split("\t")[1] == "TKT-5"
 
 
 # --- item new -----------------------------------------------------------------
 def test_item_new_without_commit_allocates_and_normalises_refs(tmp_path, capsys):
     _tree(tmp_path)
-    it = itemcli.new_item(str(tmp_path), "bug", "Cup skids", parent="JB-1",
-                          links=["jb2", "logbook/x.md"])
-    assert it.short_id == "JB-5" and it.slug == "cup-skids" and it.status == "inbox"
+    it = itemcli.new_item(str(tmp_path), "bug", "Cup skids", parent="PWAY-1",
+                          links=["bug2", "logbook/x.md"])
+    assert it.short_id == "BUG-3" and it.slug == "cup-skids" and it.status == "inbox"
     assert it.meta["parent"] == "p" and it.meta["links"] == ["bug-cone-margin", "logbook/x.md"]
     assert it.meta["filed_by"] == "claude"
-    assert open(it.path).read().startswith("---\nid: JB-5\nkind: bug\n")
+    assert open(it.path).read().startswith("---\nid: BUG-3\nkind: bug\n")
     # a same slug under another kind gets -2 (the app's uuid is slug-keyed)
     assert itemcli.new_item(str(tmp_path), "idea", "Cone margin",
                             allow_similar=True).slug == "cone-margin-2"
@@ -157,8 +174,8 @@ def test_item_new_without_commit_allocates_and_normalises_refs(tmp_path, capsys)
 def test_item_new_commit_happy_path(tmp_path):
     work, remote = _repo(tmp_path)
     it = itemcli.new_item(str(work), "feature", "Short ids", commit=True)
-    assert it.short_id == "JB-5"
-    assert _out(remote, "log", "-1", "--format=%s", "main").strip() == "map: file feature JB-5 Short ids"
+    assert it.short_id == "FEAT-1"
+    assert _out(remote, "log", "-1", "--format=%s", "main").strip() == "map: file feature FEAT-1 Short ids"
 
 
 def test_item_new_repairs_when_the_remote_advances_between_check_and_push(tmp_path, monkeypatch):
@@ -170,16 +187,16 @@ def test_item_new_repairs_when_the_remote_advances_between_check_and_push(tmp_pa
         if args and args[0] == "push":
             state["pushes"] += 1
             if state["pushes"] == 1:  # after our rebase + check, before our push lands
-                _other_clone_files(tmp_path, remote, "phone", "JB-5")
+                _other_clone_files(tmp_path, remote, "phone", "BUG-3")
         return real(repo_root, *args)
 
     monkeypatch.setattr(itemcli, "_git_out", racing)
     it = itemcli.new_item(str(work), "bug", "Mine", commit=True)
     assert state["pushes"] == 2  # the first push was rejected, the loop went round once
-    assert it.short_id == "JB-6"
+    assert it.short_id == "BUG-4"
     subjects = _out(remote, "log", "--format=%s", "main").splitlines()
-    # the renumber is folded into our unpushed file commit: no subject cites JB-5 for Mine
-    assert subjects[:2] == ["map: file bug JB-6 Mine", "map: file bug JB-5 T phone"]
+    # the renumber is folded into our unpushed file commit: no subject cites BUG-3 for Mine
+    assert subjects[:2] == ["map: file bug BUG-4 Mine", "map: file bug BUG-3 T phone"]
     assert "map: renumber" not in "\n".join(subjects)
     _git(work, "fetch")
     assert not ids.check(str(work))["duplicate"]
@@ -232,18 +249,18 @@ def test_repair_on_a_feature_upstream_renumbers_ours_whatever_the_stem_order(
     # Item the rebase brings in is no holder on origin/main; ours must still lose.
     work, remote = _repo(tmp_path)
     _git(work, "checkout", "-b", "feat")
-    _write(work, "bug", "on-feat", "JB-5")  # upstream ahead of main
+    _write(work, "bug", "on-feat", "BUG-3")  # upstream ahead of main
     _git(work, "add", ".")
     _git(work, "commit", "-m", "feat item")
     _git(work, "push", "-u", "origin", "feat")
     _inject_before_first_pull(monkeypatch, lambda: _push_from_other(
-        tmp_path, remote, "feat", theirs, "JB-6", mine))
+        tmp_path, remote, "feat", theirs, "BUG-4", mine))
     it = itemcli.new_item(str(work), "bug", mine, commit=True)
-    assert it.short_id == "JB-7"
-    assert load_item(str(work / "map" / ("bug-%s.md" % theirs))).short_id == "JB-6"
+    assert it.short_id == "BUG-5"
+    assert load_item(str(work / "map" / ("bug-%s.md" % theirs))).short_id == "BUG-4"
     _git(work, "fetch")
     assert not ids.check(str(work), "origin/feat")["duplicate"]
-    assert _out(remote, "log", "-1", "--format=%s", "feat").strip() == "map: file bug JB-7 " + mine
+    assert _out(remote, "log", "-1", "--format=%s", "feat").strip() == "map: file bug BUG-5 " + mine
     from mapkit import gen_docs
     assert gen_docs.write_docs(str(work), check=True) == []  # docs regenerated before the push
 
@@ -251,13 +268,13 @@ def test_repair_on_a_feature_upstream_renumbers_ours_whatever_the_stem_order(
 def test_slug_clash_aborts_the_rebase_and_exits_cleanly(tmp_path, monkeypatch):
     work, remote = _repo(tmp_path)
     _inject_before_first_pull(monkeypatch, lambda: _push_from_other(
-        tmp_path, remote, "main", "same-title", "JB-5", "clash"))
+        tmp_path, remote, "main", "same-title", "BUG-3", "clash"))
     with pytest.raises(itemcli.ItemCliError, match="rebase was aborted") as exc:
         itemcli.new_item(str(work), "bug", "Same title", commit=True)
     assert "map/bug-same-title.md" in str(exc.value)
     status = _out(work, "status")
     assert "rebase" not in status and "Unmerged" not in status
-    assert _out(work, "log", "-1", "--format=%s").strip() == "map: file bug JB-5 Same title"
+    assert _out(work, "log", "-1", "--format=%s").strip() == "map: file bug BUG-3 Same title"
 
 
 def test_invalid_new_item_leaves_no_file(tmp_path):
@@ -280,15 +297,15 @@ def test_cli_new_reports_a_git_failure_without_a_traceback(tmp_path, capsys):
 # --- build-review fixes (2026-10-26): amend-on-renumber, lenient allocation, waiting commit, item push ----
 def test_renumber_is_a_separate_commit_when_the_file_commit_is_not_head(tmp_path, monkeypatch):
     work, remote = _repo(tmp_path)
-    itemcli.new_item(str(work), "bug", "Mine", commit=True, push=False)  # JB-5, local only
+    itemcli.new_item(str(work), "bug", "Mine", commit=True, push=False)  # BUG-3, local only
     (work / "unrelated.txt").write_text("x\n")
     _git(work, "add", ".")
     _git(work, "commit", "-m", "later local commit")
-    _other_clone_files(tmp_path, remote, "phone", "JB-5")
+    _other_clone_files(tmp_path, remote, "phone", "BUG-3")
     it = itemcli.push_item(str(work), "bug-mine")
-    assert it.short_id == "JB-6"
+    assert it.short_id == "BUG-4"
     subjects = _out(remote, "log", "--format=%s", "main").splitlines()
-    assert subjects[0] == "map: renumber JB-5 -> JB-6 Mine"  # HEAD was the unrelated commit
+    assert subjects[0] == "map: renumber BUG-3 -> BUG-4 Mine"  # HEAD was the unrelated commit
     assert "later local commit" in subjects
 
 
@@ -298,7 +315,7 @@ def test_item_push_after_no_push_runs_the_same_loop(tmp_path):
     assert _out(remote, "log", "-1", "--format=%s", "main").strip() == "seed"
     from mapkit.__main__ import main
     assert main(["item", "push", "idea-check-first", "--repo", str(work)]) == 0
-    assert _out(remote, "log", "-1", "--format=%s", "main").strip() == "map: file idea JB-5 Check first"
+    assert _out(remote, "log", "-1", "--format=%s", "main").strip() == "map: file idea IDEA-5 Check first"
 
 
 def test_failure_after_the_commit_says_a_local_commit_is_waiting(tmp_path, monkeypatch):
@@ -320,13 +337,13 @@ def test_failure_after_the_commit_says_a_local_commit_is_waiting(tmp_path, monke
 
 def test_a_malformed_sibling_is_skipped_for_allocation_and_named_when_gen_refuses(tmp_path, capsys):
     work, _ = _repo(tmp_path)
-    (work / "map" / "bug-broken.md").write_text("---\nid: JB-9\nkind: bug\nstatus: bogus\n---\n\nb\n")
+    (work / "map" / "bug-broken.md").write_text("---\nid: BUG-9\nkind: bug\nstatus: bogus\n---\n\nb\n")
     before = sorted(p.name for p in (work / "map").iterdir())
     with pytest.raises(itemcli.ItemCliError, match="bug-broken.md"):
         itemcli.new_item(str(work), "bug", "Fine", commit=True)
     assert sorted(p.name for p in (work / "map").iterdir()) == before  # nothing half-filed
     assert "skipping unreadable Item map/bug-broken.md" in capsys.readouterr().err
-    assert ids.allocate(str(work)) == "JB-10"  # the broken file's JB-9 is never reused
+    assert ids.allocate(str(work), kind="bug") == "BUG-10"  # the broken file's BUG-9 is never reused
 
 
 # --- ids-p6-audit-fixes (2026-10-26) -------------------------------------------------------
@@ -337,19 +354,19 @@ def test_item_push_unknown_name_refuses_before_any_git_call(tmp_path, monkeypatc
     real = itemcli._git_out
     monkeypatch.setattr(itemcli, "_git_out", lambda r, *a: calls.append(a) or real(r, *a))
     from mapkit.__main__ import main
-    assert main(["item", "push", "JB-64", "--repo", str(work)]) == 2
+    assert main(["item", "push", "BUG-64", "--repo", str(work)]) == 2
     err = capsys.readouterr().err
-    assert "JB-64" in err and "waiting" not in err
+    assert "BUG-64" in err and "waiting" not in err
     assert calls == []  # not even the first pull
     assert _out(remote, "log", "-1", "--format=%s", "main").strip() == "seed"  # nothing went out
 
 
 def test_item_push_accepts_an_id(tmp_path):
     work, remote = _repo(tmp_path)
-    itemcli.new_item(str(work), "idea", "By id", commit=True, push=False)  # JB-5
+    itemcli.new_item(str(work), "idea", "By id", commit=True, push=False)  # IDEA-5
     from mapkit.__main__ import main
-    assert main(["item", "push", "JB-5", "--repo", str(work)]) == 0
-    assert _out(remote, "log", "-1", "--format=%s", "main").strip() == "map: file idea JB-5 By id"
+    assert main(["item", "push", "IDEA-5", "--repo", str(work)]) == 0
+    assert _out(remote, "log", "-1", "--format=%s", "main").strip() == "map: file idea IDEA-5 By id"
 
 
 def test_rerunning_item_push_never_amends_a_published_commit(tmp_path):
@@ -367,22 +384,13 @@ def test_rerunning_item_push_never_amends_a_published_commit(tmp_path):
 
 
 # --- per-kind IDs (plan item-id-per-kind, P1 unit 3) ----------------------------
-def _per_kind_tree(root):
-    _tree(root)
-    for name, new in (("pathway-p.md", "PWAY-1"), ("bug-cone-margin.md", "BUG-2"),
-                      ("ticket-q.md", "TKT-3"), ("idea-12.md", "IDEA-4")):
-        it = load_item(str(root / "map" / name))
-        it.meta["id"] = new
-        write_item(it.path, it.meta, it.body)
-
-
 def test_link_and_pathway_filter_take_per_kind_ids(tmp_path):
     """T-U4/T-U5 (P1 unit 3): ``--link BUG-2`` was stored as plain text; ``--pathway PWAY-1`` ignored.
 
     The is-an-ID test at itemcli ``new_item`` links and ``list_items`` pathway
     used the JB-only ``ids.parse``, so a per-kind reference fell through silently.
     """
-    _per_kind_tree(tmp_path)
+    _tree(tmp_path)
     got = itemcli.list_items(str(tmp_path), pathway="PWAY-1")
     assert {i.slug for i in got} >= {"q"}
     assert [i.slug for i in itemcli.list_items(str(tmp_path), pathway="1")] == [i.slug for i in got]
@@ -391,11 +399,9 @@ def test_link_and_pathway_filter_take_per_kind_ids(tmp_path):
     assert it.meta["links"] == ["bug-cone-margin", "logbook/x.md"]
 
 
-def test_new_item_allocates_in_its_own_kind_when_the_tree_is_per_kind(tmp_path):
+def test_new_item_allocates_in_its_own_kind_when_the_tree_is_per_kind(tmp_path):  # legacy form: retired at P5
     """T-U2/T-U3 (P1 unit 3): ``item new`` passes ``kind=`` to allocate; no csv keeps global ``JB-n``."""
-    _per_kind_tree(tmp_path)
-    (tmp_path / "mapkit").mkdir()
-    (tmp_path / "mapkit" / "legacy_ids.csv").write_text("legacy,new\n")
+    _tree(tmp_path)
     a = itemcli.new_item(str(tmp_path), "bug", "Cup skids")
     b = itemcli.new_item(str(tmp_path), "feature", "Wider stroke")
     assert a.short_id == "BUG-3" and b.short_id == "FEAT-1"
@@ -405,10 +411,61 @@ def test_new_item_allocates_in_its_own_kind_when_the_tree_is_per_kind(tmp_path):
     assert c.short_id.startswith("JB-")
 
 
-def test_padded_lower_case_jb_input_still_resolves_at_link_and_pathway(tmp_path):
+def test_padded_lower_case_jb_input_still_resolves_at_link_and_pathway(tmp_path):  # legacy form: retired at P5
     """P1 consumer (plan 2.3): ``jb-02`` named JB-2 before the expansion; ``--link`` and ``--pathway`` keep that."""
-    _tree(tmp_path)
+    _legacy_tree(tmp_path)
     it = itemcli.new_item(str(tmp_path), "bug", "Cup skids", links=["jb-02"], allow_similar=True)
     assert it.meta["links"] == ["bug-cone-margin"]
     by_id = itemcli.list_items(str(tmp_path), pathway="JB-1")
     assert by_id and [i.slug for i in itemcli.list_items(str(tmp_path), pathway="jb-01")] == [i.slug for i in by_id]
+
+
+# --- P4 unit 1 (D-3): a legacy JB-<n> after the cutover ---------------------
+def _cutover_tree(root):
+    """_legacy_tree() renumbered per kind, crosswalk in place (JB-1 p, JB-2 bug, JB-3 ticket, JB-4 idea)."""
+    _legacy_tree(root)
+    ids.make_crosswalk(str(root))
+    for stem, new in (("pathway-p", "PWAY-1"), ("bug-cone-margin", "BUG-1"),
+                      ("ticket-q", "TKT-1"), ("idea-12", "IDEA-1")):
+        ids.set_id(load_item(str(root / "map" / (stem + ".md"))), new)
+
+
+def test_legacy_id_reads_translate_with_a_stderr_line(tmp_path, capsys):  # legacy form: retired at P5
+    from mapkit.__main__ import main
+    _cutover_tree(tmp_path)
+    capsys.readouterr()
+    assert main(["items", "--pathway", "JB-1", "--repo", str(tmp_path)]) == 0
+    cap = capsys.readouterr()
+    assert "JB-1 -> PWAY-1" in cap.err.splitlines()
+    assert "cone-margin" in cap.out
+    assert main(["show", "JB-1", "--repo", str(tmp_path)]) == 0
+    assert "JB-1 -> PWAY-1" in capsys.readouterr().err.splitlines()
+    assert main(["items", "--pathway", "PWAY-1", "--repo", str(tmp_path)]) == 0
+    assert capsys.readouterr().err == ""  # the new ID prints no translation
+
+
+def test_legacy_id_writes_refuse_and_name_the_new_id(tmp_path, capsys):  # legacy form: retired at P5
+    from mapkit.__main__ import main
+    _cutover_tree(tmp_path)
+    bug = tmp_path / "map" / "bug-cone-margin.md"
+    before = bug.read_text()
+    capsys.readouterr()
+    assert main(["item", "set-status", "JB-2", "backlog", "--repo", str(tmp_path)]) == 2
+    assert "JB-2 is now BUG-1 (bug-cone-margin)" in capsys.readouterr().err
+    assert main(["item", "rate", "jb2", "--effort", "s", "--repo", str(tmp_path)]) == 2
+    assert "BUG-1" in capsys.readouterr().err
+    assert main(["item", "set-status", "BUG-1", "backlog", "--repo", str(tmp_path)]) == 0
+    assert bug.read_text() != before
+    with pytest.raises(ids.LegacyIdError, match="PWAY-1"):  # _run_new turns IdError into exit 2
+        itemcli.new_item(str(tmp_path), "bug", "Another thing", parent="JB-1", allow_similar=True)
+    with pytest.raises(itemcli.ItemCliError, match="TKT-1"):
+        itemcli.new_item(str(tmp_path), "bug", "Third thing", links=["JB-3"], allow_similar=True)
+    with pytest.raises(itemcli.ItemCliError, match="BUG-1"):
+        itemcli.new_item(str(tmp_path), "ticket", "Q two", ticket_type="question",
+                         parent="JB-2", allow_similar=True)
+
+
+def test_unknown_legacy_id_is_the_normal_not_found(tmp_path):  # legacy form: retired at P5
+    _cutover_tree(tmp_path)
+    with pytest.raises(itemcli.ItemCliError, match="no Item"):
+        itemcli.find_item(str(tmp_path), "JB-99")

@@ -1,5 +1,5 @@
 ---
-id: JB-72
+id: BUG-18
 kind: bug
 title: HomingMonitor false-times-out a home shorter than one Diagnostic period
 status: complete

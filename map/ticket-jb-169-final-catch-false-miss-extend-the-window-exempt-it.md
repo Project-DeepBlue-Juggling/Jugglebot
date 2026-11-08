@@ -1,7 +1,7 @@
 ---
-id: JB-172
+id: TKT-38
 kind: ticket
-title: 'JB-169 final-Catch false miss: extend the window, exempt it, judge it by the Tracker, book it unverifiable, or test the cup sensor first?'
+title: 'BUG-67 final-Catch false miss: extend the window, exempt it, judge it by the Tracker, book it unverifiable, or test the cup sensor first?'
 status: complete
 created: '2026-11-05'
 updated: '2026-11-04T21:20:22Z'
@@ -18,7 +18,7 @@ parent: bug-full-length-columns-goal-ends-missed-catch-on-its-final
 type: question
 ---
 
-JB-169: a full-length Columns goal ends MISSED_CATCH on its final Catch. The Night Shift traced why the final CATCH is judged at all: no exemption covers it, and the cup read EMPTY until the Stop seated, 0.17 s after the window closed. Whether Ball 1 was really in the cup is not settled by the bag (Findings (2026-11-05) on JB-169).
+BUG-67: a full-length Columns goal ends MISSED_CATCH on its final Catch. The Night Shift traced why the final CATCH is judged at all: no exemption covers it, and the cup read EMPTY until the Stop seated, 0.17 s after the window closed. Whether Ball 1 was really in the cup is not settled by the bag (Findings (2026-11-05) on BUG-67).
 
 ## Options
 1. Extend the final CATCH's window past the Stop's landing so the Stop's SEATED read vetoes the miss. This also hides a real final miss, because the Stop seats in an empty cup too.

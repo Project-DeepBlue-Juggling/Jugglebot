@@ -185,13 +185,13 @@ def _hand_at(node, rev=sn.REST_HAND_REV, ball_held=True):
 
 _HAND_CLOCK_FROZEN_S = 1.0e6
 #: `_node_with_client(frame=True)` freezes the node's frame clock here, the
-#: frame-check twin of `_HAND_CLOCK_FROZEN_S` (JB-64, 2026-10-28).
+#: frame-check twin of `_HAND_CLOCK_FROZEN_S` (BUG-14, 2026-10-28).
 _FRAME_CLOCK_FROZEN_S = 1.0e6
 #: `_node_with_client` freezes the node's commanded-position clock here, the
-#: `_prelevel` twin of `_HAND_CLOCK_FROZEN_S` (JB-141, 2026-11-03).
+#: `_prelevel` twin of `_HAND_CLOCK_FROZEN_S` (BUG-53, 2026-11-03).
 _COMMANDED_CLOCK_FROZEN_S = 1.0e6
 #: `_node_with_client` freezes the node's mocap / trajectory-status / last-install
-#: clock here, the `_observations` twin of `_HAND_CLOCK_FROZEN_S` (JB-165, 2026-11-04).
+#: clock here, the `_observations` twin of `_HAND_CLOCK_FROZEN_S` (BUG-65, 2026-11-04).
 _OBS_CLOCK_FROZEN_S = 1.0e6
 
 
@@ -237,11 +237,11 @@ def _node_with_client(response=None, ready=True, hand=True, frame=True,
     # frozen hand clock: a loaded run cannot age the fixture's sample (2026-10-15)
     node._hand_clock = lambda: _HAND_CLOCK_FROZEN_S
     # frozen commanded-position clock: a loaded run cannot age the sample
-    # `_prelevel_ready` stamps past `_TRAJ_STATUS_STALE_S` (JB-141)
+    # `_prelevel_ready` stamps past `_TRAJ_STATUS_STALE_S` (BUG-53)
     node._commanded_clock = lambda: _COMMANDED_CLOCK_FROZEN_S
     # frozen observation clock: a loaded run cannot age the fixture's
     # trajectory status past `_TRAJ_STATUS_STALE_S` across `_start_pattern`
-    # (JB-165)
+    # (BUG-65)
     node._obs_clock = lambda: _OBS_CLOCK_FROZEN_S
     client = _RecordingClient(response=response, ready=ready)
     node._install_cli = client
@@ -254,7 +254,7 @@ def _node_with_client(response=None, ready=True, hand=True, frame=True,
         _hand_at(node)
     if frame:
         # frozen frame clock: a loaded run cannot age the fixture's frame
-        # samples past `_FRAME_CHECK_WINDOW_S` (JB-64, 2026-10-28). A
+        # samples past `_FRAME_CHECK_WINDOW_S` (BUG-14, 2026-10-28). A
         # ``frame=False`` test keeps the real clock and stamps its own.
         node._frame_clock = lambda: _FRAME_CLOCK_FROZEN_S
         _frame_ready(node)
@@ -580,7 +580,7 @@ def test_the_learner_lateral_authority_parameter_defaults_to_thirty():
     amplitude-aware banking (`plans/archived/cup-contact-contract.md` § 6);
     owner 2026-09-23 set 20 mm after the first unpinned sitting — 40 mm
     dropped balls on the 25-throw chains at 0.9 m, 20 mm was stable at both
-    apexes. Owner 2026-11-02 (JB-139): 30 mm, with the Admissible box
+    apexes. Owner 2026-11-02 (BUG-52): 30 mm, with the Admissible box
     (since retired) re-swept to +/-30 mm in the same commit -- Ball 2's stable ~+22 mm landing bias held
     the learner pinned at 20. This is the executor's clamp."""
     node, _client = _node_with_client()
@@ -1011,7 +1011,7 @@ def test_the_tick_dispatches_the_opening_rest_bridge_through_the_mocked_client()
 
 
 def test_a_slow_test_run_cannot_age_the_status_before_the_first_tick():
-    """JB-165: `_observations` judged mocap and trajectory-status freshness on
+    """BUG-65: `_observations` judged mocap and trajectory-status freshness on
     the real `time.perf_counter()`, and `_start_pattern` sits between
     `_freshen` and the first tick, so a loaded full gate (Night Shift
     2026-11-04) aged the status past `_TRAJ_STATUS_STALE_S`: the tick ended
@@ -1431,7 +1431,7 @@ def test_observations_report_true_once_everything_is_fresh_and_levelled():
 
 
 def test_observations_map_status_mode_error_to_machine_fault():
-    """JB-175: the orchestrator publishes mode ERROR only on a real FAULT; an
+    """BUG-68: the orchestrator publishes mode ERROR only on a real FAULT; an
     operator disarm (STANDBY here) is a mode change, NOT a fault; a stale
     ERROR status says nothing."""
     node, _client = _node_with_client()
@@ -1450,7 +1450,7 @@ def test_observations_map_status_mode_error_to_machine_fault():
 
 
 def test_observations_map_link_status_fault_state_to_guard_latched():
-    """JB-175: `/link_status` fault_state not NONE/UNKNOWN/'' on a FRESH
+    """BUG-68: `/link_status` fault_state not NONE/UNKNOWN/'' on a FRESH
     sample is a latched guard; it is its own field, not `machine_fault`."""
     from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
     node, _client = _node_with_client()
@@ -1676,7 +1676,7 @@ def test_check_reports_frame_check_ok_when_within_limit_with_authority():
 def test_default_parameters_refuse_every_start_path_with_no_frame_data(tmp_path):
     """`learner_lateral_authority_mm` has a non-zero default (40.0 at the
     2026-09-21 unpinning, `plans/archived/cup-contact-contract.md` § 6; 30.0
-    since 2026-11-02, JB-139) — a session
+    since 2026-11-02, BUG-52) — a session
     that never saw a mocap `Platform` sample must now be refused
     REJECTED_FRAME_OFFSET on EVERY default-parameter start path, not just
     under an explicit `:=40`. This is the production fail-closed face of the
@@ -2003,7 +2003,7 @@ def test_a_clean_columns_finish_logs_the_d2_stop_line(tmp_path):
 
 def test_a_columns_goal_that_ended_on_a_stop_says_its_final_catch_is_unverifiable(
         tmp_path):
-    """JB-169: the executor booked the final Catch unverifiable
+    """BUG-67: the executor booked the final Catch unverifiable
     (`final_catch_unverifiable` set, `end_code` empty): the end line is the
     clean D2 'done' INFO line (never ENDED, never ERROR) and says so; without
     the flag it does not."""
@@ -2797,7 +2797,7 @@ def test_on_mocap_buffers_the_platform_body_xy():
 def test_commanded_position_freshness_reads_the_injected_clock():
     """`_on_commanded_position` stamps on `_commanded_clock` and
     `_live_commanded_position` ages the sample on the same clock: fresh inside
-    `_TRAJ_STATUS_STALE_S`, ``None`` (fail-closed) past it (JB-141)."""
+    `_TRAJ_STATUS_STALE_S`, ``None`` (fail-closed) past it (BUG-53)."""
     node, _client = _node_with_client(hand=False, frame=False)
     clock = [100.0]
     node._commanded_clock = lambda: clock[0]
@@ -2811,7 +2811,7 @@ def test_commanded_position_freshness_reads_the_injected_clock():
 
 
 def test_a_slow_test_run_cannot_age_the_prelevel_sample():
-    """JB-141: `_prelevel_ready` stamped the commanded position on the real
+    """BUG-53: `_prelevel_ready` stamped the commanded position on the real
     `time.perf_counter()` and `_prelevel` judged it against
     `_TRAJ_STATUS_STALE_S` (1.0 s) on the same, so a loaded full gate (Night
     Shift 2026-11-02, a MuJoCo unit on the machine) refused two self-toss tests
@@ -3768,7 +3768,7 @@ def test_c3_a_rejection_after_the_announcement_compiled_the_schedule_ends_it(tmp
 
 
 def test_not_settled_during_await_announcement_fails_closed_without_retry(tmp_path):
-    """JB-25 (2026-11-01): the once-per-attempt NOT_SETTLED retry was retired.
+    """BUG-6 (2026-11-01): the once-per-attempt NOT_SETTLED retry was retired.
     `THROW_ABORTED_NOT_SETTLED` while the ctx still awaits its announcement
     ends the attempt `REJECTED_BB(...)` at once -- no second
     `bb/throw_at_target` call."""
@@ -4104,7 +4104,7 @@ class TestJuggleAction:
         assert (values['record_beaten'], values['record_catches']) == ('0', '5')
 
     def test_the_goals_params_are_recorded_from_accept_time(self, tmp_path):
-        """JB-90: the ledger row carries what the goal resolved at accept
+        """FEAT-29: the ledger row carries what the goal resolved at accept
         (goal fields, else node params); self_toss has no separation."""
         from jugglebot import records as rec
         path = tmp_path / 'records.md'
@@ -4307,7 +4307,7 @@ class TestOperatorLines:
                                 % sn._DEFAULT_DWELL_S), info
 
     def test_a_self_toss_start_line_names_its_site(self, tmp_path):
-        # JB-190: the Site is a node parameter set by hand between goals; at
+        # BUG-77: the Site is a node parameter set by hand between goals; at
         # the P2 Sitting (2026-11-06) seven goals flew at x = -50 instead of
         # 0 and no console line said so. Columns' start line is unchanged
         # (the test above pins its ending).
@@ -4375,7 +4375,7 @@ class TestOperatorLines:
 
     def test_the_ledger_counts_an_unverifiable_final_catch_the_result_does_not(
             self, tmp_path):
-        """JB-180 option 2: `_offer_record` gets N/N (the unverified final
+        """TKT-42 option 2: `_offer_record` gets N/N (the unverified final
         Catch on both sides) while the Juggle Result keeps N-1/N-1."""
         import dataclasses
         node, _client = _node_with_client()
@@ -4391,7 +4391,7 @@ class TestOperatorLines:
             [_throw_report(1, True), _throw_report(2, True), final])
         node._stop_attempt()
         node._on_tick()
-        node._goal_end_code = ''     # a goal that ended COMPLETED (JB-197)
+        node._goal_end_code = ''     # a goal that ended COMPLETED (TKT-44)
         offered = []
         node._offer_record = lambda *a, **k: (offered.append(a) or (False, ''))
         result = node._juggle_execute(MagicMock(is_cancel_requested=False))
@@ -4400,7 +4400,7 @@ class TestOperatorLines:
             offered)
 
     def test_an_aborted_goal_keeps_the_plain_count_in_the_ledger(self, tmp_path):
-        """JB-197: only a COMPLETED goal adds the unverifiable final Catch to
+        """TKT-44: only a COMPLETED goal adds the unverifiable final Catch to
         the ledger; a goal that ended with an end code keeps the plain count."""
         import dataclasses
         node, _client = _node_with_client()
@@ -4449,7 +4449,7 @@ class TestOperatorLines:
                           ' · entered by a Feed']
 
     def test_a_fed_goals_end_line_is_searchable_by_pattern_and_a_plain_ones_has_no_suffix(self):
-        # JB-190: P2 L9214 printed "columns_turned (reload) ENDED" and a
+        # BUG-77: P2 L9214 printed "columns_turned (reload) ENDED" and a
         # search for "columns_turned ENDED" missed it.
         node, _client = _node_with_client()
         node._attempt_label = 'columns_turned (reload)'
@@ -4479,7 +4479,7 @@ class TestOperatorLines:
                           % (code,)]
 
     def test_a_fed_goals_executor_retire_end_line_carries_the_suffix(self):
-        # JB-190 audit: `_log_attempt_end` (the executor-retire end line) is
+        # BUG-77 audit: `_log_attempt_end` (the executor-retire end line) is
         # the other end-line call site; drive it with `_attempt_fed` True.
         node, _client = _node_with_client()
         node._attempt_label = 'hop (reload)'
@@ -6004,7 +6004,7 @@ def test_a_slow_test_run_cannot_age_the_fixture_sample_past_the_accept_check():
     REJECTED_BALL_UNKNOWN. probe 2026-10-15: failed before the clock
     injection, passes after.
 
-    The frame check is the second sample family the fixture seeds (JB-64,
+    The frame check is the second sample family the fixture seeds (BUG-14,
     2026-10-28): its Platform/commanded buffers were stamped on the real
     `time.perf_counter()` and judged against `_FRAME_CHECK_WINDOW_S` (1.0 s),
     so this test's own 0.6 s sleep left 0.4 s of margin and a loaded gate
@@ -7204,7 +7204,7 @@ def test_columns_turned_feed_site_is_the_one_nearest_ball_butler():
     assert node._columns_turned_feed_index(sites) is None
 
 
-# ── columns_highlow (JP-9, map JB-107): Ball 2's own Apex ──────────────────
+# ── columns_highlow (JP-9, map IDEA-10): Ball 2's own Apex ──────────────────
 
 def test_columns_highlow_refuses_unset_equal_and_level_all_at_once(tmp_path):
     node, _client = _node_with_client(response=_response())
@@ -7262,7 +7262,7 @@ def test_plain_columns_ignores_apex_m_ball2(tmp_path):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# JB-21: bb/throw_outcome carries the throw's identity (release_wall_s suffix)
+# BUG-2: bb/throw_outcome carries the throw's identity (release_wall_s suffix)
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _tagged(token, release_wall_s):
@@ -7297,7 +7297,7 @@ def test_jb21_a_late_verdict_for_the_previous_throw_is_ignored(tmp_path):
 
 
 def test_jb21_a_late_not_settled_does_not_end_the_attempt(tmp_path):
-    # The once-per-attempt retry was retired 2026-11-01 (JB-25); a late
+    # The once-per-attempt retry was retired 2026-11-01 (BUG-6); a late
     # NOT_SETTLED for another throw must still not end THIS attempt.
     node, _client = _node_with_client(response=_response())
     resp = _start_reload(node, tmp_path)

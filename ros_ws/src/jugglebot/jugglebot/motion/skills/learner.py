@@ -142,7 +142,7 @@ class LearnerConfig:
     #: cap reaches c_max (at k 8 / w0 4 it topped out at 0.865 c_max).
     w0: float = 2.0
     #: Lateral cap about the model command [m] (the node passes ``learner_lateral_authority_mm``;
-    #: 30 mm is the owner's JB-139 value, newer than the plan's 40 mm start).
+    #: 30 mm is the owner's BUG-52 value, newer than the plan's 40 mm start).
     c_max_xy_m: float = 0.030
     #: Apex cap about the model command [m] (probe: L2 apex corrections p99 12.9, max 18.0 mm).
     c_max_apex_m: float = 0.020

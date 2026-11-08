@@ -1,5 +1,5 @@
 ---
-title: "GUI: the records overlay groups Patterns by ball count, fewest first, with a sub-heading and divider per group (JB-93)"
+title: "GUI: the records overlay groups Patterns by ball count, fewest first, with a sub-heading and divider per group (IDEA-8)"
 type: feature
 date: 2026-11-01
 status: complete
@@ -22,7 +22,7 @@ tags:
   - night-shift
 ---
 
-# GUI: the records overlay groups Patterns by ball count (JB-93)
+# GUI: the records overlay groups Patterns by ball count (IDEA-8)
 
 ## Summary
 

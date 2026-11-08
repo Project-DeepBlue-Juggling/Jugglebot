@@ -65,4 +65,4 @@ the guard's two tests pass with the files' existing suites — counts in the com
 
 (2026-09-16, `./run_tests.sh --full`, log `temp/logs/ladder_close_full3_20260916.log`, the final tree of this phase — ladder close-out, new launch defaults, per-release correlation, lateral-authority guard, audit follow-ups): **PASS — parallel 6233 passed, 9 skipped, 2 xfailed in 297.12 s; serial 6 passed in 18.98 s.**
 
-> Closed 2026-11-01: fix plan steps 1 and 2 landed 2026-09-20 as the cup-contact contract C-CUP-1 (2026-09-20-cup-contact-contract-implemented.md), pinned by test_cup_realize.py; JB-22 closed by 2026-11-01-jb22-banking-saturation-closed-by-cup-contact-contract.md (Night Shift).
+> Closed 2026-11-01: fix plan steps 1 and 2 landed 2026-09-20 as the cup-contact contract C-CUP-1 (2026-09-20-cup-contact-contract-implemented.md), pinned by test_cup_realize.py; BUG-3 closed by 2026-11-01-jb22-banking-saturation-closed-by-cup-contact-contract.md (Night Shift).

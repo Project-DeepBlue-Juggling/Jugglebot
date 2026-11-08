@@ -1,5 +1,5 @@
 ---
-id: JB-96
+id: BUG-32
 kind: bug
 title: Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff
 status: inbox
@@ -16,7 +16,7 @@ blocked_by: []
 links:
 - 2026-10-28-jb76-solve-tail-is-environment-starvation-instrumented
 parent: two-ball-oval
-filed_by: claude (JB-76 21:02 Sitting read-out)
+filed_by: claude (BUG-21 21:02 Sitting read-out)
 ---
 
 21:02 Sitting 2026-10-28, starvation fixed (CATCH wall/CPU 1.27): 3 of 109 oval throws still had a re-aim refused SPLICE_TOO_LATE.
@@ -25,7 +25,7 @@ filed_by: claude (JB-76 21:02 Sitting read-out)
 
 - All CATCH solves at 136-148 ms wall on 83-88 ms CPU (oval CATCH CPU p50 81 ms vs columns 65 ms).
 - The SOLVE_BUDGET_KNOTS=6 (~150 ms) unpinned cliff was sized 2026-09-18 on CATCH p50 76 / p95 113 ms.
-- Residue of JB-76, not starvation.
+- Residue of BUG-21, not starvation.
 
 ## Levers
 

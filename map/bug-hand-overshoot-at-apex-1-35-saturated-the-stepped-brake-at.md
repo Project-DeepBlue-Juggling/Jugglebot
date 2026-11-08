@@ -1,5 +1,5 @@
 ---
-id: JB-147
+id: BUG-57
 kind: bug
 title: Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT)
 status: in_progress
@@ -33,7 +33,7 @@ The stepped brake runs near the constant-deceleration ideal, so an overspeed has
 
 ## Options
 
-Raise `hand_curr_limit_a` to the owner's 70 A (configure pushes it over the GUI value); scale a top margin with release speed; capture the Hand at a higher rate to find the overshoot's cause; a firmware overspeed guard. Related: JB-144, JB-145, the JB-114 bumper.
+Raise `hand_curr_limit_a` to the owner's 70 A (configure pushes it over the GUI value); scale a top margin with release speed; capture the Hand at a higher rate to find the overshoot's cause; a firmware overspeed guard. Related: FEAT-36, BUG-55, the IDEA-17 bumper.
 
 ## Diagnosis (2026-11-03)
 
@@ -89,7 +89,7 @@ In every block the faulting launches sit at or above the p90 of that block's mea
 
 - The C-HAND-6 margin IS the owner's 3-4 cm: margin(v) = 4.75e-5 v^2 gives 1.186 rev = 38.6 mm at 1.35 (158.0 rev/s), 41.5 mm at 1.45, 42.9 mm at 1.50; commanded tops 9.10, 9.02, 9.01 rev; measured armed tops at most 9.10 rev, leaving 47-50 mm of stroke below the 10.501 clip.
 - Every armed launch topped at or under its command; every clip crossing (10.64-10.86 rev) came after a disarm.
-- FW 36 stall guard (JB-146): never fired (`diag_flags` 2 in all 31,389 rows).
+- FW 36 stall guard (BUG-56): never fired (`diag_flags` 2 in all 31,389 rows).
 - Torque feedforward clamp: not reached (`cmd_tor_ff` -0.184..+0.138 N m, 0 rows at the 0.234 clamp).
 
 ## Sitting result (2026-11-03)
@@ -107,7 +107,7 @@ In every block the faulting launches sit at or above the p90 of that block's mea
 
 ## SPINOUT at the 2026-11-07 Sitting
 
-**Do not close JB-147 on the 2026-11-07 pass (owner, 2026-11-07): the root cause comes first.** The pass covers only the four Apex 1.10 Attempts, and the same fault fired later in that Sitting. Launch log `~/.ros/log/2026-11-07-16-15-21-645789-jetson-2503132/launch.log`, capture `temp/hand_capture/hand_capture_20261107_161525.csv`, 100 Hz.
+**Do not close BUG-57 on the 2026-11-07 pass (owner, 2026-11-07): the root cause comes first.** The pass covers only the four Apex 1.10 Attempts, and the same fault fired later in that Sitting. Launch log `~/.ros/log/2026-11-07-16-15-21-645789-jetson-2503132/launch.log`, capture `temp/hand_capture/hand_capture_20261107_161525.csv`, 100 Hz.
 
 | goal (log line) | catches | peak brake iq (A) | peak brake decel (rev/s^2) | SPINOUT |
 |---|---|---|---|---|
@@ -126,7 +126,7 @@ In every block the faulting launches sit at or above the p90 of that block's mea
 
 - **Does the fault rate move at 70/80 A?** Not shown. No brake in the four Attempts passed 29 A. Zero SPINOUTs in 69 launches was 43 % likely at the Apex 0.95 rate of 2026-11-03 and 5 % at its Apex 1.35 rate.
 - **Sitting-wide rate:** 1 in 397 against 3 in 407 for the comparable blocks of 2026-11-03 at 60 A, too few to separate (Fisher p = 0.62).
-- **Was the 70 A limit live?** Yes, setpoint -69.93 A at L963, but that was the JB-202 stall at zero speed, not a brake.
+- **Was the 70 A limit live?** Yes, setpoint -69.93 A at L963, but that was the BUG-84 stall at zero speed, not a brake.
 
 **Next:** the encoder or magnet slip and offset candidates in the Diagnosis above are still untested. The flown row is removed from this Item so the Runbook does not ask to fly it again; the next row waits until a root-cause hypothesis says what to measure.
 
@@ -137,4 +137,4 @@ In every block the faulting launches sit at or above the p90 of that block's mea
 - 2026-11-04: 2026-11-03 Sitting (22:29, P4 ramp): REFUTED for the three firmware-STOP ends (goals 3, 9, 15): the Hand braked on its profile at -23..-24 A, no SPINOUT_DETECTED all Sitting, peak |iq_set| 54.1 A vs the 70 A clamp. Withdrawn for that class; the Apex 1.35 overshoot it was filed for was not exercised.
 - 2026-11-05: 2026-11-05 L2596: SPINOUT after a C1-stop brake: decel 4826 -> ~500 rev/s^2 within 10 ms of the brake peak, 25 ms into the brake, at 4.4 rev / 20 rev/s, iq -41 A (limit 70, not saturated). Same torque-loss signature as 11-03, far from the clip; Hand rested at 5.0 rev. 1 of 3 C1 brakes at -40 A went SPINOUT.
 - 2026-11-07: 2026-11-07 Sitting: Apex 1.10 row passed (4 Attempts, 69 launches, 0 SPINOUT, brakes at most 29 A), but L8157 at Apex 0.95 is the same torque loss at -36 A into the top stop. Stays open until the root cause is known (owner). Flown row removed (detail below).
-- 2026-11-07: 2026-11-07: JB-203 filed with hand_foc_scope.py: an 8 kHz current-loop capture to measure a commutation angle error on the bench Hand, first step toward the root cause.
+- 2026-11-07: 2026-11-07: FEAT-45 filed with hand_foc_scope.py: an 8 kHz current-loop capture to measure a commutation angle error on the bench Hand, first step toward the root cause.

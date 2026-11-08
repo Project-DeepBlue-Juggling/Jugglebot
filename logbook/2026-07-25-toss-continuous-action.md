@@ -412,4 +412,4 @@ rungs on `platform_fw_version = 2`.)
    (`levelling_tilt_bag_check.py`, `catch_reach_replay.py`, `traj_stream_probe.py`)
    — unescaped `|` inside cells, present at HEAD, outside this phase's scope.
 
-> Closed 2026-10-28: superseded by plans/archived/single-ball-toss.md (JB-34 survey).
+> Closed 2026-10-28: superseded by plans/archived/single-ball-toss.md (IDEA-2 survey).

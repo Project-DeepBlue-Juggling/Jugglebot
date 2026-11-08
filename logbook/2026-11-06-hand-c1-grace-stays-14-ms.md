@@ -1,5 +1,5 @@
 ---
-title: "The Hand C1 grace stays at 14 ms (a proposed FW 41 at 6 ms was withdrawn before flashing); JB-102 and JB-147 rows refreshed; ZVD rows stay off on Columns"
+title: "The Hand C1 grace stays at 14 ms (a proposed FW 41 at 6 ms was withdrawn before flashing); FEAT-32 and BUG-57 rows refreshed; ZVD rows stay off on Columns"
 type: investigation
 date: 2026-11-06
 status: complete
@@ -43,13 +43,13 @@ The estimates scale from intervals between accepted frames in `/leg_setpoint_ech
 
 **The tradeoff accepted.** Above Apex 1.10 a release-knot C1 stop overruns the clip at 14 ms, and nomination accepts up to Apex 1.25, so the limit is a written rule and not an enforced one. It needs a C1 stop on one knot of a Throw, so it is rare, and nothing above 1.10 has flown since FW 39. If Apex above 1.10 is wanted, 10 ms is the value to test first: it clears every Apex the planner accepts, while the Hand limit stays 4500 rev/s^2. A proposed FW 41 was built and tested in a worktree, never flashed and never committed.
 
-**JB-147's row.** It sent the operator to Apex 1.35 and said to wait for JB-174, which closed on 2026-11-06, so it read as cleared while the overrun stood. Nomination also refuses 1.35 at Dwell 0.27, 0.30 and 0.35 (Hand 4605 rev/s^2 at the +10 % rung, limit 4500). The row now flies Apex 1.10, the highest the grace clears. That is a softer brake than the 2026-11-03 SPINOUTs, so a clean run there says less about the 70/80 A question than 1.35 would have.
+**BUG-57's row.** It sent the operator to Apex 1.35 and said to wait for FEAT-41, which closed on 2026-11-06, so it read as cleared while the overrun stood. Nomination also refuses 1.35 at Dwell 0.27, 0.30 and 0.35 (Hand 4605 rev/s^2 at the +10 % rung, limit 4500). The row now flies Apex 1.10, the highest the grace clears. That is a softer brake than the 2026-11-03 SPINOUTs, so a clean run there says less about the 70/80 A question than 1.35 would have.
 
-**ZVD rows on Columns (section 8, option (a)).** The 2026-11-05 headline "Columns rows-on empty" was too broad: nomination accepts Sep. 125, Dwell 0.27 with the rows at Apex 1.00 and 1.05 and refuses 0.95 and 0.97. The rows stay off for Leg acceleration and a small gain: planned 5655 mm/s^2 at Sep. 125 and 6276 at Sep. 135, against 6296 at the JB-184 separation. This is a decision and not a guard: `carry_zvd` defaults off, and nothing refuses a Columns goal with it on.
+**ZVD rows on Columns (section 8, option (a)).** The 2026-11-05 headline "Columns rows-on empty" was too broad: nomination accepts Sep. 125, Dwell 0.27 with the rows at Apex 1.00 and 1.05 and refuses 0.95 and 0.97. The rows stay off for Leg acceleration and a small gain: planned 5655 mm/s^2 at Sep. 125 and 6276 at Sep. 135, against 6296 at the BUG-72 separation. This is a decision and not a guard: `carry_zvd` defaults off, and nothing refuses a Columns goal with it on.
 
 ## Fix
 
-JB-102's row names FW 40, launches with `gc_freeze:=true` for both arms, drops the identification step and states the planned Leg peaks; it is not the next Sitting (owner). JB-147's row flies Apex 1.10. JB-145 and JB-162 rows name FW 40 (proto 12). JB-145 and JB-147 are held by other owners, so their progress is this entry and not a note on the Item.
+FEAT-32's row names FW 40, launches with `gc_freeze:=true` for both arms, drops the identification step and states the planned Leg peaks; it is not the next Sitting (owner). BUG-57's row flies Apex 1.10. BUG-55 and FEAT-39 rows name FW 40 (proto 12). BUG-55 and BUG-57 are held by other owners, so their progress is this entry and not a note on the Item.
 
 ## Verification
 

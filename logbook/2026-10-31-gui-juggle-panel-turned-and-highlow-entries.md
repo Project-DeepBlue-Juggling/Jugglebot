@@ -29,7 +29,7 @@ tags:
 
 ## What changed
 
-The owner asked (2026-10-31) for the two goals landed offline the night before, `columns_turned` (JP-10, map JB-108) and `columns_highlow` (JP-9, map JB-107), to be startable from the GUI instead of a terminal. Both goals read a **node parameter** that is not a goal field (`columns_angle_deg`, `apex_m_ball2`; the relay `orchestrator_node._parse_juggle_request` refuses any token it does not know), so the panel gained a second kind of field:
+The owner asked (2026-10-31) for the two goals landed offline the night before, `columns_turned` (JP-10, map IDEA-11) and `columns_highlow` (JP-9, map IDEA-10), to be startable from the GUI instead of a terminal. Both goals read a **node parameter** that is not a goal field (`columns_angle_deg`, `apex_m_ball2`; the relay `orchestrator_node._parse_juggle_request` refuses any token it does not know), so the panel gained a second kind of field:
 
 - Two pattern rows, `Columns — turned` and `Columns — high-low` (labels as in `records.PATTERNS`), each naming its `param`. Pre-fill from the 2026-10-31 sweep: turned at Apex 0.95 / Sep. 125 / Dwell 0.27 / Angle 45; high-low at Apex 1.00 / Sep. 100 / Dwell 0.27 / Apex 2 0.90.
 - Two parameter-backed fields, Angle (deg) and Apex 2 (m), shown only for their pattern (the other patterns' field grid is untouched) and **required** there: a blank one is a Start error, never "node default", because the node's value would be whatever the previous goal left and would fly silently under a blank field.

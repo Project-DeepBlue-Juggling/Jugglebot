@@ -33,9 +33,9 @@ def debrief() -> str:
 PROMISES = {
     "reads the Sitting results": r"## Sitting result \(<date>\)",
     "merges per Item, never the candidate branch": r"never merge the candidate branch",
-    "merges each held branch by name": r"night-shift/<d>-JB-n",
-    "closes a passed Item with the Sitting as evidence": r"set-status JB-n complete",
-    "keeps a failed Item in progress": r"set-status JB-n in_progress",
+    "merges each held branch by name": r"night-shift/<d>-<ID>",
+    "closes a passed Item with the Sitting as evidence": r"set-status <ID> complete",
+    "keeps a failed Item in progress": r"set-status <ID> in_progress",
     "returns the live checkout to main": r"git checkout main",
     "rebuilds when ros_ws changed": r"colcon build --packages-select\s+jugglebot",
     "commits docs/records.md": r"docs/records\.md",
@@ -50,9 +50,9 @@ PROMISES = {
     "aborts a conflicting merge": r"git( -C \S+)? merge --abort",
     "has a dry run": r"--dry-run",
     "re-runs the gate waiving only the hardware condition": r"night_shift_gate\.py[^`]*--waive c",
-    "looks for a held branch before the plain-check path": r"git branch -r --list 'origin/night-shift/\*-JB-n'",
+    "looks for a held branch before the plain-check path": r"git branch -r --list 'origin/night-shift/\*-<ID>'",
     "brings the branch up to date before gating it": r"merge --no-edit \$BASE",
-    "keeps the base across tool calls": r"git rev-parse main > temp/reports/debrief/base-JB-n",
+    "keeps the base across tool calls": r"git rev-parse main > temp/reports/debrief/base-<ID>",
     "refuses to audit an empty diff": r"an audit of an empty diff finds nothing",
     "names the commit when taking main's copy": r"checkout \$BASE -- <paths>",
     "starts section 3 on main": r"Be on `main` first",
@@ -63,8 +63,8 @@ PROMISES = {
     "runs the gate from an extract of the base": r"git archive \$BASE tools/night_shift_gate\.py mapkit",
     "gates against the base it updated to": r"--base \$BASE",
     "keeps the suite from outlasting its call": r"run_in_background",
-    "merges only the gated tip": r"merge -q --ff-only night-shift/<d>-JB-n",
-    "leaves no local copy behind": r"git worktree remove --force temp/debrief-JB-n",
+    "merges only the gated tip": r"merge -q --ff-only night-shift/<d>-<ID>",
+    "leaves no local copy behind": r"git worktree remove --force temp/debrief-<ID>",
 }
 
 

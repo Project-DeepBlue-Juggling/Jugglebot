@@ -1,5 +1,5 @@
 ---
-id: JB-142
+id: TKT-28
 kind: ticket
 title: 'Brake shape at the release knot: a bounded HAND_LIMIT_C2 exception so the brake flattens, limits only, the bumper first, or the exception now and the bumper only if current still binds?'
 status: complete
@@ -18,11 +18,11 @@ parent: idea-hand-end-of-stroke-bumper-and-first-the-planner-s-own-brake
 type: question
 ---
 
-JB-114's R0 result (2026-10-30) traced the 1.73x brake demand to the planner: `cup_cycle.py` pins the cup acceleration to g at the release knot and keeps acceleration continuous on the 25 ms grid, so the brake ramps for a knot and lasts about 2.4 knots (kappa 1.66-1.68; the launch has the same flaw at kappa 1.85).
+IDEA-17's R0 result (2026-10-30) traced the 1.73x brake demand to the planner: `cup_cycle.py` pins the cup acceleration to g at the release knot and keeps acceleration continuous on the 25 ms grid, so the brake ramps for a knot and lasts about 2.4 knots (kappa 1.66-1.68; the launch has the same flaw at kappa 1.85).
 
 An acceleration step at release gives kappa 1.00 but is refused by HAND_LIMIT_C2 today, so it needs a named, bounded contract exception at release knots, which the body marks as the owner's decision.
 
-Night Shift 2026-11-02 drafted the options below into the Item's `## Options (2026-11-02)` section. Context since R0: on 2026-11-01 the owner raised HAND_LIMIT_ACC 3900 to 4500 rev/s^2 with the Hand current limit 50 to 60 A (JB-120), which buys Apex headroom without touching the brake shape.
+Night Shift 2026-11-02 drafted the options below into the Item's `## Options (2026-11-02)` section. Context since R0: on 2026-11-01 the owner raised HAND_LIMIT_ACC 3900 to 4500 rev/s^2 with the Hand current limit 50 to 60 A (BUG-42), which buys Apex headroom without touching the brake shape.
 
 ## Options
 

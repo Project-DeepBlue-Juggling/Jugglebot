@@ -25,7 +25,7 @@ let connectionState = 'disconnected';
 /** Callbacks for connection state changes: (state) => void */
 const stateListeners = [];
 
-/** Bag topic -> live subscription name (JB-76 option 1; the bag does NOT contain gui/ topics). */
+/** Bag topic -> live subscription name (BUG-21 option 1; the bag does NOT contain gui/ topics). */
 const REPLAY_TOPIC_ALIASES = Object.freeze({
     'mocap_data': 'gui/mocap_data',
     'rigid_body_poses': 'gui/rigid_body_poses',

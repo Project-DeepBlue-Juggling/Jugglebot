@@ -424,7 +424,7 @@ def _ceil_to_grid(t: float, dt: float) -> float:
 def _solve_cpu_suffix(reply) -> str:
     """`` (cpu X ms, ivcsw N, vcsw M)`` from a worker reply, or ``''``.
 
-    JB-76's starvation probe: the worker's own CPU time and context switches
+    BUG-21's starvation probe: the worker's own CPU time and context switches
     over the ``solve_s`` window. Rides inside the existing ``solve X ms`` log
     text so log greps for that phrase keep matching."""
     cpu_s = float(getattr(reply, 'cpu_s', math.nan))
@@ -538,7 +538,7 @@ class TrajectoryNode(Node):
                  command_pub_factory=None, start_emitter: bool = True,
                  segment_solver=None):
         super().__init__('trajectory_node')
-        # JB-149 cpu_partition (opt-in, default OFF): pin THIS process to the
+        # BUG-58 cpu_partition (opt-in, default OFF): pin THIS process to the
         # stream cores FIRST, before any thread exists, so the emitter and every
         # later thread inherit it.  The solver worker gets solver_cpus below.
         self.declare_parameter('cpu_partition', False)
@@ -556,13 +556,13 @@ class TrajectoryNode(Node):
                 ok, txt = False, '%s (solver_cpus: %s)' % (txt, e)
             if ok:
                 self.get_logger().info(
-                    'JB-149 cpu_partition ON: trajectory_node pinned to cpus '
+                    'BUG-58 cpu_partition ON: trajectory_node pinned to cpus '
                     '%s, solver worker to cpus %s'
                     % (txt, _tuning.format_cpus(self._solver_cpus)))
             else:
                 self._solver_cpus = None
                 self.get_logger().warning(
-                    'JB-149 cpu_partition requested but NOT applied '
+                    'BUG-58 cpu_partition requested but NOT applied '
                     '(fail-open, scheduling unchanged): %s' % txt)
         # Record everything, show little (operator console phase 2; see
         # skill_node's __init__): per-install detail -- accepted/refused
@@ -1173,7 +1173,7 @@ class TrajectoryNode(Node):
         self.commanded_pose_pub = self.create_publisher(
             Pose, 'trajectory/commanded_pose', 10)
         self.create_timer(0.2, self._publish_status)
-        # JB-149: opt-in GC pause probe (default off: nothing installed).
+        # BUG-58: opt-in GC pause probe (default off: nothing installed).
         self._gc_probe = None
         self.declare_parameter('gc_probe', False)
         if bool(self.get_parameter('gc_probe').value):
@@ -1208,7 +1208,7 @@ class TrajectoryNode(Node):
         # test seam (any object with solve/poll_health/close).
         self._solve_seq = 0
         self._solves_in_flight = 0   # install solves between request and reply
-        # JB-95: SCHED_FIFO priority the WORKER asks for (fail-open to CFS; the
+        # FEAT-31: SCHED_FIFO priority the WORKER asks for (fail-open to CFS; the
         # outcome rides the READY log line).  0 = off = the worker never calls
         # sched_setscheduler.  DEFAULT OFF since the 2026-10-28 22:26 Sitting:
         # the FIFO worker stalled the setpoint stream >70 ms during CATCH
@@ -1229,13 +1229,13 @@ class TrajectoryNode(Node):
                 rt_priority=self._solver_rt_priority,
                 **({'cpus': self._solver_cpus} if self._solver_cpus else {})))
 
-        # JB-149 gc_freeze (opt-in, default OFF): everything built so far is
+        # BUG-58 gc_freeze (opt-in, default OFF): everything built so far is
         # permanent; the emitter thread starts after.
         self.declare_parameter('gc_freeze', False)
         if bool(self.get_parameter('gc_freeze').value):
             n, th = _tuning.freeze_gc()
             self.get_logger().info(
-                'JB-149 gc_freeze ON: trajectory_node froze %d objects, gc '
+                'BUG-58 gc_freeze ON: trajectory_node froze %d objects, gc '
                 'thresholds %r' % (n, th))
 
         if start_emitter:
@@ -4771,7 +4771,7 @@ class TrajectoryNode(Node):
                 response, _PLANNER_MODE,
                 'planner_mode %r is not one of %s (nothing solved)'
                 % (req_mode, list(uc.PLANNER_MODES)), t_wall)
-        # carry-ring-zvd P1c (JB-102): the ZVD ring-row flag rides with the
+        # carry-ring-zvd P1c (FEAT-32): the ZVD ring-row flag rides with the
         # planner (the same skill_node parameter selected the nomination and online check). A bool
         # cannot say "absent", so the request's flag is honoured whenever the
         # request names a planner (req_mode != ''); a request with none is the
@@ -5491,7 +5491,7 @@ class TrajectoryNode(Node):
     # ═══════════════════════════════════════════════════════════
 
     def _gc_probe_tick(self):
-        """JB-149: drain the GC probe and log it (1 Hz timer; probe on only)."""
+        """BUG-58: drain the GC probe and log it (1 Hz timer; probe on only)."""
         s = self._gc_probe.summary()
         line = _gc_probe_mod.format_summary('trajectory_node', s)
         self.get_logger().info(line)

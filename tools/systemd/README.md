@@ -131,7 +131,7 @@ systemctl status jugglebot-gui
 page's connection and kills a running overview pass (it is re-run on the next request). Edit the unit here, then re-run the block above;
 the install is a copy, so the two can drift.
 
-## Real-time budget for the solver worker (JB-95)
+## Real-time budget for the solver worker (FEAT-31)
 
 The CATCH solver worker asks for `SCHED_FIFO` priority 10 (fail-open: if the
 kernel refuses it stays on CFS and says why in the READY log line). Two things

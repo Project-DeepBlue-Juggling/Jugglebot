@@ -1,9 +1,9 @@
 ---
-title: "Hand FOC scope: a read-only tool that measures the commutation angle error through a brake, and its bench row JB-203"
+title: "Hand FOC scope: a read-only tool that measures the commutation angle error through a brake, and its bench row FEAT-45"
 type: feature
 date: 2026-11-07
 status: in-progress
-phase: "JB-147 root cause"
+phase: "BUG-57 root cause"
 related_plan: ""
 related_issues: []
 files_changed:
@@ -22,11 +22,11 @@ tags: [hardware, diagnostics]
 
 ## What
 
-`tools/probes/hand_foc_scope.py` records the Hand ODrive's current loop with its RAM oscilloscope over USB. It freezes the scope on a brake or a disarm, then reports the commutation angle error by speed, deceleration per amp, encoder phase jumps and the SPINOUT inputs. JB-203 is its bench Hand row. The tool has never run on a drive, because no ODrive was on USB when it was built; the row's `probe` step is its first contact and prints GO or NO-GO.
+`tools/probes/hand_foc_scope.py` records the Hand ODrive's current loop with its RAM oscilloscope over USB. It freezes the scope on a brake or a disarm, then reports the commutation angle error by speed, deceleration per amp, encoder phase jumps and the SPINOUT inputs. FEAT-45 is its bench Hand row. The tool has never run on a drive, because no ODrive was on USB when it was built; the row's `probe` step is its first contact and prints GO or NO-GO.
 
 ## Why
 
-JB-147's torque loss was seen again on 2026-11-07 (L8157, -36 A, into the top stop), and the 100 Hz `hand_capture` cannot show its mechanism because iq freezes before the disarm. The untested candidates are encoder or magnet slip and an offset error.
+BUG-57's torque loss was seen again on 2026-11-07 (L8157, -36 A, into the top stop), and the 100 Hz `hand_capture` cannot show its mechanism because iq freezes before the disarm. The untested candidates are encoder or magnet slip and an offset error.
 
 The owner confirmed on 2026-11-07 that the bench Hand matches production except for a shorter stroke, with the same current cap, and that USB can go through an isolator. So a bench measurement carries over to the production motor type, and the stage's 10 A assumption is void.
 
@@ -36,11 +36,11 @@ The owner confirmed on 2026-11-07 that the bench Hand matches production except 
 
 **Modulation, not `foc.Vd_setpoint`.** I first told the owner to record `foc.Vd_setpoint` and `foc.Vq_setpoint`. The Hand config has every voltage feedforward off, so those inputs should carry nothing useful, and the applied voltage is the modulation times two-thirds of vbus. That scaling is my reading of ODrive's public FOC code, not something the installed package states, so the `power` preset checks it against the drive's own `electrical_power`.
 
-**Separate row, not part of JB-145.** JB-145 tests where the stop ends up, and its pass should not depend on a new tool. Rows are also grouped by their Item's rig, and JB-147 is rated `robot`, so the bench row needs its own `bench-hand` Item.
+**Separate row, not part of BUG-55.** BUG-55 tests where the stop ends up, and its pass should not depend on a new tool. Rows are also grouped by their Item's rig, and BUG-57 is rated `robot`, so the bench row needs its own `bench-hand` Item.
 
 **What it cannot do.** R*I and w*L*I are as large as the back-EMF near 50 A, and the loop delay adds a speed-dependent offset, so the angle has to be read against a clean brake. The stage refused 130 rev/s at 3000 and 4000 rev/s^2, so the bench cannot reach the robot's 137 rev/s with this stage.
 
-**Stroke check added to JB-145.** The stage only checks the production 10.501 rev clip, but the bench stroke is shorter. The JB-145 defaults need the top stop at or above 9.7 rev by the stage's own margin, so that row now asks the operator to measure it first. The owner has not yet given the number.
+**Stroke check added to BUG-55.** The stage only checks the production 10.501 rev clip, but the bench stroke is shorter. The BUG-55 defaults need the top stop at or above 9.7 rev by the stage's own margin, so that row now asks the operator to measure it first. The owner has not yet given the number.
 
 ## Verification
 

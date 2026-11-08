@@ -1,5 +1,5 @@
 ---
-id: JB-52
+id: BUG-13
 kind: bug
 title: 'Wave camera: CLIP_MISSING on the first start after a camera power-cycle'
 status: inbox

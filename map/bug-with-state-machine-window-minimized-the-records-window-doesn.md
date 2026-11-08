@@ -1,5 +1,5 @@
 ---
-id: JB-103
+id: BUG-38
 kind: bug
 title: With STATE MACHINE window minimized, the Records window doesn't snap to the left; it remains floating
 status: complete

@@ -1,5 +1,5 @@
 ---
-id: JB-44
+id: BUG-10
 kind: bug
 title: Keyboard shortcuts dialog lists shortcuts that no longer exist
 status: complete

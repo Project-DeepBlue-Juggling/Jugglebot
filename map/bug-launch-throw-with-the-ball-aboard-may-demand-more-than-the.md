@@ -1,5 +1,5 @@
 ---
-id: JB-115
+id: BUG-40
 kind: bug
 title: 'Launch THROW with the ball aboard may demand more than the 50 A hand current limit from Apex about 0.99 (envelope arithmetic, unverified): check hand current in a columns bag'
 status: backlog
@@ -29,7 +29,7 @@ Side finding of the R0 brake-shape study 2026-10-30 (scratchpad bumper/r0_brake_
 
 ## Check
 
-Hand iq against the planned acceleration in an existing Apex 1.0-1.05 columns bag (2026-10-28 14:33 or 21:04), with tools/probes/hand_stroke_timeline.py. If confirmed, the loaded ascent needs its own gate before any Apex climb (JB-114).
+Hand iq against the planned acceleration in an existing Apex 1.0-1.05 columns bag (2026-10-28 14:33 or 21:04), with tools/probes/hand_stroke_timeline.py. If confirmed, the loaded ascent needs its own gate before any Apex climb (IDEA-17).
 
 ## Result of the check (2026-10-30)
 

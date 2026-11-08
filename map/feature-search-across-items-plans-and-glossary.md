@@ -1,5 +1,5 @@
 ---
-id: JB-59
+id: FEAT-18
 kind: feature
 title: Search across items, plans and glossary terms
 status: complete

@@ -1,4 +1,4 @@
-"""The can-bridge FW 36 hand stall guard (JB-146): cross-language pins.
+"""The can-bridge FW 36 hand stall guard (BUG-56): cross-language pins.
 
 The guard lives in ``leg_activate.cpp`` (behaviour pinned by the native
 ``test_leg_activate`` binary); its thresholds live in ``canbridge_config.h``.
@@ -40,7 +40,7 @@ def _cfg_float(name: str) -> float:
 
 
 #: Measured iq overshoot past a soft current limit (53.3 A against 50 A,
-#: 2026-11-01, JB-138): a relief stall can read this much above its own cap.
+#: 2026-11-01, BUG-51): a relief stall can read this much above its own cap.
 _IQ_OVERSHOOT_A = 3.3
 
 

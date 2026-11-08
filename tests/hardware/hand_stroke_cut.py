@@ -1,4 +1,4 @@
-"""Pure helpers for ``hand_stream_bench.py --stage stroke_cut`` (JB-145, FW 37/38).
+"""Pure helpers for ``hand_stream_bench.py --stage stroke_cut`` (BUG-55, FW 37/38).
 
 No I/O, no link, no ROS: the stroke profile, the cut-frame selection, the model
 of the can-bridge's own Hand stop after the scheduled stream dies, the
@@ -282,7 +282,7 @@ def stroke_envelope(traj, n_frames=None):
     after any of them (the probe's sweep, applied to the bench stroke):
     (max stop end, min stop end, max abort hold). The abort hold is where a
     driver disarm leaves the hand: input_pos + vel_ff/pos_gain (the bridge
-    does not flush vel_ff on a guard DISABLED, leg_interp.cpp JB-73 note)."""
+    does not flush vel_ff on a guard DISABLED, leg_interp.cpp BUG-19 note)."""
     n = n_frames if n_frames is not None else int(traj.duration / SEG_T)
     hi, lo, ab = -1e9, 1e9, -1e9
     for k in range(n):

@@ -20,11 +20,11 @@ tags:
 
 # Records hover trimmed
 
-**What.** Owner ask (2026-11-01), right after JB-90 shipped: the records row's hover repeated the
+**What.** Owner ask (2026-11-01), right after FEAT-29 shipped: the records row's hover repeated the
 Catches/Throws and the date (both already on the row), carried the time and the Note, and ended
 with "beaten N× before" (a count of the earlier records in that Pattern's table, read as if the
 current record had itself been beaten). The hover is now two lines: `Ended: <category>
-(<END_CODE>)` (the shortest label the owner accepted for the termination reason), then the JB-90
+(<END_CODE>)` (the shortest label the owner accepted for the termination reason), then the FEAT-29
 parameters line. The ledger is unchanged: the Note and the history remain in `docs/records.md`.
 
 ## Verification

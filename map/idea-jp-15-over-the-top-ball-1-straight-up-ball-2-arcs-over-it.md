@@ -1,5 +1,5 @@
 ---
-id: JB-112
+id: IDEA-15
 kind: idea
 title: 'JP-15 Over the top: Ball 1 straight up, Ball 2 arcs over it (needs P4)'
 status: inbox

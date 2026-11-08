@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Pre-release-hold ladder read: attributes throws to goals and holds BY ITSELF
-and prints the next operator action (map JB-102, runbook
+and prints the next operator action (map FEAT-32, runbook
 ``tests/hardware/session_oval_rung1.md`` § 11).
 
     python -I tools/probes/hold_rung_bias.py [--latest | --launch-log PATH]

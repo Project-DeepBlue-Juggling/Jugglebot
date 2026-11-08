@@ -1,5 +1,5 @@
 ---
-id: JB-109
+id: IDEA-12
 kind: idea
 title: 'JP-11 Rotating columns: the pair turns a few degrees every Beat'
 status: inbox

@@ -336,4 +336,4 @@ definition-of-done). ([[project_mpc_replanner_direction]])
   (deterministic pre-arm sole-authority guard); the `home`/`home_motors` action
   mismatch for orchestrator-driven homing.
 
-> Closed 2026-10-28: superseded by 2026-06-27-can-node-teensy-parity-audit (JB-34 survey).
+> Closed 2026-10-28: superseded by 2026-06-27-can-node-teensy-parity-audit (IDEA-2 survey).

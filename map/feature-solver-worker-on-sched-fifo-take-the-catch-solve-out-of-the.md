@@ -1,5 +1,5 @@
 ---
-id: JB-95
+id: FEAT-31
 kind: feature
 title: 'Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load)'
 status: backlog
@@ -16,10 +16,10 @@ blocked_by: []
 links:
 - 2026-10-28-jb76-solve-tail-is-environment-starvation-instrumented
 parent: two-ball-oval
-filed_by: claude (JB-76 21:02 Sitting read-out)
+filed_by: claude (BUG-21 21:02 Sitting read-out)
 ---
 
-Owner pick 2026-10-28 evening as the lever after JB-76.
+Owner pick 2026-10-28 evening as the lever after BUG-21.
 
 ## Problem and idea
 

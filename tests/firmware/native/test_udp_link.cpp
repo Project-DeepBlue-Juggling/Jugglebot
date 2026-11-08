@@ -147,7 +147,7 @@ TEST_CASE("both sockets' receive queues are deepened (RPC FW 22, stream FW 40)")
   // QNEthernet's default queue is ONE packet and a full queue overwrites the
   // oldest, so only the last RPC request of a 1 ms task_net tick survived. The
   // RPC socket queues RPC_RX_QUEUE_CAPACITY (<= the drain budget, so no added
-  // latency — static_assert in udp_link.cpp). FW 40 (JB-174) gives the stream
+  // latency — static_assert in udp_link.cpp). FW 40 (FEAT-41) gives the stream
   // socket the same depth: it was left at the default until then, and a host
   // heartbeat landing in the same tick as a setpoint overwrote the setpoint.
   netlockprobe::reset();
@@ -172,7 +172,7 @@ static uint16_t make_heartbeat(uint8_t* out, uint16_t out_cap, uint16_t seq) {
 }
 
 TEST_CASE("FW 40: a setpoint and a heartbeat landing in ONE task_net tick both reach the dispatcher") {
-  // The JB-174 defect, at the socket. The host's 40 Hz SETPOINT and 10 Hz
+  // The FEAT-41 defect, at the socket. The host's 40 Hz SETPOINT and 10 Hz
   // HEARTBEAT_J2T share the stream socket and one sequence counter. With the
   // library's one-packet queue the heartbeat (arriving second, same 1 ms tick)
   // overwrote the setpoint: rx_setpoints stayed put, seq_gaps and the queue's

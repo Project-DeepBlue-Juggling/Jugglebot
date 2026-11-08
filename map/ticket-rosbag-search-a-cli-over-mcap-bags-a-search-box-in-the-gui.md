@@ -1,5 +1,5 @@
 ---
-id: JB-130
+id: TKT-25
 kind: ticket
 title: 'Rosbag search: a CLI over mcap bags, a search box in the GUI replay, a nightly JSONL index for grep, or documented bag-tool recipes?'
 status: complete
@@ -18,7 +18,7 @@ parent: idea-rosbag-search
 type: question
 ---
 
-JB-36 asks for a mechanism to search rosbags from recordings for specific information (one line, low priority, owner decision). Night Shift 2026-11-01 drafted the shapes below into the Item's `## Options (2026-11-01)` section; the choice sets the effort (s to l) and whether it is a tool or a GUI feature.
+IDEA-4 asks for a mechanism to search rosbags from recordings for specific information (one line, low priority, owner decision). Night Shift 2026-11-01 drafted the shapes below into the Item's `## Options (2026-11-01)` section; the choice sets the effort (s to l) and whether it is a tool or a GUI feature.
 
 ## Options
 

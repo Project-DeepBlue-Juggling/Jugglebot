@@ -387,4 +387,4 @@ own.
 - **Hardware design conventions doc.** Worth writing once there's a second
   instrumented peripheral to draw from.
 
-> Closed 2026-10-28: closed by 2026-05-23-throw-director-and-cone-live-integration (JB-34 survey).
+> Closed 2026-10-28: closed by 2026-05-23-throw-director-and-cone-live-integration (IDEA-2 survey).

@@ -1,5 +1,5 @@
 ---
-id: JB-78
+id: BUG-22
 kind: bug
 title: Ctrl+Enter to "create" item, either from "+ New" or from "+ File new change request"
 status: complete

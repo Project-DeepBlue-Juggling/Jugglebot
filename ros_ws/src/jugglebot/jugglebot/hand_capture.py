@@ -1,4 +1,4 @@
-"""TEMPORARY (JB-147 diagnostic capture): full-rate Hand signal recorder.
+"""TEMPORARY (BUG-57 diagnostic capture): full-rate Hand signal recorder.
 
 Pure Python (no ROS2).  One row per RECEIVED Hand sample of each signal, at the
 native rate the can-bridge sends it, to a CSV -- the 100 Hz Jetson-stamped
@@ -9,8 +9,8 @@ called from the bridge's UDP RX thread and ONLY does ``queue.put_nowait`` on a
 bounded queue; a dedicated daemon writer thread drains it and does all file I/O.
 A full queue drops the row and counts it -- it never blocks, never raises.
 
-Remove when JB-147 is diagnosed: this file, its node hooks (grep
-``TEMPORARY (JB-147``), the launch arg, tools/probes/hand_capture_view.py and
+Remove when BUG-57 is diagnosed: this file, its node hooks (grep
+``TEMPORARY (BUG-57``), the launch arg, tools/probes/hand_capture_view.py and
 tests/ros/test_hand_capture.py.
 """
 

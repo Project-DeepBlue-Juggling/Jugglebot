@@ -80,7 +80,7 @@ def _main_throttles():
 
 
 #: Topics the live GUI takes as mocap_node's pre-decimated 20 Hz `gui/` copy
-#: (JB-76 option 1, 2026-10-28) -> the replay throttle that stands in for that
+#: (BUG-21 option 1, 2026-10-28) -> the replay throttle that stands in for that
 #: copy when the bag's 300 Hz original is replayed. Live, the copy's own rate
 #: is the throttle and main.js MUST pass 0: a 50 ms throttle on a 50 ms-period
 #: stream beats against its jitter and halves the rate (10 Hz measured).

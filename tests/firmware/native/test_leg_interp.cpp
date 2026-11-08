@@ -1509,7 +1509,7 @@ TEST_CASE("FW 22 scheduled: stamped frames with late arrivals + a dropped frame 
     // ~72 rev/s through a = 0 (the grace rides it, and the rejoin's knot-jerk change
     // is ~0, as it was at the pre-FW 37 drop of 17); a drop where the Hand moves UP
     // faster than HAND_C1_STOP_MIN_UP_VEL_RPS (17: 18T at +72 rev/s) keeps only the
-    // 14 ms (FW 39; 6 ms at FW 37) HAND_C1_STOP_GRACE_US before its C1 stop (FW 37, JB-145; the twin's
+    // 14 ms (FW 39; 6 ms at FW 37) HAND_C1_STOP_GRACE_US before its C1 stop (FW 37, BUG-55; the twin's
     // ..._rides_the_short_grace_or_meets_the_c1_stop pins both sides of that case).
     if (k == 23) continue;
     const uint64_t late = (uint64_t)(1 + (k * 7919) % 15) * 1000u;   // 1..15 ms AFTER the stamp (emit lead 0)
@@ -1551,7 +1551,7 @@ TEST_CASE("FW 22 scheduled: stamped frames with late arrivals + a dropped frame 
   CHECK(max_da_step < 70.0f);
 }
 
-TEST_CASE("FW 38 frame-age census: window max + 25/50/70 ms buckets at queue entry, read-and-reset (JB-149)") {
+TEST_CASE("FW 38 frame-age census: window max + 25/50/70 ms buckets at queue entry, read-and-reset (BUG-58)") {
   reset_interp_test();
   seed_hand_encoder();
   const C2Plan P = make_c2_plan(1500.0, 12, 5.0);
@@ -1677,7 +1677,7 @@ TEST_CASE("FW 22 scheduled: cover exhaustion runs a C2 stop, holds, and refuses 
   CHECK(interp_sched_phase(1) == 1);
 }
 
-// ═══ FW 37 hand C1 stop (JB-145) ═════════════════════════════════════════════
+// ═══ FW 37 hand C1 stop (BUG-55) ═════════════════════════════════════════════
 // A hand cover that ends with no newer frame gets a short grace first
 // (HAND_C1_STOP_GRACE_US, the span-2 cubic continuing); if the Hand then still moves
 // UP faster than HAND_C1_STOP_MIN_UP_VEL_RPS it stops there with a C1 entry at
@@ -1724,7 +1724,7 @@ static std::vector<HandTick> run_one_hand_frame(const C2Plan& P, uint64_t t0, ui
   return out;
 }
 
-TEST_CASE("FW 37 hand C1 stop: a Hand at +150 rev/s whose cover ends rides the 14 ms short grace (FW 39), then a C1 entry at -4500 (JB-145)") {
+TEST_CASE("FW 37 hand C1 stop: a Hand at +150 rev/s whose cover ends rides the 14 ms short grace (FW 39), then a C1 entry at -4500 (BUG-55)") {
   reset_interp_test();
   seed_hand_encoder();
   const C2Plan P = make_const_acc_plan(0.0, 60.0, 1000.0);    // knot 2: p 4.25, v 110, a +1000 (FW 39: the stop at +14 ms must fit the 10.501 clip)
@@ -1787,7 +1787,7 @@ TEST_CASE("FW 37 hand C1 stop: a Hand at +150 rev/s whose cover ends rides the 1
   CHECK(interp_sched_stops() == 2u);                              // + the flat leg group (grace + C2)
 }
 
-TEST_CASE("FW 37 hand C1 stop: one late knot landing inside the short grace is promoted, no stop starts (JB-145)") {
+TEST_CASE("FW 37 hand C1 stop: one late knot landing inside the short grace is promoted, no stop starts (BUG-55)") {
   // Emit lead 0: one dropped knot ends the cover and the next frame lands a few ms
   // after its stamp. Inside HAND_C1_STOP_GRACE_US it is promoted as a normal PLAY
   // frame (the span-2 cubic was still continuing), armed or not: no stop, no refusal.
@@ -2369,7 +2369,7 @@ TEST_CASE("FW 32 lead clamp: a command DISCONTINUITY while the frame is aged is 
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  JB-73 (FW 35) suppress-edge HOLD FLUSH
+//  BUG-19 (FW 35) suppress-edge HOLD FLUSH
 //    On the first tick of a MOTOR_FB_STALE suppression (interp_set_output_enabled
 //    (false, /*hold_flush=*/true)) each lane that was on the wire LAST tick gets
 //    its last transmitted frame once more with vel_ff = 0: input_pos bytes
@@ -2424,7 +2424,7 @@ static void stream_two_legs(LegFrame last[7]) {
 }
 }  // namespace jb73
 
-TEST_CASE("JB-73 hold flush: the fb-stale suppress edge re-sends each leg's last frame ONCE with vel_ff 0, pos + torque_ff kept") {
+TEST_CASE("BUG-19 hold flush: the fb-stale suppress edge re-sends each leg's last frame ONCE with vel_ff 0, pos + torque_ff kept") {
   using namespace jb73;
   LegFrame last[7], got[7];
   stream_two_legs(last);
@@ -2450,7 +2450,7 @@ TEST_CASE("JB-73 hold flush: the fb-stale suppress edge re-sends each leg's last
   CHECK(interp_hold_flush_edges() == 1u);
 }
 
-TEST_CASE("JB-73 hold flush: never on a non-fb-stale disable, never during a cold-start move") {
+TEST_CASE("BUG-19 hold flush: never on a non-fb-stale disable, never during a cold-start move") {
   using namespace jb73;
   LegFrame last[7];
   SUBCASE("E-STOP / disarm / link-loss disable (hold_flush false) transmits nothing") {
@@ -2492,7 +2492,7 @@ TEST_CASE("JB-73 hold flush: never on a non-fb-stale disable, never during a col
   }
 }
 
-TEST_CASE("JB-73 hold flush: recovery then a second suppression flushes again (once per edge)") {
+TEST_CASE("BUG-19 hold flush: recovery then a second suppression flushes again (once per edge)") {
   using namespace jb73;
   LegFrame last[7], got[7];
   stream_two_legs(last);
@@ -2515,7 +2515,7 @@ TEST_CASE("JB-73 hold flush: recovery then a second suppression flushes again (o
   CHECK(vel_of(got[0]) == 0);
 }
 
-TEST_CASE("JB-73 hold flush: a tau == 0 Hand stream gets ONE hold frame (pos kept, vel_ff 0)") {
+TEST_CASE("BUG-19 hold flush: a tau == 0 Hand stream gets ONE hold frame (pos kept, vel_ff 0)") {
   using namespace jb73;
   reset_interp_test();
   seed_hand_encoder();
@@ -2547,7 +2547,7 @@ TEST_CASE("JB-73 hold flush: a tau == 0 Hand stream gets ONE hold frame (pos kep
   }
 }
 
-TEST_CASE("JB-73 hold flush: a tau != 0 Hand stream's FW 22 drain carries the hold (vel_ff 0, tau 0, pos kept)") {
+TEST_CASE("BUG-19 hold flush: a tau != 0 Hand stream's FW 22 drain carries the hold (vel_ff 0, tau 0, pos kept)") {
   const C2Plan P = make_c2_plan(1500.0, 12, 5.0);
   ff_setup(P);
   const uint64_t t0 = 1'100'000;

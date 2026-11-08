@@ -1,5 +1,5 @@
 ---
-title: "Pattern progression plan: Pathway JB-116 written up as plans/active/pattern-progression.md (ten steps, no new design)"
+title: "Pattern progression plan: Pathway PWAY-8 written up as plans/active/pattern-progression.md (ten steps, no new design)"
 type: process
 date: 2026-10-30
 status: complete
@@ -24,11 +24,11 @@ tags:
 
 ## What
 
-`plans/active/pattern-progression.md` is the schedulable form of Pathway JB-116: its `steps:` mirror the Pathway's ten steps (P1 to P10) so the map app shows the step table. Sections: Context, Decisions (ordering principle, owner decisions D-a to D-d with when each is needed), Where we are, the steps with their gates, Runs in parallel, Not in this plan.
+`plans/active/pattern-progression.md` is the schedulable form of Pathway PWAY-8: its `steps:` mirror the Pathway's ten steps (P1 to P10) so the map app shows the step table. Sections: Context, Decisions (ordering principle, owner decisions D-a to D-d with when each is needed), Where we are, the steps with their gates, Runs in parallel, Not in this plan.
 
 ## Why
 
-The Pathway body carries the steps as prose; a plan gives each a status, effort and hardware tag and a gate. Written from the Pathway item and the Opus review of the first proposal, which found the Apex lift is not on the critical path (it is Hand work, JB-114) and that per-Beat Sites are already owned by JB-38. No design is added; two choices were mine: step ids use the P prefix for Rungs too (heading `P3`, steps `kind: rung`) so the ids stay P1 to P10, and effort for the shared Ideas (JB-107, JB-109, JB-111) is split across their Phase and Rung.
+The Pathway body carries the steps as prose; a plan gives each a status, effort and hardware tag and a gate. Written from the Pathway item and the Opus review of the first proposal, which found the Apex lift is not on the critical path (it is Hand work, IDEA-17) and that per-Beat Sites are already owned by PWAY-2. No design is added; two choices were mine: step ids use the P prefix for Rungs too (heading `P3`, steps `kind: rung`) so the ids stay P1 to P10, and effort for the shared Ideas (IDEA-10, IDEA-12, IDEA-14) is split across their Phase and Rung.
 
 ## Verification
 

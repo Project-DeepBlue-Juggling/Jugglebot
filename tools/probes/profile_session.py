@@ -295,7 +295,7 @@ def _start_recorders(session: Path,
 
     # vmstat - 1 s run queue (`r` = runnable tasks, the oversubscription
     # number per-core % cannot show), context switches and swap in/out
-    # (JB-76: the solver worker's wall time vs its own CPU time).
+    # (BUG-21: the solver worker's wall time vs its own CPU time).
     if shutil.which("vmstat"):
         vm_log = session / "vmstat.log"
         v = _spawn(["vmstat", "-n", "-t", "1"], vm_log)
@@ -834,7 +834,7 @@ def _parse_ps_snapshots(path: Path) -> dict[int, str]:
 
     The file is '=== <epoch> ===' delimited blocks of ps --no-headers lines in
     one of three formats: `pid ni cls rtprio pcpu pmem comm args...` (since the
-    JB-95 recorder change, 2026-10-28 evening), `pid ni pcpu pmem comm args...`
+    FEAT-31 recorder change, 2026-10-28 evening), `pid ni pcpu pmem comm args...`
     (2026-10-28 daytime) and `pid pcpu pmem comm args...` before. Last
     sighting of each PID wins, so a process that changed state mid-Sitting
     resolves to its latest command line.
@@ -856,7 +856,7 @@ _PS_CLASSES = {"TS", "FF", "RR", "B", "IDL", "ISO", "DLN", "#", "-"}
 def _parse_ps_sched(path: Path) -> dict[int, str]:
     """Map PID -> scheduling class/priority ('FF/10', 'TS', 'RR/5') from
     ps_snapshots.log; empty for a log without the cls,rtprio columns
-    (pre-JB-95 captures)."""
+    (pre-FEAT-31 captures)."""
     return {pid: sc for pid, (_ni, _args, sc) in _parse_ps_rows3(path).items()
             if sc is not None}
 
@@ -870,7 +870,7 @@ def _parse_ps_rows3(path: Path) -> dict[int, tuple[str | None, str, str | None]]
     """pid -> (nice, args, sched). Three formats, told apart per line:
     old   `pid pcpu pmem comm args`            (pcpu carries a '.')
     two   `pid ni pcpu pmem comm args`         (2026-10-28)
-    three `pid ni cls rtprio pcpu pmem comm args` (JB-95: cls is TS/FF/RR/...,
+    three `pid ni cls rtprio pcpu pmem comm args` (FEAT-31: cls is TS/FF/RR/...,
           rtprio an int or '-')."""
     if not path.exists():
         return {}

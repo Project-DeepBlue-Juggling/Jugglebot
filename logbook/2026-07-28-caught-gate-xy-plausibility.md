@@ -360,4 +360,4 @@ is the one shape that can land half-applied from a cached build, so pre-flight
   `_lock`. `set.add` is atomic under the GIL so the worst case is a duplicate log
   line; this is the pre-existing pattern and was not changed.
 
-> Closed 2026-10-28: superseded: FSM reload coordinator deleted (JB-34 survey).
+> Closed 2026-10-28: superseded: FSM reload coordinator deleted (IDEA-2 survey).

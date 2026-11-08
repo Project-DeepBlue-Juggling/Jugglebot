@@ -193,7 +193,7 @@ A real staircase repeats once per frame: FW 30 shows 8 in each 100 ms window. Th
 
 1. **Bind-plus-gap** is measured offline only (owner: twin and native). A leg bound at a stroke end with frames withheld lets the command run up to the frozen anchor. The shift is bounded by stream speed × 150 ms, which P1's walk puts at 0.45 rev at 3 rev/s. The 15 A clamp bounds the shove. P3's Sitting is the next look.
 2. **FW 32 departs from FW 31 in the replays** (emitted command differs) on 2 ticks in S1B and 1 in S2, by up to 1.06 mm. The replay's raw command moves faster than `vel_limit` at a few knot latches, because the twin latches echo knots on arrival. That is not a real-stream event. Rather than weaken P1's zero-engagement claim, the claim is asserted on `firmware_fw31`. A separate test pins exactly where FW 32 may depart (owed ticks after a fast tick, until the next frame) and that its max step is never worse.
-3. **The suppression hold is not a pure hold.** During `MOTOR_FB_STALE` the ODrive keeps its last vel_ff and settles at `input_pos + vel_ff / pos_gain`: 0.05 rev at 2 rev/s on the bench, and at most 0.0875 rev at the 3.5 rev/s cap. It is bounded, there is no integrator wind, the recovery slew re-baselines from the encoder, and it is the same on FW 30. It is filed rather than fixed: JB-73.
+3. **The suppression hold is not a pure hold.** During `MOTOR_FB_STALE` the ODrive keeps its last vel_ff and settles at `input_pos + vel_ff / pos_gain`: 0.05 rev at 2 rev/s on the bench, and at most 0.0875 rev at the 3.5 rev/s cap. It is bounded, there is no integrator wind, the recovery slew re-baselines from the encoder, and it is the same on FW 30. It is filed rather than fixed: BUG-19.
 
 ### What was ruled out
 
@@ -207,8 +207,8 @@ FW 32's slew bound, carried unchanged in FW 33, is on the board. No further firm
 
 ## Open Questions
 
-- **JB-72.** `HomingMonitor` false-times-out a home shorter than one Diagnostic period, because it never sees RUNNING. It hit the bench homing today (the leg homed fine; the observer waited 35 s). The production `/home` uses the same monitor.
-- **JB-73.** The vel_ff is held through suppression, with LEG_CMD reporting untransmitted targets alongside it.
+- **BUG-18.** `HomingMonitor` false-times-out a home shorter than one Diagnostic period, because it never sees RUNNING. It hit the bench homing today (the leg homed fine; the observer waited 35 s). The production `/home` uses the same monitor.
+- **BUG-19.** The vel_ff is held through suppression, with LEG_CMD reporting untransmitted targets alongside it.
 - P3 owes the honest on-robot engagement number from an FW 33 bag (P1 tradeoff 3) and the bind-plus-gap look.
 - One early observation is unexplained. After the owner's first homing attempt (piped through `tee`, so its output was buffered), the leg read 1.15 rev with `homing_result = OK`. A second home settled at −0.1005 rev and stayed there. The first attempt's log is empty, so it cannot be reconstructed.
 

@@ -472,4 +472,4 @@ on the producer side.
   swing-compensated translation to `(11.88, 2.87, 171.16)`. If Phase 2's fix
   changes the swing compensation, that half needs its own check.
 
-> Closed 2026-10-28: closed by 2026-07-26-catch-reach-overshoot-fix (JB-34 survey).
+> Closed 2026-10-28: closed by 2026-07-26-catch-reach-overshoot-fix (IDEA-2 survey).

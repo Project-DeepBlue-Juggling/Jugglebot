@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Records panel: the hover parameters line (JB-90) and the placement beside the
-State Machine card (JB-103).
+"""Records panel: the hover parameters line (FEAT-29) and the placement beside the
+State Machine card (BUG-38).
 
 ``tests/ros/js/records_hover_place_harness.js`` runs the real DOM-free
 ``records-model.js`` under node; the source-scan half pins the wiring a node

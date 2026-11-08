@@ -238,7 +238,7 @@ def test_panel_click_checks_the_replay_fence_first():
 
 
 def test_index_mounts_the_panel_as_the_command_banners_left_end():
-    # JB-74 (2026-10-28): the panel is the FIRST child of #command-overlay, before the button group, so the
+    # FEAT-25 (2026-10-28): the panel is the FIRST child of #command-overlay, before the button group, so the
     # buttons centre between it and the Trail control (appended last by trail-settings-ui.js).
     html = _src("index.html")
     assert re.search(r'<link rel="stylesheet" href="css/state-minimap\.css">\s*'

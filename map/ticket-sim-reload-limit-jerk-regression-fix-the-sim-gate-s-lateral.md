@@ -1,5 +1,5 @@
 ---
-id: JB-128
+id: TKT-24
 kind: ticket
 title: 'Sim `--reload` LIMIT_JERK regression: fix the sim gate''s lateral authorities first, bisect the planner, both in order, or retire the scenario?'
 status: complete
@@ -18,7 +18,7 @@ parent: bug-sim-reload-gate-limit-jerk-regression
 type: question
 ---
 
-JB-27: the sim `--reload` gate (`sim/skills_gate.py`) was good at 8364808c (5/5 makes, dwell 0.30 s) and after 08ec3fe6 (2026-09-30, the R5 columns feed-catch commit) gets 1 make with `LIMIT_JERK` in the continuation throws; no config or limit changed in that commit and hardware flew R5 cleanly after it. The candidate fix in `plans/archived/columns-empty-cup-two-feed.md` section 6 is to set the lateral authorities in the sim gate.
+BUG-8: the sim `--reload` gate (`sim/skills_gate.py`) was good at 8364808c (5/5 makes, dwell 0.30 s) and after 08ec3fe6 (2026-09-30, the R5 columns feed-catch commit) gets 1 make with `LIMIT_JERK` in the continuation throws; no config or limit changed in that commit and hardware flew R5 cleanly after it. The candidate fix in `plans/archived/columns-empty-cup-two-feed.md` section 6 is to set the lateral authorities in the sim gate.
 
 The open decision is whether the regression is in the sim gate's configuration (fix the gate) or in the planner (a real regression the hardware happened to tolerate). Night Shift 2026-11-01 drafted the options into the Item's `## Options (2026-11-01)` section.
 

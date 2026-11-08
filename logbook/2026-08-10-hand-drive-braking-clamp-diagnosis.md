@@ -472,4 +472,4 @@ Test gate for the documentation commit: `./run_tests.sh`, run 2026-08-10 —
 5. **Bridge-uptime dispatch lag** (+54–63 ms fresh → +118–133 ms at ~16 h) —
    unchanged in status, owned by `plans/parked/refactor-2026-07.md` Phase 7.
 
-> Closed 2026-10-28: closed by 2026-08-18-hand-torque-clamp-removed (JB-34 survey).
+> Closed 2026-10-28: closed by 2026-08-18-hand-torque-clamp-removed (IDEA-2 survey).

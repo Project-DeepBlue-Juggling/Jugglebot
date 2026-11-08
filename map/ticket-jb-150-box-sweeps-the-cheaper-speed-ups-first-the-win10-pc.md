@@ -1,7 +1,7 @@
 ---
-id: JB-156
+id: TKT-33
 kind: ticket
-title: 'JB-150 box sweeps: the cheaper speed-ups first, the Win10 PC over SSH, the PC by hand, or leave it?'
+title: 'FEAT-38 box sweeps: the cheaper speed-ups first, the Win10 PC over SSH, the PC by hand, or leave it?'
 status: complete
 created: '2026-11-03'
 updated: '2026-11-02T22:51:33Z'
@@ -18,7 +18,7 @@ parent: feature-run-admissible-box-sweeps-on-the-win10-desktop-about-2-5-h
 type: question
 ---
 
-JB-150 records that an admissible-box re-sweep takes about 2.5 h on the Jetson and holds every core, so a sweep and a Sitting cannot share the box. The body proposes the Win10 desktop and lists cheaper speed-ups that need no PC.
+FEAT-38 records that an admissible-box re-sweep takes about 2.5 h on the Jetson and holds every core, so a sweep and a Sitting cannot share the box. The body proposes the Win10 desktop and lists cheaper speed-ups that need no PC.
 
 The body says it is not scheduled. This ticket gives you one place to answer when you take it up.
 

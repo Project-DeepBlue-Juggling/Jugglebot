@@ -1108,4 +1108,4 @@ reconciling measurement is named and cheap: **the rev→mm gain, taken staticall
   {chained, first}) — reproduced here precisely so the BLOCKING's "the probe
   cannot see it" claim is on the record beside the probe's own green.
 
-> Closed 2026-10-28: superseded: FSM toss stack deleted at tag fsm-final (JB-34 survey).
+> Closed 2026-10-28: superseded: FSM toss stack deleted at tag fsm-final (IDEA-2 survey).

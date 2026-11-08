@@ -1,9 +1,9 @@
 ---
-title: "JB-3: the `session limits` identifiers and prose renamed to Sitting limits outside history; admissible box re-swept value-identical"
+title: "FEAT-2: the `session limits` identifiers and prose renamed to Sitting limits outside history; admissible box re-swept value-identical"
 type: refactor
 date: 2026-10-28
 status: resolved
-phase: "inbox-wall - JB-3"
+phase: "inbox-wall - FEAT-2"
 files_changed:
   - config/generated/admissible_box.yaml
   - config/hardware_config.yaml
@@ -97,9 +97,9 @@ tags:
 
 ## Summary
 
-JB-3: the live velocity / acceleration / jerk limits are now called by their glossary term, Sitting limits, everywhere outside history. `TrajectoryLimits.with_session_limits` became `with_sitting_limits` (60 call sites), the `session_limits` test fixture and four test names follow, and prose says "sitting limit(s)". The probe `displaced_reach_frontier.py` now writes a `sitting_limits` JSON key. The rename was done by one case-preserving regex, including 7 hits split across a line break. Three hits were rewritten by hand. `docs/agents/domain.md` used the rename as its example of a glossary term ahead of the code, and that example is now past tense. In `ros_ws/docs/can-node-teensy-parity.md` the two "(session limit)" notes meant a Claude usage limit, so they now read "Claude Session usage limit". The line "sitting limits at session start" in `unified_cycle.py` and its test twin became "Sitting start". The YAML comments changed and the generated `hardware_config` artefacts did not, because the generator carries no comments.
+FEAT-2: the live velocity / acceleration / jerk limits are now called by their glossary term, Sitting limits, everywhere outside history. `TrajectoryLimits.with_session_limits` became `with_sitting_limits` (60 call sites), the `session_limits` test fixture and four test names follow, and prose says "sitting limit(s)". The probe `displaced_reach_frontier.py` now writes a `sitting_limits` JSON key. The rename was done by one case-preserving regex, including 7 hits split across a line break. Three hits were rewritten by hand. `docs/agents/domain.md` used the rename as its example of a glossary term ahead of the code, and that example is now past tense. In `ros_ws/docs/can-node-teensy-parity.md` the two "(session limit)" notes meant a Claude usage limit, so they now read "Claude Session usage limit". The line "sitting limits at session start" in `unified_cycle.py` and its test twin became "Sitting start". The YAML comments changed and the generated `hardware_config` artefacts did not, because the generator carries no comments.
 
-Grep count (`grep -rn -i -E 'session[ _-]limits?'` over every file, excluding `.git logbook attic temp build install log archived`). Before: **250 lines in 85 files**. After: **9 lines, all deliberate**. They are the `_Avoid_` lines in `GLOSSARY.md` and `docs/glossary.md`, the avoid-word seed in `tests/sim/avoid_words_checked.txt` and `test_glossary_avoid_words.py`, the JB-3 title and its dated 2026-09-21 survey line, the generated JB-3 row in `docs/project-map.md`, and two quotations in map tickets (the seed list and #17's title). A multi-line scan for the wrapped form also finds zero.
+Grep count (`grep -rn -i -E 'session[ _-]limits?'` over every file, excluding `.git logbook attic temp build install log archived`). Before: **250 lines in 85 files**. After: **9 lines, all deliberate**. They are the `_Avoid_` lines in `GLOSSARY.md` and `docs/glossary.md`, the avoid-word seed in `tests/sim/avoid_words_checked.txt` and `test_glossary_avoid_words.py`, the FEAT-2 title and its dated 2026-09-21 survey line, the generated FEAT-2 row in `docs/project-map.md`, and two quotations in map tickets (the seed list and #17's title). A multi-line scan for the wrapped form also finds zero.
 
 The edits touched three gated files (`feasibility.py`, `cup_realize.py`, `unified_cycle.py`, comments and docstrings only), so the admissible box was re-swept on the frozen tree. The sweep used the 2026-10-24 `sweep_P3b.sh` recipe: ten invocations at 350/5000/200000, hand 3900, BLAS one thread, run as one round. Agreement with the committed box is the determinism check.
 

@@ -75,28 +75,28 @@ def repo(tmp_path):
         ("6", "level", "40", "low", ""),                       # 0.025
     ]
     for n, setup, mins, pri, extra in spec:
-        _item(tmp_path, "bug", "row%s" % n, _sec(setup, mins, extra), id="JB-%s" % n,
+        _item(tmp_path, "bug", "row%s" % n, _sec(setup, mins, extra), id="BUG-%s" % n,
               title="Row %s" % n, priority=pri, hardware="robot", parent="pw")
     return tmp_path
 
 
 def test_order_and_blocks(repo):
     data = sitting.collect(str(repo))
-    assert [r.item_id for r in data["rows"]] == ["JB-1", "JB-2", "JB-4", "JB-5", "JB-3", "JB-6"]
+    assert [r.item_id for r in data["rows"]] == ["BUG-1", "BUG-2", "BUG-4", "BUG-5", "BUG-3", "BUG-6"]
     assert [[r.item_id for r in b] for b in data["blocks"]] == [
-        ["JB-1", "JB-6"], ["JB-2", "JB-3"], ["JB-4"], ["JB-5"]]
+        ["BUG-1", "BUG-6"], ["BUG-2", "BUG-3"], ["BUG-4"], ["BUG-5"]]
     assert data["needs_section"] == [] and data["questions"] == []
 
 
 def test_first_pins_a_row_ahead_of_the_score_order(repo):
     """``first: <reason>`` (2026-11-06): the row is flown before every scored row and its
     setup set opens the rig's first block; without the key the order is score only."""
-    _item(repo, "bug", "row7", _sec("bb-fed", "60", "- first: the others fly on it\n"), id="JB-7",
+    _item(repo, "bug", "row7", _sec("bb-fed", "60", "- first: the others fly on it\n"), id="BUG-7",
           title="Row 7", priority="low", hardware="robot", parent="pw")  # score 1/60, last unpinned
     data = sitting.collect(str(repo))
-    assert [r.item_id for r in data["rows"]] == ["JB-7", "JB-1", "JB-2", "JB-4", "JB-5", "JB-3", "JB-6"]
+    assert [r.item_id for r in data["rows"]] == ["BUG-7", "BUG-1", "BUG-2", "BUG-4", "BUG-5", "BUG-3", "BUG-6"]
     assert [[r.item_id for r in b] for b in data["blocks"]] == [
-        ["JB-7", "JB-4"], ["JB-1", "JB-6"], ["JB-2", "JB-3"], ["JB-5"]]
+        ["BUG-7", "BUG-4"], ["BUG-1", "BUG-6"], ["BUG-2", "BUG-3"], ["BUG-5"]]
     assert data["rows"][0].spec.first == "the others fly on it"
     text = sitting.render_runbook(str(repo))
     assert "### Block 1: bb-fed  (2 rows, 65 min)" in text
@@ -111,22 +111,22 @@ def test_first_without_a_reason_is_a_parse_error():
 
 
 def test_needs_section_and_hardware_none_ignored(repo):
-    _item(repo, "bug", "nosec", id="JB-7", title="No sec", hardware="robot", priority="high")
-    _item(repo, "bug", "soft", _sec(), id="JB-8", title="Soft", hardware="none")
-    _item(repo, "bug", "done", _sec(), id="JB-9", title="Done", hardware="robot", status="complete")
+    _item(repo, "bug", "nosec", id="BUG-7", title="No sec", hardware="robot", priority="high")
+    _item(repo, "bug", "soft", _sec(), id="BUG-8", title="Soft", hardware="none")
+    _item(repo, "bug", "done", _sec(), id="BUG-9", title="Done", hardware="robot", status="complete")
     data = sitting.collect(str(repo))
-    assert [n[0] for n in data["needs_section"]] == ["JB-7"]
-    assert "JB-8" not in [r.item_id for r in data["rows"]]
-    assert "JB-9" not in [r.item_id for r in data["rows"]]
-    assert "JB-8" not in sitting.render_runbook(str(repo))
+    assert [n[0] for n in data["needs_section"]] == ["BUG-7"]
+    assert "BUG-8" not in [r.item_id for r in data["rows"]]
+    assert "BUG-9" not in [r.item_id for r in data["rows"]]
+    assert "BUG-8" not in sitting.render_runbook(str(repo))
 
 
 def test_questions_under_hardware_only(repo):
-    _item(repo, "bug", "soft", id="JB-8", title="Soft", hardware="none")
-    _item(repo, "ticket", "q1", id="JB-20", title="Which gain?", status="open", type="question", parent="JB-1")
-    _item(repo, "ticket", "q2", id="JB-21", title="Soft q", status="open", type="question", parent="JB-8")
-    assert sitting.collect(str(repo))["questions"] == [("JB-20", "Which gain?", "JB-1")]
-    assert "- JB-20 Which gain? (parent JB-1)" in sitting.render_runbook(str(repo))
+    _item(repo, "bug", "soft", id="BUG-8", title="Soft", hardware="none")
+    _item(repo, "ticket", "q1", id="TKT-1", title="Which gain?", status="open", type="question", parent="BUG-1")
+    _item(repo, "ticket", "q2", id="TKT-2", title="Soft q", status="open", type="question", parent="BUG-8")
+    assert sitting.collect(str(repo))["questions"] == [("TKT-1", "Which gain?", "BUG-1")]
+    assert "- TKT-1 Which gain? (parent BUG-1)" in sitting.render_runbook(str(repo))
 
 
 def test_render_has_no_date_and_is_stable(repo):
@@ -134,18 +134,18 @@ def test_render_has_no_date_and_is_stable(repo):
     assert not re.search(r"20\d\d-\d\d-\d\d", text)
     assert text == sitting.render_runbook(str(repo))
     assert "### Block 1: level  (2 rows, 50 min)" in text
-    assert "#### JB-1 Row 1  (10 min, high, pw)" in text
+    assert "#### BUG-1 Row 1  (10 min, high, pw)" in text
     assert "- branch: `night-shift/b`" in text
-    assert "`JB-" not in text
+    assert not re.search(r"`(BUG|FEAT|IDEA|PWAY|TKT)-\d+`", text)
 
 
 def _rig_repo(tmp_path):
     (tmp_path / "map").mkdir()
     for n, rig, mins, pri in (("1", "bench-hand", "5", "high"), ("2", "bench-leg", "10", "medium"),
                               ("3", "robot", "40", "low"), ("4", "bench-leg", "10", "low")):
-        _item(tmp_path, "bug", "rig%s" % n, _sec("level", mins), id="JB-%s" % n, title="Rig %s" % n,
+        _item(tmp_path, "bug", "rig%s" % n, _sec("level", mins), id="BUG-%s" % n, title="Rig %s" % n,
               priority=pri, hardware=rig, parent="pw")
-    _item(tmp_path, "bug", "nosec", id="JB-5", title="No sec", hardware="bench-leg", priority="high")
+    _item(tmp_path, "bug", "nosec", id="BUG-5", title="No sec", hardware="bench-leg", priority="high")
     return tmp_path
 
 
@@ -154,10 +154,10 @@ def test_rigs_never_share_a_block_and_follow_rig_order(tmp_path):
     data = sitting.collect(str(repo))
     # same setup everywhere, but one block per rig; robot first despite the lowest score
     assert [(h, [[r.item_id for r in b] for b in bs]) for h, bs in data["rigs"]] == [
-        ("robot", [["JB-3"]]), ("bench-leg", [["JB-2", "JB-4"]]), ("bench-hand", [["JB-1"]])]
-    assert [[r.item_id for r in b] for b in data["blocks"]] == [["JB-3"], ["JB-2", "JB-4"], ["JB-1"]]
-    assert {r.item_id: r.hardware for r in data["rows"]}["JB-1"] == "bench-hand"
-    assert data["needs_section"][0][0] == "JB-5" and data["needs_section"][0][3] == "bench-leg"
+        ("robot", [["BUG-3"]]), ("bench-leg", [["BUG-2", "BUG-4"]]), ("bench-hand", [["BUG-1"]])]
+    assert [[r.item_id for r in b] for b in data["blocks"]] == [["BUG-3"], ["BUG-2", "BUG-4"], ["BUG-1"]]
+    assert {r.item_id: r.hardware for r in data["rows"]}["BUG-1"] == "bench-hand"
+    assert data["needs_section"][0][0] == "BUG-5" and data["needs_section"][0][3] == "bench-leg"
 
 
 def test_rendered_rig_headings_summary_and_needs_label(tmp_path):
@@ -168,9 +168,9 @@ def test_rendered_rig_headings_summary_and_needs_label(tmp_path):
         < heads.index("## Bench hand  (1 block, 5 min)")
     assert "### Block 1: level  (1 row, 40 min)" in lines
     assert "### Block 3: level  (1 row, 5 min)" in lines
-    assert "#### JB-1 Rig 1  (5 min, high, pw)" in lines
+    assert "#### BUG-1 Rig 1  (5 min, high, pw)" in lines
     assert "Rigs: Robot 1 block (40 min) \u00b7 Bench leg 1 block (20 min) \u00b7 Bench hand 1 block (5 min)" in lines
-    assert "- JB-5 [Bench leg] No sec: no ## Sitting section" in lines
+    assert "- BUG-5 [Bench leg] No sec: no ## Sitting section" in lines
     assert "## Needs a Sitting section" in lines and "## Close-out" in lines
 
 

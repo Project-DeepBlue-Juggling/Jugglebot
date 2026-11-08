@@ -31,7 +31,7 @@ one as an idea). The map server's journal shows each POST answering 201 after 8-
 was at load 23 on 6 cores (a peer session's test gate) and the map server runs at Nice 10.
 `quick-capture.js` aborts at 8 s with "No answer from the map server - check the inbox before
 filing again", the server finished the write anyway, and nothing stopped the retry. JB-104..106
-were deleted through the app's API and JB-103 got the full title (map-bot commit `a7485979`).
+were deleted through the app's API and BUG-38 got the full title (map-bot commit `a7485979`).
 Allocation is 1 + the highest ID present, so the three freed IDs are reused: JB-104 is now a
 different bug (`47e0f5cb`); any older mention of JB-104..106 as this duplicate means the deleted copies.
 
@@ -48,11 +48,11 @@ different bug (`47e0f5cb`); any older mention of JB-104..106 as this duplicate m
   shared content words at Jaccard >= 0.40, or >= 4 shared words that make up >= 75 % of the
   shorter title.
 - `test_no_two_open_items_share_a_title` (map items gate) catches a duplicate that skipped the
-  screen (hand-written file, plain push); a planted copy of JB-103 fails it.
+  screen (hand-written file, plain push); a planted copy of BUG-38 fails it.
 
-Thresholds were set on the live 103-Item map: no existing pair trips any bar (closest: JB-40 /
-JB-41 ratio 0.61; JB-66 / JB-64 Jaccard 0.38; JB-43 / JB-68 containment 0.75 on 3 words), while
-three rewordings of JB-103 and a short rewording of the sentence-length JB-101 are all flagged.
+Thresholds were set on the live 103-Item map: no existing pair trips any bar (closest: PWAY-4 /
+PWAY-5 ratio 0.61; BUG-16 / BUG-14 Jaccard 0.38; BUG-9 / FEAT-21 containment 0.75 on 3 words), while
+three rewordings of BUG-38 and a short rewording of the sentence-length BUG-37 are all flagged.
 It is lexical only: a rewording that shares no words is not caught.
 
 Fork (`jugglebot-map`): `Store.create` calls the screen and answers 409 `code: duplicate | similar`

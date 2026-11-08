@@ -31,7 +31,7 @@ def _js_topics():
             for m in _SUBSCRIBE_RE.finditer(line):
                 t = m.group(2)
                 # The GUI subscribes the 20 Hz `gui/` copies of the mocap
-                # topics (JB-76, 2026-10-28); the bag carries the originals
+                # topics (BUG-21, 2026-10-28); the bag carries the originals
                 # and replay maps one onto the other (ros-bridge.js
                 # REPLAY_TOPIC_ALIASES), so the allowlist is keyed by the
                 # original name.

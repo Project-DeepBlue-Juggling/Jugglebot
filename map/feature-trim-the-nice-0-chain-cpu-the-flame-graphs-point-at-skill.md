@@ -1,5 +1,5 @@
 ---
-id: JB-94
+id: FEAT-30
 kind: feature
 title: 'Trim the nice-0 chain CPU the flame graphs point at: skill_node executor (~0.5 core), mocap_node publish path (~0.28), tracker message plumbing (~0.28)'
 status: inbox
@@ -12,10 +12,10 @@ blocked_by: []
 links:
 - 2026-10-28-jb76-solve-tail-is-environment-starvation-instrumented
 parent: two-ball-oval
-filed_by: claude (JB-76 21:02 Sitting read-out)
+filed_by: claude (BUG-21 21:02 Sitting read-out)
 ---
 
-py-spy 100 Hz on the 21:02 Sitting (temp/probes/profile_20261028-210241/pyspy_*.svg; shares and file:line in the JB-76 logbook entry, section The Sitting of 2026-10-28 21:02).
+py-spy 100 Hz on the 21:02 Sitting (temp/probes/profile_20261028-210241/pyspy_*.svg; shares and file:line in the BUG-21 logbook entry, section The Sitting of 2026-10-28 21:02).
 
 ## skill_node
 
@@ -43,4 +43,4 @@ Bigger than any of these: teensy_bridge_node (79 % every Sitting) and rosbridge 
 
 ## Progress
 
-- 2026-10-30: 2026-10-30 (owner): this is the next CPU lever, ahead of JB-95 (backlog). Re-gate launch-wide: 444 CATCH solves, wall p50 104 / p90 136 / max 194 ms, CPU p50 81 ms, 19 solves over 150 ms.
+- 2026-10-30: 2026-10-30 (owner): this is the next CPU lever, ahead of FEAT-31 (backlog). Re-gate launch-wide: 444 CATCH solves, wall p50 104 / p90 136 / max 194 ms, CPU p50 81 ms, 19 solves over 150 ms.

@@ -1,5 +1,5 @@
 ---
-title: "JB-149 opt-in stream cures, both default off: gc_freeze:=true and cpu_partition:=true"
+title: "BUG-58 opt-in stream cures, both default off: gc_freeze:=true and cpu_partition:=true"
 type: feature
 date: 2026-11-03
 status: complete
@@ -21,7 +21,7 @@ subsystem: [ros]
 tags: [performance, safety]
 ---
 
-# JB-149 opt-in stream cures (default off)
+# BUG-58 opt-in stream cures (default off)
 
 ## What
 
@@ -39,7 +39,7 @@ The owner asked for two cure flags, both default off (2026-11-02). They are buil
 
 ## What was dropped, and why
 
-The 2026-11-02 working tree also carried a stall probe: a `gc.callbacks` hook plus a /proc sampler, classifying each stream gap as GC, run-queue or GIL. It was not landed. The opt-in probe that jugglebot-50 landed the same day covers the same question, and the JB-149 Sitting row is written around it and FW 38's counters:
+The 2026-11-02 working tree also carried a stall probe: a `gc.callbacks` hook plus a /proc sampler, classifying each stream gap as GC, run-queue or GIL. It was not landed. The opt-in probe that jugglebot-50 landed the same day covers the same question, and the BUG-58 Sitting row is written around it and FW 38's counters:
 - `gc_probe:=true` (`gc_probe.py`);
 - `tools/probes/sched_probe.py`;
 - logbook `2026-11-03-jb149-gc-sched-probe`.
@@ -48,7 +48,7 @@ Two GC hooks in the same nodes would have confused the record. The owner chose c
 
 ## How the flags are meant to be used
 
-The JB-149 item's options are unchanged.
+The BUG-58 item's options are unchanged.
 - Fly the probe row first.
 - **Class 1** (GC pauses over 10 ms, or run-queue delay around the solves): A/B `gc_freeze:=true` or `cpu_partition:=true` at the next Sitting.
 - **Class 2** (a firmware-side cover expiry with a clean host stream): neither flag helps.

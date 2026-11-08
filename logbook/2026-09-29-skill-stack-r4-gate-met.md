@@ -337,4 +337,4 @@ Where the hand stops (the owner's "ideally at the top, ready for the next feed")
   - reconcile the WARN's encoder-frame count with `pos_estimate`, which kept updating at ~10 Hz
     in the one moving-leg episode.
 
-> Closed 2026-10-28: closed by plans/archived/two-ball-skill-stack.md (JB-34 survey).
+> Closed 2026-10-28: closed by plans/archived/two-ball-skill-stack.md (IDEA-2 survey).

@@ -208,7 +208,7 @@ def test_a_re_aim_past_the_clamp_is_refused_at_the_planner_by_the_cap(
         limits, geom):
     """With the clamp opened to 50 mm (the failure this backstop exists for: a
     wrong clamp or a wrong tracker fit) a (35, 35) mm = 49.5 mm re-aim exceeds
-    ``CAPTURE_MAX_OFFSET_M`` (46.10 mm = hypot(35, 30) since JB-139,
+    ``CAPTURE_MAX_OFFSET_M`` (46.10 mm = hypot(35, 30) since BUG-52,
     2026-11-02; 40.31 = hypot(35, 20) before), the widest the real
     clamp can emit) and the PLANNER refuses ``CATCH_AXIS`` naming the cap —
     it is not chased.  Just inside the cap (25, 25) = 35.4 mm installs."""

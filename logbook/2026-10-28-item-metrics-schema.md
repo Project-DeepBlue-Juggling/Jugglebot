@@ -52,5 +52,5 @@ in-code table. Plan steps may carry `effort` / `hardware` (validated by `check_s
 ## Verification
 
 - 2026-10-28, `./run_tests.sh` (K1 worktree, before the backfill merge): PASS, parallel 7465 passed / 13 skipped (374 s, rc=0), serial 5 passed (rc=0).
-- 2026-10-28, `./run_tests.sh` (merge worktree, schema + backfill + JB-80 follow-up): PASS, parallel 7553 passed / 13 skipped (371 s, rc=0), serial 5 passed (rc=0).
+- 2026-10-28, `./run_tests.sh` (merge worktree, schema + backfill + BUG-24 follow-up): PASS, parallel 7553 passed / 13 skipped (371 s, rc=0), serial 5 passed (rc=0).
 - The audit-fix commit's re-run is cited in that commit's message.

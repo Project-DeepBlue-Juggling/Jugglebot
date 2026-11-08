@@ -66,10 +66,22 @@ def find_item(repo_root: str, slug: str, allow_bare: bool = False) -> Item:
         items = load_items(map_dir)
     except ItemError as exc:
         raise ItemCliError(str(exc))
+    legacy = ids.legacy(repo_root)
     try:
-        return ids.resolve(items, stem, allow_bare=allow_bare)
+        item = ids.resolve(items, stem, allow_bare=allow_bare, legacy=legacy)
+    except ids.LegacyIdError as exc:
+        raise ItemCliError(str(exc))
     except ids.IdError as exc:
         raise ItemCliError("%s in %s" % (exc, map_dir))
+    _note_translation(stem, item, legacy)
+    return item
+
+
+def _note_translation(text: str, item: Item, legacy: Dict[str, str]) -> None:
+    """D-3: a read that took an old ``JB-<n>`` says what it is called now (stderr)."""
+    ref = ids.typed_ref(text.strip())
+    if ref is not None and legacy.get(ref) is not None and legacy[ref] == item.meta.get("id"):
+        print("%s -> %s" % (ref, legacy[ref]), file=sys.stderr)
 
 
 def label(item: Item) -> str:
@@ -236,10 +248,13 @@ def _unique_slug(map_dir: str, base: str) -> str:
     return slug
 
 
-def _ref_or_stem(items: List[Item], text: str) -> str:
-    """A typed reference (``JB-3`` or ``BUG-3`` or a stem/slug) -> the stem stored on disk."""
+def _ref_or_stem(items: List[Item], text: str, legacy: Optional[Dict[str, str]] = None) -> str:
+    """A typed reference (``JB-3`` or ``BUG-3`` or a stem/slug) -> the stem stored on disk.
+
+    A write: an old ``JB-<n>`` the crosswalk knows is refused, naming the new ID.
+    """
     try:
-        return ids.stem(ids.resolve(items, text))
+        return ids.stem(ids.resolve(items, text, legacy=legacy))
     except ids.IdError as exc:
         raise ItemCliError(str(exc))
 
@@ -279,6 +294,7 @@ def new_item(repo_root: str, kind: str, title: str, parent: Optional[str] = None
     if near and not allow_similar:
         raise ItemCliError("similar Items exist, not filed (check them; --allow-similar files anyway):\n  "
                            + "\n  ".join(m.describe() for m in near))
+    legacy = ids.legacy(repo_root)
     upstream = ids.upstream_ref(repo_root)  # the ref the push loop rebases onto
     meta: Dict[str, object] = {
         "id": ids.allocate(repo_root, upstream, items=items, kind=kind), "kind": kind, "title": title,
@@ -288,7 +304,9 @@ def new_item(repo_root: str, kind: str, title: str, parent: Optional[str] = None
     meta = _place_metrics(meta, given_metrics)
     if parent and kind == "ticket" and ticket_type == "question":
         try:
-            blocked = ids.resolve(items, parent)
+            blocked = ids.resolve(items, parent, legacy=legacy)
+        except ids.LegacyIdError as exc:
+            raise ItemCliError(str(exc))
         except ids.IdError:
             raise ItemCliError("parent %r not found" % parent)
         if blocked.kind in ("ticket", "pathway"):
@@ -298,12 +316,12 @@ def new_item(repo_root: str, kind: str, title: str, parent: Optional[str] = None
     elif parent:
         pw = next((i for i in items if i.kind == "pathway" and i.slug == parent), None)
         if pw is None:
-            pw = ids.resolve(items, parent)  # a write: ``jb`` ID or stem, never bare digits
+            pw = ids.resolve(items, parent, legacy=legacy)  # a write: ``jb`` ID or stem, never bare digits
         if pw.kind != "pathway":
             raise ItemCliError("parent %r is a %s, not a pathway" % (parent, pw.kind))
         meta["parent"] = pw.slug
     for l in links or []:
-        ref = _ref_or_stem(items, l) if ids.typed_ref(l) is not None else l
+        ref = _ref_or_stem(items, l, legacy) if ids.typed_ref(l) is not None else l
         if ref not in meta["links"]:
             meta["links"].append(ref)
     if kind in ("idea", "feature", "bug"):
@@ -463,7 +481,7 @@ def list_items(repo_root: str, pathway: Optional[str] = None, kind: Optional[str
     out = []
     items = load_items(os.path.join(repo_root, MAP_DIR))
     if pathway and (ids.typed_ref(pathway) is not None or pathway.strip().isdigit()):
-        pathway = _pathway(items, pathway).slug
+        pathway = _pathway(items, pathway, ids.legacy(repo_root)).slug
     for i in items:
         if kind and i.kind != kind:
             continue
@@ -480,14 +498,19 @@ def list_items(repo_root: str, pathway: Optional[str] = None, kind: Optional[str
     return out
 
 
-def _pathway(items: List[Item], text: str) -> Item:
-    """A Pathway by slug, stem or ID (bare digits allowed: read commands only)."""
+def _pathway(items: List[Item], text: str, legacy: Optional[Dict[str, str]] = None) -> Item:
+    """A Pathway by slug, stem or ID (bare digits allowed: read commands only).
+
+    An old ``JB-<n>`` the crosswalk knows reads as its new ID (one stderr line, D-3).
+    """
     pw = next((i for i in items if i.kind == "pathway" and i.slug == text), None)
     if pw is None:
         try:
-            pw = ids.resolve(items, text, allow_bare=True)
+            pw = ids.resolve(items, text, allow_bare=True, legacy=legacy)
         except ids.IdError:
             pw = None
+        else:
+            _note_translation(text, pw, legacy or {})
     if pw is None or pw.kind != "pathway":
         raise ItemCliError("no pathway %r" % text)
     return pw
@@ -495,7 +518,7 @@ def _pathway(items: List[Item], text: str) -> Item:
 
 def show(repo_root: str, pathway: str) -> Dict[str, object]:
     items = load_items(os.path.join(repo_root, MAP_DIR))
-    pw = _pathway(items, pathway)
+    pw = _pathway(items, pathway, ids.legacy(repo_root))
     pathway = pw.slug
     plan_rows = []
     for p in derive.pathway_plans(pw, load_plans(repo_root)):
@@ -710,7 +733,7 @@ def register(subparsers) -> None:
 
     p = isub.add_parser("push", help="push an Item's local commit (item new --commit --no-push) "
                                      "through the bounded rebase / renumber / push loop")
-    p.add_argument("item", help="the Item (ID or stem), e.g. JB-64 or idea-my-title")
+    p.add_argument("item", help="the Item (ID or stem), e.g. BUG-14 or idea-my-title")
     common(p)
     p.set_defaults(func=_run_push)
 

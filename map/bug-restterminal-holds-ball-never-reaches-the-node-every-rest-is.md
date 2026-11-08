@@ -1,5 +1,5 @@
 ---
-id: JB-86
+id: BUG-29
 kind: bug
 title: 'RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball'
 status: inbox
@@ -22,7 +22,7 @@ filed_by: claude
 `RestTerminal.holds_ball` never reaches the node: `tests/ros/test_install_segment.py:1413-1417` excludes it by name, so every REST is rebuilt as holding a ball. That over-constrains an empty-cup REST's cup-contact floor. Conservative: it costs refusals, not safety.
 
 - Not filed: the `skills/check` live-state rehearsal (owner declined).
-- The closing-REST LIMIT_JERK is already JB-24.
+- The closing-REST LIMIT_JERK is already BUG-5.
 
 Source entries: [logbook/2026-10-02-skill-stack-r5-sitting-2.md](logbook/2026-10-02-skill-stack-r5-sitting-2.md), [logbook/2026-10-06-skill-stack-r5-sitting-6-start-state-refusals.md](logbook/2026-10-06-skill-stack-r5-sitting-6-start-state-refusals.md), [logbook/2026-09-14-skill-stack-r3-apex-ladder-prep.md](logbook/2026-09-14-skill-stack-r3-apex-ladder-prep.md)
 

@@ -1,5 +1,5 @@
 ---
-id: JB-82
+id: BUG-26
 kind: bug
 title: teensy_bridge_node's shutdown Stow can be cut off by the launch's 5 s SIGTERM; teensy_link has no single-owner interlock
 status: complete
@@ -39,4 +39,4 @@ A question ticket carries this to the owner; the answer under its `## Answer` re
 
 ## Progress
 
-- 2026-11-01: Owner chose the split (JB-123): link single-owner (no SO_REUSEADDR, LinkBusyError) and an 8 s SIGTERM window for the bridge node; the post-rejection teardown hang is filed separately.
+- 2026-11-01: Owner chose the split (TKT-19): link single-owner (no SO_REUSEADDR, LinkBusyError) and an 8 s SIGTERM window for the bridge node; the post-rejection teardown hang is filed separately.

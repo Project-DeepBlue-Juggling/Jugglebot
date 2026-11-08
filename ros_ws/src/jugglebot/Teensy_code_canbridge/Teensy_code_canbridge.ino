@@ -169,7 +169,7 @@ static void send_heartbeat_t2j() {
   p.sched_expired   = interp_sched_expired();
   p.sched_refused   = interp_sched_refused();
   p.sched_demoted   = interp_sched_demoted();
-  // FW 38 / PROTOCOL 11 (JB-149): the rest of the scheduled-lane census and the
+  // FW 38 / PROTOCOL 11 (BUG-58): the rest of the scheduled-lane census and the
   // per-window frame-age statistics (read-and-reset here, once per heartbeat).
   p.sched_superseded    = interp_sched_superseded();
   p.sched_stale         = interp_sched_stale();
@@ -183,7 +183,7 @@ static void send_heartbeat_t2j() {
     p.rx_age_max_us = age_max;
     p.rx_age_le25 = age_b[0]; p.rx_age_le50 = age_b[1]; p.rx_age_le70 = age_b[2]; p.rx_age_gt70 = age_b[3];
   }
-  // FW 40 / PROTOCOL 12 (JB-174): downlink loss accounting. Cumulative since
+  // FW 40 / PROTOCOL 12 (FEAT-41): downlink loss accounting. Cumulative since
   // boot; the host differences them against its own sent count.
   {
     const UdpStats us = udp_link_stats();

@@ -1,4 +1,4 @@
-// axis_ticks_harness.js — the REAL ros_ws/gui/js/axis-ticks.js (JB-101) under node. Sandbox built by
+// axis_ticks_harness.js — the REAL ros_ws/gui/js/axis-ticks.js (BUG-37) under node. Sandbox built by
 // tests/ros/test_gui_axis_ticks.py. Replays uPlot 1.6's findIncr (the step choice: the first ladder
 // step whose on-screen spacing is >= `space`) over a grid of plot sizes, spans and offsets, and counts
 // the multiples of the chosen step inside [min, max]. Prints one JSON object.

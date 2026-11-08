@@ -1,4 +1,4 @@
-"""I-CATCH-7 — a BUMP is gated by the next catch (JB-120,
+"""I-CATCH-7 — a BUMP is gated by the next catch (BUG-42,
 ``motion/skills/bump.py::bump_with_next_catch_gate``).
 
 Entry: ``logbook/2026-11-03-jb120-bump-gated-by-the-next-catch.md``.

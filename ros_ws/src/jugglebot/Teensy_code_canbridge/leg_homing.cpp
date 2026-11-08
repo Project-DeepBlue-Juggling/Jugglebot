@@ -86,7 +86,7 @@ static float    s_iq_ema = 0.0f;
 static uint64_t s_t_start_us = 0;   // homing start (overall timeout clock)
 static uint64_t s_t_phase_us = 0;   // current sub-phase entry (settle clock)
 static volatile uint8_t s_result[NUM_AXES] = { HOMING_NONE };   // legs + hand
-// ── Per-home epoch (FW 34, JB-72) ────────────────────────────────────────────
+// ── Per-home epoch (FW 34, BUG-18) ────────────────────────────────────────────
 // Bumped (u8, wraps) by homing_request() on every ACCEPTED HOME, in the same
 // IRQ-guarded section that sets s_result to RUNNING, and uplinked beside the
 // result in the Diagnostic. The host records the epoch it saw before the HOME and
@@ -160,7 +160,7 @@ uint16_t homing_request(uint8_t axis) {
   const bool busy = (s_phase != Phase::IDLE) || s_start_req;
   if (!busy) {
     s_start_axis = axis; s_start_req = true;
-    // FW 34 (JB-72): RUNNING at ACCEPT (not at the homing task's consume) and the
+    // FW 34 (BUG-18): RUNNING at ACCEPT (not at the homing task's consume) and the
     // epoch bump in the same guarded section, so no Diagnostic can carry the new
     // epoch beside the previous home's terminal result. Not busy ⇒ the homing task
     // is not touching s_result, so this write has no concurrent writer. A start

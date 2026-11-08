@@ -1,5 +1,5 @@
 ---
-id: JB-76
+id: BUG-21
 kind: bug
 title: 'SPLICE_TOO_LATE ends half the goals: CATCH solve tail now crosses the 250 ms deadline'
 status: complete
@@ -97,6 +97,6 @@ Find what grew the tail since 2026-10-23, whether Jetson load (the bag ran 345 M
 - 2026-10-28: 2026-10-28 Sitting 09:49 with the recorder: starvation CONFIRMED. (detail below)
 - 2026-10-28: 2026-10-28 later: fix 1 (nice -n 10 on rosbridge / bag record / spacemouse / ball_butler, commit 0b6ddad7) and load-trim option 1 (GUI takes mocap_node 20 Hz gui/ copies of the mocap stream, rosbridge 102 -> 53 % of a core on the refreshed rosbridge_cpu_probe replica, commit b2e70285) are on main and built. (detail below)
 - 2026-10-28: Sitting 2026-10-28 14:29 (fix 1 nice + option 1 gui copies live, columns only, 79 throws): re-aim refusals 41 % -> 1.3 % (one SPLICE_TOO_LATE, throw 48/50), CATCH wall p50 153 -> 117 ms, p90 226 -> 160, over-150 ms 60 % -> 13 %, rosbridge 86 -> 56 % of a core, 49/49 columns record. (detail below)
-- 2026-10-28: JB-34 survey follow-ups: mocap_node priority/pinning (it is a fellow victim of the starved box) and a revisit of TRACKING_MAX_FRAMES (logbook/2026-10-10-mocap-frame-queue.md, logbook/2026-09-14-rosbridge-cpu-leak-and-spin.md)
+- 2026-10-28: IDEA-2 survey follow-ups: mocap_node priority/pinning (it is a fellow victim of the starved box) and a revisit of TRACKING_MAX_FRAMES (logbook/2026-10-10-mocap-frame-queue.md, logbook/2026-09-14-rosbridge-cpu-leak-and-spin.md)
 - 2026-10-28: Fix 2 landed 67eb4212: ball_tracker_node capped to one OpenBLAS thread (offline on the 14:29 bag: -40..45 % tracker CPU, per-frame no slower, output byte-identical; the 2026-09-06 'large-matrix work' comment was false for it). (detail below)
 - 2026-10-28: Closed on the 21:02 Sitting 2026-10-28: CATCH wall/CPU 2.18 -> 1.27 with oval goals in the scan, wall p50 153 -> 95 ms, tracker 148 -> 66 % in goals, oval 50/50 record. (detail below)

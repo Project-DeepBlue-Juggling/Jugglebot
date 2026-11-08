@@ -1,5 +1,5 @@
 ---
-id: JB-162
+id: FEAT-39
 kind: feature
 title: 'P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30'
 status: in_progress
@@ -37,7 +37,7 @@ P4 ramp of plan `plans/active/two-ball-oval.md`: the first Sitting at the P4 wor
   - Then re-fly the 2026-11-03 ladder unchanged (owner 2026-11-04): dwell 0.40 at Apex 1.00 (oval_1ball_fed, then oval_1ball), then dwell 0.35 at Apex 1.00 after one Attempt with no leg LIMIT, guard or HAND_LIMIT end.
   - Fly dwell 0.30 at Apex 1.10, not 1.00, and only if 0.35 holds: the retired box left 1 mm of +x landing room at 1.00 / 0.30 and 25 mm at 1.10 / 0.30 (read the nomination at the live limits before flying).
 - pass: the five Columns Attempts each read `COMPLETED (20/20 caught)` with no leg LIMIT end and peak leg iq under 20 A; then the one-ball oval sustains 30 consecutive Catches in one Attempt at the shortest dwell flown (plan P4 gate).
-- record: caught of thrown and the end code per Attempt; the CATCH leg-velocity refusal count across the canary (JB-24 expects none at 600 mm/s); peak leg iq per leg per Attempt from the bag (the 20 A measurement); the shortest dwell reaching 30; the raw long bias per dwell (landed minus the command u), from rest and carried; the LIMIT_JERK refusal count; the oval plant_id; the bag and launch log paths; commit docs/records.md.
+- record: caught of thrown and the end code per Attempt; the CATCH leg-velocity refusal count across the canary (BUG-5 expects none at 600 mm/s); peak leg iq per leg per Attempt from the bag (the 20 A measurement); the shortest dwell reaching 30; the raw long bias per dwell (landed minus the command u), from rest and carried; the LIMIT_JERK refusal count; the oval plant_id; the bag and launch log paths; commit docs/records.md.
 - minutes: 50
 
 ## Sitting result (2026-11-03 22:47)

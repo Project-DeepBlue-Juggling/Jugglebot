@@ -1,5 +1,5 @@
 ---
-title: "Next Sitting Runbook grouped by rig (Robot, Bench leg, Bench hand); new hardware value bench-hand; JB-117 re-rated bench-hand, JB-26 robot"
+title: "Next Sitting Runbook grouped by rig (Robot, Bench leg, Bench hand); new hardware value bench-hand; BUG-41 re-rated bench-hand, BUG-7 robot"
 type: feature
 date: 2026-11-01
 status: complete
@@ -43,7 +43,7 @@ and labels needs entries `[Robot]` / `[Bench leg]` / `[Bench hand]`. The map app
 day) shows a coloured rig chip and heading per rig on the Next Sitting page, a chip on each needs
 entry, and the human labels in the drawer's hardware select.
 
-**Re-rated (owner).** JB-117 (Hand brake and hold currents) `bench-leg` -> `bench-hand`; JB-26
+**Re-rated (owner).** BUG-41 (Hand brake and hold currents) `bench-leg` -> `bench-hand`; BUG-7
 (Platform Teensy int16 levelling offset) `bench-leg` -> `robot`: the fix is firmware, testable
 natively; only its flash over CAN and the persisted-offset read-back need the powered Platform.
 

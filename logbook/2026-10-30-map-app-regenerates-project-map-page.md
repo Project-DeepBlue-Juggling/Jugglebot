@@ -19,7 +19,7 @@ Every edit made through the map app (the Robot tab's quick capture, the app's fo
 committed by the fork's git writer with `map/` only staged, so `docs/project-map.md` went stale on
 `main` and `tests/sim/test_mapkit_docs.py::test_committed_pages_are_current` stayed red until a later
 `mapkit item new` happened to regenerate the page. It was red on clean `origin/main` on 2026-10-30,
-after the app deleted three duplicate copies of JB-103 and renamed the copy that was kept.
+after the app deleted three duplicate copies of BUG-38 and renamed the copy that was kept.
 
 The fork's writer (`server/gitwriter.py`, fork commit `5c78dae`, deployed on the Jetson 2026-10-30)
 now runs `mapkit.gen_docs.write_docs` after its `pull --rebase` and the short-ID repair, under the

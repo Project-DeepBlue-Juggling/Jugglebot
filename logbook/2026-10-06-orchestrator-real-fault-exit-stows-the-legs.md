@@ -58,4 +58,4 @@ The owner extended the stow to LEVELLING (2026-10-07). `level_activate` runs the
 - 2026-10-07, `python -m pytest tests/ros/test_state_machine.py tests/ros/test_orchestrator_node.py tests/ros/test_orchestrator_conduit_contract.py tests/ros/test_orchestrator_conduit_integration.py -q -p no:cacheprovider`: **290 passed in 3.67 s**.
 - Full gate (`./run_tests.sh --full`, run 2026-10-07, log `temp/logs/gate_full_r5_levelling_stow_20261007.log`): **parallel 6131 passed, 9 skipped, 1 xfailed in 305.54 s; serial 6 passed in 20.02 s; RESULT PASS, exit 0.** The only edit after that run is this line; the logbook tests were re-run after it.
 
-> Closed 2026-10-28: fix landed; its open question struck through 2026-10-07; nothing open (JB-34 survey).
+> Closed 2026-10-28: fix landed; its open question struck through 2026-10-07; nothing open (IDEA-2 survey).

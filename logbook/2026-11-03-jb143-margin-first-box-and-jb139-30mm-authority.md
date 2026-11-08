@@ -34,9 +34,9 @@ subsystem: [motion, tools]
 tags: [admissible-box, learner, testing]
 ---
 
-# Box re-swept margin-first on a +/-30 mm grid; Learner authority 30 mm (JB-143, JB-139)
+# Box re-swept margin-first on a +/-30 mm grid; Learner authority 30 mm (BUG-54, BUG-52)
 
-Items: JB-143 (closed here), JB-139 (progressed). Owner decisions 2026-11-02:
+Items: BUG-54 (closed here), BUG-52 (progressed). Owner decisions 2026-11-02:
 - the landing rectangle is chosen with the room around the target first (the smallest distance from (0, 0) to an edge), then area;
 - the Apex band is only grown where it costs the rectangle nothing;
 - the Learner gets +/-30 mm for both Throw and catch re-aims;
@@ -53,7 +53,7 @@ Items: JB-143 (closed here), JB-139 (progressed). Owner decisions 2026-11-02:
 - **The box** `config/generated/admissible_box.yaml`:
   - 104 cells, gate_hash 12ec30249323, limits unchanged (350 / 5000 / 200000, Hand 4500).
   - Same 30-family set and cell order as the box it replaces (gate_hash 242c56b683b5).
-- **`tools/admissible_sweep_run.py`** (the JB-150 runner, merged earlier the same day):
+- **`tools/admissible_sweep_run.py`** (the FEAT-38 runner, merged earlier the same day):
   - Its default family set `committed` is now the 30 families of this box; it was the 26 of the box before C-HAND-5, and `--set h4500` keeps those 26.
   - The leg and Hand limits default to the committed box's `limits` stamp, with `--leg-vel`, `--leg-acc` and `--leg-jerk` flags for a working-point change.
   - Its family arguments and merge order match the sweep that built this box, checked argument by argument.
@@ -87,7 +87,7 @@ Items: JB-143 (closed here), JB-139 (progressed). Owner decisions 2026-11-02:
 
 ## Discussion
 
-- **Why room-first, not area-first.** The night-shift JB-143 branch (f462835b, merged by a peer the same day) also fixes the rectangle before the band, but picks it by area. A long thin rectangle wins on area while leaving the target 2 mm from an edge. The Learner's corrections are centred on (0, 0) and roughly symmetric, so the number that limits it is the nearest edge. This entry's `_max_rectangle` / `_flight_band_and_rect` supersede f462835b's.
+- **Why room-first, not area-first.** The night-shift BUG-54 branch (f462835b, merged by a peer the same day) also fixes the rectangle before the band, but picks it by area. A long thin rectangle wins on area while leaving the target 2 mm from an edge. The Learner's corrections are centred on (0, 0) and roughly symmetric, so the number that limits it is the nearest edge. This entry's `_max_rectangle` / `_flight_band_and_rect` supersede f462835b's.
 - **Area before band, a non-obvious consequence.** With the +/-30 rows added, a rectangle that gains y to -30 at equal margin outranks a wider Apex band. That is why Columns pose 1.00 went from band 0.640-1.210 to 0.902-1.210 while keeping room 6. The owner ranked landing room over Apex range. Most of the Apex range lost is far below anything flown.
 - **What is still narrow.** The +/-2 mm at Columns 0.95 is feasibility MARGIN (the 90 % leg-limit margin) at the centre flight itself. No selection rule can widen it. Any change there is an owner limit decision. P4's leg working point (600 / 8000) is the next re-sweep and should move it.
 

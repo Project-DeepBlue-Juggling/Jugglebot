@@ -9,7 +9,7 @@ queue, logbook 2026-10-10-mocap-frame-queue):
   gui/rigid_body_poses   (RigidBodyPoses)     mocap_data / rigid_body_poses: the SAME message object,
                          published right after the original. The GUI's rosbridge takes these instead of
                          the 300 Hz originals (rosbridge deserialises every message before throttling;
-                         JB-76 load trim, temp/probes/rosbridge_cpu_2026-10-28/report.md).
+                         BUG-21 load trim, temp/probes/rosbridge_cpu_2026-10-28/report.md).
                          Not recorded.
   bb/calibration_result  (BallButlerCalibrationResult) — latched: the calibration IN
                          FORCE. Only a success replaces it; a failure lands here

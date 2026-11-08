@@ -345,4 +345,4 @@ which first matters when Phase 4 code reads the new constant.
   "Phase 2 must enumerate the BallButler drift" open question this entry
   discharges.
 
-> Closed 2026-10-28: stale: endpoint 726 confirmed in production; 461 read not wanted (JB-34 survey).
+> Closed 2026-10-28: stale: endpoint 726 confirmed in production; 461 read not wanted (IDEA-2 survey).

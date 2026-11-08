@@ -1,5 +1,5 @@
 ---
-id: JB-114
+id: IDEA-17
 kind: idea
 title: 'Hand end-of-stroke bumper, and first the planner''s own brake shape: let the ceiling, not the Hand, cap the Apex'
 status: inbox
@@ -112,12 +112,12 @@ R0 done 2026-10-30 (Opus, scratchpad bumper/r0_brake_shape.md, probes r0/p1-p14 
 ## Progress
 
 - 2026-10-30: R0 done 2026-10-30 (Opus, scratchpad bumper/r0_brake_shape.md, probes r0/p1-p14 reproduce the logged peaks within 6 rev/s2). (detail below)
-- 2026-11-02: R1 split out as JB-144 (the release step, C-HAND-5; owner answer on JB-142: option 4). The bumper is pinned as a later safety stop; JB-145 is the firmware stall-stop case it would back up.
+- 2026-11-02: R1 split out as FEAT-36 (the release step, C-HAND-5; owner answer on TKT-28: option 4). The bumper is pinned as a later safety stop; BUG-55 is the firmware stall-stop case it would back up.
 - 2026-11-03: 2026-11-03 Sitting: post-disarm coasts struck the top stop at 0.5-2.4 m/s (15-74 rev/s) in 6 of 10 SPINOUT events (L2277, 5380, 6906, 7853, 8106, 10110; stop reverses the coast at 10.75-10.86 rev vs clip 10.501): the bumper's exact case.
 
 ## Options (2026-11-02)
 
-Night Shift 2026-11-02, on the R0 result's open decision (an acceleration step at the release knot is refused by HAND_LIMIT_C2); a question ticket carries these and its `## Answer` re-opens this Item. Context since R0: HAND_LIMIT_ACC is 4500 rev/s^2 and the Hand current limit 60 A since the 2026-11-01 debrief (JB-120).
+Night Shift 2026-11-02, on the R0 result's open decision (an acceleration step at the release knot is refused by HAND_LIMIT_C2); a question ticket carries these and its `## Answer` re-opens this Item. Context since R0: HAND_LIMIT_ACC is 4500 rev/s^2 and the Hand current limit 60 A since the 2026-11-01 debrief (BUG-42).
 
 1. A named, bounded HAND_LIMIT_C2 exception at release knots (one acceleration step up to a stated bound, a new INVARIANTS row and test): the brake flattens toward kappa 1.0 and the Apex ceiling moves to the Hand's current limit. Offline planner unit plus a bench-hand check of the brake current.
 2. Keep continuity and buy headroom with limits only (the 4500 raise covers Apex 1.05 at kappa 1.7; more Apex from more current). No planner change.

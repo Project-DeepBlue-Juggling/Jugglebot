@@ -1,5 +1,5 @@
 ---
-id: JB-60
+id: FEAT-19
 kind: feature
 title: 'Stale items: flag items left in the inbox or in progress too long'
 status: complete

@@ -1248,7 +1248,7 @@ function buildUPlotOpts(chartIdx, width, height, showXAxis = true, onCursor = nu
             ticks: { stroke: showXAxis ? ticksStroke : 'transparent', width: 1, size: showXAxis ? 6 : 0 },
             font: '11px JetBrains Mono, monospace',
             size: showXAxis ? X_AXIS_SIZE : X_AXIS_STUB_SIZE,
-            // JB-101: >= 2 ticks at every width and zoom (axis-ticks.js), and
+            // BUG-37: >= 2 ticks at every width and zoom (axis-ticks.js), and
             // fractional seconds once a tick step is below 1 s.
             incrs: TIME_INCRS,
             space: timeTickSpace(50),
@@ -1279,7 +1279,7 @@ function buildUPlotOpts(chartIdx, width, height, showXAxis = true, onCursor = nu
             stroke: meta.color,
             grid: { stroke: gridStrokeMinor, width: 1 },
             ticks: { stroke: meta.color, width: 1 },
-            space: numTickSpace(30),   // JB-101: >= 2 ticks on a short chart or a zoom
+            space: numTickSpace(30),   // BUG-37: >= 2 ticks on a short chart or a zoom
             font: '14px JetBrains Mono, monospace',
             labelFont: '14px JetBrains Mono, monospace',
         });
@@ -2956,7 +2956,7 @@ function updateCallouts(u, record) {
         el.dataset.rawValue = String(val);
         shown.push({ el, yPx });
     }
-    // JB-159: pills whose curves are close would stack and hide each other;
+    // BUG-61: pills whose curves are close would stack and hide each other;
     // spread them so none overlaps (text unchanged, only the vertical position).
     const pillH = (shown.length && shown[0].el.offsetHeight) || 16;
     const plotH = u.bbox ? (u.bbox.height / devicePixelRatio) : u.over.clientHeight;

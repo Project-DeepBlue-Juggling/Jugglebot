@@ -285,4 +285,4 @@ PID-list explicit kill is the only safe form.
 - (phase 13 prep) Once phase C lands, `can_node` is mostly empty —
   schedule its deletion.
 
-> Closed 2026-10-28: residue filed as JB-87 (dead protocol cleanup) (JB-34 survey).
+> Closed 2026-10-28: residue filed as FEAT-28 (dead protocol cleanup) (IDEA-2 survey).

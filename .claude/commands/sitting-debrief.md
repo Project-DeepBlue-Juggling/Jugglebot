@@ -65,7 +65,7 @@ calls, writes `<unit>.md` to the scratchpad, reports only its path and a verdict
 **C. Synthesis (you).** Read the unit files, not the logs. Show the owner one verdict table
 (row, verdict, evidence line, killer class, proposed write-back) and wait for confirmation
 or correction. `--dry-run` stops here. Then the write-backs, in this order:
-- Item progress notes and closes: `python -m mapkit item set-status JB-n <status> --note "..."`
+- Item progress notes and closes: `python -m mapkit item set-status <ID> <status> --note "..."`
   (no `--commit`; the files ride in the debrief commit);
 - new Items for new facts: `python -m mapkit item new <bug|feature|idea> ...`;
 - plan status lines and the `docs/patterns.md` rung status the data moves;
@@ -93,9 +93,9 @@ Then go on to sections 2 to 6.
 
 ## 3. Merge the passed Items, one at a time
 
-For each result with verdict `pass` (typed, or a `pending` resolved to pass) AND a held branch `night-shift/<d>-JB-n` (the
+For each result with verdict `pass` (typed, or a `pending` resolved to pass) AND a held branch `night-shift/<d>-<ID>` (the
 `branch:` line of its `## Sitting` section; if the section has none, still look for
-`git branch -r --list 'origin/night-shift/*-JB-n'` before treating the pass as a plain check,
+`git branch -r --list 'origin/night-shift/*-<ID>'` before treating the pass as a plain check,
 so held software work is never dropped):
 
 The branch was gated against an older `main`, and `main` moves many times a day, so it is brought
@@ -109,11 +109,11 @@ reads it back. Never recompute it after a merge: it must stay the base this Item
 1. **Update, in a throwaway worktree.** The branch stays as it is on the remote, because that is
    what flew. Later Items build on earlier ones, because the base is local `main`:
    ```
-   mkdir -p temp/reports/debrief && git rev-parse main > temp/reports/debrief/base-JB-n
-   BASE=$(cat temp/reports/debrief/base-JB-n)
-   git worktree remove --force temp/debrief-JB-n 2>/dev/null; git worktree prune
-   git worktree add -q -B night-shift/<d>-JB-n temp/debrief-JB-n origin/night-shift/<d>-JB-n
-   git -C temp/debrief-JB-n merge --no-edit $BASE
+   mkdir -p temp/reports/debrief && git rev-parse main > temp/reports/debrief/base-<ID>
+   BASE=$(cat temp/reports/debrief/base-<ID>)
+   git worktree remove --force temp/debrief-<ID> 2>/dev/null; git worktree prune
+   git worktree add -q -B night-shift/<d>-<ID> temp/debrief-<ID> origin/night-shift/<d>-<ID>
+   git -C temp/debrief-<ID> merge --no-edit $BASE
    ```
    A held branch nearly always conflicts here, on files only the paperwork touches. These three,
    and no others, have a mechanical answer (the exception to section 0's rule):
@@ -124,38 +124,38 @@ reads it back. Never recompute it after a merge: it must stay the base this Item
    - generated pages (`docs/project-map.md`, `docs/runbook.md`, `docs/glossary.md`, `plans/*/INDEX.md`):
      `main`'s copy, then `python -m mapkit gen` in the worktree.
 
-   Take `main`'s copy by naming the commit, `git -C temp/debrief-JB-n checkout $BASE -- <paths>`, never
+   Take `main`'s copy by naming the commit, `git -C temp/debrief-<ID> checkout $BASE -- <paths>`, never
    `--ours` or `--theirs`: in this merge direction `--ours` is the branch. Anything else conflicting:
-   `git -C temp/debrief-JB-n merge --abort` and treat it as the conflict below. Otherwise finish with
-   `git -C temp/debrief-JB-n add -A`, then `git -C temp/debrief-JB-n diff --cached --quiet || git -C temp/debrief-JB-n commit --no-edit`
+   `git -C temp/debrief-<ID> merge --abort` and treat it as the conflict below. Otherwise finish with
+   `git -C temp/debrief-<ID> add -A`, then `git -C temp/debrief-<ID> diff --cached --quiet || git -C temp/debrief-<ID> commit --no-edit`
    (a clean merge has already committed).
    Never edit the flown code here. If `origin/main` was already inside the branch and `BASE` adds
    nothing (`git merge` says up to date), the tip has not moved: step 3 can use the night's gate log
    and audit from `~/night-shift/Jugglebot/temp/reports/night-shift/`.
 2. **Audit, then the full suite, on the updated tip.** The gate only accepts results for that tip.
    Save the diff first and check it is not empty, because an audit of an empty diff finds nothing and
-   the gate cannot tell: `git -C temp/debrief-JB-n diff "$(cat temp/reports/debrief/base-JB-n)...HEAD" > temp/reports/debrief/diff-JB-n.patch`.
+   the gate cannot tell: `git -C temp/debrief-<ID> diff "$(cat temp/reports/debrief/base-<ID>)...HEAD" > temp/reports/debrief/diff-<ID>.patch`.
    Empty means the branch adds nothing: stop and say so. One `audit-reporter` agent (`model: sonnet`) on
-   that file; you write its result to `temp/reports/debrief/audit-JB-n.md`, findings marked as in the
+   that file; you write its result to `temp/reports/debrief/audit-<ID>.md`, findings marked as in the
    night's 2f and ending with `Audited HEAD: <sha>` and `Behaviour-affecting findings open: <n>`.
    Narrative findings are recorded, not applied. A behaviour-affecting one keeps the branch held and
    skips the suite. Then, with Foxy and the venv sourced, and with `run_in_background` because the
    suite can outlast a foreground call (wait for the `EXIT=` line):
    ```
-   cd temp/debrief-JB-n
-   printf 'HEAD=%s\nBRANCH=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse --abbrev-ref HEAD)" > ../reports/debrief/gate-JB-n.log
-   tools/night_shift_nonet.sh ./run_tests.sh --full >> ../reports/debrief/gate-JB-n.log 2>&1; echo "EXIT=$?" >> ../reports/debrief/gate-JB-n.log
+   cd temp/debrief-<ID>
+   printf 'HEAD=%s\nBRANCH=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse --abbrev-ref HEAD)" > ../reports/debrief/gate-<ID>.log
+   tools/night_shift_nonet.sh ./run_tests.sh --full >> ../reports/debrief/gate-<ID>.log 2>&1; echo "EXIT=$?" >> ../reports/debrief/gate-<ID>.log
    cd ../..
    ```
    A branch that touches `mapkit/` also needs the app's suite against it (condition (h)):
-   `tools/night_shift_nonet.sh tools/night_shift_app_suite.sh --app ~/night-shift/jugglebot-map --mapkit temp/debrief-JB-n --log temp/reports/debrief/app-JB-n.log`.
+   `tools/night_shift_nonet.sh tools/night_shift_app_suite.sh --app ~/night-shift/jugglebot-map --mapkit temp/debrief-<ID> --log temp/reports/debrief/app-<ID>.log`.
 3. **The gate.** The hardware pass overrides ONLY the gate's hardware condition, and the gate is
    an extract of the base, never the working tree:
    ```
-   BASE=$(cat temp/reports/debrief/base-JB-n)
+   BASE=$(cat temp/reports/debrief/base-<ID>)
    rm -rf temp/gate-base && mkdir -p temp/gate-base
    git archive $BASE tools/night_shift_gate.py mapkit | tar -x -C temp/gate-base
-   python temp/gate-base/tools/night_shift_gate.py --repo . --base $BASE --branch night-shift/<d>-JB-n --item JB-n --gate-log temp/reports/debrief/gate-JB-n.log --audit temp/reports/debrief/audit-JB-n.md --waive c [--app-log temp/reports/debrief/app-JB-n.log]
+   python temp/gate-base/tools/night_shift_gate.py --repo . --base $BASE --branch night-shift/<d>-<ID> --item <ID> --gate-log temp/reports/debrief/gate-<ID>.log --audit temp/reports/debrief/audit-<ID>.md --waive c [--app-log temp/reports/debrief/app-<ID>.log]
    ```
    Anything but `MERGE (c waived)` (a red or missing gate log, open audit findings, a
    normative radius, an open question, a forbidden path, a changed `owner` rating: condition
@@ -164,24 +164,24 @@ reads it back. Never recompute it after a merge: it must stay the base this Item
    made by the owner's say-so in this Session and named in the summary as not gated.
 4. **Merge.** `main` is still at the base unless the auto-pull moved it:
    ```
-   git merge -q --ff-only night-shift/<d>-JB-n
+   git merge -q --ff-only night-shift/<d>-<ID>
    ```
-   If `main` moved and `git diff --name-only "$(cat temp/reports/debrief/base-JB-n)" main` lists only `map/`, `docs/`, `logbook/` and
+   If `main` moved and `git diff --name-only "$(cat temp/reports/debrief/base-<ID>)" main` lists only `map/`, `docs/`, `logbook/` and
    `plans/` paths, no code changed under the result:
-   `git merge -q --no-ff -m "merge(sitting <date>): JB-n <title>" night-shift/<d>-JB-n`.
+   `git merge -q --no-ff -m "merge(sitting <date>): <ID> <title>" night-shift/<d>-<ID>`.
    If code moved, go back to step 1 once. If it moves again, the branch stays held: `main kept moving`.
-5. **Clean up**, whatever the outcome: `git worktree remove --force temp/debrief-JB-n` and
-   `git branch -D night-shift/<d>-JB-n`. That deletes the local copy only; the remote branch stays.
+5. **Clean up**, whatever the outcome: `git worktree remove --force temp/debrief-<ID>` and
+   `git branch -D night-shift/<d>-<ID>`. That deletes the local copy only; the remote branch stays.
 
-- A conflict outside step 1's three: `git -C temp/debrief-JB-n merge --abort`; the Item stays `in_progress`, the branch stays held, and
+- A conflict outside step 1's three: `git -C temp/debrief-<ID> merge --abort`; the Item stays `in_progress`, the branch stays held, and
   the summary names the conflicting files. Go on to the next Item (per-Item merges are what
   keep one failure from blocking the rest; never merge the candidate branch
   `night-shift/sitting-<date>` itself, it is a build product).
 - A merge that lands: close the Item with the Sitting as evidence:
-  `python -m mapkit item set-status JB-n complete --note "Passed at the Sitting of <date>: <one line from the notes>" --link logbook/<date>-sitting-debrief.md`
+  `python -m mapkit item set-status <ID> complete --note "Passed at the Sitting of <date>: <one line from the notes>" --link logbook/<date>-sitting-debrief.md`
   plus `--link` for the branch's own logbook entry (no `--commit`; its paths ride in the debrief commit below).
 - A `fail` verdict: the Item stays `in_progress`; append the headline of the notes as a
-  Progress line (`set-status JB-n in_progress --note "Failed at the Sitting of <date>: <headline>"`,
+  Progress line (`set-status <ID> in_progress --note "Failed at the Sitting of <date>: <headline>"`,
   no `--commit`); its branch stays held and its `## Sitting` section is re-read on the next
   Runbook regeneration (edit the section if the notes say the `do:` or `pass:` was wrong).
 - A `pass` with no branch anywhere (a plain check): close the Item the same way, no merge.

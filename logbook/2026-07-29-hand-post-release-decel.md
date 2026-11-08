@@ -473,4 +473,4 @@ explanation this entry withdrew, and the two kind-2 defects
 feedforward) which are pinned rather than fixed because no live host dispatches
 kind 2.
 
-> Closed 2026-10-28: superseded: Platform Teensy stroke engine retired at skill-stack R1 (JB-34 survey).
+> Closed 2026-10-28: superseded: Platform Teensy stroke engine retired at skill-stack R1 (IDEA-2 survey).

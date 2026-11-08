@@ -3,7 +3,7 @@ title: "C-HAND-5: the Hand's acceleration steps at the release, so the launch an
 type: feature
 date: 2026-11-02
 status: complete
-phase: "JB-114 R1 (the planner's own brake)"
+phase: "IDEA-17 R1 (the planner's own brake)"
 subsystem: motion
 related_entries:
   - 2026-11-01-sitting-debrief.md
@@ -44,7 +44,7 @@ Now the release may step: the launch keeps its acceleration up to the release,
 and the next window starts from a brake seed recorded on the release mark.
 `validate_cycle` admits the step at that knot only. Owner request 2026-11-01
 ("progress with improving the planner's braking profile"; current limits up to
-80 A bursts are fine). This is JB-114's R1. The bumper is pinned for later as a
+80 A bursts are fine). This is IDEA-17's R1. The bumper is pinned for later as a
 safety stop.
 
 ## Background: R0 (2026-10-30, read-only study)
@@ -140,7 +140,7 @@ cup.**
     then). So the ladder is unreachable while every frame carries the full
     scheduled knot set; a `HAS_SCHED` downgrade (`setpoint_pump.py` clears it
     when any of u1/u2/v1/v2 or the knot stamp is missing) falls back to it.
-    That case is recorded on JB-145.
+    That case is recorded on BUG-55.
   - The test now pins the ladder's wind-down on a continuous-release plan
     (`throw_plan_continuous`).
 
@@ -157,7 +157,7 @@ cup.**
   grace alone travels about 3 rev at 150 rev/s and the planned brake already uses
   the whole stroke above the release.
 - This needs at least three missed frames (more than 70 ms; the worst measured
-  emit gap is 47 ms). It is filed as JB-145. The bumper (JB-114) is the
+  emit gap is 47 ms). It is filed as BUG-55. The bumper (IDEA-17) is the
   physical backstop.
 
 ## Verification
@@ -180,7 +180,7 @@ cup.**
   `WT=<worktree> OUT=temp/sweeps/hstep bash sweep_hstep.sh`):
   - The runner is the h4500 runner (`temp/sweeps/sweep_h4500.sh`, 26 families,
     hand 4500, BLAS 1) plus three pose Columns families at Apex 1.00-1.40
-    (`temp/sweeps/hstep/`, logs kept for JB-143).
+    (`temp/sweeps/hstep/`, logs kept for BUG-54).
   - Rounds a and b were byte-identical (CMP_STATUS 0). The box went from 82 to
     100 cells at gate_hash 252300b435d8, re-stamped 1749cca8bc23 by a one-round verify after the audit fixes (all 29 families identical).
   - Unchanged: 50 cells, including all 38 pose plain-Columns, turned, high-low
@@ -189,7 +189,7 @@ cup.**
   - Added: all 18 high Columns cells are admissible.
   - Moved (not pinned): 32 cells. The Hop cells in BOTH planner modes (8 pose,
     8 level) moved their landing rectangles and Apex floors (0.648 to 0.578),
-    the selection rule JB-143 replaces; the LEVEL planner's self_toss (2),
+    the selection rule BUG-54 replaces; the LEVEL planner's self_toss (2),
     Columns (4) and oval (10) cells.
   - Level oval at Dwell 0.45 lost its 0.95 and 1.10 cells to LIMIT_JERK (885
     refusals). The stepped release holds the launch's specific force along a
@@ -209,7 +209,7 @@ cup.**
 
 Flown 2026-11-02 17:00 (launch `2026-11-02-17-00-38`, bag
 `2026-11-02_17-00-38_Higher-throws-with-JB-144-update`), Columns Sep. 125.
-Owner verdict on JB-144: pass ("All heights worked well!").
+Owner verdict on FEAT-36: pass ("All heights worked well!").
 
 | Apex | Best run | Peak Hand iq launch / brake | Planned peak Hand acc |
 |---|---|---|---|
@@ -220,12 +220,12 @@ Owner verdict on JB-144: pass ("All heights worked well!").
 
 (The 0.95 goals that ended on LIMIT_VEL, HAND_LIMIT_ACC and MISSED_CATCH are
 the pre-existing Columns residue: leg velocity 354 > 350 on the catch side and
-the JB-120 class.)
+the BUG-42 class.)
 
 - **One SPINOUT, first 1.35 goal:** one launch overshot to 168 rev/s
   (planned ~151). The stepped brake saturated at the 60 A limit and the Hand
   ran to 10.83 rev into the top stop. Every other launch from 1.05 up stayed at
-  10.16-10.23 rev and at most -36 A. Filed as JB-147.
+  10.16-10.23 rev and at most -36 A. Filed as BUG-57.
 - **The release throws HIGH, not low:** the Learner commanded about 1.26 m to
   land 1.37 m. The prediction above (a rounded corner, slower release) had the
   sign wrong; the Learner absorbs it.
@@ -238,4 +238,4 @@ the JB-120 class.)
   - the C-HAND-3 throw envelope (5.64 m/s, about 1.62);
   - the firmware stream STOP's 3500 rev/s^2 that caps the brake seed (about 1.65);
   - the room ceiling;
-  - JB-147's overspeed margin.
+  - BUG-57's overspeed margin.

@@ -1,7 +1,7 @@
 ---
-id: JB-178
+id: TKT-40
 kind: ticket
-title: 'JB-175 held on night-shift/2026-11-06-JB-175: clear end_kind on the re-labelled end and merge, merge as is, or drop?'
+title: 'BUG-68 held on night-shift/2026-11-06-BUG-68: clear end_kind on the re-labelled end and merge, merge as is, or drop?'
 status: complete
 created: '2026-11-06'
 updated: '2026-11-05T22:56:17Z'
@@ -18,7 +18,7 @@ parent: bug-a-hand-or-guard-fault-inside-a-catch-s-judging-window-ends
 type: question
 ---
 
-JB-175 is built on night-shift/2026-11-06-JB-175: a Hand or guard fault during a Catch's judging window now ends the Attempt `ABORTED_FAULT`, and the Catch is booked unverifiable. The full gate passed, but the audit left one finding open, so the merge gate held it.
+BUG-68 is built on night-shift/2026-11-06-BUG-68: a Hand or guard fault during a Catch's judging window now ends the Attempt `ABORTED_FAULT`, and the Catch is booked unverifiable. The full gate passed, but the audit left one finding open, so the merge gate held it.
 
 ## The open finding
 
@@ -41,7 +41,7 @@ Recommendation: 1. The Item exists to stop that line blaming the Catch.
 
 - 1: the next night applies it, re-gates and merges.
 - 2: the next night re-gates and merges.
-- 3: JB-175 goes back to open.
+- 3: BUG-68 goes back to open.
 
 ## Answer
 

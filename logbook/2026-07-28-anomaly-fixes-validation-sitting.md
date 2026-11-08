@@ -1152,4 +1152,4 @@ lag reaching this gate — **CLOSED 2026-08-15**, transport fixed at can-bridge
 FW 14, end-to-end 10–20 ms
 (`plans/archived/bridge-temporal-trustworthiness.md`).
 
-> Closed 2026-10-28: Q1-Q3 answered (2026-08-18-hand-end-stop-corrected); Q4 int16 offset truncation tracked as JB-26 (JB-34 survey).
+> Closed 2026-10-28: Q1-Q3 answered (2026-08-18-hand-end-stop-corrected); Q4 int16 offset truncation tracked as BUG-7 (IDEA-2 survey).

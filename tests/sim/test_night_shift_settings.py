@@ -90,7 +90,7 @@ def test_refused(command):
     "cd ~/night-shift/jugglebot-map && npm run test -- --run",
     "tools/night_shift_nonet.sh tools/night_shift_app_suite.sh --app A --mapkit B --log C",
     "git -C ~/night-shift/jugglebot-map push -q origin main",
-    "git -C ~/night-shift/jugglebot-map push -q -u origin night-shift/2026-11-08-JB-7",
+    "git -C ~/night-shift/jugglebot-map push -q -u origin night-shift/2026-11-08-BUG-7",
     "python -m pytest tests/sim/test_night_shift_deploy.py -q",
     "grep -n check tools/night_shift_deploy.py",
     "git archive origin/main tools/night_shift_gate.py mapkit | tar -x -C D/gate-base",

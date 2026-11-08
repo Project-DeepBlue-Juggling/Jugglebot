@@ -308,7 +308,7 @@ def test_heartbeat_t2j_can_fault_latch_roundtrip():
 
 
 def test_heartbeat_t2j_fw38_sched_census_roundtrip_and_tail_layout():
-    # FW 38 / PROTOCOL 11 (JB-149): the scheduled-lane counters and the
+    # FW 38 / PROTOCOL 11 (BUG-58): the scheduled-lane counters and the
     # per-window frame-age census are APPENDED after sched_demoted, so the
     # pre-v11 126 B prefix keeps its offsets and the new fields are the tail.
     # Distinct values per field so an order slip cannot round-trip by luck;
@@ -337,7 +337,7 @@ def test_heartbeat_t2j_fw38_sched_census_roundtrip_and_tail_layout():
 
 
 def test_heartbeat_t2j_fw40_downlink_ledger_roundtrip_and_tail_layout():
-    # FW 40 / PROTOCOL 12 (JB-174): the eight cumulative downlink counters are
+    # FW 40 / PROTOCOL 12 (FEAT-41): the eight cumulative downlink counters are
     # APPENDED after rx_age_gt70, so the v11 158 B prefix keeps its offsets.
     # Distinct values so an order slip cannot round-trip by luck; u32 max
     # survives the unsigned fields.
@@ -491,9 +491,9 @@ def test_clock_diag_is_additive_protocol_version_unchanged():
     # The frames that existed before FW 11 keep their exact sizes.
     assert p.PROFILE_SIZE == 76
     assert p.HEARTBEAT_T2J_SIZE == 190   # 73 until v8 (2026-09-14) appended the FW 22 promotion
-                                     # diagnostics; 190 at v12 (2026-11-06, FW 40, JB-174) which
+                                     # diagnostics; 190 at v12 (2026-11-06, FW 40, FEAT-41) which
                                      # appended the downlink ledger (eight u32);
-                                     # 158 at v11 (2026-11-03, FW 38, JB-149) which
+                                     # 158 at v11 (2026-11-03, FW 38, BUG-58) which
                                      # appended the scheduled-lane census + frame-age window;
                                      # 126 at v9 (2026-09-15, FW 23) which appended
                                      # the CAN_BUS_DOWN trip latch can_fault_leg/age_ms/count
@@ -675,9 +675,9 @@ def test_cache_diag_is_additive_protocol_version_unchanged():
     assert p.CLOCK_DIAG_SIZE == 49
     assert p.PROFILE_SIZE == 76
     assert p.HEARTBEAT_T2J_SIZE == 190   # 73 until v8 (2026-09-14) appended the FW 22 promotion
-                                     # diagnostics; 190 at v12 (2026-11-06, FW 40, JB-174) which
+                                     # diagnostics; 190 at v12 (2026-11-06, FW 40, FEAT-41) which
                                      # appended the downlink ledger (eight u32);
-                                     # 158 at v11 (2026-11-03, FW 38, JB-149) which
+                                     # 158 at v11 (2026-11-03, FW 38, BUG-58) which
                                      # appended the scheduled-lane census + frame-age window;
                                      # 126 at v9 (2026-09-15, FW 23) which appended
                                      # the CAN_BUS_DOWN trip latch can_fault_leg/age_ms/count
@@ -902,9 +902,9 @@ def test_ring_diag_is_additive_protocol_version_unchanged():
     assert p.CLOCK_DIAG_SIZE == 49
     assert p.PROFILE_SIZE == 76
     assert p.HEARTBEAT_T2J_SIZE == 190   # 73 until v8 (2026-09-14) appended the FW 22 promotion
-                                     # diagnostics; 190 at v12 (2026-11-06, FW 40, JB-174) which
+                                     # diagnostics; 190 at v12 (2026-11-06, FW 40, FEAT-41) which
                                      # appended the downlink ledger (eight u32);
-                                     # 158 at v11 (2026-11-03, FW 38, JB-149) which
+                                     # 158 at v11 (2026-11-03, FW 38, BUG-58) which
                                      # appended the scheduled-lane census + frame-age window;
                                      # 126 at v9 (2026-09-15, FW 23) which appended
                                      # the CAN_BUS_DOWN trip latch can_fault_leg/age_ms/count

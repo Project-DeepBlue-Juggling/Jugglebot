@@ -1,5 +1,5 @@
 ---
-id: JB-74
+id: FEAT-25
 kind: feature
 title: Move the Wave camera panel to be in the same banner as the 'Home', 'Level', 'Activate' etc. buttons. Move the buttons to be centred between the camera panel and the Trail panel
 status: complete

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TEMPORARY (JB-147 diagnostic capture): view a full-rate Hand capture CSV.
+"""TEMPORARY (BUG-57 diagnostic capture): view a full-rate Hand capture CSV.
 
 Reads a CSV written by teensy_bridge_node (launch arg ``hand_capture:=true`` ->
 ~/Desktop/Jugglebot/temp/hand_capture/hand_capture_<ts>.csv) and prints a

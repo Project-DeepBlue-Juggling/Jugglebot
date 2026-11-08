@@ -336,4 +336,4 @@ pre-fix behaviour exactly. No firmware flash, no config regeneration.
    item 7 — realized peaks on the SpaceMouse / reactive-catch path are per-install
    rather than rolling-window.
 
-> Closed 2026-10-28: superseded by plans/archived/catch-reach-degenerate-overshoot.md (JB-34 survey).
+> Closed 2026-10-28: superseded by plans/archived/catch-reach-degenerate-overshoot.md (IDEA-2 survey).

@@ -242,4 +242,4 @@ audit fix (deleting the two inert lead knobs) is behaviour-preserving — the
 Commit SHA: d3ae5b0 (feat(sim): Rung-1 clean single catch (BB-reload) under
 section-3 noise).
 
-> Closed 2026-10-28: superseded by plans/archived/bb-online-juggle-tilt-rearchitecture.md (JB-34 survey).
+> Closed 2026-10-28: superseded by plans/archived/bb-online-juggle-tilt-rearchitecture.md (IDEA-2 survey).

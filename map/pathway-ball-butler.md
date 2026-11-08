@@ -1,5 +1,5 @@
 ---
-id: JB-37
+id: PWAY-1
 kind: pathway
 title: Ball Butler
 status: active

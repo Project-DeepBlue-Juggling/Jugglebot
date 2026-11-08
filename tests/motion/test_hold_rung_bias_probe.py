@@ -1,5 +1,5 @@
 """CI guard for ``tools/probes/hold_rung_bias.py`` (pre-release-hold ladder read,
-map JB-102, runbook ``tests/hardware/session_oval_rung1.md`` § 11).
+map FEAT-32, runbook ``tests/hardware/session_oval_rung1.md`` § 11).
 
 The probe attributes throws to goals (launch log) and holds (``segment config``
 lines) by itself and prints the next operator action, so its attribution, the

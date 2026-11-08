@@ -1,5 +1,5 @@
 ---
-id: JB-113
+id: IDEA-16
 kind: idea
 title: JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them
 status: in_progress

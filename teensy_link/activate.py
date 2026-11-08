@@ -22,7 +22,7 @@ active pose (``ACTIVATE_POSITION_REVS`` ≈ 2.19 rev). So:
     active errors (the leg reached the active pose and settled).
   * **failure** ⇒ active errors during the move, OR the timeout elapsed (the leg
     never reached the target — e.g. not in CLOSED_LOOP, bad gains, stalled), OR
-    the bridge's **stall guard** fired (can-bridge FW 36, JB-146: the Hand sat at
+    the bridge's **stall guard** fired (can-bridge FW 36, BUG-56: the Hand sat at
     high current without moving for 300 ms and was commanded IDLE). The guard is
     reported in the Diagnostic ``flags`` bit2, sticky until the next ladder that
     targets the axis; the monitor honours it only after it has seen the bit CLEAR
@@ -51,7 +51,7 @@ from typing import Dict, Iterable, List
 # homing.py / encoder_search.py).
 AXIS_STATE_CLOSED_LOOP = 8
 
-# DIAGNOSTIC.flags bit2 (can-bridge FW 36, JB-146): the cold-start ladder's stall
+# DIAGNOSTIC.flags bit2 (can-bridge FW 36, BUG-56): the cold-start ladder's stall
 # guard IDLEd this axis. Mirrors leg_activate.h DIAG_FLAG_ACTIVATE_STALL (pinned by
 # tests/firmware/test_hand_stall_guard_xref.py).
 DIAG_FLAG_ACTIVATE_STALL = 0x4

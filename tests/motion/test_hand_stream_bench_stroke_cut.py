@@ -1,4 +1,4 @@
-"""Pure-python half of ``hand_stream_bench.py --stage stroke_cut`` (JB-145).
+"""Pure-python half of ``hand_stream_bench.py --stage stroke_cut`` (BUG-55).
 
 The stage COMMANDS THE HAND MOTOR and lives in tests/hardware (``--ignore``d);
 its profile, cut selection, stop model, refusals and frame builder live in

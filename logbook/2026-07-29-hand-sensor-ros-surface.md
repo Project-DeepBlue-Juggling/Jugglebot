@@ -417,4 +417,4 @@ flash at Phase 7 step 1, in either order relative to this Jetson deploy, because
 - `logbook/2026-07-29-hand-sensor-ball-detect-config.md` — Phase 1.
 - `logbook/2026-07-29-hand-sensor-fw-version-surfacing.md` — Phase 0.
 
-> Closed 2026-10-28: closed by plans/archived/catch-robustness.md (JB-34 survey).
+> Closed 2026-10-28: closed by plans/archived/catch-robustness.md (IDEA-2 survey).

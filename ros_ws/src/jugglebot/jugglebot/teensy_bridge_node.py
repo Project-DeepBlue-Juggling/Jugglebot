@@ -152,7 +152,7 @@ from jugglebot import mocap_status as mocap_st
 import jugglebot.hardware_config as hw
 import jugglebot.protocol_config as proto
 from jugglebot.motion import hand_jam as hj
-from jugglebot.hand_capture import HandCaptureWriter  # TEMPORARY (JB-147 diagnostic capture)
+from jugglebot.hand_capture import HandCaptureWriter  # TEMPORARY (BUG-57 diagnostic capture)
 
 
 #: /cache_diag WARN threshold on the per-axis encoder-cache age FLOOR
@@ -838,7 +838,7 @@ _T2J_TORQUE_CLAMP_SHIFT = int(p.HEARTBEAT_TORQUE_CLAMP_SHIFT)
 # continuous promotion or the next disarm/arm edge. On the wire since FW 22,
 # surfaced 2026-10-13 after R5 sitting 7's latch went unread by every node.
 _T2J_FLAG_SCHED_HOLD_LATCHED = int(p.HeartbeatT2JFlags.SCHED_HOLD_LATCHED)
-# JB-149 (FW 38 / PROTOCOL_VERSION 11): firmware scheduled-lane counters the
+# BUG-58 (FW 38 / PROTOCOL_VERSION 11): firmware scheduled-lane counters the
 # STOP WARN differences over its ~1 s sample ring, the per-heartbeat frame-age
 # buckets, and the rx_age_max_us sentinel of a window with no stamped frame.
 _SCHED_FW_COUNTERS = ('sched_expired', 'sched_superseded', 'sched_stale',
@@ -848,7 +848,7 @@ _RX_AGE_BUCKETS = ('rx_age_le25', 'rx_age_le50', 'rx_age_le70', 'rx_age_gt70')
 _RX_AGE_NONE = -2 ** 31
 _SCHED_HIST_LEN = 11            # 10 heartbeat windows (~1 s) + the baseline
 _SCHED_DISARM_EDGE_S = 0.5      # a STOP this soon after the 1->0 fall is "at" it
-# JB-174 (FW 40 / PROTOCOL_VERSION 12): the firmware's downlink ledger. Until
+# FEAT-41 (FW 40 / PROTOCOL_VERSION 12): the firmware's downlink ledger. Until
 # FW 39 the stream socket held ONE packet, so a host heartbeat landing in the
 # same 1 ms firmware tick as a setpoint overwrote it (about 1.5 % of setpoints,
 # measured in three Sittings), and no uplinked number could count it. These are
@@ -946,7 +946,7 @@ _BB_HAND_AXIS = proto.NODE_ID_BB_HAND     # 8
 _DIAG_FLAG_HB_STALE = 0x1   # ODrive CAN heartbeat older than CAN_AXIS_SILENCE_TIMEOUT_US (2.0 s);
                             # HeartbeatT2J HB_STALE_MASK is the sharper 0.5 s diagnostic (FW 23)
 _DIAG_FLAG_HB_SEEN = 0x2    # ODrive has heartbeated at least once this firmware boot
-_DIAG_FLAG_ACTIVATE_STALL = 0x4  # FW 36 (JB-146): the cold-start ladder's stall guard IDLEd
+_DIAG_FLAG_ACTIVATE_STALL = 0x4  # FW 36 (BUG-56): the cold-start ladder's stall guard IDLEd
                                  # this axis (sticky until the next ladder targeting it)
 # BB-axis liveness windows for the robot_state append. BB diag is a fixed 1 Hz
 # per axis (send_bb_diag), so 3 s = three missed frames; BB estimates ride the
@@ -1423,7 +1423,7 @@ class TeensyBridgeNode(Node):
                  setpoint_source=None, boot_state_read: bool = True,
                  stow_on_shutdown: bool = True):
         super().__init__('teensy_bridge_node')
-        # JB-149 cpu_partition (opt-in, default OFF): pin this process FIRST,
+        # BUG-58 cpu_partition (opt-in, default OFF): pin this process FIRST,
         # before the client's RX/heartbeat threads and the forwarder exist, so
         # all of them inherit the stream cores.
         self.declare_parameter('cpu_partition', False)
@@ -1433,11 +1433,11 @@ class TeensyBridgeNode(Node):
                 self.get_parameter('stream_cpus').value)
             if ok:
                 self.get_logger().info(
-                    'JB-149 cpu_partition ON: teensy_bridge_node pinned to '
+                    'BUG-58 cpu_partition ON: teensy_bridge_node pinned to '
                     'cpus %s' % txt)
             else:
                 self.get_logger().warning(
-                    'JB-149 cpu_partition requested but NOT applied '
+                    'BUG-58 cpu_partition requested but NOT applied '
                     '(fail-open, scheduling unchanged): %s' % txt)
         # Record DEBUG detail in the node log (the launch shell filters it out of
         # the screen). Safe here: this node has no per-frame / per-tick debug()
@@ -1748,17 +1748,17 @@ class TeensyBridgeNode(Node):
         # this explicit clear a stale flags=1 could survive construction. The
         # defensive 0-write closes that — mpc_active=0 on every startup path.
         self._mpc_active = False
-        # JB-95 follow-up: firmware sched_stops baseline / WARN rate limit.
+        # FEAT-31 follow-up: firmware sched_stops baseline / WARN rate limit.
         self._sched_stops_seen = None
         self._sched_stops_warn_mono = 0.0
-        # JB-149 (FW 38 / PROTOCOL 11): the last ~1 s of heartbeat samples of the
+        # BUG-58 (FW 38 / PROTOCOL 11): the last ~1 s of heartbeat samples of the
         # firmware scheduled-lane counters + frame-age windows, for the STOP WARN,
         # and the disarm-edge state (a STOP at the 1->0 fall WARNs once).
         self._sched_hist = deque(maxlen=_SCHED_HIST_LEN)
         self._sched_hist_gen = None
         self._sched_prev_armed = False
         self._sched_fall_mono = None
-        # JB-174 (FW 40 / PROTOCOL 12): downlink loss accounting. The host's
+        # FEAT-41 (FW 40 / PROTOCOL 12): downlink loss accounting. The host's
         # sent count is sampled on the RX thread when a heartbeat lands (so at
         # most a frame or two is in flight), the tracker and the ring are fed
         # from the 10 Hz link_status timer, and one summary line is logged each
@@ -1770,7 +1770,7 @@ class TeensyBridgeNode(Node):
         self._dn_prev_armed = False
         self._dn_episode = None     # (t0, sent, lost, counters) at the arm edge
         self._dn_settle = 0         # heartbeats left before the summary
-        # 2026-11-01 observability (JB-98): forwarding-thread gap monitors. The
+        # 2026-11-01 observability (BUG-34): forwarding-thread gap monitors. The
         # emitter's max_emit_gap_ms cannot see a stall of THIS process; these
         # can. fwd = spacing of successful sends; loop = spacing of
         # _setpoint_loop iterations (~1 kHz idle poll, so a long one = starved).
@@ -1996,15 +1996,15 @@ class TeensyBridgeNode(Node):
         # (node-default MutuallyExclusiveCallbackGroup), so it needs no lock.
         self._error_log = MotorStateTracker()
 
-        # TEMPORARY (JB-147 diagnostic capture): opt-in full-rate Hand CSV capture.
+        # TEMPORARY (BUG-57 diagnostic capture): opt-in full-rate Hand CSV capture.
         # Default '' = off (no writer, no thread, hot-path cost is one None test).
         self.declare_parameter('hand_capture_dir', '')
         self._hand_capture = None
-        # Hand feedback-starvation episode lines (JB-137 diagnostic; no actuation).
+        # Hand feedback-starvation episode lines (BUG-50 diagnostic; no actuation).
         self._hand_fb_watch = HandFeedbackWatch()
         self._hfw_last_frames = None
         self._hand_capture_start(self.get_parameter('hand_capture_dir').value)
-        # JB-149: opt-in GC pause probe (default off: nothing installed).
+        # BUG-58: opt-in GC pause probe (default off: nothing installed).
         self._gc_probe = None
         self.declare_parameter('gc_probe', False)
         if bool(self.get_parameter('gc_probe').value):
@@ -2690,13 +2690,13 @@ class TeensyBridgeNode(Node):
         # banner — the launch says whether the INSTALLED copy is stale, this
         # says which file this process actually got.
         self.get_logger().debug("config identity — " + hardware_config_identity())
-        # JB-149 gc_freeze (opt-in, default OFF): init is complete; the
+        # BUG-58 gc_freeze (opt-in, default OFF): init is complete; the
         # forwarder thread starts at arm, after this.
         self.declare_parameter('gc_freeze', False)
         if bool(self.get_parameter('gc_freeze').value):
             n, th = _tuning.freeze_gc()
             self.get_logger().info(
-                'JB-149 gc_freeze ON: teensy_bridge_node froze %d objects, '
+                'BUG-58 gc_freeze ON: teensy_bridge_node froze %d objects, '
                 'gc thresholds %r' % (n, th))
 
     # ═══════════════════════════════════════════════════════════
@@ -2708,7 +2708,7 @@ class TeensyBridgeNode(Node):
             hb = HeartbeatT2J.unpack(payload)
         except Exception:  # noqa: BLE001 — never let a bad frame kill the RX thread
             return
-        # JB-174: the sent count as of THIS heartbeat's arrival (RX thread), so
+        # FEAT-41: the sent count as of THIS heartbeat's arrival (RX thread), so
         # the loss figure compares like with like. The pump is built after the
         # subscription, hence the getattr.
         pump = getattr(self, '_sp_pump', None)
@@ -2717,7 +2717,7 @@ class TeensyBridgeNode(Node):
             self._latest_heartbeat = hb
             self._latest_heartbeat_sent = sent
             self._heartbeat_gen += 1
-        # JB-137 diagnostic: must never raise into the receive path.
+        # BUG-50 diagnostic: must never raise into the receive path.
         try:
             watch = getattr(self, '_hand_fb_watch', None)
             if watch is not None:
@@ -2744,7 +2744,7 @@ class TeensyBridgeNode(Node):
         # executor timer: an executor thread blocked for seconds (`_park_hand`,
         # a cold-start verb) must not blind it. Non-blocking by contract.
         self._hand_jam_feed(tm)
-        # JB-137: episode lines for Hand feedback starvation. A few compares
+        # BUG-50: episode lines for Hand feedback starvation. A few compares
         # per frame; logs only on an episode edge. 'streaming' = the setpoint
         # pump built frames since the previous Telemetry frame.
         # Must never raise into the receive path (it would skip the capture
@@ -2763,7 +2763,7 @@ class TeensyBridgeNode(Node):
                     self.get_logger().warning(line)
         except Exception:  # noqa: BLE001 -- a diagnostic only
             pass
-        cap = self._hand_capture  # TEMPORARY (JB-147 diagnostic capture)
+        cap = self._hand_capture  # TEMPORARY (BUG-57 diagnostic capture)
         if cap is not None:
             cap.offer('telem', t_src_us=tm.t_teensy_us, pos=tm.pos_rev[_HAND_AXIS],
                       vel=tm.vel_rps[_HAND_AXIS])
@@ -2778,12 +2778,12 @@ class TeensyBridgeNode(Node):
             prev = self._latest_diag.get(axis)
             self._latest_diag[axis] = dg
             self._latest_diag_mono[axis] = time.monotonic()
-        cap = self._hand_capture  # TEMPORARY (JB-147 diagnostic capture)
+        cap = self._hand_capture  # TEMPORARY (BUG-57 diagnostic capture)
         if cap is not None and axis == _HAND_AXIS:
             cap.offer('diag', iq_sp=dg.iq_setpoint, iq_meas=dg.iq_measured,
                       axis_state=dg.axis_state, active_errors=dg.active_errors,
                       diag_flags=dg.flags)
-        # FW 36 (JB-146): name a stall-guard abort in the operator log on the
+        # FW 36 (BUG-56): name a stall-guard abort in the operator log on the
         # bit's RISING edge. An ACTIVATE's RPC reply went out before the move, so
         # this frame is the only place the bridge can say why the Hand went IDLE.
         stalled = bool(int(dg.flags) & _DIAG_FLAG_ACTIVATE_STALL)
@@ -2799,7 +2799,7 @@ class TeensyBridgeNode(Node):
                 f'IDLE during ACTIVATE / HAND_MOVE_TO: high current without motion '
                 f'for 300 ms (iq now {float(dg.iq_measured):+.1f} A, motor '
                 f'{float(dg.temp_motor):.0f} C). Check the Hand zero (an ODrive GUI '
-                f'save resets it, JB-146) and re-home before the next ACTIVATE.')
+                f'save resets it, BUG-56) and re-home before the next ACTIVATE.')
 
     def _on_profile(self, msg_type, seq, payload, addr):
         try:
@@ -2915,12 +2915,12 @@ class TeensyBridgeNode(Node):
         # commanded the hand most recently IS the command.
         with self._lock:
             self._last_hand_cmd = {'pos': pos, 'vel': vel, 'tor': tor}
-        cap = self._hand_capture  # TEMPORARY (JB-147 diagnostic capture)
+        cap = self._hand_capture  # TEMPORARY (BUG-57 diagnostic capture)
         if cap is not None:
             cap.offer('echo', t_src_us=ce.t_bridge_us, cmd_pos=pos, cmd_vel=vel,
                       cmd_tor=tor)
 
-    # TEMPORARY (JB-147 diagnostic capture)
+    # TEMPORARY (BUG-57 diagnostic capture)
     def _hand_capture_start(self, directory):
         """Start the opt-in Hand capture writer (no-op for '' / None)."""
         if not directory:
@@ -2928,7 +2928,7 @@ class TeensyBridgeNode(Node):
         try:
             self._hand_capture = HandCaptureWriter(str(directory)).start()
             self.get_logger().warn(
-                f'JB-147 hand capture ON -> {self._hand_capture.path}')
+                f'BUG-57 hand capture ON -> {self._hand_capture.path}')
         except Exception as e:  # noqa: BLE001 -- a diagnostic must not stop the bridge
             self._hand_capture = None
             self.get_logger().error(f'hand capture failed to start: {e}')
@@ -6109,7 +6109,7 @@ class TeensyBridgeNode(Node):
         return fault
 
     def _note_sched_sample(self, hb, hb_gen) -> None:
-        """Keep the last ~1 s of firmware scheduled-lane samples (JB-149).
+        """Keep the last ~1 s of firmware scheduled-lane samples (BUG-58).
 
         One entry per NEW heartbeat (``hb_gen`` changes): the cumulative
         counters and that heartbeat window's frame-age census. Read by the
@@ -6143,7 +6143,7 @@ class TeensyBridgeNode(Node):
 
     def _note_downlink_sample(self, hb, hb_gen, hb_sent, now=None) -> None:
         """Feed the downlink loss tracker and ring, once per NEW heartbeat, and
-        log one summary line each time streaming ends (JB-174, FW 40).
+        log one summary line each time streaming ends (FEAT-41, FW 40).
 
         Advisory only: runs on the 10 Hz link_status timer and writes to the
         logger and /link_status, never to a gate. The summary waits
@@ -6174,7 +6174,7 @@ class TeensyBridgeNode(Node):
 
     def _log_downlink_episode(self, entry, t) -> None:
         """One line per streaming episode: INFO when nothing was lost, WARN
-        otherwise. The Sitting row of JB-174 reads these lines."""
+        otherwise. The Sitting row of FEAT-41 reads these lines."""
         t0, sent0, lost0, c0 = self._dn_episode
         self._dn_episode = None
         sent, lost, c = entry
@@ -6226,7 +6226,7 @@ class TeensyBridgeNode(Node):
         grace = ~70 ms) expired. Three verdicts, and this WARN prints the
         measured host maxima for the last ~1 s window (published on
         /link_status as max_forward_gap_ms / max_loop_gap_ms) plus, from FW 38
-        (JB-149), the firmware's own counters and frame ages:
+        (BUG-58), the firmware's own counters and frame ages:
 
         * **host stream clean, cover expired firmware-side** when the forward
           gap tracker saw frames, its max, its OPEN gap (time since the last
@@ -6415,7 +6415,7 @@ class TeensyBridgeNode(Node):
                             # culprit after the stow.
                             # `can_fault_leg` is an AXIS id (6 = the Hand):
                             # name it through _axis_label so the Hand is never
-                            # reported as "leg 6" (JB-1).
+                            # reported as "leg 6" (BUG-1).
                             axis_no = int(hb.can_fault_leg)
                             axis_str = ('leg unknown' if axis_no == 0xFF
                                         else _axis_label(axis_no))
@@ -6732,7 +6732,7 @@ class TeensyBridgeNode(Node):
                     KeyValue(key='sched_hold_latched',
                              value=str(int(bool(int(hb.flags)
                                                 & _T2J_FLAG_SCHED_HOLD_LATCHED)))),
-                    # FW 38 / PROTOCOL 11 (JB-149): the rest of the firmware's
+                    # FW 38 / PROTOCOL 11 (BUG-58): the rest of the firmware's
                     # scheduled-lane census (cumulative since boot, difference
                     # two samples) and this heartbeat window's frame-age census
                     # (rx_age = bridge now - the frame's t_start at queue entry;
@@ -6746,7 +6746,7 @@ class TeensyBridgeNode(Node):
                                     else str(int(hb.rx_age_max_us)))),
                     *[KeyValue(key=k, value=str(int(getattr(hb, k))))
                       for k in _RX_AGE_BUCKETS],
-                    # FW 40 / PROTOCOL 12 (JB-174): the firmware's downlink
+                    # FW 40 / PROTOCOL 12 (FEAT-41): the firmware's downlink
                     # ledger (cumulative since the bridge booted) and the
                     # host's verdict on it. setpoints_lost = setpoints this
                     # node sent that never reached the firmware dispatcher,
@@ -6917,7 +6917,7 @@ class TeensyBridgeNode(Node):
                                     throttle_duration_sec=5.0)
 
     def _gc_probe_tick(self):
-        """JB-149: drain the GC probe and log it (1 Hz timer; probe on only)."""
+        """BUG-58: drain the GC probe and log it (1 Hz timer; probe on only)."""
         from jugglebot import gc_probe as _gcp
         s = self._gc_probe.summary()
         line = _gcp.format_summary('teensy_bridge_node', s)
@@ -7780,7 +7780,7 @@ class TeensyBridgeNode(Node):
             pos_rev=float(telem.pos_rev[int(axis)]),
             active_errors=int(d.active_errors),
             homing_result=int(d.homing_result),   # authoritative outcome from the HomingResult uplink
-            homing_epoch=int(d.homing_epoch))     # per-home epoch (FW 34, JB-72): attributes a fast home's result
+            homing_epoch=int(d.homing_epoch))     # per-home epoch (FW 34, BUG-18): attributes a fast home's result
 
     def _run_home(self, axes, *, poll_dt=0.05):
         """Home ``axes`` over the can-bridge link, one axis at a time.
@@ -8610,7 +8610,7 @@ class TeensyBridgeNode(Node):
         mon = ActivateMonitor(axes, targets)
         # AXIS_ALL also parks the Hand, which `axes` (the legs) does not observe.
         # Watch its FW 36 stall bit alongside so a stalled Hand fails the activate
-        # by name instead of passing with the Hand IDLE (JB-146). Same gate as
+        # by name instead of passing with the Hand IDLE (BUG-56). Same gate as
         # ActivateMonitor: honoured only after a clear bit was seen this run.
         hand_watch = fire_axis == rpc_args.AXIS_ALL and _HAND_AXIS not in axes
         hand_mon = (ActivateMonitor([_HAND_AXIS], {_HAND_AXIS: float(
@@ -10441,12 +10441,12 @@ class TeensyBridgeNode(Node):
             time.sleep(_SHUTDOWN_DISARM_SETTLE_S)
             self._wait_wire_disarmed()
             self._shutdown_stow()
-        # TEMPORARY (JB-147 diagnostic capture): flush after the stow so it is in the file.
+        # TEMPORARY (BUG-57 diagnostic capture): flush after the stow so it is in the file.
         if getattr(self, '_hand_capture', None) is not None:
             try:
                 self._hand_capture.close()
                 self.get_logger().warn(
-                    f'JB-147 hand capture closed: {self._hand_capture.written} rows, '
+                    f'BUG-57 hand capture closed: {self._hand_capture.written} rows, '
                     f'{self._hand_capture.dropped} dropped -> {self._hand_capture.path}')
             except Exception:  # noqa: BLE001
                 pass

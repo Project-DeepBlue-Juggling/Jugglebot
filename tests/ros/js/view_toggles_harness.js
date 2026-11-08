@@ -1,4 +1,4 @@
-// view_toggles_harness.js — the REAL ros_ws/gui/js/view-toggles.js (JB-89) under node. Prints one JSON object.
+// view_toggles_harness.js — the REAL ros_ws/gui/js/view-toggles.js (BUG-31) under node. Prints one JSON object.
 import { loadViewToggles, saveViewToggles, setViewToggle, toggleState, VIEW_TOGGLES_KEY } from './view-toggles.js';
 
 class Store {

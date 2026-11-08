@@ -1,4 +1,4 @@
-"""JB-21: the pure helper behind the `bb/throw_outcome` throw identity."""
+"""BUG-2: the pure helper behind the `bb/throw_outcome` throw identity."""
 from __future__ import annotations
 
 from jugglebot import throw_identity as ti

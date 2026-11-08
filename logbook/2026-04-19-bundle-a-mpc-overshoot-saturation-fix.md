@@ -136,4 +136,4 @@ The 2026-04-19 13:49–13:52 sessions will not, on their own, confirm or deny th
 - Should `WaypointTargetSource` adopt the same change-detection-plus-cache structure as `ZmqTargetSource` for consistency, or is its current "emit fresh events on every `update()`" acceptable given that waypoint sources are driven by sim time rather than external IPC?
 - The twist clamp is applied uniformly at `MPCParams.max_leg_vel_mmps`. Should it instead be derived from the Jacobian-mapped linear-velocity envelope at the current pose, which would permit faster warm-up segments near the workspace centre where leg velocities are less kinematically restrictive?
 
-> Closed 2026-10-28: superseded: MPC chain removed 2026-09-01 (JB-34 survey).
+> Closed 2026-10-28: superseded: MPC chain removed 2026-09-01 (IDEA-2 survey).

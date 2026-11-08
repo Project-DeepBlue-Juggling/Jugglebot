@@ -178,4 +178,4 @@ the hand. The top only pays off once the `reload` also starts from the top, whic
 - Columns (R5) has two balls. A drop there leaves the other ball in flight, so "stop before the
   next throw" is not obviously the right policy. That is an R5 decision.
 
-> Closed 2026-10-28: closed by plans/archived/two-ball-skill-stack.md (JB-34 survey).
+> Closed 2026-10-28: closed by plans/archived/two-ball-skill-stack.md (IDEA-2 survey).

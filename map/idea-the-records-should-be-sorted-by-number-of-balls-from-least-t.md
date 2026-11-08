@@ -1,5 +1,5 @@
 ---
-id: JB-93
+id: IDEA-8
 kind: idea
 title: The records should be sorted by number of balls, from least- to most-difficult, with sub-headings and small dividers between them.
 status: complete

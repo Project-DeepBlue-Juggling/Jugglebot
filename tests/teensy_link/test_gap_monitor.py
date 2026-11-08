@@ -73,7 +73,7 @@ def test_hand_c1_cover_mirrors_the_header_grace_and_the_twin():
     assert HAND_C1_COVER_MS * 1e3 == ti.HAND_C1_DECIDE_US
 
 
-# ── DownlinkLossTracker (JB-174, FW 40) ─────────────────────────────────────
+# ── DownlinkLossTracker (FEAT-41, FW 40) ─────────────────────────────────────
 
 def test_downlink_loss_is_zero_through_in_flight_frames_and_unequal_baselines():
     """The host and firmware counters start at different times and a sample may

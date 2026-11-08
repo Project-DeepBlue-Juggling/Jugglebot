@@ -4,7 +4,7 @@ Pure Python (no ROS, no I/O, no logging). The bridge node feeds it from the RX
 thread and logs whatever lines it returns; it changes no command, limit, guard
 or timing.
 
-WHY (2026-11-06 Sitting, JB-137): the Hand's encoder feedback reached the
+WHY (2026-11-06 Sitting, BUG-50): the Hand's encoder feedback reached the
 can-bridge at about 10 Hz instead of 100 Hz for 0.6 s. The firmware's Hand lead
 clamp (``lead_clamp_mask`` bit 6) held a Throw back against the stale position
 (0.32 m instead of 1.00 m), and when fresh feedback returned the command

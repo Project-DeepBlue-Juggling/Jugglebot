@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Identify the Platform's lateral ring mode (natural frequency, damping, input
-delay) from rosbags already on disk (JB-102, ``plans/active/carry-ring-zvd.md`` P0).
+delay) from rosbags already on disk (FEAT-32, ``plans/active/carry-ring-zvd.md`` P0).
 
     python tools/probes/platform_mode_fit.py BAG_DIR [BAG_DIR ...]
         [--source encoder|mocap|both] [--axis x|y|both]

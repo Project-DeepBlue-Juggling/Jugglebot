@@ -1,9 +1,9 @@
 ---
-title: "The Memory row records the release the Throw used, and a refused re-send no longer leaves the release record at the refused aim (JB-194)"
+title: "The Memory row records the release the Throw used, and a refused re-send no longer leaves the release record at the refused aim (BUG-81)"
 type: bugfix
 date: 2026-11-06
 status: complete
-phase: "JB-194"
+phase: "BUG-81"
 related_plan: learner-generalisation.md
 related_issues: []
 files_changed:
@@ -16,7 +16,7 @@ subsystem: [motion]
 tags: [learner, correctness]
 ---
 
-# Memory release record fixes (JB-194)
+# Memory release record fixes (BUG-81)
 
 **What.** Two fixes in `motion/skills/executor.py`, both found by the Carry creep probe
 (`logbook/2026-11-06-arrival-pull-and-hand-dropout-probes.md`) and approved by the owner on 2026-11-06.
@@ -37,7 +37,7 @@ are not inputs, and `rel_z` cannot move (the release z is the Site's Throw z). F
 next Catch of that ball by at most the refused re-aim; that Catch passes the same clamp and the same online
 admissibility check, and the restored value is always a release that was installed. Every reader and writer runs
 inside the executor's tick under the skill node's tick lock, so there is no new race. Neither fix shrinks the
-two-ball arrival pull (JB-192), which is almost all velocity.
+two-ball arrival pull (BUG-79), which is almost all velocity.
 
 **Old rows.** Rows written before 2026-11-06 hold the dispatch aim in `rel` and `seat` on a re-aimed Catch; tell
 them apart by `t_abs_s`. `INVARIANTS.md` row I-LEARN-1 now says so. No production reader assumes `rel` equals the
@@ -53,7 +53,7 @@ xy does not move there) and a fold where only the seat is refreshed.
 
 ## Verification
 
-Full gate, run 2026-11-06 19:39 to 19:48 with the fixes in the tree (`./run_tests.sh --full`): **8797 passed, 52 skipped, 1 failed** in 468 s, plus the serial tail **10 passed**. The one failure was a document check, not code (`tests/sim/test_map_items_rated.py`: Item JB-194 was closed without its `effort`, `owner` and `radius` ratings). It was rated, with no code edit after the gate, and the document tests were re-run: (2026-11-06 19:50, `python -m pytest tests/sim/test_map_items_rated.py tests/sim/test_plans_index.py tests/sim/test_logbook_front_matter.py tests/sim/test_docs_links.py tests/sim/test_glossary_avoid_words.py tests/sim/test_sitting_debrief_protocol.py tests/sim/test_sitting_sections.py tests/sim/test_night_shift_gate.py -q`: 305 passed, 48 skipped; `python -m pytest tests/sim -k "mapkit or map_items" -q`: 311 passed, 48 skipped).
+Full gate, run 2026-11-06 19:39 to 19:48 with the fixes in the tree (`./run_tests.sh --full`): **8797 passed, 52 skipped, 1 failed** in 468 s, plus the serial tail **10 passed**. The one failure was a document check, not code (`tests/sim/test_map_items_rated.py`: Item BUG-81 was closed without its `effort`, `owner` and `radius` ratings). It was rated, with no code edit after the gate, and the document tests were re-run: (2026-11-06 19:50, `python -m pytest tests/sim/test_map_items_rated.py tests/sim/test_plans_index.py tests/sim/test_logbook_front_matter.py tests/sim/test_docs_links.py tests/sim/test_glossary_avoid_words.py tests/sim/test_sitting_debrief_protocol.py tests/sim/test_sitting_sections.py tests/sim/test_night_shift_gate.py -q`: 305 passed, 48 skipped; `python -m pytest tests/sim -k "mapkit or map_items" -q`: 311 passed, 48 skipped).
 
 Scoped runs by the implementing agent, 2026-11-06 (`python -m pytest`, OPENBLAS and OMP threads 1): the 29 motion and ros test files that import `executor.py`, `-n 3 --dist loadfile -m "not serial"`: 1692 passed; `tests/sim/test_skills_gate.py tests/sim/test_skills_gate_beats.py tests/sim/test_skills_gate_online.py`: 72 passed.
 

@@ -114,7 +114,7 @@ for br in "${ALL[@]:-}"; do
     row "UNPARSED $br is not night-shift/<date>-<ID> (ID prefixes $PREFIXES)"; rc=1
   fi
 done
-# date, then prefix, then number: same-date JB-n branches keep their numeric order
+# date, then prefix, then number: same-date <ID> branches keep their numeric order
 mapfile -t BRANCHES < <(printf '%s\n' "${KEYED[@]:-}" | grep -v '^$' \
   | sort -k1,1 -k2,2 -k3,3n | cut -d' ' -f4-)
 

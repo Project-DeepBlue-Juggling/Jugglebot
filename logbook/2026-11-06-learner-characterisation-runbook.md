@@ -1,5 +1,5 @@
 ---
-title: "P2 Runbook written: the Learner characterisation Sitting (JB-187)"
+title: "P2 Runbook written: the Learner characterisation Sitting (FEAT-44)"
 type: feature
 date: 2026-11-06
 status: complete
@@ -20,17 +20,17 @@ tags: [testing]
 # The P2 Runbook
 
 **What.** `tests/hardware/session_learner_characterisation.md` is the Runbook for P2 of plan
-`learner-generalisation.md`, and JB-187 puts it on the Next Sitting Runbook (40 minutes; not pinned first).
+`learner-generalisation.md`, and FEAT-44 puts it on the Next Sitting Runbook (40 minutes; not pinned first).
 Nothing was flown and no code changed.
 
 **Why it is shaped this way.** The plan's four items are kept, with their decision rules stated before the
 data exists. Three choices are new:
 - Blocks A to C are one-ball `self_toss` goals. The Platform holds the Site, so the Apex sweep, the off-centre
   Sites and the ball swap need no fast transit and cannot end on a ball collision; both cut Attempts short at
-  the Sitting of 2026-11-06 (`logbook/2026-11-06-sitting-debrief.md`, JB-184, JB-186).
+  the Sitting of 2026-11-06 (`logbook/2026-11-06-sitting-debrief.md`, BUG-72, BUG-74).
 - The only two-ball block is the Columns pair at Sep. 120 turned to 90 degrees, with the same pair along x
   flown the same day. The Runbook states how far each block is from what has flown in planned Leg speed,
-  acceleration and transit length, not only its nomination margin (the lesson of JB-184).
+  acceleration and transit length, not only its nomination margin (the lesson of BUG-72).
 - Rows stay on the `jugglebot` plant and are told apart by time, Site and release. A fresh `plant_id` would
   start the new Learner from the identity prior, about 8 % high in Apex.
 
@@ -53,5 +53,5 @@ Hand stall-stop Item gives a stop at Apex 1.10 only 0.08 rev of stroke to spare 
 shorter lever arm costs block A little.
 
 **Not done.** The Runbook's before-power steps are its rehearsal on the loaded box; they have not been run.
-JB-108's row (turned Columns, one `plant_id` per angle) was written for the old Learner and overlaps block D;
+IDEA-11's row (turned Columns, one `plant_id` per angle) was written for the old Learner and overlaps block D;
 it is left as it is for the owner.

@@ -172,7 +172,7 @@ _SESSION_LEG_JERK_MMPS3 = 200000.0
 # session cap moved to the YAML ceiling; config/hardware_config.yaml
 # `hand_acc_limit_rps2` is 3900 since the same day.
 # Owner, 2026-11-01 (Sitting debrief): 4500, with the hand current limit 50 ->
-# 60 A (70 A since 2026-11-02, JB-147; acc limit unchanged). Now IMPORTED from the YAML launch value (the hand has no set_limits
+# 60 A (70 A since 2026-11-02, BUG-57; acc limit unchanged). Now IMPORTED from the YAML launch value (the hand has no set_limits
 # field, so the launch value IS the sitting value) so this can never again sit
 # under the live limit.
 _SESSION_HAND_ACC_RPS2 = float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)
@@ -293,7 +293,7 @@ class SkillsGateConfig:
     #: twin of skill_node's live ``planner_mode`` parameter. Validated in
     #: :class:`SkillsGate`.
     planner_mode: str = uc.PLANNER_MODE_DEFAULT
-    #: The pose planner's ZVD ring rows (carry-ring-zvd P1c, JB-102): the
+    #: The pose planner's ZVD ring rows (carry-ring-zvd P1c, FEAT-32): the
     #: gate's twin of skill_node's live ``carry_zvd`` parameter. Plans with it
     #: (``SegmentConfig.carry_zvd``); inert (and
     #: stamped false) under ``planner_mode='level'``.
@@ -796,11 +796,11 @@ def _make_bumper(ictx: _InstallCtx, limits, geom):
 #: ``catch_inward_authority_mm``; ``jugglebot_launch.py`` passes none of them,
 #: so these declared defaults ARE what the robot runs). Literals because
 #: ``skill_node`` imports rclpy; ``tests/sim/test_skills_gate.py`` parses
-#: ``skill_node.py`` and fails if these drift. JB-27 (2026-11-01): the
+#: ``skill_node.py`` and fails if these drift. BUG-8 (2026-11-01): the
 #: ``--reload`` gate left them unset, so the second catch's 41-45 mm tracker
 #: re-aim went through UNCLAMPED where the robot clips it to the 20 mm learner
-#: authority (30 mm since JB-139, 2026-11-02); with them set the gate makes 2 per seed again (1 before; the
-#: ``LIMIT_JERK`` ends JB-27 saw after 08ec3fe6 no longer reproduce on main).
+#: authority (30 mm since BUG-52, 2026-11-02); with them set the gate makes 2 per seed again (1 before; the
+#: ``LIMIT_JERK`` ends BUG-8 saw after 08ec3fe6 no longer reproduce on main).
 LAUNCH_LATERAL_AUTHORITY_MM = ex.LAUNCH_LATERAL_AUTHORITY_MM   # the table lives in executor.py
 
 
@@ -925,7 +925,7 @@ _GRAVITY_MMS2 = 9810.0
 def _plant_landing_bias_release(bias_mm):
     """``release_bias`` hook: :func:`_measured_release_bias` composed with a
     LATERAL velocity that moves the landing ``bias_mm`` = (x, y) away from
-    the aimed one (JB-32). A ball released at height with vertical speed
+    the aimed one (FEAT-7). A ball released at height with vertical speed
     ``vz`` lands at the same height after ``2 vz / g``, so the lateral
     velocity to add is ``bias * g / (2 vz)``; ``vz <= 0`` adds nothing. With
     ``(0, 0)`` this IS :func:`_measured_release_bias`. Exact at release
@@ -1058,7 +1058,7 @@ class SelfTossGateConfig:
     #: twin of skill_node's live ``planner_mode`` parameter. Validated in
     #: :class:`SkillsGate`.
     planner_mode: str = uc.PLANNER_MODE_DEFAULT
-    #: The pose planner's ZVD ring rows (carry-ring-zvd P1c, JB-102): the
+    #: The pose planner's ZVD ring rows (carry-ring-zvd P1c, FEAT-32): the
     #: gate's twin of skill_node's live ``carry_zvd`` parameter. Plans with it
     #: (``SegmentConfig.carry_zvd``); inert (and
     #: stamped false) under ``planner_mode='level'``.
@@ -1140,7 +1140,7 @@ class SelfTossGateConfig:
     #: `run_columns_attempt`'s own paragraph on this field for the exact
     #: split). Ignored outside a FEED trial.
     feed_bb_bias_mm: Tuple[float, float] = (0.0, 0.0)
-    #: JB-32: the PLANT's own lateral landing bias (x, y) mm -- every release
+    #: FEAT-7: the PLANT's own lateral landing bias (x, y) mm -- every release
     #: lands this far from its aimed landing (applied through the
     #: ``release_bias`` hook, :func:`_plant_landing_bias_release`). Distinct
     #: from `feed_bb_bias_mm` / `reload_bias_mm` (Ball Butler / announcement
@@ -1897,7 +1897,7 @@ class SkillsGate:
         (``ictx``) and the executor dispatching one ``Schedule``.
 
         ``lines_out`` (list or ``None``): every log line ``executor.tick``
-        returns is appended (JB-32: the gate's only view of the executor's
+        returns is appended (FEAT-7: the gate's only view of the executor's
         ``BOX-EXPECTED-LANDING`` notes, which the online check replaced
         2026-11-06).
 
@@ -4031,7 +4031,7 @@ def main(argv=None) -> int:
                         '[29.0, 25.0])')
     p.add_argument('--plant-bias-xy', nargs=2, type=float, default=None,
                    metavar=('X', 'Y'),
-                   help='--learn --pattern self_toss/hop/oval_1ball only (JB-32): '
+                   help='--learn --pattern self_toss/hop/oval_1ball only (FEAT-7): '
                         'SelfTossGateConfig.plant_landing_bias_mm -- every '
                         'release LANDS this (x, y) mm from its aimed '
                         'landing, so the learner fit gains support and the '
@@ -4106,7 +4106,7 @@ def main(argv=None) -> int:
     if args.plant_bias_xy is not None and (not args.learn
                                            or args.pattern == 'columns'):
         # The columns, reload and plain gate runs build their executor with
-        # no checker, so the field is never read there (JB-32 audit).
+        # no checker, so the field is never read there (FEAT-7 audit).
         p.error('--plant-bias-xy only applies to --learn --pattern '
                 'self_toss, hop or oval_1ball')
 

@@ -12,7 +12,7 @@ subsystem:
 tags:
   - rosbridge
   - service-pool
-  - JB-209
+  - BUG-86
 ---
 
 # Rosbridge service pool: the timeout names the server once the executor has run

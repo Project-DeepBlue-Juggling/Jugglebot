@@ -486,4 +486,4 @@ when the calibration session lands.
   and aligns with which targets the *system* actually knows how to
   throw at.  Worth revisiting if the target set grows past ~3.
 
-> Closed 2026-10-28: closed by plans/archived/bb-calibration-one-attempt.md (JB-34 survey).
+> Closed 2026-10-28: closed by plans/archived/bb-calibration-one-attempt.md (IDEA-2 survey).

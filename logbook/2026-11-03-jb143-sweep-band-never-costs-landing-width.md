@@ -1,5 +1,5 @@
 ---
-title: "The admissible sweep's apex band never costs landing width: the centre flight's rectangle is fixed first (JB-143 rule, re-sweep pending)"
+title: "The admissible sweep's apex band never costs landing width: the centre flight's rectangle is fixed first (BUG-54 rule, re-sweep pending)"
 type: bugfix
 date: 2026-11-03
 status: in-progress
@@ -15,20 +15,20 @@ tags:
   - sweep
 ---
 
-# The sweep's apex band never costs landing width (JB-143)
+# The sweep's apex band never costs landing width (BUG-54)
 
 ## What and why
 
 The 2026-11-02 re-sweep at hand acc 4500 widened every hop cell's apex band downward and shrank two cells' landing x. The cell Columns flies at apex 0.95 went from +/-10 to +/-4 mm. `_flight_band_and_rect` grew the band outward while the zero-offset throw passed, then fitted the largest rectangle passing at every flight in the band. At 4500 the shortest hop flights (0.65-0.73 s) newly pass at (0, 0) but fail HAND_LIMIT_C2 at large x offsets, so they joined the band and narrowed the rectangle for flights no operating throw uses.
 
-The owner's decision on JB-143 (2026-11-02) was to keep the landing rectangle as wide as possible and change the rule so a cell never gives up landing width for apex band, then re-sweep. The new rule:
+The owner's decision on BUG-54 (2026-11-02) was to keep the landing rectangle as wide as possible and change the rule so a cell never gives up landing width for apex band, then re-sweep. The new rule:
 
 1. Fit the rectangle at the centre flight alone: the largest one through (0, 0), as before.
 2. Let a neighbouring flight join the band only if every cell of that rectangle passes at it. Zero-offset passing is implied.
 
 Containment is monotone, so the result does not depend on which side grows first. All callers (columns, hop, oval, single-apex) share the one function and get the same rule, and the CENTRE-fails-at-(0, 0) contract is unchanged.
 
-Not done here: the re-sweep (about 2.5 h holding every core, JB-150). The committed box is unchanged until the owner's Session re-sweeps, and `tools/admissible_sweep.py` is not a gated file, so `gate_hash` does not move.
+Not done here: the re-sweep (about 2.5 h holding every core, FEAT-38). The committed box is unchanged until the owner's Session re-sweeps, and `tools/admissible_sweep.py` is not a gated file, so `gate_hash` does not move.
 
 ## Verification
 

@@ -38,7 +38,7 @@ orchestrator proceeded. The uplinked result distinguishes the two.
 Trust gate (which terminal result belongs to THIS home). A stale OK/FAILED left
 by a prior home must not end the new one. Two ways to earn trust:
 
-  * **epoch** (can-bridge FW 34, JB-72): the Diagnostic carries ``homing_epoch``,
+  * **epoch** (can-bridge FW 34, BUG-18): the Diagnostic carries ``homing_epoch``,
     bumped by the firmware on every ACCEPTED HOME in the same guarded write that
     sets RUNNING. The monitor records the epoch of the last Diagnostic before it
     asks for HOME and trusts a terminal result under a NEWER epoch (u8,
@@ -255,7 +255,7 @@ class HomingMonitor:
                     pr.reason = f"active_errors 0x{st.active_errors:x} during homing"
                     continue
 
-                # FW 34 (JB-72): a terminal result under an epoch newer than the
+                # FW 34 (BUG-18): a terminal result under an epoch newer than the
                 # pre-HOME baseline belongs to THIS home even when its RUNNING
                 # frame was never seen (a home shorter than the gap between two
                 # Diagnostics, or that frame lost on the stream).

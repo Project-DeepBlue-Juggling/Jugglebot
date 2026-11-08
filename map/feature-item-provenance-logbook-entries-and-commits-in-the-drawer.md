@@ -1,5 +1,5 @@
 ---
-id: JB-56
+id: FEAT-15
 kind: feature
 title: 'Item provenance: the drawer lists the logbook entries and commits that touched an item'
 status: complete

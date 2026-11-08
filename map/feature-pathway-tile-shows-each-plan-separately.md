@@ -1,5 +1,5 @@
 ---
-id: JB-70
+id: FEAT-23
 kind: feature
 title: Pathway tile shows each plan separately
 status: complete

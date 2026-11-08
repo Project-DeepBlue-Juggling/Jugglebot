@@ -1,5 +1,5 @@
 """Solve starvation scan: the planner's solve wall time against its own CPU time
-and the box load, per Sitting (JB-76).
+and the box load, per Sitting (BUG-21).
 
 Reads a launch.log whose ``solve X ms (cpu Y ms, ivcsw N, vcsw M)`` suffix the
 solver worker has carried since 2026-10-28, and a ``profile_session.py``

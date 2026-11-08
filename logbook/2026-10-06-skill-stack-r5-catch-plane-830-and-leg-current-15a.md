@@ -182,4 +182,4 @@ ripple's scope and not something to touch without the operator's own reflash act
   commit).
 - Full gate (`./run_tests.sh --full`, run 2026-10-07, log `temp/logs/gate_full_r5_plane830_curr15_stow_20261007.log`, on the tree holding this unit, the orchestrator stow unit and the merged box): **parallel 6125 passed, 9 skipped, 1 xfailed in 305.26 s; serial 6 passed in 20.51 s; RESULT PASS, exit 0.** The only edits after that run are these Verification lines; the logbook tests were re-run after them.
 
-> Closed 2026-10-28: catch plane 830 and 15 A leg clamp landed and flown; nothing open (JB-34 survey).
+> Closed 2026-10-28: catch plane 830 and 15 A leg clamp landed and flown; nothing open (IDEA-2 survey).

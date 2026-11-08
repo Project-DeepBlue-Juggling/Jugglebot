@@ -149,4 +149,4 @@ separate change agreed with the owner; see the plan.
 - `python tests/hardware/kincal_capture.py --dry-run` (2026-09-27): **0 refusal(s)**,
   185 dwells, 18.7 min.
 
-> Closed 2026-10-28: closed by 2026-09-23-kinematic-calibration-design-and-fit-tool (JB-34 survey).
+> Closed 2026-10-28: closed by 2026-09-23-kinematic-calibration-design-and-fit-tool (IDEA-2 survey).

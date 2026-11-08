@@ -370,13 +370,13 @@ def test_the_torque_bounds_bind_and_end_stop_does_not():
     ceiling (apex 1.665 -> 1.619 m). END_STOP stays last, which is the
     contract's headline: a drive bound, not a metal collision, limits height.
 
-    2026-11-02 (owner decision, JB-147): ``hand_curr_limit_a`` 60 -> 70 A (the
+    2026-11-02 (owner decision, BUG-57): ``hand_curr_limit_a`` 60 -> 70 A (the
     acceleration limit stays 4500). Same direction again: FF 6.266 -> 6.768,
     DECEL 6.464 -> 6.982, ACCEL 6.594 -> 7.140 (sqrt(70/60)), REGEN IN by
     60/70 (5.641 -> 4.835, flight ceiling 1.149 -> 0.985 s, apex 1.619 ->
     1.189 m). The order is unchanged and END_STOP (8.494) is still last.
 
-    2026-11-02 (owner decision, JB-147): REGEN compares the BUS power, the
+    2026-11-02 (owner decision, BUG-57): REGEN compares the BUS power, the
     mechanical braking power less the copper loss ``c*R*I^2`` (R 0.040 Ohm,
     c 1.0), worst case over every braking current up to the limit. It now
     binds at 7.467 m/s, outside the 7.0 m/s wire band and behind the torque
@@ -419,7 +419,7 @@ def test_the_torque_bounds_bind_and_end_stop_does_not():
 
 def test_regen_takes_the_worst_braking_current_and_the_copper_loss():
     """The bus power is ``Kt*I*omega - c*R*I^2`` maximised over ``I`` in
-    ``[0, I_lim]`` (2026-11-02, JB-147): interior at ``I* = Kt*omega/(2cR)``,
+    ``[0, I_lim]`` (2026-11-02, BUG-57): interior at ``I* = Kt*omega/(2cR)``,
     the limit once ``I*`` passes it, and never more than the lossless
     ``I_lim*Kt*omega`` the fence used to take."""
     kt, r, c = te.KT_NM_PER_A, te.PHASE_RESISTANCE_OHM, te.COPPER_LOSS_FACTOR
@@ -467,7 +467,7 @@ def test_regen_fences_the_burst_not_the_steady_state():
     assert te.REGEN_POWER_W > te.REGEN_RAIL_STEADY_W
     # The steady-state check the duty cycle actually has to clear, at the
     # ceiling: peak burst x duty, against the rail's continuous rating.  The
-    # burst is the BUS power, copper loss taken out (2026-11-02, JB-147); the
+    # burst is the BUS power, copper loss taken out (2026-11-02, BUG-57); the
     # steady check needs no loss term of its own.
     peak_w = te.regen_bus_power_w(te.MAX_RELEASE_SPEED_MPS)
     assert peak_w <= te.REGEN_POWER_W
@@ -575,7 +575,7 @@ def test_the_derived_band_and_what_it_replaced():
     lo, hi = te.flight_time_band_s()
     assert lo == pytest.approx(te._SEARCH_LO_S, abs=1e-9)
     # 2026-11-01: 1.165 -> 1.149 s (apex 1.665 -> 1.619 m) — REGEN bound at
-    # the 60 A hand current limit; 2026-11-02 (JB-147): 70 A and REGEN on the
+    # the 60 A hand current limit; 2026-11-02 (BUG-57): 70 A and REGEN on the
     # BUS power (copper loss out), so DECEL_FF_HEADROOM binds: 1.379 s, apex
     # 2.332 m; see test_the_torque_bounds_bind_and_end_stop_does_not.
     assert hi == pytest.approx(1.379, abs=1e-3)
@@ -683,7 +683,7 @@ def test_the_speed_gate_is_independent_of_the_flight_time():
     assert te.evaluate(t, te.vertical_release_speed_mps(t)).ok
     faster = te.evaluate(t, 6.85)  # an 8b aim that releases far harder
     # DECEL_FF_HEADROOM (6.768) at 70 A since REGEN takes the copper loss out
-    # (2026-11-02, JB-147); see test_the_torque_bounds_bind_and_end_stop_does_not.
+    # (2026-11-02, BUG-57); see test_the_torque_bounds_bind_and_end_stop_does_not.
     assert not faster.ok and faster.bound == 'DECEL_FF_HEADROOM'
 
 

@@ -1,9 +1,9 @@
 ---
-title: "Two offline probes, 2026-11-06 evening: the two-ball arrival pull is not a planner defect (JB-192, position half withdrawn), and the Hand encoder dropouts are a clock beat that a drive setting should stop (JB-137)"
+title: "Two offline probes, 2026-11-06 evening: the two-ball arrival pull is not a planner defect (BUG-79, position half withdrawn), and the Hand encoder dropouts are a clock beat that a drive setting should stop (BUG-50)"
 type: investigation
 date: 2026-11-06
 status: complete
-phase: "learner-generalisation P2 follow-up; JB-137 diagnosis"
+phase: "learner-generalisation P2 follow-up; BUG-50 diagnosis"
 related_plan: learner-generalisation.md
 related_issues: []
 files_changed:
@@ -26,10 +26,10 @@ This entry follows up `logbook/2026-11-06-sitting-debrief-2.md`. Two hypotheses 
 
 ## Symptoms
 
-- JB-192: the debrief recorded the two-ball pull toward the partner Site as half position (a commanded Carry creep of 5 to 6 mm, possibly a planner defect) and half velocity.
-- JB-137: the Hand encoder frame loss that faulted the Hand during the P2 Sitting. The owner asked: "Is it possible to stop these dropouts entirely?"
+- BUG-79: the debrief recorded the two-ball pull toward the partner Site as half position (a commanded Carry creep of 5 to 6 mm, possibly a planner defect) and half velocity.
+- BUG-50: the Hand encoder frame loss that faulted the Hand during the P2 Sitting. The owner asked: "Is it possible to stop these dropouts entirely?"
 
-## Part A. The two-ball arrival pull (JB-192)
+## Part A. The two-ball arrival pull (BUG-79)
 
 ### What the probe did
 
@@ -52,13 +52,13 @@ Measured against the release that really flew, the position part of the pull is 
 - F1: refresh the pending row's release and seat after each accepted re-aim (`_resend_live_catch`, `_resend_hand_corrected_catch`, the accepted branch of `commit_catch_bump`), so the row records the Throw that flew.
 - F2: snapshot and restore `_carried_release_mm` and `_carried_catch_xy_mm` when a re-send is refused.
 
-Neither changes a command by itself, so neither shrinks the pull. F2 changes the dispatch prior of that ball's next Catch by at most the refused re-aim delta (35 mm), which still passes the same clamp and the same online admissibility check. They wait for the owner's go-ahead because they change what the Memory records and the next Catch's prior. Filed as JB-194.
+Neither changes a command by itself, so neither shrinks the pull. F2 changes the dispatch prior of that ball's next Catch by at most the refused re-aim delta (35 mm), which still passes the same clamp and the same online admissibility check. They wait for the owner's go-ahead because they change what the Memory records and the next Catch's prior. Filed as BUG-81.
 
-### What it means for JB-192's options
+### What it means for BUG-79's options
 
 "Fix at source" no longer includes a planner fix. It means the ring after arrival (the subject of the carry-ring-zvd plan) or the lateral launch delivery. The Dwell A/B hardware check stands.
 
-## Part B. The Hand encoder dropouts (JB-137)
+## Part B. The Hand encoder dropouts (BUG-50)
 
 ### The mechanism and its evidence
 
@@ -137,6 +137,6 @@ This entry lands with documentation only (the plan trim, the Items and the regen
 
 ## Open
 
-- Owner go-ahead for F1 and F2 (JB-194).
-- The drive-setting trial and the passive-sniffer measurement for JB-137.
+- Owner go-ahead for F1 and F2 (BUG-81).
+- The drive-setting trial and the passive-sniffer measurement for BUG-50.
 - The velocity shortfall after an arrival (the real pull): cheapest next check is an offline per-row regression of ball lateral velocity on planned velocity, encoder velocity at release and measured tilt, split by RESEND and BUMP.

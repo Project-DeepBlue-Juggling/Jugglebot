@@ -20,7 +20,7 @@ aligned as though in an invisible table.
 
 **CONSOLE.** `#left-sidebar #panel-topics` is `flex: 1; min-height: 0` (theme.css): it takes the
 sidebar's height left after CAN TRAFFIC, and the ROS and UDP views stretch inside it. The CONSOLE
-view (2026-11-01, JB-36) overrode that with `.console-on { flex: 0 0 auto }` and a fixed 220 px,
+view (2026-11-01, IDEA-4) overrode that with `.console-on { flex: 0 0 auto }` and a fixed 220 px,
 user-resizable list, so the panel sized to its content and CAN TRAFFIC moved. The override is gone;
 `#console-container` and `.console-list` are `flex: 1; min-height: 0`, so the list takes the
 panel's remainder after the header, chips, search row and count. The resize handle is dropped: in

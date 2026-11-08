@@ -1,5 +1,5 @@
 ---
-id: JB-136
+id: BUG-49
 kind: bug
 title: 'HAND_STROKE refuses the hop-start first CATCH at -0.000..-0.004 rev: the cup QP bounds height only at knots, the gate samples 4 per knot with a strict floor'
 status: complete
@@ -27,7 +27,7 @@ Found at the 2026-11-01 Sitting: 9 refusals and 7 goal ends on straight Columns 
 
 - The hand sits at -0.000 to -0.004 rev against a 0.000 floor at the first CATCH of a hop start (hand -0.004, -0.002, -0.001 rev).
 - The cup QP bounds height only at knots; the gate samples 4 points per knot with a strict floor, so a dip between knots is refused.
-- This, not the landing bias, is the hop-start failure mode at hold 0 (JB-121). Same gate-versus-solver mismatch class as JB-120.
+- This, not the landing bias, is the hop-start failure mode at hold 0 (BUG-43). Same gate-versus-solver mismatch class as BUG-42.
 
 ## Wanted
 

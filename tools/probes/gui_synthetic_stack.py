@@ -26,7 +26,7 @@ CONTAINMENT (safety rails, enforced in code):
     ``control_mode_topic``, ``robot_state``, ``link_status``, ``profile``,
     ``hand_telemetry``, ``leg_setpoint_echo``, ``cone/heartbeat``,
     ``cone/timing_result`` (one-shot), plus the mocap-stream topics the GUI
-    consumes since JB-76 option 1 (2026-10-28): ``gui/mocap_data`` and
+    consumes since BUG-21 option 1 (2026-10-28): ``gui/mocap_data`` and
     ``gui/rigid_body_poses`` (mocap_node's 20 Hz copies) and ``mocap/status``
     (carries ``qtm_frame_hz``).  It NEVER publishes to a command
     topic the robot acts on.
@@ -243,7 +243,7 @@ BASELINE_CFG = {
     "orchestrator_state": {"period": 0.5,  "enabled": False, "data": "IDLE"},
     "control_mode_topic": {"period": 0.5,  "enabled": False, "data": ""},
     "cone/heartbeat":     {"period": 0.1,  "enabled": False, "values": dict(CONE_HB_BASE)},
-    # Mocap-stream topics (JB-76 option 1): the GUI subscribes mocap_node's 20 Hz
+    # Mocap-stream topics (BUG-21 option 1): the GUI subscribes mocap_node's 20 Hz
     # COPIES gui/mocap_data + gui/rigid_body_poses (never the 300 Hz originals) and
     # reads the QTM frame rate off mocap/status `qtm_frame_hz`.
     "gui/mocap_data":       {"period": 0.05, "enabled": False, "aligned": True,

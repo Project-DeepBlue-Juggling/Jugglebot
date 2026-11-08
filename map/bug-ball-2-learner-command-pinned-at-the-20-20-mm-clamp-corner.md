@@ -1,5 +1,5 @@
 ---
-id: JB-139
+id: BUG-52
 kind: bug
 title: Ball 2 learner command pinned at the (-20,-20) mm clamp corner in 37 of 40 straight Columns rows (BOX-EXPECTED-LANDING-UNMET u=(-20,-20))
 status: complete
@@ -27,8 +27,8 @@ Found at the 2026-11-01 Sitting: the Ball 2 learner command sits at the (-20, -2
 ## Findings
 
 - u1 (y) = -0.020 in 37/40 rows, u0 (x) = -0.020 in 13/40, both pinned in 12/40.
-- It does not predict the HAND_LIMIT_ACC ends (JB-120): lateral u moves the Hand peak by under 1 point.
-- Relevant to the learner generalisation work (JB-38).
+- It does not predict the HAND_LIMIT_ACC ends (BUG-42): lateral u moves the Hand peak by under 1 point.
+- Relevant to the learner generalisation work (PWAY-2).
 
 ## Findings (2026-11-02)
 
@@ -42,9 +42,9 @@ Night Shift 2026-11-02 replayed the committed learner memory (`temp/learn/juggle
 - The Ball 2 site lands about +26 mm in y and +16 mm in x for a zero command (landing minus command, the fit's slope D being 0.97 to 1.01 on the diagonal). The y bias exceeds the 20 mm authority by about 6 mm, so the clamp binds and a +6.7 mm mean residual is left, well inside the 19 mm scatter.
 - The unclamped y command is -25 to -27 mm (5 to 7 mm past the clamp); in x it is -14 to -18 mm, inside authority, pinned only transiently (13 of 40 rows). At u = (-20, -20) the model predicts a landing of about (-2.5, +5.0) mm, so the unmet amount is small.
 - Not new with hold 0: the -62.5 mm site's y bias is +13 to +27 mm in every Sitting since 2026-10-19 (10-19 +20.1, 10-22 +21.6, 10-27 +13.2, 10-28 +13.0, 10-30 +27.3 on 8 rows, 10-31 +18.5, 11-01 +25.9), and the pinned fraction rises with it (0 % at +13, 90 to 100 % at +26 to +27). Ball 1's site shows +6 to +20 mm and never pins.
-- Pooling across sites is ruled out: rows are keyed by the release site and the 10 mm kernel keeps the two sites apart. The residual does not predict the HAND_LIMIT_ACC ends (JB-120).
+- Pooling across sites is ruled out: rows are keyed by the release site and the 10 mm kernel keeps the two sites apart. The residual does not predict the HAND_LIMIT_ACC ends (BUG-42).
 
-What would settle it: with a fresh `plant_id` the first Ball 2 commands are the identity prior, so the first landings show the raw bias directly; if they average +20 to +32 mm in y the bias is in the plant (feed or seat geometry at that site, a JB-38 question), not the fit. Do not raise the authority on this evidence alone: the residual is small and the question is why the bias is site-specific.
+What would settle it: with a fresh `plant_id` the first Ball 2 commands are the identity prior, so the first landings show the raw bias directly; if they average +20 to +32 mm in y the bias is in the plant (feed or seat geometry at that site, a PWAY-2 question), not the fit. Do not raise the authority on this evidence alone: the residual is small and the question is why the bias is site-specific.
 
 ## Sitting row flown 2026-11-02
 
@@ -79,4 +79,4 @@ What would settle it: with a fresh `plant_id` the first Ball 2 commands are the 
 - 2026-11-03: 2026-11-03 Sitting (L547-4800): Ball 2 x command pinned at <= -19.5 mm in 36 of 91 BOX-EXPECTED-LANDING rows (40 %), y at the -20 clamp in 4; landing centred only at the clamp edge. The y bias of 2026-11-02 (first-5 +16.4 mm) is not present: -6.4 mm.
 - 2026-11-03: Learner lateral authority 20 -> 30 mm for Throw and catch re-aims (skill_node param; capture cap 46.10 mm, I-CATCH-6) and the box re-swept on a +/-30 grid, 2026-11-03; Sitting row added.
 - 2026-11-04: 2026-11-03 Sitting, one-ball oval (new plant p4-oval-2026-11-03): the learner command pushed the right way (u_x -18 -> -26 -> -30 mm) and was PINNED at the 30 mm authority from goal 4 onward; BOX-EXPECTED-LANDING-UNMET on every later Throw (y_hat +32..+52 mm outside x[-30,+30]). Owner 2026-11-04: try 60 mm for the oval Throw.
-- 2026-11-04: Closed on the Sitting of 2026-11-04 18:45: Ball 2's Throw command at the +/-30 mm clamp in 0 of 39 rows in x and 0 of 39 in y (u_x mean -17.6 mm, was pinned at -20 in 40 % on 11-03); no CATCH_AXIS refusal; 77 rows on the default memory. The one-ball Oval 60 mm request stays with the JB-102 carry-ring investigation (2026-11-04 debrief).
+- 2026-11-04: Closed on the Sitting of 2026-11-04 18:45: Ball 2's Throw command at the +/-30 mm clamp in 0 of 39 rows in x and 0 of 39 in y (u_x mean -17.6 mm, was pinned at -20 in 40 % on 11-03); no CATCH_AXIS refusal; 77 rows on the default memory. The one-ball Oval 60 mm request stays with the FEAT-32 carry-ring investigation (2026-11-04 debrief).

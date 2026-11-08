@@ -41,13 +41,13 @@ SPINOUT), 1 REJECTED_BB (Ball Butler empty), 2 COMPLETED.
 
 | Row | Typed | Verdict (owner confirmed) | Evidence |
 |---|---|---|---|
-| JB-147 | pass 16:19 | pass; Item kept open (owner) | 4 Attempts at Apex 1.10, 0 SPINOUT. At 639.57 the Hand stopped at 1.97 rev while its command went on to 0.04 rev, setpoint -69.9 A (measured -72.3) for about 0.12 s, past the row's 66 A stop; cause unknown. Off-row SPINOUT L8157 below |
-| JB-192 | fail 16:26 | fail; row off the Runbook (owner) | Separations at 856.52 and 1028.45; no answer to the Dwell question (pull n 34 / 5 / 4) |
-| JB-108 | fail 16:42 | fail | 45 deg best 20/20 (L9950); 90 deg best 9/9 in 13 Attempts; `columns90` flew at 45 deg (L10458) |
-| JB-149 | pending 16:46 | pass, literal; row stays a ride-along | L7727 and L14166 with GC_PROBE from both nodes within 0.6 s (n=0) and full WARNs |
-| JB-107 | no box | fail (owner accepted the log) | Sep. 100: 11/11, best 5/5, Apex difference 75 mm; the third separation was at Sep. 125 |
-| JB-161 | none | not flown | data only, below |
-| JB-195 and other rows | none | not flown | |
+| BUG-57 | pass 16:19 | pass; Item kept open (owner) | 4 Attempts at Apex 1.10, 0 SPINOUT. At 639.57 the Hand stopped at 1.97 rev while its command went on to 0.04 rev, setpoint -69.9 A (measured -72.3) for about 0.12 s, past the row's 66 A stop; cause unknown. Off-row SPINOUT L8157 below |
+| BUG-79 | fail 16:26 | fail; row off the Runbook (owner) | Separations at 856.52 and 1028.45; no answer to the Dwell question (pull n 34 / 5 / 4) |
+| IDEA-11 | fail 16:42 | fail | 45 deg best 20/20 (L9950); 90 deg best 9/9 in 13 Attempts; `columns90` flew at 45 deg (L10458) |
+| BUG-58 | pending 16:46 | pass, literal; row stays a ride-along | L7727 and L14166 with GC_PROBE from both nodes within 0.6 s (n=0) and full WARNs |
+| IDEA-10 | no box | fail (owner accepted the log) | Sep. 100: 11/11, best 5/5, Apex difference 75 mm; the third separation was at Sep. 125 |
+| BUG-63 | none | not flown | data only, below |
+| BUG-82 and other rows | none | not flown | |
 
 ## Findings
 
@@ -82,21 +82,21 @@ Attempt by that step (small against 17 to 24 mm sd) and does not explain the sep
 
 **Other ends.** L14166: a Hand C1 stop, then MAX_DEVIATION +5.779 rev 11 ms later with the Hand still at 2.21 rev: the
 streamed target walked away from a held Hand; the hold followed 113 ms after the STOP. L7727: a firmware STOP
-(`refused +4`) in a Feed, no latch. Downlink ledger lost 0 of 83,340 setpoints, so JB-174's queue fix holds; only 3 of
+(`refused +4`) in a Feed, no latch. Downlink ledger lost 0 of 83,340 setpoints, so FEAT-41's queue fix holds; only 3 of
 23 STOPs have a host signature. L8157 SPINOUT (turned 45, Apex 0.95): the brake fell away from about 87 rev/s at 8.93
 rev to 58.6 rev/s at 10.74 rev (clip 10.501) at -36 A against a 70 A limit, no STOP or C1 stop first, Hand rest 0.061 rev
-before and after. L17420 LIMIT_JERK: install gate 203,074 against 200,000 mm/s^3, and L17560 at 200,003. JB-186: 7
-collisions in about 300 Throws. JB-97: L2489 is a missed Catch reported as no release. JB-188: 24 of 282 Throws (8.5 %),
-turned 15 %. JB-161 (unflown): Ball 2's first Throw landed within 45 mm in all 32 Attempts, clamped Feed +4.2 mm outward
+before and after. L17420 LIMIT_JERK: install gate 203,074 against 200,000 mm/s^3, and L17560 at 200,003. BUG-74: 7
+collisions in about 300 Throws. BUG-33: L2489 is a missed Catch reported as no release. BUG-75: 24 of 282 Throws (8.5 %),
+turned 15 %. BUG-63 (unflown): Ball 2's first Throw landed within 45 mm in all 32 Attempts, clamped Feed +4.2 mm outward
 (n 25), unclamped +9.6 (n 7). Turned 90 deg: 7 of 9 Ball 2 ends landed 21 to 76 mm outward against 10 mm authority,
-scatter rather than bias (caught Ball 2 mean +5 mm, sd 20, n 13), so JB-38 P2(b) stays open. Owner: the Cup rim is 85
+scatter rather than bias (caught Ball 2 mean +5 mm, sd 20, n 13), so PWAY-2 P2(b) stays open. Owner: the Cup rim is 85
 mm in diameter; at 90 deg every strike hit the Platform top (the top of the Hand's stroke), elsewhere some misses hit
 the Hand and some other Platform parts. Encoder ages over the whole launch: Leg 4 peak 17.1 ms and Hand 18.1 ms, 0 of
 2396 windows over 25 ms each; Legs 0 to 3 and 5 peak 99 to 100 ms with 20 to 30 windows over 25 ms.
 
 ## Discussion
 
-**The Runbook row's premise was wrong, and the metric behind it does not work.** The JB-192 row said both Dwells were
+**The Runbook row's premise was wrong, and the metric behind it does not work.** The BUG-79 row said both Dwells were
 "inside what has flown": 353 mm/s and 5180 mm/s^2 planned at Dwell 0.32 against 371 and 5488 flown. The first pair was
 planned at nominal aims and the second was a live install peak that includes the Catch re-aim, so they were not
 comparable; the same Sitting's Dwell 0.27 planned 310 / 4076 and flew 350 to 383 / 4912 to 5120, and Dwell 0.32 flew
@@ -115,19 +115,19 @@ comparable; the same Sitting's Dwell 0.27 planned 310 / 4076 and flew 350 to 383
 5872 separated after 4 transits and 5936 flew 12; 7104 held for 3. Estimated tension and lead-clamp tick counts do not
 separate either. What the four events share: a transit whose executed command reached 8974 to 14450 mm/s^2 on Leg 1
 (far above the plan; earlier work reads it as the lead clamp releasing), then the joints let go at a later arrival 0.5
-to 1.2 s on. That supports JB-184's "the first transit unseats, the second finishes" over "one long fast arrival". It is
+to 1.2 s on. That supports BUG-72's "the first transit unseats, the second finishes" over "one long fast arrival". It is
 n = 4 against L14789 (ended too early to count), L15097 (8316 flew on) and a clean 6685 / 9141 on 2026-11-06: a lead,
 not a bound. The rehearsal should have used one metric on both sides (at the re-aim corners), carried the plan through
 the bridge's feedforward cap and lead clamp to the executed command on Legs 1 and 2, and said that nothing yet separates
 the events instead of "inside what has flown". The owner took the row off the Runbook and plans a hardware modification
-against separation first; no bound (JB-184 decision stands, JB-210 holds the options).
+against separation first; no bound (BUG-72 decision stands, TKT-52 holds the options).
 
 **Two readings withdrawn.** "Every later Attempt was refused because the joints had let go" (the owner's note read that
 way, and the timing invited it) does not survive the Feed table above: the planner does not read joint state, the
 Platform was attached in those Attempts, and the refusals track the Feed clamp one for one. "The resting residual walks
 because the joints creep" was the Base moving under a world-frame fit.
 
-**What JB-192 learnt.** Nothing about its question: the long Dwells gave 5 and 4 rows, mostly first Throws from rest,
+**What BUG-79 learnt.** Nothing about its question: the long Dwells gave 5 and 4 rows, mostly first Throws from rest,
 which cannot test the time from arrival to release (pull toward the partner +13.4 mm, sd 22.6, n 34 at Dwell 0.27;
 about +12 at both long Dwells). A redesign needs a Dwell contrast that stays inside what has flown on the executed
 command.
@@ -141,21 +141,21 @@ command.
 
 ## Follow-ups and Item writes
 
-Progress notes on JB-192 (with its `## Sitting` section replaced by a note: off the Runbook until redesigned), JB-184
-(two notes), JB-195, JB-161, JB-191, JB-186, JB-188, JB-97. JB-211 filed: the nomination's re-aim figure read -0.049
+Progress notes on BUG-79 (with its `## Sitting` section replaced by a note: off the Runbook until redesigned), BUG-72
+(two notes), BUG-82, BUG-63, BUG-78, BUG-74, BUG-75, BUG-33. BUG-87 filed: the nomination's re-aim figure read -0.049
 while the live Feed-Catch Segment was refused at -0.208. Four Items are claimed by other owners and `set-status`
 refused them without `--force`, so their notes live here only:
-- JB-147 (jugglebot-3d): owner keeps it open; the -69.9 A blocked downstroke at 639.57 and the L8157 SPINOUT above.
-- JB-149 (jugglebot-50): row passed literally (L7727, L14166, GC_PROBE within 0.6 s, n=0); both STOPs host-clean, lost 0
+- BUG-57 (jugglebot-3d): owner keeps it open; the -69.9 A blocked downstroke at 639.57 and the L8157 SPINOUT above.
+- BUG-58 (jugglebot-50): row passed literally (L7727, L14166, GC_PROBE within 0.6 s, n=0); both STOPs host-clean, lost 0
   of 83,340; row stays a ride-along.
-- JB-108 (jugglebot-f5): fail as above; JB-38 P2(b) still open; owner's 85 mm rim and Platform-top note.
-- JB-107 (jugglebot-f5): fail as above, owner accepted the log; Legs 1 and 2 separated in its third Sep. 125 Attempt.
+- IDEA-11 (jugglebot-f5): fail as above; PWAY-2 P2(b) still open; owner's 85 mm rim and Platform-top note.
+- IDEA-10 (jugglebot-f5): fail as above, owner accepted the log; Legs 1 and 2 separated in its third Sep. 125 Attempt.
 
-JB-195's pass clause, read literally: the row (a 20-minute armed hold with no Juggle request) was not flown. The in-run
+BUG-82's pass clause, read literally: the row (a 20-minute armed hold with no Juggle request) was not flown. The in-run
 numbers would meet its first two clauses (Leg 4 never over 25 ms; other Legs over 50 ms), the spacing clause was not
 measured: unverified, status and row left to the owner. No merges (no held branch for the passed rows), no rebuild
 (nothing under `ros_ws/` changed), `docs/records.md` unchanged, Memory already committed (eee4323d).
 
 ## Verification
 
-(2026-11-08 11:15, `pytest -q tests/sim/test_map_items.py tests/sim/test_map_items_rated.py tests/sim/test_glossary_avoid_words.py tests/sim/test_plans_index.py tests/sim/test_logbook_front_matter.py tests/sim/test_docs_links.py tests/sim/test_sitting_debrief_protocol.py tests/sim/test_sitting_sections.py tests/sim/test_mapkit*.py`: 447 passed, 40 skipped.) Tier 3 (documentation and map files only, no code): these are the tests that read `map/`, `logbook/`, the Runbook and the generated pages. The first run caught an over-long block in JB-211's body, restructured before this run.
+(2026-11-08 11:15, `pytest -q tests/sim/test_map_items.py tests/sim/test_map_items_rated.py tests/sim/test_glossary_avoid_words.py tests/sim/test_plans_index.py tests/sim/test_logbook_front_matter.py tests/sim/test_docs_links.py tests/sim/test_sitting_debrief_protocol.py tests/sim/test_sitting_sections.py tests/sim/test_mapkit*.py`: 447 passed, 40 skipped.) Tier 3 (documentation and map files only, no code): these are the tests that read `map/`, `logbook/`, the Runbook and the generated pages. The first run caught an over-long block in BUG-87's body, restructured before this run.

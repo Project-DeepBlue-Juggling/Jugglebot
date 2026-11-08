@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""JB-159: hover callout pills must not overlap.
+"""BUG-61: hover callout pills must not overlap.
 
 Drives the REAL ros_ws/gui/js/callout-layout.js under node (copied into a tmp dir with an ES-module
 package.json); a source grep pins that both chart modules import and call it.

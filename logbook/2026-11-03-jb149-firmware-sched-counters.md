@@ -1,9 +1,9 @@
 ---
-title: "JB-149: can-bridge FW 38 / PROTOCOL 11 uplinks the scheduled-lane counters and a per-heartbeat frame-age census, and the STOP WARN names a firmware-side cover expiry (built and tested, NOT flashed)"
+title: "BUG-58: can-bridge FW 38 / PROTOCOL 11 uplinks the scheduled-lane counters and a per-heartbeat frame-age census, and the STOP WARN names a firmware-side cover expiry (built and tested, NOT flashed)"
 type: feature
 date: 2026-11-03
 status: in-progress
-phase: "JB-149 firmware-side counters (owner decision via JB-155)"
+phase: "BUG-58 firmware-side counters (owner decision via TKT-32)"
 subsystem: can-bridge
 related_entries:
   - 2026-11-03-jb145-hand-stall-stop-options.md
@@ -32,14 +32,14 @@ files_changed:
   - logbook/INDEX.md
 ---
 
-# JB-149: firmware-side scheduled-lane counters on the wire
+# BUG-58: firmware-side scheduled-lane counters on the wire
 
 **Why.** On 2026-11-03 both LANE_REFUSED ends happened with a clean host stream (forward
 gap 41.7 / 42.1 ms, emitter max 38.9 ms, 4 setpoints per 100 ms), while the one real
 81.6 ms forward gap STOPped without a refusal. The firmware measures the cover from the
 frame's stamp (`t_start`), so a delay between the bridge's send and the firmware's
 promotion eats the cover with no gap on the host. The counters that would show it
-(`s_sched_expired` and friends) were serial-only. The owner chose (JB-155) to build both a
+(`s_sched_expired` and friends) were serial-only. The owner chose (TKT-32) to build both a
 host probe (already landed) and these firmware counters.
 
 **Wire change (incompatible): FW 37 -> 38, PROTOCOL_VERSION 10 -> 11.** `HeartbeatT2J`
@@ -101,4 +101,4 @@ small ages with expiries or STOPs = the stamps or the ISR, not the link.
 `colcon build` of this tree (PROTOCOL 11 on both ends or the link is dark), check the
 BridgeIdentity receipt (`38 (proto 11)`), then one Sitting to read the counters.
 
-**Flashed 2026-11-03 ~18:05** (session jugglebot-50, launch down, from the pushed tip 341950b5): `pio run -e teensy41 -t upload` -> SUCCESS 80.17 s; receipt: a read-only listener on PORT_STREAM saw 8 BridgeIdentity frames in 8 s, all `(fw_version=38, protocol_version=11)`, every frame decoding at PROTOCOL 11. The live checkout was rebuilt (`colcon build --packages-select jugglebot`, 2026-11-03, 1 package finished). The bench-hand Sitting row on JB-145 and the robot Sitting row on JB-149 remain the behaviour checks.
+**Flashed 2026-11-03 ~18:05** (session jugglebot-50, launch down, from the pushed tip 341950b5): `pio run -e teensy41 -t upload` -> SUCCESS 80.17 s; receipt: a read-only listener on PORT_STREAM saw 8 BridgeIdentity frames in 8 s, all `(fw_version=38, protocol_version=11)`, every frame decoding at PROTOCOL 11. The live checkout was rebuilt (`colcon build --packages-select jugglebot`, 2026-11-03, 1 package finished). The bench-hand Sitting row on BUG-55 and the robot Sitting row on BUG-58 remain the behaviour checks.

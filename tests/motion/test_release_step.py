@@ -304,7 +304,7 @@ def test_a_stepped_chain_declares_every_seam_and_seeds_each_window(limits, geom)
         assert ar[k] < al[k - 1] - 100.0        # a real, downward step
 
 
-# ── C-HAND-6: the post-release top-of-stroke margin (JB-147) ──────────────────
+# ── C-HAND-6: the post-release top-of-stroke margin (BUG-57) ──────────────────
 
 def _box_top_rev():
     cfg = uc.build_cup_config()
@@ -313,7 +313,7 @@ def _box_top_rev():
 
 def test_the_top_margin_grows_with_release_speed_and_is_clamped():
     """``margin_rev(v) = clamp(K v^2, MIN, MAX)``, K 4.75e-5: the owner's
-    fit at 200 rev/s has no solution in the JB-147 headroom model with the
+    fit at 200 rev/s has no solution in the BUG-57 headroom model with the
     4500 stream STOP, so K is the largest satisfiable fit, 1.180 rev at 157.7
     rev/s (logbook ``2026-11-02-hand-top-margin-and-70a``).  At the incident's
     planned 152 rev/s it is 1.097 rev (35.7 mm); zero at rest; MAX 1.9 rev so
@@ -389,7 +389,7 @@ def test_a_splice_on_the_release_knot_plans_under_the_same_lowered_top(stepped):
 
 def test_a_mid_brake_seed_plans_under_the_lowered_top(stepped, limits, geom,
                                                       monkeypatch):
-    """Owner decision 2026-11-02 (JB-147): the margin covers ANY window whose
+    """Owner decision 2026-11-02 (BUG-57): the margin covers ANY window whose
     seed cup is rising, not only the post-release ones.  An interior seed one
     knot into the brake (``state_at_knot``: ``post_release=False``, still
     rising at ~73 rev/s at Apex 1.05) plans under the box top less the margin

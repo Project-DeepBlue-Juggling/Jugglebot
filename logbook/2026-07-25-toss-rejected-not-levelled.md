@@ -343,4 +343,4 @@ if the topic was never in the bag.
   observability. It is dropped from the launch and reaches `planner` zero times,
   so nothing gates on it; noted in the contract's observability row.
 
-> Closed 2026-10-28: superseded by plans/archived/levelling-frame-contract.md (JB-34 survey).
+> Closed 2026-10-28: superseded by plans/archived/levelling-frame-contract.md (IDEA-2 survey).

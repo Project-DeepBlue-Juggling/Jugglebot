@@ -139,4 +139,4 @@ Not extracted: per-feed landing offsets (the probe prints medians), worker/node 
 - Residue rows (SPLICE_TOO_LATE self-ends, hop-entry accept not checking the cup, the 47 ms emitter gap, the throw-24 release step, the attempt-12 hand jam): rows in `plans/active/skill-stack-dress-rehearsals-and-residue.md` § 2.
 - R6 close-out proceeds tonight.
 
-> Closed 2026-10-28: R5 gate met; plans/archived/two-ball-skill-stack.md; 47 ms gap JB-23, SPLICE recurrence JB-76 (JB-34 survey).
+> Closed 2026-10-28: R5 gate met; plans/archived/two-ball-skill-stack.md; 47 ms gap BUG-4, SPLICE recurrence BUG-21 (IDEA-2 survey).

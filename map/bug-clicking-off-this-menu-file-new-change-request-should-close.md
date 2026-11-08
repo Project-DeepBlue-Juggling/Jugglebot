@@ -1,5 +1,5 @@
 ---
-id: JB-80
+id: BUG-24
 kind: bug
 title: Clicking off this menu ("+ File new change request") should close the dialog box without saving
 status: complete

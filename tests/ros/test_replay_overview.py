@@ -57,7 +57,7 @@ def drained(srv, timeout=120.0):
     poll() returns at the first 200, and the pass os.replace()s its output before it exits, so the drain thread
     is still alive then. A test that fakes ``_running``/``_running_ver``/``_thread`` after poll() must wait for
     it: the dying thread clears all three under the lock, after which the test's GET starts a REAL drain thread
-    that pops the requeue it asserts on (JB-66, ``assert [] == [A]`` under gate load, 2026-10-19..27)."""
+    that pops the requeue it asserts on (BUG-16, ``assert [] == [A]`` under gate load, 2026-10-19..27)."""
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         with srv.backend._lock:
@@ -282,7 +282,7 @@ def test_a_pass_still_exiting_for_an_older_version_neither_reports_computing_nor
     # new version instead of answering "computing" for the old one (load-flaked the route test, 2026-10-11).
     path = _put_bag(srv.root, A)
     poll(srv, A)
-    drained(srv)   # the first pass's real drain thread must not outlive the faked state below (JB-66)
+    drained(srv)   # the first pass's real drain thread must not outlive the faked state below (BUG-16)
     st = os.stat(path)
     old = (st.st_size, st.st_mtime_ns)
     os.utime(path, (st.st_atime, st.st_mtime - 1000))

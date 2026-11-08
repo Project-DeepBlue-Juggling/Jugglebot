@@ -2375,7 +2375,7 @@ def test_an_unknown_planner_mode_is_refused_by_name_before_any_solve():
     assert node._active_plan is active_before and node._cycle is cycle_before
 
 
-# ── carry_zvd on the wire (carry-ring-zvd P1c, JB-102) ────────────────────────
+# ── carry_zvd on the wire (carry-ring-zvd P1c, FEAT-32) ────────────────────────
 # Same switch discipline as planner_mode: skill_node's `carry_zvd` parameter
 # rides on every request, trajectory_node plans THAT install with it
 # (CycleGoals.pose_cfg via SegmentConfig.carry_zvd) and the reply names what
@@ -2438,7 +2438,7 @@ def test_the_planner_mode_parameter_is_the_default_for_an_empty_request():
 
 
 def test_the_solve_cpu_suffix_rides_inside_the_solve_phrase():
-    """JB-76: a worker reply's CPU time and context switches are logged as a
+    """BUG-21: a worker reply's CPU time and context switches are logged as a
     suffix after ``solve X ms`` (the phrase the launch-log greps key on); a
     reply without them (refusal, in-process double) adds nothing."""
     rep = SimpleNamespace(cpu_s=0.0652, ivcsw=12, vcsw=3)

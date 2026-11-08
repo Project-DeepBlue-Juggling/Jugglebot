@@ -1,5 +1,5 @@
 ---
-id: JB-63
+id: IDEA-5
 kind: idea
 title: 'GLOSSARY: add Item ID (JB-<n>) via grilling + domain-modeling'
 status: complete

@@ -51,7 +51,7 @@ bound                what it is
                      ``max over 0 <= I <= I_max of (Kt*I*omega - c*R*I^2) <=
                      |dc_max_negative_current| * V_bus`` = 360 W, the
                      mechanical braking power less the motor's copper loss
-                     (2026-11-02, JB-147; it read ``I_max*Kt*omega`` and so
+                     (2026-11-02, BUG-57; it read ``I_max*Kt*omega`` and so
                      bound at 4.835 m/s once the limit was 70 A).  Since then
                      it admits the whole wire band.
                      Inputs: ``regen_current_limit_a``, ``dc_bus_nominal_v``,
@@ -174,7 +174,7 @@ REGEN_RAIL_STEADY_W = float(hw.HAND_ENV_REGEN_RAIL_CAPACITY_W)
 PHASE_RESISTANCE_OHM = float(hw.HAND_ENV_HAND_PHASE_RESISTANCE_OHM)
 
 #: ``c`` in the copper loss ``c * R * I^2`` at a q-axis current ``I`` (2026-11-02,
-#: JB-147).  1.5 for amplitude-invariant dq currents (a phase-current PEAK of
+#: BUG-57).  1.5 for amplitude-invariant dq currents (a phase-current PEAK of
 #: ``I``; the open ODrive v3 FOC uses that Clarke form, ``I_alpha = I_a``) and
 #: 1.0 for power-invariant ones.  The ODrive Pro firmware is closed, so its
 #: convention is not verifiable here; 1.0 is the SMALLER loss and so the larger
@@ -237,7 +237,7 @@ J_ASCENT_KGM2 = (J_MEASURED_KGM2
 #: itself.  This bound is what stops the envelope admitting a throw C-HAND-2
 #: forbids.  At 50 A it bound at 5.720 m/s, ahead of DECEL_AUTHORITY's 5.901;
 #: at 60 A (2026-11-01) it sat at 6.266 (DECEL_AUTHORITY 6.464) and at 70 A
-#: (2026-11-02, JB-147) 6.768 (6.982).  REGEN bound first at 60 A (5.641) while
+#: (2026-11-02, BUG-57) 6.768 (6.982).  REGEN bound first at 60 A (5.641) while
 #: it fenced ``I_max*Kt*omega``; with the copper loss (2026-11-02) it is outside
 #: the wire band (tests/motion/test_throw_envelope.py pins the order).
 DECEL_FF_HEADROOM_FRAC = float(hw.HAND_ENV_DECEL_FF_CURRENT_HEADROOM_FRAC)

@@ -1,4 +1,4 @@
-"""Jugglebot records: the ledger of the most Catches per Pattern (JB-35).
+"""Jugglebot records: the ledger of the most Catches per Pattern (IDEA-3).
 
 ``docs/records.md`` (repo root) is the single source of truth. This module
 RENDERS that whole file from a data model and PARSES it back; nothing else
@@ -15,7 +15,7 @@ The rule (owner, 2026-10-28)
   that Pattern's table, so a table is the history of its record, newest last.
 * Every Pattern the skill node accepts except the Feed (``reload`` and
   ``magazine`` move balls, they are not juggling): :data:`PATTERNS`.
-* Ledger format v2 (JB-90, 2026-11-01): a last ``Parameters`` column records
+* Ledger format v2 (FEAT-29, 2026-11-01): a last ``Parameters`` column records
   what the run used, ``key=value`` pairs joined by ``; `` in insertion order
   (e.g. ``apex_m=0.95; separation_mm=125; dwell_s=0.27; planner=pose``); an
   empty cell means not recorded. :func:`parse` still accepts a v1 file (five
@@ -152,7 +152,7 @@ class Attempt:
     catches: int
     end_code: str
     note: str = ''
-    #: (key, value) pairs the run used, in insertion order (JB-90).
+    #: (key, value) pairs the run used, in insertion order (FEAT-29).
     params: Tuple[Tuple[str, str], ...] = ()
 
 

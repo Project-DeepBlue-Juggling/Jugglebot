@@ -1,5 +1,5 @@
 ---
-id: JB-101
+id: BUG-37
 kind: bug
 title: Some GUI chart zoom levels result in only  a single tick mark being visible. There should always be at least two, to give scale
 status: complete

@@ -193,4 +193,4 @@ This investigation continued in [2026-04-27-friction-feedforward-bench-validatio
 5. Demolished the cogging hypothesis recorded here, re-routed to friction FF as the primary fix.
 6. Reached a state where motor_guard integration is the next step.
 
-> Closed 2026-10-28: closed by 2026-04-27-friction-feedforward-bench-validation (JB-34 survey).
+> Closed 2026-10-28: closed by 2026-04-27-friction-feedforward-bench-validation (IDEA-2 survey).

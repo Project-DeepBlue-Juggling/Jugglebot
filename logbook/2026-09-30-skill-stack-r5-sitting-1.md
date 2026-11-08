@@ -431,4 +431,4 @@ frontmatter and index edits — see the session handoff.
   pose/yaw the 2026-09-27 coplanar-marker recalibration has since moved by 10.3°. Needs a fresh
   volley, scheduled for the next sitting, before the 0° `reload` gate (owner decision, above).
 
-> Closed 2026-10-28: residue filed as JB-84 (BB tooling residue) (JB-34 survey).
+> Closed 2026-10-28: residue filed as BUG-28 (BB tooling residue) (IDEA-2 survey).

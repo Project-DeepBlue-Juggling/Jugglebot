@@ -1,5 +1,5 @@
 ---
-title: "JB-36: a read-only CONSOLE view (/rosout) beside ROS | UDP in the GUI's topics panel, live and in replay: severity chips, search with highlights, click a line or prev/next to seek the replay"
+title: "IDEA-4: a read-only CONSOLE view (/rosout) beside ROS | UDP in the GUI's topics panel, live and in replay: severity chips, search with highlights, click a line or prev/next to seek the replay"
 type: feature
 date: 2026-11-01
 status: complete
@@ -25,9 +25,9 @@ files_changed:
   - logbook/INDEX.md
 ---
 
-# JB-36: the CONSOLE view
+# IDEA-4: the CONSOLE view
 
-**What the owner asked** (JB-130): option 2, a search box in the GUI replay, placed as a third
+**What the owner asked** (TKT-25): option 2, a search box in the GUI replay, placed as a third
 button beside "ROS | UDP" called CONSOLE; also in the live GUI; read-only; filterable by severity.
 
 **What it is.** The topics panel's segmented control is now ROS | UDP | CONSOLE (persisted under

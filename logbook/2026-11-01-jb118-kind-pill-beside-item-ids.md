@@ -1,5 +1,5 @@
 ---
-title: "JB-118 closed by JB-131's answer: a kind pill beside every Item ID in the map app (Bug, Feature, Idea, Pathway, Ticket, Question), one JB-n sequence kept; JB-n in Night Shift reports now links to the drawer (map app cc2f3d4, fbcefff)"
+title: "FEAT-34 closed by TKT-26's answer: a kind pill beside every Item ID in the map app (Bug, Feature, Idea, Pathway, Ticket, Question), one JB-n sequence kept; JB-n in Night Shift reports now links to the drawer (map app cc2f3d4, fbcefff)"
 type: feature
 date: 2026-11-01
 status: complete
@@ -12,10 +12,10 @@ files_changed:
   - logbook/INDEX.md
 ---
 
-# JB-118: kind pill beside every Item ID
+# FEAT-34: kind pill beside every Item ID
 
-**What.** JB-118 asked for per-kind ID prefixes (PWAY-n, PLAN-n) because a shared `JB-` prefix
-reads as confusing. The Night Shift drafted four options into question ticket JB-131; the owner
+**What.** FEAT-34 asked for per-kind ID prefixes (PWAY-n, PLAN-n) because a shared `JB-` prefix
+reads as confusing. The Night Shift drafted four options into question ticket TKT-26; the owner
 answered option 1: keep the one global `JB-n` sequence (no migration, `plans/archived/map-item-ids.md`
 stands) and show a kind-coloured pill "everywhere the ID is - at least on the Map". Shipped in the
 map app, fork `jugglebot-map` commit cc2f3d4, deployed 2026-11-01:

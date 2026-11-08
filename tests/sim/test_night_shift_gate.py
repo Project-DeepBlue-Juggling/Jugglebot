@@ -24,7 +24,7 @@ TOOL = os.path.join(ROOT, "tools", "night_shift_gate.py")
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 import night_shift_gate as gate  # noqa: E402
 
-BRANCH = "night-shift/2026-10-31-JB-7"
+BRANCH = "night-shift/2026-10-31-BUG-7"
 BUG = "map/bug-wobble.md"
 
 
@@ -48,7 +48,7 @@ def _meta(kind, title, status, n=None, **extra):
     meta = {"kind": kind, "title": title, "status": status, "created": "2026-10-01",
             "updated": "2026-10-01T00:00:00Z", "priority": "medium"}
     if n is not None:
-        meta = dict([("id", "JB-%d" % n)] + list(meta.items()))
+        meta = dict([("id", "%s-%d" % ({"bug": "BUG", "pathway": "PWAY", "ticket": "TKT"}[kind], n))] + list(meta.items()))
     meta.update(extra)
     return dict((k, v) for k, v in meta.items() if v is not None)
 
@@ -70,12 +70,12 @@ def set_base(root, **over):
     _git(root, "checkout", "-q", "main")
     write_bug(root, **over)
     _git(root, "add", "-A")
-    _git(root, "commit", "-q", "--allow-empty", "-m", "map: rate JB-7 on main")
+    _git(root, "commit", "-q", "--allow-empty", "-m", "map: rate BUG-7 on main")
     _git(root, "push", "-q", "origin", "main")
     _git(root, "fetch", "-q", "origin")
     _git(root, "checkout", "-q", "-B", BRANCH, "main")
     (root / "src" / "thing.py").write_text("X = 2\n")
-    commit(root, "fix(thing): X is two (JB-7)")
+    commit(root, "fix(thing): X is two (BUG-7)")
 
 
 def commit(root, msg="edit"):
@@ -119,7 +119,7 @@ def repo(tmp_path):
     _git(root, "push", "-q", "origin", "main")
     _git(root, "checkout", "-q", "-b", BRANCH)
     (root / "src" / "thing.py").write_text("X = 2\n")
-    commit(root, "fix(thing): X is two (JB-7)")
+    commit(root, "fix(thing): X is two (BUG-7)")
     return root
 
 
@@ -138,7 +138,7 @@ def gate_log(root, sha=None, exit_code=0, branch=BRANCH, with_exit=True):
 
 def audit(root, sha=None, open_findings=0, with_count=True):
     p = root.parent / "audit.md"
-    lines = ["# Audit JB-7", "", "- comment wording: narrative applied", "",
+    lines = ["# Audit BUG-7", "", "- comment wording: narrative applied", "",
              "Audited HEAD: %s" % (sha or tip(root))]
     if with_count:
         lines.append("Behaviour-affecting findings open: %d" % open_findings)
@@ -146,7 +146,7 @@ def audit(root, sha=None, open_findings=0, with_count=True):
     return str(p)
 
 
-def run(root, item="JB-7", branch=BRANCH, log=None, aud=None, base="origin/main", waive=()):
+def run(root, item="BUG-7", branch=BRANCH, log=None, aud=None, base="origin/main", waive=()):
     """evaluate() and the CLI on the same inputs; asserts they agree, returns the result."""
     log = log if log is not None else gate_log(root)
     aud = aud if aud is not None else audit(root)
@@ -212,7 +212,7 @@ def test_a_no_exit_line(repo):
 
 
 def test_a_wrong_branch_line(repo):
-    assert_hold(run(repo, log=gate_log(repo, branch="night-shift/2026-10-30-JB-7")), "a")
+    assert_hold(run(repo, log=gate_log(repo, branch="night-shift/2026-10-30-BUG-7")), "a")
 
 
 # --- (b) audit --------------------------------------------------------------
@@ -236,7 +236,7 @@ def test_b_missing_count_line(repo):
 # --- (c) hardware, (d) radius: read from the BRANCH ------------------------
 def test_c_hardware_robot_on_branch_tree_says_none(repo):
     write_bug(repo, hardware="robot")
-    commit(repo, "map: rate JB-7 Wobble")
+    commit(repo, "map: rate BUG-7 Wobble")
     write_bug(repo, hardware="none")  # the working tree lies; the branch is what merges
     res = run(repo)
     assert_hold(res, "c")
@@ -266,18 +266,18 @@ def test_d_radius_not_rated(repo):
 # --- (e) open question ------------------------------------------------------
 def _with_ticket(repo, **kw):
     write_ticket(repo, "which-way", 8, **kw)
-    commit(repo, "map: file ticket JB-8")
+    commit(repo, "map: file ticket TKT-8")
     return run(repo)
 
 
 def test_e_open_question_by_stem_holds(repo):
     res = _with_ticket(repo)
     assert_hold(res, "e")
-    assert "JB-8" in res.reasons[0]
+    assert "TKT-8" in res.reasons[0]
 
 
 def test_e_open_question_by_id_holds(repo):
-    assert_hold(_with_ticket(repo, parent="JB-7"), "e")
+    assert_hold(_with_ticket(repo, parent="BUG-7"), "e")
 
 
 def test_e_answered_question_merges(repo):
@@ -418,7 +418,7 @@ def _mapkit_branch(repo):
 
 
 def _eval(repo, app_log):
-    return gate.evaluate(str(repo), "origin/main", BRANCH, "JB-7", gate_log(repo), audit(repo),
+    return gate.evaluate(str(repo), "origin/main", BRANCH, "BUG-7", gate_log(repo), audit(repo),
                          (), app_log)
 
 
@@ -435,7 +435,7 @@ def test_h_bad_app_log_holds(repo, kw):
 
 def test_h_cannot_be_waived(repo):
     _mapkit_branch(repo)
-    res = gate.evaluate(str(repo), "origin/main", BRANCH, "JB-7", gate_log(repo), audit(repo), ("c",))
+    res = gate.evaluate(str(repo), "origin/main", BRANCH, "BUG-7", gate_log(repo), audit(repo), ("c",))
     assert res.verdict == "HOLD" and "h" in letters(res)
 
 
@@ -482,7 +482,7 @@ def _from_extract(repo, tool, cwd, *extra):
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
     args = [sys.executable, str(tool), "--repo", str(repo), "--base", "origin/main", "--branch", BRANCH,
-            "--item", "JB-7", "--gate-log", gate_log(repo), "--audit", audit(repo)] + list(extra)
+            "--item", "BUG-7", "--gate-log", gate_log(repo), "--audit", audit(repo)] + list(extra)
     return subprocess.run(args, capture_output=True, text=True, cwd=str(cwd), env=env)
 
 
@@ -516,7 +516,7 @@ def test_the_debriefs_update_then_gate_reaches_a_merge(repo):
     the old tip and no longer count; new results on the updated tip, against the base it was
     updated to, merge with the hardware condition waived and nothing else."""
     write_bug(repo, hardware="robot")
-    commit(repo, "map: rate JB-7")
+    commit(repo, "map: rate BUG-7")
     night_tip = tip(repo)
     night_log, night_audit = gate_log(repo, sha=night_tip), audit(repo, sha=night_tip)
     _git(repo, "checkout", "-q", "main")
@@ -526,14 +526,14 @@ def test_the_debriefs_update_then_gate_reaches_a_merge(repo):
     base = _git(repo, "rev-parse", "main")
     _git(repo, "checkout", "-q", BRANCH)
 
-    stale = gate.evaluate(str(repo), base, BRANCH, "JB-7", night_log, night_audit, ("c",))
+    stale = gate.evaluate(str(repo), base, BRANCH, "BUG-7", night_log, night_audit, ("c",))
     assert stale.verdict == "HOLD" and "does not contain base" in stale.reasons[0]
 
     _git(repo, "merge", "-q", "--no-edit", base)
-    still = gate.evaluate(str(repo), base, BRANCH, "JB-7", night_log, night_audit, ("c",))
+    still = gate.evaluate(str(repo), base, BRANCH, "BUG-7", night_log, night_audit, ("c",))
     assert still.verdict == "HOLD" and letters(still) == ["a", "b", "c"]
 
-    fresh = gate.evaluate(str(repo), base, BRANCH, "JB-7", gate_log(repo), audit(repo), ("c",))
+    fresh = gate.evaluate(str(repo), base, BRANCH, "BUG-7", gate_log(repo), audit(repo), ("c",))
     assert fresh.verdict == "MERGE" and fresh.waived == ["c"], fresh.reasons
     assert "MERGE (c waived)" in fresh.to_text()
 
@@ -542,13 +542,13 @@ def test_the_debriefs_remote_branch_name_matches_the_nights_log(repo):
     """/sitting-debrief names the branch origin/<name>; the night's log has the local name."""
     _git(repo, "push", "-q", "origin", BRANCH)
     _git(repo, "fetch", "-q", "origin")
-    res = gate.evaluate(str(repo), "origin/main", "origin/" + BRANCH, "JB-7",
+    res = gate.evaluate(str(repo), "origin/main", "origin/" + BRANCH, "BUG-7",
                         gate_log(repo), audit(repo))
     assert res.verdict == "MERGE", res.reasons
 
 
 # --- a branch of the map app ------------------------------------------------
-APP_BRANCH = "night-shift/2026-11-07-JB-7"
+APP_BRANCH = "night-shift/2026-11-07-BUG-7"
 
 
 def _app_repo(tmp_path):
@@ -570,7 +570,7 @@ def _app_repo(tmp_path):
     return app
 
 
-def _app_run(repo, app, branch=APP_BRANCH, item="JB-7", exit_code=0, open_findings=0):
+def _app_run(repo, app, branch=APP_BRANCH, item="BUG-7", exit_code=0, open_findings=0):
     sha = _git(app, "rev-parse", branch)
     log = app.parent / "app-gate.log"
     log.write_text("HEAD=%s\nBRANCH=%s\nok\nEXIT=%d\n" % (sha, branch, exit_code))
@@ -588,7 +588,7 @@ def _app_edit(app, rel="frontend/src/a.tsx"):
     p = app / rel
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("changed\n")
-    commit(app, "fix(app): thing (JB-7)")
+    commit(app, "fix(app): thing (BUG-7)")
 
 
 def test_app_branch_merges(repo, tmp_path):
@@ -630,7 +630,7 @@ def test_app_red_suite_and_open_findings_hold(repo, tmp_path):
 def _main_rating(repo, **over):
     _git(repo, "checkout", "-q", "main")
     write_bug(repo, **over)
-    commit(repo, "map: rate JB-7")
+    commit(repo, "map: rate BUG-7")
     _git(repo, "push", "-q", "origin", "main")
     _git(repo, "fetch", "-q", "origin")
 
@@ -649,7 +649,7 @@ def test_app_open_question_holds(repo, tmp_path):
     _app_edit(app)
     _git(repo, "checkout", "-q", "main")
     write_item(str(repo / "map" / "ticket-q.md"),
-               _meta("ticket", "Which?", "open", 9, type="question", parent="JB-7"), "Q\n")
+               _meta("ticket", "Which?", "open", 9, type="question", parent="BUG-7"), "Q\n")
     commit(repo, "map: file ticket")
     _git(repo, "push", "-q", "origin", "main")
     _git(repo, "fetch", "-q", "origin")
@@ -667,7 +667,7 @@ def test_app_cli_refuses_a_waiver(repo, tmp_path):
     app = _app_repo(tmp_path)
     _app_edit(app)
     r = subprocess.run([sys.executable, TOOL, "--repo", str(repo), "--app-repo", str(app), "--base",
-                        "origin/main", "--branch", APP_BRANCH, "--item", "JB-7", "--gate-log", "x",
+                        "origin/main", "--branch", APP_BRANCH, "--item", "BUG-7", "--gate-log", "x",
                         "--audit", "y", "--waive", "c"], capture_output=True, text=True)
     assert r.returncode == 1 and "HOLD" in r.stdout
 
@@ -675,7 +675,7 @@ def test_app_cli_refuses_a_waiver(repo, tmp_path):
 # --- ratings the branch lowered (base vs branch) ----------------------------
 def _rerate(repo, **over):
     write_bug(repo, **over)
-    commit(repo, "map: rate JB-7 Wobble")
+    commit(repo, "map: rate BUG-7 Wobble")
     return run(repo)
 
 
@@ -742,7 +742,7 @@ def test_pre_item_not_on_base(repo):
     write_item(str(repo / "map" / "bug-fresh.md"),
                _meta("bug", "Fresh", "inbox", 9, hardware="none", radius="local"), "B\n")
     commit(repo)
-    res = run(repo, item="JB-9")
+    res = run(repo, item="BUG-9")
     assert_hold(res, "pre")
     assert res.reasons[0].startswith("[pre] Item not on base")
 
@@ -750,12 +750,12 @@ def test_pre_item_not_on_base(repo):
 # --- --waive c (the Sitting debrief's hardware pass) ------------------------
 def test_waive_c_merges_where_unwaived_holds(repo):
     write_bug(repo, hardware="robot")
-    commit(repo, "map: rate JB-7 Wobble")
+    commit(repo, "map: rate BUG-7 Wobble")
     assert_hold(run(repo), "c")
     res = run(repo, waive=("c",))
     assert res.verdict == "MERGE" and res.waived == ["c"] and res.checked["c"] is False
     assert res.to_text().splitlines()[0] == "MERGE (c waived)"
-    args = ["--repo", str(repo), "--base", "origin/main", "--branch", BRANCH, "--item", "JB-7",
+    args = ["--repo", str(repo), "--base", "origin/main", "--branch", BRANCH, "--item", "BUG-7",
             "--gate-log", gate_log(repo), "--audit", audit(repo), "--waive", "c", "--json"]
     cli = subprocess.run([sys.executable, TOOL] + args, capture_output=True, text=True)
     doc = json.loads(cli.stdout)
@@ -780,10 +780,10 @@ def test_waive_c_does_not_rescue_f(repo):
 def test_waive_other_letter_refused(repo, letter):
     write_bug(repo, radius="normative")
     commit(repo)
-    res = gate.evaluate(str(repo), "origin/main", BRANCH, "JB-7", gate_log(repo), audit(repo),
+    res = gate.evaluate(str(repo), "origin/main", BRANCH, "BUG-7", gate_log(repo), audit(repo),
                         (letter,))
     assert res.verdict == "HOLD" and letters(res) == ["pre"]
-    args = ["--repo", str(repo), "--base", "origin/main", "--branch", BRANCH, "--item", "JB-7",
+    args = ["--repo", str(repo), "--base", "origin/main", "--branch", BRANCH, "--item", "BUG-7",
             "--gate-log", gate_log(repo), "--audit", audit(repo), "--waive", letter]
     cli = subprocess.run([sys.executable, TOOL] + args, capture_output=True, text=True)
     assert cli.returncode == 1 and cli.stdout.splitlines()[0] == "HOLD"
@@ -799,7 +799,7 @@ def test_two_conditions_both_listed(repo):
 
 
 def test_pre_branch_missing(repo):
-    assert_hold(run(repo, branch="night-shift/2026-10-31-JB-404"), "pre")
+    assert_hold(run(repo, branch="night-shift/2026-10-31-BUG-404"), "pre")
 
 
 def test_pre_branch_not_ahead(repo):
@@ -823,12 +823,12 @@ def test_pre_base_unresolvable(repo):
 def test_pre_not_a_repo(tmp_path):
     d = tmp_path / "plain"
     d.mkdir()
-    res = gate.evaluate(str(d), "origin/main", BRANCH, "JB-7", "x", "y")
+    res = gate.evaluate(str(d), "origin/main", BRANCH, "BUG-7", "x", "y")
     assert res.verdict == "HOLD" and letters(res) == ["pre"]
 
 
 def test_pre_item_not_on_branch(repo):
-    assert_hold(run(repo, item="JB-99"), "pre")
+    assert_hold(run(repo, item="BUG-99"), "pre")
 
 
 def test_pre_item_not_an_id(repo):
@@ -847,13 +847,13 @@ def test_usage_error_is_hold(repo):
 
 
 def test_json_shape(repo):
-    args = ["--repo", str(repo), "--base", "origin/main", "--branch", BRANCH, "--item", "JB-7",
+    args = ["--repo", str(repo), "--base", "origin/main", "--branch", BRANCH, "--item", "BUG-7",
             "--gate-log", gate_log(repo, exit_code=1), "--audit", audit(repo), "--json"]
     cli = subprocess.run([sys.executable, TOOL] + args, capture_output=True, text=True)
     doc = json.loads(cli.stdout)
     assert set(doc) == {"verdict", "item", "branch", "tip", "reasons", "checked", "waived"}
     assert doc["waived"] == []
-    assert doc["verdict"] == "HOLD" and doc["tip"] == tip(repo) and doc["item"] == "JB-7"
+    assert doc["verdict"] == "HOLD" and doc["tip"] == tip(repo) and doc["item"] == "BUG-7"
     assert doc["checked"] == {"a": False, "b": True, "c": True, "d": True, "e": True, "f": True,
                               "g": True, "h": True}
     assert cli.returncode == 1
@@ -877,8 +877,8 @@ def _neutered(tmp_path, monkeypatch, old, new):
 def test_neutered_exit_check_would_merge(repo, tmp_path, monkeypatch):
     mod = _neutered(tmp_path, monkeypatch, 'elif exits[-1] != "0":', "elif False:")
     log, aud = gate_log(repo, exit_code=1), audit(repo)
-    assert mod.evaluate(str(repo), "origin/main", BRANCH, "JB-7", log, aud).verdict == "MERGE"
-    assert gate.evaluate(str(repo), "origin/main", BRANCH, "JB-7", log, aud).verdict == "HOLD"
+    assert mod.evaluate(str(repo), "origin/main", BRANCH, "BUG-7", log, aud).verdict == "MERGE"
+    assert gate.evaluate(str(repo), "origin/main", BRANCH, "BUG-7", log, aud).verdict == "HOLD"
 
 
 def test_neutered_path_check_would_merge(repo, tmp_path, monkeypatch):
@@ -886,8 +886,8 @@ def test_neutered_path_check_would_merge(repo, tmp_path, monkeypatch):
     commit(repo)
     mod = _neutered(tmp_path, monkeypatch, "if p and _forbidden(p)]", "if False]")
     log, aud = gate_log(repo), audit(repo)
-    assert mod.evaluate(str(repo), "origin/main", BRANCH, "JB-7", log, aud).verdict == "MERGE"
-    assert gate.evaluate(str(repo), "origin/main", BRANCH, "JB-7", log, aud).verdict == "HOLD"
+    assert mod.evaluate(str(repo), "origin/main", BRANCH, "BUG-7", log, aud).verdict == "MERGE"
+    assert gate.evaluate(str(repo), "origin/main", BRANCH, "BUG-7", log, aud).verdict == "HOLD"
 
 
 # --- item-id-per-kind P1 (plan section 5, T-U6): both ID forms, prefix must match kind ---
@@ -906,7 +906,8 @@ def _rebase_on(root, *writes):
     _git(root, "checkout", "-q", "main")
     for sid, kind, rel in writes:
         _write_with_id(root, sid, kind, rel)
-    commit(root, "map: per-kind ids on main")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "--allow-empty", "-m", "map: per-kind ids on main")
     _git(root, "push", "-q", "origin", "main")
     _git(root, "fetch", "-q", "origin")
     _git(root, "checkout", "-q", "-B", BRANCH, "main")
@@ -958,8 +959,9 @@ def test_e_question_parent_compares_whole_ids(repo):
     assert_hold(run(repo, item="BUG-7"), "e")
 
 
-def test_legacy_padded_jb_item_still_resolves(repo):
+def test_legacy_padded_jb_item_still_resolves(repo):  # legacy form: retired at P5
     """T-U6: hard constraint, JB inputs behave as before, ``jb-07`` included (legacy ``parse``)."""
+    _rebase_on(repo, ("JB-7", "bug", BUG))
     assert run(repo, item="jb-07").verdict == "MERGE"
 
 

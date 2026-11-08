@@ -1,5 +1,5 @@
 ---
-title: "Night Shift designed and planned: an unattended Claude Code run after the nightly works the board through a deterministic merge gate, holds the rest on branches, asks the owner through question tickets; the Next Sitting Runbook is generated from the Items (Pathway JB-119, plans/active/night-shift.md)"
+title: "Night Shift designed and planned: an unattended Claude Code run after the nightly works the board through a deterministic merge gate, holds the rest on branches, asks the owner through question tickets; the Next Sitting Runbook is generated from the Items (Pathway PWAY-9, plans/active/night-shift.md)"
 type: process
 date: 2026-10-30
 status: complete
@@ -26,7 +26,7 @@ tags:
 
 ## What
 
-Pathway JB-119 and `plans/active/night-shift.md` were written from a two-round design discussion with the owner on 2026-10-30. Night Shift is an unattended Claude Code run on this Jetson after the 04:00 nightly suite, in its own clone and billed to the owner's otherwise idle API credits, that walks every open Item, works what Claude can finish alone, merges only what passes a deterministic gate, holds everything else on `night-shift/<date>-JB-n` branches and writes one committed report whose operator questions are answerable `ticket` Items. The second half is the Next Sitting Runbook: one ordered page of every hardware check waiting across all Pathways, generated from `## Sitting` sections on the Items, with results typed in the map app and a wrap-up Session doing the merging.
+Pathway PWAY-9 and `plans/active/night-shift.md` were written from a two-round design discussion with the owner on 2026-10-30. Night Shift is an unattended Claude Code run on this Jetson after the 04:00 nightly suite, in its own clone and billed to the owner's otherwise idle API credits, that walks every open Item, works what Claude can finish alone, merges only what passes a deterministic gate, holds everything else on `night-shift/<date>-JB-n` branches and writes one committed report whose operator questions are answerable `ticket` Items. The second half is the Next Sitting Runbook: one ordered page of every hardware check waiting across all Pathways, generated from `## Sitting` sections on the Items, with results typed in the map app and a wrap-up Session doing the merging.
 
 ## Why
 

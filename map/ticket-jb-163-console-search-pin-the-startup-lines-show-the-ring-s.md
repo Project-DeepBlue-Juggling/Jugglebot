@@ -1,7 +1,7 @@
 ---
-id: JB-164
+id: TKT-35
 kind: ticket
-title: 'JB-163 CONSOLE search: pin the startup lines, show the ring''s window, backfill from launch.log, or leave it?'
+title: 'BUG-64 CONSOLE search: pin the startup lines, show the ring''s window, backfill from launch.log, or leave it?'
 status: complete
 created: '2026-11-04'
 updated: '2026-11-03T21:55:31Z'
@@ -18,7 +18,7 @@ parent: bug-console-search-missing-some-entries
 type: question
 ---
 
-JB-163 asks why a CONSOLE search for "v38" or "v7" finds no BRIDGE or PLATFORM firmware-check line. The search works on those exact texts. The lines are simply not in the CONSOLE: the 5000-line ring evicts them after about 8-17 min, and `/rosout` on Foxy is volatile, so a page that connects after them never sees them (Findings (2026-11-04) on JB-163).
+BUG-64 asks why a CONSOLE search for "v38" or "v7" finds no BRIDGE or PLATFORM firmware-check line. The search works on those exact texts. The lines are simply not in the CONSOLE: the 5000-line ring evicts them after about 8-17 min, and `/rosout` on Foxy is volatile, so a page that connects after them never sees them (Findings (2026-11-04) on BUG-64).
 
 ## Options
 
@@ -33,7 +33,7 @@ Recommendation: 2 then 1.
 
 - 1 or 2 (or both): a GUI unit the Night Shift can build, test under node and gate.
 - 3: a larger unit that adds a server endpoint, still offline-testable.
-- 4: JB-163 closes as explained.
+- 4: BUG-64 closes as explained.
 
 ## Answer
 

@@ -391,4 +391,4 @@ in-progress — the hardware ladder sitting is outstanding; this session
 prepared the runsheet, the re-swept boxes, and the feasibility probe but
 flew nothing.
 
-> Closed 2026-10-28: holds_ball wire gap filed as JB-86; the apex-edge tie-break and the CHAIN_CATCH margin ring dropped as R3-era with no recurrence since the R5 gate (JB-34 survey).
+> Closed 2026-10-28: holds_ball wire gap filed as BUG-29; the apex-edge tie-break and the CHAIN_CATCH margin ring dropped as R3-era with no recurrence since the R5 gate (IDEA-2 survey).

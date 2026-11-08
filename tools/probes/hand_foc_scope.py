@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hand FOC scope: 8 kHz current-loop capture from the ODrive's RAM oscilloscope (JB-147).
+"""Hand FOC scope: 8 kHz current-loop capture from the ODrive's RAM oscilloscope (BUG-57).
 
 The 100 Hz ``hand_capture`` cannot show how the Hand's braking torque is lost, because
 iq freezes at its last value before the disarm. This tool records the drive's own

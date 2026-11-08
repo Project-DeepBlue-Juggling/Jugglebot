@@ -484,4 +484,4 @@ Nine units (five analyses, then J1/J2/B1/B1b/B1c/B2/B3/B4), briefs and the saved
    throw after a missed feed (one fewer stroke over a loose ball) contradicts the 2026-09-29
    "first throw after a catch" rule and waits for the owner.
 
-> Closed 2026-10-28: analysis done; refusal-margin class tracked as JB-24, BB bias by plans/archived/bb-calibration-one-attempt.md (JB-34 survey).
+> Closed 2026-10-28: analysis done; refusal-margin class tracked as BUG-5, BB bias by plans/archived/bb-calibration-one-attempt.md (IDEA-2 survey).

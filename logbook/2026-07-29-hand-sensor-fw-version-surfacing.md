@@ -224,4 +224,4 @@ gains a KeyValue *row*, not a field) and no firmware flash.
 - `logbook/2026-07-28-anomaly-fixes-validation-sitting.md` — the sitting that
   approved the sensor plan.
 
-> Closed 2026-10-28: closed by plans/archived/hand-ball-sensor.md (JB-34 survey).
+> Closed 2026-10-28: closed by plans/archived/hand-ball-sensor.md (IDEA-2 survey).

@@ -189,4 +189,4 @@ All 2026-10-13; scoped runs by the units, in their own worktrees at 39908f80 + t
 
 **Follow-up (2026-10-13 night).** Sitting 8 met the R5 gate (`2026-10-13-skill-stack-r5-sitting-8-gate-met.md`); the learner-predicted prior, the 35 mm re-aim, the trim default and the BB cancel path were verified in flight (14/14 BB throws, 0 self-cancels). The lane-latch auto-recovery was NOT exercised (no latch occurred; `lane_recovery` 0); its rehearsal is pending, and the remaining items are rows in `plans/active/skill-stack-dress-rehearsals-and-residue.md` § 2.
 
-> Closed 2026-10-28: residue filed as JB-87 (dead wire fields and literal flag masks) (JB-34 survey).
+> Closed 2026-10-28: residue filed as FEAT-28 (dead wire fields and literal flag masks) (IDEA-2 survey).

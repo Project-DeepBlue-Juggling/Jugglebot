@@ -1,9 +1,9 @@
 ---
-title: "JB-64: the skill_node accept-check fixture test flaked on the frame check's clock, not the hand clock"
+title: "BUG-14: the skill_node accept-check fixture test flaked on the frame check's clock, not the hand clock"
 type: bugfix
 date: 2026-10-28
 status: resolved
-phase: "JB-64 - skill_node fixture load flake"
+phase: "BUG-14 - skill_node fixture load flake"
 files_changed:
   - ros_ws/src/jugglebot/jugglebot/skill_node.py
   - tests/ros/test_skill_node.py

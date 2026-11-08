@@ -237,7 +237,7 @@ out.math = {
     out.overview_onchange.unsubscribed = unsubs;
 }
 
-// ---- JB-135: hover marker (mode 'marker' event) ----
+// ---- FEAT-35: hover marker (mode 'marker' event) ----
 {
     const mk = () => dock.find((e) => e.className === 'rp-hovermark')[0];
     const st = () => ({ hidden: mk().hidden, left: mk().style.left });

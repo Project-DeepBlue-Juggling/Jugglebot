@@ -1,5 +1,5 @@
 ---
-title: "The commanded-position freshness reads an injectable clock; the `self_toss` load flake closed (JB-141)"
+title: "The commanded-position freshness reads an injectable clock; the `self_toss` load flake closed (BUG-53)"
 type: bugfix
 date: 2026-11-03
 status: complete
@@ -18,13 +18,13 @@ tags:
   - clock-injection
 ---
 
-# The commanded-position freshness reads an injectable clock (JB-141)
+# The commanded-position freshness reads an injectable clock (BUG-53)
 
 ## What and why
 
 In the Night Shift 2026-11-02 full gate, two `self_toss` tests in `tests/ros/test_skill_node.py` refused with `trajectory/commanded_position is stale` while a MuJoCo unit loaded the box. The diagnosis is confirmed by reading the code, not by inference. `_prelevel_ready` stamped `_commanded_pos_mono` on the real `time.perf_counter()`. `_prelevel` then judged that stamp on the same real clock against `_TRAJ_STATUS_STALE_S` (1.0 s). Any second of load between the fixture and `_start_pattern` refused the goal.
 
-This is the third member of the class, after the hand-state clock (2026-10-15) and the frame-check clock (JB-64, 2026-10-28), and the fix has the same shape:
+This is the third member of the class, after the hand-state clock (2026-10-15) and the frame-check clock (BUG-14, 2026-10-28), and the fix has the same shape:
 
 - `SkillNode._commanded_clock` (`time.perf_counter` in production, so behaviour is unchanged) is now the only clock the family reads. It stamps the sample in `_on_commanded_position` and supplies ``now`` to both readers of `_live_commanded_position`: `_prelevel` and the magazine start.
 - `_node_with_client` freezes it, and `_prelevel_ready` stamps on it.

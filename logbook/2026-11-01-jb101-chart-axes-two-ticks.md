@@ -1,5 +1,5 @@
 ---
-title: "GUI: every chart axis shows at least two ticks at every size and zoom; sub-second time labels (JB-101)"
+title: "GUI: every chart axis shows at least two ticks at every size and zoom; sub-second time labels (BUG-37)"
 type: bugfix
 date: 2026-11-01
 status: complete
@@ -21,7 +21,7 @@ tags:
   - ux
 ---
 
-# JB-101: at least two ticks on every chart axis
+# BUG-37: at least two ticks on every chart axis
 
 **Cause.** uPlot picks the smallest ladder step whose on-screen spacing is at least `space` px
 (defaults 30 px y, 50 px x). On a short chart, or a zoom that leaves a narrow span, that minimum

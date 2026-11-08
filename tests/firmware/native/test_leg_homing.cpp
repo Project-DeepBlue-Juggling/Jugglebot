@@ -378,7 +378,7 @@ TEST_CASE("a failed RESTORE fails the home rather than reporting OK") {
   CHECK_FALSE(homing_active());
 }
 
-// ── FW 34 (JB-72): per-home epoch ────────────────────────────────────────────
+// ── FW 34 (BUG-18): per-home epoch ────────────────────────────────────────────
 // The host trusts a terminal HomingResult only under an epoch newer than the one
 // it saw before its HOME. That needs: a bump on every ACCEPTED request and none
 // on a refused one, RUNNING already set at accept (so no Diagnostic can pair the

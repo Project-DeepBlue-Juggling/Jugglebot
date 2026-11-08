@@ -232,4 +232,4 @@ move.
   step of up to 0.87 rev at this speed, so the re-timed guard would still be marginal, and it
   relaxes a safety check. Replaced by the executor's bounded retry.
 
-> Closed 2026-10-28: residue filed as JB-86 (start-state rehearsal) (JB-34 survey).
+> Closed 2026-10-28: residue filed as BUG-29 (start-state rehearsal) (IDEA-2 survey).

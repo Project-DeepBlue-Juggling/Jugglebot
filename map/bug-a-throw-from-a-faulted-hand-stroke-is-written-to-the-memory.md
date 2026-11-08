@@ -1,5 +1,5 @@
 ---
-id: JB-189
+id: BUG-76
 kind: bug
 title: A Throw from a faulted Hand stroke is written to the Memory as caught
 status: complete

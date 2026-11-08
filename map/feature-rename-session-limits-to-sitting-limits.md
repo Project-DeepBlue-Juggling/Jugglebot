@@ -1,5 +1,5 @@
 ---
-id: JB-3
+id: FEAT-2
 kind: feature
 title: Rename "session limits" to Sitting limits (glossary term)
 status: complete

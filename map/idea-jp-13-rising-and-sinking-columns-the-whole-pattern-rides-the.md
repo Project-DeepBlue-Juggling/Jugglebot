@@ -1,5 +1,5 @@
 ---
-id: JB-110
+id: IDEA-13
 kind: idea
 title: 'JP-13 Rising and sinking columns: the whole Pattern rides the Platform in z'
 status: inbox

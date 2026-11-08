@@ -1,5 +1,5 @@
 ---
-title: "JB-1 residue: the last two operator-facing strings that named the Hand by its Leg-style axis index now say hand"
+title: "BUG-1 residue: the last two operator-facing strings that named the Hand by its Leg-style axis index now say hand"
 type: bugfix
 date: 2026-10-28
 status: resolved
@@ -20,7 +20,7 @@ tags:
 
 ## Summary
 
-Bug JB-1 (filed 2026-09-21): the can-bridge Guard's operator-facing messages named
+Bug BUG-1 (filed 2026-09-21): the can-bridge Guard's operator-facing messages named
 the Hand "leg 6", which on 2026-09-13 sent two Hand `MAX_DEVIATION` latches to the
 wrong actuator. Surveying it on 2026-10-28 found most of it already closed by the F3
 work: `teensy_bridge_node._axis_label` names axis 6 `hand` and the MAX_DEVIATION hint

@@ -120,4 +120,4 @@ a few per goal, in the record only.
 - The R4 runbooks say to read OUTCOME fields live. The throw line carries the same numbers.
   R5 runbooks should name the throw line.
 
-> Closed 2026-10-28: closed by 2026-09-30-operator-console-phase-3 (JB-34 survey).
+> Closed 2026-10-28: closed by 2026-09-30-operator-console-phase-3 (IDEA-2 survey).

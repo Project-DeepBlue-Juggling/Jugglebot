@@ -1,5 +1,5 @@
 ---
-id: JB-119
+id: PWAY-9
 kind: pathway
 title: 'Night Shift: unattended overnight work on the board, and the Next Sitting Runbook'
 status: active

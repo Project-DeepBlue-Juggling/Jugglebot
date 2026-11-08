@@ -1,5 +1,5 @@
 ---
-id: JB-150
+id: FEAT-38
 kind: feature
 title: 'Run admissible-box sweeps on the Win10 desktop: about 2.5 h on the Jetson, and a sweep blocks Sittings'
 status: in_progress
@@ -28,7 +28,7 @@ An admissible-box re-sweep (`tools/admissible_sweep.py`) takes about 2.5 h on th
 
 The runner is 26-29 job families x two rounds (a and b, compared byte for byte), 6 at a time on the Jetson's 6 cores, BLAS 1 thread, about 75 min per round (examples: temp/sweeps/sweep_h4500.sh; the peer's 29-family runner in temp/sweeps/h70/).
 
-While a sweep runs it holds every core at about 85 %, so no Sitting can fly (JB-149: the setpoint stream starves even under ordinary load). Sweeps and Sittings therefore compete for the same box and the same evenings.
+While a sweep runs it holds every core at about 85 %, so no Sitting can fly (BUG-58: the setpoint stream starves even under ordinary load). Sweeps and Sittings therefore compete for the same box and the same evenings.
 
 ## Idea: run the sweep on the owner's Win10 desktop
 
@@ -74,4 +74,4 @@ Recommendation: 1 now, then 2 if the halved sweep still blocks Sittings. Option 
 
 ## Progress
 
-- 2026-11-03: Owner call (JB-156): option 1 landed as tools/admissible_sweep_run.py (round b = rotating 3-family sample); a Jetson certification pass is enough for the record; the PC is the backup (detail below)
+- 2026-11-03: Owner call (TKT-33): option 1 landed as tools/admissible_sweep_run.py (round b = rotating 3-family sample); a Jetson certification pass is enough for the record; the PC is the backup (detail below)

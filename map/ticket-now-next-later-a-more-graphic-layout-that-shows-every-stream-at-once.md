@@ -1,5 +1,5 @@
 ---
-id: JB-48
+id: TKT-18
 kind: ticket
 title: 'Now / Next / Later: a more graphic layout that shows every stream at once without scrolling'
 type: grilling

@@ -1,5 +1,5 @@
 ---
-title: "JB-27: the sim --reload gate runs the launch's lateral authorities (20 mm learner, 10 / 35 mm catch); 2 makes per seed again, and the LIMIT_JERK ends no longer reproduce on main"
+title: "BUG-8: the sim --reload gate runs the launch's lateral authorities (20 mm learner, 10 / 35 mm catch); 2 makes per seed again, and the LIMIT_JERK ends no longer reproduce on main"
 type: bugfix
 date: 2026-11-01
 status: complete
@@ -15,11 +15,11 @@ files_changed:
   - logbook/INDEX.md
 ---
 
-# JB-27: the sim `--reload` gate runs the launch's lateral authorities
+# BUG-8: the sim `--reload` gate runs the launch's lateral authorities
 
-**Question.** JB-27: the sim `--reload` gate (`sim/skills_gate.py`) made 5/5 at 8364808c and,
+**Question.** BUG-8: the sim `--reload` gate (`sim/skills_gate.py`) made 5/5 at 8364808c and,
 after 08ec3fe6 (2026-09-30), 1 make with `LIMIT_JERK` in the continuation throws, while the robot
-flew R5 cleanly. The owner chose JB-128 option 3: treat it as a gate-configuration gap first,
+flew R5 cleanly. The owner chose TKT-24 option 3: treat it as a gate-configuration gap first,
 and only bisect the planner if the gate stays red.
 
 **What was found.** On current `main` the symptom as filed does not reproduce:

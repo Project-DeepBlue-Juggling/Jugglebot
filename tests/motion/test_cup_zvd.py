@@ -1,4 +1,4 @@
-"""I-PLAN-16 (carry-ring-zvd P1, JB-102): the carry ZVD rows.
+"""I-PLAN-16 (carry-ring-zvd P1, FEAT-32): the carry ZVD rows.
 
 With ``PoseConfig.carry_zvd`` on, a pose STEADY window's MODELLED Platform
 mode state at the release knot, and its derivative in the mode frequency, is

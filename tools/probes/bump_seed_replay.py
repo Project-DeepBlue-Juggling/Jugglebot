@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bump-seeded successor replay (JB-120): does a BUMP on the previous CATCH-with-
+"""Bump-seeded successor replay (BUG-42): does a BUMP on the previous CATCH-with-
 throw raise the NEXT catch's peak Hand acceleration past ``hand_acc_limit_rps2``?
 
 For each ``install_segment BUMP Ball n ... bump (dx, dy) mm`` line of a launch log

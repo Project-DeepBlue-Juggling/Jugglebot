@@ -1,7 +1,7 @@
 ---
-id: JB-200
+id: TKT-47
 kind: ticket
-title: 'JB-193 cause withdrawn, an x-only excess of about 0.4 mm remains: close it, fly the 40-Throw check, or put a marker on the Cup?'
+title: 'BUG-80 cause withdrawn, an x-only excess of about 0.4 mm remains: close it, fly the 40-Throw check, or put a marker on the Cup?'
 status: complete
 created: '2026-11-07'
 updated: '2026-11-06T22:55:38Z'
@@ -18,7 +18,7 @@ parent: bug-the-flyback-over-corrects-a-catch-offset-by-1-2-to-1-4-times
 type: question
 ---
 
-JB-193's cause is withdrawn: the planner has no flyback gain that is too strong. It returns 1.00 mm per mm of release offset on paper and in an offline replay, and 0.96 from the commanded Tilt in the 15:53 bag. Full tables in `## Findings (2026-11-07)` on JB-193.
+BUG-80's cause is withdrawn: the planner has no flyback gain that is too strong. It returns 1.00 mm per mm of release offset on paper and in an offline replay, and 0.96 from the commanded Tilt in the 15:53 bag. Full tables in `## Findings (2026-11-07)` on BUG-80.
 
 ## What is left
 
@@ -28,13 +28,13 @@ The over-correction is real only on Robot x and only in one-ball Throws: lag-1 s
 
 1. Close it with no change. A gain would trade x for y, and the effect is about 0.4 mm of 18 mm.
 2. Keep it low, and fly the 40-Throw check when a Sitting has room: from rest, offsets of +20 and -20 mm on each axis. It separates a Tilt gain from an effect of the catch-and-rethrow fold.
-3. Put a marker on the Cup, which would show the lateral path during a stroke directly. That also serves JB-192 and JB-186, which lean on the same lateral picture.
+3. Put a marker on the Cup, which would show the lateral path during a stroke directly. That also serves BUG-79 and BUG-74, which lean on the same lateral picture.
 
 Recommendation: 2, as a rider on a Sitting that is already flying one-ball goals. Do not change the gain.
 
 ## What each answer unblocks
 
-- 1: the next night closes JB-193.
+- 1: the next night closes BUG-80.
 - 2: the next night writes its `## Sitting` section and re-rates it `robot`.
 - 3: a hardware step for you, then a read of the next bag.
 

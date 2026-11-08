@@ -1,5 +1,5 @@
 ---
-id: JB-50
+id: FEAT-10
 kind: feature
 title: A click on empty space closes the drawer and saves its edits
 status: complete

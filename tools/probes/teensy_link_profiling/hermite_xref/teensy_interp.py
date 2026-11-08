@@ -140,7 +140,7 @@ STREAM_STOP_LEG_ACCEL_RPS2 = 250.0           # hardware_config.yaml trajectory_o
 STREAM_STOP_LEG_JERK_RPS3 = 25000.0
 STREAM_STOP_HAND_ACCEL_RPS2 = 4500.0
 STREAM_STOP_HAND_JERK_RPS3 = 350000.0
-HAND_C1_STOP_MIN_UP_VEL_RPS = 50.0             # FW 37 hand C1 stop (JB-145), canbridge_config.h
+HAND_C1_STOP_MIN_UP_VEL_RPS = 50.0             # FW 37 hand C1 stop (BUG-55), canbridge_config.h
 HAND_C1_STOP_GRACE_US = 14000                  # FW 39 (was 6000 at FW 37) short grace on the fast upstroke
 HAND_C1_DECIDE_US = SCHED_COVER_US + HAND_C1_STOP_GRACE_US
 HAND_C1_S = 1.0 + HAND_C1_STOP_GRACE_US * 1e-6 / SEGMENT_T_S
@@ -254,7 +254,7 @@ def stop_eval(P, V, A, D, t):
 
 
 def hand_c1_stop_eval(P, V, A, J, t):
-    """FW 37 hand C1 stop (JB-145) from (P, V) at t -> (p, v, a).  leg_interp.cpp
+    """FW 37 hand C1 stop (BUG-55) from (P, V) at t -> (p, v, a).  leg_interp.cpp
     hand_c1_stop_eval: a = -A until v = A^2/(2J), then a jerk-J ramp-out to rest."""
     vr = A * A / (2.0 * J)
     t1 = (V - vr) / A
@@ -289,7 +289,7 @@ class SchedGroup:
         self.t0_us = 0
         self.frame_t_start_us = 0
         self.stop_D = 0.0
-        self.c1_stop = False                 # FW 37 hand C1 stop (JB-145)
+        self.c1_stop = False                 # FW 37 hand C1 stop (BUG-55)
         z = [0.0] * NUM_AXES
         self.p0, self.v0, self.p1, self.v1, self.p2, self.v2 = (list(z) for _ in range(6))
         self.ep, self.ev, self.ea = list(z), list(z), list(z)
@@ -959,7 +959,7 @@ class TeensyLegInterp:
         return g.ep[i], 0.0, 0.0
 
     def _sched_advance(self, g, now_us):
-        # FW 37 (JB-145): the hand group whose continued cubic, at cover end +
+        # FW 37 (BUG-55): the hand group whose continued cubic, at cover end +
         # HAND_C1_STOP_GRACE_US, moves up faster than the threshold enters the C1
         # stop there from the continued state (leg_interp.cpp).
         if (g.first == HAND_AXIS and g.phase == SCHED_PLAY

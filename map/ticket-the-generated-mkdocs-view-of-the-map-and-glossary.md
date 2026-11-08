@@ -1,5 +1,5 @@
 ---
-id: JB-16
+id: TKT-13
 kind: ticket
 title: The generated mkdocs view of the map and glossary
 type: grilling

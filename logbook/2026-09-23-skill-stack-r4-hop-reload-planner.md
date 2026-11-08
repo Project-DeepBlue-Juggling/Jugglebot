@@ -207,4 +207,4 @@ summarised above; the probe recipes are repeated in the tests' docstrings.
   (U6, census in hand), the hop sim gate at 20 cycles × 5 seeds, the determinism re-sweep,
   `./run_tests.sh --full`, the runbook and the plan's R4 row.
 
-> Closed 2026-10-28: closed by 2026-09-29-skill-stack-r4-gate-met (JB-34 survey).
+> Closed 2026-10-28: closed by 2026-09-29-skill-stack-r4-gate-met (IDEA-2 survey).

@@ -179,7 +179,7 @@ def test_unreachable_target_refuses_with_the_speed_and_least_speed_flight(limits
     text = err.value.reasons[0]
     # 5.69 since the 60 A hand current limit (2026-11-01): the ball-aboard
     # ascent authority throw_envelope.ACCEL_AUTHORITY_RPS2 rose 3225 -> 3897
-    # rev/s^2 (it was 5.3x at 50 A). Unchanged at 70 A (2026-11-02, JB-147:
+    # rev/s^2 (it was 5.3x at 50 A). Unchanged at 70 A (2026-11-02, BUG-57:
     # ACCEL_AUTHORITY 4569): the pin did not move.
     assert 'hand cap is 5.69' in text and 'least-speed flight' in text
     assert err.value.outcome().startswith(uc.OUTCOME_CODE + '(' + mt.MAGAZINE_UNREACHABLE)
