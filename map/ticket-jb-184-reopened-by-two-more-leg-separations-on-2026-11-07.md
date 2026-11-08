@@ -2,9 +2,9 @@
 id: JB-210
 kind: ticket
 title: 'JB-184 reopened by two more Leg separations on 2026-11-07: keep no bound and retire Dwell 0.30 and 0.32, bench-test a joint first, bound planned Leg acceleration, or hold the joints mechanically?'
-status: open
+status: complete
 created: '2026-11-08'
-updated: '2026-11-07T19:12:27Z'
+updated: '2026-11-08T00:20:40Z'
 owners: []
 priority: high
 effort: xs
@@ -47,3 +47,7 @@ Recommendation: 1 and 2 together, with no limit value yet.
 - 2: the next night writes the bench row.
 - 3: a safety-bearing plan for your Session, with the value you choose.
 - 4: a hardware step for you.
+
+## Answer
+
+I'm attempting Option 4 now, so we will see if this problem persists once I've updated the joints. Fingers crossed!
