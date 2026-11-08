@@ -1,0 +1,6 @@
+# Commits git blame should look through (git config blame.ignoreRevsFile .git-blame-ignore-revs).
+# Token-only rewrites that would otherwise sit between every touched line and its
+# Logbook-Entry trailer, the canonical code-to-logbook link.
+
+# 2026-11-08 map: renumber every Item to per-kind IDs (JB-118) - plan item-id-per-kind P4
+380587880b87e1c0290359d80db2f930b5e04d43
