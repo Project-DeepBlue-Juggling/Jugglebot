@@ -19,7 +19,7 @@ Rigs: Robot 5 blocks (183 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 
 ### Block 1: armed  (1 row, 1 min)
 
-#### JB-149 40 Hz setpoint stream starved past the firmware's 70 ms cover during CATCH-solve bursts: 3 LANE_REFUSED ends on 2026-11-02  (1 min, high, unattached)
+#### JB-149 Firmware scheduler STOPs a streamed lane while frames arrive on time and the host stream is clean: LANE_REFUSED ends, cause unseen  (1 min, high, unattached)
 - why: catch the next LANE_REFUSED with the GC probe running; three Sittings (2026-11-03 12:30 and 22:29, 2026-11-04 18:45) found no host-side cause, so only an end caught under the probe can rule the host out at the moment of failure.
 - do:
   - Nothing extra: `gc_probe` is on by default at launch since 2026-11-04 (do not pass `gc_probe:=false`). If an Attempt ends LANE_REFUSED, note the time.

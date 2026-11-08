@@ -1,10 +1,10 @@
 ---
 id: JB-149
 kind: bug
-title: '40 Hz setpoint stream starved past the firmware''s 70 ms cover during CATCH-solve bursts: 3 LANE_REFUSED ends on 2026-11-02'
+title: 'Firmware scheduler STOPs a streamed lane while frames arrive on time and the host stream is clean: LANE_REFUSED ends, cause unseen'
 status: in_progress
 created: '2026-11-02'
-updated: '2026-11-07T05:46:03Z'
+updated: '2026-11-08T03:30:00Z'
 owners:
 - jugglebot-50
 priority: high
@@ -23,10 +23,30 @@ links:
 - logbook/2026-11-04-sitting-debrief.md
 - logbook/2026-11-04-jb149-probe-sitting-and-jb139-close.md
 - logbook/2026-11-06-jb174-stream-socket-queue.md
+- logbook/2026-11-07-sitting-debrief.md
+- feature-firmware-stop-record-report-why-a-scheduler-cover-ended
 filed_by: claude
 ---
 
-Filed at the 2026-11-02 Sitting debrief (logbook/2026-11-02-sitting-debrief.md). Supersedes JB-23 (emitter gap) and owns the 70 ms cliff class JB-98 named.
+Filed at the 2026-11-02 Sitting debrief (logbook/2026-11-02-sitting-debrief.md) as a starved 40 Hz setpoint stream. Supersedes JB-23 (emitter gap) and owns the 70 ms cliff class JB-98 named. Reframed 2026-11-08 at the owner's request (section below). The sections after it are the record of the earlier framing.
+
+## Reframe (2026-11-08)
+
+**Both earlier explanations are refuted for the ends that matter. What remains is a firmware cover that ends while frames arrive on time.**
+
+- **Host starvation** (the original title): host-side for 1 of 5 STOPs on 2026-11-05 and 3 of 23 on 2026-11-07, none of which ended an Attempt. Both `LANE_REFUSED` ends on 2026-11-07 had forward gaps of 62 and 58 ms, no GC pause and frame age at most 22.6 ms.
+- **Lost frames** (2026-11-06, the one-packet socket queue): JB-174's FW 40 fix holds. Lost 0 of 83,340 setpoints, with sent equal to received in every STOP window.
+
+## What is left (2026-11-08)
+
+- 20 of 23 STOPs on 2026-11-07 ran out of cover at forward gaps of 31 to 64 ms. `expired`, `superseded`, `stale`, `future_drops` and `q_overflow` were all 0.
+- The cover runs from each frame's stamped play time, not its arrival, so on-time frames and a STOP point at a stamp gap, a step in the wall-offset mapping, or a frame that was queued and never promoted. The STOP line cannot tell these apart.
+- Next: JB-212, a firmware STOP record giving the frame stamps, arrivals, queue depth and any time-base step around each STOP.
+- The `gc_freeze` A/B still listed below would touch only the host-side STOPs, none of which ended an Attempt, so it is no longer the next step.
+
+## Why a STOP can become a Fault (2026-11-07)
+
+At 16:43:40 a Hand C1 stop (cover ended at 64 ms) held the Hand at 2.21 rev while the plan walked on. The guard latched `MAX_DEVIATION` +5.779 rev 11 ms later, and the host's hold came 113 ms after the STOP. This is the JB-98 and JB-167 class: any STOP followed by a walking plan can become a guard Fault. The ball was unaffected.
 
 ## What happens
 
@@ -116,3 +136,4 @@ Recommendation: 1, flown at the next Sitting with the instrumentation, then 2 or
 - 2026-11-04: Probe Sitting 2026-11-04 18:45 (gc_probe on, FW 38): row PASSED, record complete. No LANE_REFUSED, no STOP inside an Attempt; max GC pause 2.1 ms; rx_age max 27 ms, gt70 0. Third Sitting with no host-side support. gc_probe now on by default at launch; the row is a ride-along until a LANE_REFUSED is caught under it.
 - 2026-11-05: Row PASSED 2026-11-05 22:46 (first LANE_REFUSED under gc_probe). 1 of 5 STOPs host-side: 60.0 ms gen-2 GC pause in teensy_bridge_node (launch L1615, 421.040), forward 99.5 / loop 77.5 ms, expired +1; the only GC pause > 5 ms all Sitting. Other 4 host-clean (emit <= 28 ms, GC 0, seq_gaps 0). Next: A/B gc_freeze:=true (bridge node first).
 - 2026-11-06: 2026-11-06: the clean-host class is missing frames. Firmware counted 1.3-1.5 % fewer frames than the host sent in three bags; each clean STOP needs one missing frame (both lanes when the next is > 20 ms old, Hand C1 when > 6 ms). Likely cause: the stream socket one-packet queue, fixed in FW 40 (JB-174); its Sitting row is the test. GC caused 1 of 5 STOPs; gc_freeze A/B still owed.
+- 2026-11-08: Reframed (owner): 2026-11-07 Sitting, row passed literally (both LANE_REFUSED ends under gc_probe). Starvation and lost frames refuted for both ends (lost 0 of 83,340); 20 of 23 STOPs had a clean host and on-time frames. Next is the firmware STOP record, JB-212 (detail above).
