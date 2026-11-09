@@ -268,10 +268,15 @@ def test_the_check_logs_the_catch_landing_it_planned_against_once(cell):
 
 
 def test_the_landing_line_is_logged_when_the_check_refuses(cell):
+    """BUG-87: a refused check still logs the landing it planned against,
+    and the note rides out ahead of the NO_ADMISSIBLE_COMMAND END line."""
     chk = _RealChecker(cell)
     _s, _i, x, lines, _st = _run_catch(cell, chk, y_d_xy=(0.030, 0.0))
     assert x.attempt_ended and x.end_code == ex.NO_ADMISSIBLE_COMMAND
-    assert len(_landing_lines(lines)) == 1, lines
+    got = _landing_lines(lines)
+    assert len(got) == 1, lines
+    end_at = next(i for i, ln in enumerate(lines) if ' END ' in ln)
+    assert lines.index(got[0]) < end_at, lines
 
 
 # ---------------------------------------------------------------------------

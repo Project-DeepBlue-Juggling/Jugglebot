@@ -23,4 +23,5 @@ The landing is the clamped one the check uses; `dt` is its time minus the dispat
 ## Verification
 
 - 2026-11-10, `tools/night_shift_nonet.sh pytest -q tests/motion/test_skills_executor_online.py tests/motion/test_skills_executor.py tests/sim/test_skills_gate_online.py`: 349 passed in 57.32 s.
-- Both new tests (pass and refusal) fail with the executor change reverted (2 failed, 43 passed).
+- 2026-11-10, `tools/night_shift_nonet.sh pytest -q tests/motion/test_skills_executor_online.py` with `executor.py` reverted to origin/main: 2 failed, 43 passed (both new tests, pass and refusal, fail without the change).
+- After the audit (refusal test also asserts the landing line precedes the END line), 2026-11-10, the scoped command above: 349 passed in 54.14 s.
