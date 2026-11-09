@@ -4,7 +4,7 @@ kind: idea
 title: Improve the Next Sitting Runbook
 status: backlog
 created: '2026-11-08'
-updated: '2026-11-08T17:49:41Z'
+updated: '2026-11-09T18:16:35Z'
 owners: []
 priority: medium
 effort: m
@@ -57,6 +57,21 @@ Recommendation: 3, then 1. It settles the step format on a real Sitting before a
 - What to record, and the Item it serves (linked). Lower-priority Items read `optional`.
 - Anything a step needs comes earlier: builds, flashes, parameter sets, and the restore afterwards.
 
+## Decisions (TKT-53, 2026-11-08)
+
+- Order: Option 3 first (one hand-built sheet for a Robot Sitting, flown once), then Option 1 (the `/sitting-sheet` command) built from what worked.
+- The sheet replaces the app's Next Sitting page in the end.
+- `optional` = an Item of priority low.
+- A step shared by two Items is one step, and it names every Item it serves.
+- No time budget for now.
+- Every step gets a verdict box and a comments box, as today's Next Sitting page has per Item.
+
+## Next
+
+- The first sheet is built the night before the next Robot Sitting, from the Runbook as it stands then. The Legs are being re-jointed (TKT-52), so a sheet built now would be stale.
+- To get it: put the planned Sitting date in a Progress note here (or tell a Session), and the Night Shift before that date builds the sheet on a branch.
+
 ## Progress
 
 - 2026-11-09: Night Shift 2026-11-09: options and a draft step format written; awaiting the owner's answer
+- 2026-11-10: Night Shift 2026-11-10: TKT-53 decisions recorded; the first sheet is built the night before the next Robot Sitting, once its date is noted here
