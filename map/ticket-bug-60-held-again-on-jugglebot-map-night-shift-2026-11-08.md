@@ -2,9 +2,9 @@
 id: TKT-57
 kind: ticket
 title: 'BUG-60 held again on jugglebot-map:night-shift/2026-11-08-BUG-60: make the row read-only while saving and add the two tests, only the read-only row, merge as is, or drop?'
-status: open
+status: complete
 created: '2026-11-10'
-updated: '2026-11-09T17:48:25Z'
+updated: '2026-11-09T21:49:58Z'
 owners: []
 priority: medium
 effort: xs
@@ -40,3 +40,7 @@ Recommendation: 1, the row read-only while saving is one attribute.
 - 1 or 2: the next night applies them, re-gates and merges.
 - 3: the next night re-gates and merges.
 - 4: BUG-60 goes back to open.
+
+## Answer
+
+Let's go with Option 2. I don't use Mac, so CMD won't be realised, and we can add more tests in the future if this proves buggy.
