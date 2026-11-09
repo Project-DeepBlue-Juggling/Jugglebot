@@ -2,9 +2,9 @@
 id: TKT-60
 kind: ticket
 title: 'IDEA-21 accuracy score: a landing score per Throw, your path score over the flight, or both, and do Feeds count?'
-status: open
+status: complete
 created: '2026-11-10'
-updated: '2026-11-09T17:52:35Z'
+updated: '2026-11-09T21:44:39Z'
 owners: []
 priority: medium
 effort: xs
@@ -37,3 +37,13 @@ Recommendation: 1 first, in millimetres you already read as Catch radius; add 2 
 
 - 1: the next night builds the score module and its tests; the GUI readout follows on a branch.
 - 2 or 3: the same, plus the planned path stored per Throw.
+
+## Answer
+
+I like the idea of Landing score, but I worry that it might be vulnerable to mocap noise. Path score would also be, but I'd think that noise would be averaged out over the whole path. At the end of the day, I'd expect both to be functionally identical (assuming the Path score was calculated based on the actual throw state, not the planned one) and I can see how Landing score is faster/easier to compute. Could you try both on some logs to see how they differ?
+
+Feeds should be scored as well, but separately. I'm thinking something like this:
+- After a juggling Attempt ends, as part of the message in the GUI stating how many throws/catches were made, the 'average accuracy' score is given.
+- After a ball is fed to Jugglebot, that throw's accuracy score is given.
+
+These scores should be appended to a list of scores for Jugglebot and Ball Butler. It might make sense to separate Jugglebot's scores into the different Patterns, though I'm open to discussion here. I'm just thinking this could be a useful source of data as we aim to improve the accuracy score; this will give us a tangible comparison metric to use over time to gauge the robots' performance.
