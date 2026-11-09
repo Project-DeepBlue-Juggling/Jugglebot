@@ -39,6 +39,23 @@ export function recordRows(json, hidden) {
     return rows;
 }
 
+/**
+ * The "Drops to date" line atop the panel (FEAT-47). `json.drops` is null/absent
+ * until the ledger has the section ("not counted yet"); otherwise
+ * { total, live, since, history|null }: "Drops to date: 12 · since 2026-11-10"
+ * and, when no history was backfilled, " (history not yet counted)".
+ */
+export function dropsText(json) {
+    const d = json && json.drops;
+    if (!d || typeof d !== 'object' || !Number.isFinite(Number(d.total))) {
+        return 'Drops to date: not counted yet';
+    }
+    let t = 'Drops to date: ' + Number(d.total);
+    if (d.since) t += ' · since ' + String(d.since);
+    if (d.history === null || d.history === undefined) t += ' (history not yet counted)';
+    return t;
+}
+
 /** Unit suffix of a ledger params key -> the unit shown after the value (FEAT-29). */
 const PARAM_UNITS = [['_mm', 'mm'], ['_deg', '°'], ['_m', 'm'], ['_s', 's']];
 /** Keys whose generic "strip the unit, capitalise" label would read badly. */

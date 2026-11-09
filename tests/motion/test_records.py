@@ -145,7 +145,8 @@ def test_csv_refuses_wrong_columns_and_sim_rows(tmp_path):
 def test_record_attempt_writes_only_when_beaten(tmp_path):
     path = str(tmp_path / 'records.md')
     assert rec.record_attempt(path, _a('2026-10-20 10:00', 'hop', 0)) == (False, 0)
-    assert rec.parse(Path(path).read_text()) == rec.empty()     # new file: headings only
+    # new file: headings only, plus the drops section FEAT-47 starts on the first write
+    assert rec.parse(Path(path).read_text()) == rec.apply_drops(rec.empty(), '2026-10-20 10:00', 0)
     assert rec.record_attempt(path, _a('2026-10-20 10:01', 'hop', 3)) == (True, 3)
     before = os.stat(path).st_mtime_ns, Path(path).read_bytes()
     assert rec.record_attempt(path, _a('2026-10-20 10:02', 'hop', 2)) == (False, 3)
@@ -282,3 +283,105 @@ def test_to_json_carries_params_as_an_ordered_dict():
         '2026-11-01 10:00', 'columns', 9, 8, 'STOPPED', params=_PARAMS))
     col = next(p for p in rec.to_json(model)['patterns'] if p['pattern'] == 'columns')
     assert list(col['record']['params'].items()) == list(_PARAMS)
+
+
+# ── Drops to date (FEAT-47) ───────────────────────────────────────────────
+
+def _ad(when, pattern, catches, drops, throws=None):
+    return rec.Attempt(when, pattern, catches + 1 if throws is None else throws,
+                       catches, 'COMPLETED', drops=drops)
+
+
+def _with_history(model, hist):
+    import dataclasses
+    return dataclasses.replace(model, drops=dataclasses.replace(model.drops, history=hist))
+
+
+def test_a_file_without_the_drops_section_is_not_counted_yet():
+    text = rec.render(rec.empty())
+    assert 'drops:' not in text
+    assert rec.parse(text).drops is None
+    assert rec.to_json(rec.parse(text))['drops'] is None
+
+
+def test_drops_section_round_trips_byte_identically():
+    for hist in (None, 40):
+        model = _with_history(rec.apply_drops(rec.empty(), '2026-11-10 09:00', 3), hist)
+        text = rec.render(model)
+        assert '<!-- drops: live=3 since=2026-11-10 history=%s -->' % (
+            'none' if hist is None else hist) in text
+        assert text.index('drops:') < text.index('<!-- pattern:')   # near the top
+        assert rec.parse(text) == model
+        assert rec.render(rec.parse(text)) == text
+
+
+def test_total_is_history_plus_live_and_to_json_carries_it():
+    model = _with_history(rec.apply_drops(rec.empty(), '2026-11-10 09:00', 5), 100)
+    assert rec.to_json(model)['drops'] == {'total': 105, 'live': 5,
+                                           'since': '2026-11-10', 'history': 100}
+    none = rec.apply_drops(rec.empty(), '2026-11-10 09:00', 5)
+    assert rec.to_json(none)['drops']['total'] == 5
+    assert rec.to_json(none)['drops']['history'] is None
+
+
+def test_the_section_and_tables_survive_each_other_through_a_record():
+    model = rec.apply_drops(rec.empty(), '2026-11-10 09:00', 2)
+    model, beaten = rec.apply_attempt(model, _a('2026-11-10 09:05', 'hop', 4))
+    assert beaten and model.drops.live == 2
+    assert rec.parse(rec.render(model)) == model
+
+
+def test_record_attempt_writes_when_drops_even_if_no_record_is_beaten(tmp_path):
+    path = str(tmp_path / 'records.md')
+    assert rec.record_attempt(path, _ad('2026-11-10 10:00', 'hop', 3, 0)) == (True, 3)
+    assert rec.load(path).drops == rec.Drops(0, '2026-11-10', None)
+    before = (os.stat(path).st_mtime_ns, Path(path).read_bytes())   # no drops, no record: no write
+    assert rec.record_attempt(path, _ad('2026-11-10 10:01', 'hop', 2, 0)) == (False, 3)
+    assert (os.stat(path).st_mtime_ns, Path(path).read_bytes()) == before
+    assert rec.record_attempt(path, _ad('2026-11-11 10:02', 'hop', 2, 2)) == (False, 3)
+    assert rec.load(path).drops == rec.Drops(2, '2026-11-10', None)
+    assert rec.record_attempt(path, _ad('2026-11-11 10:03', 'hop', 1, 1)) == (False, 3)
+    assert rec.total_drops(path) == 3
+    assert os.listdir(str(tmp_path)) == ['records.md']
+
+
+def test_the_first_write_migrates_a_v2_file_without_the_section(tmp_path):
+    path = tmp_path / 'records.md'
+    path.write_text(rec.render(rec.rebuild([_a('2026-10-20 10:00', 'hop', 4)])))
+    assert rec.record_attempt(str(path), _ad('2026-11-10 10:00', 'hop', 1, 1)) == (False, 4)
+    model = rec.load(str(path))
+    assert model.drops == rec.Drops(1, '2026-11-10', None)
+    assert model.table('hop').best.catches == 4
+
+
+def test_a_feed_books_its_drops_but_never_a_record_row(tmp_path):
+    path = str(tmp_path / 'records.md')
+    rec.record_attempt(path, _ad('2026-11-10 10:00', 'hop', 1, 0))
+    before = rec.load(path)
+    assert rec.record_attempt(path, _ad('2026-11-10 10:04', 'reload', 5, 0)) == (False, 0)
+    assert rec.load(path) == before                # a Feed with no drops writes nothing
+    assert rec.record_attempt(path, _ad('2026-11-10 10:05', 'reload', 5, 2)) == (False, 0)
+    after = rec.load(path)
+    assert after.drops.live == 2
+    assert after.tables == before.tables
+    assert 'pattern: reload' not in Path(path).read_text()
+
+
+def test_a_malformed_drops_marker_is_never_overwritten(tmp_path):
+    good = rec.render(rec.apply_drops(rec.empty(), '2026-11-10 10:00', 1))
+    dup = '<!-- drops: live=1 since=2026-11-10 history=none -->'
+    for bad in (good.replace('live=1', 'live=x'),
+                good.replace('history=none', 'history=-3'),
+                good.replace(dup, dup + '\n' + dup)):
+        path = tmp_path / 'records.md'
+        path.write_text(bad)
+        with pytest.raises(rec.RecordsFormatError):
+            rec.record_attempt(str(path), _ad('2026-11-11 10:00', 'hop', 1, 1))
+        assert path.read_text() == bad
+
+
+def test_skill_node_passes_the_drop_count_and_feeds_reach_the_ledger():
+    src = SKILL_NODE.read_text()
+    assert 'drops=rp.drop_count(self._goal_reports)' in src
+    body = src.split('def _offer_record')[1].split('def _juggle_execute')[0]
+    assert 'FEED_PATTERNS' not in body        # a Feed books drops too

@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-10 | resolved | gui improvements | **Drops to date: a live counter in the records ledger and atop the GUI Records panel (FEAT-47); Ball Butler Feed misses not yet counted, history backfill not done** | [2026-11-10-drops-to-date-live-counter.md](2026-11-10-drops-to-date-live-counter.md) |
 | 2026-11-09 | resolved | map-improvements | **Per-kind Item IDs P6: auto-memory and the map-app fork rewritten through the crosswalk, the sweeper retired with its classifier kept as the guard's module, FEAT-34 closed** | [2026-11-09-item-id-per-kind-p6-close.md](2026-11-09-item-id-per-kind-p6-close.md) |
 | 2026-11-09 | resolved | night-shift | **Night Shift runner survives an early end: no background-task limit on any leg, one resume, unfinished work saved to a branch, a stub report and a new NO_REPORT status** | [2026-11-09-night-shift-survives-an-early-end](2026-11-09-night-shift-survives-an-early-end.md) |
 | 2026-11-08 | resolved | map-improvements | **Per-kind Item IDs P5: the old global form retired from code; one enforcement point, a classifier-backed guard in the default gate, the format stated in the docs** | [2026-11-08-item-id-per-kind-p5-contract.md](2026-11-08-item-id-per-kind-p5-contract.md) |

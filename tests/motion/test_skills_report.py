@@ -278,3 +278,29 @@ def test_the_unverifiable_throw_line_is_info_and_does_not_read_caught_or_missed(
     assert 'FINAL CATCH UNVERIFIABLE (the goal ended on a Stop; not counted)' \
         in text
     assert 'CAUGHT' not in text and 'MISSED' not in text
+
+
+# ── drop_count (FEAT-47) ──────────────────────────────────────────────────
+
+def test_drop_count_counts_misses_and_balls_still_in_the_air():
+    reports = [_r(caught=True), _r(caught=False), _r(caught=None)]
+    assert rp.drop_count(reports) == 2      # False = missed, None = in the air at the end
+
+
+def test_drop_count_never_counts_a_catch_the_stop_or_an_unverified_final_catch():
+    assert rp.drop_count([_r(caught=True)]) == 0
+    assert rp.drop_count([_r(caught=None, stop=True)]) == 0
+    assert rp.drop_count([_r(caught=False, stop=True)]) == 0
+    assert rp.drop_count([_r(caught=None, unverified=True)]) == 0
+    assert rp.drop_count([]) == 0
+
+
+def test_drop_count_adds_missed_feeds_and_ignores_a_negative():
+    assert rp.drop_count([_r(caught=False)], feed_missed=2) == 3
+    assert rp.drop_count([], feed_missed=1) == 1
+    assert rp.drop_count([], feed_missed=-4) == 0
+
+
+def test_drop_count_leaves_the_operators_tally_alone():
+    reports = [_r(caught=None), _r(caught=True)]
+    assert rp.summarise(reports) == (2, 1)

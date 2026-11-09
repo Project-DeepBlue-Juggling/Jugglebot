@@ -50,3 +50,4 @@
     font-size: 0.9em;
 }
 #records-panel .records-group:first-child { margin-top: 0; border-top: none; }
+#records-panel .records-drops { font-family: var(--font-mono); color: var(--text-secondary); margin-bottom: 3px; }

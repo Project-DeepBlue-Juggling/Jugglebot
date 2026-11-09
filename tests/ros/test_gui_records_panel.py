@@ -141,3 +141,22 @@ def test_panel_renders_a_heading_per_section_and_the_css_styles_it():
     assert "recordSections(rows)" in panel and "records-group" in panel
     assert "' beaten'" in panel  # the per-row flash survives the grouping
     assert ".records-group" in (GUI / "css" / "records-panel.css").read_text()
+
+
+# ── Drops to date (FEAT-47) ────────────────────────────────────────────────
+
+def test_drops_line_total_since_and_history_note(out):
+    assert out["drops"] == [
+        "Drops to date: 12 · since 2026-11-10 (history not yet counted)",
+        "Drops to date: 112 · since 2026-11-10",
+        "Drops to date: not counted yet",
+        "Drops to date: not counted yet",
+        "Drops to date: not counted yet",
+    ]
+
+
+def test_panel_has_a_drops_slot_atop_the_records():
+    html = (GUI / "index.html").read_text()
+    assert html.index('class="records-title"') < html.index('class="records-drops"') < html.index('class="records-rows"')
+    panel = (JS / "records-panel.js").read_text()
+    assert "dropsText(data)" in panel and ".records-drops" in panel

@@ -48,12 +48,28 @@ The literals are restated, not imported, from ``motion/skills/executor.py`` so
 the GUI server can load this file without the motion package;
 ``tests/motion/test_records.py`` pins them against the executor's constants.
 
+Drops to date (FEAT-47, 2026-11-10)
+-----------------------------------
+A section near the top counts every drop: a ball thrown to be caught by
+Jugglebot that was not caught (``motion/skills/report.py::drop_count``; the
+columns Stop and an unverifiable final Catch are not drops). It is parsed from
+the machine marker ``<!-- drops: live=<n> since=<YYYY-MM-DD> history=<m|none> -->``
+and the total shown is ``history + live``: ``live`` is counted by this module
+from ``since`` on, ``history`` is a figure a later backfill sets by hand (``none``
+= not yet counted, read as 0). A file without the section is "not counted yet"
+(:attr:`Ledger.drops` is ``None``; the v2 file parses unchanged) and the first
+write after the upgrade adds it. Feeds (``reload``/``magazine``) are not
+records but their drops count: :func:`record_attempt` books them without a
+table row.
+
 Writes
 ------
 :func:`record_attempt` is the one writer: it parses the existing file (a
 malformed file raises :class:`RecordsFormatError` and is NEVER overwritten),
-applies the Attempt, and writes only when a record was beaten or the file did
-not exist, atomically (temp file in the same directory + ``os.replace``).
+applies the Attempt, and writes only when a record was beaten, the file did
+not exist, the Attempt carried drops, or the drops section is not there yet
+(the first write after the upgrade), atomically (temp file in the same
+directory + ``os.replace``).
 Rendering is deterministic, so a re-render of the same model is
 byte-identical.
 
@@ -116,6 +132,8 @@ _TABLE_HEAD = '| When | Throws | Catches | How it ended | Note | Parameters |'
 _TABLE_RULE = '|---|---:|---:|---|---|---|'
 _TABLE_HEAD_V1 = '| When | Throws | Catches | How it ended | Note |'
 _TABLE_RULE_V1 = '|---|---:|---:|---|---|'
+_DROPS_RE = re.compile(r'^<!-- drops: live=(\d+) since=(\d{4}-\d{2}-\d{2}) '
+                       r'history=(\d+|none) -->$')
 _NO_RECORD = '_No record yet._'
 _FILE_MARKER = '<!-- jugglebot-records v2 -->'
 _FILE_MARKER_V1 = '<!-- jugglebot-records v1 -->'
@@ -154,6 +172,21 @@ class Attempt:
     note: str = ''
     #: (key, value) pairs the run used, in insertion order (FEAT-29).
     params: Tuple[Tuple[str, str], ...] = ()
+    #: Balls thrown to be caught that were not (``report.drop_count``).
+    drops: int = 0
+
+
+@dataclasses.dataclass(frozen=True)
+class Drops:
+    """The "Drops to date" figure: ``live`` counted from ``since`` (a date),
+    plus a ``history`` count a backfill sets (``None`` = not yet counted)."""
+    live: int
+    since: str
+    history: Optional[int] = None
+
+    @property
+    def total(self) -> int:
+        return self.live + (self.history or 0)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -183,6 +216,8 @@ class Table:
 class Ledger:
     """pattern id -> :class:`Table`; :meth:`ordered` is the file order."""
     tables: Tuple[Tuple[str, Table], ...]
+    #: ``None`` = the file has no drops section ("not counted yet").
+    drops: Optional[Drops] = None
 
     def table(self, pattern: str) -> Optional[Table]:
         for p, t in self.tables:
@@ -196,13 +231,13 @@ class Ledger:
 
     def replace(self, table: Table) -> 'Ledger':
         rest = [t for p, t in self.tables if p != table.pattern]
-        return _ledger(rest + [table])
+        return _ledger(rest + [table], self.drops)
 
 
-def _ledger(tables: Iterable[Table]) -> Ledger:
+def _ledger(tables: Iterable[Table], drops: Optional[Drops] = None) -> Ledger:
     """The canonical (file-order) tuple, so equal ledgers compare equal."""
     return Ledger(tables=tuple((t.pattern, t) for t in sorted(
-        tables, key=lambda t: (t.balls, t.pattern))))
+        tables, key=lambda t: (t.balls, t.pattern))), drops=drops)
 
 
 def empty() -> Ledger:
@@ -245,6 +280,15 @@ def _parse_params(cell: str, where: str) -> Tuple[Tuple[str, str], ...]:
     return tuple(out)
 
 
+def _drops_sentence(d: Drops) -> str:
+    """The one human line under the marker (never parsed)."""
+    hist = ('history not yet counted' if d.history is None
+            else '%d from history' % d.history)
+    return ('Drops to date: %d (%d counted live since %s; %s). A drop is a '
+            'ball thrown to be caught by Jugglebot that was not caught.'
+            % (d.total, d.live, d.since, hist))
+
+
 def render(model: Ledger) -> str:
     """The whole ``docs/records.md`` text (deterministic)."""
     out = [
@@ -265,6 +309,13 @@ def render(model: Ledger) -> str:
         'drop (a missed or lost ball), compute (a solve or limit refusal) or '
         'other, with the raw end code in parentheses.',
     ]
+    d = model.drops
+    if d is not None:
+        out += ['', '## Drops to date', '',
+                '<!-- drops: live=%d since=%s history=%s -->'
+                % (d.live, d.since,
+                   'none' if d.history is None else d.history),
+                '', _drops_sentence(d)]
     last_balls = None
     for t in model.ordered():
         if t.balls != last_balls:
@@ -319,10 +370,19 @@ def parse(text: str) -> Ledger:
     head, rule = ((_TABLE_HEAD_V1, _TABLE_RULE_V1) if v1
                   else (_TABLE_HEAD, _TABLE_RULE))
     tables: Dict[str, Table] = {}
+    drops: Optional[Drops] = None
     i = 0
     while i < len(lines):
         m = _MARKER_RE.match(lines[i].strip())
         if not m:
+            if lines[i].strip().startswith('<!-- drops:'):
+                dm = _DROPS_RE.match(lines[i].strip())
+                if not dm or drops is not None:
+                    raise RecordsFormatError('line %d: bad or repeated drops '
+                                             'marker' % (i + 1,))
+                drops = Drops(int(dm.group(1)), dm.group(2),
+                              None if dm.group(3) == 'none'
+                              else int(dm.group(3)))
             if lines[i].lstrip().startswith('|'):
                 raise RecordsFormatError('line %d: table row outside a '
                                          'Pattern' % (i + 1,))
@@ -370,7 +430,7 @@ def parse(text: str) -> Ledger:
             raise RecordsFormatError('Pattern %r: balls %d, expected %d'
                                      % (p, t.balls, _BALLS[p]))
         model = model.replace(t)
-    return model
+    return dataclasses.replace(model, drops=drops)
 
 
 def apply_attempt(model: Ledger, attempt: Attempt) -> Tuple[Ledger, bool]:
@@ -395,6 +455,17 @@ def apply_attempt(model: Ledger, attempt: Attempt) -> Tuple[Ledger, bool]:
                  tuple((_param(k), _param(v)) for k, v in attempt.params
                        if _param(k)))
     return model.replace(dataclasses.replace(table, rows=table.rows + (row,))), True
+
+
+def apply_drops(model: Ledger, when_local: str, drops: int) -> Ledger:
+    """Add ``drops`` to the live count; the first call on a ledger without
+    the section starts it (``since`` the Attempt's date, history ``none``)."""
+    d = model.drops
+    n = max(0, int(drops))
+    if d is None:
+        d = Drops(0, str(when_local)[:10], None)
+    return dataclasses.replace(model, drops=dataclasses.replace(
+        d, live=d.live + n))
 
 
 def rebuild(attempts: Iterable[Attempt]) -> Ledger:
@@ -456,7 +527,11 @@ def to_json(model: Ledger) -> dict:
                 'category': category(b.end_code), 'note': b.note,
                 'params': {k: v for k, v in b.params}},
         })
-    return {'rule': RULE, 'patterns': pats}
+    d = model.drops
+    drops = None if d is None else {
+        'total': d.total, 'live': d.live, 'since': d.since,
+        'history': d.history}
+    return {'rule': RULE, 'patterns': pats, 'drops': drops}
 
 
 def load(path: str) -> Ledger:
@@ -489,15 +564,35 @@ def write_atomic(path: str, text: str) -> None:
 
 def record_attempt(path: str, attempt: Attempt) -> Tuple[bool, int]:
     """The one writer. Returns (beaten, the Pattern's record Catches after
-    this Attempt). Raises :class:`RecordsFormatError` on a malformed file,
-    which is left untouched; writes only when beaten or the file is new."""
+    this Attempt; 0 for a Feed). Raises :class:`RecordsFormatError` on a
+    malformed file, which is left untouched. Writes when a record was beaten,
+    the file is new, the Attempt carried drops, or the drops section is not
+    in the file yet. A Feed books its drops only, never a record row."""
     existed = os.path.exists(path)
+    if attempt.pattern in FEED_PATTERNS and int(attempt.drops) <= 0:
+        return False, 0            # a Feed with no drops touches nothing
     model = load(path)
-    model, beaten = apply_attempt(model, attempt)
-    if beaten or not existed:
+    if attempt.pattern in FEED_PATTERNS:
+        beaten, best = False, 0
+    else:
+        model, beaten = apply_attempt(model, attempt)
+        t = model.table(attempt.pattern).best
+        best = t.catches if t else 0
+    n = max(0, int(attempt.drops))
+    if beaten or not existed or n > 0 or model.drops is None:
+        model = apply_drops(model, attempt.when_local, n)
         write_atomic(path, render(model))
-    best = model.table(attempt.pattern).best
-    return beaten, (best.catches if best else 0)
+    return beaten, best
+
+
+def total_drops(path: str) -> Optional[int]:
+    """The "Drops to date" total in ``path`` (``None`` = not counted yet or
+    unreadable). For the log line only."""
+    try:
+        d = load(path).drops
+    except (OSError, RecordsFormatError):
+        return None
+    return None if d is None else d.total
 
 
 def _show(model: Ledger) -> str:

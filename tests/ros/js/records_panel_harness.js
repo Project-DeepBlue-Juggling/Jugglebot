@@ -2,7 +2,7 @@
 // under node. Sandbox (tests/ros/test_gui_records_panel.py builds it): records-model.js copied verbatim,
 // this file, package.json {"type":"module"}. Prints one JSON object the test asserts on.
 import {
-    recordRows, recordSections, menuEntries, loadHidden, saveHidden, attemptEnd, RECORDS_HIDDEN_KEY,
+    dropsText, recordRows, recordSections, menuEntries, loadHidden, saveHidden, attemptEnd, RECORDS_HIDDEN_KEY,
 } from './records-model.js';
 
 const json = {
@@ -53,6 +53,11 @@ console.log(JSON.stringify({
     notArray: [...loadHidden(new Store({ [RECORDS_HIDDEN_KEY]: '{"a":1}' }))],
     blocked: [...loadHidden(throwing)],
     blockedSave: (() => { saveHidden(throwing, new Set(['x'])); return 'ok'; })(),
+    drops: [
+        dropsText({ drops: { total: 12, live: 12, since: '2026-11-10', history: null } }),
+        dropsText({ drops: { total: 112, live: 12, since: '2026-11-10', history: 100 } }),
+        dropsText({ drops: null }), dropsText({}), dropsText(null),
+    ],
     ends: [
         attemptEnd(kv('juggle_end', { pattern: 'columns', record_beaten: '1', record_catches: '33' })),
         attemptEnd(kv('juggle_end', { pattern: 'hop', record_beaten: '0' })),

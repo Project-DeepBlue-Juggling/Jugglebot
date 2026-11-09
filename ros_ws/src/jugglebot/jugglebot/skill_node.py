@@ -6832,23 +6832,24 @@ class SkillNode(Node):
         return CancelResponse.ACCEPT
 
     def _offer_record(self, pattern: str, throws, caught,
-                      end_code: str) -> Tuple[bool, str]:
+                      end_code: str, drops: int = 0) -> Tuple[bool, str]:
         """Offer a finished Attempt to the records ledger (IDEA-3,
         `jugglebot/records.py`). Returns (beaten, the Pattern's record Catches
-        as a string, '' when not known). Disabled when `records_path` is ''
-        and for a Feed (`reload`/`magazine` are not juggling). Never raises:
+        as a string, '' when not known). Disabled when `records_path` is ''.
+        A Feed (`reload`/`magazine`) is not juggling: it books its `drops`
+        (FEAT-47, `rp.drop_count`) and never a record. Never raises:
         it runs on the goal's own thread after the Result is built, a small
         local-file write, and any failure (a malformed ledger is never
         overwritten, `records.record_attempt`) is a WARN, not a goal fault."""
         path = str(self.get_parameter('records_path').value or '')
-        if not path or pattern in rec.FEED_PATTERNS:
+        if not path:
             return False, ''
         try:
             beaten, best = rec.record_attempt(path, rec.Attempt(
                 when_local=time.strftime(rec.WHEN_FORMAT, time.localtime()),
                 pattern=pattern, throws=int(throws), catches=int(caught),
                 end_code=str(end_code),
-                params=tuple(self._goal_record_params)))
+                params=tuple(self._goal_record_params), drops=int(drops)))
         except Exception as exc:  # noqa: BLE001 -- never the goal's fault
             self.get_logger().warning(
                 'records: %s not updated for %s (%d/%d %s): %s'
@@ -6859,6 +6860,11 @@ class SkillNode(Node):
                 'records: NEW RECORD %s -- %d Catches in %d Throws (%s); '
                 '%s is now dirty until the Sitting close-out commit'
                 % (pattern, int(caught), int(throws), end_code, path))
+        if drops > 0:
+            total = rec.total_drops(path)
+            self.get_logger().info(
+                'records: +%d drops (total %s)'
+                % (int(drops), '?' if total is None else total))
         return beaten, str(best)
 
     def _juggle_execute(self, goal_handle):
@@ -6903,8 +6909,13 @@ class SkillNode(Node):
         # the Result above and the end line keep the operator's tally. Only a
         # COMPLETED goal, and only a row with a landing (TKT-44).
         rec_throws, rec_caught = rp.record_counts(self._goal_reports, outcome)
+        # Drops to date (FEAT-47): Throws only. A Ball Butler Feed that missed
+        # the Cup ends the Attempt MISSED_CATCH with no ThrowReport, and the
+        # executor does not expose which CATCH was the Feed's, so it is not
+        # countable from what the node has here (feed_missed stays 0).
         beaten, record_catches = self._offer_record(
-            pattern, rec_throws, rec_caught, outcome)
+            pattern, rec_throws, rec_caught, outcome,
+            drops=rp.drop_count(self._goal_reports))
         self._publish_attempt_event(
             ATTEMPT_END, outcome,
             DiagnosticStatus.OK if outcome in ('COMPLETED', 'STOPPED')

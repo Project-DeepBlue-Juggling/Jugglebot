@@ -4141,12 +4141,24 @@ class TestJuggleAction:
                       'planner']
         assert f('hop', 'bad', 125.0, 0.27, 0.0, None) == ()   # never raises
 
-    def test_a_feed_is_never_offered_to_the_records(self, tmp_path):
+    def test_a_feed_is_never_a_record_and_a_clean_one_writes_nothing(self, tmp_path):
         path = tmp_path / 'records.md'
         _node, values = self._ended_attempt(tmp_path, 1, 1, records_path=path,
                                             pattern='reload')
         assert values['record_beaten'] == '0'
-        assert not path.exists()
+        assert not path.exists()       # no drops, no write
+
+    def test_a_feeds_drops_are_booked_but_never_a_record_row(self, tmp_path):
+        from jugglebot import records as rec
+        path = tmp_path / 'records.md'
+        with patch.object(sn.rp, 'drop_count', return_value=2):
+            _node, values = self._ended_attempt(tmp_path, 1, 1,
+                                                records_path=path,
+                                                pattern='reload')
+        assert values['record_beaten'] == '0'
+        model = rec.load(str(path))
+        assert model.drops.live == 2
+        assert all(not t.rows for t in model.ordered())
 
     def test_a_malformed_ledger_warns_and_is_left_alone(self, tmp_path):
         path = tmp_path / 'records.md'
