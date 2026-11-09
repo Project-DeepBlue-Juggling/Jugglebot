@@ -62,6 +62,7 @@ frozen	logbook/2026-11-08-feat46-firmware-stop-record.md	1
 frozen	logbook/2026-11-08-item-id-per-kind-p3-sweeper-and-census.md	9
 frozen	logbook/2026-11-08-item-id-per-kind-p4-cutover.md	22
 frozen	logbook/2026-11-08-item-id-per-kind-p5-contract.md	11
+frozen	logbook/2026-11-09-item-id-per-kind-p6-close.md	3
 frozen	logbook/INDEX.md	127
 frozen	logbook/artifacts/2026-10-28-jb34-synthesis.md	4
 frozen	map/bug-40-hz-setpoint-stream-starved-past-the-firmware-s-70-ms.md	7
@@ -131,10 +132,7 @@ frozen	tests/motion/test_skills_bump_next_catch.py	1
 frozen	tests/ros/test_launch_priority.py	1
 frozen	tests/ros/test_skill_node.py	8
 frozen	tests/sim/test_glossary_avoid_words.py	1
-frozen	tests/sim/test_id_sweep.py	154
 frozen	tests/teensy_link/test_single_owner.py	1
-frozen	tools/id_sweep.py	77
-frozen	tools/id_sweep_overrides.tsv	888
 frozen	tools/probes/README.md	9
 frozen	tools/probes/bump_seed_replay.py	1
 frozen	tools/probes/hand_stall_stop.py	1

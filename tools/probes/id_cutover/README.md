@@ -1,5 +1,8 @@
 # id_cutover: proofs for the per-kind Item ID renumbering
 
+These are the P4 cutover's frozen evidence. They ran against P4's tree and name files that P6 deleted
+(the sweeper, its overrides and its tests), so to re-run one, check out the renumber commit `38058788`.
+
 Plan `plans/active/item-id-per-kind.md` section 4 P4. Pre-sweep tree = `git HEAD`, post-sweep
 tree = the working tree. Run them before the renumber commit: they read `HEAD` as the old side.
 Needs the venv (`source ~/Desktop/PDJ_venv/venv/bin/activate`), `mapkit/legacy_ids.csv`

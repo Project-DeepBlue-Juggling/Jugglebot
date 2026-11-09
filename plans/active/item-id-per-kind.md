@@ -19,7 +19,7 @@ steps:
   - {id: P3, title: The sweeper and the classified census, kind: phase, status: complete, date: 2026-11-08, effort: m, hardware: none}
   - {id: P4, title: Cutover in one commit, kind: phase, status: complete, date: 2026-11-08, effort: s, hardware: none}
   - {id: P5, title: 'Contract: retire the old form, guard test, normative docs', kind: phase, status: complete, date: 2026-11-08, effort: s, hardware: none}
-  - {id: P6, title: Out-of-tree residue and close, kind: phase, status: not_started, effort: xs, hardware: none}
+  - {id: P6, title: Out-of-tree residue and close, kind: phase, status: complete, date: 2026-11-09, effort: xs, hardware: none}
 related_logbook:
   - 2026-11-01-jb118-kind-pill-beside-item-ids.md
   - 2026-10-26-map-item-ids-p1-p2-ids-module-and-backfill.md
@@ -207,7 +207,7 @@ node to its source, which reports stale until the `colcon build` in P4.
 | P3 | `tools/id_sweep.py`, classification of every token, dry-run report | COMPLETE | 2026-11-08 | Low: writes nothing | T-U12 to T-U14, T-R1 |
 | P4 | One commit: crosswalk, every `id:`, every citation, regenerated outputs | COMPLETE (2026-11-08): T-R2 to T-R6 and T-I3 run | 2026-11-08 | **High: repo-wide** | T-R2 to T-R6, T-I2 to T-I4, T-H1 |
 | P5 | Dual form removed, guard test, normative docs | COMPLETE (2026-11-08) | 2026-11-08 | Low | T-U15, T-R7 |
-| P6 | Memory, fork text, remote branches, close JB-118 | NOT STARTED | | Low | T-R8 |
+| P6 | Memory, fork text, remote branches, close JB-118 | COMPLETE (2026-11-09) | 2026-11-09 | Low | T-R8 |
 
 ## 4. Implementation Phases
 
@@ -378,11 +378,13 @@ the auto-pull timers publish `main` to three clones every two minutes. One commi
 
 **Outcome (2026-11-08).** P5 landed as three parts: `mapkit/ids.py` is the one enforcement point and names no old prefix (the callers and the Night Shift tools go through it; `legacy()` stays, validating the frozen crosswalk); `tests/sim/test_no_legacy_item_ids.py` is a classifier-backed guard in the default gate, with the old scheme's history allowlisted by class and pinned per file in `tests/sim/no_legacy_item_ids.tsv`; and `DOCUMENTATION_GUIDE.md` and the GLOSSARY state the format. The owner replaced the Precondition above with same-day checks (a full gate, a Night Shift dry run and a write-path probe; `logbook/2026-11-08-item-id-per-kind-p5-contract.md` Discussion 1), so tonight's Night Shift is the first real write-path night on P4 and P5 together. Owner answers: Q2 any spelling reads, writes refuse; Q3 the history layer lives in the guard; Q4 fork first, then the P5 mapkit at a second restart. Fork 13e1c0c works on both mapkits and was deployed before the data clone moved to P5; restart 2 follows the push. Final gate: `./run_tests.sh --full` (2026-11-08, rebased tree) 9249 passed, 53 skipped, serial 10 passed.
 
-### P6 — Out-of-tree residue and close — NOT STARTED
+### P6 — Out-of-tree residue and close — COMPLETE (2026-11-09)
 
 **From P5.** The sweeper stays in `tools/` until no held branch predates P4, then its classifier moves into the guard's module (the guard imports `tools/id_sweep.py` today). The fork's `_legacy_new` keeps a P4 `typed_ref` fallback that goes at P6 with the fork README, CLAUDE.md and its JB test and frontend text. Auto-memory is rewritten. FEAT-34 closes in the same commit as its fix. Restart 2's result is recorded here if not already in P5. `/archive-plan` last.
 
 Auto-memory (12 files, 366 hits) rewritten with the same crosswalk, `MEMORY.md` included; fork `README.md` and `CLAUDE.md`; old remote branch names gone (owner); sweeper retired from `tools/` once no held branch predates P4, with its classifier kept as the guard's module; logbook entry; JB-118 closes in the same commit, under its new ID; `/archive-plan`.
+
+**Outcome (2026-11-09).** Auto-memory was rewritten through the crosswalk (393 edits in 11 files; T-R8 leaves 3 tokens in 1 file, all explaining the crosswalk). The fork's citations and fixtures moved to per-kind IDs, its pre-P5 fallback was dropped, and it was deployed with one restart; T-R8 leaves 24 tokens in 3 files, each a deliberate old-ID test or the comment explaining translation. The classifier is now `tests/sim/legacy_id_rules.py`, the guard's own module, and the sweeper is deleted; a planted token per rule keeps every rule tested, and removing any rule fails that test. The cutover proofs stay as P4's evidence. FEAT-34 is closed. Evidence and the owner's answers: `logbook/2026-11-09-item-id-per-kind-p6-close.md`.
 
 ## 5. Testing Plan
 
