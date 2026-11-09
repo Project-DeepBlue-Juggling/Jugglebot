@@ -2,9 +2,9 @@
 id: TKT-59
 kind: ticket
 title: 'BUG-75 BUMP on the turned pair: a day Session runs the capture and replay first, enable it at 90 deg and let a Sitting judge, or close?'
-status: open
+status: complete
 created: '2026-11-10'
-updated: '2026-11-09T17:50:05Z'
+updated: '2026-11-09T21:46:26Z'
 owners: []
 priority: medium
 effort: xs
@@ -35,3 +35,7 @@ Recommendation: 1. It keeps your 2026-10-16 condition, and the replay is cheap.
 - 1: your Session runs steps 1 to 3; the night builds step 4 once the replay result is on BUG-75.
 - 2: the next night builds the enable on a branch, held for a Sitting.
 - 3: the next night closes BUG-75.
+
+## Answer
+
+OK, let's go with Option 1. Add it to the Next Sitting runbook and I'll run it when I can.
