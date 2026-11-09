@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-10 | complete | night-shift | **Night Shift 2026-11-10: 1 merged (BUG-87 log line), 4 held (FEAT-47 and three carried), 5 questions; FEAT-47's drops counter held on a false magazine drop** | [2026-11-10-night-shift](2026-11-10-night-shift.md) |
 | 2026-11-10 | complete | BUG-87 evidence | **ADMISSIBILITY-LANDING: the online check logs the Catch landing it planned against (position, time, aim source), once per skill** | [2026-11-10-admissibility-landing-log-line.md](2026-11-10-admissibility-landing-log-line.md) |
 | 2026-11-09 | resolved | map-improvements | **Per-kind Item IDs P6: auto-memory and the map-app fork rewritten through the crosswalk, the sweeper retired with its classifier kept as the guard's module, FEAT-34 closed** | [2026-11-09-item-id-per-kind-p6-close.md](2026-11-09-item-id-per-kind-p6-close.md) |
 | 2026-11-09 | resolved | night-shift | **Night Shift runner survives an early end: no background-task limit on any leg, one resume, unfinished work saved to a branch, a stub report and a new NO_REPORT status** | [2026-11-09-night-shift-survives-an-early-end](2026-11-09-night-shift-survives-an-early-end.md) |
