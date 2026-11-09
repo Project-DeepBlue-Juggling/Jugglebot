@@ -11,7 +11,7 @@ frozen	docs/night-shift/2026-11-05.md	1
 frozen	docs/night-shift/2026-11-06.md	1
 frozen	docs/night-shift/2026-11-07.md	1
 frozen	docs/night-shift/2026-11-08.md	1
-frozen	docs/runbook.md	2
+frozen	docs/runbook.md	1
 frozen	logbook/2026-09-16-banking-saturates-on-small-lateral-offsets.md	1
 frozen	logbook/2026-10-26-map-item-ids-p1-p2-ids-module-and-backfill.md	5
 frozen	logbook/2026-10-26-map-item-ids-p3-resolution-item-new.md	3
@@ -73,7 +73,6 @@ frozen	map/bug-a-throw-from-a-faulted-hand-stroke-is-written-to-the-memory.md	1
 frozen	map/bug-aborted-no-release-three-goals-ended-because-the-throw-never.md	1
 frozen	map/bug-admissible-box-gate-passes-a-cell-whose-solve-exceeds-hand.md	2
 frozen	map/bug-ball-2-learner-command-pinned-at-the-20-20-mm-clamp-corner.md	5
-frozen	map/bug-ball-2-s-first-throw-after-the-feed-catch-lands-about-180-mm.md	1
 frozen	map/bug-bb-throw-outcome-carries-no-throw-identity.md	1
 frozen	map/bug-box-at-hand-acc-4500-traded-hop-landing-width-for-apex-band.md	2
 frozen	map/bug-can-bridge-guard-reports-hand-as-leg-6.md	1

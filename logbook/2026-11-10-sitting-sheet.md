@@ -44,6 +44,7 @@ tags:
 ## Verification
 
 - Scoped run (2026-11-10, `python -m pytest tests/sim/test_mapkit*.py tests/sim/test_sitting_sections.py tests/sim/test_sitting_debrief_protocol.py tests/sim/test_map_items.py tests/sim/test_night_shift_gate.py tests/sim/test_docs_links.py tests/sim/test_logbook_front_matter.py tests/sim/test_plans_index.py -q`): the count and result are in the commit message.
+- Full gate (2026-11-10, `./run_tests.sh --full` on 92c404e2): 9301 passed + 10 serial, **1 failed**: `test_no_legacy_item_ids`, because the sheet quoted BUG-63's plant name, which began with an old-form Item ID. The scoped run had missed it: that guard scans the whole tree and imports nothing from `mapkit`, so a grep for importers can't find it. Fixed at the source (BUG-63 and today's sheet now say `bug63-fresh-`; the name is arbitrary), the pins regenerated.
 - App server (2026-11-10, `MAPKIT_SRC=<worktree> python3 -m pytest -q` in the jugglebot-map worktree): 132 passed.
 - App frontend (2026-11-10, `npx tsc -b --noEmit`, `npx eslint . --max-warnings 0`, `npx vitest run`): clean, 346 passed and 1 skipped.
 - `python -m mapkit sheet check map/sheets/2026-11-10-robot.yaml` (2026-11-10): `sheet check: OK`, 44 steps.

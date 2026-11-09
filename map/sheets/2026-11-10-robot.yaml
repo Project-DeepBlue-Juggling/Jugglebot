@@ -342,7 +342,7 @@ steps:
     to: [bridge-cycled, launched, level, armed, bb-fed]
     actions:
       - where: Terminal 2
-        command: ros2 param set /skill_node plant_id jb161-fresh-2026-11-10
+        command: ros2 param set /skill_node plant_id bug63-fresh-2026-11-10
       - where: Terminal 2
         command: ros2 param set /skill_node apex_m_ball2 0.90
       - where: GUI
