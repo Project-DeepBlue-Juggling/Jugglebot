@@ -2,9 +2,9 @@
 id: TKT-58
 kind: ticket
 title: 'BUG-83 held again on jugglebot-map:night-shift/2026-11-08-BUG-83: merge as is, also scroll the group label into view, or drop?'
-status: open
+status: complete
 created: '2026-11-10'
-updated: '2026-11-09T17:48:26Z'
+updated: '2026-11-09T21:47:30Z'
 owners: []
 priority: medium
 effort: xs
@@ -37,3 +37,7 @@ Recommendation: 1. It is the fix you asked for, and the label only hides on a li
 - 1: the next night re-gates and merges.
 - 2: the next night applies it, re-gates and merges.
 - 3: BUG-83 goes back to open.
+
+## Answer
+
+Agreed. Merge as is
