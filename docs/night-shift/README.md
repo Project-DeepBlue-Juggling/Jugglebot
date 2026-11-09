@@ -5,7 +5,12 @@ One file per night, `docs/night-shift/<date>.md`, written by the Night Shift orc
 `docs(night-shift): report <date>`. The morning Session reads it when the nightly ticker
 says `LOWERED ... by night-shift <date>`; the map app renders it on its Night Shift page.
 The runner's own record (`last_run.json`, status word) lives in the clone's
-`temp/reports/night-shift/`, not here. The last line of `## Cost` is the runner's, not the
+`temp/reports/night-shift/`, not here. A night that reached Claude, ended in any status but
+`OK` and has no report gets a stub from the runner instead, provided the clone is back on a
+clean `main` with nothing unpushed (`stub_report` in `last_run.json` says what happened)
+(`docs(night-shift): stub report <date> (<status>)`, `tools/night_shift_stub_report.py`): the
+same eight sections, the Item sections saying `none recorded`, and under `## Unfinished` any
+branch the runner saved work to. The last line of `## Cost` is the runner's, not the
 orchestrator's: `total_cost_usd` only exists once the orchestrator has exited, so
 `tools/night_shift.sh` appends it and pushes it as its own `docs(night-shift): total API
 cost <date>` commit (dropped, never rebased, if `main` moved meanwhile; `cost_recorded` in

@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-09 | resolved | night-shift | **Night Shift runner survives an early end: no background-task limit on any leg, one resume, unfinished work saved to a branch, a stub report and a new NO_REPORT status** | [2026-11-09-night-shift-survives-an-early-end](2026-11-09-night-shift-survives-an-early-end.md) |
 | 2026-11-08 | resolved | map-improvements | **Per-kind Item IDs P5: the old global form retired from code; one enforcement point, a classifier-backed guard in the default gate, the format stated in the docs** | [2026-11-08-item-id-per-kind-p5-contract.md](2026-11-08-item-id-per-kind-p5-contract.md) |
 | 2026-11-08 | in-progress | BUG-58 firmware STOP record | **FEAT-46: can-bridge FW 42 / PROTOCOL 13 uplinks a STOP record per lane group; the bridge classifies each STOP (stamp gap, mapping step, queued not promoted, none of these). Flashed 2026-11-08 14:41; live check owed at the next Sitting** | [2026-11-08-feat46-firmware-stop-record](2026-11-08-feat46-firmware-stop-record.md) |
 | 2026-11-08 | resolved | frame check | **Frame check reports the Platform's tilt and yaw in the robot frame and their change since the previous check (report only); it would have shown the 2026-11-07 bad re-seat** | [2026-11-08-frame-check-platform-attitude](2026-11-08-frame-check-platform-attitude.md) |

@@ -24,8 +24,9 @@
 #   4. a credential (the unit's EnvironmentFile): ANTHROPIC_API_KEY and/or
 #      CLAUDE_CODE_OAUTH_TOKEN (the Claude subscription, `claude setup-token`)
 #                                                                       -> NO_API_KEY
-#   5. clone on `main` and clean; never checkout/stash/reset, the owner
-#      sorts a dirty clone out by hand                                  -> CLONE_DIRTY
+#   5. clone on `main` and clean; never checkout/stash/reset here. The end of
+#      the previous run saved its work (see "A night that stops early"), so
+#      this only fires when that failed: the owner sorts it out by hand -> CLONE_DIRTY
 #   6. ff-only pull from origin                                         -> PULL_FAILED
 #   7. the deny-list settings installed into the clone on EVERY run;
 #      claude never runs without them                                   -> NO_SETTINGS
@@ -74,10 +75,29 @@
 # Status words. Exit 0: OK, DRY_OK, HELD, DEFERRED, OVERLAP, NOTHING_NEW.
 # Exit 1: NO_GUARD, FORBIDDEN_MODEL, NO_API_KEY, NO_CLONE, CLONE_DIRTY, PULL_FAILED, NO_SETTINGS,
 # PREFLIGHT_FAILED, CLAUDE_MISSING, CLAUDE_TIMEOUT, CLAUDE_FAILED,
-# POST_FETCH_FAILED, PUSH_REJECTED, RUN_LEFT_DIRTY, DRY_CHANGED, DRY_NO_REPORT,
-# INTERNAL_ERROR. A real run that claimed the nightly ticker and ends in any
-# status but OK re-raises it (ticker_reraised in last_run.json), so a failed
-# night never swallows a RED nightly.
+# POST_FETCH_FAILED, PUSH_REJECTED, RUN_LEFT_DIRTY, RUN_SALVAGED, NO_REPORT,
+# DRY_CHANGED, DRY_NO_REPORT, INTERNAL_ERROR. A real run that claimed the nightly
+# ticker and ends in any status but OK re-raises it (ticker_reraised in
+# last_run.json), so a failed night never swallows a RED nightly.
+#
+# A night that stops early (2026-11-09: `claude -p` gives background tasks 10
+# minutes after the orchestrator's last turn, then kills them and exits 0, so a
+# unit outliving the orchestrator's other work lost the unit and the report).
+# Three layers, each for what the one before cannot catch:
+#   1. CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 on every leg removes that limit;
+#      the leg's `timeout` is still the bound. Probed 2026-11-09: at 20 s the
+#      subagent is killed with exit 0, at 0 it finishes and wakes the orchestrator.
+#   2. A real run that exits 0 with no report, off main, or dirty gets one
+#      resume for it (`--resume`, same credential; on top of the credit-out
+#      resume if that ran, all inside the one time budget) to finish. total_cost_usd on a resumed
+#      session is cumulative (same probe), so no cost is added up here.
+#   3. Whatever still stands is saved: uncommitted work is committed to the
+#      Item's branch (a new night-shift/<date>-salvage-* one if it was on main),
+#      pushed, and the clone goes back to main so the next night can run. main
+#      is never written with it. Status RUN_SALVAGED; RUN_LEFT_DIRTY now means
+#      the save itself failed. A non-OK night that reached Claude and has no
+#      report gets a stub one (tools/night_shift_stub_report.py), provided the
+#      clone is back on a clean main with nothing unpushed.
 #
 # The map app: the night works on its own clone of the app ($NIGHT_SHIFT_APP_CLONE,
 # never ~/map-live), prepared here (a failure there is not fatal, the prompt says
@@ -167,9 +187,10 @@ unset NS_COST NS_TURNS NS_DENIALS NS_SPAWNED NS_CLAUDE_EXIT NS_HEAD_BEFORE \
   NS_HEAD_AFTER NS_BRANCH_AFTER NS_UNPUSHED NS_REPORT NS_CANDIDATES \
   NS_NIGHTLY_LINE NS_PREFLIGHT NS_RESULT NS_MAIN_COMMITS NS_TICKER_RERAISED NS_COST_RECORDED \
   NS_AUTH NS_COST_API NS_APP_CLONE_STATE NS_APP_NIGHT_START NS_DEPLOY_STATUS NS_DEPLOY_LINE \
-  NS_APP_HEALTHY_BEFORE
+  NS_APP_HEALTHY_BEFORE NS_RESUMED NS_SALVAGED NS_STUB_REPORT
 STATUS_WRITTEN=0
 TICKER_CLAIMED=0
+CLAUDE_RAN=0
 
 # ── Exit paths ────────────────────────────────────────────────────────────────
 one_line() { tr '\n\r\t' '   ' <<<"$1" | sed 's/  */ /g; s/ *$//'; }
@@ -274,6 +295,9 @@ out = {
     "ticker_reraised": e("NS_TICKER_RERAISED") == "1",
     "cost_recorded": e("NS_COST_RECORDED"),
     "auth": e("NS_AUTH"),
+    "resumed": e("NS_RESUMED"),
+    "salvaged": e("NS_SALVAGED"),
+    "stub_report": e("NS_STUB_REPORT"),
     "cost_api_usd": num("NS_COST_API", float),
     "app_clone": e("NS_APP_CLONE_STATE"),
     "app_night_start": e("NS_APP_NIGHT_START"),
@@ -296,9 +320,45 @@ PY
   echo "night_shift: $status $detail"
 }
 
+# A non-OK night that reached Claude and has no report still gets a page in the
+# usual place. Needs the clone on main, clean and with nothing unpushed: the
+# reset below may only ever drop this one commit.
+write_stub_report() {   # write_stub_report STATUS DETAIL
+  local status="$1" detail="$2" rel="docs/night-shift/$DATE.md"
+  export NS_STUB_REPORT=skipped
+  [[ -z "$DRY" && "$CLAUDE_RAN" == 1 && "$status" != OK && ! -s "$CLONE/$rel" ]] || { unset NS_STUB_REPORT; return 0; }
+  [[ "$(git -C "$CLONE" symbolic-ref -q --short HEAD 2>/dev/null)" == main ]] || return 0
+  [[ -z "$(git -C "$CLONE" status --porcelain 2>/dev/null)" ]] || return 0
+  timeout --kill-after=10 60 git -C "$CLONE" fetch -q origin 2>/dev/null 8>&- || return 0
+  [[ -z "$(git -C "$CLONE" log --format=%H origin/main..main 2>/dev/null)" ]] || return 0
+  git -C "$CLONE" merge -q --ff-only origin/main 2>/dev/null || return 0
+  [[ ! -s "$CLONE/$rel" ]] || { unset NS_STUB_REPORT; return 0; }
+  local cost=""
+  [[ -n "${NS_COST:-}" ]] && cost="$(cost_line)"
+  if ! "$PYTHON" "$CLONE/tools/night_shift_stub_report.py" --date "$DATE" --status "$status" \
+       --clone "$CLONE" --out "$CLONE/$rel" --started "$STARTED" --finished "$(date -Iseconds)" \
+       --detail "$detail" --nightly "${NS_NIGHTLY_LINE:-}" --head-before "${NS_HEAD_BEFORE:-}" \
+       --salvaged "${NS_SALVAGED:-}" --deploy-line "${NS_DEPLOY_LINE:-}" --cost-line "$cost" \
+       2>>"$REPORTS/$DATE.stub.err"; then
+    rm -f "$CLONE/$rel"
+    export NS_STUB_REPORT=write-failed
+    return 0
+  fi
+  if git -C "$CLONE" add -- "$rel" \
+     && git -C "$CLONE" commit -q -m "docs(night-shift): stub report $DATE ($status)" -- "$rel" \
+     && timeout --kill-after=10 120 git -C "$CLONE" push -q origin HEAD:main 2>>"$REPORTS/$DATE.stub.err" 8>&-; then
+    export NS_STUB_REPORT=pushed
+  else
+    export NS_STUB_REPORT=rejected
+    git -C "$CLONE" fetch -q origin 2>/dev/null 8>&-
+    git -C "$CLONE" reset -q --hard origin/main 2>/dev/null
+  fi
+}
+
 finish() {         # finish STATUS DETAIL: the only way out after argument parsing
   local status="$1" detail="${2:-}"
   trap - EXIT
+  write_stub_report "$status" "$detail"
   # A real run that claimed the nightly ticker and then did not finish OK must
   # hand the claim back: the morning Session reads "LOWERED by night-shift" as
   # "the report covers it", and there is no report, so a RED would be swallowed.
@@ -327,9 +387,12 @@ trap '[[ $STATUS_WRITTEN == 1 ]] || finish INTERNAL_ERROR "runner exited without
 # reported a status is exactly what must not happen.
 CHILD_PID=""
 on_signal() {
+  trap '' TERM INT HUP   # a second signal must not interrupt the save
   if [[ -n "$CHILD_PID" ]]; then
     kill -TERM "$CHILD_PID" 2>/dev/null
     wait "$CHILD_PID" 2>/dev/null
+    export_posthoc_git
+    salvage_clone
     export_posthoc_git
   fi
   finish INTERNAL_ERROR "terminated by signal"
@@ -342,6 +405,38 @@ export_posthoc_git() {   # head/branch/unpushed after claude ran; best-effort
   NS_UNPUSHED="$(git -C "$CLONE" log --format=%H origin/main..main 2>/dev/null | tr '\n' ' ')"
   NS_UNPUSHED="${NS_UNPUSHED% }"
   export NS_HEAD_AFTER NS_BRANCH_AFTER NS_UNPUSHED
+}
+
+# Puts a clone Claude left off main or dirty back on main, its work saved on a
+# branch and pushed, so one bad night cannot also cost the next (CLONE_DIRTY).
+# Every failure just returns, losing nothing and leaving main alone, though a
+# failed commit can leave the clone on the new salvage branch with its changes
+# staged. The status then says RUN_LEFT_DIRTY, the old by-hand path. Never on a dry run, which must
+# prove it changed nothing (DRY_CHANGED). `git add -A` honours .gitignore, so
+# temp/ and the installed settings file stay out.
+salvage_clone() {
+  [[ -z "$DRY" && "$CLAUDE_RAN" == 1 ]] || return 0
+  local branch porcelain target sha pushed=pushed
+  branch="$(git -C "$CLONE" symbolic-ref -q --short HEAD 2>/dev/null || echo DETACHED)"
+  porcelain="$(git -C "$CLONE" status --porcelain 2>/dev/null)" || return 0
+  [[ "$branch" != main || -n "$porcelain" ]] || return 0
+  target="$branch"
+  if [[ "$branch" == main || "$branch" == DETACHED ]]; then
+    target="night-shift/$DATE-salvage-$(date +%H%M%S)"
+    git -C "$CLONE" checkout -q -b "$target" 2>/dev/null || return 0
+  fi
+  if [[ -n "$porcelain" ]]; then
+    git -C "$CLONE" add -A 2>/dev/null \
+      && git -C "$CLONE" commit -q -m "wip(night-shift): salvage $DATE from $branch" \
+           -m "Saved by tools/night_shift.sh when the run ended with this work uncommitted. Not reviewed and not gated: a Session must check it before any merge." \
+           2>/dev/null \
+      || return 0
+  fi
+  sha="$(git -C "$CLONE" rev-parse --short HEAD 2>/dev/null)"
+  timeout --kill-after=10 120 git -C "$CLONE" push -q -u origin "$target" 2>>"$REPORTS/$DATE.salvage.err" 8>&- \
+    || pushed=NOT-PUSHED
+  git -C "$CLONE" checkout -q main 2>/dev/null || return 0
+  export NS_SALVAGED="$target $sha $pushed"
 }
 
 # ── 1. Overlap ────────────────────────────────────────────────────────────────
@@ -587,6 +682,7 @@ cd "$CLONE" || finish INTERNAL_ERROR "cannot cd $CLONE"
 # background and waited on so on_signal can pass a signal on (a foreground
 # child would delay our trap until it exited by itself).
 claude_start=$SECONDS
+CLAUDE_RAN=1
 # The budget fuse is opt-in: the owner wants the first nights unlimited and
 # will set NIGHT_SHIFT_MAX_USD once the cost line in the reports shows a norm.
 # It caps real money only, so it applies to the API leg alone.
@@ -601,6 +697,7 @@ run_leg() {
   local auth="$1" model="$2" leg_timeout="$3"; shift 3
   local -a envx
   if [[ "$auth" == api ]]; then envx=(env -u CLAUDE_CODE_OAUTH_TOKEN); else envx=(env -u ANTHROPIC_API_KEY); fi
+  envx+=(CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0)   # see "A night that stops early"
   timeout --kill-after=120 "$leg_timeout" "${envx[@]}" "$CLAUDE_BIN" "$@" \
     --model "$model" \
     --permission-mode acceptEdits --permission-prompts none \
@@ -663,7 +760,43 @@ else
   export NS_AUTH=subscription
   run_leg subscription "$FALLBACK_MODEL" "$TIMEOUT_S" -p "$PROMPT"
 fi
+
+# Why a real run that says it finished has not (empty = it has).
+run_incomplete() {
+  local branch
+  branch="$(git -C "$CLONE" symbolic-ref -q --short HEAD 2>/dev/null || echo DETACHED)"
+  [[ -s "$CLONE/docs/night-shift/$DATE.md" ]] || { echo "no report at docs/night-shift/$DATE.md"; return 0; }
+  [[ "$branch" == main ]] || { echo "the clone is on $branch, not main"; return 0; }
+  [[ -z "$(git -C "$CLONE" status --porcelain 2>/dev/null)" ]] || echo "the clone has uncommitted work"
+}
+session_of() {   # session_of FILE: the result's session id, or nothing
+  "$PYTHON" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+if isinstance(d,list): d=next(m for m in reversed(d) if isinstance(m,dict) and m.get("type")=="result")
+if not d.get("is_error"): print(d.get("session_id") or "")' "$1" 2>/dev/null
+}
+RESUME_MIN_S=300
+if [[ -z "$DRY" && "$claude_rc" == 0 ]]; then
+  why="$(run_incomplete)"
+  left=$(( TIMEOUT_S - (SECONDS - claude_start) ))
+  sid="$(session_of "$CLAUDE_JSON")"
+  if [[ -n "$why" && -n "$sid" ]] && (( left >= RESUME_MIN_S )); then
+    export NS_RESUMED="$why"
+    mv -f "$CLAUDE_JSON" "$REPORTS/$DATE.claude-first.json"
+    mv -f "$CLAUDE_ERR" "$REPORTS/$DATE.claude-first.err"
+    resume_prompt="Your session ended before the Night Shift run was complete: $why. The runner has resumed it to finish. A unit that was still running may have been stopped, so check its output and the tree before trusting either. Continue the /night-shift protocol from where you stopped, with the same arguments and deadline: first run git status and git branch --show-current in the clone and git log origin/main..HEAD, finish or hold the Item in flight, then write the report (section 3) and end with the clone on main and clean."
+    leg_start=$SECONDS
+    if [[ "$NS_AUTH" == api ]]; then
+      run_leg api "$MODEL" "$left" -p "$resume_prompt" --resume "$sid" "${budget_args[@]}"
+    else
+      run_leg subscription "$FALLBACK_MODEL" "$left" -p "$resume_prompt" --resume "$sid"
+    fi
+    if leg_timed_out "$claude_rc" "$leg_start" "$left"; then claude_rc=124; fi
+  fi
+fi
 export NS_CLAUDE_EXIT="$claude_rc"
+export_posthoc_git
+salvage_clone
 export_posthoc_git
 
 # ── 10b. The app deploy: the last step of the night, whatever claude's outcome ──
@@ -778,8 +911,10 @@ fi
 # Anything else would be CLONE_DIRTY tomorrow; say so tonight, with the evidence.
 run_porcelain="$(git -C "$CLONE" status --porcelain 2>&1 | head -n5 | tr '\n' ';')"
 if [[ "$NS_BRANCH_AFTER" != "main" || -n "$run_porcelain" ]]; then
-  finish RUN_LEFT_DIRTY "branch=$NS_BRANCH_AFTER; $run_porcelain"
+  finish RUN_LEFT_DIRTY "the save failed; branch=$NS_BRANCH_AFTER; $run_porcelain"
 fi
+[[ -z "${NS_SALVAGED:-}" ]] || finish RUN_SALVAGED "saved on ${NS_SALVAGED}; ${NS_RESUMED:+resumed once ($NS_RESUMED); }${NS_RESULT:-}"
+[[ -s "$NS_REPORT" ]] || finish NO_REPORT "claude exited 0 without a report; ${NS_RESUMED:+resumed once ($NS_RESUMED); }${NS_RESULT:-}"
 
 # The baseline for tomorrow's "anything new?" is the board AFTER tonight's work
 # (Items closed or edited tonight are not news), so snapshot the post-run clone

@@ -30,6 +30,7 @@ RUNNER = REPO / "tools" / "night_shift.sh"
 SETTINGS = REPO / "tools" / "night_shift_settings.json"
 
 _TOOL_FILES = ("tools/night_shift.sh", "tools/night_shift_settings.json",
+               "tools/night_shift_stub_report.py",
                "tools/night_shift_preflight.py", "tools/nightly_ticker.sh",
                "tools/lib/live_session.sh", ".gitignore")
 _GITCONFIG = "[user]\n\tname = t\n\temail = t@t\n"
@@ -40,7 +41,15 @@ FAKE_CLAUDE = r"""#!/usr/bin/env bash
 # fail, commit on main, and writes the dry-run report the protocol would.
 { for a in "$@"; do printf 'ARG %s\n' "$a"; done
   printf 'AUTH key=%s token=%s\n' "${ANTHROPIC_API_KEY:+set}" "${CLAUDE_CODE_OAUTH_TOKEN:+set}"
+  printf 'BGWAIT %s\n' "${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS:-unset}"
   printf 'PWD %s\nEND\n' "$PWD"; } >>"$FAKE_CLAUDE_LOG"
+if [[ " $* " == *" --resume "* ]]; then
+  if [[ "${FAKE_CLAUDE_FIX_ON_RESUME:-0}" == 1 ]]; then
+    git -C "$PWD" checkout -q -f main; git -C "$PWD" clean -qfd
+    FAKE_CLAUDE_REPORT=1; FAKE_CLAUDE_LEAVE_BRANCH=0; FAKE_CLAUDE_LEAVE_FILE=0
+  fi
+  [[ -n "${FAKE_CLAUDE_RESUME_EXIT:-}" ]] && FAKE_CLAUDE_EXIT="$FAKE_CLAUDE_RESUME_EXIT"
+fi
 if [[ "${FAKE_CLAUDE_CREDIT_OUT:-0}" == 1 && -n "${ANTHROPIC_API_KEY:-}" ]]; then
   echo '{"type":"result","is_error":true,"api_error_status":400,"result":"Credit balance is too low","session_id":"sess-123","total_cost_usd":1.5,"num_turns":9}'
   echo 'warning: claude.ai connectors are disabled' >&2
@@ -70,7 +79,7 @@ if [[ -n "${FAKE_CLAUDE_CLOSE_ITEM:-}" ]]; then
 fi
 [[ "${FAKE_CLAUDE_LEAVE_BRANCH:-0}" == 1 ]] && git checkout -q -b night-shift/left-behind
 [[ "${FAKE_CLAUDE_LEAVE_FILE:-0}" == 1 ]] && echo x >stray.txt
-echo '{"result":"ok","total_cost_usd":0.42,"is_error":false,"num_turns":3,"permission_denials":[],"subagent_stats":{"spawned":1}}'
+echo '{"result":"ok","session_id":"sess-456","total_cost_usd":0.42,"is_error":false,"num_turns":3,"permission_denials":[],"subagent_stats":{"spawned":1}}'
 exit "${FAKE_CLAUDE_EXIT:-0}"
 """
 
@@ -168,6 +177,8 @@ class NS:
             "ANTHROPIC_API_KEY": "test",
             "LIVE_SESSION_RE": "nsguard_absent_" + uuid.uuid4().hex,
             "FAKE_CLAUDE_LOG": str(self.log),
+            # A healthy night writes its report; a test of an early end says 0.
+            "FAKE_CLAUDE_REPORT": "1",
             # Safety net: a run that straddles midnight must not wait an hour.
             "NIGHT_SHIFT_WAIT_NIGHTLY_S": "2",
             "NIGHT_SHIFT_WAIT_NIGHTLY_POLL_S": "1",
@@ -273,7 +284,7 @@ def test_first_run_then_nothing_new_then_change(ns):
     assert "--dangerously-skip-permissions" not in joined
     # No budget fuse unless NIGHT_SHIFT_MAX_USD is set (owner, 2026-10-31).
     assert "--max-budget-usd" not in joined
-    assert last["cost_recorded"] == "no-report"
+    assert last["cost_recorded"] == "pushed"
     assert "--dry-run" not in argv[1]
     assert Path(pwd).resolve() == ns.clone.resolve()
     installed = ns.clone / ".claude" / "settings.local.json"
@@ -304,7 +315,7 @@ def test_first_run_then_nothing_new_then_change(ns):
     _check(r, "OK", 0)
     last = ns.last()
     assert len(ns.calls()) == 2
-    assert last["head_before"] != head1 and last["head_after"] == last["head_before"]
+    assert last["head_before"] != head1
     assert last["preflight"].startswith("NEW ")
 
     history = (ns.reports / "history.log").read_text().splitlines()
@@ -418,7 +429,7 @@ def test_claude_timeout(ns):
 
 
 def test_unpushed_commit_on_main_is_push_rejected(ns):
-    r = ns.run(FAKE_CLAUDE_COMMIT_MAIN=1)
+    r = ns.run(FAKE_CLAUDE_COMMIT_MAIN=1, FAKE_CLAUDE_REPORT=0, NIGHT_SHIFT_TIMEOUT_S=120)
     _check(r, "PUSH_REJECTED", 1)
     last = ns.last()
     assert len(last["unpushed"]) == 1 and len(last["unpushed"][0]) == 40
@@ -576,23 +587,148 @@ def test_sigterm_mid_run_still_writes_a_status(ns):
     assert last["status"] == "INTERNAL_ERROR" and "signal" in last["detail"]
 
 
-@pytest.mark.parametrize("knob, needle", [("FAKE_CLAUDE_LEAVE_BRANCH", "branch=night-shift/left-behind"),
-                                          ("FAKE_CLAUDE_LEAVE_FILE", "stray.txt")])
-def test_run_that_leaves_the_clone_off_main_or_dirty(ns, knob, needle):
-    r = ns.run(**{knob: 1})
-    _check(r, "RUN_LEFT_DIRTY", 1)
+def _on_origin(ns, ref):
+    return subprocess.run(["git", "-C", str(ns.origin), "rev-parse", "-q", "--verify", ref],
+                          env=ns.env, stdout=subprocess.PIPE, universal_newlines=True).stdout.strip()
+
+
+def _origin_file(ns, ref, path):
+    return subprocess.run(["git", "-C", str(ns.origin), "show", "%s:%s" % (ref, path)],
+                          env=ns.env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                          universal_newlines=True)
+
+
+def _clone_is_home(ns):
+    assert _git("symbolic-ref", "--short", "HEAD", cwd=ns.clone, env=ns.env) == "main"
+    assert _git("status", "--porcelain", cwd=ns.clone, env=ns.env) == ""
+
+
+def test_every_leg_runs_with_no_background_task_limit(ns):
+    """2026-11-09: `claude -p` killed a unit 10 minutes after the orchestrator's last
+    turn and exited 0. Every leg must switch that limit off, the resumed one too."""
+    r = ns.run(FAKE_CLAUDE_REPORT=0, FAKE_CLAUDE_FIX_ON_RESUME=1)
+    _check(r, "OK", 0)
+    waits = [l[7:] for l in ns.log.read_text().splitlines() if l.startswith("BGWAIT ")]
+    assert waits == ["0", "0"]
+
+
+def test_an_early_end_is_resumed_once_and_can_finish_ok(ns):
+    r = ns.run(FAKE_CLAUDE_REPORT=0, FAKE_CLAUDE_LEAVE_BRANCH=1, FAKE_CLAUDE_FIX_ON_RESUME=1)
+    _check(r, "OK", 0)
+    (first, _), (second, _) = ns.calls()
+    assert "--resume" not in first
+    assert _argval(second, "--resume") == "sess-456"
     last = ns.last()
-    assert needle in last["detail"]
+    assert "no report" in last["resumed"]
+    assert last["salvaged"] is None
+    assert (ns.reports / ("%s.claude-first.json" % last["date"])).exists()
+    assert last["cost_usd"] == 0.42    # the resumed leg's total is cumulative
+    _clone_is_home(ns)
+
+
+def test_a_complete_night_is_not_resumed(ns):
+    _check(ns.run(), "OK", 0)
+    assert len(ns.calls()) == 1
+    assert ns.last()["resumed"] is None
+
+
+@pytest.mark.parametrize("knob, needle", [("FAKE_CLAUDE_LEAVE_BRANCH", "night-shift/left-behind"),
+                                          ("FAKE_CLAUDE_LEAVE_FILE", "salvage")])
+def test_work_left_behind_is_saved_and_the_next_night_can_run(ns, knob, needle):
+    """The other half of 2026-11-09: a dirty clone is CLONE_DIRTY the next night."""
+    r = ns.run(FAKE_CLAUDE_REPORT=0, **{knob: 1})
+    _check(r, "RUN_SALVAGED", 1)
+    last = ns.last()
+    assert len(ns.calls()) == 2   # resumed once, and no more
+    target, _sha, pushed = last["salvaged"].split()
+    assert needle in target and pushed == "pushed"
+    assert _on_origin(ns, target)
+    if knob == "FAKE_CLAUDE_LEAVE_FILE":
+        assert _origin_file(ns, target, "stray.txt").returncode == 0
     assert last["ticker_reraised"] is True
     assert not (ns.reports / "candidates-last.json").exists()
+    _clone_is_home(ns)
+    assert "stray.txt" not in _git("ls-tree", "-r", "--name-only", "origin/main",
+                                   cwd=ns.clone, env=ns.env)
+    (ns.nightly / "ticker.raised").write_text("%sT04:20:00+11:00 %s\n" % (ns.today, ns.green))
+    r = ns.run(FAKE_CLAUDE_REPORT=0, FAKE_CLAUDE_FIX_ON_RESUME=1)
+    assert "CLONE_DIRTY" not in r.stdout
+
+
+def test_uncommitted_work_on_its_own_branch_stays_on_that_branch(ns):
+    r = ns.run(FAKE_CLAUDE_REPORT=0, FAKE_CLAUDE_LEAVE_BRANCH=1, FAKE_CLAUDE_LEAVE_FILE=1)
+    _check(r, "RUN_SALVAGED", 1)
+    assert ns.last()["salvaged"].startswith("night-shift/left-behind ")
+    assert _origin_file(ns, "night-shift/left-behind", "stray.txt").returncode == 0
+
+
+def test_a_night_with_no_report_gets_a_valid_stub_and_is_not_ok(ns):
+    from mapkit.night_shift_report import report_errors
+    r = ns.run(FAKE_CLAUDE_REPORT=0)
+    _check(r, "NO_REPORT", 1)
+    last = ns.last()
+    assert len(ns.calls()) == 2
+    assert last["stub_report"] == "pushed" and last["ticker_reraised"] is True
+    stub = _origin_file(ns, "main", "docs/night-shift/%s.md" % last["date"]).stdout
+    assert report_errors(stub) == []
+    assert "NO_REPORT" in stub and "none recorded" in stub
+    _clone_is_home(ns)
+
+
+def test_a_salvaged_night_names_the_branch_in_its_stub(ns):
+    r = ns.run(FAKE_CLAUDE_REPORT=0, FAKE_CLAUDE_LEAVE_BRANCH=1)
+    _check(r, "RUN_SALVAGED", 1)
+    last = ns.last()
+    stub = _origin_file(ns, "main", "docs/night-shift/%s.md" % last["date"]).stdout
+    assert "night-shift/left-behind" in stub and "not gated" in stub
+
+
+def test_a_failed_leg_is_saved_but_not_resumed(ns):
+    r = ns.run(FAKE_CLAUDE_REPORT=0, FAKE_CLAUDE_EXIT=1, FAKE_CLAUDE_LEAVE_FILE=1)
+    _check(r, "CLAUDE_FAILED", 1)
+    assert len(ns.calls()) == 1
+    assert ns.last()["salvaged"]
+    _clone_is_home(ns)
+
+
+def test_no_resume_without_enough_time_left(ns):
+    r = ns.run(FAKE_CLAUDE_REPORT=0, NIGHT_SHIFT_TIMEOUT_S=120)
+    _check(r, "NO_REPORT", 1)
+    assert len(ns.calls()) == 1
+
+
+def test_a_dry_run_is_neither_resumed_nor_saved(ns):
+    r = ns.run(NIGHT_SHIFT_DRY_RUN=1, FAKE_CLAUDE_NO_REPORT=1, FAKE_CLAUDE_LEAVE_FILE=1)
+    assert len(ns.calls()) == 1
+    last = ns.last()
+    assert last["salvaged"] is None and last["stub_report"] is None
+    assert (ns.clone / "stray.txt").exists()
+
+
+def test_a_multi_line_detail_cannot_break_the_stub_layout(tmp_path):
+    """A CLAUDE_FAILED detail can carry a stderr tail, and a line of it starting
+    ``## `` would otherwise become a section of its own."""
+    from mapkit.night_shift_report import report_errors
+    out = tmp_path / "docs" / "stub.md"
+    subprocess.run([sys.executable, str(REPO / "tools" / "night_shift_stub_report.py"),
+                    "--date", "2026-11-09", "--status", "CLAUDE_FAILED", "--clone", str(tmp_path),
+                    "--out", str(out), "--started", "a", "--finished", "b",
+                    "--detail", "foo\n## Cost\n## Held\n| BUG-1 | x"], check=True)
+    assert report_errors(out.read_text()) == []
+
+
+def test_stub_never_lands_over_a_report_that_exists(ns):
+    _check(ns.run(FAKE_CLAUDE_EXIT=1), "CLAUDE_FAILED", 1)
+    assert ns.last()["stub_report"] is None
+    text = _origin_file(ns, "main", "docs/night-shift/%s.md" % ns.last()["date"]).stdout
+    assert text.startswith("# Night Shift") and "units: 0" in text
 
 
 def test_post_run_snapshot_is_tomorrows_baseline(ns):
     r = ns.run(FAKE_CLAUDE_CLOSE_ITEM="bug-b1")
     _check(r, "OK", 0)
     last = ns.last()
-    assert len(last["main_commits"]) == 1
-    assert last["main_commits"][0].endswith(" close bug-b1")
+    assert sum(c.endswith(" close bug-b1") for c in last["main_commits"]) == 1
     snapshot = json.loads((ns.reports / "candidates-last.json").read_text())
     assert [i["id"] for i in snapshot["items"]] == ["BUG-2"]
     # The Item closed tonight is not news tomorrow.
