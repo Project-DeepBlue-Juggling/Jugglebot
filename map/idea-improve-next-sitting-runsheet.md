@@ -2,9 +2,9 @@
 id: IDEA-19
 kind: idea
 title: Improve the Next Sitting Runbook
-status: backlog
+status: in_progress
 created: '2026-11-08'
-updated: '2026-11-09T18:16:35Z'
+updated: '2026-11-09T22:22:04Z'
 owners: []
 priority: medium
 effort: m
@@ -66,12 +66,18 @@ Recommendation: 3, then 1. It settles the step format on a real Sitting before a
 - No time budget for now.
 - Every step gets a verdict box and a comments box, as today's Next Sitting page has per Item.
 
+## Decisions (owner, 2026-11-10)
+
+- Build the command and the page now, without flying a hand-built sheet first.
+- A step carrying a `pass:` takes one verdict per Item it serves, because Items on one flight can come out differently. Other steps take done or problem, with comments.
+- Step format as drafted above, with no separate recovery line.
+
 ## Next
 
-- The first sheet is built the night before the next Robot Sitting, from the Runbook as it stands then. The Legs are being re-jointed (TKT-52), so a sheet built now would be stale.
-- To get it: put the planned Sitting date in a Progress note here (or tell a Session), and the Night Shift before that date builds the sheet on a branch.
+- Fly the first sheet (`map/sheets/2026-11-10-robot.yaml`, at Next Sitting in the app) and note what to change in the format.
 
 ## Progress
 
 - 2026-11-09: Night Shift 2026-11-09: options and a draft step format written; awaiting the owner's answer
 - 2026-11-10: Night Shift 2026-11-10: TKT-53 decisions recorded; the first sheet is built the night before the next Robot Sitting, once its date is noted here
+- 2026-11-10: Session 2026-11-10: /sitting-sheet, the sheet check and the app page built; first Robot sheet written, not yet flown

@@ -6,7 +6,7 @@ import os
 import sys
 from typing import List, Optional
 
-from mapkit import gen_docs, gen_glossary, gen_index, ids, import_issues, itemcli, tickets
+from mapkit import gen_docs, gen_glossary, gen_index, ids, import_issues, itemcli, sheet, tickets
 
 
 def default_repo() -> str:
@@ -57,6 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     itemcli.register(sub)
     import_issues.register(sub)
     ids.register(sub)
+    sheet.register(sub)
     return parser
 
 

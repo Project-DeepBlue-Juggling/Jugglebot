@@ -1,0 +1,49 @@
+---
+title: "Sitting sheets: /sitting-sheet merges a rig's Items into one ordered page the app steps through (IDEA-19)"
+type: feature
+date: 2026-11-10
+status: in-progress
+phase: "IDEA-19"
+related_plan: []
+files_changed:
+  - mapkit/sheet.py
+  - mapkit/__main__.py
+  - tests/sim/test_mapkit_sheet.py
+  - tests/sim/test_mapkit_no_ros.py
+  - .claude/commands/sitting-sheet.md
+  - .claude/commands/sitting-debrief.md
+  - docs/agents/map-writes.md
+subsystem:
+  - map-improvements
+tags:
+  - sitting
+  - runbook
+  - map-app
+---
+
+**What.** `/sitting-sheet <rig>` has a Session merge the open `## Sitting` sections into `map/sheets/<date>-<rig>[-N].yaml`, one ordered list of steps. The map app's Next Sitting page now opens the newest sheet: per step a start state, the Terminal or GUI action, what to see, what stops you, what to record, the Items served, and boxes. App: `jugglebot-map` commits on main (`/sheets` routes, `SheetView`), the old per-Item page kept behind `All Items`.
+
+**Why.** IDEA-19: the Runbook groups by Item, so an operator had to merge the steps in their head. Each step must be doable without reading ahead.
+
+**How it stays honest.** A `do:` step is free text, so a model has to order them. `mapkit sheet check` holds the result to the Items: every `do:` placed or omitted with a reason, every quoted command verbatim, each Item's order kept, an unbroken state chain, one verdict step per Item, whose start state includes the Item's `setup:`. A cold read by a fresh agent covers what no tool can see.
+
+## Discussion
+
+**The order changed.** TKT-53 chose one hand-built sheet flown first, then the command, because a page built on an unflown format risks rework. The owner chose on 2026-11-10 to build the command and the page together, with a Sitting the same day. The accepted cost: any format change after the first flight touches both repos.
+
+**One verdict per Item on a flown step, not one per step.** `/sitting-debrief` merges a held branch on a `pass`, and two Items on one flight can come out differently, so one box could pass an Item whose own criterion failed. Setup and restore steps take done or problem. Verdicts still land as `## Sitting result`, so the debrief's input is unchanged.
+
+**Re-saves.** The first build appended a result on every save. A comment edit on a verdict step re-posted the verdict, and a corrected `pass` left a stale `pass` above it. An unchanged verdict is now a no-op on the Item, and the debrief takes the last result in file order as the verdict.
+
+**What the check caught on the first real sheet.** It refused a step that Levelled and Activated inside BUG-82's verdict step. The cold read found what the check can't: FEAT-32's canary flying on the oval plant, a venv leaking into the shell that then built ROS, and a skip that jumped over FEAT-39's verdict step. Two rules were loosened by real cases: `reorder: <why>` for an Item whose `do:` states a precondition after the steps it governs, and a bare `ros2 param get` is not a command to copy.
+
+`tests/sim/test_mapkit_no_ros.py` now exempts `sheet.py` from the word `ros2` only: the module names that CLI in strings. It still may not name a ROS Python package, and the import-graph test still holds.
+
+**Not flown.** Whether the step format works at the robot is what the 2026-11-10 Sitting will show. Status stays in-progress until it has.
+
+## Verification
+
+- Scoped run (2026-11-10, `python -m pytest tests/sim/test_mapkit*.py tests/sim/test_sitting_sections.py tests/sim/test_sitting_debrief_protocol.py tests/sim/test_map_items.py tests/sim/test_night_shift_gate.py tests/sim/test_docs_links.py tests/sim/test_logbook_front_matter.py tests/sim/test_plans_index.py -q`): the count and result are in the commit message.
+- App server (2026-11-10, `MAPKIT_SRC=<worktree> python3 -m pytest -q` in the jugglebot-map worktree): 132 passed.
+- App frontend (2026-11-10, `npx tsc -b --noEmit`, `npx eslint . --max-warnings 0`, `npx vitest run`): clean, 346 passed and 1 skipped.
+- `python -m mapkit sheet check map/sheets/2026-11-10-robot.yaml` (2026-11-10): `sheet check: OK`, 44 steps.
