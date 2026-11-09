@@ -75,6 +75,24 @@ _Status: closed (complete)._
 - bug: BUG-48 [Ball Butler yaw-settle gate aborts settled throws (THROW_ABORTED_NOT_SETTLED false positives)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-ball-butler-yaw-settle-gate-aborts-settled-throws-throw.md) (inbox)
 - feature: FEAT-3 [Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-columns-empty-cup-rows-33-34-on-hardware.md) (inbox)
 
+## GUI Improvements
+
+**Destination:** The robot GUI tells the operator how well the robot is juggling and what to do next without reading a launch log (a draft Destination from the Night Shift: edit it).
+
+**Progress:** 0 of 0 stops done
+
+**Next:** —
+
+**Owners:** —
+
+**Remaining:**
+
+- —
+
+**Attached inbox items:**
+
+- —
+
 ## Learner generalisation
 
 **Destination:** A global plant model with a physics-keyed residual replaces the local-linear Memory and the offline Admissible box, so any Site, Apex, Dwell or yaw can be commanded and changed mid-Pattern.
@@ -149,6 +167,7 @@ _Status: closed (complete)._
 | Two-ball oval | P3 A/B Sitting on the oval; P4 Working point and the dwell ladder | — | P5 Two-ball oval; bug ABORTED_NO_RELEASE: three goals ended because the throw never left the hand (new 2026-10-28 21:02); bug A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve; bug 10 % jitter-margin class of LIMIT_* refusals; bug mocap_node loses frames to queue full in bursts before the first dispatch (544 / 373 / 490 frames in the three 2026-10-28 Sittings); bug Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff; bug RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball; bug Teensy guard MAX_DEVIATION latched on the hand (+8.4 rev) mid-oval; recover_lane found nothing, re-dispatch rejected WRONG_MODE; feature P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30; feature Pre-release hold rung: release from a moving Platform (hold 0.100 → 0); feature Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load); feature Trim the nice-0 chain CPU the flame graphs point at: skill_node executor (~0.5 core), mocap_node publish path (~0.28), tracker message plumbing (~0.28) | P0 Identify the Platform mode from existing bags; P1 The ZVD contract and rows behind a flag; P2 Box re-sweep with the rows on; P1 The oval pattern dispatchable; P3 Pose-level carry planner; P1 Firmware - age-aware lead clamp and engagement counter; P2 Bench validation; P3 Robot validation |
 | Project map and shared dictionary | — | — | — | closed |
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug Ball Butler yaw-settle gate aborts settled throws (THROW_ABORTED_NOT_SETTLED false positives); feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
+| GUI Improvements | — | — | — | — |
 | Learner generalisation | — | P5 Close-out | bug The flyback over-corrects a Catch offset by 1.2 to 1.4 times: each landing error returns at -0.3 to -0.45 on the next Throw; bug Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for; feature Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z | P3a Command-time admissibility check; P3b Nomination-time check and the nearest viable configuration; P3c Box retirement; P1 Learner core; P2 The characterisation sitting; P4 BeatEvent stream and the columns wrapper; Box sweep fidelity for same-site families (plan what the executor dispatches) |
 | Pattern progression: Columns to Centre and orbit | — | P3 JP-10 turned Columns | P5 JP-9 high-low Columns; P6 Per-Beat Sites dependency owned by PWAY-2; P7 JP-5 polygon walk; P8 JP-11 rotating Columns; P9 Centre and orbit compile; P10 JP-14 Centre and orbit; idea JP-10 Turned columns: the columns pair at fixed angles about +z, under pose; idea JP-11 Rotating columns: the pair turns a few degrees every Beat; idea JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm; idea JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites; idea JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m | P1 Launch current check; P2 Turned Columns on the compiled path; P4 Per-Site Apex |
 | Map improvements | — | — | — | closed |
