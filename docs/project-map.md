@@ -95,25 +95,6 @@ _Status: closed (complete)._
 - bug: BUG-79 [Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-two-ball-throws-land-about-9-mm-toward-the-partner-site-an.md) (inbox)
 - feature: FEAT-27 [Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-kinematic-calibration-acceptance-the-flying-frame-check-and.md) (inbox)
 
-## Map improvements
-
-**Destination:** The map shows each item's history, takes new items from the Robot tab mid-sitting, finds anything by text, and surfaces stale items and a red nightly without leaving the GUI.
-
-**Progress:** 14 of 14 stops done
-
-**Next:** —
-
-**Owners:** harrison
-
-**Remaining:**
-
-- —
-
-**Attached inbox items:**
-
-- bug: BUG-17 [item_uuid(slug) collides across kinds that share a slug](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-item-uuid-slug-collides-across-kinds-that-share-a-slug.md) (inbox)
-- feature: FEAT-42 [Add a data-only verdict to the Sitting result box (pass / fail / pending / data)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-add-a-data-only-verdict-to-the-sitting-result-box-pass-fail.md) (inbox)
-
 ## Pattern progression: Columns to Centre and orbit
 
 **Destination:** JP-14 Centre and orbit flown on the robot: 30 consecutive Catches in one Attempt at radius 100 mm with 8 Sites per lap, under pose.
@@ -142,6 +123,12 @@ _Status: closed (complete)._
 - idea: IDEA-9 [JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-5-polygon-walk-one-ball-n-sites-the-cheapest-way-to-land.md) (inbox)
 - idea: IDEA-10 [JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-9-high-low-columns-ball-1-at-apex-1-05-m-ball-2-at-0-95-m.md) (in_progress)
 
+## Map improvements
+
+**Destination:** The map shows each item's history, takes new items from the Robot tab mid-sitting, finds anything by text, and surfaces stale items and a red nightly without leaving the GUI.
+
+_Status: closed (complete)._
+
 ## Two-ball skill stack
 
 **Destination:** 30 consecutive Ball Butler-fed Catches in one Attempt (the R5 Rung gate), met 2026-10-13.
@@ -163,8 +150,8 @@ _Status: closed (complete)._
 | Project map and shared dictionary | — | — | — | closed |
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug Ball Butler yaw-settle gate aborts settled throws (THROW_ABORTED_NOT_SETTLED false positives); feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
 | Learner generalisation | — | P5 Close-out | bug The flyback over-corrects a Catch offset by 1.2 to 1.4 times: each landing error returns at -0.3 to -0.45 on the next Throw; bug Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for; feature Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z | P3a Command-time admissibility check; P3b Nomination-time check and the nearest viable configuration; P3c Box retirement; P1 Learner core; P2 The characterisation sitting; P4 BeatEvent stream and the columns wrapper; Box sweep fidelity for same-site families (plan what the executor dispatches) |
-| Map improvements | — | — | bug item_uuid(slug) collides across kinds that share a slug; feature Add a data-only verdict to the Sitting result box (pass / fail / pending / data) | P0 Plan and owner decisions; P1 Expand mapkit and the Night Shift tools to both ID forms; P2 Expand the map app to both ID forms (fork repo); P3 The sweeper and the classified census; P4 Cutover in one commit; P5 Contract: retire the old form, guard test, normative docs; P6 Out-of-tree residue and close; P0 Plan and its Feature; P1 mapkit ids module and checks; P2 Backfill and the uniqueness test; P3 mapkit resolution, creation, display and the commands; P4 App server: allocate, resolve, repair (fork repo); P5 App frontend: show and deep-link (fork repo); P6 Normative docs |
 | Pattern progression: Columns to Centre and orbit | — | P3 JP-10 turned Columns | P5 JP-9 high-low Columns; P6 Per-Beat Sites dependency owned by PWAY-2; P7 JP-5 polygon walk; P8 JP-11 rotating Columns; P9 Centre and orbit compile; P10 JP-14 Centre and orbit; idea JP-10 Turned columns: the columns pair at fixed angles about +z, under pose; idea JP-11 Rotating columns: the pair turns a few degrees every Beat; idea JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm; idea JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites; idea JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m | P1 Launch current check; P2 Turned Columns on the compiled path; P4 Per-Site Apex |
+| Map improvements | — | — | — | closed |
 | Two-ball skill stack | — | — | — | closed |
 | Wave camera on CAN3 | — | — | — | closed |
 

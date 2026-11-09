@@ -1,9 +1,11 @@
 ---
 title: "Per-kind Item IDs: BUG-n, FEAT-n, IDEA-n, PWAY-n and a Ticket prefix replace the one JB-n sequence"
 created: 2026-11-07
-status: active
+status: completed
+archived: 2026-11-09
+completed: 2026-11-09
 owner: Harrison
-last_updated: 2026-11-07
+last_updated: 2026-11-09
 pathway: map-improvements
 scope: >-
   Replaces the single JB-<n> Item ID sequence with one prefix and one counter per Item kind (FEAT-34, option 3;
@@ -472,3 +474,11 @@ Auto-memory (12 files, 366 hits) rewritten with the same crosswalk, `MEMORY.md` 
 - P1, P2: inert until P4; revert normally.
 - P4: `git revert <sha>`. The crosswalk file goes with it, so the allocator returns to `JB-n` by itself. Items filed on the new form after P4 remain parseable while the dual form is live, which is why P5 waits. Rebuild with `colcon build`.
 - P5: revert P5, then P4.
+
+## Archival note (2026-11-09)
+
+**What shipped.** Every Item carries a per-kind ID (`BUG-n`, `FEAT-n`, `IDEA-n`, `PWAY-n`, `TKT-n`). `mapkit/ids.py` is the one enforcement point, `mapkit/legacy_ids.csv` is the frozen crosswalk, and an old ID translates on a read and is refused on a write. `tests/sim/test_no_legacy_item_ids.py`, with its classifier `tests/sim/legacy_id_rules.py`, keeps the old form out of the tracked tree in the default gate. Auto-memory and the map-app fork were rewritten through the crosswalk.
+
+**Why it closed.** All phases P0 to P6 are complete, the critical review returned READY TO ARCHIVE with no residual xfail markers, and FEAT-34 is complete.
+
+**Where residue went.** None was left unowned. `tools/id_sweep.py` and its overrides are deleted, and references to them in this plan describe the phases as they ran. The proofs in `tools/probes/id_cutover/` stay as P4's evidence and run only at the renumber commit. T-H1 and the phone filing in T-I2 rest on the owner's word, recorded in the P4 entry.

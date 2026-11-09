@@ -15,7 +15,7 @@ radius: cross-cutting
 area: map-app
 blocked_by: []
 links:
-- plans/active/item-id-per-kind.md
+- plans/archived/item-id-per-kind.md
 - logbook/2026-11-09-item-id-per-kind-p6-close.md
 filed_by: harrison
 parent: map-improvements

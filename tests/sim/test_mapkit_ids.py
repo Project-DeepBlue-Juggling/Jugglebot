@@ -300,7 +300,7 @@ def test_check_stays_strict_about_a_malformed_item(tmp_path):
 
 
 # --- item-id-per-kind: per-kind IDs only (P5) ----------------------------------
-# Plan plans/active/item-id-per-kind.md § 2.1 and § 5. The retired global form is
+# Plan plans/archived/item-id-per-kind.md § 2.1 and § 5. The retired global form is
 # known only to the frozen crosswalk; synthetic crosswalks here use a FICTIONAL old
 # prefix (OLD) so the code is proved to hold no knowledge of the real one.
 _KIND_PREFIX = (("bug", "BUG"), ("feature", "FEAT"), ("idea", "IDEA"),

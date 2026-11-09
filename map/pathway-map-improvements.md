@@ -1,10 +1,10 @@
 ---
 id: PWAY-7
 kind: pathway
-title: 'Map improvements'
-status: active
+title: Map improvements
+status: complete
 created: '2026-10-25'
-updated: '2026-10-25T10:00:00Z'
+updated: '2026-11-09T06:46:27Z'
 owners:
 - harrison
 priority: medium
@@ -39,3 +39,7 @@ Six Features proposed by Claude on 2026-10-25 and filed at the owner's request. 
 ## Out of scope
 
 - Multi-user features; the owner is the only user.
+
+## Progress
+
+- 2026-11-09: Destination reached (owner, 2026-11-09), at the archival of its last plan, item-id-per-kind.

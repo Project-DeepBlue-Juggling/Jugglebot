@@ -115,8 +115,8 @@ frozen	map/idea-personal-best-window.md	1
 frozen	map/idea-the-records-should-be-sorted-by-number-of-balls-from-least-t.md	1
 frozen	map/ticket-item-prefixes-a-kind-label-in-the-display-only-per-kind.md	1
 frozen	mapkit/legacy_ids.csv	250
-frozen	plans/active/item-id-per-kind.md	120
 frozen	plans/active/pattern-progression.md	2
+frozen	plans/archived/item-id-per-kind.md	120
 frozen	plans/archived/map-item-ids.md	51
 frozen	ros_ws/src/jugglebot/Teensy_code_canbridge/leg_interp.cpp	1
 frozen	ros_ws/src/jugglebot/Teensy_code_canbridge/udp_link.cpp	1
@@ -172,5 +172,5 @@ historical	map/feature-update-item-naming-convention-based-on-type-eg-pathways-c
 historical	map/idea-glossary-add-item-id-jb-n-via-grilling-domain-modeling.md	2
 historical	map/pathway-night-shift.md	1
 historical	map/ticket-item-prefixes-a-kind-label-in-the-display-only-per-kind.md	3
-historical	plans/active/INDEX.md	1
+historical	plans/archived/INDEX.md	1
 historical	plans/archived/catch-reach-degenerate-overshoot.md	1
