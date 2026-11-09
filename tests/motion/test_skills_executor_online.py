@@ -246,6 +246,34 @@ def test_a_refused_model_command_ends_the_attempt_before_any_install(cell):
     assert 'LIMIT_VEL' in x.end_message
 
 
+def _landing_lines(lines):
+    return [ln for ln in lines if 'ADMISSIBILITY-LANDING skill 0' in ln]
+
+
+def test_the_check_logs_the_catch_landing_it_planned_against_once(cell):
+    """BUG-87: one ``ADMISSIBILITY-LANDING`` line per checked skill, naming the
+    (clamped) landing the online check used, its time, how far ahead it is
+    and the aim's source -- on a passing check."""
+    chk = _RealChecker(cell)
+    sch, _i, x, lines, st = _run_catch(
+        cell, chk, learner=_Learner([0.0, 0.010, _APEX]))
+    got = _landing_lines(lines)
+    assert len(got) == 1, lines
+    lnd = st['landing']
+    t_now = sch.skills[0].dispatch_s()
+    p = lnd.pos_mm
+    assert ('catch landing (%.1f, %.1f, %.1f) mm at t=%.3f s (%+.3f s ahead), '
+            'source=%s' % (p[0], p[1], p[2], lnd.t_land_abs_s,
+                           lnd.t_land_abs_s - t_now, ex.AIM_TRACKER)) in got[0]
+
+
+def test_the_landing_line_is_logged_when_the_check_refuses(cell):
+    chk = _RealChecker(cell)
+    _s, _i, x, lines, _st = _run_catch(cell, chk, y_d_xy=(0.030, 0.0))
+    assert x.attempt_ended and x.end_code == ex.NO_ADMISSIBLE_COMMAND
+    assert len(_landing_lines(lines)) == 1, lines
+
+
 # ---------------------------------------------------------------------------
 # (2) scripted checker: plumbing
 # ---------------------------------------------------------------------------

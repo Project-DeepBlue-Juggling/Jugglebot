@@ -2611,6 +2611,10 @@ class SkillExecutor:
                              % (list(AIM_SOURCES), catch_aim_source))
         #: :data:`AIM_SCHEDULE` / :data:`AIM_SCHEDULE_HAND` / :data:`AIM_TRACKER`.
         self.catch_aim_source = str(catch_aim_source)
+        #: The aim label (``_catch_aim``'s) of the CATCH whose dispatch is
+        #: building its terminal -- read only by the one ``ADMISSIBILITY-
+        #: LANDING`` note (BUG-87); never a decision input.
+        self._dispatch_aim_label = ''
         #: ``(ball_id, t_release_abs_s) -> Optional[r]`` — the MEASURED hand
         #: launch-speed ratio, only ever read in :data:`AIM_SCHEDULE_HAND`.
         self.launch_ratio = launch_ratio
@@ -3392,6 +3396,15 @@ class SkillExecutor:
         if idx in self._u_cache:
             _x, u_dy, u_apex = self._u_cache[idx]
             return u_dy, u_apex
+        # BUG-87: name the Catch landing this online check plans against
+        # (built here, where the check already runs, once per skill).
+        self._note_once(idx, 'ADMISSIBILITY-LANDING', (
+            'ADMISSIBILITY-LANDING skill %d: catch landing (%.1f, %.1f, '
+            '%.1f) mm at t=%.3f s (%+.3f s ahead), source=%s'
+            % (idx, float(landing.pos_mm[0]), float(landing.pos_mm[1]),
+               float(landing.pos_mm[2]), float(landing.t_land_abs_s),
+               float(landing.t_land_abs_s) - float(t_abs_s),
+               self._dispatch_aim_label or 'unknown')))
         tt = skill.then_throw
         rel_site = release_site_of(skill)
         release_mm, x = self._catch_command_state(skill, landing)
@@ -5393,6 +5406,7 @@ class SkillExecutor:
                             % (t_abs_s, NO_LANDING, ball_label(skill.ball_id),
                                deadline)],
                            False)
+                self._dispatch_aim_label = aim_source
                 terminal = self._catch_terminal(idx, skill, landing,
                                                 t_abs_s=t_abs_s)
             elif skill.kind == THROW:
@@ -5405,7 +5419,13 @@ class SkillExecutor:
             self.end_code = NO_ADMISSIBLE_COMMAND
             self.end_message = str(exc)
             self.end_kind = skill.kind
-            return (['%.3f END %s at skill %d (%s): %s'
+            # The notes queued before the refusal (BUG-87's
+            # ADMISSIBILITY-LANDING among them) ride out ahead of the END
+            # line instead of being left queued.
+            refused_notes = self._pending_notes
+            self._pending_notes = []
+            return (refused_notes
+                    + ['%.3f END %s at skill %d (%s): %s'
                     % (t_abs_s, NO_ADMISSIBLE_COMMAND, idx, skill.kind, exc)],
                    False)
 
