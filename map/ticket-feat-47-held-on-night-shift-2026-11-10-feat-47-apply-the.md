@@ -2,9 +2,9 @@
 id: TKT-61
 kind: ticket
 title: 'FEAT-47 held on night-shift/2026-11-10-FEAT-47: apply the audit''s 3 fixes and merge, also count Feed misses, merge as is, or drop?'
-status: open
+status: complete
 created: '2026-11-10'
-updated: '2026-11-09T18:16:28Z'
+updated: '2026-11-09T21:36:31Z'
 owners: []
 priority: medium
 effort: xs
@@ -40,3 +40,7 @@ Recommendation: 1. Feed misses can follow as their own slice once 1 is live.
 - 1 or 2: the next night applies them, re-gates and merges.
 - 3: the next night re-gates and merges.
 - 4: FEAT-47 goes back to backlog.
+
+## Answer
+
+Agreed. Make sure Feed misses are not forgotten about; we must have these counted by the time we finish up with this Feature.
