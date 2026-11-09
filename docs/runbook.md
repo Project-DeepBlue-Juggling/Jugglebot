@@ -215,7 +215,7 @@ Rigs: Robot 5 blocks (214 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 
 ## Questions a Sitting can answer
 
-- TKT-54 IDEA-20 Platform accelerometer: an ICM-42688-P buffered on the Platform Teensy, streamed live, an ADXL355, or read the SCL3300 first? (parent IDEA-20)
+- none
 
 ## Close-out
 
