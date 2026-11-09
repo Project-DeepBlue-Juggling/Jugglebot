@@ -4,7 +4,7 @@ kind: bug
 title: Arrow-keying through the Map search items doesn't scroll
 status: in_progress
 created: '2026-11-07'
-updated: '2026-11-07T18:11:50Z'
+updated: '2026-11-09T17:48:20Z'
 owners:
 - night-shift
 priority: medium
@@ -26,3 +26,4 @@ Filed from the Robot tab at 2026-11-07T10:36:35+11:00.
 ## Progress
 
 - 2026-11-08: Night Shift 2026-11-08: held on jugglebot-map:night-shift/2026-11-08-BUG-83: gate (b), a stale keyboard flag and an unverified mouseenter case; unblocked by the owner's answer
+- 2026-11-10: Night Shift 2026-11-09: held again on jugglebot-map:night-shift/2026-11-08-BUG-83: (b) 1 new audit finding, a group label left above the scroll; unblocked by the owner's answer
