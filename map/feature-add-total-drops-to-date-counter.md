@@ -2,14 +2,15 @@
 id: FEAT-47
 kind: feature
 title: Add "Total Drops To Date" counter
-status: backlog
+status: in_progress
 created: '2026-11-08'
-updated: '2026-11-08T17:57:50Z'
-owners: []
+updated: '2026-11-09T17:54:18Z'
+owners:
+- night-shift
 priority: medium
 effort: m
 hardware: none
-owner: decision
+owner: none
 radius: subsystem
 area: gui
 blocked_by: []
@@ -38,3 +39,4 @@ Recommendation: 2. The definition's edge cases are in the ticket.
 ## Progress
 
 - 2026-11-09: Night Shift 2026-11-09: rated, options written; awaiting the owner's answer
+- 2026-11-10: Night Shift 2026-11-10: TKT-55 answered (option 3, definitions settled); building the live counter tonight, the history backfill is for a day Session
