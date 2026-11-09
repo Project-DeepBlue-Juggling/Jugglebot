@@ -15,7 +15,7 @@ area: gui
 blocked_by: []
 links: []
 filed_by: harrison
-parent: pathway-gui-improvements
+parent: gui-improvements
 ---
 
 A metric should be devised that 'scores' juggling patterns based on how close the real pattern matches the target pattern. I'm thinking something like `sum of ( error^2 / sample rate )` for each throw, as well as an average for the whole pattern. 
