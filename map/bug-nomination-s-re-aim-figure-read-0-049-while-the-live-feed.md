@@ -4,7 +4,7 @@ kind: bug
 title: Nomination's re-aim figure read -0.049 while the live Feed-Catch Segment was refused at -0.208 (Dwell 0.32)
 status: backlog
 created: '2026-11-08'
-updated: '2026-11-09T18:16:34Z'
+updated: '2026-11-09T18:42:00Z'
 owners: []
 priority: medium
 effort: m
@@ -107,3 +107,4 @@ Night Shift research unit, offline, no code changed. Columns Apex 0.93, Sep. 125
 - 2026-11-08: 2026-11-08 owner decision: fix this before anything else on the Feed clamp. The clamped Feed Catch aim (25 of 32 Attempts on 2026-11-07) costs about 0.11 of margin; above Dwell 0.27 it refused every later Attempt. Then check whether Feed misses lean one way (columns_feed_bb_bias_mm). Acceptance stays nominal.
 - 2026-11-09: Night Shift 2026-11-09: -0.049 reproduces and the fed Segments are walked; the live -0.208 does not, so no code changed; next is a bag read of the Feed's release state
 - 2026-11-10: Night Shift 2026-11-10: the Feed-seed lead is refuted (walk and check seed alike); skill 2's own Catch time is the lever; next is one log line at the check
+- 2026-11-10: Night Shift 2026-11-10: merged the ADMISSIBILITY-LANDING log line; after the next ros_ws rebuild, a refused fed Segment shows the Catch landing its check used
