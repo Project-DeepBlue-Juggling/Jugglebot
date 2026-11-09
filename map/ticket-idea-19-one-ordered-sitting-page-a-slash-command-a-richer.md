@@ -46,7 +46,7 @@ Recommendation: 3, then 1.
 I agree: (3), then (1). Answering your other questions:
 - This should replace the 'Next Sitting' page. 
 - `optional` should be anything priority 'low'.
-- Yes, but each step should name the Items that it's in the runsheet for
+- Yes, but each step should name the Items that it's in the Next Sitting Runbook for
 - No, let's leave out a time budget for now.
 
-Also, each step should have a simple 'verdict' / 'comments' section, similar to today's Next Sitting runsheet.
+Also, each step should have a simple 'verdict' / 'comments' section, similar to today's Next Sitting Runbook.
