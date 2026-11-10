@@ -4,12 +4,12 @@ kind: idea
 title: Platform Accelerometer?
 status: backlog
 created: '2026-11-08'
-updated: '2026-11-08T17:49:41Z'
+updated: '2026-11-10T18:01:28Z'
 owners: []
 priority: medium
 effort: m
 hardware: robot
-owner: decision
+owner: hands
 radius: subsystem
 area: platform-teensy
 blocked_by: []
@@ -39,6 +39,16 @@ Read from `Teensy_code_platform.ino`, with no sensor datasheet opened tonight, s
 
 Recommendation: 4 as a quick look, then 1. A buffered capture answers the input-shaping question without touching the bus during an Attempt.
 
+## Decision (2026-11-11)
+
+From TKT-54. You ordered an ICM-42688-P breakout, and it is on its way. You want option 2 together with option 1: a low-rate live stream during the Attempt, plus the full-rate data buffered on the Platform Teensy and uploaded after the Attempt.
+
+- What comes next is for a day Session, once the board is here. It covers the Platform Teensy firmware (SPI read, a ring buffer, the upload after the Attempt) and a protocol addition for the live rate.
+- The live stream needs a CAN bus-load check before it is sized.
+- The board needs a mount on the 2020 extrusion beside the Hand's rail.
+- The Night Shift does not build Platform Teensy firmware.
+
 ## Progress
 
 - 2026-11-09: Night Shift 2026-11-09: feasibility and options written; awaiting the owner's answer
+- 2026-11-11: Night Shift 2026-11-11: TKT-54 answered (ICM-42688-P, live low-rate plus buffered upload); decision recorded, re-rated owner hands for a day Session
