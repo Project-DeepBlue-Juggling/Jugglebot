@@ -133,7 +133,7 @@ Smooth sub-WARN wander of the home reading is **expected and accepted**.
 - Remember the correction is **per-PROCESS**: any relaunch (including this
   build gate) silently drops it while `RobotState.levelling_complete` still
   reads True — and a relaunch **mid-sweep** re-pushes the Teensy-persisted
-  copy (int16-mrad truncated), which is exactly the constancy violation the
+  copy (0.1 mrad quantised), which is exactly the constancy violation the
   drift gate and `/gravity_offset` monitor exist to catch.
 
 ### Pre-flight — read-only, confirms the freshly-built code is live

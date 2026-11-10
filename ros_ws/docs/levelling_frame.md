@@ -737,7 +737,7 @@ What enforces the reference now:
 - **ABORT** only when any axis's p-p exceeds **0.0087 rad (0.5°, the
   owner-stated repeatability tolerance)**, or a single **consecutive-anchor
   step** exceeds **0.005 rad**. A step between two adjacent anchors is a
-  discrete *event* — a re-level, a relaunch re-pushing the int16-mrad Teensy
+  discrete *event* — a re-level, a relaunch re-pushing the Teensy
   copy, a mechanical snap — which is a different physical claim from smooth
   wander of the same total size.
 - The **causal `/gravity_offset` mid-sweep monitor** is unchanged and remains
@@ -1058,8 +1058,8 @@ A capture run is only meaningful under all five of these:
    home-referenced residual `M(P) = m(P) − m̄(home)` cancels the loaded
    correction exactly, so freshness is **not** required — but a correction
    that *changes mid-sweep* (a re-level; a relaunch re-pushing the
-   Teensy-persisted copy, which is int16-mrad truncated, worst 1 mrad/axis
-   biased toward zero) splits the sweep across two references and corrupts
+   Teensy-persisted copy, which is quantised to 0.1 mrad counts, worst
+   0.05 mrad/axis; whole-mrad truncated before can-bridge FW 43, BUG-7) splits the sweep across two references and corrupts
    every node measured after the change. A fresh `level` immediately before
    is still **RECOMMENDED**: it keeps `|m_home|` small and the 0.010 rad WARN
    meaningful.

@@ -90,8 +90,8 @@ TEST_CASE("state_write re-encodes the 0x6E0 RobotState frame (createStateCANMess
   JbUdp::RpcArgs::ArgRobotState s{};
   s.is_homed = 1;
   s.levelling_complete = 0;
-  s.pose_offset_tiltX = 0.012f;    // *1000 → 12
-  s.pose_offset_tiltY = -0.034f;   // *1000 → -34
+  s.pose_offset_tiltX = 0.012f;    // 0.1 mrad counts → 120
+  s.pose_offset_tiltY = -0.034f;   // 0.1 mrad counts → -340
   CHECK(Relay::state_write(s) == JbUdp::RpcStatus::OK);
 
   REQUIRE(fake_sent_count() == 1);
@@ -99,8 +99,8 @@ TEST_CASE("state_write re-encodes the 0x6E0 RobotState frame (createStateCANMess
   CHECK(f.id == PlatformCanId::STATE_UPDATE);
   CHECK(f.len == 8);
   CHECK(f.buf[0] == 0x01);          // flags: bit0 is_homed=1, bit1 levelling=0
-  CHECK(le_i16(&f.buf[1]) == 12);   // pose_offset_tiltX * 1000
-  CHECK(le_i16(&f.buf[3]) == -34);  // pose_offset_tiltY * 1000
+  CHECK(le_i16(&f.buf[1]) == 120);   // tilt X, 0.1 mrad counts
+  CHECK(le_i16(&f.buf[3]) == -340);  // tilt Y, 0.1 mrad counts
   CHECK(f.buf[5] == 0);
   CHECK(f.buf[6] == 0);
   CHECK(f.buf[7] == 0);
@@ -115,7 +115,7 @@ TEST_CASE("state_write re-encodes the 0x6E0 RobotState frame (createStateCANMess
 }
 
 TEST_CASE("state_write rejects a non-finite pose offset (ERR_BAD_ARGS, nothing sent)") {
-  // A NaN/Inf pose offset makes the `* 1000.0f` → int16 cast UNDEFINED, and the corrupt
+  // A NaN/Inf pose offset makes the conversion to int16 counts UNDEFINED, and the corrupt
   // value would be PERSISTED on the Platform Teensy across reboots. Reject before the cast.
   fake_reset();
   fake_set_commands_allowed(true);
@@ -138,8 +138,66 @@ TEST_CASE("state_write rejects a non-finite pose offset (ERR_BAD_ARGS, nothing s
   s.pose_offset_tiltX = 0.012f;  s.pose_offset_tiltY = -0.034f;
   CHECK(Relay::state_write(s) == JbUdp::RpcStatus::OK);
   REQUIRE(fake_sent_count() == 1);
-  CHECK(le_i16(&fake_sent_at(0).buf[1]) == 12);
-  CHECK(le_i16(&fake_sent_at(0).buf[3]) == -34);
+  CHECK(le_i16(&fake_sent_at(0).buf[1]) == 120);
+  CHECK(le_i16(&fake_sent_at(0).buf[3]) == -340);
+}
+
+TEST_CASE("state_write rounds the offset to 0.1 mrad counts, symmetric about zero (BUG-7)") {
+  // The 2026-07-27 Sitting's offset. A truncating cast to whole mrad persisted
+  // 14 and 2; rounded counts keep it to 0.05 mrad and do not bias toward level.
+  fake_reset();
+  fake_set_commands_allowed(true);
+
+  JbUdp::RpcArgs::ArgRobotState s{};
+  s.pose_offset_tiltX = 0.014455f;   // 144.55 counts → 145
+  s.pose_offset_tiltY = 0.00207f;    // 20.7 counts → 21
+  CHECK(Relay::state_write(s) == JbUdp::RpcStatus::OK);
+  REQUIRE(fake_sent_count() == 1);
+  CHECK(le_i16(&fake_sent_at(0).buf[1]) == 145);
+  CHECK(le_i16(&fake_sent_at(0).buf[3]) == 21);
+
+  fake_clear_sent();
+  s.pose_offset_tiltX = -0.014455f;
+  s.pose_offset_tiltY = -0.00207f;
+  CHECK(Relay::state_write(s) == JbUdp::RpcStatus::OK);
+  REQUIRE(fake_sent_count() == 1);
+  CHECK(le_i16(&fake_sent_at(0).buf[1]) == -145);
+  CHECK(le_i16(&fake_sent_at(0).buf[3]) == -21);
+}
+
+TEST_CASE("state_write refuses a finite offset past the int16 count span (BUG-7)") {
+  fake_reset();
+  fake_set_commands_allowed(true);
+
+  JbUdp::RpcArgs::ArgRobotState s{};
+  s.pose_offset_tiltX = 3.3f;   s.pose_offset_tiltY = 0.0f;
+  CHECK(Relay::state_write(s) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  s.pose_offset_tiltX = 0.0f;   s.pose_offset_tiltY = -3.3f;
+  CHECK(Relay::state_write(s) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  CHECK(fake_sent_count() == 0);
+
+  s.pose_offset_tiltX = 3.2f;   s.pose_offset_tiltY = -3.2f;   // inside the span
+  CHECK(Relay::state_write(s) == JbUdp::RpcStatus::OK);
+  REQUIRE(fake_sent_count() == 1);
+  CHECK(le_i16(&fake_sent_at(0).buf[1]) == 32000);
+  CHECK(le_i16(&fake_sent_at(0).buf[3]) == -32000);
+
+  // The exact edge, in single precision: 3.2768f * 10000.f is exactly 32768.0f,
+  // the first value whose int16 cast would wrap to -32768. 3.2767f is exactly 32767.0f.
+  fake_clear_sent();
+  s.pose_offset_tiltX = 3.2768f;   s.pose_offset_tiltY = 0.0f;
+  CHECK(Relay::state_write(s) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  s.pose_offset_tiltX = -3.2768f;  s.pose_offset_tiltY = 0.0f;
+  CHECK(Relay::state_write(s) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  s.pose_offset_tiltX = 0.0f;      s.pose_offset_tiltY = 3.2768f;
+  CHECK(Relay::state_write(s) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  CHECK(fake_sent_count() == 0);
+
+  s.pose_offset_tiltX = 3.2767f;   s.pose_offset_tiltY = -3.2767f;
+  CHECK(Relay::state_write(s) == JbUdp::RpcStatus::OK);
+  REQUIRE(fake_sent_count() == 1);
+  CHECK(le_i16(&fake_sent_at(0).buf[1]) == 32767);
+  CHECK(le_i16(&fake_sent_at(0).buf[3]) == -32767);
 }
 
 TEST_CASE("relay sends fail-fast when CAN3 is down (never command a dead bus)") {

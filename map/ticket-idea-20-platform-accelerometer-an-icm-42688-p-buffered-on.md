@@ -2,9 +2,9 @@
 id: TKT-54
 kind: ticket
 title: 'IDEA-20 Platform accelerometer: an ICM-42688-P buffered on the Platform Teensy, streamed live, an ADXL355, or read the SCL3300 first?'
-status: open
+status: complete
 created: '2026-11-09'
-updated: '2026-11-08T17:49:43Z'
+updated: '2026-11-09T21:29:46Z'
 owners: []
 priority: medium
 effort: xs
@@ -34,3 +34,7 @@ Recommendation: 4 as a quick look, then 1.
 - 1 or 3: a parts order from you, then firmware and a capture tool on a held branch.
 - 2: a bus-load measurement Sitting before any firmware.
 - 4: a Sitting row, which the next night can write.
+
+## Answer
+
+I have ordered an ICM-42688-P breakout board, which is on its way. I lean Option 2 with option 1 as well; low-rate live updates as well as full data buffering, which gets uploaded after the Attempt

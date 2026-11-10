@@ -314,7 +314,7 @@ DEFAULT_HOME_REVISIT_EVERY = 4
 #: tolerance** — beyond it the "which arrival is the reference" question stops
 #: being a rounding error against the 0.15 deg theta_acc.
 #: ABORT: any single CONSECUTIVE-anchor step over 0.005 rad — a discrete event
-#: (re-level, relaunch re-push of the int16-mrad Teensy copy, a mechanical
+#: (re-level, relaunch re-push of the Teensy copy, a mechanical
 #: snap), which is a different physical claim from smooth wander and stays
 #: fatal at a threshold the smooth case does not reach.
 ANCHOR_PP_WARN_RAD = 0.002       # 0.115 deg — prominent, NON-blocking
@@ -953,7 +953,7 @@ def anchor_series_verdict(anchors: Sequence[HomeAnchor]) -> Tuple[str, str]:
                 '{:.4f} rad consecutive-step ceiling. {}. A step between two '
                 'consecutive anchors is an EVENT, not the smooth arrival-to-'
                 'arrival wander this capture tolerates: a re-level or relaunch '
-                're-pushing the int16-mrad Teensy copy (the /gravity_offset '
+                're-pushing the Teensy copy (the /gravity_offset '
                 'monitor is the causal detector and should also have fired), '
                 'or something mechanical letting go. Nothing was written; '
                 'diagnose before re-running.'
@@ -2230,7 +2230,7 @@ class _Runner:
 
         Any ``/gravity_offset`` message after :meth:`mark_sweep_started` means
         the reference changed mid-sweep — a re-level, or a relaunch re-pushing
-        the Teensy-persisted (int16-mrad truncated) copy — and every node
+        the Teensy-persisted (0.1 mrad quantised) copy — and every node
         measured after it is referenced differently from those before. That is
         observed directly here, not inferred from the drift it happens to
         leave, so a zig-zag that nets to zero drift still aborts.
@@ -3031,7 +3031,7 @@ def run(args) -> int:                                    # noqa: C901
                                      else 'unknown'),
                 'level_offset_source': ('robot_state.pose_offset_rad (bridge '
                                         'cache; fresh level = full float, '
-                                        'relaunch re-push = 1 mrad quantised)'),
+                                        'relaunch re-push = 0.1 mrad quantised)'),
                 'home_reference': home_meta,
                 'base_condition': base_condition,
             }

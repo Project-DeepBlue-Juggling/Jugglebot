@@ -4,7 +4,7 @@ kind: bug
 title: Ball 2's first throw after the feed catch lands about 180 mm outward along the separation axis
 status: inbox
 created: '2026-11-03'
-updated: '2026-11-08T00:13:22Z'
+updated: '2026-11-10T12:41:23Z'
 owners: []
 priority: high
 effort: m
@@ -20,6 +20,7 @@ links:
 - map/bug-ball-2-learner-command-pinned-at-the-20-20-mm-clamp-corner.md
 - logbook/2026-11-04-sitting-debrief.md
 - logbook/2026-11-06-sitting-debrief-2.md
+- logbook/2026-11-10-sitting-debrief.md
 filed_by: sitting-debrief 2026-11-03
 ---
 
@@ -30,7 +31,7 @@ On 2026-11-03 Ball 2's first Throw after the feed catch landed about 180 mm outw
 - setup: level, armed, bb-fed
 - why: the hypothesis is that a feed catch whose lateral aim was clamped seats the ball off-centre and the first Throw carries a lateral kick. A fresh plant_id aims the feed catch by the identity prior, so the clamp never engages: if the outward first throw disappears the clamped aim is implicated, if it persists the clamp is cleared. Either outcome is data.
 - do:
-  - Fly this right after the IDEA-10 high-low Attempts, same settings. Before the goal: `ros2 param set /skill_node plant_id jb161-fresh-<date>` (a name no memory file has; refused while a goal runs) and `ros2 param set /skill_node apex_m_ball2 0.90`.
+  - Fly this right after the IDEA-10 high-low Attempts, same settings. Before the goal: `ros2 param set /skill_node plant_id bug63-fresh-<date>` (a name no memory file has; refused while a goal runs) and `ros2 param set /skill_node apex_m_ball2 0.90`.
   - GUI: Juggle panel `Columns - high-low`, Apex 1.00, Apex 2 0.90, Sep. 100, Dwell 0.27, Throws 21. One Attempt; a second only if the first ended before Ball 2's first Throw for an unrelated reason.
   - Afterwards restore the plant_id the IDEA-10 Attempts used (read it from their goal start line, `plant_id=...`) and `ros2 param set /skill_node apex_m_ball2 0.0`.
 - pass: Ball 2's first Throw after the feed catch lands within 60 mm of its Site along the separation axis (the 2026-11-03 misses were about 180 mm outward: landings x -223 to -240 against aims near -50).
@@ -61,3 +62,4 @@ A bag probe (`tools/probes/`) of the ball's seat position in the Cup at the firs
   - Next: check whether Columns Ball 2's first Throw follows a transit whose deceleration ends close to release (fk.py restricted to those releases).
 - 2026-11-06: 2026-11-06 endurance Sittings (30 plain Columns goals that threw): the first three Throws after the Feed all landed within 64 mm of the Site; one candidate only (14:55 goal 9, Feed aim clamped +92 to +30 mm in y, also a collision goal). The 180 mm outward first Throw was not reproduced on plain Columns.
 - 2026-11-08: Not flown at the Sitting of 2026-11-07. As data: Ball 2's first Throw landed within 45 mm in all 32 Attempts; with the Feed aim clamped (n 25) +4.2 mm outward, unclamped (n 7) +9.6; no 180 mm case. No support for the clamped-aim reading here; the fresh-plant row is still unflown.
+- 2026-11-10: Sitting of 2026-11-10: the first Catch after the Feed ended 7 of 11 two-ball fed Attempts. Ball 2's first-throw landing outward along the separation axis: high-low (sep 100) 157, 23 (after a 246 mm identity refusal) and 37 mm; straight Columns 196 mm; turned 90 deg 47, 26 and 14 mm.

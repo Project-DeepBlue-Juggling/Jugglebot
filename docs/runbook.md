@@ -6,7 +6,7 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 5 blocks (214 min) · Bench leg 1 block (30 min) · Bench hand 1 block (60 min)
+Rigs: Robot 6 blocks (214 min) · Bench leg 1 block (30 min) · Bench hand 1 block (60 min)
 
 ## Setup 0: before power
 
@@ -15,7 +15,7 @@ Rigs: Robot 5 blocks (214 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Robot  (5 blocks, 214 min)
+## Robot  (6 blocks, 214 min)
 
 ### Block 1: armed  (2 rows, 2 min)
 
@@ -38,7 +38,7 @@ Rigs: Robot 5 blocks (214 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 #### BUG-63 Ball 2's first throw after the feed catch lands about 180 mm outward along the separation axis  (10 min, high, unattached)
 - why: the hypothesis is that a feed catch whose lateral aim was clamped seats the ball off-centre and the first Throw carries a lateral kick. A fresh plant_id aims the feed catch by the identity prior, so the clamp never engages: if the outward first throw disappears the clamped aim is implicated, if it persists the clamp is cleared. Either outcome is data.
 - do:
-  - Fly this right after the IDEA-10 high-low Attempts, same settings. Before the goal: `ros2 param set /skill_node plant_id jb161-fresh-<date>` (a name no memory file has; refused while a goal runs) and `ros2 param set /skill_node apex_m_ball2 0.90`.
+  - Fly this right after the IDEA-10 high-low Attempts, same settings. Before the goal: `ros2 param set /skill_node plant_id bug63-fresh-<date>` (a name no memory file has; refused while a goal runs) and `ros2 param set /skill_node apex_m_ball2 0.90`.
   - GUI: Juggle panel `Columns - high-low`, Apex 1.00, Apex 2 0.90, Sep. 100, Dwell 0.27, Throws 21. One Attempt; a second only if the first ended before Ball 2's first Throw for an unrelated reason.
   - Afterwards restore the plant_id the IDEA-10 Attempts used (read it from their goal start line, `plant_id=...`) and `ros2 param set /skill_node apex_m_ball2 0.0`.
 - pass: Ball 2's first Throw after the feed catch lands within 60 mm of its Site along the separation axis (the 2026-11-03 misses were about 180 mm outward: landings x -223 to -240 against aims near -50).
@@ -47,7 +47,7 @@ Rigs: Robot 5 blocks (214 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 #### IDEA-10 JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m  (12 min, medium, pattern-progression-columns-to-centre-and-orbit)
 - why: P5 of plan pattern-progression.md: two Apexes in one Pattern (JP-9). The Rung flies 1.00 over 0.90 at separation 100; since the 2026-10-31 re-sweep (Hand prime 10.45) 1.05 over 0.95 is admissible at both Sites too, but a 1.05 launch waits for the faster hand current capture (plan D-c).
 - do:
-  - Rehearse before arming: cup empty, Ball Butler unpowered, `ros2 param set /skill_node apex_m_ball2 0.90`, send the goal below once. The accept message may name only the cup and Ball Butler refusals (no nomination refusal) and nothing moves.
+  - Rehearse before arming: `ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: 'columns_highlow,apex_m=1.00,separation_mm=100,dwell_s=0.27,apex_m_ball2=0.90'}"`. The reply must read `success: True` with no refusal line; nothing moves, and launch up and homed is enough. Never rehearse with a Juggle goal: with the Cup empty it is accepted and moves the Platform and the Hand (found 2026-11-10).
   - GUI: Juggle panel `Columns — high-low`, Apex 1.00, Apex 2 0.90, Sep. 100, Dwell 0.27, Throws 21 (Start writes apex_m_ball2 to the node first). Terminal fallback: `ros2 param set /skill_node apex_m_ball2 0.90` (refused while a goal runs), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_highlow, apex_m: 1.00, separation_mm: 100.0, dwell_s: 0.27, num_cycles: 21}" --feedback`.
   - Watch the hand current at every launch; cancel the goal if any hand iq sample reaches 55.0 A (the hand current limit is 60 A since 2026-11-01, was 50 A with a 50.0 A watch).
   - Afterwards `ros2 param set /skill_node apex_m_ball2 0.0`.
@@ -57,7 +57,7 @@ Rigs: Robot 5 blocks (214 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 #### IDEA-11 JP-10 Turned columns: the columns pair at fixed angles about +z, under pose  (20 min, medium, pattern-progression-columns-to-centre-and-orbit)
 - why: P3 of plan pattern-progression.md: two-ball Columns off the x axis under the pose planner, one plant_id per angle (set explicitly in the steps below), which answers PWAY-2 P2(b) (does the lateral bias rotate with the pair).
 - do:
-  - Rehearse before arming: cup empty, Ball Butler unpowered, `ros2 param set /skill_node columns_angle_deg 45`, send the goal below once. The accept message may name only the cup and Ball Butler refusals (no nomination refusal) and nothing moves. Repeat at 90.
+  - Rehearse with mocap on the robot base and Ball Butler's Base markers (the fed Site needs them): `ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: 'columns_turned,apex_m=0.95,separation_mm=125,dwell_s=0.27,columns_angle_deg=45'}"`, then the same at `columns_angle_deg=90`. Each reply: `success: True`, nothing moves; `position is unknown` means bring mocap up and retry. Never a Juggle goal.
   - Fly a straight `Columns` control first if this Sitting has not flown one (GUI Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21).
   - GUI: Juggle panel `Columns — turned`, Angle 45, Apex 0.95, Sep. 125, Dwell 0.27, Throws 21 (Start writes columns_angle_deg to the node first). Terminal fallback: `ros2 param set /skill_node columns_angle_deg 45` (refused while a goal runs), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_turned, apex_m: 0.95, separation_mm: 125.0, dwell_s: 0.27, num_cycles: 21}" --feedback`. Only the 0.925 to 0.975 Apex band is admissible at 45 deg.
   - Angle 90 (or `ros2 param set /skill_node columns_angle_deg 90`), then the same goal at Apex 0.95 (0.90 is also admissible at 90 deg).
@@ -103,7 +103,7 @@ Rigs: Robot 5 blocks (214 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - pass: the bag replays through `tools/probes/human_throw_bench.py` with the robot-spot landing sd and the phantom rate reported.
 - record: the bag path, the lighting change, and the bench report path.
 
-### Block 5: armed, bb-fed, bridge-cycled  (2 rows, 95 min)
+### Block 5: armed, bb-fed, bridge-cycled  (1 row, 45 min)
 
 #### FEAT-32 Pre-release hold rung: release from a moving Platform (hold 0.100 → 0)  (45 min, high, two-ball-oval)
 - why: the ZVD rows (mode provisional 4.9 Hz / 0.20 / 20 ms) have never flown. This A/B flies them against the flag-off carry on the oval, where carried Throws land about +59 mm long at Dwell 0.40. `gc_freeze` is on for both arms, its first flight (BUG-58). The Platform mode is re-fitted afterwards from this Sitting's bag.
@@ -117,12 +117,14 @@ Rigs: Robot 5 blocks (214 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - pass: at Dwell 0.40 with the flag on, the carried minus from-rest raw landing bias is within +/-10 mm, the carried per-Throw sd is under 17.5 mm, and 30 consecutive Catches land in one Attempt; no CUP_SEATING_CONE or leg LIMIT end; the Columns canary (flag off) is unchanged (each Attempt COMPLETED, no new refusal).
 - record: raw x per Throw (landed minus u) split from-rest / carried, per arm; encoder and mocap excess at separation per arm; RING refusals (the RING refusal text if any oval install is refused); install-line leg peaks; the platform_mode_fit.py result on this bag (x and y); the bag and launch log paths.
 
+### Block 6: level, armed, bb-fed, bridge-cycled  (1 row, 50 min)
+
 #### FEAT-39 P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30  (50 min, high, two-ball-oval)
 - why: P4 ramp of plan two-ball-oval.md: the first flight at the 600 / 8000 working point with the legs at 20 A; five Columns canary Attempts show nothing regressed, then the one-ball oval dwell ladder finds the shortest dwell that holds.
 - do:
   - Fly this row FIRST, before every other robot row: since cf35526c every goal runs at 600 / 8000 and 20 A. The 2026-11-03 Sitting flew 1 of the 5 canary Attempts (20/20, peak leg iq 11.7 A) and the oval to dwell 0.35 without a pass (debrief 2026-11-04: carried throws land long, the carry's deceleration ends 25-30 ms before release).
   - Before arming: confirm the launch log shows BridgeIdentity FW 40 (proto 12) and the Sitting limits 600 / 8000 / 200000 (neither was in the 2026-11-03 launch log; read them from the GUI or `ros2 param get` and note where they came from).
-  - Rehearse before arming: cup empty, Ball Butler unpowered, send `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.40, num_cycles: 4}" --feedback` once. The accept message may name only the cup and Ball Butler refusals (no nomination refusal) and nothing moves.
+  - Rehearse before arming: `ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: 'oval_1ball_fed,apex_m=1.00,separation_mm=150,dwell_s=0.40'}"`. The reply must read `success: True` with no refusal line; nothing moves, and launch up and homed is enough. Never rehearse with a Juggle goal: with the Cup empty it is accepted and moves the Platform and the Hand (found 2026-11-10).
   - Columns canary: GUI Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21. Five Attempts (the 2026-11-03 one does not count toward this Sitting's five).
   - Watch the leg current throughout: cancel the goal if any leg iq sample reaches 19 A (1 A under the 20 A clamp; proposed 2026-11-03, owner to confirm; the 2026-11-03 peak was 11.7 A).
   - One-ball oval, on its own plant: `ros2 param set /skill_node plant_id p4-oval-<date>` (refused while a goal runs) and read it back from the goal start line.
@@ -134,7 +136,7 @@ Rigs: Robot 5 blocks (214 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 
 ## Bench leg  (1 block, 30 min)
 
-### Block 6: bridge-cycled  (1 row, 30 min)
+### Block 7: bridge-cycled  (1 row, 30 min)
 
 #### BUG-19 Hand ODrive state can silently diverge from what the can-bridge commanded  (30 min, low, unattached)
 - why: confirm FW 35's suppress-edge hold flush leaves the bench leg at the last transmitted command instead of input_pos + vel_ff/pos_gain, and measure the current step it costs.
@@ -147,7 +149,7 @@ Rigs: Robot 5 blocks (214 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 
 ## Bench hand  (1 block, 60 min)
 
-### Block 7: armed, bridge-cycled  (2 rows, 60 min)
+### Block 8: armed, bridge-cycled  (2 rows, 60 min)
 
 #### FEAT-45 Measure the Hand's commutation angle error through a hard brake on the bench Hand (FOC scope)  (30 min, high, unattached)
 - why: this proves `hand_foc_scope.py` works on the real drive and measures the angle error through a clean 4500 rev/s^2 brake, the baseline any reading of BUG-57's torque loss needs.
@@ -190,7 +192,6 @@ Rigs: Robot 5 blocks (214 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - BUG-51 [Robot] Hand iq reached 53.3 A on a 45 deg turned hop launch, over the 50 A watch the high-low row names: no ## Sitting section
 - BUG-57 [Robot] Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT): no ## Sitting section
 - BUG-66 [Robot] Firmware scheduler STOP fires on a clean host stream and ends the Attempt: no ## Sitting section
-- BUG-7 [Robot] Platform Teensy truncates the persisted levelling offset to int16 milliradians: no ## Sitting section
 - BUG-72 [Robot] Legs 1 and 2 left their magnetic base joints on Columns at Sep. 170: acceptance bounds Leg kinematics only and does not see the bridge feedforward cap: no ## Sitting section
 - BUG-74 [Robot] Mid-air ball collisions end half of two-ball Columns Attempts at Apex 1.00: closest approach about 70 mm at Sep. 100, 125 and 135: no ## Sitting section
 - BUG-78 [Robot] Two-ball Columns runs end on a missed Catch of Ball 2 with no collision: 13 of 23 ends, mean run 22 Throws: no ## Sitting section
@@ -211,11 +212,12 @@ Rigs: Robot 5 blocks (214 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - IDEA-17 [Robot] Hand end-of-stroke bumper, and first the planner's own brake shape: let the ceiling, not the Hand, cap the Apex: no ## Sitting section
 - IDEA-18 [Robot] Learner context cannot tell a Throw from rest from a carried Throw: no ## Sitting section
 - IDEA-20 [Robot] Platform Accelerometer?: no ## Sitting section
+- IDEA-22 [Robot] Turned Columns at 90 deg: tilt the Platform back (+x) at the Catch so the ball stops hitting the Platform top: no ## Sitting section
 - IDEA-9 [Robot] JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites: no ## Sitting section
 
 ## Questions a Sitting can answer
 
-- TKT-54 IDEA-20 Platform accelerometer: an ICM-42688-P buffered on the Platform Teensy, streamed live, an ADXL355, or read the SCL3300 first? (parent IDEA-20)
+- none
 
 ## Close-out
 

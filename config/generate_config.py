@@ -172,6 +172,13 @@ def generate_cpp(cfg: dict) -> str:
         lines.append(f"  constexpr uint32_t {name} = {fmt_hex(val)};")
     lines.append("}")
 
+    # 0x6E0 RobotState tilt units
+    lines.append("")
+    lines.append("// 0x6E0 RobotState tilt units (counts per radian)")
+    lines.append("namespace PlatformState {")
+    lines.append(f"  constexpr float TILT_COUNTS_PER_RAD = {float(cfg['platform_state']['TILT_COUNTS_PER_RAD'])}f;")
+    lines.append("}")
+
     # Ball Butler CAN IDs
     lines.append("")
     lines.append("// Ball Butler Teensy <-> Host")
@@ -406,6 +413,9 @@ def generate_python(cfg: dict) -> str:
     lines.append("# Platform Teensy <-> Host")
     for name, val in cfg["can_ids"]["platform"].items():
         lines.append(f"CAN_ID_PLATFORM_{name} = {fmt_hex(val)}")
+    lines.append("")
+    lines.append("# 0x6E0 RobotState tilt units (counts per radian)")
+    lines.append(f"PLATFORM_STATE_TILT_COUNTS_PER_RAD = {cfg['platform_state']['TILT_COUNTS_PER_RAD']}")
     lines.append("")
 
     # Ball Butler CAN IDs

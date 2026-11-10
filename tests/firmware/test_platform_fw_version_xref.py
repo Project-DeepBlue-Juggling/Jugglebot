@@ -234,8 +234,8 @@ int main() {
   RobotState s;
   s.is_homed = true;
   s.levelling_complete = true;
-  s.pose_offset_tiltX = 0.012f;
-  s.pose_offset_tiltY = -0.034f;
+  s.pose_offset_tiltX_counts = 120;
+  s.pose_offset_tiltY_counts = -340;
   CAN_message_t m;
   memset(&m, 0, sizeof(m));
   createStateCANMessage(s, m);
@@ -256,10 +256,10 @@ int main() {
   w.buf[5] = 0xAB; w.buf[6] = 0xCD; w.buf[7] = 0xEF;
   RobotState r;
   r.is_homed = false; r.levelling_complete = true;
-  r.pose_offset_tiltX = 9.0f; r.pose_offset_tiltY = 9.0f;
+  r.pose_offset_tiltX_counts = 9; r.pose_offset_tiltY_counts = 9;
   decodeStateCANMessage(w, r);
-  printf("DECODED %d %d %.6f %.6f\n", (int)r.is_homed, (int)r.levelling_complete,
-         (double)r.pose_offset_tiltX, (double)r.pose_offset_tiltY);
+  printf("DECODED %d %d %d %d\n", (int)r.is_homed, (int)r.levelling_complete,
+         (int)r.pose_offset_tiltX_counts, (int)r.pose_offset_tiltY_counts);
 
   // 3. Re-encoding after that write must still report OUR version, not 0xCDAB.
   CAN_message_t m2;
@@ -267,6 +267,21 @@ int main() {
   createStateCANMessage(r, m2);
   printf("REPLY2");
   for (int i = 5; i < 8; ++i) printf(" %u", (unsigned)m2.buf[i]);
+  printf("\n");
+
+  // 4. BUG-7: a written offset comes back in the reply count for count.
+  CAN_message_t w3;
+  memset(&w3, 0, sizeof(w3));
+  w3.len = 8;
+  w3.buf[1] = 145; w3.buf[2] = 0;       // +145 counts
+  w3.buf[3] = 0xEB; w3.buf[4] = 0xFF;   // -21 counts
+  RobotState r3;
+  decodeStateCANMessage(w3, r3);
+  CAN_message_t m3;
+  memset(&m3, 0, sizeof(m3));
+  createStateCANMessage(r3, m3);
+  printf("ECHO");
+  for (int i = 1; i < 5; ++i) printf(" %u", (unsigned)m3.buf[i]);
   printf("\n");
   return 0;
 }
@@ -324,8 +339,8 @@ def test_the_shipped_codec_packs_the_version_where_the_host_reads_it(tmp_path):
 
     # The pre-existing fields are untouched — this phase must not have moved them.
     assert data[0] == 0x3                                  # is_homed | levelling
-    assert int.from_bytes(data[1:3], 'little', signed=True) == 12
-    assert int.from_bytes(data[3:5], 'little', signed=True) == -34
+    assert int.from_bytes(data[1:3], 'little', signed=True) == 120
+    assert int.from_bytes(data[3:5], 'little', signed=True) == -340
 
     # ...and the host reads the firmware's own FW_VERSION back out of 5-6.
     assert (rpc_args.decode_platform_fw_version(data)
@@ -336,6 +351,13 @@ def test_the_shipped_codec_packs_the_version_where_the_host_reads_it(tmp_path):
     # Byte 7 stays reserved-zero: the next field to be added goes there, and a
     # non-zero value now would make that addition a wire-compat question.
     assert data[7] == 0
+
+
+def test_the_board_echoes_a_written_offset_count_for_count(tmp_path):
+    """BUG-7: the Platform Teensy stores the wire integer, so its reply cannot
+    drop a count on a float round trip or a truncating cast."""
+    f = _run_shipped_codec(tmp_path)
+    assert [int(v) for v in f['ECHO'].split()] == [145, 0, 0xEB, 0xFF]
 
 
 def test_a_host_write_cannot_poison_the_reported_version(tmp_path):
@@ -351,7 +373,7 @@ def test_a_host_write_cannot_poison_the_reported_version(tmp_path):
     f = _run_shipped_codec(tmp_path)
     is_homed, levelling, tilt_x, tilt_y = f['DECODED'].split()
     assert (is_homed, levelling) == ('1', '0')     # bytes 0 only
-    assert float(tilt_x) == 0.0 and float(tilt_y) == 0.0
+    assert int(tilt_x) == 0 and int(tilt_y) == 0
 
     tail = [int(v) for v in f['REPLY2'].split()]
     assert tail == [rpc_args.PLATFORM_FW_VERSION_EXPECTED & 0xFF,

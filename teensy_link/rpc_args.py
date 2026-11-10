@@ -487,7 +487,10 @@ PLATFORM_FW_VERSION_UNVERSIONED = 0
 #: broadcast. Receive-only on CAN; every host-visible path is unchanged, so a
 #: board on 7 is still fully usable and only lacks the fan control.
 #: 9 (2026-11-07) = Hand fan runtime control and status frame, over can-bridge FW 41.
-PLATFORM_FW_VERSION_EXPECTED = 9
+#: 10 (2026-11-10, BUG-7) = levelling offset held as raw int16 wire counts and
+#: echoed exactly. A board on 9 still works: its float round trip can drop one
+#: 0.1 mrad count, and it needs no knowledge of the scale.
+PLATFORM_FW_VERSION_EXPECTED = 10
 
 
 def decode_platform_fw_version(data: bytes) -> int:
@@ -969,7 +972,10 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # queue, the last four queued frames, the next one, the last time-base change).
 # A WIRE change: PROTOCOL_VERSION 12 -> 13, so an FW 41 board is DARK to this
 # host (and vice versa) until the lockstep flash. Observability only.
-EXPECTED_BRIDGE_FW_VERSION = 42
+# 42 -> 43 (2026-11-10, BUG-7): STATE_WRITE encodes the levelling offset as
+# rounded 0.1 mrad counts. PROTOCOL_VERSION 13 -> 14, so an FW 42 board is DARK
+# to this host until the lockstep flash, not ten times wrong.
+EXPECTED_BRIDGE_FW_VERSION = 43
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────
