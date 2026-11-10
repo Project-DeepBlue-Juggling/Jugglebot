@@ -2,9 +2,9 @@
 id: TKT-64
 kind: ticket
 title: 'FEAT-47 held on night-shift/2026-11-11-FEAT-47: fix the wording and merge with magazine at 0, also count magazine Feed misses, merge as is, or drop?'
-status: open
+status: complete
 created: '2026-11-11'
-updated: '2026-11-10T19:11:20Z'
+updated: '2026-11-10T21:42:31Z'
 owners: []
 priority: medium
 effort: xs
@@ -39,3 +39,9 @@ Recommendation: 2, so FEAT-47 can close with every Feed counted, as you asked in
 - 1 or 2: the next night applies it, re-gates and merges.
 - 3: the next night re-gates and merges.
 - 4: Feed misses go back to not counted.
+
+## Answer
+
+`magazine` Throws should never be considered in the drop counts; when I get around to tuning these properly, these throws will be from Jugglebot to Ball Butler's magazine, with nothing to 'catch' them. If a ball is being fed from Ball Butler to Jugglebot for Jugglebot to make the `magazine` throw, and the BB throw is missed by Jugglebot, that drop/miss should be counted. But not throws from Jugglebot to the magazine.
+
+So I believe the right choice here is Option 1
