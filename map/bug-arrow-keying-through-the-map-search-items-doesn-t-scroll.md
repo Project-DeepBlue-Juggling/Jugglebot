@@ -2,9 +2,9 @@
 id: BUG-83
 kind: bug
 title: Arrow-keying through the Map search items doesn't scroll
-status: in_progress
+status: complete
 created: '2026-11-07'
-updated: '2026-11-09T17:48:20Z'
+updated: '2026-11-10T17:52:23Z'
 owners:
 - night-shift
 priority: medium
@@ -15,7 +15,8 @@ radius: local
 diagnosis: confirmed
 area: map-app
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-11-map-search-arrow-key-scroll.md
 filed_by: harrison
 ---
 
