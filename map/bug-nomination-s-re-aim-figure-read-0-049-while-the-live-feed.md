@@ -4,7 +4,7 @@ kind: bug
 title: Nomination's re-aim figure read -0.049 while the live Feed-Catch Segment was refused at -0.208 (Dwell 0.32)
 status: backlog
 created: '2026-11-08'
-updated: '2026-11-09T18:42:00Z'
+updated: '2026-11-10T18:31:38Z'
 owners: []
 priority: medium
 effort: m
@@ -108,3 +108,4 @@ Night Shift research unit, offline, no code changed. Columns Apex 0.93, Sep. 125
 - 2026-11-09: Night Shift 2026-11-09: -0.049 reproduces and the fed Segments are walked; the live -0.208 does not, so no code changed; next is a bag read of the Feed's release state
 - 2026-11-10: Night Shift 2026-11-10: the Feed-seed lead is refuted (walk and check seed alike); skill 2's own Catch time is the lever; next is one log line at the check
 - 2026-11-10: Night Shift 2026-11-10: merged the ADMISSIBILITY-LANDING log line; after the next ros_ws rebuild, a refused fed Segment shows the Catch landing its check used
+- 2026-11-11: Night Shift 2026-11-11: ADMISSIBILITY-LANDING is live in the 2026-11-10 bags (316 and 185 lines); no fed Segment was refused (skill 2 margins 0.40 to 0.41); waits on a refused one
