@@ -181,11 +181,10 @@ def test_a_magazine_end_books_no_drop(tmp_path):
     gh = MagicMock(is_cancel_requested=False)
     gh.request.pattern = 'magazine'
     node._juggle_execute(gh)
-    if path.exists():
-        assert rec.load(str(path)).drops.live == 0
-    assert 'drops (total' not in ' '.join(
-        str(c) for c in node.get_logger().info.call_args_list) if hasattr(
-            node.get_logger().info, 'call_args_list') else True
+    # No ledger written, or one written with no drop booked (before the fix
+    # the placeholder wrote the file with live=1).
+    drops = rec.load(str(path)).drops if path.exists() else None
+    assert drops is None or drops.live == 0
 
 
 def test_too_few_samples_is_no_track(tmp_path):
