@@ -65,6 +65,13 @@ odrive:
 # =============================================================================
 # CAN Bus
 # =============================================================================
+# Units of the two tilt fields in the 0x6E0 RobotState frame (bytes 1-4, int16 LE),
+# in both directions. Counts per radian: 10000 is 0.1 mrad per count (0.0029 deg
+# worst case after rounding, against the +-0.05 deg levelling band) and an int16
+# span of +-3.2767 rad. Changing it is a PROTOCOL_VERSION bump. BUG-7.
+platform_state:
+  TILT_COUNTS_PER_RAD: 10000
+
 can_bus:
   baud_rate: 1000000           # 1 Mbps — all nodes must agree
   bits_per_frame_approx: 111   # Approx bits per 8-byte CAN frame (before bit-stuffing)

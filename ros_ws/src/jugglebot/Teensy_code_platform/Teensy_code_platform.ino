@@ -158,7 +158,7 @@
  *        older bridge AUTO still works.  No motion path touched.
  */
 constexpr char     FW_NAME[]  = "jugglebot-platform";
-constexpr uint16_t FW_VERSION = 9;   // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
+constexpr uint16_t FW_VERSION = 10;  // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
                                      //      feedforward, C-HAND-2).
                                      // 2→3: 2026-08-18 hand END-STOP correction — BEHAVIOURAL.
                                      //      Geometry::HAND_MOTOR_HARD_STOP_REVS 11.1 → 10.8 rev
@@ -197,6 +197,9 @@ constexpr uint16_t FW_VERSION = 9;   // 1→2: 2026-07-29 throwDecelToTorque (po
                                      //      from the Hand ODrive's temperature broadcast.
                                      // 8→9: 2026-11-07 Hand fan runtime control and status
                                      //      (0x6E1 / 0x6E2), RAM only.
+                                     // 9→10: 2026-11-10 BUG-7 the levelling offset is held
+                                     //      as the raw int16 wire counts and echoed exactly:
+                                     //      no float round trip, no truncating cast.
 
 /*----------------------------------------------------------------------------*/
 /*                                CAN BUS SET‑UP                              */
@@ -250,10 +253,12 @@ int messageCount = 0;
 struct RobotState {
   bool is_homed;
   bool levelling_complete;
-  float pose_offset_tiltX;
-  float pose_offset_tiltY;
+  // Levelling offset in 0x6E0 wire counts. This board only stores and echoes
+  // it, so it stays an integer and needs no knowledge of the scale (BUG-7).
+  int16_t pose_offset_tiltX_counts;
+  int16_t pose_offset_tiltY_counts;
 };
-RobotState state = { false, false, 0.0f, 0.0f };
+RobotState state = { false, false, 0, 0 };
 
 /*----------------------------------------------------------------------------*/
 /*                           PLATFORM TILT                                    */
@@ -881,8 +886,8 @@ void sendTiltData(platformTilt til) {
 /*  0x6E0 RobotState frame — dlc 8, BOTH directions.
  *
  *    byte 0     flags: bit0 is_homed, bit1 levelling_complete
- *    bytes 1-2  int16 LE  pose_offset_tiltX * 1000  (rad)
- *    bytes 3-4  int16 LE  pose_offset_tiltY * 1000  (rad)
+ *    bytes 1-2  int16 LE  pose offset tilt X, counts (PlatformState::TILT_COUNTS_PER_RAD)
+ *    bytes 3-4  int16 LE  pose offset tilt Y, counts (PlatformState::TILT_COUNTS_PER_RAD)
  *    bytes 5-6  uint16 LE FW_VERSION      ← Teensy→host ONLY (see below)
  *    byte 7     reserved, 0
  *
@@ -910,8 +915,8 @@ void sendTiltData(platformTilt til) {
  */
 void createStateCANMessage(const RobotState &s, CAN_message_t &m) {
   uint8_t flags = (s.is_homed << 0) | (s.levelling_complete << 1);
-  int16_t x = int16_t(s.pose_offset_tiltX * 1000.f);
-  int16_t y = int16_t(s.pose_offset_tiltY * 1000.f);
+  int16_t x = s.pose_offset_tiltX_counts;
+  int16_t y = s.pose_offset_tiltY_counts;
 
   m.len = 8;
   m.buf[0] = flags;
@@ -934,8 +939,8 @@ void decodeStateCANMessage(const CAN_message_t &m, RobotState &s) {
   s.levelling_complete = (f >> 1) & 1;
   int16_t x = (m.buf[2] << 8) | m.buf[1];
   int16_t y = (m.buf[4] << 8) | m.buf[3];
-  s.pose_offset_tiltX = x / 1000.f;
-  s.pose_offset_tiltY = y / 1000.f;
+  s.pose_offset_tiltX_counts = x;
+  s.pose_offset_tiltY_counts = y;
 }
 
 /*----------------------------------------------------------------------------*/

@@ -63,7 +63,8 @@ def _state_reply(is_homed, levelling, x_milli, y_milli,
     the identity block zero-filled 5-7 unconditionally.
     """
     flags = (1 if is_homed else 0) | (2 if levelling else 0)
-    return (struct.pack("<Bhh", flags, x_milli, y_milli)
+    # A literal 10 on purpose: an independent pin of the 0.1 mrad wire count.
+    return (struct.pack("<Bhh", flags, x_milli * 10, y_milli * 10)
             + int(fw_version).to_bytes(2, "little") + b"\x00")
 
 
