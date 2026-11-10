@@ -249,7 +249,66 @@ def test_a_timed_out_capture_saves_the_window_and_says_it_did_not_fire():
     d = FakeDrive()
     cols, info = hfs.capture_once(d, "angle", hfs.BrakeTrigger("brake"), 0.5, timeout_s=0.01, fill_s=0.0,
                                   sleep=lambda s: None)
-    assert not info["fired"] and info["reason"] is None and len(cols["vbus"]) == d.size * 4 // 9
+    assert not info["fired"] and info["reason"] is None and len(cols["vbus"]) == d.size * 4 // 8
+
+
+def test_every_preset_fits_the_scope_ring_so_its_recording_can_stop():
+    """FW 0.6.11 (bench, 2026-11-11): 9 channels never stopped at any trigger point but 1.0."""
+    for name, preset in hfs.PRESETS.items():
+        hfs.scope_grid_point(0.5, 65536, len(preset))          # raises if the ring cannot hold it
+    with pytest.raises(ValueError):
+        hfs.scope_grid_point(0.5, 65536, 9)
+
+
+def test_trigger_points_round_to_a_whole_sample():
+    """0.8 on 4 channels left 13107.2 bytes and recorded for ever; 3277/4096 stopped in 106 ms."""
+    q = hfs.scope_grid_point(0.8, 65536, 4)
+    assert q == 3277 / 4096 and ((1.0 - q) * 65536) % 16 == 0
+    assert hfs.scope_grid_point(0.5, 65536, 8) == 0.5
+    assert hfs.scope_grid_point(1.0, 65536, 8) == 1.0 and hfs.scope_grid_point(0.0, 65536, 8) == 0.0
+
+
+class _Scope:
+    def __init__(self, stops_after):
+        self.size, self.reads, self.stops_after, self.triggers = 65536, 0, stops_after, []
+
+    @property
+    def recording(self):
+        self.reads += 1
+        return self.stops_after is None or self.reads <= self.stops_after
+
+
+class _Utils:
+    def __init__(self, scope):
+        self.scope = scope
+
+    def ram_osci_trigger(self, odrv, point):
+        self.scope.triggers.append(point)
+
+    def ram_osci_download(self, odrv, endpoints):
+        return [[0.0] for _ in endpoints]
+
+
+class _Odrv:
+    def __init__(self, scope):
+        self.oscilloscope = scope
+
+
+def test_the_download_wait_is_bounded_and_stops_a_stuck_scope():
+    scope = _Scope(stops_after=None)
+    drive = hfs.Drive(_Odrv(scope), _Utils(scope))
+    t = [0.0]
+    with pytest.raises(RuntimeError, match="still recording"):
+        drive.scope_download(["vbus_voltage"], timeout_s=1.0, clock=lambda: t[0],
+                             sleep=lambda s: t.__setitem__(0, t[0] + s))
+    assert scope.triggers == [1.0]
+
+
+def test_the_download_waits_for_a_scope_that_stops():
+    scope = _Scope(stops_after=3)
+    drive = hfs.Drive(_Odrv(scope), _Utils(scope))
+    assert drive.scope_download(["vbus_voltage"], sleep=lambda s: None) == [[0.0]]
+    assert scope.triggers == []
 
 
 def test_capture_round_trips_through_the_files(tmp_path):
@@ -294,7 +353,7 @@ def test_every_endpoint_exists_on_the_hands_drive_and_is_readable():
     table = table.get("endpoints", table)
     used = set(hfs.IDENTITY_READS) | {hfs.VEL, hfs.STATE, hfs.DISARM}
     for preset in hfs.PRESETS.values():
-        assert len(preset) <= 9
+        assert len(preset) <= 8
         used |= set(preset.values())
     for path in sorted(used):
         assert path in table, path
