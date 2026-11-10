@@ -33,6 +33,16 @@ Usage (launch may stay down; the motion tool owns the can-bridge link, this one 
     python tools/probes/hand_foc_scope.py probe --label bench
     python tools/probes/hand_foc_scope.py capture --trigger brake --label bench_70
     python tools/probes/hand_foc_scope.py analyze temp/hand_foc_scope/<file>.csv
+
+THE SCOPE'S RULES (measured on the bench Hand's drive, FW 0.6.11, 2026-11-11). The ring is
+65536 bytes, 4 bytes per channel, at most 9 channels. A trigger ends the recording only when
+the bytes left to record after it land on a sample boundary, and the ring only wraps on one
+when the sample size divides it. Otherwise the drive records for ever and the odrive
+package's download waits for ever: the first probe on a drive hung that way. So every
+preset has 8 channels or fewer with a sample size that divides the ring
+(``scope_grid_point`` refuses one that does not), every trigger point is rounded to a whole
+sample, and the download wait is bounded. ``oscilloscope.trigger_high_res()`` dropped the
+drive off USB and restarted it, losing its position reference; never call it.
 """
 from __future__ import annotations
 
@@ -51,11 +61,12 @@ OUT_DIR = os.path.join(REPO, "temp", "hand_foc_scope")
 
 FOC = "axis0.motor.foc."
 MOTOR = "axis0.motor."
-#: CSV column name -> endpoint. Each preset holds at most 9, the scope's channel limit.
+#: CSV column name -> endpoint. Each preset's sample (4 bytes a channel) must divide the
+#: 65536-byte ring, so 8 channels at most, not the scope's 9 (see THE SCOPE'S RULES).
 PRESETS = {
     "angle": {
         "mod_d": FOC + "mod_d", "mod_q": FOC + "mod_q", "vbus": "vbus_voltage",
-        "id": FOC + "Id_measured", "iq": FOC + "Iq_measured", "iq_set": FOC + "Iq_setpoint",
+        "id": FOC + "Id_measured", "iq": FOC + "Iq_measured",
         "phase": FOC + "phase", "phase_vel": FOC + "phase_vel",
         "pos": "axis0.pos_vel_mapper.pos_rel",
     },
@@ -63,7 +74,7 @@ PRESETS = {
         "mod_d": FOC + "mod_d", "mod_q": FOC + "mod_q", "vbus": "vbus_voltage",
         "id": FOC + "Id_measured", "iq": FOC + "Iq_measured", "phase_vel": FOC + "phase_vel",
         "pos": "axis0.pos_vel_mapper.pos_rel",
-        "p_elec": MOTOR + "electrical_power", "p_mech": MOTOR + "mechanical_power",
+        "p_elec": MOTOR + "electrical_power",
     },
     "timing": {
         "n_sampling": "n_evt_sampling", "n_control": "n_evt_control_loop",
@@ -280,11 +291,32 @@ def judge_probe(r):
 
 # ---- the drive (USB) ---------------------------------------------------------------------
 
+SCOPE_BYTES_PER_CHANNEL = 4
+SCOPE_MAX_CHANNELS = 9
+SCOPE_STOP_TIMEOUT_S = 3.0      # a whole 8-channel window at 8 kHz is 256 ms
+
+
+def scope_grid_point(point, ring_bytes, n_channels):
+    """Round a trigger point to a whole sample, or refuse a channel count the ring cannot hold.
+
+    The drive stops recording only when the bytes left after the trigger are a whole number
+    of samples, so 0.8 on a 16-byte sample never stops; 1638/2048 does. Points of the form
+    k / n are exact in float32, so the drive receives what was computed here.
+    """
+    sample = SCOPE_BYTES_PER_CHANNEL * int(n_channels)
+    if not 1 <= n_channels <= SCOPE_MAX_CHANNELS or ring_bytes % sample:
+        raise ValueError("%d channels (%d-byte samples) do not divide the %d-byte scope ring; "
+                         "the recording would never stop" % (n_channels, sample, ring_bytes))
+    n = ring_bytes // sample
+    return min(1.0, max(0.0, round(float(point) * n) / n))
+
+
 class Drive:
     """The odrive package behind the few calls this tool makes."""
 
     def __init__(self, odrv, utils):
         self.odrv, self.utils = odrv, utils
+        self.n_channels = None
 
     def _resolve(self, path):
         obj = self.odrv
@@ -299,12 +331,25 @@ class Drive:
         return self._resolve(path)()
 
     def scope_config(self, endpoints):
-        self.utils.ram_osci_config(self.odrv, list(endpoints))
+        endpoints = list(endpoints)
+        scope_grid_point(0.0, int(self.read("oscilloscope.size")), len(endpoints))  # refuse first
+        self.utils.ram_osci_config(self.odrv, endpoints)
+        self.n_channels = len(endpoints)
 
     def scope_trigger(self, point):
-        self.utils.ram_osci_trigger(self.odrv, point)
+        q = scope_grid_point(point, int(self.read("oscilloscope.size")), self.n_channels)
+        self.utils.ram_osci_trigger(self.odrv, q)
 
-    def scope_download(self, endpoints):
+    def scope_download(self, endpoints, timeout_s=SCOPE_STOP_TIMEOUT_S, clock=time.monotonic,
+                       sleep=time.sleep):
+        # The package's own wait has no bound; wait here first so a stuck scope is an error.
+        t0 = clock()
+        while self.read("oscilloscope.recording"):
+            if clock() - t0 > timeout_s:
+                self.utils.ram_osci_trigger(self.odrv, 1.0)   # 1.0 stops it at once
+                raise RuntimeError("scope still recording %.1f s after the trigger; stopped it. "
+                                   "See THE SCOPE'S RULES in this file." % timeout_s)
+            sleep(0.02)
         return self.utils.ram_osci_download(self.odrv, list(endpoints))
 
 
