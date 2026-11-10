@@ -39,6 +39,8 @@ tags:
 
 **The first sheet went stale before it flew, and would not load.** A peer Session flashed can-bridge FW 43 and added a BUG-7 Sitting section after the sheet was written, so its v42 stop would have stopped the first launch. Separately, the page refused the whole sheet because a ride-along serve cited no `do` step. The check now compares any `can-bridge v<N>` on a sheet with the tree's expected firmware, and the app runs the check on every load and shows a banner, so drift after writing is visible at the robot. `enrich` always sends `do`. `setup_waived: <why>` lets BUG-7 read back what a relaunch restored before that launch levels again.
 
+**The page after its first Sitting (owner feedback, same day).** The sheet page became a dense protocol view: launch groups with Item sub-blocks, one-click done on steps that decide no verdict, comments behind an icon, an Item picker that folds the steps of deselected Items, and a tooltip on each start-state word from `STATE_HELP` in `mapkit/sheet.py`. BUG-7 was closed during the Sitting and the page then called the sheet stale. The app's check now runs with `live=True`, which accepts a step serving an Item closed since the sheet was written; the author's check still refuses one.
+
 `tests/sim/test_mapkit_no_ros.py` now exempts `sheet.py` from the word `ros2` only: the module names that CLI in strings. It still may not name a ROS Python package, and the import-graph test still holds.
 
 **Not flown.** Whether the step format works at the robot is what the 2026-11-10 Sitting will show. Status stays in-progress until it has.

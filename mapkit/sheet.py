@@ -37,6 +37,15 @@ SHEET_DIR = os.path.join("map", "sheets")
 SCHEMA = 1
 KINDS = ("setup", "run", "restore")
 STATE_WORDS = ("launched", "level", "tilt", "armed", "bb-fed", "bridge-cycled")
+#: One sentence per state word, shown by the app as the tooltip on a step's start-state chips.
+STATE_HELP = {
+    "launched": "A ros2 launch from this sheet is running in Terminal 1 and has finished Homing.",
+    "level": "The Level action has run in this launch, so the Platform's normal is aligned with gravity.",
+    "tilt": "The Platform is deliberately inclined (a Tilt was commanded) and has not been put back.",
+    "armed": "Activate has run: the Legs are Closed-loop at the Active pose and streaming motion is permitted.",
+    "bb-fed": "Ball Butler is up and loaded, ready to Feed.",
+    "bridge-cycled": "The can-bridge has been power-cycled since it last ran a launch, so its uptime is fresh.",
+}
 STEP_STATUSES = ("done", "problem")
 CMD_PREFIXES = ("ros2 ", "python ", "python3 ", "tools/", "colcon ", "./")
 
@@ -228,9 +237,18 @@ def _pattern(command: str) -> "re.Pattern[str]":
     return re.compile(".+?".join(re.escape(p) for p in parts))
 
 
-def check_sheet(sheet: Dict[str, Any], repo_root: str) -> List[str]:
-    """Every error: ``validate_shape`` plus the coverage rules in the module docstring."""
+def check_sheet(sheet: Dict[str, Any], repo_root: str, live: bool = False) -> List[str]:
+    """Every error: ``validate_shape`` plus the coverage rules in the module docstring.
+
+    ``live`` is the app's check at the robot, after the sheet was written: an Item that has been
+    closed since is not an error there (2026-11-10: BUG-7 closed mid-Sitting and the sheet read
+    as stale); the page shows it as closed. The author's check passes ``live=False``.
+    """
     errs = validate_shape(sheet)
+    closed = set()
+    if live:
+        closed = {(i.short_id or i.slug) for i in load_items(os.path.join(repo_root, "map"))
+                  if i.status not in sitting.OPEN_STATUSES}
     steps = [s for s in (sheet.get("steps") or []) if isinstance(s, dict)]
     rows = {r.item_id: r for r in scope_rows(repo_root, str(sheet.get("rig")))}
     omitted: Dict[str, Optional[List[int]]] = {}
@@ -245,7 +263,8 @@ def check_sheet(sheet: Dict[str, Any], repo_root: str) -> List[str]:
                 continue
             item = str(sv.get("item"))
             if item not in rows:
-                errs.append("step %s: %s is not an in-scope Item" % (st.get("n"), item))
+                if item not in closed:
+                    errs.append("step %s: %s is not an in-scope Item" % (st.get("n"), item))
             elif item in omitted and omitted[item] is None:
                 errs.append("step %s: %s is omitted whole but served here" % (st.get("n"), item))
     errs += _check_firmware(sheet, repo_root)
@@ -355,6 +374,7 @@ def enrich(sheet: Dict[str, Any], repo_root: str) -> Dict[str, Any]:
         copy["optional"] = bool(served) and all(s["priority"] == "low" for s in served)
         out_steps.append(copy)
     out["steps"] = out_steps
+    out["state_help"] = dict(STATE_HELP)
     return out
 
 

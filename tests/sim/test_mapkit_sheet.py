@@ -20,8 +20,8 @@ def _body(setup, do, pass_):
         setup, "".join("  - %s\n" % d for d in do), pass_)
 
 
-def _item(root, slug, id_, priority, body):
-    meta = {"id": id_, "kind": "bug", "title": slug, "status": "inbox", "created": "2026-10-20",
+def _item(root, slug, id_, priority, body, status="inbox"):
+    meta = {"id": id_, "kind": "bug", "title": slug, "status": status, "created": "2026-10-20",
             "priority": priority, "hardware": "robot", "parent": "pw"}
     write_item(str(root / "map" / ("bug-%s.md" % slug)), meta, body)
 
@@ -330,6 +330,21 @@ def test_corrupt_results_sections_read_as_empty(repo):
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("schema: 1\nsteps: null\nverdicts: null\n")
     assert sh.saved_steps(sh.load_results(str(repo), "2026-11-10-robot")) == []
+
+
+def test_live_check_accepts_an_item_closed_since_the_sheet_was_written(good, repo):
+    _item(repo, "b", "BUG-2", "medium", _body("level", ["level it", "flick it"], "it flicks"),
+          status="complete")
+    _has(sh.check_sheet(good, str(repo)), "BUG-2 is not an in-scope Item")
+    assert sh.check_sheet(good, str(repo), live=True) == []
+    good["steps"][2]["serves"][1]["item"] = "BUG-999"  # an Item that never existed still fails
+    _has(sh.check_sheet(good, str(repo), live=True), "BUG-999 is not an in-scope Item")
+
+
+def test_every_state_word_has_help_and_enrich_sends_it(good, repo):
+    assert set(sh.STATE_HELP) == set(sh.STATE_WORDS)
+    assert all(text.strip().endswith(".") for text in sh.STATE_HELP.values())
+    assert sh.enrich(good, str(repo))["state_help"] == sh.STATE_HELP
 
 
 def test_enrich_gives_a_serve_without_do_an_empty_list(good, repo):
