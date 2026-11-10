@@ -2,9 +2,9 @@
 id: BUG-60
 kind: bug
 title: CTRL+ENTER to save the result of a 'Next Sitting' entry
-status: in_progress
+status: complete
 created: '2026-11-03'
-updated: '2026-11-08T17:57:52Z'
+updated: '2026-11-10T17:59:54Z'
 owners:
 - night-shift
 priority: medium
@@ -15,7 +15,8 @@ radius: local
 diagnosis: unknown
 area: map-app
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-11-next-sitting-ctrl-enter-save.md
 filed_by: harrison
 ---
 

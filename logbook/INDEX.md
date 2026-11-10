@@ -8,6 +8,8 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-11 | resolved | map-app | **Next Sitting runbook row saves on Ctrl+Enter, keeps input on a failed save, read-only while saving (BUG-60; only a real browser can confirm the feel)** | [2026-11-11-next-sitting-ctrl-enter-save](2026-11-11-next-sitting-ctrl-enter-save.md) |
+| 2026-11-11 | resolved | map-app | **Arrow-keying through the Map search results scrolls the active result into view (BUG-83; only a real browser can confirm it)** | [2026-11-11-map-search-arrow-key-scroll](2026-11-11-map-search-arrow-key-scroll.md) |
 | 2026-11-10 | resolved | gui improvements | **Drops to date: a live counter in the records ledger and atop the GUI Records panel (FEAT-47); Ball Butler Feed misses not yet counted, history backfill not done** | [2026-11-10-drops-to-date-live-counter.md](2026-11-10-drops-to-date-live-counter.md) |
 | 2026-11-10 | complete | Sitting debrief | **Sitting 2026-11-10: the sheet's rehearsal steps flew as real Attempts on the default plant (nothing to undo); turned Columns 45 deg COMPLETED 20/20, 90 deg and high-low failed; BUG-63's first Catch after the Feed ended 7 of 11 two-ball fed Attempts; the pull toward the partner Site turns with the pair (PWAY-2 P2(b))** | [2026-11-10-sitting-debrief.md](2026-11-10-sitting-debrief.md) |
 | 2026-11-10 | complete | map-improvements | **Sitting sheets: /sitting-sheet merges a rig's Items into one ordered page the map app steps through, checked against the Items (IDEA-19)** | [2026-11-10-sitting-sheet.md](2026-11-10-sitting-sheet.md) |
