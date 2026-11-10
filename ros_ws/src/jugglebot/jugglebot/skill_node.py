@@ -1227,6 +1227,9 @@ class SkillNode(Node):
         #: MISSED_CATCH (`SkillExecutor.missed_feed_catches`), captured as each
         #: executor retires; read by `_juggle_execute` for the drops count.
         self._goal_feed_missed = 0
+        #: FEAT-47: Throws lost to an EMPTY Cup (`SkillExecutor.missed_catch_drops`),
+        #: captured as each executor retires; read by `_juggle_execute`.
+        self._goal_missed_catches = 0
         #: The running goal's records-ledger parameters (FEAT-29): an ordered
         #: ((key, value), ...) captured at accept by `_start_pattern`, read by
         #: `_offer_record` when the attempt ends (never re-read from the node
@@ -3774,6 +3777,8 @@ class SkillNode(Node):
                     self._goal_end_code = self._executor.end_code
                     self._goal_feed_missed += int(getattr(
                         self._executor, 'missed_feed_catches', 0) or 0)
+                    self._goal_missed_catches += int(getattr(
+                        self._executor, 'missed_catch_drops', 0) or 0)
                     # Columns two-feed chain (P3): ball A's clean retire
                     # opens the chain gate (ctx stays armed, so the line
                     # below stays silent and the goal stays running); an
@@ -4251,6 +4256,7 @@ class SkillNode(Node):
         self._goal_reports = []
         self._goal_end_code = ''
         self._goal_feed_missed = 0
+        self._goal_missed_catches = 0
         self._goal_record_params = ()
         with self._reload_lock:
             self._goal_armed = False
@@ -6922,7 +6928,12 @@ class SkillNode(Node):
         # Drops to date (FEAT-47): each unreleased-or-uncaught Throw, plus a
         # Ball Butler Feed that missed the Cup (the executor's
         # `missed_feed_catches`, captured at retire as `_goal_feed_missed`; a
-        # Feed miss ends the Attempt MISSED_CATCH with no ThrowReport).
+        # Feed miss ends the Attempt MISSED_CATCH with no ThrowReport), plus
+        # each Throw lost to an EMPTY Cup (`missed_catch_drops`, captured as
+        # `_goal_missed_catches`): that verdict drops the ball's outcome rows,
+        # so the lost Throw has no ThrowReport either. A Throw that never
+        # released (ABORTED_NO_RELEASE, DROPPED_SURVIVOR_STOPPED) is NOT a
+        # drop: it is not shown to have been thrown.
         # A `magazine` run books ZERO drops, always (owner, TKT-64): its Throw
         # goes from Jugglebot into Ball Butler's magazine and nothing is meant
         # to catch it, so it is never a drop (its one ThrowReport is a
@@ -6930,9 +6941,18 @@ class SkillNode(Node):
         # precedes it is a separate `reload` goal on the executor path, which
         # is counted there.
         feed_missed = int(self._goal_feed_missed)
+        missed_catches = int(self._goal_missed_catches)
         drops = (0 if pattern == 'magazine'
                  else rp.drop_count(self._goal_reports,
-                                    feed_missed=feed_missed))
+                                    feed_missed=feed_missed,
+                                    missed_catches=missed_catches))
+        if missed_catches and pattern != 'magazine':
+            try:
+                self.get_logger().info(
+                    'records: %d lost Throw(s) (cup EMPTY) counted as drops '
+                    '(%s)' % (missed_catches, pattern))
+            except Exception:
+                pass
         beaten, record_catches = self._offer_record(
             pattern, rec_throws, rec_caught, outcome, drops=drops)
         self._publish_attempt_event(

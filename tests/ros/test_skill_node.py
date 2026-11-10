@@ -4065,7 +4065,8 @@ class TestJuggleAction:
                           'record_beaten': '0', 'record_catches': ''}
 
     def _ended_attempt(self, tmp_path, throws, caught, records_path=None,
-                       pattern='self_toss', missed_feeds=0):
+                       pattern='self_toss', missed_feeds=0, missed_catches=0,
+                       carried_missed_catches=0):
         """Accept a self-throw goal, stop it, run `_juggle_execute` with
         `rp.summarise` reporting (throws, caught); returns the juggle_end
         fields and the WARN lines. `records_path` None leaves the node
@@ -4081,6 +4082,11 @@ class TestJuggleAction:
         # FEAT-47: the executor's recorded fact, as the real one sets it when
         # its MISSED_CATCH fires on a Feed Catch (tests/motion pins that half).
         node._executor.missed_feed_catches = missed_feeds
+        # FEAT-47: Throws lost to an EMPTY Cup, as the executor sets it on the
+        # MISSED_CATCH verdict (tests/motion pins that half); `carried_` is what
+        # an earlier chained executor of the same goal already retired with.
+        node._executor.missed_catch_drops = missed_catches
+        node._goal_missed_catches = carried_missed_catches
         node._on_tick()
         gh = MagicMock(is_cancel_requested=False)
         gh.request.pattern = pattern
@@ -4190,6 +4196,29 @@ class TestJuggleAction:
         model = rec.load(str(path))
         assert model.drops.live == 1
         assert all(not t.rows for t in model.ordered())
+
+    def test_lost_throws_of_an_empty_cup_are_booked_as_drops(self, tmp_path):
+        """FEAT-47: a Throw whose Catch read EMPTY has no ThrowReport; the
+        executor's `missed_catch_drops` reaches the real ledger as drops, and a
+        goal's chained executors sum (1 already retired + 2 here = 3)."""
+        from jugglebot import records as rec
+        path = tmp_path / 'records.md'
+        self._ended_attempt(tmp_path, 3, 2, records_path=path,
+                            missed_catches=2, carried_missed_catches=1)
+        assert rec.load(str(path)).drops.live == 3   # no reports here; 3 lost Throws
+        path2 = tmp_path / 'records2.md'
+        self._ended_attempt(tmp_path, 3, 3, records_path=path2)
+        drops = rec.load(str(path2)).drops
+        assert drops is None or drops.live == 0
+
+    def test_the_lost_throw_count_resets_at_goal_accept(self, tmp_path):
+        node, _client = _node_with_client()
+        _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+        _prelevel_ready(node)
+        node._goal_missed_catches = 5
+        assert (node._juggle_goal(_self_toss_goal())
+               == sn.GoalResponse.ACCEPT)
+        assert node._goal_missed_catches == 0
 
     def test_a_raising_drops_total_never_escapes_offer_record(self, tmp_path):
         """FEAT-47: the `total_drops` log line is inside the guard, so

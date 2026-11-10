@@ -370,7 +370,8 @@ def record_counts(reports: List[ThrowReport],
     return throws + n, caught + n
 
 
-def drop_count(reports: List[ThrowReport], feed_missed: int = 0) -> int:
+def drop_count(reports: List[ThrowReport], feed_missed: int = 0,
+               missed_catches: int = 0) -> int:
     """Drops in one Attempt, for the records ledger's "Drops to date" (FEAT-47).
 
     A drop is a ball thrown to be caught by Jugglebot that was not caught
@@ -380,8 +381,11 @@ def drop_count(reports: List[ThrowReport], feed_missed: int = 0) -> int:
     miss; ``None`` is a ball still in the air, or with no verdict, when the
     Attempt ended -- also a drop (a Fault, a refused Segment, a Stop).
     ``feed_missed`` adds the Ball Butler Feeds that missed the Cup (thrown by
-    the Ball Butler to be caught by Jugglebot). Nothing here is read by the
+    the Ball Butler to be caught by Jugglebot). ``missed_catches`` adds the
+    Throws lost to an EMPTY Cup, which end the Attempt MISSED_CATCH with no
+    ThrowReport (``SkillExecutor.missed_catch_drops``). Negative values are
+    ignored. Nothing here is read by the
     Juggle result, feedback or end line, which keep :func:`summarise`."""
     n = sum(1 for r in reports
             if not r.stop and not r.unverified and r.caught is not True)
-    return n + max(0, int(feed_missed))
+    return n + max(0, int(feed_missed)) + max(0, int(missed_catches))

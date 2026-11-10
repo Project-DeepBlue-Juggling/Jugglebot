@@ -301,6 +301,14 @@ def test_drop_count_adds_missed_feeds_and_ignores_a_negative():
     assert rp.drop_count([], feed_missed=-4) == 0
 
 
+def test_drop_count_adds_lost_throws_and_ignores_a_negative():
+    """FEAT-47: Throws lost to an EMPTY Cup have no ThrowReport; the executor's
+    count adds, a negative is ignored, and it sums with the Feed misses."""
+    assert rp.drop_count([_r(caught=False)], missed_catches=2) == 3
+    assert rp.drop_count([], missed_catches=1, feed_missed=1) == 2
+    assert rp.drop_count([], missed_catches=-3) == 0
+
+
 def test_drop_count_leaves_the_operators_tally_alone():
     reports = [_r(caught=None), _r(caught=True)]
     assert rp.summarise(reports) == (2, 1)

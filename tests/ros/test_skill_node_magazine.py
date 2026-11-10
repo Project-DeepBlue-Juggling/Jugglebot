@@ -180,6 +180,7 @@ def test_a_magazine_end_books_no_drop(tmp_path):
     _ctx_with_samples(node, R)
     node._magazine_finish(node._magazine_ctx)
     assert sn.rp.drop_count(node._goal_reports) == 1   # the placeholder alone WOULD count
+    node._goal_missed_catches = 2     # FEAT-47: nor do lost Throws count on a magazine goal
     gh = MagicMock(is_cancel_requested=False)
     gh.request.pattern = 'magazine'
     node._juggle_execute(gh)

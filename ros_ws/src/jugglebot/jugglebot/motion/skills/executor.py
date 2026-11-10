@@ -2739,6 +2739,13 @@ class SkillExecutor:
         #: fact only, read by ``skill_node`` for the drops count; nothing in
         #: the executor reads it.
         self.missed_feed_catches = 0
+        #: FEAT-47: Throws lost to an EMPTY Cup, i.e. the inbound flight of a
+        #: ball whose Catch ended :data:`MISSED_CATCH` while that flight's
+        #: outcome row was still pending (so it never produced a ThrowReport).
+        #: A recorded fact only, read by ``skill_node`` for the drops count;
+        #: nothing in the executor reads it. A Feed Catch has no inbound row
+        #: and is counted by :attr:`missed_feed_catches` alone.
+        self.missed_catch_drops = 0
         self.end_code = ''
         #: D2 (2026-10-19): level the platform after an END that leaves it
         #: tilted -- see :meth:`_plan_closing`.  ``False`` restores the
@@ -6506,9 +6513,20 @@ class SkillExecutor:
                 pend.last_fit_landing if pend.last_fit_landing is not None
                 else (self.tracker(pend.ball_id)
                       if self.tracker is not None else None))
+            lost = [p for p in self._pending_outcomes
+                    if p.ball_id == pend.ball_id]
             self._pending_outcomes = [
                 p for p in self._pending_outcomes
                 if p.ball_id != pend.ball_id]
+            # FEAT-47: the inbound flight (released before this landing) of a
+            # ball the Cup never received was thrown and lost; it has no
+            # ThrowReport because its row is dropped here. The carried Throw's
+            # row (released at/after this landing) is not a ball. A row that
+            # already finalised is no longer pending, so it is not counted twice.
+            self.missed_catch_drops += sum(
+                1 for p in lost
+                if p.t_release_s < pend.t_land_scheduled_s
+                and not p.shadow_landing)
             t_open_rel = pend.t_open_s - pend.t_land_scheduled_s
             t_close_rel = pend.t_close_s - pend.t_land_scheduled_s
             if pend.is_feed:

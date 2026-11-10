@@ -6132,6 +6132,217 @@ def test_a_missed_catch_on_a_throws_catch_is_not_a_missed_feed(sites):
     assert x.missed_feed_catches == 0
 
 
+def _empty_cup_window(t0, t1):
+    return ex.SeatWindow(n_valid=int(round((t1 - t0) * 100)), n_seated=0,
+                         max_gap_s=0.01)
+
+
+def _lost_throw_run(sites, *, carried, seat_window=_empty_cup_window,
+                    extra_s=1.5):
+    """THROW(P1, ball 0) then its CATCH(P2), optionally carrying a re-throw
+    (``carried``), the cup always EMPTY. Returns the executor after ticking
+    well past the verdict (40 Hz-ish, 20 ms)."""
+    p1, p2 = sites
+    t_throw = T0_ABS + 0.5
+    L = t_throw + FLIGHT_S
+    tt = (sc.ThenThrow(t_release_abs_s=L + 0.30, y_d=(np.zeros(2), APEX_M),
+                       target=p1) if carried else None)
+    skills = [
+        Skill(kind=sg.THROW, ball_id=0, site=p1, t_abs_s=t_throw,
+              window_s=LAUNCH_S, y_d=(np.zeros(2), APEX_M), target=p2),
+        Skill(kind=sg.CATCH, ball_id=0, site=p2, t_abs_s=L, window_s=0.5,
+              then_throw=tt),
+        Skill(kind=sg.REST, ball_id=0, site=p2, t_abs_s=L + sg.REST_TAIL_S,
+              window_s=sg.REST_TAIL_S),
+    ]
+    sch = Schedule(pattern='columns', skills=tuple(skills), flight_s=FLIGHT_S,
+                   beat_s=0.578, transit_s=0.278, dwell_s=0.30,
+                   t0_abs_s=t_throw)
+    x = ex.SkillExecutor(
+        sch, _FakeInstaller(), tracker=None,
+        observer=lambda b, t: (bp.EVIDENCE_SEATED if t <= t_throw
+                               else bp.EVIDENCE_EMPTY),
+        observations=lambda t: _obs(), on_experience=lambda e: None,
+        seat_window=seat_window)
+    t = sch.skills[0].dispatch_s() - 0.01
+    t_end = L + (0.30 if carried else 0.0) + extra_s
+    while t < t_end:
+        x.tick(t)
+        t += 0.02
+    return x
+
+
+def test_a_cup_empty_miss_counts_the_lost_throw_once_and_it_has_no_report(sites):
+    """FEAT-47: the MISSED_CATCH verdict drops the lost ball's outcome row, so
+    the Throw has no ThrowReport; ``missed_catch_drops`` is the recorded fact
+    the node adds to the drops count."""
+    x = _lost_throw_run(sites, carried=False)
+    assert x.end_code == ex.MISSED_CATCH
+    assert x.missed_catch_drops == 1
+    assert x.reports == []
+    assert x.missed_feed_catches == 0
+
+
+def test_the_carried_throw_of_an_empty_cup_is_not_a_lost_ball(sites):
+    """FEAT-47: a Catch carrying a re-throw registers two rows for the ball
+    (the inbound flight, released before the landing, and the carried Throw,
+    released after it). The empty Cup lost ONE ball: the carried row is not
+    counted (1, not 2)."""
+    x = _lost_throw_run(sites, carried=True)
+    assert x.end_code == ex.MISSED_CATCH
+    assert x.missed_catch_drops == 1
+    assert x.reports == []
+
+
+def test_a_feed_catch_miss_counts_no_lost_throw_here(sites):
+    """FEAT-47: the Feed Catch has no inbound row (Ball Butler's Feed is not
+    a Jugglebot Throw); only its carried Throw's row is pending, and it is not
+    counted. The Feed is counted by ``missed_feed_catches`` alone."""
+    sch, _L, R, _t = _feed_catch_schedule(sites)
+    t_decide = R + ex.MISSED_CATCH_CLOSE_AFTER_RELEASE_S \
+        + ex.MISSED_CATCH_DECIDE_LAG_S
+    x, _lines, _e = _drive_to_decision(sch, _empty_cup_window, t_decide)
+    assert x.missed_feed_catches == 1
+    assert x.missed_catch_drops == 0
+
+
+def test_a_row_that_finalised_before_the_miss_rule_is_not_counted_twice(sites):
+    """FEAT-47, the double-count trap: when the outcome row finalised first
+    (caught False, a ThrowReport exists), it is no longer pending when the
+    MISSED_CATCH verdict drops the ball's rows, so it adds nothing. A long
+    carried dwell keeps the miss rule's decision instant past the plain
+    outcome close."""
+    p1, p2 = sites
+    t_throw = T0_ABS + 0.5
+    L = t_throw + FLIGHT_S
+    R = L + 2.0                                   # long dwell
+    tt = sc.ThenThrow(t_release_abs_s=R, y_d=(np.zeros(2), APEX_M), target=p1)
+    skills = (
+        Skill(kind=sg.THROW, ball_id=0, site=p1, t_abs_s=t_throw,
+              window_s=LAUNCH_S, y_d=(np.zeros(2), APEX_M), target=p2),
+        Skill(kind=sg.CATCH, ball_id=0, site=p2, t_abs_s=L, window_s=0.5,
+              then_throw=tt),
+        Skill(kind=sg.REST, ball_id=0, site=p2, t_abs_s=R + sg.REST_TAIL_S,
+              window_s=sg.REST_TAIL_S),
+    )
+    sch = Schedule(pattern='columns', skills=skills, flight_s=FLIGHT_S,
+                   beat_s=0.578, transit_s=0.278, dwell_s=2.0,
+                   t0_abs_s=t_throw)
+    x = ex.SkillExecutor(
+        sch, _FakeInstaller(), tracker=None,
+        observer=lambda b, t: (bp.EVIDENCE_SEATED if t <= t_throw
+                               else bp.EVIDENCE_EMPTY),
+        observations=lambda t: _obs(), on_experience=lambda e: None,
+        seat_window=_empty_cup_window)
+    t = sch.skills[0].dispatch_s() - 0.01
+    while t < R + 1.5:
+        x.tick(t)
+        t += 0.02
+    assert x.end_code == ex.MISSED_CATCH
+    assert [r.caught for r in x.reports] == [False]
+    assert x.missed_catch_drops == 0
+
+
+def _inbound_lost_schedule(sites):
+    """``_feed_catch_schedule`` with B's Catch fed by a Jugglebot THROW of ball 1
+    (an inbound flight, so B's Catch has an outcome row of its own to lose)
+    instead of a Ball Butler ``landing_prior``. A's own next Catch is the D3
+    survivor. Returns ``(schedule, R, t_land_a)``."""
+    sch, L, R, t_land_a = _feed_catch_schedule(sites)
+    p1, p2 = sites
+    skills = list(sch.skills)
+    skills[1] = dataclasses.replace(skills[1], landing_prior=None)
+    skills.insert(1, Skill(kind=sg.THROW, ball_id=1, site=p2,
+                           t_abs_s=L - FLIGHT_S, window_s=LAUNCH_S,
+                           y_d=(np.zeros(2), APEX_M), target=p1))
+    return dataclasses.replace(sch, skills=tuple(skills)), R, t_land_a
+
+
+def _run_inbound_lost(sites, seat_window, a_seated_after_s=float('inf')):
+    sch, R, t_land_a = _inbound_lost_schedule(sites)
+    t_b = float(sch.skills[1].t_abs_s)
+
+    def observer(ball_id, t):
+        if ball_id == 0:
+            return (bp.EVIDENCE_SEATED
+                    if t <= T0_ABS or t > a_seated_after_s
+                    else bp.EVIDENCE_EMPTY)
+        return bp.EVIDENCE_SEATED if t <= t_b else bp.EVIDENCE_EMPTY
+
+    x = ex.SkillExecutor(sch, _FakeInstaller(), tracker=None,
+                         observer=observer, observations=lambda t: _obs(),
+                         on_experience=lambda e: None, seat_window=seat_window)
+    t = sch.skills[0].dispatch_s() - 0.01
+    while t < t_land_a + 2.0:
+        x.tick(t)
+        t += 0.02
+    return x, R, t_land_a
+
+
+def test_the_survivor_ending_counts_the_lost_ball_once(sites):
+    """FEAT-47: ball B's Catch reads EMPTY while ball A still has its own Catch
+    (the survivor ending): B's inbound Throw is counted once, its carried
+    Throw is not, and no END is added."""
+    x, _R, _tl = _run_inbound_lost(sites, _empty_cup_window)
+    assert x.end_code == ex.MISSED_CATCH
+    assert x.missed_catch_drops == 1
+    assert x.missed_feed_catches == 0
+    assert [r.caught for r in x.reports] == [False]   # A's own, not B's
+    # Both balls lost (A's own Catch also reads EMPTY): the node's total is 2.
+    assert _rp.drop_count(x.reports, missed_catches=x.missed_catch_drops) == 2
+
+
+def test_the_survivor_ending_leaves_the_caught_survivor_alone(sites):
+    """FEAT-47: the same survivor ending with ball A then SEATED in the Cup at
+    its own landing: B's lost Throw is counted once, A's report is caught True
+    and adds nothing (so the goal's drops are exactly 1)."""
+    L = T0_ABS + 0.5                              # B's feed landing, as above
+    t_a_seat = L + 0.60                           # after B's window closes
+
+    def window(t0, t1):
+        seated = 1 if t1 > t_a_seat else 0
+        return ex.SeatWindow(n_valid=int(round((t1 - t0) * 100)),
+                             n_seated=seated, max_gap_s=0.01,
+                             t_first_seated_s=(max(t0, t_a_seat)
+                                               if seated else None))
+
+    x, _R, _tl = _run_inbound_lost(sites, window, a_seated_after_s=t_a_seat)
+    assert x.end_code == ex.MISSED_CATCH
+    assert x.missed_catch_drops == 1
+    assert [r.caught for r in x.reports] == [True]
+
+
+def test_a_lost_throw_is_counted_when_the_attempt_had_already_ended(sites):
+    """FEAT-47: the verdict of a Catch whose window closes after a later skill
+    already ended the Attempt (the 'attempt already ended' branch) still drops
+    the ball's rows, so the lost Throw is still counted."""
+    sch, R, _tl = _inbound_lost_schedule(sites)
+    t_b = float(sch.skills[1].t_abs_s)
+    x = ex.SkillExecutor(
+        sch, _FakeInstaller(), tracker=None,
+        observer=lambda b, t: (bp.EVIDENCE_SEATED
+                               if t <= (T0_ABS if b == 0 else t_b)
+                               else bp.EVIDENCE_EMPTY),
+        observations=lambda t: _obs(), on_experience=lambda e: None,
+        seat_window=_empty_cup_window)
+    t_close = R + ex.MISSED_CATCH_CLOSE_AFTER_RELEASE_S
+    t = sch.skills[0].dispatch_s() - 0.01
+    while t < t_close - 0.05:
+        x.tick(t)
+        t += 0.02
+    assert x._pending_catches and not x.attempt_ended
+    x.attempt_ended = True
+    x.end_code = 'LIMIT_JERK'
+    x.end_kind = sg.CATCH
+    lines = []
+    while t < t_close + ex.MISSED_CATCH_DECIDE_LAG_S + 0.5:
+        lines.extend(x.tick(t))
+        t += 0.02
+    assert any('attempt already ended' in ln for ln in lines)
+    assert x.end_code == 'LIMIT_JERK'
+    assert x.missed_catch_drops == 1
+
+
 def test_an_attempt_ended_by_a_later_skill_still_resolves_an_open_catch_window(sites):
     """Audit finding (2026-10-04): `done` waits on every open `_PendingCatch`,
     and `_advance_catch_evidence` used to run only while the attempt was
