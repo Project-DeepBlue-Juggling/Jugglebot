@@ -12,4 +12,8 @@ steps:
     comments: ''
     saved_at: 2026-11-10 20:10
     status: skipped
+  4:
+    comments: ''
+    saved_at: 2026-11-10 20:12
+    status: done
 verdicts: {}
