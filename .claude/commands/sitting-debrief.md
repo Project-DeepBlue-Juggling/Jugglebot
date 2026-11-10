@@ -83,7 +83,8 @@ Then go on to sections 2 to 6.
    `## Sitting result (<date>)` sections (the heading may carry a trailing `HH:MM`, informational; scope by the date part; parser: `mapkit.sitting.parse_sitting_results`) newer than the last debrief (the last debrief's date
    is the newest `logbook/*-sitting-debrief.md` or older `logbook/*-sitting-wrapup.md` entry; none = all of them).
    A Sitting flown from a sheet (`/sitting-sheet`) also has `map/sheets/<name>.results.yaml`: read it alongside. A `problem`
-   step and any step comment exist nowhere else. An Item verdict there is the latest the operator saved.
+   or `skipped` step and any step comment exist nowhere else; a `skipped` step was not flown, so it is no evidence
+   either way for the Items it serves. An Item verdict there is the latest the operator saved.
    **An Item with several results from one Sitting: the last in file order is its verdict** (a re-save appends, so an earlier
    `pass` may have been corrected). Report the earlier ones in the table, never act on them; if the last differs from the
    results file's verdict for that Item, stop and ask.

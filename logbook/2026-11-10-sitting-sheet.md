@@ -41,6 +41,8 @@ tags:
 
 **The page after its first Sitting (owner feedback, same day).** The sheet page became a dense protocol view: launch groups with Item sub-blocks, one-click done on steps that decide no verdict, comments behind an icon, an Item picker that folds the steps of deselected Items, and a tooltip on each start-state word from `STATE_HELP` in `mapkit/sheet.py`. BUG-7 was closed during the Sitting and the page then called the sheet stale. The app's check now runs with `live=True`, which accepts a step serving an Item closed since the sheet was written; the author's check still refuses one.
 
+A simple step can also be saved `skipped` (not flown this Sitting; owner, 2026-11-10), which folds it like done and tells the debrief the step is no evidence either way. The `tilt` state word, coined in Night Shift P4 and used by no Item yet, now reads as the owner defines Tilt: a held angle about x and/or y.
+
 `tests/sim/test_mapkit_no_ros.py` now exempts `sheet.py` from the word `ros2` only: the module names that CLI in strings. It still may not name a ROS Python package, and the import-graph test still holds.
 
 **Not flown.** Whether the step format works at the robot is what the 2026-11-10 Sitting will show. Status stays in-progress until it has.

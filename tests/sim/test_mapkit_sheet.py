@@ -256,6 +256,14 @@ def test_apply_does_not_mutate(good):
     assert res == before
 
 
+
+def test_skipped_is_a_step_status(good):
+    out = _apply(good, 1, status="skipped")
+    assert out["steps"][1]["status"] == "skipped"
+    with pytest.raises(sh.SheetError):
+        _apply(good, 1, status="later")
+
+
 # --- results, listing, names ---
 
 def test_results_round_trip(good, tmp_path):

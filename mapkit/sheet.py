@@ -41,12 +41,12 @@ STATE_WORDS = ("launched", "level", "tilt", "armed", "bb-fed", "bridge-cycled")
 STATE_HELP = {
     "launched": "A ros2 launch from this sheet is running in Terminal 1 and has finished Homing.",
     "level": "The Level action has run in this launch, so the Platform's normal is aligned with gravity.",
-    "tilt": "The Platform is deliberately inclined (a Tilt was commanded) and has not been put back.",
+    "tilt": "The Platform is held at a commanded Tilt, a non-zero angle about x and/or y, instead of Level.",
     "armed": "Activate has run: the Legs are Closed-loop at the Active pose and streaming motion is permitted.",
     "bb-fed": "Ball Butler is up and loaded, ready to Feed.",
     "bridge-cycled": "The can-bridge has been power-cycled since it last ran a launch, so its uptime is fresh.",
 }
-STEP_STATUSES = ("done", "problem")
+STEP_STATUSES = ("done", "problem", "skipped")  # skipped: not flown this Sitting (owner, 2026-11-10)
 CMD_PREFIXES = ("ros2 ", "python ", "python3 ", "tools/", "colcon ", "./")
 
 _NAME = re.compile(r"^\d{4}-\d{2}-\d{2}-(robot|bench-leg|bench-hand)(-\d+)?$")
