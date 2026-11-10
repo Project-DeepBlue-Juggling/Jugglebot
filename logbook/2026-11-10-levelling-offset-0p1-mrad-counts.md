@@ -2,7 +2,7 @@
 title: "BUG-7: the levelling offset persists in rounded 0.1 mrad counts, not truncated whole milliradians (can-bridge FW 43, Platform FW 10, PROTOCOL 14)"
 type: bugfix
 date: 2026-11-10
-status: in-progress
+status: complete
 phase: "BUG-7"
 subsystem: platform-teensy
 files_changed:
@@ -68,6 +68,13 @@ The Item and the July sitting named the Platform Teensy's cast. The loss on the 
 - Link receipt, 2026-11-10, `tools/teensy_link_bridge.py --duration 15` at PROTOCOL 14: 6224 frames received, `crc_err=0`, `decode_err=0`.
 - Motion-free read-back on the flashed boards, 2026-11-10, a throwaway RPC script with both flags false: STATE_WRITE of `(0.014455, 0.00207)` read back `(145, 21)` counts where the old path held `(14, 2)` mrad; the negated pair read back `(-145, -21)`; 3.3 rad returned `ERR_BAD_ARGS`; zeros restored and confirmed.
 
-## Still owed
+## Robot check (2026-11-10, passed; BUG-7 closed)
 
-The `level`, relaunch and read-back check on the robot, in BUG-7's `## Sitting` section. BUG-7 closes on that result.
+From the launch logs under `~/.ros/log/`. The 19:00 launch ran `level`, and its last "Gravity offset published" line read `[-0.0018433, +0.0057132]` rad. The 19:07 and 19:09 relaunches, without re-levelling, each restored `(-0.0018, +0.0057)` rad, shown identically on the bridge's cold-start read, the orchestrator's "Restored saved level" line and `trajectory_node`'s "level correction updated" line. That is -18 and 57 counts, so the four printed decimals are the exact value.
+
+| Axis | Error now | Error with the old truncation |
+|---|---|---|
+| x | 0.043 mrad | 0.84 mrad |
+| y | 0.013 mrad | 0.71 mrad |
+
+Both errors are inside the 0.1 mrad pass criterion and the 0.05 mrad rounding bound. Every launch logged `PLATFORM_FW_CHECK: OK — Platform Teensy v10` and `BRIDGE_FW_CHECK: OK — can-bridge v43 [install_skew=0]`, with no Fault line. The three `level` runs in the 19:00 launch spread 1.1 mrad on x, which is the level sensor's own scatter, not this fix.
