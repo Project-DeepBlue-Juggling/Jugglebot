@@ -37,6 +37,8 @@ tags:
 
 **What the check caught on the first real sheet.** It refused a step that Levelled and Activated inside BUG-82's verdict step. The cold read found what the check can't: FEAT-32's canary flying on the oval plant, a venv leaking into the shell that then built ROS, and a skip that jumped over FEAT-39's verdict step. Two rules were loosened by real cases: `reorder: <why>` for an Item whose `do:` states a precondition after the steps it governs, and a bare `ros2 param get` is not a command to copy.
 
+**The first sheet went stale before it flew, and would not load.** A peer Session flashed can-bridge FW 43 and added a BUG-7 Sitting section after the sheet was written, so its v42 stop would have stopped the first launch. Separately, the page refused the whole sheet because a ride-along serve cited no `do` step. The check now compares any `can-bridge v<N>` on a sheet with the tree's expected firmware, and the app runs the check on every load and shows a banner, so drift after writing is visible at the robot. `enrich` always sends `do`. `setup_waived: <why>` lets BUG-7 read back what a relaunch restored before that launch levels again.
+
 `tests/sim/test_mapkit_no_ros.py` now exempts `sheet.py` from the word `ros2` only: the module names that CLI in strings. It still may not name a ROS Python package, and the import-graph test still holds.
 
 **Not flown.** Whether the step format works at the robot is what the 2026-11-10 Sitting will show. Status stays in-progress until it has.

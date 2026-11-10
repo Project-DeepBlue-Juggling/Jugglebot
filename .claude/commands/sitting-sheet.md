@@ -24,7 +24,9 @@ Arguments: `$ARGUMENTS` = `<rig>` (`robot` includes Ball Butler) and an optional
 An Item's `## Sitting` section was written when it was filed. Before copying from it, compare:
 
 - **Firmware**: `EXPECTED_BRIDGE_FW_VERSION` in `teensy_link/rpc_args.py` against any version a row
-  names. The sheet states the real one, and says so when the row disagrees.
+  names. The sheet states the real one as `can-bridge v<N>`, and says so when the row disagrees; the
+  check fails on any other `can-bridge v<N>`, and the app re-runs it on every load, so a flash after
+  the sheet was written shows as a stale-sheet banner.
 - **Rebuild**: `git log` on `ros_ws/` against the install tree's time, and the latest
   `docs/night-shift/` report. A `branch:` means the candidate branch
   (`tools/night_shift_candidate.sh --date <date> --push`), then a checkout and a build.
@@ -82,7 +84,8 @@ steps:
   `serves: []` (a build, a Level, a teardown). A `run` step serves at least one Item.
 - `pass: true` goes on exactly one `run` step per Item: the last flown step that decides its
   criterion. It gets one verdict per such Item in the app, and the app shows the Item's own `pass:`.
-  Its `from` must include the Item's `setup:` words. Put a "type pending" hint in `record:` when
+  Its `from` must include the Item's `setup:` words, unless that serve carries `setup_waived: <why>`
+  (an Item judging what a relaunch restores reads it before the new launch re-establishes the state). Put a "type pending" hint in `record:` when
   the Item's `pass:` is computed at the debrief.
 - Never invent a command. Quote the Item's, with `<date>` filled in. `reorder: <why>` on a `serves`
   entry is for an Item whose `do:` states a precondition after the steps it governs.

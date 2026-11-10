@@ -332,6 +332,39 @@ def test_corrupt_results_sections_read_as_empty(repo):
     assert sh.saved_steps(sh.load_results(str(repo), "2026-11-10-robot")) == []
 
 
+def test_enrich_gives_a_serve_without_do_an_empty_list(good, repo):
+    good["steps"][2]["serves"][0].pop("do", None)
+    for st in sh.enrich(good, str(repo))["steps"]:
+        for sv in st["serves"]:
+            assert isinstance(sv["do"], list)
+
+
+def test_firmware_named_on_the_sheet_must_match_the_tree(good, repo):
+    os.makedirs(os.path.join(str(repo), "teensy_link"), exist_ok=True)
+    with open(os.path.join(str(repo), "teensy_link", "rpc_args.py"), "w", encoding="utf-8") as fh:
+        fh.write("EXPECTED_BRIDGE_FW_VERSION = 43\n")
+    good["steps"][0]["see"] = "BRIDGE_FW_CHECK: OK - can-bridge v42"
+    _has(sh.check_sheet(good, str(repo)), "names can-bridge v42, but the tree expects v43")
+    good["steps"][0]["see"] = "BRIDGE_FW_CHECK: OK - can-bridge v43"
+    assert not [e for e in sh.check_sheet(good, str(repo)) if "can-bridge" in e]
+
+
+def test_setup_waived_needs_a_reason(good, repo):
+    run = next(st for st in good["steps"] if any(sv.get("pass") for sv in st["serves"]))
+    run["from"] = []
+    for st in good["steps"]:  # keep the chain whole
+        if st["n"] == run["n"] - 1:
+            st["to"] = []
+        if st["n"] == run["n"] + 1:
+            st["from"] = list(run["to"])
+    errs = sh.check_sheet(good, str(repo))
+    _has(errs, "does not start from its setup")
+    for sv in run["serves"]:
+        if sv.get("pass"):
+            sv["setup_waived"] = "the Item judges a state restored by a relaunch"
+    assert not [e for e in sh.check_sheet(good, str(repo)) if "does not start from its setup" in e]
+
+
 # --- the two exceptions a real Sitting needed (2026-11-10) ---
 
 def test_reorder_reason_allows_out_of_order(good, repo):

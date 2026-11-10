@@ -52,8 +52,8 @@ steps:
         command: cd ~/Desktop/Jugglebot/ros_ws && source /opt/ros/foxy/setup.bash && source install/setup.bash && ros2 launch jugglebot jugglebot_launch.py 2>&1 | tee -i ../temp/logs/launch_2026-11-10_1.log
       - where: Hands
         text: Do not pass gc_probe:=false on any launch today (BUG-58 needs the probe on).
-    see: "BRIDGE_FW_CHECK: OK - can-bridge v42 (FEAT-39's row still says FW 40; the bridge has been FW 42 / PROTOCOL 13 since 2026-11-08). homing: 7 axes homed."
-    stop_if: The firmware check is not OK at v42, or fewer than 7 axes homed.
+    see: "BRIDGE_FW_CHECK: OK - can-bridge v43 (FEAT-39's row still says FW 40; the bridge has been FW 43 / PROTOCOL 14, Platform FW 10, since the BUG-7 flash on 2026-11-10). homing: 7 axes homed."
+    stop_if: The firmware check is not OK at v43, or fewer than 7 axes homed.
     record: The launch log path.
     serves:
       - item: FEAT-39
@@ -148,9 +148,14 @@ steps:
     actions:
       - where: GUI
         text: "State minimap: hold LEVELLING to confirm. The Platform rises to full Active height."
-    see: The minimap passes through LEVELLING and finishes with no Fault.
+      - where: Terminal 1
+        text: "BUG-7: note the offset the orchestrator logs after level (the Gravity offset published line, in rad)."
+    see: The minimap passes through LEVELLING and finishes with no Fault. A Gravity offset published line with two values in rad.
     stop_if: Any Fault, or the Platform does not rise cleanly.
-    serves: []
+    record: "BUG-7: both offset values, in rad."
+    serves:
+      - item: BUG-7
+        do: [0]
 
   - n: 10
     kind: setup
@@ -461,19 +466,41 @@ steps:
     from: [bridge-cycled]
     to: [bridge-cycled, launched]
     actions:
+      - where: Hands
+        text: "BUG-7: do not level in this launch until the next step has read the offset back."
       - where: Terminal 1
         command: ros2 launch jugglebot jugglebot_launch.py gc_freeze:=true 2>&1 | tee -i ../temp/logs/launch_2026-11-10_2.log
       - where: Terminal 2
         text: After homing finishes.
         command: ros2 param get /skill_node carry_zvd
-    see: "BRIDGE_FW_CHECK: OK - can-bridge v42 (FEAT-32's row still says v40). A BUG-58 gc_freeze ON line from both teensy_bridge_node and trajectory_node. carry_zvd reads false."
+    see: "BRIDGE_FW_CHECK: OK - can-bridge v43 (FEAT-32's row still says v40). A BUG-58 gc_freeze ON line from both teensy_bridge_node and trajectory_node. carry_zvd reads false."
     stop_if: A gc_freeze ON line is missing from either node, or carry_zvd reads true.
     record: The launch log path.
     serves:
       - item: FEAT-32
         do: [0]
+      - item: BUG-7
+        do: [1]
 
   - n: 27
+    kind: run
+    title: BUG-7, read the restored levelling offset back before levelling
+    from: [bridge-cycled, launched]
+    to: [bridge-cycled, launched]
+    actions:
+      - where: Terminal 2
+        text: After homing finishes, and before the Level in the next step.
+        command: ros2 topic echo --once /robot_state | grep -A3 pose_offset_rad
+    see: Two values, each within 0.0001 rad of the offset noted at step 9.
+    stop_if: Nothing here stops the Sitting; a mismatch is the result.
+    record: Both offsets, in rad (step 9's and this read-back).
+    serves:
+      - item: BUG-7
+        do: [2]
+        pass: true
+        setup_waived: The Item judges the offset a relaunch restored, so it reads before this launch levels again.
+
+  - n: 28
     kind: setup
     title: Level, Activate, Ball Butler
     from: [bridge-cycled, launched]
@@ -489,7 +516,7 @@ steps:
     stop_if: Any refusal or Fault.
     serves: []
 
-  - n: 28
+  - n: 29
     kind: run
     title: ZVD A arm, flag off, Dwell 0.40
     from: [bridge-cycled, launched, level, armed, bb-fed]
@@ -510,7 +537,7 @@ steps:
       - item: FEAT-32
         do: [1, 2]
 
-  - n: 29
+  - n: 30
     kind: run
     title: ZVD B arm, flag on, Dwell 0.40 then 0.35
     from: [bridge-cycled, launched, level, armed, bb-fed]
@@ -536,7 +563,7 @@ steps:
       - item: FEAT-32
         do: [3]
 
-  - n: 30
+  - n: 31
     kind: run
     title: Columns canary with the flag off, 2 Attempts
     from: [bridge-cycled, launched, level, armed, bb-fed]
@@ -561,7 +588,7 @@ steps:
         do: [4]
         pass: true
 
-  - n: 31
+  - n: 32
     kind: restore
     title: Stand down launch 2 and re-fit the mode
     from: [bridge-cycled, launched, level, armed, bb-fed]
@@ -583,7 +610,7 @@ steps:
       - item: FEAT-32
         do: [5]
 
-  - n: 32
+  - n: 33
     kind: setup
     title: Build the candidate branch for BUG-80
     from: [bridge-cycled]
@@ -597,10 +624,10 @@ steps:
         text: From here on Terminal 1 launches this build.
         command: cd ros_ws && colcon build --packages-up-to jugglebot && source install/setup.bash && cd ..
     see: The script stacks night-shift/2026-11-09-BUG-80 with no HOLD row for it. The build finishes with no failed packages.
-    stop_if: A HOLD or SKIP row for BUG-80, or a failed build. Run git checkout main and rebuild if you already left main, note it on BUG-80, then go to step 38.
+    stop_if: A HOLD or SKIP row for BUG-80, or a failed build. Run git checkout main and rebuild if you already left main, note it on BUG-80, then go to step 39.
     serves: []
 
-  - n: 33
+  - n: 34
     kind: setup
     title: Launch 3 of 4 (candidate branch, BUG-80)
     new_launch: true
@@ -627,7 +654,7 @@ steps:
       - item: BUG-80
         do: [0]
 
-  - n: 34
+  - n: 35
     kind: setup
     title: Level, Activate, ball in the Cup by hand
     from: [bridge-cycled, launched]
@@ -645,7 +672,7 @@ steps:
       - item: BUG-80
         do: [1]
 
-  - n: 35
+  - n: 36
     kind: run
     title: Block x, 20 single-Throw Attempts, signs alternating
     from: [bridge-cycled, launched, level, armed]
@@ -668,7 +695,7 @@ steps:
       - item: BUG-80
         do: [2]
 
-  - n: 36
+  - n: 37
     kind: run
     title: Block y, the same 20 Attempts on the y offset
     from: [bridge-cycled, launched, level, armed]
@@ -691,7 +718,7 @@ steps:
         do: [3]
         pass: true
 
-  - n: 37
+  - n: 38
     kind: restore
     title: Put BUG-80's parameters back and stand down
     from: [bridge-cycled, launched, level, armed]
@@ -722,7 +749,7 @@ steps:
       - item: BUG-80
         do: [4]
 
-  - n: 38
+  - n: 39
     kind: setup
     title: Set Leg 4's encoder rate to 9 ms (launch down)
     from: [bridge-cycled]
@@ -739,7 +766,7 @@ steps:
       - item: BUG-82
         do: [0]
 
-  - n: 39
+  - n: 40
     kind: setup
     title: Launch 4 of 4 (BUG-82) and confirm the trial
     new_launch: true
@@ -758,7 +785,7 @@ steps:
       - item: BUG-82
         do: [1, 2]
 
-  - n: 40
+  - n: 41
     kind: setup
     title: Level and Activate for the BUG-82 hold
     from: [bridge-cycled, launched]
@@ -773,7 +800,7 @@ steps:
     record: The clock time of arming.
     serves: []
 
-  - n: 41
+  - n: 42
     kind: run
     title: Hold for 20 minutes, no goal
     from: [bridge-cycled, launched, level, armed]
@@ -789,7 +816,7 @@ steps:
         do: [3]
         pass: true
 
-  - n: 42
+  - n: 43
     kind: run
     title: Ride-along check, STOP records and LANE_REFUSED ends
     from: [bridge-cycled, launched, level, armed]
@@ -807,7 +834,7 @@ steps:
       - item: FEAT-46
         pass: true
 
-  - n: 43
+  - n: 44
     kind: restore
     title: Stand down, then decide Leg 4
     from: [bridge-cycled, launched, level, armed]
@@ -818,7 +845,7 @@ steps:
       - where: Terminal 1
         text: Ctrl-C the launch and wait for the shell prompt.
       - where: Terminal 2
-        text: Only if step 41 saw a Leg Fault or Guard latch, or you do not want to carry the trial forward. Otherwise leave Leg 4 at 9. This puts it back at 10; the drive saves and reboots, and the next launch re-homes.
+        text: Only if step 42 saw a Leg Fault or Guard latch, or you do not want to carry the trial forward. Otherwise leave Leg 4 at 9. This puts it back at 10; the drive saves and reboots, and the next launch re-homes.
         command: tools/odrive_fleet_reflash.py --only 4 --set axis0.config.can.encoder_msg_rate_ms=10
     see: Platform at Stow, every axis Idle before the Ctrl-C.
     stop_if: A Fault blocks the teardown; deal with it before Ctrl-C.
@@ -827,7 +854,7 @@ steps:
       - item: BUG-82
         do: [4]
 
-  - n: 44
+  - n: 45
     kind: restore
     title: Close out
     from: [bridge-cycled]

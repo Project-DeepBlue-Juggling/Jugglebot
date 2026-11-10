@@ -45,6 +45,11 @@ _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _TICKED = re.compile(r"`([^`]+)`")
 _PLACEHOLDER = re.compile(r"<[^<>]+>")
 _STEP_KEYS = ("n", "kind", "title", "from", "to", "actions", "see", "stop_if", "serves")
+#: The firmware the Jetson tree expects; a sheet that names another can-bridge version is stale
+#: (2026-11-10: the bridge went from 42 to 43 between writing a sheet and flying it).
+FW_SOURCE = os.path.join("teensy_link", "rpc_args.py")
+_FW_EXPECTED = re.compile(r"^EXPECTED_BRIDGE_FW_VERSION\s*=\s*(\d+)", re.M)
+_FW_NAMED = re.compile(r"can-bridge v(\d+)")
 
 
 class SheetError(Exception):
@@ -243,11 +248,32 @@ def check_sheet(sheet: Dict[str, Any], repo_root: str) -> List[str]:
                 errs.append("step %s: %s is not an in-scope Item" % (st.get("n"), item))
             elif item in omitted and omitted[item] is None:
                 errs.append("step %s: %s is omitted whole but served here" % (st.get("n"), item))
+    errs += _check_firmware(sheet, repo_root)
     for item, row in sorted(rows.items()):
         skip = omitted.get(item, [])
         if item in omitted and skip is None:
             continue
         errs += _check_item(item, row, steps, list(skip or []))
+    return errs
+
+
+def _check_firmware(sheet: Dict[str, Any], repo_root: str) -> List[str]:
+    try:
+        with open(os.path.join(repo_root, FW_SOURCE), encoding="utf-8") as fh:
+            m = _FW_EXPECTED.search(fh.read())
+    except OSError:
+        return []
+    if m is None:
+        return []
+    want = m.group(1)
+    errs: List[str] = []
+    for st in sheet.get("steps") or []:
+        if not isinstance(st, dict):
+            continue
+        text = " ".join(str(st.get(k) or "") for k in ("see", "stop_if", "record")) + " " + _step_text(st)
+        for got in sorted(set(_FW_NAMED.findall(text)) - {want}):
+            errs.append("step %s: names can-bridge v%s, but the tree expects v%s (%s)" % (
+                st.get("n"), got, want, FW_SOURCE))
     return errs
 
 
@@ -284,7 +310,8 @@ def _check_item(item: str, row: sitting.RunbookRow, steps: List[Dict[str, Any]],
         errs.append("%s: needs exactly one step with pass: true, has %d" % (item, len(verdicts)))
     else:
         need = set(row.spec.setup) - set(verdicts[0].get("from") or [])
-        if need:
+        waived = [sv for st, sv in serving if sv.get("pass") and str(sv.get("setup_waived") or "").strip()]
+        if need and not waived:
             errs.append("%s: its verdict step %s does not start from its setup (missing %s)" % (
                 item, verdicts[0].get("n"), ", ".join(sorted(need))))
     return errs
@@ -311,6 +338,8 @@ def enrich(sheet: Dict[str, Any], repo_root: str) -> Dict[str, Any]:
             item = items.get(sv.get("item"))
             row = dict(sv)
             row["verdict"] = bool(row.pop("pass", False))
+            if not isinstance(row.get("do"), list):
+                row["do"] = []  # a serve may cite no do step (a ride-along judged from the logs)
             row.update({"title": "", "priority": "", "is_open": False, "stem": None, "kind": None,
                         "pass_text": None})
             if item is not None:
