@@ -8,7 +8,8 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
-| 2026-11-10 | in-progress | map-improvements | **Sitting sheets: /sitting-sheet merges a rig's Items into one ordered page the map app steps through, checked against the Items (IDEA-19)** | [2026-11-10-sitting-sheet.md](2026-11-10-sitting-sheet.md) |
+| 2026-11-10 | complete | Sitting debrief | **Sitting 2026-11-10: the sheet's rehearsal steps flew as real Attempts on the default plant (nothing to undo); turned Columns 45 deg COMPLETED 20/20, 90 deg and high-low failed; BUG-63's first Catch after the Feed ended 7 of 11 two-ball fed Attempts; the pull toward the partner Site turns with the pair (PWAY-2 P2(b))** | [2026-11-10-sitting-debrief.md](2026-11-10-sitting-debrief.md) |
+| 2026-11-10 | complete | map-improvements | **Sitting sheets: /sitting-sheet merges a rig's Items into one ordered page the map app steps through, checked against the Items (IDEA-19)** | [2026-11-10-sitting-sheet.md](2026-11-10-sitting-sheet.md) |
 | 2026-11-10 | complete | BUG-7 | **The levelling offset persists in rounded 0.1 mrad counts, not truncated whole milliradians (can-bridge FW 43, Platform FW 10, PROTOCOL 14); robot relaunch restored it within 0.043 mrad, BUG-7 closed** | [2026-11-10-levelling-offset-0p1-mrad-counts](2026-11-10-levelling-offset-0p1-mrad-counts.md) |
 | 2026-11-10 | complete | night-shift | **Night Shift 2026-11-10: 1 merged (BUG-87 log line), 4 held (FEAT-47 and three carried), 5 questions; FEAT-47's drops counter held on a false magazine drop** | [2026-11-10-night-shift](2026-11-10-night-shift.md) |
 | 2026-11-10 | complete | BUG-87 evidence | **ADMISSIBILITY-LANDING: the online check logs the Catch landing it planned against (position, time, aim source), once per skill** | [2026-11-10-admissibility-landing-log-line.md](2026-11-10-admissibility-landing-log-line.md) |

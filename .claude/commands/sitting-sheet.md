@@ -53,7 +53,11 @@ The operator does not read ahead, so no step may need a state a later step creat
   rehearsal: with the Cup empty and Ball Butler off it is still accepted once the Platform is
   Active, the Platform does its pre-level move and the Hand homes (2026-11-10: a sheet called
   three such goals rehearsals and put them before Level). If an Item's row rehearses with a goal,
-  fix the Item's `## Sitting` section in the same commit.
+  fix the Item's `## Sitting` section in the same commit. Most Patterns nominate with the launch
+  up and homed; `columns_turned` does not: it picks the fed Site by Ball Butler's position, so
+  mocap must be tracking the robot base markers and Ball Butler's Base markers (Ball Butler may
+  be unpowered). Its `see:`/`stop_if:` say that a `Ball Butler's position is unknown` reply means
+  bring mocap up on both and call again, never skip the Pattern (unpowered probe, 2026-11-10).
 - **One rehearsal step per launch**, all its nominate calls together, right after Level. Do not
   give each Item its own rehearsal step.
 

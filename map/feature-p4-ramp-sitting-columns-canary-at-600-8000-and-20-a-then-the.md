@@ -4,7 +4,7 @@ kind: feature
 title: 'P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30'
 status: in_progress
 created: '2026-11-03'
-updated: '2026-11-05T12:29:19Z'
+updated: '2026-11-10T12:41:23Z'
 owners: []
 priority: high
 effort: m
@@ -16,6 +16,7 @@ blocked_by: []
 links:
 - plans/active/two-ball-oval.md
 - logbook/2026-11-04-sitting-debrief.md
+- logbook/2026-11-10-sitting-debrief.md
 parent: two-ball-oval
 filed_by: claude
 ---
@@ -51,3 +52,4 @@ P4 ramp of plan `plans/active/two-ball-oval.md`: the first Sitting at the P4 wor
   - Dominant end MISSED_CATCH: carried throws land long (+76 mm raw at 0.40, +122 at 0.35; +48 from rest), the carry's deceleration ending 25-30 ms before release with the ~6 Hz Platform ring swinging forward at separation; learner pinned at its 30 mm authority from goal 4. 3 ends were firmware scheduler STOPs on a clean host stream.
   - Next: one Attempt at dwell 0.50 first, then the same 0.40 / 0.35 ladder (owner 2026-11-04).
 - 2026-11-05: Unplanned oval_1ball Apex 0.95 Dwell 0.65 (unfed, flag off) 2026-11-05: 25/26 caught, landed x 0 +/- 16 mm, y -6.5 +/- 20 mm, apex 0.98 +/- 0.05; Throw 26 (apex 0.54) cut by MAX_DEVIATION, not a plan outlier. Long-dwell baseline only (excess +13 mm/s mocap); ladder 0.50/0.40/0.35 and the 30-Catch gate still unflown.
+- 2026-11-10: Sitting of 2026-11-10, step 6 (a rehearsal flown as goals): oval_1ball_fed 1.00/150/0.40, MISSED_CATCH 2/2 then 4/4 (num_cycles 4), on the default plant, not p4-oval-<date> (6 rows, separable by time). Not this row's gate: no verdict. Nominate probe the same night: OK, margin 0.129 (0.118 at the re-aim limit).

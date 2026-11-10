@@ -2,7 +2,7 @@
 title: "Sitting sheets: /sitting-sheet merges a rig's Items into one ordered page the app steps through (IDEA-19)"
 type: feature
 date: 2026-11-10
-status: in-progress
+status: complete
 phase: "IDEA-19"
 related_plan: []
 files_changed:
@@ -47,7 +47,7 @@ A simple step can also be saved `skipped` (not flown this Sitting; owner, 2026-1
 
 `tests/sim/test_mapkit_no_ros.py` now exempts `sheet.py` from the word `ros2` only: the module names that CLI in strings. It still may not name a ROS Python package, and the import-graph test still holds.
 
-**Not flown.** Whether the step format works at the robot is what the 2026-11-10 Sitting will show. Status stays in-progress until it has.
+**Flown.** The 2026-11-10 Sitting flew steps 1 to 8 of the first sheet from the app, results saved per step; the rehearsal-as-goal defect above was its one failure. Closed with IDEA-19 by `2026-11-10-sitting-debrief.md`.
 
 ## Verification
 

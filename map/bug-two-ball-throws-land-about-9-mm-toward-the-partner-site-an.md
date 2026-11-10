@@ -4,7 +4,7 @@ kind: bug
 title: 'Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for'
 status: inbox
 created: '2026-11-06'
-updated: '2026-11-08T00:13:20Z'
+updated: '2026-11-10T12:43:06Z'
 owners: []
 priority: high
 effort: m
@@ -18,6 +18,7 @@ links:
 - map/bug-mid-air-ball-collisions-end-half-of-two-ball-columns.md
 - plans/active/learner-generalisation.md
 - logbook/2026-11-06-sitting-debrief-2.md
+- logbook/2026-11-10-sitting-debrief.md
 parent: learner-generalisation
 filed_by: claude
 ---
@@ -57,3 +58,4 @@ Flown 2026-11-07 and taken off the Runbook by the owner until it is redesigned: 
 - 2026-11-06: Runbook row set to Dwell 0.27 against 0.32 (both inside the flown envelope: 353 mm/s, 5180 mm/s^2 at 0.32). 0.35 is left out: it plans 6207 mm/s^2, within 2 % of the 6296 that separated Legs 1 and 2 (BUG-72). The debrief reads the Platform's velocity at release from the bag, a sharper measure than landings over 0.05 s.
 - 2026-11-06: 2026-11-06: owner decision on carry-ring-zvd section 8: the ZVD rows stay off on Columns until BUG-72 has a bound. This row's own goals (Apex 0.93, Dwell 0.27 and 0.32) are RING refused with the rows on anyway, so the suppress-at-source branch needs both a bound and a window that holds the rows.
 - 2026-11-08: Failed at the Sitting of 2026-11-07: Dwell 0.32 and 0.30 each separated Legs 1 and 2 in their first Attempt; later Attempts refused the Segment after Ball 2's first Throw (Feed aim clamped -30 mm). No answer: pull n 34/5/4. Row off the Runbook until redesigned (owner): 'inside what has flown' compared nominal with live peaks, and no plan peak separates the events.
+- 2026-11-10: Debrief 2026-11-10, offline from the default Memory (caught free_cup rows, y - u in the pair frame): inward toward the partner 8.7, 12.7, 14.8 mm at 0, 45, 90 deg (n 2268, 102, 127), tangential -3.2, -2.2, +2.7 mm. The pull turns with the pair, as the arrival transient predicts; answers PWAY-2 P2(b).

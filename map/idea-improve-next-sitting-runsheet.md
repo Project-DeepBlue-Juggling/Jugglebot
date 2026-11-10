@@ -2,9 +2,9 @@
 id: IDEA-19
 kind: idea
 title: Improve the Next Sitting Runbook
-status: in_progress
+status: complete
 created: '2026-11-08'
-updated: '2026-11-09T22:22:04Z'
+updated: '2026-11-10T12:41:24Z'
 owners: []
 priority: medium
 effort: m
@@ -13,7 +13,8 @@ owner: decision
 radius: subsystem
 area: tests-tooling
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-10-sitting-debrief.md
 filed_by: harrison
 ---
 
@@ -81,3 +82,4 @@ Recommendation: 3, then 1. It settles the step format on a real Sitting before a
 - 2026-11-09: Night Shift 2026-11-09: options and a draft step format written; awaiting the owner's answer
 - 2026-11-10: Night Shift 2026-11-10: TKT-53 decisions recorded; the first sheet is built the night before the next Robot Sitting, once its date is noted here
 - 2026-11-10: Session 2026-11-10: /sitting-sheet, the sheet check and the app page built; first Robot sheet written, not yet flown
+- 2026-11-10: The Sitting sheet flew at the Sitting of 2026-11-10 (map/sheets/2026-11-10-robot.yaml, steps 1-8, results saved per step in the app). Its one defect (Juggle goals written as dress rehearsals) is fixed by 0f028a55 and the replacement sheet 2026-11-10-robot-2.yaml; the rehearsal for columns_turned also needs mocap on the robot base and Ball Butler's Base markers (debrief 2026-11-10).

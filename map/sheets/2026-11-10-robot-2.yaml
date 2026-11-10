@@ -105,14 +105,16 @@ steps:
       - where: Terminal 2
         text: High-low Columns (IDEA-10).
         command: "ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString \"{data: 'columns_highlow,apex_m=1.00,separation_mm=100,dwell_s=0.27,apex_m_ball2=0.90'}\""
+      - where: Hands
+        text: "Before the two turned checks: mocap must see the robot base markers (Level already needed them) AND Ball Butler's Base markers, because columns_turned picks the fed Site by Ball Butler's position. Ball Butler itself may stay unpowered."
       - where: Terminal 2
         text: Turned Columns at 45 degrees (IDEA-11).
         command: "ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString \"{data: 'columns_turned,apex_m=0.95,separation_mm=125,dwell_s=0.27,columns_angle_deg=45'}\""
       - where: Terminal 2
         text: Turned Columns at 90 degrees (IDEA-11).
         command: "ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString \"{data: 'columns_turned,apex_m=0.95,separation_mm=125,dwell_s=0.27,columns_angle_deg=90'}\""
-    see: "Each reply reads success: True with a one-line viable summary and no refusal line. These are planning checks only, so the Platform and the Hand stay still."
-    stop_if: Anything moves. A refusal line is not a stop; note which Pattern and what the reply names as the nearest viable setting, and skip that Pattern's flight steps.
+    see: "Each reply reads success: True with a one-line viable summary and no refusal line. These are planning checks only, so the Platform and the Hand stay still. Expect the high-low reply to show a negative margin with the Catch re-aim at its limit (-0.245 on the unpowered probe): that is information, not a refusal."
+    stop_if: "Anything moves. A refusal line is not a stop; note which Pattern and what the reply names as the nearest viable setting, and skip that Pattern's flight steps. Exception: a turned reply saying Ball Butler's position is unknown is not a planning refusal; bring mocap up on the robot base and Ball Butler's Base markers and call again, and skip the turned flights only if it still says so."
     record: Any refusal line, word for word.
     serves:
       - item: FEAT-39
