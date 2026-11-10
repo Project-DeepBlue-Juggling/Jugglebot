@@ -166,6 +166,28 @@ def test_finish_ends_the_goal_thrown(tmp_path):
     assert len(node._goal_reports) == 1 and 'MAGAZINE miss' in node._goal_outcome_lines[0]
 
 
+def test_a_magazine_end_books_no_drop(tmp_path):
+    """FEAT-47: the placeholder ThrowReport (caught=False) of `_magazine_finish`
+    is not a Throw to be caught; a Feed books only Feed misses (0 today). Real
+    `drop_count`, real ledger, real `_juggle_execute` (nothing patched away)."""
+    from unittest.mock import MagicMock
+    from jugglebot import records as rec
+    node, client, R = _setup(tmp_path)
+    path = tmp_path / 'records.md'
+    node._params['records_path'] = str(path)
+    _ctx_with_samples(node, R)
+    node._magazine_finish(node._magazine_ctx)
+    assert sn.rp.drop_count(node._goal_reports) == 1   # the placeholder alone WOULD count
+    gh = MagicMock(is_cancel_requested=False)
+    gh.request.pattern = 'magazine'
+    node._juggle_execute(gh)
+    if path.exists():
+        assert rec.load(str(path)).drops.live == 0
+    assert 'drops (total' not in ' '.join(
+        str(c) for c in node.get_logger().info.call_args_list) if hasattr(
+            node.get_logger().info, 'call_args_list') else True
+
+
 def test_too_few_samples_is_no_track(tmp_path):
     node, client, R = _setup(tmp_path)
     ctx = _ctx_with_samples(node, R, n=3)

@@ -16,7 +16,7 @@
  */
 import { isReplayFenced } from './replay/fence.js';
 import {
-    recordRows, recordSections, dropsText, menuEntries, loadHidden, saveHidden, attemptEnd, RECORD_FLASH_MS,
+    recordRows, recordSections, dropsText, panelVisible, menuEntries, loadHidden, saveHidden, attemptEnd, RECORD_FLASH_MS,
     dodgesMinimap,
 } from './records-model.js';
 
@@ -34,7 +34,7 @@ function render() {
     const el = document.getElementById('records-panel');
     if (!el) return;
     const rows = data ? recordRows(data, hidden) : [];
-    el.hidden = !data || rows.length === 0;
+    el.hidden = !panelVisible(data, rows);
     const dropsEl = el.querySelector('.records-drops');
     if (dropsEl) dropsEl.textContent = data ? dropsText(data) : '';
     const list = el.querySelector('.records-rows');

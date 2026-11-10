@@ -6850,21 +6850,24 @@ class SkillNode(Node):
                 pattern=pattern, throws=int(throws), catches=int(caught),
                 end_code=str(end_code),
                 params=tuple(self._goal_record_params), drops=int(drops)))
+            if beaten:
+                self.get_logger().info(
+                    'records: NEW RECORD %s -- %d Catches in %d Throws (%s); '
+                    '%s is now dirty until the Sitting close-out commit'
+                    % (pattern, int(caught), int(throws), end_code, path))
+            if drops > 0:
+                try:
+                    total = rec.total_drops(path)
+                except Exception:  # noqa: BLE001 -- the log line only
+                    total = None
+                self.get_logger().info(
+                    'records: +%d drops (total %s)'
+                    % (int(drops), '?' if total is None else total))
         except Exception as exc:  # noqa: BLE001 -- never the goal's fault
             self.get_logger().warning(
                 'records: %s not updated for %s (%d/%d %s): %s'
                 % (path, pattern, int(caught), int(throws), end_code, exc))
             return False, ''
-        if beaten:
-            self.get_logger().info(
-                'records: NEW RECORD %s -- %d Catches in %d Throws (%s); '
-                '%s is now dirty until the Sitting close-out commit'
-                % (pattern, int(caught), int(throws), end_code, path))
-        if drops > 0:
-            total = rec.total_drops(path)
-            self.get_logger().info(
-                'records: +%d drops (total %s)'
-                % (int(drops), '?' if total is None else total))
         return beaten, str(best)
 
     def _juggle_execute(self, goal_handle):
@@ -6913,9 +6916,12 @@ class SkillNode(Node):
         # the Cup ends the Attempt MISSED_CATCH with no ThrowReport, and the
         # executor does not expose which CATCH was the Feed's, so it is not
         # countable from what the node has here (feed_missed stays 0).
+        # A `magazine` run is a Feed: its one ThrowReport is a placeholder
+        # (`_magazine_finish`, caught=False), not a Throw to be caught, so it
+        # books only Feed misses -- 0 until those are identified.
+        drops = 0 if pattern == 'magazine' else rp.drop_count(self._goal_reports)
         beaten, record_catches = self._offer_record(
-            pattern, rec_throws, rec_caught, outcome,
-            drops=rp.drop_count(self._goal_reports))
+            pattern, rec_throws, rec_caught, outcome, drops=drops)
         self._publish_attempt_event(
             ATTEMPT_END, outcome,
             DiagnosticStatus.OK if outcome in ('COMPLETED', 'STOPPED')

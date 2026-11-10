@@ -160,3 +160,11 @@ def test_panel_has_a_drops_slot_atop_the_records():
     assert html.index('class="records-title"') < html.index('class="records-drops"') < html.index('class="records-rows"')
     panel = (JS / "records-panel.js").read_text()
     assert "dropsText(data)" in panel and ".records-drops" in panel
+
+
+def test_panel_shows_for_a_drops_section_even_with_no_rows(out):
+    """FEAT-47: a fresh ledger / every Pattern hidden still shows the counter;
+    no drops section and no rows (or no data) stays hidden."""
+    assert out["panelVisible"] == [True, True, True, False, False]
+    panel = (JS / "records-panel.js").read_text()
+    assert "el.hidden = !panelVisible(data, rows)" in panel

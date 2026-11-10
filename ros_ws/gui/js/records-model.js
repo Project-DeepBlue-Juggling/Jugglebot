@@ -14,6 +14,14 @@ export const RECORDS_HIDDEN_KEY = 'jugglebot-records-hidden';
 /** How long a just-beaten record's row stays highlighted. */
 export const RECORD_FLASH_MS = 6000;
 
+/** The panel shows when the ledger has rows to show OR a drops section (FEAT-47):
+ *  a fresh ledger, Feed-only drops or every Pattern hidden still show the counter. */
+export function panelVisible(json, rows) {
+    if (!json) return false;
+    const d = json.drops;
+    return (Array.isArray(rows) && rows.length > 0) || (!!d && typeof d === 'object');
+}
+
 /** One display row per Pattern, hidden ones dropped. */
 export function recordRows(json, hidden) {
     const off = hidden || new Set();

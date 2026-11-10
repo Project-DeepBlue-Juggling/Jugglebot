@@ -4160,6 +4160,17 @@ class TestJuggleAction:
         assert model.drops.live == 2
         assert all(not t.rows for t in model.ordered())
 
+    def test_a_raising_drops_total_never_escapes_offer_record(self, tmp_path):
+        """FEAT-47: the `total_drops` log line is inside the guard, so
+        `_offer_record` keeps its "never raises" and still returns the record."""
+        path = tmp_path / 'records.md'
+        node, _client = _node_with_client()
+        node._params['records_path'] = str(path)
+        with patch.object(sn.rec, 'total_drops', side_effect=OSError('boom')):
+            beaten, best = node._offer_record('self_toss', 6, 5, 'STOPPED',
+                                              drops=2)
+        assert (beaten, best) == (True, '5')
+
     def test_a_malformed_ledger_warns_and_is_left_alone(self, tmp_path):
         path = tmp_path / 'records.md'
         path.write_text('not a ledger\n')
