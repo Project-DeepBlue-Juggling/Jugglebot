@@ -58,6 +58,11 @@ Visually subtle: the two apexes differ by 100 mm.
 - verdict: pending
 - notes: With Ball 1 at apex 1.0 m, Ball 2 at 0.9 m: First, third, fourth attempts ended with a messy throw being uncatchable. Second ended with leg ACCEL_LIM error. One attempt ended with SPINOUT_DETECTED, for which I heard what sounded like the hand colliding with the end-stop. Trying with Ball 1 at apex 1.05 m, Ball 2 at 0.95 m, there were a lot of messy throws, leading to collisions and missed catches. Every attempt ended this way.
 
+## Sitting result (2026-11-10)
+
+- verdict: fail
+- notes: Flown as real Attempts from sheet step 7 on the default plant: 0/0, 0/0, 2/3 (HAND_JAM). Ball 2's first Throw after the Feed landed outward (BUG-63). Verdict from the logs at the debrief, confirmed by the owner 2026-11-11.
+
 ## Progress
 
 - 2026-10-31: P4 of plan pattern-progression.md done offline: goal columns_highlow, parameter apex_m_ball2, per-ball Apex and dwell in the compile, 16 pose cells swept. Nothing fits at separation 125; at 100 the pair 1.00/0.90 fits at both Sites, 1.05/0.95 only the high ball. Next: the JP-9 Rung (P5) at 100 with 1.00/0.90. Logbook 2026-10-31-pattern-progression-p4-high-low-columns.md.

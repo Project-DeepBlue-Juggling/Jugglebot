@@ -68,6 +68,11 @@ It proves the rotational symmetry on hardware that lets the admissible box key o
 - verdict: fail
 - notes: plant_id: columns45 - first attempt ended due to a mid-air collision. Second passed with all throws caught. Third ended with a mis-caught ball. plant_id: columns90 - Forgot to change angle in GUI plant_id: columns90-2 - first attempt ended with mid-air collision. Most attempts ended with Ball2 hitting the top of the Platform. No attempt lasted more than about 5 throws.
 
+## Sitting result (2026-11-10)
+
+- verdict: fail
+- notes: Flown from sheet step 8 on the default plant: 45 deg COMPLETED 20/20; 90 deg 8/8, 3/3, 3/3, 3/3, Ball 2's first Catch after the Feed missed outward (IDEA-22). Verdict from the logs at the debrief, confirmed by the owner 2026-11-11.
+
 ## Progress
 
 - 2026-10-31: P2 of plan pattern-progression.md done offline: goal columns_turned, parameter columns_angle_deg, 12 pose box cells at 45 and 90 deg (45 deg admits only Apex 0.925-0.975, 90 deg 0.875-0.975). Next: the JP-10 Rung (P3) at a Sitting. Logbook 2026-10-31-pattern-progression-p2-turned-columns.md.
