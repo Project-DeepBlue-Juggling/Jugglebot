@@ -2,9 +2,9 @@
 id: TKT-62
 kind: ticket
 title: 'IDEA-22 Catch tilt at 90 deg: a Banking offset for turned Columns, a fixed Catch attitude per Site, measure the commanded tilt in the bag first, or fix BUG-63''s landing first?'
-status: open
+status: complete
 created: '2026-11-11'
-updated: '2026-11-10T18:01:03Z'
+updated: '2026-11-10T21:45:12Z'
 owners: []
 priority: medium
 effort: xs
@@ -34,3 +34,7 @@ Recommendation: 3, then 1.
 - 1 or 2: the next night builds the parameter on a branch, with the nominate probe result, held for a Sitting.
 - 3: the next night reads the bag and writes Findings on IDEA-22.
 - 4: IDEA-22 waits on BUG-63's Sitting row.
+
+## Answer
+
+I lean Option 2. Once we've validated this idea on the 90 deg columns, we can look to generalizing it for other angles. I think we should set a default of ~3-5 deg tilt back from the currently-computed catch orientation, but it'd be good if this was runtime configurable
