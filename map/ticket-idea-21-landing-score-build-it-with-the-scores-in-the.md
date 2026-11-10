@@ -2,9 +2,9 @@
 id: TKT-63
 kind: ticket
 title: 'IDEA-21 landing score: build it with the scores in the records ledger, in a CSV beside the Memory, also add path vs plan as a release number, or not now?'
-status: open
+status: complete
 created: '2026-11-11'
-updated: '2026-11-10T18:29:31Z'
+updated: '2026-11-10T21:46:43Z'
 owners: []
 priority: medium
 effort: xs
@@ -33,3 +33,7 @@ Recommendation: 1. It is your design from TKT-60, it reads in mm, and it costs n
 
 - 1, 2 or 3: the next night builds the landing score and its readout on a branch. The suite judges the build; no Sitting is needed.
 - 4: IDEA-21 goes back to backlog.
+
+## Answer
+
+Agreed. Go for Option 1
