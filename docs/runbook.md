@@ -218,7 +218,7 @@ Rigs: Robot 6 blocks (214 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 
 ## Questions a Sitting can answer
 
-- TKT-62 IDEA-22 Catch tilt at 90 deg: a Banking offset for turned Columns, a fixed Catch attitude per Site, measure the commanded tilt in the bag first, or fix BUG-63's landing first? (parent IDEA-22)
+- none
 
 ## Close-out
 
