@@ -1223,6 +1223,10 @@ class SkillNode(Node):
         #: The goal's catch-bump switch (`_start_pattern`, `sk_bump.bump_enabled_for`).
         self._bump_enabled = False
         self._goal_end_code = ''
+        #: FEAT-47: Ball Butler Feed Catches the goal's executors ended
+        #: MISSED_CATCH (`SkillExecutor.missed_feed_catches`), captured as each
+        #: executor retires; read by `_juggle_execute` for the drops count.
+        self._goal_feed_missed = 0
         #: The running goal's records-ledger parameters (FEAT-29): an ordered
         #: ((key, value), ...) captured at accept by `_start_pattern`, read by
         #: `_offer_record` when the attempt ends (never re-read from the node
@@ -3768,6 +3772,8 @@ class SkillNode(Node):
                     # ONLY on these named paths, so reading it straight is
                     # equivalent for every pre-D3 path and correct for D3.
                     self._goal_end_code = self._executor.end_code
+                    self._goal_feed_missed += int(getattr(
+                        self._executor, 'missed_feed_catches', 0) or 0)
                     # Columns two-feed chain (P3): ball A's clean retire
                     # opens the chain gate (ctx stays armed, so the line
                     # below stays silent and the goal stays running); an
@@ -4244,6 +4250,7 @@ class SkillNode(Node):
         self._goal_outcome_lines = []
         self._goal_reports = []
         self._goal_end_code = ''
+        self._goal_feed_missed = 0
         self._goal_record_params = ()
         with self._reload_lock:
             self._goal_armed = False
@@ -6912,14 +6919,17 @@ class SkillNode(Node):
         # the Result above and the end line keep the operator's tally. Only a
         # COMPLETED goal, and only a row with a landing (TKT-44).
         rec_throws, rec_caught = rp.record_counts(self._goal_reports, outcome)
-        # Drops to date (FEAT-47): Throws only. A Ball Butler Feed that missed
-        # the Cup ends the Attempt MISSED_CATCH with no ThrowReport, and the
-        # executor does not expose which CATCH was the Feed's, so it is not
-        # countable from what the node has here (feed_missed stays 0).
+        # Drops to date (FEAT-47): each unreleased-or-uncaught Throw, plus a
+        # Ball Butler Feed that missed the Cup (the executor's
+        # `missed_feed_catches`, captured at retire as `_goal_feed_missed`; a
+        # Feed miss ends the Attempt MISSED_CATCH with no ThrowReport).
         # A `magazine` run is a Feed: its one ThrowReport is a placeholder
         # (`_magazine_finish`, caught=False), not a Throw to be caught, so it
-        # books only Feed misses -- 0 until those are identified.
-        drops = 0 if pattern == 'magazine' else rp.drop_count(self._goal_reports)
+        # books only its Feed miss, otherwise 0.
+        feed_missed = int(self._goal_feed_missed)
+        drops = (feed_missed if pattern == 'magazine'
+                 else rp.drop_count(self._goal_reports,
+                                    feed_missed=feed_missed))
         beaten, record_catches = self._offer_record(
             pattern, rec_throws, rec_caught, outcome, drops=drops)
         self._publish_attempt_event(

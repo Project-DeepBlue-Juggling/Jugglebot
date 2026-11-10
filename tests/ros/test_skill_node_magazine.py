@@ -187,6 +187,24 @@ def test_a_magazine_end_books_no_drop(tmp_path):
     assert drops is None or drops.live == 0
 
 
+def test_a_magazine_feed_miss_books_one_drop(tmp_path):
+    """FEAT-47: a magazine run whose goal captured a Feed Catch ended
+    MISSED_CATCH books exactly that drop (not the placeholder's). Real
+    `drop_count`, real ledger, real `_juggle_execute`."""
+    from unittest.mock import MagicMock
+    from jugglebot import records as rec
+    node, client, R = _setup(tmp_path)
+    path = tmp_path / 'records.md'
+    node._params['records_path'] = str(path)
+    _ctx_with_samples(node, R)
+    node._magazine_finish(node._magazine_ctx)
+    node._goal_feed_missed = 1     # what `_on_tick` captures at a retire
+    gh = MagicMock(is_cancel_requested=False)
+    gh.request.pattern = 'magazine'
+    node._juggle_execute(gh)
+    assert rec.load(str(path)).drops.live == 1
+
+
 def test_too_few_samples_is_no_track(tmp_path):
     node, client, R = _setup(tmp_path)
     ctx = _ctx_with_samples(node, R, n=3)

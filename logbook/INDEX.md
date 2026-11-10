@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-11 | resolved | gui improvements | **Drops to date counts Ball Butler Feed misses (FEAT-47)** | [2026-11-11-drops-count-feed-misses](2026-11-11-drops-count-feed-misses.md) |
 | 2026-11-11 | resolved | map-app | **Next Sitting runbook row saves on Ctrl+Enter, keeps input on a failed save, read-only while saving (BUG-60; only a real browser can confirm the feel)** | [2026-11-11-next-sitting-ctrl-enter-save](2026-11-11-next-sitting-ctrl-enter-save.md) |
 | 2026-11-11 | resolved | map-app | **Arrow-keying through the Map search results scrolls the active result into view (BUG-83; only a real browser can confirm it)** | [2026-11-11-map-search-arrow-key-scroll](2026-11-11-map-search-arrow-key-scroll.md) |
 | 2026-11-10 | resolved | gui improvements | **Drops to date: a live counter in the records ledger and atop the GUI Records panel (FEAT-47); Ball Butler Feed misses not yet counted, history backfill not done** | [2026-11-10-drops-to-date-live-counter.md](2026-11-10-drops-to-date-live-counter.md) |

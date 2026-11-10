@@ -4,7 +4,7 @@ kind: feature
 title: Add "Total Drops To Date" counter
 status: in_progress
 created: '2026-11-08'
-updated: '2026-11-10T18:54:21Z'
+updated: '2026-11-10T19:00:28Z'
 owners:
 - night-shift
 priority: medium
@@ -42,3 +42,4 @@ Recommendation: 2. The definition's edge cases are in the ticket.
 - 2026-11-10: Night Shift 2026-11-10: TKT-55 answered (option 3, definitions settled); building the live counter tonight, the history backfill is for a day Session
 - 2026-11-10: Night Shift 2026-11-10: held on night-shift/2026-11-10-FEAT-47: (b) 3 audit findings, a false magazine drop first; unblocked by the owner's answer in TKT-61
 - 2026-11-11: Night Shift 2026-11-11: TKT-61's three fixes merged (f87faa19); still open: Feed misses (required before closing) and the history backfill
+- 2026-11-11: Night Shift 2026-11-11: slice 2 counts Ball Butler Feed misses as drops; the history backfill is for a day Session
