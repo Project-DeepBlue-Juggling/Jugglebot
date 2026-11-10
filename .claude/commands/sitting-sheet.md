@@ -37,10 +37,30 @@ An Item's `## Sitting` section was written when it was filed. Before copying fro
 
 ## 3. Order the steps
 
+**The prerequisite chain, in this order, in every launch: Boot > Home > Level > Activate > goal.**
+The operator does not read ahead, so no step may need a state a later step creates.
+
+- **Launch and Homing** come first; a launch step ends `launched` only once Homing has finished.
+- **Level before anything that plans or flies a Pattern.** The skill executor refuses every
+  dispatch with `REJECTED_NOT_LEVELLED` until this launch has a levelling offset. Put the Level
+  step straight after the launch's own checks, before rehearsals, parameters and Activate.
+- **Activate (and TRAJECTORY mode) before any Juggle goal.** `python -m mapkit sheet check` fails a
+  step that sends `send_goal /jugglebot/juggle` unless it starts from `launched, level, armed`.
+- **A dress rehearsal is `/skills/nominate`, never a goal.** One call per Pattern and setting:
+  `ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: '<pattern>,apex_m=..,separation_mm=..,dwell_s=..[,apex_m_ball2=..][,columns_angle_deg=..]'}"`.
+  It plans the Pattern at the live Sitting limits, lists every refusal at once, and cannot move
+  anything; the extra keys replace `ros2 param set` for that call. A Juggle goal is NOT a
+  rehearsal: with the Cup empty and Ball Butler off it is still accepted once the Platform is
+  Active, the Platform does its pre-level move and the Hand homes (2026-11-10: a sheet called
+  three such goals rehearsals and put them before Level). If an Item's row rehearses with a goal,
+  fix the Item's `## Sitting` section in the same commit.
+- **One rehearsal step per launch**, all its nominate calls together, right after Level. Do not
+  give each Item its own rehearsal step.
+
 1. **Launches first.** Group by what forces a new launch: launch arguments, the branch, a drive
    setting changed launch-down. A new launch is its own step with `new_launch: true`.
-2. **Before arming, then armed.** Dress rehearsals and anything marked "do NOT arm" come before
-   Activate. The launch's `auto_arm` arms on entering Active.
+2. **Before arming, then armed.** The rehearsal step and anything marked "do NOT arm" come after
+   Level and before Activate. The launch's `auto_arm` arms on entering Active.
 3. **Highest priority earliest** within what the launches allow. A row with `first:` opens the rig.
    Dependencies between rows win ("right after IDEA-10, same settings").
 4. **Isolate what would contaminate others**: a `plant_id` keeps a row's Throws out of another

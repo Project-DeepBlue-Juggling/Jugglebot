@@ -46,6 +46,11 @@ STATE_HELP = {
     "bb-fed": "Ball Butler is up and loaded, ready to Feed.",
     "bridge-cycled": "The can-bridge has been power-cycled since it last ran a launch, so its uptime is fresh.",
 }
+#: What must already hold before a step may send a Juggle goal: Boot > Home > Level > Activate.
+#: A goal sent earlier is no rehearsal: with the Cup empty skill_node accepts it and moves the
+#: Platform and the Hand (2026-11-10). The no-motion rehearsal is the /skills/nominate service.
+GOAL_COMMAND = "send_goal /jugglebot/juggle"
+GOAL_NEEDS = ("launched", "level", "armed")
 STEP_STATUSES = ("done", "problem", "skipped")  # skipped: not flown this Sitting (owner, 2026-11-10)
 CMD_PREFIXES = ("ros2 ", "python ", "python3 ", "tools/", "colcon ", "./")
 
@@ -268,6 +273,12 @@ def check_sheet(sheet: Dict[str, Any], repo_root: str, live: bool = False) -> Li
             elif item in omitted and omitted[item] is None:
                 errs.append("step %s: %s is omitted whole but served here" % (st.get("n"), item))
     errs += _check_firmware(sheet, repo_root)
+    for st in steps:
+        if GOAL_COMMAND in _step_text(st) and isinstance(st.get("from"), list):
+            lacks = [w for w in GOAL_NEEDS if w not in st["from"]]
+            if lacks:
+                errs.append("step %s: sends a Juggle goal but does not start from %s (a goal moves "
+                            "the robot; rehearse with /skills/nominate)" % (st.get("n"), ", ".join(lacks)))
     for item, row in sorted(rows.items()):
         skip = omitted.get(item, [])
         if item in omitted and skip is None:

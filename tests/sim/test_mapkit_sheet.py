@@ -257,6 +257,17 @@ def test_apply_does_not_mutate(good):
 
 
 
+def test_a_juggle_goal_needs_launched_level_and_armed(good, repo):
+    goal = 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: x}"'
+    good["steps"][2]["actions"].append({"where": "Terminal 2", "command": goal})
+    _has(sh.check_sheet(good, str(repo)), "step 3: sends a Juggle goal but does not start from armed")
+    good["steps"][1]["actions"].append({"where": "Terminal 2", "command": goal})
+    _has(sh.check_sheet(good, str(repo)), "step 2: sends a Juggle goal but does not start from level, armed")
+    nominate = "ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString \"{data: 'x'}\""
+    good["steps"][1]["actions"][-1]["command"] = nominate
+    assert not [e for e in sh.check_sheet(good, str(repo)) if e.startswith("step 2: sends")]
+
+
 def test_skipped_is_a_step_status(good):
     out = _apply(good, 1, status="skipped")
     assert out["steps"][1]["status"] == "skipped"
