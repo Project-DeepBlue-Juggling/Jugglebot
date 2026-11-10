@@ -8,4 +8,8 @@ steps:
     comments: ''
     saved_at: 2026-11-10 17:46
     status: done
+  3:
+    comments: ''
+    saved_at: 2026-11-10 20:10
+    status: skipped
 verdicts: {}
