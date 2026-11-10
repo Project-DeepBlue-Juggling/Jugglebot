@@ -2734,6 +2734,11 @@ class SkillExecutor:
         #: goal ended on a Stop (BUG-67), else ``None``. Not an END: it sets
         #: no ``end_code`` and no ``attempt_ended``.
         self.final_catch_unverifiable: Optional[int] = None
+        #: FEAT-47: how many :data:`MISSED_CATCH` verdicts fired on a Ball
+        #: Butler Feed Catch (a skill carrying ``landing_prior``). A recorded
+        #: fact only, read by ``skill_node`` for the drops count; nothing in
+        #: the executor reads it.
+        self.missed_feed_catches = 0
         self.end_code = ''
         #: D2 (2026-10-19): level the platform after an END that leaves it
         #: tilted -- see :meth:`_plan_closing`.  ``False`` restores the
@@ -6506,6 +6511,8 @@ class SkillExecutor:
                 if p.ball_id != pend.ball_id]
             t_open_rel = pend.t_open_s - pend.t_land_scheduled_s
             t_close_rel = pend.t_close_s - pend.t_land_scheduled_s
+            if pend.is_feed:
+                self.missed_feed_catches += 1
             survivor = self._survivor_catch(pend.ball_id)
             if survivor is not None and not self.attempt_ended:
                 self._install_survivor_tail(*survivor, pend.ball_id)

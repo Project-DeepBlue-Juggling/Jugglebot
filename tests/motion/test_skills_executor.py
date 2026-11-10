@@ -6090,6 +6090,48 @@ def test_missed_catch_fires_on_an_empty_cup_and_keeps_the_survivor(sites):
     assert experiences == []                      # B's carried throw: no row
 
 
+def test_a_missed_catch_on_a_feed_catch_is_exposed_as_a_missed_feed(sites):
+    """FEAT-47: the MISSED_CATCH that fires on Ball Butler's Feed Catch (the
+    skill carrying ``landing_prior``) is recorded in ``missed_feed_catches``
+    -- a read-only fact the node counts as a drop; no decision reads it."""
+    sch, _L, R, _t_land_a = _feed_catch_schedule(sites)
+    seat_window = lambda t0, t1: ex.SeatWindow(
+        n_valid=int(round((t1 - t0) * 100)), n_seated=0, max_gap_s=0.01)
+    t_decide = R + ex.MISSED_CATCH_CLOSE_AFTER_RELEASE_S \
+        + ex.MISSED_CATCH_DECIDE_LAG_S
+    x, _lines, _e = _drive_to_decision(sch, seat_window, t_decide)
+    assert x.end_code == ex.MISSED_CATCH
+    assert x.missed_feed_catches == 1
+
+
+def test_a_missed_catch_on_a_throws_catch_is_not_a_missed_feed(sites):
+    """FEAT-47: a MISSED_CATCH on a plain Catch (the Throw's own ball, no
+    ``landing_prior``) leaves ``missed_feed_catches`` at 0."""
+    p1, p2 = sites
+    t_throw = T0_ABS + 0.5
+    L = t_throw + FLIGHT_S
+    skills = (
+        Skill(kind=sg.THROW, ball_id=0, site=p1, t_abs_s=t_throw,
+              window_s=LAUNCH_S, y_d=(np.zeros(2), APEX_M), target=p2),
+        Skill(kind=sg.CATCH, ball_id=0, site=p2, t_abs_s=L, window_s=0.5),
+        Skill(kind=sg.REST, ball_id=0, site=p2, t_abs_s=L + sg.REST_TAIL_S,
+              window_s=sg.REST_TAIL_S),
+    )
+    sch = Schedule(pattern='columns', skills=skills, flight_s=FLIGHT_S,
+                   beat_s=0.578, transit_s=0.278, dwell_s=0.30,
+                   t0_abs_s=t_throw)
+    seat_window = lambda t0, t1: ex.SeatWindow(
+        n_valid=int(round((t1 - t0) * 100)), n_seated=0, max_gap_s=0.01)
+    t_decide = L + ex.MISSED_CATCH_CLOSE_AFTER_LANDING_S \
+        + ex.MISSED_CATCH_DECIDE_LAG_S
+    x, _lines, _e = _drive_to_decision(
+        sch, seat_window, t_decide,
+        observer=lambda ball_id, t: bp.EVIDENCE_SEATED if t <= t_throw
+        else bp.EVIDENCE_EMPTY)
+    assert x.end_code == ex.MISSED_CATCH, x.end_code
+    assert x.missed_feed_catches == 0
+
+
 def test_an_attempt_ended_by_a_later_skill_still_resolves_an_open_catch_window(sites):
     """Audit finding (2026-10-04): `done` waits on every open `_PendingCatch`,
     and `_advance_catch_evidence` used to run only while the attempt was

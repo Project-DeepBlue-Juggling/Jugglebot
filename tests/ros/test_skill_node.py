@@ -4065,7 +4065,7 @@ class TestJuggleAction:
                           'record_beaten': '0', 'record_catches': ''}
 
     def _ended_attempt(self, tmp_path, throws, caught, records_path=None,
-                       pattern='self_toss'):
+                       pattern='self_toss', missed_feeds=0):
         """Accept a self-throw goal, stop it, run `_juggle_execute` with
         `rp.summarise` reporting (throws, caught); returns the juggle_end
         fields and the WARN lines. `records_path` None leaves the node
@@ -4078,6 +4078,9 @@ class TestJuggleAction:
         assert (node._juggle_goal(_self_toss_goal())
                == sn.GoalResponse.ACCEPT)
         node._stop_attempt()
+        # FEAT-47: the executor's recorded fact, as the real one sets it when
+        # its MISSED_CATCH fires on a Feed Catch (tests/motion pins that half).
+        node._executor.missed_feed_catches = missed_feeds
         node._on_tick()
         gh = MagicMock(is_cancel_requested=False)
         gh.request.pattern = pattern
@@ -4158,6 +4161,34 @@ class TestJuggleAction:
         assert values['record_beaten'] == '0'
         model = rec.load(str(path))
         assert model.drops.live == 2
+        assert all(not t.rows for t in model.ordered())
+
+    def test_a_fed_goal_ending_missed_catch_on_the_feed_books_one_drop(
+            self, tmp_path):
+        """FEAT-47: a Ball Butler Feed that missed the Cup (no ThrowReport)
+        is booked as 1 drop in the real ledger, captured from the executor as
+        it retires; real `drop_count`."""
+        from jugglebot import records as rec
+        path = tmp_path / 'records.md'
+        self._ended_attempt(tmp_path, 3, 2, records_path=path, missed_feeds=1)
+        assert rec.load(str(path)).drops.live == 1
+        path2 = tmp_path / 'records2.md'
+        self._ended_attempt(tmp_path, 3, 3, records_path=path2)
+        drops = rec.load(str(path2)).drops   # a record row writes; no drop
+        assert drops is None or drops.live == 0
+
+    def test_a_reload_goal_whose_feed_catch_is_missed_books_one_drop(
+            self, tmp_path):
+        """TKT-64: the Feed ahead of a `magazine` Throw is a `reload` goal;
+        its missed Feed Catch (executor `missed_feed_catches`, pinned from the
+        executor side by `test_a_missed_catch_on_a_feed_catch_is_exposed_as_a_missed_feed`)
+        books exactly one drop in the real ledger, and no record row."""
+        from jugglebot import records as rec
+        path = tmp_path / 'records.md'
+        self._ended_attempt(tmp_path, 0, 0, records_path=path,
+                            pattern='reload', missed_feeds=1)
+        model = rec.load(str(path))
+        assert model.drops.live == 1
         assert all(not t.rows for t in model.ordered())
 
     def test_a_raising_drops_total_never_escapes_offer_record(self, tmp_path):

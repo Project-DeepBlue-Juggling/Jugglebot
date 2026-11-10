@@ -382,7 +382,8 @@ def test_a_malformed_drops_marker_is_never_overwritten(tmp_path):
 
 def test_skill_node_passes_the_drop_count_and_feeds_reach_the_ledger():
     src = SKILL_NODE.read_text()
-    assert 'rp.drop_count(self._goal_reports)' in src
-    assert "0 if pattern == 'magazine' else" in src   # a magazine Feed books only Feed misses
+    assert 'rp.drop_count(self._goal_reports,' in src
+    assert 'feed_missed=feed_missed' in src          # Feed misses are counted (FEAT-47)
+    assert "drops = (0 if pattern == 'magazine'" in src   # a magazine run books ZERO drops (owner, TKT-64)
     body = src.split('def _offer_record')[1].split('def _juggle_execute')[0]
     assert 'FEED_PATTERNS' not in body        # a Feed books drops too

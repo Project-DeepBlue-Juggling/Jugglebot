@@ -168,7 +168,9 @@ def test_finish_ends_the_goal_thrown(tmp_path):
 
 def test_a_magazine_end_books_no_drop(tmp_path):
     """FEAT-47: the placeholder ThrowReport (caught=False) of `_magazine_finish`
-    is not a Throw to be caught; a Feed books only Feed misses (0 today). Real
+    is not a Throw to be caught, and a `magazine` run books ZERO drops, always
+    (owner, TKT-64): its Throw goes into Ball Butler's magazine and nothing is
+    meant to catch it. The Feed before it is a separate `reload` goal. Real
     `drop_count`, real ledger, real `_juggle_execute` (nothing patched away)."""
     from unittest.mock import MagicMock
     from jugglebot import records as rec

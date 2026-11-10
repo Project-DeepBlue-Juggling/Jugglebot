@@ -43,3 +43,4 @@ Recommendation: 2. The definition's edge cases are in the ticket.
 - 2026-11-10: Night Shift 2026-11-10: held on night-shift/2026-11-10-FEAT-47: (b) 3 audit findings, a false magazine drop first; unblocked by the owner's answer in TKT-61
 - 2026-11-11: Night Shift 2026-11-11: TKT-61's three fixes merged (f87faa19); still open: Feed misses (required before closing) and the history backfill
 - 2026-11-11: Night Shift 2026-11-11: Feed-miss slice held on night-shift/2026-11-11-FEAT-47: (b) magazine Feed misses still uncounted; unblocked by your answer
+- 2026-11-11: Night Shift 2026-11-11: slice 2 counts Ball Butler Feed misses as drops; the history backfill is for a day Session
