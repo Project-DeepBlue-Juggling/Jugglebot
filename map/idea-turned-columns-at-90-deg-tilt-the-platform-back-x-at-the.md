@@ -2,9 +2,9 @@
 id: IDEA-22
 kind: idea
 title: 'Turned Columns at 90 deg: tilt the Platform back (+x) at the Catch so the ball stops hitting the Platform top'
-status: inbox
+status: backlog
 created: '2026-11-10'
-updated: '2026-11-10T12:41:43Z'
+updated: '2026-11-10T18:01:02Z'
 owners: []
 priority: medium
 effort: m
@@ -25,3 +25,18 @@ Owner, Sitting of 2026-11-10 (sheet step 8, IDEA-11): "45 deg passed perfectly, 
 Evidence the same night (launch log 2026-11-10-20-11-22, bag ~/Desktop/rosbags/2026-11-10_20-11-22): 4 Attempts at 90 deg, 8/8, 3/3, 3/3, 3/3, all MISSED_CATCH on an empty Cup; three ended at Ball 2's first Catch after the Feed with the Tracker fit 47, 26 and 14 mm outward along -y and 9-23 mm in -x. The 2026-11-03 and 2026-11-07 notes on IDEA-11 report the same Platform-top hits at 90 deg only.
 
 Questions before software: is the Catch tilt a per-Site constant (a Catch plane tilted about the pair axis) or does it follow the arrival direction; how many degrees clear the Platform top at a 125 mm separation; does the pose planner's admissible box at 90 deg (Apex 0.875-0.975) survive the tilt at the Sitting limits (a nominate probe answers it offline).
+
+## Options (2026-11-11)
+
+What exists: every Catch is already banked toward the ball's arrival (`tilt_geometry.tilt_to_receive`, the Cup axis anti-parallel to the arrival, clamped at 12 deg). A Catch can also be pinned to a fixed attitude (`Skill.receive_tilt`); today only the Feed Catch is, pinned Level.
+
+1. **A constant Banking offset for turned Columns:** a Pattern parameter (degrees about the pair axis, +x as you asked) added to the auto-banked Catch tilt on every Throw's Catch. The Feed Catch stays pinned Level. Offline first, a nominate probe at 90 deg shows whether the admissible box (Apex 0.875 to 0.975) survives the extra tilt at the Sitting limits. Then a Sitting row.
+2. **A fixed Catch attitude per Site at 90 deg:** pin `receive_tilt` instead of auto-banking. Simpler to reason about, but it gives up the arrival-matched seat that keeps the ball from skidding in the Cup.
+3. **Measure first, no code:** read the 2026-11-10 20:11 bag for the commanded Catch tilt at 90 and 45 deg, whether the 12 deg clamp binds at 90, and where each miss struck. The Night Shift can do this offline.
+4. **Fix the landing first:** the three ends were Ball 2's first Catch after the Feed, 14 to 47 mm outward along -y, which is BUG-63's outward first Throw. If the ball lands where it should, it may stop hitting the Platform top without any tilt.
+
+Recommendation: 3, then 1. The read is cheap, and it shows whether the misses are an attitude problem (1) or a landing problem (4).
+
+## Progress
+
+- 2026-11-11: Night Shift 2026-11-11: options written; awaiting the owner's choice in the question ticket
