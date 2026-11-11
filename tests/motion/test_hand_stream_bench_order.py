@@ -53,6 +53,10 @@ def test_no_rpc_before_the_envelope_checks():
     # clears a latch, never energises) -- every SET_* RPC comes after the check
     for verb in ("SET_CONTROLLER_MODE", "SET_POS_GAIN", "SET_VEL_GAINS", "SET_AXIS_STATE"):
         assert "RpcMethod.%s" % verb not in head, verb
+    # and the clear-errors call is the only rpc.call between the precondition
+    # block and the pre-check
+    tail = head[head.index("if args.clear_errors:"):]
+    assert tail.count("rpc.call(") == 1, tail.count("rpc.call(")
 
 
 def test_triangle_envelope_refusal_helper():

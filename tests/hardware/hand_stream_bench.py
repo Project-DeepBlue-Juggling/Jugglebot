@@ -1404,7 +1404,7 @@ def main():
                 tri_pre_start = start
             why_env = triangle_envelope_refusal(tri_pre_start, args.tri_span)
             if why_env is not None:
-                print(f"ABORT: {args.stage} refused from the baseline "
+                print(f"ABORT: {args.stage} refused from "
                       f"{tri_pre_start:+.4f} rev (before the hand bring-up; "
                       f"nothing was commanded): {why_env}")
                 return 2
@@ -1484,8 +1484,8 @@ def main():
             # earlier read; the position can move on bring-up).
             why_env = triangle_envelope_refusal(start, args.tri_span)
             if why_env is not None:
-                print(f"ABORT: {why_env} (post-bring-up position {start:+.4f} rev"
-                      f"{'; the hand is ENERGISED and holding there' if args.close_loop else ''})")
+                print(f"ABORT: {why_env} (post-bring-up position {start:+.4f} rev; "
+                      f"the hand is CLOSED_LOOP and holding there)")
                 return 2
             traj = Triangle(start, args.tri_span, args.tri_speed)
         elif args.stage == "stroke_cut":
