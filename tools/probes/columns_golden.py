@@ -18,7 +18,9 @@ Serialisation (one rule per type, no tolerance anywhere):
 - a dataclass (``Skill``, ``ThenThrow``, ``LandingPrior``, ``Schedule``) ->
   ``{"__type__": class name, <every dataclasses.fields() name>: value}``, so a
   field added later is a visible difference, not a silent omission (the one
-  deliberate exception, ``_SKIPPED``, is listed with its reason);
+  deliberate exception, ``_SKIPPED``, is listed with its reason; a field
+  added later whose None is the old compile is written only when set,
+  ``_ABSENT_WHEN_NONE``);
 - None -> null, a bool -> a bool, an int -> an int, a str -> a str, a tuple /
   list -> a list.
 
@@ -65,6 +67,15 @@ FIXTURE = os.path.join(_REPO, 'tests', 'fixtures',
 #: ``compare=False`` on the dataclass for the same reason.
 _SKIPPED = {('Schedule', 'source')}
 
+#: (class name, field name) pairs ADDED after the fixture was written whose
+#: ``None`` is exactly the pre-change compile: written only when NOT None, so
+#: every recorded case still pins them None (a non-None value is a visible
+#: difference) without regenerating the fixture.
+#: ``Skill.receive_tilt_offset`` (IDEA-22, 2026-11-12): the turned-Columns
+#: 90 deg Catch tilt-back; ``Pattern.catch_tilt_offset`` defaults None, so
+#: every case here, the 45 and 90 deg turned pairs included, compiles None.
+_ABSENT_WHEN_NONE = {('Skill', 'receive_tilt_offset')}
+
 
 def ser(v):
     """The exact serialisation (module docstring)."""
@@ -86,7 +97,10 @@ def ser(v):
         for f in dataclasses.fields(v):
             if (name, f.name) in _SKIPPED:
                 continue
-            out[f.name] = ser(getattr(v, f.name))
+            val = getattr(v, f.name)
+            if val is None and (name, f.name) in _ABSENT_WHEN_NONE:
+                continue
+            out[f.name] = ser(val)
         return out
     if isinstance(v, (tuple, list)):
         return [ser(x) for x in v]

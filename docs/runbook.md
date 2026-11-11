@@ -216,7 +216,6 @@ Rigs: Robot 6 blocks (274 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - IDEA-17 [Robot] Hand end-of-stroke bumper, and first the planner's own brake shape: let the ceiling, not the Hand, cap the Apex: no ## Sitting section
 - IDEA-18 [Robot] Learner context cannot tell a Throw from rest from a carried Throw: no ## Sitting section
 - IDEA-20 [Robot] Platform Accelerometer?: no ## Sitting section
-- IDEA-22 [Robot] Turned Columns at 90 deg: tilt the Platform back (+x) at the Catch so the ball stops hitting the Platform top: no ## Sitting section
 - IDEA-9 [Robot] JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites: no ## Sitting section
 
 ## Questions a Sitting can answer

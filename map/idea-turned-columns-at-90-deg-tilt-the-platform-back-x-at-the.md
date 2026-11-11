@@ -2,20 +2,21 @@
 id: IDEA-22
 kind: idea
 title: 'Turned Columns at 90 deg: tilt the Platform back (+x) at the Catch so the ball stops hitting the Platform top'
-status: backlog
+status: complete
 created: '2026-11-10'
-updated: '2026-11-10T18:01:02Z'
+updated: '2026-11-11T18:15:31Z'
 owners: []
 priority: medium
 effort: m
 hardware: robot
-owner: decision
+owner: hands
 radius: subsystem
 area: skill-stack
 blocked_by: []
 links:
 - idea-jp-10-turned-columns-the-columns-pair-at-fixed-angles-about
 - bug-ball-2-s-first-throw-after-the-feed-catch-lands-about-180-mm
+- logbook/2026-11-12-turned-columns-catch-tilt-back.md
 parent: pattern-progression-columns-to-centre-and-orbit
 filed_by: claude (sitting debrief 2026-11-10)
 ---

@@ -194,6 +194,10 @@ class NominationConfig:
     apex_m_ball2: Optional[float] = None
     #: ``columns_turned`` only (skill_node param ``columns_angle_deg``)
     angle_deg: float = 0.0
+    #: ``columns_turned`` at 90 deg only (skill_node param
+    #: ``columns_turned_catch_tilt_back_deg``, IDEA-22): the Catch tilt-back,
+    #: degrees, :func:`turned_catch_tilt_offset`. 0.0 = today's Catch.
+    catch_tilt_back_deg: float = 0.0
     planner_mode: str = 'pose'
     carry_zvd: bool = False
     #: None = the SHORT pattern (:func:`short_n_throws`); set only to override
@@ -231,6 +235,45 @@ def _feed_index(sites, feed_site: str) -> int:
     return 0 if feed_site in (name0, name0.split('@')[0]) else 1
 
 
+#: IDEA-22 (2026-11-12): the turn at which the Catch tilt-back applies, and
+#: the tolerance on ``|angle_deg|`` (the GUI types whole degrees; 45 deg, the
+#: other flown turn, is far outside it).
+TILT_BACK_TURN_DEG = 90.0
+TILT_BACK_TURN_TOL_DEG = 0.5
+
+
+def turned_catch_tilt_offset(pattern: str, angle_deg: float,
+                             tilt_back_deg: float
+                             ) -> Optional[Tuple[float, float]]:
+    """The ``Pattern.catch_tilt_offset`` (rx, ry) rad for a goal, or ``None``.
+
+    Owner, Sitting 2026-11-10 / TKT-62 (IDEA-22): turned Columns at 90 deg
+    tilts the Platform slightly BACK, toward Robot-frame +x, at every
+    auto-banked Catch, so the ball stops striking the Platform top. Applied
+    ONLY to ``columns_turned`` with ``| |angle_deg| - 90 | <=``
+    :data:`TILT_BACK_TURN_TOL_DEG`; every other Pattern and turn, and a
+    ``tilt_back_deg`` of exactly 0.0, return ``None`` (today's schedule, bit
+    for bit).
+
+    The offset is a rotation about Robot-frame **+y** by ``+tilt_back_deg``:
+    ``(rx, ry) = (0, +radians(tilt_back_deg))``, which leans the Cup normal
+    (``tilt_geometry.cup_axis``) toward **+x** -- ``(sin t, 0, cos t)`` -- the
+    owner's "back (+ve x)". It is a Robot-frame direction, independent of the
+    turn's sign (-90 deg is the same pair with P1/P2 swapped).
+    """
+    if pattern != 'columns_turned':
+        return None
+    deg = float(tilt_back_deg)
+    if deg == 0.0:
+        return None
+    if not math.isfinite(deg):
+        raise ValueError('catch tilt-back must be finite, got %r'
+                         % (tilt_back_deg,))
+    if abs(abs(float(angle_deg)) - TILT_BACK_TURN_DEG) > TILT_BACK_TURN_TOL_DEG:
+        return None
+    return (0.0, math.radians(deg))
+
+
 def build_pattern(config: NominationConfig, n_throws: Optional[int] = None):
     """THE ``Pattern`` / ``OneBallPattern`` for ``config`` -- the one builder
     skill_node and a nomination share.  ``n_throws`` = the operator's count
@@ -266,7 +309,9 @@ def build_pattern(config: NominationConfig, n_throws: Optional[int] = None):
                           dwell_s=config.dwell_s, n_throws=n,
                           phantom_balls=((0,) if p == 'columns_1ball_fed' else ()),
                           apex_m_ball_b=(config.apex_m_ball2
-                                         if p == 'columns_highlow' else None))
+                                         if p == 'columns_highlow' else None),
+                          catch_tilt_offset=turned_catch_tilt_offset(
+                              p, config.angle_deg, config.catch_tilt_back_deg))
     if p == 'columns_1ball':
         sites = st.columns_sites(config.separation_mm)
         fi = _feed_index(sites, config.feed_site)
@@ -649,7 +694,9 @@ def plan_nominal(schedule, limits, geom, cfg, flight_frac: float = 0.0, *,
                 term = sg.CatchTerminal(landing_mm=pos_mm, landing_vel_mm_s=vel_mm_s,
                                         t_land_s=float(t_land), rest_site_mm=rest_mm,
                                         then_throw=then, hold_tilt=sk.hold_tilt,
-                                        receive_tilt=sk.receive_tilt)
+                                        receive_tilt=sg.catch_receive_tilt(
+                                            sk.receive_tilt,
+                                            sk.receive_tilt_offset, vel_mm_s))
             term = _terminal_on_segment_clock(sk.kind, term, t_origin)
         except ValueError as exc:
             v.ok, v.code, v.message = False, 'UNREACHABLE', str(exc)
@@ -849,6 +896,9 @@ class NominationReport:
         s += ', dwell %.2f s' % c.dwell_s
         if c.pattern == 'columns_turned':
             s += ', angle %.0f deg' % c.angle_deg
+            if turned_catch_tilt_offset(c.pattern, c.angle_deg,
+                                        c.catch_tilt_back_deg) is not None:
+                s += ', Catch tilt-back %g deg' % c.catch_tilt_back_deg
         s += ', %s%s' % (c.planner_mode, ', carry_zvd' if c.carry_zvd else '')
         return s
 

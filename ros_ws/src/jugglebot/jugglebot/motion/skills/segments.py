@@ -319,6 +319,45 @@ def receive_hold_tilt(landing_vel_mm_s) -> Tuple[float, float]:
     return (float(rx), float(ry))
 
 
+def catch_receive_tilt(receive_tilt, receive_tilt_offset,
+                       landing_vel_mm_s) -> Optional[Tuple[float, float]]:
+    """The ``CatchTerminal.receive_tilt`` a CATCH skill is built with: THE one
+    derivation point for the Catch tilt-back offset (IDEA-22, 2026-11-12).
+
+    ``receive_tilt_offset`` ``None`` (every Catch but turned Columns at
+    90 deg, ``schedule.Skill.receive_tilt_offset``) returns ``receive_tilt``
+    unchanged, so every other Catch is built exactly as before.  Given an
+    offset ``(drx, dry)`` rad, the auto-banked receive tilt the emitter would
+    compute for this arrival (``tilt_geometry.tilt_to_receive``, the same call
+    and the same 12 deg clamp as ``unified_cycle._receive_pin_for``) has the
+    offset ADDED component-wise in the ``(rx, ry)`` rotation-vector
+    parameterisation, and the sum is clamped back onto the
+    ``tilt_geometry.MAX_TILT_DEG`` disc (direction kept), so the commanded
+    attitude never leaves the ceiling the auto bank itself respects.  The
+    result is returned as a receive-tilt PIN: it crosses the
+    ``InstallSegment`` wire on the existing ``receive_tilt`` field, so the
+    emitter's solve, the online check and the offline nomination all plan the
+    same final attitude, and the gates (``cup_realize.prescribed_tilt_fn``'s
+    tilt disc, ``validate_cycle``) judge it.  Mutually exclusive with a
+    caller-pinned ``receive_tilt`` (the Skill refuses both at construction).
+    """
+    if receive_tilt_offset is None:
+        return receive_tilt
+    if receive_tilt is not None:
+        raise ValueError('give receive_tilt OR receive_tilt_offset, not both')
+    base = np.asarray(tg.tilt_to_receive(
+        np.asarray(landing_vel_mm_s, dtype=float).reshape(3)), dtype=float)
+    tilt = base + np.asarray(receive_tilt_offset, dtype=float).reshape(2)
+    if not np.all(np.isfinite(tilt)):
+        raise ValueError('receive tilt offset %r is not finite'
+                         % (receive_tilt_offset,))
+    mag = float(np.hypot(tilt[0], tilt[1]))
+    cap = float(np.radians(tg.MAX_TILT_DEG))
+    if mag > cap:
+        tilt = tilt * (cap / mag)
+    return (float(tilt[0]), float(tilt[1]))
+
+
 def hold_axis_site(landing_mm, hold_tilt, z_mm: float) -> np.ndarray:
     """Where the cup opening is at height ``z_mm`` on the HELD axis line.
 

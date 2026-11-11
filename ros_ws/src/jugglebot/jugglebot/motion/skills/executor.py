@@ -55,7 +55,8 @@ from jugglebot.motion.skills.schedule import (FRESH_THROW_LEAD_KNOTS,
 from jugglebot.motion.skills.segments import (CATCH, REST, THROW, CatchTerminal,
                                               RestTerminal, Segment,
                                               SegmentConfig, ThrowAfterCatch,
-                                              ThrowTerminal)
+                                              ThrowTerminal,
+                                              catch_receive_tilt)
 from jugglebot.motion.trajectory import ballistics_bc
 from jugglebot.motion.trajectory import throw_envelope
 from jugglebot.motion.trajectory.feasibility import STALE_STATE
@@ -3686,7 +3687,9 @@ class SkillExecutor:
                              t_land_s=float(landing.t_land_abs_s),
                              rest_site_mm=self._catch_rest_mm(skill, landing),
                              then_throw=then, hold_tilt=skill.hold_tilt,
-                             receive_tilt=skill.receive_tilt)
+                             receive_tilt=catch_receive_tilt(
+                                 skill.receive_tilt, skill.receive_tilt_offset,
+                                 landing.vel_mm_s))
 
     def _forward_model_xy(self, x, y_d_si,
                           ctx: Optional['lrn.ThrowContext'] = None):
@@ -4162,7 +4165,9 @@ class SkillExecutor:
                              t_land_s=float(landing.t_land_abs_s),
                              rest_site_mm=rest_mm, then_throw=then_throw,
                              hold_tilt=skill.hold_tilt,
-                             receive_tilt=skill.receive_tilt)
+                             receive_tilt=catch_receive_tilt(
+                                 skill.receive_tilt, skill.receive_tilt_offset,
+                                 landing.vel_mm_s))
 
     def _rest_terminal(self, skill: Skill) -> RestTerminal:
         """A REST's terminal. ``rest_site_mm`` / ``tilt`` / ``holds_ball``

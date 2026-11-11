@@ -7422,6 +7422,44 @@ def test_columns_angle_cannot_change_while_a_goal_is_active():
         [_MockParameter(90.0, name='columns_angle_deg')])[0].successful is True
 
 
+def test_turned_catch_tilt_back_defaults_to_4_deg_and_reaches_the_pattern():
+    """IDEA-22: `columns_turned_catch_tilt_back_deg` (default 4.0) rides the
+    ONE NominationConfig builder, so the node's Pattern and the nomination's
+    carry the same Catch tilt-back (rotation about +y, Cup normal toward +x)
+    at 90 deg, and none at 45 deg."""
+    node, _client = _node_with_client(response=_response())
+    assert node._params['columns_turned_catch_tilt_back_deg'] == 4.0
+    cfg = node._nomination_config('columns_turned', 0.95, 125.0, 0.27,
+                                  angle_deg=90.0, feed_site='P1@90')
+    assert cfg.catch_tilt_back_deg == 4.0
+    pat = sn.nom.build_pattern(cfg, 5)
+    assert pat.catch_tilt_offset == (0.0, pytest.approx(math.radians(4.0)))
+    cfg45 = node._nomination_config('columns_turned', 0.95, 125.0, 0.27,
+                                    angle_deg=45.0, feed_site='P1@45')
+    assert sn.nom.build_pattern(cfg45, 5).catch_tilt_offset is None
+    node._params['columns_turned_catch_tilt_back_deg'] = 0.0
+    cfg0 = node._nomination_config('columns_turned', 0.95, 125.0, 0.27,
+                                   angle_deg=90.0, feed_site='P1@90')
+    assert sn.nom.build_pattern(cfg0, 5).catch_tilt_offset is None
+
+
+def test_turned_catch_tilt_back_is_bounded_and_held_while_a_goal_is_active():
+    node, _client = _node_with_client(response=_response())
+    name = 'columns_turned_catch_tilt_back_deg'
+    for bad in (12.5, -13.0, float('nan'), float('inf')):
+        res = node.set_parameters([_MockParameter(bad, name=name)])[0]
+        assert res.successful is False and 'within' in res.reason
+    assert node.set_parameters(
+        [_MockParameter(3.0, name=name)])[0].successful is True
+    node._params[name] = 3.0
+    node._executor = object()          # `_attempt_running` reads this
+    res = node.set_parameters([_MockParameter(5.0, name=name)])[0]
+    assert res.successful is False and 'goal is active' in res.reason
+    # A launch-file value outside the bound (no set-time check) is clamped.
+    node._params[name] = 40.0
+    assert node._turned_catch_tilt_back_deg() == 12.0
+
+
 def test_columns_turned_feed_site_is_the_one_nearest_ball_butler():
     from jugglebot.robot_frame import RobotFrame
     node, _client = _node_with_client(response=_response())
