@@ -2,9 +2,9 @@
 id: TKT-65
 kind: ticket
 title: 'IDEA-22 held on night-shift/2026-11-12-IDEA-22: fly it with the 4 deg default, change the default to 3 deg, keep the velocity match on the arrival first, or build the fixed attitude per Site instead?'
-status: open
+status: complete
 created: '2026-11-12'
-updated: '2026-11-11T19:00:15Z'
+updated: '2026-11-11T21:12:02Z'
 owners: []
 priority: medium
 effort: xs
@@ -37,3 +37,7 @@ A side effect to know: the offset rides the existing Catch pin, and a pinned Cat
 - 3 or 4: a further night or day Session changes the branch before it flies.
 
 Recommendation: 2, then 3 if the Sitting shows the Cup sliding sideways at the Catch.
+
+## Answer
+
+OK, let's go with 3 deg. However you must change the angle. We need a rotation about +ve x, so that the platform tip moves in -ve y.
