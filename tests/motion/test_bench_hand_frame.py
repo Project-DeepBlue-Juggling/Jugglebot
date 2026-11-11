@@ -110,7 +110,7 @@ def test_the_ema_reaches_the_detect_threshold_only_on_a_sustained_stall():
 
 def test_push_verdict():
     assert bhf.push_verdict(-3.0)[0]
-    assert not bhf.push_verdict(+3.0)[0]                 # mirrored frame
+    assert not bhf.push_verdict(+3.0)[0]                 # a mirrored frame
     assert not bhf.push_verdict(-0.2)[0]                 # too small to judge
     assert bhf.push_verdict(+3.0, expect_down_sign=+1.0)[0]
 

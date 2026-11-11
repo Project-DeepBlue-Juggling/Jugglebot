@@ -1,48 +1,40 @@
 #!/usr/bin/env python3
-"""Bench Hand frame tool: make the mirrored bench Hand's drive count UP as positive, then home it.
+"""Bench Hand checks and a guarded USB home: prove the bench Hand's drive frame, then home it.
 
-The bench Hand's motor sits on the other side of the Hand axis from the robot's (owner,
-2026-11-11), so the motor turns the opposite way for the same motion and the drive's
-position frame is mirrored: pushing the Hand DOWN counts UP. The can-bridge Hand lane is
-production-frame (its 0..10.501 rev clip, and the C1 brake that fires only on upward,
-i.e. positive, velocity, leg_interp.cpp), so the stage cannot be mirrored in software.
-The drive's frame has to be. Phase swaps and ``motor.direction`` cannot do it: the
-encoder offset calibration re-learns commutation and sets ``direction`` to suit whatever
-wiring there is (ODrive docs: "Automatically set based on encoder direction after
-calibration. Do not modify this manually").
-
-THE FLIP IS UNDOCUMENTED. ODrive documents no meaning for the sign of
-``pos_vel_mapper.config.scale``. The hypothesis this tool tests: with the scale at -1 the
-position frame inverts, and a fresh encoder offset calibration sets ``direction`` so that
-torque agrees with it. Two gates prove it before any closed loop runs:
+The bench Hand is production-identical (owner, 2026-11-11: its motor was moved to the robot's
+side of the Hand axis; before that it was mirrored and the firmware HOME drove it UP). The
+can-bridge Hand lane is production-frame (the 0..10.501 rev clip, and the C1 brake that fires
+only on upward, i.e. positive, velocity, leg_interp.cpp), so the drive must count UP as
+positive. After any change to the motor, its wiring or the encoder, prove that before a
+closed loop runs:
   1. ``push-check``: Hand IDLE, the operator pushes it DOWN, the count must go NEGATIVE.
   2. ``torque-check``: two OPEN-LOOP torque pulses (no position or velocity loop, so a
      sign error cannot run away): 2 A down, then 4 A up (gravity holds at about 1.5 A).
-     Each must move the Hand the commanded way, which proves that a positive torque
-     moves the Hand in the positive direction. A failed pulse IDLEs at once.
-If either gate fails, ``unflip`` then ``calibrate`` restores the old frame, and FEAT-45
-cannot fly on this rig.
+     Each must move the Hand the commanded way, which proves that a positive torque moves
+     the Hand in the positive direction. A failed pulse IDLEs at once.
+If ``push-check`` fails, the mechanism or encoder is mirrored: stop, it is hardware. If
+``torque-check`` fails, the commutation calibration no longer matches the wiring: run
+``calibrate`` (Hand mid-stroke) and ``torque-check`` again. Calibration sets
+``motor.direction`` itself (ODrive docs: "Do not modify this manually").
 
-COMMANDS THE MOTOR (calibrate, torque-check, home), so it lives in tests/hardware/ and
-the ``*_bench.py`` name keeps pytest from collecting it. USB only: the launch stays down
-and the bridge is never asked to move the Hand. Every save restarts the drive, which
-latches the bridge's CAN_BUS_DOWN, so re-flash the bridge after the last save and
-before the stage, and home after the last save (a restart loses the reference).
+COMMANDS THE MOTOR (calibrate, torque-check, home), so it lives in tests/hardware/ and the
+``*_bench.py`` name keeps pytest from collecting it. USB only: the launch stays down and the
+bridge is never asked to move the Hand. A drive restart (power cycle, any save) loses the
+position reference and latches the bridge's CAN_BUS_DOWN, so home after the last restart and
+re-flash the bridge before the stage.
 
     python tests/hardware/bench_hand_frame_bench.py status
-    python tests/hardware/bench_hand_frame_bench.py flip            # scale -> -1, save
     python tests/hardware/bench_hand_frame_bench.py push-check      # push the Hand DOWN
-    python tests/hardware/bench_hand_frame_bench.py calibrate       # Hand mid-stroke; save
     python tests/hardware/bench_hand_frame_bench.py torque-check    # Hand mid-stroke
+    python tests/hardware/bench_hand_frame_bench.py calibrate       # only on a torque-check FAIL
     python tests/hardware/bench_hand_frame_bench.py home            # -3 rev/s, ref -0.10
-    python tests/hardware/bench_hand_frame_bench.py unflip          # fallback: scale -> +1, save
 
 ``home`` is the can-bridge HOME (leg_homing.cpp, Homing::HAND_*) run over USB with guards
-the firmware lacks: VELOCITY/VEL_RAMP at 3 rev/s, current cap 8 + 3 A, stop when the
-Iq EMA (weight 0.7) reaches 8 A, IDLE, set the reference. It aborts to IDLE on a
-wrong-way move, overspeed, too much travel, a drive error or a timeout, restores the mode
-and limits it changed, and saves nothing. ``--down-sign +1 --ref 0.1`` homes the
-unflipped (mirrored) frame, as flown 2026-11-11.
+the firmware lacks: VELOCITY/VEL_RAMP at 3 rev/s, current cap 8 + 3 A, stop when the Iq EMA
+(weight 0.7) reaches 8 A, IDLE, set the reference. It aborts to IDLE on a wrong-way move,
+overspeed, too much travel, a drive error or a timeout, restores the mode and limits it
+changed, and saves nothing. ``--down-sign +1 --ref 0.1`` homes a mirrored frame (the bench
+before 2026-11-11).
 """
 from __future__ import annotations
 
@@ -169,20 +161,6 @@ def cmd_status(args):
     print(describe(connect()))
 
 
-def set_scale(target):
-    d = connect()
-    require_idle_clean(d)
-    before = d.axis0.pos_vel_mapper.config.scale
-    d.axis0.pos_vel_mapper.config.scale = float(target)
-    d = save_and_reconnect(d)
-    after = d.axis0.pos_vel_mapper.config.scale
-    print("pos_vel_mapper.scale %+.0f -> %+.0f (read back after restart)" % (before, after))
-    print(describe(d))
-    if after != float(target):
-        raise SystemExit("FAIL: scale did not stick")
-    print("NEXT: push-check, then calibrate (the old commutation calibration no longer applies)")
-
-
 def cmd_push_check(args):
     d = connect()
     a = d.axis0
@@ -228,7 +206,7 @@ def cmd_calibrate(args):
         raise SystemExit("FAIL: calibration did not succeed; nothing saved")
     d = save_and_reconnect(d)
     print("after (saved): " + describe(d))
-    print("NEXT: torque-check")
+    print("NEXT: torque-check again")
 
 
 def _pulse(d, amps, up_sign):
@@ -301,7 +279,7 @@ def cmd_torque_check(args):
     if len(results) == 2 and all(results):
         print("TORQUE-CHECK PASS: positive torque moves the Hand the positive (up = %+d) way" % args.up_sign)
     else:
-        raise SystemExit("TORQUE-CHECK FAIL: do not run any closed loop; use unflip + calibrate")
+        raise SystemExit("TORQUE-CHECK FAIL: run no closed loop; calibrate (Hand mid-stroke), then torque-check again")
 
 
 def run_home(d, down_sign, ref, sample=None):
@@ -380,17 +358,15 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("status").set_defaults(fn=cmd_status)
-    sub.add_parser("flip").set_defaults(fn=lambda a: set_scale(-1.0))
-    sub.add_parser("unflip").set_defaults(fn=lambda a: set_scale(+1.0))
     pc = sub.add_parser("push-check")
     pc.add_argument("--seconds", type=float, default=20.0)
     pc.add_argument("--expect-down-sign", type=float, default=-1.0,
-                    help="-1: DOWN counts negative (production frame, after flip); +1 before it")
+                    help="-1: DOWN counts negative (production frame); +1 for a mirrored one")
     pc.set_defaults(fn=cmd_push_check)
     sub.add_parser("calibrate").set_defaults(fn=cmd_calibrate)
     tc = sub.add_parser("torque-check")
     tc.add_argument("--up-sign", type=int, choices=(-1, 1), default=1,
-                    help="+1: up is positive (production frame, after flip); -1 before it")
+                    help="+1: up is positive (production frame); -1 for a mirrored one")
     tc.set_defaults(fn=cmd_torque_check)
     h = sub.add_parser("home")
     h.add_argument("--down-sign", type=float, choices=(-1.0, 1.0), default=-1.0)

@@ -1,5 +1,5 @@
 ---
-title: "FEAT-45 bench prep: the bench Hand is mirrored, so its drive frame is flipped behind two gates; the FOC scope hung on a trigger point that splits a sample"
+title: "FEAT-45 bench prep: the mirrored bench Hand (fixed in hardware), a gated frame check and USB home; the FOC scope hung on a trigger point that splits a sample"
 type: bugfix
 date: 2026-11-11
 status: in-progress
@@ -53,3 +53,9 @@ The Hand was homed by hand-run USB scripts. The probe now passes (GO), and FEAT-
 - 2026-11-11, `python -m pytest tests/motion/test_bench_hand_frame.py tests/motion/test_hand_foc_scope.py -q`: **49 passed**.
 - 2026-11-11, `python tools/probes/hand_foc_scope.py probe --label bench` on the bench drive: **GO**. 8003 Hz, 255.9 ms window, field strength 0.116, working offset -5.910.
 - The flip and its gates have not run on a drive: main power was off when they were written. They are FEAT-45's first steps.
+
+## Update (later 2026-11-11): fixed in hardware, flip dropped
+
+The owner moved the bench Hand's motor to the robot's side of the Hand axis, so the rig is production-identical. `flip` and `unflip` were removed from the tool before anyone ran them: on this rig they would now mirror it. The FEAT-45 row keeps both checks, because the change touched the motor. `push-check` proves the frame. `torque-check` proves the commutation still matches the wiring, with `calibrate` then `torque-check` as its fallback. Then `home`, at production -3 rev/s to -0.10.
+
+- 2026-11-11, `python -m pytest tests/motion/test_bench_hand_frame.py -q`: **9 passed**. The checks and the home have not yet run on the modified rig.
