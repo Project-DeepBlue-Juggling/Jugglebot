@@ -4245,6 +4245,49 @@ class TestJuggleAction:
                             reports=[], feeds_caught=1)
         assert rec.load(str(path)).drops.caught == 3
 
+    def test_landing_scores_reach_the_ledger(self, tmp_path):
+        """IDEA-21: the Attempt's Throw scores (mm, Throw order, Throws
+        without a Fit counted) are offered to the ledger whether or not a
+        record is beaten; a `magazine` run books no Throw score."""
+        from jugglebot import records as rec
+        R = sn.rp.ThrowReport
+
+        def rpt(n, err, caught=True):
+            return R(throw_no=n, n_throws=3, ball_id=0, caught=caught,
+                     row=True, no_row_reason='', apex_m=0.9,
+                     landing_err_mm=err, release_err_s=None,
+                     arrival_err_s=None, seat_s=None)
+        reports = [rpt(1, (3.0, 4.0)), rpt(2, None, caught=False),
+                   rpt(3, (0.0, 12.0))]
+        path = tmp_path / 'records.md'
+        self._ended_attempt(tmp_path, 3, 2, records_path=path,
+                            reports=reports)
+        [row] = rec.load(str(path)).scores
+        assert (row.pattern, row.scores, row.no_fit) == (
+            'self_toss', (5, 12), 1)
+        # equal catches is not a record: the scores are still written
+        self._ended_attempt(tmp_path, 3, 2, records_path=path,
+                            reports=reports)
+        assert len(rec.load(str(path)).scores) == 2
+        # magazine: its placeholder Throw is never a catch target
+        self._ended_attempt(tmp_path, 1, 0, records_path=path,
+                            pattern='magazine', reports=reports)
+        assert len(rec.load(str(path)).scores) == 2
+
+    def test_a_drained_feed_report_keeps_its_landing_score(self):
+        node, _client = _node_with_client()
+        ex = MagicMock()
+        ex.feed_reports = [
+            sn.rp.FeedCatchReport(1, None, None, None, None,
+                                  landing_err_mm=(6.0, 8.0)),
+            sn.rp.FeedCatchReport(2, None, None, None, None)]
+        ex.reports = []
+        node._goal_feeds_caught = 0
+        node._goal_feed_scores = []
+        node._drain_reports(ex)
+        assert node._goal_feeds_caught == 2
+        assert node._goal_feed_scores == [10.0]
+
     def test_the_feed_catch_counter_counts_drained_feed_reports(self):
         node, _client = _node_with_client()
         ex = MagicMock()

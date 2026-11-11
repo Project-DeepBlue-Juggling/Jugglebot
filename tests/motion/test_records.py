@@ -593,3 +593,96 @@ def test_a_catch_only_attempt_still_writes_the_live_caught(tmp_path):
     assert rec.load(path).drops.caught == 6
     rec.record_attempt(path, _ac('2026-11-11 10:03', 'reload', 0, 0, 0))                     # nothing: no write
     assert rec.load(path).drops.caught == 6
+
+
+# -- Landing scores (IDEA-21, owner's decision in TKT-63) --------------------
+
+def _scored(when, pattern, catches, scores=(), no_fit=0, feeds=(), throws=None):
+    return rec.Attempt(when, pattern, catches + 1 if throws is None else throws,
+                       catches, 'COMPLETED', scores=tuple(scores),
+                       no_fit=no_fit, feed_scores=tuple(feeds))
+
+
+def test_scores_render_and_parse_round_trip_with_throws_per_pattern_and_feeds():
+    m = rec.empty()
+    m = rec.apply_scores(m, '2026-11-12 09:00', 'columns', [12.4, 14.6, 30.2], 2,
+                         [8.0])
+    m = rec.apply_scores(m, '2026-11-12 09:05', 'self_toss', [20.0])
+    m = rec.apply_scores(m, '2026-11-12 09:10', 'columns', [5.0, 7.0])
+    text = rec.render(m)
+    assert '## Landing scores' in text
+    assert '| 2026-11-12 09:00 | 3 | 15 | 2 | 12 15 30 |' in text
+    assert '| 2026-11-12 09:10 | 2 | 6 | 0 | 5 7 |' in text
+    assert '| 2026-11-12 09:00 | columns | 8 |' in text
+    back = rec.parse(text)
+    assert back == m and rec.render(back) == text
+    file_order = [t.pattern for t in back.ordered()]
+    idx = [file_order.index(r.pattern) for r in back.scores]
+    assert idx == sorted(idx)
+
+
+def test_a_ledger_with_no_scores_renders_unchanged_and_the_committed_file_still_parses():
+    text = (REPO / 'docs' / 'records.md').read_text()
+    m = rec.parse(text)
+    assert not m.scores and not m.feed_scores
+    assert 'Landing scores' not in rec.render(m)
+    assert rec.render(rec.parse(rec.render(rec.empty()))) == rec.render(rec.empty())
+
+
+def test_scores_with_no_scored_throw_still_book_the_throws_without_a_fit():
+    m = rec.apply_scores(rec.empty(), '2026-11-12 09:00', 'columns', [], 3)
+    text = rec.render(m)
+    assert '| 2026-11-12 09:00 | 0 | - | 3 | - |' in text
+    assert rec.parse(text) == m
+
+
+def test_a_feed_goal_books_feed_rows_never_a_throw_row_and_junk_scores_are_dropped():
+    m = rec.apply_scores(rec.empty(), '2026-11-12 09:00', 'reload', [5.0], 1,
+                         [10.0, float('nan'), -1.0, float('inf')])
+    assert not m.scores
+    assert [f.score_mm for f in m.feed_scores] == [10]
+    assert rec.parse(rec.render(m)) == m
+    with pytest.raises(ValueError):
+        rec.apply_scores(m, 'yesterday', 'columns', [1.0])
+
+
+@pytest.mark.parametrize('damage', [
+    lambda t: t.replace('| 3 | 15 |', '| 4 | 15 |'),       # Scored != scores
+    lambda t: t.replace('| 3 | 15 |', '| 3 | 16 |'),       # wrong median
+    lambda t: t.replace('pattern=columns', 'pattern=nope'),
+    lambda t: t.replace('| 2026-11-12 09:00 | columns | 8 |',
+                        '| 2026-11-12 09:00 | columns | eight |'),
+])
+def test_a_damaged_scores_section_is_a_format_error(damage):
+    m = rec.apply_scores(rec.empty(), '2026-11-12 09:00', 'columns',
+                         [12.4, 14.6, 30.2], 2, [8.0])
+    with pytest.raises(rec.RecordsFormatError):
+        rec.parse(damage(rec.render(m)))
+
+
+def test_record_attempt_writes_scores_whether_or_not_a_record_is_beaten(tmp_path):
+    path = str(tmp_path / 'records.md')
+    beaten, _b = rec.record_attempt(path, _scored(
+        '2026-11-12 09:00', 'columns', 5, [10.0, 20.0], 1))
+    assert beaten
+    # 3 catches does not beat 5: the scores are still written
+    beaten, best = rec.record_attempt(path, _scored(
+        '2026-11-12 09:05', 'columns', 3, [30.0], 0, feeds=[7.0]))
+    assert (beaten, best) == (False, 5)
+    m = rec.load(path)
+    assert [(r.when_local, r.scores, r.no_fit) for r in m.scores] == [
+        ('2026-11-12 09:00', (10, 20), 1), ('2026-11-12 09:05', (30,), 0)]
+    assert [f.score_mm for f in m.feed_scores] == [7]
+    # a Feed-only goal with nothing but a Feed score writes the Feed row
+    rec.record_attempt(path, _scored('2026-11-12 09:10', 'reload', 0, feeds=[4.0]))
+    assert [f.score_mm for f in rec.load(path).feed_scores] == [7, 4]
+    # no scores, nothing beaten: the file is untouched
+    before = Path(path).read_text()
+    rec.record_attempt(path, _a('2026-11-12 09:15', 'columns', 2))
+    assert Path(path).read_text() == before
+
+
+def test_replacing_a_table_keeps_the_scores():
+    m = rec.apply_scores(rec.empty(), '2026-11-12 09:00', 'columns', [9.0])
+    m, beaten = rec.apply_attempt(m, _a('2026-11-12 09:05', 'columns', 4))
+    assert beaten and len(m.scores) == 1

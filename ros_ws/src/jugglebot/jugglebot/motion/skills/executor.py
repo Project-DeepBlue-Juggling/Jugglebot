@@ -1409,6 +1409,9 @@ class _PendingCatch:
     #: (:meth:`SkillExecutor._ends_on_stop_final_catch`); an EMPTY live window
     #: then books the Catch as unverifiable instead of :data:`MISSED_CATCH`.
     ends_on_stop: bool = False
+    #: A Feed's announced landing point (x, y mm: ``landing_prior.pos_mm``),
+    #: the target of its landing score (IDEA-21). Report-only.
+    target_xy_mm: Optional[Tuple[float, float]] = None
 
 
 #: Where, around the tracker's crossing, the cup strike is searched for
@@ -5731,6 +5734,9 @@ class SkillExecutor:
             ball_id=skill.ball_id, catch_idx=idx, t_land_scheduled_s=L,
             t_open_s=t_open, t_close_s=t_close,
             is_feed=skill.landing_prior is not None,
+            target_xy_mm=(None if skill.landing_prior is None else (
+                float(skill.landing_prior.pos_mm[0]),
+                float(skill.landing_prior.pos_mm[1]))),
             last_fit_landing=self._fit_latch_by_idx.get(idx),
             ends_on_stop=self._ends_on_stop_final_catch(idx, skill)))
 
@@ -6331,6 +6337,7 @@ class SkillExecutor:
         within 0.3 s of the dispatched aim (a stale fit of another flight
         would give a nonsense zero); without one every field is ``--``."""
         t_cross = None
+        feed_err = None
         # The in-flight latch first; the live call only when none was taken
         # (the provider answers None once the ball's status leaves IN_FLIGHT).
         lnd = pend.last_fit_landing
@@ -6339,13 +6346,18 @@ class SkillExecutor:
         if (lnd is not None and lnd.from_fit and abs(
                 float(lnd.t_land_abs_s) - pend.t_land_scheduled_s) < 0.3):
             t_cross = float(lnd.t_land_abs_s)
+            if pend.target_xy_mm is not None:
+                d = (np.asarray(lnd.pos_mm, dtype=float)[:2]
+                     - np.asarray(pend.target_xy_mm, dtype=float))
+                feed_err = (float(d[0]), float(d[1]))
         contact_s, settle_s = self._contact_and_settle(t_cross, t_seat_s)
         self.feed_reports.append(FeedCatchReport(
             ball_id=pend.ball_id,
             arrival_err_s=(None if t_cross is None
                            else t_cross - pend.t_land_scheduled_s),
             seat_s=None if t_cross is None else t_seat_s - t_cross,
-            contact_s=contact_s, settle_s=settle_s))
+            contact_s=contact_s, settle_s=settle_s,
+            landing_err_mm=feed_err))
 
     def _advance_catch_evidence(self, t_abs_s: float) -> List[str]:
         """Fire :data:`MISSED_CATCH` for any armed :class:`_PendingCatch`

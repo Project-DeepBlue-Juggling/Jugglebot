@@ -2,18 +2,19 @@
 id: IDEA-21
 kind: idea
 title: Create and display an 'accuracy'/'tidyness' score
-status: backlog
+status: complete
 created: '2026-11-09'
-updated: '2026-11-10T18:29:30Z'
+updated: '2026-11-11T18:18:04Z'
 owners: []
 priority: medium
 effort: m
 hardware: none
-owner: decision
+owner: none
 radius: subsystem
 area: gui
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-12-landing-score.md
 filed_by: harrison
 parent: gui-improvements
 ---

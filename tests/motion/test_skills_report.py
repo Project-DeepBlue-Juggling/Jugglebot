@@ -118,7 +118,7 @@ def test_end_lines_by_how_the_attempt_ended():
                   release_err_s=-0.012),
                _r(throw_no=2, apex_m=0.929, landing_err_mm=(30.9, -3.4),
                   release_err_s=0.030, caught=False)]
-    tally = ('1/2 caught · apex 0.90–0.93 m · worst landing 31 mm · release '
+    tally = ('1/2 caught · apex 0.90–0.93 m · worst landing 31 mm · landing median 18 mm over 2 · release '
              '-12 ms..+30 ms')
     assert rp.end_line('self_toss', '', '', reports) == (
         'INFO', 'self_toss done: ' + tally)
@@ -380,3 +380,47 @@ def test_lost_throws_do_not_change_the_drop_count():
     reports = [_r(throw_no=i) for i in range(1, 10)]
     assert rp.drop_count(reports, missed_catches=1) == 1
     assert rp.summarise(reports, missed_catches=1)[0] == 10
+
+
+# -- the landing score (IDEA-21, owner's decision in TKT-63) ----------------
+
+def test_a_landing_score_is_the_distance_from_the_target_and_none_without_a_fit():
+    assert rp.landing_score_mm((3.0, -4.0)) == pytest.approx(5.0)
+    assert rp.landing_score_mm((0.0, 0.0)) == 0.0
+    assert rp.landing_score_mm(None) is None
+
+
+def test_landing_scores_are_in_throw_order_and_count_the_throws_without_a_fit():
+    reports = [_r(throw_no=1, landing_err_mm=(3.0, 4.0)),
+               _r(throw_no=2, landing_err_mm=None, caught=False),
+               _r(throw_no=3, landing_err_mm=(0.0, 12.0)),
+               _r(throw_no=4, landing_err_mm=(100.0, 0.0), stop=True),
+               _r(throw_no=5, landing_err_mm=None, caught=None,
+                  unverified=True)]
+    scores, no_fit = rp.landing_scores(reports)
+    assert scores == pytest.approx([5.0, 12.0]) and no_fit == 1
+    assert rp.landing_scores([]) == ([], 0)
+
+
+def test_the_median_is_the_middle_value_or_the_mean_of_the_middle_two():
+    assert rp.median_mm([30.0, 10.0, 20.0]) == 20.0
+    assert rp.median_mm([10.0, 40.0, 20.0, 30.0]) == 25.0
+    with pytest.raises(ValueError):
+        rp.median_mm([])
+
+
+def test_the_end_line_adds_the_landing_median_and_the_count_without_a_fit():
+    reports = [_r(throw_no=1, landing_err_mm=(3.0, 4.0)),
+               _r(throw_no=2, landing_err_mm=(0.0, 24.0)),
+               _r(throw_no=3, landing_err_mm=(30.0, 0.0)),
+               _r(throw_no=4, landing_err_mm=None, caught=False)]
+    _sev, text = rp.end_line('columns', '', '', reports)
+    assert ('worst landing 30 mm · landing median 24 mm over 3 '
+            '(1 without a Fit)') in text
+    clean = [_r(landing_err_mm=(3.0, 4.0))]
+    text = rp.end_line('columns', '', '', clean)[1]
+    assert 'landing median 5 mm over 1' in text
+    assert 'without a Fit' not in text
+    # no Fit anywhere: no median to print
+    assert 'landing median' not in rp.end_line(
+        'columns', '', '', [_r(landing_err_mm=None)])[1]

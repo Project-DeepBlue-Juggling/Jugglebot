@@ -152,6 +152,12 @@ _DROPS_RE = re.compile(r'^<!-- drops: live=(\d+) since=(\d{4}-\d{2}-\d{2}) '
                        r'(?: history_caught=(\d+))?'
                        r'(?: history_from=(\d{4}-\d{2}-\d{2}) '
                        r'history_through=(\d{4}-\d{2}-\d{2}))? -->$')
+_SCORES_RE = re.compile(r'^<!-- scores: pattern=([a-z0-9_]+) -->$')
+_FEED_SCORES_MARK = '<!-- feed-scores -->'
+_SCORES_HEAD = ('| When | Scored | Median mm | Without a Fit | Scores mm |')
+_SCORES_RULE = '|---|---:|---:|---:|---|'
+_FEED_SCORES_HEAD = '| When | Pattern | Score mm |'
+_FEED_SCORES_RULE = '|---|---|---:|'
 _NO_RECORD = '_No record yet._'
 _FILE_MARKER = '<!-- jugglebot-records v2 -->'
 _FILE_MARKER_V1 = '<!-- jugglebot-records v1 -->'
@@ -195,6 +201,45 @@ class Attempt:
     #: Catches that pair with ``drops`` (``report.caught_count``); ``None`` =
     #: the writer does not report them (the ledger's caught figure is untouched).
     caught: Optional[int] = None
+    #: Landing scores (IDEA-21, owner's decision in TKT-63): per Throw in
+    #: Throw order, mm (``report.landing_scores``); ``no_fit`` the Throws
+    #: with no Fit (no score); ``feed_scores`` one per Ball Butler Feed that
+    #: seated, kept apart from the Throws. Written whether or not a record
+    #: is beaten; none of them touches a record or a drops figure.
+    scores: Tuple[float, ...] = ()
+    no_fit: int = 0
+    feed_scores: Tuple[float, ...] = ()
+
+
+@dataclasses.dataclass(frozen=True)
+class ScoreRow:
+    """One Attempt's Throw landing scores for a Pattern: whole mm, in Throw
+    order; ``median_mm`` over them (``None`` when none was scored)."""
+    when_local: str
+    pattern: str
+    scores: Tuple[int, ...]
+    no_fit: int = 0
+
+    @property
+    def median_mm(self) -> Optional[int]:
+        return _median_int(self.scores)
+
+
+@dataclasses.dataclass(frozen=True)
+class FeedScore:
+    """One Ball Butler Feed's landing score, whole mm."""
+    when_local: str
+    pattern: str
+    score_mm: int
+
+
+def _median_int(values: Sequence[int]) -> Optional[int]:
+    v = sorted(values)
+    n = len(v)
+    if not n:
+        return None
+    m = v[n // 2] if n % 2 else 0.5 * (v[n // 2 - 1] + v[n // 2])
+    return int(m + 0.5)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -265,6 +310,9 @@ class Ledger:
     tables: Tuple[Tuple[str, Table], ...]
     #: ``None`` = the file has no drops section ("not counted yet").
     drops: Optional[Drops] = None
+    #: Landing scores (IDEA-21); empty = the file has no such section.
+    scores: Tuple[ScoreRow, ...] = ()
+    feed_scores: Tuple[FeedScore, ...] = ()
 
     def table(self, pattern: str) -> Optional[Table]:
         for p, t in self.tables:
@@ -278,7 +326,9 @@ class Ledger:
 
     def replace(self, table: Table) -> 'Ledger':
         rest = [t for p, t in self.tables if p != table.pattern]
-        return _ledger(rest + [table], self.drops)
+        return dataclasses.replace(
+            _ledger(rest + [table], self.drops),
+            scores=self.scores, feed_scores=self.feed_scores)
 
 
 def _ledger(tables: Iterable[Table], drops: Optional[Drops] = None) -> Ledger:
@@ -397,7 +447,95 @@ def render(model: Ledger) -> str:
             out.append('| %s | %d | %d | %s | %s | %s |'
                        % (r.when_local, r.throws, r.catches, ended, note,
                           _params_cell(r.params)))
+    if model.scores or model.feed_scores:
+        out += ['', '## Landing scores', '',
+                'A landing score is the distance in mm from the Fit\'s '
+                'landing to the target Site, one per Throw (Throw order); '
+                '"Without a Fit" counts the Throws with no landing, which '
+                'have no score. A Feed\'s score is kept apart. Written at '
+                'the end of every Attempt, whether or not a record is '
+                'beaten.']
+        for t in model.ordered():
+            rows = [r for r in model.scores if r.pattern == t.pattern]
+            if not rows:
+                continue
+            out += ['', '<!-- scores: pattern=%s -->' % (t.pattern,),
+                    '### %s' % (_cell(t.label),), '',
+                    _SCORES_HEAD, _SCORES_RULE]
+            for r in rows:
+                med = r.median_mm
+                out.append('| %s | %d | %s | %d | %s |' % (
+                    r.when_local, len(r.scores),
+                    '-' if med is None else med, r.no_fit,
+                    ' '.join(str(x) for x in r.scores) or '-'))
+        if model.feed_scores:
+            out += ['', _FEED_SCORES_MARK, '### Feeds', '',
+                    _FEED_SCORES_HEAD, _FEED_SCORES_RULE]
+            for f in model.feed_scores:
+                out.append('| %s | %s | %d |'
+                           % (f.when_local, f.pattern, f.score_mm))
     return '\n'.join(out) + '\n'
+
+
+def _table_rows(lines: List[str], i: int, head: str, rule: str,
+                where: str) -> Tuple[List[List[str]], int]:
+    """The cell lists of the table that follows the marker at ``lines[i]``,
+    and the index after it."""
+    i += 1
+    while i < len(lines) and lines[i].strip() != head:
+        s = lines[i].strip()
+        if s and not s.startswith('### '):
+            raise RecordsFormatError('%s: expected the table header, got %r'
+                                     % (where, s))
+        i += 1
+    if i + 1 >= len(lines) or lines[i + 1].strip() != rule:
+        raise RecordsFormatError('%s: table header or rule missing' % (where,))
+    i += 2
+    rows = []
+    while i < len(lines) and lines[i].strip().startswith('|'):
+        cells = [c.strip() for c in lines[i].strip().split('|')]
+        rows.append(cells[1:-1])
+        i += 1
+    return rows, i
+
+
+def _check_when(when: str, where: str) -> str:
+    if not _WHEN_RE.match(when):
+        raise RecordsFormatError('%s: bad time %r' % (where, when))
+    return when
+
+
+def _parse_score_row(pattern: str, cells: List[str], where: str) -> ScoreRow:
+    if len(cells) != 5:
+        raise RecordsFormatError('%s: a score row needs 5 cells' % (where,))
+    when, scored, med, no_fit, scores = cells
+    try:
+        vals = (() if scores == '-'
+                else tuple(int(x) for x in scores.split()))
+        n_scored, n_no_fit = int(scored), int(no_fit)
+    except ValueError:
+        raise RecordsFormatError('%s: bad score row %r' % (where, cells))
+    if (min(vals, default=0) < 0 or n_no_fit < 0 or n_scored != len(vals)):
+        raise RecordsFormatError('%s: scores disagree with Scored %r'
+                                 % (where, scored))
+    row = ScoreRow(_check_when(when, where), pattern, vals, n_no_fit)
+    if med != ('-' if row.median_mm is None else str(row.median_mm)):
+        raise RecordsFormatError('%s: Median mm %r is not the median of the '
+                                 'scores' % (where, med))
+    return row
+
+
+def _parse_feed_score_row(cells: List[str], where: str) -> FeedScore:
+    if len(cells) != 3:
+        raise RecordsFormatError('%s: a Feed score row needs 3 cells'
+                                 % (where,))
+    try:
+        mm = int(cells[2])
+    except ValueError:
+        raise RecordsFormatError('%s: bad Feed score %r' % (where, cells[2]))
+    if mm < 0:
+        raise RecordsFormatError('%s: negative Feed score' % (where,))
+    return FeedScore(_check_when(cells[0], where), cells[1], mm)
 
 
 def _parse_row(line: str, where: str, v1: bool = False) -> Record:
@@ -435,9 +573,28 @@ def parse(text: str) -> Ledger:
                   else (_TABLE_HEAD, _TABLE_RULE))
     tables: Dict[str, Table] = {}
     drops: Optional[Drops] = None
+    scores: List[ScoreRow] = []
+    feed_scores: List[FeedScore] = []
     i = 0
     while i < len(lines):
         m = _MARKER_RE.match(lines[i].strip())
+        sm = _SCORES_RE.match(lines[i].strip())
+        if sm or lines[i].strip() == _FEED_SCORES_MARK:
+            where = 'line %d' % (i + 1,)
+            if sm:
+                pat = sm.group(1)
+                if pat not in _BALLS:
+                    raise RecordsFormatError('%s: scores for unknown Pattern '
+                                             '%r' % (where, pat))
+                cells, i = _table_rows(lines, i, _SCORES_HEAD, _SCORES_RULE,
+                                       where)
+                scores += [_parse_score_row(pat, c, where) for c in cells]
+            else:
+                cells, i = _table_rows(lines, i, _FEED_SCORES_HEAD,
+                                       _FEED_SCORES_RULE, where)
+                feed_scores += [_parse_feed_score_row(c, where)
+                                for c in cells]
+            continue
         if not m:
             if lines[i].strip().startswith('<!-- drops:'):
                 dm = _DROPS_RE.match(lines[i].strip())
@@ -470,7 +627,8 @@ def parse(text: str) -> Ledger:
         seen_head = False
         while i < len(lines):
             s = lines[i].strip()
-            if _MARKER_RE.match(s) or s.startswith('#'):
+            if (_MARKER_RE.match(s) or s.startswith('#')
+                    or _SCORES_RE.match(s) or s == _FEED_SCORES_MARK):
                 break
             if s == head and not seen_head:
                 seen_head = True
@@ -497,7 +655,46 @@ def parse(text: str) -> Ledger:
             raise RecordsFormatError('Pattern %r: balls %d, expected %d'
                                      % (p, t.balls, _BALLS[p]))
         model = model.replace(t)
-    return dataclasses.replace(model, drops=drops)
+    order = {p: n for n, (p, _t) in enumerate(model.tables)}
+    return dataclasses.replace(
+        model, drops=drops, scores=_sorted_scores(scores, order),
+        feed_scores=tuple(feed_scores))
+
+
+def _sorted_scores(rows: Iterable[ScoreRow],
+                   order: Dict[str, int]) -> Tuple[ScoreRow, ...]:
+    """Grouped by Pattern in file order, chronological within one (a stable
+    sort), so a ledger equals its own parse."""
+    return tuple(sorted(rows, key=lambda r: order.get(r.pattern, 0)))
+
+
+def apply_scores(model: Ledger, when_local: str, pattern: str,
+                 scores: Sequence[float] = (), no_fit: int = 0,
+                 feed_scores: Sequence[float] = ()) -> Ledger:
+    """Append one Attempt's landing scores (IDEA-21): a Throw row for a
+    Pattern when it has scores or Throws without a Fit (never for a Feed
+    goal), a Feed row per Feed score. Scores are rounded to whole mm;
+    negative or non-finite ones are ignored. ``ValueError`` on a bad time."""
+    if not _WHEN_RE.match(str(when_local)):
+        raise ValueError('bad when_local %r (want %s)'
+                         % (when_local, WHEN_FORMAT))
+
+    def ok(v) -> bool:
+        return isinstance(v, (int, float)) and 0.0 <= v < float('inf')
+
+    ints = tuple(int(round(float(v))) for v in scores if ok(v))
+    n_no_fit = max(0, int(no_fit))
+    rows = model.scores
+    if pattern in _BALLS and pattern not in FEED_PATTERNS and (
+            ints or n_no_fit):
+        order = {p: n for n, (p, _t) in enumerate(model.tables)}
+        rows = _sorted_scores(
+            rows + (ScoreRow(str(when_local), pattern, ints, n_no_fit),),
+            order)
+    feeds = model.feed_scores + tuple(
+        FeedScore(str(when_local), str(pattern), int(round(float(v))))
+        for v in feed_scores if ok(v))
+    return dataclasses.replace(model, scores=rows, feed_scores=feeds)
 
 
 def apply_attempt(model: Ledger, attempt: Attempt) -> Tuple[Ledger, bool]:
@@ -702,8 +899,9 @@ def record_attempt(path: str, attempt: Attempt) -> Tuple[bool, int]:
     the file is new, the Attempt carried drops or catches, or the drops section is not
     in the file yet. A Feed books its drops only, never a record row."""
     existed = os.path.exists(path)
+    has_scores = bool(attempt.scores or attempt.no_fit or attempt.feed_scores)
     if (attempt.pattern in FEED_PATTERNS and int(attempt.drops) <= 0
-            and int(attempt.caught or 0) <= 0):
+            and int(attempt.caught or 0) <= 0 and not has_scores):
         return False, 0            # a Feed with no drops or catches touches nothing
     model = load(path)
     if attempt.pattern in FEED_PATTERNS:
@@ -714,7 +912,12 @@ def record_attempt(path: str, attempt: Attempt) -> Tuple[bool, int]:
         best = t.catches if t else 0
     n = max(0, int(attempt.drops))
     c = None if attempt.caught is None else max(0, int(attempt.caught))
-    if beaten or not existed or n > 0 or (c or 0) > 0 or model.drops is None:
+    if has_scores:
+        model = apply_scores(model, attempt.when_local, attempt.pattern,
+                             attempt.scores, attempt.no_fit,
+                             attempt.feed_scores)
+    if (beaten or not existed or n > 0 or (c or 0) > 0 or has_scores
+            or model.drops is None):
         model = apply_drops(model, attempt.when_local, n, c)
         write_atomic(path, render(model))
     return beaten, best

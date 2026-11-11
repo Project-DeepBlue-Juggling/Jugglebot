@@ -8024,6 +8024,27 @@ def test_a_seated_feed_catch_gets_a_feed_line(sites):
     assert 'settle 244 ms' in line
 
 
+def test_a_feed_report_carries_its_landing_error_from_the_announced_target(sites):
+    """IDEA-21: the Feed's landing score is the Fit's landing minus the
+    announced landing point (`landing_prior`); without a Fit there is none."""
+    sch, L, _R, _t = _feed_catch_schedule(sites)
+    prior = next(s.landing_prior for s in sch.skills
+                 if s.landing_prior is not None)
+    cross = L + 0.012
+    tracker = lambda ball_id: ex.Landing(
+        pos_mm=np.array([prior.pos_mm[0] + 6.0, prior.pos_mm[1] - 8.0, 830.0]),
+        vel_mm_s=np.array([0.0, 0.0, -5500.0]), t_land_abs_s=cross,
+        from_fit=True)
+    x, _L = _feed_run(sites, tracker=tracker,
+                      contact_probe=lambda a, b: cross + 0.014)
+    err = x.feed_reports[0].landing_err_mm
+    assert err == pytest.approx((6.0, -8.0))
+    assert _rp.landing_score_mm(err) == pytest.approx(10.0)
+    x, _L = _feed_run(sites, tracker=lambda ball_id: None,
+                      contact_probe=lambda a, b: None)
+    assert x.feed_reports[0].landing_err_mm is None
+
+
 def _flight_only_tracker(sites, fit_t_land_off_s):
     """Provider like skill_node._tracker: answers while the ball is IN_FLIGHT
     (until the scheduled landing + 0.2 s), None after the status flip."""

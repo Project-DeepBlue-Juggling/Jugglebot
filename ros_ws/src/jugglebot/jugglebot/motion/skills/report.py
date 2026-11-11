@@ -106,6 +106,9 @@ class FeedCatchReport:
     seat_s: Optional[float]
     contact_s: Optional[float]
     settle_s: Optional[float]
+    #: The Feed's landing minus its announced target (x, y), mm: ``None``
+    #: without a converged Fit (IDEA-21; :func:`landing_score_mm`).
+    landing_err_mm: Optional[Tuple[float, float]] = None
 
 
 def release_error_s(t_land_s: float, z_land_mm: float, vz_land_mm_s: float,
@@ -324,6 +327,12 @@ def end_line(label: str, end_code: str, end_message: str,
              for r in counted if r.landing_err_mm is not None]
     if worst:
         tally += ' · worst landing %.0f mm' % (max(worst),)
+    scores, no_fit = landing_scores(reports)
+    if scores:
+        tally += ' · landing median %.0f mm over %d' % (
+            median_mm(scores), len(scores))
+        if no_fit:
+            tally += ' (%d without a Fit)' % (no_fit,)
     releases = [r.release_err_s for r in counted
                 if r.release_err_s is not None]
     if releases:
@@ -347,6 +356,44 @@ def end_line(label: str, end_code: str, end_message: str,
                                                      suffix)
     return 'ERROR', '%s ENDED (%s)%s: %s · %s%s' % (label, end_code, at, reason,
                                                     tally, suffix)
+
+
+def landing_score_mm(err: Optional[Tuple[float, float]]) -> Optional[float]:
+    """The landing score of one Throw (or Feed), in mm: the distance from the
+    Fit's landing to the target Site, ``hypot`` of ``landing_err_mm``.
+    ``None`` when there is no Fit (no landing, so no score; IDEA-21, owner's
+    decision in TKT-63). Reads what the Throw report already carries."""
+    if err is None:
+        return None
+    return float(math.hypot(float(err[0]), float(err[1])))
+
+
+def landing_scores(reports: Sequence[ThrowReport]
+                   ) -> Tuple[List[float], int]:
+    """``(scores in Throw order, Throws without a Fit)`` over the Throws the
+    Cup was asked to Catch (the same base as :func:`summarise`: the columns
+    Stop and an ``unverified`` final Catch are left out). A Throw with no
+    landing has no score and is counted in the second figure."""
+    scores: List[float] = []
+    no_fit = 0
+    for r in reports:
+        if r.stop or r.unverified:
+            continue
+        sc = landing_score_mm(r.landing_err_mm)
+        if sc is None:
+            no_fit += 1
+        else:
+            scores.append(sc)
+    return scores, no_fit
+
+
+def median_mm(values: Sequence[float]) -> float:
+    """The median of a non-empty list (mean of the middle two when even)."""
+    v = sorted(float(x) for x in values)
+    n = len(v)
+    if n == 0:
+        raise ValueError('median of no scores')
+    return v[n // 2] if n % 2 else 0.5 * (v[n // 2 - 1] + v[n // 2])
 
 
 def summarise(reports: List[ThrowReport],
