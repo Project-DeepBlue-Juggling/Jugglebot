@@ -91,7 +91,7 @@ _Status: closed (complete)._
 
 **Attached inbox items:**
 
-- idea: IDEA-21 [Create and display an 'accuracy'/'tidyness' score](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-create-and-display-an-accuracy-tidyness-score.md) (backlog)
+- idea: IDEA-21 [Create and display an 'accuracy'/'tidyness' score](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-create-and-display-an-accuracy-tidyness-score.md) (in_progress)
 
 ## Learner generalisation
 
@@ -243,6 +243,6 @@ Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/bench-hand/robot; Owner none/deci
 | FEAT-46 | feature | [Firmware STOP record: report why a scheduler cover ended (frame stamps, arrivals, queue, time-base steps)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-firmware-stop-record-report-why-a-scheduler-cover-ended.md) | in_progress | high | m | robot | decision | normative | firmware | — | filed 2026-11-08 |
 | BUG-87 | bug | [Nomination's re-aim figure read -0.049 while the live Feed-Catch Segment was refused at -0.208 (Dwell 0.32)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-nomination-s-re-aim-figure-read-0-049-while-the-live-feed.md) | backlog | medium | m | none | none | local | skill-stack | — | filed 2026-11-08 |
 | IDEA-20 | idea | [Platform Accelerometer?](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-platform-accelerometer.md) | backlog | medium | m | robot | hands | subsystem | platform-teensy | — | filed 2026-11-08 |
-| IDEA-21 | idea | [Create and display an 'accuracy'/'tidyness' score](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-create-and-display-an-accuracy-tidyness-score.md) | backlog | medium | m | none | decision | subsystem | gui | GUI Improvements | filed 2026-11-09 |
+| IDEA-21 | idea | [Create and display an 'accuracy'/'tidyness' score](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-create-and-display-an-accuracy-tidyness-score.md) | in_progress | medium | m | none | none | subsystem | gui | GUI Improvements | filed 2026-11-09 |
 | IDEA-22 | idea | [Turned Columns at 90 deg: tilt the Platform back (+x) at the Catch so the ball stops hitting the Platform top](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-turned-columns-at-90-deg-tilt-the-platform-back-x-at-the.md) | in_progress | medium | m | robot | hands | subsystem | skill-stack | Pattern progression: Columns to Centre and orbit | filed 2026-11-10 |
 | FEAT-49 | feature | [Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-arm-a-power-capture-with-the-fault-trigger-on-the-robot-hand.md) | inbox | medium | m | robot | — | local | hand | — | filed 2026-11-11 |
