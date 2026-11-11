@@ -183,7 +183,9 @@ def test_a_magazine_end_books_no_drop(tmp_path):
     node._goal_missed_catches = 2     # FEAT-47: nor do lost Throws count on a magazine goal
     gh = MagicMock(is_cancel_requested=False)
     gh.request.pattern = 'magazine'
-    node._juggle_execute(gh)
+    result = node._juggle_execute(gh)
+    # FEAT-48: nor does it add lost Throws to its Throws figure (M).
+    assert (result.throws, result.caught) == (1, 0)
     # No ledger written, or one written with no drop booked (before the fix
     # the placeholder wrote the file with live=1).
     drops = rec.load(str(path)).drops if path.exists() else None

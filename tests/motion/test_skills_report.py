@@ -312,3 +312,49 @@ def test_drop_count_adds_lost_throws_and_ignores_a_negative():
 def test_drop_count_leaves_the_operators_tally_alone():
     reports = [_r(caught=None), _r(caught=True)]
     assert rp.summarise(reports) == (2, 1)
+
+
+# ── FEAT-48: a Throw lost to an EMPTY Cup is counted in M (Throws) ─────────
+
+def test_summarise_adds_lost_throws_to_throws_only_and_ignores_a_negative():
+    reports = [_r(throw_no=i) for i in range(1, 10)]          # 9 caught
+    assert rp.summarise(reports) == (9, 9)                    # today, unchanged
+    assert rp.summarise(reports, missed_catches=1) == (10, 9)  # 9/10, not 9/9
+    assert rp.summarise(reports, missed_catches=3) == (12, 9)
+    assert rp.summarise(reports, missed_catches=-2) == (9, 9)
+    assert rp.summarise([], missed_catches=1) == (1, 0)
+
+
+def test_end_line_says_9_of_10_and_why_only_when_a_throw_was_lost():
+    reports = [_r(throw_no=i, apex_m=0.9, landing_err_mm=None,
+                  release_err_s=None) for i in range(1, 10)]
+    _s, before = rp.end_line('columns', 'MISSED_CATCH', '', reports)
+    _s, after = rp.end_line('columns', 'MISSED_CATCH', '', reports,
+                            missed_catches=1)
+    assert 'ENDED (MISSED_CATCH) · 9/9 caught · apex' in before
+    assert 'ENDED (MISSED_CATCH) · 9/10 caught (1 lost to an empty Cup) · apex' \
+        in after
+    _s, two = rp.end_line('columns', '', '', reports, missed_catches=2)
+    assert 'done: 9/11 caught (2 lost to an empty Cup)' in two
+    # zero and negative leave today's text byte-identical
+    for k in (0, -1):
+        assert rp.end_line('columns', 'MISSED_CATCH', '', reports,
+                           missed_catches=k) == (
+            'ERROR', before)
+
+
+def test_record_counts_adds_lost_throws_to_throws_and_leaves_catches():
+    reports = [_r(throw_no=i) for i in range(1, 10)]
+    assert rp.record_counts(reports, 'MISSED_CATCH') == (9, 9)
+    assert rp.record_counts(reports, 'MISSED_CATCH',
+                            missed_catches=1) == (10, 9)
+    assert rp.record_counts(reports, 'MISSED_CATCH',
+                            missed_catches=-5) == (9, 9)
+    unv = reports + [_r(throw_no=10, caught=None, unverified=True)]
+    assert rp.record_counts(unv, 'COMPLETED', missed_catches=1) == (11, 10)
+
+
+def test_lost_throws_do_not_change_the_drop_count():
+    reports = [_r(throw_no=i) for i in range(1, 10)]
+    assert rp.drop_count(reports, missed_catches=1) == 1
+    assert rp.summarise(reports, missed_catches=1)[0] == 10

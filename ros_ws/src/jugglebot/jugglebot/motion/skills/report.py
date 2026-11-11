@@ -269,7 +269,8 @@ def end_line(label: str, end_code: str, end_message: str,
              end_kind: str = '',
              shadow_landing_stop: bool = False,
              final_catch_unverifiable: bool = False,
-             fed: bool = False) -> Tuple[str, str]:
+             fed: bool = False,
+             missed_catches: int = 0) -> Tuple[str, str]:
     """``(severity, text)`` for the attempt's last line.
 
     ``final_catch_unverifiable`` (BUG-67): the goal ended on a Stop and its
@@ -280,6 +281,12 @@ def end_line(label: str, end_code: str, end_message: str,
     with the bare pattern (so ``<pattern> ENDED`` / ``<pattern> done`` finds
     it) and carries `` · entered by a Feed`` at the very end, after the
     tally; the start line keeps its ``(reload)`` label.
+
+    ``missed_catches`` (FEAT-48): the Throws lost to an EMPTY Cup
+    (``SkillExecutor.missed_catch_drops``, the same value :func:`drop_count`
+    takes). They have no ThrowReport, so they are added to the Throws figure
+    only (caught unchanged) and the tally says so in a few words; zero leaves
+    the text exactly as before.
 
     INFO when it completed or the operator stopped it, ERROR when anything
     else ended it — with the reason in a few words (:func:`short_refusal`).
@@ -297,8 +304,11 @@ def end_line(label: str, end_code: str, end_message: str,
     # over the throws the cup was asked to catch.  The end code below still
     # rides beside it, so a run that ENDED on a real miss says so.
     suffix = ' · entered by a Feed' if fed else ''
-    thrown, caught = summarise(reports)
+    thrown, caught = summarise(reports, missed_catches)
     tally = '%d/%d caught' % (caught, thrown)
+    lost = max(0, int(missed_catches))
+    if lost:
+        tally += ' (%d lost to an empty Cup)' % (lost,)
     if final_catch_unverifiable or any(r.unverified for r in reports):
         # BUG-67: the goal ended on a Stop and its final Catch is in neither
         # side of the count above.
@@ -339,18 +349,25 @@ def end_line(label: str, end_code: str, end_message: str,
                                                     tally, suffix)
 
 
-def summarise(reports: List[ThrowReport]) -> Tuple[int, int]:
+def summarise(reports: List[ThrowReport],
+              missed_catches: int = 0) -> Tuple[int, int]:
     """``(throws, caught)`` for the Juggle result — from the reports, never
-    from log text.  The columns Stop (:attr:`ThrowReport.stop`) is neither a
+    from log text. ``missed_catches`` (FEAT-48, owner 2026-11-11) adds the
+    Throws lost to an EMPTY Cup (no ThrowReport; ``SkillExecutor.
+    missed_catch_drops``) to the Throws figure only: 9 caught of 10 Throws
+    reads 9/10. Negative values are ignored. A missed Ball Butler Feed is
+    not passed here (M counts Jugglebot's Throws).  The columns Stop (:attr:`ThrowReport.stop`) is neither a
     throw nor a catch here: it was never a catch attempt. An ``unverified``
     final Catch (BUG-67) is in neither side either; the records ledger counts
     it instead (:func:`record_counts`, owner's decision in TKT-42)."""
     counted = [r for r in reports if not r.stop and not r.unverified]
-    return len(counted), sum(1 for r in counted if r.caught)
+    return (len(counted) + max(0, int(missed_catches)),
+            sum(1 for r in counted if r.caught))
 
 
 def record_counts(reports: List[ThrowReport],
-                  end_code: str = 'COMPLETED') -> Tuple[int, int]:
+                  end_code: str = 'COMPLETED',
+                  missed_catches: int = 0) -> Tuple[int, int]:
     """``(throws, caught)`` for the records ledger: :func:`summarise`'s count
     with an ``unverified`` final Catch added to BOTH sides. Owner's decision
     in TKT-42 (option 2), narrowed by TKT-44: a goal that ended on a Stop
@@ -361,7 +378,7 @@ def record_counts(reports: List[ThrowReport],
     estimate, an Apex inside the band and BUG-76's admission) and
     ``landing_err_mm`` is set. The Juggle result, feedback and end line keep
     :func:`summarise`."""
-    throws, caught = summarise(reports)
+    throws, caught = summarise(reports, missed_catches)
     if end_code != 'COMPLETED':
         return throws, caught
     n = sum(1 for r in reports
@@ -384,8 +401,8 @@ def drop_count(reports: List[ThrowReport], feed_missed: int = 0,
     the Ball Butler to be caught by Jugglebot). ``missed_catches`` adds the
     Throws lost to an EMPTY Cup, which end the Attempt MISSED_CATCH with no
     ThrowReport (``SkillExecutor.missed_catch_drops``). Negative values are
-    ignored. Nothing here is read by the
-    Juggle result, feedback or end line, which keep :func:`summarise`."""
+    ignored. The same ``missed_catches`` also adds to the Throws figure of
+    :func:`summarise` (FEAT-48); the drops count is unaffected by that."""
     n = sum(1 for r in reports
             if not r.stop and not r.unverified and r.caught is not True)
     return n + max(0, int(feed_missed)) + max(0, int(missed_catches))

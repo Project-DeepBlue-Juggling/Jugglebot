@@ -3228,7 +3228,8 @@ class SkillNode(Node):
             severity, text = rp.end_line(
                 self._end_label() or 'attempt', end_code,
                 '' if message == end_code else message, self._goal_reports,
-                fed=self._attempt_fed)
+                fed=self._attempt_fed,
+                missed_catches=int(self._goal_missed_catches))
             self._log_at(severity, text)
 
     def _check_reload_timeout(self) -> None:
@@ -4030,7 +4031,8 @@ class SkillNode(Node):
                                      executor.schedule)),
             final_catch_unverifiable=isinstance(
                 getattr(executor, 'final_catch_unverifiable', None), int),
-            fed=self._attempt_fed)
+            fed=self._attempt_fed,
+            missed_catches=int(self._goal_missed_catches))
         self._log_at(severity, text)
 
     def _maybe_signal_goal_done(self) -> None:
@@ -6916,15 +6918,24 @@ class SkillNode(Node):
         outcome = 'STOPPED' if end_code == 'STOPPED' else (end_code or 'COMPLETED')
         result.outcome = outcome
         result.success = bool(outcome in ('COMPLETED', 'THROWN'))
+        pattern = str(goal_handle.request.pattern)
+        # FEAT-48 (owner, 2026-11-11): a Throw lost to an EMPTY Cup has no
+        # ThrowReport but IS a Throw -- M counts it, N does not. The same
+        # recorded fact `drop_count` takes below (`_goal_missed_catches`),
+        # so the end line, this Result, the Attempt event and the ledger
+        # agree. A missed Feed is NOT added (M counts Jugglebot's Throws).
+        missed_catches = (0 if pattern == 'magazine'
+                          else int(self._goal_missed_catches))
         # From the ThrowReports, never by parsing log text; `per_throw` is
         # each throw's operator line.
-        result.throws, result.caught = rp.summarise(self._goal_reports)
+        result.throws, result.caught = rp.summarise(
+            self._goal_reports, missed_catches=missed_catches)
         result.per_throw = list(self._goal_outcome_lines)
-        pattern = str(goal_handle.request.pattern)
         # The ledger counts an unverifiable final Catch (TKT-42, option 2);
         # the Result above and the end line keep the operator's tally. Only a
         # COMPLETED goal, and only a row with a landing (TKT-44).
-        rec_throws, rec_caught = rp.record_counts(self._goal_reports, outcome)
+        rec_throws, rec_caught = rp.record_counts(
+            self._goal_reports, outcome, missed_catches=missed_catches)
         # Drops to date (FEAT-47): each unreleased-or-uncaught Throw, plus a
         # Ball Butler Feed that missed the Cup (the executor's
         # `missed_feed_catches`, captured at retire as `_goal_feed_missed`; a
@@ -6941,7 +6952,6 @@ class SkillNode(Node):
         # precedes it is a separate `reload` goal on the executor path, which
         # is counted there.
         feed_missed = int(self._goal_feed_missed)
-        missed_catches = int(self._goal_missed_catches)
         drops = (0 if pattern == 'magazine'
                  else rp.drop_count(self._goal_reports,
                                     feed_missed=feed_missed,
