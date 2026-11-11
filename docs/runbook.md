@@ -6,7 +6,7 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 6 blocks (274 min) · Bench leg 1 block (30 min) · Bench hand 1 block (40 min)
+Rigs: Robot 6 blocks (299 min) · Bench leg 1 block (30 min) · Bench hand 1 block (40 min)
 
 ## Setup 0: before power
 
@@ -15,7 +15,7 @@ Rigs: Robot 6 blocks (274 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Robot  (6 blocks, 274 min)
+## Robot  (6 blocks, 299 min)
 
 ### Block 1: armed  (3 rows, 62 min)
 
@@ -42,7 +42,7 @@ Rigs: Robot 6 blocks (274 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - pass: a window is saved on a real fault, with the brake inside it and the power channels finite.
 - record: the capture path, the launch log line of the SPINOUT, the number of launches flown, and any clean-stop saves or timeouts.
 
-### Block 2: level, armed, bb-fed  (3 rows, 42 min)
+### Block 2: level, armed, bb-fed  (4 rows, 67 min)
 
 #### BUG-63 Ball 2's first throw after the feed catch lands about 180 mm outward along the separation axis  (10 min, high, unattached)
 - why: the hypothesis is that a feed catch whose lateral aim was clamped seats the ball off-centre and the first Throw carries a lateral kick. A fresh plant_id aims the feed catch by the identity prior, so the clamp never engages: if the outward first throw disappears the clamped aim is implicated, if it persists the clamp is cleared. Either outcome is data.
@@ -62,6 +62,19 @@ Rigs: Robot 6 blocks (274 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
   - Afterwards `ros2 param set /skill_node apex_m_ball2 0.0`.
 - pass: 20 consecutive Catches in one Attempt, flown with Throws 21 (the 21st throw is the Stop throw, not counted, so a full Attempt reads `COMPLETED (20/20 caught)`; with Throws 20 it reads 19/19 and the bar is unreachable); Tracker mean Apex difference between the two balls within 20 mm of the commanded 100 mm; hand iq under 54 A at every launch, judged on launches only (the brake is excluded; it reached the 60 A clamp twice on 2026-11-03).
 - record: caught of thrown, each ball's mean Tracker Apex, peak hand iq per launch, Ball 2's first-throw landing (x, y) mm per Attempt from the install line (BUG-63: 4 of 11 landed about 180 mm outward and a fifth 37 mm on 2026-11-03), the bag path; commit docs/records.md.
+
+#### IDEA-22 Turned Columns at 90 deg: tilt the Platform back (+x) at the Catch so the ball stops hitting the Platform top  (25 min, medium, pattern-progression-columns-to-centre-and-orbit)
+- why: Turned Columns at 90 deg failed on 2026-11-10 (4 Attempts, all MISSED_CATCH within 8 Throws, the ball striking the Platform top). The branch tilts every auto-banked Catch back toward +x; the Feed Catch stays Level.
+- do:
+  - Answer TKT-65 on the default first (4 deg as built, or 3 deg).
+  - Mocap up on the robot base markers and Ball Butler's Base markers (columns_turned picks the fed Site from Ball Butler's position).
+  - Rehearse: `ros2 param set /skill_node columns_angle_deg 90`, then `ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: 'columns_turned,apex_m=0.95,separation_mm=125,dwell_s=0.27,columns_angle_deg=90'}"`. Nothing moves.
+  - Offline at P4 limits 4 deg is refused (LIMIT_JERK) and 3 deg passes at margin 0.024. If refused, `ros2 param set /skill_node columns_turned_catch_tilt_back_deg 3.0` and nominate again; if 3 is refused too, use 2.0.
+  - Fly 4 Attempts of columns_turned at 90 deg (Apex 0.95, Sep. 125, Dwell 0.27) at the highest tilt-back the nomination accepted. Watch where the ball meets the Cup and whether the Cup slides sideways at the Catch.
+  - If time allows, 1 Attempt at 45 deg as a control: it compiles exactly as before.
+- pass: At 90 deg, at least one of 4 Attempts passes Ball 2's first Catch after the Feed and carries 10 or more Throws, with no Platform-top strike seen.
+- record: the tilt-back flown and its nomination margin (or refusal text), Throws caught per Attempt and each end reason, any Platform-top strike, any sideways Cup slide at the Catch, the 45 deg control.
+- branch: `night-shift/2026-11-12-IDEA-22`
 
 #### IDEA-11 JP-10 Turned columns: the columns pair at fixed angles about +z, under pose  (20 min, medium, pattern-progression-columns-to-centre-and-orbit)
 - why: P3 of plan pattern-progression.md: two-ball Columns off the x axis under the pose planner, one plant_id per angle (set explicitly in the steps below), which answers PWAY-2 P2(b) (does the lateral bias rotate with the pair).
@@ -216,12 +229,11 @@ Rigs: Robot 6 blocks (274 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - IDEA-17 [Robot] Hand end-of-stroke bumper, and first the planner's own brake shape: let the ceiling, not the Hand, cap the Apex: no ## Sitting section
 - IDEA-18 [Robot] Learner context cannot tell a Throw from rest from a carried Throw: no ## Sitting section
 - IDEA-20 [Robot] Platform Accelerometer?: no ## Sitting section
-- IDEA-22 [Robot] Turned Columns at 90 deg: tilt the Platform back (+x) at the Catch so the ball stops hitting the Platform top: no ## Sitting section
 - IDEA-9 [Robot] JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites: no ## Sitting section
 
 ## Questions a Sitting can answer
 
-- none
+- TKT-65 IDEA-22 held on night-shift/2026-11-12-IDEA-22: fly it with the 4 deg default, change the default to 3 deg, keep the velocity match on the arrival first, or build the fixed attitude per Site instead? (parent IDEA-22)
 
 ## Close-out
 

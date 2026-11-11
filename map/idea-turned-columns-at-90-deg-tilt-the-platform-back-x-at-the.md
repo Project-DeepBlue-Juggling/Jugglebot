@@ -43,7 +43,7 @@ Recommendation: 3, then 1. The read is cheap, and it shows whether the misses ar
 - setup: level, armed, bb-fed
 - why: Turned Columns at 90 deg failed on 2026-11-10 (4 Attempts, all MISSED_CATCH within 8 Throws, the ball striking the Platform top). The branch tilts every auto-banked Catch back toward +x; the Feed Catch stays Level.
 - do:
-  - Answer the question ticket on the default first (4 deg as built, or 3 deg).
+  - Answer TKT-65 on the default first (4 deg as built, or 3 deg).
   - Mocap up on the robot base markers and Ball Butler's Base markers (columns_turned picks the fed Site from Ball Butler's position).
   - Rehearse: `ros2 param set /skill_node columns_angle_deg 90`, then `ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: 'columns_turned,apex_m=0.95,separation_mm=125,dwell_s=0.27,columns_angle_deg=90'}"`. Nothing moves.
   - Offline at P4 limits 4 deg is refused (LIMIT_JERK) and 3 deg passes at margin 0.024. If refused, `ros2 param set /skill_node columns_turned_catch_tilt_back_deg 3.0` and nominate again; if 3 is refused too, use 2.0.
