@@ -2,13 +2,14 @@
 id: BUG-88
 kind: bug
 title: The triangle and moving_gap bench stages still energise the Hand before a refusal can abort
-status: inbox
+status: complete
 created: '2026-11-11'
-updated: '2026-11-11T10:37:56Z'
+updated: '2026-11-11T17:50:43Z'
 owners: []
 priority: low
 effort: xs
 hardware: none
+owner: none
 radius: local
 diagnosis: confirmed
 area: tests-tooling
@@ -16,6 +17,7 @@ blocked_by: []
 links:
 - tests/hardware/hand_stream_bench.py
 - logbook/2026-11-11-sitting-debrief.md
+- logbook/2026-11-12-bench-triangle-moving-gap-refuse-before-bring-up.md
 filed_by: claude-debrief
 ---
 

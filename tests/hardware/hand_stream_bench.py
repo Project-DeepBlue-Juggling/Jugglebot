@@ -543,6 +543,22 @@ class Triangle:
         return self.p0 + self.span - self.v * (ph - half), -self.v
 
 
+def triangle_envelope_refusal(start_rev, span_rev):
+    """The row-14 triangle's envelope check (shared by triangle and moving_gap).
+
+    PURE. Returns the refusal text, or None when ``start + span`` stays inside
+    ``HAND_MAX_POS - HAND_MARGIN``. Called twice by the driver: BEFORE the hand
+    bring-up (from a fresh position read, baseline as fallback, so a refusal
+    leaves the Hand as found) and again AFTER it (the position can move on
+    bring-up: an IDLE drive at the bottom stop read 0.4855 rev afterwards on
+    2026-11-11).
+    """
+    if start_rev + span_rev > HAND_MAX_POS - HAND_MARGIN:
+        return (f"triangle would reach {start_rev + span_rev:.2f} rev (> "
+                f"{HAND_MAX_POS - HAND_MARGIN:.2f}). Park lower.")
+    return None
+
+
 # ── moving_gap (row 17b): the falling-edge decay, taken while the hand MOVES ──
 
 def hand_gap_target(p0, v, g, seg_t=SEG_T, maxext=MAX_EXTRAP_DT_S,
@@ -1378,6 +1394,21 @@ def main():
             for ln in SC.plan_lines(pre_plan, pre_start):
                 _sc_say("pre-bring-up " + ln)
 
+        # ── triangle / moving_gap: refuse BEFORE the hand bring-up (BUG-88) ──────
+        # Same rule as stroke_cut: refusals happen before the Hand is energised.
+        # Planned from a fresh position read, the baseline as fallback; the
+        # envelope is re-checked after the bring-up below.
+        if args.stage in ("triangle", "moving_gap"):
+            tri_pre_start = _hand_pos()
+            if tri_pre_start is None:
+                tri_pre_start = start
+            why_env = triangle_envelope_refusal(tri_pre_start, args.tri_span)
+            if why_env is not None:
+                print(f"ABORT: {args.stage} refused from the baseline "
+                      f"{tri_pre_start:+.4f} rev (before the hand bring-up; "
+                      f"nothing was commanded): {why_env}")
+                return 2
+
         # ── Optional hand bring-up (mode + gains BEFORE closing the loop) ────
         if args.close_loop:
             print("hand bring-up: POSITION/PASSTHROUGH + gains → CLOSED_LOOP")
@@ -1449,10 +1480,13 @@ def main():
             # and the firmware's whole coast past the falling edge is
             # v·HAND_COAST_S (0.0525 rev = 1.66 mm at the defaults), far inside
             # the margin this check already keeps off the 10.701 rev metal.
-            if start + args.tri_span > HAND_MAX_POS - HAND_MARGIN:
-                print(f"ABORT: triangle would reach "
-                      f"{start + args.tri_span:.2f} rev (> "
-                      f"{HAND_MAX_POS - HAND_MARGIN:.2f}). Park lower."); return 2
+            # The post-bring-up RECHECK (the pre-bring-up check above ran from the
+            # earlier read; the position can move on bring-up).
+            why_env = triangle_envelope_refusal(start, args.tri_span)
+            if why_env is not None:
+                print(f"ABORT: {why_env} (post-bring-up position {start:+.4f} rev"
+                      f"{'; the hand is ENERGISED and holding there' if args.close_loop else ''})")
+                return 2
             traj = Triangle(start, args.tri_span, args.tri_speed)
         elif args.stage == "stroke_cut":
             try:
