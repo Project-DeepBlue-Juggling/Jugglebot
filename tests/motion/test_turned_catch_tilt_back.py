@@ -111,6 +111,24 @@ def test_the_sum_is_clamped_onto_the_12_deg_disc():
     got = sg.catch_receive_tilt(None, (0.0, TB4), steep)
     assert math.degrees(math.hypot(*got)) == pytest.approx(tg.MAX_TILT_DEG)
     assert got[1] > 0.0
+    # Direction kept: the clamp scales the raw sum, it does not rotate it.
+    raw = np.asarray(tg.tilt_to_receive(steep)) + np.array([0.0, TB4])
+    assert got[0] * raw[1] - got[1] * raw[0] == pytest.approx(0.0, abs=1e-12)
+    assert got[0] * raw[0] + got[1] * raw[1] > 0.0
+
+
+def test_a_negative_tilt_back_leans_the_cup_axis_minus_x_through_the_fold():
+    off = (0.0, -TB4)
+    assert sg.catch_receive_tilt(None, off, VERTICAL) == (0.0, -TB4)
+    assert tg.cup_axis(*sg.catch_receive_tilt(None, off, VERTICAL))[0] < 0.0
+
+
+def test_the_t0_initial_catch_of_a_90_deg_turned_pattern_carries_the_offset():
+    pat = nm.build_pattern(_cfg())
+    sch = sc.compile_columns(pat, t0_abs_s=1.0)
+    first = next(s for s in sch.skills if s.kind == sg.CATCH)
+    assert first.landing_prior is None and first.receive_tilt is None
+    assert first.receive_tilt_offset == (0.0, TB4)
 
 
 def test_a_pinned_catch_cannot_also_take_an_offset():

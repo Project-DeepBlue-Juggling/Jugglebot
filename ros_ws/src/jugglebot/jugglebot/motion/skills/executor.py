@@ -4082,7 +4082,10 @@ class SkillExecutor:
         ``segments.hold_axis_site``); ``skill.site.rest_site_mm()`` is the
         default every pre-R4 CATCH still gets. ``receive_tilt`` (R5, the
         BB-fed columns feed catch) passes ``skill.receive_tilt`` straight
-        through the same way — ``None`` for every catch that does not set it.
+        through the same way — ``None`` for every catch that does not set it,
+        unless ``skill.receive_tilt_offset`` is set (IDEA-22), in which case
+        ``segments.catch_receive_tilt`` returns the offset-folded pin (the
+        t0/hop initial Catch of a 90 deg turned Pattern carries it).
 
         **P3a (``self.checker`` set).** The carried throw's command is the
         ONLINE one: on the first call for ``idx`` (cache empty) it is resolved

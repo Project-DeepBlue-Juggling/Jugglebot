@@ -543,8 +543,11 @@ class Skill:
     #: physical reason). ``compile_columns(feed=...)`` is the one caller that
     #: sets it (``(0.0, 0.0)``, on the feed catch only — the skill carrying
     #: ``landing_prior=feed``). ``None`` (every other CATCH) keeps the
-    #: auto-banked receive tilt. Mutually exclusive with ``hold_tilt``.
-    receive_tilt: Optional[Tuple[float, float]] = None
+    #: auto-banked receive tilt -- unless ``receive_tilt_offset`` is set, in
+    #: which case ``segments.catch_receive_tilt`` returns the offset-folded
+    #: pin (the t0/hop initial Catch of a 90 deg turned Pattern carries it).
+    #: Mutually exclusive with ``hold_tilt``.
+    receive_tilt:Optional[Tuple[float, float]] = None
     #: CATCH only: a tilt-back OFFSET (drx, dry) rad added to this catch's
     #: auto-banked receive tilt (IDEA-22, 2026-11-12: turned Columns at
     #: 90 deg, ``Pattern.catch_tilt_offset``). The executor and the
@@ -1895,7 +1898,10 @@ def compile_beats(events, *, launch_s: float, rest_tail_s: float,
     # docstring) is what makes a BB feed's oblique arrival fit the transit +
     # dwell window at all — a `t0_abs_s` schedule's initial catch has no real
     # arrival to pin against (its own self-toss/hop landing is already
-    # vertical or near it) and keeps the auto-banked default, `None`.
+    # vertical or near it) and keeps the auto-banked default, `None` --
+    # unless `receive_tilt_offset` is set, in which case
+    # `segments.catch_receive_tilt` returns the offset-folded pin (the
+    # t0/hop initial Catch of a 90 deg turned Pattern carries it).
     #
     # `receive_tilt_offset` (IDEA-22) rides on every AUTO-banked CATCH only:
     # the Feed Catch pins Level above, so it never carries the offset.
