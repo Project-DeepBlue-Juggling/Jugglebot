@@ -233,7 +233,7 @@ Rigs: Robot 6 blocks (299 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 
 ## Questions a Sitting can answer
 
-- TKT-65 IDEA-22 held on night-shift/2026-11-12-IDEA-22: fly it with the 4 deg default, change the default to 3 deg, keep the velocity match on the arrival first, or build the fixed attitude per Site instead? (parent IDEA-22)
+- none
 
 ## Close-out
 
