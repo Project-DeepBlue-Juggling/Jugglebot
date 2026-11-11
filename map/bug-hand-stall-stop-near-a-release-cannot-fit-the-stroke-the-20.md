@@ -4,7 +4,7 @@ kind: bug
 title: 'Hand stall stop near a release cannot fit the stroke: the 20 ms grace plus the C2 stop carry the Hand past the clip'
 status: in_progress
 created: '2026-11-02'
-updated: '2026-11-07T06:39:19Z'
+updated: '2026-11-11T09:05:19Z'
 owners:
 - jugglebot-50
 priority: medium
@@ -63,6 +63,11 @@ The FW 36 stall guard never fired: `diag_flags` bit2 (value 4) was never set in 
 - pass: every upstroke run scores S1-S5 in the stage's verdict line: commanded peak at most the modelled hold + 0.1 rev and under 10.0 rev, sched_hand_c1_stops +1 and sched_stops +1 per run, no fault and no sched_refused, encoder settled within 0.05 rev of the hold within 150 ms; both controls show C1 count +0 with their hold within 0.1 rev of the model.
 - record: each run's verdict line (cut frame, entry speed, modelled and measured hold, encoder overshoot, settle time, counter deltas), the peak Iq at the stop entry, any guard or latch event, the temp/logs CSV paths, and the bench top stop in rev. The bench Hand's current cap is the same as production (owner, 2026-11-07), so the stage's 10 A assumption is void and its drive may follow the 4500 rev/s^2 stop more closely than modelled.
 - minutes: 30
+
+## Sitting result (2026-11-11 20:05)
+
+- verdict: pass
+- notes: All runs passed without problem! Step 3 result: stage 'stroke_cut' done: 3 run(s), all PASS; max belt residual 0.4947 rev; worst send lateness 0.5 ms cachediag: 15 windows, 0 episode(s) past -20, worst deficit 0.0 frames csv: /home/jetson/Desktop/Jugglebot/temp/logs/hand_stream_stroke_cut_20261111_195604.csv cachediag csv: /home/jetson/Desktop/Jugglebot/temp/logs/hand_stream_stroke_cut_20261111_195604_cachediag.csv Step 4 result: (with --repeat 3): stage 'stroke_cut' done: 3 run(s), all PASS; max belt residual 0.7249 rev; worst send lateness 0.1 ms cachediag: 10 windows, 0 episode(s) past -20, worst deficit 0.0 frames csv: /home/jetson/Desktop/Jugglebot/temp/logs/hand_stream_stroke_cut_20261111_195711.csv cachediag csv: /home/jetson/Desktop/Jugglebot/temp/logs/hand_stream_stroke_cut_20261111_195711_cachediag.csv Step 5 results: Cmd: $ python tests/hardware/hand_stream_bench.py --stage stroke_cut --cut-at-vel 64 --cut-mode downstroke --close-loop --repeat 3 Result: stage 'stroke_cut' done: 3 run(s), all PASS; max belt residual 0.9286 rev; worst send lateness 0.1 ms cachediag: 12 windows, 0 episode(s) past -20, worst deficit 0.0 frames csv: /home/jetson/Desktop/Jugglebot/temp/logs/hand_stream_stroke_cut_20261111_195758.csv cachediag csv: /home/jetson/Desktop/Jugglebot/temp/logs/hand_stream_stroke_cut_20261111_195758_cachediag.csv But then for some reason all subsequent commands (including --cut-mode slow) was met with "ABORT: preconditions not met: • bridge not TIME_SYNCED (HeartbeatT2J flags bit 0): every HAS_SCHED frame would be DEMOTED to the legacy lane, so the stage would exercise the FW 17 wind-down, not the FW 37 scheduled stop — wait for the TimeOfDay sync and re-run", for no obvious reason.
 
 ## Progress
 
