@@ -21,7 +21,7 @@ related_items: [FEAT-47]
 
 FEAT-47 asked for a "Drops to date" counter atop the Records panel. The live counter landed in slices 1 to 3 (`2026-11-10-drops-to-date-live-counter`, `2026-11-11-drops-count-feed-misses`, `2026-11-11-drops-count-lost-throws`) and the entry point for a history figure in slice 4 (`2026-11-11-drops-history-entry`). This entry records the history figure itself: **819 drops, 2026-07-23 through 2026-11-10** (low 753, high 884), written into `docs/records.md` with `tools/set_drops_history.py`. The live count starts at 0 on 2026-11-11. The evidence, one row per Attempt or per reconciled launch, is `logbook/artifacts/2026-11-11-drops-history.csv` (994 rows).
 
-If anything in this entry differs from the backfill's own `FINAL_summary.md`, that file was the source and wins; the figures below were checked against it.
+The figures below were taken from the backfill's own summary, which is not retained; the evidence CSV is the record, and every total and table here recomputes from it.
 
 ## Owner decisions (TKT-55, TKT-61, TKT-64 and the Session's answers, 2026-11-11)
 
@@ -104,7 +104,7 @@ Script-era rows are Attempts; earlier rows are per-Sitting or per-launch reconci
 
 ## Verification
 
-- Bag tool validation, 2026-11-11, four bags against their references (`B2_RECIPE.md` of the backfill): 2026-07-23 third Sitting 8 caught of 10 Feeds (exact); 2026-08-10 26 caught / 16 missed against the Hand sensor's 25/15 (off by one each way); 2026-09-06 6 of 7 (exact); 2026-09-16 7/0 (agrees with the caught-window probe). 0 wrong verdicts. Two Catching_Cone bags correctly gave 0 attempts.
-- Script reproduction, 2026-11-11, `count_script_era_v2.py` with `post_v2.py` over the whole `~/.ros/log` tree (run by the backfill, not re-run for this entry): reproduced the 825 script-era rows exactly, 0 differing.
+- Bag tool validation, 2026-11-11, four bags against their references (recorded from the backfill's own validation notes, which are not in the repo): 2026-07-23 third Sitting 8 caught of 10 Feeds (exact); 2026-08-10 26 caught / 16 missed against the Hand sensor's 25/15 (one over each way; both extras are duplicate rows the tool emits for one split flight, not wrong verdicts); 2026-09-06 6 of 7 (exact); 2026-09-16 7/0 (agrees with the caught-window probe). No verdict contradicted its reference. Two Catching_Cone bags correctly gave 0 attempts.
+- Script reproduction, 2026-11-11, the backfill's one-off script-era counter over the whole `~/.ros/log` tree (recorded from the backfill; not reproducible from the repo, since the script is uncommitted): reproduced the 825 script-era rows exactly, 0 differing.
 - Tool write, 2026-11-11, `python tools/set_drops_history.py --history 819 ...`: "total 819 = 819 history + 0 live (since 2026-11-11)", exit 0.
 - Tier 3 named tests, 2026-11-11, `pytest tests/sim/test_logbook_front_matter.py tests/sim/test_docs_links.py tests/sim/test_plans_index.py tests/sim/test_mapkit*.py tests/motion/test_records.py tests/ros/test_gui_records_panel.py tests/ros/test_gui_records_api.py tests/ros/test_skill_node.py tests/ros/test_skill_node_magazine.py tests/sim/test_map_items.py tests/sim/test_map_items_rated.py tests/sim/test_glossary_avoid_words.py tests/sim/test_sitting_debrief_protocol.py -q`, RESULT: **1038 passed, 38 skipped in 178.90 s**, exit 0. The readers of `docs/records.md` came from `grep -rn "records.md" tests/` (the last five files before the map ones); `test_records.py` parses the real ledger section.
