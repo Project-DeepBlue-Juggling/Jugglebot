@@ -8,9 +8,9 @@ The most Catches in one continuous Attempt on the robot (never the sim), per Pat
 
 ## Drops to date
 
-<!-- drops: live=0 since=2026-11-11 history=819 history_from=2026-07-23 history_through=2026-11-10 -->
+<!-- drops: live=0 since=2026-11-11 history=819 history_caught=6485 history_from=2026-07-23 history_through=2026-11-10 -->
 
-Drops to date: 819 (0 counted live since 2026-11-11; 819 from history, 2026-07-23 to 2026-11-10). A drop is a ball thrown to be caught by Jugglebot that was not caught.
+Drops to date: 819 (0 counted live since 2026-11-11; 819 from history, 2026-07-23 to 2026-11-10). 7,304 Throws and Feeds to catch, 88.8 % caught, 11.2 % dropped. A drop is a ball thrown to be caught by Jugglebot that was not caught.
 
 ## 1 ball
 

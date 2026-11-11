@@ -180,6 +180,7 @@ def test_a_magazine_end_books_no_drop(tmp_path):
     _ctx_with_samples(node, R)
     node._magazine_finish(node._magazine_ctx)
     assert sn.rp.drop_count(node._goal_reports) == 1   # the placeholder alone WOULD count
+    node._goal_feeds_caught = 3       # nor does a magazine run book any caught
     node._goal_missed_catches = 2     # FEAT-47: nor do lost Throws count on a magazine goal
     gh = MagicMock(is_cancel_requested=False)
     gh.request.pattern = 'magazine'
@@ -189,7 +190,7 @@ def test_a_magazine_end_books_no_drop(tmp_path):
     # No ledger written, or one written with no drop booked (before the fix
     # the placeholder wrote the file with live=1).
     drops = rec.load(str(path)).drops if path.exists() else None
-    assert drops is None or drops.live == 0
+    assert drops is None or (drops.live == 0 and not drops.caught)
 
 
 def test_too_few_samples_is_no_track(tmp_path):

@@ -402,7 +402,30 @@ def drop_count(reports: List[ThrowReport], feed_missed: int = 0,
     Throws lost to an EMPTY Cup, which end the Attempt MISSED_CATCH with no
     ThrowReport (``SkillExecutor.missed_catch_drops``). Negative values are
     ignored. The same ``missed_catches`` also adds to the Throws figure of
-    :func:`summarise` (FEAT-48); the drops count is unaffected by that."""
+    :func:`summarise` (FEAT-48); the drops count is unaffected by that.
+
+    Shares one base with :func:`caught_count` (the same balls, the same
+    exclusions): ``drop_count + caught_count`` is the Attempt's balls thrown
+    to be caught by Jugglebot, the denominator of the records ledger's
+    percentage caught."""
     n = sum(1 for r in reports
             if not r.stop and not r.unverified and r.caught is not True)
     return n + max(0, int(feed_missed)) + max(0, int(missed_catches))
+
+
+def caught_count(reports: List[ThrowReport], feeds_caught: int = 0) -> int:
+    """Catches in one Attempt that pair with :func:`drop_count`, for the
+    records ledger's "caught" figure (owner, 2026-11-11).
+
+    Shares one base with :func:`drop_count`: a ball thrown to be caught by
+    Jugglebot is either counted there (not caught) or here (caught), never
+    both and never neither. Per :class:`ThrowReport`: ``caught`` True, unless
+    it is the columns Stop (never a catch attempt) or an ``unverified`` final
+    Catch (neither caught nor missed). ``feeds_caught`` adds the Ball Butler
+    Feeds that seated in the Cup (``SkillExecutor.feed_reports``, one
+    :class:`FeedCatchReport` each; a Feed has no ThrowReport of its own, so
+    nothing is counted twice); a missed Feed is a drop there. A negative
+    value is ignored."""
+    n = sum(1 for r in reports
+            if not r.stop and not r.unverified and r.caught is True)
+    return n + max(0, int(feeds_caught))

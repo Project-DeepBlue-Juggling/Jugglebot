@@ -166,6 +166,25 @@ def test_drops_breakdown_is_the_hover_text(out):
     ]
 
 
+def test_drops_hover_leads_with_throws_and_percent_and_the_line_is_unchanged(out):
+    """Owner, 2026-11-11: hover = Throws and Feeds to catch + percentages, then the breakdown;
+    the visible line stays exactly "Drops to date: N"."""
+    p = out["dropsPct"]
+    assert p["line"] == "Drops to date: 819"
+    assert p["detail"] == ("7,304 Throws and Feeds to catch \u00b7 88.8 % caught, 11.2 % dropped \u00b7 "
+                           "0 live since 2026-11-11, 819 from history (2026-07-23 to 2026-11-10)")
+    # 1 of 3 caught: 33.3 + 66.7 = 100.0 (q is 100 - rounded p); no figures / zero throws / out of range -> ''
+    assert p["summary"] == [
+        "7,304 Throws and Feeds to catch \u00b7 88.8 % caught, 11.2 % dropped",
+        "", "", "",
+        "3 Throws and Feeds to catch \u00b7 33.3 % caught, 66.7 % dropped",
+        "", "",
+    ]
+    # without the figures the text is today's, unchanged
+    assert p["noFigures"] == "0 live since 2026-11-11, 819 from history (2026-07-23 to 2026-11-10)"
+    assert p["onlyThrows"] == "10 Throws and Feeds to catch \u00b7 70.0 % caught, 30.0 % dropped \u00b7 since 2026-11-12 (history not yet counted)"
+
+
 def test_drops_increment_effect_plays_only_on_a_rise_after_first_load(out):
     assert out["dropsBumped"] == [False, False, True, False, False]
     panel = (JS / "records-panel.js").read_text()

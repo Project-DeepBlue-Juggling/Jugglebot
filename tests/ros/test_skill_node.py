@@ -4066,7 +4066,7 @@ class TestJuggleAction:
 
     def _ended_attempt(self, tmp_path, throws, caught, records_path=None,
                        pattern='self_toss', missed_feeds=0, missed_catches=0,
-                       carried_missed_catches=0):
+                       carried_missed_catches=0, reports=None, feeds_caught=0):
         """Accept a self-throw goal, stop it, run `_juggle_execute` with
         `rp.summarise` reporting (throws, caught); returns the juggle_end
         fields and the WARN lines. `records_path` None leaves the node
@@ -4088,6 +4088,9 @@ class TestJuggleAction:
         node._executor.missed_catch_drops = missed_catches
         node._goal_missed_catches = carried_missed_catches
         node._on_tick()
+        if reports is not None:
+            node._goal_reports = list(reports)
+        node._goal_feeds_caught = feeds_caught
         gh = MagicMock(is_cancel_requested=False)
         gh.request.pattern = pattern
         warnings = []
@@ -4210,6 +4213,47 @@ class TestJuggleAction:
         self._ended_attempt(tmp_path, 3, 3, records_path=path2)
         drops = rec.load(str(path2)).drops
         assert drops is None or drops.live == 0
+
+    def test_caught_and_drops_share_a_base_in_the_ledger(self, tmp_path):
+        """Owner, 2026-11-11: 9 caught Throws, 1 lost Throw and 1 seated Ball
+        Butler Feed book caught 10 and drops 1 (Throws and Feeds to catch 11)."""
+        from jugglebot import records as rec
+        R = sn.rp.ThrowReport
+        mk = lambda i, c: R(throw_no=i, n_throws=10, ball_id=0, caught=c, row=True,
+                            no_row_reason='', apex_m=0.9, landing_err_mm=None,
+                            release_err_s=None, arrival_err_s=None, seat_s=None)
+        reports = [mk(i, True) for i in range(1, 10)] + [mk(10, False)]
+        path = tmp_path / 'records.md'
+        self._ended_attempt(tmp_path, 10, 9, records_path=path, reports=reports,
+                            feeds_caught=1)
+        d = rec.load(str(path)).drops
+        assert (d.caught, d.live, d.throws_total) == (10, 1, 11)
+
+    def test_an_attempt_with_catches_and_no_drops_still_raises_live_caught(self, tmp_path):
+        from jugglebot import records as rec
+        R = sn.rp.ThrowReport
+        reports = [R(throw_no=1, n_throws=1, ball_id=0, caught=True, row=True,
+                     no_row_reason='', apex_m=0.9, landing_err_mm=None,
+                     release_err_s=None, arrival_err_s=None, seat_s=None)]
+        path = tmp_path / 'records.md'
+        self._ended_attempt(tmp_path, 1, 1, records_path=path, reports=reports)
+        self._ended_attempt(tmp_path, 1, 1, records_path=path, reports=reports)  # no new record, no drop
+        d = rec.load(str(path)).drops
+        assert (d.caught, d.live) == (2, 0)
+        # a Feed (reload) goal that only seated a Feed Catch books it too, and no row
+        self._ended_attempt(tmp_path, 0, 0, records_path=path, pattern='reload',
+                            reports=[], feeds_caught=1)
+        assert rec.load(str(path)).drops.caught == 3
+
+    def test_the_feed_catch_counter_counts_drained_feed_reports(self):
+        node, _client = _node_with_client()
+        ex = MagicMock()
+        ex.feed_reports = [sn.rp.FeedCatchReport(1, None, None, None, None),
+                           sn.rp.FeedCatchReport(2, None, None, None, None)]
+        ex.reports = []
+        node._goal_feeds_caught = 0
+        node._drain_reports(ex)
+        assert node._goal_feeds_caught == 2 and ex.feed_reports == []
 
     def _ended_with_real_summary(self, tmp_path, n_caught, missed_catches=0,
                                  missed_feeds=0, records_path=None):

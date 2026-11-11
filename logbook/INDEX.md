@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-11 | resolved | gui improvements | **Drops to date: the hover text also shows the Throws total and the percentage caught** | [2026-11-11-drops-tooltip-throws-and-percent](2026-11-11-drops-tooltip-throws-and-percent.md) |
 | 2026-11-11 | complete | Sitting debrief | **Bench Hand Sittings 2026-11-11: BUG-55 passed; FEAT-45 rung A flown, the scope tool's angle analysis was wrong in units and frame, rung B never ran, and the SPINOUT false-positive reading of BUG-57 was raised and refuted the same night** | [2026-11-11-sitting-debrief](2026-11-11-sitting-debrief.md) |
 | 2026-11-11 | resolved | BUG-57 root cause | **FEAT-45 bench prep: the mirrored bench Hand (fixed in hardware the same day), a push test, open-loop torque pulses and a guarded USB home; the FOC scope hung on a trigger point that splits a sample (probe now GO)** | [2026-11-11-feat45-bench-hand-frame-and-scope-trigger](2026-11-11-feat45-bench-hand-frame-and-scope-trigger.md) |
 | 2026-11-11 | complete | night-shift | **Night Shift 2026-11-11: 3 merged (BUG-83, BUG-60, FEAT-47's three fixes), 2 held (FEAT-47 Feed misses, carried BUG-80), 3 questions; IDEA-21's landing score beat the path score on four bags** | [2026-11-11-night-shift](2026-11-11-night-shift.md) |

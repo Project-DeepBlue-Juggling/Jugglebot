@@ -7,7 +7,12 @@ figure (never by hand): it creates the drops section when the ledger has none
 (live 0), otherwise changes only the history fields.
 
     python tools/set_drops_history.py --history 828 --from 2026-07-23 \
-        --through 2026-11-11 [--since YYYY-MM-DD] [--path docs/records.md]
+        --through 2026-11-11 [--history-caught N] [--since YYYY-MM-DD] \
+        [--path docs/records.md]
+
+``--history-caught`` is the Catches paired with the history drops (the Throws
+and Feeds to catch are caught + drops); without it the Throws total and the
+percentage stay hidden.
 
 Exit 0 on success, 1 (file untouched) on a refused figure, date or marker.
 """
@@ -37,6 +42,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--history', type=int, required=True,
                     help='drops counted before the live counter')
+    ap.add_argument('--history-caught', type=int, default=None,
+                    help='catches counted in the same history (optional)')
     ap.add_argument('--from', dest='first', required=True,
                     help='first date the history counts (YYYY-MM-DD)')
     ap.add_argument('--through', required=True,
@@ -49,7 +56,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     rec = _load_records()
     try:
         model = rec.set_drops_history(args.path, args.history, args.through,
-                                      since=args.since, first=args.first)
+                                      since=args.since, first=args.first,
+                                      history_caught=args.history_caught)
     except ValueError as exc:
         print('refused (%s untouched): %s' % (args.path, exc), file=sys.stderr)
         return 1

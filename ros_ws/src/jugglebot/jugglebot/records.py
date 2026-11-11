@@ -59,7 +59,18 @@ from ``since`` on, ``history`` is the figure :func:`set_drops_history` writes
 (``tools/set_drops_history.py``; never by hand; ``none`` = not yet counted, read
 as 0). A history written with its dates carries them as the optional marker
 fields ``history_from=<date> history_through=<date>`` (a marker without them
-parses as before, and every live write preserves them). A file without the section is "not counted yet"
+parses as before, and every live write preserves them).
+
+The same section also keeps the CAUGHT side so a percentage can be shown (owner,
+2026-11-11): optional ``caught=<n>`` (live, after ``since``) and
+``history_caught=<m>`` (after ``history``). A Throw or Feed "to catch" is a ball
+thrown to be caught by Jugglebot, so ``throws = caught + drops`` BY
+CONSTRUCTION (``report.caught_count`` and ``report.drop_count`` share one base)
+and the denominator can never disagree with the drops figure. A marker without
+the fields parses and re-renders byte-identically; the figures are exposed
+(:attr:`Drops.throws_total`, ``to_json`` ``caught``/``throws``) only when every
+part that has drops also has its caught figure, else ``None``: never a
+percentage built on a denominator that misses a part. A file without the section is "not counted yet"
 (:attr:`Ledger.drops` is ``None``; the v2 file parses unchanged) and the first
 write after the upgrade adds it. Feeds (``reload``/``magazine``) are not
 records but their drops count: :func:`record_attempt` books them without a
@@ -70,7 +81,7 @@ Writes
 :func:`record_attempt` is the one writer: it parses the existing file (a
 malformed file raises :class:`RecordsFormatError` and is NEVER overwritten),
 applies the Attempt, and writes only when a record was beaten, the file did
-not exist, the Attempt carried drops, or the drops section is not there yet
+not exist, the Attempt carried drops or catches, or the drops section is not there yet
 (the first write after the upgrade), atomically (temp file in the same
 directory + ``os.replace``).
 Rendering is deterministic, so a re-render of the same model is
@@ -137,7 +148,8 @@ _TABLE_RULE = '|---|---:|---:|---|---|---|'
 _TABLE_HEAD_V1 = '| When | Throws | Catches | How it ended | Note |'
 _TABLE_RULE_V1 = '|---|---:|---:|---|---|'
 _DROPS_RE = re.compile(r'^<!-- drops: live=(\d+) since=(\d{4}-\d{2}-\d{2}) '
-                       r'history=(\d+|none)'
+                       r'(?:caught=(\d+) )?history=(\d+|none)'
+                       r'(?: history_caught=(\d+))?'
                        r'(?: history_from=(\d{4}-\d{2}-\d{2}) '
                        r'history_through=(\d{4}-\d{2}-\d{2}))? -->$')
 _NO_RECORD = '_No record yet._'
@@ -180,6 +192,9 @@ class Attempt:
     params: Tuple[Tuple[str, str], ...] = ()
     #: Balls thrown to be caught that were not (``report.drop_count``).
     drops: int = 0
+    #: Catches that pair with ``drops`` (``report.caught_count``); ``None`` =
+    #: the writer does not report them (the ledger's caught figure is untouched).
+    caught: Optional[int] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -193,10 +208,32 @@ class Drops:
     #: ``None`` on a marker written before they existed.
     history_from: Optional[str] = None
     history_through: Optional[str] = None
+    #: Catches paired with ``live`` / ``history`` (``report.caught_count``);
+    #: ``None`` = not recorded (a marker written before they existed).
+    caught: Optional[int] = None
+    history_caught: Optional[int] = None
 
     @property
     def total(self) -> int:
         return self.live + (self.history or 0)
+
+    @property
+    def caught_total(self) -> Optional[int]:
+        """Catches, live + history; ``None`` when a part that has drops lacks
+        its caught figure (a part with no drops and no figure counts 0)."""
+        live = self.caught if self.caught is not None else (
+            0 if self.live == 0 else None)
+        hist = self.history_caught if self.history_caught is not None else (
+            0 if not self.history else None)
+        if live is None or hist is None:
+            return None
+        return live + hist
+
+    @property
+    def throws_total(self) -> Optional[int]:
+        """Balls thrown to be caught: caught + drops; ``None`` as above."""
+        c = self.caught_total
+        return None if c is None else c + self.total
 
 
 @dataclasses.dataclass(frozen=True)
@@ -299,9 +336,15 @@ def _drops_sentence(d: Drops) -> str:
             d.history, d.history_from, d.history_through)
     else:
         hist = '%d from history' % d.history
-    return ('Drops to date: %d (%d counted live since %s; %s). A drop is a '
+    t = d.throws_total
+    pct = ''
+    if t:
+        p = round(100.0 * d.caught_total / t, 1)
+        pct = ' %s Throws and Feeds to catch, %.1f %% caught, %.1f %% dropped.' % (
+            format(t, ','), p, round(100.0 - p, 1))
+    return ('Drops to date: %d (%d counted live since %s; %s).%s A drop is a '
             'ball thrown to be caught by Jugglebot that was not caught.'
-            % (d.total, d.live, d.since, hist))
+            % (d.total, d.live, d.since, hist, pct))
 
 
 def render(model: Ledger) -> str:
@@ -327,9 +370,12 @@ def render(model: Ledger) -> str:
     d = model.drops
     if d is not None:
         out += ['', '## Drops to date', '',
-                '<!-- drops: live=%d since=%s history=%s%s -->'
+                '<!-- drops: live=%d since=%s%s history=%s%s%s -->'
                 % (d.live, d.since,
+                   '' if d.caught is None else ' caught=%d' % d.caught,
                    'none' if d.history is None else d.history,
+                   '' if d.history_caught is None
+                   else ' history_caught=%d' % d.history_caught,
                    (' history_from=%s history_through=%s'
                     % (d.history_from, d.history_through))
                    if d.history_from and d.history_through else ''),
@@ -398,9 +444,12 @@ def parse(text: str) -> Ledger:
                 if not dm or drops is not None:
                     raise RecordsFormatError('line %d: bad or repeated drops '
                                              'marker' % (i + 1,))
-                drops = Drops(int(dm.group(1)), dm.group(2),
-                              None if dm.group(3) == 'none'
-                              else int(dm.group(3)), dm.group(4), dm.group(5))
+                drops = Drops(
+                    int(dm.group(1)), dm.group(2),
+                    None if dm.group(4) == 'none' else int(dm.group(4)),
+                    dm.group(6), dm.group(7),
+                    None if dm.group(3) is None else int(dm.group(3)),
+                    None if dm.group(5) is None else int(dm.group(5)))
             if lines[i].lstrip().startswith('|'):
                 raise RecordsFormatError('line %d: table row outside a '
                                          'Pattern' % (i + 1,))
@@ -475,15 +524,25 @@ def apply_attempt(model: Ledger, attempt: Attempt) -> Tuple[Ledger, bool]:
     return model.replace(dataclasses.replace(table, rows=table.rows + (row,))), True
 
 
-def apply_drops(model: Ledger, when_local: str, drops: int) -> Ledger:
-    """Add ``drops`` to the live count; the first call on a ledger without
-    the section starts it (``since`` the Attempt's date, history ``none``)."""
+def apply_drops(model: Ledger, when_local: str, drops: int,
+                caught: Optional[int] = None) -> Ledger:
+    """Add ``drops`` (and the paired ``caught``) to the live counts; the first
+    call on a ledger without the section starts it (``since`` the Attempt's
+    date, history ``none``). A live caught figure that was never recorded
+    stays unrecorded when live drops already exist (it would miss them), and
+    starts at 0 + ``caught`` while live is still 0; every other field is
+    preserved. ``caught=None`` leaves the caught figure exactly as it is."""
     d = model.drops
     n = max(0, int(drops))
     if d is None:
         d = Drops(0, str(when_local)[:10], None)
+    if caught is None:
+        return dataclasses.replace(model, drops=dataclasses.replace(
+            d, live=d.live + n))
+    c = max(0, int(caught))
+    base = d.caught if d.caught is not None else (0 if d.live == 0 else None)
     return dataclasses.replace(model, drops=dataclasses.replace(
-        d, live=d.live + n))
+        d, live=d.live + n, caught=None if base is None else base + c))
 
 
 def _check_date(name: str, value: str) -> str:
@@ -499,7 +558,8 @@ def _check_date(name: str, value: str) -> str:
 
 def set_drops_history(path: str, history: int, through: str, *,
                       since: Optional[str] = None,
-                      first: Optional[str] = None) -> Ledger:
+                      first: Optional[str] = None,
+                      history_caught: Optional[int] = None) -> Ledger:
     """Write the backfilled history figure into ``path``'s drops section.
 
     ``history`` drops counted from ``first`` through ``through`` (dates). The
@@ -508,10 +568,18 @@ def set_drops_history(path: str, history: int, through: str, *,
     ``since`` untouched). ``ValueError`` (``RecordsFormatError`` is one) and
     the file untouched on a malformed existing marker, a negative or
     non-integer figure, a bad date or ``first`` after ``through``. The dates
-    are stored only when ``first`` is given."""
+    are stored only when ``first`` is given. ``history_caught`` is the Catches
+    paired with ``history`` (``None`` = not recorded, which also clears an
+    older figure: it belonged to the older history); a negative or
+    non-integer one is refused."""
     if isinstance(history, bool) or not isinstance(history, int) or history < 0:
         raise ValueError('history must be a non-negative integer, got %r'
                          % (history,))
+    if history_caught is not None and (
+            isinstance(history_caught, bool)
+            or not isinstance(history_caught, int) or history_caught < 0):
+        raise ValueError('history_caught must be a non-negative integer, '
+                         'got %r' % (history_caught,))
     through = _check_date('through', through)
     if first is not None:
         first = _check_date('first', first)
@@ -523,7 +591,8 @@ def set_drops_history(path: str, history: int, through: str, *,
     d = model.drops
     if d is None:
         d = Drops(0, since or through, None)
-    d = dataclasses.replace(d, history=history, history_from=first,
+    d = dataclasses.replace(d, history=history, history_caught=history_caught,
+                            history_from=first,
                             history_through=through if first else None)
     model = dataclasses.replace(model, drops=d)
     write_atomic(path, render(model))
@@ -593,7 +662,8 @@ def to_json(model: Ledger) -> dict:
     drops = None if d is None else {
         'total': d.total, 'live': d.live, 'since': d.since,
         'history': d.history, 'history_from': d.history_from,
-        'history_through': d.history_through}
+        'history_through': d.history_through,
+        'caught': d.caught_total, 'throws': d.throws_total}
     return {'rule': RULE, 'patterns': pats, 'drops': drops}
 
 
@@ -629,11 +699,12 @@ def record_attempt(path: str, attempt: Attempt) -> Tuple[bool, int]:
     """The one writer. Returns (beaten, the Pattern's record Catches after
     this Attempt; 0 for a Feed). Raises :class:`RecordsFormatError` on a
     malformed file, which is left untouched. Writes when a record was beaten,
-    the file is new, the Attempt carried drops, or the drops section is not
+    the file is new, the Attempt carried drops or catches, or the drops section is not
     in the file yet. A Feed books its drops only, never a record row."""
     existed = os.path.exists(path)
-    if attempt.pattern in FEED_PATTERNS and int(attempt.drops) <= 0:
-        return False, 0            # a Feed with no drops touches nothing
+    if (attempt.pattern in FEED_PATTERNS and int(attempt.drops) <= 0
+            and int(attempt.caught or 0) <= 0):
+        return False, 0            # a Feed with no drops or catches touches nothing
     model = load(path)
     if attempt.pattern in FEED_PATTERNS:
         beaten, best = False, 0
@@ -642,8 +713,9 @@ def record_attempt(path: str, attempt: Attempt) -> Tuple[bool, int]:
         t = model.table(attempt.pattern).best
         best = t.catches if t else 0
     n = max(0, int(attempt.drops))
-    if beaten or not existed or n > 0 or model.drops is None:
-        model = apply_drops(model, attempt.when_local, n)
+    c = None if attempt.caught is None else max(0, int(attempt.caught))
+    if beaten or not existed or n > 0 or (c or 0) > 0 or model.drops is None:
+        model = apply_drops(model, attempt.when_local, n, c)
         write_atomic(path, render(model))
     return beaten, best
 

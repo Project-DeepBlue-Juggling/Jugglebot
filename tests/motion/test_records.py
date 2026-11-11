@@ -320,7 +320,8 @@ def test_total_is_history_plus_live_and_to_json_carries_it():
     assert rec.to_json(model)['drops'] == {'total': 105, 'live': 5,
                                            'since': '2026-11-10', 'history': 100,
                                            'history_from': None,
-                                           'history_through': None}
+                                           'history_through': None,
+                                           'caught': None, 'throws': None}
     none = rec.apply_drops(rec.empty(), '2026-11-10 09:00', 5)
     assert rec.to_json(none)['drops']['total'] == 5
     assert rec.to_json(none)['drops']['history'] is None
@@ -387,6 +388,9 @@ def test_skill_node_passes_the_drop_count_and_feeds_reach_the_ledger():
     assert 'rp.drop_count(self._goal_reports,' in src
     assert 'feed_missed=feed_missed' in src          # Feed misses are counted (FEAT-47)
     assert 'missed_catches=missed_catches' in src    # so are Throws lost to an EMPTY Cup
+    assert 'rp.caught_count(' in src                 # the caught side shares drop_count's base
+    assert 'ball_caught=ball_caught' in src
+    assert "ball_caught = (0 if pattern == 'magazine'" in src
     assert "drops = (0 if pattern == 'magazine'" in src   # a magazine run books ZERO drops (owner, TKT-64)
     body = src.split('def _offer_record')[1].split('def _juggle_execute')[0]
     assert 'FEED_PATTERNS' not in body        # a Feed books drops too
@@ -423,7 +427,8 @@ def test_set_history_on_a_present_section_leaves_live_and_since(tmp_path):
         in Path(path).read_text()
     assert rec.to_json(rec.load(path))['drops'] == {
         'total': 840, 'live': 12, 'since': '2026-11-12', 'history': 828,
-        'history_from': '2026-07-23', 'history_through': '2026-11-11'}
+        'history_from': '2026-07-23', 'history_through': '2026-11-11',
+        'caught': None, 'throws': None}
 
 
 def test_a_live_write_after_a_history_write_keeps_history_and_dates(tmp_path):
@@ -485,3 +490,106 @@ def test_the_tools_script_writes_the_figure(tmp_path):
                          capture_output=True, text=True, timeout=60)
     assert bad.returncode == 1 and 'refused' in bad.stderr
     assert rec.load(str(path)).drops.history == 828
+
+
+# ── Caught alongside drops: the Throws total and the percentage (owner, 2026-11-11) ──
+
+OLD_MARKER = '<!-- drops: live=0 since=2026-11-11 history=819 history_from=2026-07-23 history_through=2026-11-10 -->'
+
+
+def _ac(when, pattern, catches, drops, caught):
+    return rec.Attempt(when, pattern, catches + 1, catches, 'COMPLETED', drops=drops, caught=caught)
+
+
+def test_a_marker_without_caught_parses_and_rerenders_byte_identically():
+    raw = rec.render(rec.apply_drops(rec.empty(), '2026-11-11 09:00', 0)).replace(
+        'history=none -->', 'history=819 history_from=2026-07-23 history_through=2026-11-10 -->')
+    text = rec.render(rec.parse(raw))      # the sentence is derived from the marker
+    assert OLD_MARKER in text
+    d = rec.parse(text).drops
+    assert (d.caught, d.history_caught) == (None, None)
+    assert rec.render(rec.parse(text)) == text
+    assert 'Throws and Feeds to catch' not in text           # sentence unchanged until a caught figure is written
+    # a drops-only apply_drops (caught=None) leaves the marker's shape alone
+    assert 'caught=' not in rec.render(rec.apply_drops(rec.parse(text), '2026-11-11 10:00', 2))
+
+
+def test_caught_fields_parse_render_and_survive_apply_drops():
+    d = rec.Drops(3, '2026-11-11', 100, '2026-07-23', '2026-11-10', caught=7, history_caught=900)
+    model = rec.apply_drops(rec.dataclasses.replace(rec.empty(), drops=d), '2026-11-12 08:00', 2, 5)
+    text = rec.render(model)
+    assert ('<!-- drops: live=5 since=2026-11-11 caught=12 history=100 history_caught=900 '
+            'history_from=2026-07-23 history_through=2026-11-10 -->') in text
+    assert rec.parse(text).drops == model.drops and rec.render(rec.parse(text)) == text
+    again = rec.apply_drops(model, '2026-11-12 09:00', 0, 0)         # nothing new: every field preserved
+    assert again.drops == model.drops
+
+
+def test_totals_and_the_null_rule():
+    d = rec.Drops(3, '2026-11-11', 100, caught=7, history_caught=900)
+    assert (d.caught_total, d.throws_total, d.total) == (907, 1010, 103)
+    assert rec.Drops(0, '2026-11-11', 819, history_caught=6485).throws_total == 7304   # live has no drops
+    assert rec.Drops(0, '2026-11-11', None, caught=4).throws_total == 4                # no history at all
+    assert rec.Drops(3, '2026-11-11', 100, history_caught=900).throws_total is None    # live drops, no live caught
+    assert rec.Drops(3, '2026-11-11', 100, caught=7).throws_total is None              # history drops, no history caught
+    assert rec.Drops(3, '2026-11-11', 100).caught_total is None
+    j = rec.to_json(rec.dataclasses.replace(rec.empty(), drops=d))['drops']
+    assert (j['caught'], j['throws'], j['total']) == (907, 1010, 103)
+    assert rec.to_json(rec.dataclasses.replace(rec.empty(), drops=rec.Drops(3, 'x', 100)))['drops']['throws'] is None
+
+
+def test_live_caught_starts_only_while_live_is_zero_and_never_misses_existing_drops():
+    m = rec.apply_drops(rec.empty(), '2026-11-11 09:00', 0, 4)           # live 0, no figure: starts at 4
+    assert m.drops.caught == 4
+    old = rec.dataclasses.replace(rec.empty(), drops=rec.Drops(5, '2026-11-01', None))
+    assert rec.apply_drops(old, '2026-11-11 09:00', 1, 4).drops.caught is None   # would miss the 5 old drops
+
+
+def test_the_human_sentence_gains_throws_and_percent_only_when_complete(tmp_path):
+    path = str(tmp_path / 'records.md')
+    rec.set_drops_history(path, history=819, through='2026-11-10', first='2026-07-23',
+                          since='2026-11-11', history_caught=6485)
+    text = Path(path).read_text()
+    assert ('<!-- drops: live=0 since=2026-11-11 history=819 history_caught=6485 '
+            'history_from=2026-07-23 history_through=2026-11-10 -->') in text
+    assert ('Drops to date: 819 (0 counted live since 2026-11-11; 819 from history, 2026-07-23 to 2026-11-10). '
+            '7,304 Throws and Feeds to catch, 88.8 % caught, 11.2 % dropped. A drop is') in text
+    rec.set_drops_history(path, history=819, through='2026-11-10', first='2026-07-23')   # without: cleared, sentence as before
+    assert 'Throws and Feeds to catch' not in Path(path).read_text()
+    assert rec.load(path).drops.history_caught is None
+
+
+def test_set_history_refuses_a_negative_caught_and_leaves_the_file(tmp_path):
+    path = tmp_path / 'records.md'
+    rec.set_drops_history(str(path), history=5, through='2026-11-10')
+    before = path.read_bytes()
+    for bad in (-1, 2.5, True):
+        with pytest.raises(ValueError):
+            rec.set_drops_history(str(path), history=5, through='2026-11-10', history_caught=bad)
+    assert path.read_bytes() == before
+
+
+def test_the_cli_takes_history_caught_and_refuses_a_negative(tmp_path):
+    import subprocess
+    import sys
+    path = tmp_path / 'records.md'
+    cmd = [sys.executable, str(REPO / 'tools' / 'set_drops_history.py'), '--history', '819',
+           '--from', '2026-07-23', '--through', '2026-11-10', '--path', str(path)]
+    ok = subprocess.run(cmd + ['--history-caught', '6485'], capture_output=True, text=True, timeout=60)
+    assert ok.returncode == 0, ok.stderr
+    assert rec.load(str(path)).drops.throws_total == 7304
+    before = path.read_bytes()
+    bad = subprocess.run(cmd + ['--history-caught', '-1'], capture_output=True, text=True, timeout=60)
+    assert bad.returncode == 1 and 'refused' in bad.stderr and path.read_bytes() == before
+
+
+def test_a_catch_only_attempt_still_writes_the_live_caught(tmp_path):
+    path = str(tmp_path / 'records.md')
+    rec.record_attempt(path, _ac('2026-11-11 10:00', 'hop', 3, 0, 3))
+    assert rec.load(path).drops.caught == 3
+    assert rec.record_attempt(path, _ac('2026-11-11 10:01', 'hop', 2, 0, 2)) == (False, 3)   # no record, no drops
+    assert rec.load(path).drops.caught == 5
+    rec.record_attempt(path, _ac('2026-11-11 10:02', 'reload', 1, 0, 1))                     # a Feed with catches only
+    assert rec.load(path).drops.caught == 6
+    rec.record_attempt(path, _ac('2026-11-11 10:03', 'reload', 0, 0, 0))                     # nothing: no write
+    assert rec.load(path).drops.caught == 6

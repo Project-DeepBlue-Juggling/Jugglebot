@@ -1230,6 +1230,11 @@ class SkillNode(Node):
         #: FEAT-47: Throws lost to an EMPTY Cup (`SkillExecutor.missed_catch_drops`),
         #: captured as each executor retires; read by `_juggle_execute`.
         self._goal_missed_catches = 0
+        #: Ball Butler Feed Catches that seated (one `FeedCatchReport` each,
+        #: counted as `_drain_reports` consumes them); the caught side of
+        #: `_goal_feed_missed`, read by `_juggle_execute` for the ledger's
+        #: caught figure (`rp.caught_count`).
+        self._goal_feeds_caught = 0
         #: The running goal's records-ledger parameters (FEAT-29): an ordered
         #: ((key, value), ...) captured at accept by `_start_pattern`, read by
         #: `_offer_record` when the attempt ends (never re-read from the node
@@ -3986,9 +3991,11 @@ class SkillNode(Node):
         the Juggle result. Consumes `executor.reports`."""
         feeds = getattr(executor, 'feed_reports', None)
         while isinstance(feeds, list) and feeds:
-            # Ball Butler feed catches: an INFO line only (no Juggle-result
-            # bookkeeping -- the feed is not one of the attempt's throws).
+            # Ball Butler feed catches: an INFO line, and a count for the
+            # records ledger's caught figure (the feed is not one of the
+            # attempt's throws, so no Juggle-result bookkeeping).
             self._log_at('INFO', rp.feed_line(feeds.pop(0)))
+            self._goal_feeds_caught += 1
         reports = getattr(executor, 'reports', None)
         if not isinstance(reports, list):
             return
@@ -4259,6 +4266,7 @@ class SkillNode(Node):
         self._goal_end_code = ''
         self._goal_feed_missed = 0
         self._goal_missed_catches = 0
+        self._goal_feeds_caught = 0
         self._goal_record_params = ()
         with self._reload_lock:
             self._goal_armed = False
@@ -6847,12 +6855,16 @@ class SkillNode(Node):
         return CancelResponse.ACCEPT
 
     def _offer_record(self, pattern: str, throws, caught,
-                      end_code: str, drops: int = 0) -> Tuple[bool, str]:
+                      end_code: str, drops: int = 0,
+                      ball_caught: int = 0) -> Tuple[bool, str]:
         """Offer a finished Attempt to the records ledger (IDEA-3,
         `jugglebot/records.py`). Returns (beaten, the Pattern's record Catches
         as a string, '' when not known). Disabled when `records_path` is ''.
         A Feed (`reload`/`magazine`) is not juggling: it books its `drops`
-        (FEAT-47, `rp.drop_count`) and never a record. Never raises:
+        (FEAT-47, `rp.drop_count`) and never a record. `ball_caught` is the
+        Catches that pair with `drops` (`rp.caught_count`, one shared base):
+        the ledger's caught side, so an Attempt with catches and no drops
+        still updates it. Never raises:
         it runs on the goal's own thread after the Result is built, a small
         local-file write, and any failure (a malformed ledger is never
         overwritten, `records.record_attempt`) is a WARN, not a goal fault."""
@@ -6864,7 +6876,8 @@ class SkillNode(Node):
                 when_local=time.strftime(rec.WHEN_FORMAT, time.localtime()),
                 pattern=pattern, throws=int(throws), catches=int(caught),
                 end_code=str(end_code),
-                params=tuple(self._goal_record_params), drops=int(drops)))
+                params=tuple(self._goal_record_params), drops=int(drops),
+                caught=int(ball_caught)))
             if beaten:
                 self.get_logger().info(
                     'records: NEW RECORD %s -- %d Catches in %d Throws (%s); '
@@ -6956,6 +6969,14 @@ class SkillNode(Node):
                  else rp.drop_count(self._goal_reports,
                                     feed_missed=feed_missed,
                                     missed_catches=missed_catches))
+        # The caught side, one base with `drops` (`rp.caught_count`): the
+        # Catches of the same balls, plus the Ball Butler Feeds that seated
+        # (a Feed has no ThrowReport, so there is no double count). A
+        # `magazine` run books 0 caught as it books 0 drops.
+        ball_caught = (0 if pattern == 'magazine'
+                       else rp.caught_count(
+                           self._goal_reports,
+                           feeds_caught=int(self._goal_feeds_caught)))
         if missed_catches and pattern != 'magazine':
             try:
                 self.get_logger().info(
@@ -6964,7 +6985,8 @@ class SkillNode(Node):
             except Exception:
                 pass
         beaten, record_catches = self._offer_record(
-            pattern, rec_throws, rec_caught, outcome, drops=drops)
+            pattern, rec_throws, rec_caught, outcome, drops=drops,
+            ball_caught=ball_caught)
         self._publish_attempt_event(
             ATTEMPT_END, outcome,
             DiagnosticStatus.OK if outcome in ('COMPLETED', 'STOPPED')

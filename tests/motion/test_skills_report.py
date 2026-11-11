@@ -309,6 +309,28 @@ def test_drop_count_adds_lost_throws_and_ignores_a_negative():
     assert rp.drop_count([], missed_catches=-3) == 0
 
 
+def test_caught_count_counts_only_verified_catches_of_real_throws():
+    """The owner's percentage (2026-11-11): the Catches that share drop_count's base."""
+    assert rp.caught_count([_r(caught=True), _r(caught=True), _r(caught=False),
+                            _r(caught=None)]) == 2
+    assert rp.caught_count([_r(caught=True, stop=True)]) == 0          # the Stop
+    assert rp.caught_count([_r(caught=True, unverified=True)]) == 0    # unverified final Catch
+    assert rp.caught_count([]) == 0
+
+
+def test_caught_count_adds_seated_feeds_and_ignores_a_negative():
+    assert rp.caught_count([_r(caught=True)], feeds_caught=2) == 3
+    assert rp.caught_count([], feeds_caught=1) == 1
+    assert rp.caught_count([], feeds_caught=-4) == 0
+
+
+def test_caught_and_drops_partition_the_balls_thrown_to_be_caught():
+    reports = [_r(caught=True), _r(caught=True), _r(caught=False), _r(caught=None),
+               _r(caught=None, stop=True), _r(caught=True, unverified=True)]
+    assert rp.caught_count(reports, feeds_caught=1) + rp.drop_count(
+        reports, feed_missed=1, missed_catches=1) == 2 + 1 + 2 + 1 + 1
+
+
 def test_drop_count_leaves_the_operators_tally_alone():
     reports = [_r(caught=None), _r(caught=True)]
     assert rp.summarise(reports) == (2, 1)

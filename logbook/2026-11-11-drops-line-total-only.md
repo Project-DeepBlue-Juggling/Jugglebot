@@ -28,7 +28,7 @@ of a page never plays it, and neither does a total that falls.
 ## How the total updates
 
 The panel re-reads `/api/records` on every Attempt end (`juggle_end`), which is when `skill_node`
-books an Attempt's drops into the ledger. So the number rises without a page reload at the end
+books an Attempt's drops into the ledger. So the number rises without refreshing the page at the end
 of the Attempt that dropped, not at the instant of each drop inside an Attempt. Most drops end
 their Attempt, so the two usually coincide; the exception is a two-ball Attempt that continues
 after losing one ball.

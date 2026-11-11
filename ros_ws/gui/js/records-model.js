@@ -50,7 +50,8 @@ export function recordRows(json, hidden) {
 /**
  * The "Drops to date" line atop the panel (FEAT-47). `json.drops` is null/absent
  * until the ledger has the section ("not counted yet"); otherwise
- * { total, live, since, history|null, history_from?, history_through? }.
+ * { total, live, since, history|null, history_from?, history_through?, caught?, throws? }
+ * (caught/throws null unless every part that has drops has its caught figure).
  * The line shows the total only (owner, 2026-11-11): "Drops to date: 840".
  * The breakdown is the hover text, :func:`dropsDetail`.
  */
@@ -65,9 +66,33 @@ export function dropsText(json) {
     return n === null ? 'Drops to date: not counted yet' : 'Drops to date: ' + n;
 }
 
-/** Hover text for the drops line: where the total comes from. '' when not counted. */
+/**
+ * The hover text's lead, "7,304 Throws and Feeds to catch · 88.8 % caught, 11.2 % dropped"
+ * (owner, 2026-11-11). '' unless the JSON carries throws > 0 and a caught figure
+ * (records.py sends both only when every part that has drops has its caught figure).
+ * One decimal; the dropped share is 100 - the rounded caught share, so the two add to 100.0.
+ */
+export function throwsSummary(json) {
+    const d = json && json.drops;
+    if (!d || typeof d !== 'object') return '';
+    const throws = Number(d.throws), caught = Number(d.caught);
+    if (d.throws === null || d.throws === undefined || d.caught === null || d.caught === undefined) return '';
+    if (!Number.isFinite(throws) || !Number.isFinite(caught) || throws <= 0 || caught < 0 || caught > throws) return '';
+    const p = Math.round(caught / throws * 1000) / 10;
+    const q = Math.round((100 - p) * 10) / 10;
+    return throws.toLocaleString('en-US') + ' Throws and Feeds to catch \u00b7 '
+        + p.toFixed(1) + ' % caught, ' + q.toFixed(1) + ' % dropped';
+}
+
+/** Hover text for the drops line: the Throws and percentage, then where the total comes from. '' when not counted. */
 export function dropsDetail(json) {
     if (dropsTotal(json) === null) return '';
+    const lead = throwsSummary(json);
+    const rest = dropsSources(json);
+    return lead && rest ? lead + ' \u00b7 ' + rest : lead || rest;
+}
+
+function dropsSources(json) {
     const d = json.drops;
     const hasHistory = d.history !== null && d.history !== undefined;
     if (hasHistory && d.since) {
