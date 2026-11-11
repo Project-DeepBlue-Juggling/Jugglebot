@@ -2,9 +2,9 @@
 id: TKT-66
 kind: ticket
 title: 'IDEA-21 held on night-shift/2026-11-12-IDEA-21: apply the audit''s 2 fixes and merge, apply only the empty-Cup count, merge as is, or drop?'
-status: open
+status: complete
 created: '2026-11-12'
-updated: '2026-11-11T19:00:22Z'
+updated: '2026-11-11T21:16:12Z'
 owners: []
 priority: medium
 effort: xs
@@ -33,3 +33,9 @@ The landing score is built on night-shift/2026-11-12-IDEA-21, your option 1 from
 - 3: the next night merges the branch as is.
 
 Recommendation: 1, so every Feed number means the same thing and the counts add up.
+
+## Answer
+
+I'm not sure I understand (a) correctly. To be clear: the score for both Ball Butler and Jugglebot throws should be measured against the target that that throw was aimed at. What the other robot is doing (or what's done for the catch) shouldn't matter. We're measuring throw accuracy here. 
+
+I agree with (b).
