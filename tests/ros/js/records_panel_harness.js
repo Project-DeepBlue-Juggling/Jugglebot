@@ -63,6 +63,7 @@ console.log(JSON.stringify({
     drops: [
         dropsText({ drops: { total: 12, live: 12, since: '2026-11-10', history: null } }),
         dropsText({ drops: { total: 112, live: 12, since: '2026-11-10', history: 100 } }),
+        dropsText({ drops: { total: 840, live: 12, since: '2026-11-12', history: 828, history_from: '2026-07-23', history_through: '2026-11-11' } }),
         dropsText({ drops: null }), dropsText({}), dropsText(null),
     ],
     ends: [

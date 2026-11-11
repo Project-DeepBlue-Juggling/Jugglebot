@@ -50,17 +50,27 @@ export function recordRows(json, hidden) {
 /**
  * The "Drops to date" line atop the panel (FEAT-47). `json.drops` is null/absent
  * until the ledger has the section ("not counted yet"); otherwise
- * { total, live, since, history|null }: "Drops to date: 12 · since 2026-11-10"
- * and, when no history was backfilled, " (history not yet counted)".
+ * { total, live, since, history|null, history_from?, history_through? }:
+ * "Drops to date: 12 · since 2026-11-10 (history not yet counted)", or with a
+ * history "Drops to date: 840 · 12 live since 2026-11-12, 828 from history (2026-07-23 to 2026-11-11)".
  */
 export function dropsText(json) {
     const d = json && json.drops;
     if (!d || typeof d !== 'object' || !Number.isFinite(Number(d.total))) {
         return 'Drops to date: not counted yet';
     }
+    const hasHistory = d.history !== null && d.history !== undefined;
     let t = 'Drops to date: ' + Number(d.total);
+    if (hasHistory && d.since) {
+        t += ' · ' + Number(d.live) + ' live since ' + String(d.since) + ', '
+            + Number(d.history) + ' from history';
+        if (d.history_from && d.history_through) {
+            t += ' (' + String(d.history_from) + ' to ' + String(d.history_through) + ')';
+        }
+        return t;
+    }
     if (d.since) t += ' · since ' + String(d.since);
-    if (d.history === null || d.history === undefined) t += ' (history not yet counted)';
+    if (!hasHistory) t += ' (history not yet counted)';
     return t;
 }
 

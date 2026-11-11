@@ -148,7 +148,8 @@ def test_panel_renders_a_heading_per_section_and_the_css_styles_it():
 def test_drops_line_total_since_and_history_note(out):
     assert out["drops"] == [
         "Drops to date: 12 · since 2026-11-10 (history not yet counted)",
-        "Drops to date: 112 · since 2026-11-10",
+        "Drops to date: 112 · 12 live since 2026-11-10, 100 from history",
+        "Drops to date: 840 · 12 live since 2026-11-12, 828 from history (2026-07-23 to 2026-11-11)",
         "Drops to date: not counted yet",
         "Drops to date: not counted yet",
         "Drops to date: not counted yet",

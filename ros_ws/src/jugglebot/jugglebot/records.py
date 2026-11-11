@@ -55,8 +55,11 @@ Jugglebot that was not caught (``motion/skills/report.py::drop_count``; the
 columns Stop and an unverifiable final Catch are not drops). It is parsed from
 the machine marker ``<!-- drops: live=<n> since=<YYYY-MM-DD> history=<m|none> -->``
 and the total shown is ``history + live``: ``live`` is counted by this module
-from ``since`` on, ``history`` is a figure a later backfill sets by hand (``none``
-= not yet counted, read as 0). A file without the section is "not counted yet"
+from ``since`` on, ``history`` is the figure :func:`set_drops_history` writes
+(``tools/set_drops_history.py``; never by hand; ``none`` = not yet counted, read
+as 0). A history written with its dates carries them as the optional marker
+fields ``history_from=<date> history_through=<date>`` (a marker without them
+parses as before, and every live write preserves them). A file without the section is "not counted yet"
 (:attr:`Ledger.drops` is ``None``; the v2 file parses unchanged) and the first
 write after the upgrade adds it. Feeds (``reload``/``magazine``) are not
 records but their drops count: :func:`record_attempt` books them without a
@@ -83,6 +86,7 @@ from __future__ import annotations
 import argparse
 import csv
 import dataclasses
+import datetime
 import json
 import os
 import re
@@ -133,7 +137,9 @@ _TABLE_RULE = '|---|---:|---:|---|---|---|'
 _TABLE_HEAD_V1 = '| When | Throws | Catches | How it ended | Note |'
 _TABLE_RULE_V1 = '|---|---:|---:|---|---|'
 _DROPS_RE = re.compile(r'^<!-- drops: live=(\d+) since=(\d{4}-\d{2}-\d{2}) '
-                       r'history=(\d+|none) -->$')
+                       r'history=(\d+|none)'
+                       r'(?: history_from=(\d{4}-\d{2}-\d{2}) '
+                       r'history_through=(\d{4}-\d{2}-\d{2}))? -->$')
 _NO_RECORD = '_No record yet._'
 _FILE_MARKER = '<!-- jugglebot-records v2 -->'
 _FILE_MARKER_V1 = '<!-- jugglebot-records v1 -->'
@@ -183,6 +189,10 @@ class Drops:
     live: int
     since: str
     history: Optional[int] = None
+    #: First and last date the history figure counts (``set_drops_history``);
+    #: ``None`` on a marker written before they existed.
+    history_from: Optional[str] = None
+    history_through: Optional[str] = None
 
     @property
     def total(self) -> int:
@@ -282,8 +292,13 @@ def _parse_params(cell: str, where: str) -> Tuple[Tuple[str, str], ...]:
 
 def _drops_sentence(d: Drops) -> str:
     """The one human line under the marker (never parsed)."""
-    hist = ('history not yet counted' if d.history is None
-            else '%d from history' % d.history)
+    if d.history is None:
+        hist = 'history not yet counted'
+    elif d.history_from and d.history_through:
+        hist = '%d from history, %s to %s' % (
+            d.history, d.history_from, d.history_through)
+    else:
+        hist = '%d from history' % d.history
     return ('Drops to date: %d (%d counted live since %s; %s). A drop is a '
             'ball thrown to be caught by Jugglebot that was not caught.'
             % (d.total, d.live, d.since, hist))
@@ -312,9 +327,12 @@ def render(model: Ledger) -> str:
     d = model.drops
     if d is not None:
         out += ['', '## Drops to date', '',
-                '<!-- drops: live=%d since=%s history=%s -->'
+                '<!-- drops: live=%d since=%s history=%s%s -->'
                 % (d.live, d.since,
-                   'none' if d.history is None else d.history),
+                   'none' if d.history is None else d.history,
+                   (' history_from=%s history_through=%s'
+                    % (d.history_from, d.history_through))
+                   if d.history_from and d.history_through else ''),
                 '', _drops_sentence(d)]
     last_balls = None
     for t in model.ordered():
@@ -382,7 +400,7 @@ def parse(text: str) -> Ledger:
                                              'marker' % (i + 1,))
                 drops = Drops(int(dm.group(1)), dm.group(2),
                               None if dm.group(3) == 'none'
-                              else int(dm.group(3)))
+                              else int(dm.group(3)), dm.group(4), dm.group(5))
             if lines[i].lstrip().startswith('|'):
                 raise RecordsFormatError('line %d: table row outside a '
                                          'Pattern' % (i + 1,))
@@ -468,6 +486,50 @@ def apply_drops(model: Ledger, when_local: str, drops: int) -> Ledger:
         d, live=d.live + n))
 
 
+def _check_date(name: str, value: str) -> str:
+    if (not isinstance(value, str)
+            or not re.match(r'^\d{4}-\d{2}-\d{2}$', value)):
+        raise ValueError('%s must be a YYYY-MM-DD date, got %r' % (name, value))
+    try:
+        datetime.datetime.strptime(value, '%Y-%m-%d')
+    except ValueError:
+        raise ValueError('%s must be a YYYY-MM-DD date, got %r' % (name, value))
+    return value
+
+
+def set_drops_history(path: str, history: int, through: str, *,
+                      since: Optional[str] = None,
+                      first: Optional[str] = None) -> Ledger:
+    """Write the backfilled history figure into ``path``'s drops section.
+
+    ``history`` drops counted from ``first`` through ``through`` (dates). The
+    section is created when absent (live 0, ``since`` = ``since`` or
+    ``through``); when present ONLY the history fields change (live and
+    ``since`` untouched). ``ValueError`` (``RecordsFormatError`` is one) and
+    the file untouched on a malformed existing marker, a negative or
+    non-integer figure, a bad date or ``first`` after ``through``. The dates
+    are stored only when ``first`` is given."""
+    if isinstance(history, bool) or not isinstance(history, int) or history < 0:
+        raise ValueError('history must be a non-negative integer, got %r'
+                         % (history,))
+    through = _check_date('through', through)
+    if first is not None:
+        first = _check_date('first', first)
+        if first > through:
+            raise ValueError('first %s is after through %s' % (first, through))
+    if since is not None:
+        since = _check_date('since', since)
+    model = load(path)               # a malformed marker raises, file untouched
+    d = model.drops
+    if d is None:
+        d = Drops(0, since or through, None)
+    d = dataclasses.replace(d, history=history, history_from=first,
+                            history_through=through if first else None)
+    model = dataclasses.replace(model, drops=d)
+    write_atomic(path, render(model))
+    return model
+
+
 def rebuild(attempts: Iterable[Attempt]) -> Ledger:
     """Replay Attempts from empty in chronological order (stable sort on
     ``when_local``); Feeds are skipped."""
@@ -530,7 +592,8 @@ def to_json(model: Ledger) -> dict:
     d = model.drops
     drops = None if d is None else {
         'total': d.total, 'live': d.live, 'since': d.since,
-        'history': d.history}
+        'history': d.history, 'history_from': d.history_from,
+        'history_through': d.history_through}
     return {'rule': RULE, 'patterns': pats, 'drops': drops}
 
 

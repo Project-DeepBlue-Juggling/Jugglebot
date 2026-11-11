@@ -318,7 +318,9 @@ def test_drops_section_round_trips_byte_identically():
 def test_total_is_history_plus_live_and_to_json_carries_it():
     model = _with_history(rec.apply_drops(rec.empty(), '2026-11-10 09:00', 5), 100)
     assert rec.to_json(model)['drops'] == {'total': 105, 'live': 5,
-                                           'since': '2026-11-10', 'history': 100}
+                                           'since': '2026-11-10', 'history': 100,
+                                           'history_from': None,
+                                           'history_through': None}
     none = rec.apply_drops(rec.empty(), '2026-11-10 09:00', 5)
     assert rec.to_json(none)['drops']['total'] == 5
     assert rec.to_json(none)['drops']['history'] is None
@@ -388,3 +390,98 @@ def test_skill_node_passes_the_drop_count_and_feeds_reach_the_ledger():
     assert "drops = (0 if pattern == 'magazine'" in src   # a magazine run books ZERO drops (owner, TKT-64)
     body = src.split('def _offer_record')[1].split('def _juggle_execute')[0]
     assert 'FEED_PATTERNS' not in body        # a Feed books drops too
+
+
+# ── Drops history backfill (FEAT-47 slice 4) ──────────────────────────────
+
+HIST = dict(history=828, through='2026-11-11', first='2026-07-23')
+
+
+def test_set_history_creates_the_section_when_absent(tmp_path):
+    legacy = str(tmp_path / 'legacy.md')
+    Path(legacy).write_text(rec.render(rec.empty()))   # pre-upgrade shape
+    assert rec.load(legacy).drops is None
+    rec.set_drops_history(legacy, **HIST)
+    out = Path(legacy).read_text()
+    assert ('<!-- drops: live=0 since=2026-11-11 history=828 '
+            'history_from=2026-07-23 history_through=2026-11-11 -->') in out
+    assert ('Drops to date: 828 (0 counted live since 2026-11-11; '
+            '828 from history, 2026-07-23 to 2026-11-11).') in out
+    assert rec.parse(out).drops.total == 828
+    rec.set_drops_history(str(tmp_path / 'b.md'), since='2026-11-12', **HIST)
+    assert rec.load(str(tmp_path / 'b.md')).drops.since == '2026-11-12'
+
+
+def test_set_history_on_a_present_section_leaves_live_and_since(tmp_path):
+    path = str(tmp_path / 'records.md')
+    rec.record_attempt(path, _ad('2026-11-12 10:00', 'hop', 1, 12))
+    rec.set_drops_history(path, **HIST)
+    d = rec.load(path).drops
+    assert (d.live, d.since, d.history) == (12, '2026-11-12', 828)
+    assert d.total == d.history + d.live == 840
+    assert 'Drops to date: 840 (12 counted live since 2026-11-12; 828 from history, 2026-07-23 to 2026-11-11)' \
+        in Path(path).read_text()
+    assert rec.to_json(rec.load(path))['drops'] == {
+        'total': 840, 'live': 12, 'since': '2026-11-12', 'history': 828,
+        'history_from': '2026-07-23', 'history_through': '2026-11-11'}
+
+
+def test_a_live_write_after_a_history_write_keeps_history_and_dates(tmp_path):
+    path = str(tmp_path / 'records.md')
+    rec.record_attempt(path, _ad('2026-11-12 10:00', 'hop', 1, 1))
+    rec.set_drops_history(path, **HIST)
+    rec.record_attempt(path, _ad('2026-11-13 10:00', 'hop', 2, 3))
+    d = rec.load(path).drops
+    assert d == rec.Drops(4, '2026-11-12', 828, '2026-07-23', '2026-11-11')
+
+
+def test_an_old_marker_without_the_new_fields_parses_and_round_trips():
+    model = _with_history(rec.apply_drops(rec.empty(), '2026-11-10 09:00', 3), 100)
+    text = rec.render(model)
+    assert 'history_from' not in text and 'history=100 -->' in text
+    d = rec.parse(text).drops
+    assert d == rec.Drops(3, '2026-11-10', 100) and d.history_from is None
+    assert rec.render(rec.parse(text)) == text
+
+
+@pytest.mark.parametrize('kw', [
+    dict(history=-1, through='2026-11-11', first='2026-07-23'),
+    dict(history=5, through='2026-13-40', first='2026-07-23'),
+    dict(history=5, through='2026-11-11', first='yesterday'),
+    dict(history=5, through='2026-07-01', first='2026-07-23'),
+    dict(history=5, through='2026-11-11', first='2026-07-23', since='11/12'),
+])
+def test_bad_figure_or_date_is_refused_and_the_file_untouched(tmp_path, kw):
+    path = tmp_path / 'records.md'
+    rec.record_attempt(str(path), _ad('2026-11-12 10:00', 'hop', 1, 2))
+    before = path.read_bytes()
+    with pytest.raises(ValueError):
+        rec.set_drops_history(str(path), **kw)
+    assert path.read_bytes() == before
+
+
+def test_a_malformed_existing_marker_is_refused_and_the_file_untouched(tmp_path):
+    path = tmp_path / 'records.md'
+    good = rec.render(rec.apply_drops(rec.empty(), '2026-11-10 10:00', 1))
+    bad = good.replace('history=none', 'history=none history_from=2026-01-01')
+    path.write_text(bad)
+    with pytest.raises(ValueError):
+        rec.set_drops_history(str(path), **HIST)
+    assert path.read_text() == bad
+
+
+def test_the_tools_script_writes_the_figure(tmp_path):
+    import subprocess
+    import sys
+    path = tmp_path / 'records.md'
+    cmd = [sys.executable, str(REPO / 'tools' / 'set_drops_history.py'),
+           '--history', '828', '--from', '2026-07-23', '--through',
+           '2026-11-11', '--path', str(path)]
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    assert res.returncode == 0, res.stderr
+    assert rec.load(str(path)).drops == rec.Drops(
+        0, '2026-11-11', 828, '2026-07-23', '2026-11-11')
+    bad = subprocess.run(cmd[:-4] + ['--through', 'nope', '--path', str(path)],
+                         capture_output=True, text=True, timeout=60)
+    assert bad.returncode == 1 and 'refused' in bad.stderr
+    assert rec.load(str(path)).drops.history == 828
