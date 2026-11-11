@@ -2,7 +2,7 @@
 title: "FEAT-45 bench prep: the mirrored bench Hand (fixed in hardware), a gated frame check and USB home; the FOC scope hung on a trigger point that splits a sample"
 type: bugfix
 date: 2026-11-11
-status: in-progress
+status: resolved
 phase: "BUG-57 root cause"
 related_plan: ""
 related_issues: []
@@ -59,3 +59,7 @@ The Hand was homed by hand-run USB scripts. The probe now passes (GO), and FEAT-
 The owner moved the bench Hand's motor to the robot's side of the Hand axis, so the rig is production-identical. `flip` and `unflip` were removed from the tool before anyone ran them: on this rig they would now mirror it. The FEAT-45 row keeps both checks, because the change touched the motor. `push-check` proves the frame. `torque-check` proves the commutation still matches the wiring, with `calibrate` then `torque-check` as its fallback. Then `home`, at production -3 rev/s to -0.10.
 
 - 2026-11-11, `python -m pytest tests/motion/test_bench_hand_frame.py -q`: **9 passed**. The checks and the home have not yet run on the modified rig.
+
+## Update (2026-11-11 evening)
+
+The Sitting flew: the frame checks, the probe (GO) and rung A ran, and the Hand was homed and parked at about 0.49 rev. Results, the scope tool's analysis fix and the next rungs are in `2026-11-11-sitting-debrief.md`; FEAT-45 stays open for rungs B and C.

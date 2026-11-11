@@ -269,3 +269,106 @@ def test_slow_control_discriminates_the_full_grace():
     assert ok == "PASS", crit
     bad, crit, _ = SC.evaluate_stroke_cut(plan, [(10.0, early)], enc, 10.0, 0, 1, 0)
     assert bad == "FAIL" and crit[0]["verdict"] == "FAIL"
+
+
+# ── accel cap, bench top stop, rung-table pins, TIME_SYNCED wait (2026-11-11) ──
+
+def test_stroke_accel_cap_accepts_3000_and_refuses_above():
+    assert SC.STROKE_ACCEL_MAX == 3000.0
+    assert SC.STROKE_ACCEL_DEFAULT == 800.0
+    for ok in (1.0, 800.0, 1500.0, 2000.0, 3000.0):
+        assert SC.stroke_accel_refusal(ok) is None
+    for bad in (0.0, -1.0, 3000.1, 4500.0, float("nan")):
+        msg = SC.stroke_accel_refusal(bad)
+        assert msg is not None and "(0, 3000]" in msg
+        assert "10 A" not in msg and "70 A soft" in msg      # measured facts only
+
+
+def test_effective_limit_only_tightens_never_loosens():
+    assert SC.effective_limit_rev(10.4) == 10.4
+    assert SC.effective_limit_rev(SC.HAND_CLIP_REV) == SC.HAND_CLIP_REV
+    assert SC.effective_limit_rev(12.0) == SC.HAND_CLIP_REV      # above clip: clamped
+    assert SC.effective_limit_rev(1e9) == SC.HAND_CLIP_REV
+    for bad in (0.0, -3.0, float("nan"), None):
+        with pytest.raises(ValueError):
+            SC.effective_limit_rev(bad)
+    # a plan the production clip accepts is refused by a lower bench stop ...
+    SC.plan_stroke_cut(0.4855, 8.75, 'upstroke', 100.0, 85.0, 2000.0,
+                       limit_rev=SC.effective_limit_rev(SC.HAND_CLIP_REV))
+    with pytest.raises(SC.StrokeCutRefusal):
+        SC.plan_stroke_cut(0.4855, 8.75, 'upstroke', 100.0, 85.0, 2000.0,
+                           limit_rev=SC.effective_limit_rev(9.5))
+    # ... and a higher --top-stop is exactly the production-clip check
+    with pytest.raises(SC.StrokeCutRefusal):
+        SC.plan_stroke_cut(0.4855, 9.8, 'upstroke', 100.0, 85.0, 2000.0,
+                           limit_rev=SC.effective_limit_rev(99.0))
+
+
+def _plan(start, top, peak, cut, accel, lim=10.4):
+    return SC.plan_stroke_cut(start, top, 'upstroke', peak, cut, accel,
+                              limit_rev=SC.effective_limit_rev(lim))
+
+
+def test_rung_table_pins_park_0_4855():
+    """Re-derived with the planner 2026-11-11 (rungb.md section 4 item 4)."""
+    p = _plan(0.4855, 8.75, 100.0, 85.0, 2000.0)               # rung B, accepted
+    assert p.stop['entry'][1] == pytest.approx(108.0, abs=0.1)
+    assert p.env_hi == pytest.approx(8.881, abs=0.005)
+    assert SC.bench_stop_needed(p) == pytest.approx(9.881, abs=0.005)
+    assert SC.bench_stop_needed(p) <= 10.4
+    with pytest.raises(SC.StrokeCutRefusal) as e:              # floor refusal
+        _plan(0.4855, 7.9, 100.0, 85.0, 2000.0)
+    assert any("below the 0 rev floor" in r for r in e.value.reasons)
+    for i in range(80, 220):                                   # 1500: no top works
+        with pytest.raises(SC.StrokeCutRefusal):
+            _plan(0.4855, i / 20.0, 100.0, 85.0, 1500.0)
+
+
+def test_plan_lines_carry_the_runbook_numbers():
+    p = _plan(0.4855, 8.75, 100.0, 85.0, 2000.0)
+    text = "\n".join(SC.plan_lines(p, 0.4855))
+    assert "entry v +108.0 rev/s" in text and "worst stop anywhere" in text
+    assert "bench stop needed 9.881" in text
+
+
+def test_wait_for_flag_waits_once_and_gives_up():
+    t = [0.0]
+    calls = {'wait': 0, 'sleeps': 0}
+
+    def clock():
+        return t[0]
+
+    def sleep(s):
+        t[0] += s
+        calls['sleeps'] += 1
+    # already synced: no line, no sleep
+    assert SC.wait_for_flag(lambda: 1, 1, 35.0, lambda: calls.__setitem__('wait', 1),
+                            clock, sleep)
+    assert calls == {'wait': 0, 'sleeps': 0}
+    # syncs after 12 s: one wait line, True
+    assert SC.wait_for_flag(lambda: 1 if t[0] >= 12.0 else 0, 1, 35.0,
+                            lambda: calls.__setitem__('wait', calls['wait'] + 1),
+                            clock, sleep)
+    assert calls['wait'] == 1 and 11.9 < t[0] < 12.3
+    # never syncs (and heartbeat None): False after about the timeout, one line
+    t[0] = 0.0
+    calls['wait'] = 0
+    assert not SC.wait_for_flag(lambda: None, 1, 35.0,
+                                lambda: calls.__setitem__('wait', calls['wait'] + 1),
+                                clock, sleep)
+    assert calls['wait'] == 1 and 35.0 <= t[0] < 35.5
+    assert SC.TIME_SYNC_WAIT_S == 35.0
+
+
+def test_driver_checks_the_plan_before_energising():
+    """Source-order pin (the driver opens a UDP link, so it cannot run here):
+    the stroke_cut plan check, the TimeOfDay wait and the accel/top-stop
+    arguments all come before the hand bring-up RPCs."""
+    src = open(os.path.join(_REPO, "tests", "hardware",
+                            "hand_stream_bench.py")).read()
+    bring = src.index('print("hand bring-up: POSITION/PASSTHROUGH')
+    for needle in ("SC.wait_for_flag(", "SC.plan_stroke_cut(pre_start",
+                   "refused from the baseline"):
+        assert 0 < src.index(needle) < bring, needle
+    assert "SC.stroke_accel_refusal(" in src and "--top-stop" in src
+    assert "10 A" not in src and "900-1050" not in src

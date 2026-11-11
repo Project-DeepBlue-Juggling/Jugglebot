@@ -4,7 +4,7 @@ kind: bug
 title: Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT)
 status: in_progress
 created: '2026-11-02'
-updated: '2026-11-07T06:39:18Z'
+updated: '2026-11-11T10:37:48Z'
 owners:
 - jugglebot-3d
 priority: high
@@ -18,6 +18,7 @@ blocked_by: []
 links:
 - logbook/2026-11-04-sitting-debrief.md
 - map/feature-measure-the-hand-s-commutation-angle-error-through-a-hard.md
+- logbook/2026-11-11-sitting-debrief.md
 filed_by: jugglebot-3d
 ---
 
@@ -130,6 +131,17 @@ In every block the faulting launches sit at or above the p90 of that block's mea
 
 **Next:** the encoder or magnet slip and offset candidates in the Diagnosis above are still untested. The flown row is removed from this Item so the Runbook does not ask to fly it again; the next row waits until a root-cause hypothesis says what to measure.
 
+## 2026-11-11: bench baseline and the false-positive replay
+
+- The bench Hand's clean brake (about 80 rev/s entry, 34 to 36 A, FEAT-45 rung A) kept the drive's own electrical power positive: median +29 W. So "electrical power above +10 W implies an angle error" in the Reading section above is withdrawn. A correctly commutated hard brake already meets that half of the SPINOUT test.
+- That reopened a false-positive reading: the SPINOUTs could be ODrive spinout trips on correctly commutated brakes. It was tested offline by replaying the robot's `hand_capture` events through a loss model fitted on the bench (it matches the drive's power to 1.5 to 2 W rms), and it is refuted.
+- At nominal parameters the model trips 9 of the 12 faults but also 118 of 1122 clean launches. In no setting of an 81-point sensitivity grid does it trip most faults and spare the clean launches.
+- L1019 (2026-11-03) and L2588 (2026-11-05) cannot be false positives: the modelled filtered mechanical power was still positive (+5 W and +3 W) when deceleration collapsed.
+- L10110 shows a loss while the drive was armed at the 60 A clamp, through three consecutive 10 ms bins of partial deceleration. A false positive cannot produce that.
+- Torque per amp was unchanged after every fault (10 launches before against 10 after, factor 0.81 to 1.33 with both signs). A permanent slip of 30 deg or more is therefore unlikely. A transient angle error is the leading reading; encoder error under the deceleration and a magnet that shifts and reseats are the examples.
+- Still unverified: the decisive measurement is a robot `capture --preset power --trigger fault` (FEAT-49), which separates the two readings at a real disarm. The model's firmware formula is inferred.
+- Not recommended: widening the guard to +100 / -100 W. It would hide the events and leave a real loss in the brake unguarded.
+
 ## Progress
 
 - 2026-11-02: Landed 8ffeba66: 70 A code limit, stream STOP 4500, C-HAND-6 speed-scaled top margin (K 4.75e-5), plus the opt-in hand_capture:=true for diagnosing the overshoot. Cause of the overshoot still open; fly with the capture on.
@@ -138,3 +150,4 @@ In every block the faulting launches sit at or above the p90 of that block's mea
 - 2026-11-05: 2026-11-05 L2596: SPINOUT after a C1-stop brake: decel 4826 -> ~500 rev/s^2 within 10 ms of the brake peak, 25 ms into the brake, at 4.4 rev / 20 rev/s, iq -41 A (limit 70, not saturated). Same torque-loss signature as 11-03, far from the clip; Hand rested at 5.0 rev. 1 of 3 C1 brakes at -40 A went SPINOUT.
 - 2026-11-07: 2026-11-07 Sitting: Apex 1.10 row passed (4 Attempts, 69 launches, 0 SPINOUT, brakes at most 29 A), but L8157 at Apex 0.95 is the same torque loss at -36 A into the top stop. Stays open until the root cause is known (owner). Flown row removed (detail below).
 - 2026-11-07: 2026-11-07: FEAT-45 filed with hand_foc_scope.py: an 8 kHz current-loop capture to measure a commutation angle error on the bench Hand, first step toward the root cause.
+- 2026-11-11: 2026-11-11 bench baseline: drive electrical power is positive through a clean hard brake, so the 'P_elec above +10 W implies an angle error' inference is withdrawn; the SPINOUT false-positive reading was replayed and refuted; a transient angle error is the leading reading (detail below).

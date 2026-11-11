@@ -41,7 +41,18 @@ MIN_BRIDGE_FW = 38          # FW 37 = the C1 stop; FW 38 = sched_hand_c1_stops u
 
 # Stroke-profile defaults (rev, rev/s, rev/s^2, s). Derivation in the driver's
 # docstring and logbook 2026-11-03-jb145-hand-stall-stop-options § Bench-hand rung.
-STROKE_ACCEL_DEFAULT = 800.0     # plateau accel: inside a 10 A bench drive (~900-1050 up)
+STROKE_ACCEL_DEFAULT = 800.0     # the default plateau accel (conservative; not a drive limit)
+# Cap on --stroke-accel (a typo guard, not a drive limit). MEASURED 2026-11-11 on
+# the bench Hand (rung A FOC captures): drive limits current_soft_max 70 A /
+# current_hard_max 80 A; a run-up at about 1640 rev/s^2 took 13 A mean / 19 A
+# transient (the 4500 rev/s^2 brake already ran 25 A mean / 35 A peak). 3000 is
+# a ONE-POINT extrapolation, about 22 A mean / 31 A transient, and stays below
+# the firmware stop's own 4500 rev/s^2 (STOP_A).
+STROKE_ACCEL_MAX = 3000.0
+# Bridge TIME_SYNCED wait: the bridge asks the Jetson for time every 30 s once
+# synced and drops the flag 90 s after the last anchor, so after a gap with no
+# TimeOfDayServer alive it can be up to ~30 s before the next query lands.
+TIME_SYNC_WAIT_S = 35.0
 STROKE_JERK_T = 0.020            # jerk ramp time: jerk = accel / 0.02 = 40k rev/s^3
 SLOW_PEAK_DEFAULT = 40.0         # the slow control's peak: below the 50 rev/s threshold
 SLOW_PEAK_MAX = 45.0             # refuse a "slow" stroke closer than 5 rev/s to 50
@@ -56,6 +67,79 @@ RESUME_HOLD_S = 0.3              # hand frames AT the firmware hold before the r
 BENCH_OVERSHOOT_REV = 1.0        # room left above/below a modelled stop for drive lag
 ABORT_FF_POS_GAIN = 35.0         # hw ODRIVE_HAND_POS_GAIN: a disarm leaves vel_ff applied,
                                  # the hand settles at input_pos + vel_ff / pos_gain
+
+
+def stroke_accel_refusal(accel):
+    """None when --stroke-accel is acceptable, else the error text. PURE."""
+    if not accel > 0.0 or accel > STROKE_ACCEL_MAX:          # also NaN
+        return (f"--stroke-accel {accel:g} out of (0, {STROKE_ACCEL_MAX:g}] rev/s^2 — "
+                f"the bench drive limits are 70 A soft / 80 A hard; a run-up at "
+                f"~1640 rev/s^2 measured 13 A mean / 19 A transient (2026-11-11), "
+                f"so {STROKE_ACCEL_MAX:g} extrapolates to ~22 A mean / ~31 A "
+                f"transient (one-point extrapolation) and stays under the firmware "
+                f"stop's {STOP_A:g} rev/s^2")
+    return None
+
+
+def effective_limit_rev(top_stop):
+    """The ``limit_rev`` handed to the planner for a bench top stop at
+    ``top_stop`` rev: min(top_stop, production clip). The planner uses
+    limit_rev only as an UPPER bound (top, modelled stop and abort hold must
+    sit under it), so a smaller value only tightens; a value above the clip
+    (or NaN) can never loosen the production-clip check."""
+    if top_stop is None or not top_stop > 0.0:      # also catches NaN
+        raise ValueError(f"--top-stop {top_stop!r} must be a positive rev value")
+    return min(float(top_stop), HAND_CLIP_REV)
+
+
+def wait_for_flag(read_flags, mask, timeout_s, on_wait=None, clock=None,
+                  sleep=None, poll_s=0.1):
+    """Poll ``read_flags()`` (an int or None) until ``flags & mask`` is set,
+    for up to ``timeout_s``. Returns True as soon as it is set (without
+    printing anything), False on timeout. ``on_wait`` is called ONCE, only
+    when the flag was not already set. Clock and sleep are injectable."""
+    import time as _t
+    clock = clock or _t.monotonic
+    sleep = sleep or _t.sleep
+
+    def ok():
+        f = read_flags()
+        return f is not None and bool(int(f) & mask)
+    if ok():
+        return True
+    if on_wait is not None:
+        on_wait()
+    t_end = clock() + timeout_s
+    while clock() < t_end:
+        sleep(poll_s)
+        if ok():
+            return True
+    return ok()
+
+
+def bench_stop_needed(plan):
+    """The top stop (rev) the bench rig needs for this plan: the highest of
+    worst stop anywhere + 1.0 rev drive-lag margin, modelled stop + 1.0 and
+    the disarm abort hold."""
+    return max(plan.env_hi + BENCH_OVERSHOOT_REV,
+               plan.stop['end_rev'] + BENCH_OVERSHOOT_REV, plan.abort_hi)
+
+
+def plan_lines(plan, start):
+    """The console/sidecar plan lines (what the Sitting reads). PURE."""
+    st = plan.stop
+    return [
+        (f"stroke_cut plan ({plan.mode}): {start:+.3f} -> {plan.top:.3f} rev at "
+         f"{plan.peak_vel:.0f} rev/s, {plan.accel:.0f} rev/s^2; last hand frame "
+         f"{plan.cut} (t={plan.cut * SEG_T:.3f} s); modelled {st['path']} stop: "
+         f"entry v {st['entry'][1]:+.1f} rev/s at p {st['entry'][0]:.3f}, end "
+         f"{st['end_rev']:.3f} rev {st['g_end'] * 1e3:.0f} ms after the frame "
+         f"stamp (FW 36 path: {plan.fw36_end:.3f}); worst stop anywhere on the "
+         f"stroke {plan.env_hi:.3f} rev"),
+        (f"stroke_cut envelope: abort hold {plan.abort_hi:.3f} rev, bench stop "
+         f"needed {bench_stop_needed(plan):.3f} rev (planned against a "
+         f"{plan.limit_rev:.3f} rev limit)"),
+    ]
 
 
 class StrokeCutRefusal(ValueError):
