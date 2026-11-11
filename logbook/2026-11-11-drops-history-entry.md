@@ -31,4 +31,4 @@ No motion, timing or control path is touched.
 
 ## Verification
 
-See the commit message trailer for the gate triple (date, command, result) of this commit.
+2026-11-11, `./run_tests.sh -q`, RESULT: PASS, exit 0 (parallel 601 s, serial 31 s).

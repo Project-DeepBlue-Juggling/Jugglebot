@@ -6,6 +6,12 @@ The most Catches in one continuous Attempt on the robot (never the sim), per Pat
 
 `skill_node` writes this file live at the end of each Attempt (ROS parameter `records_path`, set by `jugglebot_launch.py`) and the Sitting's close-out commits it. The tables are rendered and parsed by `ros_ws/src/jugglebot/jugglebot/records.py`; a Note cell may be edited by hand, nothing else. "Parameters" is what that run used (`key=value` pairs; empty = not recorded). "How it ended" is completed, stopped, drop (a missed or lost ball), compute (a solve or limit refusal) or other, with the raw end code in parentheses.
 
+## Drops to date
+
+<!-- drops: live=0 since=2026-11-11 history=819 history_from=2026-07-23 history_through=2026-11-10 -->
+
+Drops to date: 819 (0 counted live since 2026-11-11; 819 from history, 2026-07-23 to 2026-11-10). A drop is a ball thrown to be caught by Jugglebot that was not caught.
+
 ## 1 ball
 
 <!-- pattern: columns_1ball balls: 1 -->

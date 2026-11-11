@@ -2,9 +2,9 @@
 id: FEAT-47
 kind: feature
 title: Add "Total Drops To Date" counter
-status: in_progress
+status: complete
 created: '2026-11-08'
-updated: '2026-11-10T19:11:08Z'
+updated: '2026-11-11T00:03:39Z'
 owners:
 - night-shift
 priority: medium
@@ -44,3 +44,4 @@ Recommendation: 2. The definition's edge cases are in the ticket.
 - 2026-11-11: Night Shift 2026-11-11: TKT-61's three fixes merged (f87faa19); still open: Feed misses (required before closing) and the history backfill
 - 2026-11-11: Night Shift 2026-11-11: Feed-miss slice held on night-shift/2026-11-11-FEAT-47: (b) magazine Feed misses still uncounted; unblocked by your answer
 - 2026-11-11: Night Shift 2026-11-11: slice 2 counts Ball Butler Feed misses as drops; the history backfill is for a day Session
+- 2026-11-11: history backfill written (819, 2026-07-23 to 2026-11-10); Feed misses and Throws lost to an empty Cup counted live; closed (detail in logbook 2026-11-11-drops-history-backfill, 2026-11-11-drops-count-feed-misses, 2026-11-11-drops-count-lost-throws, 2026-11-11-drops-history-entry)
