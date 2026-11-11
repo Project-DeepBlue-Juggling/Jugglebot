@@ -2,7 +2,7 @@
 // under node. Sandbox (tests/ros/test_gui_records_panel.py builds it): records-model.js copied verbatim,
 // this file, package.json {"type":"module"}. Prints one JSON object the test asserts on.
 import {
-    dropsText, panelVisible, recordRows, recordSections, menuEntries, loadHidden, saveHidden, attemptEnd, RECORDS_HIDDEN_KEY,
+    dropsText, dropsDetail, dropsBumped, panelVisible, recordRows, recordSections, menuEntries, loadHidden, saveHidden, attemptEnd, RECORDS_HIDDEN_KEY,
 } from './records-model.js';
 
 const json = {
@@ -66,6 +66,13 @@ console.log(JSON.stringify({
         dropsText({ drops: { total: 840, live: 12, since: '2026-11-12', history: 828, history_from: '2026-07-23', history_through: '2026-11-11' } }),
         dropsText({ drops: null }), dropsText({}), dropsText(null),
     ],
+    dropsDetail: [
+        dropsDetail({ drops: { total: 12, live: 12, since: '2026-11-10', history: null } }),
+        dropsDetail({ drops: { total: 112, live: 12, since: '2026-11-10', history: 100 } }),
+        dropsDetail({ drops: { total: 840, live: 12, since: '2026-11-12', history: 828, history_from: '2026-07-23', history_through: '2026-11-11' } }),
+        dropsDetail({ drops: null }),
+    ],
+    dropsBumped: [dropsBumped(null, 819), dropsBumped(819, 819), dropsBumped(819, 820), dropsBumped(820, 819), dropsBumped(819, null)],
     ends: [
         attemptEnd(kv('juggle_end', { pattern: 'columns', record_beaten: '1', record_catches: '33' })),
         attemptEnd(kv('juggle_end', { pattern: 'hop', record_beaten: '0' })),

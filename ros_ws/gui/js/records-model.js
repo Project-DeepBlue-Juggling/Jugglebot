@@ -50,28 +50,45 @@ export function recordRows(json, hidden) {
 /**
  * The "Drops to date" line atop the panel (FEAT-47). `json.drops` is null/absent
  * until the ledger has the section ("not counted yet"); otherwise
- * { total, live, since, history|null, history_from?, history_through? }:
- * "Drops to date: 12 · since 2026-11-10 (history not yet counted)", or with a
- * history "Drops to date: 840 · 12 live since 2026-11-12, 828 from history (2026-07-23 to 2026-11-11)".
+ * { total, live, since, history|null, history_from?, history_through? }.
+ * The line shows the total only (owner, 2026-11-11): "Drops to date: 840".
+ * The breakdown is the hover text, :func:`dropsDetail`.
  */
-export function dropsText(json) {
+export function dropsTotal(json) {
     const d = json && json.drops;
-    if (!d || typeof d !== 'object' || !Number.isFinite(Number(d.total))) {
-        return 'Drops to date: not counted yet';
-    }
+    if (!d || typeof d !== 'object' || !Number.isFinite(Number(d.total))) return null;
+    return Number(d.total);
+}
+
+export function dropsText(json) {
+    const n = dropsTotal(json);
+    return n === null ? 'Drops to date: not counted yet' : 'Drops to date: ' + n;
+}
+
+/** Hover text for the drops line: where the total comes from. '' when not counted. */
+export function dropsDetail(json) {
+    if (dropsTotal(json) === null) return '';
+    const d = json.drops;
     const hasHistory = d.history !== null && d.history !== undefined;
-    let t = 'Drops to date: ' + Number(d.total);
     if (hasHistory && d.since) {
-        t += ' · ' + Number(d.live) + ' live since ' + String(d.since) + ', '
+        let t = Number(d.live) + ' live since ' + String(d.since) + ', '
             + Number(d.history) + ' from history';
         if (d.history_from && d.history_through) {
             t += ' (' + String(d.history_from) + ' to ' + String(d.history_through) + ')';
         }
         return t;
     }
-    if (d.since) t += ' · since ' + String(d.since);
-    if (!hasHistory) t += ' (history not yet counted)';
+    let t = d.since ? 'since ' + String(d.since) : '';
+    if (!hasHistory) t += (t ? ' ' : '') + '(history not yet counted)';
     return t;
+}
+
+/**
+ * Whether a new total should play the increment effect: only a rise from a
+ * total this page has already shown (never the first load, never a fall).
+ */
+export function dropsBumped(prev, next) {
+    return prev !== null && next !== null && next > prev;
 }
 
 /** Unit suffix of a ledger params key -> the unit shown after the value (FEAT-29). */

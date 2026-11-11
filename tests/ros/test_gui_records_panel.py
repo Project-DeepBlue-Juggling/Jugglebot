@@ -145,15 +145,33 @@ def test_panel_renders_a_heading_per_section_and_the_css_styles_it():
 
 # ── Drops to date (FEAT-47) ────────────────────────────────────────────────
 
-def test_drops_line_total_since_and_history_note(out):
+def test_drops_line_shows_the_total_only(out):
+    """Owner, 2026-11-11: the line reads "Drops to date: N" and nothing else."""
     assert out["drops"] == [
-        "Drops to date: 12 · since 2026-11-10 (history not yet counted)",
-        "Drops to date: 112 · 12 live since 2026-11-10, 100 from history",
-        "Drops to date: 840 · 12 live since 2026-11-12, 828 from history (2026-07-23 to 2026-11-11)",
+        "Drops to date: 12",
+        "Drops to date: 112",
+        "Drops to date: 840",
         "Drops to date: not counted yet",
         "Drops to date: not counted yet",
         "Drops to date: not counted yet",
     ]
+
+
+def test_drops_breakdown_is_the_hover_text(out):
+    assert out["dropsDetail"] == [
+        "since 2026-11-10 (history not yet counted)",
+        "12 live since 2026-11-10, 100 from history",
+        "12 live since 2026-11-12, 828 from history (2026-07-23 to 2026-11-11)",
+        "",
+    ]
+
+
+def test_drops_increment_effect_plays_only_on_a_rise_after_first_load(out):
+    assert out["dropsBumped"] == [False, False, True, False, False]
+    panel = (JS / "records-panel.js").read_text()
+    css = (GUI / "css" / "records-panel.css").read_text()
+    assert "records-drops-bump" in panel and "@keyframes records-drops-bump" in css
+    assert "prefers-reduced-motion" in css
 
 
 def test_panel_has_a_drops_slot_atop_the_records():
