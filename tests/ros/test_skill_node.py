@@ -4274,6 +4274,28 @@ class TestJuggleAction:
                             pattern='magazine', reports=reports)
         assert len(rec.load(str(path)).scores) == 2
 
+    def test_throws_lost_to_an_empty_cup_are_without_a_fit_in_the_ledger(
+            self, tmp_path):
+        """TKT-66 (b): a Throw lost to an EMPTY Cup has no ThrowReport and no
+        Fit, so it is booked `no_fit`; scored + no_fit equals the Throws the
+        ledger counts. `magazine` books no score row at all."""
+        from jugglebot import records as rec
+        R = sn.rp.ThrowReport
+
+        def rpt(n, err):
+            return R(throw_no=n, n_throws=5, ball_id=0, caught=True,
+                     row=True, no_row_reason='', apex_m=0.9,
+                     landing_err_mm=err, release_err_s=None,
+                     arrival_err_s=None, seat_s=None)
+        reports = [rpt(1, (3.0, 4.0)), rpt(2, None), rpt(3, (0.0, 12.0))]
+        path = tmp_path / 'records.md'
+        self._ended_attempt(tmp_path, 5, 3, records_path=path,
+                            reports=reports, missed_catches=2)
+        [row] = rec.load(str(path)).scores
+        assert (row.scores, row.no_fit) == ((5, 12), 1 + 2)
+        # 3 Throws with a report + 2 lost == the 5 Throws of the Attempt
+        assert len(row.scores) + row.no_fit == 5
+
     def test_a_drained_feed_report_keeps_its_landing_score(self):
         node, _client = _node_with_client()
         ex = MagicMock()

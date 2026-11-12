@@ -424,3 +424,33 @@ def test_the_end_line_adds_the_landing_median_and_the_count_without_a_fit():
     # no Fit anywhere: no median to print
     assert 'landing median' not in rp.end_line(
         'columns', '', '', [_r(landing_err_mm=None)])[1]
+
+
+def test_the_end_line_counts_a_throw_lost_to_an_empty_cup_as_without_a_fit():
+    """TKT-66 (b): scored + without-a-Fit equals the Throws figure."""
+    reports = [_r(throw_no=1, landing_err_mm=(3.0, 4.0)),
+               _r(throw_no=2, landing_err_mm=(0.0, 25.0))]
+    text = rp.end_line('columns', 'MISSED_CATCH', '', reports,
+                       missed_catches=2)[1]
+    assert '2/4 caught' in text
+    assert 'landing median 15 mm over 2 (2 without a Fit)' in text
+
+
+def test_the_ledger_scores_and_no_fit_add_up_to_the_ledger_throws():
+    """TKT-66 (b): `record_landing_scores` is on `record_counts`' base: a
+    Throw lost to an EMPTY Cup is without a Fit, and the unverified final
+    Catch the ledger counts on a COMPLETED goal is scored (it has a landing);
+    the columns Stop is in neither."""
+    reports = [_r(throw_no=1, landing_err_mm=(3.0, 4.0)),
+               _r(throw_no=2, landing_err_mm=None, row=False),
+               _r(throw_no=3, landing_err_mm=(0.0, 9.0), stop=True),
+               _r(throw_no=4, landing_err_mm=(6.0, 8.0), unverified=True,
+                  caught=None)]
+    for end_code, lost in (('COMPLETED', 2), ('MISSED_CATCH', 0)):
+        throws, _ = rp.record_counts(reports, end_code, missed_catches=lost)
+        scores, no_fit = rp.record_landing_scores(reports, end_code,
+                                                  missed_catches=lost)
+        assert len(scores) + no_fit == throws
+    scores, no_fit = rp.record_landing_scores(reports, 'COMPLETED',
+                                              missed_catches=2)
+    assert (scores, no_fit) == ([5.0, 10.0], 1 + 2)

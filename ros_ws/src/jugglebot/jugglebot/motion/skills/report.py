@@ -106,8 +106,10 @@ class FeedCatchReport:
     seat_s: Optional[float]
     contact_s: Optional[float]
     settle_s: Optional[float]
-    #: The Feed's landing minus its announced target (x, y), mm: ``None``
-    #: without a converged Fit (IDEA-21; :func:`landing_score_mm`).
+    #: The Feed's landing minus the point its thrower was aimed at (x, y),
+    #: mm (the announced landing for both Feed paths, before any Catch-side
+    #: bias walk; TKT-66): ``None`` without a converged Fit (IDEA-21;
+    #: :func:`landing_score_mm`).
     landing_err_mm: Optional[Tuple[float, float]] = None
 
 
@@ -328,6 +330,9 @@ def end_line(label: str, end_code: str, end_message: str,
     if worst:
         tally += ' · worst landing %.0f mm' % (max(worst),)
     scores, no_fit = landing_scores(reports)
+    # TKT-66: a Throw lost to an EMPTY Cup has no Fit either, so scored plus
+    # without-a-Fit equals the Throws figure above.
+    no_fit += lost
     if scores:
         tally += ' · landing median %.0f mm over %d' % (
             median_mm(scores), len(scores))
@@ -432,6 +437,28 @@ def record_counts(reports: List[ThrowReport],
             if r.unverified and not r.stop and r.row
             and r.landing_err_mm is not None)
     return throws + n, caught + n
+
+
+def record_landing_scores(reports: List[ThrowReport],
+                          end_code: str = 'COMPLETED',
+                          missed_catches: int = 0) -> Tuple[List[float], int]:
+    """``(scores, without a Fit)`` for the records ledger, on the same base as
+    :func:`record_counts`' Throws, so ``len(scores) + no_fit`` equals them
+    (owner's answer in TKT-66 (b)). :func:`landing_scores`, plus each Throw
+    lost to an EMPTY Cup (``missed_catches``; no ThrowReport, no Fit) as
+    without a Fit, plus the ``unverified`` final Catch that
+    :func:`record_counts` adds (a ``COMPLETED`` goal, a row with a landing):
+    it has a landing, so it is scored."""
+    scores, no_fit = landing_scores(reports)
+    no_fit += max(0, int(missed_catches))
+    if end_code == 'COMPLETED':
+        for r in reports:
+            if (r.unverified and not r.stop and r.row
+                    and r.landing_err_mm is not None):
+                sc = landing_score_mm(r.landing_err_mm)
+                if sc is not None:
+                    scores.append(sc)
+    return scores, no_fit
 
 
 def drop_count(reports: List[ThrowReport], feed_missed: int = 0,

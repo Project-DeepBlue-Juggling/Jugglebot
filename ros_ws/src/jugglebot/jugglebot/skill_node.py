@@ -1416,7 +1416,10 @@ class SkillNode(Node):
         # cancels), and the announced landing used as the feed catch's
         # `LandingPrior` is walked FORWARD by it (the announcement reports
         # Ball Butler's belief -- the request point -- not where the ball
-        # actually lands). Reload (`columns_1ball`, `reload`) and
+        # actually lands). The Feed's LANDING SCORE (IDEA-21, TKT-66) is
+        # NOT walked: it is measured against the raw announcement, the point
+        # Ball Butler was aimed at (`executor.feed_score_target_xy_mm`).
+        # Reload (`columns_1ball`, `reload`) and
         # hop/self_toss are untouched -- Ball Butler's bias there is folded
         # into the ordinary tracker-fit catch, not a schedule-frame prior.
         self.declare_parameter('columns_feed_bb_bias_mm', [0.0, 0.0])
@@ -6283,6 +6286,9 @@ class SkillNode(Node):
             bias_x, bias_y = self._columns_feed_bb_bias_mm()
             req_x, req_y = (float(ctx.aim_site.cup_mm[0]),
                             float(ctx.aim_site.cup_mm[1]))
+            # TKT-66: the Feed's score target is the point Ball Butler was
+            # aimed at, i.e. this raw announcement BEFORE the Catch-side walk.
+            score_target_xy = (float(landing_mm[0]), float(landing_mm[1]))
             landing_mm = landing_mm + np.array([bias_x, bias_y, 0.0])
             self.get_logger().info(
                 # The literal prefix up to '... mm, bias [...] mm' is matched
@@ -6296,7 +6302,8 @@ class SkillNode(Node):
                    ball_label(1)))
             feed = LandingPrior(pos_mm=landing_mm, vel_mm_s=landing_vel_mm_s,
                                 t_land_abs_s=t_land_abs_s)
-            self._install_columns_schedule(ctx, feed)
+            self._install_columns_schedule(
+                ctx, feed, score_target_xy_mm=score_target_xy)
             return
 
         now = self.get_clock().now().nanoseconds / 1e9
@@ -6425,7 +6432,8 @@ class SkillNode(Node):
             'cap %.1f deg) — catching it, then %d throw%s'
             % (hold_deg, cap_deg, n_after, '' if n_after == 1 else 's'))
 
-    def _install_columns_schedule(self, ctx, feed: LandingPrior) -> None:
+    def _install_columns_schedule(self, ctx, feed: LandingPrior,
+                                  score_target_xy_mm=None) -> None:
         """Compile ``compile_columns(..., feed=feed, hop_entry=True)`` and
         install it for ``ctx`` -- the columns counterpart of
         `_install_announced_reload`'s reload compile-then-swap tail (R5, owner decision D1, 2026-09-30), sharing its
@@ -6529,6 +6537,11 @@ class SkillNode(Node):
             seat_window=self._seat_window,
             contact_probe=self._contact_time,
             catch_time_offset_s=self._catch_time_offset_s)
+        # Report-only (TKT-66): the Feed's landing score is measured against
+        # the point Ball Butler was aimed at, not the bias-corrected prior.
+        if score_target_xy_mm is not None:
+            executor.feed_score_target_xy_mm = (
+                float(score_target_xy_mm[0]), float(score_target_xy_mm[1]))
         # The SkillExecutor SWAP, `_install_announced_reload`'s shape
         # exactly: `_tick_lock` first (a tick mid-dispatch on another
         # thread must not read `_executor` half-swapped), then ONE
@@ -7004,7 +7017,13 @@ class SkillNode(Node):
             if pattern == 'magazine':
                 scores, no_fit = [], 0
             else:
-                scores, no_fit = rp.landing_scores(self._goal_reports)
+                # TKT-66 (b): the same base as `rec_throws` above, so scored
+                # plus no_fit equals the ledger's Throws: a Throw lost to an
+                # EMPTY Cup (FEAT-48) is "without a Fit", and the unverified
+                # final Catch `record_counts` adds is scored.
+                scores, no_fit = rp.record_landing_scores(
+                    self._goal_reports, outcome,
+                    missed_catches=missed_catches)
             feed_scores = list(self._goal_feed_scores)
         except Exception:  # noqa: BLE001 -- a score never faults the goal
             scores, no_fit, feed_scores = [], 0, []
