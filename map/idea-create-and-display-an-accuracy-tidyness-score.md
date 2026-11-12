@@ -4,7 +4,7 @@ kind: idea
 title: Create and display an 'accuracy'/'tidyness' score
 status: complete
 created: '2026-11-09'
-updated: '2026-11-11T18:18:04Z'
+updated: '2026-11-11T19:00:09Z'
 owners: []
 priority: medium
 effort: m
@@ -62,3 +62,4 @@ Recommendation: the landing score, with Feeds apart and Throws per Pattern, and 
 
 - 2026-11-10: Night Shift 2026-11-10: under PWAY-10 as asked; feasibility and options written; awaiting the owner's choice in TKT-60
 - 2026-11-11: Night Shift 2026-11-11: both scores tried on four bags (Findings); the landing score wins; awaiting the build choice in the question ticket
+- 2026-11-12: Night Shift 2026-11-12: held on night-shift/2026-11-12-IDEA-21: landing score built, 2 audit findings open (Feed target, empty-Cup count); unblocked by your answer
