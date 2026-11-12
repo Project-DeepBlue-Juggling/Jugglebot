@@ -4,7 +4,7 @@ kind: idea
 title: 'Turned Columns at 90 deg: tilt the Platform back (+x) at the Catch so the ball stops hitting the Platform top'
 status: in_progress
 created: '2026-11-10'
-updated: '2026-11-11T19:00:02Z'
+updated: '2026-11-12T18:37:53Z'
 owners:
 - night-shift
 priority: medium
@@ -41,16 +41,16 @@ Recommendation: 3, then 1. The read is cheap, and it shows whether the misses ar
 ## Sitting
 
 - setup: level, armed, bb-fed
-- why: Turned Columns at 90 deg failed on 2026-11-10 (4 Attempts, all MISSED_CATCH within 8 Throws, the ball striking the Platform top). The branch tilts every auto-banked Catch back toward +x; the Feed Catch stays Level.
+- why: Turned Columns at 90 deg failed on 2026-11-10 (4 Attempts, all MISSED_CATCH within 8 Throws, the ball striking the Platform top). The branch adds a rotation about +x to every auto-banked Catch (the Cup leans toward -y), 3 deg by default (TKT-65); the Feed Catch stays Level.
 - do:
-  - Answer TKT-65 on the default first (4 deg as built, or 3 deg).
+  - Answer TKT-67 first: at P4 limits 3 deg about +x is refused offline.
   - Mocap up on the robot base markers and Ball Butler's Base markers (columns_turned picks the fed Site from Ball Butler's position).
   - Rehearse: `ros2 param set /skill_node columns_angle_deg 90`, then `ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: 'columns_turned,apex_m=0.95,separation_mm=125,dwell_s=0.27,columns_angle_deg=90'}"`. Nothing moves.
-  - Offline at P4 limits 4 deg is refused (LIMIT_JERK) and 3 deg passes at margin 0.024. If refused, `ros2 param set /skill_node columns_turned_catch_tilt_back_deg 3.0` and nominate again; if 3 is refused too, use 2.0.
-  - Fly 4 Attempts of columns_turned at 90 deg (Apex 0.95, Sep. 125, Dwell 0.27) at the highest tilt-back the nomination accepted. Watch where the ball meets the Cup and whether the Cup slides sideways at the Catch.
+  - Offline at P4 limits: 3 deg is refused (LIMIT_JERK, Leg 1 227k vs 200k), 2 deg is refused (margin -0.013), 1.9 deg passes (0.011). 3 deg passes at Apex 0.90 (0.027). Per TKT-67, either `ros2 param set /skill_node columns_turned_catch_tilt_back_deg 1.9` or nominate with apex_m=0.90, and nominate again.
+  - Fly 4 Attempts of columns_turned at 90 deg (Sep. 125, Dwell 0.27) at the tilt-back and Apex the nomination accepted. Watch where the ball meets the Cup and whether the Cup slides sideways (toward +y) at the Catch.
   - If time allows, 1 Attempt at 45 deg as a control: it compiles exactly as before.
 - pass: At 90 deg, at least one of 4 Attempts passes Ball 2's first Catch after the Feed and carries 10 or more Throws, with no Platform-top strike seen.
-- record: the tilt-back flown and its nomination margin (or refusal text), Throws caught per Attempt and each end reason, any Platform-top strike, any sideways Cup slide at the Catch, the 45 deg control.
+- record: the tilt-back and Apex flown and the nomination margin (or refusal text), Throws caught per Attempt and each end reason, any Platform-top strike, any sideways Cup slide at the Catch, the 45 deg control.
 - minutes: 25
 - branch: night-shift/2026-11-12-IDEA-22
 
@@ -58,3 +58,4 @@ Recommendation: 3, then 1. The read is cheap, and it shows whether the misses ar
 
 - 2026-11-11: Night Shift 2026-11-11: options written; awaiting the owner's choice in the question ticket
 - 2026-11-12: Night Shift 2026-11-12: held on night-shift/2026-11-12-IDEA-22: tilt-back built, 4 deg default refused at P4 offline (3 passes); unblocked by your call on the default and a Sitting
+- 2026-11-13: Night Shift 2026-11-13: held on night-shift/2026-11-12-IDEA-22: tilt-back now about +x at 3 deg (TKT-65), refused at P4 offline (1.9 passes); unblocked by TKT-67 and a Sitting
