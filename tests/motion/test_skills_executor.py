@@ -8024,6 +8024,64 @@ def test_a_seated_feed_catch_gets_a_feed_line(sites):
     assert 'settle 244 ms' in line
 
 
+def test_a_feed_report_carries_its_landing_error_from_the_announced_target(sites):
+    """IDEA-21: the Feed's landing score is the Fit's landing minus the
+    announced landing point (`landing_prior`); without a Fit there is none."""
+    sch, L, _R, _t = _feed_catch_schedule(sites)
+    prior = next(s.landing_prior for s in sch.skills
+                 if s.landing_prior is not None)
+    cross = L + 0.012
+    tracker = lambda ball_id: ex.Landing(
+        pos_mm=np.array([prior.pos_mm[0] + 6.0, prior.pos_mm[1] - 8.0, 830.0]),
+        vel_mm_s=np.array([0.0, 0.0, -5500.0]), t_land_abs_s=cross,
+        from_fit=True)
+    x, _L = _feed_run(sites, tracker=tracker,
+                      contact_probe=lambda a, b: cross + 0.014)
+    err = x.feed_reports[0].landing_err_mm
+    assert err == pytest.approx((6.0, -8.0))
+    assert _rp.landing_score_mm(err) == pytest.approx(10.0)
+    x, _L = _feed_run(sites, tracker=lambda ball_id: None,
+                      contact_probe=lambda a, b: None)
+    assert x.feed_reports[0].landing_err_mm is None
+
+
+def test_a_feed_is_scored_against_the_point_its_thrower_was_aimed_at(sites):
+    """TKT-66 (a): a Columns Feed's `landing_prior` is walked forward by
+    `columns_feed_bb_bias_mm` for the Catch; the SCORE is measured against
+    the raw announcement (`feed_score_target_xy_mm`), and the prior the
+    Catch plans against is untouched. Unset, the prior's own point is the
+    target (the plain `reload` Feed)."""
+    sch, L, _R, _t = _feed_catch_schedule(sites)
+    prior = next(s.landing_prior for s in sch.skills
+                 if s.landing_prior is not None)
+    prior_pos_before = np.array(prior.pos_mm, dtype=float)
+    cross = L + 0.012
+    # The Fit landed 6 mm / -8 mm from the prior's point.
+    fit_xy = (prior.pos_mm[0] + 6.0, prior.pos_mm[1] - 8.0)
+    tracker = lambda ball_id: ex.Landing(
+        pos_mm=np.array([fit_xy[0], fit_xy[1], 830.0]),
+        vel_mm_s=np.array([0.0, 0.0, -5500.0]), t_land_abs_s=cross,
+        from_fit=True)
+    # The thrower was aimed 29/25 mm back of the (bias-walked) prior.
+    aim = (float(prior.pos_mm[0]) - 29.0, float(prior.pos_mm[1]) - 25.0)
+
+    def set_aim(x):
+        x.feed_score_target_xy_mm = aim
+    x, _L = _feed_run(sites, tracker=tracker, on_executor=set_aim,
+                      contact_probe=lambda a, b: cross + 0.014)
+    err = x.feed_reports[0].landing_err_mm
+    assert err == pytest.approx((fit_xy[0] - aim[0], fit_xy[1] - aim[1]))
+    assert _rp.landing_score_mm(err) == pytest.approx(
+        float(np.hypot(35.0, 17.0)))
+    # Unset: scored against the prior itself, exactly as before.
+    x, _L = _feed_run(sites, tracker=tracker,
+                      contact_probe=lambda a, b: cross + 0.014)
+    assert x.feed_reports[0].landing_err_mm == pytest.approx((6.0, -8.0))
+    # Report-only: the prior the executor plans with is unchanged.
+    assert np.array_equal(np.asarray(prior.pos_mm, dtype=float),
+                          prior_pos_before)
+
+
 def _flight_only_tracker(sites, fit_t_land_off_s):
     """Provider like skill_node._tracker: answers while the ball is IN_FLIGHT
     (until the scheduled landing + 0.2 s), None after the status flip."""

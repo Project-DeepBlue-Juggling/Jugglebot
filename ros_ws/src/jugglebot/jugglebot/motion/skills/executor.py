@@ -1410,6 +1410,12 @@ class _PendingCatch:
     #: (:meth:`SkillExecutor._ends_on_stop_final_catch`); an EMPTY live window
     #: then books the Catch as unverifiable instead of :data:`MISSED_CATCH`.
     ends_on_stop: bool = False
+    #: The point a Feed's thrower (Ball Butler) was aimed at (x, y mm), the
+    #: target of its landing score (IDEA-21, TKT-66): the Feed's
+    #: ``landing_prior.pos_mm`` unless the executor's
+    #: ``feed_score_target_xy_mm`` overrides it (a Columns Feed, whose prior is
+    #: bias-corrected for the Catch). Report-only.
+    target_xy_mm: Optional[Tuple[float, float]] = None
 
 
 #: Where, around the tracker's crossing, the cup strike is searched for
@@ -2588,6 +2594,19 @@ class SkillExecutor:
         self.catch_time_offset_s = float(catch_time_offset_s)
         #: Feed-catch (Ball Butler) observation lines for the node to log.
         self.feed_reports: List[FeedCatchReport] = []
+        #: REPORT-ONLY (IDEA-21, TKT-66): the (x, y) mm point Ball Butler was
+        #: AIMED at for the Feed, the target of the Feed's landing score.
+        #: ``None`` = the Feed's ``landing_prior.pos_mm`` (a plain ``reload``
+        #: Feed: Ball Butler's announcement IS the aim point). A Columns Feed
+        #: sets it to the raw announcement, because its ``landing_prior`` is
+        #: walked forward by ``columns_feed_bb_bias_mm`` for the Catch and
+        #: that walk is not the thrower's aim. The score target is the point
+        #: Ball Butler was asked to hit, ``aim_site - columns_feed_bb_bias_mm``,
+        #: which it announces; with a configured bias the Feed score therefore
+        #: includes Ball Butler's own landing bias, by the owner's TKT-66
+        #: answer. Nothing the planner, the Catch,
+        #: the learner or the wire reads looks at this.
+        self.feed_score_target_xy_mm: Optional[Tuple[float, float]] = None
         #: The late catch re-aim BUMP (I-CATCH-5, :mod:`.bump`) — OFF unless the
         #: caller enables it for a pattern in ``bump.BUMP_ENABLED_PATTERNS``
         #: (columns family only, owner 2026-10-16; hop/reload stay off until a
@@ -5739,6 +5758,12 @@ class SkillExecutor:
             ball_id=skill.ball_id, catch_idx=idx, t_land_scheduled_s=L,
             t_open_s=t_open, t_close_s=t_close,
             is_feed=skill.landing_prior is not None,
+            target_xy_mm=(
+                None if skill.landing_prior is None
+                else self.feed_score_target_xy_mm
+                if self.feed_score_target_xy_mm is not None
+                else (float(skill.landing_prior.pos_mm[0]),
+                      float(skill.landing_prior.pos_mm[1]))),
             last_fit_landing=self._fit_latch_by_idx.get(idx),
             ends_on_stop=self._ends_on_stop_final_catch(idx, skill)))
 
@@ -6339,6 +6364,7 @@ class SkillExecutor:
         within 0.3 s of the dispatched aim (a stale fit of another flight
         would give a nonsense zero); without one every field is ``--``."""
         t_cross = None
+        feed_err = None
         # The in-flight latch first; the live call only when none was taken
         # (the provider answers None once the ball's status leaves IN_FLIGHT).
         lnd = pend.last_fit_landing
@@ -6347,13 +6373,18 @@ class SkillExecutor:
         if (lnd is not None and lnd.from_fit and abs(
                 float(lnd.t_land_abs_s) - pend.t_land_scheduled_s) < 0.3):
             t_cross = float(lnd.t_land_abs_s)
+            if pend.target_xy_mm is not None:
+                d = (np.asarray(lnd.pos_mm, dtype=float)[:2]
+                     - np.asarray(pend.target_xy_mm, dtype=float))
+                feed_err = (float(d[0]), float(d[1]))
         contact_s, settle_s = self._contact_and_settle(t_cross, t_seat_s)
         self.feed_reports.append(FeedCatchReport(
             ball_id=pend.ball_id,
             arrival_err_s=(None if t_cross is None
                            else t_cross - pend.t_land_scheduled_s),
             seat_s=None if t_cross is None else t_seat_s - t_cross,
-            contact_s=contact_s, settle_s=settle_s))
+            contact_s=contact_s, settle_s=settle_s,
+            landing_err_mm=feed_err))
 
     def _advance_catch_evidence(self, t_abs_s: float) -> List[str]:
         """Fire :data:`MISSED_CATCH` for any armed :class:`_PendingCatch`

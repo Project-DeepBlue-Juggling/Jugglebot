@@ -4245,6 +4245,71 @@ class TestJuggleAction:
                             reports=[], feeds_caught=1)
         assert rec.load(str(path)).drops.caught == 3
 
+    def test_landing_scores_reach_the_ledger(self, tmp_path):
+        """IDEA-21: the Attempt's Throw scores (mm, Throw order, Throws
+        without a Fit counted) are offered to the ledger whether or not a
+        record is beaten; a `magazine` run books no Throw score."""
+        from jugglebot import records as rec
+        R = sn.rp.ThrowReport
+
+        def rpt(n, err, caught=True):
+            return R(throw_no=n, n_throws=3, ball_id=0, caught=caught,
+                     row=True, no_row_reason='', apex_m=0.9,
+                     landing_err_mm=err, release_err_s=None,
+                     arrival_err_s=None, seat_s=None)
+        reports = [rpt(1, (3.0, 4.0)), rpt(2, None, caught=False),
+                   rpt(3, (0.0, 12.0))]
+        path = tmp_path / 'records.md'
+        self._ended_attempt(tmp_path, 3, 2, records_path=path,
+                            reports=reports)
+        [row] = rec.load(str(path)).scores
+        assert (row.pattern, row.scores, row.no_fit) == (
+            'self_toss', (5, 12), 1)
+        # equal catches is not a record: the scores are still written
+        self._ended_attempt(tmp_path, 3, 2, records_path=path,
+                            reports=reports)
+        assert len(rec.load(str(path)).scores) == 2
+        # magazine: its placeholder Throw is never a catch target
+        self._ended_attempt(tmp_path, 1, 0, records_path=path,
+                            pattern='magazine', reports=reports)
+        assert len(rec.load(str(path)).scores) == 2
+
+    def test_throws_lost_to_an_empty_cup_are_without_a_fit_in_the_ledger(
+            self, tmp_path):
+        """TKT-66 (b): a Throw lost to an EMPTY Cup has no ThrowReport and no
+        Fit, so it is booked `no_fit`; scored + no_fit equals the Throws the
+        ledger counts. `magazine` books no score row at all."""
+        from jugglebot import records as rec
+        R = sn.rp.ThrowReport
+
+        def rpt(n, err):
+            return R(throw_no=n, n_throws=5, ball_id=0, caught=True,
+                     row=True, no_row_reason='', apex_m=0.9,
+                     landing_err_mm=err, release_err_s=None,
+                     arrival_err_s=None, seat_s=None)
+        reports = [rpt(1, (3.0, 4.0)), rpt(2, None), rpt(3, (0.0, 12.0))]
+        path = tmp_path / 'records.md'
+        self._ended_attempt(tmp_path, 5, 3, records_path=path,
+                            reports=reports, missed_catches=2)
+        [row] = rec.load(str(path)).scores
+        assert (row.scores, row.no_fit) == ((5, 12), 1 + 2)
+        # 3 Throws with a report + 2 lost == the 5 Throws of the Attempt
+        assert len(row.scores) + row.no_fit == 5
+
+    def test_a_drained_feed_report_keeps_its_landing_score(self):
+        node, _client = _node_with_client()
+        ex = MagicMock()
+        ex.feed_reports = [
+            sn.rp.FeedCatchReport(1, None, None, None, None,
+                                  landing_err_mm=(6.0, 8.0)),
+            sn.rp.FeedCatchReport(2, None, None, None, None)]
+        ex.reports = []
+        node._goal_feeds_caught = 0
+        node._goal_feed_scores = []
+        node._drain_reports(ex)
+        assert node._goal_feeds_caught == 2
+        assert node._goal_feed_scores == [10.0]
+
     def test_the_feed_catch_counter_counts_drained_feed_reports(self):
         node, _client = _node_with_client()
         ex = MagicMock()
@@ -5000,6 +5065,31 @@ def test_columns_feed_bb_bias_mm_shifts_the_request_and_the_feed_prior(tmp_path)
     # back to the TRUE aim point, since announced == aim - bias here.
     assert first.landing_prior.pos_mm[0] == pytest.approx(float(aim[0]), abs=1e-6)
     assert first.landing_prior.pos_mm[1] == pytest.approx(float(aim[1]), abs=1e-6)
+
+
+def test_columns_feed_score_target_is_the_announced_point_not_the_biased_prior(tmp_path):
+    """TKT-66: with a non-zero `columns_feed_bb_bias_mm` the executor's
+    `feed_score_target_xy_mm` is the announced xy (the point Ball Butler was
+    asked to hit, `aim - bias`), while the feed `LandingPrior` is the
+    announcement plus the bias."""
+    node, _client = _node_with_client()
+    node.set_parameters([_MockParameter([29.0, 25.0], name='columns_feed_bb_bias_mm')])
+    _columns_bb_started(node, tmp_path)
+    throw_req = node._bb_throw_cli.calls[0]
+    ax = throw_req.target_point_global_mm.x
+    ay = throw_req.target_point_global_mm.y
+    ann = _bb_announcement(
+        target_id=node._robot_name,
+        landing_mm=(ax, ay, sn.CATCH_CUP_Z_MM),
+        landing_vel_mm_s=(0.0, 0.0, -3000.0), throw_time_s=0.5,
+        landing_time_s=5.0)
+    node._on_announcement(ann)
+    assert node._executor is not None
+    assert node._executor.feed_score_target_xy_mm == pytest.approx((ax, ay))
+    catches = [s for s in node._executor.schedule.skills if s.kind == sn.CATCH]
+    first = min(catches, key=lambda s: s.t_abs_s)
+    assert first.landing_prior.pos_mm[0] == pytest.approx(ax + 29.0, abs=1e-6)
+    assert first.landing_prior.pos_mm[1] == pytest.approx(ay + 25.0, abs=1e-6)
 
 
 def test_columns_feed_bb_bias_mm_leaves_self_toss_reload_untouched(tmp_path):
