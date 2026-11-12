@@ -5067,6 +5067,31 @@ def test_columns_feed_bb_bias_mm_shifts_the_request_and_the_feed_prior(tmp_path)
     assert first.landing_prior.pos_mm[1] == pytest.approx(float(aim[1]), abs=1e-6)
 
 
+def test_columns_feed_score_target_is_the_announced_point_not_the_biased_prior(tmp_path):
+    """TKT-66: with a non-zero `columns_feed_bb_bias_mm` the executor's
+    `feed_score_target_xy_mm` is the announced xy (the point Ball Butler was
+    asked to hit, `aim - bias`), while the feed `LandingPrior` is the
+    announcement plus the bias."""
+    node, _client = _node_with_client()
+    node.set_parameters([_MockParameter([29.0, 25.0], name='columns_feed_bb_bias_mm')])
+    _columns_bb_started(node, tmp_path)
+    throw_req = node._bb_throw_cli.calls[0]
+    ax = throw_req.target_point_global_mm.x
+    ay = throw_req.target_point_global_mm.y
+    ann = _bb_announcement(
+        target_id=node._robot_name,
+        landing_mm=(ax, ay, sn.CATCH_CUP_Z_MM),
+        landing_vel_mm_s=(0.0, 0.0, -3000.0), throw_time_s=0.5,
+        landing_time_s=5.0)
+    node._on_announcement(ann)
+    assert node._executor is not None
+    assert node._executor.feed_score_target_xy_mm == pytest.approx((ax, ay))
+    catches = [s for s in node._executor.schedule.skills if s.kind == sn.CATCH]
+    first = min(catches, key=lambda s: s.t_abs_s)
+    assert first.landing_prior.pos_mm[0] == pytest.approx(ax + 29.0, abs=1e-6)
+    assert first.landing_prior.pos_mm[1] == pytest.approx(ay + 25.0, abs=1e-6)
+
+
 def test_columns_feed_bb_bias_mm_leaves_self_toss_reload_untouched(tmp_path):
     """B4: the bias applies ONLY to `kind == 'columns'` -- a plain
     self-toss/hop reload request (`kind == 'reload'`) is unchanged by a

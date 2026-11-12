@@ -2599,7 +2599,11 @@ class SkillExecutor:
         #: Feed: Ball Butler's announcement IS the aim point). A Columns Feed
         #: sets it to the raw announcement, because its ``landing_prior`` is
         #: walked forward by ``columns_feed_bb_bias_mm`` for the Catch and
-        #: that walk is not the thrower's aim. Nothing the planner, the Catch,
+        #: that walk is not the thrower's aim. The score target is the point
+        #: Ball Butler was asked to hit, ``aim_site - columns_feed_bb_bias_mm``,
+        #: which it announces; with a configured bias the Feed score therefore
+        #: includes Ball Butler's own landing bias, by the owner's TKT-66
+        #: answer. Nothing the planner, the Catch,
         #: the learner or the wire reads looks at this.
         self.feed_score_target_xy_mm: Optional[Tuple[float, float]] = None
         #: The late catch re-aim BUMP (I-CATCH-5, :mod:`.bump`) — OFF unless the

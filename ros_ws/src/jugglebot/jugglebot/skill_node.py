@@ -6287,7 +6287,15 @@ class SkillNode(Node):
             req_x, req_y = (float(ctx.aim_site.cup_mm[0]),
                             float(ctx.aim_site.cup_mm[1]))
             # TKT-66: the Feed's score target is the point Ball Butler was
-            # aimed at, i.e. this raw announcement BEFORE the Catch-side walk.
+            # asked to hit, `aim_site - columns_feed_bb_bias_mm` (what
+            # `_fire_reload_throw` sent), which it announces: this raw
+            # announcement BEFORE the Catch-side walk. With a configured
+            # bias the Feed score therefore includes Ball Butler's own
+            # landing bias (about |bias| when the compensation works), by
+            # the owner's TKT-66 answer. NB the INFO line's "request"
+            # figure below is the aim Site BEFORE the bias walk, not the
+            # point sent; the log string is left as is because
+            # `tools/probes/feed_lateral_miss.py` parses its prefix.
             score_target_xy = (float(landing_mm[0]), float(landing_mm[1]))
             landing_mm = landing_mm + np.array([bias_x, bias_y, 0.0])
             self.get_logger().info(
@@ -6432,8 +6440,10 @@ class SkillNode(Node):
             'cap %.1f deg) — catching it, then %d throw%s'
             % (hold_deg, cap_deg, n_after, '' if n_after == 1 else 's'))
 
-    def _install_columns_schedule(self, ctx, feed: LandingPrior,
-                                  score_target_xy_mm=None) -> None:
+    def _install_columns_schedule(
+            self, ctx, feed: LandingPrior,
+            score_target_xy_mm: Optional[Tuple[float, float]] = None
+    ) -> None:
         """Compile ``compile_columns(..., feed=feed, hop_entry=True)`` and
         install it for ``ctx`` -- the columns counterpart of
         `_install_announced_reload`'s reload compile-then-swap tail (R5, owner decision D1, 2026-09-30), sharing its
@@ -6455,6 +6465,13 @@ class SkillNode(Node):
         REST this ctx's own schedule already committed to (`_run_columns`'s
         ``bridge_site``, the feed site) matches the site the compiled
         schedule plans THROW 0 from.
+
+        ``score_target_xy_mm`` (report-only, TKT-66): the (x, y) mm point the
+        Feed's landing score is measured against, stored on
+        ``executor.feed_score_target_xy_mm``. The announcement branch passes
+        the point Ball Butler was asked to hit and announces
+        (``aim_site - columns_feed_bb_bias_mm``); ``None`` leaves the score
+        on ``feed.pos_mm``.
         """
         # B2 (`columns_1ball_fed`): ball A's cup may be phantom-empty
         # (`ctx.columns_pattern.phantom_balls`) rather than actually
