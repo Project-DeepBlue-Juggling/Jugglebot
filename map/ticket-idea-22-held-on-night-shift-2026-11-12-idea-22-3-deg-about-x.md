@@ -2,9 +2,9 @@
 id: TKT-67
 kind: ticket
 title: 'IDEA-22 held on night-shift/2026-11-12-IDEA-22: 3 deg about +x is refused at P4 limits; keep 3 deg and fly at Apex 0.90, change the default to 1.9 deg, step down at the Sitting, or raise the Leg jerk limit?'
-status: open
+status: complete
 created: '2026-11-13'
-updated: '2026-11-12T18:37:50Z'
+updated: '2026-11-12T22:12:18Z'
 owners: []
 priority: medium
 effort: xs
@@ -40,3 +40,7 @@ Side effect: at 3 deg the pinned Catch asks for about 227 mm/s of sideways Cup m
 - 4: a day Session.
 
 Recommendation: 1. It keeps your 3 deg, the tilt you judged the ball needs, and a 50 mm lower Apex sits inside the admissible box at 90 deg (0.875 to 0.975).
+
+## Answer
+
+Alright, let's go with Option 1.
