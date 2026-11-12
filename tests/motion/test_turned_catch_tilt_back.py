@@ -131,9 +131,11 @@ def test_the_folded_tilt_leans_the_cup_further_toward_minus_y():
 
 def test_the_sum_is_clamped_onto_the_12_deg_disc():
     # An arrival steep enough that the auto bank alone saturates at 12 deg,
-    # leaning the Cup toward -y (an arrival moving +y): the offset cannot
-    # push the commanded tilt past the ceiling.
-    steep = np.array([0.0, 3000.0, -3000.0])
+    # leaning the Cup toward -y and +x (an arrival moving +y and -x): the
+    # offset cannot push the commanded tilt past the ceiling. Both bank
+    # components are non-zero, so the cross-product check below would see a
+    # clamp that rotated the sum.
+    steep = np.array([-2000.0, 3000.0, -3000.0])
     got = sg.catch_receive_tilt(None, _rule_offset(), steep)
     assert math.degrees(math.hypot(*got)) == pytest.approx(tg.MAX_TILT_DEG)
     assert got[0] > 0.0
