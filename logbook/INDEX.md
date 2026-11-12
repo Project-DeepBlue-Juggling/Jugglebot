@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-13 | complete | night-shift (live night) | **Night Shift 2026-11-13: 1 merged (IDEA-21), 2 held (IDEA-22, carried BUG-80), 1 question (TKT-67)** | [2026-11-13-night-shift](2026-11-13-night-shift.md) |
 | 2026-11-12 | complete | night-shift (live night) | **Night Shift 2026-11-12: 1 merged (BUG-88), 3 held (IDEA-22, IDEA-21, carried BUG-80), 2 questions (TKT-65, TKT-66)** | [2026-11-12-night-shift](2026-11-12-night-shift.md) |
 | 2026-11-12 | complete | night-shift | **Landing score: per-Throw distance to the target Site, median and a no-Fit count on the end line, every score in the records ledger** | [2026-11-12-landing-score](2026-11-12-landing-score.md) |
 | 2026-11-12 | complete | night-shift | **Bench hand_stream_bench: triangle and moving_gap refuse before the Hand bring-up (BUG-88)** | [2026-11-12-bench-triangle-moving-gap-refuse-before-bring-up](2026-11-12-bench-triangle-moving-gap-refuse-before-bring-up.md) |
