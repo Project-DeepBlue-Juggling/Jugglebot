@@ -233,7 +233,7 @@ Rigs: Robot 6 blocks (299 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 
 ## Questions a Sitting can answer
 
-- TKT-67 IDEA-22 held on night-shift/2026-11-12-IDEA-22: 3 deg about +x is refused at P4 limits; keep 3 deg and fly at Apex 0.90, change the default to 1.9 deg, step down at the Sitting, or raise the Leg jerk limit? (parent IDEA-22)
+- none
 
 ## Close-out
 
