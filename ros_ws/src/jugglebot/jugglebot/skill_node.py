@@ -1265,6 +1265,18 @@ class SkillNode(Node):
         # that goal refuses by name; every other goal ignores it. Refused while
         # a goal is active (`_on_set_parameters`), like `planner_mode`.
         self.declare_parameter('apex_m_ball2', 0.0)
+        # BUG-80: a commanded landing offset for a `self_toss` goal, mm, Robot
+        # frame, added to every Throw's commanded landing (default 0 = today).
+        # The offset is bounded per axis by `learner_lateral_authority_mm`, but
+        # the Catch clamp and the Learner cap are centred on it, so the reach
+        # from the Site is offset plus authority. A non-zero value refuses any
+        # other Pattern by name (`nominate.landing_offset_refusal`), and it is
+        # refused while a goal is active (`_on_set_parameters`). Only a goal's
+        # FIRST Throw flies the offset's Tilt (a same-Site fold releases at
+        # the caught xy): for a from-rest check, fly single-Throw goals
+        # (`num_cycles: 1`) and set this between them.
+        self.declare_parameter('landing_offset_x_mm', 0.0)
+        self.declare_parameter('landing_offset_y_mm', 0.0)
         # The segment planner this session runs ('level' | 'pose', two-ball-oval
         # P3): rides on the executor. Settable live
         # (`ros2 param set /skill_node planner_mode pose`, validated in
@@ -3942,6 +3954,34 @@ class SkillNode(Node):
                         reason='a goal is active -- set apex_m_ball2 between '
                                'attempts')
                 continue
+            if param.name in ('landing_offset_x_mm', 'landing_offset_y_mm'):
+                # BUG-80. The range is the same bound goal accept re-checks
+                # (the authority can change after this is set); between
+                # attempts only, because the schedule is compiled at accept.
+                cur_x, cur_y = self._landing_offset_mm()
+                is_x = param.name == 'landing_offset_x_mm'
+                refusal = nom.landing_offset_refusal(
+                    param.value if is_x else cur_x,
+                    cur_y if is_x else param.value,
+                    float(self.get_parameter(
+                        'learner_lateral_authority_mm').value))
+                if refusal is not None:
+                    self.get_logger().warning(
+                        'REFUSED %s=%r: %s (param NOT applied)'
+                        % (param.name, param.value, refusal))
+                    return SetParametersResult(successful=False, reason=refusal)
+                # _goal_starting too: goal accept reads this parameter twice (the
+                # check and the record, then the Pattern), and the two must agree.
+                if ((self._attempt_running() or self._goal_starting)
+                        and float(param.value) != (cur_x if is_x else cur_y)):
+                    self.get_logger().warning(
+                        'REFUSED %s=%r: a goal is active (param NOT applied) '
+                        '-- set it between attempts' % (param.name, param.value))
+                    return SetParametersResult(
+                        successful=False,
+                        reason='a goal is active -- set %s between attempts'
+                        % (param.name,))
+                continue
             if param.name != _DEBUG_FORCE_CATCH_REFUSAL_PARAM:
                 continue
             want = bool(param.value)
@@ -3957,6 +3997,11 @@ class SkillNode(Node):
             with self._debug_force_catch_lock:
                 self._debug_force_catch_refusal_armed = want
         return SetParametersResult(successful=True)
+
+    def _landing_offset_mm(self):
+        """BUG-80: the node's commanded landing offset ``(x, y)``, mm."""
+        return (float(self.get_parameter('landing_offset_x_mm').value),
+                float(self.get_parameter('landing_offset_y_mm').value))
 
     def _consume_debug_force_catch_refusal(self) -> bool:
         """True exactly once per arming: the next CATCH install is to be
@@ -4172,7 +4217,8 @@ class SkillNode(Node):
                 'oval_1ball', 'oval_1ball_fed', 'magazine', 'reload')
 
     def _record_params(self, pattern, apex_m, separation_mm, dwell_s,
-                       turned_angle_deg, apex_m_ball2):
+                       turned_angle_deg, apex_m_ball2,
+                       landing_offset_mm=(0.0, 0.0)):
         """The ordered ((key, value), ...) the records ledger stores for this
         goal (FEAT-29): only what shapes the run. Apex, dwell and the planner
         mode for every Pattern; the Site separation for all but the
@@ -4188,6 +4234,11 @@ class SkillNode(Node):
                 out.append(('turned_angle_deg', '%g' % round(turned_angle_deg, 2)))
             if pattern == 'columns_highlow' and apex_m_ball2 is not None:
                 out.append(('apex_m_ball2', '%g' % round(apex_m_ball2, 3)))
+            if any(landing_offset_mm):      # BUG-80: only non-zero shapes it
+                out.append(('landing_offset_x_mm',
+                            '%g' % round(landing_offset_mm[0], 1)))
+                out.append(('landing_offset_y_mm',
+                            '%g' % round(landing_offset_mm[1], 1)))
             out.append(('planner', self._planner_mode()))
             if self._planner_mode() == 'pose' and self._carry_zvd():
                 out.append(('carry_zvd', 'true'))
@@ -4262,6 +4313,23 @@ class SkillNode(Node):
             refusal = self._turned_refusal(turned_angle_deg)
             if refusal is not None:
                 return SimpleNamespace(success=False, message=refusal)
+        # BUG-80: re-checked here because the authority may have moved since
+        # the offset was set, and only a goal knows its Pattern.
+        landing_offset_mm = self._landing_offset_mm()
+        refusal = nom.landing_offset_refusal(
+            landing_offset_mm[0], landing_offset_mm[1],
+            float(self.get_parameter('learner_lateral_authority_mm').value),
+            pattern=pattern)
+        if refusal is not None:
+            return SimpleNamespace(success=False, message=refusal)
+        if any(landing_offset_mm):
+            # The OUTCOME lines measure from the Site, so they will read this.
+            self.get_logger().warning(
+                'LANDING OFFSET (%+.1f, %+.1f) mm on this %s goal: every '
+                'Throw is commanded that far off its Site, and the OUTCOME '
+                'lines read about that far. Set both landing_offset params '
+                'back to 0.0 after this Attempt.'
+                % (landing_offset_mm[0], landing_offset_mm[1], pattern))
 
         # Fresh bookkeeping for THIS goal (U5): the executor's OUTCOME lines
         # accumulate here across the whole attempt (`_on_tick`), for the
@@ -4349,7 +4417,7 @@ class SkillNode(Node):
         if result.success:
             self._goal_record_params = self._record_params(
                 pattern, apex_m, separation_mm, dwell_s, turned_angle_deg,
-                apex_m_ball2)
+                apex_m_ball2, landing_offset_mm=landing_offset_mm)
         if result.success and pattern != 'magazine':
             # The attempt is installed now -- from here `_maybe_signal_goal_
             # done` may end the goal (see `_goal_armed`'s `__init__` comment).
@@ -4390,6 +4458,9 @@ class SkillNode(Node):
             planner_mode=self._planner_mode(), carry_zvd=self._carry_zvd(),
             entry=('hop' if _FED_COLUMNS_HOP_ENTRY
                    and pattern in nom.COLUMNS_FED else 't0'),
+            landing_offset_mm=(self._landing_offset_mm()
+                               if pattern in nom.LANDING_OFFSET_PATTERNS
+                               else (0.0, 0.0)),
             feed_site=(feed_site if feed_site is not None
                        else self._columns_feed_site_name()),
             self_toss_site_xy_mm=(float(self.get_parameter('site_x_mm').value),
@@ -7129,6 +7200,12 @@ class SkillNode(Node):
             if refusal is None:
                 feed_site, refusal = self._turned_feed_site_name(
                     separation_mm, angle_deg)
+        if refusal is None:
+            offset_mm = self._landing_offset_mm()
+            refusal = nom.landing_offset_refusal(
+                offset_mm[0], offset_mm[1],
+                float(self.get_parameter('learner_lateral_authority_mm').value),
+                pattern=pattern)
         if refusal is not None:
             response.success = False
             response.message = refusal
