@@ -248,18 +248,19 @@ def turned_catch_tilt_offset(pattern: str, angle_deg: float,
     """The ``Pattern.catch_tilt_offset`` (rx, ry) rad for a goal, or ``None``.
 
     Owner, Sitting 2026-11-10 / TKT-62 (IDEA-22): turned Columns at 90 deg
-    tilts the Platform slightly BACK, toward Robot-frame +x, at every
-    auto-banked Catch, so the ball stops striking the Platform top. Applied
-    ONLY to ``columns_turned`` with ``| |angle_deg| - 90 | <=``
-    :data:`TILT_BACK_TURN_TOL_DEG`; every other Pattern and turn, and a
-    ``tilt_back_deg`` of exactly 0.0, return ``None`` (today's schedule, bit
-    for bit).
+    tilts the Platform slightly back at every auto-banked Catch, so the ball
+    stops striking the Platform top. Applied ONLY to ``columns_turned`` with
+    ``| |angle_deg| - 90 | <=`` :data:`TILT_BACK_TURN_TOL_DEG`; every other
+    Pattern and turn, and a ``tilt_back_deg`` of exactly 0.0, return ``None``
+    (today's schedule, bit for bit).
 
-    The offset is a rotation about Robot-frame **+y** by ``+tilt_back_deg``:
-    ``(rx, ry) = (0, +radians(tilt_back_deg))``, which leans the Cup normal
-    (``tilt_geometry.cup_axis``) toward **+x** -- ``(sin t, 0, cos t)`` -- the
-    owner's "back (+ve x)". It is a Robot-frame direction, independent of the
-    turn's sign (-90 deg is the same pair with P1/P2 swapped).
+    The offset is a rotation about Robot-frame **+x** by ``+tilt_back_deg``:
+    ``(rx, ry) = (+radians(tilt_back_deg), 0)``, which leans the Cup normal
+    (``tilt_geometry.cup_axis``) toward **-y** -- ``(0, -sin t, cos t)`` --
+    the owner's TKT-65 answer (2026-11-13): "a rotation about +ve x, so that
+    the platform tip moves in -ve y". (The 2026-11-12 build rotated about +y,
+    leaning +x; superseded.) It is a Robot-frame direction, independent of
+    the turn's sign (-90 deg is the same pair with P1/P2 swapped).
     """
     if pattern != 'columns_turned':
         return None
@@ -271,7 +272,7 @@ def turned_catch_tilt_offset(pattern: str, angle_deg: float,
                          % (tilt_back_deg,))
     if abs(abs(float(angle_deg)) - TILT_BACK_TURN_DEG) > TILT_BACK_TURN_TOL_DEG:
         return None
-    return (0.0, math.radians(deg))
+    return (math.radians(deg), 0.0)
 
 
 def build_pattern(config: NominationConfig, n_throws: Optional[int] = None):

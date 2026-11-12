@@ -512,8 +512,9 @@ _RELOAD_TOF_CEILING_S = 1.5
 
 #: IDEA-22 (owner, TKT-62): the default Catch tilt-back for `columns_turned`
 #: at 90 deg -- "~3-5 deg tilt back from the currently-computed catch
-#: orientation".
-_DEFAULT_TURNED_CATCH_TILT_BACK_DEG = 4.0
+#: orientation"; TKT-65 (2026-11-13): "let's go with 3 deg" (4 deg was the
+#: 2026-11-12 build, refused at P4 limits).
+_DEFAULT_TURNED_CATCH_TILT_BACK_DEG = 3.0
 
 
 def _wire_tilt_out(tilt):
@@ -1265,11 +1266,12 @@ class SkillNode(Node):
         # pattern builds the straight pair); refused live while a goal is
         # active (`_on_set_parameters`), like `planner_mode`.
         self.declare_parameter('columns_angle_deg', 0.0)
-        # IDEA-22 (owner, TKT-62, 2026-11-12): the Catch tilt-back, degrees,
-        # for `columns_turned` at a 90 deg turn ONLY
-        # (`nominate.turned_catch_tilt_offset`): every auto-banked Catch leans
-        # the Cup normal this far further toward Robot-frame +x (a rotation
-        # about +y); the Feed Catch stays pinned Level. 0.0 = today's Catch.
+        # IDEA-22 (owner, TKT-62 2026-11-12, TKT-65 2026-11-13): the Catch
+        # tilt-back, degrees, for `columns_turned` at a 90 deg turn ONLY
+        # (`nominate.turned_catch_tilt_offset`): every auto-banked Catch adds
+        # a rotation about Robot-frame +x of this many degrees, leaning the
+        # Cup normal toward -y; the Feed Catch stays pinned Level. 0.0 =
+        # today's Catch.
         # |value| <= tilt_geometry.MAX_TILT_DEG; refused live while a goal is
         # active (`_on_set_parameters`), like `columns_angle_deg`.
         self.declare_parameter('columns_turned_catch_tilt_back_deg',

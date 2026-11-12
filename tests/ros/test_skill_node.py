@@ -7512,18 +7512,18 @@ def test_columns_angle_cannot_change_while_a_goal_is_active():
         [_MockParameter(90.0, name='columns_angle_deg')])[0].successful is True
 
 
-def test_turned_catch_tilt_back_defaults_to_4_deg_and_reaches_the_pattern():
-    """IDEA-22: `columns_turned_catch_tilt_back_deg` (default 4.0) rides the
-    ONE NominationConfig builder, so the node's Pattern and the nomination's
-    carry the same Catch tilt-back (rotation about +y, Cup normal toward +x)
-    at 90 deg, and none at 45 deg."""
+def test_turned_catch_tilt_back_defaults_to_3_deg_and_reaches_the_pattern():
+    """IDEA-22: `columns_turned_catch_tilt_back_deg` (default 3.0, TKT-65)
+    rides the ONE NominationConfig builder, so the node's Pattern and the
+    nomination's carry the same Catch tilt-back (rotation about +x, Cup normal
+    toward -y) at 90 deg, and none at 45 deg."""
     node, _client = _node_with_client(response=_response())
-    assert node._params['columns_turned_catch_tilt_back_deg'] == 4.0
+    assert node._params['columns_turned_catch_tilt_back_deg'] == 3.0
     cfg = node._nomination_config('columns_turned', 0.95, 125.0, 0.27,
                                   angle_deg=90.0, feed_site='P1@90')
-    assert cfg.catch_tilt_back_deg == 4.0
+    assert cfg.catch_tilt_back_deg == 3.0
     pat = sn.nom.build_pattern(cfg, 5)
-    assert pat.catch_tilt_offset == (0.0, pytest.approx(math.radians(4.0)))
+    assert pat.catch_tilt_offset == (pytest.approx(math.radians(3.0)), 0.0)
     cfg45 = node._nomination_config('columns_turned', 0.95, 125.0, 0.27,
                                     angle_deg=45.0, feed_site='P1@45')
     assert sn.nom.build_pattern(cfg45, 5).catch_tilt_offset is None
