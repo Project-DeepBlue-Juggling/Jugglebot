@@ -510,6 +510,12 @@ _BB_HEARTBEAT_FRESH_S = 0.5
 #: fixtures and the 2026-09-27 sitting both measured ~0.7 s.
 _RELOAD_TOF_CEILING_S = 1.5
 
+#: IDEA-22 (owner, TKT-62): the default Catch tilt-back for `columns_turned`
+#: at 90 deg -- "~3-5 deg tilt back from the currently-computed catch
+#: orientation"; TKT-65 (2026-11-13): "let's go with 3 deg" (4 deg was the
+#: 2026-11-12 build, refused at P4 limits).
+_DEFAULT_TURNED_CATCH_TILT_BACK_DEG = 3.0
+
 
 def _wire_tilt_out(tilt):
     """``segments.CatchTerminal.hold_tilt`` / ``CatchTerminal.receive_tilt``
@@ -1260,6 +1266,16 @@ class SkillNode(Node):
         # pattern builds the straight pair); refused live while a goal is
         # active (`_on_set_parameters`), like `planner_mode`.
         self.declare_parameter('columns_angle_deg', 0.0)
+        # IDEA-22 (owner, TKT-62 2026-11-12, TKT-65 2026-11-13): the Catch
+        # tilt-back, degrees, for `columns_turned` at a 90 deg turn ONLY
+        # (`nominate.turned_catch_tilt_offset`): every auto-banked Catch adds
+        # a rotation about Robot-frame +x of this many degrees, leaning the
+        # Cup normal toward -y; the Feed Catch stays pinned Level. 0.0 =
+        # today's Catch.
+        # |value| <= tilt_geometry.MAX_TILT_DEG; refused live while a goal is
+        # active (`_on_set_parameters`), like `columns_angle_deg`.
+        self.declare_parameter('columns_turned_catch_tilt_back_deg',
+                               _DEFAULT_TURNED_CATCH_TILT_BACK_DEG)
         # Ball 2's own Apex (m) for the `columns_highlow` goal ONLY (JP-9, map
         # IDEA-10; the Juggle goal has no second Apex field). 0.0 = unset, which
         # that goal refuses by name; every other goal ignores it. Refused while
@@ -3939,6 +3955,27 @@ class SkillNode(Node):
                     return SetParametersResult(
                         successful=False,
                         reason='columns_angle_deg must be finite')
+            if param.name == 'columns_turned_catch_tilt_back_deg':
+                cur = float(self.get_parameter(
+                    'columns_turned_catch_tilt_back_deg').value)
+                if (self._attempt_running()
+                        and float(param.value) != cur):
+                    self.get_logger().warning(
+                        'REFUSED columns_turned_catch_tilt_back_deg=%r: a '
+                        'goal is active (param NOT applied) -- set it between '
+                        'attempts' % (param.value,))
+                    return SetParametersResult(
+                        successful=False,
+                        reason='a goal is active -- set '
+                               'columns_turned_catch_tilt_back_deg between '
+                               'attempts')
+                if not (math.isfinite(float(param.value))
+                        and abs(float(param.value)) <= float(tg.MAX_TILT_DEG)):
+                    return SetParametersResult(
+                        successful=False,
+                        reason='columns_turned_catch_tilt_back_deg must be '
+                               'finite and within +-%g deg (the Catch tilt '
+                               'ceiling)' % float(tg.MAX_TILT_DEG))
             if param.name == 'apex_m_ball2':
                 # Between attempts only: the high-low schedule is compiled at
                 # accept, so a mid-goal change would not apply anyway -- refuse
@@ -4455,6 +4492,7 @@ class SkillNode(Node):
             apex_m_ball2=(None if apex_m_ball2 is None
                           else float(apex_m_ball2)),
             angle_deg=float(angle_deg),
+            catch_tilt_back_deg=self._turned_catch_tilt_back_deg(),
             planner_mode=self._planner_mode(), carry_zvd=self._carry_zvd(),
             entry=('hop' if _FED_COLUMNS_HOP_ENTRY
                    and pattern in nom.COLUMNS_FED else 't0'),
@@ -4465,6 +4503,19 @@ class SkillNode(Node):
                        else self._columns_feed_site_name()),
             self_toss_site_xy_mm=(float(self.get_parameter('site_x_mm').value),
                                   float(self.get_parameter('site_y_mm').value)))
+
+    def _turned_catch_tilt_back_deg(self) -> float:
+        """`columns_turned_catch_tilt_back_deg`, clamped to the Catch tilt
+        ceiling (the set-time check refuses outside it; the clamp covers a
+        launch-file value, which bypasses `_on_set_parameters`). Read by
+        `_nomination_config` only, so the node's Pattern and the nomination's
+        are built from one value (`nom.build_pattern`)."""
+        raw = float(self.get_parameter(
+            'columns_turned_catch_tilt_back_deg').value)
+        if not math.isfinite(raw):
+            return 0.0
+        cap = float(tg.MAX_TILT_DEG)
+        return max(-cap, min(cap, raw))
 
     def _turned_feed_site_name(self, separation_mm, angle_deg):
         """``(name, error)``: the fed Site's name for a turned pair (the one

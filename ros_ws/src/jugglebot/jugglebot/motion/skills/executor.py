@@ -55,7 +55,8 @@ from jugglebot.motion.skills.schedule import (FRESH_THROW_LEAD_KNOTS,
 from jugglebot.motion.skills.segments import (CATCH, REST, THROW, CatchTerminal,
                                               RestTerminal, Segment,
                                               SegmentConfig, ThrowAfterCatch,
-                                              ThrowTerminal)
+                                              ThrowTerminal,
+                                              catch_receive_tilt)
 from jugglebot.motion.trajectory import ballistics_bc
 from jugglebot.motion.trajectory import throw_envelope
 from jugglebot.motion.trajectory.feasibility import STALE_STATE
@@ -3705,7 +3706,9 @@ class SkillExecutor:
                              t_land_s=float(landing.t_land_abs_s),
                              rest_site_mm=self._catch_rest_mm(skill, landing),
                              then_throw=then, hold_tilt=skill.hold_tilt,
-                             receive_tilt=skill.receive_tilt)
+                             receive_tilt=catch_receive_tilt(
+                                 skill.receive_tilt, skill.receive_tilt_offset,
+                                 landing.vel_mm_s))
 
     def _forward_model_xy(self, x, y_d_si,
                           ctx: Optional['lrn.ThrowContext'] = None):
@@ -4098,7 +4101,10 @@ class SkillExecutor:
         ``segments.hold_axis_site``); ``skill.site.rest_site_mm()`` is the
         default every pre-R4 CATCH still gets. ``receive_tilt`` (R5, the
         BB-fed columns feed catch) passes ``skill.receive_tilt`` straight
-        through the same way — ``None`` for every catch that does not set it.
+        through the same way — ``None`` for every catch that does not set it,
+        unless ``skill.receive_tilt_offset`` is set (IDEA-22), in which case
+        ``segments.catch_receive_tilt`` returns the offset-folded pin (the
+        t0/hop initial Catch of a 90 deg turned Pattern carries it).
 
         **P3a (``self.checker`` set).** The carried throw's command is the
         ONLINE one: on the first call for ``idx`` (cache empty) it is resolved
@@ -4181,7 +4187,9 @@ class SkillExecutor:
                              t_land_s=float(landing.t_land_abs_s),
                              rest_site_mm=rest_mm, then_throw=then_throw,
                              hold_tilt=skill.hold_tilt,
-                             receive_tilt=skill.receive_tilt)
+                             receive_tilt=catch_receive_tilt(
+                                 skill.receive_tilt, skill.receive_tilt_offset,
+                                 landing.vel_mm_s))
 
     def _rest_terminal(self, skill: Skill) -> RestTerminal:
         """A REST's terminal. ``rest_site_mm`` / ``tilt`` / ``holds_ball``

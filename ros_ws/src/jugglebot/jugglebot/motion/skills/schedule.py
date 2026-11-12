@@ -543,8 +543,19 @@ class Skill:
     #: physical reason). ``compile_columns(feed=...)`` is the one caller that
     #: sets it (``(0.0, 0.0)``, on the feed catch only — the skill carrying
     #: ``landing_prior=feed``). ``None`` (every other CATCH) keeps the
-    #: auto-banked receive tilt. Mutually exclusive with ``hold_tilt``.
-    receive_tilt: Optional[Tuple[float, float]] = None
+    #: auto-banked receive tilt -- unless ``receive_tilt_offset`` is set, in
+    #: which case ``segments.catch_receive_tilt`` returns the offset-folded
+    #: pin (the t0/hop initial Catch of a 90 deg turned Pattern carries it).
+    #: Mutually exclusive with ``hold_tilt``.
+    receive_tilt:Optional[Tuple[float, float]] = None
+    #: CATCH only: a tilt-back OFFSET (drx, dry) rad added to this catch's
+    #: auto-banked receive tilt (IDEA-22, 2026-11-12: turned Columns at
+    #: 90 deg, ``Pattern.catch_tilt_offset``). The executor and the
+    #: nomination fold it into ``CatchTerminal.receive_tilt`` against the
+    #: arrival they plan for (``segments.catch_receive_tilt``, the one
+    #: derivation point). ``None`` (every other CATCH) is today's catch.
+    #: Mutually exclusive with ``receive_tilt`` and ``hold_tilt``.
+    receive_tilt_offset: Optional[Tuple[float, float]] = None
     #: REST only: the attitude (rx, ry) rad this REST ENDS at — passed to
     #: ``segments.RestTerminal.tilt`` unchanged.  ``None`` (every pre-R4 REST)
     #: is the level rest.
@@ -631,6 +642,15 @@ class Skill:
                 'give hold_tilt OR receive_tilt, not both (see '
                 'unified_cycle.CycleGoals.receive_tilt for why the two are '
                 'mutually exclusive)')
+        if self.receive_tilt_offset is not None:
+            if self.kind != CATCH:
+                raise ValueError('only a CATCH may carry receive_tilt_offset '
+                                 '(kind=%r)' % (self.kind,))
+            if self.receive_tilt is not None or self.hold_tilt is not None:
+                raise ValueError(
+                    'receive_tilt_offset offsets the AUTO-banked receive '
+                    'tilt; a catch that pins receive_tilt or holds hold_tilt '
+                    'has no auto tilt to offset')
         if self.rest_tilt is not None and self.kind != REST:
             raise ValueError('only a REST may carry rest_tilt (kind=%r)'
                               % (self.kind,))
@@ -704,8 +724,22 @@ class Pattern:
     #: ``sites[1]``) ball B's Apex is flown at the FEED Site.
     #: :func:`columns_ball_timing` is the arithmetic.
     apex_m_ball_b: Optional[float] = None
+    #: The tilt-back offset (drx, dry) rad every auto-banked CATCH of this
+    #: Pattern carries as ``Skill.receive_tilt_offset`` (IDEA-22,
+    #: 2026-11-12). ``None`` (every Pattern but turned Columns at 90 deg,
+    #: ``nominate.turned_catch_tilt_offset``) compiles today's schedule. The
+    #: Feed Catch stays pinned Level (it pins ``receive_tilt``, so it has no
+    #: auto tilt to offset).
+    catch_tilt_offset: Optional[Tuple[float, float]] = None
 
     def __post_init__(self):
+        if self.catch_tilt_offset is not None:
+            off = tuple(float(v) for v in self.catch_tilt_offset)
+            if len(off) != 2 or not all(math.isfinite(v) for v in off):
+                raise ValueError('catch_tilt_offset must be a finite (rx, ry) '
+                                 'pair in rad, got %r'
+                                 % (self.catch_tilt_offset,))
+            object.__setattr__(self, 'catch_tilt_offset', off)
         bad = tuple(b for b in self.phantom_balls if int(b) not in (0, 1))
         if bad:
             raise ValueError('phantom_balls may only name schedule ball ids '
@@ -823,6 +857,9 @@ class BeatSource:
     feed: Optional[LandingPrior]
     hop_entry: bool
     inflight: Optional[BeatEvent] = None
+    #: :func:`compile_beats`'s ``receive_tilt_offset`` (IDEA-22), so a
+    #: recompiled tail keeps the Catch tilt-back.
+    receive_tilt_offset: Optional[Tuple[float, float]] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -901,7 +938,8 @@ class Schedule:
                              rest_tail_s=src.rest_tail_s,
                              phantom_balls=src.phantom_balls,
                              t0_abs_s=src.t0_abs_s, feed=src.feed,
-                             hop_entry=src.hop_entry, inflight=src.inflight)
+                             hop_entry=src.hop_entry, inflight=src.inflight,
+                             receive_tilt_offset=src.receive_tilt_offset)
 
     def dwell_for(self, ball_id: int) -> float:
         """The Dwell (s) schedule ball ``ball_id`` spends in the Cup between
@@ -1437,7 +1475,8 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
                          rest_tail_s=pattern.rest_tail_s,
                          phantom_balls=pattern.phantom_balls,
                          t0_abs_s=t0_abs_s, feed=feed, hop_entry=hop_entry,
-                         inflight=_columns_inflight(pattern))
+                         inflight=_columns_inflight(pattern),
+                         receive_tilt_offset=pattern.catch_tilt_offset)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1737,7 +1776,9 @@ def compile_beats(events, *, launch_s: float, rest_tail_s: float,
                   t0_abs_s: Optional[float] = None,
                   feed: Optional[LandingPrior] = None,
                   hop_entry: bool = False,
-                  inflight: Optional[BeatEvent] = None) -> Schedule:
+                  inflight: Optional[BeatEvent] = None,
+                  receive_tilt_offset: Optional[Tuple[float, float]] = None
+                  ) -> Schedule:
     """The Schedule of a beat stream (P4, D-P4-1): one :class:`BeatEvent`
     per Throw, the last one the Stop.  :func:`compile_columns` is
     ``compile_beats(columns_events(pattern), ...)``.
@@ -1746,6 +1787,9 @@ def compile_beats(events, *, launch_s: float, rest_tail_s: float,
     (exactly one of the first two; ``feed`` sets ``t0 = feed.t_land_abs_s -
     tau_1``).  ``inflight`` is the Throw that put ball 1 in the air before
     ``t0`` (None = derived from event 1; a one-Throw stream must give it).
+    ``receive_tilt_offset`` (IDEA-22, :attr:`Pattern.catch_tilt_offset`)
+    rides on every auto-banked CATCH as :attr:`Skill.receive_tilt_offset`
+    (never on the level-pinned Feed Catch); ``None`` is today's schedule.
 
     **Timing** (:func:`_beat_times`): the opening pair (event 0 and ball 1's
     pre-existing flight) sets the Beat, ``beta0 = (f_0 + d_0) / 2``, and must
@@ -1811,7 +1855,8 @@ def compile_beats(events, *, launch_s: float, rest_tail_s: float,
     source = BeatSource(events=events, launch_s=launch_s,
                         rest_tail_s=rest_tail_s, phantom_balls=phantom_balls,
                         t0_abs_s=t0_abs_s, feed=feed, hop_entry=hop_entry,
-                        inflight=inflight)
+                        inflight=inflight,
+                        receive_tilt_offset=receive_tilt_offset)
     pre, timing, dwell_cmd = _opening(events, inflight)
     _validate_stream(events, pre, hop_entry)
     # One Site object per place, so the fold's identity test (`other.site is
@@ -1853,11 +1898,19 @@ def compile_beats(events, *, launch_s: float, rest_tail_s: float,
     # docstring) is what makes a BB feed's oblique arrival fit the transit +
     # dwell window at all — a `t0_abs_s` schedule's initial catch has no real
     # arrival to pin against (its own self-toss/hop landing is already
-    # vertical or near it) and keeps the auto-banked default, `None`.
+    # vertical or near it) and keeps the auto-banked default, `None` --
+    # unless `receive_tilt_offset` is set, in which case
+    # `segments.catch_receive_tilt` returns the offset-folded pin (the
+    # t0/hop initial Catch of a 90 deg turned Pattern carries it).
+    #
+    # `receive_tilt_offset` (IDEA-22) rides on every AUTO-banked CATCH only:
+    # the Feed Catch pins Level above, so it never carries the offset.
     skills.append(Skill(kind=CATCH, ball_id=1, site=pre_site,
                         t_abs_s=bt.t_init, window_s=bt.init_window,
                         landing_prior=feed,
-                        receive_tilt=((0.0, 0.0) if feed is not None else None)))
+                        receive_tilt=((0.0, 0.0) if feed is not None else None),
+                        receive_tilt_offset=(None if feed is not None
+                                             else receive_tilt_offset)))
 
     _check_window('THROW 0 (the launch from rest)', launch_s)
     if n >= 2:
@@ -1898,7 +1951,8 @@ def compile_beats(events, *, launch_s: float, rest_tail_s: float,
             # ball actually LANDS (they differ for the hop entry's THROW 0).
             skills.append(Skill(kind=CATCH, ball_id=ball_i,
                                 site=catch_sites[i], t_abs_s=bt.t_c[i],
-                                window_s=bt.windows[i]))
+                                window_s=bt.windows[i],
+                                receive_tilt_offset=receive_tilt_offset))
 
     skills.sort(key=lambda s: s.t_abs_s)
     if dev is None:
