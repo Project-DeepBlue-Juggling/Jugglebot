@@ -74,8 +74,10 @@ steps:
     saved_at: 2026-11-13 12:54
     status: done
   21:
-    comments: ''
-    saved_at: 2026-11-13 12:57
+    comments: Only ran a few attempts, with none successful. The Hand and Platform
+      was undergoing very janky motions. The Hand in particular repeatedly moved in
+      a very 'stepped' manner, rather than followingsmooth, continuous trajectories.
+    saved_at: 2026-11-13 12:58
     status: problem
 verdicts:
   12:
