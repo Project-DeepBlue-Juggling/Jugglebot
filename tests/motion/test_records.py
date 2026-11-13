@@ -622,10 +622,15 @@ def test_scores_render_and_parse_round_trip_with_throws_per_pattern_and_feeds():
 
 
 def test_a_ledger_with_no_scores_renders_unchanged_and_the_committed_file_still_parses():
+    # The committed ledger is live data: a Sitting books scores into it, so
+    # this asserts only that it parses and round-trips, never what it holds.
     text = (REPO / 'docs' / 'records.md').read_text()
     m = rec.parse(text)
-    assert not m.scores and not m.feed_scores
-    assert 'Landing scores' not in rec.render(m)
+    assert m.tables and rec.render(m) == text
+    bare = rec.Ledger(tables=m.tables, drops=m.drops)
+    assert not bare.scores and not bare.feed_scores
+    assert 'Landing scores' not in rec.render(bare)
+    assert rec.parse(rec.render(bare)) == bare
     assert rec.render(rec.parse(rec.render(rec.empty()))) == rec.render(rec.empty())
 
 
