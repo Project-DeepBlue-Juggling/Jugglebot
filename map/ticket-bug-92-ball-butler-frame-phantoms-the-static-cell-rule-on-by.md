@@ -2,9 +2,9 @@
 id: TKT-71
 kind: ticket
 title: 'BUG-92 Ball Butler frame phantoms: the static-cell rule on by default, the same rule off by default, a Ball Butler zone in config, or leave it?'
-status: open
+status: complete
 created: '2026-11-14'
-updated: '2026-11-13T17:50:59Z'
+updated: '2026-11-13T22:45:32Z'
 owners: []
 priority: medium
 effort: xs
@@ -33,3 +33,7 @@ With `detect_human_throws` on, static Ball Butler frame markers start human_thro
 - 4: BUG-92 closes.
 
 Recommendation: 1. On the launch 3 slice it removed 26 of 30 phantoms and 0 of 114 true Throws, with no label or zone list.
+
+## Answer
+
+I prefer Option 3. Ball Butler won't move, and I'll never be partner juggling with Jugglebot from near Ball Butler.
