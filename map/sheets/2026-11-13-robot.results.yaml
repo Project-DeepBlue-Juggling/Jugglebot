@@ -41,4 +41,10 @@ steps:
       succeeded.
     saved_at: 2026-11-13 11:48
     status: done
+  11:
+    comments: Dwell 0.40 had one LANE_REFUSED and a few attempts that ended with missed
+      catches (throws landed too far in +ve x to be caught). Dwell 0.35 had a lot
+      of messy (uncaught) throws and after a few attempts the longest run was 25 catches.
+    saved_at: 2026-11-13 11:57
+    status: done
 verdicts: {}
