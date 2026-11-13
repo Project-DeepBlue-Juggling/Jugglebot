@@ -18,14 +18,15 @@
 # Every run (except "another run is active") writes ONE line, atomically, to
 # <repo>/temp/reports/pull/status:
 #   <iso> <WORD> behind=<n> since=<iso of the first consecutive non-OK run, or -> files=<up to 3 dirty tracked paths, comma-joined, or ->
-# WORD: OK | SKIPPED_DIRTY | SKIPPED_SUITE | DIVERGED | DETACHED | FETCH_FAILED
+# WORD: OK | SKIPPED_DIRTY | SKIPPED_SUITE | DIVERGED | DETACHED
+#       | FETCH_FAILED (fetch error, or no answer within FETCH_TIMEOUT_S)
 #       | NO_UPSTREAM (no origin/<branch>) | FF_FAILED (merge --ff-only refused)
 # Non-OK also goes to `logger -p user.warning`. tools/nightly_ticker.sh check
 # prints a PULL line when a non-OK status is older than 10 minutes, so a stalled
 # pull (43 commits behind, 2026-11-13) is told to every Session at start.
 #
 # Env overrides (tests): JUGGLEBOT_PULL_REPO, JUGGLEBOT_PULL_STATUS,
-# JUGGLEBOT_SUITE_LOCK, JUGGLEBOT_PULL_LOCK.
+# JUGGLEBOT_SUITE_LOCK, JUGGLEBOT_PULL_LOCK, JUGGLEBOT_PULL_FETCH_TIMEOUT_S.
 
 set -uo pipefail
 
@@ -33,6 +34,10 @@ REPO_DIR="${JUGGLEBOT_PULL_REPO:-/home/jetson/Desktop/Jugglebot}"
 SUITE_LOCK="${JUGGLEBOT_SUITE_LOCK:-/tmp/jugglebot-run_tests.lock}"   # shared with run_tests.sh
 SELF_LOCK="${JUGGLEBOT_PULL_LOCK:-/tmp/jugglebot-pull.lock}"
 STATUS_FILE="${JUGGLEBOT_PULL_STATUS:-$REPO_DIR/temp/reports/pull/status}"
+# Bound on the fetch: a stalled TCP connection otherwise hangs this oneshot forever, and
+# an active oneshot cannot be re-triggered by its 2-min timer (the status file then goes
+# stale in silence). Well under the period; the unit's TimeoutStartSec is the backstop.
+FETCH_TIMEOUT_S="${JUGGLEBOT_PULL_FETCH_TIMEOUT_S:-60}"
 
 # Anonymous fetch (public repo); never block on a prompt under systemd.
 export GIT_TERMINAL_PROMPT=0
@@ -70,8 +75,16 @@ report() {
     [ "$word" = "OK" ] || logger -p user.warning -t jugglebot-pull "$line" 2>/dev/null || true
 }
 
-if ! git fetch --prune --quiet origin; then
-    echo "fetch failed" >&2
+# timeout signals its whole process group (git's remote helper included); -k: SIGKILL
+# 10 s later if TERM is ignored. 124/137 = timed out; that is a FETCH_FAILED like any other.
+git_rc=0
+timeout -k 10 "$FETCH_TIMEOUT_S" git fetch --prune --quiet origin || git_rc=$?
+if [ "$git_rc" -ne 0 ]; then
+    if [ "$git_rc" -eq 124 ] || [ "$git_rc" -eq 137 ]; then
+        echo "fetch timed out after ${FETCH_TIMEOUT_S}s" >&2
+    else
+        echo "fetch failed" >&2
+    fi
     report FETCH_FAILED
     exit 1
 fi

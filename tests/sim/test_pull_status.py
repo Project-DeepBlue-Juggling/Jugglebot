@@ -10,7 +10,9 @@ from __future__ import annotations
 import datetime as dt
 import os
 import re
+import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -109,6 +111,34 @@ def test_detached_and_diverged_words(world):
     assert run_pull(tmp, live)[1] == "DIVERGED"
     git(live, "checkout", "-q", "--detach")
     assert run_pull(tmp, live)[1] == "DETACHED"
+
+
+def test_stalled_fetch_times_out_as_fetch_failed(world):
+    """A fetch that never returns (stalled TCP) must not hang the oneshot: an active oneshot
+    cannot be re-triggered by its timer, so the status file would never be rewritten and the
+    checkout would go stale in silence. The stub git sleeps on fetch; the bound is 1 s here."""
+    tmp, seed, live = world
+    real_git = shutil.which("git")
+    stub_dir = tmp / "stub"
+    stub_dir.mkdir()
+    stub = stub_dir / "git"
+    stub.write_text('#!/usr/bin/env bash\n'
+                    'if [ "$1" = fetch ]; then exec sleep 60; fi\n'
+                    'exec %s "$@"\n' % real_git)
+    stub.chmod(0o755)
+    status = live / "temp" / "reports" / "pull" / "status"
+    env = {**os.environ, "PATH": "%s:%s" % (stub_dir, os.environ["PATH"]),
+           "JUGGLEBOT_PULL_REPO": str(live), "JUGGLEBOT_PULL_STATUS": str(status),
+           "JUGGLEBOT_SUITE_LOCK": str(tmp / "suite.lock"),
+           "JUGGLEBOT_PULL_LOCK": str(tmp / "pull.lock"),
+           "JUGGLEBOT_PULL_FETCH_TIMEOUT_S": "1"}
+    t0 = time.monotonic()
+    r = subprocess.run(["bash", str(PULL)], env=env, capture_output=True, text=True, timeout=30)
+    elapsed = time.monotonic() - t0
+    assert elapsed < 15, elapsed
+    assert r.returncode == 1
+    assert "timed out" in r.stderr
+    assert status.read_text().split(" ")[1] == "FETCH_FAILED"
 
 
 def ticker(tmp_path, status_line):

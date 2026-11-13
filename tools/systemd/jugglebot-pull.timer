@@ -1,0 +1,14 @@
+[Unit]
+Description=Poll origin for Jugglebot commits every 2 minutes
+Documentation=file:///home/jetson/System_Scripts/jugglebot-pull.sh
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+# A git fetch against a public repo is cheap; 30 s of slop is plenty and lets
+# systemd batch this wake-up with others instead of waking the SoC on its own.
+AccuracySec=30s
+Unit=jugglebot-pull.service
+
+[Install]
+WantedBy=timers.target

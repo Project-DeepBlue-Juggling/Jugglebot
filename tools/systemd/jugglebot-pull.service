@@ -1,0 +1,17 @@
+[Unit]
+Description=Jugglebot auto-pull (fetch origin, fast-forward when safe)
+Documentation=file:///home/jetson/System_Scripts/jugglebot-pull.sh
+# Pointless to fire before the network is up; the timer will retry in 2 min anyway.
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/jetson/System_Scripts/jugglebot-pull.sh
+# Backstop for a hung run: an active oneshot cannot be re-triggered by its timer, so
+# a stall would stop every later pull. Longer than the script's own fetch bound
+# (60 s + 10 s kill grace), shorter than the 2-min timer period.
+TimeoutStartSec=90s
+# The work is trivial, but this Jetson also runs the robot. Keep the poller off
+# the back of the control loops.
+Nice=10
+IOSchedulingClass=idle

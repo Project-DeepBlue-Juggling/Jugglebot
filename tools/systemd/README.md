@@ -45,6 +45,22 @@ copy in `~/System_Scripts/`, installed (re-run after every edit) with:
 install -m 755 tools/systemd/jugglebot-pull.sh ~/System_Scripts/
 ```
 
+The units are `tools/systemd/jugglebot-pull.{service,timer}` (reference copies since
+2026-11-14; before that they lived only in `~/.config/systemd/user/`). After an edit
+to either, or on a rebuilt box:
+
+```bash
+install -Dm644 tools/systemd/jugglebot-pull.service ~/.config/systemd/user/jugglebot-pull.service
+install -Dm644 tools/systemd/jugglebot-pull.timer ~/.config/systemd/user/jugglebot-pull.timer
+systemctl --user daemon-reload
+systemctl --user enable --now jugglebot-pull.timer
+```
+
+The fetch is bounded (`FETCH_TIMEOUT_S`, 60 s) and the service has
+`TimeoutStartSec=90s` as a backstop: a stalled connection otherwise left the oneshot
+active forever, which its timer cannot re-trigger, so the checkout went stale with no
+new status line. A timed-out fetch reports `FETCH_FAILED` like any other fetch error.
+
 Every run writes one line to `temp/reports/pull/status`:
 `<iso> <WORD> behind=<n> since=<iso of the first consecutive non-OK run, - when OK> files=<up to 3 dirty tracked paths>`.
 WORD is `OK`, `SKIPPED_DIRTY` (tracked modification), `SKIPPED_SUITE` (test-suite lock held),
