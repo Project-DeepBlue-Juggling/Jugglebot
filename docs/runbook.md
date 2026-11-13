@@ -202,7 +202,6 @@ Rigs: Robot 4 blocks (261 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 
 - TKT-68 IDEA-22 failed at Apex 0.90 and 3 deg on 2026-11-13: re-measure tilt-back toward 0 offline, raise the Leg jerk limit for this Pattern, park 90 deg, or drop the branch? (parent IDEA-22)
 - TKT-71 BUG-92 Ball Butler frame phantoms: the static-cell rule on by default, the same rule off by default, a Ball Butler zone in config, or leave it? (parent BUG-92)
-- TKT-72 IDEA-23 fresh-plant K: a fixed K prior of 1.08 in config, copy K from the trained plant, warm-start from the Memory mean, or leave the identity prior? (parent IDEA-23)
 
 ## Close-out
 
