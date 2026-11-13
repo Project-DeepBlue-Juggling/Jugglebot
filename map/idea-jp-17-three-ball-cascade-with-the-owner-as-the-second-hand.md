@@ -4,7 +4,7 @@ kind: idea
 title: JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them
 status: in_progress
 created: '2026-10-30'
-updated: '2026-11-13T02:12:32Z'
+updated: '2026-11-13T02:13:36Z'
 owners: []
 priority: medium
 effort: xl
@@ -92,6 +92,11 @@ Confirmed: a ball carried through a hand kept its previous flight in its fit. A 
 
 - verdict: pass
 - notes: Done with no drops. (sheet 2026-11-13-robot, step 29)
+
+## Sitting result (2026-11-13 13:13)
+
+- verdict: pass
+- notes: Done with no drops. I noticed in the GUI that there were a few 'predicted throws' that were actually just the Ball Butler frame markers. Perhaps the tolerance for a human throw ought to be tightened? (sheet 2026-11-13-robot, step 29)
 
 ## Progress
 

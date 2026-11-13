@@ -148,6 +148,8 @@ verdicts:
       verdict: pass
   29:
     IDEA-16:
-      notes: Done with no drops.
-      saved_at: 2026-11-13 13:12
+      notes: Done with no drops. I noticed in the GUI that there were a few 'predicted
+        throws' that were actually just the Ball Butler frame markers. Perhaps the
+        tolerance for a human throw ought to be tightened?
+      saved_at: 2026-11-13 13:13
       verdict: pass
