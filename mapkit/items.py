@@ -63,6 +63,18 @@ METRIC_ENUMS: Dict[str, Tuple[str, ...]] = {
              "docs", "sim"),
 }
 METRIC_FIELDS: Tuple[str, ...] = tuple(METRIC_ENUMS)
+
+#: Night Shift skip reason (close-out plan C3): stored once, on the Item, so the
+#: nightly report no longer copies ~100 "Skipped" rows by hand and a reason that
+#: stops being true is cleared where it was written. Validated here, the single
+#: enforcement point; ``tests/sim/test_item_night_skip.py`` is the test.
+NIGHT_SKIP_REASONS: Tuple[str, ...] = (
+    "sitting", "input-fact", "input-decision", "input-sitting", "owner-session",
+    "too-large", "frozen-path", "out-of-reach", "waiting-trigger", "low-priority")
+NIGHT_SKIP_FIELDS: Tuple[str, ...] = (
+    "night_skip", "night_skip_on", "night_skip_note", "night_skip_input")
+NIGHT_SKIP_NOTE_MAX = 160
+NIGHT_SKIP_INPUT_MAX = 200
 #: The two metrics a plan step may carry (same enums).
 STEP_METRIC_FIELDS: Tuple[str, ...] = ("effort", "hardware")
 
@@ -173,6 +185,51 @@ def _iso_timestamp(value: Any) -> Any:
     return value
 
 
+def _night_skip_errors(kind: str, meta: Dict[str, Any]) -> List[str]:
+    """Errors for the four ``night_skip*`` keys (empty when none is present)."""
+    present = [f for f in NIGHT_SKIP_FIELDS if f in meta]
+    if not present:
+        return []
+    if kind == "pathway":
+        return ["night_skip keys are not allowed on a pathway (found %s)" % ", ".join(present)]
+    if kind == "ticket" and meta.get("type") == "question":
+        return ["night_skip keys are not allowed on a question ticket (found %s)"
+                % ", ".join(present)]
+    errs: List[str] = []
+    reason = meta.get("night_skip")
+    if reason is None:
+        return ["%s present without night_skip" % ", ".join(present)]
+    if not isinstance(reason, str) or reason not in NIGHT_SKIP_REASONS:
+        errs.append("night_skip %r not in %s" % (reason, NIGHT_SKIP_REASONS))
+    on = iso_date(meta.get("night_skip_on"))
+    if not isinstance(on, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", on):
+        errs.append("night_skip_on %r must be YYYY-MM-DD" % (meta.get("night_skip_on"),))
+    else:
+        try:
+            datetime.date.fromisoformat(on)
+        except ValueError:
+            errs.append("night_skip_on %r is not a calendar date" % on)
+    for key, cap in (("night_skip_note", NIGHT_SKIP_NOTE_MAX),
+                     ("night_skip_input", NIGHT_SKIP_INPUT_MAX)):
+        v = meta.get(key)
+        if v is None:
+            continue
+        if not isinstance(v, str) or not v.strip():
+            errs.append("%s must be a non-empty string" % key)
+        elif len(v) > cap:
+            errs.append("%s is %d chars (max %d)" % (key, len(v), cap))
+        elif "\n" in v:
+            errs.append("%s must be one line" % key)
+    if meta.get("night_skip_note") is None:
+        errs.append("night_skip_note is required with night_skip")
+    needs_input = isinstance(reason, str) and reason.startswith("input-")
+    if needs_input and meta.get("night_skip_input") is None:
+        errs.append("night_skip_input is required for reason %r" % reason)
+    if not needs_input and meta.get("night_skip_input") is not None:
+        errs.append("night_skip_input is only allowed for an input-* reason")
+    return errs
+
+
 def load_item(path: str) -> Item:
     """Parse and validate one item file; raises :class:`ItemError`."""
     filename = os.path.basename(path)
@@ -220,6 +277,9 @@ def load_item(path: str) -> Item:
         rank = meta.get("rank")
         if rank is not None and (isinstance(rank, bool) or not isinstance(rank, int)):
             errs.append("ticket rank %r must be an int" % (rank,))
+    errs.extend(_night_skip_errors(kind, meta))
+    if "night_skip_on" in meta:
+        meta["night_skip_on"] = iso_date(meta["night_skip_on"])
     if kind == "pathway":
         meta.setdefault("branch", DEFAULT_BRANCH)
     if errs:

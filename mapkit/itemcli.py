@@ -20,7 +20,7 @@ import sys
 from typing import Dict, List, Optional
 
 from mapkit import derive, gen_docs, ids, similar
-from mapkit.items import (KINDS, METRIC_ENUMS, METRIC_FIELDS, STATUS_SETS, Item, ItemError, is_stale, has_answer,
+from mapkit.items import (KINDS, NIGHT_SKIP_FIELDS, NIGHT_SKIP_REASONS, METRIC_ENUMS, METRIC_FIELDS, STATUS_SETS, Item, ItemError, is_stale, has_answer,
                           load_item, load_items, stale_clock, write_item)
 from mapkit.plans import load_plans
 
@@ -167,6 +167,9 @@ def set_status(repo_root: str, slug: str, status: str, note: Optional[str] = Non
         print("mapkit: warning: %s completed without an ## Answer" % (item.short_id or item.slug),
               file=sys.stderr)
     item.meta["status"] = status
+    if status in ("complete", "dropped"):  # a closed Item is never a night candidate
+        for f in NIGHT_SKIP_FIELDS:
+            item.meta.pop(f, None)
     item.meta["updated"] = _now()
     body = item.body
     if note:
@@ -244,6 +247,118 @@ def rate_item(repo_root: str, slug: str, metrics: Dict[str, Optional[str]],
             _git(repo_root, "pull", "--rebase", "--autostash")
             _git(repo_root, "push")
     return item
+
+
+def _apply_skip(meta: Dict[str, object], reason: Optional[str], note: Optional[str],
+                input_: Optional[str], on: str) -> Dict[str, object]:
+    """``meta`` with the four skip keys set (``reason`` None clears them), placed last.
+
+    ``updated`` is deliberately NOT touched: the Night Shift's delta walk (C4) treats an
+    Item whose ``updated`` or ``status`` moved as changed and walks it, and a skip written
+    by the night itself must not make the Item look changed the next night.
+    """
+    out = {k: v for k, v in meta.items() if k not in NIGHT_SKIP_FIELDS}
+    if reason is not None:
+        out["night_skip"] = reason
+        out["night_skip_on"] = on
+        out["night_skip_note"] = " ".join((note or "").split())
+        if input_ is not None:
+            out["night_skip_input"] = " ".join(input_.split())
+    return out
+
+
+def _skip_write(item: Item, meta: Dict[str, object]) -> None:
+    """Validate ``meta`` through the one enforcement point, then write (no ``updated`` bump)."""
+    from mapkit.items import _night_skip_errors
+    errs = _night_skip_errors(item.kind, meta)
+    if errs:
+        raise ItemCliError("%s: %s" % (item.slug, "; ".join(errs)))
+    item.meta = meta
+    item.changed = write_item(item.path, meta, item.body)
+
+
+def skip_item(repo_root: str, slug: str, reason: Optional[str] = None, note: Optional[str] = None,
+              input_: Optional[str] = None, clear: bool = False, on: Optional[str] = None,
+              commit: bool = False, push: bool = True) -> Item:
+    """Set (or ``clear``) one Item's Night Shift skip reason."""
+    if clear == (reason is not None):
+        raise ItemCliError("pass exactly one of --reason (with --note) or --clear")
+    if not clear and reason not in NIGHT_SKIP_REASONS:
+        raise ItemCliError("reason %r not in %s" % (reason, ", ".join(NIGHT_SKIP_REASONS)))
+    item = find_item(repo_root, slug)
+    _skip_write(item, _apply_skip(item.meta, None if clear else reason, note, input_,
+                                  on or _today()))
+    if item.changed:
+        gen_docs.write_docs(repo_root)
+        if commit:
+            _commit_paths(repo_root, [item], "map: %s %s%s" % (
+                "clear night skip" if clear else "night skip", (item.short_id + " ") if item.short_id else "",
+                item.title), push)
+    return item
+
+
+def skip_batch(repo_root: str, rows: List[Dict[str, object]], on: Optional[str] = None,
+               commit: bool = False, push: bool = True) -> List[Item]:
+    """Apply a batch of skip rows atomically: validate every row first, then write all.
+
+    Each row: ``{"item": ID|stem, "reason": R, "note": N, "input": I?}``, or
+    ``{"item": ..., "clear": true}``. Returns the Items that changed.
+    """
+    on = on or _today()
+    plan = []
+    errs: List[str] = []
+    seen = set()
+    for n, row in enumerate(rows):
+        try:
+            if not isinstance(row, dict) or not row.get("item"):
+                raise ItemCliError("row %d: needs an 'item'" % n)
+            extra = set(row) - {"item", "reason", "note", "input", "clear"}
+            if extra:
+                raise ItemCliError("row %d: unknown keys %s" % (n, sorted(extra)))
+            item = find_item(repo_root, str(row["item"]))
+            if item.path in seen:
+                raise ItemCliError("row %d: %s listed twice" % (n, item.slug))
+            seen.add(item.path)
+            clear = bool(row.get("clear"))
+            if clear == (row.get("reason") is not None):
+                raise ItemCliError("row %d: exactly one of 'reason' or 'clear'" % n)
+            if not clear and row["reason"] not in NIGHT_SKIP_REASONS:
+                raise ItemCliError("row %d: reason %r not in %s" % (
+                    n, row["reason"], ", ".join(NIGHT_SKIP_REASONS)))
+            meta = _apply_skip(item.meta, None if clear else str(row["reason"]),
+                               row.get("note"), row.get("input"), on)  # type: ignore[arg-type]
+            from mapkit.items import _night_skip_errors
+            e = _night_skip_errors(item.kind, meta)
+            if e:
+                raise ItemCliError("row %d (%s): %s" % (n, item.slug, "; ".join(e)))
+            plan.append((item, meta))
+        except (ItemCliError, ItemError, ids.IdError) as exc:
+            errs.append(str(exc))
+    if errs:
+        raise ItemCliError("batch refused, nothing written:\n  " + "\n  ".join(errs))
+    changed = []
+    for item, meta in plan:
+        item.meta = meta
+        item.changed = write_item(item.path, meta, item.body)
+        if item.changed:
+            changed.append(item)
+    if changed:
+        gen_docs.write_docs(repo_root)
+        if commit:
+            _commit_paths(repo_root, changed, "map: night skip reasons %s (%d Items)" % (
+                on, len(changed)), push)
+    return changed
+
+
+def _commit_paths(repo_root: str, items: List[Item], subject: str, push: bool) -> None:
+    paths = [os.path.relpath(i.path, repo_root) for i in items]
+    if os.path.isfile(os.path.join(repo_root, DOCS_PAGE)):
+        paths.append(DOCS_PAGE)
+    _git(repo_root, "add", "--", *paths)
+    _git(repo_root, "commit", "-m", subject, "--", *paths)
+    if push:
+        _git(repo_root, "pull", "--rebase", "--autostash")
+        _git(repo_root, "push")
 
 
 PUSH_ROUNDS = 3
@@ -618,6 +733,40 @@ def _run_rate(args) -> int:
     return 0
 
 
+def _run_skip(args) -> int:
+    try:
+        if args.batch:
+            if args.item or args.reason or args.clear or args.note or args.input:
+                raise ItemCliError("--batch takes no item, --reason, --note, --input or --clear")
+            with open(args.batch, encoding="utf-8") as fh:
+                rows = json.load(fh)
+            if not isinstance(rows, list):
+                raise ItemCliError("batch file must hold a JSON list of rows")
+            changed = skip_batch(_repo(args), rows, commit=args.commit, push=not args.no_push)
+            print("%d of %d Items changed" % (len(changed), len(rows)))
+            if changed and not args.commit:
+                for i in changed:
+                    print("stage: %s" % os.path.relpath(i.path, _repo(args)))
+                print("stage: %s" % DOCS_PAGE)
+            return 0
+        if not args.item:
+            raise ItemCliError("name an Item, or pass --batch FILE")
+        item = skip_item(_repo(args), args.item, reason=args.reason, note=args.note,
+                         input_=args.input, clear=args.clear, commit=args.commit,
+                         push=not args.no_push)
+    except (ItemCliError, ItemError, ids.IdError, OSError, ValueError) as exc:
+        print("mapkit: %s" % exc, file=sys.stderr)
+        return 2
+    if not getattr(item, "changed", True):
+        print("%s unchanged %s" % (label(item), item.title))
+        return 0
+    print("%s %s" % (label(item), "skip cleared" if args.clear else "skip %s" % item.meta["night_skip"]))
+    if not args.commit:
+        print("stage: %s" % os.path.relpath(item.path, _repo(args)))
+        print("stage: %s" % DOCS_PAGE)
+    return 0
+
+
 def _run_new(args) -> int:
     body = ""
     if args.body_file:
@@ -746,6 +895,21 @@ def register(subparsers) -> None:
     p.add_argument("--no-push", action="store_true")
     common(p)
     p.set_defaults(func=_run_rate)
+
+    p = isub.add_parser("skip", help="set or clear an Item's Night Shift skip reason "
+                                     "(does not bump `updated`); --batch FILE.json for many")
+    p.add_argument("item", nargs="?", help="the Item (ID or stem)")
+    p.add_argument("--reason", choices=NIGHT_SKIP_REASONS)
+    p.add_argument("--note", help="one sentence, <= 160 chars")
+    p.add_argument("--input", help="what the owner must supply (<= 200 chars); required for input-* reasons")
+    p.add_argument("--clear", action="store_true", help="remove the skip reason")
+    p.add_argument("--batch", metavar="FILE.json",
+                   help='JSON list of {"item","reason","note","input"?} or {"item","clear":true}; '
+                        "all-or-nothing")
+    p.add_argument("--commit", action="store_true")
+    p.add_argument("--no-push", action="store_true")
+    common(p)
+    p.set_defaults(func=_run_skip)
 
     p = isub.add_parser("push", help="push an Item's local commit (item new --commit --no-push) "
                                      "through the bounded rebase / renumber / push loop")
