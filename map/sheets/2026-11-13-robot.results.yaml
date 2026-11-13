@@ -143,6 +143,11 @@ steps:
     comments: ''
     saved_at: 2026-11-13 13:23
     status: done
+  36:
+    comments: Done! Very few of the catches were perfectly clean, and they didn't
+      visually appear to differ very much at all between the +ve and -ve offset values.
+    saved_at: 2026-11-13 13:30
+    status: done
 verdicts:
   12:
     FEAT-39:
