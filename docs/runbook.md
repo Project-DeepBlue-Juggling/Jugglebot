@@ -27,12 +27,13 @@ Rigs: Robot 4 blocks (261 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - record: the launch log path and the line of each LANE_REFUSED end; none = say so.
 
 #### FEAT-50 Live warning when a marker dwells under the Hand  (10 min, medium, unattached)
-- why: NOT flyable until the WARN is built (no branch yet). Then: confirm the Hand-marker fit and the dwell thresholds still hold after any Hand or marker re-mount, and see the WARN fire in a dive over a deliberately placed Ball.
+- why: The WARN is built, log only, on the branch below (five audit findings open, for the day Session that merges it). Confirm the Hand-marker fit and the dwell thresholds still hold after any Hand or marker re-mount, and see the WARN fire in a dive over a deliberately placed Ball.
 - do:
   - With the Platform level and the Hand at Active pose, place a Ball on the Platform top and roll it into the tube under the Cup by hand, then watch the launch log.
   - Read the WARN line and compare its position with the Ball.
 - pass: a WARN naming the dwell position within 15 mm of the Ball, within 1 s of the Ball stopping, and no WARN with the Cup empty and the Platform clear.
 - record: the WARN text, its time, and any false WARN count over the Sitting.
+- branch: `night-shift/2026-11-14-FEAT-50`
 
 #### FEAT-49 Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault  (60 min, medium, unattached)
 - why: BUG-57 faults about once in 50 to 400 launches, and only a power capture armed across launches can show whether the torque loss is an angle error.
@@ -57,7 +58,7 @@ Rigs: Robot 4 blocks (261 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 #### IDEA-22 Turned Columns at 90 deg: tilt the Platform back (+x) at the Catch so the ball stops hitting the Platform top  (25 min, medium, pattern-progression-columns-to-centre-and-orbit)
 - why: Turned Columns at 90 deg failed on 2026-11-10 (4 Attempts, all MISSED_CATCH within 8 Throws, the ball striking the Platform top). The branch adds a rotation about +x to every auto-banked Catch (the Cup leans toward -y), 3 deg by default (TKT-65); the Feed Catch stays Level.
 - do:
-  - Answer TKT-67 first: at P4 limits 3 deg about +x is refused offline.
+  - Answer TKT-68 first: 3 deg at Apex 0.90 (TKT-67) failed on 2026-11-13, 0 of 5 Attempts past 2 Throws.
   - Mocap up on the robot base markers and Ball Butler's Base markers (columns_turned picks the fed Site from Ball Butler's position).
   - Rehearse: `ros2 param set /skill_node columns_angle_deg 90`, then `ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: 'columns_turned,apex_m=0.95,separation_mm=125,dwell_s=0.27,columns_angle_deg=90'}"`. Nothing moves.
   - Offline at P4 limits: 3 deg is refused (LIMIT_JERK, Leg 1 227k vs 200k), 2 deg is refused (margin -0.013), 1.9 deg passes (0.011). 3 deg passes at Apex 0.90 (0.027). Per TKT-67, either `ros2 param set /skill_node columns_turned_catch_tilt_back_deg 1.9` or nominate with apex_m=0.90, and nominate again.
