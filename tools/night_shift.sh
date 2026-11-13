@@ -629,6 +629,19 @@ import json, sys
 deny = json.load(open(sys.argv[1])).get("permissions", {}).get("deny")
 sys.exit(0 if isinstance(deny, list) and deny else 1)
 PY
+# The Bash guard hook (probes and bag reads only under nonet) is read from origin/main
+# on every Bash call and refuses EVERY call when it is missing, so a night without it
+# would do nothing. Fail here, loudly, instead.
+"$PYTHON" - "$SETTINGS_DST" <<'PY' || finish NO_SETTINGS "$SETTINGS_DST does not wire the Bash guard hook"
+import json, sys
+pre = json.load(open(sys.argv[1])).get("hooks", {}).get("PreToolUse") or []
+ok = any(h.get("matcher") == "Bash" and any(
+    "night_shift_bash_guard.py" in (c.get("command") or "") for c in h.get("hooks") or [])
+    for h in pre if isinstance(h, dict))
+sys.exit(0 if ok else 1)
+PY
+git -C "$CLONE" cat-file -e origin/main:tools/night_shift_bash_guard.py 2>/dev/null \
+  || finish NO_SETTINGS "origin/main has no tools/night_shift_bash_guard.py"
 
 # ── 7. Environment (the gate the orchestrator runs needs ROS + the venv) ──────
 # The suite imports the pure-Python ROS packages for real, so source Foxy as the

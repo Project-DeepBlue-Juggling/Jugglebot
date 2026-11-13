@@ -120,3 +120,7 @@ inherited mounts, so `umount` and `remount,rw` are refused.
   tests/sim/test_logbook_front_matter.py tests/sim/test_docs_links.py -q` then: 160
   passed in 12.53 s (2026-11-14).
   The default gate is run on the stacked branch.
+
+## Runner check (same day)
+
+`tools/night_shift.sh` step 6 now ends `NO_SETTINGS` before claude starts when the installed settings do not wire the Bash guard hook, or when `origin/main` has no `tools/night_shift_bash_guard.py`. Without it a missing guard would refuse every Bash call for the whole night and look like a quiet run. Verification (2026-11-14): `python -m pytest tests/sim/test_night_shift_runner.py -q -n 4`: 71 passed, two of them new (guard missing on main; hook block removed). The protocol's probe paragraph also says the guard refuses redirections and a `git commit -m` naming a guarded word.

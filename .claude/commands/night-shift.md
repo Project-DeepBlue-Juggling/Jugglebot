@@ -192,7 +192,7 @@ word; `timeout` and `env` go after it; no `cd` prefix (run from the clone root);
 chaining with `&&`, `;` or `|`; outputs under the clone's `temp/probes/`. For example
 `D/gate-base/tools/night_shift_nonet.sh python tools/probes/<probe>.py --bag ~/Desktop/rosbags/<id> --out temp/probes/<x>.json`,
 or `D/gate-base/tools/night_shift_nonet.sh ros2 bag info ~/Desktop/rosbags/<id>`.
-`ros2 bag play`, `record`, `reindex` and `convert` stay refused even wrapped. `Agent` with `model: sonnet` unless the one-line
+`ros2 bag play`, `record`, `reindex` and `convert` stay refused even wrapped. The guard also refuses a redirection (`>`, `2>&1`) on such a line and a `git commit -m` whose message names one of those words: read a probe's output with the Read tool, and commit with `-F <message file>`. `Agent` with `model: sonnet` unless the one-line
 Opus reason applies. When it returns: `git status --porcelain` must list only files the
 brief allowed; anything else is reverted.
 

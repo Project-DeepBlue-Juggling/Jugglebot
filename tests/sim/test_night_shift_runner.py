@@ -31,6 +31,7 @@ SETTINGS = REPO / "tools" / "night_shift_settings.json"
 
 _TOOL_FILES = ("tools/night_shift.sh", "tools/night_shift_settings.json",
                "tools/night_shift_stub_report.py", "tools/night_shift_landed.py",
+               "tools/night_shift_bash_guard.py",
                "tools/night_shift_preflight.py", "tools/nightly_ticker.sh",
                "tools/lib/live_session.sh", ".gitignore")
 _GITCONFIG = "[user]\n\tname = t\n\temail = t@t\n"
@@ -415,6 +416,33 @@ def test_settings_reinstalled_over_a_tampered_copy(ns):
     r = ns.run()
     _check(r, "OK", 0)
     assert (ns.clone / ".claude" / "settings.local.json").read_bytes() == SETTINGS.read_bytes()
+
+
+def test_a_missing_bash_guard_on_main_never_runs_claude(ns):
+    # The hook reads the guard from origin/main on every Bash call and refuses
+    # every call without it: the runner must stop before a night that can do nothing.
+    work = ns.tmp / "work"
+    _git("clone", "-q", str(ns.origin), str(work), env=ns.env)
+    _git("rm", "-q", "tools/night_shift_bash_guard.py", cwd=work, env=ns.env)
+    _git("commit", "-q", "-m", "drop guard", cwd=work, env=ns.env)
+    _git("push", "-q", "origin", "main", cwd=work, env=ns.env)
+    r = ns.run()
+    _check(r, "NO_SETTINGS", 1)
+    assert ns.calls() == []
+
+
+def test_settings_without_the_guard_hook_never_run_claude(ns):
+    work = ns.tmp / "work"
+    _git("clone", "-q", str(ns.origin), str(work), env=ns.env)
+    s = work / "tools" / "night_shift_settings.json"
+    d = json.loads(s.read_text())
+    d.pop("hooks")
+    s.write_text(json.dumps(d))
+    _git("commit", "-q", "-am", "drop hook", cwd=work, env=ns.env)
+    _git("push", "-q", "origin", "main", cwd=work, env=ns.env)
+    r = ns.run()
+    _check(r, "NO_SETTINGS", 1)
+    assert ns.calls() == []
 
 
 def test_missing_settings_template_never_runs_claude(ns):
