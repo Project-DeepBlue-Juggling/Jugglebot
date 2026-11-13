@@ -486,16 +486,24 @@ def test_negative_control_arrival_phase_legacy_playback_breaks_c2():
 
 
 # ── constants pinned to the firmware ─────────────────────────────────────────
+def _fw_header(name):
+    return open(os.path.join(_REPO, "ros_ws", "src", "jugglebot", "Teensy_code_canbridge",
+                             name), encoding="utf-8").read()
+
+
+def _fw_const(name, text):
+    """Value of ``constexpr <type> NAME = <number>[f|u];`` in a firmware header."""
+    m = re.search(r"\b" + name + r"\s*=\s*([-0-9.eE]+)[fu]?\s*;", text)
+    assert m, name
+    return float(m.group(1))
+
+
 def test_sched_constants_match_the_firmware():
-    cb = open(os.path.join(_REPO, "ros_ws", "src", "jugglebot", "Teensy_code_canbridge",
-                           "canbridge_config.h"), encoding="utf-8").read()
-    hw = open(os.path.join(_REPO, "ros_ws", "src", "jugglebot", "Teensy_code_canbridge",
-                           "hardware_config.h"), encoding="utf-8").read()
+    cb = _fw_header("canbridge_config.h")
+    hw = _fw_header("hardware_config.h")
 
     def c(name, text=cb):
-        m = re.search(r"\b" + name + r"\s*=\s*([-0-9.eE]+)[fu]?\s*;", text)
-        assert m, name
-        return float(m.group(1))
+        return _fw_const(name, text)
 
     assert c("SCHED_QUEUE_LEN") == ti.SCHED_QUEUE_LEN
     assert c("SCHED_MAX_FUTURE_US") == ti.SCHED_MAX_FUTURE_US
@@ -522,3 +530,29 @@ def test_sched_constants_match_the_firmware():
     assert c("STREAM_STOP_LEG_ACCEL_RPS2", hw) == ti.STREAM_STOP_LEG_ACCEL_RPS2
     assert c("STREAM_STOP_LEG_JERK_RPS3", hw) == ti.STREAM_STOP_LEG_JERK_RPS3
     assert ti.SCHED_SEG_US == round(ti.SEGMENT_T_S * 1e6)
+
+
+def test_planner_resume_tolerances_match_the_firmware():
+    """The planner's hand-restated copies of the firmware's scheduled-resume
+    tolerances (``motion/`` cannot read firmware headers) track the header.
+
+    * ``executor.REBASE_TOL_*``: the I-PLAN-12 REBASE continuity bar, documented
+      as the firmware's own ``SCHED_RESUME_TOL_POS/VEL_{LEG,HAND}_*`` -- equality.
+    * ``schedule.REST_RETURN_ONSET_BUDGET_REV``: documented as HALF of
+      ``SCHED_RESUME_TOL_POS_HAND_REV`` (the other half is the seed-versus-held
+      offset) -- the half relation, not equality.
+
+    Without this pin a firmware tolerance change would silently loosen or
+    tighten the planner's REBASE_DISCONTINUOUS bar and the opening REST's
+    onset budget.
+    """
+    from jugglebot.motion.skills import executor as ex
+    from jugglebot.motion.skills import schedule as sch
+
+    cb = _fw_header("canbridge_config.h")
+    assert ex.REBASE_TOL_LEG_REV == pytest.approx(_fw_const("SCHED_RESUME_TOL_POS_LEG_REV", cb))
+    assert ex.REBASE_TOL_LEG_RPS == pytest.approx(_fw_const("SCHED_RESUME_TOL_VEL_LEG_RPS", cb))
+    assert ex.REBASE_TOL_HAND_REV == pytest.approx(_fw_const("SCHED_RESUME_TOL_POS_HAND_REV", cb))
+    assert ex.REBASE_TOL_HAND_RPS == pytest.approx(_fw_const("SCHED_RESUME_TOL_VEL_HAND_RPS", cb))
+    assert sch.REST_RETURN_ONSET_BUDGET_REV == pytest.approx(
+        0.5 * _fw_const("SCHED_RESUME_TOL_POS_HAND_REV", cb))
