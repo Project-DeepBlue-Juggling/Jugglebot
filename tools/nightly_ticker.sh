@@ -37,6 +37,9 @@ RAISED="$REPORTS/ticker.raised"
 LOWERED="$REPORTS/ticker.lowered"
 STATUS="$REPORTS/status"
 STALE_AFTER_S=$((2 * 24 * 3600))
+# The auto-pull's status line (tools/systemd/jugglebot-pull.sh); PULL_STATUS_FILE overrides (tests).
+PULL_STATUS="${PULL_STATUS_FILE:-$REPO_ROOT/temp/reports/pull/status}"
+PULL_LOUD_AFTER_S=600
 
 usage() { sed -n '2,30p' "${BASH_SOURCE[0]}" >&2; exit 2; }
 
@@ -57,7 +60,27 @@ age_s() {                                    # seconds since an iso-date, or emp
   echo $(( $(date +%s) - t ))
 }
 
+# One extra line after the verdict when the auto-pull has been stalled (non-OK)
+# for more than 10 minutes. Silent when OK, absent, or unparsable.
+pull_line() {
+  [[ -s "$PULL_STATUS" ]] || return 0
+  local line word behind since age
+  line="$(head -n1 "$PULL_STATUS")"
+  word="$(cut -d' ' -f2 <<<"$line")"
+  [[ -n "$word" && "$word" != "OK" ]] || return 0
+  behind="$(sed -n 's/.* behind=\([^ ]*\).*/\1/p' <<<"$line")"
+  since="$(sed -n 's/.* since=\([^ ]*\).*/\1/p' <<<"$line")"
+  age="$(age_s "$since")"
+  [[ -n "$age" ]] && (( age > PULL_LOUD_AFTER_S )) || return 0
+  echo "PULL $word behind=${behind:-?} since=$since"
+}
+
 check() {
+  check_verdict "$@"
+  pull_line
+}
+
+check_verdict() {
   local who="${NIGHTLY_TICKER_WHO:-pid$$/ppid$PPID/$(whoami)}"
   while (( $# )); do
     case "$1" in

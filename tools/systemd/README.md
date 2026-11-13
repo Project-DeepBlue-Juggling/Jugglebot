@@ -35,6 +35,23 @@ tools/nightly_ticker.sh check --who "<session>"        # CLAIMED|LOWERED|STALE|U
 cat temp/reports/nightly/status                       # GREEN|RED|DEFERRED <counts> <date>
 ```
 
+## Auto-pull (`jugglebot-pull.sh`)
+
+The 2-minute auto-pull (user unit `jugglebot-pull.timer`) fast-forwards the live
+checkout. Its source of truth is `tools/systemd/jugglebot-pull.sh`; the unit runs the
+copy in `~/System_Scripts/`, installed (re-run after every edit) with:
+
+```bash
+install -m 755 tools/systemd/jugglebot-pull.sh ~/System_Scripts/
+```
+
+Every run writes one line to `temp/reports/pull/status`:
+`<iso> <WORD> behind=<n> since=<iso of the first consecutive non-OK run, - when OK> files=<up to 3 dirty tracked paths>`.
+WORD is `OK`, `SKIPPED_DIRTY` (tracked modification), `SKIPPED_SUITE` (test-suite lock held),
+`DIVERGED`, `DETACHED`, `FETCH_FAILED`, `NO_UPSTREAM` or `FF_FAILED`. Non-OK also goes to
+`logger -p user.warning`. `tools/nightly_ticker.sh check` prints an extra
+`PULL <WORD> behind=<n> since=<t>` line once a non-OK status is more than 10 minutes old.
+
 ## Keeping these in sync
 
 The install is a **copy**, not a symlink, so the two can drift. `systemctl
