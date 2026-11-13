@@ -2,9 +2,9 @@
 id: TKT-70
 kind: ticket
 title: 'BUG-91 negative re-aim margin at nomination: refuse, flag in capitals, refuse below a floor, or leave it?'
-status: open
+status: complete
 created: '2026-11-14'
-updated: '2026-11-13T17:50:58Z'
+updated: '2026-11-13T22:44:09Z'
 owners: []
 priority: medium
 effort: xs
@@ -33,3 +33,7 @@ At the Sitting of 2026-11-13, `/skills/nominate` accepted columns_turned 90 deg,
 - 4: BUG-91 closes.
 
 Recommendation: 2. The re-aim figure is walked on the identity command (BUG-87: it read -0.049 when the live Segment refused at -0.208), so it is neither conservative nor exact; refusing on it would block rows you fly to learn. A refusal mid-Attempt ends cleanly, so nothing physical rides on this.
+
+## Answer
+
+I'm happy with Option 2.
