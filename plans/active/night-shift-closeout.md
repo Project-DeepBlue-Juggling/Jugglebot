@@ -3,7 +3,7 @@ title: Night Shift close-out - bind the merge to the gate, walk only the delta, 
 created: 2026-11-13
 status: active
 owner: Harrison
-last_updated: 2026-11-13
+last_updated: 2026-11-14
 pathway: night-shift
 branch: main
 scope: >-
@@ -12,12 +12,12 @@ scope: >-
   records out of the tracked tree, notes-only Sitting sheets with derived verdicts, a tested debrief
   merge script, and a Runbook that is an index.
 steps:
-  - {id: "Phase C1", title: Bind the merge to the gate, kind: phase, status: not_started, effort: m, hardware: none}
+  - {id: "Phase C1", title: Bind the merge to the gate, kind: phase, status: complete, completed: 2026-11-13, effort: m, hardware: none}
   - {id: "Phase C2", title: Runner housekeeping, kind: phase, status: not_started, effort: s, hardware: none}
   - {id: "Phase C3", title: Skip reasons live on the Item, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: "Phase C4", title: Delta walk and NOTHING_NEW, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: "Phase C5", title: Report layout and protocol, kind: phase, status: not_started, effort: m, hardware: none}
-  - {id: "Phase C6", title: Pull stalls are loud, kind: phase, status: not_started, effort: s, hardware: none}
+  - {id: "Phase C6", title: Pull stalls are loud, kind: phase, status: complete, completed: 2026-11-13, effort: s, hardware: none}
   - {id: "Phase C7", title: Offline bag reads and held-only work, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: "Phase C8", title: The robot stops writing tracked files, kind: phase, status: not_started, effort: m, hardware: robot}
   - {id: "Phase C9", title: Sheet notes-only and batched commits, kind: phase, status: not_started, effort: m, hardware: none}
@@ -25,7 +25,7 @@ steps:
   - {id: "Phase C11", title: Runbook becomes an index, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: "Phase C12", title: logbook INDEX generated, kind: phase, status: not_started, effort: s, hardware: none}
   - {id: "Phase C13", title: Map-write check inside item commits, kind: phase, status: not_started, effort: s, hardware: none}
-  - {id: "Phase C14", title: Night Shift report-history picker, kind: phase, status: not_started, effort: s, hardware: none}
+  - {id: "Phase C14", title: Night Shift report-history picker, kind: phase, status: complete, completed: 2026-11-13, effort: s, hardware: none}
   - {id: "Phase C15", title: F9 feasibility probe, kind: phase, status: not_started, effort: s, hardware: none}
   - {id: "Phase C16", title: Docs, kind: phase, status: not_started, effort: s, hardware: none}
   - {id: "Phase C17", title: R6 and close, kind: rung, status: not_started, effort: s, hardware: robot}
@@ -45,6 +45,12 @@ related_code:
 Branch `main`, base `origin/main` 8bc5e864 (2026-11-13). Pathway PWAY-9, the second plan under it: `night-shift.md` built and ran the Night Shift; this plan closes what the first live nights exposed. Steps C1 to C17 (ids are written `Phase C1` because the step-id grammar admits only P, R and Stage prefixes) are day-Session work: `tools/night_shift*`, `.claude/*`, `tests/sim/test_night_shift_*`, `tests/sim/test_sitting_*` and CLAUDE.md are gate-frozen for the Night Shift. The phase closes with `./run_tests.sh --full` (CLAUDE.md rule (b)) and one `/audit --unstaged`. Design source: the 2026-11-13 close-out design, decisions D1 to D10 and findings F1 to F12 cited per step.
 
 App layout, already landed 2026-11-13 in the app repo (jugglebot-map 89f7895), not a step: the Sitting sheet progress rail, the All Items button in the frozen Items banner, the single-scroll All Items page.
+
+## Status (2026-11-14)
+
+- C1, C6 and C14 landed 2026-11-13. First live night under C1 (2026-11-14): `last_run.json` reads `landed: gated=0 exempt=10 ungated=0`, and the gate wrote `d64c85a5.HOLD.json` for FEAT-50. The night merged nothing, so a live MERGE record covering a merge is still to be seen. C6 is installed (`~/System_Scripts/jugglebot-pull.sh`); its status file reads OK and no live `PULL` line has been needed yet.
+- R6 is met under Decision 10: BUG-80's held branch was flown at the Sitting of 2026-11-13, passed, and reached main in the debrief's push (`logbook/2026-11-13-sitting-debrief.md`; the owner merged it without the gate, see that entry's Discussion). C17 keeps the `--full` run and the archive.
+- C7 moves ahead of C2: the owner's TKT-68 answer (2026-11-14) asks the night to run the offline sweep itself.
 
 ## Decisions (owner, 2026-11-13)
 

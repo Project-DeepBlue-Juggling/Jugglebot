@@ -3,7 +3,7 @@ title: Night Shift - unattended overnight work on the board, and the Next Sittin
 created: 2026-10-30
 status: active
 owner: Harrison
-last_updated: 2026-11-13
+last_updated: 2026-11-14
 pathway: night-shift
 branch: main
 scope: >-
@@ -18,7 +18,7 @@ steps:
   - {id: P3, title: Night Shift page in the map app, kind: phase, status: complete, completed: 2026-10-31, effort: m, hardware: none}
   - {id: P4, title: Next Sitting Runbook, kind: phase, status: complete, completed: 2026-10-31, effort: m, hardware: none}
   - {id: P5, title: Sitting debrief command, kind: phase, status: complete, completed: 2026-10-31, effort: s, hardware: none}
-  - {id: R6, title: First Runbook-driven Sitting, kind: rung, status: not_started, effort: s, hardware: robot}
+  - {id: R6, title: First Runbook-driven Sitting, kind: rung, status: complete, completed: 2026-11-13, effort: s, hardware: robot}
 related_logbook:
   - 2026-10-30-night-shift-design-and-plan.md
   - 2026-10-31-night-shift-p1-runner-and-dry-run.md
@@ -122,7 +122,7 @@ The nightly suite and its status line; the ticker mechanism (Night Shift becomes
 | P3 | Night Shift page in the map app | COMPLETE | 2026-10-31 | low | reports render, a question is answered in two clicks |
 | P4 | Next Sitting Runbook | COMPLETE | 2026-10-31 | medium | `## Sitting` rows generate one ordered page; results write back |
 | P5 | Sitting debrief command | COMPLETE | 2026-10-31 | low | a Sitting ends with one prompt and no owner git |
-| R6 | First Runbook-driven Sitting | NOT STARTED | | medium | a held branch is flown, passed and merged by the wrap-up |
+| R6 | First Runbook-driven Sitting | COMPLETE | 2026-11-13 | medium | a held branch is flown, passed and merged by the wrap-up |
 
 ## 4. Implementation Phases
 
@@ -170,7 +170,8 @@ The nightly suite and its status line; the ticker mechanism (Night Shift becomes
 
 - **Rung gate**: one Sitting flown from `docs/runbook.md`, at least one held branch passed and merged by `/sitting-debrief`, the owner's typed steps limited to hardware actions and result boxes. Logged with the (date, command, result) triple.
 - **Dependencies**: P5, a held hardware branch from a real night.
-- **Close-out (2026-11-13)**: how R6 is met, and the plan that reworks the merge path it uses, are in `night-shift-closeout.md` (Decision 10, step C17); this rung's status is unchanged.
+- **Close-out (2026-11-13)**: how R6 is met, and the plan that reworks the merge path it uses, are in `night-shift-closeout.md` (Decision 10, step C17).
+- **Outcome (2026-11-13, `logbook/2026-11-13-sitting-debrief.md`)**: complete under the owner's Decision 10 of that plan. The Sitting was flown from the Sitting sheet; BUG-80's held branch passed and reached main in the debrief's push. The owner merged it without the gate (that entry's Discussion); the tested merge script is close-out step C10.
 
 ## 5. Testing Plan
 
