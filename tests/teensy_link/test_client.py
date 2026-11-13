@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import socket
 import struct
+import threading
 import time
 
 import pytest
@@ -361,3 +362,116 @@ def test_a_fixed_port_never_sets_reuseaddr():
             assert _reuseaddr(sock) == 0
     finally:
         client.stop()
+
+
+# ── TX sequence counters under concurrent senders ──────────────────────────
+#
+# ``send_stream`` is called from the heartbeat thread, the setpoint thread and
+# the ROS service threads of teensy_bridge_node; ``send_rpc`` from several
+# service threads. The firmware counts a repeated or reordered seq as a
+# downlink gap/duplicate, so wire order must equal sequence order and every
+# number must appear exactly once. These tests drive a recording fake socket
+# (no real UDP: the property is about the client, not the kernel).
+
+
+class _RecordingSock:
+    """Stand-in for a UDP socket: records every frame ``sendto`` is given."""
+
+    def __init__(self) -> None:
+        self.frames = []
+
+    def sendto(self, frame, addr):
+        self.frames.append(bytes(frame))   # list.append is atomic under the GIL
+        return len(frame)
+
+    def seqs(self):
+        return [p.decode_frame(f)[1] for f in self.frames]
+
+
+def _offline_client():
+    """A client with fake sockets and no threads (start() is never called)."""
+    client = TeensyLinkClient(teensy_addr=("127.0.0.1", 9))
+    client._stream_sock = _RecordingSock()
+    client._rpc_sock = _RecordingSock()
+    return client
+
+
+@pytest.mark.parametrize("path", ["stream", "rpc"])
+def test_tx_seq_wire_order_equals_seq_order_under_injected_interleave(
+        monkeypatch, path):
+    """Deterministic interleave: thread A is paused INSIDE its send (between
+    taking its seq and putting the frame on the wire) while thread B sends.
+
+    The pause is injected by wrapping ``encode_frame``: A's call waits (with a
+    timeout) for B's frame to hit the socket. Without serialisation B takes
+    seq 1 and sends it first, so the wire reads ``[1, 0]`` (red before the
+    fix, every run). With the lock B cannot enter until A has sent, A's wait
+    times out, and the wire reads ``[0, 1]``.
+    """
+    from teensy_link import client as client_mod
+
+    client = _offline_client()
+    send = client.send_stream if path == "stream" else client.send_rpc
+    sock = client._stream_sock if path == "stream" else client._rpc_sock
+
+    real_encode = client_mod.p.encode_frame
+    a_inside = threading.Event()
+    b_sent = threading.Event()
+
+    def encode(msg_type, seq, payload):
+        if threading.current_thread().name == "sender-A":
+            a_inside.set()
+            b_sent.wait(timeout=0.3)
+        return real_encode(msg_type, seq, payload)
+
+    monkeypatch.setattr(client_mod.p, "encode_frame", encode)
+
+    def run_b():
+        a_inside.wait(timeout=2.0)
+        send(int(MsgType.HEARTBEAT_J2T), b"")
+        b_sent.set()
+
+    ta = threading.Thread(target=send, name="sender-A",
+                          args=(int(MsgType.HEARTBEAT_J2T), b""))
+    tb = threading.Thread(target=run_b, name="sender-B")
+    ta.start()
+    tb.start()
+    ta.join(timeout=5.0)
+    tb.join(timeout=5.0)
+
+    assert sock.seqs() == [0, 1]
+
+
+@pytest.mark.parametrize("path", ["stream", "rpc"])
+def test_tx_seq_gap_free_and_in_order_under_concurrent_senders(path):
+    """Hammer one send path from 8 threads; the wire must carry exactly
+    ``0 .. N-1`` in order (no duplicate, no gap, no reorder) and the shared
+    TX stats must count every frame.
+
+    Without the lock this test is only PROBABILISTICALLY red (it needs the
+    scheduler to switch threads between the seq read and the ``sendto``); the
+    deterministic red for the race is the injected-interleave test above.
+    This one pins the gap-free, duplicate-free run and the exact stats counts.
+    """
+    client = _offline_client()
+    send = client.send_stream if path == "stream" else client.send_rpc
+    sock = client._stream_sock if path == "stream" else client._rpc_sock
+    n_threads, per_thread = 8, 400
+    go = threading.Event()
+
+    def worker():
+        go.wait()
+        for _ in range(per_thread):
+            send(int(MsgType.SETPOINT), b"")
+
+    threads = [threading.Thread(target=worker) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    go.set()
+    for t in threads:
+        t.join(timeout=10.0)
+
+    n = n_threads * per_thread
+    assert sock.seqs() == list(range(n))
+    assert client.stats.tx_frames == n
+    assert client.stats.tx_count_by_type[int(MsgType.SETPOINT)] == n

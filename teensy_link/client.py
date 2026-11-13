@@ -267,8 +267,20 @@ class TeensyLinkClient:
         self._last_rx_seq: Dict[bool, int] = {}
 
         # seq counters are per-direction. Wire wraps at 16 bits.
+        # Each counter has its own lock, held across read-increment-encode-
+        # sendto, because send_stream / send_rpc are called from several
+        # threads (heartbeat, setpoint, ROS service threads): unlocked, two
+        # senders could emit the same seq or put N+1 on the wire before N,
+        # which the firmware counts as a downlink gap/duplicate. Holding the
+        # lock across sendto is bounded: both sockets are non-blocking
+        # (_open_sockets), so a full send buffer raises instead of waiting.
         self._tx_seq_stream = 0
         self._tx_seq_rpc = 0
+        self._tx_lock_stream = threading.Lock()
+        self._tx_lock_rpc = threading.Lock()
+        # The TX stats are shared by all three send paths; always taken
+        # INSIDE a per-socket lock (never the other way round), so no cycle.
+        self._tx_stats_lock = threading.Lock()
 
         # Callbacks: list of (callback, wants_rx_stamp) per msg_type. A separate
         # "wildcard" list catches all frames (used by diagnostics) and is always
@@ -286,7 +298,8 @@ class TeensyLinkClient:
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
 
-        # Stats — read-only externally; mutated only on the RX/TX threads.
+        # Stats — read-only externally; mutated only on the RX/TX threads
+        # (the TX fields under _tx_stats_lock, see _count_tx_frame).
         self.stats = LinkStats()
 
     # ── Lifecycle ────────────────────────────────────────────────────────
@@ -419,24 +432,28 @@ class TeensyLinkClient:
     # ── Sending ──────────────────────────────────────────────────────────
 
     def send_stream(self, msg_type: int, payload: bytes) -> None:
-        """Send a frame on the STREAM port to the Teensy."""
-        seq = self._tx_seq_stream
-        self._tx_seq_stream = (self._tx_seq_stream + 1) & 0xFFFF
-        frame = p.encode_frame(msg_type, seq, payload)
-        self.stream_sock.sendto(frame, self._peer_stream)
-        self.stats.tx_frames += 1
-        self.stats.tx_bytes += len(frame)
-        self._count_tx(msg_type)
+        """Send a frame on the STREAM port to the Teensy.
+
+        Thread-safe: wire order equals seq order across concurrent callers.
+        A raising ``sendto`` has still consumed its seq (the far end sees a
+        one-frame gap, which is what it was), exactly as before the lock.
+        """
+        with self._tx_lock_stream:
+            seq = self._tx_seq_stream
+            self._tx_seq_stream = (seq + 1) & 0xFFFF
+            frame = p.encode_frame(msg_type, seq, payload)
+            self.stream_sock.sendto(frame, self._peer_stream)
+            self._count_tx_frame(msg_type, len(frame))
 
     def send_rpc(self, msg_type: int, payload: bytes) -> None:
-        """Send a frame on the RPC port to the Teensy."""
-        seq = self._tx_seq_rpc
-        self._tx_seq_rpc = (self._tx_seq_rpc + 1) & 0xFFFF
-        frame = p.encode_frame(msg_type, seq, payload)
-        self.rpc_sock.sendto(frame, self._peer_rpc)
-        self.stats.tx_frames += 1
-        self.stats.tx_bytes += len(frame)
-        self._count_tx(msg_type)
+        """Send a frame on the RPC port to the Teensy. Thread-safe, as
+        :meth:`send_stream`."""
+        with self._tx_lock_rpc:
+            seq = self._tx_seq_rpc
+            self._tx_seq_rpc = (seq + 1) & 0xFFFF
+            frame = p.encode_frame(msg_type, seq, payload)
+            self.rpc_sock.sendto(frame, self._peer_rpc)
+            self._count_tx_frame(msg_type, len(frame))
 
     def send_to(self, sock_kind: str, msg_type: int, seq: int, payload: bytes, dest: Address) -> None:
         """Send a frame to an explicit address. Used mainly for RPC responses.
@@ -449,24 +466,25 @@ class TeensyLinkClient:
         sock = self.stream_sock if sock_kind == "stream" else self.rpc_sock
         frame = p.encode_frame(msg_type, seq, payload)
         sock.sendto(frame, dest)
-        self.stats.tx_frames += 1
-        self.stats.tx_bytes += len(frame)
-        self._count_tx(msg_type)
+        self._count_tx_frame(msg_type, len(frame))
 
-    def _count_tx(self, msg_type: int) -> None:
-        """Bump the per-type TX counter (the /udp_diag tx_<TYPE> rows).
+    def _count_tx_frame(self, msg_type: int, nbytes: int) -> None:
+        """Bump ``tx_frames``, ``tx_bytes`` and the per-type TX counter (the
+        /udp_diag tx_<TYPE> rows) under ``_tx_stats_lock``.
 
         Called AFTER a successful ``sendto`` in all three send paths, so the
         count is frames that reached the kernel — a raising send counts
-        nothing, matching ``tx_frames`` beside it. Rebind-only (pre-seeded
-        keys), so a snapshot() copy never races an insert. Counts are
-        best-effort under concurrent sends: the read-modify-write is not
-        atomic across the sending threads, so a lost increment is possible
-        and bounded by the send rate — the same guarantee ``tx_frames`` has
-        always had.
+        nothing. Rebind-only on the per-type dict (pre-seeded keys), so a
+        snapshot() copy never races an insert. Exact under concurrent sends:
+        the three senders share these counters, so the read-modify-writes are
+        serialised by one lock (taken inside a per-socket lock, never around
+        one).
         """
-        if msg_type in self.stats.tx_count_by_type:
-            self.stats.tx_count_by_type[msg_type] += 1
+        with self._tx_stats_lock:
+            self.stats.tx_frames += 1
+            self.stats.tx_bytes += nbytes
+            if msg_type in self.stats.tx_count_by_type:
+                self.stats.tx_count_by_type[msg_type] += 1
 
     def send_heartbeat(self, t_jetson_us: Optional[int] = None, flags: int = 0) -> None:
         """Send a J→T heartbeat. Convenience wrapper around send_stream."""
