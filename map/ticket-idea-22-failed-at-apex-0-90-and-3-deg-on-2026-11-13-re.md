@@ -2,9 +2,9 @@
 id: TKT-68
 kind: ticket
 title: 'IDEA-22 failed at Apex 0.90 and 3 deg on 2026-11-13: re-measure tilt-back toward 0 offline, raise the Leg jerk limit for this Pattern, park 90 deg, or drop the branch?'
-status: open
+status: complete
 created: '2026-11-14'
-updated: '2026-11-13T17:50:56Z'
+updated: '2026-11-13T22:47:05Z'
 owners: []
 priority: medium
 effort: xs
@@ -32,3 +32,7 @@ Your TKT-67 answer flew at the Sitting of 2026-11-13: columns_turned 90 deg, Ape
 - 1: a day Session runs the sweep (the probes are refused at night). 2: a day Session. 3 or 4: the night parks or drops it.
 
 Recommendation: 1, the debrief's first choice, needing no hardware; 3 if the sweep finds no setting above +0.10.
+
+## Answer
+
+Agreed. Re-measure offline. The probes should be allowed on the Night Shift now, so try this yourself.
