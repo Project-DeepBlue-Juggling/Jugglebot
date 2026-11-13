@@ -77,6 +77,7 @@ App layout, already landed 2026-11-13 in the app repo (jugglebot-map 89f7895), n
 
 - After a passing C1 check, for each `refs/remotes/origin/night-shift/*` whose tip is an ancestor of origin/main the runner (not the model) runs `git push origin --delete`, at most 20 a night; merged local branches in the clone go with `branch -d`. Names go to last_run.json `pruned[]`. Test: a temp origin with one merged and one live branch; only the merged one goes.
 - `write_status` (:248) appends the last_run object to `$REPORTS/history.jsonl`. The committed `docs/night-shift/history.jsonl` is the full deduplicated local history, so a rejected push heals the next night. It rides in the cost commit on OK, the stub commit on failures, and its own commit on NOTHING_NEW/HELD/DEFERRED, only when the clone is clean on main. EXEMPT in C1 (`docs/night-shift/*`).
+- The Night Shift clone commits under its own committer identity (`git config user.name`/`user.email` set in the clone by the runner at start; author unchanged). Owner, 2026-11-13. It is the marker a later change to `tools/night_shift_landed.py` can use to exempt a night-window push by the owner or a day Session, which C1 flags by design; both checkouts commit as one identity today and the `Night-Shift:` trailer is forgeable text. C2 only sets the identity and pins it with a runner test; the exemption is not built here.
 - **Prevents**: eight nights of "please delete these branches", a per-night table rebuilt by hand, a dead runner that looks like an empty night.
 
 ### Phase C3: Skip reasons live on the Item
@@ -144,6 +145,7 @@ App layout, already landed 2026-11-13 in the app repo (jugglebot-map 89f7895), n
 
 ### Phase C10: Debrief merge as a tested script
 
+- The debrief commits the Sitting's records and learner memory (C8's merge) BEFORE `prepare`, so the suite runs on a tree that already holds them. Prevents the 2026-11-13 red: a test that read `docs/records.md` failed on main only after the debrief's records commit (`logbook/2026-11-13-records-test-read-live-ledger-contents.md`; the ordering cause is inferred, not traced).
 - `tools/sitting_merge.sh prepare --branch B --item ID --work DIR`: worktree; merge origin/main (generated files regenerated; a `map/` conflict stops); `./run_tests.sh --full` writes `DIR/gate-ID.log` with HEAD=, BRANCH=, EXIT=. The model then runs `/audit` and writes `DIR/audit-ID.md`.
 - `tools/sitting_merge.sh land --branch B --item ID --work DIR`: base-extract gate with `--waive c --record`. MERGE: push HEAD:main, delete the remote branch, remove the worktree, append to `temp/reports/sitting-merge.jsonl`. HOLD: print the reasons and keep the branch. It has no flag for (f): a frozen-path branch cannot go through it (Decision 4).
 - `FORBIDDEN_PATHS` (gate :139-169) gains `tools/sitting_merge.sh`; its test name already falls under `tests/sim/test_sitting_*`.
