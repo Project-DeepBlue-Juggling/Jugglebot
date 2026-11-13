@@ -79,6 +79,10 @@ steps:
       a very 'stepped' manner, rather than followingsmooth, continuous trajectories.
     saved_at: 2026-11-13 12:59
     status: problem
+  23:
+    comments: ''
+    saved_at: 2026-11-13 13:43
+    status: done
   24:
     comments: 'I get this `not found` error: " $ cd ~/Desktop/Jugglebot/ros_ws &&
       colcon build --packages-up-to jugglebot && source install/setup.bash; cd ~/Desktop/Jugglebot
