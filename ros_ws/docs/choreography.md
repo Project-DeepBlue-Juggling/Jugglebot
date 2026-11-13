@@ -167,7 +167,7 @@
 ### `hand_telemetry`
 
 - **publishers:** `teensy_bridge_node`
-- **subscribers:** `skill_node`
+- **subscribers:** `ball_tracker_node`, `skill_node`
 - **type:** `jugglebot_interfaces.msg.HandTelemetryMessage`
 
 ### `leg_cmd_executed`
@@ -239,7 +239,7 @@
 ### `rigid_body_poses`
 
 - **publishers:** `mocap_node`
-- **subscribers:** `ball_butler_node`, `skill_node`
+- **subscribers:** `ball_butler_node`, `ball_tracker_node`, `skill_node`
 - **type:** `jugglebot_interfaces.msg.RigidBodyPoses`
 
 ### `ring_diag`

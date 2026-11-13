@@ -7,6 +7,7 @@ phase: night-shift
 subsystem: tracking
 related_items: [FEAT-50]
 files_changed:
+  - ros_ws/docs/choreography.md
   - ros_ws/src/jugglebot/jugglebot/tracking/trapped_ball.py
   - ros_ws/src/jugglebot/jugglebot/ball_tracker_node.py
   - tools/trapped_ball_finder.py
@@ -45,4 +46,5 @@ The batch rule (voxel occupied in more than 15 % of the whole bag) has no online
 
 - 2026-11-14, `tools/night_shift_nonet.sh python -m pytest -q tests/sim/test_trapped_ball_finder.py tests/sim/test_trapped_ball_online.py tests/ros/test_ball_tracker_*.py`: 79 passed.
 - 2026-11-14, `tools/night_shift_nonet.sh python -m pytest -q tests/firmware/test_config_drift.py tests/ros/test_config_identity.py tests/motion/test_hand_ball_detect_config.py tests/sim/test_logbook_front_matter.py tests/sim/test_docs_links.py tests/sim/test_glossary_avoid_words.py`: 48 passed.
+- 2026-11-14, `tools/night_shift_nonet.sh ./run_tests.sh --full` on 4ae0a89f: 2 failed (`tests/ros/test_choreography_map.py`, the generated topic map lacked the two new subscriptions), 9592 passed; fixed by `python tools/gen_choreography_map.py`.
 - New tests fail without the change: detector `DWELL_MIN_S` forced to 0.05 (3 online tests fail), region filter widened past UNDER_HAND (1 fails), node `_check_trapped` call removed (the node WARN test fails).
