@@ -2,9 +2,9 @@
 id: TKT-69
 kind: ticket
 title: 'BUG-90 carry_zvd Hand stop-go: a Hand smoothness term with the ZVD rows on, take the Hand out of the ZVD lever, a hard bound, or leave the flag off?'
-status: open
+status: complete
 created: '2026-11-14'
-updated: '2026-11-13T17:50:57Z'
+updated: '2026-11-13T22:42:19Z'
 owners: []
 priority: medium
 effort: xs
@@ -33,3 +33,7 @@ With `carry_zvd` on, the pose planner gives the Hand a stop-and-go velocity of a
 - 2: a day Session. 3: the next night, same as 1. 4: BUG-90 is parked with FEAT-32's ZVD arm.
 
 Recommendation: 1. The smallest change the existing xfail can judge, and the flag-off plan stays byte for byte as now.
+
+## Answer
+
+I'm happy with your recommendations
