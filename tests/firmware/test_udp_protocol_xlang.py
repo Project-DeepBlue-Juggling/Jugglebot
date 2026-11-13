@@ -249,7 +249,10 @@ def test_protocol_version_frozen(gen, proto):
     Bumping it is an INCOMPATIBLE-wire change that requires reflashing the whole
     fleet — this makes the bump deliberate and keeps all three artifacts in lockstep."""
     spec_ver = _spec_const(gen, "PROTOCOL_VERSION")
-    assert spec_ver == 13, (  # 12→13: the firmware STOP record (can-bridge FW 42,
+    assert spec_ver == 14, (  # 13→14: 0x6E0 tilt fields become 0.1 mrad counts (can-bridge
+                              # FW 43, 2026-11-10, BUG-7) — no layout change, darkness
+                              # is the lockstep guard against a ten-times-wrong offset.
+                              # 12→13: the firmware STOP record (can-bridge FW 42,
                               # 2026-11-08, FEAT-46) — HeartbeatT2J GROWS 190→380 B by
                               # one record per lane group (sr_* fields); darkness vs any
                               # FW ≤ 41 board is intended.
@@ -579,7 +582,11 @@ def test_wire_layout_frozen(gen):
     # record per lane group (sr_seq .. sr_q_depth) and the StopRecordFlags enum.
     # Previous digest (HAND_FAN_SET):
     #   c7006d2abae2d2fd723da7f35ea61e9569f6a2a1650aa6312ec73ed1f080a576
-    _EXPECTED = "da1ae9be7eedddfb4ec60776c35309531c4f6783d4c4b96bb6d251c8817724ed"
+    # Re-pinned for PROTOCOL_VERSION 13 -> 14 (2026-11-10, BUG-7): the hash covers
+    # the version constant, and that is the only input that moved. No message,
+    # RPC arg or MsgType changed; the 0x6E0 tilt counts ride inside a CAN payload.
+    # Previous pin: da1ae9be7eedddfb4ec60776c35309531c4f6783d4c4b96bb6d251c8817724ed
+    _EXPECTED = "27eb4fcdb3cf7bc4031b56fcb83d4ee8010f09da60a64ce88001bbe5bc91d70a"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

@@ -48,12 +48,42 @@ The literals are restated, not imported, from ``motion/skills/executor.py`` so
 the GUI server can load this file without the motion package;
 ``tests/motion/test_records.py`` pins them against the executor's constants.
 
+Drops to date (FEAT-47, 2026-11-10)
+-----------------------------------
+A section near the top counts every drop: a ball thrown to be caught by
+Jugglebot that was not caught (``motion/skills/report.py::drop_count``; the
+columns Stop and an unverifiable final Catch are not drops). It is parsed from
+the machine marker ``<!-- drops: live=<n> since=<YYYY-MM-DD> history=<m|none> -->``
+and the total shown is ``history + live``: ``live`` is counted by this module
+from ``since`` on, ``history`` is the figure :func:`set_drops_history` writes
+(``tools/set_drops_history.py``; never by hand; ``none`` = not yet counted, read
+as 0). A history written with its dates carries them as the optional marker
+fields ``history_from=<date> history_through=<date>`` (a marker without them
+parses as before, and every live write preserves them).
+
+The same section also keeps the CAUGHT side so a percentage can be shown (owner,
+2026-11-11): optional ``caught=<n>`` (live, after ``since``) and
+``history_caught=<m>`` (after ``history``). A Throw or Feed "to catch" is a ball
+thrown to be caught by Jugglebot, so ``throws = caught + drops`` BY
+CONSTRUCTION (``report.caught_count`` and ``report.drop_count`` share one base)
+and the denominator can never disagree with the drops figure. A marker without
+the fields parses and re-renders byte-identically; the figures are exposed
+(:attr:`Drops.throws_total`, ``to_json`` ``caught``/``throws``) only when every
+part that has drops also has its caught figure, else ``None``: never a
+percentage built on a denominator that misses a part. A file without the section is "not counted yet"
+(:attr:`Ledger.drops` is ``None``; the v2 file parses unchanged) and the first
+write after the upgrade adds it. Feeds (``reload``/``magazine``) are not
+records but their drops count: :func:`record_attempt` books them without a
+table row.
+
 Writes
 ------
 :func:`record_attempt` is the one writer: it parses the existing file (a
 malformed file raises :class:`RecordsFormatError` and is NEVER overwritten),
-applies the Attempt, and writes only when a record was beaten or the file did
-not exist, atomically (temp file in the same directory + ``os.replace``).
+applies the Attempt, and writes only when a record was beaten, the file did
+not exist, the Attempt carried drops or catches, or the drops section is not there yet
+(the first write after the upgrade), atomically (temp file in the same
+directory + ``os.replace``).
 Rendering is deterministic, so a re-render of the same model is
 byte-identical.
 
@@ -67,6 +97,7 @@ from __future__ import annotations
 import argparse
 import csv
 import dataclasses
+import datetime
 import json
 import os
 import re
@@ -116,6 +147,17 @@ _TABLE_HEAD = '| When | Throws | Catches | How it ended | Note | Parameters |'
 _TABLE_RULE = '|---|---:|---:|---|---|---|'
 _TABLE_HEAD_V1 = '| When | Throws | Catches | How it ended | Note |'
 _TABLE_RULE_V1 = '|---|---:|---:|---|---|'
+_DROPS_RE = re.compile(r'^<!-- drops: live=(\d+) since=(\d{4}-\d{2}-\d{2}) '
+                       r'(?:caught=(\d+) )?history=(\d+|none)'
+                       r'(?: history_caught=(\d+))?'
+                       r'(?: history_from=(\d{4}-\d{2}-\d{2}) '
+                       r'history_through=(\d{4}-\d{2}-\d{2}))? -->$')
+_SCORES_RE = re.compile(r'^<!-- scores: pattern=([a-z0-9_]+) -->$')
+_FEED_SCORES_MARK = '<!-- feed-scores -->'
+_SCORES_HEAD = ('| When | Scored | Median mm | Without a Fit | Scores mm |')
+_SCORES_RULE = '|---|---:|---:|---:|---|'
+_FEED_SCORES_HEAD = '| When | Pattern | Score mm |'
+_FEED_SCORES_RULE = '|---|---|---:|'
 _NO_RECORD = '_No record yet._'
 _FILE_MARKER = '<!-- jugglebot-records v2 -->'
 _FILE_MARKER_V1 = '<!-- jugglebot-records v1 -->'
@@ -154,6 +196,89 @@ class Attempt:
     note: str = ''
     #: (key, value) pairs the run used, in insertion order (FEAT-29).
     params: Tuple[Tuple[str, str], ...] = ()
+    #: Balls thrown to be caught that were not (``report.drop_count``).
+    drops: int = 0
+    #: Catches that pair with ``drops`` (``report.caught_count``); ``None`` =
+    #: the writer does not report them (the ledger's caught figure is untouched).
+    caught: Optional[int] = None
+    #: Landing scores (IDEA-21, owner's decision in TKT-63): per Throw in
+    #: Throw order, mm (``report.landing_scores``); ``no_fit`` the Throws
+    #: with no Fit (no score); ``feed_scores`` one per Ball Butler Feed that
+    #: seated, kept apart from the Throws. Written whether or not a record
+    #: is beaten; none of them touches a record or a drops figure.
+    scores: Tuple[float, ...] = ()
+    no_fit: int = 0
+    feed_scores: Tuple[float, ...] = ()
+
+
+@dataclasses.dataclass(frozen=True)
+class ScoreRow:
+    """One Attempt's Throw landing scores for a Pattern: whole mm, in Throw
+    order; ``median_mm`` over them (``None`` when none was scored)."""
+    when_local: str
+    pattern: str
+    scores: Tuple[int, ...]
+    no_fit: int = 0
+
+    @property
+    def median_mm(self) -> Optional[int]:
+        return _median_int(self.scores)
+
+
+@dataclasses.dataclass(frozen=True)
+class FeedScore:
+    """One Ball Butler Feed's landing score, whole mm."""
+    when_local: str
+    pattern: str
+    score_mm: int
+
+
+def _median_int(values: Sequence[int]) -> Optional[int]:
+    v = sorted(values)
+    n = len(v)
+    if not n:
+        return None
+    m = v[n // 2] if n % 2 else 0.5 * (v[n // 2 - 1] + v[n // 2])
+    return int(m + 0.5)
+
+
+@dataclasses.dataclass(frozen=True)
+class Drops:
+    """The "Drops to date" figure: ``live`` counted from ``since`` (a date),
+    plus a ``history`` count a backfill sets (``None`` = not yet counted)."""
+    live: int
+    since: str
+    history: Optional[int] = None
+    #: First and last date the history figure counts (``set_drops_history``);
+    #: ``None`` on a marker written before they existed.
+    history_from: Optional[str] = None
+    history_through: Optional[str] = None
+    #: Catches paired with ``live`` / ``history`` (``report.caught_count``);
+    #: ``None`` = not recorded (a marker written before they existed).
+    caught: Optional[int] = None
+    history_caught: Optional[int] = None
+
+    @property
+    def total(self) -> int:
+        return self.live + (self.history or 0)
+
+    @property
+    def caught_total(self) -> Optional[int]:
+        """Catches, live + history; ``None`` when a part that has drops lacks
+        its caught figure (a part with no drops and no figure counts 0)."""
+        live = self.caught if self.caught is not None else (
+            0 if self.live == 0 else None)
+        hist = self.history_caught if self.history_caught is not None else (
+            0 if not self.history else None)
+        if live is None or hist is None:
+            return None
+        return live + hist
+
+    @property
+    def throws_total(self) -> Optional[int]:
+        """Balls thrown to be caught: caught + drops; ``None`` as above."""
+        c = self.caught_total
+        return None if c is None else c + self.total
 
 
 @dataclasses.dataclass(frozen=True)
@@ -183,6 +308,11 @@ class Table:
 class Ledger:
     """pattern id -> :class:`Table`; :meth:`ordered` is the file order."""
     tables: Tuple[Tuple[str, Table], ...]
+    #: ``None`` = the file has no drops section ("not counted yet").
+    drops: Optional[Drops] = None
+    #: Landing scores (IDEA-21); empty = the file has no such section.
+    scores: Tuple[ScoreRow, ...] = ()
+    feed_scores: Tuple[FeedScore, ...] = ()
 
     def table(self, pattern: str) -> Optional[Table]:
         for p, t in self.tables:
@@ -196,13 +326,15 @@ class Ledger:
 
     def replace(self, table: Table) -> 'Ledger':
         rest = [t for p, t in self.tables if p != table.pattern]
-        return _ledger(rest + [table])
+        return dataclasses.replace(
+            _ledger(rest + [table], self.drops),
+            scores=self.scores, feed_scores=self.feed_scores)
 
 
-def _ledger(tables: Iterable[Table]) -> Ledger:
+def _ledger(tables: Iterable[Table], drops: Optional[Drops] = None) -> Ledger:
     """The canonical (file-order) tuple, so equal ledgers compare equal."""
     return Ledger(tables=tuple((t.pattern, t) for t in sorted(
-        tables, key=lambda t: (t.balls, t.pattern))))
+        tables, key=lambda t: (t.balls, t.pattern))), drops=drops)
 
 
 def empty() -> Ledger:
@@ -245,6 +377,26 @@ def _parse_params(cell: str, where: str) -> Tuple[Tuple[str, str], ...]:
     return tuple(out)
 
 
+def _drops_sentence(d: Drops) -> str:
+    """The one human line under the marker (never parsed)."""
+    if d.history is None:
+        hist = 'history not yet counted'
+    elif d.history_from and d.history_through:
+        hist = '%d from history, %s to %s' % (
+            d.history, d.history_from, d.history_through)
+    else:
+        hist = '%d from history' % d.history
+    t = d.throws_total
+    pct = ''
+    if t:
+        p = round(100.0 * d.caught_total / t, 1)
+        pct = ' %s Throws and Feeds to catch, %.1f %% caught, %.1f %% dropped.' % (
+            format(t, ','), p, round(100.0 - p, 1))
+    return ('Drops to date: %d (%d counted live since %s; %s).%s A drop is a '
+            'ball thrown to be caught by Jugglebot that was not caught.'
+            % (d.total, d.live, d.since, hist, pct))
+
+
 def render(model: Ledger) -> str:
     """The whole ``docs/records.md`` text (deterministic)."""
     out = [
@@ -265,6 +417,19 @@ def render(model: Ledger) -> str:
         'drop (a missed or lost ball), compute (a solve or limit refusal) or '
         'other, with the raw end code in parentheses.',
     ]
+    d = model.drops
+    if d is not None:
+        out += ['', '## Drops to date', '',
+                '<!-- drops: live=%d since=%s%s history=%s%s%s -->'
+                % (d.live, d.since,
+                   '' if d.caught is None else ' caught=%d' % d.caught,
+                   'none' if d.history is None else d.history,
+                   '' if d.history_caught is None
+                   else ' history_caught=%d' % d.history_caught,
+                   (' history_from=%s history_through=%s'
+                    % (d.history_from, d.history_through))
+                   if d.history_from and d.history_through else ''),
+                '', _drops_sentence(d)]
     last_balls = None
     for t in model.ordered():
         if t.balls != last_balls:
@@ -282,7 +447,95 @@ def render(model: Ledger) -> str:
             out.append('| %s | %d | %d | %s | %s | %s |'
                        % (r.when_local, r.throws, r.catches, ended, note,
                           _params_cell(r.params)))
+    if model.scores or model.feed_scores:
+        out += ['', '## Landing scores', '',
+                'A landing score is the distance in mm from the Fit\'s '
+                'landing to the target Site, one per Throw (Throw order); '
+                '"Without a Fit" counts the Throws with no landing, which '
+                'have no score. A Feed\'s score is kept apart. Written at '
+                'the end of every Attempt, whether or not a record is '
+                'beaten.']
+        for t in model.ordered():
+            rows = [r for r in model.scores if r.pattern == t.pattern]
+            if not rows:
+                continue
+            out += ['', '<!-- scores: pattern=%s -->' % (t.pattern,),
+                    '### %s' % (_cell(t.label),), '',
+                    _SCORES_HEAD, _SCORES_RULE]
+            for r in rows:
+                med = r.median_mm
+                out.append('| %s | %d | %s | %d | %s |' % (
+                    r.when_local, len(r.scores),
+                    '-' if med is None else med, r.no_fit,
+                    ' '.join(str(x) for x in r.scores) or '-'))
+        if model.feed_scores:
+            out += ['', _FEED_SCORES_MARK, '### Feeds', '',
+                    _FEED_SCORES_HEAD, _FEED_SCORES_RULE]
+            for f in model.feed_scores:
+                out.append('| %s | %s | %d |'
+                           % (f.when_local, f.pattern, f.score_mm))
     return '\n'.join(out) + '\n'
+
+
+def _table_rows(lines: List[str], i: int, head: str, rule: str,
+                where: str) -> Tuple[List[List[str]], int]:
+    """The cell lists of the table that follows the marker at ``lines[i]``,
+    and the index after it."""
+    i += 1
+    while i < len(lines) and lines[i].strip() != head:
+        s = lines[i].strip()
+        if s and not s.startswith('### '):
+            raise RecordsFormatError('%s: expected the table header, got %r'
+                                     % (where, s))
+        i += 1
+    if i + 1 >= len(lines) or lines[i + 1].strip() != rule:
+        raise RecordsFormatError('%s: table header or rule missing' % (where,))
+    i += 2
+    rows = []
+    while i < len(lines) and lines[i].strip().startswith('|'):
+        cells = [c.strip() for c in lines[i].strip().split('|')]
+        rows.append(cells[1:-1])
+        i += 1
+    return rows, i
+
+
+def _check_when(when: str, where: str) -> str:
+    if not _WHEN_RE.match(when):
+        raise RecordsFormatError('%s: bad time %r' % (where, when))
+    return when
+
+
+def _parse_score_row(pattern: str, cells: List[str], where: str) -> ScoreRow:
+    if len(cells) != 5:
+        raise RecordsFormatError('%s: a score row needs 5 cells' % (where,))
+    when, scored, med, no_fit, scores = cells
+    try:
+        vals = (() if scores == '-'
+                else tuple(int(x) for x in scores.split()))
+        n_scored, n_no_fit = int(scored), int(no_fit)
+    except ValueError:
+        raise RecordsFormatError('%s: bad score row %r' % (where, cells))
+    if (min(vals, default=0) < 0 or n_no_fit < 0 or n_scored != len(vals)):
+        raise RecordsFormatError('%s: scores disagree with Scored %r'
+                                 % (where, scored))
+    row = ScoreRow(_check_when(when, where), pattern, vals, n_no_fit)
+    if med != ('-' if row.median_mm is None else str(row.median_mm)):
+        raise RecordsFormatError('%s: Median mm %r is not the median of the '
+                                 'scores' % (where, med))
+    return row
+
+
+def _parse_feed_score_row(cells: List[str], where: str) -> FeedScore:
+    if len(cells) != 3:
+        raise RecordsFormatError('%s: a Feed score row needs 3 cells'
+                                 % (where,))
+    try:
+        mm = int(cells[2])
+    except ValueError:
+        raise RecordsFormatError('%s: bad Feed score %r' % (where, cells[2]))
+    if mm < 0:
+        raise RecordsFormatError('%s: negative Feed score' % (where,))
+    return FeedScore(_check_when(cells[0], where), cells[1], mm)
 
 
 def _parse_row(line: str, where: str, v1: bool = False) -> Record:
@@ -319,10 +572,41 @@ def parse(text: str) -> Ledger:
     head, rule = ((_TABLE_HEAD_V1, _TABLE_RULE_V1) if v1
                   else (_TABLE_HEAD, _TABLE_RULE))
     tables: Dict[str, Table] = {}
+    drops: Optional[Drops] = None
+    scores: List[ScoreRow] = []
+    feed_scores: List[FeedScore] = []
     i = 0
     while i < len(lines):
         m = _MARKER_RE.match(lines[i].strip())
+        sm = _SCORES_RE.match(lines[i].strip())
+        if sm or lines[i].strip() == _FEED_SCORES_MARK:
+            where = 'line %d' % (i + 1,)
+            if sm:
+                pat = sm.group(1)
+                if pat not in _BALLS:
+                    raise RecordsFormatError('%s: scores for unknown Pattern '
+                                             '%r' % (where, pat))
+                cells, i = _table_rows(lines, i, _SCORES_HEAD, _SCORES_RULE,
+                                       where)
+                scores += [_parse_score_row(pat, c, where) for c in cells]
+            else:
+                cells, i = _table_rows(lines, i, _FEED_SCORES_HEAD,
+                                       _FEED_SCORES_RULE, where)
+                feed_scores += [_parse_feed_score_row(c, where)
+                                for c in cells]
+            continue
         if not m:
+            if lines[i].strip().startswith('<!-- drops:'):
+                dm = _DROPS_RE.match(lines[i].strip())
+                if not dm or drops is not None:
+                    raise RecordsFormatError('line %d: bad or repeated drops '
+                                             'marker' % (i + 1,))
+                drops = Drops(
+                    int(dm.group(1)), dm.group(2),
+                    None if dm.group(4) == 'none' else int(dm.group(4)),
+                    dm.group(6), dm.group(7),
+                    None if dm.group(3) is None else int(dm.group(3)),
+                    None if dm.group(5) is None else int(dm.group(5)))
             if lines[i].lstrip().startswith('|'):
                 raise RecordsFormatError('line %d: table row outside a '
                                          'Pattern' % (i + 1,))
@@ -343,7 +627,8 @@ def parse(text: str) -> Ledger:
         seen_head = False
         while i < len(lines):
             s = lines[i].strip()
-            if _MARKER_RE.match(s) or s.startswith('#'):
+            if (_MARKER_RE.match(s) or s.startswith('#')
+                    or _SCORES_RE.match(s) or s == _FEED_SCORES_MARK):
                 break
             if s == head and not seen_head:
                 seen_head = True
@@ -370,7 +655,46 @@ def parse(text: str) -> Ledger:
             raise RecordsFormatError('Pattern %r: balls %d, expected %d'
                                      % (p, t.balls, _BALLS[p]))
         model = model.replace(t)
-    return model
+    order = {p: n for n, (p, _t) in enumerate(model.tables)}
+    return dataclasses.replace(
+        model, drops=drops, scores=_sorted_scores(scores, order),
+        feed_scores=tuple(feed_scores))
+
+
+def _sorted_scores(rows: Iterable[ScoreRow],
+                   order: Dict[str, int]) -> Tuple[ScoreRow, ...]:
+    """Grouped by Pattern in file order, chronological within one (a stable
+    sort), so a ledger equals its own parse."""
+    return tuple(sorted(rows, key=lambda r: order.get(r.pattern, 0)))
+
+
+def apply_scores(model: Ledger, when_local: str, pattern: str,
+                 scores: Sequence[float] = (), no_fit: int = 0,
+                 feed_scores: Sequence[float] = ()) -> Ledger:
+    """Append one Attempt's landing scores (IDEA-21): a Throw row for a
+    Pattern when it has scores or Throws without a Fit (never for a Feed
+    goal), a Feed row per Feed score. Scores are rounded to whole mm;
+    negative or non-finite ones are ignored. ``ValueError`` on a bad time."""
+    if not _WHEN_RE.match(str(when_local)):
+        raise ValueError('bad when_local %r (want %s)'
+                         % (when_local, WHEN_FORMAT))
+
+    def ok(v) -> bool:
+        return isinstance(v, (int, float)) and 0.0 <= v < float('inf')
+
+    ints = tuple(int(round(float(v))) for v in scores if ok(v))
+    n_no_fit = max(0, int(no_fit))
+    rows = model.scores
+    if pattern in _BALLS and pattern not in FEED_PATTERNS and (
+            ints or n_no_fit):
+        order = {p: n for n, (p, _t) in enumerate(model.tables)}
+        rows = _sorted_scores(
+            rows + (ScoreRow(str(when_local), pattern, ints, n_no_fit),),
+            order)
+    feeds = model.feed_scores + tuple(
+        FeedScore(str(when_local), str(pattern), int(round(float(v))))
+        for v in feed_scores if ok(v))
+    return dataclasses.replace(model, scores=rows, feed_scores=feeds)
 
 
 def apply_attempt(model: Ledger, attempt: Attempt) -> Tuple[Ledger, bool]:
@@ -395,6 +719,81 @@ def apply_attempt(model: Ledger, attempt: Attempt) -> Tuple[Ledger, bool]:
                  tuple((_param(k), _param(v)) for k, v in attempt.params
                        if _param(k)))
     return model.replace(dataclasses.replace(table, rows=table.rows + (row,))), True
+
+
+def apply_drops(model: Ledger, when_local: str, drops: int,
+                caught: Optional[int] = None) -> Ledger:
+    """Add ``drops`` (and the paired ``caught``) to the live counts; the first
+    call on a ledger without the section starts it (``since`` the Attempt's
+    date, history ``none``). A live caught figure that was never recorded
+    stays unrecorded when live drops already exist (it would miss them), and
+    starts at 0 + ``caught`` while live is still 0; every other field is
+    preserved. ``caught=None`` leaves the caught figure exactly as it is."""
+    d = model.drops
+    n = max(0, int(drops))
+    if d is None:
+        d = Drops(0, str(when_local)[:10], None)
+    if caught is None:
+        return dataclasses.replace(model, drops=dataclasses.replace(
+            d, live=d.live + n))
+    c = max(0, int(caught))
+    base = d.caught if d.caught is not None else (0 if d.live == 0 else None)
+    return dataclasses.replace(model, drops=dataclasses.replace(
+        d, live=d.live + n, caught=None if base is None else base + c))
+
+
+def _check_date(name: str, value: str) -> str:
+    if (not isinstance(value, str)
+            or not re.match(r'^\d{4}-\d{2}-\d{2}$', value)):
+        raise ValueError('%s must be a YYYY-MM-DD date, got %r' % (name, value))
+    try:
+        datetime.datetime.strptime(value, '%Y-%m-%d')
+    except ValueError:
+        raise ValueError('%s must be a YYYY-MM-DD date, got %r' % (name, value))
+    return value
+
+
+def set_drops_history(path: str, history: int, through: str, *,
+                      since: Optional[str] = None,
+                      first: Optional[str] = None,
+                      history_caught: Optional[int] = None) -> Ledger:
+    """Write the backfilled history figure into ``path``'s drops section.
+
+    ``history`` drops counted from ``first`` through ``through`` (dates). The
+    section is created when absent (live 0, ``since`` = ``since`` or
+    ``through``); when present ONLY the history fields change (live and
+    ``since`` untouched). ``ValueError`` (``RecordsFormatError`` is one) and
+    the file untouched on a malformed existing marker, a negative or
+    non-integer figure, a bad date or ``first`` after ``through``. The dates
+    are stored only when ``first`` is given. ``history_caught`` is the Catches
+    paired with ``history`` (``None`` = not recorded, which also clears an
+    older figure: it belonged to the older history); a negative or
+    non-integer one is refused."""
+    if isinstance(history, bool) or not isinstance(history, int) or history < 0:
+        raise ValueError('history must be a non-negative integer, got %r'
+                         % (history,))
+    if history_caught is not None and (
+            isinstance(history_caught, bool)
+            or not isinstance(history_caught, int) or history_caught < 0):
+        raise ValueError('history_caught must be a non-negative integer, '
+                         'got %r' % (history_caught,))
+    through = _check_date('through', through)
+    if first is not None:
+        first = _check_date('first', first)
+        if first > through:
+            raise ValueError('first %s is after through %s' % (first, through))
+    if since is not None:
+        since = _check_date('since', since)
+    model = load(path)               # a malformed marker raises, file untouched
+    d = model.drops
+    if d is None:
+        d = Drops(0, since or through, None)
+    d = dataclasses.replace(d, history=history, history_caught=history_caught,
+                            history_from=first,
+                            history_through=through if first else None)
+    model = dataclasses.replace(model, drops=d)
+    write_atomic(path, render(model))
+    return model
 
 
 def rebuild(attempts: Iterable[Attempt]) -> Ledger:
@@ -456,7 +855,13 @@ def to_json(model: Ledger) -> dict:
                 'category': category(b.end_code), 'note': b.note,
                 'params': {k: v for k, v in b.params}},
         })
-    return {'rule': RULE, 'patterns': pats}
+    d = model.drops
+    drops = None if d is None else {
+        'total': d.total, 'live': d.live, 'since': d.since,
+        'history': d.history, 'history_from': d.history_from,
+        'history_through': d.history_through,
+        'caught': d.caught_total, 'throws': d.throws_total}
+    return {'rule': RULE, 'patterns': pats, 'drops': drops}
 
 
 def load(path: str) -> Ledger:
@@ -489,15 +894,43 @@ def write_atomic(path: str, text: str) -> None:
 
 def record_attempt(path: str, attempt: Attempt) -> Tuple[bool, int]:
     """The one writer. Returns (beaten, the Pattern's record Catches after
-    this Attempt). Raises :class:`RecordsFormatError` on a malformed file,
-    which is left untouched; writes only when beaten or the file is new."""
+    this Attempt; 0 for a Feed). Raises :class:`RecordsFormatError` on a
+    malformed file, which is left untouched. Writes when a record was beaten,
+    the file is new, the Attempt carried drops or catches, or the drops section is not
+    in the file yet. A Feed books its drops only, never a record row."""
     existed = os.path.exists(path)
+    has_scores = bool(attempt.scores or attempt.no_fit or attempt.feed_scores)
+    if (attempt.pattern in FEED_PATTERNS and int(attempt.drops) <= 0
+            and int(attempt.caught or 0) <= 0 and not has_scores):
+        return False, 0            # a Feed with no drops or catches touches nothing
     model = load(path)
-    model, beaten = apply_attempt(model, attempt)
-    if beaten or not existed:
+    if attempt.pattern in FEED_PATTERNS:
+        beaten, best = False, 0
+    else:
+        model, beaten = apply_attempt(model, attempt)
+        t = model.table(attempt.pattern).best
+        best = t.catches if t else 0
+    n = max(0, int(attempt.drops))
+    c = None if attempt.caught is None else max(0, int(attempt.caught))
+    if has_scores:
+        model = apply_scores(model, attempt.when_local, attempt.pattern,
+                             attempt.scores, attempt.no_fit,
+                             attempt.feed_scores)
+    if (beaten or not existed or n > 0 or (c or 0) > 0 or has_scores
+            or model.drops is None):
+        model = apply_drops(model, attempt.when_local, n, c)
         write_atomic(path, render(model))
-    best = model.table(attempt.pattern).best
-    return beaten, (best.catches if best else 0)
+    return beaten, best
+
+
+def total_drops(path: str) -> Optional[int]:
+    """The "Drops to date" total in ``path`` (``None`` = not counted yet or
+    unreadable). For the log line only."""
+    try:
+        d = load(path).drops
+    except (OSError, RecordsFormatError):
+        return None
+    return None if d is None else d.total
 
 
 def _show(model: Ledger) -> str:

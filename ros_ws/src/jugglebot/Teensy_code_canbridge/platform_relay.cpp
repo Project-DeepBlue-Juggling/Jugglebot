@@ -54,22 +54,29 @@ uint16_t state_read() {
 
 uint16_t state_write(const JbUdp::RpcArgs::ArgRobotState& s) {
   // Trust-boundary float validation: a NaN/Inf pose offset makes the
-  // `* 1000.0f` → int16 casts below UNDEFINED, and the corrupt value is then PERSISTED
+  // conversion to int16 counts below UNDEFINED, and the corrupt value is then PERSISTED
   // on the Platform Teensy across reboots (it owns the cold-start state). Reject a
   // non-finite pose before the cast — mirrors the BB_THROW throw_args_valid isfinite
   // guard (rpc.cpp). is_homed / levelling are bools; only the two floats need checking.
   if (!(std::isfinite(s.pose_offset_tiltX) && std::isfinite(s.pose_offset_tiltY)))
     return JbUdp::RpcStatus::ERR_BAD_ARGS;
+  // Same reason for a finite value past the int16 span: reject it, never wrap it.
+  const float x_counts = s.pose_offset_tiltX * PlatformState::TILT_COUNTS_PER_RAD;
+  const float y_counts = s.pose_offset_tiltY * PlatformState::TILT_COUNTS_PER_RAD;
+  if (!(std::fabs(x_counts) <= 32767.0f && std::fabs(y_counts) <= 32767.0f))
+    return JbUdp::RpcStatus::ERR_BAD_ARGS;
   // Encode the dlc-8 RobotState frame exactly as Teensy_code_platform.ino
   // createStateCANMessage decodes it: byte0 flags (bit0 is_homed, bit1 levelling),
-  // int16 LE pose*1000 about X (bytes 1-2) and Y (bytes 3-4), bytes 5-7 zero.
+  // int16 LE tilt counts about X (bytes 1-2) and Y (bytes 3-4), bytes 5-7 zero.
+  // Rounded, never a C cast: the cast truncates toward zero, which cost up to a
+  // whole count and biased the persisted offset toward level (BUG-7).
   ODrive::CanFrame f;
   f.id = PlatformCanId::STATE_UPDATE;
   f.len = 8;
   const uint8_t flags = (uint8_t)((s.is_homed ? 0x1u : 0u) |
                                   (s.levelling_complete ? 0x2u : 0u));
-  const int16_t x = (int16_t)(s.pose_offset_tiltX * 1000.0f);
-  const int16_t y = (int16_t)(s.pose_offset_tiltY * 1000.0f);
+  const int16_t x = (int16_t)std::lround(x_counts);
+  const int16_t y = (int16_t)std::lround(y_counts);
   f.buf[0] = flags;
   f.buf[1] = (uint8_t)(x & 0xFF);
   f.buf[2] = (uint8_t)((x >> 8) & 0xFF);

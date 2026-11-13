@@ -2,9 +2,9 @@
 id: TKT-55
 kind: ticket
 title: 'FEAT-47 drops counter: live only, live plus a base figure from the launch logs, or live plus the full history, and which edge cases count as a drop?'
-status: open
+status: complete
 created: '2026-11-09'
-updated: '2026-11-08T17:57:54Z'
+updated: '2026-11-08T21:40:39Z'
 owners: []
 priority: medium
 effort: xs
@@ -39,3 +39,9 @@ Recommendation: 2. It gets a defensible number without a large agent bill, and t
 - 1: the next night builds the counter on a branch.
 - 2: the next night builds it and runs the count.
 - 3: a day Session plans the backfill.
+
+## Answer
+
+Answering the questions: the first two are drops. A final Catch booked unverifiable is not a drop.
+
+On the 'Options': I want option 3. I want as complete a record as possible. We can use Sonnet agents for this, which will be cheap.

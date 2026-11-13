@@ -118,7 +118,7 @@ def test_end_lines_by_how_the_attempt_ended():
                   release_err_s=-0.012),
                _r(throw_no=2, apex_m=0.929, landing_err_mm=(30.9, -3.4),
                   release_err_s=0.030, caught=False)]
-    tally = ('1/2 caught · apex 0.90–0.93 m · worst landing 31 mm · release '
+    tally = ('1/2 caught · apex 0.90–0.93 m · worst landing 31 mm · landing median 18 mm over 2 · release '
              '-12 ms..+30 ms')
     assert rp.end_line('self_toss', '', '', reports) == (
         'INFO', 'self_toss done: ' + tally)
@@ -278,3 +278,179 @@ def test_the_unverifiable_throw_line_is_info_and_does_not_read_caught_or_missed(
     assert 'FINAL CATCH UNVERIFIABLE (the goal ended on a Stop; not counted)' \
         in text
     assert 'CAUGHT' not in text and 'MISSED' not in text
+
+
+# ── drop_count (FEAT-47) ──────────────────────────────────────────────────
+
+def test_drop_count_counts_misses_and_balls_still_in_the_air():
+    reports = [_r(caught=True), _r(caught=False), _r(caught=None)]
+    assert rp.drop_count(reports) == 2      # False = missed, None = in the air at the end
+
+
+def test_drop_count_never_counts_a_catch_the_stop_or_an_unverified_final_catch():
+    assert rp.drop_count([_r(caught=True)]) == 0
+    assert rp.drop_count([_r(caught=None, stop=True)]) == 0
+    assert rp.drop_count([_r(caught=False, stop=True)]) == 0
+    assert rp.drop_count([_r(caught=None, unverified=True)]) == 0
+    assert rp.drop_count([]) == 0
+
+
+def test_drop_count_adds_missed_feeds_and_ignores_a_negative():
+    assert rp.drop_count([_r(caught=False)], feed_missed=2) == 3
+    assert rp.drop_count([], feed_missed=1) == 1
+    assert rp.drop_count([], feed_missed=-4) == 0
+
+
+def test_drop_count_adds_lost_throws_and_ignores_a_negative():
+    """FEAT-47: Throws lost to an EMPTY Cup have no ThrowReport; the executor's
+    count adds, a negative is ignored, and it sums with the Feed misses."""
+    assert rp.drop_count([_r(caught=False)], missed_catches=2) == 3
+    assert rp.drop_count([], missed_catches=1, feed_missed=1) == 2
+    assert rp.drop_count([], missed_catches=-3) == 0
+
+
+def test_caught_count_counts_only_verified_catches_of_real_throws():
+    """The owner's percentage (2026-11-11): the Catches that share drop_count's base."""
+    assert rp.caught_count([_r(caught=True), _r(caught=True), _r(caught=False),
+                            _r(caught=None)]) == 2
+    assert rp.caught_count([_r(caught=True, stop=True)]) == 0          # the Stop
+    assert rp.caught_count([_r(caught=True, unverified=True)]) == 0    # unverified final Catch
+    assert rp.caught_count([]) == 0
+
+
+def test_caught_count_adds_seated_feeds_and_ignores_a_negative():
+    assert rp.caught_count([_r(caught=True)], feeds_caught=2) == 3
+    assert rp.caught_count([], feeds_caught=1) == 1
+    assert rp.caught_count([], feeds_caught=-4) == 0
+
+
+def test_caught_and_drops_partition_the_balls_thrown_to_be_caught():
+    reports = [_r(caught=True), _r(caught=True), _r(caught=False), _r(caught=None),
+               _r(caught=None, stop=True), _r(caught=True, unverified=True)]
+    assert rp.caught_count(reports, feeds_caught=1) + rp.drop_count(
+        reports, feed_missed=1, missed_catches=1) == 2 + 1 + 2 + 1 + 1
+
+
+def test_drop_count_leaves_the_operators_tally_alone():
+    reports = [_r(caught=None), _r(caught=True)]
+    assert rp.summarise(reports) == (2, 1)
+
+
+# ── FEAT-48: a Throw lost to an EMPTY Cup is counted in M (Throws) ─────────
+
+def test_summarise_adds_lost_throws_to_throws_only_and_ignores_a_negative():
+    reports = [_r(throw_no=i) for i in range(1, 10)]          # 9 caught
+    assert rp.summarise(reports) == (9, 9)                    # today, unchanged
+    assert rp.summarise(reports, missed_catches=1) == (10, 9)  # 9/10, not 9/9
+    assert rp.summarise(reports, missed_catches=3) == (12, 9)
+    assert rp.summarise(reports, missed_catches=-2) == (9, 9)
+    assert rp.summarise([], missed_catches=1) == (1, 0)
+
+
+def test_end_line_says_9_of_10_and_why_only_when_a_throw_was_lost():
+    reports = [_r(throw_no=i, apex_m=0.9, landing_err_mm=None,
+                  release_err_s=None) for i in range(1, 10)]
+    _s, before = rp.end_line('columns', 'MISSED_CATCH', '', reports)
+    _s, after = rp.end_line('columns', 'MISSED_CATCH', '', reports,
+                            missed_catches=1)
+    assert 'ENDED (MISSED_CATCH) · 9/9 caught · apex' in before
+    assert 'ENDED (MISSED_CATCH) · 9/10 caught (1 lost to an empty Cup) · apex' \
+        in after
+    _s, two = rp.end_line('columns', '', '', reports, missed_catches=2)
+    assert 'done: 9/11 caught (2 lost to an empty Cup)' in two
+    # zero and negative leave today's text byte-identical
+    for k in (0, -1):
+        assert rp.end_line('columns', 'MISSED_CATCH', '', reports,
+                           missed_catches=k) == (
+            'ERROR', before)
+
+
+def test_record_counts_adds_lost_throws_to_throws_and_leaves_catches():
+    reports = [_r(throw_no=i) for i in range(1, 10)]
+    assert rp.record_counts(reports, 'MISSED_CATCH') == (9, 9)
+    assert rp.record_counts(reports, 'MISSED_CATCH',
+                            missed_catches=1) == (10, 9)
+    assert rp.record_counts(reports, 'MISSED_CATCH',
+                            missed_catches=-5) == (9, 9)
+    unv = reports + [_r(throw_no=10, caught=None, unverified=True)]
+    assert rp.record_counts(unv, 'COMPLETED', missed_catches=1) == (11, 10)
+
+
+def test_lost_throws_do_not_change_the_drop_count():
+    reports = [_r(throw_no=i) for i in range(1, 10)]
+    assert rp.drop_count(reports, missed_catches=1) == 1
+    assert rp.summarise(reports, missed_catches=1)[0] == 10
+
+
+# -- the landing score (IDEA-21, owner's decision in TKT-63) ----------------
+
+def test_a_landing_score_is_the_distance_from_the_target_and_none_without_a_fit():
+    assert rp.landing_score_mm((3.0, -4.0)) == pytest.approx(5.0)
+    assert rp.landing_score_mm((0.0, 0.0)) == 0.0
+    assert rp.landing_score_mm(None) is None
+
+
+def test_landing_scores_are_in_throw_order_and_count_the_throws_without_a_fit():
+    reports = [_r(throw_no=1, landing_err_mm=(3.0, 4.0)),
+               _r(throw_no=2, landing_err_mm=None, caught=False),
+               _r(throw_no=3, landing_err_mm=(0.0, 12.0)),
+               _r(throw_no=4, landing_err_mm=(100.0, 0.0), stop=True),
+               _r(throw_no=5, landing_err_mm=None, caught=None,
+                  unverified=True)]
+    scores, no_fit = rp.landing_scores(reports)
+    assert scores == pytest.approx([5.0, 12.0]) and no_fit == 1
+    assert rp.landing_scores([]) == ([], 0)
+
+
+def test_the_median_is_the_middle_value_or_the_mean_of_the_middle_two():
+    assert rp.median_mm([30.0, 10.0, 20.0]) == 20.0
+    assert rp.median_mm([10.0, 40.0, 20.0, 30.0]) == 25.0
+    with pytest.raises(ValueError):
+        rp.median_mm([])
+
+
+def test_the_end_line_adds_the_landing_median_and_the_count_without_a_fit():
+    reports = [_r(throw_no=1, landing_err_mm=(3.0, 4.0)),
+               _r(throw_no=2, landing_err_mm=(0.0, 24.0)),
+               _r(throw_no=3, landing_err_mm=(30.0, 0.0)),
+               _r(throw_no=4, landing_err_mm=None, caught=False)]
+    _sev, text = rp.end_line('columns', '', '', reports)
+    assert ('worst landing 30 mm · landing median 24 mm over 3 '
+            '(1 without a Fit)') in text
+    clean = [_r(landing_err_mm=(3.0, 4.0))]
+    text = rp.end_line('columns', '', '', clean)[1]
+    assert 'landing median 5 mm over 1' in text
+    assert 'without a Fit' not in text
+    # no Fit anywhere: no median to print
+    assert 'landing median' not in rp.end_line(
+        'columns', '', '', [_r(landing_err_mm=None)])[1]
+
+
+def test_the_end_line_counts_a_throw_lost_to_an_empty_cup_as_without_a_fit():
+    """TKT-66 (b): scored + without-a-Fit equals the Throws figure."""
+    reports = [_r(throw_no=1, landing_err_mm=(3.0, 4.0)),
+               _r(throw_no=2, landing_err_mm=(0.0, 25.0))]
+    text = rp.end_line('columns', 'MISSED_CATCH', '', reports,
+                       missed_catches=2)[1]
+    assert '2/4 caught' in text
+    assert 'landing median 15 mm over 2 (2 without a Fit)' in text
+
+
+def test_the_ledger_scores_and_no_fit_add_up_to_the_ledger_throws():
+    """TKT-66 (b): `record_landing_scores` is on `record_counts`' base: a
+    Throw lost to an EMPTY Cup is without a Fit, and the unverified final
+    Catch the ledger counts on a COMPLETED goal is scored (it has a landing);
+    the columns Stop is in neither."""
+    reports = [_r(throw_no=1, landing_err_mm=(3.0, 4.0)),
+               _r(throw_no=2, landing_err_mm=None, row=False),
+               _r(throw_no=3, landing_err_mm=(0.0, 9.0), stop=True),
+               _r(throw_no=4, landing_err_mm=(6.0, 8.0), unverified=True,
+                  caught=None)]
+    for end_code, lost in (('COMPLETED', 2), ('MISSED_CATCH', 0)):
+        throws, _ = rp.record_counts(reports, end_code, missed_catches=lost)
+        scores, no_fit = rp.record_landing_scores(reports, end_code,
+                                                  missed_catches=lost)
+        assert len(scores) + no_fit == throws
+    scores, no_fit = rp.record_landing_scores(reports, 'COMPLETED',
+                                              missed_catches=2)
+    assert (scores, no_fit) == ([5.0, 10.0], 1 + 2)

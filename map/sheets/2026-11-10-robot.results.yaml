@@ -1,0 +1,38 @@
+schema: 1
+steps:
+  1:
+    comments: ''
+    saved_at: 2026-11-10 19:46
+    status: done
+  2:
+    comments: ''
+    saved_at: 2026-11-10 17:46
+    status: done
+  3:
+    comments: ''
+    saved_at: 2026-11-10 20:10
+    status: skipped
+  4:
+    comments: ''
+    saved_at: 2026-11-10 20:12
+    status: done
+  5:
+    comments: ''
+    saved_at: 2026-11-10 20:12
+    status: done
+  6:
+    comments: ''
+    saved_at: 2026-11-10 20:14
+    status: done
+  7:
+    comments: Throws seemed to be quite messy. No Attempts succeeded.
+    saved_at: 2026-11-10 20:18
+    status: problem
+  8:
+    comments: Nothing failed, and 45 deg passed perfectly, but 90 deg once again didn't
+      succeed. I think we need to make the 90 deg version tilt the Platform slightly
+      back (+ve x) when catching, to stop the ball hitting the top of the Platform
+      so often.
+    saved_at: 2026-11-10 20:21
+    status: done
+verdicts: {}

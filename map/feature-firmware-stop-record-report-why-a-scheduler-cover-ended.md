@@ -4,7 +4,7 @@ kind: feature
 title: 'Firmware STOP record: report why a scheduler cover ended (frame stamps, arrivals, queue, time-base steps)'
 status: in_progress
 created: '2026-11-08'
-updated: '2026-11-08T03:56:38Z'
+updated: '2026-11-13T02:59:54Z'
 owners: []
 priority: high
 effort: m
@@ -63,6 +63,11 @@ Firmware and a HeartbeatT2J or new-message wire change, so a `PROTOCOL_VERSION` 
 - pass: every firmware scheduler STOP WARN in the launch log is followed by its `firmware STOP record #<n> <group>` line carrying a classification.
 - record: each STOP record line's verdict and numbers (successor stamp gap, map shift, queue head, time-base change) and the `overwritten` count.
 - minutes: 1
+
+## Sitting result (2026-11-13 13:59)
+
+- verdict: pending
+- notes: (sheet 2026-11-13-robot, step 43)
 
 ## Progress
 

@@ -2,9 +2,9 @@
 id: FEAT-34
 kind: feature
 title: Update item naming convention based on type (eg. Pathways can be "PWAY-<N>" and Plans can be "PLAN-<N>" etc.
-status: promoted
+status: complete
 created: '2026-10-30'
-updated: '2026-11-07T06:49:37Z'
+updated: '2026-11-09T01:48:31Z'
 owners:
 - jugglebot-61
 priority: medium
@@ -15,7 +15,8 @@ radius: cross-cutting
 area: map-app
 blocked_by: []
 links:
-- plans/active/item-id-per-kind.md
+- plans/archived/item-id-per-kind.md
+- logbook/2026-11-09-item-id-per-kind-p6-close.md
 filed_by: harrison
 parent: map-improvements
 promoted_to: item-id-per-kind.md

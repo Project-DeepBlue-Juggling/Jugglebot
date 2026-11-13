@@ -76,3 +76,15 @@ def test_the_server_loads_the_module_by_path_not_the_ros_package():
     """No ``jugglebot`` package import happens: the server stays ROS-free."""
     assert gui_server.records.__name__ == "jugglebot_records"
     assert os.path.samefile(gui_server.records.__file__, rec.__file__)
+
+
+def test_the_json_carries_the_caught_and_throws_figures(tmp_path, ledger):
+    rec.set_drops_history(str(ledger), history=819, through="2026-11-10", first="2026-07-23",
+                          since="2026-11-11", history_caught=6485)
+    code, _h, body = _get(tmp_path, ledger)
+    d = json.loads(body.decode())["drops"]
+    assert code == 200 and (d["total"], d["caught"], d["throws"]) == (819, 6485, 7304)
+    rec.write_atomic(str(ledger), rec.render(rec.apply_drops(rec.empty(), "2026-11-11 09:00", 2)))
+    (tmp_path / "second").mkdir()
+    d = json.loads(_get(tmp_path / "second", ledger)[2].decode())["drops"]
+    assert d["total"] == 2 and d["caught"] is None and d["throws"] is None

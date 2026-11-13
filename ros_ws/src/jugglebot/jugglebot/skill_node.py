@@ -1223,6 +1223,20 @@ class SkillNode(Node):
         #: The goal's catch-bump switch (`_start_pattern`, `sk_bump.bump_enabled_for`).
         self._bump_enabled = False
         self._goal_end_code = ''
+        #: FEAT-47: Ball Butler Feed Catches the goal's executors ended
+        #: MISSED_CATCH (`SkillExecutor.missed_feed_catches`), captured as each
+        #: executor retires; read by `_juggle_execute` for the drops count.
+        self._goal_feed_missed = 0
+        #: FEAT-47: Throws lost to an EMPTY Cup (`SkillExecutor.missed_catch_drops`),
+        #: captured as each executor retires; read by `_juggle_execute`.
+        self._goal_missed_catches = 0
+        #: Ball Butler Feed Catches that seated (one `FeedCatchReport` each,
+        #: counted as `_drain_reports` consumes them); the caught side of
+        #: `_goal_feed_missed`, read by `_juggle_execute` for the ledger's
+        #: caught figure (`rp.caught_count`).
+        self._goal_feeds_caught = 0
+        #: Landing scores (mm) of those Feeds that had a Fit (IDEA-21).
+        self._goal_feed_scores = []
         #: The running goal's records-ledger parameters (FEAT-29): an ordered
         #: ((key, value), ...) captured at accept by `_start_pattern`, read by
         #: `_offer_record` when the attempt ends (never re-read from the node
@@ -1414,7 +1428,10 @@ class SkillNode(Node):
         # cancels), and the announced landing used as the feed catch's
         # `LandingPrior` is walked FORWARD by it (the announcement reports
         # Ball Butler's belief -- the request point -- not where the ball
-        # actually lands). Reload (`columns_1ball`, `reload`) and
+        # actually lands). The Feed's LANDING SCORE (IDEA-21, TKT-66) is
+        # NOT walked: it is measured against the raw announcement, the point
+        # Ball Butler was aimed at (`executor.feed_score_target_xy_mm`).
+        # Reload (`columns_1ball`, `reload`) and
         # hop/self_toss are untouched -- Ball Butler's bias there is folded
         # into the ordinary tracker-fit catch, not a schedule-frame prior.
         self.declare_parameter('columns_feed_bb_bias_mm', [0.0, 0.0])
@@ -3233,7 +3250,8 @@ class SkillNode(Node):
             severity, text = rp.end_line(
                 self._end_label() or 'attempt', end_code,
                 '' if message == end_code else message, self._goal_reports,
-                fed=self._attempt_fed)
+                fed=self._attempt_fed,
+                missed_catches=int(self._goal_missed_catches))
             self._log_at(severity, text)
 
     def _check_reload_timeout(self) -> None:
@@ -3780,6 +3798,10 @@ class SkillNode(Node):
                     # ONLY on these named paths, so reading it straight is
                     # equivalent for every pre-D3 path and correct for D3.
                     self._goal_end_code = self._executor.end_code
+                    self._goal_feed_missed += int(getattr(
+                        self._executor, 'missed_feed_catches', 0) or 0)
+                    self._goal_missed_catches += int(getattr(
+                        self._executor, 'missed_catch_drops', 0) or 0)
                     # Columns two-feed chain (P3): ball A's clean retire
                     # opens the chain gate (ctx stays armed, so the line
                     # below stays silent and the goal stays running); an
@@ -4019,9 +4041,15 @@ class SkillNode(Node):
         the Juggle result. Consumes `executor.reports`."""
         feeds = getattr(executor, 'feed_reports', None)
         while isinstance(feeds, list) and feeds:
-            # Ball Butler feed catches: an INFO line only (no Juggle-result
-            # bookkeeping -- the feed is not one of the attempt's throws).
-            self._log_at('INFO', rp.feed_line(feeds.pop(0)))
+            # Ball Butler feed catches: an INFO line, and a count for the
+            # records ledger's caught figure (the feed is not one of the
+            # attempt's throws, so no Juggle-result bookkeeping).
+            feed = feeds.pop(0)
+            self._log_at('INFO', rp.feed_line(feed))
+            self._goal_feeds_caught += 1
+            fs = rp.landing_score_mm(getattr(feed, 'landing_err_mm', None))
+            if fs is not None:
+                self._goal_feed_scores.append(fs)
         reports = getattr(executor, 'reports', None)
         if not isinstance(reports, list):
             return
@@ -4064,7 +4092,8 @@ class SkillNode(Node):
                                      executor.schedule)),
             final_catch_unverifiable=isinstance(
                 getattr(executor, 'final_catch_unverifiable', None), int),
-            fed=self._attempt_fed)
+            fed=self._attempt_fed,
+            missed_catches=int(self._goal_missed_catches))
         self._log_at(severity, text)
 
     def _maybe_signal_goal_done(self) -> None:
@@ -4312,6 +4341,10 @@ class SkillNode(Node):
         self._goal_outcome_lines = []
         self._goal_reports = []
         self._goal_end_code = ''
+        self._goal_feed_missed = 0
+        self._goal_missed_catches = 0
+        self._goal_feeds_caught = 0
+        self._goal_feed_scores = []
         self._goal_record_params = ()
         with self._reload_lock:
             self._goal_armed = False
@@ -6324,6 +6357,17 @@ class SkillNode(Node):
             bias_x, bias_y = self._columns_feed_bb_bias_mm()
             req_x, req_y = (float(ctx.aim_site.cup_mm[0]),
                             float(ctx.aim_site.cup_mm[1]))
+            # TKT-66: the Feed's score target is the point Ball Butler was
+            # asked to hit, `aim_site - columns_feed_bb_bias_mm` (what
+            # `_fire_reload_throw` sent), which it announces: this raw
+            # announcement BEFORE the Catch-side walk. With a configured
+            # bias the Feed score therefore includes Ball Butler's own
+            # landing bias (about |bias| when the compensation works), by
+            # the owner's TKT-66 answer. NB the INFO line's "request"
+            # figure below is the aim Site BEFORE the bias walk, not the
+            # point sent; the log string is left as is because
+            # `tools/probes/feed_lateral_miss.py` parses its prefix.
+            score_target_xy = (float(landing_mm[0]), float(landing_mm[1]))
             landing_mm = landing_mm + np.array([bias_x, bias_y, 0.0])
             self.get_logger().info(
                 # The literal prefix up to '... mm, bias [...] mm' is matched
@@ -6337,7 +6381,8 @@ class SkillNode(Node):
                    ball_label(1)))
             feed = LandingPrior(pos_mm=landing_mm, vel_mm_s=landing_vel_mm_s,
                                 t_land_abs_s=t_land_abs_s)
-            self._install_columns_schedule(ctx, feed)
+            self._install_columns_schedule(
+                ctx, feed, score_target_xy_mm=score_target_xy)
             return
 
         now = self.get_clock().now().nanoseconds / 1e9
@@ -6466,7 +6511,10 @@ class SkillNode(Node):
             'cap %.1f deg) — catching it, then %d throw%s'
             % (hold_deg, cap_deg, n_after, '' if n_after == 1 else 's'))
 
-    def _install_columns_schedule(self, ctx, feed: LandingPrior) -> None:
+    def _install_columns_schedule(
+            self, ctx, feed: LandingPrior,
+            score_target_xy_mm: Optional[Tuple[float, float]] = None
+    ) -> None:
         """Compile ``compile_columns(..., feed=feed, hop_entry=True)`` and
         install it for ``ctx`` -- the columns counterpart of
         `_install_announced_reload`'s reload compile-then-swap tail (R5, owner decision D1, 2026-09-30), sharing its
@@ -6488,6 +6536,13 @@ class SkillNode(Node):
         REST this ctx's own schedule already committed to (`_run_columns`'s
         ``bridge_site``, the feed site) matches the site the compiled
         schedule plans THROW 0 from.
+
+        ``score_target_xy_mm`` (report-only, TKT-66): the (x, y) mm point the
+        Feed's landing score is measured against, stored on
+        ``executor.feed_score_target_xy_mm``. The announcement branch passes
+        the point Ball Butler was asked to hit and announces
+        (``aim_site - columns_feed_bb_bias_mm``); ``None`` leaves the score
+        on ``feed.pos_mm``.
         """
         # B2 (`columns_1ball_fed`): ball A's cup may be phantom-empty
         # (`ctx.columns_pattern.phantom_balls`) rather than actually
@@ -6570,6 +6625,11 @@ class SkillNode(Node):
             seat_window=self._seat_window,
             contact_probe=self._contact_time,
             catch_time_offset_s=self._catch_time_offset_s)
+        # Report-only (TKT-66): the Feed's landing score is measured against
+        # the point Ball Butler was aimed at, not the bias-corrected prior.
+        if score_target_xy_mm is not None:
+            executor.feed_score_target_xy_mm = (
+                float(score_target_xy_mm[0]), float(score_target_xy_mm[1]))
         # The SkillExecutor SWAP, `_install_announced_reload`'s shape
         # exactly: `_tick_lock` first (a tick mid-dispatch on another
         # thread must not read `_executor` half-swapped), then ONE
@@ -6903,33 +6963,53 @@ class SkillNode(Node):
         return CancelResponse.ACCEPT
 
     def _offer_record(self, pattern: str, throws, caught,
-                      end_code: str) -> Tuple[bool, str]:
+                      end_code: str, drops: int = 0,
+                      ball_caught: int = 0, scores=(), no_fit: int = 0,
+                      feed_scores=()) -> Tuple[bool, str]:
         """Offer a finished Attempt to the records ledger (IDEA-3,
         `jugglebot/records.py`). Returns (beaten, the Pattern's record Catches
-        as a string, '' when not known). Disabled when `records_path` is ''
-        and for a Feed (`reload`/`magazine` are not juggling). Never raises:
+        as a string, '' when not known). Disabled when `records_path` is ''.
+        A Feed (`reload`/`magazine`) is not juggling: it books its `drops`
+        (FEAT-47, `rp.drop_count`) and never a record. `ball_caught` is the
+        Catches that pair with `drops` (`rp.caught_count`, one shared base):
+        the ledger's caught side, so an Attempt with catches and no drops
+        still updates it. Never raises:
         it runs on the goal's own thread after the Result is built, a small
         local-file write, and any failure (a malformed ledger is never
-        overwritten, `records.record_attempt`) is a WARN, not a goal fault."""
+        overwritten, `records.record_attempt`) is a WARN, not a goal fault.
+        `scores` / `no_fit` / `feed_scores` are the Attempt's landing scores
+        (IDEA-21, `rp.landing_scores`): written whether or not a record is
+        beaten."""
         path = str(self.get_parameter('records_path').value or '')
-        if not path or pattern in rec.FEED_PATTERNS:
+        if not path:
             return False, ''
         try:
             beaten, best = rec.record_attempt(path, rec.Attempt(
                 when_local=time.strftime(rec.WHEN_FORMAT, time.localtime()),
                 pattern=pattern, throws=int(throws), catches=int(caught),
                 end_code=str(end_code),
-                params=tuple(self._goal_record_params)))
+                params=tuple(self._goal_record_params), drops=int(drops),
+                caught=int(ball_caught),
+                scores=tuple(float(x) for x in scores), no_fit=int(no_fit),
+                feed_scores=tuple(float(x) for x in feed_scores)))
+            if beaten:
+                self.get_logger().info(
+                    'records: NEW RECORD %s -- %d Catches in %d Throws (%s); '
+                    '%s is now dirty until the Sitting close-out commit'
+                    % (pattern, int(caught), int(throws), end_code, path))
+            if drops > 0:
+                try:
+                    total = rec.total_drops(path)
+                except Exception:  # noqa: BLE001 -- the log line only
+                    total = None
+                self.get_logger().info(
+                    'records: +%d drops (total %s)'
+                    % (int(drops), '?' if total is None else total))
         except Exception as exc:  # noqa: BLE001 -- never the goal's fault
             self.get_logger().warning(
                 'records: %s not updated for %s (%d/%d %s): %s'
                 % (path, pattern, int(caught), int(throws), end_code, exc))
             return False, ''
-        if beaten:
-            self.get_logger().info(
-                'records: NEW RECORD %s -- %d Catches in %d Throws (%s); '
-                '%s is now dirty until the Sitting close-out commit'
-                % (pattern, int(caught), int(throws), end_code, path))
         return beaten, str(best)
 
     def _juggle_execute(self, goal_handle):
@@ -6965,17 +7045,80 @@ class SkillNode(Node):
         outcome = 'STOPPED' if end_code == 'STOPPED' else (end_code or 'COMPLETED')
         result.outcome = outcome
         result.success = bool(outcome in ('COMPLETED', 'THROWN'))
+        pattern = str(goal_handle.request.pattern)
+        # FEAT-48 (owner, 2026-11-11): a Throw lost to an EMPTY Cup has no
+        # ThrowReport but IS a Throw -- M counts it, N does not. The same
+        # recorded fact `drop_count` takes below (`_goal_missed_catches`),
+        # so the end line, this Result, the Attempt event and the ledger
+        # agree. A missed Feed is NOT added (M counts Jugglebot's Throws).
+        missed_catches = (0 if pattern == 'magazine'
+                          else int(self._goal_missed_catches))
         # From the ThrowReports, never by parsing log text; `per_throw` is
         # each throw's operator line.
-        result.throws, result.caught = rp.summarise(self._goal_reports)
+        result.throws, result.caught = rp.summarise(
+            self._goal_reports, missed_catches=missed_catches)
         result.per_throw = list(self._goal_outcome_lines)
-        pattern = str(goal_handle.request.pattern)
         # The ledger counts an unverifiable final Catch (TKT-42, option 2);
         # the Result above and the end line keep the operator's tally. Only a
         # COMPLETED goal, and only a row with a landing (TKT-44).
-        rec_throws, rec_caught = rp.record_counts(self._goal_reports, outcome)
+        rec_throws, rec_caught = rp.record_counts(
+            self._goal_reports, outcome, missed_catches=missed_catches)
+        # Drops to date (FEAT-47): each unreleased-or-uncaught Throw, plus a
+        # Ball Butler Feed that missed the Cup (the executor's
+        # `missed_feed_catches`, captured at retire as `_goal_feed_missed`; a
+        # Feed miss ends the Attempt MISSED_CATCH with no ThrowReport), plus
+        # each Throw lost to an EMPTY Cup (`missed_catch_drops`, captured as
+        # `_goal_missed_catches`): that verdict drops the ball's outcome rows,
+        # so the lost Throw has no ThrowReport either. A Throw that never
+        # released (ABORTED_NO_RELEASE, DROPPED_SURVIVOR_STOPPED) is NOT a
+        # drop: it is not shown to have been thrown.
+        # A `magazine` run books ZERO drops, always (owner, TKT-64): its Throw
+        # goes from Jugglebot into Ball Butler's magazine and nothing is meant
+        # to catch it, so it is never a drop (its one ThrowReport is a
+        # placeholder, `_magazine_finish`, caught=False). The Feed that
+        # precedes it is a separate `reload` goal on the executor path, which
+        # is counted there.
+        feed_missed = int(self._goal_feed_missed)
+        drops = (0 if pattern == 'magazine'
+                 else rp.drop_count(self._goal_reports,
+                                    feed_missed=feed_missed,
+                                    missed_catches=missed_catches))
+        # The caught side, one base with `drops` (`rp.caught_count`): the
+        # Catches of the same balls, plus the Ball Butler Feeds that seated
+        # (a Feed has no ThrowReport, so there is no double count). A
+        # `magazine` run books 0 caught as it books 0 drops.
+        ball_caught = (0 if pattern == 'magazine'
+                       else rp.caught_count(
+                           self._goal_reports,
+                           feeds_caught=int(self._goal_feeds_caught)))
+        if missed_catches and pattern != 'magazine':
+            try:
+                self.get_logger().info(
+                    'records: %d lost Throw(s) (cup EMPTY) counted as drops '
+                    '(%s)' % (missed_catches, pattern))
+            except Exception:
+                pass
+        # Landing scores (IDEA-21, owner's decision in TKT-63): a Throw's
+        # score is the distance of the Fit's landing from its target Site.
+        # A `magazine` Throw is never a catch target (TKT-64): no score.
+        try:
+            if pattern == 'magazine':
+                scores, no_fit = [], 0
+            else:
+                # TKT-66 (b): the same base as `rec_throws` above, so scored
+                # plus no_fit equals the ledger's Throws: a Throw lost to an
+                # EMPTY Cup (FEAT-48) is "without a Fit", and the unverified
+                # final Catch `record_counts` adds is scored.
+                scores, no_fit = rp.record_landing_scores(
+                    self._goal_reports, outcome,
+                    missed_catches=missed_catches)
+            feed_scores = list(self._goal_feed_scores)
+        except Exception:  # noqa: BLE001 -- a score never faults the goal
+            scores, no_fit, feed_scores = [], 0, []
         beaten, record_catches = self._offer_record(
-            pattern, rec_throws, rec_caught, outcome)
+            pattern, rec_throws, rec_caught, outcome, drops=drops,
+            ball_caught=ball_caught, scores=scores, no_fit=no_fit,
+            feed_scores=feed_scores)
         self._publish_attempt_event(
             ATTEMPT_END, outcome,
             DiagnosticStatus.OK if outcome in ('COMPLETED', 'STOPPED')

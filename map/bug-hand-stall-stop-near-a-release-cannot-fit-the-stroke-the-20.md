@@ -2,9 +2,9 @@
 id: BUG-55
 kind: bug
 title: 'Hand stall stop near a release cannot fit the stroke: the 20 ms grace plus the C2 stop carry the Hand past the clip'
-status: in_progress
+status: complete
 created: '2026-11-02'
-updated: '2026-11-07T06:39:19Z'
+updated: '2026-11-11T10:36:01Z'
 owners:
 - jugglebot-50
 priority: medium
@@ -17,6 +17,7 @@ area: can-bridge
 blocked_by: []
 links:
 - logbook/2026-11-04-sitting-debrief.md
+- logbook/2026-11-11-sitting-debrief.md
 filed_by: jugglebot-3d
 ---
 
@@ -64,9 +65,21 @@ The FW 36 stall guard never fired: `diag_flags` bit2 (value 4) was never set in 
 - record: each run's verdict line (cut frame, entry speed, modelled and measured hold, encoder overshoot, settle time, counter deltas), the peak Iq at the stop entry, any guard or latch event, the temp/logs CSV paths, and the bench top stop in rev. The bench Hand's current cap is the same as production (owner, 2026-11-07), so the stage's 10 A assumption is void and its drive may follow the 4500 rev/s^2 stop more closely than modelled.
 - minutes: 30
 
+## Sitting result (2026-11-11 20:05)
+
+- verdict: pass
+- notes (split into bullets):
+  - All runs passed without problem!
+  - Step 3 result: stage 'stroke_cut' done: 3 run(s), all PASS; max belt residual 0.4947 rev; worst send lateness 0.5 ms cachediag: 15 windows, 0 episode(s) past -20, worst deficit 0.0 frames csv: /home/jetson/Desktop/Jugglebot/temp/logs/hand_stream_stroke_cut_20261111_195604.csv cachediag csv: /home/jetson/Desktop/Jugglebot/temp/logs/hand_stream_stroke_cut_20261111_195604_cachediag.csv
+  - Step 4 result: (with --repeat 3): stage 'stroke_cut' done: 3 run(s), all PASS; max belt residual 0.7249 rev; worst send lateness 0.1 ms cachediag: 10 windows, 0 episode(s) past -20, worst deficit 0.0 frames csv: /home/jetson/Desktop/Jugglebot/temp/logs/hand_stream_stroke_cut_20261111_195711.csv cachediag csv: /home/jetson/Desktop/Jugglebot/temp/logs/hand_stream_stroke_cut_20261111_195711_cachediag.csv
+  - Step 5 results: Cmd: $ python tests/hardware/hand_stream_bench.py --stage stroke_cut --cut-at-vel 64 --cut-mode downstroke --close-loop --repeat 3 Result: stage 'stroke_cut' done: 3 run(s), all PASS; max belt residual 0.9286 rev; worst send lateness 0.1 ms cachediag: 12 windows, 0 episode(s) past -20, worst deficit 0.0 frames csv: /home/jetson/Desktop/Jugglebot/temp/logs/hand_stream_stroke_cut_20261111_195758.csv cachediag csv:
+  - /home/jetson/Desktop/Jugglebot/temp/logs/hand_stream_stroke_cut_20261111_195758_cachediag.csv But then for some reason all subsequent commands (including --cut-mode slow) was met with "ABORT: preconditions not met: • bridge not TIME_SYNCED (HeartbeatT2J flags bit 0): every HAS_SCHED frame would be DEMOTED to the legacy lane, so the stage would exercise the FW 17 wind-down, not the FW 37 scheduled stop — wait for the TimeOfDay sync and
+  - re-run", for no obvious reason.
+
 ## Progress
 
 - 2026-11-03: Owner call 2026-11-03 (TKT-31): probe extended, FW 37 built (no grace for a fast upward Hand becomes a 6 ms grace then a C1 stop at 4500; +0.71 rev margin at Apex 1.42), FW 38 adds the counters, stroke_cut bench stage written; flash and the bench-hand Sitting row below are owed (detail in logbook 2026-11-03-jb145-hand-stall-stop-options)
 - 2026-11-04: 2026-11-03 Sitting (22:29, P4 ramp): the FW 37 C1 stop FIRED on the robot twice (goal 9 THROW launch brake 117 -> ~4 rps in 60 ms at -24 A, rest 8.71 rev; goal 15 launch start 19 -> 0 rps in 40 ms at -23 A, rest 1.69 rev; clip 10.501; sched_hand_c1_stops +1 each), stopping the Hand inside the stroke with no overshoot. The bench S1-S5 pass is still owed.
 - 2026-11-05: C1 stop fired on the robot 3x 2026-11-05, all mid-upstroke on host forward gaps 40-44 ms; fit the stroke (hold 4.4-5.0 rev) but each firing ended the Attempt. hand_stall_stop.py option 2, release-knot stop end vs 10.501 clip by grace: 6 ms ok to Apex 1.42; 10 ms Apex 1.35 at 0.00 margin; 14 ms Apex 1.00 +0.47, 1.10 +0.08, 1.35 -0.93; 18 ms Apex 1.00 -0.25. FW 39 (C1 grace 14 ms).
 - 2026-11-07: 2026-11-07: owner: bench Hand matches production except a shorter stroke, same current cap. The row now asks for the bench top stop first: its defaults need 9.7 rev or more, and the stage only checks the production clip.
+- 2026-11-11: Passed at the Sitting of 2026-11-11: upstroke at defaults and cut 64, downstroke control, slow control (21:17), firmware hold equal to the model in every run, no fault. Gaps: downstroke flown at cut 64; counters and peak Iq seen only as PASS lines; belt residual grew 0.49 to 0.93 rev (bound 1.9). Detail: logbook/2026-11-11-sitting-debrief.md.

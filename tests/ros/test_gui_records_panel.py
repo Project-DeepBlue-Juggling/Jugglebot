@@ -141,3 +141,68 @@ def test_panel_renders_a_heading_per_section_and_the_css_styles_it():
     assert "recordSections(rows)" in panel and "records-group" in panel
     assert "' beaten'" in panel  # the per-row flash survives the grouping
     assert ".records-group" in (GUI / "css" / "records-panel.css").read_text()
+
+
+# ── Drops to date (FEAT-47) ────────────────────────────────────────────────
+
+def test_drops_line_shows_the_total_only(out):
+    """Owner, 2026-11-11: the line reads "Drops to date: N" and nothing else."""
+    assert out["drops"] == [
+        "Drops to date: 12",
+        "Drops to date: 112",
+        "Drops to date: 840",
+        "Drops to date: not counted yet",
+        "Drops to date: not counted yet",
+        "Drops to date: not counted yet",
+    ]
+
+
+def test_drops_breakdown_is_the_hover_text(out):
+    assert out["dropsDetail"] == [
+        "since 2026-11-10 (history not yet counted)",
+        "12 live since 2026-11-10, 100 from history",
+        "12 live since 2026-11-12, 828 from history (2026-07-23 to 2026-11-11)",
+        "",
+    ]
+
+
+def test_drops_hover_leads_with_throws_and_percent_and_the_line_is_unchanged(out):
+    """Owner, 2026-11-11: hover = Throws and Feeds to catch + percentages, then the breakdown;
+    the visible line stays exactly "Drops to date: N"."""
+    p = out["dropsPct"]
+    assert p["line"] == "Drops to date: 819"
+    assert p["detail"] == ("7,304 Throws and Feeds to catch \u00b7 88.8 % caught, 11.2 % dropped \u00b7 "
+                           "0 live since 2026-11-11, 819 from history (2026-07-23 to 2026-11-10)")
+    # 1 of 3 caught: 33.3 + 66.7 = 100.0 (q is 100 - rounded p); no figures / zero throws / out of range -> ''
+    assert p["summary"] == [
+        "7,304 Throws and Feeds to catch \u00b7 88.8 % caught, 11.2 % dropped",
+        "", "", "",
+        "3 Throws and Feeds to catch \u00b7 33.3 % caught, 66.7 % dropped",
+        "", "",
+    ]
+    # without the figures the text is today's, unchanged
+    assert p["noFigures"] == "0 live since 2026-11-11, 819 from history (2026-07-23 to 2026-11-10)"
+    assert p["onlyThrows"] == "10 Throws and Feeds to catch \u00b7 70.0 % caught, 30.0 % dropped \u00b7 since 2026-11-12 (history not yet counted)"
+
+
+def test_drops_increment_effect_plays_only_on_a_rise_after_first_load(out):
+    assert out["dropsBumped"] == [False, False, True, False, False]
+    panel = (JS / "records-panel.js").read_text()
+    css = (GUI / "css" / "records-panel.css").read_text()
+    assert "records-drops-bump" in panel and "@keyframes records-drops-bump" in css
+    assert "prefers-reduced-motion" in css
+
+
+def test_panel_has_a_drops_slot_atop_the_records():
+    html = (GUI / "index.html").read_text()
+    assert html.index('class="records-title"') < html.index('class="records-drops"') < html.index('class="records-rows"')
+    panel = (JS / "records-panel.js").read_text()
+    assert "dropsText(data)" in panel and ".records-drops" in panel
+
+
+def test_panel_shows_for_a_drops_section_even_with_no_rows(out):
+    """FEAT-47: a fresh ledger / every Pattern hidden still shows the counter;
+    no drops section and no rows (or no data) stays hidden."""
+    assert out["panelVisible"] == [True, True, True, False, False]
+    panel = (JS / "records-panel.js").read_text()
+    assert "el.hidden = !panelVisible(data, rows)" in panel

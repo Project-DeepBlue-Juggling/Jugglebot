@@ -75,6 +75,24 @@ _Status: closed (complete)._
 - bug: BUG-48 [Ball Butler yaw-settle gate aborts settled throws (THROW_ABORTED_NOT_SETTLED false positives)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-ball-butler-yaw-settle-gate-aborts-settled-throws-throw.md) (inbox)
 - feature: FEAT-3 [Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-columns-empty-cup-rows-33-34-on-hardware.md) (inbox)
 
+## GUI Improvements
+
+**Destination:** The robot GUI tells the operator how well the robot is juggling and what to do next without reading a launch log (a draft Destination from the Night Shift: edit it).
+
+**Progress:** 0 of 0 stops done
+
+**Next:** —
+
+**Owners:** —
+
+**Remaining:**
+
+- —
+
+**Attached inbox items:**
+
+- —
+
 ## Learner generalisation
 
 **Destination:** A global plant model with a physics-keyed residual replaces the local-linear Memory and the offline Admissible box, so any Site, Apex, Dwell or yaw can be commanded and changed mid-Pattern.
@@ -91,28 +109,9 @@ _Status: closed (complete)._
 
 **Attached inbox items:**
 
-- bug: BUG-80 [The flyback over-corrects a Catch offset by 1.2 to 1.4 times: each landing error returns at -0.3 to -0.45 on the next Throw](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-the-flyback-over-corrects-a-catch-offset-by-1-2-to-1-4-times.md) (backlog)
+- bug: BUG-80 [The flyback over-corrects a Catch offset by 1.2 to 1.4 times: each landing error returns at -0.3 to -0.45 on the next Throw](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-the-flyback-over-corrects-a-catch-offset-by-1-2-to-1-4-times.md) (in_progress)
 - bug: BUG-79 [Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-two-ball-throws-land-about-9-mm-toward-the-partner-site-an.md) (inbox)
 - feature: FEAT-27 [Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-kinematic-calibration-acceptance-the-flying-frame-check-and.md) (inbox)
-
-## Map improvements
-
-**Destination:** The map shows each item's history, takes new items from the Robot tab mid-sitting, finds anything by text, and surfaces stale items and a red nightly without leaving the GUI.
-
-**Progress:** 13 of 14 stops done
-
-**Next:** P6 Out-of-tree residue and close ([item-id-per-kind.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/item-id-per-kind.md))
-
-**Owners:** harrison
-
-**Remaining:**
-
-- P6 Out-of-tree residue and close ([item-id-per-kind.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/item-id-per-kind.md))
-
-**Attached inbox items:**
-
-- bug: BUG-17 [item_uuid(slug) collides across kinds that share a slug](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-item-uuid-slug-collides-across-kinds-that-share-a-slug.md) (inbox)
-- feature: FEAT-42 [Add a data-only verdict to the Sitting result box (pass / fail / pending / data)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-add-a-data-only-verdict-to-the-sitting-result-box-pass-fail.md) (inbox)
 
 ## Pattern progression: Columns to Centre and orbit
 
@@ -141,6 +140,13 @@ _Status: closed (complete)._
 - idea: IDEA-14 [JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-14-centre-and-orbit-ball-1-in-a-column-ball-2-on-a-circle.md) (inbox)
 - idea: IDEA-9 [JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-5-polygon-walk-one-ball-n-sites-the-cheapest-way-to-land.md) (inbox)
 - idea: IDEA-10 [JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-9-high-low-columns-ball-1-at-apex-1-05-m-ball-2-at-0-95-m.md) (in_progress)
+- idea: IDEA-22 [Turned Columns at 90 deg: tilt the Platform back (+x) at the Catch so the ball stops hitting the Platform top](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-turned-columns-at-90-deg-tilt-the-platform-back-x-at-the.md) (in_progress)
+
+## Map improvements
+
+**Destination:** The map shows each item's history, takes new items from the Robot tab mid-sitting, finds anything by text, and surfaces stale items and a red nightly without leaving the GUI.
+
+_Status: closed (complete)._
 
 ## Two-ball skill stack
 
@@ -162,9 +168,10 @@ _Status: closed (complete)._
 | Two-ball oval | P3 A/B Sitting on the oval; P4 Working point and the dwell ladder | — | P5 Two-ball oval; bug ABORTED_NO_RELEASE: three goals ended because the throw never left the hand (new 2026-10-28 21:02); bug A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve; bug 10 % jitter-margin class of LIMIT_* refusals; bug mocap_node loses frames to queue full in bursts before the first dispatch (544 / 373 / 490 frames in the three 2026-10-28 Sittings); bug Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff; bug RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball; bug Teensy guard MAX_DEVIATION latched on the hand (+8.4 rev) mid-oval; recover_lane found nothing, re-dispatch rejected WRONG_MODE; feature P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30; feature Pre-release hold rung: release from a moving Platform (hold 0.100 → 0); feature Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load); feature Trim the nice-0 chain CPU the flame graphs point at: skill_node executor (~0.5 core), mocap_node publish path (~0.28), tracker message plumbing (~0.28) | P0 Identify the Platform mode from existing bags; P1 The ZVD contract and rows behind a flag; P2 Box re-sweep with the rows on; P1 The oval pattern dispatchable; P3 Pose-level carry planner; P1 Firmware - age-aware lead clamp and engagement counter; P2 Bench validation; P3 Robot validation |
 | Project map and shared dictionary | — | — | — | closed |
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug Ball Butler yaw-settle gate aborts settled throws (THROW_ABORTED_NOT_SETTLED false positives); feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
+| GUI Improvements | — | — | — | — |
 | Learner generalisation | — | P5 Close-out | bug The flyback over-corrects a Catch offset by 1.2 to 1.4 times: each landing error returns at -0.3 to -0.45 on the next Throw; bug Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for; feature Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z | P3a Command-time admissibility check; P3b Nomination-time check and the nearest viable configuration; P3c Box retirement; P1 Learner core; P2 The characterisation sitting; P4 BeatEvent stream and the columns wrapper; Box sweep fidelity for same-site families (plan what the executor dispatches) |
-| Map improvements | — | P6 Out-of-tree residue and close | bug item_uuid(slug) collides across kinds that share a slug; feature Add a data-only verdict to the Sitting result box (pass / fail / pending / data) | P0 Plan and owner decisions; P1 Expand mapkit and the Night Shift tools to both ID forms; P2 Expand the map app to both ID forms (fork repo); P3 The sweeper and the classified census; P4 Cutover in one commit; P5 Contract: retire the old form, guard test, normative docs; P0 Plan and its Feature; P1 mapkit ids module and checks; P2 Backfill and the uniqueness test; P3 mapkit resolution, creation, display and the commands; P4 App server: allocate, resolve, repair (fork repo); P5 App frontend: show and deep-link (fork repo); P6 Normative docs |
-| Pattern progression: Columns to Centre and orbit | — | P3 JP-10 turned Columns | P5 JP-9 high-low Columns; P6 Per-Beat Sites dependency owned by PWAY-2; P7 JP-5 polygon walk; P8 JP-11 rotating Columns; P9 Centre and orbit compile; P10 JP-14 Centre and orbit; idea JP-10 Turned columns: the columns pair at fixed angles about +z, under pose; idea JP-11 Rotating columns: the pair turns a few degrees every Beat; idea JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm; idea JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites; idea JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m | P1 Launch current check; P2 Turned Columns on the compiled path; P4 Per-Site Apex |
+| Pattern progression: Columns to Centre and orbit | — | P3 JP-10 turned Columns | P5 JP-9 high-low Columns; P6 Per-Beat Sites dependency owned by PWAY-2; P7 JP-5 polygon walk; P8 JP-11 rotating Columns; P9 Centre and orbit compile; P10 JP-14 Centre and orbit; idea JP-10 Turned columns: the columns pair at fixed angles about +z, under pose; idea JP-11 Rotating columns: the pair turns a few degrees every Beat; idea JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm; idea JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites; idea JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m; idea Turned Columns at 90 deg: tilt the Platform back (+x) at the Catch so the ball stops hitting the Platform top | P1 Launch current check; P2 Turned Columns on the compiled path; P4 Per-Site Apex |
+| Map improvements | — | — | — | closed |
 | Two-ball skill stack | — | — | — | closed |
 | Wave camera on CAN3 | — | — | — | closed |
 
@@ -180,7 +187,6 @@ Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/bench-hand/robot; Owner none/deci
 | FEAT-4 | feature | [Magazine feed-tuning loop (`magazine` + `reload` patterns, hand-only throw)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-magazine-feed-tuning-loop.md) | inbox | medium | m | robot | hands | subsystem | skill-stack | — | filed 2026-10-24 |
 | FEAT-5 | feature | [mocap _finalize_calibration in a worker process](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-mocap-finalize-calibration-in-worker-process.md) | inbox | medium | s | none | none | subsystem | tracking | — | filed 2026-10-24 |
 | FEAT-6 | feature | [Move the other solves (skill_node 43 ms, go_home / go_to_pose / hold) into their own interpreters](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-other-solves-in-own-interpreters.md) | inbox | medium | m | none | none | subsystem | skill-stack | — | filed 2026-10-24 |
-| BUG-7 | bug | [Platform Teensy truncates the persisted levelling offset to int16 milliradians](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-platform-teensy-int16-offset-truncation.md) | inbox | medium | s | robot | hands | normative | platform-teensy | — | filed 2026-10-24 |
 | FEAT-7 | feature | [Sim columns run with a biased plant to exercise the forward-clip rule](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-sim-columns-biased-plant-forward-clip.md) | in_progress | medium | m | none | none | local | sim | — | filed 2026-10-24 |
 | BUG-13 | bug | [Wave camera: CLIP_MISSING on the first start after a camera power-cycle](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-wave-camera-clip-missing-on-first-start-after-a-camera-power-cycle.md) | inbox | low | m | robot | hands | subsystem | tracking | Wave camera on CAN3 | filed 2026-10-25 |
 | FEAT-12 | feature | [Wave camera: optical frame calibration maps the START tick to a recorded frame](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-wave-camera-optical-frame-calibration.md) | inbox | low | m | robot | hands | subsystem | tracking | Wave camera on CAN3 | filed 2026-10-25 |
@@ -215,30 +221,27 @@ Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/bench-hand/robot; Owner none/deci
 | BUG-47 | bug | [teensy_bridge_node does not exit after a rejected shutdown Stow; launch SIGTERM-killed it 4.8 s later (2026-10-31 13:06)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-teensy-bridge-node-does-not-exit-after-a-rejected-shutdown.md) | backlog | medium | s | none | none | local | can-bridge | — | filed 2026-11-01 |
 | BUG-58 | bug | [Firmware scheduler STOPs a streamed lane while frames arrive on time and the host stream is clean: LANE_REFUSED ends, cause unseen](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-40-hz-setpoint-stream-starved-past-the-firmware-s-70-ms.md) | in_progress | high | m | robot | decision | subsystem | skill-stack | — | filed 2026-11-02 |
 | BUG-57 | bug | [Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-hand-overshoot-at-apex-1-35-saturated-the-stepped-brake-at.md) | in_progress | high | m | robot | decision | subsystem | hand | — | filed 2026-11-02 |
-| BUG-55 | bug | [Hand stall stop near a release cannot fit the stroke: the 20 ms grace plus the C2 stop carry the Hand past the clip](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-hand-stall-stop-near-a-release-cannot-fit-the-stroke-the-20.md) | in_progress | medium | m | bench-hand | decision | normative | can-bridge | — | filed 2026-11-02 |
 | FEAT-37 | feature | [One-off 2 m Throws: raised Hand limits and an overshoot protection the speed-scaled margin cannot give](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-one-off-2-m-throws-raised-hand-limits-and-an-overshoot.md) | inbox | medium | l | robot | decision | subsystem | hand | — | filed 2026-11-02 |
 | FEAT-38 | feature | [Run admissible-box sweeps on the Win10 desktop: about 2.5 h on the Jetson, and a sweep blocks Sittings](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-run-admissible-box-sweeps-on-the-win10-desktop-about-2-5-h.md) | in_progress | medium | m | none | decision | subsystem | tests-tooling | — | filed 2026-11-02 |
 | BUG-63 | bug | [Ball 2's first throw after the feed catch lands about 180 mm outward along the separation axis](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-ball-2-s-first-throw-after-the-feed-catch-lands-about-180-mm.md) | inbox | high | m | robot | hands | subsystem | skill-stack | — | filed 2026-11-03 |
-| BUG-60 | bug | [CTRL+ENTER to save the result of a 'Next Sitting' entry](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-ctrl-enter-to-save-the-result-of-a-next-sitting-entry.md) | in_progress | medium | s | none | none | local | map-app | — | filed 2026-11-03 |
 | FEAT-39 | feature | [P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-p4-ramp-sitting-columns-canary-at-600-8000-and-20-a-then-the.md) | in_progress | high | m | robot | hands | subsystem | skill-stack | Two-ball oval | filed 2026-11-03 |
 | BUG-66 | bug | [Firmware scheduler STOP fires on a clean host stream and ends the Attempt](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-firmware-scheduler-stop-fires-on-a-clean-host-stream-and.md) | inbox | high | m | robot | none | subsystem | can-bridge | — | filed 2026-11-04 |
 | FEAT-40 | feature | [Install the host hold within one tick of a firmware scheduler STOP so a guard latch becomes a recoverable LANE_REFUSED](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-install-the-host-hold-within-one-tick-of-a-firmware.md) | backlog | medium | m | robot | decision | subsystem | skill-stack | — | filed 2026-11-04 |
 | IDEA-18 | idea | [Learner context cannot tell a Throw from rest from a carried Throw](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-learner-context-cannot-tell-a-throw-from-rest-from-a-carried.md) | inbox | low | m | robot | none | subsystem | learner | — | filed 2026-11-04 |
 | FEAT-42 | feature | [Add a data-only verdict to the Sitting result box (pass / fail / pending / data)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-add-a-data-only-verdict-to-the-sitting-result-box-pass-fail.md) | inbox | low | s | none | none | subsystem | map-app | Map improvements | filed 2026-11-05 |
-| BUG-75 | bug | [Catch re-aim refused INFEASIBLE on 8.4 % of Throws at the P2 Sitting, 15 of 69 on the turned pair](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-catch-re-aim-refused-infeasible-on-8-4-of-throws-at-the-p2.md) | backlog | medium | xs | none | decision | local | skill-stack | — | filed 2026-11-06 |
+| BUG-75 | bug | [Catch re-aim refused INFEASIBLE on 8.4 % of Throws at the P2 Sitting, 15 of 69 on the turned pair](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-catch-re-aim-refused-infeasible-on-8-4-of-throws-at-the-p2.md) | backlog | medium | s | robot | hands | local | skill-stack | — | filed 2026-11-06 |
 | BUG-82 | bug | [Leg encoder dropouts of 80 to 99 ms continue at the clock beat: trial encoder_msg_rate_ms 9 on Leg 4, then all Legs](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-leg-encoder-dropouts-of-80-to-99-ms-continue-at-the-clock.md) | in_progress | medium | s | robot | hands | subsystem | can-bridge | — | filed 2026-11-06 |
 | BUG-72 | bug | [Legs 1 and 2 left their magnetic base joints on Columns at Sep. 170: acceptance bounds Leg kinematics only and does not see the bridge feedforward cap](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-legs-1-and-2-left-their-magnetic-base-joints-on-columns-at.md) | backlog | high | m | robot | hands | cross-cutting | legs | — | filed 2026-11-06 |
 | BUG-74 | bug | [Mid-air ball collisions end half of two-ball Columns Attempts at Apex 1.00: closest approach about 70 mm at Sep. 100, 125 and 135](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-mid-air-ball-collisions-end-half-of-two-ball-columns.md) | in_progress | medium | l | robot | decision | cross-cutting | skill-stack | — | filed 2026-11-06 |
-| BUG-80 | bug | [The flyback over-corrects a Catch offset by 1.2 to 1.4 times: each landing error returns at -0.3 to -0.45 on the next Throw](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-the-flyback-over-corrects-a-catch-offset-by-1-2-to-1-4-times.md) | backlog | medium | s | robot | none | local | learner | Learner generalisation | filed 2026-11-06 |
+| BUG-80 | bug | [The flyback over-corrects a Catch offset by 1.2 to 1.4 times: each landing error returns at -0.3 to -0.45 on the next Throw](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-the-flyback-over-corrects-a-catch-offset-by-1-2-to-1-4-times.md) | in_progress | medium | s | robot | none | local | learner | Learner generalisation | filed 2026-11-06 |
 | BUG-70 | bug | [Tracker never confirmed Throw 3's flight on 2026-11-05 while the previous track kept running past its Catch, so that Throw has no learner row](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-tracker-never-confirmed-throw-3-s-flight-on-2026-11-05-while.md) | inbox | medium | m | none | none | subsystem | tracking | — | filed 2026-11-06 |
 | BUG-78 | bug | [Two-ball Columns runs end on a missed Catch of Ball 2 with no collision: 13 of 23 ends, mean run 22 Throws](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-two-ball-columns-runs-end-on-a-missed-catch-of-ball-2-with.md) | in_progress | high | m | robot | none | subsystem | skill-stack | — | filed 2026-11-06 |
 | BUG-79 | bug | [Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-two-ball-throws-land-about-9-mm-toward-the-partner-site-an.md) | inbox | high | m | robot | hands | subsystem | skill-stack | Learner generalisation | filed 2026-11-06 |
-| BUG-83 | bug | [Arrow-keying through the Map search items doesn't scroll](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-arrow-keying-through-the-map-search-items-doesn-t-scroll.md) | in_progress | medium | xs | none | none | local | map-app | — | filed 2026-11-07 |
 | BUG-84 | bug | [Hand stalls at the 70 A clamp mid-dive, probably on a Ball under the Cup, and the next launch comes up slow](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-hand-stalls-at-the-70-a-clamp-mid-dive-probably-on-a-ball.md) | inbox | medium | m | robot | hands | local | hand | — | filed 2026-11-07 |
 | BUG-85 | bug | [live_session matches node filenames in any process argv, not running nodes](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-live-session-matches-node-filenames-in-any-process-argv-not.md) | inbox | medium | s | none | none | subsystem | tests-tooling | — | filed 2026-11-07 |
-| FEAT-45 | feature | [Measure the Hand's commutation angle error through a hard brake on the bench Hand (FOC scope)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-measure-the-hand-s-commutation-angle-error-through-a-hard.md) | inbox | high | s | bench-hand | — | local | hand | — | filed 2026-11-07 |
-| FEAT-47 | feature | [Add "Total Drops To Date" counter](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-add-total-drops-to-date-counter.md) | backlog | medium | m | none | decision | subsystem | gui | — | filed 2026-11-08 |
+| FEAT-45 | feature | [Measure the Hand's commutation angle error through a hard brake on the bench Hand (FOC scope)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-measure-the-hand-s-commutation-angle-error-through-a-hard.md) | in_progress | high | s | bench-hand | hands | local | hand | — | filed 2026-11-07 |
 | FEAT-46 | feature | [Firmware STOP record: report why a scheduler cover ended (frame stamps, arrivals, queue, time-base steps)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-firmware-stop-record-report-why-a-scheduler-cover-ended.md) | in_progress | high | m | robot | decision | normative | firmware | — | filed 2026-11-08 |
-| IDEA-19 | idea | [Improve the Next Sitting Runbook](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-improve-next-sitting-runsheet.md) | backlog | medium | m | none | decision | subsystem | tests-tooling | — | filed 2026-11-08 |
 | BUG-87 | bug | [Nomination's re-aim figure read -0.049 while the live Feed-Catch Segment was refused at -0.208 (Dwell 0.32)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-nomination-s-re-aim-figure-read-0-049-while-the-live-feed.md) | backlog | medium | m | none | none | local | skill-stack | — | filed 2026-11-08 |
-| IDEA-20 | idea | [Platform Accelerometer?](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-platform-accelerometer.md) | backlog | medium | m | robot | decision | subsystem | platform-teensy | — | filed 2026-11-08 |
+| IDEA-20 | idea | [Platform Accelerometer?](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-platform-accelerometer.md) | backlog | medium | m | robot | hands | subsystem | platform-teensy | — | filed 2026-11-08 |
+| IDEA-22 | idea | [Turned Columns at 90 deg: tilt the Platform back (+x) at the Catch so the ball stops hitting the Platform top](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-turned-columns-at-90-deg-tilt-the-platform-back-x-at-the.md) | in_progress | medium | m | robot | hands | subsystem | skill-stack | Pattern progression: Columns to Centre and orbit | filed 2026-11-10 |
+| FEAT-49 | feature | [Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-arm-a-power-capture-with-the-fault-trigger-on-the-robot-hand.md) | inbox | medium | m | robot | — | local | hand | — | filed 2026-11-11 |

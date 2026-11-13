@@ -4,12 +4,12 @@ kind: bug
 title: Catch re-aim refused INFEASIBLE on 8.4 % of Throws at the P2 Sitting, 15 of 69 on the turned pair
 status: backlog
 created: '2026-11-06'
-updated: '2026-11-08T17:58:25Z'
+updated: '2026-11-10T18:01:34Z'
 owners: []
 priority: medium
-effort: xs
-hardware: none
-owner: decision
+effort: s
+hardware: robot
+owner: hands
 radius: local
 diagnosis: confirmed
 area: skill-stack
@@ -172,8 +172,32 @@ Your Option 2 on TKT-51. Sources: bag `/home/jetson/Desktop/rosbags/2026-11-06_1
 - Your 2026-10-16 condition for other Patterns (a matching-record capture passing the replay) has no capture for `columns_turned` in the files read.
 - The 2026-11-07 log and the one-ball goals were not recounted.
 
+## Findings (2026-11-10): what the capture involves
+
+Your question on TKT-56. Read from `plans/archived/late-catch-reaim-bump.md` § 2 and § 5 and the three scripts in `tools/probes/late_reaim/`. Steps 1 to 4 are offline; only step 5 flies.
+
+1. **Capture.** `capture_records.py` runs the sim Columns gate (`sim/skills_gate.py`) at the live Sitting limits and saves every plan record the executor installs. The gate already turns the pair (`angle_deg`); the script needs one flag to pass it. One run each at 45 and 90 deg, minutes each.
+2. **Rows.** `parse_resends.py` collects the RESEND and RESEND-REFUSED lines (delta, time to landing, refusing limit). Its log paths are fixed to 2026-10-16; point it at the 2026-11-06 and 2026-11-07 launch logs to get the refused turned second asks.
+3. **Replay.** `bump_replay.py --retarget --hold-s 0.05 --patterns columns_turned` runs the production `apply_catch_bump` on each row against the matching record, through the feasibility gate. Columns passed 86.9 % (diagonal) and 94.7 % (axis) on 2026-10-16; that is the bar.
+4. **Enable.** Add `columns_turned` to `BUMP_ENABLED_PATTERNS` in `bump.py` with its test, then the full gate. No interface change: the bump request exists since 2026-10-16.
+5. **Fly.** One turned Columns Sitting, judged by the archived plan's § 5 grep: every post-band re-aim is a `BUMP` line, no bump-caused `LIMIT_*`, landings no worse than unbumped.
+
+- The Night Shift cannot run steps 1 to 3: its permission list refuses `tools/probes/`. A day Session can, in about an hour.
+- Step 4 is then one small branch, held for step 5's Sitting.
+- One risk: the level planner is direction-sensitive at 45 deg (IDEA-11: LIMIT_JERK 205k to 207k), so 45 deg may pass the replay less often than 90 deg.
+
+## Decision (2026-11-11)
+
+From TKT-59. You chose option 1 and will run it yourself: a day Session runs the capture and replay, steps 1 to 3 of Findings (2026-11-10). If the turned refusals pass at about the Columns rate (87 to 95 %), the next night builds step 4 (`columns_turned` in `BUMP_ENABLED_PATTERNS`, with its test) on a branch held for step 5's Sitting.
+
+- The Next Sitting Runbook takes hardware steps only, and steps 1 to 3 are offline: they need no power, only `tools/probes/late_reaim/`.
+- So BUG-75 is rated `hardware: robot` for step 5. Until then the Runbook lists it under "Needs a Sitting section" as your reminder.
+- The Night Shift writes the `## Sitting` section when it builds step 4.
+
 ## Progress
 
 - 2026-11-08: Night Shift 2026-11-08: the turned pair's first ask is not later; it asks twice more often, at no measurable cost (detail below)
 - 2026-11-08: 2026-11-07: RESEND-REFUSED INFEASIBLE on 24 of 282 Throws (8.5 %); turned Columns 22 of 143 (15 %).
 - 2026-11-09: Night Shift 2026-11-09: the turned pair does not ask twice more often; its second asks take the re-solve because the BUMP is off for it; awaiting the owner's answer
+- 2026-11-10: Night Shift 2026-11-10: the capture is offline (sim records, log rows, replay), then a one-line enable and a Sitting; see TKT-59
+- 2026-11-11: Night Shift 2026-11-11: TKT-59 answered (option 1); your day Session runs the capture and replay, then the night builds the enable for a Sitting; rated robot so the Runbook lists it

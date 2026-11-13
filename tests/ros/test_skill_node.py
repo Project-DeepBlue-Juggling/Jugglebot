@@ -4065,7 +4065,8 @@ class TestJuggleAction:
                           'record_beaten': '0', 'record_catches': ''}
 
     def _ended_attempt(self, tmp_path, throws, caught, records_path=None,
-                       pattern='self_toss'):
+                       pattern='self_toss', missed_feeds=0, missed_catches=0,
+                       carried_missed_catches=0, reports=None, feeds_caught=0):
         """Accept a self-throw goal, stop it, run `_juggle_execute` with
         `rp.summarise` reporting (throws, caught); returns the juggle_end
         fields and the WARN lines. `records_path` None leaves the node
@@ -4078,7 +4079,18 @@ class TestJuggleAction:
         assert (node._juggle_goal(_self_toss_goal())
                == sn.GoalResponse.ACCEPT)
         node._stop_attempt()
+        # FEAT-47: the executor's recorded fact, as the real one sets it when
+        # its MISSED_CATCH fires on a Feed Catch (tests/motion pins that half).
+        node._executor.missed_feed_catches = missed_feeds
+        # FEAT-47: Throws lost to an EMPTY Cup, as the executor sets it on the
+        # MISSED_CATCH verdict (tests/motion pins that half); `carried_` is what
+        # an earlier chained executor of the same goal already retired with.
+        node._executor.missed_catch_drops = missed_catches
+        node._goal_missed_catches = carried_missed_catches
         node._on_tick()
+        if reports is not None:
+            node._goal_reports = list(reports)
+        node._goal_feeds_caught = feeds_caught
         gh = MagicMock(is_cancel_requested=False)
         gh.request.pattern = pattern
         warnings = []
@@ -4141,12 +4153,298 @@ class TestJuggleAction:
                       'planner']
         assert f('hop', 'bad', 125.0, 0.27, 0.0, None) == ()   # never raises
 
-    def test_a_feed_is_never_offered_to_the_records(self, tmp_path):
+    def test_a_feed_is_never_a_record_and_a_clean_one_writes_nothing(self, tmp_path):
         path = tmp_path / 'records.md'
         _node, values = self._ended_attempt(tmp_path, 1, 1, records_path=path,
                                             pattern='reload')
         assert values['record_beaten'] == '0'
-        assert not path.exists()
+        assert not path.exists()       # no drops, no write
+
+    def test_a_feeds_drops_are_booked_but_never_a_record_row(self, tmp_path):
+        from jugglebot import records as rec
+        path = tmp_path / 'records.md'
+        with patch.object(sn.rp, 'drop_count', return_value=2):
+            _node, values = self._ended_attempt(tmp_path, 1, 1,
+                                                records_path=path,
+                                                pattern='reload')
+        assert values['record_beaten'] == '0'
+        model = rec.load(str(path))
+        assert model.drops.live == 2
+        assert all(not t.rows for t in model.ordered())
+
+    def test_a_fed_goal_ending_missed_catch_on_the_feed_books_one_drop(
+            self, tmp_path):
+        """FEAT-47: a Ball Butler Feed that missed the Cup (no ThrowReport)
+        is booked as 1 drop in the real ledger, captured from the executor as
+        it retires; real `drop_count`."""
+        from jugglebot import records as rec
+        path = tmp_path / 'records.md'
+        self._ended_attempt(tmp_path, 3, 2, records_path=path, missed_feeds=1)
+        assert rec.load(str(path)).drops.live == 1
+        path2 = tmp_path / 'records2.md'
+        self._ended_attempt(tmp_path, 3, 3, records_path=path2)
+        drops = rec.load(str(path2)).drops   # a record row writes; no drop
+        assert drops is None or drops.live == 0
+
+    def test_a_reload_goal_whose_feed_catch_is_missed_books_one_drop(
+            self, tmp_path):
+        """TKT-64: the Feed ahead of a `magazine` Throw is a `reload` goal;
+        its missed Feed Catch (executor `missed_feed_catches`, pinned from the
+        executor side by `test_a_missed_catch_on_a_feed_catch_is_exposed_as_a_missed_feed`)
+        books exactly one drop in the real ledger, and no record row."""
+        from jugglebot import records as rec
+        path = tmp_path / 'records.md'
+        self._ended_attempt(tmp_path, 0, 0, records_path=path,
+                            pattern='reload', missed_feeds=1)
+        model = rec.load(str(path))
+        assert model.drops.live == 1
+        assert all(not t.rows for t in model.ordered())
+
+    def test_lost_throws_of_an_empty_cup_are_booked_as_drops(self, tmp_path):
+        """FEAT-47: a Throw whose Catch read EMPTY has no ThrowReport; the
+        executor's `missed_catch_drops` reaches the real ledger as drops, and a
+        goal's chained executors sum (1 already retired + 2 here = 3)."""
+        from jugglebot import records as rec
+        path = tmp_path / 'records.md'
+        self._ended_attempt(tmp_path, 3, 2, records_path=path,
+                            missed_catches=2, carried_missed_catches=1)
+        assert rec.load(str(path)).drops.live == 3   # no reports here; 3 lost Throws
+        path2 = tmp_path / 'records2.md'
+        self._ended_attempt(tmp_path, 3, 3, records_path=path2)
+        drops = rec.load(str(path2)).drops
+        assert drops is None or drops.live == 0
+
+    def test_caught_and_drops_share_a_base_in_the_ledger(self, tmp_path):
+        """Owner, 2026-11-11: 9 caught Throws, 1 lost Throw and 1 seated Ball
+        Butler Feed book caught 10 and drops 1 (Throws and Feeds to catch 11)."""
+        from jugglebot import records as rec
+        R = sn.rp.ThrowReport
+        mk = lambda i, c: R(throw_no=i, n_throws=10, ball_id=0, caught=c, row=True,
+                            no_row_reason='', apex_m=0.9, landing_err_mm=None,
+                            release_err_s=None, arrival_err_s=None, seat_s=None)
+        reports = [mk(i, True) for i in range(1, 10)] + [mk(10, False)]
+        path = tmp_path / 'records.md'
+        self._ended_attempt(tmp_path, 10, 9, records_path=path, reports=reports,
+                            feeds_caught=1)
+        d = rec.load(str(path)).drops
+        assert (d.caught, d.live, d.throws_total) == (10, 1, 11)
+
+    def test_an_attempt_with_catches_and_no_drops_still_raises_live_caught(self, tmp_path):
+        from jugglebot import records as rec
+        R = sn.rp.ThrowReport
+        reports = [R(throw_no=1, n_throws=1, ball_id=0, caught=True, row=True,
+                     no_row_reason='', apex_m=0.9, landing_err_mm=None,
+                     release_err_s=None, arrival_err_s=None, seat_s=None)]
+        path = tmp_path / 'records.md'
+        self._ended_attempt(tmp_path, 1, 1, records_path=path, reports=reports)
+        self._ended_attempt(tmp_path, 1, 1, records_path=path, reports=reports)  # no new record, no drop
+        d = rec.load(str(path)).drops
+        assert (d.caught, d.live) == (2, 0)
+        # a Feed (reload) goal that only seated a Feed Catch books it too, and no row
+        self._ended_attempt(tmp_path, 0, 0, records_path=path, pattern='reload',
+                            reports=[], feeds_caught=1)
+        assert rec.load(str(path)).drops.caught == 3
+
+    def test_landing_scores_reach_the_ledger(self, tmp_path):
+        """IDEA-21: the Attempt's Throw scores (mm, Throw order, Throws
+        without a Fit counted) are offered to the ledger whether or not a
+        record is beaten; a `magazine` run books no Throw score."""
+        from jugglebot import records as rec
+        R = sn.rp.ThrowReport
+
+        def rpt(n, err, caught=True):
+            return R(throw_no=n, n_throws=3, ball_id=0, caught=caught,
+                     row=True, no_row_reason='', apex_m=0.9,
+                     landing_err_mm=err, release_err_s=None,
+                     arrival_err_s=None, seat_s=None)
+        reports = [rpt(1, (3.0, 4.0)), rpt(2, None, caught=False),
+                   rpt(3, (0.0, 12.0))]
+        path = tmp_path / 'records.md'
+        self._ended_attempt(tmp_path, 3, 2, records_path=path,
+                            reports=reports)
+        [row] = rec.load(str(path)).scores
+        assert (row.pattern, row.scores, row.no_fit) == (
+            'self_toss', (5, 12), 1)
+        # equal catches is not a record: the scores are still written
+        self._ended_attempt(tmp_path, 3, 2, records_path=path,
+                            reports=reports)
+        assert len(rec.load(str(path)).scores) == 2
+        # magazine: its placeholder Throw is never a catch target
+        self._ended_attempt(tmp_path, 1, 0, records_path=path,
+                            pattern='magazine', reports=reports)
+        assert len(rec.load(str(path)).scores) == 2
+
+    def test_throws_lost_to_an_empty_cup_are_without_a_fit_in_the_ledger(
+            self, tmp_path):
+        """TKT-66 (b): a Throw lost to an EMPTY Cup has no ThrowReport and no
+        Fit, so it is booked `no_fit`; scored + no_fit equals the Throws the
+        ledger counts. `magazine` books no score row at all."""
+        from jugglebot import records as rec
+        R = sn.rp.ThrowReport
+
+        def rpt(n, err):
+            return R(throw_no=n, n_throws=5, ball_id=0, caught=True,
+                     row=True, no_row_reason='', apex_m=0.9,
+                     landing_err_mm=err, release_err_s=None,
+                     arrival_err_s=None, seat_s=None)
+        reports = [rpt(1, (3.0, 4.0)), rpt(2, None), rpt(3, (0.0, 12.0))]
+        path = tmp_path / 'records.md'
+        self._ended_attempt(tmp_path, 5, 3, records_path=path,
+                            reports=reports, missed_catches=2)
+        [row] = rec.load(str(path)).scores
+        assert (row.scores, row.no_fit) == ((5, 12), 1 + 2)
+        # 3 Throws with a report + 2 lost == the 5 Throws of the Attempt
+        assert len(row.scores) + row.no_fit == 5
+
+    def test_a_drained_feed_report_keeps_its_landing_score(self):
+        node, _client = _node_with_client()
+        ex = MagicMock()
+        ex.feed_reports = [
+            sn.rp.FeedCatchReport(1, None, None, None, None,
+                                  landing_err_mm=(6.0, 8.0)),
+            sn.rp.FeedCatchReport(2, None, None, None, None)]
+        ex.reports = []
+        node._goal_feeds_caught = 0
+        node._goal_feed_scores = []
+        node._drain_reports(ex)
+        assert node._goal_feeds_caught == 2
+        assert node._goal_feed_scores == [10.0]
+
+    def test_the_feed_catch_counter_counts_drained_feed_reports(self):
+        node, _client = _node_with_client()
+        ex = MagicMock()
+        ex.feed_reports = [sn.rp.FeedCatchReport(1, None, None, None, None),
+                           sn.rp.FeedCatchReport(2, None, None, None, None)]
+        ex.reports = []
+        node._goal_feeds_caught = 0
+        node._drain_reports(ex)
+        assert node._goal_feeds_caught == 2 and ex.feed_reports == []
+
+    def _ended_with_real_summary(self, tmp_path, n_caught, missed_catches=0,
+                                 missed_feeds=0, records_path=None):
+        """FEAT-48: like `_ended_attempt` but nothing patched: `n_caught`
+        real caught ThrowReports, the executor's recorded facts seeded as the
+        real one sets them, retired through `_on_tick`, then the real
+        `_juggle_execute`. Returns (end line, Result, Attempt-end values,
+        node)."""
+        node, _client = _node_with_client()
+        if records_path is not None:
+            node._params['records_path'] = str(records_path)
+        _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+        _prelevel_ready(node)
+        assert (node._juggle_goal(_self_toss_goal())
+               == sn.GoalResponse.ACCEPT)
+        node._goal_reports = [_throw_report(i + 1, True)
+                              for i in range(n_caught)]
+        node._stop_attempt()
+        node._executor.missed_feed_catches = missed_feeds
+        node._executor.missed_catch_drops = missed_catches
+        lines = []
+        node.get_logger().info = lines.append
+        node._on_tick()
+        end = [ln for ln in lines if 'stopped by the operator' in ln]
+        assert len(end) == 1, lines
+        gh = MagicMock(is_cancel_requested=False)
+        gh.request.pattern = 'self_toss'
+        result = node._juggle_execute(gh)
+        return end[0], result, self._attempt_events(node)[-1][2], node
+
+    def test_a_throw_lost_to_an_empty_cup_is_counted_in_throws_everywhere(
+            self, tmp_path):
+        """FEAT-48 (owner, 2026-11-11): 9 caught and the tenth Throw lost to an
+        EMPTY Cup reads 9/10 on the end line, the Juggle Result, the Attempt
+        event and the ledger row; the drops count is still 1 (not 2)."""
+        from jugglebot import records as rec
+        path = tmp_path / 'records.md'
+        line, result, values, _node = self._ended_with_real_summary(
+            tmp_path, 9, missed_catches=1, records_path=path)
+        assert '9/10 caught (1 lost to an empty Cup)' in line, line
+        assert (result.throws, result.caught) == (10, 9)
+        assert (values['throws'], values['caught']) == ('10', '9')
+        model = rec.load(str(path))
+        [row] = model.table('self_toss').rows
+        assert (row.throws, row.catches) == (10, 9)
+        assert model.drops.live == 1        # the lost Throw is not counted twice
+
+    def test_without_a_lost_throw_the_tally_is_unchanged(self, tmp_path):
+        line, result, values, _n = self._ended_with_real_summary(tmp_path, 9)
+        assert '9/9 caught' in line and 'lost to an empty Cup' not in line
+        assert (result.throws, result.caught) == (9, 9)
+
+    def test_a_missed_feed_is_a_drop_but_not_a_throw(self, tmp_path):
+        """FEAT-48: M counts Jugglebot's Throws; a Ball Butler Feed that missed
+        the Cup stays in the drops only."""
+        from jugglebot import records as rec
+        path = tmp_path / 'records.md'
+        line, result, values, _n = self._ended_with_real_summary(
+            tmp_path, 9, missed_feeds=1, records_path=path)
+        assert '9/9 caught' in line and 'lost to an empty Cup' not in line
+        assert (result.throws, result.caught) == (9, 9)
+        model = rec.load(str(path))
+        assert model.drops.live == 1
+        assert [(r.throws, r.catches) for r in model.table('self_toss').rows] \
+            == [(9, 9)]
+
+    def test_the_executors_own_counts_reach_the_goal_through_the_retire_path(self):
+        """FEAT-48 (closes the FEAT-47 coverage gap): a REAL `SkillExecutor`,
+        driven to a Cup-EMPTY MISSED_CATCH by the executor tests' own fixtures
+        (nothing seeded), is retired by the node's `_on_tick`; the goal's
+        `_goal_missed_catches` is the executor's count, the end line says 1 lost
+        Throw, and for the Feed Catch run `_goal_feed_missed` arrives the same
+        way while the end line adds nothing to M."""
+        from tests.motion import test_skills_executor as te
+        sites = te.si.columns_sites(te.SEPARATION_MM)
+        x, _R, _tl = te._run_inbound_lost(sites, te._empty_cup_window)
+        assert x.done and x.end_code == te.ex.MISSED_CATCH
+        assert x.missed_catch_drops == 1 and x.missed_feed_catches == 0
+        node, _c = _node_with_client()
+        node._executor = x
+        lines = []
+        node.get_logger().error = lines.append
+        node._on_tick()
+        assert node._goal_missed_catches == 1 and node._goal_feed_missed == 0
+        [line] = lines
+        assert '(1 lost to an empty Cup)' in line, line
+        # The Feed Catch: counted as a Feed miss, never as a lost Throw in M.
+        sch, _L, R, _tla = te._feed_catch_schedule(sites)
+        seat_window = lambda t0, t1: te.ex.SeatWindow(
+            n_valid=int(round((t1 - t0) * 100)), n_seated=0, max_gap_s=0.01)
+        t_decide = R + te.ex.MISSED_CATCH_CLOSE_AFTER_RELEASE_S \
+            + te.ex.MISSED_CATCH_DECIDE_LAG_S
+        xf, _lines, _e = te._drive_to_decision(sch, seat_window, t_decide)
+        assert xf.missed_feed_catches == 1 and xf.missed_catch_drops == 0
+        t = t_decide
+        while not xf.done and t < t_decide + 5.0:    # the rest tail, then retire
+            t += 0.02
+            xf.tick(t)
+        assert xf.done
+        node2, _c2 = _node_with_client()
+        node2._executor = xf
+        lines2 = []
+        node2.get_logger().error = lines2.append
+        node2._on_tick()
+        assert node2._goal_feed_missed == 1 and node2._goal_missed_catches == 0
+        assert 'lost to an empty Cup' not in lines2[0], lines2
+
+    def test_the_lost_throw_count_resets_at_goal_accept(self, tmp_path):
+        node, _client = _node_with_client()
+        _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+        _prelevel_ready(node)
+        node._goal_missed_catches = 5
+        assert (node._juggle_goal(_self_toss_goal())
+               == sn.GoalResponse.ACCEPT)
+        assert node._goal_missed_catches == 0
+
+    def test_a_raising_drops_total_never_escapes_offer_record(self, tmp_path):
+        """FEAT-47: the `total_drops` log line is inside the guard, so
+        `_offer_record` keeps its "never raises" and still returns the record."""
+        path = tmp_path / 'records.md'
+        node, _client = _node_with_client()
+        node._params['records_path'] = str(path)
+        with patch.object(sn.rec, 'total_drops', side_effect=OSError('boom')):
+            beaten, best = node._offer_record('self_toss', 6, 5, 'STOPPED',
+                                              drops=2)
+        assert (beaten, best) == (True, '5')
 
     def test_a_malformed_ledger_warns_and_is_left_alone(self, tmp_path):
         path = tmp_path / 'records.md'
@@ -4767,6 +5065,31 @@ def test_columns_feed_bb_bias_mm_shifts_the_request_and_the_feed_prior(tmp_path)
     # back to the TRUE aim point, since announced == aim - bias here.
     assert first.landing_prior.pos_mm[0] == pytest.approx(float(aim[0]), abs=1e-6)
     assert first.landing_prior.pos_mm[1] == pytest.approx(float(aim[1]), abs=1e-6)
+
+
+def test_columns_feed_score_target_is_the_announced_point_not_the_biased_prior(tmp_path):
+    """TKT-66: with a non-zero `columns_feed_bb_bias_mm` the executor's
+    `feed_score_target_xy_mm` is the announced xy (the point Ball Butler was
+    asked to hit, `aim - bias`), while the feed `LandingPrior` is the
+    announcement plus the bias."""
+    node, _client = _node_with_client()
+    node.set_parameters([_MockParameter([29.0, 25.0], name='columns_feed_bb_bias_mm')])
+    _columns_bb_started(node, tmp_path)
+    throw_req = node._bb_throw_cli.calls[0]
+    ax = throw_req.target_point_global_mm.x
+    ay = throw_req.target_point_global_mm.y
+    ann = _bb_announcement(
+        target_id=node._robot_name,
+        landing_mm=(ax, ay, sn.CATCH_CUP_Z_MM),
+        landing_vel_mm_s=(0.0, 0.0, -3000.0), throw_time_s=0.5,
+        landing_time_s=5.0)
+    node._on_announcement(ann)
+    assert node._executor is not None
+    assert node._executor.feed_score_target_xy_mm == pytest.approx((ax, ay))
+    catches = [s for s in node._executor.schedule.skills if s.kind == sn.CATCH]
+    first = min(catches, key=lambda s: s.t_abs_s)
+    assert first.landing_prior.pos_mm[0] == pytest.approx(ax + 29.0, abs=1e-6)
+    assert first.landing_prior.pos_mm[1] == pytest.approx(ay + 25.0, abs=1e-6)
 
 
 def test_columns_feed_bb_bias_mm_leaves_self_toss_reload_untouched(tmp_path):

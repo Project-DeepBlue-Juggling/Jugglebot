@@ -1409,6 +1409,12 @@ class _PendingCatch:
     #: (:meth:`SkillExecutor._ends_on_stop_final_catch`); an EMPTY live window
     #: then books the Catch as unverifiable instead of :data:`MISSED_CATCH`.
     ends_on_stop: bool = False
+    #: The point a Feed's thrower (Ball Butler) was aimed at (x, y mm), the
+    #: target of its landing score (IDEA-21, TKT-66): the Feed's
+    #: ``landing_prior.pos_mm`` unless the executor's
+    #: ``feed_score_target_xy_mm`` overrides it (a Columns Feed, whose prior is
+    #: bias-corrected for the Catch). Report-only.
+    target_xy_mm: Optional[Tuple[float, float]] = None
 
 
 #: Where, around the tracker's crossing, the cup strike is searched for
@@ -2587,6 +2593,19 @@ class SkillExecutor:
         self.catch_time_offset_s = float(catch_time_offset_s)
         #: Feed-catch (Ball Butler) observation lines for the node to log.
         self.feed_reports: List[FeedCatchReport] = []
+        #: REPORT-ONLY (IDEA-21, TKT-66): the (x, y) mm point Ball Butler was
+        #: AIMED at for the Feed, the target of the Feed's landing score.
+        #: ``None`` = the Feed's ``landing_prior.pos_mm`` (a plain ``reload``
+        #: Feed: Ball Butler's announcement IS the aim point). A Columns Feed
+        #: sets it to the raw announcement, because its ``landing_prior`` is
+        #: walked forward by ``columns_feed_bb_bias_mm`` for the Catch and
+        #: that walk is not the thrower's aim. The score target is the point
+        #: Ball Butler was asked to hit, ``aim_site - columns_feed_bb_bias_mm``,
+        #: which it announces; with a configured bias the Feed score therefore
+        #: includes Ball Butler's own landing bias, by the owner's TKT-66
+        #: answer. Nothing the planner, the Catch,
+        #: the learner or the wire reads looks at this.
+        self.feed_score_target_xy_mm: Optional[Tuple[float, float]] = None
         #: The late catch re-aim BUMP (I-CATCH-5, :mod:`.bump`) — OFF unless the
         #: caller enables it for a pattern in ``bump.BUMP_ENABLED_PATTERNS``
         #: (columns family only, owner 2026-10-16; hop/reload stay off until a
@@ -2611,6 +2630,10 @@ class SkillExecutor:
                              % (list(AIM_SOURCES), catch_aim_source))
         #: :data:`AIM_SCHEDULE` / :data:`AIM_SCHEDULE_HAND` / :data:`AIM_TRACKER`.
         self.catch_aim_source = str(catch_aim_source)
+        #: The aim label (``_catch_aim``'s) of the CATCH whose dispatch is
+        #: building its terminal -- read only by the one ``ADMISSIBILITY-
+        #: LANDING`` note (BUG-87); never a decision input.
+        self._dispatch_aim_label = ''
         #: ``(ball_id, t_release_abs_s) -> Optional[r]`` — the MEASURED hand
         #: launch-speed ratio, only ever read in :data:`AIM_SCHEDULE_HAND`.
         self.launch_ratio = launch_ratio
@@ -2730,6 +2753,18 @@ class SkillExecutor:
         #: goal ended on a Stop (BUG-67), else ``None``. Not an END: it sets
         #: no ``end_code`` and no ``attempt_ended``.
         self.final_catch_unverifiable: Optional[int] = None
+        #: FEAT-47: how many :data:`MISSED_CATCH` verdicts fired on a Ball
+        #: Butler Feed Catch (a skill carrying ``landing_prior``). A recorded
+        #: fact only, read by ``skill_node`` for the drops count; nothing in
+        #: the executor reads it.
+        self.missed_feed_catches = 0
+        #: FEAT-47: Throws lost to an EMPTY Cup, i.e. the inbound flight of a
+        #: ball whose Catch ended :data:`MISSED_CATCH` while that flight's
+        #: outcome row was still pending (so it never produced a ThrowReport).
+        #: A recorded fact only, read by ``skill_node`` for the drops count;
+        #: nothing in the executor reads it. A Feed Catch has no inbound row
+        #: and is counted by :attr:`missed_feed_catches` alone.
+        self.missed_catch_drops = 0
         self.end_code = ''
         #: D2 (2026-10-19): level the platform after an END that leaves it
         #: tilted -- see :meth:`_plan_closing`.  ``False`` restores the
@@ -3392,6 +3427,15 @@ class SkillExecutor:
         if idx in self._u_cache:
             _x, u_dy, u_apex = self._u_cache[idx]
             return u_dy, u_apex
+        # BUG-87: name the Catch landing this online check plans against
+        # (built here, where the check already runs, once per skill).
+        self._note_once(idx, 'ADMISSIBILITY-LANDING', (
+            'ADMISSIBILITY-LANDING skill %d: catch landing (%.1f, %.1f, '
+            '%.1f) mm at t=%.3f s (%+.3f s ahead), source=%s'
+            % (idx, float(landing.pos_mm[0]), float(landing.pos_mm[1]),
+               float(landing.pos_mm[2]), float(landing.t_land_abs_s),
+               float(landing.t_land_abs_s) - float(t_abs_s),
+               self._dispatch_aim_label or 'unknown')))
         tt = skill.then_throw
         rel_site = release_site_of(skill)
         release_mm, x = self._catch_command_state(skill, landing)
@@ -5393,6 +5437,7 @@ class SkillExecutor:
                             % (t_abs_s, NO_LANDING, ball_label(skill.ball_id),
                                deadline)],
                            False)
+                self._dispatch_aim_label = aim_source
                 terminal = self._catch_terminal(idx, skill, landing,
                                                 t_abs_s=t_abs_s)
             elif skill.kind == THROW:
@@ -5405,7 +5450,13 @@ class SkillExecutor:
             self.end_code = NO_ADMISSIBLE_COMMAND
             self.end_message = str(exc)
             self.end_kind = skill.kind
-            return (['%.3f END %s at skill %d (%s): %s'
+            # The notes queued before the refusal (BUG-87's
+            # ADMISSIBILITY-LANDING among them) ride out ahead of the END
+            # line instead of being left queued.
+            refused_notes = self._pending_notes
+            self._pending_notes = []
+            return (refused_notes
+                    + ['%.3f END %s at skill %d (%s): %s'
                     % (t_abs_s, NO_ADMISSIBLE_COMMAND, idx, skill.kind, exc)],
                    False)
 
@@ -5699,6 +5750,12 @@ class SkillExecutor:
             ball_id=skill.ball_id, catch_idx=idx, t_land_scheduled_s=L,
             t_open_s=t_open, t_close_s=t_close,
             is_feed=skill.landing_prior is not None,
+            target_xy_mm=(
+                None if skill.landing_prior is None
+                else self.feed_score_target_xy_mm
+                if self.feed_score_target_xy_mm is not None
+                else (float(skill.landing_prior.pos_mm[0]),
+                      float(skill.landing_prior.pos_mm[1]))),
             last_fit_landing=self._fit_latch_by_idx.get(idx),
             ends_on_stop=self._ends_on_stop_final_catch(idx, skill)))
 
@@ -6299,6 +6356,7 @@ class SkillExecutor:
         within 0.3 s of the dispatched aim (a stale fit of another flight
         would give a nonsense zero); without one every field is ``--``."""
         t_cross = None
+        feed_err = None
         # The in-flight latch first; the live call only when none was taken
         # (the provider answers None once the ball's status leaves IN_FLIGHT).
         lnd = pend.last_fit_landing
@@ -6307,13 +6365,18 @@ class SkillExecutor:
         if (lnd is not None and lnd.from_fit and abs(
                 float(lnd.t_land_abs_s) - pend.t_land_scheduled_s) < 0.3):
             t_cross = float(lnd.t_land_abs_s)
+            if pend.target_xy_mm is not None:
+                d = (np.asarray(lnd.pos_mm, dtype=float)[:2]
+                     - np.asarray(pend.target_xy_mm, dtype=float))
+                feed_err = (float(d[0]), float(d[1]))
         contact_s, settle_s = self._contact_and_settle(t_cross, t_seat_s)
         self.feed_reports.append(FeedCatchReport(
             ball_id=pend.ball_id,
             arrival_err_s=(None if t_cross is None
                            else t_cross - pend.t_land_scheduled_s),
             seat_s=None if t_cross is None else t_seat_s - t_cross,
-            contact_s=contact_s, settle_s=settle_s))
+            contact_s=contact_s, settle_s=settle_s,
+            landing_err_mm=feed_err))
 
     def _advance_catch_evidence(self, t_abs_s: float) -> List[str]:
         """Fire :data:`MISSED_CATCH` for any armed :class:`_PendingCatch`
@@ -6481,11 +6544,24 @@ class SkillExecutor:
                 pend.last_fit_landing if pend.last_fit_landing is not None
                 else (self.tracker(pend.ball_id)
                       if self.tracker is not None else None))
+            lost = [p for p in self._pending_outcomes
+                    if p.ball_id == pend.ball_id]
             self._pending_outcomes = [
                 p for p in self._pending_outcomes
                 if p.ball_id != pend.ball_id]
+            # FEAT-47: the inbound flight (released before this landing) of a
+            # ball the Cup never received was thrown and lost; it has no
+            # ThrowReport because its row is dropped here. The carried Throw's
+            # row (released at/after this landing) is not a ball. A row that
+            # already finalised is no longer pending, so it is not counted twice.
+            self.missed_catch_drops += sum(
+                1 for p in lost
+                if p.t_release_s < pend.t_land_scheduled_s
+                and not p.shadow_landing)
             t_open_rel = pend.t_open_s - pend.t_land_scheduled_s
             t_close_rel = pend.t_close_s - pend.t_land_scheduled_s
+            if pend.is_feed:
+                self.missed_feed_catches += 1
             survivor = self._survivor_catch(pend.ball_id)
             if survivor is not None and not self.attempt_ended:
                 self._install_survivor_tail(*survivor, pend.ball_id)

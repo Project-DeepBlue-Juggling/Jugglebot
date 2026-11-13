@@ -50,3 +50,17 @@
     font-size: 0.9em;
 }
 #records-panel .records-group:first-child { margin-top: 0; border-top: none; }
+#records-panel .records-drops { font-family: var(--font-mono); color: var(--text-secondary); margin-bottom: 3px; }
+
+/* Drops to date: a short pop when the total rises (records-panel.js adds the class). */
+#records-panel .records-drops { transform-origin: left center; }
+#records-panel .records-drops.records-drops-bump { animation: records-drops-bump 0.9s ease-out; }
+@keyframes records-drops-bump {
+    0%   { transform: scale(1);    color: var(--text-secondary); }
+    15%  { transform: scale(1.18); color: #ff6b5e; }
+    45%  { transform: scale(1);    color: #ff6b5e; }
+    100% { transform: scale(1);    color: var(--text-secondary); }
+}
+@media (prefers-reduced-motion: reduce) {
+    #records-panel .records-drops.records-drops-bump { animation: none; }
+}

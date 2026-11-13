@@ -166,6 +166,33 @@ def test_finish_ends_the_goal_thrown(tmp_path):
     assert len(node._goal_reports) == 1 and 'MAGAZINE miss' in node._goal_outcome_lines[0]
 
 
+def test_a_magazine_end_books_no_drop(tmp_path):
+    """FEAT-47: the placeholder ThrowReport (caught=False) of `_magazine_finish`
+    is not a Throw to be caught, and a `magazine` run books ZERO drops, always
+    (owner, TKT-64): its Throw goes into Ball Butler's magazine and nothing is
+    meant to catch it. The Feed before it is a separate `reload` goal. Real
+    `drop_count`, real ledger, real `_juggle_execute` (nothing patched away)."""
+    from unittest.mock import MagicMock
+    from jugglebot import records as rec
+    node, client, R = _setup(tmp_path)
+    path = tmp_path / 'records.md'
+    node._params['records_path'] = str(path)
+    _ctx_with_samples(node, R)
+    node._magazine_finish(node._magazine_ctx)
+    assert sn.rp.drop_count(node._goal_reports) == 1   # the placeholder alone WOULD count
+    node._goal_feeds_caught = 3       # nor does a magazine run book any caught
+    node._goal_missed_catches = 2     # FEAT-47: nor do lost Throws count on a magazine goal
+    gh = MagicMock(is_cancel_requested=False)
+    gh.request.pattern = 'magazine'
+    result = node._juggle_execute(gh)
+    # FEAT-48: nor does it add lost Throws to its Throws figure (M).
+    assert (result.throws, result.caught) == (1, 0)
+    # No ledger written, or one written with no drop booked (before the fix
+    # the placeholder wrote the file with live=1).
+    drops = rec.load(str(path)).drops if path.exists() else None
+    assert drops is None or (drops.live == 0 and not drops.caught)
+
+
 def test_too_few_samples_is_no_track(tmp_path):
     node, client, R = _setup(tmp_path)
     ctx = _ctx_with_samples(node, R, n=3)

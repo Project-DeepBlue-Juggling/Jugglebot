@@ -2,7 +2,7 @@
 // under node. Sandbox (tests/ros/test_gui_records_panel.py builds it): records-model.js copied verbatim,
 // this file, package.json {"type":"module"}. Prints one JSON object the test asserts on.
 import {
-    recordRows, recordSections, menuEntries, loadHidden, saveHidden, attemptEnd, RECORDS_HIDDEN_KEY,
+    dropsText, dropsDetail, throwsSummary, dropsBumped, panelVisible, recordRows, recordSections, menuEntries, loadHidden, saveHidden, attemptEnd, RECORDS_HIDDEN_KEY,
 } from './records-model.js';
 
 const json = {
@@ -53,6 +53,45 @@ console.log(JSON.stringify({
     notArray: [...loadHidden(new Store({ [RECORDS_HIDDEN_KEY]: '{"a":1}' }))],
     blocked: [...loadHidden(throwing)],
     blockedSave: (() => { saveHidden(throwing, new Set(['x'])); return 'ok'; })(),
+    panelVisible: [
+        panelVisible({ patterns: [], drops: { total: 0, live: 0, since: null, history: null } }, []),
+        panelVisible({ patterns: mixed.patterns, drops: { total: 3 } }, recordRows(mixed, new Set(['c2', 'a1', 't3', 'b2', 'd1']))),
+        panelVisible({ patterns: mixed.patterns }, mixed.patterns),
+        panelVisible({ patterns: [] }, []),
+        panelVisible(null, []),
+    ],
+    drops: [
+        dropsText({ drops: { total: 12, live: 12, since: '2026-11-10', history: null } }),
+        dropsText({ drops: { total: 112, live: 12, since: '2026-11-10', history: 100 } }),
+        dropsText({ drops: { total: 840, live: 12, since: '2026-11-12', history: 828, history_from: '2026-07-23', history_through: '2026-11-11' } }),
+        dropsText({ drops: null }), dropsText({}), dropsText(null),
+    ],
+    dropsPct: (() => {
+        const full = { total: 819, live: 0, since: '2026-11-11', history: 819, history_from: '2026-07-23',
+                       history_through: '2026-11-10', caught: 6485, throws: 7304 };
+        return {
+            line: dropsText({ drops: full }),
+            detail: dropsDetail({ drops: full }),
+            summary: [
+                throwsSummary({ drops: full }),
+                throwsSummary({ drops: { ...full, caught: null, throws: null } }),
+                throwsSummary({ drops: { ...full, caught: 0, throws: 0 } }),
+                throwsSummary({ drops: { ...full, caught: 8, throws: 7 } }),
+                throwsSummary({ drops: { ...full, caught: 1, throws: 3 } }),
+                throwsSummary({ drops: { total: 5, live: 5, since: '2026-11-10', history: null } }),
+                throwsSummary({ drops: null }),
+            ],
+            noFigures: dropsDetail({ drops: { ...full, caught: null, throws: null } }),
+            onlyThrows: dropsDetail({ drops: { total: 3, live: 3, since: '2026-11-12', history: null, caught: 7, throws: 10 } }),
+        };
+    })(),
+    dropsDetail: [
+        dropsDetail({ drops: { total: 12, live: 12, since: '2026-11-10', history: null } }),
+        dropsDetail({ drops: { total: 112, live: 12, since: '2026-11-10', history: 100 } }),
+        dropsDetail({ drops: { total: 840, live: 12, since: '2026-11-12', history: 828, history_from: '2026-07-23', history_through: '2026-11-11' } }),
+        dropsDetail({ drops: null }),
+    ],
+    dropsBumped: [dropsBumped(null, 819), dropsBumped(819, 819), dropsBumped(819, 820), dropsBumped(820, 819), dropsBumped(819, null)],
     ends: [
         attemptEnd(kv('juggle_end', { pattern: 'columns', record_beaten: '1', record_catches: '33' })),
         attemptEnd(kv('juggle_end', { pattern: 'hop', record_beaten: '0' })),

@@ -113,6 +113,11 @@ namespace PlatformCanId {
   constexpr uint32_t FW_UPDATE_REPLY = 0x6F1;
 }
 
+// 0x6E0 RobotState tilt units (counts per radian)
+namespace PlatformState {
+  constexpr float TILT_COUNTS_PER_RAD = 10000.0f;
+}
+
 // Ball Butler Teensy <-> Host
 namespace BallButlerCanId {
   constexpr uint32_t THROW_CMD = 0x7D0;

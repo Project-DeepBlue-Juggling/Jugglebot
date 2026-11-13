@@ -1,0 +1,911 @@
+schema: 1
+date: "2026-11-13"
+rig: robot
+omitted:
+  - item: FEAT-49
+    reason: Its own first step says not to fly it until FEAT-45 rungs B and C have passed on the bench Hand with the fixed scope tool. FEAT-45 is still in progress (rung B never ran on 2026-11-11).
+  - item: IDEA-22
+    do: [3]
+    reason: "TKT-67 is answered with option 1: keep the 3 degree tilt-back and fly at Apex 0.90. The row's other route (set the tilt-back to 1.9 degrees and stay at Apex 0.95) is not flown; the Apex 0.90 planning check it asks for is in step 27."
+steps:
+  - n: 1
+    kind: setup
+    title: Check the checkout is on main and in sync
+    from: []
+    to: []
+    actions:
+      - where: Terminal 2
+        command: cd ~/Desktop/Jugglebot && git fetch && git status -sb && git log --oneline -1
+    see: "## main...origin/main with nothing ahead or behind. temp/learn/ entries showing as untracked are expected."
+    stop_if: The branch is not main, or it is ahead of or behind origin/main.
+    serves: []
+
+  - n: 2
+    kind: setup
+    title: Rebuild, because ros_ws changed on the last two nights
+    from: []
+    to: []
+    actions:
+      - where: Terminal 2
+        command: cd ~/Desktop/Jugglebot/ros_ws && source /opt/ros/foxy/setup.bash && colcon build --packages-up-to jugglebot && source install/setup.bash
+    see: Summary line with no failed packages.
+    stop_if: Any package failed.
+    serves: []
+
+  - n: 3
+    kind: setup
+    title: Power-cycle the can-bridge
+    from: []
+    to: [bridge-cycled]
+    actions:
+      - where: Hands
+        text: Power-cycle the can-bridge. FEAT-39 and FEAT-32 both ask for a cycled bridge.
+    see: The can-bridge is back up.
+    stop_if: It does not come back up.
+    serves: []
+
+  - n: 4
+    kind: setup
+    title: Launch 1 of 4 (main, default arguments)
+    new_launch: true
+    from: [bridge-cycled]
+    to: [bridge-cycled, launched]
+    actions:
+      - where: Terminal 1
+        command: cd ~/Desktop/Jugglebot/ros_ws && source /opt/ros/foxy/setup.bash && source install/setup.bash && ros2 launch jugglebot jugglebot_launch.py 2>&1 | tee -i ../temp/logs/launch_2026-11-13_1.log
+      - where: Hands
+        text: Do not pass gc_probe:=false on any launch today (BUG-58 needs the probe on). Wait for Homing to finish before the next step.
+    see: "BRIDGE_FW_CHECK: OK - can-bridge v43 (FEAT-39's row still says FW 40 and FEAT-46's FW 42; the bridge has been FW 43 / PROTOCOL 14, Platform FW 10, since 2026-11-10). homing: 7 axes homed."
+    stop_if: The firmware check is not OK at v43, or fewer than 7 axes homed.
+    record: The launch log path.
+    serves:
+      - item: FEAT-39
+        do: [0]
+      - item: BUG-58
+        do: [0]
+      - item: FEAT-46
+        do: [0]
+
+  - n: 5
+    kind: setup
+    title: Set up Terminal 2 for parameters, read the plant and the limits
+    from: [bridge-cycled, launched]
+    to: [bridge-cycled, launched]
+    actions:
+      - where: Terminal 2
+        command: source /opt/ros/foxy/setup.bash && source ~/Desktop/Jugglebot/ros_ws/install/setup.bash && cd ~/Desktop/Jugglebot
+        text: Every later Terminal 2 command assumes this shell and this directory.
+      - where: Terminal 2
+        command: ros2 param get /skill_node plant_id
+      - where: GUI
+        text: Read the Sitting limits.
+    see: plant_id reads jugglebot. Sitting limits 600 / 8000 / 200000.
+    stop_if: The limits read anything else, or plant_id is not jugglebot (set it with ros2 param set /skill_node plant_id jugglebot).
+    record: The limits, and that they came from the GUI.
+    serves:
+      - item: FEAT-39
+        do: [1]
+
+  - n: 6
+    kind: setup
+    title: Level the Platform
+    from: [bridge-cycled, launched]
+    to: [bridge-cycled, launched, level]
+    actions:
+      - where: GUI
+        text: "State minimap: hold LEVELLING to confirm. The Platform rises to full Active height."
+    see: The minimap passes through LEVELLING and finishes with no Fault.
+    stop_if: Any Fault, or the Platform does not rise cleanly.
+    serves: []
+
+  - n: 7
+    kind: setup
+    title: Dress rehearsal for launch 1, two planning checks (nothing moves)
+    from: [bridge-cycled, launched, level]
+    to: [bridge-cycled, launched, level]
+    actions:
+      - where: Terminal 2
+        text: One-ball oval (FEAT-39).
+        command: "ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString \"{data: 'oval_1ball_fed,apex_m=1.00,separation_mm=150,dwell_s=0.40'}\""
+      - where: Terminal 2
+        text: High-low Columns (IDEA-10).
+        command: "ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString \"{data: 'columns_highlow,apex_m=1.00,separation_mm=100,dwell_s=0.27,apex_m_ball2=0.90'}\""
+    see: "Each reply reads success: True with a one-line 'nomination OK' summary. These are planning checks only, so the Platform and the Hand stay still. Expect the high-low reply to show a negative margin with the Catch re-aim at its limit (-0.245 on 2026-11-10) and the words 'An Attempt may end mid-Pattern': that is information, not a refusal."
+    stop_if: "Anything moves. A reply with success: False is not a stop; note which Pattern and what the reply says, and skip that Pattern's flight steps (oval: steps 10 to 12; high-low: steps 14 to 16)."
+    record: Any refusal line, word for word.
+    serves:
+      - item: FEAT-39
+        do: [2]
+      - item: IDEA-10
+        do: [0]
+
+  - n: 8
+    kind: setup
+    title: Activate (this arms) and bring up Ball Butler
+    from: [bridge-cycled, launched, level]
+    to: [bridge-cycled, launched, level, armed, bb-fed]
+    actions:
+      - where: GUI
+        text: "State minimap: hold ACTIVE:TRAJECTORY to confirm. The launch's auto_arm arms the setpoint wire on entry."
+      - where: Hands
+        text: Power Ball Butler and load it. Cup empty.
+    see: Mode ACTIVE:TRAJECTORY, Armed, no Fault. Ball Butler powered and holding a ball.
+    stop_if: Any refusal or Fault on activation.
+    serves: []
+
+  - n: 9
+    kind: run
+    title: Columns canary, 5 Attempts
+    from: [bridge-cycled, launched, level, armed, bb-fed]
+    to: [bridge-cycled, launched, level, armed, bb-fed]
+    actions:
+      - where: GUI
+        text: "Juggle panel: Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21. Start. Five Attempts in a row. Before each Attempt: Cup empty, Ball Butler loaded."
+      - where: GUI
+        text: Watch Leg current through every Attempt. Cancel the goal if any Leg iq sample reaches 19 A.
+    see: Each Attempt reads COMPLETED (20/20 caught), no Leg LIMIT end, peak Leg iq under 20 A. The Leg base joints stay seated.
+    stop_if: Any Leg iq sample reaches 19 A, or any Leg base joint moves or separates (BUG-72). Do not continue this sheet if a joint lets go; tell a Session.
+    record: Caught of thrown and the end code per Attempt; the CATCH Leg-velocity refusal count. These five also stand as IDEA-11's straight Columns control for steps 32 and 33.
+    serves:
+      - item: FEAT-39
+        do: [3, 4]
+      - item: IDEA-11
+        do: [1]
+
+  - n: 10
+    kind: run
+    title: One-ball oval at Dwell 0.50 on its own plant
+    from: [bridge-cycled, launched, level, armed, bb-fed]
+    to: [bridge-cycled, launched, level, armed, bb-fed]
+    actions:
+      - where: Terminal 2
+        text: Refused while a goal runs.
+        command: ros2 param set /skill_node plant_id p4-oval-2026-11-13
+      - where: Terminal 2
+        text: Read it back here. FEAT-39's row says to read it from the goal start line, but fed goals do not print plant_id there (found at the 2026-11-10 debrief).
+        command: ros2 param get /skill_node plant_id
+      - where: Hands
+        text: Cup empty, Ball Butler loaded.
+      - where: Terminal 2
+        command: 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.50, num_cycles: 32}" --feedback'
+    see: plant_id reads p4-oval-2026-11-13. One Attempt flies. Landings about 46 +/- 10 mm long, as at 350 / 5000 on 2026-10-31, clear P4 of the long bias.
+    stop_if: plant_id does not read back (do not fly). Any Leg iq sample reaches 19 A (cancel the goal), or any Leg joint moves.
+    record: Caught of thrown, end code, the raw long bias from rest and carried.
+    serves:
+      - item: FEAT-39
+        do: [5, 6]
+
+  - n: 11
+    kind: run
+    title: Oval ladder at Dwell 0.40, then 0.35
+    from: [bridge-cycled, launched, level, armed, bb-fed]
+    to: [bridge-cycled, launched, level, armed, bb-fed]
+    actions:
+      - where: Hands
+        text: Empty the Cup after every ended Attempt before re-sending a fed goal. Cup empty, Ball Butler loaded.
+      - where: Terminal 2
+        text: Dwell 0.40, fed.
+        command: 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.40, num_cycles: 32}" --feedback'
+      - where: Terminal 2
+        text: Then Dwell 0.40 at oval_1ball. Put the ball in the Cup by hand first.
+        command: 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.40, num_cycles: 32}" --feedback'
+      - where: Terminal 2
+        text: Dwell 0.35, only after one Attempt above with no Leg LIMIT, Guard or HAND_LIMIT end. Empty the Cup first; Ball Butler loaded.
+        command: 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.35, num_cycles: 32}" --feedback'
+    see: Attempts run with no Leg LIMIT, Guard or HAND_LIMIT end.
+    stop_if: A Leg LIMIT, Guard or HAND_LIMIT end at 0.40 means do not go to 0.35; go to step 12, skip its commands and give FEAT-39's verdict there. Any Leg iq sample at 19 A, cancel the goal.
+    record: Caught of thrown and end code per Attempt; the raw long bias per Dwell, from rest and carried; the LIMIT_JERK refusal count.
+    serves:
+      - item: FEAT-39
+        do: [7]
+
+  - n: 12
+    kind: run
+    title: Oval at Dwell 0.30 and Apex 1.10, only if 0.35 held
+    from: [bridge-cycled, launched, level, armed, bb-fed]
+    to: [bridge-cycled, launched, level, armed, bb-fed]
+    actions:
+      - where: Terminal 2
+        text: Only if Dwell 0.35 held. This reads the nomination at the live limits; nothing moves.
+        command: "ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString \"{data: 'oval_1ball_fed,apex_m=1.10,separation_mm=150,dwell_s=0.30'}\""
+      - where: Terminal 2
+        text: "Only if that reply reads success: True. Cup empty, Ball Butler loaded."
+        command: 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.10, separation_mm: 150.0, dwell_s: 0.30, num_cycles: 32}" --feedback'
+    see: "The nomination reads success: True. 'Held' means one Attempt at Dwell 0.35 in step 11 ended with no Leg LIMIT, Guard or HAND_LIMIT end. If 0.35 did not hold or was not flown, skip both commands. Either way, give FEAT-39's verdict on this step, on what flew."
+    stop_if: Nomination refused (do not fly), or any Leg iq sample at 19 A.
+    record: The shortest Dwell reaching 30 consecutive Catches; the oval plant_id; bag and launch log paths. Peak Leg iq per Leg per Attempt comes from the bag at the debrief.
+    serves:
+      - item: FEAT-39
+        do: [8]
+        pass: true
+
+  - n: 13
+    kind: restore
+    title: Put the plant back before the Columns rows
+    from: [bridge-cycled, launched, level, armed, bb-fed]
+    to: [bridge-cycled, launched, level, armed, bb-fed]
+    actions:
+      - where: Hands
+        text: Empty the Cup.
+      - where: Terminal 2
+        command: ros2 param set /skill_node plant_id jugglebot
+      - where: Terminal 2
+        command: ros2 param get /skill_node plant_id
+    see: plant_id reads jugglebot. The oval Throws stay out of the Columns Memory.
+    stop_if: It does not read jugglebot.
+    serves: []
+
+  - n: 14
+    kind: run
+    title: High-low Columns (IDEA-10)
+    from: [bridge-cycled, launched, level, armed, bb-fed]
+    to: [bridge-cycled, launched, level, armed, bb-fed]
+    actions:
+      - where: Hands
+        text: Before each Attempt, Cup empty and Ball Butler loaded.
+      - where: GUI
+        text: "Juggle panel: Columns - high-low, Apex 1.00, Apex 2 0.90, Sep. 100, Dwell 0.27, Throws 21. Start writes apex_m_ball2 to the node."
+      - where: Terminal 2
+        text: Only if the GUI will not start it. Refused while a goal runs.
+        command: 'ros2 param set /skill_node apex_m_ball2 0.90'
+      - where: Terminal 2
+        text: Only if the GUI will not start it.
+        command: 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_highlow, apex_m: 1.00, separation_mm: 100.0, dwell_s: 0.27, num_cycles: 21}" --feedback'
+      - where: GUI
+        text: Watch Hand current at every launch. Cancel the goal if any Hand iq sample reaches 55.0 A.
+    see: COMPLETED (20/20 caught), the two Balls' mean Tracker Apexes differing by 100 mm give or take 20 mm, Hand iq under 54 A at every launch (the brake is excluded).
+    stop_if: Any Hand iq sample reaches 55.0 A (cancel the goal).
+    record: Caught of thrown, each Ball's mean Tracker Apex, peak Hand iq per launch, Ball 2's first-Throw landing (x, y) mm per Attempt from the install line, the bag path.
+    serves:
+      - item: IDEA-10
+        do: [1, 2]
+        pass: true
+
+  - n: 15
+    kind: run
+    title: Same settings on a fresh plant (BUG-63)
+    from: [bridge-cycled, launched, level, armed, bb-fed]
+    to: [bridge-cycled, launched, level, armed, bb-fed]
+    actions:
+      - where: Hands
+        text: Empty the Cup. Ball Butler loaded.
+      - where: Terminal 2
+        text: A name no Memory file has. Refused while a goal runs.
+        command: ros2 param set /skill_node plant_id bug63-fresh-2026-11-13
+      - where: Terminal 2
+        command: ros2 param get /skill_node plant_id
+      - where: Terminal 2
+        command: ros2 param set /skill_node apex_m_ball2 0.90
+      - where: GUI
+        text: "Juggle panel: Columns - high-low, Apex 1.00, Apex 2 0.90, Sep. 100, Dwell 0.27, Throws 21. One Attempt. A second only if the first ended before Ball 2's first Throw for an unrelated reason."
+    see: plant_id reads bug63-fresh-2026-11-13. Ball 2's first Throw after the Feed Catch lands within 60 mm of its Site along the separation axis.
+    stop_if: plant_id does not read back (do not fly). Any Hand iq sample reaches 55.0 A (cancel the goal).
+    record: The plant_id, Ball 2's first-Throw landing (x, y) mm and its aim from the install line, the Feed-Catch aim line (clamped or not), how the Attempt ended, the bag path.
+    serves:
+      - item: BUG-63
+        do: [0, 1]
+        pass: true
+
+  - n: 16
+    kind: restore
+    title: Put the plant and Apex 2 back
+    from: [bridge-cycled, launched, level, armed, bb-fed]
+    to: [bridge-cycled, launched, level, armed, bb-fed]
+    actions:
+      - where: Terminal 2
+        text: The plant step 14 flew on.
+        command: ros2 param set /skill_node plant_id jugglebot
+      - where: Terminal 2
+        command: ros2 param get /skill_node plant_id
+      - where: Terminal 2
+        command: ros2 param set /skill_node apex_m_ball2 0.0
+    see: plant_id reads jugglebot and the apex_m_ball2 set reports success.
+    stop_if: Either fails.
+    serves:
+      - item: BUG-63
+        do: [2]
+      - item: IDEA-10
+        do: [3]
+
+  - n: 17
+    kind: restore
+    title: Stand down launch 1
+    from: [bridge-cycled, launched, level, armed, bb-fed]
+    to: [bridge-cycled]
+    actions:
+      - where: GUI
+        text: "State minimap: hold IDLE to confirm (safe teardown, disarms)."
+      - where: Terminal 1
+        text: Ctrl-C the launch and wait for the shell prompt.
+      - where: Hands
+        text: Empty the Cup.
+    see: The Platform is at Stow and every axis Idle before the Ctrl-C. The bag closes.
+    stop_if: A Fault blocks the teardown; deal with it before Ctrl-C.
+    serves: []
+
+  - n: 18
+    kind: setup
+    title: Launch 2 of 4 (main, gc_freeze on, FEAT-32)
+    new_launch: true
+    from: [bridge-cycled]
+    to: [bridge-cycled, launched]
+    actions:
+      - where: Terminal 1
+        command: ros2 launch jugglebot jugglebot_launch.py gc_freeze:=true 2>&1 | tee -i ../temp/logs/launch_2026-11-13_2.log
+      - where: Terminal 2
+        text: After Homing finishes.
+        command: ros2 param get /skill_node carry_zvd
+    see: "BRIDGE_FW_CHECK: OK - can-bridge v43 (FEAT-32's row still says v40). A BUG-58 gc_freeze ON line from both teensy_bridge_node and trajectory_node. homing: 7 axes homed. carry_zvd reads false."
+    stop_if: A gc_freeze ON line is missing from either node, or carry_zvd reads true.
+    record: The launch log path.
+    serves:
+      - item: FEAT-32
+        do: [0]
+
+  - n: 19
+    kind: setup
+    title: Level, then Activate, Ball Butler loaded
+    from: [bridge-cycled, launched]
+    to: [bridge-cycled, launched, level, armed, bb-fed]
+    actions:
+      - where: GUI
+        text: "State minimap: hold LEVELLING to confirm and let it finish."
+      - where: GUI
+        text: "State minimap: hold ACTIVE:TRAJECTORY to confirm."
+      - where: Hands
+        text: Ball Butler powered and loaded. Cup empty.
+    see: Mode ACTIVE:TRAJECTORY, Armed, no Fault.
+    stop_if: Any refusal or Fault.
+    serves: []
+
+  - n: 20
+    kind: run
+    title: ZVD A arm, flag off, Dwell 0.40
+    from: [bridge-cycled, launched, level, armed, bb-fed]
+    to: [bridge-cycled, launched, level, armed, bb-fed]
+    actions:
+      - where: Terminal 2
+        command: ros2 param set /skill_node plant_id zvd-oval-2026-11-13
+      - where: Terminal 2
+        command: ros2 param get /skill_node plant_id
+      - where: Terminal 2
+        text: One Attempt. Cup empty, Ball Butler loaded.
+        command: 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.40, num_cycles: 32}" --feedback'
+      - where: Hands
+        text: Empty the Cup after every ended Attempt before re-sending a fed goal. After clear_errors re-enter TRAJECTORY before the next goal.
+    see: plant_id reads zvd-oval-2026-11-13. One Attempt runs.
+    stop_if: A CUP_SEATING_CONE or Leg LIMIT end, or any Leg joint moves.
+    record: Raw x per Throw (landed minus u), from rest and carried; encoder and mocap excess at separation; install-line Leg peaks.
+    serves:
+      - item: FEAT-32
+        do: [1, 2]
+
+  - n: 21
+    kind: run
+    title: ZVD B arm, flag on, Dwell 0.40 then 0.35
+    from: [bridge-cycled, launched, level, armed, bb-fed]
+    to: [bridge-cycled, launched, level, armed, bb-fed]
+    actions:
+      - where: Hands
+        text: Empty the Cup after every ended Attempt before re-sending a fed goal. After clear_errors re-enter TRAJECTORY before the next goal.
+      - where: Terminal 2
+        text: Refused while a goal runs.
+        command: ros2 param set /skill_node carry_zvd true
+      - where: Terminal 2
+        command: ros2 param get /skill_node carry_zvd
+      - where: Terminal 2
+        text: Same goal at Dwell 0.40, same plant. Cup empty, Ball Butler loaded.
+        command: 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.40, num_cycles: 32}" --feedback'
+      - where: Terminal 2
+        text: Dwell 0.35, only if 0.40 held. Offline the rows plan Leg peaks of 316 mm/s and 5120 mm/s^2 at 0.35.
+        command: 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.35, num_cycles: 32}" --feedback'
+    see: carry_zvd reads true, and the goal start line shows carry_zvd.
+    stop_if: A CUP_SEATING_CONE or Leg LIMIT end, or any Leg joint moves.
+    record: Raw x per Throw split per arm, from rest and carried; encoder and mocap excess at separation; RING refusal text if any oval install is refused; install-line Leg peaks.
+    serves:
+      - item: FEAT-32
+        do: [3]
+
+  - n: 22
+    kind: run
+    title: Columns canary with the flag off, 2 Attempts
+    from: [bridge-cycled, launched, level, armed, bb-fed]
+    to: [bridge-cycled, launched, level, armed, bb-fed]
+    actions:
+      - where: Hands
+        text: Empty the Cup. Ball Butler loaded.
+      - where: Terminal 2
+        command: ros2 param set /skill_node carry_zvd false
+      - where: Terminal 2
+        command: ros2 param get /skill_node carry_zvd
+      - where: Terminal 2
+        text: Off the ZVD plant, so these Columns Throws stay out of the oval Memory.
+        command: ros2 param set /skill_node plant_id jugglebot
+      - where: Terminal 2
+        command: ros2 param get /skill_node plant_id
+      - where: GUI
+        text: "Juggle panel: Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21. Two Attempts. Before each: Cup empty, Ball Butler loaded."
+    see: carry_zvd reads false and plant_id reads jugglebot. Each Attempt COMPLETED, no new refusal.
+    stop_if: carry_zvd does not read false (do not fly Columns), or any Leg joint moves.
+    record: Each Attempt's end; the bag and launch log paths.
+    serves:
+      - item: FEAT-32
+        do: [4]
+        pass: true
+
+  - n: 23
+    kind: restore
+    title: Stand down launch 2 and re-fit the mode
+    from: [bridge-cycled, launched, level, armed, bb-fed]
+    to: [bridge-cycled]
+    actions:
+      - where: GUI
+        text: "State minimap: hold IDLE to confirm."
+      - where: Terminal 1
+        text: Ctrl-C the launch and wait for the shell prompt.
+      - where: Hands
+        text: Empty the Cup.
+      - where: Terminal 2
+        text: Use the bag launch 2 recorded (the newest folder in ~/Desktop/rosbags). The brackets keep the venv out of this shell.
+        command: (source ~/Desktop/PDJ_venv/venv/bin/activate && python tools/probes/platform_mode_fit.py ~/Desktop/rosbags/<bag from launch 2>)
+    see: The Platform is at Stow and every axis Idle before the Ctrl-C. The fit prints x and y.
+    stop_if: A Fault blocks the teardown; deal with it before Ctrl-C. A failed fit does not stop the Sitting; it can run at the debrief.
+    record: The platform_mode_fit.py result (x and y).
+    serves:
+      - item: FEAT-32
+        do: [5]
+
+  - n: 24
+    kind: setup
+    title: Check out the candidate branch (IDEA-22 and BUG-80) and build it
+    from: [bridge-cycled]
+    to: [bridge-cycled]
+    actions:
+      - where: Hands
+        text: The branch is already built and pushed. Do NOT run tools/night_shift_candidate.sh today; both held branches conflict with main in their document files and it would stack neither. The launch must be down.
+      - where: Terminal 2
+        command: git fetch && git checkout night-shift/sitting-2026-11-13 && git log --oneline -2
+      - where: Terminal 2
+        text: From here on Terminal 1 launches this build.
+        command: cd ~/Desktop/Jugglebot/ros_ws && colcon build --packages-up-to jugglebot && source install/setup.bash; cd ~/Desktop/Jugglebot
+    see: "The two newest commits read candidate(sitting-2026-11-13): IDEA-22 ... and candidate(sitting-2026-11-13): BUG-80 .... The build finishes with no failed packages."
+    stop_if: "The checkout or the build fails. Then run git checkout main, run the build command above again, and go to step 39: steps 25 to 38 need this branch."
+    serves: []
+
+  - n: 25
+    kind: setup
+    title: Launch 3 of 4 (candidate branch)
+    new_launch: true
+    from: [bridge-cycled]
+    to: [bridge-cycled, launched]
+    actions:
+      - where: Terminal 1
+        command: ros2 launch jugglebot jugglebot_launch.py 2>&1 | tee -i ../temp/logs/launch_2026-11-13_3.log
+      - where: Hands
+        text: "Mocap must be tracking the robot base markers AND Ball Butler's Base markers for this launch: columns_turned picks the fed Site by Ball Butler's position. IDEA-22's first step, answering TKT-67, is already done (option 1: 3 degrees at Apex 0.90)."
+    see: "BRIDGE_FW_CHECK: OK - can-bridge v43. homing: 7 axes homed."
+    stop_if: The firmware check is not OK at v43, or fewer than 7 axes homed.
+    record: The launch log path.
+    serves:
+      - item: IDEA-22
+        do: [0, 1]
+
+  - n: 26
+    kind: setup
+    title: Level the Platform
+    from: [bridge-cycled, launched]
+    to: [bridge-cycled, launched, level]
+    actions:
+      - where: GUI
+        text: "State minimap: hold LEVELLING to confirm and let it finish."
+    see: The minimap passes through LEVELLING and finishes with no Fault.
+    stop_if: Any Fault, or the Platform does not rise cleanly.
+    serves: []
+
+  - n: 27
+    kind: setup
+    title: Dress rehearsal for launch 3, four planning checks (nothing moves)
+    from: [bridge-cycled, launched, level]
+    to: [bridge-cycled, launched, level]
+    actions:
+      - where: Terminal 2
+        text: "Turned Columns at 45 degrees (IDEA-11). Expect success: True."
+        command: "ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString \"{data: 'columns_turned,apex_m=0.95,separation_mm=125,dwell_s=0.27,columns_angle_deg=45'}\""
+      - where: Terminal 2
+        text: "Turned Columns at 90 degrees, Apex 0.95 (IDEA-11 and IDEA-22). EXPECT A REFUSAL here: on this branch the 90 degree Catch tilts back 3 degrees, and offline that is refused at Apex 0.95 (LIMIT_JERK, Leg 1 227k against 200k). Write down what it says."
+        command: "ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString \"{data: 'columns_turned,apex_m=0.95,separation_mm=125,dwell_s=0.27,columns_angle_deg=90'}\""
+      - where: Terminal 2
+        text: "Turned Columns at 90 degrees, Apex 0.90: your TKT-67 answer (keep 3 degrees, fly at Apex 0.90). Expect success: True, margin about 0.027 offline. This is the setting step 33 flies."
+        command: "ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString \"{data: 'columns_turned,apex_m=0.90,separation_mm=125,dwell_s=0.27,columns_angle_deg=90'}\""
+      - where: Terminal 2
+        text: BUG-80's check needs the landing offset set first.
+        command: ros2 param set /skill_node landing_offset_x_mm 20.0
+      - where: Terminal 2
+        text: Single Throw from rest (BUG-80).
+        command: "ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString \"{data: 'self_toss,apex_m=1.00'}\""
+      - where: Terminal 2
+        text: Put the offset back at once, so the turned Columns flights are not offset.
+        command: ros2 param set /skill_node landing_offset_x_mm 0.0
+      - where: Terminal 2
+        command: ros2 param get /skill_node landing_offset_x_mm
+    see: "Nothing moves. 45 degrees: success: True. 90 degrees at Apex 0.95: refused. 90 degrees at Apex 0.90: success: True. self_toss: viable, and the reply names landing offset (+20.0, +0.0) mm. landing_offset_x_mm reads 0.0 at the end."
+    stop_if: "Anything moves. A turned reply saying Ball Butler's position is unknown is not a planning refusal: bring mocap up on the robot base and Ball Butler's Base markers and call again; never skip the Pattern for it. If 90 degrees at Apex 0.90 is refused, skip step 33. If 45 degrees is refused (it is unchanged on this branch, so that is unexpected), skip steps 32 and 33 and note the reply. If self_toss is not viable or does not name the offset, skip steps 35 to 37. landing_offset_x_mm not reading 0.0: set it again before going on."
+    record: Each reply's margin or refusal text, word for word.
+    serves:
+      - item: IDEA-11
+        do: [0]
+        reorder: Its straight Columns control (do 1) flew in launch 1 as the step 9 canary; the turned rehearsal belongs to this launch, which is the one that flies the turned Pattern, and still comes before any turned goal.
+      - item: IDEA-22
+        do: [2]
+      - item: BUG-80
+        do: [0]
+
+  - n: 28
+    kind: setup
+    title: Set up the owner's cascade (IDEA-16), do NOT activate
+    from: [bridge-cycled, launched, level]
+    to: [bridge-cycled, launched, level]
+    actions:
+      - where: Hands
+        text: Improve the lighting. Rest one ball in the Cup. Do not arm.
+      - where: Terminal 2
+        command: ros2 param set /ball_tracker_node detect_human_throws true
+    see: The parameter set reports success.
+    stop_if: The parameter set fails.
+    record: The lighting change.
+    serves:
+      - item: IDEA-16
+        do: [0, 1]
+
+  - n: 29
+    kind: run
+    title: Juggle the three-ball cascade beside the Cup
+    from: [bridge-cycled, launched, level]
+    to: [bridge-cycled, launched, level]
+    actions:
+      - where: Hands
+        text: Juggle a three-ball cascade for about 60 s, one hand beside the Cup at its usual Catch height, at a steady height.
+      - where: Hands
+        text: Then 60 s of single passes into the space just above the Cup.
+    see: The bag is recording. The robot stays still.
+    stop_if: The robot moves.
+    record: The bag path. Type pending; the bench report is computed at the debrief.
+    serves:
+      - item: IDEA-16
+        do: [2]
+        pass: true
+
+  - n: 30
+    kind: restore
+    title: Put the cascade setup back
+    from: [bridge-cycled, launched, level]
+    to: [bridge-cycled, launched, level]
+    actions:
+      - where: Terminal 2
+        command: ros2 param set /ball_tracker_node detect_human_throws false
+      - where: Hands
+        text: Take the ball out of the Cup. Clear the area around the robot.
+    see: The parameter set reports success.
+    stop_if: The parameter set fails.
+    serves:
+      - item: IDEA-16
+        do: [3]
+
+  - n: 31
+    kind: setup
+    title: Activate (this arms) and load Ball Butler
+    from: [bridge-cycled, launched, level]
+    to: [bridge-cycled, launched, level, armed, bb-fed]
+    actions:
+      - where: GUI
+        text: "State minimap: hold ACTIVE:TRAJECTORY to confirm."
+      - where: Hands
+        text: Ball Butler powered and loaded. Cup empty.
+    see: Mode ACTIVE:TRAJECTORY, Armed, no Fault.
+    stop_if: Any refusal or Fault.
+    serves: []
+
+  - n: 32
+    kind: run
+    title: Turned Columns at 45 degrees, 1 Attempt (unchanged on this branch)
+    from: [bridge-cycled, launched, level, armed, bb-fed]
+    to: [bridge-cycled, launched, level, armed, bb-fed]
+    actions:
+      - where: Terminal 2
+        text: Refused while a goal runs.
+        command: ros2 param set /skill_node plant_id turned45
+      - where: Terminal 2
+        command: ros2 param get /skill_node plant_id
+      - where: GUI
+        text: "Juggle panel: Columns - turned, Angle 45, Apex 0.95, Sep. 125, Dwell 0.27, Throws 21. Only the 0.925 to 0.975 Apex band is admissible at 45 deg. Start writes columns_angle_deg to the node."
+      - where: Terminal 2
+        text: Only if the GUI will not start it. Refused while a goal runs.
+        command: ros2 param set /skill_node columns_angle_deg 45
+      - where: Terminal 2
+        text: Only if the GUI will not start it.
+        command: 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_turned, apex_m: 0.95, separation_mm: 125.0, dwell_s: 0.27, num_cycles: 21}" --feedback'
+    see: plant_id reads turned45. COMPLETED (20/20 caught), as on 2026-11-10, and no HAND_LIMIT line. This is the control that shows the new build flies the unchanged Pattern before the changed 90 degree Catch.
+    stop_if: Any HAND_LIMIT line, or any Leg joint moves. If this Attempt looks different from the 2026-11-10 one (it passed 20/20), do not fly step 33; note what you saw.
+    record: Caught of thrown, the plant_id, landing scatter against the step 9 control (IDEA-11's bar is the mean within 15 mm and the sd within 10 mm of the control, per ball and per axis; computed at the debrief), Ball 2's first-Throw landing (x, y) mm, the bag path.
+    serves:
+      - item: IDEA-11
+        do: [2, 4]
+      - item: IDEA-22
+        do: [5]
+        reorder: Its do list puts the 45 degree control last, "if time allows"; it flies first here so the unchanged Pattern proves the new build before the changed 90 degree Catch flies.
+
+  - n: 33
+    kind: run
+    title: Turned Columns at 90 degrees with the 3 degree tilt-back, Apex 0.90, 4 Attempts
+    from: [bridge-cycled, launched, level, armed, bb-fed]
+    to: [bridge-cycled, launched, level, armed, bb-fed]
+    actions:
+      - where: Hands
+        text: Empty the Cup after every ended Attempt. Ball Butler loaded.
+      - where: Terminal 2
+        text: Refused while a goal runs.
+        command: ros2 param set /skill_node plant_id turned90
+      - where: Terminal 2
+        command: ros2 param get /skill_node plant_id
+      - where: Terminal 2
+        text: The tilt-back this build applies. Leave it as it is.
+        command: ros2 param get /skill_node columns_turned_catch_tilt_back_deg
+      - where: GUI
+        text: "Juggle panel: Columns - turned, Angle 90, Apex 0.90, Sep. 125, Dwell 0.27, Throws 21. Apex is 0.90 here, not 0.95 (TKT-67). Four Attempts."
+      - where: Terminal 2
+        text: Only if the GUI will not start it. Refused while a goal runs.
+        command: ros2 param set /skill_node columns_angle_deg 90
+      - where: Terminal 2
+        text: Only if the GUI will not start it.
+        command: 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_turned, apex_m: 0.90, separation_mm: 125.0, dwell_s: 0.27, num_cycles: 21}" --feedback'
+      - where: Hands
+        text: Watch where the ball meets the Cup at each Catch, whether it strikes the Platform top, and whether the Cup slides sideways (toward +y) at the Catch.
+    see: plant_id reads turned90 and the tilt-back reads 3.0. IDEA-22 passes if at least one of the 4 Attempts gets past Ball 2's first Catch after the Feed and carries 10 or more Throws with no Platform-top strike. IDEA-11 passes only on COMPLETED (20/20 caught) with no HAND_LIMIT line.
+    stop_if: The tilt-back does not read 3.0 (do not fly; note the value). Any HAND_LIMIT line, any Leg joint moves, or the Cup's sideways motion at the Catch looks violent (about 227 mm/s toward +y is planned). After any of these, fly no more Attempts here and go on to step 34.
+    record: The tilt-back and Apex flown, Throws caught per Attempt and each end reason, any Platform-top strike, any sideways Cup slide at the Catch, the plant_id, landing scatter against the step 9 control, Ball 2's first-Throw landing (x, y) mm per Attempt, the bag path.
+    serves:
+      - item: IDEA-22
+        do: [4]
+        reorder: Its 45 degree control (do 5) flew first, in step 32, so the unchanged Pattern proves the new build before this changed Catch flies.
+        pass: true
+      - item: IDEA-11
+        do: [3, 4]
+        reorder: Its do list states "set the plant before each angle's first goal" after the goals it governs.
+        pass: true
+
+  - n: 34
+    kind: restore
+    title: Put the turned angle and the plant back
+    from: [bridge-cycled, launched, level, armed, bb-fed]
+    to: [bridge-cycled, launched, level, armed, bb-fed]
+    actions:
+      - where: Hands
+        text: Empty the Cup.
+      - where: Terminal 2
+        command: ros2 param set /skill_node columns_angle_deg 0
+      - where: Terminal 2
+        command: ros2 param set /skill_node plant_id jugglebot
+      - where: Terminal 2
+        command: ros2 param get /skill_node plant_id
+    see: The angle set reports success and plant_id reads jugglebot.
+    stop_if: Either fails.
+    serves:
+      - item: IDEA-11
+        do: [5]
+
+  - n: 35
+    kind: setup
+    title: Set up BUG-80, its own plant and a ball in the Cup by hand
+    from: [bridge-cycled, launched, level, armed, bb-fed]
+    to: [bridge-cycled, launched, level, armed, bb-fed]
+    actions:
+      - where: Terminal 2
+        text: A name no Memory file has; it keeps these Throws out of the live Memory.
+        command: ros2 param set /skill_node plant_id bug80-2026-11-13
+      - where: Terminal 2
+        command: ros2 param get /skill_node plant_id
+      - where: Hands
+        text: Ball Butler is not used from here on; leave it as it is. Leave the Site at its default (-50, 0). Place the ball in the Cup by hand. The Cup must read seated before every goal.
+    see: plant_id reads bug80-2026-11-13. The Cup reads seated.
+    stop_if: plant_id does not read back, or the Cup does not read seated. An empty Cup makes the first skill a Ball Butler Feed, whose Throw does not count.
+    serves:
+      - item: BUG-80
+        do: [1]
+
+  - n: 36
+    kind: run
+    title: Block x, 20 single-Throw Attempts, signs alternating
+    from: [bridge-cycled, launched, level, armed, bb-fed]
+    to: [bridge-cycled, launched, level, armed, bb-fed]
+    actions:
+      - where: Terminal 2
+        text: "Before each Attempt set the sign: +20 first, then -20, alternating, 10 of each. Refused while a goal is active."
+        command: ros2 param set /skill_node landing_offset_x_mm 20.0
+      - where: Terminal 2
+        text: The other sign.
+        command: ros2 param set /skill_node landing_offset_x_mm -20.0
+      - where: Terminal 2
+        text: One Attempt after each set.
+        command: 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: self_toss, apex_m: 1.00, num_cycles: 1}" --feedback'
+      - where: Hands
+        text: After a drop, place the ball back by hand and repeat that sign.
+    see: 20 Attempts of one Throw each, with the first skill the Throw of the held ball.
+    stop_if: A Fault, or a first skill that is not the Throw of the held ball (do not count it; note it).
+    record: Attempts flown per sign, each repeat and why, any refusal text.
+    serves:
+      - item: BUG-80
+        do: [2]
+
+  - n: 37
+    kind: run
+    title: Block y, the same 20 Attempts on the y offset
+    from: [bridge-cycled, launched, level, armed, bb-fed]
+    to: [bridge-cycled, launched, level, armed, bb-fed]
+    actions:
+      - where: Terminal 2
+        text: First put x back.
+        command: ros2 param set /skill_node landing_offset_x_mm 0.0
+      - where: Terminal 2
+        text: "Before each Attempt set the sign: +20 first, then -20, alternating, 10 of each."
+        command: ros2 param set /skill_node landing_offset_y_mm 20.0
+      - where: Terminal 2
+        text: The other sign.
+        command: ros2 param set /skill_node landing_offset_y_mm -20.0
+      - where: Terminal 2
+        text: One Attempt after each set. Ball in the Cup by hand each time.
+        command: 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: self_toss, apex_m: 1.00, num_cycles: 1}" --feedback'
+    see: 20 Attempts of one Throw each, with the first skill the Throw of the held ball.
+    stop_if: A Fault, or a first skill that is not the Throw of the held ball (do not count it; note it).
+    record: "Type pending: the slope is computed from the bag at the debrief. The bag and launch log paths, Attempts flown per axis and sign, each repeat and why, any refusal text."
+    serves:
+      - item: BUG-80
+        do: [3]
+        pass: true
+
+  - n: 38
+    kind: restore
+    title: Put BUG-80's parameters back and stand down launch 3
+    from: [bridge-cycled, launched, level, armed, bb-fed]
+    to: [bridge-cycled]
+    actions:
+      - where: Terminal 2
+        command: ros2 param set /skill_node landing_offset_x_mm 0.0
+      - where: Terminal 2
+        command: ros2 param set /skill_node landing_offset_y_mm 0.0
+      - where: Terminal 2
+        command: ros2 param set /skill_node plant_id jugglebot
+      - where: Terminal 2
+        text: Read all three back.
+        command: ros2 param get /skill_node plant_id
+      - where: Terminal 2
+        command: ros2 param get /skill_node landing_offset_x_mm
+      - where: Terminal 2
+        command: ros2 param get /skill_node landing_offset_y_mm
+      - where: GUI
+        text: "State minimap: hold IDLE to confirm."
+      - where: Terminal 1
+        text: Ctrl-C the launch and wait for the shell prompt.
+      - where: Hands
+        text: Empty the Cup.
+    see: Offsets 0.0, plant_id jugglebot, Platform at Stow, every axis Idle before the Ctrl-C.
+    stop_if: A Fault blocks the teardown; deal with it before Ctrl-C.
+    serves:
+      - item: BUG-80
+        do: [4]
+
+  - n: 39
+    kind: setup
+    title: Set Leg 4's encoder rate to 9 ms (launch down)
+    from: [bridge-cycled]
+    to: [bridge-cycled]
+    actions:
+      - where: Hands
+        text: Launch 4 stays on whatever build Terminal 1 last ran; the hold sends no goal, so the branch makes no difference to it. Ball Butler is not used from here; leave it as it is.
+      - where: Terminal 2
+        text: Leg 4 only, 10 to 9. Untried for this setting; it reads the value back from the drive's saved config. The drive reboots on the save and loses its zero.
+        command: tools/odrive_fleet_reflash.py --only 4 --set axis0.config.can.encoder_msg_rate_ms=9
+    see: The saved config reads 9.
+    stop_if: The value does not read back as 9. Then run the step 44 command that puts Leg 4 back at 10, run the step 43 grep, skip everything else in steps 40 to 44 and go to step 45.
+    serves:
+      - item: BUG-82
+        do: [0]
+
+  - n: 40
+    kind: setup
+    title: Launch 4 of 4 (same build as launch 3, BUG-82) and confirm the trial is in
+    new_launch: true
+    from: [bridge-cycled]
+    to: [bridge-cycled, launched]
+    actions:
+      - where: Terminal 1
+        command: ros2 launch jugglebot jugglebot_launch.py 2>&1 | tee -i ../temp/logs/launch_2026-11-13_4.log
+      - where: Terminal 2
+        text: Before arming. Read it for a few seconds, then Ctrl-C the echo.
+        command: ros2 topic echo /cache_diag
+    see: "homing: 7 axes homed. enc_frames_4 and enc_frames_6 climb by about 111 per s, the others by about 100."
+    stop_if: Fewer than 7 axes homed (do not arm), or the frame rates are not as above (the setting is not in). Then run the step 43 grep, go to step 44 and put Leg 4 back.
+    record: The launch log path.
+    serves:
+      - item: BUG-82
+        do: [1, 2]
+
+  - n: 41
+    kind: setup
+    title: Level, then Activate for the BUG-82 hold
+    from: [bridge-cycled, launched]
+    to: [bridge-cycled, launched, level, armed]
+    actions:
+      - where: GUI
+        text: "State minimap: hold LEVELLING to confirm and let it finish."
+      - where: GUI
+        text: "State minimap: hold ACTIVE:TRAJECTORY to confirm."
+    see: Mode ACTIVE:TRAJECTORY, Armed, no Fault.
+    stop_if: Any refusal or Fault.
+    record: The clock time of arming.
+    serves: []
+
+  - n: 42
+    kind: run
+    title: Hold for 20 minutes, no goal
+    from: [bridge-cycled, launched, level, armed]
+    to: [bridge-cycled, launched, level, armed]
+    actions:
+      - where: Hands
+        text: Start no goal. Hold for 20 minutes with the bag recording. Nothing to watch live.
+    see: 20 minutes elapse with no Leg Fault or Guard latch.
+    stop_if: Any Leg Fault or Guard latch. Note it.
+    record: "Type pending: decided from /cache_diag at the debrief. The launch log and bag paths."
+    serves:
+      - item: BUG-82
+        do: [3]
+        pass: true
+
+  - n: 43
+    kind: run
+    title: Ride-along check, STOP records and LANE_REFUSED ends
+    from: [bridge-cycled, launched, level, armed]
+    to: [bridge-cycled, launched, level, armed]
+    actions:
+      - where: Terminal 2
+        text: All of today's launches. It needs no launch up; run it once the 20 minutes of step 42 are over (or during them, then again at the end).
+        command: grep -nE 'LANE_REFUSED|firmware scheduler STOP|firmware STOP record' temp/logs/launch_2026-11-13_*.log
+    see: Every firmware scheduler STOP line is followed by its firmware STOP record line carrying a classification. No output at all means no STOP and no LANE_REFUSED end today.
+    stop_if: Nothing here stops the Sitting.
+    record: "BUG-58: the log path and the line of each LANE_REFUSED end (none = say so). FEAT-46: each STOP record's verdict and numbers and the overwritten count. Type pending: the GC_PROBE lines around a LANE_REFUSED end are read at the debrief."
+    serves:
+      - item: BUG-58
+        pass: true
+      - item: FEAT-46
+        pass: true
+
+  - n: 44
+    kind: restore
+    title: Stand down launch 4, then decide Leg 4
+    from: [bridge-cycled, launched, level, armed]
+    to: [bridge-cycled]
+    actions:
+      - where: GUI
+        text: "State minimap: hold IDLE to confirm."
+      - where: Terminal 1
+        text: Ctrl-C the launch and wait for the shell prompt.
+      - where: Terminal 2
+        text: Only if step 42 saw a Leg Fault or Guard latch, step 40 sent you here, or you do not want to carry the trial forward. Otherwise leave Leg 4 at 9. This puts it back at 10; the drive saves and reboots, and the next launch re-homes.
+        command: tools/odrive_fleet_reflash.py --only 4 --set axis0.config.can.encoder_msg_rate_ms=10
+    see: Platform at Stow, every axis Idle before the Ctrl-C.
+    stop_if: A Fault blocks the teardown; deal with it before Ctrl-C.
+    record: Whether Leg 4 was left at 9 or put back at 10.
+    serves:
+      - item: BUG-82
+        do: [4]
+
+  - n: 45
+    kind: restore
+    title: Close out
+    from: [bridge-cycled]
+    to: [bridge-cycled]
+    actions:
+      - where: Claude Session
+        text: "In a Session in the live checkout, run /sitting-debrief 2026-11-13. It returns the checkout to main (it may still be on night-shift/sitting-2026-11-13) and commits docs/records.md."
+    see: The debrief starts its inventory.
+    stop_if: Nothing here stops anything.
+    serves: []

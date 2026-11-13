@@ -116,9 +116,11 @@ Stages (one per invocation; the runbook sequences them):
             older stages' frames ride the legacy FW 17 ladder and never reach
             that code. It streams a SCALED stroke, a jerk-limited C2 S-curve
             from the parked position up to --stroke-top (8.5) at
-            --stroke-peak-vel (70 rev/s) and --stroke-accel (800 rev/s^2:
-            inside a 10 A bench drive, which cannot follow the production
-            150-190 rev/s and 4500 rev/s^2). It then CUTS the hand channel
+            --stroke-peak-vel (70 rev/s) and --stroke-accel (default 800
+            rev/s^2, cap 3000: the bench drive limits are 70 A soft / 80 A
+            hard and a ~1640 rev/s^2 run-up measured 13 A mean / 19 A
+            transient on 2026-11-11; the production Hand runs 150-190 rev/s
+            and 4500 rev/s^2). It then CUTS the hand channel
             after the first frame whose span-2 cubic, continued to cover end
             + 6 ms (the FW 37 decision instant), moves faster than
             --cut-at-vel (55) upward. From there the frames are leg-only, so
@@ -128,8 +130,15 @@ Stages (one per invocation; the runbook sequences them):
             are the two controls. Before arming, the driver prints the cut
             frame and the modelled stop, computed with the firmware twin's own
             functions (hand_stroke_cut.py). It refuses a stroke whose
-            modelled stop anywhere comes within 1 rev of the 10.501 clip, a
-            bridge below FW 38 and a bridge that is not TIME_SYNCED. During
+            modelled stop anywhere comes within 1 rev of the 10.501 clip (or of
+            --top-stop, the bench's own top stop, when lower), a bridge
+            below FW 38 and a bridge that is not TIME_SYNCED (it waits up to
+            35 s for the sync first). The plan is built and checked from
+            the baseline position BEFORE the hand bring-up, so a refused
+            stroke leaves the Hand as found (nothing is commanded); it is
+            re-checked after the bring-up, and a refusal that only appears
+            there leaves the Hand ENERGISED and holding. The S1-S5 verdicts, counter deltas and plan lines are
+            saved beside the CSV as <csv stem>_report.json. During
             the cut window the belt compares against the MODELLED firmware
             stop with --cut-max-dev (1.9), because the bench drive lags a
             4500 rev/s^2 stop. After the stop: 0.6 s of settle, recorded at
@@ -337,8 +346,9 @@ def evaluate_trip_guard(tripped, fault_name=None):
 #     falsified prediction is reported by the criteria rather than aborted by
 #     the belt. (Rejecting the alternative: belting against the planned triangle
 #     would bake the 0.0725 rev of SANCTIONED divergence into every gap tick.)
-#   stroke_cut: the scaled stroke runs at up to 70 rev/s and 800 rev/s^2 on a
-#     current-capped bench drive; the velocity-compensated residual there is
+#   stroke_cut: the scaled stroke runs at up to 70 rev/s and 800 rev/s^2 by
+#     default (cap 3000; bench drive limits 70 A soft / 80 A hard); the
+#     velocity-compensated residual there is
 #     the drive's real tracking lag (2026-09-04 robot strokes: 0.54-1.23 rev at
 #     ~95 rev/s). 1.5 rev keeps the belt under the 2.0 lead clamp and the 2.5
 #     guard. Inside the cut window --cut-max-dev (1.9) applies instead, against
@@ -531,6 +541,22 @@ class Triangle:
         if ph < half:
             return self.p0 + self.v * ph, self.v
         return self.p0 + self.span - self.v * (ph - half), -self.v
+
+
+def triangle_envelope_refusal(start_rev, span_rev):
+    """The row-14 triangle's envelope check (shared by triangle and moving_gap).
+
+    PURE. Returns the refusal text, or None when ``start + span`` stays inside
+    ``HAND_MAX_POS - HAND_MARGIN``. Called twice by the driver: BEFORE the hand
+    bring-up (from a fresh position read, baseline as fallback, so a refusal
+    leaves the Hand as found) and again AFTER it (the position can move on
+    bring-up: an IDLE drive at the bottom stop read 0.4855 rev afterwards on
+    2026-11-11).
+    """
+    if start_rev + span_rev > HAND_MAX_POS - HAND_MARGIN:
+        return (f"triangle would reach {start_rev + span_rev:.2f} rev (> "
+                f"{HAND_MAX_POS - HAND_MARGIN:.2f}). Park lower.")
+    return None
 
 
 # ── moving_gap (row 17b): the falling-edge decay, taken while the hand MOVES ──
@@ -760,6 +786,36 @@ def evaluate_moving_gap(samples, p0, v0, fw_gap_s, reentry_step_rev,
 SC_LEAD_S = SEG_T
 
 
+_SC_LINES = []      # every stroke_cut console line worth keeping (sidecar)
+_SC_RUNS = []       # one dict per scored run: verdict, criteria, counter deltas
+
+
+def _sc_say(line):
+    """Print a stroke_cut evidence line and keep it for the sidecar."""
+    print(line)
+    _SC_LINES.append(line)
+
+
+def _write_sc_report(path, args, plan, rc):
+    """Save the stage's verdicts, counter deltas and plan lines beside the CSV
+    (the 2026-11-11 debrief had to mark them unverified: nothing held them)."""
+    import json
+    doc = {'stage': 'stroke_cut', 'written': datetime.datetime.now().isoformat(),
+           'rc': rc,
+           'args': {k: getattr(args, k, None) for k in
+                    ('cut_mode', 'stroke_top', 'stroke_peak_vel', 'cut_at_vel',
+                     'stroke_accel', 'top_stop', 'repeat', 'cut_max_dev')},
+           'plan': None if plan is None else {
+               'start': plan.start, 'cut_frame': plan.cut,
+               'path': plan.stop['path'], 'entry_v': plan.stop['entry'][1],
+               'modelled_end': plan.stop['end_rev'], 'worst_stop': plan.env_hi,
+               'abort_hold': plan.abort_hi,
+               'bench_stop_needed': SC.bench_stop_needed(plan)},
+           'runs': _SC_RUNS, 'lines': _SC_LINES}
+    with open(path, "w") as f:
+        json.dump(doc, f, indent=1, default=str)
+
+
 def _hb_counters(hb):
     if hb is None:
         return None
@@ -869,12 +925,12 @@ def _run_stroke_cut(args, client, pump, sched_cmd, w, drain_cd, plan, start):
         for k in range(plan.cut + 1):
             why = send(SC.frame_knots(plan.traj, k), 'stroke')
             if why:
-                print(f"ABORT (run {run}, stroke frame {k}): {why}")
+                _sc_say(f"ABORT (run {run}, stroke frame {k}): {why}")
                 return 2
             if k == n_pre:
                 hbd = _hb_counters(_hb())
                 if _delta(hbd, hb0, 'sched_demoted'):
-                    print(f"ABORT (run {run}): sched_demoted rose during the "
+                    _sc_say(f"ABORT (run {run}): sched_demoted rose during the "
                           f"pre-hold — the frames are playing on the LEGACY lane, "
                           f"so this stage would measure nothing (time sync?)")
                     return 2
@@ -894,7 +950,7 @@ def _run_stroke_cut(args, client, pump, sched_cmd, w, drain_cd, plan, start):
             if why:
                 with _lock:
                     _cache["rec"] = None
-                print(f"ABORT (run {run}, cut window): {why}")
+                _sc_say(f"ABORT (run {run}, cut window): {why}")
                 return 2
         with _lock:
             rec = _cache["rec"]
@@ -916,18 +972,25 @@ def _run_stroke_cut(args, client, pump, sched_cmd, w, drain_cd, plan, start):
             events.append(f"rx_age_max {hb1['rx_age_max_us']} us")
         events.append(f"worst send lateness {worst_late * 1e3:.1f} ms")
         events.append(f"max belt residual {max_dev:.3f} rev")
-        print(SC.verdict_line(run, plan, verdict, summ, d_c1, d_stops, ", ".join(events)))
+        _sc_say(SC.verdict_line(run, plan, verdict, summ, d_c1, d_stops,
+                                ", ".join(events)))
         for c in crit:
-            print(f"    {c['id']} {c['verdict']:<4} {c['name']}: {c['detail']}")
+            _sc_say(f"    {c['id']} {c['verdict']:<4} {c['name']}: {c['detail']}")
+        _sc_say(f"    counter deltas (run {run}): sched_hand_c1_stops {d_c1} "
+                f"sched_stops {d_stops} sched_refused {d_ref}")
+        _SC_RUNS.append({'run': run, 'verdict': verdict, 'criteria': crit,
+                         'summary': summ, 'sched_hand_c1_stops': d_c1,
+                         'sched_stops': d_stops, 'sched_refused': d_ref,
+                         'events': events, 'hb_before': hb0, 'hb_after': hb1})
         any_fail = any_fail or verdict != 'PASS'
         hold = summ['hold']
         if hold is None:
-            print("ABORT: no hand echo after the cut — the firmware hold is "
+            _sc_say("ABORT: no hand echo after the cut — the firmware hold is "
                   "unknown, so no continuous resume can be built; disarming at "
                   "the hold.")
             return 2
         if d_ref:
-            print("STOP: the hand group latched a refused frame; disarming at the hold.")
+            _sc_say("STOP: the hand group latched a refused frame; disarming at the hold.")
             return 1
         # ── continuous resume from the hold, then back to the start ──────────
         ret = SC.return_profile(hold, start)
@@ -939,17 +1002,17 @@ def _run_stroke_cut(args, client, pump, sched_cmd, w, drain_cd, plan, start):
         for k in range(n_ret):
             why = send(SC.frame_knots(ret, k), 'return')
             if why:
-                print(f"ABORT (run {run}, return frame {k}): {why}")
+                _sc_say(f"ABORT (run {run}, return frame {k}): {why}")
                 return 2
             if k == n_chk:
                 d = _delta(_hb_counters(_hb()), hbr, 'sched_refused')
                 if d:
-                    print(f"ABORT (run {run}): the resume AT the hold "
+                    _sc_say(f"ABORT (run {run}): the resume AT the hold "
                           f"{hold:.4f} rev was refused (sched_refused +{d}) — "
                           f"the firmware hold is not where the echo says; "
                           f"disarming at the hold, the return move NOT sent.")
                     return 2
-    print(f"stage 'stroke_cut' done: {args.repeat} run(s), "
+    _sc_say(f"stage 'stroke_cut' done: {args.repeat} run(s), "
           f"{'all PASS' if not any_fail else 'at least one FAIL'}; max belt "
           f"residual {max_dev:.4f} rev; worst send lateness {worst_late * 1e3:.1f} ms")
     return 1 if any_fail else 0
@@ -1032,8 +1095,17 @@ def main():
     ap.add_argument("--stroke-accel", type=float, default=SC.STROKE_ACCEL_DEFAULT,
                     metavar="RPS2",
                     help="stroke_cut: plateau acceleration of the stroke "
-                         f"(rev/s^2, default {SC.STROKE_ACCEL_DEFAULT:.0f}: inside "
-                         "a 10 A bench Hand drive; jerk ramps 20 ms)")
+                         f"(rev/s^2, default {SC.STROKE_ACCEL_DEFAULT:.0f}, max "
+                         f"{SC.STROKE_ACCEL_MAX:.0f}: bench drive limits 70 A soft "
+                         "/ 80 A hard, a ~1640 rev/s^2 run-up measured 13 A mean / "
+                         "19 A transient; jerk ramps 20 ms)")
+    ap.add_argument("--top-stop", type=float, default=SC.HAND_CLIP_REV,
+                    metavar="REV",
+                    help="stroke_cut: the bench rig's REAL top stop (rev, default "
+                         f"the production clip {SC.HAND_CLIP_REV}). The planner "
+                         "checks every stop against min(this, clip), so a lower "
+                         "stop tightens the refusals and a higher one never "
+                         "loosens them")
     ap.add_argument("--cut-at-vel", type=float, default=None, metavar="RPS",
                     help="stroke_cut: the LAST hand-bearing frame is the first "
                          "whose continued velocity at cover end + 6 ms (the FW 37 "
@@ -1090,9 +1162,13 @@ def main():
             ap.error("--repeat out of [1, 10]")
         if not 0.0 < args.cut_max_dev <= MAX_LEAD_HAND_REV:
             ap.error(f"--cut-max-dev out of (0, {MAX_LEAD_HAND_REV}]")
-        if not 0.0 < args.stroke_accel <= 1500.0:
-            ap.error("--stroke-accel out of (0, 1500] rev/s^2 — a bench Hand at "
-                     "10 A follows roughly 900-1050 upward")
+        why_acc = SC.stroke_accel_refusal(args.stroke_accel)
+        if why_acc is not None:
+            ap.error(why_acc)
+        try:
+            sc_limit = SC.effective_limit_rev(args.top_stop)
+        except ValueError as e:
+            ap.error(str(e))
     elif args.stage == "moving_gap":
         if args.tri_span <= 0.0 or args.tri_speed <= 0.0:
             ap.error("--tri-span and --tri-speed must be positive for moving_gap")
@@ -1263,13 +1339,26 @@ def main():
                     f"active_errors={d.active_errors}, need 0 (run --clear-errors "
                     f"first, or /clear_errors when the launch is up)")
         if args.stage == "stroke_cut":
-            hbt = _hb()
-            if hbt is None or not (int(hbt.flags) & _T2J_FLAG_TIME_SYNCED):
+            # The bridge is the TimeOfDay CLIENT (query every 30 s once synced,
+            # flag dropped 90 s after the last anchor) and this process's own
+            # TimeOfDayServer is the only answerer with the launch down, so the
+            # flag can only recover while THIS process lives: wait here, before
+            # anything energises the hand, instead of aborting on one read.
+            def _tod_flags():
+                hbt = _hb()
+                return None if hbt is None else int(hbt.flags)
+            if not SC.wait_for_flag(
+                    _tod_flags, _T2J_FLAG_TIME_SYNCED, SC.TIME_SYNC_WAIT_S,
+                    on_wait=lambda: print(
+                        f"waiting for the bridge TimeOfDay sync (up to "
+                        f"{SC.TIME_SYNC_WAIT_S:.0f} s)")):
                 problems.append(
-                    "bridge not TIME_SYNCED (HeartbeatT2J flags bit 0): every "
-                    "HAS_SCHED frame would be DEMOTED to the legacy lane, so the "
-                    "stage would exercise the FW 17 wind-down, not the FW 37 "
-                    "scheduled stop — wait for the TimeOfDay sync and re-run")
+                    f"bridge not TIME_SYNCED (HeartbeatT2J flags bit 0) after "
+                    f"{SC.TIME_SYNC_WAIT_S:.0f} s with this process answering "
+                    f"TimeOfDay: every HAS_SCHED frame would be DEMOTED to the "
+                    f"legacy lane, so the stage would exercise the FW 17 wind-down, "
+                    f"not the FW 37 scheduled stop — check the UDP RPC path, or "
+                    f"reboot the bridge, and re-run")
         fs = _fault()
         if fs not in (None, int(FaultState.NONE)):
             problems.append(
@@ -1280,6 +1369,45 @@ def main():
             for pb in problems:
                 print(f"  • {pb}")
             return 2
+
+        # ── stroke_cut: refuse BEFORE the hand bring-up (nothing commanded) ──────────────────
+        # Plan from the freshest position read and print every refusal reason
+        # at once. A refusal here leaves the hand exactly as found (the
+        # bring-up below has not run). The plan is rebuilt from the position
+        # after the bring-up and refused again there if it no longer fits.
+        if args.stage == "stroke_cut":
+            pre_start = _hand_pos()
+            if pre_start is None:
+                pre_start = start
+            try:
+                pre_plan = SC.plan_stroke_cut(pre_start, args.stroke_top,
+                                              args.cut_mode, args.stroke_peak_vel,
+                                              args.cut_at_vel, args.stroke_accel,
+                                              sc_limit)
+            except SC.StrokeCutRefusal as e:
+                print(f"ABORT: stroke_cut refused from the baseline "
+                      f"{pre_start:+.4f} rev (before the hand bring-up; "
+                      f"nothing was commanded):")
+                for r in e.reasons:
+                    print(f"  • {r}")
+                return 2
+            for ln in SC.plan_lines(pre_plan, pre_start):
+                _sc_say("pre-bring-up " + ln)
+
+        # ── triangle / moving_gap: refuse BEFORE the hand bring-up (BUG-88) ──────
+        # Same rule as stroke_cut: refusals happen before the Hand is energised.
+        # Planned from a fresh position read, the baseline as fallback; the
+        # envelope is re-checked after the bring-up below.
+        if args.stage in ("triangle", "moving_gap"):
+            tri_pre_start = _hand_pos()
+            if tri_pre_start is None:
+                tri_pre_start = start
+            why_env = triangle_envelope_refusal(tri_pre_start, args.tri_span)
+            if why_env is not None:
+                print(f"ABORT: {args.stage} refused from "
+                      f"{tri_pre_start:+.4f} rev (before the hand bring-up; "
+                      f"nothing was commanded): {why_env}")
+                return 2
 
         # ── Optional hand bring-up (mode + gains BEFORE closing the loop) ────
         if args.close_loop:
@@ -1352,30 +1480,27 @@ def main():
             # and the firmware's whole coast past the falling edge is
             # v·HAND_COAST_S (0.0525 rev = 1.66 mm at the defaults), far inside
             # the margin this check already keeps off the 10.701 rev metal.
-            if start + args.tri_span > HAND_MAX_POS - HAND_MARGIN:
-                print(f"ABORT: triangle would reach "
-                      f"{start + args.tri_span:.2f} rev (> "
-                      f"{HAND_MAX_POS - HAND_MARGIN:.2f}). Park lower."); return 2
+            # The post-bring-up RECHECK (the pre-bring-up check above ran from the
+            # earlier read; the position can move on bring-up).
+            why_env = triangle_envelope_refusal(start, args.tri_span)
+            if why_env is not None:
+                print(f"ABORT: {why_env} (post-bring-up position {start:+.4f} rev; "
+                      f"the hand is CLOSED_LOOP and holding there)")
+                return 2
             traj = Triangle(start, args.tri_span, args.tri_speed)
         elif args.stage == "stroke_cut":
             try:
                 sc_plan = SC.plan_stroke_cut(start, args.stroke_top, args.cut_mode,
                                              args.stroke_peak_vel, args.cut_at_vel,
-                                             args.stroke_accel)
+                                             args.stroke_accel, sc_limit)
             except SC.StrokeCutRefusal as e:
-                print("ABORT: stroke_cut refused:")
+                print(f"ABORT: stroke_cut refused from the post-bring-up position "
+                      f"{start:+.4f} rev (the hand is ENERGISED and holding there):")
                 for r in e.reasons:
                     print(f"  • {r}")
                 return 2
-            st = sc_plan.stop
-            print(f"stroke_cut plan ({args.cut_mode}): {start:+.3f} -> "
-                  f"{args.stroke_top:.3f} rev at {args.stroke_peak_vel:.0f} rev/s, "
-                  f"{args.stroke_accel:.0f} rev/s^2; last hand frame {sc_plan.cut} "
-                  f"(t={sc_plan.cut * SEG_T:.3f} s); modelled {st['path']} stop: "
-                  f"entry v {st['entry'][1]:+.1f} rev/s at p {st['entry'][0]:.3f}, "
-                  f"end {st['end_rev']:.3f} rev {st['g_end'] * 1e3:.0f} ms after the "
-                  f"frame stamp (FW 36 path: {sc_plan.fw36_end:.3f}); worst stop "
-                  f"anywhere on the stroke {sc_plan.env_hi:.3f} rev")
+            for ln in SC.plan_lines(sc_plan, start):
+                _sc_say(ln)
             args.duration = args.repeat * (sc_plan.cut * SEG_T + SC.SETTLE_S + 3.0)
             traj = Hold(start)
         else:                               # step / gap ride a hold
@@ -1538,8 +1663,18 @@ def main():
 
         if args.stage == "stroke_cut":
             t_start_mono = time.monotonic()     # _drain_cd's time base
-            rc = _run_stroke_cut(args, client, pump, sched_cmd, w, _drain_cd,
-                                 sc_plan, start)
+            rc = None
+            try:
+                rc = _run_stroke_cut(args, client, pump, sched_cmd, w, _drain_cd,
+                                     sc_plan, start)
+            finally:
+                sc_report = (csv_path[:-4] if csv_path.endswith(".csv")
+                             else csv_path) + "_report.json"
+                try:
+                    _write_sc_report(sc_report, args, sc_plan, rc)
+                    print(f"stroke_cut report (verdicts, counters, plan): {sc_report}")
+                except Exception as e:    # never mask the stage's own exit
+                    print(f"WARNING: could not write {sc_report}: {e!r}")
             _drain_cd()
             print(f"  cachediag: {cd_stats['windows']} windows, "
                   f"{cd_stats['episodes']} episode(s) past {CD_EPISODE_DEFICIT:.0f}, "

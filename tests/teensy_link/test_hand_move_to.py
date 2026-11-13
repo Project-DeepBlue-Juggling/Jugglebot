@@ -68,7 +68,8 @@ def test_protocol_version_is_unchanged_by_the_additive_method():
     # 10→11 the HeartbeatT2J growth of the FW 38 scheduled-lane census (BUG-58);
     # 11→12 its growth by the FW 40 downlink ledger (FEAT-41).
     # 12→13 its growth by the FW 42 STOP record (FEAT-46).
-    assert int(p.PROTOCOL_VERSION) == 13
+    # 13→14 the 0x6E0 tilt fields become 0.1 mrad counts (BUG-7).
+    assert int(p.PROTOCOL_VERSION) == 14
 
 
 def test_arg_blob_exact_bytes():

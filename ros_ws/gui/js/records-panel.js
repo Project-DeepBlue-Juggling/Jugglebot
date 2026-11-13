@@ -16,7 +16,7 @@
  */
 import { isReplayFenced } from './replay/fence.js';
 import {
-    recordRows, recordSections, menuEntries, loadHidden, saveHidden, attemptEnd, RECORD_FLASH_MS,
+    recordRows, recordSections, dropsText, dropsTotal, dropsDetail, dropsBumped, panelVisible, menuEntries, loadHidden, saveHidden, attemptEnd, RECORD_FLASH_MS,
     dodgesMinimap,
 } from './records-model.js';
 
@@ -25,6 +25,7 @@ let hidden = new Set();
 let flash = null;           // { pattern, until }
 let menuSection = null;
 let inFlight = false;
+let shownDrops = null;    // the total this page last showed (for the increment effect)
 
 function storage() {
     try { return window.localStorage; } catch (_e) { return null; }
@@ -34,7 +35,20 @@ function render() {
     const el = document.getElementById('records-panel');
     if (!el) return;
     const rows = data ? recordRows(data, hidden) : [];
-    el.hidden = !data || rows.length === 0;
+    el.hidden = !panelVisible(data, rows);
+    const dropsEl = el.querySelector('.records-drops');
+    if (dropsEl) {
+        dropsEl.textContent = data ? dropsText(data) : '';
+        dropsEl.title = data ? dropsDetail(data) : '';
+        const total = data ? dropsTotal(data) : null;
+        if (dropsBumped(shownDrops, total)) {
+            // Restart the CSS effect even when two rises land back to back.
+            dropsEl.classList.remove('records-drops-bump');
+            void dropsEl.offsetWidth;
+            dropsEl.classList.add('records-drops-bump');
+        }
+        if (total !== null) shownDrops = total;
+    }
     const list = el.querySelector('.records-rows');
     if (!list) return;
     list.textContent = '';

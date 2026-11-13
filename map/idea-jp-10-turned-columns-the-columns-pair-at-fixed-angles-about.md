@@ -4,7 +4,7 @@ kind: idea
 title: 'JP-10 Turned columns: the columns pair at fixed angles about +z, under pose'
 status: in_progress
 created: '2026-10-30'
-updated: '2026-11-07T05:42:33Z'
+updated: '2026-11-13T02:22:51Z'
 owners:
 - jugglebot-f5
 priority: medium
@@ -14,7 +14,8 @@ owner: hands
 radius: subsystem
 area: skill-stack
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-10-sitting-debrief.md
 filed_by: claude (jugglebot-f5, pattern exploration 2026-10-30)
 parent: pattern-progression-columns-to-centre-and-orbit
 ---
@@ -41,7 +42,7 @@ It proves the rotational symmetry on hardware that lets the admissible box key o
 - setup: level, armed, bb-fed
 - why: P3 of plan pattern-progression.md: two-ball Columns off the x axis under the pose planner, one plant_id per angle (set explicitly in the steps below), which answers PWAY-2 P2(b) (does the lateral bias rotate with the pair).
 - do:
-  - Rehearse before arming: cup empty, Ball Butler unpowered, `ros2 param set /skill_node columns_angle_deg 45`, send the goal below once. The accept message may name only the cup and Ball Butler refusals (no nomination refusal) and nothing moves. Repeat at 90.
+  - Rehearse with mocap on the robot base and Ball Butler's Base markers (the fed Site needs them): `ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: 'columns_turned,apex_m=0.95,separation_mm=125,dwell_s=0.27,columns_angle_deg=45'}"`, then the same at `columns_angle_deg=90`. Each reply: `success: True`, nothing moves; `position is unknown` means bring mocap up and retry. Never a Juggle goal.
   - Fly a straight `Columns` control first if this Sitting has not flown one (GUI Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21).
   - GUI: Juggle panel `Columns — turned`, Angle 45, Apex 0.95, Sep. 125, Dwell 0.27, Throws 21 (Start writes columns_angle_deg to the node first). Terminal fallback: `ros2 param set /skill_node columns_angle_deg 45` (refused while a goal runs), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_turned, apex_m: 0.95, separation_mm: 125.0, dwell_s: 0.27, num_cycles: 21}" --feedback`. Only the 0.925 to 0.975 Apex band is admissible at 45 deg.
   - Angle 90 (or `ros2 param set /skill_node columns_angle_deg 90`), then the same goal at Apex 0.95 (0.90 is also admissible at 90 deg).
@@ -67,8 +68,19 @@ It proves the rotational symmetry on hardware that lets the admissible box key o
 - verdict: fail
 - notes: plant_id: columns45 - first attempt ended due to a mid-air collision. Second passed with all throws caught. Third ended with a mis-caught ball. plant_id: columns90 - Forgot to change angle in GUI plant_id: columns90-2 - first attempt ended with mid-air collision. Most attempts ended with Ball2 hitting the top of the Platform. No attempt lasted more than about 5 throws.
 
+## Sitting result (2026-11-10)
+
+- verdict: fail
+- notes: Flown from sheet step 8 on the default plant: 45 deg COMPLETED 20/20; 90 deg 8/8, 3/3, 3/3, 3/3, Ball 2's first Catch after the Feed missed outward (IDEA-22). Verdict from the logs at the debrief, confirmed by the owner 2026-11-11.
+
+## Sitting result (2026-11-13 13:22)
+
+- verdict: fail
+- notes: (sheet 2026-11-13-robot, step 33)
+
 ## Progress
 
 - 2026-10-31: P2 of plan pattern-progression.md done offline: goal columns_turned, parameter columns_angle_deg, 12 pose box cells at 45 and 90 deg (45 deg admits only Apex 0.925-0.975, 90 deg 0.875-0.975). Next: the JP-10 Rung (P3) at a Sitting. Logbook 2026-10-31-pattern-progression-p2-turned-columns.md.
 - 2026-11-01: Sitting: gate NOT met. 45 deg best 2/2, 90 deg best 16/16 (GUARD_LATCHED, BUG-50); hand iq 53.3 A on a 45 deg hop launch (BUG-51); PWAY-2 P2(b) NOT answered (detail below)
 - 2026-11-03: Failed at the Sitting of 2026-11-03: 45 deg COMPLETED 19/19 twice of 5, 90 deg 0 of 7 (best 12/12), Ball 2 lands 37-50 mm outward at 90 deg vs 10 mm outward authority; plant_id not set per angle so PWAY-2 P2(b) unanswered; a 14th goal rejected at angle 135. 19 in 19 is a records row.
+- 2026-11-10: Failed at the Sitting of 2026-11-10 (step 8, real Attempts, plant_id not set: 32 rows in the default Memory, separable by Site). 45 deg COMPLETED 20/20; 90 deg 8/8, 3/3, 3/3, 3/3, three at Ball 2's first Catch after the Feed (BUG-63). PWAY-2 P2(b) offline: the pull toward the partner rotates with the pair (BUG-79). Filed IDEA-22. Logbook 2026-11-10-sitting-debrief.md.

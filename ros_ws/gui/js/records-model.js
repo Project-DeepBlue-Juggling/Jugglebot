@@ -14,6 +14,14 @@ export const RECORDS_HIDDEN_KEY = 'jugglebot-records-hidden';
 /** How long a just-beaten record's row stays highlighted. */
 export const RECORD_FLASH_MS = 6000;
 
+/** The panel shows when the ledger has rows to show OR a drops section (FEAT-47):
+ *  a fresh ledger, Feed-only drops or every Pattern hidden still show the counter. */
+export function panelVisible(json, rows) {
+    if (!json) return false;
+    const d = json.drops;
+    return (Array.isArray(rows) && rows.length > 0) || (!!d && typeof d === 'object');
+}
+
 /** One display row per Pattern, hidden ones dropped. */
 export function recordRows(json, hidden) {
     const off = hidden || new Set();
@@ -37,6 +45,75 @@ export function recordRows(json, hidden) {
         });
     }
     return rows;
+}
+
+/**
+ * The "Drops to date" line atop the panel (FEAT-47). `json.drops` is null/absent
+ * until the ledger has the section ("not counted yet"); otherwise
+ * { total, live, since, history|null, history_from?, history_through?, caught?, throws? }
+ * (caught/throws null unless every part that has drops has its caught figure).
+ * The line shows the total only (owner, 2026-11-11): "Drops to date: 840".
+ * The breakdown is the hover text, :func:`dropsDetail`.
+ */
+export function dropsTotal(json) {
+    const d = json && json.drops;
+    if (!d || typeof d !== 'object' || !Number.isFinite(Number(d.total))) return null;
+    return Number(d.total);
+}
+
+export function dropsText(json) {
+    const n = dropsTotal(json);
+    return n === null ? 'Drops to date: not counted yet' : 'Drops to date: ' + n;
+}
+
+/**
+ * The hover text's lead, "7,304 Throws and Feeds to catch · 88.8 % caught, 11.2 % dropped"
+ * (owner, 2026-11-11). '' unless the JSON carries throws > 0 and a caught figure
+ * (records.py sends both only when every part that has drops has its caught figure).
+ * One decimal; the dropped share is 100 - the rounded caught share, so the two add to 100.0.
+ */
+export function throwsSummary(json) {
+    const d = json && json.drops;
+    if (!d || typeof d !== 'object') return '';
+    const throws = Number(d.throws), caught = Number(d.caught);
+    if (d.throws === null || d.throws === undefined || d.caught === null || d.caught === undefined) return '';
+    if (!Number.isFinite(throws) || !Number.isFinite(caught) || throws <= 0 || caught < 0 || caught > throws) return '';
+    const p = Math.round(caught / throws * 1000) / 10;
+    const q = Math.round((100 - p) * 10) / 10;
+    return throws.toLocaleString('en-US') + ' Throws and Feeds to catch \u00b7 '
+        + p.toFixed(1) + ' % caught, ' + q.toFixed(1) + ' % dropped';
+}
+
+/** Hover text for the drops line: the Throws and percentage, then where the total comes from. '' when not counted. */
+export function dropsDetail(json) {
+    if (dropsTotal(json) === null) return '';
+    const lead = throwsSummary(json);
+    const rest = dropsSources(json);
+    return lead && rest ? lead + ' \u00b7 ' + rest : lead || rest;
+}
+
+function dropsSources(json) {
+    const d = json.drops;
+    const hasHistory = d.history !== null && d.history !== undefined;
+    if (hasHistory && d.since) {
+        let t = Number(d.live) + ' live since ' + String(d.since) + ', '
+            + Number(d.history) + ' from history';
+        if (d.history_from && d.history_through) {
+            t += ' (' + String(d.history_from) + ' to ' + String(d.history_through) + ')';
+        }
+        return t;
+    }
+    let t = d.since ? 'since ' + String(d.since) : '';
+    if (!hasHistory) t += (t ? ' ' : '') + '(history not yet counted)';
+    return t;
+}
+
+/**
+ * Whether a new total should play the increment effect: only a rise from a
+ * total this page has already shown (never the first load, never a fall).
+ */
+export function dropsBumped(prev, next) {
+    return prev !== null && next !== null && next > prev;
 }
 
 /** Unit suffix of a ledger params key -> the unit shown after the value (FEAT-29). */

@@ -4,7 +4,7 @@ kind: feature
 title: 'Pre-release hold rung: release from a moving Platform (hold 0.100 → 0)'
 status: in_progress
 created: '2026-10-30'
-updated: '2026-11-06T09:16:47Z'
+updated: '2026-11-13T02:02:49Z'
 owners: []
 priority: high
 effort: m
@@ -87,6 +87,11 @@ The Sitting flew the ladder and **withdrew the model** this Item was written on.
 
 - verdict: fail
 - notes: Attempted. Only tried up to step 3, as every attempt was ending prematurely due to LANE_REFUSED, MAX_DEVIATION, or SPINOUT_DETECTED
+
+## Sitting result (2026-11-13 13:02)
+
+- verdict: pass
+- notes: (sheet 2026-11-13-robot, step 22)
 
 ## Progress
 

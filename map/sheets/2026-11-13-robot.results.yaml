@@ -1,0 +1,242 @@
+schema: 1
+steps:
+  1:
+    comments: ''
+    saved_at: 2026-11-13 11:41
+    status: done
+  2:
+    comments: ''
+    saved_at: 2026-11-13 11:41
+    status: done
+  3:
+    comments: ''
+    saved_at: 2026-11-13 11:41
+    status: done
+  4:
+    comments: ''
+    saved_at: 2026-11-13 11:42
+    status: done
+  5:
+    comments: ''
+    saved_at: 2026-11-13 11:44
+    status: done
+  6:
+    comments: ''
+    saved_at: 2026-11-13 11:44
+    status: done
+  7:
+    comments: ''
+    saved_at: 2026-11-13 11:44
+    status: done
+  8:
+    comments: ''
+    saved_at: 2026-11-13 11:44
+    status: done
+  9:
+    comments: ''
+    saved_at: 2026-11-13 11:45
+    status: done
+  10:
+    comments: First attempt was met with LANE_REFUSED after ~7 throws. Second attempt
+      succeeded.
+    saved_at: 2026-11-13 11:48
+    status: done
+  11:
+    comments: Dwell 0.40 had one LANE_REFUSED and a few attempts that ended with missed
+      catches (throws landed too far in +ve x to be caught). Dwell 0.35 had a lot
+      of messy (uncaught) throws and after a few attempts the longest run was 25 catches.
+    saved_at: 2026-11-13 11:57
+    status: done
+  13:
+    comments: ''
+    saved_at: 2026-11-13 11:59
+    status: done
+  16:
+    comments: ''
+    saved_at: 2026-11-13 12:17
+    status: done
+  17:
+    comments: ''
+    saved_at: 2026-11-13 12:49
+    status: done
+  18:
+    comments: ''
+    saved_at: 2026-11-13 12:51
+    status: done
+  19:
+    comments: ''
+    saved_at: 2026-11-13 12:51
+    status: done
+  20:
+    comments: Took a few attempts to complete the pattern, with all of the first attempts
+      ending due to messy throws being uncatchable (generally being thrown too far
+      +ve x).
+    saved_at: 2026-11-13 12:54
+    status: done
+  21:
+    comments: Only ran a few attempts, with none successful. The Hand and Platform
+      was undergoing very janky motions. The Hand in particular repeatedly moved in
+      a very 'stepped' manner, rather than followingsmooth, continuous trajectories.
+    saved_at: 2026-11-13 12:59
+    status: problem
+  23:
+    comments: ''
+    saved_at: 2026-11-13 13:43
+    status: done
+  24:
+    comments: 'I get this `not found` error: " $ cd ~/Desktop/Jugglebot/ros_ws &&
+      colcon build --packages-up-to jugglebot && source install/setup.bash; cd ~/Desktop/Jugglebot
+      Starting >>> jugglebot_interfaces Finished <<< jugglebot_interfaces [0.98s]
+      Starting >>> jugglebot Finished <<< jugglebot [2.55s] Summary: 2 packages finished
+      [4.27s] /opt/ros/foxy/local_setup.bash:.:11: no such file or directory: /home/jetson/Desktop/Jugglebot/ros_ws/local_setup.sh
+      not found: "/home/jetson/Desktop/Jugglebot/ros_ws/local_setup.bash" "'
+    saved_at: 2026-11-13 13:05
+    status: done
+  25:
+    comments: ''
+    saved_at: 2026-11-13 13:07
+    status: done
+  26:
+    comments: ''
+    saved_at: 2026-11-13 13:07
+    status: done
+  27:
+    comments: 'As expected, the second check was REFUSED: " (venv) jetson:/home/jetson/Desktop/Jugglebot/
+      (night-shift/sitting-2026-11-13✗) $ ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString
+      "{data: ''columns_turned,apex_m=0.95,separation_mm=125,dwell_s=0.27,columns_angle_deg=90''}"
+      requester: making request: jugglebot_interfaces.srv.SetString_Request(data=''columns_turned,apex_m=0.95,separation_mm=125,dwell_s=0.27,columns_angle_deg=90'')
+      response: jugglebot_interfaces.srv.SetString_Response(success=False, message="nomination
+      REFUSED: columns_turned apex 0.95 m, separation 125 mm, dwell 0.27 s, angle
+      90 deg, Catch tilt-back 3 deg, pose; 3 refusals; nearest viable: apex 0.90 m
+      (or separation 25 mm)\nskill 2 CATCH Ball 1 at P2@90 -> P2@90, rung -20 %: LIMIT_JERK
+      leg 1 at t=0.400 s, margin -0.262 (jerk) [peak leg jerk 227081 mm/s³ > 200000
+      (leg 1 at t=0.400 s on the gated plan''s clock)]\nskill 2 CATCH Ball 1 at P2@90
+      -> P2@90, rung 0 %: LIMIT_JERK leg 1 at t=0.400 s, margin -0.257 (jerk) [peak
+      leg jerk 226222 mm/s³ > 200000 (leg 1 at t=0.400 s on the gated plan''s clock)]\nskill
+      2 CATCH Ball 1 at P2@90 -> P2@90, rung +10 %: LIMIT_JERK leg 1 at t=0.400 s,
+      margin -0.256 (jerk) [peak leg jerk 226006 mm/s³ > 200000 (leg 1 at t=0.400
+      s on the gated plan''s clock)]") " Everything else landed as expected.'
+    saved_at: 2026-11-13 13:10
+    status: done
+  28:
+    comments: ''
+    saved_at: 2026-11-13 13:10
+    status: done
+  30:
+    comments: ''
+    saved_at: 2026-11-13 13:12
+    status: done
+  31:
+    comments: ''
+    saved_at: 2026-11-13 13:14
+    status: done
+  32:
+    comments: ''
+    saved_at: 2026-11-13 13:19
+    status: done
+  33:
+    comments: Attempted ~5 times, each of which ended extremely early with either
+      NO_ADMISSIBLE_COMMAND or LIMIT_JERK and a maximum of only one throw.
+    saved_at: 2026-11-13 13:42
+    status: null
+  34:
+    comments: ''
+    saved_at: 2026-11-13 13:23
+    status: done
+  35:
+    comments: ''
+    saved_at: 2026-11-13 13:23
+    status: done
+  36:
+    comments: Done! Very few of the catches were perfectly clean, and they didn't
+      visually appear to differ very much at all between the +ve and -ve offset values.
+    saved_at: 2026-11-13 13:30
+    status: done
+  38:
+    comments: ''
+    saved_at: 2026-11-13 13:37
+    status: done
+  39:
+    comments: This was already done a few days ago. All CAN ODrive rates have been
+      updated.
+    saved_at: 2026-11-13 13:38
+    status: skipped
+  40:
+    comments: 'I got an error wih the `tee` line: " (venv) jetson:/home/jetson/Desktop/Jugglebot/
+      (night-shift/sitting-2026-11-13✗) $ ros2 launch jugglebot jugglebot_launch.py
+      2>&1 | tee -i ../temp/logs/launch_2026-11-13_4.log [13:37:37] tee: ../temp/logs/launch_2026-11-13_4.log:
+      No such file or directory [INFO] [launch]: All log files can be found below
+      /home/jetson/.ros/log/2026-11-13-13-38-42-463400-jetson-1380296 "'
+    saved_at: 2026-11-13 13:40
+    status: done
+  41:
+    comments: ''
+    saved_at: 2026-11-13 13:40
+    status: done
+  44:
+    comments: ''
+    saved_at: 2026-11-13 14:00
+    status: done
+  45:
+    comments: ''
+    saved_at: 2026-11-13 14:00
+    status: done
+verdicts:
+  12:
+    FEAT-39:
+      notes: 3/3 attempts ended with NO_ADMISSIBLE_COMMAND
+      saved_at: 2026-11-13 11:58
+      verdict: fail
+  14:
+    IDEA-10:
+      notes: Took a few attempts, with many attempts ending due to messy throws, but
+        after some tries the pattern held for the full 21 throws!
+      saved_at: 2026-11-13 12:05
+      verdict: pass
+  15:
+    BUG-63:
+      notes: Ran about 5 attempts, none of which reached the 21 throws. The pattern
+        seemed generally cleaner than for Step 14, but there was always at least one
+        messy throw that ended the pattern.
+      saved_at: 2026-11-13 12:10
+      verdict: pending
+  22:
+    FEAT-32:
+      notes: ''
+      saved_at: 2026-11-13 13:02
+      verdict: pass
+  29:
+    IDEA-16:
+      notes: Done with no drops. I noticed in the GUI that there were a few 'predicted
+        throws' that were actually just the Ball Butler frame markers. Perhaps the
+        tolerance for a human throw ought to be tightened?
+      saved_at: 2026-11-13 13:13
+      verdict: pass
+  33:
+    IDEA-11:
+      notes: ''
+      saved_at: 2026-11-13 13:42
+      verdict: fail
+    IDEA-22:
+      notes: ''
+      saved_at: 2026-11-13 13:42
+      verdict: fail
+  37:
+    BUG-80:
+      notes: ''
+      saved_at: 2026-11-13 13:36
+      verdict: pass
+  42:
+    BUG-82:
+      notes: ''
+      saved_at: 2026-11-13 13:59
+      verdict: pass
+  43:
+    BUG-58:
+      notes: ''
+      saved_at: 2026-11-13 13:59
+      verdict: pending
+    FEAT-46:
+      notes: ''
+      saved_at: 2026-11-13 13:59
+      verdict: pending

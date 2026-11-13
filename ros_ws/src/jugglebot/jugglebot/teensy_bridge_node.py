@@ -1244,7 +1244,8 @@ RelayRobotState = namedtuple(
 def _decode_relay_robot_state(data: bytes) -> RelayRobotState:
     """Decode a 0x6E0 RobotState reply exactly as Teensy_code_platform.ino
     decodeStateCANMessage packs it: byte0 flags (bit0 is_homed, bit1 levelling),
-    int16 LE pose*1000 about X (bytes 1-2) and Y (bytes 3-4).
+    int16 LE tilt counts about X (bytes 1-2) and Y (bytes 3-4), converted to
+    radians with the generated ``PLATFORM_STATE_TILT_COUNTS_PER_RAD``.
 
     Bytes 5-6 of the same frame carry the Platform Teensy's FW_VERSION and are
     decoded separately by ``rpc_args.decode_platform_fw_version`` — deliberately
@@ -1258,8 +1259,8 @@ def _decode_relay_robot_state(data: bytes) -> RelayRobotState:
     return RelayRobotState(
         is_homed=bool(flags & 0x1),
         levelling_complete=bool(flags & 0x2),
-        pose_offset_tiltX=x / 1000.0,
-        pose_offset_tiltY=y / 1000.0)
+        pose_offset_tiltX=x / proto.PLATFORM_STATE_TILT_COUNTS_PER_RAD,
+        pose_offset_tiltY=y / proto.PLATFORM_STATE_TILT_COUNTS_PER_RAD)
 
 
 def _tilt_to_quat(tilt_x: float, tilt_y: float) -> Quaternion:
