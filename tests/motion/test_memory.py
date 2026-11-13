@@ -99,6 +99,40 @@ def test_append_reload_round_trips_bitwise_in_file_order(tmp_path):
         assert fh.readline().strip().split(',') == mem.HEADER
 
 
+def test_append_to_an_empty_file_writes_the_header(tmp_path):
+    """A zero-byte file (crash between create and first write, a touch, a
+    truncate) loads as empty; the next append must write the header, or the
+    reload reads the first data row as the header and refuses the plant."""
+    path = tmp_path / 'p' / 'memory_v2.csv'
+    path.parent.mkdir()
+    path.write_bytes(b'')
+    m = mem.Memory(str(path))
+    assert len(m) == 0 and m.n_dropped == 0
+    m.append(_exp(1))
+    r = mem.Memory(str(path))
+    assert len(r) == 1 and r.n_dropped == 0
+    _same(r.rows()[0], _exp(1))
+
+
+def test_append_after_a_torn_last_row_loses_only_the_torn_row(tmp_path, caplog):
+    """A power cut mid-row leaves the file without a trailing newline; the
+    next append must start a fresh line so only the torn row is dropped,
+    never the new one glued onto it."""
+    path = tmp_path / 'p' / 'memory_v2.csv'
+    path.parent.mkdir()
+    torn = _line(_exp(2))[:40]
+    path.write_text('\n'.join([','.join(mem.HEADER), _line(_exp(0)), torn]))
+    m = mem.Memory(str(path))
+    assert len(m) == 1 and m.n_dropped == 1
+    m.append(_exp(3))
+    caplog.set_level(logging.WARNING)
+    r = mem.Memory(str(path))
+    assert len(r) == 2 and r.n_dropped == 1
+    _same(r.rows()[0], _exp(0))
+    _same(r.rows()[1], _exp(3))
+    assert any('line 3' in rec.getMessage() for rec in caplog.records)
+
+
 def test_malformed_rows_are_dropped_counted_and_logged(tmp_path, caplog):
     path = tmp_path / 'p' / 'memory_v2.csv'
     path.parent.mkdir()

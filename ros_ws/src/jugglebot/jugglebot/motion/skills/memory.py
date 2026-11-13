@@ -339,8 +339,12 @@ class Memory:
             return None
 
     def append(self, exp: Experience) -> None:
-        """Append one row (v2 only): writes the header on first create,
-        flushes, and keeps the row in call order."""
+        """Append one row (v2 only): writes the header when the file is
+        missing OR empty, flushes, and keeps the row in call order.
+
+        If the file's last byte is not a newline (a power cut mid-row), a
+        newline is written first, so only that torn row is dropped at load
+        rather than the torn row AND this one glued onto it."""
         if not isinstance(exp, Experience):
             raise ValueError('append expects an Experience, got %r' % (exp,))
         if os.path.basename(self._path) == 'memory.csv':
@@ -358,9 +362,18 @@ class Memory:
         out_dir = os.path.dirname(self._path)
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)
-        write_header = not os.path.exists(self._path)
+        size = (os.path.getsize(self._path)
+                if os.path.exists(self._path) else 0)
+        write_header = size == 0
+        torn = False
+        if size > 0:
+            with open(self._path, 'rb') as raw:
+                raw.seek(-1, os.SEEK_END)
+                torn = raw.read(1) != b'\n'
         with open(self._path, 'a', newline='') as handle:
             writer = csv.writer(handle)
+            if torn:
+                handle.write('\n')
             if write_header:
                 writer.writerow(HEADER)
             writer.writerow(_row_for(exp))
