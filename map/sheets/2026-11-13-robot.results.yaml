@@ -47,4 +47,9 @@ steps:
       of messy (uncaught) throws and after a few attempts the longest run was 25 catches.
     saved_at: 2026-11-13 11:57
     status: done
-verdicts: {}
+verdicts:
+  12:
+    FEAT-39:
+      notes: 3/3 attempts ended with NO_ADMISSIBLE_COMMAND
+      saved_at: 2026-11-13 11:58
+      verdict: fail

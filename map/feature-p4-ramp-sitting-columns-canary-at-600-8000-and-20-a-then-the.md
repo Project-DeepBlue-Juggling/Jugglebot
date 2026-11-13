@@ -4,7 +4,7 @@ kind: feature
 title: 'P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30'
 status: in_progress
 created: '2026-11-03'
-updated: '2026-11-10T12:41:23Z'
+updated: '2026-11-13T00:58:55Z'
 owners: []
 priority: high
 effort: m
@@ -45,6 +45,11 @@ P4 ramp of plan `plans/active/two-ball-oval.md`: the first Sitting at the P4 wor
 
 - verdict: pending
 - notes: Many attempts of the patterns described in 6 and 7. Didn't run 8, as 6 and 7 had no successful runs, thrown to completion. There were a few LANE_REFUSED, MAX_DEVIATION, and FRAME_OFFSET errors in the attempt, but most attempts ended due to a messy throw being uncatchable. No Lef LIMIT ends, with peak leg current of ~10 A. 'Pending' because we didn't technically pass, but we also didn't observe the fail conditions.
+
+## Sitting result (2026-11-13 11:58)
+
+- verdict: fail
+- notes: 3/3 attempts ended with NO_ADMISSIBLE_COMMAND (sheet 2026-11-13-robot, step 12)
 
 ## Progress
 
