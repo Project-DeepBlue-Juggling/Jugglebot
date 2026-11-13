@@ -200,7 +200,7 @@ Rigs: Robot 4 blocks (261 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 
 ## Questions a Sitting can answer
 
-- TKT-68 IDEA-22 failed at Apex 0.90 and 3 deg on 2026-11-13: re-measure tilt-back toward 0 offline, raise the Leg jerk limit for this Pattern, park 90 deg, or drop the branch? (parent IDEA-22)
+- none
 
 ## Close-out
 
