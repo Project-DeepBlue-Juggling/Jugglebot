@@ -135,6 +135,10 @@ steps:
       NO_ADMISSIBLE_COMMAND or LIMIT_JERK and a maximum of only one throw.
     saved_at: 2026-11-13 13:22
     status: null
+  34:
+    comments: ''
+    saved_at: 2026-11-13 13:23
+    status: done
 verdicts:
   12:
     FEAT-39:
