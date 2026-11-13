@@ -57,3 +57,9 @@ verdicts:
       notes: 3/3 attempts ended with NO_ADMISSIBLE_COMMAND
       saved_at: 2026-11-13 11:58
       verdict: fail
+  14:
+    IDEA-10:
+      notes: Took a few attempts, with many attempts ending due to messy throws, but
+        after some tries the pattern held for the full 21 throws!
+      saved_at: 2026-11-13 12:05
+      verdict: pass

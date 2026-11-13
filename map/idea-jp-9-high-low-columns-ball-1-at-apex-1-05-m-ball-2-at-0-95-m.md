@@ -4,7 +4,7 @@ kind: idea
 title: 'JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m'
 status: in_progress
 created: '2026-10-30'
-updated: '2026-11-10T12:41:42Z'
+updated: '2026-11-13T01:05:01Z'
 owners:
 - jugglebot-f5
 priority: medium
@@ -62,6 +62,11 @@ Visually subtle: the two apexes differ by 100 mm.
 
 - verdict: fail
 - notes: Flown as real Attempts from sheet step 7 on the default plant: 0/0, 0/0, 2/3 (HAND_JAM). Ball 2's first Throw after the Feed landed outward (BUG-63). Verdict from the logs at the debrief, confirmed by the owner 2026-11-11.
+
+## Sitting result (2026-11-13 12:05)
+
+- verdict: pass
+- notes: Took a few attempts, with many attempts ending due to messy throws, but after some tries the pattern held for the full 21 throws! (sheet 2026-11-13-robot, step 14)
 
 ## Progress
 
