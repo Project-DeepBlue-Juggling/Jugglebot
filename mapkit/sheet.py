@@ -15,7 +15,9 @@ needs something a free-text ``do:`` never states) is the command's read-through.
   ``ros2 param set`` cannot be retyped wrongly;
 - an Item's ``do:`` steps keep their order;
 - each step starts in the state the previous step left, and the sheet does not end Armed;
-- an Item's verdict sits on one run step, whose start state includes the Item's ``setup:``.
+- an Item's verdict sits on one run step, whose start state includes the Item's ``setup:``;
+- an action's shell is the operator's zsh and any working directory: no ``source ...setup.bash``
+  (``setup.zsh`` instead) and no ``tee`` to a relative path (2026-11-13: both failed at the robot).
 
 A step with ``pass: true`` on a served Item takes one verdict per such Item, because Items
 sharing a flight can come out differently and ``/sitting-debrief`` merges a held branch on a
@@ -273,6 +275,8 @@ def check_sheet(sheet: Dict[str, Any], repo_root: str, live: bool = False) -> Li
             elif item in omitted and omitted[item] is None:
                 errs.append("step %s: %s is omitted whole but served here" % (st.get("n"), item))
     errs += _check_firmware(sheet, repo_root)
+    if not live:  # a flown sheet is a record: the app's re-check must not banner it for authoring rules
+        errs += _check_shell(steps)
     for st in steps:
         if GOAL_COMMAND in _step_text(st) and isinstance(st.get("from"), list):
             lacks = [w for w in GOAL_NEEDS if w not in st["from"]]
@@ -284,6 +288,30 @@ def check_sheet(sheet: Dict[str, Any], repo_root: str, live: bool = False) -> Li
         if item in omitted and skip is None:
             continue
         errs += _check_item(item, row, steps, list(skip or []))
+    return errs
+
+
+#: The operator's terminals run zsh. colcon's ``setup.bash`` finds its sibling scripts through
+#: ``BASH_SOURCE``, which zsh lacks, so it looks in the working directory and prints "no such file"
+#: (2026-11-13, step 24). ``setup.zsh`` is the same file for zsh.
+_SOURCE_BASH = re.compile(r"\b(?:source|\.)\s+\S*setup\.bash\b")
+#: ``tee [-flags] <path>``; a relative path breaks when the shell is not where the author assumed
+#: (2026-11-13: ``tee -i ../temp/logs/...`` from the repo root, launches 3 and 4 lost their logs).
+_TEE_PATH = re.compile(r"\btee\b(?:\s+-\w+)*\s+(\S+)")
+
+
+def _check_shell(steps: List[Dict[str, Any]]) -> List[str]:
+    errs: List[str] = []
+    for st in steps:
+        text = _step_text(st)
+        for m in _SOURCE_BASH.finditer(text):
+            errs.append("step %s: '%s' is bash-only and fails in the operator's zsh; source "
+                        "setup.zsh instead" % (st.get("n"), m.group(0)))
+        for m in _TEE_PATH.finditer(text):
+            target = m.group(1).strip("\"'")
+            if not target.startswith(("/", "~", "$")):
+                errs.append("step %s: tee to the relative path %s depends on the working directory; "
+                            "use an absolute path (~/Desktop/Jugglebot/temp/logs/...)" % (st.get("n"), target))
     return errs
 
 

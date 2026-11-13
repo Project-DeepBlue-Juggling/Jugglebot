@@ -104,6 +104,12 @@ steps:
 - `where` names one place: `Terminal 1` (the launch), `Terminal 2` (parameters, goals), `GUI`,
   `Hands`. The first use of Terminal 2 shows its full `source` line, and any working directory a
   later command relies on is established by an earlier step.
+- **Commands run in the operator's zsh from any working directory.** Source `setup.zsh`, never
+  `setup.bash` (zsh has no `BASH_SOURCE`, so colcon's chain looks for `local_setup.sh` in the
+  working directory and prints "no such file"): `source /opt/ros/foxy/setup.zsh && source
+  install/setup.zsh`. A `tee` log path is absolute (`~/Desktop/Jugglebot/temp/logs/launch_<date>_<n>.log`),
+  never `../temp/logs/...`: Terminal 2 and the shell after a `cd` are not where the launch step's
+  author assumed (2026-11-13: launches 3 and 4 lost their logs). `sheet check` fails both.
 - `serves[].do` cites the Item's `do:` numbers, so a step that serves no Item's `do:` has
   `serves: []` (a build, a Level, a teardown). A `run` step serves at least one Item.
 - `pass: true` goes on exactly one `run` step per Item: the last flown step that decides its

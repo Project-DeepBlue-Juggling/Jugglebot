@@ -383,6 +383,24 @@ def test_firmware_named_on_the_sheet_must_match_the_tree(good, repo):
     assert not [e for e in sh.check_sheet(good, str(repo)) if "can-bridge" in e]
 
 
+def test_actions_must_suit_zsh_and_any_working_directory(good, repo):
+    """2026-11-13: step 24 sourced install/setup.bash in zsh (sibling scripts resolved against the
+    working directory: "no such file ... local_setup.sh") and step 40 tee'd to ../temp/logs from the
+    repo root (launches 3 and 4 lost their logs)."""
+    acts = good["steps"][1]["actions"]
+    acts.append({"where": "Terminal 2", "command": "cd ~/Desktop/Jugglebot/ros_ws && source install/setup.bash"})
+    _has(sh.check_sheet(good, str(repo)), "step 2: 'source install/setup.bash' is bash-only")
+    acts[-1]["command"] = "cd ~/Desktop/Jugglebot/ros_ws && source /opt/ros/foxy/setup.zsh && source install/setup.zsh"
+    assert not [e for e in sh.check_sheet(good, str(repo)) if "bash-only" in e]
+    acts[-1]["command"] = "ros2 launch jugglebot jugglebot_launch.py 2>&1 | tee -i ../temp/logs/l.log"
+    _has(sh.check_sheet(good, str(repo)), "tee to the relative path ../temp/logs/l.log")
+    acts[-1]["command"] = "ros2 launch jugglebot jugglebot_launch.py 2>&1 | tee -i ~/Desktop/Jugglebot/temp/logs/l.log"
+    assert sh.check_sheet(good, str(repo)) == []
+    # The app's live re-check of an already-flown sheet is not bannered by authoring rules.
+    acts[-1]["command"] = "source install/setup.bash && x | tee ../l.log"
+    assert not [e for e in sh.check_sheet(good, str(repo), live=True) if "bash-only" in e or "tee to" in e]
+
+
 def test_setup_waived_needs_a_reason(good, repo):
     run = next(st for st in good["steps"] if any(sv.get("pass") for sv in st["serves"]))
     run["from"] = []
