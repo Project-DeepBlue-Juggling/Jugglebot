@@ -4,7 +4,7 @@ kind: bug
 title: Ball 2's first throw after the feed catch lands about 180 mm outward along the separation axis
 status: inbox
 created: '2026-11-03'
-updated: '2026-11-10T12:41:23Z'
+updated: '2026-11-13T01:10:12Z'
 owners: []
 priority: high
 effort: m
@@ -55,6 +55,11 @@ A feed catch whose lateral aim was clamped (`CATCH-AIM skill 1 ... y -20.0`) sea
 ## Next
 
 A bag probe (`tools/probes/`) of the ball's seat position in the Cup at the first Ball 2 release against the outcome. No change on the Throw path until it names a cause. Related: IDEA-10, IDEA-11, BUG-52.
+
+## Sitting result (2026-11-13 12:10)
+
+- verdict: pending
+- notes: Ran about 5 attempts, none of which reached the 21 throws. The pattern seemed generally cleaner than for Step 14, but there was always at least one messy throw that ended the pattern. (sheet 2026-11-13-robot, step 15)
 
 ## Progress
 

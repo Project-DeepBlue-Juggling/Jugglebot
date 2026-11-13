@@ -63,3 +63,10 @@ verdicts:
         after some tries the pattern held for the full 21 throws!
       saved_at: 2026-11-13 12:05
       verdict: pass
+  15:
+    BUG-63:
+      notes: Ran about 5 attempts, none of which reached the 21 throws. The pattern
+        seemed generally cleaner than for Step 14, but there was always at least one
+        messy throw that ended the pattern.
+      saved_at: 2026-11-13 12:10
+      verdict: pending
