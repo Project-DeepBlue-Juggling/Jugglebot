@@ -4,7 +4,7 @@ kind: feature
 title: Measure the Hand's commutation angle error through a hard brake on the bench Hand (FOC scope)
 status: in_progress
 created: '2026-11-07'
-updated: '2026-11-11T10:36:12Z'
+updated: '2026-11-13T00:32:21Z'
 owners: []
 priority: high
 effort: s
@@ -114,6 +114,11 @@ If the bench shows a clean baseline, `capture --trigger fault` can sit armed on 
 - The angle is about -3 deg plus 0.22 deg/A, with no speed term resolved. This setup resolves only gross angle errors (tens of degrees), not a few-degree baseline.
 - The drive's own electrical power stayed positive through the clean brake (median +29 W). That withdraws one inference on BUG-57 (see its 2026-11-11 section).
 - Not shown: anything at 137 rev/s or 60 A, and that magnet slip is ruled out on the robot's Hand.
+
+## Sitting result (2026-11-13 11:32)
+
+- verdict: pass
+- notes: Completed all runs, with all tests passing! All tests were done on 2026-11-13 between 10:30 and 11:30 am.
 
 ## Progress
 
