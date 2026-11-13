@@ -150,8 +150,12 @@ from mapkit.items import METRIC_ENUMS, Item, ItemError, load_item  # noqa: E402
 #: frozen: a branch that edits the gate, the runner, the guard, the protocol or
 #: their tests would decide its own verdict. That includes what decides whether those
 #: tests run at all: a ``collect_ignore`` in a conftest or a new root pytest config
-#: would drop them from (a). The last four entries name files that do not exist today;
-#: creating one is exactly what they catch.
+#: would drop them from (a). So every conftest under ``tests/`` is frozen, at any depth
+#: and whether it exists at the base or is new (``tests/conftest.py`` plus
+#: ``tests/*/conftest.py``, whose ``*`` crosses ``/``; until 2026-11-14 only the
+#: ``tests/sim`` one was, leaving ``tests/ros``, ``tests/teensy_link`` and any new one
+#: open). The last four entries name files that do not exist today; creating one is
+#: exactly what they catch.
 FORBIDDEN_PATHS: Tuple[str, ...] = (
     "ros_ws/src/jugglebot/Teensy_code_canbridge/*",
     "ros_ws/src/jugglebot/Teensy_code_platform/*",
@@ -177,7 +181,7 @@ FORBIDDEN_PATHS: Tuple[str, ...] = (
     "CLAUDE.md",
     "DOCUMENTATION_GUIDE.md",
     "tests/conftest.py",
-    "tests/sim/conftest.py",
+    "tests/*/conftest.py",
     "conftest.py",
     "pytest.ini",
     "tox.ini",

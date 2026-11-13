@@ -363,7 +363,7 @@ def test_forbidden_paths_pinned():
         "tools/systemd/*", "tools/nightly_*", ".claude/*", "tests/sim/test_night_shift_*",
         "tests/sim/test_live_session_guard.py", "tests/sim/test_question_tickets.py",
         "tests/sim/test_sitting_*", "run_tests.sh", "pyproject.toml", "GLOSSARY.md",
-        "CLAUDE.md", "DOCUMENTATION_GUIDE.md", "tests/conftest.py", "tests/sim/conftest.py",
+        "CLAUDE.md", "DOCUMENTATION_GUIDE.md", "tests/conftest.py", "tests/*/conftest.py",
         "conftest.py", "pytest.ini", "tox.ini", "setup.cfg")
     assert gate.WAIVABLE == ("c",)
 
@@ -509,6 +509,40 @@ def test_a_branch_cannot_switch_off_the_frozen_tests(repo):
     (repo / "tests" / "sim" / "conftest.py").write_text('collect_ignore = ["test_night_shift_gate.py"]\n')
     commit(repo)
     assert_hold(run(repo), "f")
+
+
+@pytest.mark.parametrize("rel", ["tests/ros/conftest.py", "tests/teensy_link/conftest.py"])
+def test_f_editing_an_existing_subdir_conftest_holds(repo, rel):
+    """Every conftest under tests/ decides what is collected, not only tests/sim's: an edited
+    tests/ros or tests/teensy_link conftest could drop or skip a frozen test as well."""
+    def seed():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text("# base conftest\n")
+    _move_base(repo, seed)
+    (repo / rel).write_text('collect_ignore = ["test_x.py"]\n')
+    commit(repo)
+    res = run(repo)
+    assert_hold(res, "f")
+    assert res.reasons == ["[f] touches forbidden path %s" % rel]
+
+
+def test_f_adding_a_new_subdir_conftest_holds(repo):
+    """A conftest that does not exist at the base (tests/motion has none today) is frozen too."""
+    p = repo / "tests" / "motion" / "conftest.py"
+    p.parent.mkdir(parents=True)
+    p.write_text("collect_ignore_glob = ['*']\n")
+    commit(repo)
+    res = run(repo)
+    assert_hold(res, "f")
+    assert res.reasons == ["[f] touches forbidden path tests/motion/conftest.py"]
+
+
+def test_f_an_ordinary_test_file_beside_a_conftest_merges(repo):
+    p = repo / "tests" / "motion" / "test_x.py"
+    p.parent.mkdir(parents=True)
+    p.write_text("def test_x():\n    pass\n")
+    commit(repo)
+    assert run(repo).verdict == "MERGE"
 
 
 def test_the_debriefs_update_then_gate_reaches_a_merge(repo):
