@@ -144,3 +144,91 @@ def test_readability_rule_clauses():
     assert readability_violations("Intro.\n\n## Detail\n\n" + paras) == []
     # only ## counts as the heading; ### alone does not
     assert any("no ## heading" in v for v in readability_violations("Intro.\n\n### Detail\n\n" + paras))
+
+
+# --- atomic Item writes ------------------------------------------------------
+# The map app re-indexes map/ on every change and several writers share it, so a
+# truncate-then-write lets a reader see an empty or half-written Item, and a crash
+# mid-write destroys it. Writes go to a same-directory temp file, then os.replace.
+
+def _bug(tmp_path, body="Body text.\n"):
+    return _write(tmp_path, "bug-feed-y-bias.md", FIXTURES["bug-feed-y-bias.md"], body)
+
+
+def _leftovers(d, keep):
+    return sorted(p.name for p in d.iterdir() if p.name not in keep)
+
+
+def test_write_text_atomic_round_trips_and_leaves_no_temp(tmp_path):
+    from mapkit.atomic import write_text_atomic
+    p = tmp_path / "bug-x.md"
+    write_text_atomic(str(p), "a\nb\n")
+    assert p.read_bytes() == b"a\nb\n"
+    write_text_atomic(str(p), "crlf\r\nkept\n", newline="")   # set_id's mode: bytes as given
+    assert p.read_bytes() == b"crlf\r\nkept\n"
+    write_text_atomic(str(p), "é\n")
+    assert p.read_bytes() == "é\n".encode("utf-8")
+    assert _leftovers(tmp_path, {"bug-x.md"}) == []
+
+
+def test_write_text_atomic_keeps_mode_bits(tmp_path):
+    import os
+    import stat
+    from mapkit.atomic import write_text_atomic
+    p = tmp_path / "bug-x.md"
+    p.write_text("old\n")
+    os.chmod(str(p), 0o640)
+    write_text_atomic(str(p), "new\n")
+    assert stat.S_IMODE(os.stat(str(p)).st_mode) == 0o640
+    # a NEW file gets what open(path, "w") would give, not mkstemp's 0600
+    q = tmp_path / "bug-new.md"
+    umask = os.umask(0o022)
+    os.umask(umask)
+    write_text_atomic(str(q), "x\n")
+    assert stat.S_IMODE(os.stat(str(q)).st_mode) == 0o666 & ~umask
+
+
+def test_failed_replace_keeps_the_original_and_no_temp(tmp_path, monkeypatch):
+    import os
+    from mapkit.atomic import write_text_atomic
+    p = tmp_path / "bug-x.md"
+    p.write_text("original\n")
+    seen = []
+
+    def boom(src, dst):
+        seen.append(os.path.basename(src))
+        with open(src) as fh:
+            assert fh.read() == "replacement\n"   # fully written before the swap
+        raise OSError("disk gone")
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(OSError):
+        write_text_atomic(str(p), "replacement\n")
+    assert p.read_text() == "original\n"
+    assert _leftovers(tmp_path, {"bug-x.md"}) == []
+    # the temp name can never be loaded as an Item: every map/ loader takes *.md only
+    assert seen and seen[0].startswith(".") and not seen[0].endswith(".md")
+
+
+def test_write_item_and_set_id_are_atomic(tmp_path, monkeypatch):
+    import os
+    from mapkit.ids import set_id
+    from mapkit.items import write_item
+    p = _bug(tmp_path)
+    before = p.read_text()
+    item = load_item(str(p))
+
+    def boom(src, dst):
+        raise OSError("disk gone")
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(OSError):
+        write_item(str(p), dict(item.meta, title="Changed"), item.body)
+    with pytest.raises(OSError):
+        set_id(item, "BUG-9")
+    assert p.read_text() == before
+    assert _leftovers(tmp_path, {p.name}) == []
+    monkeypatch.undo()
+    set_id(item, "BUG-9")
+    assert p.read_text().startswith("---\nid: BUG-9\n")
+    assert write_item(str(p), dict(load_item(str(p)).meta, title="Changed"), item.body)
+    assert load_item(str(p)).meta["title"] == "Changed"
+    assert _leftovers(tmp_path, {p.name}) == []

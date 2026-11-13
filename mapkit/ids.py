@@ -41,6 +41,7 @@ import subprocess
 import sys
 from typing import Dict, Iterable, List, Optional, Tuple
 
+from mapkit.atomic import write_text_atomic
 from mapkit.items import Item, ItemError, load_items, load_items_lenient, write_item
 
 PREFIXES: Dict[str, str] = {"bug": "BUG", "feature": "FEAT", "idea": "IDEA",
@@ -382,8 +383,7 @@ def set_id(item: Item, new_id: str) -> None:
     end = text.find("\n---", 3)
     head, rest = text[4:end + 1], text[end + 1:]
     head = _ID_LINE.sub("", head, count=1)
-    with open(item.path, "w", encoding="utf-8", newline="") as fh:
-        fh.write("---\nid: %s\n%s%s" % (new_id, head, rest))
+    write_text_atomic(item.path, "---\nid: %s\n%s%s" % (new_id, head, rest), newline="")
     meta = {"id": new_id}
     meta.update((k, v) for k, v in item.meta.items() if k != "id")
     item.meta = meta

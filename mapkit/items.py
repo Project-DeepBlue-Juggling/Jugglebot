@@ -20,6 +20,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
+from mapkit.atomic import write_text_atomic
 from mapkit.frontmatter import FrontmatterError, split_frontmatter
 from mapkit.plans import iso_date
 
@@ -296,8 +297,7 @@ def write_item(path: str, meta: Dict[str, Any], body: str) -> bool:
         probe["updated"] = raw["updated"]
         if dump_item(probe, body) == current:
             return False
-    with open(path, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(dump_item(meta, body))
+    write_text_atomic(path, dump_item(meta, body), newline="\n")
     return True
 
 
