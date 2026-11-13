@@ -223,3 +223,12 @@ verdicts:
       notes: ''
       saved_at: 2026-11-13 13:59
       verdict: pass
+  43:
+    BUG-58:
+      notes: ''
+      saved_at: 2026-11-13 13:59
+      verdict: pending
+    FEAT-46:
+      notes: ''
+      saved_at: 2026-11-13 13:59
+      verdict: pending

@@ -4,7 +4,7 @@ kind: bug
 title: 'Firmware scheduler STOPs a streamed lane while frames arrive on time and the host stream is clean: LANE_REFUSED ends, cause unseen'
 status: in_progress
 created: '2026-11-02'
-updated: '2026-11-08T05:00:00Z'
+updated: '2026-11-13T02:59:53Z'
 owners:
 - jugglebot-50
 priority: high
@@ -127,6 +127,11 @@ Recommendation: 1, flown at the next Sitting with the instrumentation, then 2 or
 
 - verdict: pending
 - notes: LANE_REFUSED hit at 2026-11-07 around 16:43
+
+## Sitting result (2026-11-13 13:59)
+
+- verdict: pending
+- notes: (sheet 2026-11-13-robot, step 43)
 
 ## Progress
 
