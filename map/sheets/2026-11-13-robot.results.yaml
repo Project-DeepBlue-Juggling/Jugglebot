@@ -88,6 +88,14 @@ steps:
       not found: "/home/jetson/Desktop/Jugglebot/ros_ws/local_setup.bash" "'
     saved_at: 2026-11-13 13:05
     status: done
+  25:
+    comments: ''
+    saved_at: 2026-11-13 13:07
+    status: done
+  26:
+    comments: ''
+    saved_at: 2026-11-13 13:07
+    status: done
 verdicts:
   12:
     FEAT-39:
