@@ -2,12 +2,16 @@
 id: FEAT-50
 kind: feature
 title: Live warning when a marker dwells under the Hand
-status: inbox
+status: in_progress
 created: '2026-11-13'
-updated: '2026-11-13T06:09:43Z'
-owners: []
+updated: '2026-11-13T18:20:44Z'
+owners:
+- night-shift
 priority: medium
+effort: m
 hardware: robot
+owner: none
+radius: subsystem
 area: tracking
 blocked_by: []
 links:
@@ -26,10 +30,15 @@ Log only: no action on the Hand path; the Hand safety authority stays the Teensy
 ## Sitting
 
 - setup: armed
-- why: NOT flyable until the WARN is built (no branch yet). Then: confirm the Hand-marker fit and the dwell thresholds still hold after any Hand or marker re-mount, and see the WARN fire in a dive over a deliberately placed Ball.
+- why: The WARN is built, log only, on the branch below (five audit findings open, for the day Session that merges it). Confirm the Hand-marker fit and the dwell thresholds still hold after any Hand or marker re-mount, and see the WARN fire in a dive over a deliberately placed Ball.
 - do:
   - With the Platform level and the Hand at Active pose, place a Ball on the Platform top and roll it into the tube under the Cup by hand, then watch the launch log.
   - Read the WARN line and compare its position with the Ball.
 - pass: a WARN naming the dwell position within 15 mm of the Ball, within 1 s of the Ball stopping, and no WARN with the Cup empty and the Platform clear.
 - record: the WARN text, its time, and any false WARN count over the Sitting.
 - minutes: 10
+- branch: night-shift/2026-11-14-FEAT-50
+
+## Progress
+
+- 2026-11-14: Night Shift 2026-11-14: held on night-shift/2026-11-14-FEAT-50: built, suite green; 5 audit findings open, config is gate-frozen; unblocked by a day Session and the Sitting
