@@ -65,8 +65,11 @@ The eight conditions, ALL evaluated so a HOLD lists every failing reason:
       line is ``EXIT=0``;
   (b) audit: the report's ``Audited HEAD: <sha>`` equals the branch tip and
       ``Behaviour-affecting findings open: <n>`` is present with n == 0;
-  (c) hardware: the Item on the branch is rated ``hardware: none``, and the
-      branch did not lower a ``hardware`` rating the base had;
+  (c) hardware: the Item on the branch is rated ``hardware: none``, the
+      branch did not lower a ``hardware`` rating the base had, and the Item has
+      no ``## Sitting`` section on the branch or at the base (a fix to flown
+      behaviour is proven only on the robot, so it never merges at night, even
+      rated ``none``; closeout C7). Only ``--waive c`` clears any of these;
   (d) radius: the Item on the branch is rated, not ``normative``, and the
       branch did not lower a ``radius`` rating the base had. A rating absent
       at the base may first appear on the branch (the orchestrator rating an
@@ -135,6 +138,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from mapkit.frontmatter import FrontmatterError, split_frontmatter  # noqa: E402
 from mapkit.ids import KIND_OF_PREFIX, mismatch, parse_ref, split_ref  # noqa: E402
 from mapkit.items import METRIC_ENUMS, Item, ItemError, load_item  # noqa: E402
+from mapkit.sitting import has_sitting_section  # noqa: E402
 
 #: Paths a Night Shift branch may never touch (plan § 2 "Merge gate rule" (f)),
 #: matched with ``fnmatch.fnmatchcase`` against repo-root paths. ``*`` crosses
@@ -345,19 +349,20 @@ def _load_branch_item(name: str, text: str) -> Item:
                                     % (name, str(exc).replace(path, name)))
 
 
-def _base_meta(repo: str, base_sha: str, ref: str) -> Dict[str, object]:
-    """The Item's frontmatter at the base; ``[pre] Item not on base`` when absent."""
+def _base_item(repo: str, base_sha: str, ref: str) -> Tuple[Dict[str, object], str]:
+    """The Item's ``(frontmatter, body)`` at the base; ``[pre] Item not on base`` when absent."""
     try:
         _, text = _find_item(_map_files(repo, base_sha), ref, "at the base")
     except PreconditionError as exc:
         if str(exc).startswith("no map/ file"):
             raise PreconditionError("Item not on base: %s" % exc)
         raise
-    return split_frontmatter(text)[0]
+    return split_frontmatter(text)
 
 
-def _preconditions(repo: str, base: str, branch: str, item: str) -> Tuple[str, str, Item, Dict[str, Optional[str]], Dict[str, object]]:
-    """``(tip, base sha, Item, map files, base frontmatter)`` or raise :class:`PreconditionError`."""
+def _preconditions(repo: str, base: str, branch: str, item: str) -> Tuple[str, str, Item, Dict[str, Optional[str]], Dict[str, object], str]:
+    """``(tip, base sha, Item, map files, base frontmatter, base body)`` or raise
+    :class:`PreconditionError`."""
     if not os.path.isdir(repo):
         raise PreconditionError("repo %r is not a directory" % repo)
     r = _git(repo, "rev-parse", "--git-dir")
@@ -377,7 +382,8 @@ def _preconditions(repo: str, base: str, branch: str, item: str) -> Tuple[str, s
     files = _map_files(repo, tip)
     name, text = _find_item(files, ref)
     it = _load_branch_item(name, text)
-    return tip, base_sha, it, files, _base_meta(repo, base_sha, ref)
+    base_meta, base_body = _base_item(repo, base_sha, ref)
+    return tip, base_sha, it, files, base_meta, base_body
 
 
 def _loaded_gate_files() -> List[Tuple[str, str]]:
@@ -489,7 +495,8 @@ def _lowered(letter: str, metric: str, base_meta: Dict[str, object], it: Item) -
     return []
 
 
-def _check_c(it: Item, base_meta: Dict[str, object]) -> List[str]:
+def _check_c(it: Item, base_meta: Dict[str, object], base_body: str) -> List[str]:
+    """Only ever appends reasons: the Sitting rule adds a HOLD and clears none."""
     out = []
     hw = it.meta.get("hardware")
     if hw is None:
@@ -497,6 +504,12 @@ def _check_c(it: Item, base_meta: Dict[str, object]) -> List[str]:
     elif hw != "none":
         out.append("[c] hardware: %s (expected none)" % hw)
     out.extend(_lowered("c", "hardware", base_meta, it))
+    # A `## Sitting` section means a Sitting flies (or flew) this Item: its fix changes
+    # flown behaviour and is proven only on the robot, so it never merges at night,
+    # whatever the rating says. The base copy counts too, so deleting the section on
+    # the branch does not dodge it. Only the debrief's `--waive c` clears it.
+    if has_sitting_section(it.body) or has_sitting_section(base_body):
+        out.append("[c] changes flown behaviour (has a Sitting section)")
     return out
 
 
@@ -651,7 +664,7 @@ def evaluate_app(repo: str, app_repo: str, base: str, branch: str, item: str,
     checks = {
         "a": lambda: _check_a(app_repo, tip, branch, gate_log),
         "b": lambda: _check_b(app_repo, tip, audit),
-        "c": lambda: _check_c(it, meta),
+        "c": lambda: _check_c(it, meta, it.body),
         "d": lambda: _check_d(it, meta),
         "e": lambda: _check_e(it, ref, files),
         "f": lambda: _check_f_app(app_repo, base_sha, tip),
@@ -684,7 +697,7 @@ def evaluate(repo: str, base: str, branch: str, item: str,
         return res
     res.waived = sorted(set(waive))
     try:
-        tip, base_sha, it, files, base_meta = _preconditions(repo, base, branch, item)
+        tip, base_sha, it, files, base_meta, base_body = _preconditions(repo, base, branch, item)
         _check_gate_is_base(repo, base_sha)
     except PreconditionError as exc:
         res.reasons = ["[pre] %s" % exc]
@@ -697,7 +710,7 @@ def evaluate(repo: str, base: str, branch: str, item: str,
     checks = {
         "a": lambda: _check_a(repo, tip, branch, gate_log),
         "b": lambda: _check_b(repo, tip, audit),
-        "c": lambda: _check_c(it, base_meta),
+        "c": lambda: _check_c(it, base_meta, base_body),
         "d": lambda: _check_d(it, base_meta),
         "e": lambda: _check_e(it, ref, files),
         "f": lambda: _check_f(repo, base_sha, tip),

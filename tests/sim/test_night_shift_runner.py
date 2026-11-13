@@ -83,6 +83,11 @@ if [[ "${FAKE_CLAUDE_GATED_MERGE:-0}" == 1 || "${FAKE_CLAUDE_EVIL_MERGE:-0}" == 
   fi
   git push -q origin main
 fi
+# The never-list scan (closeout C7): a held branch pushed tonight that edits run_tests.sh.
+if [[ "${FAKE_CLAUDE_SELF_EDIT:-0}" == 1 ]]; then
+  git checkout -q -b night-shift/self-edit && echo "# skip" >run_tests.sh && git add run_tests.sh \
+    && git commit -q -m "held: edit the gate" && git push -q origin night-shift/self-edit && git checkout -q main
+fi
 if [[ "${FAKE_CLAUDE_REPORT:-0}" == 1 && "$prompt" != *--dry-run* ]]; then
   date="$(date +%F)"   # a resumed leg's prompt carries no date
   [[ "$prompt" =~ ^/night-shift\ ([0-9-]+) ]] && date="${BASH_REMATCH[1]}"
@@ -1067,3 +1072,32 @@ def test_no_checker_at_head_before_skips_the_landed_check(ns):
     _check(r, "OK", 0)
     assert ns.last()["landed"] == "landed: skipped (no checker at head_before)"
     assert not (ns.reports / "ungated.hold").exists()
+
+
+# --- the never-list scan (closeout C7) -----------------------------------------
+def test_a_branch_pushed_tonight_touching_the_never_list_is_self_edit_branch(ns):
+    """An older branch that touches the never-list is ignored (it is in the pre-claude
+    snapshot); the one pushed tonight is named with its path, the report is flagged,
+    the ticker re-raised, and no hold file stops the next night."""
+    work = ns.tmp / "old_branch"
+    _git("clone", "-q", str(ns.origin), str(work), env=ns.env)
+    _git("checkout", "-q", "-b", "night-shift/2026-11-01-old", cwd=work, env=ns.env)
+    (work / "tools" / "night_shift_old.py").write_text("x = 1\n")
+    _git("add", "-A", cwd=work, env=ns.env)
+    _git("commit", "-q", "-m", "old", cwd=work, env=ns.env)
+    _git("push", "-q", "origin", "night-shift/2026-11-01-old", cwd=work, env=ns.env)
+    r = ns.run(FAKE_CLAUDE_SELF_EDIT=1, FAKE_CLAUDE_REPORT=1, FAKE_CLAUDE_SUMMARY=1)
+    _check(r, "SELF_EDIT_BRANCH", 1)
+    last = ns.last()
+    assert last["branches"] == "branches: pushed=1 self_edit=1"
+    assert "SELF_EDIT night-shift/self-edit" in last["detail"] and "run_tests.sh" in last["detail"]
+    assert "2026-11-01-old" not in last["detail"]
+    assert last["ticker_reraised"] is True
+    report = _git("show", "main:docs/night-shift/%s.md" % last["date"], cwd=ns.origin, env=ns.env)
+    assert "**SELF_EDIT_BRANCH: a branch pushed tonight touches the Night Shift never-list" in report
+    assert report.splitlines()[-2].startswith("never-list scan: SELF_EDIT_BRANCH; branches: pushed=1")
+    assert not (ns.reports / "ungated.hold").exists()
+    # Nothing moved since: the next night is not flagged again.
+    ns.push_change()
+    _check(ns.run(), "OK", 0)
+    assert ns.last()["branches"] == "branches: pushed=0 self_edit=0"

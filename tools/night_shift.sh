@@ -83,7 +83,7 @@
 # Exit 1: NO_GUARD, FORBIDDEN_MODEL, NO_API_KEY, NO_CLONE, CLONE_DIRTY, PULL_FAILED, NO_SETTINGS,
 # PREFLIGHT_FAILED, CLAUDE_MISSING, CLAUDE_TIMEOUT, CLAUDE_FAILED,
 # POST_FETCH_FAILED, PUSH_REJECTED, RUN_LEFT_DIRTY, RUN_SALVAGED, NO_REPORT,
-# UNGATED_MERGE, UNGATED_HOLD, DRY_CHANGED, DRY_NO_REPORT, INTERNAL_ERROR. A real run that claimed the nightly
+# UNGATED_MERGE, UNGATED_HOLD, SELF_EDIT_BRANCH, DRY_CHANGED, DRY_NO_REPORT, INTERNAL_ERROR. A real run that claimed the nightly
 # ticker and ends in any status but OK re-raises it (ticker_reraised in
 # last_run.json), so a failed night never swallows a RED nightly.
 #
@@ -110,6 +110,20 @@
 #   Bootstrap and rollback: when head_before has no tools/night_shift_landed.py,
 #   the check is skipped (`landed: skipped (no checker at head_before)`) and the
 #   night goes on; a checker that exists there but cannot run is fail-closed.
+#
+# The never-list (closeout C7). A night may push held branches that touch frozen
+# paths, for the owner to merge by hand, but never one that touches the Night
+# Shift's own machinery (NEVER_LIST in tools/night_shift_landed.py). Right after the
+# pre-run fetch the runner keeps a snapshot of origin's branches IN MEMORY (claude
+# cannot edit it); after the landed check, the same head_before checker runs
+# `--branches` over every branch other than main that is new or moved since that
+# snapshot, whatever its name. A hit, or a scan that cannot run, is SELF_EDIT_BRANCH:
+# the branches and paths go in the detail, the report's Summary and Cost get a flag,
+# the ticker is re-raised like any failure, exit 1. No hold file: the danger is a
+# hand merge of that branch, not the next night, and the next night ignores an
+# unmoved branch. To clear: delete the branch on origin (or drop the commits that
+# touch those paths). last_run.json carries `branches: pushed=k self_edit=n`. A
+# head_before checker with no NEVER_LIST (bootstrap, rollback) skips the scan.
 #
 # A night that stops early (2026-11-09: `claude -p` gives background tasks 10
 # minutes after the orchestrator's last turn, then kills them and exits 0, so a
@@ -223,7 +237,7 @@ unset NS_COST NS_TURNS NS_DENIALS NS_SPAWNED NS_CLAUDE_EXIT NS_HEAD_BEFORE \
   NS_NIGHTLY_LINE NS_PREFLIGHT NS_RESULT NS_MAIN_COMMITS NS_TICKER_RERAISED NS_COST_RECORDED \
   NS_AUTH NS_COST_API NS_APP_CLONE_STATE NS_APP_NIGHT_START NS_DEPLOY_STATUS NS_DEPLOY_LINE \
   NS_APP_HEALTHY_BEFORE NS_RESUMED NS_SALVAGED NS_STUB_REPORT \
-  NS_ORIGIN_AFTER_CLAUDE NS_LANDED NS_LANDED_UNGATED
+  NS_ORIGIN_AFTER_CLAUDE NS_LANDED NS_LANDED_UNGATED NS_BRANCHES NS_SELF_EDIT
 STATUS_WRITTEN=0
 TICKER_CLAIMED=0
 CLAUDE_RAN=0
@@ -270,14 +284,22 @@ append_landed_flag() {
     "${NS_LANDED:-}" "$NS_LANDED_UNGATED" "$UNGATED_HOLD" >>"$NS_REPORT" || return 1
   sed -i "0,/^\*\*Summary\.\*\*.*/s//& **UNGATED_MERGE: a commit reached main with no MERGE record, see the last lines of Cost.**/" "$NS_REPORT"
 }
+# A branch that touches the never-list (closeout C7) is flagged the same way.
+append_self_edit_flag() {
+  [[ -n "${NS_SELF_EDIT:-}" ]] || return 0
+  printf 'never-list scan: SELF_EDIT_BRANCH; %s; %s. Do not merge it: delete the branch on origin, or drop the commits that touch those paths (runner, tools/night_shift_landed.py --branches)\n' \
+    "${NS_BRANCHES:-}" "$NS_SELF_EDIT" >>"$NS_REPORT" || return 1
+  sed -i "0,/^\*\*Summary\.\*\*.*/s//& **SELF_EDIT_BRANCH: a branch pushed tonight touches the Night Shift never-list, see the last lines of Cost.**/" "$NS_REPORT"
+}
 record_cost_main() {
-  if [[ -z "${NS_COST:-}" && -z "${NS_DEPLOY_LINE:-}" && -z "${NS_LANDED_UNGATED:-}" ]]; then
+  if [[ -z "${NS_COST:-}" && -z "${NS_DEPLOY_LINE:-}" && -z "${NS_LANDED_UNGATED:-}" && -z "${NS_SELF_EDIT:-}" ]]; then
     export NS_COST_RECORDED=no-cost; return 0
   fi
   if [[ ! -s "$NS_REPORT" ]]; then export NS_COST_RECORDED=no-report; return 0; fi
   local rel="docs/night-shift/$DATE.md"
   if append_deploy_line \
      && append_landed_flag \
+     && append_self_edit_flag \
      && { [[ -z "${NS_COST:-}" ]] || cost_line >>"$NS_REPORT"; } \
      && git -C "$CLONE" add -- "$rel" \
      && git -C "$CLONE" commit -q -m "docs(night-shift): total API cost $DATE" \
@@ -353,6 +375,7 @@ out = {
     "deploy_line": e("NS_DEPLOY_LINE"),
     "origin_after_claude": e("NS_ORIGIN_AFTER_CLAUDE"),
     "landed": e("NS_LANDED"),
+    "branches": e("NS_BRANCHES"),
 }
 tmp = sys.argv[1] + ".tmp"
 with open(tmp, "w") as fh:
@@ -414,6 +437,10 @@ finish() {         # finish STATUS DETAIL: the only way out after argument parsi
     printf 'UNGATED_MERGE %s: %s\n%s\n' "$DATE" "${NS_LANDED:-}" "$NS_LANDED_UNGATED" \
       >"$UNGATED_HOLD" 2>/dev/null || detail="$detail (ungated.hold write FAILED)"
     [[ "$status" == UNGATED_MERGE ]] || detail="$detail; UNGATED_MERGE ${NS_LANDED:-} $NS_LANDED_UNGATED"
+  fi
+  # A never-list branch (C7) rides along on any other failure status too.
+  if [[ -n "${NS_SELF_EDIT:-}" && "$status" != SELF_EDIT_BRANCH ]]; then
+    detail="$detail; SELF_EDIT_BRANCH ${NS_BRANCHES:-} $NS_SELF_EDIT"
   fi
   write_stub_report "$status" "$detail"
   # A real run that claimed the nightly ticker and then did not finish OK must
@@ -578,6 +605,10 @@ fetch_err="$( { git -C "$CLONE" fetch -q origin && git -C "$CLONE" merge -q --ff
   || finish PULL_FAILED "$fetch_err"
 NS_HEAD_BEFORE="$(git -C "$CLONE" rev-parse HEAD)"
 export NS_HEAD_BEFORE
+# What origin's branches were before claude (the never-list scan, C7). Kept in this
+# shell, never in a file claude could rewrite; written out only after claude exits.
+NS_REFS_BEFORE="$(git -C "$CLONE" for-each-ref --format='%(objectname) %(refname)' refs/remotes/origin/ 2>/dev/null)" \
+  || NS_REFS_BEFORE_FAILED=1
 
 # ── 6a. An earlier ungated landing holds every night, loudly (closeout C1) ─────
 # After the clone is ready, so the stub report (write_stub_report) can say so on
@@ -897,6 +928,42 @@ landed_step() {
 }
 landed_step
 
+# -- 10a'. The never-list scan: branches pushed tonight (C7) -----------------------
+# After landed_step's fetch; the checker is again the copy at head_before.
+branches_step() {
+  [[ -z "$DRY" ]] || return 0
+  local checker="$REPORTS/branches-$DATE.py" snap="$REPORTS/branches-before-$DATE.txt" out rc
+  if ! git -C "$CLONE" cat-file -e "$NS_HEAD_BEFORE:tools/night_shift_landed.py" 2>/dev/null; then
+    export NS_BRANCHES="branches: skipped (no checker at head_before)" NS_SELF_EDIT=""
+    return 0
+  fi
+  git -C "$CLONE" show "$NS_HEAD_BEFORE:tools/night_shift_landed.py" >"$checker" 2>/dev/null \
+    || rm -f "$checker"
+  if [[ -s "$checker" ]] && ! grep -q '^NEVER_LIST' "$checker"; then
+    export NS_BRANCHES="branches: skipped (the checker at head_before has no never-list)" NS_SELF_EDIT=""
+    return 0
+  fi
+  if [[ -n "${NS_REFS_BEFORE_FAILED:-}" ]] || ! printf '%s\n' "$NS_REFS_BEFORE" >"$snap" 2>/dev/null; then
+    export NS_BRANCHES="branches: error" \
+      NS_SELF_EDIT="the never-list scan could not run: no pre-claude snapshot of origin's branches"
+    return 0
+  fi
+  out="$(timeout --kill-after=10 300 "$PYTHON" -I "$checker" --repo "$CLONE" --branches --before "$snap" \
+         --main "${NS_ORIGIN_AFTER_CLAUDE:-refs/remotes/origin/main}" 2>&1 8>&-)"
+  rc=$?
+  printf '%s\n' "$out" >"$REPORTS/branches-$DATE.txt" 2>/dev/null
+  NS_BRANCHES="$(head -n1 <<<"$out")"
+  case "$rc" in
+    0) NS_SELF_EDIT="" ;;
+    1) NS_SELF_EDIT="$(tail -n +2 <<<"$out" | head -n10 | tr '\n' ';')"
+       NS_SELF_EDIT="${NS_SELF_EDIT%;}"
+       NS_SELF_EDIT="${NS_SELF_EDIT:-never-list branches, none named (rc=1)}" ;;
+    *) NS_SELF_EDIT="the never-list scan could not run (rc=$rc): $(one_line "$(head -n3 <<<"$out")")" ;;
+  esac
+  export NS_BRANCHES NS_SELF_EDIT
+}
+branches_step
+
 # ── 10b. The app deploy: the last step of the night, whatever claude's outcome ──
 # Before the outcome is judged, because a night that dies after merging still has
 # commits to put live or take back. A Sitting holding the box outranks all of it:
@@ -1021,4 +1088,5 @@ fi
   --out "$REPORTS/candidates-last.json") >/dev/null 2>>"$REPORTS/preflight.err"
 record_cost_main
 [[ -z "${NS_LANDED_UNGATED:-}" ]] || finish UNGATED_MERGE "${NS_LANDED:-}; ${NS_LANDED_UNGATED}"
+[[ -z "${NS_SELF_EDIT:-}" ]] || finish SELF_EDIT_BRANCH "${NS_BRANCHES:-}; ${NS_SELF_EDIT}"
 finish OK "cost ${NS_COST:-?} USD (${NS_COST_RECORDED:-?}), turns ${NS_TURNS:-?}, main ${NS_HEAD_BEFORE:0:8} -> ${NS_HEAD_AFTER:0:8}"

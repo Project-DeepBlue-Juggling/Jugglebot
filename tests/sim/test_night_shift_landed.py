@@ -7,7 +7,8 @@ answer: the four failures it exists for (a merge after a HOLD, a merge with no g
 run, a log from another tip, an evil merge) and the shapes a normal night produces
 (exempt map/report writes, a gated fast-forward, a ``--no-ff`` merge, a branch that
 merged ``main`` in for its re-gate). The EXEMPT list is pinned against what
-``mapkit gen`` writes. No ports, no fixed paths, safe under xdist.
+``mapkit gen`` writes. ``--branches`` (closeout C7): the never-list scan of the branches
+a night pushed, against a temp bare origin. No ports, no fixed paths, safe under xdist.
 """
 from __future__ import annotations
 
@@ -306,3 +307,149 @@ def test_no_exempt_path_is_one_the_gate_forbids():
     assert both == []
     for p in landed.GEN_NOT_EXEMPT:
         assert any(fnmatch.fnmatchcase(p, f) for f in gate.FORBIDDEN_PATHS)
+
+
+# --- --branches: the never-list scan (closeout C7) -----------------------------
+class Origin:
+    """A bare origin and the night's clone; ``snapshot()`` is the runner's pre-claude
+    ``for-each-ref refs/remotes/origin/`` capture."""
+
+    def __init__(self, tmp_path):
+        self.tmp = tmp_path
+        seed = tmp_path / "seed"
+        seed.mkdir()
+        _git(seed, "init", "-q")
+        _git(seed, "checkout", "-q", "-b", "main")
+        for rel, text in (("src/a.py", "A = 1\n"), ("run_tests.sh", "#!/bin/sh\n"),
+                          ("tools/night_shift_gate.py", "# gate\n"), ("config/c.yaml", "a: 1\n")):
+            p = seed / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text)
+        _git(seed, "add", "-A")
+        _git(seed, "commit", "-q", "-m", "seed")
+        self.bare = tmp_path / "origin.git"
+        _git(tmp_path, "clone", "-q", "--bare", str(seed), str(self.bare))
+        self.clone = tmp_path / "night"
+        _git(tmp_path, "clone", "-q", str(self.bare), str(self.clone))
+
+    def push_branch(self, name, edits, base="origin/main", force=False):
+        _git(self.clone, "checkout", "-q", "-B", name, base)
+        for rel, text in edits.items():
+            p = self.clone / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text)
+        _git(self.clone, "add", "-A")
+        _git(self.clone, "commit", "-q", "-m", "edit %s" % name)
+        _git(self.clone, "push", "-q", *(["-f"] if force else []), "origin", "HEAD:refs/heads/" + name)
+        _git(self.clone, "checkout", "-q", "main")
+        _git(self.clone, "fetch", "-q", "origin")
+
+    def snapshot(self):
+        out = _git(self.clone, "for-each-ref", "--format=%(objectname) %(refname)", "refs/remotes/origin/")
+        p = self.tmp / ("snap-%d.txt" % len(list(self.tmp.glob("snap-*.txt"))))
+        p.write_text(out + "\n")
+        return str(p)
+
+    def scan(self, snap):
+        res = landed.check_branches(str(self.clone), landed.read_snapshot(snap), "refs/remotes/origin/main")
+        cli = subprocess.run([sys.executable, TOOL, "--repo", str(self.clone), "--branches",
+                              "--before", snap], capture_output=True, text=True)
+        lines = cli.stdout.splitlines()
+        assert lines[0] == "branches: pushed=%d self_edit=%d" % (len(res["pushed"]), len(res["self_edit"]))
+        assert cli.returncode == (1 if res["self_edit"] else 0), cli.stdout + cli.stderr
+        return res, lines
+
+
+@pytest.fixture
+def origin(tmp_path):
+    return Origin(tmp_path)
+
+
+def test_branches_a_clean_branch_pushed_tonight_passes(origin):
+    snap = origin.snapshot()
+    origin.push_branch("night-shift/2026-11-14-BUG-7", {"src/a.py": "A = 2\n"})
+    res, _ = origin.scan(snap)
+    assert res == {"pushed": ["night-shift/2026-11-14-BUG-7"], "self_edit": []}
+
+
+def test_branches_a_frozen_path_outside_the_never_list_passes(origin):
+    """Decision 4: a held branch may edit a frozen path (config/) for the owner to merge."""
+    snap = origin.snapshot()
+    origin.push_branch("night-shift/2026-11-14-FEAT-50", {"config/c.yaml": "a: 2\n"})
+    assert origin.scan(snap)[0]["self_edit"] == []
+
+
+def test_branches_a_never_list_path_is_flagged(origin):
+    snap = origin.snapshot()
+    origin.push_branch("night-shift/2026-11-14-BUG-8", {
+        "run_tests.sh": "#!/bin/sh\nexit 0\n", "tools/night_shift_gate.py": "# MERGE\n",
+        "tests/ros/conftest.py": "collect_ignore = ['x']\n", "src/a.py": "A = 3\n",
+        "config/c.yaml": "a: 3\n"})
+    res, lines = origin.scan(snap)
+    [hit] = res["self_edit"]
+    assert hit["branch"] == "night-shift/2026-11-14-BUG-8"
+    assert hit["paths"] == ["run_tests.sh", "tests/ros/conftest.py", "tools/night_shift_gate.py"]
+    assert lines[1] == "SELF_EDIT night-shift/2026-11-14-BUG-8 %s: %s" % (
+        hit["tip"][:12], " ".join(hit["paths"]))
+
+
+def test_branches_an_old_branch_is_ignored_until_it_moves(origin):
+    """A branch from an earlier night is in the snapshot: unmoved, it is not tonight's.
+    Moved tonight (even force-pushed), it is, whatever its date says."""
+    origin.push_branch("night-shift/2026-11-01-BUG-9", {"tools/lib/x.sh": "x\n"})
+    snap = origin.snapshot()
+    assert origin.scan(snap)[0] == {"pushed": [], "self_edit": []}
+    origin.push_branch("night-shift/2026-11-01-BUG-9", {"src/a.py": "A = 4\n"},
+                       base="origin/night-shift/2026-11-01-BUG-9")
+    res, _ = origin.scan(snap)
+    assert res["pushed"] == ["night-shift/2026-11-01-BUG-9"]
+    assert [h["paths"] for h in res["self_edit"]] == [["tools/lib/x.sh"]]
+
+
+def test_branches_a_name_outside_night_shift_does_not_dodge(origin):
+    snap = origin.snapshot()
+    origin.push_branch("scratch", {".claude/settings.json": "{}\n"})
+    assert [h["branch"] for h in origin.scan(snap)[0]["self_edit"]] == ["scratch"]
+
+
+def test_branches_diff_is_against_the_merge_base(origin):
+    """A never-list change that reached main after the branch forked is not the branch's."""
+    _git(origin.clone, "checkout", "-q", "-b", "fork", "origin/main")
+    (origin.clone / "src" / "a.py").write_text("A = 5\n")
+    _git(origin.clone, "commit", "-qam", "fork")
+    _git(origin.clone, "checkout", "-q", "main")
+    (origin.clone / "run_tests.sh").write_text("#!/bin/sh\n# day Session\n")
+    _git(origin.clone, "commit", "-qam", "owner edits the gate")
+    _git(origin.clone, "push", "-q", "origin", "main")
+    snap = origin.snapshot()
+    _git(origin.clone, "push", "-q", "origin", "fork:refs/heads/night-shift/2026-11-14-BUG-10")
+    _git(origin.clone, "fetch", "-q", "origin")
+    res, _ = origin.scan(snap)
+    assert res == {"pushed": ["night-shift/2026-11-14-BUG-10"], "self_edit": []}
+
+
+def test_branches_without_a_snapshot_is_an_error_not_a_pass(origin, tmp_path):
+    cli = subprocess.run([sys.executable, TOOL, "--repo", str(origin.clone), "--branches",
+                          "--before", str(tmp_path / "missing.txt")], capture_output=True, text=True)
+    assert cli.returncode == 2 and cli.stdout.startswith("branches: error")
+    bad = tmp_path / "bad.txt"
+    bad.write_text("not a snapshot\n")
+    cli = subprocess.run([sys.executable, TOOL, "--repo", str(origin.clone), "--branches",
+                          "--before", str(bad)], capture_output=True, text=True)
+    assert cli.returncode == 2
+
+
+@pytest.mark.parametrize("path,never", [
+    ("tools/night_shift.sh", True), ("tools/night_shift_bash_guard.py", True),
+    ("tools/lib/live_session.sh", True), ("tools/systemd/jugglebot-pull.sh", True),
+    ("tools/nightly_ticker.sh", True), (".claude/settings.json", True),
+    (".claude/settings.local.json", True), (".claude/commands/night-shift.md", True),
+    ("tests/sim/test_night_shift_gate.py", True), ("tests/sim/test_live_session_guard.py", True),
+    ("run_tests.sh", True), ("conftest.py", True), ("tests/conftest.py", True),
+    ("tests/teensy_link/conftest.py", True), ("pyproject.toml", True), ("pytest.ini", True),
+    ("config/hardware_config.yaml", False), ("ros_ws/src/jugglebot/Teensy_code_canbridge/x.ino", False),
+    (".claude/commands/sitting-debrief.md", False), ("tools/probes/x.py", False),
+    ("mapkit/sitting.py", False), ("GLOSSARY.md", False),
+])
+def test_never_list_is_pinned(path, never):
+    assert landed.is_never(path) is never

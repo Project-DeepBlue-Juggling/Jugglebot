@@ -53,11 +53,11 @@ def _meta(kind, title, status, n=None, **extra):
     return dict((k, v) for k, v in meta.items() if v is not None)
 
 
-def write_bug(root, **over):
+def write_bug(root, body="Body\n", **over):
     fields = dict(hardware="none", radius="local", effort="s", owner="none",
                   diagnosis="confirmed")
     fields.update(over)
-    write_item(str(root / BUG), _meta("bug", "Wobble", "in_progress", 7, **fields), "Body\n")
+    write_item(str(root / BUG), _meta("bug", "Wobble", "in_progress", 7, **fields), body)
 
 
 def write_ticket(root, slug, n, parent="bug-wobble", type_="question", status="open"):
@@ -65,10 +65,10 @@ def write_ticket(root, slug, n, parent="bug-wobble", type_="question", status="o
     write_item(str(root / "map" / ("ticket-%s.md" % slug)), meta, "Question?\n")
 
 
-def set_base(root, **over):
+def set_base(root, body="Body\n", **over):
     """Re-rate the Item on main (the base) and rebuild BRANCH on it with one src commit."""
     _git(root, "checkout", "-q", "main")
-    write_bug(root, **over)
+    write_bug(root, body=body, **over)
     _git(root, "add", "-A")
     _git(root, "commit", "-q", "--allow-empty", "-m", "map: rate BUG-7 on main")
     _git(root, "push", "-q", "origin", "main")
@@ -808,6 +808,32 @@ def test_waive_c_does_not_rescue_f(repo):
     commit(repo)
     res = run(repo, waive=("c",))
     assert res.verdict == "HOLD" and letters(res) == ["f"]
+
+
+# --- (c) a Sitting section: a fix to flown behaviour never merges at night ----
+SITTING_BODY = "Body\n\n## Sitting\n\n- rig: robot\n- branch: %s\n" % BRANCH
+FLOWN = "[c] changes flown behaviour (has a Sitting section)"
+
+
+def test_c_sitting_section_holds_even_rated_none(repo):
+    """Mutant: drop the Sitting rule from _check_c and this Item (hardware: none, a
+    Sitting section, everything else valid) would MERGE at night (closeout C7)."""
+    write_bug(repo, body=SITTING_BODY)
+    commit(repo, "map: BUG-7 gets a Sitting section")
+    res = run(repo)
+    assert_hold(res, "c")
+    assert res.reasons == [FLOWN]
+    waived = run(repo, waive=("c",))  # the debrief, after the Sitting passed
+    assert waived.verdict == "MERGE" and waived.waived == ["c"], waived.reasons
+
+
+def test_c_sitting_section_at_base_cannot_be_deleted_on_branch(repo):
+    set_base(repo, body=SITTING_BODY)
+    write_bug(repo)  # the branch drops the section
+    commit(repo, "map: BUG-7 loses its Sitting section")
+    res = run(repo)
+    assert_hold(res, "c")
+    assert res.reasons == [FLOWN]
 
 
 @pytest.mark.parametrize("letter", ["d", "a", "x"])

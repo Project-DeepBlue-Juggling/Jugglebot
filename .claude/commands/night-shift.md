@@ -115,6 +115,20 @@ git checkout -q main && git pull -q --ff-only
 git checkout -q -b night-shift/<date>-<ID>
 ```
 
+Then extract the base's own machinery, which every later step runs from: the gate, its
+`mapkit`, and the wrapper that fences every test, probe and bag read. A branch that edits
+any of them would otherwise judge, or fence, its own run:
+
+```
+rm -rf D/gate-base && mkdir -p D/gate-base
+git archive origin/main tools/night_shift_gate.py tools/night_shift_nonet.sh mapkit | tar -x -C D/gate-base
+```
+
+Re-run it after anything that moves `origin/main` locally (a `git fetch`, 2l step 1). From
+here on "the wrapper" is `D/gate-base/tools/night_shift_nonet.sh` (written with `D`'s
+absolute path), never the branch's `tools/night_shift_nonet.sh`. No extract, or no wrapper
+in it: Held `no wrapper at the base`.
+
 ### 2b. Read and rate
 
 Read the Item file, every `links:` target, and `python -m mapkit show <pathway>` if it has
@@ -134,6 +148,8 @@ a HOLD writes the same rating on `main` (2j), so base and branch agree at a late
 | `owner: decision` (any kind) | research the question; write `## Options (<date>)` into the body (2-4 options, one line each, a recommendation); file one question ticket (2h); no code | Questioned (Held if a branch exists) |
 | `area: map-app`, or the fix is in the map app | § 2m | Merged, Held or Skipped |
 | bug or feature that needs a change under `ros_ws/src/jugglebot_interfaces/` | one unit as row 1, on a branch; do not expect a merge: the gate holds it at (f), because the suite mocks that package and only a real two-package colcon build can show the node and interface agree. Say so in the Item's Progress headline | Held, `Respond in` `none`, unblock `a day Session merges after the two-package build` |
+| a fix to flown behaviour: the Item has a `## Sitting` section, whatever its `hardware` rating (closeout C7) | one unit as row 1, on a branch; keep or write the `## Sitting` section and set its `- branch: night-shift/<date>-<ID>` line (2j step 2); do not expect a merge: the gate holds it at (c) `changes flown behaviour`, and only `/sitting-debrief`'s `--waive c` after a Sitting pass merges it | Held `needs a Sitting`, `Respond in` `none` |
+| a fix that needs a path the gate freezes at (f) (`config/`, firmware, `INVARIANTS.md`, `GLOSSARY.md`, ...) and none on the never-list below | one unit as row 1, on a branch; do not expect a merge: the gate holds it at (f). Say so in the Item's Progress headline | Held `(f) the owner merges`, `Respond in` `none`, unblock `the owner merges it by hand in a day Session` (owner decision 4: no script flag exists for it) |
 | `hardware: bench-leg`, `bench-hand` or `robot`, or `owner: hands` | work the software part only if the body names one that is testable offline (then as row 1); always write or complete the Item's `## Sitting` section when the body gives enough to fill `do:` and `pass:` honestly (P4 format; never invent a step) | Held `needs a Sitting` or Skipped |
 | idea | write `## Feasibility (<date>)` (what it would take, effort, hardware, one risk); if rated xs or s with `hardware: none` and `owner: none`, build it as row 1 | Merged, Held or Skipped `feasibility noted` |
 | ticket `type: question` already complete (`## Answer` present) whose parent has a held branch `night-shift/<old-date>-<ID>` | RESUME (2l): the answer says what to do with the branch | Merged, Held again, or closed out |
@@ -141,6 +157,18 @@ a HOLD writes the same rating on `main` (2j), so base and branch agree at a late
 | ticket `type: question` open | list it again under `## Questions for the Operator`; its parent is Skipped `awaiting answer` (a held parent stays in `## Held` with the ticket in `Respond in`, not re-worked) | Skipped |
 | other ticket (research, prototype, grilling, task) under a Pathway | research/task: one unit writing `## Findings` or the task's result; grilling/prototype: Skipped `needs the owner` | Held or Skipped |
 | `diagnosis: unknown` or `hypothesis` bug with `hardware: none` | one unit whose brief is "reproduce offline and confirm or refute; fix only if confirmed" | Merged (if confirmed and fixed), Held, or re-rated and Skipped |
+
+**The never-list: paths no branch of yours touches, not even a held one** (owner decision
+11): `tools/night_shift*`, `tools/lib/*`, `tools/systemd/*`, `tools/nightly_*`,
+`.claude/settings*`, `.claude/commands/night-shift.md`, the tests that pin them
+(`tests/sim/test_night_shift_*`, `test_live_session_guard.py`, `test_pull_status.py`,
+`test_sitting_debrief_protocol.py`), `run_tests.sh`, any `conftest.py`, `pyproject.toml`,
+`pytest.ini`, `tox.ini`, `setup.cfg` (`NEVER_LIST` in `tools/night_shift_landed.py`). A held
+branch is merged by people, so one that edits the night's own rules is one careless merge
+from the night deciding them. After you exit the runner scans every branch pushed tonight
+(`night_shift_landed.py --branches`, against a snapshot it took before you started, so the
+name does not matter) and a hit ends the night `SELF_EDIT_BRANCH`. An Item whose fix needs
+one of these paths is Skipped `needs a never-list path, a day Session`.
 
 ### 2d. The unit
 
@@ -153,8 +181,18 @@ tests; confirm each new test fails without the change; write the logbook entry (
 form, `logbook/<date>-<slug>.md`, type by change, `status: complete`, `files_changed`,
 Verification with the scoped triple) and its `logbook/INDEX.md` row (newest first, row
 format as the existing rows); do not commit; do not write under `map/`; do not run
-`./run_tests.sh`; run every test command, probe and bag read under `tools/night_shift_nonet.sh` (wrapper first); stay under about 80 tool calls and report the file list, the scoped
-pytest line, and anything left undone. `Agent` with `model: sonnet` unless the one-line
+`./run_tests.sh`; run every test command, probe and bag read under the wrapper
+(`D/gate-base/tools/night_shift_nonet.sh`, 2a); stay under about 80 tool calls and report the file list, the scoped
+pytest line, and anything left undone.
+
+Probes and bag reads are allowed at night, read-only (owner decision 4): `tools/probes`
+offline against the rosbags (`~/Desktop/rosbags`) and launch logs (`~/.ros/log`). Exactly
+one shape, in your commands and in every brief that needs one: the wrapper is the FIRST
+word; `timeout` and `env` go after it; no `cd` prefix (run from the clone root); no
+chaining with `&&`, `;` or `|`; outputs under the clone's `temp/probes/`. For example
+`D/gate-base/tools/night_shift_nonet.sh python tools/probes/<probe>.py --bag ~/Desktop/rosbags/<id> --out temp/probes/<x>.json`,
+or `D/gate-base/tools/night_shift_nonet.sh ros2 bag info ~/Desktop/rosbags/<id>`.
+`ros2 bag play`, `record`, `reindex` and `convert` stay refused even wrapped. `Agent` with `model: sonnet` unless the one-line
 Opus reason applies. When it returns: `git status --porcelain` must list only files the
 brief allowed; anything else is reverted.
 
@@ -193,8 +231,10 @@ Behaviour-affecting findings open: <n>
 
 ```
 printf 'HEAD=%s\nBRANCH=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse --abbrev-ref HEAD)" > D/gate-<ID>.log
-tools/night_shift_nonet.sh ./run_tests.sh --full >> D/gate-<ID>.log 2>&1; echo "EXIT=$?" >> D/gate-<ID>.log
+D/gate-base/tools/night_shift_nonet.sh ./run_tests.sh --full >> D/gate-<ID>.log 2>&1; echo "EXIT=$?" >> D/gate-<ID>.log
 ```
+
+The wrapper is the base's (2a), so a branch cannot loosen the fence around its own suite run.
 
 ONE full suite, on the tip the audit names: the audit and its narrative fixes run first (2e),
 so a fix never costs a second full suite or a re-gate. Any commit after this point (a fix
@@ -203,9 +243,10 @@ tip, or Hold.
 
 ### 2g. The gate script
 
+From the extract made in 2a (re-run it first if you fetched since; the gate HOLDs at `[pre]`
+if it is not `origin/main`'s copy):
+
 ```
-rm -rf D/gate-base && mkdir -p D/gate-base
-git archive origin/main tools/night_shift_gate.py mapkit | tar -x -C D/gate-base
 python D/gate-base/tools/night_shift_gate.py --repo . --base origin/main --branch night-shift/<date>-<ID> \
     --item <ID> --gate-log D/gate-<ID>.log --audit D/audit-<ID>.md [--app-log D/app-<ID>.log] \
     --record "$NIGHT_SHIFT_VERDICTS"
@@ -224,7 +265,7 @@ this itself, byte for byte, and HOLDs if it is not the base's copy. No `PYTHONPA
 extract finds its own `mapkit`. A branch that touches `mapkit/` also needs the app's suite
 run against it first, because `pull.sh` restarts the live app within about 30 s of a `mapkit/`
 change landing on `main`: with `--app-clone` on its `main` and this branch checked out here,
-`tools/night_shift_nonet.sh tools/night_shift_app_suite.sh --app <app-clone> --mapkit . --log D/app-<ID>.log`,
+`D/gate-base/tools/night_shift_nonet.sh tools/night_shift_app_suite.sh --app <app-clone> --mapkit . --log D/app-<ID>.log`,
 then `--app-log` above; without it condition (h) holds. With `--app-clone none`, such a branch
 is Held `app clone unavailable`. Exit 0 and `MERGE` -> 2i. Exit 1 and `HOLD <reasons>` -> 2j. Any other exit -> Held
 `gate script error` with the stderr.
@@ -312,7 +353,8 @@ The ticket is complete and its parent has a held branch (find it with
 ticket's `## Answer` as the order for the night:
 
 1. `git fetch -q && git checkout -q night-shift/<old-date>-<ID> && git merge -q origin/main`
-   (the gate needs the base inside the branch; the merge also brings the closed ticket).
+   (the gate needs the base inside the branch; the merge also brings the closed ticket),
+   then re-run the 2a extract: the fetch moved `origin/main`.
    A conflict you cannot resolve mechanically: Held again, reason `resume merge conflict`.
 2. **Apply** (the answer names fixes, or accepts the audit's): make the named changes as
    in 2d (a unit, `model: sonnet`), commit, then 2e-2g as for any branch. Merge on 2i.
@@ -331,7 +373,9 @@ A re-held Item keeps its branch name; the Held row's `Branch` cell stays
 
 A hold at condition (f) cannot be resumed at night, whatever the answer: the path stays
 forbidden and a HOLD is never promoted. Such a row says `a day Session merges it` and its
-`Respond in` is `none`, so no ticket asks a question the night could not act on.
+`Respond in` is `none`, so no ticket asks a question the night could not act on. The same
+holds for a (c) hold on a `## Sitting` section: the night never waives (c); the debrief
+merges it after a Sitting pass.
 
 ### 2m. An Item in the map app
 
@@ -343,17 +387,18 @@ present, no upstream names). Items stay in Jugglebot's `map/`; only the code is 
    and was reverted: Skipped `deploy failed, awaiting a Session`. Do not retry it.
 2. Rate first, on `main`, through the map-write check: the gate reads an app Item's rating from
    Jugglebot's `origin/main`, because the app holds no Items and a branch there cannot carry one.
-3. Branch in the app clone: `git -C <app-clone> checkout -q main`, pull `--ff-only`, then
+3. Run the 2a extract in the Jugglebot clone on `main` (the suite's wrapper and the gate come
+   from it). Branch in the app clone: `git -C <app-clone> checkout -q main`, pull `--ff-only`, then
    `checkout -q -b night-shift/<date>-<ID>`. The unit works there (2d, with the logbook entry
    still in the Jugglebot clone, uncommitted until step 7), and commits nothing itself.
 4. Commit in the app clone: subject `<type>(<area>): <what> (<ID>)`, because the deploy's
    rollback finds the Items to reopen from those subjects; trailers `Logbook-Entry: <slug>` and
    `Night-Shift: <date>`.
-5. Suite: `tools/night_shift_nonet.sh tools/night_shift_app_suite.sh --app <app-clone> --mapkit . --log D/app-<ID>.log`,
+5. Suite: `D/gate-base/tools/night_shift_nonet.sh tools/night_shift_app_suite.sh --app <app-clone> --mapkit . --log D/app-<ID>.log`,
    then one audit on `git -C <app-clone> diff origin/main...HEAD` (2e), writing `D/audit-app-<ID>.md`.
    An edit after the suite re-runs the suite.
 6. Gate: `python D/gate-base/tools/night_shift_gate.py --repo . --app-repo <app-clone> --base origin/main --branch night-shift/<date>-<ID> --item <ID> --gate-log D/app-<ID>.log --audit D/audit-app-<ID>.md`
-   (extract `D/gate-base` as in 2g). `MERGE`: `git -C <app-clone> checkout -q main`, merge the
+   (the extract from step 3). `MERGE`: `git -C <app-clone> checkout -q main`, merge the
    branch as in 2i, `git -C <app-clone> push -q origin main` on its own line. Nothing goes live: the runner deploys after you exit.
    `HOLD`: `git -C <app-clone> push -q -u origin night-shift/<date>-<ID>`, then 2j from its step 2
    (there is no Jugglebot branch to push); the Held row's Branch cell reads
