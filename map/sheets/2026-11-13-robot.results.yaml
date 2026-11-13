@@ -130,6 +130,11 @@ steps:
     comments: ''
     saved_at: 2026-11-13 13:19
     status: done
+  33:
+    comments: Attempted ~5 times, each of which ended extremely early with either
+      NO_ADMISSIBLE_COMMAND or LIMIT_JERK and a maximum of only one throw.
+    saved_at: 2026-11-13 13:22
+    status: null
 verdicts:
   12:
     FEAT-39:
@@ -161,3 +166,8 @@ verdicts:
         tolerance for a human throw ought to be tightened?
       saved_at: 2026-11-13 13:13
       verdict: pass
+  33:
+    IDEA-11:
+      notes: ''
+      saved_at: 2026-11-13 13:22
+      verdict: fail

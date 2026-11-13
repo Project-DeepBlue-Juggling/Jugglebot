@@ -4,7 +4,7 @@ kind: idea
 title: 'JP-10 Turned columns: the columns pair at fixed angles about +z, under pose'
 status: in_progress
 created: '2026-10-30'
-updated: '2026-11-10T12:41:42Z'
+updated: '2026-11-13T02:22:51Z'
 owners:
 - jugglebot-f5
 priority: medium
@@ -72,6 +72,11 @@ It proves the rotational symmetry on hardware that lets the admissible box key o
 
 - verdict: fail
 - notes: Flown from sheet step 8 on the default plant: 45 deg COMPLETED 20/20; 90 deg 8/8, 3/3, 3/3, 3/3, Ball 2's first Catch after the Feed missed outward (IDEA-22). Verdict from the logs at the debrief, confirmed by the owner 2026-11-11.
+
+## Sitting result (2026-11-13 13:22)
+
+- verdict: fail
+- notes: (sheet 2026-11-13-robot, step 33)
 
 ## Progress
 
