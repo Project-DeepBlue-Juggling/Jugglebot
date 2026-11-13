@@ -114,6 +114,10 @@ steps:
       s on the gated plan''s clock)]") " Everything else landed as expected.'
     saved_at: 2026-11-13 13:10
     status: done
+  28:
+    comments: ''
+    saved_at: 2026-11-13 13:10
+    status: done
 verdicts:
   12:
     FEAT-39:
