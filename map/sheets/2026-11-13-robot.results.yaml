@@ -184,3 +184,8 @@ verdicts:
       notes: ''
       saved_at: 2026-11-13 13:22
       verdict: fail
+  37:
+    BUG-80:
+      notes: ''
+      saved_at: 2026-11-13 13:36
+      verdict: pass

@@ -4,7 +4,7 @@ kind: bug
 title: 'The flyback over-corrects a Catch offset by 1.2 to 1.4 times: each landing error returns at -0.3 to -0.45 on the next Throw'
 status: in_progress
 created: '2026-11-06'
-updated: '2026-11-08T22:16:43Z'
+updated: '2026-11-13T02:36:51Z'
 owners:
 - night-shift
 priority: medium
@@ -181,6 +181,11 @@ So there is no `## Sitting` section yet: a `do:` step nobody can fly would be in
 - record: the bag and launch log paths, the number of Attempts flown per axis and sign, each repeat and why, any refusal text, and any Attempt whose first skill was not the Throw of the held ball.
 - minutes: 30
 - branch: night-shift/2026-11-09-BUG-80
+
+## Sitting result (2026-11-13 13:36)
+
+- verdict: pass
+- notes: (sheet 2026-11-13-robot, step 37)
 
 ## Progress
 
