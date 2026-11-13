@@ -2,9 +2,9 @@
 id: TKT-72
 kind: ticket
 title: 'IDEA-23 fresh-plant K: a fixed K prior of 1.08 in config, copy K from the trained plant, warm-start from the Memory mean, or leave the identity prior?'
-status: open
+status: complete
 created: '2026-11-14'
-updated: '2026-11-13T17:51:08Z'
+updated: '2026-11-13T22:43:04Z'
 owners: []
 priority: low
 effort: xs
@@ -33,3 +33,7 @@ A fresh plant starts with apex gain K = 1.0, but 9 fresh starts on 2026-11-13 me
 - 4: IDEA-23 closes.
 
 Recommendation: 1. It matches both the corpus and the fresh starts, cannot inherit a bad plant, and takes the first Throw from about +68 mm to about +10 mm.
+
+## Answer
+
+Agreed. Good idea. Let's go with Option 1
