@@ -152,6 +152,11 @@ steps:
     comments: ''
     saved_at: 2026-11-13 13:37
     status: done
+  39:
+    comments: This was already done a few days ago. All CAN ODrive rates have been
+      updated.
+    saved_at: 2026-11-13 13:38
+    status: skipped
 verdicts:
   12:
     FEAT-39:
