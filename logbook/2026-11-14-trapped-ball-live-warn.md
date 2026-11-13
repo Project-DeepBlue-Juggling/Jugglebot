@@ -29,7 +29,7 @@ files_changed:
 
 BUG-84's three Hand stalls (2026-11-13) were each a Ball trapped under the Cup that the Tracker had dropped; only the raw unlabelled marker on `mocap_data` showed it, found offline by `tools/trapped_ball_finder.py`. `region_of`, `to_platform_frame`, `quat_to_matrix`, `hand_marker_local_z` moved to `tracking/trapped_ball.py` (pure, no ROS), with an `OnlineDwellDetector` fed one frame at a time. The finder imports and re-exports them (its batch `find_dwells` and `tests/sim/test_trapped_ball_finder.py` are untouched). `ball_tracker_node` logs `marker dwelling under the Hand at (x, y, z) mm for N ms, Hand at R rev` at WARN, repeated at 1 Hz while it persists. Log-only: no Hand-path action, the Teensy guard and jam detector stay the authority. The Hand-marker fit, Cup seat and dwell thresholds are `ball_tracking.trapped_*` in `hardware_config.yaml` (generated `TRACKING_TRAPPED_*`).
 
-Wiring: the node gained `rigid_body_poses` (Platform pose; the brief named the `robot_frame` subscription but that is the world-frame fit, not the Platform) and `hand_telemetry` (`pos_meas`) subscriptions; every 6th mocap frame (about 50 Hz, as the tool) is fed. Missing pose, no telemetry or telemetry older than 0.5 s: nothing happens. Any detector exception is logged once and swallowed.
+Wiring: the node gained `rigid_body_poses` (Platform pose; the brief named the `robot_frame` subscription but that is the world-frame fit, not the Platform) and `hand_telemetry` (`pos_meas`) subscriptions; every 6th mocap frame (about 50 Hz, as the tool) is fed. No pose yet, no telemetry or telemetry older than 0.5 s: nothing happens (the pose itself has no staleness check once one has arrived; audit finding, open). Any detector exception is logged once and swallowed.
 
 ## Fixture-filter choice
 
@@ -38,6 +38,7 @@ The batch rule (voxel occupied in more than 15 % of the whole bag) has no online
 ## Not done
 
 - The 0.08 s at-a-stall threshold (`STALL_DWELL_MIN_S`) needs stall detection; the live WARN uses 0.30 s only.
+- Five audit findings are open on the branch (behaviour-affecting): no staleness check on the cached Platform pose; the fixture filter's per-frame prune scans every voxel; a static marker whose jitter straddles a 10 mm voxel boundary can escape the 90 % filter and WARN every second; online clustering takes UNDER_HAND markers only where the batch tool labels a cluster by its majority region; no test pins the decimation or the swallowed-exception path.
 - Sitting confirmation pending: not yet seen on hardware or replayed on a bag; the live Tracker CPU cost of the decimated feed (FEAT-30 flags the Tracker) is unmeasured.
 
 ## Verification
