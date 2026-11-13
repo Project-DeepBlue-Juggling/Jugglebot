@@ -41,7 +41,11 @@ Arguments: `$ARGUMENTS`
    masked, so it cannot reach the board or change the evidence whatever it does. A probe is
    `tools/night_shift_nonet.sh python tools/probes/<probe>.py ...` from the clone root, the
    wrapper FIRST (put `timeout`/`env` after it), writing only under the clone's
-   `temp/probes/`; the deny list refuses the unwrapped spellings. A
+   `temp/probes/` through the probe's own `--out`. A hook (`tools/night_shift_bash_guard.py`)
+   refuses any command naming `probes`, `ros2 bag`, `rosbags` or `~/.ros`, reads and `git add`
+   included, unless the whole line is that one wrapper call: no `cd X &&` prefix, no `;`,
+   `&&`, `|`, `&`, `>`, `<`, `$(` or backtick, and the wrapper must be byte-identical to
+   `origin/main`'s (on a branch that edits it, use `D/gate-base/tools/night_shift_nonet.sh`). A
    refused tool call is the deny list doing its job: note it and move on, never work around
    it. The Wave camera's native tests run through `tests/firmware/test_wave_native.py`;
    `pio test` itself stays refused because its default environment is the ESP32.

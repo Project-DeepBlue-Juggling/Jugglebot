@@ -15,8 +15,9 @@
 # Probes and bag reads (closeout C7a, 2026-11-14) run here too. Inside the namespace:
 #   - ~/Desktop/rosbags and ~/.ros/log are bound read-only: a write fails EROFS, so a
 #     probe cannot reindex, convert or append to the evidence;
-#   - every /dev/ttyACM* and /dev/ttyUSB* is /dev/null and /dev/serial is an empty
-#     read-only tmpfs, so a probe's default serial port opens nothing;
+#   - every /dev/ttyACM*, /dev/ttyUSB*, /dev/ttyTHS* (the Jetson UARTs) and /dev/hidraw*
+#     (the Teensy HID path) is /dev/null, and /dev/serial and /dev/bus/usb (libusb's
+#     device nodes) are empty read-only tmpfs, so a probe's default port opens nothing;
 #   - ROS_LOG_DIR, when unset, points at a fresh temp dir (rcl and launch would
 #     otherwise create their log files in the read-only ~/.ros/log and fail).
 # The mounts are made in an outer user namespace and the command runs in a NESTED one:
@@ -29,7 +30,8 @@
 # Fails closed: if the namespace cannot be made, loopback cannot come up or any mount
 # fails, the command does NOT run and the exit code is non-zero (125), which the merge
 # gate reads as a failed suite. Needs no root (user namespaces); the network part was
-# probed on this box 2026-11-07, the mounts 2026-11-14.
+# probed on this box 2026-11-07, the mounts 2026-11-14 (ttyTHS, hidraw and /dev/bus/usb
+# probed the same day with python, numpy, mujoco and pytest running inside).
 set -uo pipefail
 
 if (( $# == 0 )); then
@@ -41,8 +43,8 @@ fi
 pw_home=$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6)
 RO="${pw_home:+$pw_home/Desktop/rosbags:$pw_home/.ros/log:}$HOME/Desktop/rosbags:$HOME/.ros/log"
 RO+="${NIGHT_SHIFT_NONET_EXTRA_RO:+:$NIGHT_SHIFT_NONET_EXTRA_RO}"
-MASK="/dev/ttyACM*:/dev/ttyUSB*${NIGHT_SHIFT_NONET_EXTRA_MASK:+:$NIGHT_SHIFT_NONET_EXTRA_MASK}"
-EMPTY="/dev/serial${NIGHT_SHIFT_NONET_EXTRA_EMPTY:+:$NIGHT_SHIFT_NONET_EXTRA_EMPTY}"
+MASK="/dev/ttyACM*:/dev/ttyUSB*:/dev/ttyTHS*:/dev/hidraw*${NIGHT_SHIFT_NONET_EXTRA_MASK:+:$NIGHT_SHIFT_NONET_EXTRA_MASK}"
+EMPTY="/dev/serial:/dev/bus/usb${NIGHT_SHIFT_NONET_EXTRA_EMPTY:+:$NIGHT_SHIFT_NONET_EXTRA_EMPTY}"
 
 if [[ -z ${ROS_LOG_DIR:-} ]]; then
   ROS_LOG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/night_shift_nonet_roslog.XXXXXX") \

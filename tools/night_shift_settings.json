@@ -15,7 +15,7 @@
     "is caught too. Edit this file, never the installed copy.",
     "The Bash deny list is best-effort pattern matching, not a sandbox: it stops the obvious spellings of every forbidden action so an honest orchestrator cannot stumble into one; the hold file, the live-Sitting guard and the merge gate are the layers that do not depend on spelling.",
     "A deny rule beats every allow, so a rule that matches a word also blocks reading and testing that word. Until 2026-11-07 *teensy_bridge_node* and *teensy_link* refused greps and the bridge's own loopback tests while the night's gate ran those same tests anyway. These rules now name the spellings that RUN the node or the client; the protection for a test is tools/night_shift_nonet.sh, a network namespace where the board is unreachable whatever the command does.",
-    "Probes and bag reads (closeout C7a, 2026-11-14) are allowed ONLY under tools/night_shift_nonet.sh, which binds ~/Desktop/rosbags and ~/.ros/log read-only, masks the serial devices and has no network. No pattern can demand that prefix, so the rules below anchor on the UNWRAPPED spellings instead (no leading *: a line that starts with python, timeout, cd tools/probes, ros2 bag, ... or has one after &&, ; or |), which the wrapped form never matches because it starts with the wrapper. The wrapper goes first and timeout/env go after it. ros2 bag play, record, reindex and convert stay refused even wrapped.",
+    "Probes, bag reads and the evidence directories (closeout C7a, 2026-11-14) are guarded by the PreToolUse hook below, tools/night_shift_bash_guard.py, the ONE enforcement point: a Bash command that mentions probes, ros2 bag, rosbag or ~/.ros runs only when the whole line is one invocation of tools/night_shift_nonet.sh (wrapper first, no ; && || | & > < $( backtick or newline) and that wrapper file equals origin/main's; ros2 bag play, record, reindex and convert never run. The hook runs MAIN's copy of the guard (git show origin/main:...), so a branch's edit to it changes nothing before the merge gate; a guard that cannot be read or started exits 2 and refuses every Bash call. Hooks apply to subagents' tool calls too, and a settings file edited mid-session is re-read, so Edit/Write of any .claude/settings*.json is denied (disableAllHooks there would switch the guard off). The few anchored denies below for probes and ros2 bag are defence in depth only (the wrapped form never matches them).",
     "pio test is denied because bare pio test builds for the ESP32 and tries to upload; the native run is tests/firmware/test_wave_native.py, which can only pass -e native."
   ],
   "permissions": {
@@ -88,6 +88,12 @@
       "MultiEdit(//home/jetson/Desktop/**)",
       "Edit(//home/jetson/map-live/**)",
       "Write(//home/jetson/map-live/**)",
+      "Edit(//home/jetson/.ros/**)",
+      "Write(//home/jetson/.ros/**)",
+      "Edit(**/.claude/settings*.json)",
+      "Write(**/.claude/settings*.json)",
+      "Edit(//home/jetson/.claude/settings*.json)",
+      "Write(//home/jetson/.claude/settings*.json)",
       "Bash(*git push*-f)",
       "Bash(*git push*:main*)",
       "Bash(*git push*--delete*)",
@@ -102,44 +108,30 @@
       "Bash(*ros2 bag reindex*)",
       "Bash(*ros2 bag convert*)",
       "Bash(python*tools/probes/*)",
-      "Bash(python*tools.probes*)",
       "Bash(tools/probes/*)",
       "Bash(./tools/probes/*)",
-      "Bash(bash tools/probes/*)",
-      "Bash(sh tools/probes/*)",
       "Bash(cd tools/probes*)",
-      "Bash(cd ./tools/probes*)",
-      "Bash(env *tools/probes/*)",
-      "Bash(timeout*tools/probes/*)",
-      "Bash(nice*tools/probes/*)",
-      "Bash(nohup*tools/probes/*)",
-      "Bash(time *tools/probes/*)",
-      "Bash(xargs*tools/probes/*)",
-      "Bash(uv *tools/probes/*)",
-      "Bash(*&& python*tools/probes/*)",
-      "Bash(*&& tools/probes/*)",
-      "Bash(*&& ./tools/probes/*)",
-      "Bash(*&& cd tools/probes*)",
-      "Bash(*&& ros2 bag*)",
-      "Bash(*; python*tools/probes/*)",
-      "Bash(*; tools/probes/*)",
-      "Bash(*; ./tools/probes/*)",
-      "Bash(*; cd tools/probes*)",
-      "Bash(*; ros2 bag*)",
-      "Bash(*| python*tools/probes/*)",
-      "Bash(*| tools/probes/*)",
-      "Bash(*| ./tools/probes/*)",
-      "Bash(*| cd tools/probes*)",
-      "Bash(*| ros2 bag*)",
       "Bash(ros2 bag*)",
-      "Bash(timeout*ros2 bag*)",
-      "Bash(env *ros2 bag*)",
       "Bash(*cd *Desktop*)",
       "Bash(*.git-credentials*)",
       "Bash(*night-shift.env*)",
       "Read(//home/jetson/.config/jugglebot/**)",
       "Read(//home/jetson/.ssh/**)",
       "Read(//home/jetson/.git-credentials)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 60,
+            "command": "g=$(timeout 20 git -C \"$CLAUDE_PROJECT_DIR\" show origin/main:tools/night_shift_bash_guard.py) && /usr/bin/python3 -I -c \"$g\" || exit 2"
+          }
+        ]
+      }
     ]
   }
 }
