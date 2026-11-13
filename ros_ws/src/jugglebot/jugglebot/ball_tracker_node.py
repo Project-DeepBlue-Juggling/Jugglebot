@@ -4,15 +4,18 @@ Subscribes to:
   - mocap_data (MocapDataMulti) — ALL mocap markers at ~200 Hz
     (labelled and unlabelled; the matcher excludes the robot's own bodies)
   - throw_announcements (ThrowAnnouncement) — Ball Butler throw events
+  - rigid_body_poses (RigidBodyPoses) — the Platform pose, for the trapped-marker WARN
+  - hand_telemetry (HandTelemetryMessage) — the Hand position, for the same WARN
 
 Publishes:
   - balls (BallStateArray) — all tracked balls at mocap rate
 """
 
+import time
+
 import rclpy
 from rclpy.logging import LoggingSeverity
 from rclpy.node import Node
-import time
 
 import numpy as np
 

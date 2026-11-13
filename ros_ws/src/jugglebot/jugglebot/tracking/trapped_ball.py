@@ -14,7 +14,9 @@ Frames and constants. Markers are in the Platform frame (``to_platform_frame``:
 pose x, y as published, z + ``GEOM_INITIAL_HEIGHT_MM``). The Hand-marker fit
 (z = -47 + 32.567 mm/rev x rev), the Cup seat and the dwell thresholds live in
 ``config/hardware_config.yaml`` (``ball_tracking.trapped_*``), read here through
-``jugglebot.hardware_config`` as ``TRACKING_TRAPPED_*``.
+``jugglebot.hardware_config`` as ``TRACKING_TRAPPED_*``. One exception stays a module
+constant: ``FIXTURE_MIN_S``, the history the rolling fixture filter needs before it
+retires anything (a start-up guard, not a fitted threshold).
 
 Online dwell. ``OnlineDwellDetector.update(t, markers, hand_rev)`` takes one frame
 of UNLABELLED markers. A marker whose ``region_of`` is UNDER_HAND and that stays
@@ -77,6 +79,7 @@ WARN_REPEAT_S = float(hw.TRACKING_TRAPPED_WARN_REPEAT_S)
 STRIDE = int(hw.TRACKING_TRAPPED_STRIDE)
 FIXTURE_FRAC_ONLINE = float(hw.TRACKING_TRAPPED_FIXTURE_FRAC)
 FIXTURE_WINDOW_S = float(hw.TRACKING_TRAPPED_FIXTURE_WINDOW_S)
+#: Not in config: a start-up guard for the rolling filter, not a fitted threshold.
 FIXTURE_MIN_S = 10.0
 HAND_STALE_S = float(hw.TRACKING_TRAPPED_HAND_STALE_S)
 
