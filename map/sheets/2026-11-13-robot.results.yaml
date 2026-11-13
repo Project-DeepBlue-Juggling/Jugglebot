@@ -96,6 +96,24 @@ steps:
     comments: ''
     saved_at: 2026-11-13 13:07
     status: done
+  27:
+    comments: 'As expected, the second check was REFUSED: " (venv) jetson:/home/jetson/Desktop/Jugglebot/
+      (night-shift/sitting-2026-11-13✗) $ ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString
+      "{data: ''columns_turned,apex_m=0.95,separation_mm=125,dwell_s=0.27,columns_angle_deg=90''}"
+      requester: making request: jugglebot_interfaces.srv.SetString_Request(data=''columns_turned,apex_m=0.95,separation_mm=125,dwell_s=0.27,columns_angle_deg=90'')
+      response: jugglebot_interfaces.srv.SetString_Response(success=False, message="nomination
+      REFUSED: columns_turned apex 0.95 m, separation 125 mm, dwell 0.27 s, angle
+      90 deg, Catch tilt-back 3 deg, pose; 3 refusals; nearest viable: apex 0.90 m
+      (or separation 25 mm)\nskill 2 CATCH Ball 1 at P2@90 -> P2@90, rung -20 %: LIMIT_JERK
+      leg 1 at t=0.400 s, margin -0.262 (jerk) [peak leg jerk 227081 mm/s³ > 200000
+      (leg 1 at t=0.400 s on the gated plan''s clock)]\nskill 2 CATCH Ball 1 at P2@90
+      -> P2@90, rung 0 %: LIMIT_JERK leg 1 at t=0.400 s, margin -0.257 (jerk) [peak
+      leg jerk 226222 mm/s³ > 200000 (leg 1 at t=0.400 s on the gated plan''s clock)]\nskill
+      2 CATCH Ball 1 at P2@90 -> P2@90, rung +10 %: LIMIT_JERK leg 1 at t=0.400 s,
+      margin -0.256 (jerk) [peak leg jerk 226006 mm/s³ > 200000 (leg 1 at t=0.400
+      s on the gated plan''s clock)]") " Everything else landed as expected.'
+    saved_at: 2026-11-13 13:10
+    status: done
 verdicts:
   12:
     FEAT-39:
