@@ -2,9 +2,9 @@
 id: IDEA-10
 kind: idea
 title: 'JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m'
-status: in_progress
+status: complete
 created: '2026-10-30'
-updated: '2026-11-13T01:05:01Z'
+updated: '2026-11-13T05:58:04Z'
 owners:
 - jugglebot-f5
 priority: medium
@@ -16,6 +16,7 @@ area: skill-stack
 blocked_by: []
 links:
 - logbook/2026-11-10-sitting-debrief.md
+- logbook/2026-11-13-sitting-debrief.md
 filed_by: claude (jugglebot-f5, pattern exploration 2026-10-30)
 parent: pattern-progression-columns-to-centre-and-orbit
 ---
@@ -74,3 +75,4 @@ Visually subtle: the two apexes differ by 100 mm.
 - 2026-11-01: 2026-11-01 Sitting: gate NOT met. 8/8 (GUARD_LATCHED) and 12/13 (leg LIMIT_ACC 5142.8 > 5000, a late re-send seed); apex difference 87 mm vs 100 commanded (Ball 1 0.997, Ball 2 0.910 m); hand iq peaks 32.1 / 41.5 A. First high-low records are in docs/records.md.
 - 2026-11-03: Failed at the Sitting of 2026-11-03: best 18 consecutive at 1.00/0.90, 15 at 1.05/0.95; apex gap 119.2 and 89.7 mm; launch iq max 36.5 A; brake hit the 60 A clamp twice; 5 of 11 attempts ended on Ball 2's first throw landing ~180 mm outward. Plan D-c answered: 1.05/0.95 flown, Ball 1 reached only 1.019 m.
 - 2026-11-10: Failed at the Sitting of 2026-11-10 (step 7, real Attempts, default plant): 0/0, 0/0, 2/3 (HAND_JAM). Ball 2's first throw after the Feed outward 157, 23, 37 mm (BUG-63); Ball 1's hop-entry Catch missed twice, fit 26 mm off. No end on an admissibility refusal, so the probe's -0.245 re-aim margin is not the killer. Logbook 2026-11-10-sitting-debrief.md.
+- 2026-11-13: Passed at the Sitting of 2026-11-13: columns_highlow COMPLETED 20/20 at 12:03:51 (one of 9 Attempts on that plant); Tracker mean Apex difference 100.9 mm (1.0099 vs 0.9090 m) against the commanded 100 mm; Hand iq 35.9 A over that Attempt. Not verifiable from the log: Ball 2 first-Throw landing from the install line.

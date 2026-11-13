@@ -34,14 +34,17 @@ close-out the Runbook promises, unchanged from `/sitting-wrapup`.
 ## 1. Analyse the data (before any paperwork)
 
 Writing-for-agents rule: you orchestrate and synthesise; sub-agents read the logs. Scope is
-every launch log under `~/.ros/log/` and every rosbag under `~/Desktop/rosbags/` newer than
+every launch log under `~/.ros/log/` (`temp/logs/launch_<date>_<n>.log` exists only when the
+operator's tee worked, so `~/.ros/log/<date>-*/launch.log` is the complete source) and every rosbag under `~/Desktop/rosbags/` newer than
 the last debrief entry (or the day of the date argument). The dirty `docs/records.md` and
 `temp/learn/jugglebot/memory.csv` are the Sitting's expected output, not a surprise. No
 robot, no GUI writes: this is reading.
 
 **A. Inventory (you, not an agent).** In a scratchpad `context.md` list, per launch log, with
-line numbers: every goal (`grep -n 'Juggle requested.*goal dispatched (pattern='`) and every
-attempt end (`grep -n 'ENDED (.*caught'`: reason, `N/M caught`), plus the bag path and the
+line numbers: every Attempt start (`grep -n ' started:' launch.log`: the line is `<pattern> ... started:`),
+every end (`grep -n ' ENDED' launch.log`: reason) and every success (`grep -nE ' done.*: [0-9]+/[0-9]+ caught'`:
+`<pattern> done...: N/M caught`; the older `goal dispatched (pattern=` and `ENDED (.*caught` greps
+match nothing or too little on current logs), plus the bag path and the
 `## Sitting` rows of the Runbook the Sitting flew. Then ONE `AskUserQuestion`: (1) verdict
 source (the owner's typed `## Sitting result` boxes, or you derive verdicts from the logs and
 the owner confirms); (2) fix scope, default = diagnose and fix non-threshold bugs, while any
@@ -61,6 +64,15 @@ calls, writes `<unit>.md` to the scratchpad, reports only its path and a verdict
    before proposing a new one. A refuted hypothesis is stated as withdrawn, not rescued.
 3. *Crosswalk*: which open plan steps, plan Questions and Items (`python -m mapkit items
    --open --json`, `docs/patterns.md` rungs) this data can advance, and what each still needs.
+4. *Trapped-Ball scan* (you, standing, every bag, before the Hand-stall and missed-Catch units start):
+   `source ~/Desktop/PDJ_venv/venv/bin/activate; for b in <each bag>; do python tools/trapped_ball_finder.py $b [--hand-csv <Hand capture csv>] > temp/logs/trapped_$(basename $b).txt; done`
+   (5-12 min per bag, run them in parallel). Copy each report's section (b) and the UNDER_HAND dwells into
+   the scratchpad `context.md` and hand every Hand stall and every under-Hand dwell to the diagnosis units.
+   A stall that says TRAPPED MARKER COINCIDES is BUG-84 confirmed for that event (marker position and the
+   Ball it traces to); one that says "cannot see" is stated as such and never read as "refuted"; a
+   Ball-origin question in a missed-Catch unit reads the dwell list for that Ball (a Ball the Tracker dropped
+   can still sit under the Cup). A Hand stall is never judged from the Tracker's ball tracks alone: `/balls`
+   drops a Ball once it jostles on the Platform.
 
 **C. Synthesis (you).** Read the unit files, not the logs. Show the owner one verdict table
 (row, verdict, evidence line, killer class, proposed write-back) and wait for confirmation

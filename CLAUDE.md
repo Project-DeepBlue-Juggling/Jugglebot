@@ -119,7 +119,7 @@ python tests/hardware/single_leg_test.py --test all
 ### ROS2 (on Jetson)
 ```bash
 cd ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot
-source install/setup.bash
+source install/setup.zsh   # the operator's shell is zsh: `setup.bash` sourced from zsh resolves its sibling scripts against the working directory and fails with "not found: .../local_setup.bash" (Sitting 2026-11-13, step 24). Inside `bash -c '...'` use `setup.bash`.
 ros2 launch jugglebot jugglebot_launch.py
 ```
 

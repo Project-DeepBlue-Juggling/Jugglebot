@@ -4,7 +4,7 @@ kind: bug
 title: Hand stalls at the 70 A clamp mid-dive, probably on a Ball under the Cup, and the next launch comes up slow
 status: inbox
 created: '2026-11-07'
-updated: '2026-11-07T18:11:53Z'
+updated: '2026-11-13T06:09:31Z'
 owners: []
 priority: medium
 effort: m
@@ -19,7 +19,7 @@ links:
 filed_by: jugglebot-b1
 ---
 
-Four times in the captures, the Hand stopped dead mid-dive and pressed down at the 70 A clamp for about 100 ms, with no fault. The owner believes a Ball was stuck under the Hand at the 2026-11-07 event, though not with certainty. That fits the data, but nothing has measured it.
+Four times in the captures, the Hand stopped dead mid-dive and pressed down at the 70 A clamp for about 100 ms, with no fault. The owner believes a Ball was stuck under the Hand at the 2026-11-07 event, though not with certainty. For the three stalls of 2026-11-13 the cause is confirmed (see Progress): a Ball trapped under the Hand, seen in raw mocap markers and in the replay. The four earlier events remain unmeasured.
 
 ## Evidence
 
@@ -41,3 +41,8 @@ Four times in the captures, the Hand stopped dead mid-dive and pressed down at t
 - No guard acted. As filed in BUG-56, the FW 36 stall guard covers the ACTIVATE and HAND_MOVE_TO ladder, and it needs 300 ms.
 
 Sources: `~/.ros/log/2026-11-07-16-15-21-645789-jetson-2503132/launch.log`, `temp/hand_capture/hand_capture_20261107_161525.csv`, and the 2026-11-06 captures 151412 and 153512. Found while checking BUG-57.
+
+## Progress
+
+- 2026-11-13: Three new instances 2026-11-13 (12:02:17.66, 12:08:30.63, 13:15:22.69), all CONFIRMED as a Ball trapped under the Hand: raw unlabelled mocap markers 65-85 mm below the Hand, static at the stall instant; the owner saw it in the replay.
+- 2026-11-13: The 13:15:22 one latched the Hand MAX_DEVIATION guard and self-recovered in 7.2 s. Found with tools/trapped_ball_finder.py; the Tracker-only read had missed it (it drops a Ball after it jostles on the Platform).

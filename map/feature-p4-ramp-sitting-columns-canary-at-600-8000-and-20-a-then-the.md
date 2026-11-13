@@ -4,7 +4,7 @@ kind: feature
 title: 'P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30'
 status: in_progress
 created: '2026-11-03'
-updated: '2026-11-13T00:58:55Z'
+updated: '2026-11-13T06:09:32Z'
 owners: []
 priority: high
 effort: m
@@ -17,6 +17,7 @@ links:
 - plans/active/two-ball-oval.md
 - logbook/2026-11-04-sitting-debrief.md
 - logbook/2026-11-10-sitting-debrief.md
+- logbook/2026-11-13-sitting-debrief.md
 parent: two-ball-oval
 filed_by: claude
 ---
@@ -58,3 +59,6 @@ P4 ramp of plan `plans/active/two-ball-oval.md`: the first Sitting at the P4 wor
   - Next: one Attempt at dwell 0.50 first, then the same 0.40 / 0.35 ladder (owner 2026-11-04).
 - 2026-11-05: Unplanned oval_1ball Apex 0.95 Dwell 0.65 (unfed, flag off) 2026-11-05: 25/26 caught, landed x 0 +/- 16 mm, y -6.5 +/- 20 mm, apex 0.98 +/- 0.05; Throw 26 (apex 0.54) cut by MAX_DEVIATION, not a plan outlier. Long-dwell baseline only (excess +13 mm/s mocap); ladder 0.50/0.40/0.35 and the 30-Catch gate still unflown.
 - 2026-11-10: Sitting of 2026-11-10, step 6 (a rehearsal flown as goals): oval_1ball_fed 1.00/150/0.40, MISSED_CATCH 2/2 then 4/4 (num_cycles 4), on the default plant, not p4-oval-<date> (6 rows, separable by time). Not this row's gate: no verdict. Nominate probe the same night: OK, margin 0.129 (0.118 at the re-aim limit).
+- 2026-11-13: Failed at the Sitting of 2026-11-13: shortest Dwell with 30 consecutive Catches was 0.40 (31 fed, 32 unfed); 0.35 reached 25; 0.30 ended 1/1, 1/1, 0/1 on LIMIT_JERK (margin -0.12). Carried minus from-rest bias grows as Dwell shortens (+7, +25, +84 mm at 0.50, 0.40, 0.35). The canary was flown once, not five times.
+- 2026-11-13: Launch 1 reading 'the learner chases its own command' did not reproduce at Dwell 0.40 on a fresh plant (launch 2, slope +1.49, looks like flyback over-correction, see BUG-80); withdrawn for 0.40, still open at 0.35. Do not fly 0.30 again until the 0.35 carried landing sits within +/-30 mm.
+- 2026-11-13: Moved from BUG-80: at Dwell 0.40 (oval, launch 2 Attempt 5) landing on command slope +1.49 over 31 carried Throws (r 0.68), the over-correcting loop this Item names; not separated from IDEA-18.

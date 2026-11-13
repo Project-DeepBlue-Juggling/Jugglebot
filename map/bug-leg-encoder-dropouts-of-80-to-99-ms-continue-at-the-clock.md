@@ -2,9 +2,9 @@
 id: BUG-82
 kind: bug
 title: 'Leg encoder dropouts of 80 to 99 ms continue at the clock beat: trial encoder_msg_rate_ms 9 on Leg 4, then all Legs'
-status: in_progress
+status: complete
 created: '2026-11-06'
-updated: '2026-11-13T02:59:08Z'
+updated: '2026-11-13T05:58:15Z'
 owners: []
 priority: medium
 effort: s
@@ -18,6 +18,7 @@ links:
 - map/bug-hand-odrive-feedback-starvation-701-ms-heartbeat-dropout.md
 - logbook/2026-11-06-sitting-debrief-3.md
 - logbook/2026-11-08-odrive-odd-can-rates.md
+- logbook/2026-11-13-sitting-debrief.md
 filed_by: claude
 ---
 
@@ -54,3 +55,4 @@ Still unknown: which side drops the frame (a passive CAN sniffer settles it), wh
 - 2026-11-08: Leg 4 flew at encoder_msg_rate_ms 9 through the whole 2026-11-07 launch (owner set it before; in-run, not the parked hold the row asks for): Leg 4 peak 17.1 ms, 0 of 2396 /cache_diag windows over 25 ms over 40 min; Legs 0-3 and 5 peak 99-100 ms, 20-30 windows over 25 ms; Hand 18.1 ms, 0. Frame-loss spacing not measured. Row and status left to the owner.
 - 2026-11-08: 2026-11-08: owner chose all drives at once. All six Legs and the Hand set to odd-ms CAN rates over USB (encoder and iq 9, error 19, heartbeat and temperature 99, bus voltage 499), verified from flash; 88740cf7. Leg 4 in-run 2026-11-07: 0 of 2396 windows over 25 ms. Next: the debrief reads every Leg's census.
 - 2026-11-08: 2026-11-08 owner decisions: Hand lead-clamp anchor unchanged (the beat that starved the encoder is cured; Hand worst gap 23 ms, under the 30 ms gate); revisit only if Hand lead clamp ENGAGED appears in a Throw. Hand limits stay 70 soft / 80 A hard; revisit on another hard-max trip.
+- 2026-11-13: Complete on before/after evidence (Sitting of 2026-11-13): Leg windows with encoder age max over 50 ms were 245 of 27,046 at 10 ms (bags 2026-11-06/07); after the all-axes 9 ms change, 0 of 41,952 over 25 ms in six launches (Leg peak 17.1-17.2 ms, Hand 28.1 ms). Same-launch control 2026-11-07: Leg 4 at 9 ms 0 of 2396 over 25 ms, the other five Legs 20-30. Criterion: before/after.

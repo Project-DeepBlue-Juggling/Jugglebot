@@ -4,7 +4,7 @@ kind: feature
 title: 'Pre-release hold rung: release from a moving Platform (hold 0.100 → 0)'
 status: in_progress
 created: '2026-10-30'
-updated: '2026-11-13T02:02:49Z'
+updated: '2026-11-13T05:58:34Z'
 owners: []
 priority: high
 effort: m
@@ -18,6 +18,7 @@ links:
 - logbook/2026-10-31-hold-ladder-sitting-the-hold-model-was-wrong.md
 - logbook/2026-11-04-sitting-debrief.md
 - plans/active/carry-ring-zvd.md
+- logbook/2026-11-13-sitting-debrief.md
 parent: two-ball-oval
 filed_by: claude (P3 re-gate close-out 2026-10-30)
 ---
@@ -73,10 +74,11 @@ The Sitting flew the ladder and **withdrew the model** this Item was written on.
 - setup: armed, bb-fed, bridge-cycled
 - why: the ZVD rows (mode provisional 4.9 Hz / 0.20 / 20 ms) have never flown. This A/B flies them against the flag-off carry on the oval, where carried Throws land about +59 mm long at Dwell 0.40. `gc_freeze` is on for both arms, its first flight (BUG-58). The Platform mode is re-fitted afterwards from this Sitting's bag.
 - do:
-  - Before arming: launch with `gc_freeze:=true`. The launch log must show `can-bridge v40` and a `BUG-58 gc_freeze ON` line from both `teensy_bridge_node` and `trajectory_node`. Run `ros2 param get /skill_node carry_zvd` and confirm it reads false.
-  - A arm (flag off, the existing behaviour): `ros2 param set /skill_node plant_id zvd-oval-<date>` and read it back, then one Attempt of `{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.40, num_cycles: 32}` (cup empty, Ball Butler loaded).
+  - Before arming: launch with `gc_freeze:=true`. The launch log must show `can-bridge v43` and a `BUG-58 gc_freeze ON` line from both `teensy_bridge_node` and `trajectory_node`. Run `ros2 param get /skill_node carry_zvd` and confirm it reads false.
+  - A arm (flag off, the existing behaviour): `ros2 param set /skill_node plant_id zvd-oval-<date>-A` and read it back, then one Attempt of `{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.40, num_cycles: 32}` (cup empty, Ball Butler loaded).
   - Empty the Cup after every ended Attempt before re-sending a fed goal (two REJECTED_BALL_IN_HAND on 2026-11-05); after clear_errors re-enter TRAJECTORY before the next goal (one WRONG_MODE).
-  - B arm: `ros2 param set /skill_node carry_zvd true` (refused while a goal runs) and read it back with `ros2 param get /skill_node carry_zvd`; the goal start line must show carry_zvd. Fly the same oval goal at dwell 0.40 on the same plant. Then dwell 0.35 (`dwell_s: 0.35`, same other keys) with the flag on, only if 0.40 holds. Offline at nominal aims the rows plan Leg peaks of 277 mm/s and 3270 mm/s^2 at 0.40, 316 and 5120 at 0.35 (worst flown clean 5488; Legs 1 and 2 separated at 6296).
+  - First set a FRESH plant, `ros2 param set /skill_node plant_id zvd-oval-<date>-B`, and read it back (2026-11-13: the B arm shared the A arm's Memory, which had learned to aim carried Throws 68 mm short, so every first carried Throw was fitted 71 mm inside and the arm ended at the first Catch).
+  - B arm: `ros2 param set /skill_node carry_zvd true` (refused while a goal runs) and read it back with `ros2 param get /skill_node carry_zvd`; the goal start line must show carry_zvd. Fly the same oval goal at dwell 0.40. Then dwell 0.35 (`dwell_s: 0.35`, same other keys) with the flag on, only if 0.40 holds. Offline at nominal aims the rows plan Leg peaks of 277 mm/s and 3270 mm/s^2 at 0.40, 316 and 5120 at 0.35 (worst flown clean 5488; Legs 1 and 2 separated at 6296).
   - Columns canary with the flag OFF (owner 2026-11-06: the rows are an oval tool, off on Columns until BUG-72 has a bound): before it run `ros2 param set /skill_node carry_zvd false` and read it back with `ros2 param get /skill_node carry_zvd`; two Attempts: GUI Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21.
   - Afterwards re-fit the mode on this bag: `python tools/probes/platform_mode_fit.py <bag>` (forced-response fit, x and y).
 - pass: at Dwell 0.40 with the flag on, the carried minus from-rest raw landing bias is within +/-10 mm, the carried per-Throw sd is under 17.5 mm, and 30 consecutive Catches land in one Attempt; no CUP_SEATING_CONE or leg LIMIT end; the Columns canary (flag off) is unchanged (each Attempt COMPLETED, no new refusal).
@@ -104,3 +106,5 @@ The Sitting flew the ladder and **withdrew the model** this Item was written on.
 - 2026-11-05: P2 box swept (gate_hash e8d303ae93bc, 195 cells): oval Dwell 0.40 / Apex 1.00 keeps 30 mm with the rows on; the Columns canary cell (Dwell 0.27) is empty with the rows on (RING), so the Columns canary flies flag off; fallback is an owner question (plan carry-ring-zvd.md section 8)
 - 2026-11-05: Sitting 22:46: step 3 (A arm, flag off) only; 3 fed Attempts 9/9, 3/3, 0/0, each cut by a firmware STOP (2 Hand C1 stops + MAX_DEVIATION, 1 bridge GC pause); B arm never set, no A/B. Flag-off repeats 11-03 (raw x +59 mm carried). Identification steps excite no ring; whole-bag fit x 5.47 enc / 4.68 mocap Hz, y 4.1-4.2 Hz. Re-fly under FW 39 (C1 grace 14 ms).
 - 2026-11-06: row refreshed for FW 40 and the retired box, gc_freeze on for both arms, identification step removed. Owner: not the next Sitting, the learner-generalisation work has priority; flying soon. Plan section 8 answered (a): the rows are an oval tool, off on Columns until BUG-72 has a bound.
+- 2026-11-13: Failed at the Sitting of 2026-11-13 (typed pass meant row flown; the literal pass line is not met): flag on, Dwell 0.40, 6 goals, no carried Throw reached a landing, best 1 Catch. ZVD cut the carried landing offset from +70 to -3 mm but drives a 5 Hz Hand stop-go (BUG-90).
+- 2026-11-13: The B arm is confounded: it shared the A arm Memory, which had learned to aim carried Throws 68 mm short, so every first carried Throw was fitted 71 mm inside against 35 mm of lateral authority. Flag-on Dwell 0.35 must not fly until BUG-90 is fixed; the next A/B needs a fresh plant_id per arm.

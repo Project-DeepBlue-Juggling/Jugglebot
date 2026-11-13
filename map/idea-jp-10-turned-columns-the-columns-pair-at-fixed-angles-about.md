@@ -4,7 +4,7 @@ kind: idea
 title: 'JP-10 Turned columns: the columns pair at fixed angles about +z, under pose'
 status: in_progress
 created: '2026-10-30'
-updated: '2026-11-13T02:22:51Z'
+updated: '2026-11-13T05:58:26Z'
 owners:
 - jugglebot-f5
 priority: medium
@@ -16,6 +16,7 @@ area: skill-stack
 blocked_by: []
 links:
 - logbook/2026-11-10-sitting-debrief.md
+- logbook/2026-11-13-sitting-debrief.md
 filed_by: claude (jugglebot-f5, pattern exploration 2026-10-30)
 parent: pattern-progression-columns-to-centre-and-orbit
 ---
@@ -43,7 +44,7 @@ It proves the rotational symmetry on hardware that lets the admissible box key o
 - why: P3 of plan pattern-progression.md: two-ball Columns off the x axis under the pose planner, one plant_id per angle (set explicitly in the steps below), which answers PWAY-2 P2(b) (does the lateral bias rotate with the pair).
 - do:
   - Rehearse with mocap on the robot base and Ball Butler's Base markers (the fed Site needs them): `ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: 'columns_turned,apex_m=0.95,separation_mm=125,dwell_s=0.27,columns_angle_deg=45'}"`, then the same at `columns_angle_deg=90`. Each reply: `success: True`, nothing moves; `position is unknown` means bring mocap up and retry. Never a Juggle goal.
-  - Fly a straight `Columns` control first if this Sitting has not flown one (GUI Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21).
+  - Fly a straight `Columns` control first if this Sitting has not flown one: five Attempts (GUI Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21), because the sd bar needs them (2026-11-13: flown once, so the control sd rests on n 10 per ball).
   - GUI: Juggle panel `Columns — turned`, Angle 45, Apex 0.95, Sep. 125, Dwell 0.27, Throws 21 (Start writes columns_angle_deg to the node first). Terminal fallback: `ros2 param set /skill_node columns_angle_deg 45` (refused while a goal runs), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_turned, apex_m: 0.95, separation_mm: 125.0, dwell_s: 0.27, num_cycles: 21}" --feedback`. Only the 0.925 to 0.975 Apex band is admissible at 45 deg.
   - Angle 90 (or `ros2 param set /skill_node columns_angle_deg 90`), then the same goal at Apex 0.95 (0.90 is also admissible at 90 deg).
   - Set the plant per angle before each angle's first goal (never set on 2026-11-01 or 2026-11-03, so PWAY-2 P2(b) is unanswered): `ros2 param set /skill_node plant_id <name>` with a distinct name per angle, for example `turned45` and `turned90`, refused while a goal runs; read it back from the goal start line (`plant_id=...`) and write it in the record.
@@ -84,3 +85,4 @@ It proves the rotational symmetry on hardware that lets the admissible box key o
 - 2026-11-01: Sitting: gate NOT met. 45 deg best 2/2, 90 deg best 16/16 (GUARD_LATCHED, BUG-50); hand iq 53.3 A on a 45 deg hop launch (BUG-51); PWAY-2 P2(b) NOT answered (detail below)
 - 2026-11-03: Failed at the Sitting of 2026-11-03: 45 deg COMPLETED 19/19 twice of 5, 90 deg 0 of 7 (best 12/12), Ball 2 lands 37-50 mm outward at 90 deg vs 10 mm outward authority; plant_id not set per angle so PWAY-2 P2(b) unanswered; a 14th goal rejected at angle 135. 19 in 19 is a records row.
 - 2026-11-10: Failed at the Sitting of 2026-11-10 (step 8, real Attempts, plant_id not set: 32 rows in the default Memory, separable by Site). 45 deg COMPLETED 20/20; 90 deg 8/8, 3/3, 3/3, 3/3, three at Ball 2's first Catch after the Feed (BUG-63). PWAY-2 P2(b) offline: the pull toward the partner rotates with the pair (BUG-79). Filed IDEA-22. Logbook 2026-11-10-sitting-debrief.md.
+- 2026-11-13: Failed at the Sitting of 2026-11-13: 45 deg COMPLETED 20/20 (13:18:59), scatter inside the 15 mm mean bar on all four ball and axis cells, outside the 10 mm sd bar on one (Ball 1 x, +13 mm); 90 deg 0 of 5 Attempts past 2 Throws (see IDEA-22, BUG-91). The straight Columns control was flown once, not five times, so its sd rests on n 10 per ball.

@@ -2,9 +2,9 @@
 id: BUG-80
 kind: bug
 title: 'The flyback over-corrects a Catch offset by 1.2 to 1.4 times: each landing error returns at -0.3 to -0.45 on the next Throw'
-status: in_progress
+status: complete
 created: '2026-11-06'
-updated: '2026-11-13T02:36:51Z'
+updated: '2026-11-13T05:58:06Z'
 owners:
 - night-shift
 priority: medium
@@ -17,6 +17,8 @@ area: learner
 blocked_by: []
 links:
 - logbook/2026-11-06-sitting-debrief-2.md
+- logbook/2026-11-13-sitting-debrief.md
+- logbook/2026-11-09-landing-offset-parameter.md
 parent: learner-generalisation
 filed_by: claude
 ---
@@ -191,3 +193,5 @@ So there is no `## Sitting` section yet: a `do:` step nobody can fly would be in
 
 - 2026-11-08: Night Shift 2026-11-08: re-rated robot on TKT-47; no Sitting row yet because no parameter commands a landing offset (detail below)
 - 2026-11-09: Night Shift 2026-11-09: held on night-shift/2026-11-09-BUG-80: landing offset built, gate passed; unblocked by the 40-Throw Sitting
+- 2026-11-13: Complete at the Sitting of 2026-11-13, merged by the owner without the gate (audit: 2 findings, one narrative, one fixed in a follow-up that refuses an offset on an empty-Cup Feed Attempt and names the plant_id). Landing followed the offset: x +20 -> +18.2 mm (n 12), -20 -> -16.4 (n 9); y +20 -> +19.4 (n 10), -20 -> -25.6 (n 11), sd 8.5-10.8 mm.
+- 2026-11-13: Proxy slope of ball lateral velocity on mocap Platform tilt: x 4.64 +/- 0.09, y 4.66 +/- 0.11 mm/s per mrad (n 22 each) against the 4.4 +/- 0.5 band; the commanded-Tilt slope was not computed. Open at Dwell 0.40 (launch 2, oval Attempt 5): landing on command slope +1.49 over 31 carried Throws (r 0.68), the over-correcting loop this Item names; not separated from IDEA-18.

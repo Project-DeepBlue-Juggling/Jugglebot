@@ -4,7 +4,7 @@ kind: idea
 title: Learner context cannot tell a Throw from rest from a carried Throw
 status: inbox
 created: '2026-11-04'
-updated: '2026-11-04T17:51:06Z'
+updated: '2026-11-13T05:58:39Z'
 owners: []
 priority: low
 effort: m
@@ -15,6 +15,7 @@ area: learner
 blocked_by: []
 links:
 - logbook/2026-11-04-sitting-debrief.md
+- logbook/2026-11-13-sitting-debrief.md
 filed_by: claude
 ---
 
@@ -27,3 +28,7 @@ Filed by the 2026-11-04 debrief (2026-11-03 Sitting, one-ball oval). The oval's 
 - Effort m (state vector, Memory schema migration, learner tests). Hardware robot: only flown Throws show whether `y_hat` stops reading low on carried Throws. Owner none.
 - Risk: a new state dimension splits existing support, so the first Sitting after it starts colder (fewer than `k_min` neighbours means the identity prior) until carried rows accumulate.
 - Not built tonight: rated m and robot.
+
+## Progress
+
+- 2026-11-13: Sitting of 2026-11-13: the split holds on a second plant at Dwell 0.40: landing minus command +27 mm from rest against +71 +/- 18 mm carried (launch 1: +32 vs +57; +27 vs +111 at 0.35). One pair at the identical command: +23 vs +141 mm. Priority left as filed.

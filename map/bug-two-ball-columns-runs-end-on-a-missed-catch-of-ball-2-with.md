@@ -4,7 +4,7 @@ kind: bug
 title: 'Two-ball Columns runs end on a missed Catch of Ball 2 with no collision: 13 of 23 ends, mean run 22 Throws'
 status: in_progress
 created: '2026-11-06'
-updated: '2026-11-08T00:13:24Z'
+updated: '2026-11-13T05:58:37Z'
 owners: []
 priority: high
 effort: m
@@ -18,6 +18,7 @@ links:
 - logbook/2026-11-06-sitting-debrief-2.md
 - bug-mid-air-ball-collisions-end-half-of-two-ball-columns
 - logbook/2026-11-06-sitting-debrief-3.md
+- logbook/2026-11-13-sitting-debrief.md
 filed_by: claude
 ---
 
@@ -45,3 +46,4 @@ Two-ball Columns runs of 2026-11-06 mostly end on a smooth missed Catch of Ball 
 - 2026-11-06: 2026-11-06 20:20 Sitting: goals 2 and 4 are smooth Ball 2 misses with the ball deflected at Cup height: sideways speed jumps to 1.8 and 0.3 m/s within 30 ms, cup raw 0 throughout, so a false EMPTY and a late fit are out for these two. Ball 45 and 37 mm off the Platform origin at z 1000 (caught median 19, p90 36), Platform at 406 and 784 mm/s. Rim, Cone or edge: mocap cannot say.
 - 2026-11-06: Across the endurance set and 20:20: every smooth no-collision end (15 of 15) is a Ball 2 Catch, and all 4 Ball 1 ends are collisions. Open: whether offset or Platform arrival error drives the strike; /trajectory/commanded_position was not read. Evidence: temp/probes/sitting_debrief_2026-11-06c/unit_ends.md.
 - 2026-11-08: 2026-11-07: of 20 non-collision Ball 2 ends, 13 had a last fit beyond the Catch authority and 4 inside reach with the Cup empty. Owner: Cup rim 85 mm dia; in turned 90 deg Columns every strike hit the Platform top (top of the Hand's stroke); in other Patterns some misses hit the Hand, some other Platform parts. No seated-ball baseline in the bag.
+- 2026-11-13: Sitting of 2026-11-13: Columns canary on the trained plant ended on Ball 2 in 4 of 6 Attempts, fitted landings mixed sign (+44, +25, -88 mm, one no Fit), 3 of 4 within 45 mm of aim with the Cup empty. columns_highlow: 9 of 15 ends Ball 2; 12 had a lost Throw with no Fit. Same signature on the oval and on two single-Throw ends at 20 mm.

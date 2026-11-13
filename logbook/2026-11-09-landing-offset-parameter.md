@@ -25,7 +25,7 @@ TKT-47 chose a 40-Throw check that needs commanded landing offsets of +20 and -2
 - **Refused while a goal runs** and past `learner_lateral_authority_mm` per axis, re-checked at accept in case the authority moved.
 - **Default 0 is today, bit for bit**: same digest of every Segment's pose, pose velocity, Hand and takeoff before and after the change (Verification).
 
-Flown on hardware 2026-11-13 (operator passed it) and merged to `main` at the Sitting debrief of 2026-11-13 by owner say-so, with two audit findings fixed in the follow-up commit: a non-zero offset is refused when the goal takes the reload path (empty Cup), and the accept WARN names the live `plant_id` that the Memory rows are written to. Originally held on `night-shift/2026-11-09-BUG-80` for a Sitting by TKT-48.
+Flown on hardware 2026-11-13 (operator passed it) and merged to `main` at the Sitting debrief of 2026-11-13 by owner say-so, with two audit findings fixed in the follow-up commit: a non-zero offset is refused when the goal takes the Feed path (empty Cup), and the accept WARN names the live `plant_id` that the Memory rows are written to. Originally held on `night-shift/2026-11-09-BUG-80` for a Sitting by TKT-48.
 
 ## Discussion
 
@@ -82,4 +82,4 @@ It looks like the direct way to fly the +20/-20 sequence in one goal. But a same
 
 ## Debrief follow-up (2026-11-13)
 
-The audit's two behaviour findings, refusals and text only (no limit, margin, timing or trajectory change). (1) Memory rows: the row is self-consistent (`u` is the command sent, offset included; `y` is landing minus the Site's catch point), so no skip was added; the accept WARN now names the live `plant_id` the rows go to and tells the operator to use a fresh one and restore it. (2) A non-zero offset on a goal that takes the reload path (EMPTY Cup, first Throw carried, not from rest) is refused at accept with a message to seat a ball or zero the offset. A zero offset is unchanged (pinned by test).
+The audit's two behaviour findings, refusals and text only (no limit, margin, timing or trajectory change). (1) Memory rows: the row is self-consistent (`u` is the command sent, offset included; `y` is landing minus the Site's catch point), so no skip was added; the accept WARN now names the live `plant_id` the rows go to and tells the operator to use a fresh one and restore it. (2) A non-zero offset on a goal that takes the Feed path (EMPTY Cup, first Throw carried, not from rest) is refused at accept with a message to seat a ball or zero the offset. A zero offset is unchanged (pinned by test).

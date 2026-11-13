@@ -100,6 +100,11 @@ Read `sim/analysis/known_issues.yaml`.  For each flag in the analysis output:
 - Check if the flag matches any known issue's signatures
 - If matched: report the known issue ID, description, and fix suggestion
 - If unmatched: flag as a **new/unknown anomaly** for investigation
+- **Hand stall at the ~70 A clamp (|iq| near the limit, or |cmd - pos| > 1 rev with the Hand stopped; BUG-84)**:
+  run `python tools/trapped_ball_finder.py <rosbag dir>` and read its section (b). "TRAPPED MARKER COINCIDES"
+  = a raw unlabelled marker sat under the Hand at the stall instant (the Ball the Tracker had dropped): report it
+  as a confirmed trapped Ball with the marker position and the traced Ball id. "cannot see" = state it, do not
+  say refuted. Do not use /balls alone to rule a Ball out; the Tracker drops a Ball after it jostles on the Platform.
 
 ### Step 5: Gather context
 

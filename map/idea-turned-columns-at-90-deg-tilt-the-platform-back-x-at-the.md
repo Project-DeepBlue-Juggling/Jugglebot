@@ -4,7 +4,7 @@ kind: idea
 title: 'Turned Columns at 90 deg: tilt the Platform back (+x) at the Catch so the ball stops hitting the Platform top'
 status: in_progress
 created: '2026-11-10'
-updated: '2026-11-13T02:42:53Z'
+updated: '2026-11-13T05:58:33Z'
 owners:
 - night-shift
 priority: medium
@@ -17,6 +17,7 @@ blocked_by: []
 links:
 - idea-jp-10-turned-columns-the-columns-pair-at-fixed-angles-about
 - bug-ball-2-s-first-throw-after-the-feed-catch-lands-about-180-mm
+- logbook/2026-11-13-sitting-debrief.md
 parent: pattern-progression-columns-to-centre-and-orbit
 filed_by: claude (sitting debrief 2026-11-10)
 ---
@@ -64,3 +65,4 @@ Recommendation: 3, then 1. The read is cheap, and it shows whether the misses ar
 - 2026-11-11: Night Shift 2026-11-11: options written; awaiting the owner's choice in the question ticket
 - 2026-11-12: Night Shift 2026-11-12: held on night-shift/2026-11-12-IDEA-22: tilt-back built, 4 deg default refused at P4 offline (3 passes); unblocked by your call on the default and a Sitting
 - 2026-11-13: Night Shift 2026-11-13: held on night-shift/2026-11-12-IDEA-22: tilt-back now about +x at 3 deg (TKT-65), refused at P4 offline (1.9 passes); unblocked by TKT-67 and a Sitting
+- 2026-11-13: Failed at the Sitting of 2026-11-13: apex 0.90, tilt-back 3 deg (nominate +0.027, -0.080 at re-aim limit); 5 Attempts all ended at the first Catch after the Feed (LIMIT_JERK x3, NO_ADMISSIBLE_COMMAND x2), best 2. "3 deg tilt-back makes 90 deg flyable" refuted at today limits; Platform-top not reached. Branch origin/night-shift/2026-11-12-IDEA-22 stays held (BUG-91).

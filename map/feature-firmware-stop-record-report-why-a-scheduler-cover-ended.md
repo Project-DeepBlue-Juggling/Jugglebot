@@ -2,9 +2,9 @@
 id: FEAT-46
 kind: feature
 title: 'Firmware STOP record: report why a scheduler cover ended (frame stamps, arrivals, queue, time-base steps)'
-status: in_progress
+status: complete
 created: '2026-11-08'
-updated: '2026-11-13T02:59:54Z'
+updated: '2026-11-13T05:58:07Z'
 owners: []
 priority: high
 effort: m
@@ -16,6 +16,7 @@ blocked_by: []
 links:
 - map/bug-40-hz-setpoint-stream-starved-past-the-firmware-s-70-ms.md
 - logbook/2026-11-07-sitting-debrief.md
+- logbook/2026-11-13-sitting-debrief.md
 filed_by: claude
 ---
 
@@ -73,3 +74,4 @@ Firmware and a HeartbeatT2J or new-message wire change, so a `PROTOCOL_VERSION` 
 
 - 2026-11-08: FW 42 / PROTOCOL 13 STOP record built and tested (pio build OK, native + host tests), NOT flashed: HeartbeatT2J 190->380 B carries one record per lane group; the bridge logs one classified line per record (stamp gap / mapping step / queued, not promoted / none of these). Needs the flash, a colcon build and a Sitting.
 - 2026-11-08: 2026-11-08 14:41: FW 42 flashed (launch down), receipt 6,225 frames, 0 decode errors at PROTOCOL 13; colcon built; full gate PASS. Live check: the first STOP at the next Sitting must print its classified STOP record line.
+- 2026-11-13: Passed at the Sitting of 2026-11-13: 108 STOP records over four launches (counter 1..108, overwritten 0), every STOP WARN has its record. The records pointed at the host (stamp gap, successor +50 ms) and led to the located cause, the :5557 drain in teensy_bridge_node discarding one older knot (BUG-89).
