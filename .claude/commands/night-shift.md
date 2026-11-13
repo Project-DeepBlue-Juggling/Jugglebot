@@ -31,13 +31,17 @@ Arguments: `$ARGUMENTS`
    not a path in a command line. The permission deny list refuses it; do not try. The app's
    night clone (`--app-clone`) is yours; the live app is the runner's, and it deploys after
    you exit. You never deploy, and never restart anything.
-2. **No hardware.** No `pio`, `ros2`, `colcon`, `tests/hardware/`, `tools/probes/`,
-   `tools/teensy_link_bridge.py`, serial devices, `systemctl`, `sudo`, and never run
-   `teensy_bridge_node` or a `teensy_link` client outside a test. The bridge is powered and
-   its UDP link is single-owner; the robot is not powered. Reading, grepping and diffing
-   those modules is fine. **Every test command, yours and every unit's, runs under
-   `tools/night_shift_nonet.sh`**: a network namespace with loopback only, so a test cannot
-   reach the board whatever it does (the tests use loopback already and lose nothing). A
+2. **No hardware.** No `pio`, `ros2` (except `ros2 bag info` under the wrapper below),
+   `colcon`, `tests/hardware/`, `tools/teensy_link_bridge.py`, serial devices, `systemctl`,
+   `sudo`, and never run `teensy_bridge_node` or a `teensy_link` client outside a test. The
+   bridge is powered and its UDP link is single-owner; the robot is not powered. Reading,
+   grepping and diffing those modules is fine. **Every test command, probe and bag read,
+   yours and every unit's, runs under `tools/night_shift_nonet.sh`**: loopback only, the
+   rosbags (`~/Desktop/rosbags`) and launch logs (`~/.ros/log`) read-only, serial devices
+   masked, so it cannot reach the board or change the evidence whatever it does. A probe is
+   `tools/night_shift_nonet.sh python tools/probes/<probe>.py ...` from the clone root, the
+   wrapper FIRST (put `timeout`/`env` after it), writing only under the clone's
+   `temp/probes/`; the deny list refuses the unwrapped spellings. A
    refused tool call is the deny list doing its job: note it and move on, never work around
    it. The Wave camera's native tests run through `tests/firmware/test_wave_native.py`;
    `pio test` itself stays refused because its default environment is the ESP32.
@@ -145,7 +149,7 @@ tests; confirm each new test fails without the change; write the logbook entry (
 form, `logbook/<date>-<slug>.md`, type by change, `status: complete`, `files_changed`,
 Verification with the scoped triple) and its `logbook/INDEX.md` row (newest first, row
 format as the existing rows); do not commit; do not write under `map/`; do not run
-`./run_tests.sh`; run every test command under `tools/night_shift_nonet.sh`; stay under about 80 tool calls and report the file list, the scoped
+`./run_tests.sh`; run every test command, probe and bag read under `tools/night_shift_nonet.sh` (wrapper first); stay under about 80 tool calls and report the file list, the scoped
 pytest line, and anything left undone. `Agent` with `model: sonnet` unless the one-line
 Opus reason applies. When it returns: `git status --porcelain` must list only files the
 brief allowed; anything else is reverted.

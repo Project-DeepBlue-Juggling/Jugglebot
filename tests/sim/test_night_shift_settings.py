@@ -72,6 +72,30 @@ def _denied(command):
     "cat ~/Desktop/Jugglebot/x",
     "python tests/hardware/free_platform_test.py",
     "colcon build",
+    # Probes and bag reads outside the wrapper (closeout C7a): the unwrapped spellings.
+    "python tools/probes/feed_catch_bag_probe.py --bag x",
+    "python3 tools/probes/feed_catch_bag_probe.py",
+    "python -m tools.probes.feed_catch_bag_probe",
+    "tools/probes/x.sh",
+    "./tools/probes/x.py",
+    "bash tools/probes/x.sh",
+    "cd tools/probes && python feed_catch_bag_probe.py",
+    "timeout 600 python tools/probes/x.py",
+    "env PYTHONPATH=. python tools/probes/x.py",
+    "nice -n 10 python tools/probes/x.py",
+    "cd ~/night-shift/Jugglebot && python tools/probes/x.py",
+    "cd x; python tools/probes/x.py",
+    "true | python tools/probes/x.py",
+    "ros2 bag info ~/Desktop/rosbags/x",
+    "cd x && ros2 bag info y",
+    # ...and the bag verbs that write or publish, refused even wrapped.
+    "tools/night_shift_nonet.sh ros2 bag play x",
+    "tools/night_shift_nonet.sh ros2 bag record -a",
+    "tools/night_shift_nonet.sh ros2 bag reindex x",
+    "tools/night_shift_nonet.sh ros2 bag convert -i x -o y",
+    # A cd line that names Desktop is refused (pre-existing rule): run from the clone root.
+    "cd ~/night-shift/Jugglebot && tools/night_shift_nonet.sh python tools/probes/x.py"
+    " --bag ~/Desktop/rosbags/x",
 ])
 def test_refused(command):
     assert _denied(command), command
@@ -95,6 +119,19 @@ def test_refused(command):
     "grep -n check tools/night_shift_deploy.py",
     "git archive origin/main tools/night_shift_gate.py mapkit | tar -x -C D/gate-base",
     "python D/gate-base/tools/night_shift_gate.py --repo . --base origin/main",
+    # Probes and bag reads under the wrapper, and reading the probes (closeout C7a).
+    "tools/night_shift_nonet.sh python tools/probes/feed_catch_bag_probe.py"
+    " --bag ~/Desktop/rosbags/x --out temp/probes/y.json",
+    "D/gate-base/tools/night_shift_nonet.sh timeout 900 python tools/probes/x.py",
+    "/home/jetson/night-shift/r/gate-base/tools/night_shift_nonet.sh python3 tools/probes/x.py",
+    "cd ~/night-shift/Jugglebot && tools/night_shift_nonet.sh python tools/probes/x.py",
+    "tools/night_shift_nonet.sh env PYTHONPATH=. python tools/probes/x.py",
+    "tools/night_shift_nonet.sh ros2 bag info ~/Desktop/rosbags/x",
+    "tools/night_shift_nonet.sh python -m pytest tests/motion/test_levelling_probe.py -q",
+    "grep -rln socket tools/probes/",
+    "ls ~/Desktop/rosbags",
+    "git diff origin/main...HEAD -- tools/probes/x.py",
+    "git add tools/probes/x.py temp/probes",
 ])
 def test_allowed(command):
     assert _denied(command) is None, _denied(command)
@@ -145,6 +182,92 @@ def test_nonet_fails_closed_when_no_namespace_can_be_made(tmp_path):
 
 def test_nonet_needs_a_command():
     assert subprocess.run([NONET], capture_output=True).returncode == 2
+
+
+# --- evidence read-only, serial masked (closeout C7a) -----------------------
+# Stand-ins under tmp_path go in through the EXTRA_* variables, which only ADD paths:
+# the defaults (~/Desktop/rosbags, ~/.ros/log, /dev/ttyACM*, /dev/ttyUSB*, /dev/serial)
+# apply on every run, so these tests also check the real ones without writing to them.
+_INSIDE = r'''
+set -u
+bags=$1 log=$2 tty=$3 serial=$4
+r=0
+no() { echo "FAIL $*"; r=1; }
+erofs() { [[ $("$@" 2>&1) == *"Read-only file system"* ]] || no "not EROFS: $*"; }
+erofs touch "$bags/run1/new"
+erofs sh -c "echo y >> '$bags/run1/x.mcap'"
+erofs mkdir "$log/new"
+[[ $(cat "$bags/run1/x.mcap") == evidence ]] || no "bag unreadable"
+umount "$bags" 2>/dev/null && no "umount of the read-only bind succeeded"
+mount -o remount,bind,rw "$bags" 2>/dev/null && no "remount rw succeeded"
+erofs touch "$bags/run1/new"
+[[ -z $(cat "$tty") ]] || no "tty stand-in readable"
+echo poke > "$tty" || no "write to masked tty failed"
+umount "$tty" 2>/dev/null && no "umount of the tty mask succeeded"
+[[ -z $(ls -A "$serial") ]] || no "serial dir not empty"
+erofs touch "$serial/x"
+touch "$ROS_LOG_DIR/x" || no "ROS_LOG_DIR not writable"
+for dev in /dev/ttyACM* /dev/ttyUSB*; do
+  [[ -e $dev ]] || continue
+  [[ $(stat -Lc %t:%T "$dev") == 1:3 ]] || no "$dev not masked"
+done
+[[ ! -e /dev/serial ]] || [[ -z $(ls -A /dev/serial) ]] || no "/dev/serial not empty"
+python3 - <<'PY' || r=1
+import os
+for d in ("~/Desktop/rosbags", "~/.ros/log"):
+    d = os.path.expanduser(d)
+    if os.path.exists(d) and os.access(d, os.W_OK):
+        print("FAIL writable", d)
+        raise SystemExit(1)
+PY
+exit $r
+'''
+
+
+@pytest.fixture
+def evidence(tmp_path):
+    bags, log, serial = tmp_path / "rosbags", tmp_path / "roslog", tmp_path / "serial"
+    (bags / "run1").mkdir(parents=True)
+    (bags / "run1" / "x.mcap").write_text("evidence")
+    log.mkdir()
+    (serial / "by-id").mkdir(parents=True)
+    tty = tmp_path / "ttyFAKE0"
+    tty.write_text("SECRET")
+    env = dict(os.environ,
+               NIGHT_SHIFT_NONET_EXTRA_RO="%s:%s" % (bags, log),
+               NIGHT_SHIFT_NONET_EXTRA_MASK=str(tmp_path / "ttyFAKE*"),
+               NIGHT_SHIFT_NONET_EXTRA_EMPTY=str(serial))
+    env.pop("ROS_LOG_DIR", None)
+    return env, bags, log, tty, serial
+
+
+@needs_nonet
+def test_nonet_evidence_is_read_only_and_serial_is_masked(evidence):
+    env, bags, log, tty, serial = evidence
+    r = subprocess.run([NONET, "bash", "-c", _INSIDE, "_", str(bags), str(log), str(tty),
+                        str(serial)], env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    # Nothing leaked to the host side.
+    assert sorted(os.listdir(str(bags / "run1"))) == ["x.mcap"]
+    assert (bags / "run1" / "x.mcap").read_text() == "evidence"
+    assert os.listdir(str(log)) == [] and tty.read_text() == "SECRET"
+    assert os.listdir(str(serial)) == ["by-id"]
+
+
+def test_nonet_fails_closed_when_a_mount_fails(evidence, tmp_path):
+    if not _nonet_works():
+        pytest.skip("no user namespaces on this box")
+    env, _, _, _, _ = evidence
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "mount"
+    fake.write_text("#!/usr/bin/env bash\nexit 32\n")
+    fake.chmod(0o755)
+    env["PATH"] = "%s%s%s" % (bin_dir, os.pathsep, env["PATH"])
+    marker = tmp_path / "ran"
+    r = subprocess.run([NONET, "touch", str(marker)], env=env, capture_output=True, text=True)
+    assert r.returncode == 125 and not marker.exists(), r.stderr
+    assert "night_shift_nonet: cannot bind" in r.stderr
 
 
 # --- the app suite's log ----------------------------------------------------
