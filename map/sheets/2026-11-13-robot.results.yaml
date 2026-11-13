@@ -158,8 +158,12 @@ steps:
     saved_at: 2026-11-13 13:38
     status: skipped
   40:
-    comments: ''
-    saved_at: 2026-11-13 13:39
+    comments: 'I got an error wih the `tee` line: " (venv) jetson:/home/jetson/Desktop/Jugglebot/
+      (night-shift/sitting-2026-11-13✗) $ ros2 launch jugglebot jugglebot_launch.py
+      2>&1 | tee -i ../temp/logs/launch_2026-11-13_4.log [13:37:37] tee: ../temp/logs/launch_2026-11-13_4.log:
+      No such file or directory [INFO] [launch]: All log files can be found below
+      /home/jetson/.ros/log/2026-11-13-13-38-42-463400-jetson-1380296 "'
+    saved_at: 2026-11-13 13:40
     status: done
 verdicts:
   12:
