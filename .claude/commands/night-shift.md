@@ -121,7 +121,7 @@ a HOLD writes the same rating on `main` (2j), so base and branch agree at a late
 
 | The Item is | Do | Ends as |
 |---|---|---|
-| bug or feature, `hardware: none`, `owner: none`, `effort` xs or s | one unit (2d), gate (2e), audit (2f), gate script (2g) | Merged or Held |
+| bug or feature, `hardware: none`, `owner: none`, `effort` xs or s | one unit (2d), audit (2e), suite gate (2f), gate script (2g) | Merged or Held |
 | bug or feature, `hardware: none`, `owner: none`, `effort` m or larger | one unit on the first self-contained slice if one is obvious from the body; else Skipped `too large for one unit` | Held (Progress headline) or Skipped |
 | `owner: decision` (any kind) | research the question; write `## Options (<date>)` into the body (2-4 options, one line each, a recommendation); file one question ticket (2h); no code | Questioned (Held if a branch exists) |
 | `area: map-app`, or the fix is in the map app | § 2m | Merged, Held or Skipped |
@@ -150,21 +150,15 @@ pytest line, and anything left undone. `Agent` with `model: sonnet` unless the o
 Opus reason applies. When it returns: `git status --porcelain` must list only files the
 brief allowed; anything else is reverted.
 
-### 2e. The suite gate
+### 2e. The audit
 
-```
-printf 'HEAD=%s\nBRANCH=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse --abbrev-ref HEAD)" > D/gate-<ID>.log
-tools/night_shift_nonet.sh ./run_tests.sh --full >> D/gate-<ID>.log 2>&1; echo "EXIT=$?" >> D/gate-<ID>.log
-```
-
-The unit's work must be committed BEFORE the gate runs (the gate log's `HEAD=` must equal
-the branch tip the gate script sees; an edit after the gate re-runs the gate), and the Item's
-closure goes INTO that commit, not after it: run
+The unit's work is committed BEFORE the audit and the suite run (the audit's `Audited HEAD:`
+and the gate log's `HEAD=` must both equal the branch tip the gate script sees; nothing is
+amended after the gate, ever), and the Item's closure goes INTO that commit, not after it: run
 `python -m mapkit item set-status <ID> complete --link logbook/<entry>.md` (no `--commit`)
-before `git add -A`, so the tip the gate judges is the tip that merges (nothing is amended
-after the gate, ever). If the branch ends up HELD, `main` keeps the Item `in_progress`
-(2j step 2) while the branch carries the closure, which is exactly what merging it later
-should produce. Commit:
+before `git add -A`, so the tip the gate judges is the tip that merges. If the branch ends up
+HELD, `main` keeps the Item `in_progress` (2j step 2) while the branch carries the closure,
+which is exactly what merging it later should produce. Commit:
 `git add -A && git commit -q -F -` with subject `<type>(<area>): <what> (<ID>)` (`fix`,
 `feat`, `docs`, `test`, `refactor`), a body of two or three lines, then the trailers
 `Logbook-Entry: <slug>`, `Night-Shift: <date>` and `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
@@ -173,21 +167,31 @@ deploy proves a commit is tonight's before it may revert one, and an unmarked co
 leave everything for a Session.
 A rating change alone is `map: rate <ID> <title>` with no trailer.
 
-### 2f. The audit
-
 Spawn the `audit-reporter` agent (Sonnet) on `git diff origin/main...HEAD` plus
 `git log --oneline origin/main..HEAD`. Classify each finding yourself: narrative (comment,
 docstring, logbook wording, test metadata, naming) or behaviour-affecting (a code path,
 a value, a test that asserts the wrong thing, a missing edge case). Spawn the
 `audit-fixer` agent (Sonnet) with the narrative findings only; commit its edits as
-`chore(audit): <ID> narrative findings` (same trailers) and RE-RUN 2e. Write
-`D/audit-<ID>.md`: the findings, each marked `narrative applied` or `behaviour-affecting
-open`, ending with the two lines the gate parses:
+`chore(audit): <ID> narrative findings` (same trailers). Write `D/audit-<ID>.md` for the tip
+AFTER those fixes (`git rev-parse HEAD`): the findings, each marked `narrative applied` or
+`behaviour-affecting open`, ending with the two lines the gate parses:
 
 ```
 Audited HEAD: <sha>
 Behaviour-affecting findings open: <n>
 ```
+
+### 2f. The suite gate
+
+```
+printf 'HEAD=%s\nBRANCH=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse --abbrev-ref HEAD)" > D/gate-<ID>.log
+tools/night_shift_nonet.sh ./run_tests.sh --full >> D/gate-<ID>.log 2>&1; echo "EXIT=$?" >> D/gate-<ID>.log
+```
+
+ONE full suite, on the tip the audit names: the audit and its narrative fixes run first (2e),
+so a fix never costs a second full suite or a re-gate. Any commit after this point (a fix
+for a red suite, say) leaves both the log and the audit stale: re-run 2e and 2f on the new
+tip, or Hold.
 
 ### 2g. The gate script
 
@@ -195,8 +199,16 @@ Behaviour-affecting findings open: <n>
 rm -rf D/gate-base && mkdir -p D/gate-base
 git archive origin/main tools/night_shift_gate.py mapkit | tar -x -C D/gate-base
 python D/gate-base/tools/night_shift_gate.py --repo . --base origin/main --branch night-shift/<date>-<ID> \
-    --item <ID> --gate-log D/gate-<ID>.log --audit D/audit-<ID>.md [--app-log D/app-<ID>.log]
+    --item <ID> --gate-log D/gate-<ID>.log --audit D/audit-<ID>.md [--app-log D/app-<ID>.log] \
+    --record "$NIGHT_SHIFT_VERDICTS"
 ```
+
+`--record` writes the verdict, MERGE or HOLD, to `$NIGHT_SHIFT_VERDICTS/<tip>.json` (the
+runner exports the directory). After the night the runner checks that every commit that
+reached `main`, other than map, report, logbook and generated-page writes, is covered by a
+MERGE record (`tools/night_shift_landed.py`); anything else ends the night `UNGATED_MERGE`
+and holds the next ones. So 2i merges exactly the tip the gate recorded as MERGE, never a
+HOLD, never a tip with no gate run, and the `--no-ff` merge commit carries nothing of its own.
 
 The gate is always `origin/main`'s copy, with `origin/main`'s `mapkit` beside it, never the
 branch's: a branch that edits either would otherwise decide its own verdict. The gate checks
@@ -296,7 +308,7 @@ ticket's `## Answer` as the order for the night:
    A conflict you cannot resolve mechanically: Held again, reason `resume merge conflict`.
 2. **Apply** (the answer names fixes, or accepts the audit's): make the named changes as
    in 2d (a unit, `model: sonnet`), commit, then 2e-2g as for any branch. Merge on 2i.
-3. **Merge as is**: re-run 2e on the merged tip and 2f/2g; merge on `MERGE`.
+3. **Merge as is**: re-run 2e-2g on the merged tip; merge on `MERGE`.
 4. **Drop**: leave the remote branch (the deny list refuses deleting one; the report's row
    names it for the owner to delete); on `main`, in one
    write, remove the `- branch:` line from the Item's `## Sitting` section (if any) and
@@ -330,7 +342,7 @@ present, no upstream names). Items stay in Jugglebot's `map/`; only the code is 
    rollback finds the Items to reopen from those subjects; trailers `Logbook-Entry: <slug>` and
    `Night-Shift: <date>`.
 5. Suite: `tools/night_shift_nonet.sh tools/night_shift_app_suite.sh --app <app-clone> --mapkit . --log D/app-<ID>.log`,
-   then one audit on `git -C <app-clone> diff origin/main...HEAD` (2f), writing `D/audit-app-<ID>.md`.
+   then one audit on `git -C <app-clone> diff origin/main...HEAD` (2e), writing `D/audit-app-<ID>.md`.
    An edit after the suite re-runs the suite.
 6. Gate: `python D/gate-base/tools/night_shift_gate.py --repo . --app-repo <app-clone> --base origin/main --branch night-shift/<date>-<ID> --item <ID> --gate-log D/app-<ID>.log --audit D/audit-app-<ID>.md`
    (extract `D/gate-base` as in 2g). `MERGE`: `git -C <app-clone> checkout -q main`, merge the

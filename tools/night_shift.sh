@@ -16,6 +16,8 @@
 # Guards, in order. Each one that stops the run writes a status (never silence):
 #   1. flock on $REPORTS/run.lock         two runs never overlap        -> OVERLAP
 #   2. $LIVE/temp/night-shift.hold        the owner's off switch        -> HELD
+#   2a. $REPORTS/ungated.hold: an earlier night ended UNGATED_MERGE; held until
+#      the owner has reviewed those commits and deleted the file          -> HELD
 #   2b. no Fable model: NIGHT_SHIFT_MODEL / _FALLBACK_MODEL naming Fable stop
 #      the run at once, before the live-session wait, any credential read or
 #      the clone (owner, 2026-11-02)                                    -> FORBIDDEN_MODEL
@@ -48,6 +50,9 @@
 #   nightly-<date>.md       copy of the nightly's latest.md for the orchestrator
 #   <date>.claude.json/.err the claude result and stderr
 #   dry-<date>.md           the dry-run report (dry runs only)
+#   landed-<date>.txt/.py   the landed check's output, and the checker as extracted
+#                           from the night's starting commit
+#   ungated.hold            written on an ungated landing; blocks the next nights
 # stdout gets one line, "night_shift: <STATUS> <detail>".
 #
 # Credentials (owner, 2026-11-02: "default to API, but if there are not enough
@@ -76,9 +81,23 @@
 # Exit 1: NO_GUARD, FORBIDDEN_MODEL, NO_API_KEY, NO_CLONE, CLONE_DIRTY, PULL_FAILED, NO_SETTINGS,
 # PREFLIGHT_FAILED, CLAUDE_MISSING, CLAUDE_TIMEOUT, CLAUDE_FAILED,
 # POST_FETCH_FAILED, PUSH_REJECTED, RUN_LEFT_DIRTY, RUN_SALVAGED, NO_REPORT,
-# DRY_CHANGED, DRY_NO_REPORT, INTERNAL_ERROR. A real run that claimed the nightly
+# UNGATED_MERGE, DRY_CHANGED, DRY_NO_REPORT, INTERNAL_ERROR. A real run that claimed the nightly
 # ticker and ends in any status but OK re-raises it (ticker_reraised in
 # last_run.json), so a failed night never swallows a RED nightly.
+#
+# The merge is bound to the gate (closeout C1). Every MERGE the orchestrator acts
+# on is recorded by `night_shift_gate.py --record` in $NIGHT_SHIFT_VERDICTS
+# (exported to claude; default ~/.local/state/jugglebot/verdicts). Once claude has
+# exited, and BEFORE the app deploy (its reverts are this runner's commits), the
+# runner fetches, captures origin/main and runs tools/night_shift_landed.py, as it
+# stood at the night's start, over head_before..that capture: every non-exempt
+# commit must be covered by a MERGE record. A failure (or a check that cannot run)
+# is UNGATED_MERGE: the commits, authors and paths go in the detail, the report's
+# Summary and Cost get a flag (the report and cost commit still land),
+# $REPORTS/ungated.hold is written and the next start is HELD until the owner
+# deletes it. Nothing is reverted. On another failure status the same evidence is
+# appended to its detail and the hold file is written too. last_run.json carries
+# `landed: gated=k exempt=m ungated=n` and `origin_after_claude`.
 #
 # A night that stops early (2026-11-09: `claude -p` gives background tasks 10
 # minutes after the orchestrator's last turn, then kills them and exits 0, so a
@@ -175,6 +194,10 @@ DATA_LIVE="${NIGHT_SHIFT_DATA_LIVE:-$HOME/map-live/Jugglebot}"
 DEPLOY_TOOL="${NIGHT_SHIFT_DEPLOY_TOOL:-$SCRIPT_DIR/night_shift_deploy.py}"
 DEPLOY_TIMEOUT_S="${NIGHT_SHIFT_DEPLOY_TIMEOUT_S:-2400}"
 APP_URL="${NIGHT_SHIFT_APP_URL:-http://127.0.0.1:8765}"
+UNGATED_HOLD="$REPORTS/ungated.hold"
+# Where the gate records its verdicts (--record) and the landed check reads them.
+NIGHT_SHIFT_VERDICTS="${NIGHT_SHIFT_VERDICTS:-$HOME/.local/state/jugglebot/verdicts}"
+export NIGHT_SHIFT_VERDICTS
 
 DATE="$(date +%F)"
 STARTED="$(date -Iseconds)"
@@ -187,7 +210,8 @@ unset NS_COST NS_TURNS NS_DENIALS NS_SPAWNED NS_CLAUDE_EXIT NS_HEAD_BEFORE \
   NS_HEAD_AFTER NS_BRANCH_AFTER NS_UNPUSHED NS_REPORT NS_CANDIDATES \
   NS_NIGHTLY_LINE NS_PREFLIGHT NS_RESULT NS_MAIN_COMMITS NS_TICKER_RERAISED NS_COST_RECORDED \
   NS_AUTH NS_COST_API NS_APP_CLONE_STATE NS_APP_NIGHT_START NS_DEPLOY_STATUS NS_DEPLOY_LINE \
-  NS_APP_HEALTHY_BEFORE NS_RESUMED NS_SALVAGED NS_STUB_REPORT
+  NS_APP_HEALTHY_BEFORE NS_RESUMED NS_SALVAGED NS_STUB_REPORT \
+  NS_ORIGIN_AFTER_CLAUDE NS_LANDED NS_LANDED_UNGATED
 STATUS_WRITTEN=0
 TICKER_CLAIMED=0
 CLAUDE_RAN=0
@@ -226,11 +250,22 @@ append_deploy_line() {
     *) sed -i "0,/^\*\*Summary\.\*\*.*/s//& **App deploy: ${NS_DEPLOY_STATUS:-unknown}, see the last lines of Cost.**/" "$NS_REPORT" ;;
   esac
 }
+# An ungated landing (closeout C1) is flagged in the report the owner reads first:
+# a line before the cost line, and the Summary.
+append_landed_flag() {
+  [[ -n "${NS_LANDED_UNGATED:-}" ]] || return 0
+  printf 'landed check: UNGATED_MERGE; %s; %s (runner, tools/night_shift_landed.py)\n' \
+    "${NS_LANDED:-}" "$NS_LANDED_UNGATED" >>"$NS_REPORT" || return 1
+  sed -i "0,/^\*\*Summary\.\*\*.*/s//& **UNGATED_MERGE: a commit reached main with no MERGE record, see the last lines of Cost.**/" "$NS_REPORT"
+}
 record_cost_main() {
-  if [[ -z "${NS_COST:-}" && -z "${NS_DEPLOY_LINE:-}" ]]; then export NS_COST_RECORDED=no-cost; return 0; fi
+  if [[ -z "${NS_COST:-}" && -z "${NS_DEPLOY_LINE:-}" && -z "${NS_LANDED_UNGATED:-}" ]]; then
+    export NS_COST_RECORDED=no-cost; return 0
+  fi
   if [[ ! -s "$NS_REPORT" ]]; then export NS_COST_RECORDED=no-report; return 0; fi
   local rel="docs/night-shift/$DATE.md"
   if append_deploy_line \
+     && append_landed_flag \
      && { [[ -z "${NS_COST:-}" ]] || cost_line >>"$NS_REPORT"; } \
      && git -C "$CLONE" add -- "$rel" \
      && git -C "$CLONE" commit -q -m "docs(night-shift): total API cost $DATE" \
@@ -304,6 +339,8 @@ out = {
     "app_healthy_before": e("NS_APP_HEALTHY_BEFORE"),
     "deploy_status": e("NS_DEPLOY_STATUS"),
     "deploy_line": e("NS_DEPLOY_LINE"),
+    "origin_after_claude": e("NS_ORIGIN_AFTER_CLAUDE"),
+    "landed": e("NS_LANDED"),
 }
 tmp = sys.argv[1] + ".tmp"
 with open(tmp, "w") as fh:
@@ -358,6 +395,13 @@ write_stub_report() {   # write_stub_report STATUS DETAIL
 finish() {         # finish STATUS DETAIL: the only way out after argument parsing
   local status="$1" detail="${2:-}"
   trap - EXIT
+  # An ungated landing outlives any status: the hold file stops the next nights, and a
+  # failure status carries the evidence too (UNGATED_MERGE's own detail already does).
+  if [[ -n "${NS_LANDED_UNGATED:-}" ]]; then
+    printf 'UNGATED_MERGE %s: %s\n%s\n' "$DATE" "${NS_LANDED:-}" "$NS_LANDED_UNGATED" \
+      >"$UNGATED_HOLD" 2>/dev/null || detail="$detail (ungated.hold write FAILED)"
+    [[ "$status" == UNGATED_MERGE ]] || detail="$detail; UNGATED_MERGE ${NS_LANDED:-} $NS_LANDED_UNGATED"
+  fi
   write_stub_report "$status" "$detail"
   # A real run that claimed the nightly ticker and then did not finish OK must
   # hand the claim back: the morning Session reads "LOWERED by night-shift" as
@@ -457,6 +501,9 @@ fi
 if [[ -e "$HOLD_FILE" ]]; then
   hold_line="$(head -n1 "$HOLD_FILE" 2>/dev/null)"
   finish HELD "${hold_line:-$HOLD_FILE}"
+fi
+if [[ -e "$UNGATED_HOLD" ]]; then
+  finish HELD "$(head -n1 "$UNGATED_HOLD" 2>/dev/null); review those commits on main, then delete $UNGATED_HOLD"
 fi
 
 # ── 2b. No Fable (owner, 2026-11-02): before the live-session wait ──────────
@@ -799,6 +846,34 @@ export_posthoc_git
 salvage_clone
 export_posthoc_git
 
+# ── 10a. The landed check: what reached origin/main while claude ran (C1) ─────
+# Captured here, BEFORE the deploy, whose reverts and reopens are this runner's own
+# commits. The checker is the copy at the night's start, so a push tonight cannot
+# rewrite it; any failure to run it counts as ungated (fail closed).
+landed_step() {
+  [[ -z "$DRY" ]] || return 0
+  timeout --kill-after=10 120 git -C "$CLONE" fetch -q origin 2>/dev/null 8>&-
+  NS_ORIGIN_AFTER_CLAUDE="$(git -C "$CLONE" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)"
+  export NS_ORIGIN_AFTER_CLAUDE
+  local checker="$REPORTS/landed-$DATE.py" out rc
+  git -C "$CLONE" show "$NS_HEAD_BEFORE:tools/night_shift_landed.py" >"$checker" 2>/dev/null \
+    || cp "$SCRIPT_DIR/night_shift_landed.py" "$checker" 2>/dev/null
+  out="$(timeout --kill-after=10 300 "$PYTHON" -I "$checker" --repo "$CLONE" --from "$NS_HEAD_BEFORE" \
+         --to "${NS_ORIGIN_AFTER_CLAUDE:-refs/remotes/origin/main}" --verdicts "$NIGHT_SHIFT_VERDICTS" 2>&1 8>&-)"
+  rc=$?
+  printf '%s\n' "$out" >"$REPORTS/landed-$DATE.txt" 2>/dev/null
+  NS_LANDED="$(head -n1 <<<"$out")"
+  case "$rc" in
+    0) NS_LANDED_UNGATED="" ;;
+    1) NS_LANDED_UNGATED="$(tail -n +2 <<<"$out" | head -n10 | tr '\n' ';')"
+       NS_LANDED_UNGATED="${NS_LANDED_UNGATED%;}"
+       NS_LANDED_UNGATED="${NS_LANDED_UNGATED:-ungated commits, none named (rc=1)}" ;;
+    *) NS_LANDED_UNGATED="the landed check could not run (rc=$rc): $(one_line "$(head -n3 <<<"$out")")" ;;
+  esac
+  export NS_LANDED NS_LANDED_UNGATED
+}
+landed_step
+
 # ── 10b. The app deploy: the last step of the night, whatever claude's outcome ──
 # Before the outcome is judged, because a night that dies after merging still has
 # commits to put live or take back. A Sitting holding the box outranks all of it:
@@ -922,4 +997,5 @@ fi
 (cd "$CLONE" && "$PYTHON" "$CLONE/tools/night_shift_preflight.py" --repo "$CLONE" \
   --out "$REPORTS/candidates-last.json") >/dev/null 2>>"$REPORTS/preflight.err"
 record_cost_main
+[[ -z "${NS_LANDED_UNGATED:-}" ]] || finish UNGATED_MERGE "${NS_LANDED:-}; ${NS_LANDED_UNGATED}"
 finish OK "cost ${NS_COST:-?} USD (${NS_COST_RECORDED:-?}), turns ${NS_TURNS:-?}, main ${NS_HEAD_BEFORE:0:8} -> ${NS_HEAD_AFTER:0:8}"

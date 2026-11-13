@@ -155,7 +155,7 @@ reads it back. Never recompute it after a merge: it must stay the base this Item
    the gate cannot tell: `git -C temp/debrief-<ID> diff "$(cat temp/reports/debrief/base-<ID>)...HEAD" > temp/reports/debrief/diff-<ID>.patch`.
    Empty means the branch adds nothing: stop and say so. One `audit-reporter` agent (`model: sonnet`) on
    that file; you write its result to `temp/reports/debrief/audit-<ID>.md`, findings marked as in the
-   night's 2f and ending with `Audited HEAD: <sha>` and `Behaviour-affecting findings open: <n>`.
+   night's 2e and ending with `Audited HEAD: <sha>` and `Behaviour-affecting findings open: <n>`.
    Narrative findings are recorded, not applied. A behaviour-affecting one keeps the branch held and
    skips the suite. Then, with Foxy and the venv sourced, and with `run_in_background` because the
    suite can outlast a foreground call (wait for the `EXIT=` line):

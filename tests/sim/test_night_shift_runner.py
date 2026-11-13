@@ -30,7 +30,7 @@ RUNNER = REPO / "tools" / "night_shift.sh"
 SETTINGS = REPO / "tools" / "night_shift_settings.json"
 
 _TOOL_FILES = ("tools/night_shift.sh", "tools/night_shift_settings.json",
-               "tools/night_shift_stub_report.py",
+               "tools/night_shift_stub_report.py", "tools/night_shift_landed.py",
                "tools/night_shift_preflight.py", "tools/nightly_ticker.sh",
                "tools/lib/live_session.sh", ".gitignore")
 _GITCONFIG = "[user]\n\tname = t\n\temail = t@t\n"
@@ -65,6 +65,24 @@ if [[ "$prompt" == *--dry-run* && "${FAKE_CLAUDE_NO_REPORT:-0}" != 1 ]]; then
 fi
 [[ "${FAKE_CLAUDE_COMMIT_MAIN:-0}" == 1 ]] && git -C "$PWD" commit -q --allow-empty -m x
 [[ -n "${FAKE_CLAUDE_START:-}" ]] && { nohup "$FAKE_CLAUDE_START" >/dev/null 2>&1 & disown; sleep 0.3; }
+# Landed-check shapes (closeout C1): an ungated code push, a gated merge with its
+# MERGE record in the runner's $NIGHT_SHIFT_VERDICTS, and an evil merge of a gated tip.
+if [[ "${FAKE_CLAUDE_PUSH_CODE:-0}" == 1 ]]; then
+  echo "Y = 1" >code.py && git add code.py && git commit -q -m "fix: ungated" && git push -q origin main
+fi
+if [[ "${FAKE_CLAUDE_GATED_MERGE:-0}" == 1 || "${FAKE_CLAUDE_EVIL_MERGE:-0}" == 1 ]]; then
+  git checkout -q -b night-shift/gated && echo "X = 1" >gated.py && git add gated.py && git commit -q -m "fix: gated"
+  tip="$(git rev-parse HEAD)"; mkdir -p "$NIGHT_SHIFT_VERDICTS"
+  printf '{"schema": 1, "verdict": "MERGE", "tip": "%s"}\n' "$tip" >"$NIGHT_SHIFT_VERDICTS/$tip.json"
+  git checkout -q main
+  if [[ "${FAKE_CLAUDE_EVIL_MERGE:-0}" == 1 ]]; then
+    git merge -q --no-ff --no-commit night-shift/gated && echo "EVIL = 1" >evil.py && git add evil.py \
+      && git commit -q -m "merge(night-shift): gated"
+  else
+    git merge -q --ff-only night-shift/gated
+  fi
+  git push -q origin main
+fi
 if [[ "${FAKE_CLAUDE_REPORT:-0}" == 1 && "$prompt" != *--dry-run* ]]; then
   date="$(date +%F)"   # a resumed leg's prompt carries no date
   [[ "$prompt" =~ ^/night-shift\ ([0-9-]+) ]] && date="${BASH_REMATCH[1]}"
@@ -951,3 +969,65 @@ def test_deploy_skipped_during_a_sitting_and_on_a_dry_run(ns, tmp_path):
     _check(r, "OK", 0)
     assert not (tmp_path / "deploy.log").exists()
     assert json.loads((ns.reports / "last_run.json").read_text())["deploy_status"] == "SKIPPED_LIVE_SESSION"
+
+
+# --- the landed check (closeout C1) -------------------------------------------
+def test_an_ungated_code_push_ends_ungated_merge_and_holds_the_next_night(ns):
+    r = ns.run(FAKE_CLAUDE_PUSH_CODE=1, FAKE_CLAUDE_SUMMARY=1)
+    _check(r, "UNGATED_MERGE", 1)
+    last = ns.last()
+    code = _git("log", "-1", "--format=%H", "--", "code.py", cwd=ns.clone, env=ns.env)
+    assert last["landed"] == "landed: gated=0 exempt=1 ungated=1"
+    assert "UNGATED %s t <t@t> no MERGE record covers it: code.py" % code[:12] in last["detail"]
+    assert last["ticker_reraised"] is True and (ns.nightly / "ticker.raised").exists()
+    hold = (ns.reports / "ungated.hold").read_text()
+    assert hold.startswith("UNGATED_MERGE %s: landed: gated=0" % last["date"]) and code[:12] in hold
+    # The report and its cost commit still land, flagged; nothing is reverted.
+    assert last["cost_recorded"] == "pushed"
+    report = _git("show", "main:docs/night-shift/%s.md" % last["date"], cwd=ns.origin, env=ns.env)
+    assert "**UNGATED_MERGE: a commit reached main with no MERGE record" in report
+    assert report.splitlines()[-2].startswith("landed check: UNGATED_MERGE; landed: gated=0")
+    assert report.splitlines()[-1].startswith("total API cost:")
+    assert _git("cat-file", "-e", "main:code.py", cwd=ns.origin, env=ns.env) == ""
+    assert _git("status", "--porcelain", cwd=ns.clone, env=ns.env) == ""
+    # The next start is HELD, without claude, until the owner deletes the file.
+    ns.push_change()
+    r = ns.run()
+    _check(r, "HELD", 0)
+    assert ns.last()["detail"].startswith("UNGATED_MERGE %s" % last["date"])
+    assert len(ns.calls()) == 1
+    (ns.reports / "ungated.hold").unlink()
+    _check(ns.run(), "OK", 0)
+
+
+def test_a_recorded_merge_passes_the_landed_check(ns):
+    r = ns.run(FAKE_CLAUDE_GATED_MERGE=1)
+    _check(r, "OK", 0)
+    last = ns.last()
+    assert last["landed"] == "landed: gated=1 exempt=1 ungated=0"
+    assert last["origin_after_claude"] == _git("rev-parse", "main~1", cwd=ns.origin, env=ns.env)
+    assert not (ns.reports / "ungated.hold").exists()
+    records = list((ns.tmp / ".local" / "state" / "jugglebot" / "verdicts").iterdir())
+    assert len(records) == 1   # the runner's default directory, exported to claude
+
+
+def test_exempt_only_commits_pass_the_landed_check(ns):
+    r = ns.run(FAKE_CLAUDE_CLOSE_ITEM="bug-b1")
+    _check(r, "OK", 0)
+    assert ns.last()["landed"] == "landed: gated=0 exempt=2 ungated=0"
+
+
+def test_an_evil_merge_is_flagged_by_the_runner(ns):
+    r = ns.run(FAKE_CLAUDE_EVIL_MERGE=1)
+    _check(r, "UNGATED_MERGE", 1)
+    last = ns.last()
+    assert "merge carries content of its own (evil merge): evil.py" in last["detail"]
+    assert last["landed"] == "landed: gated=1 exempt=1 ungated=1"
+
+
+def test_an_ungated_push_on_a_failed_night_still_holds(ns):
+    r = ns.run(FAKE_CLAUDE_PUSH_CODE=1, FAKE_CLAUDE_EXIT=3)
+    _check(r, "CLAUDE_FAILED", 1)
+    last = ns.last()
+    assert "; UNGATED_MERGE landed: gated=0" in last["detail"] and "code.py" in last["detail"]
+    assert (ns.reports / "ungated.hold").exists()

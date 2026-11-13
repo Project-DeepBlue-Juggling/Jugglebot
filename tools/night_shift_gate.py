@@ -11,7 +11,7 @@ unreadable file is a HOLD.
 Usage:
   python tools/night_shift_gate.py --repo R --base origin/main \\
       --branch night-shift/<date>-<ID> --item <ID> \\
-      --gate-log PATH --audit PATH [--app-log PATH] [--waive c] [--json]
+      --gate-log PATH --audit PATH [--app-log PATH] [--waive c] [--json] [--record [DIR]]
 
   # A branch of the map app (its own repo, its own clone):
   python tools/night_shift_gate.py --repo R --base origin/main --app-repo A \\
@@ -23,6 +23,18 @@ Run from an extract of the base, never from the working tree (protocol 2g):
 Output: ``MERGE`` (exit 0), or ``HOLD`` then one reason per line, each opening
 with its condition letter in brackets (exit 1). ``--json`` prints
 ``{"verdict", "item", "branch", "tip", "reasons", "checked", "waived"}`` instead.
+
+``--record [DIR]`` also writes the verdict, MERGE and HOLD alike, to ``DIR/<tip>.json``
+(atomically: a temp file in DIR, then a rename), with the fields ``schema`` (1),
+``verdict``, ``item``, ``branch``, ``tip``, ``base_ref``, ``base_sha``, ``waived``,
+``reasons``, ``gate_sha256`` (this file), ``gate_log_sha256``, ``audit_sha256`` and
+``written_at``. DIR defaults to ``$NIGHT_SHIFT_VERDICTS``, then
+``~/.local/state/jugglebot/verdicts``. The runner's ``tools/night_shift_landed.py``
+reads these records after the night: a commit that reached ``main`` with no MERGE
+record covering it is ``UNGATED_MERGE`` (closeout C1). A MERGE whose record cannot be
+written is printed as a HOLD, so no merge stands on a verdict the check cannot see.
+A precondition HOLD with no branch tip to name the file is not recorded. The record
+changes no verdict otherwise.
 
 ``--waive c`` is for ``/sitting-debrief``: it runs the gate on a branch the owner
 passed at a Sitting, once the branch has been brought up to date with ``main``,
@@ -105,6 +117,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -112,6 +125,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -700,6 +714,68 @@ def evaluate(repo: str, base: str, branch: str, item: str,
     return res
 
 
+# --- the verdict record (--record) ---------------------------------------------
+#: ``--record`` with no directory: this environment variable (the runner exports it),
+#: else :data:`VERDICTS_DEFAULT`. The directory is shared by every merge to ``main``
+#: (the night's and the debrief's), so the landed check covers both.
+VERDICTS_ENV = "NIGHT_SHIFT_VERDICTS"
+VERDICTS_DEFAULT = os.path.join("~", ".local", "state", "jugglebot", "verdicts")
+
+
+def verdicts_dir(arg: Optional[str] = None) -> str:
+    """The record directory: ``arg`` if non-empty, else ``$NIGHT_SHIFT_VERDICTS``, else the default."""
+    d = arg or os.environ.get(VERDICTS_ENV) or VERDICTS_DEFAULT
+    return os.path.abspath(os.path.expanduser(d))
+
+
+def _sha256_file(path: Optional[str]) -> Optional[str]:
+    try:
+        with open(str(path), "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
+    except (OSError, TypeError):
+        return None
+
+
+def write_record(directory: str, res: GateResult, repo: str, base: str,
+                 gate_log: Optional[str], audit: Optional[str]) -> Optional[str]:
+    """Write ``directory/<tip>.json`` atomically; return its path, or None with no tip to name it.
+
+    ``repo`` is the repository the branch lives in (the app clone for ``--app-repo``)."""
+    tip = res.tip or _rev(repo, res.branch)
+    if tip is None:
+        return None
+    record = {
+        "schema": 1,
+        "verdict": res.verdict,
+        "item": res.item,
+        "branch": res.branch,
+        "tip": tip,
+        "base_ref": base,
+        "base_sha": _rev(repo, base),
+        "waived": list(res.waived),
+        "reasons": list(res.reasons),
+        "gate_sha256": _sha256_file(os.path.abspath(__file__)),
+        "gate_log_sha256": _sha256_file(gate_log),
+        "audit_sha256": _sha256_file(audit),
+        "written_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, tip + ".json")
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix="." + tip, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(record, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+    return path
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     ap.add_argument("--repo", required=True)
@@ -713,6 +789,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--waive", action="append", default=[],
                     help="a condition a Sitting pass overrides; only 'c'")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--record", nargs="?", const="", default=None, metavar="DIR",
+                    help="also write the verdict to DIR/<tip>.json (default $%s, then %s)"
+                         % (VERDICTS_ENV, VERDICTS_DEFAULT))
     try:
         args = ap.parse_args(argv)
     except SystemExit:
@@ -732,6 +811,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     else:
         res = evaluate(args.repo, args.base, args.branch, args.item, args.gate_log, args.audit,
                        tuple(args.waive), args.app_log)
+    if args.record is not None:
+        try:
+            written = write_record(verdicts_dir(args.record), res, args.app_repo or args.repo,
+                                   args.base, args.gate_log, args.audit)
+        except Exception as exc:  # fail closed: a MERGE nobody can see is not a MERGE
+            res.verdict = "HOLD"
+            res.reasons.append("[pre] gate error: could not write the verdict record: %s: %s"
+                               % (type(exc).__name__, exc))
+        else:
+            if written is None:
+                print("night_shift_gate: no branch tip, verdict not recorded", file=sys.stderr)
     print(json.dumps(res.to_json(), indent=2) if args.json else res.to_text())
     return 0 if res.verdict == "MERGE" else 1
 

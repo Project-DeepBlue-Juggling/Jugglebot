@@ -979,3 +979,72 @@ def test_app_gate_takes_per_kind_ids_and_refuses_a_mismatch(repo, tmp_path):
     res = _app_run(repo, app, item="BUG-9")
     assert res.verdict == "HOLD"
     assert "BUG-9 names a bug, but map/feature-tilt.md is a feature" in res.reasons[0], res.reasons
+
+
+# --- the verdict record (--record, closeout C1) ------------------------------
+RECORD_FIELDS = {"schema", "verdict", "item", "branch", "tip", "base_ref", "base_sha", "waived",
+                 "reasons", "gate_sha256", "gate_log_sha256", "audit_sha256", "written_at"}
+
+
+def _sha256(path):
+    import hashlib
+    with open(str(path), "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
+def _cli(repo, *extra, log=None, aud=None, env=None):
+    args = [sys.executable, TOOL, "--repo", str(repo), "--base", "origin/main", "--branch", BRANCH,
+            "--item", "BUG-7", "--gate-log", log or gate_log(repo), "--audit", aud or audit(repo)]
+    return subprocess.run(args + list(extra), capture_output=True, text=True, env=env)
+
+
+def test_record_written_for_a_merge_with_every_field(repo, tmp_path):
+    d = tmp_path / "verdicts"
+    log, aud = gate_log(repo), audit(repo)
+    r = _cli(repo, "--record", str(d), log=log, aud=aud)
+    assert r.returncode == 0 and r.stdout.strip() == "MERGE", r.stdout + r.stderr
+    rec = json.loads((d / (tip(repo) + ".json")).read_text())
+    assert set(rec) == RECORD_FIELDS
+    assert rec["schema"] == 1 and rec["verdict"] == "MERGE" and rec["item"] == "BUG-7"
+    assert rec["branch"] == BRANCH and rec["tip"] == tip(repo) and rec["reasons"] == []
+    assert rec["base_ref"] == "origin/main" and rec["base_sha"] == _git(repo, "rev-parse", "origin/main")
+    assert rec["waived"] == [] and rec["written_at"].endswith("+00:00")
+    assert rec["gate_sha256"] == _sha256(TOOL)
+    assert rec["gate_log_sha256"] == _sha256(log) and rec["audit_sha256"] == _sha256(aud)
+    # atomic: the temp file is renamed into place, nothing else is left in the directory
+    assert os.listdir(str(d)) == [tip(repo) + ".json"]
+
+
+def test_record_written_for_a_hold_with_its_reasons(repo, tmp_path):
+    d = tmp_path / "verdicts"
+    r = _cli(repo, "--record", str(d), log=gate_log(repo, exit_code=1))
+    assert r.returncode == 1 and r.stdout.startswith("HOLD")
+    rec = json.loads((d / (tip(repo) + ".json")).read_text())
+    assert rec["verdict"] == "HOLD" and [x[:3] for x in rec["reasons"]] == ["[a]"]
+
+
+def test_record_dir_defaults_to_the_env_then_home(repo, tmp_path):
+    env = dict(os.environ)
+    env["NIGHT_SHIFT_VERDICTS"] = str(tmp_path / "from-env")
+    assert _cli(repo, "--record", env=env).returncode == 0
+    assert (tmp_path / "from-env" / (tip(repo) + ".json")).exists()
+    env.pop("NIGHT_SHIFT_VERDICTS")
+    assert _cli(repo, "--record", "", env=env).returncode == 0   # HOME is tmp_path (autouse)
+    assert (tmp_path / ".local" / "state" / "jugglebot" / "verdicts" / (tip(repo) + ".json")).exists()
+
+
+def test_a_merge_whose_record_cannot_be_written_is_a_hold(repo, tmp_path):
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x\n")
+    r = _cli(repo, "--record", str(blocker / "verdicts"))
+    assert r.returncode == 1 and r.stdout.startswith("HOLD"), r.stdout
+    assert "could not write the verdict record" in r.stdout
+
+
+def test_record_changes_no_verdict(repo, tmp_path):
+    """The same inputs with and without --record print the same verdict and reasons."""
+    for kw in ({}, {"exit_code": 1}):
+        log = gate_log(repo, **kw)
+        plain = _cli(repo, log=log)
+        recorded = _cli(repo, "--record", str(tmp_path / "v"), log=log)
+        assert (plain.returncode, plain.stdout) == (recorded.returncode, recorded.stdout)
