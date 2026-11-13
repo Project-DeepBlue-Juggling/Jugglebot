@@ -73,7 +73,7 @@ fi
 if [[ "${FAKE_CLAUDE_GATED_MERGE:-0}" == 1 || "${FAKE_CLAUDE_EVIL_MERGE:-0}" == 1 ]]; then
   git checkout -q -b night-shift/gated && echo "X = 1" >gated.py && git add gated.py && git commit -q -m "fix: gated"
   tip="$(git rev-parse HEAD)"; mkdir -p "$NIGHT_SHIFT_VERDICTS"
-  printf '{"schema": 1, "verdict": "MERGE", "tip": "%s"}\n' "$tip" >"$NIGHT_SHIFT_VERDICTS/$tip.json"
+  printf '{"schema": 1, "verdict": "MERGE", "tip": "%s"}\n' "$tip" >"$NIGHT_SHIFT_VERDICTS/$tip.MERGE.json"
   git checkout -q main
   if [[ "${FAKE_CLAUDE_EVIL_MERGE:-0}" == 1 ]]; then
     git merge -q --no-ff --no-commit night-shift/gated && echo "EVIL = 1" >evil.py && git add evil.py \
@@ -986,15 +986,19 @@ def test_an_ungated_code_push_ends_ungated_merge_and_holds_the_next_night(ns):
     assert last["cost_recorded"] == "pushed"
     report = _git("show", "main:docs/night-shift/%s.md" % last["date"], cwd=ns.origin, env=ns.env)
     assert "**UNGATED_MERGE: a commit reached main with no MERGE record" in report
-    assert report.splitlines()[-2].startswith("landed check: UNGATED_MERGE; landed: gated=0")
+    flag = report.splitlines()[-2]
+    assert flag.startswith("landed check: UNGATED_MERGE; landed: gated=0")
+    assert "then delete %s" % (ns.reports / "ungated.hold") in flag and "flagged by design" in flag
     assert report.splitlines()[-1].startswith("total API cost:")
     assert _git("cat-file", "-e", "main:code.py", cwd=ns.origin, env=ns.env) == ""
     assert _git("status", "--porcelain", cwd=ns.clone, env=ns.env) == ""
-    # The next start is HELD, without claude, until the owner deletes the file.
+    # The next start ends UNGATED_HOLD, without claude, until the owner deletes the file.
     ns.push_change()
     r = ns.run()
-    _check(r, "HELD", 0)
-    assert ns.last()["detail"].startswith("UNGATED_MERGE %s" % last["date"])
+    _check(r, "UNGATED_HOLD", 1)
+    detail = ns.last()["detail"]
+    assert "UNGATED_MERGE %s" % last["date"] in detail and code[:12] in detail
+    assert "then delete %s" % (ns.reports / "ungated.hold") in detail
     assert len(ns.calls()) == 1
     (ns.reports / "ungated.hold").unlink()
     _check(ns.run(), "OK", 0)
@@ -1031,3 +1035,35 @@ def test_an_ungated_push_on_a_failed_night_still_holds(ns):
     last = ns.last()
     assert "; UNGATED_MERGE landed: gated=0" in last["detail"] and "code.py" in last["detail"]
     assert (ns.reports / "ungated.hold").exists()
+
+
+def test_every_night_held_by_ungated_hold_pushes_a_stub_report(ns):
+    """Not silent: the stub names the file, the flagged commits and how to clear it."""
+    ns.reports.mkdir(parents=True)
+    (ns.reports / "ungated.hold").write_text(
+        "UNGATED_MERGE 2026-11-12: landed: gated=0 exempt=1 ungated=1\n"
+        "UNGATED abc123def456 t <t@t> no MERGE record covers it: code.py\n")
+    r = ns.run()
+    _check(r, "UNGATED_HOLD", 1)
+    last = ns.last()
+    assert last["stub_report"] == "pushed" and ns.calls() == []
+    report = _git("show", "main:docs/night-shift/%s.md" % last["date"], cwd=ns.origin, env=ns.env)
+    assert "UNGATED_HOLD" in report and "abc123def456" in report
+    assert "then delete %s" % (ns.reports / "ungated.hold") in report
+    # The owner's own off switch stays quiet, as before.
+    (ns.reports / "ungated.hold").unlink()
+    (ns.live / "temp" / "night-shift.hold").write_text("owner: away\n")
+    _check(ns.run(), "HELD", 0)
+
+
+def test_no_checker_at_head_before_skips_the_landed_check(ns):
+    """Bootstrap or rollback: the night's start has no checker; recorded, no hold, no copy."""
+    work = ns.tmp / "rm_checker"
+    _git("clone", "-q", str(ns.origin), str(work), env=ns.env)
+    _git("rm", "-q", "tools/night_shift_landed.py", cwd=work, env=ns.env)
+    _git("commit", "-q", "-m", "rollback", cwd=work, env=ns.env)
+    _git("push", "-q", "origin", "main", cwd=work, env=ns.env)
+    r = ns.run(FAKE_CLAUDE_PUSH_CODE=1)
+    _check(r, "OK", 0)
+    assert ns.last()["landed"] == "landed: skipped (no checker at head_before)"
+    assert not (ns.reports / "ungated.hold").exists()

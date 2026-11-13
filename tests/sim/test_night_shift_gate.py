@@ -1003,7 +1003,7 @@ def test_record_written_for_a_merge_with_every_field(repo, tmp_path):
     log, aud = gate_log(repo), audit(repo)
     r = _cli(repo, "--record", str(d), log=log, aud=aud)
     assert r.returncode == 0 and r.stdout.strip() == "MERGE", r.stdout + r.stderr
-    rec = json.loads((d / (tip(repo) + ".json")).read_text())
+    rec = json.loads((d / (tip(repo) + ".MERGE.json")).read_text())
     assert set(rec) == RECORD_FIELDS
     assert rec["schema"] == 1 and rec["verdict"] == "MERGE" and rec["item"] == "BUG-7"
     assert rec["branch"] == BRANCH and rec["tip"] == tip(repo) and rec["reasons"] == []
@@ -1012,14 +1012,14 @@ def test_record_written_for_a_merge_with_every_field(repo, tmp_path):
     assert rec["gate_sha256"] == _sha256(TOOL)
     assert rec["gate_log_sha256"] == _sha256(log) and rec["audit_sha256"] == _sha256(aud)
     # atomic: the temp file is renamed into place, nothing else is left in the directory
-    assert os.listdir(str(d)) == [tip(repo) + ".json"]
+    assert os.listdir(str(d)) == [tip(repo) + ".MERGE.json"]
 
 
 def test_record_written_for_a_hold_with_its_reasons(repo, tmp_path):
     d = tmp_path / "verdicts"
     r = _cli(repo, "--record", str(d), log=gate_log(repo, exit_code=1))
     assert r.returncode == 1 and r.stdout.startswith("HOLD")
-    rec = json.loads((d / (tip(repo) + ".json")).read_text())
+    rec = json.loads((d / (tip(repo) + ".HOLD.json")).read_text())
     assert rec["verdict"] == "HOLD" and [x[:3] for x in rec["reasons"]] == ["[a]"]
 
 
@@ -1027,10 +1027,10 @@ def test_record_dir_defaults_to_the_env_then_home(repo, tmp_path):
     env = dict(os.environ)
     env["NIGHT_SHIFT_VERDICTS"] = str(tmp_path / "from-env")
     assert _cli(repo, "--record", env=env).returncode == 0
-    assert (tmp_path / "from-env" / (tip(repo) + ".json")).exists()
+    assert (tmp_path / "from-env" / (tip(repo) + ".MERGE.json")).exists()
     env.pop("NIGHT_SHIFT_VERDICTS")
     assert _cli(repo, "--record", "", env=env).returncode == 0   # HOME is tmp_path (autouse)
-    assert (tmp_path / ".local" / "state" / "jugglebot" / "verdicts" / (tip(repo) + ".json")).exists()
+    assert (tmp_path / ".local" / "state" / "jugglebot" / "verdicts" / (tip(repo) + ".MERGE.json")).exists()
 
 
 def test_a_merge_whose_record_cannot_be_written_is_a_hold(repo, tmp_path):
@@ -1048,3 +1048,12 @@ def test_record_changes_no_verdict(repo, tmp_path):
         plain = _cli(repo, log=log)
         recorded = _cli(repo, "--record", str(tmp_path / "v"), log=log)
         assert (plain.returncode, plain.stdout) == (recorded.returncode, recorded.stdout)
+
+
+def test_a_later_hold_never_replaces_the_merge_record(repo, tmp_path):
+    """A resume or re-check that HOLDs an already-merged tip keeps its MERGE record."""
+    d = tmp_path / "verdicts"
+    assert _cli(repo, "--record", str(d)).returncode == 0
+    assert _cli(repo, "--record", str(d), log=gate_log(repo, exit_code=1)).returncode == 1
+    assert sorted(os.listdir(str(d))) == [tip(repo) + ".HOLD.json", tip(repo) + ".MERGE.json"]
+    assert json.loads((d / (tip(repo) + ".MERGE.json")).read_text())["verdict"] == "MERGE"

@@ -21,8 +21,14 @@ after claude):
       such as the re-gate's ``git merge origin/main``: the gate judged a tree that
       contains it), or m adds no non-EXEMPT content of its own (``diff-tree --cc``,
       no evil merge) AND one of its parents is a MERGE tip.
-A record is ``<VERDICTS>/<tip>.json`` with ``"schema": 1``, ``"verdict": "MERGE"`` and
-``"tip"`` equal to the file's name; anything else in the directory is ignored.
+A MERGE record is ``<VERDICTS>/<tip>.MERGE.json`` with ``"schema": 1``, ``"verdict": "MERGE"``
+and ``"tip"`` equal to the name's sha; anything else in the directory (HOLD records
+``<tip>.HOLD.json`` included) is ignored, so a later HOLD of a merged tip cannot unmerge it.
+
+Flagged by design: a non-exempt push to ``main`` by the owner or a day Session inside the
+night window (head_before to the capture) has no record and is flagged. Merges into the
+map app's own repo are outside this check (it reads Jugglebot's ``main`` only). To clear
+an UNGATED_MERGE: review the commits listed, then delete ``$REPORTS/ungated.hold``.
 
 Exempt paths are what the night (and the map app) write straight to ``main`` with no
 branch: the map, the night's report, the logbook, and every page ``mapkit gen``
@@ -113,7 +119,7 @@ def merge_tips(directory: str) -> Set[str]:
     except FileNotFoundError:
         return tips
     for name in names:
-        if not name.endswith(".json") or name.startswith("."):
+        if not name.endswith(".MERGE.json") or name.startswith("."):
             continue
         try:
             with open(os.path.join(directory, name), encoding="utf-8") as fh:
@@ -121,7 +127,7 @@ def merge_tips(directory: str) -> Set[str]:
         except (OSError, ValueError):
             continue
         if (isinstance(rec, dict) and rec.get("schema") == 1 and rec.get("verdict") == "MERGE"
-                and isinstance(rec.get("tip"), str) and rec["tip"] + ".json" == name
+                and isinstance(rec.get("tip"), str) and rec["tip"] + ".MERGE.json" == name
                 and len(rec["tip"]) == 40):
             tips.add(rec["tip"])
     return tips

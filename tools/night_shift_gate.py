@@ -24,8 +24,10 @@ Output: ``MERGE`` (exit 0), or ``HOLD`` then one reason per line, each opening
 with its condition letter in brackets (exit 1). ``--json`` prints
 ``{"verdict", "item", "branch", "tip", "reasons", "checked", "waived"}`` instead.
 
-``--record [DIR]`` also writes the verdict, MERGE and HOLD alike, to ``DIR/<tip>.json``
-(atomically: a temp file in DIR, then a rename), with the fields ``schema`` (1),
+``--record [DIR]`` also writes the verdict, MERGE and HOLD alike, to
+``DIR/<tip>.<verdict>.json`` (``<tip>.MERGE.json`` or ``<tip>.HOLD.json``; atomically: a
+temp file in DIR, then a rename). The verdict is in the name so a later HOLD of the same
+tip (a resume or re-check after it merged) never replaces its MERGE record. Fields: ``schema`` (1),
 ``verdict``, ``item``, ``branch``, ``tip``, ``base_ref``, ``base_sha``, ``waived``,
 ``reasons``, ``gate_sha256`` (this file), ``gate_log_sha256``, ``audit_sha256`` and
 ``written_at``. DIR defaults to ``$NIGHT_SHIFT_VERDICTS``, then
@@ -738,7 +740,9 @@ def _sha256_file(path: Optional[str]) -> Optional[str]:
 
 def write_record(directory: str, res: GateResult, repo: str, base: str,
                  gate_log: Optional[str], audit: Optional[str]) -> Optional[str]:
-    """Write ``directory/<tip>.json`` atomically; return its path, or None with no tip to name it.
+    """Write ``directory/<tip>.<verdict>.json`` atomically; return its path, or None with no tip.
+
+    The verdict is part of the name: a HOLD never replaces or removes a MERGE record.
 
     ``repo`` is the repository the branch lives in (the app clone for ``--app-repo``)."""
     tip = res.tip or _rev(repo, res.branch)
@@ -760,7 +764,7 @@ def write_record(directory: str, res: GateResult, repo: str, base: str,
         "written_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     os.makedirs(directory, exist_ok=True)
-    path = os.path.join(directory, tip + ".json")
+    path = os.path.join(directory, "%s.%s.json" % (tip, res.verdict))
     fd, tmp = tempfile.mkstemp(dir=directory, prefix="." + tip, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:

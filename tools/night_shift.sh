@@ -16,8 +16,6 @@
 # Guards, in order. Each one that stops the run writes a status (never silence):
 #   1. flock on $REPORTS/run.lock         two runs never overlap        -> OVERLAP
 #   2. $LIVE/temp/night-shift.hold        the owner's off switch        -> HELD
-#   2a. $REPORTS/ungated.hold: an earlier night ended UNGATED_MERGE; held until
-#      the owner has reviewed those commits and deleted the file          -> HELD
 #   2b. no Fable model: NIGHT_SHIFT_MODEL / _FALLBACK_MODEL naming Fable stop
 #      the run at once, before the live-session wait, any credential read or
 #      the clone (owner, 2026-11-02)                                    -> FORBIDDEN_MODEL
@@ -30,6 +28,10 @@
 #      the previous run saved its work (see "A night that stops early"), so
 #      this only fires when that failed: the owner sorts it out by hand -> CLONE_DIRTY
 #   6. ff-only pull from origin                                         -> PULL_FAILED
+#   6a. $REPORTS/ungated.hold: an earlier night ended UNGATED_MERGE. Loud, not
+#      HELD: a stub report naming the file, the flagged commits and the clearing
+#      step is pushed every such night, exit 1 (the ticker is not claimed yet,
+#      so it stays raised for the morning Session)                       -> UNGATED_HOLD
 #   7. the deny-list settings installed into the clone on EVERY run;
 #      claude never runs without them                                   -> NO_SETTINGS
 #   8. preflight: nothing new since the last real run = no claude call  -> NOTHING_NEW
@@ -81,7 +83,7 @@
 # Exit 1: NO_GUARD, FORBIDDEN_MODEL, NO_API_KEY, NO_CLONE, CLONE_DIRTY, PULL_FAILED, NO_SETTINGS,
 # PREFLIGHT_FAILED, CLAUDE_MISSING, CLAUDE_TIMEOUT, CLAUDE_FAILED,
 # POST_FETCH_FAILED, PUSH_REJECTED, RUN_LEFT_DIRTY, RUN_SALVAGED, NO_REPORT,
-# UNGATED_MERGE, DRY_CHANGED, DRY_NO_REPORT, INTERNAL_ERROR. A real run that claimed the nightly
+# UNGATED_MERGE, UNGATED_HOLD, DRY_CHANGED, DRY_NO_REPORT, INTERNAL_ERROR. A real run that claimed the nightly
 # ticker and ends in any status but OK re-raises it (ticker_reraised in
 # last_run.json), so a failed night never swallows a RED nightly.
 #
@@ -98,6 +100,16 @@
 # deletes it. Nothing is reverted. On another failure status the same evidence is
 # appended to its detail and the hold file is written too. last_run.json carries
 # `landed: gated=k exempt=m ungated=n` and `origin_after_claude`.
+#   To clear: review the commits listed (last_run.json, landed-<date>.txt, the hold
+#   file itself), then delete $REPORTS/ungated.hold. Until then every night ends
+#   UNGATED_HOLD with a stub report saying so.
+#   Flagged by design: a non-exempt push to main by the owner or a day Session
+#   inside the night window has no MERGE record (a debrief merge will, once it
+#   records). Merges into the map-app repo are outside this check: it reads
+#   Jugglebot's main only.
+#   Bootstrap and rollback: when head_before has no tools/night_shift_landed.py,
+#   the check is skipped (`landed: skipped (no checker at head_before)`) and the
+#   night goes on; a checker that exists there but cannot run is fail-closed.
 #
 # A night that stops early (2026-11-09: `claude -p` gives background tasks 10
 # minutes after the orchestrator's last turn, then kills them and exits 0, so a
@@ -254,8 +266,8 @@ append_deploy_line() {
 # a line before the cost line, and the Summary.
 append_landed_flag() {
   [[ -n "${NS_LANDED_UNGATED:-}" ]] || return 0
-  printf 'landed check: UNGATED_MERGE; %s; %s (runner, tools/night_shift_landed.py)\n' \
-    "${NS_LANDED:-}" "$NS_LANDED_UNGATED" >>"$NS_REPORT" || return 1
+  printf 'landed check: UNGATED_MERGE; %s; %s. To clear: review those commits on main, then delete %s. A non-exempt push by the owner or a day Session during the night is flagged by design; map-app merges are outside this check (runner, tools/night_shift_landed.py)\n' \
+    "${NS_LANDED:-}" "$NS_LANDED_UNGATED" "$UNGATED_HOLD" >>"$NS_REPORT" || return 1
   sed -i "0,/^\*\*Summary\.\*\*.*/s//& **UNGATED_MERGE: a commit reached main with no MERGE record, see the last lines of Cost.**/" "$NS_REPORT"
 }
 record_cost_main() {
@@ -363,7 +375,8 @@ PY
 write_stub_report() {   # write_stub_report STATUS DETAIL
   local status="$1" detail="$2" rel="docs/night-shift/$DATE.md"
   export NS_STUB_REPORT=skipped
-  [[ -z "$DRY" && "$CLAUDE_RAN" == 1 && "$status" != OK && ! -s "$CLONE/$rel" ]] || { unset NS_STUB_REPORT; return 0; }
+  [[ -z "$DRY" && ( "$CLAUDE_RAN" == 1 || "$status" == UNGATED_HOLD ) && "$status" != OK && ! -s "$CLONE/$rel" ]] \
+    || { unset NS_STUB_REPORT; return 0; }
   [[ "$(git -C "$CLONE" symbolic-ref -q --short HEAD 2>/dev/null)" == main ]] || return 0
   [[ -z "$(git -C "$CLONE" status --porcelain 2>/dev/null)" ]] || return 0
   timeout --kill-after=10 60 git -C "$CLONE" fetch -q origin 2>/dev/null 8>&- || return 0
@@ -502,9 +515,6 @@ if [[ -e "$HOLD_FILE" ]]; then
   hold_line="$(head -n1 "$HOLD_FILE" 2>/dev/null)"
   finish HELD "${hold_line:-$HOLD_FILE}"
 fi
-if [[ -e "$UNGATED_HOLD" ]]; then
-  finish HELD "$(head -n1 "$UNGATED_HOLD" 2>/dev/null); review those commits on main, then delete $UNGATED_HOLD"
-fi
 
 # ── 2b. No Fable (owner, 2026-11-02): before the live-session wait ──────────
 for m in "$MODEL" "$FALLBACK_MODEL"; do
@@ -568,6 +578,13 @@ fetch_err="$( { git -C "$CLONE" fetch -q origin && git -C "$CLONE" merge -q --ff
   || finish PULL_FAILED "$fetch_err"
 NS_HEAD_BEFORE="$(git -C "$CLONE" rev-parse HEAD)"
 export NS_HEAD_BEFORE
+
+# ── 6a. An earlier ungated landing holds every night, loudly (closeout C1) ─────
+# After the clone is ready, so the stub report (write_stub_report) can say so on
+# main each night; the owner's own night-shift.hold (guard 2) stays quiet.
+if [[ -e "$UNGATED_HOLD" ]]; then
+  finish UNGATED_HOLD "$UNGATED_HOLD from $(one_line "$(head -n12 "$UNGATED_HOLD" 2>/dev/null)"); to clear: review those commits on main, then delete $UNGATED_HOLD; claude NOT run"
+fi
 
 # ── 6. Deny-list settings, reinstalled every run ──────────────────────────────
 SETTINGS_SRC="$CLONE/tools/night_shift_settings.json"
@@ -856,8 +873,14 @@ landed_step() {
   NS_ORIGIN_AFTER_CLAUDE="$(git -C "$CLONE" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)"
   export NS_ORIGIN_AFTER_CLAUDE
   local checker="$REPORTS/landed-$DATE.py" out rc
+  # Bootstrap or rollback: no checker in the night's starting commit, so nothing to
+  # bind the night to. Recorded, never a hold, never a copy from elsewhere.
+  if ! git -C "$CLONE" cat-file -e "$NS_HEAD_BEFORE:tools/night_shift_landed.py" 2>/dev/null; then
+    export NS_LANDED="landed: skipped (no checker at head_before)" NS_LANDED_UNGATED=""
+    return 0
+  fi
   git -C "$CLONE" show "$NS_HEAD_BEFORE:tools/night_shift_landed.py" >"$checker" 2>/dev/null \
-    || cp "$SCRIPT_DIR/night_shift_landed.py" "$checker" 2>/dev/null
+    || rm -f "$checker"
   out="$(timeout --kill-after=10 300 "$PYTHON" -I "$checker" --repo "$CLONE" --from "$NS_HEAD_BEFORE" \
          --to "${NS_ORIGIN_AFTER_CLAUDE:-refs/remotes/origin/main}" --verdicts "$NIGHT_SHIFT_VERDICTS" 2>&1 8>&-)"
   rc=$?

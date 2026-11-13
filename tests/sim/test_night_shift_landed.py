@@ -70,7 +70,7 @@ class Repo:
         self.verdicts.mkdir(exist_ok=True)
         rec = {"schema": 1, "verdict": verdict, "item": "BUG-7", "branch": "b", "tip": tip}
         rec.update(over)
-        (self.verdicts / ("%s.json" % tip)).write_text(json.dumps(rec))
+        (self.verdicts / ("%s.%s.json" % (tip, verdict))).write_text(json.dumps(rec))
 
     def branch(self, name="night-shift/x"):
         _git(self.root, "checkout", "-q", "-b", name)
@@ -166,6 +166,21 @@ def test_a_record_for_another_tip_does_not_cover_a_later_commit(repo):
     assert res["gated"] == 1 and [u["commit"] for u in res["ungated"]] == [late]
 
 
+def test_a_hold_after_the_merge_does_not_unmerge(repo):
+    """The gate re-run on a merged tip (a resume, a re-check) HOLDs; the MERGE record stands."""
+    import night_shift_gate as g
+    repo.branch()
+    repo.write("src/a.py", "A = 2\n")
+    tip = repo.commit("fix")
+    repo.main()
+    _git(repo.root, "merge", "-q", "--ff-only", "night-shift/x")
+    for verdict, reasons in (("MERGE", []), ("HOLD", ["[a] stale"])):
+        res = g.GateResult(verdict=verdict, item="BUG-7", branch="night-shift/x", tip=tip, reasons=reasons)
+        g.write_record(str(repo.verdicts), res, str(repo.root), "main", None, None)
+    assert sorted(os.listdir(str(repo.verdicts))) == [tip + ".HOLD.json", tip + ".MERGE.json"]
+    assert repo.check()["ungated"] == [] and repo.cli().returncode == 0
+
+
 def test_a_recorded_no_ff_merge_passes(repo):
     repo.branch()
     repo.write("src/a.py", "A = 2\n")
@@ -232,13 +247,13 @@ def test_malformed_records_are_ignored(repo):
     c = repo.commit("fix")
     repo.record(c, schema=2)
     assert len(repo.check()["ungated"]) == 1
-    (repo.verdicts / ("%s.json" % c)).write_text("{not json")
+    (repo.verdicts / ("%s.MERGE.json" % c)).write_text("{not json")
     assert len(repo.check()["ungated"]) == 1
-    (repo.verdicts / ("%s.json" % c)).unlink()
+    (repo.verdicts / ("%s.MERGE.json" % c)).unlink()
     repo.record(c)
-    os.rename(str(repo.verdicts / ("%s.json" % c)), str(repo.verdicts / "other.json"))
+    os.rename(str(repo.verdicts / ("%s.MERGE.json" % c)), str(repo.verdicts / "other.json"))
     assert len(repo.check()["ungated"]) == 1
-    os.rename(str(repo.verdicts / "other.json"), str(repo.verdicts / ("%s.json" % c)))
+    os.rename(str(repo.verdicts / "other.json"), str(repo.verdicts / ("%s.MERGE.json" % c)))
     assert repo.check()["ungated"] == []
 
 
