@@ -4,9 +4,13 @@ kind: bug
 title: carry_zvd rows make the Hand stop and go at about 5 Hz in flight
 status: inbox
 created: '2026-11-13'
-updated: '2026-11-13T05:57:34Z'
+updated: '2026-11-13T17:50:21Z'
 owners: []
 priority: medium
+effort: m
+hardware: robot
+owner: decision
+radius: subsystem
 diagnosis: confirmed
 area: skill-stack
 blocked_by: []
@@ -36,3 +40,12 @@ With `carry_zvd` on, the pose planner gives the Hand a stop-and-go velocity of a
 - A Hand velocity bound or smoothness term in the pose QP, or a ZVD-row formulation that does not trade Hand motion for Platform lateral mode cancellation.
 - Landed as a strict xfail: `test_the_zvd_rows_do_not_make_the_hand_stop_and_go_in_flight` (Dwell 0.40, asserts on <= off); the passing control is `test_the_flag_off_hand_velocity_is_monotone_through_the_flight`. Remove the xfail when fixed. The planner is unchanged.
 - The flag-on Dwell 0.35 must not fly until this is fixed.
+
+## Options (2026-11-14)
+
+1. **A Hand smoothness term with the ZVD rows on:** penalise Hand jerk across the flight window only when `carry_zvd` is set; the strict xfail judges it offline. Planner math, so an Opus unit; held for a Sitting.
+2. **Take the Hand out of the ZVD lever:** the rows see the Platform's own lateral motion, not cup z through the tilt lever. A change to the I-PLAN-16 formulation, for a day Session.
+3. **A hard bound:** no Hand velocity turning point in flight. Risks infeasible solves at short Dwell.
+4. **Leave `carry_zvd` off** (the default) and park the ZVD arm of FEAT-32 until a Session takes it up.
+
+Recommendation: 1. It is the smallest change the existing xfail can judge, and it leaves the flag-off plan byte for byte as now. Risk: a heavy weight could weaken the mode cancellation the rows exist for, so the Sitting compares the Platform residual too.

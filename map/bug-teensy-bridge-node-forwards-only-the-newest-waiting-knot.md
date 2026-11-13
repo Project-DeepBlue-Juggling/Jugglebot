@@ -4,10 +4,13 @@ kind: bug
 title: teensy_bridge_node forwards only the newest waiting knot; harmless at emit lead 0, but the cover has 7-14 ms of margin against a stall
 status: inbox
 created: '2026-11-13'
-updated: '2026-11-13T05:57:33Z'
+updated: '2026-11-13T17:50:20Z'
 owners: []
 priority: high
+effort: s
 hardware: robot
+owner: hands
+radius: subsystem
 diagnosis: confirmed
 area: can-bridge
 blocked_by: []

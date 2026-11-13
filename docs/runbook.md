@@ -169,6 +169,8 @@ Rigs: Robot 4 blocks (251 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - BUG-78 [Robot] Two-ball Columns runs end on a missed Catch of Ball 2 with no collision: 13 of 23 ends, mean run 22 Throws: no ## Sitting section
 - BUG-79 [Robot] Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for: no ## Sitting section
 - BUG-84 [Robot] Hand stalls at the 70 A clamp mid-dive, probably on a Ball under the Cup, and the next launch comes up slow: no ## Sitting section
+- BUG-90 [Robot] carry_zvd rows make the Hand stop and go at about 5 Hz in flight: no ## Sitting section
+- BUG-92 [Robot] static Ball Butler frame markers are tracked as human_throw: no ## Sitting section
 - FEAT-1 [Robot] Design change: the Hand should be Idle, not Parked Closed-loop, while Active: no ## Sitting section
 - FEAT-12 [Robot] Wave camera: optical frame calibration maps the START tick to a recorded frame: no ## Sitting section
 - FEAT-27 [Robot] Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z: no ## Sitting section
@@ -184,11 +186,15 @@ Rigs: Robot 4 blocks (251 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - IDEA-17 [Robot] Hand end-of-stroke bumper, and first the planner's own brake shape: let the ceiling, not the Hand, cap the Apex: no ## Sitting section
 - IDEA-18 [Robot] Learner context cannot tell a Throw from rest from a carried Throw: no ## Sitting section
 - IDEA-20 [Robot] Platform Accelerometer?: no ## Sitting section
+- IDEA-23 [Robot] seed a fresh plant K from the trained plant: no ## Sitting section
 - IDEA-9 [Robot] JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites: no ## Sitting section
 
 ## Questions a Sitting can answer
 
-- none
+- TKT-68 IDEA-22 failed at Apex 0.90 and 3 deg on 2026-11-13: re-measure tilt-back toward 0 offline, raise the Leg jerk limit for this Pattern, park 90 deg, or drop the branch? (parent IDEA-22)
+- TKT-69 BUG-90 carry_zvd Hand stop-go: a Hand smoothness term with the ZVD rows on, take the Hand out of the ZVD lever, a hard bound, or leave the flag off? (parent BUG-90)
+- TKT-71 BUG-92 Ball Butler frame phantoms: the static-cell rule on by default, the same rule off by default, a Ball Butler zone in config, or leave it? (parent BUG-92)
+- TKT-72 IDEA-23 fresh-plant K: a fixed K prior of 1.08 in config, copy K from the trained plant, warm-start from the Memory mean, or leave the identity prior? (parent IDEA-23)
 
 ## Close-out
 
