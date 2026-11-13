@@ -1771,6 +1771,34 @@ ball_tracking:
   # 5-55 ms and the still-pushed (> g) samples bias the fit EARLY. See
   # tracking/flight_fit.py add().
   flight_fit_freeze_above_plane_mm: 250.0
+  # Live WARN for a marker dwelling under the Hand (FEAT-50; BUG-84's three Hand
+  # stalls of 2026-11-13 were each a Ball the Tracker had dropped, trapped under
+  # the Cup). Log-only; see tracking/trapped_ball.py. Values are those of
+  # tools/trapped_ball_finder.py, fitted 2026-11-13 on bag 12-50-26 and 13-06-39.
+  # The Hand's own unlabelled marker, Platform frame: z = z0 + hand_mm_per_rev x rev.
+  trapped_hand_marker_z0_mm: -47.0
+  trapped_hand_marker_x_mm: 0.0
+  trapped_hand_marker_y_mm: -5.0
+  # A Ball SEATED in the Cup rides with the Hand: (x, y) and centre z0 at rev 0.
+  trapped_cup_seat_z0_mm: -25.0
+  trapped_cup_seat_x_mm: 8.0
+  trapped_cup_seat_y_mm: 23.0
+  # Dwell: within this radius for at least this long, an occlusion gap shorter
+  # than trapped_dwell_gap_s does not end it. Event 3's marker sat 0.8 s, event 2's
+  # 0.37 s; shorter passes are bounces (many, harmless).
+  trapped_dwell_radius_mm: 15.0
+  trapped_dwell_min_s: 0.30
+  trapped_dwell_gap_s: 0.25
+  # Re-log a persisting dwell at this period {s}.
+  trapped_warn_repeat_s: 1.0
+  # Decode every Nth mocap frame (~300 Hz -> 50 Hz, as the finder does).
+  trapped_stride: 6
+  # Rolling fixture filter: a 10 mm voxel occupied in more than this fraction of
+  # the last trapped_fixture_window_s of fed frames is a fixture, not a Ball.
+  trapped_fixture_frac: 0.90
+  trapped_fixture_window_s: 30.0
+  # Hand telemetry older than this {s} counts as missing (detector idles).
+  trapped_hand_stale_s: 0.5
 
 # ============================================================
 # 12. Ball Butler Geometry & Kinematics

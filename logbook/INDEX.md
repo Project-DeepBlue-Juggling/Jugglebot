@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-14 | complete | night-shift | **Live WARN when an unlabelled marker dwells under the Hand (FEAT-50): the trapped-Ball finder's geometry moved to a shared module, an online detector feeds a log-only, 1 Hz-throttled Tracker WARN** | [2026-11-14-trapped-ball-live-warn](2026-11-14-trapped-ball-live-warn.md) |
 | 2026-11-13 | complete | night-shift close-out | **test_records asserted the committed ledger holds no landing scores: main went red when a Sitting booked some** | [2026-11-13-records-test-read-live-ledger-contents](2026-11-13-records-test-read-live-ledger-contents.md) |
 | 2026-11-13 | complete | Sitting debrief | **Robot Sitting 2026-11-13: LANE_REFUSED ends were a :5557 drain discarding one knot (newest-only is right, cover margin 7-14 ms), carry_zvd drives a 5 Hz Hand stop-go, turned Columns at 90 deg is a margin cliff, BUG-80 and BUG-82 resolved, four readings withdrawn** | [2026-11-13-sitting-debrief](2026-11-13-sitting-debrief.md) |
 | 2026-11-13 | complete | night-shift | **Night Shift close-out recorded as a plan: steps C1 to C17 under PWAY-9, owner decisions of 2026-11-13** | [2026-11-13-night-shift-closeout-plan](2026-11-13-night-shift-closeout-plan.md) |

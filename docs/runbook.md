@@ -6,7 +6,7 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 4 blocks (261 min) · Bench leg 1 block (30 min) · Bench hand 1 block (40 min)
+Rigs: Robot 4 blocks (251 min) · Bench leg 1 block (30 min) · Bench hand 1 block (40 min)
 
 ## Setup 0: before power
 
@@ -15,9 +15,9 @@ Rigs: Robot 4 blocks (261 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Robot  (4 blocks, 261 min)
+## Robot  (4 blocks, 251 min)
 
-### Block 1: armed  (3 rows, 71 min)
+### Block 1: armed  (2 rows, 61 min)
 
 #### BUG-58 Firmware scheduler STOPs a streamed lane while frames arrive on time and the host stream is clean: LANE_REFUSED ends, cause unseen  (1 min, high, unattached)
 - why: catch the next LANE_REFUSED with the GC probe running; three Sittings (2026-11-03 12:30 and 22:29, 2026-11-04 18:45) found no host-side cause, so only an end caught under the probe can rule the host out at the moment of failure.
@@ -25,14 +25,6 @@ Rigs: Robot 4 blocks (261 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
   - Nothing extra: `gc_probe` is on by default at launch since 2026-11-04 (do not pass `gc_probe:=false`). If an Attempt ends LANE_REFUSED, note the time.
 - pass: a LANE_REFUSED end is on record with GC_PROBE lines from both stream nodes within 1 s of its STOP WARN, and that WARN carries its verdict, fw_sched counters and frame ages.
 - record: the launch log path and the line of each LANE_REFUSED end; none = say so.
-
-#### FEAT-50 Live warning when a marker dwells under the Hand  (10 min, medium, unattached)
-- why: NOT flyable until the WARN is built (no branch yet). Then: confirm the Hand-marker fit and the dwell thresholds still hold after any Hand or marker re-mount, and see the WARN fire in a dive over a deliberately placed Ball.
-- do:
-  - With the Platform level and the Hand at Active pose, place a Ball on the Platform top and roll it into the tube under the Cup by hand, then watch the launch log.
-  - Read the WARN line and compare its position with the Ball.
-- pass: a WARN naming the dwell position within 15 mm of the Ball, within 1 s of the Ball stopping, and no WARN with the Cup empty and the Platform clear.
-- record: the WARN text, its time, and any false WARN count over the Sitting.
 
 #### FEAT-49 Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault  (60 min, medium, unattached)
 - why: BUG-57 faults about once in 50 to 400 launches, and only a power capture armed across launches can show whether the torque loss is an angle error.

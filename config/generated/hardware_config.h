@@ -329,6 +329,20 @@ namespace Tracking {
   constexpr uint32_t FLIGHT_FIT_MIN_SAMPLES = 12u;
   constexpr float FLIGHT_FIT_RESIDUAL_MM = 12.0f;
   constexpr float FLIGHT_FIT_FREEZE_ABOVE_PLANE_MM = 250.0f;
+  constexpr float TRAPPED_HAND_MARKER_Z0_MM = -47.0f;
+  constexpr float TRAPPED_HAND_MARKER_X_MM = 0.0f;
+  constexpr float TRAPPED_HAND_MARKER_Y_MM = -5.0f;
+  constexpr float TRAPPED_CUP_SEAT_Z0_MM = -25.0f;
+  constexpr float TRAPPED_CUP_SEAT_X_MM = 8.0f;
+  constexpr float TRAPPED_CUP_SEAT_Y_MM = 23.0f;
+  constexpr float TRAPPED_DWELL_RADIUS_MM = 15.0f;
+  constexpr float TRAPPED_DWELL_MIN_S = 0.3f;
+  constexpr float TRAPPED_DWELL_GAP_S = 0.25f;
+  constexpr float TRAPPED_WARN_REPEAT_S = 1.0f;
+  constexpr uint32_t TRAPPED_STRIDE = 6u;
+  constexpr float TRAPPED_FIXTURE_FRAC = 0.9f;
+  constexpr float TRAPPED_FIXTURE_WINDOW_S = 30.0f;
+  constexpr float TRAPPED_HAND_STALE_S = 0.5f;
 }
 
 // ==========================================================================

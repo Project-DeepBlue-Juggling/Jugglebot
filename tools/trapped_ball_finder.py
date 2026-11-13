@@ -57,37 +57,27 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(REPO, "ros_ws", "src", "jugglebot"))
+
+from jugglebot.tracking.trapped_ball import (  # noqa: E402,F401
+    CUP_SEAT_AXIAL_TOL_MM, CUP_SEAT_RADIAL_TOL_MM, CUP_SEAT_XY_MM, CUP_SEAT_Z0_MM,
+    DWELL_GAP_S, DWELL_MIN_S, DWELL_RADIUS_MM, HAND_MARKER_AXIAL_TOL_MM,
+    HAND_MARKER_RADIAL_TOL_MM, HAND_MARKER_XY_MM, HAND_MARKER_Z0_MM,
+    HAND_MM_PER_REV, INITIAL_HEIGHT_MM, ON_PLATFORM_Z_MM, PLATFORM_R_MM,
+    STRIDE, UNDER_R_MM, UNDER_Z_MIN_MM,
+    hand_marker_local_z, quat_to_matrix, region_of, to_platform_frame)
+
 # ---------------------------------------------------------------------------
 # Analysis parameters (named defaults; each justified from the three known
 # events of 2026-11-13: launch 1 12:02:17.66 and 12:08:30.63, launch 3
 # 13:15:22.69 -- see the report scratchpad fix-trapped.md / BUG-84 note).
 # ---------------------------------------------------------------------------
-STRIDE = 6                    # decode every 6th mocap frame (300 Hz -> 50 Hz)
-INITIAL_HEIGHT_MM = 578.2     # config jugglebot_geometry.initial_height_mm (pose z is relative)
-HAND_MM_PER_REV = 32.567      # config hand_mm_per_rev
-HAND_MARKER_Z0_MM = -47.0     # Hand's own unlabelled marker, Platform-frame z at rev 0
-HAND_MARKER_XY_MM = (0.0, -5.0)  # ... and its (x, y); measured (-1,-9) at rev 0, (0,-1) higher
-HAND_MARKER_RADIAL_TOL_MM = 25.0
-HAND_MARKER_AXIAL_TOL_MM = 25.0   # + speed term below
-HAND_MARKER_LAG_S = 0.03      # mocap vs telemetry skew allowed when the Hand moves fast
-# A Ball SEATED in the Cup rides with the Hand: Platform-frame (x,y) about (8,23), centre
-# z = -25 + 32.567 mm/rev x rev (seen 2026-11-13 bag 13-06-39: 12.8 s dwell at (3,22,-25)
-# with the Hand parked at rev 0, harmless). The trapped marker of event 3 sat at the same
-# (x,y) but 80 mm BELOW where the Cup was (Hand stalled at 2.6 rev), so it is not IN_CUP.
-CUP_SEAT_XY_MM = (8.0, 23.0)
-CUP_SEAT_Z0_MM = -25.0
-CUP_SEAT_RADIAL_TOL_MM = 20.0
-CUP_SEAT_AXIAL_TOL_MM = 22.0
-FIXTURE_FRAC = 0.15           # one 10 mm voxel held for > 15 % of frames = fixture
-UNDER_R_MM = 95.0             # arm opening radius 70 + ~25 mm ball radius
-UNDER_Z_MIN_MM = -250.0       # lowest believable resting height in the tube
-PLATFORM_R_MM = 230.0         # plat_radius_mm 219.075 + margin
-ON_PLATFORM_Z_MM = (-60.0, 80.0)  # a resting Ball's centre; excludes airborne Balls
-DWELL_RADIUS_MM = 15.0        # "roughly stationary relative to the Platform"
-DWELL_GAP_S = 0.25            # occlusion gap that does not end a dwell
-DWELL_MIN_S = 0.30            # listed-dwell threshold: event 3's marker sat 0.8 s, event 2's 0.37 s;
-                              # shorter passes are bounces (many, harmless)
-STALL_DWELL_MIN_S = 0.08      # ... but AT a stall the bar is lower: event 1's marker sat only 0.13 s
+# Geometry and its config-backed constants (Hand-marker fit, Cup seat, dwell
+# thresholds) live in the shared pure module the live WARN also uses (FEAT-50);
+# re-exported here so this tool's names and tests are unchanged.
+FIXTURE_FRAC = 0.15           # one 10 mm voxel held for > 15 % of frames = fixture (whole-bag batch rule)
+STALL_DWELL_MIN_S = 0.08      # AT a stall the bar is lower: event 1's marker sat only 0.13 s
                               # (22,3,-38) because the Hand freed itself in ~150 ms
 ANCESTRY_LOOKBACK_S = 4.0     # how far before the dwell a Ball track may have ended
 STALL_IQ_A = 55.0             # clamp is ~70 A; matches the debrief scan rule
@@ -99,54 +89,7 @@ STALL_MERGE_S = 1.0
 COINCIDE_PAD_S = 0.05         # dwell must be in place at the stall instant (+/- this); 0.3 s admitted slow
                               # Ball-in-flight passes at the Apex
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPORT_DIR = os.path.join(REPO, "temp", "reports")
-
-
-# ---------------------------------------------------------------------------
-# Geometry (pure)
-# ---------------------------------------------------------------------------
-def quat_to_matrix(x: float, y: float, z: float, w: float) -> np.ndarray:
-    return np.array([
-        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
-
-
-def to_platform_frame(world_pts: np.ndarray, pose: Sequence[float]) -> np.ndarray:
-    """World markers (N,3) mm -> Platform frame. pose = (x, y, z_rel, qx, qy, qz, qw)."""
-    R = quat_to_matrix(*pose[3:7])
-    c = np.array([pose[0], pose[1], pose[2] + INITIAL_HEIGHT_MM])
-    return (np.asarray(world_pts, float) - c) @ R
-
-
-def hand_marker_local_z(rev: float) -> float:
-    """Platform-frame z of the Hand's own marker at Hand position ``rev``."""
-    return HAND_MARKER_Z0_MM + HAND_MM_PER_REV * rev
-
-
-def region_of(local_xyz: Sequence[float], hand_rev: float) -> Optional[str]:
-    """Where a marker (Platform frame, mm) sits relative to the Cup.
-
-    "HAND_MARKER" - it is the Hand's own marker (to be dropped, never a Ball);
-    "IN_CUP"      - a Ball seated in the Cup, moving with the Hand (harmless, never a dwell);
-    "UNDER_HAND"  - inside the arm tube, below the Hand marker;
-    "ON_PLATFORM" - resting on the Platform top outside the tube;
-    None          - anywhere else (airborne, on the floor, on the Base...).
-    """
-    x, y, z = float(local_xyz[0]), float(local_xyz[1]), float(local_xyz[2])
-    r_hand = np.hypot(x - HAND_MARKER_XY_MM[0], y - HAND_MARKER_XY_MM[1])
-    if r_hand <= HAND_MARKER_RADIAL_TOL_MM and abs(z - hand_marker_local_z(hand_rev)) <= HAND_MARKER_AXIAL_TOL_MM:
-        return "HAND_MARKER"
-    if (np.hypot(x - CUP_SEAT_XY_MM[0], y - CUP_SEAT_XY_MM[1]) <= CUP_SEAT_RADIAL_TOL_MM
-            and abs(z - (CUP_SEAT_Z0_MM + HAND_MM_PER_REV * hand_rev)) <= CUP_SEAT_AXIAL_TOL_MM):
-        return "IN_CUP"
-    r = np.hypot(x, y)
-    if r <= UNDER_R_MM and UNDER_Z_MIN_MM <= z < hand_marker_local_z(hand_rev):
-        return "UNDER_HAND"
-    if r <= PLATFORM_R_MM and ON_PLATFORM_Z_MM[0] <= z <= ON_PLATFORM_Z_MM[1]:
-        return "ON_PLATFORM"
-    return None
 
 
 # ---------------------------------------------------------------------------

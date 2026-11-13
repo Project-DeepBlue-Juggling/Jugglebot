@@ -2,16 +2,20 @@
 id: FEAT-50
 kind: feature
 title: Live warning when a marker dwells under the Hand
-status: inbox
+status: complete
 created: '2026-11-13'
-updated: '2026-11-13T06:09:43Z'
+updated: '2026-11-13T17:52:57Z'
 owners: []
 priority: medium
+effort: m
 hardware: robot
+owner: none
+radius: subsystem
 area: tracking
 blocked_by: []
 links:
 - map/bug-hand-stalls-at-the-70-a-clamp-mid-dive-probably-on-a-ball.md
+- logbook/2026-11-14-trapped-ball-live-warn.md
 filed_by: claude
 ---
 

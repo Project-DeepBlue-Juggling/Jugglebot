@@ -12,12 +12,16 @@ Publishes:
 import rclpy
 from rclpy.logging import LoggingSeverity
 from rclpy.node import Node
+import time
+
 import numpy as np
 
 from rcl_interfaces.msg import SetParametersResult
 
 from jugglebot_interfaces.msg import (
+    HandTelemetryMessage,
     MocapDataMulti,
+    RigidBodyPoses,
     ThrowAnnouncement,
     BallStateArray,
     BallState,
@@ -31,6 +35,7 @@ from jugglebot.motion import blas_threads
 from jugglebot.motion.skills import sites
 from jugglebot.tracking.matcher import BallTracker, parse_label_prefixes
 from jugglebot.tracking.ball import Ball
+from jugglebot.tracking import trapped_ball
 from jugglebot.ball_possession import announced_source, require_identity_fields
 from jugglebot.robot_frame import RobotFrame
 
@@ -120,6 +125,19 @@ class BallTrackerNode(Node):
         # Subscribers
         self._mocap_sub = self.create_subscription(
             MocapDataMulti, 'mocap_data', self._on_mocap, 10)
+        # Live WARN for a marker dwelling under the Hand (FEAT-50, log-only;
+        # logic in tracking/trapped_ball.py). Needs the Platform pose and the
+        # Hand position; either missing/stale -> the detector idles.
+        self._trapped = trapped_ball.OnlineDwellDetector()
+        self._trapped_n = 0
+        self._trapped_pose = None
+        self._trapped_hand_rev = None
+        self._trapped_hand_mono = None
+        self._trapped_err_logged = False
+        self._poses_sub = self.create_subscription(
+            RigidBodyPoses, 'rigid_body_poses', self._on_rigid_body_poses, 10)
+        self._hand_sub = self.create_subscription(
+            HandTelemetryMessage, 'hand_telemetry', self._on_hand_telemetry, 10)
         self._announcement_sub = self.create_subscription(
             ThrowAnnouncement, 'throw_announcements', self._on_announcement, 10)
         # mocap_node's latched robot-frame fit (TRANSIENT_LOCAL depth 1).
@@ -269,6 +287,8 @@ class BallTrackerNode(Node):
         # Run tracker
         balls = self._tracker.process_frame(markers, current_time, labels)
 
+        self._check_trapped(markers, labels, current_time)
+
         # Publish all active balls
         if balls:
             out = BallStateArray()
@@ -278,6 +298,49 @@ class BallTrackerNode(Node):
                     out.balls.append(ball_msg)
             if out.balls:
                 self._balls_pub.publish(out)
+
+    def _on_rigid_body_poses(self, msg: RigidBodyPoses):
+        """Cache the Platform pose (x, y, z_rel, qx, qy, qz, qw) for the trapped-marker WARN."""
+        for body in msg.bodies:
+            if body.name == 'Platform':
+                p = body.pose.pose.position
+                q = body.pose.pose.orientation
+                self._trapped_pose = (p.x, p.y, p.z, q.x, q.y, q.z, q.w)
+                return
+
+    def _on_hand_telemetry(self, msg: HandTelemetryMessage):
+        self._trapped_hand_rev = float(msg.pos_meas)
+        self._trapped_hand_mono = time.monotonic()
+
+    def _check_trapped(self, markers, labels, current_time):
+        """Decimated, log-only: WARN while an unlabelled marker dwells under the Hand.
+
+        No Hand-path action; the Hand's safety authority stays the Teensy guard.
+        Pose or Hand telemetry missing/stale -> nothing. Never raises into the
+        tracker callback.
+        """
+        self._trapped_n += 1
+        if self._trapped_n % trapped_ball.STRIDE:
+            return
+        pose, mono = self._trapped_pose, self._trapped_hand_mono
+        if (pose is None or mono is None
+                or time.monotonic() - mono > trapped_ball.HAND_STALE_S):
+            return
+        try:
+            world = [m for m, lab in zip(markers, labels) if not lab]
+            local = (trapped_ball.to_platform_frame(np.array(world), pose)
+                     if world else [])
+            events = self._trapped.update(current_time, local, self._trapped_hand_rev)
+        except Exception as exc:  # noqa: BLE001 - log-only feature must not hurt the tracker
+            if not self._trapped_err_logged:
+                self._trapped_err_logged = True
+                self.get_logger().warning(f"trapped-marker check failed: {exc!r}")
+            return
+        for ev in events:
+            x, y, z = ev['local_mean']
+            self.get_logger().warning(
+                f"marker dwelling under the Hand at ({x:.0f}, {y:.0f}, {z:.0f}) mm "
+                f"for {ev['dur_s'] * 1000:.0f} ms, Hand at {ev['hand_rev']:.2f} rev")
 
     def _ball_to_msg(self, ball: Ball) -> BallState:
         """Convert internal Ball to ROS2 BallState message."""
