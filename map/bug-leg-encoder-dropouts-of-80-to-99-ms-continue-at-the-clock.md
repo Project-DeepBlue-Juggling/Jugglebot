@@ -4,7 +4,7 @@ kind: bug
 title: 'Leg encoder dropouts of 80 to 99 ms continue at the clock beat: trial encoder_msg_rate_ms 9 on Leg 4, then all Legs'
 status: in_progress
 created: '2026-11-06'
-updated: '2026-11-08T03:03:17Z'
+updated: '2026-11-13T02:59:08Z'
 owners: []
 priority: medium
 effort: s
@@ -43,6 +43,11 @@ Still unknown: which side drops the frame (a passive CAN sniffer settles it), wh
 - pass: type the result as pending. At the debrief, from the bag's `/cache_diag`: `age_max_us_4` never exceeds 25 ms over the 20 minutes, while at least one other Leg shows a window over 50 ms (the in-run control). One Leg 4 window over 50 ms refutes the cure for the Legs; no window over 50 ms on any other Leg voids the result. Leg 4's frame-loss spacing should fall to about 62 s from 124 to 130 s.
 - record: the launch log and bag paths, the clock time of arming, and whether Leg 4 was left at 9 or put back.
 - minutes: 30
+
+## Sitting result (2026-11-13 13:59)
+
+- verdict: pass
+- notes: (sheet 2026-11-13-robot, step 42)
 
 ## Progress
 
