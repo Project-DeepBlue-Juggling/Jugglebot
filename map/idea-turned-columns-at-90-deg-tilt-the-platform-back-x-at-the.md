@@ -4,7 +4,7 @@ kind: idea
 title: 'Turned Columns at 90 deg: tilt the Platform back (+x) at the Catch so the ball stops hitting the Platform top'
 status: in_progress
 created: '2026-11-10'
-updated: '2026-11-12T18:37:53Z'
+updated: '2026-11-13T02:42:53Z'
 owners:
 - night-shift
 priority: medium
@@ -53,6 +53,11 @@ Recommendation: 3, then 1. The read is cheap, and it shows whether the misses ar
 - record: the tilt-back and Apex flown and the nomination margin (or refusal text), Throws caught per Attempt and each end reason, any Platform-top strike, any sideways Cup slide at the Catch, the 45 deg control.
 - minutes: 25
 - branch: night-shift/2026-11-12-IDEA-22
+
+## Sitting result (2026-11-13 13:42)
+
+- verdict: fail
+- notes: (sheet 2026-11-13-robot, step 33)
 
 ## Progress
 
