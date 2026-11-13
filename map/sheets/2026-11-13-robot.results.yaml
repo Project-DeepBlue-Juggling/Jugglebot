@@ -79,6 +79,15 @@ steps:
       a very 'stepped' manner, rather than followingsmooth, continuous trajectories.
     saved_at: 2026-11-13 12:59
     status: problem
+  24:
+    comments: 'I get this `not found` error: " $ cd ~/Desktop/Jugglebot/ros_ws &&
+      colcon build --packages-up-to jugglebot && source install/setup.bash; cd ~/Desktop/Jugglebot
+      Starting >>> jugglebot_interfaces Finished <<< jugglebot_interfaces [0.98s]
+      Starting >>> jugglebot Finished <<< jugglebot [2.55s] Summary: 2 packages finished
+      [4.27s] /opt/ros/foxy/local_setup.bash:.:11: no such file or directory: /home/jetson/Desktop/Jugglebot/ros_ws/local_setup.sh
+      not found: "/home/jetson/Desktop/Jugglebot/ros_ws/local_setup.bash" "'
+    saved_at: 2026-11-13 13:05
+    status: done
 verdicts:
   12:
     FEAT-39:
