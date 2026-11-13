@@ -67,6 +67,12 @@ steps:
     comments: ''
     saved_at: 2026-11-13 12:51
     status: done
+  20:
+    comments: Took a few attempts to complete the pattern, with all of the first attempts
+      ending due to messy throws being uncatchable (generally being thrown too far
+      +ve x).
+    saved_at: 2026-11-13 12:54
+    status: done
 verdicts:
   12:
     FEAT-39:
