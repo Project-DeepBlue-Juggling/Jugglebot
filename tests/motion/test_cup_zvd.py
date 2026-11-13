@@ -613,3 +613,58 @@ def test_the_production_splice_path_seeds_mode0_from_the_live_switch(flag):
         assert np.all(np.isfinite(np.asarray(st.mode_state, dtype=float)))
     else:
         assert st.mode_state is None
+
+
+def _hand_flight_turning_points(plan, prom_mm_s=80.0):
+    """Hand-velocity turning points of the carried ball's flight in one folded
+    window: knots ``catch_k-30 .. catch_k-7`` (the diag's [t_land-0.75, -0.2] s
+    at 25 ms), counting a reversal only once the velocity has moved more than
+    ``prom_mm_s`` from the last extreme (a zig-zag filter, so knot noise and
+    the one gentle turn of the flag-off plan do not count)."""
+    hv = np.asarray(plan.hand_vel_rps, float) * hw.GEOM_HAND_MM_PER_REV
+    k = int(plan.catch_k)
+    w = hv[k - 30:k - 6]
+    pts, up, ext = 0, None, w[0]
+    for x in w[1:]:
+        if up is None:
+            if abs(x - ext) > prom_mm_s:
+                up, ext = x > ext, x
+        elif up:
+            if x > ext:
+                ext = x
+            elif ext - x > prom_mm_s:
+                pts, up, ext = pts + 1, False, x
+        else:
+            if x < ext:
+                ext = x
+            elif x - ext > prom_mm_s:
+                pts, up, ext = pts + 1, True, x
+    return pts
+
+
+def test_the_flag_off_hand_velocity_is_monotone_through_the_flight(plans):
+    """CONTROL for the stop-go test below.  MEASURED 2026-11-13 (Dwell 0.40,
+    prominence 80 mm/s, knots catch_k-30..catch_k-7): flag off has 0 turning
+    points (Hand v -88 .. +194 mm/s, one zero crossing); also 0 at Dwell 0.35
+    and 0.50."""
+    for d in DWELLS:
+        assert _hand_flight_turning_points(plans[(d, False)][0]) == 0, d
+
+
+@pytest.mark.xfail(strict=True, reason="FEAT-32 ZVD rows drive a ~5 Hz Hand "
+                   "stop-go; see logbook 2026-11-13-sitting-debrief")
+def test_the_zvd_rows_do_not_make_the_hand_stop_and_go_in_flight(plans):
+    """KNOWN DEFECT (2026-11-13 Sitting, step 21, flag on at Dwell 0.40): the
+    rows let the QP use the Hand to cancel the Platform lateral mode, so the
+    Hand command stops and starts at ~5 Hz through the ball's flight
+    (+/-400 mm/s on the robot; 'jank' the operator saw).  RECIPE, offline,
+    deterministic (this file's ``_solve``, the ``plans`` fixture), turning
+    points of Hand velocity in knots catch_k-30..catch_k-7, prominence 80
+    mm/s, MEASURED 2026-11-13 flag off -> on: Dwell 0.35 0 -> 5, 0.40 0 -> 4
+    (Hand v -376 .. +751 mm/s against -88 .. +194), 0.50 0 -> 2.  The plan only
+    gated HAND_* peaks, which the wiggle passes.  Asserts the flag-on plan has
+    no more turning points than the flag-off one; it flips to a failure
+    (strict xfail) once the planner stops doing this."""
+    on = _hand_flight_turning_points(plans[(0.40, True)][0])
+    off = _hand_flight_turning_points(plans[(0.40, False)][0])
+    assert on <= off, (on, off)
