@@ -849,6 +849,7 @@ _RX_AGE_BUCKETS = ('rx_age_le25', 'rx_age_le50', 'rx_age_le70', 'rx_age_gt70')
 _RX_AGE_NONE = -2 ** 31
 _SCHED_HIST_LEN = 11            # 10 heartbeat windows (~1 s) + the baseline
 _SCHED_DISARM_EDGE_S = 0.5      # a STOP this soon after the 1->0 fall is "at" it
+_SP_DROP_WINDOW_S = 1.0         # a :5557 drain drop this recent is named by the STOP WARN (= the gap window)
 # FEAT-41 (FW 40 / PROTOCOL_VERSION 12): the firmware's downlink ledger. Until
 # FW 39 the stream socket held ONE packet, so a host heartbeat landing in the
 # same 1 ms firmware tick as a setpoint overwrote it (about 1.5 % of setpoints,
@@ -1330,16 +1331,48 @@ class _SetpointCommandSource:
         self._sub.connect(addr)
         self._sub.setsockopt(zmq.SUBSCRIBE, topic)         # setpoint_cmd frames only
         self._sub.setsockopt(zmq.RCVTIMEO, 0)              # non-blocking
+        # Drain accounting (2026-11-13 Sitting debrief): every frame this drain
+        # discards in favour of a newer one. Forwarding stays newest-only; these
+        # only make the discard visible. Written by the one thread that calls
+        # recv_latest; `last_drops` is overwritten on EVERY call (0 on the common
+        # path), the rest only when a frame was discarded (no allocation then:
+        # the discarded dicts are kept by reference, formatted by the caller).
+        self.drops_total = 0          # cumulative older frames discarded
+        self.last_drops = 0           # discarded by the LAST recv_latest call
+        self.last_drop_oldest = None  # oldest discarded frame dict of that call
+        self.last_drop_newest = None  # newest discarded frame dict of that call
+        self.last_drop_wall_s = 0.0   # time.time() at that drain
 
     def recv_latest(self) -> dict | None:
-        """Drain the SUB and return the latest setpoint command dict, or None."""
+        """Drain the SUB and return the latest setpoint command dict, or None.
+
+        Newest-only by design: under the stamped-knot protocol (FW 22) each frame
+        carries three knots (u0, u1, u2) of the same plan and the firmware itself
+        promotes the newest DUE frame (leg_interp.cpp sched_tick_begin), so an
+        older frame drained in the same call as a newer, already-due one could
+        only ever be superseded. Each discarded frame is still COUNTED
+        (``drops_total`` / ``last_drops``) so a thinned stream is visible.
+        """
         latest = None
+        n = 0
+        oldest = None
         while True:
             try:
                 frames = self._sub.recv_multipart(flags=self._zmq.NOBLOCK)
-                latest = self._msgpack.unpackb(frames[1], raw=False)
+                cmd = self._msgpack.unpackb(frames[1], raw=False)
             except self._zmq.Again:
                 break
+            if latest is not None:
+                if n == 0:
+                    oldest = latest
+                n += 1
+                self.last_drop_newest = latest
+            latest = cmd
+        self.last_drops = n
+        if n:
+            self.drops_total += n
+            self.last_drop_oldest = oldest
+            self.last_drop_wall_s = time.time()
         return latest
 
     def close(self) -> None:
@@ -1782,6 +1815,15 @@ class TeensyBridgeNode(Node):
         self._loop_gap = GapTracker(window_s=1.0, idle_s=5.0)
         self._fwd_gap_latch = EpisodeLatch(SCHED_COVER_MS)
         self._gap_snap = (EMPTY_STATS, EMPTY_STATS)   # (forward, loop)
+        # 2026-11-13 debrief: frames the :5557 drain discarded (newest-only
+        # forward). Written ONLY by the setpoint thread (_note_setpoint_drops),
+        # read by the 10 Hz timer: the total is an int and the last drop is one
+        # tuple (mono, n, seq_first, seq_last, drop_lag_ms, fwd_seq, fwd_lag_ms),
+        # each replaced by a single assignment.
+        self._sp_drops_total = 0
+        self._sp_last_drop = None
+        self._sp_drop_warn_mono = -1e9
+        self._sp_drop_suppressed = 0
         self._client.start_heartbeat(hz=float(p.HEARTBEAT_HZ), flags=0)
         self._client.set_heartbeat_flags(0)
 
@@ -5738,10 +5780,84 @@ class TeensyBridgeNode(Node):
                 cmd = None
             if cmd is not None:
                 self._process_setpoint(cmd)
+                # Drop accounting AFTER the forward, so it never delays a send;
+                # the common path is one attribute read (getattr: injected test
+                # sources have no counters).
+                if getattr(self._sp_source, 'last_drops', 0):
+                    self._note_setpoint_drops(self._sp_source, cmd)
             else:
                 # ~1 kHz idle poll (the setpoint command stream arrives at 40 Hz; the
                 # Teensy interpolates to 500 Hz from the knots).
                 self._sp_stop.wait(0.001)
+
+    def _note_setpoint_drops(self, src, cmd: dict, now=None) -> None:
+        """Count and report the older frames the last :5557 drain discarded.
+
+        Observability only (2026-11-13 Sitting debrief): what is forwarded and
+        when is unchanged. Runs on the setpoint thread, after the send, and only
+        when a drain discarded a frame. WARN at most once a second while armed,
+        naming the dropped seq range, the newest dropped frame's stamp and its
+        receive lag (drain wall time minus knot_epoch_us), and the forwarded
+        frame's seq and lag; drops in between are counted in the next line.
+        Never raises (a diagnostic must not kill the setpoint thread).
+        """
+        try:
+            t = time.monotonic() if now is None else float(now)
+            n = int(src.last_drops)
+            self._sp_drops_total = int(src.drops_total)
+            wall_us = float(src.last_drop_wall_s) * 1e6
+            oldest = src.last_drop_oldest or {}
+            newest = src.last_drop_newest or {}
+
+            def _lag_ms(frame):
+                ep = frame.get('knot_epoch_us')
+                return None if ep is None else (wall_us - float(ep)) / 1e3
+
+            drop_lag = _lag_ms(newest)
+            fwd_lag = _lag_ms(cmd)
+            self._sp_last_drop = (t, n, oldest.get('seq'), newest.get('seq'),
+                                  drop_lag, cmd.get('seq'), fwd_lag)
+            if not self._mpc_active:
+                return
+            if t - self._sp_drop_warn_mono < 1.0:
+                self._sp_drop_suppressed += n
+                return
+            more = self._sp_drop_suppressed
+            self._sp_drop_warn_mono = t
+            self._sp_drop_suppressed = 0
+            ep = newest.get('knot_epoch_us')
+            seqs = ('%s' % newest.get('seq') if n == 1
+                    else '%s..%s' % (oldest.get('seq'), newest.get('seq')))
+            self.get_logger().warning(
+                'setpoint drain dropped %d older frame(s) (newest-only forward): '
+                'dropped seq %s, stamp %s, lag %s at drain; forwarded seq %s, '
+                'lag %s; total %d (%d more since the last such line)'
+                % (n, seqs,
+                   'n/a' if ep is None else '%.6f' % (float(ep) / 1e6),
+                   'n/a' if drop_lag is None else '%.1f ms' % drop_lag,
+                   cmd.get('seq'),
+                   'n/a' if fwd_lag is None else '%.1f ms' % fwd_lag,
+                   self._sp_drops_total, more))
+        except Exception:  # noqa: BLE001 -- diagnostic only
+            return
+
+    def _sp_drop_note(self, now_mono: float) -> tuple:
+        """``(recent, text)`` for the STOP WARNs: whether the :5557 drain
+        discarded a frame within the last ``_SP_DROP_WINDOW_S``, and a clause
+        naming the last drop (age, seq, lag) and the running total."""
+        last = self._sp_last_drop
+        total = self._sp_drops_total
+        if last is None:
+            return False, ('bridge :5557 drain dropped 0 frames since start '
+                           '(newest-only forward)')
+        t, n, _s0, s1, lag, _fs, _fl = last
+        age_ms = (now_mono - t) * 1e3
+        recent = 0.0 <= age_ms <= _SP_DROP_WINDOW_S * 1e3
+        return recent, (
+            'bridge :5557 drain dropped %d frame(s) in total (newest-only '
+            'forward); last drop %.0f ms ago: %d frame(s), seq %s, lag %s at drain'
+            % (total, age_ms, n, s1,
+               'n/a' if lag is None else '%.1f ms' % lag))
 
     def _process_setpoint(self, cmd: dict):
         """Pack one 40 Hz setpoint command into a Teensy-side knot Setpoint frame, gate it, send.
@@ -6232,12 +6348,20 @@ class TeensyBridgeNode(Node):
         /link_status as max_forward_gap_ms / max_loop_gap_ms) plus, from FW 38
         (BUG-58), the firmware's own counters and frame ages:
 
-        * **host stream clean, cover expired firmware-side** when the forward
-          gap tracker saw frames, its max, its OPEN gap (time since the last
-          forward) and the loop gap max are all below the cover: the frames
-          left this node in time, so the cover ran out between the send and
-          the promotion (link, net task, stamps, ISR). The fw_sched segment
-          says which (frame ages > 50 ms = late arrival, dropped as expired).
+        * **host forward cadence clean, no knot dropped at the drain** when the
+          forward gap tracker saw frames, its max, its OPEN gap (time since the
+          last forward) and the loop gap max are all below the cover AND the
+          :5557 drain discarded no frame in the last ``_SP_DROP_WINDOW_S``: the
+          frames left this node in time and unthinned, so the cover ran out
+          between the send and the promotion (link, net task, stamps, ISR).
+          The fw_sched segment says which (frame ages > 50 ms = late arrival,
+          dropped as expired). What it does NOT check: an emitter-side stamp
+          skip (trajectory_node's overrun skip; /trajectory/status).
+        * **forward cadence below the cover BUT this node dropped a knot** when
+          the same gap checks pass but the drain discarded an older frame in
+          the window (2026-11-13: both LANE_REFUSED ends were this case and the
+          old verdict called them clean, because it tested send spacing, not
+          stamp continuity).
         * otherwise the two host candidates as before: emitter gap (setpoints
           arrived late) vs bridge forwarding gap (this node starved).
 
@@ -6275,16 +6399,34 @@ class TeensyBridgeNode(Node):
                  and loop.max_ms < cover_ms and open_ms < cover_ms)
         where = ('at the disarm edge (mpc_active 1->0)' if edge
                  else 'while streaming')
-        if clean:
+        dropped, drop_note = self._sp_drop_note(time.monotonic())
+        if clean and dropped:
+            # 2026-11-13: the forward-gap check alone called both LANE_REFUSED
+            # ends "clean" while the drain had discarded the knot between the
+            # playing frame and its successor (a 50 ms stamp gap on the wire).
             verdict = (
-                'host stream clean, cover expired firmware-side: forward gap '
+                'host forward cadence below the cover BUT this node dropped a '
+                'knot: forward gap %.1f ms (p99 %.1f, open %.1f), bridge loop '
+                'gap %.1f ms, all below the ~%.0f ms cover, yet the :5557 drain '
+                'discarded an older frame in the last ~%.0f s, so the forwarded '
+                'stamps skipped a knot and the surviving frame had to arrive '
+                'before the playing cover ran out; read the STOP record (stamp '
+                'gap, successor arrival) and fw_sched'
+                % (fwd.max_ms, fwd.p99_ms, open_ms, loop.max_ms, cover_ms,
+                   _SP_DROP_WINDOW_S))
+        elif clean:
+            verdict = (
+                'host forward cadence clean, no knot dropped at the drain, '
+                'cover expired downstream or at a stamp: forward gap '
                 '%.1f ms (p99 %.1f, open %.1f), bridge loop gap %.1f ms, all '
-                'below the ~%.0f ms cover, so the frames left this node in '
-                'time; read fw_sched (frame age > 50 ms = arrived late and '
-                'dropped as expired: link or net task; small ages = stamps or '
-                'the ISR)'
+                'below the ~%.0f ms cover, and the :5557 drain discarded no '
+                'frame in the last ~%.0f s (checked: send spacing and drain '
+                'discards; NOT checked: an emitter-side stamp skip, see '
+                '/trajectory/status); read fw_sched (frame age > 50 ms = '
+                'arrived late and dropped as expired: link or net task; small '
+                'ages = stamps or the ISR)'
                 % (fwd.max_ms, fwd.p99_ms, open_ms, loop.max_ms,
-                   cover_ms))
+                   cover_ms, _SP_DROP_WINDOW_S))
         else:
             verdict = (
                 'the lane cover (~%.0f ms) expired. Candidates: emitter gap '
@@ -6301,9 +6443,9 @@ class TeensyBridgeNode(Node):
                 '%.0f ms with no newer frame; ' % HAND_C1_COVER_MS) + verdict
         fw = self._sched_fw_summary()
         self.get_logger().warning(
-            'firmware scheduler STOP (+%d, total %d) %s: %s%s'
+            'firmware scheduler STOP (+%d, total %d) %s: %s%s. %s'
             % (total - prev, total, where, verdict,
-               ('. ' + fw) if fw else ''))
+               ('. ' + fw) if fw else '', drop_note))
 
     def _log_stop_records(self, hb, now=None) -> None:
         """FEAT-46: log each new firmware STOP record once, classified (stamp
@@ -6316,8 +6458,11 @@ class TeensyBridgeNode(Node):
             lines = self._stop_record_log.update(hb, t)
         except Exception:  # noqa: BLE001 -- a diagnostic must not kill the timer
             return
+        if not lines:
+            return
+        _recent, drop_note = self._sp_drop_note(time.monotonic())
         for line in lines:
-            self.get_logger().warning('firmware ' + line)
+            self.get_logger().warning('firmware ' + line + '; ' + drop_note)
 
     def _update_gap_snapshot(self) -> None:
         """Snapshot the forwarding-gap monitors (10 Hz timer) and WARN once per
@@ -6641,6 +6786,11 @@ class TeensyBridgeNode(Node):
                          value=str(self._sp_pump.frames_built)),
                 KeyValue(key='setpoints_rejected',
                          value=str(self._sp_pump.frames_rejected)),
+                # Older frames the :5557 drain discarded in favour of a newer
+                # one (newest-only forward; cumulative since node start). A
+                # rise = a 50 ms stamp gap on the wire (2026-11-13 debrief).
+                KeyValue(key='setpoints_coalesced',
+                         value=str(self._sp_drops_total)),
                 # Leg torque FF (ships ON since 2026-07-16). torque_ff_ramp is the live 0→1 ramp
                 # multiplier — the operator watches this climb during the first arming
                 # (tests/hardware/session_torque_ff.md, step S3). It reads 0 whenever

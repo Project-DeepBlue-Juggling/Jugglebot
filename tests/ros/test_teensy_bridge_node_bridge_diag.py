@@ -417,7 +417,14 @@ def test_sched_stop_with_clean_host_maxima_names_a_firmware_side_expiry():
         assert len(lines) == 1
         m = lines[0]
         assert m.startswith('firmware scheduler STOP (+2, total 46) while streaming: ')
-        assert 'host stream clean, cover expired firmware-side' in m
+        # 2026-11-13: the verdict names what it checked (send spacing and drain
+        # discards), not "host stream clean".
+        assert ('host forward cadence clean, no knot dropped at the drain, '
+                'cover expired downstream or at a stamp') in m
+        assert 'NOT checked: an emitter-side stamp skip' in m
+        assert 'host stream clean' not in m
+        assert m.endswith('bridge :5557 drain dropped 0 frames since start '
+                          '(newest-only forward)')
         assert 'Candidates' not in m
         assert 'forward gap 42.1 ms' in m and 'bridge loop gap 19.0 ms' in m
         assert 'fw_sched last 2 heartbeats: expired +3 superseded +0 stale +0 refused +3 hand_c1_stops +1' in m
@@ -702,3 +709,150 @@ def test_sched_stop_warn_carries_the_downlink_ledger():
     finally:
         _teardown(teensy, client, node)
 
+
+
+# ── 2026-11-13 debrief: the :5557 drain's newest-only discards, counted ──────
+
+class _FakeSub:
+    """Stands in for the SUB socket: hands out queued [topic, payload] pairs,
+    then raises zmq.Again, exactly as recv_multipart(NOBLOCK) does."""
+
+    def __init__(self, zmq_mod):
+        self._zmq = zmq_mod
+        self.q = []
+
+    def recv_multipart(self, flags=0):
+        if not self.q:
+            raise self._zmq.Again()
+        return self.q.pop(0)
+
+    def close(self):
+        pass
+
+
+def _drain_source():
+    """A real _SetpointCommandSource (real recv_latest, real msgpack) whose
+    socket is the deterministic fake above (no port, no slow-joiner)."""
+    import msgpack
+    from jugglebot.teensy_bridge_node import _SetpointCommandSource
+    src = _SetpointCommandSource(addr='tcp://127.0.0.1:1')   # connect never completes; unused
+    src._sub.close()
+    src._sub = _FakeSub(src._zmq)
+
+    def push(seq, epoch_us):
+        src._sub.q.append([b'setpoint', msgpack.packb(
+            {'type': 'setpoint_cmd', 'seq': seq, 'knot_epoch_us': epoch_us},
+            use_bin_type=True)])
+    return src, push
+
+
+def test_drain_forwards_the_newest_and_counts_the_discarded_older_frame():
+    """Two frames waiting: the newest is returned (forwarding unchanged), the
+    older one is counted with its seq; one frame waiting: count 0; empty: None."""
+    src, push = _drain_source()
+    try:
+        push(100, 1_000_000)
+        push(101, 1_025_000)
+        got = src.recv_latest()
+        assert got['seq'] == 101
+        assert src.last_drops == 1 and src.drops_total == 1
+        assert src.last_drop_newest['seq'] == 100
+        assert src.last_drop_oldest['seq'] == 100
+        assert src.last_drop_newest['knot_epoch_us'] == 1_000_000
+        push(102, 1_050_000)
+        got = src.recv_latest()
+        assert got['seq'] == 102
+        assert src.last_drops == 0 and src.drops_total == 1
+        assert src.recv_latest() is None
+        assert src.last_drops == 0 and src.drops_total == 1
+        push(103, 1_075_000)
+        push(104, 1_100_000)
+        push(105, 1_125_000)
+        assert src.recv_latest()['seq'] == 105
+        assert src.last_drops == 2 and src.drops_total == 3
+        assert src.last_drop_oldest['seq'] == 103
+        assert src.last_drop_newest['seq'] == 104
+    finally:
+        src.close()
+
+
+def test_drop_note_warns_with_seq_stamp_and_lag_and_is_throttled():
+    """The setpoint-thread note: one WARN naming the dropped seq, its stamp
+    and its receive lag plus the forwarded frame's; a second drop within 1 s
+    is counted into the next line; disarmed drops are counted, not logged;
+    /link_status carries the total as setpoints_coalesced."""
+    from types import SimpleNamespace
+    teensy, client, node = _build_paired_node(boot_state_read=False)
+    try:
+        lines = []
+        node.get_logger().warning = lambda m, *a, **k: lines.append(str(m))
+        assert _link_kv(node)['setpoints_coalesced'] == '0'
+        node._mpc_active = True
+        src = SimpleNamespace(
+            last_drops=1, drops_total=1,
+            last_drop_oldest={'seq': 7, 'knot_epoch_us': 2_000_000_000_000_000},
+            last_drop_newest={'seq': 7, 'knot_epoch_us': 2_000_000_000_000_000},
+            last_drop_wall_s=2_000_000_000.0473)
+        fwd = {'seq': 8, 'knot_epoch_us': 2_000_000_000_025_000}
+        node._note_setpoint_drops(src, fwd, now=50.0)
+        assert len(lines) == 1
+        m = lines[0]
+        assert m.startswith('setpoint drain dropped 1 older frame(s) (newest-only forward): ')
+        assert 'dropped seq 7, stamp 2000000000.000000, lag 47.3 ms at drain' in m
+        assert 'forwarded seq 8, lag 22.3 ms' in m
+        assert m.endswith('total 1 (0 more since the last such line)')
+        # within 1 s: counted, not logged
+        src.drops_total = 2
+        node._note_setpoint_drops(src, fwd, now=50.5)
+        assert len(lines) == 1
+        src.last_drops, src.drops_total = 2, 4
+        src.last_drop_oldest = {'seq': 20}
+        src.last_drop_newest = {'seq': 21}
+        node._note_setpoint_drops(src, {'seq': 22}, now=51.6)
+        assert len(lines) == 2
+        assert 'dropped seq 20..21, stamp n/a, lag n/a at drain' in lines[1]
+        assert lines[1].endswith('total 4 (1 more since the last such line)')
+        # disarmed: counted, silent
+        node._mpc_active = False
+        src.last_drops, src.drops_total = 1, 5
+        node._note_setpoint_drops(src, {'seq': 30}, now=60.0)
+        assert len(lines) == 2 and node._sp_drops_total == 5
+        assert _link_kv(node)['setpoints_coalesced'] == '5'
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_sched_stop_after_a_recent_drain_drop_is_not_called_clean():
+    """The 2026-11-13 LANE_REFUSED shape: forward gap 46.8 ms, loop 22.3 ms
+    (both below the cover) but the drain discarded the knot between the
+    playing frame and its successor. The verdict must say a knot was dropped,
+    and the STOP record line carries the same drop clause."""
+    import time as _t
+    from teensy_link.gap_monitor import GapStats
+    teensy, client, node = _build_paired_node(boot_state_read=False)
+    try:
+        lines = []
+        node.get_logger().warning = lambda m, *a, **k: lines.append(str(m))
+        node._mpc_active = True
+        node._gap_snap = (GapStats(40, 46.8, 30.0), GapStats(900, 22.3, 22.3))
+        node._sp_drops_total = 3
+        node._sp_last_drop = (_t.monotonic() - 0.08, 1, 900, 900, 45.0, 901, 20.0)
+        node._note_sched_sample(_sched_hb(10, 25, 4_000, (4, 0, 0, 0)), 1)
+        node._note_sched_sample(_sched_hb(10, 31, 23_200, (4, 0, 0, 0)), 2)
+        node._warn_on_sched_stop(7, now=100.0)
+        node._warn_on_sched_stop(9, now=101.0)
+        assert len(lines) == 1
+        m = lines[0]
+        assert 'host forward cadence below the cover BUT this node dropped a knot' in m
+        assert 'no knot dropped' not in m and 'host stream clean' not in m
+        assert 'forward gap 46.8 ms' in m and 'bridge loop gap 22.3 ms' in m
+        assert ('bridge :5557 drain dropped 3 frame(s) in total (newest-only '
+                'forward); last drop ') in m
+        assert '1 frame(s), seq 900, lag 45.0 ms at drain' in m
+        # An old drop (outside the 1 s window) keeps the clean verdict.
+        node._sp_last_drop = (_t.monotonic() - 5.0, 1, 900, 900, 45.0, 901, 20.0)
+        node._warn_on_sched_stop(11, now=103.0)
+        assert 'host forward cadence clean, no knot dropped at the drain' in lines[1]
+        assert 'last drop 5' in lines[1]
+    finally:
+        _teardown(teensy, client, node)
