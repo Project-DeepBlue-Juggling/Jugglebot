@@ -6,14 +6,31 @@ Where each pathway of the Jugglebot project stands: its destination, how many st
 
 **Destination:** Every morning main is green and carries the overnight work that needed no hands; everything else waits on a held branch, an answerable question in the app or a row of the Next Sitting Runbook, and the owner's share of a Sitting is the hardware steps only.
 
-**Progress:** 5 of 6 stops done
+**Progress:** 5 of 23 stops done
 
-**Next:** R6 First Runbook-driven Sitting ([night-shift.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift.md))
+**Next:** Phase C1 Bind the merge to the gate ([night-shift-closeout.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift-closeout.md))
 
 **Owners:** Harrison
 
 **Remaining:**
 
+- Phase C1 Bind the merge to the gate ([night-shift-closeout.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift-closeout.md))
+- Phase C2 Runner housekeeping ([night-shift-closeout.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift-closeout.md))
+- Phase C3 Skip reasons live on the Item ([night-shift-closeout.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift-closeout.md))
+- Phase C4 Delta walk and NOTHING_NEW ([night-shift-closeout.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift-closeout.md))
+- Phase C5 Report layout and protocol ([night-shift-closeout.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift-closeout.md))
+- Phase C6 Pull stalls are loud ([night-shift-closeout.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift-closeout.md))
+- Phase C7 Offline bag reads and held-only work ([night-shift-closeout.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift-closeout.md))
+- Phase C8 The robot stops writing tracked files ([night-shift-closeout.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift-closeout.md))
+- Phase C9 Sheet notes-only and batched commits ([night-shift-closeout.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift-closeout.md))
+- Phase C10 Debrief merge as a tested script ([night-shift-closeout.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift-closeout.md))
+- Phase C11 Runbook becomes an index ([night-shift-closeout.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift-closeout.md))
+- Phase C12 logbook INDEX generated ([night-shift-closeout.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift-closeout.md))
+- Phase C13 Map-write check inside item commits ([night-shift-closeout.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift-closeout.md))
+- Phase C14 Night Shift report-history picker ([night-shift-closeout.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift-closeout.md))
+- Phase C15 F9 feasibility probe ([night-shift-closeout.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift-closeout.md))
+- Phase C16 Docs ([night-shift-closeout.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift-closeout.md))
+- Phase C17 R6 and close ([night-shift-closeout.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift-closeout.md))
 - R6 First Runbook-driven Sitting ([night-shift.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift.md))
 
 **Attached inbox items:**
@@ -162,7 +179,7 @@ _Status: closed (complete)._
 
 | Pathway | Now | Next | Later | Done |
 | --- | --- | --- | --- | --- |
-| Night Shift: unattended overnight work on the board, and the Next Sitting Runbook | — | R6 First Runbook-driven Sitting | — | P1 Runner skeleton and dry run; P2 Work loop, merge gate, report and ticker; P3 Night Shift page in the map app; P4 Next Sitting Runbook; P5 Sitting debrief command |
+| Night Shift: unattended overnight work on the board, and the Next Sitting Runbook | — | Phase C1 Bind the merge to the gate | Phase C2 Runner housekeeping; Phase C3 Skip reasons live on the Item; Phase C4 Delta walk and NOTHING_NEW; Phase C5 Report layout and protocol; Phase C6 Pull stalls are loud; Phase C7 Offline bag reads and held-only work; Phase C8 The robot stops writing tracked files; Phase C9 Sheet notes-only and batched commits; Phase C10 Debrief merge as a tested script; Phase C11 Runbook becomes an index; Phase C12 logbook INDEX generated; Phase C13 Map-write check inside item commits; Phase C14 Night Shift report-history picker; Phase C15 F9 feasibility probe; Phase C16 Docs; Phase C17 R6 and close; R6 First Runbook-driven Sitting | P1 Runner skeleton and dry run; P2 Work loop, merge gate, report and ticker; P3 Night Shift page in the map app; P4 Next Sitting Runbook; P5 Sitting debrief command |
 | Two-ball oval | P3 A/B Sitting on the oval; P4 Working point and the dwell ladder | — | P5 Two-ball oval; bug ABORTED_NO_RELEASE: three goals ended because the throw never left the hand (new 2026-10-28 21:02); bug A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve; bug 10 % jitter-margin class of LIMIT_* refusals; bug mocap_node loses frames to queue full in bursts before the first dispatch (544 / 373 / 490 frames in the three 2026-10-28 Sittings); bug Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff; bug RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball; bug Teensy guard MAX_DEVIATION latched on the hand (+8.4 rev) mid-oval; recover_lane found nothing, re-dispatch rejected WRONG_MODE; feature P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30; feature Pre-release hold rung: release from a moving Platform (hold 0.100 → 0); feature Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load); feature Trim the nice-0 chain CPU the flame graphs point at: skill_node executor (~0.5 core), mocap_node publish path (~0.28), tracker message plumbing (~0.28) | P0 Identify the Platform mode from existing bags; P1 The ZVD contract and rows behind a flag; P2 Box re-sweep with the rows on; P1 The oval pattern dispatchable; P3 Pose-level carry planner; P1 Firmware - age-aware lead clamp and engagement counter; P2 Bench validation; P3 Robot validation |
 | Project map and shared dictionary | — | — | — | closed |
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug Ball Butler yaw-settle gate aborts settled throws (THROW_ABORTED_NOT_SETTLED false positives); feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
