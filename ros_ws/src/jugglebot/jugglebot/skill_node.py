@@ -4322,14 +4322,38 @@ class SkillNode(Node):
             pattern=pattern)
         if refusal is not None:
             return SimpleNamespace(success=False, message=refusal)
+        if any(landing_offset_mm) and reload:
+            # BUG-80 audit finding 2: an EMPTY cup opens with the Ball Butler
+            # reload catch, so the first Throw is released from a carried
+            # catch, not from rest -- the shape the offset check intends is
+            # absent. Refusal only; a zero offset never reaches here.
+            return SimpleNamespace(
+                success=False,
+                message=('refused: landing offset (%+.1f, %+.1f) mm applies '
+                         'only to a from-rest %s, and the cup is EMPTY so this '
+                         'goal opens with the Ball Butler reload catch -- put '
+                         'a ball in the Cup, or set landing_offset_x_mm and '
+                         'landing_offset_y_mm back to 0.0'
+                         % (landing_offset_mm[0], landing_offset_mm[1],
+                            pattern)))
         if any(landing_offset_mm):
             # The OUTCOME lines measure from the Site, so they will read this.
+            # Memory rows are written under the live plant_id (BUG-80 audit
+            # finding 1). The row is self-consistent (u = the command sent,
+            # offset included; y = landing minus the Site's catch point, so a
+            # landing that follows the command has zero innovation), but a
+            # plant gain error at the offset is stored as plant evidence, and
+            # a block of one sign would leave a residual in later goals.
+            plant_id = str(self.get_parameter('plant_id').value)
             self.get_logger().warning(
                 'LANDING OFFSET (%+.1f, %+.1f) mm on this %s goal: every '
                 'Throw is commanded that far off its Site, and the OUTCOME '
-                'lines read about that far. Set both landing_offset params '
-                'back to 0.0 after this Attempt.'
-                % (landing_offset_mm[0], landing_offset_mm[1], pattern))
+                'lines read about that far. Memory rows from this Attempt '
+                'are written to plant_id %r: set plant_id to a fresh name '
+                'for offset Attempts and restore it afterwards. Set both '
+                'landing_offset params back to 0.0 after this Attempt.'
+                % (landing_offset_mm[0], landing_offset_mm[1], pattern,
+                   plant_id))
 
         # Fresh bookkeeping for THIS goal (U5): the executor's OUTCOME lines
         # accumulate here across the whole attempt (`_on_tick`), for the

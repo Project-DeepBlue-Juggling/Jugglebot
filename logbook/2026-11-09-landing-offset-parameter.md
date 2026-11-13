@@ -21,11 +21,11 @@ TKT-47 chose a 40-Throw check that needs commanded landing offsets of +20 and -2
 
 `skill_node` now has `landing_offset_x_mm` and `landing_offset_y_mm` (mm, Robot frame, default 0). `OneBallPattern.landing_offset_m` adds them to each Throw's `y_d`.
 
-- **Applies to `self_toss` only.** Every other Pattern, the two-ball ones included, refuses a non-zero offset by name at goal accept and at `skills/nominate` (`nominate.landing_offset_refusal`). A goal that ignored the parameter would look like the experiment while being an ordinary Attempt.
+- **Applies to `self_toss` only.** Every other Pattern, the two-ball ones included, refuses a non-zero offset by name at goal accept, and `skills/nominate` refuses it for other Patterns and out-of-range values while showing a set offset on a `self_toss` request (`nominate.landing_offset_refusal`). A goal that ignored the parameter would look like the experiment while being an ordinary Attempt.
 - **Refused while a goal runs** and past `learner_lateral_authority_mm` per axis, re-checked at accept in case the authority moved.
 - **Default 0 is today, bit for bit**: same digest of every Segment's pose, pose velocity, Hand and takeoff before and after the change (Verification).
 
-Held on `night-shift/2026-11-09-BUG-80` for a Sitting by TKT-48. Not on `main`.
+Flown on hardware 2026-11-13 (operator passed it) and merged to `main` at the Sitting debrief of 2026-11-13 by owner say-so, with two audit findings fixed in the follow-up commit: a non-zero offset is refused when the goal takes the reload path (empty Cup), and the accept WARN names the live `plant_id` that the Memory rows are written to. Originally held on `night-shift/2026-11-09-BUG-80` for a Sitting by TKT-48.
 
 ## Discussion
 
@@ -74,8 +74,12 @@ It looks like the direct way to fly the +20/-20 sequence in one goal. But a same
 
 ## Verification
 
-- (2026-11-09, `OMP_NUM_THREADS=1 python -m pytest -q tests/motion/test_skills_landing_offset.py tests/ros/test_skill_node_landing_offset.py`, worktree on the branch): 45 passed.
+- (2026-11-09, `OMP_NUM_THREADS=1 python -m pytest -q tests/motion/test_skills_landing_offset.py tests/ros/test_skill_node_landing_offset.py`, worktree on the branch): 45 passed at the time; 46 after the audit-fix test (2026-11-13, same command, `OMP_NUM_THREADS=1 python -m pytest -q tests/motion/test_skills_landing_offset.py tests/ros/test_skill_node_landing_offset.py`); 50 passed after the debrief follow-up's four tests (2026-11-13, same command, run in the follow-up worktree).
 - (2026-11-09, mutation: `y_d` forced to zeros in `_append_one_ball_pattern`, same two files, `-k` the four tests added today): 4 failed, restored after; the earlier 2026-11-09 mutation on the unit's first pass recorded 40 failed, 1 passed.
 - (2026-11-09, `/tmp/probe_bug80_digest.py` on `3f03e2b3` and on the branch, `OMP_NUM_THREADS=1`, 12 Segments each): SHA-256 prefixes pose `6d50f425ec1d8e59` and level `68312e1319f82337` on both, so zero offset is bit-identical to the pre-change code (every Segment's pose, pose velocity, Hand, time and takeoff, plus each `y_d`).
 - (2026-11-09, `./run_tests.sh` in the branch worktree, on the code and tests committed here): parallel phase 9295 passed, 52 skipped; serial phase 7 passed; RESULT: PASS, 648 s.
 - Audit fix (the parameter is also refused during goal accept, so the check, the record and the Pattern read one value; 2026-11-09, `./run_tests.sh -q` in the branch worktree, after that fix): parallel rc 0, serial rc 0, RESULT: PASS, 599 s. The doubled quiet flag hid the pass count. The new test fails with the fix removed (`pytest -q tests/ros/test_skill_node_landing_offset.py`: 1 failed, 9 passed). The only edit after this run is these lines.
+
+## Debrief follow-up (2026-11-13)
+
+The audit's two behaviour findings, refusals and text only (no limit, margin, timing or trajectory change). (1) Memory rows: the row is self-consistent (`u` is the command sent, offset included; `y` is landing minus the Site's catch point), so no skip was added; the accept WARN now names the live `plant_id` the rows go to and tells the operator to use a fresh one and restore it. (2) A non-zero offset on a goal that takes the reload path (EMPTY Cup, first Throw carried, not from rest) is refused at accept with a message to seat a ball or zero the offset. A zero offset is unchanged (pinned by test).

@@ -152,3 +152,65 @@ def test_the_goal_re_checks_the_authority_at_accept(tmp_path):
     assert resp.success is False
     assert 'learner_lateral_authority_mm' in resp.message
     assert node._executor is None
+
+
+# --- BUG-80 audit follow-up: reload refusal and the plant_id WARN ----------
+
+def _empty_cup_node(tag):
+    from tests.ros.test_skill_node import _reload_ready
+    node, client = _node_with_client(response=_response())
+    node._params['plant_id'] = 'test_landing_offset_%s_%s' % (tag, id(node))
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=False)          # EMPTY cup: the goal takes the reload path
+    _prelevel_ready(node)
+    _reload_ready(node)
+    return node
+
+
+def test_a_non_zero_offset_is_refused_when_the_goal_takes_the_reload_path(
+        tmp_path):
+    node = _empty_cup_node('reload_off')
+    node._params['landing_offset_x_mm'] = 20.0
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_self_toss_goal(apex_m=1.0, num_cycles=1))
+    assert resp.success is False
+    assert 'landing offset' in resp.message
+    assert 'put a ball in the Cup' in resp.message
+    assert 'landing_offset_x_mm' in resp.message
+    assert node._executor is None
+    assert node._goal_starting is False
+
+
+def test_a_zero_offset_reload_goal_is_not_touched_by_the_offset_refusal(
+        tmp_path):
+    node = _empty_cup_node('reload_zero')
+    assert node._landing_offset_mm() == (0.0, 0.0)
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_self_toss_goal(apex_m=1.0, num_cycles=1))
+    assert 'landing offset' not in resp.message
+    assert resp.success is True, resp.message
+    assert node._attempt_fed is True      # the reload (Feed-first) path, as before
+
+
+def test_the_accept_warn_names_the_live_plant_id_for_an_offset_goal(tmp_path):
+    node, _ = _ready_node('warn')
+    node._params['landing_offset_x_mm'] = 20.0
+    warnings = []
+    node.get_logger().warning = warnings.append
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_self_toss_goal(apex_m=1.0, num_cycles=1))
+    assert resp.success is True, resp.message
+    text = ' '.join(str(w) for w in warnings)
+    assert 'LANDING OFFSET' in text
+    assert repr(node._params['plant_id']) in text
+    assert 'Memory rows' in text and 'fresh' in text
+
+
+def test_a_zero_offset_goal_logs_no_offset_warn(tmp_path):
+    node, _ = _ready_node('nowarn')
+    warnings = []
+    node.get_logger().warning = warnings.append
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_self_toss_goal(apex_m=1.0, num_cycles=1))
+    assert resp.success is True, resp.message
+    assert not any('LANDING OFFSET' in str(w) for w in warnings)
