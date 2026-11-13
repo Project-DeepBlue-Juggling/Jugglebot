@@ -36,4 +36,9 @@ steps:
     comments: ''
     saved_at: 2026-11-13 11:45
     status: done
+  10:
+    comments: First attempt was met with LANE_REFUSED after ~7 throws. Second attempt
+      succeeded.
+    saved_at: 2026-11-13 11:48
+    status: done
 verdicts: {}
