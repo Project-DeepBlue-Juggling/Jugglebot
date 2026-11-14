@@ -37,3 +37,11 @@ code that published videos may link to on GitHub, not video files, and
   `data_analysis.py` in the same directory (a standalone script) and historical
   logbook and archived-plan text. No test reads them.
 - 2026-11-14, `pytest tests/sim/test_logbook_front_matter.py tests/sim/test_docs_links.py tests/sim/test_glossary_avoid_words.py tests/sim/test_map_items.py tests/sim/test_mapkit_docs.py tests/sim/test_plans_index.py -q`: 53 passed in 5.27 s.
+
+## Commit note
+
+The thirteen deletions landed in 8b93a377, whose subject is the FEAT-57 map note and which
+carries no trailer: `git rm` had already staged them when the map file was committed,
+and the staged set was printed but not read before the commit. The commit with this
+entry's trailer holds only the README and the entry. The tree is as intended; the
+tag was taken before either commit.
