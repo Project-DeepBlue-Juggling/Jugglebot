@@ -1758,6 +1758,22 @@ ball_tracking:
   # phantom `human_throw` tracks off one static floor marker at
   # (550,-353,95) mm, and nothing on the skill stack consumes them yet.
   detect_human_throws: false
+  # Ball Butler frame box (BUG-92, ticket TKT-71 option 3, owner's choice): a
+  # human-Throw candidate whose FIRST marker sample lies inside this box is
+  # dropped. At the Sitting of 2026-11-13 (launch 3 bag) 12 of 124 live
+  # human_throw tracks and 26 of 30 bench phantoms started on the static
+  # Ball Butler frame markers (cells x -730..-988, z 1665..1861 mm); the label
+  # filter cannot name them because QTM labels the flying ball `Ball Butler - 1`.
+  # Cell range padded by 40 mm per side (the radius at which the debrief matched
+  # a phantom start to a static marker). Mocap (world) frame, the tracker's own.
+  # y is UNBOUNDED: the owner's option names x and z only. Owner: "Ball Butler
+  # won't move, and I'll never be partner juggling with Jugglebot from near Ball
+  # Butler." Announced (Ball Butler) Throws are never affected. To disable, set
+  # min > max.
+  human_throw_exclusion_x_min_mm: -1028.0   # {mm}
+  human_throw_exclusion_x_max_mm: -690.0    # {mm}
+  human_throw_exclusion_z_min_mm: 1625.0    # {mm}
+  human_throw_exclusion_z_max_mm: 1901.0    # {mm}
   # Gravity-fixed batch landing fit (2026-09-17) — see
   # `tracking/flight_fit.py`. The tracker's KF-extrapolated `landing_time`
   # runs 0.06-0.20 s LATE and grows later through the descent (measured

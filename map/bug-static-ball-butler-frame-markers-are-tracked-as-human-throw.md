@@ -2,9 +2,9 @@
 id: BUG-92
 kind: bug
 title: static Ball Butler frame markers are tracked as human_throw
-status: inbox
+status: complete
 created: '2026-11-13'
-updated: '2026-11-13T17:50:22Z'
+updated: '2026-11-14T17:56:47Z'
 owners: []
 priority: medium
 effort: s
@@ -16,6 +16,7 @@ area: tracking
 blocked_by: []
 links:
 - map/idea-jp-17-three-ball-cascade-with-the-owner-as-the-second-hand.md
+- logbook/2026-11-15-human-throw-ball-butler-zone.md
 filed_by: claude
 ---
 

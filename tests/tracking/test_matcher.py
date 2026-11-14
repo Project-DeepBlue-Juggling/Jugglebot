@@ -315,3 +315,79 @@ class TestHumanThrowCarriedAcrossFlights:
         that makes it moot (e.g. a new id per human throw) is noticed."""
         ball, t_true = self._run(None)
         assert abs(ball.landing_time - t_true) > 0.030
+
+
+class TestHumanThrowExclusionBox:
+    """BUG-92 (TKT-71 option 3): a human-throw candidate whose first sample is
+    inside the Ball Butler frame box is dropped. Box here is the config's
+    x [-1028, -690], z [1625, 1901] mm, y unbounded."""
+
+    BOX = (-1028.0, -690.0, 1625.0, 1901.0)
+
+    def _tracker(self, box):
+        return BallTracker(
+            dt=DT, landing_z=LANDING_Z, parabolic_min_frames=3,
+            parabolic_accel_threshold_mmps2=3000.0,
+            detect_human_throws=True, human_throw_exclusion_box=box,
+        )
+
+    def _humans(self, tracker):
+        return [b for b in tracker.active_balls if b.source == "human_throw"]
+
+    @staticmethod
+    def _wobbling_static(base, i):
+        """A static marker whose noise happens to follow a gravity-shaped
+        micro-arc (about 2 mm over 5 frames): the measured phantom mechanism,
+        a fixed cell that the parabola test still passes."""
+        t = i * DT
+        return base + np.array([0.0, 0.0, -0.5 * GRAVITY_MMPS2 * t * t])
+
+    def test_phantom_inside_box_starts_no_track(self):
+        tracker = self._tracker(self.BOX)
+        base = np.array([-850.0, 300.0, 1750.0])
+        for i in range(8):
+            tracker.process_frame([self._wobbling_static(base, i)], i * DT)
+        assert self._humans(tracker) == []
+
+    def test_same_marker_100mm_outside_box_still_starts_a_track(self):
+        """The rule is the box, not a general suppression of static phantoms."""
+        tracker = self._tracker(self.BOX)
+        base = np.array([-850.0 + 100.0 + (self.BOX[1] + 850.0), 300.0, 1750.0])
+        assert base[0] == pytest.approx(self.BOX[1] + 100.0)
+        for i in range(8):
+            tracker.process_frame([self._wobbling_static(base, i)], i * DT)
+        assert len(self._humans(tracker)) >= 1
+
+    def test_phantom_inside_box_starts_a_track_without_a_box(self):
+        """Control: no box (the default) keeps today's behaviour."""
+        tracker = self._tracker(None)
+        base = np.array([-850.0, 300.0, 1750.0])
+        for i in range(8):
+            tracker.process_frame([self._wobbling_static(base, i)], i * DT)
+        assert len(self._humans(tracker)) >= 1
+
+    def test_true_throw_starting_outside_box_is_detected(self):
+        tracker = self._tracker(self.BOX)
+        pos0 = np.array([0.0, 0.0, 900.0])
+        vel0 = np.array([1500.0, 0.0, 1000.0])
+        for i in range(5):
+            t = i * DT
+            tracker.process_frame([_ballistic_pos(pos0, vel0, t)], t)
+        humans = self._humans(tracker)
+        assert len(humans) == 1
+        assert humans[0].tracking == TrackingConfidence.CONFIRMED
+
+    def test_announced_throw_released_inside_box_is_still_confirmed(self):
+        tracker = self._tracker(self.BOX)
+        pos0 = np.array([-850.0, 0.0, 1750.0])
+        vel0 = np.array([0.0, 0.0, 1500.0])
+        bid = tracker.handle_announcement(
+            initial_position=pos0, initial_velocity=vel0, throw_time=0.0,
+            source="ball_butler", destination="jugglebot",
+        )
+        for i in range(1, 12):
+            t = i * DT
+            tracker.process_frame([_ballistic_pos(pos0, vel0, t)], t)
+        ball = tracker.get_ball(bid)
+        assert ball is not None
+        assert ball.tracking == TrackingConfidence.CONFIRMED

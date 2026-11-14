@@ -359,3 +359,5 @@ class TestConfigWiring:
         # business guessing which rigid bodies belong to the robot, and an
         # unlabelled-marker caller must not be silently filtered.
         assert bare.excluded_label_prefixes == ()
+        # No Ball Butler box either: callers opt in (BUG-92).
+        assert bare.human_throw_exclusion_box is None
