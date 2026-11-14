@@ -135,7 +135,7 @@ refactor that modified motor_guard.py.
    - Create `logbook/YYYY-MM-DD-<slug>.md` from the template
    - Fill in title and date; leave other fields for the user to complete
    - Set status to `open`
-   - Update INDEX.md
+   - Run `python -m mapkit gen` and stage `logbook/INDEX.md` (generated from entry frontmatter)
 2. Present the new entry path for the user to review
 
 ## Important Notes

@@ -474,8 +474,8 @@ Process gates, in order:
         Length — short form is the default".
      d. Xfail accounting if applicable (Plan 2's three-field rule:
         test ID + tracking reference + target close phase or date).
-     e. Update logbook/INDEX.md with the new entry as the topmost
-        row.
+     e. Run python -m mapkit gen and stage logbook/INDEX.md (it is
+        generated from entry frontmatter; never hand-edit a row).
 
   6. Update the plan: Phase {TARGET_PHASE} → COMPLETE in BOTH the
      summary table (status + date columns) AND the detailed phase

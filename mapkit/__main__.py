@@ -6,7 +6,7 @@ import os
 import sys
 from typing import List, Optional
 
-from mapkit import gen_docs, gen_glossary, gen_index, ids, import_issues, itemcli, sheet, tickets
+from mapkit import gen_docs, gen_glossary, gen_index, gen_logbook, ids, import_issues, itemcli, sheet, tickets
 
 
 def default_repo() -> str:
@@ -20,6 +20,7 @@ def _cmd_gen(args: argparse.Namespace) -> int:
     root = os.path.abspath(args.repo or default_repo())
     changed: List[str] = []
     changed += gen_index.write_indexes(root, check=args.check)
+    changed += gen_logbook.write_index(root, check=args.check)
     changed += gen_glossary.write_term_block(root, check=args.check)
     changed += gen_docs.write_docs(root, check=args.check)
     for path in changed:
@@ -45,7 +46,7 @@ def _cmd_runbook(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mapkit")
     sub = parser.add_subparsers(dest="command")
-    gen = sub.add_parser("gen", help="regenerate INDEX boards and map outputs")
+    gen = sub.add_parser("gen", help="regenerate the INDEX boards, logbook/INDEX.md and map outputs")
     gen.add_argument("--repo", default=None, help="repo root (default: $JUGGLEBOT_REPO or parent of mapkit/)")
     gen.add_argument("--check", action="store_true", help="write nothing; exit 1 if anything is stale")
     gen.set_defaults(func=_cmd_gen)

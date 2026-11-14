@@ -138,8 +138,8 @@ reads it back. Never recompute it after a merge: it must stay the base this Item
    - the Item's own `map/<stem>.md`: `main`'s copy, which holds the Sitting result. First read the
      branch's copy: anything its body adds that `main` lacks goes into the Item on `main` when you
      close it, under a `## From the branch (<date>)` heading;
-   - `logbook/INDEX.md`: keep both sides' rows, dropping only the conflict markers;
-   - generated pages (`docs/project-map.md`, `docs/runbook.md`, `docs/glossary.md`, `plans/*/INDEX.md`):
+   - generated pages (`docs/project-map.md`, `docs/runbook.md`, `docs/glossary.md`, `plans/*/INDEX.md`,
+     `logbook/INDEX.md`):
      `main`'s copy, then `python -m mapkit gen` in the worktree.
 
    Take `main`'s copy by naming the commit, `git -C temp/debrief-<ID> checkout $BASE -- <paths>`, never
@@ -224,9 +224,9 @@ reads it back. Never recompute it after a merge: it must stay the base this Item
    `python -m mapkit item new <bug|feature|idea> "<title>" --body "<the note, with the Item and date>" --link map/<stem>.md --priority <p>` (no `--commit`; the files ride in the debrief commit).
    Rate it when you know the answer.
 2. Write `logbook/<date>-sitting-debrief.md` (short form: the results table, what merged with
-   SHAs, what stayed held and why, follow-ups filed, the rebuild if any) and its
+   SHAs, what stayed held and why, follow-ups filed, the rebuild if any); step 3 gives it its
    `logbook/INDEX.md` row.
-3. `python -m mapkit gen` (the Runbook page `docs/runbook.md` drops the passed rows and keeps
+3. `python -m mapkit gen` (`logbook/INDEX.md` gains the entry's row; the Runbook page `docs/runbook.md` drops the passed rows and keeps
    the failed ones; the project-map page follows the status changes).
 4. `./run_tests.sh` (each merged branch passed the full gate on its updated tip; the merged
    result gets the per-commit gate here, the nightly covers the rest tonight). Red: stop, say

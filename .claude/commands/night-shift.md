@@ -179,8 +179,8 @@ marker vocabulary `serial` + `nightly` only, grep before renaming, the (date, co
 result) triple), the scoped pytest command, and these orders: write the code and its
 tests; confirm each new test fails without the change; write the logbook entry (short
 form, `logbook/<date>-<slug>.md`, type by change, `status: complete`, `files_changed`,
-Verification with the scoped triple) and its `logbook/INDEX.md` row (newest first, row
-format as the existing rows); do not commit; do not write under `map/`; do not run
+Verification with the scoped triple), then `python -m mapkit gen` so `logbook/INDEX.md`
+gains its row (generated from the frontmatter; never hand-edit a row); do not commit; do not write under `map/`; do not run
 `./run_tests.sh`; run every test command, probe and bag read under the wrapper
 (`D/gate-base/tools/night_shift_nonet.sh`, 2a); stay under about 80 tool calls and report the file list, the scoped
 pytest line, and anything left undone.
@@ -424,11 +424,12 @@ After the last Item (or at the deadline, or when a unit returns and the budget i
 spent): write `docs/night-shift/<date>.md` in the layout of `docs/night-shift/README.md`
 (the eight sections in order, the Item sections as GFM tables with a header row, every
 `<ID>` bare, the Held table's last column `Respond in` filled, a one-line **Summary.** under the title), and `logbook/<date>-night-shift.md`
-(short form: the counts, the nightly line, the cost, a link to the report) with its
-`logbook/INDEX.md` row. Commit on `main` as `docs(night-shift): report <date>` with the
+(short form: the counts, the nightly line, the cost, a link to the report), then
+`python -m mapkit gen` and stage the regenerated `logbook/INDEX.md`. Commit on `main` as `docs(night-shift): report <date>` with the
 trailers (`Logbook-Entry: <date>-night-shift`), `git pull -q --rebase` ONLY if the push is
 rejected and ONLY for this report commit (a docs commit rebased onto a moved `main` is
-safe), push. Then 2k once more.
+safe; a conflict there on `logbook/INDEX.md` is resolved by `python -m mapkit gen`, then
+`git add logbook/INDEX.md` and `git rebase --continue`), push. Then 2k once more.
 
 The `## Nightly` section: the `--nightly` line verbatim; on RED the failures from the
 nightly report (test id and one line each). The `## Cost` section: `total_cost_usd` is

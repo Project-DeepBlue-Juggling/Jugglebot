@@ -96,7 +96,7 @@ Spawn the **logbook-updater** agent to:
      canonical link (SHA backfill retired 2026-08-01)
 4. Fill in: Summary (from verdict), Symptoms, Diagnosis sections
 5. Set status to `in-progress`
-6. Update `logbook/INDEX.md`
+6. Run `python -m mapkit gen` and stage `logbook/INDEX.md` (it is generated from entry frontmatter; never hand-edit a row)
 7. Update `sim/analysis/log_index.json` with `logbook_entry` pointers
 
 **If `--dry-run` was specified:** Stop here. The logbook entry has been created with
@@ -273,7 +273,7 @@ Spawn the **logbook-updater** agent to:
    - `resolved` — every symptom in the entry's scope is addressed and verified; no open follow-ups inside this entry's scope
    - `tuned` — the specific thing this entry was investigating is addressed (e.g. hold-phase fighting brought into spec) but the entry intentionally leaves a sibling investigation open elsewhere. Use this when a committed change ships a real improvement but the entry's Open Questions or a sibling logbook entry still have work. This is better than stranding entries at `in-progress` forever.
    - `in-progress` — neither of the above; the investigation is genuinely still unfinished
-4. Update `logbook/INDEX.md` with new status
+4. Run `python -m mapkit gen` and stage `logbook/INDEX.md` (the row follows the new status)
 5. If the entry's Discussion section references a methodology plan in its
    frontmatter (`related_plan:`), ensure that plan is linked inline from the
    body text of the Discussion section (not just the frontmatter). A reader

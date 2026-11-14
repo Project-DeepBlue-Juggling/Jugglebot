@@ -25,6 +25,7 @@ import time
 
 import pytest
 
+from mapkit.gen_logbook import write_index
 from mapkit.items import PROGRESS_CAP
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -484,17 +485,22 @@ def test_a_rejected_revert_still_leaves_the_last_good_commit_live(rig, monkeypat
 
 # --- mapkit is the cause ----------------------------------------------------
 def _mapkit_night(rig):
-    """What a real night looks like: the fix commit carries its test and an INDEX row, and the
-    report commit after it touches logbook/INDEX.md too, so a `git revert` would conflict."""
+    """What a real night looks like: the fix commit carries its test, its entry and the
+    regenerated logbook/INDEX.md, and the report commit after it regenerates the index too,
+    so a `git revert` would conflict."""
     git(rig.main_seed, "pull", "-q", "--ff-only", "origin", "main")
     (rig.main_seed / "mapkit" / "broken").write_text("x\n")
     (rig.main_seed / "tests").mkdir()
     (rig.main_seed / "tests" / "test_new_mapkit.py").write_text("x\n")
-    (rig.main_seed / "logbook" / "entry.md").write_text("the entry\n")
-    (rig.main_seed / "logbook" / "INDEX.md").write_text("| fix |\n| row |\n")
+    (rig.main_seed / "logbook" / ("%s-fix.md" % DATE)).write_text(_ENTRY % ("Fix", DATE))
+    write_index(str(rig.main_seed))
     commit(rig.main_seed, "feat(mapkit): thing (BUG-7)")
-    (rig.main_seed / "logbook" / "INDEX.md").write_text("| report |\n| fix |\n| row |\n")
+    (rig.main_seed / "logbook" / ("%s-night-shift.md" % DATE)).write_text(_ENTRY % ("Report", DATE))
+    write_index(str(rig.main_seed))
     commit(rig.main_seed, "docs(night-shift): report %s" % DATE, mark=False)
+
+
+_ENTRY = "---\ntitle: %s\ntype: feature\ndate: %s\nstatus: complete\n---\n# entry\n"
 
 
 def test_mapkit_breaking_the_app_is_undone_on_a_real_night(rig):
@@ -503,8 +509,9 @@ def test_mapkit_breaking_the_app_is_undone_on_a_real_night(rig):
     assert res["status"] == "ROLLED_BACK_MAPKIT"
     assert rig.origin_file(rig.main_origin, "mapkit/broken") is None
     assert rig.origin_file(rig.main_origin, "tests/test_new_mapkit.py") is None   # main stays green
-    assert rig.origin_file(rig.main_origin, "logbook/entry.md") == "the entry\n"  # history stays
-    assert rig.origin_file(rig.main_origin, "logbook/INDEX.md").startswith("| report |")
+    assert rig.origin_file(rig.main_origin, "logbook/%s-fix.md" % DATE).startswith("---")  # history stays
+    index = rig.origin_file(rig.main_origin, "logbook/INDEX.md")
+    assert "](%s-fix.md)" % DATE in index and "](%s-night-shift.md)" % DATE in index
     assert res["items_reopened"] == ["BUG-7"] and "status: in_progress" in rig.item()
     log = git(rig.tmp, "--git-dir", str(rig.main_origin), "log", "-2", "--format=%B", "main")
     assert "revert(night-shift): mapkit change broke the map app" in log

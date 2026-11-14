@@ -2,14 +2,19 @@
 id: FEAT-52
 kind: feature
 title: Generate logbook/INDEX.md from entry frontmatter with a capped summary
-status: inbox
+status: complete
 created: '2026-11-14'
-updated: '2026-11-13T23:09:28Z'
+updated: '2026-11-14T02:53:54Z'
 owners: []
 priority: medium
+effort: m
+hardware: none
+owner: none
+radius: cross-cutting
 area: docs
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-14-logbook-index-generated.md
 filed_by: claude
 ---
 
@@ -31,3 +36,7 @@ Generate `logbook/INDEX.md` from entry frontmatter, as the three plan indexes al
 
 - `/logbook --search` and `sim/analysis/logbook_search.py` read entries, not the index; confirm nothing else depends on the long rows.
 - Whether the index should be committed at all, or built with the docs site.
+
+## Progress
+
+- 2026-11-14: Generator, currency test and every consumer instruction landed; index 929 KB to 213 KB

@@ -72,7 +72,7 @@ Spawn the **logbook-updater** agent to create the entry:
    trailer is the canonical link.
 4. Fill in Summary from commit messages or user description
 5. Fill in the remaining sections with available information
-6. Update `logbook/INDEX.md`
+6. Run `python -m mapkit gen` and stage `logbook/INDEX.md` (it is generated from entry frontmatter; never hand-edit a row)
 7. **Gated offer: file the open follow-ups.** If the entry's status is anything
    other than `resolved`, list each open follow-up visible in the entry (open
    questions, follow-up sections, residue bullets; the logbook-updater returns
