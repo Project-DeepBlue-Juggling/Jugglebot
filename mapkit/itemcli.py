@@ -19,7 +19,7 @@ import subprocess
 import sys
 from typing import Dict, List, Optional
 
-from mapkit import derive, gen_docs, ids, similar
+from mapkit import checks, derive, gen_docs, ids, similar
 from mapkit.items import (KINDS, NIGHT_SKIP_FIELDS, NIGHT_SKIP_REASONS, METRIC_ENUMS, METRIC_FIELDS, STATUS_SETS, Item, ItemError, is_stale, has_answer,
                           load_item, load_items, stale_clock, write_item)
 from mapkit.plans import load_plans
@@ -31,6 +31,10 @@ _CLOSED = ("complete", "dropped", "promoted")
 
 class ItemCliError(Exception):
     """A refused operation; exit code 2."""
+
+
+class MapCheckRefused(ItemCliError):
+    """The map-write check failed; the commit was refused. Exit code 4."""
 
 
 def _now() -> str:
@@ -180,13 +184,7 @@ def set_status(repo_root: str, slug: str, status: str, note: Optional[str] = Non
         return item  # no-op: nothing written, regenerated or committed
     gen_docs.write_docs(repo_root)
     if commit:
-        rel = os.path.relpath(item.path, repo_root)
-        paths = [rel] + ([DOCS_PAGE] if os.path.isfile(os.path.join(repo_root, DOCS_PAGE)) else [])
-        _git(repo_root, "add", "--", *paths)
-        _git(repo_root, "commit", "-m", _subject(status, item), "--", *paths)
-        if push:
-            _git(repo_root, "pull", "--rebase", "--autostash")
-            _git(repo_root, "push")
+        _commit_paths(repo_root, [item], _subject(status, item), push)
     return item
 
 
@@ -239,13 +237,7 @@ def rate_item(repo_root: str, slug: str, metrics: Dict[str, Optional[str]],
         return item
     gen_docs.write_docs(repo_root)
     if commit:
-        rel = os.path.relpath(item.path, repo_root)
-        paths = [rel] + ([DOCS_PAGE] if os.path.isfile(os.path.join(repo_root, DOCS_PAGE)) else [])
-        _git(repo_root, "add", "--", *paths)
-        _git(repo_root, "commit", "-m", _subject("rate", item), "--", *paths)
-        if push:
-            _git(repo_root, "pull", "--rebase", "--autostash")
-            _git(repo_root, "push")
+        _commit_paths(repo_root, [item], _subject("rate", item), push)
     return item
 
 
@@ -350,12 +342,26 @@ def skip_batch(repo_root: str, rows: List[Dict[str, object]], on: Optional[str] 
     return changed
 
 
-def _commit_paths(repo_root: str, items: List[Item], subject: str, push: bool) -> None:
+def _check_before_commit(repo_root: str) -> None:
+    """The map-write check (:mod:`mapkit.checks`), run on the tree as it will be
+    committed. A failure refuses the commit; the write stays in the working tree."""
+    problems = checks.run_all(repo_root)
+    if problems:
+        raise MapCheckRefused(
+            "map-write check failed; nothing committed (the change is left in the working "
+            "tree: fix it, run `python -m mapkit check`, then commit by hand):\n  "
+            + "\n  ".join(problems))
+
+
+def _commit_paths(repo_root: str, items: List[Item], subject: str, push: bool,
+                  quiet: bool = False) -> None:
+    """The one commit path of every ``item ... --commit``: check, add, commit, push."""
+    _check_before_commit(repo_root)
     paths = [os.path.relpath(i.path, repo_root) for i in items]
     if os.path.isfile(os.path.join(repo_root, DOCS_PAGE)):
         paths.append(DOCS_PAGE)
     _git(repo_root, "add", "--", *paths)
-    _git(repo_root, "commit", "-m", subject, "--", *paths)
+    _git(repo_root, "commit", *(["-q"] if quiet else []), "-m", subject, "--", *paths)
     if push:
         _git(repo_root, "pull", "--rebase", "--autostash")
         _git(repo_root, "push")
@@ -421,7 +427,9 @@ def new_item(repo_root: str, kind: str, title: str, parent: Optional[str] = None
     if dup is not None:
         raise ItemCliError("duplicate of %s: not filed (an open Item has this title)"
                            % dup.describe())
-    if near and not allow_similar:
+    if near and not allow_similar and not (kind == "ticket" and parent):
+        # a ticket filed under a parent (a question ticket, a step) is exempt from
+        # the similar-title refusal only; an exact open duplicate is still refused above
         raise ItemCliError("similar Items exist, not filed (check them; --allow-similar files anyway):\n  "
                            + "\n  ".join(m.describe() for m in near))
     legacy = _legacy(repo_root)
@@ -475,10 +483,7 @@ def new_item(repo_root: str, kind: str, title: str, parent: Optional[str] = None
         raise ItemCliError("cannot regenerate %s, so nothing was filed: %s" % (DOCS_PAGE, exc))
     if not commit:
         return item
-    rel = os.path.relpath(path, repo_root)
-    paths = [rel] + ([DOCS_PAGE] if os.path.isfile(os.path.join(repo_root, DOCS_PAGE)) else [])
-    _git(repo_root, "add", "--", *paths)
-    _git(repo_root, "commit", "-q", "-m", _subject("file " + kind, item), "--", *paths)
+    _commit_paths(repo_root, [item], _subject("file " + kind, item), push=False, quiet=True)
     stem = "%s-%s" % (kind, slug)
     if not push:
         return item
@@ -698,7 +703,10 @@ def _run_set_status(args) -> int:
         item = set_status(_repo(args), args.slug, args.status, note=args.note,
                           links=args.link, owner=args.owner, force=args.force,
                           commit=args.commit, push=not args.no_push)
-    except ItemCliError as exc:
+    except MapCheckRefused as exc:
+        print("mapkit: %s" % exc, file=sys.stderr)
+        return 4
+    except (ItemCliError, ItemError) as exc:
         print("mapkit: %s" % exc, file=sys.stderr)
         return 2
     if not getattr(item, "changed", True):
@@ -719,6 +727,9 @@ def _run_rate(args) -> int:
     try:
         item = rate_item(_repo(args), args.item, _metrics_arg(args),
                          commit=args.commit, push=not args.no_push)
+    except MapCheckRefused as exc:
+        print("mapkit: %s" % exc, file=sys.stderr)
+        return 4
     except (ItemCliError, ItemError, ids.IdError) as exc:
         print("mapkit: %s" % exc, file=sys.stderr)
         return 2
@@ -754,6 +765,9 @@ def _run_skip(args) -> int:
         item = skip_item(_repo(args), args.item, reason=args.reason, note=args.note,
                          input_=args.input, clear=args.clear, commit=args.commit,
                          push=not args.no_push)
+    except MapCheckRefused as exc:
+        print("mapkit: %s" % exc, file=sys.stderr)
+        return 4
     except (ItemCliError, ItemError, ids.IdError, OSError, ValueError) as exc:
         print("mapkit: %s" % exc, file=sys.stderr)
         return 2
@@ -780,6 +794,9 @@ def _run_new(args) -> int:
                         links=args.link, ticket_type=args.type, destination=args.destination,
                         commit=args.commit, push=not args.no_push, metrics=_metrics_arg(args),
                         allow_similar=args.allow_similar)
+    except MapCheckRefused as exc:
+        print("mapkit: %s" % exc, file=sys.stderr)
+        return 4
     except (ItemCliError, ItemError, ids.IdError) as exc:
         print("mapkit: %s" % exc, file=sys.stderr)
         return 2
@@ -791,6 +808,15 @@ def _run_new(args) -> int:
     if not args.commit:
         print("stage: %s" % os.path.relpath(item.path, _repo(args)))
         print("stage: %s" % DOCS_PAGE)
+    return 0
+
+
+def _run_check(args) -> int:
+    problems = checks.run_all(_repo(args), map_only_avoid=not args.full)
+    if problems:
+        print("mapkit: map-write check failed:\n  " + "\n  ".join(problems), file=sys.stderr)
+        return 4
+    print("map-write check: clean")
     return 0
 
 
@@ -910,6 +936,13 @@ def register(subparsers) -> None:
     p.add_argument("--no-push", action="store_true")
     common(p)
     p.set_defaults(func=_run_skip)
+
+    p = subparsers.add_parser("check", help="the map-write check (map loads, rated, readability, "
+                                            "avoid-words) on the working tree; exit 4 on a problem")
+    p.add_argument("--full", action="store_true",
+                   help="avoid-words over plans and logbook too (the test's scope), not map/ alone")
+    common(p)
+    p.set_defaults(func=_run_check)
 
     p = isub.add_parser("push", help="push an Item's local commit (item new --commit --no-push) "
                                      "through the bounded rebase / renumber / push loop")

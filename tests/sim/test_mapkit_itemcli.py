@@ -25,6 +25,10 @@ def _item(root, kind, slug, status="inbox", **extra):
     if kind == "ticket":
         meta["type"] = "task"
     meta.update(extra)
+    if meta["status"] != "inbox":  # the commit path's map-write check wants a triaged Item rated
+        meta.update(effort="s", hardware="none", owner="none", radius="local", area="docs")
+        if kind == "bug":
+            meta["diagnosis"] = "unknown"
     write_item(str(root / "map" / ("%s-%s.md" % (kind, slug))), meta, "Body text\n")
 
 
@@ -36,7 +40,9 @@ def _tree(root):
         (root / "plans" / b).mkdir(parents=True, exist_ok=True)
     write_item(str(root / "map" / "pathway-p.md"),
                {"kind": "pathway", "title": "P", "status": "active",
-                "created": "2026-10-01", "destination": "reach the goal"}, "Body\n")
+                "created": "2026-10-01", "destination": "reach the goal",
+                "effort": "s", "hardware": "none", "owner": "none", "radius": "local",
+                "area": "docs"}, "Body\n")
     (root / "plans" / "active" / "plan-a.md").write_text(
         "---\ntitle: Plan A\nstatus: active\npathway: p\nsteps:\n"
         "  - {id: P1, title: First, status: complete}\n"
@@ -126,7 +132,8 @@ def _git_repo(tmp_path):
                     "refs/heads/main"], check=True)
     work.mkdir()
     _tree(work)
-    _item(work, "bug", "b")
+    _item(work, "bug", "b", effort="s", hardware="none", owner="none", radius="local",
+          diagnosis="unknown", area="docs")  # leaving inbox: the commit-path check wants it rated
     for cmd in (["init"], ["symbolic-ref", "HEAD", "refs/heads/main"],
                 ["config", "user.name", "T"], ["config", "user.email", "t@e.x"],
                 ["remote", "add", "origin", str(remote)],

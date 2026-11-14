@@ -10,29 +10,16 @@ from pathlib import Path
 
 import pytest
 
-from mapkit.items import METRIC_FIELDS
+from mapkit.checks import is_inbox, unrated_problems
 
 REPO = Path(__file__).resolve().parents[2]
 ITEMS = sorted((REPO / "map").glob("*.md"))
 
 
-def _frontmatter(path: Path) -> dict:
-    text = path.read_text(encoding="utf-8")
-    assert text.startswith("---\n"), path
-    body = text.split("\n---", 1)[0][4:]
-    out = {}
-    for line in body.splitlines():
-        if line and not line.startswith(" ") and ":" in line:
-            k, v = line.split(":", 1)
-            out[k.strip()] = v.strip()
-    return out
-
-
 @pytest.mark.parametrize("path", ITEMS, ids=[p.stem for p in ITEMS])
 def test_every_item_is_rated(path: Path) -> None:
-    fm = _frontmatter(path)
-    if fm.get("status") == "inbox":
+    if is_inbox(str(path)):
         pytest.skip("inbox items are rated at triage (DOCUMENTATION_GUIDE.md § 2.10)")
-    required = [f for f in METRIC_FIELDS if f != "diagnosis" or fm.get("kind") == "bug"]
-    missing = [f for f in required if not fm.get(f)]
-    assert not missing, f"{path.name} is unrated: {missing}"
+    # mapkit.checks.unrated_problems: the same check the commit path makes
+    bad = unrated_problems(str(path))
+    assert not bad, "\n".join(bad)

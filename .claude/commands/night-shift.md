@@ -77,17 +77,10 @@ Arguments: `$ARGUMENTS`
    runner was given `NIGHT_SHIFT_MAX_USD`; the first nights run without one) may end you
    mid-Item; everything you pushed before that is already consistent by construction
    (branches pushed before `main` is touched; `main` pushed before the Item is closed).
-10. **No `map:` push to `main` with the map tests red.** Every `map:` write you make on
-   `main` (a hold note, a question ticket, a rating, a Sitting section) goes through the
-   **map-write check**: write it with `--commit --no-push`, run
-   `pytest -q tests/sim/test_map_items.py tests/sim/test_map_items_rated.py tests/sim/test_glossary_avoid_words.py tests/sim/test_mapkit_docs.py`,
-   fix anything red in a follow-up `map:` commit, then `git push -q origin main` as its own
-   command line (the deny list refuses a push line that runs anything else). An Item that
-   leaves `inbox` on `main` must be fully rated (`effort`, `hardware`, `owner`, `radius`,
-   `area`, and `diagnosis` on a bug), and an Item body has a per-block readability cap. The
-   2026-11-01 night turned `main` red four times on its own `map:` pushes (a 540-character
-   block, a 536-character note, the first question tickets, BUG-31 set `in_progress`
-   unrated); every Session's suite gate and your own gate logs fail while it is red.
+10. **No `map:` push to `main` with the map tests red; the commit path enforces it.** Write every
+   `map:` change through `python -m mapkit item ... --commit --no-push` (exit 4 = the map-write
+   check refused it, change left in the tree: fix it); a hand-edited map file is committed only
+   after `python -m mapkit check` is clean. Then `git push -q origin main` as its own command line.
 
 ## 1. Start
 
@@ -181,7 +174,7 @@ reason written to the Item, in ONE batch at the end of the walk (not Item by Ite
 python -m mapkit item skip --batch D/skips-<date>.json --commit --no-push
 ```
 
-(then the map-write check of § 0 rule 10 and `git push -q origin main` on its own line; the
+(then `git push -q origin main` on its own line; the commit path ran the map-write check, § 0 rule 10; the
 commit is `map: night skip reasons <date> (<n> Items)`). `D/skips-<date>.json` is a JSON list of
 `{"item": "<ID>", "reason": "<R>", "note": "<one line, 160 characters at most>"}`, plus
 `"input": "<what the owner must supply, 200 characters at most>"` when the reason starts with
@@ -335,7 +328,7 @@ python -m mapkit item new ticket "<the question, one sentence ending in ?>" --ty
 Rated at filing: a ticket is not `inbox`, so `test_map_items_rated` requires every metric.
 The body: the context in two sentences, the options you drafted, what each answer would
 unblock, each paragraph under the readability cap. Every question ticket is filed on
-`main` through the map-write check (§ 0 rule 10: `--commit --no-push`, the map tests, then
+`main` through the map-write check (§ 0 rule 10: `--commit --no-push` runs it, then
 push; subject `map: file ticket <question-ID> <title>`, no trailer), never on an Item's branch: the
 app writes the answer to `main`, and a branch copy would stay open and trip the gate's
 condition (e) at the re-gate (and add/add-conflict when the branch later merges `main`). The owner answers in the app
@@ -396,7 +389,7 @@ one tonight, unless only a Sitting unblocks it (`none`).
    `python -m mapkit item rate <ID> --effort .. --hardware .. --owner .. --radius .. [--diagnosis ..] --area ..`
    (no `--commit`: it rides in the next write's commit), then
    `python -m mapkit item set-status <ID> in_progress --owner night-shift --note "Night Shift <date>: held on night-shift/<date>-<ID>: <reasons, one line>; unblocked by <what>" --commit --no-push`,
-   then the map-write check (§ 0 rule 10) and `git push -q origin main`. The note stays one
+   then `git push -q origin main` (the commit ran the map-write check, § 0 rule 10). The note stays one
    short line (the readability cap); detail goes in the branch's Item body. An Item already `in_progress`
    under another owner is not re-owned: the note only. If the Item is a hardware one with
    a `## Sitting` section (or you wrote one), set its `- branch: night-shift/<date>-<ID>`
@@ -453,7 +446,7 @@ present, no upstream names). Items stay in Jugglebot's `map/`; only the code is 
 
 1. An Item whose latest Progress note says `App deploy failed` was merged, broke the live app
    and was reverted: Skipped `deploy failed, awaiting a Session`. Do not retry it.
-2. Rate first, on `main`, through the map-write check: the gate reads an app Item's rating from
+2. Rate first, on `main`, through `item rate ... --commit --no-push` (the map-write check): the gate reads an app Item's rating from
    Jugglebot's `origin/main`, because the app holds no Items and a branch there cannot carry one.
 3. Run the 2a extract in the Jugglebot clone on `main` (the suite's wrapper and the gate come
    from it). Branch in the app clone: `git -C <app-clone> checkout -q main`, pull `--ff-only`, then
@@ -474,7 +467,7 @@ present, no upstream names). Items stay in Jugglebot's `map/`; only the code is 
 7. On a merge, in the Jugglebot clone on `main`: `python -m mapkit item set-status <ID> complete --link logbook/<entry>.md`
    (no `--commit`, which would stage only the Item and leave the entry behind), `git add -A`, and
    commit as `map: close <ID> <title>` with the `Logbook-Entry:` and `Night-Shift:` trailers; the
-   map-write check (§ 0 rule 10), push. The report's Commits cell names the app commit with
+   `python -m mapkit check` (§ 0 rule 10, a hand commit), push. The report's Commits cell names the app commit with
    `jugglebot-map:<sha>`. If the fix's correctness is something only eyes can judge (a layout, a
    scroll, a focus jump), say so in the row: the tests passing is not proof it looks right.
 8. **An Item that spans both repos** (a `mapkit/` change and an app change): build both branches,

@@ -41,6 +41,10 @@ def _write(root, kind, slug, sid=None, **extra):
         meta.update(status="active", destination="reach the goal")
         meta.pop("parent")
     meta.update(extra)
+    if meta["status"] != "inbox":  # the commit path's map-write check wants a triaged Item rated
+        meta.update(effort="s", hardware="none", owner="none", radius="local", area="docs")
+        if kind == "bug":
+            meta["diagnosis"] = "unknown"
     write_item(str(root / "map" / ("%s-%s.md" % (kind, slug))), meta, "Body\n")
 
 

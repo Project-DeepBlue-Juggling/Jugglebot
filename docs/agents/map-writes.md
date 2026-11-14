@@ -22,13 +22,13 @@ Every Item has a short ID `<ID>` (frontmatter `id:`, one sequence per kind; form
    - **`promoted`, `dropped`, filing**: own `map:` commit, no trailer.
    - If the push races the app: `git pull --rebase`, re-run `python -m mapkit gen`, stage again.
 3. **Announce** a status change in one line (`TKT-9 bug-x -> in_progress`). No approval step. The one exception is a **Pathway** going `complete`: always ask the owner.
-4. **Scoped tests** after a write, before its push: `pytest -q tests/sim/test_map_items.py tests/sim/test_map_items_rated.py tests/sim/test_glossary_avoid_words.py tests/sim/test_mapkit_docs.py` (item bodies are inside the Avoid-word scope; an Item that leaves `inbox` must be fully rated). A write that pushes at once (`--commit`) skips this step, so on a shared `main` prefer `--commit --no-push`, run the tests, then push.
+4. **The map-write check runs inside every `item ... --commit`** (`mapkit/checks.py`, the same functions the four map tests call: every `map/*.md` loads, an Item past `inbox` is fully rated, the per-block readability cap, no GLOSSARY Avoid-word in the Items). It runs on the working tree before the commit; a failure refuses the commit with **exit 4**, prints every problem, and leaves the write in the working tree so you can fix it and re-commit. It takes under a second on the real map. A hand-edited map file, a plain `git commit`, or the app's own writer is not covered: run `python -m mapkit check` (add `--full` for the test's wider avoid-word scope, plans and logbook) before committing it. A write that pushes at once (`--commit`) is checked but cannot be inspected before the push, so on a shared `main` prefer `--commit --no-push`, then `git push` on its own line. An Item filed without `--commit` is checked at its next commit, so rate a `ticket` (not `inbox`) with the metric flags at filing.
 
 ### Question tickets
 
 When an Item needs a decision only the owner can make, file a question ticket that blocks it, instead of guessing:
 
-`python -m mapkit item new ticket "<question>?" --type question --parent <ID> --body-file F --commit`
+`python -m mapkit item new ticket "<question>?" --type question --parent <ID> --body-file F --effort S --hardware H --owner O --radius R --area A --commit` (a ticket is not `inbox`, so the map-write check wants it rated; a ticket filed with `--parent` is exempt from the similar-title refusal only, an exact open duplicate is still refused)
 
 - **Who files:** Night Shift (`.claude/commands/night-shift.md`), or any Session that hits an owner-only decision. `--parent` is the bug, feature or idea it blocks (ID, stem or slug; stored as the stem); a pathway or ticket parent is refused.
 - **How it is answered:** the owner types in the app's answer box, which appends `## Answer` to the body and completes the ticket in one save. By hand: add `## Answer` with the reply, then `python -m mapkit item set-status <id> complete`. Completing without an answer succeeds but warns on stderr.

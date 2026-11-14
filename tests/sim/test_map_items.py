@@ -24,12 +24,9 @@ def _items():
 
 
 def test_every_item_loads():
-    bad = []
-    for p in sorted(glob.glob(os.path.join(MAP, "*.md"))):
-        try:
-            load_item(p)
-        except ItemError as exc:
-            bad.append(str(exc))
+    from mapkit.checks import check_map_loads  # the commit path's own check
+
+    bad = check_map_loads(REPO)
     assert not bad, "\n".join(bad)
     assert _items()
 
@@ -179,8 +176,7 @@ def test_item_bodies_are_readable():
     # BLOCK_CAP characters, no Progress line over PROGRESS_CAP, a ## heading on
     # any body over HEADINGLESS_CAP. Fix by restructuring (sections, bullets,
     # tables; docs/agents/map-writes.md), never by cutting facts.
-    from mapkit.items import readability_violations
+    from mapkit.checks import check_readability  # the commit path's own check
 
-    bad = ["%s: %s" % (i.filename, v)
-           for i in _items() for v in readability_violations(i.body)]
+    bad = check_readability(REPO)
     assert not bad, "\n".join(bad)
