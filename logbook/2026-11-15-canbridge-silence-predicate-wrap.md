@@ -23,7 +23,9 @@ files_changed:
 
 **Tests.** Four new cases in `tests/firmware/native/test_fault_machine.cpp` stamp `ts = now + 1 us` and `now + 1 h` (the board's interleaving, reproduced without preemption): no trip, `any_present_leg_silent` false, `all_present_legs_alive` true, `first_silent_leg` 0xFF, empty `fault_hb_stale_mask`, no `heartbeat_stale`; a future stamp on Leg 0 neither hides nor steals a real silence on Leg 3 (latch names 3, age 2000 ms) and reads alive at reconnect; the boundary is unchanged (age = timeout does not trip, timeout + 1 does); `rx_older_than` is strict on both sides. The xref gains the FW 44 history clause.
 
-**NOT flashed.** The branch is held for a flash and a Sitting; until then BRIDGE_FW_CHECK reports a skew against a board on FW 43.
+**NOT flashed.** The branch is held for a flash and a Sitting; until then BRIDGE_FW_CHECK reports a skew against a board on FW 43. That check logs an ERROR-level `BRIDGE_FW_CHECK: FAIL` but refuses nothing (`teensy_link/rpc_args.py`), so merge this branch together with the flash, not before it. The Item is closed on the branch by the Night Shift's convention (the tip that merges carries the closure); it is not verified on the board.
+
+**Same class outside this file (audit, open).** `can_buses.h` (`bus_partner_present`, `classify_bus_health`, `classify_command_gate`) and `telemetry.cpp` (the diagnostic `stale` bit) keep the unguarded `now - last_rx_us`. None is fatal: the worst case is one refused CAN3 TX or RPC, or one wrong diagnostic bit. The one enforcement point therefore covers `fault_machine.cpp` only until those sites route through the helper.
 
 ## Verification
 

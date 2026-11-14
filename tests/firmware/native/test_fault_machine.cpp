@@ -583,8 +583,9 @@ TEST_CASE("FW 23: HB_STALE_MASK is per-axis, includes the hand, and is 4x sharpe
 //  latched as leg 0xFF / age 0 (the latch re-reads the clock after the writer is
 //  done). The native harness has no preemption, but the interleaving is fully
 //  reproduced by stamping ts > fake_mono_us(): the predicate reads exactly what
-//  it would have read on the board. Recipe confirmed against the unguarded code
-//  (every REQUIRE marked [wraps] below fails there; logbook
+//  it would have read on the board. Recipe confirmed against the unguarded code:
+//  3 of the 33 doctest cases fail there (a case stops at its first failing
+//  REQUIRE, so not every [wraps] REQUIRE was observed failing; logbook
 //  2026-11-15-canbridge-silence-predicate-wrap).
 static void stamp_future(uint8_t a, uint64_t ahead_us) {
   axes[a].last_rx_us        = fake_mono_us() + ahead_us;
