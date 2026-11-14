@@ -16,6 +16,16 @@ orchestrator's: `total_cost_usd` only exists once the orchestrator has exited, s
 cost <date>` commit (dropped, never rebased, if `main` moved meanwhile; `cost_recorded` in
 `last_run.json` says which). A dry run's report gets the same line as a plain file write.
 
+`docs/night-shift/history.jsonl` is the runner's too: one JSON row per run (`date`, `status`,
+`detail`, `started`, `finished`, `duration_s`, cost, turns, heads, `landed`, `branches`,
+`pruned`, `deploy_status` and the rest of `last_run.json`, minus the absolute-path fields
+`report` and `candidates`, the model's `result` text and `history_commit`; `$HOME` shows as `~`
+and credential values are redacted), rebuilt each night from the clone's local history and
+keyed on the run id (start time and pid). It rides in the cost or stub commit, or in its own `docs(night-shift): run history <date> (<status>)`
+commit on a night with neither, when the clone is clean on `main`. The runner commits as
+`Jugglebot Night Shift <night-shift@noreply.jugglebot.invalid>` (committer only) and deletes
+merged `night-shift/*` branches after a passing landed check (`pruned` in `last_run.json`).
+
 The line before it is also the runner's: `app deploy: <status> ...`, from
 `tools/night_shift_deploy.py`, the night's last step, which puts the map app's `main` live and
 takes back what breaks it. `NOOP` and `DEPLOYED` are healthy. `ROLLED_BACK_APP`,

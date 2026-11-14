@@ -1129,3 +1129,178 @@ def test_a_branch_pushed_tonight_touching_the_never_list_is_self_edit_branch(ns)
     ns.push_change()
     _check(ns.run(), "OK", 0)
     assert ns.last()["branches"] == "branches: pushed=0 self_edit=0"
+
+
+# --- housekeeping (closeout C2): the committer identity, the prune, the history --------
+IDENT = "Jugglebot Night Shift <night-shift@noreply.jugglebot.invalid>"
+
+
+def _idents(ns, rev, *extra):
+    """['author|committer', ...] as 'name <email>|name <email>' per commit."""
+    out = _git("log", "--format=%an <%ae>|%cn <%ce>", *extra, rev, cwd=ns.origin, env=ns.env)
+    return out.splitlines()
+
+
+def test_night_commits_carry_the_night_shift_committer_and_keep_their_author(ns):
+    """Committer differs, author unchanged: the fake claude's own report commit, the
+    runner's cost-and-history commit, and (negative) the pre-existing init commit."""
+    r = ns.run(FAKE_CLAUDE_REPORT=1)
+    _check(r, "OK", 0)
+    rows = _idents(ns, "main")
+    assert rows[:2] == ["t <t@t>|%s" % IDENT] * 2, rows   # cost commit, claude's report commit
+    assert rows[-1] == "t <t@t>|t <t@t>"                  # init: before the night, untouched
+    # nothing was written to the clone's git config: the author is still the config's
+    assert _git("config", "user.name", cwd=ns.clone, env=ns.env) == "t"
+
+
+def _rows(ns, ref="main"):
+    txt = _git("show", "%s:docs/night-shift/history.jsonl" % ref, cwd=ns.origin, env=ns.env)
+    return [json.loads(l) for l in txt.splitlines()]
+
+
+def test_history_rides_in_the_cost_commit_and_carries_no_paths(ns):
+    r = ns.run(FAKE_CLAUDE_REPORT=1)
+    _check(r, "OK", 0)
+    last = ns.last()
+    assert last["history_commit"] == "pushed"
+    files = _git("show", "--format=%s", "--name-only", "main", cwd=ns.origin, env=ns.env).splitlines()
+    assert files[0].startswith("docs(night-shift): total API cost")
+    assert sorted(f for f in files[1:] if f) == ["docs/night-shift/%s.md" % last["date"], "docs/night-shift/history.jsonl"]
+    rows = _rows(ns)
+    assert len(rows) == 1 and rows[0]["status"] == "OK" and rows[0]["started"] == last["started"]
+    for gone in ("report", "candidates", "result", "history_commit"):
+        assert gone not in rows[0]
+    assert str(ns.tmp) not in _git("show", "main:docs/night-shift/history.jsonl", cwd=ns.origin, env=ns.env)
+    local = [json.loads(l) for l in (ns.reports / "history.jsonl").read_text().splitlines()]
+    assert len(local) == 1 and local[0]["report"]   # the local twin keeps everything
+    assert last["head_after"] == _git("rev-parse", "main", cwd=ns.origin, env=ns.env)
+
+
+def test_a_night_with_no_commit_of_its_own_gets_a_history_commit(ns):
+    _check(ns.run(FAKE_CLAUDE_REPORT=1), "OK", 0)
+    (ns.live / "temp" / "night-shift.hold").write_text("owner: away\n")
+    _check(ns.run(), "HELD", 0)
+    subject = _git("log", "-1", "--format=%s%n%b", "main", cwd=ns.origin, env=ns.env)
+    assert subject.startswith("docs(night-shift): run history ") and "(HELD)" in subject
+    assert "Logbook-Entry" not in subject
+    assert [r["status"] for r in _rows(ns)] == ["OK", "HELD"]
+    assert ns.last()["history_commit"] == "pushed"
+    assert _idents(ns, "main", "-1") == ["t <t@t>|%s" % IDENT]
+    # NOTHING_NEW is the same path, and the landed check tolerates all of it
+    (ns.live / "temp" / "night-shift.hold").unlink()
+    _check(ns.run(), "NOTHING_NEW", 0)
+    assert [r["status"] for r in _rows(ns)] == ["OK", "HELD", "NOTHING_NEW"]
+    ns.push_change()
+    _check(ns.run(), "OK", 0)
+    assert ns.last()["landed"].endswith("ungated=0")
+
+
+def test_history_commit_is_skipped_when_the_clone_is_not_clean_and_says_why(ns):
+    _check(ns.run(FAKE_CLAUDE_REPORT=1), "OK", 0)
+    (ns.clone / "stray.txt").write_text("x")
+    before = _git("rev-parse", "main", cwd=ns.origin, env=ns.env)
+    (ns.live / "temp" / "night-shift.hold").write_text("owner: away\n")
+    _check(ns.run(), "HELD", 0)
+    assert _git("rev-parse", "main", cwd=ns.origin, env=ns.env) == before
+    assert ns.last()["history_commit"] == "skipped: clone not clean"
+
+
+def test_a_rejected_push_heals_the_next_night_and_a_rerun_is_one_row(ns):
+    hook = ns.origin / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\nwhile read o n r; do git cat-file -p \"$n\" | "
+                    "grep -q '^docs(night-shift): \\(total API cost\\|run history\\)' && exit 1; done; exit 0\n")
+    hook.chmod(0o755)
+    _check(ns.run(FAKE_CLAUDE_REPORT=1), "OK", 0)
+    assert ns.last()["history_commit"] != "pushed"
+    assert "history.jsonl" not in _git("ls-tree", "-r", "--name-only", "main", cwd=ns.origin, env=ns.env)
+    hook.unlink()
+    # the report is already on origin from the first night; a second identical one has nothing to commit
+    ns.push_change()
+    _check(ns.run(FAKE_CLAUDE_REPORT=0), "OK", 0)
+    rows = _rows(ns)
+    assert len(rows) == 2 and rows[0]["run_id"] != rows[1]["run_id"]
+    # the same run id written twice (a re-run) is one row, the later one wins
+    line = (ns.reports / "history.jsonl").read_text().splitlines()[-1]
+    with open(str(ns.reports / "history.jsonl"), "a") as fh:
+        fh.write(line.replace('"OK"', '"CLAUDE_FAILED"', 1) + "\n")
+    _check(ns.run(FAKE_CLAUDE_REPORT=0), "NOTHING_NEW", 0)   # its own history commit
+    rows = _rows(ns)
+    assert len(rows) == 3
+    assert [r["status"] for r in rows][1] == "CLAUDE_FAILED"
+
+
+def _publish(ns, name, commits=0, merge=False):
+    """Push night-shift/<name> from a throwaway clone; `merge` also fast-forwards main."""
+    work = ns.tmp / ("pub_" + uuid.uuid4().hex[:6])
+    _git("clone", "-q", str(ns.origin), str(work), env=ns.env)
+    _git("checkout", "-q", "-b", name, cwd=work, env=ns.env)
+    for i in range(commits):
+        (work / ("f_%s_%d.txt" % (name.replace("/", "_"), i))).write_text("x")
+        _git("add", "-A", cwd=work, env=ns.env)
+        _git("commit", "-q", "-m", "c", cwd=work, env=ns.env)
+    _git("push", "-q", "origin", name, cwd=work, env=ns.env)
+    if merge:
+        _git("push", "-q", "origin", "%s:main" % name, cwd=work, env=ns.env)
+
+
+def _heads(ns):
+    return _git("for-each-ref", "--format=%(refname:short)", "refs/heads", cwd=ns.origin, env=ns.env).split()
+
+
+def test_only_merged_night_shift_branches_are_pruned(ns):
+    _publish(ns, "night-shift/merged", commits=1, merge=True)
+    _publish(ns, "night-shift/live", commits=1)
+    _publish(ns, "feature/merged-but-not-ours", commits=1)
+    _check(ns.run(), "OK", 0)
+    heads = _heads(ns)
+    assert "night-shift/merged" not in heads
+    assert "night-shift/live" in heads and "feature/merged-but-not-ours" in heads and "main" in heads
+    last = ns.last()
+    assert last["pruned"] == ["origin/night-shift/merged"] and last["prune_failed"] == []
+    # the next night's before-snapshot does not have it, nothing looks moved or new
+    ns.push_change()
+    _check(ns.run(), "OK", 0)
+    assert ns.last()["branches"] == "branches: pushed=0 self_edit=0"
+
+
+def test_local_merged_branches_go_and_unmerged_ones_stay(ns):
+    _check(ns.run(), "OK", 0)
+    _git("branch", "night-shift/loc-merged", "main", cwd=ns.clone, env=ns.env)
+    _git("checkout", "-q", "-b", "night-shift/loc-live", cwd=ns.clone, env=ns.env)
+    (ns.clone / "k.txt").write_text("k")
+    _git("add", "-A", cwd=ns.clone, env=ns.env)
+    _git("commit", "-q", "-m", "k", cwd=ns.clone, env=ns.env)
+    _git("checkout", "-q", "main", cwd=ns.clone, env=ns.env)
+    ns.push_change()
+    _check(ns.run(), "OK", 0)
+    local = _git("for-each-ref", "--format=%(refname:short)", "refs/heads", cwd=ns.clone, env=ns.env).split()
+    assert "night-shift/loc-merged" not in local and "night-shift/loc-live" in local
+    assert ns.last()["pruned"] == ["night-shift/loc-merged"]
+
+
+def test_the_prune_is_capped_at_twenty_a_night(ns):
+    work = ns.tmp / "many"
+    _git("clone", "-q", str(ns.origin), str(work), env=ns.env)
+    for i in range(23):
+        _git("push", "-q", "origin", "main:refs/heads/night-shift/m%02d" % i, cwd=work, env=ns.env)
+    _check(ns.run(), "OK", 0)
+    assert len(ns.last()["pruned"]) == 20
+    assert len([h for h in _heads(ns) if h.startswith("night-shift/")]) == 3
+
+
+def test_a_failed_delete_is_recorded_and_does_not_fail_the_night(ns):
+    _publish(ns, "night-shift/merged", commits=1, merge=True)
+    hook = ns.origin / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\nwhile read o n r; do "
+                    "[ \"$n\" = 0000000000000000000000000000000000000000 ] && exit 1; done; exit 0\n")
+    hook.chmod(0o755)
+    _check(ns.run(), "OK", 0)
+    last = ns.last()
+    assert last["pruned"] == [] and last["prune_failed"] == ["origin/night-shift/merged"]
+    assert "night-shift/merged" in _heads(ns)
+
+
+def test_nothing_is_pruned_when_the_night_is_flagged(ns):
+    _publish(ns, "night-shift/merged", commits=1, merge=True)
+    _check(ns.run(FAKE_CLAUDE_PUSH_CODE=1), "UNGATED_MERGE", 1)
+    assert "night-shift/merged" in _heads(ns) and ns.last()["pruned"] == []

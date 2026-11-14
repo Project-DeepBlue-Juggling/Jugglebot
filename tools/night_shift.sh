@@ -47,6 +47,7 @@
 # Outputs, under $NIGHT_SHIFT_REPORTS ($CLONE/temp/reports/night-shift, gitignored):
 #   last_run.json           the run's summary, written by EVERY exit path
 #   history.log             one line per run: "<iso> <STATUS> <detail>"
+#   history.jsonl           the same runs, the whole summary each, one JSON line per run
 #   candidates-<date>.json  the preflight's candidate set; candidates-last.json
 #                           is the last REAL run's (a dry run never updates it)
 #   nightly-<date>.md       copy of the nightly's latest.md for the orchestrator
@@ -124,6 +125,26 @@
 # unmoved branch. To clear: delete the branch on origin (or drop the commits that
 # touch those paths). last_run.json carries `branches: pushed=k self_edit=n`. A
 # head_before checker with no NEVER_LIST (bootstrap, rollback) skips the scan.
+#
+# Housekeeping (closeout C2).
+#   Prune: after a PASSING landed check and never-list scan (not a dry run, not a skipped
+#   check), the runner deletes every origin night-shift/* branch whose tip is an ancestor of
+#   origin/main (`push --delete` with a lease on the tip it read), at most 20 a night, and
+#   `branch -d`s the merged ones in the clone; tonight's salvage branch is kept. The names go
+#   to last_run.json `pruned`, a delete that failed to `prune_failed`; a failure never fails
+#   the night. branches_step has already run, so a pruned branch is never new or moved to it.
+#   History: write_status appends the whole summary to $REPORTS/history.jsonl; the committed
+#   docs/night-shift/history.jsonl is rebuilt from it every night (one row per run id, start time + pid,
+#   the later row wins; no absolute-path fields, no model text, credentials redacted), so a
+#   rejected push heals the next night. It rides in the cost commit, in the stub commit, or
+#   in its own `docs(night-shift): run history` commit on a night that made neither (HELD,
+#   DEFERRED, NOTHING_NEW, any early failure), the last only on a clean main with nothing
+#   unpushed (`history_commit` in last_run.json says pushed or why not). docs/night-shift/*
+#   is EXEMPT in the landed check. The row of a night is written before that night's final
+#   status is known past the commit, so the next rebuild may correct it.
+#   Identity: GIT_COMMITTER_NAME/EMAIL are exported for the whole run (Jugglebot Night Shift
+#   <night-shift@noreply.jugglebot.invalid>), so every commit by the runner, claude and its
+#   subagents has that committer while the author stays the clone's git config.
 #
 # A night that stops early (2026-11-09: `claude -p` gives background tasks 10
 # minutes after the orchestrator's last turn, then kills them and exits 0, so a
@@ -225,8 +246,17 @@ UNGATED_HOLD="$REPORTS/ungated.hold"
 NIGHT_SHIFT_VERDICTS="${NIGHT_SHIFT_VERDICTS:-$HOME/.local/state/jugglebot/verdicts}"
 export NIGHT_SHIFT_VERDICTS
 
+# The Night Shift's commits carry their own COMMITTER identity (owner, 2026-11-13), so
+# a later check can tell night work from a day Session's. Exported, not written to
+# git config: it reaches every commit made by this runner, by claude and by its
+# subagents, and the AUTHOR (the clone's user.name/user.email) stays what it was.
+# The address is a no-reply one on the reserved .invalid TLD: it can never be a mailbox.
+export GIT_COMMITTER_NAME="Jugglebot Night Shift"
+export GIT_COMMITTER_EMAIL="night-shift@noreply.jugglebot.invalid"
+
 DATE="$(date +%F)"
 STARTED="$(date -Iseconds)"
+RUN_ID="$STARTED#$$"   # one run, as the key of its row in history.jsonl (STARTED alone has 1 s resolution)
 START_S=$SECONDS
 DRY=""
 [[ "$DRY_RUN" == "1" ]] && DRY=1
@@ -237,7 +267,9 @@ unset NS_COST NS_TURNS NS_DENIALS NS_SPAWNED NS_CLAUDE_EXIT NS_HEAD_BEFORE \
   NS_NIGHTLY_LINE NS_PREFLIGHT NS_RESULT NS_MAIN_COMMITS NS_TICKER_RERAISED NS_COST_RECORDED \
   NS_AUTH NS_COST_API NS_APP_CLONE_STATE NS_APP_NIGHT_START NS_DEPLOY_STATUS NS_DEPLOY_LINE \
   NS_APP_HEALTHY_BEFORE NS_RESUMED NS_SALVAGED NS_STUB_REPORT \
-  NS_ORIGIN_AFTER_CLAUDE NS_LANDED NS_LANDED_UNGATED NS_BRANCHES NS_SELF_EDIT
+  NS_ORIGIN_AFTER_CLAUDE NS_LANDED NS_LANDED_UNGATED NS_BRANCHES NS_SELF_EDIT \
+  NS_PRUNED NS_PRUNE_FAILED NS_HISTORY
+HISTORY_COMMITTED=0
 STATUS_WRITTEN=0
 TICKER_CLAIMED=0
 CLAUDE_RAN=0
@@ -296,16 +328,22 @@ record_cost_main() {
     export NS_COST_RECORDED=no-cost; return 0
   fi
   if [[ ! -s "$NS_REPORT" ]]; then export NS_COST_RECORDED=no-report; return 0; fi
-  local rel="docs/night-shift/$DATE.md"
+  local rel="docs/night-shift/$DATE.md" hrel="docs/night-shift/history.jsonl" hstatus=OK
+  # The status finish() is about to write, as far as it is known here: the two failures
+  # that follow this commit. Anything else that changes it is healed by the next rebuild.
+  [[ -z "${NS_SELF_EDIT:-}" ]] || hstatus=SELF_EDIT_BRANCH
+  [[ -z "${NS_LANDED_UNGATED:-}" ]] || hstatus=UNGATED_MERGE
+  history_stage "$hstatus" "cost ${NS_COST:-?} USD, main ${NS_HEAD_BEFORE:0:8}" || hrel=""
   if append_deploy_line \
      && append_landed_flag \
      && append_self_edit_flag \
      && { [[ -z "${NS_COST:-}" ]] || cost_line >>"$NS_REPORT"; } \
-     && git -C "$CLONE" add -- "$rel" \
+     && git -C "$CLONE" add -- "$rel" ${hrel:+"$hrel"} \
      && git -C "$CLONE" commit -q -m "docs(night-shift): total API cost $DATE" \
-          -m "Logbook-Entry: $DATE-night-shift" -- "$rel" \
+          -m "Logbook-Entry: $DATE-night-shift" -- "$rel" ${hrel:+"$hrel"} \
      && git -C "$CLONE" push -q origin HEAD:main 2>>"$REPORTS/$DATE.cost.err"; then
     export NS_COST_RECORDED=pushed
+    if [[ -n "$hrel" ]]; then export NS_HISTORY=pushed HISTORY_COMMITTED=1; fi
   else
     export NS_COST_RECORDED=rejected
     git -C "$CLONE" fetch -q origin 2>/dev/null
@@ -314,15 +352,10 @@ record_cost_main() {
   export_posthoc_git
 }
 
-write_status() {   # write_status STATUS DETAIL -> last_run.json + history.log
-  local status="$1" detail; detail="$(one_line "$2")"
-  STATUS_WRITTEN=1
-  mkdir -p "$REPORTS" 2>/dev/null
-  local finished; finished="$(date -Iseconds)"
-  if ! NS_STATUS="$status" NS_DETAIL="$detail" NS_DATE="$DATE" NS_DRY="$DRY_RUN" \
-       NS_STARTED="$STARTED" NS_FINISHED="$finished" \
-       NS_DURATION="$((SECONDS - START_S))" \
-       "$PYTHON" - "$REPORTS/last_run.json" <<'PY'
+# The run's summary object (last_run.json, and the provisional row of the committed
+# history): reads the NS_* environment, writes JSON to $1 atomically.
+status_json() {   # status_json DEST
+  "$PYTHON" - "$1" <<'PY'
 import json, os, sys
 
 e = os.environ.get
@@ -342,6 +375,7 @@ out = {
     "status": e("NS_STATUS"),
     "detail": e("NS_DETAIL"),
     "dry_run": e("NS_DRY") == "1",
+    "run_id": e("NS_RUN_ID"),
     "started": e("NS_STARTED"),
     "finished": e("NS_FINISHED"),
     "duration_s": num("NS_DURATION", int),
@@ -376,6 +410,9 @@ out = {
     "origin_after_claude": e("NS_ORIGIN_AFTER_CLAUDE"),
     "landed": e("NS_LANDED"),
     "branches": e("NS_BRANCHES"),
+    "pruned": [x for x in (e("NS_PRUNED") or "").splitlines() if x],
+    "prune_failed": [x for x in (e("NS_PRUNE_FAILED") or "").splitlines() if x],
+    "history_commit": e("NS_HISTORY"),
 }
 tmp = sys.argv[1] + ".tmp"
 with open(tmp, "w") as fh:
@@ -383,13 +420,121 @@ with open(tmp, "w") as fh:
     fh.write("\n")
 os.replace(tmp, sys.argv[1])
 PY
+}
+
+write_status() {   # write_status STATUS DETAIL -> last_run.json + history.log + history.jsonl
+  local status="$1" detail; detail="$(one_line "$2")"
+  STATUS_WRITTEN=1
+  mkdir -p "$REPORTS" 2>/dev/null
+  local finished; finished="$(date -Iseconds)"
+  if ! NS_STATUS="$status" NS_DETAIL="$detail" NS_DATE="$DATE" NS_DRY="$DRY_RUN" \
+       NS_STARTED="$STARTED" NS_RUN_ID="$RUN_ID" NS_FINISHED="$finished" \
+       NS_DURATION="$((SECONDS - START_S))" \
+       status_json "$REPORTS/last_run.json"
   then
     # The interpreter itself is gone: still leave a parseable minimum.
     printf '{"date": "%s", "status": "%s", "detail": "summary writer failed"}\n' \
       "$DATE" "$status" >"$REPORTS/last_run.json" 2>/dev/null
   fi
   printf '%s %s %s\n' "$finished" "$status" "$detail" >>"$REPORTS/history.log" 2>/dev/null
+  # The machine-readable twin of history.log: the whole summary, one line per run. The
+  # committed docs/night-shift/history.jsonl is rebuilt from this file (history_stage).
+  "$PYTHON" -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))))' \
+    "$REPORTS/last_run.json" >>"$REPORTS/history.jsonl" 2>/dev/null
   echo "night_shift: $status $detail"
+}
+
+# ── The committed run history (closeout C2) ───────────────────────────────────
+# $REPORTS/history.jsonl is the local, complete record (write_status appends the whole
+# summary of every run). docs/night-shift/history.jsonl is REBUILT from it, never
+# appended: local rows plus this run's provisional row, one row per run, keyed on the run id (start time and pid)
+# (a night can be re-run, and a rejected push leaves a gap the next rebuild
+# fills; a later row of the same key replaces the provisional one; the key is the run_id,
+# the start time plus the runner's pid). The row is last_run.json
+# minus what must not be published: the two absolute-path fields and the model's result text
+# (`report`, `candidates`, `result`), $HOME shown as ~, and any credential value or
+# sk-... token redacted. The history commit is docs/night-shift/* only, which
+# tools/night_shift_landed.py EXEMPTs, and is made after the landed check has run.
+history_stage() {   # history_stage STATUS DETAIL: write the file into the clone's tree
+  local status="$1" detail; detail="$(one_line "$2")"
+  local tmp="$REPORTS/.history-row.$$.json" rel_dir="$CLONE/docs/night-shift"
+  mkdir -p "$rel_dir" 2>/dev/null || return 1
+  NS_STATUS="$status" NS_DETAIL="$detail" NS_DATE="$DATE" NS_DRY="$DRY_RUN" \
+    NS_STARTED="$STARTED" NS_RUN_ID="$RUN_ID" NS_FINISHED="$(date -Iseconds)" NS_DURATION="$((SECONDS - START_S))" \
+    status_json "$tmp" || return 1
+  "$PYTHON" - "$REPORTS/history.jsonl" "$tmp" "$rel_dir/history.jsonl" <<'PY'
+import json, os, re, sys
+local, prov, dest = sys.argv[1:4]
+DROP = ("report", "candidates", "result", "history_commit")
+secrets = [v for v in (os.environ.get("ANTHROPIC_API_KEY"), os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"))
+           if v and len(v) >= 8]
+home = os.path.expanduser("~")
+def scrub(v):
+    if isinstance(v, str):
+        for s in secrets:
+            v = v.replace(s, "[redacted]")
+        v = re.sub(r"sk-[A-Za-z0-9_-]{10,}", "[redacted]", v)
+        return v.replace(home, "~") if home not in ("", "/") else v
+    if isinstance(v, list):
+        return [scrub(x) for x in v]
+    return v
+rows = {}
+def take(obj):
+    if isinstance(obj, dict):
+        key = obj.get("run_id") or "%s/%s" % (obj.get("started"), obj.get("finished"))
+        rows[key] = obj
+try:
+    with open(local) as fh:
+        for line in fh:
+            try:
+                take(json.loads(line))
+            except ValueError:
+                pass
+except OSError:
+    pass
+take(json.load(open(prov)))
+os.unlink(prov)
+out = [{k: scrub(v) for k, v in r.items() if k not in DROP}
+       for r in sorted(rows.values(), key=lambda r: (r.get("started") or "", r.get("finished") or ""))]
+tmp = dest + ".tmp"
+with open(tmp, "w") as fh:
+    for r in out:
+        fh.write(json.dumps(r, sort_keys=True) + "\n")
+os.replace(tmp, dest)
+PY
+}
+
+# The runner's own commit for a night that made none (NOTHING_NEW, HELD, DEFERRED, a
+# failure before the stub report or the cost commit): only on a clean main with nothing
+# unpushed, otherwise skipped and the reason recorded in last_run.json `history_commit`.
+# Never while another run owns the clone (OVERLAP), never on a dry run.
+history_own_commit() {   # history_own_commit STATUS DETAIL
+  local status="$1" detail="$2" rel="docs/night-shift/history.jsonl" why=""
+  if [[ -n "$DRY" ]]; then return 0; fi
+  if [[ "$status" == OVERLAP ]]; then export NS_HISTORY="skipped: another run owns the clone"; return 0; fi
+  [[ "$HISTORY_COMMITTED" == 1 ]] && { export NS_HISTORY=pushed; return 0; }
+  if [[ ! -e "$CLONE/.git" ]]; then why="no clone yet"
+  elif [[ "$(git -C "$CLONE" symbolic-ref -q --short HEAD 2>/dev/null)" != main ]]; then why="clone not on main"
+  elif [[ -n "$(git -C "$CLONE" status --porcelain 2>/dev/null)" ]]; then why="clone not clean"
+  elif ! timeout --kill-after=10 60 git -C "$CLONE" fetch -q origin 2>/dev/null 8>&-; then why="fetch failed"
+  elif [[ -n "$(git -C "$CLONE" log --format=%H origin/main..main 2>/dev/null)" ]]; then why="unpushed commits on main"
+  elif ! git -C "$CLONE" merge -q --ff-only origin/main 2>/dev/null; then why="main not fast-forwardable"
+  fi
+  if [[ -n "$why" ]]; then export NS_HISTORY="skipped: $why"; return 0; fi
+  history_stage "$status" "$detail" || { export NS_HISTORY="skipped: render failed"; return 0; }
+  if [[ -z "$(git -C "$CLONE" status --porcelain -- "$rel" 2>/dev/null)" ]]; then
+    export NS_HISTORY="skipped: unchanged"; return 0
+  fi
+  if git -C "$CLONE" add -- "$rel" \
+     && git -C "$CLONE" commit -q -m "docs(night-shift): run history $DATE ($status)" -- "$rel" \
+     && timeout --kill-after=10 120 git -C "$CLONE" push -q origin HEAD:main 2>>"$REPORTS/$DATE.history.err" 8>&-; then
+    export NS_HISTORY=pushed HISTORY_COMMITTED=1
+    export_posthoc_git
+  else
+    export NS_HISTORY=rejected
+    git -C "$CLONE" fetch -q origin 2>/dev/null 8>&-
+    git -C "$CLONE" reset -q --hard origin/main 2>/dev/null
+  fi
 }
 
 # A non-OK night that reached Claude and has no report still gets a page in the
@@ -417,10 +562,13 @@ write_stub_report() {   # write_stub_report STATUS DETAIL
     export NS_STUB_REPORT=write-failed
     return 0
   fi
-  if git -C "$CLONE" add -- "$rel" \
-     && git -C "$CLONE" commit -q -m "docs(night-shift): stub report $DATE ($status)" -- "$rel" \
+  local paths=("$rel") hrel="docs/night-shift/history.jsonl"
+  history_stage "$status" "$detail" && paths+=("$hrel")
+  if git -C "$CLONE" add -- "${paths[@]}" \
+     && git -C "$CLONE" commit -q -m "docs(night-shift): stub report $DATE ($status)" -- "${paths[@]}" \
      && timeout --kill-after=10 120 git -C "$CLONE" push -q origin HEAD:main 2>>"$REPORTS/$DATE.stub.err" 8>&-; then
     export NS_STUB_REPORT=pushed
+    if (( ${#paths[@]} > 1 )); then export NS_HISTORY=pushed HISTORY_COMMITTED=1; fi
   else
     export NS_STUB_REPORT=rejected
     git -C "$CLONE" fetch -q origin 2>/dev/null 8>&-
@@ -443,6 +591,7 @@ finish() {         # finish STATUS DETAIL: the only way out after argument parsi
     detail="$detail; SELF_EDIT_BRANCH ${NS_BRANCHES:-} $NS_SELF_EDIT"
   fi
   write_stub_report "$status" "$detail"
+  history_own_commit "$status" "$detail"
   # A real run that claimed the nightly ticker and then did not finish OK must
   # hand the claim back: the morning Session reads "LOWERED by night-shift" as
   # "the report covers it", and there is no report, so a RED would be swallowed.
@@ -976,6 +1125,57 @@ branches_step() {
   export NS_BRANCHES NS_SELF_EDIT
 }
 branches_step
+
+# -- 10a''. The prune: merged night-shift branches (closeout C2) -----------------------
+# The runner deletes what its nights leave behind, so the owner never has to be asked
+# for it: every night-shift/* branch whose tip is an ancestor of origin/main (fully
+# merged: nothing is lost) goes from origin (`push --delete`, with a lease on the tip
+# just read, so a branch pushed to meanwhile is left alone), at most $PRUNE_MAX a night,
+# and the merged ones in the clone go with `branch -d`, which itself refuses an unmerged
+# branch. Only refs under night-shift/ are ever looked at. Only after a PASSING landed
+# check and never-list scan (not skipped, not a dry run): on a night that flagged
+# something the branches are evidence. Ordering against branches_step: the scan has
+# already compared the pre-claude snapshot with origin, so a pruned branch is never
+# "new or moved" to it, and the next night snapshots origin after its own fetch, where
+# a branch deleted by `push --delete` is gone (the deletion removes the tracking ref).
+# A failed delete is recorded in last_run.json prune_failed and never fails the night.
+PRUNE_MAX=20
+prune_step() {
+  [[ -z "$DRY" ]] || return 0
+  [[ -z "${NS_LANDED_UNGATED:-}" && -z "${NS_SELF_EDIT:-}" ]] || return 0
+  [[ "${NS_LANDED:-}" == "landed: gated="* ]] || return 0
+  local main sha ref name n=0 pruned="" failed="" cur keep="${NS_SALVAGED:-}"; keep="${keep%% *}"   # tonight's salvage branch is evidence
+  main="$(git -C "$CLONE" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)" || return 0
+  while read -r sha ref; do
+    [[ "$ref" == refs/remotes/origin/night-shift/* ]] || continue
+    (( n < PRUNE_MAX )) || break
+    name="${ref#refs/remotes/origin/}"
+    [[ -z "$keep" || "$name" != "$keep" ]] || continue
+    git -C "$CLONE" merge-base --is-ancestor "$sha" "$main" 2>/dev/null || continue
+    n=$((n + 1))
+    if timeout --kill-after=10 120 git -C "$CLONE" push -q --force-with-lease="$name:$sha" origin ":$name" \
+         </dev/null 2>>"$REPORTS/$DATE.prune.err" 8>&-; then
+      pruned+="origin/$name"$'\n'
+    else
+      failed+="origin/$name"$'\n'
+    fi
+  done < <(git -C "$CLONE" for-each-ref --format='%(objectname) %(refname)' refs/remotes/origin/night-shift/ 2>/dev/null)
+  n=0
+  cur="$(git -C "$CLONE" symbolic-ref -q --short HEAD 2>/dev/null)"
+  while read -r name; do
+    [[ "$name" == night-shift/* && "$name" != "$cur" && "$name" != "$keep" ]] || continue
+    (( n < PRUNE_MAX )) || break
+    n=$((n + 1))
+    if git -C "$CLONE" branch -q -d "$name" </dev/null 2>>"$REPORTS/$DATE.prune.err"; then
+      pruned+="$name"$'\n'
+    else
+      # not merged (or anything else): left alone, and not worth a failure line
+      n=$((n - 1))
+    fi
+  done < <(git -C "$CLONE" for-each-ref --format='%(refname:short)' refs/heads/night-shift/ 2>/dev/null)
+  export NS_PRUNED="${pruned%$'\n'}" NS_PRUNE_FAILED="${failed%$'\n'}"
+}
+prune_step
 
 # ── 10b. The app deploy: the last step of the night, whatever claude's outcome ──
 # Before the outcome is judged, because a night that dies after merging still has
