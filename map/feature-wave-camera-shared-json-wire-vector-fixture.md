@@ -19,6 +19,9 @@ links:
 - tests/ros/test_wave_camera.py
 parent: wave-camera-can3
 filed_by: claude
+night_skip: out-of-reach
+night_skip_on: '2026-11-15'
+night_skip_note: The firmware consumer is a pio native test, refused at night.
 ---
 
 The CAN adapter design s7 calls for one JSON fixture of frame vectors that the ESP32 firmware tests and the node tests both consume (the clapboard precedent). Not written; the vectors live in `tests/ros/test_wave_camera.py` until it is.

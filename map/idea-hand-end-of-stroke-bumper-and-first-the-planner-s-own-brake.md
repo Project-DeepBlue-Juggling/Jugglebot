@@ -15,6 +15,9 @@ area: hand
 blocked_by: []
 links: []
 filed_by: claude (jugglebot-f5, Opus design study 2026-10-30)
+night_skip: owner-session
+night_skip_on: '2026-11-15'
+night_skip_note: TKT-28 answered; C-HAND-5 shipped and the bumper is hardware.
 ---
 
 Owner's recurring thought 2026-10-30: the ceiling is about 1.5 m above the catch plane (Apex about 1.45 m, release 5.3 m/s). A shock-absorber bumper at the top of the Hand stroke would replace the post-release motor brake, so the motor could be run hard.

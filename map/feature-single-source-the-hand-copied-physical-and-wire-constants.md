@@ -4,13 +4,20 @@ kind: feature
 title: Single-source the hand-copied physical and wire constants
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:10:00Z'
+updated: '2026-11-14T17:55:08Z'
 owners: []
 priority: medium
+effort: m
+hardware: none
+owner: none
 radius: cross-cutting
+area: tests-tooling
 blocked_by: []
 links: []
 filed_by: claude
+night_skip: frozen-path
+night_skip_on: '2026-11-15'
+night_skip_note: Single-sourcing touches config/ and the firmware headers, both frozen at night.
 ---
 
 Physical and wire constants that are typed by hand in more than one place, with nothing tying the copies together. From the 2026-11-13 maintainer review. The review itself added a test pinning the executor's `REBASE_TOL_*` to the firmware header; this Item holds the rest.

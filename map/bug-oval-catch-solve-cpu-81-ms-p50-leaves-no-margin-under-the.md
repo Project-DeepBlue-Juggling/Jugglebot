@@ -17,6 +17,9 @@ links:
 - 2026-10-28-jb76-solve-tail-is-environment-starvation-instrumented
 parent: two-ball-oval
 filed_by: claude (BUG-21 21:02 Sitting read-out)
+night_skip: sitting
+night_skip_on: '2026-11-15'
+night_skip_note: A flown CPU measurement on the robot, owner hands.
 ---
 
 21:02 Sitting 2026-10-28, starvation fixed (CATCH wall/CPU 1.27): 3 of 109 oval throws still had a re-aim refused SPLICE_TOO_LATE.

@@ -19,6 +19,9 @@ links:
 - logbook/2026-11-06-sitting-debrief-2.md
 - logbook/2026-11-06-sitting-debrief-3.md
 filed_by: claude
+night_skip: sitting
+night_skip_on: '2026-11-15'
+night_skip_note: Robot; your decision follows the collision data from the next Columns Sittings.
 ---
 
 At the Sitting of 2026-11-06 four of eight two-ball Columns Attempts (Apex 1.00, Dwell 0.27) ended on a mid-air collision between the two balls; a fifth early end is unclassified. Collisions are now the main Attempt killer for Columns.

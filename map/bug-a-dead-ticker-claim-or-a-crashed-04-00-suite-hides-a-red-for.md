@@ -4,15 +4,22 @@ kind: bug
 title: A dead ticker claim or a crashed 04:00 suite hides a RED for up to two days
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:09:01Z'
+updated: '2026-11-14T17:54:17Z'
 owners: []
 priority: medium
+effort: s
+hardware: none
+owner: none
+radius: subsystem
 diagnosis: hypothesis
 area: tests-tooling
 blocked_by: []
 links: []
 parent: night-shift
 filed_by: claude
+night_skip: frozen-path
+night_skip_on: '2026-11-15'
+night_skip_note: The claim path is tools/nightly_ticker.sh and the suite runner, both on the never-list.
 ---
 
 A Session that dies between claiming the 04:00 suite ticker and lowering it leaves a claim file behind, and a later RED can then go unread. Found by the 2026-11-13 maintainer review; the claim path was read, the full sequence across a new raise was not traced.

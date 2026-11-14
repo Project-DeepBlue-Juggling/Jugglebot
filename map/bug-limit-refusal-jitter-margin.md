@@ -20,6 +20,9 @@ links:
 - logbook/2026-11-07-sitting-debrief.md
 parent: two-ball-oval
 filed_by: claude
+night_skip: waiting-trigger
+night_skip_on: '2026-11-15'
+night_skip_note: Your measure-first answer is done; LIMIT_* is not the dominant miss, so its trigger has not fired.
 ---
 
 Landing-time jitter of +-20-30 ms against the 10 % margin, with session acc/jerk sitting on the YAML ceilings, makes `LIMIT_*` refusals the likely dominant miss class. Source: the sitting-4 analysis in `plans/archived/two-ball-skill-stack.md` and the wave-3 tally. Trigger: `LIMIT_*` returns as the dominant miss; the owner's options (a)-(d) from sitting 4 are still undecided. More Dwell costs transit.

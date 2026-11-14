@@ -4,9 +4,13 @@ kind: bug
 title: teensy_bridge_node blocking RPC services share a callback group with the 100 Hz publishers and the link-loss check
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:08:57Z'
+updated: '2026-11-14T17:54:30Z'
 owners: []
 priority: low
+effort: s
+hardware: robot
+owner: none
+radius: subsystem
 diagnosis: hypothesis
 area: can-bridge
 blocked_by: []

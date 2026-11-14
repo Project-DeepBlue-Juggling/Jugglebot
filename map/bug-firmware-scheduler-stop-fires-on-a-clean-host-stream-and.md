@@ -20,6 +20,9 @@ links:
 - logbook/2026-11-06-jb174-stream-socket-queue.md
 - logbook/2026-11-06-sitting-debrief-2.md
 filed_by: claude
+night_skip: sitting
+night_skip_on: '2026-11-15'
+night_skip_note: The 2026-11-13 debrief traced both LANE_REFUSED ends to the :5557 drain (BUG-89); waits on that Sitting.
 ---
 
 Filed by the 2026-11-04 debrief of the 2026-11-03 22:29 Sitting (FEAT-39).

@@ -17,6 +17,9 @@ blocked_by: []
 links:
 - logbook/2026-11-06-sitting-debrief-2.md
 filed_by: claude (jugglebot-f5, R0 study 2026-10-30)
+night_skip: sitting
+night_skip_on: '2026-11-15'
+night_skip_note: Refuted for one-ball Throws on 2026-11-06 (31.7 A at Apex 1.00); two-ball Columns at Apex 1.00-1.05 still needs iq captured at a Sitting.
 ---
 
 Side finding of the R0 brake-shape study 2026-10-30 (scratchpad bumper/r0_brake_shape.md).

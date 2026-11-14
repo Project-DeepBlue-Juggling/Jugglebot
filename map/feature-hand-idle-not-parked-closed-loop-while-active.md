@@ -16,6 +16,9 @@ blocked_by: []
 links:
 - https://github.com/Project-DeepBlue-Juggling/Jugglebot/issues/19
 filed_by: harrison
+night_skip: owner-session
+night_skip_on: '2026-11-15'
+night_skip_note: 'TKT-27 answered: a safety-bearing plan with an arm rung, for your Session.'
 ---
 
 Owner intent, recorded 2026-09-21 while defining **Active** and **Active pose** in `CONTEXT.md`: after ACTIVATE the Legs hold the Active pose Closed-loop, and the Hand's motor controller should be **Idle**.

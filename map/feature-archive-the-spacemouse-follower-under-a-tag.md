@@ -4,13 +4,20 @@ kind: feature
 title: Archive the SpaceMouse follower under a tag
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:10:02Z'
+updated: '2026-11-14T17:55:14Z'
 owners: []
 priority: low
+effort: s
+hardware: robot
+owner: none
+radius: subsystem
 area: skill-stack
 blocked_by: []
 links: []
 filed_by: claude
+night_skip: owner-session
+night_skip_on: '2026-11-15'
+night_skip_note: Archiving under a tag means creating and pushing a tag and editing the launch; a day Session's job.
 ---
 
 Archive the SpaceMouse follower path under a tag, so it can be brought back later. Owner, 2026-11-14: not used for some time, happy to archive, likely to want it again.

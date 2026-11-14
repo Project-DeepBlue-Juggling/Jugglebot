@@ -4,15 +4,22 @@ kind: bug
 title: Unattended runners check for a live Sitting once at the start, and cannot see a bench rig
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:09:04Z'
+updated: '2026-11-14T17:53:49Z'
 owners: []
 priority: medium
+effort: m
+hardware: none
+owner: none
+radius: cross-cutting
 diagnosis: confirmed
 area: tests-tooling
 blocked_by: []
 links: []
 parent: night-shift
 filed_by: claude
+night_skip: frozen-path
+night_skip_on: '2026-11-15'
+night_skip_note: The runner checks live in tools/night_shift.sh, tools/nightly_suite.sh and tools/lib/, all on the never-list.
 ---
 
 The unattended runners ask "is a robot Sitting live" once, at the start, and then work for hours; and the question itself cannot see a bench rig. Found by the 2026-11-13 maintainer review. BUG-85 covers the false-positive half (the pattern matches any process whose arguments name a node file; the review itself saw a peer pytest make the box read live).

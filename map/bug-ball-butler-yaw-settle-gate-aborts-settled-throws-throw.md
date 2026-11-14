@@ -18,6 +18,9 @@ links:
 - map/bug-not-settled-retry-dead-in-the-field.md
 parent: ball-butler
 filed_by: claude
+night_skip: out-of-reach
+night_skip_on: '2026-11-15'
+night_skip_note: The fix lives in the BallButler repo.
 ---
 
 Ball Butler's yaw-settle gate aborts throws it could have made: `THROW_ABORTED_NOT_SETTLED` ended 4 of 19 attempts on 2026-09-30, judged plausible false positives (`not_settled_report.md`). Since BUG-6 closed on 2026-11-01 (TKT-21 option 1) the host retries nothing: each false positive costs one attempt, `REJECTED_BB(THROW_ABORTED_NOT_SETTLED)`.

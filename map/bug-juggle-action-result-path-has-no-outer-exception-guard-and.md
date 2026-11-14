@@ -4,9 +4,13 @@ kind: bug
 title: Juggle action Result path has no outer exception guard and can be reset by the next request
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:08:55Z'
+updated: '2026-11-14T17:54:23Z'
 owners: []
 priority: low
+effort: s
+hardware: none
+owner: none
+radius: local
 diagnosis: hypothesis
 area: skill-stack
 blocked_by: []

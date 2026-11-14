@@ -18,6 +18,9 @@ links:
 - bug-40-hz-setpoint-stream-starved-past-the-firmware-s-70-ms
 - bug-box-at-hand-acc-4500-traded-hop-landing-width-for-apex-band
 filed_by: claude
+night_skip: owner-session
+night_skip_on: '2026-11-15'
+night_skip_note: TKT-33 answered and landed by your Session; in progress under it.
 ---
 
 Filed 2026-11-02 at the owner's request, from the Sitting debrief Session (logbook/2026-11-02-sitting-debrief.md). Not scheduled; the owner will take it up when there is time.

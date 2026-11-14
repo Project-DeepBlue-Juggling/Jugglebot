@@ -17,6 +17,9 @@ links:
 - plans/archived/columns-empty-cup-two-feed.md
 parent: ball-butler
 filed_by: claude
+night_skip: sitting
+night_skip_on: '2026-11-15'
+night_skip_note: A flown rung on the robot, owner hands.
 ---
 
 Rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, `ABORTED_BB_NOT_READY`) have never been exercised on hardware; only the mocked-ROS chain tests cover them.
