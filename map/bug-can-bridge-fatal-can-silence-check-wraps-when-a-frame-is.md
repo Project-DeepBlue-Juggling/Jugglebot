@@ -2,10 +2,11 @@
 id: BUG-93
 kind: bug
 title: 'can-bridge fatal CAN-silence check wraps when a frame is stamped after its clock read: a live Leg reads silent and the Platform Stows'
-status: inbox
+status: in_progress
 created: '2026-11-14'
-updated: '2026-11-14T17:53:33Z'
-owners: []
+updated: '2026-11-14T20:05:42Z'
+owners:
+- night-shift
 priority: high
 effort: xs
 hardware: robot
@@ -36,3 +37,20 @@ A CAN_BUS_DOWN trip whose latched record names Leg 0xFF with age 0: the rescan a
 - Apply the `now > ts` guard to all four sites, ideally through one helper so the class is closed at one enforcement point.
 - A native test in `tests/firmware/native/` that stamps `last_rx_us` after `now` and asserts no trip.
 - A firmware version bump and a flash; that is why this was not fixed in the review itself.
+
+## Sitting
+
+- setup: bridge-cycled, level, armed
+- why: The held branch is can-bridge FW 44: the CAN-silence predicates no longer wrap when a Leg is stamped after the fault machine reads its clock; it must be flashed and flown before it merges.
+- do:
+  - Flash the can-bridge with FW 44 from the branch and power-cycle the bridge.
+  - Launch and check the start-up log shows `BRIDGE_FW_CHECK` passing at version 44.
+  - Fly your usual Columns Attempts for the rest of the Sitting.
+- pass: BRIDGE_FW_CHECK passes at 44 and no CAN_BUS_DOWN trip occurs; any CAN_BUS_DOWN that does occur names a real Leg with a real age, never Leg 0xFF with age 0.
+- record: the FW version the bridge reports, every CAN_BUS_DOWN or Stow with its latched Leg and age, the Attempts flown.
+- minutes: 15
+- branch: night-shift/2026-11-15-BUG-93
+
+## Progress
+
+- 2026-11-15: Night Shift 2026-11-15: held on night-shift/2026-11-15-BUG-93: firmware is gate-frozen and unflashed (FW 44); suite failed only the 4 Sunday runner tests (BUG-107); 3 same-class findings open; unblocked by a flash and a Sitting
