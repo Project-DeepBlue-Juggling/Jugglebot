@@ -144,6 +144,24 @@ void fault_set_mpc_active(bool a) {
   s_mpc_active = a;
 }
 
+// ── THE ONE AGE PREDICATE over a receive-stamped timestamp (FW 44, BUG-93) ─────
+// True iff `ts` is strictly older than `now` by MORE than `limit`. Every
+// "has axis i gone quiet?" test in this file goes through here, because the
+// naive form `now - ts > limit` is wrong on this scheduler in one specific way:
+// the caller captures `now = micros64()` FIRST and reads the timestamp AFTER,
+// and the writer (task_can_rx, priority 5) preempts this task (priority 3) in
+// between. A frame stamped in that window is NEWER than `now`, the unsigned
+// subtraction wraps to ~2^64, and a live axis reads as silent for one
+// evaluation. On the fatal predicate that is a CAN_BUS_DOWN trip and a Stow
+// mid-Attempt whose latch names leg 0xFF with age 0 (first_silent_leg re-reads
+// a clock that has moved on). A stamp at or after `now` is age zero: NOT older,
+// so NOT silent / NOT stale and, in the inverted predicates, ALIVE / fresh.
+// Same semantics as the MOTOR_FB_STALE guard has carried since FW 27; this
+// helper is that guard made the single enforcement point for the whole class.
+static inline bool rx_older_than(uint64_t now, uint64_t ts, uint64_t limit) {
+  return now > ts && (now - ts) > limit;
+}
+
 // ── Cache predicates over the leg axes ────────────────────────────────────────
 static bool legs_all_closed_loop() {
   for (uint8_t i = 0; i < NUM_LEGS; ++i)
@@ -180,10 +198,14 @@ static bool actuators_intact_and_holding() { return legs_all_closed_loop() && le
 // a leg that stops answering is an actuator loss, not a reporting gap. The
 // whole-bus-dark case is simply the all-legs instance of the same predicate, so
 // there is ONE predicate and ONE enforcement point, not a special case each.
+//
+// The age test is rx_older_than (BUG-93): a frame stamped after `now` was
+// captured is a LIVE leg, never a silent one.
 static bool any_present_leg_silent() {
   const uint64_t now = micros64();   // interval clock — never the steppable wall
   for (uint8_t i = 0; i < NUM_LEGS; ++i)
-    if (leg_present(i) && (now - atomic_read_u64(&axes[i].last_rx_us) > CAN_AXIS_SILENCE_TIMEOUT_US))
+    if (leg_present(i) &&
+        rx_older_than(now, atomic_read_u64(&axes[i].last_rx_us), CAN_AXIS_SILENCE_TIMEOUT_US))
       return true;
   return false;
 }
@@ -195,8 +217,9 @@ static uint8_t first_silent_leg(uint32_t* age_ms_out) {
   const uint64_t now = micros64();
   for (uint8_t i = 0; i < NUM_LEGS; ++i) {
     if (!leg_present(i)) continue;
-    const uint64_t age = now - atomic_read_u64(&axes[i].last_rx_us);
-    if (age > CAN_AXIS_SILENCE_TIMEOUT_US) {
+    const uint64_t ts = atomic_read_u64(&axes[i].last_rx_us);
+    if (rx_older_than(now, ts, CAN_AXIS_SILENCE_TIMEOUT_US)) {
+      const uint64_t age = now - ts;   // now > ts here, so no wrap
       if (age_ms_out) *age_ms_out = (uint32_t)(age / 1000ULL);
       return i;
     }
@@ -213,10 +236,13 @@ static uint8_t first_silent_leg(uint32_t* age_ms_out) {
 // still requires all six fresh). Vacuously true only with zero present legs,
 // which cannot co-occur with the fatal_can_error precondition of the sole caller
 // (that needs s_first_leg_hb_seen — at least one leg already seen).
+// Exactly the complement of any_present_leg_silent over the present legs, through
+// the same rx_older_than: a stamp newer than `now` reads ALIVE here (BUG-93).
 static bool all_present_legs_alive() {
   const uint64_t now = micros64();   // interval clock — never the steppable wall
   for (uint8_t i = 0; i < NUM_LEGS; ++i)
-    if (leg_present(i) && (now - atomic_read_u64(&axes[i].last_rx_us) > CAN_AXIS_SILENCE_TIMEOUT_US))
+    if (leg_present(i) &&
+        rx_older_than(now, atomic_read_u64(&axes[i].last_rx_us), CAN_AXIS_SILENCE_TIMEOUT_US))
       return false;
   return true;
 }
@@ -351,14 +377,15 @@ static void watchdog_and_stow() {
   const uint64_t now = micros64();   // interval clock — never the steppable wall
   for (uint8_t i = 0; i < NUM_AXES; ++i)
     axes[i].heartbeat_stale = axes[i].heartbeat_seen &&
-                              (now - atomic_read_u64(&axes[i].last_heartbeat_us) > CAN_AXIS_SILENCE_TIMEOUT_US);
+                              rx_older_than(now, atomic_read_u64(&axes[i].last_heartbeat_us),
+                                            CAN_AXIS_SILENCE_TIMEOUT_US);
 
   // Ball Butler heartbeat staleness (CAN1, BB_HEARTBEAT_TIMEOUT_US = 0.5 s).
   // Information-only — no fault response is triggered by BB silence (the CAN3
   // watchdog below is the safety-relevant one); this just keeps bb_state.
   // heartbeat_stale in sync for the [bb] diag print and upstream HeartbeatT2J.
   bb_state.heartbeat_stale = bb_state.heartbeat_seen &&
-      (now - atomic_read_u64(&bb_state.last_heartbeat_us) > BB_HEARTBEAT_TIMEOUT_US);
+      rx_older_than(now, atomic_read_u64(&bb_state.last_heartbeat_us), BB_HEARTBEAT_TIMEOUT_US);
       // ^ atomic (review fix): the last bare last_heartbeat_us read the torn-u64 hardening sweep
       //   missed — the CAN3-decode writer (task_can_rx, prio 5) can preempt this
       //   fault-task (prio 3) read between its two 32-bit loads → a torn u64. Info-only
@@ -430,6 +457,8 @@ static void watchdog_and_stow() {
 static bool jetson_link_up() {
   const uint64_t last = udp_last_rx_us();
   if (last == 0) return false;
+  // Not rx_older_than, and safe without it: the stamp is read BEFORE the clock,
+  // so a preempting writer can only make micros64() later, never `last` newer.
   return (micros64() - last) <= JETSON_LINK_TIMEOUT_US;   // interval: udp_last_rx_us is mono
 }
 
@@ -569,9 +598,10 @@ static void evaluate_guard() {
       // now > ts guards the ordering half of the hazard: the prio-5 writer can
       // stamp AFTER our `now` capture, and an unclamped subtraction would wrap
       // past the threshold — a false one-tick MOTOR_FB_STALE (~100 ms output
-      // suppression) on the live leg path.
+      // suppression) on the live leg path. That guard is rx_older_than (BUG-93
+      // made it the one enforcement point for every age test in this file).
       const uint64_t ts = atomic_read_u64(&axes[i].pos_timestamp_us);
-      if (leg_present(i) && now > ts && (now - ts > MOTOR_FB_STALENESS_US)) {
+      if (leg_present(i) && rx_older_than(now, ts, MOTOR_FB_STALENESS_US)) {
         fb_stale = true; break;
       }
     }
@@ -594,7 +624,7 @@ static void evaluate_guard() {
   if (!fb_stale && s_mpc_active && interp_hand_lane_active()) {
     const uint64_t now = micros64();
     const uint64_t hts = atomic_read_u64(&axes[HAND_AXIS].pos_timestamp_us);
-    if (hts != 0 && now > hts && (now - hts > MOTOR_FB_STALENESS_US)) fb_stale = true;
+    if (hts != 0 && rx_older_than(now, hts, MOTOR_FB_STALENESS_US)) fb_stale = true;
   }
 
   // Latch the guard E-STOP: once any guard condition trips, hold it
@@ -719,7 +749,7 @@ uint32_t fault_hb_stale_mask() {
   uint32_t m = 0;
   for (uint8_t i = 0; i < NUM_AXES; ++i)
     if (axes[i].heartbeat_seen &&
-        (now - atomic_read_u64(&axes[i].last_heartbeat_us) > CAN_HEARTBEAT_STALE_US))
+        rx_older_than(now, atomic_read_u64(&axes[i].last_heartbeat_us), CAN_HEARTBEAT_STALE_US))
       m |= (1u << i);
   return m;
 }

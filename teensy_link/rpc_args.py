@@ -975,7 +975,11 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # 42 -> 43 (2026-11-10, BUG-7): STATE_WRITE encodes the levelling offset as
 # rounded 0.1 mrad counts. PROTOCOL_VERSION 13 -> 14, so an FW 42 board is DARK
 # to this host until the lockstep flash, not ten times wrong.
-EXPECTED_BRIDGE_FW_VERSION = 43
+# 43 -> 44 (2026-11-15, BUG-93): the silence predicates no longer wrap on a
+# receive stamp newer than the fault task's clock read (one helper,
+# rx_older_than), so a live Leg can no longer read silent for one tick and trip
+# CAN_BUS_DOWN. Behavioural only: no wire change, PROTOCOL_VERSION stays 14.
+EXPECTED_BRIDGE_FW_VERSION = 44
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

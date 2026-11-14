@@ -572,6 +572,112 @@ TEST_CASE("FW 23: HB_STALE_MASK is per-axis, includes the hand, and is 4x sharpe
   REQUIRE((fault_hb_stale_mask() & ~0x7Fu) == 0);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+//  FW 44 (BUG-93) — a receive stamp NEWER than the clock read is a LIVE axis
+// ═══════════════════════════════════════════════════════════════════════════════
+//  On the board, every age test captures `now = micros64()` and then reads the
+//  axis timestamp; task_can_rx (priority 5) can preempt the fault task
+//  (priority 3) between the two and stamp a frame that is newer than `now`.
+//  Until FW 44 the unsigned `now - ts` then wrapped to ~2^64 and a live leg read
+//  as silent for one evaluation: a CAN_BUS_DOWN trip and a Stow mid-Attempt,
+//  latched as leg 0xFF / age 0 (the latch re-reads the clock after the writer is
+//  done). The native harness has no preemption, but the interleaving is fully
+//  reproduced by stamping ts > fake_mono_us(): the predicate reads exactly what
+//  it would have read on the board. Recipe confirmed against the unguarded code
+//  (every REQUIRE marked [wraps] below fails there; logbook
+//  2026-11-15-canbridge-silence-predicate-wrap).
+static void stamp_future(uint8_t a, uint64_t ahead_us) {
+  axes[a].last_rx_us        = fake_mono_us() + ahead_us;
+  axes[a].last_heartbeat_us = fake_mono_us() + ahead_us;
+}
+
+TEST_CASE("FW 44 BUG-93: a stamp after the clock read is ALIVE, never SILENT") {
+  for (uint64_t ahead : {uint64_t{1}, uint64_t{3'600'000'000ULL}}) {   // 1 us, 1 h
+    CAPTURE(ahead);
+    reset_all();
+    fake_set_clock(10'000'000, 10'000'000);
+    seed_present_axes();
+    fault_step();
+    REQUIRE(fault_can_bus_down() == false);
+
+    // Every axis stamped AFTER `now` — the worst case: the whole bus in the window.
+    for (uint8_t i = 0; i < NUM_AXES; ++i) stamp_future(i, ahead);
+    REQUIRE(any_present_leg_silent() == false);   // [wraps]
+    REQUIRE(all_present_legs_alive() == true);    // [wraps]
+    uint32_t age_ms = 12345;
+    REQUIRE(first_silent_leg(&age_ms) == 0xFF);   // [wraps]
+    REQUIRE(age_ms == 0);
+    REQUIRE(fault_hb_stale_mask() == 0);          // [wraps]
+
+    fault_step();
+    REQUIRE(fault_can_bus_down() == false);       // [wraps] no CAN_BUS_DOWN trip
+    REQUIRE(fault_stow_pending() == false);
+    REQUIRE(fault_can_fault_leg() == 0xFF);
+    REQUIRE(fault_can_fault_count() == 0);
+    for (uint8_t i = 0; i < NUM_AXES; ++i) {
+      CAPTURE(i);
+      REQUIRE(axes[i].heartbeat_stale == false);  // [wraps] telemetry bookkeeping too
+    }
+  }
+}
+
+TEST_CASE("FW 44 BUG-93: a future stamp on one leg neither hides nor steals a real silence") {
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  seed_present_legs();
+  fault_step();
+
+  // Leg 3 genuinely silent by one microsecond past the window; leg 0 stamped in
+  // the preemption window; the rest fresh at `now`.
+  fake_advance(CAN_AXIS_SILENCE_TIMEOUT_US + 1);
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) if (i != 3) stamp_hb(i);
+  stamp_future(0, 1);
+  REQUIRE(any_present_leg_silent() == true);
+  REQUIRE(all_present_legs_alive() == false);
+  uint32_t age_ms = 0;
+  REQUIRE(first_silent_leg(&age_ms) == 3);        // [wraps] unguarded names leg 0
+  REQUIRE(age_ms == (CAN_AXIS_SILENCE_TIMEOUT_US + 1) / 1000);
+
+  fault_step();
+  REQUIRE(fault_can_bus_down() == true);          // the timeout still trips
+  REQUIRE(fault_stow_pending() == true);
+  REQUIRE(fault_can_fault_leg() == 3);            // [wraps]
+  REQUIRE(fault_can_fault_count() == 1);
+
+  // Reconnect inside the window: every leg's next frame lands after `now`. The
+  // inverted predicate must read that as alive and self-clear on this tick.
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) stamp_future(i, 1);
+  fault_step();
+  REQUIRE(fault_can_bus_down() == false);         // [wraps]
+}
+
+TEST_CASE("FW 44 BUG-93: the silence boundary is unchanged (timeout trips only past it)") {
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  seed_present_legs();
+  fault_step();
+
+  fake_advance(CAN_AXIS_SILENCE_TIMEOUT_US);      // age == timeout: not yet silent
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) if (i != 2) stamp_hb(i);
+  fault_step();
+  REQUIRE(fault_can_bus_down() == false);
+
+  fake_advance(1);                                // age == timeout + 1: silent
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) if (i != 2) stamp_hb(i);
+  fault_step();
+  REQUIRE(fault_can_bus_down() == true);
+  REQUIRE(fault_can_fault_leg() == 2);
+}
+
+TEST_CASE("FW 44 BUG-93: rx_older_than is strict on both sides") {
+  REQUIRE(rx_older_than(100, 100, 0) == false);   // same instant: age zero
+  REQUIRE(rx_older_than(100, 101, 0) == false);   // future stamp: age zero, not 2^64
+  REQUIRE(rx_older_than(100, ~0ULL, 0) == false);
+  REQUIRE(rx_older_than(100, 99, 0) == true);
+  REQUIRE(rx_older_than(100, 50, 50) == false);   // age == limit: not older
+  REQUIRE(rx_older_than(100, 49, 50) == true);
+}
+
 TEST_CASE("motor-feedback staleness suppresses output recoverably (not latched)") {
   reset_all();
   fake_set_clock(10'000'000, 10'000'000);
