@@ -64,7 +64,9 @@ from jugglebot.motion.trajectory.cycle_plan import CyclePlan
 
 # ── I-PLAN-12: the REBASE continuity bar (2026-10-23) ─────────────────────────
 #: The firmware's own "same state" tolerances (``canbridge_config.h``
-#: ``SCHED_RESUME_TOL_POS/VEL_{LEG,HAND}_*``, lines 461-465): what
+#: ``SCHED_RESUME_TOL_POS/VEL_{LEG,HAND}_*``, equality pinned by
+#: ``tests/firmware/test_sched_c2_twin.py::
+#: test_planner_resume_tolerances_match_the_firmware``): what
 #: ``sched_apply`` allows between a promoted frame and the lane it is already
 #: holding.  A REBASED REST's knot 0 is held to the same bar against the state
 #: the machine is propagated to at the new origin, so a rebase can never put a
@@ -5334,8 +5336,11 @@ class SkillExecutor:
                 and t_abs_s < float(skill.t_abs_s) - float(skill.window_s)):
             # A REST refused STALE_STATE is RETRIED on the next tick, until
             # its own scheduled start (R5 sitting 6, 2026-10-05). A REST is
-            # dispatched `lead_s` before that start and the installer gives
-            # it no lead (`install_segment`: a REST's origin is `t_now`), so
+            # dispatched `lead_s` before that start, and its origin sits near
+            # the dispatch, not at that start: a fresh-origin REST starts at
+            # `t_now` (`install_segment` reserves it no lead), a spliced REST
+            # at `splice_lead_s` ahead (never under `lead_s`, growing with
+            # the window so the solve fits). So
             # after a CATCH it takes the machine over mid-runway, seeded
             # from the moving hand. The install guard measures the hand's
             # travel across the solve against 1.0 rev; at the 930 mm catch

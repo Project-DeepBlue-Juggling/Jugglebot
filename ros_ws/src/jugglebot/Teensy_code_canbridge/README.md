@@ -56,10 +56,19 @@ silicon-fixed DEF mux — the library default the firmware actually runs (the
 | Signal | Teensy 4.1 pin (TX / RX) | Notes |
 |--------|----------------|-------|
 | CAN1 TX / RX | 22 / 23 | Ball Butler bus (BB Teensy only) → TJA1051T/3 transceiver |
-| CAN2 TX / RX | 1 / 0 | Catching cone bus (cone Teensy, often disconnected) → second transceiver; firmware tolerates cone-absent TX (no bus-off) |
-| CAN3 TX / RX | 31 / 30 | Jugglebot core bus (6 leg ODrives + Hand ODrive + platform Teensy 4.0) → third transceiver |
+| CAN2 TX / RX | 1 / 0 | Jugglebot core bus (6 leg ODrives + Hand ODrive + Platform Teensy 4.0) → second transceiver |
+| CAN3 TX / RX | 31 / 30 | Catching cone bus (cone Teensy, often disconnected) → third transceiver; firmware tolerates cone-absent TX (no bus-off) |
 | Ethernet | dedicated MAC pads | PJRC Ethernet kit 6-pin ribbon |
 | LED | 13 | On-board; 1 Hz blink = scheduler alive |
+
+The Jugglebot role runs on the CAN2 controller and the cone role on CAN3
+(physical plugs to match) because the bridge's CAN3 drive path has a
+load-dependent fault: it drives the 1-node cone bus cleanly but fails within
+seconds against the 8-node Jugglebot chain (error-passive/BUS_OFF;
+`logbook/2026-07-31-can3-drive-path-fault-jugglebot-to-can2.md`). The role
+assignment is the two `FlexCAN_T4` declarations in `can_buses.cpp` (whose
+header comment says what to revert once CAN3 is repaired); wire-slot names
+(`bus1_health`, `can3_errors`) are role-keyed and do not follow the swap.
 
 120 Ω termination on each of the three CAN bus ends. CAN3 is the FD-capable
 peripheral, run classical 1 Mbps today (the ODrive firmware is classical-CAN
@@ -188,14 +197,14 @@ second from `task_diag`. Every field, line by line:
 | field | meaning |
 |---|---|
 | `link` | Jetson UDP link state: 0 INIT (no Jetson heartbeat yet), 1 UP, 2 DEGRADED (missed heartbeats), 3 LOST |
-| `fault` | fault-machine state: 0 NONE, 1 SETPOINT_STALE, 2 LINK_LOST, 3 MOTOR_OVERSPEED, 4 MAX_DEVIATION, 5 ODRIVE_FATAL (active error/disarm — incl. plain undervoltage when 45 V is off), 6 CAN_BUS_DOWN (CAN3 RX silent > 2 s), 7 MOTOR_FB_STALE |
+| `fault` | fault-machine state: 0 NONE, 1 SETPOINT_STALE, 2 LINK_LOST, 3 MOTOR_OVERSPEED, 4 MAX_DEVIATION, 5 ODRIVE_FATAL (active error/disarm — incl. plain undervoltage when 45 V is off), 6 CAN_BUS_DOWN (Jugglebot bus RX silent > 2 s), 7 MOTOR_FB_STALE |
 | `rx` / `tx` | cumulative UDP frames received from / sent to the Jetson (tx runs ~320/s: 100 Hz telemetry + 100 Hz hand echo + 100 Hz platform/BB traffic + 10 Hz heartbeat + diagnostics) |
 | `crc_err` / `seq_gaps` | UDP frames dropped on bad CRC-16 / gaps seen in the Jetson's frame sequence counter |
 | `drain_cap` | ticks the UDP RX drain budget bound with datagrams still queued (0 in health) |
 | `synced` | `time_synced()`: 1 = wall-clock anchored by a fresh Jetson time-of-day response. **0 whenever ROS2/the UDP link is down — and the 100 Hz 0x7DD time-sync broadcast is withheld while 0.** |
 | `heap` | free FreeRTOS heap (bytes) |
 
-### `[canhealth]` — per-bus health (`jugglebot`=CAN3, `bb`=CAN1, `cone`=CAN2)
+### `[canhealth]` — per-bus health (`jugglebot`=CAN2, `bb`=CAN1, `cone`=CAN3)
 
 `sync=1 hwm=9 capHit=0 err=N flags=0x2c rec=N tec=N flt=active fltNow=active gated=N chg=N`
 
@@ -208,7 +217,7 @@ second from `task_diag`. Every field, line by line:
 | `flags` | sticky-since-boot OR of wire-error types ever seen: 0x01 ACK, 0x02 CRC, 0x04 FORM, 0x08 STUFF, 0x10 BIT0, 0x20 BIT1 (e.g. `0x2c` = FORM+STUFF+BIT1 — the 12 V supply-ramp signature) |
 | `rec` / `tec` | **high-water marks** (not live values) of the RX/TX error counters. CAN fault confinement: ≥96 warning, ≥128 error-passive, TEC ≥256 bus-off. `tec=128` exactly = the passive-ACK cap: something transmitted into a partner-less bus. Live values are `recNow`/`tecNow` on `[canerrs]`. |
 | `flt` | **worst-ever** fault confinement since boot (sticky): `active` / `passive` / `BUSOFF`. **Known-benign signature (bench-confirmed 2026-07-06):** a mid-session 12 V CAN power-cycle leaves `flt=BUSOFF` + `tec≈254` sticky for the rest of the session — the supply ramp's BIT1/STUFF garbage hits resumed TX at +8 TEC apiece on top of the closing-window 128 pin, punching through 256 into a milliseconds-scale bus-off that auto-recovers (BOFFREC=0) before the next 1 Hz print. `fltNow` never shows it and no gate misbehaves; the fresh-**boot** rule (flt/tec must not exceed `passive`/128) still holds because sticky state resets at boot. |
-| `fltNow` | **live** fault confinement at the last 1 kHz service tick (recovers when the bus does). Together with RX staleness this drives the per-bus health classification (2026-07-05 bus-off wiring): live `BUSOFF` → health `BUS_OFF`; live `passive` **or** RX silent > 2 s → `WARN`; else `OK` (`UNKNOWN` until the first frame). Each bus classifies independently from its own registers/timestamps, but only **CAN3's** health gates motion — and since 2026-07-29 the gate is SHARED and SUSTAINED-only: `jugglebot_commands_allowed()` is the single enforcement point (the homing/activate/deactivate gates now call it instead of re-deriving from this enum), and it refuses on BUS_OFF instantly, on RX-stale > 2 s, but on error-*passive* only once `fltNow` has held `passive` continuously for `CAN_PASSIVE_SUSTAIN_US` (1.0 s). An instantaneous `fltNow=passive` shown here is therefore NOT an outage — error-passive is transient by construction, and gating on it caused the 2026-07-29 CAN3 flap (`logbook/2026-07-29-can3-bus-health-flap-hand-sensor-poller.md`). `bus1_health` on the uplink still reports the instantaneous state on purpose, so this print and `/link_status` keep telling the truth; the `sust=` field on `/link_status`'s `can3_errors` row is what says the gate is actually refusing; CAN1/CAN2 health feeds only the `bus1_health`/`bus2_health` uplink slots and this print — BB commands stay gated on BB-heartbeat presence. WARN keys on error-passive (128), not the CAN warning level (96), so the 12 V-ramp REC burst (~121) never flags it. |
+| `fltNow` | **live** fault confinement at the last 1 kHz service tick (recovers when the bus does). Together with RX staleness this drives the per-bus health classification (2026-07-05 bus-off wiring): live `BUSOFF` → health `BUS_OFF`; live `passive` **or** RX silent > 2 s → `WARN`; else `OK` (`UNKNOWN` until the first frame). Each bus classifies independently from its own registers/timestamps, but only the **Jugglebot bus's** health gates motion — and since 2026-07-29 the gate is SHARED and SUSTAINED-only: `jugglebot_commands_allowed()` is the single enforcement point (the homing/activate/deactivate gates now call it instead of re-deriving from this enum), and it refuses on BUS_OFF instantly, on RX-stale > 2 s, but on error-*passive* only once `fltNow` has held `passive` continuously for `CAN_PASSIVE_SUSTAIN_US` (1.0 s). An instantaneous `fltNow=passive` shown here is therefore NOT an outage — error-passive is transient by construction, and gating on it caused the 2026-07-29 CAN3 flap (`logbook/2026-07-29-can3-bus-health-flap-hand-sensor-poller.md`). `bus1_health` on the uplink still reports the instantaneous state on purpose, so this print and `/link_status` keep telling the truth; the `sust=` field on `/link_status`'s `can3_errors` row is what says the gate is actually refusing; the BB bus's health feeds only the `bus2_health` uplink slot and this print (the cone bus only this print) — BB commands stay gated on BB-heartbeat presence. WARN keys on error-passive (128), not the CAN warning level (96), so the 12 V-ramp REC burst (~121) never flags it. |
 | `gated` | TX attempts refused by the bus-partner presence gate (no partner frame within 5 s — see `BUS_PARTNER_STALENESS_US`). Non-zero = the gate is protecting a dead/unpowered bus from un-ACKed TX. |
 | `chg` | raw ESR1-*change* snapshot counter — any change in the masked ESR1 bits captures one, **including benign IDLE/RX/TX activity flips**, so it climbs continuously with traffic (~200/s with the 100 Hz 0x7DD active). Not an error signal; its one use is liveness of the capture machinery (frozen at 0 = snapshot path broken, so `err=0` would be meaningless). uint32, wraps harmlessly after ~8 months of continuous traffic. |
 
@@ -244,7 +253,7 @@ quanta (`ntq`), computed `rate` and sample point (`sp`). Expected: 24 MHz,
 ntq=12, 1 Mbps, sp=75.0 %, sjw=2 (the FlexCAN_T4 `setBaudRate` table result —
 all Teensies on the buses use the same defaults).
 
-### `[canhealth] decode_drops` — CAN3 decode drops + uplink-ring overflows
+### `[canhealth] decode_drops` — Jugglebot-bus decode drops + uplink-ring overflows
 
 `short` = DLC < 8 (truncated); `bad_axis` = node id ≥ 7 after the platform-reply
 filter. **`bad_axis` ticking at 2 Hz is normal**: it's the Platform Teensy's
@@ -263,7 +272,7 @@ ODrive states: 1 IDLE, 8 CLOSED_LOOP. `fresh=N/7` counts fully-healthy axes.
 ### `[guard]` — leg output gate (is the firmware streaming setpoints?)
 
 `mpc_active` = J→T heartbeat arm bit seen; `guard_mode` 0 DISABLED / 1 ENABLED /
-2 ESTOP; `output` = interp gate (1 ⇒ sending 500 Hz setpoints to CAN3);
+2 ESTOP; `output` = interp gate (1 ⇒ sending 500 Hz setpoints to the Jugglebot bus);
 `sp_age_ms` = age of the last Jetson setpoint (huge ⇒ none received);
 `u0` = latched commanded base position for axis 0 (rev).
 
@@ -282,13 +291,26 @@ time_base.h / .cpp          micros64 + wall-clock (time-sync master rate owner)
 net_ethernet.h / .cpp       QNEthernet static bring-up
 udp_link.h / .cpp           framing (CRC-16), RX dispatch, TX, stats           [Phase 3]
 udp_protocol.h              generated wire protocol (structs + framing)        [Phase 4]
-odrive_protocol.h / .cpp    ODrive CAN encode/decode (port of odrive.py)       [Phase 5]
+odrive_protocol.h           ODrive CAN encode/decode (port of odrive.py)       [Phase 5]
 can_buses.h / .cpp          FlexCAN_T4 setup + RX dispatch + TX                [Phase 5]
 time_sync_master.h / .cpp   0x7DD 100 Hz broadcast + time-of-day RPC           [Phase 5]
 telemetry.h / .cpp          100 Hz motor-state + on-change diagnostics uplink  [Phase 6]
 leg_interp.h / .cpp         500 Hz Hermite/Taylor ladder (port of motor_guard) [Phase 7]
 fault_machine.h / .cpp      fault state machine + watchdog/deferred-stow       [Phase 8]
 profiling.h / .cpp          per-task CPU, bus util, RTT, deadline-miss → PROFILE
+rpc.h / .cpp                RPC envelope helpers + server dispatcher (PORT_RPC)
+ball_butler_protocol.h      Ball Butler command CAN frame encoders
+ball_butler_state.h / .cpp  Ball Butler heartbeat cache (decoded fields)
+gpio_poll.h / .cpp          Hand ball-present sensor poll (Hand ODrive G02, SDO)
+leg_homing.h / .cpp         firmware homing (velocity-limited move to hardstop)
+leg_activate.h / .cpp       firmware activate (TRAP_TRAJ move to active pose)
+leg_deactivate.h / .cpp     firmware deactivate (TRAP_TRAJ move to STOW, then IDLE)
+platform_relay.h / .cpp     typed Jetson→Platform-Teensy relay write RPCs
+version_check.h / .cpp      firmware Get_Version sweep + raw-version cache
+freertos_shim.h             single include point for the FreeRTOS Teensy 4 port
+protocol_config.h           generated shared protocol constants (config/protocol_config.yaml)
+hardware_config.h           generated hardware & geometry constants (config/hardware_config.yaml)
+extra_script.py             PlatformIO hook: patch the Teensy linker script (.ARM.extab)
 ```
 
 ## lwIP threading (hardware-validation item)

@@ -3,7 +3,7 @@
 #
 # Single source of truth for all hardware dimensions, physical properties,
 # tuning parameters, and operational constants across the Jugglebot system.
-# CAN protocol constants live separately in jugglebot_protocol.yaml.
+# CAN protocol constants live separately in protocol_config.yaml.
 #
 # Consumed by: generate_config.py → hardware_config.py (Python)
 #                                  → hardware_config.h  (C++)

@@ -2,16 +2,20 @@
 id: BUG-102
 kind: bug
 title: CLAUDE.md, INVARIANTS.md and the can-bridge README contradict the code in eight places
-status: inbox
+status: complete
 created: '2026-11-14'
-updated: '2026-11-13T23:09:10Z'
+updated: '2026-11-14T02:55:32Z'
 owners: []
 priority: medium
+effort: s
+hardware: none
+owner: none
 radius: normative
 diagnosis: confirmed
 area: docs
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-14-stale-docs-realigned.md
 filed_by: claude
 ---
 
@@ -33,3 +37,7 @@ Places where a normative or orienting document contradicts the code, collected b
 ## Wanted
 
 One docs pass that fixes these, with `/audit --unstaged` before the commit because `CLAUDE.md` and `INVARIANTS.md` are normative.
+
+## Progress
+
+- 2026-11-14: All eight places verified true and fixed; executor.py AST unchanged

@@ -1,25 +1,35 @@
 #!/usr/bin/env python3
-"""Minimum-viable Jetson-side daemon for the can-bridge Teensy link.
+"""Firmware update over CAN for the boards behind the can-bridge, plus a link probe.
 
-This is the MVP: a runnable single-process Jetson that gives the
-Teensy what it needs to clear its `LINK_LOST` fault and lock its wall-clock:
+Two modes, one standalone Jetson process speaking the can-bridge UDP link
+(``teensy_link``). Neither runs beside the ROS launch: the bridge has one UDP
+owner at a time.
 
-    * Sends J→T heartbeats at 10 Hz (so the Teensy's link watchdog clears).
+``--fw-update HEX_PATH`` (the main use): flash a board over CAN through the
+can-bridge's firmware relay and exit. ``--target platform`` (the default) is
+the Platform Teensy, whose USB port is damaged, so CAN is its only update path;
+``Teensy_code_platform/platformio.ini`` makes this the ``upload_command``, so a
+bare ``pio run -e teensy40 -t upload`` builds and flashes in one call.
+``--target bb`` is Ball Butler, which parks itself first. The tool checks the
+image's identity marker and CRC-32, runs BEGIN / DATA / VERIFY / COMMIT, and
+reads the board's firmware version back as the receipt. ``--dry-run`` stops
+before touching the board; ``--verify-only`` runs everything except COMMIT.
+
+Without ``--fw-update``: a minimal link daemon with no setpoint stream and no
+ROS 2, for checking the protocol layer on real hardware:
+
+    * Sends J→T heartbeats at 10 Hz with leg output disabled (so the
+      Teensy's link watchdog clears).
     * Responds to ``RpcMethod.TIME_OF_DAY_QUERY`` with CLOCK_REALTIME µs
       (so the Teensy's time-sync master can anchor its broadcast clock —
       see ADR-0008).
-    * Logs T→J telemetry / diagnostic / heartbeat / profile frames at a
-      configurable cadence.
-
-No setpoint stream (that's the heavier half of this work — pulls from MPC), no
-ROS 2 plumbing (that's the bridge node rewrite). The point of this MVP is
-to verify the protocol layer works end-to-end on real hardware before
-investing in the rest.
+    * Logs T→J telemetry / heartbeat / profile frames at a configurable
+      cadence.
 
 Usage::
 
-    python tools/teensy_link_bridge.py
-    python tools/teensy_link_bridge.py --teensy-ip 192.168.42.2
+    python tools/teensy_link_bridge.py --fw-update firmware.hex --dry-run
+    python tools/teensy_link_bridge.py --fw-update firmware.hex --target bb
     python tools/teensy_link_bridge.py --duration 30 --verbose
 
 Exits cleanly on Ctrl-C.
