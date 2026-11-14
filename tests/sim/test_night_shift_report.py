@@ -4,7 +4,8 @@ from __future__ import annotations
 import os
 import re
 
-from mapkit.night_shift_report import SECTIONS, parse_report, report_errors
+from mapkit.night_shift_report import (INPUTS_CUTOVER, INPUTS_SECTION, LEGACY_SECTIONS, SECTIONS,
+                                       parse_report, report_errors)
 
 _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -54,7 +55,7 @@ def _swap(text, old, new):
 def test_valid_report_parses_and_has_no_errors():
     assert report_errors(VALID) == []
     parsed = parse_report(VALID)
-    assert tuple(parsed) == SECTIONS
+    assert tuple(parsed) == LEGACY_SECTIONS
     assert parsed["Merged to main"][-1].startswith("| BUG-12 |")
     assert parsed["Unaddressed Sitting results"] == ["none recorded"]
     # the orchestrator's line(s) plus the runner's appended total API cost
@@ -152,3 +153,126 @@ def test_bare_id_prefixes_are_mapkit_ids_all_prefixes():
     assert set(inner.split("|")) == set(ALL_PREFIXES)
     for p in ALL_PREFIXES:
         assert _BARE_ID.match("%s-12" % p) and not _BARE_ID.match("%s-012" % p)
+
+
+# --- close-out C5: the ninth section and the Skipped trailer -----------------------------
+
+INPUT_HEAD = ("| Item | What it is | Input | Exactly what is needed | What the night then does | Respond in |\n"
+              "|---|---|---|---|---|---|\n")
+INPUT_ROW = "| BUG-13 | Wobble | decision | Pick A or B | Implements the pick | TKT-14 |\n"
+TRAILER = "unchanged: 97 Items not re-examined (reasons on each Item: night_skip)"
+
+
+def _nine(date="2026-11-15", inputs="none\n"):
+    text = _swap(VALID, "2026-10-31", date)
+    return _swap(text, "## Unfinished", "## %s\n%s\n## Unfinished" % (INPUTS_SECTION, inputs))
+
+
+def test_the_cutover_date_and_section_counts():
+    assert INPUTS_CUTOVER == "2026-11-15" and len(SECTIONS) == 9 and len(LEGACY_SECTIONS) == 8
+    assert report_errors(VALID) == []                       # 8 sections, dated before the cutover
+    assert report_errors(_nine()) == []                     # 9 sections on the cutover date
+    assert report_errors(_nine("2026-11-01")) == []         # a pre-cutover report may carry it too
+    errs = report_errors(_swap(VALID, "2026-10-31", "2026-11-15"))
+    assert len(errs) == 1 and INPUTS_SECTION in errs[0] and "missing" in errs[0]
+
+
+def test_ninth_section_must_follow_questions():
+    text = _nine()
+    text = _swap(text, "## %s\nnone\n\n## Unfinished" % INPUTS_SECTION, "## Unfinished")
+    text = _swap(text, "## Skipped", "## %s\nnone\n\n## Skipped" % INPUTS_SECTION)
+    errs = report_errors(text)
+    assert len(errs) == 1 and "out of order" in errs[0]
+
+
+def test_inputs_table_header_and_rows_are_checked():
+    assert report_errors(_nine(inputs=INPUT_HEAD + INPUT_ROW)) == []
+    assert report_errors(_nine(inputs="none recorded\n")) == []
+    bad_head = INPUT_HEAD.replace("Input |", "Kind |")
+    assert any("must be 'none' or a table" in e for e in report_errors(_nine(inputs=bad_head + INPUT_ROW)))
+    assert any("must be 'none' or a table" in e for e in report_errors(_nine(inputs="BUG-13 | x\n")))
+    for bad, why in ((INPUT_ROW.replace("BUG-13", "`BUG-13`"), "bare Item ID"),
+                     (INPUT_ROW.replace("decision", "maybe"), "Input must be"),
+                     (INPUT_ROW.replace("TKT-14", "later"), "Respond in"),
+                     (INPUT_ROW.replace(" | TKT-14 |", " |"), "cells")):
+        errs = report_errors(_nine(inputs=INPUT_HEAD + bad))
+        assert len(errs) == 1 and why in errs[0], (bad, errs)
+    for ok in ("sheet", "none"):
+        assert report_errors(_nine(inputs=INPUT_HEAD + INPUT_ROW.replace("TKT-14", ok))) == []
+
+
+def test_skipped_trailer_is_allowed_only_as_the_last_skipped_line():
+    with_trailer = _swap(VALID, "BUG-16 | needs hardware", "BUG-16 | needs hardware\n" + TRAILER)
+    assert report_errors(with_trailer) == []
+    assert report_errors(_swap(VALID, "BUG-16 | needs hardware", "none\n" + TRAILER)) == []
+    # not last: a row after it
+    errs = report_errors(_swap(VALID, "BUG-16 | needs hardware", TRAILER + "\nBUG-16 | needs hardware"))
+    assert len(errs) == 1 and "bare Item ID" in errs[0]
+    # in another section
+    errs = report_errors(_swap(VALID, "night/bug-15 | stopped at step 2", "night/bug-15 | x\n" + TRAILER))
+    assert errs == []  # Unfinished is not an Item-row section; the trailer is simply text there
+    errs = report_errors(_swap(VALID, "| BUG-12 | Fix the thing | The thing is fixed. | abc1234 |",
+                               "| BUG-12 | Fix the thing | The thing is fixed. | abc1234 |\n" + TRAILER))
+    assert len(errs) == 1 and "'## Merged to main'" in errs[0]
+    # a malformed trailer is a bad row
+    errs = report_errors(_swap(VALID, "BUG-16 | needs hardware", "BUG-16 | x\nunchanged: many Items"))
+    assert len(errs) == 1 and "bare Item ID" in errs[0]
+
+
+def test_inputs_rows_are_not_item_rows_for_the_carry_rule():
+    """A standing generated list of every input-* Item must not mark them walked tonight."""
+    import sys
+    sys.path.insert(0, os.path.join(_REPO, "tools"))
+    import night_shift_preflight as pf
+    from mapkit.night_shift_report import ITEM_ROW_SECTIONS
+    assert INPUTS_SECTION not in ITEM_ROW_SECTIONS
+    text = _nine(inputs=INPUT_HEAD + INPUT_ROW.replace("BUG-13", "BUG-99"))
+    assert "BUG-99" not in pf.report_item_ids(text)
+    assert "BUG-12" in pf.report_item_ids(text)             # a real row still counts
+
+
+def test_stub_report_writes_the_inputs_section_and_matches_the_constant(tmp_path):
+    import subprocess
+    import sys
+    sys.path.insert(0, os.path.join(_REPO, "tools"))
+    import night_shift_stub_report as stub
+    assert stub._INPUTS_SECTION == INPUTS_SECTION
+    out = tmp_path / "stub.md"
+    subprocess.run([sys.executable, os.path.join(_REPO, "tools", "night_shift_stub_report.py"),
+                    "--date", "2026-11-16", "--status", "CLAUDE_FAILED", "--clone", str(tmp_path),
+                    "--out", str(out), "--started", "a", "--finished", "b"], check=True)
+    text = out.read_text()
+    assert report_errors(text) == []
+    assert parse_report(text)[INPUTS_SECTION] == ["none recorded"]
+    assert tuple(parse_report(text)) == SECTIONS
+
+
+EARLIER = "earlier: 0 open questions from earlier nights, not re-listed"
+
+
+def test_questions_earlier_line_only_last_in_nine_section_reports():
+    q_row = "| TKT-14 | Which one? | BUG-13 | |"
+    ok = _swap(_nine(), q_row, q_row + "\n" + EARLIER.replace("0", "12"))
+    assert report_errors(ok) == []
+    # not last
+    errs = report_errors(_swap(_nine(), q_row, EARLIER + "\n" + q_row))
+    assert len(errs) == 1 and "bare Item ID" in errs[0]
+    # malformed
+    errs = report_errors(_swap(_nine(), q_row, q_row + "\nearlier: many open questions"))
+    assert len(errs) == 1 and "bare Item ID" in errs[0]
+    # eight-section (pre-cutover) report: not allowed
+    errs = report_errors(_swap(VALID, "| TKT-14 | Which one? | BUG-13 | |", "| TKT-14 | Which one? | BUG-13 | |\n" + EARLIER))
+    assert len(errs) == 1 and "'## Questions" in errs[0]
+    # other sections
+    errs = report_errors(_swap(_nine(), "| BUG-12 | Fix the thing | The thing is fixed. | abc1234 |",
+                               "| BUG-12 | Fix the thing | The thing is fixed. | abc1234 |\n" + EARLIER))
+    assert len(errs) == 1 and "Merged" in errs[0]
+
+
+def test_earlier_line_is_not_a_carry_row():
+    import sys
+    sys.path.insert(0, os.path.join(_REPO, "tools"))
+    import night_shift_preflight as pf
+    text = _swap(_nine(), "| TKT-14 | Which one? | BUG-13 | |", "| TKT-14 | Which one? | BUG-13 | |\n" + EARLIER)
+    assert pf.report_item_ids(text) >= {"TKT-14"}
+    assert not any(i.startswith("earlier") for i in pf.report_item_ids(text))

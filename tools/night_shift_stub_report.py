@@ -2,7 +2,7 @@
 """The report a Night Shift writes for itself when the orchestrator could not.
 
 `tools/night_shift.sh` calls this when a real run that reached Claude ends in any
-status but OK with no `docs/night-shift/<date>.md`. It writes the eight-section
+status but OK with no `docs/night-shift/<date>.md`. It writes the nine-section
 layout of `docs/night-shift/README.md`, so the morning finds a page in the usual
 place that says the night failed and where its work went, and the map app and
 `mapkit.night_shift_report` read it like any other report.
@@ -20,6 +20,8 @@ import subprocess
 import sys
 from typing import List
 
+#: Kept literal (this script runs from any clone); pinned to mapkit.night_shift_report.INPUTS_SECTION by a test.
+_INPUTS_SECTION = "Items the Night Shift could resolve with a small amount of input from you"
 _NOT_RECORDED = "none recorded (the orchestrator stopped before reporting)"
 #: Ticket statuses that no longer want an answer.
 _CLOSED = ("complete", "wontfix", "archived", "cancelled")
@@ -76,7 +78,7 @@ def render(args: argparse.Namespace) -> str:
                 "|---|---|---|---|"] + questions
     else:
         out += ["none"]
-    out += ["", "## Unfinished"]
+    out += ["", "## " + _INPUTS_SECTION, "none recorded", "", "## Unfinished"]
     if args.salvaged:
         branch = args.salvaged.split()[0]
         out += ["%s | Saved by the runner (%s): not reviewed and not gated, so a Session "

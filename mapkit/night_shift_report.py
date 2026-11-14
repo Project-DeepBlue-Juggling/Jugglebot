@@ -1,4 +1,4 @@
-"""Night Shift report layout: the eight sections and a checker (T-U7).
+"""Night Shift report layout: the nine sections and a checker (T-U7).
 
 The report is ``docs/night-shift/<date>.md`` (layout in
 ``docs/night-shift/README.md``). The map app renders it (GFM, tables included)
@@ -12,25 +12,43 @@ from __future__ import annotations
 import re
 from typing import Dict, List
 
+INPUTS_SECTION = "Items the Night Shift could resolve with a small amount of input from you"
 SECTIONS = (
     "Nightly",
     "Merged to main",
     "Held",
     "Questions for the Operator",
+    INPUTS_SECTION,
     "Unfinished",
     "Skipped",
     "Unaddressed Sitting results",
     "Cost",
 )
+#: Reports dated before this keep passing as eight-section reports (no INPUTS_SECTION);
+#: reports dated on or after it must carry all nine (night-shift close-out C5).
+INPUTS_CUTOVER = "2026-11-15"
+LEGACY_SECTIONS = tuple(s for s in SECTIONS if s != INPUTS_SECTION)
+#: The generated section's header row (``python -m mapkit night inputs`` writes it).
+INPUTS_HEADER = ("Item", "What it is", "Input", "Exactly what is needed",
+                 "What the night then does", "Respond in")
+INPUT_TYPES = ("fact", "decision", "sitting")
+#: Skipped ends with exactly this one line: the count of Items the night did not re-examine.
+_UNCHANGED_LINE = re.compile(
+    r"^unchanged: \d+ Items not re-examined \(reasons on each Item: night_skip\)$")
 # sections whose every row begins with the Item it is about
+# (INPUTS_SECTION is deliberately NOT one: it is a standing generated list of every open
+# input-* Item, and counting it would mark each of them walked tonight in the carry rule.)
 ITEM_ROW_SECTIONS = ("Merged to main", "Held", "Questions for the Operator", "Skipped",
                      "Unaddressed Sitting results")
-_TITLE = re.compile(r"^# Night Shift \d{4}-\d{2}-\d{2}$")
+_TITLE = re.compile(r"^# Night Shift (\d{4}-\d{2}-\d{2})$")
 #: The bare Item ID; the prefixes are ``mapkit.ids.ALL_PREFIXES`` (pinned by a test,
 #: kept literal here so the checker stays stdlib-only).
 _BARE_ID = re.compile(r"^(?:BUG|FEAT|IDEA|PWAY|TKT)-[1-9]\d*$")
 RESPOND_IN = "Respond in"
 _RULE_CELL = re.compile(r"^:?-{3,}:?$")
+#: Questions ends with exactly this one line in a nine-section report (the count of open
+#: question tickets from earlier nights that are not re-listed); never an Item row.
+_EARLIER_LINE = re.compile(r"^earlier: \d+ open questions from earlier nights, not re-listed$")
 
 
 def cells(row: str) -> List[str]:
@@ -80,6 +98,27 @@ def _respond_in_errors(rows: List[str]) -> List[str]:
     return errs
 
 
+def _inputs_errors(rows: List[str]) -> List[str]:
+    """The generated section: ``none`` / ``none recorded``, or a table with the fixed header
+    whose rows name an Item, an Input type and a Respond in (bare ID, ``sheet`` or ``none``)."""
+    if rows in (["none"], ["none recorded"]) or not rows:
+        return [] if rows else ["'## %s' is empty: write 'none'" % INPUTS_SECTION]
+    if len(rows) < 2 or not is_table_rule(rows[1]) or tuple(cells(rows[0])) != INPUTS_HEADER:
+        return ["'## %s' must be 'none' or a table headed | %s |" % (INPUTS_SECTION, " | ".join(INPUTS_HEADER))]
+    errs: List[str] = []
+    for r in rows[2:]:
+        cs = cells(r)
+        if len(cs) != len(INPUTS_HEADER):
+            errs.append("'## %s' row has %d cells, want %d: %r" % (INPUTS_SECTION, len(cs), len(INPUTS_HEADER), r))
+        elif not _BARE_ID.match(cs[0]):
+            errs.append("'## %s' row must start with a bare Item ID: %r" % (INPUTS_SECTION, r))
+        elif cs[2] not in INPUT_TYPES:
+            errs.append("'## %s' row's Input must be one of %s: %r" % (INPUTS_SECTION, "/".join(INPUT_TYPES), r))
+        elif cs[5] not in ("none", "sheet") and not _BARE_ID.match(cs[5]):
+            errs.append("'## %s' row's Respond in must be a bare Item ID, 'sheet' or 'none': %r" % (INPUTS_SECTION, r))
+    return errs
+
+
 def _headings(text: str) -> List[str]:
     return [l[3:].strip() for l in text.splitlines() if l.startswith("## ")]
 
@@ -103,16 +142,25 @@ def report_errors(text: str) -> List[str]:
     first = next((l for l in text.splitlines() if l.strip()), "")
     if not _TITLE.match(first.rstrip()):
         errs.append("title must be '# Night Shift <YYYY-MM-DD>', got %r" % first)
+    m = _TITLE.match(first.rstrip())
     heads = _headings(text)
-    for s in SECTIONS:
+    # before the cutover a report may still carry the new section (a stub written early)
+    legacy = (not m or m.group(1) < INPUTS_CUTOVER) and INPUTS_SECTION not in heads  # no date: the title error speaks
+    wanted = LEGACY_SECTIONS if legacy else SECTIONS
+    for s in wanted:
         if s not in heads:
             errs.append("missing section '## %s'" % s)
     present = [h for h in heads if h in SECTIONS]
-    if not any(e.startswith("missing") for e in errs) and present != list(SECTIONS):
-        errs.append("sections out of order: found %s, want %s" % (present, list(SECTIONS)))
+    if not any(e.startswith("missing") for e in errs) and present != list(wanted):
+        errs.append("sections out of order: found %s, want %s" % (present, list(wanted)))
     parsed = parse_report(text)
     for s in ITEM_ROW_SECTIONS:
-        for row in item_rows(parsed.get(s, [])):
+        rows = parsed.get(s, [])
+        if s == "Skipped" and rows and _UNCHANGED_LINE.match(rows[-1]):
+            rows = rows[:-1]  # the one trailer line, allowed only as Skipped's last line
+        if s == "Questions for the Operator" and not legacy and rows and _EARLIER_LINE.match(rows[-1]):
+            rows = rows[:-1]  # likewise, in a nine-section report only
+        for row in item_rows(rows):
             first = cells(row)[0]
             if first == "none" or first.startswith("none "):
                 continue
@@ -120,4 +168,6 @@ def report_errors(text: str) -> List[str]:
             if not _BARE_ID.match(first_tok):
                 errs.append("'## %s' row must start with a bare Item ID (BUG-/FEAT-/IDEA-/PWAY-/TKT-n): %r" % (s, row))
     errs.extend(_respond_in_errors(parsed.get("Held", [])))
+    if INPUTS_SECTION in parsed:
+        errs.extend(_inputs_errors(parsed[INPUTS_SECTION]))
     return errs

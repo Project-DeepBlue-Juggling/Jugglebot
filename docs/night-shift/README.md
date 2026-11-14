@@ -9,7 +9,7 @@ The runner's own record (`last_run.json`, status word) lives in the clone's
 `OK` and has no report gets a stub from the runner instead, provided the clone is back on a
 clean `main` with nothing unpushed (`stub_report` in `last_run.json` says what happened)
 (`docs(night-shift): stub report <date> (<status>)`, `tools/night_shift_stub_report.py`): the
-same eight sections, the Item sections saying `none recorded`, and under `## Unfinished` any
+same nine sections, the Item sections saying `none recorded`, and under `## Unfinished` any
 branch the runner saved work to. The last line of `## Cost` is the runner's, not the
 orchestrator's: `total_cost_usd` only exists once the orchestrator has exited, so
 `tools/night_shift.sh` appends it and pushes it as its own `docs(night-shift): total API
@@ -39,7 +39,7 @@ see a feature that works badly. Map data errors are named in the line and are no
 
 ## Layout
 
-Eight sections, this order, every heading present even when empty (`none`). Every Item is
+Nine sections (eight before 2026-11-15), this order, every heading present even when empty (`none`). Every Item is
 named by its bare ID `<ID>` (no backticks, no link) so the app's drawer links it. The Item
 sections are GFM tables (the owner reads the report in the app and on GitHub, 2026-11-01):
 one row per Item, the Item's own words in a "what it is" column, the night's result in
@@ -71,13 +71,20 @@ Item section (a hint goes in a header cell). One **Summary.** line between the t
 |---|---|---|---|
 | <question-ID> | <the question> | <ID> | <re-rating or context, or empty> |
 
+earlier: <n> open questions from earlier nights, not re-listed
+
+## Items the Night Shift could resolve with a small amount of input from you
+<the output of `python -m mapkit night inputs`, verbatim: a table, or `none`>
+
 ## Unfinished
 <branch> | <Progress headline>        (or `none`)
 
 ## Skipped
 | Item | What it is | Why skipped |
 |---|---|---|
-| <ID> | <title> | <one sentence> |        (grouped by reason: Sittings first, then owner decisions, then out of reach, then not reached)
+| <ID> | <title> | <one sentence> |        (only delta Items skipped tonight; none, or the table)
+
+unchanged: <n> Items not re-examined (reasons on each Item: night_skip)
 
 ## Unaddressed Sitting results
 | Item | Result date | Verdict |            (P5; `none recorded` until then)
@@ -89,6 +96,24 @@ wall clock: <start> to <end>
 app deploy: <status> ... (runner)
 total API cost: USD <n> (runner, total_cost_usd)
 ```
+
+`## Items the Night Shift could resolve with a small amount of input from you` is **generated, never
+model-written**: `python -m mapkit night inputs` prints its whole body from every open Item whose
+`night_skip` starts with `input-` (one row each, ordered by ID kind then number; a `|` in a title or
+note shows as `/`; no rows: the single word `none`). Columns: `Item` is the ID; `What it is` the
+title; `Input` is `fact`, `decision` or `sitting` (the reason's suffix); `Exactly what is needed` is
+`night_skip_input`; `What the night then does` is `night_skip_note`; `Respond in` is the lowest-ID
+open question ticket filed against the Item, else `sheet` for a sitting input, else `none`. The
+list is standing (the same Item appears every night until its input arrives), so the checker does
+not count its rows as Item rows for the carry rule. `## Skipped` lists only Items the night
+skipped tonight, then exactly one last line `unchanged: <n> Items not re-examined (reasons on each
+Item: night_skip)`, where `<n>` is `unchanged` from `candidates-<date>.json`; the checker allows
+that line only as the last line of Skipped. In a nine-section report `## Questions for the Operator` lists only tonight's new questions and ends
+with exactly one line `earlier: <n> open questions from earlier nights, not re-listed` (`earlier: 0 ...`
+when none), allowed only there and never an Item row. Put a blank line before each trailer line
+(`unchanged:`, `earlier:`) so GFM does not read it as a table row. Reports dated before 2026-11-15
+(`INPUTS_CUTOVER` in `mapkit/night_shift_report.py`) are checked as the eight-section reports
+they are; from that date nine are required.
 
 `Respond in` is how the owner answers a Held row: a bare `<question-ID>` naming the question ticket
 the night filed for it (every Held row waiting on the owner's call has one, also listed under
@@ -122,8 +147,10 @@ with one classification line per candidate and commits nothing.
 
 ## Pinned by
 
-`tests/sim/test_night_shift_report.py` (T-U7): a report fixture parses into the eight
-sections; every Item row's first cell is a bare `<ID>` (table header and rule rows are
+`tests/sim/test_night_shift_report.py` (T-U7): a report fixture parses into the nine
+sections (eight before the cutover); every Item row's first cell is a bare `<ID>` (table header and rule rows are
 skipped; the older bare `<ID> | ...` lines still pass); a Held table that has a `Respond in` column
 must fill it with a bare `<question-ID>` or `none` (older Held tables without the column still pass);
-every committed report under `docs/night-shift/` passes the checker.
+the generated section's header and rows are checked, and its rows never count as Item rows for
+the carry rule; the Skipped trailer line is allowed only last; every committed report under
+`docs/night-shift/` passes the checker. `tests/sim/test_night_inputs.py` pins the generator.
