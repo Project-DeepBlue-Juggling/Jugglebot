@@ -35,6 +35,7 @@ emitter's core and ticks reach 4-7 ms (p99 up to 3.7 ms); GC was ruled out
 
 from __future__ import annotations
 
+import gc
 import os
 import sys
 import threading
@@ -131,6 +132,14 @@ def test_the_worker_keeps_the_40hz_grid_while_the_in_process_solve_starves_it():
                                            first.warm_start, limits, geom, sites))
         assert warm.result.accepted, warm.result.message
 
+        # This process has collected the whole suite (about 430 000 tracked
+        # objects in the gate's serial phase), so one garbage collection in the
+        # caller stops the emitter thread for 35-400 ms: the caller's stall, not
+        # the worker's lateness. Measured 2026-11-14: 3/3 failures unmodified,
+        # 3/3 passes with gc disabled process-wide, same tree. Freeze the heap
+        # for the measurement, as the node's opt-in gc_freeze cure does.
+        gc.collect()
+        gc.freeze()
         hold = _calibrated_gil_hold(150.0)
         control = _measure(lambda: [hold() for _ in range(N_CONTROL)])
 
@@ -145,6 +154,7 @@ def test_the_worker_keeps_the_40hz_grid_while_the_in_process_solve_starves_it():
 
         sub = _measure(via_worker)
     finally:
+        gc.unfreeze()
         solver.close()
 
     assert all(r.result.accepted for r in solves), \
