@@ -21,7 +21,16 @@ needs something a free-text ``do:`` never states) is the command's read-through.
 
 A step with ``pass: true`` on a served Item takes one verdict per such Item, because Items
 sharing a flight can come out differently and ``/sitting-debrief`` merges a held branch on a
-pass. The verdict lands on the Item as today's ``## Sitting result``.
+pass. The verdict lands on the Item as ``## Sitting result``.
+
+Results schema 2 (C9, 2026-11-14): the app records NOTES ONLY, ``verdicts[n][ID] = {notes,
+saved_at}``, because the operator's live pass/fail was wrong, missing or contradicted by the logs on
+seven Sittings. During the Sitting the results file is the only store; nothing is written into an
+Item. The debrief then adds ``derived[n][ID] = {verdict, evidence, criterion, by}`` from the logs
+(``derive_results``), the owner confirms once (``confirm_results``: ``confirmed = {at, changed}``),
+and ``close_sheet`` writes each Item's ``## Sitting result`` exactly once, only after ``confirmed``.
+A schema 1 file still loads, and the verdicts it carries are kept (they were written to the Items
+live, so ``close_sheet`` refuses it).
 """
 from __future__ import annotations
 
@@ -36,7 +45,9 @@ from mapkit import sitting
 from mapkit.items import load_items
 
 SHEET_DIR = os.path.join("map", "sheets")
-SCHEMA = 1
+SCHEMA = 1  # the SHEET file; results have their own RESULTS_SCHEMA
+RESULTS_SCHEMA = 2
+READABLE_RESULTS = (1, 2)
 KINDS = ("setup", "run", "restore")
 STATE_WORDS = ("launched", "level", "tilt", "armed", "bb-fed", "bridge-cycled")
 #: One sentence per state word, shown by the app as the tooltip on a step's start-state chips.
@@ -418,7 +429,7 @@ def enrich(sheet: Dict[str, Any], repo_root: str) -> Dict[str, Any]:
 
 
 def empty_results() -> Dict[str, Any]:
-    return {"schema": SCHEMA, "steps": {}, "verdicts": {}}
+    return {"schema": RESULTS_SCHEMA, "steps": {}, "verdicts": {}}
 
 
 def load_results(repo_root: str, name: str) -> Dict[str, Any]:
@@ -426,6 +437,8 @@ def load_results(repo_root: str, name: str) -> Dict[str, Any]:
     if not os.path.exists(path):
         return empty_results()
     data = load_sheet(path)
+    if data.get("schema") not in READABLE_RESULTS:
+        raise SheetError("%s: results schema must be one of %s" % (path, READABLE_RESULTS))
     for key in ("steps", "verdicts"):
         if not isinstance(data.get(key), dict):
             data[key] = {}
@@ -439,43 +452,198 @@ def saved_steps(results: Dict[str, Any]) -> List[int]:
 def apply_step_result(sheet: Dict[str, Any], results: Dict[str, Any], n: int,
                       status: Optional[str], comments: str, verdicts: Dict[str, Dict[str, str]],
                       saved_at: str) -> Dict[str, Any]:
-    """``results`` with step ``n``'s boxes saved; raises SheetError if they do not fit the step.
+    """``results`` (as schema 2) with step ``n``'s boxes saved; raises SheetError if they do not fit.
 
-    A step that carries verdicts takes those, one per Item it carries; any other step takes
-    ``status``. ``comments`` is free on both. The Item's own ``## Sitting result`` is the
-    caller's write, so this stays pure.
+    A step that carries a verdict takes notes per Item (``verdicts[ID] = {notes}``; a ``verdict``
+    key is refused, the debrief derives it) and may also take a ``status`` (the way to mark it done
+    with no notes). Any other step takes ``status``. ``comments`` is free on both. Pure: the
+    caller writes the file. Entries a schema 1 file already holds, verdicts included, are kept.
     """
+    if results.get("confirmed"):
+        raise SheetError("these results are confirmed; the debrief has the Sitting")
     step = next((s for s in sheet.get("steps") or [] if s.get("n") == n), None)
     if step is None:
         raise SheetError("no step %s" % (n,))
     carried = {sv["item"] for sv in step.get("serves") or [] if sv.get("pass")}
+    if status is not None and status not in STEP_STATUSES:
+        raise SheetError("status must be one of %s" % ", ".join(STEP_STATUSES))
     if carried:
         unknown = set(verdicts) - carried
         if unknown:
-            raise SheetError("step %d does not carry a verdict for %s" % (n, ", ".join(sorted(unknown))))
+            raise SheetError("step %d does not carry notes for %s" % (n, ", ".join(sorted(unknown))))
         for item, box in verdicts.items():
-            if box.get("verdict") not in sitting.VERDICTS:
-                raise SheetError("%s: verdict must be one of %s" % (item, ", ".join(sitting.VERDICTS)))
-        if status is not None:
-            raise SheetError("step %d takes a verdict per Item, not a status" % n)
-        if not verdicts and not comments.strip():
+            if "verdict" in box:
+                raise SheetError("%s: the sheet records notes only; the debrief derives the verdict" % item)
+        if not verdicts and status is None and not comments.strip():
             raise SheetError("nothing to save on step %d" % n)
     else:
         if verdicts:
             raise SheetError("step %d carries no verdicts" % n)
-        if status not in STEP_STATUSES:
+        if status is None:
             raise SheetError("status must be one of %s" % ", ".join(STEP_STATUSES))
-    out = {"schema": SCHEMA, "steps": dict(results.get("steps", {})),
-           "verdicts": dict(results.get("verdicts", {}))}
+    out = {k: v for k, v in results.items() if k not in ("steps", "verdicts")}
+    out.update({"schema": RESULTS_SCHEMA, "steps": dict(results.get("steps", {})),
+                "verdicts": dict(results.get("verdicts", {}))})
     if status is not None or comments.strip():
-        out["steps"][n] = {"status": status, "comments": " ".join(comments.split()), "saved_at": saved_at}
+        prior = out["steps"].get(n) or {}
+        out["steps"][n] = {"status": status if status is not None else prior.get("status"),
+                           "comments": " ".join(comments.split()), "saved_at": saved_at}
     if verdicts:
         merged = dict(out["verdicts"].get(n, {}))
         for item, box in verdicts.items():
-            merged[item] = {"verdict": box["verdict"], "notes": " ".join(str(box.get("notes", "")).split()),
-                            "saved_at": saved_at}
+            merged[item] = {"notes": " ".join(str(box.get("notes", "")).split()), "saved_at": saved_at}
         out["verdicts"][n] = merged
     return out
+
+
+# --- the debrief: derive, confirm, close ----------------------------------------------------
+
+
+def verdict_items(sheet: Dict[str, Any]) -> Dict[str, int]:
+    """``{Item ID: n}`` of the one step per Item that carries its verdict (``pass: true``)."""
+    out: Dict[str, int] = {}
+    for st in sheet.get("steps") or []:
+        for sv in st.get("serves") or []:
+            if isinstance(sv, dict) and sv.get("pass"):
+                out[str(sv["item"])] = int(st["n"])
+    return out
+
+
+def _int(n: Any) -> Optional[int]:
+    try:
+        return int(n)
+    except (TypeError, ValueError):
+        return None
+
+
+def validate_derived(sheet: Dict[str, Any], derived: Any) -> List[str]:
+    """Errors in ``derived[n][ID] = {verdict, evidence, criterion, by}`` against the sheet."""
+    if not isinstance(derived, dict):
+        return ["derived must map a step number to {Item ID: entry}"]
+    errs: List[str] = []
+    want = verdict_items(sheet)
+    for n, boxes in derived.items():
+        if not isinstance(boxes, dict):
+            errs.append("derived[%s]: must map an Item ID to an entry" % (n,))
+            continue
+        for item, box in boxes.items():
+            where = "derived[%s][%s]" % (n, item)
+            if want.get(str(item)) != _int(n):
+                errs.append("%s: %s's verdict is not on step %s" % (where, item, n))
+            if not isinstance(box, dict):
+                errs.append("%s: must be a mapping" % where)
+                continue
+            if box.get("verdict") not in sitting.VERDICTS:
+                errs.append("%s: verdict must be one of %s" % (where, ", ".join(sitting.VERDICTS)))
+            for key in ("evidence", "criterion", "by"):
+                if not str(box.get(key) or "").strip():
+                    errs.append("%s: '%s' is required" % (where, key))
+    return errs
+
+
+def derive_results(sheet: Dict[str, Any], results: Dict[str, Any],
+                   derived: Dict[Any, Dict[str, Dict[str, str]]]) -> Dict[str, Any]:
+    """``results`` with ``derived`` set (replacing any earlier one); refuses a bad shape or a
+    confirmed file. The debrief shows these as one table, then calls :func:`confirm_results`."""
+    if results.get("confirmed"):
+        raise SheetError("these results are confirmed already")
+    errs = validate_derived(sheet, derived)
+    if errs:
+        raise SheetError("; ".join(errs))
+    out = dict(results)
+    out["schema"] = RESULTS_SCHEMA
+    out["derived"] = {int(n): {str(i): {k: str(b[k]) for k in ("verdict", "evidence", "criterion", "by")}
+                               for i, b in boxes.items()} for n, boxes in derived.items()}
+    return out
+
+
+def _derived_for(results: Dict[str, Any], n: int) -> Dict[str, Any]:
+    d = results.get("derived") or {}
+    return d.get(n) or d.get(str(n)) or {}
+
+
+def _missing_derived(sheet: Dict[str, Any], results: Dict[str, Any]) -> List[str]:
+    return sorted(item for item, n in verdict_items(sheet).items()
+                  if item not in _derived_for(results, n))
+
+
+def confirm_results(sheet: Dict[str, Any], results: Dict[str, Any], at: str,
+                    changed: Optional[List[str]] = None) -> Dict[str, Any]:
+    """``results`` with ``confirmed = {at, changed}``: the owner's one confirmation of ``derived``.
+
+    ``changed`` lists the Item IDs whose derived verdict the owner flipped (already edited in
+    ``derived``). Refuses until every verdict-carrying Item has a derived entry."""
+    missing = _missing_derived(sheet, results)
+    if missing:
+        raise SheetError("no derived verdict for %s" % ", ".join(missing))
+    out = dict(results)
+    out["confirmed"] = {"at": str(at), "changed": sorted(set(changed or []))}
+    return out
+
+
+def validate_results(sheet: Dict[str, Any], results: Dict[str, Any]) -> List[str]:
+    """Shape errors in a results file, ``derived`` and ``confirmed`` included."""
+    errs: List[str] = []
+    if results.get("schema") not in READABLE_RESULTS:
+        errs.append("schema must be one of %s" % (READABLE_RESULTS,))
+    if "derived" in results:
+        errs += validate_derived(sheet, results["derived"])
+    conf = results.get("confirmed")
+    if conf is not None and not (isinstance(conf, dict) and conf.get("at")
+                                 and isinstance(conf.get("changed"), list)):
+        errs.append("confirmed must be {at, changed: [Item IDs]}")
+    if conf is not None and "derived" not in results:
+        errs.append("confirmed without derived")
+    return errs
+
+
+def close_sheet(repo_root: str, name: str, now: Optional[str] = None) -> List[str]:
+    """Write each verdict-carrying Item's ``## Sitting result`` from the confirmed derived
+    verdicts, exactly once; returns the Item IDs written.
+
+    Refuses (every reason at once) a schema 1 file (its verdicts went into the Items live), a file
+    without ``confirmed``, a missing derived verdict, and a file already closed. The results file
+    gets ``closed = {at, items}`` last, so a second call is refused; an Item that already holds
+    this sheet's result for its step is skipped, so a run that died halfway can be repeated.
+    """
+    from mapkit.items import load_items, write_item
+    sheet = load_sheet(sheet_path(repo_root, name))
+    results = load_results(repo_root, name)
+    errs: List[str] = []
+    if results.get("schema") != RESULTS_SCHEMA:
+        errs.append("schema 1 results were written into the Items live; there is nothing to close")
+    if results.get("closed"):
+        errs.append("already closed at %s" % (results["closed"].get("at"),))
+    if not results.get("confirmed"):
+        errs.append("not confirmed: the owner confirms the derived verdicts first")
+    errs += validate_results(sheet, results)
+    errs += ["no derived verdict for %s" % i for i in _missing_derived(sheet, results)]
+    want = verdict_items(sheet)
+    by_id = {(i.short_id or i.slug): i for i in load_items(os.path.join(repo_root, "map"))}
+    errs += ["%s is not an Item" % i for i in sorted(want) if i not in by_id]
+    if errs:
+        raise SheetError("; ".join(errs))
+    date = str(sheet.get("date"))
+    at = str(results["confirmed"]["at"])
+    m = re.match(r"^%s (\d{2}:\d{2})" % re.escape(date), at)
+    time = m.group(1) if m else None
+    written: List[str] = []
+    for item, n in sorted(want.items(), key=lambda kv: kv[1]):
+        box = _derived_for(results, n)[item]
+        notes_box = (results["verdicts"].get(n) or results["verdicts"].get(str(n)) or {}).get(item) or {}
+        marker = "(sheet %s, step %d)" % (name, n)
+        it = by_id[item]
+        if marker in it.body:
+            continue
+        text = ("%s %s [derived: %s]" % (str(notes_box.get("notes", "")).strip(), marker,
+                                         box["evidence"])).strip()
+        write_item(it.path, dict(it.meta), sitting.append_sitting_result(
+            it.body, date, box["verdict"], text, time=time))
+        written.append(item)
+    out = dict(results)
+    out["closed"] = {"at": now or at, "items": sorted(want)}
+    write_results(repo_root, name, out)
+    return written
 
 
 def write_results(repo_root: str, name: str, results: Dict[str, Any]) -> str:
@@ -519,6 +687,21 @@ def register(sub: Any) -> None:
     check.add_argument("path")
     check.add_argument("--repo", default=None)
     check.set_defaults(func=_cmd_check)
+    derive = verbs.add_parser("derive", help="set derived verdicts from a YAML file ({step: {ID: entry}})")
+    derive.add_argument("name")
+    derive.add_argument("file", help="YAML: step number -> Item ID -> {verdict, evidence, criterion, by}")
+    derive.add_argument("--repo", default=None)
+    derive.set_defaults(func=_cmd_derive)
+    confirm = verbs.add_parser("confirm", help="record the owner's one confirmation of the derived verdicts")
+    confirm.add_argument("name")
+    confirm.add_argument("--at", required=True, help="'YYYY-MM-DD HH:MM'")
+    confirm.add_argument("--changed", nargs="*", default=[], help="Item IDs the owner flipped")
+    confirm.add_argument("--repo", default=None)
+    confirm.set_defaults(func=_cmd_confirm)
+    close = verbs.add_parser("close", help="write each Item's Sitting result once, from confirmed verdicts")
+    close.add_argument("name")
+    close.add_argument("--repo", default=None)
+    close.set_defaults(func=_cmd_close)
     name = verbs.add_parser("next-name", help="print the free sheet name for a date and rig")
     name.add_argument("date")
     name.add_argument("rig", choices=sitting.HARDWARE)
@@ -554,4 +737,39 @@ def _cmd_check(args: Any) -> int:
 
 def _cmd_next_name(args: Any) -> int:
     print(next_name(_root(args), args.date, args.rig))
+    return 0
+
+
+def _results_edit(args: Any, edit: Any) -> int:
+    root = _root(args)
+    try:
+        sheet = load_sheet(sheet_path(root, args.name))
+        write_results(root, args.name, edit(sheet, load_results(root, args.name)))
+    except (SheetError, OSError, yaml.YAMLError) as exc:
+        print("sheet: %s" % (exc,))
+        return 1
+    return 0
+
+
+def _cmd_derive(args: Any) -> int:
+    try:
+        with open(args.file, encoding="utf-8") as fh:
+            derived = yaml.safe_load(fh)
+    except (OSError, yaml.YAMLError) as exc:
+        print("sheet: %s" % (exc,))
+        return 1
+    return _results_edit(args, lambda sh, res: derive_results(sh, res, derived))
+
+
+def _cmd_confirm(args: Any) -> int:
+    return _results_edit(args, lambda sh, res: confirm_results(sh, res, args.at, args.changed))
+
+
+def _cmd_close(args: Any) -> int:
+    try:
+        written = close_sheet(_root(args), args.name)
+    except SheetError as exc:
+        print("sheet close: %s" % (exc,))
+        return 1
+    print("sheet close: wrote %d Sitting result(s): %s" % (len(written), ", ".join(written) or "-"))
     return 0

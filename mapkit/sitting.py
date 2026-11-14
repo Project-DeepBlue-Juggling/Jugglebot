@@ -269,9 +269,10 @@ def render_runbook(repo_root: str) -> str:
 
 
 # A Sitting result's verdict. ``pending``: the row was flown but its pass needs logs or an
-# analysis the operator cannot do live; ``/sitting-debrief`` derives the verdict. The map app
-# reads this tuple, so a new verdict lands here first.
-VERDICTS = ("pass", "fail", "pending")
+# analysis the operator cannot do live; ``/sitting-debrief`` derives the verdict. ``data``: flown
+# for the record, no criterion to judge (FEAT-42); ``inconclusive``: flown but the logs cannot say.
+# The map app reads this tuple, so a new verdict lands here first.
+VERDICTS = ("pass", "fail", "pending", "data", "inconclusive")
 
 
 RESULT_HEADING = re.compile(r"^##\s+Sitting result \((\d{4}-\d{2}-\d{2})(?: (\d{2}:\d{2}))?\)\s*$")

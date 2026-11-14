@@ -227,31 +227,142 @@ def test_apply_status_plain_step(good):
     assert out["steps"][1] == {"status": "done", "comments": "all fine", "saved_at": "2026-11-10T10:00:00"}
 
 
-def test_apply_verdicts(good):
-    out = _apply(good, 3, verdicts={"BUG-1": {"verdict": "pass", "notes": "ok"},
-                                    "BUG-2": {"verdict": "fail", "notes": "x"}})
-    assert out["verdicts"][3]["BUG-1"]["verdict"] == "pass"
-    assert out["verdicts"][3]["BUG-2"]["verdict"] == "fail"
+def test_apply_notes_only(good):
+    out = _apply(good, 3, verdicts={"BUG-1": {"notes": " ok "}, "BUG-2": {"notes": "x"}})
+    assert out["schema"] == 2
+    assert out["verdicts"][3]["BUG-1"] == {"notes": "ok", "saved_at": "2026-11-10T10:00:00"}
+    assert "verdict" not in out["verdicts"][3]["BUG-2"]
+
+
+def test_apply_verdict_step_done_without_notes(good):
+    out = _apply(good, 3, status="done")
+    assert out["steps"][3]["status"] == "done" and 3 not in out["verdicts"]
 
 
 def test_apply_errors(good):
-    with pytest.raises(sh.SheetError, match="takes a verdict per Item, not a status"):
-        _apply(good, 3, status="done", verdicts={"BUG-1": {"verdict": "pass"}})
+    with pytest.raises(sh.SheetError, match="notes only"):
+        _apply(good, 3, verdicts={"BUG-1": {"verdict": "pass"}})
     with pytest.raises(sh.SheetError, match="carries no verdicts"):
-        _apply(good, 1, status="done", verdicts={"BUG-1": {"verdict": "pass"}})
-    with pytest.raises(sh.SheetError, match="verdict must be one of"):
-        _apply(good, 3, verdicts={"BUG-1": {"verdict": "great"}})
+        _apply(good, 1, status="done", verdicts={"BUG-1": {"notes": "x"}})
+    with pytest.raises(sh.SheetError, match="does not carry notes for BUG-9"):
+        _apply(good, 3, verdicts={"BUG-9": {"notes": ""}})
+    with pytest.raises(sh.SheetError, match="nothing to save"):
+        _apply(good, 3)
     with pytest.raises(sh.SheetError, match="no step 9"):
         _apply(good, 9, status="done")
     with pytest.raises(sh.SheetError, match="status must be one of"):
         _apply(good, 1, status="bogus")
+    with pytest.raises(sh.SheetError, match="confirmed"):
+        _apply(good, 1, status="done", results={"schema": 2, "steps": {}, "verdicts": {},
+                                                "confirmed": {"at": "t", "changed": []}})
+
+
+def test_schema_1_results_load_and_keep_their_verdicts(good, tmp_path):
+    old = {"schema": 1, "steps": {1: {"status": "done", "comments": "", "saved_at": "t"}},
+           "verdicts": {3: {"BUG-1": {"verdict": "pass", "notes": "n", "saved_at": "t"}}}}
+    sh.write_results(str(tmp_path), "2026-11-10-robot", old)
+    back = sh.load_results(str(tmp_path), "2026-11-10-robot")
+    assert back["verdicts"][3]["BUG-1"]["verdict"] == "pass"
+    out = _apply(good, 2, status="done", results=back)  # saving upgrades to 2, keeps the old verdict
+    assert out["schema"] == 2 and out["verdicts"][3]["BUG-1"]["verdict"] == "pass"
+
+
+def test_unknown_results_schema_is_an_error(good, tmp_path):
+    sh.write_results(str(tmp_path), "2026-11-10-robot", {"schema": 3, "steps": {}, "verdicts": {}})
+    with pytest.raises(sh.SheetError, match="schema"):
+        sh.load_results(str(tmp_path), "2026-11-10-robot")
+
+
+# --- derive / confirm / close ---
+
+def _derived(**over):
+    box = {"verdict": "pass", "evidence": "temp/logs/x.csv: max 3 mm", "criterion": "it works", "by": "debrief"}
+    return {3: {"BUG-1": dict(box), "BUG-2": dict(box, **over)}}
+
+
+def _closable(good, repo):
+    """The sheet and a results file on disk, notes saved; returns the repo root string."""
+    root = str(repo)
+    os.makedirs(os.path.join(root, "map", "sheets"), exist_ok=True)
+    with open(sh.sheet_path(root, "2026-11-10-robot"), "w") as fh:
+        yaml.safe_dump(good, fh)
+    res = _apply(good, 3, verdicts={"BUG-1": {"notes": "clean"}, "BUG-2": {"notes": ""}})
+    sh.write_results(root, "2026-11-10-robot", res)
+    return root
+
+
+def test_derive_validates(good):
+    res = sh.derive_results(good, sh.empty_results(), _derived(verdict="data"))
+    assert res["derived"][3]["BUG-2"]["verdict"] == "data"
+    with pytest.raises(sh.SheetError, match="verdict must be one of"):
+        sh.derive_results(good, sh.empty_results(), _derived(verdict="great"))
+    with pytest.raises(sh.SheetError, match="'evidence' is required"):
+        sh.derive_results(good, sh.empty_results(), _derived(evidence=""))
+    with pytest.raises(sh.SheetError, match="not on step"):
+        sh.derive_results(good, sh.empty_results(), {1: _derived()[3]})
+    assert sh.derive_results(good, sh.empty_results(), _derived(verdict="inconclusive"))
+
+
+def test_confirm_needs_every_derived_verdict(good):
+    one = sh.derive_results(good, sh.empty_results(), {3: {"BUG-1": _derived()[3]["BUG-1"]}})
+    with pytest.raises(sh.SheetError, match="no derived verdict for BUG-2"):
+        sh.confirm_results(good, one, "2026-11-11 09:00")
+
+
+def test_close_writes_each_item_once_after_confirm(good, repo):
+    root = _closable(good, repo)
+    name = "2026-11-10-robot"
+    with pytest.raises(sh.SheetError, match="not confirmed"):
+        sh.close_sheet(root, name)
+    res = sh.derive_results(good, sh.load_results(root, name), _derived(verdict="fail"))
+    sh.write_results(root, name, res)
+    with pytest.raises(sh.SheetError, match="not confirmed"):  # derived is not confirmed
+        sh.close_sheet(root, name)
+    sh.write_results(root, name, sh.confirm_results(good, res, "2026-11-10 22:15", ["BUG-2"]))
+    assert sh.close_sheet(root, name) == ["BUG-1", "BUG-2"]
+    one = open(os.path.join(root, "map", "bug-a.md")).read()
+    two = open(os.path.join(root, "map", "bug-b.md")).read()
+    assert one.count("## Sitting result (2026-11-10 22:15)") == 1
+    assert "- verdict: pass" in one and "clean (sheet %s, step 3)" % name in one
+    assert "- verdict: fail" in two and "temp/logs/x.csv" in two
+    with pytest.raises(sh.SheetError, match="already closed"):  # exactly once
+        sh.close_sheet(root, name)
+    assert open(os.path.join(root, "map", "bug-a.md")).read().count("## Sitting result") == 1
+
+
+def test_close_resumes_after_a_partial_run(good, repo):
+    root = _closable(good, repo)
+    name = "2026-11-10-robot"
+    res = sh.confirm_results(good, sh.derive_results(good, sh.load_results(root, name), _derived()),
+                             "2026-11-11 08:00")
+    sh.write_results(root, name, res)
+    from mapkit.items import load_item, write_item
+    it = load_item(os.path.join(root, "map", "bug-a.md"))  # a run that died after the first Item
+    from mapkit.sitting import append_sitting_result
+    write_item(it.path, dict(it.meta), append_sitting_result(
+        it.body, "2026-11-10", "pass", "(sheet %s, step 3)" % name))
+    assert sh.close_sheet(root, name) == ["BUG-2"]
+    assert open(it.path).read().count("## Sitting result") == 1
+
+
+def test_close_refuses_schema_1(good, repo):
+    root = _closable(good, repo)
+    old = {"schema": 1, "steps": {}, "verdicts": {3: {"BUG-1": {"verdict": "pass", "notes": "", "saved_at": "t"}}}}
+    sh.write_results(root, "2026-11-10-robot", old)
+    with pytest.raises(sh.SheetError, match="schema 1"):
+        sh.close_sheet(root, "2026-11-10-robot")
+
+
+def test_verdicts_include_data_and_inconclusive():
+    from mapkit import sitting
+    assert {"data", "inconclusive"} <= set(sitting.VERDICTS)
 
 
 def test_apply_does_not_mutate(good):
     res = {"schema": 1, "steps": {1: {"status": "done", "comments": "", "saved_at": "t"}},
            "verdicts": {3: {"BUG-1": {"verdict": "pass", "notes": "", "saved_at": "t"}}}}
     before = copy.deepcopy(res)
-    _apply(good, 3, verdicts={"BUG-1": {"verdict": "fail"}}, results=res)
+    _apply(good, 3, verdicts={"BUG-1": {"notes": "later"}}, results=res)
     _apply(good, 2, status="problem", results=res)
     assert res == before
 
