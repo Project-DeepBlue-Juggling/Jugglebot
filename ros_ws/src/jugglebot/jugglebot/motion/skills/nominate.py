@@ -513,6 +513,9 @@ AIM_FULL_WALK = False
 AIM_FIGURE_TEXT = 'with the Catch re-aim at its limit'
 AIM_NEGATIVE_TEXT = ('An Attempt may end mid-Pattern on an admissibility '
                      'refusal.')
+#: Capitals the operator cannot skim past; ends the summary line when the
+#: re-aim margin is below zero (BUG-91, TKT-70 option 2: display only).
+AIM_WARNING_TEXT = 'WARNING: RE-AIM MARGIN NEGATIVE'
 
 
 class _AimShifts:
@@ -956,7 +959,7 @@ class NominationReport:
                        '%.3f' % a.margin if a else 'unplannable',
                        AIM_FIGURE_TEXT, a_where))
             if self.aim_below_zero():
-                line += '. ' + AIM_NEGATIVE_TEXT
+                line += '. ' + AIM_NEGATIVE_TEXT + ' ' + AIM_WARNING_TEXT
             return line
         n = len(self.refusals)
         s = 'nomination REFUSED: %s; %d refusal%s' % (

@@ -234,6 +234,13 @@ state.nominate = () => Promise.resolve({ success: false, message: 'nomination un
 await pick('columns'); await advance(450);
 out.unavailable_reply_view = view();
 
+// ---- 7c. accepted but the re-aim margin is negative (BUG-91): red warn state ----
+await advance(5000);
+state.nominate = () => Promise.resolve({ success: true,
+    message: 'nomination OK: columns; worst margin 0.060, -0.080 with the Catch re-aim at its limit. An Attempt may end mid-Pattern on an admissibility refusal. WARNING: RE-AIM MARGIN NEGATIVE' });
+await pick('columns'); await advance(450);
+out.warn_reply_view = view();
+
 // ---- 8. disconnect clears the block ----
 await advance(5000);
 gate({ connected: false, active: false, mainState: null });

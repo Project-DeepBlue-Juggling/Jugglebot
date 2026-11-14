@@ -136,6 +136,16 @@ def test_ok_reply_is_coloured_ok_with_no_lines(out):
 
 
 @needs_node
+def test_negative_reaim_reply_is_red_warn_and_still_accepted(out):
+    """BUG-91: success stays True, the line gets the warn state (red); a plain
+    OK reply does not."""
+    v = out["warn_reply_view"]
+    assert v["summary"].endswith("WARNING: RE-AIM MARGIN NEGATIVE")
+    assert "warn" in v["cls"].split() and "ok" not in v["cls"].split()
+    assert "warn" not in out["ok_view"]["cls"].split()
+
+
+@needs_node
 def test_rapid_edits_make_one_call_with_the_last_value(out):
     assert len(out["debounce_calls"]) == 1
     assert "apex_m=0.93" in out["debounce_calls"][0]
