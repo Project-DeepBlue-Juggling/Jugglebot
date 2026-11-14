@@ -18,6 +18,9 @@ links:
 - plans/archived/map-item-ids.md
 parent: map-improvements
 filed_by: claude
+night_skip: low-priority
+night_skip_on: '2026-11-15'
+night_skip_note: No slug is shared by two kinds today; the fix changes every Item uuid and a mapkit/ merge restarts the live app.
 ---
 
 The app server derives each Item's uuid from its slug alone, so two Items of different kinds with the same slug (bug-x and feature-x) get one uuid and the store silently skips the second file. Only mapkit-side writers can create such a pair (the app refuses a duplicate slug). Fix: derive the uuid from the stem (kind + slug), with a one-time redirect for existing deep links. Residue of plans/archived/map-item-ids.md section 7.

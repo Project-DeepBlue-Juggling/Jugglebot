@@ -17,6 +17,9 @@ links:
 - 2026-10-28-jb76-solve-tail-is-environment-starvation-instrumented
 parent: two-ball-oval
 filed_by: claude (BUG-21 21:02 Sitting read-out)
+night_skip: sitting
+night_skip_on: '2026-11-15'
+night_skip_note: Only the live mocap stream reproduces it; robot, owner hands.
 ---
 
 Each 2026-10-28 Sitting lost mocap frames to the node queue (150 deep) in one or two bursts in the first ~90 s after launch and none during goals.

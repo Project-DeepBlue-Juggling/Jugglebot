@@ -15,6 +15,9 @@ area: docs
 blocked_by: []
 links: []
 filed_by: claude
+night_skip: frozen-path
+night_skip_on: '2026-11-15'
+night_skip_note: The largest targets are INVARIANTS.md and the can-bridge config header, both frozen at night.
 ---
 
 Move dated history out of code and normative documents into the logbook, where it already has a home. From the 2026-11-13 maintainer review. The token-budget rule in `CLAUDE.md` already says a plan past about 400 lines has become a changelog; the same has happened to these files, and every Session that opens them pays for it.

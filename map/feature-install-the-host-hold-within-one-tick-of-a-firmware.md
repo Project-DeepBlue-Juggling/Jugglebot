@@ -17,6 +17,9 @@ links:
 - logbook/2026-11-04-sitting-debrief.md
 - bug-teensy-guard-max-deviation-latched-on-the-hand-8-4-rev-mid
 filed_by: claude
+night_skip: waiting-trigger
+night_skip_on: '2026-11-15'
+night_skip_note: Parked on your TKT-45 answer until its unpark condition fires.
 ---
 
 Filed by the 2026-11-04 debrief (2026-11-03 Sitting).

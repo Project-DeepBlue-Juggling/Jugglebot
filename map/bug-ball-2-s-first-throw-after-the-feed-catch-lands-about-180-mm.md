@@ -23,6 +23,9 @@ links:
 - logbook/2026-11-10-sitting-debrief.md
 - logbook/2026-11-13-sitting-debrief.md
 filed_by: sitting-debrief 2026-11-03
+night_skip: sitting
+night_skip_on: '2026-11-15'
+night_skip_note: 'Unresolved on 2026-11-13: no 180 mm case on either plant (max 33 mm); needs a flown recurrence.'
 ---
 
 On 2026-11-03 Ball 2's first Throw after the feed catch landed about 180 mm outward along the separation axis in 5 of 11 high-low Attempts and in 5 of 7 turned-90-degree Attempts. When it happens the Attempt ends within about 3 s at 0/0 or 1/1.

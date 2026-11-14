@@ -15,6 +15,9 @@ area: tests-tooling
 blocked_by: []
 links: []
 filed_by: claude
+night_skip: out-of-reach
+night_skip_on: '2026-11-15'
+night_skip_note: Needs real rclpy and a launch; ros2 launch and colcon are refused at night.
 ---
 
 Add one test tier that runs the nodes against real rclpy on the Jetson. From the 2026-11-13 maintainer review: no test under `tests/` calls `rclpy.init`, uses `launch_testing` or imports the real `jugglebot_interfaces`; every node test runs on the mock layer in `tests/ros/conftest.py`.

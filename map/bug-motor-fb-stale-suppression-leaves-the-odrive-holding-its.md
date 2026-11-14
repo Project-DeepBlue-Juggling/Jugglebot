@@ -19,6 +19,9 @@ links:
 - ros_ws/src/jugglebot/Teensy_code_canbridge/leg_interp.cpp
 - logbook/2026-11-01-jb73-suppress-edge-hold-flush.md
 filed_by: claude
+night_skip: sitting
+night_skip_on: '2026-11-15'
+night_skip_note: FW 35 is flashed and the bench-leg Sitting section is written.
 ---
 
 During a MOTOR_FB_STALE suppression the can-bridge stops transmitting leg setpoints (`s_output_enabled` gates the TX in `leg_interp.cpp`). The ODrive then holds its LAST setpoint, including its vel_ff. In POSITION/PASSTHROUGH the leg settles at input_pos + vel_ff/pos_gain and stays there until output resumes.

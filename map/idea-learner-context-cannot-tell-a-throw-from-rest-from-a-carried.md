@@ -17,6 +17,9 @@ links:
 - logbook/2026-11-04-sitting-debrief.md
 - logbook/2026-11-13-sitting-debrief.md
 filed_by: claude
+night_skip: low-priority
+night_skip_on: '2026-11-15'
+night_skip_note: Feasibility is in the body; robot. The 2026-11-13 Sitting confirmed the split on a second plant.
 ---
 
 Filed by the 2026-11-04 debrief (2026-11-03 Sitting, one-ball oval). The oval's context x = [-0.075, 0, ...] is the same for Throw 1 (from rest, +48 mm raw long) and carried Throws 2+ (+76 mm), so the learner's y_hat is biased low on carried throws (+32..+52 vs ~+45 measured). Immaterial while the command is pinned at its authority; matters once the authority or the carry fix frees it. Option: a carried/from-rest flag or the seat velocity in the context.

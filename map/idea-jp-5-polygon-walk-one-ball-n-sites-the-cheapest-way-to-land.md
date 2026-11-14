@@ -16,6 +16,9 @@ blocked_by: []
 links: []
 filed_by: claude (jugglebot-f5, pattern exploration 2026-10-30)
 parent: pattern-progression-columns-to-centre-and-orbit
+night_skip: low-priority
+night_skip_on: '2026-11-15'
+night_skip_note: Feasibility is in the body; robot, owner hands.
 ---
 
 One ball hopping around N Sites (triangle, square, hexagon) instead of two. Physics trivial at any step the hop already flies (250 mm, apex 0.9).

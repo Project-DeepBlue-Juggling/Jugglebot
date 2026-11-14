@@ -18,6 +18,9 @@ links:
 - logbook/2026-11-06-sitting-debrief.md
 - logbook/2026-11-06-sitting-debrief-2.md
 filed_by: claude
+night_skip: sitting
+night_skip_on: '2026-11-15'
+night_skip_note: You chose to re-joint the Legs (TKT-52, option 4); waits on that Sitting.
 ---
 
 At the Sitting of 2026-11-06 a two-ball Columns goal at Apex 1.00, Sep. 170, Dwell 0.27 (limits 600 / 8000 / 200000) pulled Legs 1 and 2 out of their magnetic base joints about 9 s after Start. The owner pressed the E-stop button; nothing was damaged.

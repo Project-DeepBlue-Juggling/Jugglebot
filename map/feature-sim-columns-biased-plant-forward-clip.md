@@ -18,6 +18,9 @@ links:
 - plans/archived/skill-stack-dress-rehearsals-and-residue.md
 - logbook/2026-11-02-jb32-sim-columns-biased-plant-forward-clip.md
 filed_by: claude
+night_skip: waiting-trigger
+night_skip_on: '2026-11-15'
+night_skip_note: The remaining slice replaces your deliberate boxes=None, and its trigger has not fired.
 ---
 
 Run the sim columns pattern against a deliberately biased plant so the forward-clip rule is exercised. Not built (wave-3 open 2). Trigger: a change to the clip rule.

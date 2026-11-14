@@ -18,6 +18,9 @@ links:
 - logbook/2026-10-13-magazine-throw-program.md
 - logbook/2026-10-13-magazine-throw-hand-only-and-reload-button.md
 filed_by: claude
+night_skip: sitting
+night_skip_on: '2026-11-15'
+night_skip_note: A flown rung on the robot, owner hands.
 ---
 
 A tuning loop for the `magazine` and `reload` patterns with a hand-only Throw. Nothing is flown; the real magazine is out of hand-only reach, and the heave was withdrawn by the owner and is never re-added. Trigger: the owner lowers or approaches the magazine. A parallel session's work.

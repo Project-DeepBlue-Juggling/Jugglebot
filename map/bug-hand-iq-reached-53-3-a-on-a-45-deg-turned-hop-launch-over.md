@@ -17,6 +17,9 @@ blocked_by: []
 links:
 - map/bug-hand-brake-and-hold-currents-sit-far-below-the-throw.md
 filed_by: claude
+night_skip: sitting
+night_skip_on: '2026-11-15'
+night_skip_note: Needs a re-flight under the raised Hand limits; the 2026-11-13 70.9 A peaks were the trapped-Ball stall of BUG-84.
 ---
 
 Found at the 2026-11-01 Sitting: hand iq 53.3 A at launch-log L3521 on a 45 deg turned hop launch, over the 50 A watch the high-low row names. The high-low goals peaked at 32.1 and 41.5 A. Related: IDEA-17, BUG-41 (hand current headroom).

@@ -16,6 +16,9 @@ blocked_by: []
 links:
 - plans/archived/skill-stack-dress-rehearsals-and-residue.md
 filed_by: claude
+night_skip: waiting-trigger
+night_skip_on: '2026-11-15'
+night_skip_note: Its trigger (a calibration that stalls the node) has not fired.
 ---
 
 Each calibration sweep stalls mocap for 10-13 s because `_finalize_calibration` runs in the node's interpreter, so never calibrate during a goal. Moving it to a worker process removes the stall (bb-self-cancel Discussion 5). Trigger: any calibration needed near a goal.
