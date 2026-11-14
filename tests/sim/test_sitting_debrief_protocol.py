@@ -42,6 +42,7 @@ PROMISES = {
     "returns the live checkout to main": r"git checkout main",
     "rebuilds when ros_ws changed": r"colcon build --packages-select\s+jugglebot",
     "commits docs/records.md": r"docs/records\.md",
+    "merges the runtime records and Memory back first": r"python tools/runtime_records\.py merge",
     "files follow-ups from the notes": r"python -m mapkit item new <bug\|feature\|idea>",
     "writes the logbook entry": r"logbook/<date>-sitting-debrief\.md",
     "regenerates the Runbook": r"python -m mapkit gen",
