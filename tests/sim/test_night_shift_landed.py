@@ -445,6 +445,7 @@ def test_branches_without_a_snapshot_is_an_error_not_a_pass(origin, tmp_path):
     ("tools/nightly_ticker.sh", True), (".claude/settings.json", True),
     (".claude/settings.local.json", True), (".claude/commands/night-shift.md", True),
     ("tests/sim/test_night_shift_gate.py", True), ("tests/sim/test_live_session_guard.py", True),
+    ("tools/sitting_merge.sh", True), ("tests/sim/test_sitting_merge.py", True),
     ("run_tests.sh", True), ("conftest.py", True), ("tests/conftest.py", True),
     ("tests/teensy_link/conftest.py", True), ("pyproject.toml", True), ("pytest.ini", True),
     ("config/hardware_config.yaml", False), ("ros_ws/src/jugglebot/Teensy_code_canbridge/x.ino", False),

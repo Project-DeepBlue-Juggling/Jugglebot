@@ -158,8 +158,9 @@ from mapkit.sitting import has_sitting_section  # noqa: E402
 #: and whether it exists at the base or is new (``tests/conftest.py`` plus
 #: ``tests/*/conftest.py``, whose ``*`` crosses ``/``; until 2026-11-14 only the
 #: ``tests/sim`` one was, leaving ``tests/ros``, ``tests/teensy_link`` and any new one
-#: open). The last four entries name files that do not exist today; creating one is
-#: exactly what they catch.
+#: open). ``tools/sitting_merge.sh`` is the debrief's path from a held branch to ``main``
+#: (closeout C10): a branch that edits it would decide how it lands itself. The last four
+#: entries name files that do not exist today; creating one is exactly what they catch.
 FORBIDDEN_PATHS: Tuple[str, ...] = (
     "ros_ws/src/jugglebot/Teensy_code_canbridge/*",
     "ros_ws/src/jugglebot/Teensy_code_platform/*",
@@ -174,6 +175,7 @@ FORBIDDEN_PATHS: Tuple[str, ...] = (
     "tools/lib/*",
     "tools/systemd/*",
     "tools/nightly_*",
+    "tools/sitting_merge.sh",
     ".claude/*",
     "tests/sim/test_night_shift_*",
     "tests/sim/test_live_session_guard.py",

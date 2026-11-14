@@ -5,7 +5,9 @@ that sends the owner to `/sitting-debrief <date>`. This test pins that the comma
 names each step that close-out and `plans/active/night-shift.md` § 4 P5 promise, so a later
 edit of the protocol cannot silently drop one (per-Item merges, never the candidate branch;
 the single-writer check; no force-push; the rebuild; `docs/records.md`; the follow-ups; the
-logbook entry; `mapkit gen`). It also pins that the Night Shift protocol lists unaddressed
+logbook entry; `mapkit gen`). Since closeout C10 the merge itself is
+`tools/sitting_merge.sh`, whose behaviour `tests/sim/test_sitting_merge.py` pins; the
+promises it took over are pointer rows here (:data:`MOVED_TO_SCRIPT`). It also pins that the Night Shift protocol lists unaddressed
 Sitting results, the one step P5 adds to it.
 """
 from __future__ import annotations
@@ -32,7 +34,7 @@ def debrief() -> str:
 
 PROMISES = {
     "reads the Sitting results": r"## Sitting result \(<date>\)",
-    "merges per Item, never the candidate branch": r"never merge the candidate branch",
+    "merges per Item, never the candidate branch": r"never merge the candidate\s+branch",
     "merges each held branch by name": r"night-shift/<d>-<ID>",
     "closes a passed Item with the Sitting as evidence": r"set-status <ID> complete",
     "keeps a failed Item in progress": r"set-status <ID> in_progress",
@@ -47,25 +49,52 @@ PROMISES = {
     "checks for a peer Session first": r"git fetch && git status -sb",
     "forbids a force-push": r"never a force-push",
     "forbids stash and branch -f": r"Never `git stash`, never `git branch -f`",
-    "aborts a conflicting merge": r"git( -C \S+)? merge --abort",
     "has a dry run": r"--dry-run",
-    "re-runs the gate waiving only the hardware condition": r"night_shift_gate\.py[^`]*--waive c",
     "looks for a held branch before the plain-check path": r"git branch -r --list 'origin/night-shift/\*-<ID>'",
-    "brings the branch up to date before gating it": r"merge --no-edit \$BASE",
-    "keeps the base across tool calls": r"git rev-parse main > temp/reports/debrief/base-<ID>",
-    "refuses to audit an empty diff": r"an audit of an empty diff finds nothing",
-    "names the commit when taking main's copy": r"checkout \$BASE -- <paths>",
     "starts section 3 on main": r"Be on `main` first",
     "keeps the flown branch as it is on the remote": r"stays as it is on the remote",
-    "names the only conflicts with a mechanical answer": r"These three,\s+and no others",
     "audits the updated tip": r"audit-reporter",
-    "runs the full suite with no network": r"night_shift_nonet\.sh \./run_tests\.sh --full",
-    "runs the gate from an extract of the base": r"git archive \$BASE tools/night_shift_gate\.py mapkit",
-    "gates against the base it updated to": r"--base \$BASE",
     "keeps the suite from outlasting its call": r"run_in_background",
-    "merges only the gated tip": r"merge -q --ff-only night-shift/<d>-<ID>",
-    "leaves no local copy behind": r"git worktree remove --force temp/debrief-<ID>",
+    # closeout C10: the merge is the script's, run from a scratch worktree, records first.
+    "prepares each Item through the script": r"tools/sitting_merge\.sh prepare --branch night-shift/<d>-<ID> --item <ID>",
+    "lands each Item through the script": r"tools/sitting_merge\.sh land --branch night-shift/<d>-<ID> --item <ID>",
+    "names the scratch worktree": r"scratch worktree per Item, `temp/debrief/wt-<ID>`",
+    "commits records and Memory before the first prepare": r"Commit the Sitting's records and learner Memory first",
+    "never works a refusal around": r"A refusal is never worked around",
+    "sends a frozen-path branch to a day Session": r"merged\s+by hand in a day Session",
+    "follows the lands with a fast-forward pull": r"git pull --ff-only",
 }
+
+#: Promises the prose procedure made before closeout C10 and that tools/sitting_merge.sh now
+#: keeps; each is pinned by the named test in tests/sim/test_sitting_merge.py (real script,
+#: real gate, temp repos). This table only checks the pin still exists.
+MOVED_TO_SCRIPT = {
+    "aborts a conflicting merge (another Item's map file included)": "test_a_map_conflict_stops_prepare",
+    "takes main's copy of the Item's own map file": "test_the_items_own_map_conflict_takes_mains_copy_and_lands",
+    "names the only conflicts with a mechanical answer": "test_a_generated_page_conflict_is_regenerated",
+    "takes main's copy of a generated page and regenerates": "test_a_generated_page_conflict_is_regenerated",
+    "re-runs the gate waiving only the hardware condition": "test_happy_path_lands_exactly_the_gated_tip",
+    "brings the branch up to date before gating it": "test_happy_path_lands_exactly_the_gated_tip",
+    "gates against the base it updated to": "test_happy_path_lands_exactly_the_gated_tip",
+    "merges only the gated tip": "test_happy_path_lands_exactly_the_gated_tip",
+    "leaves no local copy behind": "test_happy_path_lands_exactly_the_gated_tip",
+    "runs the full suite with no network": "test_happy_path_lands_exactly_the_gated_tip",
+    "runs the gate, wrapper and guard from an extract of the base": "test_machinery_comes_from_the_base",
+    "keeps the base across tool calls": "test_main_moved_since_prepare_is_refused",
+    "refuses to audit an empty diff": "test_an_empty_branch_and_the_candidate_branch_are_refused",
+    "never merges the candidate branch": "test_an_empty_branch_and_the_candidate_branch_are_refused",
+    "refuses a commit after the suite": "test_a_commit_after_the_suite_is_refused",
+    "refuses a missing audit": "test_a_missing_audit_is_refused",
+    "keeps a HOLD held": "test_hold_keeps_the_branch_and_the_worktree",
+    "refuses a frozen-path branch with no override": "test_a_frozen_path_branch_is_refused_with_no_override",
+}
+
+
+@pytest.mark.parametrize("promise", sorted(MOVED_TO_SCRIPT))
+def test_moved_promise_is_pinned_by_the_script_tests(promise):
+    pins = _read(os.path.join(REPO, "tests", "sim", "test_sitting_merge.py"))
+    assert re.search(r"^def %s\(" % MOVED_TO_SCRIPT[promise], pins, re.M), \
+        "%s: test_sitting_merge.py lost %s" % (promise, MOVED_TO_SCRIPT[promise])
 
 
 @pytest.mark.parametrize("promise", sorted(PROMISES))

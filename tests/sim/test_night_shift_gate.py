@@ -318,7 +318,8 @@ def test_e_unparseable_map_file_holds(repo):
     "tools/night_shift_app_suite.sh", "tests/sim/test_night_shift_gate.py",
     "tests/conftest.py", "tests/sim/conftest.py", "conftest.py", "pytest.ini", "tox.ini", "setup.cfg",
     "tests/sim/test_live_session_guard.py", "tests/sim/test_question_tickets.py",
-    "tests/sim/test_sitting_debrief.py", "run_tests.sh", "pyproject.toml",
+    "tests/sim/test_sitting_debrief.py", "tools/sitting_merge.sh", "tests/sim/test_sitting_merge.py",
+    "run_tests.sh", "pyproject.toml",
 ])
 def test_f_forbidden_path_holds(repo, path):
     p = repo / path
@@ -360,7 +361,8 @@ def test_forbidden_paths_pinned():
         "ros_ws/src/jugglebot/WaveCamera_ESP_code/platformio.ini",
         "ros_ws/src/jugglebot/jugglebot/motion/skills/INVARIANTS.md",
         "ros_ws/src/jugglebot_interfaces/*", "config/*", "tools/night_shift*", "tools/lib/*",
-        "tools/systemd/*", "tools/nightly_*", ".claude/*", "tests/sim/test_night_shift_*",
+        "tools/systemd/*", "tools/nightly_*", "tools/sitting_merge.sh", ".claude/*",
+        "tests/sim/test_night_shift_*",
         "tests/sim/test_live_session_guard.py", "tests/sim/test_question_tickets.py",
         "tests/sim/test_sitting_*", "run_tests.sh", "pyproject.toml", "GLOSSARY.md",
         "CLAUDE.md", "DOCUMENTATION_GUIDE.md", "tests/conftest.py", "tests/*/conftest.py",

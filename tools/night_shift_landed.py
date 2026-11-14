@@ -104,8 +104,8 @@ GEN_NOT_EXEMPT = ("CLAUDE.md",)
 #: Paths no Night Shift branch may touch, not even a held one (closeout C7, owner
 #: decision 11), matched like :data:`EXEMPT` (``*`` crosses ``/``). The machinery
 #: (runner, gate, checks, nonet and bash guards, ``live_session``, systemd units, the
-#: nightly), the settings and protocol that bound the night, the tests that pin them,
-#: and whatever decides whether those tests run. ``pyproject.toml`` is matched whole
+#: nightly, the debrief's ``sitting_merge.sh``), the settings and protocol that bound
+#: the night, the tests that pin them, and whatever decides whether those tests run. ``pyproject.toml`` is matched whole
 #: (its pytest section is the concern; the rest is rarely a night's to change).
 #: ``.claude/settings*`` also covers a ``settings.local.json``.
 NEVER_LIST = (
@@ -113,12 +113,14 @@ NEVER_LIST = (
     "tools/lib/*",
     "tools/systemd/*",
     "tools/nightly_*",
+    "tools/sitting_merge.sh",
     ".claude/settings*",
     ".claude/commands/night-shift.md",
     "tests/sim/test_night_shift_*",
     "tests/sim/test_live_session_guard.py",
     "tests/sim/test_pull_status.py",
     "tests/sim/test_sitting_debrief_protocol.py",
+    "tests/sim/test_sitting_merge.py",
     "run_tests.sh",
     "conftest.py",
     "*/conftest.py",
