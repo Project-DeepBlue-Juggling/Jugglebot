@@ -13,17 +13,17 @@ scope: >-
   merge script, and a Runbook that is an index.
 steps:
   - {id: "Phase C1", title: Bind the merge to the gate, kind: phase, status: complete, completed: 2026-11-13, effort: m, hardware: none}
-  - {id: "Phase C2", title: Runner housekeeping, kind: phase, status: not_started, effort: s, hardware: none}
-  - {id: "Phase C3", title: Skip reasons live on the Item, kind: phase, status: in_progress, effort: m, hardware: none}
-  - {id: "Phase C4", title: Delta walk and NOTHING_NEW, kind: phase, status: not_started, effort: m, hardware: none}
-  - {id: "Phase C5", title: Report layout and protocol, kind: phase, status: not_started, effort: m, hardware: none}
+  - {id: "Phase C2", title: Runner housekeeping, kind: phase, status: complete, completed: 2026-11-14, effort: s, hardware: none}
+  - {id: "Phase C3", title: Skip reasons live on the Item, kind: phase, status: complete, completed: 2026-11-14, effort: m, hardware: none}
+  - {id: "Phase C4", title: Delta walk and NOTHING_NEW, kind: phase, status: complete, completed: 2026-11-14, effort: m, hardware: none}
+  - {id: "Phase C5", title: Report layout and protocol, kind: phase, status: complete, completed: 2026-11-14, effort: m, hardware: none}
   - {id: "Phase C6", title: Pull stalls are loud, kind: phase, status: complete, completed: 2026-11-13, effort: s, hardware: none}
   - {id: "Phase C7", title: Offline bag reads and held-only work, kind: phase, status: complete, completed: 2026-11-14, effort: m, hardware: none}
-  - {id: "Phase C8", title: The robot stops writing tracked files, kind: phase, status: not_started, effort: m, hardware: robot}
+  - {id: "Phase C8", title: The robot stops writing tracked files, kind: phase, status: in_progress, effort: m, hardware: robot}
   - {id: "Phase C9", title: Sheet notes-only and batched commits, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: "Phase C10", title: Debrief merge as a tested script, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: "Phase C11", title: Runbook becomes an index, kind: phase, status: not_started, effort: m, hardware: none}
-  - {id: "Phase C12", title: logbook INDEX generated, kind: phase, status: not_started, effort: s, hardware: none}
+  - {id: "Phase C12", title: logbook INDEX generated, kind: phase, status: complete, completed: 2026-11-14, effort: s, hardware: none}
   - {id: "Phase C13", title: Map-write check inside item commits, kind: phase, status: not_started, effort: s, hardware: none}
   - {id: "Phase C14", title: Night Shift report-history picker, kind: phase, status: complete, completed: 2026-11-13, effort: s, hardware: none}
   - {id: "Phase C15", title: F9 feasibility probe, kind: phase, status: not_started, effort: s, hardware: none}
@@ -51,7 +51,10 @@ App layout, already landed 2026-11-13 in the app repo (jugglebot-map 89f7895), n
 - C1, C6 and C14 landed 2026-11-13. First live night under C1 (2026-11-14): `last_run.json` reads `landed: gated=0 exempt=10 ungated=0`, and the gate wrote `d64c85a5.HOLD.json` for FEAT-50. The night merged nothing, so a live MERGE record covering a merge is still to be seen. C6 is installed (`~/System_Scripts/jugglebot-pull.sh`); its status file reads OK and no live `PULL` line has been needed yet.
 - R6 is met under Decision 10: BUG-80's held branch was flown at the Sitting of 2026-11-13, passed, and reached main in the debrief's push (`logbook/2026-11-13-sitting-debrief.md`; the owner merged it without the gate, see that entry's Discussion). C17 keeps the `--full` run and the archive.
 - C7 landed 2026-11-14, ahead of C2, because the owner's TKT-68 answer asks the night to run the offline sweep itself. Beyond the step text: the "only under nonet" rule is enforced by a PreToolUse hook (`tools/night_shift_bash_guard.py`, read from origin/main on every Bash call, fail closed), not by deny-list spellings; the wrapper also masks `/dev/hidraw*`, `/dev/ttyTHS*` and `/dev/bus/usb`; the runner ends `NO_SETTINGS` when the hook is not wired. Gate on the landed tree (2026-11-14, `tools/night_shift_nonet.sh ./run_tests.sh -q`): parallel 601 s rc=0; serial rc=1 on one wall-clock test (`test_solver_worker_lateness`, p99 115 ms), then the serial phase rerun whole (`tools/night_shift_nonet.sh python -m pytest tests/ -q -m "serial and not nightly"`): 7 passed. The same stack before the rebase: parallel 606 s rc=0, serial 31 s rc=0, EXIT=0. Known open bypass: a script the night writes and runs unwrapped. Acceptance still to see: a live bag-read night.
-- C3: keys, validation and `mapkit item skip` landed 2026-11-14. The seeding of the real Items waits for C4 and C5, the first consumers.
+- C3, C2, C4 and C5 landed 2026-11-14 (main at a690b7a0). No seeding script was run: the first night under them, 2026-11-15, is a Sunday, so it is a full walk and writes the skip reasons itself. Deviations from the step text: the committer identity is set with `GIT_COMMITTER_NAME`/`GIT_COMMITTER_EMAIL` (git has no committer-only config key); the committed `history.jsonl` row publishes `detail` only for an OK night (the repo is public); question tickets are kept out of carry, unblocked and unclassified; the Questions section ends with an `earlier: <n> ...` count line; the protocol gained a merge-conflict rule (abort, merge main into the branch, regenerate, re-gate, merge the gated tip). Gate on the landed tree (2026-11-14, `tools/night_shift_nonet.sh ./run_tests.sh -q`): parallel 614 s rc=0, serial 32 s rc=0, EXIT=0. Acceptance still to see: the first full-walk night, the first delta night and the first NOTHING_NEW night.
+- C12 was landed 2026-11-14 by another Session as FEAT-52 (`logbook/INDEX.md` is generated by `python -m mapkit gen`).
+- C8 is built and gated on the branch `closeout/c8-runtime-paths` (2026-11-14, `./run_tests.sh --full -q`: parallel 645 s rc=0, serial 43 s rc=0, EXIT=0; `temp/runtime` empty after the suite). It waits for the owner: merge, `colcon build`, the dress rehearsal, then a Sitting. Beyond the step text: the stale-seed check is cached on the tracked file's mtime and size, the merge keeps a journal so a crash is recovered on rerun, and tests cannot resolve a runtime path inside a real checkout.
+- The gate's serial phase failed `test_solver_worker_lateness` four times in ten runs on 2026-11-14: a garbage collection in the test process (`logbook/2026-11-14-lateness-test-gc-pause.md`); fixed in the test.
 
 ## Decisions (owner, 2026-11-13)
 
