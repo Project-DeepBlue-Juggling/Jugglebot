@@ -18,7 +18,7 @@ the lateral offsets are NOT global, so the Learner's residual memory (L2, ``lear
 what b and s miss. Cold-start apex error at a new Site: 73.5 mm under the identity prior, 17.8 mm
 under f0.
 
-The fit (RLS, Kalman form, measurement variance R, identity prior, three independent scalar-
+The fit (RLS, Kalman form, measurement variance R, prior mean 0 for b, s, Delta and ``prior_K`` for K, three independent scalar-
 measurement filters: apex [K]; axis 0 [b_x, s, Delta_x...]; axis 1 [b_y, Delta_y...]). The
 probe's prototype (``learner_replay.Filt`` / ``run_rls``) is the reference; this module ports it.
 Three rules the probe decided:
@@ -28,8 +28,10 @@ Three rules the probe decided:
   its variance grows by 1/lambda per row) until it falls back to its prior: on the corpus after
   410-1958 rows. Covariance cross-terms are divided by sqrt(lambda_i lambda_j), as the probe does.
 * **Report the prior while uncertain.** A parameter whose posterior sd exceeds
-  ``fallback_frac`` x its prior sd REPORTS its prior mean, so an empty memory is exactly the
-  identity (plan T-R2) and a never-seen ball's offset is zero. On the corpus K leaves its prior
+  ``fallback_frac`` x its prior sd REPORTS its prior mean, so an empty memory reports K =
+  ``prior_K`` (1.08 from config since 2026-11-15, IDEA-23 / TKT-72 option 1; 1.0 restores the
+  identity, plan T-R2's original wording), zero lateral offsets, and a never-seen ball's offset
+  is zero. On the corpus K leaves its prior
   after 2 rows, b after 3-8, s after 14. K and b_y follow this per-PARAMETER rule (each is
   observed directly). The axis-0 offset b_x + s x follows it per QUERY on the predicted quantity
   (2026-11-06 follow-up): at one Site only that sum is observed, so b_x and s each stay uncertain
@@ -61,6 +63,8 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
+import jugglebot.hardware_config as hw
+
 __all__ = ['PlantModelConfig', 'PlantModel']
 
 
@@ -70,7 +74,12 @@ class PlantModelConfig:
     (``tools/probes/learner_replay.py``, run 2026-11-06 on the 846- and 3276-row corpora,
     ``temp/probes/learner_replay/SUMMARY.md``) unless stated. SI units."""
 
-    #: Prior sd of the apex gain K about 1 (probe: K 1.070-1.095 per Sitting; 1 +- 0.10 covers it).
+    #: Prior MEAN of the apex gain K, from ``hardware_config.yaml`` ``trajectory_op.learner_prior_apex_gain``
+    #: (IDEA-23 / TKT-72 option 1, 2026-11-15: 1.08, from 9 fresh starts at 1.077 +- 0.015 and the
+    #: 39-Sitting fit 1.081). 1.0 is the old identity prior. Only K's mean moves; b, s and Delta
+    #: keep a zero prior mean.
+    prior_K: float = hw.JB_TRAJ_LEARNER_PRIOR_APEX_GAIN
+    #: Prior sd of the apex gain K about ``prior_K`` (probe: K 1.070-1.095 per Sitting; +-0.10 covers it).
     prior_sd_K: float = 0.10
     #: Prior sd of each lateral offset b about 0 [m] (probe: per-Site b_x -2..+18 mm).
     prior_sd_b_m: float = 0.030
@@ -103,7 +112,7 @@ class PlantModelConfig:
     n_balls: int = 2
 
     def __post_init__(self) -> None:
-        for name in ('prior_sd_K', 'prior_sd_b_m', 'prior_sd_s_per_m', 'prior_sd_delta_m',
+        for name in ('prior_K', 'prior_sd_K', 'prior_sd_b_m', 'prior_sd_s_per_m', 'prior_sd_delta_m',
                      'noise_sd_apex_m', 'noise_sd_lateral_m', 'inlier_lateral_m',
                      'inlier_apex_frac'):
             v = getattr(self, name)
@@ -197,7 +206,7 @@ class PlantModel(object):
         lam = cfg.forgetting
         nd = cfg.n_balls - 1 if cfg.ball_offsets else 0
         self._nd = nd
-        self._fa = _Filter([1.0], [cfg.prior_sd_K], cfg.noise_sd_apex_m ** 2, lam)
+        self._fa = _Filter([cfg.prior_K], [cfg.prior_sd_K], cfg.noise_sd_apex_m ** 2, lam)
         self._fx = _Filter([0.0] * (2 + nd), [cfg.prior_sd_b_m, cfg.prior_sd_s_per_m]
                            + [cfg.prior_sd_delta_m] * nd,
                            cfg.noise_sd_lateral_m ** 2, [lam, 1.0] + [1.0] * nd)

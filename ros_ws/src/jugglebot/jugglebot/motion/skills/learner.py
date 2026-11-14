@@ -16,7 +16,8 @@ commanded), :meth:`Learner.command` returns the command ``u``::
 net of the catch offset), ``dv`` over the planned release velocity (xyz) of the
 MODEL command (the caller computes it from f0^-1(y_d) with ``ballistics_bc.launch_velocity``;
 the Learner's own answer would be circular). Support = rows with ``d^2 <= support_d2`` (9, the
-old law's gate). Empty memory -> exactly ``y_d`` (the reported model is the identity, plan T-R2);
+old law's gate). Empty memory -> exactly f0^-1(y_d) (the reported model is the identity except K = ``prior_K``,
+1.08 from config since 2026-11-15, IDEA-23; at ``prior_K`` 1.0 this is exactly ``y_d``, plan T-R2);
 empty support -> exactly the model command.
 
 The old local-linear law (anchor, ridge fit of (C, D, d), damped step) is DELETED (owner decision
@@ -289,7 +290,8 @@ class Learner(object):
         return sw, n
 
     def model_command(self, ctx: ThrowContext, y_d) -> np.ndarray:
-        """f0^-1(y_d): the command the plant model alone gives (exactly ``y_d`` when empty)."""
+        """f0^-1(y_d): the command the plant model alone gives (``y_d`` with the apex divided by
+        ``prior_K`` when empty; exactly ``y_d`` at ``prior_K`` 1.0)."""
         ctx = self._ctx(ctx)
         return self.model.inverse(y_d, ctx.site_xy_m[0], ctx.ball_id)
 

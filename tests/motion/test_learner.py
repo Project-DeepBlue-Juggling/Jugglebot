@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 
 from jugglebot.motion.skills.learner import Learner, LearnerConfig, ThrowContext
-from jugglebot.motion.skills.plant_model import PlantModelConfig
+from jugglebot.motion.skills.plant_model import PlantModel, PlantModelConfig
 
 
 def _ctx(site_x=0.0, rel=None, vel=(0.0, 0.0, 4.4), ball=0, kind='free_cup', dwell=0.4):
@@ -62,8 +62,9 @@ Y_D = np.array([0.0, 0.0, 0.9])
 
 
 # --------------------------------------------------------------------------- T-R2
-def test_t_r2_an_empty_learner_returns_exactly_y_d_and_predicts_exactly_u():
-    L = Learner()
+def test_t_r2_an_empty_learner_returns_exactly_y_d_and_predicts_exactly_u_at_prior_K_1():
+    """T-R2 as originally written, now at ``prior_K=1.0`` (IDEA-23: the config default is 1.08)."""
+    L = Learner(PlantModel(PlantModelConfig(prior_K=1.0)))
     for ctx in (_ctx(), _ctx(-0.075, kind='carried', ball=1), _ctx(0.125, dwell=math.nan)):
         y_d = np.array([0.0123, -0.0045, 0.912345])
         assert np.array_equal(L.command(ctx, y_d), y_d)
@@ -74,6 +75,19 @@ def test_t_r2_an_empty_learner_returns_exactly_y_d_and_predicts_exactly_u():
         assert L.evidence(ctx) == (0.0, 0)
         u_bar, D, d = L.local_model(ctx, y_d)
         assert np.array_equal(u_bar, y_d) and np.array_equal(D, np.eye(3)) and np.array_equal(d, y_d)
+
+
+def test_idea_23_an_empty_learner_commands_the_apex_over_the_config_K_prior():
+    """IDEA-23: the first Throw on a fresh plant commands y_d with the apex divided by 1.08 (the
+    lateral axes are untouched) and predicts the matching forward map."""
+    L = Learner()
+    for ctx in (_ctx(), _ctx(-0.075, kind='carried', ball=1), _ctx(0.125, dwell=math.nan)):
+        y_d = np.array([0.0123, -0.0045, 0.912345])
+        u = L.command(ctx, y_d)
+        assert np.array_equal(u[:2], y_d[:2]) and u[2] == pytest.approx(y_d[2] / 1.08, rel=1e-15)
+        assert np.array_equal(L.model_command(ctx, y_d), u)
+        assert L.predict(ctx, u)[2] == pytest.approx(y_d[2], rel=1e-12)
+        assert L.evidence(ctx) == (0.0, 0)
 
 
 def test_the_learner_advertises_the_context_api():
@@ -258,7 +272,8 @@ def test_queries_do_not_change_state():
 
 
 # --------------------------------------------------------------------------- convergence (plan § 1.1)
-def test_a_biased_plant_converges_within_a_handful_of_throws_with_the_two_throw_delay():
+@pytest.mark.parametrize('prior_K', [1.0, 1.08])
+def test_a_biased_plant_converges_within_a_handful_of_throws_with_the_two_throw_delay(prior_K):
     """Columns-like: alternating Sites x = -/+0.125, plant K 1.08, b (10, 12) mm, s -0.09/m plus an
     (8, -6, 5) mm residual f0 cannot see; landing noise 5 mm per axis; row i reaches the Learner
     only after throw i+1 is commanded (the real loop's 2-throw delay). Measured 2026-11-06 over
@@ -268,7 +283,7 @@ def test_a_biased_plant_converges_within_a_handful_of_throws_with_the_two_throw_
     errs = []
     for seed in range(10):
         rng = np.random.default_rng(seed)
-        L, pend, e = Learner(), [], []
+        L, pend, e = Learner(PlantModel(PlantModelConfig(prior_K=prior_K))), [], []
         for i in range(14):
             sx = (-0.125, 0.125)[i % 2]
             ctx = _ctx(sx)
@@ -280,7 +295,10 @@ def test_a_biased_plant_converges_within_a_handful_of_throws_with_the_two_throw_
                 L.observe(pend.pop(0))
         errs.append(np.abs(np.array(e)))
     errs = np.array(errs)                        # (seed, throw, axis) [m]
-    assert errs[:, 0, 2].mean() > 0.070          # the bias is real: the first Throw misses by ~77 mm
+    if prior_K == 1.0:                           # the old identity prior: the first Throw misses by ~77 mm
+        assert errs[:, 0, 2].mean() > 0.070
+    else:                                        # IDEA-23: the config prior takes it to ~5 mm (1.08 vs 1.085)
+        assert errs[:, 0, 2].mean() < 0.010
     late = errs[:, 6:, :].mean(axis=(0, 1))
     assert np.all(late < 0.004), late * 1e3
 

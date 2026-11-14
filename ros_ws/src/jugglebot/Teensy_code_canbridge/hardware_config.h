@@ -202,6 +202,7 @@ namespace TrajOp {
   constexpr bool UNIFIED_Z_FLOAT_ENABLED = false;
   constexpr float UNIFIED_Z_BAND_MM = 30.0f;
   constexpr const char* PLANNER_MODE = "pose";
+  constexpr float LEARNER_PRIOR_APEX_GAIN = 1.08f;
   constexpr float POSE_LEG_JERK_WEIGHT = 10.0f;
   constexpr float POSE_Z_BAND_MM = 0.0f;
   constexpr float POSE_CONE_DEG = 20.0f;

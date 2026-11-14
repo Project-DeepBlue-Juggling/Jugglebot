@@ -2,9 +2,9 @@
 id: IDEA-23
 kind: idea
 title: seed a fresh plant K from the trained plant
-status: inbox
+status: complete
 created: '2026-11-13'
-updated: '2026-11-13T17:50:23Z'
+updated: '2026-11-14T18:52:14Z'
 owners: []
 priority: low
 effort: s
@@ -16,6 +16,7 @@ blocked_by: []
 links:
 - map/idea-learner-context-cannot-tell-a-throw-from-rest-from-a-carried.md
 - map/feature-p4-ramp-sitting-columns-canary-at-600-8000-and-20-a-then-the.md
+- logbook/2026-11-15-fresh-plant-k-prior.md
 filed_by: claude
 ---
 

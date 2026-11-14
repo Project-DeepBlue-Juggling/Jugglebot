@@ -144,7 +144,9 @@ and is replayed over the memory at load; nothing else is persisted. K and b forg
 does (one factor on every parameter wound s up over single-Site stretches). A parameter reports its prior
 while its posterior sd exceeds half its prior sd, and the axis-0 offset is decided per query on the
 predictive sd of b_x + s·x, so an empty memory is exactly the identity and a Site far from the data gets
-no offset. Inlier rule, relative to the model: within 100 mm laterally of the prediction and apex ratio
+no offset. **Amended 2026-11-15 (IDEA-23, TKT-72 option 1): an empty memory is the identity EXCEPT K, whose
+prior mean is 1.08 from config (`trajectory_op.learner_prior_apex_gain`; 1.0 restores the identity); the
+prior sd, RLS and fallback rule are unchanged.** Inlier rule, relative to the model: within 100 mm laterally of the prediction and apex ratio
 within max(9 % of K, 3 sd_K). On the 3276-row corpus K = 1.079–1.081 (per Sitting 1.070–1.095), b = (+5.9,
 +1.4) mm, s = −0.074/m; cold-start apex error at a new Site falls from 74 mm to 13 mm (mean, Sites with any
 earlier row). The lateral offsets are NOT global (−2 to +18 mm by Site): L2 carries them. The 2026-10-18

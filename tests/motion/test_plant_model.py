@@ -21,6 +21,7 @@ import sys
 import numpy as np
 import pytest
 
+import jugglebot.hardware_config as hw
 from jugglebot.motion.skills.plant_model import PlantModel, PlantModelConfig
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -71,9 +72,10 @@ def test_t_u1_forward_inverse_round_trip_for_random_theta_and_sites(offsets):
             assert m.forward(u, 0.05, 1)[0] - y0[0] == pytest.approx(th_r[4], abs=1e-15)
 
 
-def test_t_r2_an_empty_model_is_exactly_the_identity():
+def test_t_r2_an_empty_model_is_exactly_the_identity_at_prior_K_1():
+    """The original T-R2 rule, now an opt-in: ``prior_K=1.0`` (config value 1.0) restores it."""
     for offsets in (False, True):
-        m = PlantModel(PlantModelConfig(ball_offsets=offsets))
+        m = PlantModel(PlantModelConfig(prior_K=1.0, ball_offsets=offsets))
         y = np.array([0.0123, -0.0456, 0.987654321])
         for sx, ball in ((0.0, 0), (-0.075, 1), (0.125, 0)):
             assert np.array_equal(m.inverse(y, sx, ball), y)
@@ -84,6 +86,39 @@ def test_t_r2_an_empty_model_is_exactly_the_identity():
         for sx in (-0.3, -0.075, 0.0, 0.125, 0.3):
             assert m.offset_x(sx) == (0.0, True)
             assert np.array_equal(m.forward_rows(np.tile(y, (2, 1)), np.array([sx, sx]), 0), np.tile(y, (2, 1)))
+
+
+def test_idea_23_an_empty_model_reports_the_config_K_prior_and_zero_offsets():
+    """IDEA-23 (TKT-72 option 1): a fresh plant reports K = 1.08 from config, every lateral
+    parameter still 0, a never-seen ball's offset 0, and the inverse divides by 1.08."""
+    assert PlantModelConfig().prior_K == hw.JB_TRAJ_LEARNER_PRIOR_APEX_GAIN == 1.08
+    for offsets in (False, True):
+        m = PlantModel(PlantModelConfig(ball_offsets=offsets))
+        th = m.theta()
+        assert th[0] == 1.08 and np.all(th[1:] == 0.0)
+        assert set(m.at_prior()) == set(m.param_names)
+        y = np.array([0.0123, -0.0456, 0.9504])
+        for sx, ball in ((0.0, 0), (-0.075, 1), (0.125, 0)):
+            u = m.inverse(y, sx, ball)
+            assert np.array_equal(u[:2], y[:2])
+            assert u[2] == pytest.approx(y[2] / 1.08, rel=1e-15)
+            assert m.forward(u, sx, ball)[2] == pytest.approx(y[2], rel=1e-12)
+        assert m.offset_x(-0.075) == (0.0, True)
+
+
+def test_idea_23_the_rls_still_converges_to_the_data_not_the_prior():
+    """Rows at K = 1.077 end near 1.077 (not stuck at the 1.08 prior), and rows at the sim's
+    1.23 are still learned from the new prior."""
+    for K_true, tol in ((1.077, 0.004), (1.23, 0.006)):
+        rng = np.random.default_rng(21)
+        m = PlantModel()
+        for i in range(80):
+            u = _cmd(rng)
+            sx = (-0.075, 0.075)[i % 2]
+            y = _plant((K_true, 0.0, 0.0, 0.0), u, sx, 0) + rng.normal(0, [0.002, 0.002, 0.002])
+            assert m.observe(u, y, sx, 0)
+        assert 'K' not in m.at_prior()
+        assert m.theta()[0] == pytest.approx(K_true, abs=tol)
 
 
 # --------------------------------------------------------------------------- T-U2
@@ -355,7 +390,9 @@ def test_pin_production_equals_the_probe_prototype_on_400_corpus_rows(monkeypatc
     hist, _sd, raw, acc, _nz = probe.run_rls(d, 0.99, False, 'mband+struct')
     U = d[['u0', 'u1', 'u2_apex_m']].values
     Y = d[['y0', 'y1', 'y2_apex_m']].values
-    models = (PlantModel(PlantModelConfig(ball_offsets=True)), PlantModel())
+    # the probe starts from the identity prior, so the pin runs at prior_K = 1.0
+    models = (PlantModel(PlantModelConfig(prior_K=1.0, ball_offsets=True)),
+              PlantModel(PlantModelConfig(prior_K=1.0)))
     accs = []
     for m in models:
         accs.append(np.array([m.observe(U[i], Y[i], float(d.x0.values[i]), int(d.ball_id.values[i]))
