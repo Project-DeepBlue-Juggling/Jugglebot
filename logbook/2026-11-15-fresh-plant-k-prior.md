@@ -19,6 +19,8 @@ files_changed:
   - tests/motion/test_learner.py
   - plans/active/learner-generalisation.md
   - logbook/INDEX.md
+  - map/idea-seed-a-fresh-plant-k-from-the-trained-plant.md
+  - docs/project-map.md
 tags: [night-shift, IDEA-23]
 related_items: [IDEA-23]
 related_plan: learner-generalisation.md
@@ -33,3 +35,5 @@ related_plan: learner-generalisation.md
 **Tests.** `test_plant_model.py`: the identity test now runs at `prior_K=1.0`; new tests pin K = 1.08 from config with zero lateral offsets, and RLS convergence to 1.077 and 1.23 (not stuck at the prior); the probe pin runs at `prior_K=1.0` (the probe starts from identity). `test_learner.py`: T-R2 at `prior_K=1.0`, a new empty-learner command at 1.08, and the convergence test parametrised over both priors (first-Throw apex miss over 70 mm at 1.0, under 10 mm at 1.08). The new config/learner tests fail without the change (`prior_K` does not exist, empty K reports 1.0); the old first-Throw miss assertion fails with it, hence the parametrisation.
 
 **Verification.** 2026-11-15, `night_shift_nonet.sh python -m pytest tests/motion/test_plant_model.py tests/motion/test_learner.py tests/motion/test_skills_executor_learner.py tests/sim/test_plans_index.py -q`: **65 passed in 107.64 s**. 2026-11-15, `... pytest tests/motion/test_skills_executor_beats.py tests/ros/test_skills_plan_bench.py tests/motion/test_skills_executor.py -q -k "learner or beats or plan_bench or prior or K or Learner"` (a -k subset, the full executor file was not run): **417 passed in 1979.76 s**. 2026-11-15, plant_model.py reverted to HEAD, `pytest tests/motion/test_plant_model.py -k "idea_23 or prior_K_1"`: 2 failed (no `prior_K`), the convergence test passed as designed. The default gate was not run.
+
+**Not verified.** `tests/ros/test_skill_node.py` was not run; the audit expects its empty-learner identity test (around line 7835) to fail at the 1.08 prior. `INVARIANTS.md` I-LEARN-1 still states the identity rule (an empty memory gives exactly the identity command); it is frozen at night and left for a day Session to amend. Nothing in this change is verified on hardware.

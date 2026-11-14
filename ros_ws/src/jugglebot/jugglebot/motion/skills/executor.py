@@ -3381,7 +3381,9 @@ class SkillExecutor:
           context Learner's own capped command, an old-API one's
           lateral-authority-clipped about ``y_d``); no Learner -> ``y_d``.
           Model command = ``learner.model_command(ctx, y_d)`` for a context
-          Learner (:meth:`_catch_context`), else ``y_d`` (identity prior).
+          Learner (:meth:`_catch_context`), else ``y_d`` (identity prior; a
+          Learner with an empty Memory is the identity except K, which starts
+          at the configured prior ``prior_K``).
         * ``verdict_fn(u)``: (1) the envelope on the REAL carried Throw built
           from ``u`` (this release, the commanded target incl. the fly-back,
           ``flight_s(u_apex)``) -- a refusal costs no solve; (2) the
@@ -3536,7 +3538,8 @@ class SkillExecutor:
         check at ``t_abs_s`` (:meth:`_resolve_catch_command`'s bullet list:
         the envelope, the stand-in, ``self.checker``). ``u_model`` is the
         MODEL command a refused candidate steps toward (``None`` -> ``y_d``,
-        the identity prior); ``ctx`` the context Learner's query for the
+        the identity prior; a Learner with an empty Memory is the identity
+        except K, which starts at the configured prior ``prior_K``); ``ctx`` the context Learner's query for the
         stand-in's forward model (:meth:`_forward_model_xy`). Writes NOTHING on the
         executor -- the checker call is its only effect -- so the early
         command can call it. ``AdmissibleError`` ->

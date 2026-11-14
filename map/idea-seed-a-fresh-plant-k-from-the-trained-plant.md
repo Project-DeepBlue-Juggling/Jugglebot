@@ -43,3 +43,7 @@ A fresh plant starts with K = 1.0 (identity prior), but 9 fresh starts over the 
 4. **Leave the identity prior:** the learner fits K within two rows.
 
 Recommendation: 1. It matches both the 39-Sitting corpus and the 9 fresh starts, cannot inherit a bad plant, and takes the first Throw from about +68 mm to about +10 mm. It changes the empty-Memory-is-identity rule, so plan T-R2's wording changes with it.
+
+## Decision (2026-11-15)
+
+The owner chose option 1 (TKT-72). Built by the Night Shift of 2026-11-15 (logbook `2026-11-15-fresh-plant-k-prior`): `trajectory_op.learner_prior_apex_gain: 1.08` seeds K's prior mean; 1.0 restores the identity. Not yet checked on the robot: a dress rehearsal on a fresh plant judges the first Throw's Apex error.
