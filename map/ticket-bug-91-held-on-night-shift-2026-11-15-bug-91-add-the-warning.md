@@ -2,9 +2,9 @@
 id: TKT-74
 kind: ticket
 title: 'BUG-91 held on night-shift/2026-11-15-BUG-91: add the warning-text pin test and merge, merge as is, or drop?'
-status: open
+status: complete
 created: '2026-11-15'
-updated: '2026-11-14T20:27:59Z'
+updated: '2026-11-14T23:37:09Z'
 owners: []
 priority: medium
 effort: xs
@@ -32,3 +32,7 @@ Your TKT-70 option 2 is built on night-shift/2026-11-15-BUG-91: an accepted nomi
 - 3: BUG-91 goes back to open.
 
 Recommendation: 1. It is a few lines, and the red state is the whole point of the change.
+
+## Answer
+
+Agreed.
