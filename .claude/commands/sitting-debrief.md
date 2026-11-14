@@ -39,10 +39,14 @@ results come from.
   authority for map state), which the script takes from `main` before it regenerates.
 - **Commit the Sitting's records and learner Memory first**, before the first `prepare`, so the
   suite runs on a `main` that already holds them (the 2026-11-13 debrief went red on `main`
-  only after its records commit). Whatever the Sitting wrote to tracked files (`docs/records.md`,
-  `temp/learn/jugglebot/memory*.csv`; once closeout C8 lands, the output of
-  `python tools/runtime_records.py merge`) is committed on `main` and pushed, on its own,
-  with the `Logbook-Entry: <date>-sitting-debrief` trailer.
+  only after its records commit). The robot writes its ledger and Memory under `temp/runtime/`
+  (gitignored), so first run `python tools/runtime_records.py merge` (`status` shows what it
+  will do): it copies them back into `docs/records.md` and
+  `temp/learn/<plant_id>/memory_v2.csv`. Exit 2 = a file was refused and the message says what
+  differs (e.g. `docs/records.md` changed since the seed): ask the owner, then rerun with the
+  answer (`--resolve-records keep-runtime|keep-tracked`). Exit 3 = a Sitting looks live: stop
+  and ask. Then `docs/records.md` and `temp/learn/jugglebot/memory_v2.csv` are committed on
+  `main` and pushed, on their own, with the `Logbook-Entry: <date>-sitting-debrief` trailer.
 - Nothing here powers hardware. The Sitting is over.
 
 ## 0a. Flush the Sitting sheet's results
@@ -68,8 +72,9 @@ do not go on to the analysis on a results file you could not flush.
 Writing-for-agents rule: you orchestrate and synthesise; sub-agents read the logs. Scope is
 every launch log under `~/.ros/log/` (`temp/logs/launch_<date>_<n>.log` exists only when the
 operator's tee worked, so `~/.ros/log/<date>-*/launch.log` is the complete source) and every rosbag under `~/Desktop/rosbags/` newer than
-the last debrief entry (or the day of the date argument). The dirty `docs/records.md` and
-`temp/learn/jugglebot/memory.csv` are the Sitting's expected output, not a surprise. No
+the last debrief entry (or the day of the date argument). The Sitting's records and Memory are
+written to the gitignored `temp/runtime/` (Phase C8) and section 4.3 merges them back, so a
+dirty `docs/records.md` or `temp/learn/jugglebot/memory_v2.csv` before then is a surprise. No
 robot, no GUI writes: this is reading.
 
 **A. Inventory (you, not an agent).** In a scratchpad `context.md` list, per launch log, with
@@ -241,8 +246,9 @@ and Memory already committed (section 0). One Item at a time, `prepare` to `land
 2. If any merged branch touched `ros_ws/`: `cd ros_ws && colcon build --packages-select
    jugglebot_interfaces jugglebot` (both, always: `jugglebot` alone installs new node code over an
    old interface, and the mismatch only shows at the first service call) and say so.
-3. `git add docs/records.md` if it changed again since section 0's records commit (skill_node
-   writes it live during a Sitting; it is committed at every Sitting close-out).
+3. `python tools/runtime_records.py status`: every file should read `in step` or `absent`
+   after section 0's merge. If a launch ran since then, run the merge and the records commit of
+   section 0 again.
 
 ## 5. Follow-ups, logbook, Runbook, commit
 

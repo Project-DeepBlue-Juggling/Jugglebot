@@ -210,29 +210,73 @@ def write_seed(runtime: str, tracked: str, data: Optional[bytes],
 
 # ── seeding ───────────────────────────────────────────────────────────────
 
+#: The present-runtime check, cached per ``(runtime, tracked)`` on the
+#: ``(st_mtime_ns, st_size)`` of the seed and of the tracked file. skill_node
+#: calls :func:`ensure_seeded` at every goal start, and hashing the 1.6 MB
+#: tracked Memory there (about 40 ms on this Jetson) sat inside wall-clock
+#: windows. A hit costs ``os.stat`` calls only; any rewrite of either file (a
+#: pull, an edit, a merge's re-seed) changes its signature and recomputes.
+_CHECK_CACHE = {}
+
+
+def _signature(path: str) -> Optional[Tuple[int, int]]:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
 def ensure_seeded(runtime: str, tracked: str, memory: bool = False) -> Seeding:
     """Make ``runtime`` ready to load or write (module docstring, Seeding):
     seed it from ``tracked`` if absent; never touch it if present. Raises
     OSError if the tracked file exists but cannot be read (a directory, no
-    permission): the caller's existing refusal path, as for the old load."""
+    permission): the caller's existing refusal path, as for the old load.
+    A call costs ``os.stat`` calls only unless the seed or the tracked file
+    changed since the last call (:data:`_CHECK_CACHE`) or a seed must be
+    written; an empty seed already on disk is not rewritten."""
     if os.path.exists(runtime):
+        key = (runtime, tracked)
+        sigs = (_signature(seed_path(runtime)), _signature(tracked))
+        hit = _CHECK_CACHE.get(key)
+        if hit is not None and sigs[0] is not None and hit[0] == sigs:
+            return hit[1]
+        seeding = _check_present(runtime, tracked)
+        _CHECK_CACHE[key] = (sigs, seeding)
+        return seeding
+    if not os.path.exists(tracked):
         seed = read_seed(runtime)
-        if seed is None:
-            return Seeding(runtime, tracked, UNSEEDED, None, '', (
-                'runtime file %s has no readable seed %s: loading it as is; '
-                'the debrief merge cannot tell which rows are new'
-                % (runtime, seed_path(runtime))))
-        rows = seed.get('rows')
-        seeded_at = str(seed.get('seeded_at', '?'))
-        if sha256_of(tracked) != seed.get('sha256'):
-            return Seeding(runtime, tracked, STALE, rows, seeded_at, (
-                'tracked %s changed since the runtime copy was seeded at %s '
-                '(an auto-pull or an edit): the robot keeps using the runtime '
-                'copy %s unchanged and does NOT see the new tracked content '
-                'until the debrief merge (tools/runtime_records.py); to load '
-                'the tracked file instead, move the runtime copy and its '
-                '.seed aside' % (tracked, seeded_at, runtime)))
-        return Seeding(runtime, tracked, KEPT, rows, seeded_at, '')
+        if seed is not None and seed.get('sha256') is None:
+            # Seeded empty by an earlier goal that appended nothing: nothing
+            # to write, so a goal start does not fsync a seed every time.
+            return Seeding(runtime, tracked, SEEDED_EMPTY, seed.get('rows'),
+                           str(seed.get('seeded_at', '?')), '')
+    return _seed_absent(runtime, tracked, memory)
+
+
+def _check_present(runtime: str, tracked: str) -> Seeding:
+    """The runtime file exists: KEPT, STALE or UNSEEDED; never writes."""
+    seed = read_seed(runtime)
+    if seed is None:
+        return Seeding(runtime, tracked, UNSEEDED, None, '', (
+            'runtime file %s has no readable seed %s: loading it as is; '
+            'the debrief merge cannot tell which rows are new'
+            % (runtime, seed_path(runtime))))
+    rows = seed.get('rows')
+    seeded_at = str(seed.get('seeded_at', '?'))
+    if sha256_of(tracked) != seed.get('sha256'):
+        return Seeding(runtime, tracked, STALE, rows, seeded_at, (
+            'tracked %s changed since the runtime copy was seeded at %s '
+            '(an auto-pull or an edit): the robot keeps using the runtime '
+            'copy %s unchanged and does NOT see the new tracked content '
+            'until the debrief merge (tools/runtime_records.py); to load '
+            'the tracked file instead, move the runtime copy and its '
+            '.seed aside' % (tracked, seeded_at, runtime)))
+    return Seeding(runtime, tracked, KEPT, rows, seeded_at, '')
+
+
+def _seed_absent(runtime: str, tracked: str, memory: bool) -> Seeding:
+    """The runtime file is absent: seed it from ``tracked``, or seed empty."""
     if os.path.exists(tracked):
         with open(tracked, 'rb') as handle:
             data = handle.read()
