@@ -505,7 +505,8 @@ to the Item), then ends with exactly one line, built from `unchanged` in `--cand
 are not rows. `## Questions for the Operator` lists the question tickets filed or changed tonight
 (an open question asked on an earlier night is not re-listed row by row) and ends with one count line
 for the older open ones: `earlier: <n> open questions from earlier nights, not re-listed` (count
-the open `type: question` tickets not listed above; `earlier: 0 ...` when none).
+the open `type: question` tickets not listed above; `earlier: 0 ...` when none). Put a blank
+line before each of the two trailer lines, so neither renders as a table row.
 
 The ninth section, directly after Questions, is
 `## Items the Night Shift could resolve with a small amount of input from you`. Never write its
