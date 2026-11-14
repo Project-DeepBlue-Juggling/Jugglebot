@@ -19,6 +19,8 @@ files_changed:
   - tests/ros/test_ball_tracker_frame_stamp.py
   - tests/ros/test_ball_tracker_gate.py
   - logbook/INDEX.md
+  - map/bug-static-ball-butler-frame-markers-are-tracked-as-human-throw.md
+  - docs/project-map.md
 ---
 
 ## What and why
@@ -26,7 +28,7 @@ files_changed:
 With `detect_human_throws` on, static Ball Butler frame markers started `human_throw` tracks: 12 of 124 live tracks and 26 of 30 bench phantoms at the Sitting of 2026-11-13 began on fixed cells (x -730 to -988, z 1665 to 1861 mm). The label filter cannot name them (QTM labels the flying ball `Ball Butler - 1`) and a parabola tolerance cannot help. The owner chose option 3 of TKT-71: a Ball Butler zone in config ("Ball Butler won't move, and I'll never be partner juggling with Jugglebot from near Ball Butler").
 
 - `ball_tracking.human_throw_exclusion_{x,z}_{min,max}_mm` = x [-1028, -690], z [1625, 1901] (measured cells padded 40 mm per side); y unbounded, as the option names x and z only. min > max disables it. Generated with `python config/generate_config.py`.
-- `BallTracker(human_throw_exclusion_box=(x_min, x_max, z_min, z_max))`, default None: `_detect_parabolic` does not open a new marker track for an unmatched marker inside the box. Announced balls never pass through that path, so Ball Butler Throws are untouched; nothing changes with `detect_human_throws` off. A track that starts outside and moves in keeps going. The node wires the box from `hw` and logs it in its start-up info line beside `detect_human_throws=`.
+- `BallTracker(human_throw_exclusion_box=(x_min, x_max, z_min, z_max))`, default None: `_detect_parabolic` does not open a new marker track for an unmatched marker inside the box. Announced balls never pass through that path, so Ball Butler Throws are untouched; nothing changes with `detect_human_throws` off. A track that starts outside and moves in keeps going. The converse is the accepted limit of the first-sample rule: a marker first seen inside the box (for example reappearing after occlusion) is dropped on every frame until it leaves, so a real human Throw starting inside the box starts late or not at all; acceptable per the owner, who never throws from near Ball Butler. The box is read once at node start-up, so a change needs a node restart. The node wires the box from `hw` and logs it in its start-up info line beside `detect_human_throws=`.
 
 ## Frame check
 
@@ -34,6 +36,7 @@ The tracker runs in the mocap (world) frame: `_on_mocap` passes `msg.markers[].p
 
 ## Verification
 
-- 2026-11-15, `night_shift_nonet.sh python -m pytest tests/tracking/ tests/ros/test_ball_tracker_frame_stamp.py tests/ros/test_ball_tracker_gate.py -q`: 83 passed.
-- Without the matcher check (`if False:` in place of the box test), `-k ExclusionBox`: the phantom-inside-box test fails, the other four pass (they are guards: the same marker 100 mm outside the box, a true throw outside, an announced release inside, and the no-box control).
+- 2026-11-15, `/home/jetson/night-shift/Jugglebot/temp/reports/night-shift/gate-base/tools/night_shift_nonet.sh python -m pytest tests/tracking/ tests/ros/test_ball_tracker_frame_stamp.py tests/ros/test_ball_tracker_gate.py -q`: 83 passed.
+- Mutation check, 2026-11-15, `/home/jetson/night-shift/Jugglebot/temp/reports/night-shift/gate-base/tools/night_shift_nonet.sh python -m pytest tests/tracking/test_matcher.py -q -k ExclusionBox` from the worktree root: unmutated 5 passed; with `if False:` in place of the box test in `matcher.py`, **1 failed, 4 passed** (`test_phantom_inside_box_starts_no_track` fails; the other four are guards: the same marker 100 mm outside the box, a true throw outside, an announced release inside, and the no-box control); matcher restored to the committed version (`git diff` clean on `matcher.py`), re-run 5 passed.
+- Not verified on hardware: whether the phantom rate drops and no true human Throw is lost needs a human-Throw Sitting window. The 4 phantoms of the 30 that were not static-cell starts are outside this rule.
 - Not run: `./run_tests.sh` (Night Shift gate owns it).

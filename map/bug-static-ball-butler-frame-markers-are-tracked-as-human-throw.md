@@ -44,3 +44,7 @@ Exclude a human_throw candidate whose first sample lies within about 40 mm of a 
 4. **Leave it:** `detect_human_throws` is off by default, so phantoms only appear in human-Throw windows.
 
 Recommendation: 1. On the launch 3 slice it removed 26 of 30 bench phantoms and 0 of 114 true Throws, and it needs no label or zone. FEAT-50 builds a rolling static-cell filter tonight that this could share.
+
+## Decision (2026-11-15)
+
+The owner chose option 3 (TKT-71): a Ball Butler zone in config. Built by the Night Shift of 2026-11-15 (logbook `2026-11-15-human-throw-ball-butler-zone`): the measured cells padded by 40 mm, y unbounded. Not yet checked on the robot: a human-Throw Sitting window confirms the phantom rate drops and no true Throw is lost.

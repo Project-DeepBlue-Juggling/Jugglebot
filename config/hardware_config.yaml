@@ -1769,7 +1769,8 @@ ball_tracking:
   # y is UNBOUNDED: the owner's option names x and z only. Owner: "Ball Butler
   # won't move, and I'll never be partner juggling with Jugglebot from near Ball
   # Butler." Announced (Ball Butler) Throws are never affected. To disable, set
-  # min > max.
+  # min > max. Read once at node start-up, so a change needs a node restart
+  # (unlike detect_human_throws, which can be set live).
   human_throw_exclusion_x_min_mm: -1028.0   # {mm}
   human_throw_exclusion_x_max_mm: -690.0    # {mm}
   human_throw_exclusion_z_min_mm: 1625.0    # {mm}

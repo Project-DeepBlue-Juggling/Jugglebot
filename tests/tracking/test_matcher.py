@@ -352,8 +352,7 @@ class TestHumanThrowExclusionBox:
     def test_same_marker_100mm_outside_box_still_starts_a_track(self):
         """The rule is the box, not a general suppression of static phantoms."""
         tracker = self._tracker(self.BOX)
-        base = np.array([-850.0 + 100.0 + (self.BOX[1] + 850.0), 300.0, 1750.0])
-        assert base[0] == pytest.approx(self.BOX[1] + 100.0)
+        base = np.array([self.BOX[1] + 100.0, 300.0, 1750.0])
         for i in range(8):
             tracker.process_frame([self._wobbling_static(base, i)], i * DT)
         assert len(self._humans(tracker)) >= 1
