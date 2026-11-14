@@ -13,7 +13,9 @@ interactive Session; this is the same protocol for the whole board, unattended.
 Arguments: `$ARGUMENTS`
 
 - `<date>`: tonight's date, used in every branch name, report and commit subject.
-- `--candidates F`: the preflight's record of every workable Item in work order (`rank`).
+- `--candidates F`: the preflight's record: `items` (every workable Item in work order, `rank`),
+  `delta` (the IDs you walk tonight, in order), `delta_why` (`{ID: reason}`), `unchanged` (how many
+  Items you do not walk) and `full_walk` (true on a Sunday or on request).
 - `--reports D`: the runner's output directory (gitignored). Your gate logs, audit reports,
   unit briefs and the dry report go here.
 - `--nightly "LINE"`: the nightly ticker line (`CLAIMED GREEN ...`, `CLAIMED RED ...`,
@@ -67,9 +69,10 @@ Arguments: `$ARGUMENTS`
    and the Items, not on memory**: the clone's memory directory is empty and stays
    irrelevant. Glossary words are normative (Sitting, Item, Pathway, Night Shift, Next
    Sitting Runbook; never "session" for robot time, never "runsheet").
-8. **Every step ends in a status, never silence**: an Item is Merged, Held, Questioned,
-   Unfinished or Skipped in the report, each with a reason. Anything pushed is named in
-   the report even if a later step fails.
+8. **Every step ends in a status, never silence**: every Item in the `delta` is Merged, Held,
+   Questioned, Unfinished or Skipped in the report, each with a reason (an Item outside the
+   delta is not reported individually: it is counted once, in the Skipped section's last
+   line, § 3). Anything pushed is named in the report even if a later step fails.
 9. Stop starting Items at `--deadline`. The budget fuse (`--max-budget-usd`, only when the
    runner was given `NIGHT_SHIFT_MAX_USD`; the first nights run without one) may end you
    mid-Item; everything you pushed before that is already consistent by construction
@@ -90,23 +93,36 @@ Arguments: `$ARGUMENTS`
 
 1. `date`; `git status -sb` must read `## main...origin/main` with a clean tree. If not,
    write the report with status `CLONE_UNEXPECTED` and stop.
-2. Read `--candidates` (JSON). Read the Item bodies you will work as you reach them, not
-   all at once. Read `--nightly`; on `RED` read `--nightly-report` and list the failures
+2. Read `--candidates` (JSON) and walk **`delta`, in its order, never `items`**: the night
+   examines only what is new since the last night. `delta_why[<ID>]` says why an Item is there
+   and so what to do first:
+   - `answered`: a question ticket the owner answered. Act on the answer once, through its
+     parent Item (2c's ticket rows, 2l for a held branch). The ticket is never listed again.
+   - `carry`: it was in the last night's delta but got no report row; classify it now.
+   - `unclassified`: workable, no `night_skip`, no held branch: nobody has ever classified it.
+   - `unblocked`: a `blocked_by` Item changed or closed; re-read what it was waiting on.
+   - `changed`: the Item's `updated` or `status` moved since the last night (the owner or a
+     Session touched it); re-read it as it now stands.
+   - `added`: a new Item; classify it.
+   - `full-walk`: a full walk (`full_walk` true, Sundays): every open Item is here, whatever
+     its `night_skip`; re-examine each and rewrite or clear its skip reason (2c).
+   An Item outside the delta is not opened, not re-rated, and not reported individually. Read the Item
+   bodies you will work as you reach them, not all at once. Read `--nightly`; on `RED` read `--nightly-report` and list the failures
    in the report's `## Nightly`; a RED nightly does not stop the night, but a unit whose
    gate fails on a test the nightly also failed records that in its HOLD reason.
 3. `source ~/Desktop/PDJ_venv/venv/bin/activate` is NOT allowed (path rule). The venv is
    already active in your environment (the runner sourced it); check `python -c "import
    mujoco"` works. If it does not, every gate will fail: write the report with status
    `NO_VENV` and stop.
-4. Dry run: do steps 2 and 3, then for each candidate write one line
+4. Dry run: do steps 2 and 3, then for each Item in the `delta` write one line
    `<ID> | <kind> | <rating> | <would do: unit | question | feasibility | skip (reason)>`
-   into `D/dry-<date>.md` under the report layout's headings (every section present,
+   into `D/dry-<date>.md` under the report layout's headings (every section present, the inputs section's body the output of `python -m mapkit night inputs`,
    `## Merged to main` and `## Held` saying "dry run, nothing done"), and stop. Nothing
    else happens on a dry run.
 
 ## 2. The work loop
 
-Take the candidates in `rank` order. For each Item <ID>:
+Take the Items of `delta` in its order. For each Item <ID>:
 
 ### 2a. Branch
 
@@ -153,10 +169,48 @@ a HOLD writes the same rating on `main` (2j), so base and branch agree at a late
 | `hardware: bench-leg`, `bench-hand` or `robot`, or `owner: hands` | work the software part only if the body names one that is testable offline (then as row 1); always write or complete the Item's `## Sitting` section when the body gives enough to fill `do:` and `pass:` honestly (P4 format; never invent a step) | Held `needs a Sitting` or Skipped |
 | idea | write `## Feasibility (<date>)` (what it would take, effort, hardware, one risk); if rated xs or s with `hardware: none` and `owner: none`, build it as row 1 | Merged, Held or Skipped `feasibility noted` |
 | ticket `type: question` already complete (`## Answer` present) whose parent has a held branch `night-shift/<old-date>-<ID>` | RESUME (2l): the answer says what to do with the branch | Merged, Held again, or closed out |
-| ticket `type: question` already complete (`## Answer` present), no held branch | re-open its parent Item's work: the answer is now an input; proceed by the parent's row | per the parent |
-| ticket `type: question` open | list it again under `## Questions for the Operator`; its parent is Skipped `awaiting answer` (a held parent stays in `## Held` with the ticket in `Respond in`, not re-worked) | Skipped |
+| ticket `type: question` already complete (`## Answer` present), no held branch (`delta_why` `answered`) | re-open its parent Item's work: the answer is now an input; proceed by the parent's row, and clear the parent's `night_skip` in the batch (below). The answer is acted on this once and the ticket is not listed again | per the parent |
+| ticket `type: question` open | in the delta only because it was filed or changed tonight: list it under `## Questions for the Operator`; do not re-work its parent. An open question already asked on an earlier night is not in the delta and is not re-listed | (listed) |
 | other ticket (research, prototype, grilling, task) under a Pathway | research/task: one unit writing `## Findings` or the task's result; grilling/prototype: Skipped `needs the owner` | Held or Skipped |
 | `diagnosis: unknown` or `hypothesis` bug with `hardware: none` | one unit whose brief is "reproduce offline and confirm or refute; fix only if confirmed" | Merged (if confirmed and fixed), Held, or re-rated and Skipped |
+
+**Skip reasons live on the Item, written once.** Every Item you classify Skipped tonight gets its
+reason written to the Item, in ONE batch at the end of the walk (not Item by Item):
+
+```
+python -m mapkit item skip --batch D/skips-<date>.json --commit --no-push
+```
+
+(then the map-write check of § 0 rule 10 and `git push -q origin main` on its own line; the
+commit is `map: night skip reasons <date> (<n> Items)`). `D/skips-<date>.json` is a JSON list of
+`{"item": "<ID>", "reason": "<R>", "note": "<one line, 160 characters at most>"}`, plus
+`"input": "<what the owner must supply, 200 characters at most>"` when the reason starts with
+`input-`, or `{"item": "<ID>", "clear": true}`. The batch validates every row first and writes all
+or none; it does not move `updated`, so tonight's skip does not make the Item look changed tomorrow.
+Map the situation to the reason:
+
+| The Item is Skipped because | `reason` |
+|---|---|
+| needs a Sitting and has no honest offline part (`needs a Sitting`; hardware `bench-leg`, `bench-hand`, `robot`) | `sitting` (or `input-sitting` when its `## Sitting` section is written and the owner flying it is the small input) |
+| waits on a fact only the owner has (a number, a measurement, a yes/no) | `input-fact` |
+| waits on an owner decision (`owner decision`, `awaiting answer`, `needs the owner`, a feasibility note whose build the owner must choose) | `input-decision` |
+| the Item or its fix is the owner's own Session work (`owner: hands`, `In progress under your Session`, `deploy failed, awaiting a Session`) | `owner-session` |
+| `too large for one unit` | `too-large` |
+| `needs a never-list path, a day Session`, or a path the gate freezes at (f) with no branch built | `frozen-path` |
+| `out of reach`, `app clone unavailable tonight`, `dropped by the owner's answer` | `out-of-reach` |
+| blocked on a trigger that has not fired (a release, a flight, another Item) | `waiting-trigger` |
+| `feasibility noted` and nothing more worth doing now | `low-priority` |
+
+An `input-*` reason needs `input`: exactly what the owner must supply, so that supplying it
+unblocks the Item. Its `note` is phrased as what the night WILL do once it arrives ("builds the
+bound at the value you name, then merges if the gate says MERGE"). The owner's list of such inputs
+is generated from these keys (§ 3), so a vague `input` is a vague question. An `input-fact` or
+`input-decision` skip files its question ticket (2h) ONCE, when the skip is first set: a night that finds
+the reason already on the Item and unchanged files nothing and rewrites nothing. `input-sitting` files
+no ticket: it needs the Item's `## Sitting` section instead (P4 format). A **Merge or a Hold clears the Item's
+skip** (`{"item": "<ID>", "clear": true}` in the same batch; an Item with no skip needs no row).
+On a full walk every Item is re-examined and its reason is rewritten or cleared. A question
+ticket and a Pathway never carry a skip.
 
 **The never-list: paths no branch of yours touches, not even a held one** (owner decision
 11): `tools/night_shift*`, `tools/lib/*`, `tools/systemd/*`, `tools/nightly_*`,
@@ -292,7 +346,7 @@ re-opens the parent.
 require my input should be written up with a response cell"). That is: every Held row whose
 unblock is the owner's call (audit findings open, a design choice, a scope call), and every
 Skipped or Unfinished row skipped for `owner decision`, unless an open ticket already
-exists for it (the dispatch table's open-ticket row: list that one again, file no second). NOT for a Held or
+exists for it (the dispatch table's open-ticket row: file no second, and it is listed tonight only if it was filed or changed tonight). NOT for a Held or
 Skipped row whose only unblock is a Sitting (the Runbook's job), `out of reach` or `not
 reached`. A hold ticket is "<ID> held on night-shift/<date>-<ID>: apply the audit's N
 fixes and merge, merge as is, or drop?", the body lists each open finding as an option
@@ -314,12 +368,26 @@ one tonight, unless only a Sitting unblocks it (`none`).
    git merge -q --ff-only night-shift/<date>-<ID> || git merge -q --no-ff -m "merge(night-shift): <ID> <title>" night-shift/<date>-<ID>
    git push -q origin main
    ```
-3. Push rejected (someone pushed meanwhile): `git reset -q --hard origin/main` (local
+3. **A conflict in the `--no-ff` merge** (main moved between two Items, typically on the generated
+   `logbook/INDEX.md`): on ANY conflict, `git merge --abort`. Never resolve it on `main`: a
+   hand-resolved merge is a tree the gate never saw. Instead, on the Item branch,
+   `git fetch -q && git checkout -q night-shift/<date>-<ID> && git merge -q origin/main` (the same move
+   as RESUME, 2l step 1; give the merge commit the `Night-Shift: <date>` trailer). A conflict confined to
+   generated files (`logbook/INDEX.md`, `plans/*/INDEX.md`, `docs/project-map.md`,
+   `docs/glossary.md`, `docs/runbook.md`) is resolved by taking either side, `python -m mapkit gen`,
+   `git add` of those files and the commit. Any other conflict: `git merge --abort`, and the Item is
+   Held `merge conflict with main in <paths>` (2j). Then re-run the 2a extract (the fetch moved
+   `origin/main`), `git push -q -u origin night-shift/<date>-<ID>`, and 2e-2g on the NEW tip (a fresh
+   audit and suite; the audit's `Audited HEAD:`, the gate log's `HEAD=` and the gate's record are all keyed
+   by that tip), and merge only the tip the gate recorded `MERGE` for. A merge that went through the branch is
+   covered by `tools/night_shift_landed.py`: its merge of `origin/main` is inside the gated tip, and the
+   final `--no-ff` merge adds nothing of its own. A `HOLD` on the new tip goes to 2j as for any branch.
+4. Push rejected (someone pushed meanwhile): `git reset -q --hard origin/main` (local
    `main` back to the remote; nothing of yours was pushed), `git push -u origin
    night-shift/<date>-<ID>`, and the Item is Held with reason `main moved during merge;
    re-gate needed` (status `in_progress`, 2j step 2). Never rebase the branch onto the
    moved `main` and merge untested.
-4. Report row under `## Merged to main`: `| <ID> | <title> | <what changed, a sentence or two> | <fix sha> (fix), <audit sha> (audit) |`.
+5. Report row under `## Merged to main`: `| <ID> | <title> | <what changed, a sentence or two> | <fix sha> (fix), <audit sha> (audit) |`.
 
 ### 2j. HOLD
 
@@ -422,7 +490,7 @@ present, no upstream names). Items stay in Jugglebot's `map/`; only the code is 
 
 After the last Item (or at the deadline, or when a unit returns and the budget is nearly
 spent): write `docs/night-shift/<date>.md` in the layout of `docs/night-shift/README.md`
-(the eight sections in order, the Item sections as GFM tables with a header row, every
+(the nine sections in order, the Item sections as GFM tables with a header row, every
 `<ID>` bare, the Held table's last column `Respond in` filled, a one-line **Summary.** under the title), and `logbook/<date>-night-shift.md`
 (short form: the counts, the nightly line, the cost, a link to the report), then
 `python -m mapkit gen` and stage the regenerated `logbook/INDEX.md`. Commit on `main` as `docs(night-shift): report <date>` with the
@@ -430,6 +498,20 @@ trailers (`Logbook-Entry: <date>-night-shift`), `git pull -q --rebase` ONLY if t
 rejected and ONLY for this report commit (a docs commit rebased onto a moved `main` is
 safe; a conflict there on `logbook/INDEX.md` is resolved by `python -m mapkit gen`, then
 `git add logbook/INDEX.md` and `git rebase --continue`), push. Then 2k once more.
+
+`## Skipped` lists ONLY the delta Items skipped tonight (Item, what it is, why: the reason you wrote
+to the Item), then ends with exactly one line, built from `unchanged` in `--candidates`:
+`unchanged: <n> Items not re-examined (reasons on each Item: night_skip)`. Items outside the delta
+are not rows. `## Questions for the Operator` lists the question tickets filed or changed tonight
+(an open question asked on an earlier night is not re-listed row by row) and ends with one count line
+for the older open ones: `earlier: <n> open questions from earlier nights, not re-listed` (count
+the open `type: question` tickets not listed above; `earlier: 0 ...` when none).
+
+The ninth section, directly after Questions, is
+`## Items the Night Shift could resolve with a small amount of input from you`. Never write its
+rows: run `python -m mapkit night inputs` and paste its output verbatim under that heading (a
+table of every open Item whose `night_skip` starts with `input-`, from the Items as they stand
+after your skip batch, or the single line `none`). Run it AFTER the skip batch has landed.
 
 The `## Nightly` section: the `--nightly` line verbatim; on RED the failures from the
 nightly report (test id and one line each). The `## Cost` section: `total_cost_usd` is
