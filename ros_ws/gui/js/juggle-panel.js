@@ -308,7 +308,7 @@ let magazineMiss = null;        // { text, cls } — latest MAGAZINE_MISS, until
 let last = null;                // { kind: 'end'|'refused', ... }
 let crossCheck = null;          // { pattern, typed, t }
 let warn = null;                // stale-relay mismatch text
-let nom = null;                 // { state: checking|ok|err|unavailable, summary, lines } | null
+let nom = null;                 // { state: checking|ok|warn|err|unavailable, summary, lines } | null (warn: accepted, re-aim margin negative, BUG-91)
 let nomTimer = null;
 let nomSeq = 0;                 // request counter: a reply for an older request is dropped
 
