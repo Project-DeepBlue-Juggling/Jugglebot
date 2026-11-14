@@ -359,7 +359,7 @@ require my input should be written up with a response cell"). That is: every Hel
 unblock is the owner's call (audit findings open, a design choice, a scope call), and every
 Skipped or Unfinished row skipped for `owner decision`, unless an open ticket already
 exists for it (the dispatch table's open-ticket row: file no second, and it is listed tonight only if it was filed or changed tonight). NOT for a Held or
-Skipped row whose only unblock is a Sitting (the Runbook's job), `out of reach` or `not
+Skipped row whose only unblock is a Sitting (the Next Sitting Runbook, an index of the waiting Items, and the Sitting sheet carry those), `out of reach` or `not
 reached`. A hold ticket is "<ID> held on night-shift/<date>-<ID>: apply the audit's N
 fixes and merge, merge as is, or drop?", the body lists each open finding as an option
 with what it would change, and ends with your recommendation. Every such ticket is a row
@@ -417,7 +417,7 @@ one tonight, unless only a Sitting unblocks it (`none`).
    a `## Sitting` section (or you wrote one), set its `- branch: night-shift/<date>-<ID>`
    line in that section in the same write (edit the body with `mapkit.items.load_item` /
    `write_item` in a `python -` snippet before the `set-status`), so the Next Sitting
-   Runbook row carries the branch and `/sitting-debrief` knows what to merge on a pass.
+   Runbook index row carries the branch and `/sitting-debrief` knows what to merge on a pass.
 3. If the unblock is the owner's call, file the hold question ticket (2h, on `main`, in
    the same push as the `set-status`); a Sitting-only hold files none.
 4. Report row under `## Held`: `| <ID> | <title> | night-shift/<date>-<ID> | (<letter>) <reason>. ... | <what unblocks it> | <question-ID or none> |`.
@@ -540,7 +540,12 @@ section with no trailing text: after you exit the runner deploys the app and app
 `## Unaddressed Sitting results`: every `## Sitting result (<date>)` section (optionally `(<date> HH:MM)`; the date part decides) on an Item
 (`grep -l '## Sitting result' map/*.md`) whose date is newer than the newest
 `logbook/*-sitting-debrief.md` (or the older `*-sitting-wrapup.md`) entry, one table row `| <ID> | <date> | <verdict> |`; none ->
-`none recorded`. The owner closes them with `/sitting-debrief <date>`; you never merge a Sitting's
+`none recorded`. A Sitting flown from a Sitting sheet has its results in `map/sheets/<name>.results.yaml`
+rather than on the Items: list each such file (`ls map/sheets/*.results.yaml`) that has no `confirmed` block
+(the debrief has not derived and confirmed its verdicts yet), one row `| <sheet name> | <sheet date> | unconfirmed |`;
+a file with a `closed` marker already put its results on the Items (listed by the rule above if newer than the
+last debrief, never here). A schema 1 file has no `confirmed` block by design (its verdicts went into the Items live): never list it.
+The Sitting-flown-without-a-sheet rule above is unchanged. The owner closes them with `/sitting-debrief <date>`; you never merge a Sitting's
 branches yourself (the gate's hardware condition is exactly what a Sitting result overrides,
 and only the owner's Session does that).
 

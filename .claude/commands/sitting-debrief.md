@@ -1,5 +1,5 @@
 ---
-description: Debrief the Sitting(s) flown from the Next Sitting Runbook since the last debrief: first ANALYSE the new launch logs and rosbags against the open Items and plans (inventory, verdicts, per-killer diagnosis, crosswalk, write-backs), then close the paperwork - read every new ## Sitting result, merge the passed Items' held branches into main one by one, return the live checkout to main, rebuild if ros_ws changed, commit docs/records.md, file follow-ups from the notes, write the logbook entry, regenerate the Runbook. Invoke with /sitting-debrief [<date>] [--dry-run]. Runs in ~/Desktop/Jugglebot under the single-writer rule.
+description: Debrief the Sitting(s) flown since the last debrief: first flush the Sitting sheet's results from the map app, then ANALYSE the new launch logs and rosbags against the open Items and plans (inventory, derived verdicts the owner confirms once, per-killer diagnosis, crosswalk, write-backs), then close the paperwork - write each Item's ## Sitting result from the confirmed verdicts, merge the passed Items' held branches into main one by one, return the live checkout to main, rebuild if ros_ws changed, commit docs/records.md, file follow-ups from the notes, write the logbook entry, regenerate the Runbook index. Invoke with /sitting-debrief [<date>] [--dry-run]. Runs in ~/Desktop/Jugglebot under the single-writer rule.
 ---
 
 # Sitting debrief
@@ -8,17 +8,21 @@ description: Debrief the Sitting(s) flown from the Next Sitting Runbook since th
 
 The morning or post-Sitting Session's one prompt. The owner's share of the Sitting was the
 hardware steps and the result boxes in the map app; everything that is git, tests and
-paperwork is this command. It is the close-out the Next Sitting Runbook (`docs/runbook.md`,
-`## Close-out`) promises, step for step.
+paperwork is this command. The owner's share of a flown sheet is notes only (done, problem or
+skipped, plus a few words per step); the verdicts are this command's: derived from the logs,
+confirmed by the owner once. The Next Sitting Runbook (`docs/runbook.md`) is only an index of the
+waiting Items and holds no steps and no close-out; the step-by-step page is the Sitting sheet
+(`map/sheets/<name>.yaml`, results beside it in `<name>.results.yaml`).
 
 Arguments: `$ARGUMENTS` (`<date>` = the Sitting's date, the one in the `## Sitting result
 (<date>)` headings (optionally `(<date> HH:MM)`, time informational) and in `night-shift/sitting-<date>`; with no date, every Sitting since the
-last debrief is in scope; `--dry-run` = run the analysis (section 1) and the results table
-(section 2.2), write nothing to the repo or the map, and stop after the verdict table).
+last debrief is in scope; `--dry-run` = run the analysis (section 1) and the derived-verdict table
+(section 1.C), write nothing to the repo or the map, and stop after the verdict table).
 
-Two phases. **Analysis (section 1)** reads the new test data against the ongoing research and
-ends with write-backs to Items, plans and the logbook. **Paperwork (sections 2 to 6)** is the
-close-out the Runbook promises, unchanged from `/sitting-wrapup`.
+Two phases. **Analysis (section 1)** reads the new test data against the ongoing research,
+derives the verdicts, and ends with write-backs to Items, plans and the logbook. **Paperwork
+(sections 2 to 6)** is the close-out, unchanged from `/sitting-wrapup` apart from where the
+results come from.
 
 ## 0. Where you are, and the rules
 
@@ -41,6 +45,24 @@ close-out the Runbook promises, unchanged from `/sitting-wrapup`.
   with the `Logbook-Entry: <date>-sitting-debrief` trailer.
 - Nothing here powers hardware. The Sitting is over.
 
+## 0a. Flush the Sitting sheet's results
+
+The operator's notes live in the map app's clone until the app pushes them. Make that happen
+first, so they reach `main`: for each sheet in scope (`ls map/sheets/<date>-*.yaml`; `<name>` is the
+file name without `.yaml`)
+
+```
+curl -sS -X POST http://localhost:8765/api/v1/sheets/<name>/close
+```
+
+It answers `flushed: true` only after the push; then `git pull --ff-only` (this checkout's
+single-writer check from section 0 has already passed). Anything else means the notes are not on
+`main`: **do not hand-copy the results file** from the app's clone
+(`~/map-live/Jugglebot/map/sheets/<name>.results.yaml` holds it on disk, so nothing is lost).
+App down (connection refused): start it (`systemctl --user start jugglebot-map`) and call again,
+or ask the owner. An error body or a non-`true` `flushed`: report it verbatim and ask the owner;
+do not go on to the analysis on a results file you could not flush.
+
 ## 1. Analyse the data (before any paperwork)
 
 Writing-for-agents rule: you orchestrate and synthesise; sub-agents read the logs. Scope is
@@ -54,10 +76,14 @@ robot, no GUI writes: this is reading.
 line numbers: every Attempt start (`grep -n ' started:' launch.log`: the line is `<pattern> ... started:`),
 every end (`grep -n ' ENDED' launch.log`: reason) and every success (`grep -nE ' done.*: [0-9]+/[0-9]+ caught'`:
 `<pattern> done...: N/M caught`; the older `goal dispatched (pattern=` and `ENDED (.*caught` greps
-match nothing or too little on current logs), plus the bag path and the
-`## Sitting` rows of the Runbook the Sitting flew. Then ONE `AskUserQuestion`: (1) verdict
-source (the owner's typed `## Sitting result` boxes, or you derive verdicts from the logs and
-the owner confirms); (2) fix scope, default = diagnose and fix non-threshold bugs, while any
+match nothing or too little on current logs), plus the bag path and the sheet the Sitting flew
+(`map/sheets/<name>.yaml` and `<name>.results.yaml`: its steps, each verdict-carrying Item's
+step and the Item's `pass:` criterion, the owner's notes per step). A Sitting flown with no sheet
+has no such file: use the Items' own `## Sitting` sections (`do:`, `pass:`, `record:`). Then ONE
+`AskUserQuestion`: (1) the verdict source is not asked: on a schema 2 sheet you derive every
+verdict from the logs and the owner confirms the table once (a sheet-less or schema 1 Sitting,
+whose results were typed live, keeps its typed verdicts, section 2), so question 1 is the Sitting's
+date scope if the `<date>` argument was absent, else dropped; (2) fix scope, default = diagnose and fix non-threshold bugs, while any
 limit, margin or guard change comes back as an owner decision with the numbers; (3) physical
 observations the logs cannot hold (sounds, a ball that looked wrong, a rig change). Put the
 answers in `context.md`; every unit below reads it.
@@ -65,9 +91,15 @@ answers in `context.md`; every unit below reads it.
 **B. Parallel units** (one `Agent` each, Sonnet by default; Opus only for diagnosis that is
 safety- or control-bearing, one line of justification in its brief; each under ~80 tool
 calls, writes `<unit>.md` to the scratchpad, reports only its path and a verdict line):
-1. *Runbook verdicts*: for each Runbook row, extract exactly what its `record:` line asks,
-   from the logs and bags, and judge `pass:` literally. A pass that needs a number the logs
-   lack is `unverified`, never `pass`.
+1. *Sheet verdicts*: for every verdict-carrying Item of every step (`pass: true` on the step's
+   `serves`, `python -c` over `mapkit.sheet.verdict_items`), extract exactly what the step's
+   `record:` line and the Item's `pass:` criterion ask, from the logs and bags, and judge the
+   criterion literally. Output per Item: `verdict` (`pass` | `fail` | `data` | `inconclusive`),
+   `evidence` (the log or bag path plus the measured value) and `criterion` (the step's pass
+   text VERBATIM). The owner's notes are leads to where to look, never the verdict. A criterion
+   that needs a number the logs lack is `inconclusive`, never `pass`; `data` is a flight that
+   produced readings but has no pass/fail criterion. A sheet-less Sitting does the same per
+   Item from its `## Sitting` section's `pass:`.
 2. *One diagnosis unit per attempt-killer class*: group the `ENDED` reasons (guard latches,
    limit-margin trips, missed catches, timeouts...). Each unit first tests the open Item's
    hypothesis against the new data (confirm, refute, or cannot tell, with the evidence lines)
@@ -84,9 +116,27 @@ calls, writes `<unit>.md` to the scratchpad, reports only its path and a verdict
    can still sit under the Cup). A Hand stall is never judged from the Tracker's ball tracks alone: `/balls`
    drops a Ball once it jostles on the Platform.
 
-**C. Synthesis (you).** Read the unit files, not the logs. Show the owner one verdict table
-(row, verdict, evidence line, killer class, proposed write-back) and wait for confirmation
-or correction. `--dry-run` stops here. Then the write-backs, in this order:
+**C. Synthesis and the one confirmation (you).** Read the unit files, not the logs.
+
+1. *Derive.* Write the verdicts into the results file (not under `--dry-run`): a scratchpad YAML
+   `{<step n>: {<Item ID>: {verdict, evidence, criterion, by: sitting-debrief <date>}}}` for every
+   verdict-carrying Item, then `python -m mapkit sheet derive <name> <file.yaml>`. Never guess a pass:
+   `inconclusive` when the logs cannot decide.
+2. *One table.* Show the owner ONE table, `Item | step | criterion | measured | derived`, with the
+   killer class and proposed write-back per row, and ask the owner to confirm or flip rows, once.
+   The owner's notes were leads, never the verdict. `--dry-run` stops here (it wrote nothing,
+   so it shows the table from your unit files only).
+3. *Apply flips,* if any: edit the YAML's `verdict` (keep the criterion and say in `evidence`
+   that the owner flipped it), re-run `derive` (it replaces the earlier set), then
+   `python -m mapkit sheet confirm <name> --at "YYYY-MM-DD HH:MM" [--changed <ID> ...]` (the
+   owner's confirmation time; `--changed` names the flipped Items). It refuses until every
+   verdict-carrying Item has a derived entry.
+4. *Close.* `python -m mapkit sheet close <name>` writes each Item's `## Sitting result` exactly
+   once, from the confirmed verdicts (it refuses an unconfirmed or already closed file, and a
+   schema 1 file, whose verdicts already went into the Items live). Those Item files and the
+   results file ride in the debrief commit. Several sheets: derive, confirm and close each.
+
+Then the write-backs, in this order:
 - Item progress notes and closes: `python -m mapkit item set-status <ID> <status> --note "..."`
   (no `--commit`; the files ride in the debrief commit);
 - new Items for new facts: `python -m mapkit item new <bug|feature|idea> ...`;
@@ -100,28 +150,39 @@ Then go on to sections 2 to 6.
 
 ## 2. Read the results
 
-1. `python -m mapkit items --open --json` and, for every hardware Item (`hardware` bench-leg, bench-hand or
-   robot) plus every Item named by a `branch:` in `docs/runbook.md`, read its body for
-   `## Sitting result (<date>)` sections (the heading may carry a trailing `HH:MM`, informational; scope by the date part; parser: `mapkit.sitting.parse_sitting_results`) newer than the last debrief (the last debrief's date
-   is the newest `logbook/*-sitting-debrief.md` or older `logbook/*-sitting-wrapup.md` entry; none = all of them).
-   A Sitting flown from a sheet (`/sitting-sheet`) also has `map/sheets/<name>.results.yaml`: read it alongside. A `problem`
-   or `skipped` step and any step comment exist nowhere else; a `skipped` step was not flown, so it is no evidence
-   either way for the Items it serves. An Item verdict there is the latest the operator saved.
-   **An Item with several results from one Sitting: the last in file order is its verdict** (a re-save appends, so an earlier
-   `pass` may have been corrected). Report the earlier ones in the table, never act on them; if the last differs from the
-   results file's verdict for that Item, stop and ask.
-2. For each result: Item, verdict (`pass`, `fail` or `pending`), notes, and the held branch its `## Sitting`
-   section names (if any). List them in a table before touching anything. (Section 1 has already produced the verdicts; this table is the Items' typed results reconciled against them.)
-3. A `pending` result means the row was flown but the owner could not judge its `pass:` live: its
-   verdict is section 1's log-derived one (`unverified` if the logs cannot settle it), confirmed
-   by the owner in the C table. Sections 3 onward act on that resolved verdict; an `unverified`
-   row is neither closed nor merged, and gets a Progress line `Flown at the Sitting of <date>,
-   verdict unresolved: <what is missing>` so the next Runbook keeps it. The typed `pending`
-   section stays on the Item as the record of what was flown.
+1. **From a sheet (schema 2 results, the default).** The confirmed table of section 1.C is the
+   result set: after `sheet close` each verdict-carrying Item holds one `## Sitting result
+   (<date> HH:MM)` section whose text is the owner's note plus `(sheet <name>, step <n>)` and
+   `[derived: <evidence>]`. The results file also holds what exists nowhere else: a `problem` or
+   `skipped` step and any step note (a `skipped` step was not flown, so it is no evidence either
+   way for the Items it serves). An earlier typed or derived result on an Item is reported in the
+   table, never acted on.
+2. **Fallback: a Sitting flown without a sheet, or from a schema 1 sheet** (results typed
+   straight onto Items, verdicts saved live). `python -m mapkit items --open --json` and, for
+   every hardware Item (`hardware` bench-leg, bench-hand or robot), read its body for
+   `## Sitting result (<date>)` sections (the heading may carry a trailing `HH:MM`, informational;
+   scope by the date part; parser: `mapkit.sitting.parse_sitting_results`) newer than the last
+   debrief (the last debrief's date is the newest `logbook/*-sitting-debrief.md` or older
+   `logbook/*-sitting-wrapup.md` entry; none = all of them). A schema 1 sheet's
+   `map/sheets/<name>.results.yaml` is read alongside: a `problem` or `skipped` step and any
+   step comment exist nowhere else. **An Item with several results from one Sitting: the last in
+   file order is its verdict** (a re-save appends, so an earlier `pass` may have been
+   corrected). Report the earlier ones in the table, never act on them; if the last differs from
+   the results file's verdict for that Item, stop and ask. These typed verdicts are reconciled
+   against section 1's log-derived ones in the C table, and the owner confirms that table once.
+3. For each result: Item, verdict (`pass`, `fail`, `data`, `inconclusive`, or the typed
+   `pending`), notes, and the held branch the Item's `## Sitting` section names (if any). List
+   them in a table before touching anything.
+4. A `pending` (typed, fallback path only) or `inconclusive` result means the logs and the owner
+   could not judge the criterion: it is neither closed nor merged, and gets a Progress line
+   `Flown at the Sitting of <date>, verdict unresolved: <what is missing>` so the next sheet
+   keeps it. `data` closes nothing either: a Progress line with the readings. The section stays
+   on the Item as the record of what was flown.
 
 ## 3. Merge the passed Items, one at a time
 
-For each result with verdict `pass` (typed, or a `pending` resolved to pass) AND a held branch `night-shift/<d>-<ID>` (the
+For each result whose confirmed verdict is `pass` (`fail`, `data` and `inconclusive` never merge;
+on the fallback path a typed `pending` counts once resolved to pass) AND a held branch `night-shift/<d>-<ID>` (the
 `branch:` line of its `## Sitting` section; if the section has none, still look for
 `git branch -r --list 'origin/night-shift/*-<ID>'` before treating the pass as a plain check,
 so held software work is never dropped), land it with `tools/sitting_merge.sh`, the only path
@@ -164,8 +225,8 @@ and Memory already committed (section 0). One Item at a time, `prepare` to `land
   plus `--link` for the branch's own logbook entry (no `--commit`; its paths ride in the debrief commit below).
 - A `fail` verdict: the Item stays `in_progress`; append the headline of the notes as a
   Progress line (`set-status <ID> in_progress --note "Failed at the Sitting of <date>: <headline>"`,
-  no `--commit`); its branch stays held and its `## Sitting` section is re-read on the next
-  Runbook regeneration (edit the section if the notes say the `do:` or `pass:` was wrong).
+  no `--commit`); its branch stays held and its `## Sitting` section is read again by the next `/sitting-sheet`
+  (edit the section if the notes say the `do:` or `pass:` was wrong).
 - A `pass` with no branch anywhere (a plain check): close the Item the same way, no merge.
 - The candidate branch `night-shift/sitting-<date>` is built before the Sitting by the owner or
   the preparing Session with `tools/night_shift_candidate.sh --date <date> --push`; it is only
@@ -191,7 +252,7 @@ and Memory already committed (section 0). One Item at a time, `prepare` to `land
 2. Write `logbook/<date>-sitting-debrief.md` (short form: the results table, what merged with
    SHAs, what stayed held and why, follow-ups filed, the rebuild if any); step 3 gives it its
    `logbook/INDEX.md` row.
-3. `python -m mapkit gen` (`logbook/INDEX.md` gains the entry's row; the Runbook page `docs/runbook.md` drops the passed rows and keeps
+3. `python -m mapkit gen` (`logbook/INDEX.md` gains the entry's row; the Runbook index `docs/runbook.md` drops the passed Items and keeps
    the failed ones; the project-map page follows the status changes).
 4. `./run_tests.sh` (each merged branch passed the full gate on its updated tip; the merged
    result gets the per-commit gate here, the nightly covers the rest tonight). Red: stop, say
@@ -199,18 +260,21 @@ and Memory already committed (section 0). One Item at a time, `prepare` to `land
    its gate recorded MERGE for) for the owner to decide. Never revert or reset them away.
 5. One commit: `docs(sitting): debrief <date> - <n> passed, <m> merged, <k> held` with the
    trailers `Logbook-Entry: <date>-sitting-debrief` and
-   `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`; `git fetch && git status -sb`
+   `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` (the commit holds the Items' new
+   `## Sitting result` sections and each closed sheet's `<name>.results.yaml`); `git fetch && git status -sb`
    again; `git push origin main`. Then push nothing else. If `origin/main` has moved and the push is
    rejected: section 0 applies, so pause and say what you see.
 
 ## 6. Finish
 
 Say, in three lines: results read (passed / failed), merged and closed (with SHAs), held
-(with why). Offer the owner the Runbook link for the next Sitting and nothing else.
+(with why). Offer the owner `/sitting-sheet <rig>` for the next Sitting (the Runbook index lists what waits) and nothing else.
 
-Pinned by `tests/sim/test_sitting_debrief_protocol.py`: this file names every step the
-Runbook's `## Close-out` promises (results read, per-Item merge, return to `main`, rebuild if
-`ros_ws` changed, `docs/records.md`, follow-ups filed, the logbook entry, `mapkit gen`, the
-single-writer check, no force-push, the records first, the merge through `tools/sitting_merge.sh`).
-What the script does (brought up to date, suite, base gate with `--waive c`, the gated tip only,
-the refusals) is pinned by `tests/sim/test_sitting_merge.py` against temp repos.
+Pinned by `tests/sim/test_sitting_debrief_protocol.py`: this file names every close-out step
+(the flush call first, results read, derive, one owner confirmation, confirm, close, per-Item
+merge, return to `main`, rebuild if `ros_ws` changed, `docs/records.md`, follow-ups filed, the
+logbook entry, `mapkit gen`, the single-writer check, no force-push, the records first, the merge
+through `tools/sitting_merge.sh`), and that it reads nothing from the Runbook's tables. What the script does
+(brought up to date, suite, base gate with `--waive c`, the gated tip only, the refusals) is
+pinned by `tests/sim/test_sitting_merge.py` against temp repos; derive, confirm and close by
+`tests/sim/test_mapkit_sheet.py`.

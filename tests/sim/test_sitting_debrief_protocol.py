@@ -64,6 +64,18 @@ PROMISES = {
     "never works a refusal around": r"A refusal is never worked around",
     "sends a frozen-path branch to a day Session": r"merged\s+by hand in a day Session",
     "follows the lands with a fast-forward pull": r"git pull --ff-only",
+    # closeout C9c: the sheet's results are flushed first, verdicts derived and confirmed once.
+    "flushes the sheet's results to main": r"curl -sS -X POST http://localhost:8765/api/v1/sheets/<name>/close",
+    "waits for flushed: true": r"`flushed: true` only after the push",
+    "never hand-copies the results file": r"do not hand-copy the results file",
+    "derives the verdicts": r"python -m mapkit sheet derive <name> <file\.yaml>",
+    "confirms them once": r"python -m mapkit sheet confirm <name> --at",
+    "closes the sheet": r"python -m mapkit sheet close <name>",
+    "owner notes are leads, not the verdict": r"never the verdict",
+    "asks the owner to confirm or flip once": r"confirm or flip rows, once",
+    "never guesses a pass": r"`inconclusive` when the logs cannot decide",
+    "merges only a confirmed pass": r"confirmed verdict is `pass`",
+    "keeps a sheet-less fallback": r"Fallback: a Sitting flown without a sheet",
 }
 
 #: Promises the prose procedure made before closeout C10 and that tools/sitting_merge.sh now
@@ -112,9 +124,23 @@ def test_debrief_frontmatter_has_description(debrief):
 def test_debrief_has_analysis_phase_before_paperwork(debrief):
     i = debrief.index("## 1. Analyse the data")
     assert i < debrief.index("## 2. Read the results")
-    for needle in ("AskUserQuestion", "goal dispatched", "ENDED (", "Runbook verdicts",
+    for needle in ("AskUserQuestion", "goal dispatched", "ENDED (", "Sheet verdicts",
                    "attempt-killer", "Crosswalk", "verdict table", "sitting-wrapup.md"):
         assert needle in debrief, needle
+
+
+def test_debrief_flushes_before_analysis(debrief):
+    assert debrief.index("/api/v1/sheets/<name>/close") < debrief.index("## 1. Analyse the data")
+    assert "ls map/sheets/<date>-*.yaml" in debrief
+
+
+def test_debrief_reads_no_runbook_rows(debrief):
+    # Since close-out C11 docs/runbook.md is an index: no do/pass/record lines, no Close-out.
+    assert not re.search(r"Runbook rows?\b", debrief)
+    assert "`## Close-out`" not in debrief
+    assert "rows of the Runbook" not in debrief
+    assert "branch:` in `docs/runbook.md`" not in debrief
+    assert "Runbook the Sitting flew" not in debrief
 
 
 def test_debrief_uses_glossary_words(debrief):
@@ -127,6 +153,13 @@ def test_night_shift_protocol_lists_unaddressed_sitting_results():
     text = _read(NIGHT_SHIFT)
     assert "## Unaddressed Sitting results" in text or "Unaddressed Sitting results" in text
     assert "## Sitting result (<date>)" in text
+
+
+def test_night_shift_protocol_lists_unconfirmed_sheet_results():
+    text = _read(NIGHT_SHIFT)
+    assert "map/sheets/*.results.yaml" in text
+    assert "has no `confirmed` block" in text
+    assert "`closed` marker already put its results on the Items" in text
 
 
 def test_runbook_points_at_the_sitting_sheet():

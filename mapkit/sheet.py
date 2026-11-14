@@ -1,7 +1,8 @@
 """Sitting sheets: one ordered, step-by-step page for one Sitting on one rig (IDEA-19).
 
-``docs/runbook.md`` keeps each Item's steps together and cannot merge them, because a
-``do:`` step is free text. A sheet is the merge: ``/sitting-sheet <rig>`` has Claude write
+An Item's ``## Sitting`` section keeps its steps together and cannot merge with another's, because a
+``do:`` step is free text (``docs/runbook.md`` is only an index of the waiting Items; this sheet is
+the one ordering authority). A sheet is the merge: ``/sitting-sheet <rig>`` has Claude write
 ``map/sheets/<date>-<rig>[-N].yaml`` from the open Items' ``## Sitting`` sections, and the map
 app's Next Sitting page steps through it. The app saves into a sibling
 ``<name>.results.yaml``, never into the sheet, so a sheet is immutable once written.
@@ -19,9 +20,10 @@ needs something a free-text ``do:`` never states) is the command's read-through.
 - an action's shell is the operator's zsh and any working directory: no ``source ...setup.bash``
   (``setup.zsh`` instead) and no ``tee`` to a relative path (2026-11-13: both failed at the robot).
 
-A step with ``pass: true`` on a served Item takes one verdict per such Item, because Items
-sharing a flight can come out differently and ``/sitting-debrief`` merges a held branch on a
-pass. The verdict lands on the Item as ``## Sitting result``.
+A step with ``pass: true`` on a served Item is where that Item's verdict is derived: one per such
+Item, because Items sharing a flight can come out differently and ``/sitting-debrief`` merges a
+held branch on a pass. The operator saves notes only; the verdict lands on the Item as
+``## Sitting result`` when the debrief closes the sheet.
 
 Results schema 2 (C9, 2026-11-14): the app records NOTES ONLY, ``verdicts[n][ID] = {notes,
 saved_at}``, because the operator's live pass/fail was wrong, missing or contradicted by the logs on
@@ -238,7 +240,7 @@ def _step_text(st: Dict[str, Any]) -> str:
 
 
 def scope_rows(repo_root: str, rig: str) -> List[sitting.RunbookRow]:
-    """The open Items with a valid ``## Sitting`` section on ``rig``, in Runbook order."""
+    """The open Items with a valid ``## Sitting`` section on ``rig``, in Runbook order (priority, then ID; the order of a sheet is the author's)."""
     return [r for r in sitting.collect(repo_root)["rows"] if r.hardware == rig]
 
 

@@ -65,8 +65,11 @@ The operator does not read ahead, so no step may need a state a later step creat
    setting changed launch-down. A new launch is its own step with `new_launch: true`.
 2. **Before arming, then armed.** The rehearsal step and anything marked "do NOT arm" come after
    Level and before Activate. The launch's `auto_arm` arms on entering Active.
-3. **Highest priority earliest** within what the launches allow. A row with `first:` opens the rig.
-   Dependencies between rows win ("right after IDEA-10, same settings").
+3. **Highest priority earliest** within what the launches allow. The sheet is the only ordering
+   authority: `docs/runbook.md` is an index (rows by priority then ID) and `mapkit/sheet.py` has no
+   ordering input, so nothing orders a sheet but this step. A `first:` key in an Item's section is
+   parsed and ignored by mapkit; read it as the Item's author's hint, and order by the dependency it
+   names. Dependencies between rows win ("right after IDEA-10, same settings").
 4. **Isolate what would contaminate others**: a `plant_id` keeps a row's Throws out of another
    row's Memory, so put the plant back before the next row, even when the Item forgets to say so.
    A trial on one drive or a diagnostic launch flag goes last or gets its own launch.
@@ -113,7 +116,7 @@ steps:
 - `serves[].do` cites the Item's `do:` numbers, so a step that serves no Item's `do:` has
   `serves: []` (a build, a Level, a teardown). A `run` step serves at least one Item.
 - `pass: true` goes on exactly one `run` step per Item: the last flown step that decides its
-  criterion. It gets one verdict per such Item in the app, and the app shows the Item's own `pass:`.
+  criterion. The app shows the Item's own `pass:` there and records notes only (done, problem, skipped); the verdict is derived at the debrief from the logs against that `pass:`.
   Its `from` must include the Item's `setup:` words, unless that serve carries `setup_waived: <why>`
   (an Item judging what a relaunch restores reads it before the new launch re-establishes the state). Put a "type pending" hint in `record:` when
   the Item's `pass:` is computed at the debrief.
@@ -128,7 +131,8 @@ steps:
    `sheet scope` output: walk it tracking parameters, ball, Ball Butler, launch and checkout, and
    name any step needing something not established before it, any value changed from its Item, and
    anything misreadable. Fix what it finds and re-run the check.
-3. Commit only `map/sheets/<name>.yaml` as `map: Sitting sheet <name>`, no trailer, push `HEAD:main`,
+3. Run `python -m mapkit gen` (a new sheet changes the "On a sheet" column of `docs/runbook.md`), then commit
+   `map/sheets/<name>.yaml` and the regenerated `docs/runbook.md` as `map: Sitting sheet <name>`, no trailer, push `HEAD:main`,
    then in one short message give the operator: the page
    (`http://192.168.20.34:8765`, Next Sitting), the step count and launches, the Items covered,
    anything `omitted` with its reason, each place a row disagreed with reality, and how to close out
