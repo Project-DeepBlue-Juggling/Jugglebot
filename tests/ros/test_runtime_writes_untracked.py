@@ -308,3 +308,37 @@ def test_skill_node_never_builds_a_memory_on_the_tracked_path():
                             'skill_node.py')).read()
     assert re.search(r'(?<![\w.])memory_path\(', src) is None
     assert src.count('self._open_memory(plant_id)') == 4
+
+
+# ── C8 unit 3: no test process resolves a runtime path in a real checkout ──
+
+def test_test_process_never_resolves_a_runtime_path_in_a_real_checkout(
+        monkeypatch):
+    """The conftest fixture points the real checkout's runtime base outside
+    the repo; with it removed, the resolver REFUSES instead of letting a
+    test write ``<repo>/temp/runtime`` (gitignored, so invisible, and merged
+    into the robot's tracked Memory at the next debrief). Fails if the guard
+    or the fixture is removed."""
+    real_repo = os.path.realpath(_REPO)
+    base = rtp.runtime_base(_REPO)
+    assert os.path.realpath(base) != real_repo
+    assert not os.path.realpath(base).startswith(real_repo + os.sep)
+    assert rtp.runtime_memory_path(_REPO, 'jugglebot').startswith(base)
+    assert rtp.runtime_records_path(_REPO).startswith(base)
+
+    monkeypatch.delenv(rtp.RUNTIME_DIR_ENV)
+    for call in (lambda: rtp.runtime_base(_REPO),
+                 lambda: rtp.runtime_records_path(_REPO),
+                 lambda: rtp.runtime_memory_path(_REPO, 'jugglebot'),
+                 lambda: rtp.live_memory_path(_REPO, 'jugglebot')):
+        with pytest.raises(rtp.RuntimePathRefused):
+            call()
+    # A foreign override that is itself inside the checkout is refused too.
+    monkeypatch.setenv(rtp.RUNTIME_DIR_ENV, os.path.join(_REPO, 'temp', 'x'))
+    with pytest.raises(rtp.RuntimePathRefused):
+        rtp.runtime_base(_REPO)
+
+
+def test_other_roots_are_never_redirected(tmp_path):
+    assert rtp.runtime_base(str(tmp_path)) == os.path.join(
+        str(tmp_path), 'temp', 'runtime')

@@ -69,6 +69,31 @@ its seed are removed (or the edit is made to the runtime copy). Re-seeding or
 merging on load was rejected: it would rewrite a live Memory on a goal start,
 and an append-merge is wrong for an edit that REMOVED rows.
 A runtime file with no readable seed is likewise kept, with a warning.
+
+**The test-isolation contract** (Phase C8 unit 3; invariant: *no test process
+ever resolves a runtime path inside a real checkout*). Before C8 a test that
+drove ``skill_node`` or the Memory through the live paths dirtied a tracked
+file and showed in ``git status``; with the runtime copy gitignored the same
+write is invisible, and rows a test appended under plant ``jugglebot`` would
+be merged into the robot's tracked Memory at the next debrief. One
+enforcement point, :func:`runtime_base`, closes it two ways:
+
+* **Override**: when ``JUGGLEBOT_RUNTIME_DIR`` is set AND ``root`` is the
+  checkout this module lives in, the base is that directory instead of
+  ``<root>/temp/runtime``. ``tests/conftest.py`` sets it for every test
+  session to a per-process temp directory. A caller passing some OTHER root
+  (a ``tmp_path`` repo) is never redirected: its ``<root>/temp/runtime`` is
+  already private.
+* **Refusal**: under pytest (``"pytest" in sys.modules`` or
+  ``JUGGLEBOT_UNDER_TEST`` set, which the root conftest sets at import),
+  a base that falls inside this module's own checkout, or inside any git
+  checkout outside the system temp dir, raises :class:`RuntimePathRefused`
+  instead of writing. A future test that bypasses the fixture fails loudly.
+
+The live robot is unaffected: with neither signal present the base is exactly
+``<root>/temp/runtime``. **No launch file, service unit or script may set
+``JUGGLEBOT_RUNTIME_DIR`` or ``JUGGLEBOT_UNDER_TEST``** (grep-verified at
+landing; ``tests/ros/test_runtime_writes_untracked.py`` pins the guard).
 """
 
 from __future__ import annotations
@@ -79,11 +104,20 @@ import hashlib
 import io
 import json
 import os
+import sys
 import tempfile
 from typing import List, NamedTuple, Optional, Tuple
 
 #: Runtime files live under ``<root>/temp/runtime`` (gitignored by ``temp/*``).
 RUNTIME_DIR = os.path.join('temp', 'runtime')
+
+#: Test-isolation signals (module docstring, "The test-isolation contract").
+RUNTIME_DIR_ENV = 'JUGGLEBOT_RUNTIME_DIR'
+UNDER_TEST_ENV = 'JUGGLEBOT_UNDER_TEST'
+
+#: The checkout this module lives in (``ros_ws/src/jugglebot/jugglebot/``).
+_OWN_CHECKOUT = os.path.realpath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', '..'))
 
 #: The seed JSON sits beside its runtime file: ``<runtime file>.seed``.
 SEED_SUFFIX = '.seed'
@@ -108,6 +142,52 @@ class Seeding(NamedTuple):
     warning: str
 
 
+# ── the single base resolver ──────────────────────────────────────────────
+
+class RuntimePathRefused(RuntimeError):
+    """A test process tried to resolve a runtime path inside a real checkout."""
+
+
+def _under_test() -> bool:
+    return 'pytest' in sys.modules or bool(os.environ.get(UNDER_TEST_ENV))
+
+
+def _inside(path: str, parent: str) -> bool:
+    return path == parent or path.startswith(parent.rstrip(os.sep) + os.sep)
+
+
+def _in_git_checkout(path: str) -> bool:
+    cur = path
+    while True:
+        if os.path.exists(os.path.join(cur, '.git')):
+            return True
+        nxt = os.path.dirname(cur)
+        if nxt == cur:
+            return False
+        cur = nxt
+
+
+def runtime_base(root: str) -> str:
+    """``<root>/temp/runtime``, or the test override / refusal (module
+    docstring). Every runtime path is built on this."""
+    base = os.path.join(root, RUNTIME_DIR)
+    override = os.environ.get(RUNTIME_DIR_ENV)
+    if override and os.path.realpath(root) == _OWN_CHECKOUT:
+        base = override
+    if _under_test():
+        real = os.path.realpath(base)
+        tmp = os.path.realpath(tempfile.gettempdir())
+        if _inside(real, _OWN_CHECKOUT) or (
+                not _inside(real, tmp) and _in_git_checkout(real)):
+            raise RuntimePathRefused(
+                'refusing runtime path %s under pytest: it lies inside a '
+                'real checkout, so a test would write the robot\'s runtime '
+                'files invisibly (gitignored). Use a tmp_path root or set '
+                '%s (tests/conftest.py does for every session).'
+                % (base, RUNTIME_DIR_ENV))
+    return base
+
+
 # ── paths ─────────────────────────────────────────────────────────────────
 
 def tracked_records_path(root: str) -> str:
@@ -117,7 +197,7 @@ def tracked_records_path(root: str) -> str:
 
 def runtime_records_path(root: str) -> str:
     """``<root>/temp/runtime/records.md``: the ledger the robot writes."""
-    return os.path.join(root, RUNTIME_DIR, 'records.md')
+    return os.path.join(runtime_base(root), 'records.md')
 
 
 def tracked_memory_path(root: str, plant_id: str) -> str:
@@ -131,7 +211,7 @@ def tracked_memory_path(root: str, plant_id: str) -> str:
 def runtime_memory_path(root: str, plant_id: str) -> str:
     """``<root>/temp/runtime/learn/<plant_id>/memory_v2.csv``."""
     tracked = tracked_memory_path(root, plant_id)   # validates plant_id
-    return os.path.join(root, RUNTIME_DIR, 'learn', plant_id,
+    return os.path.join(runtime_base(root), 'learn', plant_id,
                         os.path.basename(tracked))
 
 
