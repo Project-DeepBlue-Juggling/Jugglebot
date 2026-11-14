@@ -60,6 +60,8 @@ No row turned out to lack live enforcement, so nothing was added to the Gaps sec
 
 ## Verification
 
-- 2026-11-14, `./run_tests.sh -q` on this change together with the generated logbook
-  index: result recorded below when the gate finishes.
-- 2026-11-14, one audit pass over both changes.
+- 2026-11-14, `flock /tmp/jugglebot-tests.lock ./run_tests.sh -q` on this change
+  together with the generated logbook index: RESULT PASS (parallel rc=0 in 638 s, serial
+  rc=0 in 32 s; `-q` prints no count).
+- 2026-11-14, one audit pass over both changes: no blocking finding; every cited
+  enforcement symbol and test in the changed `INVARIANTS.md` cells exists by that name.
