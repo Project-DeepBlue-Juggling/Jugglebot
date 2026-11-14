@@ -8,11 +8,10 @@ section into ``docs/runbook.md``, the Next Sitting Runbook. The generator never
 invents a ``do:`` step: an Item without a valid section is listed under
 "Needs a Sitting section" with the parse errors, never as a row.
 
-Rows are grouped by rig first (robot, bench leg, bench hand: a Sitting is on one
-rig), then by setup set within a rig. Within a rig the order is priority weight per minute;
-a row whose section carries ``first: <reason>`` is flown before every scored row (several
-pinned rows keep the score order among themselves), and its setup set opens the rig's first
-block.
+The Runbook is an index, not an ordering authority (close-out C11): per rig a table of the
+waiting Items (minutes, setup set, held branch, and the open Sitting sheet that includes the
+Item), sorted by (rig, priority, ID). The order a Sitting flies in is the sheet's
+(``/sitting-sheet <rig>``, ``mapkit/sheet.py``). ``first:`` is still parsed, and ignored here.
 
 A result typed in the map app lands on the Item as ``## Sitting result (<date>)`` or, since
 2026-11-03, ``## Sitting result (<date> HH:MM)`` (24-hour local clock, the time it was saved);
@@ -36,7 +35,7 @@ OPTIONAL_KEYS = ("branch", "first")
 HARDWARE = ("robot", "bench-leg", "bench-hand")  # also the rig display order
 RIG_LABELS = {"robot": "Robot", "bench-leg": "Bench leg", "bench-hand": "Bench hand"}
 OPEN_STATUSES = ("inbox", "backlog", "in_progress")
-PRIORITY_WEIGHT = {"high": 3, "medium": 2, "low": 1}
+PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 _HEADING = re.compile(r"^##\s+Sitting\s*$")
 _ANY_H2 = re.compile(r"^##\s")
@@ -53,7 +52,7 @@ class SittingSpec:
     record: str
     minutes: int
     branch: Optional[str] = None
-    first: Optional[str] = None  # why this row is flown before every scored row
+    first: Optional[str] = None  # parsed, ignored by the Runbook (the sheet orders)
 
 
 @dataclass
@@ -64,8 +63,9 @@ class RunbookRow:
     pathway: str
     priority: str
     spec: SittingSpec
-    score: float
+    score: float = 0.0  # compatibility only (the app of 2026-11-14 reads it); always 0
     hardware: str = "robot"
+    on_sheet: str = ""  # name of the open sheet that includes this Item, else ""
 
 
 def has_sitting_section(body: str) -> bool:
@@ -148,27 +148,49 @@ def parse_sitting(body: str) -> Tuple[Optional[SittingSpec], List[str]]:
                        minutes=minutes, branch=branch or None, first=first or None), []
 
 
-def _score(priority: str, spec: SittingSpec) -> float:
-    return PRIORITY_WEIGHT.get(priority, 1) * (2 if spec.branch else 1) / float(spec.minutes)
-
-
 def _bid(item: Item) -> str:
     return item.short_id or item.slug
+
+
+def _open_sheets(repo_root: str, items: List[Item]) -> Dict[str, str]:
+    """Item ID -> name of the newest sheet that serves it and is still open for it.
+
+    A sheet is open for an Item until the Item carries a ``## Sitting result`` dated on or
+    after the sheet's date. Derived from the Items and the sheet files only (never from the
+    app's ``.results.yaml``), so ``docs/runbook.md`` stays reproducible from a commit."""
+    from mapkit import sheet as sheet_mod  # lazy: sheet imports this module
+    done: Dict[str, str] = {}
+    for i in items:
+        dates = [r["date"] or "" for r in parse_sitting_results(i.body)]
+        if dates:
+            done[_bid(i)] = max(dates)
+    out: Dict[str, Tuple[str, str]] = {}
+    try:
+        listing = sheet_mod.list_sheets(repo_root)  # newest first
+    except Exception:  # a bad sheet must not take the Runbook down
+        return {}
+    for row in reversed(listing):  # oldest first, so the newest overwrites
+        try:
+            data = sheet_mod.load_sheet(sheet_mod.sheet_path(repo_root, row["name"]))
+        except Exception:
+            continue
+        for st in data.get("steps") or []:
+            for sv in (st.get("serves") or []) if isinstance(st, dict) else []:
+                item = str(sv.get("item")) if isinstance(sv, dict) else ""
+                if item and done.get(item, "") < str(data.get("date", "")):
+                    out[item] = (row["name"], str(data.get("date", "")))
+    return {k: v[0] for k, v in out.items()}
 
 
 def collect(repo_root: str) -> Dict:
     """Gather the Runbook's content from ``<repo>/map/``.
 
-    Keys: ``rows`` (valid hardware Items: those pinned with ``first:`` ahead of the rest,
-    then by score desc, then ID), ``needs_section``
-    ``(id, title, errors, hardware)``, ``questions`` ``(ticket id, title, parent id)`` for open
-    question tickets under a hardware Item, and ``blocks``: rows grouped by their
-    exact setup set within a rig (never mixing rigs), and ``rigs``: ``(hardware,
-    blocks)`` in rig order for rigs with at least one row. The greedy pass walks rows in score order; a row joins the
-    block already opened for its setup set (a Sitting sets up once per set, so a
-    later row never reopens a set) and opens a new block only for a set not seen
-    yet. Blocks are thus ordered by rig, then by their best row (a pinned row beats any
-    score), rows within a block pinned first, then by score.
+    Keys: ``rows`` (valid hardware Items sorted by rig, priority high to low, then ID),
+    ``needs_section`` ``(id, title, errors, hardware)``, ``questions`` ``(ticket id, title,
+    parent id)`` for open question tickets under a hardware Item, and, as compatibility fields
+    for a map app built before 2026-11-14, ``rigs`` (``(hardware, blocks)`` in rig order for
+    rigs with a row) and ``blocks`` (one block per rig holding that rig's rows, every score 0).
+    The order a Sitting flies in is the sheet's, not this one's.
     """
     items = load_items(os.path.join(repo_root, "map"))
     hw = [i for i in items if i.kind in INBOX_KINDS and i.meta.get("hardware") in HARDWARE
@@ -182,9 +204,14 @@ def collect(repo_root: str) -> Dict:
             continue
         pri = str(i.meta.get("priority") or "")
         rows.append(RunbookRow(_bid(i), "%s-%s" % (i.kind, i.slug), i.title,
-                               str(i.meta.get("parent") or ""), pri, spec, _score(pri, spec),
+                               str(i.meta.get("parent") or ""), pri, spec, 0.0,
                                str(i.meta.get("hardware"))))
-    rows.sort(key=lambda r: (0 if r.spec.first else 1, -r.score, r.item_id))
+    if rows:
+        on = _open_sheets(repo_root, hw)
+        for r in rows:
+            r.on_sheet = on.get(r.item_id, "")
+    rows.sort(key=lambda r: (HARDWARE.index(r.hardware), PRIORITY_ORDER.get(r.priority, 3),
+                             r.item_id))
     needs.sort()
     questions: List[Tuple[str, str, str]] = []
     for i in items:
@@ -195,20 +222,16 @@ def collect(repo_root: str) -> Dict:
     blocks: List[List[RunbookRow]] = []
     rigs: List[Tuple[str, List[List[RunbookRow]]]] = []
     for rig in HARDWARE:
-        rig_blocks: List[List[RunbookRow]] = []
-        by_set: Dict[Tuple[str, ...], List[RunbookRow]] = {}
-        for r in rows:
-            if r.hardware != rig:
-                continue
-            if r.spec.setup not in by_set:
-                by_set[r.spec.setup] = []
-                rig_blocks.append(by_set[r.spec.setup])
-            by_set[r.spec.setup].append(r)
-        if rig_blocks:
-            rigs.append((rig, rig_blocks))
-            blocks.extend(rig_blocks)
+        rig_rows = [r for r in rows if r.hardware == rig]
+        if rig_rows:
+            rigs.append((rig, [rig_rows]))
+            blocks.append(rig_rows)
     return {"rows": rows, "needs_section": needs, "questions": questions, "blocks": blocks,
             "rigs": rigs}
+
+
+def _cell(text: str) -> str:
+    return text.replace("|", "\\|")
 
 
 def render_runbook(repo_root: str) -> str:
@@ -216,55 +239,30 @@ def render_runbook(repo_root: str) -> str:
     out: List[str] = [
         "# Next Sitting Runbook", "",
         "Generated by `python -m mapkit gen` from the `## Sitting` sections of the open hardware",
-        "Items and the held Night Shift branches; never hand-edited (`tests/sim/test_sitting_sections.py`).",
-        "Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by",
-        "`tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are",
-        "linked from rows, never duplicated.", "",
-        "## Setup 0: before power", "",
-        "- Power-cycle the can-bridge after any re-cabling (sticky presence set trips CAN_BUS_DOWN).",
-        "- Run `colcon build --packages-up-to jugglebot` and re-source before the Sitting (the install tree is stale until then; this builds the interfaces too, which a changed interface needs).",
-        "- BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).",
-        "- Check out the candidate branch in the live checkout only if a row below names a `branch:`.", ""]
-    def _plural(n: int, word: str) -> str:
-        return "%d %s%s" % (n, word, "" if n == 1 else "s")
-
-    def _mins(bs: List[List[RunbookRow]]) -> int:
-        return sum(r.spec.minutes for b in bs for r in b)
-
-    if data["rigs"]:
-        out[out.index("## Setup 0: before power"):out.index("## Setup 0: before power")] = [
-            "Rigs: " + " \u00b7 ".join("%s %s (%d min)" % (RIG_LABELS[rig], _plural(len(bs), "block"),
-                                                        _mins(bs)) for rig, bs in data["rigs"]), ""]
-    n = 0
-    for rig, rig_blocks in data["rigs"]:
-        out += ["## %s  (%s, %d min)" % (RIG_LABELS[rig], _plural(len(rig_blocks), "block"),
-                                         _mins(rig_blocks)), ""]
-        for block in rig_blocks:
-            n += 1
-            setup = ", ".join(block[0].spec.setup) or "no setup"
-            out += ["### Block %d: %s  (%s, %d min)" % (n, setup, _plural(len(block), "row"),
-                                                          sum(r.spec.minutes for r in block)), ""]
-            for r in block:
-                out += ["#### %s %s  (%d min, %s, %s)" % (r.item_id, r.title, r.spec.minutes,
-                                                         r.priority or "unrated", r.pathway or "unattached"),
-                        "- why: %s" % r.spec.why, "- do:"]
-                out += ["  - %s" % s for s in r.spec.do]
-                out += ["- pass: %s" % r.spec.pass_, "- record: %s" % r.spec.record]
-                if r.spec.first:
-                    out.append("- first: %s" % r.spec.first)
-                if r.spec.branch:
-                    out.append("- branch: `%s`" % r.spec.branch)
-                out.append("")
+        "Items; never hand-edited (`tests/sim/test_sitting_sections.py`). This page is an index of the",
+        "waiting Items: the order a Sitting flies in, and every step, is on its Sitting sheet.", "",
+        "Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand", ""]
+    for rig in HARDWARE:
+        rows = [r for r in data["rows"] if r.hardware == rig]
+        if not rows:
+            continue
+        out += ["## %s  (%d Item%s, %d min)" % (RIG_LABELS[rig], len(rows),
+                                               "" if len(rows) == 1 else "s",
+                                               sum(r.spec.minutes for r in rows)), "",
+                "| Item | Minutes | Setup | Branch | On a sheet |",
+                "| --- | ---: | --- | --- | --- |"]
+        for r in rows:
+            out.append("| %s | %d | %s | %s | %s |" % (
+                _cell("%s %s" % (r.item_id, r.title)), r.spec.minutes,
+                ", ".join(r.spec.setup) or "-", ("`%s`" % r.spec.branch) if r.spec.branch else "-",
+                r.on_sheet or "-"))
+        out.append("")
     out += ["## Needs a Sitting section", ""]
     out += ["- %s [%s] %s: %s" % (i, RIG_LABELS.get(h, h), t, "; ".join(e))
             for i, t, e, h in data["needs_section"]] or ["- none"]
     out += ["", "## Questions a Sitting can answer", ""]
     out += ["- %s %s (parent %s)" % q for q in data["questions"]] or ["- none"]
-    out += ["", "## Close-out", "",
-            "- Type each row's result in the map app (pass, fail, or pending when the verdict needs "
-            "the logs; notes); it lands on the Item as `## Sitting result (<date>)` "
-            "or, when saved with a time, `## Sitting result (<date> HH:MM)` with the time the result was saved.",
-            "- Then, in a Session in the live checkout: `/sitting-debrief <date>`.", ""]
+    out.append("")
     return "\n".join(out)
 
 

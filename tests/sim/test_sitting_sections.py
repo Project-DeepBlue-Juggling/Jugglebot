@@ -1,4 +1,4 @@
-"""T-U5: ``## Sitting`` parsing, Runbook ordering/grouping and the currency of docs/runbook.md."""
+"""T-U5: ``## Sitting`` parsing, Runbook index and the currency of docs/runbook.md."""
 from __future__ import annotations
 
 import os
@@ -80,27 +80,42 @@ def repo(tmp_path):
     return tmp_path
 
 
-def test_order_and_blocks(repo):
+def test_rows_sort_by_rig_priority_id_and_blocks_is_one_per_rig(repo):
     data = sitting.collect(str(repo))
-    assert [r.item_id for r in data["rows"]] == ["BUG-1", "BUG-2", "BUG-4", "BUG-5", "BUG-3", "BUG-6"]
+    assert [r.item_id for r in data["rows"]] == ["BUG-1", "BUG-3", "BUG-5", "BUG-2", "BUG-4", "BUG-6"]
+    # compatibility field for a pre-2026-11-14 app: one block per rig, every score 0
     assert [[r.item_id for r in b] for b in data["blocks"]] == [
-        ["BUG-1", "BUG-6"], ["BUG-2", "BUG-3"], ["BUG-4"], ["BUG-5"]]
+        ["BUG-1", "BUG-3", "BUG-5", "BUG-2", "BUG-4", "BUG-6"]]
+    assert all(r.score == 0 for r in data["rows"])
     assert data["needs_section"] == [] and data["questions"] == []
 
 
-def test_first_pins_a_row_ahead_of_the_score_order(repo):
-    """``first: <reason>`` (2026-11-06): the row is flown before every scored row and its
-    setup set opens the rig's first block; without the key the order is score only."""
+def test_first_is_parsed_but_ignored_by_the_order(repo):
+    """``first:`` (2026-11-06) no longer pins a row: the sheet is the only ordering authority."""
     _item(repo, "bug", "row7", _sec("bb-fed", "60", "- first: the others fly on it\n"), id="BUG-7",
-          title="Row 7", priority="low", hardware="robot", parent="pw")  # score 1/60, last unpinned
+          title="Row 7", priority="low", hardware="robot", parent="pw")
     data = sitting.collect(str(repo))
-    assert [r.item_id for r in data["rows"]] == ["BUG-7", "BUG-1", "BUG-2", "BUG-4", "BUG-5", "BUG-3", "BUG-6"]
-    assert [[r.item_id for r in b] for b in data["blocks"]] == [
-        ["BUG-7", "BUG-4"], ["BUG-1", "BUG-6"], ["BUG-2", "BUG-3"], ["BUG-5"]]
-    assert data["rows"][0].spec.first == "the others fly on it"
+    assert [r.item_id for r in data["rows"]] == ["BUG-1", "BUG-3", "BUG-5", "BUG-2", "BUG-4", "BUG-6", "BUG-7"]
+    assert data["rows"][-1].spec.first == "the others fly on it"
+    assert "the others fly on it" not in sitting.render_runbook(str(repo))
+
+
+def test_on_a_sheet_names_the_open_sheet_that_serves_the_item(repo):
+    sheets = repo / "map" / "sheets"
+    sheets.mkdir()
+    (sheets / "2026-11-10-robot.yaml").write_text(
+        'schema: 1\ndate: "2026-11-10"\nrig: robot\nsteps:\n'
+        '  - {n: 1, kind: run, title: t, from: [], to: [], actions: [], serves: [{item: BUG-1}, {item: BUG-2}]}\n')
+    (sheets / "2026-11-12-robot.yaml").write_text(
+        'schema: 1\ndate: "2026-11-12"\nrig: robot\nsteps:\n'
+        '  - {n: 1, kind: run, title: t, from: [], to: [], actions: [], serves: [{item: BUG-1}]}\n')
+    # BUG-2 already carries a result dated on the sheet's day: the sheet is closed for it
+    p = repo / "map" / "bug-row2.md"
+    p.write_text(p.read_text() + "\n## Sitting result (2026-11-10 12:00)\n\n- verdict: pass\n- notes: ok\n")
     text = sitting.render_runbook(str(repo))
-    assert "### Block 1: bb-fed  (2 rows, 65 min)" in text
-    assert "- first: the others fly on it" in text
+    assert "| BUG-1 Row 1 | 10 | level | - | 2026-11-12-robot |" in text
+    assert "| BUG-2 Row 2 | 10 | level, armed | - | - |" in text
+    assert "| BUG-3 Row 3 | 20 | armed, level | - | - |" in text or "| BUG-3 Row 3 | 20 | level, armed | - | - |" in text
 
 
 def test_first_without_a_reason_is_a_parse_error():
@@ -133,9 +148,11 @@ def test_render_has_no_date_and_is_stable(repo):
     text = sitting.render_runbook(str(repo))
     assert not re.search(r"20\d\d-\d\d-\d\d", text)
     assert text == sitting.render_runbook(str(repo))
-    assert "### Block 1: level  (2 rows, 50 min)" in text
-    assert "#### BUG-1 Row 1  (10 min, high, pw)" in text
-    assert "- branch: `night-shift/b`" in text
+    assert "| Item | Minutes | Setup | Branch | On a sheet |" in text
+    assert "| BUG-1 Row 1 | 10 | level | - | - |" in text
+    assert "| BUG-5 Row 5 | 30 | bridge-cycled | `night-shift/b` | - |" in text
+    for gone in ("Setup 0", "Close-out", "### Block", "#### "):
+        assert gone not in text
     assert not re.search(r"`(BUG|FEAT|IDEA|PWAY|TKT)-\d+`", text)
 
 
@@ -149,29 +166,26 @@ def _rig_repo(tmp_path):
     return tmp_path
 
 
-def test_rigs_never_share_a_block_and_follow_rig_order(tmp_path):
+def test_rigs_follow_rig_order(tmp_path):
     repo = _rig_repo(tmp_path)
     data = sitting.collect(str(repo))
-    # same setup everywhere, but one block per rig; robot first despite the lowest score
     assert [(h, [[r.item_id for r in b] for b in bs]) for h, bs in data["rigs"]] == [
         ("robot", [["BUG-3"]]), ("bench-leg", [["BUG-2", "BUG-4"]]), ("bench-hand", [["BUG-1"]])]
-    assert [[r.item_id for r in b] for b in data["blocks"]] == [["BUG-3"], ["BUG-2", "BUG-4"], ["BUG-1"]]
+    assert [r.item_id for r in data["rows"]] == ["BUG-3", "BUG-2", "BUG-4", "BUG-1"]
     assert {r.item_id: r.hardware for r in data["rows"]}["BUG-1"] == "bench-hand"
     assert data["needs_section"][0][0] == "BUG-5" and data["needs_section"][0][3] == "bench-leg"
 
 
-def test_rendered_rig_headings_summary_and_needs_label(tmp_path):
+def test_rendered_rig_headings_header_line_and_needs_label(tmp_path):
     text = sitting.render_runbook(str(_rig_repo(tmp_path)))
     lines = text.splitlines()
     heads = [l for l in lines if l.startswith("#")]
-    assert heads.index("## Robot  (1 block, 40 min)") < heads.index("## Bench leg  (1 block, 20 min)") \
-        < heads.index("## Bench hand  (1 block, 5 min)")
-    assert "### Block 1: level  (1 row, 40 min)" in lines
-    assert "### Block 3: level  (1 row, 5 min)" in lines
-    assert "#### BUG-1 Rig 1  (5 min, high, pw)" in lines
-    assert "Rigs: Robot 1 block (40 min) \u00b7 Bench leg 1 block (20 min) \u00b7 Bench hand 1 block (5 min)" in lines
+    assert heads.index("## Robot  (1 Item, 40 min)") < heads.index("## Bench leg  (2 Items, 20 min)") \
+        < heads.index("## Bench hand  (1 Item, 5 min)")
+    assert "Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand" in lines
+    assert "| BUG-1 Rig 1 | 5 | level | - | - |" in lines
     assert "- BUG-5 [Bench leg] No sec: no ## Sitting section" in lines
-    assert "## Needs a Sitting section" in lines and "## Close-out" in lines
+    assert "## Needs a Sitting section" in lines
 
 
 def test_bench_hand_is_a_valid_hardware_value():
