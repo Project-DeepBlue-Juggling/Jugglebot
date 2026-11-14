@@ -84,4 +84,4 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
 ## Questions a Sitting can answer
 
-- TKT-73 IDEA-22 tilt-back sweep: only 0.5 deg clears +0.10 at the re-aim limit (Apex 0.95-0.975), about what 0 deg gives; fly 0.5 deg, fly 1.0 deg, fly 0 deg at Apex 0.975 first, or park 90 deg? (parent IDEA-22)
+- none
