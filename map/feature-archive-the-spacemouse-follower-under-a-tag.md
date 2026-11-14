@@ -25,3 +25,7 @@ Archive the SpaceMouse follower path under a tag, so it can be brought back late
 
 - A grep-counted removal: the handler, the launch entry, the follower code and its tests, with an `archive/` tag on the last commit that has them and a note of the tag in the logbook entry.
 - Check what else imports `follower.py`, `chase.py` and `_install_continuity_ok` before deleting; the reviewer saw the last one still called at `:5049`.
+
+## Scope widened (2026-11-14)
+
+Owner, 2026-11-14: `trajectory/timed_target` goes with the follower in the same archival. It is the service that makes the Platform reach a pose at a velocity a set lead time after the call, from before the skill stack; `install_segment` does that job now. So the removal also takes `_svc_timed_target`, `_plan_and_install_timed`, `_ros_time_to_perf`, the service definition if nothing else uses it, and their tests, under the same tag.
