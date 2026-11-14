@@ -444,6 +444,21 @@ class PoseConfig:
     #: mode at the release knot (:func:`_zvd_rows`).  False = not assembled, the
     #: pose program byte for byte as before (``trajectory_op.carry_zvd``).
     carry_zvd: bool = bool(hw.JB_TRAJ_CARRY_ZVD)
+    #: BUG-90 (TKT-69 option 1): with ``carry_zvd`` on, the weight of the Hand
+    #: smoothness term over the flight window (:func:`_pose_augment` block 6):
+    #: ``w/n · Σ a_hand,k²`` (m/s²) at the flight knots, an extra weight on
+    #: the level program's own mean-square acceleration (which weighs cup z
+    #: 1/n).  Without it the ring rows buy their mode cancellation with a ~5 Hz
+    #: Hand stop-and-go in flight (cup z is the cheap lever under a tilted
+    #: Platform).  Read only with ``carry_zvd``: the flag-off program is
+    #: untouched.  0 = not assembled.
+    zvd_hand_smooth_weight: float = 100.0
+    #: The term's flight window, as margins off the window's two ends: the
+    #: first ``skip_release_s`` (the Hand's post-release brake, ~75 ms from
+    #: +4.4 m/s, which the term must not stretch) and the last ``skip_catch_s``
+    #: before the catch knot (the capture move).
+    zvd_hand_smooth_skip_release_s: float = 0.15
+    zvd_hand_smooth_skip_catch_s: float = 0.15
     #: The Platform lateral mode(s) per axis ``(x, y)``: each entry a frequency
     #: (Hz) or a tuple of them (one mode per element); ``mode_zeta`` the same
     #: shape.  ``mode_delay_s``: the mode is driven by ``a_cmd(t - delay)``.
@@ -481,6 +496,13 @@ class PoseConfig:
         if not float(self.leg_jerk_weight) >= 0.0:
             raise ValueError("leg_jerk_weight must be >= 0, got %r"
                              % (self.leg_jerk_weight,))
+        if not float(self.zvd_hand_smooth_weight) >= 0.0:
+            raise ValueError("zvd_hand_smooth_weight must be >= 0, got %r"
+                             % (self.zvd_hand_smooth_weight,))
+        for name in ('zvd_hand_smooth_skip_release_s', 'zvd_hand_smooth_skip_catch_s'):
+            if not float(getattr(self, name)) >= 0.0:
+                raise ValueError("%s must be >= 0, got %r"
+                                 % (name, getattr(self, name)))
         if not float(self.z_band_mm) >= 0.0:
             raise ValueError("z_band_mm must be >= 0, got %r" % (self.z_band_mm,))
         if not float(self.touchdown_skid_mmps) >= 0.0:
@@ -2708,7 +2730,16 @@ def _pose_augment(pose: PoseSpec, n: int, dt: float, H, f, Aeq, beq, cols, rhss,
        interior knots only; the RHS carries the seed's ring (``pose.mode0``).
        Returned as ``ring = (R, c, names)`` (unscaled, ``R @ x + c`` = the
        modelled state) so :func:`plan_window` can name a ``RING`` refusal;
-       ``None`` with the flag off, when nothing is computed.
+       ``None`` with the flag off, when nothing is computed.  With the rows
+       comes the Hand smoothness term (BUG-90, ``cfg.zvd_hand_smooth_weight``):
+       ``w/n · Σ a_hand,k²`` at the flight knots between the post-release
+       brake and the capture move (``zvd_hand_smooth_skip_*_s``), ``a_hand``
+       the cup-z acceleration less the centroid-z one.  Without it the rows
+       are met by a ~5 Hz Hand stop-and-go in flight (cup z moves the Platform
+       laterally through the lever under the prescribed tilt).  A cost only:
+       no row, no RHS, no column moves, and nothing at all with the flag off.  The ``RING`` refusal's ring-less
+       re-solve keeps it (a PSD cost cannot change feasibility; only the
+       residual it reports is that of the smoothed ring-less plan).
     7. Nothing else: the catch's soft velocity match, the holds and the
        release triple are the level program's, untouched.
     """
@@ -2901,6 +2932,27 @@ def _pose_augment(pose: PoseSpec, n: int, dt: float, H, f, Aeq, beq, cols, rhss,
         Aeq = np.vstack([Aeq, Rr / sc[:, None]])
         beq = np.concatenate([beq, -cr_ / sc])
         ring = (Rr, cr_, names)
+        # BUG-90: the Hand smoothness term, ``w/n · Σ_k a_hand,k²`` at the
+        # flight knots k0+1 .. k1 (the empty Hand between its post-release
+        # brake and its capture move).  The Hand slider's acceleration is the
+        # cup-z acceleration less the centroid-z one (when the dz block is
+        # assembled); the prescribed tilt's share is left out.  Acceleration,
+        # not jerk: a jerk penalty only turns the ~5 Hz wiggle into a slow
+        # +/-500 mm/s swing that the rows use the same way (measured
+        # 2026-11-15, logbook 2026-11-15-carry-zvd-hand-smoothness).
+        wh = float(pcfg.zvd_hand_smooth_weight)
+        k0 = int(np.ceil(float(pcfg.zvd_hand_smooth_skip_release_s) / dt - 1e-9))
+        k1 = k_td - int(np.ceil(float(pcfg.zvd_hand_smooth_skip_catch_s) / dt - 1e-9))
+        if wh > 0.0 and k1 > k0:
+            ks = np.arange(k0 + 1, k1 + 1)
+            Rh = np.zeros((ks.size, nv))
+            Rh[:, 2 * n:3 * n] = Aa[ks]
+            ch = ca[ks, 2].copy()
+            if use_dz:
+                Rh[:, nv3:] = -Aa[ks]
+                ch = ch - ca_dz[ks]
+            H = H + (2.0 * wh / n) * (Rh.T @ Rh)
+            f = f + (2.0 * wh / n) * (Rh.T @ ch)
 
     return H, f, Aeq, beq, cols, rhss, (n if use_dz else 0), dz0, ring
 
