@@ -5,7 +5,7 @@ One file per night, `docs/night-shift/<date>.md`, written by the Night Shift orc
 `docs(night-shift): report <date>`. The morning Session reads it when the nightly ticker
 says `LOWERED ... by night-shift <date>`; the map app renders it on its Night Shift page.
 The runner's own record (`last_run.json`, status word) lives in the clone's
-`temp/reports/night-shift/`, not here. A night that reached Claude, ended in any status but
+`temp/reports/night-shift/`, not here. A night that reached Claude (or ended `UNGATED_HOLD`), ended in any status but
 `OK` and has no report gets a stub from the runner instead, provided the clone is back on a
 clean `main` with nothing unpushed (`stub_report` in `last_run.json` says what happened)
 (`docs(night-shift): stub report <date> (<status>)`, `tools/night_shift_stub_report.py`): the

@@ -18,13 +18,18 @@ def _git_env(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
 
 
+#: claim/resolve now run the map-write check, which wants every Item past inbox rated.
+_RATED = {"effort": "s", "hardware": "none", "owner": "none", "radius": "local",
+          "area": "tests-tooling"}
+
+
 def _ticket(root, slug, rank, status="open", blocked_by=(), owners=(),
             parent="p"):
     meta = {"kind": "ticket", "title": "T " + slug, "type": "task",
             "parent": parent, "blocked_by": list(blocked_by),
             "owners": list(owners), "rank": rank, "status": status,
             "links": [], "created": "2026-10-23", "updated": "2026-10-23T00:00:00Z",
-            "priority": "medium"}
+            "priority": "medium", **_RATED}
     write_item(str(root / "map" / ("ticket-%s.md" % slug)), meta, "Question?\n")
 
 
@@ -40,7 +45,7 @@ def _tree(root):
         (root / "plans" / b).mkdir(parents=True, exist_ok=True)
     write_item(str(root / "map" / "pathway-p.md"),
                {"kind": "pathway", "title": "P", "status": "active",
-                "created": "2026-10-23", "destination": "d"}, "Body\n")
+                "created": "2026-10-23", "destination": "d", **_RATED}, "Body\n")
 
 
 def _slugs(root, pathway="p"):
@@ -150,3 +155,20 @@ def test_cli_refusals_exit_2(tmp_path):
     assert tickets._run_claim(ns(slug="q", user="b")) == 2
     # a pathway is not a ticket
     assert tickets._run_claim(ns(slug="p", user="a")) == 2
+
+
+def test_claim_and_resolve_refuse_a_commit_that_breaks_the_map_checks(tmp_path):
+    """The map-write check runs before the commit: exit 4, nothing committed, write kept."""
+    work, remote = _git_repo(tmp_path)
+    before = _log(work)
+    bad = work / "map" / "ticket-unrated.md"
+    _ticket(work, "unrated", 2)
+    meta = {k: v for k, v in load_item(str(bad)).meta.items() if k not in _RATED}
+    write_item(str(bad), meta, "Question?\n")  # an unrated ticket breaks the 'rated' check
+    ns = argparse.Namespace
+    for run, kw in ((tickets._run_claim, dict(user="a")),
+                    (tickets._run_resolve, dict(answer="x", answer_file=None))):
+        assert run(ns(repo=str(work), slug="q", no_push=False, **kw)) == 4
+        assert _log(work) == before
+        assert _log(remote, "main") == before
+    assert load_item(str(work / "map" / "ticket-q.md")).meta["status"] == "complete"  # write left in tree

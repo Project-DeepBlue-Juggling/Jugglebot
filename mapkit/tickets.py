@@ -105,6 +105,8 @@ def _git(repo_root: str, *args: str) -> None:
 
 
 def _commit(repo_root: str, item: Item, message: str, push: bool) -> None:
+    from mapkit.itemcli import _check_before_commit  # the map-write check every --commit runs
+    _check_before_commit(repo_root)  # MapCheckRefused: nothing committed, write left in the tree
     rel = os.path.relpath(item.path, repo_root)
     _git(repo_root, "add", "--", rel)
     _git(repo_root, "commit", "-m", message, "--", rel)
@@ -144,6 +146,11 @@ def _repo(args) -> str:
     return os.path.abspath(args.repo)
 
 
+def _refused():
+    from mapkit.itemcli import MapCheckRefused
+    return MapCheckRefused
+
+
 def _run_frontier(args) -> int:
     for it in frontier(_repo(args), args.pathway):
         print("%s\t%s\t%s\t%s" % (it.meta.get("rank", ""), it.short_id or "-", it.slug, it.title))
@@ -153,6 +160,9 @@ def _run_frontier(args) -> int:
 def _run_claim(args) -> int:
     try:
         item = claim(_repo(args), args.slug, args.user, push=not args.no_push)
+    except _refused() as exc:
+        print("mapkit: %s" % exc, file=sys.stderr)
+        return 4
     except TicketError as exc:
         print("mapkit: %s" % exc, file=sys.stderr)
         return 2
@@ -168,6 +178,9 @@ def _run_resolve(args) -> int:
             answer = fh.read()
     try:
         item = resolve(_repo(args), args.slug, answer, push=not args.no_push)
+    except _refused() as exc:
+        print("mapkit: %s" % exc, file=sys.stderr)
+        return 4
     except TicketError as exc:
         print("mapkit: %s" % exc, file=sys.stderr)
         return 2

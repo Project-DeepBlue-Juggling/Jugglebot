@@ -43,13 +43,15 @@ Minimum from the filer: kind, title, one line. If the line is missing, ask for i
    that Item, never re-file under a tweaked title) or on `similar Items exist ...` (near
    titles, listed). On `similar`, show the owner the list and ask; add `--allow-similar` only
    when they say it is a different thing.
-4. **Check BEFORE the push** (the item is inside the Avoid-word scope; a title with an
-   Avoid word that reaches `main` paints the gate RED):
-   `pytest tests/sim/test_map_items.py tests/sim/test_glossary_avoid_words.py tests/sim/test_mapkit_docs.py -q`.
-   On a failure, fix the offending word in `map/<stem>.md` (frontmatter title or body; the
+4. **The check already ran** (the item is inside the Avoid-word scope; a title with an
+   Avoid word that reaches `main` paints the gate RED): `item new --commit` runs the
+   map-write check (`mapkit/checks.py`, the same functions as `tests/sim/test_map_items.py`
+   and `test_glossary_avoid_words.py`) before it commits, so there is no test to run by hand.
+   On a failure it exits **4**, prints every problem, commits nothing and leaves
+   `map/<stem>.md` in the tree: fix the offending word (frontmatter title or body; the
    filename stays), run `python -m mapkit gen`, then
-   `git add map/<stem>.md docs/project-map.md && git commit --amend -m "map: file <kind> <ID> <fixed title>"`
-   and re-run the check. Never push on a red check.
+   `git add map/<stem>.md docs/project-map.md && git commit -m "map: file <kind> <ID> <fixed title>"`.
+   Never push after a refusal you did not clear.
 5. **Push** with the same bounded loop `item new` uses:
    `python -m mapkit item push <stem>` (up to 3 rounds of `pull --rebase` -> duplicate-ID
    check -> push; if a rebase brought in the same ID it renumbers its own Item by amending
