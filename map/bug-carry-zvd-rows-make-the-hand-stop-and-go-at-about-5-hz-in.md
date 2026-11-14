@@ -2,10 +2,11 @@
 id: BUG-90
 kind: bug
 title: carry_zvd rows make the Hand stop and go at about 5 Hz in flight
-status: inbox
+status: in_progress
 created: '2026-11-13'
-updated: '2026-11-13T17:50:21Z'
-owners: []
+updated: '2026-11-14T20:28:06Z'
+owners:
+- night-shift
 priority: medium
 effort: m
 hardware: robot
@@ -49,3 +50,7 @@ With `carry_zvd` on, the pose planner gives the Hand a stop-and-go velocity of a
 4. **Leave `carry_zvd` off** (the default) and park the ZVD arm of FEAT-32 until a Session takes it up.
 
 Recommendation: 1. It is the smallest change the existing xfail can judge, and it leaves the flag-off plan byte for byte as now. Risk: a heavy weight could weaken the mode cancellation the rows exist for, so the Sitting compares the Platform residual too.
+
+## Progress
+
+- 2026-11-15: Night Shift 2026-11-15: TKT-69 option 1 built on night-shift/2026-11-15-BUG-90 but unfinished (unit cut off by API credit); test_cup_zvd passes, wider checks, suite and audit owed
