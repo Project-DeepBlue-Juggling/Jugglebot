@@ -2,10 +2,11 @@
 id: BUG-92
 kind: bug
 title: static Ball Butler frame markers are tracked as human_throw
-status: inbox
+status: in_progress
 created: '2026-11-13'
-updated: '2026-11-13T17:50:22Z'
-owners: []
+updated: '2026-11-14T19:08:38Z'
+owners:
+- night-shift
 priority: medium
 effort: s
 hardware: robot
@@ -43,3 +44,21 @@ Exclude a human_throw candidate whose first sample lies within about 40 mm of a 
 4. **Leave it:** `detect_human_throws` is off by default, so phantoms only appear in human-Throw windows.
 
 Recommendation: 1. On the launch 3 slice it removed 26 of 30 bench phantoms and 0 of 114 true Throws, and it needs no label or zone. FEAT-50 builds a rolling static-cell filter tonight that this could share.
+
+## Sitting
+
+- setup: level
+- why: The held branch drops human_throw starts inside a configured Ball Butler frame box (TKT-71 option 3); only a live mocap window shows the phantom rate falls and no real human Throw is lost.
+- do:
+  - Launch from the branch with mocap up and Ball Butler in its usual place.
+  - `ros2 param set /ball_tracker_node detect_human_throws true`
+  - Leave the cell idle for 2 minutes, nothing thrown.
+  - Make 10 human Throws from your usual spot, away from Ball Butler.
+- pass: No human_throw track starts inside the box during the idle 2 minutes, and all 10 human Throws are tracked.
+- record: human_throw tracks started during the idle window (and where), human Throws tracked out of 10, the launch log time.
+- minutes: 10
+- branch: night-shift/2026-11-15-BUG-92
+
+## Progress
+
+- 2026-11-15: Night Shift 2026-11-15: held on night-shift/2026-11-15-BUG-92: config is gate-frozen, suite not finished under load, 2 test-coverage findings open; unblocked by a day Session merge and a Sitting window
