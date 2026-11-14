@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-14 | complete | maintainer review | **Leg-mapping calibration CSVs removed from the tree (179 MB), kept at an archive tag** | [2026-11-14-leg-mapping-calibration-data-removed](2026-11-14-leg-mapping-calibration-data-removed.md) |
 | 2026-11-14 | complete | maintainer review | **Maintainer review: seven small fixes landed (tracker tests collected, TX sequence lock, Memory header, tolerance pin, gate conftest freeze, auto-pull timeout, atomic Item writes), the rest filed as Items** | [2026-11-14-maintainer-review-fixes](2026-11-14-maintainer-review-fixes.md) |
 | 2026-11-14 | complete | night-shift close-out C3 | **Night Shift skip reasons live on the Item: four validated keys, `item skip`, close clears them** | [2026-11-14-night-skip-reasons-on-the-item](2026-11-14-night-skip-reasons-on-the-item.md) |
 | 2026-11-14 | complete | night-shift close-out | **Night Shift held-only work: a Sitting section holds the gate at (c), branches are scanned for the never-list** | [2026-11-14-night-shift-held-only-work](2026-11-14-night-shift-held-only-work.md) |
