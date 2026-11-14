@@ -14,11 +14,11 @@ scope: >-
 steps:
   - {id: "Phase C1", title: Bind the merge to the gate, kind: phase, status: complete, completed: 2026-11-13, effort: m, hardware: none}
   - {id: "Phase C2", title: Runner housekeeping, kind: phase, status: not_started, effort: s, hardware: none}
-  - {id: "Phase C3", title: Skip reasons live on the Item, kind: phase, status: not_started, effort: m, hardware: none}
+  - {id: "Phase C3", title: Skip reasons live on the Item, kind: phase, status: in_progress, effort: m, hardware: none}
   - {id: "Phase C4", title: Delta walk and NOTHING_NEW, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: "Phase C5", title: Report layout and protocol, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: "Phase C6", title: Pull stalls are loud, kind: phase, status: complete, completed: 2026-11-13, effort: s, hardware: none}
-  - {id: "Phase C7", title: Offline bag reads and held-only work, kind: phase, status: not_started, effort: m, hardware: none}
+  - {id: "Phase C7", title: Offline bag reads and held-only work, kind: phase, status: complete, completed: 2026-11-14, effort: m, hardware: none}
   - {id: "Phase C8", title: The robot stops writing tracked files, kind: phase, status: not_started, effort: m, hardware: robot}
   - {id: "Phase C9", title: Sheet notes-only and batched commits, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: "Phase C10", title: Debrief merge as a tested script, kind: phase, status: not_started, effort: m, hardware: none}
@@ -50,7 +50,8 @@ App layout, already landed 2026-11-13 in the app repo (jugglebot-map 89f7895), n
 
 - C1, C6 and C14 landed 2026-11-13. First live night under C1 (2026-11-14): `last_run.json` reads `landed: gated=0 exempt=10 ungated=0`, and the gate wrote `d64c85a5.HOLD.json` for FEAT-50. The night merged nothing, so a live MERGE record covering a merge is still to be seen. C6 is installed (`~/System_Scripts/jugglebot-pull.sh`); its status file reads OK and no live `PULL` line has been needed yet.
 - R6 is met under Decision 10: BUG-80's held branch was flown at the Sitting of 2026-11-13, passed, and reached main in the debrief's push (`logbook/2026-11-13-sitting-debrief.md`; the owner merged it without the gate, see that entry's Discussion). C17 keeps the `--full` run and the archive.
-- C7 moves ahead of C2: the owner's TKT-68 answer (2026-11-14) asks the night to run the offline sweep itself.
+- C7 landed 2026-11-14, ahead of C2, because the owner's TKT-68 answer asks the night to run the offline sweep itself. Beyond the step text: the "only under nonet" rule is enforced by a PreToolUse hook (`tools/night_shift_bash_guard.py`, read from origin/main on every Bash call, fail closed), not by deny-list spellings; the wrapper also masks `/dev/hidraw*`, `/dev/ttyTHS*` and `/dev/bus/usb`; the runner ends `NO_SETTINGS` when the hook is not wired. Gate on the landed tree (2026-11-14, `tools/night_shift_nonet.sh ./run_tests.sh -q`): parallel 601 s rc=0; serial rc=1 on one wall-clock test (`test_solver_worker_lateness`, p99 115 ms), then the serial phase rerun whole (`tools/night_shift_nonet.sh python -m pytest tests/ -q -m "serial and not nightly"`): 7 passed. The same stack before the rebase: parallel 606 s rc=0, serial 31 s rc=0, EXIT=0. Known open bypass: a script the night writes and runs unwrapped. Acceptance still to see: a live bag-read night.
+- C3: keys, validation and `mapkit item skip` landed 2026-11-14. The seeding of the real Items waits for C4 and C5, the first consumers.
 
 ## Decisions (owner, 2026-11-13)
 
