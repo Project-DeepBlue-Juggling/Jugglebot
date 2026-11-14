@@ -232,3 +232,63 @@ one line changed, and the result is a fixed point of the render.
 - After a Sitting, with the launch down: `python tools/runtime_records.py
   status`, then `python tools/runtime_records.py merge`, then commit the two
   tracked files (debrief step 4.3 does this).
+
+## Unit 3: tests can no longer write the robot's runtime files
+
+**The hole.** Before C8 a test that drove `skill_node` (or the Memory) through
+the live paths dirtied a tracked file and showed in `git status`. With the
+runtime copy gitignored the same write is invisible, and rows appended under
+plant `jugglebot` would be merged into the robot's tracked Memory at the next
+debrief. Unit 2's run had left seed-only `temp/runtime/learn/<test_plant>/`
+folders and one real `temp/runtime/learn/jugglebot` copy seeded by a test.
+`skill_node` takes `_REPO_ROOT` (the real checkout), so every test that
+constructs it resolved a real runtime path.
+
+**Contract** (invariant: no test process resolves a runtime path inside a real
+checkout). One enforcement point, `runtime_paths.runtime_base(root)`, which
+every runtime path is built on (`tools/runtime_records.py` uses the same
+functions with `--repo`, so its tests stay in `tmp_path`):
+- Override: `JUGGLEBOT_RUNTIME_DIR` replaces `<root>/temp/runtime`, but only
+  when `root` is the checkout the module lives in. `tests/conftest.py` sets it
+  per session (session-scoped autouse fixture, a `mkdtemp` per process, so
+  each xdist worker has its own). Other roots (`tmp_path` repos) are never
+  redirected, so every existing path assertion is unchanged.
+- Refusal: under pytest (`"pytest" in sys.modules` or `JUGGLEBOT_UNDER_TEST`,
+  set at conftest import) a base inside the module's own checkout, or inside
+  any git checkout outside the system temp dir, raises `RuntimePathRefused`.
+  A scratch worktree under `/tmp` is still protected, because the check
+  against the own checkout comes first.
+- Robot path: with neither signal present the base is exactly
+  `<root>/temp/runtime` (unit 1 behaviour). `grep -rn "JUGGLEBOT_RUNTIME\|
+  JUGGLEBOT_UNDER" ros_ws tools config *.sh` finds nothing but
+  `runtime_paths.py` and the conftest; the launch must never set either.
+- Test: `test_test_process_never_resolves_a_runtime_path_in_a_real_checkout`
+  (base is outside the repo; with the env var removed, four resolvers refuse;
+  an override pointing inside the repo is refused) and
+  `test_other_roots_are_never_redirected`. Removing the guard or the fixture
+  fails the first.
+
+**Audit.** Writers of runtime paths in `tests/`: `skill_node` constructors
+(`tests/ros/test_skill_node*.py`) resolve `_REPO_ROOT` and rely on the fixture;
+`test_runtime_writes_untracked.py`, `tests/sim/test_runtime_records.py`,
+`tests/ros/test_gui_records_api.py` and the merge-tool tests use `tmp_path`
+roots and needed nothing.
+
+**Sharing hypothesis** (the 10.36 s stall in a `-n 2` run, unexplained in unit
+2). Before this unit two workers did share one real `temp/runtime`: seed
+files and `os.replace` on the same directory. That cannot make one block the
+other by itself (`mkstemp` names are unique, there is no lock, `os.replace` is
+atomic), but an `fsync` stall on a loaded filesystem is filesystem-wide and
+the per-worker base is on the same `/tmp` filesystem, so the isolation removes
+the file sharing and not an fsync stall. Not chased further.
+
+### Verification (unit 3)
+- 2026-11-14, `find temp/runtime -type f | sort | md5sum` in the worktree
+  after deleting its debris, before and after the scoped run: both
+  `d41d8cd98f00b204e9800998ecf8427e` (empty listing), unchanged.
+- 2026-11-14, `flock /tmp/jugglebot-tests.lock python -m pytest -n 2 -q
+  tests/ros/test_runtime_writes_untracked.py tests/sim/test_runtime_records.py
+  tests/ros/test_gui_records_api.py tests/ros/test_skill_node*.py
+  tests/motion/test_memory.py tests/motion/test_records.py
+  tests/sim/test_logbook_index.py tests/sim/test_logbook_front_matter.py
+  tests/sim/test_docs_links.py`: 768 passed in 1689.47 s (a loaded box).
