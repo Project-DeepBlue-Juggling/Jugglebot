@@ -120,11 +120,19 @@ def claim(repo_root: str, slug: str, user: str, push: bool = True) -> Item:
         raise TicketError("ticket %r is %s, not open" % (slug, item.status))
     owners = list(item.meta.get("owners") or [])
     if user in owners:
-        return item  # idempotent: already claimed by this user, nothing to commit
-    owners.append(user)
-    item.meta["owners"] = owners
-    item.meta["updated"] = _now()
-    write_item(item.path, item.meta, item.body)
+        rel = os.path.relpath(item.path, repo_root)
+        dirty = subprocess.run(["git", "status", "--porcelain", "--", rel], cwd=repo_root,
+                               check=True, stdout=subprocess.PIPE,
+                               universal_newlines=True).stdout.strip()
+        if not dirty:
+            return item  # idempotent: already claimed by this user, nothing to commit
+        # the owner is in the file but uncommitted: an earlier claim was refused by the
+        # map-write check (exit 4) and left its write in the tree. Commit it now.
+    else:
+        owners.append(user)
+        item.meta["owners"] = owners
+        item.meta["updated"] = _now()
+        write_item(item.path, item.meta, item.body)
     _commit(repo_root, item, "map: claim %s" % _label(item), push)
     return item
 

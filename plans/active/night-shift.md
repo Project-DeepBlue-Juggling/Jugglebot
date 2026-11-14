@@ -7,7 +7,7 @@ last_updated: 2026-11-14
 pathway: night-shift
 branch: main
 scope: >-
-  An unattended Claude Code run after the 04:00 nightly suite that walks every open Item, works what
+  An unattended Claude Code run after the 04:00 nightly suite that walks the delta of open Items (every open Item on Sundays), works what
   Claude can finish alone, merges only what passes a deterministic merge gate, holds the rest on
   branches and writes one committed report with the operator's questions as answerable tickets; then
   the Next Sitting Runbook, one ordered page of every hardware check waiting across all Pathways,
@@ -68,7 +68,7 @@ map app (:8765, own clone ~/map-live/Jugglebot, pulls every 30 s): board, drawer
    guards: live_session() from nightly_suite.sh; temp/night-shift.hold; |
            suite flock via run_tests.sh                                  |
    preflight: tools/night_shift_preflight.py -> candidates.json;         |
-           exit 0 with "nothing new" if the set equals last night's      |
+           exit 3 NOTHING_NEW when the delta (added, changed, answered, carry, unblocked, unclassified) is empty |
    claude -p "/night-shift <date> ..." --model opus  [--max-budget-usd N] |
        --permission-mode acceptEdits --permission-prompts none          |
        --output-format json  (deny list installed in the clone)         |
@@ -90,7 +90,7 @@ Sitting: checkout night-shift/sitting-<date> -> fly rows -> /sitting-debrief Ses
 | Artefact | Form |
 |---|---|
 | `tools/night_shift.sh` | runner: guards, preflight, `claude -p`, exit summary to `temp/reports/night-shift/last_run.json` (in the clone) |
-| `tools/night_shift_preflight.py` | the candidate record and the "nothing new" exit (P1) |
+| `tools/night_shift_preflight.py` | the candidate record and the "nothing new" exit (P1): "nothing new" is an empty `delta` (see `night-shift-closeout.md` C4) |
 | `tools/night_shift_settings.json` | the clone's permission settings, installed over `.claude/settings.local.json` every run (P1) |
 | `tools/lib/live_session.sh` | the live-Sitting guard shared by the nightly and Night Shift (P1) |
 | `tools/systemd/jugglebot-night-shift.{service,timer}` | user units; `OnCalendar=*-*-* 04:45`, `Persistent=false` (a missed night never fires at the next boot, which is when the robot is powered), `After=jugglebot-nightly.service`, `Nice=10`, `EnvironmentFile=-%h/.config/jugglebot/night-shift.env` (mode 600, holds `ANTHROPIC_API_KEY` and, since 2026-11-02, `CLAUDE_CODE_OAUTH_TOKEN`: the subscription fallback when the API credit runs out) |
@@ -177,7 +177,7 @@ The nightly suite and its status line; the ticker mechanism (Night Shift becomes
 
 Unit (offline):
 - T-U1 `tools/night_shift_gate.py`: each of the eight gate conditions (a) to (h) failing alone yields HOLD naming its letter ((c) hardware, which also covers a `## Sitting` section on the Item; (g) owner and (h) app check are never waivable, `--waive c` clears only (c)); all passing yields MERGE; a missing audit report is HOLD, never MERGE.
-- T-U2 preflight "nothing new": same ids and stamps -> exit 0 and no `claude` invocation (fake `claude` on PATH records calls); one new Item, one changed `updated`, or one answered ticket -> invocation.
+- T-U2 preflight "nothing new": empty delta -> exit 3, no `claude` call; any delta member -> exit 0 (fake `claude` on PATH records calls); one new Item, one changed `updated`, or one answered ticket -> invocation.
 - T-U3 runner guards: hold file present -> `HELD`; `live_session()` true -> wait then `DEFERRED`; both runners source the one guard file (a grep test that `nightly_suite.sh` no longer defines its own regex).
 - T-U4 ticket `type: question` validated; `## Answer` detection; a `question` ticket on a non-existent parent is refused.
 - T-U5 `## Sitting` parser: every key, missing `do:` -> listed under needs-a-section, bad `minutes` -> refused; ordering and setup grouping on a fixture of six Items; `docs/runbook.md` currency.

@@ -49,7 +49,18 @@ Arguments: `$ARGUMENTS`
    `&&`, `|`, `&`, `>`, `<`, `$(` or backtick, and the wrapper must be byte-identical to
    `origin/main`'s (on a branch that edits it, use `D/gate-base/tools/night_shift_nonet.sh`). A
    refused tool call is the deny list doing its job: note it and move on, never work around
-   it. The Wave camera's native tests run through `tests/firmware/test_wave_native.py`;
+   it. **Free text never rides a command line** (the hook's trigger is the whole line, and an
+   Item's title or a finding's reasons can name `probes` or `rosbag`: real Items do): write
+   every commit or merge message, trailers included, to a file under D with the Write tool
+   (`D/msg-<ID>.txt`) and pass it with `-F` (`git commit -q -F D/msg-<ID>.txt`,
+   `git merge -q --no-ff -F D/msg-<ID>.txt <branch>`); never `-m "..."`, never a heredoc or
+   `-F -`, never `git add -A && git commit`: `git add -A` and the commit are two commands.
+   `mapkit` builds its own `map:` commit message inside its process, so that line stays clean;
+   but three `mapkit` arguments are free text with no file option (`item new` title,
+   `item set-status --note`, `item skip --note/--input` outside a `--batch` file): keep their
+   text free of the four guarded words (`probes`, `ros2 bag`, `rosbag`, `.ros`), rewording
+   ("bag search", "probe" singular and "launch-log read" are not guarded), and prefer the
+   file options where they exist (`--body-file`, `--batch`). The Wave camera's native tests run through `tests/firmware/test_wave_native.py`;
    `pio test` itself stays refused because its default environment is the ESP32.
 3. **`main` is sacred.** No force-push, no history rewrite, no `reset --hard` of a pushed
    ref, no commit on `main` that did not come through the merge gate or is not a report,
@@ -252,13 +263,15 @@ amended after the gate, ever), and the Item's closure goes INTO that commit, not
 before `git add -A`, so the tip the gate judges is the tip that merges. If the branch ends up
 HELD, `main` keeps the Item `in_progress` (2j step 2) while the branch carries the closure,
 which is exactly what merging it later should produce. Commit:
-`git add -A && git commit -q -F -` with subject `<type>(<area>): <what> (<ID>)` (`fix`,
+write the message to `D/msg-<ID>.txt` (Write tool; § 0 rule 2: free text never goes on a command
+line) with subject `<type>(<area>): <what> (<ID>)` (`fix`,
 `feat`, `docs`, `test`, `refactor`), a body of two or three lines, then the trailers
-`Logbook-Entry: <slug>`, `Night-Shift: <date>` and `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+`Logbook-Entry: <slug>`, `Night-Shift: <date>` and `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`;
+then `git add -A`, and as its own command `git commit -q -F D/msg-<ID>.txt`.
 `Night-Shift:` goes on every commit of an Item's work, in both repos: it is how the runner's
 deploy proves a commit is tonight's before it may revert one, and an unmarked commit makes it
 leave everything for a Session.
-A rating change alone is `map: rate <ID> <title>` with no trailer.
+A rating change alone is a `map:` commit with no trailer, made by `mapkit item rate ... --commit --no-push`.
 
 Spawn the `audit-reporter` agent (Sonnet) on `git diff origin/main...HEAD` plus
 `git log --oneline origin/main..HEAD`. Classify each finding yourself: narrative (comment,
@@ -278,10 +291,12 @@ Behaviour-affecting findings open: <n>
 
 ```
 printf 'HEAD=%s\nBRANCH=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse --abbrev-ref HEAD)" > D/gate-<ID>.log
-D/gate-base/tools/night_shift_nonet.sh ./run_tests.sh --full >> D/gate-<ID>.log 2>&1; echo "EXIT=$?" >> D/gate-<ID>.log
+flock /tmp/jugglebot-tests.lock D/gate-base/tools/night_shift_nonet.sh ./run_tests.sh --full >> D/gate-<ID>.log 2>&1; echo "EXIT=$?" >> D/gate-<ID>.log
 ```
 
 The wrapper is the base's (2a), so a branch cannot loosen the fence around its own suite run.
+The `flock` serialises the night's suite against a day Session's run: two overlapping suites
+fail the wall-clock `serial` tests (the line names no guarded word, so the hook lets it by).
 
 ONE full suite, on the tip the audit names: the audit and its narrative fixes run first (2e),
 so a fix never costs a second full suite or a re-gate. Any commit after this point (a fix
@@ -322,14 +337,18 @@ is Held `app clone unavailable`. Exit 0 and `MERGE` -> 2i. Exit 1 and `HOLD <rea
 ```
 python -m mapkit item new ticket "<the question, one sentence ending in ?>" --type question \
     --parent <ID> --priority <the Item's> --body-file D/briefs/<ID>-question.md \
-    --effort xs --hardware none --owner decision --radius local --area <the parent's area>
+    --effort xs --hardware none --owner decision --radius local --area <the parent's area> \
+    --commit --no-push
 ```
+
+then `git push -q origin main` on its own line. The title is free text with no file option
+(§ 0 rule 2): phrase the question without `probes`, `ros2 bag`, `rosbag` or `.ros`; the body is a file.
 
 Rated at filing: a ticket is not `inbox`, so `test_map_items_rated` requires every metric.
 The body: the context in two sentences, the options you drafted, what each answer would
 unblock, each paragraph under the readability cap. Every question ticket is filed on
 `main` through the map-write check (§ 0 rule 10: `--commit --no-push` runs it, then
-push; subject `map: file ticket <question-ID> <title>`, no trailer), never on an Item's branch: the
+push; mapkit writes the subject `map: file ticket <question-ID> <title>`, no trailer), never on an Item's branch: the
 app writes the answer to `main`, and a branch copy would stay open and trip the gate's
 condition (e) at the re-gate (and add/add-conflict when the branch later merges `main`). The owner answers in the app
 under `## Answer`; the next night's preflight sees the ticket's `updated` move and
@@ -358,14 +377,16 @@ one tonight, unless only a Sitting unblocks it (`none`).
 1. The Item is already `complete` in the gated tip (2e). Nothing is amended.
 2. ```
    git checkout -q main && git pull -q --ff-only
-   git merge -q --ff-only night-shift/<date>-<ID> || git merge -q --no-ff -m "merge(night-shift): <ID> <title>" night-shift/<date>-<ID>
-   git push -q origin main
+   git merge -q --ff-only night-shift/<date>-<ID>
    ```
+   Only if that fails (main moved), write `D/msg-<ID>.txt` (subject `merge(night-shift): <ID> <title>`, no
+   trailer needed) and run `git merge -q --no-ff -F D/msg-<ID>.txt night-shift/<date>-<ID>` as its own command.
+   Then, on its own line, `git push -q origin main`.
 3. **A conflict in the `--no-ff` merge** (main moved between two Items, typically on the generated
    `logbook/INDEX.md`): on ANY conflict, `git merge --abort`. Never resolve it on `main`: a
    hand-resolved merge is a tree the gate never saw. Instead, on the Item branch,
-   `git fetch -q && git checkout -q night-shift/<date>-<ID> && git merge -q origin/main` (the same move
-   as RESUME, 2l step 1; give the merge commit the `Night-Shift: <date>` trailer). A conflict confined to
+   `git fetch -q`, `git checkout -q night-shift/<date>-<ID>`, `git merge -q -F D/msg-<ID>.txt origin/main` (the same move
+   as RESUME, 2l step 1, with `-F D/msg-<ID>.txt` carrying the `Night-Shift: <date>` trailer). A conflict confined to
    generated files (`logbook/INDEX.md`, `plans/*/INDEX.md`, `docs/project-map.md`,
    `docs/glossary.md`, `docs/runbook.md`) is resolved by taking either side, `python -m mapkit gen`,
    `git add` of those files and the commit. Any other conflict: `git merge --abort`, and the Item is
@@ -388,7 +409,8 @@ one tonight, unless only a Sitting unblocks it (`none`).
 2. `git checkout -q main && git pull -q --ff-only`, then, with the SAME flags as 2b,
    `python -m mapkit item rate <ID> --effort .. --hardware .. --owner .. --radius .. [--diagnosis ..] --area ..`
    (no `--commit`: it rides in the next write's commit), then
-   `python -m mapkit item set-status <ID> in_progress --owner night-shift --note "Night Shift <date>: held on night-shift/<date>-<ID>: <reasons, one line>; unblocked by <what>" --commit --no-push`,
+   `python -m mapkit item set-status <ID> in_progress --owner night-shift --note "Night Shift <date>: held on night-shift/<date>-<ID>: <reasons, one line>; unblocked by <what>" --commit --no-push`
+   (the note is free text with no file option: § 0 rule 2, no guarded word in it),
    then `git push -q origin main` (the commit ran the map-write check, § 0 rule 10). The note stays one
    short line (the readability cap); detail goes in the branch's Item body. An Item already `in_progress`
    under another owner is not re-owned: the note only. If the Item is a hardware one with
@@ -413,7 +435,7 @@ The ticket is complete and its parent has a held branch (find it with
 `git ls-remote --heads origin 'night-shift/*-<ID>'`; the newest date if several). Read the
 ticket's `## Answer` as the order for the night:
 
-1. `git fetch -q && git checkout -q night-shift/<old-date>-<ID> && git merge -q origin/main`
+1. `git fetch -q`, `git checkout -q night-shift/<old-date>-<ID>`, `git merge -q -F D/msg-<ID>.txt origin/main`
    (the gate needs the base inside the branch; the merge also brings the closed ticket),
    then re-run the 2a extract: the fetch moved `origin/main`.
    A conflict you cannot resolve mechanically: Held again, reason `resume merge conflict`.
@@ -452,7 +474,7 @@ present, no upstream names). Items stay in Jugglebot's `map/`; only the code is 
    from it). Branch in the app clone: `git -C <app-clone> checkout -q main`, pull `--ff-only`, then
    `checkout -q -b night-shift/<date>-<ID>`. The unit works there (2d, with the logbook entry
    still in the Jugglebot clone, uncommitted until step 7), and commits nothing itself.
-4. Commit in the app clone: subject `<type>(<area>): <what> (<ID>)`, because the deploy's
+4. Commit in the app clone (message in `D/msg-<ID>.txt`, `git -C <app-clone> commit -q -F D/msg-<ID>.txt`, § 0 rule 2): subject `<type>(<area>): <what> (<ID>)`, because the deploy's
    rollback finds the Items to reopen from those subjects; trailers `Logbook-Entry: <slug>` and
    `Night-Shift: <date>`.
 5. Suite: `D/gate-base/tools/night_shift_nonet.sh tools/night_shift_app_suite.sh --app <app-clone> --mapkit . --log D/app-<ID>.log`,
@@ -466,7 +488,7 @@ present, no upstream names). Items stay in Jugglebot's `map/`; only the code is 
    `jugglebot-map:night-shift/<date>-<ID>`.
 7. On a merge, in the Jugglebot clone on `main`: `python -m mapkit item set-status <ID> complete --link logbook/<entry>.md`
    (no `--commit`, which would stage only the Item and leave the entry behind), `git add -A`, and
-   commit as `map: close <ID> <title>` with the `Logbook-Entry:` and `Night-Shift:` trailers; the
+   commit with `-F D/msg-<ID>.txt` (subject `map: close <ID> <title>`, the `Logbook-Entry:` and `Night-Shift:` trailers; `git add -A` first, as its own command); the
    `python -m mapkit check` (§ 0 rule 10, a hand commit), push. The report's Commits cell names the app commit with
    `jugglebot-map:<sha>`. If the fix's correctness is something only eyes can judge (a layout, a
    scroll, a focus jump), say so in the row: the tests passing is not proof it looks right.
@@ -486,7 +508,7 @@ spent): write `docs/night-shift/<date>.md` in the layout of `docs/night-shift/RE
 (the nine sections in order, the Item sections as GFM tables with a header row, every
 `<ID>` bare, the Held table's last column `Respond in` filled, a one-line **Summary.** under the title), and `logbook/<date>-night-shift.md`
 (short form: the counts, the nightly line, the cost, a link to the report), then
-`python -m mapkit gen` and stage the regenerated `logbook/INDEX.md`. Commit on `main` as `docs(night-shift): report <date>` with the
+`python -m mapkit gen` and stage the regenerated `logbook/INDEX.md`. Commit on `main` (message in `D/msg-report.txt`, `git add -A` then `git commit -q -F D/msg-report.txt`, as two commands) as `docs(night-shift): report <date>` with the
 trailers (`Logbook-Entry: <date>-night-shift`), `git pull -q --rebase` ONLY if the push is
 rejected and ONLY for this report commit (a docs commit rebased onto a moved `main` is
 safe; a conflict there on `logbook/INDEX.md` is resolved by `python -m mapkit gen`, then

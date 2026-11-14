@@ -105,7 +105,7 @@ def test_merge_conflict_rule(text):
     s = _section(text, "### 2i. MERGE", "### 2j. HOLD")
     assert "on ANY conflict, `git merge --abort`" in s
     assert "a\n   hand-resolved merge is a tree the gate never saw" in s
-    assert "git merge -q origin/main" in s
+    assert "git merge -q -F D/msg-<ID>.txt origin/main" in s
     for gen in ("logbook/INDEX.md", "plans/*/INDEX.md", "docs/project-map.md", "docs/glossary.md",
                 "docs/runbook.md"):
         assert gen in s, gen
@@ -115,3 +115,35 @@ def test_merge_conflict_rule(text):
     assert "merge only the tip the gate recorded `MERGE` for" in s
     # The rule's merge happens on the branch (the gated tip), never on main.
     assert re.search(r"Never resolve it on `main`", s)
+
+
+# ---- C16: free text never rides a command line (the Bash guard's trigger is the line) ---
+
+_FENCE = re.compile(r"```[^\n]*\n(.*?)```", re.S)
+_INLINE = re.compile(r"`([^`\n]+)`")
+_COMMIT_SHAPES = re.compile(r"^(git(?: -C \S+)? (?:commit|merge)\b|python -m mapkit item\b)")
+
+
+def _command_examples(text):
+    """Every fenced line (continuations joined) and inline span that is a commit/merge/item command."""
+    found = []
+    for block in _FENCE.findall(text):
+        for line in block.replace("\\\n", " ").splitlines():
+            found.append(line.strip())
+    prose = _FENCE.sub("", text)
+    found.extend(m.strip() for m in _INLINE.findall(prose))
+    return [c for c in found if _COMMIT_SHAPES.match(c)]
+
+
+def test_commit_merge_and_item_commands_carry_no_free_text(text):
+    """A message on the command line can name `probes` or `rosbag` (real Item titles do), and
+    the guard then refuses the whole line, `&&` chains included: messages go in a file via -F."""
+    cmds = _command_examples(text)
+    assert len(cmds) >= 8, cmds  # the extraction found the protocol's examples
+    for c in cmds:
+        assert '-m "' not in c, c
+        assert "&&" not in c, c
+        assert "<<" not in c, c
+        assert "<title>" not in c, c
+    assert any(c.startswith("git commit -q -F D/msg-") for c in cmds)
+    assert any("--no-ff -F D/msg-" in c for c in cmds)

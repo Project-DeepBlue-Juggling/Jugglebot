@@ -1,7 +1,7 @@
 """The map-write check: four checks over ``map/``, one enforcement point.
 
 Each function returns a list of problem strings (empty = clean). The four map
-tests call these same functions, and every ``mapkit item ... --commit`` calls
+tests call these same functions, and every ``mapkit item ... --commit``, ``claim`` and ``resolve`` call
 :func:`run_all` on the working tree BEFORE it commits, so the test and the
 commit path cannot drift (plan ``night-shift-closeout.md``, C13):
 

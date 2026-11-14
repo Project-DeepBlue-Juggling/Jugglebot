@@ -172,3 +172,22 @@ def test_claim_and_resolve_refuse_a_commit_that_breaks_the_map_checks(tmp_path):
         assert _log(work) == before
         assert _log(remote, "main") == before
     assert load_item(str(work / "map" / "ticket-q.md")).meta["status"] == "complete"  # write left in tree
+
+
+def test_claim_retry_after_a_refused_check_commits_the_kept_write(tmp_path):
+    """Exit 4 leaves the owner in the file; a retry must not take the idempotent early return."""
+    work, remote = _git_repo(tmp_path)
+    before = _log(work)
+    bad = work / "map" / "ticket-unrated.md"
+    _ticket(work, "unrated", 2)
+    meta = {k: v for k, v in load_item(str(bad)).meta.items() if k not in _RATED}
+    write_item(str(bad), meta, "Question?\n")
+    ns = argparse.Namespace
+    assert tickets._run_claim(ns(repo=str(work), slug="q", user="a", no_push=False)) == 4
+    assert _log(work) == before
+    assert load_item(str(work / "map" / "ticket-q.md")).meta["owners"] == ["a"]
+    bad.unlink()  # fix the map
+    assert tickets._run_claim(ns(repo=str(work), slug="q", user="a", no_push=False)) == 0
+    assert _log(work) == "map: claim q"
+    assert _log(remote, "main") == "map: claim q"
+    assert _files(work) == ["map/ticket-q.md"]

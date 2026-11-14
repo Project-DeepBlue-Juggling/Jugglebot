@@ -35,3 +35,17 @@ sitting merge script already record.
 
 2026-11-14, `python -m pytest tests/sim/test_mapkit_tickets.py tests/sim/test_question_tickets.py -q`:
 25 passed.
+
+Docs pass (commit 6bf1a1d5), 2026-11-14: `python -m mapkit check --full`: clean.
+`flock /tmp/jugglebot-tests.lock python -m pytest tests/sim/test_mapkit*.py test_night_shift_gate.py
+test_night_shift_protocol.py test_plans_index.py test_docs_links.py test_logbook_index.py
+test_logbook_front_matter.py test_question_tickets.py test_map_items.py test_map_items_rated.py
+test_glossary_avoid_words.py test_night_shift_candidate.py test_sitting_debrief_protocol.py
+test_sitting_merge.py test_night_shift_report.py test_itemcli_commit_check.py -q -n 2`:
+802 passed, 61 skipped in 113.06 s. `test_night_shift_runner.py`, same lock, `-n 2`: 86 passed in 72.42 s.
+
+Audit-fix commit, 2026-11-14: `claim` now commits a kept write on retry (a refused claim left the
+owner in the file, so the retry returned early): `test_claim_retry_after_a_refused_check_commits_the_kept_write`
+in `tests/sim/test_mapkit_tickets.py`; and the Night Shift protocol pin
+`test_commit_merge_and_item_commands_carry_no_free_text` in `tests/sim/test_night_shift_protocol.py`
+(no `-m "`, `&&`, heredoc or `<title>` in any commit, merge or `mapkit item` example). Results in that commit's message.

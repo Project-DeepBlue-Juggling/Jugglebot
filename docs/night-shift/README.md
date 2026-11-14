@@ -5,7 +5,7 @@ One file per night, `docs/night-shift/<date>.md`, written by the Night Shift orc
 `docs(night-shift): report <date>`. The morning Session reads it when the nightly ticker
 says `LOWERED ... by night-shift <date>`; the map app renders it on its Night Shift page.
 The runner's own record (`last_run.json`, status word) lives in the clone's
-`temp/reports/night-shift/`, not here. A night that reached Claude (or ended `UNGATED_HOLD`), ended in any status but
+`temp/reports/night-shift/`, not here. A night that reached Claude, or ended `UNGATED_HOLD`, and ended in any status but
 `OK` and has no report gets a stub from the runner instead, provided the clone is back on a
 clean `main` with nothing unpushed (`stub_report` in `last_run.json` says what happened)
 (`docs(night-shift): stub report <date> (<status>)`, `tools/night_shift_stub_report.py`): the
@@ -137,7 +137,7 @@ added or changed, so an answered ticket is walked once and never reported again.
 delta ends the night `NOTHING_NEW` (no claude, no ticker claim, cost zero; `last_run.json` and
 the history row are still written). A **full walk** (every open Item, `night_skip` ignored)
 runs on Sundays, and on request by creating `temp/reports/night-shift/full-walk.request` in
-the clone; the runner deletes it after the night that honoured it. `candidates-<date>.json`
+the clone; the runner deletes it after the night that honoured it (a night that fails before the snapshot keeps it). `candidates-<date>.json`
 carries `delta[]` (walk order), `delta_why{}`, `unchanged` and `full_walk`; the post-run
 snapshot `candidates-last.json` carries `carry[]` and is only written by a night that
 completed, so a failed night leaves the older baseline in place.
