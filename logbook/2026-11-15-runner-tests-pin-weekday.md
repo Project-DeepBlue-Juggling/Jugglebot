@@ -40,8 +40,8 @@ that row's `pruned` list names 19 branches of the old ID scheme, so
 `tests/sim/test_no_legacy_item_ids.py` failed on main from that commit on (after the
 04:00 nightly, so the nightly did not show it). The test now has a guard rule
 `night-shift-history-ledger`: a branch-name token in that file is `historical` and
-pinned by count. No old-form branch is left on origin (`git branch -r | grep -c
-"night-shift/.*JB-"`: 0, 2026-11-15), so no later row can change the count. Any
+pinned by count. No old-form branch is left on origin (`git branch -r` lists no
+`night-shift/` branch with an old-form ID, 2026-11-15), so no later row can change the count. Any
 other old-form token in the ledger still fails.
 
 2026-11-15, `python -m pytest -q tests/sim/test_no_legacy_item_ids.py
