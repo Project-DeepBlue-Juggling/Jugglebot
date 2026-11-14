@@ -34,7 +34,9 @@
 #      so it stays raised for the morning Session)                       -> UNGATED_HOLD
 #   7. the deny-list settings installed into the clone on EVERY run;
 #      claude never runs without them                                   -> NO_SETTINGS
-#   8. preflight: nothing new since the last real run = no claude call  -> NOTHING_NEW
+#   8. preflight: the DELTA (added, changed, carry, unclassified, unblocked Items; see
+#      tools/night_shift_preflight.py) is empty = no claude call, no ticker claim
+#      -> NOTHING_NEW. Sundays and $REPORTS/full-walk.request make it a FULL WALK
 #
 # Permission model: `--permission-mode acceptEdits --permission-prompts none`
 # with tools/night_shift_settings.json installed as the clone's
@@ -819,8 +821,21 @@ have_credential || finish NO_API_KEY "credentials lost after sourcing the enviro
 
 # ── 8. Preflight: anything new since the last real run? ───────────────────────
 CANDIDATES="$REPORTS/candidates-$DATE.json"
+# The night examines only the delta (closeout C4). A FULL WALK (every open Item, no
+# skip carry-over) runs on Sundays (NIGHT_SHIFT_WEEKDAY overrides `date +%u`, for
+# tests) and on request: a one-shot $REPORTS/full-walk.request, removed after the
+# night that honoured it ends in a snapshot (a failed night keeps it).
+FULL_WALK_REQUEST="$REPORTS/full-walk.request"
+FULL_WALK_ARGS=()
+FULL_WALK_REQUESTED=0
+if [[ -e "$FULL_WALK_REQUEST" ]]; then FULL_WALK_REQUESTED=1; fi
+if [[ "$FULL_WALK_REQUESTED" == 1 || "${NIGHT_SHIFT_WEEKDAY:-$(date +%u)}" == "7" ]]; then
+  NIGHT_SHIFT_FULL_WALK=1
+fi
+[[ "${NIGHT_SHIFT_FULL_WALK:-0}" == 1 ]] && FULL_WALK_ARGS=(--full-walk)
 NS_PREFLIGHT="$(cd "$CLONE" && "$PYTHON" "$CLONE/tools/night_shift_preflight.py" \
-  --repo "$CLONE" --out "$CANDIDATES" --previous "$REPORTS/candidates-last.json" 2>"$REPORTS/preflight.err")"
+  --repo "$CLONE" --out "$CANDIDATES" --previous "$REPORTS/candidates-last.json" \
+  "${FULL_WALK_ARGS[@]}" 2>"$REPORTS/preflight.err")"
 pf_rc=$?
 NS_PREFLIGHT="$(one_line "$NS_PREFLIGHT")"
 export NS_PREFLIGHT
@@ -1305,8 +1320,11 @@ fi
 # The baseline for tomorrow's "anything new?" is the board AFTER tonight's work
 # (Items closed or edited tonight are not news), so snapshot the post-run clone
 # rather than keep the pre-run candidates. A snapshot: its exit code is moot.
+# --walked/--report: carry = tonight's delta minus the IDs the report has a row for.
 (cd "$CLONE" && "$PYTHON" "$CLONE/tools/night_shift_preflight.py" --repo "$CLONE" \
-  --out "$REPORTS/candidates-last.json") >/dev/null 2>>"$REPORTS/preflight.err"
+  --out "$REPORTS/candidates-last.json" --walked "$CANDIDATES" \
+  --report "$CLONE/docs/night-shift/$DATE.md") >/dev/null 2>>"$REPORTS/preflight.err"
+[[ "$FULL_WALK_REQUESTED" == 1 ]] && rm -f "$FULL_WALK_REQUEST"
 record_cost_main
 [[ -z "${NS_LANDED_UNGATED:-}" ]] || finish UNGATED_MERGE "${NS_LANDED:-}; ${NS_LANDED_UNGATED}"
 [[ -z "${NS_SELF_EDIT:-}" ]] || finish SELF_EDIT_BRANCH "${NS_BRANCHES:-}; ${NS_SELF_EDIT}"

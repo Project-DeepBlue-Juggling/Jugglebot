@@ -94,7 +94,9 @@ if [[ "${FAKE_CLAUDE_REPORT:-0}" == 1 && "$prompt" != *--dry-run* ]]; then
   [[ "$prompt" =~ ^/night-shift\ ([0-9-]+) ]] && date="${BASH_REMATCH[1]}"
   mkdir -p docs/night-shift
   summary=""; [[ "${FAKE_CLAUDE_SUMMARY:-0}" == 1 ]] && summary=$'**Summary.** merged 0\n\n'
-  printf '# Night Shift %s\n\n%s## Nightly\nGREEN\n\n## Cost\nunits: 0\n' "$date" "$summary" >"docs/night-shift/$date.md"
+  # Item rows for the whole fixture board (closeout C4: an Item with a row is walked, not carried).
+  rows=$'## Skipped\nBUG-1 | fixture\nBUG-2 | fixture\n\n'; [[ "${FAKE_CLAUDE_ROWS:-1}" == 0 ]] && rows=""
+  printf '# Night Shift %s\n\n%s## Nightly\nGREEN\n\n%s## Cost\nunits: 0\n' "$date" "$summary" "$rows" >"docs/night-shift/$date.md"
   git add docs/night-shift && git commit -q -m "docs(night-shift): report $date" && git push -q origin main
 fi
 if [[ -n "${FAKE_CLAUDE_CLOSE_ITEM:-}" ]]; then
@@ -118,7 +120,8 @@ def _bug(root: Path, n: int, updated: str = "2026-10-20T00:00:00Z") -> None:
     write_item(str(root / "map" / ("bug-b%d.md" % n)),
                {"id": "BUG-%d" % n, "kind": "bug", "title": "Bug %d" % n,
                 "status": "inbox", "created": "2026-10-20", "updated": updated,
-                "priority": "medium"}, "Body\n")
+                "priority": "medium", "night_skip": "out-of-reach",   # classified: not in the delta
+                "night_skip_on": "2026-11-14", "night_skip_note": "fixture"}, "Body\n")
 
 
 def _base_path() -> str:
@@ -1308,3 +1311,70 @@ def test_nothing_is_pruned_when_the_night_is_flagged(ns):
     _publish(ns, "night-shift/merged", commits=1, merge=True)
     _check(ns.run(FAKE_CLAUDE_PUSH_CODE=1), "UNGATED_MERGE", 1)
     assert "night-shift/merged" in _heads(ns) and ns.last()["pruned"] == []
+
+
+# --- closeout C4: the delta walk -------------------------------------------------
+
+def _preflight_of(ns):
+    return json.loads((ns.reports / ("candidates-%s.json" % ns.last()["date"])).read_text())
+
+
+def test_empty_delta_is_nothing_new_without_claude_or_ticker(ns):
+    _check(ns.run(), "OK", 0)
+    (ns.nightly / "ticker.lowered").unlink()          # a later night must not re-claim it
+    (ns.nightly / "ticker.raised").write_text(
+        "%sT04:20:00+11:00 %s\n" % (ns.today, ns.green))
+    r = ns.run(NIGHT_SHIFT_WEEKDAY=3)
+    _check(r, "NOTHING_NEW", 0)
+    last = ns.last()
+    assert len(ns.calls()) == 1                       # claude never started again
+    assert last["preflight"].startswith("NOTHING_NEW items=2 unchanged=2")
+    assert not (ns.nightly / "ticker.lowered").exists()   # the ticker was not claimed
+    rec = _preflight_of(ns)
+    assert rec["delta"] == [] and rec["full_walk"] is False and rec["unchanged"] == 2
+
+
+def test_sunday_is_a_full_walk_even_with_an_empty_delta(ns):
+    _check(ns.run(NIGHT_SHIFT_WEEKDAY=3), "OK", 0)
+    r = ns.run(NIGHT_SHIFT_WEEKDAY=7)
+    _check(r, "OK", 0)
+    assert len(ns.calls()) == 2
+    rec = _preflight_of(ns)
+    assert rec["full_walk"] is True and rec["delta"] == ["BUG-1", "BUG-2"]
+    assert set(rec["delta_why"].values()) == {"full-walk"}
+    assert "full_walk=1" in ns.last()["preflight"]
+
+
+def test_full_walk_request_is_honoured_once_and_removed(ns):
+    _check(ns.run(NIGHT_SHIFT_WEEKDAY=3), "OK", 0)
+    req = ns.reports / "full-walk.request"
+    req.write_text("")
+    _check(ns.run(NIGHT_SHIFT_WEEKDAY=3), "OK", 0)
+    assert _preflight_of(ns)["full_walk"] is True
+    assert not req.exists()
+    _check(ns.run(NIGHT_SHIFT_WEEKDAY=3), "NOTHING_NEW", 0)   # one-shot: back to the delta
+
+
+def test_failed_night_keeps_the_request_and_the_baseline(ns):
+    _check(ns.run(NIGHT_SHIFT_WEEKDAY=3), "OK", 0)
+    before = (ns.reports / "candidates-last.json").read_text()
+    req = ns.reports / "full-walk.request"
+    req.write_text("")
+    r = ns.run(NIGHT_SHIFT_WEEKDAY=3, FAKE_CLAUDE_EXIT=1)
+    assert ns.last()["status"] != "OK"
+    assert req.exists()
+    assert (ns.reports / "candidates-last.json").read_text() == before
+
+
+def test_snapshot_carries_delta_items_the_report_has_no_row_for(ns):
+    # The fake report has no Item rows: tonight's whole delta carries to tomorrow.
+    ns.push_change()
+    _check(ns.run(NIGHT_SHIFT_WEEKDAY=7, FAKE_CLAUDE_ROWS=0), "OK", 0)
+    snap = json.loads((ns.reports / "candidates-last.json").read_text())
+    assert snap["carry"] == ["BUG-1", "BUG-2"]
+    r = ns.run(NIGHT_SHIFT_WEEKDAY=3)
+    _check(r, "OK", 0)
+    assert _preflight_of(ns)["delta_why"] == {"BUG-1": "carry", "BUG-2": "carry"}
+    # that night's report names both: nothing carries, the next night is empty
+    assert json.loads((ns.reports / "candidates-last.json").read_text())["carry"] == []
+    _check(ns.run(NIGHT_SHIFT_WEEKDAY=3), "NOTHING_NEW", 0)

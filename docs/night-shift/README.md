@@ -101,6 +101,22 @@ ticket's `## Answer` (BUG-46); the committed file never carries that column, so 
 orchestrator does not write one. Reports from before 2026-11-02 have no `Respond in` column
 and are served and checked as they were.
 
+## What a night examines (the delta)
+
+The preflight (`tools/night_shift_preflight.py`) decides before any model starts. The night
+examines only the **delta** of the open Items: added or changed since the last night that
+ended in a snapshot, **carried** from that night (in its delta but with no report row),
+**unclassified** (workable, no `night_skip`, no `night-shift/*-<ID>` branch on origin),
+or **unblocked** (a `blocked_by` Item changed or closed). A question ticket enters only when
+added or changed, so an answered ticket is walked once and never reported again. An empty
+delta ends the night `NOTHING_NEW` (no claude, no ticker claim, cost zero; `last_run.json` and
+the history row are still written). A **full walk** (every open Item, `night_skip` ignored)
+runs on Sundays, and on request by creating `temp/reports/night-shift/full-walk.request` in
+the clone; the runner deletes it after the night that honoured it. `candidates-<date>.json`
+carries `delta[]` (walk order), `delta_why{}`, `unchanged` and `full_walk`; the post-run
+snapshot `candidates-last.json` carries `carry[]` and is only written by a night that
+completed, so a failed night leaves the older baseline in place.
+
 A dry run writes the same layout to the clone's `temp/reports/night-shift/dry-<date>.md`
 with one classification line per candidate and commits nothing.
 
