@@ -4,9 +4,13 @@ kind: bug
 title: Hand keeps its last velocity feedforward on a Soft E-stop, disarm or link loss and stays in Closed-loop
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:10:31Z'
+updated: '2026-11-14T02:40:04Z'
 owners: []
 priority: high
+effort: s
+hardware: bench-hand
+owner: hands
+radius: subsystem
 diagnosis: hypothesis
 area: hand
 blocked_by: []
@@ -43,3 +47,21 @@ A power cut does clear the terms: they are volatile, and the axis comes back Idl
 1. A bench-Hand measurement: stop the stream mid-stroke by a disarm and record where the Hand settles. Get the bench top stop first; the bench Hand has the shorter stroke.
 2. If it matches the arithmetic, widen the hold flush to every suppress edge for the Hand, or send one frame with zero vel_ff on those edges. The drain already transmits on a Soft E-stop, so the rule "transmit nothing a stop forbids" is not what blocks it.
 3. Record what the E-stop button cuts.
+
+## Already known in the tree (2026-11-14)
+
+The property is not new: `tests/hardware/hand_stream_bench.py:150` and `logbook/2026-11-03-jb145-hand-stall-stop-options.md` both state that the bridge does not flush vel_ff on a disarm and that a disarm while moving leaves the Hand at `input_pos + vel_ff/35`. The bench driver is built to disarm only from a hold for that reason. What is missing is a measurement on the Hand and a decision on a cure.
+
+## Sitting
+
+- setup: bridge-cycled, armed
+- why: the offset law `vel_ff / pos_gain` was measured on a Leg and only derived for the Hand; two low-speed disarms confirm it before any firmware change is designed around it.
+- do:
+  - Launch down. Bench Hand on the bridge, bridge rebooted after re-cabling, Hand homed and parked at or below 0.9 rev, Cup empty, E-stop in hand. Know the bench top stop in rev first: this row needs it at or above 6.0 rev.
+  - From the repo root in the venv: `python tests/hardware/hand_stream_bench.py --stage triangle --tri-span 4 --tri-speed 10 --duration 60 --close-loop`. Press Ctrl-C once in the middle of an upward ramp, well away from either turning point. Expected offset 10 / 35 = 0.29 rev above the last command.
+  - Read where the Hand settled and the last commanded position (the driver's last printed telemetry, or `pos_estimate` over the isolated USB). Recover with `python tests/hardware/hand_stream_bench.py --clear-errors`, re-home if needed.
+  - Repeat at `--tri-speed 20` (expected 0.57 rev), again cutting on an upward ramp, and once more cutting on a downward ramp (expected 0.57 rev below).
+  - Do not go faster in this row: the offset grows with speed and the purpose is the law, not the limit.
+- pass: each settled offset is within 0.05 rev of `tri-speed / 35` in the direction of travel, and the Hand holds there without drifting.
+- record: for each cut the ramp direction, the last commanded position, the settled position, the offset, whether any Guard or latch fired, and the bench top stop in rev. Also what the E-stop button cuts (ODrive bus power or not), since the repo does not say.
+- minutes: 20

@@ -6,7 +6,7 @@ Candidate branch: `night-shift/sitting-<date>`, built at the Sitting by
 `tools/night_shift_candidate.sh --date <date> --push`. Existing `tests/hardware/` Runbooks are
 linked from rows, never duplicated.
 
-Rigs: Robot 4 blocks (261 min) · Bench leg 1 block (30 min) · Bench hand 1 block (40 min)
+Rigs: Robot 4 blocks (261 min) · Bench leg 1 block (30 min) · Bench hand 1 block (60 min)
 
 ## Setup 0: before power
 
@@ -133,9 +133,20 @@ Rigs: Robot 4 blocks (261 min) · Bench leg 1 block (30 min) · Bench hand 1 blo
 - pass: in every rate-0 gap the leg settles within 0.01 rev of the last transmitted command (FW 33: 0.05-0.056 rev), MOTOR_FB_STALE self-clears when frames return, no MAX_DEVIATION latch, and the iq step at the suppress edge stays under about 10 A with no visible jolt (else switch to the pre-registered vel_ff ramp, logbook 2026-11-01-jb73-suppress-edge-hold-flush).
 - record: per gap the settle offset (rev), the last vel_ff, the ODrive iq step at the edge, and the run directory.
 
-## Bench hand  (1 block, 40 min)
+## Bench hand  (1 block, 60 min)
 
-### Block 6: armed, bridge-cycled  (1 row, 40 min)
+### Block 6: armed, bridge-cycled  (2 rows, 60 min)
+
+#### BUG-105 Hand keeps its last velocity feedforward on a Soft E-stop, disarm or link loss and stays in Closed-loop  (20 min, high, unattached)
+- why: the offset law `vel_ff / pos_gain` was measured on a Leg and only derived for the Hand; two low-speed disarms confirm it before any firmware change is designed around it.
+- do:
+  - Launch down. Bench Hand on the bridge, bridge rebooted after re-cabling, Hand homed and parked at or below 0.9 rev, Cup empty, E-stop in hand. Know the bench top stop in rev first: this row needs it at or above 6.0 rev.
+  - From the repo root in the venv: `python tests/hardware/hand_stream_bench.py --stage triangle --tri-span 4 --tri-speed 10 --duration 60 --close-loop`. Press Ctrl-C once in the middle of an upward ramp, well away from either turning point. Expected offset 10 / 35 = 0.29 rev above the last command.
+  - Read where the Hand settled and the last commanded position (the driver's last printed telemetry, or `pos_estimate` over the isolated USB). Recover with `python tests/hardware/hand_stream_bench.py --clear-errors`, re-home if needed.
+  - Repeat at `--tri-speed 20` (expected 0.57 rev), again cutting on an upward ramp, and once more cutting on a downward ramp (expected 0.57 rev below).
+  - Do not go faster in this row: the offset grows with speed and the purpose is the law, not the limit.
+- pass: each settled offset is within 0.05 rev of `tri-speed / 35` in the direction of travel, and the Hand holds there without drifting.
+- record: for each cut the ramp direction, the last commanded position, the settled position, the offset, whether any Guard or latch fired, and the bench top stop in rev. Also what the E-stop button cuts (ODrive bus power or not), since the repo does not say.
 
 #### FEAT-45 Measure the Hand's commutation angle error through a hard brake on the bench Hand (FOC scope)  (40 min, high, unattached)
 - why: rung A is flown and the scope tool's analysis is fixed in the same commit (captures are re-analysed offline); this row flies harder bench brakes (rungs B and C, modelled entry 108 and 122 rev/s) for deceleration per amp, phase continuity and the modelled SPINOUT margin, the baseline any reading of BUG-57's torque loss needs. The tool withholds the angle unless the back-EMF dominates.
