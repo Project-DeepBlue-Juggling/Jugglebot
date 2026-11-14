@@ -15,6 +15,9 @@ area: platform-teensy
 blocked_by: []
 links: []
 filed_by: harrison
+night_skip: waiting-trigger
+night_skip_on: '2026-11-15'
+night_skip_note: Your TKT-54 decision is recorded; Platform Teensy firmware waits on the board arriving.
 ---
 
 Let's discuss the possible advantages that we might receive as a result of adding an accelerometer to the 2020 extrusion on which Jugglebot's hand's linear rail is mounted. Might this help with our 'input shaping' work, by allowing us to capture high resolution data on Platform acceleration? I imagine we have the Teensy pins available for this? What specific sensor might be best to use?

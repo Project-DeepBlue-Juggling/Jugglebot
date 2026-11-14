@@ -16,6 +16,9 @@ blocked_by: []
 links:
 - plans/archived/skill-stack-dress-rehearsals-and-residue.md
 filed_by: claude
+night_skip: too-large
+night_skip_on: '2026-11-15'
+night_skip_note: Rated m with several solves to move, and its trigger has not fired.
 ---
 
 The skill node's 43 ms solve and the `go_home` / `go_to_pose` / hold solves still run in the shared interpreter; the worker seam can take them (wave-3 open 7, design R8). Trigger: a stall traced to those solves.

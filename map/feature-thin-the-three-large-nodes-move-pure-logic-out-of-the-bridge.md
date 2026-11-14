@@ -15,6 +15,9 @@ area: skill-stack
 blocked_by: []
 links: []
 filed_by: claude
+night_skip: too-large
+night_skip_on: '2026-11-15'
+night_skip_note: 'Rated xl: three node refactors.'
 ---
 
 Bring the three large nodes back toward the rule that a node is a thin wrapper over pure modules. From the 2026-11-13 maintainer review: `teensy_bridge_node.py` is 10,666 lines, `skill_node.py` 7,454 and `trajectory_node.py` 5,725, and the reviewers judged more than half of each to be logic.

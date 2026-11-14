@@ -27,6 +27,9 @@ links:
 - feature-firmware-stop-record-report-why-a-scheduler-cover-ended
 - logbook/2026-11-13-sitting-debrief.md
 filed_by: claude
+night_skip: sitting
+night_skip_on: '2026-11-15'
+night_skip_note: The next evidence is the BUG-89 dropped-knot counter Sitting.
 ---
 
 Filed at the 2026-11-02 Sitting debrief (logbook/2026-11-02-sitting-debrief.md) as a starved 40 Hz setpoint stream. Supersedes BUG-4 (emitter gap) and owns the 70 ms cliff class BUG-34 named. Reframed 2026-11-08 at the owner's request (section below). The sections after it are the record of the earlier framing.

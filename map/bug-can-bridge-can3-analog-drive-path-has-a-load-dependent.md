@@ -16,6 +16,9 @@ area: can-bridge
 blocked_by: []
 links: []
 filed_by: claude
+night_skip: sitting
+night_skip_on: '2026-11-15'
+night_skip_note: A load-dependent hardware fault on CAN3; robot, owner hands.
 ---
 
 The can-bridge CAN3 analog drive path has a load-dependent hardware fault that was never repaired. The Jugglebot loom stays on CAN2; the firmware still runs the bus swap until the CAN3 path is repaired.

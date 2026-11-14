@@ -15,6 +15,9 @@ area: skill-stack
 blocked_by: []
 links: []
 filed_by: claude (jugglebot-f5, pattern exploration 2026-10-30)
+night_skip: low-priority
+night_skip_on: '2026-11-15'
+night_skip_note: Feasibility is in the body; robot, owner hands.
 ---
 
 Owner framing 2026-10-30: the release and catch planes stay fixed RELATIVE to the Platform centroid, so the hand stroke is untouched and the limits are the leg lengths.

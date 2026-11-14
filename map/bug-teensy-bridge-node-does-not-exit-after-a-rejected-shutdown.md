@@ -16,6 +16,9 @@ area: can-bridge
 blocked_by: []
 links: []
 filed_by: claude
+night_skip: out-of-reach
+night_skip_on: '2026-11-15'
+night_skip_note: Not reproduced offline; the hypothesis needs real rclpy (FEAT-55).
 ---
 
 On 2026-10-31 13:06 (launch log `~/.ros/log/2026-10-31-13-06-17-735496-jetson-1119080/launch.log`) the shutdown Stow was rejected at once (`DEACTIVATE: ERR_REJECTED`, leg 0 latched ODRIVE_FATAL after a SPINOUT_DETECTED), yet `teensy_bridge_node` did not exit; launch SIGTERM-killed it 4.8 s later (exit -15). A rejected Stow should leave nothing to wait for, so something in the teardown after it blocks for seconds.

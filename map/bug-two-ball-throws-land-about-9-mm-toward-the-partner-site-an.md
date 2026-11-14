@@ -21,6 +21,9 @@ links:
 - logbook/2026-11-10-sitting-debrief.md
 parent: learner-generalisation
 filed_by: claude
+night_skip: owner-session
+night_skip_on: '2026-11-15'
+night_skip_note: Its row stays off the Runbook until redesigned in your Session.
 ---
 
 At the P2 Sitting of 2026-11-06 and in the 13:19 data, two-ball Throws landed pulled toward the partner Site, and the plant model has no term that holds it. It is not the "centre pull" the plan assumed.

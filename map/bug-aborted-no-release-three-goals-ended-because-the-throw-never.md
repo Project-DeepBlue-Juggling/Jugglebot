@@ -20,6 +20,9 @@ links:
 - logbook/2026-11-13-sitting-debrief.md
 parent: two-ball-oval
 filed_by: claude (BUG-21 21:02 Sitting read-out)
+night_skip: sitting
+night_skip_on: '2026-11-15'
+night_skip_note: Diagnosis unknown; robot, owner hands. A bag read could add evidence but no new ABORTED_NO_RELEASE end has been flown since 2026-10-28.
 ---
 
 21:02 Sitting: goals 1 (columns, throw 61), 2 (columns, throw 25) and 3 (oval_1ball, throw 32) ended ABORTED_NO_RELEASE: throw N never left the hand (no release evidence by +0.5 s). Not seen in the 09:49 or 14:29 Sittings the same day. Not a solver symptom (BUG-21 is closed).

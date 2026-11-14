@@ -21,6 +21,9 @@ links:
 - logbook/2026-11-13-sitting-debrief.md
 parent: two-ball-oval
 filed_by: claude (P3 re-gate close-out 2026-10-30)
+night_skip: sitting
+night_skip_on: '2026-11-15'
+night_skip_note: The B arm was confounded on 2026-11-13; flag-on Dwell 0.35 waits on BUG-90, built tonight on a held branch.
 ---
 
 Owner decision 2026-10-30 (P3 re-gate GO): a pre-release-hold rung is scheduled ahead of the P4 working-point commit (plans/active/two-ball-oval.md P4.0).

@@ -18,6 +18,9 @@ links:
 - ros_ws/docs/wave_camera_findings.md
 parent: wave-camera-can3
 filed_by: claude
+night_skip: sitting
+night_skip_on: '2026-11-15'
+night_skip_note: A measurement on the robot, owner hands.
 ---
 
 Phase 5 of `plans/archived/wave-camera-can3-integration.md`, left out of its closure: a clapboard flash recorded by the camera maps the START tick to a frame index and confirms the assumed stop quantisation (`ros_ws/docs/wave_camera_findings.md`).

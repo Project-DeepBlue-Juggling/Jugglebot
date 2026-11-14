@@ -20,6 +20,9 @@ links:
 - logbook/2026-11-13-sitting-debrief.md
 parent: two-ball-oval
 filed_by: claude
+night_skip: sitting
+night_skip_on: '2026-11-15'
+night_skip_note: Failed 2026-11-13 (30 consecutive Catches only at Dwell 0.40; 0.30 ends on LIMIT_JERK); waits on the next ramp Sitting.
 ---
 
 P4 ramp of plan `plans/active/two-ball-oval.md`: the first Sitting at the P4 working point (600 / 8000 / 200000, legs 20 A under the 30 A trip; box 113 cells, gate_hash 2605fc1bd25e; logbook `2026-11-03-p4-working-point-600-8000-20a`). Five Columns canary Attempts, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30. Closes when the plan's P4 gate is met.

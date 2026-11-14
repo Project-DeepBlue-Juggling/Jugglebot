@@ -17,6 +17,9 @@ blocked_by: []
 links: []
 parent: night-shift
 filed_by: claude
+night_skip: frozen-path
+night_skip_on: '2026-11-15'
+night_skip_note: The claim path is tools/nightly_ticker.sh and the suite runner, both on the never-list.
 ---
 
 A Session that dies between claiming the 04:00 suite ticker and lowering it leaves a claim file behind, and a later RED can then go unread. Found by the 2026-11-13 maintainer review; the claim path was read, the full sequence across a new raise was not traced.

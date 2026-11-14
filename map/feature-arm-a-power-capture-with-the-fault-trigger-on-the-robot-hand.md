@@ -18,6 +18,9 @@ links:
 - map/feature-measure-the-hand-s-commutation-angle-error-through-a-hard.md
 - tools/probes/hand_foc_scope.py
 filed_by: claude-debrief
+night_skip: sitting
+night_skip_on: '2026-11-15'
+night_skip_note: After FEAT-45 rungs B and C pass on the bench Hand.
 ---
 
 Arm `tools/probes/hand_foc_scope.py capture --preset power --trigger fault` on the robot's Hand for a whole Sitting, to catch a BUG-57 SPINOUT at its disarm. It is the one measurement that separates a transient commutation angle error from the other readings (BUG-57, 2026-11-11 section). Blocked on FEAT-45: its bench rungs B and C must pass with the fixed scope tool first.

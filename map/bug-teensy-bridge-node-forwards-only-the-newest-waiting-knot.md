@@ -18,6 +18,9 @@ links:
 - map/bug-40-hz-setpoint-stream-starved-past-the-firmware-s-70-ms.md
 - map/feature-firmware-stop-record-report-why-a-scheduler-cover-ended.md
 filed_by: claude
+night_skip: sitting
+night_skip_on: '2026-11-15'
+night_skip_note: Its Sitting section (dropped-knot counter, cpu_partition off/on A/B) is written; the night has nothing offline to add.
 ---
 
 On 2026-11-13 both LANE_REFUSED ends (11:46:53, 11:49:33) followed a :5557 drain that held two knots; `_SetpointCommandSource.recv_latest` forwarded only the newer one. Newest-only forwarding is right (confirmed against the firmware), but the cover that remains has only 7 to 14 ms of margin against a delivery stall.

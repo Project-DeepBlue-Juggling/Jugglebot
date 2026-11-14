@@ -20,6 +20,9 @@ links:
 - map/feature-measure-the-hand-s-commutation-angle-error-through-a-hard.md
 - logbook/2026-11-11-sitting-debrief.md
 filed_by: jugglebot-3d
+night_skip: sitting
+night_skip_on: '2026-11-15'
+night_skip_note: FEAT-45 rungs B and C, then FEAT-49, are next on the bench and robot Hand.
 ---
 
 At the first Apex 1.35 Columns goal (2026-11-02 17:00 Sitting, throw 10), one launch overshot. The Hand reached 168 rev/s against a planned ~151, and the release step's brake saturated at the 60 A limit (-60.4 A). The Hand overran the planned top (10.16 rev) and the 10.501 clip to 10.83 rev and hit the top stop; the encoder slipped (SPINOUT_DETECTED). The Ball went to 1.65 m.

@@ -15,6 +15,9 @@ area: hand
 blocked_by: []
 links: []
 filed_by: jugglebot-3d
+night_skip: waiting-trigger
+night_skip_on: '2026-11-15'
+night_skip_note: Waits on BUG-57's cause.
 ---
 
 Owner goal (2026-11-02): occasional single Throws to about 2 m Apex (not continuous juggling); the owner is confident the hardware can do it.

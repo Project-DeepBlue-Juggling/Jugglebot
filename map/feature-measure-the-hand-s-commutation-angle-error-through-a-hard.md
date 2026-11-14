@@ -19,6 +19,9 @@ links:
 - logbook/2026-11-07-hand-foc-scope.md
 - logbook/2026-11-11-sitting-debrief.md
 filed_by: jugglebot-b1
+night_skip: sitting
+night_skip_on: '2026-11-15'
+night_skip_note: Rungs B and C on the bench Hand are on the Runbook.
 ---
 
 The onboard encoder drives both commutation and position, so a slipped magnet moves the reported angle and position together and neither shows it. The 100 Hz `hand_capture` cannot show it either, because iq freezes before the disarm. BUG-57's torque loss needs a measurement that can see an angle error directly.

@@ -15,6 +15,9 @@ area: skill-stack
 blocked_by: []
 links: []
 filed_by: claude (jugglebot-f5, pattern exploration 2026-10-30)
+night_skip: low-priority
+night_skip_on: '2026-11-15'
+night_skip_note: Feasibility is in the body; robot, owner hands; needs P4.
 ---
 
 Owner idea: hop and self-throw at once. Ball 1 in a column at the centre, Ball 2 thrown from one side over Ball 1 to the other.

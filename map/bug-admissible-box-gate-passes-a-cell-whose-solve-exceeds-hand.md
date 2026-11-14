@@ -18,6 +18,9 @@ blocked_by: []
 links: []
 parent: two-ball-oval
 filed_by: claude-books-2026-10-31
+night_skip: owner-session
+night_skip_on: '2026-11-15'
+night_skip_note: In progress under your Session; the planned-release case of the FW 37 C1 stop is unverified on the robot.
 ---
 
 The admissible-box gate reports a Columns Ball 2 catch as `inside box` while the realised solve is refused on Hand acceleration, so the attempt ends at the first install.
