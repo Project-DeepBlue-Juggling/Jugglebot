@@ -4,10 +4,13 @@ kind: feature
 title: Extract the pure install layer from executor.py and split the rest along its seams
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:09:35Z'
+updated: '2026-11-14T17:54:51Z'
 owners: []
 priority: medium
 effort: l
+hardware: none
+owner: none
+radius: subsystem
 area: skill-stack
 blocked_by: []
 links: []

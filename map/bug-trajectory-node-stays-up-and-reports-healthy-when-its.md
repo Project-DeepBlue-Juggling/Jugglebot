@@ -4,9 +4,13 @@ kind: bug
 title: trajectory_node stays up and reports healthy when its emitter cannot bind the command socket
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:08:54Z'
+updated: '2026-11-14T17:53:43Z'
 owners: []
 priority: medium
+effort: s
+hardware: none
+owner: none
+radius: local
 diagnosis: confirmed
 area: skill-stack
 blocked_by: []

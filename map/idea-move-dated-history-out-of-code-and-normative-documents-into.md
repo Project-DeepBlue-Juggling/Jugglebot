@@ -4,9 +4,13 @@ kind: idea
 title: Move dated history out of code and normative documents into the logbook
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:09:57Z'
+updated: '2026-11-14T17:55:21Z'
 owners: []
 priority: medium
+effort: l
+hardware: none
+owner: none
+radius: normative
 area: docs
 blocked_by: []
 links: []

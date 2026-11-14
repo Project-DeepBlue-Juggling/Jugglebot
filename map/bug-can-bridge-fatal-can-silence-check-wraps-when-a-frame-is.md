@@ -4,9 +4,12 @@ kind: bug
 title: 'can-bridge fatal CAN-silence check wraps when a frame is stamped after its clock read: a live Leg reads silent and the Platform Stows'
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:08:45Z'
+updated: '2026-11-14T17:53:33Z'
 owners: []
 priority: high
+effort: xs
+hardware: robot
+owner: none
 radius: subsystem
 diagnosis: confirmed
 area: firmware

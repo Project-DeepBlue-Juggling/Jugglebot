@@ -4,9 +4,13 @@ kind: bug
 title: 'Tests that never run or cannot fail: two permanent skips, Node lookup, stale-log fixture, loose ROS mocks'
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:09:15Z'
+updated: '2026-11-14T17:53:56Z'
 owners: []
 priority: medium
+effort: m
+hardware: none
+owner: none
+radius: subsystem
 diagnosis: confirmed
 area: tests-tooling
 blocked_by: []

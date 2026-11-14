@@ -4,9 +4,13 @@ kind: bug
 title: A dead ticker claim or a crashed 04:00 suite hides a RED for up to two days
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:09:01Z'
+updated: '2026-11-14T17:54:17Z'
 owners: []
 priority: medium
+effort: s
+hardware: none
+owner: none
+radius: subsystem
 diagnosis: hypothesis
 area: tests-tooling
 blocked_by: []

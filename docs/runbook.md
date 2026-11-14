@@ -57,14 +57,21 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - BUG-84 [Robot] Hand stalls at the 70 A clamp mid-dive, probably on a Ball under the Cup, and the next launch comes up slow: no ## Sitting section
 - BUG-90 [Robot] carry_zvd rows make the Hand stop and go at about 5 Hz in flight: no ## Sitting section
 - BUG-92 [Robot] static Ball Butler frame markers are tracked as human_throw: no ## Sitting section
+- BUG-93 [Robot] can-bridge fatal CAN-silence check wraps when a frame is stamped after its clock read: a live Leg reads silent and the Platform Stows: no ## Sitting section
+- BUG-94 [Robot] Ball Butler Throw announcement gives the Tracker the calibrated origin, not the release point: no ## Sitting section
+- BUG-95 [Robot] A long REST can be refused SPLICE_TOO_LATE: the fresh decision and the Knot choice use different leads: no ## Sitting section
+- BUG-98 [Robot] teensy_bridge_node blocking RPC services share a callback group with the 100 Hz publishers and the link-loss check: no ## Sitting section
+- BUG-99 [Robot] can-bridge firmware accepts four discontinuities on rare paths and has no armed interlock on reconfiguration RPCs (to confirm): no ## Sitting section
 - FEAT-1 [Robot] Design change: the Hand should be Idle, not Parked Closed-loop, while Active: no ## Sitting section
 - FEAT-12 [Robot] Wave camera: optical frame calibration maps the START tick to a recorded frame: no ## Sitting section
 - FEAT-27 [Robot] Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z: no ## Sitting section
 - FEAT-3 [Robot] Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware: no ## Sitting section
+- FEAT-30 [Robot] Trim the nice-0 chain CPU the flame graphs point at: skill_node executor (~0.5 core), mocap_node publish path (~0.28), tracker message plumbing (~0.28): no ## Sitting section
 - FEAT-31 [Robot] Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load): no ## Sitting section
 - FEAT-37 [Robot] One-off 2 m Throws: raised Hand limits and an overshoot protection the speed-scaled margin cannot give: no ## Sitting section
 - FEAT-4 [Robot] Magazine feed-tuning loop (`magazine` + `reload` patterns, hand-only throw): no ## Sitting section
 - FEAT-40 [Robot] Install the host hold within one tick of a firmware scheduler STOP so a guard latch becomes a recoverable LANE_REFUSED: no ## Sitting section
+- FEAT-57 [Robot] Archive the SpaceMouse follower under a tag: no ## Sitting section
 - IDEA-12 [Robot] JP-11 Rotating columns: the pair turns a few degrees every Beat: no ## Sitting section
 - IDEA-13 [Robot] JP-13 Rising and sinking columns: the whole Pattern rides the Platform in z: no ## Sitting section
 - IDEA-14 [Robot] JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm: no ## Sitting section

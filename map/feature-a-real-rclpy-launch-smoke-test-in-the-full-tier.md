@@ -4,9 +4,13 @@ kind: feature
 title: A real-rclpy launch smoke test in the full tier
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:09:59Z'
+updated: '2026-11-14T17:55:04Z'
 owners: []
 priority: medium
+effort: m
+hardware: none
+owner: none
+radius: subsystem
 area: tests-tooling
 blocked_by: []
 links: []

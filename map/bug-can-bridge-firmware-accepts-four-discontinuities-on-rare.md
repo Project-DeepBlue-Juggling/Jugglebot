@@ -4,9 +4,13 @@ kind: bug
 title: can-bridge firmware accepts four discontinuities on rare paths and has no armed interlock on reconfiguration RPCs (to confirm)
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:08:59Z'
+updated: '2026-11-14T17:54:09Z'
 owners: []
 priority: medium
+effort: m
+hardware: robot
+owner: none
+radius: normative
 diagnosis: hypothesis
 area: firmware
 blocked_by: []

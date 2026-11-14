@@ -4,10 +4,14 @@ kind: feature
 title: Single-source the hand-copied physical and wire constants
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:10:00Z'
+updated: '2026-11-14T17:55:08Z'
 owners: []
 priority: medium
+effort: m
+hardware: none
+owner: none
 radius: cross-cutting
+area: tests-tooling
 blocked_by: []
 links: []
 filed_by: claude

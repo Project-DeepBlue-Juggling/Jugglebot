@@ -4,9 +4,13 @@ kind: feature
 title: Archive the SpaceMouse follower under a tag
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:10:02Z'
+updated: '2026-11-14T17:55:14Z'
 owners: []
 priority: low
+effort: s
+hardware: robot
+owner: none
+radius: subsystem
 area: skill-stack
 blocked_by: []
 links: []

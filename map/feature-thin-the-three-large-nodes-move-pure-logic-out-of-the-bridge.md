@@ -4,11 +4,14 @@ kind: feature
 title: 'Thin the three large nodes: move pure logic out of the bridge, skill and trajectory nodes'
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:09:41Z'
+updated: '2026-11-14T17:54:58Z'
 owners: []
 priority: medium
 effort: xl
+hardware: none
+owner: none
 radius: cross-cutting
+area: skill-stack
 blocked_by: []
 links: []
 filed_by: claude

@@ -4,9 +4,13 @@ kind: feature
 title: 'Trim the nice-0 chain CPU the flame graphs point at: skill_node executor (~0.5 core), mocap_node publish path (~0.28), tracker message plumbing (~0.28)'
 status: inbox
 created: '2026-10-28'
-updated: '2026-10-30T06:12:20Z'
+updated: '2026-11-14T17:55:18Z'
 owners: []
 priority: medium
+effort: m
+hardware: robot
+owner: none
+radius: subsystem
 area: skill-stack
 blocked_by: []
 links:

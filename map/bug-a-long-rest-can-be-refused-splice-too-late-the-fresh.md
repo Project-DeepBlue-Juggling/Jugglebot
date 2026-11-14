@@ -4,9 +4,13 @@ kind: bug
 title: 'A long REST can be refused SPLICE_TOO_LATE: the fresh decision and the Knot choice use different leads'
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:08:52Z'
+updated: '2026-11-14T17:54:01Z'
 owners: []
 priority: medium
+effort: s
+hardware: robot
+owner: none
+radius: subsystem
 diagnosis: hypothesis
 area: skill-stack
 blocked_by: []

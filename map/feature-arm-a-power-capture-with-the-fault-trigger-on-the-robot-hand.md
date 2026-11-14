@@ -4,11 +4,12 @@ kind: feature
 title: Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault
 status: inbox
 created: '2026-11-11'
-updated: '2026-11-11T10:38:11Z'
+updated: '2026-11-14T17:55:27Z'
 owners: []
 priority: medium
 effort: m
 hardware: robot
+owner: hands
 radius: local
 area: hand
 blocked_by: []

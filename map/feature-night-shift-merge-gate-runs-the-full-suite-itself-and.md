@@ -4,9 +4,13 @@ kind: feature
 title: Night Shift merge gate runs the full suite itself and enforces a collected-test floor
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:09:20Z'
+updated: '2026-11-14T17:54:43Z'
 owners: []
 priority: high
+effort: m
+hardware: none
+owner: none
+radius: normative
 area: tests-tooling
 blocked_by: []
 links: []

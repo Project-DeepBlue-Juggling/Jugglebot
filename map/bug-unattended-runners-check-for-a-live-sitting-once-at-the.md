@@ -4,9 +4,13 @@ kind: bug
 title: Unattended runners check for a live Sitting once at the start, and cannot see a bench rig
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:09:04Z'
+updated: '2026-11-14T17:53:49Z'
 owners: []
 priority: medium
+effort: m
+hardware: none
+owner: none
+radius: cross-cutting
 diagnosis: confirmed
 area: tests-tooling
 blocked_by: []
