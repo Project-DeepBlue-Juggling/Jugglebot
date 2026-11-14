@@ -24,6 +24,7 @@ build_paired_node — same pattern as test_teensy_bridge_node_rpc.py.
 from __future__ import annotations
 
 import time
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -34,7 +35,9 @@ from teensy_link import (
 from teensy_link import rpc_args
 from teensy_link import protocol as p
 
-from tests.ros._bridge_harness import _build_paired_node, _teardown, _wait_until
+from tests.ros._bridge_harness import (
+    _build_paired_node, _messages, _platform_frame, _teardown, _wait_until,
+)
 
 # Mocked ROS service/message + action types (tests/ros/conftest.py).
 from std_srvs.srv import Trigger
@@ -43,6 +46,7 @@ from rclpy.action import GoalResponse
 from jugglebot_interfaces.action import BallButlerThrowCmd
 from jugglebot.protocol_config import BallButlerCommandType, BallButlerCommandOutcome
 from jugglebot import mocap_status as mocap_st
+from jugglebot import protocol_config as _pc
 
 
 def _node():
@@ -993,5 +997,134 @@ def test_bb_cancel_aborts_an_outstanding_throw_end_to_end():
             BallButlerCommandOutcome.THROW_ABORTED_BY_HOST)
         assert result.message.startswith('THROW_ABORTED_BY_HOST')
         assert handle.aborted is True
+    finally:
+        _teardown(teensy, client, node)
+
+
+# ── Ball Butler Teensy firmware version (BB_FW_INFO → link_status bb_fw_version) ──
+#
+# The sibling of the Platform Teensy's FW_VERSION row. The ask is BB_FW_INFO, the
+# read-only opcode Ball Butler answers before touching any update-session state
+# (BallButler ball_butler_main/FwUpdate.cpp handleCommand), relayed by the
+# can-bridge (FW 21+) on CAN1; the reply comes back as a PLATFORM_FRAME on 0x7D7
+# with FW_VERSION in the detail field. Advisory: nothing refuses on a skew.
+
+
+def _bb_info_reply(version, *, opcode=rpc_args.FW_OP_INFO,
+                   status=rpc_args.PLATFORM_FW_STATUS_OK):
+    """0x7D7 payload: [opcode][status][seq u16][detail u32], all LE."""
+    return (bytes([opcode, status]) + (0).to_bytes(2, 'little')
+            + int(version).to_bytes(4, 'little'))
+
+
+def _wire_bb_info(teensy, version, calls):
+    def handler(req_id, args):
+        calls.append(req_id)
+        if version is not None:
+            teensy.send_to_jetson(
+                int(MsgType.PLATFORM_FRAME),
+                _platform_frame(_pc.CAN_ID_BB_FW_UPDATE_REPLY, _bb_info_reply(version)))
+        return (int(RpcStatus.OK), b'')
+    teensy.on_rpc(int(RpcMethod.BB_FW_INFO), handler)
+
+
+def _bb_present_node(teensy, node):
+    _send_heartbeat(teensy)
+    assert _wait_until(node._bb_present)
+
+
+def _bb_fw_kv(node):
+    node._publish_link_status()
+    return {kv.key: kv.value
+            for kv in node.link_status_pub.published[-1].values}['bb_fw_version']
+
+
+def test_bb_fw_version_answered_renders_the_number_and_stops_asking():
+    teensy, client, node = _node()
+    node._logger = MagicMock()
+    calls = []
+    try:
+        _wire_bb_info(teensy, rpc_args.BB_FW_VERSION_EXPECTED, calls)
+        _bb_present_node(teensy, node)
+        node._bb_fw_info_poll()
+        assert _wait_until(lambda: node._bb_fw_version is not None)
+        assert _bb_fw_kv(node) == str(rpc_args.BB_FW_VERSION_EXPECTED)
+        ok = [m for m in _messages(node._logger.info) if 'BB_FW_CHECK: OK' in m]
+        assert len(ok) == 1
+        node._bb_fw_info_poll()          # resolved: no second ask on CAN1
+        assert len(calls) == 1
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_bb_fw_version_skew_is_rendered_and_warned_never_refused():
+    teensy, client, node = _node()
+    node._logger = MagicMock()
+    other = rpc_args.BB_FW_VERSION_EXPECTED - 1
+    try:
+        _wire_bb_info(teensy, other, [])
+        _bb_present_node(teensy, node)
+        node._bb_fw_info_poll()
+        assert _wait_until(lambda: node._bb_fw_version == other)
+        assert _bb_fw_kv(node) == (
+            f'{other} (SKEW — expected v{rpc_args.BB_FW_VERSION_EXPECTED})')
+        warns = [m for m in _messages(node._logger.warning) if 'BB_FW_CHECK: SKEW' in m]
+        assert len(warns) == 1 and 'not refused' in warns[0]
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_bb_fw_version_absent_ball_butler_is_never_asked():
+    """No BB heartbeat: no CAN1 frame toward a board that is not there."""
+    teensy, client, node = _node()
+    calls = []
+    try:
+        _wire_bb_info(teensy, rpc_args.BB_FW_VERSION_EXPECTED, calls)
+        node._bb_fw_info_poll()
+        assert calls == []
+        assert _bb_fw_kv(node) == 'unknown (no Ball Butler heartbeat)'
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_bb_fw_version_not_answered_is_distinct_from_absent():
+    """ACKed asks with no 0x7D7 reply (an image older than the CAN receiver)."""
+    teensy, client, node = _node()
+    calls = []
+    try:
+        _wire_bb_info(teensy, None, calls)
+        _bb_present_node(teensy, node)
+        node._bb_fw_info_poll()
+        assert _bb_fw_kv(node) == 'unknown'          # one ask, reply in flight
+        node._bb_fw_info_poll()
+        assert len(calls) == 2
+        assert _bb_fw_kv(node) == 'unknown (not answered)'
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_bb_fw_version_unsupported_bridge_is_latched():
+    """A bridge without BB_FW_INFO (FakeTeensy: no handler → ERR_UNKNOWN_METHOD)
+    renders the reason, and the poll stops asking."""
+    teensy, client, node = _node()
+    try:
+        _bb_present_node(teensy, node)
+        node._bb_fw_info_poll()
+        assert _bb_fw_kv(node) == 'unsupported (bridge FW < 21)'
+        calls = []
+        _wire_bb_info(teensy, rpc_args.BB_FW_VERSION_EXPECTED, calls)
+        node._bb_fw_info_poll()
+        assert calls == []
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_bb_fw_non_info_reply_on_0x7d7_is_ignored():
+    """A flasher session's BEGIN/DATA replies share 0x7D7; only INFO is a version."""
+    teensy, client, node = _node()
+    try:
+        node._record_bb_fw_info_reply(_bb_info_reply(4096, opcode=0x01))
+        node._record_bb_fw_info_reply(_bb_info_reply(9, status=3))
+        assert node._bb_fw_version is None
     finally:
         _teardown(teensy, client, node)

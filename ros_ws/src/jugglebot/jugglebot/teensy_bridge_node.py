@@ -2030,6 +2030,16 @@ class TeensyBridgeNode(Node):
         # reason the pull cannot resolve (rendered on link_status verbatim).
         self._bb_versions_resolved = None
         self._bb_version_unavailable = None
+        # Ball Butler's OWN Teensy firmware (FwUpdate.h FW_VERSION), read by
+        # the side-effect-free BB_FW_INFO relay (_bb_fw_info_poll). Advisory,
+        # like the ODrive half above. Written on the RX thread (the 0x7D7 reply)
+        # and the timer thread (the ask counter), so both under self._lock.
+        #   _bb_fw_version             int once an INFO reply landed
+        #   _bb_fw_version_unavailable str reason the question cannot be asked
+        #   _bb_fw_info_asks           INFO RPCs ACKed with no reply yet
+        self._bb_fw_version = None
+        self._bb_fw_version_unavailable = None
+        self._bb_fw_info_asks = 0
 
         # ── F3/C2: per-(axis, error-code) log throttle for _log_odrive_errors ──
         # A SECOND tracker, deliberately NOT self._versions. The tracker above is
@@ -2938,6 +2948,11 @@ class TeensyBridgeNode(Node):
             if int(pf.can_id) == proto.CAN_ID_PLATFORM_HAND_FAN_STATUS:
                 self._hand_fan_status_frame = data
             self._platform_reply_cv.notify_all()
+        # Ball Butler's FW-update reply (0x7D7) rides the same uplink. Only the
+        # INFO answer is consumed here (_bb_fw_info_poll asked for it); recorded
+        # outside the cv so the verdict log never runs under the relay lock.
+        if int(pf.can_id) == proto.CAN_ID_BB_FW_UPDATE_REPLY:
+            self._record_bb_fw_info_reply(data)
 
     def _on_hand_cmd_echo(self, msg_type, seq, payload, addr):
         # RX-thread callback (hand conduit): the bridge sniffed the Platform Teensy's
@@ -4621,6 +4636,9 @@ class TeensyBridgeNode(Node):
            That keeps retrying (a BB switched on later must still resolve) but
            is never logged as an error.
         """
+        # Ball Butler's own Teensy rides the same 1 Hz tick (no new timer); it
+        # resolves independently of the ODrive pull below.
+        self._bb_fw_info_poll()
         if self._bb_versions_resolved or self._bb_version_unavailable:
             return
         try:
@@ -4820,6 +4838,112 @@ class TeensyBridgeNode(Node):
         clamp = ' '.join(str(int(v)) for v in d.lead_clamp_ticks)
         stale = ' '.join(str(int(v)) for v in d.stale_anchor_ticks)
         return f'clamp {clamp} | stale {stale}'
+
+    # ── Ball Butler Teensy firmware identity (BB_FW_INFO) ──
+    # The can-bridge relays BB_FW_INFO (FW 21+) as one 0x7D6 frame on CAN1;
+    # Ball Butler's FwUpdate::handleCommand answers INFO BEFORE touching any
+    # session state ("INFO is a read — no session, no state change, answered
+    # any time"), so the ask never parks, never freezes the state machine and
+    # never arms the 60 s abandoned-session reboot. The reply comes back as a
+    # PLATFORM_FRAME on 0x7D7 and is recorded on the RX thread; the poll never
+    # waits for it, so its only block is the RPC ACK, bounded exactly like the
+    # GET_BB_AXIS_VERSIONS pull it shares a tick with.
+
+    #: The can-bridge build that added the BB_FW_* relay (rpc.cpp, 2026-09-28).
+    _BB_FW_INFO_MIN_BRIDGE_FW = 21
+
+    def _bb_fw_info_poll(self):
+        """Ask Ball Butler's Teensy for its FW_VERSION until it answers.
+
+        No-op once answered or once the bridge proved it cannot relay the ask.
+        Skipped while Ball Butler is not heartbeating: the relay only needs a
+        heartbeat SEEN since bridge boot, so asking a BB that has since gone
+        stale would put an un-ACKed frame on CAN1 for nothing.
+        """
+        with self._lock:
+            if (self._bb_fw_version is not None
+                    or self._bb_fw_version_unavailable):
+                return
+        if not self._bb_present():
+            return
+        try:
+            ok, msg, _ = self._call_rpc(
+                RpcMethod.BB_FW_INFO, timeout=0.3, retries=1)
+        except Exception as e:  # noqa: BLE001 — never let a timer die
+            self.get_logger().error(f"BB firmware INFO ask errored: {e}",
+                                    throttle_duration_sec=5.0)
+            return
+        if not ok:
+            if 'UNKNOWN_METHOD' in str(msg).upper() or 'NOT_IMPL' in str(msg).upper():
+                with self._lock:
+                    self._bb_fw_version_unavailable = (
+                        f'unsupported (bridge FW < {self._BB_FW_INFO_MIN_BRIDGE_FW})')
+                self.get_logger().info(
+                    'Ball Butler Teensy firmware check unavailable: the bridge '
+                    f'answered BB_FW_INFO with "{msg}". Advisory only; BB '
+                    'commands are unaffected.')
+            return   # ERR_BUS_DOWN / timeout: transient, ask again next tick
+        with self._lock:
+            if self._bb_fw_version is None:
+                self._bb_fw_info_asks += 1
+
+    def _record_bb_fw_info_reply(self, data: bytes):
+        """Capture an INFO answer from a 0x7D7 frame and log the verdict.
+
+        Any other opcode on 0x7D7 (a flasher session's BEGIN/DATA replies) is
+        not ours and is ignored. Advisory: a skew logs a WARNING and renders on
+        link_status; nothing refuses on it.
+        """
+        try:
+            opcode, status, _seq, detail = rpc_args.decode_platform_fw_reply(data)
+        except Exception:  # noqa: BLE001 — never kill the RX thread
+            return
+        if opcode != rpc_args.FW_OP_INFO or status != rpc_args.PLATFORM_FW_STATUS_OK:
+            return
+        version = int(detail)
+        with self._lock:
+            previous = self._bb_fw_version
+            self._bb_fw_version = version
+        if previous == version:
+            return
+        expected = rpc_args.BB_FW_VERSION_EXPECTED
+        if version == expected:
+            self.get_logger().info(f'BB_FW_CHECK: OK — Ball Butler Teensy v{version}')
+        else:
+            self.get_logger().warning(
+                f'BB_FW_CHECK: SKEW — Ball Butler Teensy reports v{version}, host '
+                f'tree expects v{expected}. Advisory only, BB commands are not '
+                f'refused; re-flash with tools/teensy_link_bridge.py --fw-update '
+                f'--target bb or update BB_FW_VERSION_EXPECTED.')
+
+    def _bb_fw_version_str(self) -> str:
+        """``/link_status`` rendering of Ball Butler's Teensy FW_VERSION.
+
+        Same shape as :meth:`_bridge_fw_version_str` so the panel's one parser
+        serves it: the number, ``N (SKEW — expected vM)`` on a mismatch, or a
+        reason when there is no number. The reasons stay distinct:
+        ``unsupported (bridge FW < 21)`` (the bridge cannot relay the ask),
+        ``unknown (no Ball Butler heartbeat)`` (never asked: BB absent),
+        ``unknown`` (asked once, reply in flight) and ``unknown (not answered)``
+        (asked repeatedly, no INFO reply: an image older than the CAN receiver,
+        or the reply is being lost).
+        """
+        with self._lock:
+            version = self._bb_fw_version
+            unavailable = self._bb_fw_version_unavailable
+            asks = self._bb_fw_info_asks
+        if version is not None:
+            expected = rpc_args.BB_FW_VERSION_EXPECTED
+            if version == expected:
+                return str(version)
+            return f'{version} (SKEW — expected v{expected})'
+        if unavailable:
+            return unavailable
+        if asks == 0:
+            return 'unknown (no Ball Butler heartbeat)'
+        if asks == 1:
+            return 'unknown'
+        return 'unknown (not answered)'
 
     def _bridge_fw_version_str(self) -> str:
         """Human/runbook rendering of the can-bridge's reported ``FW_VERSION``.
@@ -6694,6 +6818,11 @@ class TeensyBridgeNode(Node):
                 # "the axes did not answer".
                 KeyValue(key='bb_odrive_fw_versions',
                          value=self._bb_odrive_fw_versions_str()),
+                # Ball Butler's own Teensy (FwUpdate.h FW_VERSION), read by the
+                # side-effect-free BB_FW_INFO relay. Its own row for the same
+                # reason as the line above: a different board, a different ask.
+                KeyValue(key='bb_fw_version',
+                         value=self._bb_fw_version_str()),
                 # Hand ball-present sensor: tri-state word + miss count + the
                 # RAW get_gpio_states word in hex. Rendered unconditionally
                 # (never-seen reads 'unknown (never seen)') so an unflashed or

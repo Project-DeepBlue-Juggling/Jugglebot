@@ -3,7 +3,7 @@
  * directly below the Event Log).
  *
  * One row per (model, firmware version) pair across every board on the robot:
- * the two Teensys and the nine ODrives.  Devices of the same MODEL collapse
+ * the three Teensys and the nine ODrives.  Devices of the same MODEL collapse
  * into a single row while they agree on firmware; the moment they don't, the
  * minority splits out onto its own row with an ODD badge, which is the whole
  * point of the panel — a half-flashed set of leg drives is invisible in every
@@ -20,9 +20,10 @@
  *            FW_VERSION).  See the YAML section header for the full rationale.
  *
  *   FIRMWARE — live, from 'link_status' (10 Hz, diagnostic_msgs/DiagnosticStatus,
- *            teensy_bridge_node._publish_link_status).  Four KeyValues:
+ *            teensy_bridge_node._publish_link_status).  Five KeyValues:
  *              bridge_fw_version      _bridge_fw_version_str()
  *              platform_fw_version    _platform_fw_version_str()
+ *              bb_fw_version          _bb_fw_version_str()          BB Teensy
  *              odrive_fw_versions     _odrive_fw_versions_str()      axes 0-6
  *              bb_odrive_fw_versions  _bb_odrive_fw_versions_str()   axes 7-8
  *            Their exact rendering is pinned producer-side by
@@ -69,6 +70,17 @@ const DEVICES = [
         key: 'teensy_platform', label: 'platform', short: 'platform',
         src: 'kv', kv: 'platform_fw_version',
         tip: 'Platform Teensy — self-reported in the 0x6E0 RobotState relay reply',
+    },
+    // Ball Butler's own Teensy.  Same board MODEL as the Platform Teensy but a
+    // different firmware project, so `family` keeps the two out of one model
+    // group: their version numbers are unrelated counters, and grouping them
+    // would raise a false ODD on a healthy robot.
+    {
+        key: 'teensy_ball_butler', label: 'Ball Butler', short: 'BB',
+        src: 'kv', kv: 'bb_fw_version', family: 'ballbutler-main',
+        tip: 'Ball Butler Teensy — self-reported in the BB_FW_INFO reply (0x7D7), '
+           + 'a read-only ask relayed by the can-bridge (FW 21+) that never opens '
+           + 'a firmware-update session. unknown until Ball Butler heartbeats.',
     },
     { key: 'odrive_axis_0', label: 'Leg 0', short: 'L0', src: 'axis', axis: 0 },
     { key: 'odrive_axis_1', label: 'Leg 1', short: 'L1', src: 'axis', axis: 1 },
@@ -156,6 +168,9 @@ function kvMap(msg) {
  * The node emits, verbatim:
  *   bridge   '19 (proto 6)' | '15 (SKEW — expected v19, proto 6)' | 'unknown (never seen)'
  *   platform '6'            | '0 (PRE-VERSIONING)'                | 'unknown'
+ *   bb       '9'            | '8 (SKEW — expected v9)'            | 'unknown (not answered)'
+ *            and the reasons 'unknown (no Ball Butler heartbeat)', a bare
+ *            'unknown' (ask in flight), 'unsupported (bridge FW < 21)'
  *
  * Split into the bare number and the node's own qualifier so the number can be
  * shown large and the qualifier as a badge — WITHOUT re-deriving the verdict.
@@ -294,14 +309,17 @@ function buildRows() {
         fw: latestFw[d.key] || null,
     }));
 
-    // 2. Group by model, preserving registry order.
+    // 2. Group by model, preserving registry order.  A device with a
+    //    `family` (a different firmware project on the same board model) gets
+    //    its own group: comparing unrelated version counters is meaningless.
     const groups = [];
     const byModel = new Map();
     for (const r of resolved) {
-        let g = byModel.get(r.model);
+        const groupKey = r.dev.family ? `${r.model}\u0000${r.dev.family}` : r.model;
+        let g = byModel.get(groupKey);
         if (!g) {
             g = { model: r.model, buckets: new Map() };
-            byModel.set(r.model, g);
+            byModel.set(groupKey, g);
             groups.push(g);
         }
         // 3. Bucket by the RAW version string, so two axes that differ only in

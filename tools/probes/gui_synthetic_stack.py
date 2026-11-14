@@ -129,6 +129,10 @@ VERSIONS_NOMINAL = {
     # fixture that made all nine agree would let a grouping bug that merges
     # across models pass unnoticed.
     "bb_odrive_fw_versions": "7:0.6.10-0 8:0.6.11-0",
+    # Ball Butler's own Teensy (_bb_fw_version_str, BB_FW_INFO).  The same
+    # board model as the Platform Teensy at a different number, on purpose: the
+    # panel must keep them in separate groups (`family`) and raise no ODD.
+    "bb_fw_version": "9",
 }
 # Never-seen: no BRIDGE_IDENTITY frame has ever arrived, the Platform relay
 # read failed, and the bus-paced Get_Version sweep has not run — all three of
@@ -138,6 +142,7 @@ VERSIONS_UNSEEN = {
     "platform_fw_version": "unknown",
     "odrive_fw_versions": "0:? 1:? 2:? 3:? 4:? 5:? 6:?",
     "bb_odrive_fw_versions": "7:? 8:?",
+    "bb_fw_version": "unknown (no Ball Butler heartbeat)",
 }
 # A bridge older than FW 20 has no GET_BB_AXIS_VERSIONS method, so the node
 # latches the reason and renders it for the whole row.  Distinct from "7:? 8:?"
@@ -147,6 +152,7 @@ VERSIONS_BB_UNSUPPORTED = dict(
     VERSIONS_NOMINAL,
     bridge_fw_version="19 (SKEW \u2014 expected v20, proto 6)",
     bb_odrive_fw_versions="unsupported (bridge FW < 20)",
+    bb_fw_version="unsupported (bridge FW < 21)",
 )
 # Leg 3 left behind on an older ODrive build — the half-flashed set the panel
 # exists to make visible.  Six axes agree, one does not.
@@ -161,6 +167,7 @@ VERSIONS_SKEW = dict(
     VERSIONS_NOMINAL,
     bridge_fw_version="15 (SKEW \u2014 expected v20, proto 6)",
     platform_fw_version="0 (PRE-VERSIONING)",
+    bb_fw_version="8 (SKEW — expected v9)",
 )
 
 

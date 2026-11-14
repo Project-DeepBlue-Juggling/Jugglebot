@@ -1673,7 +1673,7 @@ class TestHardwareModels:
         tests below exist for.
         """
         keys = set(re.findall(r"key: '([\w]+)'", _strip_js_comments(hardware_versions_js)))
-        assert len(keys) == 11, f'DEVICES key extraction went stale: {keys}'
+        assert len(keys) == 12, f'DEVICES key extraction went stale: {keys}'
         missing = keys - set(yaml_config['hardware_models'])
         assert not missing, f'DEVICES keys with no hardware_models entry: {missing}'
 
@@ -1690,10 +1690,11 @@ class TestHardwareVersionKeyValueContract:
     exactly that), so a broken key looks like a normal pre-connection panel.
     """
 
-    #: The four KeyValues the panel reads, and the node method that renders each.
+    #: The five KeyValues the panel reads, and the node method that renders each.
     EXPECTED = {
         'bridge_fw_version': '_bridge_fw_version_str',
         'platform_fw_version': '_platform_fw_version_str',
+        'bb_fw_version': '_bb_fw_version_str',
         'odrive_fw_versions': '_odrive_fw_versions_str',
         'bb_odrive_fw_versions': '_bb_odrive_fw_versions_str',
     }
@@ -1702,7 +1703,8 @@ class TestHardwareVersionKeyValueContract:
         js = _strip_js_comments(js)
         # Whole-KeyValue sources come from the DEVICES registry's `kv:` field.
         kv_keys = set(re.findall(r"kv: '(\w+)'", js))
-        assert kv_keys == {'bridge_fw_version', 'platform_fw_version'}, \
+        assert kv_keys == {'bridge_fw_version', 'platform_fw_version',
+                           'bb_fw_version'}, \
             f'DEVICES kv-field extraction went stale: {kv_keys}'
         # Per-axis rows are read indirectly (kv[d.axisKv || DEFAULT_AXIS_KV]),
         # so the names come from the registry's `axisKv:` plus the default —
@@ -1796,3 +1798,26 @@ class TestHardwareVersionKeyValueContract:
             'BB per-axis version no longer renders as "<axis>:<M>.<m>.<r>"'
         assert "' '.join(parts)" in src, \
             'BB per-axis fields are no longer space-separated'
+
+    def test_bb_teensy_row_compares_against_the_pinned_constant(self, bridge_py):
+        """The Ball Butler Teensy row judges skew against
+        ``rpc_args.BB_FW_VERSION_EXPECTED`` (pinned to BallButler FwUpdate.h by
+        tests/firmware/test_bb_fw_update_xref.py), never a re-typed literal, and
+        its skew text carries the 'SKEW' word parseKv flags on."""
+        src = _extract_method_source(bridge_py, '_bb_fw_version_str')
+        assert 'rpc_args.BB_FW_VERSION_EXPECTED' in src, \
+            'the BB Teensy row no longer compares against BB_FW_VERSION_EXPECTED'
+        assert "(SKEW — expected v{expected})" in src, \
+            'the BB Teensy skew rendering no longer carries the SKEW word'
+
+    def test_bb_teensy_row_is_its_own_model_group(self, hardware_versions_js):
+        """Ball Butler's Teensy shares the Platform Teensy's board MODEL but not
+        its firmware project: grouping them would compare two unrelated version
+        counters and raise a false ODD on a healthy robot. The registry entry
+        carries a `family` and buildRows keys its groups on it."""
+        js = _strip_js_comments(hardware_versions_js)
+        entry = re.search(r"\{[^{}]*key: 'teensy_ball_butler'[^{}]*\}", js, re.S)
+        assert entry, 'teensy_ball_butler DEVICES entry not found'
+        assert "family: '" in entry.group(0), \
+            'the BB Teensy entry lost its family — it would group with the Platform'
+        assert 'r.dev.family' in js, 'buildRows no longer groups on family'

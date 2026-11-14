@@ -108,6 +108,7 @@ export const BB_PITCH_DEG_MAX = 90.0;
 export const HARDWARE_MODELS = {
     teensy_can_bridge: 'Teensy 4.1',
     teensy_platform: 'Teensy 4.0',
+    teensy_ball_butler: 'Teensy 4.0',
     odrive_axis_0: 'ODrive Pro',
     odrive_axis_1: 'ODrive Pro',
     odrive_axis_2: 'ODrive Pro',

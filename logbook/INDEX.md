@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-14 | complete | maintainer review | **GUI Hardware panel shows the firmware version of the Ball Butler Teensy (no firmware change; read once per launch)** | [2026-11-14-gui-ball-butler-firmware-row](2026-11-14-gui-ball-butler-firmware-row.md) |
 | 2026-11-14 | complete | maintainer review | **The schedule_hand Catch aim source is deleted (BUG-106): about 490 lines of code and 550 of tests, tracker and schedule unchanged** | [2026-11-14-schedule-hand-aim-source-deleted](2026-11-14-schedule-hand-aim-source-deleted.md) |
 | 2026-11-14 | complete | maintainer review | **Leg-mapping calibration CSVs removed from the tree (179 MB), kept at an archive tag** | [2026-11-14-leg-mapping-calibration-data-removed](2026-11-14-leg-mapping-calibration-data-removed.md) |
 | 2026-11-14 | complete | maintainer review | **Maintainer review: seven small fixes landed (tracker tests collected, TX sequence lock, Memory header, tolerance pin, gate conftest freeze, auto-pull timeout, atomic Item writes), the rest filed as Items** | [2026-11-14-maintainer-review-fixes](2026-11-14-maintainer-review-fixes.md) |
