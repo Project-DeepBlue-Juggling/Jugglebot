@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import os
 import re
 import threading
 import time
@@ -42,6 +43,7 @@ from jugglebot_interfaces.action import Juggle
 from jugglebot_interfaces.srv import BallButlerThrow, InstallSegment
 
 from jugglebot import ball_possession
+from jugglebot import runtime_paths as rtp
 from jugglebot import skill_node as sn
 import jugglebot.hardware_config as hw
 
@@ -485,8 +487,11 @@ def test_stop_keeps_ticking_until_a_pending_flight_finalises_then_appends_its_ro
         node._on_tick()
         assert node._executor is None
 
-    memory = Memory(memory_path(str(tmp_path), plant_id))
+    # Phase C8: the node appends to the gitignored runtime copy, never to the
+    # tracked `memory_path` file (`runtime_paths`).
+    memory = Memory(rtp.runtime_memory_path(str(tmp_path), plant_id))
     assert len(memory) == 1
+    assert not os.path.exists(memory_path(str(tmp_path), plant_id))
 
 
 def test_stop_with_no_attempt_is_a_harmless_success():

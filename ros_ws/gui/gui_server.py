@@ -3,9 +3,11 @@
 
 Serves static files from this directory on all interfaces and the
 ``/api/replay/`` rosbag-replay routes (replay/api.py), plus ``GET /api/records``
-(the records ledger, IDEA-3: ``to_json`` of the repo's ``docs/records.md``,
-parsed by ``ros_ws/src/jugglebot/jugglebot/records.py`` loaded BY PATH, so
-the ROS package is never imported). Pure stdlib, no ROS2 -
+(the records ledger, IDEA-3: ``to_json`` of the robot's runtime copy
+``temp/runtime/records.md`` when present, else the tracked ``docs/records.md``
+-- Phase C8, ``jugglebot/runtime_paths.py`` -- parsed by
+``ros_ws/src/jugglebot/jugglebot/records.py``; both modules are loaded BY
+PATH, so the ROS package is never imported). Pure stdlib, no ROS2 -
 start once and leave running. The browser reads recordings over HTTP Range; the
 overview pass runs in a niced subprocess under the venv interpreter
 (``--worker-python``); the server itself needs nothing.
@@ -30,20 +32,28 @@ if _HERE not in sys.path:
 from replay.api import ReplayBackend  # noqa: E402
 
 RECORDS_ROUTE = "/api/records"
-_RECORDS_MODULE = os.path.join(_HERE, "..", "src", "jugglebot", "jugglebot", "records.py")
+_PKG_DIR = os.path.join(_HERE, "..", "src", "jugglebot", "jugglebot")
+_RECORDS_MODULE = os.path.join(_PKG_DIR, "records.py")
+_RUNTIME_PATHS_MODULE = os.path.join(_PKG_DIR, "runtime_paths.py")
+_REPO = os.path.join(_HERE, "..", "..")
 
 
-def _load_records_module():
-    """``jugglebot/records.py`` by file path (stdlib only, no package import).
+def _load_module_by_path(name, path):
+    """A ``jugglebot/`` module by file path (stdlib only, no package import).
     Registered in sys.modules before exec: dataclasses resolve their module."""
-    spec = importlib.util.spec_from_file_location("jugglebot_records", _RECORDS_MODULE)
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
 
+def _load_records_module():
+    return _load_module_by_path("jugglebot_records", _RECORDS_MODULE)
+
+
 records = _load_records_module()
+runtime_paths = _load_module_by_path("jugglebot_runtime_paths", _RUNTIME_PATHS_MODULE)
 
 
 def records_payload(path):
@@ -63,6 +73,10 @@ class CORSHandler(http.server.SimpleHTTPRequestHandler):
 
     backend = None  # set per server in make_server
     records_path = None  # set per server in make_server
+    #: True when ``records_path`` is the default (tracked) ledger: then the
+    #: robot's runtime copy is served when it exists (read per request, so a
+    #: Sitting's first write shows without a restart).
+    records_runtime_first = False
     _replay_headers_sent = False
 
     def end_headers(self):
@@ -80,7 +94,10 @@ class CORSHandler(http.server.SimpleHTTPRequestHandler):
         super().do_GET()
 
     def _records(self):
-        status, payload = records_payload(self.records_path)
+        path = self.records_path
+        if self.records_runtime_first:
+            path = runtime_paths.readable_records_path(_REPO)
+        status, payload = records_payload(path)
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -122,7 +139,9 @@ def build_parser():
     parser.add_argument("--worker-python", default="~/Desktop/PDJ_venv/venv/bin/python")
     parser.add_argument("--records-path",
                         default=os.path.join(_HERE, "..", "..", "docs", "records.md"),
-                        help="the records ledger served at " + RECORDS_ROUTE)
+                        help="the records ledger served at " + RECORDS_ROUTE
+                        + " (the default serves the robot's runtime copy "
+                        "temp/runtime/records.md when it exists)")
     return parser
 
 
@@ -140,9 +159,12 @@ def make_server(args):
         pass
 
     Handler.backend = backend
+    default_records = os.path.abspath(build_parser().get_default("records_path"))
     Handler.records_path = os.path.abspath(os.path.expanduser(
-        getattr(args, "records_path", None)
-        or build_parser().get_default("records_path")))
+        getattr(args, "records_path", None) or default_records))
+    # Runtime-first only for the default ledger: an explicit --records-path
+    # is served exactly as given (the tests, a hand-picked file).
+    Handler.records_runtime_first = Handler.records_path == default_records
     handler = lambda *a, **kw: Handler(*a, directory=_HERE, **kw)  # noqa: E731
     server = ReusableHTTPServer((getattr(args, "host", "0.0.0.0"), args.port), handler)
     return server, backend

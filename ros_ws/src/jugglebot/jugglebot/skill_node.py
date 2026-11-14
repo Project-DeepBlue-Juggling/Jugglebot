@@ -74,6 +74,7 @@ from jugglebot import ball_possession
 from jugglebot import juggle_request as jr
 from jugglebot import mocap_status as mocap_st
 from jugglebot import records as rec
+from jugglebot import runtime_paths as rtp
 from jugglebot import throw_identity as ti
 from jugglebot.motion import blas_threads
 from jugglebot.motion import unified_cycle as uc
@@ -88,7 +89,7 @@ from jugglebot.motion.skills.executor import (InstallResult, Landing,
                                               Observations, SeatWindow,
                                               SkillExecutor,
                                               precondition_refusals)
-from jugglebot.motion.skills.memory import Memory, memory_path
+from jugglebot.motion.skills.memory import Memory
 from jugglebot.motion.skills.schedule import (COLUMNS_HIGHLOW,
                                               FRESH_THROW_LEAD_S, LEAD_S,
                                               LandingPrior, OneBallPattern,
@@ -1235,6 +1236,9 @@ class SkillNode(Node):
         #: params: an operator may change them mid-attempt).
         self._goal_record_params = ()
         self._goal_outcome_lines = []
+        #: Runtime-copy warnings already logged (`_note_seeding`): a stale or
+        #: unseeded runtime file WARNs once per node, not on every goal.
+        self._seed_warned = set()
         #: The attempt's ThrowReports (the result's counts) and its name on
         #: the operator's lines (`_start_pattern`).
         self._goal_reports = []
@@ -1288,8 +1292,14 @@ class SkillNode(Node):
         # The records ledger (IDEA-3, `jugglebot/records.py`): the file each
         # juggling Attempt's end is offered to. '' (the default) = disabled,
         # so a bare node and the mocked-ROS tests never touch the committed
-        # `docs/records.md`; `jugglebot_launch.py` points it at the repo's.
+        # `docs/records.md`. `jugglebot_launch.py` points `records_path` at
+        # the gitignored runtime copy `temp/runtime/records.md` and
+        # `records_tracked_path` at `docs/records.md`, the file the runtime
+        # copy is seeded from before the first write (`jugglebot/
+        # runtime_paths.py`, Phase C8: the robot never dirties the checkout).
+        # `records_tracked_path` '' = no seeding (write `records_path` as is).
         self.declare_parameter('records_path', '')
+        self.declare_parameter('records_tracked_path', '')
         self.declare_parameter('site_x_mm', _DEFAULT_SITE_X_MM)
         self.declare_parameter('site_y_mm', _DEFAULT_SITE_Y_MM)
         self.declare_parameter('plant_id', _DEFAULT_PLANT_ID)
@@ -4788,7 +4798,7 @@ class SkillNode(Node):
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
         try:
-            memory = Memory(memory_path(_REPO_ROOT, plant_id))
+            memory = self._open_memory(plant_id)
             # The Learner is built and its memory replayed HERE, at goal
             # start before anything moves (~1 s on the 3276-row corpus), never
             # on an announcement or feed callback (`_make_learner` memoises).
@@ -4946,7 +4956,7 @@ class SkillNode(Node):
             return SimpleNamespace(success=False, message=msg)
 
         try:
-            memory = Memory(memory_path(_REPO_ROOT, plant_id))
+            memory = self._open_memory(plant_id)
             # The Learner is built and its memory replayed HERE, at goal
             # start before anything moves (~1 s on the 3276-row corpus), never
             # on an announcement or feed callback (`_make_learner` memoises).
@@ -5411,8 +5421,10 @@ class SkillNode(Node):
         two :func:`~jugglebot.motion.skills.sites.columns_sites` sites for
         ``hop``, same compiler either way
         (:func:`~jugglebot.motion.skills.schedule.compile_one_ball`)):
-        THROW -> CATCH -> ... -> REST, the learner on, memory at
-        ``temp/learn/<plant_id>/memory_v2.csv`` (schema v2 since 2026-11-06).
+        THROW -> CATCH -> ... -> REST, the learner on, memory at the runtime
+        copy ``temp/runtime/learn/<plant_id>/memory_v2.csv`` seeded from the
+        tracked ``temp/learn/<plant_id>/memory_v2.csv`` (`_open_memory`;
+        schema v2 since 2026-11-06).
 
         Order: refuse fast on anything that does not need the platform to
         move (running / repo root / pattern / nomination) BEFORE
@@ -5446,13 +5458,13 @@ class SkillNode(Node):
         sites = pattern.sites
 
         # Finding 11, R3 audit (2026-09-13): built here, before `_prelevel`
-        # actually moves the platform, and guarded — `memory_path` raises
+        # actually moves the platform, and guarded — `_open_memory` raises
         # `ValueError` on a bad `plant_id`, and `Memory(...)` can raise
         # `OSError` (unreadable file) or `csv.Error` (malformed rows); left
         # uncaught in a goal accept either kills the node AFTER the platform
         # has already moved.
         try:
-            memory = Memory(memory_path(_REPO_ROOT, plant_id))
+            memory = self._open_memory(plant_id)
             # The Learner is built and its memory replayed HERE, at goal
             # start before anything moves (~1 s on the 3276-row corpus), never
             # on an announcement or feed callback (`_make_learner` memoises).
@@ -5818,7 +5830,7 @@ class SkillNode(Node):
             sites=sites, apex_m=float(self.get_parameter('apex_m').value),
             dwell_s=dwell_s, n_throws=0)
         try:
-            memory = Memory(memory_path(_REPO_ROOT, plant_id))
+            memory = self._open_memory(plant_id)
             # The Learner is built and its memory replayed HERE, at goal
             # start before anything moves (~1 s on the 3276-row corpus), never
             # on an announcement or feed callback (`_make_learner` memoises).
@@ -6670,6 +6682,39 @@ class SkillNode(Node):
             % (ball_label(1), float(feed.t_land_abs_s) - now,
                n_after, '' if n_after == 1 else 's'))
 
+    def _note_seeding(self, seeding) -> None:
+        """Log one `runtime_paths.Seeding`: DEBUG when a runtime copy was just
+        seeded (the operator console keeps its one learner line and one start
+        line per goal, `TestOperatorLines`), WARN (once per runtime file and
+        message, per node) when it is stale or has no seed."""
+        if seeding.action in (rtp.SEEDED, rtp.SEEDED_EMPTY):
+            self.get_logger().debug('runtime copy %s: %s' % (
+                seeding.runtime, rtp.describe(seeding)))
+        if seeding.warning:
+            key = (seeding.runtime, seeding.warning)
+            if key not in self._seed_warned:
+                self._seed_warned.add(key)
+                self.get_logger().warning(seeding.warning)
+
+    def _open_memory(self, plant_id: str) -> Memory:
+        """THE Memory for ``plant_id`` (Phase C8): the gitignored runtime copy
+        ``temp/runtime/learn/<plant_id>/memory_v2.csv``, seeded byte-for-byte
+        from the tracked ``temp/learn/<plant_id>/memory_v2.csv`` when absent
+        (`runtime_paths.live_memory_path`, which also owns the stale-seed
+        rule), then ONE DEBUG line ``memory loaded N rows from <path> (...)``.
+        On a fresh seed N is the tracked file's row count; the operator's
+        INFO check is the Learner's goal-start line (`_make_learner`,
+        ``rows N``), which counts the same rows. Raises what `Memory` and the path resolution
+        raise (ValueError, OSError, csv.Error); every caller turns those into
+        "memory refused: ..." before anything moves."""
+        path, seeding = rtp.live_memory_path(_REPO_ROOT, plant_id)
+        self._note_seeding(seeding)
+        memory = Memory(path)
+        self.get_logger().debug(
+            'memory loaded %d rows from %s (%s; %d dropped)'
+            % (len(memory), path, rtp.describe(seeding), memory.n_dropped))
+        return memory
+
     def _make_learner(self, memory: Memory, site_x: Optional[float] = None):
         """THE Learner for ``memory`` (P1, 2026-11-06): a fresh
         ``plant_model.PlantModel`` + ``learner.Learner`` with its lateral cap
@@ -6969,6 +7014,10 @@ class SkillNode(Node):
         if not path:
             return False, ''
         try:
+            tracked = str(
+                self.get_parameter('records_tracked_path').value or '')
+            if tracked:
+                self._note_seeding(rtp.ensure_seeded(path, tracked))
             beaten, best = rec.record_attempt(path, rec.Attempt(
                 when_local=time.strftime(rec.WHEN_FORMAT, time.localtime()),
                 pattern=pattern, throws=int(throws), catches=int(caught),
@@ -6979,8 +7028,8 @@ class SkillNode(Node):
                 feed_scores=tuple(float(x) for x in feed_scores)))
             if beaten:
                 self.get_logger().info(
-                    'records: NEW RECORD %s -- %d Catches in %d Throws (%s); '
-                    '%s is now dirty until the Sitting close-out commit'
+                    'records: NEW RECORD %s -- %d Catches in %d Throws (%s) '
+                    'in %s (merged into docs/records.md at the debrief)'
                     % (pattern, int(caught), int(throws), end_code, path))
             if drops > 0:
                 try:

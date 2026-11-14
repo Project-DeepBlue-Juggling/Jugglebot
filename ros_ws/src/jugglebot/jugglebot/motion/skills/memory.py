@@ -27,6 +27,10 @@ the node turns it into "memory refused: ..." and rejects the goal):
   unmigrated corpus.
 * neither present: an empty memory (a new plant_id starts cold).
 
+On the robot these rules apply to the RUNTIME copy under ``temp/runtime/``
+(``jugglebot.runtime_paths``), seeded byte-for-byte from the tracked file;
+the v1 refusal is checked on the tracked directory before seeding.
+
 Rows that fail to parse are dropped with a logged warning and counted in
 :attr:`Memory.n_dropped`. File I/O (load, ``append``) happens on the
 orchestrator thread ONCE PER THROW, never on the 40 Hz emitter.
@@ -45,7 +49,8 @@ import os
 import numpy as np
 
 __all__ = ['Experience', 'Memory', 'APEX_RATIO_BAND', 'apex_in_band',
-           'memory_path', 'legacy_memory_path', 'HEADER', 'HEADER_V1',
+           'memory_path', 'legacy_memory_path', 'refuse_unmigrated_v1',
+           'HEADER', 'HEADER_V1',
            'LEGACY_FLIGHT_HEADER', 'SCHEMA_VERSION', 'RELEASE_KINDS']
 
 _LOG = logging.getLogger(__name__)
@@ -217,10 +222,32 @@ def _check_plant_id(plant_id) -> None:
 def memory_path(root: str, plant_id: str) -> str:
     """``<root>/temp/learn/<plant_id>/memory_v2.csv`` (the schema-v2 file).
 
+    This is the TRACKED Memory (committed at each debrief). The running
+    robot never writes it: ``skill_node`` loads and appends to the runtime
+    copy ``jugglebot.runtime_paths.live_memory_path`` returns (seeded from
+    this file; Phase C8 of ``plans/active/night-shift-closeout.md``).
+
     ``plant_id`` must be exactly one safe path segment.
     """
     _check_plant_id(plant_id)
     return os.path.join(root, 'temp', 'learn', plant_id, 'memory_v2.csv')
+
+
+def refuse_unmigrated_v1(path: str) -> None:
+    """Raise ValueError (naming the migration command) if ``path`` is an
+    absent ``<dir>/memory_v2.csv`` with a schema-v1 ``<dir>/memory.csv``
+    beside it: never a silent cold start beside an unmigrated corpus.
+    ``Memory`` checks its own path; ``runtime_paths.live_memory_path`` checks
+    the TRACKED path (the runtime directory never holds a v1 file)."""
+    legacy = os.path.join(os.path.dirname(path), 'memory.csv')
+    if (not os.path.exists(path)
+            and os.path.basename(path) == 'memory_v2.csv'
+            and os.path.exists(legacy)):
+        raise ValueError(
+            'found a schema-v1 memory at %s and no memory_v2.csv: '
+            'run `python tools/migrate_memory_schema_v2.py --memory '
+            '%s --out %s` (it writes a new file and never changes '
+            'the v1 one)' % (legacy, legacy, path))
 
 
 def legacy_memory_path(root: str, plant_id: str) -> str:
@@ -269,14 +296,7 @@ class Memory:
 
     def _load(self) -> None:
         if not os.path.exists(self._path):
-            legacy = os.path.join(os.path.dirname(self._path), 'memory.csv')
-            if (os.path.basename(self._path) == 'memory_v2.csv'
-                    and os.path.exists(legacy)):
-                raise ValueError(
-                    'found a schema-v1 memory at %s and no memory_v2.csv: '
-                    'run `python tools/migrate_memory_schema_v2.py --memory '
-                    '%s --out %s` (it writes a new file and never changes '
-                    'the v1 one)' % (legacy, legacy, self._path))
+            refuse_unmigrated_v1(self._path)
             return
         with open(self._path, newline='') as handle:
             reader = csv.reader(handle)

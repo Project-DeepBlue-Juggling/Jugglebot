@@ -99,9 +99,17 @@ Ball Butler/hand_sensor_pcb_rail/fp-info-cache
 !/.claude/agents/
 !/.claude/workflows/
 temp/*
-# The skill-stack learner memory is the one runtime artifact under temp/ that is
+# temp/runtime/ (ignored by temp/* above, and NOTHING may re-include it) holds
+# the copies the running robot writes: temp/runtime/records.md and
+# temp/runtime/learn/<plant_id>/memory_v2.csv, each with a .seed JSON. Seeded
+# from the tracked files below and merged back at the Sitting debrief
+# (tools/runtime_records.py), so a running launch leaves `git status` empty
+# (Phase C8, plans/active/night-shift-closeout.md; ros_ws/src/jugglebot/
+# jugglebot/runtime_paths.py; pinned by tests/ros/test_runtime_writes_untracked.py).
+#
+# The skill-stack learner memory is the one artifact under temp/ that is
 # tracked: it is the robot's accumulated learning and had no off-box copy.
-# Commit it at sitting close-out, not mid-sitting.
+# The robot never writes it directly (above); the debrief commits it.
 !temp/learn/
 temp/learn/*
 # Every plant_id's memory.csv (one directory per plant_id / Sitting rung,

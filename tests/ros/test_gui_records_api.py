@@ -88,3 +88,25 @@ def test_the_json_carries_the_caught_and_throws_figures(tmp_path, ledger):
     (tmp_path / "second").mkdir()
     d = json.loads(_get(tmp_path / "second", ledger)[2].decode())["drops"]
     assert d["total"] == 2 and d["caught"] is None and d["throws"] is None
+
+
+def test_the_default_ledger_serves_the_runtime_copy_first(tmp_path, monkeypatch):
+    """Phase C8: with the default --records-path the server reads the robot's
+    runtime copy ``temp/runtime/records.md`` when it exists (per request) and
+    the tracked ``docs/records.md`` otherwise (``runtime_paths``)."""
+    repo = tmp_path / "repo"
+    (repo / "docs").mkdir(parents=True)
+    tracked = rec.rebuild([rec.Attempt("2026-11-01 10:00", "columns", 5, 4, "STOPPED")])
+    rec.write_atomic(str(repo / "docs" / "records.md"), rec.render(tracked))
+    monkeypatch.setattr(gui_server, "_REPO", str(repo))
+    srv = _RecordsSrv(tmp_path, "")       # '' = the default ledger
+    try:
+        _c, _h, body = srv.req("/api/records")
+        assert json.loads(body.decode()) == rec.to_json(tracked)
+        runtime = rec.rebuild([rec.Attempt("2026-11-14 10:00", "columns", 9, 8, "STOPPED")])
+        (repo / "temp" / "runtime").mkdir(parents=True)
+        rec.write_atomic(str(repo / "temp" / "runtime" / "records.md"), rec.render(runtime))
+        _c, _h, body = srv.req("/api/records")
+        assert json.loads(body.decode()) == rec.to_json(runtime)
+    finally:
+        srv.close()
