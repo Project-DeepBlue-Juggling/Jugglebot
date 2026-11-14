@@ -44,3 +44,7 @@ child process. A committed row cannot hold the night's final status (the commit 
 ## Verification
 
 - 2026-11-14, `python -m pytest tests/sim/test_night_shift_runner.py tests/sim/test_night_shift_landed.py tests/sim/test_night_shift_settings.py tests/sim/test_logbook_front_matter.py tests/sim/test_docs_links.py -q -n 2`: **286 passed in 89.92s**; with the two gated files, `test_live_session_guard.py` and `test_night_shift_gate.py`, 156 passed (65 s).
+
+## Published detail (same day)
+
+The repository is public and a failed night's `detail` can carry the tail of claude's or the preflight's stderr. The committed `history.jsonl` row therefore publishes `detail` only for an OK night; any other status gets a fixed "not published" text and the full row stays in the reports directory on the box. Verification (2026-11-14): `python -m pytest tests/sim/test_night_shift_runner.py tests/sim/test_night_shift_landed.py -q -n 3`: 126 passed.

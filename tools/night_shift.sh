@@ -453,7 +453,8 @@ write_status() {   # write_status STATUS DETAIL -> last_run.json + history.log +
 # the start time plus the runner's pid). The row is last_run.json
 # minus what must not be published: the two absolute-path fields and the model's result text
 # (`report`, `candidates`, `result`), $HOME shown as ~, and any credential value or
-# sk-... token redacted. The history commit is docs/night-shift/* only, which
+# sk-... token redacted, and the free-text `detail` of any night that is not OK withheld
+# (the repo is public). The history commit is docs/night-shift/* only, which
 # tools/night_shift_landed.py EXEMPTs, and is made after the landed check has run.
 history_stage() {   # history_stage STATUS DETAIL: write the file into the clone's tree
   local status="$1" detail; detail="$(one_line "$2")"
@@ -494,7 +495,14 @@ except OSError:
     pass
 take(json.load(open(prov)))
 os.unlink(prov)
-out = [{k: scrub(v) for k, v in r.items() if k not in DROP}
+def public(r):
+    # The repo is public. A failed night's detail can carry the tail of claude's or the
+    # preflight's stderr, free text no pattern can vouch for: publish the status word only.
+    row = {k: scrub(v) for k, v in r.items() if k not in DROP}
+    if row.get("status") != "OK" and "detail" in row:
+        row["detail"] = "(not published: see last_run.json / history.jsonl in the reports dir on the box)"
+    return row
+out = [public(r)
        for r in sorted(rows.values(), key=lambda r: (r.get("started") or "", r.get("finished") or ""))]
 tmp = dest + ".tmp"
 with open(tmp, "w") as fh:

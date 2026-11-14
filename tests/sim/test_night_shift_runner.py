@@ -1184,6 +1184,10 @@ def test_a_night_with_no_commit_of_its_own_gets_a_history_commit(ns):
     assert subject.startswith("docs(night-shift): run history ") and "(HELD)" in subject
     assert "Logbook-Entry" not in subject
     assert [r["status"] for r in _rows(ns)] == ["OK", "HELD"]
+    # the repo is public: only an OK night's detail is published
+    ok_row, held_row = _rows(ns)
+    assert ok_row["detail"].startswith("cost ") and held_row["detail"].startswith("(not published")
+    assert "owner: away" not in _git("show", "main:docs/night-shift/history.jsonl", cwd=ns.origin, env=ns.env)
     assert ns.last()["history_commit"] == "pushed"
     assert _idents(ns, "main", "-1") == ["t <t@t>|%s" % IDENT]
     # NOTHING_NEW is the same path, and the landed check tolerates all of it
