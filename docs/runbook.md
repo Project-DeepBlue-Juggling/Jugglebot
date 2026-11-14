@@ -6,13 +6,14 @@ waiting Items: the order a Sitting flies in, and every step, is on its Sitting s
 
 Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
-## Robot  (10 Items, 271 min)
+## Robot  (11 Items, 286 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
 | BUG-58 Firmware scheduler STOPs a streamed lane while frames arrive on time and the host stream is clean: LANE_REFUSED ends, cause unseen | 1 | armed | - | - |
 | BUG-63 Ball 2's first throw after the feed catch lands about 180 mm outward along the separation axis | 10 | level, armed, bb-fed | - | - |
 | BUG-89 teensy_bridge_node forwards only the newest waiting knot; harmless at emit lead 0, but the cover has 7-14 ms of margin against a stall | 40 | level, armed, bb-fed | - | - |
+| BUG-93 can-bridge fatal CAN-silence check wraps when a frame is stamped after its clock read: a live Leg reads silent and the Platform Stows | 15 | level, armed, bridge-cycled | `night-shift/2026-11-15-BUG-93` | - |
 | FEAT-32 Pre-release hold rung: release from a moving Platform (hold 0.100 → 0) | 45 | armed, bb-fed, bridge-cycled | - | - |
 | FEAT-39 P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30 | 50 | level, armed, bb-fed, bridge-cycled | - | - |
 | BUG-92 static Ball Butler frame markers are tracked as human_throw | 10 | level | `night-shift/2026-11-15-BUG-92` | - |
@@ -57,7 +58,6 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - BUG-79 [Robot] Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for: no ## Sitting section
 - BUG-84 [Robot] Hand stalls at the 70 A clamp mid-dive, probably on a Ball under the Cup, and the next launch comes up slow: no ## Sitting section
 - BUG-90 [Robot] carry_zvd rows make the Hand stop and go at about 5 Hz in flight: no ## Sitting section
-- BUG-93 [Robot] can-bridge fatal CAN-silence check wraps when a frame is stamped after its clock read: a live Leg reads silent and the Platform Stows: no ## Sitting section
 - BUG-94 [Robot] Ball Butler Throw announcement gives the Tracker the calibrated origin, not the release point: no ## Sitting section
 - BUG-95 [Robot] A long REST can be refused SPLICE_TOO_LATE: the fresh decision and the Knot choice use different leads: no ## Sitting section
 - BUG-98 [Robot] teensy_bridge_node blocking RPC services share a callback group with the 100 Hz publishers and the link-loss check: no ## Sitting section
