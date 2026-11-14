@@ -50,7 +50,7 @@ A power cut does clear the terms: they are volatile, and the axis comes back Idl
 
 ## Already known in the tree (2026-11-14)
 
-The property is not new: `tests/hardware/hand_stream_bench.py:150` and `logbook/2026-11-03-jb145-hand-stall-stop-options.md` both state that the bridge does not flush vel_ff on a disarm and that a disarm while moving leaves the Hand at `input_pos + vel_ff/35`. The bench driver is built to disarm only from a hold for that reason. What is missing is a measurement on the Hand and a decision on a cure.
+The property is not new: `tests/hardware/hand_stream_bench.py:150` and the 2026-11-03 logbook entry on the Hand stall-stop options both state that the bridge does not flush vel_ff on a disarm and that a disarm while moving leaves the Hand at `input_pos + vel_ff/35`. The bench driver is built to disarm only from a hold for that reason. What is missing is a measurement on the Hand and a decision on a cure.
 
 ## Sitting
 
