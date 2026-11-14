@@ -209,6 +209,10 @@ class NS:
             # Safety net: a run that straddles midnight must not wait an hour.
             "NIGHT_SHIFT_WAIT_NIGHTLY_S": "2",
             "NIGHT_SHIFT_WAIT_NIGHTLY_POLL_S": "1",
+            # A weekday (BUG-107): on a Sunday the runner does a full walk, which
+            # turns an expected NOTHING_NEW into OK. A test of the full walk
+            # passes NIGHT_SHIFT_WEEKDAY=7 itself.
+            "NIGHT_SHIFT_WEEKDAY": "3",
         }
 
     def run(self, background=False, new_session=False, **overrides):
