@@ -224,11 +224,6 @@ def test_oval_next_catch_prior_flies_from_T():
     want = ballistics_bc.arrival_velocity(lv, fl)
     got = x._predicted_landing(k + 1, nxt)
     assert got.vel_mm_s.tolist() == pytest.approx(want.tolist(), abs=1e-9)
-    hc = x._hand_corrected_landing(k + 1, nxt, 1.0)
-    _p, vel2, _t = ballistics_bc.arrival_state_at_z(
-        t.throw_site_mm(), lv, float(pos[2]))
-    assert hc.vel_mm_s.tolist() == pytest.approx(
-        np.asarray(vel2).tolist(), abs=1e-6)
 
 
 def test_oval_carried_window_and_stop_rest_at_T():

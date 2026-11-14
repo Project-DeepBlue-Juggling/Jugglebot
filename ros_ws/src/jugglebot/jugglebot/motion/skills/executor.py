@@ -60,7 +60,6 @@ from jugglebot.motion.trajectory import ballistics_bc
 from jugglebot.motion.trajectory import throw_envelope
 from jugglebot.motion.trajectory.feasibility import STALE_STATE
 from jugglebot.motion.trajectory import cup_realize as cr
-from jugglebot.motion.trajectory import tilt_geometry as tg
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
 
 # ── I-PLAN-12: the REBASE continuity bar (2026-10-23) ─────────────────────────
@@ -285,8 +284,7 @@ CATCH_FREEZE_S = LEAD_S + float(hw.JB_TRAJ_KNOT_DT_S)
 #: generated source twice is not a second copy of the number (plan § 0: no
 #: ``motion/`` module owns ``hw.*`` more than another). A re-send whose
 #: splice base falls inside this window is declined BEFORE the solve
-#: (:meth:`SkillExecutor._resend_live_catch` /
-#: :meth:`_resend_hand_corrected_catch`): a splice that opens inside the
+#: (:meth:`SkillExecutor._resend_live_catch`): a splice that opens inside the
 #: window hands the QP a re-solve with no runway left to reach the contact
 #: floor from whatever state the re-aim seeds, so the solve would only
 #: refuse ``CUP_CONTACT_ACC`` — paying it is a wasted 40-130 ms on the
@@ -355,12 +353,8 @@ AIM_TRACKER = 'tracker'
 #: This is what the 2026-09-15..09-17 sittings flew; retained selectable
 #: because the A/B runsheets fly it against :data:`AIM_TRACKER`.
 AIM_SCHEDULE = 'schedule'
-#: :data:`AIM_SCHEDULE`, plus ONE re-aim of the committed catch from the
-#: MEASURED throw state: the hand's launch-speed ratio ``r`` from
-#: ``/hand_telemetry`` (:mod:`jugglebot.motion.skills.hand_launch`), never QTM.
-AIM_SCHEDULE_HAND = 'schedule_hand'
 #: The whole vocabulary — ``skill_node`` validates its parameter against it.
-AIM_SOURCES = (AIM_SCHEDULE, AIM_SCHEDULE_HAND, AIM_TRACKER)
+AIM_SOURCES = (AIM_SCHEDULE, AIM_TRACKER)
 #: NOT a selectable source (not in :data:`AIM_SOURCES`): the CATCH-AIM label
 #: of a schedule prior built from the learner's FORWARD prediction of the
 #: command actually sent (:meth:`SkillExecutor._prior_landing`, 2026-10-13),
@@ -2535,8 +2529,6 @@ class SkillExecutor:
                  installer: Callable[..., InstallResult], *,
                  tracker: Optional[Callable[[int], Optional[Landing]]] = None,
                  catch_aim_source: str = AIM_TRACKER,
-                 launch_ratio: Optional[Callable[[int, float],
-                                                 Optional[float]]] = None,
                  catch_freeze_s: float = CATCH_FREEZE_S,
                  resend_min_interval_s: float = 0.025,
                  resend_pos_tol_mm: float = 10.0,
@@ -2628,15 +2620,12 @@ class SkillExecutor:
         if catch_aim_source not in AIM_SOURCES:
             raise ValueError('catch_aim_source must be one of %r, not %r'
                              % (list(AIM_SOURCES), catch_aim_source))
-        #: :data:`AIM_SCHEDULE` / :data:`AIM_SCHEDULE_HAND` / :data:`AIM_TRACKER`.
+        #: :data:`AIM_SCHEDULE` / :data:`AIM_TRACKER`.
         self.catch_aim_source = str(catch_aim_source)
         #: The aim label (``_catch_aim``'s) of the CATCH whose dispatch is
         #: building its terminal -- read only by the one ``ADMISSIBILITY-
         #: LANDING`` note (BUG-87); never a decision input.
         self._dispatch_aim_label = ''
-        #: ``(ball_id, t_release_abs_s) -> Optional[r]`` — the MEASURED hand
-        #: launch-speed ratio, only ever read in :data:`AIM_SCHEDULE_HAND`.
-        self.launch_ratio = launch_ratio
         self.catch_freeze_s = float(catch_freeze_s)
         self.resend_min_interval_s = float(resend_min_interval_s)
         #: How far a later fit must move the committed landing before a
@@ -2839,9 +2828,6 @@ class SkillExecutor:
         #: BEFORE :meth:`_register_catch`, so its fit is parked here and
         #: handed to the :class:`_PendingCatch` at registration.
         self._fit_latch_by_idx: Dict[int, Landing] = {}
-        #: CATCH indices whose ONE hand-measured re-aim is already settled —
-        #: applied, refused, or given up on (:data:`AIM_SCHEDULE_HAND`).
-        self._hand_corrected = set()
         #: ``idx -> re-aims already installed`` (:attr:`resend_max_per_catch`).
         self._resend_counts = {}
         #: ``(idx, reason)`` pairs already reported by :meth:`_resend_live_catch`
@@ -2869,8 +2855,7 @@ class SkillExecutor:
         self.stop_before_declined = None
         #: Lines queued by :meth:`_clamp_lateral_to_schedule` (via
         #: :meth:`_catch_terminal`), drained by whichever caller fired it
-        #: (dispatch, :meth:`_resend_live_catch`,
-        #: :meth:`_resend_hand_corrected_catch`) into its own return.
+        #: (dispatch, :meth:`_resend_live_catch`) into its own return.
         self._pending_notes: List[str] = []
 
     @property
@@ -4528,8 +4513,7 @@ class SkillExecutor:
         committed catch in :meth:`_resend_live_catch`, which is where the
         tracker earns its place; the dispatch never blocks on it.
 
-        Under :data:`AIM_SCHEDULE` / :data:`AIM_SCHEDULE_HAND` only step 2
-        runs (plus the hand-measured correction), with no tracker call at
+        Under :data:`AIM_SCHEDULE` only step 2 runs, with no tracker call at
         all — the open-loop A/B arm. Either way the one catch the schedule
         cannot aim, of a ball released before ``t0``, falls through to the
         tracker: not a carve-out, the absence of any alternative.
@@ -4548,30 +4532,7 @@ class SkillExecutor:
         if predicted is None:
             tracked = self._tracked_landing(idx, skill)
             return (tracked, AIM_TRACKER) if tracked is not None else (None, '')
-        if self.catch_aim_source == AIM_SCHEDULE:
-            return self._prior_landing(idx, skill)
-        # :data:`AIM_SCHEDULE_HAND` keeps the ``y_d`` prior, NOT the learner's
-        # forward prediction: its measured ratio rescales the ``y_d`` throw
-        # (:meth:`_hand_corrected_landing`), and the learner's apex
-        # correction already models the same stroke overspeed -- stacking
-        # the two would count it twice.
-        # the measured correction is applied to the
-        # DISPATCH itself whenever the stroke has already been measured by
-        # then — which is the common case, because a catch dispatches after
-        # its own ball's release. Re-aiming a catch that was just installed
-        # would pay a second ~25 ms solve on the orchestrator thread for a
-        # landing that was already knowable;
-        # :meth:`_resend_hand_corrected_catch` is for the case this branch
-        # cannot serve (the ratio not measurable yet at dispatch).
-        corrected, r = self._hand_ratio_landing(idx, skill, t_abs_s)
-        if r is None:
-            return predicted, self.catch_aim_source
-        self._hand_corrected.add(idx)
-        if corrected is None:
-            return predicted, ('%s (r=%.3f, no arrival at the catch '
-                               'plane — theoretical aim)'
-                               % (AIM_SCHEDULE_HAND, r))
-        return corrected, '%s (r=%.3f)' % (AIM_SCHEDULE_HAND, r)
+        return self._prior_landing(idx, skill)
 
     def _tracked_landing(self, idx: int, skill: Skill) -> Optional[Landing]:
         """The tracker's landing for CATCH ``idx``, gated by
@@ -4609,91 +4570,6 @@ class SkillExecutor:
                 if pend.catch_idx == idx:
                     pend.last_fit_landing = landing
         return landing
-
-    def _hand_ratio_landing(self, idx: int, skill: Skill, t_abs_s: float):
-        """``(corrected_landing, r)`` from the MEASURED hand stroke, for the
-        one aim source that uses it (:data:`AIM_SCHEDULE_HAND`).
-
-        ``(None, None)`` = no measurement to act on (no ``launch_ratio``
-        wired, no previous release in this schedule, the stroke still in the
-        future, or a window the monitor will not vouch for). ``(None, r)`` =
-        a measurement whose scaled flight never reaches the catch plane. Both
-        mean the same thing to the caller: keep the theoretical aim; the
-        second says so with a number.
-        """
-        if self.launch_ratio is None:
-            return None, None
-        prev = _previous_release(self.schedule, idx, skill.ball_id)
-        if prev is None:
-            return None, None
-        t_release_s = prev[1]
-        if t_abs_s < t_release_s:
-            # The throw stroke this correction measures has not happened yet.
-            return None, None
-        r = self.launch_ratio(skill.ball_id, t_release_s)
-        if r is None:
-            return None, None
-        r = float(r)
-        try:
-            return self._hand_corrected_landing(idx, skill, r), r
-        except ValueError:
-            return None, r
-
-    def _hand_corrected_landing(self, idx: int, skill: Skill,
-                                r: float) -> Optional[Landing]:
-        """The predicted landing re-flown with the MEASURED launch speed:
-        the same release site and commanded landing as
-        :meth:`_predicted_landing`, but the ballistic launch velocity's
-        HAND-STROKE component scaled by ``r = v_meas / v_cmd``
-        (:mod:`~jugglebot.motion.skills.hand_launch`).
-
-        **Scale only the axial (stroke) component, not the whole vector**
-        (R4, 2026-09-23 — this method's own prior comment said "revisit if
-        that changes", and a cross-site hop target is exactly the case that
-        changes it). ``r`` measures the fast slider stroke, which launches
-        the ball ALONG the release cup's up-axis
-        (``tilt_geometry.tilt_to_throw`` — the same rotation
-        ``unified_cycle.cup_state_from_platform`` realises the pose
-        through); the PERPENDICULAR component of the launch velocity is
-        delivered by platform motion/tilt geometry, not the stroke, so
-        scaling it by the same ``r`` would attribute a hand-speed error to a
-        DoF the hand never touched. For a vertical throw the perpendicular
-        component is exactly zero (``cup_axis(0, 0) == (0, 0, 1)``), so this
-        reduces to the old isotropic ``launch_vel * r`` bit for bit (pinned:
-        ``tests/motion/test_skills_executor.py::
-        test_hand_corrected_landing_reduces_to_the_old_formula_for_a_vertical_throw``).
-        This is still purely a TIMING correction in that case -- ``T' =
-        r·T``, i.e. an apex ``r²`` times the commanded one, since a flight
-        scales with the release speed and an apex with its SQUARE -- which is
-        the whole "the catch is not timed" symptom: at 0.9 m apex and the
-        measured r = 1.086, touch-down is ~74 ms later than the schedule
-        commanded. The general (lateral hop target) case is solved, not
-        approximated: :func:`ballistics_bc.arrival_state_at_z` crosses the
-        commanded landing PLANE, so a scaled launch that also drifts
-        horizontally gets the drifted arrival position too.
-
-        Raises ``ValueError`` (from ``arrival_state_at_z``) when the scaled
-        throw never reaches the catch plane -- an r so low the ball apexes
-        below the hand. The caller keeps the theoretical aim and says so.
-        """
-        prev = _previous_release(self.schedule, idx, skill.ball_id)
-        if prev is None:
-            return None
-        site, t_release_s, y_d, target, release_idx = prev
-        pos_mm = self._commanded_target_mm(target, y_d)
-        flight_s = sch.flight_s(float(y_d[1]))
-        release_pos = self._release_pos_mm(release_idx)
-        launch_vel = ballistics_bc.launch_velocity(
-            release_pos, pos_mm, flight_s)
-        rx, ry = tg.tilt_to_throw(launch_vel)
-        axis = tg.cup_axis(rx, ry)
-        axial = float(np.dot(launch_vel, axis))
-        perp = launch_vel - axis * axial
-        scaled_vel = perp + axis * (axial * float(r))
-        pos2, vel2, t2 = ballistics_bc.arrival_state_at_z(
-            release_pos, scaled_vel, float(pos_mm[2]))
-        return Landing(pos_mm=pos2, vel_mm_s=vel2,
-                       t_land_abs_s=t_release_s + float(t2))
 
     def _valid_tracked_landing(self, idx: int, skill: Skill,
                                landing: Optional[Landing]
@@ -4830,11 +4706,8 @@ class SkillExecutor:
             memory it will have at dispatch -- and on the dispatch tick
             :meth:`_advance_outcomes` runs AFTER the dispatch loop;
         (c) a landing from a SIDE-EFFECT-FREE read: the prior
-            (:meth:`_prior_landing`; :meth:`_predicted_landing` under
-            :data:`AIM_SCHEDULE_HAND`, which is what :meth:`_catch_aim` aims
-            that source at before its measured ratio) -- never
-            :meth:`_catch_aim` (it latches ``_fit_latch_by_idx``, adds to
-            ``_hand_corrected``, and its tracker read queues identity notes)
+            (:meth:`_prior_landing`) -- never :meth:`_catch_aim` (it latches
+            ``_fit_latch_by_idx``, and its tracker read queues identity notes)
             -- clamped through the same funnel with ``note=False``;
         (d) ``dispatch - EARLY_COMMAND_MAX_S <= t_abs_s < dispatch``, where
             the dispatch instant is the tick the loop will dispatch on,
@@ -4912,10 +4785,7 @@ class SkillExecutor:
             if self._finalise_floor_s(pend) + lag < t_dispatch:
                 return
         try:
-            if self.catch_aim_source == AIM_SCHEDULE_HAND:       # (c)
-                prior = self._predicted_landing(idx, skill)
-            else:
-                prior, _label = self._prior_landing(idx, skill)
+            prior, _label = self._prior_landing(idx, skill)      # (c)
             if prior is None:
                 return
             self._early_resolve(idx, skill, tt, prior, t_abs_s)
@@ -5058,17 +4928,12 @@ class SkillExecutor:
                         # ahead of it this tick.  Retried next tick.
                         break
                 if not self.attempt_ended:
-                    # One re-aim path per aim source, and never two: under
-                    # :data:`AIM_TRACKER` later fits refine the committed
-                    # catch, under :data:`AIM_SCHEDULE_HAND` the measured
-                    # launch ratio does, and under :data:`AIM_SCHEDULE` the
+                    # Only :data:`AIM_TRACKER` re-aims: later fits refine
+                    # the committed catch. Under :data:`AIM_SCHEDULE` the
                     # schedule's commanded landing IS the aim, so there is
                     # nothing to refine it with.
                     if self.catch_aim_source == AIM_TRACKER:
                         lines.extend(self._resend_live_catch(t_abs_s))
-                    elif self.catch_aim_source == AIM_SCHEDULE_HAND:
-                        lines.extend(
-                            self._resend_hand_corrected_catch(t_abs_s))
                 if not self.attempt_ended and self.observations is not None:
                     lines.extend(self._advance_catch_evidence(t_abs_s))
                 if not self.attempt_ended and self.observations is not None:
@@ -5565,12 +5430,10 @@ class SkillExecutor:
                 self._note_aim_fallback(idx, refused_code)
             lines.append(
                 '%.3f CATCH-AIM skill %d: source=%s landing=(%.1f, %.1f, '
-                '%.1f) mm t_land=%.3f%s'
+                '%.1f) mm t_land=%.3f'
                 % (t_abs_s, idx, aim_source, terminal.landing_mm[0],
                    terminal.landing_mm[1], terminal.landing_mm[2],
-                   _event_abs_s(CATCH, terminal),
-                   (' — awaiting the measured hand ratio'
-                    if aim_source == AIM_SCHEDULE_HAND else '')))
+                   _event_abs_s(CATCH, terminal)))
             self._register_catch(idx, skill, _event_abs_s(CATCH, terminal))
         else:
             self._live_catch = None
@@ -5996,15 +5859,14 @@ class SkillExecutor:
         (:attr:`_ctx_cache`), no early resolution (:attr:`_early_by_idx`), no
         catch state (:attr:`_fit_latch_by_idx`, :attr:`_resend_counts`,
         :attr:`_carried_release_mm`, :attr:`_carried_catch_xy_mm`,
-        :attr:`_hand_corrected`, :attr:`_bump_refused_mm`, the live catch, a
+        :attr:`_bump_refused_mm`, the live catch, a
         pending catch or outcome naming it)."""
         if k in self.dispatched or any(i == k for i, _s, _r in self.results):
             return False
         for keyed in (self._u_cache, self._learned_u, self._ctx_cache,
                       self._early_by_idx, self._fit_latch_by_idx,
                       self._resend_counts, self._carried_release_mm,
-                      self._carried_catch_xy_mm, self._hand_corrected,
-                      self._bump_refused_mm):
+                      self._carried_catch_xy_mm, self._bump_refused_mm):
             if k in keyed:
                 return False
         if self._live_catch is not None and int(self._live_catch[0]) == k:
@@ -6251,7 +6113,7 @@ class SkillExecutor:
         _fit_latch_by_idx, _resend_counts     prefix-only (checked first)
         _carried_release_mm,                  prefix-only (checked first)
         _carried_catch_xy_mm
-        _hand_corrected, _bump_refused_mm     prefix-only (checked first)
+        _bump_refused_mm                      prefix-only (checked first)
         _live_catch                           prefix-only (checked first)
         _resend_notes ((idx, reason)),        CLEARED at >= first (once-per
         _identity_refused (('catch', idx))    notes; a new Skill may re-note)
@@ -6331,7 +6193,6 @@ class SkillExecutor:
                             (self._carried_release_mm, '_carried_release_mm'),
                             (self._carried_catch_xy_mm,
                              '_carried_catch_xy_mm'),
-                            (self._hand_corrected, '_hand_corrected'),
                             (self._bump_refused_mm, '_bump_refused_mm'),
                             ({p.catch_idx for p in self._pending_catches},
                              '_pending_catches')):
@@ -7295,124 +7156,6 @@ class SkillExecutor:
                 'caught=%s%s%s%s'
                 % (finalise_at, ball_label(pend.ball_id), y[0], y[1], y[2],
                    caught, phase, shadow, hop)]
-
-    def _resend_hand_corrected_catch(self, t_abs_s: float) -> List[str]:
-        """:data:`AIM_SCHEDULE_HAND`: re-aim the committed CATCH ONCE, from
-        the MEASURED hand launch speed of its own ball's throw.
-
-        The catch is already committed on the theoretical aim (the schedule's
-        commanded landing), so this is strictly a refinement and every
-        failure path keeps that aim: no ratio yet (retried next tick), a
-        ratio the monitor will not vouch for (``None``, permanently), a
-        scaled flight that misses the catch plane, or a re-send that no
-        longer fits before touch-down. "Once" is the point -- ``r`` is a
-        property of a stroke that has already happened, so a second call
-        would re-install the same landing and pay a solve for it.
-
-        The first two timing fences are :meth:`_resend_live_catch`'s, for the
-        same two physical facts: nothing re-sends inside ``catch_freeze_s`` of
-        touch-down (the hand is already decelerating into the ball), and
-        nothing re-sends once ``now + lead_s`` leaves less than
-        :data:`MIN_WINDOW_S` before the landing (a solve there can only
-        refuse ``WINDOW_TOO_SHORT``). Both are checked against the CORRECTED
-        landing as well as the committed one -- a correction that pulls
-        touch-down EARLIER (r < 1) can land inside a freeze the committed aim
-        cleared. A third fence is checked ONCE, against the corrected landing
-        only, right before the solve it would otherwise pay for: nothing
-        re-sends once the splice would open inside the cup-contact window (a
-        solve there can only refuse ``CUP_CONTACT_ACC`` — see
-        :data:`CUP_CONTACT_WINDOW_LEAD_S`). It needs no earlier stage against
-        the committed landing the way the two above do -- those gate whether
-        computing ``r`` is worth it at all, while this one exists only to
-        skip the SOLVE, and by the time ``r`` and the corrected landing are
-        known, checking the value the solve would actually target is both
-        necessary and sufficient (the committed landing's own touch-down can
-        differ from the corrected one in either direction, so it would not
-        reliably predict this fence's answer anyway).
-        """
-        if self._live_catch is None or self.launch_ratio is None:
-            return []
-        idx, terminal, _t_last = self._live_catch
-        if idx in self._hand_corrected:
-            return []
-        skill = self.schedule.skills[idx]
-        if _previous_release(self.schedule, idx, skill.ball_id) is None:
-            self._hand_corrected.add(idx)
-            return []
-        if self._resend_too_late(t_abs_s, skill,
-                                 _event_abs_s(CATCH, terminal)):
-            self._hand_corrected.add(idx)
-            return ['%.3f CATCH-AIM-LATE skill %d: no hand-measured '
-                    'correction arrived in time — the theoretical aim stands '
-                    '(t_land %.3f)' % (t_abs_s, idx, terminal.t_land_s)]
-        landing, r = self._hand_ratio_landing(idx, skill, t_abs_s)
-        if r is None:
-            return []
-        self._hand_corrected.add(idx)
-        if landing is None:
-            return ['%.3f CATCH-AIM-HAND-INFEASIBLE skill %d: r=%.3f gives no '
-                    'arrival at the catch plane — the theoretical aim stands'
-                    % (t_abs_s, idx, r)]
-        # The terminal carries the debug catch-time offset; so must the
-        # landing time every comparison below uses.
-        t_land_eff = float(landing.t_land_abs_s) + self.catch_time_offset_s
-        dt_s = t_land_eff - _event_abs_s(CATCH, terminal)
-        if self._resend_too_late(t_abs_s, skill, t_land_eff):
-            return ['%.3f CATCH-AIM-LATE skill %d: the hand-measured '
-                    'correction (r=%.3f, Δt=%+.3f s) would splice too late — '
-                    'the theoretical aim stands' % (t_abs_s, idx, r, dt_s)]
-        # DECLINE BEFORE THE SOLVE — the same physical fact
-        # :meth:`_resend_live_catch` declines on (see
-        # :data:`CUP_CONTACT_WINDOW_LEAD_S`): a splice opening inside the
-        # cup-contact window hands the QP no runway to reach
-        # ``CUP_CONTACT_ACC`` from a re-aimed seed, so the solve can only
-        # refuse it.
-        moved_mm = float(np.max(np.abs(
-            np.asarray(landing.pos_mm, dtype=float) - terminal.landing_mm)))
-        if (t_abs_s + float(skill.lead_s)
-                >= t_land_eff - CUP_CONTACT_WINDOW_LEAD_S):
-            return self._resend_declined(
-                t_abs_s, idx, 'CONTACT-WINDOW', moved_mm, dt_s)
-        saved = (self._carried_release_mm.get(idx),
-                 self._carried_catch_xy_mm.get(idx))
-        new_terminal = self._catch_terminal(idx, skill, landing)
-        clamp_lines = self._pending_notes
-        self._pending_notes = []
-        res = self.installer(CATCH, new_terminal, t_abs_s,
-                             ball_id=skill.ball_id)
-        self.results.append((idx, skill, res))
-        if not res.accepted:
-            # The committed catch stands — a refused re-aim is strictly
-            # better than no catch, so the attempt continues. Its release
-            # record goes back to the installed one (BUG-81).
-            self._restore_release_record(idx, saved)
-            self._live_catch = (idx, terminal, t_abs_s)
-            self._note_reaim_refused(idx, res.code)
-            return clamp_lines + [
-                    '%.3f CATCH-AIM-HAND-REFUSED %s skill %d: r=%.3f, '
-                    'Δt=%+.3f s — %s'
-                    % (t_abs_s, res.code, idx, r, dt_s, res.message)]
-        self._live_catch = (idx, new_terminal, t_abs_s)
-        self._refresh_pending_release(idx)
-        self._note_catch_aim(skill.ball_id, idx,
-                             _event_abs_s(CATCH, new_terminal), reaim=True)
-        return clamp_lines + ['%.3f CATCH-AIM skill %d: source=%s r=%.3f Δt=%+.3f s '
-                'landing=(%.1f, %.1f, %.1f) mm t_land=%.3f'
-                % (t_abs_s, idx, AIM_SCHEDULE_HAND, r, dt_s,
-                   new_terminal.landing_mm[0], new_terminal.landing_mm[1],
-                   new_terminal.landing_mm[2], new_terminal.t_land_s)]
-
-    def _resend_too_late(self, t_abs_s: float, skill: Skill,
-                         t_land_abs_s: float) -> bool:
-        """True when a re-send at ``t_abs_s`` for a touch-down at
-        ``t_land_abs_s`` is past one of the two fences (freeze, window floor)
-        — see :meth:`_resend_hand_corrected_catch`. Inside this layer a
-        terminal's time field holds the ABSOLUTE instant (``_event_abs_s``),
-        which is the clock both fences are measured on."""
-        if t_abs_s >= t_land_abs_s - self.catch_freeze_s:
-            return True
-        return (t_land_abs_s - (t_abs_s + float(skill.lead_s))
-                < MIN_WINDOW_S - 1e-12)
 
     def _resend_splice_instant(self, idx: int, t_abs_s: float,
                                t_land_abs_s: float):

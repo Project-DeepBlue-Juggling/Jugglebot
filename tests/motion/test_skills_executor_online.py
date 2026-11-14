@@ -868,7 +868,7 @@ def test_no_checker_makes_no_early_resolution():
 
 def _side_effect_state(x):
     return dict(
-        fit_latch=dict(x._fit_latch_by_idx), hand=set(x._hand_corrected),
+        fit_latch=dict(x._fit_latch_by_idx),
         notes=list(x._pending_notes), identity=set(x._identity_refused),
         resend_notes=set(x._resend_notes), learned=set(x._learned_u),
         cache=sorted(x._u_cache), release=sorted(x._carried_release_mm),
@@ -876,13 +876,13 @@ def _side_effect_state(x):
         live=x._live_catch)
 
 
-@pytest.mark.parametrize('aim', [ex.AIM_TRACKER, ex.AIM_SCHEDULE_HAND])
+@pytest.mark.parametrize('aim', [ex.AIM_TRACKER, ex.AIM_SCHEDULE])
 def test_an_early_command_has_no_side_effects(aim):
     """Two executors ticked identically, early command ON vs OFF: after the
     early tick every piece of state the dispatch's aim / clamp / Learner
-    path writes is IDENTICAL -- ``_fit_latch_by_idx``, ``_hand_corrected``,
-    ``_pending_notes``, the identity-refused set, the once-keys, the learned
-    marks, the cache. The learned prior is 50 mm off the schedule landing
+    path writes is IDENTICAL -- ``_fit_latch_by_idx``, ``_pending_notes``,
+    the identity-refused set, the once-keys, the learned marks, the cache.
+    The learned prior is 50 mm off the schedule landing
     with a 20 mm authority, so the clamp BITES (a ``note=True`` clamp would
     queue AIM-LATERAL-CLAMPED), and the tracker serves the WRONG ball's
     estimate (an identity-refused line on any tracker read)."""
@@ -895,7 +895,7 @@ def test_an_early_command_has_no_side_effects(aim):
         sch, _inst, x = _early_exec(
             chk, _SeqLearner([[0.0, 0.0, _APEX]], predict_bias=(0.05, 0.0)),
             tracker=lambda b: wrong, catch_aim_source=aim,
-            launch_ratio=lambda b, t: 1.05, lateral_authority_m=0.020,
+            lateral_authority_m=0.020,
             early_command=on)
         _dispatch_throws(sch, x)
         x.tick(sch.skills[-1].dispatch_s() - 0.2)

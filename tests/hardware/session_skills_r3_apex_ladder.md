@@ -265,16 +265,11 @@ BEFORE `start_self_toss` (it is read when the schedule is compiled):
 | Value | What it does | When to use it |
 |---|---|---|
 | `schedule` | The commanded landing, dispatched at the scheduled instant. No tracker, no re-aim. The default WHEN THIS LADDER FLEW (2026-09-16) and what its rows record. | Reproducing a row of this ladder. |
-| `schedule_hand` | The same, corrected ONCE by the MEASURED hand launch-speed ratio `r = v_meas/v_cmd` from `/hand_telemetry` (never QTM). Logs `source=schedule_hand (r=1.086)` and, when the correction arrives after the dispatch, a second `CATCH-AIM … r=… Δt=+0.074 s` line. | The optional A/B once a rung's throw lands cleanly: the plant threw ~8–9 % fast at this sitting, which is ~74 ms of late arrival at 0.9 m. |
 | `tracker` (default since 2026-09-18) | The tracker's CONVERGED fit aims the catch, with the commanded landing as the prior when no fit has converged, then later fits re-aim the committed catch (≤ 2, ≥ 10 mm / 10 ms apart). Logs `source=tracker`, `source=schedule` for the prior, and `RESEND …` / `RESEND-SKIPPED <reason> …` for the refine. | The live default; use `schedule` to re-fly this ladder's own rows. |
 
-`ros2 param set /skill_node catch_aim_source schedule_hand`. A value that is
-not one of the three logs an error and falls back to the live default
-(`tracker` since 2026-09-18). Two lines
-that are **not** failures: `CATCH-AIM-LATE …the theoretical aim stands` (the
-hand ratio did not arrive in time to splice — the catch still flies on the
-commanded landing) and `CATCH-AIM-HAND-REFUSED …` (the re-aim's solve was
-refused; the committed catch stands).
+`ros2 param set /skill_node catch_aim_source schedule`. A value that is
+not one of the two logs an error and falls back to the live default
+(`tracker` since 2026-09-18).
 
 **Expected, not a stop:** an attempt that ends `LIMIT_JERK` on the closing
 REST after the catch (the pre-existing refusal noted at step 8 — up to about

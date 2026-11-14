@@ -88,7 +88,6 @@ from jugglebot.motion.skills.executor import (InstallResult, Landing,
                                               Observations, SeatWindow,
                                               SkillExecutor,
                                               precondition_refusals)
-from jugglebot.motion.skills.hand_launch import HandLaunchMonitor
 from jugglebot.motion.skills.memory import Memory, memory_path
 from jugglebot.motion.skills.schedule import (COLUMNS_HIGHLOW,
                                               FRESH_THROW_LEAD_S, LEAD_S,
@@ -950,13 +949,6 @@ class SkillNode(Node):
         self._hand_clock = time.perf_counter
         self._hand_pos_meas = 0.0
         self._hand_pos_cmd = 0.0
-        # The hand's launch-speed ratio source for `catch_aim_source` =
-        # `schedule_hand` (`hand_launch.HandLaunchMonitor`): fed every
-        # `/hand_telemetry` sample, read once per catch by the executor. Held
-        # for the node's life (not per attempt) — a stroke's samples arrive
-        # before the catch that asks about them, and the monitor's own
-        # history bound is what keeps it small.
-        self._hand_launch = HandLaunchMonitor()
         # `trajectory/commanded_position` — the pre-level move's own xy/z
         # (item 7; `_prelevel`), restated from
         # `reload_coordinator_node._on_commanded_position` /
@@ -1308,8 +1300,8 @@ class SkillNode(Node):
         # 2026-09-15 NO_LANDING sitting was an aim that DEPENDED on a mocap
         # marker; since `ce6d603` the tracker confirms every flight, 22/22 on
         # 2026-09-17, and the release slips 0.019-0.137 s from its knot,
-        # which only an observation can see). `schedule` and `schedule_hand`
-        # stay selectable as the open-loop A/B arm — see
+        # which only an observation can see). `schedule` stays selectable
+        # as the open-loop A/B arm — see
         # `executor.AIM_SOURCES` and `executor._catch_aim`.
         self.declare_parameter('catch_aim_source', ex.AIM_TRACKER)
         # Owner 2026-09-16 pinned this at 0 (the learner corrects FLIGHT
@@ -1991,20 +1983,6 @@ class SkillNode(Node):
             raise ValueError('carry_zvd=%r is not a bool' % (value,))
         return value
 
-    def _launch_ratio(self, ball_id: int, t_release_abs_s: float):
-        """The executor's ``launch_ratio`` callable: the MEASURED hand
-        launch-speed ratio of the stroke ending at ``t_release_abs_s``, or
-        ``None`` when the hand telemetry cannot vouch for one (the executor
-        then keeps the theoretical aim). ``ball_id`` is unused — this hand
-        throws one ball at a time, and the release INSTANT is what selects
-        the stroke."""
-        r = self._hand_launch.ratio(t_release_abs_s)
-        self.get_logger().debug(
-            'hand launch ratio for the release at %.3f (%s): %s'
-            % (t_release_abs_s, ball_label(ball_id),
-               self._hand_launch.last_reason))
-        return r
-
     def _on_traj_status(self, msg) -> None:
         """Cache the latest `trajectory/status` for `_run_one_ball`'s
         limits check and the R3 ladder's `levelled`/`in_trajectory_mode`
@@ -2361,16 +2339,6 @@ class SkillNode(Node):
         self._hand_pos_meas = float(getattr(msg, 'pos_meas', 0.0))
         self._hand_pos_cmd = float(getattr(msg, 'pos_cmd', 0.0))
         self._hand_telemetry_mono = self._hand_clock()
-        # The launch-ratio monitor's sample, stamped on the ROS WALL clock
-        # (the clock the schedule's release instants live on — a perf stamp
-        # would not be comparable with one). Arrival time, not a bridge
-        # stamp: the ratio compares PEAKS of the two channels inside one
-        # window, so the few ms of transport lag shifts both channels of the
-        # same message identically and cannot bias the ratio.
-        self._hand_launch.add_sample(
-            self.get_clock().now().nanoseconds / 1e9,
-            float(getattr(msg, 'vel_ff_cmd', 0.0)),
-            float(getattr(msg, 'vel_meas', 0.0)))
         valid = bool(getattr(msg, 'ball_held_valid', False))
         raw = getattr(msg, 'ball_held_raw', None)
         if not valid or raw is None:
@@ -5058,7 +5026,6 @@ class SkillNode(Node):
             planner_mode=self._planner_mode(),
             carry_zvd=self._carry_zvd(),
             resend_max_per_catch=self._catch_resend_max(),
-            launch_ratio=self._launch_ratio,
             learner=learner,
             lateral_authority_m=float(self.get_parameter(
                 'learner_lateral_authority_mm').value) / 1000.0,
@@ -5584,7 +5551,6 @@ class SkillNode(Node):
             planner_mode=self._planner_mode(),
             carry_zvd=self._carry_zvd(),
             resend_max_per_catch=self._catch_resend_max(),
-            launch_ratio=self._launch_ratio,
             learner=learner,
             lateral_authority_m=float(self.get_parameter(
                 'learner_lateral_authority_mm').value) / 1000.0,
@@ -5998,7 +5964,6 @@ class SkillNode(Node):
                 planner_mode=self._planner_mode(),
                 carry_zvd=self._carry_zvd(),
                 resend_max_per_catch=self._catch_resend_max(),
-                launch_ratio=self._launch_ratio,
                 observer=self._ball_evidence, observations=self._observations,
                 dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
                 seat_window=self._seat_window,
@@ -6013,7 +5978,6 @@ class SkillNode(Node):
                 planner_mode=self._planner_mode(),
                 carry_zvd=self._carry_zvd(),
                 resend_max_per_catch=self._catch_resend_max(),
-                launch_ratio=self._launch_ratio,
                 observer=self._ball_evidence, observations=self._observations,
                 dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
                 seat_window=self._seat_window,
@@ -6294,7 +6258,6 @@ class SkillNode(Node):
                 planner_mode=self._planner_mode(),
                 carry_zvd=self._carry_zvd(),
                 resend_max_per_catch=self._catch_resend_max(),
-                launch_ratio=self._launch_ratio,
                 learner=learner,
                 lateral_authority_m=float(self.get_parameter(
                     'learner_lateral_authority_mm').value) / 1000.0,
@@ -6450,7 +6413,6 @@ class SkillNode(Node):
             planner_mode=self._planner_mode(),
             carry_zvd=self._carry_zvd(),
             resend_max_per_catch=self._catch_resend_max(),
-            launch_ratio=self._launch_ratio,
             learner=learner,
             lateral_authority_m=float(self.get_parameter(
                 'learner_lateral_authority_mm').value) / 1000.0,
@@ -6637,7 +6599,6 @@ class SkillNode(Node):
             planner_mode=self._planner_mode(),
             carry_zvd=self._carry_zvd(),
             resend_max_per_catch=self._catch_resend_max(),
-            launch_ratio=self._launch_ratio,
             learner=learner,
             lateral_authority_m=float(self.get_parameter(
                 'learner_lateral_authority_mm').value) / 1000.0,

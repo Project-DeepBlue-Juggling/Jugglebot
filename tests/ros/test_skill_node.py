@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from tests.ros.conftest import MockTime, _MockParameter
+from tests.ros.conftest import _MockParameter
 
 import rclpy
 from rclpy.callback_groups import (MutuallyExclusiveCallbackGroup,
@@ -2265,10 +2265,9 @@ def test_the_live_catch_aim_default_is_the_trackers_converged_fit():
     assert node.get_parameter('catch_aim_source').value == 'tracker'
     node._start_pattern(_flown_columns_goal())
     assert node._executor.catch_aim_source == 'tracker'
-    assert node._executor.launch_ratio is not None
 
 
-@pytest.mark.parametrize('value', ['schedule', 'schedule_hand'])
+@pytest.mark.parametrize('value', ['schedule'])
 def test_the_aim_source_parameter_reaches_the_executor(value):
     node, _client = _node_with_client()
     node.set_parameters([_MockParameter(value, name='catch_aim_source')])
@@ -2285,31 +2284,6 @@ def test_an_unknown_aim_source_falls_back_to_the_live_default():
     node.set_parameters([_MockParameter('mocap', name='catch_aim_source')])
     node._start_pattern(_flown_columns_goal())
     assert node._executor.catch_aim_source == 'tracker'
-
-
-def test_hand_telemetry_feeds_the_launch_ratio_the_executor_asks_for():
-    """`/hand_telemetry` is the ONLY source of the measured correction (never
-    QTM): the node's `launch_ratio` callable must answer from the samples that
-    topic delivered, and answer `None` before any stroke has been seen."""
-    node, _client = _node_with_client()
-    t_release = 1000.0
-    assert node._launch_ratio(0, t_release) is None      # nothing recorded yet
-
-    # One throw stroke delivered through the REAL callback, sample by sample.
-    # Each sample is stamped with the node's wall clock at arrival (the clock
-    # the schedule's release instants live on), so the mock clock is stepped
-    # rather than left at 0 — an unstamped sample is dropped by design, since
-    # it cannot be compared with a release instant.
-    n, dt = 20, 0.01
-    for i in range(n):
-        t = t_release - (n - 1 - i) * dt
-        node._clock = MagicMock()
-        node._clock.now.return_value = MockTime(int(round(t * 1e9)))
-        cmd = 120.0 * (i + 1) / n
-        node._on_hand_telemetry(HandTelemetryMessage(
-            vel_ff_cmd=cmd, vel_meas=cmd * 1.086, ball_held_valid=False))
-    assert len(node._hand_launch) == n
-    assert node._launch_ratio(0, t_release) == pytest.approx(1.086, abs=1e-6)
 
 
 def test_a_refused_memory_row_is_logged_and_never_raises():

@@ -2,15 +2,20 @@
 id: BUG-106
 kind: bug
 title: 'Catch aim source schedule_hand breaks I-CATCH-4 and has not been flown in three months: delete or port'
-status: inbox
+status: complete
 created: '2026-11-14'
-updated: '2026-11-13T23:10:33Z'
+updated: '2026-11-14T02:13:34Z'
 owners: []
 priority: low
+effort: s
+hardware: none
+owner: decision
+radius: subsystem
 diagnosis: confirmed
 area: skill-stack
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-14-schedule-hand-aim-source-deleted.md
 filed_by: claude
 ---
 
@@ -29,3 +34,7 @@ The Catch aim source `schedule_hand` has a re-send path that breaks invariant I-
 ## Decision for the owner
 
 Delete `schedule_hand` (about 200 lines: `executor.py:4613-4750`, `:7299-7416`, the early-command branch, `hand_launch.py` if nothing else reads it), or port its fences to I-CATCH-4. Deleting is the smaller change and removes a path the contract no longer describes.
+
+## Progress
+
+- 2026-11-14: Deleted by owner decision 2026-11-14; tracker and schedule unchanged, full suite 9797 passed

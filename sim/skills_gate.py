@@ -3942,9 +3942,8 @@ def main(argv=None) -> int:
                    help='where a CATCH is aimed from: tracker (the LIVE '
                         'default since 2026-09-18 and this gate\'s -- the '
                         'converged fit, with the schedule as its prior, plus '
-                        'the refine path this gate asserts), schedule (open '
-                        'loop from the commanded throw state), or '
-                        'schedule_hand')
+                        'the refine path this gate asserts) or schedule (open '
+                        'loop from the commanded throw state)')
     p.add_argument('--learn', action='store_true',
                    help='run the R3/R4/R5 sim-validation learner run (plan '
                         '§ 4 R3; R4 Unit U7a; R5 Unit G) instead of the R2 '

@@ -3596,8 +3596,7 @@ def test_a_stale_previous_flight_landing_never_confirms_a_release(sites):
 # when there is not, never waiting for either — the tracker has confirmed
 # every flight since `ce6d603` (22/22 on 2026-09-17) and the release slips
 # 0.019-0.137 s from its knot, which only an observation can see.  `schedule`
-# and `schedule_hand` (the hand-measured launch-speed correction) stay
-# selectable and stay tested as the open-loop A/B arm.
+# stays selectable and stays tested as the open-loop A/B arm.
 # ═════════════════════════════════════════════════════════════════════════════
 
 
@@ -3767,161 +3766,6 @@ def test_a_catch_the_schedule_cannot_aim_still_waits_for_the_tracker(sites):
     assert inst.calls == [] and not x.attempt_ended
     x.tick(deadline)
     assert x.attempt_ended and x.end_code == ex.NO_LANDING
-
-
-def _corrected_t_land(sch, r):
-    """The arrival the measured ratio implies, restated from the same closed
-    form: the release is 70 mm BELOW the catch plane (cup height at throw vs
-    at catch, since R5 sitting 6's catch-high, 2026-10-05; was 30 mm ABOVE),
-    so the flight is not level and T' is only APPROXIMATELY r x T."""
-    throw = sch.skills[0]
-    release_mm = throw.site.throw_site_mm()
-    pos_mm = throw.site.catch_site_mm()
-    v0 = ballistics_bc.launch_velocity(release_mm, pos_mm, FLIGHT_S) * r
-    _p, _v, t_flight = ballistics_bc.arrival_state_at_z(
-        release_mm, v0, float(pos_mm[2]))
-    return float(throw.t_abs_s) + float(t_flight)
-
-
-def test_schedule_hand_aims_the_dispatch_itself_from_the_measured_speed(sites):
-    """`schedule_hand`, the common case: a catch dispatches AFTER its own
-    ball's release, so the stroke is already measured and the correction goes
-    into the dispatch — one install, not an install plus a ~25 ms re-solve.
-    At the R3 point (0.857 s flight) the sitting's measured r = 1.086 moves
-    touch-down ~74 ms later, which is the whole "the catch is not timed"
-    symptom."""
-    sch = _schedule(sites)
-    inst = _FakeInstaller()
-    r = 1.086
-    x = ex.SkillExecutor(sch, inst, tracker=_angry_tracker,
-                         catch_aim_source=ex.AIM_SCHEDULE_HAND,
-                         launch_ratio=lambda ball_id, t_rel: r)
-    catch = sch.skills[1]
-    x.tick(sch.skills[0].dispatch_s())
-    lines = x.tick(catch.dispatch_s())
-    assert [c[0] for c in inst.calls] == [sg.THROW, sg.CATCH]
-    _pos, t_land = _predicted(sites, sch)
-    assert (inst.calls[1][1].t_land_s
-            == pytest.approx(_corrected_t_land(sch, r), abs=1e-9))
-    assert _corrected_t_land(sch, r) - t_land == pytest.approx(0.074,
-                                                               abs=0.005)
-    assert any('source=schedule_hand (r=1.086)' in ln for ln in lines)
-    # And nothing re-aims it afterwards.
-    x.tick(catch.dispatch_s() + 5 * DT)
-    assert len([c for c in inst.calls if c[0] == sg.CATCH]) == 1
-
-
-def test_schedule_hand_re_aims_once_when_the_ratio_arrives_after_dispatch(
-        sites):
-    """When the stroke is not measurable yet at the dispatch instant, the
-    catch commits on the theoretical aim and exactly ONE re-aim follows, as
-    soon as the ratio exists."""
-    sch = _schedule(sites)
-    inst = _FakeInstaller()
-    r = 1.086
-    ratio_box = {'r': None}
-    x = ex.SkillExecutor(sch, inst, tracker=_angry_tracker,
-                         catch_aim_source=ex.AIM_SCHEDULE_HAND,
-                         launch_ratio=lambda ball_id, t_rel: ratio_box['r'])
-    catch = sch.skills[1]
-    x.tick(sch.skills[0].dispatch_s())
-    x.tick(catch.dispatch_s())
-    assert [c[0] for c in inst.calls] == [sg.THROW, sg.CATCH]
-    _pos, t_land = _predicted(sites, sch)
-    assert inst.calls[1][1].t_land_s == pytest.approx(t_land)
-
-    ratio_box['r'] = r
-    lines = x.tick(catch.dispatch_s() + DT)
-    assert [c[0] for c in inst.calls] == [sg.THROW, sg.CATCH, sg.CATCH]
-    assert (inst.calls[2][1].t_land_s
-            == pytest.approx(_corrected_t_land(sch, r), abs=1e-9))
-    assert any('r=1.086' in ln and 'source=schedule_hand' in ln
-              for ln in lines)
-
-    # ONCE: r is a property of a stroke that has already happened, so every
-    # later tick would re-install the same landing and pay a solve for it.
-    x.tick(catch.dispatch_s() + 5 * DT)
-    assert len([c for c in inst.calls if c[0] == sg.CATCH]) == 2
-
-
-def test_schedule_hand_keeps_the_theoretical_aim_when_no_ratio_arrives(sites):
-    """Hand telemetry silent, or a window the monitor will not vouch for: the
-    committed theoretical aim stands, the attempt continues, and the log says
-    so once rather than every tick."""
-    sch = _schedule(sites)
-    inst = _FakeInstaller()
-    x = ex.SkillExecutor(sch, inst, tracker=_angry_tracker,
-                         catch_aim_source=ex.AIM_SCHEDULE_HAND,
-                         launch_ratio=lambda ball_id, t_rel: None)
-    catch = sch.skills[1]
-    x.tick(sch.skills[0].dispatch_s())
-    x.tick(catch.dispatch_s())
-    late = []
-    t = catch.dispatch_s() + DT
-    while t < float(catch.t_abs_s):
-        late.extend(ln for ln in x.tick(t) if 'CATCH-AIM-LATE' in ln)
-        t += 0.02
-    assert len([c for c in inst.calls if c[0] == sg.CATCH]) == 1
-    assert len(late) == 1
-    assert not x.attempt_ended
-
-
-def test_schedule_hand_never_re_aims_once_it_could_not_splice_in_time(sites):
-    """A correction that only becomes measurable late is not spliceable: the
-    two fences are ``catch_freeze_s`` of touch-down (the hand is already
-    decelerating into the ball) and the window floor — a re-send splices at
-    ``now + lead_s``, so once that leaves less than ``MIN_WINDOW_S`` before
-    the landing a solve could only refuse ``WINDOW_TOO_SHORT``.  The window
-    floor is the binding one here (``lead_s`` 0.15 + ``MIN_WINDOW_S`` 0.1 =
-    0.25 s of touch-down, against the 0.175 s freeze).  Either way the
-    theoretical aim stands and the executor says it kept it."""
-    sch = _schedule(sites)
-    inst = _FakeInstaller()
-    ratio_box = {'r': None}
-    x = ex.SkillExecutor(sch, inst, tracker=_angry_tracker,
-                         catch_aim_source=ex.AIM_SCHEDULE_HAND,
-                         launch_ratio=lambda ball_id, t_rel: ratio_box['r'])
-    catch = sch.skills[1]
-    x.tick(sch.skills[0].dispatch_s())
-    x.tick(catch.dispatch_s())
-    ratio_box['r'] = 1.086
-    t_late = float(catch.t_abs_s) - float(catch.lead_s) - sc.MIN_WINDOW_S / 2.0
-    # Strictly BEFORE the freeze begins: the window floor is what refuses.
-    assert t_late < float(catch.t_abs_s) - ex.CATCH_FREEZE_S
-    lines = x.tick(t_late)
-    assert len([c for c in inst.calls if c[0] == sg.CATCH]) == 1
-    assert any('CATCH-AIM-LATE' in ln for ln in lines)
-
-
-def test_schedule_hand_keeps_the_theoretical_aim_when_the_scaled_throw_misses(
-        sites, monkeypatch):
-    """A scaled launch with no arrival at the catch plane at all (the ball
-    apexes below it — ``arrival_state_at_z`` raises ``ValueError``) leaves the
-    committed theoretical aim standing.  Driven by making the closed form
-    raise, because a LEVEL self-toss always crosses its own release plane
-    whatever r is: the failure is reachable on a rising throw, and the
-    executor must not turn it into an ended attempt on any of them."""
-    sch = _schedule(sites)
-    inst = _FakeInstaller()
-    x = ex.SkillExecutor(sch, inst, tracker=_angry_tracker,
-                         catch_aim_source=ex.AIM_SCHEDULE_HAND,
-                         launch_ratio=lambda ball_id, t_rel: 0.80)
-
-    def _no_arrival(*a, **k):
-        raise ValueError('apex below the catch height')
-
-    catch = sch.skills[1]
-    x.tick(sch.skills[0].dispatch_s())
-    monkeypatch.setattr(ex.ballistics_bc, 'arrival_state_at_z', _no_arrival)
-    lines = x.tick(catch.dispatch_s())
-    assert len([c for c in inst.calls if c[0] == sg.CATCH]) == 1
-    _pos, t_land = _predicted(sites, sch)
-    assert inst.calls[1][1].t_land_s == pytest.approx(t_land)
-    assert any('no arrival at the catch plane' in ln for ln in lines)
-    assert not x.attempt_ended
-    # ... and the one attempt at a correction is spent, not retried forever.
-    x.tick(catch.dispatch_s() + 5 * DT)
-    assert len([c for c in inst.calls if c[0] == sg.CATCH]) == 1
 
 
 # ── the landing observation freezes at the crossing (2026-09-16, the 16:22
@@ -4470,145 +4314,6 @@ def test_a_refused_re_send_ends_re_aiming_for_that_catch(sites):
 
 
 # ---------------------------------------------------------------------------
-# R4 (2026-09-23) — hand-ratio scaling on the STROKE component only
-# ---------------------------------------------------------------------------
-
-def test_hand_corrected_landing_reduces_to_the_old_formula_for_a_vertical_throw(
-        sites):
-    """The axis-decomposed scaling must collapse to the OLD isotropic
-    ``launch_vel * r`` for a vertical self-toss, where the release cup axis
-    IS the launch velocity's direction (``cup_axis(0, 0) == (0, 0, 1)``
-    exactly, so the perpendicular component is exactly zero and the whole
-    vector is "the stroke")."""
-    sch = _schedule(sites)
-    inst = _FakeInstaller()
-    x = ex.SkillExecutor(sch, inst, tracker=lambda b: None)
-    catch_idx = 1
-    catch_skill = sch.skills[catch_idx]
-    r = 1.086
-    got = x._hand_corrected_landing(catch_idx, catch_skill, r)
-
-    site, t_release_s, y_d, target, release_idx = ex._previous_release(
-        sch, catch_idx, catch_skill.ball_id)
-    pos_mm = x._commanded_target_mm(target, y_d)
-    flight_s = sc.flight_s(float(y_d[1]))
-    release_pos = x._release_pos_mm(release_idx)
-    launch_vel = ballistics_bc.launch_velocity(release_pos, pos_mm, flight_s)
-    assert abs(launch_vel[0]) < 1e-9 and abs(launch_vel[1]) < 1e-9  # vertical
-    old_vel = launch_vel * r
-    exp_pos, exp_v, exp_t = ballistics_bc.arrival_state_at_z(
-        release_pos, old_vel, float(pos_mm[2]))
-    assert np.allclose(got.pos_mm, exp_pos)
-    assert np.allclose(got.vel_mm_s, exp_v)
-    assert got.t_land_abs_s == pytest.approx(t_release_s + float(exp_t))
-
-
-def _hand_corrected_reference(x, sch, catch_idx, catch_skill, r):
-    """The axis-decomposed reference, computed the SAME way the production
-    code does -- shared by the two tests below so neither restates the
-    formula independently of ``_hand_corrected_landing`` itself (that would
-    only prove the two copies agree with each other, not with the code)."""
-    import jugglebot.motion.trajectory.tilt_geometry as tg
-    site, t_release_s, y_d, target, release_idx = ex._previous_release(
-        sch, catch_idx, catch_skill.ball_id)
-    pos_mm = x._commanded_target_mm(target, y_d)
-    flight_s = sc.flight_s(float(y_d[1]))
-    release_pos = x._release_pos_mm(release_idx)
-    launch_vel = ballistics_bc.launch_velocity(release_pos, pos_mm, flight_s)
-    rx, ry = tg.tilt_to_throw(launch_vel)
-    axis = tg.cup_axis(rx, ry)
-    axial = float(np.dot(launch_vel, axis))
-    perp = launch_vel - axis * axial
-    scaled = perp + axis * (axial * r)
-    pos2, vel2, t2 = ballistics_bc.arrival_state_at_z(
-        release_pos, scaled, float(pos_mm[2]))
-    return launch_vel, ex.Landing(pos_mm=pos2, vel_mm_s=vel2,
-                                  t_land_abs_s=t_release_s + float(t2))
-
-
-def test_hand_corrected_landing_matches_the_axis_decomposed_formula_for_a_hop(
-        sites):
-    """A cross-site hop (R4's 100 mm operating separation) is pinned against
-    the axis-decomposed reference (:func:`_hand_corrected_reference`).
-
-    **This throw's takeoff angle from vertical is ~1.6° (atan(117/4201)),
-    well under ``tilt_geometry.MAX_TILT_DEG`` (12°) -- so ``tilt_to_throw``
-    does NOT saturate, its cup axis is (to float precision) PARALLEL to
-    ``launch_vel`` itself (the throw-tilt policy's own definition: the cup
-    axis points ALONG the commanded takeoff velocity), and the axial/
-    perpendicular split therefore coincides with the old isotropic
-    ``launch_vel * r`` at this separation -- confirmed below, not assumed.**
-    The two formulas diverge only once the takeoff angle exceeds the clamp;
-    see ``test_hand_corrected_landing_diverges_from_the_old_formula_once_the_throw_tilt_saturates``
-    for that case, which R4's 100-250 mm hop separations never reach (apex
-    0.9 m gives 1.6-4°, per the schedule module's own docstring probe)."""
-    p1, p2 = sites
-    t_throw = T0_ABS + LAUNCH_S
-    skills = (
-        Skill(kind=sg.THROW, ball_id=0, site=p1, t_abs_s=t_throw,
-              window_s=LAUNCH_S, y_d=(np.zeros(2), APEX_M), target=p2),
-        Skill(kind=sg.CATCH, ball_id=0, site=p2, t_abs_s=t_throw + FLIGHT_S,
-              window_s=0.278),
-    )
-    sch = Schedule(pattern='self_toss', skills=skills, flight_s=FLIGHT_S, beat_s=0.578,
-                  transit_s=0.278, dwell_s=0.30, t0_abs_s=T0_ABS)
-    inst = _FakeInstaller()
-    x = ex.SkillExecutor(sch, inst, tracker=lambda b: None)
-    catch_idx = 1
-    catch_skill = sch.skills[catch_idx]
-    r = 1.086
-    got = x._hand_corrected_landing(catch_idx, catch_skill, r)
-    launch_vel, expected = _hand_corrected_reference(
-        x, sch, catch_idx, catch_skill, r)
-    # This throw crosses sites, so the launch velocity is NOT purely axial.
-    assert abs(launch_vel[0]) > 1e-6 or abs(launch_vel[1]) > 1e-6
-    assert np.allclose(got.pos_mm, expected.pos_mm, atol=1e-6)
-    assert np.allclose(got.vel_mm_s, expected.vel_mm_s, atol=1e-6)
-    assert got.t_land_abs_s == pytest.approx(expected.t_land_abs_s)
-    # Confirmed coincidence with the isotropic formula AT THIS SEPARATION.
-    old_vel = launch_vel * r
-    old_pos, _v, _t = ballistics_bc.arrival_state_at_z(
-        p1.throw_site_mm(), old_vel, float(p2.catch_site_mm()[2]))
-    assert np.allclose(got.pos_mm, old_pos, atol=1e-6)
-
-
-def test_hand_corrected_landing_diverges_from_the_old_formula_once_the_throw_tilt_saturates(
-        sites):
-    """Past ``tilt_geometry.MAX_TILT_DEG`` (12°) ``tilt_to_throw`` SATURATES
-    the tilt, so the cup axis is no longer parallel to the commanded launch
-    velocity and a genuine perpendicular (platform-motion) component exists
-    -- this is the case the axis-decomposed formula actually protects
-    against, even though R4's real hop separations never reach it (see the
-    test above). A 2 m separation at the same 0.9 m apex gives ~29° from
-    vertical, well past the clamp."""
-    p1 = sites[0]
-    p2 = si.Site('FAR', np.array([p1.cup_mm[0] + 2000.0, p1.cup_mm[1],
-                                  float(p1.cup_mm[2])]))
-    t_throw = T0_ABS + LAUNCH_S
-    skills = (
-        Skill(kind=sg.THROW, ball_id=0, site=p1, t_abs_s=t_throw,
-              window_s=LAUNCH_S, y_d=(np.zeros(2), APEX_M), target=p2),
-        Skill(kind=sg.CATCH, ball_id=0, site=p2, t_abs_s=t_throw + FLIGHT_S,
-              window_s=0.278),
-    )
-    sch = Schedule(pattern='self_toss', skills=skills, flight_s=FLIGHT_S, beat_s=0.578,
-                  transit_s=0.278, dwell_s=0.30, t0_abs_s=T0_ABS)
-    inst = _FakeInstaller()
-    x = ex.SkillExecutor(sch, inst, tracker=lambda b: None)
-    catch_idx = 1
-    catch_skill = sch.skills[catch_idx]
-    r = 1.086
-    got = x._hand_corrected_landing(catch_idx, catch_skill, r)
-    launch_vel, expected = _hand_corrected_reference(
-        x, sch, catch_idx, catch_skill, r)
-    assert np.allclose(got.pos_mm, expected.pos_mm, atol=1e-6)
-    old_vel = launch_vel * r
-    old_pos, _v, _t = ballistics_bc.arrival_state_at_z(
-        p1.throw_site_mm(), old_vel, float(p2.catch_site_mm()[2]))
-    assert not np.allclose(got.pos_mm, old_pos, atol=1e-6)
-
-
-# ---------------------------------------------------------------------------
 # R4 (2026-09-23) — a re-send declines BEFORE the solve inside the
 # cup-contact window (plan § 0 carry-in)
 # ---------------------------------------------------------------------------
@@ -5012,32 +4717,15 @@ def test_the_cup_does_not_translate_between_a_catch_and_its_carried_release(
 
 
 def test_the_next_catch_s_priors_fly_from_the_offset_release(reaimed_self_toss):
-    """Both schedule-derived priors for the NEXT catch of the same ball are
+    """The schedule-derived prior for the NEXT catch of the same ball is
     built from the release the plan USES, not from the site
     (:meth:`ex.SkillExecutor._release_pos_mm`) -- otherwise the executor would
     announce a vertical flight for a throw the planner banked.
 
     MEASURED 2026-09-28: the commanded landing POSITION is unchanged (it is
-    the target the pattern names, by construction), the ballistic arrival
+    the target the pattern names, by construction) and the ballistic arrival
     VELOCITY gains -23.34 mm/s in y (= -20 mm / 0.8569 s, zero for a release
-    at the site), and the hand-corrected prior -- which crosses the catch
-    PLANE rather than assuming the commanded point -- lands 3.56 mm on the
-    far side of the site at the measured r = 1.086 (0.00 mm before).
-
-    RE-MEASURED 2026-10-05 (``sites.CATCH_CUP_Z_MM`` moved 830 -> 930 mm, the
-    catch-high change: the plane the hand-corrected prior crosses moved with
-    it): the hand-corrected prior landed 3.66 mm on the far side -- (date,
-    command, result) 2026-10-05, ``pytest
-    tests/motion/test_skills_executor.py::test_the_next_catch_s_priors_fly_from_the_offset_release -q``:
-    passed with ``corrected.pos_mm[1] == -3.6589`` (was -3.5582 at the old
-    830 mm catch plane).
-
-    RE-MEASURED AGAIN 2026-10-06 (the owner returned the catch plane to
-    830 mm): the hand-corrected prior is back to landing 3.56 mm on the far
-    side, byte-identical to the pre-catch-high measurement above --
-    ``corrected.pos_mm[1] == -3.5582`` (date, command, result) 2026-10-06,
-    same command, passes. The commanded-position and arrival-velocity checks
-    above are unaffected -- neither depends on the catch plane."""
+    at the site). Neither depends on the catch plane."""
     sched, execu, _records, landings = reaimed_self_toss
     idx = _carried_catch_idx(sched)
     nxt = [j for j in range(idx + 1, len(sched.skills))
@@ -5048,11 +4736,6 @@ def test_the_next_catch_s_priors_fly_from_the_offset_release(reaimed_self_toss):
     assert np.allclose(prior.pos_mm, skill.site.catch_site_mm())
     assert prior.vel_mm_s[1] == pytest.approx(-20.0 / sched.flight_s, abs=1e-6)
     assert prior.vel_mm_s[1] == pytest.approx(-23.3405, abs=1e-3)
-
-    corrected = execu._hand_corrected_landing(nxt, skill, 1.086)
-    assert corrected.pos_mm[1] == pytest.approx(-3.5582, abs=1e-3)
-    assert corrected.pos_mm[0] == pytest.approx(
-        float(skill.site.catch_site_mm()[0]), abs=1e-6)
 
 
 def test_a_hop_catch_releases_from_the_caught_position_too(limits_r5, geom):
@@ -7238,7 +6921,7 @@ def test_a_hop_whose_learner_query_failed_keeps_the_y_d_catch_prior(sites):
 
 def test_schedule_aim_source_also_uses_the_learner_prediction(sites):
     """The open-loop arm keeps its no-tracker rule but takes the better
-    prior; ``schedule_hand`` keeps y_d (its ratio rescales the y_d throw)."""
+    prior."""
     p1, _p2 = sites
     learner = _PredictingLearner(y_hat=[0.010, 0.0, APEX_M])
     terminal, lines, _x = _run_catch(
@@ -7247,12 +6930,6 @@ def test_schedule_aim_source_also_uses_the_learner_prediction(sites):
     assert np.allclose(terminal.landing_mm[:2],
                        p1.catch_site_mm()[:2] + np.array([10.0, 0.0]))
     assert any('source=schedule:learned' in ln for ln in lines)
-    learner = _PredictingLearner(y_hat=[0.010, 0.0, APEX_M])
-    terminal, _lines, _x = _run_catch(
-        _cross_schedule(sites), learner=learner, tracker=_angry_tracker,
-        catch_aim_source=ex.AIM_SCHEDULE_HAND, catch_inward_authority_m=0.035)
-    assert np.allclose(terminal.landing_mm, p1.catch_site_mm())
-    assert learner.predict_calls == []
 
 
 # ---------------------------------------------------------------------------
