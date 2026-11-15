@@ -172,6 +172,35 @@ class TestSuccessPath:
         assert ann.target_id == 'Catching_Cone'
         assert ann.thrower_name == 'ball_butler'
 
+    def test_announced_initial_position_is_the_release_point_not_the_origin(self, calibrated_node):
+        """BUG-94: the announced ball start is bb_release_state's release point
+        (for the announced aim and calibration), not the calibrated BB origin;
+        the announced velocity is that same release velocity."""
+        from jugglebot.can.throw_ballistics import bb_release_state
+        calibrated_node._on_bb_calibration(_calibration(
+            x_mm=100.0, y_mm=-50.0, z_mm=0.0, yaw_offset_rad=0.0))
+        calibrated_node._on_rigid_bodies(_rigid_bodies({
+            'Catching_Cone': (1300.0, 350.0, 0.0),   # same BB-local target as the fixture
+        }))
+        req = BallButlerThrow.Request()
+        req.target_name = 'Catching_Cone'
+        res = calibrated_node._svc_throw_at_target(req, BallButlerThrow.Response())
+        assert res.success is True
+        ann = calibrated_node.throw_announcement_pub.published[0]
+
+        # local aim comes back out of the announced world velocity
+        v = (ann.initial_velocity.x, ann.initial_velocity.y, ann.initial_velocity.z)
+        speed = math.sqrt(sum(c * c for c in v)) / 1000.0
+        pitch = math.asin(v[2] / (speed * 1000.0))
+        yaw_local = math.atan2(v[1], v[0])
+        release, rel_v = bb_release_state(
+            yaw_local, pitch, speed, (100.0, -50.0, 0.0), 0.0)
+        assert (ann.initial_position.x, ann.initial_position.y,
+                ann.initial_position.z) == pytest.approx(release, abs=1e-6)
+        assert v == pytest.approx(rel_v, abs=1e-3)
+        origin_gap = math.dist(release, (100.0, -50.0, 0.0))
+        assert origin_gap > 50.0   # the old origin start would be wrong by this much
+
     def test_caller_specified_delay_is_used(self, calibrated_node):
         calibrated_node._on_rigid_bodies(_rigid_bodies({
             'Catching_Cone': (1200.0, 400.0, 0.0),

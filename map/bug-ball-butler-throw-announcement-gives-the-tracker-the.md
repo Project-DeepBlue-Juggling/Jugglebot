@@ -2,9 +2,9 @@
 id: BUG-94
 kind: bug
 title: Ball Butler Throw announcement gives the Tracker the calibrated origin, not the release point
-status: inbox
+status: complete
 created: '2026-11-14'
-updated: '2026-11-14T17:53:38Z'
+updated: '2026-11-15T17:59:20Z'
 owners: []
 priority: high
 effort: s
@@ -14,7 +14,8 @@ radius: subsystem
 diagnosis: confirmed
 area: tracking
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-16-bb-throw-announcement-release-point.md
 parent: ball-butler
 filed_by: claude
 ---
