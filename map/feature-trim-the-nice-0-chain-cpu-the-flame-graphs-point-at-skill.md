@@ -4,15 +4,22 @@ kind: feature
 title: 'Trim the nice-0 chain CPU the flame graphs point at: skill_node executor (~0.5 core), mocap_node publish path (~0.28), tracker message plumbing (~0.28)'
 status: inbox
 created: '2026-10-28'
-updated: '2026-10-30T06:12:20Z'
+updated: '2026-11-14T17:55:18Z'
 owners: []
 priority: medium
+effort: m
+hardware: robot
+owner: none
+radius: subsystem
 area: skill-stack
 blocked_by: []
 links:
 - 2026-10-28-jb76-solve-tail-is-environment-starvation-instrumented
 parent: two-ball-oval
 filed_by: claude (BUG-21 21:02 Sitting read-out)
+night_skip: sitting
+night_skip_on: '2026-11-15'
+night_skip_note: Each trim needs a control-implication check and a flown profile under load to judge it.
 ---
 
 py-spy 100 Hz on the 21:02 Sitting (temp/probes/profile_20261028-210241/pyspy_*.svg; shares and file:line in the BUG-21 logbook entry, section The Sitting of 2026-10-28 21:02).

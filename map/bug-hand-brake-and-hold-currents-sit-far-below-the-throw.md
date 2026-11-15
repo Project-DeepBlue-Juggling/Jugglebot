@@ -18,6 +18,9 @@ links:
 - bug-launch-throw-with-the-ball-aboard-may-demand-more-than-the
 - idea-hand-end-of-stroke-bumper-and-first-the-planner-s-own-brake
 filed_by: claude (jugglebot-f5, BUG-40 bag check 2026-10-30)
+night_skip: sitting
+night_skip_on: '2026-11-15'
+night_skip_note: A bench-hand measurement; no pass criterion yet for a Sitting section.
 ---
 
 Side finding of the BUG-40 bag check (logbook `2026-10-30-jb115-launch-current-bag-check.md`), 2026-10-28 Columns bags 14:29 and 21:02.

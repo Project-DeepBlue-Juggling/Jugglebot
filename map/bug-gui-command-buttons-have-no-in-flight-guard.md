@@ -4,9 +4,13 @@ kind: bug
 title: GUI command buttons have no in-flight guard
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:10:03Z'
+updated: '2026-11-14T17:54:37Z'
 owners: []
 priority: low
+effort: s
+hardware: none
+owner: none
+radius: local
 diagnosis: hypothesis
 area: gui
 blocked_by: []

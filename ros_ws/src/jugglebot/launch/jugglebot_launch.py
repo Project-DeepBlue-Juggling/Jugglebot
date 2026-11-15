@@ -556,19 +556,26 @@ def generate_launch_description():
     # cap does — so it gets the same cap. See _planner_blas_env above and the
     # 2026-09-06 UH-3 entry.
     #
-    # records_path (IDEA-3): the records ledger `docs/records.md` in the repo
-    # that produced THIS install (`_repo_root`, the same walk teensy_bridge's
-    # PYTHONPATH uses below). skill_node offers every juggling Attempt's end to
-    # it (jugglebot/records.py) and rewrites it only when a record is beaten.
-    # A beaten record therefore DIRTIES the live checkout until the Sitting's
-    # close-out commits it (owner-accepted 2026-10-28; `jugglebot-pull` goes
-    # fetch-only while the tree is dirty). The node's own default '' disables
-    # the ledger, so only a real launch writes it.
+    # records_path (IDEA-3): the records ledger of the repo that produced THIS
+    # install (`_repo_root`, the same walk teensy_bridge's PYTHONPATH uses
+    # below). skill_node offers every juggling Attempt's end to it
+    # (jugglebot/records.py). Since Phase C8 (plans/active/
+    # night-shift-closeout.md) it writes the GITIGNORED runtime copy
+    # `temp/runtime/records.md`, seeded from the tracked `docs/records.md`
+    # (`records_tracked_path`) before its first write, so a running launch
+    # never dirties the checkout and `jugglebot-pull` keeps pulling through a
+    # Sitting; the debrief merges the copy back (tools/runtime_records.py).
+    # The learner's Memory follows the same rule inside skill_node
+    # (`runtime_paths.live_memory_path`). Both paths come from
+    # `jugglebot/runtime_paths.py`, the one runtime path source. The node's
+    # own default '' disables the ledger, so only a real launch writes it.
+    from jugglebot import runtime_paths as _rtp
     skill_node = Node(
         package='jugglebot',
         executable='skill_node',
         parameters=[{
-            'records_path': os.path.join(_repo_root(), 'docs', 'records.md'),
+            'records_path': _rtp.runtime_records_path(_repo_root()),
+            'records_tracked_path': _rtp.tracked_records_path(_repo_root()),
         }],
         additional_env=dict(_planner_blas_env),
     )

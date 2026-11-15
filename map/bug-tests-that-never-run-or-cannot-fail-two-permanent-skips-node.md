@@ -4,14 +4,21 @@ kind: bug
 title: 'Tests that never run or cannot fail: two permanent skips, Node lookup, stale-log fixture, loose ROS mocks'
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:09:15Z'
+updated: '2026-11-14T17:53:56Z'
 owners: []
 priority: medium
+effort: m
+hardware: none
+owner: none
+radius: subsystem
 diagnosis: confirmed
 area: tests-tooling
 blocked_by: []
 links: []
 filed_by: claude
+night_skip: frozen-path
+night_skip_on: '2026-11-15'
+night_skip_note: The loose ROS mocks are tests/ros/conftest.py, on the never-list; the two permanent skips could go in a day Session alongside.
 ---
 
 Tests that look like protection and are not, from the 2026-11-13 maintainer review. The tracker tests that were never collected are being moved into `tests/tracking/` by the review itself; this Item holds the rest.

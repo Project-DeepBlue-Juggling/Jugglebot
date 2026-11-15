@@ -4,14 +4,21 @@ kind: bug
 title: can-bridge firmware accepts four discontinuities on rare paths and has no armed interlock on reconfiguration RPCs (to confirm)
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:08:59Z'
+updated: '2026-11-14T17:54:09Z'
 owners: []
 priority: medium
+effort: m
+hardware: robot
+owner: none
+radius: normative
 diagnosis: hypothesis
 area: firmware
 blocked_by: []
 links: []
 filed_by: claude
+night_skip: frozen-path
+night_skip_on: '2026-11-15'
+night_skip_note: can-bridge firmware, frozen at night; each of the four reports needs confirming by a firmware read first.
 ---
 
 Four can-bridge firmware paths the 2026-11-13 maintainer review (Opus read of the firmware) reported as accepting a discontinuity or lacking an interlock. None was re-read by the coordinating Session, so each needs confirming before any change. All are on rare paths.

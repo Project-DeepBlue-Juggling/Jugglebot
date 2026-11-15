@@ -359,7 +359,7 @@ require my input should be written up with a response cell"). That is: every Hel
 unblock is the owner's call (audit findings open, a design choice, a scope call), and every
 Skipped or Unfinished row skipped for `owner decision`, unless an open ticket already
 exists for it (the dispatch table's open-ticket row: file no second, and it is listed tonight only if it was filed or changed tonight). NOT for a Held or
-Skipped row whose only unblock is a Sitting (the Next Sitting Runbook, an index of the waiting Items, and the Sitting sheet carry those), `out of reach` or `not
+Skipped row whose only unblock is a Sitting (the Sitting index, an index of the waiting Items, and the Sitting sheet carry those), `out of reach` or `not
 reached`. A hold ticket is "<ID> held on night-shift/<date>-<ID>: apply the audit's N
 fixes and merge, merge as is, or drop?", the body lists each open finding as an option
 with what it would change, and ends with your recommendation. Every such ticket is a row

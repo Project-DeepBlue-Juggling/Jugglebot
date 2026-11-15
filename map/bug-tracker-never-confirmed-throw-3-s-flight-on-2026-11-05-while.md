@@ -16,6 +16,9 @@ area: tracking
 blocked_by: []
 links: []
 filed_by: claude
+night_skip: too-large
+night_skip_on: '2026-11-15'
+night_skip_note: 'Rated m: the fix changes what a live Catch reads, and why steady Throws escape is untested; not built unattended.'
 ---
 
 Found by the Night Shift on 2026-11-06 while reading BUG-69's bag (2026-11-05 22:46, the first fed Attempt). Throw 3 got no learner row because the Tracker never confirmed its flight, not because of the identity gate.

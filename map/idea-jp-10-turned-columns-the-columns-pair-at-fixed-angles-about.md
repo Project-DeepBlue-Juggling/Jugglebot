@@ -19,6 +19,9 @@ links:
 - logbook/2026-11-13-sitting-debrief.md
 filed_by: claude (jugglebot-f5, pattern exploration 2026-10-30)
 parent: pattern-progression-columns-to-centre-and-orbit
+night_skip: sitting
+night_skip_on: '2026-11-15'
+night_skip_note: 45 deg passed 20/20 again on 2026-11-13; 90 deg is IDEA-22 (swept offline tonight).
 ---
 
 Columns with the Site pair rotated to a fixed angle (30, 45, 60, 90 deg) about the Platform +z.

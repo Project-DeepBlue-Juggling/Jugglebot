@@ -4,9 +4,13 @@ kind: bug
 title: Ball Butler Throw announcement gives the Tracker the calibrated origin, not the release point
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-14T02:52:54Z'
+updated: '2026-11-14T17:53:38Z'
 owners: []
 priority: high
+effort: s
+hardware: robot
+owner: none
+radius: subsystem
 diagnosis: confirmed
 area: tracking
 blocked_by: []

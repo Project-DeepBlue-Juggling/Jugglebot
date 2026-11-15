@@ -339,6 +339,7 @@
 .jp-nom-sum { font-weight: 600; overflow-wrap: anywhere; }
 .jp-nom-sum.ok          { color: var(--accent-green); }
 .jp-nom-sum.err         { color: var(--accent-red); }
+.jp-nom-sum.warn        { color: var(--accent-red); }
 .jp-nom-sum.checking,
 .jp-nom-sum.unavailable { color: var(--text-muted); font-weight: 400; font-style: italic; }
 /* One refusal per line, wrapped in full (never clamped or truncated). */

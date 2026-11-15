@@ -18,6 +18,9 @@ links:
 - logbook/2026-11-07-sitting-debrief.md
 - map/bug-two-ball-throws-land-about-9-mm-toward-the-partner-site-an.md
 filed_by: claude
+night_skip: waiting-trigger
+night_skip_on: '2026-11-15'
+night_skip_note: Waits on a refused fed Segment at Dwell 0.27 or more in a bag.
 ---
 
 At the Sitting of 2026-11-07 (Columns Apex 0.93 Sep. 125) the goal was accepted at nominal margin 0.189 and the printed re-aim figure was -0.049.

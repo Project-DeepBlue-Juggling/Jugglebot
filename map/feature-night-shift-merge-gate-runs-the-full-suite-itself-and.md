@@ -4,14 +4,21 @@ kind: feature
 title: Night Shift merge gate runs the full suite itself and enforces a collected-test floor
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-13T23:09:20Z'
+updated: '2026-11-14T17:54:43Z'
 owners: []
 priority: high
+effort: m
+hardware: none
+owner: none
+radius: normative
 area: tests-tooling
 blocked_by: []
 links: []
 parent: night-shift
 filed_by: claude
+night_skip: frozen-path
+night_skip_on: '2026-11-15'
+night_skip_note: tools/night_shift_gate.py and the night-shift protocol are on the never-list; a day Session builds it.
 ---
 
 The Night Shift merge gate should run the full suite itself and stop trusting a log the orchestrating agent wrote. Owner decision, 2026-11-14, on a finding of the 2026-11-13 maintainer review.
