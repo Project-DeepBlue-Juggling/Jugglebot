@@ -1213,6 +1213,18 @@ class SkillNode(Node):
         # Read and written only under `_reload_lock`, with the event's
         # clear/set, so a tick cannot act on a stale arm.
         self._goal_armed = False
+        #: BUG-97: True from the instant the done event is set until
+        #: `_juggle_execute` has finished building (and ledgered) that goal's
+        #: Result. `_refuse_if_running` counts it as running, so a second
+        #: request cannot reset the `_goal_*` fields the Result still reads.
+        #: Written under `_reload_lock` with the event's set; cleared by
+        #: `_juggle_execute`'s `finally` (and by `_start_pattern_body`'s reset).
+        self._goal_result_pending = False
+        #: True only while a `_juggle_execute` callback is in flight; the
+        #: pending mark is set only then, so it can never be left set with
+        #: nobody to clear it (an execute that raised mid-Attempt, then the
+        #: stopped Attempt reaching its rest). Under `_reload_lock`.
+        self._juggle_execute_active = False
         #: The goal's catch-bump switch (`_start_pattern`, `sk_bump.bump_enabled_for`).
         self._bump_enabled = False
         self._goal_end_code = ''
@@ -4090,6 +4102,9 @@ class SkillNode(Node):
         with self._reload_lock:
             if (self._goal_armed and self._executor is None
                     and self._reload_ctx is None):
+                if (not self._goal_done_event.is_set()
+                        and self._juggle_execute_active):
+                    self._goal_result_pending = True
                 self._goal_done_event.set()
 
     # ── attempt lifecycle ──────────────────────────────────────────────
@@ -4110,7 +4125,8 @@ class SkillNode(Node):
         # segment, then a timer collecting the miss report), so it is
         # "running" until _magazine_finish clears its context.
         if (self._executor is None and not reloading
-                and self._magazine_ctx is None and not self._goal_starting):
+                and self._magazine_ctx is None and not self._goal_starting
+                and not self._goal_result_pending):
             return None
         response.success = False
         response.message = ('an attempt is already running — cancel the '
@@ -5795,6 +5811,8 @@ class SkillNode(Node):
         self._magazine_ctx = None
         with self._reload_lock:
             self._goal_armed = True
+            if self._juggle_execute_active:
+                self._goal_result_pending = True
             self._goal_done_event.set()
 
     def _run_reload_only(self, dwell_s: float) -> SimpleNamespace:
@@ -7047,6 +7065,50 @@ class SkillNode(Node):
         return beaten, str(best)
 
     def _juggle_execute(self, goal_handle):
+        """``execute_callback``: :meth:`_juggle_execute_body` under an outer
+        guard (BUG-97). Whatever raises while the Result is built, the action
+        is ended (aborted, a clear message in the log), the goal-armed state
+        is cleared and the pending-Result mark dropped, so the next request is
+        not refused until a relaunch. The success path is the body unchanged."""
+        with self._reload_lock:
+            self._juggle_execute_active = True
+            # Done before this callback started: the Result is still owed.
+            if self._goal_done_event.is_set():
+                self._goal_result_pending = True
+        try:
+            return self._juggle_execute_body(goal_handle)
+        except Exception as exc:  # noqa: BLE001 -- the action must always end
+            try:
+                self.get_logger().error(
+                    'jugglebot/juggle: building the Result raised %s: %s; '
+                    'aborting the goal' % (type(exc).__name__, exc))
+            except Exception:
+                pass
+            try:
+                # Only when the attempt is still running (the raise was in
+                # the wait loop): bring it to its rest tail. Never moves
+                # anything on a finished attempt.
+                if not self._goal_done_event.is_set():
+                    self._stop_attempt()
+            except Exception:
+                pass
+            try:
+                goal_handle.abort()
+            except Exception:
+                pass
+            with self._reload_lock:
+                if self._goal_done_event.is_set():
+                    self._goal_armed = False
+            result = Juggle.Result()
+            result.outcome = 'ERROR'
+            result.success = False
+            return result
+        finally:
+            with self._reload_lock:
+                self._goal_result_pending = False
+                self._juggle_execute_active = False
+
+    def _juggle_execute_body(self, goal_handle):
         """``execute_callback``: wait for the attempt `_juggle_goal` already
         started (through `_start_pattern`) to finish, publishing feedback at
         <= `_FEEDBACK_HZ`, and return the `Juggle.Result`.
