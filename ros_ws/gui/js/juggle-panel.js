@@ -692,8 +692,8 @@ function runNominate(seq) {
             const neutral = /^nomination unavailable/i.test(text);
             // BUG-91 (TKT-70 option 2): accepted, but the re-aim margin is negative: the
             // summary ends with this text and the line is red, not green.
-            const warn = ok && !neutral && text.split('\n')[0].trim().endsWith(NOMINATE_WARNING_TEXT);
-            nom = { state: neutral ? 'unavailable' : (warn ? 'warn' : (ok ? 'ok' : 'err')),
+            const aimWarn = ok && !neutral && text.split('\n')[0].trim().endsWith(NOMINATE_WARNING_TEXT);
+            nom = { state: neutral ? 'unavailable' : (aimWarn ? 'warn' : (ok ? 'ok' : 'err')),
                 summary: rows.length ? rows[0] : (ok ? 'nomination OK' : 'nomination REFUSED'),
                 lines: rows.slice(1) };
             sync();
