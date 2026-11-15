@@ -23,9 +23,9 @@ files_changed:
 |---|---|---|---|---|---|---|
 | columns / rest_columns / one_ball, all variants | closing | 0.300 | 0.225 | 0.225 | 0.175..0.225 | no |
 | reload_columns (lift 1.5/3.2/6.5) | DECAY, closing | 1.000, 0.300 | 0.225 | 0.225 | 0.175..0.225 | no |
-| reload after bridge, lift 1.5 | PRE-TILT (0) | 1.500 | 0.225 | 0.225 | swept | no (0/250) |
-| reload after bridge, lift 3.2 | PRE-TILT (0) | 3.200 | 0.225 | 0.550 | swept | **yes**, 75/250: dispatch 0.18-0.55 s before bridge end |
-| reload after bridge, lift 6.5 | PRE-TILT (0) | 6.500 | 0.225 | 2.000 | swept | **yes**, 205/250: dispatch 0.18-1.2 s (to 2.0 s) before bridge end |
+| Feed after bridge, lift 1.5 | PRE-TILT (0) | 1.500 | 0.225 | 0.225 | swept | no (0/250) |
+| Feed after bridge, lift 3.2 | PRE-TILT (0) | 3.200 | 0.225 | 0.550 | swept | **yes**, 75/250: dispatch 0.18-0.55 s before bridge end |
+| Feed after bridge, lift 6.5 | PRE-TILT (0) | 6.500 | 0.225 | 2.000 | swept | **yes**, 205/250: dispatch 0.18-1.2 s (to 2.0 s) before bridge end |
 
 So the band is reached live by the Feed's PRE-TILT REST onto a bridge REST of about 2.2 s or more (a Hand far from rest: goal 13's lift was 3.2 s), whenever Ball Butler's announcement lands in the bridge's tail. Every compiled-in REST is fresh by construction.
 
@@ -33,12 +33,12 @@ So the band is reached live by the Feed's PRE-TILT REST onto a bridge REST of ab
 
 **Not the Item's literal "fresh from now"** (decision, made at night): a fresh REST today starts at `t_now` from the live, moving state. Widening that from 0.225 s to up to 2.0 s before the running REST's end would pre-empt a still-moving Hand by up to 2 s, and in the in-motion REBASE branch `_rebase_fresh_rest`'s own docstring says the residual against the running record is unmeasured. Anchoring at the record's end gives the REBASE rule an exact-rest seed (the held branch) with no step.
 
-**One control cycle (40 Hz), band case `t_now = end - 0.4 s`.** Before: the splice Knot was `n-1`, the cliff `end - 75 ms`, so 325 ms of budget, and a 600 ms solve gave SPLICE_TOO_LATE. After, each 25 ms tick: the emitter keeps sampling the running record, holding its terminal rest past `end_s` while the solve runs. A solve shorter than 475 ms installs `t0 = end_s` with the same plan the clamped splice would have streamed, so there is zero step at the switch. A longer one REBASES to `t_inst + 75 ms` (same motion later, the wire holds the terminal rest until then, zero step). No install starts earlier than today, and no budget that works today shrinks. Residual: a REBASE shifts the PRE-TILT REST's end later, which the reload CATCH meets with the existing REBASED-pre-tilt handling (R5 sitting 2). That handling is unverified for a slide above about 0.2 s.
+**One control cycle (40 Hz), band case `t_now = end - 0.4 s`.** Before: the splice Knot was `n-1`, the cliff `end - 75 ms`, so 325 ms of budget, and a 600 ms solve gave SPLICE_TOO_LATE. After, each 25 ms tick: the emitter keeps sampling the running record, holding its terminal rest past `end_s` while the solve runs. A solve shorter than 475 ms installs `t0 = end_s` with the same plan the clamped splice would have streamed, so there is zero step at the switch. A longer one REBASES to `t_inst + 75 ms` (same motion later, the wire holds the terminal rest until then, zero step). No install starts earlier than today, and no budget that works today shrinks. Residual: a REBASE shifts the PRE-TILT REST's end later, which the Feed CATCH meets with the existing REBASED-pre-tilt handling (R5 sitting 2). That handling is unverified for a slide above about 0.2 s.
 
 **Owner follow-up:** `motion/skills/INVARIANTS.md` (not edited, by the Night Shift rules) needs two text changes. The K1 row ("a REST SPLICE (never a fresh REST)") and I-INSTALL-1's last cell ("A fresh REST is exempt") should both say that a band REST is fresh, anchored at the record's end, and not exempt.
 
 **Open after the audit** (named, not fixed):
-- (a) A band REST's REBASE slide is bounded only by the solve deadline, so a slow solve can move the PRE-TILT REST's end, and the reload Catch, later than the +0.16-0.18 s ever measured.
+- (a) A band REST's REBASE slide is bounded only by the solve deadline, so a slow solve can move the PRE-TILT REST's end, and the Feed Catch, later than the +0.16-0.18 s ever measured.
 - (b) `install_is_fresh` runs outside the `try` that maps a malformed REST terminal's ValueError to UNREACHABLE.
 - (c) A REST onto a MAGAZINE record in the band is now fresh instead of refused MAGAZINE_NEEDS_REST (untested).
 - (d) The band REST skips the grid snap, so it starts off-grid if the running record was itself a REBASED fresh REST.
