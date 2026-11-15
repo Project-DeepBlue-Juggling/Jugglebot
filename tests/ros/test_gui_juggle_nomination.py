@@ -184,3 +184,17 @@ def test_dispatch_cancels_a_pending_nomination(out):
 @needs_node
 def test_disconnect_hides_the_block(out):
     assert out["disconnected_hidden"] is True
+
+
+def test_gui_warning_text_matches_nominate():
+    """The panel's red ``warn`` state keys on the end of the summary line, so its copy
+    of the warning text must equal ``nominate.AIM_WARNING_TEXT``: a wording change on
+    the Python side would otherwise drop the red state silently (BUG-91, TKT-74)."""
+    import re
+
+    from jugglebot.motion.skills import nominate as nm
+
+    src = (JS / "juggle-panel.js").read_text(encoding="utf-8")
+    m = re.search(r"const NOMINATE_WARNING_TEXT = '([^']*)';", src)
+    assert m, "NOMINATE_WARNING_TEXT not found in juggle-panel.js"
+    assert m.group(1) == nm.AIM_WARNING_TEXT
