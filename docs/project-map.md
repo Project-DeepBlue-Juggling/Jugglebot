@@ -95,7 +95,7 @@ _Status: closed (complete)._
 
 **Attached inbox items:**
 
-- bug: BUG-104 [GUI command buttons have no in-flight guard](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-gui-command-buttons-have-no-in-flight-guard.md) (inbox)
+- bug: BUG-104 [GUI command buttons have no in-flight guard](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-gui-command-buttons-have-no-in-flight-guard.md) (in_progress)
 
 ## Learner generalisation
 
@@ -254,7 +254,7 @@ Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/bench-hand/robot; Owner none/deci
 | BUG-93 | bug | [can-bridge fatal CAN-silence check wraps when a frame is stamped after its clock read: a live Leg reads silent and the Platform Stows](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-can-bridge-fatal-can-silence-check-wraps-when-a-frame-is.md) | in_progress | high | xs | robot | none | subsystem | firmware | — | filed 2026-11-14 |
 | BUG-99 | bug | [can-bridge firmware accepts four discontinuities on rare paths and has no armed interlock on reconfiguration RPCs (to confirm)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-can-bridge-firmware-accepts-four-discontinuities-on-rare.md) | inbox | medium | m | robot | none | normative | firmware | — | filed 2026-11-14 |
 | FEAT-53 | feature | [Extract the pure install layer from executor.py and split the rest along its seams](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-extract-the-pure-install-layer-from-executor-py-and-split.md) | inbox | medium | l | none | none | subsystem | skill-stack | — | filed 2026-11-14 |
-| BUG-104 | bug | [GUI command buttons have no in-flight guard](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-gui-command-buttons-have-no-in-flight-guard.md) | inbox | low | s | none | none | local | gui | GUI Improvements | filed 2026-11-14 |
+| BUG-104 | bug | [GUI command buttons have no in-flight guard](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-gui-command-buttons-have-no-in-flight-guard.md) | in_progress | low | s | none | none | local | gui | GUI Improvements | filed 2026-11-14 |
 | BUG-105 | bug | [Hand keeps its last velocity feedforward on a Soft E-stop, disarm or link loss and stays in Closed-loop](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-hand-keeps-its-last-velocity-feedforward-on-a-soft-e-stop.md) | inbox | high | s | bench-hand | hands | subsystem | hand | — | filed 2026-11-14 |
 | IDEA-24 | idea | [Move dated history out of code and normative documents into the logbook](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-move-dated-history-out-of-code-and-normative-documents-into.md) | inbox | medium | l | none | none | normative | docs | — | filed 2026-11-14 |
 | FEAT-51 | feature | [Night Shift merge gate runs the full suite itself and enforces a collected-test floor](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-night-shift-merge-gate-runs-the-full-suite-itself-and.md) | inbox | high | m | none | none | normative | tests-tooling | Night Shift: unattended overnight work on the board, and the Next Sitting Runbook | filed 2026-11-14 |
