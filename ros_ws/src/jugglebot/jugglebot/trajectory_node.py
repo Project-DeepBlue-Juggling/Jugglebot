@@ -4849,7 +4849,7 @@ class TrajectoryNode(Node):
             #
             # The fix is not to loosen the rest bound — it is to stop asking
             # the LIVE state that question at all. `fresh`'s own test
-            # (`t_now_s + lead_s >= record.end_s`) is the exact claim `t0 >=
+            # (`install_is_fresh`: `t_now_s + splice_lead_s >= record.end_s`) is the exact claim `t0 >=
             # record.end_s` once `reserve_fresh_lead` (below) plants the new
             # segment's origin at `t0 = t_now_s + lead_s`: by construction the
             # record WILL have reached ITS OWN terminal rest (plan § 0, every
@@ -4914,7 +4914,7 @@ class TrajectoryNode(Node):
             # seeds from `record`'s own terminal rest, which is a property of
             # `record` alone and does not depend on `t_now_s` either. The
             # SPLICE branch below is untouched: its `t_now_s` stays real wall
-            # time, because the chain's t0 is already on the grid (the fresh
+            # time, because the chain's t0 is already on the grid when the running record's t0 is (a REBASED fresh REST's t0 is not; the fresh
             # origin that seeded it was) — see the `fresh` predicate above,
             # which recomputes the identical way `install_segment` does, so a
             # monotonic forward snap here cannot flip that predicate's answer
@@ -5051,7 +5051,9 @@ class TrajectoryNode(Node):
         if (fresh and stream_handoff and record is not None
                 and float(new_record.t0_s) < record.end_s - 1e-9):
             # Not reachable from the schedule's compilers (`fresh` already
-            # implies `t_now + lead >= record.end_s` and the grid snap only
+            # implies `t_now + splice_lead_s >= record.end_s` (see
+            # `install_is_fresh`); a band REST's origin is exactly
+            # `record.end_s`, so this guard stays unreachable for it, and the grid snap only
             # moves the origin later); refused rather than truncating a
             # running record mid-motion at the switch.
             return self._reject_segment(

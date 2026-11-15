@@ -37,6 +37,13 @@ So the band is reached live by the Feed's PRE-TILT REST onto a bridge REST of ab
 
 **Owner follow-up:** `motion/skills/INVARIANTS.md` (not edited, by the Night Shift rules) needs two text changes. The K1 row ("a REST SPLICE (never a fresh REST)") and I-INSTALL-1's last cell ("A fresh REST is exempt") should both say that a band REST is fresh, anchored at the record's end, and not exempt.
 
+**Open after the audit** (named, not fixed):
+- (a) A band REST's REBASE slide is bounded only by the solve deadline, so a slow solve can move the PRE-TILT REST's end, and the reload Catch, later than the +0.16-0.18 s ever measured.
+- (b) `install_is_fresh` runs outside the `try` that maps a malformed REST terminal's ValueError to UNREACHABLE.
+- (c) A REST onto a MAGAZINE record in the band is now fresh instead of refused MAGAZINE_NEEDS_REST (untested).
+- (d) The band REST skips the grid snap, so it starts off-grid if the running record was itself a REBASED fresh REST.
+- (e) `INVARIANTS.md` K1 (line ~45) and I-INSTALL-1 (line ~39) now contradict the code and need the owner's amendment.
+
 ## Verification
 
 2026-11-16, from the worktree, `night_shift_nonet.sh nice -n 19 env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 python -m pytest -q` over the 22 files that call the install path (tests/motion: magazine_throw, skills_admissible_online, skills_bump, skills_capture_replay, skills_executor_learner, skills_executor_online, skills_executor, skills_install_origin, skills_rebase_continuity, skills_schedule, solver_worker, splice_tilt_rate_seam, validate_cycle; tests/ros: install_segment, levelling_frame, skill_node_check, skill_node, skills_plan_bench, trajectory_node, unified_cycle_levelling; tests/sim: sched_probe, skills_gate): **1650 passed in 390.66 s**. All six new tests failed with the source change reverted (node: `splice_k` 128, the clamped splice; executor: SPLICE_TOO_LATE, "from the splice at knot 128", missing `install_is_fresh`).
