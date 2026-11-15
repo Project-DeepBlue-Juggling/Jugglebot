@@ -292,3 +292,25 @@ the file sharing and not an fsync stall. Not chased further.
   tests/motion/test_memory.py tests/motion/test_records.py
   tests/sim/test_logbook_index.py tests/sim/test_logbook_front_matter.py
   tests/sim/test_docs_links.py`: 768 passed in 1689.47 s (a loaded box).
+
+## Landed 2026-11-15
+
+Rebased onto main and pushed after `flock /tmp/jugglebot-tests.lock
+tools/night_shift_nonet.sh ./run_tests.sh --full -q` (2026-11-15): parallel
+625 s rc=0, serial 43 s rc=0, EXIT=0. The live checkout followed by auto-pull
+and was rebuilt with no launch running (`colcon build --packages-select
+jugglebot_interfaces jugglebot`, 2 packages finished).
+
+Offline rehearsal of the installed build (2026-11-15, system `python3` with
+the install's site-packages first on the path, a scratch root holding a copy
+of the tracked Memory and `docs/records.md`): `Memory` on the tracked file
+loaded 4818 rows; `live_memory_path` seeded the runtime copy and `Memory` on
+it loaded 4818 rows, 0 dropped; the seed says 4818 rows with the tracked
+file's sha256; a second call kept the copy with no warning. In the live
+checkout `python tools/runtime_records.py status` reads `absent` for both
+files and `git status` is unchanged. `ros2 launch jugglebot
+jugglebot_launch.py --show-args` parses.
+
+This is not the dress rehearsal: no launch ran and no goal was sent. The
+on-launch check in Open Questions and the Sitting are still owed, and the GUI
+unit needs a restart (sudo) before the Records panel reads the runtime copy.
