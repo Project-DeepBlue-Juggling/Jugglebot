@@ -24,6 +24,6 @@ Sitting note: this changes live executor threading, so the branch is held for a 
 ## Verification
 
 - Tests: `tests/ros/test_teensy_bridge_node_blocking_rpc_group.py` pins that the six services and both polls are in `_blocking_rpc_cbgroup`, the three publisher/health timers stay in the default group, and no service is left in the default group. Two existing assertions (`reboot_odrives` was `callback_group is None`) in `test_teensy_bridge_node_recover.py` updated.
-- The three new tests FAIL with the source change stashed (2026-11-16, 3 failed), pass with it.
+- The three new tests FAIL with the source change stashed (2026-11-16, `night_shift_nonet.sh nice -n 19 python -m pytest -q tests/ros/test_teensy_bridge_node_blocking_rpc_group.py` with `teensy_bridge_node.py` at the base: 3 failed), pass with it.
 - 2026-11-16, `night_shift_nonet.sh nice -n 19 env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 python -m pytest -q tests/ros/test_teensy_bridge_node_blocking_rpc_group.py tests/ros/test_teensy_bridge_node_recover.py tests/ros/test_teensy_bridge_node_version.py tests/ros/test_teensy_bridge_node_rpc.py tests/ros/test_teensy_bridge_node_bb.py tests/ros/test_teensy_bridge_node_hand.py tests/ros/test_orchestrator_conduit_contract.py`: **128 passed in 29.73 s**.
 - Not run: `./run_tests.sh` (tier 1 for `ros_ws/`; the Night Shift gate owns it). The test mocks rclpy, so real executor scheduling is only exercised at the Sitting.
