@@ -1789,6 +1789,47 @@ def splice_lead_s(kind: str, terminal, t_now_s: float, lead_s: float) -> float:
     return max(float(lead_s), min(want, cap))
 
 
+def install_is_fresh(record: Optional[PlanRecord], kind: str, terminal,
+                     t_now_s: float, lead_s: float) -> bool:
+    """The fresh-vs-splice decision, ONE spelling for :func:`install_segment`,
+    :func:`check_segment` and ``trajectory_node`` (BUG-95, 2026-11-16).
+
+    Fresh iff there is no record or the record ends by the time a splice
+    could land: ``t_now + splice_lead_s(...) >= record.end_s``.  The lead is
+    :func:`splice_lead_s`, the SAME function :func:`splice_knot_for` places
+    the splice knot with, so a segment judged a splice always has its knot
+    inside the record and never clamps onto the record's last knot.  Before
+    BUG-95 the decision read the bare per-kind lead (``LEAD_S`` for a REST)
+    while the knot read the window-scaled REST lead, so a long REST
+    dispatched with the record ending between the two leads spliced at the
+    clamped last knot on a solve budget of ``end_s - t_now - 75 ms`` and a
+    slow solve ended the Attempt ``SPLICE_TOO_LATE``.  For THROW/CATCH/
+    MAGAZINE :func:`splice_lead_s` is ``lead_s``, so their decision is
+    unchanged.  Such a REST (the record still streams past ``t_now +
+    lead_s``) is planned from the record's end, not from now:
+    :func:`fresh_rest_waits_for_end`."""
+    if record is None:
+        return True
+    return (float(t_now_s) + splice_lead_s(kind, terminal, t_now_s, lead_s)
+            >= float(record.end_s))
+
+
+def fresh_rest_waits_for_end(record: Optional[PlanRecord], kind: str,
+                             t_now_s: float, lead_s: float) -> bool:
+    """True for a REST that :func:`install_is_fresh` calls fresh while the
+    running record still streams past ``t_now + lead_s`` (BUG-95's band, which
+    was a splice before 2026-11-16).  Its origin is the record's END and its
+    seed the record's terminal rest (:func:`_segment_origin`): exactly the
+    origin and seed the old clamped splice had, so nothing installs earlier
+    than before and the running record is never pre-empted (I-INSTALL-1: the
+    node hands the wire over at ``t0``).  The seed is an exact rest, so a slow
+    solve REBASES (the same motion later) instead of ending the Attempt.  A
+    fresh REST inside ``lead_s`` of the record's end is unchanged: origin now,
+    seeded by the caller."""
+    return (record is not None and kind == REST
+            and float(t_now_s) + float(lead_s) < float(record.end_s))
+
+
 def splice_knot_for(record: PlanRecord, kind: str, terminal,
                     t_now_s: float, lead_s: float) -> Tuple[int, bool]:
     """``(k_s, seeded_post_release)`` — the splice knot :func:`install_segment`
@@ -2003,6 +2044,14 @@ def _segment_origin(record: Optional[PlanRecord],
     fresh origin, a malformed terminal) and whatever the planner's seed
     readers raise, for the caller to convert; the order of every check is the
     install's own, so the refusals are the same ones in the same order."""
+    if fresh and fresh_rest_waits_for_end(record, kind, t_now_s, lead_s):
+        # BUG-95: the record ends inside the REST's window-scaled splice
+        # lead but past `t_now + lead_s`. Plan from the record's terminal
+        # rest at the record's end (the clamped splice's own seed and origin)
+        # as a FRESH origin, so the REBASE rule absorbs a slow solve.
+        t0 = float(record.end_s)
+        return _Origin(True, False, _rest_seed(record), t0, 0, t0, False,
+                       None)
     if fresh:
         if seed_rest is not None:
             seed = seed_rest
@@ -2110,7 +2159,7 @@ def check_segment(record: Optional[PlanRecord],
         gate_limits = TrajectoryLimits.from_config(hw)
     else:
         gate_limits = limits
-    fresh = record is None or (t_now_s + lead_s) >= record.end_s
+    fresh = install_is_fresh(record, kind, terminal, t_now_s, lead_s)
     refusal = _magazine_splice_refusal(record, kind, t_now_s, lead_s, fresh)
     if refusal is not None:
         return CheckResult(False, refusal[0], refusal[1], nan, 0.0)
@@ -2297,7 +2346,7 @@ def install_segment(record: Optional[PlanRecord],
     # dispatched the skill by, so the reserved origin lands on the skill's own
     # splice base and the planned window is the schedule's (2026-10-16).
     lead_s = (sch.install_lead_s(kind) if lead_s is None else float(lead_s))
-    fresh = record is None or (t_now_s + lead_s) >= record.end_s
+    fresh = install_is_fresh(record, kind, terminal, t_now_s, lead_s)
     refusal = _magazine_splice_refusal(record, kind, t_now_s, lead_s, fresh)
     if refusal is not None:
         return record, InstallResult(False, refusal[0], refusal[1], 0.0), None

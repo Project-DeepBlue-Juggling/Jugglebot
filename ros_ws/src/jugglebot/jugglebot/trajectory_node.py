@@ -4858,8 +4858,20 @@ class TrajectoryNode(Node):
         # class `reserve_fresh_lead` closed. The request carries no lead, so
         # both ends derive it from the kind through one function.
         lead_s = sk_sched.install_lead_s(kind)
-        fresh = record is None or (t_now_s + lead_s) >= record.end_s
-        if fresh:
+        # BUG-95 (2026-11-16): the decision reads `install_is_fresh`, the
+        # executor's ONE spelling, whose lead is `splice_lead_s` -- the lead
+        # the splice knot is placed with -- so a long REST whose record ends
+        # inside its window-scaled splice lead is fresh, never a splice
+        # clamped onto the record's last knot. Such a REST
+        # (`rest_waits_for_end`: the record still streams past `t_now +
+        # lead_s`) is planned from the record's terminal rest at the
+        # record's END, so it is seeded from the record (no live seed) and
+        # hands the wire over at its origin like any non-REST install.
+        fresh = sk_exec.install_is_fresh(record, kind, terminal, t_now_s,
+                                         lead_s)
+        rest_waits_for_end = fresh and sk_exec.fresh_rest_waits_for_end(
+            record, kind, t_now_s, lead_s)
+        if fresh and not rest_waits_for_end:
             # `record` STILL STREAMING at this instant (`t_now_s <
             # record.end_s`) is the one `fresh` sub-case the LIVE at-rest test
             # below must not run on (found 2026-10-02 while landing
@@ -5068,7 +5080,8 @@ class TrajectoryNode(Node):
         # bit-identical to the head it replaces. A fresh REST keeps the
         # install-instant check: its origin is now and it takes the machine
         # from its live state.
-        stream_handoff = not (fresh and kind == sk_seg.REST)
+        stream_handoff = not (fresh and kind == sk_seg.REST
+                              and not rest_waits_for_end)
         if stream_handoff:
             # fresh: exactly `t0` (a late origin is the reply-transit guard's
             # ORIGIN_TOO_LATE below, not a continuity question); splice: the

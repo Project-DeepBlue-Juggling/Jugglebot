@@ -8051,6 +8051,107 @@ def test_goal_13_rest_resplice_with_a_323_ms_solve_is_no_longer_too_late(
 
 
 # ---------------------------------------------------------------------------
+# BUG-95 (2026-11-16): the fresh decision and the splice knot read ONE lead.
+# A long REST dispatched with the running record ending between the bare
+# LEAD_S and its window-scaled splice lead used to splice at the record's
+# CLAMPED last knot on a budget of `end_s - t_now - 75 ms`; reachable live by
+# the Feed's PRE-TILT REST onto a >= ~2.2 s bridge REST when Ball Butler's
+# announcement lands in the bridge's last 0.2-2.0 s
+# (logbook/2026-11-16-bug-95-rest-band-installs-fresh-at-the-records-end.md).
+# ---------------------------------------------------------------------------
+
+def _bug95_band(limits, geom, sites, left_s=0.40, window_s=3.2):
+    """A 3.2 s REST record, ``t_now`` ``left_s`` before its end, and a
+    ``window_s`` REST terminal from ``t_now`` (to the other Site)."""
+    p1, p2 = sites
+    record, res, _ = ex.install_segment(
+        None, _rest_state(p1.rest_site_mm()), sg.REST,
+        sg.RestTerminal(rest_site_mm=p1.rest_site_mm(), t_rest_s=1003.2),
+        1000.0, limits=limits, geom=geom)
+    assert res.accepted, res.message
+    t_now = record.end_s - left_s
+    term = sg.RestTerminal(rest_site_mm=p2.rest_site_mm(),
+                           t_rest_s=t_now + window_s)
+    # In the band: the bare lead says splice, the splice lead overruns the
+    # record's end (the old knot clamped onto the record's last knot).
+    assert t_now + ex.LEAD_S < record.end_s
+    assert t_now + ex.splice_lead_s(sg.REST, term, t_now, ex.LEAD_S) \
+        >= record.end_s
+    return record, term, t_now
+
+
+def test_a_long_rest_in_the_band_is_fresh_from_the_records_end(
+        limits, geom, sites):
+    """Fast solve: fresh, origin AT the record's end (never earlier: no
+    pre-emption of the running record), seeded from its terminal rest --
+    the clamped splice's own origin and seed."""
+    record, term, t_now = _bug95_band(limits, geom, sites)
+    assert ex.install_is_fresh(record, sg.REST, term, t_now, ex.LEAD_S)
+    new, res, seg = ex.install_segment(
+        record, None, sg.REST, term, t_now, limits=limits, geom=geom,
+        t_install_s=t_now + 0.05)
+    assert res.accepted, res.message
+    assert res.splice_k == 0
+    assert new.t0_s == pytest.approx(record.end_s, abs=1e-12)
+    np.testing.assert_allclose(seg.plan.pose[0], record.plan.pose[-1],
+                               atol=1e-9)
+    assert float(seg.plan.hand_rev[0]) == pytest.approx(
+        float(record.plan.hand_rev[-1]), abs=1e-9)
+
+
+def test_a_slow_solve_of_a_band_rest_rebases_instead_of_splice_too_late(
+        limits, geom, sites):
+    """The solve outruns ``end_s - t_now - 75 ms`` (the clamped splice's
+    budget, 325 ms here): before BUG-95 SPLICE_TOO_LATE ended the Attempt;
+    now the REST REBASES (exact-rest seed: the same motion later), and its
+    origin is still never before the record's end."""
+    record, term, t_now = _bug95_band(limits, geom, sites)
+    t_inst = record.end_s + 0.20                 # a 600 ms solve
+    new, res, _seg = ex.install_segment(
+        record, None, sg.REST, term, t_now, limits=limits, geom=geom,
+        t_install_s=t_inst)
+    assert res.code != ex.SPLICE_TOO_LATE, res.message
+    assert res.accepted, res.message
+    assert 'REBASED' in res.message and 'from rest' in res.message
+    assert new.t0_s >= t_inst + ex.WIRE_READ_KNOTS * DT - 1e-9
+    assert new.t0_s > record.end_s
+
+
+def test_check_segment_reads_the_same_fresh_decision_in_the_band(
+        limits, geom, sites):
+    record, term, t_now = _bug95_band(limits, geom, sites)
+    chk = ex.check_segment(record, None, sg.REST, term, t_now,
+                           limits=limits, geom=geom)
+    assert chk.planned, chk.message
+    assert 'from a fresh origin' in chk.message
+
+
+@pytest.mark.parametrize('kind', [sg.REST, sg.CATCH])
+def test_a_splice_never_clamps_onto_the_records_last_knot(sites, kind):
+    """The invariant BUG-95 closes, swept over dispatch instants: whenever
+    :func:`install_is_fresh` says splice, the knot :func:`splice_knot_for`
+    places is never before ``t_now + splice_lead_s`` -- the solve keeps the
+    whole budget its lead reserves (no clamp onto the record's last knot)."""
+    p1, p2 = sites
+    n = 129                                         # a 3.2 s record
+    plan = types.SimpleNamespace(total_duration=(n - 1) * DT, dt=DT)
+    meta = types.SimpleNamespace(dt=DT, n_knots=n, releases=())
+    record = ex.PlanRecord(plan=plan, meta=meta, t0_s=1000.0)
+    for left in np.arange(0.0, 1.2, 0.005):
+        t_now = record.end_s - float(left)
+        if kind == sg.REST:
+            term = sg.RestTerminal(rest_site_mm=p2.rest_site_mm(),
+                                   t_rest_s=t_now + 6.5)
+        else:
+            term = _catch_terminal(p2, t_now + 1.0)
+        if ex.install_is_fresh(record, kind, term, t_now, ex.LEAD_S):
+            continue
+        k_s, _post = ex.splice_knot_for(record, kind, term, t_now, ex.LEAD_S)
+        lead = ex.splice_lead_s(kind, term, t_now, ex.LEAD_S)
+        assert record.t0_s + k_s * DT >= t_now + lead - 1e-9, (left, k_s)
+
+
+# ---------------------------------------------------------------------------
 # BUG-67 (owner option 4 of TKT-38): a goal that ends on a Stop books its
 # FINAL Catch as unverifiable when the cup reads EMPTY over a live window.
 #
