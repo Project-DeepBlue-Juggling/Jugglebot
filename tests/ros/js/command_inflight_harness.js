@@ -1,6 +1,6 @@
 // command_inflight_harness.js — the REAL commands.js under node with a fake DOM, a MUTABLE stub panels.js and
 // captured timers. Asserts the BUG-104 in-flight guard: a double click publishes once; the latch releases on an
-// orchestrator state CHANGE (not on a same-state re-publish) or on cooldown expiry; clear_errors stays hold-gated.
+// orchestrator state CHANGE (not on a same-state re-publish) or on cooldown expiry. The clear-errors hold-to-confirm path is not exercised here.
 globalThis.window = { location: { hostname: 'localhost' }, addEventListener() {} };
 class Ros { constructor() { this.isConnected = false; } on() {} connect() {} close() {} }
 class Topic { constructor(o) { this.name = o && o.name; } subscribe() {} unsubscribe() {} publish() {} }

@@ -22,7 +22,7 @@ second click handler call returns early) until the orchestrator state CHANGES fr
 `COMMAND_COOLDOWN_MS` (1500 ms) expires. Release is on a state change, not on "the next message", because
 `orchestrator_state` re-publishes continuously and the next message would release on the next tick. 1500 ms rather
 than the Juggle Start cooldown (4000 ms): a refused command never changes the state, so the latch must clear quickly.
-Commands, payloads and the clear-errors hold-to-confirm are unchanged (the guard sits inside the shared `dispatch`).
+Commands and payloads are unchanged, and the clear-errors hold-to-confirm still runs through the same shared `dispatch` (by reading; the harness never presses Clear Errors). One dispatch latches all five buttons, Deactivate and Clear Errors included, for up to 1.5 s when the state does not move (open audit finding, held for the owner).
 
 ## Is a repeat a no-op in the orchestrator? Partly
 
