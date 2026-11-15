@@ -23,7 +23,7 @@ only for an exception.)
 **Why.** The announced velocity is the release velocity, so the start belongs at the release
 point; at the Feed aim it is about 179 mm from the origin. Offline replay of 117 Ball Butler
 Feed flights (7 bags, 6 Sittings, 2026-11-14): median residual at the announced time 288 mm
-from the origin against 136 mm from the release point; the release point is closer on 117 of 117.
+from the origin against 136 mm from the release point; the release point is closer on 117 of 117 (not re-run here: the figures are the Item's § Offline replay (2026-11-14), whose own Limits line names its untracked outputs).
 
 **Unchanged on purpose.** Announced velocity (same `sol` yaw/pitch/speed, same formula as
 `bb_release_state`'s velocity), `throw_time`, `landing_*` fields, the Tracker's 200 mm gate,
