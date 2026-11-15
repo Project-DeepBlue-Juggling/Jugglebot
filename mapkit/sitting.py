@@ -186,10 +186,9 @@ def collect(repo_root: str) -> Dict:
     """Gather the Runbook's content from ``<repo>/map/``.
 
     Keys: ``rows`` (valid hardware Items sorted by rig, priority high to low, then ID),
-    ``needs_section`` ``(id, title, errors, hardware)``, ``questions`` ``(ticket id, title,
-    parent id)`` for open question tickets under a hardware Item, and, as compatibility fields
-    for a map app built before 2026-11-14, ``rigs`` (``(hardware, blocks)`` in rig order for
-    rigs with a row) and ``blocks`` (one block per rig holding that rig's rows, every score 0).
+    ``needs_section`` ``(id, title, errors, hardware)`` and ``questions`` ``(ticket id, title,
+    parent id)`` for open question tickets under a hardware Item. A reader groups ``rows`` by
+    ``row.hardware`` (the ``blocks`` and ``rigs`` compatibility fields went 2026-11-15).
     The order a Sitting flies in is the sheet's, not this one's.
     """
     items = load_items(os.path.join(repo_root, "map"))
@@ -219,15 +218,7 @@ def collect(repo_root: str) -> Dict:
             for t in open_questions(items, i.short_id or "%s-%s" % (i.kind, i.slug)):
                 questions.append((_bid(t), t.title, _bid(i)))
     questions = sorted(set(questions))
-    blocks: List[List[RunbookRow]] = []
-    rigs: List[Tuple[str, List[List[RunbookRow]]]] = []
-    for rig in HARDWARE:
-        rig_rows = [r for r in rows if r.hardware == rig]
-        if rig_rows:
-            rigs.append((rig, [rig_rows]))
-            blocks.append(rig_rows)
-    return {"rows": rows, "needs_section": needs, "questions": questions, "blocks": blocks,
-            "rigs": rigs}
+    return {"rows": rows, "needs_section": needs, "questions": questions}
 
 
 def _cell(text: str) -> str:

@@ -80,12 +80,10 @@ def repo(tmp_path):
     return tmp_path
 
 
-def test_rows_sort_by_rig_priority_id_and_blocks_is_one_per_rig(repo):
+def test_rows_sort_by_rig_priority_id_and_nothing_groups_them(repo):
     data = sitting.collect(str(repo))
     assert [r.item_id for r in data["rows"]] == ["BUG-1", "BUG-3", "BUG-5", "BUG-2", "BUG-4", "BUG-6"]
-    # compatibility field for a pre-2026-11-14 app: one block per rig, every score 0
-    assert [[r.item_id for r in b] for b in data["blocks"]] == [
-        ["BUG-1", "BUG-3", "BUG-5", "BUG-2", "BUG-4", "BUG-6"]]
+    assert sorted(data) == ["needs_section", "questions", "rows"]   # no blocks, no rigs
     assert all(r.score == 0 for r in data["rows"])
     assert data["needs_section"] == [] and data["questions"] == []
 
@@ -169,8 +167,6 @@ def _rig_repo(tmp_path):
 def test_rigs_follow_rig_order(tmp_path):
     repo = _rig_repo(tmp_path)
     data = sitting.collect(str(repo))
-    assert [(h, [[r.item_id for r in b] for b in bs]) for h, bs in data["rigs"]] == [
-        ("robot", [["BUG-3"]]), ("bench-leg", [["BUG-2", "BUG-4"]]), ("bench-hand", [["BUG-1"]])]
     assert [r.item_id for r in data["rows"]] == ["BUG-3", "BUG-2", "BUG-4", "BUG-1"]
     assert {r.item_id: r.hardware for r in data["rows"]}["BUG-1"] == "bench-hand"
     assert data["needs_section"][0][0] == "BUG-5" and data["needs_section"][0][3] == "bench-leg"
