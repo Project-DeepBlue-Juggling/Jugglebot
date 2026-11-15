@@ -2,9 +2,9 @@
 id: TKT-73
 kind: ticket
 title: 'IDEA-22 tilt-back sweep: only 0.5 deg clears +0.10 at the re-aim limit (Apex 0.95-0.975), about what 0 deg gives; fly 0.5 deg, fly 1.0 deg, fly 0 deg at Apex 0.975 first, or park 90 deg?'
-status: open
+status: complete
 created: '2026-11-15'
-updated: '2026-11-14T18:50:07Z'
+updated: '2026-11-14T23:38:00Z'
 owners: []
 priority: medium
 effort: xs
@@ -33,3 +33,7 @@ Your TKT-68 answer (re-measure offline, tilt-back toward 0) ran tonight: a 7 x 6
 - 4: the next night parks IDEA-22.
 
 Recommendation: 1, flown beside one Attempt of 3 as its control if time allows. The 2026-11-13 failures were margin ends at 3 deg; 0.5 deg keeps the best margin on the grid, and the control separates the tilt from the Apex. Full grid: the IDEA-22 Item, Findings (2026-11-15).
+
+## Answer
+
+Agreed. Let's try both 1 and 3

@@ -38,3 +38,27 @@ if _TESTS_DIR not in sys.path:
 
 # Register hypothesis profiles (ci-fast default; ci-deep for nightly).
 import conftest_hypothesis  # noqa: F401, E402
+
+
+# Runtime-path isolation (closeout C8 unit 3): jugglebot/runtime_paths.py
+# refuses, under pytest, any runtime path inside a real checkout. The signal
+# is set at import so it holds before any fixture; the per-process base
+# (each xdist worker is its own process, so workers never share a directory)
+# is what the real-checkout root resolves to.
+os.environ['JUGGLEBOT_UNDER_TEST'] = '1'
+
+import tempfile  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(scope='session', autouse=True)
+def _runtime_dir_isolated():
+    base = tempfile.mkdtemp(prefix='jugglebot-runtime-')
+    os.environ['JUGGLEBOT_RUNTIME_DIR'] = base
+    try:
+        yield base
+    finally:
+        os.environ.pop('JUGGLEBOT_RUNTIME_DIR', None)
+        import shutil
+        shutil.rmtree(base, ignore_errors=True)

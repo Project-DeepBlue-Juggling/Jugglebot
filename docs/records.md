@@ -4,7 +4,7 @@
 
 The most Catches in one continuous Attempt on the robot (never the sim), per Pattern. A record is beaten only by strictly more Catches. Each time a record is beaten a row is appended to that Pattern's table, so a table is the history of its record, newest last. The Feed is not a Pattern here.
 
-`skill_node` writes this file live at the end of each Attempt (ROS parameter `records_path`, set by `jugglebot_launch.py`) and the Sitting's close-out commits it. The tables are rendered and parsed by `ros_ws/src/jugglebot/jugglebot/records.py`; a Note cell may be edited by hand, nothing else. "Parameters" is what that run used (`key=value` pairs; empty = not recorded). "How it ended" is completed, stopped, drop (a missed or lost ball), compute (a solve or limit refusal) or other, with the raw end code in parentheses.
+`skill_node` writes a gitignored runtime copy of this file, `temp/runtime/records.md`, at the end of each Attempt (ROS parameter `records_path`, set by `jugglebot_launch.py`); the Sitting debrief copies it back here (`tools/runtime_records.py merge`) and commits it. The tables are rendered and parsed by `ros_ws/src/jugglebot/jugglebot/records.py`; a Note cell may be edited by hand, nothing else. "Parameters" is what that run used (`key=value` pairs; empty = not recorded). "How it ended" is completed, stopped, drop (a missed or lost ball), compute (a solve or limit refusal) or other, with the raw end code in parentheses.
 
 ## Drops to date
 

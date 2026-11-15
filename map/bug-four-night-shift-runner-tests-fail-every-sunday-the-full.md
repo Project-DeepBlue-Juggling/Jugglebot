@@ -2,9 +2,9 @@
 id: BUG-107
 kind: bug
 title: 'Four Night Shift runner tests fail every Sunday: the full walk turns their expected NOTHING_NEW into OK'
-status: inbox
+status: complete
 created: '2026-11-15'
-updated: '2026-11-14T17:47:41Z'
+updated: '2026-11-14T23:46:56Z'
 owners: []
 priority: high
 effort: xs
@@ -31,3 +31,7 @@ Four tests in `tests/sim/test_night_shift_runner.py` fail on every Sunday, so th
 ## Wanted
 
 Pin the weekday in the `ns` fixture's default environment (`NIGHT_SHIFT_WEEKDAY=3`), so only the tests that ask for a Sunday get one. The file is on the Night Shift's never-list, so a day Session makes this change. Until it lands, no Night Shift branch can merge on a Sunday.
+
+## Progress
+
+- 2026-11-15: Fixed 2026-11-15: the ns fixture pins NIGHT_SHIFT_WEEKDAY=3 (logbook/2026-11-15-runner-tests-pin-weekday.md); 86 passed on a Sunday.
