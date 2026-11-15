@@ -1218,7 +1218,7 @@ class SkillNode(Node):
         #: Result. `_refuse_if_running` counts it as running, so a second
         #: request cannot reset the `_goal_*` fields the Result still reads.
         #: Written under `_reload_lock` with the event's set; cleared by
-        #: `_juggle_execute`'s `finally` (and by `_start_pattern_body`'s reset).
+        #: `_juggle_execute`'s `finally`.
         self._goal_result_pending = False
         #: True only while a `_juggle_execute` callback is in flight; the
         #: pending mark is set only then, so it can never be left set with
