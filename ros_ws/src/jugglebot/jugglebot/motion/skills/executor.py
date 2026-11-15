@@ -2208,7 +2208,10 @@ def install_segment(record: Optional[PlanRecord],
     **Two cases, and the machine's physical state is what chooses.**
 
     *Fresh origin* — there is no record, or the record's plan has ENDED by the
-    time this install could reach the wire (``t_now + lead >= record.end_s``).
+    time this install could reach the wire (``executor.install_is_fresh``: ``t_now +
+    splice_lead_s(...) >= record.end_s``; a REST in the band between the install
+    lead and the splice lead is fresh too, but starts at ``record.end_s`` from the
+    record's terminal rest, ``fresh_rest_waits_for_end()``).
     The machine is then holding a terminal REST: a stopped platform over a
     seated ball.  The segment is planned from that rest with ``t0 = t_now_s``
     (the solve time is not skipped over), which is sound for exactly one

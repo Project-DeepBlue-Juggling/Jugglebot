@@ -963,7 +963,7 @@ class Schedule:
 
 #: Knots of margin the CLOSING REST's splice base keeps PAST the end of the
 #: last catch's own rest tail, so that REST is a FRESH ORIGIN from a machine
-#: already at rest (``executor.install_segment``: ``t_now + lead >= record.end_s``)
+#: already at rest (``executor.install_is_fresh``: ``t_now + splice_lead_s >= record.end_s``)
 #: and never a splice into the tail's last knots.
 #:
 #: MEASURED 2026-09-23 (scratchpad ``probe_r4_hop_schedule.py``, the one-ball HOP
@@ -2414,7 +2414,7 @@ def compile_one_ball(pattern: OneBallPattern, t0_abs_s: float) -> Schedule:
     that: with ``t_abs_s = floor_lift_s + launch_s``, ``window_s = launch_s``
     and the THROW lead :data:`FRESH_THROW_LEAD_S` (``L`` below; the general
     :data:`LEAD_S` until 2026-10-16), ``THROW 0.dispatch_s() = floor_lift_s -
-    L``, so ``install_segment``'s fresh test (``t_now + lead >=
+    L``, so ``install_is_fresh``'s test (``t_now + splice_lead_s >=
     record.end_s``, with the SAME ``L`` — :func:`install_lead_s`) reads
     ``(floor_lift_s - L) + L >= floor_lift_s`` — true by construction, not by
     margin, whatever ``L`` is, as long as the two agree. Putting THROW 0 at ``floor_lift_s``
@@ -2744,7 +2744,7 @@ def compile_reload(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
     its ``record.end_s`` is exactly its own event instant.  Setting the
     CATCH's ``window_s`` to exactly ``t_land - pretilt_rest.t_abs_s`` (as
     below) puts its splice base EXACTLY on that event, so
-    ``install_segment``'s fresh test (``t_now + lead >= record.end_s``)
+    ``install_is_fresh``'s test (``t_now + splice_lead_s >= record.end_s``)
     reads true by construction at the catch's own dispatch instant, for ANY
     window size — :data:`RELOAD_CATCH_WINDOW_S` is solve-budget margin for
     the heavier held-axis QP (U2), not what makes the test pass.
