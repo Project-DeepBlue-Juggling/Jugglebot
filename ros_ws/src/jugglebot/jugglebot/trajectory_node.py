@@ -1011,6 +1011,9 @@ class TrajectoryNode(Node):
         self._pub = None
         self._emit_stop = threading.Event()
         self._emit_thread = None
+        # BUG-96: set by the emitter thread when it could not bind :5557. main()
+        # reads it after the executor returns and exits non-zero.
+        self.emitter_bind_failed = False
 
         # ── Subscriptions ───────────────────────────────────────
         mode_topic = str(self.get_parameter('control_mode_topic').value)
@@ -1447,7 +1450,18 @@ class TrajectoryNode(Node):
                 "trajectory_node: could not bind the :5557 command PUB "
                 f"({e}). Another process already owns that address — most "
                 "likely a stale trajectory_node. The emitter will NOT start; "
-                "stop the other process and relaunch.")
+                "stop the other process and relaunch. Shutting the node down "
+                "(exit code 1) so the launch shows it.")
+            # BUG-96: a node that cannot emit has no purpose. Record the failure
+            # and stop the executor (sys.exit here would only end this thread);
+            # main() turns the flag into a non-zero exit. Only reachable before
+            # the first setpoint, so no stream is interrupted.
+            self.emitter_bind_failed = True
+            try:
+                if rclpy.ok():
+                    rclpy.shutdown()
+            except Exception:  # noqa: BLE001
+                pass
             return
 
         # The emitter period IS the knot spacing: the can-hub firmware pins its
@@ -5719,6 +5733,8 @@ def main(args=None):
         node.destroy_node()
         if rclpy.ok():   # the SIGINT handler may already have shut the context
             rclpy.shutdown()
+    if node.emitter_bind_failed:
+        sys.exit(1)
 
 
 if __name__ == '__main__':
