@@ -2,11 +2,10 @@
 id: BUG-91
 kind: bug
 title: nominate accepts a setting whose own reply shows a negative margin with the Catch re-aim at its limit
-status: in_progress
+status: complete
 created: '2026-11-13'
-updated: '2026-11-14T20:27:56Z'
-owners:
-- night-shift
+updated: '2026-11-14T20:11:09Z'
+owners: []
 priority: medium
 effort: xs
 hardware: none
@@ -18,6 +17,7 @@ blocked_by: []
 links:
 - map/idea-turned-columns-at-90-deg-tilt-the-platform-back-x-at-the.md
 - map/bug-nomination-s-re-aim-figure-read-0-049-while-the-live-feed.md
+- logbook/2026-11-15-nominate-negative-reaim-warning.md
 filed_by: claude
 ---
 
