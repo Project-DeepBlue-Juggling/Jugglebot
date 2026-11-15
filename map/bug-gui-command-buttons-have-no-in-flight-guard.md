@@ -2,9 +2,9 @@
 id: BUG-104
 kind: bug
 title: GUI command buttons have no in-flight guard
-status: inbox
+status: complete
 created: '2026-11-14'
-updated: '2026-11-14T17:54:37Z'
+updated: '2026-11-15T17:55:33Z'
 owners: []
 priority: low
 effort: s
@@ -14,7 +14,8 @@ radius: local
 diagnosis: hypothesis
 area: gui
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-16-gui-command-inflight-guard.md
 parent: gui-improvements
 filed_by: claude
 ---

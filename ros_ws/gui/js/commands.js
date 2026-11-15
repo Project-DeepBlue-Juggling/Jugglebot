@@ -18,8 +18,26 @@ import { isReplayFenced } from './replay/fence.js';
  *  responds to a single click. */
 const DESTRUCTIVE_COMMANDS = new Set(['clear_errors']);
 
+/** In-flight guard (BUG-104).  One publish latches every command button inert until the orchestrator
+ *  state CHANGES from the one the click saw (orchestrator_state re-publishes continuously, so "the next
+ *  message" would release on the very next tick and guard nothing) or this cooldown expires, so a double
+ *  click inside one state-update latency publishes once.  Shorter than the Juggle Start cooldown (4 s):
+ *  these are state-changing commands whose result shows in the state within a tick or two, and a stuck
+ *  latch on a command that is refused (state never changes) must clear quickly. */
+const COMMAND_COOLDOWN_MS = 1500;
+
 /** @type {{ publish: function } | null} */
 let cmdPublisher = null;
+let inFlight = false;
+let stateAtDispatch = null;
+let cooldownTimer = null;
+
+function releaseInFlight() {
+    inFlight = false;
+    clearTimeout(cooldownTimer);
+    cooldownTimer = null;
+    updateCommandStates();
+}
 
 // The Standby / SpaceMouse / Shell / GUI command buttons were removed — the
 // ACTIVE sub-mode is now changed from the state-machine minimap panel. Those
@@ -54,6 +72,12 @@ export function initCommands() {
 
         const dispatch = () => {
             if (isReplayFenced()) return;   // replay fence: never publish or log a COMMAND
+            if (inFlight) return;           // BUG-104: one publish per state-update latency
+            inFlight = true;
+            stateAtDispatch = currentOrchestratorState;
+            clearTimeout(cooldownTimer);
+            cooldownTimer = setTimeout(releaseInFlight, COMMAND_COOLDOWN_MS);
+            updateCommandStates();
             if (cmdPublisher) {
                 cmdPublisher.publish({ data: cmd.command });
             }
@@ -87,6 +111,15 @@ export function updateCommandStates() {
         return;
     }
     const state = currentOrchestratorState;
+    if (inFlight && state !== stateAtDispatch) {   // the command took effect: release
+        inFlight = false;
+        clearTimeout(cooldownTimer);
+        cooldownTimer = null;
+    }
+    if (inFlight) {
+        for (const id of ['cmd-home', 'cmd-level', 'cmd-activate', 'cmd-deactivate', 'cmd-clear']) setEnabled(id, false);
+        return;
+    }
     const active = state === 'ACTIVE';
 
     setEnabled('cmd-home', state === 'IDLE' || state === 'BOOT');
