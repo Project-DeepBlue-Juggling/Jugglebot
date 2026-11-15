@@ -2,7 +2,7 @@
 title: "carry_zvd Hand smoothness term (BUG-90): a flight-window Hand ACCELERATION penalty, read only with the ZVD rows on, removes the ~5 Hz Hand stop-and-go at no cost to the mode cancellation; a jerk penalty was tried first and only turned the wiggle into a slow ±0.5-1.8 m/s swing"
 type: bugfix
 date: 2026-11-15
-status: in_progress
+status: complete
 phase: "carry-ring-zvd P3 prerequisite (Night Shift 2026-11-15)"
 subsystem: motion
 related_plan: carry-ring-zvd.md
@@ -10,6 +10,7 @@ related_items: [BUG-90]
 files_changed:
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/cup_cycle.py
   - tests/motion/test_cup_zvd.py
+  - tests/motion/test_skills_nominate.py
   - logbook/INDEX.md
 ---
 
@@ -89,5 +90,11 @@ only the residual it reports.
 
 - 2026-11-15, `night_shift_nonet.sh python -m pytest tests/motion/test_cup_zvd.py -q -p no:cacheprovider`: **39 passed in 221 s** (the flag-off golden byte-identity test included; the release-triple test now pins the objective change to exactly `2w/n · Aa[ks]ᵀAa[ks]` in the cup-z block and byte-identity elsewhere).
 - Re-run by the orchestrator after the unit was cut off (API credit), 2026-11-15, `tools/night_shift_nonet.sh python -m pytest tests/motion/test_cup_zvd.py -q -p no:cacheprovider` on this tree: **39 passed in 183.66 s**.
-- **Not run (the unit was cut off before them):** the wider planner set (every test file naming `carry_zvd` or `cup_cycle`), the wall-clock `serial` budget tests (`test_unified_cycle_budget.py`, `test_check_segment_budget.py`), the full suite and an audit. The numbers above came from the unit's own one-off scripts in `/tmp` and were not re-checked. Work in progress, held for a day Session or the next night to finish.
+- Finished by the Night Shift 2026-11-16 (all via `tools/night_shift_nonet.sh nice -n 19 env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 python -m pytest -q -p no:cacheprovider`):
+  - Every test file naming `carry_zvd`, `cup_cycle`, `PoseConfig` or `_pose_augment` outside test_cup_zvd (18 files under `tests/motion/` and `tests/ros/`), 2026-11-16: **1 failed, 1331 passed, 2 skipped in 303.74 s**. The one failure, `test_skills_nominate.py::test_oval_carry_zvd_at_gate_limits_refuses_035_and_names_040`, pinned the old flag-on objective's margins: the Dwell 0.35 refusal (same verdicts, LIMIT_ACC Leg 1) moved from -0.147113829 to -0.156255330 and the Dwell 0.40 viable margin from 0.116713586 to 0.115946813 (still viable, still the first viable Dwell). Test expectations updated, nothing else; the smoother Hand loads the Legs slightly more (leg-peak table above, < 1 %).
+  - `tests/motion/test_skills_nominate.py` after that update, 2026-11-16: **47 passed in 54.12 s**.
+  - Wall-clock budget tests `tests/motion/test_unified_cycle_budget.py tests/motion/test_check_segment_budget.py`, 2026-11-16, run alone: **4 passed in 10.27 s**.
+  - The new tests fail without the change (source reverted to the parent commit, `-k "stop_and_go or smooth"`, 2026-11-16): 4 failed (the three Hand stop-and-go tests and the flag-off weight test; the weight test fails on the missing `PoseConfig` field).
+  - Flag-off claim re-read from the diff: the new cost is built inside `if bool(pcfg.carry_zvd):` after the ring rows, so with the flag off nothing is computed and the pose program is untouched (the golden byte-identity test in test_cup_zvd also pins it).
+- **Not run:** the full suite and an audit (outside the finishing unit's scope). The Discussion's numbers came from the earlier unit's one-off scripts and were not re-measured.
 - Probes (uncommitted): `/tmp/probe_bug90.py` (weight sweep: turning points, Hand range, ±10/15 % residuals, realised), `/tmp/probe_bug90_acc.py` (acceleration-vs-jerk A/B), `/tmp/probe_bug90_legs.py` (leg peaks), `/tmp/probe_bug90_time.py` (interleaved solve time).

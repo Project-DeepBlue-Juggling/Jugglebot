@@ -206,19 +206,19 @@ def test_oval_refused_dwell_names_the_first_viable_dwell_at_p4():
 
 def test_oval_carry_zvd_at_gate_limits_refuses_035_and_names_040():
     """``carry_zvd=True`` at GATE: dwell 0.35 refused (LIMIT_ACC leg 1 at
-    t=0.863 s on every rung), first viable dwell 0.40 (margin 0.117), or
+    t=0.863 s on every rung), first viable dwell 0.40 (margin 0.116), or
     separation 125 mm."""
     nm.clear_cache()
     rep = nm.nominate(C('oval_1ball', 0.95, 150.0, 0.35, carry_zvd=True), GATE)
     assert not rep.ok
     assert {(v.idx, v.code, v.leg) for v in rep.verdicts if not v.ok} == {
         (2, 'LIMIT_ACC', 1), (3, 'LIMIT_ACC', 1)}
-    assert _refused(rep, 2, 0.0).margin == pytest.approx(-0.147113829, abs=TOL)
+    assert _refused(rep, 2, 0.0).margin == pytest.approx(-0.156255330, abs=TOL)
     assert dict((p, v) for p, v, _ in rep.nearest) == {'separation': 125.0,
                                                        'dwell': 0.40}
     ok = nm.nominate(C('oval_1ball', 0.95, 150.0, 0.40, carry_zvd=True), GATE,
                      search=False)
-    assert ok.ok and ok.worst().margin == pytest.approx(0.116713586, abs=TOL)
+    assert ok.ok and ok.worst().margin == pytest.approx(0.115946813, abs=TOL)
 
 
 # ── one nomination per GUI pre-fill (juggle-panel.js PATTERN_POINTS), P4 ────

@@ -2,9 +2,9 @@
 id: BUG-90
 kind: bug
 title: carry_zvd rows make the Hand stop and go at about 5 Hz in flight
-status: inbox
+status: complete
 created: '2026-11-13'
-updated: '2026-11-13T17:50:21Z'
+updated: '2026-11-15T18:17:36Z'
 owners: []
 priority: medium
 effort: m
@@ -16,6 +16,7 @@ area: skill-stack
 blocked_by: []
 links:
 - map/feature-pre-release-hold-rung-release-from-a-moving-platform-hold-0.md
+- logbook/2026-11-15-carry-zvd-hand-smoothness.md
 filed_by: claude
 ---
 
