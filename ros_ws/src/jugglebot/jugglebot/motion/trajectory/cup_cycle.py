@@ -2737,9 +2737,10 @@ def _pose_augment(pose: PoseSpec, n: int, dt: float, H, f, Aeq, beq, cols, rhss,
        the cup-z acceleration less the centroid-z one.  Without it the rows
        are met by a ~5 Hz Hand stop-and-go in flight (cup z moves the Platform
        laterally through the lever under the prescribed tilt).  A cost only:
-       no row, no RHS, no column moves, and nothing at all with the flag off.  The ``RING`` refusal's ring-less
-       re-solve keeps it (a PSD cost cannot change feasibility; only the
-       residual it reports is that of the smoothed ring-less plan).
+       no row, no RHS, no column moves, and nothing at all with the flag
+       off.  The ``RING`` refusal's ring-less re-solve keeps it (a PSD cost
+       cannot change feasibility; only the residual it reports is that of
+       the smoothed ring-less plan).
     7. Nothing else: the catch's soft velocity match, the holds and the
        release triple are the level program's, untouched.
     """

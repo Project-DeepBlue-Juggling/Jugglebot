@@ -80,8 +80,8 @@ at 500 Hz. The QP's variables are still piecewise-constant cup jerks. Positions,
 accelerations stay continuous at every knot by construction, and the release triple, catch row,
 seed and ring rows are unchanged equalities. So a cycle sees the same kind of command: no new
 step, no feedforward change, and no seam change (the release state test still agrees to 1e-6).
-Inside the flight one cycle now carries a Hand velocity that moves ≤ ~30 mm/s per knot, not the
-±400 mm/s, 5 Hz oscillation. The ring is cancelled by the Platform's lateral motion instead, and
+Inside the flight one cycle now carries a Hand velocity with no turning point (0 at w 100 in the
+sweep above), not the ±400 mm/s, 5 Hz oscillation. The ring is cancelled by the Platform's lateral motion instead, and
 the leg peaks above show that motion stays well inside the limits. A failed solve still takes
 the `RING` path. Its ring-less re-solve keeps this PSD cost, which cannot change feasibility,
 only the residual it reports.
