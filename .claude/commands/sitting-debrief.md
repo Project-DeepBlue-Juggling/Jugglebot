@@ -10,7 +10,7 @@ The morning or post-Sitting Session's one prompt. The owner's share of the Sitti
 hardware steps and the result boxes in the map app; everything that is git, tests and
 paperwork is this command. The owner's share of a flown sheet is notes only (done, problem or
 skipped, plus a few words per step); the verdicts are this command's: derived from the logs,
-confirmed by the owner once. The Next Sitting Runbook (`docs/runbook.md`) is only an index of the
+confirmed by the owner once. The Sitting index (`docs/runbook.md`) is only an index of the
 waiting Items and holds no steps and no close-out; the step-by-step page is the Sitting sheet
 (`map/sheets/<name>.yaml`, results beside it in `<name>.results.yaml`).
 

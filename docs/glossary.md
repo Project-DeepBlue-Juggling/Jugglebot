@@ -404,9 +404,15 @@ A graduated sweep of test points flown within one Sitting (an Apex ladder). Rung
 
 **Runbook**
 
-The written, step-by-step procedure an operator follows at a Sitting.
+The written, step-by-step procedure an operator follows at a Sitting. For a Sitting on a rig it is that rig's Sitting sheet.
 
 _Avoid: runsheet, script_
+
+**Sitting sheet**
+
+The ordered, step-by-step sheet for one rig, built from the `## Sitting` sections of the open hardware Items. It is the only ordering authority at a Sitting: the operator flies from it and saves notes on it, and verdicts are derived at the debrief.
+
+_Avoid: runsheet, checklist_
 
 **Night Shift**
 
@@ -414,11 +420,11 @@ The unattended Claude Code run on the Jetson after the nightly suite, in its own
 
 _Avoid: nightly (that is the 04:00 test suite), cron job, bot_
 
-**Next Sitting Runbook**
+**Sitting index**
 
-The one ordered page, `docs/runbook.md`, generated from the `## Sitting` sections of every hardware Item and the held Night Shift branches, that lists every hardware check waiting across all Pathways, grouped by setup state; results are typed per row in the map app.
+The generated page that lists, per rig, the hardware Items waiting for a Sitting. It orders nothing and holds no steps; the Sitting sheet does.
 
-_Avoid: runsheet, sitting list, hardware backlog_
+_Avoid: Next Sitting Runbook, runsheet, sitting list, hardware backlog_
 
 ### Project map
 

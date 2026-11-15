@@ -50,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--repo", default=None, help="repo root (default: $JUGGLEBOT_REPO or parent of mapkit/)")
     gen.add_argument("--check", action="store_true", help="write nothing; exit 1 if anything is stale")
     gen.set_defaults(func=_cmd_gen)
-    rb = sub.add_parser("runbook", help="regenerate docs/runbook.md (the Next Sitting Runbook) only")
+    rb = sub.add_parser("runbook", help="regenerate docs/runbook.md (the Sitting index) only")
     rb.add_argument("--repo", default=None, help="repo root (default: $JUGGLEBOT_REPO or parent of mapkit/)")
     rb.add_argument("--check", action="store_true", help="write nothing; exit 1 if stale")
     rb.set_defaults(func=_cmd_runbook)
