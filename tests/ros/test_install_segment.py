@@ -363,6 +363,39 @@ def test_a_fresh_rest_while_the_previous_rest_still_streams_seeds_from_the_live_
         % (hand_after - hand_before))
 
 
+def test_a_long_rest_in_the_bug95_band_installs_fresh_at_the_running_records_end():
+    """BUG-95 (2026-11-16): a 3.2 s REST dispatched 0.4 s before the running
+    REST's end -- past the bare LEAD_S (0.225 s), inside its window-scaled
+    splice lead (0.475 s). The node's decision is the executor's
+    (`install_is_fresh`): FRESH, origin AT the running record's end (never
+    earlier: the running REST is not pre-empted, the wire hands over at
+    `t0`), seeded from its terminal rest -- not a splice clamped onto its
+    last knot with 325 ms of budget."""
+    node = _perf_node()
+    with _frozen_perf() as at:
+        resp = node._svc_install_segment(_rest_req(at + 3.2, rest_z=850.0),
+                                         InstallSegment.Response())
+        assert resp.accepted is True, resp.message
+    rest_plan, _meta, _rest_t0 = node._cycle
+    rest_end = resp.t0_mono + resp.duration_s
+
+    real_perf = time.perf_counter
+    t2 = rest_end - 0.4
+    time.perf_counter = lambda: t2
+    try:
+        _refresh(node)
+        resp2 = node._svc_install_segment(_rest_req(t2 + 3.2, rest_z=800.0),
+                                          InstallSegment.Response())
+    finally:
+        time.perf_counter = real_perf
+    assert resp2.accepted is True, resp2.message
+    assert resp2.splice_k == 0
+    assert resp2.t0_mono == pytest.approx(rest_end, abs=1e-6)
+    new_plan, _m, _t0 = node._cycle
+    assert float(new_plan.hand_rev[0]) == pytest.approx(
+        float(rest_plan.hand_rev[-1]), abs=1e-9)
+
+
 def _fast_rest_then_fresh_throw(during_solve=None):
     """A 900 mm REST (fast enough to be ~150 mm / several rev/s from its own
     terminal with 0.225 s left), then a fresh THROW dispatched at ``rest_end -

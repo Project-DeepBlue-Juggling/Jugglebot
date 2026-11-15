@@ -59,7 +59,6 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - BUG-84 [Robot] Hand stalls at the 70 A clamp mid-dive, probably on a Ball under the Cup, and the next launch comes up slow: no ## Sitting section
 - BUG-90 [Robot] carry_zvd rows make the Hand stop and go at about 5 Hz in flight: no ## Sitting section
 - BUG-94 [Robot] Ball Butler Throw announcement gives the Tracker the calibrated origin, not the release point: no ## Sitting section
-- BUG-95 [Robot] A long REST can be refused SPLICE_TOO_LATE: the fresh decision and the Knot choice use different leads: no ## Sitting section
 - BUG-98 [Robot] teensy_bridge_node blocking RPC services share a callback group with the 100 Hz publishers and the link-loss check: no ## Sitting section
 - BUG-99 [Robot] can-bridge firmware accepts four discontinuities on rare paths and has no armed interlock on reconfiguration RPCs (to confirm): no ## Sitting section
 - FEAT-1 [Robot] Design change: the Hand should be Idle, not Parked Closed-loop, while Active: no ## Sitting section

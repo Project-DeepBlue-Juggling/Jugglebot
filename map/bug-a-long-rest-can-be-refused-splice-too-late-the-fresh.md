@@ -2,9 +2,9 @@
 id: BUG-95
 kind: bug
 title: 'A long REST can be refused SPLICE_TOO_LATE: the fresh decision and the Knot choice use different leads'
-status: inbox
+status: complete
 created: '2026-11-14'
-updated: '2026-11-14T17:54:01Z'
+updated: '2026-11-15T18:17:31Z'
 owners: []
 priority: medium
 effort: s
@@ -14,7 +14,8 @@ radius: subsystem
 diagnosis: hypothesis
 area: skill-stack
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-16-bug-95-rest-band-installs-fresh-at-the-records-end.md
 filed_by: claude
 ---
 
