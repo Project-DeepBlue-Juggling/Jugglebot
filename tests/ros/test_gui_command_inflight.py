@@ -61,7 +61,7 @@ def test_control_idle_enables_level(out):
 
 def test_double_click_publishes_once_across_all_buttons(out):
     assert out["double_click_published"] == ["level"]
-    assert out["latched_disabled"] == ["cmd-home", "cmd-level", "cmd-activate", "cmd-deactivate", "cmd-clear"]
+    assert out["latched_disabled"] == ["cmd-home", "cmd-level", "cmd-activate", "cmd-deactivate"]  # Deactivate: IDLE, by state
 
 
 def test_same_state_republish_does_not_release(out):
@@ -77,3 +77,19 @@ def test_state_change_releases(out):
 
 def test_cooldown_expiry_releases_without_state_change(out):
     assert out["after_cooldown_published"] == ["level", "level", "home"]
+
+
+def test_clear_errors_not_latched_by_another_button(out):
+    # Activate latched the shared guard (IDLE: Deactivate disabled by state anyway); Clear Errors stays lit
+    assert out["ex_idle_disabled"] == ["cmd-home", "cmd-level", "cmd-activate", "cmd-deactivate"]
+    # a double click of Clear Errors publishes once (its own latch)
+    assert out["ex_clear_published"] == ["activate", "clear_errors"]
+    assert "cmd-clear" in out["ex_clear_disabled"]
+
+
+def test_deactivate_not_latched_by_another_button(out):
+    # ACTIVE, Level clicked: the shared latch takes Home/Level/Activate (and Clear is lit), Deactivate stays enabled
+    assert out["ex_active_disabled"] == ["cmd-home", "cmd-level", "cmd-activate"]
+    # a double click of Deactivate publishes once
+    assert out["ex_deactivate_published"] == ["level", "deactivate"]
+    assert "cmd-deactivate" in out["ex_deactivate_disabled"]

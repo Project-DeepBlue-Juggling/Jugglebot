@@ -1,6 +1,6 @@
 // command_inflight_harness.js — the REAL commands.js under node with a fake DOM, a MUTABLE stub panels.js and
 // captured timers. Asserts the BUG-104 in-flight guard: a double click publishes once; the latch releases on an
-// orchestrator state CHANGE (not on a same-state re-publish) or on cooldown expiry. The clear-errors hold-to-confirm path is not exercised here.
+// orchestrator state CHANGE (not on a same-state re-publish) or on cooldown expiry. Deactivate and Clear Errors are exempt from the shared latch (TKT-78) and keep a private one. The clear-errors hold-to-confirm gesture is not exercised here (it reaches the same dispatch).
 globalThis.window = { location: { hostname: 'localhost' }, addEventListener() {} };
 class Ros { constructor() { this.isConnected = false; } on() {} connect() {} close() {} }
 class Topic { constructor(o) { this.name = o && o.name; } subscribe() {} unsubscribe() {} publish() {} }
@@ -35,6 +35,11 @@ const list = () => ev.getRecentEvents(null, 500).filter((e) => e.type === 'comma
 const ids = ['cmd-home', 'cmd-level', 'cmd-activate', 'cmd-deactivate', 'cmd-clear'];
 const disabled = () => ids.filter((i) => buttons.get(i).disabled);
 const click = (id) => buttons.get(id).listeners.click[0]();
+// Clear Errors is hold-to-confirm: pointerdown, then the 800 ms hold timer fires (never a click).
+const hold = (id) => {
+    buttons.get(id).listeners.pointerdown[0]({ button: 0 });
+    const t = timers.filter((x) => x.live && x.ms === 800); t.forEach((x) => { x.live = false; x.f(); });
+};
 const out = {};
 
 initCommands();
@@ -59,5 +64,22 @@ out.after_release_published = published.slice();
 fireTimers();                                            // cooldown expiry releases without any state change
 click('cmd-home');
 out.after_cooldown_published = published.slice();
+
+// TKT-78 exemption. IDLE: Activate latches the shared guard; Clear Errors still publishes, once per double click.
+fireTimers(); panels.__setState('IDLE'); updateCommandStates();
+const base = published.length;
+click('cmd-activate');
+out.ex_idle_disabled = disabled();                       // Home/Level/Activate latched, Clear lit
+hold('cmd-clear'); hold('cmd-clear');   // a completed hold publishes; the second is refused (own latch, disabled)
+out.ex_clear_published = published.slice().slice(base);
+out.ex_clear_disabled = disabled();                      // Clear now latched by its OWN click
+// ACTIVE: Level click latches shared; Deactivate stays enabled, publishes once on a double click.
+fireTimers(); panels.__setState('ACTIVE'); updateCommandStates();
+const base2 = published.length;
+click('cmd-level');
+out.ex_active_disabled = disabled();
+click('cmd-deactivate'); click('cmd-deactivate');
+out.ex_deactivate_published = published.slice().slice(base2);
+out.ex_deactivate_disabled = disabled();
 console.log(JSON.stringify(out));
 process.exit(0);
