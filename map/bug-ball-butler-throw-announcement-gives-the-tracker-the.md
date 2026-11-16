@@ -67,3 +67,20 @@ The real ball passes the release point about 66 ms before `throw_time`, about 12
 ## Limits
 
 One aim only; other aims rest on the geometry. Drag ignored. 14 flights were first seen near the Apex. Probe and tables: `temp/probes/bug94_announce_origin/` on the Jetson (untracked).
+
+## Sitting
+
+- setup: level, armed, bb-fed
+- why: Ball Butler's Throw announcement now starts the ball at the release point (about 179 mm from the calibrated origin at the Feed aim) instead of the origin; offline (2026-11-14, 117 Feed flights) the release point is right on every flight, but it changes what a live Feed Catch reads, so it is flown once before it is trusted.
+- do:
+  - Launch on the branch with the bag recording. Nothing else changes: the Tracker's 200 mm announced gate and the two Ball Butler timing constants are as before.
+  - Ball Butler calibrated, Platform level and armed: fly the usual Ball Butler-fed Attempt, 10 Feeds.
+  - Watch each Feed: is the ball picked up as Ball Butler's announced Throw (the GUI's tracked ball, as on any Feed), and is the Feed Catch made.
+- pass: every Feed is tracked as Ball Butler's announced Throw and the Feed Catches are no fewer than on the last Ball Butler-fed Sitting.
+- record: launch log and bag paths (the debrief replays the bag for the residual at the announced time; offline it was 288 mm from the origin, 136 mm from the release point), Feeds caught of fed, any Feed the Tracker did not take as the announced Throw.
+- minutes: 15
+- branch: night-shift/2026-11-16-BUG-94
+
+## Progress
+
+- 2026-11-16: Night Shift 2026-11-16: held on night-shift/2026-11-16-BUG-94: announcement starts at the release point, unflown; one audit finding open (no yaw-offset test); unblocked by TKT-75 and a Sitting
