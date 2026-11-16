@@ -3953,6 +3953,88 @@ class TestJuggleAction:
         gh.canceled.assert_not_called()
         gh.abort.assert_called_once()
 
+    def _stopped_goal(self):
+        node, _client = _node_with_client()
+        _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+        _prelevel_ready(node)
+        assert (node._juggle_goal(_self_toss_goal())
+               == sn.GoalResponse.ACCEPT)
+        node._stop_attempt()
+        node._on_tick()
+        assert node._executor is None
+        gh = MagicMock(is_cancel_requested=False)
+        gh.request.pattern = 'self_toss'
+        return node, gh
+
+    def test_a_raise_while_building_the_result_still_ends_the_action(self):
+        """BUG-97: a helper the Result path calls raises. The action is
+        aborted (not left EXECUTING), a Result comes back, and the next
+        request is not refused."""
+        node, gh = self._stopped_goal()
+        with patch.object(sn.rp, 'record_counts',
+                          side_effect=RuntimeError('boom')):
+            result = node._juggle_execute(gh)
+        gh.abort.assert_called_once()
+        gh.succeed.assert_not_called()
+        assert result.success is False and result.outcome == 'ERROR'
+        assert node._goal_result_pending is False
+        assert node._goal_armed is False
+        refused = node._refuse_if_running(SimpleNamespace(success=None,
+                                                          message=None))
+        assert refused is None
+        assert (node._juggle_goal(_self_toss_goal())
+               == sn.GoalResponse.ACCEPT)
+
+    def test_a_second_request_is_refused_until_the_result_is_built(self):
+        """BUG-97: while `_juggle_execute` builds the Result the `_goal_*`
+        fields still belong to the first goal, so a request that would reset
+        them is refused (probed from inside the Result path); afterwards it
+        is accepted."""
+        node, gh = self._stopped_goal()
+        probe = {}
+        real = sn.rp.record_counts
+
+        def spy(*a, **k):
+            probe['refused'] = node._refuse_if_running(
+                SimpleNamespace(success=None, message=None))
+            probe['goal'] = node._juggle_goal(_self_toss_goal())
+            return real(*a, **k)
+
+        with patch.object(sn.rp, 'record_counts', side_effect=spy):
+            node._juggle_execute(gh)
+        assert probe['refused'] is not None and probe['refused'].success is False
+        assert probe['goal'] == sn.GoalResponse.REJECT
+        assert node._refuse_if_running(
+            SimpleNamespace(success=None, message=None)) is None
+        assert (node._juggle_goal(_self_toss_goal())
+               == sn.GoalResponse.ACCEPT)
+
+    def test_a_raise_mid_attempt_does_not_leave_a_later_request_refused(self):
+        """BUG-97: the body raises while the Attempt still runs (wait loop);
+        the stopped Attempt then reaches its rest with no execute callback in
+        flight. The done signal must not set the pending mark."""
+        node, _client = _node_with_client()
+        _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+        _prelevel_ready(node)
+        assert (node._juggle_goal(_self_toss_goal())
+               == sn.GoalResponse.ACCEPT)
+        gh = MagicMock(is_cancel_requested=False)
+        gh.request.pattern = 'self_toss'
+        assert not node._goal_done_event.is_set()
+        with patch.object(sn.rp, 'summarise',
+                          side_effect=RuntimeError('boom')):
+            result = node._juggle_execute(gh)
+        assert result.outcome == 'ERROR'
+        gh.abort.assert_called_once()
+        node._on_tick()                  # the stopped Attempt reaches rest
+        assert node._executor is None
+        assert node._goal_done_event.is_set()
+        assert node._goal_result_pending is False
+        assert node._refuse_if_running(
+            SimpleNamespace(success=None, message=None)) is None
+        assert (node._juggle_goal(_self_toss_goal())
+               == sn.GoalResponse.ACCEPT)
+
     @pytest.mark.parametrize('pattern', ['self_toss', 'columns'])
     def test_a_tick_during_the_start_compile_does_not_end_the_goal(
             self, tmp_path, pattern):

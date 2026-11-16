@@ -2,10 +2,11 @@
 id: BUG-98
 kind: bug
 title: teensy_bridge_node blocking RPC services share a callback group with the 100 Hz publishers and the link-loss check
-status: inbox
+status: in_progress
 created: '2026-11-14'
-updated: '2026-11-14T17:54:30Z'
-owners: []
+updated: '2026-11-15T19:02:51Z'
+owners:
+- night-shift
 priority: low
 effort: s
 hardware: robot
@@ -30,3 +31,20 @@ Several `teensy_bridge_node` services make blocking RPC calls from the default c
 ## Wanted
 
 Put the blocking services in their own callback group, the pattern `skill_node` already uses for waited service calls, and add a test that a slow RPC does not delay the health check.
+
+## Sitting
+
+- setup: level, bb-fed
+- why: The branch moves the bridge node's six blocking services and both firmware-version polls into their own callback group, so a slow call no longer stalls the 100 Hz robot state and the link-loss check; the node's threading changed, so its normal startup is flown once before it is trusted.
+- do:
+  - Launch on the branch. In a second terminal, `ros2 topic hz /robot_state` and leave it running.
+  - Boot, Home, Level as usual, with Ball Butler connected and calibrated (its calibrate and Feed services are among those moved).
+  - Watch the hz terminal while the Ball Butler calibrate runs, and note any service that answers differently from the last Sitting (refused, slow, or a timeout).
+- pass: startup and the Ball Butler calibrate behave as on the last Sitting, and `/robot_state` holds near 100 Hz throughout the calibrate.
+- record: the lowest `/robot_state` rate seen during the calibrate, any service that failed or hung, and the launch log path.
+- minutes: 10
+- branch: night-shift/2026-11-16-BUG-98
+
+## Progress
+
+- 2026-11-16: Night Shift 2026-11-16: held on night-shift/2026-11-16-BUG-98: blocking services in their own callback group, suite and audit clean; unblocked by a Sitting
