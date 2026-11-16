@@ -1012,7 +1012,8 @@ class TrajectoryNode(Node):
         self._emit_stop = threading.Event()
         self._emit_thread = None
         # BUG-96: set by the emitter thread when it could not bind :5557. main()
-        # reads it after the executor returns and exits non-zero.
+        # reads it right after construction (early exit) and again after the
+        # executor returns, and exits non-zero.
         self.emitter_bind_failed = False
 
         # ── Subscriptions ───────────────────────────────────────

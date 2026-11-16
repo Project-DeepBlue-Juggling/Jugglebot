@@ -21,7 +21,7 @@ thread starts inside `__init__`, so on real Foxy the failure almost always lands
 builds the executor, and `MultiThreadedExecutor()` on a dead context raises with `on_shutdown()`
 never run (the segment-solver worker would not be closed). `main()` therefore checks the flag
 right after constructing the node: it runs `on_shutdown()` and `destroy_node()` and calls
-`sys.exit(1)` without building the executor, deterministically. The post-spin `sys.exit(1)`
+`sys.exit(1)` without building the executor, whenever the bind has already failed by then (the common ordering; the 2026-11-17 audit notes the bind is asynchronous, so a failure landing between the check and the executor's construction still exits by traceback, open on the branch). The post-spin `sys.exit(1)`
 stays for the rarer ordering where the failure lands mid-spin (a timer callback raising out of
 `spin()` in that window still exits non-zero by traceback; accepted, same exit code). The error text
 still names the likely stale trajectory_node. `sys.exit` inside the thread was avoided because
