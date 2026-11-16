@@ -2,13 +2,20 @@
 id: BUG-108
 kind: bug
 title: test_TI1 in test_install_segment goes stale under box load and fails the gate on unrelated branches
-status: inbox
+status: complete
 created: '2026-11-16'
-updated: '2026-11-15T20:02:12Z'
+updated: '2026-11-16T17:52:22Z'
 owners: []
 priority: medium
+effort: s
+hardware: none
+owner: none
+radius: local
+diagnosis: hypothesis
+area: tests-tooling
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-17-test-install-segment-stale-clock.md
 filed_by: claude
 ---
 
