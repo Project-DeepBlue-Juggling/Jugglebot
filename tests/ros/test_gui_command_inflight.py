@@ -3,7 +3,8 @@
 
 A double click inside one state-update latency publishes once; the latch releases when the orchestrator state
 changes, or when the cooldown timer fires, and NOT on a same-state re-publish (orchestrator_state streams
-continuously).  Skips when node is absent, like the other GUI harness tests.
+continuously).  Deactivate and Clear Errors are exempt from that shared latch and keep a private one
+against their own double click (TKT-78).  Skips when node is absent, like the other GUI harness tests.
 """
 from __future__ import annotations
 

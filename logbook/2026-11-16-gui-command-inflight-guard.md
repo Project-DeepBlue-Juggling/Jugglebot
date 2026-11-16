@@ -17,12 +17,12 @@ files_changed:
 ## What and why
 
 `commands.js` published on every click and took its enable state from the last `orchestrator_state`, so a double click
-inside one state-update latency published twice. Each dispatch now latches all five command buttons inert (and a
+inside one state-update latency published twice. Each dispatch now latches the shared command buttons (Home, Level, Activate) inert (and a
 second click handler call returns early) until the orchestrator state CHANGES from the one the click saw, or
-`COMMAND_COOLDOWN_MS` (1500 ms) expires. Release is on a state change, not on "the next message", because
+`COMMAND_COOLDOWN_MS` (1500 ms) expires; Deactivate and Clear Errors keep a private latch each (2026-11-17, below). Release is on a state change, not on "the next message", because
 `orchestrator_state` re-publishes continuously and the next message would release on the next tick. 1500 ms rather
 than the Juggle Start cooldown (4000 ms): a refused command never changes the state, so the latch must clear quickly.
-Commands and payloads are unchanged, and the clear-errors hold-to-confirm still runs through the same shared `dispatch` (by reading; the harness never presses Clear Errors). One dispatch latches all five buttons, Deactivate and Clear Errors included, for up to 1.5 s when the state does not move (the audit finding, resolved 2026-11-17 below).
+Commands and payloads are unchanged, and the clear-errors hold-to-confirm still runs through the same shared `dispatch` (the harness drives it with `hold()`). As first built, one dispatch latched all five buttons, Deactivate and Clear Errors included, for up to 1.5 s when the state did not move (the audit finding, resolved 2026-11-17 below).
 
 ## Exemption: Deactivate and Clear Errors (2026-11-17, owner answer to TKT-78, option 1)
 

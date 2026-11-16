@@ -1,6 +1,6 @@
 // command_inflight_harness.js — the REAL commands.js under node with a fake DOM, a MUTABLE stub panels.js and
 // captured timers. Asserts the BUG-104 in-flight guard: a double click publishes once; the latch releases on an
-// orchestrator state CHANGE (not on a same-state re-publish) or on cooldown expiry. Deactivate and Clear Errors are exempt from the shared latch (TKT-78) and keep a private one. The clear-errors hold-to-confirm gesture is not exercised here (it reaches the same dispatch).
+// orchestrator state CHANGE (not on a same-state re-publish) or on cooldown expiry. Deactivate and Clear Errors are exempt from the shared latch (TKT-78) and keep a private one. `hold()` drives the clear-errors hold-to-confirm gesture into the same dispatch.
 globalThis.window = { location: { hostname: 'localhost' }, addEventListener() {} };
 class Ros { constructor() { this.isConnected = false; } on() {} connect() {} close() {} }
 class Topic { constructor(o) { this.name = o && o.name; } subscribe() {} unsubscribe() {} publish() {} }
