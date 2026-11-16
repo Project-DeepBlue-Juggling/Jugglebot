@@ -2,9 +2,9 @@
 id: TKT-77
 kind: ticket
 title: 'BUG-96 held on night-shift/2026-11-16-BUG-96: apply the audit''s clean-exit fix and merge, merge as is, or drop?'
-status: open
+status: complete
 created: '2026-11-16'
-updated: '2026-11-15T19:02:06Z'
+updated: '2026-11-16T06:44:45Z'
 owners: []
 priority: medium
 effort: xs
@@ -32,3 +32,7 @@ BUG-96 is built on night-shift/2026-11-16-BUG-96: when the emitter cannot bind :
 - 3: BUG-96 goes back to open.
 
 Recommendation: 1. It is a few lines, and it makes the exit deterministic and closes the segment-solver worker.
+
+## Answer
+
+Agreed.
