@@ -201,6 +201,45 @@ class TestSuccessPath:
         origin_gap = math.dist(release, (100.0, -50.0, 0.0))
         assert origin_gap > 50.0   # the old origin start would be wrong by this much
 
+    def test_announced_release_point_applies_the_yaw_offset_exactly_once(self, calibrated_node):
+        """BUG-94, nonzero yaw offset (0.3 rad): the expected release point is
+        written out from the geometry (hw constants, hand-rolled trig, no call
+        into bb_release_state) with the WORLD azimuth taken from the announced
+        world velocity, so a doubled or a missing offset in the position makes
+        it disagree with the velocity's azimuth and fails."""
+        import jugglebot.hardware_config as hw
+        off = 0.3
+        origin = (100.0, -50.0, 20.0)
+        calibrated_node._on_bb_calibration(_calibration(
+            x_mm=origin[0], y_mm=origin[1], z_mm=origin[2], yaw_offset_rad=off))
+        # world target: rotate a BB-local point by the offset so the aim is sensible
+        lx, ly = 1200.0, 300.0
+        tx = origin[0] + lx * math.cos(off) - ly * math.sin(off)
+        ty = origin[1] + lx * math.sin(off) + ly * math.cos(off)
+        calibrated_node._on_rigid_bodies(_rigid_bodies({'Catching_Cone': (tx, ty, 0.0)}))
+        req = BallButlerThrow.Request()
+        req.target_name = 'Catching_Cone'
+        res = calibrated_node._svc_throw_at_target(req, BallButlerThrow.Response())
+        assert res.success is True
+        ann = calibrated_node.throw_announcement_pub.published[0]
+
+        vx, vy, vz = (ann.initial_velocity.x, ann.initial_velocity.y,
+                      ann.initial_velocity.z)
+        v = math.sqrt(vx * vx + vy * vy + vz * vz)
+        world_yaw = math.atan2(vy, vx)
+        pitch = math.asin(vz / v)
+        # world azimuth = local aim (~ the BB-local bearing; the solver aims from the
+        # release point, so it differs by under ~0.1 rad) plus the offset ONCE
+        assert world_yaw - math.atan2(ly, lx) == pytest.approx(off, abs=0.15)
+
+        a = hw.BB_GEOM_RELEASE_L_POSITION_MM * math.cos(pitch) - hw.BB_GEOM_PITCH_D_OFFSET_MM
+        s = hw.BB_GEOM_YAW_S_OFFSET_MM
+        exp = (origin[0] + a * math.cos(world_yaw) - s * math.sin(world_yaw),
+               origin[1] + a * math.sin(world_yaw) + s * math.cos(world_yaw),
+               origin[2] + hw.BB_GEOM_RELEASE_L_POSITION_MM * math.sin(pitch))
+        got = (ann.initial_position.x, ann.initial_position.y, ann.initial_position.z)
+        assert got == pytest.approx(exp, abs=1e-6)
+
     def test_caller_specified_delay_is_used(self, calibrated_node):
         calibrated_node._on_rigid_bodies(_rigid_bodies({
             'Catching_Cone': (1200.0, 400.0, 0.0),

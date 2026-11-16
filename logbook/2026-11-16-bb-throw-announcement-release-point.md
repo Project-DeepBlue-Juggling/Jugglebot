@@ -37,3 +37,15 @@ is a separate call after a Sitting.
 (through the Night Shift no-net wrapper): 107 passed. The new test
 `test_announced_initial_position_is_the_release_point_not_the_origin` fails with the source
 change reverted and passes with it.
+
+**Follow-up 2026-11-17 (TKT-75, option 1): nonzero yaw offset.** The first test used a zero yaw
+offset, so a doubled or missing offset would still pass. Added
+`test_announced_release_point_applies_the_yaw_offset_exactly_once` (offset 0.3 rad, BB at
+(100, -50, 20) mm, target rotated by the offset). Its expected release point is written out
+from the geometry (`hw.BB_GEOM_*` constants and plain trig, no call into `bb_release_state`),
+taking the world azimuth and pitch from the announced world velocity, plus a check that the
+azimuth is the local bearing plus the offset once. Mutation proof, source restored after each:
+doubling the offset passed to `bb_release_state` fails it (x 48.89 vs 59.04 expected); dropping
+it (0.0) fails it (x 59.45 vs 59.04). No source change.
+Verification, 2026-11-17: `pytest -q tests/ros/test_ball_butler_node.py tests/ros/test_ball_butler.py`
+(no-net wrapper, nice 19): 108 passed.
