@@ -4,14 +4,14 @@ kind: bug
 title: test_TI1 in test_install_segment goes stale under box load and fails the gate on unrelated branches
 status: complete
 created: '2026-11-16'
-updated: '2026-11-16T17:52:22Z'
+updated: '2026-11-16T17:54:21Z'
 owners: []
 priority: medium
 effort: s
 hardware: none
 owner: none
 radius: local
-diagnosis: hypothesis
+diagnosis: confirmed
 area: tests-tooling
 blocked_by: []
 links:

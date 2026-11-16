@@ -21,8 +21,10 @@ Fix (test only): `_refresh(traj)` immediately before the frozen install, as the 
 
 ## Findings
 
-Reproduced deterministically: a temporary `time.sleep(0.8)` after the source setup failed the test with the stale message before the fix and passed with it. The sleep was then removed. `test_a_fresh_throw_installs_through_the_real_worker_process` already calls `_refresh` right before each attempt and the staleness check has a single call site at service entry, so its one stale-looking failure is not explained by this window and is not changed here.
+Reproduced deterministically: a temporary `time.sleep(0.8)` after the source setup failed the test with the stale message before the fix and passed with it. The sleep was then removed. `test_a_fresh_throw_installs_through_the_real_worker_process` already calls `_refresh` right before each attempt and the staleness check has a single call site at service entry, so its one stale-looking failure is not explained by this window and is not changed here; it stays unexplained (one failure in four loaded runs on 2026-11-16), and a recurrence should be filed as its own Bug.
 
 ## Verification
 
 2026-11-17, `night_shift_nonet.sh nice -n 19 env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 python -m pytest -q tests/ros/test_install_segment.py`: 87 passed in 7.94 s.
+
+2026-11-17, the same command with a temporary `time.sleep(0.8)` after the source setup in `test_TI1`: failed `robot_state telemetry stale` without `_refresh(traj)`, passed with it.
