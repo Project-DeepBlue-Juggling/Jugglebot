@@ -5697,6 +5697,17 @@ class TrajectoryNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = TrajectoryNode()
+    # BUG-96: the emitter thread starts inside the constructor, so a :5557 bind
+    # failure (flag set, context shut down) usually lands BEFORE the executor
+    # exists, and constructing one on the dead context raises with on_shutdown()
+    # never run. Check the flag first: clean up (closes the segment-solver
+    # worker) and exit 1 without building the executor.
+    if node.emitter_bind_failed:
+        node.on_shutdown()
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+        sys.exit(1)
     # ── MultiThreadedExecutor, for exactly one callback ───────────────────────
     # `trajectory/hold` is on a reentrant group; everything else shares the
     # default MUTUALLY-EXCLUSIVE group and therefore keeps today's serialisation

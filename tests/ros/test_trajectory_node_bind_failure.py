@@ -67,3 +67,35 @@ def test_main_exits_cleanly_when_emitter_ok(monkeypatch):
         lambda *a, **k: real(command_pub_factory=lambda: object(),
                              start_emitter=False))
     tn.main()   # no SystemExit
+
+
+def test_main_early_exit_when_bind_fails_before_executor(monkeypatch):
+    """Real-Foxy ordering: the emitter thread fails to bind and shuts the
+    context down inside the constructor, so building the executor raises.
+    main() must clean up and exit 1 without ever constructing it."""
+    built = []
+    shutdowns = []
+
+    class _Exec:
+        def __init__(self, *a, **k):
+            built.append(1)
+            raise RuntimeError('context already shut down')
+
+    monkeypatch.setattr(tn, 'MultiThreadedExecutor', _Exec)
+    monkeypatch.setattr(tn.rclpy, 'shutdown', lambda *a, **k: None)
+    real = tn.TrajectoryNode
+    holder = []
+
+    def make(*a, **k):
+        n = real(command_pub_factory=_boom, start_emitter=False)
+        n._emitter_loop()
+        monkeypatch.setattr(n, 'on_shutdown',
+                            lambda: shutdowns.append('on_shutdown'))
+        holder.append(n)
+        return n
+    monkeypatch.setattr(tn, 'TrajectoryNode', make)
+    with pytest.raises(SystemExit) as ei:
+        tn.main()
+    assert ei.value.code == 1
+    assert built == []
+    assert shutdowns == ['on_shutdown']
