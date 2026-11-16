@@ -2,11 +2,18 @@
 id: BUG-108
 kind: bug
 title: test_TI1 in test_install_segment goes stale under box load and fails the gate on unrelated branches
-status: inbox
+status: in_progress
 created: '2026-11-16'
-updated: '2026-11-15T20:02:12Z'
-owners: []
+updated: '2026-11-16T18:59:46Z'
+owners:
+- night-shift
 priority: medium
+effort: s
+hardware: none
+owner: none
+radius: local
+diagnosis: confirmed
+area: tests-tooling
 blocked_by: []
 links: []
 filed_by: claude
@@ -25,3 +32,7 @@ BUG-104 changes only the GUI's `commands.js`, so the branch cannot be the cause.
 ## Wanted
 
 Find which wall-clock freshness window the test leaves to real time (the robot_state staleness check against the node clock), and pin it with the test's own clock so box load cannot make it stale. A gate that fails on load turns a clean branch into a HOLD.
+
+## Progress
+
+- 2026-11-17: Night Shift 2026-11-17: held on night-shift/2026-11-17-BUG-108: confirmed and fixed in the test; gate held at [pre] and (a), the legacy ID test also red on main (BUG-109); unblocked by TKT-79, then a re-gate
