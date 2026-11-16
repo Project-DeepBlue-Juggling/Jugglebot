@@ -2,9 +2,9 @@
 id: TKT-75
 kind: ticket
 title: 'BUG-94 held on night-shift/2026-11-16-BUG-94: add the yaw-offset test before the Sitting, fly it as is, or drop?'
-status: open
+status: complete
 created: '2026-11-16'
-updated: '2026-11-15T19:01:55Z'
+updated: '2026-11-16T06:46:57Z'
 owners: []
 priority: high
 effort: xs
@@ -33,3 +33,7 @@ BUG-94 is built on night-shift/2026-11-16-BUG-94: Ball Butler's Throw announceme
 - 3: BUG-94 goes back to open.
 
 Recommendation: 1. It is a few lines, and the offset is the one argument the replay cannot catch if a later edit doubles it.
+
+## Answer
+
+I agree with your recommendation
