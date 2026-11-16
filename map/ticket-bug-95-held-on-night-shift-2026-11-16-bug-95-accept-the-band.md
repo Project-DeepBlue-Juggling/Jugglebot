@@ -2,9 +2,9 @@
 id: TKT-76
 kind: ticket
 title: 'BUG-95 held on night-shift/2026-11-16-BUG-95: accept the band-REST design with a cap on its rebase slide, accept it uncapped, log the band case only, or drop?'
-status: open
+status: complete
 created: '2026-11-16'
-updated: '2026-11-15T19:02:04Z'
+updated: '2026-11-16T06:46:24Z'
 owners: []
 priority: medium
 effort: xs
@@ -36,3 +36,7 @@ The fix on night-shift/2026-11-16-BUG-95 makes one function decide fresh vs spli
 - 4: BUG-95 goes back to open.
 
 Recommendation: 1. The cap keeps the Feed Catch inside timing that has flown, and the contract text has to change before the code it describes.
+
+## Answer
+
+I agree with your recommendation
