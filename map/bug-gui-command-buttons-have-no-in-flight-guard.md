@@ -32,3 +32,7 @@ The GUI's orchestrator command buttons publish on every click with no in-flight 
 ## Wanted
 
 The same busy-and-cooldown guard on the command buttons, and a decision on whether Activate deserves a confirm.
+
+## Progress
+
+- 2026-11-16: Night Shift 2026-11-16: held on night-shift/2026-11-16-BUG-104: command buttons latch until the state moves; 1 audit finding open (Deactivate shares the latch); unblocked by TKT-78

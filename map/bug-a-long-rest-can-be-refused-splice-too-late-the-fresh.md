@@ -2,10 +2,11 @@
 id: BUG-95
 kind: bug
 title: 'A long REST can be refused SPLICE_TOO_LATE: the fresh decision and the Knot choice use different leads'
-status: inbox
+status: in_progress
 created: '2026-11-14'
-updated: '2026-11-14T17:54:01Z'
-owners: []
+updated: '2026-11-15T19:02:43Z'
+owners:
+- night-shift
 priority: medium
 effort: s
 hardware: robot
@@ -32,3 +33,7 @@ A long REST can be refused `SPLICE_TOO_LATE` when it should have been installed 
 - A probe over the compiled Schedules of every dispatchable Pattern: does any REST dispatch inside that band? That decides the priority.
 - One function that both the fresh decision and the Knot choice read the lead from, at all three sites.
 - A test that pins a long REST dispatched inside the band.
+
+## Progress
+
+- 2026-11-16: Night Shift 2026-11-16: held on night-shift/2026-11-16-BUG-95: confirmed offline, a band REST installs fresh at the record end; 4 audit findings open, INVARIANTS.md K1 and I-INSTALL-1 to amend; unblocked by TKT-76, a day Session, then a Sitting

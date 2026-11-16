@@ -2,10 +2,11 @@
 id: BUG-96
 kind: bug
 title: trajectory_node stays up and reports healthy when its emitter cannot bind the command socket
-status: inbox
+status: in_progress
 created: '2026-11-14'
-updated: '2026-11-14T17:53:43Z'
-owners: []
+updated: '2026-11-15T19:02:46Z'
+owners:
+- night-shift
 priority: medium
 effort: s
 hardware: none
@@ -29,3 +30,7 @@ If `trajectory_node` cannot bind the :5557 command socket it logs one error and 
 ## Wanted
 
 Either exit the node on a bind failure so the launch shows it, or publish an emitter-alive flag and refuse installs while it is false. Root cause for preferring the exit: a node that cannot emit has no purpose, and a refusal path is one more state to test.
+
+## Progress
+
+- 2026-11-16: Night Shift 2026-11-16: held on night-shift/2026-11-16-BUG-96: node exits 1 on a bind failure; 3 audit findings open (the exit before spin skips cleanup); unblocked by TKT-77

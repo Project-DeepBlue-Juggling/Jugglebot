@@ -4,7 +4,7 @@ kind: bug
 title: carry_zvd rows make the Hand stop and go at about 5 Hz in flight
 status: in_progress
 created: '2026-11-13'
-updated: '2026-11-14T20:28:06Z'
+updated: '2026-11-15T19:02:54Z'
 owners:
 - night-shift
 priority: medium
@@ -51,6 +51,23 @@ With `carry_zvd` on, the pose planner gives the Hand a stop-and-go velocity of a
 
 Recommendation: 1. It is the smallest change the existing xfail can judge, and it leaves the flag-off plan byte for byte as now. Risk: a heavy weight could weaken the mode cancellation the rows exist for, so the Sitting compares the Platform residual too.
 
+## Sitting
+
+- setup: level, armed, bb-fed
+- why: The branch adds a Hand acceleration cost (weight 100, flight window less 0.15 s at each end) read only with carry_zvd on, which offline removes the ~5 Hz Hand stop-and-go the flag produced in flight at the 2026-11-13 Sitting (step 21), but it has never flown.
+- do:
+  - Launch on the branch with `gc_freeze:=true` and the bag recording. After Homing, `ros2 param get /skill_node carry_zvd` reads false. Level, Activate, Ball Butler loaded, Cup empty.
+  - Set a fresh plant: `ros2 param set /skill_node plant_id zvd-oval-<date>-C`, read it back with `ros2 param get /skill_node plant_id`.
+  - `ros2 param set /skill_node carry_zvd true` (refused while a goal runs), read it back; the goal start line must show carry_zvd.
+  - Dwell 0.40: `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.40, num_cycles: 32}" --feedback`. Empty the Cup after every ended Attempt; after clear_errors re-enter TRAJECTORY before the next goal.
+  - Dwell 0.35 (`dwell_s: 0.35`, other keys the same) ONLY if 0.40 showed no ~5 Hz Hand stop-and-go.
+  - Stand down: `ros2 param set /skill_node carry_zvd false` and `ros2 param set /skill_node plant_id jugglebot`, each read back.
+- pass: with the flag on at Dwell 0.40, the Hand moves smoothly through each flight between the post-release brake and the Capture move (no ~5 Hz stop-and-go seen), no Leg LIMIT or RING refusal end, and Catches no fewer than the 2026-11-13 flag-on arm.
+- record: per Dwell: Throws caught per Attempt and each end reason, whether the Hand stop-and-go is gone, install-line Leg peaks (offline about 275 mm/s and 3270 mm/s² at 0.40, 318 and 5130 at 0.35), any RING refusal text, the bag and launch log paths.
+- minutes: 30
+- branch: night-shift/2026-11-15-BUG-90
+
 ## Progress
 
 - 2026-11-15: Night Shift 2026-11-15: TKT-69 option 1 built on night-shift/2026-11-15-BUG-90 but unfinished (unit cut off by API credit); test_cup_zvd passes, wider checks, suite and audit owed
+- 2026-11-16: Night Shift 2026-11-16: held on night-shift/2026-11-15-BUG-90: checks finished and audited clean, Sitting section written; unblocked by a Sitting
