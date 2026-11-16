@@ -2,9 +2,9 @@
 id: TKT-78
 kind: ticket
 title: 'BUG-104 held on night-shift/2026-11-16-BUG-104: exempt Deactivate and Clear Errors from the latch and merge, merge as is, or drop?'
-status: open
+status: complete
 created: '2026-11-16'
-updated: '2026-11-15T19:02:09Z'
+updated: '2026-11-16T06:44:05Z'
 owners: []
 priority: low
 effort: xs
@@ -34,3 +34,7 @@ Separately, the Item asked whether Activate deserves a hold-to-confirm like Clea
 - 3: BUG-104 goes back to open.
 
 Recommendation: 1. Deactivate is the operator's way out of Active, and it should never wait on another button's latch.
+
+## Answer
+
+Agreed; go with Option 1. Don't forget that many of these buttons cannot be simply clicked; they must be clicked-and-held, so it's possible that we're making a mountain out of a molehill here.
