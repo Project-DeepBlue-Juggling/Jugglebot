@@ -84,4 +84,4 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
 ## Questions a Sitting can answer
 
-- TKT-75 BUG-94 held on night-shift/2026-11-16-BUG-94: add the yaw-offset test before the Sitting, fly it as is, or drop? (parent BUG-94)
+- none
