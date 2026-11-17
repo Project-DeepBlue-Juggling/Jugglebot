@@ -2,9 +2,9 @@
 id: TKT-79
 kind: ticket
 title: 'BUG-109: resolve the four stale local branches and re-pin, fix the runner''s ledger, or let the guard pass the ledger''s branch names?'
-status: open
+status: complete
 created: '2026-11-17'
-updated: '2026-11-16T17:53:20Z'
+updated: '2026-11-17T22:52:53Z'
 owners: []
 priority: high
 effort: xs
@@ -32,3 +32,7 @@ The 04:00 nightly is RED on `test_no_legacy_item_ids` because the runner's ledge
 - 2: a day Session.
 
 Recommendation: 1 now, then 2 so no other prune failure can do the same.
+
+## Answer
+
+If the local branches are fully merged, just delete them. Otherwise, let me know what's outstanding from them and we can take them on a case-by-case basis. Then, I'd like to discuss which of the Option 2 solutions you recommend. Give pros and cons of each
