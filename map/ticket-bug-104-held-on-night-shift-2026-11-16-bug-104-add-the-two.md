@@ -2,9 +2,9 @@
 id: TKT-81
 kind: ticket
 title: 'BUG-104 held on night-shift/2026-11-16-BUG-104: add the two missing tests and merge, merge as is, or drop?'
-status: open
+status: complete
 created: '2026-11-17'
-updated: '2026-11-16T19:00:10Z'
+updated: '2026-11-17T22:50:23Z'
 owners: []
 priority: low
 effort: xs
@@ -32,3 +32,7 @@ BUG-104 is rebuilt on night-shift/2026-11-16-BUG-104 as you chose on TKT-78: Dea
 - 3: BUG-104 goes back to open.
 
 Recommendation: 2. You noted the buttons are mostly hold-to-confirm, so the risk is small; the code is right and both gaps are test-only.
+
+## Answer
+
+I agree. Option 2
