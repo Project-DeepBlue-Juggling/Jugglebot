@@ -2,9 +2,9 @@
 id: TKT-82
 kind: ticket
 title: 'BUG-94 held on night-shift/2026-11-16-BUG-94: add the three test gaps before the Sitting, fly it as is, or drop?'
-status: open
+status: complete
 created: '2026-11-17'
-updated: '2026-11-16T19:00:13Z'
+updated: '2026-11-17T22:47:59Z'
 owners: []
 priority: high
 effort: xs
@@ -33,3 +33,7 @@ BUG-94's branch night-shift/2026-11-16-BUG-94 now has the 0.3 rad yaw-offset tes
 - 3: BUG-94 goes back to open.
 
 Recommendation: 2. The fallback test (option 1's first item) would be worth adding, but none of the three gaps changes what the Sitting will see, and the branch is ready to fly.
+
+## Answer
+
+Option 2. I'll fly the Sitting today, then we can assess whether the gaps are problematic
