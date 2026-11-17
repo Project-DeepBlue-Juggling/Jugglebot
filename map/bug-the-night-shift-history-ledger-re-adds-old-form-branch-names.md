@@ -16,6 +16,10 @@ area: tests-tooling
 blocked_by: []
 links: []
 filed_by: night-shift
+night_skip: input-decision
+night_skip_on: '2026-11-18'
+night_skip_note: Builds the option you pick on TKT-79 (the one-time re-pin or the ledger-token guard rule), then re-gates the held branches
+night_skip_input: 'Your answer on TKT-79: resolve the stale local branches then re-pin once, fix the runner''s ledger in a day Session, or let the guard pass the ledger''s branch names'
 ---
 
 The 04:00 nightly of 2026-11-17 is RED on one test, `tests/sim/test_no_legacy_item_ids.py::test_the_tree_holds_no_old_item_id`: `docs/night-shift/history.jsonl` holds 26 old-form tokens against the 22 pinned. It fails on `main` too, so every Night Shift gate on 2026-11-17 holds at (a).
