@@ -30,6 +30,11 @@ dwell  off x1.0   on x1.0   on x0.90  on x1.10  on x0.85  on x1.15  realised
 0.35   -84.8      +0.00     -7.2      +13.5     -40.4     +28.3     -0.04
 =====  =========  ========  ========  ========  ========  ========  ========
 
+Re-measured 2026-11-15 with BUG-90's Hand smoothness term
+(``PoseConfig.zvd_hand_smooth_weight`` 100): every flag-on column within
+1.0 mm/s of the above (0.35: -39.4 / -7.0 / +13.2 / +27.8 at x0.85 / 0.90 /
+1.10 / 1.15; realised unchanged).
+
 The mode values come from the yaml (``trajectory_op.platform_mode_*``, the
 ``PoseConfig`` defaults), never from literals here.  The asserted robustness band is
 +/-10 % (|e'| < 15 mm/s and >= 3x better than flag off): the P0 bag fit
@@ -290,6 +295,12 @@ def test_pose_config_validates_the_mode_parameters():
     with pytest.raises(ValueError):
         cc.PoseConfig(mode_delay_s=-0.001)
     with pytest.raises(ValueError):
+        cc.PoseConfig(zvd_hand_smooth_weight=-1.0)
+    with pytest.raises(ValueError):
+        cc.PoseConfig(zvd_hand_smooth_skip_release_s=-0.01)
+    with pytest.raises(ValueError):
+        cc.PoseConfig(zvd_hand_smooth_skip_catch_s=float('nan'))
+    with pytest.raises(ValueError):
         cc.PoseConfig(mode_hz=((6.0, 11.0), 6.0), mode_zeta=(0.17, 0.17))
     two = cc.PoseConfig(mode_hz=[[6.0, 11.0], 6.0], mode_zeta=[[0.17, 0.05], 0.2])
     hash(two)
@@ -379,15 +390,35 @@ def test_flag_off_is_byte_identical_to_the_pre_change_golden():
 def test_the_release_triple_catch_and_seed_are_unchanged_with_the_flag_on(dwell, plans):
     """The rows ADD eight equality rows and touch nothing else: the level
     program's equalities (release triple / release step, catch position,
-    holds), every inequality (C-CUP-4 cone + floor, skid, boxes) and the
-    objective are byte-identical; on the solved plans the release knot, the
-    catch and the chained release seed agree."""
+    holds) and every inequality (C-CUP-4 cone + floor, skid, boxes) are
+    byte-identical, and so is the objective outside the cup-z block; inside
+    it the only change is BUG-90's Hand smoothness term
+    ``2w/n · Aa[ks]ᵀ Aa[ks]`` at the flight knots ``ks``.  On the solved plans
+    the release knot, the catch and the chained release seed agree."""
     plan_on, meta_on, _, p_on = plans[(dwell, True)]
     plan_off, meta_off, _, p_off = plans[(dwell, False)]
     m = p_off.Aeq.shape[0]
     assert p_on.Aeq.shape[0] == m + 8
-    for a in ('H', 'f', 'C', 'bc'):
+    for a in ('C', 'bc'):
         assert np.array_equal(getattr(p_on, a), getattr(p_off, a)), a
+    n, dt = p_off.n_steps, meta_on.cup_plan.dt
+    z = slice(2 * n, 3 * n)
+    dH = p_on.H - p_off.H
+    df = p_on.f - p_off.f
+    outside = np.ones(dH.shape, bool)
+    outside[z, z] = False
+    assert np.array_equal(p_on.H[outside], p_off.H[outside])
+    assert np.array_equal(p_on.f[:2 * n], p_off.f[:2 * n])
+    _, _, Aa, _, _, _ = cc._integrator_maps(n, dt)
+    k_td = int(meta_on.cup_plan.catch_k)
+    k0 = int(np.ceil(ZVD_ON.zvd_hand_smooth_skip_release_s / dt - 1e-9))
+    k1 = k_td - int(np.ceil(ZVD_ON.zvd_hand_smooth_skip_catch_s / dt - 1e-9))
+    ks = np.arange(k0 + 1, k1 + 1)
+    assert ks.size >= 10, ks              # the term covers the flight
+    expect = 2.0 * ZVD_ON.zvd_hand_smooth_weight / n * (Aa[ks].T @ Aa[ks])
+    np.testing.assert_allclose(dH[z, z], expect, rtol=0,
+                               atol=1e-12 * np.abs(p_on.H).max())
+    assert np.any(df[z] != 0.0)
     assert np.array_equal(p_on.Aeq[:m], p_off.Aeq)
     assert np.array_equal(p_on.beq[:m], p_off.beq)
     assert 'ring residual' in cc._eq_label(p_on, m + 1)
@@ -651,20 +682,43 @@ def test_the_flag_off_hand_velocity_is_monotone_through_the_flight(plans):
         assert _hand_flight_turning_points(plans[(d, False)][0]) == 0, d
 
 
-@pytest.mark.xfail(strict=True, reason="FEAT-32 ZVD rows drive a ~5 Hz Hand "
-                   "stop-go; see logbook 2026-11-13-sitting-debrief")
 def test_the_zvd_rows_do_not_make_the_hand_stop_and_go_in_flight(plans):
-    """KNOWN DEFECT (2026-11-13 Sitting, step 21, flag on at Dwell 0.40): the
-    rows let the QP use the Hand to cancel the Platform lateral mode, so the
-    Hand command stops and starts at ~5 Hz through the ball's flight
-    (+/-400 mm/s on the robot; 'jank' the operator saw).  RECIPE, offline,
+    """BUG-90 (2026-11-13 Sitting, step 21, flag on at Dwell 0.40): the rows
+    let the QP use the Hand to cancel the Platform lateral mode, so the Hand
+    command stopped and started at ~5 Hz through the ball's flight (+/-400
+    mm/s on the robot; 'jank' the operator saw).  RECIPE, offline,
     deterministic (this file's ``_solve``, the ``plans`` fixture), turning
     points of Hand velocity in knots catch_k-30..catch_k-7, prominence 80
     mm/s, MEASURED 2026-11-13 flag off -> on: Dwell 0.35 0 -> 5, 0.40 0 -> 4
     (Hand v -376 .. +751 mm/s against -88 .. +194), 0.50 0 -> 2.  The plan only
-    gated HAND_* peaks, which the wiggle passes.  Asserts the flag-on plan has
-    no more turning points than the flag-off one; it flips to a failure
-    (strict xfail) once the planner stops doing this."""
+    gated HAND_* peaks, which the wiggle passes.  FIXED 2026-11-15 by the Hand
+    smoothness term (``PoseConfig.zvd_hand_smooth_weight``, read only with the
+    flag on; logbook 2026-11-15-carry-zvd-hand-smoothness).  Asserts the
+    flag-on plan has no more turning points than the flag-off one."""
     on = _hand_flight_turning_points(plans[(0.40, True)][0])
     off = _hand_flight_turning_points(plans[(0.40, False)][0])
     assert on <= off, (on, off)
+
+
+@pytest.mark.parametrize('dwell', (0.35, 0.50))
+def test_the_zvd_rows_do_not_make_the_hand_stop_and_go_at_the_other_dwells(dwell,
+                                                                           plans):
+    """BUG-90 at the fixture's other two Dwells (2026-11-13 recipe: 0 -> 5 at
+    0.35, 0 -> 2 at 0.50 before the smoothness term)."""
+    on = _hand_flight_turning_points(plans[(dwell, True)][0])
+    off = _hand_flight_turning_points(plans[(dwell, False)][0])
+    assert on <= off, (dwell, on, off)
+
+
+def test_the_hand_smoothness_weight_is_not_read_with_the_flag_off():
+    """BUG-90's term is assembled only with ``carry_zvd``: a flag-off plan is
+    bit-identical whatever ``zvd_hand_smooth_weight`` says (the golden test
+    above pins the default config; this pins the gate itself)."""
+    a_cfg = dataclasses.replace(ZVD_OFF, zvd_hand_smooth_weight=0.0)
+    b_cfg = dataclasses.replace(ZVD_OFF, zvd_hand_smooth_weight=1e3)
+    with threadpool_limits(limits=1):
+        pa, ma = _folded(0.40, a_cfg)
+        pb, mb = _folded(0.40, b_cfg)
+    assert np.array_equal(pa.pose, pb.pose)
+    assert np.array_equal(pa.pose_vel, pb.pose_vel)
+    assert np.array_equal(ma.cup_plan.jerk, mb.cup_plan.jerk)
