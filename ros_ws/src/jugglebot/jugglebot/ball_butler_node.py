@@ -59,6 +59,7 @@ import jugglebot.hardware_config as hw
 from jugglebot import throw_identity
 from jugglebot.can.throw_ballistics import (
     ThrowSolution,
+    bb_release_state,
     global_to_bb_local,
     solve_throw_local,
 )
@@ -218,6 +219,7 @@ class BallButlerNode(Node):
         # BB calibration (latched).  None until first /bb/calibration_result.
         self._bb_position_mm: Optional[Tuple[float, float, float]] = None
         self._bb_yaw_offset_rad: float = 0.0
+        self._warned_release_fallback: bool = False
 
         # Latest heartbeat (used by the accuracy-calibration state machine)
         self._bb_state: Optional[int] = None
@@ -987,9 +989,24 @@ class BallButlerNode(Node):
         ann.header.stamp = now.to_msg()
         ann.header.frame_id = 'world'
         ann.thrower_name = 'ball_butler'
-        ann.initial_position = Point(x=self._bb_position_mm[0],
-                                     y=self._bb_position_mm[1],
-                                     z=self._bb_position_mm[2])
+        # BUG-94: the ball starts at the RELEASE POINT (bb_release_state, the
+        # single source of truth the solver's Landing already uses), not at the
+        # calibrated BB origin; at the Feed aim that is ~179 mm away. The
+        # velocity above is the release velocity, so the two now agree.
+        try:
+            release_mm, _ = bb_release_state(
+                sol.yaw_rad, sol.pitch_rad, sol.speed_mps,
+                self._bb_position_mm, self._bb_yaw_offset_rad)
+        except Exception as exc:  # fall back to the old origin, warn once
+            release_mm = tuple(self._bb_position_mm)
+            if not self._warned_release_fallback:
+                self._warned_release_fallback = True
+                self.get_logger().warning(
+                    f'bb_release_state failed ({exc!r}); announcing the BB '
+                    'origin as the ball start (BUG-94 fallback)')
+        ann.initial_position = Point(x=float(release_mm[0]),
+                                     y=float(release_mm[1]),
+                                     z=float(release_mm[2]))
         ann.initial_velocity = Vector3(x=vx, y=vy, z=vz)
         ann.target_id = target_name
         ann.throw_time = throw_time.to_msg()
