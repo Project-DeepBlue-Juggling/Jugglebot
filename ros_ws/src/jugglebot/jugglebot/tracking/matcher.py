@@ -107,6 +107,7 @@ class BallTracker:
         announced_gate_mm: float = 200.0,
         excluded_label_prefixes: Optional[Tuple[str, ...]] = None,
         detect_human_throws: bool = False,
+        human_throw_exclusion_box: Optional[Tuple[float, float, float, float]] = None,
         flight_fit_min_samples: int = 12,
         flight_fit_residual_mm: float = 12.0,
         flight_fit_freeze_above_plane_mm: float = 250.0,
@@ -250,6 +251,16 @@ class BallTracker:
         # 2026-09-15 session, and nothing on the skill stack consumes them
         # yet.  Turn it on when human throws are actually being caught.
         self.detect_human_throws = bool(detect_human_throws)
+
+        # BUG-92: ``(x_min, x_max, z_min, z_max)`` mm in the mocap frame (y
+        # unbounded). A human-throw candidate whose FIRST sample lies inside is
+        # never buffered: the static Ball Butler frame markers started
+        # `human_throw` phantoms from fixed cells. Human-throw path only --
+        # announced balls never pass through `_detect_parabolic`. None = off.
+        self.human_throw_exclusion_box: Optional[Tuple[float, float, float, float]] = (
+            None if human_throw_exclusion_box is None
+            else tuple(float(v) for v in human_throw_exclusion_box)  # type: ignore[assignment]
+        )
 
         # --- Landing: gravity-fixed batch fit (2026-09-17) ---
         # One `FlightFit` per CONFIRMED ball, fed the RAW matched marker in
@@ -811,7 +822,10 @@ class BallTracker:
                 self._marker_tracks[best_track_id].add(mpos, current_time)
                 matched_track_ids.add(best_track_id)
             else:
-                # New track
+                # New track -- unless its first sample is inside the Ball
+                # Butler frame box (BUG-92).
+                if self._in_human_throw_exclusion_box(mpos):
+                    continue
                 tid = self._next_track_id
                 self._next_track_id += 1
                 track = _MarkerTrack()
@@ -842,6 +856,13 @@ class BallTracker:
         ]
         for tid in stale:
             del self._marker_tracks[tid]
+
+    def _in_human_throw_exclusion_box(self, pos: np.ndarray) -> bool:
+        box = self.human_throw_exclusion_box
+        if box is None:
+            return False
+        x_min, x_max, z_min, z_max = box
+        return bool(x_min <= pos[0] <= x_max and z_min <= pos[2] <= z_max)
 
     def _is_parabolic(self, track: _MarkerTrack) -> bool:
         """Check if a marker track exhibits gravity-consistent acceleration."""
