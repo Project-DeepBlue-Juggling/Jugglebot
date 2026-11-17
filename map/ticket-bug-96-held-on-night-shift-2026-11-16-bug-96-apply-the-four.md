@@ -2,9 +2,9 @@
 id: TKT-80
 kind: ticket
 title: 'BUG-96 held on night-shift/2026-11-16-BUG-96: apply the four findings (a race-free bind check) and merge, merge as is, or drop?'
-status: open
+status: complete
 created: '2026-11-17'
-updated: '2026-11-16T19:00:07Z'
+updated: '2026-11-17T22:50:53Z'
 owners: []
 priority: medium
 effort: xs
@@ -32,3 +32,7 @@ BUG-96 is rebuilt on night-shift/2026-11-16-BUG-96 as you chose on TKT-77: `main
 - 3: BUG-96 goes back to open.
 
 Recommendation: 1. The bind-done event is a few lines, and it is what makes the exit deterministic, which is what you asked for.
+
+## Answer
+
+I agree with your recommendation
