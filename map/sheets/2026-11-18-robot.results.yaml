@@ -166,6 +166,45 @@ steps:
     comments: ''
     saved_at: 2026-11-18 12:12
     status: done
+  43:
+    comments: ''
+    saved_at: 2026-11-18 12:15
+    status: done
+  44:
+    comments: ''
+    saved_at: 2026-11-18 12:15
+    status: done
+  45:
+    comments: ''
+    saved_at: 2026-11-18 12:15
+    status: done
+  46:
+    comments: ''
+    saved_at: 2026-11-18 12:16
+    status: done
+  47:
+    comments: ''
+    saved_at: 2026-11-18 12:16
+    status: done
+  50:
+    comments: 'Here''s the total output from Terminal 3: " (venv) jetson:/home/jetson/Desktop/Jugglebot/
+      (main✗) $ cd ~/Desktop/Jugglebot && source ~/Desktop/PDJ_venv/venv/bin/activate
+      && python tools/probes/hand_foc_scope.py capture --preset power --trigger fault
+      --label robot_fault [12:15:41] Recording from 0xffff0010, 0xffff0011, 0xffff0228,
+      0xffff0229... Fetching buffer... break None at 65536, 4, 65536 Collected 4096
+      samples, which corresponds to 512.00 ms of data (assuming a sampling frequency
+      of 8000) armed: preset power, trigger fault, trigger point 0.90, waiting until
+      Ctrl-C; scope size 65536 bytes, 8002 Hz measured; Ctrl-C leaves the drive untouched
+      Recording from 0xffff022e, 0xffff022f, 0xffff0001, 0xffff022a, 0xffff022b, 0xffff0229,
+      0xffff01b6, 0xffff0241... clean exit from CLOSED_LOOP to state 1 (disarm_reason
+      0x0, active_errors 0x0, no new value); re-armed ^Cstopped by Ctrl-C after 0
+      saved; 1 clean exits seen while waiting; the drive is untouched "'
+    saved_at: 2026-11-18 12:26
+    status: done
+  51:
+    comments: ''
+    saved_at: 2026-11-18 12:26
+    status: done
 verdicts:
   13:
     BUG-63:
@@ -215,3 +254,13 @@ verdicts:
         messy, which cascaded to failure. Overall, this seemed less reliable than
         tilt_back_deg 0.0
       saved_at: 2026-11-18 12:09
+  48:
+    FEAT-49:
+      notes: Gave this a bunch of attempts. Until the last one, all attempts either
+        completed or ended due to a missed catch. The final attempt ended with MAX_DEVIATION.
+      saved_at: 2026-11-18 12:24
+  49:
+    BUG-58:
+      notes: Too much output here for me to review. Have a Sonnet agent check over
+        this.
+      saved_at: 2026-11-18 12:25
