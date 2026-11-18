@@ -193,8 +193,10 @@ def _pattern_sig(p):
             getattr(p, 'roles', None))
 
 
+#: human_catch is not nominated until unit U5b (PWAY-11 P2) extends
+#: I-ADMIT-2 to it; remove it from this exclusion then.
 _PATTERN_CELLS = [(p, ev) for p, ev in _ACCEPTED_CUP_CELLS
-                  if p not in ('reload',)]
+                  if p not in ('reload', 'human_catch')]
 
 
 @pytest.mark.parametrize('pattern,evidence', _PATTERN_CELLS)

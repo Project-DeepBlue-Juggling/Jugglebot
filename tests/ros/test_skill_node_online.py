@@ -62,14 +62,14 @@ def test_a_self_toss_executor_gets_the_checker_and_the_early_switch():
 
 def test_every_executor_construction_site_hands_the_online_kwargs():
     """Source pin for the construction sites no goal fixture reaches (bridge
-    / reload / chain / oval / hop executors): each `SkillExecutor(` call that
+    / reload / chain / oval / hop / human_catch executors): each `SkillExecutor(` call that
     takes `self._installer` also splats `**self._online_kwargs()`."""
     path = os.path.join(os.path.dirname(sn.__file__), 'skill_node.py')
     with open(path) as fh:
         src = fh.read()
     sites = [m.start() for m in re.finditer(r'SkillExecutor\(\s*\n?\s*\w+, '
                                             r'self\._installer', src)]
-    assert len(sites) == 7, len(sites)
+    assert len(sites) == 8, len(sites)     # 8th: _build_hc_executor (U5a)
     for pos in sites:
         call = src[pos:pos + 400]
         assert '**self._online_kwargs()' in call.split('catch_aim_source')[0], call

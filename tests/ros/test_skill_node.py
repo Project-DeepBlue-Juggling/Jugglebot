@@ -5301,7 +5301,7 @@ _ACCEPTED_CUP_CELLS = [
     (pattern, ev) for pattern, row in sn._CUP_RULE.items()
     if pattern not in ('magazine', 'columns_turned')   # turned: its own tests
     for ev, decision in row.items()
-    if decision in (sn.RELOAD_FIRST, sn.THROW_FIRST)]
+    if decision in (sn.RELOAD_FIRST, sn.THROW_FIRST, sn.CATCH_FIRST)]
 
 
 @pytest.mark.parametrize('pattern,evidence', _ACCEPTED_CUP_CELLS)
@@ -5344,7 +5344,8 @@ def test_every_pattern_entry_opens_on_a_rest(tmp_path, pattern, evidence):
     # tail as 'columns').
     covered = {'self_toss', 'hop', 'columns', 'columns_1ball',
                'columns_1ball_fed', 'columns_turned', 'columns_highlow',
-               'oval_1ball', 'oval_1ball_fed', 'polygon_walk', 'reload'}
+               'oval_1ball', 'oval_1ball_fed', 'polygon_walk', 'reload',
+               'human_catch'}
     # 'magazine' has no schedule (one MAGAZINE segment from rest; its own
     # tests are tests/ros/test_skill_node_magazine.py).
     assert set(sn.SkillNode._PATTERNS) - {'magazine'} == covered
@@ -6426,7 +6427,7 @@ def _expected_cup_decision(pattern, evidence):
     decision = sn._CUP_RULE[pattern][evidence]
     if decision == sn.RELOAD_FIRST:
         return None, True
-    if decision == sn.THROW_FIRST:
+    if decision in (sn.THROW_FIRST, sn.CATCH_FIRST):
         return None, False
     return decision, False
 
