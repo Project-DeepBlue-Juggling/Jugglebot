@@ -115,7 +115,7 @@ export function imuView(model, nowMs, ctx) {
 // DOM / ROS glue
 // ---------------------------------------------------------------------------
 
-const nowMono = () => (globalThis.performance ? globalThis.performance.now() : Date.now()); // live status age only
+const nowMono = () => (globalThis.performance ? globalThis.performance.now() : Date.now()); // wall-clock: live status age only (how long since the last platform_imu/status arrived)
 let model = null;
 let pending = false;
 let flash = null;
