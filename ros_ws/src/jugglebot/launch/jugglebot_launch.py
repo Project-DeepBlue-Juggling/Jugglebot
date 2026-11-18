@@ -768,6 +768,7 @@ def generate_launch_description():
             '/gravity_offset',
             '/leg_torques_diagnostic',
             '/balls',
+            '/human_throws',   # PWAY-11 P1: Human Throw event (idle unless detect_human_throws)
             '/throw_announcements',
             '/cone/catch_event',
             '/cone/heartbeat',

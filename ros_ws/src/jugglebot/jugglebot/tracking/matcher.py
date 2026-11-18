@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import logging
 from collections import deque
-from typing import Callable, Deque, Dict, List, Optional, Tuple
+from types import MappingProxyType
+from typing import Callable, Deque, Dict, List, Mapping, Optional, Tuple
 
 import numpy as np
 
@@ -482,6 +483,11 @@ class BallTracker:
     def active_balls(self) -> List[Ball]:
         """All balls not yet cleaned up."""
         return list(self._balls.values())
+
+    @property
+    def flight_fits(self) -> Mapping[int, FlightFit]:
+        """Read-only view of the per-ball flight Fits (live, not a copy)."""
+        return MappingProxyType(self._flight_fits)
 
     def get_ball(self, ball_id: int) -> Optional[Ball]:
         return self._balls.get(ball_id)

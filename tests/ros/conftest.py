@@ -353,6 +353,34 @@ class BallStateArray:
 
 
 @dataclass
+class HumanThrowEvent:
+    """Stand-in for jugglebot_interfaces/msg/HumanThrowEvent (PWAY-11 P1).
+    Field set mirrors msg/HumanThrowEvent.msg; `__setattr__` rejects names
+    outside it so a typo in the publisher fails here, not on hardware
+    (BUG-116 class)."""
+    header: object = field(default_factory=lambda: MockHeader())
+    track_id: int = 0
+    flight_seq: int = 0
+    revision: int = 0
+    flight_start: object = field(default_factory=lambda: MsgTime())
+    landing_position: object = field(default_factory=lambda: Point())
+    landing_velocity: object = field(default_factory=lambda: Vector3())
+    landing_time: object = field(default_factory=lambda: MsgTime())
+    landing_z_mm: float = 0.0
+    n_samples: int = 0
+    rms_mm: float = 0.0
+    span_s: float = 0.0
+    fit_age_s: float = 0.0
+    start_speed_mm_s: float = 0.0
+    final: bool = False
+
+    def __setattr__(self, name, value):
+        if name not in self.__dataclass_fields__:
+            raise AttributeError(f"HumanThrowEvent has no field {name!r}")
+        object.__setattr__(self, name, value)
+
+
+@dataclass
 class RigidBodyPose:
     name: str = ""
     # A full PoseStamped (defined further down; the lambda defers the lookup),
@@ -1103,6 +1131,7 @@ _create_mock_module('jugglebot_interfaces.msg', {
     'TargetFeedback': TargetFeedback,
     'BallState': BallState,
     'BallStateArray': BallStateArray,
+    'HumanThrowEvent': HumanThrowEvent,
 })
 _create_mock_module('jugglebot_interfaces.srv', {
     'ActivateOrDeactivate': ActivateOrDeactivate,
