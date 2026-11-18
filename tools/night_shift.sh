@@ -8,7 +8,7 @@
 # whether it may run at all, the clone it runs in, the candidate preflight that
 # skips a night with nothing new, and an explicit status for every outcome.
 #
-# Armed by systemd --user (jugglebot-night-shift.timer, 04:45, after the 04:00
+# Armed by systemd --user (jugglebot-night-shift.timer, 02:45, after the 02:00
 # nightly; units and install block in tools/systemd/). The clone is
 # $NIGHT_SHIFT_CLONE (~/night-shift/Jugglebot), on `main` only, fast-forwarded
 # from origin each run; the runner never switches its branch.
@@ -190,7 +190,7 @@
 # NIGHT_SHIFT_REPORTS, NIGHT_SHIFT_DRY_RUN (0), NIGHT_SHIFT_MAX_USD (unset = no fuse),
 # NIGHT_SHIFT_MODEL (opus), NIGHT_SHIFT_FALLBACK_MODEL (opus; the subscription
 # leg; neither may name Fable), NIGHT_SHIFT_TIMEOUT_S (14400; both legs together), NIGHT_SHIFT_DEADLINE
-# (08:00), NIGHT_SHIFT_DEFER_BUDGET_S (7200), NIGHT_SHIFT_DEFER_POLL_S (120),
+# (06:00), NIGHT_SHIFT_DEFER_BUDGET_S (7200), NIGHT_SHIFT_DEFER_POLL_S (120),
 # NIGHT_SHIFT_WAIT_NIGHTLY_S (3600), NIGHT_SHIFT_WAIT_NIGHTLY_POLL_S (60),
 # NIGHT_SHIFT_IGNORE_SESSION (0; hand runs only), NIGHT_SHIFT_SKIP_ENV (0; tests),
 # NIGHT_SHIFT_PYTHON (the venv python if present, else python3), NIGHT_SHIFT_CLAUDE
@@ -217,7 +217,7 @@ MAX_USD="${NIGHT_SHIFT_MAX_USD:-}"   # empty or 0 = no --max-budget-usd (owner, 
 MODEL="${NIGHT_SHIFT_MODEL:-opus}"
 FALLBACK_MODEL="${NIGHT_SHIFT_FALLBACK_MODEL:-opus}"
 TIMEOUT_S="${NIGHT_SHIFT_TIMEOUT_S:-14400}"
-DEADLINE="${NIGHT_SHIFT_DEADLINE:-08:00}"
+DEADLINE="${NIGHT_SHIFT_DEADLINE:-06:00}"
 DEFER_BUDGET_S="${NIGHT_SHIFT_DEFER_BUDGET_S:-7200}"
 DEFER_POLL_S="${NIGHT_SHIFT_DEFER_POLL_S:-120}"
 WAIT_NIGHTLY_S="${NIGHT_SHIFT_WAIT_NIGHTLY_S:-3600}"
@@ -848,7 +848,7 @@ esac
 export NS_CANDIDATES="$CANDIDATES"
 
 # ── 9. The nightly line (a real run claims the ticker; a dry run never does) ──
-# The 04:00 nightly can still be running at 04:45 (it waits up to 2 h on a live
+# The 02:00 nightly can still be running at 02:45 (it waits up to 2 h on a live
 # Sitting; ci-deep takes ~26 min). Claiming yesterday's ticker would hand the
 # morning a stale verdict, so a real run first waits for today's run to land:
 # ticker.raised or ticker.lowered whose run date is today, or a `status` whose

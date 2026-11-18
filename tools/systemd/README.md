@@ -79,7 +79,7 @@ Armed 2026-08-01 (`logbook/2026-08-01-nightly-tier-and-mpc-dormancy.md`).
 
 ## Night Shift units (`jugglebot-night-shift.{service,timer}`)
 
-User units that run [`tools/night_shift.sh`](../night_shift.sh) at 04:45, after
+User units that run [`tools/night_shift.sh`](../night_shift.sh) at 02:45, after
 the nightly: an unattended `claude -p` on the board in its own clone
 `~/night-shift/Jugglebot` (`plans/archived/night-shift.md`). The timer is
 `Persistent=false` on purpose: a missed night must not fire at the next boot,

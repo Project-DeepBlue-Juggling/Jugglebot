@@ -1,7 +1,7 @@
 """The ONE Node.js lookup for the GUI harness tests (BUG-103).
 
 Node on the Jetson lives only under ``~/.nvm``, which is on an interactive
-shell's PATH and NOT on the 04:00 systemd run's. Thirty test files carried a
+shell's PATH and NOT on the 02:00 systemd run's. Thirty test files carried a
 copy of this lookup and eight used a bare ``shutil.which``; those eight (59
 tests) skipped on every nightly run from 2026-10-17 to 2026-11-16. Import
 ``find_node`` here instead of writing another copy.

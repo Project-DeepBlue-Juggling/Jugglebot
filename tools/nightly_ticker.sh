@@ -5,7 +5,7 @@
 # Problem it solves: every Claude session on this box used to read
 # temp/reports/nightly/status at start. With several sessions a day that is the
 # same RED read and re-diagnosed N times — often a RED that was only one session's
-# unfinished work-in-progress at 04:00 (the nightly runs against the WORKING TREE).
+# unfinished work-in-progress at 02:00 (the nightly runs against the WORKING TREE).
 #
 # Mechanism: the nightly RAISES the ticker right after it writes `status`. The
 # FIRST session to run `check` afterwards CLAIMS it with an atomic rename(2) —

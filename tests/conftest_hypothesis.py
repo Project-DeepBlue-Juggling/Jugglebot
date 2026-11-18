@@ -8,7 +8,7 @@ Profiles
 --------
 
 - ``ci-fast`` (default): ``max_examples=50``.  Every per-commit run.
-- ``ci-deep``: ``max_examples=1000``.  The 04:00 nightly, and any explicit
+- ``ci-deep``: ``max_examples=1000``.  The 02:00 nightly, and any explicit
   ``./run_tests.sh --full --hypothesis-profile=ci-deep``.
 - ``dev``: ``max_examples=200``.  Convenience for local iteration when
   ``ci-fast`` is too coarse to chase a flaky shrink and ``ci-deep`` is
