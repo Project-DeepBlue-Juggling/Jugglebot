@@ -107,6 +107,65 @@ steps:
     comments: ''
     saved_at: 2026-11-18 11:30
     status: done
+  27:
+    comments: ''
+    saved_at: 2026-11-18 11:32
+    status: done
+  28:
+    comments: ''
+    saved_at: 2026-11-18 11:32
+    status: done
+  29:
+    comments: ''
+    saved_at: 2026-11-18 11:33
+    status: done
+  31:
+    comments: ''
+    saved_at: 2026-11-18 11:37
+    status: done
+  33:
+    comments: ''
+    saved_at: 2026-11-18 11:38
+    status: done
+  36:
+    comments: ''
+    saved_at: 2026-11-18 11:49
+    status: done
+  37:
+    comments: The pattern didn't seem any messier than earlier, but multiple attempts
+      ended prematurely due to catches not settling and being thrown messily. One
+      attempt ended with LANE_REFUSED. The final attempt basically finished, except
+      the last throw collided with the second-last, leading to both balls being dropped.
+    saved_at: 2026-11-18 11:53
+    status: done
+  38:
+    comments: 'First attempt went really well! Until a LANE_REFUSED ended it early...
+      Here, I had to CTRL-C (and reboot) the Launch because the system got stuck thinking
+      that an attempt was running, preventing me from issuing new JUGGLE commands.
+      clicking "Stop" in the GUI simply showed "Juggle stop ignored: no attempt is
+      running". The re-launch had log ID "launch_2026-11-18_3-1.log" After re-launching
+      and checking the params, the first attempt got LANE_REFUSED, the second ended
+      with a missed catch caused by the ball just barely hitting the top of the Platform,
+      third and fourth ended due to mid-air ball collisions, and the last effectively
+      finished! (there was a mid-air ball collision, but one of the balls was caught)'
+    saved_at: 2026-11-18 12:05
+    status: done
+  40:
+    comments: ''
+    saved_at: 2026-11-18 12:10
+    status: done
+  41:
+    comments: Worked! Just wanted to note here that I've had the /robot_state echo
+      running this whole time, and it seemed to progressively slow down over time.
+      At one point it was running at 45 Hz, and for a long time it was down at 80
+      Hz. Just wanted to record this here for posterity. I think this would be worth
+      looking into.
+    saved_at: 2026-11-18 12:12
+    status: done
+  42:
+    comments: ''
+    saved_at: 2026-11-18 12:12
+    status: done
 verdicts:
   13:
     BUG-63:
@@ -122,3 +181,37 @@ verdicts:
     IDEA-11:
       notes: Ran two attempts, both completing.
       saved_at: 2026-11-18 11:29
+  30:
+    BUG-92:
+      notes: Made 11 human throws in a three ball cascade
+      saved_at: 2026-11-18 11:37
+  32:
+    BUG-98:
+      notes: /robot_state held at almost exactly 98 Hz throughout the calibrate; basically
+        unchanged since launch
+      saved_at: 2026-11-18 11:38
+  34:
+    BUG-94:
+      notes: First attempt ended with MAX_DEVIATION after just 12 throws. Second attempt
+        ended the same way after 20 throws. Third, fourth and fifth attempts ended
+        after a catch didn't settle before the throw, leading to the throw being uncatchable.
+        Feeds didn't seem any smoother than previously. Not sure how the tracking
+        went, as I can only watch so much at once.
+      saved_at: 2026-11-18 11:44
+  35:
+    BUG-90:
+      notes: First two attempts at dwell 0.40 ended with messy throws being uncatchable.
+        Third attempt lasted much longer but ended the same way. Movements were much
+        better than before (with ZVD true), but still nowhere near as smooth as with
+        ZVD false. Dwell 0.35 was ABORTED immediately after the first throw on all
+        three attempts, due to NO_ADMISSIBLE_COMMAND
+      saved_at: 2026-11-18 11:48
+  39:
+    IDEA-22:
+      notes: No attempts succeeded through completion, and it was difficult to visually
+        distinguish these attempts from those with tilt_back_deg 0.0, though there
+        were a handful of throws that collided with the top of the Platform. Many
+        of these were recovered from, however some led to the following throws being
+        messy, which cascaded to failure. Overall, this seemed less reliable than
+        tilt_back_deg 0.0
+      saved_at: 2026-11-18 12:09
