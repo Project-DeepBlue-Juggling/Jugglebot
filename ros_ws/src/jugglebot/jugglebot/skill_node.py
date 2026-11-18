@@ -202,6 +202,15 @@ _CHECK_NOT_EVALUATED_CODES = frozenset((
 #: become the reason a dispatch lands late.
 _TICK_HZ = 40.0
 
+
+def _tick_line_is_evidence(line: str) -> bool:
+    """An executor tick line the operator log must carry (INFO, so it reaches
+    the tee): the MISSED-BALL evidence line that follows a MISSED_CATCH end.
+    It was DEBUG-only, so the tee log lacked it for all 34 MISSED_CATCH ends
+    of the Sitting of 2026-11-18 (BUG-114). Every other tick line stays DEBUG."""
+    return ' MISSED-BALL ' in line
+
+
 #: How far AHEAD of the tick a skill dispatches (``SkillExecutor``'s
 #: ``dispatch_lookahead_s``, 2026-10-02). A reserved fresh origin (THROW/CATCH
 #: from rest) plans over ``t_event - (t_now + LEAD_S)``, so the gap between
@@ -3752,7 +3761,10 @@ class SkillNode(Node):
             if self._executor is not None:
                 now = self.get_clock().now().nanoseconds / 1e9
                 for line in self._executor.tick(now):
-                    self.get_logger().debug(line)
+                    if _tick_line_is_evidence(line):
+                        self.get_logger().info(line)
+                    else:
+                        self.get_logger().debug(line)
                 self._drain_notices(self._executor)
                 # The Juggle goal result's `per_throw`/`throws`/`caught`
                 # (R4 U5): every finalised release gets exactly one

@@ -7954,3 +7954,15 @@ def test_a_goal_with_no_memory_starts_cold_on_the_identity(tmp_path):
     import numpy as np
     y_d = np.array([0.0, 0.0, 0.9])
     np.testing.assert_allclose(learner.command(ctx, y_d), y_d)
+
+
+def test_the_missed_ball_evidence_line_is_logged_at_info():
+    """BUG-114 (Sitting 2026-11-18): the MISSED-BALL line was DEBUG-only, so
+    the operator's tee log lacked it for every MISSED_CATCH end. It is the
+    one executor tick line promoted to INFO; the rest stay DEBUG."""
+    assert sn._tick_line_is_evidence(
+        '12.345 MISSED-BALL Ball 2 (the CATCH of skill 7): thrown by skill 5, '
+        'scheduled release 11.900 (0.445 s before its scheduled landing); '
+        'tracker last fit: NO FIT')
+    assert not sn._tick_line_is_evidence('12.345 DISPATCH skill 7 CATCH')
+    assert not sn._tick_line_is_evidence('12.345 END MISSED_CATCH skill 7')
