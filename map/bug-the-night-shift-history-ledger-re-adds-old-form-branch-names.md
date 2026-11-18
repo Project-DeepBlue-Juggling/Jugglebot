@@ -2,9 +2,9 @@
 id: BUG-109
 kind: bug
 title: The Night Shift history ledger re-adds old-form branch names every night, so the legacy ID test fails on main
-status: inbox
+status: in_progress
 created: '2026-11-17'
-updated: '2026-11-16T17:51:43Z'
+updated: '2026-11-18T02:35:31Z'
 owners: []
 priority: high
 effort: xs
@@ -37,3 +37,7 @@ The 04:00 nightly of 2026-11-17 is RED on one test, `tests/sim/test_no_legacy_it
 3. Let the guard pass the ledger's branch tokens without a per-file count (it is append-only and machine-written), keeping the rule that no other class may appear there.
 
 Recommendation: 2 then a one-time re-pin, with 1 as the durable guard.
+
+## Progress
+
+- 2026-11-18: Sitting debrief: the four branches were already gone from origin; the Night Shift clone held stale remote-tracking refs, so its nightly delete failed and the ledger re-named them. Per TKT-79: fetch --prune in the clone, safe-deleted five merged local branches, one-time re-pin 22 to 34. Open: the option 2 runner discussion.
