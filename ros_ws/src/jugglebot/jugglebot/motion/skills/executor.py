@@ -5590,7 +5590,9 @@ class SkillExecutor:
 
         UNARMED (no row at all, the rule simply does not apply to this
         catch) when ``t_open`` cannot be anchored (no scheduled release
-        before this landing at all) or comes out past the already-armed
+        before this landing at all, and no ``skill.catch_open_abs_s`` -- the
+        human_catch CATCH's own stated open, which replaces the release
+        anchor when set) or comes out past the already-armed
         :data:`CAUGHT_LEAD_S` floor the OUTCOME ladder uses, or when the
         other-ball landing guard collapses the window to empty or negative.
         """
@@ -5603,10 +5605,18 @@ class SkillExecutor:
                 and bool(skill.then_throw.shadow_landing)):
             return
         L = float(t_land_scheduled_s)
-        latest_release = _latest_release_before(self.schedule, L)
-        if latest_release is None:
-            return
-        t_open = latest_release + MISSED_CATCH_OPEN_AFTER_RELEASE_S
+        if skill.catch_open_abs_s is not None:
+            # A CATCH whose Schedule holds no release (human_catch, the one
+            # compile that sets the field): its own stated open, the instant
+            # the plan was made (``schedule.compile_human_catch``).  Every
+            # other CATCH carries None and takes the release anchor below,
+            # unchanged.
+            t_open = float(skill.catch_open_abs_s)
+        else:
+            latest_release = _latest_release_before(self.schedule, L)
+            if latest_release is None:
+                return
+            t_open = latest_release + MISSED_CATCH_OPEN_AFTER_RELEASE_S
         if t_open > L - CAUGHT_LEAD_S:
             return
         if skill.then_throw is not None:

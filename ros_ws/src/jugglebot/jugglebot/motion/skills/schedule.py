@@ -601,6 +601,17 @@ class Skill:
     #: lead the executor reserves for the same install, so a hand-built Skill
     #: cannot dispatch by one lead and be planned by another.
     lead_s: Optional[float] = None
+    #: CATCH only: the instant (wall clock, s) this CATCH's MISSED_CATCH
+    #: evidence window OPENS, for a CATCH whose Schedule holds no release
+    #: before its landing (``executor._register_catch`` otherwise anchors the
+    #: open on the latest scheduled release, and with none it arms nothing).
+    #: :func:`compile_human_catch` is the one caller that sets it: the
+    #: instant the plan is made (its ``t_now_s``), when the cup is known
+    #: EMPTY and the human's Ball is in flight, so a SEATED sample from then
+    #: on can only be this Ball (PWAY-11 P2, U5a).  ``None`` (every other
+    #: skill, the reload / Feed CATCH included) keeps the release-derived
+    #: window, or none, exactly as before.
+    catch_open_abs_s: Optional[float] = None
 
     def __post_init__(self):
         if self.kind not in KINDS:
@@ -625,6 +636,12 @@ class Skill:
         if self.landing_prior is not None and self.kind != CATCH:
             raise ValueError('only a CATCH may carry landing_prior (kind=%r)'
                               % (self.kind,))
+        if self.catch_open_abs_s is not None and (
+                self.kind != CATCH
+                or not np.isfinite(float(self.catch_open_abs_s))):
+            raise ValueError('catch_open_abs_s is a finite instant on a CATCH '
+                             'only (kind=%r, value=%r)'
+                             % (self.kind, self.catch_open_abs_s))
         if self.hold_tilt is not None and self.kind != CATCH:
             raise ValueError('only a CATCH may carry hold_tilt (kind=%r)'
                               % (self.kind,))
@@ -2637,6 +2654,19 @@ def compile_human_catch(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
     ``receive_tilt=(0, 0)`` pins the touch-down attitude level (the columns
     feed CATCH's rule), so a lob's lateral arrival velocity never banks the
     Platform; ``ball_id=0`` carries no Memory row (no Throw follows).
+
+    **The CATCH's verdict window opens at ``t_now_s``**
+    (``Skill.catch_open_abs_s``, schedule clock 0.0 before the shift): this
+    Schedule holds no release, so the MISSED_CATCH rule's usual anchor (the
+    latest scheduled release) does not exist and the CATCH would otherwise
+    arm no verdict, the executor reporting ``done`` the tick it dispatched,
+    about 0.5 s before touch-down.  The plan instant, not the Tracker's
+    ``flight_start``: the window's open exists only to keep an EARLIER ball's
+    seat out of this Catch's evidence, and at the plan instant the cup is
+    known EMPTY (the Pattern plans only from WAITING) while this Ball is in
+    flight at least ``first_lead_s`` from touch-down; ``flight_start`` is the
+    Tracker segment's first admitted sample, a fit-dependent estimate that
+    adds nothing to that guarantee and is not carried into the policy event.
     """
     landing = _vec3(landing_mm, 'landing_mm')
     vel = _vec3(landing_vel_mm_s, 'landing_vel_mm_s')
@@ -2662,7 +2692,8 @@ def compile_human_catch(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
                     window_s=window,
                     landing_prior=LandingPrior(pos_mm=landing, vel_mm_s=vel,
                                                t_land_abs_s=t_land),
-                    receive_tilt=(0.0, 0.0))]
+                    receive_tilt=(0.0, 0.0),
+                    catch_open_abs_s=0.0)]
     skills = _assign_leads(skills)
     skills = [_shifted(s, t_now) for s in skills]
     return Schedule(skills=tuple(skills), flight_s=0.0, beat_s=t_rel,
@@ -3052,7 +3083,9 @@ def _shifted(sk: Skill, t0: float) -> Skill:
     ~1e-15 s.
     """
     tt = sk.then_throw
+    co = sk.catch_open_abs_s
     return dataclasses.replace(
         sk, t_abs_s=float(sk.t_abs_s) + t0,
         then_throw=(None if tt is None else dataclasses.replace(
-            tt, t_release_abs_s=float(tt.t_release_abs_s) + t0)))
+            tt, t_release_abs_s=float(tt.t_release_abs_s) + t0)),
+        catch_open_abs_s=(None if co is None else float(co) + t0))
