@@ -1017,6 +1017,10 @@ class TrajectoryNode(Node):
         # reads it right after construction (early exit) and again after the
         # executor returns, and exits non-zero.
         self.emitter_bind_failed = False
+        # BUG-96: set by the emitter thread once the bind has resolved either
+        # way (success or failure), so main() can wait for the verdict instead
+        # of racing it.
+        self._emit_bind_done = threading.Event()
 
         # ── Subscriptions ───────────────────────────────────────
         mode_topic = str(self.get_parameter('control_mode_topic').value)
@@ -1465,7 +1469,11 @@ class TrajectoryNode(Node):
                     rclpy.shutdown()
             except Exception:  # noqa: BLE001
                 pass
+            finally:
+                # Set AFTER the flag and the shutdown, whichever way they went.
+                self._emit_bind_done.set()
             return
+        self._emit_bind_done.set()
 
         # The emitter period IS the knot spacing: the can-hub firmware pins its
         # segment time to 25 ms, so this MUST match hw.JB_TRAJ_KNOT_DT_S (the dt
@@ -5710,19 +5718,29 @@ class TrajectoryNode(Node):
             self._emit_thread.join(timeout=1.0)
 
 
+#: BUG-96: bound on main()'s wait for the emitter thread's bind verdict.
+_BIND_WAIT_S = 3.0
+
+
 def main(args=None):
     rclpy.init(args=args)
     node = TrajectoryNode()
-    # BUG-96: the emitter thread starts inside the constructor, so a :5557 bind
-    # failure (flag set, context shut down) usually lands BEFORE the executor
-    # exists, and constructing one on the dead context raises with on_shutdown()
-    # never run. Check the flag first: clean up (closes the segment-solver
-    # worker) and exit 1 without building the executor.
+    # BUG-96: the emitter thread starts inside the constructor and binds :5557
+    # asynchronously. Wait (bounded) for its verdict so the check below is
+    # deterministic. On timeout we PROCEED: a hung bind must not hang startup,
+    # and the executor is built inside the try/finally and the flag is
+    # re-checked after spin, so a late failure still cleans up and exits 1.
+    if node._emit_thread is not None:
+        node._emit_bind_done.wait(timeout=_BIND_WAIT_S)
+    # A failed bind has shut the context down; constructing an executor on it
+    # raises. Clean up (closes the segment-solver worker) and exit 1 instead.
     if node.emitter_bind_failed:
-        node.on_shutdown()
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+        try:
+            node.on_shutdown()
+        finally:
+            node.destroy_node()
+            if rclpy.ok():
+                rclpy.shutdown()
         sys.exit(1)
     # ── MultiThreadedExecutor, for exactly one callback ───────────────────────
     # `trajectory/hold` is on a reentrant group; everything else shares the
@@ -5749,12 +5767,17 @@ def main(args=None):
     #    the bound the test asserts. The comparison that matters is not
     #    "hold alone" but "hold now vs hold after the whole solve", and the whole
     #    solve is 387 ms idle / 1.06 s loaded.
-    executor = MultiThreadedExecutor(num_threads=2)
-    executor.add_node(node)
     try:
+        executor = MultiThreadedExecutor(num_threads=2)
+        executor.add_node(node)
         executor.spin()
     except KeyboardInterrupt:
         pass
+    except Exception:  # noqa: BLE001
+        # A bind failure that landed after the verdict wait (timeout path) kills
+        # the context under the executor: that is the bind failure, exit 1.
+        if not node.emitter_bind_failed:
+            raise
     finally:
         node.on_shutdown()
         node.destroy_node()
