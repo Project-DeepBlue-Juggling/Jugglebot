@@ -37,6 +37,7 @@ from __future__ import annotations
 import collections
 import csv
 import dataclasses
+import inspect
 import math
 import re
 import threading
@@ -63,7 +64,8 @@ from std_srvs.srv import Trigger
 from jugglebot_interfaces.action import Juggle
 from jugglebot_interfaces.msg import (BallButlerHeartbeat, BallState,
                                       BallStateArray,
-                                      HandTelemetryMessage, RigidBodyPoses,
+                                      HandTelemetryMessage, HumanThrowEvent,
+                                      RigidBodyPoses,
                                       ThrowAnnouncement, TrajectoryStatus)
 from jugglebot_interfaces.srv import (BallButlerThrow, GoToPose,
                                       InstallSegment, SetString)
@@ -82,6 +84,7 @@ from jugglebot.motion.skills import admissible as adm
 from jugglebot.motion.skills import nominate as nom
 from jugglebot.motion.skills import bump as sk_bump
 from jugglebot.motion.skills import executor as ex
+from jugglebot.motion.skills import human_catch as hcp
 from jugglebot.motion.skills import learner as lr
 from jugglebot.motion.skills import plant_model as pm
 from jugglebot.motion.skills import report as rp
@@ -97,6 +100,7 @@ from jugglebot.motion.skills.schedule import (COLUMNS_HIGHLOW,
                                               ball_label,
                                               columns_ball_timing,
                                               compile_columns,
+                                              compile_human_catch,
                                               compile_one_ball,
                                               compile_reload,
                                               compile_reload_columns,
@@ -201,6 +205,15 @@ _CHECK_NOT_EVALUATED_CODES = frozenset((
 #: knot grid, so ticking at the same rate is the only choice that cannot itself
 #: become the reason a dispatch lands late.
 _TICK_HZ = 40.0
+
+
+def _tick_line_is_evidence(line: str) -> bool:
+    """An executor tick line the operator log must carry (INFO, so it reaches
+    the tee): the MISSED-BALL evidence line that follows a MISSED_CATCH end.
+    It was DEBUG-only, so the tee log lacked it for all 34 MISSED_CATCH ends
+    of the Sitting of 2026-11-18 (BUG-114). Every other tick line stays DEBUG."""
+    return ' MISSED-BALL ' in line
+
 
 #: How far AHEAD of the tick a skill dispatches (``SkillExecutor``'s
 #: ``dispatch_lookahead_s``, 2026-10-02). A reserved fresh origin (THROW/CATCH
@@ -587,6 +600,10 @@ def _columns_feed_aim_site(feed_site: Site, a_site: Site,
 #: operator no longer forces "reload first": the cup decides.
 RELOAD_FIRST = 'reload_first'
 THROW_FIRST = 'throw_first'
+#: PWAY-11 P2 (`human_catch`): the Attempt opens by WAITING for a human Throw
+#: to Catch -- an EMPTY cup, no Ball Butler Feed (so NOT `RELOAD_FIRST`, which
+#: would mark the Attempt fed and ask Ball Butler).
+CATCH_FIRST = 'catch_first'
 _E = ball_possession.EVIDENCE_EMPTY
 _S = ball_possession.EVIDENCE_SEATED
 _CUP_RULE = {
@@ -607,8 +624,13 @@ _CUP_RULE = {
     # columns_1ball_fed's.
     'oval_1ball': {_E: RELOAD_FIRST, _S: THROW_FIRST},
     'oval_1ball_fed': {_E: RELOAD_FIRST, _S: ex.REJECTED_BALL_IN_HAND},
+    # JP-5 polygon walk: ONE ball fed by Ball Butler at P1, so the oval_1ball_fed
+    # rows (EMPTY cup -> reload first; a seated ball refused).
+    'polygon_walk': {_E: RELOAD_FIRST, _S: ex.REJECTED_BALL_IN_HAND},
     'reload': {_E: RELOAD_FIRST, _S: ex.REJECTED_BALL_IN_HAND},
     'magazine': {_E: ex.REJECTED_NO_BALL, _S: THROW_FIRST},
+    # PWAY-11 P2: Catch a human Throw, so the cup must start EMPTY.
+    'human_catch': {_E: CATCH_FIRST, _S: ex.REJECTED_BALL_IN_HAND},
 }
 
 
@@ -624,9 +646,28 @@ def accept_cup_decision(pattern: str, evidence: str) -> Tuple[Optional[str], boo
     decision = _CUP_RULE[pattern][evidence]
     if decision == RELOAD_FIRST:
         return None, True
-    if decision == THROW_FIRST:
+    if decision in (THROW_FIRST, CATCH_FIRST):
         return None, False
     return decision, False
+
+
+#: The `human_catch` node parameters (``human_catch_<name>``): every one an
+#: owner decision of `HumanCatchPolicy`, defaulting to the policy's own
+#: keyword default (ONE source; config/ carries none of them). Read at goal
+#: accept only.
+_HC_HOLDING_LOG_S = 5.0     # HOLDING visibility cadence (no timeout)
+_HC_PARAM_NAMES = ('first_lead_s', 'plan_lead_s', 'max_fit_age_s',
+                   'assoc_radius_mm', 'reaim_authority_mm', 'resend_max',
+                   'mean_n', 'wait_radius_mm', 'wait_deadband_mm', 'clear_s',
+                   'return_s', 'nominal_apex_m')
+_HC_DEFAULTS = {name: p.default for name, p in
+                inspect.signature(hcp.HumanCatchPolicy).parameters.items()}
+#: The code a `human_catch` Attempt ends with when its RETURNING REST cannot
+#: be compiled or sized mid-Attempt (nothing new is sent; the platform rests
+#: where the last Segment left it).
+HC_RETURN_UNSCHEDULABLE = 'REJECTED_HUMAN_CATCH_UNSCHEDULABLE'
+#: a per-Throw plan that raised (not a refusal): ends the Attempt (rule E).
+HC_PLAN_ERROR = 'HUMAN_CATCH_PLAN_ERROR'
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1235,6 +1276,13 @@ class SkillNode(Node):
         #: FEAT-47: Throws lost to an EMPTY Cup (`SkillExecutor.missed_catch_drops`),
         #: captured as each executor retires; read by `_juggle_execute`.
         self._goal_missed_catches = 0
+        #: PWAY-11 P2 U5b: a `human_catch` Attempt's own tally, never added to
+        #: the Feed figures: Throws a Catch was planned for, those confirmed
+        #: seated (`SkillExecutor.human_caught`) and those the cup history
+        #: called MISSED_CATCH (`missed_human_catches`); the rest abstained.
+        self._goal_human_claimed = 0
+        self._goal_human_caught = 0
+        self._goal_human_missed = 0
         #: Ball Butler Feed Catches that seated (one `FeedCatchReport` each,
         #: counted as `_drain_reports` consumes them); the caught side of
         #: `_goal_feed_missed`, read by `_juggle_execute` for the ledger's
@@ -1263,6 +1311,20 @@ class SkillNode(Node):
 
         self.declare_parameter('apex_m', _DEFAULT_APEX_M)
         self.declare_parameter('separation_mm', _DEFAULT_SEPARATION_MM)
+        # JP-5 (`polygon_walk`): the Site count N (>= 3; separation_mm is the
+        # polygon's edge). Read at goal accept ONLY by that pattern.
+        self.declare_parameter('polygon_n', 4)
+        # PWAY-11 P2 (`human_catch`): the policy's owner decisions D3-D8 and
+        # the plan window, each defaulting to `HumanCatchPolicy`'s own
+        # keyword default; the home Site xy as two scalars. Read at goal
+        # accept ONLY by that pattern (`_hc_policy`).
+        for _name in _HC_PARAM_NAMES:
+            self.declare_parameter('human_catch_' + _name,
+                                   _HC_DEFAULTS[_name])
+        self.declare_parameter('human_catch_home_x_mm',
+                               float(_HC_DEFAULTS['home_xy_mm'][0]))
+        self.declare_parameter('human_catch_home_y_mm',
+                               float(_HC_DEFAULTS['home_xy_mm'][1]))
         # JP-10 (`columns_turned`): the Site pair's angle about the Platform
         # origin, degrees. Read ONLY by the `columns_turned` goal (every other
         # pattern builds the straight pair); refused live while a goal is
@@ -1621,6 +1683,12 @@ class SkillNode(Node):
         self.create_subscription(
             ThrowAnnouncement, 'throw_announcements', self._on_announcement,
             10, callback_group=self._sub_cbgroup)
+        # PWAY-11 P1/P2: the Tracker's human Throw events, read ONLY by a
+        # live `human_catch` Attempt (`_on_human_throw`); a plain cache
+        # update into the policy under `_reload_lock`, never blocking.
+        self.create_subscription(
+            HumanThrowEvent, 'human_throws', self._on_human_throw, 10,
+            callback_group=self._sub_cbgroup)
         # R4 reload C1 (2026-09-28): Ball Butler's own state, cached (never
         # blocking, same reason every other subscription here is on its own
         # group) for `_maybe_fire_reload_throw` to read every tick.
@@ -3084,8 +3152,11 @@ class SkillNode(Node):
         """
         if self._goal_end_code:
             return self._goal_end_code
-        if self._executor is not None and self._executor.attempt_ended:
-            return self._executor.end_code or 'ATTEMPT_ENDED'
+        # ONE read: `_on_tick` nulls `_executor` on the timer thread while
+        # `_on_human_throw` calls this holding only `_reload_lock`.
+        executor = self._executor
+        if executor is not None and executor.attempt_ended:
+            return executor.end_code or 'ATTEMPT_ENDED'
         return ''
 
     # ── the tick ────────────────────────────────────────────────────────
@@ -3351,8 +3422,16 @@ class SkillNode(Node):
         already names, checked at the one place still watching once the
         bridge's own executor has retired."""
         with self._reload_lock:
-            reloading = self._reload_ctx is not None
-        if not reloading or not self._hand_lane_refused(time.perf_counter()):
+            ctx = self._reload_ctx
+            reloading = ctx is not None
+            # human_catch with a LIVE executor (a per-Throw CATCH or a REST):
+            # that executor's own observation owns the refusal. Ending here
+            # too would, when the counter moves between this check and the
+            # executor's tick, arm a second hold and print a second end line.
+            hc_live = (reloading and getattr(ctx, 'kind', '') == 'human_catch'
+                       and self._executor is not None)
+        if (not reloading or hc_live
+                or not self._hand_lane_refused(time.perf_counter())):
             return
         self._end_attempt(
             ex.LANE_REFUSED,
@@ -3748,11 +3827,22 @@ class SkillNode(Node):
         # `_end_attempt` call `_maybe_hold_pending_event` outside it.
         stop_code = None
         stop_executor = None
+        hc_end = None
         try:
+            # PWAY-11 P2: a `human_catch` Attempt's between-Executor steps
+            # (WAITING plans, HOLDING watches the cup, RETURNING compiles
+            # the REST), under the tick lock so this is the ONE writer that
+            # swaps its executors in; BEFORE the executor block, so a CATCH
+            # planned here is ticked (dispatched) on this same tick.
+            hc_end = self._hc_service(
+                self.get_clock().now().nanoseconds / 1e9)
             if self._executor is not None:
                 now = self.get_clock().now().nanoseconds / 1e9
                 for line in self._executor.tick(now):
-                    self.get_logger().debug(line)
+                    if _tick_line_is_evidence(line):
+                        self.get_logger().info(line)
+                    else:
+                        self.get_logger().debug(line)
                 self._drain_notices(self._executor)
                 # The Juggle goal result's `per_throw`/`throws`/`caught`
                 # (R4 U5): every finalised release gets exactly one
@@ -3792,11 +3882,21 @@ class SkillNode(Node):
                         self._executor, 'missed_feed_catches', 0) or 0)
                     self._goal_missed_catches += int(getattr(
                         self._executor, 'missed_catch_drops', 0) or 0)
+                    # human_catch's own booking (never the Feed's, above)
+                    self._goal_human_caught += int(getattr(
+                        self._executor, 'human_caught', 0) or 0)
+                    self._goal_human_missed += int(getattr(
+                        self._executor, 'missed_human_catches', 0) or 0)
                     # Columns two-feed chain (P3): ball A's clean retire
                     # opens the chain gate (ctx stays armed, so the line
                     # below stays silent and the goal stays running); an
                     # ended A clears the ctx so the line below reports it.
                     self._resolve_chain_on_retire(self._executor)
+                    # human_catch: a per-Throw / REST executor retired; an
+                    # ending code clears the ctx so the line below reports
+                    # it, a continuing one keeps the Attempt (and the goal)
+                    # running.
+                    self._hc_on_retire(self._executor)
                     self._log_attempt_end(self._executor)
                     self._executor = None
                     with self._reload_lock:
@@ -3808,11 +3908,22 @@ class SkillNode(Node):
                         if self._reload_ctx is None:
                             self._bb_throw_dispatched = False
                             self._bb_throw_release_window = None
+                    # human_catch: the tick that retires an executor also
+                    # runs the between-executor step, so a missed Ball's
+                    # return REST (or the next plan) is swapped in on this
+                    # tick rather than one tick later. No-op without an hc
+                    # ctx; `hc_end` is None here (the first call saw a live
+                    # executor and returned at once).
+                    if hc_end is None:
+                        hc_end = self._hc_service(
+                            self.get_clock().now().nanoseconds / 1e9)
         finally:
             self._tick_lock.release()
         if stop_code is not None:
             self._maybe_hold_pending_event(stop_code, executor=stop_executor)
             self._maybe_cancel_bb_throw(stop_code)
+        if hc_end is not None:
+            self._hc_finish(hc_end)
         self._maybe_signal_goal_done()
 
     def _frame_offset_mm(self):
@@ -4058,6 +4169,36 @@ class SkillNode(Node):
             return self._attempt_label[:-len(' (reload)')]
         return self._attempt_label
 
+    def _release_declined_claim(self, ctx, ended: str) -> bool:
+        """A compile whose executor swap was DECLINED because an END already
+        decided the goal resolves its claim (sitting 2026-11-18 L3 hang): a
+        claimed ``_reload_ctx`` left behind kept `_log_attempt_end` silent,
+        `_maybe_signal_goal_done` false and `_refuse_if_running` true forever,
+        so the Juggle goal never returned. Caller holds `_reload_lock`. Clears
+        ``ctx`` only if it is still current and returns True when no executor
+        is left to report the end (it retired itself on its own tick, before
+        the swap): the caller then prints the end line with ``ended``, the
+        real end code. A still-live refused executor reports through its own
+        retire, which prints the line now that the ctx is gone."""
+        if not ended or self._reload_ctx is not ctx:
+            return False
+        self._reload_ctx = None
+        if self._executor is not None:
+            return False
+        self._reload_throw_inflight = False
+        self._bb_throw_dispatched = False
+        self._bb_throw_release_window = None
+        return True
+
+    def _log_declined_end(self, ended: str) -> None:
+        """The attempt's end line for `_release_declined_claim` (the
+        executor-less form `_end_attempt` prints)."""
+        severity, text = rp.end_line(
+            self._end_label() or 'attempt', ended, '', self._goal_reports,
+            fed=self._attempt_fed,
+            missed_catches=int(self._goal_missed_catches))
+        self._log_at(severity, text)
+
     def _log_attempt_end(self, executor) -> None:
         """The attempt's last line (`report.end_line`), as its executor
         retires -- unless this is the reload's opening REST retiring while
@@ -4208,7 +4349,8 @@ class SkillNode(Node):
     #: and box label is ``schedule.COLUMNS_HIGHLOW``.
     _PATTERNS = ('self_toss', 'hop', 'columns', 'columns_1ball',
                 'columns_1ball_fed', 'columns_turned', 'columns_highlow',
-                'oval_1ball', 'oval_1ball_fed', 'magazine', 'reload')
+                'oval_1ball', 'oval_1ball_fed', 'polygon_walk', 'magazine',
+                'reload', 'human_catch')
 
     def _record_params(self, pattern, apex_m, separation_mm, dwell_s,
                        turned_angle_deg, apex_m_ball2,
@@ -4224,6 +4366,9 @@ class SkillNode(Node):
             if pattern != 'self_toss':
                 out.append(('separation_mm', '%g' % round(separation_mm, 1)))
             out.append(('dwell_s', '%g' % round(dwell_s, 3)))
+            if pattern == 'polygon_walk':
+                out.append(('polygon_n',
+                            '%d' % int(self.get_parameter('polygon_n').value)))
             if pattern == 'columns_turned':
                 out.append(('turned_angle_deg', '%g' % round(turned_angle_deg, 2)))
             if pattern == 'columns_highlow' and apex_m_ball2 is not None:
@@ -4290,14 +4435,43 @@ class SkillNode(Node):
         cup_msg, reload = self._accept_cup_decision(pattern)
         if cup_msg is not None:
             return SimpleNamespace(success=False, message=cup_msg)
+        # BUG-113 (owner 2026-11-18): a FED goal (`reload`: it opens by waiting
+        # for a Ball Butler Feed) outside TRAJECTORY would end itself
+        # ABORTED_MODE_CHANGED on the executor's first tick while Ball
+        # Butler's announcement claimed the Feed context. The fact is the
+        # executor's own (`_observations`: a FRESH `trajectory/status` saying
+        # TRAJECTORY), so a never-seen or stale status refuses too -- exactly
+        # what the first tick would conclude. Before the bookkeeping reset and
+        # any Ball Butler request.
+        if reload and not (
+                self._traj_status_mono > 0.0
+                and (self._obs_clock() - self._traj_status_mono)
+                < _TRAJ_STATUS_STALE_S
+                and self._traj_status.mode == 'TRAJECTORY'):
+            return SimpleNamespace(
+                success=False,
+                message=('%s -- refused: the orchestrator is not in TRAJECTORY '
+                         '(no fresh trajectory/status says so), and %s opens '
+                         'with a Ball Butler Feed that a mode change would '
+                         'strand; switch to TRAJECTORY (Activate), then send '
+                         'the goal again; nothing moves and Ball Butler is not '
+                         'asked' % (ex.REJECTED_NOT_TRAJECTORY, pattern)))
+        if pattern == 'human_catch':
+            refusal = self._hc_accept_refusal()
+            if refusal is not None:
+                return SimpleNamespace(success=False, message=refusal)
 
-        apex_m = (float(goal.apex_m) or float(self.get_parameter('apex_m').value))
+        apex_m =(float(goal.apex_m) or float(self.get_parameter('apex_m').value))
         separation_mm = (float(goal.separation_mm)
                          or float(self.get_parameter('separation_mm').value))
         # One dwell per goal (2026-10-21, owner): the goal's, else the Pattern's default.
         dwell_s = (float(goal.dwell_s) or _pattern_default_dwell_s(pattern))
         n_throws = (int(goal.num_cycles)
                    or int(self.get_parameter('n_throws').value))
+        if pattern == 'human_catch':
+            # The goal's own count of claimed human Throws: 0 = until Stop
+            # (never the self-toss `n_throws` parameter).
+            n_throws = max(0, int(goal.num_cycles))
         turned_angle_deg = 0.0
         if pattern == 'columns_turned':
             # No-motion refusals by name, before anything is built. The level
@@ -4361,6 +4535,9 @@ class SkillNode(Node):
         self._goal_end_code = ''
         self._goal_feed_missed = 0
         self._goal_missed_catches = 0
+        self._goal_human_claimed = 0
+        self._goal_human_caught = 0
+        self._goal_human_missed = 0
         self._goal_feeds_caught = 0
         self._goal_feed_scores = []
         self._goal_record_params = ()
@@ -4384,6 +4561,9 @@ class SkillNode(Node):
         if pattern == 'columns_highlow':
             apex_m_ball2 = float(self.get_parameter('apex_m_ball2').value)
             result = self._highlow_refusal(apex_m, apex_m_ball2)
+        # human_catch IS nominated (I-ADMIT-2, PWAY-11 P2 U5b): the nominal
+        # CATCH at the wait Site from the nominal arrival (D9, PROPOSED);
+        # each live per-Throw CATCH is judged again by the install's gate.
         if result is None and pattern not in ('magazine', 'reload'):
             result = self._nominate_at_accept(
                 pattern, apex_m, separation_mm, dwell_s,
@@ -4418,6 +4598,10 @@ class SkillNode(Node):
             result = self._run_magazine()
         elif pattern == 'reload':
             result = self._run_reload_only(dwell_s)
+        elif pattern == 'human_catch':
+            result = self._run_human_catch(
+                n_throws, self._nomination_config(pattern, apex_m,
+                                                  separation_mm, dwell_s))
         else:
             result = self._run_one_ball(pattern, apex_m, separation_mm,
                                         dwell_s, n_throws, reload)
@@ -4460,7 +4644,8 @@ class SkillNode(Node):
                                   ll.leg_jerk_mmps3, ll.hand_acc_limit_rps2)
 
     def _nomination_config(self, pattern, apex_m, separation_mm, dwell_s, *,
-                           apex_m_ball2=None, angle_deg=0.0, feed_site=None):
+                           apex_m_ball2=None, angle_deg=0.0, feed_site=None,
+                           polygon_n=None):
         """The :class:`nominate.NominationConfig` for one goal: the goal /
         resolved fields plus the node parameters that shape the plan
         (``planner_mode``, ``carry_zvd``, ``columns_feed_site``,
@@ -4473,6 +4658,8 @@ class SkillNode(Node):
             apex_m_ball2=(None if apex_m_ball2 is None
                           else float(apex_m_ball2)),
             angle_deg=float(angle_deg),
+            polygon_n=(int(polygon_n) if polygon_n is not None
+                       else int(self.get_parameter('polygon_n').value)),
             planner_mode=self._planner_mode(), carry_zvd=self._carry_zvd(),
             entry=('hop' if _FED_COLUMNS_HOP_ENTRY
                    and pattern in nom.COLUMNS_FED else 't0'),
@@ -4482,7 +4669,15 @@ class SkillNode(Node):
             feed_site=(feed_site if feed_site is not None
                        else self._columns_feed_site_name()),
             self_toss_site_xy_mm=(float(self.get_parameter('site_x_mm').value),
-                                  float(self.get_parameter('site_y_mm').value)))
+                                  float(self.get_parameter('site_y_mm').value)),
+            # human_catch (PWAY-11 P2 U5b): the wait Site, D3 and D9
+            hc_home_xy_mm=(
+                float(self.get_parameter('human_catch_home_x_mm').value),
+                float(self.get_parameter('human_catch_home_y_mm').value)),
+            hc_first_lead_s=float(
+                self.get_parameter('human_catch_first_lead_s').value),
+            hc_nominal_apex_m=float(
+                self.get_parameter('human_catch_nominal_apex_m').value))
 
     def _turned_feed_site_name(self, separation_mm, angle_deg):
         """``(name, error)``: the fed Site's name for a turned pair (the one
@@ -5145,6 +5340,10 @@ class SkillNode(Node):
             return ('%s -- refused: cup state unknown, %s; %s needs a known '
                     'cup state at start, so nothing moves and Ball Butler is '
                     'not asked' % (code, why, pattern)), False
+        if code == ex.REJECTED_BALL_IN_HAND and pattern == 'human_catch':
+            return ('%s -- refused: ball already in hand -- human_catch '
+                    'catches a human Throw and needs an EMPTY cup; empty the '
+                    'cup first' % (code,)), False
         if code == ex.REJECTED_BALL_IN_HAND:
             return ('%s -- refused: ball already in hand -- %s opens with the '
                     'Ball Butler reload catch and needs an EMPTY cup; empty '
@@ -6156,6 +6355,426 @@ class SkillNode(Node):
                else ' · mocap frame offset %.1f mm' % (offset,)))
         return response
 
+    # ── human_catch (PWAY-11 P2): Catch a human Throw ───────────────────
+    #
+    # One Attempt = one `_reload_ctx` with ``kind == 'human_catch'`` (never
+    # a Feed phase, so no Ball Butler reader acts on it; the reader table is
+    # in the U5a handoff) carrying the `HumanCatchPolicy`. Its executors (the
+    # opening REST, one CATCH per claimed Throw, the RETURNING REST) are
+    # swapped in ONLY by `_hc_service` on the tick, under `_tick_lock` then
+    # `_reload_lock`; `_on_human_throw` only feeds the policy. Every policy
+    # call and ctx field is read and written under `_reload_lock`. The ctx is
+    # released by: Stop (`_stop_attempt`), `_end_attempt` (lane refusal, an
+    # unschedulable return), an ending per-Throw / REST code at retire
+    # (`_hc_on_retire`), or the goal's Throw count (`_hc_service`).
+
+    def _hc_accept_refusal(self) -> Optional[str]:
+        """The accept refusal of a ``human_catch`` goal, or None: a FRESH
+        `trajectory/status` saying TRAJECTORY (BUG-113's test) and the
+        Platform levelled (the executor's own ``levelled`` row), both before
+        anything moves."""
+        status_fresh = (self._traj_status_mono > 0.0
+                        and (self._obs_clock() - self._traj_status_mono)
+                        < _TRAJ_STATUS_STALE_S)
+        if not (status_fresh and self._traj_status.mode == 'TRAJECTORY'):
+            return ('%s -- refused: the orchestrator is not in TRAJECTORY (no '
+                    'fresh trajectory/status says so) and human_catch moves '
+                    'the Platform to Catch; switch to TRAJECTORY (Activate), '
+                    'then send the goal again; nothing moves'
+                    % (ex.REJECTED_NOT_TRAJECTORY,))
+        if not bool(getattr(self._traj_status, 'gravity_correction_loaded',
+                            False)):
+            return ('%s -- refused: the Platform is not levelled (no tilt map '
+                    'applied) and human_catch Catches level; run level, then '
+                    'send the goal again; nothing moves'
+                    % (ex.REJECTED_NOT_LEVELLED,))
+        return None
+
+    def _hc_policy(self, n_throws: int) -> 'hcp.HumanCatchPolicy':
+        """The Attempt's policy from the ``human_catch_*`` parameters (a bad
+        value raises ``ValueError`` from the policy: the goal is refused)."""
+        kw = {name: self.get_parameter('human_catch_' + name).value
+              for name in _HC_PARAM_NAMES}
+        kw['resend_max'] = int(kw['resend_max'])
+        kw['mean_n'] = int(kw['mean_n'])
+        home = (float(self.get_parameter('human_catch_home_x_mm').value),
+                float(self.get_parameter('human_catch_home_y_mm').value))
+        return hcp.HumanCatchPolicy(home_xy_mm=home, n_throws=int(n_throws),
+                                    **kw)
+
+    def _build_hc_executor(self, sched, policy) -> SkillExecutor:
+        """An executor for one ``human_catch`` Schedule (a REST or the
+        per-Throw CATCH): the reload executor's kwargs, the event as its
+        tracker, no Learner and no experience sink (rule G), the policy's
+        re-aim authority (D5, lateral only) and re-send cap (D6)."""
+        return SkillExecutor(
+            sched, self._installer, tracker=self._human_tracker,
+            **self._bump_kwargs(),
+            **self._online_kwargs(),
+            catch_aim_source=self._catch_aim_source(),
+            planner_mode=self._planner_mode(),
+            carry_zvd=self._carry_zvd(),
+            resend_max_per_catch=int(policy.resend_max),
+            learner=None, on_experience=None,
+            lateral_authority_m=float(policy.reaim_authority_mm) / 1000.0,
+            catch_outward_authority_m=None, catch_inward_authority_m=None,
+            observer=self._ball_evidence, observations=self._observations,
+            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
+            seat_window=self._seat_window,
+            contact_probe=self._contact_time,
+            catch_time_offset_s=self._catch_time_offset_s)
+
+    @staticmethod
+    def _hc_rest_schedule(xy, period_s: float, now: float):
+        """A one-REST Schedule to the wait Site ``xy`` (level, hand home, no
+        Ball) with the reload bridge's t0 idiom (`_start_reload`): its
+        dispatch lands one tick after ``now``. Raises ``ValueError``."""
+        site = Site('W', np.array([float(xy[0]), float(xy[1]),
+                                   CATCH_CUP_Z_MM]))
+        probe = compile_reload_wait(site, period_s, now, holds_ball=False)
+        deficit = now - probe.skills[0].dispatch_s()
+        t0 = (now + max(deficit, 0.0) + (1.0 / _TICK_HZ)
+              + _DISPATCH_LOOKAHEAD_S)
+        return compile_reload_wait(site, period_s, t0, holds_ball=False)
+
+    def _run_human_catch(self, n_throws: int, config=None) -> SimpleNamespace:
+        """The ``human_catch`` branch of :meth:`_start_pattern`: the policy
+        from the parameters, the reload's no-motion refusals (opening-REST
+        sizing, frame check, `_prelevel`), then the opening REST to the wait
+        Site and the Attempt's ctx. Nothing is dispatched after that REST
+        until an event passes the policy."""
+        try:
+            policy = self._hc_policy(n_throws)
+        except (ValueError, TypeError) as exc:
+            msg = 'human_catch refused: %s' % (exc,)
+            self.get_logger().debug(msg)
+            return SimpleNamespace(success=False, message=msg)
+        lift_s, lift_err = self._opening_rest_period()
+        if lift_err:
+            return SimpleNamespace(success=False,
+                                   message='human_catch refused: %s' % lift_err)
+        frame_err = self._frame_check_error()
+        if frame_err:
+            return SimpleNamespace(success=False,
+                                   message='human_catch refused: %s' % frame_err)
+        prelevel_err = self._prelevel()
+        if prelevel_err:
+            return SimpleNamespace(
+                success=False, message='human_catch refused: %s' % prelevel_err)
+        now = self.get_clock().now().nanoseconds / 1e9
+        xy = policy.wait_xy_mm.copy()
+        if config is not None:
+            # the wait Site is the nomination's: ONE builder (I-ADMIT-2)
+            try:
+                pat = nom.build_pattern(config, n_throws)
+            except ValueError as exc:
+                return SimpleNamespace(
+                    success=False, message='human_catch refused: %s' % (exc,))
+            if not np.allclose(pat.sites[0].cup_mm[:2], xy, atol=1e-9):
+                return SimpleNamespace(
+                    success=False,
+                    message='human_catch refused: the wait Site of the '
+                            'nomination %s differs from the policy\'s %s'
+                            % (tuple(pat.sites[0].cup_mm[:2]), tuple(xy)))
+        try:
+            sched = self._hc_rest_schedule(xy, float(lift_s), now)
+        except ValueError as exc:
+            return SimpleNamespace(
+                success=False,
+                message='human_catch opening REST refused: %s' % (exc,))
+        executor = self._build_hc_executor(sched, policy)
+        ctx = SimpleNamespace(
+            kind='human_catch', phase='human_catch', announced=True,
+            deadline_mono=math.inf, policy=policy, executor=executor,
+            rest_until_s=float(sched.skills[0].t_abs_s), key=None,
+            latest=None, plan_due=None, return_due=False,
+            bb_ignored_logged=False, hold_since_s=None, hold_log_s=None,
+            plan_error=None)
+        with self._correlation_lock:
+            self._correlation.pop(0, None)
+            self._correlation.pop(1, None)
+        # The lane baseline for the WHOLE Attempt: never reset at a per-Throw
+        # swap, or a lane refusal between Throws would be hidden.
+        self._sched_refused_at_start = self._sched_refused
+        self._force_hold = False
+        self._hold_forced_code = ''
+        self._executor = executor
+        with self._reload_lock:
+            self._reload_throw_inflight = False
+            self._bb_throw_dispatched = False
+            self._bb_throw_release_window = None
+            self._reload_ctx = ctx
+        return SimpleNamespace(
+            success=True,
+            message=('human_catch started: waiting at (%.0f, %.0f) mm for a '
+                     'human Throw · %s' % (xy[0], xy[1],
+                                           ('up to %d Throws' % n_throws)
+                                           if n_throws else 'until Stop')))
+
+    def _human_tracker(self, ball_id) -> Optional[Landing]:
+        """The per-Throw executor's tracker: the latest revision of the
+        CLAIMED event key, already in the schedule frame, or None. Called
+        from `executor.tick` under `_tick_lock` (then `_reload_lock` here:
+        the established order). The identity is the event key, never /balls."""
+        with self._reload_lock:
+            ctx = self._reload_ctx
+            if (ctx is None or getattr(ctx, 'kind', '') != 'human_catch'
+                    or ctx.latest is None):
+                return None
+            evt = ctx.latest
+        return Landing(pos_mm=np.array(evt.landing_mm, dtype=float),
+                       vel_mm_s=np.array(evt.landing_vel_mm_s, dtype=float),
+                       t_land_abs_s=float(evt.landing_time_s), from_fit=True)
+
+    def _on_human_throw(self, msg) -> None:
+        """`human_throws` (PWAY-11 P1): one Tracker event into the policy of
+        a live ``human_catch`` Attempt; ignored otherwise. The Landing goes
+        through the SAME world -> schedule transform as /balls and Ball
+        Butler's announcement; ``fit_age_s`` is used as published. A PLAN is
+        only RECORDED here (``ctx.plan_due``): the tick compiles and swaps it
+        in (`_hc_service`), the one writer of this Attempt's executors."""
+        with self._reload_lock:
+            ctx = self._reload_ctx
+            if ctx is None or getattr(ctx, 'kind', '') != 'human_catch':
+                return
+        pos, vel = self._world_to_schedule(
+            (msg.landing_position.x, msg.landing_position.y,
+             msg.landing_position.z),
+            (msg.landing_velocity.x, msg.landing_velocity.y,
+             msg.landing_velocity.z))
+        evt = hcp.HumanThrowEvt(
+            track_id=int(msg.track_id), flight_seq=int(msg.flight_seq),
+            revision=int(msg.revision),
+            landing_mm=tuple(float(v) for v in pos),
+            landing_vel_mm_s=tuple(float(v) for v in vel),
+            landing_time_s=(float(msg.landing_time.sec)
+                            + float(msg.landing_time.nanosec) * 1e-9),
+            fit_age_s=float(msg.fit_age_s), final=bool(msg.final))
+        now = self.get_clock().now().nanoseconds / 1e9
+        with self._reload_lock:
+            if self._reload_ctx is not ctx or self._ended_code_for_swap():
+                return
+            if (ctx.latest is not None and evt.key == ctx.key
+                    and evt.revision > ctx.latest.revision):
+                ctx.latest = evt               # the live CATCH re-aims on it
+            d = ctx.policy.on_event(evt, now)
+            if d.kind == hcp.PLAN:
+                ctx.plan_due = d
+        if d.log:
+            self.get_logger().info(d.log)
+
+    def _hc_plan(self, ctx, d, now: float) -> List[str]:
+        """Compile and swap in the per-Throw CATCH for PLAN decision ``d``
+        (caller holds `_tick_lock` and `_reload_lock`). A window too short to
+        compile moves nothing and continues (WINDOW_TOO_SHORT). Returns the
+        lines to log."""
+        evt = d.evt
+        lead = float(evt.landing_time_s) - now
+        try:
+            sched = compile_human_catch(evt.landing_mm, evt.landing_vel_mm_s,
+                                        evt.landing_time_s, now,
+                                        _DISPATCH_LOOKAHEAD_S)
+            executor = self._build_hc_executor(sched, ctx.policy)
+        except ValueError as exc:
+            ctx.policy.on_executor_done(ex.WINDOW_TOO_SHORT, moved=False)
+            return ['HUMAN-CATCH-REFUSED %s id %d seq %d: dist %.0f mm lead '
+                    '%.3f s -- nothing moved (%s)'
+                    % (ex.WINDOW_TOO_SHORT, d.key[0], d.key[1], d.dist_mm,
+                       lead, exc)]
+        except Exception as exc:  # noqa: BLE001 -- the claim must not leak
+            # The policy already claimed this event (phase CATCHING): release
+            # it through its done path with a code OUTSIDE the allowlist, so
+            # rule E ends the Attempt (a defect, unlike a window too short, is
+            # not retried on the next Throw). The caller ends it.
+            ctx.policy.on_executor_done(HC_PLAN_ERROR, moved=False)
+            text = '%s: %s' % (type(exc).__name__, exc)
+            self.get_logger().error(
+                'HUMAN-CATCH-PLAN-ERROR id %d seq %d: %s'
+                % (d.key[0], d.key[1], text))
+            ctx.plan_error = text
+            return []
+        ctx.executor = executor
+        ctx.key = d.key
+        ctx.latest = evt
+        ctx.decision = d
+        self._executor = executor
+        self._goal_human_claimed += 1
+        return ['HUMAN-CATCH-PLANNED id %d seq %d rev %d: lead %.3f s, %.0f mm '
+                'from the wait Site' % (d.key[0], d.key[1], evt.revision,
+                                         lead, d.dist_mm)]
+
+    def _hc_service(self, now: float):
+        """The Attempt's between-executor step, every tick under
+        `_tick_lock` (no-op while an executor is live or after an END):
+        OPENING / RETURNING at rest -> WAITING (or the Throw count is done);
+        WAITING plans an event (`plan_due`, or the policy's plan window);
+        HOLDING watches the debounced cup (rule F); RETURNING compiles the
+        REST to the wait Site. Returns None or the end to run after the
+        lock is released (`_hc_finish`)."""
+        lines = []
+        end = None
+        with self._reload_lock:
+            ctx = self._reload_ctx
+            if (ctx is None or getattr(ctx, 'kind', '') != 'human_catch'
+                    or self._executor is not None
+                    or self._ended_code_for_swap()):
+                return None
+            pol = ctx.policy
+            # An event the subscription already claimed (the policy moved to
+            # CATCHING on its PLAN): compile and swap it in now.
+            d, ctx.plan_due = ctx.plan_due, None
+            if d is not None and pol.phase == hcp.CATCHING:
+                lines.extend(self._hc_plan(ctx, d, now))
+                if ctx.plan_error:
+                    return self._hc_end_in_lock(ctx, lines, HC_PLAN_ERROR)
+            if (pol.phase in (hcp.OPENING, hcp.RETURNING)
+                    and not ctx.return_due):
+                if now < ctx.rest_until_s:
+                    return None
+                if pol.phase == hcp.OPENING:
+                    pol.opening_done()
+                else:
+                    pol.return_done()
+                lines.append('HUMAN-CATCH-WAITING at (%.0f, %.0f) mm'
+                             % (pol.wait_xy_mm[0], pol.wait_xy_mm[1]))
+            if pol.phase == hcp.WAITING:
+                if pol.finished(self._goal_human_claimed):
+                    self._reload_ctx = None
+                    end = ('done',)
+                else:
+                    d = pol.poll(now)
+                    if d is not None and d.log:
+                        lines.append(d.log)
+                    if d is not None and d.kind == hcp.PLAN:
+                        lines.extend(self._hc_plan(ctx, d, now))
+                        if ctx.plan_error:
+                            return self._hc_end_in_lock(ctx, lines,
+                                                        HC_PLAN_ERROR)
+            elif pol.phase == hcp.HOLDING:
+                cup = self._cup_state()[0]
+                if pol.observe_cup(cup, now):
+                    ctx.return_due = True
+                    ctx.hold_since_s = None
+                elif ctx.hold_since_s is None:
+                    ctx.hold_since_s = ctx.hold_log_s = float(now)
+                elif now - ctx.hold_log_s >= _HC_HOLDING_LOG_S:
+                    # Visibility only (a dead Cup sensor, a Ball never
+                    # removed): no timeout -- that is the owner's decision.
+                    ctx.hold_log_s = float(now)
+                    lines.append('HUMAN-CATCH-HOLDING cup=%s for %.0f s'
+                                 % (cup, now - ctx.hold_since_s))
+            if pol.phase == hcp.RETURNING and ctx.return_due:
+                ctx.return_due = False
+                xy, moved = pol.begin_return()
+                lift_s, lift_err = self._opening_rest_period()
+                why = lift_err
+                if not why:
+                    try:
+                        sched = self._hc_rest_schedule(
+                            xy, max(float(pol.return_s), float(lift_s)), now)
+                    except ValueError as exc:
+                        why = 'the return REST is refused: %s' % (exc,)
+                if why:
+                    # Decided HERE, under the lock: the ctx is released
+                    # before another tick can read the stale `rest_until_s`
+                    # as "REST arrived" and plan a CATCH.
+                    return self._hc_end_in_lock(
+                        ctx, lines, HC_RETURN_UNSCHEDULABLE,
+                        'human_catch: %s -- nothing more is sent; the '
+                        'platform rests where the last Segment left it'
+                        % (why,))
+                else:
+                    executor = self._build_hc_executor(sched, pol)
+                    ctx.executor = executor
+                    ctx.rest_until_s = float(sched.skills[0].t_abs_s)
+                    self._executor = executor
+                    lines.append('HUMAN-CATCH-RETURNING to (%.0f, %.0f) mm%s'
+                                 % (xy[0], xy[1], ' (the wait Site moved)'
+                                    if moved else ''))
+        for line in lines:
+            self.get_logger().info(line)
+        return end
+
+    def _hc_end_in_lock(self, ctx, lines, code: str, message: str = ''):
+        """Decide an Attempt-ending end INSIDE `_hc_service`'s locks (no
+        executor is live): release the ctx and set the goal's end code the way
+        `_end_attempt`'s no-executor branch does, so no other tick acts on a
+        stale phase. Logs ``lines`` and returns the ('ended', ...) tuple
+        `_hc_finish` prints the end line for, outside the tick lock."""
+        if not message:
+            message = ('human_catch: a per-Throw plan failed (%s) -- nothing '
+                       'more is sent' % (ctx.plan_error,))
+        self._reload_ctx = None
+        self._reload_throw_inflight = False
+        self._bb_throw_dispatched = False
+        self._bb_throw_release_window = None
+        if not self._goal_end_code:
+            self._goal_end_code = code
+        for line in lines:
+            self.get_logger().info(line)
+        return ('ended', code, message)
+
+    def _hc_finish(self, end) -> None:
+        """Run `_hc_service`'s end outside the tick lock: the Throw count's
+        COMPLETED line (the ctx is already released), or the end line of an
+        end decided in the lock (`_hc_end_in_lock`)."""
+        if end[0] == 'done':
+            self._log_declined_end('')
+            return
+        code, message = end[1], end[2]
+        self._maybe_hold_pending_event(code)
+        self._maybe_cancel_bb_throw(code)
+        severity, text = rp.end_line(
+            self._end_label() or 'attempt', code,
+            '' if message == code else message, self._goal_reports,
+            fed=self._attempt_fed,
+            missed_catches=int(self._goal_missed_catches))
+        self._log_at(severity, text)
+
+    def _hc_on_retire(self, executor) -> None:
+        """A ``human_catch`` executor retired (`_on_tick`'s ``done`` block,
+        under `_tick_lock`, BEFORE `_log_attempt_end`). A per-Throw CATCH's
+        code goes to the policy (``code or 'COMPLETED'``: a caught CATCH ends
+        with ''): rule E's END releases the ctx so the end line prints now;
+        every continuing code clears the captured `_goal_end_code` (or
+        `_ended_code_for_swap` would block every later swap) and HOLDING /
+        RETURNING / WAITING follow. A REST that ended with a code ends the
+        Attempt. No-op for any other executor."""
+        lines = []
+        with self._reload_lock:
+            ctx = self._reload_ctx
+            if (ctx is None or getattr(ctx, 'kind', '') != 'human_catch'
+                    or ctx.executor is not executor):
+                return
+            ctx.executor = None
+            pol = ctx.policy
+            code = str(executor.end_code or '')
+            if pol.phase == hcp.CATCHING:
+                ctx.latest = None
+                moved = any(bool(r.accepted) for _i, _s, r in executor.results)
+                out = pol.on_executor_done(code or 'COMPLETED', moved)
+                if out.next == hcp.END_ATTEMPT:
+                    self._reload_ctx = None
+                else:
+                    self._goal_end_code = ''
+                    if out.next == hcp.TO_RETURNING:
+                        ctx.return_due = True
+                        lines.append('HUMAN-CATCH-NOT-CAUGHT %s: returning to the '
+                                     'wait Site' % (code,))
+                    elif out.next == hcp.TO_HOLDING:
+                        lines.append('HUMAN-CATCH-CAUGHT%s: holding until the '
+                                     'cup reads EMPTY for %.1f s'
+                                     % ('' if getattr(executor, 'human_caught',
+                                                      0)
+                                        else ' (not confirmed by the cup '
+                                             'history)', pol.clear_s))
+                if out.log:
+                    lines.append(out.log)
+            elif code:
+                self._reload_ctx = None
+        for line in lines:
+            self.get_logger().info(line)
+
     def _on_announcement(self, msg: ThrowAnnouncement) -> None:
         """Ball Butler's `ThrowAnnouncement` for a reload throw (R4, brief
         step 1c) — the AUTHORITY the reload schedule is compiled from,
@@ -6182,6 +6801,22 @@ class SkillNode(Node):
         """
         if (str(msg.thrower_name) != 'ball_butler'
                 or str(msg.target_id) != self._robot_name):
+            return
+        # human_catch (PWAY-11 P2) has no Feed: Ball Butler's announcement is
+        # never claimed for it (its ctx never reaches 'await_announcement'),
+        # and this says so ONCE per Attempt instead of the reload WARN below.
+        with self._reload_lock:
+            ctx = self._reload_ctx
+            hc = ctx is not None and getattr(ctx, 'kind', '') == 'human_catch'
+            hc_first = hc and not ctx.bb_ignored_logged
+            if hc:
+                ctx.bb_ignored_logged = True
+        if hc:
+            if hc_first:
+                self.get_logger().info(
+                    'human_catch: a Ball Butler announcement is ignored (no '
+                    'Feed in this Pattern; Ball Butler is never asked to '
+                    'throw)')
             return
         with self._reload_lock:
             ctx = self._reload_ctx
@@ -6317,6 +6952,7 @@ class SkillNode(Node):
                         self.get_logger().info(
                             'columns_1ball reload: declining the executor '
                             'swap -- the attempt already ended (%s)' % (ended,))
+                    release_line = self._release_declined_claim(ctx, ended)
                     if installed:
                         self._sched_refused_at_start = self._sched_refused
                         self._force_hold = False
@@ -6329,6 +6965,8 @@ class SkillNode(Node):
             finally:
                 if got_lock:
                     self._tick_lock.release()
+            if release_line:
+                self._log_declined_end(ended)
             if not installed:
                 self.get_logger().info(
                     'columns_1ball reload: the attempt ended (stop, timeout '
@@ -6477,6 +7115,7 @@ class SkillNode(Node):
                     self.get_logger().info(
                         'reload: declining the executor swap -- the attempt '
                         'already ended (%s)' % (ended,))
+                release_line = self._release_declined_claim(ctx, ended)
                 if installed:
                     self._sched_refused_at_start = self._sched_refused
                     self._force_hold = False
@@ -6503,6 +7142,8 @@ class SkillNode(Node):
         finally:
             if got_lock:
                 self._tick_lock.release()
+        if release_line:
+            self._log_declined_end(ended)
         if not installed:
             self.get_logger().info(
                 'reload: the attempt ended (stop, timeout or a refused hand '
@@ -6666,6 +7307,7 @@ class SkillNode(Node):
                     self.get_logger().info(
                         'columns feed: declining the executor swap -- the '
                         'attempt already ended (%s)' % (ended,))
+                release_line = self._release_declined_claim(ctx, ended)
                 if installed:
                     self._sched_refused_at_start = self._sched_refused
                     self._force_hold = False
@@ -6678,6 +7320,8 @@ class SkillNode(Node):
         finally:
             if got_lock:
                 self._tick_lock.release()
+        if release_line:
+            self._log_declined_end(ended)
         if not installed:
             self.get_logger().info(
                 'columns feed: the attempt ended (stop, timeout or a '
@@ -6858,6 +7502,7 @@ class SkillNode(Node):
                 '— proceeding without it' % _STOP_LOCK_WAIT_S)
         ended_now = False
         message = ''
+        hc_phase = ''
         try:
             if self._executor is not None:
                 if not self._executor.attempt_ended:
@@ -6904,17 +7549,35 @@ class SkillNode(Node):
                 # point (the bridge REST's rest tail), so there is nothing
                 # else to command.
                 with self._reload_lock:
-                    was_reloading = self._reload_ctx is not None
+                    ctx = self._reload_ctx
+                    was_reloading = ctx is not None
+                    # human_catch between executors (WAITING / HOLDING / a
+                    # RETURNING REST not yet compiled): no executor is left
+                    # to report the end, so the goal's code is set and the
+                    # end line printed here (after the lock release below).
+                    hc_phase = (ctx.policy.phase if was_reloading
+                                and getattr(ctx, 'kind', '') == 'human_catch'
+                                else '')
+                    if hc_phase and not self._goal_end_code:
+                        self._goal_end_code = 'STOPPED'
                     self._reload_ctx = None
-                message = (
-                    'reload wait cancelled -- BB\'s countdown cannot be '
-                    'aborted once its wind-up starts, so a still-pending '
-                    'throw is sent bb/cancel_throw (see the cancel line); the '
-                    'platform is at rest under the aim point' if was_reloading
-                    else 'no attempt was running')
+                if hc_phase:
+                    message = ('human_catch stopped while %s -- no new move '
+                               'is sent; the last REST (if any) completes '
+                               'to rest'
+                               % hc_phase)
+                else:
+                    message = (
+                        'reload wait cancelled -- BB\'s countdown cannot be '
+                        'aborted once its wind-up starts, so a still-pending '
+                        'throw is sent bb/cancel_throw (see the cancel line); '
+                        'the platform is at rest under the aim point'
+                        if was_reloading else 'no attempt was running')
         finally:
             if got_lock:
                 self._tick_lock.release()
+        if hc_phase:
+            self._log_declined_end(self._goal_end_code)
         if ended_now:
             # An operator stop is a stop of the MACHINE, not only of
             # dispatch (Unit A) — the same hold `_on_tick` installs on an
@@ -7154,11 +7817,29 @@ class SkillNode(Node):
         result.throws, result.caught = rp.summarise(
             self._goal_reports, missed_catches=missed_catches)
         result.per_throw = list(self._goal_outcome_lines)
+        hc_line = ''
+        if pattern == 'human_catch':
+            # PWAY-11 P2 U5b: the Throws are a PERSON's, booked on their own
+            # (`SkillExecutor.human_caught` / `missed_human_catches`), never
+            # as Feeds: planned / confirmed seated here, the rest abstained.
+            hc_n = int(self._goal_human_claimed)
+            hc_c = int(self._goal_human_caught)
+            hc_m = int(self._goal_human_missed)
+            result.throws, result.caught = hc_n, hc_c
+            hc_line = ('human_catch result: %d of %d human Throws caught, %d '
+                       'missed, %d not confirmed (cup history blind or the '
+                       'Attempt ended first); not counted as Feeds'
+                       % (hc_c, hc_n, hc_m, max(0, hc_n - hc_c - hc_m)))
+            result.per_throw = list(result.per_throw) + [hc_line]
+            self._log_at('INFO', hc_line)
         # The ledger counts an unverifiable final Catch (TKT-42, option 2);
         # the Result above and the end line keep the operator's tally. Only a
         # COMPLETED goal, and only a row with a landing (TKT-44).
         rec_throws, rec_caught = rp.record_counts(
             self._goal_reports, outcome, missed_catches=missed_catches)
+        if pattern == 'human_catch':
+            # the ledger row: Throws planned for / Catches confirmed seated
+            rec_throws, rec_caught = result.throws, result.caught
         # Drops to date (FEAT-47): each unreleased-or-uncaught Throw, plus a
         # Ball Butler Feed that missed the Cup (the executor's
         # `missed_feed_catches`, captured at retire as `_goal_feed_missed`; a
@@ -7282,6 +7963,7 @@ class SkillNode(Node):
                    or _pattern_default_dwell_s(pattern))
         apex_m_ball2 = None
         angle_deg = 0.0
+        polygon_n = None
         feed_site = None
         refusal = None
         if pattern == 'columns_highlow':
@@ -7289,6 +7971,9 @@ class SkillNode(Node):
                             or float(self.get_parameter('apex_m_ball2').value))
             res_ = self._highlow_refusal(apex_m, apex_m_ball2)
             refusal = None if res_ is None else res_.message
+        elif pattern == 'polygon_walk':
+            polygon_n = int(vals.get('polygon_n', 0)
+                            or self.get_parameter('polygon_n').value)
         elif pattern == 'columns_turned':
             angle_deg = (vals.get('columns_angle_deg', 0.0)
                          or float(self.get_parameter('columns_angle_deg').value))
@@ -7312,7 +7997,7 @@ class SkillNode(Node):
         res = self._nominate(self._nomination_config(
             pattern, apex_m, separation_mm, dwell_s,
             apex_m_ball2=apex_m_ball2, angle_deg=angle_deg,
-            feed_site=feed_site), with_aim=True)
+            feed_site=feed_site, polygon_n=polygon_n), with_aim=True)
         response.success = res.ok
         response.message = '\n'.join([res.summary] + (
             [] if res.ok else list(res.lines)))

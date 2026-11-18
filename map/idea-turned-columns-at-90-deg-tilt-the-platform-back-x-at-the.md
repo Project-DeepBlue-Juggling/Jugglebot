@@ -2,9 +2,9 @@
 id: IDEA-22
 kind: idea
 title: 'Turned Columns at 90 deg: tilt the Platform back (+x) at the Catch so the ball stops hitting the Platform top'
-status: in_progress
+status: dropped
 created: '2026-11-10'
-updated: '2026-11-15T17:54:07Z'
+updated: '2026-11-18T03:59:55Z'
 owners:
 - night-shift
 priority: medium
@@ -18,6 +18,7 @@ links:
 - idea-jp-10-turned-columns-the-columns-pair-at-fixed-angles-about
 - bug-ball-2-s-first-throw-after-the-feed-catch-lands-about-180-mm
 - logbook/2026-11-13-sitting-debrief.md
+- logbook/2026-11-18-sitting-debrief.md
 parent: pattern-progression-columns-to-centre-and-orbit
 filed_by: claude (sitting debrief 2026-11-10)
 ---
@@ -79,6 +80,14 @@ Your TKT-68 answer: the offline sweep on the held branch (`columns_turned` 90 de
 - Apex below 0.90 is negative at the re-aim limit even at tilt 0. The refusals are LIMIT_JERK on Leg 1 at the second Catch (212k to 227k against 200k).
 - Next: TKT-73 (which tilt and Apex to fly, or park 90 deg).
 
+## Sitting result (2026-11-18 13:05)
+
+- verdict: data
+- notes (split into bullets):
+  - No attempts succeeded through completion, and it was difficult to visually distinguish these attempts from those with tilt_back_deg 0.0, though there were a handful of throws that collided with the top of the Platform. Many of these were recovered from, however some led to the following throws being messy, which cascaded to failure.
+  - Overall, this seemed less reliable than tilt_back_deg 0.0 (sheet 2026-11-18-robot, step 39) [derived: temp/logs/launch_2026-11-18_3.log 11:54-11:55 and launch_2026-11-18_3-1.log. Nomination margin +0.350, with re-aim +0.131 (tilt-back 0.0) and +0.146 (0.5). 0.0 deg: 6 Attempts caught 19, 6, 18, 7, 5, 20. 0.5 deg: 5 Attempts caught 7, 9, 11, 14, 9, all MISSED_CATCH. Ball 2's first Catch after the Feed passed at both settings.
+  - The operator saw a handful of Platform-top strikes at 0.5; the sample cannot separate the two settings. The 3 deg default is refused at Apex 0.975.]
+
 ## Progress
 
 - 2026-11-11: Night Shift 2026-11-11: options written; awaiting the owner's choice in the question ticket
@@ -87,3 +96,5 @@ Your TKT-68 answer: the offline sweep on the held branch (`columns_turned` 90 de
 - 2026-11-13: Failed at the Sitting of 2026-11-13: apex 0.90, tilt-back 3 deg (nominate +0.027, -0.080 at re-aim limit); 5 Attempts all ended at the first Catch after the Feed (LIMIT_JERK x3, NO_ADMISSIBLE_COMMAND x2), best 2. "3 deg tilt-back makes 90 deg flyable" refuted at today limits; Platform-top not reached. Branch origin/night-shift/2026-11-12-IDEA-22 stays held (BUG-91).
 - 2026-11-15: Night Shift 2026-11-15: offline sweep done (TKT-68); only 0.5 deg clears +0.10 at the re-aim limit, Apex 0.95-0.975; branch stays held; unblocked by TKT-73 and a Sitting
 - 2026-11-16: Night Shift 2026-11-16: TKT-73 answered (fly 0 deg then 0.5 deg at Apex 0.975); Sitting steps rewritten; held on night-shift/2026-11-12-IDEA-22; unblocked by a Sitting
+- 2026-11-18: Flown at the Sitting of 2026-11-18, verdict data: at 90 deg, Apex 0.975, tilt-back 0.0 caught 19, 6, 18, 7, 5, 20 and 0.5 caught 7, 9, 11, 14, 9 with Platform-top strikes seen; 0.5 was not better. The branch default of 3 deg is REFUSED at Apex 0.975. Owner decision: the default tilt-back (0.0, or drop the feature). Branch stays held.
+- 2026-11-18: Dropped by the owner 2026-11-18: at 90 deg tilt-back 0.5 was not better than 0.0 and the 3 deg default is refused at Apex 0.975, so turned Columns at 90 deg flies with no tilt-back at the slightly higher Apex 0.975. The held branch night-shift/2026-11-12-IDEA-22 is not merged.

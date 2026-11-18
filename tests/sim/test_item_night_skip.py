@@ -68,7 +68,7 @@ def test_no_skip_keys_is_fine(tmp_path):
     assert "night_skip" not in _load(tmp_path, "bug", "plain").meta
 
 
-@pytest.mark.parametrize("reason", ["sitting", "input-fact", "input-decision", "input-sitting",
+@pytest.mark.parametrize("reason", ["sitting", "input-fact", "input-decision",
                                     "owner-session", "too-large", "frozen-path", "out-of-reach",
                                     "waiting-trigger", "low-priority"])
 def test_every_enum_reason_is_accepted(tmp_path, reason):
@@ -80,6 +80,7 @@ def test_every_enum_reason_is_accepted(tmp_path, reason):
 
 @pytest.mark.parametrize("patch,frag", [
     ({"night_skip": "lazy"}, "not in"),
+    ({"night_skip": "input-sitting", "night_skip_input": "x"}, "not in"),   # dropped 2026-11-18
     ({"night_skip_on": "13-11-2026"}, "YYYY-MM-DD"),
     ({"night_skip_on": "2026-02-30"}, "calendar"),
     ({"night_skip_on": None}, "YYYY-MM-DD"),

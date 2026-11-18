@@ -104,7 +104,7 @@ temp/*
 # temp/runtime/learn/<plant_id>/memory_v2.csv, each with a .seed JSON. Seeded
 # from the tracked files below and merged back at the Sitting debrief
 # (tools/runtime_records.py), so a running launch leaves `git status` empty
-# (Phase C8, plans/active/night-shift-closeout.md; ros_ws/src/jugglebot/
+# (Phase C8, plans/archived/night-shift-closeout.md; ros_ws/src/jugglebot/
 # jugglebot/runtime_paths.py; pinned by tests/ros/test_runtime_writes_untracked.py).
 #
 # The skill-stack learner memory is the one artifact under temp/ that is

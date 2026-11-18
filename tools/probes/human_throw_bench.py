@@ -86,8 +86,16 @@ MIN_THROW_VZ = 500.0
 GAP_S = 1.5          # a phantom this far from every truth release sits in a truth gap
 
 
-def load_frames(bag: Path):
-    """[(t, [xyz arrays], [labels])] of eligible markers, in bag order."""
+def load_frames(bag: Path, with_wall: bool = False):
+    """[(t, [xyz arrays], [labels])] of eligible markers, in bag order.
+
+    `with_wall` appends the bag log time (epoch s) as a fourth element, for the
+    `--t-start/--t-end` clock slices."""
+    cache = _REPO / 'temp' / 'probes' / 'human_throw_bench' / 'frames' / f'{bag.name}.pkl'
+    if with_wall and cache.exists():     # decoding a bag takes ~10 min on the loaded box
+        import pickle
+        with open(cache, 'rb') as fh:
+            return pickle.load(fh)
     mc = R._find_mcap(bag)
     excl = R.make_tracker()
     frames = []
@@ -98,7 +106,13 @@ def load_frames(bag: Path):
         el = excl.eligible_markers(pos, lab)
         ids = {id(p) for p in el}
         keep = [i for i, p in enumerate(pos) if id(p) in ids]
-        frames.append((t, [pos[i] for i in keep], [lab[i] for i in keep]))
+        row = (t, [pos[i] for i in keep], [lab[i] for i in keep])
+        frames.append(row + (t_bag,) if with_wall else row)
+    if with_wall:
+        import pickle
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache, 'wb') as fh:
+            pickle.dump(frames, fh, protocol=4)
     return frames
 
 
@@ -206,17 +220,50 @@ def kmeans(X, k, iters=50):
     return c[order], np.array([remap[int(v)] for v in lab])
 
 
-def replay(frames):
+def human_throw_box():
+    """The BUG-92 Ball Butler frame box, computed exactly as `ball_tracker_node` does."""
+    hw = R.hw
+    hx = (float(hw.TRACKING_HUMAN_THROW_EXCLUSION_X_MIN_MM), float(hw.TRACKING_HUMAN_THROW_EXCLUSION_X_MAX_MM))
+    hz = (float(hw.TRACKING_HUMAN_THROW_EXCLUSION_Z_MIN_MM), float(hw.TRACKING_HUMAN_THROW_EXCLUSION_Z_MAX_MM))
+    return (hx[0], hx[1], hz[0], hz[1]) if hx[0] <= hx[1] and hz[0] <= hz[1] else None
+
+
+def replay(frames, emitters=None, box=False, flights_seen=None, events_out=None):
+    """Replay through the real tracker. The default call is the original replay (no BUG-92
+    box, no emitter). `emitters` ({name: HumanThrowEventEmitter}) are stepped on every frame
+    with the tracker's own balls and Fits and their events appended to `events_out[name]`;
+    `box` applies the node's BUG-92 exclusion box; `flights_seen` ({(id, seq): dict}) records
+    every flight's start speed whether or not an emitter accepts it."""
     R.hw.TRACKING_DETECT_HUMAN_THROWS = True
     trk = R.make_tracker()
     assert trk.detect_human_throws
+    if box:
+        trk.human_throw_exclusion_box = human_throw_box()
     hist = {}
+    log = events_out if events_out is not None else {}
+    for k in (emitters or {}):
+        log.setdefault(k, [])
     for t, pos, lab in frames:
-        for b in trk.process_frame(pos, t, lab):
+        balls = trk.process_frame(pos, t, lab)
+        for b in balls:
             h = hist.setdefault(b.id, {'t0': t, 'p0': np.array(b.position, float),
                                        'v0': np.array(b.velocity, float), 'trace': []})
             h['trace'].append((t, np.array(b.position, float), float(b.landing_time or 0.0),
                                np.array(b.landing_position, float), np.array(b.velocity, float)))
+        if emitters:
+            fits = trk._flight_fits
+            for name, em in emitters.items():
+                log[name].extend(em.step(balls, fits, t))
+            if flights_seen is not None:
+                for b in balls:
+                    f = fits.get(b.id)
+                    if f is None or b.source != 'human_throw':
+                        continue
+                    d = flights_seen.setdefault((b.id, f.flight_seq), {'speed': None, 'start': None})
+                    if d['speed'] is None and f.start_speed_mm_s is not None:
+                        d['speed'] = float(f.start_speed_mm_s)
+                    if d['start'] is None and f.flight_start_t is not None:
+                        d['start'] = float(f.flight_start_t)
     return hist
 
 
@@ -240,6 +287,22 @@ def origin(p, v, z_hand):
     return p[:2] + v[:2] * tau
 
 
+def serve_map(hist, th):
+    """{throw index: [(first serving sample time, tracker id, serving samples)]}.
+
+    A tracker ball serves a Throw when >= 5 of its samples inside the flight lie within
+    MATCH_MM of the truth parabola; detection = its first such sample (a carried-over
+    track counts, which is what the catch would use)."""
+    serve = {}
+    for bid, h in hist.items():
+        for k, x in enumerate(th):
+            near = [s for s in h['trace'] if x['t_rel'] <= s[0] <= x['t_end']
+                    and np.linalg.norm(s[1] - truth_at(x, s[0])) <= 30.0]
+            if len(near) >= 5:
+                serve.setdefault(k, []).append((near[0][0], bid, near))
+    return serve
+
+
 def analyse(bag, args, plane_z):
     frames = load_frames(bag)
     t0 = frames[0][0]
@@ -253,16 +316,7 @@ def analyse(bag, args, plane_z):
         x['hand'] = int(h)
     hist = replay(frames)
 
-    # A tracker ball serves a Throw when >= 5 of its samples inside the flight lie within
-    # MATCH_MM of the truth parabola; detection = its first such sample (a carried-over
-    # track counts, which is what the catch would use).
-    serve = {}
-    for bid, h in hist.items():
-        for k, x in enumerate(th):
-            near = [s for s in h['trace'] if x['t_rel'] <= s[0] <= x['t_end']
-                    and np.linalg.norm(s[1] - truth_at(x, s[0])) <= 30.0]
-            if len(near) >= 5:
-                serve.setdefault(k, []).append((near[0][0], bid, near))
+    serve = serve_map(hist, th)
     served_ids = {bid for v in serve.values() for _, bid, _ in v}
     phantoms = [(bid, h) for bid, h in hist.items() if bid not in served_ids]
 
@@ -367,6 +421,254 @@ def report(res, args, plane_z):
     return L
 
 
+# ----------------------------------------------------------------------------------------
+# --events: score the human Throw EVENT stream (PWAY-11 P1 gate, design-human-catch.md s.5)
+# ----------------------------------------------------------------------------------------
+
+def _pct(v, q):
+    v = [x for x in v if x is not None and np.isfinite(x)]
+    return float(np.percentile(v, q)) if v else float('nan')
+
+
+def _fmt(v, f='{:.2f}'):
+    return f.format(v) if np.isfinite(v) else '-'
+
+
+def match_flight(track_id, flight_start, th, serve_ids, pad_s=0.10):
+    """Index of the truth Throw a flight (track id, first admitted sample time) belongs to, or
+    None: the tracker id serves that Throw and the flight starts between `pad_s` before its
+    release and its end. Independent of the landing the emitter reported (no circularity)."""
+    best = None
+    for k, x in enumerate(th):
+        if track_id in serve_ids.get(k, ()) and x['t_rel'] - pad_s <= flight_start <= x['t_end']:
+            d = abs(flight_start - x['t_rel'])
+            if best is None or d < best[0]:
+                best = (d, k)
+    return None if best is None else best[1]
+
+
+def score_events(events, th, serve_ids, span_s, deadline_s=0.30, gap_s=GAP_S):
+    """Score one event stream against the truth Throws. Pure: no tracker needed.
+
+    `events` are `HumanThrowEvent`s (any object with track_id, flight_seq, revision, stamp,
+    flight_start, landing_position, landing_time, final, start_speed_mm_s); `th` the truth
+    Throws from `throws()`; `serve_ids` {throw index: ids of tracker balls serving it}.
+    A stream is (track_id, flight_seq). Returns per-Throw rows, phantom streams and a summary."""
+    streams = {}
+    for e in events:
+        streams.setdefault((e.track_id, e.flight_seq), []).append(e)
+    for v in streams.values():
+        v.sort(key=lambda e: (e.stamp, e.revision))
+    by_throw, phantoms = {}, []
+    rel = [x['t_rel'] for x in th]
+    for key, evs in streams.items():
+        k = match_flight(key[0], evs[0].flight_start, th, serve_ids)
+        if k is None:
+            idle = not any(abs(evs[0].flight_start - t) <= gap_s for t in rel)
+            phantoms.append(dict(key=key, t=evs[0].stamp, idle=idle, n=len(evs),
+                                 speed=evs[0].start_speed_mm_s))
+        else:
+            by_throw.setdefault(k, []).append(evs)
+    rows = []
+    for k, x in enumerate(th):
+        r = dict(k=k, served=False, lead=None, err_xy=None, err_t=None, n_rev=0, frozen_only=False,
+                 last_err_xy=None, last_err_t=None, seq=None)
+        cross = bool(np.isfinite(x['t_cross']))
+        if k in by_throw:
+            evs = min(by_throw[k], key=lambda v: v[0].stamp)
+            e0 = evs[0]
+            r.update(served=True, n_rev=len(evs), seq=e0.flight_seq,
+                     frozen_only=bool(e0.revision == 0 and e0.final))
+            if cross:
+                r['lead'] = x['t_cross'] - e0.stamp
+                r['err_xy'] = float(np.linalg.norm(np.asarray(e0.landing_position)[:2] - x['xy_cross']))
+                r['err_t'] = (e0.landing_time - x['t_cross']) * 1000.0
+                pre = [e for e in evs if e.stamp <= x['t_cross'] - deadline_s]
+                if pre:
+                    e = pre[-1]
+                    r['last_err_xy'] = float(np.linalg.norm(np.asarray(e.landing_position)[:2] - x['xy_cross']))
+                    r['last_err_t'] = (e.landing_time - x['t_cross']) * 1000.0
+        r['cross'] = cross
+        rows.append(r)
+    cross_rows = [r for r in rows if r['cross']]
+    served = [r for r in rows if r['served']]
+    sc = [r for r in cross_rows if r['served']]
+    good = [r for r in sc if abs(r['err_t']) <= 30.0 and r['err_xy'] <= 50.0]
+    lastgood = [r for r in cross_rows if r['last_err_xy'] is not None
+                and abs(r['last_err_t']) <= 30.0 and r['last_err_xy'] <= 50.0]
+    ph_idle = [p for p in phantoms if p['idle']]
+    summ = dict(
+        n_throws=len(th), n_cross=len(cross_rows), n_served=len(served), n_served_cross=len(sc),
+        lead_p10=_pct([r['lead'] for r in sc], 10), lead_p50=_pct([r['lead'] for r in sc], 50),
+        lead_p90=_pct([r['lead'] for r in sc], 90),
+        err_xy_p50=_pct([r['err_xy'] for r in sc], 50), err_xy_p90=_pct([r['err_xy'] for r in sc], 90),
+        err_t_abs_p50=_pct([abs(r['err_t']) for r in sc], 50),
+        err_t_abs_p90=_pct([abs(r['err_t']) for r in sc], 90),
+        n_good_first=len(good), n_good_last=len(lastgood),
+        n_last=sum(1 for r in cross_rows if r['last_err_xy'] is not None),
+        last_xy_p50=_pct([r['last_err_xy'] for r in cross_rows], 50),
+        last_xy_p90=_pct([r['last_err_xy'] for r in cross_rows], 90),
+        last_t_p50=_pct([abs(r['last_err_t']) for r in cross_rows if r['last_err_t'] is not None], 50),
+        last_t_p90=_pct([abs(r['last_err_t']) for r in cross_rows if r['last_err_t'] is not None], 90),
+        n_frozen_only=sum(1 for r in served if r['frozen_only']),
+        n_phantom=len(phantoms), n_phantom_idle=len(ph_idle),
+        n_phantom_juggle=len(phantoms) - len(ph_idle),
+        phantom_per_min=len(phantoms) / span_s * 60.0 if span_s > 0 else float('nan'),
+        n_events=len(events))
+    return dict(rows=rows, phantoms=phantoms, summary=summ)
+
+
+def classify_flights(flights_seen, th, serve_ids, min_speed=500.0):
+    """One dict per (track id, flight_seq) the tracker produced: its start speed, the truth
+    Throw it belongs to (or None) and whether the D1 rule would reject it."""
+    out = []
+    for (tid, seq), d in sorted(flights_seen.items()):
+        if d['start'] is None:
+            continue
+        k = match_flight(tid, d['start'], th, serve_ids)
+        out.append(dict(id=tid, seq=seq, speed=d['speed'], k=k, start=d['start'],
+                        rejected=bool(d['speed'] is not None and d['speed'] < min_speed)))
+    return out
+
+
+def _fit_only_config(base):
+    from jugglebot.tracking.human_throw_event import HumanThrowEventConfig as C
+    return C(min_start_speed_mm_s=base.min_start_speed_mm_s, rms_mm=1e9)
+
+
+def make_emitter(name, cfg):
+    """The D2-i 'fit valid only' variant is not expressed in the config (the first Fit of a
+    flight has no older Fit to agree with, whatever `stable_gap_ms` / `stable_time_ms` are):
+    the probe skips the stability test in a subclass instead."""
+    from jugglebot.tracking.human_throw_event import HumanThrowEventEmitter as E
+    if name == 'D2-i fit-only':
+        class FitOnly(E):
+            def _stable(self, *a, **k):
+                return True
+        return FitOnly(cfg)
+    return E(cfg)
+
+
+def d2_variants(base=None):
+    """Emitter configs the P1 gate compares. 'default' is the PROPOSED D1/D2 set."""
+    from jugglebot.tracking.human_throw_event import HumanThrowEventConfig as C
+    base = base or C()
+    v = {'default': base,
+         'D2-i fit-only': _fit_only_config(base),
+         'D2-iii 20mm/10ms': C(min_start_speed_mm_s=base.min_start_speed_mm_s, stable_mm=20.0,
+                               stable_gap_ms=10.0, stable_time_ms=10.0),
+         'no-speed-rule': C(min_start_speed_mm_s=0.0),
+         'speed 300': C(min_start_speed_mm_s=300.0)}
+    for rms in (4.0, 6.0, 10.0):
+        for agr in (20.0, 30.0, 50.0):
+            nm = f'rms{rms:g}/agree{agr:g}'
+            v[nm] = C(min_start_speed_mm_s=base.min_start_speed_mm_s, rms_mm=rms, stable_mm=agr)
+    return v
+
+
+def _parse_clock(v, wall0, t_first):
+    """A `--t-start/--t-end` value -> frame time. `HH:MM:SS[.f]` is the local clock of the bag
+    log time; a bare number is seconds from the first frame."""
+    if v is None:
+        return None
+    if ':' in str(v):
+        h, m, sec = str(v).split(':')
+        base = time.localtime(wall0)
+        mid = time.mktime((base.tm_year, base.tm_mon, base.tm_mday, int(h), int(m), 0,
+                           0, 0, base.tm_isdst))
+        return t_first + (mid + float(sec) - wall0)
+    return t_first + float(v)
+
+
+def analyse_events(bag, args, plane_z):
+    import pickle
+    frames4 = load_frames(bag, with_wall=True)
+    t_first, wall0 = frames4[0][0], frames4[0][3]
+    lo = _parse_clock(args.t_start, wall0, t_first)
+    hi = _parse_clock(args.t_end, wall0, t_first)
+    frames = [f[:3] for f in frames4 if (lo is None or f[0] >= lo) and (hi is None or f[0] <= hi)]
+    del frames4
+    t0 = frames[0][0]
+    span = frames[-1][0] - t0
+    th = throws(flights(link(frames), args.fit_tol_mm), plane_z)
+    variants = d2_variants()
+    ems = {n: make_emitter(n, c) for n, c in variants.items()}
+    flights_seen, ev = {}, {}
+    hist = replay(frames, emitters=ems, box=not args.no_box, flights_seen=flights_seen, events_out=ev)
+    serve = serve_map(hist, th)
+    serve_ids = {k: {bid for _, bid, _ in v} for k, v in serve.items()}
+    scores = {n: score_events(ev[n], th, serve_ids, span, args.deadline_s) for n in variants}
+    fl = classify_flights(flights_seen, th, serve_ids)
+    rejections = {n: dict(ems[n].rejections) for n in variants}
+    out = Path(args.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    tag = bag.name + ('_nobox' if args.no_box else '')
+    ev_dump = {n: [dict(vars(e), landing_position=list(map(float, e.landing_position)),
+                        landing_velocity=list(map(float, e.landing_velocity))) for e in ev[n]]
+               for n in ('default',)}
+    with open(out / f"{tag}_events.pkl", 'wb') as fh:
+        pickle.dump(dict(events=ev_dump, truth=[{k: v for k, v in x.items()} for x in th],
+                         flights=fl, t0=t0, span=span), fh)
+    return dict(bag=bag, t0=t0, span=span, th=th, scores=scores, flights=fl,
+                rejections=rejections, variants=variants, box=not args.no_box,
+                first_throw=min((x['t_rel'] for x in th), default=None))
+
+
+def report_events(res, args, plane_z):
+    L = []
+    s = res['scores']['default']['summary']
+    sp = res['span']
+    L.append(f"## {res['bag'].name} (events; BUG-92 box {'ON' if res['box'] else 'OFF'}; span {sp:.1f} s; "
+             f"truth Throws {s['n_throws']}, crossing {s['n_cross']})\n")
+    hdr = ('| variant | Throws served (any / crossing) | frozen-only first events | first lead p10 / p50 / p90 (s) '
+           '| first err xy p50 / p90 (mm) | first err t p50 / p90 (ms) | first good (50 mm, 30 ms) '
+           '| last-before-0.30 s err xy p50 / p90 (mm), t p50 / p90 (ms), good | phantom streams (idle / juggling), per min |')
+    L += [hdr, '|' + '---|' * 9]
+    for n, sc in res['scores'].items():
+        m = sc['summary']
+        L.append(f"| {n} | {m['n_served']}/{m['n_throws']} ({m['n_served_cross']}/{m['n_cross']}) | {m['n_frozen_only']} "
+                 f"| {_fmt(m['lead_p10'])} / {_fmt(m['lead_p50'])} / {_fmt(m['lead_p90'])} "
+                 f"| {_fmt(m['err_xy_p50'], '{:.0f}')} / {_fmt(m['err_xy_p90'], '{:.0f}')} "
+                 f"| {_fmt(m['err_t_abs_p50'], '{:.0f}')} / {_fmt(m['err_t_abs_p90'], '{:.0f}')} "
+                 f"| {m['n_good_first']}/{m['n_served_cross']} "
+                 f"| {_fmt(m['last_xy_p50'], '{:.0f}')} / {_fmt(m['last_xy_p90'], '{:.0f}')}, "
+                 f"{_fmt(m['last_t_p50'], '{:.0f}')} / {_fmt(m['last_t_p90'], '{:.0f}')}, {m['n_good_last']}/{m['n_last']} "
+                 f"| {m['n_phantom']} ({m['n_phantom_idle']} / {m['n_phantom_juggle']}), {m['phantom_per_min']:.1f} |")
+    L.append('')
+    L.append('Rejections by reason (default emitter; phantom_start_speed counts flights, the rest evaluations): '
+             + ', '.join(f"{k} {v}" for k, v in sorted(res['rejections']['default'].items())))
+    fl = res['flights']
+    for seq_name, sel in (('flight_seq 0', [f for f in fl if f['seq'] == 0]),
+                          ('flight_seq >= 1', [f for f in fl if f['seq'] >= 1])):
+        real = [f for f in sel if f['k'] is not None]
+        fake = [f for f in sel if f['k'] is None]
+        rs = [f['speed'] for f in real]
+        L.append(f"- {seq_name}: {len(sel)} flights; matched to a real Throw {len(real)} "
+                 f"(start speed p10/p50/p90 {_fmt(_pct(rs, 10), '{:.0f}')}/{_fmt(_pct(rs, 50), '{:.0f}')}/{_fmt(_pct(rs, 90), '{:.0f}')} mm/s, "
+                 f"{sum(1 for f in real if f['rejected'])} below 500 = real Throws the D1 rule would reject); "
+                 f"unmatched {len(fake)} ({sum(1 for f in fake if f['rejected'])} rejected by D1, "
+                 f"{sum(1 for f in fake if not f['rejected'])} pass D1 and are phantom-event candidates)")
+    L.append('')
+    L.append('Default emitter, per Throw (lead = plane crossing minus first event stamp):\n')
+    L.append('| # | t (s) | seq | events | first lead (s) | first err xy (mm), t (ms) | frozen-only | last-before-0.30 s err xy, t |')
+    L.append('|---|---|---|---|---|---|---|---|')
+    for r, x in zip(res['scores']['default']['rows'], res['th']):
+        if not r['served']:
+            L.append(f"| {r['k']} | {x['t_rel'] - res['t0']:.2f} | - | 0 | NO EVENT | - | - | - |")
+            continue
+        e = f"{r['err_xy']:.0f}, {r['err_t']:+.0f}" if r['err_xy'] is not None else '-'
+        la = f"{r['last_err_xy']:.0f}, {r['last_err_t']:+.0f}" if r['last_err_xy'] is not None else '-'
+        L.append(f"| {r['k']} | {x['t_rel'] - res['t0']:.2f} | {r['seq']} | {r['n_rev']} | "
+                 f"{_fmt(r['lead']) if r['lead'] is not None else '-'} | {e} | {'yes' if r['frozen_only'] else ''} | {la} |")
+    L.append('')
+    ph = res['scores']['default']['phantoms']
+    L.append('Phantom streams (default): ' + '; '.join(
+        f"id {p['key'][0]}/{p['key'][1]} t {p['t'] - res['t0']:.1f} {'IDLE' if p['idle'] else 'near-truth'} v0 {p['speed']:.0f}"
+        for p in ph))
+    L.append('')
+    return L
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('bags', nargs='+', help='rosbag directories (or .mcap files)')
@@ -377,6 +679,13 @@ def main(argv=None):
     ap.add_argument('--hands', type=int, default=2, help='release clusters (stationary hands)')
     ap.add_argument('--fit-tol-mm', type=float, default=6.0, help='parabola fit tolerance, z')
     ap.add_argument('--gate-r-mm', type=float, default=200.0, help='hand-region gate radius, xy')
+    ap.add_argument('--events', action='store_true',
+                    help='score the Human Throw EVENT stream (HumanThrowEventEmitter, PWAY-11 P1 gate): '
+                         'real tracker with the BUG-92 box, proposed D1/D2 plus the D2 sweep')
+    ap.add_argument('--t-start', default=None,
+                    help='--events slice start: seconds from the first frame, or local HH:MM:SS of the bag log time')
+    ap.add_argument('--t-end', default=None, help='--events slice end (same forms)')
+    ap.add_argument('--no-box', action='store_true', help='--events: leave the BUG-92 exclusion box OFF')
     ap.add_argument('--out-dir', default=str(_REPO / 'temp' / 'probes' / 'human_throw_bench'))
     args = ap.parse_args(argv)
     plane_z = args.plane_z if args.plane_z is not None else float(sites.CATCH_CUP_Z_MM)
@@ -384,12 +693,15 @@ def main(argv=None):
          f"`python tools/probes/human_throw_bench.py {' '.join(str(b) for b in args.bags)}` "
          f"(plane {plane_z:.0f} mm, deadline {args.deadline_s:.2f} s, fit tol {args.fit_tol_mm:.0f} mm)\n"]
     for b in args.bags:
-        L += report(analyse(Path(b).expanduser(), args, plane_z), args, plane_z)
+        if args.events:
+            L += report_events(analyse_events(Path(b).expanduser(), args, plane_z), args, plane_z)
+        else:
+            L += report(analyse(Path(b).expanduser(), args, plane_z), args, plane_z)
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    path = out / f"human_throw_bench_{time.strftime('%Y%m%d_%H%M%S')}.md"
+    path = out / f"human_throw_bench{'_events' if args.events else ''}_{time.strftime('%Y%m%d_%H%M%S')}.md"
     path.write_text('\n'.join(L))
-    print('\n'.join(l for l in L if not l.startswith('| ') or l.startswith('| direction') or ' to ' in l))
+    print('\n'.join(l for l in L if args.events or not l.startswith('| ') or l.startswith('| direction') or ' to ' in l))
     print(f"\nreport: {path}")
 
 

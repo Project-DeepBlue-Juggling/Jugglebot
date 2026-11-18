@@ -193,6 +193,7 @@ def _pattern_sig(p):
             getattr(p, 'roles', None))
 
 
+#: reload is not nominated (a live landing); human_catch is, since U5b.
 _PATTERN_CELLS = [(p, ev) for p, ev in _ACCEPTED_CUP_CELLS
                   if p not in ('reload',)]
 

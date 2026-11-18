@@ -132,10 +132,16 @@ SCHED_PROMO_TOL_LEG = (0.002, 0.1, 10.0)     # (rev, rev/s, rev/s^2)
 SCHED_PROMO_TOL_HAND = (0.005, 0.5, 50.0)
 SCHED_RESUME_TOL_LEG = (0.005, 0.3, 60.0)    # accept/refuse out of a stop/hold while armed
 SCHED_RESUME_TOL_HAND = (0.05, 8.0, 1000.0)
-SCHED_GRACE_S = 0.020                        # span-2 cubic continues this long before the stop
-SCHED_GRACE_US = 20000
-SCHED_EXHAUST_US = SCHED_COVER_US + SCHED_GRACE_US
-SCHED_S_MAX = 1.0 + SCHED_GRACE_S / SEGMENT_T_S
+# Per-group grace since FW 44 (owner, 2026-11-18): the span-2 cubic continues
+# this long before the stop. Legs 30 ms (20 through FW 43), the Hand 20 ms.
+SCHED_GRACE_LEG_S = 0.030
+SCHED_GRACE_HAND_S = 0.020
+SCHED_GRACE_LEG_US = 30000
+SCHED_GRACE_HAND_US = 20000
+SCHED_EXHAUST_LEG_US = SCHED_COVER_US + SCHED_GRACE_LEG_US     # 80 ms
+SCHED_EXHAUST_HAND_US = SCHED_COVER_US + SCHED_GRACE_HAND_US   # 70 ms
+SCHED_S_MAX_LEG = 1.0 + SCHED_GRACE_LEG_S / SEGMENT_T_S
+SCHED_S_MAX_HAND = 1.0 + SCHED_GRACE_HAND_S / SEGMENT_T_S
 STREAM_STOP_LEG_ACCEL_RPS2 = 250.0           # hardware_config.yaml trajectory_op.stream_stop_*
 STREAM_STOP_LEG_JERK_RPS3 = 25000.0
 STREAM_STOP_HAND_ACCEL_RPS2 = 4500.0
@@ -176,16 +182,28 @@ def span_eval(P0, V0, P1, V1, s):
     return p, v, a
 
 
-def play_eval(t0_us, P0, V0, P1, V1, P2, V2, now_us):
-    """A frame's 2T cover at ``now_us``.  leg_interp.cpp play_eval."""
+def sched_exhaust_us(first_or_axis):
+    """The group's cover + grace (leg_interp.cpp sched_exhaust_us): the Hand group
+    owns HAND_AXIS and up."""
+    return SCHED_EXHAUST_HAND_US if first_or_axis >= HAND_AXIS else SCHED_EXHAUST_LEG_US
+
+
+def sched_s_max(first_or_axis):
+    """The group's span-2 s at exhaustion (leg_interp.cpp sched_s_max)."""
+    return SCHED_S_MAX_HAND if first_or_axis >= HAND_AXIS else SCHED_S_MAX_LEG
+
+
+def play_eval(t0_us, P0, V0, P1, V1, P2, V2, s_max, now_us):
+    """A frame's 2T cover at ``now_us``, the grace capped at ``s_max``
+    (``sched_s_max`` of the group).  leg_interp.cpp play_eval."""
     t = (now_us - t0_us) * 1e-6
     if t < 0.0:
         t = 0.0
     if t < SEGMENT_T_S:
         return span_eval(P0, V0, P1, V1, t / SEGMENT_T_S)
     s = (t - SEGMENT_T_S) / SEGMENT_T_S
-    if s > SCHED_S_MAX:
-        s = SCHED_S_MAX                      # the grace continuation of the same cubic
+    if s > s_max:
+        s = s_max                            # the grace continuation of the same cubic
     return span_eval(P1, V1, P2, V2, s)
 
 
@@ -949,7 +967,7 @@ class TeensyLegInterp:
     def _sched_eval(self, g, i, now_us):
         if g.phase == SCHED_PLAY:
             return play_eval(g.t0_us, g.p0[i], g.v0[i], g.p1[i], g.v1[i],
-                             g.p2[i], g.v2[i], now_us)
+                             g.p2[i], g.v2[i], sched_s_max(i), now_us)
         if g.phase == SCHED_STOP and g.c1_stop:
             return hand_c1_stop_eval(g.ep[i], g.ev[i], STREAM_STOP_HAND_ACCEL_RPS2,
                                      STREAM_STOP_HAND_JERK_RPS3, (now_us - g.t0_us) * 1e-6)
@@ -978,16 +996,17 @@ class TeensyLegInterp:
             g.phase = SCHED_STOP
             self.sched_stops += 1
             self.sched_hand_c1_stops += 1
-        if g.phase == SCHED_PLAY and (now_us - g.t0_us) >= SCHED_EXHAUST_US:
+        exhaust_us = sched_exhaust_us(g.first)      # FW 44: this group's cover + grace
+        if g.phase == SCHED_PLAY and (now_us - g.t0_us) >= exhaust_us:
             for i in range(g.first, g.last):
                 g.ep[i], g.ev[i], g.ea[i] = span_eval(g.p1[i], g.v1[i],
-                                                      g.p2[i], g.v2[i], SCHED_S_MAX)
+                                                      g.p2[i], g.v2[i], sched_s_max(g.first))
             g.stop_D, capped = stop_duration(g.ev[g.first:g.last], g.ea[g.first:g.last],
                                              g.accel_limit, g.jerk_limit)
             if capped:
                 self.sched_stop_capped += 1
             g.c1_stop = False
-            g.t0_us += SCHED_EXHAUST_US
+            g.t0_us += exhaust_us
             g.phase = SCHED_STOP
             self.sched_stops += 1
         if g.phase == SCHED_STOP and (now_us - g.t0_us) * 1e-6 >= g.stop_D:
@@ -1008,15 +1027,16 @@ class TeensyLegInterp:
             # Handover instant: a playing group whose cover ended inside this tick
             # has not been advanced yet (promotion runs first) — compare at the
             # cover end (leg_interp.cpp sched_apply t_cmp).
-            t_cmp = (g.t0_us + SCHED_EXHAUST_US
-                     if g.phase == SCHED_PLAY and (now_us - g.t0_us) > SCHED_EXHAUST_US
+            exhaust_us = sched_exhaust_us(g.first)  # FW 44: this group's cover + grace
+            t_cmp = (g.t0_us + exhaust_us
+                     if g.phase == SCHED_PLAY and (now_us - g.t0_us) > exhaust_us
                      else now_us)
             dp = dv = da = 0.0
             for i in range(g.first, g.last):
                 po, vo, ao = self._sched_eval(g, i, t_cmp)
                 pn, vn, an = play_eval(f['t_start_us'], f['p0'][i], f['v0'][i],
                                        f['p1'][i], f['v1'][i], f['p2'][i],
-                                       f['v2'][i], t_cmp)
+                                       f['v2'][i], sched_s_max(g.first), t_cmp)
                 dp = max(dp, abs(pn - po))
                 dv = max(dv, abs(vn - vo))
                 da = max(da, abs(an - ao))

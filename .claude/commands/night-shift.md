@@ -4,7 +4,7 @@ description: The Night Shift orchestrator protocol - unattended work on every op
 
 # Night Shift
 
-You are the Night Shift orchestrator (Pathway PWAY-9, `plans/active/night-shift.md`). It is
+You are the Night Shift orchestrator (Pathway PWAY-9, `plans/archived/night-shift.md`). It is
 night, the owner is asleep, nobody will answer a question. You are running headless in the
 clone `~/night-shift/Jugglebot` on `main`, under an optional budget fuse, with the permission settings
 `tools/night_shift_settings.json` installed. `/work-inbox` is this protocol for one Item in an
@@ -78,8 +78,8 @@ Arguments: `$ARGUMENTS`
    findings; behaviour-affecting findings stay open and hold the branch.
 7. **Rely on `CLAUDE.md`, `GLOSSARY.md`, `DOCUMENTATION_GUIDE.md`, `docs/agents/map-writes.md`
    and the Items, not on memory**: the clone's memory directory is empty and stays
-   irrelevant. Glossary words are normative (Sitting, Item, Pathway, Night Shift, Next
-   Sitting Runbook; never "session" for robot time, never "runsheet").
+   irrelevant. Glossary words are normative (Sitting, Item, Pathway, Night Shift, Sitting
+   sheet, Sitting index; never "session" for robot time, never "runsheet").
 8. **Every step ends in a status, never silence**: every Item in the `delta` is Merged, Held,
    Questioned, Unfinished or Skipped in the report, each with a reason (an Item outside the
    delta is not reported individually: it is counted once, in the Skipped section's last
@@ -195,7 +195,7 @@ Map the situation to the reason:
 
 | The Item is Skipped because | `reason` |
 |---|---|
-| needs a Sitting and has no honest offline part (`needs a Sitting`; hardware `bench-leg`, `bench-hand`, `robot`) | `sitting` (or `input-sitting` when its `## Sitting` section is written and the owner flying it is the small input) |
+| needs a Sitting and has no honest offline part (`needs a Sitting`; hardware `bench-leg`, `bench-hand`, `robot`) | `sitting` (whether or not its `## Sitting` section is written: the Sitting index lists what is ready to fly) |
 | waits on a fact only the owner has (a number, a measurement, a yes/no) | `input-fact` |
 | waits on an owner decision (`owner decision`, `awaiting answer`, `needs the owner`, a feasibility note whose build the owner must choose) | `input-decision` |
 | the Item or its fix is the owner's own Session work (`owner: hands`, `In progress under your Session`, `deploy failed, awaiting a Session`) | `owner-session` |
@@ -210,8 +210,8 @@ unblocks the Item. Its `note` is phrased as what the night WILL do once it arriv
 bound at the value you name, then merges if the gate says MERGE"). The owner's list of such inputs
 is generated from these keys (§ 3), so a vague `input` is a vague question. An `input-fact` or
 `input-decision` skip files its question ticket (2h) ONCE, when the skip is first set: a night that finds
-the reason already on the Item and unchanged files nothing and rewrites nothing. `input-sitting` files
-no ticket: it needs the Item's `## Sitting` section instead (P4 format). A **Merge or a Hold clears the Item's
+the reason already on the Item and unchanged files nothing and rewrites nothing. A `sitting` skip files
+no ticket; where the body gives enough, write the Item's `## Sitting` section (row 2 above, P4 format). A **Merge or a Hold clears the Item's
 skip** (`{"item": "<ID>", "clear": true}` in the same batch; an Item with no skip needs no row).
 On a full walk every Item is re-examined and its reason is rewritten or cleared. A question
 ticket and a Pathway never carry a skip.
@@ -416,8 +416,8 @@ one tonight, unless only a Sitting unblocks it (`none`).
    under another owner is not re-owned: the note only. If the Item is a hardware one with
    a `## Sitting` section (or you wrote one), set its `- branch: night-shift/<date>-<ID>`
    line in that section in the same write (edit the body with `mapkit.items.load_item` /
-   `write_item` in a `python -` snippet before the `set-status`), so the Next Sitting
-   Runbook index row carries the branch and `/sitting-debrief` knows what to merge on a pass.
+   `write_item` in a `python -` snippet before the `set-status`), so the Sitting
+   index row carries the branch and `/sitting-debrief` knows what to merge on a pass.
 3. If the unblock is the owner's call, file the hold question ticket (2h, on `main`, in
    the same push as the `set-status`); a Sitting-only hold files none.
 4. Report row under `## Held`: `| <ID> | <title> | night-shift/<date>-<ID> | (<letter>) <reason>. ... | <what unblocks it> | <question-ID or none> |`.

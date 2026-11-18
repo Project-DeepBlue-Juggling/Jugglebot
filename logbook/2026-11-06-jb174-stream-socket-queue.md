@@ -2,7 +2,7 @@
 title: "FEAT-41 / BUG-58: the can-bridge stream socket held ONE packet, so about 1.5 % of setpoints never reached the scheduler; FW 40 / PROTOCOL 12 deepens the queue to 8 and uplinks a downlink ledger"
 type: investigation
 date: 2026-11-06
-status: in-progress
+status: complete
 phase: "FEAT-41 downlink loss accounting"
 related_entries:
   - 2026-11-05-sitting-debrief.md
@@ -105,9 +105,12 @@ The shortfall is the same holding at rest (1.11 % over 148 s) as juggling. The u
 - 2026-11-06 00:52, `pio run -e teensy41 -t upload` (launch down, board was FW 39): **SUCCESS**, 287,744 bytes. Receipt, an 8 s listen with the commit's `teensy_link`: BridgeIdentity `fw_version` 40 in 8 of 8 frames, 80 of 80 HeartbeatT2J decoded at 190 B, all eight ledger counters 0 (no stream yet), host `seq_gaps` 0. The robot was unpowered, so the heartbeat read fault state ODRIVE_FATAL, as it did under FW 39 in the unpowered launch at 00:37; nothing here exercised a lane.
 - NOT yet verified: the loss figure under a live stream. That is the FEAT-41 Sitting row.
 
-## Open
+## Outcome (closed 2026-11-18)
 
-- FEAT-41 Sitting row (five minutes armed at rest): the confirming measurement. Until it passes, the queue as the loss mechanism is a hypothesis.
-- BUG-58: the gc_freeze A/B for `teensy_bridge_node` (the 60 ms pause) is independent of this and still owed.
-- The refused resume after a STOP (profiled rejoin) remains an owner decision on BUG-58.
-- If the row passes, the FW 39 Apex 1.10 ceiling can be revisited (owner): the 14 ms grace was bought to survive losses that should no longer occur.
+The queue fix held; the hypothesis that the missing frames caused the Attempt-ending STOPs did not.
+
+- **The fix is confirmed.** The FEAT-41 Sitting row passed on 2026-11-06 (three `downlink summary` lines over 12,613 setpoints: lost 0, `queue_dropped` +0) and FEAT-41 closed. At the 2026-11-07 Sitting 0 of 83,340 setpoints were lost.
+- **Withdrawn: one missing frame per clean-host STOP.** On 2026-11-07 both LANE_REFUSED ends had sent equal to received, and 20 of 23 STOPs ran out of cover with on-time frames. BUG-58 was reframed (2026-11-08) as a cover that ends while frames arrive on time. The next step became the firmware STOP record (FEAT-46, FW 42), not this ledger.
+- **The `seq_gaps` +3 steps were not loss.** Each came with received equal to sent, which fits two datagrams swapped by the unlocked host sequence counter (an inference). `d8fce21d` (2026-11-14) put that counter under a lock. With that fix, the summary WARN's reading of `seq_gaps` as loss before the firmware socket is correct.
+- **Most "clean" Hand STOPs were by design.** Under a plan with no Hand track the Hand group's cover lapses; the STOP WARN called these clean-host until BUG-119.
+- **The items listed here as open went elsewhere.** The per-group stamp-hole counter was superseded by the FEAT-46 record's stamp-gap verdict and the drain-discard counter (BUG-89). The `gc_freeze` A/B was flown on 2026-11-13 and 2026-11-18 and stays with BUG-58. The Hand C1 grace stays at 14 ms (owner, `2026-11-06-hand-c1-grace-stays-14-ms`). The refused resume stays an owner decision on BUG-58. BUG-66 was dropped into BUG-58 on 2026-11-18.

@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.ros._node import find_node
+
 ROOT = Path(__file__).resolve().parents[2]
 BUNDLE = ROOT / "ros_ws" / "gui" / "lib" / "mcap-bundle.min.js"
 VENDORED = ROOT / "ros_ws" / "gui" / "lib" / "VENDORED.md"
@@ -52,13 +54,16 @@ def test_lockfile_resolves_the_pins():
         assert lock["node_modules/" + name]["version"] == ver
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+NODE = find_node()
+
+
+@pytest.mark.skipif(NODE is None, reason="node not installed")
 def test_node_import_exposes_named_exports(tmp_path):
     (tmp_path / "package.json").write_text('{"type":"module"}')
     shutil.copy(BUNDLE, tmp_path / "b.js")
     js = ("import * as m from './b.js';"
           "console.log(JSON.stringify(Object.keys(m).sort()),"
           "typeof m.McapIndexedReader, typeof m.parse, typeof m.MessageReader)")
-    out = subprocess.run(["node", "--input-type=module", "-e", js], cwd=tmp_path,
+    out = subprocess.run([NODE, "--input-type=module", "-e", js], cwd=tmp_path,
                          capture_output=True, text=True, check=True).stdout.split()
     assert out == ['["McapIndexedReader","MessageReader","parse"]', "function", "function", "function"]

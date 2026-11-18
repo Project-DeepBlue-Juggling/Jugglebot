@@ -4,7 +4,7 @@ kind: bug
 title: 'Firmware scheduler STOPs a streamed lane while frames arrive on time and the host stream is clean: LANE_REFUSED ends, cause unseen'
 status: in_progress
 created: '2026-11-02'
-updated: '2026-11-13T05:58:36Z'
+updated: '2026-11-18T02:08:58Z'
 owners:
 - jugglebot-50
 priority: high
@@ -26,6 +26,7 @@ links:
 - logbook/2026-11-07-sitting-debrief.md
 - feature-firmware-stop-record-report-why-a-scheduler-cover-ended
 - logbook/2026-11-13-sitting-debrief.md
+- logbook/2026-11-18-sitting-debrief.md
 filed_by: claude
 night_skip: sitting
 night_skip_on: '2026-11-15'
@@ -137,6 +138,13 @@ Recommendation: 1, flown at the next Sitting with the instrumentation, then 2 or
 - verdict: pending
 - notes: (sheet 2026-11-13-robot, step 43)
 
+## Sitting result (2026-11-18 13:05)
+
+- verdict: data
+- notes (split into bullets):
+  - Too much output here for me to review. Have a Sonnet agent check over this. (sheet 2026-11-18-robot, step 49) [derived: All five tee logs: 12 LANE_REFUSED ends, each with GC_PROBE lines from both stream nodes within 1 s of its STOP WARN, and each WARN carries its verdict, counters and frame ages. 4 of the 12 had a forward gap over 70 ms;
+  - 3 follow a 47-54 ms gen-2 GC pause in trajectory_node (launch 1 lines 3450 and 3979, launch 2 line 2798), so the starvation itself still happens. The owner flipped the literal pass to data on 2026-11-18: the record exists but the starvation still happens, so the Item stays open.]
+
 ## Progress
 
 - 2026-11-03: Both probes landed 2026-11-03 (owner call on TKT-32 plus the Sitting-findings follow-up): opt-in host GC and sched probe, and FW 38 / PROTOCOL 11 heartbeat sched counters, frame-age stats and the STOP WARN third verdict. Body rewritten: two classes (host gap on 11-02, clean-host STOP on 11-03). Sitting row written; flash and colcon build owed before it (detail below)
@@ -148,3 +156,4 @@ Recommendation: 1, flown at the next Sitting with the instrumentation, then 2 or
 - 2026-11-08: Reframed (owner): 2026-11-07 Sitting, row passed literally (both LANE_REFUSED ends under gc_probe). Starvation and lost frames refuted for both ends (lost 0 of 83,340); 20 of 23 STOPs had a clean host and on-time frames. Next is the firmware STOP record, FEAT-46 (detail above).
 - 2026-11-08: Owner decision: the Hand hold coming 113 ms after a C1 stop stays as is (the fail-loud guard rule is kept; the host cannot react inside 11 ms). Revisit after FEAT-46 shows why STOPs happen; 1 of 23 STOPs on 2026-11-07 became a Fault.
 - 2026-11-13: Sitting of 2026-11-13: pass line met by the letter (2 LANE_REFUSED ends, each with GC_PROBE lines from both nodes within 1 s), but its 'host stream clean' premise is refuted: the :5557 drain discarded a knot (BUG-89). gc_freeze removed GC pauses (launch 2: none in 12.5 min) but not the drops.
+- 2026-11-18: Flown 2026-11-18, verdict data (owner flipped the literal pass): all 12 LANE_REFUSED ends carry GC_PROBE lines and the STOP verdict. 3 ends followed a 47-54 ms gen-2 GC pause in trajectory_node, two at +72.9 s into a 200-cycle oval; 60-95 ms pauses also appear with gc_freeze on. Next: gc.get_stats in GC_PROBE and one 200-cycle oval with gc_freeze:=true.

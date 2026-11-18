@@ -40,12 +40,19 @@ def test_synthetic_all_modes_match_motor_guard():
     assert max_dvel < 1e-6, f"synthetic Δvel {max_dvel:.3e} >= 1e-6"
 
 
+#: A committed recording (BUG-103). The test used to replay the newest
+#: ``temp/logs/mpc_*.csv``: gitignored logs of the MPC chain deleted 2026-09-01,
+#: so it skipped silently on any box whose ``temp/`` was clean. This is the
+#: 200-row stream the xref README's acceptance figure was measured on, cut to
+#: the twelve columns ``run_recorded_xref`` reads.
+_RECORDED_CSV = os.path.join(
+    _REPO, "tests", "fixtures", "hermite_xref", "mpc_20260524_153227.csv")
+
+
 def test_recorded_stream_matches_motor_guard():
-    csv = xref._newest_csv()
-    if not csv:
-        pytest.skip("no temp/logs/mpc_*.csv recorded data available")
+    csv = _RECORDED_CSV
     max_dpos, max_dvel, n = xref.run_recorded_xref(csv)
-    assert n >= 3
+    assert n == 200
     assert max_dpos < 1e-6, f"recorded Δpos {max_dpos:.3e} >= 1e-6 ({csv})"
     assert max_dvel < 1e-6, f"recorded Δvel {max_dvel:.3e} >= 1e-6 ({csv})"
 

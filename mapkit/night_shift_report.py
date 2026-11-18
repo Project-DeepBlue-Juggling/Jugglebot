@@ -31,7 +31,7 @@ LEGACY_SECTIONS = tuple(s for s in SECTIONS if s != INPUTS_SECTION)
 #: The generated section's header row (``python -m mapkit night inputs`` writes it).
 INPUTS_HEADER = ("Item", "What it is", "Input", "Exactly what is needed",
                  "What the night then does", "Respond in")
-INPUT_TYPES = ("fact", "decision", "sitting")
+INPUT_TYPES = ("fact", "decision")
 #: Skipped ends with exactly this one line: the count of Items the night did not re-examine.
 _UNCHANGED_LINE = re.compile(
     r"^unchanged: \d+ Items not re-examined \(reasons on each Item: night_skip\)$")

@@ -57,6 +57,22 @@ def test_columns_default_working_point_viable(capsys):
     assert 'separation 125 mm, dwell 0.27 s' in out
 
 
+def test_polygon_walk_default_square_viable_and_the_hop_edge_refused(capsys):
+    """JP-5 (2026-11-18): the square at the default point (edge 100 mm, apex
+    0.9, dwell 0.27; worst margin 0.189 at 600/8000/200000/4500) nominates;
+    the Hop's 250 mm edge is refused (workspace gate off here: the nomination
+    walker finds the QP infeasible).  ``--learn`` has no polygon sim run."""
+    P4 = ['--limits', '600', '8000', '200000', '4500']
+    rc, out = _run(capsys, ['--nominate', '--pattern', 'polygon_walk'] + P4)
+    assert rc == 0
+    assert out.startswith('nomination OK: polygon_walk apex 0.90 m, '
+                          'separation 100 mm, dwell 0.27 s')
+    rc, out = _run(capsys, ['--nominate', '--pattern', 'polygon_walk',
+                            '--separation-mm', '250', '--no-search'] + P4)
+    assert rc == 1
+    assert out.startswith('nomination REFUSED: polygon_walk')
+
+
 @pytest.mark.parametrize('extra', [['--learn'], ['--reload'],
                                    ['--seeds', '1'], ['--viewer']])
 def test_conflicting_flags_error(extra, capsys):

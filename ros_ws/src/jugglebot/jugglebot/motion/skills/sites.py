@@ -139,6 +139,29 @@ class Site:
         return np.array([self.cup_mm[0], self.cup_mm[1], float(rest_z_mm)])
 
 
+def polygon_sites(n: int, edge_mm: float) -> Tuple[Site, ...]:
+    """The ``polygon_walk`` Sites (JP-5, IDEA-9): a regular ``n``-gon of side
+    ``edge_mm`` centred on the Platform centre, ``n >= 3``, in walk order
+    (``P1`` .. ``Pn``, counter-clockwise).  ``P1`` is at (-R, 0), where
+    :func:`columns_sites` puts its ``P1`` (nearest Ball Butler, the Feed Site),
+    with R = edge / (2 sin(pi / n)); a square of edge 100 mm has R = 70.7 mm.
+    The ball is thrown ``P(k)`` -> ``P(k+1)``, so ``edge_mm`` is the Throw's
+    lateral travel (the Hop's ``separation_mm`` is the same quantity)."""
+    n = int(n)
+    if n < 3:
+        raise ValueError('polygon_n must be >= 3, got %r' % (n,))
+    if not float(edge_mm) > 0.0:
+        raise ValueError('edge_mm (separation_mm) must be > 0, got %r'
+                         % (edge_mm,))
+    radius = float(edge_mm) / (2.0 * math.sin(math.pi / n))
+    out = []
+    for k in range(n):
+        a = math.pi + 2.0 * math.pi * k / n
+        out.append(Site('P%d' % (k + 1), np.array(
+            [radius * math.cos(a), radius * math.sin(a), CATCH_CUP_Z_MM])))
+    return tuple(out)
+
+
 def columns_sites(separation_mm: float,
                   angle_deg: float = 0.0) -> Tuple[Site, Site]:
     """The two columns-pattern sites, ``separation_mm`` apart, straddling x=0.

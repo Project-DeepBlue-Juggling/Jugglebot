@@ -19,7 +19,8 @@ import pytest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _GUI_JS = os.path.abspath(os.path.join(_HERE, '..', '..', 'ros_ws', 'gui', 'js'))
-_NODE = shutil.which('node') or shutil.which('nodejs')
+from tests.ros._node import find_node  # noqa: E402
+_NODE = find_node()
 
 pytestmark = pytest.mark.skipif(_NODE is None, reason='node not found')
 

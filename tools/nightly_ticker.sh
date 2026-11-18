@@ -5,7 +5,7 @@
 # Problem it solves: every Claude session on this box used to read
 # temp/reports/nightly/status at start. With several sessions a day that is the
 # same RED read and re-diagnosed N times — often a RED that was only one session's
-# unfinished work-in-progress at 04:00 (the nightly runs against the WORKING TREE).
+# unfinished work-in-progress at 02:00 (the nightly runs against the WORKING TREE).
 #
 # Mechanism: the nightly RAISES the ticker right after it writes `status`. The
 # FIRST session to run `check` afterwards CLAIMS it with an atomic rename(2) —
@@ -26,7 +26,18 @@
 # Files, all under temp/reports/nightly/ (gitignored, like `status`):
 #   ticker.raised   "<run-iso> <status line>"                 written by `raise`
 #   ticker.lowered  "<run-iso> handled <ack-iso> by <who>"    written by the claimant
+#   ticker.claim.<pid>  the raised ticker while a claimant holds it (renamed, then touched)
 # `raise` removes any old `ticker.lowered`, so each run starts a fresh cycle.
+#
+# Dead claims (BUG-100): a claimant killed between its rename and its `ticker.lowered`
+# write would leave ticker.claim.<pid> for good, and every later `check` would print
+# "claim in progress" and nobody would read the result. So a claim whose mtime is older
+# than NIGHTLY_TICKER_CLAIM_MAX_AGE_S (default 300 s) is DEAD: the next `check` takes it
+# over by renaming it to its own ticker.claim.<pid> (atomic, the loser of a race gets
+# ENOENT and falls through), touches it, and proceeds as a fresh claimant, so the result
+# is read exactly once. A claimant touches its claim right after the rename (the rename
+# keeps the raised file's old mtime); the microsecond between the two is the only window
+# in which a live claim could look dead. A newer ticker.raised wins over a dead claim.
 # NIGHTLY_REPORTS_DIR overrides the directory (tests).
 
 set -euo pipefail
@@ -40,6 +51,7 @@ STALE_AFTER_S=$((2 * 24 * 3600))
 # The auto-pull's status line (tools/systemd/jugglebot-pull.sh); PULL_STATUS_FILE overrides (tests).
 PULL_STATUS="${PULL_STATUS_FILE:-$REPO_ROOT/temp/reports/pull/status}"
 PULL_LOUD_AFTER_S=600
+CLAIM_MAX_AGE_S="${NIGHTLY_TICKER_CLAIM_MAX_AGE_S:-300}"
 
 usage() { sed -n '2,30p' "${BASH_SOURCE[0]}" >&2; exit 2; }
 
@@ -80,6 +92,28 @@ check() {
   pull_line
 }
 
+# Remove every claim file older than the max age except $1 (our own).
+drop_dead_claims() {
+  local f now mtime
+  now="$(date +%s)"
+  for f in "$REPORTS"/ticker.claim.*; do
+    [[ -f "$f" && "$f" != "$1" ]] || continue
+    mtime="$(stat -c %Y "$f" 2>/dev/null)" || continue
+    if (( now - mtime > CLAIM_MAX_AGE_S )); then rm -f "$f"; fi
+  done
+  return 0
+}
+
+# We hold $1 (a claim file): write the lowered line, release the claim, report it.
+finish_claim() {
+  local claim="$1" who="$2" run_iso line
+  run_iso="$(cut -d' ' -f1 "$claim")"
+  line="$(cut -d' ' -f2- "$claim")"
+  printf '%s handled %s by %s\n' "$run_iso" "$(date -Iseconds)" "$who" >"$LOWERED"
+  rm -f "$claim"
+  echo "CLAIMED $line"
+}
+
 check_verdict() {
   local who="${NIGHTLY_TICKER_WHO:-pid$$/ppid$PPID/$(whoami)}"
   while (( $# )); do
@@ -90,14 +124,23 @@ check_verdict() {
   done
   local claim="$REPORTS/ticker.claim.$$"
   if mv -f "$RAISED" "$claim" 2>/dev/null; then       # the atomic claim; losers get ENOENT
-    local run_iso line
-    run_iso="$(cut -d' ' -f1 "$claim")"
-    line="$(cut -d' ' -f2- "$claim")"
-    printf '%s handled %s by %s\n' "$run_iso" "$(date -Iseconds)" "$who" >"$LOWERED"
-    rm -f "$claim"
-    echo "CLAIMED $line"
+    touch "$claim"                                     # mv keeps the raised file's old mtime
+    drop_dead_claims "$claim"                          # a newer raise supersedes a dead claim
+    finish_claim "$claim" "$who"
     return 0
   fi
+  local f now mtime
+  now="$(date +%s)"
+  for f in "$REPORTS"/ticker.claim.*; do               # unmatched glob stays literal: -f fails
+    [[ -f "$f" && "$f" != "$claim" ]] || continue
+    mtime="$(stat -c %Y "$f" 2>/dev/null)" || continue
+    (( now - mtime > CLAIM_MAX_AGE_S )) || continue
+    if mv -f "$f" "$claim" 2>/dev/null; then           # atomic takeover; a racing loser gets ENOENT
+      touch "$claim"                                   # else the next racer sees it dead too
+      finish_claim "$claim" "$who"
+      return 0
+    fi
+  done
   if [[ -f "$LOWERED" ]]; then
     local run_iso age
     run_iso="$(cut -d' ' -f1 "$LOWERED")"

@@ -1206,6 +1206,10 @@ def _correlator_is_legacy(cfg: 'SelfTossGateConfig') -> bool:
     return cfg.correlator == 'head'
 
 
+#: ``polygon_walk``'s Site count in the sim gate (the node's ``polygon_n``).
+_POLYGON_N = 4
+
+
 def _sites_for(cfg: 'SelfTossGateConfig') -> tuple:
     """``cfg.pattern``'s site tuple -- ``('self_toss',)`` slices out just P1
     (the R3 single-site operating point, unchanged); ``'hop'`` (R4) keeps
@@ -1224,8 +1228,12 @@ def _sites_for(cfg: 'SelfTossGateConfig') -> tuple:
         return (s0, s1)
     if cfg.pattern == 'self_toss':
         return (s0,)
-    raise ValueError("cfg.pattern must be 'self_toss', 'hop' or 'oval_1ball', "
-                     "got %r" % (cfg.pattern,))
+    if cfg.pattern == 'polygon_walk':
+        # JP-5: a regular _POLYGON_N-gon whose EDGE is cfg.separation_mm
+        # (OneBallPattern(roles='polygon')); P1 = the Feed Site, as columns' P1.
+        return sites.polygon_sites(_POLYGON_N, cfg.separation_mm)
+    raise ValueError("cfg.pattern must be 'self_toss', 'hop', 'oval_1ball' or "
+                     "'polygon_walk', got %r" % (cfg.pattern,))
 
 
 #: The ACTIVATE park is documented (and requested) as "hand 0 rev", which
@@ -2251,7 +2259,9 @@ class SkillsGate:
         pattern = sk.OneBallPattern(
             sites=tuple(pattern_sites), apex_m=cfg.apex_m,
             dwell_s=cfg.dwell_s, n_throws=n_throws,
-            roles='fixed' if cfg.pattern == 'oval_1ball' else 'alternate')
+            roles=('fixed' if cfg.pattern == 'oval_1ball'
+                   else 'polygon' if cfg.pattern == 'polygon_walk'
+                   else 'alternate'))
         sched = sk.compile_one_ball(pattern, t0_abs_s)
 
         ball_state = {0: dict(estimator=BallisticEstimator(bal.G_VEC_MMS2),
@@ -3509,6 +3519,10 @@ class SkillsGate:
             pattern = sk.OneBallPattern(
                 sites=_sites_for(self.cfg), apex_m=self.cfg.apex_m,
                 dwell_s=self.cfg.dwell_s, n_throws=n_throws, roles='fixed')
+        elif self.cfg.pattern == 'polygon_walk':
+            pattern = sk.OneBallPattern(
+                sites=_sites_for(self.cfg), apex_m=self.cfg.apex_m,
+                dwell_s=self.cfg.dwell_s, n_throws=n_throws, roles='polygon')
         else:
             pattern = sk.OneBallPattern(sites=(site,), apex_m=self.cfg.apex_m,
                                         dwell_s=self.cfg.dwell_s,
@@ -3851,6 +3865,8 @@ _NOMINATE_DEFAULTS = {
     'columns_highlow':   (1.0, 100.0, 0.27),
     'oval_1ball':        (0.95, _OVAL_SEPARATION_MM, _OVAL_DWELL_S),
     'oval_1ball_fed':    (0.95, _OVAL_SEPARATION_MM, _OVAL_DWELL_S),
+    # JP-5: the square's EDGE (nominated 2026-11-18: 100 mm/0.27 s margin 0.189)
+    'polygon_walk':      (0.9, 100.0, 0.27),
 }
 _NOMINATE_DEFAULTS_HELP = '; '.join(
     '%s %g/%g/%g' % ((k,) + v) for k, v in _NOMINATE_DEFAULTS.items()
@@ -4150,6 +4166,7 @@ def main(argv=None) -> int:
                      '--feed-speed-mmps set')
         default_sep = (_HOP_SEPARATION_MM if args.pattern == 'hop'
                       else _OVAL_SEPARATION_MM if args.pattern == 'oval_1ball'
+                      else 100.0 if args.pattern == 'polygon_walk'
                       else _SELF_TOSS_SEPARATION_MM)
         separation_mm = (float(args.separation_mm)
                          if args.separation_mm is not None else default_sep)

@@ -506,3 +506,24 @@ def test_first_changed_skill_is_the_one_carrying_throw_j(ckw, j):
     assert b[j] != a[j]
     assert new.skills[j].then_throw is not None
     assert new.t0_abs_s == sched.t0_abs_s
+
+
+def test_a_field_omitted_when_none_is_still_a_difference_once_set():
+    """PWAY-11 (2026-11-18): ``Skill.catch_open_abs_s`` postdates the golden and
+    is omitted from the serialisation only while it is None.  A Skill that
+    carries a value must serialise it, so a Columns compile that started
+    setting it would fail the golden."""
+    golden = _load_golden_module() if '_load_golden_module' in globals() else None
+    if golden is None:
+        spec = importlib.util.spec_from_file_location('columns_golden', _GOLDEN_PY)
+        golden = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(golden)
+    assert ('Skill', 'catch_open_abs_s') in golden._OMITTED_WHEN_NONE
+
+    @dataclasses.dataclass
+    class Skill:                      # same class name as the real one, on purpose
+        catch_open_abs_s: object = None
+        t0: float = 0.0
+
+    assert 'catch_open_abs_s' not in golden.ser(Skill())
+    assert golden.ser(Skill(catch_open_abs_s=1.5))['catch_open_abs_s'] == (1.5).hex()

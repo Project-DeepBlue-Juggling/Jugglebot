@@ -34,6 +34,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ThrowAnnouncement.msg"
   "msg/BallState.msg"
   "msg/BallStateArray.msg"
+  "msg/HumanThrowEvent.msg"
   "msg/HandTelemetryMessage.msg"
   "msg/BallButlerHeartbeat.msg"
   "msg/BallButlerCalibrationResult.msg"

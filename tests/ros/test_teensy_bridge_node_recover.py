@@ -421,10 +421,11 @@ def test_clear_errors_shares_recover_callback_group():
         # clear_errors shares the SAME reentrant group as /recover.
         assert svcs['clear_errors'].callback_group is node._recover_cbgroup
         assert svcs['recover'].callback_group is node._recover_cbgroup
-        # And it is NOT the node-default group: reboot_odrives (a quick RPC) stays in the
-        # default MutuallyExclusiveCallbackGroup, recorded as callback_group=None here.
+        # And it is NOT the node-default group (recorded as callback_group=None here).
+        # reboot_odrives (a quick RPC) left the default group too (BUG-98): it is in
+        # its own blocking-RPC group, not the recover one.
         assert svcs['clear_errors'].callback_group is not None
-        assert svcs['reboot_odrives'].callback_group is None
+        assert svcs['reboot_odrives'].callback_group is node._blocking_rpc_cbgroup
     finally:
         _teardown(teensy, client, node)
 
@@ -958,6 +959,7 @@ def test_odrive_command_shares_the_recover_callback_group():
         svcs = node._services
         assert svcs['odrive_command'].callback_group is node._recover_cbgroup
         assert svcs['odrive_command'].callback_group is svcs['clear_errors'].callback_group
-        assert svcs['reboot_odrives'].callback_group is None      # quick RPC, unchanged
+        # quick RPC: own blocking-RPC group since BUG-98, still not the recover group
+        assert svcs['reboot_odrives'].callback_group is node._blocking_rpc_cbgroup
     finally:
         _teardown(teensy, client, node)
