@@ -18,6 +18,9 @@
 #include <vector>
 
 #include "../../../ros_ws/src/jugglebot/Teensy_code_platform/loop_service.h"
+#include "../../../ros_ws/src/jugglebot/Teensy_code_platform/imu_service.h"  // the IMU's TX reserve
+#include <functional>
+#include <random>
 
 using LoopService::reached;
 using LoopService::Tilt::Reply;
@@ -171,34 +174,42 @@ TEST_CASE("re-probe cadence: 1 s floor after boot, doubling to the 60 s ceiling"
   }
 }
 
-TEST_CASE("a request pulls the next probe in, but never inside the 1 s floor") {
+// P2 audit B1: a request used to pull the next probe forward to the 1 s floor, so a host
+// polling a dead sensor drove one 103 ms probe per second.  The schedule is now the sensor's.
+std::vector<uint32_t> probe_schedule(uint32_t t0, uint32_t poll_every_ms, uint32_t minutes) {
+  Service s; FakeIo io;
+  s.boot(false, t0);
+  std::vector<uint32_t> at;
+  for (uint32_t dt = 0; dt <= minutes * 60000u; dt += 10) {
+    const bool req = poll_every_ms && dt % poll_every_ms == 0;
+    const int before = io.n_probe;
+    pass(s, io, t0 + dt, req);
+    if (io.n_probe != before) at.push_back(dt);
+    if (req) CHECK(io.replies.back() == Reply::NOT_READY);
+  }
+  return at;
+}
+
+TEST_CASE("a dead sensor polled at 10 Hz for 10 minutes is probed exactly on the unpolled schedule") {
   for (uint32_t t0 : STARTS) {
-    Service s; FakeIo io;
-    s.boot(false, t0);
-    pass(s, io, t0 + 1000);                 // probe 1 fails; next due at +2 s gap
-    REQUIRE(io.n_probe == 1);
-    pass(s, io, t0 + 1200, true);           // request 200 ms after a probe
-    CHECK(io.replies.back() == Reply::NOT_READY);
-    CHECK(io.n_probe == 1);                 // inside the floor: no probe
-    for (uint32_t t = t0 + 1210; t != t0 + 2000; t += 10) pass(s, io, t);
-    CHECK(io.n_probe == 1);
-    io.probes = {true};
-    pass(s, io, t0 + 2000);                 // the floor, not the 3 s back-off
-    CHECK(io.n_probe == 2);
-    CHECK(s.sensor_ok());
+    const auto quiet = probe_schedule(t0, 0, 10);
+    const auto polled = probe_schedule(t0, 100, 10);
+    CHECK(polled == quiet);
+    // 1, 3, 7, 15, 31, 63, then every 60 s to 543: 14 probes in 600 s (before the fix: ~590).
+    CHECK(quiet.size() == 14);
   }
 }
 
-TEST_CASE("a request long after the last probe is answered NOT_READY, then probed in the same pass") {
+TEST_CASE("a request never brings a probe forward, even long after the last one") {
   Service s; FakeIo io;
   s.boot(false, 0);
   for (uint32_t t = 0; t <= 200000; t += 10) pass(s, io, t);   // back-off is at the ceiling
   const int probes = io.n_probe;
-  const uint32_t now = 200005;
-  // Find a time far from the next scheduled probe but past the floor.
-  pass(s, io, now, true);
+  const uint32_t due = s.probe_due();
+  pass(s, io, 200005, true);
   CHECK(io.replies.back() == Reply::NOT_READY);
-  CHECK(io.n_probe == probes + 1);          // reply first, then the (rationed) probe
+  CHECK(io.n_probe == probes);              // answered, not probed
+  CHECK(s.probe_due() == due);              // and the schedule did not move
 }
 
 TEST_CASE("no probe while a firmware update session is open") {
@@ -264,23 +275,205 @@ TEST_CASE("reply bytes: VALID is two f32 LE; invalid is two quiet NaNs carrying 
   CHECK(std::isnan(y));
 }
 
-TEST_CASE("CAN dispatch: drain until empty, never more than CAN_FRAMES_PER_PASS calls") {
-  using LoopService::keep_dispatching;
-  using LoopService::CAN_FRAMES_PER_PASS;
+// ---------------------------------------------------------------------------------------------
+//  CAN dispatch and the TX mailboxes (P2 audit B2, T1, T2)
+// ---------------------------------------------------------------------------------------------
+namespace Can = LoopService::Can;
+using LoopService::CAN_FRAMES_PER_PASS;
+
+static_assert(Can::DISPATCH_MIN_FREE_TX == 5, "2 for the dispatched frame's handler + 3 after the dispatch");
+static_assert(ImuService::TX_RESERVE_MAILBOXES >= Can::WRITES_AFTER_DISPATCH_MAX + 1,
+              "the IMU leaves room for the writers that run without a dispatch, plus one");
+
+TEST_CASE("TX mailboxes: the pure formula equals FlexCAN_T4's mailboxOffset() for every MAXMB, FEN, RFFN") {
+  // FlexCAN_T4.tpp mailboxOffset() (framework-arduinoteensy 1.160; pinned by test_platform_sketch_source.py).
+  auto lib_offset = [](uint32_t maxmb, bool fen, uint32_t rffn) -> uint32_t {
+    if (!fen) return 0;
+    uint32_t remaining = maxmb - 6 - (((rffn & 0xF) + 1) * 2);
+    if (maxmb < (6 + (((rffn & 0xF) + 1) * 2))) remaining = 0;
+    return uint8_t(maxmb - remaining);
+  };
+  std::mt19937 rng(7);
+  for (uint32_t maxmb = 1; maxmb <= 64; ++maxmb)
+    for (int fen = 0; fen <= 1; ++fen)
+      for (uint32_t rffn = 0; rffn <= 15; ++rffn) {
+        const uint32_t off = lib_offset(maxmb, fen, rffn);
+        CHECK(Can::mailbox_offset(maxmb, fen, rffn) == off);
+        uint8_t codes[64];
+        uint32_t want = 0;
+        for (uint32_t i = 0; i < 64; ++i) {
+          codes[i] = uint8_t(rng() % 16);
+          if (i >= off && i < maxmb && codes[i] == Can::CODE_TX_INACTIVE) ++want;
+        }
+        CHECK(Can::free_tx_mailboxes(maxmb, fen, rffn, codes) == want);
+      }
+  // The sketch: setMaxMB(16), enableFIFO(), default RFFN 0 -> MB 8-15 transmit, 8 mailboxes.
+  CHECK(Can::mailbox_offset(16, true, 0) == 8);
+  uint8_t codes[64];
+  std::memset(codes, Can::CODE_TX_INACTIVE, sizeof codes);   // FIFO area bytes look "free" too
+  CHECK(Can::free_tx_mailboxes(16, true, 0, codes) == 8);    // and are never counted
+}
+
+TEST_CASE("dispatch policy: one events() per pass during an update; gated and bounded otherwise") {
   auto ret = [](uint32_t rx_left, uint32_t tx_left) { return (uint64_t(rx_left) << 12) | tx_left; };
-  CHECK_FALSE(keep_dispatching(1, ret(0, 0)));       // queue empty after the first call
-  CHECK_FALSE(keep_dispatching(1, ret(0, 5)));       // TX backlog alone does not loop
-  CHECK(keep_dispatching(1, ret(1, 0)));
-  // A full 256-frame queue: count the calls one pass makes.
-  for (uint32_t queued : {0u, 1u, 31u, 32u, 33u, 256u}) {
-    uint32_t left = queued, calls = 0;
-    uint64_t ev;
-    do {
-      if (left) --left;                        // events() pops one frame if any
-      ev = ret(left, 0);
-      ++calls;
-    } while (keep_dispatching(calls, ev));
-    const uint32_t want = queued == 0 ? 1u : (queued < CAN_FRAMES_PER_PASS ? queued : CAN_FRAMES_PER_PASS);
-    CHECK(calls == want);
+  // Firmware update open: the first call, whatever the mailboxes and the queue say; never a second.
+  CHECK(Can::may_dispatch(0, 0, true, 0, 9));
+  CHECK_FALSE(Can::may_dispatch(1, ret(200, 0), true, 8, 0));
+  // Otherwise: never with a frame in the software queue, never below 5 free mailboxes.
+  CHECK(Can::may_dispatch(0, 0, false, Can::DISPATCH_MIN_FREE_TX, 0));
+  CHECK_FALSE(Can::may_dispatch(0, 0, false, Can::DISPATCH_MIN_FREE_TX - 1, 0));
+  CHECK_FALSE(Can::may_dispatch(0, 0, false, 8, 1));
+  CHECK_FALSE(Can::may_dispatch(1, ret(0, 0), false, 8, 0));   // nothing left to dispatch
+  CHECK_FALSE(Can::may_dispatch(1, ret(0, 5), false, 8, 0));   // a TX backlog alone does not loop
+  CHECK(Can::may_dispatch(1, ret(1, 0), false, 8, 0));
+  CHECK_FALSE(Can::may_dispatch(CAN_FRAMES_PER_PASS, ret(1, 0), false, 8, 0));
+}
+
+namespace {
+
+/*  FlexCAN_T4's TX side as this sketch uses it (FlexCAN_T4.tpp write(), events(),
+ *  flexcan_interrupt()): 8 TX mailboxes, write() falling back to the software queue,
+ *  events()' frame.mb == -1 loop (one copy of the head frame and one pop per free mailbox)
+ *  and the TX-complete ISR's one-for-one refill.  events() really returns
+ *  (rx << 12) | tx (a pytest pins that line in the library source). */
+struct FakeCan {
+  static constexpr uint32_t MB = 8;
+  uint32_t pending = 0;              // mailboxes holding a frame not yet on the wire
+  std::deque<int> swq;               // the software queue
+  std::deque<int> rx;                // received frames, by kind
+  uint32_t entered_swq = 0, dup_copies = 0, empty_pops = 0, events_with_swq = 0;
+  uint32_t free_tx() const { return MB - pending; }
+  void write() {
+    if (pending < MB) ++pending;
+    else { swq.push_back(1); ++entered_swq; }
+  }
+  uint64_t events(const std::function<void(int)>& cb) {
+    if (!rx.empty()) { const int k = rx.front(); rx.pop_front(); cb(k); }
+    if (!swq.empty()) {
+      ++events_with_swq;
+      const uint32_t f = free_tx();
+      for (uint32_t i = 0; i < f; ++i) {
+        ++pending;
+        if (i) ++dup_copies;
+        if (swq.empty()) ++empty_pops; else swq.pop_front();
+      }
+    }
+    return (uint64_t(rx.size()) << 12) | swq.size();
+  }
+  void complete(uint32_t n) {          // n of our frames leave the bus; the ISR refills one-for-one
+    for (; n && pending; --n) {
+      --pending;
+      if (!swq.empty()) { swq.pop_front(); ++pending; }
+    }
+  }
+  void complete_irq_masked(uint32_t n) { for (; n && pending; --n) --pending; }   // e.g. a flash erase
+};
+
+// Received-frame kinds and what the sketch's canSniff writes for each.
+enum Kind : int { QUIET = 0, ONE_REPLY = 1, FAN_CMD = 2, TILT_REQ = 3, BEGIN = 4 };
+
+/*  loop() as the sketch runs it: dispatch, tilt reply, traffic report (500 ms), the IMU (one
+ *  frame through tx_may_place when it has one), Hand fan status (1000 ms). */
+struct Sketch {
+  FakeCan can;
+  bool fw_open = false, old_policy = false, imu_busy = true, tilt_req = false;
+  uint32_t now_ms = 0, next_report = 0, next_fan = 0, calls = 0;
+  void pass() {
+    auto cb = [&](int k) {
+      if (k == ONE_REPLY || k == BEGIN) can.write();
+      if (k == FAN_CMD) { can.write(); can.write(); }
+      if (k == TILT_REQ) tilt_req = true;
+      if (k == BEGIN) fw_open = true;
+    };
+    calls = 0;
+    uint64_t ev = 0;
+    if (old_policy) {                  // FW 11 before the audit: 32 frames, no TX check
+      do { ev = can.events(cb); ++calls; } while (calls < CAN_FRAMES_PER_PASS && (ev >> 12));
+    } else {
+      while (Can::may_dispatch(calls, ev, fw_open, can.free_tx(), uint32_t(can.swq.size()))) {
+        ev = can.events(cb);
+        ++calls;
+      }
+    }
+    if (tilt_req) { can.write(); tilt_req = false; }
+    if (reached(now_ms, next_report)) { can.write(); next_report = now_ms + 500; }
+    if (imu_busy && ImuService::tx_may_place(can.free_tx(), uint32_t(can.swq.size()))) can.write();
+    if (reached(now_ms, next_fan)) { can.write(); next_fan = now_ms + 1000; }
+  }
+};
+
+}  // namespace
+
+TEST_CASE("outside an update no RX pattern puts a frame in FlexCAN's software queue while our frames move") {
+  for (uint32_t seed = 1; seed <= 20; ++seed) {
+    std::mt19937 rng(seed);
+    Sketch k;
+    uint32_t stall_left = 0;
+    for (uint32_t i = 0; i < 100000; ++i) {          // 10 s of 100 us passes
+      k.now_ms = i / 10;
+      for (uint32_t n = rng() % 9; n; --n) k.can.rx.push_back(int(rng() % 4));   // up to 8 frames per pass
+      if (k.can.rx.size() > 256) k.can.rx.resize(256);                          // FlexCAN's RX queue
+      if (stall_left) --stall_left;
+      else if (rng() % 500 == 0) stall_left = rng() % 3000;                     // stalls up to 300 ms
+      else k.can.complete(rng() % 3);
+      k.pass();
+    }
+    CHECK(k.can.entered_swq == 0);
+    CHECK(k.can.events_with_swq == 0);
+  }
+}
+
+TEST_CASE("the model fails the pre-audit policy: 32 replies in one pass overflow 8 mailboxes, events() duplicates") {
+  Sketch k;
+  k.old_policy = true;
+  k.imu_busy = false;
+  for (int i = 0; i < 40; ++i) k.can.rx.push_back(ONE_REPLY);   // e.g. a BAD_SEQ/BAD_STATE run
+  k.pass();
+  CHECK(k.calls == CAN_FRAMES_PER_PASS);
+  CHECK(k.can.entered_swq > 0);
+  k.can.complete_irq_masked(3);
+  k.pass();
+  CHECK(k.can.dup_copies > 0);
+  // The same frames under the policy: dispatch stops at 5 free, nothing queued.
+  Sketch n;
+  n.imu_busy = false;
+  for (int i = 0; i < 40; ++i) n.can.rx.push_back(ONE_REPLY);
+  n.pass();
+  CHECK(n.calls == 4);                                           // 8, 7, 6, 5 free before each
+  CHECK(n.can.entered_swq == 0);
+}
+
+TEST_CASE("during an update: exactly one events() per pass, as FW 10, from the BEGIN on") {
+  Sketch k;
+  k.imu_busy = false;
+  for (int i = 0; i < 3; ++i) k.can.rx.push_back(QUIET);
+  k.can.rx.push_back(BEGIN);
+  for (int i = 0; i < 200; ++i) k.can.rx.push_back(ONE_REPLY);  // a BAD_SEQ run, no mailbox ever frees
+  k.pass();
+  CHECK(k.calls == 4);                                           // the dispatch stops at the BEGIN
+  CHECK(k.fw_open);
+  for (uint32_t i = 1; i < 300; ++i) {
+    k.now_ms = i;
+    k.pass();
+    CHECK(k.calls == 1);
+  }
+  // FW 10's exposure, unchanged: with every mailbox full its replies reach the software queue.
+  CHECK(k.can.entered_swq > 0);
+}
+
+TEST_CASE("a bus that never takes our frames: the periodic writers queue (as FW 10), events() never meets the queue") {
+  for (uint32_t seed = 1; seed <= 5; ++seed) {
+    std::mt19937 rng(seed);
+    Sketch k;
+    for (uint32_t i = 0; i < 50000; ++i) {
+      k.now_ms = i / 10;
+      for (uint32_t n = rng() % 4; n; --n) k.can.rx.push_back(int(rng() % 4));
+      if (k.can.rx.size() > 256) k.can.rx.resize(256);
+      k.pass();
+    }
+    CHECK(k.can.entered_swq > 0);                                // report 2 Hz + fan 1 Hz, as FW 10
+    CHECK(k.can.events_with_swq == 0);                           // but no duplicate / empty-pop path
+    CHECK(k.can.dup_copies == 0);
+    CHECK(k.can.empty_pops == 0);
   }
 }

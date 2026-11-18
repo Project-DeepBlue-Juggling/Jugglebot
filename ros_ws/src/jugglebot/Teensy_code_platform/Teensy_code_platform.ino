@@ -184,16 +184,21 @@
  *        rejects it with its |tilt| bound, as it rejected (pi, pi).
  *        (c) setup() no longer waits for ever for the SCL3300: three begin() calls
  *        at most (about 310 ms), then the board runs with tilt NOT_READY and loop()
- *        re-probes (1 s, backing off to 60 s; never during a firmware update).
+ *        re-probes (1 s, backing off to 60 s; never during a firmware update, never
+ *        brought forward by a tilt request).
  *        With the sensor present, setup() makes the same single begin() as before.
- *        (d) loop() dispatches up to 32 received CAN frames per pass, not one.
+ *        (d) loop() dispatches up to 32 received CAN frames per pass, not one, each
+ *        only while 5 TX mailboxes are free and FlexCAN's software TX queue is empty;
+ *        during a firmware update, exactly one per pass as before.
  *        No motion path, no CAN id, no TX frame other than the tilt reply changed.
  *        (e) IDEA-20 P2b: the Platform IMU (ICM-42688-P on Wire, pins 18/19, 1 MHz):
  *        a 32 s capture ring in RAM2, frozen and uploaded on request over 0x6E3-0x6E6
  *        (ros_ws/docs/platform_imu_protocol.md), status at 1 Hz.  STRICTLY OPTIONAL:
  *        absent, unplugged or stuck, it costs at most one bounded I2C transaction per
  *        loop() pass and backs off to one probe a minute; a firmware-update BEGIN stops
- *        all of it.  Kill switch: PLATFORM_IMU_ENABLED (below the includes).
+ *        all of it.  Nothing IMU runs for the first 10 s after boot, and a BEGIN in
+ *        those 10 s keeps it off until the next reboot (the recovery window if IMU code
+ *        ever faults).  Kill switch: PLATFORM_IMU_ENABLED (below the includes).
  */
 constexpr char     FW_NAME[]  = "jugglebot-platform";
 constexpr uint16_t FW_VERSION = 11;  // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
@@ -383,6 +388,7 @@ icm42688::Driver imuChip(Wire);
  *  FlexCAN's ISR then): the bus's timing against this board's boot is what makes boot_id
  *  differ from one boot to the next.  Integer only. */
 volatile uint32_t imuBootEntropy = 0;
+DMAMEM uint32_t imuBootSeq;  // uninitialised on purpose: a boot counter that survives warm resets
 volatile uint32_t imuTxQueuedAnyway = 0;  // write() queued an IMU frame (never expected; see ImuTx)
 #endif
 
@@ -895,6 +901,26 @@ void tick() {
 
 }  // namespace FwUpdate
 
+/*----------------------------------------------------------------------------*/
+/*                     C A N   T X   M A I L B O X E S                        */
+/*----------------------------------------------------------------------------*/
+/*  Free TX mailboxes, read from the FlexCAN registers (FW 11).  The decision is
+ *  LoopService::Can::free_tx_mailboxes() (pure, tested natively: same formula as FlexCAN_T4's
+ *  private mailboxOffset(), with setMaxMB(16) and the default RFFN: MB 8-15); this only reads
+ *  the C/S words of the TX mailboxes, never the RX FIFO's (reading an RX C/S word locks it).
+ *  Used by loop()'s dispatch gate and by the IMU's TX rule.  Hardware-only: never run on host. */
+static_assert(LoopService::Can::CODE_TX_INACTIVE == FLEXCAN_MB_CODE_TX_INACTIVE, "loop_service.h mirrors FlexCAN_T4");
+uint32_t canFreeTxMailboxes() {
+  const uint32_t b = uint32_t(CAN1);
+  const uint32_t maxmb = FLEXCANb_MAXMB_SIZE(b) > 64u ? 64u : FLEXCANb_MAXMB_SIZE(b);
+  const bool fen = (FLEXCANb_MCR(b) & FLEXCAN_MCR_FEN) != 0;
+  const uint32_t rffn = (FLEXCANb_CTRL2(b) >> FLEXCAN_CTRL2_RFFN_BIT_NO) & 0xFu;
+  uint8_t codes[64];
+  for (uint32_t i = LoopService::Can::mailbox_offset(maxmb, fen, rffn); i < maxmb; ++i)
+    codes[i] = uint8_t(FLEXCAN_get_code(FLEXCANb_MBn_CS(b, i)));
+  return LoopService::Can::free_tx_mailboxes(maxmb, fen, rffn, codes);
+}
+
 #if PLATFORM_IMU_ENABLED
 /*----------------------------------------------------------------------------*/
 /*                 P L A T F O R M   I M U   A D A P T E R S                  */
@@ -905,8 +931,18 @@ void tick() {
  *  ~0.1 ms when nothing answers, ~17 ms with SDA held low, <= ~68 ms worst case per Wire call.
  *  Those loops call yield(), which on this core runs only serialEvent/HardwareSerial/
  *  EventResponder hooks, none of which this sketch defines: never can1.events(), never canSniff. */
+bool imuWireStarted = false;
 struct ImuIo {
-  void init_start() { imuChip.initStart(); }
+  /*  Wire is configured here, at the first probe (>= BOOT_SETTLE_MS after boot), not in
+   *  setup(): a fault in Wire's set-up is then inside the region the boot settle protects. */
+  void init_start() {
+    if (!imuWireStarted) {
+      Wire.begin();
+      Wire.setClock(IMU_I2C_HZ);
+      imuWireStarted = true;
+    }
+    imuChip.initStart();
+  }
   int init_step(uint32_t now_us) { return imuChip.initStep(now_us); }
   int fifo_count(bool *overflow) { return imuChip.fifoCount(overflow); }
   int read_burst(ImuService::Pkt *out, int n) {
@@ -943,24 +979,6 @@ struct ImuIo {
   }
 };
 
-/*  Free TX mailboxes, read from the FlexCAN registers.  The scan starts after the RX FIFO and
- *  its filter table, with the same formula as FlexCAN_T4's private mailboxOffset() (with
- *  setMaxMB(16) and the default RFFN: MB 8-15).  A TX mailbox is free when its CODE is
- *  TX_INACTIVE, which the hardware also sets after a transmission. */
-uint32_t imuFreeTxMailboxes() {
-  const uint32_t b = uint32_t(CAN1);
-  const uint32_t maxmb = FLEXCANb_MAXMB_SIZE(b);
-  uint32_t off = 0;
-  if (FLEXCANb_MCR(b) & FLEXCAN_MCR_FEN) {
-    const uint32_t fifo = 6u + ((((FLEXCANb_CTRL2(b) >> FLEXCAN_CTRL2_RFFN_BIT_NO) & 0xFu) + 1u) * 2u);
-    off = fifo > maxmb ? maxmb : fifo;
-  }
-  uint32_t n = 0;
-  for (uint32_t i = off; i < maxmb; ++i)
-    if (FLEXCAN_get_code(FLEXCANb_MBn_CS(b, i)) == FLEXCAN_MB_CODE_TX_INACTIVE) ++n;
-  return n;
-}
-
 /*  The spec's TX rule (section 4): an IMU frame goes to write() only when write() is certain
  *  to land it in a mailbox (ImuService::tx_may_place: SW queue empty, more than the reserve
  *  free), so it can never enter FlexCAN_T4's queued-frame path, whose events() writes one
@@ -970,7 +988,7 @@ uint32_t imuFreeTxMailboxes() {
 struct ImuTx {
   bool place(uint32_t id, const uint8_t *d) {
     NVIC_DISABLE_IRQ(IRQ_CAN1);
-    const bool ok = ImuService::tx_may_place(imuFreeTxMailboxes(), can1.getTXQueueCount());
+    const bool ok = ImuService::tx_may_place(canFreeTxMailboxes(), can1.getTXQueueCount());
     if (ok) {
       CAN_message_t m;
       m.id = id;
@@ -1259,12 +1277,15 @@ void setup() {
   tiltService.boot(sclOk, millis());
   Serial.println(sclOk ? "SCL3300 initialised." : "SCL3300 not answering: tilt NOT_READY, re-probing from loop().");
 #if PLATFORM_IMU_ENABLED
-  /* Platform IMU: OPTIONAL, after CAN.  Wire is configured here and NOT used: no device
-   * traffic in setup().  loop() starts probing BOOT_SETTLE_MS later, one bounded transaction
-   * per pass. */
-  Wire.begin();
-  Wire.setClock(IMU_I2C_HZ);
-  uint32_t bootId = imuBootEntropy ^ (ARM_DWT_CYCCNT * 2654435761u) ^ (receivedCount << 16);
+  /* Platform IMU: OPTIONAL, after CAN.  No Wire and no device traffic in setup(): loop()'s
+   * imuService.pass() is inert for BOOT_SETTLE_MS (10 s), then probes one bounded
+   * transaction per pass and starts Wire at the first one (ImuIo::init_start).
+   * boot_id: imuBootSeq steps on every boot (RAM2 is not cleared by startup.c and survives
+   * the SCB_AIRCR resets of a fault and of a firmware COMMIT) and the RTC's 32 kHz count
+   * moves on between boots, so a quiet bus no longer gives the same id twice. */
+  imuBootSeq = imuBootSeq * 1664525u + 1013904223u;
+  uint32_t bootId = imuBootEntropy ^ (ARM_DWT_CYCCNT * 2654435761u) ^ (receivedCount << 16)
+                  ^ imuBootSeq ^ (uint32_t(SNVS_HPRTCLR) * 0x9E3779B9u);
   bootId ^= bootId >> 15;
   bootId *= 0x2C1B3C6Du;
   bootId ^= bootId >> 12;
@@ -1280,13 +1301,17 @@ void setup() {
 /*                                   L O O P                                   */
 /*----------------------------------------------------------------------------*/
 void loop() {
-  /* Dispatch CAN callbacks: up to CAN_FRAMES_PER_PASS queued frames (FW 11; one before). */
+  /* Dispatch CAN callbacks (loop_service.h, LoopService::Can).  During a firmware update:
+   * exactly one events() per pass, as FW 10.  Otherwise up to CAN_FRAMES_PER_PASS, each only
+   * while FlexCAN's software TX queue is empty and enough TX mailboxes are free for every
+   * reply the frame and the rest of this pass can write. */
   uint32_t calls = 0;
-  uint64_t ev;
-  do {
+  uint64_t ev = 0;
+  while (LoopService::Can::may_dispatch(calls, ev, FwUpdate::sessionOpen(),
+                                        canFreeTxMailboxes(), can1.getTXQueueCount())) {
     ev = can1.events();
     ++calls;
-  } while (LoopService::keep_dispatching(calls, ev));
+  }
 
   /* Tilt: at most one inclinometer read (~1.3 ms) or probe (~103 ms, rationed) per pass. */
   const bool tiltReq = tiltRequested;

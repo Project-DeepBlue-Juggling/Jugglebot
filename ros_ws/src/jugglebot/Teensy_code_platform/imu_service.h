@@ -23,8 +23,8 @@
  *  one I2C transaction (an init step, a FIFO count, one burst of <= 8 packets, a flush or a
  *  WHO_AM_I), or one CRC slice, or one IMU_DATA frame; never two, never a wait.  A failed
  *  transaction is never retried in the same pass; repeated failures back off from
- *  PROBE_MIN_GAP_MS to PROBE_MAX_GAP_MS.  While a firmware-update session is open nothing
- *  here touches the bus.  Contract: ros_ws/docs/platform_imu_protocol.md.
+ *  PROBE_MIN_GAP_MS to PROBE_MAX_GAP_MS.  For BOOT_SETTLE_MS after boot, and while a
+ *  firmware-update session is open, nothing here touches the bus.  Contract: ros_ws/docs/platform_imu_protocol.md.
  *****************************************************************************************/
 #pragma once
 
@@ -35,14 +35,27 @@
 
 namespace ImuService {
 
-constexpr uint32_t BOOT_SETTLE_MS = 2000;    // CAN only for the first 2 s after boot: no I2C at all
+/*  THE BOOT SETTLE (P2 audit B3).  For the first 10 s after boot pass() does nothing but drop
+ *  IMU_CMD frames and watch for a firmware-update BEGIN: no I2C, no Wire set-up (the sketch
+ *  starts Wire at the first probe), no engine work, no IMU frame.  If IMU code ever faults the
+ *  board, the core reboots it 8 s later, so every reboot cycle has this IMU-free window in
+ *  which a BEGIN can land; a BEGIN seen inside it keeps the IMU in FW_HALTED for the rest of
+ *  that boot, even if the update is then abandoned. */
+constexpr uint32_t BOOT_SETTLE_MS = 10000;
 constexpr uint32_t DRAIN_PERIOD_US = 4000;   // FIFO_COUNT read cadence: ~4 packets per drain at 1 kHz
 constexpr int      BURST_PKTS = 8;           // 8 x 16 B = 128 B, inside Wire's 136-byte BUFFER_LENGTH
 constexpr uint32_t DRAIN_MAX_PKTS = 120;     // never read past what was counted, never near the 128-record FIFO
 constexpr uint32_t PROBE_MIN_GAP_MS = 1000;  // probe back-off floor (also the spec's BACKOFF minimum)
 constexpr uint32_t PROBE_MAX_GAP_MS = 60000; // and ceiling
 constexpr uint32_t HEALTHY_RESET_MS = 10000; // this long RUNNING without an error resets the back-off
-constexpr uint32_t TX_RESERVE_MAILBOXES = 2; // TX mailboxes the IMU always leaves free for everyone else
+/*  TX mailboxes the IMU always leaves free for everyone else.  The sketch has 8 (setMaxMB(16),
+ *  the RX FIFO and its filter table take MB 0-7).  After an IMU frame the non-IMU writers that
+ *  can run before loop() next checks the mailboxes for a dispatch are the Hand fan status
+ *  (this pass), the tilt reply, the traffic report and the Hand fan status (the next pass): 3,
+ *  plus one for a Hand fan change in the pass after a periodic status.  So 4, and the IMU
+ *  keeps at most 4 frames pending: at 111 us per frame on the wire still far above its
+ *  1600 frames/s READ cap.  LoopService::Can::DISPATCH_MIN_FREE_TX is the dispatch side. */
+constexpr uint32_t TX_RESERVE_MAILBOXES = 4;
 constexpr uint8_t  CMD_SLOTS = 8;            // pending IMU_CMD frames (7 usable)
 constexpr uint8_t  REPLY_SLOTS = 8;          // pending IMU_REPLY frames (7 usable)
 constexpr int      INIT_PENDING = 1;         // icm42688::Driver::INIT_PENDING (the sketch static_asserts both)
@@ -160,6 +173,7 @@ class SyncQuality {
 
 struct Counters {
   uint32_t fifo_overflows = 0, i2c_errors = 0, bad_packets = 0, probes = 0, tx_deferred = 0;
+  uint32_t cmds_in_settle = 0;  // IMU_CMD frames dropped unanswered during the boot settle
 };
 
 class Service {
@@ -167,12 +181,14 @@ class Service {
   enum StepKind : uint8_t { STEP_NONE = 0, STEP_I2C = 1, STEP_CRC = 2, STEP_DATA = 3 };
 
   /*  The capture must already be init()ed on its storage.  Boots into PROBING (the Engine),
-   *  with the first probe BOOT_SETTLE_MS after boot. */
+   *  inert until BOOT_SETTLE_MS after `now_ms`, with the first probe then. */
   void init(ImuCapture::Capture* cap, uint32_t boot_id, uint32_t now_ms) {
     cap_ = cap;
     boot_id_ = boot_id;
     eng_.init(cap);
-    probe_at_ = now_ms + BOOT_SETTLE_MS;
+    settle_end_ms_ = now_ms + BOOT_SETTLE_MS;
+    settled_ = halted_for_boot_ = false;
+    probe_at_ = settle_end_ms_;
     fail_streak_ = 0;
     init_started_ = chip_ok_ = resume_who_ = flush_pending_ = false;
     new_capture();
@@ -187,6 +203,8 @@ class Service {
   uint32_t probe_due_ms() const { return probe_at_; }
   uint32_t fail_streak() const { return fail_streak_; }
   StepKind last_step() const { return last_step_; }
+  bool settled() const { return settled_; }
+  bool halted_for_boot() const { return halted_for_boot_; }
 
   /*  One loop() pass, after the CAN dispatch and FwUpdate::tick().  `fw_session_open` is
    *  FwUpdate::sessionOpen(): BEGIN opened it, an abandoned or failed session closes it, and
@@ -195,8 +213,17 @@ class Service {
   void pass(uint32_t now_us, uint32_t now_ms, bool fw_session_open, Io& io, Tx& tx) {
     using namespace PlatformImuState;
     last_step_ = STEP_NONE;
+    // -1. The boot settle: drop commands, note a BEGIN, nothing else (BOOT_SETTLE_MS).  The
+    //     latch is exact while passes come at least every 24.8 days, which loop() guarantees.
+    if (!settled_) {
+      if (fw_session_open) halted_for_boot_ = true;
+      uint8_t sd[8], sl;
+      while (cmds_.pop(sd, &sl)) cnt_.cmds_in_settle++;
+      if (int32_t(now_ms - settle_end_ms_) < 0) return;
+      settled_ = true;
+    }
     // 0. Firmware update first: nothing below may touch the bus once BEGIN has been seen.
-    if (fw_session_open) {
+    if (fw_session_open || halted_for_boot_) {
       if (eng_.state() != FW_HALTED) { eng_.on_fw_update_begin(); halt_local(); }
     } else if (eng_.state() == FW_HALTED) {
       eng_.on_fw_update_abandoned();
@@ -496,6 +523,9 @@ class Service {
   uint32_t boot_id_ = 0;
   bool i2c_400k_ = false;
   StepKind last_step_ = STEP_NONE;
+  // boot settle
+  uint32_t settle_end_ms_ = 0;
+  bool settled_ = false, halted_for_boot_ = false;
   // probe and back-off
   uint32_t probe_at_ = 0, fail_streak_ = 0, healthy_since_ms_ = 0;
   bool init_started_ = false, chip_ok_ = false, resume_who_ = false;

@@ -108,17 +108,23 @@ struct Rig {
   FakeTx tx;
   uint32_t t_us = 0;
   bool fw_open = false;
+  // micros() and millis() wrap independently on the board: millis = ms_base + elapsed.
+  uint32_t us_base = 0, ms_base = 0;
 
-  Rig() {
+  explicit Rig(uint32_t t0_us = 0, uint32_t t0_ms = 0, bool do_init = true) : t_us(t0_us), us_base(t0_us), ms_base(t0_ms) {
     std::memset(buf, 0x5A, sizeof buf);          // DMAMEM is not zeroed: nothing may depend on it
     std::memset(anchors, 0xA5, sizeof anchors);
-    cap.init(buf, CAP, anchors, ACAP, 0x12345678u);
-    svc.init(&cap, 0x12345678u, 0);
+    if (do_init) init();
   }
+  void init() {
+    cap.init(buf, CAP, anchors, ACAP, 0x12345678u);
+    svc.init(&cap, 0x12345678u, now_ms());
+  }
+  uint32_t now_ms() const { return ms_base + (t_us - us_base) / 1000; }
   void pass() {
     io.t_us = tx.t_us = t_us;
     io.begin_pass();
-    svc.pass(t_us, t_us / 1000, fw_open, io, tx);
+    svc.pass(t_us, now_ms(), fw_open, io, tx);
     io.end_pass();
     CHECK(io.pass_txns <= 1);
   }
@@ -134,7 +140,7 @@ struct Rig {
   }
   std::vector<Sent> replies() const { return tx.of(PlatformCanId::IMU_REPLY); }
   const Sent* last_reply() const { auto v = replies(); static Sent s; if (v.empty()) return nullptr; s = v.back(); return &s; }
-  // Run until RUNNING with samples (the boot settle is 2 s).
+  // Run until RUNNING with samples (the boot settle is 10 s).
   void to_running(uint32_t extra_ms = 500) {
     run_ms(BOOT_SETTLE_MS + 100);
     REQUIRE(svc.state() == S::RUNNING);
@@ -198,14 +204,14 @@ TEST_CASE("IMU absent for ever: bounded work, back-off growth to 60 s, status ev
   r.run_ms(600000, 1000);
   CHECK(r.io.max_pass_txns <= 1);
   CHECK(r.svc.state() == S::PROBING);
-  // Probe starts at 2, 3, 5, 9, 17, 33, 65, 125, then every 60 s: two address probes each.
+  // Probe starts at 10, 11, 13, 17, 25, 41, 73, 133, then every 60 s: two address probes each.
   CHECK(r.io.total_txns <= 2 * 17);
   CHECK(r.io.txn_times_ms.front() >= BOOT_SETTLE_MS);
   int late = 0;
   for (uint32_t t : r.io.txn_times_ms) if (t >= 300000) late++;
   CHECK(late <= 2 * 6);                  // <= 12 failing transactions in 5 min: at 68 ms each, 0.27 % duty
   auto st = r.tx.of(PlatformCanId::IMU_STATUS);
-  CHECK(st.size() >= 599); CHECK(st.size() <= 601);
+  CHECK(st.size() >= 589); CHECK(st.size() <= 591);   // from the end of the 10 s settle
   CHECK(st.back().d[0] == S::PROBING);
   CHECK((st.back().d[1] & PlatformImuStatusFlag::SENSOR_OK) == 0);
   CHECK(st.back().d[7] == 0x78);         // boot byte
@@ -313,14 +319,14 @@ TEST_CASE("a bad FIFO packet flushes and marks a discontinuity") {
   CHECK(disc == 1);
 }
 
-TEST_CASE("FwUpdate BEGIN in every engine state: FW_HALTED, no I2C until the session ends") {
+TEST_CASE("FwUpdate BEGIN in every engine state after the settle: FW_HALTED, no I2C until the session ends") {
   struct Case { const char* name; uint8_t want_before; };
   for (int which = 0; which < 7; which++) {
     CAPTURE(which);
     Rig r;
     switch (which) {
-      case 0: r.cmd({Op::DISABLE}); r.run_ms(5); break;                                  // DISABLED
-      case 1: r.run_ms(500); break;                                                      // PROBING (settling)
+      case 0: r.run_ms(BOOT_SETTLE_MS + 5); r.cmd({Op::DISABLE}); r.run_ms(5); break;     // DISABLED
+      case 1: r.io.present = false; r.run_ms(BOOT_SETTLE_MS + 500); break;               // PROBING (between probes)
       case 2: r.to_running(300); break;                                                  // RUNNING
       case 3: r.to_running(300); r.cmd({Op::FREEZE, 1}); r.pass(); break;                // FROZEN, CRC in progress
       case 4: r.to_running(300); r.freeze_and_wait(); break;                             // FROZEN
@@ -477,4 +483,118 @@ TEST_CASE("command slots: full ring drops the newest; DISABLE stops all I2C; ENA
   r.cmd({Op::ENABLE});
   r.run_ms(200);
   CHECK(r.svc.state() == S::RUNNING);
+}
+
+// ---------------------------------------------------------------------------------------------
+//  P2 audit: the 10 s boot settle (B3), the BEGIN latch, the pre-init ISR window, clock wraps,
+//  READ while FW_HALTED (T3)
+// ---------------------------------------------------------------------------------------------
+TEST_CASE("boot settle: for 10 s no I2C, no frame, commands dropped; then the first probe") {
+  Rig r;
+  r.cmd({Op::DISABLE});
+  r.run_ms(3000);
+  r.cmd({Op::ENABLE});                               // ENABLE cannot start a probe early either
+  r.cmd({Op::FREEZE, 1});
+  r.run_ms(BOOT_SETTLE_MS - 3000 - 1);
+  CHECK(r.io.total_txns == 0);
+  CHECK(r.tx.sent.empty());                          // no STATUS, no reply
+  CHECK_FALSE(r.svc.settled());
+  CHECK(r.svc.counters().cmds_in_settle == 3);
+  CHECK(r.svc.state() == S::PROBING);
+  r.run_ms(200);
+  CHECK(r.svc.settled());
+  CHECK(r.io.total_txns >= 1);
+  CHECK(r.io.txn_times_ms.front() >= BOOT_SETTLE_MS);
+  CHECK(r.tx.of(PlatformCanId::IMU_STATUS).size() == 1);
+  CHECK(r.replies().empty());                        // the dropped commands are never answered
+}
+
+TEST_CASE("a BEGIN seen inside the settle keeps the IMU off for the rest of that boot, even if abandoned") {
+  Rig r;
+  r.run_ms(4000);
+  r.fw_open = true;                                  // BEGIN at 4 s
+  r.run_ms(1000);
+  r.fw_open = false;                                 // the session ends (abandoned or failed) at 5 s
+  r.run_ms(120000, 1000);
+  CHECK(r.svc.halted_for_boot());
+  CHECK(r.svc.state() == S::FW_HALTED);
+  CHECK(r.io.total_txns == 0);
+  CHECK(r.tx.of(PlatformCanId::IMU_STATUS).back().d[0] == S::FW_HALTED);
+  r.cmd({Op::ENABLE});
+  r.run_ms(5);
+  REQUIRE(r.last_reply());
+  CHECK(r.last_reply()->d[1] == St::ERR_FW_UPDATE);
+  CHECK(r.io.total_txns == 0);
+  // The same BEGIN after the settle: an abandoned update returns to PROBING (spec section 4).
+  Rig q;
+  q.run_ms(BOOT_SETTLE_MS + 1000);
+  q.fw_open = true;  q.run_ms(1000);
+  q.fw_open = false; q.run_ms(3000);
+  CHECK_FALSE(q.svc.halted_for_boot());
+  CHECK(q.svc.state() == S::RUNNING);
+}
+
+TEST_CASE("pushes before init() (canSniff in FlexCAN's ISR during setup) survive init and are dropped by the settle") {
+  Rig r(0, 0, /*do_init=*/false);
+  r.cmd({Op::FREEZE, 1});                            // statically constructed: usable before init()
+  r.svc.sync().note(true, 1700000000000000ll);
+  r.svc.sync().note(false, 40);
+  r.init();
+  r.run_ms(100);
+  CHECK(r.svc.counters().cmds_in_settle == 1);
+  r.run_ms(BOOT_SETTLE_MS + 500);
+  CHECK(r.svc.state() == S::RUNNING);
+  CHECK(r.replies().empty());
+  CHECK(r.svc.counters().i2c_errors == 0);
+}
+
+TEST_CASE("micros() wraps mid-capture and mid-READ: drains, anchors and frame gaps carry on") {
+  Rig r(0xFFFFFFFFu - 13000000u, 777);
+  r.to_running(2000);                                // ~1 s before the micros() wrap
+  r.run_ms(2000);                                    // across it
+  CHECK(r.t_us < 2000000u);
+  CHECK(r.svc.counters().fifo_overflows == 0);
+  CHECK(r.svc.counters().i2c_errors == 0);
+  CHECK((r.tx.of(PlatformCanId::IMU_STATUS).back().d[1] & PlatformImuStatusFlag::DISCONTINUITY) == 0);
+  CHECK(r.io.consumed >= 3400);                      // 1 kHz for ~3.6 s read out, nothing lost at the wrap
+  CHECK(r.io.consumed + 8 >= r.io.produced());       // and the drain kept up across it
+  Rig q(0xFFFFFFFFu - 13000000u, 777);
+  q.to_running(300);
+  q.freeze_and_wait();
+  REQUIRE(q.t_us >= 0x80000000u);                    // still before the wrap
+  while (q.t_us < 0xFFFFFFFFu - 5000u) { q.pass(); q.t_us += 1000; }   // FROZEN until 5 ms before it
+  const uint32_t id = q.cap.capture_id();
+  const size_t before = q.tx.of(PlatformCanId::IMU_DATA).size();
+  q.cmd({Op::READ, uint8_t(id), uint8_t(id >> 8), 0, 0, 30, 0, 10});
+  for (int i = 0; i < 400; i++) { q.pass(); q.t_us += 100; }
+  auto d = q.tx.of(PlatformCanId::IMU_DATA);
+  REQUIRE(d.size() == before + 30);
+  CHECK(d.back().t_us < d[before].t_us);             // the block spans the wrap
+  for (size_t i = before + 1; i < d.size(); i++) CHECK(uint32_t(d[i].t_us - d[i - 1].t_us) >= 400);
+}
+
+TEST_CASE("millis() wraps through the settle and the back-off: same probe schedule as from zero") {
+  Rig a(0, 0), b(0, 0xFFFFFFFFu - 30000u);
+  a.io.present = b.io.present = false;
+  a.run_ms(300000, 1000);
+  b.run_ms(300000, 1000);
+  CHECK(b.io.total_txns == a.io.total_txns);
+  CHECK(b.io.txn_times_ms == a.io.txn_times_ms);     // FakeIo logs micros-based times: identical
+  CHECK(b.tx.of(PlatformCanId::IMU_STATUS).size() == a.tx.of(PlatformCanId::IMU_STATUS).size());
+}
+
+TEST_CASE("READ while FW_HALTED is refused ERR_FW_UPDATE and sends no DATA") {
+  Rig r;
+  r.to_running(300);
+  r.freeze_and_wait();
+  const uint32_t id = r.cap.capture_id();
+  r.fw_open = true;
+  r.pass(); r.t_us += 500;
+  REQUIRE(r.svc.state() == S::FW_HALTED);
+  const size_t data_before = r.tx.of(PlatformCanId::IMU_DATA).size();
+  r.cmd({Op::READ, uint8_t(id), uint8_t(id >> 8), 0, 0, 5, 0, 80});
+  r.run_ms(50);
+  REQUIRE(r.last_reply());
+  CHECK(r.last_reply()->d[1] == St::ERR_FW_UPDATE);
+  CHECK(r.tx.of(PlatformCanId::IMU_DATA).size() == data_before);
 }
