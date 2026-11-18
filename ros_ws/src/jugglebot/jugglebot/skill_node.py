@@ -658,7 +658,7 @@ def accept_cup_decision(pattern: str, evidence: str) -> Tuple[Optional[str], boo
 _HC_PARAM_NAMES = ('first_lead_s', 'plan_lead_s', 'max_fit_age_s',
                    'assoc_radius_mm', 'reaim_authority_mm', 'resend_max',
                    'mean_n', 'wait_radius_mm', 'wait_deadband_mm', 'clear_s',
-                   'return_s')
+                   'return_s', 'nominal_apex_m')
 _HC_DEFAULTS = {name: p.default for name, p in
                 inspect.signature(hcp.HumanCatchPolicy).parameters.items()}
 #: The code a `human_catch` Attempt ends with when its RETURNING REST cannot
@@ -1273,6 +1273,13 @@ class SkillNode(Node):
         #: FEAT-47: Throws lost to an EMPTY Cup (`SkillExecutor.missed_catch_drops`),
         #: captured as each executor retires; read by `_juggle_execute`.
         self._goal_missed_catches = 0
+        #: PWAY-11 P2 U5b: a `human_catch` Attempt's own tally, never added to
+        #: the Feed figures: Throws a Catch was planned for, those confirmed
+        #: seated (`SkillExecutor.human_caught`) and those the cup history
+        #: called MISSED_CATCH (`missed_human_catches`); the rest abstained.
+        self._goal_human_claimed = 0
+        self._goal_human_caught = 0
+        self._goal_human_missed = 0
         #: Ball Butler Feed Catches that seated (one `FeedCatchReport` each,
         #: counted as `_drain_reports` consumes them); the caught side of
         #: `_goal_feed_missed`, read by `_juggle_execute` for the ledger's
@@ -3861,6 +3868,11 @@ class SkillNode(Node):
                         self._executor, 'missed_feed_catches', 0) or 0)
                     self._goal_missed_catches += int(getattr(
                         self._executor, 'missed_catch_drops', 0) or 0)
+                    # human_catch's own booking (never the Feed's, above)
+                    self._goal_human_caught += int(getattr(
+                        self._executor, 'human_caught', 0) or 0)
+                    self._goal_human_missed += int(getattr(
+                        self._executor, 'missed_human_catches', 0) or 0)
                     # Columns two-feed chain (P3): ball A's clean retire
                     # opens the chain gate (ctx stays armed, so the line
                     # below stays silent and the goal stays running); an
@@ -4509,6 +4521,9 @@ class SkillNode(Node):
         self._goal_end_code = ''
         self._goal_feed_missed = 0
         self._goal_missed_catches = 0
+        self._goal_human_claimed = 0
+        self._goal_human_caught = 0
+        self._goal_human_missed = 0
         self._goal_feeds_caught = 0
         self._goal_feed_scores = []
         self._goal_record_params = ()
@@ -4532,11 +4547,10 @@ class SkillNode(Node):
         if pattern == 'columns_highlow':
             apex_m_ball2 = float(self.get_parameter('apex_m_ball2').value)
             result = self._highlow_refusal(apex_m, apex_m_ball2)
-        # human_catch: NOT nominated yet -- I-ADMIT-2's extension to it (the
-        # nominal arrival at the wait Site, design § 2.4) is unit U5b; until
-        # then every per-Throw CATCH is judged by the install's own gate.
-        if result is None and pattern not in ('magazine', 'reload',
-                                              'human_catch'):
+        # human_catch IS nominated (I-ADMIT-2, PWAY-11 P2 U5b): the nominal
+        # CATCH at the wait Site from the nominal arrival (D9, PROPOSED);
+        # each live per-Throw CATCH is judged again by the install's gate.
+        if result is None and pattern not in ('magazine', 'reload'):
             result = self._nominate_at_accept(
                 pattern, apex_m, separation_mm, dwell_s,
                 apex_m_ball2=apex_m_ball2, angle_deg=turned_angle_deg)
@@ -4571,7 +4585,9 @@ class SkillNode(Node):
         elif pattern == 'reload':
             result = self._run_reload_only(dwell_s)
         elif pattern == 'human_catch':
-            result = self._run_human_catch(n_throws)
+            result = self._run_human_catch(
+                n_throws, self._nomination_config(pattern, apex_m,
+                                                  separation_mm, dwell_s))
         else:
             result = self._run_one_ball(pattern, apex_m, separation_mm,
                                         dwell_s, n_throws, reload)
@@ -4639,7 +4655,15 @@ class SkillNode(Node):
             feed_site=(feed_site if feed_site is not None
                        else self._columns_feed_site_name()),
             self_toss_site_xy_mm=(float(self.get_parameter('site_x_mm').value),
-                                  float(self.get_parameter('site_y_mm').value)))
+                                  float(self.get_parameter('site_y_mm').value)),
+            # human_catch (PWAY-11 P2 U5b): the wait Site, D3 and D9
+            hc_home_xy_mm=(
+                float(self.get_parameter('human_catch_home_x_mm').value),
+                float(self.get_parameter('human_catch_home_y_mm').value)),
+            hc_first_lead_s=float(
+                self.get_parameter('human_catch_first_lead_s').value),
+            hc_nominal_apex_m=float(
+                self.get_parameter('human_catch_nominal_apex_m').value))
 
     def _turned_feed_site_name(self, separation_mm, angle_deg):
         """``(name, error)``: the fed Site's name for a turned pair (the one
@@ -6399,7 +6423,7 @@ class SkillNode(Node):
               + _DISPATCH_LOOKAHEAD_S)
         return compile_reload_wait(site, period_s, t0, holds_ball=False)
 
-    def _run_human_catch(self, n_throws: int) -> SimpleNamespace:
+    def _run_human_catch(self, n_throws: int, config=None) -> SimpleNamespace:
         """The ``human_catch`` branch of :meth:`_start_pattern`: the policy
         from the parameters, the reload's no-motion refusals (opening-REST
         sizing, frame check, `_prelevel`), then the opening REST to the wait
@@ -6425,6 +6449,19 @@ class SkillNode(Node):
                 success=False, message='human_catch refused: %s' % prelevel_err)
         now = self.get_clock().now().nanoseconds / 1e9
         xy = policy.wait_xy_mm.copy()
+        if config is not None:
+            # the wait Site is the nomination's: ONE builder (I-ADMIT-2)
+            try:
+                pat = nom.build_pattern(config, n_throws)
+            except ValueError as exc:
+                return SimpleNamespace(
+                    success=False, message='human_catch refused: %s' % (exc,))
+            if not np.allclose(pat.sites[0].cup_mm[:2], xy, atol=1e-9):
+                return SimpleNamespace(
+                    success=False,
+                    message='human_catch refused: the wait Site of the '
+                            'nomination %s differs from the policy\'s %s'
+                            % (tuple(pat.sites[0].cup_mm[:2]), tuple(xy)))
         try:
             sched = self._hc_rest_schedule(xy, float(lift_s), now)
         except ValueError as exc:
@@ -6534,6 +6571,7 @@ class SkillNode(Node):
         ctx.latest = evt
         ctx.decision = d
         self._executor = executor
+        self._goal_human_claimed += 1
         return ['HUMAN-CATCH-PLANNED id %d seq %d rev %d: lead %.3f s, %.0f mm '
                 'from the wait Site' % (d.key[0], d.key[1], evt.revision,
                                          lead, d.dist_mm)]
@@ -6651,9 +6689,12 @@ class SkillNode(Node):
                         lines.append('HUMAN-CATCH-NOT-CAUGHT %s: returning to the '
                                      'wait Site' % (code,))
                     elif out.next == hcp.TO_HOLDING:
-                        lines.append('HUMAN-CATCH-CAUGHT: holding until the '
+                        lines.append('HUMAN-CATCH-CAUGHT%s: holding until the '
                                      'cup reads EMPTY for %.1f s'
-                                     % (pol.clear_s,))
+                                     % ('' if getattr(executor, 'human_caught',
+                                                      0)
+                                        else ' (not confirmed by the cup '
+                                             'history)', pol.clear_s))
                 if out.log:
                     lines.append(out.log)
             elif code:
@@ -7577,8 +7618,7 @@ class SkillNode(Node):
         (IDEA-21, `rp.landing_scores`): written whether or not a record is
         beaten."""
         path = str(self.get_parameter('records_path').value or '')
-        if not path or pattern == 'human_catch':
-            # human_catch: not in `records.PATTERNS` until unit U5b adds it.
+        if not path:
             return False, ''
         try:
             tracked = str(
@@ -7703,11 +7743,29 @@ class SkillNode(Node):
         result.throws, result.caught = rp.summarise(
             self._goal_reports, missed_catches=missed_catches)
         result.per_throw = list(self._goal_outcome_lines)
+        hc_line = ''
+        if pattern == 'human_catch':
+            # PWAY-11 P2 U5b: the Throws are a PERSON's, booked on their own
+            # (`SkillExecutor.human_caught` / `missed_human_catches`), never
+            # as Feeds: planned / confirmed seated here, the rest abstained.
+            hc_n = int(self._goal_human_claimed)
+            hc_c = int(self._goal_human_caught)
+            hc_m = int(self._goal_human_missed)
+            result.throws, result.caught = hc_n, hc_c
+            hc_line = ('human_catch result: %d of %d human Throws caught, %d '
+                       'missed, %d not confirmed (cup history blind or the '
+                       'Attempt ended first); not counted as Feeds'
+                       % (hc_c, hc_n, hc_m, max(0, hc_n - hc_c - hc_m)))
+            result.per_throw = list(result.per_throw) + [hc_line]
+            self._log_at('INFO', hc_line)
         # The ledger counts an unverifiable final Catch (TKT-42, option 2);
         # the Result above and the end line keep the operator's tally. Only a
         # COMPLETED goal, and only a row with a landing (TKT-44).
         rec_throws, rec_caught = rp.record_counts(
             self._goal_reports, outcome, missed_catches=missed_catches)
+        if pattern == 'human_catch':
+            # the ledger row: Throws planned for / Catches confirmed seated
+            rec_throws, rec_caught = result.throws, result.caught
         # Drops to date (FEAT-47): each unreleased-or-uncaught Throw, plus a
         # Ball Butler Feed that missed the Cup (the executor's
         # `missed_feed_catches`, captured at retire as `_goal_feed_missed`; a

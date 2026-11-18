@@ -78,6 +78,7 @@ from __future__ import annotations
 import collections
 import dataclasses
 import math
+import inspect
 import time
 from types import SimpleNamespace
 from typing import Dict, List, Optional, Tuple
@@ -93,6 +94,7 @@ from jugglebot.motion.trajectory import cup_realize as cr
 from jugglebot.motion.trajectory import throw_envelope
 from jugglebot.motion.trajectory.limits import TrajectoryLimits
 from jugglebot.motion.skills import admissible as adm
+from jugglebot.motion.skills import human_catch as hcp
 from jugglebot.motion.skills import schedule as sc
 from jugglebot.motion.skills import segments as sg
 from jugglebot.motion.skills import sites as st
@@ -146,7 +148,26 @@ RUNGS = (-0.20, 0.0, 0.10)
 #: Patterns a nomination plans: skill_node ``_PATTERNS`` minus the two below.
 NOMINATED_PATTERNS = ('self_toss', 'hop', 'columns', 'columns_1ball',
                       'columns_1ball_fed', 'columns_turned', 'columns_highlow',
-                      'oval_1ball', 'oval_1ball_fed', 'polygon_walk')
+                      'oval_1ball', 'oval_1ball_fed', 'polygon_walk',
+                      'human_catch')
+#: PWAY-11 P2 U5b: the Pattern whose nomination is ONE nominal CATCH, not a
+#: Site cycle (:func:`build_pattern` / :func:`compile_schedule`): a Ball
+#: thrown by a person arrives VERTICALLY at the wait Site at the policy's
+#: nominal arrival (D9, ``HumanCatchPolicy.nominal_apex_m``, a PROPOSED owner
+#: value: 1.9 m absolute, 1.07 m above the Catch plane, 4.58 m/s) with the
+#: LATEST lead the policy still plans from (``first_lead_s``, D3, PROPOSED
+#: 0.55 s: the hardest window an admitted event can have).  Zero displacement:
+#: the Landing is the wait Site, so what is judged is the Hand's catch (the
+#: runway to a 4.58 m/s arrival and the match speed), not the reach (the P2
+#: reach table).  Search (apex / separation / dwell) does not apply: none of
+#: those fields enters this plan; the operator's knobs are the
+#: ``human_catch_*`` node parameters.
+HUMAN_CATCH = 'human_catch'
+#: skill_node's ``_DISPATCH_LOOKAHEAD_S`` (``1 / _TICK_HZ + JB_TRAJ_KNOT_DT_S``,
+#: 40 Hz); a test pins the two together.
+HUMAN_CATCH_DISPATCH_LEAD_S = 1.0 / 40.0 + float(hw.JB_TRAJ_KNOT_DT_S)
+_HC_DEFAULTS = {n: p.default for n, p in
+                inspect.signature(hcp.HumanCatchPolicy).parameters.items()}
 #: The refusal of a nomination that walked no non-REST Segment.
 NOTHING_TO_PLAN = 'NOT_NOMINATED: nothing to plan'
 #: Patterns refused ``NOT_NOMINATED`` by name, with the reason.
@@ -232,6 +253,13 @@ class NominationConfig:
     #: ``polygon_walk`` only (JP-5): the Site count N (skill_node param
     #: ``polygon_n``); ``separation_mm`` is the polygon's edge.
     polygon_n: int = 4
+    #: ``human_catch`` only (PWAY-11 P2 U5b): the wait Site xy, the latest
+    #: planned lead (D3) and the nominal arrival's absolute Apex (D9) -- the
+    #: node's ``human_catch_home_x_mm`` / ``_home_y_mm`` / ``_first_lead_s`` /
+    #: ``_nominal_apex_m`` parameters; defaults are the policy's.
+    hc_home_xy_mm: Tuple[float, float] = tuple(_HC_DEFAULTS['home_xy_mm'])
+    hc_first_lead_s: float = _HC_DEFAULTS['first_lead_s']
+    hc_nominal_apex_m: float = _HC_DEFAULTS['nominal_apex_m']
 
     def key(self) -> tuple:
         return dataclasses.astuple(self)
@@ -295,6 +323,37 @@ def _feed_index(sites, feed_site: str) -> int:
     return 0 if feed_site in (name0, name0.split('@')[0]) else 1
 
 
+@dataclasses.dataclass(frozen=True)
+class HumanCatchPattern:
+    """The ``human_catch`` Pattern as nomination and node share it: the wait
+    Site and the nominal arrival.  Not a Site cycle: ``n_throws`` is the
+    goal's claimed-Throw count (the nomination plans one), ``apex_m`` the
+    nominal arrival's absolute Apex (D9, PROPOSED)."""
+    sites: Tuple
+    apex_m: float
+    first_lead_s: float
+    arrival_vel_mm_s: Tuple[float, float, float]
+    n_throws: int = 1
+    dwell_s: float = 0.0
+    roles: str = 'human'
+
+
+def _human_catch_pattern(config: NominationConfig, n: int) -> HumanCatchPattern:
+    pol = hcp.HumanCatchPolicy(home_xy_mm=config.hc_home_xy_mm,
+                               first_lead_s=config.hc_first_lead_s,
+                               plan_lead_s=max(config.hc_first_lead_s,
+                                               _HC_DEFAULTS['plan_lead_s']),
+                               nominal_apex_m=config.hc_nominal_apex_m)
+    vel = pol.nominal_arrival_vel_mm_s()
+    w = pol.wait_xy_mm
+    return HumanCatchPattern(
+        sites=(st.Site('W', np.array([float(w[0]), float(w[1]),
+                                      st.CATCH_CUP_Z_MM])),),
+        apex_m=float(config.hc_nominal_apex_m),
+        first_lead_s=float(config.hc_first_lead_s),
+        arrival_vel_mm_s=(float(vel[0]), float(vel[1]), float(vel[2])), n_throws=n)
+
+
 def build_pattern(config: NominationConfig, n_throws: Optional[int] = None):
     """THE ``Pattern`` / ``OneBallPattern`` for ``config`` -- the one builder
     skill_node and a nomination share.  ``n_throws`` = the operator's count
@@ -324,6 +383,10 @@ def build_pattern(config: NominationConfig, n_throws: Optional[int] = None):
     if any(config.landing_offset_mm) and p not in LANDING_OFFSET_PATTERNS:
         raise ValueError('a landing offset is for %s only, not %r'
                          % (' / '.join(LANDING_OFFSET_PATTERNS), p))
+    if p == HUMAN_CATCH:
+        return _human_catch_pattern(
+            config, int(n_throws if n_throws is not None
+                        else (config.n_throws or 1)))
     if p in COLUMNS_FED:
         sites = st.columns_sites(config.separation_mm,
                                  config.angle_deg if p == 'columns_turned' else 0.0)
@@ -375,6 +438,11 @@ def compile_schedule(config: NominationConfig, t0: float = DUMMY_T0_S):
     compiler's own text: no transit, window under the floor, dispatch not
     monotone) -> a ``COMPILE`` refusal."""
     pat = build_pattern(config)
+    if isinstance(pat, HumanCatchPattern):
+        w = pat.sites[0].catch_site_mm()
+        return sc.compile_human_catch(
+            w, np.array(pat.arrival_vel_mm_s), float(t0) + pat.first_lead_s,
+            float(t0), HUMAN_CATCH_DISPATCH_LEAD_S)
     if isinstance(pat, sc.Pattern):
         if config.entry == 'hop' and config.pattern != 'columns_1ball':
             feed_site = pat.sites[1]
@@ -921,6 +989,13 @@ class NominationReport:
 
     def config_text(self) -> str:
         c = self.config
+        if c.pattern == HUMAN_CATCH:
+            return ('human_catch: a Ball arriving at the wait Site (%.0f, %.0f) '
+                    'mm vertically, Apex %.2f m absolute (PROPOSED D9), '
+                    'planned %.2f s before touch-down, %s'
+                    % (c.hc_home_xy_mm[0], c.hc_home_xy_mm[1],
+                       c.hc_nominal_apex_m, c.hc_first_lead_s, c.planner_mode)
+                    + (', carry_zvd' if c.carry_zvd else ''))
         s = '%s apex %.2f' % (c.pattern, c.apex_m)
         if c.pattern == 'columns_highlow' and c.apex_m_ball2 is not None:
             s += '/%.2f' % c.apex_m_ball2
@@ -1078,6 +1153,7 @@ def nominate(config: NominationConfig, limits: Optional[TrajectoryLimits] = None
                 _CACHE.popitem(last=False)
     if (search and not rep.ok and not rep.search_done
             and config.pattern not in NOT_NOMINATED_PATTERNS
+            and config.pattern != HUMAN_CATCH
             and NOTHING_TO_PLAN not in rep.refusals):
         _search_nearest(rep, limits, geom, rungs)
     if aim is not None and rep.ok and not rep.has_aim_for(aim):
@@ -1226,7 +1302,7 @@ def workspace_ok(config: NominationConfig) -> bool:
     """Every Site's ``|xy| + WORKSPACE_HALF_EXTENT_MM`` inside
     ``CupCycleConfig().workspace_xy_m`` (``columns_sites`` ValueError ->
     False).  Self-toss: True (its Site does not move with a parameter)."""
-    if config.pattern == 'self_toss':
+    if config.pattern in ('self_toss', HUMAN_CATCH):
         return True
     try:
         if config.pattern == 'polygon_walk':

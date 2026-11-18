@@ -209,7 +209,7 @@ def test_parameters_default_from_the_policy_and_a_bad_one_refuses():
     for name in ('first_lead_s', 'plan_lead_s', 'max_fit_age_s',
                  'assoc_radius_mm', 'reaim_authority_mm', 'resend_max',
                  'mean_n', 'wait_radius_mm', 'wait_deadband_mm', 'clear_s',
-                 'return_s'):
+                 'return_s', 'nominal_apex_m'):
         assert getattr(pol, name) == getattr(ref, name), name
         assert ('human_catch_' + name) in node._params
     assert tuple(pol.home_xy_mm) == tuple(ref.home_xy_mm)

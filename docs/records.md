@@ -47,6 +47,11 @@ Drops to date: 939 (120 counted live since 2026-11-11; 819 from history, 2026-07
 | 2026-09-29 19:21 | 28 | 24 | other (UNKNOWN) | seed: reconstructed from per-throw lines, no summary line (approximate) |  |
 | 2026-11-02 18:31 | 61 | 61 | drop (MISSED_CATCH) |  | apex_m=0.9; separation_mm=250; dwell_s=0.27; planner=pose |
 
+<!-- pattern: human_catch balls: 1 -->
+### Human Throw — Catch
+
+_No record yet._
+
 <!-- pattern: oval_1ball balls: 1 -->
 ### Oval — Ball 1
 

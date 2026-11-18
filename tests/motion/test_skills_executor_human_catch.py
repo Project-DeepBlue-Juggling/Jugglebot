@@ -190,6 +190,8 @@ def test_a_later_fit_re_aims_the_live_human_catch():
 def _all_other_compiles():
     out = []
     for p in nm.NOMINATED_PATTERNS:
+        if p == 'human_catch':
+            continue         # the one compile that sets the field (U5a)
         out.append((p, nm.compile_schedule(
             nm.NominationConfig(p, 0.9, 100.0, 0.27))))
     out.append(('columns hop entry', nm.compile_schedule(
@@ -264,3 +266,79 @@ def test_a_release_anchored_catch_keeps_its_window_exactly():
         t_throw + ex.MISSED_CATCH_OPEN_AFTER_RELEASE_S)
     assert pend.t_close_s == pytest.approx(
         L + ex.MISSED_CATCH_CLOSE_AFTER_LANDING_S)
+
+
+# ── U5b: a human Catch is booked as a human Catch, never as a Feed ──────────
+
+def _verdict_time(sch=None):
+    L = T_NOW + LEAD_S
+    return (L + ex.MISSED_CATCH_CLOSE_AFTER_LANDING_S
+            + ex.MISSED_CATCH_DECIDE_LAG_S)
+
+
+def test_a_caught_human_ball_is_counted_as_human_not_as_a_feed():
+    sch = _hc_schedule()
+    x, _inst = _executor(sch, _live(12))
+    _run(x, sch.skills[0].dispatch_s(), _verdict_time())
+    assert x.end_code == ''
+    assert x.human_caught == 1 and x.missed_human_catches == 0
+    assert x.feed_reports == []              # no `feed` line for a human Ball
+    assert x.missed_feed_catches == 0
+
+
+def test_a_missed_human_ball_is_counted_as_human_not_as_a_feed_miss():
+    sch = _hc_schedule()
+    x, _inst = _executor(sch, _live(0))
+    _run(x, sch.skills[0].dispatch_s(), _verdict_time() + 1.0)
+    assert x.end_code == ex.MISSED_CATCH
+    assert x.missed_human_catches == 1 and x.human_caught == 0
+    assert x.missed_feed_catches == 0        # not a Ball Butler Feed miss
+    assert x.feed_reports == []
+
+
+def test_an_unverifiable_human_window_counts_neither_way():
+    """A blind window abstains (no verdict): neither caught nor missed."""
+    sch = _hc_schedule()
+
+    def blind(t0, t1):
+        return ex.SeatWindow(n_valid=0, n_seated=0, max_gap_s=9.0,
+                             t_first_seated_s=None)
+    x, _inst = _executor(sch, blind)
+    _run(x, sch.skills[0].dispatch_s(), _verdict_time() + 1.0)
+    assert x.human_caught == 0 and x.missed_human_catches == 0
+    assert x.missed_feed_catches == 0
+
+
+def _feed_schedule():
+    """The human CATCH's Schedule relabelled a non-human Pattern: a CATCH
+    carrying ``landing_prior`` on a Ball Butler Feed's Schedule, armed from
+    the same window start, so the booking is the Feed's."""
+    import dataclasses
+    return dataclasses.replace(_hc_schedule(), pattern='reload')
+
+
+def test_a_feed_catch_is_booked_exactly_as_before():
+    """Pin: a landing_prior CATCH on any other Pattern is a Feed: it prints
+    through `feed_reports` when seated and counts in `missed_feed_catches`
+    when missed, and never in the human counters."""
+    sch = _feed_schedule()
+    x, _inst = _executor(sch, _live(12))
+    x.tick(sch.skills[0].dispatch_s())
+    (pend,) = x._pending_catches
+    assert pend.is_feed is True and pend.is_human is False
+    _run(x, sch.skills[0].dispatch_s() + 0.025, _verdict_time())
+    assert len(x.feed_reports) == 1
+    assert x.human_caught == 0 and x.missed_human_catches == 0
+    m, _inst = _executor(_feed_schedule(), _live(0))
+    _run(m, m.schedule.skills[0].dispatch_s(), _verdict_time() + 1.0)
+    assert m.missed_feed_catches == 1
+    assert m.missed_human_catches == 0 and m.feed_reports == []
+
+
+def test_the_human_flag_follows_the_pattern_not_the_prior():
+    sch = _hc_schedule()
+    x, _inst = _executor(sch, _live(0))
+    x._register_catch(0, sch.skills[0], float(sch.skills[0].t_abs_s))
+    (pend,) = x._pending_catches
+    assert pend.is_human is True and pend.is_feed is False
+    assert pend.target_xy_mm is None         # no Ball Butler aim to score
