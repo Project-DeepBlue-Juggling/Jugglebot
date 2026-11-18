@@ -2,11 +2,16 @@
 id: BUG-118
 kind: bug
 title: mapkit atomic write uses os.fchmod, which Windows lacks, so map writes fail on the Windows box
-status: inbox
+status: complete
 created: '2026-11-18'
-updated: '2026-11-18T09:29:10Z'
+updated: '2026-11-18T11:37:18Z'
 owners: []
 priority: low
+effort: xs
+hardware: none
+owner: none
+radius: local
+diagnosis: confirmed
 area: map-app
 blocked_by: []
 links: []
