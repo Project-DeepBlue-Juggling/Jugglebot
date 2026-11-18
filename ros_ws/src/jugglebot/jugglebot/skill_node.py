@@ -4058,6 +4058,36 @@ class SkillNode(Node):
             return self._attempt_label[:-len(' (reload)')]
         return self._attempt_label
 
+    def _release_declined_claim(self, ctx, ended: str) -> bool:
+        """A compile whose executor swap was DECLINED because an END already
+        decided the goal resolves its claim (sitting 2026-11-18 L3 hang): a
+        claimed ``_reload_ctx`` left behind kept `_log_attempt_end` silent,
+        `_maybe_signal_goal_done` false and `_refuse_if_running` true forever,
+        so the Juggle goal never returned. Caller holds `_reload_lock`. Clears
+        ``ctx`` only if it is still current and returns True when no executor
+        is left to report the end (it retired itself on its own tick, before
+        the swap): the caller then prints the end line with ``ended``, the
+        real end code. A still-live refused executor reports through its own
+        retire, which prints the line now that the ctx is gone."""
+        if not ended or self._reload_ctx is not ctx:
+            return False
+        self._reload_ctx = None
+        if self._executor is not None:
+            return False
+        self._reload_throw_inflight = False
+        self._bb_throw_dispatched = False
+        self._bb_throw_release_window = None
+        return True
+
+    def _log_declined_end(self, ended: str) -> None:
+        """The attempt's end line for `_release_declined_claim` (the
+        executor-less form `_end_attempt` prints)."""
+        severity, text = rp.end_line(
+            self._end_label() or 'attempt', ended, '', self._goal_reports,
+            fed=self._attempt_fed,
+            missed_catches=int(self._goal_missed_catches))
+        self._log_at(severity, text)
+
     def _log_attempt_end(self, executor) -> None:
         """The attempt's last line (`report.end_line`), as its executor
         retires -- unless this is the reload's opening REST retiring while
@@ -6317,6 +6347,7 @@ class SkillNode(Node):
                         self.get_logger().info(
                             'columns_1ball reload: declining the executor '
                             'swap -- the attempt already ended (%s)' % (ended,))
+                    release_line = self._release_declined_claim(ctx, ended)
                     if installed:
                         self._sched_refused_at_start = self._sched_refused
                         self._force_hold = False
@@ -6329,6 +6360,8 @@ class SkillNode(Node):
             finally:
                 if got_lock:
                     self._tick_lock.release()
+            if release_line:
+                self._log_declined_end(ended)
             if not installed:
                 self.get_logger().info(
                     'columns_1ball reload: the attempt ended (stop, timeout '
@@ -6477,6 +6510,7 @@ class SkillNode(Node):
                     self.get_logger().info(
                         'reload: declining the executor swap -- the attempt '
                         'already ended (%s)' % (ended,))
+                release_line = self._release_declined_claim(ctx, ended)
                 if installed:
                     self._sched_refused_at_start = self._sched_refused
                     self._force_hold = False
@@ -6503,6 +6537,8 @@ class SkillNode(Node):
         finally:
             if got_lock:
                 self._tick_lock.release()
+        if release_line:
+            self._log_declined_end(ended)
         if not installed:
             self.get_logger().info(
                 'reload: the attempt ended (stop, timeout or a refused hand '
@@ -6666,6 +6702,7 @@ class SkillNode(Node):
                     self.get_logger().info(
                         'columns feed: declining the executor swap -- the '
                         'attempt already ended (%s)' % (ended,))
+                release_line = self._release_declined_claim(ctx, ended)
                 if installed:
                     self._sched_refused_at_start = self._sched_refused
                     self._force_hold = False
@@ -6678,6 +6715,8 @@ class SkillNode(Node):
         finally:
             if got_lock:
                 self._tick_lock.release()
+        if release_line:
+            self._log_declined_end(ended)
         if not installed:
             self.get_logger().info(
                 'columns feed: the attempt ended (stop, timeout or a '

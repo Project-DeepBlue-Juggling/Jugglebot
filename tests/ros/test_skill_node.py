@@ -5642,6 +5642,41 @@ def test_columns_feed_swap_declines_over_a_refused_live_executor(tmp_path):
     assert node._ended_code_for_swap() == 'SERVICE_TIMEOUT'
 
 
+def test_declined_swap_after_the_executor_ended_itself_releases_the_attempt(
+        tmp_path):
+    """Sitting 2026-11-18 L3 hang: a fed Attempt's executor ended itself
+    (ABORTED_MODE_CHANGED) while Ball Butler's announcement had already
+    claimed the reload context. The compile then declined the swap but left
+    the claimed context behind, so the end line stayed silent, the Juggle
+    goal never completed and every later Juggle was refused. The decline
+    must release the attempt: the end line names the real end code, the goal
+    completes and a new goal is accepted."""
+    node, _client = _node_with_client(response=_response())
+    _columns_bb_started(node, tmp_path)
+    _finish_bridge(node)
+    ctx = node._reload_ctx
+    ann = _bb_announcement(
+        target_id=node._robot_name, landing_mm=(50.0, 0.0, 830.0),
+        landing_vel_mm_s=(0.0, 0.0, -3000.0), throw_time_s=0.5,
+        landing_time_s=5.0)
+    with node._reload_lock:
+        ctx.announced = True
+    # The executor already retired itself on its own tick (mode change).
+    assert node._executor is None
+    node._goal_end_code = 'ABORTED_MODE_CHANGED'
+    lines = []
+    node.get_logger().error = lines.append
+    node.get_logger().warning = lines.append
+    node.get_logger().info = lines.append
+    node._install_announced_reload(ctx, ann)
+    node._on_tick()
+    assert [ln for ln in lines if 'ABORTED_MODE_CHANGED' in ln
+            and 'declining' not in ln], lines
+    assert node._goal_done_event.is_set()
+    refusal = node._refuse_if_running(SimpleNamespace(success=None, message=''))
+    assert refusal is None
+
+
 class _NoAnswerClient(_RecordingClient):
     def call_async(self, request):
         fut = super().call_async(request)
