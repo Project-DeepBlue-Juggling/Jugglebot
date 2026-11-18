@@ -124,6 +124,16 @@ namespace PlatformState {
   constexpr float TILT_COUNTS_PER_RAD = 10000.0f;
 }
 
+// 0x7DE TILT_READING invalid reply: bytes 0-3 = INVALID_NAN_BITS,
+// bytes 4-7 = INVALID_NAN_BITS | PlatformTiltReason (both u32 LE, both float32 NaN)
+namespace PlatformTilt {
+  constexpr uint32_t INVALID_NAN_BITS = 0x7FC00000;
+}
+namespace PlatformTiltReason {
+  constexpr uint8_t NOT_READY = 0x01;
+  constexpr uint8_t READ_FAILED = 0x02;
+}
+
 // Ball Butler Teensy <-> Host
 namespace BallButlerCanId {
   constexpr uint32_t THROW_CMD = 0x7D0;

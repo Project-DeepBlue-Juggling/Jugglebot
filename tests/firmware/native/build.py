@@ -41,6 +41,7 @@ REPO_ROOT = NATIVE_DIR.parents[2]
 FIRMWARE_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "Teensy_code_canbridge"
 PLATFORM_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "Teensy_code_platform"
 PLATFORM_HAND_FAN = PLATFORM_DIR / "hand_fan.h"
+PLATFORM_LOOP_SERVICE = PLATFORM_DIR / "loop_service.h"
 PLATFORM_IMU_HEADERS = [PLATFORM_DIR / "imu_capture.h", PLATFORM_DIR / "imu_proto.h",
                         PLATFORM_DIR / "protocol_config.h",
                         PLATFORM_DIR / "icm42688.h", PLATFORM_DIR / "icm42688.cpp"]
@@ -115,6 +116,13 @@ _BINARIES = {
     # directory's generated headers share their names with the can-bridge's.
     "test_platform_hand_fan": (
         NATIVE_DIR / "test_platform_hand_fan.cpp",
+        [],
+    ),
+    # The Platform Teensy's loop() decisions (FW 11): the tilt service, the inclinometer
+    # re-probe scheduler and the CAN dispatch bound. Pure header (loop_service.h, which
+    # includes the Platform's protocol_config.h); same relative-include rule as the fan.
+    "test_platform_loop_service": (
+        NATIVE_DIR / "test_platform_loop_service.cpp",
         [],
     ),
     # The Platform Teensy's IMU capture ring + protocol/state-machine logic: pure headers
@@ -219,6 +227,7 @@ def _source_hash() -> str:
         files += sorted(p for p in d.glob("*") if p.is_file() and p.suffix in (".h", ".cpp"))
     files += sorted(p for p in FIRMWARE_DIR.glob("*") if p.suffix in (".h", ".cpp", ".ino"))
     files.append(PLATFORM_HAND_FAN)
+    files.append(PLATFORM_LOOP_SERVICE)
     files += PLATFORM_IMU_HEADERS
     for p in sorted(set(files)):
         h.update(p.name.encode())

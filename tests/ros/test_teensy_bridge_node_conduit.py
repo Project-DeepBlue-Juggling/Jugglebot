@@ -33,6 +33,7 @@ import types
 import pytest
 
 import jugglebot.hardware_config as hw
+import jugglebot.protocol_config as proto
 
 from teensy_link import (
     RpcMethod, RpcStatus, MsgType, Telemetry, Diagnostic, PlatformFrame,
@@ -333,6 +334,38 @@ def test_get_platform_tilt_out_of_range_returns_nan():
 
         res = node._svc_get_platform_tilt(object(), GetTiltReadingService.Response())
         assert math.isnan(res.tilt_xy[0]) and math.isnan(res.tilt_xy[1])
+    finally:
+        _teardown(teensy, client, node)
+
+
+@pytest.mark.parametrize("reason", [proto.PLATFORM_TILT_REASON_NOT_READY,
+                                    proto.PLATFORM_TILT_REASON_READ_FAILED])
+def test_get_platform_tilt_rejects_the_fw11_invalid_reply(reason):
+    """Platform FW 11 answers a tilt request it cannot serve with an explicit invalid
+    reply (config/protocol_config.yaml platform_tilt): dlc 8, two quiet NaNs. This
+    pins that TODAY's decoder, which knows nothing of it, still rejects it as a
+    reply (no timeout wait) through its |tilt| bound, retries, and returns the NaN
+    shape, exactly as it did for FW <= 10's (pi, pi). P3 adds the explicit decode."""
+    teensy, client, node = _build_paired_node()
+    try:
+        bits = proto.PLATFORM_TILT_INVALID_NAN_BITS
+        frame = struct.pack("<II", bits, bits | reason)
+        calls = []
+
+        def handler(rid, a):
+            calls.append(rid)
+            teensy.send_to_jetson(int(MsgType.PLATFORM_FRAME), _platform_frame(_TILT_ID, frame))
+            return (int(RpcStatus.OK), b"")
+        teensy.on_rpc(int(RpcMethod.TILT_READ), handler)
+
+        t0 = time.monotonic()
+        res = node._svc_get_platform_tilt(object(), GetTiltReadingService.Response())
+        elapsed = time.monotonic() - t0
+        assert math.isnan(res.tilt_xy[0]) and math.isnan(res.tilt_xy[1])
+        assert math.isnan(res.tilt_quat.w)
+        assert len(calls) == node._TILT_READ_ATTEMPTS
+        # Answered, not timed out: three round trips well inside one relay timeout.
+        assert elapsed < node._RELAY_READ_TIMEOUT_S
     finally:
         _teardown(teensy, client, node)
 

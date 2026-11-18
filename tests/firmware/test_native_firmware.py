@@ -153,6 +153,17 @@ def test_native_platform_hand_fan_binary_passes(binaries):
         f"native test_platform_hand_fan FAILED:\n{r.stdout}\n{r.stderr}")
 
 
+def test_native_platform_loop_service_binary_passes(binaries):
+    """The Platform Teensy's FW 11 loop() decisions (loop_service.h): a healthy tilt request
+    answered in the same pass, at most one inclinometer operation per pass, the explicit
+    invalid reply and its bytes, the re-probe floor and back-off, no probe during a firmware
+    update, a request joining a retry sequence, due times across the clock wrap, and the
+    CAN dispatch bound."""
+    r = _run(binaries["test_platform_loop_service"])
+    assert r.returncode == 0, (
+        f"native test_platform_loop_service FAILED:\n{r.stdout}\n{r.stderr}")
+
+
 def test_native_leg_activate_binary_passes(binaries):
     """The compiled leg_activate.cpp passes every behaviour assertion
     (ACTIVATE: request validation — dead-bus/E-STOP/concurrent-move/no-present-leg/

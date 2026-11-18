@@ -5,7 +5,8 @@
  *    • CAN traffic monitor (ID 0x7DF)
  *    • Optional debugging of specific CAN IDs
  *    • Timed analysis of RxSdo messages
- *    • SCL3300 inclinometer → CAN (ID 0x7DE)
+ *    • SCL3300 inclinometer → CAN (ID 0x7DE), served from loop() since FW 11
+ *      (loop_service.h), with an explicit invalid reply when it cannot answer
  *    • Robot state exchange (ID 0x6E0) — also reports this firmware's
  *      FW_VERSION in bytes 5-6; see the FIRMWARE IDENTITY block below and
  *      ros_ws/docs/platform_fw_version.md
@@ -35,6 +36,7 @@
 #include "hardware_config.h"  // Auto-generated from config/hardware_config.yaml
 #include "protocol_config.h"  // Auto-generated from config/protocol_config.yaml
 #include "hand_fan.h"
+#include "loop_service.h"  // FW 11: tilt service, inclinometer probe, CAN dispatch bound
 
 #define DEBUG_TRAFFIC 0    // 0 = silent, 1 = Serial print report CAN traffic frames
 #define DEBUG_TIME_SYNC 0  // 0 = silent, 1 = Serial print periodic messages showing how tight the clocks are synced
@@ -156,9 +158,25 @@
  *        to AUTO at the defaults.  0x6E2 is a new status frame at 1 Hz, on every
  *        command and on every fan change.  Needs can-bridge FW 41 for both; on an
  *        older bridge AUTO still works.  No motion path touched.
+ *   11 = 2026-11-19.  ROBUSTNESS for the Platform IMU (IDEA-20 P2a): this board must
+ *        keep calling can1.events(), because firmware over CAN is its only way in.
+ *        (a) The 0x7DE tilt request no longer runs the inclinometer inside the CAN
+ *        callback: the callback sets a flag and loop() serves it (loop_service.h),
+ *        reading in the same pass, at most one sensor operation per pass, retries
+ *        10 ms apart.  A failing SCL3300 used to hold the callback >= 600 ms.
+ *        (b) When the inclinometer cannot answer, the reply is an explicit INVALID
+ *        frame, two quiet NaNs with a reason (protocol_config.yaml platform_tilt),
+ *        instead of the old (pi, pi).  A FW <= 10 host decodes it as (nan, nan) and
+ *        rejects it with its |tilt| bound, as it rejected (pi, pi).
+ *        (c) setup() no longer waits for ever for the SCL3300: three begin() calls
+ *        at most (about 310 ms), then the board runs with tilt NOT_READY and loop()
+ *        re-probes (1 s, backing off to 60 s; never during a firmware update).
+ *        With the sensor present, setup() makes the same single begin() as before.
+ *        (d) loop() dispatches up to 32 received CAN frames per pass, not one.
+ *        No motion path, no CAN id, no TX frame other than the tilt reply changed.
  */
 constexpr char     FW_NAME[]  = "jugglebot-platform";
-constexpr uint16_t FW_VERSION = 10;  // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
+constexpr uint16_t FW_VERSION = 11;  // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
                                      //      feedforward, C-HAND-2).
                                      // 2→3: 2026-08-18 hand END-STOP correction — BEHAVIOURAL.
                                      //      Geometry::HAND_MOTOR_HARD_STOP_REVS 11.1 → 10.8 rev
@@ -200,6 +218,11 @@ constexpr uint16_t FW_VERSION = 10;  // 1→2: 2026-07-29 throwDecelToTorque (po
                                      // 9→10: 2026-11-10 BUG-7 the levelling offset is held
                                      //      as the raw int16 wire counts and echoed exactly:
                                      //      no float round trip, no truncating cast.
+                                     // 10→11: 2026-11-19 IDEA-20 P2a robustness: tilt served
+                                     //      from loop() with an explicit invalid reply,
+                                     //      bounded inclinometer probe in setup() plus
+                                     //      re-probes from loop(), up to 32 CAN frames
+                                     //      dispatched per loop() pass.
 
 /*----------------------------------------------------------------------------*/
 /*                                CAN BUS SET‑UP                              */
@@ -276,8 +299,9 @@ struct platformTilt {
  *  COMMIT the main loop has stopped, so the pin holds its last state until the
  *  reset releases it. */
 /*  This section sits below the structs above on purpose: the .ino preprocessor puts
- *  every function prototype ahead of the first function it finds, and sendTiltData
- *  and createStateCANMessage need platformTilt and RobotState declared by then. */
+ *  every function prototype ahead of the first function it finds, and
+ *  createStateCANMessage needs RobotState declared by then (as sendTiltData needed
+ *  platformTilt before FW 11). */
 constexpr uint8_t HAND_FAN_PIN = uint8_t(TeensyOp::HAND_FAN_PIN);
 static_assert(HAND_FAN_PIN != 10 && HAND_FAN_PIN != 11 && HAND_FAN_PIN != 12 && HAND_FAN_PIN != 13
                   && HAND_FAN_PIN != 18 && HAND_FAN_PIN != 19 && HAND_FAN_PIN != 22 && HAND_FAN_PIN != 23,
@@ -849,36 +873,50 @@ float convertTo180Range(float a) {
   return (a > 180.f) ? a - 360.f : a;
 }
 
-platformTilt getInclination() {
-  platformTilt t{ PI, PI };  // default error value
-  const int maxAttempts = 3;
+/*  The tilt service's hands (LoopService::Tilt::Service calls these from loop(), at
+ *  most one read() or probe() per pass).  Nothing here runs in the CAN callback: since
+ *  FW 11 canSniff only sets tiltRequested.  No Serial output on this path either: the
+ *  USB console is gone, and a write to a port that enumerated with no reader can block
+ *  for up to 120 ms. */
+struct TiltIo {
+  platformTilt last{ 0.f, 0.f };
 
-  for (int k = 0; k < maxAttempts; ++k) {
-    if (inclinometer.available()) {
-      float ay = convertTo180Range(inclinometer.getCalculatedAngleY());
-      float az = convertTo180Range(inclinometer.getCalculatedAngleZ());
-
-      t.tiltX = -(az)*PI / 180.f;
-      t.tiltY = -(ay)*PI / 180.f;
-
-      Serial.printf("X:%f Y:%f\n\n", t.tiltX, t.tiltY);
-      return t;
-    }
-    inclinometer.reset();
-    delay(100);
+  /*  One read, about 1.3 ms.  Same angles and signs as FW <= 10. */
+  bool read() {
+    if (!inclinometer.available()) return false;
+    const float ay = convertTo180Range(inclinometer.getCalculatedAngleY());
+    const float az = convertTo180Range(inclinometer.getCalculatedAngleZ());
+    last.tiltX = -(az)*PI / 180.f;
+    last.tiltY = -(ay)*PI / 180.f;
+    return true;
   }
-  return t;  // returns {π,π} if failed
-}
 
-void sendTiltData(platformTilt til) {
-  CAN_message_t m;
-  m.id = tiltID;
-  m.len = 8;
-  memcpy(&m.buf[0], &til.tiltX, 4);
-  memcpy(&m.buf[4], &til.tiltY, 4);
-  can1.write(m);
-  Serial.printf("Sent tilt: X=%f Y=%f\n", til.tiltX, til.tiltY);
-}
+  /*  One (re)initialisation, about 103 ms of the library's busy waits; the same
+   *  begin() setup() has always used (mode 4, angle outputs enabled, WHOAMI 0xC1). */
+  bool probe() { return inclinometer.begin(); }
+
+  void reply(LoopService::Tilt::Reply r) {
+    CAN_message_t m;
+    m.id = tiltID;
+    m.len = 8;
+    if (r == LoopService::Tilt::Reply::VALID) {
+      LoopService::Tilt::encode_valid(last.tiltX, last.tiltY, m.buf);
+    } else {
+      LoopService::Tilt::encode_invalid(r, m.buf);
+    }
+    can1.write(m);
+  }
+};
+
+TiltIo tiltIo;
+LoopService::Tilt::Service tiltService;
+
+/*  Set by canSniff, read and cleared by loop() after the pass's dispatch.  volatile
+ *  because until loop()'s first can1.events() FlexCAN_T4 runs canSniff in its ISR
+ *  (struct2queueRx, isEventsUsed == 0), i.e. during the whole of setup(); after that
+ *  canSniff only runs inside events(), in loop() context, so the read-and-clear in
+ *  loop() has no concurrent writer. */
+volatile bool tiltRequested = false;
 
 /*----------------------------------------------------------------------------*/
 /*            R O B O T  S T A T E  P A C K / U N P A C K                     */
@@ -978,10 +1016,9 @@ void analyzeMessageTiming(const CAN_message_t &msg) {
 void canSniff(const CAN_message_t &msg) {
   receivedCount++;
 
-  /* — Inclinometer trigger — */
+  /* — Inclinometer trigger: served from loop() (FW 11), never here — */
   if (msg.id == tiltID) {
-    platformTilt t = getInclination();
-    sendTiltData(t);
+    tiltRequested = true;
   }
 
   /* — Robot‑state exchange — */
@@ -1042,8 +1079,7 @@ void setup() {
    * "the board rebooted" evidence into "the board rebooted INTO v<N>". */
   Serial.printf("[boot] %s v%u\n", FW_NAME, (unsigned)FW_VERSION);
 
-  /* Hand fan off before anything that can block: the inclinometer wait below never
-   * returns if the SCL3300 is absent. */
+  /* Hand fan off first, before CAN can deliver a fan command. */
   pinMode(HAND_FAN_PIN, OUTPUT);
   digitalWrite(HAND_FAN_PIN, LOW);
 
@@ -1055,13 +1091,18 @@ void setup() {
   can1.enableFIFOInterrupt();
   can1.onReceive(canSniff);
 
-  /* Inclinometer */
-  while (!inclinometer.begin()) {
-    Serial.println("SCL3300 not found, resetting…");
-    inclinometer.reset();
-    delay(500);
+  /* Inclinometer: OPTIONAL, so bounded (FW 11).  Everything above came up without
+   * it.  At most BOOT_PROBE_ATTEMPTS begin() calls, about 103 ms each; a present
+   * sensor answers the first, exactly as before.  An absent one leaves tilt
+   * NOT_READY and loop() re-probes.  CAN frames arriving meanwhile are handled by
+   * canSniff in FlexCAN's ISR (loop() has not called events() yet); the tilt branch
+   * there only sets a flag, so no SPI runs in the ISR while begin() uses it here. */
+  bool sclOk = false;
+  for (uint8_t i = 0; i < LoopService::Tilt::BOOT_PROBE_ATTEMPTS && !sclOk; ++i) {
+    sclOk = inclinometer.begin();
   }
-  Serial.println("SCL3300 initialised.");
+  tiltService.boot(sclOk, millis());
+  Serial.println(sclOk ? "SCL3300 initialised." : "SCL3300 not answering: tilt NOT_READY, re-probing from loop().");
   Serial.println("Teensy platform MCU ready.");
 }
 
@@ -1069,7 +1110,19 @@ void setup() {
 /*                                   L O O P                                   */
 /*----------------------------------------------------------------------------*/
 void loop() {
-  can1.events();   // dispatch CAN callbacks
+  /* Dispatch CAN callbacks: up to CAN_FRAMES_PER_PASS queued frames (FW 11; one before). */
+  uint32_t calls = 0;
+  uint64_t ev;
+  do {
+    ev = can1.events();
+    ++calls;
+  } while (LoopService::keep_dispatching(calls, ev));
+
+  /* Tilt: at most one inclinometer read (~1.3 ms) or probe (~103 ms, rationed) per pass. */
+  const bool tiltReq = tiltRequested;
+  tiltRequested = false;
+  tiltService.service(millis(), tiltReq, FwUpdate::sessionOpen(), tiltIo);
+
   reportStatus();  // traffic monitor
   FwUpdate::tick();  // time out an abandoned firmware-update session
   updateHandFan();   // apply the fan decision (fed from canSniff)

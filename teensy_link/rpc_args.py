@@ -490,7 +490,14 @@ PLATFORM_FW_VERSION_UNVERSIONED = 0
 #: 10 (2026-11-10, BUG-7) = levelling offset held as raw int16 wire counts and
 #: echoed exactly. A board on 9 still works: its float round trip can drop one
 #: 0.1 mrad count, and it needs no knowledge of the scale.
-PLATFORM_FW_VERSION_EXPECTED = 10
+#: 11 (2026-11-19, IDEA-20 P2a) = robustness ahead of the Platform IMU: the tilt
+#: request is served from loop() instead of the CAN callback, a tilt the board
+#: cannot read is answered with an explicit invalid reply (two quiet NaNs with a
+#: reason, protocol_config.yaml platform_tilt) instead of (pi, pi), setup() no
+#: longer waits for ever for the inclinometer, and loop() dispatches up to 32 CAN
+#: frames per pass. A board on 10 still works: this host rejects its (pi, pi) and
+#: the new invalid reply alike, through the |tilt| bound.
+PLATFORM_FW_VERSION_EXPECTED = 11
 
 
 def decode_platform_fw_version(data: bytes) -> int:
