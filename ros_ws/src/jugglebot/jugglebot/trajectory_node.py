@@ -1484,6 +1484,18 @@ class TrajectoryNode(Node):
                     # as 299-679 rev/s^2 hand accel steps at every 25 ms frame
                     # boundary.
                     next_deadline = _ceil_to_grid(time.perf_counter(), period)
+                    # ...then WAIT for that knot, exactly as the on-time
+                    # branch does (BUG-110). The snapped deadline is up to one
+                    # period in the future; emitting it at once published a
+                    # frame up to 25 ms before (its stamp - emit lead), and
+                    # the bridge's newest-only drain (teensy_bridge_node
+                    # recv_latest) then forwarded that not-yet-due frame and
+                    # discarded the late, due one, so the firmware's cover ran
+                    # out (2026-11-18: 3 Attempt-ending STOPs). Interruptible:
+                    # a stop ends the loop without emitting.
+                    sleep_dt = next_deadline - time.perf_counter()
+                    if sleep_dt > 0:
+                        self._emit_stop.wait(sleep_dt)
         finally:
             try:
                 self._pub.close()
