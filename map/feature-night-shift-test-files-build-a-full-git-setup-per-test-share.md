@@ -4,11 +4,12 @@ kind: feature
 title: 'Night Shift test files build a full git setup per test: share one template per module'
 status: complete
 created: '2026-11-18'
-updated: '2026-11-18T08:39:21Z'
+updated: '2026-11-18T09:00:38Z'
 owners: []
 priority: low
 effort: m
 hardware: none
+owner: none
 radius: subsystem
 area: tests-tooling
 blocked_by: []
