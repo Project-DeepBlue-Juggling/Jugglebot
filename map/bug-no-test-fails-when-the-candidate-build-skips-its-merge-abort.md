@@ -16,6 +16,9 @@ area: tests-tooling
 blocked_by: []
 links: []
 filed_by: claude
+night_skip: frozen-path
+night_skip_on: '2026-11-19'
+night_skip_note: 'Needs tests/sim/test_night_shift_candidate.py, a never-list path: a day Session.'
 ---
 
 Removing the merge --abort at tools/night_shift_candidate.sh:137 fails no test in tests/sim/test_night_shift_candidate.py (checked 2026-11-18 during FEAT-58, on the file before and after that change). Wanted: a test in which one branch conflicts and a later branch is still tried, asserting the later branch merges cleanly and the candidate worktree holds no half-finished merge. The test file is on the Night Shift's frozen paths, so this needs a day Session.

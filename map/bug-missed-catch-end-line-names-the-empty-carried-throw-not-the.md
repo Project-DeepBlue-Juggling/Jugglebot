@@ -17,6 +17,9 @@ blocked_by: []
 links:
 - logbook/2026-11-18-sitting-debrief.md
 filed_by: sitting-debrief 2026-11-18
+night_skip: too-large
+night_skip_on: '2026-11-19'
+night_skip_note: 'Rated m: naming the lost flight needs a rule for when the carried Throw never flew (10 of 34 ends it did fly).'
 ---
 
 Found at the debrief of the Sitting of 2026-11-18 (34 MISSED_CATCH ends). Related: BUG-78, BUG-33.
