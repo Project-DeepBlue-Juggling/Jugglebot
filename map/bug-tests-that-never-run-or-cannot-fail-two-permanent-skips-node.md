@@ -4,7 +4,7 @@ kind: bug
 title: 'Tests that never run or cannot fail: two permanent skips, Node lookup, stale-log fixture, loose ROS mocks'
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-14T17:53:56Z'
+updated: '2026-11-17T23:05:52Z'
 owners: []
 priority: medium
 effort: m
@@ -37,3 +37,7 @@ Tests that look like protection and are not, from the 2026-11-13 maintainer revi
 - A committed fixture for the hermite cross-check in place of `temp/logs`.
 - Port or delete the calibration script.
 - `__slots__` or a strict `__setattr__` on the mock messages, and a test that the mock fields equal the `.msg`, `.srv` and `.action` definitions.
+
+## Progress
+
+- 2026-11-18: 2026-11-16 review, Node lookup confirmed from 31 nights of junit: 59 tests in 8 tests/ros/test_gui_*.py files skipped on every 04:00 run (bare shutil.which; Node is only under ~/.nvm). Owner wants this part fixed first.

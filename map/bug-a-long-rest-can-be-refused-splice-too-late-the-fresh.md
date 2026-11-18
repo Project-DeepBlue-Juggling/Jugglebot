@@ -4,7 +4,7 @@ kind: bug
 title: 'A long REST can be refused SPLICE_TOO_LATE: the fresh decision and the Knot choice use different leads'
 status: in_progress
 created: '2026-11-14'
-updated: '2026-11-15T19:02:43Z'
+updated: '2026-11-16T17:53:26Z'
 owners:
 - night-shift
 priority: medium
@@ -37,3 +37,4 @@ A long REST can be refused `SPLICE_TOO_LATE` when it should have been installed 
 ## Progress
 
 - 2026-11-16: Night Shift 2026-11-16: held on night-shift/2026-11-16-BUG-95: confirmed offline, a band REST installs fresh at the record end; 4 audit findings open, INVARIANTS.md K1 and I-INSTALL-1 to amend; unblocked by TKT-76, a day Session, then a Sitting
+- 2026-11-17: Night Shift 2026-11-17: TKT-76 answered option 1 (capped band REST); held on night-shift/2026-11-16-BUG-95; unblocked by a day Session (INVARIANTS.md K1 and I-INSTALL-1, the rebase-slide cap, the ValueError and MAGAZINE findings, then the Sitting section), then a Sitting

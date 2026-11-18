@@ -2,10 +2,11 @@
 id: BUG-94
 kind: bug
 title: Ball Butler Throw announcement gives the Tracker the calibrated origin, not the release point
-status: complete
+status: in_progress
 created: '2026-11-14'
-updated: '2026-11-15T17:59:20Z'
-owners: []
+updated: '2026-11-16T18:59:59Z'
+owners:
+- night-shift
 priority: high
 effort: s
 hardware: robot
@@ -14,8 +15,7 @@ radius: subsystem
 diagnosis: confirmed
 area: tracking
 blocked_by: []
-links:
-- logbook/2026-11-16-bb-throw-announcement-release-point.md
+links: []
 parent: ball-butler
 filed_by: claude
 ---
@@ -84,3 +84,4 @@ One aim only; other aims rest on the geometry. Drag ignored. 14 flights were fir
 ## Progress
 
 - 2026-11-16: Night Shift 2026-11-16: held on night-shift/2026-11-16-BUG-94: announcement starts at the release point, unflown; one audit finding open (no yaw-offset test); unblocked by TKT-75 and a Sitting
+- 2026-11-17: Night Shift 2026-11-17: held on night-shift/2026-11-16-BUG-94: yaw-offset test added (TKT-75); 3 test gaps open; gate [pre], (a) BUG-109, (c) robot; unblocked by TKT-82, then the Sitting
