@@ -191,7 +191,7 @@ Attempt's capture on disk, complete and CRC-checked, handed to the carry-ring-zv
 
 ## 6. Open questions
 
-- **Lever arm:** from the owner's bracket CAD, needed to about 5 mm. Pending; P5 cannot close without it.
+- **Lever arm and nominal mount (owner, from CAD, 2026-11-19):** the IMU sits at about (5, -115, 18.5) mm in the Platform frame. Nominal axes: IMU x = Platform +z, IMU y = Platform -x, so IMU z = Platform -y (right-handed). These seed the P5 mount fit, which measures the real rotation; the position is approximate until the bracket is fitted.
 - **Bridge FW number:** P3a took 45 (2026-11-19) because the held BUG-93 branch had not landed on main; whichever of
   the two reaches main second renumbers (BUG-93 to 46 if this lands first). No PROTOCOL bump either way.
 - **Upload time (owner, 2026-11-19: "keep this area open; I will want to explore minimising it once the MVP works"):**
