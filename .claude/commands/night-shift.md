@@ -294,8 +294,8 @@ script (2g) makes its own detached worktree of the branch tip, runs `./run_tests
 there under the base's network fence (its own copy beside it, never the branch's) and the
 shared `flock`, and counts the collected tests against `origin/main`'s. A suite log you wrote
 is not read. Expect 2g to take about 15 to 30 minutes including the lock wait (the gate's
-timeout is 3600 s, lock wait included); run it in the foreground with the longest tool timeout
-or with `run_in_background`, and read the verdict when it ends. Its output is the verdict on
+timeout is 3600 s, lock wait included); run it with `run_in_background` (a foreground
+call is capped at 10 minutes, shorter than the gate) and read the verdict when it ends. Its output is the verdict on
 line 1, the reason lines, then `# suite: exit <n> in <s> s, log <path>` and
 `# collected: base <n>, tip <n>`. Scoped tests while BUILDING a fix (2d) still run under the
 wrapper as before; only the gate's own run is evidence.
@@ -323,7 +323,7 @@ python D/gate-base/tools/night_shift_gate.py --repo . --base origin/main --branc
     --record "$NIGHT_SHIFT_VERDICTS"
 ```
 
-`--record` writes the verdict, MERGE or HOLD, to `$NIGHT_SHIFT_VERDICTS/<tip>.json` (the
+`--record` writes the verdict, MERGE or HOLD, to `$NIGHT_SHIFT_VERDICTS/<tip>.<MERGE|HOLD>.json` (the
 runner exports the directory). After the night the runner checks that every commit that
 reached `main`, other than map, report, logbook and generated-page writes, is covered by a
 MERGE record (`tools/night_shift_landed.py`); anything else ends the night `UNGATED_MERGE`

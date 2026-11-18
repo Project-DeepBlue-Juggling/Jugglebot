@@ -18,13 +18,13 @@ destination: Every morning main is green and carries the overnight work that nee
 branch: main
 ---
 
-The board gains small Items faster than Sessions clear them. Night Shift is an unattended Claude Code run on this Jetson after the 04:00 nightly suite, in its own clone, `~/night-shift/Jugglebot`. It examines what changed on the board, works the Items Claude can finish alone, holds the rest on branches, and writes one committed report. Its protocol is `.claude/commands/night-shift.md`; its runner is `tools/night_shift.sh`.
+The board gains small Items faster than Sessions clear them. Night Shift is an unattended Claude Code run on this Jetson after the 02:00 nightly suite, in its own clone, `~/night-shift/Jugglebot`. It examines what changed on the board, works the Items Claude can finish alone, holds the rest on branches, and writes one committed report. Its protocol is `.claude/commands/night-shift.md`; its runner is `tools/night_shift.sh`.
 
 The Next Sitting Runbook is the second half: one page listing every hardware check waiting across all Pathways, Items and plans, with the owner's steps cut to the hardware-relevant ones.
 
 ## How the night runs
 
-- **Runner**: headless `claude -p` under a user systemd timer (04:45), in the clone on `main`, never in `~/Desktop/Jugglebot`. A deny-list settings file is installed into the clone on every run; the runner waits for a live robot session and ends `DEFERRED` if it does not clear, stops `HELD` on the owner's hold file, and stops `UNGATED_HOLD` on an unreviewed ungated landing.
+- **Runner**: headless `claude -p` under a user systemd timer (02:45), in the clone on `main`, never in `~/Desktop/Jugglebot`. A deny-list settings file is installed into the clone on every run; the runner waits for a live robot session and ends `DEFERRED` if it does not clear, stops `HELD` on the owner's hold file, and stops `UNGATED_HOLD` on an unreviewed ungated landing.
 - **Models and billing**: the orchestrator is Opus (`NIGHT_SHIFT_MODEL`); the runner refuses a Fable model (`FORBIDDEN_MODEL`) and subagents are Sonnet, or Opus with a stated reason. With an API key the night runs on it; if the credit balance runs out and a subscription token is set, the same session resumes on the subscription. With no key it runs on the subscription from the start.
 - **The delta, not the board**: the preflight (`tools/night_shift_preflight.py`) lists the Items added, changed, answered (a question the owner just answered), carried over, unblocked or never classified since the last completed night. An empty delta ends the night `NOTHING_NEW` with no claude call and no ticker claim. Sundays, and a `full-walk.request` file, walk every open Item.
 - **Skip reasons live on the Item**: an Item the night leaves alone carries `night_skip` (a fixed vocabulary, `mapkit/items.py`) so it is not re-examined until it changes; an `input-*` reason is listed in the report's section of Items the owner could unblock with a small input.

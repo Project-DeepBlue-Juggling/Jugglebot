@@ -20,7 +20,7 @@
 #   plans/*/INDEX.md, docs/project-map.md, docs/glossary.md, docs/runbook.md) and the map
 #   file of the --item Item (found by its id through the base's mapkit; main is the authority
 #   for map state) takes the base's copy and runs `python -m mapkit gen`; the Item's file is
-#   announced `TOOK MAIN's copy of map/<file>`, in the gate log header too, and the branch's
+#   announced `TOOK MAIN's copy of map/<file>` on stdout and in the prepare record, and the branch's
 #   copy is kept as DIR/branch-copy-<ID>.md (the prepare record's header says so too). Any other
 #   conflict, another map/ file included, aborts the merge and stops with the paths named. Writes
 #   DIR/diff-<ID>.patch (base...HEAD; refuses an empty one) and the prepare record
@@ -262,7 +262,7 @@ land() {
   [[ -z "$(W status --porcelain)" ]] || refuse 10 "worktree $WT has uncommitted changes after prepare; re-run prepare"
   [[ -f "$AUDIT" ]] || refuse 11 "no audit $AUDIT: run /audit on $DIFF and write it, ending 'Audited HEAD: $head'"
   local main; main="$(G rev-parse "$RREF/main")"
-  [[ "$main" == "$base" ]] || refuse 12 "main moved since prepare ($base -> $main): re-run prepare (a fresh merge, suite and audit); never merged untested"
+  [[ "$main" == "$base" ]] || refuse 12 "main moved since prepare ($base -> $main): re-run prepare (a fresh merge and audit; land's gate runs the suite); never merged untested"
   G merge-base --is-ancestor "$base" "$head" || refuse 12 "the prepared tip does not contain the base: re-run prepare"
 
   extract_base "$base"

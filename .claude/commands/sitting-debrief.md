@@ -1,5 +1,5 @@
 ---
-description: Debrief the Sitting(s) flown since the last debrief: first flush the Sitting sheet's results from the map app, then ANALYSE the new launch logs and rosbags against the open Items and plans (inventory, derived verdicts the owner confirms once, per-killer diagnosis, crosswalk, write-backs), then close the paperwork - write each Item's ## Sitting result from the confirmed verdicts, merge the passed Items' held branches into main one by one, return the live checkout to main, rebuild if ros_ws changed, commit docs/records.md, file follow-ups from the notes, write the logbook entry, regenerate the Runbook index. Invoke with /sitting-debrief [<date>] [--dry-run]. Runs in ~/Desktop/Jugglebot under the single-writer rule.
+description: Debrief the Sitting(s) flown since the last debrief: first flush the Sitting sheet's results from the map app, then ANALYSE the new launch logs and rosbags against the open Items and plans (inventory, derived verdicts the owner confirms once, per-killer diagnosis, crosswalk, write-backs), then close the paperwork - write each Item's ## Sitting result from the confirmed verdicts, merge the passed Items' held branches into main one by one, return the live checkout to main, rebuild if ros_ws changed, commit docs/records.md, file follow-ups from the notes, write the logbook entry, regenerate the Sitting index. Invoke with /sitting-debrief [<date>] [--dry-run]. Runs in ~/Desktop/Jugglebot under the single-writer rule.
 ---
 
 # Sitting debrief
@@ -281,7 +281,7 @@ Pinned by `tests/sim/test_sitting_debrief_protocol.py`: this file names every cl
 (the flush call first, results read, derive, one owner confirmation, confirm, close, per-Item
 merge, return to `main`, rebuild if `ros_ws` changed, `docs/records.md`, follow-ups filed, the
 logbook entry, `mapkit gen`, the single-writer check, no force-push, the records first, the merge
-through `tools/sitting_merge.sh`), and that it reads nothing from the Runbook's tables. What the script does
+through `tools/sitting_merge.sh`), and that it reads nothing from the Sitting index's tables. What the script does
 (brought up to date, the base gate with `--waive c` running the suite itself, the gated tip only, the refusals) is
 pinned by `tests/sim/test_sitting_merge.py` against temp repos; derive, confirm and close by
 `tests/sim/test_mapkit_sheet.py`.
