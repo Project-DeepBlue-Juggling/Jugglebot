@@ -2,7 +2,7 @@
 title: "Platform IMU P3a: can-bridge FW 45 relays the Platform IMU (IMU_REPLY/IMU_STATUS on the reply whitelist, IMU_DATA on a dedicated lock-free ring uplinked as the additive PLATFORM_IMU_BATCH, PLATFORM_IMU_CTRL/_READ RPCs with the Armed gap clamp) (IDEA-20)"
 type: feature
 date: 2026-11-19
-status: in-progress
+status: complete
 phase: "platform-imu P3"
 related_plan: "platform-imu.md"
 related_issues: []
@@ -256,7 +256,10 @@ callback on the IMU callback group, a cached-dict read in the command path and a
 Not covered: a live GUI session, real DDS latency of `skills/attempt` (the 2 s margin absorbs it), the hardware ramp (P4).
 There is no `gui_server` endpoint (toggle = rosbridge service, progress = topic), so no server test.
 
-Full gate (`./run_tests.sh --full`): FULL-GATE-TRIPLE-PENDING
+Full gate (`./run_tests.sh --full`): two runs on 2026-11-19, both `flock /tmp/jugglebot-tests.lock ./run_tests.sh --full` on branch `imu-p3` (Platform FW 11, can-bridge FW 45 and the Jetson side together) on a quiet box.
+  At f2e4c1c9: **RESULT FAIL**, parallel 1 failed, 10516 passed, 61 skipped, 1 xfailed in 667.04 s; serial 10 passed in 39.95 s. The failure was `tests/ros/test_gui_clock_contract.py::test_every_wall_clock_read_is_marked` on `imu-upload-panel.js:118` (a wall-clock read without its marker comment), fixed by a comment-only commit.
+  At fcedefa5: **RESULT PASS**, parallel 10517 passed, 61 skipped, 1 xfailed in 643.77 s; serial 10 passed in 40.22 s; total 691 s. This run is also the end-to-end gate for phase 2, whose own commit never passed a single `--full` invocation (see its entry).
+  Not verified: nothing here has run on hardware; the first flash and its checks are Rung P4.
 
 ## Appendix: the 87 scoped test files (P3a verification run)
 
