@@ -16,8 +16,8 @@ Arguments: `$ARGUMENTS`
 - `--candidates F`: the preflight's record: `items` (every workable Item in work order, `rank`),
   `delta` (the IDs you walk tonight, in order), `delta_why` (`{ID: reason}`), `unchanged` (how many
   Items you do not walk) and `full_walk` (true on a Sunday or on request).
-- `--reports D`: the runner's output directory (gitignored). Your gate logs, audit reports,
-  unit briefs and the dry report go here.
+- `--reports D`: the runner's output directory (gitignored). Your audit reports,
+  unit briefs and the dry report go here (the gate's own suite logs go to `$NIGHT_SHIFT_VERDICTS/gate-<tip12>.log`).
 - `--nightly "LINE"`: the nightly ticker line (`CLAIMED GREEN ...`, `CLAIMED RED ...`,
   `UNCLAIMED ...` on a dry run). `--nightly-report F`: a copy of the nightly's `latest.md`.
 - `--deadline HH:MM`: local time after which you start no new Item.
@@ -163,7 +163,7 @@ a HOLD writes the same rating on `main` (2j), so base and branch agree at a late
 
 | The Item is | Do | Ends as |
 |---|---|---|
-| bug or feature, `hardware: none`, `owner: none`, `effort` xs or s | one unit (2d), audit (2e), suite gate (2f), gate script (2g) | Merged or Held |
+| bug or feature, `hardware: none`, `owner: none`, `effort` xs or s | one unit (2d), audit (2e), gate script and its suite (2f, 2g) | Merged or Held |
 | bug or feature, `hardware: none`, `owner: none`, `effort` m or larger | one unit on the first self-contained slice if one is obvious from the body; else Skipped `too large for one unit` | Held (Progress headline) or Skipped |
 | `owner: decision` (any kind) | research the question; write `## Options (<date>)` into the body (2-4 options, one line each, a recommendation); file one question ticket (2h); no code | Questioned (Held if a branch exists) |
 | `area: map-app`, or the fix is in the map app | § 2m | Merged, Held or Skipped |
@@ -256,8 +256,8 @@ brief allowed; anything else is reverted.
 
 ### 2e. The audit
 
-The unit's work is committed BEFORE the audit and the suite run (the audit's `Audited HEAD:`
-and the gate log's `HEAD=` must both equal the branch tip the gate script sees; nothing is
+The unit's work is committed BEFORE the audit and the gate runs (the audit's `Audited HEAD:`
+must equal the branch tip the gate script sees, and the gate runs its suite on that tip; nothing is
 amended after the gate, ever), and the Item's closure goes INTO that commit, not after it: run
 `python -m mapkit item set-status <ID> complete --link logbook/<entry>.md` (no `--commit`)
 before `git add -A`, so the tip the gate judges is the tip that merges. If the branch ends up
@@ -287,21 +287,30 @@ Audited HEAD: <sha>
 Behaviour-affecting findings open: <n>
 ```
 
-### 2f. The suite gate
+### 2f. The suite is the gate's
 
-```
-printf 'HEAD=%s\nBRANCH=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse --abbrev-ref HEAD)" > D/gate-<ID>.log
-flock /tmp/jugglebot-tests.lock D/gate-base/tools/night_shift_nonet.sh ./run_tests.sh --full >> D/gate-<ID>.log 2>&1; echo "EXIT=$?" >> D/gate-<ID>.log
-```
+You no longer run the full suite for the gate and you write no `HEAD=`/`EXIT=` log: the gate
+script (2g) makes its own detached worktree of the branch tip, runs `./run_tests.sh --full`
+there under the base's network fence (its own copy beside it, never the branch's) and the
+shared `flock`, and counts the collected tests against `origin/main`'s. A suite log you wrote
+is not read. Expect 2g to take about 15 to 30 minutes including the lock wait (the gate's
+timeout is 3600 s, lock wait included); run it in the foreground with the longest tool timeout
+or with `run_in_background`, and read the verdict when it ends. Its output is the verdict on
+line 1, the reason lines, then `# suite: exit <n> in <s> s, log <path>` and
+`# collected: base <n>, tip <n>`. Scoped tests while BUILDING a fix (2d) still run under the
+wrapper as before; only the gate's own run is evidence.
 
-The wrapper is the base's (2a), so a branch cannot loosen the fence around its own suite run.
-The `flock` serialises the night's suite against a day Session's run: two overlapping suites
-fail the wall-clock `serial` tests (the line names no guarded word, so the hook lets it by).
+ONE gate run, on the tip the audit names: the audit and its narrative fixes run first (2e), so
+a fix never costs a second suite. Any commit after the gate is a new tip: re-run 2e and 2g on
+it, or Hold. What the new HOLD reasons mean for the night:
 
-ONE full suite, on the tip the audit names: the audit and its narrative fixes run first (2e),
-so a fix never costs a second full suite or a re-gate. Any commit after this point (a fix
-for a red suite, say) leaves both the log and the audit stale: re-run 2e and 2f on the new
-tip, or Hold.
+- Suite red (`[a] suite exit <n> ...`): Held, the reason carrying the log path
+  (`$NIGHT_SHIFT_VERDICTS/gate-<tip12>.log`). A fix is a new tip: 2e and 2g again.
+- Suite timed out (`[a] suite timed out after 3600 s ...`): Held, log path in the reason.
+- Condition (i), the tip collects fewer tests than the base (`[i] the tip collects <n> tests,
+  fewer than the base's <m> ...`): Held for a day Session. A branch that removes tests is
+  merged by a day Session, never at night; never "fix" it by adding tests to reach the floor.
+  A collection error (`[i] cannot count ...`) is Held the same way. (i) is never waivable.
 
 ### 2g. The gate script
 
@@ -310,7 +319,7 @@ if it is not `origin/main`'s copy):
 
 ```
 python D/gate-base/tools/night_shift_gate.py --repo . --base origin/main --branch night-shift/<date>-<ID> \
-    --item <ID> --gate-log D/gate-<ID>.log --audit D/audit-<ID>.md [--app-log D/app-<ID>.log] \
+    --item <ID> --audit D/audit-<ID>.md [--app-log D/app-<ID>.log] \
     --record "$NIGHT_SHIFT_VERDICTS"
 ```
 
@@ -392,7 +401,7 @@ one tonight, unless only a Sitting unblocks it (`none`).
    `git add` of those files and the commit. Any other conflict: `git merge --abort`, and the Item is
    Held `merge conflict with main in <paths>` (2j). Then re-run the 2a extract (the fetch moved
    `origin/main`), `git push -q -u origin night-shift/<date>-<ID>`, and 2e-2g on the NEW tip (a fresh
-   audit and suite; the audit's `Audited HEAD:`, the gate log's `HEAD=` and the gate's record are all keyed
+   audit and gate suite run; the audit's `Audited HEAD:` and the gate's record (and its suite log) are all keyed
    by that tip), and merge only the tip the gate recorded `MERGE` for. A merge that went through the branch is
    covered by `tools/night_shift_landed.py`: its merge of `origin/main` is inside the gated tip, and the
    final `--no-ff` merge adds nothing of its own. A `HOLD` on the new tip goes to 2j as for any branch.
@@ -480,7 +489,7 @@ present, no upstream names). Items stay in Jugglebot's `map/`; only the code is 
 5. Suite: `D/gate-base/tools/night_shift_nonet.sh tools/night_shift_app_suite.sh --app <app-clone> --mapkit . --log D/app-<ID>.log`,
    then one audit on `git -C <app-clone> diff origin/main...HEAD` (2e), writing `D/audit-app-<ID>.md`.
    An edit after the suite re-runs the suite.
-6. Gate: `python D/gate-base/tools/night_shift_gate.py --repo . --app-repo <app-clone> --base origin/main --branch night-shift/<date>-<ID> --item <ID> --gate-log D/app-<ID>.log --audit D/audit-app-<ID>.md`
+6. Gate: `python D/gate-base/tools/night_shift_gate.py --repo . --app-repo <app-clone> --base origin/main --branch night-shift/<date>-<ID> --item <ID> --app-log D/app-<ID>.log --audit D/audit-app-<ID>.md`
    (the extract from step 3). `MERGE`: `git -C <app-clone> checkout -q main`, merge the
    branch as in 2i, `git -C <app-clone> push -q origin main` on its own line. Nothing goes live: the runner deploys after you exit.
    `HOLD`: `git -C <app-clone> push -q -u origin night-shift/<date>-<ID>`, then 2j from its step 2

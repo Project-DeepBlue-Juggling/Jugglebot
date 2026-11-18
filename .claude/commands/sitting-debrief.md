@@ -31,8 +31,7 @@ results come from.
   changes you did not make, or `origin/main` ahead of local, means **pause and say what you
   see** before any git write. Never `git stash`, never `git branch -f`, never a force-push.
 - **Merges never happen in this working tree.** `tools/sitting_merge.sh` (section 3) makes a
-  scratch worktree per Item, `temp/debrief/wt-<ID>` (gitignored), merges and runs the suite
-  there, and pushes the gated tip to `origin/main`; this checkout only follows with
+  scratch worktree per Item, `temp/debrief/wt-<ID>` (gitignored), merges there (the suite runs in `land`'s gate), and pushes the gated tip to `origin/main`; this checkout only follows with
   `git pull --ff-only`. A failed merge leaves the branch held with the conflict named; it is
   never resolved by guesswork and never by taking either side wholesale. The two exceptions
   are the pages `python -m mapkit gen` writes and the Item's own `map/` file (`main` is the
@@ -193,33 +192,35 @@ on the fallback path a typed `pending` counts once resolved to pass) AND a held 
 so held software work is never dropped), land it with `tools/sitting_merge.sh`, the only path
 from a held branch to `main` (closeout C10; its header has every rule and exit code, and
 `tests/sim/test_sitting_merge.py` pins them). The branch was gated against an older `main`, so
-`prepare` brings it up to date and runs the full suite again (owner, 2026-11-07): a Sitting pass
+`prepare` brings it up to date and `land`'s gate runs the full suite on the merged tip (owner, 2026-11-07; the gate runs it itself since FEAT-51, `prepare` runs none): a Sitting pass
 says the flown code works; only this says it still works beside what has landed since. The
 flown branch stays as it is on the remote until it lands. Be on `main` first, with the records
 and Memory already committed (section 0). One Item at a time, `prepare` to `land`: a land moves
 `main`, and the next Item's `land` refuses a `main` its `prepare` did not see.
 
 1. `tools/sitting_merge.sh prepare --branch night-shift/<d>-<ID> --item <ID> --work ~/Desktop/Jugglebot/temp/debrief`
-   with `run_in_background` (the suite can outlast a foreground call; it takes the suite lock
-   itself, so never wrap it in `flock`). It ends `PREPARED <ID> <tip>`, or `REFUSED <code> <reason>`.
+   (a few minutes at most: `prepare` runs no suite; it refuses a live robot session, exit 3). It ends `PREPARED <ID> <tip>`, or `REFUSED <code> <reason>`.
 2. One `audit-reporter` agent (`model: sonnet`) on `temp/debrief/diff-<ID>.patch`; you write its
    result to `temp/debrief/audit-<ID>.md`, findings marked as in the night's 2e, ending with
    `Audited HEAD: <tip>` and `Behaviour-affecting findings open: <n>`. Narrative findings are
-   recorded, not applied: any commit after the suite makes `land` refuse. A branch that touches
+   recorded, not applied: any commit after `prepare` makes `land` refuse (exit 9). A branch that touches
    `mapkit/` also needs `tools/night_shift_nonet.sh tools/night_shift_app_suite.sh --app ~/night-shift/jugglebot-map --mapkit temp/debrief/wt-<ID> --log temp/debrief/app-<ID>.log` (condition (h)).
-3. `tools/sitting_merge.sh land --branch night-shift/<d>-<ID> --item <ID> --work ~/Desktop/Jugglebot/temp/debrief`.
-   It runs the base's gate with `--waive c`: the hardware pass overrides ONLY the hardware
-   condition. `LANDED` means `main` is now exactly the gated tip. A `HOLD` (open audit findings,
+3. `tools/sitting_merge.sh land --branch night-shift/<d>-<ID> --item <ID> --work ~/Desktop/Jugglebot/temp/debrief`,
+   with `run_in_background` (about 15 minutes: it waits for the suite lock and the gate runs the full suite itself,
+   so never wrap it in `flock`). It refuses a live robot session (exit 3), then runs the base's gate with `--waive c`:
+   the hardware pass overrides ONLY the hardware
+   condition. The gate's suite log is `<verdicts>/gate-<tip12>.log`; a red or timed-out suite is exit 7, any other
+   HOLD is exit 13, and (i), the collected-test floor, is never waivable. `LANDED` means `main` is now exactly the gated tip. A `HOLD` (open audit findings,
    a normative radius, an open question, a changed `owner` rating: condition (g), which no waiver
    clears) keeps the branch held with the reasons in the summary; the Sitting result stays on the Item.
 
-- `TOOK MAIN's copy of map/<file>` (also in the gate log header): the Item's own file conflicted
+- `TOOK MAIN's copy of map/<file>` (also in `temp/debrief/prepared-<ID>`): the Item's own file conflicted
   and `main`'s copy was kept; the branch's copy is `temp/debrief/branch-copy-<ID>.md`. Anything
   its body adds that `main` lacks goes into the Item when you close it, under a
   `## From the branch (<date>)` heading.
 - A refusal is never worked around. `5` (a conflict outside the generated pages and the Item's
   own file, another Item's `map/` file included): the Item stays `in_progress`, the branch
-  stays held, the summary names the files. `12` (`main`
+  stays held, the summary names the files. `7` (the suite was red or timed out inside `land`: the branch stays held, the log path is in the summary), `13` (any other HOLD), `3` (a live robot session: stop, `prepare` and `land` wait for the owner), `8` (no prepare record: `prepare` first), `9` (a commit after `prepare`: `prepare` again), `12` (`main`
   moved): `prepare` again, once; if it moves again the branch stays held: `main kept moving`.
   `4` (a frozen path, gate condition (f)): the script has no flag for it; such a branch is merged
   by hand in a day Session at the owner's say-so, named in the summary as not gated. Go on to the
@@ -281,6 +282,6 @@ Pinned by `tests/sim/test_sitting_debrief_protocol.py`: this file names every cl
 merge, return to `main`, rebuild if `ros_ws` changed, `docs/records.md`, follow-ups filed, the
 logbook entry, `mapkit gen`, the single-writer check, no force-push, the records first, the merge
 through `tools/sitting_merge.sh`), and that it reads nothing from the Runbook's tables. What the script does
-(brought up to date, suite, base gate with `--waive c`, the gated tip only, the refusals) is
+(brought up to date, the base gate with `--waive c` running the suite itself, the gated tip only, the refusals) is
 pinned by `tests/sim/test_sitting_merge.py` against temp repos; derive, confirm and close by
 `tests/sim/test_mapkit_sheet.py`.

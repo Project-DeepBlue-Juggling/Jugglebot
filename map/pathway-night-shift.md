@@ -34,16 +34,17 @@ The Next Sitting Runbook is the second half: one page listing every hardware che
 
 ## The merge gate
 
-A held branch merges to `main` only through `tools/night_shift_gate.py`, which fails closed and exits 0 only on MERGE. Eight conditions, all evaluated:
+A held branch merges to `main` only through `tools/night_shift_gate.py`, which fails closed and exits 0 only on MERGE. Nine conditions, all evaluated:
 
-- (a) the full suite passed on the branch tip;
+- (a) the gate ran the full suite on the branch tip itself and it passed;
 - (b) the audit names that tip and has no open behaviour-affecting finding;
 - (c) the Item is rated `hardware: none`, the branch did not lower a rating the base had, and the Item has no `## Sitting` section;
 - (d) the Item is rated and its radius is not normative;
 - (e) no open question ticket names the Item;
 - (f) the branch touches no frozen path;
 - (g) the branch did not change an `owner` rating the base had;
-- (h) a branch touching `mapkit/` also passed the map app's own suite.
+- (h) a branch touching `mapkit/` also passed the map app's own suite;
+- (i) the branch collects no fewer tests than main; never waivable.
 
 Only (c) is waivable, by `/sitting-debrief` after a hardware pass. A merge with no gate record is `UNGATED_MERGE` and holds every later night until the owner clears it. A branch that edits the Night Shift's own machinery (the never-list in `tools/night_shift_landed.py`) is flagged `SELF_EDIT_BRANCH`.
 
