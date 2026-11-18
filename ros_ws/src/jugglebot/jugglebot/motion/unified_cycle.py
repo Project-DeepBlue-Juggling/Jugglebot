@@ -396,8 +396,8 @@ _SEAM_POS_TOL_REV = _SEAM_MARGIN * _SEAM_FEAS_TOL_M * HAND_REV_PER_M
 #: starting at ``k_seam − 1`` measures it, so on that path
 #: :func:`extend_gate_range` starts ONE knot earlier (``k_seam − 2``), which is the
 #: width the retired ``replan_tail`` always gated and the one
-#: ``tests/motion/test_unified_cycle.py::test_a_splice_adjacent_defect_in_the_new_tail_is_still_refused``
-#: drives (its "ONE KNOT WIDER" pair).
+#: ``tests/motion/test_unified_cycle_splice.py::test_a_truncated_head_splice_gates_the_straddle_at_k_s_minus_1``
+#: drives.
 _VALIDATE_STENCIL_KNOTS = 1
 
 #: Tolerance (mm, platform xy) on I-PLAN-10's splice-time check that the

@@ -236,7 +236,7 @@ fi
 echo "═══ Phase 1/2: parallel (${WORKERS} workers, --dist loadfile, -m '${PHASE1_MARK}')"
 start=$SECONDS
 rc_parallel=0
-"$VENV_PY" -m pytest tests/ -q -n "$WORKERS" --dist loadfile -m "$PHASE1_MARK" \
+"$VENV_PY" -m pytest tests/ -q -rs -n "$WORKERS" --dist loadfile -m "$PHASE1_MARK" \
   ${_junit1[@]+"${_junit1[@]}"} "$@" || rc_parallel=$?
 t_parallel=$((SECONDS - start))
 
@@ -253,7 +253,7 @@ start=$SECONDS
 rc_serial=0
 # -p no:xdist makes this phase structurally serial: a stray -n becomes a usage
 # error rather than a silently-parallelised run of the very tests that must not be.
-"$VENV_PY" -m pytest tests/ -q -p no:xdist -m "$PHASE2_MARK" \
+"$VENV_PY" -m pytest tests/ -q -rs -p no:xdist -m "$PHASE2_MARK" \
   ${_junit2[@]+"${_junit2[@]}"} "$@" || rc_serial=$?
 t_serial=$((SECONDS - start))
 
