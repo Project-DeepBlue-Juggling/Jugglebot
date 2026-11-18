@@ -2,9 +2,9 @@
 id: FEAT-51
 kind: feature
 title: Night Shift merge gate runs the full suite itself and enforces a collected-test floor
-status: inbox
+status: in_progress
 created: '2026-11-14'
-updated: '2026-11-14T17:54:43Z'
+updated: '2026-11-18T23:11:00Z'
 owners: []
 priority: high
 effort: m
@@ -40,3 +40,7 @@ The Night Shift merge gate should run the full suite itself and stop trusting a 
 
 - The gate becomes a ten-minute step that must respect the suite lock and `live_session`.
 - The audit condition stays self-attested; say so in the plan and leave it to a later step.
+
+## Progress
+
+- 2026-11-19: Built 2026-11-18 and held on branch origin/feat-51 (three commits: gate code, protocol and docs, audit fixes; rebased onto main a1e2cfbe on 2026-11-19). Gated: default gate EXIT=0 on the first two commits, one real end-to-end gate run. NOT on main: the owner has not yet chosen between pushing it live and a dry-run night first. To land: rebase, ./run_tests.sh, push HEAD:main. The night of 2026-11-19 ran on the old gate. Still on trust after it lands: the audit report of (b), the app suite log, skipped and xfailed tests.
