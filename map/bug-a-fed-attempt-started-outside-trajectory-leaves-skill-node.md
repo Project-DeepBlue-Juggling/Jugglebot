@@ -4,7 +4,7 @@ kind: bug
 title: A fed Attempt started outside TRAJECTORY leaves skill_node stuck with an Attempt running, and Stop is ignored
 status: in_progress
 created: '2026-11-18'
-updated: '2026-11-18T03:42:04Z'
+updated: '2026-11-18T04:00:00Z'
 owners: []
 priority: high
 effort: s
@@ -30,3 +30,4 @@ Owner question, not decided: should a fed Attempt be refused at accept when the 
 ## Progress
 
 - 2026-11-18: Both defects fixed at the 2026-11-18 debrief (declined swap releases the claimed context; a rejection no longer clears the live goal handle), with a failing-first test each. Open: the owner question on refusing a fed Attempt outside TRAJECTORY.
+- 2026-11-18: Owner decision 2026-11-18: a fed Attempt started outside TRAJECTORY is refused outright at accept. Being built.

@@ -2,9 +2,9 @@
 id: IDEA-16
 kind: idea
 title: JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them
-status: complete
+status: in_progress
 created: '2026-10-30'
-updated: '2026-11-13T05:58:16Z'
+updated: '2026-11-18T03:59:58Z'
 owners: []
 priority: medium
 effort: xl
@@ -103,3 +103,4 @@ Confirmed: a ball carried through a hand kept its previous flight in its fit. A 
 
 - 2026-11-03: Human-throw bench landed: two human-only Sittings scored, owner decisions recorded, data Sitting section written (detail below)
 - 2026-11-13: Complete at the Sitting of 2026-11-13: bench report run offline (human_throw_bench.py, 130 s slice of the launch 3 bag): landing sd 73 x 101 mm at the Cup side, phantoms 13.8 per minute against 27.3 on 2026-11-02. The lighting change was not recorded. 26 of 30 phantoms are static Ball Butler frame markers (BUG-92).
+- 2026-11-18: Reopened 2026-11-18 (owner): the 2026-11-13 debrief closed the whole Item on its bench re-measure row; the cascade itself has not been attempted. Open: the three Blockers (perception, a reactive Catch on the observed flight, the held-tilt mode) and the owner safety rules for a person inside the Platform reach.

@@ -4,7 +4,7 @@ kind: idea
 title: 'JP-10 Turned columns: the columns pair at fixed angles about +z, under pose'
 status: in_progress
 created: '2026-10-30'
-updated: '2026-11-18T02:09:16Z'
+updated: '2026-11-18T04:00:03Z'
 owners:
 - jugglebot-f5
 priority: medium
@@ -96,3 +96,4 @@ It proves the rotational symmetry on hardware that lets the admissible box key o
 - 2026-11-10: Failed at the Sitting of 2026-11-10 (step 8, real Attempts, plant_id not set: 32 rows in the default Memory, separable by Site). 45 deg COMPLETED 20/20; 90 deg 8/8, 3/3, 3/3, 3/3, three at Ball 2's first Catch after the Feed (BUG-63). PWAY-2 P2(b) offline: the pull toward the partner rotates with the pair (BUG-79). Filed IDEA-22. Logbook 2026-11-10-sitting-debrief.md.
 - 2026-11-13: Failed at the Sitting of 2026-11-13: 45 deg COMPLETED 20/20 (13:18:59), scatter inside the 15 mm mean bar on all four ball and axis cells, outside the 10 mm sd bar on one (Ball 1 x, +13 mm); 90 deg 0 of 5 Attempts past 2 Throws (see IDEA-22, BUG-91). The straight Columns control was flown once, not five times, so its sd rests on n 10 per ball.
 - 2026-11-18: Flown at the Sitting of 2026-11-18, verdict data: 45 deg flew 20/20 twice, no HAND_LIMIT, landing scatter inside the 15 mm mean and 10 mm sd bars of the five-Attempt straight control. 90 deg was flown under IDEA-22 only (best 20/20 and 19/19 at tilt-back 0.0, not at Apex 0.95), so the per-angle criterion is still open for 90 deg.
+- 2026-11-18: 2026-11-18 (owner): IDEA-22 is dropped, so the 90 deg angle flies at Apex 0.975 with no tilt-back; it flew 20/20 and 19/19 there on 2026-11-18 (launch 3-1, plant turned90). Still owed for the Rung gate: the 90 deg landing scatter against the straight control.
