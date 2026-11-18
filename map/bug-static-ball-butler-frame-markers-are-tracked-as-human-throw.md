@@ -4,7 +4,7 @@ kind: bug
 title: static Ball Butler frame markers are tracked as human_throw
 status: in_progress
 created: '2026-11-13'
-updated: '2026-11-14T19:08:38Z'
+updated: '2026-11-18T02:09:22Z'
 owners:
 - night-shift
 priority: medium
@@ -17,6 +17,7 @@ area: tracking
 blocked_by: []
 links:
 - map/idea-jp-17-three-ball-cascade-with-the-owner-as-the-second-hand.md
+- logbook/2026-11-18-sitting-debrief.md
 filed_by: claude
 ---
 
@@ -59,6 +60,12 @@ Recommendation: 1. On the launch 3 slice it removed 26 of 30 bench phantoms and 
 - minutes: 10
 - branch: night-shift/2026-11-15-BUG-92
 
+## Sitting result (2026-11-18 13:05)
+
+- verdict: pass
+- notes: Made 11 human throws in a three ball cascade (sheet 2026-11-18-robot, step 30) [derived: Bag 2026-11-18_11-31-37 and temp/logs/launch_2026-11-18_3.log: 0 human-Throw tracks started inside the Ball Butler box between detect on (11:34:18.9) and the first human Throw (about 11:36:45); 12 tracks for the 11 Throws (one likely a split track). 8 phantom tracks still started outside the box (4 at a floor cell, 4 near x -900, z 2150-2305).]
+
 ## Progress
 
 - 2026-11-15: Night Shift 2026-11-15: held on night-shift/2026-11-15-BUG-92: config is gate-frozen, suite not finished under load, 2 test-coverage findings open; unblocked by a day Session merge and a Sitting window
+- 2026-11-18: Passed at the Sitting of 2026-11-18: 0 tracks started inside the box when idle, all 11 human Throws tracked; 8 phantoms still start outside it (a floor cell, and near x -900, z 2150-2305). Not merged: the branch touches config/hardware_config.yaml (frozen path), so tools/sitting_merge.sh refuses it (code 4); needs a hand merge at the owner say-so.

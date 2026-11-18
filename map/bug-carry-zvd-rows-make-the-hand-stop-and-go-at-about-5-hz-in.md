@@ -4,7 +4,7 @@ kind: bug
 title: carry_zvd rows make the Hand stop and go at about 5 Hz in flight
 status: in_progress
 created: '2026-11-13'
-updated: '2026-11-15T19:02:54Z'
+updated: '2026-11-18T02:09:04Z'
 owners:
 - night-shift
 priority: medium
@@ -17,6 +17,7 @@ area: skill-stack
 blocked_by: []
 links:
 - map/feature-pre-release-hold-rung-release-from-a-moving-platform-hold-0.md
+- logbook/2026-11-18-sitting-debrief.md
 filed_by: claude
 ---
 
@@ -67,7 +68,16 @@ Recommendation: 1. It is the smallest change the existing xfail can judge, and i
 - minutes: 30
 - branch: night-shift/2026-11-15-BUG-90
 
+## Sitting result (2026-11-18 13:05)
+
+- verdict: fail
+- notes (split into bullets):
+  - First two attempts at dwell 0.40 ended with messy throws being uncatchable. Third attempt lasted much longer but ended the same way. Movements were much better than before (with ZVD true), but still nowhere near as smooth as with ZVD false.
+  - Dwell 0.35 was ABORTED immediately after the first throw on all three attempts, due to NO_ADMISSIBLE_COMMAND (sheet 2026-11-18-robot, step 35) [derived: temp/logs/launch_2026-11-18_3.log 11:44-11:48 and temp/hand_capture/hand_capture_20261118_113140.csv. Dwell 0.40, flag on: 0/1, 2/3, 28/29 caught, all MISSED_CATCH, no Leg LIMIT or RING end (the 2026-11-13 flag-on arm caught about 5 in total).
+  - Hand turning points per flight: 0.77 mean against 2.05 on 2026-11-13 and 0.03 flag off; 22 of 31 flights still show 1-2. Whether that counts as no stop-and-go seen is the owner's call. Dwell 0.35: NO_ADMISSIBLE_COMMAND LIMIT_JERK three times at the first learned Catch (margins -0.15 to -0.20). The owner confirmed fail on 2026-11-18: the stop-and-go is reduced, not gone.]
+
 ## Progress
 
 - 2026-11-15: Night Shift 2026-11-15: TKT-69 option 1 built on night-shift/2026-11-15-BUG-90 but unfinished (unit cut off by API credit); test_cup_zvd passes, wider checks, suite and audit owed
 - 2026-11-16: Night Shift 2026-11-16: held on night-shift/2026-11-15-BUG-90: checks finished and audited clean, Sitting section written; unblocked by a Sitting
+- 2026-11-18: Failed at the Sitting of 2026-11-18: at Dwell 0.40 the stop-and-go is reduced, not gone (Hand turning points per flight 0.77 against 2.05 on 2026-11-13 and 0.03 flag off); caught 0/1, 2/3, 28/29, no Leg LIMIT or RING end. Dwell 0.35 refused LIMIT_JERK three times at the first learned Catch (margins -0.15 to -0.20). Branch stays held.

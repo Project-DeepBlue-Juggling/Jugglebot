@@ -1,3 +1,152 @@
+closed:
+  at: 2026-11-18 13:05
+  items:
+  - BUG-58
+  - BUG-63
+  - BUG-89
+  - BUG-90
+  - BUG-92
+  - BUG-94
+  - BUG-98
+  - FEAT-49
+  - IDEA-11
+  - IDEA-22
+confirmed:
+  at: 2026-11-18 13:05
+  changed:
+  - BUG-58
+  - BUG-90
+derived:
+  13:
+    BUG-63:
+      by: sitting-debrief 2026-11-18
+      criterion: 'Ball 2''s first Throw after the feed catch lands within 60 mm of
+        its Site along the separation axis (the 2026-11-03 misses were about 180 mm
+        outward: landings x -223 to -240 against aims near -50).'
+      evidence: 'temp/logs/launch_2026-11-18_1.log 11:04-11:05, four columns_highlow
+        Attempts on plant bug63-fresh-2026-11-18 (0 rows at the first): Ball 2''s
+        first Throw landed x +22, -7, +23, +21 mm (max |x| 23 mm, at most 7 mm outward).
+        The Feed-Catch aim was still clamped in y in every Attempt, so the clamp is
+        not the cause of the 180 mm miss.'
+      verdict: pass
+  22:
+    BUG-89:
+      by: sitting-debrief 2026-11-18
+      criterion: '`setpoints_coalesced` is non-zero and the WARN lines name seq and
+        lag; every STOP inside an Attempt whose record says stamp gap carries the
+        dropped-a-knot verdict (or an emitter skip is visible on /trajectory/status);
+        the two arms are tabulated side by side.'
+      evidence: 'temp/logs/launch_2026-11-18_1.log and _2.log. Counter non-zero (8
+        and 9 read; 42 frames dropped in 11.2 min with cpu_partition off, 37 in 10.2
+        min with it on: 3.2 against 3.3 per minute, no measurable difference). Clause
+        2 fails: of 7 in-Attempt STOPs whose record says stamp gap, 4 lack the dropped-a-knot
+        verdict (launch 1 line 3971; launch 2 lines 2770, 2783, 3350, all on the cover-expired
+        branch). /trajectory/status was not read for those four.'
+      verdict: fail
+  23:
+    IDEA-11:
+      by: sitting-debrief 2026-11-18
+      criterion: 20 consecutive Catches in one Attempt at each angle, flown with Throws
+        21 (the 21st throw is the Stop throw, so `COMPLETED (20/20 caught)`; with
+        Throws 20 it reads 19/19); landing scatter, per ball and per axis, with the
+        mean within 15 mm and the sd within 10 mm of the straight control (proposed
+        2026-11-03, owner to confirm; the old "within 3 mm" was below the control's
+        own run-to-run sd of 18-31 mm); no HAND_LIMIT line.
+      evidence: 'temp/logs/launch_2026-11-18_2.log lines 3738 and 3849: 45 deg flew
+        20/20 twice, no HAND_LIMIT line; landing scatter inside the 15 mm mean and
+        10 mm sd bars of the five-Attempt straight control on all four ball/axis cells
+        (n 20 per ball against 58 and 50). The criterion is per angle and 90 deg was
+        not on this step. Plant turned45 was not fresh (93 rows at the start).'
+      verdict: data
+  30:
+    BUG-92:
+      by: sitting-debrief 2026-11-18
+      criterion: No human_throw track starts inside the box during the idle 2 minutes,
+        and all 10 human Throws are tracked.
+      evidence: 'Bag 2026-11-18_11-31-37 and temp/logs/launch_2026-11-18_3.log: 0
+        human-Throw tracks started inside the Ball Butler box between detect on (11:34:18.9)
+        and the first human Throw (about 11:36:45); 12 tracks for the 11 Throws (one
+        likely a split track). 8 phantom tracks still started outside the box (4 at
+        a floor cell, 4 near x -900, z 2150-2305).'
+      verdict: pass
+  32:
+    BUG-98:
+      by: sitting-debrief 2026-11-18
+      criterion: startup and the Ball Butler calibrate behave as on the last Sitting,
+        and `/robot_state` holds near 100 Hz throughout the calibrate.
+      evidence: 'Bag 2026-11-18_11-31-37, calibrate window 11:37:30.3-11:37:51.9:
+        /robot_state mean 98.6 Hz, lowest 1 s bin 95 Hz, longest gap 44.5 ms; main
+        the same day 98.3 and 98.8 Hz. No service failed or hung. No log line shows
+        the bridge calibrate RPC itself being called.'
+      verdict: pass
+  34:
+    BUG-94:
+      by: sitting-debrief 2026-11-18
+      criterion: every Feed is tracked as Ball Butler's announced Throw and the Feed
+        Catches are no fewer than on the last Ball Butler-fed Sitting.
+      evidence: 'temp/logs/launch_2026-11-18_3.log 11:39-11:43 and bag 2026-11-18_11-31-37:
+        10 of 10 Feeds tracked as the announced Throw (confirmed 0.02-0.06 s after
+        the throw time) and 10 of 10 Feed Catches; main the same day 8 of 9, 8 of
+        8 and 20 of 20. Residual at confirm: median 101 mm from the release point
+        against about 265 mm from the origin on the same flights. The last Sitting''s
+        Feed-Catch count was not found, so the comparison is against today''s main
+        launches.'
+      verdict: pass
+  35:
+    BUG-90:
+      by: sitting-debrief 2026-11-18
+      criterion: with the flag on at Dwell 0.40, the Hand moves smoothly through each
+        flight between the post-release brake and the Capture move (no ~5 Hz stop-and-go
+        seen), no Leg LIMIT or RING refusal end, and Catches no fewer than the 2026-11-13
+        flag-on arm.
+      evidence: 'temp/logs/launch_2026-11-18_3.log 11:44-11:48 and temp/hand_capture/hand_capture_20261118_113140.csv.
+        Dwell 0.40, flag on: 0/1, 2/3, 28/29 caught, all MISSED_CATCH, no Leg LIMIT
+        or RING end (the 2026-11-13 flag-on arm caught about 5 in total). Hand turning
+        points per flight: 0.77 mean against 2.05 on 2026-11-13 and 0.03 flag off;
+        22 of 31 flights still show 1-2. Whether that counts as no stop-and-go seen
+        is the owner''s call. Dwell 0.35: NO_ADMISSIBLE_COMMAND LIMIT_JERK three times
+        at the first learned Catch (margins -0.15 to -0.20). The owner confirmed fail
+        on 2026-11-18: the stop-and-go is reduced, not gone.'
+      verdict: fail
+  39:
+    IDEA-22:
+      by: sitting-debrief 2026-11-18
+      criterion: At 90 deg, at least one of 4 Attempts passes Ball 2's first Catch
+        after the Feed and carries 10 or more Throws, with no Platform-top strike
+        seen.
+      evidence: 'temp/logs/launch_2026-11-18_3.log 11:54-11:55 and launch_2026-11-18_3-1.log.
+        Nomination margin +0.350, with re-aim +0.131 (tilt-back 0.0) and +0.146 (0.5).
+        0.0 deg: 6 Attempts caught 19, 6, 18, 7, 5, 20. 0.5 deg: 5 Attempts caught
+        7, 9, 11, 14, 9, all MISSED_CATCH. Ball 2''s first Catch after the Feed passed
+        at both settings. The operator saw a handful of Platform-top strikes at 0.5;
+        the sample cannot separate the two settings. The 3 deg default is refused
+        at Apex 0.975.'
+      verdict: data
+  48:
+    FEAT-49:
+      by: sitting-debrief 2026-11-18
+      criterion: a window is saved on a real fault, with the brake inside it and the
+        power channels finite.
+      evidence: 'temp/logs/launch_2026-11-18_4.log and temp/hand_capture/hand_capture_20261118_121427.csv:
+        armed 12:15:41 for 10 Columns Attempts, 0 saved, 1 clean exit. The Hand drive
+        stayed in closed loop with no errors 12:15:59-12:25:22, so no real fault occurred
+        to trigger on (the one MAX_DEVIATION latch is a Teensy guard fault, not a
+        drive fault).'
+      verdict: inconclusive
+  49:
+    BUG-58:
+      by: sitting-debrief 2026-11-18
+      criterion: a LANE_REFUSED end is on record with GC_PROBE lines from both stream
+        nodes within 1 s of its STOP WARN, and that WARN carries its verdict, fw_sched
+        counters and frame ages.
+      evidence: 'All five tee logs: 12 LANE_REFUSED ends, each with GC_PROBE lines
+        from both stream nodes within 1 s of its STOP WARN, and each WARN carries
+        its verdict, counters and frame ages. 4 of the 12 had a forward gap over 70
+        ms; 3 follow a 47-54 ms gen-2 GC pause in trajectory_node (launch 1 lines
+        3450 and 3979, launch 2 line 2798), so the starvation itself still happens.
+        The owner flipped the literal pass to data on 2026-11-18: the record exists
+        but the starvation still happens, so the Item stays open.'
+      verdict: data
 schema: 2
 steps:
   1:

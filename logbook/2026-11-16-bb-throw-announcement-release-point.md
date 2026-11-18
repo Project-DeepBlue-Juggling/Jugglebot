@@ -49,3 +49,5 @@ doubling the offset passed to `bb_release_state` fails it (x 48.89 vs 59.04 expe
 it (0.0) fails it (x 59.45 vs 59.04). No source change.
 Verification, 2026-11-17: `pytest -q tests/ros/test_ball_butler_node.py tests/ros/test_ball_butler.py`
 (no-net wrapper, nice 19): 108 passed.
+
+Flown 2026-11-18: 10 of 10 Feeds tracked as the announced Throw, residual at confirm median 101 mm from the release point against about 265 mm from the origin; landed at the debrief (logbook/2026-11-18-sitting-debrief.md).

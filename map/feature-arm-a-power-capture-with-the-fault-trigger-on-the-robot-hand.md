@@ -2,9 +2,9 @@
 id: FEAT-49
 kind: feature
 title: Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault
-status: inbox
+status: in_progress
 created: '2026-11-11'
-updated: '2026-11-14T17:55:27Z'
+updated: '2026-11-18T02:08:25Z'
 owners: []
 priority: medium
 effort: m
@@ -17,6 +17,7 @@ links:
 - map/bug-hand-overshoot-at-apex-1-35-saturated-the-stepped-brake-at.md
 - map/feature-measure-the-hand-s-commutation-angle-error-through-a-hard.md
 - tools/probes/hand_foc_scope.py
+- logbook/2026-11-18-sitting-debrief.md
 filed_by: claude-debrief
 night_skip: sitting
 night_skip_on: '2026-11-15'
@@ -47,3 +48,14 @@ Arm `tools/probes/hand_foc_scope.py capture --preset power --trigger fault` on t
 - pass: a window is saved on a real fault, with the brake inside it and the power channels finite.
 - record: the capture path, the launch log line of the SPINOUT, the number of launches flown, and any clean-stop saves or timeouts.
 - minutes: 60
+
+## Sitting result (2026-11-18 13:05)
+
+- verdict: inconclusive
+- notes (split into bullets):
+  - Gave this a bunch of attempts. Until the last one, all attempts either completed or ended due to a missed catch. The final attempt ended with MAX_DEVIATION. (sheet 2026-11-18-robot, step 48) [derived: temp/logs/launch_2026-11-18_4.log and temp/hand_capture/hand_capture_20261118_121427.csv: armed 12:15:41 for 10 Columns Attempts, 0 saved, 1 clean exit.
+  - The Hand drive stayed in closed loop with no errors 12:15:59-12:25:22, so no real fault occurred to trigger on (the one MAX_DEVIATION latch is a Teensy guard fault, not a drive fault).]
+
+## Progress
+
+- 2026-11-18: Flown at the Sitting of 2026-11-18, verdict unresolved: armed for 10 Columns Attempts, 0 saved; the Hand drive never faulted (the one MAX_DEVIATION latch is a Teensy guard fault and cannot fire the trigger). Arm it in every launch: BUG-111 was a SPINOUT in launch 1, before it was armed. FEAT-45 rungs B and C passed on the bench 2026-11-13.

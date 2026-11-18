@@ -6,24 +6,23 @@ waiting Items: the order a Sitting flies in, and every step, is on its Sitting s
 
 Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
-## Robot  (14 Items, 341 min)
+## Robot  (13 Items, 331 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
-| BUG-58 Firmware scheduler STOPs a streamed lane while frames arrive on time and the host stream is clean: LANE_REFUSED ends, cause unseen | 1 | armed | - | 2026-11-18-robot |
-| BUG-63 Ball 2's first throw after the feed catch lands about 180 mm outward along the separation axis | 10 | level, armed, bb-fed | - | 2026-11-18-robot |
-| BUG-89 teensy_bridge_node forwards only the newest waiting knot; harmless at emit lead 0, but the cover has 7-14 ms of margin against a stall | 40 | level, armed, bb-fed | - | 2026-11-18-robot |
+| BUG-110 Emitter catch-up sends the next knot up to 25 ms early and the bridge drops the due knot | 20 | level, armed, bb-fed | - | - |
+| BUG-111 Hand SPINOUT at the Throw peak after a setpoint 12.6 ms late (2026-11-18) | 5 | level, armed, bb-fed | - | - |
+| BUG-58 Firmware scheduler STOPs a streamed lane while frames arrive on time and the host stream is clean: LANE_REFUSED ends, cause unseen | 1 | armed | - | - |
+| BUG-89 teensy_bridge_node forwards only the newest waiting knot; harmless at emit lead 0, but the cover has 7-14 ms of margin against a stall | 40 | level, armed, bb-fed | - | - |
 | BUG-93 can-bridge fatal CAN-silence check wraps when a frame is stamped after its clock read: a live Leg reads silent and the Platform Stows | 15 | level, armed, bridge-cycled | `night-shift/2026-11-15-BUG-93` | - |
-| BUG-94 Ball Butler Throw announcement gives the Tracker the calibrated origin, not the release point | 15 | level, armed, bb-fed | `night-shift/2026-11-16-BUG-94` | 2026-11-18-robot |
 | FEAT-32 Pre-release hold rung: release from a moving Platform (hold 0.100 → 0) | 45 | armed, bb-fed, bridge-cycled | - | - |
 | FEAT-39 P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30 | 50 | level, armed, bb-fed, bridge-cycled | - | - |
-| BUG-90 carry_zvd rows make the Hand stop and go at about 5 Hz in flight | 30 | level, armed, bb-fed | `night-shift/2026-11-15-BUG-90` | 2026-11-18-robot |
-| BUG-92 static Ball Butler frame markers are tracked as human_throw | 10 | level | `night-shift/2026-11-15-BUG-92` | 2026-11-18-robot |
-| FEAT-49 Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault | 60 | armed | - | 2026-11-18-robot |
+| BUG-90 carry_zvd rows make the Hand stop and go at about 5 Hz in flight | 30 | level, armed, bb-fed | `night-shift/2026-11-15-BUG-90` | - |
+| BUG-92 static Ball Butler frame markers are tracked as human_throw | 10 | level | `night-shift/2026-11-15-BUG-92` | - |
+| FEAT-49 Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault | 60 | armed | - | - |
 | FEAT-50 Live warning when a marker dwells under the Hand | 10 | armed | `night-shift/2026-11-14-FEAT-50` | - |
-| IDEA-11 JP-10 Turned columns: the columns pair at fixed angles about +z, under pose | 20 | level, armed, bb-fed | - | 2026-11-18-robot |
-| IDEA-22 Turned Columns at 90 deg: tilt the Platform back (+x) at the Catch so the ball stops hitting the Platform top | 25 | level, armed, bb-fed | `night-shift/2026-11-12-IDEA-22` | 2026-11-18-robot |
-| BUG-98 teensy_bridge_node blocking RPC services share a callback group with the 100 Hz publishers and the link-loss check | 10 | level, bb-fed | `night-shift/2026-11-16-BUG-98` | 2026-11-18-robot |
+| IDEA-11 JP-10 Turned columns: the columns pair at fixed angles about +z, under pose | 20 | level, armed, bb-fed | - | - |
+| IDEA-22 Turned Columns at 90 deg: tilt the Platform back (+x) at the Catch so the ball stops hitting the Platform top | 25 | level, armed, bb-fed | `night-shift/2026-11-12-IDEA-22` | - |
 
 ## Bench leg  (1 Item, 30 min)
 

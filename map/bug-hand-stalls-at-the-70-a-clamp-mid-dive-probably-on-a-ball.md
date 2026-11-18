@@ -4,7 +4,7 @@ kind: bug
 title: Hand stalls at the 70 A clamp mid-dive, probably on a Ball under the Cup, and the next launch comes up slow
 status: inbox
 created: '2026-11-07'
-updated: '2026-11-13T06:09:31Z'
+updated: '2026-11-18T02:08:36Z'
 owners: []
 priority: medium
 effort: m
@@ -16,6 +16,7 @@ area: hand
 blocked_by: []
 links:
 - map/bug-hand-overshoot-at-apex-1-35-saturated-the-stepped-brake-at.md
+- logbook/2026-11-18-sitting-debrief.md
 filed_by: jugglebot-b1
 night_skip: sitting
 night_skip_on: '2026-11-15'
@@ -49,3 +50,4 @@ Sources: `~/.ros/log/2026-11-07-16-15-21-645789-jetson-2503132/launch.log`, `tem
 
 - 2026-11-13: Three new instances 2026-11-13 (12:02:17.66, 12:08:30.63, 13:15:22.69), all CONFIRMED as a Ball trapped under the Hand: raw unlabelled mocap markers 65-85 mm below the Hand, static at the stall instant; the owner saw it in the replay.
 - 2026-11-13: The 13:15:22 one latched the Hand MAX_DEVIATION guard and self-recovered in 7.2 s. Found with tools/trapped_ball_finder.py; the Tracker-only read had missed it (it drops a Ball after it jostles on the Platform).
+- 2026-11-18: 2026-11-18 debrief: no Hand stall at the current clamp in any of the five bags (trapped_ball_finder on all five); no event today, which is no evidence either way.

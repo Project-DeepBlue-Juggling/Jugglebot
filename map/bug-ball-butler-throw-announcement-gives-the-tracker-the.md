@@ -2,9 +2,9 @@
 id: BUG-94
 kind: bug
 title: Ball Butler Throw announcement gives the Tracker the calibrated origin, not the release point
-status: in_progress
+status: complete
 created: '2026-11-14'
-updated: '2026-11-16T18:59:59Z'
+updated: '2026-11-18T03:25:27Z'
 owners:
 - night-shift
 priority: high
@@ -15,7 +15,9 @@ radius: subsystem
 diagnosis: confirmed
 area: tracking
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-18-sitting-debrief.md
+- logbook/2026-11-16-bb-throw-announcement-release-point.md
 parent: ball-butler
 filed_by: claude
 ---
@@ -81,7 +83,16 @@ One aim only; other aims rest on the geometry. Drag ignored. 14 flights were fir
 - minutes: 15
 - branch: night-shift/2026-11-16-BUG-94
 
+## Sitting result (2026-11-18 13:05)
+
+- verdict: pass
+- notes (split into bullets):
+  - First attempt ended with MAX_DEVIATION after just 12 throws. Second attempt ended the same way after 20 throws. Third, fourth and fifth attempts ended after a catch didn't settle before the throw, leading to the throw being uncatchable. Feeds didn't seem any smoother than previously. Not sure how the tracking went, as I can only watch so much at once.
+  - (sheet 2026-11-18-robot, step 34) [derived: temp/logs/launch_2026-11-18_3.log 11:39-11:43 and bag 2026-11-18_11-31-37: 10 of 10 Feeds tracked as the announced Throw (confirmed 0.02-0.06 s after the throw time) and 10 of 10 Feed Catches; main the same day 8 of 9, 8 of 8 and 20 of 20. Residual at confirm: median 101 mm from the release point against about 265 mm from the origin on the same flights.
+  - The last Sitting's Feed-Catch count was not found, so the comparison is against today's main launches.]
+
 ## Progress
 
 - 2026-11-16: Night Shift 2026-11-16: held on night-shift/2026-11-16-BUG-94: announcement starts at the release point, unflown; one audit finding open (no yaw-offset test); unblocked by TKT-75 and a Sitting
 - 2026-11-17: Night Shift 2026-11-17: held on night-shift/2026-11-16-BUG-94: yaw-offset test added (TKT-75); 3 test gaps open; gate [pre], (a) BUG-109, (c) robot; unblocked by TKT-82, then the Sitting
+- 2026-11-18: Passed at the Sitting of 2026-11-18: 10 of 10 Feeds tracked as the announced Throw, 10 of 10 Feed Catches, residual at confirm median 101 mm from the release point; landed on main as 8236822f through tools/sitting_merge.sh. Audit: 0 behaviour-affecting, 3 narrative findings in the debrief entry.
