@@ -2,9 +2,9 @@
 id: BUG-97
 kind: bug
 title: Juggle action Result path has no outer exception guard and can be reset by the next request
-status: inbox
+status: complete
 created: '2026-11-14'
-updated: '2026-11-14T17:54:23Z'
+updated: '2026-11-15T18:12:31Z'
 owners: []
 priority: low
 effort: s
@@ -14,7 +14,8 @@ radius: local
 diagnosis: hypothesis
 area: skill-stack
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-16-juggle-result-path-outer-guard-and-pending-refusal.md
 filed_by: claude
 ---
 
