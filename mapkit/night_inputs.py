@@ -51,7 +51,7 @@ def rows(map_dir: str) -> List[List[str]]:
         kind = reason[len("input-"):]
         stem = "%s-%s" % (it.kind, it.slug)
         asked = sorted(open_questions.get(stem, []))
-        respond = asked[0][1] if asked else ("sheet" if kind == "sitting" else "none")
+        respond = asked[0][1] if asked else "none"
         out.append((_sort_key(ref), [str(it.meta["id"]), it.meta.get("title"), kind,
                                       it.meta.get("night_skip_input"), it.meta.get("night_skip_note"),
                                       respond]))
