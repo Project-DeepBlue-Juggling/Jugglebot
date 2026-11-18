@@ -86,6 +86,8 @@ ring [motion]. The calibration above is what makes the attitude correction possi
 
 ## 4. Interfaces
 
+- **Wire protocol (normative, P1a):** `ros_ws/docs/platform_imu_protocol.md`, covering IDs, frames, the frozen-capture
+  image, the state machine, the RPCs and the upload walk-through.
 - **YAML to generated constants:** the IMU CAN IDs, the status frame layout and the RpcMethod ids live in
   `config/protocol_config.yaml`; `python config/generate_config.py` writes the firmware and Python constants.
 - **Platform Teensy:** pure headers for the capture ring, the upload framing (sequence, gap re-request, CRC-32) and

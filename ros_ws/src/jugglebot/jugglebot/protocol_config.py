@@ -98,6 +98,12 @@ CAN_ID_PLATFORM_HAND_FAN_CMD = 0x6E1
 CAN_ID_PLATFORM_HAND_FAN_STATUS = 0x6E2
 CAN_ID_PLATFORM_FW_UPDATE_CMD = 0x6F0
 CAN_ID_PLATFORM_FW_UPDATE_REPLY = 0x6F1
+CAN_ID_PLATFORM_IMU_CMD = 0x6E3
+CAN_ID_PLATFORM_IMU_REPLY = 0x6E4
+CAN_ID_PLATFORM_IMU_STATUS = 0x6E5
+CAN_ID_PLATFORM_IMU_DATA = 0x6E6
+CAN_ID_PLATFORM_IMU_LIVE_ACCEL = 0x6E7
+CAN_ID_PLATFORM_IMU_LIVE_GYRO = 0x6E8
 
 # 0x6E0 RobotState tilt units (counts per radian)
 PLATFORM_STATE_TILT_COUNTS_PER_RAD = 10000
@@ -224,6 +230,89 @@ class WaveReason(IntEnum):
     CLIP_MISSING = 5
     CONSOLE_OWNS = 6
     GPI2_FAULT = 7
+
+# ============================================================================
+# Platform IMU Capture
+# ============================================================================
+
+# Contract: ros_ws/docs/platform_imu_protocol.md
+PLATFORM_IMU_CAN_BLOCK_FIRST = 1763
+PLATFORM_IMU_CAN_BLOCK_LAST = 1768
+PLATFORM_IMU_RING_SAMPLES = 32000
+PLATFORM_IMU_BYTES_PER_SAMPLE = 12
+PLATFORM_IMU_WORD_BYTES = 6
+PLATFORM_IMU_NOMINAL_ODR_HZ = 1000
+PLATFORM_IMU_ANCHOR_PERIOD_MS = 100
+PLATFORM_IMU_ANCHOR_RING = 400
+PLATFORM_IMU_ANCHOR_BYTES = 18
+PLATFORM_IMU_HEADER_BYTES = 66
+PLATFORM_IMU_HEADER_FORMAT_VERSION = 1
+PLATFORM_IMU_ANCHOR_SEQ_BASE = 64128
+PLATFORM_IMU_HEADER_SEQ_BASE = 65520
+PLATFORM_IMU_READ_MAX_WORDS = 256
+PLATFORM_IMU_READ_DEFAULT_GAP_10US = 100
+PLATFORM_IMU_READ_MIN_GAP_10US = 40
+PLATFORM_IMU_STATUS_PERIOD_MS = 1000
+
+# IMU_CMD byte 0
+class PlatformImuOp(IntEnum):
+    ENABLE = 0x01
+    DISABLE = 0x02
+    FREEZE = 0x03
+    RESUME = 0x04
+    READ = 0x05
+    ABORT = 0x06
+
+# IMU_REPLY byte 1
+class PlatformImuStatus(IntEnum):
+    OK = 0x00
+    ALREADY_FROZEN = 0x01
+    ERR_BAD_ARGS = 0x10
+    ERR_NOT_FROZEN = 0x11
+    ERR_WRONG_CAPTURE = 0x12
+    ERR_OUT_OF_RANGE = 0x13
+    ERR_EMPTY = 0x14
+    ERR_DISABLED = 0x15
+    ERR_FW_UPDATE = 0x16
+
+# IMU_STATUS byte 0
+class PlatformImuState(IntEnum):
+    DISABLED = 0x00
+    PROBING = 0x01
+    RUNNING = 0x02
+    FROZEN = 0x03
+    UPLOADING = 0x04
+    BACKOFF = 0x05
+    FW_HALTED = 0x06
+
+# FREEZE byte 1, header byte 1
+class PlatformImuFreezeReason(IntEnum):
+    ATTEMPT_END = 0x01
+    FAULT = 0x02
+    SOFT_ESTOP = 0x03
+    OPERATOR = 0x04
+
+# IMU_STATUS byte 1 (bits)
+class PlatformImuStatusFlag(IntEnum):
+    SENSOR_OK = 0x01
+    TIME_SYNCED = 0x02
+    RING_WRAPPED = 0x04
+    I2C_400K = 0x08
+    DISCONTINUITY = 0x10
+
+# Header bytes 18-19 (bits)
+class PlatformImuCaptureFlag(IntEnum):
+    WRAPPED = 0x01
+    DISCONTINUITY = 0x02
+    SENSOR_ERROR = 0x04
+    NEVER_SYNCED = 0x08
+    I2C_400K = 0x10
+
+# Anchor byte 16 (bits)
+class PlatformImuAnchorFlag(IntEnum):
+    DISCONTINUITY = 0x01
+    WALL_INVALID = 0x02
+    SYNC_STEP = 0x04
 
 # ============================================================================
 # Encoding / Scaling

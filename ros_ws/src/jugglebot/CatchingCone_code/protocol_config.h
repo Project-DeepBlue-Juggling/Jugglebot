@@ -111,6 +111,12 @@ namespace PlatformCanId {
   constexpr uint32_t HAND_FAN_STATUS = 0x6E2;
   constexpr uint32_t FW_UPDATE_CMD = 0x6F0;
   constexpr uint32_t FW_UPDATE_REPLY = 0x6F1;
+  constexpr uint32_t IMU_CMD = 0x6E3;
+  constexpr uint32_t IMU_REPLY = 0x6E4;
+  constexpr uint32_t IMU_STATUS = 0x6E5;
+  constexpr uint32_t IMU_DATA = 0x6E6;
+  constexpr uint32_t IMU_LIVE_ACCEL = 0x6E7;
+  constexpr uint32_t IMU_LIVE_GYRO = 0x6E8;
 }
 
 // 0x6E0 RobotState tilt units (counts per radian)
@@ -259,6 +265,98 @@ namespace WaveCameraReason {
   constexpr uint8_t CLIP_MISSING = 5;
   constexpr uint8_t CONSOLE_OWNS = 6;
   constexpr uint8_t GPI2_FAULT = 7;
+}
+
+// ==========================================================================
+// Platform IMU Capture
+// ==========================================================================
+
+// Contract: ros_ws/docs/platform_imu_protocol.md
+namespace PlatformImu {
+  constexpr uint32_t CAN_BLOCK_FIRST = 1763u;
+  constexpr uint32_t CAN_BLOCK_LAST = 1768u;
+  constexpr uint32_t RING_SAMPLES = 32000u;
+  constexpr uint32_t BYTES_PER_SAMPLE = 12u;
+  constexpr uint32_t WORD_BYTES = 6u;
+  constexpr uint32_t NOMINAL_ODR_HZ = 1000u;
+  constexpr uint32_t ANCHOR_PERIOD_MS = 100u;
+  constexpr uint32_t ANCHOR_RING = 400u;
+  constexpr uint32_t ANCHOR_BYTES = 18u;
+  constexpr uint32_t HEADER_BYTES = 66u;
+  constexpr uint32_t HEADER_FORMAT_VERSION = 1u;
+  constexpr uint32_t ANCHOR_SEQ_BASE = 64128u;
+  constexpr uint32_t HEADER_SEQ_BASE = 65520u;
+  constexpr uint32_t READ_MAX_WORDS = 256u;
+  constexpr uint32_t READ_DEFAULT_GAP_10US = 100u;
+  constexpr uint32_t READ_MIN_GAP_10US = 40u;
+  constexpr uint32_t STATUS_PERIOD_MS = 1000u;
+}
+
+// IMU_CMD byte 0
+namespace PlatformImuOp {
+  constexpr uint8_t ENABLE = 0x01;
+  constexpr uint8_t DISABLE = 0x02;
+  constexpr uint8_t FREEZE = 0x03;
+  constexpr uint8_t RESUME = 0x04;
+  constexpr uint8_t READ = 0x05;
+  constexpr uint8_t ABORT = 0x06;
+}
+
+// IMU_REPLY byte 1
+namespace PlatformImuStatus {
+  constexpr uint8_t OK = 0x00;
+  constexpr uint8_t ALREADY_FROZEN = 0x01;
+  constexpr uint8_t ERR_BAD_ARGS = 0x10;
+  constexpr uint8_t ERR_NOT_FROZEN = 0x11;
+  constexpr uint8_t ERR_WRONG_CAPTURE = 0x12;
+  constexpr uint8_t ERR_OUT_OF_RANGE = 0x13;
+  constexpr uint8_t ERR_EMPTY = 0x14;
+  constexpr uint8_t ERR_DISABLED = 0x15;
+  constexpr uint8_t ERR_FW_UPDATE = 0x16;
+}
+
+// IMU_STATUS byte 0
+namespace PlatformImuState {
+  constexpr uint8_t DISABLED = 0x00;
+  constexpr uint8_t PROBING = 0x01;
+  constexpr uint8_t RUNNING = 0x02;
+  constexpr uint8_t FROZEN = 0x03;
+  constexpr uint8_t UPLOADING = 0x04;
+  constexpr uint8_t BACKOFF = 0x05;
+  constexpr uint8_t FW_HALTED = 0x06;
+}
+
+// FREEZE byte 1, header byte 1
+namespace PlatformImuFreezeReason {
+  constexpr uint8_t ATTEMPT_END = 0x01;
+  constexpr uint8_t FAULT = 0x02;
+  constexpr uint8_t SOFT_ESTOP = 0x03;
+  constexpr uint8_t OPERATOR = 0x04;
+}
+
+// IMU_STATUS byte 1 (bits)
+namespace PlatformImuStatusFlag {
+  constexpr uint8_t SENSOR_OK = 0x01;
+  constexpr uint8_t TIME_SYNCED = 0x02;
+  constexpr uint8_t RING_WRAPPED = 0x04;
+  constexpr uint8_t I2C_400K = 0x08;
+  constexpr uint8_t DISCONTINUITY = 0x10;
+}
+
+// Header bytes 18-19 (bits)
+namespace PlatformImuCaptureFlag {
+  constexpr uint16_t WRAPPED = 0x01;
+  constexpr uint16_t DISCONTINUITY = 0x02;
+  constexpr uint16_t SENSOR_ERROR = 0x04;
+  constexpr uint16_t NEVER_SYNCED = 0x08;
+  constexpr uint16_t I2C_400K = 0x10;
+}
+
+// Anchor byte 16 (bits)
+namespace PlatformImuAnchorFlag {
+  constexpr uint8_t DISCONTINUITY = 0x01;
+  constexpr uint8_t WALL_INVALID = 0x02;
+  constexpr uint8_t SYNC_STEP = 0x04;
 }
 
 // ==========================================================================
