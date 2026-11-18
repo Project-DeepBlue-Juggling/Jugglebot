@@ -15,6 +15,8 @@ omitted:
     reason: Its row failed on 2026-11-18 and the held branch has not changed since, so flying it again would repeat that result.
   - item: FEAT-50
     reason: Its branch still has five audit findings open for a day Session, so it is not on main.
+  - item: IDEA-20
+    reason: Its row was filed after this sheet was written and flashes both the can-bridge and the Platform Teensy with IMU firmware. Only phase 1 (protocol constants and headers that nothing references yet) is on main, so there is no firmware to flash today, and a second firmware change would confound the first flight of can-bridge v44.
 steps:
   - n: 1
     kind: setup
