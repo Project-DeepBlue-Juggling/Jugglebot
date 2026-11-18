@@ -50,6 +50,31 @@ uint16_t state_write(const JbUdp::RpcArgs::ArgRobotState& s);
 // Teensy_code_platform/hand_fan.h. The reply is the Platform's HAND_FAN_STATUS frame.
 uint16_t hand_fan_set(const JbUdp::RpcArgs::ArgHandFanSet& a);
 
+// ── Platform IMU capture (FW 45, IDEA-20 P3a) ────────────────────────────────
+// Contract: ros_ws/docs/platform_imu_protocol.md sections 2 and 6. Both build the
+// 8-byte IMU_CMD frame (PlatformCanId::IMU_CMD, 0x6E3, unused bytes 0) and send it
+// through the shared relay gate (send_gated: jugglebot_commands_allowed, else
+// ERR_BUS_DOWN; TxCls::SAFETY like every relay write). OK = queued on the bus;
+// the Platform Teensy's verdict is its IMU_REPLY (0x6E4), uplinked as a
+// PLATFORM_FRAME, exactly as HAND_FAN_SET's verdict is its HAND_FAN_STATUS.
+// Both are ALLOWED while Armed (owner, 2026-11-19), and the bridge sends no ABORT
+// of its own at arming: the Jetson owns the "no upload during an Attempt" gate.
+//
+// PLATFORM_IMU_CTRL → [op][reason or capture_id LE][0..]: ENABLE/DISABLE/ABORT
+// carry no args, FREEZE carries `reason` in byte 1, RESUME `capture_id` in bytes
+// 1-2. Any other op, READ included, is ERR_BAD_ARGS with nothing sent: a READ can
+// only leave through platform_imu_read and its clamp.
+uint16_t platform_imu_ctrl(const JbUdp::RpcArgs::ArgPlatformImuCtrl& a);
+// PLATFORM_IMU_READ → [0x05][capture_id u16][first_seq u16][count u16][gap u8].
+// ERR_BAD_ARGS for count 0 or above PlatformImu::READ_MAX_WORDS. While Armed
+// (`armed_now` = fault_mpc_active(), passed in as for the FW ops) the gap is
+// raised to PlatformImu::BRIDGE_ARMED_MIN_GAP_10US (63 x 10 us, about 1590
+// frames/s), the bus protection the spec puts on the bridge; not Armed it goes out
+// as asked and the Platform Teensy's own READ_MIN_GAP_10US floor applies.
+uint16_t platform_imu_read(const JbUdp::RpcArgs::ArgPlatformImuRead& a, bool armed_now);
+// The gap byte platform_imu_read puts on the wire. Pure, for the native harness.
+uint8_t imu_read_effective_gap(uint8_t requested_10us, bool armed_now);
+
 // ── Platform firmware-over-CAN (2026-09-09) ──────────────────────────────────
 // The Platform Teensy's USB port is damaged, so its firmware now arrives over
 // CAN3 through this same typed seam. Four ops on PlatformCanId::FW_UPDATE_CMD

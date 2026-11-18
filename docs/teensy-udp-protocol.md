@@ -43,6 +43,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `PROTOCOL_VERSION` | 14 | Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed; 7→8: 2026-09-14 hand C2 (can-bridge FW 22) — Setpoint GROWS 208→240 B: v2[7] (exact u2-knot velocity, flags bit4 HAS_V2) + hand_ff_gain (K, clamped [0,1.5] at ingest), flags bit5 HAS_SCHED plays the frame on its t_origin_us stamp instead of on UDP arrival; HeartbeatT2J GROWS by the scheduled-playback promotion-continuity diagnostics and flags bits 14 HAND_TORQUE_CLAMP / 15 SCHED_HOLD_LATCHED. Growing a struct is as incompatible as shrinking one: darkness against any FW ≤ 21 board is the INTENDED failure. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design) 8→9: 2026-09-15 axis-silence watchdog (can-bridge FW 23) — HeartbeatT2J GROWS by can_fault_leg/can_fault_age_ms/can_fault_count (the CAN_BUS_DOWN trip latch: WHICH leg went silent, how stale it was, how many trips this boot) and gains flags bits 16-22 HB_STALE_MASK (per-axis ODrive heartbeat staleness at CAN_HEARTBEAT_STALE_US = 0.5 s, report-only); CacheDiag GROWS by hb_frames[7], the per-axis heartbeat-frame census beside enc_frames. Both structs grow, so this is an incompatible wire change: darkness against any FW ≤ 22 board is the INTENDED failure. 9→10: 2026-10-12 BB absolute release (can-bridge FW 29) — ArgBbThrow.delay_s (f32, relative, converted to absolute ON RECEIPT, so Jetson dispatch latency moved the release 1:1) is replaced by release_wall_us (u64, absolute, the bridge wall clock = Jetson CLOCK_REALTIME), the arg GROWS 16→20 B, BB_THROW gains ResultBbThrow (lead at receipt) and three named refusals ERR_RELEASE_PAST/TOO_SOON/TOO_FAR. A delay_s read as an epoch would throw at the wrong instant, so darkness against any FW ≤ 28 board is the INTENDED failure; 10→11: 2026-11-03 scheduled-lane observability (can-bridge FW 38, BUG-58) — HeartbeatT2J GROWS 126→158 B: five more cumulative scheduled-lane counters (sched_superseded, sched_stale, sched_hand_c1_stops, sched_future_drops, sched_q_overflow) and a per-heartbeat-window frame-age census measured in the net task at queue entry (rx_age_max_us + four buckets at 25/50/70 ms, age = bridge monotonic now − the frame's t_start). Two LANE_REFUSED ends on 2026-11-03 had a clean host stream, so the cover was expiring between the bridge's send and the firmware's promotion, where no uplinked number could see it. A 126 B heartbeat decoded as 158 B (or the reverse) would misread every counter, so darkness against any FW ≤ 37 board is the INTENDED failure; 11→12: 2026-11-06 downlink loss accounting (can-bridge FW 40, FEAT-41) — HeartbeatT2J GROWS 158→190 B by eight cumulative u32 counters (dn_rx_setpoints, dn_queue_dropped, dn_seq_gaps, dn_crc_errors, sched_frames, sp_seq_drops, sp_no_hand, sp_no_sched). The stream socket's one-packet receive queue was overwriting about 1.5 % of setpoints and nothing uplinked could count it. A 158 B heartbeat decoded as 190 B (or the reverse) would misread or reject the frame, so darkness against any FW ≤ 39 board is the INTENDED failure; 12→13: 2026-11-08 firmware STOP record (can-bridge FW 42, FEAT-46) — HeartbeatT2J GROWS 190→380 B by one STOP record per lane group (legs, Hand): the playing frame's t_start, the queue depth and head, the last four queued frames' stamp / mapped t_start / arrival, the next frame's, and the last wall-offset change > 1 ms, plus a count of records overwritten before uplink. 20 of 23 STOPs on 2026-11-07 had on-time frames and no counter moving, so a stamp gap, a mapping step and an unpromoted frame could not be told apart. A 190 B heartbeat decoded as 380 B (or the reverse) would reject the frame, so darkness against any FW ≤ 41 board is the INTENDED failure; 13→14: 2026-11-10 BUG-7 the 0x6E0 RobotState tilt fields are 0.1 mrad counts, not whole mrad. No frame layout changes, but a stale peer would read the offset ten times wrong, and darkness is the only enforced refusal because Platform and bridge FW skew are logged, never refused. |
 | `BB_RELEASE_MIN_LEAD_US` | 700000 | BB_THROW: refuse a release closer than this at bridge receipt (ERR_RELEASE_TOO_SOON); BB wind-up 0.6 s + schedule margin 0.1 s |
 | `BB_RELEASE_MAX_LEAD_US` | 30000000 | BB_THROW: refuse a release further than this at bridge receipt (ERR_RELEASE_TOO_FAR); BB's 16-bit epoch-ms wrap is ±32.768 s |
+| `PLATFORM_IMU_BATCH_MAX_FRAMES` | 24 | IMU_DATA frames one PLATFORM_IMU_BATCH can carry (frames[] holds this many 8-byte records) |
 | `MAGIC` | 0x4A42 | "JB" little-endian preamble (bytes 0x42 0x4A) |
 | `HEADER_SIZE` | 8 | Bytes before payload |
 | `CRC_SIZE` | 2 | Trailing CRC-16 bytes |
@@ -93,6 +94,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `RING_DIAG` | 0x92 | 1 Hz CAN RX-ring TRUE-occupancy census (true_depth vs reported _available = the leak) + jugglebot delivery lag + SDO RTT (STREAM, T→J) |
 | `BB_YAW_ESTIMATE` | 0x93 | Ball Butler yaw estimate @100Hz, paired 1:1 with BB_AXIS_ESTIMATES by t_bridge_us (STREAM, T→J) |
 | `LEG_CLAMP_DIAG` | 0x94 | 1 Hz per-leg lead-clamp census: clamp-engaged ticks + stale-anchor ticks, cumulative since boot (STREAM, T→J) |
+| `PLATFORM_IMU_BATCH` | 0x95 | Platform IMU_DATA frames batched off their dedicated bridge ring at the telemetry tick, plus the ring's counters (STREAM, T→J) |
 
 ### RpcMethod
 
@@ -137,6 +139,8 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `HAND_MOVE_TO` | 0x0061 | Hand-only TRAP_TRAJ move to a caller target (ACTIVATE's axis-6 ladder); deferred reply at arrival / timeout / supersede |
 | `WAVE_CMD` | 0x0062 | Wave camera: send one WAVE_CMD intent frame on the cone bus |
 | `HAND_FAN_SET` | 0x0063 | Relay: set the Platform Teensy's Hand fan mode and thresholds |
+| `PLATFORM_IMU_CTRL` | 0x0064 | Relay: one Platform IMU control op (ENABLE/DISABLE/FREEZE/RESUME/ABORT) as an IMU_CMD frame |
+| `PLATFORM_IMU_READ` | 0x0065 | Relay: one Platform IMU READ block as an IMU_CMD frame, frame gap clamped while Armed |
 
 ### RpcStatus
 
@@ -662,6 +666,24 @@ Payload **48 bytes**. Python struct fmt: `<IIIIIIIIIIII`.
 | `lead_clamp_ticks` | u32 | 6 | Per leg (0-5): 500 Hz ticks on which the leg lead clamp engaged AND the command reached the wire, CUMULATIVE SINCE BOOT. Difference two samples for a window count; 500 x window_seconds is the per-leg ceiling. u32 wraps after ~99 days of continuous engagement; unsigned differencing is wrap-correct |
 | `stale_anchor_ticks` | u32 | 6 | Per leg (0-5): 500 Hz ticks on which the leg's encoder anchor age (now - pos_timestamp_us) exceeded LEG_ANCHOR_STALE_US (30 ms), CUMULATIVE SINCE BOOT and NOT gated on the output enable. A 100 ms frame gap adds ~35 (ticks 16..50 of the gap). An axis never seen (pos_timestamp_us == 0) is NOT counted: its anchor has no age to census (the CacheDiag seen_mask 'n/a' discipline), and a bench rig with absent legs must not spin six counters at 500 Hz |
 
+### PlatformImuBatch (`MsgType.PLATFORM_IMU_BATCH`, T2J, STREAM port)
+
+Platform IMU upload frames (IDEA-20 P3a, can-bridge FW 45). Every IMU_DATA (0x6E6) frame the bridge receives on the jugglebot bus goes into a dedicated lock-free ring (not the 8-slot Platform reply ring), and the telemetry task drains it into these batches, up to PLATFORM_IMU_BATCH_MAX_FRAMES per datagram and a bounded number of datagrams per tick. Each record in `frames` is the frame's 8 CAN data bytes verbatim, i.e. `[seq u16 LE][word 6 B]` (the CAN id is fixed, so it is not carried); records past `count` are zero. The ring drops the NEWEST frame when full and counts it: the Jetson finds the hole from `seq` and re-requests it with a READ. The counters are cumulative since bridge boot and ride every batch, so the Sitting's rate ramp reads them from the bag. Additive: no PROTOCOL_VERSION bump. Contract: ros_ws/docs/platform_imu_protocol.md section 6.
+
+Payload **220 bytes**. Python struct fmt: `<QBBHIIIIBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB`.
+
+| Field | Type | Count | Notes |
+|-------|------|------:|-------|
+| `t_bridge_us` | u64 | 1 | Bridge wall-clock when this batch was built (us); diagnostic only, sample time comes from the capture's anchors |
+| `count` | u8 | 1 | Valid 8-byte records in frames (0..PLATFORM_IMU_BATCH_MAX_FRAMES) |
+| `flags` | u8 | 1 | Reserved, 0 |
+| `ring_hwm` | u16 | 1 | Largest IMU ring occupancy seen since boot (frames; ring capacity is the firmware's IMU_RING_CAP) |
+| `rx_frames` | u32 | 1 | IMU_DATA frames received from the jugglebot bus since boot, dropped ones included |
+| `ring_drops` | u32 | 1 | IMU_DATA frames dropped since boot because the ring was full (drop-newest) |
+| `batches_sent` | u32 | 1 | PLATFORM_IMU_BATCH datagrams handed to UDP since boot, before this one |
+| `send_fails` | u32 | 1 | PLATFORM_IMU_BATCH datagrams UDP refused since boot (their frames are lost; recover by seq) |
+| `frames` | u8 | 192 | count x [seq u16 LE][word 6 B]: the IMU_DATA CAN payloads verbatim, zero past count (192 = 24 x 8) |
+
 ### RpcRequest (`MsgType.RPC_REQUEST`, J2T, RPC port)
 
 Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
@@ -881,6 +903,27 @@ wraps the generated Python. `AXIS_ALL = 0xFF` broadcasts to all legs.
 | `levelling_complete` | u8 | Platform levelling complete |
 | `pose_offset_tiltX` | f32 | Levelling pose offset, tilt about X (rad) |
 | `pose_offset_tiltY` | f32 | Levelling pose offset, tilt about Y (rad) |
+
+### ArgPlatformImuCtrl (`PLATFORM_IMU_CTRL`)
+
+**4 bytes**. Python struct fmt: `<BBH`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `op` | u8 | PlatformImuOp: ENABLE 1, DISABLE 2, FREEZE 3, RESUME 4, ABORT 6 (READ 5 is ERR_BAD_ARGS) |
+| `reason` | u8 | FREEZE only: PlatformImuFreezeReason (ignored for other ops) |
+| `capture_id` | u16 | RESUME only: the frozen capture's id (ignored for other ops) |
+
+### ArgPlatformImuRead (`PLATFORM_IMU_READ`)
+
+**7 bytes**. Python struct fmt: `<HHHB`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `capture_id` | u16 | The frozen capture's id |
+| `first_seq` | u16 | First word of the block (the image address, spec section 3) |
+| `count` | u16 | Words in the block, 1..PlatformImu::READ_MAX_WORDS (else ERR_BAD_ARGS) |
+| `frame_gap_10us` | u8 | Requested gap between IMU_DATA frames, 10 us units; raised to PlatformImu::BRIDGE_ARMED_MIN_GAP_10US while Armed |
 
 ### ArgHandFanSet (`HAND_FAN_SET`)
 

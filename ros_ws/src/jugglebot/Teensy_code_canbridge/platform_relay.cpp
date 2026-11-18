@@ -110,6 +110,60 @@ uint16_t hand_fan_set(const JbUdp::RpcArgs::ArgHandFanSet& a) {
   return send_gated(f);
 }
 
+// ── Platform IMU capture (FW 45, IDEA-20 P3a) ───────────────────────────────
+// See platform_relay.h. Op values come from the generated PlatformImuOp.
+static ODrive::CanFrame imu_cmd_frame(uint8_t op) {
+  ODrive::CanFrame f;
+  f.id = PlatformCanId::IMU_CMD;
+  f.len = 8;                       // spec section 2: every frame DLC 8, unused bytes 0
+  for (uint8_t i = 0; i < 8; ++i) f.buf[i] = 0;
+  f.buf[0] = op;
+  return f;
+}
+
+uint16_t platform_imu_ctrl(const JbUdp::RpcArgs::ArgPlatformImuCtrl& a) {
+  ODrive::CanFrame f = imu_cmd_frame(a.op);
+  switch (a.op) {
+    case PlatformImuOp::ENABLE:
+    case PlatformImuOp::DISABLE:
+    case PlatformImuOp::ABORT:
+      break;
+    case PlatformImuOp::FREEZE:
+      f.buf[1] = a.reason;         // the Platform judges it (reason 0 is its ERR_BAD_ARGS)
+      break;
+    case PlatformImuOp::RESUME:
+      f.buf[1] = (uint8_t)(a.capture_id & 0xFF);
+      f.buf[2] = (uint8_t)((a.capture_id >> 8) & 0xFF);
+      break;
+    default:                       // READ (would bypass the Armed clamp) or unknown
+      return JbUdp::RpcStatus::ERR_BAD_ARGS;
+  }
+  return send_gated(f);
+}
+
+uint8_t imu_read_effective_gap(uint8_t requested_10us, bool armed_now) {
+  if (armed_now && requested_10us < PlatformImu::BRIDGE_ARMED_MIN_GAP_10US)
+    return (uint8_t)PlatformImu::BRIDGE_ARMED_MIN_GAP_10US;
+  return requested_10us;
+}
+
+uint16_t platform_imu_read(const JbUdp::RpcArgs::ArgPlatformImuRead& a, bool armed_now) {
+  if (a.count == 0 || a.count > PlatformImu::READ_MAX_WORDS) return JbUdp::RpcStatus::ERR_BAD_ARGS;
+  ODrive::CanFrame f = imu_cmd_frame(PlatformImuOp::READ);
+  f.buf[1] = (uint8_t)(a.capture_id & 0xFF);
+  f.buf[2] = (uint8_t)((a.capture_id >> 8) & 0xFF);
+  f.buf[3] = (uint8_t)(a.first_seq & 0xFF);
+  f.buf[4] = (uint8_t)((a.first_seq >> 8) & 0xFF);
+  f.buf[5] = (uint8_t)(a.count & 0xFF);
+  f.buf[6] = (uint8_t)((a.count >> 8) & 0xFF);
+  f.buf[7] = imu_read_effective_gap(a.frame_gap_10us, armed_now);
+  return send_gated(f);
+}
+
+static_assert(PlatformImu::BRIDGE_ARMED_MIN_GAP_10US <= 0xFF, "the gap is one byte on the wire");
+static_assert(PlatformImu::BRIDGE_ARMED_MIN_GAP_10US >= PlatformImu::READ_MIN_GAP_10US,
+              "the bridge's Armed floor must not sit below the Platform Teensy's own");
+
 // ── Platform firmware-over-CAN (2026-09-09) ─────────────────────────────────
 // See platform_relay.h for the seam contract. Byte 0 of every FW_UPDATE_CMD
 // frame is the opcode; the Platform receiver mirrors these four values.

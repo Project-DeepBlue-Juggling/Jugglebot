@@ -299,6 +299,7 @@ namespace PlatformImu {
   constexpr uint32_t READ_MAX_WORDS = 256u;
   constexpr uint32_t READ_DEFAULT_GAP_10US = 100u;
   constexpr uint32_t READ_MIN_GAP_10US = 40u;
+  constexpr uint32_t BRIDGE_ARMED_MIN_GAP_10US = 63u;
   constexpr uint32_t STATUS_PERIOD_MS = 1000u;
 }
 

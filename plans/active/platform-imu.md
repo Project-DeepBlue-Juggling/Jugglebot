@@ -148,7 +148,8 @@ this replaces the manual "re-run the upload until BEGIN OK" rule once built; tod
 check, log the reason, retry NOT_READY no sooner than 1 s, treat (pi, pi) as the FW <= 10 failure reply); (c) no IMU_STATUS
 for 10 s after a boot is normal; (d) the kill-switch build (ignores IMU_CMD, sends no STATUS, still reports FW 11) reads as
 "no IMU", not a fault. Hardware: none. **Gate (Suite gate):** `./run_tests.sh --full`, including the xref
-and version tests. Status: not started. The bridge FW number is open (section 6).
+and version tests. Status: P3a (the can-bridge side, FW 45) built on branch `imu-p3`
+(`logbook/2026-11-19-platform-imu-p3-bridge-jetson.md`); the Jetson side (P3b) not started.
 
 ### P4: Sitting 1, flash and bench the capture path
 
@@ -176,8 +177,8 @@ Attempt's capture on disk, complete and CRC-checked, handed to the carry-ring-zv
 ## 6. Open questions
 
 - **Lever arm:** from the owner's bracket CAD, needed to about 5 mm. Pending; P5 cannot close without it.
-- **Bridge FW number:** the BUG-93 held branch takes 45, so this plan's bridge build is 45 or 46. Coordinate when
-  P3 starts; no PROTOCOL bump either way.
+- **Bridge FW number:** P3a took 45 (2026-11-19) because the held BUG-93 branch had not landed on main; whichever of
+  the two reaches main second renumbers (BUG-93 to 46 if this lands first). No PROTOCOL bump either way.
 - **Upload time (owner, 2026-11-19: "keep this area open; I will want to explore minimising it once the MVP works"):**
   three levers, filed as an Idea under this Pathway ("Minimise the Platform IMU upload time after an Attempt"): (1)
   tighter sample packing or compression (the 6 x int16 words are raw chip counts); (2) a slower

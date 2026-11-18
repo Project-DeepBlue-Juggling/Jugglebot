@@ -338,6 +338,7 @@ platform_imu:
   read_max_words: 256             # largest READ block (0.26 s at the default gap)
   read_default_gap_10us: 100      # 1000 us between IMU_DATA frames (1000 fps on the wire)
   read_min_gap_10us: 40           # the Platform Teensy clamps faster requests to 400 us
+  bridge_armed_min_gap_10us: 63   # can-bridge FW 45 clamps a READ's gap up to this while Armed (630 us, ~1590 fps)
   status_period_ms: 1000
 
   # IMU_CMD byte 0. Absent ops (GET_HEADER, READ_ANCHORS) are READs of a region.

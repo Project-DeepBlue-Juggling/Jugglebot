@@ -12,6 +12,7 @@ namespace JbUdp {
 constexpr uint8_t PROTOCOL_VERSION = 14u;  // Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed; 7→8: 2026-09-14 hand C2 (can-bridge FW 22) — Setpoint GROWS 208→240 B: v2[7] (exact u2-knot velocity, flags bit4 HAS_V2) + hand_ff_gain (K, clamped [0,1.5] at ingest), flags bit5 HAS_SCHED plays the frame on its t_origin_us stamp instead of on UDP arrival; HeartbeatT2J GROWS by the scheduled-playback promotion-continuity diagnostics and flags bits 14 HAND_TORQUE_CLAMP / 15 SCHED_HOLD_LATCHED. Growing a struct is as incompatible as shrinking one: darkness against any FW ≤ 21 board is the INTENDED failure. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design) 8→9: 2026-09-15 axis-silence watchdog (can-bridge FW 23) — HeartbeatT2J GROWS by can_fault_leg/can_fault_age_ms/can_fault_count (the CAN_BUS_DOWN trip latch: WHICH leg went silent, how stale it was, how many trips this boot) and gains flags bits 16-22 HB_STALE_MASK (per-axis ODrive heartbeat staleness at CAN_HEARTBEAT_STALE_US = 0.5 s, report-only); CacheDiag GROWS by hb_frames[7], the per-axis heartbeat-frame census beside enc_frames. Both structs grow, so this is an incompatible wire change: darkness against any FW ≤ 22 board is the INTENDED failure. 9→10: 2026-10-12 BB absolute release (can-bridge FW 29) — ArgBbThrow.delay_s (f32, relative, converted to absolute ON RECEIPT, so Jetson dispatch latency moved the release 1:1) is replaced by release_wall_us (u64, absolute, the bridge wall clock = Jetson CLOCK_REALTIME), the arg GROWS 16→20 B, BB_THROW gains ResultBbThrow (lead at receipt) and three named refusals ERR_RELEASE_PAST/TOO_SOON/TOO_FAR. A delay_s read as an epoch would throw at the wrong instant, so darkness against any FW ≤ 28 board is the INTENDED failure; 10→11: 2026-11-03 scheduled-lane observability (can-bridge FW 38, BUG-58) — HeartbeatT2J GROWS 126→158 B: five more cumulative scheduled-lane counters (sched_superseded, sched_stale, sched_hand_c1_stops, sched_future_drops, sched_q_overflow) and a per-heartbeat-window frame-age census measured in the net task at queue entry (rx_age_max_us + four buckets at 25/50/70 ms, age = bridge monotonic now − the frame's t_start). Two LANE_REFUSED ends on 2026-11-03 had a clean host stream, so the cover was expiring between the bridge's send and the firmware's promotion, where no uplinked number could see it. A 126 B heartbeat decoded as 158 B (or the reverse) would misread every counter, so darkness against any FW ≤ 37 board is the INTENDED failure; 11→12: 2026-11-06 downlink loss accounting (can-bridge FW 40, FEAT-41) — HeartbeatT2J GROWS 158→190 B by eight cumulative u32 counters (dn_rx_setpoints, dn_queue_dropped, dn_seq_gaps, dn_crc_errors, sched_frames, sp_seq_drops, sp_no_hand, sp_no_sched). The stream socket's one-packet receive queue was overwriting about 1.5 % of setpoints and nothing uplinked could count it. A 158 B heartbeat decoded as 190 B (or the reverse) would misread or reject the frame, so darkness against any FW ≤ 39 board is the INTENDED failure; 12→13: 2026-11-08 firmware STOP record (can-bridge FW 42, FEAT-46) — HeartbeatT2J GROWS 190→380 B by one STOP record per lane group (legs, Hand): the playing frame's t_start, the queue depth and head, the last four queued frames' stamp / mapped t_start / arrival, the next frame's, and the last wall-offset change > 1 ms, plus a count of records overwritten before uplink. 20 of 23 STOPs on 2026-11-07 had on-time frames and no counter moving, so a stamp gap, a mapping step and an unpromoted frame could not be told apart. A 190 B heartbeat decoded as 380 B (or the reverse) would reject the frame, so darkness against any FW ≤ 41 board is the INTENDED failure; 13→14: 2026-11-10 BUG-7 the 0x6E0 RobotState tilt fields are 0.1 mrad counts, not whole mrad. No frame layout changes, but a stale peer would read the offset ten times wrong, and darkness is the only enforced refusal because Platform and bridge FW skew are logged, never refused.
 constexpr uint32_t BB_RELEASE_MIN_LEAD_US = 700000u;  // BB_THROW: refuse a release closer than this at bridge receipt (ERR_RELEASE_TOO_SOON); BB wind-up 0.6 s + schedule margin 0.1 s
 constexpr uint32_t BB_RELEASE_MAX_LEAD_US = 30000000u;  // BB_THROW: refuse a release further than this at bridge receipt (ERR_RELEASE_TOO_FAR); BB's 16-bit epoch-ms wrap is ±32.768 s
+constexpr uint8_t PLATFORM_IMU_BATCH_MAX_FRAMES = 24u;  // IMU_DATA frames one PLATFORM_IMU_BATCH can carry (frames[] holds this many 8-byte records)
 constexpr uint16_t MAGIC = 0x4A42u;  // "JB" little-endian preamble (bytes 0x42 0x4A)
 constexpr uint16_t HEADER_SIZE = 8u;  // Bytes before payload
 constexpr uint16_t CRC_SIZE = 2u;  // Trailing CRC-16 bytes
@@ -58,6 +59,7 @@ namespace MsgType {
   constexpr uint8_t RING_DIAG = 146u;  // 1 Hz CAN RX-ring TRUE-occupancy census (true_depth vs reported _available = the leak) + jugglebot delivery lag + SDO RTT (STREAM, T→J)
   constexpr uint8_t BB_YAW_ESTIMATE = 147u;  // Ball Butler yaw estimate @100Hz, paired 1:1 with BB_AXIS_ESTIMATES by t_bridge_us (STREAM, T→J)
   constexpr uint8_t LEG_CLAMP_DIAG = 148u;  // 1 Hz per-leg lead-clamp census: clamp-engaged ticks + stale-anchor ticks, cumulative since boot (STREAM, T→J)
+  constexpr uint8_t PLATFORM_IMU_BATCH = 149u;  // Platform IMU_DATA frames batched off their dedicated bridge ring at the telemetry tick, plus the ring's counters (STREAM, T→J)
 }
 namespace RpcMethod {
   constexpr uint16_t NOP = 0x0000u;  // No-op (link test)
@@ -99,6 +101,8 @@ namespace RpcMethod {
   constexpr uint16_t HAND_MOVE_TO = 0x0061u;  // Hand-only TRAP_TRAJ move to a caller target (ACTIVATE's axis-6 ladder); deferred reply at arrival / timeout / supersede
   constexpr uint16_t WAVE_CMD = 0x0062u;  // Wave camera: send one WAVE_CMD intent frame on the cone bus
   constexpr uint16_t HAND_FAN_SET = 0x0063u;  // Relay: set the Platform Teensy's Hand fan mode and thresholds
+  constexpr uint16_t PLATFORM_IMU_CTRL = 0x0064u;  // Relay: one Platform IMU control op (ENABLE/DISABLE/FREEZE/RESUME/ABORT) as an IMU_CMD frame
+  constexpr uint16_t PLATFORM_IMU_READ = 0x0065u;  // Relay: one Platform IMU READ block as an IMU_CMD frame, frame gap clamped while Armed
 }
 namespace RpcStatus {
   constexpr uint16_t OK = 0x0000u;  // Success
@@ -524,6 +528,20 @@ struct LegClampDiagPayload {
 };
 static_assert(sizeof(LegClampDiagPayload) == 48, "LegClampDiagPayload size drift");
 
+// PlatformImuBatch: Platform IMU upload frames (IDEA-20 P3a, can-bridge FW 45). Every IMU_DATA (0x6E6) frame the bridge receives on the jugglebot bus goes into a dedicated lock-free ring (not the 8-slot Platform reply ring), and the telemetry task drains it into these batches, up to PLATFORM_IMU_BATCH_MAX_FRAMES per datagram and a bounded number of datagrams per tick. Each record in `frames` is the frame's 8 CAN data bytes verbatim, i.e. `[seq u16 LE][word 6 B]` (the CAN id is fixed, so it is not carried); records past `count` are zero. The ring drops the NEWEST frame when full and counts it: the Jetson finds the hole from `seq` and re-requests it with a READ. The counters are cumulative since bridge boot and ride every batch, so the Sitting's rate ramp reads them from the bag. Additive: no PROTOCOL_VERSION bump. Contract: ros_ws/docs/platform_imu_protocol.md section 6.
+struct PlatformImuBatchPayload {
+  uint64_t t_bridge_us;  // Bridge wall-clock when this batch was built (us); diagnostic only, sample time comes from the capture's anchors
+  uint8_t count;  // Valid 8-byte records in frames (0..PLATFORM_IMU_BATCH_MAX_FRAMES)
+  uint8_t flags;  // Reserved, 0
+  uint16_t ring_hwm;  // Largest IMU ring occupancy seen since boot (frames; ring capacity is the firmware's IMU_RING_CAP)
+  uint32_t rx_frames;  // IMU_DATA frames received from the jugglebot bus since boot, dropped ones included
+  uint32_t ring_drops;  // IMU_DATA frames dropped since boot because the ring was full (drop-newest)
+  uint32_t batches_sent;  // PLATFORM_IMU_BATCH datagrams handed to UDP since boot, before this one
+  uint32_t send_fails;  // PLATFORM_IMU_BATCH datagrams UDP refused since boot (their frames are lost; recover by seq)
+  uint8_t frames[192];  // count x [seq u16 LE][word 6 B]: the IMU_DATA CAN payloads verbatim, zero past count (192 = 24 x 8)
+};
+static_assert(sizeof(PlatformImuBatchPayload) == 220, "PlatformImuBatchPayload size drift");
+
 // RpcRequest: Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
 struct RpcRequestPayload {
   uint16_t method;  // RpcMethod enum
@@ -568,6 +586,7 @@ constexpr uint16_t CLOCK_DIAG_SIZE = 49u;
 constexpr uint16_t CACHE_DIAG_SIZE = 157u;
 constexpr uint16_t RING_DIAG_SIZE = 103u;
 constexpr uint16_t LEG_CLAMP_DIAG_SIZE = 48u;
+constexpr uint16_t PLATFORM_IMU_BATCH_SIZE = 220u;
 constexpr uint16_t RPC_REQUEST_SIZE = 8u;
 constexpr uint16_t RPC_RESPONSE_SIZE = 8u;
 
@@ -707,6 +726,21 @@ struct ArgRobotState {
   float pose_offset_tiltY;  // Levelling pose offset, tilt about Y (rad)
 };
 static_assert(sizeof(ArgRobotState) == 10, "ArgRobotState size drift");
+// ArgPlatformImuCtrl (PLATFORM_IMU_CTRL)
+struct ArgPlatformImuCtrl {
+  uint8_t op;  // PlatformImuOp: ENABLE 1, DISABLE 2, FREEZE 3, RESUME 4, ABORT 6 (READ 5 is ERR_BAD_ARGS)
+  uint8_t reason;  // FREEZE only: PlatformImuFreezeReason (ignored for other ops)
+  uint16_t capture_id;  // RESUME only: the frozen capture's id (ignored for other ops)
+};
+static_assert(sizeof(ArgPlatformImuCtrl) == 4, "ArgPlatformImuCtrl size drift");
+// ArgPlatformImuRead (PLATFORM_IMU_READ)
+struct ArgPlatformImuRead {
+  uint16_t capture_id;  // The frozen capture's id
+  uint16_t first_seq;  // First word of the block (the image address, spec section 3)
+  uint16_t count;  // Words in the block, 1..PlatformImu::READ_MAX_WORDS (else ERR_BAD_ARGS)
+  uint8_t frame_gap_10us;  // Requested gap between IMU_DATA frames, 10 us units; raised to PlatformImu::BRIDGE_ARMED_MIN_GAP_10US while Armed
+};
+static_assert(sizeof(ArgPlatformImuRead) == 7, "ArgPlatformImuRead size drift");
 // ArgHandFanSet (HAND_FAN_SET)
 struct ArgHandFanSet {
   uint8_t mode;  // 0 AUTO, 1 FORCE_ON, 2 FORCE_OFF
@@ -751,6 +785,8 @@ constexpr uint16_t ARG_WAVE_CMD_SIZE = 8u;
 constexpr uint16_t ARG_BB_THROW_SIZE = 20u;
 constexpr uint16_t RESULT_BB_THROW_SIZE = 4u;
 constexpr uint16_t ARG_ROBOT_STATE_SIZE = 10u;
+constexpr uint16_t ARG_PLATFORM_IMU_CTRL_SIZE = 4u;
+constexpr uint16_t ARG_PLATFORM_IMU_READ_SIZE = 7u;
 constexpr uint16_t ARG_HAND_FAN_SET_SIZE = 9u;
 constexpr uint16_t ARG_PLATFORM_FW_BEGIN_SIZE = 4u;
 constexpr uint16_t ARG_PLATFORM_FW_DATA_SIZE = 8u;

@@ -33,6 +33,8 @@ from .protocol import (
     ResultTimeOfDay,
     ArgBbThrow,
     ArgHandFanSet,
+    ArgPlatformImuCtrl,
+    ArgPlatformImuRead,
     ArgRobotState,
     ResultAxisVersions,
     ResultBbAxisVersions,
@@ -987,7 +989,12 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # stamp, was 70), the Hand group unchanged at 20 ms (70 ms) with its 14 ms
 # fast-upstroke C1 stop.
 # Behavioural only: no wire change, PROTOCOL_VERSION stays 14.
-EXPECTED_BRIDGE_FW_VERSION = 44
+# 44 -> 45 (2026-11-19, IDEA-20 P3a): the Platform IMU relay. IMU_REPLY and
+# IMU_STATUS uplink as PLATFORM_FRAMEs, IMU_DATA as the additive
+# PLATFORM_IMU_BATCH stream, and the additive PLATFORM_IMU_CTRL / _READ RPCs
+# (READ's gap clamped while Armed). PROTOCOL_VERSION stays 14: an FW 44 board
+# answers the two RPCs with ERR_UNKNOWN_METHOD and sends no batch.
+EXPECTED_BRIDGE_FW_VERSION = 45
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────
@@ -1068,6 +1075,8 @@ METHOD = {
     RpcMethod.BB_THROW: ArgBbThrow,
     RpcMethod.STATE_WRITE: ArgRobotState,
     RpcMethod.HAND_FAN_SET: ArgHandFanSet,
+    RpcMethod.PLATFORM_IMU_CTRL: ArgPlatformImuCtrl,
+    RpcMethod.PLATFORM_IMU_READ: ArgPlatformImuRead,
     # HAND_TRAJ_CMD / HAND_SOURCE_SET removed at PROTOCOL_VERSION 7 (2026-09-11,
     # skill-stack R1) with the hand-mastery latch and stroke-engine conduit they
     # served — the bridge is the one hand master and the lane follows the

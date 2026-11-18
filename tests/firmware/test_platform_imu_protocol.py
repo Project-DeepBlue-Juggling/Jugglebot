@@ -215,8 +215,18 @@ def test_the_contract_names_every_constant():
         assert f"0x{_IMU[key]:X}" in doc, key
 
 
+def test_the_bridge_armed_gap_floor():
+    """The bridge's Armed floor (P3a, can-bridge FW 45) sits at or above the Platform's
+    own floor, fits the one-byte gap, and caps the upload near the spec's 1600 frames/s."""
+    g = _IMU["bridge_armed_min_gap_10us"]
+    assert _IMU["read_min_gap_10us"] <= g <= 0xFF
+    assert 1e5 / g <= 1600, "the Armed cap is about 1600 frames/s (spec section 6 item 4)"
+    assert 1e5 / _IMU["read_default_gap_10us"] <= 1e5 / g, "the shipped default is not refused by the clamp"
+    assert "bridge_armed_min_gap_10us" in _doc()
+
+
 def test_the_rpc_ids_stay_reserved_for_the_imu():
-    """0x64 / 0x65 are reserved by the contract until P3 defines them with their dispatch."""
+    """0x64 / 0x65 belong to the IMU: P3a defined them with their dispatch."""
     by_value = {int(m): m.name for m in up.RpcMethod}
     for value, name in ((0x64, "PLATFORM_IMU_CTRL"), (0x65, "PLATFORM_IMU_READ")):
         assert by_value.get(value, name) == name, hex(value)

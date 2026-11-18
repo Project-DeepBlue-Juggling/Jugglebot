@@ -177,15 +177,20 @@ FROZEN, so upload traffic cannot bias a capture's timestamps.
 ## 6. can-bridge and Jetson obligations (P3)
 
 Two typed RPCs, following HAND_FAN_SET (the bridge lays out the frame; its OK means queued on CAN, and the Platform
-Teensy's verdict is the IMU_REPLY). They are reserved by comment in `config/generate_udp_protocol.py` and are defined
-there with their `rpc.cpp` cases in P3:
+Teensy's verdict is the IMU_REPLY). They are defined in `config/generate_udp_protocol.py` with their `rpc.cpp` cases
+(can-bridge FW 45, P3a); an FW 44 board answers both with ERR_UNKNOWN_METHOD:
 
 - **0x0064 PLATFORM_IMU_CTRL**, `ArgPlatformImuCtrl {op u8, reason u8, capture_id u16}`, op in {ENABLE, DISABLE,
-  FREEZE, RESUME, ABORT} (READ is ERR_BAD_ARGS).
+  FREEZE, RESUME, ABORT} (READ and any unknown op are ERR_BAD_ARGS, nothing sent, so a READ can only pass the clamp
+  below). The bridge puts `reason` in byte 1 for FREEZE and `capture_id` in bytes 1-2 for RESUME, zeroes the rest, and
+  leaves judging their values to the Platform Teensy.
 - **0x0065 PLATFORM_IMU_READ**, `ArgPlatformImuRead {capture_id u16, first_seq u16, count u16, frame_gap_10us u8}`.
   ERR_BAD_ARGS for count 0 or above `read_max_words`. Both RPCs are ALLOWED while Armed (owner, 2026-11-19).
 
-Both are gated on `jugglebot_commands_allowed()` (ERR_BUS_DOWN). It uplinks 0x6E4-0x6E6, not the reserved ids.
+Both are gated on `jugglebot_commands_allowed()` (ERR_BUS_DOWN). It uplinks 0x6E4-0x6E6, not the reserved ids:
+IMU_REPLY and IMU_STATUS join the Platform reply whitelist and ride the existing 8-slot reply ring as PLATFORM_FRAMEs
+(a few frames per second: STATUS is 1 Hz and the host sends the next IMU_CMD only after the previous reply), and
+IMU_DATA takes the dedicated ring of item 5.
 
 **Boot silence.** A Platform Teensy that has just booted sends no IMU_STATUS for 10 s (section 4); the Jetson treats that
 as normal, not as a fault, and sends no IMU_CMD in that window (the board drops them unanswered). A board with no IMU
@@ -210,7 +215,8 @@ an ABORT at every arming edge):
    1250 frames/s on the bus, 51 s. Only the Attempt's span plus a margin is requested, so a shorter Attempt uploads
    proportionally faster.
 4. *Bus protection.* While Armed the bridge enforces a hard minimum inter-frame gap by clamping the READ's
-   `frame_gap_10us` (cap about 1600 frames/s, 625 us; P3 fixes the constant, 63 x 10 us = 630 us). The operating pace is
+   `frame_gap_10us` up to `bridge_armed_min_gap_10us` (63 x 10 us = 630 us, about 1590 frames/s; Armed is the bridge's
+   `fault_mpc_active()`). Not Armed, the gap goes out as asked and the Platform Teensy's own floor applies. The operating pace is
    a Jetson config value passed as that argument, so it is tunable without a reflash. The Platform Teensy's own
    `read_min_gap_10us` (400 us) is below the bridge cap, so no YAML constant changes. Failure prevented: a bad Jetson
    config value flooding the bus the Legs and Hand share.
@@ -218,7 +224,12 @@ an ABORT at every arming edge):
    the Leg and Hand setpoints. IMU_DATA frames get their own bridge ring and a new ADDITIVE batched UDP message type
    (no PROTOCOL bump, per the additive-message precedent): about 16 data frames per datagram (`seq` plus 6-byte word
    each), flushed at the 100 Hz telemetry tick. P3 defines the struct in `config/generate_udp_protocol.py`. REPLY and
-   STATUS keep their existing per-frame route.
+   STATUS keep their existing per-frame route. As built (FW 45): MsgType PLATFORM_IMU_BATCH 0x95, 220-byte payload
+   `{t_bridge_us u64, count u8, flags u8, ring_hwm u16, rx_frames u32, ring_drops u32, batches_sent u32, send_fails
+   u32, frames u8[192]}`, where `frames` holds `count` (at most 24) records of the IMU_DATA frame's 8 data bytes
+   verbatim, zero after. The ring holds 128 frames (80 ms at the cap), is lock-free single-producer single-consumer,
+   and drops the NEWEST frame when full; the counters are cumulative since bridge boot, so a hole in `seq` with
+   `ring_drops` unchanged was lost on the bus or in UDP, not in the bridge. At most 4 datagrams leave per tick.
 
 `teensy_bridge_node` freezes at the ending REST of every Attempt, and on a Fault or Soft E-stop. It uploads when no
 Attempt is running, re-requests holes, checks both CRCs, writes `temp/imu_capture/<stamp>/`, then RESUMEs. On start, a

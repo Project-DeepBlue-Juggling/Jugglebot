@@ -296,6 +296,7 @@ static void task_telem(void*) {
     cone_uplink_step();
     cmd_result_uplink_step();
     platform_uplink_step();   // Platform-Teensy relay reply uplink
+    platform_imu_uplink_step();  // FW 45 Platform IMU_DATA ring → PLATFORM_IMU_BATCH (silent when empty)
     hand_cmd_echo_uplink_step(); // hand Set_Input_Pos command-echo
     hand_sensor_uplink_step();   // hand ball-sensor state (per new reply + 1 Hz keepalive)
     can_errors_uplink_step();    // CAN3 wire-error + confinement counters @ 1 Hz

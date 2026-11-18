@@ -260,6 +260,28 @@ void platform_uplink_step() {
   }
 }
 
+// ── Platform IMU upload uplink (FW 45, IDEA-20 P3a) ───────────────────────────
+// Drains the dedicated IMU_DATA ring (imu_ring.h) into PLATFORM_IMU_BATCH
+// datagrams. Steady state at the 1600 frames/s Armed cap is one 230-byte datagram
+// per tick (16 frames); the per-frame PLATFORM_FRAME route would have been 16
+// send_to calls, each taking NetLock, which the net task (setpoint RX) also needs.
+// Bounded at IMU_BATCHES_PER_TICK_MAX sends per tick whatever the ring holds.
+// The payload is static: task_telem is the only caller, and 220 B stays off its stack.
+void platform_imu_uplink_step() {
+  static JbUdp::PlatformImuBatchPayload s_batch;
+  static uint32_t s_batches_sent = 0;
+  static uint32_t s_send_fails = 0;
+  ImuDataRingT& ring = can_imu_data_ring();
+  for (uint8_t i = 0; i < IMU_BATCHES_PER_TICK_MAX; ++i) {
+    if (imu_batch_fill(ring, s_batch, s_batches_sent, s_send_fails) == 0) break;
+    s_batch.t_bridge_us = now_wall_us();
+    if (udp_send_stream(JbUdp::MsgType::PLATFORM_IMU_BATCH, (const uint8_t*)&s_batch, sizeof(s_batch)))
+      s_batches_sent++;
+    else
+      s_send_fails++;
+  }
+}
+
 // ── Hand command-echo uplink ──────────────────────────────────────────────────
 // Emit the latest sniffed hand Set_Input_Pos as a HAND_CMD_ECHO whenever a fresh
 // one is pending (event-driven — silent while the hand is idle). The single-slot

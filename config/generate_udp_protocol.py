@@ -117,6 +117,12 @@ CONSTANTS = [
     # decoded as a time in the PAST; 30 s leaves 2.7 s for bridge↔BB clock offset.
     ("BB_RELEASE_MIN_LEAD_US", 700000,   "u32", "BB_THROW: refuse a release closer than this at bridge receipt (ERR_RELEASE_TOO_SOON); BB wind-up 0.6 s + schedule margin 0.1 s"),
     ("BB_RELEASE_MAX_LEAD_US", 30000000, "u32", "BB_THROW: refuse a release further than this at bridge receipt (ERR_RELEASE_TOO_FAR); BB's 16-bit epoch-ms wrap is ±32.768 s"),
+    # Platform IMU upload (IDEA-20 P3a, can-bridge FW 45). Slots in one
+    # PLATFORM_IMU_BATCH: 24 x 8 B = 192 B of frames, 220 B payload, 230 B on
+    # the wire. At the 1600 frames/s Armed cap a 10 ms telemetry tick holds 16
+    # frames, so one datagram per tick carries the whole tick with room for
+    # jitter; the fixed size keeps the struct a plain packed record.
+    ("PLATFORM_IMU_BATCH_MAX_FRAMES", 24, "u8", "IMU_DATA frames one PLATFORM_IMU_BATCH can carry (frames[] holds this many 8-byte records)"),
     ("MAGIC",            0x4A42, "u16", '"JB" little-endian preamble (bytes 0x42 0x4A)'),
     ("HEADER_SIZE",      8,      "u16", "Bytes before payload"),
     ("CRC_SIZE",         2,      "u16", "Trailing CRC-16 bytes"),
@@ -218,6 +224,9 @@ ENUMS = {
         ("RING_DIAG",      0x92, "1 Hz CAN RX-ring TRUE-occupancy census (true_depth vs reported _available = the leak) + jugglebot delivery lag + SDO RTT (STREAM, T→J)"),
         ("BB_YAW_ESTIMATE", 0x93, "Ball Butler yaw estimate @100Hz, paired 1:1 with BB_AXIS_ESTIMATES by t_bridge_us (STREAM, T→J)"),
         ("LEG_CLAMP_DIAG",  0x94, "1 Hz per-leg lead-clamp census: clamp-engaged ticks + stale-anchor ticks, cumulative since boot (STREAM, T→J)"),
+        # ADDITIVE (2026-11-19, can-bridge FW 45, IDEA-20 P3a, no PROTOCOL_VERSION
+        # bump: an older host counts and ignores the unknown type).
+        ("PLATFORM_IMU_BATCH", 0x95, "Platform IMU_DATA frames batched off their dedicated bridge ring at the telemetry tick, plus the ring's counters (STREAM, T→J)"),
     ],
     "RpcMethod": [
         ("NOP",                0x0000, "No-op (link test)"),
@@ -344,13 +353,16 @@ ENUMS = {
         # an older board gets ERR_UNKNOWN_METHOD. The reply is the Platform's
         # HAND_FAN_STATUS frame, uplinked as a PLATFORM_FRAME.
         ("HAND_FAN_SET", 0x0063, "Relay: set the Platform Teensy's Hand fan mode and thresholds"),
-        # RESERVED, not yet defined (2026-11-18, IDEA-20 P1a): 0x0064 PLATFORM_IMU_CTRL
-        # (ENABLE/DISABLE/FREEZE/RESUME/ABORT) and 0x0065
-        # PLATFORM_IMU_READ, both allowed while Armed (owner, 2026-11-19: the Jetson gates
-        # uploads to between Attempts and the bridge clamps the READ frame gap). Their args
-        # and gating are fixed in
-        # ros_ws/docs/platform_imu_protocol.md section 6. They land in P3 together with
-        # their rpc.cpp dispatch cases: test_rpc_dispatch_lint forbids a reserved stub.
+        # ADDITIVE (2026-11-19, can-bridge FW 45, IDEA-20 P3a, no PROTOCOL_VERSION
+        # bump: an FW <= 44 board answers ERR_UNKNOWN_METHOD). Both are allowed
+        # while Armed (owner, 2026-11-19: the Jetson gates uploads to between
+        # Attempts); READ's frame gap is clamped up to
+        # PlatformImu::BRIDGE_ARMED_MIN_GAP_10US while Armed. OK means the IMU_CMD
+        # frame is queued on the jugglebot bus; the Platform Teensy's verdict is its
+        # IMU_REPLY (0x6E4), uplinked as a PLATFORM_FRAME. Contract:
+        # ros_ws/docs/platform_imu_protocol.md section 6.
+        ("PLATFORM_IMU_CTRL", 0x0064, "Relay: one Platform IMU control op (ENABLE/DISABLE/FREEZE/RESUME/ABORT) as an IMU_CMD frame"),
+        ("PLATFORM_IMU_READ", 0x0065, "Relay: one Platform IMU READ block as an IMU_CMD frame, frame gap clamped while Armed"),
     ],
     "RpcStatus": [
         ("OK",            0x0000, "Success"),
@@ -1692,6 +1704,34 @@ MESSAGES = [
         ],
     ),
     Message(
+        "PlatformImuBatch", "PLATFORM_IMU_BATCH", "T2J", "STREAM",
+        summary=(
+            "Platform IMU upload frames (IDEA-20 P3a, can-bridge FW 45). Every "
+            "IMU_DATA (0x6E6) frame the bridge receives on the jugglebot bus goes "
+            "into a dedicated lock-free ring (not the 8-slot Platform reply ring), "
+            "and the telemetry task drains it into these batches, up to "
+            "PLATFORM_IMU_BATCH_MAX_FRAMES per datagram and a bounded number of "
+            "datagrams per tick. Each record in `frames` is the frame's 8 CAN data "
+            "bytes verbatim, i.e. `[seq u16 LE][word 6 B]` (the CAN id is fixed, so "
+            "it is not carried); records past `count` are zero. The ring drops the "
+            "NEWEST frame when full and counts it: the Jetson finds the hole from "
+            "`seq` and re-requests it with a READ. The counters are cumulative "
+            "since bridge boot and ride every batch, so the Sitting's rate ramp "
+            "reads them from the bag. Additive: no PROTOCOL_VERSION bump. "
+            "Contract: ros_ws/docs/platform_imu_protocol.md section 6."),
+        fields=[
+            Field("t_bridge_us",  "u64", 1, "Bridge wall-clock when this batch was built (us); diagnostic only, sample time comes from the capture's anchors"),
+            Field("count",        "u8",  1, "Valid 8-byte records in frames (0..PLATFORM_IMU_BATCH_MAX_FRAMES)"),
+            Field("flags",        "u8",  1, "Reserved, 0"),
+            Field("ring_hwm",     "u16", 1, "Largest IMU ring occupancy seen since boot (frames; ring capacity is the firmware's IMU_RING_CAP)"),
+            Field("rx_frames",    "u32", 1, "IMU_DATA frames received from the jugglebot bus since boot, dropped ones included"),
+            Field("ring_drops",   "u32", 1, "IMU_DATA frames dropped since boot because the ring was full (drop-newest)"),
+            Field("batches_sent", "u32", 1, "PLATFORM_IMU_BATCH datagrams handed to UDP since boot, before this one"),
+            Field("send_fails",   "u32", 1, "PLATFORM_IMU_BATCH datagrams UDP refused since boot (their frames are lost; recover by seq)"),
+            Field("frames",       "u8",  192, "count x [seq u16 LE][word 6 B]: the IMU_DATA CAN payloads verbatim, zero past count (192 = 24 x 8)"),
+        ],
+    ),
+    Message(
         "RpcRequest", "RPC_REQUEST", "J2T", "RPC",
         summary=(
             "Generic RPC envelope. `method` selects the operation; `args` is a "
@@ -1907,6 +1947,23 @@ RPC_ARGS = [
     ]),
     # HAND_FAN_SET (FW 41, additive). The firmware validates and encodes the
     # HAND_FAN_CMD frame itself (least-privilege, as STATE_WRITE above).
+    # PLATFORM_IMU_CTRL / PLATFORM_IMU_READ (FW 45, additive, IDEA-20 P3a). The
+    # bridge lays out the 8-byte IMU_CMD frame itself (least-privilege, as
+    # STATE_WRITE). CTRL refuses op READ (and any op it does not know) with
+    # ERR_BAD_ARGS, so a READ can only go through PLATFORM_IMU_READ and its
+    # Armed gap clamp. `reason` is sent only for FREEZE and `capture_id` only for
+    # RESUME; the Platform Teensy judges their values (its IMU_REPLY).
+    RpcArg("ArgPlatformImuCtrl", "PLATFORM_IMU_CTRL", [
+        Field("op",         "u8",  1, "PlatformImuOp: ENABLE 1, DISABLE 2, FREEZE 3, RESUME 4, ABORT 6 (READ 5 is ERR_BAD_ARGS)"),
+        Field("reason",     "u8",  1, "FREEZE only: PlatformImuFreezeReason (ignored for other ops)"),
+        Field("capture_id", "u16", 1, "RESUME only: the frozen capture's id (ignored for other ops)"),
+    ]),
+    RpcArg("ArgPlatformImuRead", "PLATFORM_IMU_READ", [
+        Field("capture_id",     "u16", 1, "The frozen capture's id"),
+        Field("first_seq",      "u16", 1, "First word of the block (the image address, spec section 3)"),
+        Field("count",          "u16", 1, "Words in the block, 1..PlatformImu::READ_MAX_WORDS (else ERR_BAD_ARGS)"),
+        Field("frame_gap_10us", "u8",  1, "Requested gap between IMU_DATA frames, 10 us units; raised to PlatformImu::BRIDGE_ARMED_MIN_GAP_10US while Armed"),
+    ]),
     RpcArg("ArgHandFanSet", "HAND_FAN_SET", [
         Field("mode",        "u8",  1, "0 AUTO, 1 FORCE_ON, 2 FORCE_OFF"),
         Field("on_above_c",  "f32", 1, "Hand motor thermistor above this turns the fan on in AUTO (deg C)"),

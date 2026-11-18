@@ -71,6 +71,10 @@ static uint8_t g_hand_ver_raw[8] = {0};
 static int      g_tilt_calls = 0, g_state_read_calls = 0, g_state_write_calls = 0;
 static int      g_hand_fan_calls = 0;
 static JbUdp::RpcArgs::ArgHandFanSet g_hand_fan_args{};
+static int      g_imu_ctrl_calls = 0, g_imu_read_calls = 0;   // FW 45 Relay::platform_imu_* stubs
+static JbUdp::RpcArgs::ArgPlatformImuCtrl g_imu_ctrl_args{};
+static JbUdp::RpcArgs::ArgPlatformImuRead g_imu_read_args{};
+static bool     g_imu_read_armed = false;     // the armed flag rpc.cpp sampled + passed in
 static int      g_bb_fw_calls = 0;            // Relay::bb_fw_* stub call count
 static uint16_t g_bb_fw_method = 0;           // which bb_fw_* stub ran (the RpcMethod it serves)
 static Relay::BbFwGate g_bb_fw_gate{};        // the gate rpc.cpp sampled + passed in
@@ -86,6 +90,8 @@ static void drv_reset() {
   g_version_len = 8;
   g_tilt_calls = g_state_read_calls = g_state_write_calls = 0;
   g_hand_fan_calls = 0;
+  g_imu_ctrl_calls = g_imu_read_calls = 0; g_imu_read_armed = false;
+  g_imu_ctrl_args = JbUdp::RpcArgs::ArgPlatformImuCtrl{}; g_imu_read_args = JbUdp::RpcArgs::ArgPlatformImuRead{};
   g_hand_ver_have = false; memset(g_hand_ver_raw, 0, 8);
   g_bb_fw_calls = 0; g_bb_fw_method = 0; g_bb_fw_gate = Relay::BbFwGate{};
 }
@@ -140,6 +146,11 @@ uint16_t tilt_read()  { g_tilt_calls++; return JbUdp::RpcStatus::OK; }
 uint16_t state_read() { g_state_read_calls++; return JbUdp::RpcStatus::OK; }
 uint16_t state_write(const JbUdp::RpcArgs::ArgRobotState&) { g_state_write_calls++; return JbUdp::RpcStatus::OK; }
 uint16_t hand_fan_set(const JbUdp::RpcArgs::ArgHandFanSet& a) { g_hand_fan_calls++; g_hand_fan_args = a; return JbUdp::RpcStatus::OK; }
+// Platform IMU (FW 45). Recording stubs: the frame layout, the op whitelist and the
+// Armed gap clamp live in platform_relay.cpp (test_platform_relay.cpp).
+uint16_t platform_imu_ctrl(const JbUdp::RpcArgs::ArgPlatformImuCtrl& a) { g_imu_ctrl_calls++; g_imu_ctrl_args = a; return JbUdp::RpcStatus::OK; }
+uint16_t platform_imu_read(const JbUdp::RpcArgs::ArgPlatformImuRead& a, bool armed) { g_imu_read_calls++; g_imu_read_args = a; g_imu_read_armed = armed; return JbUdp::RpcStatus::OK; }
+uint8_t imu_read_effective_gap(uint8_t g, bool) { return g; }
 // Platform firmware-over-CAN (FW 19). Link stubs only — the real gating
 // (mpc_active ⇒ ERR_REJECTED, n outside 1..5 ⇒ ERR_BAD_ARGS, the CAN3 gate) lives
 // in platform_relay.cpp and is exercised through test_platform_relay.cpp.
@@ -561,6 +572,39 @@ TEST_CASE("HAND_FAN_SET (FW 41): routes typed args to the relay, refuses a short
   CHECK(Rpc::dispatch(RpcMethod::HAND_FAN_SET, reinterpret_cast<const uint8_t*>(&a), sizeof(a) - 1,
                       result, res_len) == RpcStatus::ERR_BAD_ARGS);
   CHECK(g_hand_fan_calls == 1);
+}
+
+TEST_CASE("PLATFORM_IMU_CTRL / _READ (FW 45): typed args reach the relay, Armed is passed in, never refused for it") {
+  reset_all();
+  JbUdp::RpcArgs::ArgPlatformImuCtrl c{};
+  c.op = PlatformImuOp::RESUME; c.capture_id = 0x4A21;
+  g_mpc_active = true;   // Armed: both IMU RPCs are allowed (owner, 2026-11-19)
+  CHECK(call(RpcMethod::PLATFORM_IMU_CTRL, c) == RpcStatus::OK);
+  CHECK(g_imu_ctrl_calls == 1);
+  CHECK(g_imu_ctrl_args.op == PlatformImuOp::RESUME);
+  CHECK(g_imu_ctrl_args.capture_id == 0x4A21);
+
+  JbUdp::RpcArgs::ArgPlatformImuRead r{};
+  r.capture_id = 0x4A21; r.first_seq = 0xFFF0; r.count = 11; r.frame_gap_10us = 40;
+  CHECK(call(RpcMethod::PLATFORM_IMU_READ, r) == RpcStatus::OK);
+  CHECK(g_imu_read_calls == 1);
+  CHECK(g_imu_read_armed);                       // rpc.cpp samples fault_mpc_active()
+  CHECK(g_imu_read_args.first_seq == 0xFFF0);
+  CHECK(g_imu_read_args.count == 11);
+  CHECK(g_imu_read_args.frame_gap_10us == 40);   // the clamp is the relay's, not dispatch's
+
+  g_mpc_active = false;
+  CHECK(call(RpcMethod::PLATFORM_IMU_READ, r) == RpcStatus::OK);
+  CHECK_FALSE(g_imu_read_armed);
+
+  uint8_t result[64];
+  uint16_t res_len = 0;
+  CHECK(Rpc::dispatch(RpcMethod::PLATFORM_IMU_CTRL, reinterpret_cast<const uint8_t*>(&c), sizeof(c) - 1,
+                      result, res_len) == RpcStatus::ERR_BAD_ARGS);
+  CHECK(Rpc::dispatch(RpcMethod::PLATFORM_IMU_READ, reinterpret_cast<const uint8_t*>(&r), sizeof(r) - 1,
+                      result, res_len) == RpcStatus::ERR_BAD_ARGS);
+  CHECK(g_imu_ctrl_calls == 1);
+  CHECK(g_imu_read_calls == 2);
 }
 
 TEST_CASE("WAVE_CMD (FW 33): args verbatim as one DLC-8 0x7E2 frame on the cone bus; gate/arg refusals") {
