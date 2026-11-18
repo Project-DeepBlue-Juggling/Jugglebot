@@ -2,9 +2,9 @@
 id: TKT-84
 kind: ticket
 title: 'BUG-115: does anyone run the Ball Butler calibration check script by hand at a Sitting, or may the night port its uncovered checks and delete it?'
-status: open
+status: complete
 created: '2026-11-19'
-updated: '2026-11-18T15:54:16Z'
+updated: '2026-11-18T21:20:41Z'
 owners: []
 priority: low
 effort: xs
@@ -31,3 +31,7 @@ BUG-115: a 760-line Ball Butler calibration check script (`ros_ws/src/jugglebot/
 1 or 2 lets a night build BUG-115 as a branch. 3 closes it.
 
 Recommendation: 1, unless the script is part of a Sitting routine you use. No Sitting sheet or Runbook row names it.
+
+## Answer
+
+I quite often run the BB calibration itself, but I have never run the calibration *check* by hand. As long as this doesn't interfere with the calibration itself running, I'm happy to go with Option 1
