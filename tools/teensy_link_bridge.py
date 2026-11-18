@@ -221,6 +221,13 @@ _FW_MAX_MISSING_ACKS = 2
 #: surfaces as its PARK_FAILED rather than as this host-side limit.
 _FW_PARK_POLL_S = 0.25
 _FW_PARK_TIMEOUT_S = 20.0
+#: Platform only (IDEA-20 P3b): a board whose IMU code faults reboots about every
+#: 18.5 s and is alive for about 10 s of each cycle (ros_ws/docs/platform_imu_protocol.md
+#: section 4, "Recovery if IMU code faults"). A BEGIN that lands in that window latches the IMU off
+#: and the update completes, but one BEGIN with a 1 s wait catches the window about 54 % of the
+#: time. Keep sending BEGIN, one per _FW_REPLY_TIMEOUT_S wait, for this long: > 18.5 s guarantees
+#: a hit. Nothing after BEGIN OK changes. Ball Butler keeps its single-BEGIN behaviour (0.0).
+_FW_BEGIN_RETRY_S = 25.0
 
 
 @dataclass(frozen=True)
@@ -241,6 +248,7 @@ class _FwTarget:
     version_wait_s: float           # after COMMIT: keep trying the version read this long
     data_pipeline_depth: int        # DATA RPCs in flight; 1 = synchronous, as flown
     sector_pause_s: float           # host pause after the frame that fills a sector
+    begin_retry_s: float = 0.0      # keep re-sending BEGIN through silence this long (0 = one BEGIN)
 
 
 _FW_TARGETS = {
@@ -266,6 +274,7 @@ _FW_TARGETS = {
         # fallback). Its relay also rides the busier Jugglebot bus.
         data_pipeline_depth=1,
         sector_pause_s=_FW_SECTOR_FLUSH_PAUSE_FLOWN_S,
+        begin_retry_s=_FW_BEGIN_RETRY_S,
     ),
     "bb": _FwTarget(
         key="bb",
@@ -544,23 +553,36 @@ def _send_data_window(rpc: RpcClient, waiter: PlatformFrameWaiter, reply_id: int
 
 
 def _begin_session(rpc: RpcClient, waiter: PlatformFrameWaiter, target: _FwTarget,
-                   total: int) -> bool:
+                   total: int, monotonic=None) -> bool:
     """BEGIN, re-sent while the board answers PARKING (Ball Butler moving pitch
     to its stow angle and idling its axes before it accepts an image — the
     Platform never parks, so for it this is a single BEGIN). Returns True once
-    the board answers OK."""
-    deadline = time.monotonic() + _FW_PARK_TIMEOUT_S
+    the board answers OK. A target with ``begin_retry_s`` (the Platform) also
+    re-sends BEGIN through SILENCE for that long, so a board in a fault-reboot
+    loop is caught in its alive window; ``monotonic`` is injectable for tests."""
+    now_fn = monotonic if monotonic is not None else time.monotonic
+    deadline = now_fn() + _FW_PARK_TIMEOUT_S
+    silence_deadline = now_fn() + target.begin_retry_s
+    attempt = 0
     next_log = 0.0
     while True:
+        attempt += 1
         waiter.clear(target.reply_id)
         rpc.call(target.rpc_begin, rpc_args.encode_platform_fw_begin(total))
         reply = waiter.wait(target.reply_id, expected_dlc=8, timeout=_FW_REPLY_TIMEOUT_S)
         if reply is None:
-            logging.error("fw-update: BEGIN — no reply from the %s", target.label)
+            if target.begin_retry_s > 0.0 and now_fn() < silence_deadline:
+                logging.info("fw-update: BEGIN attempt %d — no reply from the %s yet "
+                             "(retrying for up to %.0f s; a board that is rebooting "
+                             "answers only in its alive window)",
+                             attempt, target.label, target.begin_retry_s)
+                continue
+            logging.error("fw-update: BEGIN — no reply from the %s after %d attempt(s)",
+                          target.label, attempt)
             return False
         _, status, _, detail = rpc_args.decode_platform_fw_reply(reply)
         if status == rpc_args.PLATFORM_FW_STATUS_PARKING:
-            now = time.monotonic()
+            now = now_fn()
             if now >= deadline:
                 logging.error("fw-update: BEGIN — still PARKING after %.0f s (pitch %.1f deg); "
                               "giving up", _FW_PARK_TIMEOUT_S, _centideg(detail))

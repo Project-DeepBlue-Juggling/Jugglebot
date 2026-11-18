@@ -149,7 +149,10 @@ check, log the reason, retry NOT_READY no sooner than 1 s, treat (pi, pi) as the
 for 10 s after a boot is normal; (d) the kill-switch build (ignores IMU_CMD, sends no STATUS, still reports FW 11) reads as
 "no IMU", not a fault. Hardware: none. **Gate (Suite gate):** `./run_tests.sh --full`, including the xref
 and version tests. Status: P3a (the can-bridge side, FW 45) built on branch `imu-p3`
-(`logbook/2026-11-19-platform-imu-p3-bridge-jetson.md`); the Jetson side (P3b) not started.
+(`logbook/2026-11-19-platform-imu-p3-bridge-jetson.md`). P3b (the Jetson side: codecs, upload state machine, timestamp fit, capture
+files, node wiring and API, tilt invalid reply, uploader BEGIN retry; `teensy_link/platform_imu.py`,
+`teensy_link/platform_imu_capture.py`) built on the same branch; items (a), (b), (c), (d) above are done in it. P3c (the Attempt-end trigger, the
+refusal of motion-starting commands during an upload, the GUI toggle and progress display) not started.
 
 ### P4: Sitting 1, flash and bench the capture path
 

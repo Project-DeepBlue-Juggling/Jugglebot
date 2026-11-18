@@ -7,6 +7,17 @@ phase: "platform-imu P3"
 related_plan: "platform-imu.md"
 related_issues: []
 files_changed:
+  - teensy_link/platform_imu.py
+  - teensy_link/platform_imu_capture.py
+  - ros_ws/src/jugglebot/jugglebot/teensy_bridge_node.py
+  - ros_ws/src/jugglebot/launch/jugglebot_launch.py
+  - tools/teensy_link_bridge.py
+  - tests/teensy_link/test_platform_imu.py
+  - tests/teensy_link/test_platform_imu_native.py
+  - tests/teensy_link/fake_platform_imu.py
+  - tests/teensy_link/test_fw_update_begin_retry.py
+  - tests/ros/test_teensy_bridge_node_platform_imu.py
+  - tests/ros/test_teensy_bridge_node_conduit.py
   - ros_ws/src/jugglebot/Teensy_code_canbridge/imu_ring.h
   - ros_ws/src/jugglebot/Teensy_code_canbridge/can_buses.h
   - ros_ws/src/jugglebot/Teensy_code_canbridge/can_buses.cpp
@@ -122,3 +133,70 @@ staging); `/cache_diag` `rx_depth_hwm_jb`, `rx_cap_hits_jb`; `/ring_diag` `fifo_
 - Not run: ./run_tests.sh (a sibling gate held the box); the tier-1 gate is owed before main.
 
 Not flashed; the Jetson side (P3b) is next.
+
+# Platform IMU P3b: the Jetson side (host to the fixed wire protocol)
+
+**What.** `teensy_link/platform_imu.py` (codecs for IMU_REPLY / IMU_STATUS / header / anchors / the
+PLATFORM_IMU_BATCH datagram; `UploadMachine`, a single-owner state machine driven by injected time and
+send functions; `PlatformImuService`, one worker thread behind two bounded queues) and
+`teensy_link/platform_imu_capture.py` (the timestamp model, SI scaling, the npz capture writer). Node
+wiring in `teensy_bridge_node.py` (`_setup_platform_imu`): own queues, status topic `platform_imu/status`
+(DiagnosticStatus, 2 Hz, added to the rosbag list), services `platform_imu/set_upload_after_attempt`
+(SetBool), `platform_imu/upload` (SetString, JSON span), `platform_imu/abort` (Trigger), and the API unit
+P3c calls: `attempt_ended(t_start_wall, t_end_wall, reason, attempt_id)`, `upload_in_progress()`,
+`abort_upload(reason)`, `imu_upload_status()`, `set_imu_upload_after_attempt(on)`. Tilt: raw NaN words
+classified before the float bound (`classify_tilt_reply`): not-ready waits at least 1 s between at most 4
+tries, read-failed and (pi, pi) take the existing 3-attempt failure path. Uploader: Platform BEGIN is re-sent
+through silence for 25 s (`_FW_BEGIN_RETRY_S`, one attempt per 1 s reply wait, every attempt logged); Ball
+Butler stays single-BEGIN; nothing after BEGIN OK changed.
+
+**Spec points settled in code.**
+- The payload CRC covers all anchors plus ALL samples, so a span request (the Attempt plus margin) cannot be
+  CRC-checked: a partial span records `crc_checked = false` and relies on the CAN frame CRC; a full upload is
+  checked, re-read once on a mismatch, then written `crc_ok = false` and RESUMEd.
+- The span is chosen after the anchors arrive (the fit maps wall time to sample index), so FREEZE, header and
+  anchors always upload and only the sample region is trimmed.
+- A FREEZE answered ALREADY_FROZEN on the first try is an earlier capture (flag `already_frozen`, uploaded in
+  full, the span ignored); on a resend after a lost reply it is our own FREEZE and not flagged.
+- STATUS right after FREEZE/RESUME may still show the old state, so "not FROZEN/UPLOADING" counts as a reboot
+  only after a 2.5 s grace; a changed boot byte counts at once.
+- Block timeout = count x EFFECTIVE gap + 150 ms (spec 50 ms plus the bridge's 10 ms batching and UDP slack),
+  extended while frames keep arriving; effective gap = max(requested, 40, 63 while Armed).
+- File name `<UTC stamp>_<capture_id hex>.npz` (+ `.json` sidecar) under `temp/imu_capture/`, not the spec's
+  per-capture directory (one npz is one atomic rename; the sidecar carries the same metadata).
+
+## Timing and control note (P3b)
+
+- **UDP receive thread** (`_on_platform_imu_batch`, `_on_platform_frame`): per PLATFORM_IMU_BATCH datagram one
+  fixed 28-byte `struct.unpack_from`, one slice of at most 192 bytes and one `queue.put_nowait` (about 50-70
+  datagrams per second at 1250-1600 frames/s, a few microseconds each); a full queue drops and counts. Relayed
+  IMU_REPLY/IMU_STATUS add one `put_nowait` on a separate 256-slot queue. No per-frame Python work, no I/O.
+- **`platform_imu_worker` thread** (new, daemon): owns the machine, parses records into the region buffers,
+  runs the timeouts, and issues every IMU RPC (`_call_rpc`, 0.3 s timeout, no retries; each blocks this thread
+  only while its data queue absorbs up to 2048 batches). Builds the capture (a numpy fit, milliseconds) and hands
+  it to the writer.
+- **`platform_imu_writer` thread** (new, daemon): npz/JSON file I/O behind a 4-slot queue.
+- **ROS callback groups:** a new `ReentrantCallbackGroup` (`_imu_cbgroup`) holds the 2 Hz status timer and the
+  three services; the services only enqueue an event or read a snapshot and never block, so nothing is added to
+  `_blocking_rpc_cbgroup` (BUG-98) or to the default group that runs the 100 Hz publishers. Nothing touches the
+  setpoint emit path. The tilt service (coldstart group, already blocking) may now sleep up to 3 s in the
+  FW 11 not-ready case.
+- **Net effect on the 40 Hz planner / leg path:** none by construction; the extra load is the two threads and
+  about 60 small callbacks per second during an upload, none while an Attempt runs (STATUS only, 1 Hz).
+
+## Verification (P3b)
+
+Tests run 2026-11-19 with `nice -n 10 python -m pytest` on a quiet box:
+- new: `tests/teensy_link/test_platform_imu.py`, `test_platform_imu_native.py` (decodes header and anchors
+  written by the compiled firmware headers, and uploads the firmware-written image), `test_fw_update_begin_retry.py`,
+  `tests/ros/test_teensy_bridge_node_platform_imu.py`; updated `tests/ros/test_teensy_bridge_node_conduit.py`
+  (tilt invalid replies, now explicit).
+- scoped readers (`grep -rlE "teensy_bridge_node|teensy_link_bridge|jugglebot_launch|platform_imu|teensy_link\.platform"
+  tests`, minus hardware scripts, conftest/harness: 84 files, `nice -n 10 python -m pytest <84 files> -q -p no:cacheprovider
+  -n 2`): 2335 passed, 3 failed, 4 skipped in 297 s; the 3 failures were findings, fixed the same day: the generated
+  `ros_ws/docs/choreography.md` (regenerated with `python tools/gen_choreography_map.py`) and the orchestrator
+  integration test's `relay_read_tilt` stub (now `relay_read_tilt_ex`). Re-run of those three files
+  (`test_choreography_map.py test_orchestrator_conduit_integration.py test_launch_nodes.py`): 49 passed in 12.6 s;
+  docs readers (`test_logbook_front_matter/index`, `test_docs_links`, `test_no_legacy_item_ids`, `test_plans_index`): 61 passed.
+- Not covered: real bus timing and loss (P4 ramp), the receive thread under real 1600 frames/s load, a real
+  Platform boot-loop, the live `Armed` gate. `./run_tests.sh` is owed before main.

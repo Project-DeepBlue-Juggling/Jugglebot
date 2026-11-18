@@ -224,6 +224,12 @@
 - **subscribers:** `ball_butler_node`
 - **type:** `std_msgs.msg.String`
 
+### `platform_imu/status`
+
+- **publishers:** `teensy_bridge_node`
+- **subscribers:** _none_
+- **type:** `diagnostic_msgs.msg.DiagnosticStatus`
+
 ### `platform_pose_topic`
 
 - **publishers:** `spacemouse_handler`
@@ -496,6 +502,24 @@
 - **clients:** _none_
 - **type:** `std_srvs.srv.Trigger`
 
+### `platform_imu/abort`
+
+- **servers:** `teensy_bridge_node`
+- **clients:** _none_
+- **type:** `std_srvs.srv.Trigger`
+
+### `platform_imu/set_upload_after_attempt`
+
+- **servers:** `teensy_bridge_node`
+- **clients:** _none_
+- **type:** `std_srvs.srv.SetBool`
+
+### `platform_imu/upload`
+
+- **servers:** `teensy_bridge_node`
+- **clients:** _none_
+- **type:** `jugglebot_interfaces.srv.SetString`
+
 ### `reboot_odrives`
 
 - **servers:** `teensy_bridge_node`
@@ -654,6 +678,10 @@ broken wire cannot hide among them.
 - `leg_torques_diagnostic` — topic with no subscribers
 - `orchestrator_command` — topic with no publishers
 - `park_hand` — service with no clients
+- `platform_imu/abort` — service with no clients
+- `platform_imu/set_upload_after_attempt` — service with no clients
+- `platform_imu/status` — topic with no subscribers
+- `platform_imu/upload` — service with no clients
 - `profile` — topic with no subscribers
 - `qtm_clock_offset_sec` — topic with no subscribers
 - `reboot_odrives` — service with no clients

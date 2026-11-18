@@ -117,7 +117,7 @@ def test_full_cold_start_boot_home_level_to_idle_via_conduit():
         bridge._run_configure = lambda axes, **kw: (True, "configured")
         bridge._run_activate = lambda axes, **kw: (True, "activated")
         bridge._run_deactivate = lambda axes, **kw: (True, "deactivated")
-        bridge.relay_read_tilt = lambda timeout=None: (True, "OK", (0.02, -0.01))
+        bridge.relay_read_tilt_ex = lambda timeout=None: (True, "OK", (0.02, -0.01), None)
         teensy.on_rpc(int(RpcMethod.STATE_WRITE), lambda rid, a: (int(RpcStatus.OK), b""))
         # Make the levelling settle instant (test-only tweak to the handler instance).
         orch.sm._handlers[RobotState.LEVELLING]._settle_s = 0.0
