@@ -70,6 +70,11 @@ Drops to date: 939 (120 counted live since 2026-11-11; 819 from history, 2026-07
 | 2026-11-18 10:57 | 50 | 50 | other (LANE_REFUSED) |  | apex_m=1; separation_mm=150; dwell_s=0.5; planner=pose |
 | 2026-11-18 11:00 | 76 | 75 | other (LANE_REFUSED) |  | apex_m=1; separation_mm=150; dwell_s=0.5; planner=pose |
 
+<!-- pattern: polygon_walk balls: 1 -->
+### Polygon walk
+
+_No record yet._
+
 <!-- pattern: self_toss balls: 1 -->
 ### Self-throw
 

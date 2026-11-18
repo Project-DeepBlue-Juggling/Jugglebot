@@ -6,7 +6,7 @@ waiting Items: the order a Sitting flies in, and every step, is on its Sitting s
 
 Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
-## Robot  (12 Items, 311 min)
+## Robot  (13 Items, 331 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
@@ -22,6 +22,7 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | FEAT-50 Live warning when a marker dwells under the Hand | 10 | armed | `night-shift/2026-11-14-FEAT-50` | - |
 | IDEA-11 JP-10 Turned columns: the columns pair at fixed angles about +z, under pose | 20 | level, armed, bb-fed | - | - |
 | IDEA-16 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them | 15 | level | - | - |
+| IDEA-9 JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites | 20 | level, armed, bb-fed | - | - |
 
 ## Bench leg  (1 Item, 30 min)
 
@@ -78,7 +79,6 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - IDEA-18 [Robot] Learner context cannot tell a Throw from rest from a carried Throw: no ## Sitting section
 - IDEA-20 [Robot] Platform Accelerometer?: no ## Sitting section
 - IDEA-23 [Robot] seed a fresh plant K from the trained plant: no ## Sitting section
-- IDEA-9 [Robot] JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites: no ## Sitting section
 
 ## Questions a Sitting can answer
 

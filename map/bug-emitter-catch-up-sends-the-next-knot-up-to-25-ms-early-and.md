@@ -2,18 +2,21 @@
 id: BUG-110
 kind: bug
 title: Emitter catch-up sends the next knot up to 25 ms early and the bridge drops the due knot
-status: inbox
+status: in_progress
 created: '2026-11-18'
-updated: '2026-11-18T02:07:32Z'
+updated: '2026-11-18T05:14:42Z'
 owners: []
 priority: high
+effort: s
 hardware: robot
 owner: decision
+radius: subsystem
 diagnosis: confirmed
 area: skill-stack
 blocked_by: []
 links:
 - logbook/2026-11-18-sitting-debrief.md
+- logbook/2026-11-18-emitter-waits-after-late-tick.md
 filed_by: sitting-debrief 2026-11-18
 ---
 
@@ -35,3 +38,7 @@ Not checked: early-emit drops hidden by the 1/s WARN throttle; the 2026-11-13 ba
 - pass: no setpoint drain dropped line shows a 50 ms stamp step with a negative forwarded lag, and no Attempt ends LANE_REFUSED after such a line.
 - record: the count of drop lines, the count with a negative forwarded lag, each LANE_REFUSED end with its STOP verdict, the launch log path.
 - minutes: 20
+
+## Progress
+
+- 2026-11-18: Fix landed 2026-11-18 (owner chose option A): after a late tick the emitter waits for the snapped deadline, so no knot is published before its stamp. Walk: 10 ms late unchanged; 35 ms late now rides through; 60 ms late still stops (the cover runs out first). Waits for its Sitting row.
