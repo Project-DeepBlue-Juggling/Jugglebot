@@ -975,7 +975,12 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # 42 -> 43 (2026-11-10, BUG-7): STATE_WRITE encodes the levelling offset as
 # rounded 0.1 mrad counts. PROTOCOL_VERSION 13 -> 14, so an FW 42 board is DARK
 # to this host until the lockstep flash, not ten times wrong.
-EXPECTED_BRIDGE_FW_VERSION = 43
+# 43 -> 44 (2026-11-18, owner decision): the scheduler grace per lane group,
+# the LEG group 20 -> 30 ms (cover runs out 80 ms after the playing frame's
+# stamp, was 70), the Hand group unchanged at 20 ms (70 ms) with its 14 ms
+# fast-upstroke C1 stop.
+# Behavioural only: no wire change, PROTOCOL_VERSION stays 14.
+EXPECTED_BRIDGE_FW_VERSION = 44
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

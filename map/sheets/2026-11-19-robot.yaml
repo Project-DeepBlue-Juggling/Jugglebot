@@ -1,0 +1,367 @@
+schema: 1
+date: "2026-11-19"
+rig: robot
+omitted:
+  - item: BUG-89
+    do: [1]
+    reason: The cpu_partition off/on comparison flew on 2026-11-18 and showed no measurable difference (3.2 against 3.3 dropped knots a minute). Today flies the partition-off arm only, to measure the stream on the new firmware and the emitter fix.
+  - item: BUG-93
+    reason: Its held branch was renumbered to FW 45 and passed the default gate on 2026-11-18, after this sheet was built. It stays off this sheet because BUG-89's row measures the stream on FW 44 and a firmware flash in the same Sitting would confound it. It is ready for the next sheet.
+  - item: FEAT-32
+    reason: The ZVD A/B waits for BUG-90's fix, which failed its row on 2026-11-18 (the Hand stop-and-go was reduced, not gone).
+  - item: FEAT-39
+    reason: The Dwell ladder failed on 2026-11-13 (carried Throws land long as Dwell shortens) and no code under it has changed since.
+  - item: BUG-90
+    reason: Its row failed on 2026-11-18 and the held branch has not changed since, so flying it again would repeat that result.
+  - item: FEAT-50
+    reason: Its branch still has five audit findings open for a day Session, so it is not on main.
+  - item: IDEA-20
+    reason: Its row was filed after this sheet was written and flashes both the can-bridge and the Platform Teensy with IMU firmware. Only phase 1 (protocol constants and headers that nothing references yet) is on main, so there is no firmware to flash today, and a second firmware change would confound the first flight of can-bridge v44.
+steps:
+  - n: 1
+    kind: setup
+    title: Check the checkout is on main and in sync
+    from: []
+    to: []
+    actions:
+      - where: Terminal 2
+        command: cd ~/Desktop/Jugglebot && git fetch && git status -sb && git log --oneline -1
+    see: "## main...origin/main with nothing ahead or behind. temp/learn/ entries showing as untracked are expected."
+    stop_if: The branch is not main, or it is ahead of or behind origin/main.
+    serves: []
+
+  - n: 2
+    kind: setup
+    title: Rebuild both packages
+    from: []
+    to: []
+    actions:
+      - where: Terminal 2
+        text: A new message (HumanThrowEvent) landed on 2026-11-18. Both packages were rebuilt that evening; this makes sure the install tree matches main. If the message is missing from the build, every node fails to import.
+        command: cd ~/Desktop/Jugglebot/ros_ws && source /opt/ros/foxy/setup.zsh && colcon build --packages-select jugglebot_interfaces jugglebot && source install/setup.zsh
+    see: Summary line with no failed packages.
+    stop_if: Any package failed.
+    serves: []
+
+  - n: 3
+    kind: setup
+    title: Launch 1 of 1 (main, cpu_partition off) - first launch on can-bridge v44
+    new_launch: true
+    from: []
+    to: [launched]
+    actions:
+      - where: Terminal 1
+        command: cd ~/Desktop/Jugglebot/ros_ws && source /opt/ros/foxy/setup.zsh && source install/setup.zsh && ros2 launch jugglebot jugglebot_launch.py cpu_partition:=false 2>&1 | tee -i ~/Desktop/Jugglebot/temp/logs/launch_2026-11-19_1.log
+      - where: Hands
+        text: Do not pass gc_probe:=false (BUG-58 needs the probe on). Wait for Homing to finish before the next step. The bridge firmware, the knot emitter, the skill node and the Tracker node all changed on 2026-11-18 and none of it has run on the robot, so read the start-up log for anything new.
+    see: "BRIDGE_FW_CHECK: OK - can-bridge v44. homing: 7 axes homed. No 'cpu_partition ON' line. No import error from skill_node or ball_tracker_node."
+    stop_if: The firmware check is not OK at v44, fewer than 7 axes homed, or any node dies or logs an error at start-up that you have not seen before. Ctrl-C the launch and tell a Session.
+    record: The launch log path, and the bag directory (the newest folder under ~/Desktop/rosbags, named for the launch time).
+    serves:
+      - item: BUG-89
+        do: [0]
+      - item: BUG-58
+        do: [0]
+
+  - n: 4
+    kind: setup
+    title: Set up Terminal 2, read the plant, the limits and the dropped-knot counter
+    from: [launched]
+    to: [launched]
+    actions:
+      - where: Terminal 2
+        command: source /opt/ros/foxy/setup.zsh && source ~/Desktop/Jugglebot/ros_ws/install/setup.zsh && cd ~/Desktop/Jugglebot
+        text: Every later Terminal 2 command assumes this shell and this directory.
+      - where: Terminal 2
+        command: ros2 param get /skill_node plant_id
+      - where: GUI
+        text: Read the Sitting limits.
+      - where: Terminal 2
+        text: Watch for a few seconds, then Ctrl-C.
+        command: ros2 topic echo /link_status | grep -A1 setpoints_coalesced
+    see: plant_id reads jugglebot. Sitting limits 600 / 8000 / 200000. The echo prints the key setpoints_coalesced with a number as its value.
+    stop_if: The limits read anything else, or plant_id is not jugglebot (set it with ros2 param set /skill_node plant_id jugglebot). The setpoints_coalesced key never appears (do not arm; Ctrl-C the launch in Terminal 1 and tell a Session).
+    record: The limits, and that they came from the GUI.
+    serves: []
+
+  - n: 5
+    kind: setup
+    title: Level the Platform
+    from: [launched]
+    to: [launched, level]
+    actions:
+      - where: GUI
+        text: "State minimap: hold LEVELLING to confirm. The Platform rises to full Active height."
+    see: The minimap passes through LEVELLING and finishes with no Fault.
+    stop_if: Any Fault, or the Platform does not rise cleanly.
+    serves: []
+
+  - n: 6
+    kind: setup
+    title: Dress rehearsal, three planning checks (nothing moves)
+    from: [launched, level]
+    to: [launched, level]
+    actions:
+      - where: Terminal 2
+        text: Columns.
+        command: "ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString \"{data: 'columns,apex_m=0.95,separation_mm=125,dwell_s=0.27'}\""
+      - where: Terminal 2
+        text: One-ball oval at Dwell 0.50.
+        command: "ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString \"{data: 'oval_1ball_fed,apex_m=1.00,separation_mm=150,dwell_s=0.50'}\""
+      - where: Terminal 2
+        text: The polygon walk, a new Pattern (a square of four Sites, edge 100 mm). Offline its worst margin is +0.189 (Leg jerk).
+        command: "ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString \"{data: 'polygon_walk,apex_m=0.9,separation_mm=100,dwell_s=0.27,polygon_n=4'}\""
+    see: "Each reply reads success: True and nothing moves. The polygon_walk reply prints its margins."
+    stop_if: "Anything moves (hold IDLE on the minimap, Ctrl-C the launch and tell a Session). A reply with success: False is not a stop: note the Pattern and the reply word for word, and skip that Pattern's flight step (Columns: step 10; oval: step 11; polygon walk: steps 14 and 15)."
+    record: The polygon_walk margins, and any refusal line word for word.
+    serves:
+      - item: IDEA-9
+        do: [0]
+
+  - n: 7
+    kind: run
+    title: Lob single Balls at the Cup for the human-Throw recording (NOT armed)
+    from: [launched, level]
+    to: [launched, level]
+    actions:
+      - where: Hands
+        text: The Platform is Level and NOT armed; it stays still for this whole step. Leave the Cup empty.
+      - where: Terminal 2
+        command: ros2 param set /ball_tracker_node detect_human_throws true
+      - where: Hands
+        text: Lob one Ball at the Cup about 30 times, one Ball in the air at a time, from where you would stand to juggle with the robot, at a height of about 1.8 m or more. Let each Ball land in or beside the Cup and pick it up by hand before the next lob.
+      - where: Terminal 2
+        command: ros2 param set /ball_tracker_node detect_human_throws false
+      - where: Hands
+        text: Empty the Cup and clear any Ball off the Platform.
+    see: Both parameter sets report success. Nothing moves. The launch log may print human-Throw lines from the Tracker; that is expected.
+    stop_if: The Platform or the Hand moves (it must not; hold IDLE on the minimap, then set the flag false with the second command of this step, Ctrl-C the launch and tell a Session). The Tracker node logs errors once the flag is on (set the flag false and go on to step 8).
+    record: "Where you stood, the lob count, roughly how many landed in the Cup, and the clock time you started and finished (the bag is the one noted in step 3). Type pending: the replay through tools/probes/human_catch_replay.py is run at the debrief."
+    serves:
+      - item: IDEA-16
+        do: [0, 1, 2, 3]
+        pass: true
+
+  - n: 8
+    kind: setup
+    title: Arm the power capture on the Hand (before activating)
+    from: [launched, level]
+    to: [launched, level]
+    actions:
+      - where: Hands
+        text: Confirm the robot Hand's USB runs through the isolator. FEAT-49's row says to wait for FEAT-45 rungs B and C on the bench; those passed on 2026-11-13. Its row also names a live_session check, which is for unattended runs and does not apply with you at the robot; the CPU load is read below.
+      - where: Terminal 3
+        text: From the repo root in the venv, with the launch up and the Hand homed. Leave it armed until step 17.
+        command: cd ~/Desktop/Jugglebot && source ~/Desktop/PDJ_venv/venv/bin/activate && python tools/probes/hand_foc_scope.py capture --preset power --trigger fault --label robot_fault
+      - where: GUI
+        text: Check CPU load with the capture running (it makes about 2100 USB reads a second).
+    see: The capture reports it is armed and waiting for a fault. The launch log shows no new warnings from the Hand or the bridge.
+    stop_if: The capture will not arm, prints errors, or the launch starts logging Hand or stream warnings once it runs. Ctrl-C the capture (safe) and go on without it; say so in the notes, and skip the Terminal 3 actions in steps 16 and 17.
+    record: The CPU load with the capture armed.
+    serves:
+      - item: FEAT-49
+        do: [0, 1]
+      - item: BUG-111
+        do: [0]
+
+  - n: 9
+    kind: setup
+    title: Activate (this arms) and bring up Ball Butler
+    from: [launched, level]
+    to: [launched, level, armed, bb-fed]
+    actions:
+      - where: GUI
+        text: "State minimap: hold ACTIVE:TRAJECTORY to confirm. The launch's auto_arm arms the setpoint wire on entry."
+      - where: Hands
+        text: Power Ball Butler, calibrate it as you usually do, and load it. Cup empty.
+    see: Mode ACTIVE:TRAJECTORY, Armed, no Fault. Ball Butler powered and holding a ball. The capture is still armed and has saved nothing.
+    stop_if: Any refusal or Fault on activation (clear it as you usually do; if it will not clear, go to step 17). The capture saved a window on activation with no fault (note it as a false trigger and carry on).
+    serves: []
+
+  - n: 10
+    kind: run
+    title: Columns, 8 Attempts - the first flight of the new firmware and the emitter fix
+    from: [launched, level, armed, bb-fed]
+    to: [launched, level, armed, bb-fed]
+    actions:
+      - where: GUI
+        text: "Juggle panel: Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21. Start. Eight Attempts in a row. Before each Attempt: Cup empty, Ball Butler loaded. FEAT-49's row names the Apex 0.95 to 1.35 rows; only today's Apex 0.95 and 1.00 flights are on this sheet."
+      - where: Hands
+        text: Watch the first Attempt closely. New since the last Sitting and never flown - the Legs now ride 30 ms past a late knot before the firmware stops them (the Hand is unchanged at 20 ms), the emitter waits after a late tick instead of sending the next knot early, and a goal sent outside TRAJECTORY mode is now refused outright. After each Attempt ends, check the GUI lets you Start the next one.
+    see: Attempts fly as on 2026-11-18 (that day 9 of 26 Columns Attempts completed 20 Catches). The Leg base joints stay seated. Each ended Attempt reports its result and the next Start is accepted.
+    stop_if: The first Attempt moves differently from what you know (a jerky Platform, a Hand stroke that looks wrong, a Leg that keeps moving after a stop) - go to step 17, stand down and tell a Session. Any Leg base joint moves or separates (BUG-72) - do not continue this sheet; tell a Session. A Hand SPINOUT - stop flying and go to step 16 whether or not the capture saved a window. A Ball trapped under the Hand clears itself; note the time.
+    record: Caught of thrown, the end code and the rough length in seconds of each Attempt, and the time of any LANE_REFUSED end.
+    serves:
+      - item: BUG-110
+        do: [0]
+      - item: BUG-89
+        do: [0]
+
+  - n: 11
+    kind: run
+    title: One-ball oval on its own plant, 6 Attempts and then two long ones
+    from: [launched, level, armed, bb-fed]
+    to: [launched, level, armed, bb-fed]
+    actions:
+      - where: Terminal 2
+        text: A plant of its own keeps these Throws out of the Columns Memory. Refused while a goal runs.
+        command: ros2 param set /skill_node plant_id bug110-oval-2026-11-19
+      - where: Terminal 2
+        command: ros2 param get /skill_node plant_id
+      - where: Hands
+        text: Empty the Cup after every ended Attempt before re-sending a fed goal. Cup empty, Ball Butler loaded. Each goal command below holds Terminal 2 until its Attempt ends; send it, wait for the end, then send it again. After a clear_errors, re-enter TRAJECTORY on the minimap before the next goal (a goal sent outside TRAJECTORY is now refused).
+      - where: Terminal 2
+        text: Send this goal six times, one Attempt each. BUG-110 and BUG-89 name the Pattern and not its settings; these are the Dwell 0.50 settings flown on 2026-11-18. The plant is fresh, so the first Attempts may end on an early missed Catch.
+        command: 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.50, num_cycles: 32}" --feedback'
+      - where: Terminal 2
+        text: Then send this goal twice, so this step and step 10 add up to at least 10 minutes of Attempt time (BUG-89); if they ended early and the total is short, send it once or twice more. On 2026-11-18 both long Attempts of the first launch ended LANE_REFUSED, at Throw 50 and Throw 76.
+        command: 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.50, num_cycles: 200}" --feedback'
+    see: plant_id reads bug110-oval-2026-11-19. The Attempts fly.
+    stop_if: plant_id does not read back (do not fly). Any Leg base joint moves (stop flying, do step 13, then go to step 17 and tell a Session). A Hand SPINOUT - stop flying, do step 13, then go to step 16.
+    record: Caught of thrown, the end code and the rough length in seconds of each Attempt, how many of each goal you sent, and the time of any LANE_REFUSED end.
+    serves:
+      - item: BUG-110
+        do: [0]
+      - item: BUG-89
+        do: [0]
+
+  - n: 12
+    kind: run
+    title: Read the counter and the STOP lines
+    from: [launched, level, armed, bb-fed]
+    to: [launched, level, armed, bb-fed]
+    actions:
+      - where: Terminal 2
+        text: Watch for a few seconds, then Ctrl-C.
+        command: ros2 topic echo /link_status | grep -A1 setpoints_coalesced
+      - where: Terminal 2
+        text: BUG-89's row greps the ROS log because the copy under temp/logs used to go missing; since 2026-11-13 the launch command saves it to a full path, and all five copies were complete on 2026-11-18. It is the same text.
+        command: grep -nE "setpoint drain dropped|firmware scheduler STOP|firmware STOP record|LANE_REFUSED" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-19_1.log
+    see: A counter value, and zero or more WARN lines. On 2026-11-18 the bridge dropped about 3 knots a minute during Attempts. In a 'setpoint drain dropped' line, look at the forwarded lag - a negative number there is the early-knot signature the emitter fix should have removed.
+    stop_if: Nothing here stops the Sitting.
+    record: "The counter value, the number of 'setpoint drain dropped' lines, how many of them show a negative forwarded lag, and each STOP or LANE_REFUSED line. Type pending: the per-STOP verdicts and the stamp steps are read at the debrief."
+    serves:
+      - item: BUG-110
+        do: [0]
+        pass: true
+      - item: BUG-89
+        do: [0]
+        pass: true
+
+  - n: 13
+    kind: restore
+    title: Put the plant back
+    from: [launched, level, armed, bb-fed]
+    to: [launched, level, armed, bb-fed]
+    actions:
+      - where: Hands
+        text: Empty the Cup.
+      - where: Terminal 2
+        command: ros2 param set /skill_node plant_id jugglebot
+      - where: Terminal 2
+        command: ros2 param get /skill_node plant_id
+    see: plant_id reads jugglebot.
+    stop_if: It does not read jugglebot.
+    serves: []
+
+  - n: 14
+    kind: run
+    title: Polygon walk, first flight - one Ball around a square, up to 5 Attempts
+    from: [launched, level, armed, bb-fed]
+    to: [launched, level, armed, bb-fed]
+    actions:
+      - where: Terminal 2
+        text: Its own plant, so the walk does not write into the Columns Memory. Refused while a goal runs.
+        command: ros2 param set /skill_node plant_id polygon-2026-11-19
+      - where: Terminal 2
+        command: ros2 param get /skill_node plant_id
+      - where: Terminal 2
+        text: Four Sites. 4 is also the default, so there is nothing to put back afterwards.
+        command: ros2 param set /skill_node polygon_n 4
+      - where: Hands
+        text: Cup empty, Ball Butler loaded. The GUI Juggle panel has no entry for this Pattern, so the goal goes from the terminal; Ctrl-C on the goal cancels the Attempt. The Ball is fed at the Site nearest Ball Butler and then thrown Site to Site around a square of edge 100 mm - the Platform changes Site at every Throw, which no Pattern has done before.
+      - where: Terminal 2
+        text: 25 Throws is six laps plus one. Send the goal, wait for the Attempt to end, empty the Cup, and send it again - up to five Attempts. Stop early once one Attempt has caught 24 in a row.
+        command: 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: polygon_walk, apex_m: 0.90, separation_mm: 100.0, dwell_s: 0.27, num_cycles: 25}" --feedback'
+    see: plant_id reads polygon-2026-11-19 and the polygon_n set reports success. The goal start line names polygon_walk. The Ball walks the four Sites in order.
+    stop_if: plant_id does not read back (do not fly). The goal is REJECTED (note the reason word for word and go to step 15). The first Attempt looks wrong (the Platform lunges between Sites, a Leg base joint moves) - cancel with Ctrl-C, go to step 15 and do not fly it again today. Three Attempts in a row end before the fourth Throw - stop the row there and go to step 15.
+    record: Throws caught per Attempt and each end reason, the Site of every miss and whether it was a first visit to that Site, the bag path.
+    serves:
+      - item: IDEA-9
+        do: [1, 2]
+        pass: true
+
+  - n: 15
+    kind: restore
+    title: Put the plant back after the polygon walk
+    from: [launched, level, armed, bb-fed]
+    to: [launched, level, armed, bb-fed]
+    actions:
+      - where: Hands
+        text: Empty the Cup.
+      - where: Terminal 2
+        command: ros2 param set /skill_node plant_id jugglebot
+      - where: Terminal 2
+        command: ros2 param get /skill_node plant_id
+    see: plant_id reads jugglebot.
+    stop_if: It does not read jugglebot.
+    serves:
+      - item: IDEA-9
+        do: [3]
+
+  - n: 16
+    kind: run
+    title: Ride-along check - the capture, any SPINOUT and every LANE_REFUSED end
+    from: [launched, level, armed, bb-fed]
+    to: [launched, level, armed, bb-fed]
+    actions:
+      - where: Terminal 3
+        text: Read what the capture has printed so far. Do not stop it yet.
+      - where: Terminal 2
+        text: The counter once more, as the last reading of this launch. Watch for a few seconds, then Ctrl-C.
+        command: ros2 topic echo /link_status | grep -A1 setpoints_coalesced
+      - where: Terminal 2
+        command: grep -nE "SPINOUT|LANE_REFUSED|firmware scheduler STOP|firmware STOP record|setpoint drain dropped" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-19_1.log
+    see: Every firmware scheduler STOP line is followed by its firmware STOP record line. No output at all means no STOP, no drop, no SPINOUT and no LANE_REFUSED end today. The capture is armed, or has saved a window if the Hand faulted.
+    stop_if: Nothing here stops the Sitting.
+    record: "FEAT-49 and BUG-111 - the capture path if one saved, the launch log line of any SPINOUT and the nearest 'setpoint drain dropped' line before it with its lag, the number of launches flown with the capture armed (1). BUG-58 - the line of each LANE_REFUSED end (none = say so). BUG-89 - the final counter value. Type pending: with no fault there is no window to judge, and the GC_PROBE lines around a LANE_REFUSED end are read at the debrief."
+    serves:
+      - item: FEAT-49
+        do: [2]
+        pass: true
+      - item: BUG-111
+        do: [0]
+        pass: true
+      - item: BUG-58
+        pass: true
+
+  - n: 17
+    kind: restore
+    title: Stand down and see what the capture does on a clean stop
+    from: [launched, level, armed, bb-fed]
+    to: []
+    actions:
+      - where: GUI
+        text: "State minimap: hold IDLE to confirm (safe teardown, disarms)."
+      - where: Terminal 3
+        text: Read what the capture printed when the Hand went Idle, then Ctrl-C it.
+      - where: Terminal 1
+        text: Ctrl-C the launch and wait for the shell prompt.
+      - where: Hands
+        text: Empty the Cup. Unload and power down Ball Butler. Unplug the Hand's USB if you do not leave it connected.
+    see: On the clean Idle the capture re-arms and saves nothing (as it did on 2026-11-18). The Platform is at Stow and every axis Idle before the Ctrl-C. The bag closes.
+    stop_if: A Fault blocks the teardown; deal with it before Ctrl-C.
+    record: Whether the capture saved anything on the clean Idle.
+    serves: []
+
+  - n: 18
+    kind: restore
+    title: Close out
+    from: []
+    to: []
+    actions:
+      - where: Claude Session
+        text: "In a Session in the live checkout, run /sitting-debrief 2026-11-19. It copies the runtime records and Memory back into the tracked files."
+    see: The debrief starts its inventory.
+    stop_if: Nothing here stops anything.
+    serves: []

@@ -41,8 +41,8 @@ def _function_body(name: str) -> str:
 
 
 def test_the_pin_is_free_on_this_board():
-    """Pins 10-13 are the SCL3300's SPI, 22/23 are this board's CAN controller."""
-    assert hc.TEENSY_HAND_FAN_PIN not in (10, 11, 12, 13, 22, 23)
+    """Pins 10-13 are the SCL3300's SPI, 22/23 are this board's CAN controller, 18/19 are the IMU's I2C (SDA/SCL)."""
+    assert hc.TEENSY_HAND_FAN_PIN not in (10, 11, 12, 13, 18, 19, 22, 23)
 
 
 def test_the_thresholds_leave_a_gap():

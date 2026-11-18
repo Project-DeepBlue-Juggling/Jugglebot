@@ -109,6 +109,16 @@ can_ids:
     # bridge uplinks verbatim as a PLATFORM_FRAME. The USB port is damaged.
     FW_UPDATE_CMD:   0x6F0
     FW_UPDATE_REPLY: 0x6F1
+    # Platform IMU capture (2026-11-18, IDEA-20, plans/active/platform-imu.md). Block
+    # 0x6E3-0x6E8 (see platform_imu.can_block_*); DLC 8, little-endian. Contract and
+    # frame layouts: ros_ws/docs/platform_imu_protocol.md. CMD is written only by the
+    # bridge's typed relay; the other three are uplinked by the bridge.
+    IMU_CMD:         0x6E3   # bridge -> Platform Teensy  [op][args]
+    IMU_REPLY:       0x6E4   # Platform Teensy -> bridge  [op][status][capture_id u16][detail u32]
+    IMU_STATUS:      0x6E5   # Platform Teensy -> bridge  1 Hz, always (an Attempt included)
+    IMU_DATA:        0x6E6   # Platform Teensy -> bridge  [seq u16][6 B word], only inside a READ
+    IMU_LIVE_ACCEL:  0x6E7   # RESERVED for a future live stream; never transmitted today
+    IMU_LIVE_GYRO:   0x6E8   # RESERVED for a future live stream; never transmitted today
 
   # Ball Butler Teensy <-> Host
   ball_butler:
@@ -289,6 +299,92 @@ wave_camera:
     CLIP_MISSING:    5   # START without the "Created new clip." line; GPI2 kept low
     CONSOLE_OWNS:    6
     GPI2_FAULT:      7
+
+# =============================================================================
+# Platform IMU capture (IDEA-20) — ros_ws/docs/platform_imu_protocol.md
+# =============================================================================
+# The frozen capture is ONE address space of 6-byte words, addressed by the u16
+# seq in every IMU_DATA frame: samples at seq 0..2N-1 (word 2k = accel of sample
+# k, 2k+1 = gyro), anchors at anchor_seq_base + 3a..3a+2, the header at
+# header_seq_base.. . The bases are fixed, so a frame's seq alone says what it is.
+platform_imu:
+  can_block_first: 0x6E3          # inclusive bounds of the IMU id allocation
+  can_block_last: 0x6E8
+  ring_samples: 32000             # 32 s at nominal_odr_hz
+  bytes_per_sample: 12            # 6 x int16 LE raw LSB: ax ay az gx gy gz (chip axes)
+  word_bytes: 6                   # payload bytes per IMU_DATA frame (one accel or one gyro triple)
+  nominal_odr_hz: 1000            # for the status fill and the Jetson's starting guess only
+  anchor_period_ms: 100           # one anchor per this period while recording
+  anchor_ring: 400                # anchor slots (320 at the period over 32 s + discontinuities)
+  anchor_bytes: 18                # 3 words: [index u32][local_us u32][wall_us u64][flags u8][0]
+  header_bytes: 66                # 11 words, last 4 bytes = CRC-32 of the first 62
+  header_format_version: 1
+  anchor_seq_base: 0xFA80         # 64128, above the 64000 sample words
+  header_seq_base: 0xFFF0
+  read_max_words: 256             # largest READ block (0.26 s at the default gap)
+  read_default_gap_10us: 100      # 1000 us between IMU_DATA frames (1000 fps on the wire)
+  read_min_gap_10us: 40           # the Platform Teensy clamps faster requests to 400 us
+  status_period_ms: 1000
+
+  # IMU_CMD byte 0. Absent ops (GET_HEADER, READ_ANCHORS) are READs of a region.
+  ops:
+    ENABLE:   0x01
+    DISABLE:  0x02
+    FREEZE:   0x03
+    RESUME:   0x04
+    READ:     0x05
+    ABORT:    0x06
+
+  # IMU_REPLY byte 1. 0x0x = accepted, 0x1x = refused (nothing changed, nothing sent).
+  statuses:
+    OK:                0x00
+    ALREADY_FROZEN:    0x01   # FREEZE found a capture frozen EARLIER (this Attempt was not recorded)
+    ERR_BAD_ARGS:      0x10   # unknown op, short DLC, count 0 or > read_max_words, reason 0
+    ERR_NOT_FROZEN:    0x11
+    ERR_WRONG_CAPTURE: 0x12   # capture_id is not the frozen one (stale request or a reboot)
+    ERR_OUT_OF_RANGE:  0x13   # READ block not wholly inside one region; detail hi16 = region end
+    ERR_EMPTY:         0x14   # FREEZE with no samples recorded
+    ERR_DISABLED:      0x15
+    ERR_FW_UPDATE:     0x16   # a firmware update is in progress (IMU halted)
+
+  # IMU_STATUS byte 0
+  states:
+    DISABLED:   0
+    PROBING:    1
+    RUNNING:    2
+    FROZEN:     3
+    UPLOADING:  4
+    BACKOFF:    5
+    FW_HALTED:  6
+
+  # FREEZE byte 1 (kept in the header)
+  freeze_reasons:
+    ATTEMPT_END: 1
+    FAULT:       2
+    SOFT_ESTOP:  3
+    OPERATOR:    4
+
+  # IMU_STATUS byte 1
+  status_flags:
+    SENSOR_OK:      0x01
+    TIME_SYNCED:    0x02   # a TIME_SYNC frame arrived within the last status period
+    RING_WRAPPED:   0x04
+    I2C_400K:       0x08   # running on the 400 kHz fallback
+    DISCONTINUITY:  0x10   # the current capture holds a discontinuity anchor
+
+  # header bytes 18-19
+  capture_flags:
+    WRAPPED:        0x0001
+    DISCONTINUITY:  0x0002
+    SENSOR_ERROR:   0x0004   # frozen from PROBING or BACKOFF, not RUNNING
+    NEVER_SYNCED:   0x0008   # no anchor carries a valid wall time
+    I2C_400K:       0x0010
+
+  # anchor byte 16
+  anchor_flags:
+    DISCONTINUITY:  0x01   # samples were lost just before this anchor: fit each side apart
+    WALL_INVALID:   0x02   # no TIME_SYNC yet; wall_us is meaningless
+    SYNC_STEP:      0x04   # the wall offset was stepped since the previous anchor
 
 # =============================================================================
 # Encoding / Scaling

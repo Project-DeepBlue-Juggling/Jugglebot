@@ -73,6 +73,31 @@ def test_hand_c1_cover_mirrors_the_header_grace_and_the_twin():
     assert HAND_C1_COVER_MS * 1e3 == ti.HAND_C1_DECIDE_US
 
 
+def test_group_covers_mirror_the_header_graces_and_the_twin():
+    """FW 44: the grace is per group (legs 30 ms, Hand 20 ms). Each mirror is
+    pinned to the header and the twin, and SCHED_COVER_MS is the earlier of
+    the two group covers (the Hand's), the one the verdicts judge against."""
+    import os
+    import re
+    import sys
+    from teensy_link.gap_monitor import (
+        SCHED_COVER_HAND_MS, SCHED_COVER_LEG_MS, SCHED_GRACE_HAND_MS, SCHED_GRACE_LEG_MS)
+    repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    hdr = open(os.path.join(repo, "ros_ws", "src", "jugglebot",
+                            "Teensy_code_canbridge", "canbridge_config.h")).read()
+    for name, mirror in (("SCHED_GRACE_LEG_S", SCHED_GRACE_LEG_MS),
+                         ("SCHED_GRACE_HAND_S", SCHED_GRACE_HAND_MS)):
+        m = re.search(r"constexpr\s+float\s+" + name + r"\s*=\s*([0-9.]+)f\s*;", hdr)
+        assert m, name
+        assert round(float(m.group(1)) * 1e3, 6) == mirror, name
+    sys.path.insert(0, os.path.join(repo, "tools", "probes",
+                                    "teensy_link_profiling", "hermite_xref"))
+    import teensy_interp as ti
+    assert SCHED_COVER_LEG_MS * 1e3 == ti.SCHED_EXHAUST_LEG_US == 80_000
+    assert SCHED_COVER_HAND_MS * 1e3 == ti.SCHED_EXHAUST_HAND_US == 70_000
+    assert SCHED_COVER_MS == SCHED_COVER_HAND_MS
+
+
 # ── DownlinkLossTracker (FEAT-41, FW 40) ─────────────────────────────────────
 
 def test_downlink_loss_is_zero_through_in_flight_frames_and_unequal_baselines():

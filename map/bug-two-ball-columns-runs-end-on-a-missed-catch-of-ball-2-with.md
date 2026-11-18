@@ -4,7 +4,7 @@ kind: bug
 title: 'Two-ball Columns runs end on a missed Catch of Ball 2 with no collision: 13 of 23 ends, mean run 22 Throws'
 status: in_progress
 created: '2026-11-06'
-updated: '2026-11-13T05:58:37Z'
+updated: '2026-11-18T09:39:19Z'
 owners: []
 priority: high
 effort: m
@@ -19,6 +19,7 @@ links:
 - bug-mid-air-ball-collisions-end-half-of-two-ball-columns
 - logbook/2026-11-06-sitting-debrief-3.md
 - logbook/2026-11-13-sitting-debrief.md
+- logbook/2026-11-18-sitting-debrief.md
 filed_by: claude
 night_skip: sitting
 night_skip_on: '2026-11-15'
@@ -50,3 +51,5 @@ Two-ball Columns runs of 2026-11-06 mostly end on a smooth missed Catch of Ball 
 - 2026-11-06: Across the endurance set and 20:20: every smooth no-collision end (15 of 15) is a Ball 2 Catch, and all 4 Ball 1 ends are collisions. Open: whether offset or Platform arrival error drives the strike; /trajectory/commanded_position was not read. Evidence: temp/probes/sitting_debrief_2026-11-06c/unit_ends.md.
 - 2026-11-08: 2026-11-07: of 20 non-collision Ball 2 ends, 13 had a last fit beyond the Catch authority and 4 inside reach with the Cup empty. Owner: Cup rim 85 mm dia; in turned 90 deg Columns every strike hit the Platform top (top of the Hand's stroke); in other Patterns some misses hit the Hand, some other Platform parts. No seated-ball baseline in the bag.
 - 2026-11-13: Sitting of 2026-11-13: Columns canary on the trained plant ended on Ball 2 in 4 of 6 Attempts, fitted landings mixed sign (+44, +25, -88 mm, one no Fit), 3 of 4 within 45 mm of aim with the Cup empty. columns_highlow: 9 of 15 ends Ball 2; 12 had a lost Throw with no Fit. Same signature on the oval and on two single-Throw ends at 20 mm.
+- 2026-11-18: 2026-11-18 debrief: NO FIT on a MISSED_CATCH end is the carried empty Throw, not a Tracker miss (ball_held false 33 of 33). Of 28 lost flights with a Fit, 9 were 100 mm or more off, 7 of them outward at the Ball 2 Site, beyond the 10 mm outward Catch authority (owner decision, not changed). 7 lost Balls were found at rest beside the Cup. See BUG-114.
+- 2026-11-18: Cup-empty diagnosis (plain Columns on main, 11 first-lost flights): 6 bounced out after entering 3-15 mm from the Cup axis; 2 rim strikes after a late inward re-aim; 2 far Throws after a late-seating Catch; 10 of 11 are Ball 2. Owner: Ball 2 differs only in order and Site, so small misalignments compound. Next: a 300 Hz replay of the bounce-outs.

@@ -5301,7 +5301,7 @@ _ACCEPTED_CUP_CELLS = [
     (pattern, ev) for pattern, row in sn._CUP_RULE.items()
     if pattern not in ('magazine', 'columns_turned')   # turned: its own tests
     for ev, decision in row.items()
-    if decision in (sn.RELOAD_FIRST, sn.THROW_FIRST)]
+    if decision in (sn.RELOAD_FIRST, sn.THROW_FIRST, sn.CATCH_FIRST)]
 
 
 @pytest.mark.parametrize('pattern,evidence', _ACCEPTED_CUP_CELLS)
@@ -5344,7 +5344,8 @@ def test_every_pattern_entry_opens_on_a_rest(tmp_path, pattern, evidence):
     # tail as 'columns').
     covered = {'self_toss', 'hop', 'columns', 'columns_1ball',
                'columns_1ball_fed', 'columns_turned', 'columns_highlow',
-               'oval_1ball', 'oval_1ball_fed', 'reload'}
+               'oval_1ball', 'oval_1ball_fed', 'polygon_walk', 'reload',
+               'human_catch'}
     # 'magazine' has no schedule (one MAGAZINE segment from rest; its own
     # tests are tests/ros/test_skill_node_magazine.py).
     assert set(sn.SkillNode._PATTERNS) - {'magazine'} == covered
@@ -5640,6 +5641,41 @@ def test_columns_feed_swap_declines_over_a_refused_live_executor(tmp_path):
     node._install_announced_reload(ctx, ann)
     assert node._executor is bridge_executor
     assert node._ended_code_for_swap() == 'SERVICE_TIMEOUT'
+
+
+def test_declined_swap_after_the_executor_ended_itself_releases_the_attempt(
+        tmp_path):
+    """Sitting 2026-11-18 L3 hang: a fed Attempt's executor ended itself
+    (ABORTED_MODE_CHANGED) while Ball Butler's announcement had already
+    claimed the reload context. The compile then declined the swap but left
+    the claimed context behind, so the end line stayed silent, the Juggle
+    goal never completed and every later Juggle was refused. The decline
+    must release the attempt: the end line names the real end code, the goal
+    completes and a new goal is accepted."""
+    node, _client = _node_with_client(response=_response())
+    _columns_bb_started(node, tmp_path)
+    _finish_bridge(node)
+    ctx = node._reload_ctx
+    ann = _bb_announcement(
+        target_id=node._robot_name, landing_mm=(50.0, 0.0, 830.0),
+        landing_vel_mm_s=(0.0, 0.0, -3000.0), throw_time_s=0.5,
+        landing_time_s=5.0)
+    with node._reload_lock:
+        ctx.announced = True
+    # The executor already retired itself on its own tick (mode change).
+    assert node._executor is None
+    node._goal_end_code = 'ABORTED_MODE_CHANGED'
+    lines = []
+    node.get_logger().error = lines.append
+    node.get_logger().warning = lines.append
+    node.get_logger().info = lines.append
+    node._install_announced_reload(ctx, ann)
+    node._on_tick()
+    assert [ln for ln in lines if 'ABORTED_MODE_CHANGED' in ln
+            and 'declining' not in ln], lines
+    assert node._goal_done_event.is_set()
+    refusal = node._refuse_if_running(SimpleNamespace(success=None, message=''))
+    assert refusal is None
 
 
 class _NoAnswerClient(_RecordingClient):
@@ -6199,6 +6235,74 @@ def test_accept_possession_reload_with_a_seated_cup_is_refused_ball_in_hand():
     _assert_no_bb_and_no_motion(node, reload_client, throw_client)
 
 
+def _fed_ready_outside_trajectory(node, mode='STANDBY'):
+    """An EMPTY cup (so the goal is FED), everything else fresh, the
+    orchestrator in ``mode`` (`_freshen(in_traj=False)` -> STANDBY)."""
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=False, in_traj=False)
+    if mode != 'STANDBY':
+        node._on_traj_status(_status(gravity_correction_loaded=True,
+                                     mode=mode))
+    _prelevel_ready(node)
+    return _reload_ready(node)
+
+
+def test_accept_fed_goal_outside_trajectory_is_refused_not_trajectory(
+        tmp_path):
+    """BUG-113 (2026-11-18): a fed goal accepted in STANDBY ended itself
+    ABORTED_MODE_CHANGED on the executor's first tick while Ball Butler's
+    announcement claimed the Feed context. Refused at accept instead: no
+    `bb/reload`, no `bb/throw_at_target`, no executor, no Feed context."""
+    node, _client = _node_with_client()
+    reload_client, throw_client = _fed_ready_outside_trajectory(node)
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        for goal in (_self_toss_goal(), _goal('reload'),
+                     _columns_goal(separation_mm=100.0)):
+            resp = node._start_pattern(goal)
+            assert resp.success is False, goal.pattern
+            assert ex.REJECTED_NOT_TRAJECTORY in resp.message
+            assert 'TRAJECTORY' in resp.message and 'Activate' in resp.message
+            _assert_no_bb_and_no_motion(node, reload_client, throw_client)
+            assert node._goal_starting is False
+
+
+def test_accept_fed_goal_with_unknown_or_stale_mode_is_refused():
+    """The executor's own check reads a never-seen or stale status as NOT in
+    TRAJECTORY (`_observations`), so the accept check reads it the same way."""
+    node, _client = _node_with_client()
+    reload_client, throw_client = _fed_ready_outside_trajectory(node)
+    node._on_traj_status(_status(gravity_correction_loaded=True,
+                                 mode='TRAJECTORY'))
+    node._traj_status_mono -= sn._TRAJ_STATUS_STALE_S + 0.1      # stale
+    assert ex.REJECTED_NOT_TRAJECTORY in node._start_pattern(
+        _self_toss_goal()).message
+    node._traj_status_mono = 0.0                                 # never seen
+    assert ex.REJECTED_NOT_TRAJECTORY in node._start_pattern(
+        _self_toss_goal()).message
+    _assert_no_bb_and_no_motion(node, reload_client, throw_client)
+
+
+def test_accept_fed_goal_in_trajectory_is_accepted_as_before(tmp_path):
+    node, _client = _node_with_client()
+    resp = _start_reload(node, tmp_path)        # TRAJECTORY, EMPTY cup
+    assert resp.success is True, resp.message
+    assert len(node._bb_throw_cli.calls) == 1
+
+
+def test_accept_non_fed_goal_outside_trajectory_is_unchanged(tmp_path):
+    """A throw-first goal (SEATED cup) waits for no Feed: the new refusal does
+    not apply (the executor's tick-level mode check still guards it)."""
+    node, _client = _node_with_client()
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=True, in_traj=False)
+    _prelevel_ready(node)
+    reload_client, throw_client = _reload_ready(node)
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_self_toss_goal())
+    assert ex.REJECTED_NOT_TRAJECTORY not in str(resp.message)
+    assert resp.success is True, resp.message
+
+
 def test_accept_possession_self_toss_reload_with_an_empty_cup_is_accepted(
         tmp_path):
     node, _client = _node_with_client()
@@ -6323,7 +6427,7 @@ def _expected_cup_decision(pattern, evidence):
     decision = sn._CUP_RULE[pattern][evidence]
     if decision == sn.RELOAD_FIRST:
         return None, True
-    if decision == sn.THROW_FIRST:
+    if decision in (sn.THROW_FIRST, sn.CATCH_FIRST):
         return None, False
     return decision, False
 
@@ -7919,3 +8023,15 @@ def test_a_goal_with_no_memory_starts_cold_on_the_identity(tmp_path):
     import numpy as np
     y_d = np.array([0.0, 0.0, 0.9])
     np.testing.assert_allclose(learner.command(ctx, y_d), y_d)
+
+
+def test_the_missed_ball_evidence_line_is_logged_at_info():
+    """BUG-114 (Sitting 2026-11-18): the MISSED-BALL line was DEBUG-only, so
+    the operator's tee log lacked it for every MISSED_CATCH end. It is the
+    one executor tick line promoted to INFO; the rest stay DEBUG."""
+    assert sn._tick_line_is_evidence(
+        '12.345 MISSED-BALL Ball 2 (the CATCH of skill 7): thrown by skill 5, '
+        'scheduled release 11.900 (0.445 s before its scheduled landing); '
+        'tracker last fit: NO FIT')
+    assert not sn._tick_line_is_evidence('12.345 DISPATCH skill 7 CATCH')
+    assert not sn._tick_line_is_evidence('12.345 END MISSED_CATCH skill 7')

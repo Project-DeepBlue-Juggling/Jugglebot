@@ -2,9 +2,9 @@
 id: BUG-100
 kind: bug
 title: A dead ticker claim or a crashed 04:00 suite hides a RED for up to two days
-status: inbox
+status: in_progress
 created: '2026-11-14'
-updated: '2026-11-14T17:54:17Z'
+updated: '2026-11-18T07:11:22Z'
 owners: []
 priority: medium
 effort: s
@@ -35,3 +35,7 @@ A Session that dies between claiming the 04:00 suite ticker and lowering it leav
 - Expire a claim file by its age (a claim older than a few minutes is dead).
 - Report `STALE` when the status is not from today's 04:00 slot, not after two days.
 - Cases for both in `tests/sim/`.
+
+## Progress
+
+- 2026-11-18: Claim expiry landed (tools/nightly_ticker.sh, 300 s by mtime, takeover by rename). The missed-slot STALE half is still open.

@@ -209,6 +209,22 @@ def test_failed_replace_keeps_the_original_and_no_temp(tmp_path, monkeypatch):
     assert seen and seen[0].startswith(".") and not seen[0].endswith(".md")
 
 
+def test_write_text_atomic_works_without_os_fchmod(tmp_path, monkeypatch):
+    """Windows has no ``os.fchmod`` (BUG-118): the write still lands and the
+    mode bits are still kept, through ``os.chmod`` on the temp path."""
+    import os
+    import stat
+    from mapkit.atomic import write_text_atomic
+    monkeypatch.delattr(os, "fchmod")
+    p = tmp_path / "item.md"
+    p.write_text("old\n")
+    os.chmod(str(p), 0o640)
+    write_text_atomic(str(p), "new\n")
+    assert p.read_text() == "new\n"
+    assert stat.S_IMODE(os.stat(str(p)).st_mode) == 0o640
+    assert [n for n in os.listdir(str(tmp_path)) if n.endswith(".tmp")] == []
+
+
 def test_write_item_and_set_id_are_atomic(tmp_path, monkeypatch):
     import os
     from mapkit.ids import set_id

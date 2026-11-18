@@ -167,3 +167,53 @@ def test_ticker_prints_pull_only_past_ten_minutes(tmp_path):
     assert len(ticker(tmp_path, fresh)) == 1
     assert len(ticker(tmp_path, f"{iso(0)} OK behind=0 since=- files=-")) == 1
     assert len(ticker(tmp_path, None)) == 1
+
+
+# --- dead ticker claims expire by age (BUG-100) ---------------------------------------
+
+def _ticker_dir(tmp_path):
+    rep = tmp_path / "nightly"
+    rep.mkdir()
+    return rep
+
+
+def _check(rep, tmp_path):
+    env = {**os.environ, "PULL_STATUS_FILE": str(tmp_path / "nopull"),
+           "NIGHTLY_REPORTS_DIR": str(rep), "NIGHTLY_TICKER_CLAIM_MAX_AGE_S": "300"}
+    r = subprocess.run(["bash", str(TICKER), "check", "--who", "t"], env=env,
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    return r.stdout.strip()
+
+
+def _claim(rep, age_s, status="RED 3/9 2026-11-17T04:00:00+00:00", pid=99999):
+    f = rep / f"ticker.claim.{pid}"
+    f.write_text(f"2026-11-17T04:00:00+00:00 {status}\n")
+    t = time.time() - age_s
+    os.utime(f, (t, t))
+    return f
+
+
+def test_dead_claim_is_taken_over_and_read_once(tmp_path):
+    rep = _ticker_dir(tmp_path)
+    _claim(rep, 3600)
+    out = _check(rep, tmp_path)
+    assert out == "CLAIMED RED 3/9 2026-11-17T04:00:00+00:00"
+    assert (rep / "ticker.lowered").read_text().startswith("2026-11-17T04:00:00+00:00 handled ")
+    assert not list(rep.glob("ticker.claim.*"))
+    assert _check(rep, tmp_path).startswith("LOWERED ")          # read exactly once
+
+
+def test_young_claim_still_reports_in_progress(tmp_path):
+    rep = _ticker_dir(tmp_path)
+    f = _claim(rep, 10)
+    assert _check(rep, tmp_path) == "LOWERED claim in progress by another session"
+    assert f.exists() and not (rep / "ticker.lowered").exists()
+
+
+def test_dead_claim_plus_new_raise_claims_the_raised_status(tmp_path):
+    rep = _ticker_dir(tmp_path)
+    _claim(rep, 3600, status="RED 1/9 old")
+    (rep / "ticker.raised").write_text("2026-11-18T04:00:00+00:00 GREEN 9/9 2026-11-18T04:00:00+00:00\n")
+    assert _check(rep, tmp_path) == "CLAIMED GREEN 9/9 2026-11-18T04:00:00+00:00"
+    assert not list(rep.glob("ticker.claim.*"))

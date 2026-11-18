@@ -4,7 +4,7 @@ Both are launch-flag controlled and DEFAULT OFF.
 
 * ``gc_freeze`` -- a gen2 collection walks every tracked object; in a node
   heap of this size it took 130-190 ms on the Jetson, longer than the
-  firmware's 70 ms setpoint cover.  After init we ``gc.collect()`` once and
+  firmware's setpoint cover (Hand 70 ms, legs 80 ms since FW 44).  After init we ``gc.collect()`` once and
   ``gc.freeze()`` (every surviving object moves to the permanent generation
   and is skipped by ALL later collections), and raise the thresholds so
   gen0/gen1 run 70x/50x less often and gen2 is rare (the runtime allocations

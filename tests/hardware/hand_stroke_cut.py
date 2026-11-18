@@ -33,7 +33,7 @@ import teensy_interp as ti  # noqa: E402
 SEG_T = ti.SEGMENT_T_S                                   # 0.025 s knot
 C1_MIN_UP_VEL = ti.HAND_C1_STOP_MIN_UP_VEL_RPS           # 50 rev/s
 C1_DECIDE_S = ti.HAND_C1_DECIDE_US * 1e-6                # cover + 6 ms = 0.056 s
-EXHAUST_S = ti.SCHED_EXHAUST_US * 1e-6                   # cover + 20 ms = 0.070 s
+EXHAUST_S = ti.SCHED_EXHAUST_HAND_US * 1e-6              # Hand cover + 20 ms = 0.070 s
 STOP_A = ti.STREAM_STOP_HAND_ACCEL_RPS2                  # 4500 rev/s^2
 STOP_J = ti.STREAM_STOP_HAND_JERK_RPS3                   # 350000 rev/s^3
 HAND_CLIP_REV = ti.HAND_MOTOR_MAX_POSITION               # 10.501 (firmware clip)
@@ -302,7 +302,7 @@ def model_stop(kn):
         end = ti.hand_c1_stop_eval(pd, vd, STOP_A, STOP_J, D)[0]
         return {'path': 'C1', 'g_entry': C1_DECIDE_S, 'entry': (pd, vd, -STOP_A),
                 'D': D, 'end_rev': end, 'g_end': C1_DECIDE_S + D}
-    pe, ve, ae = ti.span_eval(p1, v1, p2, v2, ti.SCHED_S_MAX)
+    pe, ve, ae = ti.span_eval(p1, v1, p2, v2, ti.SCHED_S_MAX_HAND)
     D, _capped = ti.stop_duration([ve], [ae], STOP_A, STOP_J)
     end = ti.stop_eval(pe, ve, ae, D, D)[0]
     return {'path': 'C2', 'g_entry': EXHAUST_S, 'entry': (pe, ve, ae),
@@ -314,7 +314,7 @@ def model_stop_fw36(kn):
     discriminator the verdict reads against: what the hold would be had the
     C1 decision not fired."""
     _, _, p1, v1, p2, v2, _ = kn
-    pe, ve, ae = ti.span_eval(p1, v1, p2, v2, ti.SCHED_S_MAX)
+    pe, ve, ae = ti.span_eval(p1, v1, p2, v2, ti.SCHED_S_MAX_HAND)
     D, _ = ti.stop_duration([ve], [ae], STOP_A, STOP_J)
     return ti.stop_eval(pe, ve, ae, D, D)[0]
 

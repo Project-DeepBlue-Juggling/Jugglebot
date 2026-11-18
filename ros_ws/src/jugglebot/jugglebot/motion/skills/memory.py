@@ -225,7 +225,7 @@ def memory_path(root: str, plant_id: str) -> str:
     This is the TRACKED Memory (committed at each debrief). The running
     robot never writes it: ``skill_node`` loads and appends to the runtime
     copy ``jugglebot.runtime_paths.live_memory_path`` returns (seeded from
-    this file; Phase C8 of ``plans/active/night-shift-closeout.md``).
+    this file; Phase C8 of ``plans/archived/night-shift-closeout.md``).
 
     ``plant_id`` must be exactly one safe path segment.
     """

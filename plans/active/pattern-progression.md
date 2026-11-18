@@ -3,7 +3,7 @@ title: Pattern progression - Columns to Centre and orbit
 created: 2026-10-30
 status: active
 owner: Harrison
-last_updated: 2026-10-31
+last_updated: 2026-11-18
 pathway: pattern-progression-columns-to-centre-and-orbit
 branch: main
 scope: >-
@@ -14,7 +14,7 @@ scope: >-
 steps:
   - {id: P1, title: Launch current check, kind: phase, status: complete, effort: xs, hardware: none}
   - {id: P2, title: Turned Columns on the compiled path, kind: phase, status: complete, effort: s, hardware: none}
-  - {id: P3, title: JP-10 turned Columns, kind: rung, status: not_started, effort: s, hardware: robot}
+  - {id: P3, title: JP-10 turned Columns, kind: rung, status: complete, effort: s, hardware: robot}
   - {id: P4, title: Per-Site Apex, kind: phase, status: complete, effort: m, hardware: none}
   - {id: P5, title: JP-9 high-low Columns, kind: rung, status: not_started, effort: s, hardware: robot}
   - {id: P6, title: Per-Beat Sites dependency owned by PWAY-2, kind: phase, status: not_started, effort: m, hardware: none}
@@ -23,6 +23,7 @@ steps:
   - {id: P9, title: Centre and orbit compile, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: P10, title: JP-14 Centre and orbit, kind: rung, status: not_started, effort: m, hardware: robot}
 related_logbook:
+  - 2026-11-18-jp5-polygon-walk-compile.md
   - 2026-10-30-pattern-progression-plan.md
   - 2026-10-30-jb115-launch-current-bag-check.md
   - 2026-10-31-pattern-progression-p2-turned-columns.md
@@ -128,8 +129,8 @@ The release-step exception to `HAND_LIMIT_C2` is on the Hand thread (IDEA-17), n
 
 ### P7: JP-5 polygon walk
 
-- Adds: the first Pattern whose Site changes every Throw, on `BeatEvent`, one ball.
-- Rung gate: a square whose edge the Hop already flies, 24 consecutive Catches in one Attempt (six laps), no miss on a first visit to a Site.
+- Adds: the first Pattern whose Site changes every Throw, one ball. Built 2026-11-18 on the one-ball compile path (label `polygon_walk`, provisional): the `BeatEvent` stream is two-ball by construction, so this Rung does not exercise it; P8 is the first test of per-Beat Sites.
+- Rung gate: a square of edge 100 mm at Dwell 0.27 and Apex 0.9 (the Hop's 250 mm edge is infeasible for a square: `logbook/2026-11-18-jp5-polygon-walk-compile.md`), 24 consecutive Catches in one Attempt (six laps), no miss on a first visit to a Site.
 - Depends on: P6. Items consumed: IDEA-9. Plus the three standing Rung preconditions.
 
 ### P8: JP-11 rotating Columns

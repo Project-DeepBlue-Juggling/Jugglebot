@@ -1,0 +1,676 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IMU Bench Viewer</title>
+<style>
+:root{
+  --bg:#f5f6f8; --card:#ffffff; --fg:#1b1f24; --muted:#5d6672; --border:#d5d9df; --accent:#2f6fe0;
+  --x:#d1453b; --y:#2a9d57; --z:#3a6fd8; --grid:#e3e6ea; --ok:#1f8a4c; --warn:#b7791f; --err:#c53030;
+  --face:#9db8ee; --edge:#2a3f6b;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#14171b; --card:#1d2127; --fg:#e6e9ed; --muted:#97a1ad; --border:#343a43; --accent:#6ea0ff;
+    --x:#ff7a70; --y:#4fd388; --z:#7aa5ff; --grid:#2a2f37; --ok:#4fd388; --warn:#e6b450; --err:#ff7a70;
+    --face:#3f5f9e; --edge:#a9c1f2;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 16px;background:var(--card);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:5}
+h1{font-size:16px;margin:0 12px 0 0}
+button,select,input{font:inherit;color:var(--fg);background:var(--card);border:1px solid var(--border);border-radius:6px;padding:5px 10px}
+button{cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button:disabled{opacity:.5;cursor:default}
+button.on{outline:2px solid var(--accent)}
+.chip{padding:3px 10px;border-radius:999px;border:1px solid var(--border);font-size:13px}
+.chip.ok{color:var(--ok);border-color:var(--ok)} .chip.warn{color:var(--warn);border-color:var(--warn)} .chip.err{color:var(--err);border-color:var(--err)}
+main{display:grid;grid-template-columns:minmax(300px,1fr) minmax(320px,1fr);gap:12px;padding:12px 16px;max-width:1500px;margin:auto}
+@media (max-width:900px){main{grid-template-columns:1fr}}
+section{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+section h2{font-size:13px;margin:0 0 6px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+canvas{width:100%;display:block}
+#view3d{height:300px}
+.plot{height:190px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px}
+.note{color:var(--muted);font-size:12px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.tile{border:1px solid var(--border);border-radius:8px;padding:6px 8px}
+.tile .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
+.tile .v{font:600 15px ui-monospace,Consolas,monospace;white-space:pre}
+.tile{min-width:0}
+.tile .s{font:12px ui-monospace,Consolas,monospace;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
+.full{grid-column:1/-1}
+label{display:flex;gap:5px;align-items:center;font-size:13px}
+#log{font:12px ui-monospace,Consolas,monospace;max-height:120px;overflow:auto;white-space:pre-wrap;color:var(--muted)}
+#banner{display:none;padding:8px 12px;border-radius:8px;border:1px solid var(--err);color:var(--err);margin:12px 16px 0}
+.legend span{margin-right:12px;font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>IMU Bench Viewer</h1>
+  <button id="btnConnect" class="primary">Connect</button>
+  <button id="btnDemo">Demo data: off</button>
+  <span id="chip" class="chip">Disconnected</span>
+  <span id="statusTxt" class="note"></span>
+</header>
+<div id="banner"></div>
+
+<main>
+  <section>
+    <h2>Orientation (6-axis Mahony, JS)</h2>
+    <canvas id="view3d"></canvas>
+    <div class="row">
+      <button id="btnCal">Calibrate gyro bias (hold still, 2 s)</button>
+      <button id="btnReset">Reset orientation</button>
+      <label>Mahony kp <input id="kp" type="number" min="0" max="20" step="0.1" value="1.5" style="width:70px"></label>
+    </div>
+    <div class="note" id="calTxt">Gyro bias: not calibrated.</div>
+    <div class="note"><b>Yaw drifts</b>: with no magnetometer, rotation about the vertical axis is unobservable; only roll/pitch are anchored by gravity. Accel correction is skipped when |a| is outside 0.7-1.3 g.</div>
+  </section>
+
+  <section>
+    <h2>Readings</h2>
+    <div class="tiles" id="tiles"></div>
+  </section>
+
+  <section class="full">
+    <h2>Accelerometer (g)</h2>
+    <canvas id="plotA" class="plot"></canvas>
+    <div class="legend"><span style="color:var(--x)">&#9632; ax</span><span style="color:var(--y)">&#9632; ay</span><span style="color:var(--z)">&#9632; az</span></div>
+  </section>
+  <section class="full">
+    <h2>Gyroscope (deg/s)</h2>
+    <canvas id="plotG" class="plot"></canvas>
+    <div class="legend"><span style="color:var(--x)">&#9632; gx</span><span style="color:var(--y)">&#9632; gy</span><span style="color:var(--z)">&#9632; gz</span></div>
+    <div class="row">
+      <label>Time window <select id="win"><option>2</option><option selected>5</option><option>10</option></select> s</label>
+      <label>Y zoom <select id="zoom"><option value="1">full range</option><option value="4" selected>1/4</option><option value="16">1/16</option><option value="64">1/64</option></select></label>
+      <span class="note">Plots are min/max-decimated per pixel column for display only; the filter and CSV use every sample. Values beyond the zoomed axis are clipped.</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Device controls</h2>
+    <div class="row">
+      <label>ODR <select id="selOdr"><option>100</option><option>200</option><option>500</option><option selected>1000</option><option>2000</option></select> Hz</label>
+      <label>Accel <select id="selA"><option>2</option><option>4</option><option>8</option><option selected>16</option></select> g</label>
+      <label>Gyro <select id="selG"><option>125</option><option>250</option><option>500</option><option>1000</option><option selected>2000</option></select> dps</label>
+      <label>I2C <select id="selI"><option value="400">400 kHz</option><option value="1000">1 MHz</option></select></label>
+    </div>
+    <div class="row">
+      <button id="btnPause">Pause stream</button>
+      <button id="btnStatus">Re-print status</button>
+      <label>Timestamp tick <input id="tick" type="number" min="0.1" step="any" value="1.0667" style="width:70px"> us</label>
+    </div>
+    <div class="note" id="tickHint"></div>
+  </section>
+
+  <section>
+    <h2>Record</h2>
+    <div class="row">
+      <button id="btnRec">Start recording</button>
+      <span id="recTxt" class="note">Idle.</span>
+    </div>
+    <div class="note">CSV columns: seq, ts_ticks, t_s, ax_g, ay_g, az_g, gx_dps, gy_dps, gz_dps, temp_c. Every received sample is recorded (no decimation). Downloads on stop.</div>
+    <h2 style="margin-top:10px">Device messages</h2>
+    <div id="log"></div>
+  </section>
+</main>
+
+<script id="core">
+// ===== Pure logic (no DOM): parser, ring buffer, Mahony filter, quaternion helpers, demo generator. =====
+// Kept in its own <script id="core"> so it can be extracted and run under node (see README).
+const IMUCore = (() => {
+  // Line protocol: "D,seq,ts,ax,ay,az,gx,gy,gz,temp" | "#S {json}" | "#I|#W|#E text". Anything else -> bad.
+  function parseLine(line) {
+    line = line.trim();
+    if (!line) return null;
+    if (line.charCodeAt(0) === 68 /* D */ && line[1] === ',') {
+      const f = line.split(',');
+      if (f.length !== 10) return { type: 'bad', line };
+      const n = new Array(9);
+      for (let i = 0; i < 9; i++) {
+        const s = f[i + 1];
+        if (!/^-?\d+$/.test(s)) return { type: 'bad', line };
+        n[i] = +s;
+      }
+      return { type: 'data', seq: n[0], ts: n[1], a: [n[2], n[3], n[4]], g: [n[5], n[6], n[7]], temp: n[8] };
+    }
+    if (line[0] === '#') {
+      const tag = line[1], text = line.slice(3);
+      if (tag === 'S') {
+        try { return { type: 'status', obj: JSON.parse(text) }; } catch (e) { return { type: 'bad', line }; }
+      }
+      if (tag === 'I' || tag === 'W' || tag === 'E') return { type: 'msg', tag, text };
+    }
+    return { type: 'bad', line };
+  }
+
+  class Ring {
+    constructor(cap) {
+      this.cap = cap; this.n = 0; this.head = 0; // head = next write slot
+      this.t = new Float64Array(cap);
+      this.v = []; for (let i = 0; i < 6; i++) this.v.push(new Float32Array(cap));
+    }
+    push(t, a, g) {
+      const h = this.head;
+      this.t[h] = t;
+      this.v[0][h] = a[0]; this.v[1][h] = a[1]; this.v[2][h] = a[2];
+      this.v[3][h] = g[0]; this.v[4][h] = g[1]; this.v[5][h] = g[2];
+      this.head = (h + 1) % this.cap; if (this.n < this.cap) this.n++;
+    }
+    // slot of the i-th oldest element
+    slot(i) { return (this.head - this.n + i + this.cap * 2) % this.cap; }
+    // index (0 = oldest) of the first sample with t >= tMin (scan backwards from newest)
+    firstAtOrAfter(tMin) {
+      let i = this.n;
+      while (i > 0 && this.t[this.slot(i - 1)] >= tMin) i--;
+      return i;
+    }
+    last() { return this.n ? this.slot(this.n - 1) : -1; }
+    clear() { this.n = 0; this.head = 0; }
+  }
+
+  // Std dev of channel c over samples with t >= tMin.
+  function stdLast(ring, c, tMin) {
+    const i0 = ring.firstAtOrAfter(tMin), arr = ring.v[c];
+    const n = ring.n - i0; if (n < 2) return NaN;
+    let m = 0; for (let i = i0; i < ring.n; i++) m += arr[ring.slot(i)];
+    m /= n; let s = 0;
+    for (let i = i0; i < ring.n; i++) { const d = arr[ring.slot(i)] - m; s += d * d; }
+    return Math.sqrt(s / (n - 1));
+  }
+
+  const D2R = Math.PI / 180, R2D = 180 / Math.PI;
+
+  // Rotation of vector v by quaternion q (body -> world), q = [w,x,y,z].
+  function rotate(q, v) {
+    const [w, x, y, z] = q;
+    const r00 = 1 - 2 * (y * y + z * z), r01 = 2 * (x * y - w * z), r02 = 2 * (x * z + w * y);
+    const r10 = 2 * (x * y + w * z), r11 = 1 - 2 * (x * x + z * z), r12 = 2 * (y * z - w * x);
+    const r20 = 2 * (x * z - w * y), r21 = 2 * (y * z + w * x), r22 = 1 - 2 * (x * x + y * y);
+    return [r00 * v[0] + r01 * v[1] + r02 * v[2], r10 * v[0] + r11 * v[1] + r12 * v[2], r20 * v[0] + r21 * v[1] + r22 * v[2]];
+  }
+  function rotateInv(q, v) { return rotate([q[0], -q[1], -q[2], -q[3]], v); }
+
+  function quatFromAccel(a) { // roll/pitch from gravity, yaw 0; world z up, accel at rest = +1 g on z
+    const roll = Math.atan2(a[1], a[2]);
+    const pitch = Math.atan2(-a[0], Math.hypot(a[1], a[2]));
+    const cr = Math.cos(roll / 2), sr = Math.sin(roll / 2), cp = Math.cos(pitch / 2), sp = Math.sin(pitch / 2);
+    return [cr * cp, sr * cp, cr * sp, -sr * sp]; // ZYX with yaw=0
+  }
+  function rollPitchFromAccel(a) {
+    return { roll: Math.atan2(a[1], a[2]) * R2D, pitch: Math.atan2(-a[0], Math.hypot(a[1], a[2])) * R2D };
+  }
+  function quatToEulerDeg(q) { // ZYX
+    const [w, x, y, z] = q;
+    return {
+      roll: Math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y)) * R2D,
+      pitch: Math.asin(Math.max(-1, Math.min(1, 2 * (w * y - z * x)))) * R2D,
+      yaw: Math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)) * R2D
+    };
+  }
+
+  // 6-axis Mahony (proportional + optional integral). gyro in rad/s, accel in g, dt in s.
+  class Mahony {
+    constructor(kp = 1.5, ki = 0) { this.kp = kp; this.ki = ki; this.q = [1, 0, 0, 0]; this.ix = 0; this.iy = 0; this.iz = 0; this.accelUsed = 0; this.accelSkipped = 0; }
+    reset(q) { this.q = q ? q.slice() : [1, 0, 0, 0]; this.ix = this.iy = this.iz = 0; }
+    update(gx, gy, gz, ax, ay, az, dt) {
+      let [q0, q1, q2, q3] = this.q;
+      const n = Math.sqrt(ax * ax + ay * ay + az * az);
+      if (n > 0.7 && n < 1.3) {
+        ax /= n; ay /= n; az /= n;
+        const vx = 2 * (q1 * q3 - q0 * q2), vy = 2 * (q0 * q1 + q2 * q3), vz = q0 * q0 - q1 * q1 - q2 * q2 + q3 * q3;
+        const ex = ay * vz - az * vy, ey = az * vx - ax * vz, ez = ax * vy - ay * vx;
+        if (this.ki > 0) { this.ix += this.ki * ex * dt; this.iy += this.ki * ey * dt; this.iz += this.ki * ez * dt; gx += this.ix; gy += this.iy; gz += this.iz; }
+        gx += this.kp * ex; gy += this.kp * ey; gz += this.kp * ez;
+        this.accelUsed++;
+      } else this.accelSkipped++;
+      const h = 0.5 * dt;
+      const d0 = (-q1 * gx - q2 * gy - q3 * gz) * h, d1 = (q0 * gx + q2 * gz - q3 * gy) * h,
+            d2 = (q0 * gy - q1 * gz + q3 * gx) * h, d3 = (q0 * gz + q1 * gy - q2 * gx) * h;
+      q0 += d0; q1 += d1; q2 += d2; q3 += d3;
+      const m = 1 / Math.sqrt(q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3);
+      this.q = [q0 * m, q1 * m, q2 * m, q3 * m];
+    }
+  }
+
+  // Demo generator: emits protocol lines (as the firmware would) from a scripted motion, plus handles commands.
+  function gauss() { let u = 0, v = 0; while (!u) u = Math.random(); v = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); }
+  class DemoGen {
+    constructor() {
+      this.st = { fw: 'demo', ready: 1, addr: 104, who: 71, odr: 1000, accel_fs_g: 16, gyro_fs_dps: 2000, lsb_per_g: 2048, lsb_per_dps: 16.384,
+        temp_lsb_per_c: 2.07, temp_off_c: 25, ts_tick_us: 1, i2c_hz: 400000, overflows: 0, serial_drops: 0, i2c_errs: 0, bad_packets: 0, paused: 0, seq: 0 };
+      this.q = [1, 0, 0, 0]; this.seq = 0; this.tsTicks = 0; this.t = 0; this.bias = [0.8, -0.5, 0.3];
+      this.truth = [1, 0, 0, 0];
+    }
+    statusLine() { this.st.lsb_per_g = 32768 / this.st.accel_fs_g; this.st.lsb_per_dps = 32768 / this.st.gyro_fs_dps; this.st.seq = this.seq; return '#S ' + JSON.stringify(this.st); }
+    command(text) {
+      const c = text.trim()[0], v = parseInt(text.trim().slice(1), 10);
+      if (c === 'o' && [50, 100, 200, 500, 1000, 2000, 4000, 8000].includes(v)) this.st.odr = v;
+      else if (c === 'a' && [2, 4, 8, 16].includes(v)) this.st.accel_fs_g = v;
+      else if (c === 'g' && [125, 250, 500, 1000, 2000].includes(v)) this.st.gyro_fs_dps = v;
+      else if (c === 'i') this.st.i2c_hz = (v === 1000 || v === 1000000) ? 1000000 : 400000;
+      else if (c === 'p') this.st.paused = 1; else if (c === 'r') this.st.paused = 0;
+      return [this.statusLine()];
+    }
+    // body-frame angular velocity (dps) at demo time t: still, roll +90, hold, back, pitch +90, hold, back, yaw spin, rest (28 s loop)
+    omega(t) {
+      t = t % 28;
+      if (t < 3) return [0, 0, 0];
+      if (t < 5) return [45, 0, 0]; if (t < 7) return [0, 0, 0]; if (t < 9) return [-45, 0, 0];
+      if (t < 11) return [0, 0, 0];
+      if (t < 13) return [0, 45, 0]; if (t < 15) return [0, 0, 0]; if (t < 17) return [0, -45, 0];
+      if (t < 19) return [0, 0, 0];
+      if (t < 22) return [0, 0, 60];
+      return [0, 0, 0];
+    }
+    // Advance by dtSec of demo time; returns array of protocol lines (D lines unless paused).
+    step(dtSec) {
+      const st = this.st, out = [], dt = 1 / st.odr;
+      this.acc = (this.acc || 0) + dtSec * st.odr; const n = Math.floor(this.acc + 1e-9); this.acc -= n;
+      for (let k = 0; k < n; k++) {
+        const w = this.omega(this.t), wr = w.map(x => x * D2R);
+        const [q0, q1, q2, q3] = this.q, h = 0.5 * dt;
+        const nq = [q0 + h * (-q1 * wr[0] - q2 * wr[1] - q3 * wr[2]), q1 + h * (q0 * wr[0] + q2 * wr[2] - q3 * wr[1]),
+                    q2 + h * (q0 * wr[1] - q1 * wr[2] + q3 * wr[0]), q3 + h * (q0 * wr[2] + q1 * wr[1] - q2 * wr[0])];
+        const m = 1 / Math.hypot(...nq); this.q = nq.map(x => x * m);
+        this.t += dt;
+        const gb = rotateInv(this.q, [0, 0, 1]);
+        let tap = 0; const tp = this.t % 28; if (tp > 23.0 && tp < 23.02) tap = 4 * Math.sin((tp - 23.0) * 400); // tap spike
+        const a = [gb[0] + 0.002 * gauss(), gb[1] + 0.002 * gauss(), gb[2] + 0.002 * gauss() + tap];
+        const g = [w[0] + this.bias[0] + 0.05 * gauss(), w[1] + this.bias[1] + 0.05 * gauss(), w[2] + this.bias[2] + 0.05 * gauss()];
+        const clip = v => Math.max(-32768, Math.min(32767, Math.round(v)));
+        this.tsTicks += dt * 1e6 / st.ts_tick_us;
+        if (!st.paused) out.push(['D', this.seq, Math.round(this.tsTicks), clip(a[0] * st.lsb_per_g), clip(a[1] * st.lsb_per_g), clip(a[2] * st.lsb_per_g),
+          clip(g[0] * st.lsb_per_dps), clip(g[1] * st.lsb_per_dps), clip(g[2] * st.lsb_per_dps), clip((28 - 25) * 2.07)].join(','));
+        this.seq++;
+      }
+      this.truth = this.q.slice();
+      return out;
+    }
+  }
+
+  return { parseLine, Ring, stdLast, Mahony, DemoGen, rotate, rotateInv, quatFromAccel, rollPitchFromAccel, quatToEulerDeg, D2R, R2D };
+})();
+</script>
+
+<script id="app">
+(() => {
+'use strict';
+const C = IMUCore;
+const $ = id => document.getElementById(id);
+const ring = new C.Ring(32768);   // 10 s window at 2 kHz = 20000 samples
+const filter = new C.Mahony(1.5, 0);
+let st = { lsb_per_g: 2048, lsb_per_dps: 16.384, odr: 1000, accel_fs_g: 16, gyro_fs_dps: 2000, temp_lsb_per_c: 2.07, temp_off_c: 25, ts_tick_us: 1, ready: 1 };
+let tickUs = 1;
+let mode = 'off';                 // 'off' | 'serial' | 'demo'
+let port = null, reader = null, writer = null, readPromise = null, demo = null, demoTimer = null, demoLast = 0;
+let tsRaw = null, tsOff = 0;
+let lastSeq = -1, missed = 0, lastTsTicks = null, tsUnwrapNote = 0, badLines = 0, totalSamples = 0;
+let lastDataMs = 0, lastSample = null, lastTempC = NaN;
+let bias = [0, 0, 0], calib = null, biasText = 'Gyro bias: not calibrated.';
+let recording = false, recRows = [], recStartMs = 0, recCapped = false;
+const REC_CAP = 2e6;   // ~250 MB of row strings; 2e6 rows = 17 min at 2 kHz
+let hostHist = [];                // [ms, totalSamples] for 1 s host-rate window
+let rateHost = NaN, rateSens = NaN;
+const logLines = [];
+let lastErr = '';
+
+function log(s) { logLines.push(s); if (logLines.length > 40) logLines.shift(); $('log').textContent = logLines.join('\n'); $('log').scrollTop = 1e9; }
+function banner(msg) { const b = $('banner'); b.style.display = msg ? 'block' : 'none'; b.textContent = msg || ''; }
+function setChip(text, cls) { const c = $('chip'); c.textContent = text; c.className = 'chip ' + (cls || ''); }
+
+// ---------- tiles ----------
+const tileDefs = ['accel', 'gyro', 'amag', 'rp', 'yaw', 'temp', 'rates', 'missed', 'ovf', 'sdA', 'sdG', 'dev'];
+const tileTitle = { accel: 'Accel (g)', gyro: 'Gyro (dps)', amag: '|accel| (g)', rp: 'Roll / pitch from gravity', yaw: 'Filter yaw (drifts)', temp: 'Temperature',
+  rates: 'Sample rate (Hz)', missed: 'Missed seq (host side)', ovf: 'FIFO overflows / drops', sdA: 'Accel std, last 2 s (g)', sdG: 'Gyro std, last 2 s (dps)', dev: 'Device' };
+for (const k of tileDefs) { const d = document.createElement('div'); d.className = 'tile'; d.innerHTML = `<div class="k">${tileTitle[k]}</div><div class="v" id="t_${k}">-</div><div class="s" id="s_${k}"></div>`; $('tiles').appendChild(d); }
+const f = (x, d) => Number.isFinite(x) ? x.toFixed(d) : '-';
+const fs = (x, d) => Number.isFinite(x) ? (x >= 0 ? '+' : '') + x.toFixed(d) : '-';
+
+// ---------- data path (every sample, no decimation) ----------
+function onSample(s) {
+  totalSamples++; lastDataMs = performance.now();
+  if (lastSeq >= 0) {
+    if (s.seq > lastSeq) missed += s.seq - lastSeq - 1;
+    else { log('seq restarted (device re-init?) ' + lastSeq + ' -> ' + s.seq); lastTsTicks = null; tsRaw = null; tsOff = 0; }
+  }
+  lastSeq = s.seq;
+  const ax = s.a[0] / st.lsb_per_g, ay = s.a[1] / st.lsb_per_g, az = s.a[2] / st.lsb_per_g;
+  const gx = s.g[0] / st.lsb_per_dps, gy = s.g[1] / st.lsb_per_dps, gz = s.g[2] / st.lsb_per_dps;
+  const tempC = s.temp / st.temp_lsb_per_c + st.temp_off_c; lastTempC = tempC;
+  // firmware unwraps the 16-bit FIFO stamp to 32 bits (wraps after ~71 min at 1 us): unwrap that too
+  if (tsRaw !== null && s.ts < tsRaw - 2147483648) tsOff += 4294967296;
+  tsRaw = s.ts; const tsU = s.ts + tsOff;
+  const tSec = tsU * tickUs * 1e-6;
+  // dt for the filter: sensor timestamps, falling back to 1/ODR when implausible (also guards a wrong tick setting)
+  let dt = 1 / st.odr;
+  if (lastTsTicks !== null) {
+    const d = (tsU - lastTsTicks) * tickUs * 1e-6;
+    if (d > 0.25 / st.odr && d < 4 / st.odr) dt = d;
+  }
+  lastTsTicks = tsU;
+  ring.push(tSec, [ax, ay, az], [gx, gy, gz]);
+  lastSample = { ax, ay, az, gx, gy, gz, seq: s.seq };
+  if (calib) {
+    calib.n++; for (let i = 0; i < 3; i++) { const v = [gx, gy, gz][i]; calib.sum[i] += v; calib.sq[i] += v * v; }
+    if (calib.n >= Math.max(50, 2 * st.odr)) finishCalib();
+  }
+  filter.update((gx - bias[0]) * C.D2R, (gy - bias[1]) * C.D2R, (gz - bias[2]) * C.D2R, ax, ay, az, dt);
+  if (recording && recRows.length >= REC_CAP) recCapped = true;
+  else if (recording)
+    recRows.push(`${s.seq},${s.ts},${tSec.toFixed(6)},${ax.toFixed(5)},${ay.toFixed(5)},${az.toFixed(5)},${gx.toFixed(4)},${gy.toFixed(4)},${gz.toFixed(4)},${tempC.toFixed(2)}`);
+}
+
+function handleLine(line) {
+  const p = C.parseLine(line);
+  if (!p) return;
+  if (p.type === 'data') onSample(p);
+  else if (p.type === 'status') { applyStatus(p.obj); }
+  else if (p.type === 'msg') { log('[' + p.tag + '] ' + p.text); if (p.tag === 'E') lastErr = p.text; }
+  else { badLines++; if (badLines <= 5) log('ignored malformed line: ' + p.line.slice(0, 60)); }
+}
+
+function applyStatus(o) {
+  // The device keeps counting seq while paused (it still drains the FIFO), so resuming is not a loss:
+  // status lines are in-order with D lines, so the next sample will be o.seq.
+  if ((st.paused || o.paused) && Number.isFinite(o.seq) && lastSeq >= 0) lastSeq = o.seq - 1;
+  st = Object.assign(st, o);
+  if (!(st.lsb_per_g > 0)) st.lsb_per_g = 32768 / st.accel_fs_g;
+  if (!(st.lsb_per_dps > 0)) st.lsb_per_dps = 32768 / st.gyro_fs_dps;
+  if ($('tick').dataset.user !== '1') { tickUs = st.ts_tick_us || 1; $('tick').value = tickUs; }
+  setSel('selOdr', st.odr); setSel('selA', st.accel_fs_g); setSel('selG', st.gyro_fs_dps); setSel('selI', Math.round(st.i2c_hz / 1000));
+  $('btnPause').textContent = st.paused ? 'Resume stream' : 'Pause stream';
+  $('btnPause').classList.toggle('on', !!st.paused);
+  $('statusTxt').textContent = st.ready ? `addr 0x${(st.addr || 0).toString(16)}  WHO_AM_I 0x${(st.who || 0).toString(16)}  ${st.odr} Hz  ±${st.accel_fs_g} g  ±${st.gyro_fs_dps} dps  I2C ${(st.i2c_hz / 1000)} kHz`
+    : 'device not initialised (see messages)';
+  // ranges / rates changed: restart the sequence & timestamp bookkeeping so no false "missed"
+  lastTsTicks = null;
+}
+function setSel(id, v) { const s = $(id); for (const o of s.options) if (+o.value === +v) s.value = o.value; }
+
+// ---------- transport ----------
+async function send(text) {
+  if (mode === 'demo' && demo) { for (const l of demo.command(text)) handleLine(l); return; }
+  if (mode === 'serial' && writer) { try { await writer.write(new TextEncoder().encode(text + '\n')); } catch (e) { log('write failed: ' + e.message); } }
+  else log('not connected; command not sent: ' + text);
+}
+
+async function connectSerial() {
+  banner('');
+  if (!('serial' in navigator)) { banner('Web Serial is not available in this browser. Use Chrome or Edge (desktop). If the page is opened from file:// and refused, serve it: python -m http.server 8000 in this folder, then open http://localhost:8000/'); return; }
+  stopDemo();
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200, bufferSize: 262144 });
+  } catch (e) { banner('Could not open serial port: ' + e.message + (e.name === 'NotFoundError' ? ' (no port chosen)' : ' (is another program, e.g. a serial monitor or pio, holding it?)')); port = null; return; }
+  mode = 'serial'; resetStats();
+  $('btnConnect').textContent = 'Disconnect'; $('btnDemo').disabled = true;
+  try { await port.setSignals({ dataTerminalReady: true }); } catch (e) {}   // Teensy's `Serial` bool follows DTR
+  writer = port.writable.getWriter();
+  setChip('Connected, waiting for data', 'warn');
+  readPromise = readLoop();
+  setTimeout(() => send('s'), 300);
+}
+async function readLoop() {
+  const dec = new TextDecoder(); let buf = '';
+  try {
+    while (port && port.readable) {
+      reader = port.readable.getReader();
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let i, start = 0;
+          while ((i = buf.indexOf('\n', start)) >= 0) { handleLine(buf.slice(start, i)); start = i + 1; }
+          buf = buf.slice(start);
+          if (buf.length > 4096) buf = '';   // runaway line without newline
+        }
+      } finally { reader.releaseLock(); reader = null; }
+      break;
+    }
+  } catch (e) { banner('Serial read error: ' + e.message + ' (device unplugged or reset?)'); }
+  await disconnect(true);
+}
+async function disconnect(fromLoop) {
+  if (mode === 'serial') {
+    mode = 'off';
+    try { if (reader) await reader.cancel(); } catch (e) {}
+    // port.close() rejects while the readable is still locked: wait for readLoop to release it first
+    // (not when we ARE the read loop's own cleanup, which would deadlock on itself).
+    if (!fromLoop && readPromise) { try { await readPromise; } catch (e) {} }
+    try { if (writer) { writer.releaseLock(); writer = null; } } catch (e) {}
+    try { if (port) await port.close(); } catch (e) {}
+    port = null;
+  }
+  $('btnConnect').textContent = 'Connect'; $('btnDemo').disabled = false; setChip('Disconnected', '');
+}
+function startDemo() {
+  banner(''); demo = new C.DemoGen(); mode = 'demo'; resetStats();
+  $('btnDemo').textContent = 'Demo data: on'; $('btnDemo').classList.add('on'); $('btnConnect').disabled = true;
+  handleLine(demo.statusLine()); demoLast = performance.now();
+  demoTimer = setInterval(() => { const now = performance.now(); const lines = demo.step((now - demoLast) / 1000); demoLast = now; for (const l of lines) handleLine(l); }, 10);
+  demoLast = performance.now();
+  log('demo mode: simulated 28 s motion loop (still, roll 90, pitch 90, yaw spin, tap at ~23 s), gyro bias (0.8,-0.5,0.3) dps');
+}
+function stopDemo() {
+  if (mode !== 'demo') return;
+  clearInterval(demoTimer); demoTimer = null; demo = null; mode = 'off';
+  $('btnDemo').textContent = 'Demo data: off'; $('btnDemo').classList.remove('on'); $('btnConnect').disabled = false; setChip('Disconnected', '');
+}
+function resetStats() {
+  ring.clear(); lastSeq = -1; missed = 0; lastTsTicks = null; tsRaw = null; tsOff = 0; badLines = 0; totalSamples = 0; hostHist = []; lastSample = null; lastErr = '';
+  filter.reset(); filter.accelUsed = filter.accelSkipped = 0; lastDataMs = performance.now();
+}
+
+// ---------- actions ----------
+function startCalib() { if (!lastSample) { log('no data to calibrate with'); return; } calib = { n: 0, sum: [0, 0, 0], sq: [0, 0, 0] }; $('calTxt').textContent = 'Calibrating gyro bias... hold the board still.'; $('btnCal').disabled = true; }
+function finishCalib() {
+  const n = calib.n, m = calib.sum.map(s => s / n), sd = calib.sq.map((q, i) => Math.sqrt(Math.max(0, q / n - m[i] * m[i])));
+  calib = null; $('btnCal').disabled = false;
+  const moved = Math.max(...sd) > 1.0;
+  bias = m;
+  biasText = `Gyro bias (dps): ${m.map(v => v.toFixed(3)).join(', ')}; noise sd ${sd.map(v => v.toFixed(3)).join(', ')}` + (moved ? '  WARNING: board moved during calibration, repeat.' : '');
+  $('calTxt').textContent = biasText;
+}
+function resetOrientation() { if (lastSample) filter.reset(C.quatFromAccel([lastSample.ax, lastSample.ay, lastSample.az])); else filter.reset(); }
+
+$('btnConnect').onclick = () => mode === 'serial' ? disconnect() : connectSerial();
+$('btnDemo').onclick = () => mode === 'demo' ? stopDemo() : (mode === 'off' ? startDemo() : null);
+$('btnCal').onclick = startCalib;
+$('btnReset').onclick = resetOrientation;
+$('kp').onchange = e => { filter.kp = Math.max(0, +e.target.value || 0); };
+$('selOdr').onchange = e => send('o ' + e.target.value);
+$('selA').onchange = e => send('a ' + e.target.value);
+$('selG').onchange = e => send('g ' + e.target.value);
+$('selI').onchange = e => send('i ' + e.target.value);
+$('btnPause').onclick = () => send(st.paused ? 'r' : 'p');
+$('btnStatus').onclick = () => send('s');
+$('tick').onchange = e => { const v = +e.target.value; if (v > 0) { tickUs = v; e.target.dataset.user = '1'; lastTsTicks = null; ring.clear(); } };
+$('btnRec').onclick = () => {
+  if (!recording) { recRows = []; recCapped = false; recording = true; recStartMs = performance.now(); $('btnRec').textContent = 'Stop and download CSV'; $('btnRec').classList.add('on'); }
+  else {
+    recording = false; $('btnRec').textContent = 'Start recording'; $('btnRec').classList.remove('on');
+    const head = 'seq,ts_ticks,t_s,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,temp_c\n';
+    const blob = new Blob([head, recRows.join('\n'), '\n'], { type: 'text/csv' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+    a.download = 'imu_' + new Date().toISOString().replace(/[:.]/g, '-') + '.csv'; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    $('recTxt').textContent = `Saved ${recRows.length} samples.`; recRows = [];
+  }
+};
+
+// ---------- slow UI (4 Hz) ----------
+function updateTiles() {
+  const now = performance.now();
+  hostHist.push([now, totalSamples]); while (hostHist.length > 1 && now - hostHist[0][0] > 1000) hostHist.shift();
+  if (hostHist.length > 1) { const a = hostHist[0], b = hostHist[hostHist.length - 1]; rateHost = (b[1] - a[1]) / ((b[0] - a[0]) / 1000); } else rateHost = NaN;
+  const li = ring.last();
+  if (li >= 0) {
+    const i0 = ring.firstAtOrAfter(ring.t[li] - 1);
+    const n = ring.n - i0;
+    rateSens = n > 1 ? (n - 1) / (ring.t[li] - ring.t[ring.slot(i0)]) : NaN;
+  } else rateSens = NaN;
+
+  if (recording) $('recTxt').textContent = recCapped ? `STOPPED ADDING: ${recRows.length} rows is the memory cap, press Stop to save what was recorded.` : `Recording: ${recRows.length} samples.`;
+  const L = lastSample;
+  const set = (k, v, s) => { $('t_' + k).textContent = v; $('s_' + k).textContent = s || ''; };
+  if (L) {
+    const am = Math.hypot(L.ax, L.ay, L.az), rp = C.rollPitchFromAccel([L.ax, L.ay, L.az]), e = C.quatToEulerDeg(filter.q);
+    set('accel', `x ${fs(L.ax, 3)}\ny ${fs(L.ay, 3)}\nz ${fs(L.az, 3)}`);
+    set('gyro', `x ${fs(L.gx, 2)}\ny ${fs(L.gy, 2)}\nz ${fs(L.gz, 2)}`);
+    set('amag', f(am, 4), Math.abs(am - 1) < 0.03 ? 'at rest ~1.000' : 'moving or off-nominal');
+    set('rp', `${fs(rp.roll, 1)}° / ${fs(rp.pitch, 1)}°`, 'roll = atan2(ay,az), pitch = atan2(-ax, hypot(ay,az))');
+    set('yaw', fs(e.yaw, 1) + '°', 'relative; no magnetometer');
+    set('temp', f(lastTempC, 1) + ' °C', '8-bit FIFO temp, ±~0.5 °C steps');
+    const t2 = ring.t[li] - 2;
+    const sdA = [0, 1, 2].map(c => C.stdLast(ring, c, t2)), sdG = [3, 4, 5].map(c => C.stdLast(ring, c, t2));
+    set('sdA', sdA.map((v, i) => 'xyz'[i] + ' ' + f(v, 4)).join('\n'));
+    set('sdG', sdG.map((v, i) => 'xyz'[i] + ' ' + f(v, 3)).join('\n'));
+  }
+  set('rates', `host   ${f(rateHost, 0)}\nsensor ${f(rateSens, 0)}`, `nominal ${st.odr}`);
+  set('missed', String(missed), `lines ignored: ${badLines}`);
+  set('ovf', `${st.overflows | 0} / ${st.serial_drops | 0}`, 'from last status line; request status to refresh');
+  set('dev', st.ready ? `0x${(st.addr || 0).toString(16)}` : 'not ready', `I2C errs ${st.i2c_errs | 0}  bad pkts ${st.bad_packets | 0}`);
+
+  // timestamp tick hint
+  let hint = '';
+  if (Number.isFinite(rateSens) && Number.isFinite(rateHost) && rateHost > 0) {
+    const r = rateSens / st.odr;
+    if (Math.abs(r - 1) > 0.15) hint = `Sensor-timestamp rate is ${f(rateSens, 0)} Hz vs nominal ${st.odr}: the timestamp tick is probably ${f(tickUs * r, 2)}... try setting "Timestamp tick" to ${f(tickUs * r, 1)} us (nominal 1 us, but the real value is 32/30 = 1.0667 us without an external clock, or 16 us if TMST_RES were set).`;
+  }
+  $('tickHint').textContent = hint;
+
+  // connection chip
+  if (mode === 'off') { /* keep chip */ }
+  else if (!st.ready) setChip('Device not ready' + (lastErr ? ': ' + lastErr.slice(0, 80) : ''), 'err');
+  else if (st.paused) setChip('Connected, stream paused', 'warn');
+  else if (now - lastDataMs > 2000) setChip('Connected, no data for 2 s', 'warn');
+  else setChip(mode === 'demo' ? 'Demo data streaming' : 'Streaming', 'ok');
+}
+setInterval(updateTiles, 250);
+
+// ---------- rendering (rAF) ----------
+function fit(cv) {
+  const dpr = window.devicePixelRatio || 1, r = cv.getBoundingClientRect();
+  const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+  const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { g, w: r.width, h: r.height };
+}
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+function drawPlot(cv, ch0, fsVal, unit) {
+  const { g, w, h } = fit(cv);
+  const winS = +$('win').value, ylim = fsVal / +$('zoom').value;
+  const L = 52, R = 8, T = 8, B = 20, pw = w - L - R, ph = h - T - B;
+  g.clearRect(0, 0, w, h);
+  g.font = '11px system-ui'; g.fillStyle = css('--muted'); g.strokeStyle = css('--grid'); g.lineWidth = 1;
+  // y grid: 5 lines
+  for (let i = 0; i <= 4; i++) {
+    const y = T + ph * i / 4, val = ylim - 2 * ylim * i / 4;
+    g.beginPath(); g.moveTo(L, y); g.lineTo(L + pw, y); g.stroke();
+    g.textAlign = 'right'; g.textBaseline = 'middle'; g.fillText(val.toFixed(Math.abs(ylim) < 1 ? 2 : (Math.abs(ylim) < 10 ? 1 : 0)), L - 4, y);
+  }
+  for (let i = 0; i <= winS; i += winS > 5 ? 2 : 1) {
+    const x = L + pw * i / winS;
+    g.beginPath(); g.moveTo(x, T); g.lineTo(x, T + ph); g.stroke();
+    g.textAlign = i === 0 ? 'left' : (i === winS ? 'right' : 'center'); g.textBaseline = 'top'; g.fillText(i === winS ? 'now' : '-' + (winS - i) + ' s', x, T + ph + 4);
+  }
+  g.save(); g.translate(11, T + ph / 2); g.rotate(-Math.PI / 2); g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(unit + '  (axis ±' + ylim + ', full scale ±' + fsVal + ')', 0, 0); g.restore();
+  const li = ring.last(); if (li < 0) return;
+  const tNow = ring.t[li], t0 = tNow - winS, i0 = ring.firstAtOrAfter(t0);
+  const cols = Math.max(1, Math.floor(pw)), cols3 = ['--x', '--y', '--z'];
+  g.save(); g.beginPath(); g.rect(L, T, pw, ph); g.clip();
+  for (let c = 0; c < 3; c++) {
+    const arr = ring.v[ch0 + c], mn = new Float32Array(cols).fill(Infinity), mx = new Float32Array(cols).fill(-Infinity);
+    for (let i = i0; i < ring.n; i++) {
+      const s = ring.slot(i), x = Math.min(cols - 1, Math.floor((ring.t[s] - t0) / winS * cols)); if (x < 0) continue;
+      const v = arr[s]; if (v < mn[x]) mn[x] = v; if (v > mx[x]) mx[x] = v;
+    }
+    g.strokeStyle = css(cols3[c]); g.lineWidth = 1.2; g.beginPath();
+    let prev = null;
+    for (let x = 0; x < cols; x++) {
+      if (mn[x] === Infinity) { prev = null; continue; }
+      const y1 = T + ph * (0.5 - mn[x] / (2 * ylim)), y2 = T + ph * (0.5 - mx[x] / (2 * ylim)), px = L + x + 0.5;
+      if (prev !== null) g.lineTo(px, prev);
+      g.moveTo(px, y1); g.lineTo(px, y2 === y1 ? y1 + 0.5 : y2); prev = y2;
+      g.moveTo(px, y2);
+    }
+    g.stroke();
+  }
+  g.restore();
+}
+
+// 3D board: world z up; view = yaw az about z then elevation el.
+const BOX = [1.0, 0.7, 0.12];
+const FACES = [ // normal (body), 4 corner signs
+  { n: [0, 0, 1], v: [[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]], top: true },
+  { n: [0, 0, -1], v: [[-1, -1, -1], [-1, 1, -1], [1, 1, -1], [1, -1, -1]] },
+  { n: [1, 0, 0], v: [[1, -1, -1], [1, 1, -1], [1, 1, 1], [1, -1, 1]] },
+  { n: [-1, 0, 0], v: [[-1, -1, -1], [-1, -1, 1], [-1, 1, 1], [-1, 1, -1]] },
+  { n: [0, 1, 0], v: [[-1, 1, -1], [-1, 1, 1], [1, 1, 1], [1, 1, -1]] },
+  { n: [0, -1, 0], v: [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1]] },
+];
+function draw3d() {
+  const cv = $('view3d'), { g, w, h } = fit(cv);
+  g.clearRect(0, 0, w, h);
+  const az = 0.65, el = 0.5, ca = Math.cos(az), sa = Math.sin(az), ce = Math.cos(el), se = Math.sin(el);
+  const sc = Math.min(w, h) * 0.2, cx = w / 2, cy = h / 2 + 10;
+  const view = p => { const x1 = ca * p[0] - sa * p[1], y1 = sa * p[0] + ca * p[1]; return { x: cx + x1 * sc, y: cy - (p[2] * ce + y1 * se) * sc, d: y1 * ce - p[2] * se }; };
+  // ground grid (world)
+  g.strokeStyle = css('--grid'); g.lineWidth = 1; g.beginPath();
+  for (let i = -3; i <= 3; i++) {
+    let a = view([i, -3, -1.3]), b = view([i, 3, -1.3]); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y);
+    a = view([-3, i, -1.3]); b = view([3, i, -1.3]); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y);
+  }
+  g.stroke();
+  const q = filter.q, faces = [];
+  for (const F of FACES) {
+    const nw = C.rotate(q, F.n), nv = [ca * nw[0] - sa * nw[1], sa * nw[0] + ca * nw[1], nw[2]];
+    const nd = nv[1] * ce - nv[2] * se;
+    if (nd >= 0) continue;                                   // back face
+    const pts = F.v.map(s => view(C.rotate(q, [s[0] * BOX[0], s[1] * BOX[1], s[2] * BOX[2]])));
+    faces.push({ pts, d: pts.reduce((a, p) => a + p.d, 0) / 4, shade: 0.55 + 0.45 * Math.max(0, -nd), top: F.top });
+  }
+  faces.sort((a, b) => b.d - a.d);
+  g.lineWidth = 1.5; g.strokeStyle = css('--edge');
+  for (const F of faces) {
+    g.beginPath(); F.pts.forEach((p, i) => i ? g.lineTo(p.x, p.y) : g.moveTo(p.x, p.y)); g.closePath();
+    g.globalAlpha = 0.92; g.fillStyle = css('--face'); g.fill(); g.globalAlpha = (1 - F.shade) * 0.55; g.fillStyle = '#000'; g.fill(); g.globalAlpha = 1; g.stroke();
+  }
+  // body axes
+  const o = view(C.rotate(q, [0, 0, 0]));
+  const axes = [['X', [1.9, 0, 0], '--x'], ['Y', [0, 1.5, 0], '--y'], ['Z', [0, 0, 1.2], '--z']];
+  g.font = 'bold 13px system-ui'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.lineWidth = 2.5;
+  for (const [name, v, col] of axes) {
+    const e = view(C.rotate(q, v)); g.strokeStyle = g.fillStyle = css(col);
+    g.beginPath(); g.moveTo(o.x, o.y); g.lineTo(e.x, e.y); g.stroke();
+    const dx = e.x - o.x, dy = e.y - o.y, L = Math.hypot(dx, dy) || 1;
+    g.fillText(name, e.x + dx / L * 11, e.y + dy / L * 11);
+  }
+  g.fillStyle = css('--muted'); g.font = '12px system-ui'; g.textAlign = 'left'; g.textBaseline = 'top';
+  g.fillText('grid = world (z up). axes = IMU body frame', 8, 6);
+  if (!lastSample) { g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('no data: press Connect or enable Demo', w / 2, h / 2 + 90); }
+}
+function frame() {
+  draw3d();
+  drawPlot($('plotA'), 0, st.accel_fs_g, 'g');
+  drawPlot($('plotG'), 3, st.gyro_fs_dps, 'deg/s');
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+if (!('serial' in navigator)) banner('Web Serial is not available in this browser: use desktop Chrome or Edge to connect to hardware (Demo data still works).');
+try { if (/[?&]demo=1(&|$)/.test(location.search)) startDemo(); } catch (e) {}
+window.__imu = { C, filter, ring, handleLine, get st() { return st; } };   // handy in the devtools console
+})();
+</script>
+</body>
+</html>

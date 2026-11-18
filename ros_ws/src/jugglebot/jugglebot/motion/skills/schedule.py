@@ -19,7 +19,8 @@ import numpy as np
 import jugglebot.hardware_config as hw
 from jugglebot.motion.skills import segments as sg
 from jugglebot.motion.skills.segments import CATCH, KINDS, REST, THROW
-from jugglebot.motion.skills.sites import REST_CUP_Z_MM, REST_HAND_REV, Site
+from jugglebot.motion.skills.sites import (CATCH_CUP_Z_MM, REST_CUP_Z_MM,
+                                           REST_HAND_REV, Site)
 from jugglebot.motion.trajectory import ballistics_bc
 from jugglebot.motion.trajectory import tilt_geometry as tg
 
@@ -298,6 +299,10 @@ def transit_s(flight_s_: float, dwell_s: float) -> float:
 #: The ``Schedule.pattern`` label (and nomination pattern; formerly the admissible-box pattern) of a Columns
 #: whose two balls fly to DIFFERENT Apexes (JP-9, goal ``columns_highlow``).
 COLUMNS_HIGHLOW = 'columns_highlow'
+
+#: The ``Schedule.pattern`` label of :func:`compile_human_catch`'s per-Throw
+#: Schedule (PWAY-11 P2).
+HUMAN_CATCH = 'human_catch'
 
 
 @dataclasses.dataclass(frozen=True)
@@ -596,6 +601,17 @@ class Skill:
     #: lead the executor reserves for the same install, so a hand-built Skill
     #: cannot dispatch by one lead and be planned by another.
     lead_s: Optional[float] = None
+    #: CATCH only: the instant (wall clock, s) this CATCH's MISSED_CATCH
+    #: evidence window OPENS, for a CATCH whose Schedule holds no release
+    #: before its landing (``executor._register_catch`` otherwise anchors the
+    #: open on the latest scheduled release, and with none it arms nothing).
+    #: :func:`compile_human_catch` is the one caller that sets it: the
+    #: instant the plan is made (its ``t_now_s``), when the cup is known
+    #: EMPTY and the human's Ball is in flight, so a SEATED sample from then
+    #: on can only be this Ball (PWAY-11 P2, U5a).  ``None`` (every other
+    #: skill, the reload / Feed CATCH included) keeps the release-derived
+    #: window, or none, exactly as before.
+    catch_open_abs_s: Optional[float] = None
 
     def __post_init__(self):
         if self.kind not in KINDS:
@@ -620,6 +636,12 @@ class Skill:
         if self.landing_prior is not None and self.kind != CATCH:
             raise ValueError('only a CATCH may carry landing_prior (kind=%r)'
                               % (self.kind,))
+        if self.catch_open_abs_s is not None and (
+                self.kind != CATCH
+                or not np.isfinite(float(self.catch_open_abs_s))):
+            raise ValueError('catch_open_abs_s is a finite instant on a CATCH '
+                             'only (kind=%r, value=%r)'
+                             % (self.kind, self.catch_open_abs_s))
         if self.hold_tilt is not None and self.kind != CATCH:
             raise ValueError('only a CATCH may carry hold_tilt (kind=%r)'
                               % (self.kind,))
@@ -2252,6 +2274,10 @@ class OneBallPattern:
     #: (:data:`FLOOR_LIFT_S`), which is also what every offline test and the
     #: sim gate get.
     floor_lift_s: float = FLOOR_LIFT_S
+    #: ``'polygon'`` (JP-5, IDEA-9) = the polygon walk: ``sites`` is N >= 3
+    #: long and throw ``i`` leaves ``sites[i % N]`` for ``sites[(i+1) % N]``,
+    #: the ``'alternate'`` arithmetic unchanged (``_append_one_ball_pattern``);
+    #: only the label (``POLYGON_WALK``) and the site-count check differ.
     #: ``'alternate'`` = today's hop/self_toss (throw ``i`` from
     #: ``sites[i % n]`` to ``sites[(i+1) % n]``).  ``'fixed'`` = the one-ball
     #: oval (plan two-ball-oval § 2.1): EVERY throw from ``sites[0]`` (T) to
@@ -2275,15 +2301,19 @@ class OneBallPattern:
             raise ValueError(
                 'a landing offset is for a one-Site self-toss only, got %d '
                 'sites and roles %r' % (len(self.sites), self.roles))
-        if self.roles not in ('alternate', 'fixed'):
+        if self.roles not in ('alternate', 'fixed', 'polygon'):
             raise ValueError(
-                "roles must be 'alternate' or 'fixed', got %r"
+                "roles must be 'alternate', 'fixed' or 'polygon', got %r"
                 % (self.roles,))
+        if self.roles == 'polygon' and len(self.sites) < 3:
+            raise ValueError(
+                "roles='polygon' needs at least 3 sites, got %d"
+                % (len(self.sites),))
         if self.roles == 'fixed' and len(self.sites) != 2:
             raise ValueError(
                 "roles='fixed' needs exactly 2 sites (T, C), got %d"
                 % (len(self.sites),))
-        if len(self.sites) not in (1, 2):
+        if self.roles != 'polygon' and len(self.sites) not in (1, 2):
             raise ValueError(
                 'OneBallPattern takes 1 or 2 sites, got %d — no third site '
                 'exists in this plan (R4, owner decision D1 2026-09-23)'
@@ -2296,11 +2326,18 @@ class OneBallPattern:
                 % (self.floor_lift_s, FLOOR_LIFT_S))
 
 
+#: ``Schedule.pattern`` of a ``roles='polygon'`` one-ball schedule (JP-5; the
+#: label is provisional until the owner confirms it).
+POLYGON_WALK = 'polygon_walk'
+
+
 def _one_ball_label(pattern: OneBallPattern) -> str:
     """The ONE place a one-ball pattern's :attr:`Schedule.pattern` is named
     (``compile_one_ball`` and ``compile_reload`` both)."""
     if pattern.roles == 'fixed':
         return 'oval_1ball'
+    if pattern.roles == 'polygon':
+        return POLYGON_WALK
     return 'self_toss' if len(pattern.sites) == 1 else 'hop'
 
 
@@ -2578,6 +2615,90 @@ def compile_reload_wait(site: Site, floor_lift_s: float,
     return Schedule(skills=tuple(skills), flight_s=0.0, beat_s=period,
                     transit_s=0.0, dwell_s=0.0, t0_abs_s=t0,
                     pattern='self_toss')
+
+
+def compile_human_catch(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
+                        t_now_s: float, dispatch_lead_s: float) -> Schedule:
+    """The per-Throw Schedule of the ``human_catch`` Pattern (PWAY-11 P2,
+    ``design-human-catch.md`` section 2.1): ONE level CATCH at a human
+    Throw's predicted Landing, planned from the REST the machine is holding at
+    the wait Site, rest-terminal at the Landing xy (a standalone LANDING:
+    I-PLAN-7).
+
+    ``landing_mm`` / ``landing_vel_mm_s`` / ``t_land_abs_s`` are the Tracker
+    event's Fit, already in the schedule frame (the caller subtracts the
+    measured mocap-to-schedule offset) and on the wall clock.  ``t_now_s`` is
+    the instant the event is claimed (the Schedule's ``t0``);
+    ``dispatch_lead_s`` is the executor's dispatch look-ahead
+    (``skill_node._DISPATCH_LOOKAHEAD_S``, passed in so ``motion/`` stays free
+    of node constants): the CATCH's window is
+
+        ``t_land - (t_now + dispatch_lead_s) - LEAD_S``,
+
+    so ``Skill.dispatch_s() == t_now + dispatch_lead_s`` -- the executor
+    installs on its next tick -- and a fresh origin reserves ``LEAD_S`` after
+    that (``install_segment(..., reserve_fresh_lead=True)``).  A window under
+    :data:`MIN_WINDOW_S` raises ``ValueError`` (:func:`_check_window`): the
+    caller declines the event, nothing is sent.
+
+    **The CATCH's Site IS the Landing xy.**  The machine's start is the
+    executor's seed (the REST at the wait Site), not a Schedule input, and the
+    CATCH's terminal rest is ``Skill.site.rest_site_mm()``
+    (``executor._catch_rest_mm``): putting the Site at the Landing makes the
+    rest-terminal xy the event's xy bit for bit, whatever the wait Site or the
+    running mean of earlier Landings (the Pattern prior only GATES association
+    and places the wait Site; it never enters the aim).  A live re-aim
+    (``executor._resend_live_catch``) moves the touch-down inside the lateral
+    clamp about this first Landing; the rest tail still settles at this Site.
+
+    ``receive_tilt=(0, 0)`` pins the touch-down attitude level (the columns
+    feed CATCH's rule), so a lob's lateral arrival velocity never banks the
+    Platform; ``ball_id=0`` carries no Memory row (no Throw follows).
+
+    **The CATCH's verdict window opens at ``t_now_s``**
+    (``Skill.catch_open_abs_s``, schedule clock 0.0 before the shift): this
+    Schedule holds no release, so the MISSED_CATCH rule's usual anchor (the
+    latest scheduled release) does not exist and the CATCH would otherwise
+    arm no verdict, the executor reporting ``done`` the tick it dispatched,
+    about 0.5 s before touch-down.  The plan instant, not the Tracker's
+    ``flight_start``: the window's open exists only to keep an EARLIER ball's
+    seat out of this Catch's evidence, and at the plan instant the cup is
+    known EMPTY (the Pattern plans only from WAITING) while this Ball is in
+    flight at least ``first_lead_s`` from touch-down; ``flight_start`` is the
+    Tracker segment's first admitted sample, a fit-dependent estimate that
+    adds nothing to that guarantee and is not carried into the policy event.
+    """
+    landing = _vec3(landing_mm, 'landing_mm')
+    vel = _vec3(landing_vel_mm_s, 'landing_vel_mm_s')
+    t_land = float(t_land_abs_s)
+    t_now = float(t_now_s)
+    lookahead = float(dispatch_lead_s)
+    if not (np.isfinite(t_land) and np.isfinite(t_now)):
+        raise ValueError('t_land_abs_s / t_now_s must be finite, got %r / %r'
+                         % (t_land_abs_s, t_now_s))
+    if not (np.isfinite(lookahead) and lookahead >= 0.0):
+        raise ValueError('dispatch_lead_s must be finite and >= 0, got %r'
+                         % (dispatch_lead_s,))
+    if not t_land > t_now:
+        raise ValueError('the landing (%.3f) is not after now (%.3f)'
+                         % (t_land, t_now))
+    t_rel = t_land - t_now
+    window = t_rel - lookahead - LEAD_S
+    _check_window('the human_catch CATCH (event + dispatch look-ahead + '
+                  'install lead to touch-down)', window)
+    site = Site(name='HC', cup_mm=np.array([landing[0], landing[1],
+                                            CATCH_CUP_Z_MM]))
+    skills = [Skill(kind=CATCH, ball_id=0, site=site, t_abs_s=t_rel,
+                    window_s=window,
+                    landing_prior=LandingPrior(pos_mm=landing, vel_mm_s=vel,
+                                               t_land_abs_s=t_land),
+                    receive_tilt=(0.0, 0.0),
+                    catch_open_abs_s=0.0)]
+    skills = _assign_leads(skills)
+    skills = [_shifted(s, t_now) for s in skills]
+    return Schedule(skills=tuple(skills), flight_s=0.0, beat_s=t_rel,
+                    transit_s=0.0, dwell_s=0.0, t0_abs_s=t_now,
+                    pattern=HUMAN_CATCH)
 
 
 def compile_reload(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
@@ -2962,7 +3083,9 @@ def _shifted(sk: Skill, t0: float) -> Skill:
     ~1e-15 s.
     """
     tt = sk.then_throw
+    co = sk.catch_open_abs_s
     return dataclasses.replace(
         sk, t_abs_s=float(sk.t_abs_s) + t0,
         then_throw=(None if tt is None else dataclasses.replace(
-            tt, t_release_abs_s=float(tt.t_release_abs_s) + t0)))
+            tt, t_release_abs_s=float(tt.t_release_abs_s) + t0)),
+        catch_open_abs_s=(None if co is None else float(co) + t0))

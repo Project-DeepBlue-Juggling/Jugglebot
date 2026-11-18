@@ -21,6 +21,7 @@ from jugglebot_interfaces.msg import (
     ThrowAnnouncement,
     BallStateArray,
     BallState,
+    HumanThrowEvent,
 )
 from geometry_msgs.msg import Point, PoseStamped, Vector3
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -31,6 +32,11 @@ from jugglebot.motion import blas_threads
 from jugglebot.motion.skills import sites
 from jugglebot.tracking.matcher import BallTracker, parse_label_prefixes
 from jugglebot.tracking.ball import Ball
+from jugglebot.tracking.human_throw_event import (
+    HumanThrowEvent as _EmitterEvent,
+    HumanThrowEventConfig,
+    HumanThrowEventEmitter,
+)
 from jugglebot.ball_possession import announced_source, require_identity_fields
 from jugglebot.robot_frame import RobotFrame
 
@@ -86,6 +92,15 @@ class BallTrackerNode(Node):
         detect_human_throws = bool(
             self.get_parameter('detect_human_throws').value)
 
+        # BUG-92: Ball Butler frame box; min > max on either axis disables it.
+        hx = (float(hw.TRACKING_HUMAN_THROW_EXCLUSION_X_MIN_MM),
+              float(hw.TRACKING_HUMAN_THROW_EXCLUSION_X_MAX_MM))
+        hz = (float(hw.TRACKING_HUMAN_THROW_EXCLUSION_Z_MIN_MM),
+              float(hw.TRACKING_HUMAN_THROW_EXCLUSION_Z_MAX_MM))
+        human_throw_box = (
+            (hx[0], hx[1], hz[0], hz[1])
+            if hx[0] <= hx[1] and hz[0] <= hz[1] else None)
+
         self._tracker = BallTracker(
             dt=hw.TRACKING_MOCAP_DT_S,
             landing_z=self._landing_z,
@@ -102,6 +117,7 @@ class BallTrackerNode(Node):
             excluded_label_prefixes=parse_label_prefixes(
                 hw.TRACKING_EXCLUDED_LABEL_PREFIXES),
             detect_human_throws=detect_human_throws,
+            human_throw_exclusion_box=human_throw_box,
             flight_fit_min_samples=hw.TRACKING_FLIGHT_FIT_MIN_SAMPLES,
             flight_fit_residual_mm=hw.TRACKING_FLIGHT_FIT_RESIDUAL_MM,
             flight_fit_freeze_above_plane_mm=hw.TRACKING_FLIGHT_FIT_FREEZE_ABOVE_PLANE_MM,
@@ -134,6 +150,29 @@ class BallTrackerNode(Node):
         # Publisher
         self._balls_pub = self.create_publisher(BallStateArray, 'balls', 10)
 
+        # PWAY-11 P1: the Human Throw event. The publisher always exists (idle);
+        # the emitter exists only while `detect_human_throws` is true and is
+        # dropped when it goes false, so a re-enable starts from clean state.
+        # D1/D2 values are node parameters (defaults = HumanThrowEventConfig,
+        # the PROPOSED owner decisions), read once at construction.
+        cfg = HumanThrowEventConfig()
+        self.declare_parameter('human_throw_min_start_speed_mm_s',
+                               float(cfg.min_start_speed_mm_s))
+        self.declare_parameter('human_throw_event_rms_mm', float(cfg.rms_mm))
+        self.declare_parameter('human_throw_event_stable_mm', float(cfg.stable_mm))
+        self.declare_parameter('human_throw_event_stable_gap_ms',
+                               float(cfg.stable_gap_ms))
+        self.declare_parameter('human_throw_event_stable_time_ms',
+                               float(cfg.stable_time_ms))
+        self.declare_parameter('human_throw_event_refine_mm', float(cfg.refine_mm))
+        self.declare_parameter('human_throw_event_refine_ms', float(cfg.refine_ms))
+        self._human_pub = self.create_publisher(
+            HumanThrowEvent, 'human_throws', 10)
+        self._human_emitter = None
+        # (track id -> flight_seq) in the air when the flag was last turned on:
+        # those flights are stale to a fresh emitter and are never served.
+        self._human_stale_flights = {}
+
         # Frame-stamp source tracking (2026-09-20, see _on_mocap): each of
         # these two transitions logs exactly ONCE, ever — not once per
         # occurrence — so a flapping clock sync doesn't spam the log.
@@ -151,6 +190,7 @@ class BallTrackerNode(Node):
         self.get_logger().info(
             f"Ball tracker up (landing plane z={self._landing_z:.0f} mm, "
             f"detect_human_throws={detect_human_throws}, "
+            f"human_throw_exclusion_box(x,z mm)={human_throw_box}, "
             f"{blas_threads.format_blas_short(self._blas_threads)})")
         self.get_logger().debug(
             f"BallTrackerNode ready: landing_z={self._landing_z:.1f}mm, "
@@ -269,6 +309,12 @@ class BallTrackerNode(Node):
         # Run tracker
         balls = self._tracker.process_frame(markers, current_time, labels)
 
+        if self._tracker.detect_human_throws:
+            self._publish_human_throws(balls, current_time)
+        elif self._human_emitter is not None:
+            self._human_emitter = None
+            self._human_stale_flights = {}
+
         # Publish all active balls
         if balls:
             out = BallStateArray()
@@ -278,6 +324,72 @@ class BallTrackerNode(Node):
                     out.balls.append(ball_msg)
             if out.balls:
                 self._balls_pub.publish(out)
+
+    def _ensure_human_emitter(self) -> HumanThrowEventEmitter:
+        """Build the emitter on the first frame after the flag turns on.
+
+        The flights already in the air at that moment are recorded as stale:
+        a fresh emitter has no history for them and would serve a half-flown
+        Throw as if it had just been seen, with a landing time that is nearly
+        past. They are skipped until the track starts a later flight.
+        """
+        if self._human_emitter is None:
+            def _p(name):
+                return float(self.get_parameter(name).value)
+            cfg = HumanThrowEventConfig(
+                min_start_speed_mm_s=_p('human_throw_min_start_speed_mm_s'),
+                rms_mm=_p('human_throw_event_rms_mm'),
+                stable_mm=_p('human_throw_event_stable_mm'),
+                stable_gap_ms=_p('human_throw_event_stable_gap_ms'),
+                stable_time_ms=_p('human_throw_event_stable_time_ms'),
+                refine_mm=_p('human_throw_event_refine_mm'),
+                refine_ms=_p('human_throw_event_refine_ms'))
+            self._human_emitter = HumanThrowEventEmitter(
+                cfg, logger=_NodeLogAdapter(self))
+            self._human_stale_flights = {
+                bid: fit.flight_seq
+                for bid, fit in self._tracker.flight_fits.items()}
+        return self._human_emitter
+
+    def _publish_human_throws(self, balls, current_time: float) -> None:
+        emitter = self._ensure_human_emitter()
+        fits = self._tracker.flight_fits
+        stale = self._human_stale_flights
+        if stale:
+            for bid in list(stale):
+                fit = fits.get(bid)
+                if fit is None or fit.flight_seq != stale[bid]:
+                    del stale[bid]  # track gone or on a later flight
+            fits = {bid: f for bid, f in fits.items() if bid not in stale}
+        for ev in emitter.step(self._tracker.active_balls, fits, current_time):
+            self._human_pub.publish(self._human_event_to_msg(ev))
+
+    @staticmethod
+    def _human_event_to_msg(ev: _EmitterEvent) -> HumanThrowEvent:
+        msg = HumanThrowEvent()
+        msg.header.stamp = _seconds_to_time(ev.stamp)
+        msg.header.frame_id = "base"
+        msg.track_id = int(ev.track_id)
+        msg.flight_seq = int(ev.flight_seq)
+        msg.revision = int(ev.revision)
+        msg.flight_start = _seconds_to_time(ev.flight_start)
+        msg.landing_position = Point(
+            x=float(ev.landing_position[0]),
+            y=float(ev.landing_position[1]),
+            z=float(ev.landing_position[2]))
+        msg.landing_velocity = Vector3(
+            x=float(ev.landing_velocity[0]),
+            y=float(ev.landing_velocity[1]),
+            z=float(ev.landing_velocity[2]))
+        msg.landing_time = _seconds_to_time(ev.landing_time)
+        msg.landing_z_mm = float(ev.landing_z_mm)
+        msg.n_samples = int(ev.n_samples)
+        msg.rms_mm = float(ev.rms_mm)
+        msg.span_s = float(ev.span_s)
+        msg.fit_age_s = float(ev.fit_age_s)
+        msg.start_speed_mm_s = float(ev.start_speed_mm_s)
+        msg.final = bool(ev.final)
+        return msg
 
     def _ball_to_msg(self, ball: Ball) -> BallState:
         """Convert internal Ball to ROS2 BallState message."""
@@ -396,11 +508,35 @@ class BallTrackerNode(Node):
                 self.get_logger().info(
                     f"detect_human_throws -> {value} (ros2 param set)")
             self._tracker.detect_human_throws = value
+            if not value:
+                # Drop the emitter here, not only on the next frame, so an
+                # off/on pair with no frame between still restarts clean.
+                self._human_emitter = None
+                self._human_stale_flights = {}
         return SetParametersResult(successful=True)
 
     def destroy_node(self):
         self.get_logger().debug("Shutting down BallTrackerNode.")
         super().destroy_node()
+
+
+class _NodeLogAdapter:
+    """The emitter logs python-logging style (``info(fmt, *args)``); the
+    rclpy logger takes one preformatted string."""
+
+    def __init__(self, node):
+        self._node = node
+
+    def info(self, fmt, *args):
+        self._node.get_logger().info(fmt % args if args else fmt)
+
+
+def _seconds_to_time(t: float) -> Time:
+    ns = int(round(float(t) * 1e9))
+    msg = Time()
+    msg.sec = ns // 1_000_000_000
+    msg.nanosec = ns % 1_000_000_000
+    return msg
 
 
 def main(args=None):

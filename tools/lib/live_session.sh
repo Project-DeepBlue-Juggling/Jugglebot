@@ -5,7 +5,7 @@
 # tools/night_shift.sh, so both runners share ONE definition of "a robot
 # Sitting is live" (the regex below) and one wait loop.
 #
-# Why the guard exists: the 04:00 timers have Persistent=true, so a night the
+# Why the guard exists: the 02:00 timers have Persistent=true, so a night the
 # Jetson was off fires at the next boot, which is often the minute an operator
 # powers up for a Sitting. Nice/IO classes bound CPU and IO but NOT memory, and
 # this 7.3 GB box degrades hard when over-committed. An OOM-killed pytest

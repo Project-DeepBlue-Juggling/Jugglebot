@@ -41,7 +41,7 @@ def test_no_rows_is_none(tmp_path):
 
 def test_each_input_type_and_respond_in(tmp_path):
     _put(tmp_path, "bug", "fact", 5, **_skip("input-fact"))
-    _put(tmp_path, "feature", "sit", 2, **_skip("input-sitting"))
+    _put(tmp_path, "feature", "sit", 2, **_skip("sitting", note="n"))
     _put(tmp_path, "idea", "dec", 3, **_skip("input-decision"))
     _put(tmp_path, "idea", "dec2", 1, **_skip("input-decision"))
     # open question tickets on bug-fact: the lowest ID wins; a complete one is ignored
@@ -53,10 +53,9 @@ def test_each_input_type_and_respond_in(tmp_path):
     out = _body(tmp_path).splitlines()
     assert cells(out[0]) == list(INPUTS_HEADER)
     rows = [cells(r) for r in out[2:]]
-    assert [r[0] for r in rows] == ["BUG-5", "FEAT-2", "IDEA-1", "IDEA-3"]   # kind, then number
+    assert [r[0] for r in rows] == ["BUG-5", "IDEA-1", "IDEA-3"]   # kind, then number
     by = {r[0]: r for r in rows}
     assert by["BUG-5"][2:] == ["fact", "Need X", "Then it does Y", "TKT-7"]
-    assert by["FEAT-2"][2] == "sitting" and by["FEAT-2"][5] == "sheet"
     assert by["IDEA-3"][2] == "decision" and by["IDEA-3"][5] == "none"
     assert by["IDEA-1"][5] == "none"
 
@@ -82,7 +81,7 @@ def test_a_pipe_or_newline_cannot_break_the_table_and_the_report_passes(tmp_path
 
 
 def test_cli_prints_the_body(tmp_path, capsys):
-    _put(tmp_path, "bug", "a", 1, **_skip("input-sitting"))
+    _put(tmp_path, "bug", "a", 1, **_skip("input-fact"))
     assert main(["night", "inputs", "--map", str(tmp_path / "map")]) == 0
     out = capsys.readouterr().out
     assert out.startswith("| Item | What it is | Input |") and "| BUG-1 |" in out

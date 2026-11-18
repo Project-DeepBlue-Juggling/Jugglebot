@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Copy a Sitting's runtime records and learner Memory back into the tracked files.
 
-Phase C8 (``plans/active/night-shift-closeout.md``): the robot writes the
+Phase C8 (``plans/archived/night-shift-closeout.md``): the robot writes the
 records ledger and every plant's Memory under the gitignored ``temp/runtime/``
 (``ros_ws/src/jugglebot/jugglebot/runtime_paths.py``, whose docstring defines
 the ``<file>.seed`` JSON this tool reads). The Sitting debrief runs ``merge``

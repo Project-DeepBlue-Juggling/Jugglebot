@@ -12,7 +12,8 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 UI = REPO / "ros_ws" / "gui" / "js" / "replay" / "ui"
 HARNESS = REPO / "tests" / "ros" / "js" / "replay_ui_absent_harness.js"
-NODE = shutil.which("node") or shutil.which("nodejs")
+from tests.ros._node import find_node  # noqa: E402
+NODE = find_node()
 pytestmark = pytest.mark.skipif(NODE is None, reason="node not installed")
 
 

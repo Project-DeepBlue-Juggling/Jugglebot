@@ -47,7 +47,8 @@ from jugglebot.motion.skills.memory import (APEX_RATIO_BAND, Experience,
 from jugglebot.motion.skills.schedule import (FRESH_THROW_LEAD_KNOTS,
                                                FRESH_THROW_LEAD_S,
                                                HANDOFF_LEAD_KNOTS,
-                                               HANDOFF_LEAD_S, LEAD_KNOTS,
+                                               HANDOFF_LEAD_S, HUMAN_CATCH,
+                                               LEAD_KNOTS,
                                                LEAD_S, MIN_WINDOW_KNOTS,
                                                MIN_WINDOW_S, WIRE_READ_KNOTS,
                                                Schedule, Skill, ball_label,
@@ -538,6 +539,13 @@ REJECTED_ROBOT_FRAME_UNKNOWN = 'REJECTED_ROBOT_FRAME_UNKNOWN'
 #: ~2 s after the robot is at rest; a false-positive move costs one refusal.
 REJECTED_ROBOT_FRAME_SETTLING = 'REJECTED_ROBOT_FRAME_SETTLING'
 REJECTED_NOT_LEVELLED = 'REJECTED_NOT_LEVELLED'
+#: A FED goal (one that opens with the Ball Butler Feed) refused AT ACCEPT
+#: because the orchestrator is not in TRAJECTORY (BUG-113, owner 2026-11-18).
+#: Not a ladder row (`precondition_refusals` never returns it): the SAME fact
+#: the executor's per-tick `in_trajectory_mode` check ends an attempt on
+#: (`ABORTED_MODE_CHANGED`), read once at goal accept by `skill_node`, because
+#: a fed attempt that self-ends there raced Ball Butler's announcement.
+REJECTED_NOT_TRAJECTORY = 'REJECTED_NOT_TRAJECTORY'
 REJECTED_HAND_STALE = 'REJECTED_HAND_STALE'
 #: ``REJECTED_HAND_NOT_PARKED`` WAS here and is RETIRED (owner decision,
 #: 2026-09-16).  It refused a fresh-origin skill whose hand was off the park
@@ -1390,6 +1398,13 @@ class _PendingCatch:
     #: A Ball Butler FEED catch (the skill carries ``landing_prior``): on a
     #: confirmed seat it logs a ``feed`` line (:func:`report.feed_line`).
     is_feed: bool = False
+    #: A HUMAN Throw's Catch (``human_catch``, PWAY-11 P2 U5b): the Schedule's
+    #: Pattern, never the prior.  It carries ``landing_prior`` too, but it is
+    #: not a Ball Butler Feed: a seat counts in :attr:`SkillExecutor.
+    #: human_caught` (no ``feed`` line) and a miss in
+    #: :attr:`SkillExecutor.missed_human_catches` (not
+    #: ``missed_feed_catches``).  ``is_feed`` and ``is_human`` are exclusive.
+    is_human: bool = False
     #: The last CONVERGED (``from_fit``) tracker landing taken for this catch
     #: while its ball was still in flight (:meth:`SkillExecutor.
     #: _tracked_landing`).  :meth:`SkillExecutor._report_feed` fires ~0.53 s
@@ -2749,6 +2764,13 @@ class SkillExecutor:
         #: fact only, read by ``skill_node`` for the drops count; nothing in
         #: the executor reads it.
         self.missed_feed_catches = 0
+        #: PWAY-11 P2 U5b: a ``human_catch`` Schedule's CATCH, booked on its
+        #: own (never in the Feed figures above): confirmed seats (a LIVE
+        #: window with a raw-SEATED sample) and MISSED_CATCH verdicts.  A
+        #: blind or gappy window abstains and counts in neither.  Recorded
+        #: facts only, read by ``skill_node``; nothing here reads them.
+        self.human_caught = 0
+        self.missed_human_catches = 0
         #: FEAT-47: Throws lost to an EMPTY Cup, i.e. the inbound flight of a
         #: ball whose Catch ended :data:`MISSED_CATCH` while that flight's
         #: outcome row was still pending (so it never produced a ThrowReport).
@@ -5583,7 +5605,9 @@ class SkillExecutor:
 
         UNARMED (no row at all, the rule simply does not apply to this
         catch) when ``t_open`` cannot be anchored (no scheduled release
-        before this landing at all) or comes out past the already-armed
+        before this landing at all, and no ``skill.catch_open_abs_s`` -- the
+        human_catch CATCH's own stated open, which replaces the release
+        anchor when set) or comes out past the already-armed
         :data:`CAUGHT_LEAD_S` floor the OUTCOME ladder uses, or when the
         other-ball landing guard collapses the window to empty or negative.
         """
@@ -5596,10 +5620,18 @@ class SkillExecutor:
                 and bool(skill.then_throw.shadow_landing)):
             return
         L = float(t_land_scheduled_s)
-        latest_release = _latest_release_before(self.schedule, L)
-        if latest_release is None:
-            return
-        t_open = latest_release + MISSED_CATCH_OPEN_AFTER_RELEASE_S
+        if skill.catch_open_abs_s is not None:
+            # A CATCH whose Schedule holds no release (human_catch, the one
+            # compile that sets the field): its own stated open, the instant
+            # the plan was made (``schedule.compile_human_catch``).  Every
+            # other CATCH carries None and takes the release anchor below,
+            # unchanged.
+            t_open = float(skill.catch_open_abs_s)
+        else:
+            latest_release = _latest_release_before(self.schedule, L)
+            if latest_release is None:
+                return
+            t_open = latest_release + MISSED_CATCH_OPEN_AFTER_RELEASE_S
         if t_open > L - CAUGHT_LEAD_S:
             return
         if skill.then_throw is not None:
@@ -5617,9 +5649,12 @@ class SkillExecutor:
         self._pending_catches.append(_PendingCatch(
             ball_id=skill.ball_id, catch_idx=idx, t_land_scheduled_s=L,
             t_open_s=t_open, t_close_s=t_close,
-            is_feed=skill.landing_prior is not None,
+            is_feed=(skill.landing_prior is not None
+                     and self.schedule.pattern != HUMAN_CATCH),
+            is_human=self.schedule.pattern == HUMAN_CATCH,
             target_xy_mm=(
-                None if skill.landing_prior is None
+                None if (skill.landing_prior is None
+                         or self.schedule.pattern == HUMAN_CATCH)
                 else self.feed_score_target_xy_mm
                 if self.feed_score_target_xy_mm is not None
                 else (float(skill.landing_prior.pos_mm[0]),
@@ -6356,6 +6391,8 @@ class SkillExecutor:
             if (live and window.n_seated > 0 and pend.is_feed
                     and window.t_first_seated_s is not None):
                 self._report_feed(pend, float(window.t_first_seated_s))
+            if live and window.n_seated > 0 and pend.is_human:
+                self.human_caught += 1
             if not live or window.n_seated > 0:
                 # Confirmed (a raw-SEATED sample vetoes), or not trustworthy
                 # (under-covered / gappy): no verdict, row dropped -- logged
@@ -6426,7 +6463,9 @@ class SkillExecutor:
                 and not p.shadow_landing)
             t_open_rel = pend.t_open_s - pend.t_land_scheduled_s
             t_close_rel = pend.t_close_s - pend.t_land_scheduled_s
-            if pend.is_feed:
+            if pend.is_human:
+                self.missed_human_catches += 1
+            elif pend.is_feed:
                 self.missed_feed_catches += 1
             survivor = self._survivor_catch(pend.ball_id)
             if survivor is not None and not self.attempt_ended:
