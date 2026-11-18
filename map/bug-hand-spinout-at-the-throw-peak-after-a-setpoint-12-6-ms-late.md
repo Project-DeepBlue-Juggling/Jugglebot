@@ -4,11 +4,11 @@ kind: bug
 title: Hand SPINOUT at the Throw peak after a setpoint 12.6 ms late (2026-11-18)
 status: inbox
 created: '2026-11-18'
-updated: '2026-11-18T02:07:35Z'
+updated: '2026-11-18T04:39:48Z'
 owners: []
 priority: high
 hardware: robot
-diagnosis: hypothesis
+diagnosis: confirmed
 area: hand
 blocked_by: []
 links:
@@ -18,12 +18,37 @@ filed_by: sitting-debrief 2026-11-18
 
 Sitting of 2026-11-18, launch 1, first Columns Attempt, 10:41:49.256 (temp/logs/launch_2026-11-18_1.log lines 545-575; temp/hand_capture/hand_capture_20261118_103811.csv). Related: BUG-57, FEAT-49, BUG-89. The owner reports nothing physical changed on the Hand since 2026-11-13.
 
-- Hypothesis (the plan was not read from the bag): a Hand setpoint frame arrived 12.6 ms late, so the firmware extrapolated the Hand for about 13.6 ms at the peak of a Throw, just inside the 14 ms Hand C1 stop grace. The command peaked at 137 rev/s against 122-124 rev/s on the 17 earlier Throws, then dropped to 81 in one echo.
-- The Hand overshot its command by 1.6 rev and hit the top stop at 10.90 rev (the other Throws topped out at 9.42-9.46). Braking fell to about 500 rev/s^2 at -52 to -58 A, the BUG-57 torque-loss signature, and the drive disarmed with SPINOUT_DETECTED.
+## Findings (2026-11-18, bag review, confirmed)
 
-Owner decision, not made: HAND_C1_STOP_GRACE_US is 14000 us (canbridge_config.h:547; it was 6000 before 2026-11-05). This event argues for less; the launch 3 stop at line 1339 missed it by 1.3 ms, which argues for more.
+Method: the bag has no Hand knot topic, so the knot plan was rebuilt from the firmware command echo (velocity residual 0.002 rev/s) and replayed through the firmware twin with the real arrival times. The numbers below are the record (the scripts lived in the session scratchpad); the hypothesis was first written in logbook/2026-11-18-sitting-debrief.md.
 
-Next evidence: FEAT-49 armed in every launch, and the plan Hand velocity from the bag at the next Hand C1-grace promotion (command peak against plan peak).
+- The plan never asked for 137 rev/s. Its velocity at the release knot is 126.0 rev/s, the same as four earlier Throws of the Attempt (126.00 to 126.03).
+- At the release knot the plan flips from +1126 rev/s^2 to about -2150 rev/s^2. The late frame (seq 2724, 12.6 ms late) was the one carrying that flip.
+- The firmware extended the accelerating cubic meanwhile: the two echoes left out of the fit are predicted to four digits, 127.17 rev/s and 136.52 rev/s, where the plan read 123.80 and 102.02.
+- The 137 to 81 drop is the promotion of the late frame, not a C1 stop (`hand_c1_stops +0`): a command velocity step of -39 to -45 rev/s in one 2 ms tick.
+- The commanded position never exceeded the plan's 9.395 rev. The overshoot to 10.90 rev and the weak braking are the drive's response to that step (the BUG-57 signature; not diagnosed here).
+- Lateness alone is the cause. The dropped knot (seq 2723) changes nothing in the twin, and the BUG-110 emitter fix would not have prevented this event.
+- The lateness looks bridge-side (inference): emitter max gap 26.1 ms, bridge forward gap 54.7 ms, bridge loop gap 36.9 ms. That is the BUG-89 and BUG-58 stall class.
+- The step grows about 3 rev/s per ms of extrapolation across a release knot (-7.7 rev/s at 3 ms, -50.2 at 17 ms).
+
+## What a different Hand C1 stop grace would have done (twin, command only)
+
+| Grace | Peak command | Outcome |
+|---|---|---|
+| 6 ms | 132.2 rev/s, 8.17 rev | late frame refused, latched hold, Attempt ends, no velocity step |
+| 10 ms | 135.7 rev/s, 8.81 rev | the same |
+| 14 ms (now) | 136.5 to 138.0 rev/s, 9.395 rev | frame promoted with the step that preceded the SPINOUT |
+
+Neither direction gives a clean Throw: of the three C1 stops on 2026-11-05, two ended in MAX_DEVIATION and one in SPINOUT, and on 2026-11-18 a C1 stop that missed the grace by 1.3 ms ended in MAX_DEVIATION.
+
+## Options (owner, 2026-11-18: recorded, decide after the current work)
+
+- Leave `HAND_C1_STOP_GRACE_US` at 14000 us (agreed 2026-11-18).
+- Emit lead 1 for the Hand, so the release knot and its brake are on board before they are due. Owner: prudent, but may not fully resolve it.
+- Constant-velocity extrapolation of the Hand in the firmware, in place of extending the accelerating cubic.
+- Find why the bridge loop stalls (BUG-112, BUG-89), since that is what made the frame late.
+
+Not checked: which tick promoted the frame; the Hand's physical response in any counterfactual; other late frames near release knots across the five launches.
 
 ## Sitting
 
@@ -33,3 +58,7 @@ Next evidence: FEAT-49 armed in every launch, and the plan Hand velocity from th
 - pass: a SPINOUT is captured and the bag shows whether the command peak exceeded the plan peak at a late frame.
 - record: the capture path, the launch log line of the SPINOUT, the nearest setpoint drain dropped line and its lag.
 - minutes: 5
+
+## Progress
+
+- 2026-11-18: Bag review confirmed it: firmware extrapolation across the release knot of a frame 12.6 ms late produced the 137 rev/s command and a -39 to -45 rev/s step when the frame was promoted. Grace stays at 14 ms (owner); options recorded in the body, to decide after the current work.
