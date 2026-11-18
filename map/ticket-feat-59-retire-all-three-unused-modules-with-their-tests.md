@@ -2,9 +2,9 @@
 id: TKT-83
 kind: ticket
 title: 'FEAT-59: retire all three unused modules with their tests, retire the ILC and vel-FF tools only and keep toss_release, or leave all three?'
-status: open
+status: complete
 created: '2026-11-19'
-updated: '2026-11-18T15:54:04Z'
+updated: '2026-11-18T21:22:00Z'
 owners: []
 priority: low
 effort: xs
@@ -32,3 +32,7 @@ FEAT-59 retires about 180 tests that cover code nothing live imports, deleting e
 - 3: FEAT-59 is dropped.
 
 Recommendation: 2. Both tools say they are dormant. Retiring `toss_release` means rewording its live references, so it is a separate small refactor.
+
+## Answer
+
+I agree. Go with Option 2
