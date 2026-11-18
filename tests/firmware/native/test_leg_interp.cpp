@@ -1626,7 +1626,7 @@ TEST_CASE("FW 22 scheduled: cover exhaustion runs a C2 stop, holds, and refuses 
   SchedRun r;
   const int K = 13;                                             // last frame; entry at knot 15 (Hand v ~ 0: the C2 path; K = 14 is a fast upstroke and C1 since the FW 39 grace)
   for (int k = 0; k <= K; ++k) r.ev.push_back({t0 + (uint64_t)k * 25'000u - 20'000u, k});
-  const uint64_t t_exh = t0 + (uint64_t)K * 25'000u + (uint64_t)SCHED_EXHAUST_US;   // cover + grace
+  const uint64_t t_exh = t0 + (uint64_t)K * 25'000u + (uint64_t)SCHED_EXHAUST_HAND_US;   // cover + grace
   float prev_a = 0.0f, prev_v = 0.0f, max_da = 0.0f, peak_a_stop = 0.0f;
   bool have_prev = false;
   sched_ticks(r, P, t0, t_exh + 500'000u, [&](uint64_t now) {
@@ -1642,8 +1642,8 @@ TEST_CASE("FW 22 scheduled: cover exhaustion runs a C2 stop, holds, and refuses 
   CHECK(interp_sched_stops() == 2);                               // legs + hand groups
   CHECK(interp_sched_phase(1) == 3);
   CHECK(max_da <= SCHED_STOP_JERK_HAND_RPS3 * 0.002f * 1.01f + 1.0f);
-  {  // entry accel = the grace-extended span (K+1 → K+2) at s = SCHED_S_MAX
-    const double s = SCHED_S_MAX, T = SEGMENT_T_S, d = P.p[K + 2] - P.p[K + 1];
+  {  // entry accel = the grace-extended span (K+1 → K+2) at s = SCHED_S_MAX_HAND
+    const double s = SCHED_S_MAX_HAND, T = SEGMENT_T_S, d = P.p[K + 2] - P.p[K + 1];
     const double a_entry = ((6 - 12 * s) * d / T + (6 * s - 4) * P.v[K + 1] + (6 * s - 2) * P.v[K + 2]) / T;
     CHECK(peak_a_stop <= std::max((double)SCHED_STOP_ACCEL_HAND_RPS2, std::fabs(a_entry)) * 1.001 + 1.0);
   }
@@ -1794,12 +1794,16 @@ TEST_CASE("FW 37 hand C1 stop: a Hand at +150 rev/s whose cover ends rides the 1
   CHECK(rh.play_start_rel_us == -(int32_t)(SCHED_COVER_US + HAND_C1_STOP_GRACE_US));
   CHECK(rh.entry_wall_us == t_d);                                 // wall == mono in this test
   CHECK((rl.flags & STOP_REC_HAND_C1) == 0);
-  CHECK(rl.play_start_rel_us == -(int32_t)SCHED_EXHAUST_US);
+  CHECK(rl.play_start_rel_us == -(int32_t)SCHED_EXHAUST_LEG_US);
   CHECK(rl.seq > rh.seq);                                         // the Hand stopped first
 }
 
 // ═══ FW 42 STOP record (FEAT-46) ═════════════════════════════════════════════
 TEST_CASE("FW 42 STOP record: a STOP captures the playing t_start, ring and queue; the next frame fills in; a later STOP overwrites and counts") {
+  // FW 44: per-group grace. The Hand runs out of cover 10 ms before the legs
+  // (cover + 20 ms vs cover + 30 ms), so its STOP record is written FIRST, at
+  // its own entry time; the Hand's numbers are what FW 43 recorded for both
+  // groups (it had one 20 ms grace), the legs' are the same shifted by 10 ms.
   reset_interp_test();
   const uint64_t OFF = 4'000'000;                                 // wall = mono + OFF: the record must map, not equate
   fake_set_clock(1'000'000 + OFF, 1'000'000);
@@ -1815,66 +1819,78 @@ TEST_CASE("FW 42 STOP record: a STOP captures the playing t_start, ring and queu
   // A stamp gap: knot K+6 arrives 10 ms after knot K's stamp, 150 ms ahead of it.
   r.ev.push_back({t0 + (uint64_t)K * 25'000u + 10'000u, K + 6});
   const uint64_t origin_K = t0 + (uint64_t)K * 25'000u;
-  const uint64_t entry_wall = origin_K + (uint64_t)SCHED_EXHAUST_US;
-  const int64_t  entry_mono = (int64_t)(entry_wall - OFF);
-  sched_ticks(r, P, t0, entry_wall + 10'000u, [](uint64_t) {});
-  REQUIRE(interp_sched_stops() == 2u);                            // legs + Hand, same tick
-  InterpStopRecord rl{};
+  const int64_t  EXH_H = SCHED_EXHAUST_HAND_US, EXH_L = SCHED_EXHAUST_LEG_US;
+  REQUIRE(EXH_L - EXH_H == 10'000);                               // the Hand stops 10 ms before the legs
+  const uint64_t entry_wall_h = origin_K + (uint64_t)EXH_H;
+  const uint64_t entry_wall_l = origin_K + (uint64_t)EXH_L;
+  const int64_t  entry_mono_h = (int64_t)(entry_wall_h - OFF);
+  const int64_t  entry_mono_l = (int64_t)(entry_wall_l - OFF);
+  sched_ticks(r, P, t0, entry_wall_l + 10'000u, [](uint64_t) {});
+  REQUIRE(interp_sched_stops() == 2u);                            // Hand, then legs
+  InterpStopRecord rl{}, rh{};
   interp_stop_record_take(0, &rl);
-  CHECK(rl.seq != 0u);
-  CHECK(rl.overwritten == 0u);
-  CHECK(rl.entry_wall_us == entry_wall);
-  CHECK(rl.play_start_rel_us == -(int32_t)SCHED_EXHAUST_US);
-  CHECK(rl.q_depth == 1);                                         // knot K+6 sits queued, not yet due
-  CHECK(rl.q_head_rel_us == (int32_t)(6 * 25'000 - SCHED_EXHAUST_US));
-  REQUIRE(rl.ring_n == 4);
-  CHECK(rl.ring_origin_rel_us[0] == (int32_t)(6 * 25'000 - SCHED_EXHAUST_US));   // newest queued: K+6
-  CHECK(rl.ring_start_rel_us[0]  == (int32_t)(6 * 25'000 - SCHED_EXHAUST_US));
-  // Arrivals land on the 2 ms tick grid (odd knots' stamps sit 1 ms off it).
-  CHECK(rl.ring_arrive_rel_us[0] >= (int32_t)(10'000 - SCHED_EXHAUST_US));
-  CHECK(rl.ring_arrive_rel_us[0] <  (int32_t)(12'000 - SCHED_EXHAUST_US));
-  for (int j = 1; j < 4; ++j) {                                   // then K, K-1, K-2
-    const int32_t rel = -(int32_t)SCHED_EXHAUST_US - (j - 1) * 25'000;
-    CHECK(rl.ring_origin_rel_us[j] == rel);
-    CHECK(rl.ring_start_rel_us[j] == rel);                        // no offset change while queued
-    CHECK(rl.ring_arrive_rel_us[j] >= rel - 20'000);              // each landed ~20 ms early
-    CHECK(rl.ring_arrive_rel_us[j] <  rel - 18'000);
-  }
-  CHECK((rl.flags & STOP_REC_HAND_C1) == 0);
-  CHECK((rl.flags & STOP_REC_NEXT_VALID) == 0);
-  REQUIRE((rl.flags & STOP_REC_TB_VALID) != 0);
-  CHECK(rl.tb_rel_us == (int32_t)((int64_t)t_jump_mono - entry_mono));
-  CHECK(rl.tb_delta_us == -25'000);
-  InterpStopRecord rh{};
   interp_stop_record_take(1, &rh);                                // read once (marks it uplinked)
-  CHECK(rh.seq == rl.seq + 1u);                                   // legs advance first in the tick
-  CHECK(rh.q_depth == 1);
-  CHECK(rh.ring_n == 4);
+  CHECK(rh.seq != 0u);
+  CHECK(rl.seq == rh.seq + 1u);                                   // the Hand's cover ends first, so its record is first
+  // Both groups: the same knots, the queue and ring relative to each group's OWN entry.
+  const struct { const InterpStopRecord* rec; int64_t exh; uint64_t entry_wall; int64_t entry_mono; } G[2] = {
+    {&rh, EXH_H, entry_wall_h, entry_mono_h}, {&rl, EXH_L, entry_wall_l, entry_mono_l}};
+  for (const auto& g : G) {
+    const InterpStopRecord& x = *g.rec;
+    CHECK(x.overwritten == 0u);
+    CHECK(x.entry_wall_us == g.entry_wall);
+    CHECK(x.play_start_rel_us == -(int32_t)g.exh);
+    CHECK(x.q_depth == 1);                                        // knot K+6 sits queued, not yet due
+    CHECK(x.q_head_rel_us == (int32_t)(6 * 25'000 - g.exh));
+    REQUIRE(x.ring_n == 4);
+    CHECK(x.ring_origin_rel_us[0] == (int32_t)(6 * 25'000 - g.exh));   // newest queued: K+6
+    CHECK(x.ring_start_rel_us[0]  == (int32_t)(6 * 25'000 - g.exh));
+    // Arrivals land on the 2 ms tick grid (odd knots' stamps sit 1 ms off it).
+    CHECK(x.ring_arrive_rel_us[0] >= (int32_t)(10'000 - g.exh));
+    CHECK(x.ring_arrive_rel_us[0] <  (int32_t)(12'000 - g.exh));
+    for (int j = 1; j < 4; ++j) {                                 // then K, K-1, K-2
+      const int32_t rel = -(int32_t)g.exh - (j - 1) * 25'000;
+      CHECK(x.ring_origin_rel_us[j] == rel);
+      CHECK(x.ring_start_rel_us[j] == rel);                       // no offset change while queued
+      CHECK(x.ring_arrive_rel_us[j] >= rel - 20'000);             // each landed ~20 ms early
+      CHECK(x.ring_arrive_rel_us[j] <  rel - 18'000);
+    }
+    CHECK((x.flags & STOP_REC_HAND_C1) == 0);
+    CHECK((x.flags & STOP_REC_NEXT_VALID) == 0);
+    REQUIRE((x.flags & STOP_REC_TB_VALID) != 0);
+    CHECK(x.tb_rel_us == (int32_t)((int64_t)t_jump_mono - g.entry_mono));
+    CHECK(x.tb_delta_us == -25'000);
+  }
 
   // The next frame (knot K+4) is queued after the STOP: the net task fills it in.
   const uint64_t t_next_wall = fake_wall_us();
   stage_sched_frame(r.seq++, P, K + 4, t0);
   interp_stop_record_take(0, &rl);
   REQUIRE((rl.flags & STOP_REC_NEXT_VALID) != 0);
-  CHECK(rl.next_origin_rel_us == (int32_t)(4 * 25'000 - SCHED_EXHAUST_US));
-  CHECK(rl.next_start_rel_us  == (int32_t)(4 * 25'000 - SCHED_EXHAUST_US));
-  CHECK(rl.next_arrive_rel_us == (int32_t)((int64_t)(t_next_wall - OFF) - entry_mono));
+  CHECK(rl.next_origin_rel_us == (int32_t)(4 * 25'000 - EXH_L));
+  CHECK(rl.next_start_rel_us  == (int32_t)(4 * 25'000 - EXH_L));
+  CHECK(rl.next_arrive_rel_us == (int32_t)((int64_t)(t_next_wall - OFF) - entry_mono_l));
   const uint32_t seq1 = rl.seq;
+  interp_stop_record_take(1, &rh);                                // the Hand's record is filled in against ITS entry
+  REQUIRE((rh.flags & STOP_REC_NEXT_VALID) != 0);
+  CHECK(rh.next_origin_rel_us == (int32_t)(4 * 25'000 - EXH_H));
+  CHECK(rh.next_start_rel_us  == (int32_t)(4 * 25'000 - EXH_H));
+  CHECK(rh.next_arrive_rel_us == (int32_t)((int64_t)(t_next_wall - OFF) - entry_mono_h));
 
   // Resume (disarmed, so accepted), play K+4 then K+6, then run out again: a
   // second STOP per group. The Hand slot was not read since the next frame, but
   // it WAS read after the first STOP, so neither slot counts an overwrite yet.
-  sched_ticks(r, P, t0, entry_wall + 400'000u, [](uint64_t) {});
+  sched_ticks(r, P, t0, entry_wall_l + 400'000u, [](uint64_t) {});
   REQUIRE(interp_sched_stops() == 4u);
   interp_stop_record_take(0, &rl);
   CHECK(rl.seq > seq1 + 1u);
   CHECK(rl.overwritten == 0u);
-  CHECK(rl.play_start_rel_us == -(int32_t)SCHED_EXHAUST_US);
+  CHECK(rl.play_start_rel_us == -(int32_t)EXH_L);
   // A third STOP with no read in between overwrites the Hand slot and counts it.
   const uint32_t h2 = interp_sched_stops();
   const uint64_t t0_res = fake_wall_us() + 5'000u - (uint64_t)(K + 20) * 25'000u;
   stage_sched_frame(r.seq++, P, K + 20, t0_res);                  // re-stamped 5 ms ahead: resumes
-  sched_ticks(r, P, t0, entry_wall + 700'000u, [](uint64_t) {});
+  sched_ticks(r, P, t0, entry_wall_l + 700'000u, [](uint64_t) {});
   REQUIRE(interp_sched_stops() == h2 + 2u);
   interp_stop_record_take(1, &rh);
   CHECK(rh.overwritten == 1u);                                    // the second Hand record was never read
@@ -1921,7 +1937,7 @@ TEST_CASE("FW 37 hand C1 stop: a Hand at +30 rev/s (below the threshold) keeps t
   seed_hand_encoder();
   const C2Plan P = make_const_acc_plan(1.0, 30.0, 0.0);         // constant 30 rev/s up
   const uint64_t t0 = 1'100'000, t_c = t0 + (uint64_t)SCHED_COVER_US;
-  const uint64_t t_x = t0 + (uint64_t)SCHED_EXHAUST_US;          // cover + grace
+  const uint64_t t_x = t0 + (uint64_t)SCHED_EXHAUST_HAND_US;          // cover + grace
   REQUIRE(t_x - t_c == 20'000u);
   const auto ticks = run_one_hand_frame(P, t0, t_c + 300'000u);
   int grace_ticks = 0;
@@ -1950,7 +1966,7 @@ TEST_CASE("FW 37 hand C1 stop: a Hand moving DOWN at -160 rev/s keeps the grace 
   seed_hand_encoder();
   const C2Plan P = make_const_acc_plan(10.0, -100.0, -1200.0);  // knot 2: p 3.5, v -160
   const uint64_t t0 = 1'100'000, t_c = t0 + (uint64_t)SCHED_COVER_US;
-  const uint64_t t_x = t0 + (uint64_t)SCHED_EXHAUST_US;
+  const uint64_t t_x = t0 + (uint64_t)SCHED_EXHAUST_HAND_US;
   const auto ticks = run_one_hand_frame(P, t0, t_c + 300'000u);
   int grace_ticks = 0;
   for (const auto& h : ticks) {
@@ -1970,11 +1986,11 @@ TEST_CASE("FW 37 hand C1 stop: a Hand moving DOWN at -160 rev/s keeps the grace 
   CHECK(interp_sched_stops() == 2u);
 }
 
-TEST_CASE("FW 37 hand C1 stop: a leg lane moving up at 60 rev/s keeps the grace and the C2 stop (hand-only change)") {
+TEST_CASE("FW 37 hand C1 stop: a leg lane moving up at 60 rev/s keeps the LEG grace (30 ms since FW 44) and the C2 stop (hand-only change)") {
   reset_interp_test();
   for (uint8_t i = 0; i < 6; ++i) { axes[i].pos_rev = 1.0f; axes[i].heartbeat_seen = true; }
   const uint64_t t0 = 1'100'000, t_c = t0 + (uint64_t)SCHED_COVER_US;
-  const uint64_t t_x = t0 + (uint64_t)SCHED_EXHAUST_US;
+  const uint64_t t_x = t0 + (uint64_t)SCHED_EXHAUST_LEG_US;
   JbUdp::SetpointPayload sp;
   memset(&sp, 0, sizeof(sp));
   for (int i = 0; i < 6; ++i) {
@@ -1996,7 +2012,7 @@ TEST_CASE("FW 37 hand C1 stop: a leg lane moving up at 60 rev/s keeps the grace 
     if (now >= t_x) CHECK(interp_sched_phase(0) >= 2);
     fake_advance(INTERP_PERIOD_US);
   }
-  CHECK(grace_ticks == 10);
+  CHECK(grace_ticks == 15);                                      // 30 ms / 2 ms: the leg grace (FW 44; 10 through FW 43)
   CHECK(interp_sched_phase(0) == 3);
   CHECK(interp_sched_phase(1) == 0);                              // the hand group never ran
   CHECK(interp_sched_hand_c1_stops() == 0u);

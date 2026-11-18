@@ -501,6 +501,7 @@ def test_reaim_figure_is_a_floor_below_the_nominal_and_rounds_out_the_line():
     assert rep.aim_worst().margin < rep.worst().margin
     assert not rep.aim_below_zero()
     assert NEGATIVE not in rep.summary()
+    assert nm.AIM_WARNING_TEXT not in rep.summary()
     assert rep.aim_solves == 2 * 6 and rep.solves == 18   # worst rung only, 2 signs
     # the plain wording of the operator's line
     assert ('worst margin 0.211 at the nominal Sites (jerk, CATCH Ball 1 at P2, '
@@ -520,7 +521,10 @@ def test_reaim_below_zero_is_still_accepted_and_says_so():
     assert rep.ok and rep.refusals == []
     assert rep.worst().margin == pytest.approx(0.060, abs=1e-3)
     assert rep.aim_worst().margin < 0.0 and rep.aim_below_zero()
-    assert rep.summary().endswith('. ' + NEGATIVE)
+    assert rep.summary().endswith('. ' + NEGATIVE + ' ' + nm.AIM_WARNING_TEXT)
+    assert nm.AIM_WARNING_TEXT == 'WARNING: RE-AIM MARGIN NEGATIVE'
+    # display only (BUG-91, TKT-70 option 2): the verdict is untouched
+    assert rep.ok and rep.refusals == []
     assert 'An Attempt may end mid-Pattern on an admissibility refusal.' in rep.summary()
 
 

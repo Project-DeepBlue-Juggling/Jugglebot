@@ -58,7 +58,7 @@ import quaternion  # numpy-quaternion; same library can_node uses for tilt→qua
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionServer, GoalResponse, CancelResponse
-from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.logging import LoggingSeverity
 
@@ -128,8 +128,8 @@ from teensy_link.rpc import HandMoveToUnavailable, RpcTimeout
 from teensy_link.fault_logic import LinkLossLatch
 from jugglebot import stream_tuning as _tuning
 from teensy_link.gap_monitor import (
-    EMPTY_STATS, HAND_C1_COVER_MS, SCHED_COVER_MS, DownlinkLossTracker,
-    EpisodeLatch, GapTracker)
+    EMPTY_STATS, HAND_C1_COVER_MS, SCHED_COVER_LEG_MS, SCHED_COVER_MS,
+    DownlinkLossTracker, EpisodeLatch, GapTracker)
 from teensy_link.hand_feedback_watch import HandFeedbackWatch
 from teensy_link.setpoint_pump import SetpointPump, FLAG_HAS_HAND, HAND_FF_GAIN_MAX
 from teensy_link.stop_record import StopRecordLog
@@ -2012,9 +2012,10 @@ class TeensyBridgeNode(Node):
         # FAULTs on BOOT_TIMEOUT_S — can_node's behaviour when versions never come).
         # _versions is used for record_version + validate_group + the per-axis fw
         # rendering (_odrive_fw_versions_str); the latched bools are read on the
-        # publish path under self._lock. The tracker needs no lock: the version-poll
-        # writer and the link_status reader share the node-default
-        # MutuallyExclusiveCallbackGroup, so they never run concurrently.
+        # publish path under self._lock. The tracker has no lock: both version polls
+        # (its only writers) share _blocking_rpc_cbgroup so never run concurrently
+        # with each other, and the link_status reader (default group) does only
+        # atomic dict .get() reads (BUG-98; see the group's comment).
         self._versions = MotorStateTracker()
         self._firmware_validated = False
         self._firmware_mismatch_error = None     # str once a mismatch is latched (sticky)
@@ -2312,12 +2313,32 @@ class TeensyBridgeNode(Node):
         # here: the firmware busy-rejects a second concurrent move and the orchestrator
         # drives strictly sequentially; the one remaining race (two home_motors goals)
         # is closed by _home_action_goal's in-progress guard. reboot_odrives /
-        # odrive_command stay in the default group — they are quick single RPCs, not
-        # multi-second moves. clear_errors is created LATER, in the /recover
+        # odrive_command is in the /recover group below and reboot_odrives in
+        # _blocking_rpc_cbgroup (BUG-98). clear_errors is created LATER, in the /recover
         # ReentrantCallbackGroup, because the armed reroute (F1) blocks multi-second.
         self._coldstart_cbgroup = ReentrantCallbackGroup()
 
-        self.create_service(Trigger, 'reboot_odrives', self._svc_reboot_odrives)
+        # ── Short-blocking RPC callback group (BUG-98) ────────────
+        # The quick-but-BLOCKING services (reboot_odrives, set_hand_state,
+        # set_hand_gains, bb/reload, bb/reset, bb/calibrate) and the two 1 Hz
+        # firmware-version polls each park an executor thread in _call_rpc for up
+        # to the RPC budget (0.5 s x 3 attempts = 1.5 s default; 0.3 s x 2 for the
+        # polls). In the node-default MutuallyExclusiveCallbackGroup that serialized
+        # them with the 100 Hz robot_state publisher, the 10 Hz link status and the
+        # 1 Hz _health_check link-loss latch, so one call against a dead bridge
+        # stalled all three. Their OWN MutuallyExclusiveCallbackGroup keeps them off
+        # the publishers' group (the node runs a MultiThreadedExecutor, see main())
+        # and still serializes them with EACH OTHER, which the version-poll state
+        # relies on (both polls write self._versions / _fw_unreleased, unlocked).
+        # Readers of that state on the default group (_publish_link_status via
+        # _odrive_fw_versions_str) now run concurrently with the writer: they only
+        # .get() single dict entries (atomic under the GIL) and render '?' for a
+        # missing one, so a torn read is a one-tick advisory string, never a crash.
+        # The latched verdict bools are still written/read under self._lock.
+        self._blocking_rpc_cbgroup = MutuallyExclusiveCallbackGroup()
+
+        self.create_service(Trigger, 'reboot_odrives', self._svc_reboot_odrives,
+                            callback_group=self._blocking_rpc_cbgroup)
         self.create_service(Trigger, 'encoder_search', self._svc_encoder_search,
                             callback_group=self._coldstart_cbgroup)
         self.create_service(Trigger, 'home', self._svc_home,
@@ -2385,8 +2406,10 @@ class TeensyBridgeNode(Node):
         # PROTOCOL_VERSION 7 (2026-09-11, skill-stack R1) with the HAND_TRAJ_CMD /
         # HAND_SOURCE_SET conduit — the hand is the 7th streamed Setpoint lane now,
         # with no RPC service in the loop.
-        self.create_service(SetString, 'set_hand_state', self._svc_set_hand_state)
-        self.create_service(SetHandGains, 'set_hand_gains', self._svc_set_hand_gains)
+        self.create_service(SetString, 'set_hand_state', self._svc_set_hand_state,
+                            callback_group=self._blocking_rpc_cbgroup)
+        self.create_service(SetHandGains, 'set_hand_gains', self._svc_set_hand_gains,
+                            callback_group=self._blocking_rpc_cbgroup)
 
         # ── Ball Butler services (production names, cutover) ────
         # The bb/* services formerly served by can_node. The firmware
@@ -2395,9 +2418,12 @@ class TeensyBridgeNode(Node):
         # can_node._svc_bb_calibrate's HOMING semantics (allows homing to
         # complete without BB attached). The other two propagate the
         # error so an operator sees a failed reload/reset.
-        self.create_service(Trigger, 'bb/reload',    self._svc_bb_reload)
-        self.create_service(Trigger, 'bb/reset',     self._svc_bb_reset)
-        self.create_service(Trigger, 'bb/calibrate', self._svc_bb_calibrate)
+        self.create_service(Trigger, 'bb/reload',    self._svc_bb_reload,
+                            callback_group=self._blocking_rpc_cbgroup)
+        self.create_service(Trigger, 'bb/reset',     self._svc_bb_reset,
+                            callback_group=self._blocking_rpc_cbgroup)
+        self.create_service(Trigger, 'bb/calibrate', self._svc_bb_calibrate,
+                            callback_group=self._blocking_rpc_cbgroup)
         # Throw CANCEL (FW 30): its own ReentrantCallbackGroup because it waits —
         # bounded — on BB's CANCEL CMD_RESULT and, in the in-flight case, on the
         # throw's own RPC; it must never stall the 100 Hz timers in the default
@@ -2478,8 +2504,10 @@ class TeensyBridgeNode(Node):
         self.create_timer(1.0, self._publish_profile)          # 1 Hz (profile rate)
         self.create_timer(1.0, self._publish_udp_diag)         # 1 Hz per-type UDP census
         self.create_timer(1.0, self._health_check)             # 1 Hz link watchdog
-        self.create_timer(1.0, self._version_check_poll)       # 1 Hz firmware-version handshake (no-op once resolved)
-        self.create_timer(1.0, self._bb_version_check_poll)    # 1 Hz Ball Butler ODrive versions (advisory; no-op once resolved)
+        self.create_timer(1.0, self._version_check_poll,
+                          callback_group=self._blocking_rpc_cbgroup)  # 1 Hz firmware-version handshake (no-op once resolved)
+        self.create_timer(1.0, self._bb_version_check_poll,
+                          callback_group=self._blocking_rpc_cbgroup)  # 1 Hz Ball Butler ODrive versions (advisory; no-op once resolved)
 
         # ── Setpoint downlink (Commit 3) — STARTS DISARMED ────
         # The 40/500 Hz hot path. The SetpointPump (pure packing + per-step
@@ -4539,9 +4567,10 @@ class TeensyBridgeNode(Node):
                 return
         try:
             # GET_AXIS_VERSIONS is a bridge-LOCAL cache read (sub-ms RTT normally),
-            # but this poll shares _publish_robot_state's callback group, so bound
-            # the worst-case block on a degraded link (audit 2026-06-29 LOW): one
-            # short timeout + one retry rather than the default budget. A miss just
+            # but a degraded link can still block: the poll runs in
+            # _blocking_rpc_cbgroup (off _publish_robot_state's group, BUG-98) and
+            # the worst case is bounded (audit 2026-06-29 LOW): one short timeout
+            # + one retry rather than the default budget. A miss just
             # retries next 1 Hz tick (BOOT_TIMEOUT governs the give-up).
             ok, msg, blob = self._call_rpc(
                 RpcMethod.GET_AXIS_VERSIONS, timeout=0.3, retries=1)
@@ -6466,8 +6495,10 @@ class TeensyBridgeNode(Node):
         """WARN (<= 1/s) when the firmware's ``sched_stops`` rises while armed,
         and ONCE at a disarm edge.
 
-        A rise while streaming means the lane's cover (2 knots x 25 ms + 20 ms
-        grace = ~70 ms) expired. Three verdicts, and this WARN prints the
+        A rise while streaming means a group's cover (2 knots x 25 ms + the
+        group's grace: Hand 20 ms = ~70 ms, legs 30 ms = ~80 ms since FW 44)
+        expired; the verdicts judge against the Hand's, the earlier one
+        (``SCHED_COVER_MS``). Three verdicts, and this WARN prints the
         measured host maxima for the last ~1 s window (published on
         /link_status as max_forward_gap_ms / max_loop_gap_ms) plus, from FW 38
         (BUG-58), the firmware's own counters and frame ages:
@@ -6516,7 +6547,7 @@ class TeensyBridgeNode(Node):
         fwd, loop = self._gap_snap
         open_ms = self._fwd_gap.open_gap_ms(time.monotonic())
         # A Hand C1 stop (FW 37, fast upstroke) fires at the 50 ms cover + the
-        # short C1 grace, not at the 70 ms lane cover: judge against that.
+        # short C1 grace, not at the 70 ms Hand lane cover (legs 80 ms): judge against that.
         c1 = self._sched_c1_delta() > 0
         cover_ms = HAND_C1_COVER_MS if c1 else SCHED_COVER_MS
         clean = (fwd.n > 0 and fwd.max_ms < cover_ms
@@ -6553,14 +6584,14 @@ class TeensyBridgeNode(Node):
                    cover_ms, _SP_DROP_WINDOW_S))
         else:
             verdict = (
-                'the lane cover (~%.0f ms) expired. Candidates: emitter gap '
+                'a lane cover (Hand ~%.0f ms, legs ~%.0f ms) expired. Candidates: emitter gap '
                 '(setpoints arrived late) vs bridge forwarding gap (this node '
                 'starved). Window maxima: forward gap %.1f ms (p99 %.1f, open '
                 '%.1f), bridge loop gap %.1f ms. Loop gap near the forward gap '
                 '= bridge stall; loop gap small = the stream itself was late '
                 '(see /trajectory/status max_emit_gap_ms)'
-                % (cover_ms, fwd.max_ms, fwd.p99_ms, open_ms,
-                   loop.max_ms))
+                % (cover_ms, SCHED_COVER_LEG_MS, fwd.max_ms, fwd.p99_ms,
+                   open_ms, loop.max_ms))
         if c1:
             verdict = (
                 'Hand C1 stop (fast upstroke): the Hand\'s cover ended at '

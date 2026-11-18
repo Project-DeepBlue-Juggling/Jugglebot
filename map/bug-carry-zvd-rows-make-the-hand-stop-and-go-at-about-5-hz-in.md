@@ -2,10 +2,11 @@
 id: BUG-90
 kind: bug
 title: carry_zvd rows make the Hand stop and go at about 5 Hz in flight
-status: inbox
+status: in_progress
 created: '2026-11-13'
-updated: '2026-11-13T17:50:21Z'
-owners: []
+updated: '2026-11-18T02:09:04Z'
+owners:
+- night-shift
 priority: medium
 effort: m
 hardware: robot
@@ -16,6 +17,7 @@ area: skill-stack
 blocked_by: []
 links:
 - map/feature-pre-release-hold-rung-release-from-a-moving-platform-hold-0.md
+- logbook/2026-11-18-sitting-debrief.md
 filed_by: claude
 ---
 
@@ -49,3 +51,33 @@ With `carry_zvd` on, the pose planner gives the Hand a stop-and-go velocity of a
 4. **Leave `carry_zvd` off** (the default) and park the ZVD arm of FEAT-32 until a Session takes it up.
 
 Recommendation: 1. It is the smallest change the existing xfail can judge, and it leaves the flag-off plan byte for byte as now. Risk: a heavy weight could weaken the mode cancellation the rows exist for, so the Sitting compares the Platform residual too.
+
+## Sitting
+
+- setup: level, armed, bb-fed
+- why: The branch adds a Hand acceleration cost (weight 100, flight window less 0.15 s at each end) read only with carry_zvd on, which offline removes the ~5 Hz Hand stop-and-go the flag produced in flight at the 2026-11-13 Sitting (step 21), but it has never flown.
+- do:
+  - Launch on the branch with `gc_freeze:=true` and the bag recording. After Homing, `ros2 param get /skill_node carry_zvd` reads false. Level, Activate, Ball Butler loaded, Cup empty.
+  - Set a fresh plant: `ros2 param set /skill_node plant_id zvd-oval-<date>-C`, read it back with `ros2 param get /skill_node plant_id`.
+  - `ros2 param set /skill_node carry_zvd true` (refused while a goal runs), read it back; the goal start line must show carry_zvd.
+  - Dwell 0.40: `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.40, num_cycles: 32}" --feedback`. Empty the Cup after every ended Attempt; after clear_errors re-enter TRAJECTORY before the next goal.
+  - Dwell 0.35 (`dwell_s: 0.35`, other keys the same) ONLY if 0.40 showed no ~5 Hz Hand stop-and-go.
+  - Stand down: `ros2 param set /skill_node carry_zvd false` and `ros2 param set /skill_node plant_id jugglebot`, each read back.
+- pass: with the flag on at Dwell 0.40, the Hand moves smoothly through each flight between the post-release brake and the Capture move (no ~5 Hz stop-and-go seen), no Leg LIMIT or RING refusal end, and Catches no fewer than the 2026-11-13 flag-on arm.
+- record: per Dwell: Throws caught per Attempt and each end reason, whether the Hand stop-and-go is gone, install-line Leg peaks (offline about 275 mm/s and 3270 mm/s² at 0.40, 318 and 5130 at 0.35), any RING refusal text, the bag and launch log paths.
+- minutes: 30
+- branch: night-shift/2026-11-15-BUG-90
+
+## Sitting result (2026-11-18 13:05)
+
+- verdict: fail
+- notes (split into bullets):
+  - First two attempts at dwell 0.40 ended with messy throws being uncatchable. Third attempt lasted much longer but ended the same way. Movements were much better than before (with ZVD true), but still nowhere near as smooth as with ZVD false.
+  - Dwell 0.35 was ABORTED immediately after the first throw on all three attempts, due to NO_ADMISSIBLE_COMMAND (sheet 2026-11-18-robot, step 35) [derived: temp/logs/launch_2026-11-18_3.log 11:44-11:48 and temp/hand_capture/hand_capture_20261118_113140.csv. Dwell 0.40, flag on: 0/1, 2/3, 28/29 caught, all MISSED_CATCH, no Leg LIMIT or RING end (the 2026-11-13 flag-on arm caught about 5 in total).
+  - Hand turning points per flight: 0.77 mean against 2.05 on 2026-11-13 and 0.03 flag off; 22 of 31 flights still show 1-2. Whether that counts as no stop-and-go seen is the owner's call. Dwell 0.35: NO_ADMISSIBLE_COMMAND LIMIT_JERK three times at the first learned Catch (margins -0.15 to -0.20). The owner confirmed fail on 2026-11-18: the stop-and-go is reduced, not gone.]
+
+## Progress
+
+- 2026-11-15: Night Shift 2026-11-15: TKT-69 option 1 built on night-shift/2026-11-15-BUG-90 but unfinished (unit cut off by API credit); test_cup_zvd passes, wider checks, suite and audit owed
+- 2026-11-16: Night Shift 2026-11-16: held on night-shift/2026-11-15-BUG-90: checks finished and audited clean, Sitting section written; unblocked by a Sitting
+- 2026-11-18: Failed at the Sitting of 2026-11-18: at Dwell 0.40 the stop-and-go is reduced, not gone (Hand turning points per flight 0.77 against 2.05 on 2026-11-13 and 0.03 flag off); caught 0/1, 2/3, 28/29, no Leg LIMIT or RING end. Dwell 0.35 refused LIMIT_JERK three times at the first learned Catch (margins -0.15 to -0.20). Branch stays held.

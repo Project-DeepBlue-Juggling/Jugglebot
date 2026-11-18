@@ -4,7 +4,7 @@ kind: bug
 title: Tracker never confirmed Throw 3's flight on 2026-11-05 while the previous track kept running past its Catch, so that Throw has no learner row
 status: inbox
 created: '2026-11-06'
-updated: '2026-11-06T19:54:16Z'
+updated: '2026-11-18T02:08:40Z'
 owners: []
 priority: medium
 effort: m
@@ -14,7 +14,8 @@ radius: subsystem
 diagnosis: confirmed
 area: tracking
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-18-sitting-debrief.md
 filed_by: claude
 night_skip: too-large
 night_skip_on: '2026-11-15'
@@ -71,3 +72,7 @@ Bag 2026-11-05_22-46-00, launch.log, replay of `/mocap_data` + `/throw_announcem
 - Risk to a live Catch: a wrongly stolen marker would move the old ball's landing and the Catch aim. Retire only a track whose landing time has passed.
 - Pin by replay: this bag (ids 3/4), its second Attempt (15/16), and a synthetic marker with slow versus fast re-throw ramp. Assert each id confirms at about +0.003 s.
 - Control view at 40 Hz: the tracker publishes after the Catch of the old ball, so a retired old track is not read by a live Catch.
+
+## Progress
+
+- 2026-11-18: 2026-11-18 debrief: refuted as the cause of the empty Throws at MISSED_CATCH ends (the Ball was lost one flight earlier; see BUG-114).

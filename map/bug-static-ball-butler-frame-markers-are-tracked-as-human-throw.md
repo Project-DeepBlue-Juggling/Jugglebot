@@ -2,10 +2,11 @@
 id: BUG-92
 kind: bug
 title: static Ball Butler frame markers are tracked as human_throw
-status: inbox
+status: complete
 created: '2026-11-13'
-updated: '2026-11-13T17:50:22Z'
-owners: []
+updated: '2026-11-18T05:11:29Z'
+owners:
+- night-shift
 priority: medium
 effort: s
 hardware: robot
@@ -16,6 +17,8 @@ area: tracking
 blocked_by: []
 links:
 - map/idea-jp-17-three-ball-cascade-with-the-owner-as-the-second-hand.md
+- logbook/2026-11-18-sitting-debrief.md
+- logbook/2026-11-15-human-throw-ball-butler-zone.md
 filed_by: claude
 ---
 
@@ -43,3 +46,28 @@ Exclude a human_throw candidate whose first sample lies within about 40 mm of a 
 4. **Leave it:** `detect_human_throws` is off by default, so phantoms only appear in human-Throw windows.
 
 Recommendation: 1. On the launch 3 slice it removed 26 of 30 bench phantoms and 0 of 114 true Throws, and it needs no label or zone. FEAT-50 builds a rolling static-cell filter tonight that this could share.
+
+## Sitting
+
+- setup: level
+- why: The held branch drops human_throw starts inside a configured Ball Butler frame box (TKT-71 option 3); only a live mocap window shows the phantom rate falls and no real human Throw is lost.
+- do:
+  - Launch from the branch with mocap up and Ball Butler in its usual place.
+  - `ros2 param set /ball_tracker_node detect_human_throws true`
+  - Leave the cell idle for 2 minutes, nothing thrown.
+  - Make 10 human Throws from your usual spot, away from Ball Butler.
+- pass: No human_throw track starts inside the box during the idle 2 minutes, and all 10 human Throws are tracked.
+- record: human_throw tracks started during the idle window (and where), human Throws tracked out of 10, the launch log time.
+- minutes: 10
+- branch: night-shift/2026-11-15-BUG-92
+
+## Sitting result (2026-11-18 13:05)
+
+- verdict: pass
+- notes: Made 11 human throws in a three ball cascade (sheet 2026-11-18-robot, step 30) [derived: Bag 2026-11-18_11-31-37 and temp/logs/launch_2026-11-18_3.log: 0 human-Throw tracks started inside the Ball Butler box between detect on (11:34:18.9) and the first human Throw (about 11:36:45); 12 tracks for the 11 Throws (one likely a split track). 8 phantom tracks still started outside the box (4 at a floor cell, 4 near x -900, z 2150-2305).]
+
+## Progress
+
+- 2026-11-15: Night Shift 2026-11-15: held on night-shift/2026-11-15-BUG-92: config is gate-frozen, suite not finished under load, 2 test-coverage findings open; unblocked by a day Session merge and a Sitting window
+- 2026-11-18: Passed at the Sitting of 2026-11-18: 0 tracks started inside the box when idle, all 11 human Throws tracked; 8 phantoms still start outside it (a floor cell, and near x -900, z 2150-2305). Not merged: the branch touches config/hardware_config.yaml (frozen path), so tools/sitting_merge.sh refuses it (code 4); needs a hand merge at the owner say-so.
+- 2026-11-18: Passed at the Sitting of 2026-11-18 and merged by hand at the owner say-so (frozen config paths, so not through tools/sitting_merge.sh): full suite green on the merged tree, audit 0 behaviour-affecting; the four box constants reach the firmware headers but no firmware reads them, no flash. Open follow-up: phantoms outside the box (PWAY-11 P1).

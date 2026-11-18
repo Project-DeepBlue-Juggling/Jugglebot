@@ -1618,6 +1618,104 @@ def test_emitter_cadence_40hz():
     assert pub.closed is True    # PUB closed on shutdown
 
 
+# ── Emitter overrun: no knot published ahead of its stamp (BUG-110) ──
+
+class _FakeEmitClock:
+    """Fake ``perf_counter`` plus a fake ``_emit_stop`` for ``_emitter_loop``.
+
+    ``wait(dt)`` advances the clock by ``dt``; the wait whose index is
+    ``late_wait`` overshoots by ``late_s`` (a late wake: the scheduler handed the
+    thread back ``late_s`` after its deadline). ``stop_on_wait`` sets the stop
+    flag inside that wait (a shutdown arriving mid-wait)."""
+
+    def __init__(self, t0, late_wait=None, late_s=0.0, stop_on_wait=None):
+        self.t = float(t0)
+        self.waits = 0
+        self.late_wait, self.late_s = late_wait, float(late_s)
+        self.stop_on_wait = stop_on_wait
+        self._set = False
+
+    def perf_counter(self):
+        return self.t
+
+    def is_set(self):
+        return self._set
+
+    def set(self):
+        self._set = True
+
+    def wait(self, dt):
+        self.t += max(float(dt), 0.0)
+        if self.waits == self.late_wait:
+            self.t += self.late_s
+        if self.waits == self.stop_on_wait:
+            self._set = True
+        self.waits += 1
+        return self._set
+
+
+def _run_fake_emitter_loop(monkeypatch, clock, n_emits=10):
+    """Run the REAL ``_emitter_loop`` on the fake clock; ``_emit_once`` is a
+    recorder of ``(t_k, publish instant)``. Returns the records and the PUB."""
+    import jugglebot.trajectory_node as tn
+    monkeypatch.setattr(tn, 'time', types.SimpleNamespace(
+        perf_counter=clock.perf_counter))
+    pub = _CapturePub()
+    node = _node(command_pub_factory=lambda: pub)
+    node._emit_stop = clock
+    records = []
+
+    def _record(t_k, wake=None):
+        records.append((t_k, clock.t))
+        if len(records) >= n_emits:
+            clock.set()
+
+    node._emit_once = _record
+    node._emitter_loop()
+    return records, pub
+
+
+@pytest.mark.parametrize('late_s', [0.010, 0.035, 0.060, 0.110])
+def test_emitter_never_publishes_a_knot_before_its_stamp_minus_lead(
+        monkeypatch, late_s):
+    """BUG-110: after a late tick the overrun branch snapped ``next_deadline``
+    to the next grid knot and emitted it AT ONCE, up to 25 ms before its
+    stamp; the bridge's newest-only drain then forwarded that not-yet-due
+    frame and discarded the due one (2026-11-18: 3 Attempt-ending STOPs).
+    Invariant: a knot ``t_k`` (stamp ``t_k + L``) is published no earlier than
+    ``stamp - L = t_k``, for every lateness, and the grid stays phase-locked."""
+    period = hw.JB_TRAJ_KNOT_DT_S
+    lead = float(hw.JB_TRAJ_EMIT_LEAD_KNOTS) * period
+    t0 = 40000 * period                         # an exact grid instant
+    clock = _FakeEmitClock(t0, late_wait=2, late_s=late_s)
+    records, pub = _run_fake_emitter_loop(monkeypatch, clock)
+    assert len(records) == 10
+    for t_k, t_pub in records:
+        stamp = t_k + lead
+        assert t_pub >= stamp - lead - 1e-9, (
+            f"knot t_k={t_k - t0:+.3f} s published at {t_pub - t0:+.3f} s, "
+            f"{(stamp - lead - t_pub) * 1e3:.1f} ms ahead of stamp - lead "
+            f"(late tick {late_s * 1e3:.0f} ms)")
+        k = (t_k - t0) / period
+        assert abs(k - round(k)) < 1e-6         # on the absolute grid
+    ks = [round((t_k - t0) / period) for t_k, _ in records]
+    assert ks == sorted(set(ks))                # strictly increasing, no repeat
+    assert pub.closed is True
+
+
+def test_emitter_overrun_wait_is_interrupted_by_stop(monkeypatch):
+    """A stop arriving during the post-overrun wait ends the loop without
+    emitting the snapped knot, and the PUB still closes."""
+    period = hw.JB_TRAJ_KNOT_DT_S
+    t0 = 40000 * period
+    # Wait 2 overshoots by 35 ms (tick 3 published at +110 ms); the next
+    # wait is the post-overrun one, and the stop lands inside it.
+    clock = _FakeEmitClock(t0, late_wait=2, late_s=0.035, stop_on_wait=3)
+    records, pub = _run_fake_emitter_loop(monkeypatch, clock)
+    assert [round((t_k - t0) / period) for t_k, _ in records] == [0, 1, 2, 3]
+    assert pub.closed is True
+
+
 # ══════════════════════════════════════════════════════════════
 # Phase 5 — timed targets + catch path
 # ══════════════════════════════════════════════════════════════

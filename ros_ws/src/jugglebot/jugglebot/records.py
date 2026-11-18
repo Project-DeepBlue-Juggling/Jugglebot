@@ -114,6 +114,12 @@ PATTERNS: Tuple[Tuple[str, str, int], ...] = (
     ('hop', 'Hop', 1),
     ('oval_1ball', 'Oval — Ball 1', 1),
     ('oval_1ball_fed', 'Oval — fed', 1),
+    ('polygon_walk', 'Polygon walk', 1),
+    # PWAY-11 P2 U5b: Jugglebot Catches a Ball a person throws. Throws = the
+    # human Throws the robot planned a Catch for, Catches = those confirmed
+    # seated (`SkillExecutor.human_caught`); it books NO drops (the drops
+    # figure is Jugglebot's own Throws and the Ball Butler Feed).
+    ('human_catch', 'Human Throw — Catch', 1),
     ('columns_1ball', 'Columns — Ball 1', 1),
     ('columns_1ball_fed', 'Columns — Ball 2 (fed)', 1),
     ('columns', 'Columns', 2),
@@ -408,9 +414,11 @@ def render(model: Ledger) -> str:
         'Pattern\'s table, so a table is the history of its record, newest '
         'last. The Feed is not a Pattern here.',
         '',
-        '`skill_node` writes this file live at the end of each Attempt (ROS '
-        'parameter `records_path`, set by `jugglebot_launch.py`) and the '
-        'Sitting\'s close-out commits it. The tables are rendered and parsed '
+        '`skill_node` writes a gitignored runtime copy of this file, '
+        '`temp/runtime/records.md`, at the end of each Attempt (ROS '
+        'parameter `records_path`, set by `jugglebot_launch.py`); the '
+        'Sitting debrief copies it back here (`tools/runtime_records.py '
+        'merge`) and commits it. The tables are rendered and parsed '
         'by `ros_ws/src/jugglebot/jugglebot/records.py`; a Note cell may be '
         'edited by hand, nothing else. "Parameters" is what that run used '
         '(`key=value` pairs; empty = not recorded). "How it ended" is completed, stopped, '

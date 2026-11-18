@@ -2,9 +2,9 @@
 id: IDEA-11
 kind: idea
 title: 'JP-10 Turned columns: the columns pair at fixed angles about +z, under pose'
-status: in_progress
+status: complete
 created: '2026-10-30'
-updated: '2026-11-13T05:58:26Z'
+updated: '2026-11-18T09:39:14Z'
 owners:
 - jugglebot-f5
 priority: medium
@@ -17,11 +17,9 @@ blocked_by: []
 links:
 - logbook/2026-11-10-sitting-debrief.md
 - logbook/2026-11-13-sitting-debrief.md
+- logbook/2026-11-18-sitting-debrief.md
 filed_by: claude (jugglebot-f5, pattern exploration 2026-10-30)
 parent: pattern-progression-columns-to-centre-and-orbit
-night_skip: sitting
-night_skip_on: '2026-11-15'
-night_skip_note: 45 deg passed 20/20 again on 2026-11-13; 90 deg is IDEA-22 (swept offline tonight).
 ---
 
 Columns with the Site pair rotated to a fixed angle (30, 45, 60, 90 deg) about the Platform +z.
@@ -82,6 +80,11 @@ It proves the rotational symmetry on hardware that lets the admissible box key o
 - verdict: fail
 - notes: (sheet 2026-11-13-robot, step 33)
 
+## Sitting result (2026-11-18 13:05)
+
+- verdict: data
+- notes: Ran two attempts, both completing. (sheet 2026-11-18-robot, step 23) [derived: temp/logs/launch_2026-11-18_2.log lines 3738 and 3849: 45 deg flew 20/20 twice, no HAND_LIMIT line; landing scatter inside the 15 mm mean and 10 mm sd bars of the five-Attempt straight control on all four ball/axis cells (n 20 per ball against 58 and 50). The criterion is per angle and 90 deg was not on this step. Plant turned45 was not fresh (93 rows at the start).]
+
 ## Progress
 
 - 2026-10-31: P2 of plan pattern-progression.md done offline: goal columns_turned, parameter columns_angle_deg, 12 pose box cells at 45 and 90 deg (45 deg admits only Apex 0.925-0.975, 90 deg 0.875-0.975). Next: the JP-10 Rung (P3) at a Sitting. Logbook 2026-10-31-pattern-progression-p2-turned-columns.md.
@@ -89,3 +92,6 @@ It proves the rotational symmetry on hardware that lets the admissible box key o
 - 2026-11-03: Failed at the Sitting of 2026-11-03: 45 deg COMPLETED 19/19 twice of 5, 90 deg 0 of 7 (best 12/12), Ball 2 lands 37-50 mm outward at 90 deg vs 10 mm outward authority; plant_id not set per angle so PWAY-2 P2(b) unanswered; a 14th goal rejected at angle 135. 19 in 19 is a records row.
 - 2026-11-10: Failed at the Sitting of 2026-11-10 (step 8, real Attempts, plant_id not set: 32 rows in the default Memory, separable by Site). 45 deg COMPLETED 20/20; 90 deg 8/8, 3/3, 3/3, 3/3, three at Ball 2's first Catch after the Feed (BUG-63). PWAY-2 P2(b) offline: the pull toward the partner rotates with the pair (BUG-79). Filed IDEA-22. Logbook 2026-11-10-sitting-debrief.md.
 - 2026-11-13: Failed at the Sitting of 2026-11-13: 45 deg COMPLETED 20/20 (13:18:59), scatter inside the 15 mm mean bar on all four ball and axis cells, outside the 10 mm sd bar on one (Ball 1 x, +13 mm); 90 deg 0 of 5 Attempts past 2 Throws (see IDEA-22, BUG-91). The straight Columns control was flown once, not five times, so its sd rests on n 10 per ball.
+- 2026-11-18: Flown at the Sitting of 2026-11-18, verdict data: 45 deg flew 20/20 twice, no HAND_LIMIT, landing scatter inside the 15 mm mean and 10 mm sd bars of the five-Attempt straight control. 90 deg was flown under IDEA-22 only (best 20/20 and 19/19 at tilt-back 0.0, not at Apex 0.95), so the per-angle criterion is still open for 90 deg.
+- 2026-11-18: 2026-11-18 (owner): IDEA-22 is dropped, so the 90 deg angle flies at Apex 0.975 with no tilt-back; it flew 20/20 and 19/19 there on 2026-11-18 (launch 3-1, plant turned90). Still owed for the Rung gate: the 90 deg landing scatter against the straight control.
+- 2026-11-18: JP-10 Rung accepted by the owner 2026-11-18: 45 deg flew 20/20 twice with scatter inside the control bars; 90 deg flew 20/20 at Apex 0.975 with no tilt-back (launch 3-1, 12:03:55), all eight ball/axis scatter cells inside 15 mm mean and 10 mm sd, no HAND_LIMIT. Accepted caveats: Apex 0.975 not 0.95, flown on the candidate branch, plant turned90 small, 1 of 6 Attempts reached 20.

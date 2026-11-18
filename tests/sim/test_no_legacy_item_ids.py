@@ -80,6 +80,11 @@ GUARD_RULES: Tuple[GuardRule, ...] = (
     GuardRule("historical-record", "historical",
               r"^(?:logbook/|plans/archived/|plans/(?:active|parked|archived)/INDEX\.md$|map/)",
               from_classes=_HISTORICAL_FROM),
+    # The Night Shift's append-only ledger names the branches it pruned; a branch name is a
+    # fact of its day (2026-11-15: the first prune removed every old-form branch, so row 1
+    # holds them and no later row can add one).
+    GuardRule("night-shift-history-ledger", "historical", r"^docs/night-shift/history\.jsonl$",
+              from_classes=frozenset({"branch"})),
 )
 _GUARD = [(r, re.compile(r.path), re.compile(r.line) if r.line else None) for r in GUARD_RULES]
 
@@ -296,6 +301,8 @@ PLANTS = (
     ("glossary-avoid", "GLOSSARY.md", "_Avoid_: JB-12", "JB-12", "frozen"),
     ("legacy-test-identifier", "tests/ros/test_skill_node.py", "def test_jb21_x(): pass", "jb21_x", "frozen"),
     ("historical-record", "logbook/2026-10-01-x.md", "JB-12", "JB-12", "historical"),
+    ("night-shift-history-ledger", "docs/night-shift/history.jsonl",
+     '{"pruned": ["night-shift/2026-11-01-JB-120"]}', "JB-120", "historical"),
 )
 
 

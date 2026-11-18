@@ -8,7 +8,7 @@
 # Usage:
 #   ./run_tests.sh                                       # per-commit gate (excludes `nightly`)
 #   ./run_tests.sh --full                                # EVERY tier, `nightly` included
-#   ./run_tests.sh --full --hypothesis-profile=ci-deep   # what tools/nightly_suite.sh runs at 04:00
+#   ./run_tests.sh --full --hypothesis-profile=ci-deep   # what tools/nightly_suite.sh runs at 02:00
 #   ./run_tests.sh tests/ros                             # a subset
 #   ./run_tests.sh tests/ros/test_throw_ballistics.py -v # any pytest args, passed straight through
 #   JB_TEST_WORKERS=5 ./run_tests.sh                     # override the worker count
@@ -17,7 +17,7 @@
 # ── TIERS ─────────────────────────────────────────────────────────────────────
 # The default gate deselects `-m nightly`: research/demo characterization and the
 # dormant ZMQ-target / catch-optimiser batteries (their live publisher and caller
-# went with the MPC chain on 2026-09-01). Those still RUN — every night at 04:00 via
+# went with the MPC chain on 2026-09-01). Those still RUN — every night at 02:00 via
 # tools/nightly_suite.sh, and on demand with `--full`. The hardware-safety
 # surface (teensy_link wire bytes, firmware natives, ROS nodes, motion) is NEVER
 # demoted; it is per-commit. ONE carve-out (2026-08-01): three tests/motion/ tests
@@ -236,7 +236,7 @@ fi
 echo "═══ Phase 1/2: parallel (${WORKERS} workers, --dist loadfile, -m '${PHASE1_MARK}')"
 start=$SECONDS
 rc_parallel=0
-"$VENV_PY" -m pytest tests/ -q -n "$WORKERS" --dist loadfile -m "$PHASE1_MARK" \
+"$VENV_PY" -m pytest tests/ -q -rs -n "$WORKERS" --dist loadfile -m "$PHASE1_MARK" \
   ${_junit1[@]+"${_junit1[@]}"} "$@" || rc_parallel=$?
 t_parallel=$((SECONDS - start))
 
@@ -253,7 +253,7 @@ start=$SECONDS
 rc_serial=0
 # -p no:xdist makes this phase structurally serial: a stray -n becomes a usage
 # error rather than a silently-parallelised run of the very tests that must not be.
-"$VENV_PY" -m pytest tests/ -q -p no:xdist -m "$PHASE2_MARK" \
+"$VENV_PY" -m pytest tests/ -q -rs -p no:xdist -m "$PHASE2_MARK" \
   ${_junit2[@]+"${_junit2[@]}"} "$@" || rc_serial=$?
 t_serial=$((SECONDS - start))
 
@@ -295,7 +295,7 @@ if [[ $rc_serial -eq 5 ]]; then
     if "$VENV_PY" -m pytest tests/ -q -p no:xdist -m serial --collect-only \
          >/dev/null 2>&1; then
       echo "note: every serial-marked test is 'nightly' — the gate's serial phase is empty."
-      echo "      they still run in './run_tests.sh --full' and the 04:00 nightly."
+      echo "      they still run in './run_tests.sh --full' and the 02:00 nightly."
       rc_serial=0
     else
       echo "error: this run collected ZERO tests for the serial phase (-m '${PHASE2_MARK}')," >&2

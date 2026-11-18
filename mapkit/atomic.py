@@ -50,10 +50,14 @@ def write_text_atomic(path: str, text: str, newline: str = "\n") -> None:
                                suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as fh:
-            os.fchmod(fh.fileno(), mode)
+            has_fchmod = hasattr(os, "fchmod")   # absent on Windows (BUG-118)
+            if has_fchmod:
+                os.fchmod(fh.fileno(), mode)
             fh.write(text)
             fh.flush()
             os.fsync(fh.fileno())
+        if not has_fchmod:
+            os.chmod(tmp, mode)
         os.replace(tmp, path)
     except BaseException:
         try:

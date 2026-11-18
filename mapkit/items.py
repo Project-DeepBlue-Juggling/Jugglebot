@@ -69,7 +69,7 @@ METRIC_FIELDS: Tuple[str, ...] = tuple(METRIC_ENUMS)
 #: stops being true is cleared where it was written. Validated here, the single
 #: enforcement point; ``tests/sim/test_item_night_skip.py`` is the test.
 NIGHT_SKIP_REASONS: Tuple[str, ...] = (
-    "sitting", "input-fact", "input-decision", "input-sitting", "owner-session",
+    "sitting", "input-fact", "input-decision", "owner-session",
     "too-large", "frozen-path", "out-of-reach", "waiting-trigger", "low-priority")
 NIGHT_SKIP_FIELDS: Tuple[str, ...] = (
     "night_skip", "night_skip_on", "night_skip_note", "night_skip_input")

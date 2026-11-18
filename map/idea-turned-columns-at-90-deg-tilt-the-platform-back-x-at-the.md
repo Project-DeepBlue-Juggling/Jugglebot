@@ -2,9 +2,9 @@
 id: IDEA-22
 kind: idea
 title: 'Turned Columns at 90 deg: tilt the Platform back (+x) at the Catch so the ball stops hitting the Platform top'
-status: in_progress
+status: dropped
 created: '2026-11-10'
-updated: '2026-11-14T18:50:48Z'
+updated: '2026-11-18T03:59:55Z'
 owners:
 - night-shift
 priority: medium
@@ -18,6 +18,7 @@ links:
 - idea-jp-10-turned-columns-the-columns-pair-at-fixed-angles-about
 - bug-ball-2-s-first-throw-after-the-feed-catch-lands-about-180-mm
 - logbook/2026-11-13-sitting-debrief.md
+- logbook/2026-11-18-sitting-debrief.md
 parent: pattern-progression-columns-to-centre-and-orbit
 filed_by: claude (sitting debrief 2026-11-10)
 ---
@@ -44,14 +45,14 @@ Recommendation: 3, then 1. The read is cheap, and it shows whether the misses ar
 - setup: level, armed, bb-fed
 - why: Turned Columns at 90 deg failed on 2026-11-10 (4 Attempts, all MISSED_CATCH within 8 Throws, the ball striking the Platform top). The branch adds a rotation about +x to every auto-banked Catch (the Cup leans toward -y), 3 deg by default (TKT-65); the Feed Catch stays Level.
 - do:
-  - Answer TKT-73 first: 3 deg at Apex 0.90 (TKT-67) failed on 2026-11-13, 0 of 5 Attempts past 2 Throws; the 2026-11-15 sweep (Findings below) puts the only +0.10 cells at 0.5 deg, Apex 0.95 to 0.975.
+  - TKT-73 answered (2026-11-16, options 1 and 3): fly tilt-back 0 deg at Apex 0.975 first as the control, then 0.5 deg at Apex 0.975. Offline (Findings 2026-11-15) both clear the re-aim figure: 0 deg +0.350 / +0.131, 0.5 deg +0.350 / +0.146.
   - Mocap up on the robot base markers and Ball Butler's Base markers (columns_turned picks the fed Site from Ball Butler's position).
-  - Rehearse: `ros2 param set /skill_node columns_angle_deg 90`, then `ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: 'columns_turned,apex_m=0.95,separation_mm=125,dwell_s=0.27,columns_angle_deg=90'}"`. Nothing moves.
-  - Offline at P4 limits: 3 deg is refused (LIMIT_JERK, Leg 1 227k vs 200k), 2 deg is refused (margin -0.013), 1.9 deg passes (0.011). 3 deg passes at Apex 0.90 (0.027). Per TKT-67, either `ros2 param set /skill_node columns_turned_catch_tilt_back_deg 1.9` or nominate with apex_m=0.90, and nominate again.
-  - Fly 4 Attempts of columns_turned at 90 deg (Sep. 125, Dwell 0.27) at the tilt-back and Apex the nomination accepted. Watch where the ball meets the Cup and whether the Cup slides sideways (toward +y) at the Catch.
+  - Rehearse: `ros2 param set /skill_node columns_angle_deg 90` and `ros2 param set /skill_node columns_turned_catch_tilt_back_deg 0.0` (a double: write 0.0, not 0), then `ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: 'columns_turned,apex_m=0.975,separation_mm=125,dwell_s=0.27,columns_angle_deg=90'}"`. Nothing moves. Expect an accepted line with no WARNING: RE-AIM MARGIN NEGATIVE.
+  - Fly 2 Attempts of columns_turned at 90 deg (Sep. 125, Dwell 0.27, Apex 0.975) at tilt-back 0.0. Watch where the ball meets the Cup, any Platform-top strike, and whether the Cup slides sideways (toward +y) at the Catch.
+  - Between Attempts, `ros2 param set /skill_node columns_turned_catch_tilt_back_deg 0.5`, nominate again with the same string, then fly 2 Attempts at tilt-back 0.5.
   - If time allows, 1 Attempt at 45 deg as a control: it compiles exactly as before.
 - pass: At 90 deg, at least one of 4 Attempts passes Ball 2's first Catch after the Feed and carries 10 or more Throws, with no Platform-top strike seen.
-- record: the tilt-back and Apex flown and the nomination margin (or refusal text), Throws caught per Attempt and each end reason, any Platform-top strike, any sideways Cup slide at the Catch, the 45 deg control.
+- record: per tilt-back (0.0, then 0.5) at Apex 0.975: the nomination margin and re-aim figure (or refusal text), Throws caught per Attempt and each end reason, any Platform-top strike, any sideways Cup slide at the Catch; the 45 deg control.
 - minutes: 25
 - branch: night-shift/2026-11-12-IDEA-22
 
@@ -79,6 +80,14 @@ Your TKT-68 answer: the offline sweep on the held branch (`columns_turned` 90 de
 - Apex below 0.90 is negative at the re-aim limit even at tilt 0. The refusals are LIMIT_JERK on Leg 1 at the second Catch (212k to 227k against 200k).
 - Next: TKT-73 (which tilt and Apex to fly, or park 90 deg).
 
+## Sitting result (2026-11-18 13:05)
+
+- verdict: data
+- notes (split into bullets):
+  - No attempts succeeded through completion, and it was difficult to visually distinguish these attempts from those with tilt_back_deg 0.0, though there were a handful of throws that collided with the top of the Platform. Many of these were recovered from, however some led to the following throws being messy, which cascaded to failure.
+  - Overall, this seemed less reliable than tilt_back_deg 0.0 (sheet 2026-11-18-robot, step 39) [derived: temp/logs/launch_2026-11-18_3.log 11:54-11:55 and launch_2026-11-18_3-1.log. Nomination margin +0.350, with re-aim +0.131 (tilt-back 0.0) and +0.146 (0.5). 0.0 deg: 6 Attempts caught 19, 6, 18, 7, 5, 20. 0.5 deg: 5 Attempts caught 7, 9, 11, 14, 9, all MISSED_CATCH. Ball 2's first Catch after the Feed passed at both settings.
+  - The operator saw a handful of Platform-top strikes at 0.5; the sample cannot separate the two settings. The 3 deg default is refused at Apex 0.975.]
+
 ## Progress
 
 - 2026-11-11: Night Shift 2026-11-11: options written; awaiting the owner's choice in the question ticket
@@ -86,3 +95,6 @@ Your TKT-68 answer: the offline sweep on the held branch (`columns_turned` 90 de
 - 2026-11-13: Night Shift 2026-11-13: held on night-shift/2026-11-12-IDEA-22: tilt-back now about +x at 3 deg (TKT-65), refused at P4 offline (1.9 passes); unblocked by TKT-67 and a Sitting
 - 2026-11-13: Failed at the Sitting of 2026-11-13: apex 0.90, tilt-back 3 deg (nominate +0.027, -0.080 at re-aim limit); 5 Attempts all ended at the first Catch after the Feed (LIMIT_JERK x3, NO_ADMISSIBLE_COMMAND x2), best 2. "3 deg tilt-back makes 90 deg flyable" refuted at today limits; Platform-top not reached. Branch origin/night-shift/2026-11-12-IDEA-22 stays held (BUG-91).
 - 2026-11-15: Night Shift 2026-11-15: offline sweep done (TKT-68); only 0.5 deg clears +0.10 at the re-aim limit, Apex 0.95-0.975; branch stays held; unblocked by TKT-73 and a Sitting
+- 2026-11-16: Night Shift 2026-11-16: TKT-73 answered (fly 0 deg then 0.5 deg at Apex 0.975); Sitting steps rewritten; held on night-shift/2026-11-12-IDEA-22; unblocked by a Sitting
+- 2026-11-18: Flown at the Sitting of 2026-11-18, verdict data: at 90 deg, Apex 0.975, tilt-back 0.0 caught 19, 6, 18, 7, 5, 20 and 0.5 caught 7, 9, 11, 14, 9 with Platform-top strikes seen; 0.5 was not better. The branch default of 3 deg is REFUSED at Apex 0.975. Owner decision: the default tilt-back (0.0, or drop the feature). Branch stays held.
+- 2026-11-18: Dropped by the owner 2026-11-18: at 90 deg tilt-back 0.5 was not better than 0.0 and the 3 deg default is refused at Apex 0.975, so turned Columns at 90 deg flies with no tilt-back at the slightly higher Apex 0.975. The held branch night-shift/2026-11-12-IDEA-22 is not merged.

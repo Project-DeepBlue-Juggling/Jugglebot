@@ -10,7 +10,7 @@ The morning or post-Sitting Session's one prompt. The owner's share of the Sitti
 hardware steps and the result boxes in the map app; everything that is git, tests and
 paperwork is this command. The owner's share of a flown sheet is notes only (done, problem or
 skipped, plus a few words per step); the verdicts are this command's: derived from the logs,
-confirmed by the owner once. The Next Sitting Runbook (`docs/runbook.md`) is only an index of the
+confirmed by the owner once. The Sitting index (`docs/runbook.md`) is only an index of the
 waiting Items and holds no steps and no close-out; the step-by-step page is the Sitting sheet
 (`map/sheets/<name>.yaml`, results beside it in `<name>.results.yaml`).
 
@@ -39,10 +39,14 @@ results come from.
   authority for map state), which the script takes from `main` before it regenerates.
 - **Commit the Sitting's records and learner Memory first**, before the first `prepare`, so the
   suite runs on a `main` that already holds them (the 2026-11-13 debrief went red on `main`
-  only after its records commit). Whatever the Sitting wrote to tracked files (`docs/records.md`,
-  `temp/learn/jugglebot/memory*.csv`; once closeout C8 lands, the output of
-  `python tools/runtime_records.py merge`) is committed on `main` and pushed, on its own,
-  with the `Logbook-Entry: <date>-sitting-debrief` trailer.
+  only after its records commit). The robot writes its ledger and Memory under `temp/runtime/`
+  (gitignored), so first run `python tools/runtime_records.py merge` (`status` shows what it
+  will do): it copies them back into `docs/records.md` and
+  `temp/learn/<plant_id>/memory_v2.csv`. Exit 2 = a file was refused and the message says what
+  differs (e.g. `docs/records.md` changed since the seed): ask the owner, then rerun with the
+  answer (`--resolve-records keep-runtime|keep-tracked`). Exit 3 = a Sitting looks live: stop
+  and ask. Then `docs/records.md` and `temp/learn/jugglebot/memory_v2.csv` are committed on
+  `main` and pushed, on their own, with the `Logbook-Entry: <date>-sitting-debrief` trailer.
 - Nothing here powers hardware. The Sitting is over.
 
 ## 0a. Flush the Sitting sheet's results
@@ -68,8 +72,9 @@ do not go on to the analysis on a results file you could not flush.
 Writing-for-agents rule: you orchestrate and synthesise; sub-agents read the logs. Scope is
 every launch log under `~/.ros/log/` (`temp/logs/launch_<date>_<n>.log` exists only when the
 operator's tee worked, so `~/.ros/log/<date>-*/launch.log` is the complete source) and every rosbag under `~/Desktop/rosbags/` newer than
-the last debrief entry (or the day of the date argument). The dirty `docs/records.md` and
-`temp/learn/jugglebot/memory.csv` are the Sitting's expected output, not a surprise. No
+the last debrief entry (or the day of the date argument). The Sitting's records and Memory are
+written to the gitignored `temp/runtime/` (Phase C8) and section 4.3 merges them back, so a
+dirty `docs/records.md` or `temp/learn/jugglebot/memory_v2.csv` before then is a surprise. No
 robot, no GUI writes: this is reading.
 
 **A. Inventory (you, not an agent).** In a scratchpad `context.md` list, per launch log, with
@@ -241,10 +246,11 @@ and Memory already committed (section 0). One Item at a time, `prepare` to `land
 2. If any merged branch touched `ros_ws/`: `cd ros_ws && colcon build --packages-select
    jugglebot_interfaces jugglebot` (both, always: `jugglebot` alone installs new node code over an
    old interface, and the mismatch only shows at the first service call) and say so.
-3. `git add docs/records.md` if it changed again since section 0's records commit (skill_node
-   writes it live during a Sitting; it is committed at every Sitting close-out).
+3. `python tools/runtime_records.py status`: every file should read `in step` or `absent`
+   after section 0's merge. If a launch ran since then, run the merge and the records commit of
+   section 0 again.
 
-## 5. Follow-ups, logbook, Runbook, commit
+## 5. Follow-ups, logbook, Sitting index, commit
 
 1. For every note that names a new problem or idea, file it:
    `python -m mapkit item new <bug|feature|idea> "<title>" --body "<the note, with the Item and date>" --link map/<stem>.md --priority <p>` (no `--commit`; the files ride in the debrief commit).
@@ -252,7 +258,7 @@ and Memory already committed (section 0). One Item at a time, `prepare` to `land
 2. Write `logbook/<date>-sitting-debrief.md` (short form: the results table, what merged with
    SHAs, what stayed held and why, follow-ups filed, the rebuild if any); step 3 gives it its
    `logbook/INDEX.md` row.
-3. `python -m mapkit gen` (`logbook/INDEX.md` gains the entry's row; the Runbook index `docs/runbook.md` drops the passed Items and keeps
+3. `python -m mapkit gen` (`logbook/INDEX.md` gains the entry's row; the Sitting index `docs/runbook.md` drops the passed Items and keeps
    the failed ones; the project-map page follows the status changes).
 4. `./run_tests.sh` (each merged branch passed the full gate on its updated tip; the merged
    result gets the per-commit gate here, the nightly covers the rest tonight). Red: stop, say
@@ -268,7 +274,7 @@ and Memory already committed (section 0). One Item at a time, `prepare` to `land
 ## 6. Finish
 
 Say, in three lines: results read (passed / failed), merged and closed (with SHAs), held
-(with why). Offer the owner `/sitting-sheet <rig>` for the next Sitting (the Runbook index lists what waits) and nothing else.
+(with why). Offer the owner `/sitting-sheet <rig>` for the next Sitting (the Sitting index lists what waits) and nothing else.
 
 Pinned by `tests/sim/test_sitting_debrief_protocol.py`: this file names every close-out step
 (the flush call first, results read, derive, one owner confirmation, confirm, close, per-Item

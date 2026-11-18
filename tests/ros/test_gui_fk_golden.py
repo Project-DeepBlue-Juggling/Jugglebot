@@ -99,33 +99,7 @@ _IMPORT_RE = re.compile(r"""from\s+['"](\./[^'"]+)['"]""")
 # node discovery (never assume PATH)
 # ---------------------------------------------------------------------------
 
-def _find_node():
-    """Absolute path to a usable node binary, or ``None``."""
-    found = shutil.which('node') or shutil.which('nodejs')
-    if found:
-        return found
-    patterns = (
-        os.path.expanduser('~/.nvm/versions/node/*/bin/node'),
-        '/usr/local/bin/node',
-        '/usr/bin/node',
-        '/opt/node*/bin/node',
-    )
-    candidates = []
-    for pattern in patterns:
-        candidates.extend(glob.glob(pattern))
-    # Highest version first, sorted NUMERICALLY: a lexicographic sort puts
-    # nvm's "v9.x" above "v22.x" and would pick an ancient interpreter (and
-    # then skip) on a box that has a modern one installed.
-    for candidate in sorted(candidates, key=_path_version, reverse=True):
-        if os.access(candidate, os.X_OK):
-            return candidate
-    return None
-
-
-def _path_version(path):
-    """Version tuple parsed out of an nvm-style path; (0,) when absent."""
-    match = re.search(r'/v(\d+)\.(\d+)\.(\d+)/', path)
-    return tuple(int(g) for g in match.groups()) if match else (0, 0, 0)
+from tests.ros._node import find_node as _find_node  # noqa: E402
 
 
 _NODE = _find_node()

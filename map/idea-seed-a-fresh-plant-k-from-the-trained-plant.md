@@ -2,10 +2,11 @@
 id: IDEA-23
 kind: idea
 title: seed a fresh plant K from the trained plant
-status: inbox
+status: in_progress
 created: '2026-11-13'
-updated: '2026-11-13T17:50:23Z'
-owners: []
+updated: '2026-11-14T19:08:50Z'
+owners:
+- night-shift
 priority: low
 effort: s
 hardware: robot
@@ -42,3 +43,7 @@ A fresh plant starts with K = 1.0 (identity prior), but 9 fresh starts over the 
 4. **Leave the identity prior:** the learner fits K within two rows.
 
 Recommendation: 1. It matches both the 39-Sitting corpus and the 9 fresh starts, cannot inherit a bad plant, and takes the first Throw from about +68 mm to about +10 mm. It changes the empty-Memory-is-identity rule, so plan T-R2's wording changes with it.
+
+## Progress
+
+- 2026-11-15: Night Shift 2026-11-15: held on night-shift/2026-11-15-IDEA-23: config and INVARIANTS are gate-frozen, a stale skill_node test and 3 more findings open; unblocked by a day Session and a fresh-plant rehearsal

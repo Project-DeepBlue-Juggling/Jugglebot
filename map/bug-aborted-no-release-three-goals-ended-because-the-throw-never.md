@@ -4,7 +4,7 @@ kind: bug
 title: 'ABORTED_NO_RELEASE: three goals ended because the throw never left the hand (new 2026-10-28 21:02)'
 status: inbox
 created: '2026-10-28'
-updated: '2026-11-13T05:58:38Z'
+updated: '2026-11-18T02:08:33Z'
 owners: []
 priority: high
 effort: m
@@ -18,6 +18,7 @@ links:
 - 2026-10-28-jb76-solve-tail-is-environment-starvation-instrumented
 - logbook/2026-11-06-sitting-debrief-2.md
 - logbook/2026-11-13-sitting-debrief.md
+- logbook/2026-11-18-sitting-debrief.md
 parent: two-ball-oval
 filed_by: claude (BUG-21 21:02 Sitting read-out)
 night_skip: sitting
@@ -38,3 +39,4 @@ Launch log: `~/.ros/log/2026-10-28-21-02-48-831501-jetson-3765883/launch.log`.
 - 2026-11-06: Two ABORTED_NO_RELEASE ends on 2026-11-06 were not release failures. P2 goal 19 (L11050): the Hand stroke was normal and the cup read empty for the whole stroke; the ball was lost at the Catch before. Endurance 14:55 goal 9 (L9001-L9014): the release had been cancelled by an earlier END. The end code names the wrong thing; the three 2026-10-28 ends were not re-examined.
 - 2026-11-08: 2026-11-07 L2489 matches the 2026-11-06 reading: Throw 19/21 was a missed Catch (ball_held 0 for 0.9 s), reported as ABORTED_NO_RELEASE.
 - 2026-11-13: Sitting of 2026-11-13: the 12:01:36 ABORTED_NO_RELEASE (columns_highlow, 6/8 caught) follows a MISSED Throw 8 near aim (13 mm): same lost-ball-at-the-Catch reading as the 2026-11-06 and 11-08 notes. Confirming needs ball_held in the 2026-11-13_11-42-08 bag around 12:01:35.
+- 2026-11-18: 2026-11-18 debrief: another case of the same signature, launch 4 12:20:41 ABORTED_NO_RELEASE (throw 16 missed at 12:20:39.4, a Ball under the Hand 12:20:38.97-39.89); the end code names the wrong thing.

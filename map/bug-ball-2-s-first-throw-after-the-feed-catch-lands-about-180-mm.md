@@ -2,9 +2,9 @@
 id: BUG-63
 kind: bug
 title: Ball 2's first throw after the feed catch lands about 180 mm outward along the separation axis
-status: inbox
+status: complete
 created: '2026-11-03'
-updated: '2026-11-13T05:58:44Z'
+updated: '2026-11-18T02:08:17Z'
 owners: []
 priority: high
 effort: m
@@ -22,10 +22,8 @@ links:
 - logbook/2026-11-06-sitting-debrief-2.md
 - logbook/2026-11-10-sitting-debrief.md
 - logbook/2026-11-13-sitting-debrief.md
+- logbook/2026-11-18-sitting-debrief.md
 filed_by: sitting-debrief 2026-11-03
-night_skip: sitting
-night_skip_on: '2026-11-15'
-night_skip_note: 'Unresolved on 2026-11-13: no 180 mm case on either plant (max 33 mm); needs a flown recurrence.'
 ---
 
 On 2026-11-03 Ball 2's first Throw after the feed catch landed about 180 mm outward along the separation axis in 5 of 11 high-low Attempts and in 5 of 7 turned-90-degree Attempts. When it happens the Attempt ends within about 3 s at 0/0 or 1/1.
@@ -65,6 +63,13 @@ A bag probe (`tools/probes/`) of the ball's seat position in the Cup at the firs
 - verdict: pending
 - notes: Ran about 5 attempts, none of which reached the 21 throws. The pattern seemed generally cleaner than for Step 14, but there was always at least one messy throw that ended the pattern. (sheet 2026-11-13-robot, step 15)
 
+## Sitting result (2026-11-18 13:05)
+
+- verdict: pass
+- notes (split into bullets):
+  - Gave this a few attempts. Most ended due to the balls colliding mid-air and becoming un-catchable. All attempts lasted for at least 2-3 throws. (sheet 2026-11-18-robot, step 13) [derived: temp/logs/launch_2026-11-18_1.log 11:04-11:05, four columns_highlow Attempts on plant bug63-fresh-2026-11-18 (0 rows at the first): Ball 2's first Throw landed x +22, -7, +23, +21 mm (max |x| 23 mm, at most 7 mm outward).
+  - The Feed-Catch aim was still clamped in y in every Attempt, so the clamp is not the cause of the 180 mm miss.]
+
 ## Progress
 
 - 2026-11-04: 2026-11-03 Sitting, one-ball oval: the clamped-feed-catch mechanism is REFUTED for the oval (first Throw after the feed catch was the BEST throw, caught 19/19, +47.8 mm raw; 7 clamped feed catches each followed by a normal Throw 1). The oval's long throws follow the CARRY (FEAT-32 mechanism).
@@ -73,3 +78,4 @@ A bag probe (`tools/probes/`) of the ball's seat position in the Cup at the firs
 - 2026-11-08: Not flown at the Sitting of 2026-11-07. As data: Ball 2's first Throw landed within 45 mm in all 32 Attempts; with the Feed aim clamped (n 25) +4.2 mm outward, unclamped (n 7) +9.6; no 180 mm case. No support for the clamped-aim reading here; the fresh-plant row is still unflown.
 - 2026-11-10: Sitting of 2026-11-10: the first Catch after the Feed ended 7 of 11 two-ball fed Attempts. Ball 2's first-throw landing outward along the separation axis: high-low (sep 100) 157, 23 (after a 246 mm identity refusal) and 37 mm; straight Columns 196 mm; turned 90 deg 47, 26 and 14 mm.
 - 2026-11-13: Flown at the Sitting of 2026-11-13, verdict unresolved: the 180 mm first-Throw miss did not appear on either plant (trained max 25 mm, fresh max 33 mm along the axis, n 6 each), so the fresh plant cannot be credited with removing it.
+- 2026-11-18: Passed at the Sitting of 2026-11-18: on a fresh plant Ball 2 first Throw landed x +22, -7, +23, +21 mm (limit 60). The Feed-Catch aim was still clamped in y in every Attempt, so the clamp is not the cause and the fresh plant cannot be credited; the 180 mm miss did not recur.

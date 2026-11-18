@@ -1,0 +1,415 @@
+closed:
+  at: 2026-11-18 13:05
+  items:
+  - BUG-58
+  - BUG-63
+  - BUG-89
+  - BUG-90
+  - BUG-92
+  - BUG-94
+  - BUG-98
+  - FEAT-49
+  - IDEA-11
+  - IDEA-22
+confirmed:
+  at: 2026-11-18 13:05
+  changed:
+  - BUG-58
+  - BUG-90
+derived:
+  13:
+    BUG-63:
+      by: sitting-debrief 2026-11-18
+      criterion: 'Ball 2''s first Throw after the feed catch lands within 60 mm of
+        its Site along the separation axis (the 2026-11-03 misses were about 180 mm
+        outward: landings x -223 to -240 against aims near -50).'
+      evidence: 'temp/logs/launch_2026-11-18_1.log 11:04-11:05, four columns_highlow
+        Attempts on plant bug63-fresh-2026-11-18 (0 rows at the first): Ball 2''s
+        first Throw landed x +22, -7, +23, +21 mm (max |x| 23 mm, at most 7 mm outward).
+        The Feed-Catch aim was still clamped in y in every Attempt, so the clamp is
+        not the cause of the 180 mm miss.'
+      verdict: pass
+  22:
+    BUG-89:
+      by: sitting-debrief 2026-11-18
+      criterion: '`setpoints_coalesced` is non-zero and the WARN lines name seq and
+        lag; every STOP inside an Attempt whose record says stamp gap carries the
+        dropped-a-knot verdict (or an emitter skip is visible on /trajectory/status);
+        the two arms are tabulated side by side.'
+      evidence: 'temp/logs/launch_2026-11-18_1.log and _2.log. Counter non-zero (8
+        and 9 read; 42 frames dropped in 11.2 min with cpu_partition off, 37 in 10.2
+        min with it on: 3.2 against 3.3 per minute, no measurable difference). Clause
+        2 fails: of 7 in-Attempt STOPs whose record says stamp gap, 4 lack the dropped-a-knot
+        verdict (launch 1 line 3971; launch 2 lines 2770, 2783, 3350, all on the cover-expired
+        branch). /trajectory/status was not read for those four.'
+      verdict: fail
+  23:
+    IDEA-11:
+      by: sitting-debrief 2026-11-18
+      criterion: 20 consecutive Catches in one Attempt at each angle, flown with Throws
+        21 (the 21st throw is the Stop throw, so `COMPLETED (20/20 caught)`; with
+        Throws 20 it reads 19/19); landing scatter, per ball and per axis, with the
+        mean within 15 mm and the sd within 10 mm of the straight control (proposed
+        2026-11-03, owner to confirm; the old "within 3 mm" was below the control's
+        own run-to-run sd of 18-31 mm); no HAND_LIMIT line.
+      evidence: 'temp/logs/launch_2026-11-18_2.log lines 3738 and 3849: 45 deg flew
+        20/20 twice, no HAND_LIMIT line; landing scatter inside the 15 mm mean and
+        10 mm sd bars of the five-Attempt straight control on all four ball/axis cells
+        (n 20 per ball against 58 and 50). The criterion is per angle and 90 deg was
+        not on this step. Plant turned45 was not fresh (93 rows at the start).'
+      verdict: data
+  30:
+    BUG-92:
+      by: sitting-debrief 2026-11-18
+      criterion: No human_throw track starts inside the box during the idle 2 minutes,
+        and all 10 human Throws are tracked.
+      evidence: 'Bag 2026-11-18_11-31-37 and temp/logs/launch_2026-11-18_3.log: 0
+        human-Throw tracks started inside the Ball Butler box between detect on (11:34:18.9)
+        and the first human Throw (about 11:36:45); 12 tracks for the 11 Throws (one
+        likely a split track). 8 phantom tracks still started outside the box (4 at
+        a floor cell, 4 near x -900, z 2150-2305).'
+      verdict: pass
+  32:
+    BUG-98:
+      by: sitting-debrief 2026-11-18
+      criterion: startup and the Ball Butler calibrate behave as on the last Sitting,
+        and `/robot_state` holds near 100 Hz throughout the calibrate.
+      evidence: 'Bag 2026-11-18_11-31-37, calibrate window 11:37:30.3-11:37:51.9:
+        /robot_state mean 98.6 Hz, lowest 1 s bin 95 Hz, longest gap 44.5 ms; main
+        the same day 98.3 and 98.8 Hz. No service failed or hung. No log line shows
+        the bridge calibrate RPC itself being called.'
+      verdict: pass
+  34:
+    BUG-94:
+      by: sitting-debrief 2026-11-18
+      criterion: every Feed is tracked as Ball Butler's announced Throw and the Feed
+        Catches are no fewer than on the last Ball Butler-fed Sitting.
+      evidence: 'temp/logs/launch_2026-11-18_3.log 11:39-11:43 and bag 2026-11-18_11-31-37:
+        10 of 10 Feeds tracked as the announced Throw (confirmed 0.02-0.06 s after
+        the throw time) and 10 of 10 Feed Catches; main the same day 8 of 9, 8 of
+        8 and 20 of 20. Residual at confirm: median 101 mm from the release point
+        against about 265 mm from the origin on the same flights. The last Sitting''s
+        Feed-Catch count was not found, so the comparison is against today''s main
+        launches.'
+      verdict: pass
+  35:
+    BUG-90:
+      by: sitting-debrief 2026-11-18
+      criterion: with the flag on at Dwell 0.40, the Hand moves smoothly through each
+        flight between the post-release brake and the Capture move (no ~5 Hz stop-and-go
+        seen), no Leg LIMIT or RING refusal end, and Catches no fewer than the 2026-11-13
+        flag-on arm.
+      evidence: 'temp/logs/launch_2026-11-18_3.log 11:44-11:48 and temp/hand_capture/hand_capture_20261118_113140.csv.
+        Dwell 0.40, flag on: 0/1, 2/3, 28/29 caught, all MISSED_CATCH, no Leg LIMIT
+        or RING end (the 2026-11-13 flag-on arm caught about 5 in total). Hand turning
+        points per flight: 0.77 mean against 2.05 on 2026-11-13 and 0.03 flag off;
+        22 of 31 flights still show 1-2. Whether that counts as no stop-and-go seen
+        is the owner''s call. Dwell 0.35: NO_ADMISSIBLE_COMMAND LIMIT_JERK three times
+        at the first learned Catch (margins -0.15 to -0.20). The owner confirmed fail
+        on 2026-11-18: the stop-and-go is reduced, not gone.'
+      verdict: fail
+  39:
+    IDEA-22:
+      by: sitting-debrief 2026-11-18
+      criterion: At 90 deg, at least one of 4 Attempts passes Ball 2's first Catch
+        after the Feed and carries 10 or more Throws, with no Platform-top strike
+        seen.
+      evidence: 'temp/logs/launch_2026-11-18_3.log 11:54-11:55 and launch_2026-11-18_3-1.log.
+        Nomination margin +0.350, with re-aim +0.131 (tilt-back 0.0) and +0.146 (0.5).
+        0.0 deg: 6 Attempts caught 19, 6, 18, 7, 5, 20. 0.5 deg: 5 Attempts caught
+        7, 9, 11, 14, 9, all MISSED_CATCH. Ball 2''s first Catch after the Feed passed
+        at both settings. The operator saw a handful of Platform-top strikes at 0.5;
+        the sample cannot separate the two settings. The 3 deg default is refused
+        at Apex 0.975.'
+      verdict: data
+  48:
+    FEAT-49:
+      by: sitting-debrief 2026-11-18
+      criterion: a window is saved on a real fault, with the brake inside it and the
+        power channels finite.
+      evidence: 'temp/logs/launch_2026-11-18_4.log and temp/hand_capture/hand_capture_20261118_121427.csv:
+        armed 12:15:41 for 10 Columns Attempts, 0 saved, 1 clean exit. The Hand drive
+        stayed in closed loop with no errors 12:15:59-12:25:22, so no real fault occurred
+        to trigger on (the one MAX_DEVIATION latch is a Teensy guard fault, not a
+        drive fault).'
+      verdict: inconclusive
+  49:
+    BUG-58:
+      by: sitting-debrief 2026-11-18
+      criterion: a LANE_REFUSED end is on record with GC_PROBE lines from both stream
+        nodes within 1 s of its STOP WARN, and that WARN carries its verdict, fw_sched
+        counters and frame ages.
+      evidence: 'All five tee logs: 12 LANE_REFUSED ends, each with GC_PROBE lines
+        from both stream nodes within 1 s of its STOP WARN, and each WARN carries
+        its verdict, counters and frame ages. 4 of the 12 had a forward gap over 70
+        ms; 3 follow a 47-54 ms gen-2 GC pause in trajectory_node (launch 1 lines
+        3450 and 3979, launch 2 line 2798), so the starvation itself still happens.
+        The owner flipped the literal pass to data on 2026-11-18: the record exists
+        but the starvation still happens, so the Item stays open.'
+      verdict: data
+schema: 2
+steps:
+  1:
+    comments: ''
+    saved_at: 2026-11-18 10:33
+    status: done
+  2:
+    comments: ''
+    saved_at: 2026-11-18 10:33
+    status: done
+  3:
+    comments: ''
+    saved_at: 2026-11-18 10:38
+    status: done
+  4:
+    comments: ''
+    saved_at: 2026-11-18 10:38
+    status: done
+  5:
+    comments: ''
+    saved_at: 2026-11-18 10:39
+    status: done
+  6:
+    comments: ''
+    saved_at: 2026-11-18 10:40
+    status: done
+  7:
+    comments: ''
+    saved_at: 2026-11-18 10:40
+    status: done
+  8:
+    comments: First attempt ended with SPINOUT_DETECTED on the hand. Second, fourth,
+      sixth attempts ended with a messy throw being dropped. Third and seventh attempts
+      completed. Fifth and eighth attempt ended with MAX_DEVIATION at the hand causing
+      a LANE_REFUSED. Learner memory row appears with the `cat` command
+    saved_at: 2026-11-18 10:47
+    status: done
+  9:
+    comments: ''
+    saved_at: 2026-11-18 10:48
+    status: done
+  10:
+    comments: Six attempts flew without problem. To reach the 10 minute requirement,
+      I ran two attempts with 200 cycles. For the first, at exactly 50 throws, a LANE_REFUSED
+      ended the attempt. Again in the second attempt, a LANE_REFUSED ended the attempt
+      at 75 throws.
+    saved_at: 2026-11-18 11:01
+    status: done
+  11:
+    comments: The `-A1 setpoints_coalesced` counter reads 8 The BUG-89 grep command
+      returned a bunch of entries with `setpoint drain dropped`, `LANE_REFUSED`, `firmware
+      STOP recorded` etc
+    saved_at: 2026-11-18 11:03
+    status: done
+  12:
+    comments: ''
+    saved_at: 2026-11-18 11:03
+    status: done
+  14:
+    comments: ''
+    saved_at: 2026-11-18 11:07
+    status: done
+  15:
+    comments: ''
+    saved_at: 2026-11-18 11:07
+    status: done
+  16:
+    comments: ''
+    saved_at: 2026-11-18 11:08
+    status: done
+  17:
+    comments: ''
+    saved_at: 2026-11-18 11:09
+    status: done
+  18:
+    comments: ''
+    saved_at: 2026-11-18 11:09
+    status: done
+  19:
+    comments: ''
+    saved_at: 2026-11-18 11:09
+    status: done
+  20:
+    comments: First, second attempts ended with a messy catch leading to an uncatchable
+      throw. Third, fourth, seventh attempts finished. Fifth and sixth attempts ended
+      with a barely-dropped catch. Eighth attempt ended with a mid-air collision and
+      both balls being dropped. No leg base joint separations.
+    saved_at: 2026-11-18 11:15
+    status: done
+  21:
+    comments: 'Ran a similar same sequence as for step 10: six attempts with 32 cycles,
+      then three attempts with 200 cycles. All 32 cycle attempts completed. The first
+      200-cycle attempt ended at 50 cycles with LANE_REFUSED, and the second ended
+      with a drop after 64 throws. The third 200-cycle attempt ended with LANE_REFUSED
+      after only 19 cycles.'
+    saved_at: 2026-11-18 11:26
+    status: done
+  24:
+    comments: ''
+    saved_at: 2026-11-18 11:29
+    status: done
+  25:
+    comments: ''
+    saved_at: 2026-11-18 11:29
+    status: done
+  26:
+    comments: ''
+    saved_at: 2026-11-18 11:30
+    status: done
+  27:
+    comments: ''
+    saved_at: 2026-11-18 11:32
+    status: done
+  28:
+    comments: ''
+    saved_at: 2026-11-18 11:32
+    status: done
+  29:
+    comments: ''
+    saved_at: 2026-11-18 11:33
+    status: done
+  31:
+    comments: ''
+    saved_at: 2026-11-18 11:37
+    status: done
+  33:
+    comments: ''
+    saved_at: 2026-11-18 11:38
+    status: done
+  36:
+    comments: ''
+    saved_at: 2026-11-18 11:49
+    status: done
+  37:
+    comments: The pattern didn't seem any messier than earlier, but multiple attempts
+      ended prematurely due to catches not settling and being thrown messily. One
+      attempt ended with LANE_REFUSED. The final attempt basically finished, except
+      the last throw collided with the second-last, leading to both balls being dropped.
+    saved_at: 2026-11-18 11:53
+    status: done
+  38:
+    comments: 'First attempt went really well! Until a LANE_REFUSED ended it early...
+      Here, I had to CTRL-C (and reboot) the Launch because the system got stuck thinking
+      that an attempt was running, preventing me from issuing new JUGGLE commands.
+      clicking "Stop" in the GUI simply showed "Juggle stop ignored: no attempt is
+      running". The re-launch had log ID "launch_2026-11-18_3-1.log" After re-launching
+      and checking the params, the first attempt got LANE_REFUSED, the second ended
+      with a missed catch caused by the ball just barely hitting the top of the Platform,
+      third and fourth ended due to mid-air ball collisions, and the last effectively
+      finished! (there was a mid-air ball collision, but one of the balls was caught)'
+    saved_at: 2026-11-18 12:05
+    status: done
+  40:
+    comments: ''
+    saved_at: 2026-11-18 12:10
+    status: done
+  41:
+    comments: Worked! Just wanted to note here that I've had the /robot_state echo
+      running this whole time, and it seemed to progressively slow down over time.
+      At one point it was running at 45 Hz, and for a long time it was down at 80
+      Hz. Just wanted to record this here for posterity. I think this would be worth
+      looking into.
+    saved_at: 2026-11-18 12:12
+    status: done
+  42:
+    comments: ''
+    saved_at: 2026-11-18 12:12
+    status: done
+  43:
+    comments: ''
+    saved_at: 2026-11-18 12:15
+    status: done
+  44:
+    comments: ''
+    saved_at: 2026-11-18 12:15
+    status: done
+  45:
+    comments: ''
+    saved_at: 2026-11-18 12:15
+    status: done
+  46:
+    comments: ''
+    saved_at: 2026-11-18 12:16
+    status: done
+  47:
+    comments: ''
+    saved_at: 2026-11-18 12:16
+    status: done
+  50:
+    comments: 'Here''s the total output from Terminal 3: " (venv) jetson:/home/jetson/Desktop/Jugglebot/
+      (main✗) $ cd ~/Desktop/Jugglebot && source ~/Desktop/PDJ_venv/venv/bin/activate
+      && python tools/probes/hand_foc_scope.py capture --preset power --trigger fault
+      --label robot_fault [12:15:41] Recording from 0xffff0010, 0xffff0011, 0xffff0228,
+      0xffff0229... Fetching buffer... break None at 65536, 4, 65536 Collected 4096
+      samples, which corresponds to 512.00 ms of data (assuming a sampling frequency
+      of 8000) armed: preset power, trigger fault, trigger point 0.90, waiting until
+      Ctrl-C; scope size 65536 bytes, 8002 Hz measured; Ctrl-C leaves the drive untouched
+      Recording from 0xffff022e, 0xffff022f, 0xffff0001, 0xffff022a, 0xffff022b, 0xffff0229,
+      0xffff01b6, 0xffff0241... clean exit from CLOSED_LOOP to state 1 (disarm_reason
+      0x0, active_errors 0x0, no new value); re-armed ^Cstopped by Ctrl-C after 0
+      saved; 1 clean exits seen while waiting; the drive is untouched "'
+    saved_at: 2026-11-18 12:26
+    status: done
+  51:
+    comments: ''
+    saved_at: 2026-11-18 12:26
+    status: done
+verdicts:
+  13:
+    BUG-63:
+      notes: Gave this a few attempts. Most ended due to the balls colliding mid-air
+        and becoming un-catchable. All attempts lasted for at least 2-3 throws.
+      saved_at: 2026-11-18 11:06
+  22:
+    BUG-89:
+      notes: '`ros2 topic echo /link_status | grep -A1 setpoints_coalesced` gives
+        9, and the second command gives a bunch of rows.'
+      saved_at: 2026-11-18 11:27
+  23:
+    IDEA-11:
+      notes: Ran two attempts, both completing.
+      saved_at: 2026-11-18 11:29
+  30:
+    BUG-92:
+      notes: Made 11 human throws in a three ball cascade
+      saved_at: 2026-11-18 11:37
+  32:
+    BUG-98:
+      notes: /robot_state held at almost exactly 98 Hz throughout the calibrate; basically
+        unchanged since launch
+      saved_at: 2026-11-18 11:38
+  34:
+    BUG-94:
+      notes: First attempt ended with MAX_DEVIATION after just 12 throws. Second attempt
+        ended the same way after 20 throws. Third, fourth and fifth attempts ended
+        after a catch didn't settle before the throw, leading to the throw being uncatchable.
+        Feeds didn't seem any smoother than previously. Not sure how the tracking
+        went, as I can only watch so much at once.
+      saved_at: 2026-11-18 11:44
+  35:
+    BUG-90:
+      notes: First two attempts at dwell 0.40 ended with messy throws being uncatchable.
+        Third attempt lasted much longer but ended the same way. Movements were much
+        better than before (with ZVD true), but still nowhere near as smooth as with
+        ZVD false. Dwell 0.35 was ABORTED immediately after the first throw on all
+        three attempts, due to NO_ADMISSIBLE_COMMAND
+      saved_at: 2026-11-18 11:48
+  39:
+    IDEA-22:
+      notes: No attempts succeeded through completion, and it was difficult to visually
+        distinguish these attempts from those with tilt_back_deg 0.0, though there
+        were a handful of throws that collided with the top of the Platform. Many
+        of these were recovered from, however some led to the following throws being
+        messy, which cascaded to failure. Overall, this seemed less reliable than
+        tilt_back_deg 0.0
+      saved_at: 2026-11-18 12:09
+  48:
+    FEAT-49:
+      notes: Gave this a bunch of attempts. Until the last one, all attempts either
+        completed or ended due to a missed catch. The final attempt ended with MAX_DEVIATION.
+      saved_at: 2026-11-18 12:24
+  49:
+    BUG-58:
+      notes: Too much output here for me to review. Have a Sonnet agent check over
+        this.
+      saved_at: 2026-11-18 12:25

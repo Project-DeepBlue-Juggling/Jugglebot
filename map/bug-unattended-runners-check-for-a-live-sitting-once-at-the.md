@@ -4,7 +4,7 @@ kind: bug
 title: Unattended runners check for a live Sitting once at the start, and cannot see a bench rig
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-14T17:53:49Z'
+updated: '2026-11-18T08:04:12Z'
 owners: []
 priority: medium
 effort: m
@@ -35,3 +35,7 @@ The unattended runners ask "is a robot Sitting live" once, at the start, and the
 ## Wanted
 
 A positive signal in place of the argv guess: a lock or heartbeat file that the launch and the bench scripts hold, read by `live_session`, and re-checked by the runners before each suite and each merge. That closes BUG-85 in the same change.
+
+## Progress
+
+- 2026-11-18: Owner decision 2026-11-18: the live-Sitting half is not a problem. The nightly suite moves to 02:00 and the Night Shift to 02:45, and the owner starts no Sitting between 02:00 and 09:00. Still open here: the auto-pull is not guarded and can fast-forward ros_ws under a running launch; a bench rig is invisible to live_session.

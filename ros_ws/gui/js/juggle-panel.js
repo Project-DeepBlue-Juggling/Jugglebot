@@ -308,7 +308,7 @@ let magazineMiss = null;        // { text, cls } — latest MAGAZINE_MISS, until
 let last = null;                // { kind: 'end'|'refused', ... }
 let crossCheck = null;          // { pattern, typed, t }
 let warn = null;                // stale-relay mismatch text
-let nom = null;                 // { state: checking|ok|err|unavailable, summary, lines } | null
+let nom = null;                 // { state: checking|ok|warn|err|unavailable, summary, lines } | null (warn: accepted, re-aim margin negative, BUG-91)
 let nomTimer = null;
 let nomSeq = 0;                 // request counter: a reply for an older request is dropped
 
@@ -673,6 +673,10 @@ function buildNominateData(p) {
     return data;
 }
 
+/** Ends the nomination summary when the Catch re-aim margin is negative
+ *  (`nominate.AIM_WARNING_TEXT`). */
+const NOMINATE_WARNING_TEXT = 'WARNING: RE-AIM MARGIN NEGATIVE';
+
 function runNominate(seq) {
     if (seq !== nomSeq) return;
     const p = patternOf(ui.pattern);
@@ -686,7 +690,10 @@ function runNominate(seq) {
             const ok = !!(res && res.success);
             // "nomination unavailable: ..." (an Attempt is running) is not a verdict on the configuration.
             const neutral = /^nomination unavailable/i.test(text);
-            nom = { state: neutral ? 'unavailable' : (ok ? 'ok' : 'err'),
+            // BUG-91 (TKT-70 option 2): accepted, but the re-aim margin is negative: the
+            // summary ends with this text and the line is red, not green.
+            const aimWarn = ok && !neutral && text.split('\n')[0].trim().endsWith(NOMINATE_WARNING_TEXT);
+            nom = { state: neutral ? 'unavailable' : (aimWarn ? 'warn' : (ok ? 'ok' : 'err')),
                 summary: rows.length ? rows[0] : (ok ? 'nomination OK' : 'nomination REFUSED'),
                 lines: rows.slice(1) };
             sync();

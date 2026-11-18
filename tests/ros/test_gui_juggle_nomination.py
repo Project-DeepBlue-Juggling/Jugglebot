@@ -41,15 +41,7 @@ export function withTimeout(promise, ms, label) {
 """
 
 
-def _find_node():
-    found = shutil.which("node") or shutil.which("nodejs")
-    if found:
-        return found
-    for pat in (os.path.expanduser("~/.nvm/versions/node/*/bin/node"), "/usr/local/bin/node", "/usr/bin/node"):
-        hits = sorted(glob.glob(pat))
-        if hits:
-            return hits[-1]
-    return None
+from tests.ros._node import find_node as _find_node  # noqa: E402
 
 
 NODE = _find_node()
@@ -136,6 +128,16 @@ def test_ok_reply_is_coloured_ok_with_no_lines(out):
 
 
 @needs_node
+def test_negative_reaim_reply_is_red_warn_and_still_accepted(out):
+    """BUG-91: success stays True, the line gets the warn state (red); a plain
+    OK reply does not."""
+    v = out["warn_reply_view"]
+    assert v["summary"].endswith("WARNING: RE-AIM MARGIN NEGATIVE")
+    assert "warn" in v["cls"].split() and "ok" not in v["cls"].split()
+    assert "warn" not in out["ok_view"]["cls"].split()
+
+
+@needs_node
 def test_rapid_edits_make_one_call_with_the_last_value(out):
     assert len(out["debounce_calls"]) == 1
     assert "apex_m=0.93" in out["debounce_calls"][0]
@@ -174,3 +176,17 @@ def test_dispatch_cancels_a_pending_nomination(out):
 @needs_node
 def test_disconnect_hides_the_block(out):
     assert out["disconnected_hidden"] is True
+
+
+def test_gui_warning_text_matches_nominate():
+    """The panel's red ``warn`` state keys on the end of the summary line, so its copy
+    of the warning text must equal ``nominate.AIM_WARNING_TEXT``: a wording change on
+    the Python side would otherwise drop the red state silently (BUG-91, TKT-74)."""
+    import re
+
+    from jugglebot.motion.skills import nominate as nm
+
+    src = (JS / "juggle-panel.js").read_text(encoding="utf-8")
+    m = re.search(r"const NOMINATE_WARNING_TEXT = '([^']*)';", src)
+    assert m, "NOMINATE_WARNING_TEXT not found in juggle-panel.js"
+    assert m.group(1) == nm.AIM_WARNING_TEXT

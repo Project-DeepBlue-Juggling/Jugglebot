@@ -170,6 +170,12 @@
 - **subscribers:** `skill_node`
 - **type:** `jugglebot_interfaces.msg.HandTelemetryMessage`
 
+### `human_throws`
+
+- **publishers:** `ball_tracker_node`
+- **subscribers:** `skill_node`
+- **type:** `jugglebot_interfaces.msg.HumanThrowEvent`
+
 ### `leg_cmd_executed`
 
 - **publishers:** `teensy_bridge_node`

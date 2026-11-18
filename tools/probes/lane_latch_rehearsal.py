@@ -4,7 +4,7 @@
 Injects, ON PURPOSE and on the powered robot, the real fault mechanism that
 latched a streamed lane at sitting 7: a ~100 ms Jetson stall of
 ``trajectory_node`` in the middle of a leg move, so the firmware's scheduled
-playback loses its cover (SCHED_COVER 50 ms + SCHED_GRACE_S 20 ms = 70 ms),
+playback loses its cover (SCHED_COVER 50 ms + SCHED_GRACE_LEG_S 30 ms = 80 ms for the legs since FW 44),
 refuses the discontinuous resume (legs moving faster than
 SCHED_RESUME_TOL_VEL_LEG_RPS = 0.3 rps) and sets ``sched_hold_latched``
 (``/link_status`` heartbeat flag, bit 15). It then watches the automatic
@@ -69,7 +69,7 @@ QUINTIC_PEAK_FACTOR = 1.875      # peak/mean speed of a quintic rest-to-rest mov
 ACTIVE_Z_MM = 170.0              # STOW-relative z of the ACTIVE pose
 SETPOINT_STALE_S = 0.250
 FREEZE_MAX_MS = 150.0            # refuse >= this (leaves 100 ms margin to STALE)
-COVER_MS = 70.0                  # SCHED_COVER 50 + SCHED_GRACE_S 20
+COVER_MS = 80.0                  # SCHED_COVER 50 + SCHED_GRACE_LEG_S 30 (FW 44; 20 through FW 43)
 IN_PROGRESS_WITHIN_S = 1.0       # latch rise -> lane_recovery in_progress
 DONE_WITHIN_S = 10.0             # latch rise -> done
 MAX_LIVE_DEV_REV = 0.1           # through the recovery (converge done -> DONE)

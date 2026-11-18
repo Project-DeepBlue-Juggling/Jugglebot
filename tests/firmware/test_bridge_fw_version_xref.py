@@ -262,16 +262,28 @@ def test_the_bump_history_records_what_this_version_carries():
     assert 'PROTOCOL_VERSION 12→13' in m42.group(1), m42.group(1)
     assert 'time_base_last_jump' in m42.group(1), m42.group(1)
     assert 'no lane behaviour change' in m42.group(1), m42.group(1)
-    # FW 44 — BUG-93 silence-predicate wrap.  The substance: a SAFETY PREDICATE
+    # FW 44 — the LEG scheduler grace 20→30 ms, the Hand's unchanged (owner
+    # decision 2026-11-18): a lane behaviour change with no wire change; the
+    # line must name both group constants, the new leg cover + grace and that
+    # the Hand (its 70 ms and its 14 ms C1 stop) is untouched.
+    m44 = re.search(r'^// 43→44:(.*)$', text, re.M)
+    assert m44 is not None, "FW 44 history line missing"
+    assert 'SCHED_GRACE_LEG_S 0.030' in m44.group(1), m44.group(1)
+    assert 'SCHED_GRACE_HAND_S 0.020' in m44.group(1), m44.group(1)
+    assert 'SCHED_EXHAUST_LEG_US 80000' in m44.group(1), m44.group(1)
+    assert 'SCHED_EXHAUST_HAND_US 70000, unchanged' in m44.group(1), m44.group(1)
+    assert 'HAND_C1_STOP_GRACE_US (14 ms) unchanged' in m44.group(1), m44.group(1)
+    assert 'NO WIRE CHANGE' in m44.group(1) and 'PROTOCOL_VERSION stays 14' in m44.group(1), m44.group(1)
+    # FW 45 — BUG-93 silence-predicate wrap.  The substance: a SAFETY PREDICATE
     # changed (the CAN_BUS_DOWN trip and its reconnect now age the receive stamp
     # through rx_older_than, so a stamp newer than the clock read is live), and
     # the bump is wire-invisible, so only BRIDGE_FW_CHECK says whether it is aboard.
-    m44 = re.search(r'^// 43→44:(.*)$', text, re.M)
-    assert m44 is not None, "FW 44 history line missing"
-    assert 'BUG-93' in m44.group(1) and 'rx_older_than' in m44.group(1), m44.group(1)
-    assert 'SAFETY PREDICATE' in m44.group(1), m44.group(1)
-    assert 'CAN_AXIS_SILENCE_TIMEOUT_US' in m44.group(1), m44.group(1)
-    assert 'NO WIRE CHANGE' in m44.group(1) and 'PROTOCOL_VERSION stays 14' in m44.group(1), m44.group(1)
+    m45 = re.search(r'^// 44→45:(.*)$', text, re.M)
+    assert m45 is not None, "FW 45 history line missing"
+    assert 'BUG-93' in m45.group(1) and 'rx_older_than' in m45.group(1), m45.group(1)
+    assert 'SAFETY PREDICATE' in m45.group(1), m45.group(1)
+    assert 'CAN_AXIS_SILENCE_TIMEOUT_US' in m45.group(1), m45.group(1)
+    assert 'NO WIRE CHANGE' in m45.group(1) and 'PROTOCOL_VERSION stays 14' in m45.group(1), m45.group(1)
 
 
 def test_the_version_this_release_pins_is_actually_uplinked():

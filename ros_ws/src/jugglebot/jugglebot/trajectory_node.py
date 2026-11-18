@@ -152,11 +152,13 @@ _MOVE_MODE = 'TRAJECTORY'
 #: (`_refresh_clock_offset`).
 _CLOCK_STEP_WARN_US = 100.0
 
-# Emitter wake-gap WARN threshold (ms).  The can-bridge firmware covers a lane
-# for 2 knots x 25 ms + 20 ms grace = 70 ms before it STOPs; a wake gap of
-# 70 - 25 (one knot) = 45 ms means the next knot is already late enough that a
-# further hiccup is fatal.  Evaluated on the diagnostics timer, never in the
-# emitter thread.
+# Emitter wake-gap WARN threshold (ms).  Derived when the can-bridge firmware
+# covered a lane for 2 knots x 25 ms + 20 ms grace = 70 ms before it STOPped: a
+# wake gap of 70 - 25 (one knot) = 45 ms meant the next knot was already late
+# enough that a further hiccup is fatal.  FW 44 (2026-11-18) made the grace per
+# group: the legs 30 ms (cover 80 ms), the Hand still 20 ms (70 ms), and its
+# fast-upstroke C1 stop still fires at 50 + 14 = 64 ms, so 45 is unchanged.  Evaluated on
+# the diagnostics timer, never in the emitter thread.
 EMIT_GAP_WARN_MS = 45.0
 
 # Service-level rejection codes (NOT feasibility-enum members — those describe a
@@ -1484,6 +1486,18 @@ class TrajectoryNode(Node):
                     # as 299-679 rev/s^2 hand accel steps at every 25 ms frame
                     # boundary.
                     next_deadline = _ceil_to_grid(time.perf_counter(), period)
+                    # ...then WAIT for that knot, exactly as the on-time
+                    # branch does (BUG-110). The snapped deadline is up to one
+                    # period in the future; emitting it at once published a
+                    # frame up to 25 ms before (its stamp - emit lead), and
+                    # the bridge's newest-only drain (teensy_bridge_node
+                    # recv_latest) then forwarded that not-yet-due frame and
+                    # discarded the late, due one, so the firmware's cover ran
+                    # out (2026-11-18: 3 Attempt-ending STOPs). Interruptible:
+                    # a stop ends the loop without emitting.
+                    sleep_dt = next_deadline - time.perf_counter()
+                    if sleep_dt > 0:
+                        self._emit_stop.wait(sleep_dt)
         finally:
             try:
                 self._pub.close()
@@ -5518,7 +5532,8 @@ class TrajectoryNode(Node):
         if gap_ms > EMIT_GAP_WARN_MS:
             self.get_logger().warning(
                 'emitter wake gap %.0f ms over the last window (firmware '
-                'STOPs the lane past ~70 ms); the stream is being stalled by '
+                'STOPs the Hand lane past ~70 ms, the legs past ~80 ms); the '
+                'stream is being stalled by '
                 'something on this box' % gap_ms)
         msg = TrajectoryStatus()
         msg.streaming = bool(streaming)

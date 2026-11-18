@@ -22,14 +22,21 @@ import threading
 from collections import deque
 from typing import Deque, NamedTuple, Optional, Tuple
 
-# The firmware scheduler lane's cover: 2 knots x 25 ms + 20 ms grace
-# (canbridge_config.h / leg_interp.cpp; the knot period mirrors
-# setpoint_pump.DEFAULT_KNOT_DT_S). The firmware source is not in this
-# checkout, so this is the single Python mirror; a gap above it expires the
-# lane's cover -> STOP.
+# The firmware scheduler lane's cover: 2 knots x 25 ms + the group's grace
+# (canbridge_config.h SCHED_GRACE_LEG_S / SCHED_GRACE_HAND_S, per group since
+# FW 44; the knot period mirrors setpoint_pump.DEFAULT_KNOT_DT_S). Pinned
+# against the header and the twin by tests/teensy_link/test_gap_monitor.py; a
+# gap above a group's cover expires that group's cover -> STOP.
 SCHED_KNOT_DT_MS = 25.0
-SCHED_GRACE_MS = 20.0
-SCHED_COVER_MS = 2.0 * SCHED_KNOT_DT_MS + SCHED_GRACE_MS  # 70.0
+SCHED_GRACE_LEG_MS = 30.0    # FW 44 (owner, 2026-11-18; 20.0 through FW 43)
+SCHED_GRACE_HAND_MS = 20.0
+SCHED_COVER_LEG_MS = 2.0 * SCHED_KNOT_DT_MS + SCHED_GRACE_LEG_MS    # 80.0
+SCHED_COVER_HAND_MS = 2.0 * SCHED_KNOT_DT_MS + SCHED_GRACE_HAND_MS  # 70.0
+# What the WARN latch and the STOP verdicts judge against: the EARLIER group
+# cover, the Hand's (outside its C1 stop below). A gap past it can have stopped
+# a group; a gap below it stopped neither (the legs' 80 ms is later still). A
+# legs-only stream (hand-less hold) is judged 10 ms early: advisory text only.
+SCHED_COVER_MS = min(SCHED_COVER_HAND_MS, SCHED_COVER_LEG_MS)       # 70.0
 # FW 37 Hand C1 stop (fast upstroke): the Hand group's grace shrinks to
 # HAND_C1_STOP_GRACE_US (canbridge_config.h), so its deadline is the 50 ms
 # cover + that grace. Mirror of the header constant; pinned against the header

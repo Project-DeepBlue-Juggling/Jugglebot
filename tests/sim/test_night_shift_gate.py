@@ -84,42 +84,66 @@ def commit(root, msg="edit"):
     return _git(root, "rev-parse", "HEAD")
 
 
+@pytest.fixture(scope="module")
+def template(tmp_path_factory):
+    """The seeded clone and its bare origin, built once; copied per test (FEAT-58)."""
+    tmp_path = tmp_path_factory.mktemp("gate_template")
+    mp = pytest.MonkeyPatch()  # the module-scoped twin of the autouse _git_env
+    mp.setenv("HOME", str(tmp_path))
+    mp.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
+    mp.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    for k in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"):
+        mp.setenv(k, "t")
+    for k in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
+        mp.setenv(k, "t@example.com")
+    try:
+        root = tmp_path / "work"
+        root.mkdir()
+        _git(root, "init", "-q")  # this git (2.25) has no `init -b`
+        _git(root, "checkout", "-q", "-b", "main")
+        (root / "map").mkdir()
+        write_item(str(root / "map" / "pathway-steady.md"),
+                   _meta("pathway", "Steady", "active", 1, destination="It is steady."), "Body\n")
+        write_bug(root)
+        (root / "src").mkdir()
+        (root / "src" / "thing.py").write_text("X = 1\n")
+        for name in ("GLOSSARY.md", "CLAUDE.md", "DOCUMENTATION_GUIDE.md"):
+            (root / name).write_text("# %s\n" % name)
+        (root / "config").mkdir()
+        (root / "config" / "hardware_config.yaml").write_text("a: 1\n")
+        fw = root / "ros_ws" / "src" / "jugglebot" / "Teensy_code_canbridge"
+        fw.mkdir(parents=True)
+        (fw / "x.ino").write_text("// x\n")
+        (root / "docs").mkdir()
+        (root / "docs" / "CLAUDE.md").write_text("# docs copy\n")
+        # The gate running must be the base's own, so the base carries the real one and its mapkit.
+        (root / "tools").mkdir()
+        shutil.copy(TOOL, str(root / "tools" / "night_shift_gate.py"))
+        shutil.copytree(os.path.join(ROOT, "mapkit"), str(root / "mapkit"),
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        (root / ".gitignore").write_text("__pycache__/\n")
+        commit(root, "seed")
+        _git(tmp_path, "clone", "-q", "--bare", str(root), str(tmp_path / "origin.git"))
+        _git(root, "remote", "add", "origin", str(tmp_path / "origin.git"))
+        _git(root, "fetch", "-q", "origin")
+        _git(root, "push", "-q", "origin", "main")
+        _git(root, "checkout", "-q", "-b", BRANCH)
+        (root / "src" / "thing.py").write_text("X = 2\n")
+        commit(root, "fix(thing): X is two (BUG-7)")
+    finally:
+        mp.undo()
+    return tmp_path
+
+
 @pytest.fixture
-def repo(tmp_path):
+def repo(tmp_path, template):
     """A clone with origin/main and BRANCH one commit ahead (src/thing.py edited)."""
     root = tmp_path / "work"
-    root.mkdir()
-    _git(root, "init", "-q")  # this git (2.25) has no `init -b`
-    _git(root, "checkout", "-q", "-b", "main")
-    (root / "map").mkdir()
-    write_item(str(root / "map" / "pathway-steady.md"),
-               _meta("pathway", "Steady", "active", 1, destination="It is steady."), "Body\n")
-    write_bug(root)
-    (root / "src").mkdir()
-    (root / "src" / "thing.py").write_text("X = 1\n")
-    for name in ("GLOSSARY.md", "CLAUDE.md", "DOCUMENTATION_GUIDE.md"):
-        (root / name).write_text("# %s\n" % name)
-    (root / "config").mkdir()
-    (root / "config" / "hardware_config.yaml").write_text("a: 1\n")
-    fw = root / "ros_ws" / "src" / "jugglebot" / "Teensy_code_canbridge"
-    fw.mkdir(parents=True)
-    (fw / "x.ino").write_text("// x\n")
-    (root / "docs").mkdir()
-    (root / "docs" / "CLAUDE.md").write_text("# docs copy\n")
-    # The gate running must be the base's own, so the base carries the real one and its mapkit.
-    (root / "tools").mkdir()
-    shutil.copy(TOOL, str(root / "tools" / "night_shift_gate.py"))
-    shutil.copytree(os.path.join(ROOT, "mapkit"), str(root / "mapkit"),
-                    ignore=shutil.ignore_patterns("__pycache__"))
-    (root / ".gitignore").write_text("__pycache__/\n")
-    commit(root, "seed")
-    _git(tmp_path, "clone", "-q", "--bare", str(root), str(tmp_path / "origin.git"))
-    _git(root, "remote", "add", "origin", str(tmp_path / "origin.git"))
-    _git(root, "fetch", "-q", "origin")
-    _git(root, "push", "-q", "origin", "main")
-    _git(root, "checkout", "-q", "-b", BRANCH)
-    (root / "src" / "thing.py").write_text("X = 2\n")
-    commit(root, "fix(thing): X is two (BUG-7)")
+    shutil.copytree(str(template / "work"), str(root), symlinks=True)
+    shutil.copytree(str(template / "origin.git"), str(tmp_path / "origin.git"), symlinks=True)
+    _git(root, "remote", "set-url", "origin", str(tmp_path / "origin.git"))
+    # `clone --bare` recorded the template's work dir as the bare origin's own remote.
+    _git(tmp_path / "origin.git", "remote", "set-url", "origin", str(root))
     return root
 
 
@@ -306,6 +330,7 @@ def test_e_unparseable_map_file_holds(repo):
     "ros_ws/src/jugglebot/WaveCamera_ESP_code/src/x.cpp",
     "ros_ws/src/jugglebot/WaveCamera_ESP_code/include/x.h",
     "ros_ws/src/jugglebot/WaveCamera_ESP_code/platformio.ini",
+    "tools/probes/imu_bench/firmware/src/x.cpp", "tools/probes/imu_bench/firmware/platformio.ini",
     "ros_ws/src/jugglebot/jugglebot/motion/skills/INVARIANTS.md",
     "ros_ws/src/jugglebot_interfaces/srv/InstallSegment.srv",
     "config/hardware_config.yaml", "config/generate_udp_protocol.py",
@@ -341,6 +366,7 @@ def test_f_rename_away_from_forbidden_path_holds(repo):
 
 def test_f_lookalike_paths_merge(repo):
     for path in ("docs/CLAUDE.md", "docs/config/notes.md", "tools/nightly.py", "tools/other.py",
+                 "tools/probes/imu_bench/viewer/index.html", "tools/probes/imu_bench/README.md",
                  "tests/sim/test_mapkit_items_extra.py", "docs/run_tests.sh",
                  "src/mapkit/x.py", "ros_ws/src/jugglebot/WaveCamera_ESP_code/test/x.cpp",
                  "ros_ws/src/jugglebot/jugglebot/skill_node.py", "tests/fixtures/wave.json"):
@@ -359,6 +385,7 @@ def test_forbidden_paths_pinned():
         "ros_ws/src/jugglebot/WaveCamera_ESP_code/src/*",
         "ros_ws/src/jugglebot/WaveCamera_ESP_code/include/*",
         "ros_ws/src/jugglebot/WaveCamera_ESP_code/platformio.ini",
+        "tools/probes/imu_bench/firmware/*",
         "ros_ws/src/jugglebot/jugglebot/motion/skills/INVARIANTS.md",
         "ros_ws/src/jugglebot_interfaces/*", "config/*", "tools/night_shift*", "tools/lib/*",
         "tools/systemd/*", "tools/nightly_*", "tools/sitting_merge.sh", ".claude/*",
