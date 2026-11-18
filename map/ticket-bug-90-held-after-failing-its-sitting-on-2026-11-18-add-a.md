@@ -2,9 +2,9 @@
 id: TKT-85
 kind: ticket
 title: 'BUG-90 held after failing its Sitting on 2026-11-18: add a hard bound and fly again, take the Hand out of the ZVD lever, or drop it and leave carry_zvd off?'
-status: open
+status: complete
 created: '2026-11-19'
-updated: '2026-11-18T15:54:22Z'
+updated: '2026-11-18T21:23:23Z'
 owners: []
 priority: medium
 effort: xs
@@ -32,3 +32,7 @@ BUG-90 (the `carry_zvd` rows make the Hand stop and go in flight) is held on nig
 - 3: BUG-90 closes with the flag off, and the branch is left for you to delete.
 
 Recommendation: 3, unless `carry_zvd` is buying something the Legs need. The failed Sitting shows option 1 only halves the stop-and-go, and with the flag off it is gone.
+
+## Answer
+
+Agreed. Let's leave this off. Go with Option 3
