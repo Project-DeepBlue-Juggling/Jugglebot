@@ -1,4 +1,4 @@
-"""Night Shift candidate branch (plans/active/night-shift.md T-U6).
+"""Night Shift candidate branch (plans/archived/night-shift.md T-U6).
 
 `tools/night_shift_candidate.sh` stacks the held `night-shift/<date>-<ID>` branches
 whose Item has a `## Sitting` section into one `night-shift/sitting-<date>` branch.
@@ -34,7 +34,7 @@ def _item(n, with_section):
 
 
 class Fx:
-    def __init__(self, tmp_path):
+    def __init__(self, tmp_path, template=None, build_only=False):
         self.root = tmp_path
         (tmp_path / "gitconfig").write_text(_GITCONFIG)
         (tmp_path / ".gitconfig").write_text(_GITCONFIG)
@@ -46,6 +46,15 @@ class Fx:
         self.origin = tmp_path / "origin.git"
         self.seed = tmp_path / "seed"
         self.clone = tmp_path / "clone"
+        if template is not None:
+            # Same starting state as the build below, made by copy: the seeded origin and
+            # seed repo are copied, the seed's remote is re-pointed at THIS copy, and the
+            # working clone is cloned fresh from it.
+            shutil.copytree(str(template / "origin.git"), str(self.origin))
+            shutil.copytree(str(template / "seed"), str(self.seed))
+            _git("remote", "set-url", "origin", str(self.origin), cwd=self.seed, env=self.env)
+            _git("clone", "-q", str(self.origin), str(self.clone), cwd=tmp_path, env=self.env)
+            return
         _git("init", "-q", "--bare", str(self.origin), cwd=tmp_path, env=self.env)
         _git("symbolic-ref", "HEAD", "refs/heads/main", cwd=self.origin, env=self.env)
         self.seed.mkdir()
@@ -67,6 +76,8 @@ class Fx:
         self.branch(2, "src/b.txt", "b\n")
         self.branch(3, "src/a.txt", "line1\nline2\nthree\n")
         self.branch(9, "src/z.txt", "z\n")
+        if build_only:
+            return
         _git("clone", "-q", str(self.origin), str(self.clone), cwd=tmp_path, env=self.env)
 
     def item(self, n, sec):
@@ -114,11 +125,21 @@ def _python():
     return sys.executable
 
 
-@pytest.fixture
-def fx(tmp_path):
+@pytest.fixture(scope="module")
+def template(tmp_path_factory):
+    """The seeded origin and seed repo, built once and copied per test (never returned)."""
     if not (REPO / "mapkit" / "sitting.py").exists():
         pytest.skip("mapkit/sitting.py not present")
-    return Fx(tmp_path)
+    root = tmp_path_factory.mktemp("cand_template")
+    Fx(root, build_only=True)
+    return root
+
+
+@pytest.fixture
+def fx(tmp_path, template):
+    if not (REPO / "mapkit" / "sitting.py").exists():
+        pytest.skip("mapkit/sitting.py not present")
+    return Fx(tmp_path, template)
 
 
 def test_script_is_valid_bash():

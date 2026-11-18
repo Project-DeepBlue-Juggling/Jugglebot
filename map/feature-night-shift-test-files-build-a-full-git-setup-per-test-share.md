@@ -2,13 +2,14 @@
 id: FEAT-58
 kind: feature
 title: 'Night Shift test files build a full git setup per test: share one template per module'
-status: inbox
+status: complete
 created: '2026-11-18'
-updated: '2026-11-17T23:05:27Z'
+updated: '2026-11-18T09:00:38Z'
 owners: []
 priority: low
 effort: m
 hardware: none
+owner: none
 radius: subsystem
 area: tests-tooling
 blocked_by: []

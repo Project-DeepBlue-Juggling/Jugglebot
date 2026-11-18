@@ -58,6 +58,8 @@ The schedulable form of the Pathway item for JP-17 (IDEA-16 holds the physics: t
 - Decided in code, not by the owner: a human Throw is a new message from the Tracker, `HumanThrowEvent` on `human_throws`, keyed `(track_id, flight_seq)` (the Ball Butler announcement and `/balls` were rejected for named failure modes, entry `2026-11-18-human-throw-event.md`); a human Catch is booked as its own count and never as a Feed; Memory is never opened for it.
 - Still PROPOSED, owner to decide (full list in `2026-11-18-human-catch-compile.md` "Owner decisions open"): D2 usable bar (rms 6 mm, 30 mm / 20 ms); D3 first lead 0.55 s (the sweep suggests 0.60 s); plan window 0.62 s; D4 association radius 400 mm; D5 re-aim authority 50 mm; D6 re-sends 2; D7 wait Site (mean of 5, clamp 150 mm, deadband 20 mm); D8 clear 0.5 s and return 1.0 s; D9 nominal arrival Apex 1.9 m; D10 thresholds (P1 first-event criterion fails on the 11-18 bag, 2/11); D11 the 11-18 bag scored per direction; the holding timeout; the pending-key rule; the wording of three INVARIANTS.md rows (drafted, pending approval, not edited).
 - Open: the Destination's count (the Pathway item proposes 30 consecutive Throws of the shared cascade).
+- Owner, 2026-11-18 (evening): the person is assumed not to drop. A Ball counts as dropped only once it has neither been tracked nor felt by the Hand; a missed human Catch is otherwise not a drop.
+- Owner, 2026-11-18 (evening): the three INVARIANTS.md rows are approved and landed with the code (I-PLAN-8's sixth entry, I-ADMIT-2's `human_catch` clause, the new I-CATCH-8).
 
 ## 3. Steps
 

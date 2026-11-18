@@ -4,7 +4,7 @@ kind: idea
 title: 'JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites'
 status: in_progress
 created: '2026-10-30'
-updated: '2026-11-18T05:13:48Z'
+updated: '2026-11-18T09:39:17Z'
 owners: []
 priority: medium
 effort: s
@@ -48,3 +48,4 @@ A compile_one_ball over a Site list plus an admissible-box cell per edge, or the
 ## Progress
 
 - 2026-11-18: Offline half built 2026-11-18: Pattern polygon_walk (label provisional) on the one-ball path. The 250 mm Hop edge is infeasible for a square; the nomination accepts 100 mm at Dwell 0.27 (+0.189) and 125 mm at 0.45 (+0.200). Not on the BeatEvent stream. GUI not wired. Next: the Rung Sitting (plan P7).
+- 2026-11-18: Owner 2026-11-18: label polygon_walk stands; first flight is the square at edge 100 mm, Dwell 0.27, Apex 0.9.

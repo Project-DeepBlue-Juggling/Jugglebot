@@ -2,9 +2,9 @@
 id: IDEA-11
 kind: idea
 title: 'JP-10 Turned columns: the columns pair at fixed angles about +z, under pose'
-status: in_progress
+status: complete
 created: '2026-10-30'
-updated: '2026-11-18T04:00:03Z'
+updated: '2026-11-18T09:39:14Z'
 owners:
 - jugglebot-f5
 priority: medium
@@ -20,9 +20,6 @@ links:
 - logbook/2026-11-18-sitting-debrief.md
 filed_by: claude (jugglebot-f5, pattern exploration 2026-10-30)
 parent: pattern-progression-columns-to-centre-and-orbit
-night_skip: sitting
-night_skip_on: '2026-11-15'
-night_skip_note: 45 deg passed 20/20 again on 2026-11-13; 90 deg is IDEA-22 (swept offline tonight).
 ---
 
 Columns with the Site pair rotated to a fixed angle (30, 45, 60, 90 deg) about the Platform +z.
@@ -97,3 +94,4 @@ It proves the rotational symmetry on hardware that lets the admissible box key o
 - 2026-11-13: Failed at the Sitting of 2026-11-13: 45 deg COMPLETED 20/20 (13:18:59), scatter inside the 15 mm mean bar on all four ball and axis cells, outside the 10 mm sd bar on one (Ball 1 x, +13 mm); 90 deg 0 of 5 Attempts past 2 Throws (see IDEA-22, BUG-91). The straight Columns control was flown once, not five times, so its sd rests on n 10 per ball.
 - 2026-11-18: Flown at the Sitting of 2026-11-18, verdict data: 45 deg flew 20/20 twice, no HAND_LIMIT, landing scatter inside the 15 mm mean and 10 mm sd bars of the five-Attempt straight control. 90 deg was flown under IDEA-22 only (best 20/20 and 19/19 at tilt-back 0.0, not at Apex 0.95), so the per-angle criterion is still open for 90 deg.
 - 2026-11-18: 2026-11-18 (owner): IDEA-22 is dropped, so the 90 deg angle flies at Apex 0.975 with no tilt-back; it flew 20/20 and 19/19 there on 2026-11-18 (launch 3-1, plant turned90). Still owed for the Rung gate: the 90 deg landing scatter against the straight control.
+- 2026-11-18: JP-10 Rung accepted by the owner 2026-11-18: 45 deg flew 20/20 twice with scatter inside the control bars; 90 deg flew 20/20 at Apex 0.975 with no tilt-back (launch 3-1, 12:03:55), all eight ball/axis scatter cells inside 15 mm mean and 10 mm sd, no HAND_LIMIT. Accepted caveats: Apex 0.975 not 0.95, flown on the candidate branch, plant turned90 small, 1 of 6 Attempts reached 20.

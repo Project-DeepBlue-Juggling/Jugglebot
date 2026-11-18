@@ -27,26 +27,6 @@ Where each pathway of the Jugglebot project stands: its destination, how many st
 
 - —
 
-## Night Shift: unattended overnight work on the board, and the Next Sitting Runbook
-
-**Destination:** Every morning main is green and carries the overnight work that needed no hands; everything else waits on a held branch, an answerable question in the app or a row of the Next Sitting Runbook, and the owner's share of a Sitting is the hardware steps only.
-
-**Progress:** 23 of 23 stops done
-
-**Next:** —
-
-**Owners:** Harrison
-
-**Remaining:**
-
-- —
-
-**Attached inbox items:**
-
-- bug: BUG-100 [A dead ticker claim or a crashed 04:00 suite hides a RED for up to two days](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-a-dead-ticker-claim-or-a-crashed-04-00-suite-hides-a-red-for.md) (inbox)
-- bug: BUG-101 [Unattended runners check for a live Sitting once at the start, and cannot see a bench rig](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-unattended-runners-check-for-a-live-sitting-once-at-the.md) (inbox)
-- feature: FEAT-51 [Night Shift merge gate runs the full suite itself and enforces a collected-test floor](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-night-shift-merge-gate-runs-the-full-suite-itself-and.md) (inbox)
-
 ## Two-ball oval
 
 **Destination:** Two balls in one Hand on an oval, every Throw caught and carried back in the Cup, closed by 30 consecutive Ball Butler-fed Catches in one Attempt (P5 Rung gate).
@@ -76,6 +56,12 @@ Where each pathway of the Jugglebot project stands: its destination, how many st
 - feature: FEAT-32 [Pre-release hold rung: release from a moving Platform (hold 0.100 → 0)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-pre-release-hold-rung-release-from-a-moving-platform-hold-0.md) (in_progress)
 - feature: FEAT-31 [Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-solver-worker-on-sched-fifo-take-the-catch-solve-out-of-the.md) (backlog)
 - feature: FEAT-30 [Trim the nice-0 chain CPU the flame graphs point at: skill_node executor (~0.5 core), mocap_node publish path (~0.28), tracker message plumbing (~0.28)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-trim-the-nice-0-chain-cpu-the-flame-graphs-point-at-skill.md) (inbox)
+
+## Night Shift: unattended overnight work on the board, and the Next Sitting Runbook
+
+**Destination:** Every morning main is green and carries the overnight work that needed no hands; everything else waits on a held branch, an answerable question in the app or a row of the Next Sitting Runbook, and the owner's share of a Sitting is the hardware steps only.
+
+_Status: closed (complete)._
 
 ## Project map and shared dictionary
 
@@ -143,15 +129,14 @@ _Status: closed (complete)._
 
 **Destination:** JP-14 Centre and orbit flown on the robot: 30 consecutive Catches in one Attempt at radius 100 mm with 8 Sites per lap, under pose.
 
-**Progress:** 3 of 10 stops done
+**Progress:** 4 of 10 stops done
 
-**Next:** P3 JP-10 turned Columns ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
+**Next:** P5 JP-9 high-low Columns ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
 
 **Owners:** Harrison
 
 **Remaining:**
 
-- P3 JP-10 turned Columns ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
 - P5 JP-9 high-low Columns ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
 - P6 Per-Beat Sites dependency owned by PWAY-2 ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
 - P7 JP-5 polygon walk ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
@@ -161,7 +146,6 @@ _Status: closed (complete)._
 
 **Attached inbox items:**
 
-- idea: IDEA-11 [JP-10 Turned columns: the columns pair at fixed angles about +z, under pose](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-10-turned-columns-the-columns-pair-at-fixed-angles-about.md) (in_progress)
 - idea: IDEA-12 [JP-11 Rotating columns: the pair turns a few degrees every Beat](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-11-rotating-columns-the-pair-turns-a-few-degrees-every.md) (inbox)
 - idea: IDEA-14 [JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-14-centre-and-orbit-ball-1-in-a-column-ball-2-on-a-circle.md) (inbox)
 - idea: IDEA-9 [JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-5-polygon-walk-one-ball-n-sites-the-cheapest-way-to-land.md) (in_progress)
@@ -189,13 +173,13 @@ _Status: closed (complete)._
 | Pathway | Now | Next | Later | Done |
 | --- | --- | --- | --- | --- |
 | Human-partner juggling | P1 Human Throw event; P2 Reactive Catch | — | P3 Catch one pass; P4 Throw back to a fixed hand point; P5 Catch and throw back; P6 Held tilt; P7 Exchange at a held tilt; P8 Three-ball cascade | — |
-| Night Shift: unattended overnight work on the board, and the Next Sitting Runbook | — | — | bug A dead ticker claim or a crashed 04:00 suite hides a RED for up to two days; bug Unattended runners check for a live Sitting once at the start, and cannot see a bench rig; feature Night Shift merge gate runs the full suite itself and enforces a collected-test floor | P1 Runner skeleton and dry run; P2 Work loop, merge gate, report and ticker; P3 Night Shift page in the map app; P4 Next Sitting Runbook; P5 Sitting debrief command; R6 First Runbook-driven Sitting; Phase C1 Bind the merge to the gate; Phase C2 Runner housekeeping; Phase C3 Skip reasons live on the Item; Phase C4 Delta walk and NOTHING_NEW; Phase C5 Report layout and protocol; Phase C6 Pull stalls are loud; Phase C7 Offline bag reads and held-only work; Phase C8 The robot stops writing tracked files; Phase C9 Sheet notes-only and batched commits; Phase C10 Debrief merge as a tested script; Phase C11 Runbook becomes an index; Phase C12 logbook INDEX generated; Phase C13 Map-write check inside item commits; Phase C14 Night Shift report-history picker; Phase C15 F9 feasibility probe; Phase C16 Docs; Phase C17 R6 and close |
 | Two-ball oval | P3 A/B Sitting on the oval; P4 Working point and the dwell ladder | — | P5 Two-ball oval; bug ABORTED_NO_RELEASE: three goals ended because the throw never left the hand (new 2026-10-28 21:02); bug A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve; bug 10 % jitter-margin class of LIMIT_* refusals; bug mocap_node loses frames to queue full in bursts before the first dispatch (544 / 373 / 490 frames in the three 2026-10-28 Sittings); bug Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff; bug RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball; bug Teensy guard MAX_DEVIATION latched on the hand (+8.4 rev) mid-oval; recover_lane found nothing, re-dispatch rejected WRONG_MODE; feature P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30; feature Pre-release hold rung: release from a moving Platform (hold 0.100 → 0); feature Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load); feature Trim the nice-0 chain CPU the flame graphs point at: skill_node executor (~0.5 core), mocap_node publish path (~0.28), tracker message plumbing (~0.28) | P0 Identify the Platform mode from existing bags; P1 The ZVD contract and rows behind a flag; P2 Box re-sweep with the rows on; P1 The oval pattern dispatchable; P3 Pose-level carry planner; P1 Firmware - age-aware lead clamp and engagement counter; P2 Bench validation; P3 Robot validation |
+| Night Shift: unattended overnight work on the board, and the Next Sitting Runbook | — | — | — | closed |
 | Project map and shared dictionary | — | — | — | closed |
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug Ball Butler yaw-settle gate aborts settled throws (THROW_ABORTED_NOT_SETTLED false positives); feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
 | GUI Improvements | — | — | bug GUI command buttons have no in-flight guard | — |
 | Learner generalisation | — | P5 Close-out | bug Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for; feature Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z | P3a Command-time admissibility check; P3b Nomination-time check and the nearest viable configuration; P3c Box retirement; P1 Learner core; P2 The characterisation sitting; P4 BeatEvent stream and the columns wrapper; Box sweep fidelity for same-site families (plan what the executor dispatches) |
-| Pattern progression: Columns to Centre and orbit | — | P3 JP-10 turned Columns | P5 JP-9 high-low Columns; P6 Per-Beat Sites dependency owned by PWAY-2; P7 JP-5 polygon walk; P8 JP-11 rotating Columns; P9 Centre and orbit compile; P10 JP-14 Centre and orbit; idea JP-10 Turned columns: the columns pair at fixed angles about +z, under pose; idea JP-11 Rotating columns: the pair turns a few degrees every Beat; idea JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm; idea JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites | P1 Launch current check; P2 Turned Columns on the compiled path; P4 Per-Site Apex |
+| Pattern progression: Columns to Centre and orbit | — | P5 JP-9 high-low Columns | P6 Per-Beat Sites dependency owned by PWAY-2; P7 JP-5 polygon walk; P8 JP-11 rotating Columns; P9 Centre and orbit compile; P10 JP-14 Centre and orbit; idea JP-11 Rotating columns: the pair turns a few degrees every Beat; idea JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm; idea JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites | P1 Launch current check; P2 Turned Columns on the compiled path; P3 JP-10 turned Columns; P4 Per-Site Apex |
 | Map improvements | — | — | — | closed |
 | Two-ball skill stack | — | — | — | closed |
 | Wave camera on CAN3 | — | — | — | closed |
@@ -230,7 +214,6 @@ Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/bench-hand/robot; Owner none/deci
 | FEAT-30 | feature | [Trim the nice-0 chain CPU the flame graphs point at: skill_node executor (~0.5 core), mocap_node publish path (~0.28), tracker message plumbing (~0.28)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-trim-the-nice-0-chain-cpu-the-flame-graphs-point-at-skill.md) | inbox | medium | m | robot | none | subsystem | skill-stack | Two-ball oval | filed 2026-10-28 |
 | BUG-41 | bug | [Hand brake and hold currents sit far below the throw envelope's model (brake -14 to -20 A measured vs 35 to 40 A predicted; hold 1.5 vs 2.6 A): Kt, moving mass or friction is mis-modelled](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-hand-brake-and-hold-currents-sit-far-below-the-throw.md) | inbox | medium | s | bench-hand | hands | subsystem | hand | — | filed 2026-10-30 |
 | IDEA-17 | idea | [Hand end-of-stroke bumper, and first the planner's own brake shape: let the ceiling, not the Hand, cap the Apex](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-hand-end-of-stroke-bumper-and-first-the-planner-s-own-brake.md) | inbox | medium | l | robot | decision | cross-cutting | hand | — | filed 2026-10-30 |
-| IDEA-11 | idea | [JP-10 Turned columns: the columns pair at fixed angles about +z, under pose](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-10-turned-columns-the-columns-pair-at-fixed-angles-about.md) | in_progress | medium | s | robot | hands | subsystem | skill-stack | Pattern progression: Columns to Centre and orbit | filed 2026-10-30 |
 | IDEA-12 | idea | [JP-11 Rotating columns: the pair turns a few degrees every Beat](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-11-rotating-columns-the-pair-turns-a-few-degrees-every.md) | inbox | medium | l | robot | hands | cross-cutting | skill-stack | Pattern progression: Columns to Centre and orbit | filed 2026-10-30 |
 | IDEA-13 | idea | [JP-13 Rising and sinking columns: the whole Pattern rides the Platform in z](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-13-rising-and-sinking-columns-the-whole-pattern-rides-the.md) | inbox | medium | l | robot | hands | cross-cutting | skill-stack | — | filed 2026-10-30 |
 | IDEA-14 | idea | [JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-14-centre-and-orbit-ball-1-in-a-column-ball-2-on-a-circle.md) | inbox | high | l | robot | hands | cross-cutting | skill-stack | Pattern progression: Columns to Centre and orbit | filed 2026-10-30 |
@@ -261,13 +244,13 @@ Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/bench-hand/robot; Owner none/deci
 | BUG-85 | bug | [live_session matches node filenames in any process argv, not running nodes](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-live-session-matches-node-filenames-in-any-process-argv-not.md) | inbox | medium | s | none | none | subsystem | tests-tooling | — | filed 2026-11-07 |
 | FEAT-45 | feature | [Measure the Hand's commutation angle error through a hard brake on the bench Hand (FOC scope)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-measure-the-hand-s-commutation-angle-error-through-a-hard.md) | in_progress | high | s | bench-hand | hands | local | hand | — | filed 2026-11-07 |
 | BUG-87 | bug | [Nomination's re-aim figure read -0.049 while the live Feed-Catch Segment was refused at -0.208 (Dwell 0.32)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-nomination-s-re-aim-figure-read-0-049-while-the-live-feed.md) | backlog | medium | m | none | none | local | skill-stack | — | filed 2026-11-08 |
-| IDEA-20 | idea | [Platform Accelerometer?](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-platform-accelerometer.md) | backlog | medium | m | robot | hands | subsystem | platform-teensy | — | filed 2026-11-08 |
+| IDEA-20 | idea | [Platform Accelerometer?](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-platform-accelerometer.md) | in_progress | medium | m | robot | hands | subsystem | platform-teensy | — | filed 2026-11-08 |
 | FEAT-49 | feature | [Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-arm-a-power-capture-with-the-fault-trigger-on-the-robot-hand.md) | in_progress | medium | m | robot | hands | local | hand | — | filed 2026-11-11 |
 | BUG-90 | bug | [carry_zvd rows make the Hand stop and go at about 5 Hz in flight](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-carry-zvd-rows-make-the-hand-stop-and-go-at-about-5-hz-in.md) | in_progress | medium | m | robot | decision | subsystem | skill-stack | — | filed 2026-11-13 |
 | FEAT-50 | feature | [Live warning when a marker dwells under the Hand](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-live-warning-when-a-marker-dwells-under-the-hand.md) | in_progress | medium | m | robot | none | subsystem | tracking | — | filed 2026-11-13 |
 | IDEA-23 | idea | [seed a fresh plant K from the trained plant](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-seed-a-fresh-plant-k-from-the-trained-plant.md) | in_progress | low | s | robot | decision | subsystem | learner | — | filed 2026-11-13 |
 | BUG-89 | bug | [teensy_bridge_node forwards only the newest waiting knot; harmless at emit lead 0, but the cover has 7-14 ms of margin against a stall](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-teensy-bridge-node-forwards-only-the-newest-waiting-knot.md) | in_progress | high | s | robot | hands | subsystem | can-bridge | — | filed 2026-11-13 |
-| BUG-100 | bug | [A dead ticker claim or a crashed 04:00 suite hides a RED for up to two days](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-a-dead-ticker-claim-or-a-crashed-04-00-suite-hides-a-red-for.md) | inbox | medium | s | none | none | subsystem | tests-tooling | Night Shift: unattended overnight work on the board, and the Next Sitting Runbook | filed 2026-11-14 |
+| BUG-100 | bug | [A dead ticker claim or a crashed 04:00 suite hides a RED for up to two days](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-a-dead-ticker-claim-or-a-crashed-04-00-suite-hides-a-red-for.md) | in_progress | medium | s | none | none | subsystem | tests-tooling | Night Shift: unattended overnight work on the board, and the Next Sitting Runbook | filed 2026-11-14 |
 | BUG-95 | bug | [A long REST can be refused SPLICE_TOO_LATE: the fresh decision and the Knot choice use different leads](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-a-long-rest-can-be-refused-splice-too-late-the-fresh.md) | in_progress | medium | s | robot | none | subsystem | skill-stack | — | filed 2026-11-14 |
 | FEAT-55 | feature | [A real-rclpy launch smoke test in the full tier](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-a-real-rclpy-launch-smoke-test-in-the-full-tier.md) | inbox | medium | m | none | none | subsystem | tests-tooling | — | filed 2026-11-14 |
 | FEAT-57 | feature | [Archive the SpaceMouse follower under a tag](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-archive-the-spacemouse-follower-under-a-tag.md) | inbox | low | s | robot | none | subsystem | skill-stack | — | filed 2026-11-14 |
@@ -283,11 +266,13 @@ Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/bench-hand/robot; Owner none/deci
 | BUG-96 | bug | [trajectory_node stays up and reports healthy when its emitter cannot bind the command socket](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-trajectory-node-stays-up-and-reports-healthy-when-its.md) | in_progress | medium | s | none | none | local | skill-stack | — | filed 2026-11-14 |
 | BUG-101 | bug | [Unattended runners check for a live Sitting once at the start, and cannot see a bench rig](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-unattended-runners-check-for-a-live-sitting-once-at-the.md) | inbox | medium | m | none | none | cross-cutting | tests-tooling | Night Shift: unattended overnight work on the board, and the Next Sitting Runbook | filed 2026-11-14 |
 | BUG-108 | bug | [test_TI1 in test_install_segment goes stale under box load and fails the gate on unrelated branches](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-test-ti1-in-test-install-segment-goes-stale-under-box-load.md) | in_progress | medium | s | none | none | local | tests-tooling | — | filed 2026-11-16 |
-| BUG-109 | bug | [The Night Shift history ledger re-adds old-form branch names every night, so the legacy ID test fails on main](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-the-night-shift-history-ledger-re-adds-old-form-branch-names.md) | in_progress | high | xs | none | decision | local | tests-tooling | — | filed 2026-11-17 |
+| FEAT-60 | feature | [Confirm the 2026-11-19 nightly ran the 59 GUI tests: skipped count at or under 60](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-confirm-the-2026-11-19-nightly-ran-the-59-gui-tests-skipped.md) | inbox | medium | xs | none | none | local | tests-tooling | — | filed 2026-11-18 |
 | BUG-110 | bug | [Emitter catch-up sends the next knot up to 25 ms early and the bridge drops the due knot](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-emitter-catch-up-sends-the-next-knot-up-to-25-ms-early-and.md) | in_progress | high | s | robot | decision | subsystem | skill-stack | — | filed 2026-11-18 |
 | BUG-111 | bug | [Hand SPINOUT at the Throw peak after a setpoint 12.6 ms late (2026-11-18)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-hand-spinout-at-the-throw-peak-after-a-setpoint-12-6-ms-late.md) | inbox | high | — | robot | — | — | hand | — | filed 2026-11-18 |
+| BUG-118 | bug | [mapkit atomic write uses os.fchmod, which Windows lacks, so map writes fail on the Windows box](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-mapkit-atomic-write-uses-os-fchmod-which-windows-lacks-so.md) | inbox | low | — | — | — | — | map-app | Map improvements | filed 2026-11-18 |
 | BUG-114 | bug | [MISSED_CATCH end line names the empty carried Throw, not the flight that was lost one cycle earlier](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-missed-catch-end-line-names-the-empty-carried-throw-not-the.md) | inbox | medium | — | — | — | — | skill-stack | — | filed 2026-11-18 |
-| FEAT-58 | feature | [Night Shift test files build a full git setup per test: share one template per module](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-night-shift-test-files-build-a-full-git-setup-per-test-share.md) | inbox | low | m | none | — | subsystem | tests-tooling | — | filed 2026-11-18 |
+| BUG-117 | bug | [No test fails when the candidate build skips its merge abort after a conflict](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-no-test-fails-when-the-candidate-build-skips-its-merge-abort.md) | inbox | low | s | none | — | local | tests-tooling | — | filed 2026-11-18 |
+| FEAT-59 | feature | [Retire the tests of unused modules together with the modules](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-retire-the-tests-of-unused-modules-together-with-the-modules.md) | inbox | low | s | none | decision | local | tests-tooling | — | filed 2026-11-18 |
 | BUG-112 | bug | [/robot_state rate drops to 80-89 Hz during Attempts and drifts down over a launch](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-robot-state-rate-drops-to-80-89-hz-during-attempts-and.md) | inbox | medium | — | — | — | — | can-bridge | — | filed 2026-11-18 |
 | BUG-116 | bug | [ROS mock messages accept misspelt fields and are never compared with the real interface definitions](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-ros-mock-messages-accept-misspelt-fields-and-are-never.md) | inbox | medium | l | none | — | subsystem | tests-tooling | — | filed 2026-11-18 |
 | BUG-115 | bug | [Uncollected Ball Butler calibration check script in the ROS package: port what is not covered, then delete](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-uncollected-ball-butler-calibration-check-script-in-the-ros.md) | inbox | low | m | none | — | subsystem | tests-tooling | — | filed 2026-11-18 |

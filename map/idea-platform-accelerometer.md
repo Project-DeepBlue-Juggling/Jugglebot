@@ -2,10 +2,11 @@
 id: IDEA-20
 kind: idea
 title: Platform Accelerometer?
-status: backlog
+status: in_progress
 created: '2026-11-08'
-updated: '2026-11-10T18:01:28Z'
-owners: []
+updated: '2026-11-18T09:27:40Z'
+owners:
+- claude
 priority: medium
 effort: m
 hardware: robot
@@ -15,9 +16,9 @@ area: platform-teensy
 blocked_by: []
 links: []
 filed_by: harrison
-night_skip: waiting-trigger
-night_skip_on: '2026-11-15'
-night_skip_note: Your TKT-54 decision is recorded; Platform Teensy firmware waits on the board arriving.
+night_skip: owner-session
+night_skip_on: '2026-11-18'
+night_skip_note: A day Session owns this; the Night Shift does not build Platform Teensy firmware.
 ---
 
 Let's discuss the possible advantages that we might receive as a result of adding an accelerometer to the 2020 extrusion on which Jugglebot's hand's linear rail is mounted. Might this help with our 'input shaping' work, by allowing us to capture high resolution data on Platform acceleration? I imagine we have the Teensy pins available for this? What specific sensor might be best to use?
@@ -51,7 +52,17 @@ From TKT-54. You ordered an ICM-42688-P breakout, and it is on its way. You want
 - The board needs a mount on the 2020 extrusion beside the Hand's rail.
 - The Night Shift does not build Platform Teensy firmware.
 
+## Bench proof of concept (2026-11-18)
+
+Working at `tools/probes/imu_bench/` (commit afdf0e91, logbook `2026-11-18-imu-bench-proof-of-concept`).
+
+- **Wiring.** Teensy 4.0 and ICM-42688-P over I2C, chosen over the SPI this Item first assumed; Stemma QT to the Platform Teensy pins 18 and 19.
+- **Driver.** Chip-FIFO driver, 0 FIFO overflows and 0 I2C errors at 1 and 2 kHz; sensor rate 999.97 Hz at 1 kHz.
+- **Rest check.** |a| 1.004 g at rest on one face; the other five faces and a 90 degree rotation are still open.
+- **Next.** A day Session started 2026-11-18: the question round, calibration options and CAN transport design come before any Platform Teensy firmware.
+
 ## Progress
 
 - 2026-11-09: Night Shift 2026-11-09: feasibility and options written; awaiting the owner's answer
 - 2026-11-11: Night Shift 2026-11-11: TKT-54 answered (ICM-42688-P, live low-rate plus buffered upload); decision recorded, re-rated owner hands for a day Session
+- 2026-11-18: Bench proof of concept working (ICM-42688-P on a Teensy 4.0, 0 FIFO overflows and 0 I2C errors at 1 and 2 kHz); day Session started, no Platform Teensy firmware before the question round, calibration options and CAN transport design (detail below)

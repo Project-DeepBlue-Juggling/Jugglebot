@@ -13,7 +13,7 @@ import pytest
 
 REPO = os.path.join(os.path.dirname(__file__), "..", "..")
 PROTOCOL = os.path.join(REPO, ".claude", "commands", "night-shift.md")
-REASONS = ("sitting", "input-fact", "input-decision", "input-sitting", "owner-session",
+REASONS = ("sitting", "input-fact", "input-decision", "owner-session",
            "too-large", "frozen-path", "out-of-reach", "waiting-trigger", "low-priority")
 
 
@@ -79,7 +79,7 @@ def test_input_reasons_need_input_and_a_what_the_night_will_do_note(text):
     assert "An `input-*` reason needs `input`" in text
     assert "phrased as what the night WILL do" in text
     assert "ONCE, when the skip is first set" in text
-    assert "`input-sitting` files\nno ticket" in text
+    assert "`input-sitting`" not in text
 
 
 def test_skipped_section_ends_with_the_unchanged_trailer(text):

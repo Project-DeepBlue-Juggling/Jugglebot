@@ -14,7 +14,7 @@ scope: >-
 steps:
   - {id: P1, title: Launch current check, kind: phase, status: complete, effort: xs, hardware: none}
   - {id: P2, title: Turned Columns on the compiled path, kind: phase, status: complete, effort: s, hardware: none}
-  - {id: P3, title: JP-10 turned Columns, kind: rung, status: not_started, effort: s, hardware: robot}
+  - {id: P3, title: JP-10 turned Columns, kind: rung, status: complete, effort: s, hardware: robot}
   - {id: P4, title: Per-Site Apex, kind: phase, status: complete, effort: m, hardware: none}
   - {id: P5, title: JP-9 high-low Columns, kind: rung, status: not_started, effort: s, hardware: robot}
   - {id: P6, title: Per-Beat Sites dependency owned by PWAY-2, kind: phase, status: not_started, effort: m, hardware: none}

@@ -4,7 +4,7 @@ kind: idea
 title: JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them
 status: in_progress
 created: '2026-10-30'
-updated: '2026-11-18T05:00:10Z'
+updated: '2026-11-18T09:39:22Z'
 owners: []
 priority: medium
 effort: xl
@@ -99,15 +99,15 @@ Not checked: a replay on the candidate Tracker, a replay with a lowered floor, w
 ## Sitting
 
 - setup: level
-- why: re-measure the human-throw bench with the robot in place (moving Platform markers, a ball in the Cup, the robot blocking camera views) and the owner's throws at better lighting.
+- why: the three recorded bags are cascades and passes with several Balls in the air, so they cannot score a one-Ball Catch; this records single lobs at the Cup for the offline replay (plan step P3, data row).
 - do:
-  - Improve the lighting; launch, home and Level the Platform; do NOT arm. Rest one ball in the Cup.
+  - Launch, home and Level the Platform; do NOT arm. Leave the Cup empty.
   - `ros2 param set /ball_tracker_node detect_human_throws true`.
-  - Juggle a three-ball cascade for about 60 s with one hand beside the Cup at its usual catch height, at a steady height; then 60 s of single passes into the space just above the Cup.
+  - Lob one Ball at the Cup about 30 times, one Ball in the air at a time, from where you would stand to juggle with the robot, at a height of about 1.8 m or more; let each Ball land in or beside the Cup and pick it up by hand before the next.
   - Afterwards `ros2 param set /ball_tracker_node detect_human_throws false`.
-- pass: the bag replays through `tools/probes/human_throw_bench.py` with the robot-spot landing sd and the phantom rate reported.
-- record: the bag path, the lighting change, and the bench report path.
-- minutes: 15
+- pass: the bag replays through `tools/probes/human_catch_replay.py` and reports, for the lobs that crossed inside the Cup's reach, how many had an admitted plan and how far the planned Cup centre was from the real crossing.
+- record: the bag path, where you stood, the lob count, and the replay report path.
+- minutes: 10
 
 ## Sitting result (2026-11-13 13:12)
 
@@ -125,3 +125,4 @@ Not checked: a replay on the candidate Tracker, a replay with a lowered floor, w
 - 2026-11-13: Complete at the Sitting of 2026-11-13: bench report run offline (human_throw_bench.py, 130 s slice of the launch 3 bag): landing sd 73 x 101 mm at the Cup side, phantoms 13.8 per minute against 27.3 on 2026-11-02. The lighting change was not recorded. 26 of 30 phantoms are static Ball Butler frame markers (BUG-92).
 - 2026-11-18: Reopened 2026-11-18 (owner): the 2026-11-13 debrief closed the whole Item on its bench re-measure row; the cascade itself has not been attempted. Open: the three Blockers (perception, a reactive Catch on the observed flight, the held-tilt mode) and the owner safety rules for a person inside the Platform reach.
 - 2026-11-18: Promoted to Pathway PWAY-11 (plan human-partner-juggling.md): perception and reach numbers from the 2026-11-18 bag are in the body; the owner decided no safety rules are needed and set the ladder (one Ball caught, caught and thrown back, held tilt, three Balls).
+- 2026-11-18: P1 and P2 of plan human-partner-juggling.md are built, audited and on main (Pattern human_catch, unflown). The Sitting section is now the single-lob data row. Owner 2026-11-18: the person is assumed not to drop; a Ball is dropped only when neither tracked nor felt by the Hand.

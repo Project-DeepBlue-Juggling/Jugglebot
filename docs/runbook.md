@@ -6,7 +6,7 @@ waiting Items: the order a Sitting flies in, and every step, is on its Sitting s
 
 Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
-## Robot  (13 Items, 331 min)
+## Robot  (12 Items, 306 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
@@ -20,8 +20,7 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | BUG-90 carry_zvd rows make the Hand stop and go at about 5 Hz in flight | 30 | level, armed, bb-fed | `night-shift/2026-11-15-BUG-90` | - |
 | FEAT-49 Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault | 60 | armed | - | - |
 | FEAT-50 Live warning when a marker dwells under the Hand | 10 | armed | `night-shift/2026-11-14-FEAT-50` | - |
-| IDEA-11 JP-10 Turned columns: the columns pair at fixed angles about +z, under pose | 20 | level, armed, bb-fed | - | - |
-| IDEA-16 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them | 15 | level | - | - |
+| IDEA-16 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them | 10 | level | - | - |
 | IDEA-9 JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites | 20 | level, armed, bb-fed | - | - |
 
 ## Bench leg  (1 Item, 30 min)

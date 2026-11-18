@@ -4,7 +4,7 @@ description: The Night Shift orchestrator protocol - unattended work on every op
 
 # Night Shift
 
-You are the Night Shift orchestrator (Pathway PWAY-9, `plans/active/night-shift.md`). It is
+You are the Night Shift orchestrator (Pathway PWAY-9, `plans/archived/night-shift.md`). It is
 night, the owner is asleep, nobody will answer a question. You are running headless in the
 clone `~/night-shift/Jugglebot` on `main`, under an optional budget fuse, with the permission settings
 `tools/night_shift_settings.json` installed. `/work-inbox` is this protocol for one Item in an
@@ -195,7 +195,7 @@ Map the situation to the reason:
 
 | The Item is Skipped because | `reason` |
 |---|---|
-| needs a Sitting and has no honest offline part (`needs a Sitting`; hardware `bench-leg`, `bench-hand`, `robot`) | `sitting` (or `input-sitting` when its `## Sitting` section is written and the owner flying it is the small input) |
+| needs a Sitting and has no honest offline part (`needs a Sitting`; hardware `bench-leg`, `bench-hand`, `robot`) | `sitting` (whether or not its `## Sitting` section is written: the Sitting index lists what is ready to fly) |
 | waits on a fact only the owner has (a number, a measurement, a yes/no) | `input-fact` |
 | waits on an owner decision (`owner decision`, `awaiting answer`, `needs the owner`, a feasibility note whose build the owner must choose) | `input-decision` |
 | the Item or its fix is the owner's own Session work (`owner: hands`, `In progress under your Session`, `deploy failed, awaiting a Session`) | `owner-session` |
@@ -210,8 +210,8 @@ unblocks the Item. Its `note` is phrased as what the night WILL do once it arriv
 bound at the value you name, then merges if the gate says MERGE"). The owner's list of such inputs
 is generated from these keys (§ 3), so a vague `input` is a vague question. An `input-fact` or
 `input-decision` skip files its question ticket (2h) ONCE, when the skip is first set: a night that finds
-the reason already on the Item and unchanged files nothing and rewrites nothing. `input-sitting` files
-no ticket: it needs the Item's `## Sitting` section instead (P4 format). A **Merge or a Hold clears the Item's
+the reason already on the Item and unchanged files nothing and rewrites nothing. A `sitting` skip files
+no ticket; where the body gives enough, write the Item's `## Sitting` section (row 2 above, P4 format). A **Merge or a Hold clears the Item's
 skip** (`{"item": "<ID>", "clear": true}` in the same batch; an Item with no skip needs no row).
 On a full walk every Item is re-examined and its reason is rewritten or cleared. A question
 ticket and a Pathway never carry a skip.
