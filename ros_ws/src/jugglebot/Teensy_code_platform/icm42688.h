@@ -1,0 +1,95 @@
+// icm42688.h - small direct-register ICM-42688-P driver (I2C, bank 0 only), Platform Teensy copy.
+// Lifted from tools/probes/imu_bench/firmware/src (the bench copy stays untouched). Differences:
+//   * init is a NON-BLOCKING step function (initStart / initStep): each call does at most one bounded I2C
+//     transaction (plus the 200 us FIFO-flush pause) and never delays; the waits the datasheet requires are
+//     due times the caller's clock is checked against. The bench's blocking begin() (~80 ms of delay()) is gone.
+//   * agreed configuration: accel +/-16 g, gyro +/-1000 dps, ODR 1 kHz, UI filter per UI_FILT_CODE below.
+// Every call returns an error code (<0) or a count/value (>=0). See tools/probes/imu_bench/README.md for the
+// register-verification table that covers the shared register facts.
+#pragma once
+#include <Arduino.h>
+#include <Wire.h>
+
+namespace icm42688 {
+
+enum Err : int {
+  OK = 0,
+  ERR_NO_DEVICE = -1,   // nothing ACKed at 0x68/0x69
+  ERR_WHO_AM_I = -2,    // something ACKed but WHO_AM_I != 0x47
+  ERR_I2C = -3,         // bus error / short read mid-operation
+  ERR_BAD_ARG = -4,
+  ERR_BAD_PACKET = -5   // FIFO header not the expected 16-byte packet (resync needed)
+};
+const char* errName(int e);
+
+struct Sample {
+  uint16_t ts;      // FIFO timestamp field, raw (wraps at 65536 ticks)
+  int16_t a[3];     // raw accel x,y,z (-32768 = invalid)
+  int16_t g[3];     // raw gyro x,y,z
+  int8_t temp;      // FIFO 8-bit temp: degC = raw/2.07 + 25
+};
+
+class Driver {
+ public:
+  static const int PKT_BYTES = 16;        // header + 6 accel + 6 gyro + 1 temp + 2 timestamp
+  static const int FIFO_RECORDS = 128;    // 2 KiB FIFO / 16 B
+  // Wire receive buffer on Teensy 4 is BUFFER_LENGTH=136 (WireIMXRT.h) -> 8 packets = 128 B per burst.
+  static const int BURST_PKTS = 8;
+
+  // GYRO_ACCEL_CONFIG0 (0x52) value: accel UI filter BW in [7:4], gyro in [3:0].
+  // TODO(IDEA-20 P2): the agreed setting is ODR/4. From memory of DS-000347 14.40 the code is 1 (0x11), but that
+  // was NOT verified against the datasheet text in this unit (no readable mirror was reachable), so this keeps the
+  // bench value 0x00 (BW = ODR/2). Verify 0x11 = ODR/4 against 14.40, then set it here; the header records it.
+  static const uint8_t UI_FILT_CODE = 0x00;
+  static const uint8_t INIT_STEP_RESET_POLLS = 20;
+
+  explicit Driver(TwoWire& w) : _w(w) {}
+
+  // Non-blocking init. initStart() arms it (forceAddr: only that address, else scan 0x68/0x69); then call
+  // initStep(now_us) every loop() pass. It returns INIT_PENDING while work remains, OK when configured and
+  // streaming, or an Err (init ended; call initStart again to retry). now_us is micros(), wrap-safe.
+  static const int INIT_PENDING = 1;
+  void initStart(uint8_t forceAddr = 0);
+  int initStep(uint32_t now_us);
+  bool initBusy() const { return _ist != IST_IDLE; }
+  uint8_t address() const { return _addr; }
+  uint8_t whoAmI() const { return _who; }
+  uint8_t lastTriedAddr() const { return _lastTried; }
+
+  int setOdr(uint16_t hz);       // 100,200,500,1000,2000 (also 50,4000,8000). Flushes FIFO.
+  int setAccelFs(uint8_t g);     // 2,4,8,16
+  int setGyroFs(uint16_t dps);   // 2000,1000,500,250,125
+  uint16_t odr() const { return _odr; }
+  uint8_t accelFs() const { return _accelFs; }
+  uint16_t gyroFs() const { return _gyroFs; }
+  float lsbPerG() const { return 32768.0f / _accelFs; }
+  float lsbPerDps() const { return 32768.0f / _gyroFs; }
+
+  int flushFifo();
+  // Reads INT_STATUS+FIFO_COUNT in one transaction. Returns record count (>=0) or Err.
+  // *overflow is set if the FIFO-full flag was seen or count is at/near capacity.
+  int fifoCount(bool* overflow);
+  // Reads up to maxN packets. Returns packets parsed or Err.
+  // Empty-marker packets are dropped. On ERR_BAD_PACKET the caller should flushFifo().
+  int readFifo(Sample* out, int maxN);
+
+  // Raw register access (bank 0), public for the sketch's diagnostics.
+  int readRegs(uint8_t reg, uint8_t* buf, uint8_t n);
+  int readReg(uint8_t reg);                 // returns byte or Err
+  int writeReg(uint8_t reg, uint8_t val);
+
+ private:
+  int applyOdrFs();
+  int initProbe();
+  enum InitState : uint8_t { IST_IDLE, IST_PROBE, IST_RESET, IST_WAIT_RESET, IST_POLL_RESET, IST_CONFIG, IST_PWR, IST_WAIT_GYRO, IST_FLUSH };
+  TwoWire& _w;
+  InitState _ist = IST_IDLE;
+  uint8_t _force = 0, _cfgIdx = 0, _polls = 0;
+  uint32_t _dueUs = 0;
+  uint8_t _addr = 0, _who = 0, _lastTried = 0;
+  uint16_t _odr = 1000;
+  uint8_t _accelFs = 16;
+  uint16_t _gyroFs = 1000;
+};
+
+}  // namespace icm42688

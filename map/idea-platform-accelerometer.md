@@ -69,7 +69,7 @@ Working at `tools/probes/imu_bench/` (commit afdf0e91, logbook `2026-11-18-imu-b
 - do:
   - With the launch down, flash the can-bridge, then the Platform Teensy over CAN; read both identities (the BridgeIdentity sniff) and bring the launch up.
   - Request a tilt reading and check the Hand fan still answers.
-  - With the IMU unplugged, power-cycle the Platform Teensy: it must boot, answer CAN and accept a firmware update; replug it.
+  - With the IMU unplugged, power-cycle the Platform Teensy: it must boot, answer CAN and accept a firmware update. Then replug the IMU with the board still powered and check the status frame shows the IMU return to RUNNING without another power cycle.
   - Check the 1 Hz IMU status frame arrives.
   - At rest take a capture and upload it: |a| about 1 g, rate 1 kHz, 0 overflows, CRC passes.
   - Upload again with a forced gap and check the re-request heals it.

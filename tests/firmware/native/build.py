@@ -38,7 +38,10 @@ NATIVE_DIR = Path(__file__).resolve().parent
 SHIM_DIR = NATIVE_DIR / "hal_shims"
 REPO_ROOT = NATIVE_DIR.parents[2]
 FIRMWARE_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "Teensy_code_canbridge"
-PLATFORM_HAND_FAN = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "Teensy_code_platform" / "hand_fan.h"
+PLATFORM_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "Teensy_code_platform"
+PLATFORM_HAND_FAN = PLATFORM_DIR / "hand_fan.h"
+PLATFORM_IMU_HEADERS = [PLATFORM_DIR / "imu_capture.h", PLATFORM_DIR / "imu_proto.h",
+                        PLATFORM_DIR / "protocol_config.h"]
 # All runtime build artifacts live under temp/ (gitignored), per the repo rule.
 CACHE_DIR = REPO_ROOT / "temp" / "firmware_native"
 
@@ -108,6 +111,12 @@ _BINARIES = {
     # directory's generated headers share their names with the can-bridge's.
     "test_platform_hand_fan": (
         NATIVE_DIR / "test_platform_hand_fan.cpp",
+        [],
+    ),
+    # The Platform Teensy's IMU capture ring + protocol/state-machine logic: pure headers
+    # (imu_capture.h, imu_proto.h), nothing to link. Same relative-include rule as the fan.
+    "test_platform_imu": (
+        NATIVE_DIR / "test_platform_imu.cpp",
         [],
     ),
     # Cold-start move ladders. Each driver #includes ONE real
@@ -200,6 +209,7 @@ def _source_hash() -> str:
         files += sorted(p for p in d.glob("*") if p.is_file() and p.suffix in (".h", ".cpp"))
     files += sorted(p for p in FIRMWARE_DIR.glob("*") if p.suffix in (".h", ".cpp", ".ino"))
     files.append(PLATFORM_HAND_FAN)
+    files += PLATFORM_IMU_HEADERS
     for p in sorted(set(files)):
         h.update(p.name.encode())
         h.update(p.read_bytes())

@@ -129,6 +129,14 @@ def test_native_gpio_poll_binary_passes(binaries):
         f"normative ball-sensor signal semantics:\n{r.stdout}\n{r.stderr}")
 
 
+def test_native_platform_imu_binary_passes(binaries):
+    """The Platform Teensy's IMU capture ring, frames, state machine and pacing
+    (imu_capture.h / imu_proto.h, contract ros_ws/docs/platform_imu_protocol.md)."""
+    r = _run(binaries["test_platform_imu"])
+    assert r.returncode == 0, (
+        f"native test_platform_imu FAILED:\n{r.stdout}\n{r.stderr}")
+
+
 def test_native_platform_hand_fan_binary_passes(binaries):
     """The Platform Teensy's shipped Hand fan logic (hand_fan.h): thresholds and their
     gap, motor thermistor not FET, unusable frames ignored, off after the timeout."""
