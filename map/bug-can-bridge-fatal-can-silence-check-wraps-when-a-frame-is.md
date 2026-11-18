@@ -41,12 +41,12 @@ A CAN_BUS_DOWN trip whose latched record names Leg 0xFF with age 0: the rescan a
 ## Sitting
 
 - setup: bridge-cycled, level, armed
-- why: The held branch is can-bridge FW 44: the CAN-silence predicates no longer wrap when a Leg is stamped after the fault machine reads its clock; it must be flashed and flown before it merges.
+- why: The held branch is can-bridge FW 45 (main and the robot are FW 44, the scheduler grace): the CAN-silence predicates no longer wrap when a Leg is stamped after the fault machine reads its clock; it must be flashed and flown before it merges.
 - do:
-  - Flash the can-bridge with FW 44 from the branch and power-cycle the bridge.
-  - Launch and check the start-up log shows `BRIDGE_FW_CHECK` passing at version 44.
+  - Flash the can-bridge with FW 45 from the branch and power-cycle the bridge.
+  - Launch and check the start-up log shows `BRIDGE_FW_CHECK` passing at version 45.
   - Fly your usual Columns Attempts for the rest of the Sitting.
-- pass: BRIDGE_FW_CHECK passes at 44 and no CAN_BUS_DOWN trip occurs; any CAN_BUS_DOWN that does occur names a real Leg with a real age, never Leg 0xFF with age 0.
+- pass: BRIDGE_FW_CHECK passes at 45 and no CAN_BUS_DOWN trip occurs; any CAN_BUS_DOWN that does occur names a real Leg with a real age, never Leg 0xFF with age 0.
 - record: the FW version the bridge reports, every CAN_BUS_DOWN or Stow with its latched Leg and age, the Attempts flown.
 - minutes: 15
 - branch: night-shift/2026-11-15-BUG-93
@@ -55,3 +55,4 @@ A CAN_BUS_DOWN trip whose latched record names Leg 0xFF with age 0: the rescan a
 
 - 2026-11-15: Night Shift 2026-11-15: held on night-shift/2026-11-15-BUG-93: firmware is gate-frozen and unflashed (FW 44); suite failed only the 4 Sunday runner tests (BUG-107); 3 same-class findings open; unblocked by a flash and a Sitting
 - 2026-11-18: 2026-11-18: main is now can-bridge FW 44 (per-group scheduler grace). The held branch of this Item also calls its firmware FW 44 and must renumber to FW 45 (version constant, history line, EXPECTED_BRIDGE_FW_VERSION, xref tests) before it lands.
+- 2026-11-18: Held branch merged up to main and renumbered to FW 45 (version constant, history line, EXPECTED_BRIDGE_FW_VERSION, cross-reference test, native test names); no predicate change. Unblocked by a flash and a Sitting. A bridge on FW 45 fails BRIDGE_FW_CHECK on main until this branch lands, so the Sitting ends with the merge or a flash back to FW 44.
