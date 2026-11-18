@@ -4,7 +4,7 @@ kind: idea
 title: JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them
 status: in_progress
 created: '2026-10-30'
-updated: '2026-11-18T03:59:58Z'
+updated: '2026-11-18T05:00:10Z'
 owners: []
 priority: medium
 effort: xl
@@ -16,6 +16,7 @@ blocked_by: []
 links:
 - logbook/2026-11-02-jb113-human-throw-bench.md
 - logbook/2026-11-13-sitting-debrief.md
+- pathway-human-partner-juggling
 filed_by: claude (jugglebot-f5, pattern exploration 2026-10-30)
 ---
 
@@ -76,6 +77,25 @@ Confirmed: a ball carried through a hand kept its previous flight in its fit. A 
 3. The predicted-Throw announcement (the Pattern prior).
 4. Offline reach check: the Cup re-aiming over 150-300 mm in the last 0.5-0.8 s.
 
+## Perception and reach (2026-11-18)
+
+Read-only unit on the 2026-11-18 launch 3 bag (11 cascade Throws beside the robot, apex 1.85 to 2.07 m) and a re-run of the two 2026-11-02 bags. The replay used main's Tracker, so BUG-92's box was not applied. Now worked under PWAY-11, plan `plans/active/human-partner-juggling.md`.
+
+| | 2026-11-18 cascade | 2026-11-02 cascade | 2026-11-02 passes |
+|---|---|---|---|
+| Good landing estimate (50 mm, 30 ms) 0.30 s before the plane | 10 of 11 | 51 of 71 | 37 of 42 |
+| Lead of the first usable estimate, median | 0.71 s | 0.60 s | 0.72 s |
+| Landing vs the mean of the previous five, median (p90) | 101 to 163 mm (122 to 387 mm) across the three bags | | |
+
+- Phantoms outside BUG-92's box are static unlabelled markers: two high cells near (-898,-265,2150) and (-913,-254,2305), occupied in every frame, and a floor cell near (809,-398,74), occupied in 28 % of frames.
+- A first-state speed of at least 500 mm/s rejects all 9 idle phantoms outside the box and loses 0 of 11, 1 of 44 and 4 of 82 real Throws. "Must rise" loses 16 of 82; a 600 mm height floor loses 15 of 44 and 26 of 82.
+- The low-Throw floor is `flight_fit.py:141` (samples at or below 1080 mm are dropped from the landing fit). On 2026-11-02, 23 of 113 crossing Throws had an apex under 1160 mm and 19 of the 25 misses were among them; a floor of 1000, 950, 900 or 850 mm for human balls recovers at most 2, 5, 8 or 11.
+- The Catch path takes only a Ball Butler announcement (`skill_node.py:6225`). A human track has landing position, velocity and time but no `throw_time`, so the announced-track latch (`ball_possession.py:2050`) cannot resolve it.
+- Re-aim limits today: 35 mm inward, 10 mm outward, 30 mm across, two re-sends, none within 0.25 s of touch-down, at least 0.35 s of lead.
+- Rough Cup travel, rest to rest under the Sitting limits less the 0.225 s splice lead: 96 mm at 0.50 s of lead, 156 mm at 0.60 s, 216 mm at 0.70 s (ignores the Jacobian, the contact window and the skid bound).
+
+Not checked: a replay on the candidate Tracker, a replay with a lowered floor, what the static markers physically are.
+
 ## Sitting
 
 - setup: level
@@ -104,3 +124,4 @@ Confirmed: a ball carried through a hand kept its previous flight in its fit. A 
 - 2026-11-03: Human-throw bench landed: two human-only Sittings scored, owner decisions recorded, data Sitting section written (detail below)
 - 2026-11-13: Complete at the Sitting of 2026-11-13: bench report run offline (human_throw_bench.py, 130 s slice of the launch 3 bag): landing sd 73 x 101 mm at the Cup side, phantoms 13.8 per minute against 27.3 on 2026-11-02. The lighting change was not recorded. 26 of 30 phantoms are static Ball Butler frame markers (BUG-92).
 - 2026-11-18: Reopened 2026-11-18 (owner): the 2026-11-13 debrief closed the whole Item on its bench re-measure row; the cascade itself has not been attempted. Open: the three Blockers (perception, a reactive Catch on the observed flight, the held-tilt mode) and the owner safety rules for a person inside the Platform reach.
+- 2026-11-18: Promoted to Pathway PWAY-11 (plan human-partner-juggling.md): perception and reach numbers from the 2026-11-18 bag are in the body; the owner decided no safety rules are needed and set the ladder (one Ball caught, caught and thrown back, held tilt, three Balls).
