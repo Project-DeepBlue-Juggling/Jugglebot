@@ -4332,6 +4332,27 @@ class SkillNode(Node):
         cup_msg, reload = self._accept_cup_decision(pattern)
         if cup_msg is not None:
             return SimpleNamespace(success=False, message=cup_msg)
+        # BUG-113 (owner 2026-11-18): a FED goal (`reload`: it opens by waiting
+        # for a Ball Butler Feed) outside TRAJECTORY would end itself
+        # ABORTED_MODE_CHANGED on the executor's first tick while Ball
+        # Butler's announcement claimed the Feed context. The fact is the
+        # executor's own (`_observations`: a FRESH `trajectory/status` saying
+        # TRAJECTORY), so a never-seen or stale status refuses too -- exactly
+        # what the first tick would conclude. Before the bookkeeping reset and
+        # any Ball Butler request.
+        if reload and not (
+                self._traj_status_mono > 0.0
+                and (self._obs_clock() - self._traj_status_mono)
+                < _TRAJ_STATUS_STALE_S
+                and self._traj_status.mode == 'TRAJECTORY'):
+            return SimpleNamespace(
+                success=False,
+                message=('%s -- refused: the orchestrator is not in TRAJECTORY '
+                         '(no fresh trajectory/status says so), and %s opens '
+                         'with a Ball Butler Feed that a mode change would '
+                         'strand; switch to TRAJECTORY (Activate), then send '
+                         'the goal again; nothing moves and Ball Butler is not '
+                         'asked' % (ex.REJECTED_NOT_TRAJECTORY, pattern)))
 
         apex_m = (float(goal.apex_m) or float(self.get_parameter('apex_m').value))
         separation_mm = (float(goal.separation_mm)

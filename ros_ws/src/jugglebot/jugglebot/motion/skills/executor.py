@@ -538,6 +538,13 @@ REJECTED_ROBOT_FRAME_UNKNOWN = 'REJECTED_ROBOT_FRAME_UNKNOWN'
 #: ~2 s after the robot is at rest; a false-positive move costs one refusal.
 REJECTED_ROBOT_FRAME_SETTLING = 'REJECTED_ROBOT_FRAME_SETTLING'
 REJECTED_NOT_LEVELLED = 'REJECTED_NOT_LEVELLED'
+#: A FED goal (one that opens with the Ball Butler Feed) refused AT ACCEPT
+#: because the orchestrator is not in TRAJECTORY (BUG-113, owner 2026-11-18).
+#: Not a ladder row (`precondition_refusals` never returns it): the SAME fact
+#: the executor's per-tick `in_trajectory_mode` check ends an attempt on
+#: (`ABORTED_MODE_CHANGED`), read once at goal accept by `skill_node`, because
+#: a fed attempt that self-ends there raced Ball Butler's announcement.
+REJECTED_NOT_TRAJECTORY = 'REJECTED_NOT_TRAJECTORY'
 REJECTED_HAND_STALE = 'REJECTED_HAND_STALE'
 #: ``REJECTED_HAND_NOT_PARKED`` WAS here and is RETIRED (owner decision,
 #: 2026-09-16).  It refused a fresh-origin skill whose hand was off the park

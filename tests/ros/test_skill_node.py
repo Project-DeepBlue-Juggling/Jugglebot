@@ -6234,6 +6234,74 @@ def test_accept_possession_reload_with_a_seated_cup_is_refused_ball_in_hand():
     _assert_no_bb_and_no_motion(node, reload_client, throw_client)
 
 
+def _fed_ready_outside_trajectory(node, mode='STANDBY'):
+    """An EMPTY cup (so the goal is FED), everything else fresh, the
+    orchestrator in ``mode`` (`_freshen(in_traj=False)` -> STANDBY)."""
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=False, in_traj=False)
+    if mode != 'STANDBY':
+        node._on_traj_status(_status(gravity_correction_loaded=True,
+                                     mode=mode))
+    _prelevel_ready(node)
+    return _reload_ready(node)
+
+
+def test_accept_fed_goal_outside_trajectory_is_refused_not_trajectory(
+        tmp_path):
+    """BUG-113 (2026-11-18): a fed goal accepted in STANDBY ended itself
+    ABORTED_MODE_CHANGED on the executor's first tick while Ball Butler's
+    announcement claimed the Feed context. Refused at accept instead: no
+    `bb/reload`, no `bb/throw_at_target`, no executor, no Feed context."""
+    node, _client = _node_with_client()
+    reload_client, throw_client = _fed_ready_outside_trajectory(node)
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        for goal in (_self_toss_goal(), _goal('reload'),
+                     _columns_goal(separation_mm=100.0)):
+            resp = node._start_pattern(goal)
+            assert resp.success is False, goal.pattern
+            assert ex.REJECTED_NOT_TRAJECTORY in resp.message
+            assert 'TRAJECTORY' in resp.message and 'Activate' in resp.message
+            _assert_no_bb_and_no_motion(node, reload_client, throw_client)
+            assert node._goal_starting is False
+
+
+def test_accept_fed_goal_with_unknown_or_stale_mode_is_refused():
+    """The executor's own check reads a never-seen or stale status as NOT in
+    TRAJECTORY (`_observations`), so the accept check reads it the same way."""
+    node, _client = _node_with_client()
+    reload_client, throw_client = _fed_ready_outside_trajectory(node)
+    node._on_traj_status(_status(gravity_correction_loaded=True,
+                                 mode='TRAJECTORY'))
+    node._traj_status_mono -= sn._TRAJ_STATUS_STALE_S + 0.1      # stale
+    assert ex.REJECTED_NOT_TRAJECTORY in node._start_pattern(
+        _self_toss_goal()).message
+    node._traj_status_mono = 0.0                                 # never seen
+    assert ex.REJECTED_NOT_TRAJECTORY in node._start_pattern(
+        _self_toss_goal()).message
+    _assert_no_bb_and_no_motion(node, reload_client, throw_client)
+
+
+def test_accept_fed_goal_in_trajectory_is_accepted_as_before(tmp_path):
+    node, _client = _node_with_client()
+    resp = _start_reload(node, tmp_path)        # TRAJECTORY, EMPTY cup
+    assert resp.success is True, resp.message
+    assert len(node._bb_throw_cli.calls) == 1
+
+
+def test_accept_non_fed_goal_outside_trajectory_is_unchanged(tmp_path):
+    """A throw-first goal (SEATED cup) waits for no Feed: the new refusal does
+    not apply (the executor's tick-level mode check still guards it)."""
+    node, _client = _node_with_client()
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=True, in_traj=False)
+    _prelevel_ready(node)
+    reload_client, throw_client = _reload_ready(node)
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_self_toss_goal())
+    assert ex.REJECTED_NOT_TRAJECTORY not in str(resp.message)
+    assert resp.success is True, resp.message
+
+
 def test_accept_possession_self_toss_reload_with_an_empty_cup_is_accepted(
         tmp_path):
     node, _client = _node_with_client()
