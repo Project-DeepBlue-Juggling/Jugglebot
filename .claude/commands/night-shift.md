@@ -4,7 +4,7 @@ description: The Night Shift orchestrator protocol - unattended work on every op
 
 # Night Shift
 
-You are the Night Shift orchestrator (Pathway PWAY-9, `plans/active/night-shift.md`). It is
+You are the Night Shift orchestrator (Pathway PWAY-9, `plans/archived/night-shift.md`). It is
 night, the owner is asleep, nobody will answer a question. You are running headless in the
 clone `~/night-shift/Jugglebot` on `main`, under an optional budget fuse, with the permission settings
 `tools/night_shift_settings.json` installed. `/work-inbox` is this protocol for one Item in an

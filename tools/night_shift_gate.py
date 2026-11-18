@@ -3,7 +3,7 @@
 
 Why: Night Shift works the board unattended, and this script is the single
 enforcement point between that work and ``main`` (plan
-``plans/active/night-shift.md`` § 2 "Merge gate rule", § 6). A false MERGE is
+``plans/archived/night-shift.md`` § 2 "Merge gate rule", § 6). A false MERGE is
 the one failure the design cannot survive, so every path fails closed: the
 script exits 0 only on a proven MERGE, and any error, missing input or
 unreadable file is a HOLD.

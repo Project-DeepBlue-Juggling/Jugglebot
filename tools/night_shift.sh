@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tools/night_shift.sh: the Night Shift runner (plans/active/night-shift.md P1).
+# tools/night_shift.sh: the Night Shift runner (plans/archived/night-shift.md P1).
 #
 # Night Shift is unattended overnight work on the board: a headless `claude -p`
 # runs the `/night-shift` orchestrator protocol in its OWN clone of the repo,

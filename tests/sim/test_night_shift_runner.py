@@ -1,4 +1,4 @@
-"""Night Shift runner guards (plans/active/night-shift.md T-U2 runner part, T-U3).
+"""Night Shift runner guards (plans/archived/night-shift.md T-U2 runner part, T-U3).
 
 `tools/night_shift.sh` is the safety layer between an unattended `claude -p` and a
 box whose CAN bridge is powered overnight, so every guard is pinned here: it must

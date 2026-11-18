@@ -1,4 +1,4 @@
-"""Night Shift candidate branch (plans/active/night-shift.md T-U6).
+"""Night Shift candidate branch (plans/archived/night-shift.md T-U6).
 
 `tools/night_shift_candidate.sh` stacks the held `night-shift/<date>-<ID>` branches
 whose Item has a `## Sitting` section into one `night-shift/sitting-<date>` branch.
