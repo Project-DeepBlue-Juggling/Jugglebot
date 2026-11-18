@@ -43,6 +43,18 @@ DATA_FMT = "<H6s"
 READ_CMD_FMT = "<BHHHB"
 
 
+# The header layout as the spec's table states it (section 3), written out independently of HEADER_FMT:
+# (offset, struct code, field). Two tests pin this against the format string and against the spec's own table.
+SPEC_HEADER_FIELDS = [
+    (0, "B", "version"), (1, "B", "reason"), (2, "H", "capture_id"), (4, "I", "boot_id"), (8, "I", "n_samples"),
+    (12, "I", "first_index"), (16, "H", "n_anchors"), (18, "H", "flags"), (20, "Q", "freeze_wall_us"),
+    (28, "I", "freeze_local_us"), (32, "H", "odr_hz"), (34, "H", "accel_lsb_per_g"), (36, "H", "gyro_lsb_per_dps_x10"),
+    (38, "B", "reg_gyro_accel_config0"), (39, "B", "reg_accel_config0"), (40, "B", "reg_gyro_config0"),
+    (41, "B", "i2c_clock_100khz"), (42, "h", "temp_start_raw"), (44, "h", "temp_freeze_raw"),
+    (46, "H", "fifo_overflows"), (48, "H", "i2c_errors"), (50, "H", "sync_peak_us"), (52, "H", "fw_version"),
+    (54, "I", "payload_crc32"), (58, "I", "reserved"), (62, "I", "header_crc32")]
+
+
 def _doc() -> str:
     with open(_DOC, encoding="utf-8") as fh:
         return fh.read()
@@ -209,3 +221,25 @@ def test_the_rpc_ids_stay_reserved_for_the_imu():
     for value, name in ((0x64, "PLATFORM_IMU_CTRL"), (0x65, "PLATFORM_IMU_READ")):
         assert by_value.get(value, name) == name, hex(value)
         assert f"0x{value:04X} {name}" in _doc()
+
+
+def test_header_format_matches_the_spec_table_field_by_field():
+    """HEADER_FMT (used by the native cross-check) has every field of the spec's header table at its offset and type,
+    and the spec table itself, parsed from the document, lists exactly those offsets and widths."""
+    assert "<" + "".join(c for _, c, _ in SPEC_HEADER_FIELDS) == HEADER_FMT
+    for off, code, name in SPEC_HEADER_FIELDS:
+        idx = [o for o, _, _ in SPEC_HEADER_FIELDS].index(off)
+        prefix = "<" + "".join(c for _, c, _ in SPEC_HEADER_FIELDS[:idx])
+        assert struct.calcsize(prefix) == off, (name, off)   # little-endian, no padding: offset = sum of widths
+    # The document's own table: `| Off | Type | Field | Off | Type | Field |` rows, two groups per row.
+    width = {"u8": 1, "i8": 1, "u16": 2, "i16": 2, "u32": 4, "u64": 8}
+    doc_fields = {}
+    for line in _doc().splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) != 6 or not cells[0].isdigit() and not cells[3].isdigit():
+            continue
+        for k in (0, 3):
+            if cells[k].isdigit():
+                doc_fields[int(cells[k])] = width[cells[k + 1]]
+    assert doc_fields, "the header table was not found in the contract"
+    assert doc_fields == {off: struct.calcsize("<" + code) for off, code, _ in SPEC_HEADER_FIELDS}

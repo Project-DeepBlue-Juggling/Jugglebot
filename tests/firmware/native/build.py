@@ -28,6 +28,7 @@ Importable (the pytest wrapper calls build_all()) and runnable
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import shutil
 import subprocess
@@ -41,7 +42,8 @@ FIRMWARE_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "Teensy_code_canbrid
 PLATFORM_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "Teensy_code_platform"
 PLATFORM_HAND_FAN = PLATFORM_DIR / "hand_fan.h"
 PLATFORM_IMU_HEADERS = [PLATFORM_DIR / "imu_capture.h", PLATFORM_DIR / "imu_proto.h",
-                        PLATFORM_DIR / "protocol_config.h"]
+                        PLATFORM_DIR / "protocol_config.h",
+                        PLATFORM_DIR / "icm42688.h", PLATFORM_DIR / "icm42688.cpp"]
 # All runtime build artifacts live under temp/ (gitignored), per the repo rule.
 CACHE_DIR = REPO_ROOT / "temp" / "firmware_native"
 
@@ -58,6 +60,8 @@ _OBJECTS = {
     "axis_state":        FIRMWARE_DIR / "axis_state.cpp",
     "ball_butler_state": FIRMWARE_DIR / "ball_butler_state.cpp",
     "fake_hal":          NATIVE_DIR / "fake_hal.cpp",
+    # The Platform Teensy's ICM-42688 driver, compiled against the Wire fake (hal_shims/Wire.h).
+    "icm42688":          PLATFORM_DIR / "icm42688.cpp",
     # Cold-start move drivers (homing/activate/deactivate): a SEPARATE self-contained fake HAL (never linked
     # alongside fake_hal.o) for the leg_homing/activate/deactivate drivers — their
     # bus/fault gate + *_active() ODR needs differ from the fault/interp TUs.
@@ -118,6 +122,12 @@ _BINARIES = {
     "test_platform_imu": (
         NATIVE_DIR / "test_platform_imu.cpp",
         [],
+    ),
+    # The ICM-42688 non-blocking init against the scripted Wire fake: register sequence, waits,
+    # one transaction per call, absent chip, error recovery.
+    "test_icm42688": (
+        NATIVE_DIR / "test_icm42688.cpp",
+        ["icm42688"],
     ),
     # Cold-start move ladders. Each driver #includes ONE real
     # module .cpp (defining its own *_active) + supplies the two sibling predicates
@@ -235,20 +245,31 @@ def build_all(force: bool = False) -> dict:
     stamp = CACHE_DIR / "build.stamp"
     bins = {name: CACHE_DIR / name for name in _BINARIES}
 
-    if (not force and stamp.exists() and stamp.read_text() == key
-            and all(b.exists() for b in bins.values())):
+    def fresh() -> bool:
+        return (not force and stamp.exists() and stamp.read_text() == key
+                and all(b.exists() for b in bins.values()))
+
+    if fresh():
         return bins
 
-    # Cache miss: recompile all shared objects, relink all binaries.
-    objs = {}
-    for name, src in _OBJECTS.items():
-        obj = CACHE_DIR / f"{name}.o"
-        _run(["g++", *FLAGS, *INCLUDES, "-c", str(src), "-o", str(obj)])
-        objs[name] = obj
-    for name, (driver, link_objs) in _BINARIES.items():
-        _run(["g++", *FLAGS, *INCLUDES, str(driver),
-              *[str(objs[o]) for o in link_objs], "-o", str(bins[name])])
-    stamp.write_text(key)
+    # Cache miss. Several pytest files (and xdist workers) call build_all(); without a lock one worker can run
+    # a binary another is relinking. Serialise the build with an exclusive flock and re-check the stamp once
+    # held: the worker that waited finds the finished build and returns it. The stamp is written last, so a
+    # reader that sees the new stamp sees complete objects and binaries.
+    with open(CACHE_DIR / ".build.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if fresh():
+            return bins
+        # Recompile all shared objects, relink all binaries.
+        objs = {}
+        for name, src in _OBJECTS.items():
+            obj = CACHE_DIR / f"{name}.o"
+            _run(["g++", *FLAGS, *INCLUDES, "-c", str(src), "-o", str(obj)])
+            objs[name] = obj
+        for name, (driver, link_objs) in _BINARIES.items():
+            _run(["g++", *FLAGS, *INCLUDES, str(driver),
+                  *[str(objs[o]) for o in link_objs], "-o", str(bins[name])])
+        stamp.write_text(key)
     return bins
 
 

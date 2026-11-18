@@ -1,8 +1,9 @@
 // icm42688.h - small direct-register ICM-42688-P driver (I2C, bank 0 only), Platform Teensy copy.
 // Lifted from tools/probes/imu_bench/firmware/src (the bench copy stays untouched). Differences:
-//   * init is a NON-BLOCKING step function (initStart / initStep): each call does at most one bounded I2C
-//     transaction (plus the 200 us FIFO-flush pause) and never delays; the waits the datasheet requires are
-//     due times the caller's clock is checked against. The bench's blocking begin() (~80 ms of delay()) is gone.
+//   * init is a NON-BLOCKING step function (initStart / initStep): each call does at most ONE I2C transaction
+//     (plus the 200 us FIFO-flush pause on the last) and never delays; the waits the datasheet requires are
+//     elapsed-time checks against the caller's clock. The transaction is bounded only by Wire's own timeout,
+//     which P2 must verify on the teensy40 core. The bench's blocking begin() (~80 ms of delay()) is gone.
 //   * agreed configuration: accel +/-16 g, gyro +/-1000 dps, ODR 1 kHz, UI filter per UI_FILT_CODE below.
 // Every call returns an error code (<0) or a count/value (>=0). See tools/probes/imu_bench/README.md for the
 // register-verification table that covers the shared register facts.
@@ -18,7 +19,8 @@ enum Err : int {
   ERR_WHO_AM_I = -2,    // something ACKed but WHO_AM_I != 0x47
   ERR_I2C = -3,         // bus error / short read mid-operation
   ERR_BAD_ARG = -4,
-  ERR_BAD_PACKET = -5   // FIFO header not the expected 16-byte packet (resync needed)
+  ERR_BAD_PACKET = -5,  // FIFO header not the expected 16-byte packet (resync needed)
+  ERR_NOT_STARTED = -6  // initStep called without initStart
 };
 const char* errName(int e);
 
@@ -46,12 +48,14 @@ class Driver {
   explicit Driver(TwoWire& w) : _w(w) {}
 
   // Non-blocking init. initStart() arms it (forceAddr: only that address, else scan 0x68/0x69); then call
-  // initStep(now_us) every loop() pass. It returns INIT_PENDING while work remains, OK when configured and
-  // streaming, or an Err (init ended; call initStart again to retry). now_us is micros(), wrap-safe.
+  // initStep(now_us) every loop() pass. It returns INIT_PENDING while work remains, OK only when configured and
+  // streaming, or an Err (init ended). A failed init keeps returning its Err, and a driver on which initStart
+  // was never called returns ERR_NOT_STARTED, until initStart is called again (retry from the probe). Call
+  // initStart on every (re-)entry to PROBING. now_us is micros(), wrap-safe.
   static const int INIT_PENDING = 1;
   void initStart(uint8_t forceAddr = 0);
   int initStep(uint32_t now_us);
-  bool initBusy() const { return _ist != IST_IDLE; }
+  bool initBusy() const { return _ist != IST_IDLE && _ist != IST_DONE && _ist != IST_FAILED; }
   uint8_t address() const { return _addr; }
   uint8_t whoAmI() const { return _who; }
   uint8_t lastTriedAddr() const { return _lastTried; }
@@ -80,12 +84,17 @@ class Driver {
 
  private:
   int applyOdrFs();
-  int initProbe();
-  enum InitState : uint8_t { IST_IDLE, IST_PROBE, IST_RESET, IST_WAIT_RESET, IST_POLL_RESET, IST_CONFIG, IST_PWR, IST_WAIT_GYRO, IST_FLUSH };
+  int probeNext();
+  int fail(int err);
+  enum InitState : uint8_t { IST_IDLE, IST_PROBE_ACK, IST_PROBE_BANK, IST_PROBE_WHO, IST_RESET_BANK, IST_RESET,
+                             IST_POLL_RESET, IST_POLL_BANK, IST_POLL_WHO, IST_CONFIG, IST_PWR, IST_WAIT_GYRO,
+                             IST_FLUSH, IST_DONE, IST_FAILED };
   TwoWire& _w;
   InitState _ist = IST_IDLE;
-  uint8_t _force = 0, _cfgIdx = 0, _polls = 0;
-  uint32_t _dueUs = 0;
+  uint8_t _force = 0, _cfgIdx = 0, _polls = 0, _cand = 0;
+  bool _anyAck = false;
+  int _err = OK;
+  uint32_t _waitStartUs = 0, _waitUs = 0;
   uint8_t _addr = 0, _who = 0, _lastTried = 0;
   uint16_t _odr = 1000;
   uint8_t _accelFs = 16;

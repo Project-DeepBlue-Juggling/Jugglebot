@@ -69,14 +69,38 @@ inline uint32_t crc32_update(uint32_t crc, const uint8_t* d, size_t n) {
 }
 inline uint32_t crc32(const uint8_t* d, size_t n) { return ~crc32_update(0xFFFFFFFFu, d, n); }
 
+// The layout this file hard-codes, tied to the generated constants so a YAML change that breaks it fails the
+// build instead of corrupting a capture: a sample is two 6-byte words (accel half, gyro half) of three int16;
+// an anchor record is three words; the header is whole words and ends in two CRC words (offsets 54, 62).
+static_assert(PlatformImu::WORD_BYTES == 6, "a word is three int16");
+static_assert(PlatformImu::BYTES_PER_SAMPLE == 2 * PlatformImu::WORD_BYTES, "a sample is accel word + gyro word");
+static_assert(PlatformImu::ANCHOR_BYTES == 3 * PlatformImu::WORD_BYTES, "an anchor is three words");
+static_assert(PlatformImu::ANCHOR_BYTES == 18, "anchor_bytes() writes the 18-byte record");
+static_assert(PlatformImu::HEADER_BYTES == 66, "finalize() writes the 66-byte header");
+static_assert(PlatformImu::HEADER_BYTES % PlatformImu::WORD_BYTES == 0, "the header is whole words");
+// The three regions of the 16-bit seq address space must not overlap or run past 0xFFFF.
+static_assert(PlatformImu::RING_SAMPLES * (PlatformImu::BYTES_PER_SAMPLE / PlatformImu::WORD_BYTES) <= PlatformImu::ANCHOR_SEQ_BASE,
+              "sample words overlap the anchor region");
+static_assert(PlatformImu::ANCHOR_SEQ_BASE + PlatformImu::ANCHOR_RING * (PlatformImu::ANCHOR_BYTES / PlatformImu::WORD_BYTES) <=
+                  PlatformImu::HEADER_SEQ_BASE, "anchor words overlap the header region");
+static_assert(PlatformImu::HEADER_SEQ_BASE + PlatformImu::HEADER_BYTES / PlatformImu::WORD_BYTES <= 65536u,
+              "header words run past the 16-bit seq");
+
 class Capture {
  public:
   static constexpr uint32_t WORD = PlatformImu::WORD_BYTES;
   static constexpr uint32_t HEADER_WORDS = PlatformImu::HEADER_BYTES / PlatformImu::WORD_BYTES;
+  static constexpr uint32_t SAMPLE_WORDS = PlatformImu::BYTES_PER_SAMPLE / PlatformImu::WORD_BYTES;  // 2
+  static constexpr uint32_t ANCHOR_WORDS = PlatformImu::ANCHOR_BYTES / PlatformImu::WORD_BYTES;      // 3
+  static constexpr uint32_t HALF_INT16 = PlatformImu::WORD_BYTES / 2;                                // 3
+  static constexpr uint32_t HEADER_CRC_SPAN = PlatformImu::HEADER_BYTES - 4;                         // 62
 
   // buf: cap_samples x 6 int16. anchors: anchor_cap entries. boot_id nonzero random.
   void init(int16_t* buf, uint32_t cap_samples, Anchor* anchors, uint32_t anchor_cap, uint32_t boot_id) {
-    buf_ = buf; cap_ = cap_samples; anchors_ = anchors; acap_ = anchor_cap; boot_id_ = boot_id;
+    // Capacities beyond the address-space limits would alias regions of the seq space: clamp them.
+    buf_ = buf; anchors_ = anchors; boot_id_ = boot_id;
+    cap_ = cap_samples < PlatformImu::RING_SAMPLES ? cap_samples : PlatformImu::RING_SAMPLES;
+    acap_ = anchor_cap < PlatformImu::ANCHOR_RING ? anchor_cap : PlatformImu::ANCHOR_RING;
     uint16_t lo = uint16_t(boot_id);
     next_id_ = lo ? lo : 1;
     capture_id_ = 0;
@@ -85,7 +109,7 @@ class Capture {
 
   // Start a new capture (boot, ENABLE from DISABLED, RESUME). Discards everything retained.
   void reset() {
-    head_ = 0; count_ = 0; appended_ = 0; a_head_ = 0; a_count_ = 0;
+    head_ = 0; count_ = 0; appended_ = 0; overwritten_ = false; a_head_ = 0; a_count_ = 0;
     frozen_ = false; ready_ = false; n_ = 0; n_anchors_ = 0; crc_pos_ = 0; crc_ = 0xFFFFFFFFu;
     capture_id_ = 0;
   }
@@ -97,21 +121,27 @@ class Capture {
   uint32_t capacity() const { return cap_; }
   uint16_t capture_id() const { return capture_id_; }
   uint32_t n_anchors() const { return frozen_ ? n_anchors_ : a_count_; }
-  bool wrapped() const { return appended_ > cap_; }
+  // Latched in push() when the oldest retained sample is overwritten. NOT derived from appended_ > cap_:
+  // appended_ is a u32 that wraps after 2^32 samples (49.7 days at 1 kHz without a freeze).
+  bool wrapped() const { return overwritten_; }
+  // TEST SEAM ONLY (never called by the sketch): start the appended counter near 2^32 on an empty ring, to prove
+  // the wrap-safe comparisons. Valid only while count_ == 0 and not frozen.
+  void test_seed_appended(uint32_t v) { if (!frozen_ && count_ == 0) appended_ = v; }
 
   // Append one sample (ax ay az gx gy gz). Refused while frozen.
   bool push(const int16_t* six) {
-    if (frozen_ || !buf_) return false;
-    std::memcpy(buf_ + size_t(head_) * 6, six, 12);
+    if (frozen_ || !buf_ || !cap_) return false;
+    std::memcpy(buf_ + size_t(head_) * (2 * HALF_INT16), six, PlatformImu::BYTES_PER_SAMPLE);
     head_ = (head_ + 1 == cap_) ? 0 : head_ + 1;
     if (count_ < cap_) count_++;
+    else overwritten_ = true;
     appended_++;
     return true;
   }
 
   // Record an anchor for the drain just pushed (index = samples appended so far). Refused while frozen.
   bool add_anchor(uint32_t local_us, uint64_t wall_us, uint8_t flags) {
-    if (frozen_ || !acap_) return false;
+    if (frozen_ || !acap_ || !anchors_) return false;
     uint32_t slot = (a_head_ + a_count_) % acap_;
     if (a_count_ == acap_) { a_head_ = (a_head_ + 1) % acap_; slot = (a_head_ + a_count_ - 1) % acap_; }
     else a_count_++;
@@ -128,7 +158,8 @@ class Capture {
     start_ = (head_ + cap_ - count_) % cap_;
     // Anchors whose sample (index - 1) is no longer retained are dropped.
     uint32_t skip = 0;
-    while (skip < a_count_ && anchor_at(skip).index <= first_index_) skip++;
+    // Signed difference: appended_ and the stored indices are u32 counters that may wrap; the span is < 2^31.
+    while (skip < a_count_ && int32_t(anchor_at(skip).index - first_index_) <= 0) skip++;
     a_first_ = skip;
     n_anchors_ = a_count_ - skip;
     capture_id_ = next_id_;
@@ -141,7 +172,7 @@ class Capture {
     return true;
   }
 
-  uint32_t payload_words() const { return 3u * n_anchors_ + 2u * n_; }
+  uint32_t payload_words() const { return ANCHOR_WORDS * n_anchors_ + SAMPLE_WORDS * n_; }
 
   // Advance the payload CRC by at most max_bytes (rounded to whole words). True once it is complete.
   bool crc_step(uint32_t max_bytes) {
@@ -194,7 +225,7 @@ class Capture {
     put16(p + 52, h.fw_version);
     put32(p + 54, payload_crc());
     put32(p + 58, 0);
-    put32(p + 62, crc32(p, 62));
+    put32(p + 62, crc32(p, HEADER_CRC_SPAN));
     ready_ = true;
     return true;
   }
@@ -203,9 +234,9 @@ class Capture {
   // Exclusive end seq of the valid part of the region containing seq; 0 if seq is in no valid region.
   uint32_t region_end(uint32_t seq) const {
     if (!frozen_) return 0;
-    if (seq < 2u * n_) return 2u * n_;
+    if (seq < SAMPLE_WORDS * n_) return SAMPLE_WORDS * n_;
     uint32_t ab = PlatformImu::ANCHOR_SEQ_BASE;
-    if (seq >= ab && seq < ab + 3u * n_anchors_) return ab + 3u * n_anchors_;
+    if (seq >= ab && seq < ab + ANCHOR_WORDS * n_anchors_) return ab + ANCHOR_WORDS * n_anchors_;
     uint32_t hb = PlatformImu::HEADER_SEQ_BASE;
     if (ready_ && seq >= hb && seq < hb + HEADER_WORDS) return hb + HEADER_WORDS;
     return 0;
@@ -220,13 +251,13 @@ class Capture {
   // The 6-byte word at seq; false if seq is not valid. Anchors are the 18-byte records split in three.
   bool read_word(uint32_t seq, uint8_t* out6) const {
     if (region_end(seq) == 0) return false;
-    if (seq < 2u * n_) { sample_word(seq, out6); return true; }
+    if (seq < SAMPLE_WORDS * n_) { sample_word(seq, out6); return true; }
     uint32_t hb = PlatformImu::HEADER_SEQ_BASE;
     if (seq >= hb) { std::memcpy(out6, header_ + (seq - hb) * WORD, WORD); return true; }
     uint32_t r = seq - PlatformImu::ANCHOR_SEQ_BASE;
     uint8_t rec[PlatformImu::ANCHOR_BYTES];
-    anchor_bytes(a_first_ + r / 3u, rec);
-    std::memcpy(out6, rec + (r % 3u) * WORD, WORD);
+    anchor_bytes(a_first_ + r / ANCHOR_WORDS, rec);
+    std::memcpy(out6, rec + (r % ANCHOR_WORDS) * WORD, WORD);
     return true;
   }
 
@@ -241,20 +272,21 @@ class Capture {
     rec[17] = 0;
   }
   void sample_word(uint32_t w, uint8_t* out) const {
-    uint32_t k = w >> 1;
-    const int16_t* s = buf_ + size_t((start_ + k) % cap_) * 6 + (w & 1u) * 3;
-    for (int i = 0; i < 3; i++) put16(out + 2 * i, uint16_t(s[i]));
+    uint32_t k = w / SAMPLE_WORDS;
+    const int16_t* s = buf_ + size_t((start_ + k) % cap_) * (SAMPLE_WORDS * HALF_INT16) + (w % SAMPLE_WORDS) * HALF_INT16;
+    for (uint32_t i = 0; i < HALF_INT16; i++) put16(out + 2 * i, uint16_t(s[i]));
   }
   // Payload word p: the anchor words, then the sample words, in seq order.
   void payload_word(uint32_t p, uint8_t* out) const {
-    if (p < 3u * n_anchors_) read_word(PlatformImu::ANCHOR_SEQ_BASE + p, out);
-    else sample_word(p - 3u * n_anchors_, out);
+    if (p < ANCHOR_WORDS * n_anchors_) read_word(PlatformImu::ANCHOR_SEQ_BASE + p, out);
+    else sample_word(p - ANCHOR_WORDS * n_anchors_, out);
   }
 
   int16_t* buf_ = nullptr;
   Anchor* anchors_ = nullptr;
   uint32_t cap_ = 0, acap_ = 0, boot_id_ = 0;
   uint32_t head_ = 0, count_ = 0, appended_ = 0;
+  bool overwritten_ = false;
   uint32_t a_head_ = 0, a_count_ = 0;
   bool frozen_ = false, ready_ = false;
   uint16_t next_id_ = 1, capture_id_ = 0;

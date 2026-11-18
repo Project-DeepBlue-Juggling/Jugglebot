@@ -3,7 +3,8 @@
 namespace icm42688 {
 
 // ---- Register map (bank 0). Every address, bit and code below was checked against DS-000347 rev 1.6
-// (pcbsync.com mirror) on 2026-11-18; see README "Register verification" for the table. ----
+// (pcbsync.com mirror) on 2026-11-18; see README "Register verification" for the table. The one exception is
+// UI_FILT_CODE (icm42688.h), which is the bench value and NOT verified for the agreed ODR/4 setting. ----
 static const uint8_t REG_DEVICE_CONFIG = 0x11;   // bit0 SOFT_RESET_CONFIG
 static const uint8_t REG_INT_STATUS = 0x2D;      // bit4 RESET_DONE, bit1 FIFO_FULL (clear on read)
 static const uint8_t REG_FIFO_DATA = 0x30;
@@ -29,6 +30,7 @@ const char* errName(int e) {
     case ERR_I2C: return "i2c_error";
     case ERR_BAD_ARG: return "bad_arg";
     case ERR_BAD_PACKET: return "bad_fifo_packet";
+    case ERR_NOT_STARTED: return "init_not_started";
     default: return "?";
   }
 }
@@ -74,74 +76,104 @@ int Driver::applyOdrFs() {
   return writeReg(REG_ACCEL_CONFIG0, (uint8_t)((accelFsCode(_accelFs) << 5) | odrCode(_odr)));
 }
 
-void Driver::initStart(uint8_t forceAddr) {
-  _force = forceAddr;
-  _addr = 0; _who = 0; _cfgIdx = 0; _polls = 0;
-  _odr = 1000; _accelFs = 16; _gyroFs = 1000;
-  _ist = IST_PROBE;
+static const uint8_t PROBE_ADDRS[2] = {0x68, 0x69};
+
+// First candidate index >= from that the force filter allows (2 = none). No I2C.
+static uint8_t candFrom(uint8_t from, uint8_t force) {
+  while (from < 2 && force && PROBE_ADDRS[from] != force) from++;
+  return from;
 }
 
-// One candidate address per call: ACK check plus WHO_AM_I.
-int Driver::initProbe() {
-  const uint8_t cands[2] = {0x68, 0x69};
-  bool anyAck = false;
-  for (int i = 0; i < 2; i++) {
-    uint8_t a = cands[i];
-    if (_force && a != _force) continue;
-    _lastTried = a;
-    _w.beginTransmission(a);
-    if (_w.endTransmission() != 0) continue;
-    anyAck = true;
-    _addr = a;
-    writeReg(REG_BANK_SEL, 0);
-    int who = readReg(REG_WHO_AM_I);
-    if (who == WHO_AM_I_VAL) { _who = (uint8_t)who; return OK; }
-    _who = who < 0 ? 0 : (uint8_t)who;
-    _addr = 0;
-  }
-  return anyAck ? ERR_WHO_AM_I : ERR_NO_DEVICE;
+void Driver::initStart(uint8_t forceAddr) {
+  _force = forceAddr;
+  _addr = 0; _who = 0; _cfgIdx = 0; _polls = 0; _cand = candFrom(0, forceAddr); _anyAck = false; _err = OK;
+  _odr = 1000; _accelFs = 16; _gyroFs = 1000;
+  _ist = IST_PROBE_ACK;
 }
 
 // The configuration writes, one per initStep call, in the bench driver's order. All before PWR_MGMT0
 // (datasheet 12.9: only ODR/FS/mode may change while the sensors run).
-static const uint8_t N_CFG = 8;
+static const uint8_t N_CFG = 7;
 
+// Next probe candidate after a failed one, or the end of the probe. Issues no I2C transaction.
+int Driver::probeNext() {
+  _cand = candFrom(_cand + 1, _force);
+  if (_cand >= 2) return fail(_anyAck ? ERR_WHO_AM_I : ERR_NO_DEVICE);
+  _ist = IST_PROBE_ACK;
+  return INIT_PENDING;
+}
+
+int Driver::fail(int err) {
+  _ist = IST_FAILED;
+  _err = err;
+  return err;
+}
+
+// Exactly ONE I2C transaction per call in every state (a state that only waits issues none), so one loop() pass
+// can never sit in more than one Wire timeout. Waits are elapsed-time checks (now - start >= wait, unsigned), not
+// absolute due times: they stay correct across the micros() wrap and, if init is parked and resumed late, they
+// release at once instead of stalling. A caller that parks init (DISABLE, FW_HALTED) calls initStart on re-entry.
 int Driver::initStep(uint32_t now_us) {
   int r;
   switch (_ist) {
     case IST_IDLE:
+      return ERR_NOT_STARTED;               // never started: not success
+    case IST_DONE:
       return OK;
-    case IST_PROBE:
-      // The probe is up to two addresses: ACK + WHO_AM_I each, a few hundred us at 100 kHz.
-      r = initProbe();
-      if (r < 0) { _ist = IST_IDLE; return r; }
+    case IST_FAILED:
+      return _err;                          // sticky until initStart
+    case IST_PROBE_ACK: {
+      if (_cand >= 2) return fail(ERR_NO_DEVICE);   // forced address is not a legal one: nothing to try
+      uint8_t a = PROBE_ADDRS[_cand];
+      _lastTried = a;
+      _w.beginTransmission(a);
+      if (_w.endTransmission() != 0) return probeNext();
+      _anyAck = true;
+      _addr = a;
+      _ist = IST_PROBE_BANK;
+      return INIT_PENDING;
+    }
+    case IST_PROBE_BANK:
+      writeReg(REG_BANK_SEL, 0);            // result ignored, as in the bench driver
+      _ist = IST_PROBE_WHO;
+      return INIT_PENDING;
+    case IST_PROBE_WHO: {
+      int who = readReg(REG_WHO_AM_I);
+      if (who == WHO_AM_I_VAL) { _who = (uint8_t)who; _ist = IST_RESET_BANK; return INIT_PENDING; }
+      _who = who < 0 ? 0 : (uint8_t)who;
+      _addr = 0;
+      return probeNext();
+    }
+    case IST_RESET_BANK:
+      if ((r = writeReg(REG_BANK_SEL, 0)) < 0) return fail(r);
       _ist = IST_RESET;
       return INIT_PENDING;
     case IST_RESET:
-      if ((r = writeReg(REG_BANK_SEL, 0)) < 0) { _ist = IST_IDLE; return r; }
-      if ((r = writeReg(REG_DEVICE_CONFIG, 0x01)) < 0) { _ist = IST_IDLE; return r; }   // soft reset
-      _dueUs = now_us + 10000u;                  // datasheet minimum 1 ms; the bench waited 10
-      _ist = IST_WAIT_RESET;
-      return INIT_PENDING;
-    case IST_WAIT_RESET:
-      if ((int32_t)(now_us - _dueUs) < 0) return INIT_PENDING;
+      if ((r = writeReg(REG_DEVICE_CONFIG, 0x01)) < 0) return fail(r);   // soft reset
+      _waitStartUs = now_us; _waitUs = 10000u;   // datasheet minimum 1 ms; the bench waited 10
       _polls = 0;
       _ist = IST_POLL_RESET;
       return INIT_PENDING;
     case IST_POLL_RESET: {
       // RESET_DONE (INT_STATUS bit4) is informational: up to INIT_STEP_RESET_POLLS polls 1 ms apart, then go on.
-      if ((int32_t)(now_us - _dueUs) < 0) return INIT_PENDING;
+      if ((uint32_t)(now_us - _waitStartUs) < _waitUs) return INIT_PENDING;
       int s = readReg(REG_INT_STATUS);
       if ((s >= 0 && (s & 0x10)) || ++_polls >= INIT_STEP_RESET_POLLS) {
-        writeReg(REG_BANK_SEL, 0);
-        if (readReg(REG_WHO_AM_I) != WHO_AM_I_VAL) { _ist = IST_IDLE; return ERR_WHO_AM_I; }
-        _cfgIdx = 0;
-        _ist = IST_CONFIG;
+        _ist = IST_POLL_BANK;
       } else {
-        _dueUs = now_us + 1000u;
+        _waitStartUs = now_us; _waitUs = 1000u;
       }
       return INIT_PENDING;
     }
+    case IST_POLL_BANK:
+      writeReg(REG_BANK_SEL, 0);            // result ignored, as in the bench driver
+      _ist = IST_POLL_WHO;
+      return INIT_PENDING;
+    case IST_POLL_WHO:
+      if (readReg(REG_WHO_AM_I) != WHO_AM_I_VAL) return fail(ERR_WHO_AM_I);
+      _cfgIdx = 0;
+      _ist = IST_CONFIG;
+      return INIT_PENDING;
     case IST_CONFIG: {
       switch (_cfgIdx) {
         case 0: r = writeReg(REG_INT_CONFIG1, 0x00); break;      // INT_ASYNC_RESET cleared (DS 12.6)
@@ -150,26 +182,26 @@ int Driver::initStep(uint32_t now_us) {
         case 3: r = writeReg(REG_ACCEL_CONFIG0, (uint8_t)((accelFsCode(_accelFs) << 5) | odrCode(_odr))); break;
         case 4: r = writeReg(REG_GYRO_ACCEL_CONFIG0, UI_FILT_CODE); break;
         case 5: r = writeReg(REG_FIFO_CONFIG1, 0x4F); break;     // accel+gyro+temp+timestamp, RESUME_PARTIAL_RD
-        case 6: r = writeReg(REG_FIFO_CONFIG, 0x40); break;      // stream mode
-        default: r = OK; break;
+        default: r = writeReg(REG_FIFO_CONFIG, 0x40); break;     // stream mode
       }
-      if (r < 0) { _ist = IST_IDLE; return r; }
-      if (++_cfgIdx >= N_CFG - 1) _ist = IST_PWR;
+      if (r < 0) return fail(r);
+      if (++_cfgIdx >= N_CFG) _ist = IST_PWR;
       return INIT_PENDING;
     }
     case IST_PWR:
-      if ((r = writeReg(REG_PWR_MGMT0, 0x0F)) < 0) { _ist = IST_IDLE; return r; }   // accel+gyro low-noise
-      _dueUs = now_us + 50000u;                  // gyro needs >= 45 ms before use
+      if ((r = writeReg(REG_PWR_MGMT0, 0x0F)) < 0) return fail(r);   // accel+gyro low-noise
+      _waitStartUs = now_us; _waitUs = 50000u;   // gyro needs >= 45 ms before use
       _ist = IST_WAIT_GYRO;
       return INIT_PENDING;
     case IST_WAIT_GYRO:
-      if ((int32_t)(now_us - _dueUs) < 0) return INIT_PENDING;
+      if ((uint32_t)(now_us - _waitStartUs) < _waitUs) return INIT_PENDING;
       _ist = IST_FLUSH;
       return INIT_PENDING;
     case IST_FLUSH:
       r = flushFifo();
-      _ist = IST_IDLE;
-      return r < 0 ? r : OK;
+      if (r < 0) return fail(r);
+      _ist = IST_DONE;
+      return OK;
   }
   return ERR_BAD_ARG;
 }

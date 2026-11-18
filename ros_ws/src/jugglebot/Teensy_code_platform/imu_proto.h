@@ -137,6 +137,8 @@ class Engine {
     block_active_ = false;
     pending_freeze_reply_ = false;
     disc_pending_ = false;
+    resume_check_ = false;
+    have_sent_ = false;
     last_status_ms_ = 0;
     status_started_ = false;
   }
@@ -149,8 +151,10 @@ class Engine {
   void note_overflow() { disc_pending_ = true; }
   // True once since the last call after a RESUME: the sketch flushes the chip FIFO and re-checks WHO_AM_I.
   bool take_resume_check() { bool r = resume_check_; resume_check_ = false; return r; }
-  // The sketch may push samples and take anchors only in these states.
-  bool sampling() const { return state_ == PlatformImuState::RUNNING; }
+  // The sketch may push samples and take anchors only while this is true: RUNNING, and the post-RESUME FIFO
+  // flush has been serviced (take_resume_check called). The chip kept streaming while FROZEN, so its FIFO holds
+  // up to 128 stale packets that must not enter the new capture.
+  bool sampling() const { return state_ == PlatformImuState::RUNNING && !resume_check_; }
 
   /* ----------------------------- commands ----------------------------- */
 
@@ -162,12 +166,15 @@ class Engine {
     *deferred = false;
     Reply r;
     r.op = c.op;
+    // The frozen capture's id (0 when none): the spec's rule for every reply, refusals included. DISABLE
+    // overrides it below because it discards the capture; FW_HALTED has already reset it.
+    r.capture_id = cap_->frozen() ? cap_->capture_id() : 0;
     if (!c.valid) return fail(r, ERR_BAD_ARGS);
     if (state_ == PlatformImuState::FW_HALTED) return fail(r, ERR_FW_UPDATE);
     const uint8_t s = state_;
     const bool frozenish = s == PlatformImuState::FROZEN || s == PlatformImuState::UPLOADING;
     if (s == PlatformImuState::DISABLED) {
-      if (c.op == ENABLE) { cap_->reset(); state_ = PlatformImuState::PROBING; return r; }
+      if (c.op == ENABLE) { reset_capture(); state_ = PlatformImuState::PROBING; return r; }
       if (c.op == DISABLE || c.op == ABORT) return r;
       return fail(r, ERR_DISABLED);
     }
@@ -177,7 +184,8 @@ class Engine {
       case DISABLE:
         cancel_block();
         pending_freeze_reply_ = false;
-        cap_->reset();
+        reset_capture();
+        r.capture_id = 0;  // the capture is discarded
         state_ = PlatformImuState::DISABLED;
         return r;
       case ABORT:
@@ -186,7 +194,6 @@ class Engine {
       case FREEZE:
         if (frozenish) {
           r.status = ALREADY_FROZEN;
-          r.capture_id = cap_->capture_id();
           r.detail = cap_->n_samples();
           return r;
         }
@@ -204,9 +211,9 @@ class Engine {
         if (c.capture_id != cap_->capture_id()) return fail(r, ERR_WRONG_CAPTURE);
         cancel_block();
         pending_freeze_reply_ = false;
-        cap_->reset();
+        reset_capture();
         state_ = PlatformImuState::RUNNING;
-        resume_check_ = true;
+        resume_check_ = true;  // sampling() stays false until the sketch has flushed the chip FIFO
         return r;
       case READ:
         if (!frozenish) return fail(r, ERR_NOT_FROZEN);
@@ -221,8 +228,6 @@ class Engine {
         next_seq_ = c.first_seq;
         remaining_ = c.count;
         gap_us_ = gap_for(c.gap_10us);
-        next_due_us_ = 0;
-        block_started_ = false;
         state_ = PlatformImuState::UPLOADING;
         r.detail = uint32_t(c.first_seq) | (uint32_t(c.count) << 16);
         return r;
@@ -255,7 +260,7 @@ class Engine {
   // The next DATA frame, if one is due now. Does not advance: call commit_data once it is in a mailbox.
   bool peek_data(uint32_t now_us, Frame* out) const {
     if (!block_active_) return false;
-    if (block_started_ && int32_t(now_us - next_due_us_) < 0) return false;
+    if (!gap_elapsed(now_us)) return false;
     uint8_t w[6];
     if (!cap_->read_word(next_seq_, w)) return false;
     *out = pack_data(uint16_t(next_seq_), w);
@@ -265,8 +270,8 @@ class Engine {
     if (!block_active_) return;
     next_seq_++;
     remaining_--;
-    next_due_us_ = now_us + gap_us_;
-    block_started_ = true;
+    last_sent_us_ = now_us;  // kept across blocks: the gap floor also separates the last frame of one block from the first of the next
+    have_sent_ = true;
     if (remaining_ == 0) {
       block_active_ = false;
       if (state_ == PlatformImuState::UPLOADING) state_ = PlatformImuState::FROZEN;
@@ -274,9 +279,9 @@ class Engine {
   }
   // Microseconds until the next DATA frame is due (0 if due or none pending).
   uint32_t data_wait_us(uint32_t now_us) const {
-    if (!block_active_ || !block_started_) return 0;
-    int32_t d = int32_t(next_due_us_ - now_us);
-    return d > 0 ? uint32_t(d) : 0;
+    if (!block_active_ || !have_sent_) return 0;
+    uint32_t age = now_us - last_sent_us_;
+    return age >= gap_us_ ? 0u : gap_us_ - age;
   }
 
   /* ------------------------- internal transitions ------------------------- */
@@ -299,7 +304,7 @@ class Engine {
   void on_fw_update_begin() {
     cancel_block();
     pending_freeze_reply_ = false;
-    cap_->reset();
+    reset_capture();
     state_ = PlatformImuState::FW_HALTED;
   }
   void on_fw_update_abandoned() { if (state_ == PlatformImuState::FW_HALTED) state_ = PlatformImuState::PROBING; }
@@ -319,13 +324,22 @@ class Engine {
  private:
   static Reply& fail(Reply& r, uint8_t status) { r.status = status; return r; }
   void cancel_block() { block_active_ = false; remaining_ = 0; }
+  // A new capture begins: nothing from the old one (a pending resume flush, a pending discontinuity) carries over.
+  void reset_capture() { cap_->reset(); resume_check_ = false; disc_pending_ = false; }
+  // Wrap-safe: the next frame is due once gap_us_ has passed since the last frame sent (any block). An age that
+  // is negative as an int32 (clock read just before the stamp) counts as elapsed; so does the first frame ever.
+  bool gap_elapsed(uint32_t now_us) const {
+    if (!have_sent_) return true;
+    uint32_t age = now_us - last_sent_us_;
+    return age >= gap_us_;
+  }
 
   ImuCapture::Capture* cap_ = nullptr;
   ImuCapture::HeaderInfo pending_info_;
   uint8_t state_ = PlatformImuState::PROBING;
   bool pending_freeze_reply_ = false, resume_check_ = false, disc_pending_ = false;
-  bool block_active_ = false, block_started_ = false;
-  uint32_t next_seq_ = 0, remaining_ = 0, gap_us_ = 0, next_due_us_ = 0;
+  bool block_active_ = false, have_sent_ = false;
+  uint32_t next_seq_ = 0, remaining_ = 0, gap_us_ = 0, last_sent_us_ = 0;
   uint32_t backoff_until_ms_ = 0, last_status_ms_ = 0;
   bool status_started_ = false;
 };

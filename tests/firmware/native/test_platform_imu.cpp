@@ -430,6 +430,8 @@ TEST_CASE("state machine legality table") {
       }
       CHECK(r.eng.state() == want_next);
       CHECK(rep.op == op);
+      // Spec: every reply carries the frozen capture's id (0 when none); DISABLE discards it, so 0.
+      if (!def) CHECK(rep.capture_id == (((st == S::FROZEN || st == S::UPLOADING) && op != Op::DISABLE) ? id : 0));
     }
   }
 }
@@ -634,7 +636,13 @@ TEST_CASE("dump a wrapped capture for the Python zlib cross-check") {
     if (i % 25 == 24) r.cap.add_anchor(uint32_t(i * 1000), 1700000000000000ull + uint64_t(i) * 1000,
                                        i == 199 ? PlatformImuAnchorFlag::DISCONTINUITY : 0);
   }
-  r.info.fw_version = 11;
+  // Every pass-through header field gets a distinct value, so a transposed pair of fields fails in Python.
+  r.info.freeze_wall_us = 0x1122334455667788ull; r.info.freeze_local_us = 0x99AABBCCu;
+  r.info.odr_hz = 1000; r.info.accel_lsb_per_g = 2048; r.info.gyro_lsb_per_dps_x10 = 328;
+  r.info.reg_gyro_accel_config0 = 0x31; r.info.reg_accel_config0 = 0x06; r.info.reg_gyro_config0 = 0x26;
+  r.info.i2c_clock_100khz = 4; r.info.temp_start_raw = -321; r.info.temp_freeze_raw = 4321;
+  r.info.fifo_overflows = 17; r.info.i2c_errors = 29; r.info.sync_peak_us = 1357; r.info.fw_version = 11;
+  r.info.extra_flags = PlatformImuCaptureFlag::NEVER_SYNCED | PlatformImuCaptureFlag::I2C_400K;
   Reply f = r.freeze();
   REQUIRE(f.status == St::OK);
   std::vector<uint8_t> out;
@@ -648,4 +656,431 @@ TEST_CASE("dump a wrapped capture for the Python zlib cross-check") {
   REQUIRE(fp != nullptr);
   std::fwrite(out.data(), 1, out.size(), fp);
   std::fclose(fp);
+  // The fed values, for the independent struct-based layout check in Python.
+  std::string jp = std::string(dir) + "/header_info.json";
+  FILE* jf = std::fopen(jp.c_str(), "w");
+  REQUIRE(jf != nullptr);
+  const HeaderInfo& i = r.info;
+  std::fprintf(jf,
+               "{\"boot_id\":%u,\"reason\":1,\"freeze_wall_us\":%llu,\"freeze_local_us\":%u,\"odr_hz\":%u,"
+               "\"accel_lsb_per_g\":%u,\"gyro_lsb_per_dps_x10\":%u,\"reg_gyro_accel_config0\":%u,"
+               "\"reg_accel_config0\":%u,\"reg_gyro_config0\":%u,\"i2c_clock_100khz\":%u,\"temp_start_raw\":%d,"
+               "\"temp_freeze_raw\":%d,\"fifo_overflows\":%u,\"i2c_errors\":%u,\"sync_peak_us\":%u,"
+               "\"fw_version\":%u,\"extra_flags\":%u}\n",
+               0xCAFE0007u, (unsigned long long)i.freeze_wall_us, i.freeze_local_us, i.odr_hz, i.accel_lsb_per_g,
+               i.gyro_lsb_per_dps_x10, i.reg_gyro_accel_config0, i.reg_accel_config0, i.reg_gyro_config0,
+               i.i2c_clock_100khz, i.temp_start_raw, i.temp_freeze_raw, i.fifo_overflows, i.i2c_errors,
+               i.sync_peak_us, i.fw_version, i.extra_flags);
+  std::fclose(jf);
+}
+
+
+/* ===================== P1 audit follow-up: wrap, resume gating, ids, pacing, real sizes ===================== */
+
+namespace {
+
+// A ring of any (small) size with its own storage, for the anchor-ring and wrap cases.
+struct SmallRig {
+  std::vector<int16_t> buf;
+  std::vector<Anchor> anchors;
+  Capture cap;
+  HeaderInfo info;
+  SmallRig(uint32_t n, uint32_t an, uint32_t boot = 0x5150u) : buf(n * 6), anchors(an) {
+    cap.init(buf.data(), n, anchors.data(), an, boot);
+  }
+  void push(uint32_t n, int base = 0) {
+    for (uint32_t i = 0; i < n; i++) {
+      int16_t s[6];
+      for (int j = 0; j < 6; j++) s[j] = int16_t((base + int(i)) * 7 + j);
+      REQUIRE(cap.push(s));
+    }
+  }
+  void freeze_all() {
+    REQUIRE(cap.begin_freeze(PlatformImuFreezeReason::ATTEMPT_END));
+    while (!cap.crc_step(8192)) {}
+    REQUIRE(cap.finalize(info));
+  }
+};
+
+// CRC-32 of the payload words read back through read_word in seq order, and the header words.
+uint32_t walk_payload_crc(const Capture& c) {
+  uint32_t crc = 0xFFFFFFFFu;
+  uint8_t w[6];
+  for (uint32_t p = 0; p < 3 * c.n_anchors(); p++) { REQUIRE(c.read_word(PlatformImu::ANCHOR_SEQ_BASE + p, w)); crc = crc32_update(crc, w, 6); }
+  for (uint32_t p = 0; p < 2 * c.n_samples(); p++) { REQUIRE(c.read_word(p, w)); crc = crc32_update(crc, w, 6); }
+  return ~crc;
+}
+
+}  // namespace
+
+TEST_CASE("B1: the appended counter wrapping past 2^32 keeps WRAPPED and the anchor trimming right") {
+  SmallRig r(100, 8);
+  r.cap.test_seed_appended(0xFFFFFF8Du);  // 115 samples before the u32 wrap
+  r.push(10);
+  r.cap.add_anchor(1, 1, 0);              // index 0xFFFFFF97: older than the oldest retained sample at freeze
+  r.push(20);
+  r.cap.add_anchor(2, 2, 0);              // index 0xFFFFFFAB: retained
+  r.push(90);                             // 120 pushed in all: the counter has wrapped to 5, the ring is full
+  r.cap.add_anchor(3, 3, 0);              // index 5: retained
+  CHECK(r.cap.appended() == 5u);          // appended_ <= capacity although 120 samples went through a 100 ring
+  CHECK(r.cap.wrapped());                 // the old `appended_ > cap_` test said false here
+  r.freeze_all();
+  CHECK(r.cap.n_samples() == 100u);
+  CHECK(r.cap.n_anchors() == 2u);         // the old unsigned compare kept the stale one and dropped the newest
+  const uint8_t* h = r.cap.header();
+  CHECK(get32(h + 12) == 0xFFFFFFA1u);    // first_index: appended 5 minus 100 retained, modulo 2^32
+  CHECK(flag16(h + 18, PlatformImuCaptureFlag::WRAPPED));
+  uint8_t rec[18];
+  for (int k = 0; k < 3; k++) REQUIRE(r.cap.read_word(PlatformImu::ANCHOR_SEQ_BASE + k, rec + 6 * k));
+  CHECK(get32(rec) == 0xFFFFFFABu);
+  for (int k = 0; k < 3; k++) REQUIRE(r.cap.read_word(PlatformImu::ANCHOR_SEQ_BASE + 3 + k, rec + 6 * k));
+  CHECK(get32(rec) == 5u);
+  CHECK(get32(h + 54) == walk_payload_crc(r.cap));
+}
+
+TEST_CASE("exactly capacity is not wrapped; capacity + 1 is, with the oldest sample dropped") {
+  Rig r;
+  go_running(r);
+  r.push(CAP);
+  CHECK_FALSE(r.cap.wrapped());
+  Reply f = r.freeze();
+  CHECK(f.detail == CAP);
+  uint8_t w[6];
+  REQUIRE(r.cap.read_word(0, w));
+  CHECK(int16_t(get16(w)) == 0);                       // sample 0 is the oldest
+  CHECK(get32(r.cap.header() + 12) == 0u);
+  CHECK_FALSE(flag16(r.cap.header() + 18, PlatformImuCaptureFlag::WRAPPED));
+  CHECK(get32(r.cap.header() + 54) == walk_payload_crc(r.cap));
+  Rig q;
+  go_running(q);
+  q.push(CAP + 1);
+  CHECK(q.cap.wrapped());
+  q.freeze();
+  REQUIRE(q.cap.read_word(0, w));
+  CHECK(int16_t(get16(w)) == int16_t(1 * 7));          // sample 0 was overwritten: sample 1 is the oldest
+  REQUIRE(q.cap.read_word(2 * CAP - 1, w));
+  CHECK(int16_t(get16(w + 4)) == int16_t(CAP * 7 + 5));
+  CHECK(get32(q.cap.header() + 12) == 1u);
+  CHECK(flag16(q.cap.header() + 18, PlatformImuCaptureFlag::WRAPPED));
+  CHECK(get32(q.cap.header() + 54) == walk_payload_crc(q.cap));
+}
+
+TEST_CASE("one sample and no anchors freeze cleanly") {
+  Rig r;
+  go_running(r);
+  r.push(1);
+  Reply f = r.freeze();
+  CHECK(f.status == St::OK);
+  CHECK(f.detail == 1u);
+  CHECK(r.cap.n_anchors() == 0u);
+  uint8_t w[6];
+  CHECK_FALSE(r.cap.read_word(2, w));                           // past the sample region
+  CHECK_FALSE(r.cap.read_word(PlatformImu::ANCHOR_SEQ_BASE, w)); // no anchor words
+  CHECK(r.cap.read_word(1, w));
+  CHECK(get32(r.cap.header() + 54) == walk_payload_crc(r.cap));
+  CHECK(get32(r.cap.header() + 62) == crc32(r.cap.header(), 62));
+}
+
+TEST_CASE("anchor ring wrapped (head != 0) and trimmed in the same freeze") {
+  SmallRig r(50, 4);
+  for (int i = 1; i <= 13; i++) { r.push(10, i * 10); r.cap.add_anchor(uint32_t(i), uint64_t(i), uint8_t(i)); }  // idx 10..130
+  r.push(30, 200);                                    // appended 160: first_index 110
+  r.freeze_all();
+  // The ring holds the last four anchors (idx 100,110,120,130), written with a_head_ = 13 % 4 = 1.
+  // Anchors at idx <= 110 refer to samples no longer retained: 100 and 110 are dropped.
+  CHECK(r.cap.n_anchors() == 2u);
+  const uint8_t* h = r.cap.header();
+  CHECK(get16(h + 16) == 2u);
+  CHECK(get32(h + 12) == 110u);
+  uint8_t rec[18];
+  for (int k = 0; k < 3; k++) REQUIRE(r.cap.read_word(PlatformImu::ANCHOR_SEQ_BASE + k, rec + 6 * k));
+  CHECK(get32(rec) == 120u);
+  CHECK(rec[16] == 12);
+  for (int k = 0; k < 3; k++) REQUIRE(r.cap.read_word(PlatformImu::ANCHOR_SEQ_BASE + 3 + k, rec + 6 * k));
+  CHECK(get32(rec) == 130u);
+  CHECK(rec[16] == 13);
+  CHECK(get32(h + 54) == walk_payload_crc(r.cap));
+  // chunked CRC equals the one-shot walk (freeze_all used 8192-byte slices; redo with 6-byte slices)
+  SmallRig q(50, 4);
+  for (int i = 1; i <= 13; i++) { q.push(10, i * 10); q.cap.add_anchor(uint32_t(i), uint64_t(i), uint8_t(i)); }
+  q.push(30, 200);
+  REQUIRE(q.cap.begin_freeze(1));
+  while (!q.cap.crc_step(6)) {}
+  CHECK(q.cap.payload_crc() == r.cap.payload_crc());
+}
+
+namespace {
+// The real sizes, in static storage (384 KB of samples, 400 anchors): the shipped DMAMEM layout.
+int16_t g_real_buf[PlatformImu::RING_SAMPLES * 6];
+Anchor g_real_anchors[PlatformImu::ANCHOR_RING];
+
+void real_push(Capture& c, uint32_t n, uint32_t base, uint32_t anchor_every) {
+  for (uint32_t i = 0; i < n; i++) {
+    int16_t s[6];
+    for (int j = 0; j < 6; j++) s[j] = int16_t((base + i) * 7 + j);
+    REQUIRE(c.push(s));
+    if (anchor_every && (c.appended() % anchor_every) == 0) c.add_anchor(c.appended(), c.appended(), 0);
+  }
+}
+}  // namespace
+
+TEST_CASE("real sizes: 32000 samples fill the 16-bit seq space exactly, with 320 anchors and the header") {
+  Capture c;
+  c.init(g_real_buf, PlatformImu::RING_SAMPLES, g_real_anchors, PlatformImu::ANCHOR_RING, 0x0BADF00Du);
+  real_push(c, PlatformImu::RING_SAMPLES, 0, 100);
+  CHECK_FALSE(c.wrapped());
+  REQUIRE(c.begin_freeze(1));
+  while (!c.crc_step(8192)) {}
+  HeaderInfo hi;
+  REQUIRE(c.finalize(hi));
+  CHECK(c.n_samples() == 32000u);
+  CHECK(c.n_anchors() == 320u);
+  uint8_t w[6];
+  // last sample word: seq 63999 is the gyro half of sample 31999; it round-trips through pack_data's u16 seq
+  REQUIRE(c.read_word(63999, w));
+  CHECK(int16_t(get16(w + 4)) == int16_t(31999u * 7u + 5u));
+  Frame fr = pack_data(uint16_t(63999), w);
+  CHECK(get16(fr.d) == 63999);
+  CHECK_FALSE(c.read_word(64000, w));
+  // last anchor word, and one past it
+  uint32_t last_anchor_seq = PlatformImu::ANCHOR_SEQ_BASE + 3u * 320u - 1u;
+  CHECK(last_anchor_seq == 65087u);
+  CHECK(c.read_word(last_anchor_seq, w));
+  CHECK_FALSE(c.read_word(last_anchor_seq + 1, w));
+  // header words at 65520..65530
+  for (uint32_t k = 0; k < 11; k++) CHECK(c.read_word(PlatformImu::HEADER_SEQ_BASE + k, w));
+  CHECK_FALSE(c.read_word(PlatformImu::HEADER_SEQ_BASE + 11, w));
+  CHECK(get32(c.header() + 54) == walk_payload_crc(c));
+  CHECK(get32(c.header() + 62) == crc32(c.header(), 62));
+  CHECK(get32(c.header() + 8) == 32000u);
+  CHECK(get16(c.header() + 16) == 320u);
+}
+
+TEST_CASE("real sizes: 32001 samples wrap by one; 64000 samples with 640 anchors wrap the anchor ring and trim") {
+  Capture c;
+  c.init(g_real_buf, PlatformImu::RING_SAMPLES, g_real_anchors, PlatformImu::ANCHOR_RING, 0x0BADF00Du);
+  real_push(c, PlatformImu::RING_SAMPLES + 1, 0, 100);
+  CHECK(c.wrapped());
+  REQUIRE(c.begin_freeze(1));
+  while (!c.crc_step(8192)) {}
+  HeaderInfo hi;
+  REQUIRE(c.finalize(hi));
+  CHECK(get32(c.header() + 12) == 1u);
+  CHECK(c.n_anchors() == 320u);   // anchors at 100..32000, all of which reference retained samples
+  uint8_t w[6];
+  REQUIRE(c.read_word(0, w));
+  CHECK(int16_t(get16(w)) == int16_t(1u * 7u));
+  CHECK(get32(c.header() + 54) == walk_payload_crc(c));
+
+  Capture d;
+  d.init(g_real_buf, PlatformImu::RING_SAMPLES, g_real_anchors, PlatformImu::ANCHOR_RING, 0x0BADF00Du);
+  real_push(d, 2 * PlatformImu::RING_SAMPLES, 0, 100);  // 640 anchors into a 400 ring: head = 240, then trimmed
+  REQUIRE(d.begin_freeze(1));
+  while (!d.crc_step(8192)) {}
+  REQUIRE(d.finalize(hi));
+  CHECK(d.wrapped());
+  CHECK(get32(d.header() + 12) == 32000u);
+  CHECK(d.n_anchors() == 320u);   // ring kept idx 24100..64000; those <= 32000 are dropped: 32100..64000 remain
+  uint8_t rec[18];
+  for (int k = 0; k < 3; k++) REQUIRE(d.read_word(PlatformImu::ANCHOR_SEQ_BASE + k, rec + 6 * k));
+  CHECK(get32(rec) == 32100u);
+  uint32_t last = PlatformImu::ANCHOR_SEQ_BASE + 3u * 320u - 3u;
+  for (int k = 0; k < 3; k++) REQUIRE(d.read_word(last + k, rec + 6 * k));
+  CHECK(get32(rec) == 64000u);
+  CHECK(get32(d.header() + 54) == walk_payload_crc(d));
+  CHECK(get32(d.header() + 62) == crc32(d.header(), 62));
+}
+
+TEST_CASE("B6: capacities beyond the address-space limits are clamped") {
+  static int16_t dummy[6];
+  static Anchor adummy[1];
+  Capture c;
+  c.init(dummy, 1000000u, adummy, 1000000u, 1u);
+  CHECK(c.capacity() == PlatformImu::RING_SAMPLES);
+  // 12 / 6 / 3 / 62 are derived from the generated constants
+  CHECK(Capture::SAMPLE_WORDS == 2u);
+  CHECK(Capture::ANCHOR_WORDS == 3u);
+  CHECK(Capture::HALF_INT16 == 3u);
+  CHECK(Capture::HEADER_CRC_SPAN == 62u);
+}
+
+TEST_CASE("B2: after RESUME sampling() is false until the FIFO flush has been serviced") {
+  Rig r;
+  go_running(r);
+  CHECK(r.eng.sampling());
+  r.push(10);
+  uint16_t id = r.freeze().capture_id;
+  CHECK_FALSE(r.eng.sampling());                       // FROZEN
+  REQUIRE(r.resume(id).status == St::OK);
+  CHECK(r.eng.state() == S::RUNNING);
+  CHECK_FALSE(r.eng.sampling());                       // the chip's FIFO still holds the frozen interval
+  CHECK(r.eng.take_resume_check());                    // the sketch flushes the FIFO now
+  CHECK(r.eng.sampling());
+  CHECK_FALSE(r.eng.take_resume_check());
+}
+
+TEST_CASE("B2: a resume flush or a discontinuity pending from a dead capture never leaks into the next one") {
+  // DISABLE then ENABLE
+  Rig a;
+  go_running(a);
+  a.push(5);
+  uint16_t id = a.freeze().capture_id;
+  a.resume(id);                                        // resume_check_ pending
+  a.eng.note_overflow();                               // disc_pending_ too
+  REQUIRE(a.send(Op::DISABLE).status == St::OK);
+  REQUIRE(a.send(Op::ENABLE).status == St::OK);
+  a.eng.on_chip_ready();
+  CHECK(a.eng.sampling());                             // not held back by the old capture's flush
+  CHECK_FALSE(a.eng.take_resume_check());
+  CHECK_FALSE(a.eng.take_discontinuity());
+  // firmware update begin / abandon
+  Rig b;
+  go_running(b);
+  b.push(5);
+  id = b.freeze().capture_id;
+  b.resume(id);
+  b.eng.note_overflow();
+  b.eng.on_fw_update_begin();
+  b.eng.on_fw_update_abandoned();
+  b.eng.on_chip_ready();
+  CHECK(b.eng.state() == S::RUNNING);
+  CHECK(b.eng.sampling());
+  CHECK_FALSE(b.eng.take_resume_check());
+  CHECK_FALSE(b.eng.take_discontinuity());
+  // a discontinuity noted before a freeze does not mark the capture that follows RESUME
+  Rig c;
+  go_running(c);
+  c.push(5);
+  c.eng.on_i2c_error(0);                               // BACKOFF + disc_pending_
+  id = c.freeze().capture_id;
+  REQUIRE(c.resume(id).status == St::OK);
+  CHECK(c.eng.take_resume_check());
+  CHECK_FALSE(c.eng.take_discontinuity());
+  // init() on a reused engine
+  Rig d;
+  go_running(d);
+  d.push(5);
+  id = d.freeze().capture_id;
+  d.resume(id);
+  d.eng.init(&d.cap);
+  CHECK_FALSE(d.eng.take_resume_check());
+}
+
+TEST_CASE("B3: every reply carries the frozen capture's id, refusals and ABORT included") {
+  Rig r;
+  go_running(r);
+  r.push(10);
+  CHECK(r.send(Op::ABORT).capture_id == 0);            // nothing frozen
+  uint16_t id = r.freeze().capture_id;
+  REQUIRE(id != 0);
+  CHECK(r.send(Op::ENABLE).capture_id == id);          // ENABLE while frozen
+  CHECK(r.send(Op::ABORT).capture_id == id);           // ABORT while merely frozen
+  CHECK(r.send(Op::FREEZE, 1).capture_id == id);       // ALREADY_FROZEN
+  CHECK(r.send(Op::READ, 0xFF, 0xFF, 0, 0, 1, 0, 100).capture_id == id);  // ERR_WRONG_CAPTURE still names the frozen one
+  CHECK(r.send(Op::FREEZE, 0).capture_id == id);       // ERR_BAD_ARGS
+  REQUIRE(r.read(id, 0, 6).status == St::OK);
+  CHECK(r.send(Op::ENABLE).capture_id == id);          // ENABLE while UPLOADING
+  Reply ab = r.send(Op::ABORT);                        // the cut upload's reply correlates with its capture
+  CHECK(ab.capture_id == id);
+  CHECK(r.eng.state() == S::FROZEN);
+  Reply dis = r.send(Op::DISABLE);                     // the capture is discarded
+  CHECK(dis.capture_id == 0);
+  CHECK(r.send(Op::ENABLE).capture_id == 0);
+}
+
+TEST_CASE("B7: the gap floor holds between consecutive READ blocks and a replacing READ") {
+  Rig r;
+  go_running(r);
+  r.push(10);
+  uint16_t id = r.freeze().capture_id;
+  uint32_t t = 0xFFFFFC00u;
+  Frame f{};
+  REQUIRE(r.read(id, 0, 2, 100).status == St::OK);     // gap 1000 us
+  REQUIRE(r.eng.peek_data(t, &f));
+  r.eng.commit_data(t);
+  REQUIRE(r.eng.peek_data(t + 1000, &f));
+  r.eng.commit_data(t + 1000);                         // block done at t + 1000
+  CHECK(r.eng.state() == S::FROZEN);
+  // a new block asked for 100 us later: its first frame waits out the gap since the previous block's last frame
+  REQUIRE(r.read(id, 4, 2, 100).status == St::OK);
+  CHECK_FALSE(r.eng.peek_data(t + 1100, &f));
+  CHECK(r.eng.data_wait_us(t + 1100) == 900u);
+  CHECK_FALSE(r.eng.peek_data(t + 1999, &f));
+  REQUIRE(r.eng.peek_data(t + 2000, &f));              // across the u32 wrap
+  CHECK(get16(f.d) == 4);
+  r.eng.commit_data(t + 2000);
+  // a replacing READ mid-block does not reset the floor either
+  REQUIRE(r.read(id, 8, 1, 100).status == St::OK);
+  CHECK_FALSE(r.eng.peek_data(t + 2500, &f));
+  REQUIRE(r.eng.peek_data(t + 3000, &f));
+  CHECK(get16(f.d) == 8);
+  // long after the last frame (idle for a minute), the first frame of a block is due at once
+  r.eng.commit_data(t + 3000);
+  REQUIRE(r.read(id, 0, 1, 100).status == St::OK);
+  REQUIRE(r.eng.peek_data(t + 60u * 1000000u, &f));
+}
+
+TEST_CASE("T3: refused READs leave a running block running; FREEZE in UPLOADING does not cut it") {
+  Rig r;
+  go_running(r);
+  r.push(10);
+  uint16_t id = r.freeze().capture_id;
+  REQUIRE(r.read(id, 2, 6).status == St::OK);
+  Frame f{};
+  CHECK(r.send(Op::FREEZE, 1).status == St::ALREADY_FROZEN);
+  CHECK(r.eng.block_active());
+  CHECK(r.eng.state() == S::UPLOADING);
+  CHECK(r.read(uint16_t(id + 1), 0, 1).status == St::ERR_WRONG_CAPTURE);
+  CHECK(r.eng.block_active());
+  Reply oor = r.read(id, 19, 5);                       // straddles the end of the sample region (20 words)
+  CHECK(oor.status == St::ERR_OUT_OF_RANGE);
+  CHECK((oor.detail & 0xFFFFu) == 19u);
+  CHECK((oor.detail >> 16) == 20u);                    // region_end
+  CHECK(r.eng.block_active());
+  CHECK(r.eng.state() == S::UPLOADING);
+  REQUIRE(r.eng.peek_data(0, &f));
+  CHECK(get16(f.d) == 2);                              // still the original block
+  Reply none = r.read(id, 1000, 1);                    // a seq in no region
+  CHECK(none.status == St::ERR_OUT_OF_RANGE);
+  CHECK((none.detail >> 16) == 0u);                    // region_end = 0
+}
+
+TEST_CASE("T3: DISABLE from FROZEN discards; RESUME of a capture frozen from BACKOFF runs again") {
+  Rig r;
+  go_running(r);
+  r.push(10);
+  r.freeze();
+  REQUIRE(r.send(Op::DISABLE).status == St::OK);
+  CHECK(r.eng.state() == S::DISABLED);
+  CHECK(r.cap.n_samples() == 0u);
+  CHECK_FALSE(r.cap.frozen());
+  Rig q;
+  go_running(q);
+  q.push(10);
+  q.eng.on_i2c_error(0);
+  REQUIRE(q.eng.state() == S::BACKOFF);
+  Reply f = q.freeze();
+  REQUIRE(f.status == St::OK);
+  CHECK(flag16(q.cap.header() + 18, PlatformImuCaptureFlag::SENSOR_ERROR));
+  REQUIRE(q.resume(f.capture_id).status == St::OK);
+  CHECK(q.eng.state() == S::RUNNING);
+  CHECK(q.eng.take_resume_check());
+}
+
+TEST_CASE("T3: while the freeze CRC is pending a sample READ is accepted and the header is not readable") {
+  Rig r;
+  go_running(r);
+  r.push(CAP);
+  bool def = false;
+  r.send(Op::FREEZE, 1, 0, 0, 0, 0, 0, 0, &def);
+  REQUIRE(def);
+  REQUIRE(r.eng.freeze_pending());
+  uint16_t id = r.cap.capture_id();
+  Reply hdr = r.read(id, uint16_t(PlatformImu::HEADER_SEQ_BASE), 1);
+  CHECK(hdr.status == St::ERR_OUT_OF_RANGE);
+  CHECK((hdr.detail >> 16) == 0u);
+  CHECK(r.read(id, 0, 4).status == St::OK);
+  Reply out;
+  while (!r.eng.service_freeze(&out)) {}
+  CHECK(r.read(id, uint16_t(PlatformImu::HEADER_SEQ_BASE), 1).status == St::OK);  // readable once finalized
 }

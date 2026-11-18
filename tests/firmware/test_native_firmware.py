@@ -137,6 +137,14 @@ def test_native_platform_imu_binary_passes(binaries):
         f"native test_platform_imu FAILED:\n{r.stdout}\n{r.stderr}")
 
 
+def test_native_icm42688_binary_passes(binaries):
+    """The Platform Teensy's ICM-42688 non-blocking init (icm42688.cpp) against the scripted Wire fake: the exact
+    register sequence, the datasheet waits, one I2C transaction per call, an absent chip, error recovery."""
+    r = _run(binaries["test_icm42688"])
+    assert r.returncode == 0, (
+        f"native test_icm42688 FAILED:\n{r.stdout}\n{r.stderr}")
+
+
 def test_native_platform_hand_fan_binary_passes(binaries):
     """The Platform Teensy's shipped Hand fan logic (hand_fan.h): thresholds and their
     gap, motor thermistor not FET, unusable frames ignored, off after the timeout."""
