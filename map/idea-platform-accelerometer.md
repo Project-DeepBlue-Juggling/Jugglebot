@@ -70,7 +70,8 @@ Working at `tools/probes/imu_bench/` (commit afdf0e91, logbook `2026-11-18-imu-b
   - With the launch down, flash the can-bridge, then the Platform Teensy over CAN; read both identities (the BridgeIdentity sniff) and bring the launch up.
   - Request a tilt reading and check the Hand fan still answers.
   - With the IMU unplugged, power-cycle the Platform Teensy: it must boot, answer CAN and accept a firmware update. Then replug the IMU with the board still powered and check the status frame shows the IMU return to RUNNING without another power cycle.
-  - Check the 1 Hz IMU status frame arrives.
+  - Check the 1 Hz IMU status frame arrives, and on the first boot after the flash that the first STATUS appears about 10 s after the boot (none before that is normal).
+  - Fault-loop rule: if the Platform Teensy stops answering after the flash, take the launch down and re-run the upload until the log shows BEGIN OK.
   - At rest take a capture and upload it: |a| about 1 g, rate 1 kHz, 0 overflows, CRC passes. Read GYRO_ACCEL_CONFIG0 back from the chip and settle the ODR/4 UI-filter code from it.
   - Upload again with a forced gap and check the re-request heals it.
   - Arm the robot and hold the Active pose. Read the baseline (bridge loop and emit-gap counters, RX queue depth, bus error counts, ODrive errors, Leg position error). Then upload at 400, 800, 1250 and 1600 frames/s, reading the same counters at each step.
@@ -94,3 +95,4 @@ Working at `tools/probes/imu_bench/` (commit afdf0e91, logbook `2026-11-18-imu-b
 - 2026-11-18: Bench proof of concept working (ICM-42688-P on a Teensy 4.0, 0 FIFO overflows and 0 I2C errors at 1 and 2 kHz); day Session started, no Platform Teensy firmware before the question round, calibration options and CAN transport design (detail below)
 - 2026-11-18: Design round done: decisions agreed with the owner and written up in plans/active/platform-imu.md (phases P1 to P5, buffered capture only, no live stream).
 - 2026-11-19: Owner decisions recorded in the plan: uploads run while Armed between Attempts (the Jetson gates; the bridge clamps the READ gap), target under 60 s for the full window, P4 gains a rate ramp.
+- 2026-11-19: FW 11 written and audited on branch imu-p2, awaiting the gate and the flash.

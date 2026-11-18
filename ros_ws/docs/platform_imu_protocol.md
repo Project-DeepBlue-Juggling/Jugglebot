@@ -72,7 +72,12 @@ capture began, after the drain the anchor belongs to. `local_us` is the low 32 b
 before that drain's FIFO_COUNT read, and `wall_us` is the same instant on the synced wall clock (`micros64()` plus the
 offset, snapshotted together). Pairing rule: sample `index - 1` was produced no later than `local_us` plus the
 FIFO_COUNT read latency (tens of us). One anchor is taken at the first drain after each `anchor_period_ms` (100 ms),
-and one at the first drain after any discontinuity. `flags`: DISCONTINUITY 0x01 (samples lost just before this anchor,
+and one at the first drain after any discontinuity. Before every discontinuity and at every FREEZE the board also emits a
+**closing anchor**: an ordinary-flag anchor stamped with the drain that produced the samples pushed since the previous
+anchor (the earlier drain's `local_us` and `wall_us`), so the pre-gap segment ends exactly on an ordinary anchor. A reader
+splits segments at the DISCONTINUITY anchor: samples with index before the closing anchor's `index` are pre-gap, and
+samples from the closing anchor's `index` up to the DISCONTINUITY anchor's `index` are post-gap (the first drain after
+the gap); the closing anchor itself belongs to the pre-gap fit. `flags`: DISCONTINUITY 0x01 (samples lost just before this anchor,
 by FIFO overflow or a re-probe: fit each side separately), WALL_INVALID 0x02 (no 0x7DD yet), SYNC_STEP 0x04 (the wall
 offset was stepped since the previous anchor).
 
@@ -99,16 +104,24 @@ Both CRCs are CRC-32/IEEE (Python `zlib.crc32`, the FwUpdate VERIFY CRC). `paylo
 the sample words, in seq order, exactly as the IMU_DATA payloads carry them. The Platform Teensy computes it at FREEZE,
 in slices of `CRC_SLICE_BYTES` (8192 B, expected to hold `loop()` for about 1 ms each; P2 times one slice on the board), and sends the FREEZE reply when it is done.
 
-`boot_id` is a random nonzero u32 drawn at boot. The capture_id counter starts at its low 16 bits and steps at each
+`boot_id` is a nonzero u32 that changes on every warm boot: it mixes a boot counter kept in RAM2 (not cleared by the
+core's startup code, so it survives a warm reset) and the RTC 32 kHz count with the cycle counter and the timing of CAN
+frames received during `setup()`; no hardware RNG is called. The capture_id counter starts at its low 16 bits and steps at each
 FREEZE that creates a capture, skipping 0, so an id from before a reboot almost never names a capture after it.
 
 ## 4. State machine
 
 States (IMU_STATUS byte 0): DISABLED 0, PROBING 1, RUNNING 2, FROZEN 3, UPLOADING 4, BACKOFF 5, FW_HALTED 6. The
-board boots into PROBING (enabled); DISABLE is RAM-only. Internal transitions: PROBING to RUNNING when the chip answers
+board boots into PROBING (enabled); DISABLE is RAM-only. For the first `BOOT_SETTLE_MS` (10 s) after boot the board does
+no IMU work: no I2C, no IMU_STATUS, and every IMU_CMD is dropped unanswered. The first probe and the first STATUS come at
+10 s, so no STATUS for 10 s after a boot is normal. Internal transitions: PROBING to RUNNING when the chip answers
 and is configured; RUNNING to BACKOFF on an I2C error or a failed WHO_AM_I re-check; BACKOFF to PROBING after a bounded
 back-off of at least 1 s; any state to FW_HALTED at FwUpdate BEGIN (I2C stopped, capture discarded); FW_HALTED to
-PROBING if that update is abandoned; UPLOADING to FROZEN once the block's last frame is handed to FlexCAN. A FIFO
+PROBING if that update is abandoned, unless the BEGIN arrived during the 10 s boot settle, in which case FW_HALTED holds
+until the next reboot (see "Recovery if IMU code faults"); UPLOADING to FROZEN once the block's last frame is handed to FlexCAN. Probe failures
+stay in PROBING (BACKOFF is entered only from RUNNING), re-probing after 1, 2, 4, 8, 16 and 32 s, then every 60 s; the
+schedule depends only on the sensor, not on host polling, and 10 s of clean RUNNING resets it. A board with no IMU
+therefore shows PROBING with SENSOR_OK clear and a rising `i2c_errors`: that is not an alarm. A FIFO
 overflow alone keeps RUNNING and marks the next anchor DISCONTINUITY. Recovery from BACKOFF keeps appending to the same
 ring behind a DISCONTINUITY anchor; only boot, ENABLE from DISABLED and RESUME start a new capture. There is no I2C
 traffic in FROZEN or UPLOADING. Nothing in this table or in the Platform Teensy depends on Armed: the gating below is the bridge's and the Jetson's; RESUME flushes the chip FIFO and re-checks WHO_AM_I.
@@ -127,11 +140,29 @@ Legality (checks run in this order: op and length, FW_HALTED, DISABLED, state, c
 RESUME and READ carry a `capture_id`; a mismatch with the frozen one is ERR_WRONG_CAPTURE. That is what makes an RPC
 retry safe: a delayed RESUME can never thaw a capture frozen after it was sent.
 
-**Platform Teensy TX rule.** An IMU frame is handed to FlexCAN only when it lands directly in a free TX mailbox, never
-in the library's software TX queue (the FlexCAN_T4 all-mailboxes-busy defect writes a queued frame into every free
-mailbox and drops the rest). A frame that cannot be placed waits in the IMU module, REPLY and STATUS ahead of DATA. At
-most one IMU_DATA frame per `loop()` pass, and none sooner than the block's gap after the previous one. The gap is
-`frame_gap_10us` x 10 us, raised to `read_min_gap_10us` (400 us) when smaller.
+**Platform Teensy TX rule.** An IMU frame is handed to `write()` only when the software TX queue is empty and at least
+5 FlexCAN mailboxes are free (4 stay free after it for the tilt, state, fan and firmware-update replies), so it always
+lands directly in a mailbox and never in the library's software TX queue (the FlexCAN_T4 all-mailboxes-busy defect writes
+a queued frame into every free mailbox and drops the rest). A frame that cannot be placed waits in the IMU module, REPLY
+and STATUS ahead of DATA; the IMU keeps at most 4 frames pending. At most one IMU_DATA frame per `loop()` pass, and none
+sooner than the block's gap after the previous one. The gap is `frame_gap_10us` x 10 us, raised to
+`read_min_gap_10us` (400 us) when smaller.
+
+**Compile-time kill switch.** `PLATFORM_IMU_ENABLED=0` compiles every IMU path out. That image ignores IMU_CMD (0x6E3,
+it falls to the ordinary frame handling), sends no 0x6E4-0x6E6 frame, and still reports FW 11, so the host can infer
+"no IMU" only from STATUS silence: no STATUS for at least 3 s on an FW 11 board that has been up for more than 10 s is a
+no-IMU build, not a fault.
+
+**Recovery if IMU code faults.** The mechanism: a fault in IMU code makes the core write a CrashReport, wait 8 s and
+reset. The board then reboots about every 18.5 s (8 s CrashReport delay, about 0.4 s boot, 10 s settle) and is alive and
+IMU-free for about 10 s of each cycle. A firmware-update BEGIN that lands in that window latches the IMU off for that
+boot (FW_HALTED holds until the next reboot even if the update is abandoned), so the update completes. The Jetson uploader
+today sends ONE BEGIN and waits 1.0 s (`teensy_link_bridge.py`, `_FW_REPLY_TIMEOUT_S`), about 54 % per attempt, so the
+operator re-runs the upload until the log shows BEGIN OK (about 5 back-to-back attempts cover a cycle); P3 builds the
+retry into the uploader. Not covered: hangs (there is no watchdog), faults before the settle check (static
+initialisers, `setup()`, the per-frame hooks in `canSniff`), and faults in the non-IMU FW 11 changes (tilt service,
+dispatch). Decision record: a CrashReport safe mode was considered and not built (owner decision 2026-11-18 against
+safe-boot machinery); the settle window plus the BEGIN latch cover the same IMU-path crash class.
 
 ## 5. Timestamps (the Jetson's fit)
 
@@ -155,6 +186,10 @@ there with their `rpc.cpp` cases in P3:
   ERR_BAD_ARGS for count 0 or above `read_max_words`. Both RPCs are ALLOWED while Armed (owner, 2026-11-19).
 
 Both are gated on `jugglebot_commands_allowed()` (ERR_BUS_DOWN). It uplinks 0x6E4-0x6E6, not the reserved ids.
+
+**Boot silence.** A Platform Teensy that has just booted sends no IMU_STATUS for 10 s (section 4); the Jetson treats that
+as normal, not as a fault, and sends no IMU_CMD in that window (the board drops them unanswered). A board with no IMU
+shows PROBING with SENSOR_OK clear; a no-IMU build shows STATUS silence (kill switch, section 4).
 
 **Uploads run while Armed.** Owner decisions of 2026-11-18/19, superseding the first design (READ refused while Armed,
 an ABORT at every arming edge):

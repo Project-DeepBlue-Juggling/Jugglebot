@@ -32,7 +32,8 @@ static uint16_t send_gated(const ODrive::CanFrame& f) {
 
 uint16_t tilt_read() {
   // Any frame on TILT_READING triggers the Platform Teensy's inclinometer read +
-  // reply (Teensy_code_platform.ino canSniff: `if (msg.id == tiltID) sendTiltData(...)`).
+  // reply (Teensy_code_platform.ino canSniff: `if (msg.id == tiltID) tiltRequested = true`, served in loop() by
+  // LoopService::Tilt::Service, loop_service.h).
   // A 1-byte request keeps it distinguishable (dlc 1) from the dlc-8 reply.
   ODrive::CanFrame f;
   f.id = PlatformCanId::TILT_READING;

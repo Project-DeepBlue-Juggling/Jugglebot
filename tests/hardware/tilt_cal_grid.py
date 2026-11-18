@@ -161,7 +161,7 @@ is still recorded on every CSV row and in ``_meta.json``: it stopped being a gat
 not a label.
 
 **Why reads are spaced (``--read-gap-s``).** The Murata SCL3300 is read **one
-sample per trigger** (``Teensy_code_platform.ino:377-396``, ``getInclination()``)
+sample per trigger** (``LoopService::Tilt::Service``, ``loop_service.h``: up to 3 reads 10 ms apart, FW 11)
 in **mode 4**, whose inclination output carries a **10 Hz internal low-pass
 filter**. Mode 4 is the SCL3300 library's default (``SCL3300.h:144``,
 ``scl3300_mode = 4``, applied by ``begin()``) and the firmware never calls

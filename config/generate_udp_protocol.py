@@ -865,7 +865,7 @@ MESSAGES = [
             "(STATE_UPDATE 0x6E0 RobotState, TILT_READING 0x7DE inclinometer) "
             "verbatim, so the host owns the decode and the bridge stays decoupled "
             "from the Platform-Teensy byte layout (Teensy_code_platform.ino "
-            "createStateCANMessage / sendTiltData). The host correlates a reply to "
+            "createStateCANMessage / LoopService::Tilt::Service in loop_service.h). The host correlates a reply to "
             "its pending relay read by (can_id, dlc): a STATE_READ awaits "
             "(0x6E0, 8); a TILT_READ awaits (0x7DE, 8). `t_bridge_us` only stamps "
             "bridge-side CAN3 RX for latency/diagnostics. NOTE(bench): the "

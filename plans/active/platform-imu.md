@@ -89,7 +89,7 @@ is 0.031 dps, under the 0.05 to 0.07 dps rms bench noise, so the wide range cost
 | Platform Teensy robustness changes ride along: the tilt request becomes a flag serviced in `loop()` with a bounded failure path (today at least 300 ms stalls inside the CAN callback); the SCL3300 wait-forever in `setup()` is bounded; `loop()` dispatches several CAN frames per pass (today one). FW 10 to 11 | A busy callback blocking CAN reception while the IMU is also being served; a missing inclinometer hanging boot [fw] |
 | Tilt request with the inclinometer absent or failing (owner, 2026-11-18): the Platform Teensy answers with an explicit invalid reply, never silence and never a stale value | A Jetson caller waiting out a timeout on a missing sensor, or acting on a tilt that is no longer measured |
 | The IMU is strictly optional: a non-blocking probe and init state machine in `loop()` (never `setup()`), bounded Wire timeouts, back-off on errors, IMU work stops at FwUpdate BEGIN, a CAN disable command | An unplugged or misbehaving IMU stopping the board from booting, answering CAN or accepting a firmware update |
-| Recovery stance (owner, 2026-11-18): the CAN firmware update is the trusted recovery path and power is reliable. No bench self-update rehearsal, no safe-boot window, no opt-in-per-boot, no crash breadcrumbs. Off-board checks only: native tests of the pure logic (the `tests/firmware/native` host g++ and doctest pattern), a `pio` compile, then flash | Building recovery machinery for a risk the owner has judged acceptable; it is recorded so a later Session does not reopen it unasked |
+| Recovery stance (owner, 2026-11-18): the CAN firmware update is the trusted recovery path and power is reliable. No bench self-update rehearsal, no safe-boot machinery, no opt-in-per-boot, no crash breadcrumbs. P2 added a 10 s boot settle and a BEGIN latch (not a safe mode; the CrashReport safe mode was considered and not built, owner 2026-11-18). Off-board checks only: native tests of the pure logic (the `tests/firmware/native` host g++ and doctest pattern), a `pio` compile, then flash | Building recovery machinery for a risk the owner has judged acceptable; it is recorded so a later Session does not reopen it unasked |
 | Jetson: `teensy_bridge_node` gets an IMU handler with its own queue (today it keeps only the latest frame per CAN id); status on a topic added to the rosbag list in `jugglebot_launch.py`; captures written to `temp/imu_capture/<stamp>` with metadata (ODR, ranges, clock anchors, temperature, CRC result, complete flag), following `hand_capture.py`. Automatic freeze and upload at Attempt end and on Fault from the start | Latest-frame-wins dropping capture frames; a status topic that is never bagged; a capture needing a hand to start it |
 | Mount calibration, the owner's simpler procedure: fasten the sensor; at Level take gravity for the IMU's Z (two mount angles); Tilt the Platform about its local X, then Y (static holds plus the moves, Mocap recording) and fit the third angle. Gyro bias zeroed from a still window before each Attempt (Jetson side). Factory scale and bias otherwise; no six-face solve, no temperature compensation (temperature is logged). Applied on the Jetson, raw counts on the wire. Lever arm from the owner's bracket CAD, needed to about 5 mm | Re-flashing firmware for a calibration change; a lever-arm error that mixes angular acceleration into translation (0.3 to 0.6 g tangential at r of 0.2 to 0.3 m against a ring of 0.2 to 0.4 g [motion]) |
 
@@ -130,10 +130,10 @@ are untouched, but `config/` is tier 1). Status: P1a and P1b landed with the pha
 
 The robustness changes, the IMU state machine, the ring, the status frame and the upload responder (section 3).
 Hardware: none. **Gate (Suite gate):** native tests, `pio` build, `/audit` of the diff, then `./run_tests.sh --full`.
-Status: implementation complete (2026-11-19), pending the phase gate (`/audit` of the P2 diff, then
-`./run_tests.sh --full`). P2a (robustness: tilt off the CAN callback, bounded inclinometer probe, multi-frame
+Status: P2 complete (2026-11-19, FW 11 on branch `imu-p2`), pending the phase gate (`./run_tests.sh --full`); the phase-end
+audit ran and its findings are closed (0 blocking, 4 behaviour, 4 test, 5 narrative). P2a (robustness: tilt off the CAN callback, bounded inclinometer probe, multi-frame
 dispatch) and P2b (the IMU wired into `loop()` through `imu_service.h`: one bounded step per pass, back-off to 60 s,
-the TX-mailbox rule, FW_HALTED at FwUpdate BEGIN, kill switch `PLATFORM_IMU_ENABLED`) are both on branch `imu-p2`.
+the TX-mailbox rule, a 10 s boot settle, FW_HALTED at FwUpdate BEGIN with a latch when BEGIN lands in the settle, kill switch `PLATFORM_IMU_ENABLED`) are both on branch `imu-p2`.
 Walk-through and sizes: `logbook/2026-11-19-platform-imu-p2-firmware.md`. Not flashed.
 
 ### P3: can-bridge firmware and the Jetson side
@@ -141,7 +141,13 @@ Walk-through and sizes: `logbook/2026-11-19-platform-imu-p2-firmware.md`. Not fl
 The whitelist, the IMU ring, the batched IMU_DATA UDP message and the two RPCs on the bridge (READ allowed while
 Armed; the gap clamp; no ABORT on arming); decode, capture writer, automatic freeze and upload at the configured pace,
 the upload toggle, the refusal of motion-starting commands during an upload, the progress display, status topic and bag
-list on the Jetson. Hardware: none. **Gate (Suite gate):** `./run_tests.sh --full`, including the xref
+list on the Jetson. Also from P2 (spec section 4, "Recovery if IMU code faults"): (a) the uploader BEGIN retry
+(`teensy_link_bridge.py`: retry BEGIN for at least 20 s so a fault-loop window of about 10 s every 18.5 s is always hit;
+this replaces the manual "re-run the upload until BEGIN OK" rule once built; today it sends one BEGIN and waits 1.0 s,
+`_FW_REPLY_TIMEOUT_S`); (b) Jetson handling of the tilt invalid reply (detect the raw NaN words before the float bound
+check, log the reason, retry NOT_READY no sooner than 1 s, treat (pi, pi) as the FW <= 10 failure reply); (c) no IMU_STATUS
+for 10 s after a boot is normal; (d) the kill-switch build (ignores IMU_CMD, sends no STATUS, still reports FW 11) reads as
+"no IMU", not a fault. Hardware: none. **Gate (Suite gate):** `./run_tests.sh --full`, including the xref
 and version tests. Status: not started. The bridge FW number is open (section 6).
 
 ### P4: Sitting 1, flash and bench the capture path
