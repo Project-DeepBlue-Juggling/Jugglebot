@@ -2,9 +2,9 @@
 id: BUG-92
 kind: bug
 title: static Ball Butler frame markers are tracked as human_throw
-status: in_progress
+status: complete
 created: '2026-11-13'
-updated: '2026-11-18T02:09:22Z'
+updated: '2026-11-18T05:11:29Z'
 owners:
 - night-shift
 priority: medium
@@ -18,6 +18,7 @@ blocked_by: []
 links:
 - map/idea-jp-17-three-ball-cascade-with-the-owner-as-the-second-hand.md
 - logbook/2026-11-18-sitting-debrief.md
+- logbook/2026-11-15-human-throw-ball-butler-zone.md
 filed_by: claude
 ---
 
@@ -69,3 +70,4 @@ Recommendation: 1. On the launch 3 slice it removed 26 of 30 bench phantoms and 
 
 - 2026-11-15: Night Shift 2026-11-15: held on night-shift/2026-11-15-BUG-92: config is gate-frozen, suite not finished under load, 2 test-coverage findings open; unblocked by a day Session merge and a Sitting window
 - 2026-11-18: Passed at the Sitting of 2026-11-18: 0 tracks started inside the box when idle, all 11 human Throws tracked; 8 phantoms still start outside it (a floor cell, and near x -900, z 2150-2305). Not merged: the branch touches config/hardware_config.yaml (frozen path), so tools/sitting_merge.sh refuses it (code 4); needs a hand merge at the owner say-so.
+- 2026-11-18: Passed at the Sitting of 2026-11-18 and merged by hand at the owner say-so (frozen config paths, so not through tools/sitting_merge.sh): full suite green on the merged tree, audit 0 behaviour-affecting; the four box constants reach the firmware headers but no firmware reads them, no flash. Open follow-up: phantoms outside the box (PWAY-11 P1).

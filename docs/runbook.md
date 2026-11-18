@@ -6,7 +6,7 @@ waiting Items: the order a Sitting flies in, and every step, is on its Sitting s
 
 Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
-## Robot  (13 Items, 321 min)
+## Robot  (12 Items, 311 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
@@ -18,7 +18,6 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | FEAT-32 Pre-release hold rung: release from a moving Platform (hold 0.100 → 0) | 45 | armed, bb-fed, bridge-cycled | - | - |
 | FEAT-39 P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30 | 50 | level, armed, bb-fed, bridge-cycled | - | - |
 | BUG-90 carry_zvd rows make the Hand stop and go at about 5 Hz in flight | 30 | level, armed, bb-fed | `night-shift/2026-11-15-BUG-90` | - |
-| BUG-92 static Ball Butler frame markers are tracked as human_throw | 10 | level | `night-shift/2026-11-15-BUG-92` | - |
 | FEAT-49 Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault | 60 | armed | - | - |
 | FEAT-50 Live warning when a marker dwells under the Hand | 10 | armed | `night-shift/2026-11-14-FEAT-50` | - |
 | IDEA-11 JP-10 Turned columns: the columns pair at fixed angles about +z, under pose | 20 | level, armed, bb-fed | - | - |
