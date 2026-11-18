@@ -315,10 +315,12 @@ def test_a_frame_past_the_grace_window_meets_the_stop_and_is_refused_while_armed
     P, V, A = c2_plan(64)
     d = Driver(P, V, A)
     ev = [e for e in nominal_events(60, lambda k: 3.0) if e[1] not in (21, 22)]
-    ev.append((T0_US + 22 * T_US + 30_000, 22))       # frame 20's cover + grace ended at 22T+20 ms
+    ev.append((T0_US + 22 * T_US + 30_000, 22))       # frame 20's Hand cover + grace ended at 22T+20 ms
     d.run(ev, T0_US - 40_000, T0_US + 30 * T_US)
     it = d.it
-    assert it.sched_stops == 2 and it.sched_refused >= 1 and it._sg[1].latched
+    # FW 44: the legs' cover + grace ends at 22T+30 ms, the tick the frame lands
+    # on, so the legs hand over at their cover end (no leg STOP; 2 through FW 43).
+    assert it.sched_stops == 1 and it.sched_refused >= 1 and it._sg[1].latched
     assert it.sched_phase(1) in (2, 3)
 
 
@@ -329,7 +331,7 @@ def test_cover_exhaustion_runs_a_c2_stop_then_holds_and_refuses_a_step(last_fram
     d = Driver(P, V, A)
     K = last_frame
     t_exh = T0_US + (K + 2) * T_US
-    t_exh = T0_US + K * T_US + ti.SCHED_EXHAUST_US     # last stamp + 2T + grace
+    t_exh = T0_US + K * T_US + ti.SCHED_EXHAUST_HAND_US     # last stamp + 2T + grace
     d.run(nominal_events(K + 1, lambda k: 5.0), T0_US - 40_000, t_exh + 600_000)
     it, g = d.it, d.it._sg[1]
     assert it.sched_stops == 2                          # legs group + hand group
@@ -352,7 +354,7 @@ def test_cover_exhaustion_runs_a_c2_stop_then_holds_and_refuses_a_step(last_fram
         assert not c2_violations(before, jb) and not c2_violations(stop, jb)
     else:
         assert it.sched_hand_c1_stops == 0
-        p_entry, v_entry, a_entry = ti.span_eval(P[K + 1], V[K + 1], P[K + 2], V[K + 2], ti.SCHED_S_MAX)
+        p_entry, v_entry, a_entry = ti.span_eval(P[K + 1], V[K + 1], P[K + 2], V[K + 2], ti.SCHED_S_MAX_HAND)
         stop = [s for s in d.hand if s[0] >= t_exh]
         assert abs(stop[0][3] - ti.stop_eval(p_entry, v_entry, a_entry, g.stop_D,
                                              (stop[0][0] - t_exh) * 1e-6)[2]) < 1e-6
@@ -520,16 +522,96 @@ def test_sched_constants_match_the_firmware():
     assert c("SCHED_STOP_BISECT_ITERS") == ti.SCHED_STOP_BISECT_ITERS
     assert c("SCHED_STOP_REL_EPS") == pytest.approx(ti.SCHED_STOP_REL_EPS)
     assert c("HAND_FF_GAIN_MAX") == pytest.approx(ti.HAND_FF_GAIN_MAX)
-    assert c("SCHED_GRACE_S") == pytest.approx(ti.SCHED_GRACE_S)
+    assert c("SCHED_GRACE_LEG_S") == pytest.approx(ti.SCHED_GRACE_LEG_S)
+    assert c("SCHED_GRACE_HAND_S") == pytest.approx(ti.SCHED_GRACE_HAND_S)
     assert c("HAND_C1_STOP_MIN_UP_VEL_RPS") == pytest.approx(ti.HAND_C1_STOP_MIN_UP_VEL_RPS)
     assert c("HAND_C1_STOP_GRACE_US") == ti.HAND_C1_STOP_GRACE_US
-    assert ti.HAND_C1_STOP_GRACE_US < ti.SCHED_GRACE_US and ti.HAND_C1_STOP_GRACE_US % TICK_US == 0
-    assert ti.SCHED_GRACE_US == round(ti.SCHED_GRACE_S * 1e6)
+    assert ti.HAND_C1_STOP_GRACE_US < ti.SCHED_GRACE_HAND_US and ti.HAND_C1_STOP_GRACE_US % TICK_US == 0
+    assert ti.SCHED_GRACE_LEG_US == round(ti.SCHED_GRACE_LEG_S * 1e6)
+    assert ti.SCHED_GRACE_HAND_US == round(ti.SCHED_GRACE_HAND_S * 1e6)
     assert c("STREAM_STOP_HAND_ACCEL_RPS2", hw) == ti.STREAM_STOP_HAND_ACCEL_RPS2
     assert c("STREAM_STOP_HAND_JERK_RPS3", hw) == ti.STREAM_STOP_HAND_JERK_RPS3
     assert c("STREAM_STOP_LEG_ACCEL_RPS2", hw) == ti.STREAM_STOP_LEG_ACCEL_RPS2
     assert c("STREAM_STOP_LEG_JERK_RPS3", hw) == ti.STREAM_STOP_LEG_JERK_RPS3
     assert ti.SCHED_SEG_US == round(ti.SEGMENT_T_S * 1e6)
+
+
+# ── FW 44: the grace is per lane group (owner decision 2026-11-18) ──────────
+def test_the_grace_is_per_group_legs_30_ms_hand_20_ms():
+    """Owner, 2026-11-18: "Let's keep the hand at 20 ms and bring the legs to
+    30 ms". Pinned as literals against the header AND the twin, so neither can
+    drift to a single global value again without failing here."""
+    cb = _fw_header("canbridge_config.h")
+    assert _fw_const("SCHED_GRACE_LEG_S", cb) == pytest.approx(0.030)
+    assert _fw_const("SCHED_GRACE_HAND_S", cb) == pytest.approx(0.020)
+    assert not re.search(r"\bSCHED_GRACE_S\s*=", cb), "the single global grace is gone since FW 44"
+    assert (ti.SCHED_GRACE_LEG_US, ti.SCHED_GRACE_HAND_US) == (30_000, 20_000)
+    assert (ti.SCHED_EXHAUST_LEG_US, ti.SCHED_EXHAUST_HAND_US) == (80_000, 70_000)
+    assert ti.sched_exhaust_us(0) == ti.sched_exhaust_us(ti.NUM_LEGS - 1) == 80_000
+    assert ti.sched_exhaust_us(ti.HAND_AXIS) == 70_000
+    assert ti.sched_s_max(0) == pytest.approx(2.2) and ti.sched_s_max(ti.HAND_AXIS) == pytest.approx(1.8)
+
+
+def _fw43_grace(monkeypatch):
+    """Turn the twin's LEG grace back to FW 43's 20 ms (the Hand's is already)."""
+    monkeypatch.setattr(ti, "SCHED_EXHAUST_LEG_US", ti.SCHED_EXHAUST_HAND_US)
+    monkeypatch.setattr(ti, "SCHED_S_MAX_LEG", ti.SCHED_S_MAX_HAND)
+
+
+def _hand_state(d):
+    g = d.it._sg[1]
+    return (d.hand, d.c1_entries, d.it.sched_hand_c1_stops, g.phase, g.latched,
+            g.dp_max, g.dv_max, g.da_max, g.promo_over)
+
+
+@pytest.mark.parametrize("seed", range(4))
+@pytest.mark.parametrize("late_hi_ms", [40.0, 75.0])
+def test_the_hand_lane_is_bit_identical_to_fw43(monkeypatch, seed, late_hi_ms):
+    """FW 44 changes the LEG group only: the same stream (random lateness up to
+    late_hi_ms, random drops, so covers end inside both graces and past them)
+    gives the same Hand ladder, C1 entries, phase, latch and promotion maxima
+    as a twin with the FW 43 leg grace."""
+    rnd = random.Random(1000 + seed)
+    late = [rnd.uniform(0.0, late_hi_ms) for _ in range(60)]
+    drop = {k for k in range(2, 58) if rnd.random() < 0.15}
+    P, V, A = c2_plan(64)
+    ev = nominal_events(60, lambda k: late[k], drop=drop)
+    fw44 = Driver(P, V, A)
+    fw44.run(ev, T0_US - 40_000, T0_US + 62 * T_US)
+    _fw43_grace(monkeypatch)
+    fw43 = Driver(P, V, A)
+    fw43.run(ev, T0_US - 40_000, T0_US + 62 * T_US)
+    assert _hand_state(fw44) == _hand_state(fw43)
+
+
+def test_a_frame_between_the_hand_and_the_leg_cover_ends_is_promoted_by_the_legs_and_met_by_the_hand_stop(monkeypatch):
+    """The mixed case. Frame 20 is dropped and frame 21 lands 25 ms after 21T:
+    past the Hand's cover + grace (21T + 20 ms), inside the legs' (21T + 30 ms).
+    The legs promote it and replay the plan exactly (no leg STOP); the Hand has
+    entered its C2 stop at 21T + 20 ms and meets the frame with its resume rule,
+    exactly as at FW 43. At FW 43 the legs stop too."""
+    P, V, A = c2_plan(64)
+    ev = nominal_events(60, drop={20})
+    ev = [e for e in ev if e[1] != 21] + [(T0_US + 21 * T_US + 25_000, 21)]
+    d = Driver(P, V, A)
+    d.run(ev, T0_US - 40_000, T0_US + 58 * T_US)
+    assert d.it.sched_stops == 1 and d.it.sched_hand_c1_stops == 0   # the Hand's only
+    assert d.it.sched_phase(0) == 1                                  # legs still PLAYing
+    rejoin = T0_US + 21 * T_US + 25_000 + TICK_US   # the grace extrapolates until the promotion
+    for now, p, v, a in d.leg:
+        if T0_US + 21 * T_US <= now < rejoin:
+            continue
+        pr, vr, ar = ref(d.P, d.V, now)
+        assert abs(p - LEG_SCALE * pr) < 1e-11 and abs(a - LEG_SCALE * ar) < 1e-7, now
+    rp, rv, ra = ti.SCHED_RESUME_TOL_LEG             # this plan's leg rejoin step, 25 ms in
+    g = d.it._sg[0]
+    assert g.dp_max <= rp and g.dv_max <= rv and g.da_max <= ra, (g.dp_max, g.dv_max, g.da_max)
+    fw44_hand = _hand_state(d)
+    _fw43_grace(monkeypatch)
+    d43 = Driver(P, V, A)
+    d43.run(ev, T0_US - 40_000, T0_US + 58 * T_US)
+    assert d43.it.sched_stops == 2                                   # FW 43: both groups
+    assert _hand_state(d43) == fw44_hand
 
 
 def test_planner_resume_tolerances_match_the_firmware():

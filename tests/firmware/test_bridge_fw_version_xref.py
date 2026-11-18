@@ -262,6 +262,18 @@ def test_the_bump_history_records_what_this_version_carries():
     assert 'PROTOCOL_VERSION 12→13' in m42.group(1), m42.group(1)
     assert 'time_base_last_jump' in m42.group(1), m42.group(1)
     assert 'no lane behaviour change' in m42.group(1), m42.group(1)
+    # FW 44 — the LEG scheduler grace 20→30 ms, the Hand's unchanged (owner
+    # decision 2026-11-18): a lane behaviour change with no wire change; the
+    # line must name both group constants, the new leg cover + grace and that
+    # the Hand (its 70 ms and its 14 ms C1 stop) is untouched.
+    m44 = re.search(r'^// 43→44:(.*)$', text, re.M)
+    assert m44 is not None, "FW 44 history line missing"
+    assert 'SCHED_GRACE_LEG_S 0.030' in m44.group(1), m44.group(1)
+    assert 'SCHED_GRACE_HAND_S 0.020' in m44.group(1), m44.group(1)
+    assert 'SCHED_EXHAUST_LEG_US 80000' in m44.group(1), m44.group(1)
+    assert 'SCHED_EXHAUST_HAND_US 70000, unchanged' in m44.group(1), m44.group(1)
+    assert 'HAND_C1_STOP_GRACE_US (14 ms) unchanged' in m44.group(1), m44.group(1)
+    assert 'NO WIRE CHANGE' in m44.group(1) and 'PROTOCOL_VERSION stays 14' in m44.group(1), m44.group(1)
 
 
 def test_the_version_this_release_pins_is_actually_uplinked():

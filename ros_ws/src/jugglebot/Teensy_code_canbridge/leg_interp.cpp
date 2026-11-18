@@ -364,7 +364,8 @@ static float s_hand_recover_speed    = 0.0f;
 // drops frames whose 2T cover is already gone (counted), and never promotes a
 // frame older than the one playing (no double play).
 // GRACE. Past t_start+2T the span-2 cubic simply continues (s > 1) for
-// SCHED_GRACE_S (canbridge_config.h: at emit lead 0 a dropped knot is routine,
+// the group's grace, SCHED_GRACE_LEG_S 30 ms / SCHED_GRACE_HAND_S 20 ms since FW 44
+// (canbridge_config.h: at emit lead 0 a dropped knot is routine,
 // and a stop started at 2T would refuse the next, barely-late frame). FW 37: the
 // hand group's grace is cut to HAND_C1_STOP_GRACE_US when the Hand is still moving
 // up fast there (the C1 stop below).
@@ -426,9 +427,24 @@ static SchedGroup s_sg[2];
 static constexpr uint8_t SG_LEGS = 0, SG_HAND = 1;
 static constexpr int64_t SCHED_SEG_US   = (int64_t)(SEGMENT_T_S * 1e6f + 0.5f);
 static constexpr int64_t SCHED_COVER_US = 2 * SCHED_SEG_US;                              // a frame's own cover
-static constexpr int64_t SCHED_GRACE_US = (int64_t)(SCHED_GRACE_S * 1e6f + 0.5f);
-static constexpr int64_t SCHED_EXHAUST_US = SCHED_COVER_US + SCHED_GRACE_US;            // cover + grace
-static constexpr float   SCHED_S_MAX = 1.0f + SCHED_GRACE_S / SEGMENT_T_S;              // span-2 s at exhaustion
+// FW 44: the grace is per group (canbridge_config.h SCHED_GRACE_LEG_S / _HAND_S).
+// Every read goes through sched_exhaust_us / sched_s_max with the group's first
+// axis, so a group can never run out on the other group's clock.
+static constexpr int64_t SCHED_GRACE_LEG_US    = (int64_t)(SCHED_GRACE_LEG_S * 1e6f + 0.5f);
+static constexpr int64_t SCHED_GRACE_HAND_US   = (int64_t)(SCHED_GRACE_HAND_S * 1e6f + 0.5f);
+static constexpr int64_t SCHED_EXHAUST_LEG_US  = SCHED_COVER_US + SCHED_GRACE_LEG_US;   // leg cover + grace
+static constexpr int64_t SCHED_EXHAUST_HAND_US = SCHED_COVER_US + SCHED_GRACE_HAND_US;  // hand cover + grace
+static constexpr float   SCHED_S_MAX_LEG  = 1.0f + SCHED_GRACE_LEG_S / SEGMENT_T_S;     // span-2 s at exhaustion
+static constexpr float   SCHED_S_MAX_HAND = 1.0f + SCHED_GRACE_HAND_S / SEGMENT_T_S;
+static_assert(HAND_AXIS == NUM_LEGS, "the Hand group is the axes from HAND_AXIS up; every leg axis is below it");
+// `first_or_axis` = the group's first axis (sched_advance / sched_apply) or any of
+// its axes (sched_eval_axis): the Hand group owns HAND_AXIS..NUM_AXES-1.
+static constexpr int64_t sched_exhaust_us(uint8_t first_or_axis) {
+  return (first_or_axis >= HAND_AXIS) ? SCHED_EXHAUST_HAND_US : SCHED_EXHAUST_LEG_US;
+}
+static constexpr float sched_s_max(uint8_t first_or_axis) {
+  return (first_or_axis >= HAND_AXIS) ? SCHED_S_MAX_HAND : SCHED_S_MAX_LEG;
+}
 static constexpr int64_t HAND_C1_DECIDE_US = SCHED_COVER_US + (int64_t)HAND_C1_STOP_GRACE_US;   // cover + short grace
 static constexpr float   HAND_C1_S = 1.0f + ((float)HAND_C1_STOP_GRACE_US * 1e-6f) / SEGMENT_T_S;  // span-2 s there
 
@@ -457,11 +473,16 @@ static volatile uint32_t s_sched_slew_rearms  = 0;   // ISR: leg stream restart 
 // the frame's t_start at queue entry (net task, inside the queue's IRQ-off
 // section, so the heartbeat task's read-and-reset cannot tear it). Edges 25 / 50
 // / 70 ms: ≤ 25 one knot of lead eaten, ≤ 50 still promotable, ≤ 70 already past
-// the 2T cover (counted sched_expired at promotion), > 70 past cover + grace at
-// ARRIVAL (the playing frame has run out). Uplinked on HeartbeatT2J (v11).
+// the 2T cover (counted sched_expired at promotion), > 70 past the HAND group's
+// cover + grace at ARRIVAL (the Hand's playing frame has run out). Uplinked on
+// HeartbeatT2J (v11). FW 44 split the grace per group: the 70 ms edge stays the
+// Hand's cover + grace (the earlier of the two, so > 70 still means "a group
+// had run out"); the legs' 80 ms is not an edge, and a 70-80 ms arrival lands in
+// > 70 while the legs could still promote it. The edges are wire-named
+// (rx_age_le70 / rx_age_gt70): re-edging means renaming them with a PROTOCOL bump.
 static constexpr int64_t RX_AGE_EDGE_US[3] = { 25'000, 50'000, 70'000 };
-static_assert(SCHED_COVER_US == 50'000 && SCHED_EXHAUST_US == 70'000,
-              "HeartbeatT2J rx_age bucket edges document the 2T cover (50 ms) and cover + grace (70 ms); re-edge the buckets and the wire docs with them");
+static_assert(SCHED_COVER_US == 50'000 && SCHED_EXHAUST_HAND_US == 70'000 && SCHED_EXHAUST_LEG_US >= SCHED_EXHAUST_HAND_US,
+              "HeartbeatT2J rx_age bucket edges document the 2T cover (50 ms) and the Hand's cover + grace (70 ms, the earliest group run-out); re-edge the buckets and the wire docs with them");
 static int32_t  s_rx_age_max_us = INT32_MIN;          // window max (INT32_MIN = no stamped frame)
 static uint16_t s_rx_age_bucket[4] = { 0, 0, 0, 0 };  // ≤25, ≤50, ≤70, >70 ms (saturating)
 
@@ -623,14 +644,15 @@ static void span_eval(float P0, float V0, float P1, float V1, float s,
   a = ((6.0f - 12.0f * s) * (d * invT) + (6.0f * s - 4.0f) * V0 + (6.0f * s - 2.0f) * V1) * invT;
 }
 
-// A frame's 2T cover evaluated at `now` (t clamped to [0, 2T]).
+// A frame's 2T cover evaluated at `now` (t clamped to [0, 2T + the group's grace];
+// s_max = sched_s_max(the group)).
 static void play_eval(int64_t t0, float P0, float V0, float P1, float V1, float P2, float V2,
-                      int64_t now, float& p, float& v, float& a) {
+                      float s_max, int64_t now, float& p, float& v, float& a) {
   float t = (float)((double)(now - t0) * 1e-6);
   if (t < 0.0f) t = 0.0f;
   if (t < SEG_T) { span_eval(P0, V0, P1, V1, t / SEG_T, p, v, a); return; }
   float s = (t - SEG_T) / SEG_T;
-  if (s > SCHED_S_MAX) s = SCHED_S_MAX;      // s in (1, S_MAX]: the grace continuation of the same cubic
+  if (s > s_max) s = s_max;                  // s in (1, s_max]: the grace continuation of the same cubic
   span_eval(P1, V1, P2, V2, s, p, v, a);
 }
 
@@ -699,7 +721,8 @@ static void stop_eval(float P, float V, float A, float D, float t, float& p, flo
 // ═══ FW 37 — HAND C1 STOP (BUG-55) ═══════════════════════════════════════════
 // INVARIANT. A hand cover that ends with no newer frame while the Hand moves UP
 // faster than HAND_C1_STOP_MIN_UP_VEL_RPS must stop inside the stroke. The grace
-// (20 ms of the span's own cubic, ~3 rev at 150 rev/s) plus a C2 stop that cannot
+// (20 ms of the span's own cubic, ~3 rev at 150 rev/s; the Hand group's grace,
+// which FW 44 deliberately left at 20 ms when the legs' went to 30) plus a C2 stop that cannot
 // start below its entry acceleration carried the Hand to 13-16 rev against the
 // 10.501 rev clip (tools/probes/hand_stall_stop.py; option 2 --grace-ms 6 there is
 // this code, release-knot stop 8.30 / 9.79 rev at Apex 1.05 / 1.42 step). So, for
@@ -742,7 +765,7 @@ static float hand_c1_stop_duration(float V, float A, float J) { return (V - A * 
 
 static void sched_eval_axis(const SchedGroup& g, uint8_t i, int64_t now, float& p, float& v, float& a) {
   if (g.phase == SCHED_PLAY) {
-    play_eval(g.t0_us, g.p0[i], g.v0[i], g.p1[i], g.v1[i], g.p2[i], g.v2[i], now, p, v, a);
+    play_eval(g.t0_us, g.p0[i], g.v0[i], g.p1[i], g.v1[i], g.p2[i], g.v2[i], sched_s_max(i), now, p, v, a);
   } else if (g.phase == SCHED_STOP && g.c1_stop) {
     hand_c1_stop_eval(g.ep[i], g.ev[i], SCHED_STOP_ACCEL_HAND_RPS2, SCHED_STOP_JERK_HAND_RPS3,
                       (float)((double)(now - g.t0_us) * 1e-6), p, v, a);
@@ -784,14 +807,15 @@ static void sched_advance(SchedGroup& g, uint8_t first, uint8_t last, int64_t no
       sr_capture(SG_HAND, true, g.t0_us, g.frame_t_start_us);   // FW 42 STOP record
     }
   }
-  if (g.phase == SCHED_PLAY && (now - g.t0_us) >= SCHED_EXHAUST_US) {
+  const int64_t exhaust_us = sched_exhaust_us(first);   // FW 44: this group's cover + grace
+  if (g.phase == SCHED_PLAY && (now - g.t0_us) >= exhaust_us) {
     for (uint8_t i = first; i < last; ++i)
-      span_eval(g.p1[i], g.v1[i], g.p2[i], g.v2[i], SCHED_S_MAX, g.ep[i], g.ev[i], g.ea[i]);
+      span_eval(g.p1[i], g.v1[i], g.p2[i], g.v2[i], sched_s_max(first), g.ep[i], g.ev[i], g.ea[i]);
     bool capped = false;
     g.stop_D = stop_duration(g, first, last, A, J, capped);
     if (capped) ++s_sched_stop_capped;
     g.c1_stop = false;
-    g.t0_us += SCHED_EXHAUST_US;
+    g.t0_us += exhaust_us;
     g.phase = SCHED_STOP;
     ++s_sched_stops;
     sr_capture(first == HAND_AXIS ? SG_HAND : SG_LEGS, false, g.t0_us, g.frame_t_start_us);   // FW 42 STOP record
@@ -818,13 +842,15 @@ static void sched_apply(SchedGroup& g, const SchedFrame& f, uint8_t first, uint8
     // group whose cover ended inside this tick has not entered its stop yet: the
     // two curves hand over at the cover end, not at `now` (a frame stamped at
     // the cover end is on time, and must be measured — and accepted — as such).
-    const int64_t t_cmp = (g.phase == SCHED_PLAY && (now - g.t0_us) > SCHED_EXHAUST_US)
-                              ? (g.t0_us + SCHED_EXHAUST_US) : now;
+    const int64_t exhaust_us = sched_exhaust_us(first);   // FW 44: this group's cover + grace
+    const int64_t t_cmp = (g.phase == SCHED_PLAY && (now - g.t0_us) > exhaust_us)
+                              ? (g.t0_us + exhaust_us) : now;
     float dp = 0.0f, dv = 0.0f, da = 0.0f;
     for (uint8_t i = first; i < last; ++i) {
       float po, vo, ao, pn, vn, an;
       sched_eval_axis(g, i, t_cmp, po, vo, ao);
-      play_eval(f.t_start_us, f.p0[i], f.v0[i], f.p1[i], f.v1[i], f.p2[i], f.v2[i], t_cmp, pn, vn, an);
+      play_eval(f.t_start_us, f.p0[i], f.v0[i], f.p1[i], f.v1[i], f.p2[i], f.v2[i], sched_s_max(first),
+                t_cmp, pn, vn, an);
       const float ep_ = fabs32(pn - po), ev_ = fabs32(vn - vo), ea_ = fabs32(an - ao);
       if (ep_ > dp) dp = ep_;
       if (ev_ > dv) dv = ev_;
