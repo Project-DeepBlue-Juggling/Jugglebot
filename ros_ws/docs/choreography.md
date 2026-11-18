@@ -227,7 +227,7 @@
 ### `platform_imu/status`
 
 - **publishers:** `teensy_bridge_node`
-- **subscribers:** _none_
+- **subscribers:** `orchestrator_node`, `skill_node`
 - **type:** `diagnostic_msgs.msg.DiagnosticStatus`
 
 ### `platform_pose_topic`
@@ -287,7 +287,7 @@
 ### `skills/attempt`
 
 - **publishers:** `skill_node`
-- **subscribers:** _none_
+- **subscribers:** `teensy_bridge_node`
 - **type:** `diagnostic_msgs.msg.DiagnosticStatus`
 - **name source:** `constant`
 
@@ -505,7 +505,7 @@
 ### `platform_imu/abort`
 
 - **servers:** `teensy_bridge_node`
-- **clients:** _none_
+- **clients:** `orchestrator_node`
 - **type:** `std_srvs.srv.Trigger`
 
 ### `platform_imu/set_upload_after_attempt`
@@ -678,9 +678,7 @@ broken wire cannot hide among them.
 - `leg_torques_diagnostic` — topic with no subscribers
 - `orchestrator_command` — topic with no publishers
 - `park_hand` — service with no clients
-- `platform_imu/abort` — service with no clients
 - `platform_imu/set_upload_after_attempt` — service with no clients
-- `platform_imu/status` — topic with no subscribers
 - `platform_imu/upload` — service with no clients
 - `profile` — topic with no subscribers
 - `qtm_clock_offset_sec` — topic with no subscribers
@@ -689,7 +687,6 @@ broken wire cannot hide among them.
 - `ring_diag` — topic with no subscribers
 - `set_hand_gains` — service with no clients
 - `set_motor_vel_curr_limits` — topic with no publishers
-- `skills/attempt` — topic with no subscribers
 - `skills/check` — service with no clients
 - `skills/nominate` — service with no clients
 - `trajectory/commanded_pose` — topic with no subscribers

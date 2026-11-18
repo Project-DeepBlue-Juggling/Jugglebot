@@ -131,6 +131,7 @@ from teensy_link.gap_monitor import (
     EMPTY_STATS, HAND_C1_COVER_MS, SCHED_COVER_LEG_MS, SCHED_COVER_MS,
     DownlinkLossTracker, EpisodeLatch, GapTracker)
 from teensy_link.hand_feedback_watch import HandFeedbackWatch
+from jugglebot import platform_imu_gate as _imu_gate
 from teensy_link.platform_imu import PlatformImuService, UploadConfig as _ImuUploadConfig
 from teensy_link.platform_imu_capture import ImuCaptureWriter
 from teensy_link.setpoint_pump import SetpointPump, FLAG_HAS_HAND, HAND_FF_GAIN_MAX
@@ -3051,6 +3052,11 @@ class TeensyBridgeNode(Node):
         self._imu_cbgroup = ReentrantCallbackGroup()
         self.platform_imu_status_pub = self.create_publisher(DiagnosticStatus, 'platform_imu/status', 10)
         self.create_timer(0.5, self._publish_platform_imu_status, callback_group=self._imu_cbgroup)
+        # The Attempt's wall-clock span comes from skills/attempt (every goal source publishes it), so skill_node
+        # is untouched and a dead skill_node cannot reach this node. See _imu_on_attempt_event.
+        self._imu_span = _imu_gate.AttemptSpanTracker()
+        self.create_subscription(DiagnosticStatus, 'skills/attempt', self._imu_on_attempt_event, 10,
+                                 callback_group=self._imu_cbgroup)
         self.create_service(SetBool, 'platform_imu/set_upload_after_attempt',
                             self._svc_imu_set_upload_after_attempt, callback_group=self._imu_cbgroup)
         self.create_service(SetString, 'platform_imu/upload', self._svc_imu_upload,
@@ -3104,8 +3110,54 @@ class TeensyBridgeNode(Node):
     def set_imu_upload_after_attempt(self, on):
         self._imu.set_upload_after_attempt(bool(on))
 
+    # -- IDEA-20 P3c: the automatic trigger. Fire-and-forget: nothing here can raise into, wait on, or delay
+    #    the Attempt's own end handling, a Soft E-stop or a deactivate (a subscriber callback on this node's own
+    #    reentrant group, every body wrapped; attempt_ended only queues work for the IMU worker thread).
+    def _imu_on_attempt_event(self, msg, now_wall=None):
+        try:
+            t = time.time() if now_wall is None else now_wall
+            if msg.name == 'juggle_start':
+                # An Attempt starting while an upload runs (the gate refused every normal start; this is a
+                # belt for a start the gate let through, e.g. fail-open): the capture so far is kept
+                # incomplete and the ring resumes, so the Attempt is recorded.
+                if self.upload_in_progress():
+                    self.abort_upload('attempt_start')
+                self._imu_span.started(t)
+            elif msg.name == 'juggle_end':
+                span = self._imu_span.ended(t)
+                if span is not None:
+                    self._imu_trigger(span)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().warning('IMU attempt trigger swallowed: %s' % e)
+
+    def _imu_on_fault(self, now_wall=None):
+        """A Fault / Soft E-stop edge. During an Attempt: upload its span now. Otherwise an upload that is
+        running is a pacifying case and is aborted (the capture is kept, flagged incomplete)."""
+        try:
+            t = time.time() if now_wall is None else now_wall
+            span = self._imu_span.fault(t)
+            if span is not None:
+                self._imu_trigger(span)
+            elif self.upload_in_progress():
+                self.abort_upload('fault')
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().warning('IMU fault trigger swallowed: %s' % e)
+
+    def _imu_trigger(self, span):
+        try:
+            started = self.attempt_ended(span.t_start, span.t_end, span.reason)
+            self.get_logger().info('Platform IMU upload %s (%s, %.1f s span)' % (
+                'started' if started else 'not started (toggle OFF, no IMU, or one already running)',
+                span.reason, span.t_end - span.t_start))
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().warning('IMU upload trigger swallowed: %s' % e)
+
     def _svc_imu_set_upload_after_attempt(self, req, res):
         self.set_imu_upload_after_attempt(req.data)
+        if not req.data and self.upload_in_progress():
+            # Toggle OFF mid-upload aborts it: OFF means nothing frozen and nothing refused, and an upload left
+            # running with the gate off would let an Attempt start over a frozen ring on a loaded bus.
+            self.abort_upload('toggle_off')
         res.success = True
         res.message = 'upload after each Attempt: %s' % ('ON' if req.data else 'OFF')
         return res
@@ -6923,6 +6975,7 @@ class TeensyBridgeNode(Node):
                 fs = int(hb.fault_state)
                 if fs != self._last_fault_state:
                     if fs != int(FaultState.NONE):
+                        self._imu_on_fault()
                         leg_hint = self._guard_fault_leg_hint()
                         # For a MAX_DEVIATION latch the single culprit leg is not
                         # the whole story — a fast coordinated move loads every

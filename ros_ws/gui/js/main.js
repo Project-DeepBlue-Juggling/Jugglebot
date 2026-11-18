@@ -74,6 +74,7 @@ import { initTrailSettingsUi } from './trail-settings-ui.js';
 import { initTrails, getTrailFeed } from './trails-scene.js';
 import { initCameraPanel, cameraPanelOnHeartbeat, setCameraPanelDisconnected } from './camera-panel.js';
 import { initHandFanPanel, handFanPanelOnStatus, setHandFanPanelDisconnected } from './hand-fan-panel.js';
+import { initImuUploadPanel, imuUploadPanelOnStatus, setImuUploadPanelDisconnected } from './imu-upload-panel.js';
 import { initRecordsPanel, attachRecordsMenu } from './records-panel.js';
 import { loadViewToggles, setViewToggle, toggleState } from './view-toggles.js';
 
@@ -145,6 +146,7 @@ function init() {
     //     minimap; DOM-only until camera/heartbeat arrives).
     initCameraPanel();
     initHandFanPanel();
+    initImuUploadPanel();
 
     // 3c. Init the records panel (IDEA-3; HTTP only, so it shows while disconnected too).
     initRecordsPanel();
@@ -348,6 +350,7 @@ export function blankDisconnectedState() {
     setCameraPanelDisconnected();
     // Hand fan: same reasoning, never freeze an ON/OFF that may no longer be true.
     setHandFanPanelDisconnected();
+    setImuUploadPanelDisconnected();
 }
 
 /**
@@ -417,6 +420,7 @@ function subscribeAll() {
 
     // Hand fan status (1 Hz, no throttle) - SYSTEM indicator and Platform Control toggle
     ros.subscribe('hand_fan/status', 'jugglebot_interfaces/msg/HandFanStatus', handFanPanelOnStatus, 0);
+    ros.subscribe('platform_imu/status', 'diagnostic_msgs/msg/DiagnosticStatus', imuUploadPanelOnStatus, 0);
 
     // Orchestrator state (on change)
     ros.subscribe('orchestrator_state', 'std_msgs/msg/String', onOrchestratorState, 0);
@@ -1239,7 +1243,7 @@ const GUI_SUBSCRIBED_TOPICS = new Set([
     'profile', 'link_status', 'udp_diag', 'clock_diag', 'hand_telemetry',
     'gui/mocap_data', 'balls',
     'gui/rigid_body_poses',
-    'robot_frame', 'mocap/status', 'hand_fan/status',
+    'robot_frame', 'mocap/status', 'hand_fan/status', 'platform_imu/status',
     'leg_setpoint_echo', 'control_mode_topic', 'motion/diagnostics',
     'bb/calibration_result', 'bb/calibration_attempt', 'cone/heartbeat', 'cone/timing_result',
     'skills/attempt', 'camera/heartbeat', 'rosout',

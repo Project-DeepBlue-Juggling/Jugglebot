@@ -18,6 +18,13 @@ files_changed:
   - tests/teensy_link/test_fw_update_begin_retry.py
   - tests/ros/test_teensy_bridge_node_platform_imu.py
   - tests/ros/test_teensy_bridge_node_conduit.py
+  - ros_ws/src/jugglebot/jugglebot/platform_imu_gate.py
+  - ros_ws/src/jugglebot/jugglebot/orchestrator_node.py
+  - ros_ws/src/jugglebot/jugglebot/skill_node.py
+  - ros_ws/gui/js/imu-upload-panel.js
+  - tests/ros/test_platform_imu_gate.py
+  - tests/ros/test_teensy_bridge_node_imu_trigger.py
+  - tests/ros/test_gui_imu_upload_panel.py
   - ros_ws/src/jugglebot/Teensy_code_canbridge/imu_ring.h
   - ros_ws/src/jugglebot/Teensy_code_canbridge/can_buses.h
   - ros_ws/src/jugglebot/Teensy_code_canbridge/can_buses.cpp
@@ -200,3 +207,50 @@ Tests run 2026-11-19 with `nice -n 10 python -m pytest` on a quiet box:
   docs readers (`test_logbook_front_matter/index`, `test_docs_links`, `test_no_legacy_item_ids`, `test_plans_index`): 61 passed.
 - Not covered: real bus timing and loss (P4 ramp), the receive thread under real 1600 frames/s load, a real
   Platform boot-loop, the live `Armed` gate. `./run_tests.sh` is owed before main.
+
+## P3c: the Attempt-end trigger, the command gate and the GUI toggle (2026-11-19)
+
+**What.** After an Attempt (normal end, self-end, operator stop) or a Fault / Soft E-stop during one, the Jetson uploads
+the Platform IMU capture of the Attempt's span (2 s before to 3 s after, last 32 s if longer). While an upload runs with
+the toggle ON, motion-starting commands are refused with a reason that names the upload and the seconds left. The GUI
+has the toggle, a progress bar and the last capture's result.
+
+**Where and why.** The trigger is in `teensy_bridge_node` (in-process `attempt_ended`): it already owns the IMU and
+the fault edge, and the Attempt's span arrives on `skills/attempt`, which `skill_node` publishes for every goal source,
+so `skill_node`'s end-of-Attempt path gets no new code at all and a dead or slow IMU path cannot reach it. Every handler
+is wrapped and only queues work for the IMU worker thread. The gate is `jugglebot/platform_imu_gate.py` (pure), one call
+per entry point: `orchestrator_node._on_command`, `_svc_juggle_request`, `skill_node._juggle_goal` (so a
+`ros2 action send_goal` cannot start an Attempt over a frozen ring). The gate reads cached status, never a service.
+Gate rules, each tested: fail-open on a status older than 2 s or absent; a 180 s busy ceiling treats the upload as idle and
+sends one abort per 10 s; pacifying commands (`deactivate`) and everything off the motion list always pass.
+
+**Commands.** Refused: `standby`, `trajectory`, `spacemouse`, `gui`, `level`, `home`, the Juggle request. Always allowed:
+`deactivate` (aborts), the Soft E-stop (the bridge aborts on the Fault edge), `activate`, `clear_errors`, the Juggle stop.
+`activate` and `clear_errors` are not on the owner's list and start no Attempt or profiled move.
+
+**Operator walk-through.**
+- Toggle ON, upload running, Start pressed: the Juggle service answers failure with "'juggle' refused: the Platform IMU
+  upload is running (samples, about 12 s remain). Wait for it to finish, send 'deactivate' to stop it, or switch off ..."
+  (shown by the Juggle panel line); nothing is dispatched. After the upload RESUMEs, Start works.
+- Toggle ON, upload running, deactivate: enqueued at once, `platform_imu/abort` sent fire-and-forget; the capture is
+  written `complete = false` and the ring resumes.
+- Bridge node dies mid-upload: `platform_imu/status` stops; after 2 s the gate allows everything (fail-open).
+- Platform IMU absent: `attempt_ended` returns False (no IMU_STATUS), no upload, `busy` never rises, nothing refused.
+- Toggle switched OFF mid-upload: the upload is aborted (flagged incomplete). Chosen over "finish but stop refusing"
+  because OFF is meant to mean nothing frozen and nothing refused, and an unrefused upload would let an Attempt start over
+  a frozen ring on a loaded bus; the cost is one partial capture, which the flag says.
+- Start pressed within 0.5 s of an Attempt end (status is 2 Hz, so the gate may not know yet): allowed, and the bridge
+  aborts the upload at the `juggle_start` event, so the Attempt is never run over a frozen ring.
+
+**Control implications.** No change to the 40 Hz planner, feedforward or emit path: the new code is a subscriber
+callback on the IMU callback group, a cached-dict read in the command path and a rate-limited fire-and-forget abort call.
+
+**Verification.** 2026-11-19, box load average about 16 (another session's gate running):
+- new tests: `nice -n 10 python -m pytest tests/ros/test_platform_imu_gate.py tests/ros/test_teensy_bridge_node_imu_trigger.py tests/ros/test_gui_imu_upload_panel.py -q -p no:cacheprovider`: 92 passed (80 + 12).
+- readers (grep `-rlE "orchestrator_node|skill_node|teensy_bridge_node|main\.js|index\.html|choreography|platform_imu|replay/(schema|policy|allowlist)" tests`, narrowed to the cheap files): `... python -m pytest tests/ros/test_teensy_bridge_node_platform_imu.py test_teensy_bridge_node_deactivate.py test_teensy_bridge_node_console.py test_orchestrator_conduit_integration.py test_launch_nodes.py tests/teensy_link/test_platform_imu.py test_platform_imu_gate.py test_teensy_bridge_node_imu_trigger.py test_choreography_map.py -n 2`: 188 passed in 73 s; `test_orchestrator_node.py test_state_machine.py`: 282 passed; GUI and replay files (`test_gui_replay_policy test_replay_allowlist test_replay_mcap_oracle test_gui_replay_format_contract test_replay_api test_gui_replay_engine test_gui_replay_ui_hide test_gui_replay_ui_fence_dom test_gui_replay_feed test_gui_replay_mode test_gui_imu_upload_panel`): 99 passed in 36 s; `test_rosbridge_websocket_lean test_replay_mcap_oracle`: 45 passed.
+- Findings fixed on the way: `skill_node`'s status subscription named its topic through a module constant (the generated `ros_ws/docs/choreography.md` could not resolve it; now a literal, doc regenerated); `test_gui_replay_policy` demanded `/platform_imu/status` in `replay/schema.py` SUBSCRIBED, `js/replay/allowlist.js` and `js/replay/policy.js` (added; the topic was already in the bag list).
+- Not finished: the whole `tests/ros/test_skill_node.py` (planner-heavy, about 1 test per 25 s under that load) was stopped; its `TestJuggleAction` class ran 38 tests with no failure before the stop, and `test_skill_node_check`/`_nominate` were not re-run after the edit. Owed to the gate.
+Not covered: a live GUI session, real DDS latency of `skills/attempt` (the 2 s margin absorbs it), the hardware ramp (P4).
+There is no `gui_server` endpoint (toggle = rosbridge service, progress = topic), so no server test.
+
+Full gate (`./run_tests.sh --full`): FULL-GATE-TRIPLE-PENDING

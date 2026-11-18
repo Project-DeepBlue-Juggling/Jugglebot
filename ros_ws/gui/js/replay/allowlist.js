@@ -19,6 +19,7 @@ export const ALLOWLIST = Object.freeze([
   '/mocap_data',
   '/motion/diagnostics',
   '/orchestrator_state',
+  '/platform_imu/status',
   '/profile',
   '/rigid_body_poses',
   '/robot_frame',

@@ -109,6 +109,12 @@ ring [motion]. The calibration above is what makes the attitude correction possi
   Jetson with no PROTOCOL bump.
 - **Jetson:** the IMU handler in `teensy_bridge_node`, the status topic, and the capture writer. The freeze trigger
   is the end of an Attempt, a Fault, or a Soft E-stop; the resume follows a CRC-checked upload.
+- **Jetson trigger, gate and GUI (P3c, as built):** `teensy_bridge_node` subscribes `skills/attempt` (`juggle_start` /
+  `juggle_end`, published by `skill_node` for every goal source) and the guard fault edge, and calls `attempt_ended` with
+  the span from `platform_imu_gate.AttemptSpanTracker` (2 s before the Attempt starts to 3 s after its end, last 32 s if
+  longer), fire-and-forget. The gate (`platform_imu_gate.imu_upload_gate`, cached `platform_imu/status` only, fail-open
+  when older than 2 s or absent, hard ceiling 180 s with an abort) has three call sites: the orchestrator command topic,
+  the orchestrator Juggle relay and `skill_node`'s Juggle goal callback. The GUI row is in Platform Control.
 - **Jetson gate and GUI (P3):** the "Upload IMU data after each Attempt" toggle (default ON); while an upload runs
   with the toggle ON the skill/orchestrator side refuses the Attempt-starting command (the Juggle request, the GUI
   Start button; the owner's word is JUGGLE) and any other command that starts motion (`standby`, `trajectory`,
@@ -152,7 +158,13 @@ and version tests. Status: P3a (the can-bridge side, FW 45) built on branch `imu
 (`logbook/2026-11-19-platform-imu-p3-bridge-jetson.md`). P3b (the Jetson side: codecs, upload state machine, timestamp fit, capture
 files, node wiring and API, tilt invalid reply, uploader BEGIN retry; `teensy_link/platform_imu.py`,
 `teensy_link/platform_imu_capture.py`) built on the same branch; items (a), (b), (c), (d) above are done in it. P3c (the Attempt-end trigger, the
-refusal of motion-starting commands during an upload, the GUI toggle and progress display) not started.
+refusal of motion-starting commands during an upload, the GUI toggle and progress display) built on the same branch
+(2026-11-19): the trigger lives in `teensy_bridge_node` (it listens to `skills/attempt` and the guard fault edge, so
+`skill_node` is untouched there); the gate is the pure `jugglebot/platform_imu_gate.py`, called once in
+`orchestrator_node._on_command`, once in `_svc_juggle_request` and once in `skill_node._juggle_goal`; the GUI is
+`ros_ws/gui/js/imu-upload-panel.js`. Refused: `standby`, `trajectory`, `spacemouse`, `gui`, `level`, `home` and the Juggle
+request; always allowed: `deactivate` (aborts the upload), the Soft E-stop (the bridge aborts on the Fault edge), `activate`,
+`clear_errors`, `juggle_stop`. Switching the toggle OFF mid-upload aborts it. Hardware proof (the ramp) stays P4.
 
 ### P4: Sitting 1, flash and bench the capture path
 

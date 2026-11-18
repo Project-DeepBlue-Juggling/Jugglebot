@@ -120,6 +120,7 @@ SUBSCRIBED: Tuple[str, ...] = (
     "/mocap_data",
     "/motion/diagnostics",
     "/orchestrator_state",
+    "/platform_imu/status",     # Platform IMU upload progress and last capture (IDEA-20 P3c)
     "/profile",
     "/rigid_body_poses",
     "/robot_frame",             # latched software robot frame: places the Stewart model in the world-anchored scene (2026-10-19)

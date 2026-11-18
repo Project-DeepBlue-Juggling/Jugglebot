@@ -231,6 +231,14 @@ an ABORT at every arming edge):
    and drops the NEWEST frame when full; the counters are cumulative since bridge boot, so a hole in `seq` with
    `ring_drops` unchanged was lost on the bus or in UDP, not in the bridge. At most 4 datagrams leave per tick.
 
+*As built (P3c, 2026-11-19).* The refused commands are `standby`, `trajectory`, `spacemouse`, `gui`, `level`, `home` and the
+Juggle request (orchestrator command topic, the Juggle relay and `skill_node`'s Juggle goal); `deactivate` always passes
+and aborts, the Soft E-stop aborts through the bridge's Fault edge; `activate`, `clear_errors` and the Juggle stop are never
+gated. The decision is one pure function, `jugglebot/platform_imu_gate.imu_upload_gate`, reading cached
+`platform_imu/status` only: a status older than 2 s or absent allows (a dead bridge node cannot lock the operator out), and an
+upload busy for more than 180 s counts as idle and is aborted. Toggle OFF mid-upload aborts the running upload (capture
+flagged incomplete). The Attempt span is 2 s before the first motion to 3 s after the end, the last 32 s if longer.
+
 `teensy_bridge_node` freezes at the ending REST of every Attempt, and on a Fault or Soft E-stop. It uploads when no
 Attempt is running, re-requests holes, checks both CRCs, writes `temp/imu_capture/<stamp>/`, then RESUMEs. On start, a
 status of FROZEN means an earlier capture is still waiting: a FREEZE returns ALREADY_FROZEN with its id, and the node

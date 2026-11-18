@@ -58,6 +58,7 @@ export const TOPIC_POLICY = Object.freeze({
     '/cone/heartbeat':        { cls: R, throttleMs: 0 },
     '/camera/heartbeat':      { cls: R, throttleMs: 0 },   // Wave camera adapter (record panel)
     '/hand_fan/status':       { cls: R, throttleMs: 0 },   // Hand fan pill and toggle (1 Hz)
+    '/platform_imu/status':   { cls: R, throttleMs: 0 },   // Platform IMU upload row (2 Hz; read-only in replay)
     '/control_mode_topic':    { cls: R, throttleMs: 0, onChange: true },
     '/profile':               { cls: H, throttleMs: 0 },
     '/udp_diag':              { cls: H, throttleMs: 0 },
