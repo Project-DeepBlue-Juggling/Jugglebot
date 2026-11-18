@@ -1,6 +1,6 @@
 """Where the running robot writes: the ONE path source for runtime files.
 
-**The invariant** (``plans/active/night-shift-closeout.md`` Phase C8): a
+**The invariant** (``plans/archived/night-shift-closeout.md`` Phase C8): a
 running launch leaves ``git status`` of the live checkout empty. The robot
 used to append to two TRACKED files during a Sitting -- the records ledger
 ``docs/records.md`` and the learner's Memory

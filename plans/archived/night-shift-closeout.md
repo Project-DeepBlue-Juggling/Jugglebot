@@ -1,7 +1,9 @@
 ---
 title: Night Shift close-out - bind the merge to the gate, walk only the delta, stop the robot writing tracked files, notes-only Sitting sheets
 created: 2026-11-13
-status: active
+status: completed
+completed: 2026-11-18
+archived: 2026-11-18
 owner: Harrison
 last_updated: 2026-11-18
 pathway: night-shift
@@ -236,3 +238,25 @@ Each unit stays under the ~80-call agent cap. Parallel lanes (A to G in the desi
 7. The index Runbook versus the app /runbook, sheet scope order and a frozen debrief test: hence C11's three phases. R6 is reworded.
 8. Tools that read tracked memory mid-day (migration, probes) see the state at the last debrief; acceptable, and C8's docstring says so.
 9. Timing versus R6: per Decision 10, a held branch merged by the 2026-11-13 debrief on the existing prose procedure meets R6 before C10 exists; C10's first merge counts only if that did not happen. C17 is worded to match.
+
+## Archival note (2026-11-18)
+
+**Shipped:** all seventeen steps. Every merge to main is covered by a gate record (C1), the walk covers the delta (C4), skip reasons live on the Item (C3), the robot writes Memory and records under `temp/runtime` and the debrief merges them back (C8), Sitting sheets record notes and the debrief derives verdicts (C9), the debrief merge is a tested script (C10), and `docs/runbook.md` is the Sitting index (C11). **Why it closed:** C8's acceptance was met at the Sitting of 2026-11-18 and the phase-closure run passed the same day (`logbook/2026-11-18-night-shift-closeout-c8-c17-closed.md`).
+
+**Seen live since the Status section was written** (it is kept as the record of its dates):
+
+- A gate record covering a merge: the night of 2026-11-16 (`docs/night-shift/history.jsonl`, `landed: gated=10 exempt=13 ungated=0`; BUG-91 and BUG-97 merged).
+- The first full-walk night, 2026-11-15 (`full_walk=1 delta=88 unchanged=49`), and delta nights on 2026-11-16, 17 and 18.
+- A Sitting on a schema-2 notes-only sheet and a debrief through derive, confirm and close, with merges through `tools/sitting_merge.sh`: 2026-11-18 (`map/sheets/2026-11-18-robot.results.yaml`, `logbook/2026-11-18-sitting-debrief.md`).
+- FEAT-42 is complete.
+
+**Not seen live at archival:** a night that reads a rosbag, a NOTHING_NEW night (both covered by tests only), and the End Sitting push as a distinct event.
+
+**Residue and where it lives:**
+
+- BUG-109 (in progress): the history ledger re-adds old-form branch names; the runner-side fix is still to be decided.
+- BUG-100, BUG-101 and FEAT-51 (inbox, under PWAY-9): a dead ticker claim hiding a RED, the single live-Sitting check of unattended runners, and a merge gate that runs the suite itself (the F1 follow-up).
+- Unowned, no Item: a script the night writes and runs outside the no-network wrapper (C7); the committer-identity exemption C2 did not build; two untracked `temp/learn/` directories of 2026-11-03 and 2026-11-05 in the live checkout (C8).
+- PWAY-9 stays active until the owner asks for it to close.
+
+**Residual xfail markers:** none in this plan's tests. One strict xfail landed in the same date range from other work (`tests/motion/test_cup_zvd.py::test_the_zvd_rows_do_not_make_the_hand_stop_and_go_in_flight`, BUG-90, reason cites `logbook/2026-11-13-sitting-debrief.md`).

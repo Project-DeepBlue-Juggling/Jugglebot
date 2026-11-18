@@ -1,4 +1,4 @@
-"""Phase C8 (``plans/active/night-shift-closeout.md``): the running robot never
+"""Phase C8 (``plans/archived/night-shift-closeout.md``): the running robot never
 writes a tracked file.
 
 The invariant: a running launch leaves ``git status`` of the live checkout
