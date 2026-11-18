@@ -128,8 +128,8 @@ from teensy_link.rpc import HandMoveToUnavailable, RpcTimeout
 from teensy_link.fault_logic import LinkLossLatch
 from jugglebot import stream_tuning as _tuning
 from teensy_link.gap_monitor import (
-    EMPTY_STATS, HAND_C1_COVER_MS, SCHED_COVER_MS, DownlinkLossTracker,
-    EpisodeLatch, GapTracker)
+    EMPTY_STATS, HAND_C1_COVER_MS, SCHED_COVER_LEG_MS, SCHED_COVER_MS,
+    DownlinkLossTracker, EpisodeLatch, GapTracker)
 from teensy_link.hand_feedback_watch import HandFeedbackWatch
 from teensy_link.setpoint_pump import SetpointPump, FLAG_HAS_HAND, HAND_FF_GAIN_MAX
 from teensy_link.stop_record import StopRecordLog
@@ -6495,8 +6495,10 @@ class TeensyBridgeNode(Node):
         """WARN (<= 1/s) when the firmware's ``sched_stops`` rises while armed,
         and ONCE at a disarm edge.
 
-        A rise while streaming means the lane's cover (2 knots x 25 ms + 20 ms
-        grace = ~70 ms) expired. Three verdicts, and this WARN prints the
+        A rise while streaming means a group's cover (2 knots x 25 ms + the
+        group's grace: Hand 20 ms = ~70 ms, legs 30 ms = ~80 ms since FW 44)
+        expired; the verdicts judge against the Hand's, the earlier one
+        (``SCHED_COVER_MS``). Three verdicts, and this WARN prints the
         measured host maxima for the last ~1 s window (published on
         /link_status as max_forward_gap_ms / max_loop_gap_ms) plus, from FW 38
         (BUG-58), the firmware's own counters and frame ages:
@@ -6545,7 +6547,7 @@ class TeensyBridgeNode(Node):
         fwd, loop = self._gap_snap
         open_ms = self._fwd_gap.open_gap_ms(time.monotonic())
         # A Hand C1 stop (FW 37, fast upstroke) fires at the 50 ms cover + the
-        # short C1 grace, not at the 70 ms lane cover: judge against that.
+        # short C1 grace, not at the 70 ms Hand lane cover (legs 80 ms): judge against that.
         c1 = self._sched_c1_delta() > 0
         cover_ms = HAND_C1_COVER_MS if c1 else SCHED_COVER_MS
         clean = (fwd.n > 0 and fwd.max_ms < cover_ms
@@ -6582,14 +6584,14 @@ class TeensyBridgeNode(Node):
                    cover_ms, _SP_DROP_WINDOW_S))
         else:
             verdict = (
-                'the lane cover (~%.0f ms) expired. Candidates: emitter gap '
+                'a lane cover (Hand ~%.0f ms, legs ~%.0f ms) expired. Candidates: emitter gap '
                 '(setpoints arrived late) vs bridge forwarding gap (this node '
                 'starved). Window maxima: forward gap %.1f ms (p99 %.1f, open '
                 '%.1f), bridge loop gap %.1f ms. Loop gap near the forward gap '
                 '= bridge stall; loop gap small = the stream itself was late '
                 '(see /trajectory/status max_emit_gap_ms)'
-                % (cover_ms, fwd.max_ms, fwd.p99_ms, open_ms,
-                   loop.max_ms))
+                % (cover_ms, SCHED_COVER_LEG_MS, fwd.max_ms, fwd.p99_ms,
+                   open_ms, loop.max_ms))
         if c1:
             verdict = (
                 'Hand C1 stop (fast upstroke): the Hand\'s cover ended at '

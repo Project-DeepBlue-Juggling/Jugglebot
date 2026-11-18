@@ -4,7 +4,7 @@ kind: bug
 title: teensy_bridge_node forwards only the newest waiting knot; harmless at emit lead 0, but the cover has 7-14 ms of margin against a stall
 status: in_progress
 created: '2026-11-13'
-updated: '2026-11-18T02:08:21Z'
+updated: '2026-11-18T06:47:51Z'
 owners: []
 priority: high
 effort: s
@@ -18,6 +18,7 @@ links:
 - map/bug-40-hz-setpoint-stream-starved-past-the-firmware-s-70-ms.md
 - map/feature-firmware-stop-record-report-why-a-scheduler-cover-ended.md
 - logbook/2026-11-18-sitting-debrief.md
+- logbook/2026-11-18-leg-scheduler-grace-30ms.md
 filed_by: claude
 night_skip: sitting
 night_skip_on: '2026-11-15'
@@ -67,3 +68,4 @@ On 2026-11-13 both LANE_REFUSED ends (11:46:53, 11:49:33) followed a :5557 drain
 ## Progress
 
 - 2026-11-18: Failed at the Sitting of 2026-11-18 on clause 2 only: the counter works (3.2 drops per minute with cpu_partition off, 3.3 on: no measurable difference), but 4 of 7 in-Attempt stamp-gap STOPs lack the dropped-a-knot verdict. The dropped knot marks lateness; it is the cause only in the early-emit cases (BUG-110). Detail and owner decisions: the 2026-11-18 debrief entry.
+- 2026-11-18: Owner decision 2026-11-18: the firmware scheduler grace is now per lane group, Legs 30 ms (cover 80 ms), Hand unchanged at 20 ms (a global 30 ms let a Hand moving down at 70-100 rev/s stop past the floor clip). can-bridge FW 44. Emit lead and the due-aware bridge rule stay undecided.

@@ -1,6 +1,7 @@
 """The firmware STOP record (FEAT-46, can-bridge FW 42, PROTOCOL_VERSION 13).
 
-Every scheduler STOP on the can-bridge (the 70 ms cover + grace running out, or
+Every scheduler STOP on the can-bridge (the group's cover + grace running out:
+the Hand's at 70 ms, the legs' at 80 ms since FW 44, 70 through FW 43; or
 the Hand C1 stop at 64 ms) writes a record for its lane group (legs or Hand),
 and ``HeartbeatT2J`` re-sends the latest record per group at 10 Hz. This module
 decodes the two slots and says why the cover ended.

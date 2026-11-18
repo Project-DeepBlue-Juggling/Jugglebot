@@ -4,7 +4,7 @@ kind: bug
 title: 'can-bridge fatal CAN-silence check wraps when a frame is stamped after its clock read: a live Leg reads silent and the Platform Stows'
 status: in_progress
 created: '2026-11-14'
-updated: '2026-11-14T20:05:42Z'
+updated: '2026-11-18T06:48:01Z'
 owners:
 - night-shift
 priority: high
@@ -54,3 +54,4 @@ A CAN_BUS_DOWN trip whose latched record names Leg 0xFF with age 0: the rescan a
 ## Progress
 
 - 2026-11-15: Night Shift 2026-11-15: held on night-shift/2026-11-15-BUG-93: firmware is gate-frozen and unflashed (FW 44); suite failed only the 4 Sunday runner tests (BUG-107); 3 same-class findings open; unblocked by a flash and a Sitting
+- 2026-11-18: 2026-11-18: main is now can-bridge FW 44 (per-group scheduler grace). The held branch of this Item also calls its firmware FW 44 and must renumber to FW 45 (version constant, history line, EXPECTED_BRIDGE_FW_VERSION, xref tests) before it lands.

@@ -250,7 +250,7 @@ and Memory already committed (section 0). One Item at a time, `prepare` to `land
    after section 0's merge. If a launch ran since then, run the merge and the records commit of
    section 0 again.
 
-## 5. Follow-ups, logbook, Runbook, commit
+## 5. Follow-ups, logbook, Sitting index, commit
 
 1. For every note that names a new problem or idea, file it:
    `python -m mapkit item new <bug|feature|idea> "<title>" --body "<the note, with the Item and date>" --link map/<stem>.md --priority <p>` (no `--commit`; the files ride in the debrief commit).
@@ -258,7 +258,7 @@ and Memory already committed (section 0). One Item at a time, `prepare` to `land
 2. Write `logbook/<date>-sitting-debrief.md` (short form: the results table, what merged with
    SHAs, what stayed held and why, follow-ups filed, the rebuild if any); step 3 gives it its
    `logbook/INDEX.md` row.
-3. `python -m mapkit gen` (`logbook/INDEX.md` gains the entry's row; the Runbook index `docs/runbook.md` drops the passed Items and keeps
+3. `python -m mapkit gen` (`logbook/INDEX.md` gains the entry's row; the Sitting index `docs/runbook.md` drops the passed Items and keeps
    the failed ones; the project-map page follows the status changes).
 4. `./run_tests.sh` (each merged branch passed the full gate on its updated tip; the merged
    result gets the per-commit gate here, the nightly covers the rest tonight). Red: stop, say
@@ -274,7 +274,7 @@ and Memory already committed (section 0). One Item at a time, `prepare` to `land
 ## 6. Finish
 
 Say, in three lines: results read (passed / failed), merged and closed (with SHAs), held
-(with why). Offer the owner `/sitting-sheet <rig>` for the next Sitting (the Runbook index lists what waits) and nothing else.
+(with why). Offer the owner `/sitting-sheet <rig>` for the next Sitting (the Sitting index lists what waits) and nothing else.
 
 Pinned by `tests/sim/test_sitting_debrief_protocol.py`: this file names every close-out step
 (the flush call first, results read, derive, one owner confirmation, confirm, close, per-Item
