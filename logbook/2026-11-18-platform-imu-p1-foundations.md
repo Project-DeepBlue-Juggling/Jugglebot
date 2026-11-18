@@ -2,7 +2,7 @@
 title: "Platform IMU foundations: protocol constants and spec (P1a), capture ring, protocol logic and non-blocking driver with native tests (P1b) (IDEA-20)"
 type: feature
 date: 2026-11-18
-status: in-progress
+status: complete
 phase: "platform-imu P1"
 related_plan: "platform-imu.md"
 related_issues: []
@@ -51,6 +51,6 @@ tags: [imu, capture, can, native-tests]
 - Audit-fix commit, `source ~/Desktop/PDJ_venv/venv/bin/activate && pytest tests/firmware -q -p no:cacheprovider` (started 2026-11-18, finished after midnight): 343 passed, 4 skipped in 324.51 s; then `pytest tests/firmware/test_native_firmware.py -q -p no:cacheprovider -k "icm or platform_imu"` (2026-11-19): 2 passed.
 - Docs commit (2026-11-19): `g++ -std=c++17 -O2 -Wall -I hal_shims -I <Teensy_code_platform> test_platform_imu.cpp` after the N8 test-data fix (accel config 0x06): 41 cases, 326525 assertions, 0 failed.
 - `pio run -e teensy40` on a scratchpad copy of the Platform sketch plus a throwaway TU including `imu_proto.h` and `icm42688.h` (2026-11-18): SUCCESS, text 62784, data 12992, bss 29088, no warnings from the IMU files.
-- Full gate (`./run_tests.sh --full`): FULL-GATE-TRIPLE-PENDING
+- Full gate (`./run_tests.sh --full`): 2026-11-19, `flock /tmp/jugglebot-tests.lock ./run_tests.sh --full` on branch tip 3b649a1a (before the rebase onto b18a8094): **RESULT PASS**, parallel 10320 passed, 62 skipped, 1 xfailed in 662.35 s; serial 10 passed in 39.88 s; total 713 s.
 
 **Not verified.** Nothing ran on hardware, and the driver's step function was compiled for the Teensy but never exercised against a chip. The entry stays in-progress until the full-gate line above is filled.
