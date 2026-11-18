@@ -21,21 +21,25 @@
 #   file of the --item Item (found by its id through the base's mapkit; main is the authority
 #   for map state) takes the base's copy and runs `python -m mapkit gen`; the Item's file is
 #   announced `TOOK MAIN's copy of map/<file>`, in the gate log header too, and the branch's
-#   copy is kept as DIR/branch-copy-<ID>.md. Any other conflict, another map/ file included,
-#   aborts the merge and stops with the paths named. Writes DIR/diff-<ID>.patch (base...HEAD; refuses an
-#   empty one), then runs `./run_tests.sh --full` in the worktree under the base's
-#   night_shift_nonet.sh and `flock /tmp/jugglebot-tests.lock`, into DIR/gate-<ID>.log:
-#   HEAD=/BRANCH= first, the suite output, HEAD=/BRANCH= again, EXIT= last.
-# land: refuses unless the gate log's HEAD= lines all equal the worktree's HEAD (nothing was
-#   committed after the suite), the worktree is clean, the log's last EXIT= is 0, and
-#   DIR/audit-<ID>.md exists; refuses if origin/main is not the base prepare merged (it never
-#   improvises a merge: re-run prepare) and refuses a frozen-path branch again. Then runs the
-#   gate from an extract of the base (never the branch's copy) with
-#   `--waive c --record <verdicts>` (and --app-log DIR/app-<ID>.log when present). MERGE (and
-#   the MERGE record on disk): pushes exactly the gated tip to main, as a fast-forward and
-#   never forced, deletes the remote branch, removes the worktree and local branch, appends
-#   one JSON line to <repo>/temp/reports/sitting-merge.jsonl. HOLD: prints the gate's reasons,
-#   keeps everything. Re-running land after a land finishes any cleanup and exits 0.
+#   copy is kept as DIR/branch-copy-<ID>.md (the prepare record's header says so too). Any other
+#   conflict, another map/ file included, aborts the merge and stops with the paths named. Writes
+#   DIR/diff-<ID>.patch (base...HEAD; refuses an empty one) and the prepare record
+#   DIR/prepared-<ID> (HEAD=<the merged tip>, BRANCH=, any TOOK lines). It runs NO suite: the
+#   suite runs once, inside the gate, at land (FEAT-51).
+# land: refuses unless the worktree's HEAD is the prepare record's HEAD= (nothing was committed
+#   after prepare), the worktree is clean and DIR/audit-<ID>.md exists; refuses if origin/main is
+#   not the base prepare merged (it never improvises a merge: re-run prepare), a live robot
+#   session, and a frozen-path branch again. Then runs the gate from an extract of the base
+#   (never the branch's copy) with `--waive c --record <verdicts>` (and --app-log
+#   DIR/app-<ID>.log when present). The gate itself runs `./run_tests.sh --full` on that tip in
+#   a detached worktree under the base's night_shift_nonet.sh and the suite lock, into
+#   <verdicts>/gate-<tip12>.log, and counts the collected tests against the base. A red suite
+#   (a HOLD whose [a] line is the suite's exit or timeout) is refusal 7; any other HOLD is 13.
+#   MERGE (and the MERGE record for the worktree's unchanged HEAD on disk): pushes exactly the
+#   gated tip to main, as a fast-forward and never forced, deletes the remote branch, removes the
+#   worktree and local branch, appends one JSON line to <repo>/temp/reports/sitting-merge.jsonl.
+#   HOLD: prints the gate's reasons, keeps everything. Re-running land after a land finishes any
+#   cleanup and exits 0.
 #
 # Why a fast-forward and not --no-ff: main then IS the gated tree, and every commit it gains
 # is an ancestor of the MERGE record's tip, which tools/night_shift_landed.py counts as gated
@@ -44,14 +48,15 @@
 # Options: --repo R (default: the git top level of the current directory), --origin NAME
 # (default origin), --verdicts DIR (default $NIGHT_SHIFT_VERDICTS, then
 # ~/.local/state/jugglebot/verdicts, the gate's and the landed check's default).
-# Test-only environment: SITTING_MERGE_LOCK (the suite lock file), SITTING_MERGE_PYTHON.
+# Test-only environment: SITTING_MERGE_LOCK (the suite lock file, passed to the gate as
+# NIGHT_SHIFT_SUITE_LOCK, which moves the lock and never removes it), SITTING_MERGE_PYTHON.
 #
 # Exit codes (every refusal prints one line `REFUSED <code> <reason>` on stderr):
-#   0 prepare: suite green, ready for the audit; land: landed, or already landed
-#   2 usage                       3 live robot session (prepare)
+#   0 prepare: merged, ready for the audit; land: landed, or already landed
+#   2 usage                       3 live robot session (prepare, land)
 #   4 frozen path (f)             5 conflict beyond the generated pages and the Item's own map file
-#   6 the branch adds nothing     7 suite red (prepare writes the log; land reads it)
-#   8 no gate log (land)          9 committed after the suite: HEAD is not the log's HEAD=
+#   6 the branch adds nothing     7 suite red (land: the gate's own run on the prepared tip)
+#   8 no prepare record (land)    9 committed after prepare: HEAD is not the record's HEAD=
 #  10 uncommitted changes in the worktree
 #  11 no audit file (land)       12 main moved since prepare (or during the push): re-run prepare
 #  13 HOLD (land)                14 gate error, or a MERGE with no record on disk
@@ -95,7 +100,7 @@ elif [[ -x "$HOME/Desktop/PDJ_venv/venv/bin/python" ]]; then PYTHON="$HOME/Deskt
 else PYTHON="python3"; fi
 
 WT="$WORK/wt-$ITEM"; EXTRACT="$WORK/gate-base-$ITEM"
-GATE_LOG="$WORK/gate-$ITEM.log"; AUDIT="$WORK/audit-$ITEM.md"; APP_LOG="$WORK/app-$ITEM.log"
+PREPARED="$WORK/prepared-$ITEM"; AUDIT="$WORK/audit-$ITEM.md"; APP_LOG="$WORK/app-$ITEM.log"
 BASE_FILE="$WORK/base-$ITEM"; DIFF="$WORK/diff-$ITEM.patch"
 JSONL="$REPO/temp/reports/sitting-merge.jsonl"
 RREF="refs/remotes/$ORIGIN"
@@ -158,7 +163,7 @@ GENERATED_RE='^(logbook/INDEX\.md|plans/[^/]+/INDEX\.md|docs/project-map\.md|doc
 
 prepare() {
   # Anything from an earlier prepare is stale the moment we start again.
-  rm -f "$GATE_LOG" "$AUDIT" "$DIFF" "$BASE_FILE" "$APP_LOG" "$WORK/branch-copy-$ITEM.md"
+  rm -f "$PREPARED" "$WORK/gate-$ITEM.log" "$AUDIT" "$DIFF" "$BASE_FILE" "$APP_LOG" "$WORK/branch-copy-$ITEM.md"
   fetch
   G rev-parse -q --verify "$RREF/$BRANCH^{commit}" >/dev/null || refuse 15 "no remote branch $ORIGIN/$BRANCH"
   local base; base="$(G rev-parse "$RREF/main")"
@@ -211,22 +216,12 @@ prepare() {
   [[ -s "$DIFF" ]] || refuse 6 "$BRANCH adds nothing to main (empty diff): nothing to audit or merge"
 
   local head; head="$(W rev-parse HEAD)"
-  printf 'HEAD=%s\nBRANCH=%s\n' "$head" "$(W rev-parse --abbrev-ref HEAD)" > "$GATE_LOG"
+  printf 'HEAD=%s\nBRANCH=%s\n' "$head" "$(W rev-parse --abbrev-ref HEAD)" > "$PREPARED"
   for p in "${taken[@]+"${taken[@]}"}"; do
-    echo "TOOK MAIN's copy of $p (merge conflict; the branch's copy is $WORK/branch-copy-$ITEM.md)" >> "$GATE_LOG"
+    echo "TOOK MAIN's copy of $p (merge conflict; the branch's copy is $WORK/branch-copy-$ITEM.md)" >> "$PREPARED"
   done
-  info "suite on $head (waits for $LOCK); log $GATE_LOG"
-  local rc=0
-  (
-    set +eu
-    [[ -n "${ROS_DISTRO:-}" || ! -f /opt/ros/foxy/setup.bash ]] || source /opt/ros/foxy/setup.bash
-    [[ -n "${VIRTUAL_ENV:-}" || ! -f "$HOME/Desktop/PDJ_venv/venv/bin/activate" ]] || source "$HOME/Desktop/PDJ_venv/venv/bin/activate"
-    cd "$WT" && exec flock "$LOCK" "$EXTRACT/tools/night_shift_nonet.sh" ./run_tests.sh --full
-  ) >> "$GATE_LOG" 2>&1 || rc=$?
-  printf 'HEAD=%s\nBRANCH=%s\nEXIT=%s\n' "$(W rev-parse HEAD)" "$(W rev-parse --abbrev-ref HEAD)" "$rc" >> "$GATE_LOG"
-  (( rc == 0 )) || refuse 7 "suite red (EXIT=$rc) on $head; see $GATE_LOG; the branch stays held"
   echo "PREPARED $ITEM $head"
-  echo "next: audit $DIFF, write $AUDIT ending 'Audited HEAD: $head' and 'Behaviour-affecting findings open: <n>', then land"
+  echo "next: audit $DIFF, write $AUDIT ending 'Audited HEAD: $head' and 'Behaviour-affecting findings open: <n>', then land (the gate runs the full suite on $head there)"
 }
 
 finish_cleanup() {  # idempotent: remote branch, worktree, local branch, the jsonl line
@@ -243,14 +238,14 @@ finish_cleanup() {  # idempotent: remote branch, worktree, local branch, the jso
   mkdir -p "$(dirname "$JSONL")"
   if ! grep -qs "\"tip\": \"$tip\"" "$JSONL"; then
     printf '{"ts": "%s", "item": "%s", "branch": "%s", "tip": "%s", "base": "%s", "verdict": "MERGE", "record": "%s", "gate_log": "%s", "audit": "%s"}\n' \
-      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ITEM" "$BRANCH" "$tip" "$base" "$record" "$GATE_LOG" "$AUDIT" >> "$JSONL"
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ITEM" "$BRANCH" "$tip" "$base" "$record" "$VERDICTS/gate-${tip:0:12}.log" "$AUDIT" >> "$JSONL"
   fi
 }
 
 land() {
   fetch
   local logged=""
-  [[ -f "$GATE_LOG" ]] && logged="$(grep -E '^HEAD=' "$GATE_LOG" | head -1 | cut -d= -f2)"
+  [[ -f "$PREPARED" ]] && logged="$(grep -E '^HEAD=' "$PREPARED" | head -1 | cut -d= -f2)"
   # Already landed? (a re-run after a land, or after one whose cleanup was cut short)
   if [[ -n "$logged" ]] && G cat-file -e "$logged^{commit}" 2>/dev/null \
       && G merge-base --is-ancestor "$logged" "$RREF/main" \
@@ -260,34 +255,46 @@ land() {
     return 0
   fi
   [[ -d "$WT" ]] || refuse 16 "no prepared worktree $WT and $ITEM has not landed: run prepare first"
-  [[ -f "$GATE_LOG" ]] || refuse 8 "no gate log $GATE_LOG: run prepare"
+  [[ -f "$PREPARED" && -n "$logged" ]] || refuse 8 "no prepare record $PREPARED: run prepare"
   [[ -f "$BASE_FILE" ]] || refuse 8 "no base record $BASE_FILE: run prepare"
   local head base; head="$(W rev-parse HEAD)"; base="$(cat "$BASE_FILE")"
-  local h
-  for h in $(grep -E '^HEAD=' "$GATE_LOG" | cut -d= -f2); do
-    [[ "$h" == "$head" ]] || refuse 9 "the worktree HEAD $head is not the gate log's HEAD=$h: something was committed after the suite; re-run prepare"
-  done
-  [[ -z "$(W status --porcelain)" ]] || refuse 10 "worktree $WT has uncommitted changes after the suite; re-run prepare"
-  local last; last="$(grep -E '^EXIT=' "$GATE_LOG" | tail -1 | cut -d= -f2)"
-  [[ "$last" == "0" ]] || refuse 7 "gate log $GATE_LOG ends EXIT=${last:-none}: the suite did not pass"
+  [[ "$logged" == "$head" ]] || refuse 9 "the worktree HEAD $head is not the prepared HEAD=$logged: something was committed after prepare; re-run prepare"
+  [[ -z "$(W status --porcelain)" ]] || refuse 10 "worktree $WT has uncommitted changes after prepare; re-run prepare"
   [[ -f "$AUDIT" ]] || refuse 11 "no audit $AUDIT: run /audit on $DIFF and write it, ending 'Audited HEAD: $head'"
   local main; main="$(G rev-parse "$RREF/main")"
   [[ "$main" == "$base" ]] || refuse 12 "main moved since prepare ($base -> $main): re-run prepare (a fresh merge, suite and audit); never merged untested"
   G merge-base --is-ancestor "$base" "$head" || refuse 12 "the prepared tip does not contain the base: re-run prepare"
 
   extract_base "$base"
+  # The suite runs inside the gate below: never while the robot is live.
+  # shellcheck source=lib/live_session.sh
+  source "$EXTRACT/tools/lib/live_session.sh" || refuse 15 "cannot source the base's live_session.sh"
+  declare -F live_session >/dev/null || refuse 15 "the base's live_session.sh defines no live_session"
+  if live_session; then refuse 3 "a live robot session holds the box (launch up); the gate's full suite waits for it to end"; fi
   refuse_frozen "$base" "$head"
-  local args=(--repo "$REPO" --base "$base" --branch "$BRANCH" --item "$ITEM" --gate-log "$GATE_LOG"
+  local args=(--repo "$REPO" --base "$base" --branch "$BRANCH" --item "$ITEM"
               --audit "$AUDIT" --waive c --record "$VERDICTS")
   [[ -f "$APP_LOG" ]] && args+=(--app-log "$APP_LOG")
+  info "gate on $head: it runs the full suite itself (waits for $LOCK); log $VERDICTS/gate-${head:0:12}.log"
   local out rc=0
-  out="$("$PYTHON" -I "$EXTRACT/tools/night_shift_gate.py" "${args[@]}" 2>&1)" || rc=$?
+  out="$(
+    set +eu
+    [[ -n "${ROS_DISTRO:-}" || ! -f /opt/ros/foxy/setup.bash ]] || source /opt/ros/foxy/setup.bash
+    [[ -n "${VIRTUAL_ENV:-}" || ! -f "$HOME/Desktop/PDJ_venv/venv/bin/activate" ]] || source "$HOME/Desktop/PDJ_venv/venv/bin/activate"
+    NIGHT_SHIFT_SUITE_LOCK="$LOCK" exec "$PYTHON" -I "$EXTRACT/tools/night_shift_gate.py" "${args[@]}" 2>&1
+  )" || rc=$?
   echo "$out"
-  if (( rc == 1 )); then refuse 13 "HOLD: $ITEM stays on $BRANCH; the worktree and logs in $WORK are kept"; fi
+  if (( rc == 1 )); then
+    if echo "$out" | grep -Eq '^\[a\] suite (exit|timed out)'; then
+      refuse 7 "suite red on $head (the gate's own run; log $VERDICTS/gate-${head:0:12}.log); $ITEM stays on $BRANCH"
+    fi
+    refuse 13 "HOLD: $ITEM stays on $BRANCH; the worktree and logs in $WORK are kept"
+  fi
   (( rc == 0 )) || refuse 14 "gate error (exit $rc); nothing pushed"
   [[ "$(echo "$out" | head -1)" == MERGE* ]] || refuse 14 "gate exited 0 without MERGE; nothing pushed"
   local record="$VERDICTS/$head.MERGE.json"
   [[ -f "$record" ]] || refuse 14 "no MERGE record $record on disk; nothing pushed"
+  [[ "$(W rev-parse HEAD)" == "$head" ]] || refuse 9 "the worktree HEAD moved during the gate; nothing pushed; re-run prepare"
 
   # Exactly the gated tip, as a fast-forward of the base; never forced.
   G push -q "$ORIGIN" "$head:refs/heads/main" >/dev/null 2>&1 \
