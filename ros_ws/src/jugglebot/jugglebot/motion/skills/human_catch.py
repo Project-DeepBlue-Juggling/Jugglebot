@@ -62,6 +62,9 @@ PHASES = (OPENING, WAITING, CATCHING, HOLDING, RETURNING)
 
 PLAN = 'PLAN'
 IGNORE = 'IGNORE'
+#: The key is held: its Landing is kept and the plan is made at the first
+#: :meth:`HumanCatchPolicy.poll` inside the plan window (``plan_lead_s``).
+PENDING = 'PENDING'
 
 #: Decline reasons (``Decision.reason``).
 NOT_AT_ROBOT = 'NOT_AT_ROBOT'          # rule A: farther than assoc_radius_mm
@@ -75,20 +78,38 @@ KEY_CLAIMED = 'KEY_CLAIMED'            # a later revision of the claimed key
 # -- per-Throw end codes ---------------------------------------------------
 
 #: Rule E's ALLOWLIST: a per-Throw executor ending in one of these CONTINUES
-#: the Attempt.  The first two are verdicts; the rest are what a refused first
-#: install returns (``executor.install_segment`` / ``unified_cycle``
-#: outcomes).  The design leaves the executor's exact end code for a refused
-#: first install unverified (section 7), so BOTH the bare gate codes and the
-#: executor's ``REJECTED_CYCLE_INFEASIBLE`` wrapper are listed; anything not
-#: listed (STOPPED, ABORTED_*, LANE_REFUSED, every other REJECTED_*
-#: precondition, a code nobody has seen) ENDS the Attempt.
+#: the Attempt.  The first two are verdicts; the rest are what a refused
+#: install of the CATCH returns as ``SkillExecutor.end_code`` (VERIFIED
+#: against the code, U5a, 2026-11-18): the executor copies
+#: ``InstallResult.code`` verbatim (``executor._dispatch``: ``self.end_code =
+#: res.code``), and ``install_segment`` puts the BARE subcode there
+#: (``except uc.CycleInfeasible: InstallResult(False, exc.code,
+#: exc.outcome())``); ``REJECTED_CYCLE_INFEASIBLE(...)`` is only the MESSAGE,
+#: never the code, so it is not listed.  The subcodes are every code the
+#: segment planner and its gate raise for "this move cannot be flown"
+#: (``feasibility``, ``cup_cycle`` reasons, ``unified_cycle``), the two
+#: wire-timing refusals, ``STALE_STATE`` (design 2.3 E) and
+#: ``WINDOW_TOO_SHORT`` (the node's own compile refusal).  NOT listed, so they
+#: END the Attempt: STOPPED, ABORTED_*, LANE_REFUSED, every REJECTED_*
+#: precondition, and the install-service refusals that say the MACHINE or the
+#: link is not fit (``WRONG_MODE``, ``GUARD_LATCHED``, ``SUPERSEDED_BY_HOLD``,
+#: ``PLANNER_MODE``, ``SERVICE_UNAVAILABLE``, ``SERVICE_TIMEOUT``: after a
+#: timeout nobody knows whether the CATCH is streaming), and any code nobody
+#: has seen.  ``REJECTED_SITE_OUTSIDE_WORKSPACE`` is a goal-ACCEPT refusal of
+#: the node's nomination only; no install returns it.
 CONTINUE_CODES = frozenset((
     'MISSED_CATCH', 'NO_LANDING',
-    'REJECTED_CYCLE_INFEASIBLE',
-    'LIMIT_VEL', 'LIMIT_ACC', 'LIMIT_JERK', 'WORKSPACE', 'UNREACHABLE',
-    'WINDOW_TOO_SHORT', 'ORIGIN_TOO_LATE', 'SPLICE_TOO_LATE',
-    'STALE_STATE', 'CATCH_CLOSING_SPEED', 'CATCH_AXIS', 'SETTLE_SITE',
-    'INFEASIBLE', 'MARGIN',
+    # feasibility gate
+    'UNREACHABLE', 'WORKSPACE', 'LIMIT_VEL', 'LIMIT_ACC', 'LIMIT_JERK',
+    'TOO_FAST', 'STEP_BOUND', 'HAND_STROKE', 'HAND_LIMIT_VEL',
+    'HAND_LIMIT_ACC', 'CUP_CONTACT_ACC', 'CUP_SEATING_CONE',
+    'CUP_SEATING_FLOOR', 'CATCH_CLOSING_SPEED',
+    # cup_cycle reasons
+    'SETTLE_SITE', 'CATCH_AXIS', 'INFEASIBLE', 'SINGULAR', 'UNVERIFIED',
+    # unified_cycle
+    'TILT_PIN', 'POSE_WINDOW', 'REPLAN_WINDOW',
+    # wire timing, stale seed, the node's compile window
+    'ORIGIN_TOO_LATE', 'SPLICE_TOO_LATE', 'STALE_STATE', 'WINDOW_TOO_SHORT',
 ))
 
 #: What a CAUGHT per-Throw executor ends with.
@@ -145,6 +166,8 @@ class Decision:
     lead_s: float = float('nan')
     dist_mm: float = float('nan')
     log: Optional[str] = None
+    #: On PLAN: the revision to compile from (the LATEST one received).
+    evt: Optional['HumanThrowEvt'] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -167,9 +190,21 @@ class HumanCatchPolicy:
         columns Pattern's P1 at (-50, 0) mm in the Platform frame).  The wait
         Site starts here and never leaves ``wait_radius_mm`` of it.
     :param first_lead_s: D3, PROPOSED 0.55 s.  The shortest lead (landing time
-        minus now) at which revision 0 may start a Catch.  The sweep
-        (``tools/probes/human_catch_reach.py``) is the evidence: below the
-        planner's own floor the install refuses everything.
+        minus now) at which a first plan may be made.  The sweep
+        (``tools/probes/human_catch_reach.py``) is the evidence: below about
+        0.51 s the install's own gate refuses everything.
+    :param plan_lead_s: PROPOSED 0.62 s (U5a, coordinator 2026-11-18, NOT in
+        the design): the EARLIEST lead at which a first plan is made.  A
+        key's revision 0 arriving with more lead than this is held
+        (:data:`PENDING`); its later revisions only replace the pending
+        Landing, and the plan is made from the LATEST revision at the first
+        :meth:`poll` where the remaining lead is at or below this.  Why: the
+        P1 gate replay (2026-11-18 bag) put the first event of a high Throw
+        p50 70 / p90 99 mm off truth at a lead of about 0.75 s, with
+        revisions correcting it within about 0.05 s, and the reach sweep
+        shows planning earlier than about 0.60 s extends no reach (the
+        workspace box bounds it), so an early first aim only costs accuracy.
+        ``math.inf`` plans at once (the design's original rule B).
     :param max_fit_age_s: rule B, PROPOSED 0.05 s: the oldest Fit a first plan
         may start from.
     :param assoc_radius_mm: D4, PROPOSED 400 mm: farther from W than this is
@@ -205,6 +240,7 @@ class HumanCatchPolicy:
 
     def __init__(self, *, home_xy_mm=(-50.0, 0.0),
                  first_lead_s: float = 0.55,
+                 plan_lead_s: float = 0.62,
                  max_fit_age_s: float = 0.05,
                  assoc_radius_mm: float = 400.0,
                  reaim_authority_mm: float = 50.0,
@@ -220,6 +256,10 @@ class HumanCatchPolicy:
                  workspace_half_mm: float = 150.0):
         self.home_xy_mm = np.asarray(home_xy_mm, dtype=float)[:2].copy()
         self.first_lead_s = float(first_lead_s)
+        self.plan_lead_s = float(plan_lead_s)
+        if not self.plan_lead_s >= self.first_lead_s:
+            raise ValueError('plan_lead_s %r must be >= first_lead_s %r'
+                             % (plan_lead_s, first_lead_s))
         self.max_fit_age_s = float(max_fit_age_s)
         self.assoc_radius_mm = float(assoc_radius_mm)
         self.reaim_authority_mm = float(reaim_authority_mm)
@@ -260,6 +300,8 @@ class HumanCatchPolicy:
         self._seen: Dict[Tuple[int, int], str] = {}   # key -> first verdict
         self._logged = set()
         self.claimed_key: Optional[Tuple[int, int]] = None
+        #: the held key's LATEST revision (plan window not yet reached)
+        self.pending: Optional[HumanThrowEvt] = None
         self.claimed = 0
         self._empty_since_s: Optional[float] = None
         self.declines: List[Decision] = []
@@ -304,16 +346,23 @@ class HumanCatchPolicy:
         if evt.key == self.claimed_key:
             return self._decline(evt, KEY_CLAIMED, now, lead, dist,
                                  'a later revision of the claimed Throw')
+        if self.pending is not None and evt.key == self.pending.key:
+            # the held key: keep its latest revision, plan at the window
+            if int(evt.revision) > int(self.pending.revision):
+                self.pending = evt
+            return Decision(PENDING, PENDING, evt.key, lead, dist, None)
         if evt.key in self._seen:
             return self._decline(evt, KEY_DECLINED, now, lead, dist,
                                  'a later revision of a declined Throw (%s)'
                                  % self._seen[evt.key])
-        if self.phase != WAITING:
+        if self.phase != WAITING or self.pending is not None:
             # not remembered as a verdict: BUSY is about the phase, and a
             # revision 0 that arrives busy is never planned later (B)
             self._seen[evt.key] = BUSY
             return self._decline(evt, BUSY, now, lead, dist,
-                                 'phase %s, one Ball at a time' % self.phase)
+                                 'phase %s%s, one Ball at a time'
+                                 % (self.phase, '' if self.pending is None
+                                    else ' (a Throw is pending)'))
         if int(evt.revision) != 0:
             self._seen[evt.key] = NOT_FIRST_REVISION
             return self._decline(evt, NOT_FIRST_REVISION, now, lead, dist,
@@ -329,11 +378,55 @@ class HumanCatchPolicy:
             return self._decline(evt, LEAD_TOO_SHORT, now, lead, dist,
                                  'lead %.3f s < first-plan lead %.3f s'
                                  % (lead, self.first_lead_s))
+        if lead > self.plan_lead_s:
+            self._seen[evt.key] = PENDING
+            self.pending = evt
+            first = (evt.key, PENDING) not in self._logged
+            self._logged.add((evt.key, PENDING))
+            return Decision(
+                PENDING, PENDING, evt.key, lead, dist,
+                ('HUMAN-CATCH-PENDING id %d seq %d: lead %.3f s > plan lead '
+                 '%.3f s, planning from the latest revision at the window'
+                 % (evt.key[0], evt.key[1], lead, self.plan_lead_s))
+                if first else None)
+        return self._claim(evt, lead, dist)
+
+    def _claim(self, evt, lead, dist) -> Decision:
         self._seen[evt.key] = PLAN
         self.claimed_key = evt.key
         self.claimed += 1
         self.phase = CATCHING
-        return Decision(PLAN, 'OK', evt.key, lead, dist, None)
+        return Decision(PLAN, 'OK', evt.key, lead, dist, None, evt=evt)
+
+    def poll(self, now_s: float) -> Optional[Decision]:
+        """The plan window for a held key, called every tick: None while
+        nothing is held or its lead is still above ``plan_lead_s``; else the
+        held key is resolved ONCE from its LATEST revision -- PLAN (the policy
+        moves to CATCHING), or IGNORE with the reason (``NOT_AT_ROBOT`` if the
+        revisions walked it out of association, ``LEAD_TOO_SHORT`` if the
+        window was first seen below ``first_lead_s``), logged once."""
+        evt = self.pending
+        if evt is None or self.phase != WAITING:
+            return None
+        now = float(now_s)
+        lead = float(evt.landing_time_s) - now
+        if lead > self.plan_lead_s:
+            return None
+        self.pending = None
+        xy = np.asarray(evt.landing_mm, dtype=float)[:2]
+        dist = float(np.linalg.norm(xy - self.wait_xy_mm))
+        if dist > self.assoc_radius_mm:
+            self._seen[evt.key] = NOT_AT_ROBOT
+            return self._decline(evt, NOT_AT_ROBOT, now, lead, dist,
+                                 'Landing %.0f mm from the wait Site > %.0f '
+                                 '(not thrown at the robot)'
+                                 % (dist, self.assoc_radius_mm))
+        if not lead >= self.first_lead_s:
+            self._seen[evt.key] = LEAD_TOO_SHORT
+            return self._decline(evt, LEAD_TOO_SHORT, now, lead, dist,
+                                 'lead %.3f s < first-plan lead %.3f s'
+                                 % (lead, self.first_lead_s))
+        return self._claim(evt, lead, dist)
 
     # -- phase transitions --------------------------------------------------
 

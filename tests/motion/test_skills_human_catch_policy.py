@@ -25,6 +25,8 @@ box); the pure-policy tests do not.
 from __future__ import annotations
 
 import importlib.util
+import re
+import math
 import os
 
 import numpy as np
@@ -54,6 +56,9 @@ def _evt(x, y, t_land, tid=1, seq=0, rev=0, age=0.0, final=False):
 
 
 def _waiting(**kw):
+    # plan_lead_s inf: the design's original rule B (plan at once); the plan
+    # window has its own tests at the end of this file (U5a)
+    kw.setdefault('plan_lead_s', math.inf)
     p = hc.HumanCatchPolicy(home_xy_mm=HOME, **kw)
     p.opening_done()
     return p
@@ -64,6 +69,7 @@ def _waiting(**kw):
 def test_defaults_are_the_designs_proposed_values():
     p = hc.HumanCatchPolicy()
     assert p.first_lead_s == 0.55                 # D3
+    assert p.plan_lead_s == 0.62                  # U5a plan window (PROPOSED)
     assert p.assoc_radius_mm == 400.0             # D4
     assert p.reaim_authority_mm == 50.0           # D5
     assert p.resend_max == 2                      # D6
@@ -185,7 +191,7 @@ def _catching():
 
 
 @pytest.mark.parametrize('code', ['MISSED_CATCH', 'NO_LANDING',
-                                  'REJECTED_CYCLE_INFEASIBLE', 'LIMIT_VEL',
+                                  'LIMIT_VEL', 'UNVERIFIED', 'HAND_STROKE',
                                   'LIMIT_ACC', 'LIMIT_JERK', 'WORKSPACE',
                                   'WINDOW_TOO_SHORT', 'ORIGIN_TOO_LATE',
                                   'SPLICE_TOO_LATE', 'STALE_STATE',
@@ -202,7 +208,11 @@ def test_allowlisted_codes_continue_the_attempt(code):
 @pytest.mark.parametrize('code', ['STOPPED', 'ABORTED_FAULT',
                                   'ABORTED_MODE_CHANGED', 'LANE_REFUSED',
                                   'REJECTED_MOCAP_STALE', 'REJECTED_NO_BALL',
-                                  'REJECTED_BALL_IN_HAND', 'SOMETHING_NEW', ''])
+                                  'REJECTED_BALL_IN_HAND', 'SOMETHING_NEW', '',
+                                  'REJECTED_CYCLE_INFEASIBLE', 'WRONG_MODE',
+                                  'GUARD_LATCHED', 'SUPERSEDED_BY_HOLD',
+                                  'SERVICE_TIMEOUT', 'SERVICE_UNAVAILABLE',
+                                  'REJECTED_SITE_OUTSIDE_WORKSPACE', 'MARGIN'])
 def test_every_other_code_including_an_unknown_one_ends_the_attempt(code):
     p = _catching()
     out = p.on_executor_done(code, moved=True)
@@ -224,10 +234,24 @@ def test_the_continue_codes_are_defined_names_in_the_code_base():
              'ORIGIN_TOO_LATE': ex.ORIGIN_TOO_LATE,
              'SPLICE_TOO_LATE': ex.SPLICE_TOO_LATE,
              'WINDOW_TOO_SHORT': ex.WINDOW_TOO_SHORT,
-             'UNREACHABLE': ex.UNREACHABLE,
-             'REJECTED_CYCLE_INFEASIBLE': ex.uc.OUTCOME_CODE}
+             'UNREACHABLE': ex.UNREACHABLE}
     for name, value in named.items():
         assert name == value and name in hc.CONTINUE_CODES
+    # U5a (verified 2026-11-18): every listed code is a constant some layer
+    # of the install path really returns as InstallResult.code; the
+    # REJECTED_CYCLE_INFEASIBLE wrapper is only ever the MESSAGE
+    import inspect
+    from jugglebot.motion import unified_cycle as uc
+    from jugglebot.motion.trajectory import cup_cycle as cc
+    from jugglebot.motion.trajectory import feasibility as feas
+    cup_reasons = set(re.findall(r"reason='([A-Z_]+)'", inspect.getsource(cc)))
+    cup_reasons |= {'INFEASIBLE', 'SINGULAR'}
+    feas_codes = {getattr(feas, n) for n in dir(feas)
+                  if n.isupper() and isinstance(getattr(feas, n), str)}
+    known = (set(named) | cup_reasons | feas_codes
+             | {uc.TILT_PIN, uc.POSE_WINDOW, uc.REPLAN_WINDOW})
+    assert hc.CONTINUE_CODES <= known, hc.CONTINUE_CODES - known
+    assert uc.OUTCOME_CODE not in hc.CONTINUE_CODES
 
 
 # -- rule F: the debounced cup ------------------------------------------------------
@@ -427,7 +451,7 @@ def test_walkthrough_2_a_300mm_landing_is_planned_by_the_policy_and_refused_by_t
     r = reach.check_reach(300.0, 0.0, 0.70)
     assert not r.ok and r.code == 'SETTLE_SITE'
     assert r.wall_s < 1.0                       # refused before any solve
-    out = p.on_executor_done('REJECTED_CYCLE_INFEASIBLE', moved=False)
+    out = p.on_executor_done(r.code, moved=False)  # the bare gate code (U5a, verified)
     assert out.next == hc.TO_WAITING and p.phase == hc.WAITING
     np.testing.assert_allclose(p.mean_landing_xy(), [250.0, 0.0])
     # W walks toward the owner, but never out of the box or 150 mm of home
@@ -450,3 +474,62 @@ def test_the_first_plan_lead_floor_is_just_under_the_proposed_d3():
     for ang in (0.0, 90.0, 180.0, 270.0):
         dx, dy = 100.0 * np.cos(np.radians(ang)), 100.0 * np.sin(np.radians(ang))
         assert reach.check_reach(dx, dy, 0.60).ok, ang
+
+
+# -- the plan window (U5a, coordinator 2026-11-18: PROPOSED plan_lead_s) -------
+
+def test_an_early_event_is_held_and_planned_once_from_the_latest_revision():
+    p = _waiting(plan_lead_s=0.62)
+    d = p.on_event(_evt(-50, 0, 1.0, rev=0), now_s=0.0)        # lead 1.0
+    assert d.kind == hc.PENDING and d.log and 'HUMAN-CATCH-PENDING' in d.log
+    assert p.phase == hc.WAITING and p.claimed == 0
+    assert p.poll(0.30) is None                                # lead 0.70
+    d = p.on_event(_evt(-20, 10, 1.01, rev=3), now_s=0.32)
+    assert d.kind == hc.PENDING and d.log is None
+    # an older revision arriving late never replaces a newer one
+    p.on_event(_evt(-90, 0, 1.0, rev=2), now_s=0.33)
+    d = p.poll(0.40)                                           # lead 0.61
+    assert d.kind == hc.PLAN and d.evt.revision == 3
+    assert d.evt.landing_mm[:2] == (-20, 10)
+    assert p.phase == hc.CATCHING and p.claimed == 1
+    assert p.poll(0.45) is None                                # once
+    assert p.on_event(_evt(-20, 10, 1.01, rev=4), 0.45).reason == hc.KEY_CLAIMED
+
+
+def test_an_event_inside_the_window_is_planned_at_once():
+    p = _waiting(plan_lead_s=0.62)
+    d = p.on_event(_evt(-50, 0, 0.60), now_s=0.0)
+    assert d.kind == hc.PLAN and d.evt.revision == 0
+    assert p.phase == hc.CATCHING
+
+
+def test_an_event_below_the_floor_is_declined_and_logged_once():
+    p = _waiting(plan_lead_s=0.62)
+    d = p.on_event(_evt(-50, 0, 0.50), now_s=0.0)
+    assert d.kind == hc.IGNORE and d.reason == hc.LEAD_TOO_SHORT and d.log
+    later = [p.on_event(_evt(-50, 0, 0.50, rev=r), now_s=0.01 * r)
+             for r in (1, 2, 3)]
+    assert all(x.kind == hc.IGNORE for x in later)
+    lines = [x.log for x in [d] + later if x.log]
+    assert sum('first-plan lead' in ln for ln in lines) == 1, lines
+    assert p.claimed == 0 and p.phase == hc.WAITING
+
+
+def test_a_held_key_first_polled_below_the_floor_is_declined_once():
+    p = _waiting(plan_lead_s=0.62)
+    assert p.on_event(_evt(-50, 0, 1.0), now_s=0.0).kind == hc.PENDING
+    d = p.poll(0.50)                                           # lead 0.50
+    assert d.kind == hc.IGNORE and d.reason == hc.LEAD_TOO_SHORT and d.log
+    assert p.poll(0.51) is None and p.claimed == 0
+
+
+def test_a_held_key_makes_a_second_ball_busy():
+    p = _waiting(plan_lead_s=0.62)
+    p.on_event(_evt(-50, 0, 1.0, tid=1), now_s=0.0)
+    d = p.on_event(_evt(-50, 0, 1.0, tid=2), now_s=0.0)
+    assert d.kind == hc.IGNORE and d.reason == hc.BUSY
+
+
+def test_the_plan_window_cannot_open_below_the_floor():
+    with pytest.raises(ValueError):
+        hc.HumanCatchPolicy(first_lead_s=0.55, plan_lead_s=0.5)
