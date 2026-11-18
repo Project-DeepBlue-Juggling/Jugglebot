@@ -21,7 +21,8 @@
  *  its encoder (FW 8 listens to node 6's temperature broadcast for the Hand fan,
  *  which is receive-only and carries no motion).  This board's TX set is the inclinometer frame (0x7DE), the
  *  RobotState reply (0x6E0), the firmware-update reply (0x6F1), the traffic
- *  report (0x7DF) and, since FW 9, the Hand fan status (0x6E2) — nothing else.  The stroke engine (Trajectory.h, the 0x6D0
+ *  report (0x7DF), since FW 9 the Hand fan status (0x6E2) and, since FW 11, the IMU reply,
+ *  status and data frames (0x6E4-0x6E6, ros_ws/docs/platform_imu_protocol.md) — nothing else.  The stroke engine (Trajectory.h, the 0x6D0
  *  TRAJ_CMD decode, the 0x0C9 hand-encoder cache) was deleted with it.
  *
  *  NOTE on CAN IDs:
@@ -37,6 +38,19 @@
 #include "protocol_config.h"  // Auto-generated from config/protocol_config.yaml
 #include "hand_fan.h"
 #include "loop_service.h"  // FW 11: tilt service, inclinometer probe, CAN dispatch bound
+
+/*  IMU KILL SWITCH (FW 11, IDEA-20 P2b).  1 = the ICM-42688 capture (imu_service.h); 0 = every
+ *  IMU code path compiled out: no Wire, no ring, no 0x6E3 handling, no 0x6E4-0x6E6 frames, so a
+ *  known-good no-IMU image builds from this same tree (pio run -e teensy40 with
+ *  build_flags -DPLATFORM_IMU_ENABLED=0).  At run time the IMU_CMD DISABLE does the same. */
+#ifndef PLATFORM_IMU_ENABLED
+#define PLATFORM_IMU_ENABLED 1
+#endif
+#if PLATFORM_IMU_ENABLED
+#include <Wire.h>
+#include "icm42688.h"
+#include "imu_service.h"
+#endif
 
 #define DEBUG_TRAFFIC 0    // 0 = silent, 1 = Serial print report CAN traffic frames
 #define DEBUG_TIME_SYNC 0  // 0 = silent, 1 = Serial print periodic messages showing how tight the clocks are synced
@@ -174,6 +188,12 @@
  *        With the sensor present, setup() makes the same single begin() as before.
  *        (d) loop() dispatches up to 32 received CAN frames per pass, not one.
  *        No motion path, no CAN id, no TX frame other than the tilt reply changed.
+ *        (e) IDEA-20 P2b: the Platform IMU (ICM-42688-P on Wire, pins 18/19, 1 MHz):
+ *        a 32 s capture ring in RAM2, frozen and uploaded on request over 0x6E3-0x6E6
+ *        (ros_ws/docs/platform_imu_protocol.md), status at 1 Hz.  STRICTLY OPTIONAL:
+ *        absent, unplugged or stuck, it costs at most one bounded I2C transaction per
+ *        loop() pass and backs off to one probe a minute; a firmware-update BEGIN stops
+ *        all of it.  Kill switch: PLATFORM_IMU_ENABLED (below the includes).
  */
 constexpr char     FW_NAME[]  = "jugglebot-platform";
 constexpr uint16_t FW_VERSION = 11;  // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
@@ -222,7 +242,8 @@ constexpr uint16_t FW_VERSION = 11;  // 1→2: 2026-07-29 throwDecelToTorque (po
                                      //      from loop() with an explicit invalid reply,
                                      //      bounded inclinometer probe in setup() plus
                                      //      re-probes from loop(), up to 32 CAN frames
-                                     //      dispatched per loop() pass.
+                                     //      dispatched per loop() pass. P2b: the Platform
+                                     //      IMU capture, status and upload (0x6E3-0x6E6).
 
 /*----------------------------------------------------------------------------*/
 /*                                CAN BUS SET‑UP                              */
@@ -338,6 +359,34 @@ void updateHandFan() {
 }
 
 /*----------------------------------------------------------------------------*/
+/*                       P L A T F O R M   I M U  (IDEA-20)                    */
+/*----------------------------------------------------------------------------*/
+#if PLATFORM_IMU_ENABLED
+/*  1 MHz (Fast-mode Plus).  400000 is the fallback: set it here if the board's pull-ups or
+ *  wiring do not hold 1 MHz; the I2C_400K flags then say so in STATUS and the header, and a
+ *  burst of 8 packets takes ~3.0 ms instead of ~1.3 ms. */
+constexpr uint32_t IMU_I2C_HZ = 1000000;
+static_assert(ImuService::INIT_PENDING == icm42688::Driver::INIT_PENDING, "imu_service.h mirrors the driver");
+static_assert(ImuService::ERR_BAD_PACKET == icm42688::ERR_BAD_PACKET, "imu_service.h mirrors the driver");
+static_assert(ImuService::BURST_PKTS <= icm42688::Driver::BURST_PKTS, "one burst is one Wire read");
+
+/*  The capture ring (32000 x 12 B = 384000 B) and anchor table in RAM2 (DMAMEM, .bss.dma),
+ *  linker-placed below the heap and so below the CrashReport area at 0x2027FF80.  DMAMEM is
+ *  NOT zeroed at boot: ImuCapture only ever reads slots it has written (count_, a_count_), so
+ *  nothing depends on the initial contents. */
+DMAMEM int16_t imuRingBuf[PlatformImu::RING_SAMPLES * 6] __attribute__((aligned(32)));
+DMAMEM ImuCapture::Anchor imuAnchors[PlatformImu::ANCHOR_RING];
+ImuCapture::Capture imuCapture;
+ImuService::Service imuService;
+icm42688::Driver imuChip(Wire);
+/*  Mixed with the cycle counter by every CAN frame received during setup() (canSniff runs in
+ *  FlexCAN's ISR then): the bus's timing against this board's boot is what makes boot_id
+ *  differ from one boot to the next.  Integer only. */
+volatile uint32_t imuBootEntropy = 0;
+volatile uint32_t imuTxQueuedAnyway = 0;  // write() queued an IMU frame (never expected; see ImuTx)
+#endif
+
+/*----------------------------------------------------------------------------*/
 /*                        ──  TIME–SYNC  LAYER ──                             */
 /*----------------------------------------------------------------------------*/
 namespace TimeSync {
@@ -413,6 +462,11 @@ inline void handleSyncFrame(const CAN_message_t &msg) {
   uint64_t jetson_us = uint64_t(sec) * 1'000'000ULL + usec;
   uint64_t local_us = micros64();
   int64_t offset = int64_t(jetson_us) - int64_t(local_us);
+#if PLATFORM_IMU_ENABLED
+  /* IMU_STATUS sync_peak: wall time received minus get_wall_time_us() before the IIR update,
+   * i.e. offset - wall_offset_us.  Integer only: this runs in FlexCAN's ISR during setup(). */
+  imuService.sync().note(!have_offset, offset - wall_offset_us);
+#endif
 
   if (!have_offset) {  // first frame → step
     wall_offset_us = offset;
@@ -841,6 +895,98 @@ void tick() {
 
 }  // namespace FwUpdate
 
+#if PLATFORM_IMU_ENABLED
+/*----------------------------------------------------------------------------*/
+/*                 P L A T F O R M   I M U   A D A P T E R S                  */
+/*----------------------------------------------------------------------------*/
+/*  ImuService (imu_service.h) decides; these are its hands.  Every Io method except stamp()
+ *  and header_info() is exactly ONE Wire transaction, bounded by the core's Wire timeouts
+ *  (WireIMXRT.cpp: wait_idle 16 ms then a 9-pulse force_clock(); 50 ms per transfer loop):
+ *  ~0.1 ms when nothing answers, ~17 ms with SDA held low, <= ~68 ms worst case per Wire call.
+ *  Those loops call yield(), which on this core runs only serialEvent/HardwareSerial/
+ *  EventResponder hooks, none of which this sketch defines: never can1.events(), never canSniff. */
+struct ImuIo {
+  void init_start() { imuChip.initStart(); }
+  int init_step(uint32_t now_us) { return imuChip.initStep(now_us); }
+  int fifo_count(bool *overflow) { return imuChip.fifoCount(overflow); }
+  int read_burst(ImuService::Pkt *out, int n) {
+    icm42688::Sample smp[icm42688::Driver::BURST_PKTS];
+    if (n > icm42688::Driver::BURST_PKTS) n = icm42688::Driver::BURST_PKTS;
+    const int got = imuChip.readFifo(smp, n);   // n <= 8: one 16n-byte Wire read
+    for (int i = 0; i < got; ++i) {
+      for (int j = 0; j < 3; ++j) { out[i].s[j] = smp[i].a[j]; out[i].s[3 + j] = smp[i].g[j]; }
+      out[i].temp = smp[i].temp;
+    }
+    return got;
+  }
+  int flush() { return imuChip.flushFifo(); }
+  int check_who() { return imuChip.checkWhoAmI(); }
+  /*  micros64() and the wall clock at one instant.  wall_offset_us is 64-bit and written by
+   *  handleSyncFrame, which after loop()'s first can1.events() runs only inside events(), in
+   *  loop() context; this runs in loop() too, so the two never interleave (no torn read). */
+  void stamp(ImuService::Stamp *s) {
+    const uint64_t l = TimeSync::micros64();
+    s->local_us = uint32_t(l);
+    s->wall_us = uint64_t(int64_t(l) + TimeSync::wall_offset_us);
+    s->wall_valid = TimeSync::have_offset;
+  }
+  void header_info(ImuCapture::HeaderInfo *h) {
+    h->odr_hz = imuChip.odr();
+    h->accel_lsb_per_g = uint16_t(32768u / imuChip.accelFs());                                // 2048 at 16 g
+    h->gyro_lsb_per_dps_x10 = uint16_t((327680u + imuChip.gyroFs() / 2) / imuChip.gyroFs());  // 328 at 1000 dps
+    h->reg_gyro_accel_config0 = icm42688::Driver::UI_FILT_CODE;
+    h->reg_accel_config0 = imuChip.regAccelConfig0();
+    h->reg_gyro_config0 = imuChip.regGyroConfig0();
+    h->i2c_clock_100khz = uint8_t(IMU_I2C_HZ / 100000u);
+    h->fw_version = FW_VERSION;
+    if (IMU_I2C_HZ < 1000000u) h->extra_flags |= PlatformImuCaptureFlag::I2C_400K;
+  }
+};
+
+/*  Free TX mailboxes, read from the FlexCAN registers.  The scan starts after the RX FIFO and
+ *  its filter table, with the same formula as FlexCAN_T4's private mailboxOffset() (with
+ *  setMaxMB(16) and the default RFFN: MB 8-15).  A TX mailbox is free when its CODE is
+ *  TX_INACTIVE, which the hardware also sets after a transmission. */
+uint32_t imuFreeTxMailboxes() {
+  const uint32_t b = uint32_t(CAN1);
+  const uint32_t maxmb = FLEXCANb_MAXMB_SIZE(b);
+  uint32_t off = 0;
+  if (FLEXCANb_MCR(b) & FLEXCAN_MCR_FEN) {
+    const uint32_t fifo = 6u + ((((FLEXCANb_CTRL2(b) >> FLEXCAN_CTRL2_RFFN_BIT_NO) & 0xFu) + 1u) * 2u);
+    off = fifo > maxmb ? maxmb : fifo;
+  }
+  uint32_t n = 0;
+  for (uint32_t i = off; i < maxmb; ++i)
+    if (FLEXCAN_get_code(FLEXCANb_MBn_CS(b, i)) == FLEXCAN_MB_CODE_TX_INACTIVE) ++n;
+  return n;
+}
+
+/*  The spec's TX rule (section 4): an IMU frame goes to write() only when write() is certain
+ *  to land it in a mailbox (ImuService::tx_may_place: SW queue empty, more than the reserve
+ *  free), so it can never enter FlexCAN_T4's queued-frame path, whose events() writes one
+ *  queued frame into every free mailbox.  The CAN interrupt is masked from the count to the
+ *  write so the TX-complete ISR cannot take the mailbox in between; a few microseconds, and
+ *  the 6-deep hardware RX FIFO holds what arrives meanwhile. */
+struct ImuTx {
+  bool place(uint32_t id, const uint8_t *d) {
+    NVIC_DISABLE_IRQ(IRQ_CAN1);
+    const bool ok = ImuService::tx_may_place(imuFreeTxMailboxes(), can1.getTXQueueCount());
+    if (ok) {
+      CAN_message_t m;
+      m.id = id;
+      m.len = 8;
+      memcpy(m.buf, d, 8);
+      if (can1.write(m) != 1) imuTxQueuedAnyway = imuTxQueuedAnyway + 1;
+    }
+    NVIC_ENABLE_IRQ(IRQ_CAN1);
+    return ok;
+  }
+};
+
+ImuIo imuIo;
+ImuTx imuTx;
+#endif  // PLATFORM_IMU_ENABLED
+
 /*----------------------------------------------------------------------------*/
 /*                          T R A F F I C   R E P O R T                       */
 /*----------------------------------------------------------------------------*/
@@ -1052,6 +1198,15 @@ void canSniff(const CAN_message_t &msg) {
     sendHandFanStatus();
   }
 
+#if PLATFORM_IMU_ENABLED
+  /* — Platform IMU command: copied into a pending slot, nothing else (FW 11).  No I2C and
+   * no engine work here: until loop()'s first events() this runs in FlexCAN's ISR. — */
+  imuBootEntropy = (imuBootEntropy * 31u) ^ ARM_DWT_CYCCNT ^ msg.id;
+  if (msg.id == PlatformCanId::IMU_CMD && !msg.flags.remote) {
+    imuService.cmds().push(msg.buf, msg.len);
+  }
+#endif
+
   /* ── firmware update over CAN  ID 0x6F0 ──────────────────────────
    * See § FIRMWARE UPDATE OVER CAN.  Returns early: the id has no other
    * meaning on this board, and a BEGIN/DATA burst has no business walking
@@ -1103,6 +1258,21 @@ void setup() {
   }
   tiltService.boot(sclOk, millis());
   Serial.println(sclOk ? "SCL3300 initialised." : "SCL3300 not answering: tilt NOT_READY, re-probing from loop().");
+#if PLATFORM_IMU_ENABLED
+  /* Platform IMU: OPTIONAL, after CAN.  Wire is configured here and NOT used: no device
+   * traffic in setup().  loop() starts probing BOOT_SETTLE_MS later, one bounded transaction
+   * per pass. */
+  Wire.begin();
+  Wire.setClock(IMU_I2C_HZ);
+  uint32_t bootId = imuBootEntropy ^ (ARM_DWT_CYCCNT * 2654435761u) ^ (receivedCount << 16);
+  bootId ^= bootId >> 15;
+  bootId *= 0x2C1B3C6Du;
+  bootId ^= bootId >> 12;
+  if (bootId == 0) bootId = 1;
+  imuCapture.init(imuRingBuf, PlatformImu::RING_SAMPLES, imuAnchors, PlatformImu::ANCHOR_RING, bootId);
+  imuService.set_i2c_400k(IMU_I2C_HZ < 1000000u);
+  imuService.init(&imuCapture, bootId, millis());
+#endif
   Serial.println("Teensy platform MCU ready.");
 }
 
@@ -1125,6 +1295,12 @@ void loop() {
 
   reportStatus();  // traffic monitor
   FwUpdate::tick();  // time out an abandoned firmware-update session
+#if PLATFORM_IMU_ENABLED
+  /* Platform IMU: at most ONE bounded step (one I2C transaction, one CRC slice or one
+   * IMU_DATA frame), after the dispatch and the firmware-update tick, so a BEGIN or an
+   * abandoned session is seen before any I2C this pass (imu_service.h). */
+  imuService.pass(micros(), millis(), FwUpdate::sessionOpen(), imuIo, imuTx);
+#endif
   updateHandFan();   // apply the fan decision (fed from canSniff)
 
   #if DEBUG_TIME_SYNC

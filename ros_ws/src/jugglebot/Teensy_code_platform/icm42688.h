@@ -69,6 +69,12 @@ class Driver {
   float lsbPerG() const { return 32768.0f / _accelFs; }
   float lsbPerDps() const { return 32768.0f / _gyroFs; }
 
+  // Raw register values the configuration writes (the capture header records them). No I2C.
+  uint8_t regGyroConfig0() const;
+  uint8_t regAccelConfig0() const;
+  // ONE transaction: OK if WHO_AM_I still reads 0x47 at the configured address, else an Err.
+  int checkWhoAmI();
+
   int flushFifo();
   // Reads INT_STATUS+FIFO_COUNT in one transaction. Returns record count (>=0) or Err.
   // *overflow is set if the FIFO-full flag was seen or count is at/near capacity.

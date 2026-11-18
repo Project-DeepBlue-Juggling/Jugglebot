@@ -14,7 +14,7 @@ scope: >-
   the carry-ring-zvd analysis.
 steps:
   - {id: P1, title: Off-board foundations, kind: phase, status: in_progress, effort: m, hardware: none}
-  - {id: P2, title: Platform Teensy firmware FW 11, kind: phase, status: not_started, effort: l, hardware: none}
+  - {id: P2, title: Platform Teensy firmware FW 11, kind: phase, status: in_progress, effort: l, hardware: none}
   - {id: P3, title: can-bridge firmware and the Jetson side, kind: phase, status: not_started, effort: l, hardware: none}
   - {id: P4, title: "Sitting 1, flash and bench the capture path", kind: rung, status: not_started, effort: m, hardware: robot}
   - {id: P5, title: "Sitting 2, mount calibration and first Attempt captures", kind: rung, status: not_started, effort: m, hardware: robot}
@@ -130,7 +130,11 @@ are untouched, but `config/` is tier 1). Status: P1a and P1b landed with the pha
 
 The robustness changes, the IMU state machine, the ring, the status frame and the upload responder (section 3).
 Hardware: none. **Gate (Suite gate):** native tests, `pio` build, `/audit` of the diff, then `./run_tests.sh --full`.
-Status: not started.
+Status: implementation complete (2026-11-19), pending the phase gate (`/audit` of the P2 diff, then
+`./run_tests.sh --full`). P2a (robustness: tilt off the CAN callback, bounded inclinometer probe, multi-frame
+dispatch) and P2b (the IMU wired into `loop()` through `imu_service.h`: one bounded step per pass, back-off to 60 s,
+the TX-mailbox rule, FW_HALTED at FwUpdate BEGIN, kill switch `PLATFORM_IMU_ENABLED`) are both on branch `imu-p2`.
+Walk-through and sizes: `logbook/2026-11-19-platform-imu-p2-firmware.md`. Not flashed.
 
 ### P3: can-bridge firmware and the Jetson side
 

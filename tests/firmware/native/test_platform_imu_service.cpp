@@ -1,0 +1,480 @@
+// =============================================================================
+//  test_platform_imu_service.cpp — compiled test of the Platform IMU loop() glue (FW 11, P2b)
+// =============================================================================
+//  Includes the Platform Teensy's own imu_service.h (which pulls in imu_proto.h and
+//  imu_capture.h) and drives it exactly as the sketch's loop() does, one pass() per simulated
+//  loop pass, against a simulated ICM-42688 (FakeIo: a 1 kHz stream into a 128-packet FIFO)
+//  and a CAN TX model (FakeTx: free mailboxes + the software queue). Contract:
+//  ros_ws/docs/platform_imu_protocol.md. The property every case also checks: no pass ever
+//  issues more than one I2C transaction.
+
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include "doctest.h"
+
+#include <array>
+#include <cstring>
+#include <map>
+#include <vector>
+
+#include "../../../ros_ws/src/jugglebot/Teensy_code_platform/imu_service.h"
+
+using namespace ImuService;
+namespace Op = PlatformImuOp;
+namespace St = PlatformImuStatus;
+namespace S = PlatformImuState;
+
+namespace {
+
+uint16_t g16(const uint8_t* p) { return uint16_t(p[0] | (p[1] << 8)); }
+uint32_t g32(const uint8_t* p) { return uint32_t(g16(p)) | (uint32_t(g16(p + 2)) << 16); }
+
+struct FakeIo {
+  bool present = true;
+  bool wall_valid = true;
+  bool force_overflow = false, bad_packet = false;
+  uint32_t t_us = 0;
+  bool configured = false;
+  uint32_t stream_start_us = 0, consumed = 0;
+  int init_left = 0;
+  int pass_txns = 0, max_pass_txns = 0, total_txns = 0;
+  std::vector<uint32_t> txn_times_ms;
+
+  void txn() { pass_txns++; total_txns++; txn_times_ms.push_back(t_us / 1000); }
+  void begin_pass() { pass_txns = 0; }
+  void end_pass() { if (pass_txns > max_pass_txns) max_pass_txns = pass_txns; }
+  uint32_t produced() const { return configured ? (t_us - stream_start_us) / 1000 : 0; }
+  uint32_t in_fifo(bool* ovf) {
+    uint32_t p = produced() - consumed;
+    if (p > 128) { *ovf = true; consumed = produced() - 128; p = 128; }
+    return p;
+  }
+  void init_start() { init_left = 4; }
+  int init_step(uint32_t now) {
+    txn();
+    if (!present) return -1;
+    if (--init_left > 0) return INIT_PENDING;
+    configured = true; stream_start_us = now; consumed = 0;
+    return 0;
+  }
+  int fifo_count(bool* ovf) {
+    txn();
+    if (!present) return -3;
+    *ovf = false;
+    uint32_t n = in_fifo(ovf);
+    if (force_overflow) { *ovf = true; force_overflow = false; }
+    return int(n);
+  }
+  int read_burst(Pkt* out, int n) {
+    txn();
+    if (!present) return -3;
+    if (bad_packet) { bad_packet = false; return ERR_BAD_PACKET; }
+    for (int i = 0; i < n; i++) {
+      const uint32_t k = consumed++;
+      for (int j = 0; j < 6; j++) out[i].s[j] = int16_t((k * 7 + j) & 0x7FFF);
+      out[i].temp = 10;
+    }
+    return n;
+  }
+  int flush() { txn(); if (!present) return -3; consumed = produced(); return 0; }
+  int check_who() { txn(); return present ? 0 : -2; }
+  void stamp(Stamp* s) { s->local_us = t_us; s->wall_us = uint64_t(t_us) + 5000000000ull; s->wall_valid = wall_valid; }
+  void header_info(ImuCapture::HeaderInfo* h) { h->odr_hz = 1000; h->accel_lsb_per_g = 2048; h->gyro_lsb_per_dps_x10 = 328; h->fw_version = 11; h->i2c_clock_100khz = 10; }
+};
+
+struct Sent { uint32_t id; std::array<uint8_t, 8> d; uint32_t t_us; };
+
+struct FakeTx {
+  uint32_t free_mb = 8, sw_queued = 0;
+  uint32_t t_us = 0;
+  std::vector<Sent> sent;
+  bool place(uint32_t id, const uint8_t* d) {
+    if (!tx_may_place(free_mb, sw_queued)) return false;
+    Sent s{id, {}, t_us};
+    std::memcpy(s.d.data(), d, 8);
+    sent.push_back(s);
+    return true;
+  }
+  std::vector<Sent> of(uint32_t id) const { std::vector<Sent> v; for (auto& s : sent) if (s.id == id) v.push_back(s); return v; }
+};
+
+constexpr uint32_t CAP = 3000, ACAP = 64;
+
+struct Rig {
+  int16_t buf[CAP * 6];
+  ImuCapture::Anchor anchors[ACAP];
+  ImuCapture::Capture cap;
+  Service svc;
+  FakeIo io;
+  FakeTx tx;
+  uint32_t t_us = 0;
+  bool fw_open = false;
+
+  Rig() {
+    std::memset(buf, 0x5A, sizeof buf);          // DMAMEM is not zeroed: nothing may depend on it
+    std::memset(anchors, 0xA5, sizeof anchors);
+    cap.init(buf, CAP, anchors, ACAP, 0x12345678u);
+    svc.init(&cap, 0x12345678u, 0);
+  }
+  void pass() {
+    io.t_us = tx.t_us = t_us;
+    io.begin_pass();
+    svc.pass(t_us, t_us / 1000, fw_open, io, tx);
+    io.end_pass();
+    CHECK(io.pass_txns <= 1);
+  }
+  void run_ms(uint32_t ms, uint32_t step_us = 500) {
+    const uint32_t end = t_us + ms * 1000;
+    while (int32_t(t_us - end) < 0) { pass(); t_us += step_us; }
+  }
+  void cmd(std::initializer_list<uint8_t> b) {
+    uint8_t d[8] = {};
+    uint8_t n = 0;
+    for (uint8_t x : b) d[n++] = x;
+    svc.cmds().push(d, 8);
+  }
+  std::vector<Sent> replies() const { return tx.of(PlatformCanId::IMU_REPLY); }
+  const Sent* last_reply() const { auto v = replies(); static Sent s; if (v.empty()) return nullptr; s = v.back(); return &s; }
+  // Run until RUNNING with samples (the boot settle is 2 s).
+  void to_running(uint32_t extra_ms = 500) {
+    run_ms(BOOT_SETTLE_MS + 100);
+    REQUIRE(svc.state() == S::RUNNING);
+    run_ms(extra_ms);
+  }
+  void freeze_and_wait() {
+    cmd({Op::FREEZE, 1});
+    for (int i = 0; i < 400 && svc.engine().freeze_pending() == false && svc.state() != S::FROZEN; i++) pass();
+    for (int i = 0; i < 400 && svc.engine().freeze_pending(); i++) { pass(); t_us += 500; }
+    pass();
+    REQUIRE(svc.state() == S::FROZEN);
+    REQUIRE(cap.header_ready());
+  }
+  // Anchor records from a frozen capture.
+  std::vector<std::array<uint8_t, 18>> anchor_records() const {
+    std::vector<std::array<uint8_t, 18>> v;
+    for (uint32_t a = 0; a < cap.n_anchors(); a++) {
+      std::array<uint8_t, 18> r{};
+      for (uint32_t w = 0; w < 3; w++) cap.read_word(PlatformImu::ANCHOR_SEQ_BASE + 3 * a + w, r.data() + 6 * w);
+      v.push_back(r);
+    }
+    return v;
+  }
+};
+
+}  // namespace
+
+TEST_CASE("pure rules: TX gate, back-off, temperature, sync quality") {
+  CHECK_FALSE(tx_may_place(0, 0));
+  CHECK_FALSE(tx_may_place(TX_RESERVE_MAILBOXES, 0));
+  CHECK(tx_may_place(TX_RESERVE_MAILBOXES + 1, 0));
+  CHECK_FALSE(tx_may_place(8, 1));  // anything in the SW queue: never add to the defect path
+  CHECK(backoff_ms(1) == 1000);
+  CHECK(backoff_ms(2) == 2000);
+  CHECK(backoff_ms(6) == 32000);
+  CHECK(backoff_ms(7) == 60000);
+  CHECK(backoff_ms(100) == 60000);
+  CHECK(temp_c_from_fifo(0) == 25);
+  CHECK(temp_c_from_fifo(10) == 30);     // 10 / 2.07 = 4.83
+  CHECK(temp_c_from_fifo(-10) == 20);
+  CHECK(temp_data_from_fifo(10) == 640);
+  SyncQuality q;
+  uint8_t p; bool s;
+  q.take_period(&p, &s);
+  CHECK(p == 255); CHECK_FALSE(s);
+  q.note(true, 1700000000000000ll);      // the step is not an innovation
+  CHECK(q.take_step());
+  q.note(false, -31);
+  q.note(false, 12);
+  q.take_period(&p, &s);
+  CHECK(s); CHECK(p == 4);               // 31 us -> 4 x 10 us, rounded up
+  q.note(false, 9000000);
+  q.take_period(&p, &s);
+  CHECK(p == 254);
+  CHECK(q.capture_peak_us() == 0xFFFF);
+}
+
+TEST_CASE("IMU absent for ever: bounded work, back-off growth to 60 s, status every second") {
+  Rig r;
+  r.io.present = false;
+  r.run_ms(600000, 1000);
+  CHECK(r.io.max_pass_txns <= 1);
+  CHECK(r.svc.state() == S::PROBING);
+  // Probe starts at 2, 3, 5, 9, 17, 33, 65, 125, then every 60 s: two address probes each.
+  CHECK(r.io.total_txns <= 2 * 17);
+  CHECK(r.io.txn_times_ms.front() >= BOOT_SETTLE_MS);
+  int late = 0;
+  for (uint32_t t : r.io.txn_times_ms) if (t >= 300000) late++;
+  CHECK(late <= 2 * 6);                  // <= 12 failing transactions in 5 min: at 68 ms each, 0.27 % duty
+  auto st = r.tx.of(PlatformCanId::IMU_STATUS);
+  CHECK(st.size() >= 599); CHECK(st.size() <= 601);
+  CHECK(st.back().d[0] == S::PROBING);
+  CHECK((st.back().d[1] & PlatformImuStatusFlag::SENSOR_OK) == 0);
+  CHECK(st.back().d[7] == 0x78);         // boot byte
+  // A FREEZE with nothing captured is refused, and the board stays reachable for commands.
+  r.cmd({Op::FREEZE, 1});
+  r.run_ms(5);
+  REQUIRE(r.last_reply());
+  CHECK(r.last_reply()->d[1] == St::ERR_EMPTY);
+}
+
+TEST_CASE("healthy capture: drains every 4 ms, anchors every 100 ms, no overflow") {
+  Rig r;
+  r.to_running(3000);
+  CHECK(r.svc.counters().fifo_overflows == 0);
+  CHECK(r.cap.n_samples() > 2900);
+  CHECK(r.cap.n_anchors() >= 29);
+  CHECK(r.io.max_pass_txns <= 1);
+  r.io.wall_valid = false;               // no 0x7DD yet ...
+  r.run_ms(250);
+  r.io.wall_valid = true;
+  r.svc.sync().note(true, 0);            // ... then the first one steps the offset
+  r.run_ms(250);
+  r.freeze_and_wait();
+  auto a = r.anchor_records();
+  REQUIRE(a.size() >= 2);
+  int invalid = 0, step = 0;
+  for (auto& x : a) {
+    CHECK((x[16] & PlatformImuAnchorFlag::DISCONTINUITY) == 0);
+    if (x[16] & PlatformImuAnchorFlag::WALL_INVALID) invalid++;
+    if (x[16] & PlatformImuAnchorFlag::SYNC_STEP) { step++; CHECK((x[16] & PlatformImuAnchorFlag::WALL_INVALID) == 0); }
+  }
+  CHECK(invalid >= 2);
+  CHECK(step == 1);                      // exactly the first anchor after the step
+  // Every anchor's index is a sample count at a drain, and its local_us is that drain's stamp.
+  for (size_t i = 1; i < a.size(); i++) CHECK(g32(a[i].data()) > g32(a[i - 1].data()));
+}
+
+TEST_CASE("a slow pass (inclinometer re-probe, 103 ms) is caught up without a discontinuity") {
+  Rig r;
+  r.to_running(500);
+  r.t_us += 103000;                      // one pass held by the SCL3300 begin()
+  r.run_ms(500);
+  CHECK(r.svc.counters().fifo_overflows == 0);
+  r.t_us += 140000;                      // longer than the 128 ms FIFO: an overflow, marked
+  r.run_ms(500);
+  CHECK(r.svc.counters().fifo_overflows == 1);
+  r.freeze_and_wait();
+  auto a = r.anchor_records();
+  int disc = 0;
+  for (size_t i = 0; i < a.size(); i++) {
+    if (a[i][16] & PlatformImuAnchorFlag::DISCONTINUITY) {
+      disc++;
+      REQUIRE(i > 0);
+      CHECK((a[i - 1][16] & PlatformImuAnchorFlag::DISCONTINUITY) == 0);  // the closing anchor
+    }
+  }
+  CHECK(disc == 1);
+  CHECK(((g16(r.cap.header() + 18) & PlatformImuCaptureFlag::DISCONTINUITY) != 0));
+  CHECK(g16(r.cap.header() + 46) == 1);
+}
+
+TEST_CASE("unplug mid-run: RUNNING -> BACKOFF -> PROBING -> RUNNING behind a DISCONTINUITY anchor") {
+  Rig r;
+  r.to_running(1000);
+  const uint32_t before = r.cap.appended();
+  r.io.present = false;
+  r.run_ms(10);
+  CHECK(r.svc.state() == S::BACKOFF);
+  CHECK(r.svc.fail_streak() == 1);
+  r.run_ms(4000);                        // probes fail at 1 s and 2 s more
+  CHECK(r.svc.state() == S::PROBING);
+  CHECK(r.svc.fail_streak() >= 2);
+  r.io.present = true;
+  for (int i = 0; i < 20000 && r.svc.state() != S::RUNNING; i++) { r.pass(); r.t_us += 500; }  // next probe <= 8 s away
+  CHECK(r.svc.state() == S::RUNNING);
+  r.run_ms(500);                         // short of the 3000-sample ring, so the gap is still retained
+  CHECK(r.cap.appended() > before + 100);
+  CHECK(r.io.max_pass_txns <= 1);
+  r.freeze_and_wait();
+  auto a = r.anchor_records();
+  int disc = 0;
+  for (size_t i = 0; i < a.size(); i++)
+    if (a[i][16] & PlatformImuAnchorFlag::DISCONTINUITY) {
+      disc++;
+      CHECK(g32(a[i - 1].data()) == before);   // the closing anchor ends exactly at the gap
+    }
+  CHECK(disc == 1);
+  r.run_ms(1100);                        // FROZEN: STATUS goes on and still reports the capture's discontinuity
+  auto st = r.tx.of(PlatformCanId::IMU_STATUS);
+  CHECK(st.back().d[0] == S::FROZEN);
+  CHECK(((st.back().d[1] & PlatformImuStatusFlag::DISCONTINUITY) != 0));
+  CHECK(st.back().d[4] >= 1);            // i2c_errors
+}
+
+TEST_CASE("a bad FIFO packet flushes and marks a discontinuity") {
+  Rig r;
+  r.to_running(500);
+  r.io.bad_packet = true;
+  r.run_ms(500);
+  CHECK(r.svc.counters().bad_packets == 1);
+  CHECK(r.svc.state() == S::RUNNING);
+  r.freeze_and_wait();
+  int disc = 0;
+  for (auto& x : r.anchor_records()) if (x[16] & PlatformImuAnchorFlag::DISCONTINUITY) disc++;
+  CHECK(disc == 1);
+}
+
+TEST_CASE("FwUpdate BEGIN in every engine state: FW_HALTED, no I2C until the session ends") {
+  struct Case { const char* name; uint8_t want_before; };
+  for (int which = 0; which < 7; which++) {
+    CAPTURE(which);
+    Rig r;
+    switch (which) {
+      case 0: r.cmd({Op::DISABLE}); r.run_ms(5); break;                                  // DISABLED
+      case 1: r.run_ms(500); break;                                                      // PROBING (settling)
+      case 2: r.to_running(300); break;                                                  // RUNNING
+      case 3: r.to_running(300); r.cmd({Op::FREEZE, 1}); r.pass(); break;                // FROZEN, CRC in progress
+      case 4: r.to_running(300); r.freeze_and_wait(); break;                             // FROZEN
+      case 5: r.to_running(300); r.freeze_and_wait();
+              r.cmd({Op::READ, uint8_t(r.cap.capture_id()), uint8_t(r.cap.capture_id() >> 8), 0, 0, 0, 1, 100});
+              r.pass(); break;                                                            // UPLOADING
+      case 6: r.to_running(300); r.io.present = false; r.run_ms(10); break;              // BACKOFF
+    }
+    const uint8_t s0 = r.svc.state();
+    const uint8_t want[7] = {S::DISABLED, S::PROBING, S::RUNNING, S::FROZEN, S::FROZEN, S::UPLOADING, S::BACKOFF};
+    CHECK(s0 == want[which]);
+    r.io.present = true;
+    r.fw_open = true;
+    const int txns0 = r.io.total_txns;
+    const size_t data0 = r.tx.of(PlatformCanId::IMU_DATA).size();
+    r.run_ms(30000);
+    CHECK(r.svc.state() == S::FW_HALTED);
+    CHECK(r.io.total_txns == txns0);                             // not one I2C transaction
+    CHECK(r.tx.of(PlatformCanId::IMU_DATA).size() == data0);     // the block is cut
+    CHECK(r.cap.n_samples() == 0);                               // the capture is discarded
+    r.cmd({Op::ENABLE});
+    r.run_ms(5);
+    CHECK(r.last_reply()->d[1] == St::ERR_FW_UPDATE);
+    CHECK(r.tx.of(PlatformCanId::IMU_STATUS).back().d[0] == S::FW_HALTED);  // STATUS goes on, 1 Hz
+    // The session is abandoned (idle timeout, failed staging): back to PROBING, then capturing.
+    r.fw_open = false;
+    r.run_ms(10);
+    CHECK(r.svc.state() == S::PROBING);
+    r.run_ms(1500);
+    CHECK(r.svc.state() == S::RUNNING);
+  }
+}
+
+TEST_CASE("full cycle through the glue: FREEZE -> header -> anchors -> samples -> CRCs -> RESUME") {
+  Rig r;
+  r.to_running(4000);                        // the 3000-sample ring wraps
+  r.cmd({Op::FREEZE, 1});
+  for (int i = 0; i < 200; i++) { r.pass(); r.t_us += 500; }
+  auto fr = r.replies();
+  REQUIRE(fr.size() == 1);
+  CHECK(fr[0].d[0] == Op::FREEZE);
+  CHECK(fr[0].d[1] == St::OK);
+  const uint16_t id = g16(fr[0].d.data() + 2);
+  CHECK(g32(fr[0].d.data() + 4) == CAP);
+  std::map<uint32_t, std::array<uint8_t, 6>> got;
+  auto read = [&](uint32_t first, uint32_t count) {
+    r.cmd({Op::READ, uint8_t(id), uint8_t(id >> 8), uint8_t(first), uint8_t(first >> 8), uint8_t(count), uint8_t(count >> 8), 80});
+    for (int i = 0; i < 4000 && (r.svc.state() != S::FROZEN || i < 2); i++) { r.pass(); r.t_us += 100; }
+  };
+  read(PlatformImu::HEADER_SEQ_BASE, 11);
+  const uint32_t na = r.cap.n_anchors();
+  for (uint32_t s = 0; s < 3 * na; s += 256) read(PlatformImu::ANCHOR_SEQ_BASE + s, std::min<uint32_t>(256, 3 * na - s));
+  for (uint32_t s = 0; s < 2 * CAP; s += 256) read(s, std::min<uint32_t>(256, 2 * CAP - s));
+  uint32_t last_t = 0; bool first = true;
+  for (auto& f : r.tx.of(PlatformCanId::IMU_DATA)) {
+    std::array<uint8_t, 6> w; std::memcpy(w.data(), f.d.data() + 2, 6);
+    got[g16(f.d.data())] = w;
+    if (!first) CHECK(f.t_us - last_t >= 800);   // the block's gap, 80 x 10 us
+    first = false; last_t = f.t_us;
+  }
+  CHECK(got.size() == 11 + 3 * na + 2 * CAP);
+  uint8_t hdr[66];
+  for (uint32_t i = 0; i < 11; i++) std::memcpy(hdr + 6 * i, got[PlatformImu::HEADER_SEQ_BASE + i].data(), 6);
+  CHECK(g32(hdr + 62) == ImuCapture::crc32(hdr, 62));
+  CHECK(g16(hdr + 2) == id);
+  CHECK(((g16(hdr + 18) & PlatformImuCaptureFlag::WRAPPED) != 0));
+  CHECK((g16(hdr + 18) & PlatformImuCaptureFlag::NEVER_SYNCED) == 0);
+  CHECK(int16_t(g16(hdr + 42)) == 640);  // temp at capture start, TEMP_DATA scale
+  std::vector<uint8_t> payload;
+  for (uint32_t s = 0; s < 3 * na; s++) payload.insert(payload.end(), got[PlatformImu::ANCHOR_SEQ_BASE + s].begin(), got[PlatformImu::ANCHOR_SEQ_BASE + s].end());
+  for (uint32_t s = 0; s < 2 * CAP; s++) payload.insert(payload.end(), got[s].begin(), got[s].end());
+  CHECK(g32(hdr + 54) == ImuCapture::crc32(payload.data(), payload.size()));
+  // Retained samples are consecutive chip samples (no loss in a healthy run).
+  const uint32_t k0 = uint16_t(g16(got[0].data()));
+  const uint32_t k1 = uint16_t(g16(got[2].data()));
+  CHECK(k1 == ((k0 + 7) & 0x7FFF));
+  // RESUME: a new capture, the FIFO flushed and WHO_AM_I re-checked before any sample.
+  const int t0 = r.io.total_txns;
+  r.cmd({Op::RESUME, uint8_t(id), uint8_t(id >> 8)});
+  r.pass();
+  CHECK(r.svc.state() == S::RUNNING);
+  CHECK(r.cap.n_samples() == 0);
+  r.run_ms(100);
+  CHECK(r.io.total_txns > t0 + 2);
+  CHECK(r.cap.n_samples() > 80);
+  r.cmd({Op::READ, uint8_t(id), uint8_t(id >> 8), 0, 0, 1, 0, 80});
+  r.run_ms(5);
+  CHECK(r.last_reply()->d[1] == St::ERR_NOT_FROZEN);
+  CHECK(r.io.max_pass_txns <= 1);
+}
+
+TEST_CASE("READ pacing: zero free mailboxes queues nothing; then one DATA frame per pass at the gap") {
+  Rig r;
+  r.to_running(300);
+  r.freeze_and_wait();
+  const uint16_t id = r.cap.capture_id();
+  const size_t n0 = r.tx.sent.size();
+  r.tx.free_mb = 0;
+  r.cmd({Op::READ, uint8_t(id), uint8_t(id >> 8), 0, 0, 20, 0, 10});  // gap 10 -> raised to the 400 us floor
+  for (int i = 0; i < 2000; i++) { r.pass(); r.t_us += 100; }
+  CHECK(r.tx.sent.size() == n0);         // not the reply, not a status, not a data frame
+  CHECK(r.svc.state() == S::UPLOADING);
+  r.tx.free_mb = TX_RESERVE_MAILBOXES;   // still the reserve: nothing
+  for (int i = 0; i < 100; i++) { r.pass(); r.t_us += 100; }
+  CHECK(r.tx.sent.size() == n0);
+  r.tx.free_mb = TX_RESERVE_MAILBOXES + 1;
+  r.tx.sw_queued = 1;                    // something in the SW queue: nothing
+  for (int i = 0; i < 100; i++) { r.pass(); r.t_us += 100; }
+  CHECK(r.tx.sent.size() == n0);
+  r.tx.sw_queued = 0;
+  r.pass();
+  auto after = std::vector<Sent>(r.tx.sent.begin() + long(n0), r.tx.sent.end());
+  REQUIRE(after.size() >= 1);
+  CHECK(after[0].id == PlatformCanId::IMU_REPLY);   // the reply goes first
+  for (int i = 0; i < 300; i++) { r.pass(); r.t_us += 100; }
+  auto d = r.tx.of(PlatformCanId::IMU_DATA);
+  CHECK(d.size() == 20);
+  for (size_t i = 1; i < d.size(); i++) CHECK(d[i].t_us - d[i - 1].t_us >= 400);
+  CHECK(r.svc.state() == S::FROZEN);
+}
+
+TEST_CASE("STATUS cadence: one per second in RUNNING, with sync figures") {
+  Rig r;
+  r.to_running(0);
+  const size_t n0 = r.tx.of(PlatformCanId::IMU_STATUS).size();
+  for (int s = 0; s < 10; s++) {
+    for (int i = 0; i < 100; i++) r.svc.sync().note(false, (i % 2) ? 25 : -40);
+    r.run_ms(1000);
+  }
+  auto st = r.tx.of(PlatformCanId::IMU_STATUS);
+  CHECK(st.size() - n0 == 10);
+  CHECK(st.back().d[0] == S::RUNNING);
+  CHECK(((st.back().d[1] & PlatformImuStatusFlag::SENSOR_OK) != 0));
+  CHECK(((st.back().d[1] & PlatformImuStatusFlag::TIME_SYNCED) != 0));
+  CHECK(st.back().d[5] == 4);            // 40 us peak
+  CHECK(int8_t(st.back().d[2]) == 30);
+  CHECK(st.back().d[6] == CAP / 1000);   // fill_s: the (test-sized) ring is full
+}
+
+TEST_CASE("command slots: full ring drops the newest; DISABLE stops all I2C; ENABLE restarts") {
+  CmdSlots c;
+  uint8_t d[8] = {Op::ENABLE};
+  for (int i = 0; i < CMD_SLOTS - 1; i++) CHECK(c.push(d, 1));
+  CHECK_FALSE(c.push(d, 1));
+  CHECK(c.dropped() == 1);
+  Rig r;
+  r.to_running(300);
+  r.cmd({Op::DISABLE});
+  r.pass();
+  const int t0 = r.io.total_txns;
+  r.run_ms(5000);
+  CHECK(r.svc.state() == S::DISABLED);
+  CHECK(r.io.total_txns == t0);
+  r.cmd({Op::ENABLE});
+  r.run_ms(200);
+  CHECK(r.svc.state() == S::RUNNING);
+}

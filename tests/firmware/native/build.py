@@ -42,7 +42,7 @@ FIRMWARE_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "Teensy_code_canbrid
 PLATFORM_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "Teensy_code_platform"
 PLATFORM_HAND_FAN = PLATFORM_DIR / "hand_fan.h"
 PLATFORM_LOOP_SERVICE = PLATFORM_DIR / "loop_service.h"
-PLATFORM_IMU_HEADERS = [PLATFORM_DIR / "imu_capture.h", PLATFORM_DIR / "imu_proto.h",
+PLATFORM_IMU_HEADERS = [PLATFORM_DIR / "imu_capture.h", PLATFORM_DIR / "imu_proto.h", PLATFORM_DIR / "imu_service.h",
                         PLATFORM_DIR / "protocol_config.h",
                         PLATFORM_DIR / "icm42688.h", PLATFORM_DIR / "icm42688.cpp"]
 # All runtime build artifacts live under temp/ (gitignored), per the repo rule.
@@ -129,6 +129,12 @@ _BINARIES = {
     # (imu_capture.h, imu_proto.h), nothing to link. Same relative-include rule as the fan.
     "test_platform_imu": (
         NATIVE_DIR / "test_platform_imu.cpp",
+        [],
+    ),
+    # The Platform IMU's loop() glue (FW 11, P2b): one bounded step per pass, back-off, the
+    # TX-mailbox rule, anchors, FwUpdate halt. Pure header (imu_service.h), nothing to link.
+    "test_platform_imu_service": (
+        NATIVE_DIR / "test_platform_imu_service.cpp",
         [],
     ),
     # The ICM-42688 non-blocking init against the scripted Wire fake: register sequence, waits,
