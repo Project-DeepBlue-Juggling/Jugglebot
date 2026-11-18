@@ -2,9 +2,9 @@
 id: PWAY-9
 kind: pathway
 title: 'Night Shift: unattended overnight work on the board, and the Next Sitting Runbook'
-status: active
+status: complete
 created: '2026-10-30'
-updated: '2026-10-30T12:36:21Z'
+updated: '2026-11-18T08:04:09Z'
 owners: []
 priority: high
 effort: xl
@@ -15,6 +15,7 @@ area: tests-tooling
 blocked_by: []
 links: []
 destination: Every morning main is green and carries the overnight work that needed no hands; everything else waits on a held branch, an answerable question in the app or a row of the Next Sitting Runbook, and the owner's share of a Sitting is the hardware steps only.
+branch: main
 ---
 
 The board gains small Items faster than Sessions clear them. Night Shift is an unattended Claude Code run on this Jetson after the 04:00 nightly suite, in its own clone, `~/night-shift/Jugglebot`. It examines what changed on the board, works the Items Claude can finish alone, holds the rest on branches, and writes one committed report. Its protocol is `.claude/commands/night-shift.md`; its runner is `tools/night_shift.sh`.
@@ -57,3 +58,7 @@ Only (c) is waivable, by `/sitting-debrief` after a hardware pass. A merge with 
 ## Plan
 
 One plan under this Pathway, `plans/archived/night-shift.md`, in six steps: P1 runner skeleton and dry run; P2 work loop, merge gate, report and ticker; P3 Night Shift page with answerable tickets; P4 `## Sitting` sections, Runbook generator and page; P5 Sitting debrief command; R6 the first Runbook-driven Sitting. Its hardening is `plans/archived/night-shift-closeout.md`.
+
+## Progress
+
+- 2026-11-18: Closed on the owner's ask (2026-11-18). Both plans are archived (night-shift.md, night-shift-closeout.md). The Night Shift runs nightly; open residue stays as Items under this Pathway (BUG-100, BUG-101, FEAT-51).
