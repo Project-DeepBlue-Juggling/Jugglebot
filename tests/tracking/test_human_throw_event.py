@@ -184,7 +184,8 @@ class TestUsableRule:
         """An agreement bar tighter than two live Fits can meet never serves
         while the Fit is still changing; only the frozen Fit (identical to
         itself, so trivially stable) is served, as a final revision."""
-        cfg = HumanThrowEventConfig(stable_mm=0.0001, stable_ms=20.0)
+        cfg = HumanThrowEventConfig(stable_mm=0.0001, stable_gap_ms=20.0,
+                                     stable_time_ms=20.0)
         events = _run(HumanThrowEventEmitter(cfg), _fit(), _ball())
         assert len(events) == 1 and events[0].final and events[0].revision == 0
 

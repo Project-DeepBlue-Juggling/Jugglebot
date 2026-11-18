@@ -304,7 +304,8 @@ class HumanCatchPolicy:
         self.pending: Optional[HumanThrowEvt] = None
         self.claimed = 0
         self._empty_since_s: Optional[float] = None
-        self.declines: List[Decision] = []
+        #: bounded: an until-Stop Attempt must not grow it without limit
+        self.declines: 'collections.deque' = collections.deque(maxlen=256)
 
     # -- the rules ---------------------------------------------------------
 
@@ -436,10 +437,14 @@ class HumanCatchPolicy:
             raise ValueError('opening_done in phase %s' % self.phase)
         self.phase = WAITING
 
-    def finished(self) -> bool:
-        """True once ``n_throws`` events have been claimed AND the machine is
-        back in WAITING (a bounded Attempt ends between Throws, never in one)."""
-        return (self.n_throws > 0 and self.claimed >= self.n_throws
+    def finished(self, planned: Optional[int] = None) -> bool:
+        """True once ``n_throws`` events have been counted AND the machine is
+        back in WAITING (a bounded Attempt ends between Throws, never in one).
+        ``planned`` is the node's count of COMPILED plans (the same number its
+        result line reports); a claim the compile then refused is not one.
+        Omitted, the policy's own claimed count stands."""
+        n = self.claimed if planned is None else int(planned)
+        return (self.n_throws > 0 and n >= self.n_throws
                 and self.phase == WAITING)
 
     def on_executor_done(self, code: str, moved: bool = True) -> Outcome:

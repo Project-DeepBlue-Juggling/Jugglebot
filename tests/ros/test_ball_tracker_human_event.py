@@ -138,7 +138,8 @@ def test_params_default_from_the_config_dataclass():
             ('human_throw_min_start_speed_mm_s', 'min_start_speed_mm_s'),
             ('human_throw_event_rms_mm', 'rms_mm'),
             ('human_throw_event_stable_mm', 'stable_mm'),
-            ('human_throw_event_stable_ms', 'stable_ms'),
+            ('human_throw_event_stable_gap_ms', 'stable_gap_ms'),
+            ('human_throw_event_stable_time_ms', 'stable_time_ms'),
             ('human_throw_event_refine_mm', 'refine_mm'),
             ('human_throw_event_refine_ms', 'refine_ms')):
         assert float(node.get_parameter(name).value) == getattr(cfg, attr)

@@ -160,7 +160,10 @@ class BallTrackerNode(Node):
                                float(cfg.min_start_speed_mm_s))
         self.declare_parameter('human_throw_event_rms_mm', float(cfg.rms_mm))
         self.declare_parameter('human_throw_event_stable_mm', float(cfg.stable_mm))
-        self.declare_parameter('human_throw_event_stable_ms', float(cfg.stable_ms))
+        self.declare_parameter('human_throw_event_stable_gap_ms',
+                               float(cfg.stable_gap_ms))
+        self.declare_parameter('human_throw_event_stable_time_ms',
+                               float(cfg.stable_time_ms))
         self.declare_parameter('human_throw_event_refine_mm', float(cfg.refine_mm))
         self.declare_parameter('human_throw_event_refine_ms', float(cfg.refine_ms))
         self._human_pub = self.create_publisher(
@@ -337,7 +340,8 @@ class BallTrackerNode(Node):
                 min_start_speed_mm_s=_p('human_throw_min_start_speed_mm_s'),
                 rms_mm=_p('human_throw_event_rms_mm'),
                 stable_mm=_p('human_throw_event_stable_mm'),
-                stable_ms=_p('human_throw_event_stable_ms'),
+                stable_gap_ms=_p('human_throw_event_stable_gap_ms'),
+                stable_time_ms=_p('human_throw_event_stable_time_ms'),
                 refine_mm=_p('human_throw_event_refine_mm'),
                 refine_ms=_p('human_throw_event_refine_ms'))
             self._human_emitter = HumanThrowEventEmitter(

@@ -64,7 +64,8 @@ class HumanThrowEventConfig:
     min_start_speed_mm_s: float = 500.0   # D1
     rms_mm: float = 6.0                   # D2
     stable_mm: float = 30.0               # D2
-    stable_ms: float = 20.0               # D2 (agreement AND minimum age gap)
+    stable_gap_ms: float = 20.0           # D2 PROPOSED: minimum gap between the two Fits
+    stable_time_ms: float = 20.0           # D2 PROPOSED: landing-time agreement of the two Fits
     refine_mm: float = 5.0                # design rule 5
     refine_ms: float = 5.0                # design rule 5
 
@@ -240,13 +241,14 @@ class HumanThrowEventEmitter:
 
     def _stable(self, fl: _Flight, now: float, pos: np.ndarray,
                 t_land: float) -> bool:
-        """Some usable Fit at least `stable_ms` older agrees with this one."""
+        """Some usable Fit at least `stable_gap_ms` older agrees with this one
+        (position within `stable_mm`, landing time within `stable_time_ms`)."""
         cfg = self.config
-        gap = cfg.stable_ms / 1000.0 - 1e-9
+        gap = cfg.stable_gap_ms / 1000.0 - 1e-9
         for t_then, p_then, tl_then in fl.history:
             if now - t_then >= gap:
                 if (float(np.linalg.norm(pos - p_then)) <= cfg.stable_mm
-                        and abs(t_land - tl_then) * 1000.0 <= cfg.stable_ms):
+                        and abs(t_land - tl_then) * 1000.0 <= cfg.stable_time_ms):
                     return True
         return False
 

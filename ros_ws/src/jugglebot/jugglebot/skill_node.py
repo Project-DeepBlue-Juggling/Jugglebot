@@ -655,6 +655,7 @@ def accept_cup_decision(pattern: str, evidence: str) -> Tuple[Optional[str], boo
 #: owner decision of `HumanCatchPolicy`, defaulting to the policy's own
 #: keyword default (ONE source; config/ carries none of them). Read at goal
 #: accept only.
+_HC_HOLDING_LOG_S = 5.0     # HOLDING visibility cadence (no timeout)
 _HC_PARAM_NAMES = ('first_lead_s', 'plan_lead_s', 'max_fit_age_s',
                    'assoc_radius_mm', 'reaim_authority_mm', 'resend_max',
                    'mean_n', 'wait_radius_mm', 'wait_deadband_mm', 'clear_s',
@@ -665,6 +666,8 @@ _HC_DEFAULTS = {name: p.default for name, p in
 #: be compiled or sized mid-Attempt (nothing new is sent; the platform rests
 #: where the last Segment left it).
 HC_RETURN_UNSCHEDULABLE = 'REJECTED_HUMAN_CATCH_UNSCHEDULABLE'
+#: a per-Throw plan that raised (not a refusal): ends the Attempt (rule E).
+HC_PLAN_ERROR = 'HUMAN_CATCH_PLAN_ERROR'
 
 
 @dataclasses.dataclass(frozen=True)
@@ -3149,8 +3152,11 @@ class SkillNode(Node):
         """
         if self._goal_end_code:
             return self._goal_end_code
-        if self._executor is not None and self._executor.attempt_ended:
-            return self._executor.end_code or 'ATTEMPT_ENDED'
+        # ONE read: `_on_tick` nulls `_executor` on the timer thread while
+        # `_on_human_throw` calls this holding only `_reload_lock`.
+        executor = self._executor
+        if executor is not None and executor.attempt_ended:
+            return executor.end_code or 'ATTEMPT_ENDED'
         return ''
 
     # ── the tick ────────────────────────────────────────────────────────
@@ -3416,8 +3422,16 @@ class SkillNode(Node):
         already names, checked at the one place still watching once the
         bridge's own executor has retired."""
         with self._reload_lock:
-            reloading = self._reload_ctx is not None
-        if not reloading or not self._hand_lane_refused(time.perf_counter()):
+            ctx = self._reload_ctx
+            reloading = ctx is not None
+            # human_catch with a LIVE executor (a per-Throw CATCH or a REST):
+            # that executor's own observation owns the refusal. Ending here
+            # too would, when the counter moves between this check and the
+            # executor's tick, arm a second hold and print a second end line.
+            hc_live = (reloading and getattr(ctx, 'kind', '') == 'human_catch'
+                       and self._executor is not None)
+        if (not reloading or hc_live
+                or not self._hand_lane_refused(time.perf_counter())):
             return
         self._end_attempt(
             ex.LANE_REFUSED,
@@ -6474,7 +6488,8 @@ class SkillNode(Node):
             deadline_mono=math.inf, policy=policy, executor=executor,
             rest_until_s=float(sched.skills[0].t_abs_s), key=None,
             latest=None, plan_due=None, return_due=False,
-            bb_ignored_logged=False)
+            bb_ignored_logged=False, hold_since_s=None, hold_log_s=None,
+            plan_error=None)
         with self._correlation_lock:
             self._correlation.pop(0, None)
             self._correlation.pop(1, None)
@@ -6559,13 +6574,25 @@ class SkillNode(Node):
             sched = compile_human_catch(evt.landing_mm, evt.landing_vel_mm_s,
                                         evt.landing_time_s, now,
                                         _DISPATCH_LOOKAHEAD_S)
+            executor = self._build_hc_executor(sched, ctx.policy)
         except ValueError as exc:
             ctx.policy.on_executor_done(ex.WINDOW_TOO_SHORT, moved=False)
             return ['HUMAN-CATCH-REFUSED %s id %d seq %d: dist %.0f mm lead '
                     '%.3f s -- nothing moved (%s)'
                     % (ex.WINDOW_TOO_SHORT, d.key[0], d.key[1], d.dist_mm,
                        lead, exc)]
-        executor = self._build_hc_executor(sched, ctx.policy)
+        except Exception as exc:  # noqa: BLE001 -- the claim must not leak
+            # The policy already claimed this event (phase CATCHING): release
+            # it through its done path with a code OUTSIDE the allowlist, so
+            # rule E ends the Attempt (a defect, unlike a window too short, is
+            # not retried on the next Throw). The caller ends it.
+            ctx.policy.on_executor_done(HC_PLAN_ERROR, moved=False)
+            text = '%s: %s' % (type(exc).__name__, exc)
+            self.get_logger().error(
+                'HUMAN-CATCH-PLAN-ERROR id %d seq %d: %s'
+                % (d.key[0], d.key[1], text))
+            ctx.plan_error = text
+            return []
         ctx.executor = executor
         ctx.key = d.key
         ctx.latest = evt
@@ -6598,6 +6625,8 @@ class SkillNode(Node):
             d, ctx.plan_due = ctx.plan_due, None
             if d is not None and pol.phase == hcp.CATCHING:
                 lines.extend(self._hc_plan(ctx, d, now))
+                if ctx.plan_error:
+                    return self._hc_end_in_lock(ctx, lines, HC_PLAN_ERROR)
             if (pol.phase in (hcp.OPENING, hcp.RETURNING)
                     and not ctx.return_due):
                 if now < ctx.rest_until_s:
@@ -6609,7 +6638,7 @@ class SkillNode(Node):
                 lines.append('HUMAN-CATCH-WAITING at (%.0f, %.0f) mm'
                              % (pol.wait_xy_mm[0], pol.wait_xy_mm[1]))
             if pol.phase == hcp.WAITING:
-                if pol.finished():
+                if pol.finished(self._goal_human_claimed):
                     self._reload_ctx = None
                     end = ('done',)
                 else:
@@ -6618,9 +6647,22 @@ class SkillNode(Node):
                         lines.append(d.log)
                     if d is not None and d.kind == hcp.PLAN:
                         lines.extend(self._hc_plan(ctx, d, now))
+                        if ctx.plan_error:
+                            return self._hc_end_in_lock(ctx, lines,
+                                                        HC_PLAN_ERROR)
             elif pol.phase == hcp.HOLDING:
-                if pol.observe_cup(self._cup_state()[0], now):
+                cup = self._cup_state()[0]
+                if pol.observe_cup(cup, now):
                     ctx.return_due = True
+                    ctx.hold_since_s = None
+                elif ctx.hold_since_s is None:
+                    ctx.hold_since_s = ctx.hold_log_s = float(now)
+                elif now - ctx.hold_log_s >= _HC_HOLDING_LOG_S:
+                    # Visibility only (a dead Cup sensor, a Ball never
+                    # removed): no timeout -- that is the owner's decision.
+                    ctx.hold_log_s = float(now)
+                    lines.append('HUMAN-CATCH-HOLDING cup=%s for %.0f s'
+                                 % (cup, now - ctx.hold_since_s))
             if pol.phase == hcp.RETURNING and ctx.return_due:
                 ctx.return_due = False
                 xy, moved = pol.begin_return()
@@ -6633,10 +6675,14 @@ class SkillNode(Node):
                     except ValueError as exc:
                         why = 'the return REST is refused: %s' % (exc,)
                 if why:
-                    end = ('end', ctx, HC_RETURN_UNSCHEDULABLE,
-                           'human_catch: %s -- nothing more is sent; the '
-                           'platform rests where the last Segment left it'
-                           % (why,))
+                    # Decided HERE, under the lock: the ctx is released
+                    # before another tick can read the stale `rest_until_s`
+                    # as "REST arrived" and plan a CATCH.
+                    return self._hc_end_in_lock(
+                        ctx, lines, HC_RETURN_UNSCHEDULABLE,
+                        'human_catch: %s -- nothing more is sent; the '
+                        'platform rests where the last Segment left it'
+                        % (why,))
                 else:
                     executor = self._build_hc_executor(sched, pol)
                     ctx.executor = executor
@@ -6649,14 +6695,41 @@ class SkillNode(Node):
             self.get_logger().info(line)
         return end
 
+    def _hc_end_in_lock(self, ctx, lines, code: str, message: str = ''):
+        """Decide an Attempt-ending end INSIDE `_hc_service`'s locks (no
+        executor is live): release the ctx and set the goal's end code the way
+        `_end_attempt`'s no-executor branch does, so no other tick acts on a
+        stale phase. Logs ``lines`` and returns the ('ended', ...) tuple
+        `_hc_finish` prints the end line for, outside the tick lock."""
+        if not message:
+            message = ('human_catch: a per-Throw plan failed (%s) -- nothing '
+                       'more is sent' % (ctx.plan_error,))
+        self._reload_ctx = None
+        self._reload_throw_inflight = False
+        self._bb_throw_dispatched = False
+        self._bb_throw_release_window = None
+        if not self._goal_end_code:
+            self._goal_end_code = code
+        for line in lines:
+            self.get_logger().info(line)
+        return ('ended', code, message)
+
     def _hc_finish(self, end) -> None:
         """Run `_hc_service`'s end outside the tick lock: the Throw count's
-        COMPLETED line (the ctx is already released), or `_end_attempt` while
-        the ctx is still current (a Stop that won the race already ended)."""
+        COMPLETED line (the ctx is already released), or the end line of an
+        end decided in the lock (`_hc_end_in_lock`)."""
         if end[0] == 'done':
             self._log_declined_end('')
-        elif self._still_current(end[1]):
-            self._end_attempt(end[2], end[3])
+            return
+        code, message = end[1], end[2]
+        self._maybe_hold_pending_event(code)
+        self._maybe_cancel_bb_throw(code)
+        severity, text = rp.end_line(
+            self._end_label() or 'attempt', code,
+            '' if message == code else message, self._goal_reports,
+            fed=self._attempt_fed,
+            missed_catches=int(self._goal_missed_catches))
+        self._log_at(severity, text)
 
     def _hc_on_retire(self, executor) -> None:
         """A ``human_catch`` executor retired (`_on_tick`'s ``done`` block,
@@ -7489,8 +7562,9 @@ class SkillNode(Node):
                         self._goal_end_code = 'STOPPED'
                     self._reload_ctx = None
                 if hc_phase:
-                    message = ('human_catch stopped while %s -- nothing was '
-                               'moving; the platform rests where it is'
+                    message = ('human_catch stopped while %s -- no new move '
+                               'is sent; the last REST (if any) completes '
+                               'to rest'
                                % hc_phase)
                 else:
                     message = (

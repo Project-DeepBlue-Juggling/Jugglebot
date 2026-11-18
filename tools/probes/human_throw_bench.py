@@ -537,9 +537,9 @@ def _fit_only_config(base):
 
 
 def make_emitter(name, cfg):
-    """The D2-i 'fit valid only' variant cannot be expressed in the config (`stable_ms` is
-    both the minimum age gap and the landing-time agreement, so 0 demands identical times and
-    a huge value never fires): the probe skips the stability test in a subclass instead."""
+    """The D2-i 'fit valid only' variant is not expressed in the config (the first Fit of a
+    flight has no older Fit to agree with, whatever `stable_gap_ms` / `stable_time_ms` are):
+    the probe skips the stability test in a subclass instead."""
     from jugglebot.tracking.human_throw_event import HumanThrowEventEmitter as E
     if name == 'D2-i fit-only':
         class FitOnly(E):
@@ -556,7 +556,7 @@ def d2_variants(base=None):
     v = {'default': base,
          'D2-i fit-only': _fit_only_config(base),
          'D2-iii 20mm/10ms': C(min_start_speed_mm_s=base.min_start_speed_mm_s, stable_mm=20.0,
-                               stable_ms=10.0),
+                               stable_gap_ms=10.0, stable_time_ms=10.0),
          'no-speed-rule': C(min_start_speed_mm_s=0.0),
          'speed 300': C(min_start_speed_mm_s=300.0)}
     for rms in (4.0, 6.0, 10.0):
