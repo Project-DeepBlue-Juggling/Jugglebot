@@ -64,9 +64,61 @@ steps:
     comments: ''
     saved_at: 2026-11-18 11:07
     status: done
+  16:
+    comments: ''
+    saved_at: 2026-11-18 11:08
+    status: done
+  17:
+    comments: ''
+    saved_at: 2026-11-18 11:09
+    status: done
+  18:
+    comments: ''
+    saved_at: 2026-11-18 11:09
+    status: done
+  19:
+    comments: ''
+    saved_at: 2026-11-18 11:09
+    status: done
+  20:
+    comments: First, second attempts ended with a messy catch leading to an uncatchable
+      throw. Third, fourth, seventh attempts finished. Fifth and sixth attempts ended
+      with a barely-dropped catch. Eighth attempt ended with a mid-air collision and
+      both balls being dropped. No leg base joint separations.
+    saved_at: 2026-11-18 11:15
+    status: done
+  21:
+    comments: 'Ran a similar same sequence as for step 10: six attempts with 32 cycles,
+      then three attempts with 200 cycles. All 32 cycle attempts completed. The first
+      200-cycle attempt ended at 50 cycles with LANE_REFUSED, and the second ended
+      with a drop after 64 throws. The third 200-cycle attempt ended with LANE_REFUSED
+      after only 19 cycles.'
+    saved_at: 2026-11-18 11:26
+    status: done
+  24:
+    comments: ''
+    saved_at: 2026-11-18 11:29
+    status: done
+  25:
+    comments: ''
+    saved_at: 2026-11-18 11:29
+    status: done
+  26:
+    comments: ''
+    saved_at: 2026-11-18 11:30
+    status: done
 verdicts:
   13:
     BUG-63:
       notes: Gave this a few attempts. Most ended due to the balls colliding mid-air
         and becoming un-catchable. All attempts lasted for at least 2-3 throws.
       saved_at: 2026-11-18 11:06
+  22:
+    BUG-89:
+      notes: '`ros2 topic echo /link_status | grep -A1 setpoints_coalesced` gives
+        9, and the second command gives a bunch of rows.'
+      saved_at: 2026-11-18 11:27
+  23:
+    IDEA-11:
+      notes: Ran two attempts, both completing.
+      saved_at: 2026-11-18 11:29
