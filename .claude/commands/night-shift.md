@@ -78,8 +78,8 @@ Arguments: `$ARGUMENTS`
    findings; behaviour-affecting findings stay open and hold the branch.
 7. **Rely on `CLAUDE.md`, `GLOSSARY.md`, `DOCUMENTATION_GUIDE.md`, `docs/agents/map-writes.md`
    and the Items, not on memory**: the clone's memory directory is empty and stays
-   irrelevant. Glossary words are normative (Sitting, Item, Pathway, Night Shift, Next
-   Sitting Runbook; never "session" for robot time, never "runsheet").
+   irrelevant. Glossary words are normative (Sitting, Item, Pathway, Night Shift, Sitting
+   sheet, Sitting index; never "session" for robot time, never "runsheet").
 8. **Every step ends in a status, never silence**: every Item in the `delta` is Merged, Held,
    Questioned, Unfinished or Skipped in the report, each with a reason (an Item outside the
    delta is not reported individually: it is counted once, in the Skipped section's last
@@ -416,8 +416,8 @@ one tonight, unless only a Sitting unblocks it (`none`).
    under another owner is not re-owned: the note only. If the Item is a hardware one with
    a `## Sitting` section (or you wrote one), set its `- branch: night-shift/<date>-<ID>`
    line in that section in the same write (edit the body with `mapkit.items.load_item` /
-   `write_item` in a `python -` snippet before the `set-status`), so the Next Sitting
-   Runbook index row carries the branch and `/sitting-debrief` knows what to merge on a pass.
+   `write_item` in a `python -` snippet before the `set-status`), so the Sitting
+   index row carries the branch and `/sitting-debrief` knows what to merge on a pass.
 3. If the unblock is the owner's call, file the hold question ticket (2h, on `main`, in
    the same push as the `set-status`); a Sitting-only hold files none.
 4. Report row under `## Held`: `| <ID> | <title> | night-shift/<date>-<ID> | (<letter>) <reason>. ... | <what unblocks it> | <question-ID or none> |`.
