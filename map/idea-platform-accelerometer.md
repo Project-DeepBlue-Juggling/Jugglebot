@@ -4,7 +4,7 @@ kind: idea
 title: Platform Accelerometer?
 status: in_progress
 created: '2026-11-08'
-updated: '2026-11-18T09:27:40Z'
+updated: '2026-11-18T11:19:42Z'
 owners:
 - claude
 priority: medium
@@ -14,7 +14,8 @@ owner: hands
 radius: subsystem
 area: platform-teensy
 blocked_by: []
-links: []
+links:
+- plans/active/platform-imu.md
 filed_by: harrison
 night_skip: owner-session
 night_skip_on: '2026-11-18'
@@ -61,8 +62,25 @@ Working at `tools/probes/imu_bench/` (commit afdf0e91, logbook `2026-11-18-imu-b
 - **Rest check.** |a| 1.004 g at rest on one face; the other five faces and a 90 degree rotation are still open.
 - **Next.** A day Session started 2026-11-18: the question round, calibration options and CAN transport design come before any Platform Teensy firmware.
 
+## Sitting
+
+- setup: bridge-cycled, armed
+- why: first hardware contact of the Platform IMU path (plans/active/platform-imu.md P4): the new can-bridge and Platform Teensy firmware must be flashed and the capture, upload and bus-load behaviour shown safe before any Attempt relies on it.
+- do:
+  - With the launch down, flash the can-bridge, then the Platform Teensy over CAN; read both identities (the BridgeIdentity sniff) and bring the launch up.
+  - Request a tilt reading and check the Hand fan still answers.
+  - With the IMU unplugged, power-cycle the Platform Teensy: it must boot, answer CAN and accept a firmware update; replug it.
+  - Check the 1 Hz IMU status frame arrives.
+  - At rest take a capture and upload it: |a| about 1 g, rate 1 kHz, 0 overflows, CRC passes.
+  - Upload again with a forced gap and check the re-request heals it.
+  - Arm and run an Attempt-like move; compare the bus-load counters in `/profile` with an earlier bag.
+- pass: both identities read as flashed; the tilt request and the Hand fan answer; with the IMU unplugged the board boots, answers CAN and takes an update; the status frame arrives; the rest capture reads |a| about 1 g at 1 kHz with 0 overflows; both uploads pass CRC and the forced gap is re-requested and healed; the bus-load counters are unchanged during the Attempt-like move.
+- record: both identity strings, the capture's |a|, rate, overflow count and CRC result, the forced-gap outcome, and the `/profile` bus-load before and after.
+- minutes: 60
+
 ## Progress
 
 - 2026-11-09: Night Shift 2026-11-09: feasibility and options written; awaiting the owner's answer
 - 2026-11-11: Night Shift 2026-11-11: TKT-54 answered (ICM-42688-P, live low-rate plus buffered upload); decision recorded, re-rated owner hands for a day Session
 - 2026-11-18: Bench proof of concept working (ICM-42688-P on a Teensy 4.0, 0 FIFO overflows and 0 I2C errors at 1 and 2 kHz); day Session started, no Platform Teensy firmware before the question round, calibration options and CAN transport design (detail below)
+- 2026-11-18: Design round done: decisions agreed with the owner and written up in plans/active/platform-imu.md (phases P1 to P5, buffered capture only, no live stream).
