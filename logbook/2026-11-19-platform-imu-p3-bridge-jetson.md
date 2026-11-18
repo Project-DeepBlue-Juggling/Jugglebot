@@ -128,7 +128,7 @@ staging); `/cache_diag` `rx_depth_hwm_jb`, `rx_cap_hits_jb`; `/ring_diag` `fifo_
 - Scoped Python readers (grep -rlE over tests/ for Teensy_code_canbridge, platform_imu_protocol,
   generate_udp_protocol, udp_protocol, rpc_args, teensy_link protocol, EXPECTED_BRIDGE_FW_VERSION,
   protocol_config, platform-imu; minus hardware scripts, conftest/harness and the native wrappers:
-  87 files, list in the session scratchpad), run 2026-11-19:
+  87 files, listed in the appendix at the end of this entry), run 2026-11-19:
   `nice -n 10 python -m pytest <those 87 files> -q -p no:cacheprovider -x -n 2` -> 2440 passed, 4 skipped in 427.60 s.
 - Native + docs readers, run 2026-11-19: `nice -n 10 python -m pytest tests/firmware/test_native_firmware.py
   tests/firmware/test_platform_imu_native.py tests/sim/test_logbook_front_matter.py tests/sim/test_logbook_index.py
@@ -189,7 +189,10 @@ Butler stays single-BEGIN; nothing after BEGIN OK changed.
   setpoint emit path. The tilt service (coldstart group, already blocking) may now sleep up to 3 s in the
   FW 11 not-ready case.
 - **Net effect on the 40 Hz planner / leg path:** none by construction; the extra load is the two threads and
-  about 60 small callbacks per second during an upload, none while an Attempt runs (STATUS only, 1 Hz).
+  about 60 small callbacks per second during an upload. While an Attempt runs the node still does: STATUS
+  (1 Hz), the 2 Hz status publish, and at Attempt start an abort-service call plus, when an upload was running,
+  the ABORT/RESUME RPC pair (the audit later dropped the ABORT); a Fault mid-Attempt starts an upload (FREEZE
+  at once, the READ stream after a configurable delay, audit B7), so the bus is not idle of IMU traffic then.
 
 ## Verification (P3b)
 
@@ -254,3 +257,95 @@ Not covered: a live GUI session, real DDS latency of `skills/attempt` (the 2 s m
 There is no `gui_server` endpoint (toggle = rosbridge service, progress = topic), so no server test.
 
 Full gate (`./run_tests.sh --full`): FULL-GATE-TRIPLE-PENDING
+
+## Appendix: the 87 scoped test files (P3a verification run)
+
+```
+tests/firmware/test_ball_butler_xref.py
+tests/firmware/test_bb_fw_update_xref.py
+tests/firmware/test_bridge_fw_version_xref.py
+tests/firmware/test_config_drift.py
+tests/firmware/test_deactivate_xref.py
+tests/firmware/test_firmware_build_pins.py
+tests/firmware/test_flash_b_concurrency_lint.py
+tests/firmware/test_flexcan_tx_defer_guard.py
+tests/firmware/test_gpio_poll_xref.py
+tests/firmware/test_hand_axis6_allow.py
+tests/firmware/test_hand_single_master.py
+tests/firmware/test_hand_stall_guard_xref.py
+tests/firmware/test_hand_torque_ff_twin.py
+tests/firmware/test_hermite_xref.py
+tests/firmware/test_leg_clamp_age_aware_twin.py
+tests/firmware/test_odrive_protocol_xref.py
+tests/firmware/test_platform_fw_version_xref.py
+tests/firmware/test_platform_hand_fan_xref.py
+tests/firmware/test_platform_imu_protocol.py
+tests/firmware/test_rpc_dispatch_lint.py
+tests/firmware/test_sched_c2_twin.py
+tests/firmware/test_udp_protocol_xlang.py
+tests/motion/test_endpoint_id_contract.py
+tests/motion/test_hand_jam.py
+tests/motion/test_hand_stream_bench_stroke_cut.py
+tests/motion/test_kt_lib.py
+tests/motion/test_leg_torque_ff.py
+tests/motion/test_odrive_fleet_reflash.py
+tests/ros/test_ball_butler_node.py
+tests/ros/test_ball_butler.py
+tests/ros/test_catching_cone.py
+tests/ros/test_gui_geometry.py
+tests/ros/test_hand_capture.py
+tests/ros/test_install_segment.py
+tests/ros/test_mocap_calibration_solve_worker.py
+tests/ros/test_mocap_frame_queue.py
+tests/ros/test_mocap_node_attempt_fields.py
+tests/ros/test_mocap_node_base_frame.py
+tests/ros/test_mocap_node_keep_last_good.py
+tests/ros/test_mocap_node.py
+tests/ros/test_mocap_node_yaw_gate.py
+tests/ros/test_odrive.py
+tests/ros/test_perception_console_lines.py
+tests/ros/test_teensy_bridge_node_bb.py
+tests/ros/test_teensy_bridge_node_bridge_diag.py
+tests/ros/test_teensy_bridge_node_clock_diag.py
+tests/ros/test_teensy_bridge_node_coldstart.py
+tests/ros/test_teensy_bridge_node_conduit.py
+tests/ros/test_teensy_bridge_node_cone.py
+tests/ros/test_teensy_bridge_node_encoder_search.py
+tests/ros/test_teensy_bridge_node_hand_jam.py
+tests/ros/test_teensy_bridge_node_hand.py
+tests/ros/test_teensy_bridge_node_hand_sensor.py
+tests/ros/test_teensy_bridge_node_install_skew.py
+tests/ros/test_teensy_bridge_node_lag_normalizer.py
+tests/ros/test_teensy_bridge_node_latency_monitor.py
+tests/ros/test_teensy_bridge_node_read.py
+tests/ros/test_teensy_bridge_node_recover_lane.py
+tests/ros/test_teensy_bridge_node_recover.py
+tests/ros/test_teensy_bridge_node_relay.py
+tests/ros/test_teensy_bridge_node_ring_diag.py
+tests/ros/test_teensy_bridge_node_robot_state_freshness.py
+tests/ros/test_teensy_bridge_node_rpc.py
+tests/ros/test_teensy_bridge_node_setpoint.py
+tests/ros/test_teensy_bridge_node_shutdown_stow.py
+tests/ros/test_teensy_bridge_node_version.py
+tests/ros/test_teensy_bridge_node_wave.py
+tests/ros/test_wave_camera.py
+tests/sim/test_mapkit_sheet.py
+tests/sim/test_mjcf_drift.py
+tests/sim/test_night_shift_gate.py
+tests/sim/test_night_shift_landed.py
+tests/sim/test_sim_import_style.py
+tests/teensy_link/test_client.py
+tests/teensy_link/test_gap_monitor.py
+tests/teensy_link/test_hand_feedback_watch.py
+tests/teensy_link/test_hand_move_to.py
+tests/teensy_link/test_hand_stream_bench_gap.py
+tests/teensy_link/test_leg_clamp_diag_codec.py
+tests/teensy_link/test_protocol_codec.py
+tests/teensy_link/test_rpc_args.py
+tests/teensy_link/test_rpc.py
+tests/teensy_link/test_rx_timestamping.py
+tests/teensy_link/test_setpoint_pump.py
+tests/teensy_link/test_stop_record.py
+tests/teensy_link/test_synthetic_setpoint.py
+tests/teensy_link/test_v5_wire_regression.py
+```

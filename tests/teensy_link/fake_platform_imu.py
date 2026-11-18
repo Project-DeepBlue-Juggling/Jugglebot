@@ -78,6 +78,9 @@ class FakePlatform:
     reboot_at_s    sim time at which the board "reboots": STATUS boot changes, READs get ERR_NOT_FROZEN
     armed          bridge Armed: gaps clamped to 63
     lose_replies   number of leading IMU_REPLY frames the bridge loses
+    read_status    status code to answer every READ with (a refusal; the board stays frozen)
+    resume_ignored RESUME is neither applied nor answered (a lost command: the ring stays frozen)
+    freeze_reply_lost  FREEZE is applied but its reply never arrives (the id stays unknown to the host)
     """
 
     def __init__(self, machine, image, **opt):
@@ -114,6 +117,9 @@ class FakePlatform:
         self.ctrls.append((op, reason, cid))
         img = self.img
         if op == OP.FREEZE:
+            if self.opt.get("freeze_reply_lost"):
+                self.frozen = True
+                return True, "ok"
             if self.opt.get("refuse_freeze") is not None:
                 self._reply(op, self.opt["refuse_freeze"], 0, 0)
             elif self.opt.get("already_frozen") and not self.frozen:
@@ -125,6 +131,8 @@ class FakePlatform:
                 self.frozen = True
                 self._reply(op, ST.OK, img["cap_id"], img["n"])
         elif op == OP.RESUME:
+            if self.opt.get("resume_ignored"):
+                return True, "ok"
             if self.rebooted or cid != img["cap_id"] or not self.frozen:
                 self._reply(op, ST.ERR_NOT_FROZEN, 0, 0)
             else:
@@ -151,6 +159,9 @@ class FakePlatform:
             return True, "ok"
         if cid != img["cap_id"]:
             self._reply(OP.READ, ST.ERR_WRONG_CAPTURE, img["cap_id"], 0)
+            return True, "ok"
+        if self.opt.get("read_status") is not None:
+            self._reply(OP.READ, self.opt["read_status"], img["cap_id"], 0)
             return True, "ok"
         self._reply(OP.READ, ST.OK, cid, first | (count << 16))
         drop_block = self.reads_seen <= self.opt.get("drop_block_n", 0)

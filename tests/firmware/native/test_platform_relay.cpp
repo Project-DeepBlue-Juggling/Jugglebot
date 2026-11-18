@@ -31,6 +31,7 @@
 #include <cstring>
 #include <cmath>                 // NAN / INFINITY (state_write float validation)
 #include <vector>                // recorded CAN1 frames (BB firmware-over-CAN)
+#include <thread>                // IMU ring: one producer, one consumer (SPSC stress)
 
 #include "udp_protocol.h"
 #include "protocol_config.h"
@@ -740,4 +741,33 @@ TEST_CASE("IMU batch framing: 24 records per batch, FIFO, zero past count, count
   CHECK(imu_batch_fill(ring, p, 7, 2) == 0);
   CHECK(IMU_RING_CAP >= 2 * 16);                      // two ticks of the 1600 fps cap at least
   CHECK(IMU_BATCHES_PER_TICK_MAX * JbUdp::PLATFORM_IMU_BATCH_MAX_FRAMES >= IMU_RING_CAP / 2);
+}
+
+// Audit T4: the SPSC ordering claim (acquire/release between task_can_rx and task_telem) exercised with two
+// real threads. One producer pushes a sequence-numbered stream, retrying when full; one consumer pops and
+// checks every frame arrives once, in order, intact. Pass under -fsanitize=thread as well (run by hand).
+TEST_CASE("IMU ring: one producer thread and one consumer thread keep order and content") {
+  static ImuDataRingT ring;
+  const uint32_t TOTAL = 400000;
+  std::thread prod([&] {
+    uint8_t in[8];
+    for (uint32_t i = 0; i < TOTAL;) {
+      imu_frame(in, (uint16_t)i);
+      if (ring.push(in, 8)) ++i;            // full: the producer retries the SAME frame (nothing is lost here)
+    }
+  });
+  uint32_t got = 0, bad = 0;
+  uint8_t out[8], want[8];
+  while (got < TOTAL) {
+    if (ring.pop(out)) {
+      imu_frame(want, (uint16_t)got);
+      if (memcmp(out, want, 8) != 0) ++bad;
+      ++got;
+    }
+  }
+  prod.join();
+  CHECK(bad == 0);
+  CHECK(got == TOTAL);
+  CHECK_FALSE(ring.pop(out));
+  CHECK(ring.hwm() <= IMU_RING_CAP);
 }

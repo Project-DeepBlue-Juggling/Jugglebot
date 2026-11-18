@@ -81,7 +81,8 @@ function lastResult(m) {
 
 /**
  * Everything the DOM shows, from the status model and ctx { rosConnected, fenced, pending, flash }.
- * A replay shows nothing (the topic is not recorded) and never offers the toggle.
+ * A replay is fenced (ctx.fenced): it shows nothing live and never offers the toggle, although
+ * /platform_imu/status is recorded in the bag and allowlisted for replay (jugglebot_launch.py, replay/allowlist.js).
  */
 export function imuView(model, nowMs, ctx) {
     const fresh = !!model && !ctx.fenced && nowMs - model.atMs <= STATUS_STALE_MS;

@@ -122,3 +122,45 @@ def test_toggle_off_mid_upload_aborts_it():
         assert calls == []
     finally:
         _teardown(teensy, client, node)
+
+
+# ── audit B1 (through the real heartbeat call site) and B4 ───────────────────────────────────────
+
+def _hb(teensy, node, state):
+    from teensy_link import FaultState
+    from tests.ros._bridge_harness import _wait_until
+    teensy.send_heartbeat_t2j(fault_state=int(state))
+    assert _wait_until(lambda: node._latest_heartbeat is not None
+                       and int(node._latest_heartbeat.fault_state) == int(state), timeout=2.0)
+    node._publish_link_status()          # the 10 Hz timer body: the only caller of the fault-edge branch
+
+
+def test_a_second_fault_value_in_a_cascade_does_not_abort_the_upload_the_first_edge_started():
+    from teensy_link import FaultState
+    teensy, client, node, calls = _node_with_spy()
+    try:
+        _hb(teensy, node, FaultState.NONE)
+        node._imu_on_attempt_event(_ev('juggle_start'), 1000.0)
+        _hb(teensy, node, FaultState.MAX_DEVIATION)                  # edge from NONE: the span upload starts
+        assert [c[2] for c in calls if len(c) == 3] == ['fault'] and ('abort', 'fault') not in calls
+        node.upload_in_progress = lambda: True                       # ...and is running
+        _hb(teensy, node, FaultState.CAN_BUS_DOWN)                   # cascade: NON-NONE -> NON-NONE
+        assert ('abort', 'fault') not in calls
+        # a fresh fault out of NONE between Attempts is still a pacifying case
+        _hb(teensy, node, FaultState.NONE)
+        _hb(teensy, node, FaultState.MAX_DEVIATION)
+        assert calls[-1] == ('abort', 'fault')
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_requesting_an_upload_publishes_the_busy_status_at_once_not_at_the_next_tick():
+    teensy, client, node, calls = _node_with_spy()
+    try:
+        published = []
+        node._publish_platform_imu_status = lambda: published.append(True)
+        node._imu_on_attempt_event(_ev('juggle_start'), 1000.0)
+        node._imu_on_attempt_event(_ev('juggle_end'), 1006.0)        # attempt_ended spy returns True: started
+        assert published == [True]
+    finally:
+        _teardown(teensy, client, node)

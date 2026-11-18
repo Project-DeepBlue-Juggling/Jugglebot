@@ -199,6 +199,14 @@ Attempt's capture on disk, complete and CRC-checked, handed to the carry-ring-zv
   tighter sample packing or compression (the 6 x int16 words are raw chip counts); (2) a slower
   setpoint heartbeat while holding (decided 2026-11-19 to keep the 500 Hz stream as is for now: it feeds the ODrive
   watchdog and avoids a rate switch on the Leg path); (3) a higher measured rate from the P4 ramp.
+- **Span-only uploads cannot be CRC-checked (IDEA-25 note, P3 audit 2026-11-19):** the payload CRC covers the whole
+  frozen capture, so an upload of only the Attempt span (the default) records `crc_checked = false`. Per-block
+  checksums would close it and need a firmware and spec change; until then a span capture's integrity rests on the
+  per-frame sequence numbers and the hole-refill, and `complete` means "the requested span arrived", not "verified".
+- **Owner confirmations pending (P3 audit):** (1) `activate` and `clear_errors` are not gated while an upload runs
+  (the gate refuses only motion-starting commands); (2) toggle OFF aborts a running upload; (3) the Fault upload delay:
+  a Fault or Soft E-stop freezes at once but starts the READ stream `imu_fault_upload_delay_s` (default 5 s, clamped
+  to 60 s, and held while still Armed up to 30 s) later, so the upload never competes with the deactivate response.
 - **Residue, recorded and not solved here:** (a) tighten the wall-clock chain once the status frame shows the real
   sync quality (stamp sync frames nearer the receive interrupt; min-RTT filtering of the bridge's Jetson anchor);
   (b) the encoder-versus-Mocap ring-frequency discrepancy (5.4 versus 4.4 to 4.7 Hz), which the IMU should settle;

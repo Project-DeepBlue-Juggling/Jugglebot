@@ -209,6 +209,12 @@ class UploadConfig:
     span_margin_s: float = 2.0         # added each side of an Attempt span
     max_total_s: float = 300.0         # a whole upload is abandoned after this
     status_stale_s: float = 3.0        # no STATUS this long on a booted board: no IMU (spec section 4)
+    fault_upload_delay_s: float = 5.0  # a Fault / Soft E-stop freezes at once but starts the READs this late
+    fault_hold_max_s: float = 30.0     # ...and, while the robot is still Armed, holds them up to this long
+    heal_grace_s: float = 3.0          # a ring FROZEN with the machine idle: RESUME our own capture after this
+    heal_foreign_grace_s: float = 15.0  # ...or a frozen capture that is not ours (FREEZE probe learns its id)
+    heal_retry_s: float = 5.0          # between heal attempts
+    heal_max_tries: int = 3            # per frozen episode; then log an error and stop until the state changes
 
 
 @dataclass
@@ -218,6 +224,9 @@ class UploadJob:
     reason: int = int(pc.PlatformImuFreezeReason.ATTEMPT_END)
     attempt_id: Optional[str] = None
     label: str = "attempt_end"
+    read_delay_s: float = 0.0         # FREEZE now, start the READs this much later (Fault: the robot is busy)
+    heal: bool = False                # a heal job: FREEZE to learn the id (or use ``heal_cid``), then RESUME only
+    heal_cid: int = 0
 
 
 @dataclass
@@ -232,6 +241,9 @@ class UploadResult:
     stats: Dict[str, Any]
     job: UploadJob
     failure: str = ""
+    frozen_cid: int = 0               # the capture id we froze (0 = never learned)
+    freeze_lost: bool = False         # FREEZE unanswered: the ring may be frozen under an id we never saw
+    resume_lost: bool = False         # RESUME unanswered: the ring may still be frozen under ``frozen_cid``
 
 
 class _Region:
@@ -297,8 +309,8 @@ class _Block:
 
 
 # Phases
-IDLE, FREEZING, HEADER, ANCHORS, SAMPLES, RESUMING, DONE = (
-    "idle", "freezing", "header", "anchors", "samples", "resuming", "done")
+IDLE, FREEZING, WAITING, HEADER, ANCHORS, SAMPLES, RESUMING, DONE = (
+    "idle", "freezing", "waiting", "header", "anchors", "samples", "resuming", "done")
 
 
 class UploadMachine:
@@ -342,7 +354,8 @@ class UploadMachine:
         self.stalled = 0
         self.rereads_left = 0
         self._abort_reason: Optional[str] = None
-        self._resume_after = True
+        self._wait_until = 0.0
+        self._wait_cap = 0.0
         self.expected_n: Optional[int] = None
         self.frames_total = 0
         self.frames_done = 0
@@ -382,6 +395,10 @@ class UploadMachine:
         self.flags = {"complete": False, "crc_checked": False, "crc_ok": None, "aborted": False,
                       "platform_rebooted": False, "already_frozen": False, "partial_span": False,
                       "span_unavailable": False, "resume_ok": None, "holes_unfilled": 0}
+        if job.heal and job.heal_cid:
+            self.cid = job.heal_cid                 # our own capture whose RESUME was lost: RESUME it directly
+            self._resume(now)
+            return
         self.phase = FREEZING
         self._send_cmd(OP.FREEZE, now, reason=job.reason)
 
@@ -391,9 +408,10 @@ class UploadMachine:
         if not self.busy:
             return
         self.flags["aborted"] = True
-        if self.phase in (HEADER, ANCHORS, SAMPLES):
-            self._ctrl(int(OP.ABORT), 0, 0)         # UPLOADING -> FROZEN: the board stops sending
-            self._fail("aborted: " + reason, now, resume=True)
+        if self.phase in (WAITING, HEADER, ANCHORS, SAMPLES):
+            # RESUME is legal from UPLOADING and cuts the block (spec section 4 table), so no ABORT first:
+            # one IMU_CMD at a time keeps the bridge's reply ring within its sizing assumption.
+            self._fail("aborted: " + reason, now)
         elif self.phase == FREEZING:
             self._abort_reason = reason             # settle the FREEZE first, then give the ring back
         # RESUMING: already giving the ring back
@@ -461,13 +479,23 @@ class UploadMachine:
             self._cmd = None
             if self._abort_reason is not None:
                 self.flags["aborted"] = True
-                self._fail("aborted: " + self._abort_reason, now, resume=True)
+                self._fail("aborted: " + self._abort_reason, now)
+                return
+            if self.job.heal:                       # a heal only wanted the id: give the ring back
+                self.flags["healed"] = True
+                self._resume(now)
+                return
+            if self.job.read_delay_s > 0:
+                self.phase = WAITING
+                self._wait_until = now + self.job.read_delay_s
+                self._wait_cap = now + max(self.job.read_delay_s, self.cfg.fault_hold_max_s)
                 return
             self._begin_region_header(now)
             return
         # Refused with nothing changed: no capture to fetch and nothing to RESUME.
         names = {ST.ERR_EMPTY: "no samples", ST.ERR_DISABLED: "IMU disabled", ST.ERR_FW_UPDATE: "firmware update"}
-        self._fail("FREEZE refused: %s" % names.get(st, "status 0x%02X" % st), now, resume=False)
+        self._fail("FREEZE refused: %s" % names.get(st, "status 0x%02X" % st), now,
+                   no_resume="nothing frozen (FREEZE refused)")
 
     def _on_read_reply(self, rep: ImuReply, now: float) -> None:
         b = self.blk
@@ -478,12 +506,16 @@ class UploadMachine:
         elif rep.status in (ST.ERR_NOT_FROZEN, ST.ERR_WRONG_CAPTURE):
             self.flags["platform_rebooted"] = True
             self._fail("READ refused (%s): the Platform rebooted or was resumed" % ST(rep.status).name, now,
-                       resume=False)
+                       no_resume="Platform rebooted or already resumed")
         elif rep.status == ST.ERR_OUT_OF_RANGE:
             self._fail("READ out of range (seq 0x%04X, region end %d)" % (rep.read_first_seq, rep.read_count),
-                       now, resume=True)
-        elif rep.status in (ST.ERR_BAD_ARGS, ST.ERR_DISABLED, ST.ERR_FW_UPDATE):
-            self._fail("READ refused (%s)" % ST(rep.status).name, now, resume=False)
+                       now)
+        elif rep.status == ST.ERR_BAD_ARGS:
+            # The board is still FROZEN/UPLOADING and would stay so: give the ring back (audit B2).
+            self._fail("READ refused (ERR_BAD_ARGS)", now)
+        elif rep.status in (ST.ERR_DISABLED, ST.ERR_FW_UPDATE):
+            self._fail("READ refused (%s)" % ST(rep.status).name, now,
+                       no_resume="IMU disabled (capture discarded) or firmware update (halted)")
 
     def on_status(self, st: ImuStatus, now: float) -> None:
         """A 1 Hz IMU_STATUS. During a transfer it is the reboot detector."""
@@ -491,15 +523,16 @@ class UploadMachine:
             return
         if self.boot_low is None:
             self.boot_low = st.boot
-        if self.phase not in (HEADER, ANCHORS, SAMPLES):
+        if self.phase not in (WAITING, HEADER, ANCHORS, SAMPLES):
             return
         if self.header is not None and st.boot != (self.header.boot_id & 0xFF):
             self.flags["platform_rebooted"] = True
             self._fail("boot changed mid-upload (status boot %d, header boot_id low byte %d)"
-                       % (st.boot, self.header.boot_id & 0xFF), now, resume=False)
+                       % (st.boot, self.header.boot_id & 0xFF), now, no_resume="Platform rebooted")
         elif now - self.t_freeze_reply >= self.cfg.status_grace_s and st.state not in (STATE.FROZEN, STATE.UPLOADING):
             self.flags["platform_rebooted"] = True
-            self._fail("Platform left FROZEN/UPLOADING mid-upload (state %d)" % st.state, now, resume=False)
+            self._fail("Platform left FROZEN/UPLOADING mid-upload (state %d)" % st.state, now,
+                       no_resume="Platform rebooted (left FROZEN)")
 
     # -- data --
     def on_records(self, records: bytes, now: float) -> None:
@@ -533,18 +566,27 @@ class UploadMachine:
     def tick(self, now: float) -> None:
         if not self.busy:
             return
-        if now - self.t_job0 > self.cfg.max_total_s and self.phase in (HEADER, ANCHORS, SAMPLES):
-            self._fail("upload exceeded %.0f s" % self.cfg.max_total_s, now, resume=True)
+        if now - self.t_job0 > self.cfg.max_total_s and self.phase in (WAITING, HEADER, ANCHORS, SAMPLES):
+            self._fail("upload exceeded %.0f s" % self.cfg.max_total_s, now)
+            return
+        if self.phase == WAITING:
+            if now >= self._wait_until and (not self._is_armed() or now >= self._wait_cap):
+                self._begin_region_header(now)
             return
         if self.phase in (FREEZING, RESUMING):
             cmd = self._cmd
             if cmd and now >= cmd["deadline"]:
                 if cmd["tries"] >= self.cfg.cmd_retries:
                     if self.phase == FREEZING:
-                        self._fail("no reply to FREEZE", now, resume=False)
+                        # The FREEZE may have been applied with every reply lost: the id is unknown, so the
+                        # service heals from a STATUS that stays FROZEN (FREEZE probe, then RESUME).
+                        self.flags["freeze_lost"] = True
+                        self._fail("no reply to FREEZE", now, no_resume="FREEZE unanswered (healed from STATUS)")
                     else:
                         self.flags["resume_ok"] = False
-                        self._fail("no reply to RESUME (the ring may still be frozen)", now, resume=False)
+                        self.flags["resume_lost"] = True
+                        self._fail("no reply to RESUME (the ring may still be frozen)", now,
+                                   no_resume="RESUME unanswered (healed from STATUS)")
                 else:
                     self._send_cmd(cmd["op"], now, reason=cmd["reason"])
             return
@@ -582,7 +624,7 @@ class UploadMachine:
         if b is not None:
             self.stalled = 0 if b.n_new else self.stalled + 1
         if self.stalled > self.cfg.max_stalled_blocks:
-            self._fail("upload stalled: %d consecutive blocks delivered nothing" % self.stalled, now, resume=True)
+            self._fail("upload stalled: %d consecutive blocks delivered nothing" % self.stalled, now)
             return
         if self.region.complete:
             self.blk = None
@@ -591,7 +633,7 @@ class UploadMachine:
         if self.region.passes > self.cfg.max_passes:
             self.flags["holes_unfilled"] = self.region.missing()
             self._fail("%d word(s) of the %s region still missing after %d passes"
-                       % (self.region.missing(), self.region.name, self.cfg.max_passes), now, resume=True)
+                       % (self.region.missing(), self.region.name, self.cfg.max_passes), now)
             return
         self._start_block(now)
 
@@ -615,17 +657,18 @@ class UploadMachine:
         try:
             h = decode_header(bytes(self.region.buf))
         except HeaderError as e:
-            self._fail("header invalid: %s" % e, now, resume=True)
+            self._fail("header invalid: %s" % e, now)
             return
         if h.capture_id != self.cid:
-            self._fail("header capture_id 0x%04X != reply 0x%04X" % (h.capture_id, self.cid), now, resume=True)
+            self._fail("header capture_id 0x%04X != reply 0x%04X" % (h.capture_id, self.cid), now)
             return
         if self.expected_n is not None and h.n_samples != self.expected_n:
-            self._fail("header n_samples %d != FREEZE reply %d" % (h.n_samples, self.expected_n), now, resume=True)
+            self._fail("header n_samples %d != FREEZE reply %d" % (h.n_samples, self.expected_n), now)
             return
         if self.boot_low is not None and (h.boot_id & 0xFF) != self.boot_low:
             self.flags["platform_rebooted"] = True
-            self._fail("boot_id low byte %d != status boot %d" % (h.boot_id & 0xFF, self.boot_low), now, resume=False)
+            self._fail("boot_id low byte %d != status boot %d" % (h.boot_id & 0xFF, self.boot_low), now,
+                       no_resume="Platform rebooted")
             return
         self.header = h
         self._begin_region_anchors(now)
@@ -654,6 +697,8 @@ class UploadMachine:
                 self.flags["span_unavailable"] = True      # no wall clock in this capture: take it all
             else:
                 k0, k1 = rng
+                if rng == (0, 0):
+                    self.flags["span_empty"] = True        # no sample inside the span: clocks disagree
                 self.full_coverage = (k0, k1) == (0, h.n_samples)
                 self.flags["partial_span"] = not self.full_coverage
         self.k0, self.k1 = k0, k1
@@ -686,14 +731,22 @@ class UploadMachine:
                                   and not self.flags["aborted"] and not self.flags["platform_rebooted"])
         self._resume(now)
 
-    def _fail(self, why: str, now: float, *, resume: bool) -> None:
+    def _fail(self, why: str, now: float, *, no_resume: str = "") -> None:
+        """THE early exit. Invariant: the ring is never left frozen by us. Every early end RESUMEs the
+        capture we froze, except where ``no_resume`` names why it is provably unnecessary (nothing frozen,
+        or the Platform rebooted / discarded it) or where the id is unknown (FREEZE unanswered: the
+        service heals from STATUS). The RESUME itself is retried and, if lost, healed the same way."""
         self.failure = self.failure or why
         self.flags["complete"] = False
         logger.warning("IMU upload ended early: %s", why)
         self.blk = None
-        if resume and self.cid:
+        if no_resume:
+            self.flags["resume_skipped"] = no_resume
+            self._finish(now)
+        elif self.cid:
             self._resume(now)
         else:
+            self.flags["resume_skipped"] = "no capture id"
             self._finish(now)
 
     def _resume(self, now: float) -> None:
@@ -709,10 +762,13 @@ class UploadMachine:
             header=self.header, anchors=list(self.anchors),
             sample_words=bytes(sr.buf) if sr else b"", word_present=bytes(sr.have) if sr else b"",
             k0=self.k0, flags=dict(self.flags), stats=dict(self.stats, wall_s=now - self.t_job0),
-            job=self.job, failure=self.failure)
+            job=self.job, failure=self.failure, frozen_cid=self.cid,
+            freeze_lost=bool(self.flags.get("freeze_lost")), resume_lost=bool(self.flags.get("resume_lost")))
         res.flags["holes_unfilled"] = sr.missing() if sr else 0
         if sr is not None and sr.n:
             res.flags["complete"] = bool(res.flags["complete"]) and sr.complete
+        if self.flags.get("span_empty"):
+            res.flags["complete"] = False              # zero samples matched the span: not a capture of it
         try:
             self._on_result(res)
         except Exception:  # noqa: BLE001
@@ -732,8 +788,10 @@ class PlatformImuService:
     def __init__(self, send_ctrl, send_read, *, writer=None, clock: Callable[[], float] = time.monotonic,
                  wall: Callable[[], float] = time.time, is_armed: Callable[[], bool] = lambda: False,
                  config: Optional[UploadConfig] = None, start_thread: bool = True,
-                 data_queue_size: int = 2048, event_queue_size: int = 256):
+                 data_queue_size: int = 2048, event_queue_size: int = 256,
+                 on_state_change: Optional[Callable[[], None]] = None):
         self._clock, self._wall = clock, wall
+        self._on_state_change = on_state_change        # busy flipped (accepted / ended): publish at once
         self.cfg = config or UploadConfig()
         self._writer = writer
         self.machine = UploadMachine(send_ctrl, send_read, self._on_result, config=self.cfg, is_armed=is_armed)
@@ -750,6 +808,15 @@ class PlatformImuService:
         self._last_result: Dict[str, Any] = {}
         self._last_skip = ""
         self._boot_seen: Optional[int] = None
+        # Healing a ring left frozen (worker thread only): _pending_cid None = nothing owed, 0 = a capture
+        # froze under an id we never saw, >0 = our own capture whose RESUME was lost.
+        self._pending_cid: Optional[int] = None
+        self._pending_t = 0.0
+        self._frozen_since: Optional[float] = None
+        self._heal_tries = 0
+        self._last_heal_t = -1e9
+        self._heal_gave_up = False
+        self.heals_started = 0
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="platform_imu_worker", daemon=True)
         if start_thread:
@@ -804,7 +871,7 @@ class PlatformImuService:
 
     def request_upload(self, t_start_wall: Optional[float] = None, t_end_wall: Optional[float] = None,
                        reason: int = int(pc.PlatformImuFreezeReason.OPERATOR), attempt_id: Optional[str] = None,
-                       label: str = "operator", force: bool = False) -> bool:
+                       label: str = "operator", force: bool = False, read_delay_s: float = 0.0) -> bool:
         """Freeze now and upload the span (wall seconds; None = everything). False if one is already
         running or (unless ``force``) there is no IMU to freeze. Never blocks."""
         if not force:
@@ -818,7 +885,7 @@ class PlatformImuService:
             if self._busy:
                 return False
             self._busy = True
-        job = UploadJob(t_start_wall, t_end_wall, int(reason), attempt_id, label)
+        job = UploadJob(t_start_wall, t_end_wall, int(reason), attempt_id, label, read_delay_s=float(read_delay_s))
         try:
             self._ev_q.put_nowait(("start", job, self._clock()))
         except queue.Full:
@@ -826,7 +893,16 @@ class PlatformImuService:
                 self._busy = False
             self.dropped_events += 1
             return False
+        self._notify()
         return True
+
+    def _notify(self) -> None:
+        cb = self._on_state_change
+        if cb is not None:
+            try:
+                cb()
+            except Exception:  # noqa: BLE001 -- a status publisher never breaks the worker
+                logger.exception("platform IMU state-change callback failed")
 
     def attempt_ended(self, t_start_wall: float, t_end_wall: float, reason: str = "attempt_end",
                       attempt_id: Optional[str] = None) -> bool:
@@ -835,8 +911,11 @@ class PlatformImuService:
             return False
         rmap = {"attempt_end": pc.PlatformImuFreezeReason.ATTEMPT_END, "fault": pc.PlatformImuFreezeReason.FAULT,
                 "soft_estop": pc.PlatformImuFreezeReason.SOFT_ESTOP}
+        # A Fault / Soft E-stop freezes now (that is what keeps the data) but starts the READs later: the
+        # robot is still deactivating and its recovery RPCs share the bus (audit B7).
+        delay = self.cfg.fault_upload_delay_s if reason in ("fault", "soft_estop") else 0.0
         return self.request_upload(t_start_wall, t_end_wall, int(rmap.get(reason, pc.PlatformImuFreezeReason.ATTEMPT_END)),
-                                   attempt_id, label=reason)
+                                   attempt_id, label=reason, read_delay_s=delay)
 
     def abort_upload(self, reason: str = "abort") -> None:
         """Stop an upload (pacifying command, Attempt start). Returns at once; the worker sends ABORT
@@ -858,7 +937,19 @@ class PlatformImuService:
                 "status_age_s": (now - t) if t is not None else None,
                 "bridge": dict(self._bridge), "last_result": dict(self._last_result), "last_skip": self._last_skip,
                 "dropped_batches": self.dropped_batches, "dropped_events": self.dropped_events,
+                "heals_started": self.heals_started,
             }
+            w = self._writer
+            wr = {"written": int(getattr(w, "written", 0)), "dropped": int(getattr(w, "dropped", 0)),
+                  "errors": int(getattr(w, "errors", 0)), "last_error": str(getattr(w, "last_error", "") or "")}
+            lr = snap["last_result"]
+            if lr.get("path") == "queued" and (wr["errors"] > lr.get("writer_errors_at_submit", 0)
+                                               or wr["dropped"] > lr.get("writer_dropped_at_submit", 0)):
+                # the writer thread failed after the machine reported success: the operator must see it
+                lr["write_failed"] = True
+                lr["failure"] = (lr.get("failure") + "; " if lr.get("failure") else "") + \
+                    "capture write failed: " + (wr["last_error"] or "dropped")
+            snap["writer"] = wr
         snap["progress"] = self.machine.progress()
         return snap
 
@@ -881,6 +972,59 @@ class PlatformImuService:
                             "batches_sent": info.batches_sent, "send_fails": info.send_fails}
             self.machine.on_records(records, t)
         self.machine.tick(now)
+        self._heal_check(now)
+
+    def _heal_check(self, now: float) -> None:
+        """Audit B3: never leave the ring frozen. A STATUS that shows FROZEN/UPLOADING while no upload is
+        running means a RESUME (or the FREEZE reply) was lost, or the capture was frozen by a process that
+        is gone. After a grace, RESUME it: our own capture by its id; otherwise FREEZE (a probe: the board
+        answers ALREADY_FROZEN with the frozen capture's id, which STATUS and the header do not carry in
+        a way the spec lets us read before a FREEZE) and RESUME that id. Bounded, logged."""
+        with self._lock:
+            st, t, busy = self._last_status, self._last_status_t, self._busy
+        fresh = st is not None and t is not None and now - t <= self.cfg.status_stale_s
+        frozen = fresh and st.state in (STATE.FROZEN, STATE.UPLOADING)
+        if not fresh:
+            return
+        if not frozen:
+            self._frozen_since, self._heal_tries, self._heal_gave_up = None, 0, False
+            if self._pending_cid is not None and t > self._pending_t:
+                self._pending_cid = None
+            return
+        if busy or self.machine.busy:
+            self._frozen_since = None              # the grace restarts when the job ends
+            return
+        if self._frozen_since is None:
+            self._frozen_since = now
+            return
+        known = bool(self._pending_cid)
+        grace = self.cfg.heal_grace_s if known else self.cfg.heal_foreign_grace_s
+        if now - self._frozen_since < grace or now - self._last_heal_t < self.cfg.heal_retry_s:
+            return
+        if self._heal_tries >= self.cfg.heal_max_tries:
+            if not self._heal_gave_up:
+                self._heal_gave_up = True
+                logger.error("Platform IMU ring is still FROZEN after %d heal attempts: the recording is stopped "
+                             "until the Platform is resumed or rebooted", self._heal_tries)
+            return
+        self._heal_tries += 1
+        self._last_heal_t = now
+        self.heals_started += 1
+        cid = int(self._pending_cid or 0)
+        logger.warning("Platform IMU ring FROZEN with no upload running for %.1f s: RESUME %s (attempt %d)",
+                       now - self._frozen_since, ("0x%04X" % cid) if cid else "after a FREEZE probe", self._heal_tries)
+        self._pending_cid = 0                      # a retry (if this fails) probes for the id
+        self._pending_t = now
+        with self._lock:
+            self._busy = True
+        self._notify()
+        try:
+            self.machine.start(UploadJob(label="heal", heal=True, heal_cid=cid, reason=int(pc.PlatformImuFreezeReason.OPERATOR)),
+                               now, self._boot_seen)
+        except Exception:  # noqa: BLE001
+            logger.exception("platform IMU heal failed to start")
+            with self._lock:
+                self._busy = False
 
     def _handle_event(self, ev: tuple) -> None:
         kind = ev[0]
@@ -930,6 +1074,17 @@ class PlatformImuService:
                 logger.exception("platform IMU pump failed")
 
     def _on_result(self, res: UploadResult) -> None:
+        now = self._clock()
+        if res.freeze_lost:
+            self._pending_cid, self._pending_t = 0, now
+        elif res.resume_lost:
+            self._pending_cid, self._pending_t = (res.frozen_cid or 0), now
+        if res.job.heal:                            # a heal: nothing to write, never overwrite the last result
+            logger.info("Platform IMU heal finished: %s", res.failure or "RESUME sent")
+            with self._lock:
+                self._busy = False
+            self._notify()
+            return
         summary: Dict[str, Any] = {"label": res.job.label, "attempt_id": res.job.attempt_id,
                                    "flags": dict(res.flags), "failure": res.failure, "stats": dict(res.stats),
                                    "capture_id": res.header.capture_id if res.header else None, "path": None}
@@ -945,8 +1100,14 @@ class PlatformImuService:
                 summary["fit"] = {k: cap.fit.get(k) for k in ("rate_hz", "resid_rms_us", "n_segments", "wall_ok")}
                 summary["flags"] = flags
                 if self._writer is not None:
-                    self._writer.submit(cap)
-                    summary["path"] = "queued"
+                    summary["writer_errors_at_submit"] = int(getattr(self._writer, "errors", 0))
+                    summary["writer_dropped_at_submit"] = int(getattr(self._writer, "dropped", 0))
+                    if self._writer.submit(cap):
+                        summary["path"] = "queued"
+                    else:
+                        summary["write_failed"] = True
+                        summary["failure"] = (summary["failure"] + "; " if summary["failure"] else "") + \
+                            "capture dropped (writer queue full or closed)"
             else:
                 logger.warning("IMU upload produced no capture: %s", res.failure)
         except Exception:  # noqa: BLE001 -- a capture-building bug must not strand the busy flag
@@ -956,6 +1117,7 @@ class PlatformImuService:
             with self._lock:
                 self._last_result = summary
                 self._busy = False
+            self._notify()
 
     def close(self, timeout: float = 5.0) -> None:
         self._stop.set()

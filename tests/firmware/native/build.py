@@ -51,7 +51,7 @@ CACHE_DIR = REPO_ROOT / "temp" / "firmware_native"
 # Fixed, reproducible flags. Exceptions/RTTI are ENABLED (doctest uses them); the
 # compiled firmware TUs neither throw nor use RTTI, so this does not change their
 # behaviour. -Wno-unused-function silences firmware helpers unused in a test TU.
-FLAGS = ["-std=c++17", "-O2", "-Wall", "-Wno-unused-function"]
+FLAGS = ["-std=c++17", "-O2", "-Wall", "-Wno-unused-function", "-pthread"]   # -pthread: the IMU ring producer/consumer stress
 INCLUDES = ["-I", str(SHIM_DIR), "-I", str(NATIVE_DIR), "-I", str(FIRMWARE_DIR)]
 
 # Shared firmware/HAL objects compiled once and linked per binary. leg_interp is

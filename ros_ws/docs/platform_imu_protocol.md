@@ -247,6 +247,16 @@ rebooted: the partial capture is written with `complete = false`, as is a captur
 aborted. A `payload_crc32` mismatch gets one full re-read, then the capture is written with `crc_ok = false` and
 RESUMEd.
 
+Host behaviour added by the P3 audit (no wire change): (a) a Fault or Soft E-stop freezes at once but the READs start
+`imu_fault_upload_delay_s` later (default 5 s, at most 60 s; while still Armed up to 30 s more), and a second non-NONE
+fault value in a cascade does not abort the upload the first edge started; (b) every early end of an upload RESUMEs the
+capture the node froze (the one exception is a Platform that rebooted or discarded it), an abort sends RESUME alone
+(legal from UPLOADING, table above), and a ring that STATUS still shows FROZEN with no upload running is healed: RESUME
+by the remembered capture id, or, for a capture frozen by a process that is gone, a FREEZE probe (ALREADY_FROZEN returns
+the id; STATUS carries none) then RESUME, after 3 s or 15 s, at most 3 tries per frozen episode; (c) a span-only upload
+has no payload CRC (it covers the whole capture) and `complete` then means the requested span arrived; (d) the toggle
+is default ON at every node start (not persisted).
+
 ## 7. Walk-through: one capture with one lost frame
 
 N = 32000 (wrapped), 320 anchors (960 words), header 11 words; 64971 words in all.

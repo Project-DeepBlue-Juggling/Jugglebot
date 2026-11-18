@@ -220,7 +220,7 @@ def test_abort_mid_samples_sends_abort_then_resume_and_keeps_partial_data():
         m.on_records = hook
     fp, m, res, img = _upload(post=at_samples)
     ops = [c[0] for c in fp.ctrls]
-    assert ops == [OP.FREEZE, OP.ABORT, OP.RESUME]
+    assert ops == [OP.FREEZE, OP.RESUME]          # RESUME alone: legal from UPLOADING (audit B8d)
     assert res.flags["aborted"] and not res.flags["complete"] and "aborted" in res.failure
     assert res.header is not None and res.stats["frames_rx"] > 0 and res.flags["holes_unfilled"] > 0
 
@@ -481,7 +481,7 @@ def test_service_abort_upload_writes_partial_and_resumes():
     fp.run(limit_s=10.0)
     assert not svc.upload_in_progress() and len(w.caps) == 1
     assert w.caps[0].flags["aborted"] and not w.caps[0].flags["complete"]
-    assert [c[0] for c in fp.ctrls][-2:] == [OP.ABORT, OP.RESUME]
+    assert [c[0] for c in fp.ctrls][-2:] == [OP.FREEZE, OP.RESUME]
 
 
 def test_service_queues_are_bounded_and_never_raise():
@@ -511,3 +511,300 @@ def test_service_thread_mode_processes_batches_without_a_pump():
         assert svc.status_snapshot()["bridge"]["ring_hwm"] == 7
     finally:
         svc.close()
+
+
+# ── P3 audit: the ring is never left frozen by us (B2, B3), faults (B7), writer failures (B5), spans (B6) ──
+
+ALLOWED_SKIPS = ("nothing frozen", "Platform rebooted", "IMU disabled", "FREEZE unanswered", "RESUME unanswered")
+
+
+def _ops(fp):
+    return [c[0] for c in fp.ctrls]
+
+
+def _abort_in_freezing(fp, m):
+    m.abort("pacifying", 0.0)
+
+
+@pytest.mark.parametrize("name,opt,job,cfg,post", [
+    ("clean", {}, None, None, None),
+    ("read bad args", {"read_status": ST.ERR_BAD_ARGS}, None, None, None),
+    ("read out of range", {"read_status": ST.ERR_OUT_OF_RANGE}, None, None, None),
+    ("read not frozen", {"read_status": ST.ERR_NOT_FROZEN}, None, None, None),
+    ("read wrong capture", {"read_status": ST.ERR_WRONG_CAPTURE}, None, None, None),
+    ("read disabled", {"read_status": ST.ERR_DISABLED}, None, None, None),
+    ("read fw update", {"read_status": ST.ERR_FW_UPDATE}, None, None, None),
+    ("freeze refused empty", {"refuse_freeze": ST.ERR_EMPTY}, None, None, None),
+    ("freeze refused disabled", {"refuse_freeze": ST.ERR_DISABLED}, None, None, None),
+    ("freeze never answered", {"freeze_reply_lost": True}, None, None, None),
+    ("resume never answered", {"resume_ignored": True}, None, None, None),
+    ("abort while FREEZING", {}, None, None, _abort_in_freezing),
+    ("stall", {"drop_block_n": 1000}, None, None, None),
+    ("platform reboot", {"reboot_at_s": 0.9}, None, None, None),
+    ("persistent corruption", {"corrupt": {1500: 0x55}}, None, None, None),
+    ("header corrupt", {"corrupt": {pc.PLATFORM_IMU_HEADER_SEQ_BASE + 2: 0x01}}, None, None, None),
+    ("300 s limit", {}, None, pi.UploadConfig(span_margin_s=0.0, max_total_s=0.3), None),
+    ("empty span", {}, "empty", None, None),
+])
+def test_every_terminal_state_resumed_the_capture_or_provably_needed_no_resume(name, opt, job, cfg, post):
+    """The invariant (one enforcement point, UploadMachine._fail): the machine never ends having frozen a
+    ring it can still resume without sending RESUME. The only silent ends are named in ALLOWED_SKIPS and
+    each is a state where RESUME is provably useless (nothing frozen, board rebooted or discarded it) or is
+    owned by the service's heal (FREEZE or RESUME unanswered)."""
+    img = build_image()
+    if job == "empty":
+        w0 = img["wall0_us"] / 1e6
+        job = pi.UploadJob(t_start_wall=w0 + 1000.0, t_end_wall=w0 + 1001.0)
+    fp, m, res, _ = _upload(image=img, job=job, cfg=cfg, post=post, **opt)
+    ops = _ops(fp)
+    assert OP.ABORT not in ops, name
+    skipped = res.flags.get("resume_skipped")
+    if OP.RESUME in ops:
+        assert ops[-1] == OP.RESUME and (skipped is None or skipped.startswith("RESUME unanswered")), (name, ops, skipped)
+    else:
+        assert skipped and skipped.startswith(ALLOWED_SKIPS), (name, ops, skipped)
+        if opt.get("refuse_freeze") is not None:
+            assert not fp.frozen
+        if "freeze_reply_lost" in opt:
+            assert res.freeze_lost and fp.frozen                      # frozen and unknown: the heal owns it
+    if opt.get("resume_ignored"):
+        assert ops.count(OP.RESUME) == 3 and res.resume_lost and res.frozen_cid == img["cap_id"]
+    if opt.get("read_status") == ST.ERR_BAD_ARGS or name == "abort while FREEZING":
+        assert fp.resumed and not fp.frozen
+
+
+def test_empty_span_is_flagged_and_never_complete():
+    img = build_image()
+    w0 = img["wall0_us"] / 1e6
+    fp, m, res, _ = _upload(image=img, job=pi.UploadJob(t_start_wall=w0 + 1000.0, t_end_wall=w0 + 1001.0))
+    assert res.flags["span_empty"] and not res.flags["complete"] and res.sample_words == b""
+
+
+def test_u32_local_clock_wrap_inside_an_upload_selects_the_right_span():
+    img = build_image(n=2000, local0=(1 << 32) - 1_000_000)          # the chip clock wraps about 1 s in
+    w0 = img["wall0_us"] / 1e6
+    job = pi.UploadJob(t_start_wall=w0 + 1.4, t_end_wall=w0 + 1.8)   # entirely after the wrap
+    fp, m, res, _ = _upload(image=img, job=job)
+    assert res.flags["partial_span"] and res.flags["complete"] and not res.flags.get("span_empty")
+    assert abs(res.k0 - int(1.4e6 / 1010.0)) <= 4 and abs(len(res.sample_words) // 12 - int(0.4e6 / 1010.0)) <= 8
+
+
+def test_a_fault_freezes_at_once_and_starts_the_reads_after_the_delay():
+    fp, m, res, _ = _upload(job=pi.UploadJob(read_delay_s=5.0, reason=int(pc.PlatformImuFreezeReason.FAULT)))
+    assert res.flags["complete"] and fp.reads
+    assert fp.ctrls[0][0] == OP.FREEZE and fp.ctrls[0][1] == int(pc.PlatformImuFreezeReason.FAULT)
+    assert res.stats["wall_s"] >= 5.0
+
+
+def test_a_fault_upload_holds_the_reads_while_still_armed_but_not_past_the_cap():
+    cfg = pi.UploadConfig(span_margin_s=0.0, fault_upload_delay_s=5.0, fault_hold_max_s=12.0)
+    seen = {}
+
+    def spy(fp, m):
+        orig = fp.send_read
+
+        def rd(*a):
+            seen.setdefault("t", fp.t)
+            return orig(*a)
+        fp.send_read = rd
+    fp, m, res, _ = _upload(job=pi.UploadJob(read_delay_s=5.0), cfg=cfg, post=spy, armed=True)
+    assert 11.9 <= seen["t"] <= 12.5 and res.flags["complete"]       # Armed: held to the cap, then it goes
+
+
+def test_an_abort_during_the_fault_delay_resumes_and_sends_no_read():
+    def at_wait(fp, m):
+        orig = m.tick
+
+        def tick(now):
+            orig(now)
+            if m.phase == pi.WAITING and now > 1.0 and not m.flags["aborted"]:
+                m.abort("deactivate", now)
+        m.tick = tick
+    fp, m, res, _ = _upload(job=pi.UploadJob(read_delay_s=5.0), post=at_wait)
+    assert not fp.reads and _ops(fp) == [OP.FREEZE, OP.RESUME] and res.flags["aborted"]
+
+
+def test_armed_clamp_is_in_the_host_gap_and_timeout_when_the_parameter_is_below_63():
+    # audit B8c: imu_read_gap_10us = 45 while Armed goes out as 63 and the block timeout follows it
+    m = pi.UploadMachine(lambda *a: (True, ""), lambda *a: (True, ""), lambda r: None,
+                         config=pi.UploadConfig(gap_10us=45), is_armed=lambda: True)
+    assert m.effective_gap_10us() == 63
+    m2 = pi.UploadMachine(lambda *a: (True, ""), lambda *a: (True, ""), lambda r: None,
+                          config=pi.UploadConfig(gap_10us=45), is_armed=lambda: False)
+    assert m2.effective_gap_10us() == 45
+
+
+def test_a_first_anchor_sync_step_gives_the_samples_before_it_no_wall_time_not_a_1970_one():
+    # audit B8b: anchor 0 is a SYNC_STEP and the chip-clock drain jitter is realistic (0..40 us).
+    # Before the fix those samples got wall = local (about 4e9 us, year 1970); now NaN.
+    hdr = pi.decode_header(build_image(n=1000, n_anchors=10)["header"])
+    rng = np.random.default_rng(3)
+    local0, wall0 = 4_000_000_000, 1_700_000_000_000_000
+    anchors = []
+    for a in range(10):
+        k_last = (a + 1) * 100 - 1
+        jit = int(rng.integers(0, 40))
+        anchors.append(pi.Anchor(hdr.first_index + k_last + 1, (local0 + 1000 * k_last + jit) & 0xFFFFFFFF,
+                                 wall0 + 1000 * k_last + jit, 0x04 if a == 0 else 0))
+    model = cap.TimeModel(hdr, anchors)
+    w = model.wall_us(np.arange(1000))
+    ok = np.isfinite(w)
+    assert not (w[ok] < 1e15).any(), "a sample got a pre-2001 wall time"
+    assert np.isnan(w[:90]).all() and np.abs(w[150:] - (wall0 + 1000.0 * np.arange(150, 1000))).max() < 45.0
+
+
+# ── the service: heal, state-change notification, writer failures ────────────────────────────────
+
+def _svc_status(svc, fp, state, t):
+    svc.offer_frame(pc.CAN_ID_PLATFORM_IMU_STATUS, struct.pack("<BBbBBBBB", state, 3, 30, 0, 0, 20, 30,
+                                                               fp.img["boot_id"] & 0xFF), t)
+
+
+def test_state_change_callback_fires_when_an_upload_is_accepted_and_when_it_ends():
+    seen = []
+    box = {}
+    w = _StubWriter()
+    svc = pi.PlatformImuService(lambda *a: box["fp"].send_ctrl(*a), lambda *a: box["fp"].send_read(*a), writer=w,
+                                clock=lambda: box["fp"].t, start_thread=False,
+                                config=pi.UploadConfig(span_margin_s=0.0),
+                                on_state_change=lambda: seen.append(svc.upload_in_progress()))
+    img = build_image()
+    fp = FakePlatform(_Sink(svc), img)
+    box["fp"] = fp
+    _svc_status(svc, fp, 2, 0.0)
+    svc.pump(0.0)
+    assert svc.request_upload() and seen == [True]                  # published busy at once
+    fp.run()
+    assert seen == [True, False]                                    # and idle at the end
+
+
+def test_a_lost_resume_is_healed_from_a_status_that_stays_frozen():
+    svc, fp, w, img = _service(resume_ignored=True)
+    _svc_status(svc, fp, 2, 0.0)
+    svc.pump(0.0)
+    assert svc.request_upload()
+    fp.run()
+    assert "no reply to RESUME" in svc.status_snapshot()["last_result"]["failure"] and fp.frozen
+    n_before = len(fp.ctrls)
+    fp.opt["resume_ignored"] = False                                # the bus recovers
+    fp.run(until_done=False, limit_s=fp.t + 12.0)
+    assert not fp.frozen and fp.resumed and svc.heals_started == 1
+    assert fp.ctrls[n_before][0] == OP.RESUME and fp.ctrls[n_before][2] == img["cap_id"]   # by the remembered id
+    assert not svc.upload_in_progress() and len(w.caps) == 1         # the heal wrote nothing
+
+
+def test_a_foreign_frozen_capture_is_probed_for_its_id_then_resumed_after_the_longer_grace():
+    svc, fp, w, img = _service()
+    fp.frozen = True                                                # frozen by a process that is gone
+    fp.run(until_done=False, limit_s=14.0)
+    assert fp.ctrls == []                                           # inside the 15 s foreign grace: nothing sent
+    fp.run(until_done=False, limit_s=25.0)
+    assert _ops(fp) == [OP.FREEZE, OP.RESUME] and fp.ctrls[1][2] == img["cap_id"] and not fp.frozen
+
+
+def test_a_lost_freeze_reply_leaves_a_frozen_unknown_ring_that_the_probe_heals():
+    svc, fp, w, img = _service(freeze_reply_lost=True)
+    _svc_status(svc, fp, 2, 0.0)
+    svc.pump(0.0)
+    assert svc.request_upload()
+    fp.run()
+    assert fp.frozen and svc.status_snapshot()["last_result"]["flags"]["freeze_lost"]
+    fp.opt["freeze_reply_lost"] = False
+    fp.run(until_done=False, limit_s=fp.t + 25.0)
+    assert not fp.frozen and svc.heals_started >= 1
+
+
+def test_the_heal_is_bounded_and_then_gives_up_loudly(caplog):
+    svc, fp, w, img = _service(resume_ignored=True)
+    fp.frozen = True
+    with caplog.at_level("ERROR"):
+        fp.run(until_done=False, limit_s=120.0)
+    assert svc.heals_started == 3 and "still FROZEN after 3 heal attempts" in caplog.text
+
+
+def test_a_running_ring_is_never_touched_by_the_heal():
+    svc, fp, w, img = _service()
+    fp.run(until_done=False, limit_s=40.0)
+    assert fp.ctrls == [] and svc.heals_started == 0
+
+
+def _failing_writer(tmp_path, monkeypatch):
+    def boom(fh, **kw):
+        fh.write(b"partial")
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(cap.np, "savez_compressed", boom)
+    return cap.ImuCaptureWriter(str(tmp_path / "caps")).start()
+
+
+def test_a_failed_capture_write_leaves_no_tmp_file_and_counts_the_error(tmp_path, monkeypatch):
+    w = _failing_writer(tmp_path, monkeypatch)
+    try:
+        assert w.submit(_capture_from_upload()[0])
+        for _ in range(100):
+            if w.errors:
+                break
+            import time as _t
+            _t.sleep(0.02)
+        assert w.errors == 1 and "No space left" in w.last_error
+        assert list((tmp_path / "caps").glob("*.tmp")) == [] and list((tmp_path / "caps").glob("*.npz")) == []
+    finally:
+        w.close()
+
+
+def test_a_capture_write_failure_reaches_the_status_the_gui_shows(tmp_path, monkeypatch):
+    w = _failing_writer(tmp_path, monkeypatch)
+    box = {}
+    svc = pi.PlatformImuService(lambda *a: box["fp"].send_ctrl(*a), lambda *a: box["fp"].send_read(*a), writer=w,
+                                clock=lambda: box["fp"].t, start_thread=False,
+                                config=pi.UploadConfig(span_margin_s=0.0))
+    img = build_image()
+    fp = FakePlatform(_Sink(svc), img)
+    box["fp"] = fp
+    try:
+        _svc_status(svc, fp, 2, 0.0)
+        svc.pump(0.0)
+        assert svc.request_upload()
+        fp.run()
+        import time as _t
+        for _ in range(100):
+            snap = svc.status_snapshot()
+            if snap["writer"]["errors"]:
+                break
+            _t.sleep(0.02)
+        snap = svc.status_snapshot()
+        assert snap["writer"]["errors"] == 1 and snap["last_result"]["write_failed"] is True
+        assert "capture write failed" in snap["last_result"]["failure"]
+    finally:
+        svc.close()
+
+
+def test_a_dropped_capture_is_reported_as_a_failure():
+    class Full(_StubWriter):
+        def submit(self, c):
+            return False
+    box = {}
+    svc = pi.PlatformImuService(lambda *a: box["fp"].send_ctrl(*a), lambda *a: box["fp"].send_read(*a),
+                                writer=Full(), clock=lambda: box["fp"].t, start_thread=False,
+                                config=pi.UploadConfig(span_margin_s=0.0))
+    img = build_image()
+    fp = FakePlatform(_Sink(svc), img)
+    box["fp"] = fp
+    _svc_status(svc, fp, 2, 0.0)
+    svc.pump(0.0)
+    assert svc.request_upload()
+    fp.run()
+    last = svc.status_snapshot()["last_result"]
+    assert last["write_failed"] and "capture dropped" in last["failure"]
+
+
+def test_a_fault_upload_started_through_the_service_carries_the_configured_delay():
+    svc, fp, w, img = _service()
+    svc.cfg.fault_upload_delay_s = 4.0
+    _svc_status(svc, fp, 2, 0.0)
+    svc.pump(0.0)
+    w0 = img["wall0_us"] / 1e6
+    assert svc.attempt_ended(w0, w0 + 1.0, "fault")
+    fp.run(until_done=False, limit_s=3.5)
+    assert fp.reads == [] and svc.upload_in_progress() and svc.status_snapshot()["progress"]["phase"] == "waiting"
+    fp.run()
+    assert w.caps and fp.reads

@@ -3035,7 +3035,14 @@ class TeensyBridgeNode(Node):
 
     def _setup_platform_imu(self):
         import json as _json  # noqa: F401  (used by the upload service)
+        # Default ON at every node start by the owner's ask (the GUI toggle is NOT persisted): a restart
+        # re-enables the post-Attempt upload and with it the gate's refusal of motion-starting commands
+        # while an upload runs. Documented in ros_ws/docs/platform_imu_protocol.md section 6.
         self.declare_parameter('imu_upload_after_attempt', True)
+        # A Fault / Soft E-stop freezes the ring at once but starts the READ stream this many seconds later
+        # (and, while Armed, up to fault_hold_max_s) so it never competes with the deactivate response.
+        # Clamped to 0..60 s so the gate's 180 s busy ceiling still covers delay + a typical 20-50 s upload.
+        self.declare_parameter('imu_fault_upload_delay_s', 5.0)
         self.declare_parameter('imu_capture_dir', '')
         self.declare_parameter('imu_read_gap_10us', 80)
         directory = str(self.get_parameter('imu_capture_dir').value or '')
@@ -3044,10 +3051,13 @@ class TeensyBridgeNode(Node):
             root = os.path.dirname(os.path.dirname(os.path.abspath(_tl.__file__)))
             directory = os.path.join(root, 'temp', 'imu_capture')
         self._imu_writer = ImuCaptureWriter(directory).start()
-        cfg = _ImuUploadConfig(gap_10us=int(self.get_parameter('imu_read_gap_10us').value))
+        delay = min(max(float(self.get_parameter('imu_fault_upload_delay_s').value), 0.0), 60.0)
+        cfg = _ImuUploadConfig(gap_10us=int(self.get_parameter('imu_read_gap_10us').value),
+                               fault_upload_delay_s=delay)
         self._imu = PlatformImuService(
             self._imu_send_ctrl, self._imu_send_read, writer=self._imu_writer,
-            is_armed=lambda: bool(self._mpc_active), config=cfg)
+            is_armed=lambda: bool(self._mpc_active), config=cfg,
+            on_state_change=self._publish_platform_imu_status)
         self._imu.set_upload_after_attempt(bool(self.get_parameter('imu_upload_after_attempt').value))
         self._imu_cbgroup = ReentrantCallbackGroup()
         self.platform_imu_status_pub = self.create_publisher(DiagnosticStatus, 'platform_imu/status', 10)
@@ -3130,15 +3140,17 @@ class TeensyBridgeNode(Node):
         except Exception as e:  # noqa: BLE001
             self.get_logger().warning('IMU attempt trigger swallowed: %s' % e)
 
-    def _imu_on_fault(self, now_wall=None):
+    def _imu_on_fault(self, now_wall=None, from_none=True):
         """A Fault / Soft E-stop edge. During an Attempt: upload its span now. Otherwise an upload that is
-        running is a pacifying case and is aborted (the capture is kept, flagged incomplete)."""
+        running is a pacifying case and is aborted (the capture is kept, flagged incomplete) -- but only on
+        an edge FROM NONE: a second non-NONE value in a cascade must not abort the fault-span upload the
+        first edge started (audit B1)."""
         try:
             t = time.time() if now_wall is None else now_wall
             span = self._imu_span.fault(t)
             if span is not None:
                 self._imu_trigger(span)
-            elif self.upload_in_progress():
+            elif from_none and self.upload_in_progress():
                 self.abort_upload('fault')
         except Exception as e:  # noqa: BLE001
             self.get_logger().warning('IMU fault trigger swallowed: %s' % e)
@@ -3149,6 +3161,8 @@ class TeensyBridgeNode(Node):
             self.get_logger().info('Platform IMU upload %s (%s, %.1f s span)' % (
                 'started' if started else 'not started (toggle OFF, no IMU, or one already running)',
                 span.reason, span.t_end - span.t_start))
+            if started:
+                self._publish_platform_imu_status()    # the gate sees busy now, not at the next 2 Hz tick
         except Exception as e:  # noqa: BLE001
             self.get_logger().warning('IMU upload trigger swallowed: %s' % e)
 
@@ -3193,7 +3207,9 @@ class TeensyBridgeNode(Node):
             msg = DiagnosticStatus()
             msg.name = 'platform_imu/status'
             msg.hardware_id = 'platform_teensy'
-            bad = bool(last.get('failure')) or (last.get('flags') or {}).get('crc_ok') is False
+            wr = snap.get('writer') or {}
+            bad = bool(last.get('failure')) or (last.get('flags') or {}).get('crc_ok') is False \
+                or bool(last.get('write_failed'))
             msg.level = DiagnosticStatus.WARN if bad else DiagnosticStatus.OK
             msg.message = '%s %d/%d' % (prog['phase'], prog['frames_done'], prog['frames_total']) if snap['busy'] \
                 else 'idle'
@@ -3206,10 +3222,14 @@ class TeensyBridgeNode(Node):
                 'platform_boot': snap['platform_boot'] if snap['platform_boot'] is not None else '',
                 'status_age_s': '' if snap['status_age_s'] is None else '%.1f' % snap['status_age_s'],
                 'last_label': last.get('label', ''), 'last_attempt_id': last.get('attempt_id') or '',
-                'last_complete': int(bool((last.get('flags') or {}).get('complete'))) if last else '',
+                'last_complete': int(bool((last.get('flags') or {}).get('complete'))
+                                     and not last.get('write_failed')) if last else '',
                 'last_crc_ok': str((last.get('flags') or {}).get('crc_ok')) if last else '',
                 'last_failure': last.get('failure', ''), 'last_capture_id': last.get('capture_id') if last.get('capture_id') is not None else '',
                 'last_skip': snap.get('last_skip', ''), 'dropped_batches': snap['dropped_batches'],
+                'writer_written': wr.get('written', 0), 'writer_dropped': wr.get('dropped', 0),
+                'writer_errors': wr.get('errors', 0), 'writer_last_error': wr.get('last_error', ''),
+                'heals_started': snap.get('heals_started', 0),
             }
             kv.update({'bridge_' + k: v for k, v in (snap.get('bridge') or {}).items()})
             msg.values = [KeyValue(key=k, value=str(v)) for k, v in kv.items()]
@@ -6975,7 +6995,7 @@ class TeensyBridgeNode(Node):
                 fs = int(hb.fault_state)
                 if fs != self._last_fault_state:
                     if fs != int(FaultState.NONE):
-                        self._imu_on_fault()
+                        self._imu_on_fault(from_none=self._last_fault_state in (None, int(FaultState.NONE)))
                         leg_hint = self._guard_fault_leg_hint()
                         # For a MAX_DEVIATION latch the single culprit leg is not
                         # the whole story — a fast coordinated move loads every

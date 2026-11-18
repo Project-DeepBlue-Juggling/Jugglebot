@@ -2,7 +2,7 @@
 title: "Platform IMU P2: FW 11 robustness (tilt served from loop() with an explicit invalid reply, bounded inclinometer probe, multi-frame CAN dispatch) and the IMU capture, status and upload responder wired into loop() (IDEA-20)"
 type: feature
 date: 2026-11-19
-status: in-progress
+status: complete
 phase: "platform-imu P2"
 related_plan: "platform-imu.md"
 related_issues: []
@@ -303,7 +303,7 @@ has another size limit, and the commit copy's overlap invariant holds for an ima
   - readers (`grep -rln` for loop_service.h, imu_service.h, Teensy_code_platform in tests/ and tools/): `pytest tests/ros/test_teensy_bridge_node_relay.py tests/ros/test_teensy_bridge_node_coldstart.py -q`: 40 passed.
   - real builds (`pio run -e teensy40`, teensy@5.1.0, framework 1.160.0, scratch copy): IMU on, ITCM 67,888 B (3 banks, 30,416 B headroom), RAM2 406,048 B, image 88,064 B; `-DPLATFORM_IMU_ENABLED=0`, ITCM 56,864 B (2 banks), RAM2 12,416 B, image 75,776 B. Both SUCCESS.
 - Docs close-out (2026-11-19): spec additions, plan and map edits; the generated UDP text was regenerated (`python config/generate_udp_protocol.py`); test commands and results are in the commit message.
-- Full gate (`./run_tests.sh --full`): FULL-GATE-TRIPLE-PENDING
+- Full gate, run 2026-11-19: `flock /tmp/jugglebot-tests.lock ./run_tests.sh --full` on imu-p2 at b6544ddb gave RESULT FAIL. Parallel phase: 10336 passed, 61 skipped, 1 xfailed in 695.54 s (rc=0). Serial phase: 1 failed, 9 passed (`tests/motion/test_unified_cycle_budget.py`, planner core 50.2 ms against the 50.0 ms budget) while a firmware build and, later, another session's nightly-style suite were loading the box (load average 5 to 7). The serial tier re-run alone once the box was quieter (2026-11-19, `flock /tmp/jugglebot-tests.lock pytest -m serial tests/ -q -p no:cacheprovider -p no:xdist`, same commit, load average 2.4) gave 10 passed in 40.45 s. Stated plainly: no single `--full` invocation passed end to end on that commit; the phase 3 gate on the combined branch is the end-to-end evidence.
 
 ## Audit
 

@@ -20,6 +20,7 @@ import logging
 import math
 import os
 import queue
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -172,7 +173,9 @@ class TimeModel:
         for g in range(int(gid.max()) + 1):
             m = valid & (gid == g)
             if not m.any():
-                groups.append(groups[-1] if groups else (0.0, 0.0, 0.0))
+                # Only the leading run can be empty (each SYNC_STEP anchor opens a run holding itself). Samples
+                # before a first-anchor step have no known wall offset: NaN, not "wall = local".
+                groups.append((float("nan"), float("nan"), float("nan")))
                 continue
             x = local[m]
             y = wall[m] - local[m]
@@ -317,12 +320,19 @@ def write_capture(directory: str, capture: Capture, now: Optional[float] = None)
                       "columns": ["ax", "ay", "az", "gx", "gy", "gz"], "units": {"accel": "g", "gyro": "dps"},
                       **capture.meta})
     tmp = path + ".tmp"
-    with open(tmp, "wb") as fh:
-        np.savez_compressed(
-            fh, raw=capture.raw, valid=capture.valid, t_wall_us=capture.t_wall_us,
-            accel_g=capture.accel_g, gyro_dps=capture.gyro_dps, anchors=capture.anchors,
-            k0=np.int64(capture.k0), meta_json=np.array(json.dumps(meta)))
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "wb") as fh:
+            np.savez_compressed(
+                fh, raw=capture.raw, valid=capture.valid, t_wall_us=capture.t_wall_us,
+                accel_g=capture.accel_g, gyro_dps=capture.gyro_dps, anchors=capture.anchors,
+                k0=np.int64(capture.k0), meta_json=np.array(json.dumps(meta)))
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)              # a full disk must not also fill with half-written .tmp files
+        except OSError:
+            pass
+        raise
     with open(path[:-4] + ".json", "w") as fh:
         json.dump(meta, fh, indent=1, sort_keys=True)
     return path
@@ -337,6 +347,7 @@ class ImuCaptureWriter:
         self.dropped = 0
         self.written = 0
         self.errors = 0
+        self.last_error = ""
         self.last_path: Optional[str] = None
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="platform_imu_writer", daemon=True)
@@ -370,6 +381,7 @@ class ImuCaptureWriter:
                 logger.info("platform IMU capture written: %s", self.last_path)
             except Exception:  # noqa: BLE001
                 self.errors += 1
+                self.last_error = "%s" % (sys.exc_info()[1],)
                 logger.exception("platform IMU capture write failed")
 
     def close(self, timeout: float = 10.0) -> None:
