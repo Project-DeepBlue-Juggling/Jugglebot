@@ -541,8 +541,15 @@ class BallTracker:
                 ball.last_seen = current_time
                 # Feed the RAW matched marker (not the KF state) to this
                 # ball's gravity-fixed flight fit.
-                self._get_or_create_flight_fit(ball_id, ball).add(
-                    current_time, markers[best_idx])
+                ffit = self._get_or_create_flight_fit(ball_id, ball)
+                ffit.add(current_time, markers[best_idx])
+                if ffit.start_speed_pending and len(ffit) > 0:
+                    # A later flight on a kept id: its start speed is the
+                    # filter velocity at the first admitted sample (the
+                    # human-Throw event phantom rule; flight 0 is set at
+                    # promotion).
+                    ffit.start_speed_mm_s = float(np.linalg.norm(kf.velocity))
+                    ffit.start_speed_pending = False
             else:
                 ball.frames_without_measurement += 1
 
@@ -984,6 +991,11 @@ class BallTracker:
         # only catches balls explicitly aimed at it (via BB announcements).
         self._balls[ball_id] = ball
         self._filters[ball_id] = kf
+        # Flight 0's start state is the promotion state (human-Throw event
+        # phantom rule). Creating the fit here is behaviour-neutral: it holds
+        # no samples until the first matched frame, as before.
+        self._get_or_create_flight_fit(ball_id, ball).start_speed_mm_s = float(
+            np.linalg.norm(kf.velocity))
 
     # ------------------------------------------------------------------
     # Internal: Lifecycle transitions
