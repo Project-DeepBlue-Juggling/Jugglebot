@@ -50,20 +50,49 @@ def logbook_entry(root, slug, title):
         % (title, slug[:10]))
 
 
+def _seeded_env(root):
+    """The env a build under `root` uses: commit identity from a gitconfig in `root`."""
+    for name in ("gitconfig", ".gitconfig"):  # this git (2.25) reads HOME, not GIT_CONFIG_GLOBAL
+        (root / name).write_text("[user]\n\tname = t\n\temail = t@t\n")
+    return dict(os.environ, HOME=str(root), GIT_CONFIG_GLOBAL=str(root / "gitconfig"),
+                GIT_CONFIG_NOSYSTEM="1")
+
+
+@pytest.fixture(scope="module")
+def template(tmp_path_factory):
+    """The seeded origin, seed clone and live clone, built once; copied per test."""
+    root = tmp_path_factory.mktemp("sm_template")
+    Fx.build(root)
+    return root
+
+
 class Fx:
-    def __init__(self, tmp_path):
+    def __init__(self, tmp_path, template):
         self.tmp = tmp_path
-        for name in ("gitconfig", ".gitconfig"):  # this git (2.25) reads HOME, not GIT_CONFIG_GLOBAL
-            (tmp_path / name).write_text("[user]\n\tname = t\n\temail = t@t\n")
+        env = _seeded_env(tmp_path)
         self.verdicts = tmp_path / "verdicts"
         self.work = tmp_path / "work"
-        self.env = dict(os.environ, HOME=str(tmp_path), GIT_CONFIG_GLOBAL=str(tmp_path / "gitconfig"),
-                        GIT_CONFIG_NOSYSTEM="1", NIGHT_SHIFT_VERDICTS=str(self.verdicts),
+        self.env = dict(env, NIGHT_SHIFT_VERDICTS=str(self.verdicts),
                         SITTING_MERGE_LOCK=str(tmp_path / "suite.lock"),
                         SITTING_MERGE_PYTHON=sys.executable, STUB_SUITE_EXIT="0",
                         LIVE_SESSION_RE="^no-such-process-sitting-merge-test$",
                         ROS_DISTRO="test", VIRTUAL_ENV=os.environ.get("VIRTUAL_ENV", "test"))
         self.env.pop("JUGGLEBOT_REPO", None)
+        self.origin = tmp_path / "origin.git"
+        self.seed = tmp_path / "seed"
+        self.live = tmp_path / "live"
+        for name in ("origin.git", "seed", "live"):  # a private copy: nothing writes the template
+            shutil.copytree(str(template / name), str(tmp_path / name), symlinks=True)
+        # The clones store their origin as an absolute path: point them at THIS test's copy.
+        self.git(self.seed, "remote", "set-url", "origin", str(self.origin))
+        self.git(self.live, "remote", "set-url", "origin", str(self.origin))
+
+    @staticmethod
+    def build(tmp_path):
+        """The from-scratch setup: bare origin, seed clone (pushed), live clone."""
+        self = Fx.__new__(Fx)
+        self.tmp = tmp_path
+        self.env = _seeded_env(tmp_path)
         self.origin = tmp_path / "origin.git"
         self.seed = tmp_path / "seed"
         self.live = tmp_path / "live"
@@ -174,8 +203,8 @@ def refused(r, code):
 
 
 @pytest.fixture
-def fx(tmp_path):
-    return Fx(tmp_path)
+def fx(tmp_path, template):
+    return Fx(tmp_path, template)
 
 
 def test_script_is_valid_bash_and_strict():
