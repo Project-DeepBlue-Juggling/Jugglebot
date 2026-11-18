@@ -33,6 +33,7 @@ class FitResult:
     t_ref: float          # absolute seconds (the fit's reference instant)
     n: int                # surviving sample count after outlier rejection
     rms_mm: float         # 3D residual RMS over the surviving samples
+    span_s: float = 0.0   # time span of the surviving samples
 
 
 class FlightFit:
@@ -107,6 +108,38 @@ class FlightFit:
         # since this flight closed, None while it is open.
         self._closed_min_z: Optional[float] = None
 
+        # --- Human Throw event bookkeeping (PWAY-11 P1, 2026-11-18) ---
+        # Read-only facts for human_throw_event.HumanThrowEventEmitter;
+        # nothing here feeds fit() or landing().
+        #: Index of the current flight on this fit: 0 for the first flight,
+        #: +1 each time the segmentation above starts a new one. Only the
+        #: segmentation path advances it (a plain reset() does not), so a
+        #: (track id, flight_seq) pair names one flight exactly.
+        self.flight_seq: int = 0
+        #: Time of the current flight's first admitted sample (None until one).
+        self.flight_start_t: Optional[float] = None
+        #: |v| (mm/s) at the flight's start, set by the owner (the tracker):
+        #: the promotion state for flight 0, the Kalman velocity at the first
+        #: admitted sample for a later flight. None = not yet known.
+        self.start_speed_mm_s: Optional[float] = None
+        #: True from the moment a later flight begins until the owner has
+        #: recorded its start speed (the tracker polls this after add()).
+        self.start_speed_pending: bool = False
+        # z of the latest sample seen after release (admitted or not).
+        self._last_z: Optional[float] = None
+
+    @property
+    def frozen(self) -> bool:
+        """True once the flight has samples and the ball is back at or below
+        the freeze floor: no further sample can be admitted this flight, so
+        the fit no longer changes."""
+        return (len(self._t) > 0 and self._last_z is not None
+                and self._last_z <= self.freeze_floor_z)
+
+    @property
+    def last_sample_t(self) -> Optional[float]:
+        return self._t[-1] if self._t else None
+
     def reset(self, throw_time: Optional[float] = None) -> None:
         """Clear all accumulated samples — a fresh flight starts clean.
 
@@ -121,6 +154,8 @@ class FlightFit:
         self._t = []
         self._pos = []
         self._closed_min_z = None
+        self.flight_start_t = None
+        self._last_z = None
 
     def add(self, t: float, pos) -> None:
         """Feed one raw (unfiltered) marker sample.
@@ -138,9 +173,12 @@ class FlightFit:
         z = float(pos[2])
         if self.new_flight_rise_mm is not None:
             self._segment(z)
+        self._last_z = z
         if z <= self.freeze_floor_z:
             return  # in/near the cup: pushed on the way up, caught on the way down
 
+        if not self._t:
+            self.flight_start_t = t
         self._t.append(t)
         self._pos.append(pos)
         if len(self._t) > self.max_samples:
@@ -158,6 +196,9 @@ class FlightFit:
         self._closed_min_z = min(self._closed_min_z, z)
         if z >= self._closed_min_z + rise:
             self.reset()
+            self.flight_seq += 1
+            self.start_speed_mm_s = None
+            self.start_speed_pending = True
 
     def __len__(self) -> int:
         return len(self._t)
@@ -237,6 +278,7 @@ class FlightFit:
             t_ref=t_ref,
             n=n,
             rms_mm=rms_mm,
+            span_s=float(tau_final.max() - tau_final.min()),
         )
 
     def landing(

@@ -101,9 +101,9 @@ total API cost: USD <n> (runner, total_cost_usd)
 model-written**: `python -m mapkit night inputs` prints its whole body from every open Item whose
 `night_skip` starts with `input-` (one row each, ordered by ID kind then number; a `|` in a title or
 note shows as `/`; no rows: the single word `none`). Columns: `Item` is the ID; `What it is` the
-title; `Input` is `fact`, `decision` or `sitting` (the reason's suffix); `Exactly what is needed` is
+title; `Input` is `fact` or `decision` (the reason's suffix); `Exactly what is needed` is
 `night_skip_input`; `What the night then does` is `night_skip_note`; `Respond in` is the lowest-ID
-open question ticket filed against the Item, else `sheet` for a sitting input, else `none`. The
+open question ticket filed against the Item, else `none`. The
 list is standing (the same Item appears every night until its input arrives), so the checker does
 not count its rows as Item rows for the carry rule. `## Skipped` lists only Items the night
 skipped tonight, then exactly one last line `unchanged: <n> Items not re-examined (reasons on each

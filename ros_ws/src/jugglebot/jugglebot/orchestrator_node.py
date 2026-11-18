@@ -406,7 +406,10 @@ class OrchestratorNode(Node):
             self.get_logger().warning(f'juggle goal send failed: {e}')
             return
         if not goal_handle.accepted:
-            self._juggle_goal_handle = None
+            # A rejection is about the NEW goal only: it must not wipe the
+            # handle of an earlier goal that is still live (Stop would then
+            # answer "no attempt is running"). `_on_juggle_result` alone
+            # clears the handle.
             # skill_node logs the rejection and its reason (it owns the goal).
             self.get_logger().debug(
                 'juggle goal REJECTED (an attempt is already in progress?).')

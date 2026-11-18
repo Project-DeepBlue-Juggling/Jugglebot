@@ -35,6 +35,13 @@ static inline void     __set_PRIMASK(uint32_t) {}
 unsigned long micros();
 unsigned long millis();
 
+// ── blocking-delay probes (the ICM-42688 driver's non-blocking init must never call these except the 200 us
+//    FIFO-flush pause; the test reads the counters). Host-side they only count.
+inline unsigned long g_delay_calls = 0;
+inline unsigned long g_delay_us_total = 0;
+inline void delay(unsigned long ms) { g_delay_calls++; g_delay_us_total += ms * 1000ul; }
+inline void delayMicroseconds(unsigned int us) { g_delay_us_total += us; }
+
 // ── IntervalTimer stub (leg_interp.cpp instantiates one; never driven host-side)
 class IntervalTimer {
  public:

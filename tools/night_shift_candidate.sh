@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Night Shift candidate branch (plans/active/night-shift.md section 4 P4, T-U6).
+# Night Shift candidate branch (plans/archived/night-shift.md section 4 P4, T-U6).
 #
 # What: stack every held Night Shift branch (origin/night-shift/<date>-<ID>, the Item
 # ID: BUG-n FEAT-n IDEA-n PWAY-n TKT-n) whose Item

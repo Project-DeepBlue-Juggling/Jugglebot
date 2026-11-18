@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Night Shift preflight: list the board's workable Items, say if anything is new.
 
-Why: the 04:45 Night Shift run must cost nothing on a night when the board did not
+Why: the 02:45 Night Shift run must cost nothing on a night when the board did not
 change, so `claude` is only invoked when this tool exits 0. It writes the candidate
 record (`candidates.json`) and compares it with the previous night's.
 

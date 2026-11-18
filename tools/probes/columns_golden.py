@@ -18,7 +18,8 @@ Serialisation (one rule per type, no tolerance anywhere):
 - a dataclass (``Skill``, ``ThenThrow``, ``LandingPrior``, ``Schedule``) ->
   ``{"__type__": class name, <every dataclasses.fields() name>: value}``, so a
   field added later is a visible difference, not a silent omission (the one
-  deliberate exception, ``_SKIPPED``, is listed with its reason);
+  deliberate exception, ``_SKIPPED``, is listed with its reason; a field
+  in ``_OMITTED_WHEN_NONE`` is omitted only while it is ``None``);
 - None -> null, a bool -> a bool, an int -> an int, a str -> a str, a tuple /
   list -> a list.
 
@@ -65,6 +66,15 @@ FIXTURE = os.path.join(_REPO, 'tests', 'fixtures',
 #: ``compare=False`` on the dataclass for the same reason.
 _SKIPPED = {('Schedule', 'source')}
 
+#: Fields added AFTER the golden was written that are serialised only when set.
+#: ``Skill.catch_open_abs_s`` (2026-11-18, PWAY-11) is an optional CATCH field
+#: that only ``schedule.compile_human_catch`` sets; every Columns compile leaves
+#: it ``None``.  The golden is never regenerated, so a ``None`` here is omitted
+#: (the fixture has no such key), while any non-``None`` value IS serialised and
+#: shows up as a difference: a Columns Schedule that started setting it would
+#: fail the golden, which is the point.
+_OMITTED_WHEN_NONE = {('Skill', 'catch_open_abs_s')}
+
 
 def ser(v):
     """The exact serialisation (module docstring)."""
@@ -86,7 +96,10 @@ def ser(v):
         for f in dataclasses.fields(v):
             if (name, f.name) in _SKIPPED:
                 continue
-            out[f.name] = ser(getattr(v, f.name))
+            value = getattr(v, f.name)
+            if value is None and (name, f.name) in _OMITTED_WHEN_NONE:
+                continue
+            out[f.name] = ser(value)
         return out
     if isinstance(v, (tuple, list)):
         return [ser(x) for x in v]

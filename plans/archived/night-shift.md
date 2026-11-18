@@ -1,7 +1,9 @@
 ---
 title: Night Shift - unattended overnight work on the board, and the Next Sitting Runbook
 created: 2026-10-30
-status: active
+status: completed
+completed: 2026-11-13
+archived: 2026-11-18
 owner: Harrison
 last_updated: 2026-11-14
 pathway: night-shift
@@ -218,3 +220,16 @@ Verdicts: BUG-60, BUG-59, BUG-36, BUG-17, FEAT-42, BUG-47, FEAT-13 open; FEAT-28
 - **Startup ordering**: nightly 04:00 -> Night Shift 04:45 (waits on the suite flock) -> auto-pull -> map-pull -> page. A Sitting that starts before Night Shift finishes is detected by the guard, which waits and then defers.
 - **Files affected**: listed per step above; the `jugglebot-map` changes live in that repository and deploy with `deploy-jetson.sh`.
 - **Rollback**: `systemctl --user disable --now jugglebot-night-shift.timer`; held branches are deleted or kept; merges to `main` revert like any commit and the bundled `complete` re-opens textually; the guard refactor reverts by restoring the regex into `nightly_suite.sh`.
+
+## Archival note (2026-11-18)
+
+**Shipped:** the runner, the merge gate, the committed report with question tickets, the Night Shift and Next Sitting pages in the map app, `## Sitting` sections with the generated index, and `/sitting-debrief` (P1 to P5, 2026-10-31); R6 was met at the Sitting of 2026-11-13. **Why it closed:** every step is complete, and its hardening plan, `night-shift-closeout.md`, was archived the same day with the live evidence (a gated merge night on 2026-11-16, a debrief that merged through the tested script on 2026-11-18).
+
+**Read with these corrections** (the body is kept as written):
+
+- The page this plan calls the Next Sitting Runbook is the Sitting index since 2026-11-15 (`GLOSSARY.md`).
+- The P1 Outcome leaves the dry fire and timer to the owner; section 6 records T-I1 done on 2026-10-31.
+- R6's note that deriving verdicts is "close-out C9, pending" is out of date: C9 and C10 are complete.
+- T-I3 was seen live on 2026-11-16. T-I4 (timer ordering against the nightly) and T-R2 (`/work-inbox` unchanged) have no dated record here; the nights of 2026-11-14 to 18 ran after the 04:00 suite without either painting the other's status, and `/work-inbox` has been used interactively since.
+
+**Residue:** all of it is listed in the close-out plan's archival note (BUG-109, BUG-100, BUG-101, FEAT-51 and three unowned points). Pathway PWAY-9 stays active until the owner closes it. **Residual xfail markers:** none in this plan's tests.

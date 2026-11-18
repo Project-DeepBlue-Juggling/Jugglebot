@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tools/night_shift.sh: the Night Shift runner (plans/active/night-shift.md P1).
+# tools/night_shift.sh: the Night Shift runner (plans/archived/night-shift.md P1).
 #
 # Night Shift is unattended overnight work on the board: a headless `claude -p`
 # runs the `/night-shift` orchestrator protocol in its OWN clone of the repo,
@@ -8,7 +8,7 @@
 # whether it may run at all, the clone it runs in, the candidate preflight that
 # skips a night with nothing new, and an explicit status for every outcome.
 #
-# Armed by systemd --user (jugglebot-night-shift.timer, 04:45, after the 04:00
+# Armed by systemd --user (jugglebot-night-shift.timer, 02:45, after the 02:00
 # nightly; units and install block in tools/systemd/). The clone is
 # $NIGHT_SHIFT_CLONE (~/night-shift/Jugglebot), on `main` only, fast-forwarded
 # from origin each run; the runner never switches its branch.
@@ -135,6 +135,8 @@
 #   `branch -d`s the merged ones in the clone; tonight's salvage branch is kept. The names go
 #   to last_run.json `pruned`, a delete that failed to `prune_failed`; a failure never fails
 #   the night. branches_step has already run, so a pruned branch is never new or moved to it.
+#   The landed check's fetch is `--prune`, so a tracking ref whose branch is already gone
+#   from origin is dropped before the prune and is never a candidate (BUG-109).
 #   History: write_status appends the whole summary to $REPORTS/history.jsonl; the committed
 #   docs/night-shift/history.jsonl is rebuilt from it every night (one row per run id, start time + pid,
 #   the later row wins; no absolute-path fields, no model text, credentials redacted), so a
@@ -143,7 +145,10 @@
 #   DEFERRED, NOTHING_NEW, any early failure), the last only on a clean main with nothing
 #   unpushed (`history_commit` in last_run.json says pushed or why not). docs/night-shift/*
 #   is EXEMPT in the landed check. The row of a night is written before that night's final
-#   status is known past the commit, so the next rebuild may correct it.
+#   status is known past the commit, so the next rebuild may correct it. A `prune_failed`
+#   name is published at most once (BUG-109): a row carries it only if the committed
+#   ledger already has it in that row, or no other row has it; last_run.json and the
+#   local history keep every night's full list.
 #   Identity: GIT_COMMITTER_NAME/EMAIL are exported for the whole run (Jugglebot Night Shift
 #   <night-shift@noreply.jugglebot.invalid>), so every commit by the runner, claude and its
 #   subagents has that committer while the author stays the clone's git config.
@@ -190,7 +195,7 @@
 # NIGHT_SHIFT_REPORTS, NIGHT_SHIFT_DRY_RUN (0), NIGHT_SHIFT_MAX_USD (unset = no fuse),
 # NIGHT_SHIFT_MODEL (opus), NIGHT_SHIFT_FALLBACK_MODEL (opus; the subscription
 # leg; neither may name Fable), NIGHT_SHIFT_TIMEOUT_S (14400; both legs together), NIGHT_SHIFT_DEADLINE
-# (08:00), NIGHT_SHIFT_DEFER_BUDGET_S (7200), NIGHT_SHIFT_DEFER_POLL_S (120),
+# (06:00), NIGHT_SHIFT_DEFER_BUDGET_S (7200), NIGHT_SHIFT_DEFER_POLL_S (120),
 # NIGHT_SHIFT_WAIT_NIGHTLY_S (3600), NIGHT_SHIFT_WAIT_NIGHTLY_POLL_S (60),
 # NIGHT_SHIFT_IGNORE_SESSION (0; hand runs only), NIGHT_SHIFT_SKIP_ENV (0; tests),
 # NIGHT_SHIFT_PYTHON (the venv python if present, else python3), NIGHT_SHIFT_CLAUDE
@@ -217,7 +222,7 @@ MAX_USD="${NIGHT_SHIFT_MAX_USD:-}"   # empty or 0 = no --max-budget-usd (owner, 
 MODEL="${NIGHT_SHIFT_MODEL:-opus}"
 FALLBACK_MODEL="${NIGHT_SHIFT_FALLBACK_MODEL:-opus}"
 TIMEOUT_S="${NIGHT_SHIFT_TIMEOUT_S:-14400}"
-DEADLINE="${NIGHT_SHIFT_DEADLINE:-08:00}"
+DEADLINE="${NIGHT_SHIFT_DEADLINE:-06:00}"
 DEFER_BUDGET_S="${NIGHT_SHIFT_DEFER_BUDGET_S:-7200}"
 DEFER_POLL_S="${NIGHT_SHIFT_DEFER_POLL_S:-120}"
 WAIT_NIGHTLY_S="${NIGHT_SHIFT_WAIT_NIGHTLY_S:-3600}"
@@ -482,10 +487,24 @@ def scrub(v):
         return [scrub(x) for x in v]
     return v
 rows = {}
+def key(obj):
+    return obj.get("run_id") or "%s/%s" % (obj.get("started"), obj.get("finished"))
 def take(obj):
     if isinstance(obj, dict):
-        key = obj.get("run_id") or "%s/%s" % (obj.get("started"), obj.get("finished"))
-        rows[key] = obj
+        rows[key(obj)] = obj
+# What the committed ledger already names in prune_failed, per row (BUG-109).
+published = {}
+try:
+    with open(dest) as fh:
+        for line in fh:
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(obj, dict) and isinstance(obj.get("prune_failed"), list):
+                published[key(obj)] = set(obj["prune_failed"])
+except OSError:
+    pass
 try:
     with open(local) as fh:
         for line in fh:
@@ -506,6 +525,19 @@ def public(r):
     return row
 out = [public(r)
        for r in sorted(rows.values(), key=lambda r: (r.get("started") or "", r.get("finished") or ""))]
+# A failed prune is named once, not once a night (BUG-109): a row keeps a prune_failed
+# name only if the committed ledger already has it in THAT row (a published row is never
+# rewritten) or no other row has it (committed, or earlier in this rebuild). last_run.json
+# and the local history keep the full list.
+seen = set()
+for row in out:
+    full = row.get("prune_failed")
+    if not isinstance(full, list):
+        continue
+    mine = published.get(key(row), set())
+    others = set().union(*(v for k, v in published.items() if k != key(row)))
+    row["prune_failed"] = [n for n in full if n in mine or (n not in seen and n not in others)]
+    seen.update(full)
 tmp = dest + ".tmp"
 with open(tmp, "w") as fh:
     for r in out:
@@ -848,7 +880,7 @@ esac
 export NS_CANDIDATES="$CANDIDATES"
 
 # ── 9. The nightly line (a real run claims the ticker; a dry run never does) ──
-# The 04:00 nightly can still be running at 04:45 (it waits up to 2 h on a live
+# The 02:00 nightly can still be running at 02:45 (it waits up to 2 h on a live
 # Sitting; ci-deep takes ~26 min). Claiming yesterday's ticker would hand the
 # morning a stale verdict, so a real run first waits for today's run to land:
 # ticker.raised or ticker.lowered whose run date is today, or a `status` whose
@@ -1085,7 +1117,10 @@ export_posthoc_git
 # rewrite it; any failure to run it counts as ungated (fail closed).
 landed_step() {
   [[ -z "$DRY" ]] || return 0
-  timeout --kill-after=10 120 git -C "$CLONE" fetch -q origin 2>/dev/null 8>&-
+  # --prune: a tracking ref whose branch is gone from origin would otherwise be a prune
+  # candidate whose delete fails every night (BUG-109). Only refs/remotes/origin/* moves;
+  # NS_REFS_BEFORE is already in memory and a vanished ref is never "new or moved".
+  timeout --kill-after=10 120 git -C "$CLONE" fetch -q --prune origin 2>/dev/null 8>&-
   NS_ORIGIN_AFTER_CLAUDE="$(git -C "$CLONE" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)"
   export NS_ORIGIN_AFTER_CLAUDE
   local checker="$REPORTS/landed-$DATE.py" out rc
@@ -1161,7 +1196,10 @@ branches_step
 # already compared the pre-claude snapshot with origin, so a pruned branch is never
 # "new or moved" to it, and the next night snapshots origin after its own fetch, where
 # a branch deleted by `push --delete` is gone (the deletion removes the tracking ref).
-# A failed delete is recorded in last_run.json prune_failed and never fails the night.
+# The candidates are tracking refs as landed_step's `fetch --prune` left them, so a ref
+# whose branch is already gone from origin is not among them (BUG-109).
+# A failed delete is recorded in last_run.json prune_failed and never fails the night;
+# the committed ledger names it once (history_stage), not once a night.
 PRUNE_MAX=20
 prune_step() {
   [[ -z "$DRY" ]] || return 0

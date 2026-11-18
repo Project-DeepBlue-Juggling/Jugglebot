@@ -418,7 +418,7 @@ _Avoid: runsheet, checklist_
 
 The unattended Claude Code run on the Jetson after the nightly suite, in its own clone, that works every open Item it can finish alone, merges only through the merge gate, holds the rest on `night-shift/<date>-<ID>` branches and commits one report. Never a Sitting and never a Session: nobody is present.
 
-_Avoid: nightly (that is the 04:00 test suite), cron job, bot_
+_Avoid: nightly (that is the 02:00 test suite), cron job, bot_
 
 **Sitting index**
 

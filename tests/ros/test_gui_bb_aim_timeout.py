@@ -70,28 +70,7 @@ _REAL_SOURCES = ('bb-aim.js', 'event-store.js', 'geometry-config.js', 'clock.js'
 # collects test_*.py modules independently (no shared conftest hook for it).
 # ---------------------------------------------------------------------------
 
-def _find_node():
-    found = shutil.which('node') or shutil.which('nodejs')
-    if found:
-        return found
-    patterns = (
-        os.path.expanduser('~/.nvm/versions/node/*/bin/node'),
-        '/usr/local/bin/node',
-        '/usr/bin/node',
-        '/opt/node*/bin/node',
-    )
-    candidates = []
-    for pattern in patterns:
-        candidates.extend(glob.glob(pattern))
-    for candidate in sorted(candidates, key=_path_version, reverse=True):
-        if os.access(candidate, os.X_OK):
-            return candidate
-    return None
-
-
-def _path_version(path):
-    match = re.search(r'/v(\d+)\.(\d+)\.(\d+)/', path)
-    return tuple(int(g) for g in match.groups()) if match else (0, 0, 0)
+from tests.ros._node import find_node as _find_node  # noqa: E402
 
 
 _NODE = _find_node()

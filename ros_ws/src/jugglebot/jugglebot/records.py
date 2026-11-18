@@ -114,6 +114,12 @@ PATTERNS: Tuple[Tuple[str, str, int], ...] = (
     ('hop', 'Hop', 1),
     ('oval_1ball', 'Oval — Ball 1', 1),
     ('oval_1ball_fed', 'Oval — fed', 1),
+    ('polygon_walk', 'Polygon walk', 1),
+    # PWAY-11 P2 U5b: Jugglebot Catches a Ball a person throws. Throws = the
+    # human Throws the robot planned a Catch for, Catches = those confirmed
+    # seated (`SkillExecutor.human_caught`); it books NO drops (the drops
+    # figure is Jugglebot's own Throws and the Ball Butler Feed).
+    ('human_catch', 'Human Throw — Catch', 1),
     ('columns_1ball', 'Columns — Ball 1', 1),
     ('columns_1ball_fed', 'Columns — Ball 2 (fed)', 1),
     ('columns', 'Columns', 2),

@@ -4,7 +4,7 @@ kind: bug
 title: trajectory_node stays up and reports healthy when its emitter cannot bind the command socket
 status: in_progress
 created: '2026-11-14'
-updated: '2026-11-15T19:02:46Z'
+updated: '2026-11-16T18:59:54Z'
 owners:
 - night-shift
 priority: medium
@@ -34,3 +34,4 @@ Either exit the node on a bind failure so the launch shows it, or publish an emi
 ## Progress
 
 - 2026-11-16: Night Shift 2026-11-16: held on night-shift/2026-11-16-BUG-96: node exits 1 on a bind failure; 3 audit findings open (the exit before spin skips cleanup); unblocked by TKT-77
+- 2026-11-17: Night Shift 2026-11-17: held on night-shift/2026-11-16-BUG-96: early-exit check built (TKT-77); 4 audit findings open, the check races the async bind; gate [pre] and (a) BUG-109; unblocked by TKT-80

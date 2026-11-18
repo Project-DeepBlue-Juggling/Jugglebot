@@ -3,12 +3,12 @@
 # rather than a delete button.
 #
 #   ./run_tests.sh          per-commit gate, deselects `nightly`  (200 s measured)
-#   this script (04:00)     ./run_tests.sh --full at ci-deep depth (1259 s measured)
+#   this script (02:00)     ./run_tests.sh --full at ci-deep depth (1259 s measured)
 #
 # Demoting a test is only honest if something still runs it. Land any demotion
 # and this runner in the SAME commit (plans/parked/refactor-2026-07.md Phase 2).
 #
-# Armed by systemd --user (jugglebot-nightly.timer, OnCalendar=04:00,
+# Armed by systemd --user (jugglebot-nightly.timer, OnCalendar=02:00,
 # Persistent=true so a night the Jetson is off fires on the next boot). Linger is
 # enabled for jetson, so the user manager runs without an active login session.
 # The units are checked in at tools/systemd/ with install + verify commands —
@@ -22,7 +22,7 @@
 #   status                ONE line: "GREEN|RED|DEFERRED <counts> <iso-date>"
 #
 # DEFERRED = a live robot session held the box past the wait budget (see the
-# live-session guard below); the suite did not run and tomorrow's 04:00 picks
+# live-session guard below); the suite did not run and tomorrow's 02:00 picks
 # it up. It is written over any older GREEN precisely so nobody reads a stale
 # verdict as today's.
 #
@@ -45,7 +45,7 @@ LOG="$REPORTS/$DATE.log"
 
 # ── Live-session guard: never run the suite alongside a powered robot ────────
 # The timer's Persistent=true means a night the Jetson was off fires the missed
-# 04:00 run at the NEXT BOOT — which on this box is often the same minute an
+# 02:00 run at the NEXT BOOT — which on this box is often the same minute an
 # operator powers up for a sitting. Nice=10 + IOSchedulingClass=idle in the unit
 # bound CPU and IO but NOT memory, and run_tests.sh's own header records a
 # ~417 MB available-memory floor at 4 workers on this 7.3 GB box with zram swap:
@@ -56,7 +56,7 @@ LOG="$REPORTS/$DATE.log"
 # This is a wait, not a skip: a skip is the delete button `nightly` exists to
 # avoid. If the wait budget expires the status file says DEFERRED — never GREEN,
 # never silence — and CLAUDE.md's session-start rule surfaces anything that is
-# not a fresh GREEN. Tomorrow's 04:00 run picks it up.
+# not a fresh GREEN. Tomorrow's 02:00 run picks it up.
 #
 # JB_NIGHTLY_IGNORE_SESSION=1 skips the guard (deliberate hand-run during a
 # sitting). JB_NIGHTLY_DEFER_BUDGET_S caps the wait; the default 2 h leaves
@@ -114,7 +114,7 @@ cd "$REPO_ROOT" || exit 1
 started="$(date -Iseconds)"
 start=$SECONDS
 # run_tests.sh takes the suite flock itself, so an interactive gate that is still
-# running at 04:00 makes this QUEUE (up to 30 min) rather than collide.
+# running at 02:00 makes this QUEUE (up to 30 min) rather than collide.
 JB_JUNIT_DIR="$JUNIT_DIR" ./run_tests.sh --full --hypothesis-profile=ci-deep \
   >"$LOG" 2>&1
 rc=$?

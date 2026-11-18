@@ -2,9 +2,9 @@
 id: BUG-98
 kind: bug
 title: teensy_bridge_node blocking RPC services share a callback group with the 100 Hz publishers and the link-loss check
-status: in_progress
+status: complete
 created: '2026-11-14'
-updated: '2026-11-15T19:02:51Z'
+updated: '2026-11-18T03:09:09Z'
 owners:
 - night-shift
 priority: low
@@ -15,7 +15,9 @@ radius: subsystem
 diagnosis: hypothesis
 area: can-bridge
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-18-sitting-debrief.md
+- logbook/2026-11-16-bridge-blocking-rpc-callback-group.md
 filed_by: claude
 ---
 
@@ -45,6 +47,12 @@ Put the blocking services in their own callback group, the pattern `skill_node` 
 - minutes: 10
 - branch: night-shift/2026-11-16-BUG-98
 
+## Sitting result (2026-11-18 13:05)
+
+- verdict: pass
+- notes: /robot_state held at almost exactly 98 Hz throughout the calibrate; basically unchanged since launch (sheet 2026-11-18-robot, step 32) [derived: Bag 2026-11-18_11-31-37, calibrate window 11:37:30.3-11:37:51.9: /robot_state mean 98.6 Hz, lowest 1 s bin 95 Hz, longest gap 44.5 ms; main the same day 98.3 and 98.8 Hz. No service failed or hung. No log line shows the bridge calibrate RPC itself being called.]
+
 ## Progress
 
 - 2026-11-16: Night Shift 2026-11-16: held on night-shift/2026-11-16-BUG-98: blocking services in their own callback group, suite and audit clean; unblocked by a Sitting
+- 2026-11-18: Passed at the Sitting of 2026-11-18: /robot_state held 98.6 Hz (lowest second 95) through the Ball Butler calibrate; landed on main as a5037ab3 through tools/sitting_merge.sh. Audit: 0 behaviour-affecting, 3 narrative findings recorded in the debrief entry.

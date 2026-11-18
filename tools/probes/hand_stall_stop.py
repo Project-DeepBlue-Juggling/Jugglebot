@@ -5,10 +5,10 @@ WHAT IT DOES
 ------------
 Models the can-bridge scheduled lane (FW 36 ``leg_interp.cpp::sched_advance``;
 constants re-checked 2026-11-03 against canbridge_config.h / hardware_config.h:
-SCHED_GRACE_S 0.020, Hand stop 4500 rev/s^2 and 350k rev/s^3, knot 25 ms; FW 35
+SCHED_GRACE_HAND_S 0.020 (the Hand group; the legs have their own since FW 44), Hand stop 4500 rev/s^2 and 350k rev/s^3, knot 25 ms; FW 35
 -> 36 was the Hand stall guard in leg_activate.cpp and does not touch the lane):
 a frame covers two 25 ms spans; if no newer frame arrives, the lane continues
-the last span's cubic for ``SCHED_GRACE_S`` (20 ms, ``s`` up to 1.8) and then
+the last span's cubic for ``SCHED_GRACE_HAND_S`` (20 ms, ``s`` up to 1.8) and then
 runs the C2 stop from that state (peak |a| <= max(A, |a_entry|), |jerk| <= J).
 For each knot around the release of a production self-throw (release 860) it
 assumes the cover ends on that knot and prints the rev the stop ends at,
@@ -78,7 +78,7 @@ from jugglebot.motion import unified_cycle as uc      # noqa: E402
 import release_step_shape as rs                       # noqa: E402
 
 T = float(hw.JB_TRAJ_KNOT_DT_S)
-GRACE_S = 0.020                                       # canbridge_config.h SCHED_GRACE_S
+GRACE_S = 0.020                                       # canbridge_config.h SCHED_GRACE_HAND_S
 S_MAX = 1.0 + GRACE_S / T
 CLIP_REV = 10.501                                     # HAND_MOTOR_MAX_POSITION
 

@@ -34,15 +34,7 @@ from replay.convert import convert  # noqa: E402
 DURATION = 100.0   # 10 slots: /skills/attempt's last message (27.7 s) is > 60 s before slot 9
 
 
-def _find_node():
-    found = shutil.which("node") or shutil.which("nodejs")
-    if found:
-        return found
-    for pat in (os.path.expanduser("~/.nvm/versions/node/*/bin/node"), "/usr/local/bin/node", "/usr/bin/node"):
-        hits = sorted(glob.glob(pat))
-        if hits:
-            return hits[-1]
-    return None
+from tests.ros._node import find_node as _find_node  # noqa: E402
 
 
 NODE = _find_node()

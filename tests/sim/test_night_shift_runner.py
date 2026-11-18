@@ -1,4 +1,4 @@
-"""Night Shift runner guards (plans/active/night-shift.md T-U2 runner part, T-U3).
+"""Night Shift runner guards (plans/archived/night-shift.md T-U2 runner part, T-U3).
 
 `tools/night_shift.sh` is the safety layer between an unattended `claude -p` and a
 box whose CAN bridge is powered overnight, so every guard is pinned here: it must
@@ -1309,6 +1309,70 @@ def test_a_failed_delete_is_recorded_and_does_not_fail_the_night(ns):
     last = ns.last()
     assert last["pruned"] == [] and last["prune_failed"] == ["origin/night-shift/merged"]
     assert "night-shift/merged" in _heads(ns)
+
+
+def _reject_deletes(ns):
+    """The deterministic failing-delete driver: origin refuses every ref deletion."""
+    hook = ns.origin / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\nwhile read o n r; do "
+                    "[ \"$n\" = 0000000000000000000000000000000000000000 ] && exit 1; done; exit 0\n")
+    hook.chmod(0o755)
+
+
+def test_a_stale_tracking_ref_is_pruned_not_reported_night_after_night(ns):
+    """BUG-109 cause: a remote-tracking ref whose branch is already gone from origin made
+    the delete fail every night, and the ledger named it every night. The landed fetch
+    prunes, so it is never a candidate: in no row, not in last_run.json, ref gone."""
+    _check(ns.run(), "OK", 0)
+    stale = "refs/remotes/origin/night-shift/stale"
+    _git("update-ref", stale, "main", cwd=ns.clone, env=ns.env)
+    assert "night-shift/stale" not in _heads(ns)
+    for _ in range(2):
+        _check(ns.run(NIGHT_SHIFT_WEEKDAY=7), "OK", 0)   # the full walk: never NOTHING_NEW
+        assert ns.last()["prune_failed"] == []
+    assert all("origin/night-shift/stale" not in r.get("prune_failed", []) for r in _rows(ns))
+    assert _git("for-each-ref", stale, cwd=ns.clone, env=ns.env) == ""
+
+
+def test_a_delete_that_really_fails_is_in_the_ledger_once_over_two_nights(ns):
+    """BUG-109 ledger: last_run.json keeps the full nightly list, the committed ledger
+    names a failed prune in the first row only; a failure still never fails the night."""
+    _publish(ns, "night-shift/merged", commits=1, merge=True)
+    _reject_deletes(ns)
+    _check(ns.run(), "OK", 0)
+    ns.push_change()
+    _check(ns.run(), "OK", 0)
+    assert ns.last()["prune_failed"] == ["origin/night-shift/merged"]
+    rows = _rows(ns)
+    assert [r["prune_failed"] for r in rows] == [["origin/night-shift/merged"], []]
+    assert "night-shift/merged" in _heads(ns)
+
+
+def test_a_published_row_keeps_its_prune_failed_list(ns):
+    """Rows already in the committed ledger are never rewritten, even where an earlier
+    row named the same branch (the pre-fix rows a per-file token count pins); only a
+    row the ledger does not yet carry drops a name an earlier row named."""
+    _publish(ns, "night-shift/merged", commits=1, merge=True)
+    _reject_deletes(ns)
+    _check(ns.run(), "OK", 0)
+    first = _rows(ns)[0]
+    assert first["prune_failed"] == ["origin/night-shift/merged"]
+    old = dict(first, run_id="2000-01-01T04:45:00+11:00#1", started="2000-01-01T04:45:00+11:00",
+               finished="2000-01-01T05:00:00+11:00")
+    with open(str(ns.reports / "history.jsonl"), "a") as fh:
+        fh.write(json.dumps(old) + "\n")
+    work = ns.tmp / "ledger"
+    _git("clone", "-q", str(ns.origin), str(work), env=ns.env)
+    (work / "docs" / "night-shift" / "history.jsonl").write_text(
+        "".join(json.dumps(r, sort_keys=True) + "\n" for r in (old, first)))
+    _git("commit", "-q", "-am", "docs(night-shift): a pre-fix ledger", cwd=work, env=ns.env)
+    _git("push", "-q", "origin", "main", cwd=work, env=ns.env)
+    ns.push_change()
+    _check(ns.run(), "OK", 0)
+    rows = _rows(ns)
+    assert [r["run_id"] for r in rows[:2]] == [old["run_id"], first["run_id"]]
+    assert [r["prune_failed"] for r in rows] == [["origin/night-shift/merged"]] * 2 + [[]]
+    assert ns.last()["prune_failed"] == ["origin/night-shift/merged"]
 
 
 def test_nothing_is_pruned_when_the_night_is_flagged(ns):

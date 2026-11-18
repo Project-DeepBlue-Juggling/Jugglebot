@@ -1,7 +1,7 @@
 [Unit]
 Description=Jugglebot Night Shift (unattended claude -p on the board, own clone)
 Documentation=file:///home/jetson/Desktop/Jugglebot/tools/night_shift.sh
-# Start after the 04:00 nightly so its status line is final when the ticker is
+# Start after the 02:00 nightly so its status line is final when the ticker is
 # claimed. The runner's own guards (hold file, live-session wait, run lock) do
 # the rest.
 After=jugglebot-nightly.service

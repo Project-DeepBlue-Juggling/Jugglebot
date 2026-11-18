@@ -280,8 +280,8 @@ struct platformTilt {
  *  and createStateCANMessage need platformTilt and RobotState declared by then. */
 constexpr uint8_t HAND_FAN_PIN = uint8_t(TeensyOp::HAND_FAN_PIN);
 static_assert(HAND_FAN_PIN != 10 && HAND_FAN_PIN != 11 && HAND_FAN_PIN != 12 && HAND_FAN_PIN != 13
-                  && HAND_FAN_PIN != 22 && HAND_FAN_PIN != 23,
-              "hand_fan_pin collides with the SCL3300's SPI or this board's CAN");
+                  && HAND_FAN_PIN != 18 && HAND_FAN_PIN != 19 && HAND_FAN_PIN != 22 && HAND_FAN_PIN != 23,
+              "hand_fan_pin collides with the SCL3300's SPI, the IMU's I2C (18/19) or this board's CAN");
 static_assert(TeensyOp::HAND_FAN_OFF_BELOW_C < TeensyOp::HAND_FAN_ON_ABOVE_C,
               "the Hand fan thresholds need a gap, or the fan chatters at the threshold");
 

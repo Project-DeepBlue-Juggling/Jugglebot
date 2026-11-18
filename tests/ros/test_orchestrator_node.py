@@ -1226,6 +1226,24 @@ class TestJuggleRelay:
         goal_handle.get_result_async.assert_not_called()
         assert orch._juggle_goal_handle is None
 
+    def test_a_rejected_new_goal_keeps_the_live_goals_handle_for_stop(self, orch):
+        # Sitting 2026-11-18 L3: a REJECTED new Juggle wiped the handle of the
+        # still-live goal, so Stop answered "no attempt is running".
+        live = MagicMock()
+        live.accepted = True
+        live.get_result_async.return_value = MockFuture()
+        fut = MockFuture()
+        fut.set_result(live)
+        orch._on_juggle_goal_response(fut)
+        rejected = MagicMock()
+        rejected.accepted = False
+        fut2 = MockFuture()
+        fut2.set_result(rejected)
+        orch._on_juggle_goal_response(fut2)
+        res = orch._svc_juggle_stop(Trigger.Request(), Trigger.Response())
+        assert res.success is True
+        live.cancel_goal_async.assert_called_once()
+
     def test_goal_response_accepted_chains_result_and_latches_the_handle(self, orch):
         goal_future = MockFuture()
         goal_handle = MagicMock()
