@@ -82,4 +82,4 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
 ## Questions a Sitting can answer
 
-- TKT-85 BUG-90 held after failing its Sitting on 2026-11-18: add a hard bound and fly again, take the Hand out of the ZVD lever, or drop it and leave carry_zvd off? (parent BUG-90)
+- none
