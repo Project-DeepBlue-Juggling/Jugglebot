@@ -4,10 +4,13 @@ kind: bug
 title: Hand SPINOUT at the Throw peak after a setpoint 12.6 ms late (2026-11-18)
 status: inbox
 created: '2026-11-18'
-updated: '2026-11-18T04:39:48Z'
+updated: '2026-11-18T15:51:07Z'
 owners: []
 priority: high
+effort: m
 hardware: robot
+owner: decision
+radius: subsystem
 diagnosis: confirmed
 area: hand
 blocked_by: []

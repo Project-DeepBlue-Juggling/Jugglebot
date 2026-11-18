@@ -4,9 +4,14 @@ kind: idea
 title: Minimise the Platform IMU upload time after an Attempt
 status: inbox
 created: '2026-11-19'
-updated: '2026-11-18T13:11:51Z'
+updated: '2026-11-18T15:51:27Z'
 owners: []
 priority: low
+effort: m
+hardware: robot
+owner: decision
+radius: local
+area: platform-teensy
 blocked_by: []
 links:
 - plans/active/platform-imu.md

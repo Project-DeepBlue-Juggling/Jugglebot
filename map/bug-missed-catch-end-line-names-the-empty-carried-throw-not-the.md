@@ -4,9 +4,13 @@ kind: bug
 title: MISSED_CATCH end line names the empty carried Throw, not the flight that was lost one cycle earlier
 status: inbox
 created: '2026-11-18'
-updated: '2026-11-18T02:07:43Z'
+updated: '2026-11-18T15:51:14Z'
 owners: []
 priority: medium
+effort: m
+hardware: none
+owner: none
+radius: local
 diagnosis: confirmed
 area: skill-stack
 blocked_by: []

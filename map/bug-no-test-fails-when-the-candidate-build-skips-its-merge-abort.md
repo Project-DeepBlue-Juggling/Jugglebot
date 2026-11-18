@@ -4,11 +4,12 @@ kind: bug
 title: No test fails when the candidate build skips its merge abort after a conflict
 status: inbox
 created: '2026-11-18'
-updated: '2026-11-18T09:00:28Z'
+updated: '2026-11-18T15:51:23Z'
 owners: []
 priority: low
 effort: s
 hardware: none
+owner: none
 radius: local
 diagnosis: confirmed
 area: tests-tooling

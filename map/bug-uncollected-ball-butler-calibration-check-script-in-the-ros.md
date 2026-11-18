@@ -4,11 +4,12 @@ kind: bug
 title: 'Uncollected Ball Butler calibration check script in the ROS package: port what is not covered, then delete'
 status: inbox
 created: '2026-11-18'
-updated: '2026-11-18T03:43:59Z'
+updated: '2026-11-18T15:51:20Z'
 owners: []
 priority: low
 effort: m
 hardware: none
+owner: decision
 radius: subsystem
 diagnosis: confirmed
 area: tests-tooling
