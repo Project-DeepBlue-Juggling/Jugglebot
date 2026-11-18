@@ -2,9 +2,9 @@
 id: FEAT-60
 kind: feature
 title: 'Confirm the 2026-11-19 nightly ran the 59 GUI tests: skipped count at or under 60'
-status: inbox
+status: complete
 created: '2026-11-18'
-updated: '2026-11-18T09:22:32Z'
+updated: '2026-11-18T16:13:36Z'
 owners: []
 priority: medium
 effort: xs
@@ -35,3 +35,7 @@ One-off check for the Night Shift of 2026-11-19. BUG-103 (commit b90f31b3, 2026-
 
 - Leave this Item open. Put the skipped count and the Node skip reasons in the night's report under the owner's questions.
 - Do not edit `tools/nightly_*` or `tools/systemd/*`: the 04:00 unit's PATH is the likely cause and is frozen for the night.
+
+## Progress
+
+- 2026-11-19: Night Shift 2026-11-19: pass. The 2026-11-19 nightly skipped 53 (2026-11-18: 113), at or under 60; its report lists no skip reasons, so none mentions Node.

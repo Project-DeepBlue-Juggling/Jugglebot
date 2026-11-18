@@ -4,9 +4,13 @@ kind: bug
 title: /robot_state rate drops to 80-89 Hz during Attempts and drifts down over a launch
 status: inbox
 created: '2026-11-18'
-updated: '2026-11-18T02:07:37Z'
+updated: '2026-11-18T15:51:11Z'
 owners: []
 priority: medium
+effort: m
+hardware: robot
+owner: hands
+radius: subsystem
 diagnosis: unknown
 area: can-bridge
 blocked_by: []

@@ -4,11 +4,12 @@ kind: bug
 title: ROS mock messages accept misspelt fields and are never compared with the real interface definitions
 status: inbox
 created: '2026-11-18'
-updated: '2026-11-18T03:44:02Z'
+updated: '2026-11-18T15:51:17Z'
 owners: []
 priority: medium
 effort: l
 hardware: none
+owner: none
 radius: subsystem
 diagnosis: confirmed
 area: tests-tooling

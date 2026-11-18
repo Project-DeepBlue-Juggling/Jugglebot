@@ -39,3 +39,13 @@ About 180 tests cover code that nothing live imports. From the 2026-11-16 test-s
 ## Owner decision needed
 
 - Whether each of the three modules is really finished with. The measurements they produced stay valid either way.
+
+## Options (2026-11-19)
+
+Grep on 2026-11-19: `toss_release` has no import outside its own module and tests. But five live modules name it in comments (`cup_cycle.py`, `unified_cycle.py`, `cup_realize.py`, `throw_envelope.py`, `tilt_geometry.py`). And `ball_possession.py:1407` names `toss_release.stow_to_global_mm` in a log message as "the SINGLE conversion point". `tools/check_vel_ff_plumbing.py` is read only by its own test and a docstring in `tests/sim/test_tilt_cal_analyse.py`.
+
+1. **Retire all three now:** delete each module with its tests in one commit, reword the live comments and the `ball_possession.py` log message, and update the ILC rows in the README. About 180 tests go.
+2. **Retire the ILC and vel-FF tools only; keep `toss_release`:** it is still cited as the reference for the stow-to-global conversion, so deleting it leaves those comments pointing at nothing.
+3. **Leave all three:** about 30 CPU-seconds a run is the whole cost.
+
+Recommendation: 2. Both tools are dormant by their own docstrings. `toss_release` is still the named conversion reference in live code, so retiring it is a separate small refactor.
