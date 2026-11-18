@@ -616,6 +616,9 @@ _CUP_RULE = {
     # columns_1ball_fed's.
     'oval_1ball': {_E: RELOAD_FIRST, _S: THROW_FIRST},
     'oval_1ball_fed': {_E: RELOAD_FIRST, _S: ex.REJECTED_BALL_IN_HAND},
+    # JP-5 polygon walk: ONE ball fed by Ball Butler at P1, so the oval_1ball_fed
+    # rows (EMPTY cup -> reload first; a seated ball refused).
+    'polygon_walk': {_E: RELOAD_FIRST, _S: ex.REJECTED_BALL_IN_HAND},
     'reload': {_E: RELOAD_FIRST, _S: ex.REJECTED_BALL_IN_HAND},
     'magazine': {_E: ex.REJECTED_NO_BALL, _S: THROW_FIRST},
 }
@@ -1272,6 +1275,9 @@ class SkillNode(Node):
 
         self.declare_parameter('apex_m', _DEFAULT_APEX_M)
         self.declare_parameter('separation_mm', _DEFAULT_SEPARATION_MM)
+        # JP-5 (`polygon_walk`): the Site count N (>= 3; separation_mm is the
+        # polygon's edge). Read at goal accept ONLY by that pattern.
+        self.declare_parameter('polygon_n', 4)
         # JP-10 (`columns_turned`): the Site pair's angle about the Platform
         # origin, degrees. Read ONLY by the `columns_turned` goal (every other
         # pattern builds the straight pair); refused live while a goal is
@@ -4250,7 +4256,8 @@ class SkillNode(Node):
     #: and box label is ``schedule.COLUMNS_HIGHLOW``.
     _PATTERNS = ('self_toss', 'hop', 'columns', 'columns_1ball',
                 'columns_1ball_fed', 'columns_turned', 'columns_highlow',
-                'oval_1ball', 'oval_1ball_fed', 'magazine', 'reload')
+                'oval_1ball', 'oval_1ball_fed', 'polygon_walk', 'magazine',
+                'reload')
 
     def _record_params(self, pattern, apex_m, separation_mm, dwell_s,
                        turned_angle_deg, apex_m_ball2,
@@ -4266,6 +4273,9 @@ class SkillNode(Node):
             if pattern != 'self_toss':
                 out.append(('separation_mm', '%g' % round(separation_mm, 1)))
             out.append(('dwell_s', '%g' % round(dwell_s, 3)))
+            if pattern == 'polygon_walk':
+                out.append(('polygon_n',
+                            '%d' % int(self.get_parameter('polygon_n').value)))
             if pattern == 'columns_turned':
                 out.append(('turned_angle_deg', '%g' % round(turned_angle_deg, 2)))
             if pattern == 'columns_highlow' and apex_m_ball2 is not None:
@@ -4523,7 +4533,8 @@ class SkillNode(Node):
                                   ll.leg_jerk_mmps3, ll.hand_acc_limit_rps2)
 
     def _nomination_config(self, pattern, apex_m, separation_mm, dwell_s, *,
-                           apex_m_ball2=None, angle_deg=0.0, feed_site=None):
+                           apex_m_ball2=None, angle_deg=0.0, feed_site=None,
+                           polygon_n=None):
         """The :class:`nominate.NominationConfig` for one goal: the goal /
         resolved fields plus the node parameters that shape the plan
         (``planner_mode``, ``carry_zvd``, ``columns_feed_site``,
@@ -4536,6 +4547,8 @@ class SkillNode(Node):
             apex_m_ball2=(None if apex_m_ball2 is None
                           else float(apex_m_ball2)),
             angle_deg=float(angle_deg),
+            polygon_n=(int(polygon_n) if polygon_n is not None
+                       else int(self.get_parameter('polygon_n').value)),
             planner_mode=self._planner_mode(), carry_zvd=self._carry_zvd(),
             entry=('hop' if _FED_COLUMNS_HOP_ENTRY
                    and pattern in nom.COLUMNS_FED else 't0'),
@@ -7354,6 +7367,7 @@ class SkillNode(Node):
                    or _pattern_default_dwell_s(pattern))
         apex_m_ball2 = None
         angle_deg = 0.0
+        polygon_n = None
         feed_site = None
         refusal = None
         if pattern == 'columns_highlow':
@@ -7361,6 +7375,9 @@ class SkillNode(Node):
                             or float(self.get_parameter('apex_m_ball2').value))
             res_ = self._highlow_refusal(apex_m, apex_m_ball2)
             refusal = None if res_ is None else res_.message
+        elif pattern == 'polygon_walk':
+            polygon_n = int(vals.get('polygon_n', 0)
+                            or self.get_parameter('polygon_n').value)
         elif pattern == 'columns_turned':
             angle_deg = (vals.get('columns_angle_deg', 0.0)
                          or float(self.get_parameter('columns_angle_deg').value))
@@ -7384,7 +7401,7 @@ class SkillNode(Node):
         res = self._nominate(self._nomination_config(
             pattern, apex_m, separation_mm, dwell_s,
             apex_m_ball2=apex_m_ball2, angle_deg=angle_deg,
-            feed_site=feed_site), with_aim=True)
+            feed_site=feed_site, polygon_n=polygon_n), with_aim=True)
         response.success = res.ok
         response.message = '\n'.join([res.summary] + (
             [] if res.ok else list(res.lines)))

@@ -30,6 +30,7 @@ JUGGLE_NUMERIC_FIELDS = {
 NOMINATE_EXTRA_FIELDS = {
     'apex_m_ball2': float,
     'columns_angle_deg': float,
+    'polygon_n': int,     # polygon_walk only (JP-5)
 }
 
 

@@ -2252,6 +2252,10 @@ class OneBallPattern:
     #: (:data:`FLOOR_LIFT_S`), which is also what every offline test and the
     #: sim gate get.
     floor_lift_s: float = FLOOR_LIFT_S
+    #: ``'polygon'`` (JP-5, IDEA-9) = the polygon walk: ``sites`` is N >= 3
+    #: long and throw ``i`` leaves ``sites[i % N]`` for ``sites[(i+1) % N]``,
+    #: the ``'alternate'`` arithmetic unchanged (``_append_one_ball_pattern``);
+    #: only the label (``POLYGON_WALK``) and the site-count check differ.
     #: ``'alternate'`` = today's hop/self_toss (throw ``i`` from
     #: ``sites[i % n]`` to ``sites[(i+1) % n]``).  ``'fixed'`` = the one-ball
     #: oval (plan two-ball-oval § 2.1): EVERY throw from ``sites[0]`` (T) to
@@ -2275,15 +2279,19 @@ class OneBallPattern:
             raise ValueError(
                 'a landing offset is for a one-Site self-toss only, got %d '
                 'sites and roles %r' % (len(self.sites), self.roles))
-        if self.roles not in ('alternate', 'fixed'):
+        if self.roles not in ('alternate', 'fixed', 'polygon'):
             raise ValueError(
-                "roles must be 'alternate' or 'fixed', got %r"
+                "roles must be 'alternate', 'fixed' or 'polygon', got %r"
                 % (self.roles,))
+        if self.roles == 'polygon' and len(self.sites) < 3:
+            raise ValueError(
+                "roles='polygon' needs at least 3 sites, got %d"
+                % (len(self.sites),))
         if self.roles == 'fixed' and len(self.sites) != 2:
             raise ValueError(
                 "roles='fixed' needs exactly 2 sites (T, C), got %d"
                 % (len(self.sites),))
-        if len(self.sites) not in (1, 2):
+        if self.roles != 'polygon' and len(self.sites) not in (1, 2):
             raise ValueError(
                 'OneBallPattern takes 1 or 2 sites, got %d — no third site '
                 'exists in this plan (R4, owner decision D1 2026-09-23)'
@@ -2296,11 +2304,18 @@ class OneBallPattern:
                 % (self.floor_lift_s, FLOOR_LIFT_S))
 
 
+#: ``Schedule.pattern`` of a ``roles='polygon'`` one-ball schedule (JP-5; the
+#: label is provisional until the owner confirms it).
+POLYGON_WALK = 'polygon_walk'
+
+
 def _one_ball_label(pattern: OneBallPattern) -> str:
     """The ONE place a one-ball pattern's :attr:`Schedule.pattern` is named
     (``compile_one_ball`` and ``compile_reload`` both)."""
     if pattern.roles == 'fixed':
         return 'oval_1ball'
+    if pattern.roles == 'polygon':
+        return POLYGON_WALK
     return 'self_toss' if len(pattern.sites) == 1 else 'hop'
 
 

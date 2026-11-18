@@ -146,7 +146,7 @@ RUNGS = (-0.20, 0.0, 0.10)
 #: Patterns a nomination plans: skill_node ``_PATTERNS`` minus the two below.
 NOMINATED_PATTERNS = ('self_toss', 'hop', 'columns', 'columns_1ball',
                       'columns_1ball_fed', 'columns_turned', 'columns_highlow',
-                      'oval_1ball', 'oval_1ball_fed')
+                      'oval_1ball', 'oval_1ball_fed', 'polygon_walk')
 #: The refusal of a nomination that walked no non-REST Segment.
 NOTHING_TO_PLAN = 'NOT_NOMINATED: nothing to plan'
 #: Patterns refused ``NOT_NOMINATED`` by name, with the reason.
@@ -229,6 +229,9 @@ class NominationConfig:
     #: dispatches for a FED Columns (``compile_columns(feed=..., hop_entry=
     #: True)``) with a VERTICAL identity feed at the fed Site.
     entry: str = 't0'
+    #: ``polygon_walk`` only (JP-5): the Site count N (skill_node param
+    #: ``polygon_n``); ``separation_mm`` is the polygon's edge.
+    polygon_n: int = 4
 
     def key(self) -> tuple:
         return dataclasses.astuple(self)
@@ -341,6 +344,14 @@ def build_pattern(config: NominationConfig, n_throws: Optional[int] = None):
         x, y = config.self_toss_site_xy_mm
         sites = (st.Site(SELF_TOSS_SITE_NAME,
                          np.array([float(x), float(y), st.CATCH_CUP_Z_MM])),)
+    elif p == 'polygon_walk':
+        sites = st.polygon_sites(config.polygon_n, config.separation_mm)
+        # the SHORT pattern is the launch plus two full laps of N Sites
+        if n_throws is None and not config.n_throws:
+            n = 1 + 2 * len(sites)
+        return sc.OneBallPattern(sites=sites, apex_m=config.apex_m,
+                                 dwell_s=config.dwell_s, n_throws=n,
+                                 roles='polygon')
     elif p in ('hop', 'oval_1ball', 'oval_1ball_fed'):
         sites = st.columns_sites(config.separation_mm)
     else:
@@ -1218,9 +1229,13 @@ def workspace_ok(config: NominationConfig) -> bool:
     if config.pattern == 'self_toss':
         return True
     try:
-        sites = st.columns_sites(
-            config.separation_mm,
-            config.angle_deg if config.pattern == 'columns_turned' else 0.0)
+        if config.pattern == 'polygon_walk':
+            sites = st.polygon_sites(config.polygon_n, config.separation_mm)
+        else:
+            sites = st.columns_sites(
+                config.separation_mm,
+                config.angle_deg if config.pattern == 'columns_turned'
+                else 0.0)
     except ValueError:
         return False
     lim = float(cc.CupCycleConfig().workspace_xy_m) * 1000.0

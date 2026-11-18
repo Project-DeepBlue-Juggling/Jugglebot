@@ -114,6 +114,7 @@ PATTERNS: Tuple[Tuple[str, str, int], ...] = (
     ('hop', 'Hop', 1),
     ('oval_1ball', 'Oval — Ball 1', 1),
     ('oval_1ball_fed', 'Oval — fed', 1),
+    ('polygon_walk', 'Polygon walk', 1),
     ('columns_1ball', 'Columns — Ball 1', 1),
     ('columns_1ball_fed', 'Columns — Ball 2 (fed)', 1),
     ('columns', 'Columns', 2),
