@@ -183,3 +183,16 @@ def test_detect_human_throws_param_set_updates_the_tracker_live():
     assert node._tracker.detect_human_throws is True
     node.set_parameters([_MockParameter(False, name='detect_human_throws')])
     assert node._tracker.detect_human_throws is False
+
+
+def test_human_throw_exclusion_box_is_wired_from_the_config():
+    """BUG-92: the Ball Butler frame box reaches the tracker from `hw`."""
+    from jugglebot import hardware_config as hw
+    node = BallTrackerNode()
+    assert node._tracker.human_throw_exclusion_box == (
+        hw.TRACKING_HUMAN_THROW_EXCLUSION_X_MIN_MM,
+        hw.TRACKING_HUMAN_THROW_EXCLUSION_X_MAX_MM,
+        hw.TRACKING_HUMAN_THROW_EXCLUSION_Z_MIN_MM,
+        hw.TRACKING_HUMAN_THROW_EXCLUSION_Z_MAX_MM)
+    assert node._tracker.human_throw_exclusion_box == (
+        -1028.0, -690.0, 1625.0, 1901.0)

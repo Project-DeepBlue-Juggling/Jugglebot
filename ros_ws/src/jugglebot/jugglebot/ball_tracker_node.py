@@ -86,6 +86,15 @@ class BallTrackerNode(Node):
         detect_human_throws = bool(
             self.get_parameter('detect_human_throws').value)
 
+        # BUG-92: Ball Butler frame box; min > max on either axis disables it.
+        hx = (float(hw.TRACKING_HUMAN_THROW_EXCLUSION_X_MIN_MM),
+              float(hw.TRACKING_HUMAN_THROW_EXCLUSION_X_MAX_MM))
+        hz = (float(hw.TRACKING_HUMAN_THROW_EXCLUSION_Z_MIN_MM),
+              float(hw.TRACKING_HUMAN_THROW_EXCLUSION_Z_MAX_MM))
+        human_throw_box = (
+            (hx[0], hx[1], hz[0], hz[1])
+            if hx[0] <= hx[1] and hz[0] <= hz[1] else None)
+
         self._tracker = BallTracker(
             dt=hw.TRACKING_MOCAP_DT_S,
             landing_z=self._landing_z,
@@ -102,6 +111,7 @@ class BallTrackerNode(Node):
             excluded_label_prefixes=parse_label_prefixes(
                 hw.TRACKING_EXCLUDED_LABEL_PREFIXES),
             detect_human_throws=detect_human_throws,
+            human_throw_exclusion_box=human_throw_box,
             flight_fit_min_samples=hw.TRACKING_FLIGHT_FIT_MIN_SAMPLES,
             flight_fit_residual_mm=hw.TRACKING_FLIGHT_FIT_RESIDUAL_MM,
             flight_fit_freeze_above_plane_mm=hw.TRACKING_FLIGHT_FIT_FREEZE_ABOVE_PLANE_MM,
@@ -151,6 +161,7 @@ class BallTrackerNode(Node):
         self.get_logger().info(
             f"Ball tracker up (landing plane z={self._landing_z:.0f} mm, "
             f"detect_human_throws={detect_human_throws}, "
+            f"human_throw_exclusion_box(x,z mm)={human_throw_box}, "
             f"{blas_threads.format_blas_short(self._blas_threads)})")
         self.get_logger().debug(
             f"BallTrackerNode ready: landing_z={self._landing_z:.1f}mm, "
