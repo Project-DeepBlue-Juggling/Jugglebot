@@ -710,6 +710,83 @@ def test_sched_stop_warn_carries_the_downlink_ledger():
         _teardown(teensy, client, node)
 
 
+# ── BUG-119: a Hand cover lapse under a plan with no Hand track ──────────────
+
+def _handless_warn_text(sr_before, sr_after, no_hand_per_hb, c1=0,
+                        quiet_tail=0):
+    """One armed STOP WARN on clean host maxima. ``no_hand_per_hb`` frames
+    without a Hand per downlink heartbeat over five heartbeats, then
+    ``quiet_tail`` heartbeats with none; the STOP record sequence numbers
+    (legs, Hand) go from ``sr_before`` to ``sr_after`` between the checks."""
+    from tests.ros._bridge_harness import _build_paired_node, _teardown
+    from teensy_link.gap_monitor import GapStats
+    teensy, client, node = _build_paired_node(boot_state_read=False)
+    try:
+        lines = []
+        node.get_logger().warning = lambda m, *a, **k: lines.append(str(m))
+        node._mpc_active = True
+        node._gap_snap = (GapStats(40, 42.1, 30.0), GapStats(900, 19.0, 19.0))
+        node._note_sched_sample(_sched_hb(10, 25, 4_000, (4, 0, 0, 0)), 1)
+        node._note_sched_sample(
+            _sched_hb(10, 25, 4_000, (4, 0, 0, 0), c1=c1), 2)
+        rx, no_hand, gen, sent = 1000, 0, 0, 400
+        for i in range(5 + quiet_tail):
+            gen += 1
+            rx += 4
+            sent += 4
+            if i < 5:
+                no_hand += no_hand_per_hb
+            node._note_downlink_sample(_dn_hb(rx, no_hand=no_hand), gen, sent,
+                                       now=100.0 + 0.1 * gen)
+        node._warn_on_sched_stop(3, now=100.0, sr_seq=sr_before)
+        node._warn_on_sched_stop(4, now=101.0, sr_seq=sr_after)
+        assert len(lines) == 1
+        return lines[0]
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_hand_only_stop_under_a_handless_plan_is_named_and_not_called_clean():
+    """2026-11-18: 43 of 44 "host forward cadence clean" WARNs were the Hand
+    group's cover running out while go_to_pose / Level sent legs only."""
+    m = _handless_warn_text((7, 8), (7, 9), no_hand_per_hb=4)
+    assert m.startswith('firmware scheduler STOP (+1, total 4) while streaming: '
+                        'Hand cover lapsed under a plan with no Hand track')
+    assert '12 frames without a Hand arrived in the last 3 heartbeats' in m
+    assert 'host forward cadence clean' not in m
+    assert 'fw_sched' in m and 'no_hand +' in m
+
+
+def test_legs_stop_under_a_handless_plan_keeps_the_host_verdicts():
+    m = _handless_warn_text((7, 8), (9, 10), no_hand_per_hb=4)
+    assert 'no Hand track' not in m
+    assert 'host forward cadence clean' in m
+
+
+def test_hand_only_stop_with_every_frame_carrying_a_hand_keeps_the_host_verdicts():
+    m = _handless_warn_text((7, 8), (7, 9), no_hand_per_hb=0)
+    assert 'no Hand track' not in m
+    assert 'host forward cadence clean' in m
+
+
+def test_handless_frames_older_than_the_window_do_not_explain_a_hand_stop():
+    m = _handless_warn_text((7, 8), (7, 9), no_hand_per_hb=4, quiet_tail=3)
+    assert 'no Hand track' not in m
+
+
+def test_hand_c1_stop_is_never_called_a_handless_lapse():
+    m = _handless_warn_text((7, 8), (7, 9), no_hand_per_hb=4, c1=1)
+    assert 'no Hand track' not in m
+    assert m.startswith('firmware scheduler STOP (+1, total 4) while streaming: '
+                        'Hand C1 stop (fast upstroke)')
+
+
+def test_without_stop_record_sequence_numbers_the_host_verdicts_stand():
+    """A heartbeat without ``sr_seq`` (pre-FW 42) cannot name the group."""
+    m = _handless_warn_text(None, None, no_hand_per_hb=4)
+    assert 'no Hand track' not in m
+
+
 
 # ── 2026-11-13 debrief: the :5557 drain's newest-only discards, counted ──────
 

@@ -860,6 +860,10 @@ _DN_FW_COUNTERS = ('dn_rx_setpoints', 'dn_queue_dropped', 'dn_seq_gaps',
                    'dn_crc_errors', 'sched_frames', 'sp_seq_drops',
                    'sp_no_hand', 'sp_no_sched')
 _DN_SETTLE_HEARTBEATS = 5       # after streaming ends, before the summary line
+# BUG-119: a Hand-only STOP while frames without a Hand arrived in the last this
+# many heartbeat windows (~300 ms, the STOP's report latency plus margin) is the
+# Hand cover lapsing under a plan with no Hand track, not a fault.
+_HANDLESS_WINDOW_HB = 3
 
 # Bits 16-22 carry the report-only per-axis ODrive heartbeat-staleness mask
 # (bit 16+i = axis i's CAN heartbeat older than CAN_HEARTBEAT_STALE_US = 0.5 s;
@@ -1785,6 +1789,9 @@ class TeensyBridgeNode(Node):
         self._mpc_active = False
         # FEAT-31 follow-up: firmware sched_stops baseline / WARN rate limit.
         self._sched_stops_seen = None
+        # BUG-119: the per-group STOP record sequence numbers (legs, Hand) at the
+        # last WARN check, so the WARN can say which group stopped.
+        self._sched_sr_seen = None
         # FEAT-46 (FW 42): one line per firmware STOP record, classified.
         self._stop_record_log = StopRecordLog()
         self._sched_stops_warn_mono = 0.0
@@ -6491,7 +6498,17 @@ class TeensyBridgeNode(Node):
         i = _SCHED_FW_COUNTERS.index('sched_hand_c1_stops')
         return (h[-1][0][i] - h[0][0][i]) & 0xFFFFFFFF
 
-    def _warn_on_sched_stop(self, total: int, now=None) -> None:
+    def _sp_no_hand_recent(self) -> int:
+        """Frames parsed with HAS_HAND clear over the last
+        ``_HANDLESS_WINDOW_HB`` downlink samples (0 with < 2, or pre-FW 40)."""
+        h = self._dn_hist
+        if len(h) < 2:
+            return 0
+        i = _DN_FW_COUNTERS.index('sp_no_hand')
+        a = h[max(0, len(h) - 1 - _HANDLESS_WINDOW_HB)][2][i]
+        return (h[-1][2][i] - a) & 0xFFFFFFFF
+
+    def _warn_on_sched_stop(self, total: int, now=None, sr_seq=None) -> None:
         """WARN (<= 1/s) when the firmware's ``sched_stops`` rises while armed,
         and ONCE at a disarm edge.
 
@@ -6520,6 +6537,15 @@ class TeensyBridgeNode(Node):
         * otherwise the two host candidates as before: emitter gap (setpoints
           arrived late) vs bridge forwarding gap (this node starved).
 
+        Ahead of all three (BUG-119): when ``sr_seq`` (the heartbeat's per-group
+        STOP record sequence numbers, legs then Hand, FW 42) says only the Hand
+        group stopped, the stop is not a C1 stop, and frames without a Hand
+        arrived in the last ``_HANDLESS_WINDOW_HB`` heartbeats, the verdict is
+        **Hand cover lapsed under a plan with no Hand track**: go_to_pose,
+        Level and the guard descents send legs only, so the Hand group's cover
+        runs out by design. The host maxima do not bear on it. On 2026-11-18
+        43 of 44 "clean" verdicts were this.
+
         Disarm edge: a STOP rise seen within ``_SCHED_DISARM_EDGE_S`` of
         ``mpc_active`` falling 1->0 WARNs once for that fall, rate limit
         bypassed (the host flag falls a heartbeat or two before the firmware
@@ -6528,6 +6554,8 @@ class TeensyBridgeNode(Node):
         """
         prev = self._sched_stops_seen
         self._sched_stops_seen = total
+        prev_sr = self._sched_sr_seen
+        self._sched_sr_seen = sr_seq
         t = time.monotonic() if now is None else float(now)
         armed = bool(self._mpc_active)
         if self._sched_prev_armed and not armed:
@@ -6555,7 +6583,18 @@ class TeensyBridgeNode(Node):
         where = ('at the disarm edge (mpc_active 1->0)' if edge
                  else 'while streaming')
         dropped, drop_note = self._sp_drop_note(time.monotonic())
-        if clean and dropped:
+        hand_only = (sr_seq is not None and prev_sr is not None
+                     and len(sr_seq) == 2 and len(prev_sr) == 2
+                     and sr_seq[1] != prev_sr[1] and sr_seq[0] == prev_sr[0])
+        no_hand = self._sp_no_hand_recent()
+        if hand_only and not c1 and no_hand > 0:
+            verdict = (
+                'Hand cover lapsed under a plan with no Hand track: only the '
+                'Hand group stopped (legs did not), and %d frames without a '
+                'Hand arrived in the last %d heartbeats, so the Hand holds '
+                'where it was by design until the next Hand frame; not a link '
+                'or firmware fault (BUG-119)' % (no_hand, _HANDLESS_WINDOW_HB))
+        elif clean and dropped:
             # 2026-11-13: the forward-gap check alone called both LANE_REFUSED
             # ends "clean" while the drain had discarded the knot between the
             # playing frame and its successor (a 50 ms stamp gap on the wire).
@@ -6673,7 +6712,10 @@ class TeensyBridgeNode(Node):
                 self._track_hb_stale_episodes(hb_stale_mask)
                 self._note_sched_sample(hb, hb_gen)
                 self._note_downlink_sample(hb, hb_gen, hb_sent)
-                self._warn_on_sched_stop(int(hb.sched_stops))
+                sr = getattr(hb, 'sr_seq', None)
+                self._warn_on_sched_stop(
+                    int(hb.sched_stops),
+                    sr_seq=None if sr is None else tuple(int(v) for v in sr))
                 self._log_stop_records(hb)
 
             msg = DiagnosticStatus()

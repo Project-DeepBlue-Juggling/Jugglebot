@@ -2,9 +2,9 @@
 id: BUG-119
 kind: bug
 title: STOP WARN calls a Hand cover lapse under a plan with no Hand track a clean-host firmware STOP
-status: inbox
+status: complete
 created: '2026-11-18'
-updated: '2026-11-18T12:46:53Z'
+updated: '2026-11-18T12:49:40Z'
 owners: []
 priority: low
 effort: xs
@@ -16,6 +16,7 @@ area: can-bridge
 blocked_by: []
 links:
 - map/bug-40-hz-setpoint-stream-starved-past-the-firmware-s-70-ms.md
+- logbook/2026-11-18-stop-warn-handless-hand-lapse.md
 filed_by: claude
 ---
 
@@ -32,3 +33,7 @@ Frames from a plan with no Hand track (`go_to_pose`, Level, the guard descents) 
 ## Fix
 
 Name the group from the per-group STOP record sequence numbers in the heartbeat. A Hand-only, non-C1 STOP while frames without a Hand arrive gets its own verdict, so it is no longer called clean-host.
+
+## Progress
+
+- 2026-11-18: Fixed 2026-11-18: the STOP WARN reads the per-group STOP record sequence numbers; a Hand-only, non-C1 STOP with frames without a Hand in the last 3 heartbeats is named a Hand cover lapse under a plan with no Hand track, not clean-host.
