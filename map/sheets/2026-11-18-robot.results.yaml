@@ -8,4 +8,65 @@ steps:
     comments: ''
     saved_at: 2026-11-18 10:33
     status: done
-verdicts: {}
+  3:
+    comments: ''
+    saved_at: 2026-11-18 10:38
+    status: done
+  4:
+    comments: ''
+    saved_at: 2026-11-18 10:38
+    status: done
+  5:
+    comments: ''
+    saved_at: 2026-11-18 10:39
+    status: done
+  6:
+    comments: ''
+    saved_at: 2026-11-18 10:40
+    status: done
+  7:
+    comments: ''
+    saved_at: 2026-11-18 10:40
+    status: done
+  8:
+    comments: First attempt ended with SPINOUT_DETECTED on the hand. Second, fourth,
+      sixth attempts ended with a messy throw being dropped. Third and seventh attempts
+      completed. Fifth and eighth attempt ended with MAX_DEVIATION at the hand causing
+      a LANE_REFUSED. Learner memory row appears with the `cat` command
+    saved_at: 2026-11-18 10:47
+    status: done
+  9:
+    comments: ''
+    saved_at: 2026-11-18 10:48
+    status: done
+  10:
+    comments: Six attempts flew without problem. To reach the 10 minute requirement,
+      I ran two attempts with 200 cycles. For the first, at exactly 50 throws, a LANE_REFUSED
+      ended the attempt. Again in the second attempt, a LANE_REFUSED ended the attempt
+      at 75 throws.
+    saved_at: 2026-11-18 11:01
+    status: done
+  11:
+    comments: The `-A1 setpoints_coalesced` counter reads 8 The BUG-89 grep command
+      returned a bunch of entries with `setpoint drain dropped`, `LANE_REFUSED`, `firmware
+      STOP recorded` etc
+    saved_at: 2026-11-18 11:03
+    status: done
+  12:
+    comments: ''
+    saved_at: 2026-11-18 11:03
+    status: done
+  14:
+    comments: ''
+    saved_at: 2026-11-18 11:07
+    status: done
+  15:
+    comments: ''
+    saved_at: 2026-11-18 11:07
+    status: done
+verdicts:
+  13:
+    BUG-63:
+      notes: Gave this a few attempts. Most ended due to the balls colliding mid-air
+        and becoming un-catchable. All attempts lasted for at least 2-3 throws.
+      saved_at: 2026-11-18 11:06
