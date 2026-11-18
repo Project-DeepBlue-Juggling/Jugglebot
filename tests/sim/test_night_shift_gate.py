@@ -330,6 +330,7 @@ def test_e_unparseable_map_file_holds(repo):
     "ros_ws/src/jugglebot/WaveCamera_ESP_code/src/x.cpp",
     "ros_ws/src/jugglebot/WaveCamera_ESP_code/include/x.h",
     "ros_ws/src/jugglebot/WaveCamera_ESP_code/platformio.ini",
+    "tools/probes/imu_bench/firmware/src/x.cpp", "tools/probes/imu_bench/firmware/platformio.ini",
     "ros_ws/src/jugglebot/jugglebot/motion/skills/INVARIANTS.md",
     "ros_ws/src/jugglebot_interfaces/srv/InstallSegment.srv",
     "config/hardware_config.yaml", "config/generate_udp_protocol.py",
@@ -365,6 +366,7 @@ def test_f_rename_away_from_forbidden_path_holds(repo):
 
 def test_f_lookalike_paths_merge(repo):
     for path in ("docs/CLAUDE.md", "docs/config/notes.md", "tools/nightly.py", "tools/other.py",
+                 "tools/probes/imu_bench/viewer/index.html", "tools/probes/imu_bench/README.md",
                  "tests/sim/test_mapkit_items_extra.py", "docs/run_tests.sh",
                  "src/mapkit/x.py", "ros_ws/src/jugglebot/WaveCamera_ESP_code/test/x.cpp",
                  "ros_ws/src/jugglebot/jugglebot/skill_node.py", "tests/fixtures/wave.json"):
@@ -383,6 +385,7 @@ def test_forbidden_paths_pinned():
         "ros_ws/src/jugglebot/WaveCamera_ESP_code/src/*",
         "ros_ws/src/jugglebot/WaveCamera_ESP_code/include/*",
         "ros_ws/src/jugglebot/WaveCamera_ESP_code/platformio.ini",
+        "tools/probes/imu_bench/firmware/*",
         "ros_ws/src/jugglebot/jugglebot/motion/skills/INVARIANTS.md",
         "ros_ws/src/jugglebot_interfaces/*", "config/*", "tools/night_shift*", "tools/lib/*",
         "tools/systemd/*", "tools/nightly_*", "tools/sitting_merge.sh", ".claude/*",

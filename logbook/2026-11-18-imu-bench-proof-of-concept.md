@@ -50,6 +50,11 @@ Facts worth keeping:
   the firmware as `serial_drops`, by design). At rest, Z up, +-16 g / +-2000 dps: |a| = 1.004 to 1.005 g, gyro offset
   up to 0.5 dps per axis, accel noise 1.3 to 2.2 mg rms per axis, gyro 0.05 to 0.07 dps rms, 23.6 degC.
 
+- Follow-up, same day: the bench firmware tree is a `platformio.ini`, so `test_every_firmware_tree_is_frozen` failed on
+  `main` (seen in a peer session's `./run_tests.sh --full`, 1 failed). `tools/probes/imu_bench/firmware/*` is now on the
+  Night Shift gate's frozen list (`tools/night_shift_gate.py` `FORBIDDEN_PATHS`, pinned in `test_night_shift_gate.py`);
+  the viewer and README stay open. The commit message carries the gate run.
+
 **Not verified:** |a| on the other five faces and a measured 90 degree rotation (one face only was held still);
 behaviour on a moving Platform, with the real cable, or inside the Platform Teensy firmware (nothing there is
 touched). Datasheet checks were read from a text mirror, not the PDF.

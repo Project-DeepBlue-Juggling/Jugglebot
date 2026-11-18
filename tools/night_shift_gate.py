@@ -168,6 +168,7 @@ FORBIDDEN_PATHS: Tuple[str, ...] = (
     "ros_ws/src/jugglebot/WaveCamera_ESP_code/src/*",
     "ros_ws/src/jugglebot/WaveCamera_ESP_code/include/*",
     "ros_ws/src/jugglebot/WaveCamera_ESP_code/platformio.ini",
+    "tools/probes/imu_bench/firmware/*",
     "ros_ws/src/jugglebot/jugglebot/motion/skills/INVARIANTS.md",
     "ros_ws/src/jugglebot_interfaces/*",
     "config/*",
