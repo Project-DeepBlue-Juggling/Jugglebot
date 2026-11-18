@@ -2,9 +2,9 @@
 id: TKT-86
 kind: ticket
 title: 'BUG-96 held on night-shift/2026-11-16-BUG-96: apply the two new findings (log the swallowed exception, test the bind wait) and merge, merge as is, or drop?'
-status: open
+status: complete
 created: '2026-11-19'
-updated: '2026-11-18T17:45:49Z'
+updated: '2026-11-18T21:24:25Z'
 owners: []
 priority: medium
 effort: xs
@@ -32,3 +32,7 @@ BUG-96 is rebuilt on night-shift/2026-11-16-BUG-96 with your TKT-80 choice, all 
 - 3: BUG-96 goes back to open.
 
 Recommendation: 1. Both are a few lines. Without the log line, a late failure would show only exit code 1.
+
+## Answer
+
+Agreed. GO with Option 1
