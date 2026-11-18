@@ -6,7 +6,7 @@ waiting Items: the order a Sitting flies in, and every step, is on its Sitting s
 
 Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
-## Robot  (13 Items, 366 min)
+## Robot  (13 Items, 396 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
@@ -21,7 +21,7 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | FEAT-49 Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault | 60 | armed | - | 2026-11-19-robot |
 | FEAT-50 Live warning when a marker dwells under the Hand | 10 | armed | `night-shift/2026-11-14-FEAT-50` | - |
 | IDEA-16 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them | 10 | level | - | 2026-11-19-robot |
-| IDEA-20 Platform Accelerometer? | 60 | armed, bridge-cycled | - | - |
+| IDEA-20 Platform Accelerometer? | 90 | armed, bridge-cycled | - | - |
 | IDEA-9 JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites | 20 | level, armed, bb-fed | - | 2026-11-19-robot |
 
 ## Bench leg  (1 Item, 30 min)

@@ -345,8 +345,10 @@ ENUMS = {
         # HAND_FAN_STATUS frame, uplinked as a PLATFORM_FRAME.
         ("HAND_FAN_SET", 0x0063, "Relay: set the Platform Teensy's Hand fan mode and thresholds"),
         # RESERVED, not yet defined (2026-11-18, IDEA-20 P1a): 0x0064 PLATFORM_IMU_CTRL
-        # (ENABLE/DISABLE/FREEZE/RESUME/ABORT, allowed while Armed) and 0x0065
-        # PLATFORM_IMU_READ (refused while Armed). Their args and gating are fixed in
+        # (ENABLE/DISABLE/FREEZE/RESUME/ABORT) and 0x0065
+        # PLATFORM_IMU_READ, both allowed while Armed (owner, 2026-11-19: the Jetson gates
+        # uploads to between Attempts and the bridge clamps the READ frame gap). Their args
+        # and gating are fixed in
         # ros_ws/docs/platform_imu_protocol.md section 6. They land in P3 together with
         # their rpc.cpp dispatch cases: test_rpc_dispatch_lint forbids a reserved stub.
     ],

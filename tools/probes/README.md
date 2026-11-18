@@ -1,6 +1,6 @@
 # tools/probes/ — Reusable Empirical-Probe Harnesses
 
-Probes fall into two families:
+Probes fall into two families (the standalone bench rigs under `### Bench firmware` below are a third kind and sit outside both):
 
 1. **Offline drivers** — scripts that drive the MPC / controller stack in
    a production-faithful way from recorded telemetry, to reproduce
@@ -196,11 +196,11 @@ See `teensy_link_profiling/README.md`.
 
 ### Bench firmware
 
-Standalone bench rigs: firmware for a spare board plus a host-side viewer. Needs the bench board, never the robot.
+Standalone bench rigs: firmware for a spare board plus a host-side viewer. Needs the bench board, never the robot. They are outside the two families, so the `temp/probes/` output, header-docstring and `python tools/probes/<name>.py` rules above do not apply; each rig's own README says how to build and run it.
 
 | Probe | Purpose | Motivating logbook entry |
 |-------|---------|--------------------------|
-| `imu_bench/` (`firmware/`, `viewer/index.html`, `README.md`) | IDEA-20's bench proof of concept: a standalone Teensy 4.0 reads an ICM-42688-P over I2C through the chip FIFO and streams text over USB serial; a single-file Web Serial viewer shows 3D orientation, accel/gyro plots and noise/rate tiles and records CSV (`?demo=1` runs it without hardware). Build with `pio run -t upload` in `firmware/`. | `2026-11-18-imu-bench-proof-of-concept` |
+| `imu_bench/` (`firmware/`, `viewer/index.html`, `README.md`) | IDEA-20's bench proof of concept: a standalone Teensy 4.0 reads an ICM-42688-P over I2C through the chip FIFO and streams text over USB serial; a single-file Web Serial viewer shows 3D orientation, accel/gyro plots and noise/rate tiles and records CSV (`?demo=1` runs it without hardware). Build with `pio run -t upload` in `firmware/`. | [2026-11-18-imu-bench-proof-of-concept](../../logbook/2026-11-18-imu-bench-proof-of-concept.md) |
 
 ## Archived probes
 

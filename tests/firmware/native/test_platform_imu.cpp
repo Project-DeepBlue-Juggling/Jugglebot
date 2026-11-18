@@ -273,7 +273,7 @@ TEST_CASE("header fields land at the spec offsets") {
   HeaderInfo hi;
   hi.freeze_wall_us = 0x0102030405060708ull; hi.freeze_local_us = 0xAABBCCDDu; hi.odr_hz = 1000;
   hi.accel_lsb_per_g = 2048; hi.gyro_lsb_per_dps_x10 = 328; hi.reg_gyro_accel_config0 = 0x11;
-  hi.reg_accel_config0 = 0x26; hi.reg_gyro_config0 = 0x26; hi.i2c_clock_100khz = 4;
+  hi.reg_accel_config0 = 0x06; hi.reg_gyro_config0 = 0x26; hi.i2c_clock_100khz = 4;
   hi.temp_start_raw = -5; hi.temp_freeze_raw = 300; hi.fifo_overflows = 7; hi.i2c_errors = 9;
   hi.sync_peak_us = 1234; hi.fw_version = 11; hi.extra_flags = PlatformImuCaptureFlag::NEVER_SYNCED;
   r.info = hi;
@@ -290,7 +290,7 @@ TEST_CASE("header fields land at the spec offsets") {
   CHECK(get16(h + 34) == 2048);
   CHECK(get16(h + 36) == 328);
   CHECK(h[38] == 0x11);
-  CHECK(h[39] == 0x26);
+  CHECK(h[39] == 0x06);
   CHECK(h[40] == 0x26);
   CHECK(h[41] == 4);
   CHECK(int16_t(get16(h + 42)) == -5);

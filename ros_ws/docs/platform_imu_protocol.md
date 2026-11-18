@@ -14,7 +14,7 @@ are 0. Raw sensor counts go on the wire; scaling and calibration happen on the J
 
 | ID | Name | Direction | When |
 | --- | --- | --- | --- |
-| 0x6E3 | IMU_CMD | bridge to Platform Teensy | on an RPC (section 6), and one ABORT at the Armed edge |
+| 0x6E3 | IMU_CMD | bridge to Platform Teensy | on an RPC (section 6), including the Jetson's ABORT at a pacifying command or Attempt start |
 | 0x6E4 | IMU_REPLY | Platform Teensy to bridge | one per IMU_CMD |
 | 0x6E5 | IMU_STATUS | Platform Teensy to bridge | every `status_period_ms` (1 s), in every state |
 | 0x6E6 | IMU_DATA | Platform Teensy to bridge | only inside an accepted READ block |
@@ -97,7 +97,7 @@ offset was stepped since the previous anchor).
 
 Both CRCs are CRC-32/IEEE (Python `zlib.crc32`, the FwUpdate VERIFY CRC). `payload_crc32` covers the anchor words then
 the sample words, in seq order, exactly as the IMU_DATA payloads carry them. The Platform Teensy computes it at FREEZE,
-in slices that hold `loop()` for at most about 5 ms each, and sends the FREEZE reply when it is done.
+in slices of `CRC_SLICE_BYTES` (8192 B, expected to hold `loop()` for about 1 ms each; P2 times one slice on the board), and sends the FREEZE reply when it is done.
 
 `boot_id` is a random nonzero u32 drawn at boot. The capture_id counter starts at its low 16 bits and steps at each
 FREEZE that creates a capture, skipping 0, so an id from before a reboot almost never names a capture after it.
@@ -111,7 +111,7 @@ back-off of at least 1 s; any state to FW_HALTED at FwUpdate BEGIN (I2C stopped,
 PROBING if that update is abandoned; UPLOADING to FROZEN once the block's last frame is handed to FlexCAN. A FIFO
 overflow alone keeps RUNNING and marks the next anchor DISCONTINUITY. Recovery from BACKOFF keeps appending to the same
 ring behind a DISCONTINUITY anchor; only boot, ENABLE from DISABLED and RESUME start a new capture. There is no I2C
-traffic in FROZEN or UPLOADING; RESUME flushes the chip FIFO and re-checks WHO_AM_I.
+traffic in FROZEN or UPLOADING. Nothing in this table or in the Platform Teensy depends on Armed: the gating below is the bridge's and the Jetson's; RESUME flushes the chip FIFO and re-checks WHO_AM_I.
 
 Legality (checks run in this order: op and length, FW_HALTED, DISABLED, state, capture_id, range):
 
@@ -150,22 +150,48 @@ Teensy's verdict is the IMU_REPLY). They are reserved by comment in `config/gene
 there with their `rpc.cpp` cases in P3:
 
 - **0x0064 PLATFORM_IMU_CTRL**, `ArgPlatformImuCtrl {op u8, reason u8, capture_id u16}`, op in {ENABLE, DISABLE,
-  FREEZE, RESUME, ABORT} (READ is ERR_BAD_ARGS). Allowed while Armed: a FREEZE at Attempt end or on a Fault must not
-  wait for disarm.
+  FREEZE, RESUME, ABORT} (READ is ERR_BAD_ARGS).
 - **0x0065 PLATFORM_IMU_READ**, `ArgPlatformImuRead {capture_id u16, first_seq u16, count u16, frame_gap_10us u8}`.
-  ERR_REJECTED while Armed; ERR_BAD_ARGS for count 0 or above `read_max_words`.
+  ERR_BAD_ARGS for count 0 or above `read_max_words`. Both RPCs are ALLOWED while Armed (owner, 2026-11-19).
 
-Both are gated on `jugglebot_commands_allowed()` (ERR_BUS_DOWN). At every not-Armed to Armed edge the bridge sends one
-IMU_CMD ABORT itself, so a block in flight stops within one loop pass (arming wins; the capture stays frozen and the
-upload resumes after disarm). It uplinks 0x6E4-0x6E6, not the reserved ids. IMU_DATA rides its own ring, drained fast
-enough for the requested pace when not Armed (at least 1000 fps).
+Both are gated on `jugglebot_commands_allowed()` (ERR_BUS_DOWN). It uplinks 0x6E4-0x6E6, not the reserved ids.
 
-`teensy_bridge_node` freezes at the ending REST of every Attempt, and on a Fault or Soft E-stop. It uploads when not
-Armed, re-requests holes, checks both CRCs, writes `temp/imu_capture/<stamp>/`, then RESUMEs. On start, a status of
-FROZEN means an earlier capture is still waiting: a FREEZE returns ALREADY_FROZEN with its id, and the node uploads it.
-A changed `boot` byte, or ERR_NOT_FROZEN or ERR_WRONG_CAPTURE mid-upload, means the Platform Teensy rebooted: the
-partial capture is written with `complete = false`. A `payload_crc32` mismatch gets one full re-read, then the capture
-is written with `crc_ok = false` and RESUMEd.
+**Uploads run while Armed.** Owner decisions of 2026-11-18/19, superseding the first design (READ refused while Armed,
+an ABORT at every arming edge):
+
+1. *Where the gate lives.* The can-bridge cannot know what an Attempt is, so the gate is on the Jetson: it starts an
+   upload only when no Attempt is running, with the robot Armed and holding the Active pose (the STANDBY hold of
+   `ARMING_CONTRACT.md`) between Attempts. The bridge does not ABORT on arming any more; the Jetson sends ABORT at a
+   pacifying command or at an Attempt start. Failure prevented: a bridge-side Armed refusal would make a 50 s upload
+   impossible in the one state, Active, where the Platform sits between Attempts, so the data would never leave the
+   board before the next Attempt overwrote the ring.
+2. *Toggle (GUI, P3).* With "Upload IMU data after each Attempt" ON (default ON) the Jetson REFUSES the Attempt-starting
+   command (the Juggle request) and every other command that starts motion while an upload is in progress. Pacifying
+   commands (deactivate, stow, Soft E-stop and the like) always pass and abort the upload; that capture is flagged
+   `complete = false`. With the toggle OFF the ring is never frozen and nothing is refused; switching it ON applies from
+   the next Attempt. The GUI shows progress and time remaining. Failure prevented: an Attempt starting with the ring
+   frozen (no capture of it), and a stop command waiting behind a transfer.
+3. *Target.* The full window (64000 data frames, plus 960 anchor words and the header) uploads in under 60 s: about
+   1250 frames/s on the bus, 51 s. Only the Attempt's span plus a margin is requested, so a shorter Attempt uploads
+   proportionally faster.
+4. *Bus protection.* While Armed the bridge enforces a hard minimum inter-frame gap by clamping the READ's
+   `frame_gap_10us` (cap about 1600 frames/s, 625 us; P3 fixes the constant, 63 x 10 us = 630 us). The operating pace is
+   a Jetson config value passed as that argument, so it is tunable without a reflash. The Platform Teensy's own
+   `read_min_gap_10us` (400 us) is below the bridge cap, so no YAML constant changes. Failure prevented: a bad Jetson
+   config value flooding the bus the Legs and Hand share.
+5. *Uplink.* One UDP datagram per CAN frame at about 1250 frames/s is too much work in the bridge loop that also emits
+   the Leg and Hand setpoints. IMU_DATA frames get their own bridge ring and a new ADDITIVE batched UDP message type
+   (no PROTOCOL bump, per the additive-message precedent): about 16 data frames per datagram (`seq` plus 6-byte word
+   each), flushed at the 100 Hz telemetry tick. P3 defines the struct in `config/generate_udp_protocol.py`. REPLY and
+   STATUS keep their existing per-frame route.
+
+`teensy_bridge_node` freezes at the ending REST of every Attempt, and on a Fault or Soft E-stop. It uploads when no
+Attempt is running, re-requests holes, checks both CRCs, writes `temp/imu_capture/<stamp>/`, then RESUMEs. On start, a
+status of FROZEN means an earlier capture is still waiting: a FREEZE returns ALREADY_FROZEN with its id, and the node
+uploads it. A changed `boot` byte, or ERR_NOT_FROZEN or ERR_WRONG_CAPTURE mid-upload, means the Platform Teensy
+rebooted: the partial capture is written with `complete = false`, as is a capture whose upload a pacifying command
+aborted. A `payload_crc32` mismatch gets one full re-read, then the capture is written with `crc_ok = false` and
+RESUMEd.
 
 ## 7. Walk-through: one capture with one lost frame
 
@@ -173,9 +199,9 @@ N = 32000 (wrapped), 320 anchors (960 words), header 11 words; 64971 words in al
 
 1. Ending REST: CTRL FREEZE(ATTEMPT_END). The Platform Teensy goes RUNNING to FROZEN, computes the CRC and replies
    `[03][00][0x4A21][32000]`.
-2. Once not Armed: READ(0x4A21, 0xFFF0, 11, 100). It replies `[05][00][0x4A21][0xFFF0 | 11 << 16]`, then sends seq
+2. Once no Attempt is running: READ(0x4A21, 0xFFF0, 11, 80). It replies `[05][00][0x4A21][0xFFF0 | 11 << 16]`, then sends seq
    0xFFF0..0xFFFA. The node checks `header_crc32`, the version, capture_id against the FREEZE reply, and N.
-3. READ the anchors (0xFA80, four blocks: 256, 256, 256, 192), then the samples (250 blocks of 256). The node asks for
+3. READ (gap 80, 800 us) the anchors (0xFA80, four blocks: 256, 256, 256, 192), then the samples (250 blocks of 256). The node asks for
    the next block when the current block's last seq arrives, or after `count x gap + 50 ms`.
 4. Frame seq 0x1235 (the gyro word of sample 2330) is dropped in the bridge ring. The bitmap shows the hole after its
    block.
@@ -186,12 +212,26 @@ N = 32000 (wrapped), 320 anchors (960 words), header 11 words; 64971 words in al
 
 ## 8. Bus load and timing
 
-- **During an Attempt:** only IMU_STATUS, 1 fps, +0.011 % on a bus at 64.2 % (111-bit accounting, `plans/active/platform-imu.md` section 2).
-  Then one CMD and one REPLY at the FREEZE. A READ is refused while Armed.
-- **Upload at the default gap (1000 us):** at most 1000 fps of IMU_DATA, plus one CMD and one REPLY per block (about
-  4 blocks per second). An idle bus at about 2280 fps (25.3 %) rises to about 3290 fps (36.5 %; 42.7 % at 130-bit
-  stuffing). The frames alone take 65 s; with block turnarounds of a few ms the full capture takes about 66 to 70 s.
-  At a 500 us gap (2000 fps, about 48 %) it would take about 35 s, if the bridge ring keeps up.
-- **Arbitration:** IMU ids lose to every ODrive and Leg frame. They beat 0x7DD and 0x7DE, but at 1000 fps a 0x7DD
-  frame waits at most one IMU frame (about 130 us), and no anchors are taken during an upload.
+Facts and sources (surveys of the 2026-11-18 design round, `plans/active/platform-imu.md` section 2):
+
+- Every ODrive and setpoint frame has a lower CAN id (higher priority) than 0x6E6, so an upload frame can delay a
+  control frame by at most one frame time, about 0.13 ms at 111 bit/frame. Source: the id map in
+  `config/protocol_config.yaml` and the arbitration rule.
+- The bridge emits setpoints from a 500 Hz timer interrupt to every Armed axis on every tick, including HOLD
+  (`leg_interp.cpp`), which also feeds the ODrive watchdog. So the between-Attempts bus load is about the Attempt's:
+  about 59 % with the Hand Idle and 64 % with the Hand Closed-loop (2280 versus 5277 frames/s in the 2026-11-13 and
+  2026-11-18 bags' `/profile`).
+- 1250 frames/s of IMU_DATA adds about 14 % (111-bit frames). The risk is bridge loop time (existing residue: 47 ms
+  worst emit gap; Leg scheduler grace 30 ms), not bus arbitration.
+
+Numbers:
+
+- **During an Attempt:** only IMU_STATUS, 1 fps, +0.011 % on a bus at 64.2 %. Then one CMD and one REPLY at the
+  FREEZE. No upload runs.
+- **Upload (the target):** `frame_gap_10us` 80 gives 1250 fps; the 64000 data frames take 51 s, and with block
+  turnarounds of a few ms plus the anchors and header the full capture lands under 60 s. At the bridge cap (625 us,
+  1600 fps) about 40 s; at the old 1000 us default about 66 to 70 s. `read_default_gap_10us` (100, 1000 fps) stays the
+  default the YAML ships; the Jetson's configured pace overrides it per READ.
+- **Rate ramp (P4):** the operating pace is measured, not assumed; see the plan's P4 gate.
+- **No anchors** are taken during an upload (FROZEN), so upload traffic cannot bias a capture's timestamps.
 - **RAM:** the ring is 32000 x 12 B = 384000 B, plus the anchor ring (400 slots), in RAM2 clear of the CrashReport area.
