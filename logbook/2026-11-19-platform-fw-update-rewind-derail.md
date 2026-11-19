@@ -169,3 +169,21 @@ Each rewind's INFO trail shows which fault type it was.
   overtake.
 - COMMIT still reads its reply from the latest-reply slot. A late DATA straggler there would misreport a COMMIT, but only
   host-side: the board decides by itself. It was deliberately left unchanged.
+
+## On hardware, 2026-11-19 (launch down, E-stop button pressed, 48 V off)
+
+Run by the orchestrating Session with this branch's tool, before the branch was pushed (the board checks the CRC-32
+itself, so an unpushed host tool cannot commit a bad image):
+
+- 18:16, `python tools/teensy_link_bridge.py --fw-update <FW 11 firmware.hex> --verify-only` against Platform FW 10,
+  can-bridge FW 45: BEGIN OK, **88064 B in 32.6 s, 0 rewinds, 0 window retries, 0 missing acks, VERIFY OK**
+  crc32 0x235796D4. The old tool failed this rehearsal three times the same hour (923 and 1657 rewinds, VERIFY BAD_SEQ).
+- 18:18, the same command without `--verify-only`: 0 rewinds, VERIFY OK, COMMIT OK, receipt
+  **`Platform Teensy FW version: 10 -> 11`**.
+- 18:19, 20 s read-only listen: 20 of 20 BridgeIdentity (45, 14); 20 HAND_FAN_STATUS 0x6E2; 18 IMU_STATUS 0x6E5 with
+  state PROBING, SENSOR_OK clear and i2c_errors rising 0 to 5 on the back-off schedule (no IMU is wired yet).
+- 18:19, `--verify-only` again, now against FW 11: 0 rewinds, VERIFY OK, and IMU_STATUS read FW_HALTED with i2c_errors
+  held at 5 for the transfer. So FW 11 accepts a firmware update and stops its I2C while one runs.
+
+Not observed in any of these three runs: the periodic bad frame that started each derail. Its cause is still open.
+Not verified: tilt request, Hand fan control, anything with the launch up or the robot Armed (Rung P4, IDEA-20).
