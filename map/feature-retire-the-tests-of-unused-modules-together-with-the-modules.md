@@ -4,12 +4,12 @@ kind: feature
 title: Retire the tests of unused modules together with the modules
 status: inbox
 created: '2026-11-18'
-updated: '2026-11-18T09:22:29Z'
+updated: '2026-11-19T15:50:59Z'
 owners: []
 priority: low
 effort: s
 hardware: none
-owner: decision
+owner: none
 radius: local
 area: tests-tooling
 blocked_by: []
