@@ -2010,8 +2010,9 @@ def test_a_fresh_throw_installs_through_the_real_worker_process(monkeypatch):
         # 12 retries), so the lead the node RESERVES is widened for this test only
         # (the node derives it per request from `schedule.install_lead_s`, ships
         # it as `req.lead_s` and the wire deadline `t_wall + lead + dt`; the worker
-        # re-derives nothing).  The 250 ms budget itself is asserted by the
-        # fake-solver tests above; what this test proves -- spawn, pickle, solve in
+        # re-derives nothing).  The node's deadline arithmetic and the late-reply
+        # mapping are asserted by the fake-solver tests above (not a measured
+        # 250 ms refusal of a real worker); what this test proves -- spawn, pickle, solve in
         # a real process, reply, transit guard, `_install` -- does not depend on it.
         # A residual starvation outcome is retried: the timing refusal, and the
         # node's own designed recovery from a worker the client killed after
