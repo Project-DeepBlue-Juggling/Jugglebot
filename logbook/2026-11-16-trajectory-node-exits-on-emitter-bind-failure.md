@@ -37,6 +37,11 @@ was not needed: the exit is simpler and adds no new state to test.
 
 Lifecycle only: nothing on the emit path, its timing or knot content changed.
 
+## 2026-11-20: the two open audit findings applied (TKT-86 option 1)
+
+1. `main()`'s `except Exception` (taken only when the bind-failure flag is set) now logs the swallowed exception with its traceback through the node logger (falling back to `traceback.print_exc()` if the logger fails) before the exit-1 path. Exit code and ordering unchanged; `import traceback` added.
+2. Three new tests in `test_trajectory_node_bind_failure.py`: a REAL emitter thread with a failing bind (main's bounded wait sees the verdict, no executor built, worker `close()` ran, exit 1); a bind that BLOCKS with `_BIND_WAIT_S` patched to 0.01 (main times out, builds the executor, the late failure is released from `spin()` and exits 1); and the logged-exception test for item 1. Joins use a 30 s ceiling and no wall-clock asserts.
+
 ## Control-system check
 
 The exit happens only when the bind failed, i.e. before any setpoint was ever emitted, so no
@@ -57,3 +62,5 @@ a silent healthy-looking node. A respawn would just collide with the stale holde
 2026-11-17 (deterministic exit, TKT-77 option 1), same wrapper and command over `tests/ros/test_trajectory_node*.py`: 174 passed in 10.00s. The new `test_main_early_exit_when_bind_fails_before_executor` (executor constructor raises, never built, `on_shutdown` called, exit 1) fails with the early-exit check disabled. Success path untouched: the added block is guarded by the bind-failure flag, so the executor, emitter and 40 Hz path are unchanged when the bind succeeds.
 
 2026-11-19 (TKT-80 findings), `night_shift_nonet.sh timeout 600 python -m pytest tests/ros/test_trajectory_node_bind_failure.py tests/ros/ -k "trajectory_node" -q -p no:cacheprovider`: 195 passed in 37.89s (8 of the 195 are `test_trajectory_node_bind_failure.py`). With the source reverted to the branch HEAD, 3 of the 8 tests in the bind-failure file fail (`on_shutdown`-raises, late failure during executor construction, bind-done Event); the spin-time test passes on both, since the post-spin exit already existed and was merely unpinned.
+
+2026-11-20 (TKT-86 option 1), `night_shift_nonet.sh timeout 900 python -m pytest tests/ros/test_trajectory_node_bind_failure.py tests/ros/test_trajectory_node.py tests/ros/test_trajectory_node_console.py tests/ros/test_trajectory_node_rt_param.py -q -p no:cacheprovider`: 186 passed in 14.72s. With the source change reverted only the logged-exception test fails; the two real-thread tests pin existing branch behaviour (the wait and the late-failure path) and pass on both.

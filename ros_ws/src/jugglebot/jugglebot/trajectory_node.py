@@ -74,6 +74,7 @@ import os
 import sys
 import threading
 import time
+import traceback
 
 import numpy as np
 
@@ -5778,6 +5779,15 @@ def main(args=None):
         # the context under the executor: that is the bind failure, exit 1.
         if not node.emitter_bind_failed:
             raise
+        # Swallowed on purpose, but never silently: log the cause (the node's
+        # logger is still alive here; destroy_node() runs in the finally below).
+        tb = traceback.format_exc()
+        try:
+            node.get_logger().error(
+                "trajectory_node: exception after the :5557 bind failure "
+                "(exiting 1 for the bind failure):\n" + tb)
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
     finally:
         node.on_shutdown()
         node.destroy_node()

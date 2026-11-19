@@ -189,3 +189,140 @@ def test_bind_done_event_set_on_both_outcomes(monkeypatch):
     assert not bad._emit_bind_done.is_set()
     bad._emitter_loop()
     assert bad._emit_bind_done.is_set()
+
+
+# ── BUG-96 audit follow-ups (2026-11-20) ─────────────────────────────────────
+# Every test above builds the node with start_emitter=False, so main()'s wait on
+# the bind-done Event never ran. These use the REAL emitter thread.
+
+_JOIN_S = 30.0   # generous: joins return the instant the event fires
+
+
+class _NoSpinExec:
+    built = 0
+
+    def __init__(self, *a, **k):
+        type(self).built += 1
+
+    def add_node(self, n):
+        self.n = n
+
+    def spin(self):
+        pass
+
+
+def _real_thread_node(monkeypatch, factory, closes):
+    monkeypatch.setattr(tn.rclpy, 'shutdown', lambda *a, **k: None)
+    real = tn.TrajectoryNode
+    holder = []
+
+    def make(*a, **k):
+        n = real(command_pub_factory=factory)     # start_emitter=True
+        orig = n._segment_solver.close
+
+        def close():
+            closes.append(1)
+            orig()
+        monkeypatch.setattr(n._segment_solver, 'close', close)
+        holder.append(n)
+        return n
+    monkeypatch.setattr(tn, 'TrajectoryNode', make)
+    return holder
+
+
+def test_main_waits_for_real_emitter_thread_and_exits_1(monkeypatch):
+    """Real emitter thread, failing bind: main()'s bounded wait sees the
+    verdict, takes the early-exit path (no executor built), cleans up, exit 1."""
+    closes = []
+    _NoSpinExec.built = 0
+    monkeypatch.setattr(tn, 'MultiThreadedExecutor', _NoSpinExec)
+    monkeypatch.setattr(tn, '_BIND_WAIT_S', 60.0)   # returns when the event fires
+    holder = _real_thread_node(monkeypatch, _boom, closes)
+    with pytest.raises(SystemExit) as ei:
+        tn.main()
+    node = holder[0]
+    node._emit_thread.join(timeout=_JOIN_S)
+    assert not node._emit_thread.is_alive()
+    assert node.emitter_bind_failed is True
+    assert ei.value.code == 1
+    assert _NoSpinExec.built == 0
+    assert closes == [1]
+
+
+def test_main_proceeds_after_bind_wait_timeout_then_exits_1(monkeypatch):
+    """The bind BLOCKS past _BIND_WAIT_S: main() must time out and proceed
+    (executor built), then the late failure is caught post-spin: cleanup, exit 1."""
+    import threading
+    release = threading.Event()
+    closes = []
+    state = {}
+
+    def blocking_factory():
+        release.wait(timeout=_JOIN_S)
+        raise OSError('Address already in use')
+
+    class _Exec:
+        def __init__(self, *a, **k):
+            state['built'] = True
+            state['flag_at_build'] = holder[0].emitter_bind_failed
+
+        def add_node(self, n):
+            self.n = n
+
+        def spin(self):
+            release.set()                       # let the bind fail "late"
+            assert self.n._emit_bind_done.wait(timeout=_JOIN_S)
+
+    monkeypatch.setattr(tn, 'MultiThreadedExecutor', _Exec)
+    monkeypatch.setattr(tn, '_BIND_WAIT_S', 0.01)
+    holder = _real_thread_node(monkeypatch, blocking_factory, closes)
+    try:
+        with pytest.raises(SystemExit) as ei:
+            tn.main()
+    finally:
+        release.set()
+        holder[0]._emit_thread.join(timeout=_JOIN_S)
+    assert state['built'] is True
+    assert state['flag_at_build'] is False      # proceeded before any verdict
+    assert holder[0].emitter_bind_failed is True
+    assert ei.value.code == 1
+    assert closes == [1]
+
+
+def test_exception_after_bind_failure_is_logged_and_exit_is_1(monkeypatch):
+    """The swallowed exception must leave a trace (cause was hidden before)."""
+    logged = []
+
+    class _Log:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def error(self, msg, **kw):
+            logged.append(msg)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    class _Exec:
+        def __init__(self, *a, **k):
+            holder[0]._emitter_loop()
+            raise RuntimeError('executor construction exploded')
+
+    monkeypatch.setattr(tn, 'MultiThreadedExecutor', _Exec)
+    closes = []
+    holder = _patch_node(monkeypatch, bind_inline=False, closes=closes)
+    real_make = tn.TrajectoryNode
+
+    def make(*a, **k):
+        n = real_make(*a, **k)
+        wrapped = _Log(n.get_logger())
+        monkeypatch.setattr(n, 'get_logger', lambda: wrapped)
+        return n
+    monkeypatch.setattr(tn, 'TrajectoryNode', make)
+    with pytest.raises(SystemExit) as ei:
+        tn.main()
+    assert ei.value.code == 1
+    assert closes == [1]
+    text = '\n'.join(logged)
+    assert 'executor construction exploded' in text
+    assert 'RuntimeError' in text
