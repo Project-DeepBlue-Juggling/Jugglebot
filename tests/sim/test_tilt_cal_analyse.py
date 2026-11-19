@@ -5,9 +5,8 @@ Contract: ``ros_ws/docs/levelling_frame.md`` § **C-LEVEL-2**.
 Plan: ``plans/archived/tilt-calibration-grid.md`` § Phase 3 (rung C2 consumes the
 ``--diff`` mode).
 
-Lives in ``tests/sim/`` because that is where the existing test of a ``tools/``
-script lives (``test_check_vel_ff_plumbing.py``), using the same ``sys.path``
-idiom. The analyser is pure offline analysis — no ROS, no hardware, no motion.
+Lives in ``tests/sim/``, where the tests of ``tools/`` scripts were first put,
+and imports the tool through ``sys.path``. The analyser is pure offline analysis — no ROS, no hardware, no motion.
 
 The tests that matter most are the two around **outlier detection**, because
 that is where this tool makes a judgement rather than a calculation:
