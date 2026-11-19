@@ -2,11 +2,10 @@
 id: BUG-90
 kind: bug
 title: carry_zvd rows make the Hand stop and go at about 5 Hz in flight
-status: in_progress
+status: complete
 created: '2026-11-13'
-updated: '2026-11-18T02:09:04Z'
-owners:
-- night-shift
+updated: '2026-11-19T15:53:24Z'
+owners: []
 priority: medium
 effort: m
 hardware: robot
@@ -18,6 +17,7 @@ blocked_by: []
 links:
 - map/feature-pre-release-hold-rung-release-from-a-moving-platform-hold-0.md
 - logbook/2026-11-18-sitting-debrief.md
+- logbook/2026-11-20-bug-90-closed-carry-zvd-stays-off.md
 filed_by: claude
 ---
 
@@ -66,7 +66,6 @@ Recommendation: 1. It is the smallest change the existing xfail can judge, and i
 - pass: with the flag on at Dwell 0.40, the Hand moves smoothly through each flight between the post-release brake and the Capture move (no ~5 Hz stop-and-go seen), no Leg LIMIT or RING refusal end, and Catches no fewer than the 2026-11-13 flag-on arm.
 - record: per Dwell: Throws caught per Attempt and each end reason, whether the Hand stop-and-go is gone, install-line Leg peaks (offline about 275 mm/s and 3270 mm/s² at 0.40, 318 and 5130 at 0.35), any RING refusal text, the bag and launch log paths.
 - minutes: 30
-- branch: night-shift/2026-11-15-BUG-90
 
 ## Sitting result (2026-11-18 13:05)
 
@@ -81,3 +80,4 @@ Recommendation: 1. It is the smallest change the existing xfail can judge, and i
 - 2026-11-15: Night Shift 2026-11-15: TKT-69 option 1 built on night-shift/2026-11-15-BUG-90 but unfinished (unit cut off by API credit); test_cup_zvd passes, wider checks, suite and audit owed
 - 2026-11-16: Night Shift 2026-11-16: held on night-shift/2026-11-15-BUG-90: checks finished and audited clean, Sitting section written; unblocked by a Sitting
 - 2026-11-18: Failed at the Sitting of 2026-11-18: at Dwell 0.40 the stop-and-go is reduced, not gone (Hand turning points per flight 0.77 against 2.05 on 2026-11-13 and 0.03 flag off); caught 0/1, 2/3, 28/29, no Leg LIMIT or RING end. Dwell 0.35 refused LIMIT_JERK three times at the first learned Catch (margins -0.15 to -0.20). Branch stays held.
+- 2026-11-20: Night Shift 2026-11-20: closed by TKT-85 option 3; carry_zvd stays off; branch night-shift/2026-11-15-BUG-90 left for the owner to delete
