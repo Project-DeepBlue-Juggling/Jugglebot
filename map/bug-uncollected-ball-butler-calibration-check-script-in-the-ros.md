@@ -2,9 +2,9 @@
 id: BUG-115
 kind: bug
 title: 'Uncollected Ball Butler calibration check script in the ROS package: port what is not covered, then delete'
-status: inbox
+status: complete
 created: '2026-11-18'
-updated: '2026-11-18T15:51:20Z'
+updated: '2026-11-19T15:55:41Z'
 owners: []
 priority: low
 effort: m
@@ -16,11 +16,8 @@ area: tests-tooling
 blocked_by: []
 links:
 - bug-tests-that-never-run-or-cannot-fail-two-permanent-skips-node
+- logbook/2026-11-20-bb-calibration-check-script-ported-and-deleted.md
 filed_by: claude
-night_skip: input-fact
-night_skip_on: '2026-11-19'
-night_skip_note: Compares the script with the twelve collected files, ports what is missing, deletes it if unused; merges if the gate says MERGE.
-night_skip_input: Whether anyone runs ros_ws/.../tests/test_bb_calibration.py by hand at a Sitting (TKT-84)
 ---
 
 A 760-line calibration check script sits in the ROS package and no test run collects it. Split from BUG-103 on 2026-11-18.
