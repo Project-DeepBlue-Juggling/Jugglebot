@@ -232,12 +232,20 @@ def _real_thread_node(monkeypatch, factory, closes):
 
 def test_main_waits_for_real_emitter_thread_and_exits_1(monkeypatch):
     """Real emitter thread, failing bind: main()'s bounded wait sees the
-    verdict, takes the early-exit path (no executor built), cleans up, exit 1."""
+    verdict, takes the early-exit path (no executor built), cleans up, exit 1.
+    The bind sleeps before failing, so main() reaches the executor build before
+    the verdict unless it really waits (deterministic, not a thread race)."""
+    import time
+
+    def slow_boom():
+        time.sleep(0.2)
+        raise OSError('Address already in use')
+
     closes = []
     _NoSpinExec.built = 0
     monkeypatch.setattr(tn, 'MultiThreadedExecutor', _NoSpinExec)
     monkeypatch.setattr(tn, '_BIND_WAIT_S', 60.0)   # returns when the event fires
-    holder = _real_thread_node(monkeypatch, _boom, closes)
+    holder = _real_thread_node(monkeypatch, slow_boom, closes)
     with pytest.raises(SystemExit) as ei:
         tn.main()
     node = holder[0]
@@ -251,7 +259,8 @@ def test_main_waits_for_real_emitter_thread_and_exits_1(monkeypatch):
 
 def test_main_proceeds_after_bind_wait_timeout_then_exits_1(monkeypatch):
     """The bind BLOCKS past _BIND_WAIT_S: main() must time out and proceed
-    (executor built), then the late failure is caught post-spin: cleanup, exit 1."""
+    (executor built), then the late failure is observed after spin() returns: cleanup, exit 1
+    (via the trailing ``if node.emitter_bind_failed: sys.exit(1)``)."""
     import threading
     release = threading.Event()
     closes = []
@@ -326,3 +335,43 @@ def test_exception_after_bind_failure_is_logged_and_exit_is_1(monkeypatch):
     text = '\n'.join(logged)
     assert 'executor construction exploded' in text
     assert 'RuntimeError' in text
+
+
+def test_exception_after_bind_failure_falls_back_to_stderr_when_logger_raises(
+        monkeypatch, capsys):
+    """If the node logger itself fails, main() falls back to
+    traceback.print_exc(): the original cause still reaches stderr."""
+    class _Log:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def error(self, msg, **kw):
+            # the bind-failure report itself also logs; only main()'s
+            # post-failure exception log must blow up
+            if 'exception after' in msg:
+                raise RuntimeError('logger broke')
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    class _Exec:
+        def __init__(self, *a, **k):
+            holder[0]._emitter_loop()
+            raise RuntimeError('executor construction exploded')
+
+    monkeypatch.setattr(tn, 'MultiThreadedExecutor', _Exec)
+    closes = []
+    holder = _patch_node(monkeypatch, bind_inline=False, closes=closes)
+    real_make = tn.TrajectoryNode
+
+    def make(*a, **k):
+        n = real_make(*a, **k)
+        wrapped = _Log(n.get_logger())
+        monkeypatch.setattr(n, 'get_logger', lambda: wrapped)
+        return n
+    monkeypatch.setattr(tn, 'TrajectoryNode', make)
+    with pytest.raises(SystemExit) as ei:
+        tn.main()
+    assert ei.value.code == 1
+    assert closes == [1]
+    assert 'executor construction exploded' in capsys.readouterr().err
