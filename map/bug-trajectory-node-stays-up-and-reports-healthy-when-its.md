@@ -2,11 +2,10 @@
 id: BUG-96
 kind: bug
 title: trajectory_node stays up and reports healthy when its emitter cannot bind the command socket
-status: in_progress
+status: complete
 created: '2026-11-14'
 updated: '2026-11-18T17:45:41Z'
-owners:
-- night-shift
+owners: []
 priority: medium
 effort: s
 hardware: none
@@ -15,7 +14,8 @@ radius: local
 diagnosis: confirmed
 area: skill-stack
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-16-trajectory-node-exits-on-emitter-bind-failure.md
 filed_by: claude
 ---
 

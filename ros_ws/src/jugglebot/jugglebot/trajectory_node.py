@@ -74,6 +74,7 @@ import os
 import sys
 import threading
 import time
+import traceback
 
 import numpy as np
 
@@ -1013,6 +1014,14 @@ class TrajectoryNode(Node):
         self._pub = None
         self._emit_stop = threading.Event()
         self._emit_thread = None
+        # BUG-96: set by the emitter thread when it could not bind :5557. main()
+        # reads it right after construction (early exit) and again after the
+        # executor returns, and exits non-zero.
+        self.emitter_bind_failed = False
+        # BUG-96: set by the emitter thread once the bind has resolved either
+        # way (success or failure), so main() can wait for the verdict instead
+        # of racing it.
+        self._emit_bind_done = threading.Event()
 
         # ── Subscriptions ───────────────────────────────────────
         mode_topic = str(self.get_parameter('control_mode_topic').value)
@@ -1449,8 +1458,23 @@ class TrajectoryNode(Node):
                 "trajectory_node: could not bind the :5557 command PUB "
                 f"({e}). Another process already owns that address — most "
                 "likely a stale trajectory_node. The emitter will NOT start; "
-                "stop the other process and relaunch.")
+                "stop the other process and relaunch. Shutting the node down "
+                "(exit code 1) so the launch shows it.")
+            # BUG-96: a node that cannot emit has no purpose. Record the failure
+            # and stop the executor (sys.exit here would only end this thread);
+            # main() turns the flag into a non-zero exit. Only reachable before
+            # the first setpoint, so no stream is interrupted.
+            self.emitter_bind_failed = True
+            try:
+                if rclpy.ok():
+                    rclpy.shutdown()
+            except Exception:  # noqa: BLE001
+                pass
+            finally:
+                # Set AFTER the flag and the shutdown, whichever way they went.
+                self._emit_bind_done.set()
             return
+        self._emit_bind_done.set()
 
         # The emitter period IS the knot spacing: the can-hub firmware pins its
         # segment time to 25 ms, so this MUST match hw.JB_TRAJ_KNOT_DT_S (the dt
@@ -5695,9 +5719,30 @@ class TrajectoryNode(Node):
             self._emit_thread.join(timeout=1.0)
 
 
+#: BUG-96: bound on main()'s wait for the emitter thread's bind verdict.
+_BIND_WAIT_S = 3.0
+
+
 def main(args=None):
     rclpy.init(args=args)
     node = TrajectoryNode()
+    # BUG-96: the emitter thread starts inside the constructor and binds :5557
+    # asynchronously. Wait (bounded) for its verdict so the check below is
+    # deterministic. On timeout we PROCEED: a hung bind must not hang startup,
+    # and the executor is built inside the try/finally and the flag is
+    # re-checked after spin, so a late failure still cleans up and exits 1.
+    if node._emit_thread is not None:
+        node._emit_bind_done.wait(timeout=_BIND_WAIT_S)
+    # A failed bind has shut the context down; constructing an executor on it
+    # raises. Clean up (closes the segment-solver worker) and exit 1 instead.
+    if node.emitter_bind_failed:
+        try:
+            node.on_shutdown()
+        finally:
+            node.destroy_node()
+            if rclpy.ok():
+                rclpy.shutdown()
+        sys.exit(1)
     # ── MultiThreadedExecutor, for exactly one callback ───────────────────────
     # `trajectory/hold` is on a reentrant group; everything else shares the
     # default MUTUALLY-EXCLUSIVE group and therefore keeps today's serialisation
@@ -5723,17 +5768,33 @@ def main(args=None):
     #    the bound the test asserts. The comparison that matters is not
     #    "hold alone" but "hold now vs hold after the whole solve", and the whole
     #    solve is 387 ms idle / 1.06 s loaded.
-    executor = MultiThreadedExecutor(num_threads=2)
-    executor.add_node(node)
     try:
+        executor = MultiThreadedExecutor(num_threads=2)
+        executor.add_node(node)
         executor.spin()
     except KeyboardInterrupt:
         pass
+    except Exception:  # noqa: BLE001
+        # A bind failure that landed after the verdict wait (timeout path) kills
+        # the context under the executor: that is the bind failure, exit 1.
+        if not node.emitter_bind_failed:
+            raise
+        # Swallowed on purpose, but never silently: log the cause (the node's
+        # logger is still alive here; destroy_node() runs in the finally below).
+        tb = traceback.format_exc()
+        try:
+            node.get_logger().error(
+                "trajectory_node: exception after the :5557 bind failure "
+                "(exiting 1 for the bind failure):\n" + tb)
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
     finally:
         node.on_shutdown()
         node.destroy_node()
         if rclpy.ok():   # the SIGINT handler may already have shut the context
             rclpy.shutdown()
+    if node.emitter_bind_failed:
+        sys.exit(1)
 
 
 if __name__ == '__main__':

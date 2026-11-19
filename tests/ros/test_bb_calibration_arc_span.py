@@ -1,14 +1,10 @@
 """The BB calibration arc-span floor — bb_calibration.MIN_ARC_DEG (F4/Q5a).
 
-WHY THIS FILE EXISTS SEPARATELY FROM
-``ros_ws/src/jugglebot/jugglebot/tests/test_bb_calibration.py``. That module is
-a standalone script with a hand-rolled ``run_tests()`` runner and no ``test_*``
-functions, and it lives outside ``testpaths = ["tests"]`` (pyproject.toml). So
-``./run_tests.sh`` does not collect a single assertion from it — it is run by
-hand, or not at all. The arc-span floor is a safety invariant (see below);
-"protected by a test nobody runs" is not protection, so the floor's cases are
-pinned here too, where the per-commit gate sees them. The pipeline-level cases
-still live in that script, next to the other 14.
+HISTORY. The arc-span floor's cases were first written in a standalone script,
+``jugglebot/tests/test_bb_calibration.py``, that no test run collected; it was
+retired 2026-11-20 (BUG-115) and its remaining pipeline checks live in
+``test_bb_calibration_pipeline.py``. The arc-span floor is a safety invariant
+(see below), pinned here where the per-commit gate runs it.
 
 WHAT THE FLOOR IS FOR. ``find_rotation_axis`` used to ask only for *enough
 points* (``min_points=50``). At the 200 Hz marker rate that is 0.25 s of data,
