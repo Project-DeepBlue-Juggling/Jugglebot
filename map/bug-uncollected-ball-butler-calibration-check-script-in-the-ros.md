@@ -9,7 +9,7 @@ owners: []
 priority: low
 effort: m
 hardware: none
-owner: decision
+owner: none
 radius: subsystem
 diagnosis: confirmed
 area: tests-tooling
