@@ -2,9 +2,9 @@
 id: TKT-87
 kind: ticket
 title: 'BUG-120 held on night-shift/2026-11-20-BUG-120: make the starvation skip load-conditional and cap restarts at one, then merge; merge as is; or drop?'
-status: open
+status: complete
 created: '2026-11-20'
-updated: '2026-11-19T17:40:09Z'
+updated: '2026-11-19T23:34:17Z'
 owners: []
 priority: medium
 effort: xs
@@ -37,3 +37,7 @@ The audit left two findings open:
 - 3: BUG-120 reopens.
 
 Recommendation: 1. Both changes are a few lines. Without the first, the gate can turn a real slowdown into a skip without anyone noticing.
+
+## Answer
+
+I agree with your recommendation.
