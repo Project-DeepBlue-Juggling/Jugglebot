@@ -2,10 +2,11 @@
 id: FEAT-59
 kind: feature
 title: Retire the tests of unused modules together with the modules
-status: inbox
+status: in_progress
 created: '2026-11-18'
-updated: '2026-11-19T15:50:59Z'
-owners: []
+updated: '2026-11-19T17:40:17Z'
+owners:
+- night-shift
 priority: low
 effort: s
 hardware: none
@@ -53,3 +54,7 @@ Grep on 2026-11-19: `toss_release` has no import outside its own module and test
 3. **Leave all three:** about 30 CPU-seconds a run is the whole cost.
 
 Recommendation: 2. Both tools are dormant by their own docstrings. `toss_release` is still the named conversion reference in live code, so retiring it is a separate small refactor.
+
+## Progress
+
+- 2026-11-20: Night Shift 2026-11-20: vel-FF slice held on night-shift/2026-11-20-FEAT-59 (removes 16 tests: gate (i) holds it); ILC tool deletion needs a day Session; unblocked by a day Session merge
