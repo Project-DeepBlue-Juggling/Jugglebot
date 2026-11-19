@@ -187,3 +187,13 @@ itself, so an unpushed host tool cannot commit a bad image):
 
 Not observed in any of these three runs: the periodic bad frame that started each derail. Its cause is still open.
 Not verified: tilt request, Hand fan control, anything with the launch up or the robot Armed (Rung P4, IDEA-20).
+
+## Gate, and a date bomb it found
+
+2026-11-19, `flock /tmp/jugglebot-tests.lock ./run_tests.sh --full` on this branch at 91395162: **RESULT FAIL**,
+parallel 1 failed, 10589 passed, 60 skipped, 1 xfailed in 728.39 s; serial 10 passed in 39.98 s. The one failure is
+unrelated to the uploader: `tests/sim/test_pull_status.py::test_dead_claim_is_taken_over_and_read_once` used a fixed
+nightly stamp of 2026-11-17T04:00Z, which the ticker started calling STALE (older than two days) at 15:00 AEDT today,
+so the test fails on `main` as well from then on. Fixed in the same push by deriving the stamp from the clock (six
+hours ago). After the fix, 2026-11-19, `pytest tests/sim/test_pull_status.py -q -p no:cacheprovider`: 9 passed in
+3.29 s. The full gate was not re-run after that test-only change.
