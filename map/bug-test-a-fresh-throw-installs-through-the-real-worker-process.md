@@ -2,16 +2,17 @@
 id: BUG-120
 kind: bug
 title: test_a_fresh_throw_installs_through_the_real_worker_process misses the solver wire deadline under box load and fails the gate
-status: inbox
+status: in_progress
 created: '2026-11-19'
-updated: '2026-11-18T16:10:13Z'
-owners: []
+updated: '2026-11-19T17:40:03Z'
+owners:
+- night-shift
 priority: medium
 effort: s
 hardware: none
 owner: none
 radius: local
-diagnosis: hypothesis
+diagnosis: confirmed
 area: tests-tooling
 blocked_by: []
 links:
@@ -33,3 +34,7 @@ Found by the Night Shift of 2026-11-19 while re-gating BUG-108. Related: BUG-108
 
 - Find which wall-clock deadline the test leaves to real time: the worker process's solve time against the wire deadline. Pin it with the test's own clock, or give the test a load-independent deadline, as BUG-108 did for the staleness window.
 - A gate that fails on box load turns a clean branch into a HOLD.
+
+## Progress
+
+- 2026-11-20: Night Shift 2026-11-20: held on night-shift/2026-11-20-BUG-120: (b) 2 audit findings open (the skip can hide a slowdown, one restart retried away); suite green; unblocked by TKT answer
