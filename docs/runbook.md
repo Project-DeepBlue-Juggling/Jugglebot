@@ -6,7 +6,7 @@ waiting Items: the order a Sitting flies in, and every step, is on its Sitting s
 
 Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
-## Robot  (13 Items, 366 min)
+## Robot  (13 Items, 396 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
@@ -21,7 +21,7 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | FEAT-49 Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault | 60 | armed | - | 2026-11-19-robot |
 | FEAT-50 Live warning when a marker dwells under the Hand | 10 | armed | `night-shift/2026-11-14-FEAT-50` | - |
 | IDEA-16 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them | 10 | level | - | 2026-11-19-robot |
-| IDEA-20 Platform Accelerometer? | 60 | armed, bridge-cycled | - | - |
+| IDEA-20 Platform Accelerometer? | 90 | armed, bridge-cycled | - | - |
 | IDEA-9 JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites | 20 | level, armed, bb-fed | - | 2026-11-19-robot |
 
 ## Bench leg  (1 Item, 30 min)
@@ -39,6 +39,7 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
 ## Needs a Sitting section
 
+- BUG-112 [Robot] /robot_state rate drops to 80-89 Hz during Attempts and drifts down over a launch: no ## Sitting section
 - BUG-13 [Robot] Wave camera: CLIP_MISSING on the first start after a camera power-cycle: no ## Sitting section
 - BUG-27 [Robot] can-bridge CAN3 analog drive path has a load-dependent hardware fault (the Jugglebot loom stays on CAN2): no ## Sitting section
 - BUG-29 [Robot] RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball: no ## Sitting section
@@ -52,7 +53,6 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - BUG-5 [Robot] 10 % jitter-margin class of LIMIT_* refusals: no ## Sitting section
 - BUG-51 [Robot] Hand iq reached 53.3 A on a 45 deg turned hop launch, over the 50 A watch the high-low row names: no ## Sitting section
 - BUG-57 [Robot] Hand overshoot at Apex 1.35 saturated the stepped brake at 60 A and drove the Hand into the top stop (SPINOUT): no ## Sitting section
-- BUG-66 [Robot] Firmware scheduler STOP fires on a clean host stream and ends the Attempt: no ## Sitting section
 - BUG-72 [Robot] Legs 1 and 2 left their magnetic base joints on Columns at Sep. 170: acceptance bounds Leg kinematics only and does not see the bridge feedforward cap: no ## Sitting section
 - BUG-74 [Robot] Mid-air ball collisions end half of two-ball Columns Attempts at Apex 1.00: closest approach about 70 mm at Sep. 100, 125 and 135: no ## Sitting section
 - BUG-75 [Robot] Catch re-aim refused INFEASIBLE on 8.4 % of Throws at the P2 Sitting, 15 of 69 on the turned pair: no ## Sitting section
@@ -78,6 +78,7 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - IDEA-17 [Robot] Hand end-of-stroke bumper, and first the planner's own brake shape: let the ceiling, not the Hand, cap the Apex: no ## Sitting section
 - IDEA-18 [Robot] Learner context cannot tell a Throw from rest from a carried Throw: no ## Sitting section
 - IDEA-23 [Robot] seed a fresh plant K from the trained plant: no ## Sitting section
+- IDEA-25 [Robot] Minimise the Platform IMU upload time after an Attempt: no ## Sitting section
 
 ## Questions a Sitting can answer
 

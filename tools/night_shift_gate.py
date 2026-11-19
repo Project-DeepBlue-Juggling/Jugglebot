@@ -11,26 +11,57 @@ unreadable file is a HOLD.
 Usage:
   python tools/night_shift_gate.py --repo R --base origin/main \\
       --branch night-shift/<date>-<ID> --item <ID> \\
-      --gate-log PATH --audit PATH [--app-log PATH] [--waive c] [--json] [--record [DIR]]
+      --audit PATH [--app-log PATH] [--waive c] [--json] [--record [DIR]]
 
   # A branch of the map app (its own repo, its own clone):
   python tools/night_shift_gate.py --repo R --base origin/main --app-repo A \\
-      --branch night-shift/<date>-<ID> --item <ID> --gate-log PATH --audit PATH
+      --branch night-shift/<date>-<ID> --item <ID> --app-log PATH --audit PATH
 
 Run from an extract of the base, never from the working tree (protocol 2g):
-``git archive origin/main tools/night_shift_gate.py mapkit | tar -x -C D/gate-base``.
+``git archive origin/main tools/night_shift_gate.py tools/night_shift_nonet.sh mapkit
+| tar -x -C D/gate-base``. The extract must carry ``night_shift_nonet.sh`` beside the gate:
+the gate runs the suite under the wrapper in ITS OWN directory, never the branch's.
+
+The gate runs the suite itself (condition (a), FEAT-51, owner 2026-11-14). Until then
+(a) read a log the orchestrating agent wrote, ``HEAD=<tip>`` and a last ``EXIT=0``, so
+it bound an honest agent only. Now the gate checks the tip out in a fresh detached
+``git worktree`` of ``--repo`` (removed afterwards, also on failure) and runs
+``flock <lock> <gate dir>/night_shift_nonet.sh ./run_tests.sh --full`` there itself,
+stdin closed, with a :data:`SUITE_TIMEOUT_S` timeout, and decides from the child's
+exit code. ``run_tests.sh`` comes from the tip and is frozen by (f), so it is the
+base's. The output goes to ``<record dir>/gate-<tip12>.log``, which the gate names in
+its output and record. Condition (i) collects the tests on the tip and on the base
+the same way. ``<record dir>`` is ``--record``'s DIR, else the default below, also
+when no record is written.
+
+Why there is NO override, by flag, environment variable or file: whatever could skip
+the suite, substitute its command or hand in its result is exactly the self-report
+FEAT-51 removed, and the agent that would misuse it is the one that writes the command
+line. Tests replace the runner from Python only (``evaluate(..., runner=)``,
+``main(argv, runner=)``), which a command line cannot reach. The suite's environment is
+the caller's minus the variables that change WHAT runs (:func:`suite_env`: ``PDJ_VENV_PY``,
+``PYTEST_*``, ``BASH_ENV``, ``LD_PRELOAD``, exported shell functions, ``PYTHONPATH``
+entries outside ``/opt/ros``), with ``HOME`` from the password database. The one
+variable read is ``$NIGHT_SHIFT_SUITE_LOCK``, which MOVES the lock (tests run inside the
+real one and would deadlock on it) and can never remove it: an empty value is the
+default ``/tmp/jugglebot-tests.lock``.
 
 Output: ``MERGE`` (exit 0), or ``HOLD`` then one reason per line, each opening
-with its condition letter in brackets (exit 1). ``--json`` prints
-``{"verdict", "item", "branch", "tip", "reasons", "checked", "waived"}`` instead.
+with its condition letter in brackets (exit 1), then ``# suite:`` and ``# collected:``
+lines naming the suite log, its exit code and duration, and both collected counts.
+``--json`` prints ``{"verdict", "item", "branch", "tip", "reasons", "checked",
+"waived", "suite_log", "suite_exit", "suite_seconds", "collected_base",
+"collected_tip"}`` instead.
 
 ``--record [DIR]`` also writes the verdict, MERGE and HOLD alike, to
 ``DIR/<tip>.<verdict>.json`` (``<tip>.MERGE.json`` or ``<tip>.HOLD.json``; atomically: a
 temp file in DIR, then a rename). The verdict is in the name so a later HOLD of the same
 tip (a resume or re-check after it merged) never replaces its MERGE record. Fields: ``schema`` (1),
 ``verdict``, ``item``, ``branch``, ``tip``, ``base_ref``, ``base_sha``, ``waived``,
-``reasons``, ``gate_sha256`` (this file), ``gate_log_sha256``, ``audit_sha256`` and
-``written_at``. DIR defaults to ``$NIGHT_SHIFT_VERDICTS``, then
+``reasons``, ``gate_sha256`` (this file), ``gate_log_sha256`` (the suite log the gate
+wrote; the app log for ``--app-repo``), ``audit_sha256``, ``suite_log``, ``suite_exit``
+(null: not run or timed out), ``suite_seconds``, ``collected_base``, ``collected_tip``
+(null: not counted) and ``written_at``. DIR defaults to ``$NIGHT_SHIFT_VERDICTS``, then
 ``~/.local/state/jugglebot/verdicts``. The runner's ``tools/night_shift_landed.py``
 reads these records after the night: a commit that reached ``main`` with no MERGE
 record covering it is ``UNGATED_MERGE`` (closeout C1). A MERGE whose record cannot be
@@ -40,7 +71,7 @@ changes no verdict otherwise.
 
 ``--waive c`` is for ``/sitting-debrief``: it runs the gate on a branch the owner
 passed at a Sitting, once the branch has been brought up to date with ``main``,
-with a suite log and audit for that updated tip, so a hardware pass overrides the hardware condition (c) and nothing else: in
+with an audit for that updated tip (the gate runs the suite on it), so a hardware pass overrides the hardware condition (c) and nothing else: in
 particular not (g), the owner check, which is its own letter so that no Sitting
 pass can clear an Item that a branch made to look workable (owner, 2026-10-31). (c)
 is still evaluated and reported in ``checked`` and the reasons, but a failing
@@ -59,10 +90,10 @@ create the Item it merges); and the gate running is the base's own: this file
 and every ``mapkit`` module it loaded are byte-identical to the base (a file the
 base does not have is not compared), so a branch cannot decide its own verdict.
 
-The eight conditions, ALL evaluated so a HOLD lists every failing reason:
-  (a) suite gate: the gate log's ``HEAD=<sha>`` line(s) equal the branch tip,
-      any ``BRANCH=<name>`` line names the branch, and its LAST ``EXIT=<n>``
-      line is ``EXIT=0``;
+The nine conditions, ALL evaluated so a HOLD lists every failing reason:
+  (a) suite gate: the gate's OWN run of ``./run_tests.sh --full`` on the branch tip
+      (above) exits 0. A non-zero exit, a timeout, a missing wrapper or a worktree
+      that cannot be made is a HOLD naming the exit code and the log;
   (b) audit: the report's ``Audited HEAD: <sha>`` equals the branch tip and
       ``Behaviour-affecting findings open: <n>`` is present with n == 0;
   (c) hardware: the Item on the branch is rated ``hardware: none``, the
@@ -87,20 +118,32 @@ The eight conditions, ALL evaluated so a HOLD lists every failing reason:
       ``tools/night_shift_app_suite.sh`` whose ``MAPKIT_HEAD=<sha>`` is the branch
       tip and whose last ``EXIT=`` is 0. ``pull.sh`` restarts the live map app on
       any ``mapkit/`` change within about 30 s, so the app's own suite has to have
-      run against this ``mapkit`` first. Never waivable.
+      run against this ``mapkit`` first. Never waivable. This log is still written
+      by the caller (self-reported), as is the audit report of (b);
+  (i) test floor: the tip collects at least as many tests as the base
+      (``python -m pytest tests/ --collect-only -q -p no:cacheprovider``, run by
+      the gate under the same lock and wrapper in a detached worktree of each; the
+      base's count is cached per base sha as ``<record dir>/collected-<sha>.json``).
+      Fewer is a HOLD with both numbers; a collection that does not exit 0 or end in
+      ``N tests collected`` is a HOLD. There is no declared-removals list: a branch
+      that legitimately removes tests is merged by a day Session. Never waivable.
+      Skipped and xfailed tests are not counted apart (open).
 
 ``--app-repo`` judges a branch of the map app instead: ``--base`` and ``--branch``
 name refs in the app clone, ``--repo`` is the Jugglebot clone whose ``origin/main``
-holds the Item. (a) and (b) read the same log and audit formats; (c), (d) and (e)
+holds the Item. (a) reads ``--app-log``, the log ``tools/night_shift_app_suite.sh``
+writes (``HEAD=`` the app tip, any ``BRANCH=`` the branch, last ``EXIT=0``): still a
+self-reported input, the gate does not run the app's suite. (b) reads the same audit format; (c), (d) and (e)
 read the Item as it stands on Jugglebot's ``origin/main`` (the app holds no Items,
 so no branch can re-rate one); (f) uses :data:`APP_FORBIDDEN_PATHS`, and a pattern
 there that matches nothing at the base is itself a HOLD (the two repos cannot be
-pinned by one test); (g) and (h) do not apply. Merging the app's ``main`` puts
+pinned by one test); (g), (h) and (i) do not apply. Merging the app's ``main`` puts
 nothing live: the runner's ``tools/night_shift_deploy.py`` does that at the end.
 
-Input formats (written by ``.claude/commands/night-shift.md`` §§ 2e, 2f):
-  gate log:      ``HEAD=<sha>`` / ``BRANCH=<name>`` lines first, the suite
-                 output, then ``EXIT=<n>`` last;
+Input formats (written by the caller):
+  app log:       ``HEAD=<sha>`` / ``BRANCH=<name>`` lines first, the suite
+                 output, then ``EXIT=<n>`` last (``--app-repo`` (a); for (h) the
+                 ``MAPKIT_HEAD=<sha>`` line);
   audit report:  the findings, ending with ``Audited HEAD: <sha>`` and
                  ``Behaviour-affecting findings open: <n>``.
 A sha matches the tip when it is the full 40 characters or an unambiguous
@@ -114,6 +157,8 @@ edits the gate or its tests decides its own verdict. ``mapkit/`` is NOT frozen
 (owner, 2026-11-07: three Items blocked in seven nights, none near the robot);
 the gate imports it, which is safe because of the base-copy precondition above,
 and the frozen gate tests run against the branch's ``mapkit`` inside condition (a).
+``run_tests.sh``, ``tools/night_shift*`` (the wrapper) and ``tools/lib/`` are frozen
+too, so the suite command the gate runs from the tip is the base's.
 
 A HOLD is never promoted to MERGE by anyone; change this file and its test
 together or not at all.
@@ -125,13 +170,18 @@ import fnmatch
 import hashlib
 import json
 import os
+import pwd
 import re
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, Iterator, List, Optional, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -215,8 +265,27 @@ APP_FORBIDDEN_PATHS: Tuple[str, ...] = (
 #: Letters ``--waive`` accepts: only the hardware condition, which a Sitting pass overrides.
 WAIVABLE: Tuple[str, ...] = ("c",)
 
-CONDITIONS: Tuple[str, ...] = ("a", "b", "c", "d", "e", "f", "g", "h")
+CONDITIONS: Tuple[str, ...] = ("a", "b", "c", "d", "e", "f", "g", "h", "i")
 APP_CONDITIONS: Tuple[str, ...] = ("a", "b", "c", "d", "e", "f")
+
+#: The suite the gate runs on the tip (condition (a)), from the tip's root; frozen by (f).
+SUITE_CMD: Tuple[str, ...] = ("./run_tests.sh", "--full")
+#: The collection the floor counts (condition (i)), run with this interpreter.
+COLLECT_ARGS: Tuple[str, ...] = ("-m", "pytest", "tests/", "--collect-only", "-q",
+                                 "-p", "no:cacheprovider")
+#: The network fence, taken from the gate's OWN directory (the base extract), never the tip.
+NONET = "night_shift_nonet.sh"
+#: The box-wide test lock (CLAUDE.md); ``$NIGHT_SHIFT_SUITE_LOCK`` moves it, never removes it.
+SUITE_LOCK = "/tmp/jugglebot-tests.lock"
+SUITE_LOCK_ENV = "NIGHT_SHIFT_SUITE_LOCK"
+#: Seconds, lock wait included. The full tier took 10-15 min in 2026-11; a timeout is a HOLD.
+SUITE_TIMEOUT_S = 3600.0
+COLLECT_TIMEOUT_S = 1800.0
+_COLLECTED_LINE = re.compile(r"^(\d+) tests? collected(?:, \d+ warnings?)? in \S+")
+
+#: ``runner(cmd, cwd, env, log_path, timeout_s)`` -> the exit code, or None on a timeout.
+#: Output (stdout and stderr) is appended to ``log_path``. Replaceable from Python only.
+Runner = Callable[[List[str], str, Dict[str, str], str, float], Optional[int]]
 MAP_DIR = "map"
 MIN_SHA_PREFIX = 7
 _QUESTION_CLOSED = ("complete", "dropped")
@@ -243,17 +312,37 @@ class GateResult:
     reasons: List[str] = field(default_factory=list)
     checked: Dict[str, bool] = field(default_factory=dict)
     waived: List[str] = field(default_factory=list)
+    suite_log: Optional[str] = None
+    suite_exit: Optional[int] = None
+    suite_seconds: Optional[float] = None
+    collected_base: Optional[int] = None
+    collected_tip: Optional[int] = None
+
+    def suite_fields(self) -> Dict[str, object]:
+        return {"suite_log": self.suite_log, "suite_exit": self.suite_exit,
+                "suite_seconds": self.suite_seconds, "collected_base": self.collected_base,
+                "collected_tip": self.collected_tip}
 
     def to_json(self) -> Dict[str, object]:
-        return {"verdict": self.verdict, "item": self.item, "branch": self.branch,
-                "tip": self.tip, "reasons": list(self.reasons),
-                "checked": dict(self.checked), "waived": list(self.waived)}
+        out = {"verdict": self.verdict, "item": self.item, "branch": self.branch,
+               "tip": self.tip, "reasons": list(self.reasons),
+               "checked": dict(self.checked), "waived": list(self.waived)}
+        out.update(self.suite_fields())
+        return out
 
     def to_text(self) -> str:
         head = self.verdict
         if self.verdict == "MERGE" and self.waived:
             head = "MERGE (%s waived)" % ", ".join(self.waived)
-        return "\n".join([head] + self.reasons)
+        info = []
+        if self.suite_log is not None:
+            info.append("# suite: exit %s in %s s, log %s" % (
+                "none (timed out or not run)" if self.suite_exit is None else self.suite_exit,
+                "?" if self.suite_seconds is None else int(round(self.suite_seconds)),
+                self.suite_log))
+        if self.collected_base is not None or self.collected_tip is not None:
+            info.append("# collected: base %s, tip %s" % (self.collected_base, self.collected_tip))
+        return "\n".join([head] + self.reasons + info)
 
 
 # --- git ---------------------------------------------------------------------
@@ -437,28 +526,212 @@ def _read(path: str) -> Optional[List[str]]:
         return None
 
 
-def _check_a(repo: str, tip: str, branch: str, gate_log: str) -> List[str]:
-    lines = _read(gate_log)
+def _check_app_a(repo: str, tip: str, branch: str, app_log: Optional[str]) -> List[str]:
+    """``--app-repo`` (a): the app suite's log, written by the caller (self-reported)."""
+    if not app_log:
+        return ["[a] no --app-log: the app branch's suite log is required"]
+    lines = _read(app_log)
     if lines is None:
-        return ["[a] gate log %s missing or unreadable" % gate_log]
+        return ["[a] app log %s missing or unreadable" % app_log]
     out = []
     heads = [m.group(1) for m in (_HEAD_LINE.match(x) for x in lines) if m]
     if not heads:
-        out.append("[a] gate log has no HEAD= line")
+        out.append("[a] app log has no HEAD= line")
     for h in heads:
         if not _sha_matches(repo, tip, h):
-            out.append("[a] gate log HEAD=%s is not the branch tip %s" % (h, tip))
+            out.append("[a] app log HEAD=%s is not the branch tip %s" % (h, tip))
     want = branch[len("refs/heads/"):] if branch.startswith("refs/heads/") else branch
-    # /sitting-debrief names the night's branch by its remote ref; the log has the local name.
     want = want[len("origin/"):] if want.startswith("origin/") else want
     for m in (_BRANCH_LINE.match(x) for x in lines):
         if m and m.group(1) != want:
-            out.append("[a] gate log BRANCH=%s is not %s" % (m.group(1), want))
+            out.append("[a] app log BRANCH=%s is not %s" % (m.group(1), want))
     exits = [m.group(1) for m in (_EXIT_LINE.match(x) for x in lines) if m]
     if not exits:
-        out.append("[a] gate log has no EXIT= line")
+        out.append("[a] app log has no EXIT= line")
     elif exits[-1] != "0":
-        out.append("[a] gate log EXIT=%s (expected 0)" % exits[-1])
+        out.append("[a] app log EXIT=%s (expected 0)" % exits[-1])
+    return out
+
+
+# --- the gate's own suite run (a) and test floor (i) -------------------------
+class SuiteError(Exception):
+    """The gate could not run or read the suite or the collection: a HOLD, never a pass."""
+
+
+def run_command(cmd: List[str], cwd: str, env: Dict[str, str], log_path: str,
+                timeout_s: float) -> Optional[int]:
+    """The production runner: ``cmd`` in ``cwd``, stdin closed, output appended to
+    ``log_path``; its exit code, or None on a timeout (its whole process group killed)."""
+    with open(log_path, "ab") as log:
+        p = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=log,
+                             stderr=subprocess.STDOUT, start_new_session=True)
+        try:
+            return p.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            _kill_group(p)
+            return None
+        except BaseException:
+            _kill_group(p)
+            raise
+
+
+def _kill_group(p: subprocess.Popen) -> None:
+    for sig, grace in ((signal.SIGTERM, 10.0), (signal.SIGKILL, 10.0)):
+        try:
+            os.killpg(p.pid, sig)
+        except OSError:
+            pass
+        try:
+            p.wait(timeout=grace)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+#: Variables that would change WHAT the suite runs; never passed to it (see the docstring).
+_ENV_DROP = ("PDJ_VENV_PY", "BASH_ENV", "ENV", "LD_PRELOAD", "PYTHONSTARTUP", "PYTHONHOME",
+             "PYTHONINSPECT", "PYTHONUSERBASE", "CDPATH")
+_ENV_DROP_PREFIXES = ("PYTEST_", "BASH_FUNC_")
+
+
+def suite_env(environ: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """The environment the suite and the collection run in: the caller's, minus what
+    would substitute the interpreter, the pytest options or the shell's start-up, with
+    ``HOME`` from the password database (``run_tests.sh`` finds the venv under it) and
+    only the ``/opt/ros`` entries of ``PYTHONPATH`` (the nightly sources ROS 2 Foxy)."""
+    env = dict(os.environ if environ is None else environ)
+    for k in list(env):
+        if k in _ENV_DROP or k.startswith(_ENV_DROP_PREFIXES):
+            del env[k]
+    env["HOME"] = pwd.getpwuid(os.getuid()).pw_dir
+    keep = [p for p in env.get("PYTHONPATH", "").split(os.pathsep) if p.startswith("/opt/ros/")]
+    if keep:
+        env["PYTHONPATH"] = os.pathsep.join(keep)
+    else:
+        env.pop("PYTHONPATH", None)
+    return env
+
+
+def _flock() -> str:
+    for d in ("/usr/bin", "/bin"):
+        p = os.path.join(d, "flock")
+        if os.access(p, os.X_OK):
+            return p
+    raise SuiteError("no flock in /usr/bin or /bin")
+
+
+def _fence(lock_env: Optional[str] = None) -> List[str]:
+    """``[flock, <lock>, <gate dir>/night_shift_nonet.sh]``: the prefix of every child."""
+    wrapper = os.path.join(os.path.dirname(os.path.abspath(__file__)), NONET)
+    if not (os.path.isfile(wrapper) and os.access(wrapper, os.X_OK)):
+        raise SuiteError("the network fence %s (the gate's own copy) is missing or not "
+                         "executable: extract it beside the gate" % wrapper)
+    lock = (os.environ.get(SUITE_LOCK_ENV) if lock_env is None else lock_env) or SUITE_LOCK
+    return [_flock(), lock, wrapper]
+
+
+@contextmanager
+def _worktree(repo: str, sha: str) -> Iterator[str]:
+    """A fresh detached worktree of ``repo`` at ``sha``; removed on the way out, always."""
+    parent = tempfile.mkdtemp(prefix="night_shift_gate_wt_")
+    path = os.path.join(parent, "wt")
+    try:
+        r = _git(repo, "worktree", "add", "--detach", path, sha)
+        if r.returncode != 0:
+            raise SuiteError("git worktree add %s failed: %s" % (sha[:12], r.stderr.strip()))
+        head = _git(path, "rev-parse", "HEAD").stdout.strip()
+        if head != sha:
+            raise SuiteError("worktree HEAD %s is not %s" % (head, sha))
+        yield path
+    finally:
+        _git(repo, "worktree", "remove", "--force", path)
+        shutil.rmtree(parent, ignore_errors=True)
+        _git(repo, "worktree", "prune")
+
+
+def _check_a(repo: str, tip: str, logs_dir: str, runner: Runner, res: GateResult) -> List[str]:
+    """Run the suite on the tip, here and now, and pass only on its exit code 0."""
+    fence = _fence()
+    os.makedirs(logs_dir, exist_ok=True)
+    log = os.path.join(logs_dir, "gate-%s.log" % tip[:12])
+    res.suite_log = log
+    cmd = fence + list(SUITE_CMD)
+    with open(log, "w", encoding="utf-8") as fh:  # the gate's header, not the caller's
+        fh.write("HEAD=%s\nCOMMAND=%s\nSTARTED=%s\n" % (
+            tip, " ".join(cmd), datetime.now(timezone.utc).isoformat(timespec="seconds")))
+    t0 = time.monotonic()
+    with _worktree(repo, tip) as wt:
+        rc = runner(cmd, wt, suite_env(), log, SUITE_TIMEOUT_S)
+    res.suite_seconds = round(time.monotonic() - t0, 1)
+    res.suite_exit = rc if isinstance(rc, int) and not isinstance(rc, bool) else None
+    with open(log, "a", encoding="utf-8") as fh:
+        fh.write("\nEXIT=%s\n" % ("TIMEOUT" if rc is None else rc))
+    if rc is None:
+        return ["[a] suite timed out after %d s on %s; log %s" % (SUITE_TIMEOUT_S, tip[:12], log)]
+    if res.suite_exit is None:
+        return ["[a] suite runner returned %r, not an exit code; log %s" % (rc, log)]
+    if rc != 0:
+        return ["[a] suite exit %d on %s (expected 0); log %s" % (rc, tip[:12], log)]
+    return []
+
+
+def _collect(repo: str, sha: str, logs_dir: str, runner: Runner) -> int:
+    """The number of tests ``sha`` collects, or :class:`SuiteError`."""
+    cmd = _fence() + [sys.executable] + list(COLLECT_ARGS)
+    log = os.path.join(logs_dir, "collect-%s.log" % sha[:12])
+    open(log, "w").close()
+    with _worktree(repo, sha) as wt:
+        rc = runner(cmd, wt, suite_env(), log, COLLECT_TIMEOUT_S)
+    if rc is None:
+        raise SuiteError("collection on %s timed out after %d s; log %s"
+                         % (sha[:12], COLLECT_TIMEOUT_S, log))
+    if rc != 0:
+        raise SuiteError("collection on %s exited %s (a collection error); log %s"
+                         % (sha[:12], rc, log))
+    lines = [x.strip() for x in (_read(log) or []) if x.strip()]
+    m = _COLLECTED_LINE.match(lines[-1]) if lines else None
+    if m is None or "error" in lines[-1]:
+        raise SuiteError("collection on %s did not end in 'N tests collected': %r; log %s"
+                         % (sha[:12], lines[-1] if lines else "", log))
+    return int(m.group(1))
+
+
+def _base_count(repo: str, base_sha: str, logs_dir: str, runner: Runner) -> int:
+    """The base's count, from ``collected-<sha>.json`` when a run tonight already made it."""
+    cache = os.path.join(logs_dir, "collected-%s.json" % base_sha)
+    try:
+        with open(cache, encoding="utf-8") as fh:
+            rec = json.load(fh)
+        n = rec.get("count") if isinstance(rec, dict) and rec.get("sha") == base_sha else None
+        if isinstance(n, int) and not isinstance(n, bool) and n >= 0:
+            return n
+    except (OSError, ValueError):
+        pass
+    n = _collect(repo, base_sha, logs_dir, runner)
+    fd, tmp = tempfile.mkstemp(dir=logs_dir, prefix=".collected-", suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump({"sha": base_sha, "count": n}, fh)
+    os.replace(tmp, cache)
+    return n
+
+
+def _check_i(repo: str, base_sha: str, tip: str, logs_dir: str, runner: Runner,
+             res: GateResult) -> List[str]:
+    """The tip may not collect fewer tests than the base."""
+    os.makedirs(logs_dir, exist_ok=True)
+    out = []
+    try:
+        res.collected_base = _base_count(repo, base_sha, logs_dir, runner)
+    except SuiteError as exc:
+        out.append("[i] cannot count the base's tests: %s" % exc)
+    try:
+        res.collected_tip = _collect(repo, tip, logs_dir, runner)
+    except SuiteError as exc:
+        out.append("[i] cannot count the tip's tests: %s" % exc)
+    if not out and res.collected_tip < res.collected_base:
+        out.append("[i] the tip collects %d tests, fewer than the base's %d: a branch that "
+                   "removes tests is merged by a day Session, never at night"
+                   % (res.collected_tip, res.collected_base))
     return out
 
 
@@ -632,7 +905,7 @@ def _check_f_app(app_repo: str, base_sha: str, tip: str) -> List[str]:
 
 
 def evaluate_app(repo: str, app_repo: str, base: str, branch: str, item: str,
-                 gate_log: str, audit: str) -> GateResult:
+                 app_log: Optional[str], audit: str) -> GateResult:
     """The verdict for a branch of the map app; the Item is read from ``repo``'s origin/main."""
     res = GateResult(verdict="HOLD", item=item, branch=branch, tip=None,
                      checked=dict((c, False) for c in APP_CONDITIONS))
@@ -665,7 +938,7 @@ def evaluate_app(repo: str, app_repo: str, base: str, branch: str, item: str,
         return res
     res.tip = tip
     checks = {
-        "a": lambda: _check_a(app_repo, tip, branch, gate_log),
+        "a": lambda: _check_app_a(app_repo, tip, branch, app_log),
         "b": lambda: _check_b(app_repo, tip, audit),
         "c": lambda: _check_c(it, meta, it.body),
         "d": lambda: _check_d(it, meta),
@@ -687,11 +960,17 @@ def evaluate_app(repo: str, app_repo: str, base: str, branch: str, item: str,
 
 
 # --- verdict -----------------------------------------------------------------
-def evaluate(repo: str, base: str, branch: str, item: str,
-             gate_log: str, audit: str, waive: Tuple[str, ...] = (),
-             app_log: Optional[str] = None) -> GateResult:
+def evaluate(repo: str, base: str, branch: str, item: str, audit: str,
+             waive: Tuple[str, ...] = (), app_log: Optional[str] = None,
+             logs_dir: Optional[str] = None, runner: Optional[Runner] = None) -> GateResult:
     """The gate verdict. MERGE only when the preconditions hold and every condition
-    not in ``waive`` passes (``waive`` may hold only letters in :data:`WAIVABLE`)."""
+    not in ``waive`` passes (``waive`` may hold only letters in :data:`WAIVABLE`).
+
+    ``logs_dir`` takes the suite and collection logs and the base-count cache (default:
+    :func:`verdicts_dir`). ``runner`` replaces :func:`run_command` for tests; it is a
+    Python argument only, never reachable from the command line (see the docstring)."""
+    logs_dir = verdicts_dir(logs_dir)
+    run = runner if runner is not None else run_command
     res = GateResult(verdict="HOLD", item=item, branch=branch, tip=None,
                      checked=dict((c, False) for c in CONDITIONS))
     bad = sorted(set(w for w in waive if w not in WAIVABLE))
@@ -711,7 +990,7 @@ def evaluate(repo: str, base: str, branch: str, item: str,
     res.tip = tip
     ref = _item_ref(item)  # cannot raise: the preconditions parsed it
     checks = {
-        "a": lambda: _check_a(repo, tip, branch, gate_log),
+        "a": lambda: _check_a(repo, tip, logs_dir, run, res),
         "b": lambda: _check_b(repo, tip, audit),
         "c": lambda: _check_c(it, base_meta, base_body),
         "d": lambda: _check_d(it, base_meta),
@@ -719,6 +998,7 @@ def evaluate(repo: str, base: str, branch: str, item: str,
         "f": lambda: _check_f(repo, base_sha, tip),
         "g": lambda: _check_g(it, base_meta),
         "h": lambda: _check_h(repo, base_sha, tip, app_log),
+        "i": lambda: _check_i(repo, base_sha, tip, logs_dir, run, res),
     }
     errored = False
     for letter in CONDITIONS:
@@ -759,7 +1039,7 @@ def _sha256_file(path: Optional[str]) -> Optional[str]:
 
 
 def write_record(directory: str, res: GateResult, repo: str, base: str,
-                 gate_log: Optional[str], audit: Optional[str]) -> Optional[str]:
+                 audit: Optional[str], app_log: Optional[str] = None) -> Optional[str]:
     """Write ``directory/<tip>.<verdict>.json`` atomically; return its path, or None with no tip.
 
     The verdict is part of the name: a HOLD never replaces or removes a MERGE record.
@@ -779,10 +1059,11 @@ def write_record(directory: str, res: GateResult, repo: str, base: str,
         "waived": list(res.waived),
         "reasons": list(res.reasons),
         "gate_sha256": _sha256_file(os.path.abspath(__file__)),
-        "gate_log_sha256": _sha256_file(gate_log),
+        "gate_log_sha256": _sha256_file(res.suite_log if res.suite_log else app_log),
         "audit_sha256": _sha256_file(audit),
         "written_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+    record.update(res.suite_fields())
     os.makedirs(directory, exist_ok=True)
     path = os.path.join(directory, "%s.%s.json" % (tip, res.verdict))
     fd, tmp = tempfile.mkstemp(dir=directory, prefix="." + tip, suffix=".tmp")
@@ -800,21 +1081,23 @@ def write_record(directory: str, res: GateResult, repo: str, base: str,
     return path
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: Optional[List[str]] = None, runner: Optional[Runner] = None) -> int:
+    """The CLI. ``runner`` is for tests (Python only); there is no flag for it."""
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     ap.add_argument("--repo", required=True)
     ap.add_argument("--base", required=True)
     ap.add_argument("--branch", required=True)
     ap.add_argument("--item", required=True)
-    ap.add_argument("--gate-log", required=True)
     ap.add_argument("--audit", required=True)
-    ap.add_argument("--app-log", help="tools/night_shift_app_suite.sh's log; required when the branch touches mapkit/")
+    ap.add_argument("--app-log", help="tools/night_shift_app_suite.sh's log; required when the "
+                                      "branch touches mapkit/, and for --app-repo")
     ap.add_argument("--app-repo", help="judge a branch of the map app in this clone (--repo holds the Item)")
     ap.add_argument("--waive", action="append", default=[],
                     help="a condition a Sitting pass overrides; only 'c'")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--record", nargs="?", const="", default=None, metavar="DIR",
-                    help="also write the verdict to DIR/<tip>.json (default $%s, then %s)"
+                    help="also write the verdict to DIR/<tip>.<verdict>.json; the suite logs "
+                         "go to DIR too (default $%s, then %s)"
                          % (VERDICTS_ENV, VERDICTS_DEFAULT))
     try:
         args = ap.parse_args(argv)
@@ -831,14 +1114,14 @@ def main(argv: Optional[List[str]] = None) -> int:
             print("HOLD\n[pre] usage error: --waive does not apply to --app-repo")
             return 1
         res = evaluate_app(args.repo, args.app_repo, args.base, args.branch, args.item,
-                           args.gate_log, args.audit)
+                           args.app_log, args.audit)
     else:
-        res = evaluate(args.repo, args.base, args.branch, args.item, args.gate_log, args.audit,
-                       tuple(args.waive), args.app_log)
+        res = evaluate(args.repo, args.base, args.branch, args.item, args.audit,
+                       tuple(args.waive), args.app_log, logs_dir=args.record, runner=runner)
     if args.record is not None:
         try:
             written = write_record(verdicts_dir(args.record), res, args.app_repo or args.repo,
-                                   args.base, args.gate_log, args.audit)
+                                   args.base, args.audit, args.app_log)
         except Exception as exc:  # fail closed: a MERGE nobody can see is not a MERGE
             res.verdict = "HOLD"
             res.reasons.append("[pre] gate error: could not write the verdict record: %s: %s"

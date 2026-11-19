@@ -66,6 +66,20 @@ CANBRIDGE_FIRMWARE_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "Teensy_co
 GUI_JS_DIR = REPO_ROOT / "ros_ws" / "gui" / "js"
 
 
+# Platform IMU (IDEA-20) enum / flag groups under protocol_config.yaml platform_imu:
+# (yaml_key, C++ namespace, Python IntEnum, C++ type, comment). Flags are IntEnum
+# members too (bit values; combine with int()), matching the other generated enums.
+PLATFORM_IMU_GROUPS = [
+    ("ops",            "PlatformImuOp",           "PlatformImuOp",           "uint8_t",  "IMU_CMD byte 0"),
+    ("statuses",       "PlatformImuStatus",       "PlatformImuStatus",       "uint8_t",  "IMU_REPLY byte 1"),
+    ("states",         "PlatformImuState",        "PlatformImuState",        "uint8_t",  "IMU_STATUS byte 0"),
+    ("freeze_reasons", "PlatformImuFreezeReason", "PlatformImuFreezeReason", "uint8_t",  "FREEZE byte 1, header byte 1"),
+    ("status_flags",   "PlatformImuStatusFlag",   "PlatformImuStatusFlag",   "uint8_t",  "IMU_STATUS byte 1 (bits)"),
+    ("capture_flags",  "PlatformImuCaptureFlag",  "PlatformImuCaptureFlag",  "uint16_t", "Header bytes 18-19 (bits)"),
+    ("anchor_flags",   "PlatformImuAnchorFlag",   "PlatformImuAnchorFlag",   "uint8_t",  "Anchor byte 16 (bits)"),
+]
+
+
 def load_yaml(path: Path) -> dict:
     with open(path, "r") as f:
         return yaml.safe_load(f)
@@ -179,6 +193,18 @@ def generate_cpp(cfg: dict) -> str:
     lines.append(f"  constexpr float TILT_COUNTS_PER_RAD = {float(cfg['platform_state']['TILT_COUNTS_PER_RAD'])}f;")
     lines.append("}")
 
+    # 0x7DE TILT_READING invalid reply (Platform FW 11)
+    lines.append("")
+    lines.append("// 0x7DE TILT_READING invalid reply: bytes 0-3 = INVALID_NAN_BITS,")
+    lines.append("// bytes 4-7 = INVALID_NAN_BITS | PlatformTiltReason (both u32 LE, both float32 NaN)")
+    lines.append("namespace PlatformTilt {")
+    lines.append(f"  constexpr uint32_t INVALID_NAN_BITS = {fmt_hex(cfg['platform_tilt']['INVALID_NAN_BITS'])};")
+    lines.append("}")
+    lines.append("namespace PlatformTiltReason {")
+    for name, val in cfg["platform_tilt"]["reasons"].items():
+        lines.append(f"  constexpr uint8_t {name} = {fmt_hex(val)};")
+    lines.append("}")
+
     # Ball Butler CAN IDs
     lines.append("")
     lines.append("// Ball Butler Teensy <-> Host")
@@ -283,6 +309,23 @@ def generate_cpp(cfg: dict) -> str:
     for name, val in cfg["wave_camera"]["reasons"].items():
         lines.append(f"  constexpr uint8_t {name} = {val};")
     lines.append("}")
+
+    # Platform IMU capture (IDEA-20): sizes, address-space bases, enums, flags
+    lines += cpp_section("Platform IMU Capture")
+    lines.append("// Contract: ros_ws/docs/platform_imu_protocol.md")
+    lines.append("namespace PlatformImu {")
+    for name, val in cfg["platform_imu"].items():
+        if not isinstance(val, dict):
+            ctype, cval = _cpp_type_and_val(val)
+            lines.append(f"  constexpr {ctype} {name.upper()} = {cval};")
+    lines.append("}")
+    for key, ns, _cls, ctype, comment in PLATFORM_IMU_GROUPS:
+        lines.append("")
+        lines.append(f"// {comment}")
+        lines.append(f"namespace {ns} {{")
+        for name, val in cfg["platform_imu"][key].items():
+            lines.append(f"  constexpr {ctype} {name} = {fmt_hex(val)};")
+        lines.append("}")
 
     # Heartbeat encoding
     lines += cpp_section("Encoding / Scaling")
@@ -417,6 +460,12 @@ def generate_python(cfg: dict) -> str:
     lines.append("# 0x6E0 RobotState tilt units (counts per radian)")
     lines.append(f"PLATFORM_STATE_TILT_COUNTS_PER_RAD = {cfg['platform_state']['TILT_COUNTS_PER_RAD']}")
     lines.append("")
+    lines.append("# 0x7DE TILT_READING invalid reply (Platform FW 11): bytes 0-3 = INVALID_NAN_BITS,")
+    lines.append("# bytes 4-7 = INVALID_NAN_BITS | reason (both u32 LE, both float32 NaN)")
+    lines.append(f"PLATFORM_TILT_INVALID_NAN_BITS = {fmt_hex(cfg['platform_tilt']['INVALID_NAN_BITS'])}")
+    for name, val in cfg["platform_tilt"]["reasons"].items():
+        lines.append(f"PLATFORM_TILT_REASON_{name} = {val}")
+    lines.append("")
 
     # Ball Butler CAN IDs
     lines.append("# Ball Butler Teensy <-> Host")
@@ -498,6 +547,19 @@ def generate_python(cfg: dict) -> str:
     lines.append("class WaveReason(IntEnum):")
     for name, val in cfg["wave_camera"]["reasons"].items():
         lines.append(f"    {name} = {val}")
+
+    # Platform IMU capture (IDEA-20)
+    lines += py_section("Platform IMU Capture")
+    lines.append("# Contract: ros_ws/docs/platform_imu_protocol.md")
+    for name, val in cfg["platform_imu"].items():
+        if not isinstance(val, dict):
+            lines.append(f"PLATFORM_IMU_{name.upper()} = {val}")
+    for key, _ns, cls, _ctype, comment in PLATFORM_IMU_GROUPS:
+        lines.append("")
+        lines.append(f"# {comment}")
+        lines.append(f"class {cls}(IntEnum):")
+        for name, val in cfg["platform_imu"][key].items():
+            lines.append(f"    {name} = {fmt_hex(val)}")
 
     # Heartbeat encoding
     lines += py_section("Encoding / Scaling")

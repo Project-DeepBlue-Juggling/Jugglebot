@@ -131,6 +131,9 @@ from teensy_link.gap_monitor import (
     EMPTY_STATS, HAND_C1_COVER_MS, SCHED_COVER_LEG_MS, SCHED_COVER_MS,
     DownlinkLossTracker, EpisodeLatch, GapTracker)
 from teensy_link.hand_feedback_watch import HandFeedbackWatch
+from jugglebot import platform_imu_gate as _imu_gate
+from teensy_link.platform_imu import PlatformImuService, UploadConfig as _ImuUploadConfig
+from teensy_link.platform_imu_capture import ImuCaptureWriter
 from teensy_link.setpoint_pump import SetpointPump, FLAG_HAS_HAND, HAND_FF_GAIN_MAX
 from teensy_link.stop_record import StopRecordLog
 from teensy_link.encoder_search import (
@@ -860,6 +863,10 @@ _DN_FW_COUNTERS = ('dn_rx_setpoints', 'dn_queue_dropped', 'dn_seq_gaps',
                    'dn_crc_errors', 'sched_frames', 'sp_seq_drops',
                    'sp_no_hand', 'sp_no_sched')
 _DN_SETTLE_HEARTBEATS = 5       # after streaming ends, before the summary line
+# BUG-119: a Hand-only STOP while frames without a Hand arrived in the last this
+# many heartbeat windows (~300 ms, the STOP's report latency plus margin) is the
+# Hand cover lapsing under a plan with no Hand track, not a fault.
+_HANDLESS_WINDOW_HB = 3
 
 # Bits 16-22 carry the report-only per-axis ODrive heartbeat-staleness mask
 # (bit 16+i = axis i's CAN heartbeat older than CAN_HEARTBEAT_STALE_US = 0.5 s;
@@ -1443,6 +1450,28 @@ class _HandMoveSlot:
         return hj.IntentResult(True, 'STARTED')
 
 
+def classify_tilt_reply(data):
+    """Classify a 0x7DE TILT_READING reply from its RAW words, before any float comparison (a NaN
+    fails every bound check, which would hide the reason). Returns ``(kind, value)``:
+
+    * ``('not_ready', None)`` / ``('read_failed', None)``: the FW 11 invalid reply, bytes 0-3 =
+      ``PLATFORM_TILT_INVALID_NAN_BITS`` and bytes 4-7 = that | reason (both u32 LE, both quiet NaNs);
+    * ``('legacy_failure', None)``: FW <= 10's failure reply, (pi, pi);
+    * ``('ok', (tiltX, tiltY))``: anything else (the caller still applies its |tilt| bound).
+    """
+    w0, w1 = struct.unpack('<II', bytes(data[:8]))
+    nan = proto.PLATFORM_TILT_INVALID_NAN_BITS
+    if w0 == nan and (w1 & ~0xFF) == nan:
+        reason = w1 & 0xFF
+        if reason == proto.PLATFORM_TILT_REASON_NOT_READY:
+            return 'not_ready', None
+        return 'read_failed', None          # READ_FAILED, and any reason this host does not know
+    x, y = struct.unpack('<ff', bytes(data[:8]))
+    if abs(x - math.pi) < 1e-4 and abs(y - math.pi) < 1e-4:
+        return 'legacy_failure', None
+    return 'ok', (x, y)
+
+
 class TeensyBridgeNode(Node):
     """ROS 2 node bridging the can-bridge Teensy UDP link to production topics.
 
@@ -1785,6 +1814,9 @@ class TeensyBridgeNode(Node):
         self._mpc_active = False
         # FEAT-31 follow-up: firmware sched_stops baseline / WARN rate limit.
         self._sched_stops_seen = None
+        # BUG-119: the per-group STOP record sequence numbers (legs, Hand) at the
+        # last WARN check, so the WARN can say which group stopped.
+        self._sched_sr_seen = None
         # FEAT-46 (FW 42): one line per firmware STOP record, classified.
         self._stop_record_log = StopRecordLog()
         self._sched_stops_warn_mono = 0.0
@@ -2090,6 +2122,8 @@ class TeensyBridgeNode(Node):
         self._client.subscribe(int(MsgType.CLOCK_DIAG), self._on_clock_diag)    # per-anchor clock + interp occupancy
         self._client.subscribe(int(MsgType.CACHE_DIAG), self._on_cache_diag)    # encoder-cache age + CAN RX ring
         self._client.subscribe(int(MsgType.RING_DIAG), self._on_ring_diag)      # TRUE RX-ring occupancy + delivery lag
+        self._client.subscribe(int(MsgType.PLATFORM_IMU_BATCH), self._on_platform_imu_batch)  # Platform IMU upload data
+        self._setup_platform_imu()
 
         # ── Publishers (production names — leg-side cutover) ──
         # Promoted from the /teensy/* namespace to the production topic names
@@ -2976,11 +3010,232 @@ class TeensyBridgeNode(Node):
             if int(pf.can_id) == proto.CAN_ID_PLATFORM_HAND_FAN_STATUS:
                 self._hand_fan_status_frame = data
             self._platform_reply_cv.notify_all()
+        # Platform IMU verdicts (IMU_REPLY 0x6E4 / IMU_STATUS 0x6E5) go to the IMU worker's own bounded
+        # queue (O(1), never blocks); the latch above is for the one-shot relay reads, never for data.
+        if int(pf.can_id) in (proto.CAN_ID_PLATFORM_IMU_REPLY, proto.CAN_ID_PLATFORM_IMU_STATUS):
+            imu = getattr(self, '_imu', None)
+            if imu is not None:
+                imu.offer_frame(int(pf.can_id), data)
         # Ball Butler's FW-update reply (0x7D7) rides the same uplink. Only the
         # INFO answer is consumed here (_bb_fw_info_poll asked for it); recorded
         # outside the cv so the verdict log never runs under the relay lock.
         if int(pf.can_id) == proto.CAN_ID_BB_FW_UPDATE_REPLY:
             self._record_bb_fw_info_reply(data)
+
+    # ── Platform IMU capture upload (IDEA-20 P3b) ──
+    # Contract: ros_ws/docs/platform_imu_protocol.md. Logic lives in teensy_link.platform_imu (pure
+    # Python); this node only wires it. Threads: the UDP RX thread calls _on_platform_imu_batch /
+    # _on_platform_frame, which do O(1) work (one fixed struct unpack + one slice + one put_nowait per
+    # PLATFORM_IMU_BATCH datagram, about 50-70 per second at 1250-1600 frames/s). One worker thread
+    # ("platform_imu_worker") owns the upload state machine and issues every IMU RPC (blocking up to
+    # 0.3 s each, on that thread only, so no ROS callback group is occupied by an upload). The
+    # capture writer has its own thread. Nothing here touches the setpoint emit path or the 100 Hz
+    # publishers; the 2 Hz status timer and the three services run in their own ReentrantCallbackGroup
+    # and only read a snapshot / enqueue an event (BUG-98: not in the blocking-RPC group).
+
+    def _setup_platform_imu(self):
+        import json as _json  # noqa: F401  (used by the upload service)
+        # Default ON at every node start by the owner's ask (the GUI toggle is NOT persisted): a restart
+        # re-enables the post-Attempt upload and with it the gate's refusal of motion-starting commands
+        # while an upload runs. Documented in ros_ws/docs/platform_imu_protocol.md section 6.
+        self.declare_parameter('imu_upload_after_attempt', True)
+        # A Fault / Soft E-stop freezes the ring at once but starts the READ stream this many seconds later
+        # (and, while Armed, up to fault_hold_max_s) so it never competes with the deactivate response.
+        # Clamped to 0..60 s so the gate's 180 s busy ceiling still covers delay + a typical 20-50 s upload.
+        self.declare_parameter('imu_fault_upload_delay_s', 5.0)
+        self.declare_parameter('imu_capture_dir', '')
+        self.declare_parameter('imu_read_gap_10us', 80)
+        directory = str(self.get_parameter('imu_capture_dir').value or '')
+        if not directory:
+            import teensy_link as _tl
+            root = os.path.dirname(os.path.dirname(os.path.abspath(_tl.__file__)))
+            directory = os.path.join(root, 'temp', 'imu_capture')
+        self._imu_writer = ImuCaptureWriter(directory).start()
+        delay = min(max(float(self.get_parameter('imu_fault_upload_delay_s').value), 0.0), 60.0)
+        cfg = _ImuUploadConfig(gap_10us=int(self.get_parameter('imu_read_gap_10us').value),
+                               fault_upload_delay_s=delay)
+        self._imu = PlatformImuService(
+            self._imu_send_ctrl, self._imu_send_read, writer=self._imu_writer,
+            is_armed=lambda: bool(self._mpc_active), config=cfg,
+            on_state_change=self._publish_platform_imu_status)
+        self._imu.set_upload_after_attempt(bool(self.get_parameter('imu_upload_after_attempt').value))
+        self._imu_cbgroup = ReentrantCallbackGroup()
+        self.platform_imu_status_pub = self.create_publisher(DiagnosticStatus, 'platform_imu/status', 10)
+        self.create_timer(0.5, self._publish_platform_imu_status, callback_group=self._imu_cbgroup)
+        # The Attempt's wall-clock span comes from skills/attempt (every goal source publishes it), so skill_node
+        # is untouched and a dead skill_node cannot reach this node. See _imu_on_attempt_event.
+        self._imu_span = _imu_gate.AttemptSpanTracker()
+        self.create_subscription(DiagnosticStatus, 'skills/attempt', self._imu_on_attempt_event, 10,
+                                 callback_group=self._imu_cbgroup)
+        self.create_service(SetBool, 'platform_imu/set_upload_after_attempt',
+                            self._svc_imu_set_upload_after_attempt, callback_group=self._imu_cbgroup)
+        self.create_service(SetString, 'platform_imu/upload', self._svc_imu_upload,
+                            callback_group=self._imu_cbgroup)
+        self.create_service(Trigger, 'platform_imu/abort', self._svc_imu_abort,
+                            callback_group=self._imu_cbgroup)
+
+    def _imu_send_ctrl(self, op, reason, capture_id):
+        """Worker-thread RPC: one PLATFORM_IMU_CTRL. OK = queued on the bus; the verdict is the IMU_REPLY.
+        retries=0: the upload machine owns resend policy (FREEZE/RESUME are safe to resend by capture_id)."""
+        ok, msg, _ = self._call_rpc(
+            RpcMethod.PLATFORM_IMU_CTRL,
+            p.ArgPlatformImuCtrl(op=int(op), reason=int(reason), capture_id=int(capture_id)).pack(),
+            timeout=0.3, retries=0)
+        return ok, msg
+
+    def _imu_send_read(self, capture_id, first_seq, count, gap_10us):
+        ok, msg, _ = self._call_rpc(
+            RpcMethod.PLATFORM_IMU_READ,
+            p.ArgPlatformImuRead(capture_id=int(capture_id), first_seq=int(first_seq), count=int(count),
+                                 frame_gap_10us=int(gap_10us)).pack(),
+            timeout=0.3, retries=0)
+        return ok, msg
+
+    def _on_platform_imu_batch(self, msg_type, seq, payload, addr):
+        # RX-thread callback: bounded O(1) hand-off to the IMU worker's data queue.
+        imu = getattr(self, '_imu', None)
+        if imu is not None:
+            imu.offer_batch(payload)
+
+    # -- the API unit P3c wires to the Attempt lifecycle and the command gate --
+    def attempt_ended(self, t_start_wall, t_end_wall, reason='attempt_end', attempt_id=None):
+        """Freeze the ring and upload the Attempt's span plus margin (wall seconds), if 'upload after each
+        Attempt' is ON and an IMU is recording. Returns True if an upload was started. Never blocks."""
+        return self._imu.attempt_ended(t_start_wall, t_end_wall, reason, attempt_id)
+
+    def upload_in_progress(self):
+        """True from the moment an upload is requested until its capture is handed to the writer and the
+        ring is RESUMEd. P3c refuses motion-starting commands while this is True and the toggle is ON."""
+        return self._imu.upload_in_progress()
+
+    def abort_upload(self, reason='abort'):
+        """Stop an upload (pacifying command, Attempt start). Returns at once; the capture so far is written
+        flagged complete = false and the ring RESUMEd."""
+        self._imu.abort_upload(reason)
+
+    def imu_upload_status(self):
+        """Snapshot dict (what the status topic publishes)."""
+        return self._imu.status_snapshot()
+
+    def set_imu_upload_after_attempt(self, on):
+        self._imu.set_upload_after_attempt(bool(on))
+
+    # -- IDEA-20 P3c: the automatic trigger. Fire-and-forget: nothing here can raise into, wait on, or delay
+    #    the Attempt's own end handling, a Soft E-stop or a deactivate (a subscriber callback on this node's own
+    #    reentrant group, every body wrapped; attempt_ended only queues work for the IMU worker thread).
+    def _imu_on_attempt_event(self, msg, now_wall=None):
+        try:
+            t = time.time() if now_wall is None else now_wall
+            if msg.name == 'juggle_start':
+                # An Attempt starting while an upload runs (the gate refused every normal start; this is a
+                # belt for a start the gate let through, e.g. fail-open): the capture so far is kept
+                # incomplete and the ring resumes, so the Attempt is recorded.
+                if self.upload_in_progress():
+                    self.abort_upload('attempt_start')
+                self._imu_span.started(t)
+            elif msg.name == 'juggle_end':
+                span = self._imu_span.ended(t)
+                if span is not None:
+                    self._imu_trigger(span)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().warning('IMU attempt trigger swallowed: %s' % e)
+
+    def _imu_on_fault(self, now_wall=None, from_none=True):
+        """A Fault / Soft E-stop edge. During an Attempt: upload its span now. Otherwise an upload that is
+        running is a pacifying case and is aborted (the capture is kept, flagged incomplete) -- but only on
+        an edge FROM NONE: a second non-NONE value in a cascade must not abort the fault-span upload the
+        first edge started (audit B1)."""
+        try:
+            t = time.time() if now_wall is None else now_wall
+            span = self._imu_span.fault(t)
+            if span is not None:
+                self._imu_trigger(span)
+            elif from_none and self.upload_in_progress():
+                self.abort_upload('fault')
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().warning('IMU fault trigger swallowed: %s' % e)
+
+    def _imu_trigger(self, span):
+        try:
+            started = self.attempt_ended(span.t_start, span.t_end, span.reason)
+            self.get_logger().info('Platform IMU upload %s (%s, %.1f s span)' % (
+                'started' if started else 'not started (toggle OFF, no IMU, or one already running)',
+                span.reason, span.t_end - span.t_start))
+            if started:
+                self._publish_platform_imu_status()    # the gate sees busy now, not at the next 2 Hz tick
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().warning('IMU upload trigger swallowed: %s' % e)
+
+    def _svc_imu_set_upload_after_attempt(self, req, res):
+        self.set_imu_upload_after_attempt(req.data)
+        if not req.data and self.upload_in_progress():
+            # Toggle OFF mid-upload aborts it: OFF means nothing frozen and nothing refused, and an upload left
+            # running with the gate off would let an Attempt start over a frozen ring on a loaded bus.
+            self.abort_upload('toggle_off')
+        res.success = True
+        res.message = 'upload after each Attempt: %s' % ('ON' if req.data else 'OFF')
+        return res
+
+    def _svc_imu_upload(self, req, res):
+        """platform_imu/upload: JSON in ``data``: {"t_start": s, "t_end": s, "attempt_id": str}, wall
+        seconds; an empty string or {} uploads the whole frozen capture. Freezes now (reason OPERATOR)."""
+        import json as _json
+        try:
+            spec = _json.loads(req.data) if req.data.strip() else {}
+            t0, t1 = spec.get('t_start'), spec.get('t_end')
+            ok = self._imu.request_upload(
+                None if t0 is None else float(t0), None if t1 is None else float(t1),
+                attempt_id=spec.get('attempt_id'), label='operator')
+            res.success = bool(ok)
+            res.message = 'upload started' if ok else (
+                'refused: an upload is already running' if self._imu.upload_in_progress()
+                else 'refused: ' + (self._imu.status_snapshot().get('last_skip') or 'no IMU'))
+        except Exception as e:  # noqa: BLE001
+            res.success, res.message = False, 'bad request: %s' % e
+        return res
+
+    def _svc_imu_abort(self, req, res):
+        self.abort_upload('operator')
+        res.success, res.message = True, 'abort queued'
+        return res
+
+    def _publish_platform_imu_status(self):
+        try:
+            snap = self._imu.status_snapshot()
+            prog = snap['progress']
+            last = snap.get('last_result') or {}
+            msg = DiagnosticStatus()
+            msg.name = 'platform_imu/status'
+            msg.hardware_id = 'platform_teensy'
+            wr = snap.get('writer') or {}
+            bad = bool(last.get('failure')) or (last.get('flags') or {}).get('crc_ok') is False \
+                or bool(last.get('write_failed'))
+            msg.level = DiagnosticStatus.WARN if bad else DiagnosticStatus.OK
+            msg.message = '%s %d/%d' % (prog['phase'], prog['frames_done'], prog['frames_total']) if snap['busy'] \
+                else 'idle'
+            kv = {
+                'busy': int(snap['busy']), 'upload_after_attempt': int(snap['upload_after_attempt']),
+                'phase': prog['phase'], 'frames_done': prog['frames_done'], 'frames_total': prog['frames_total'],
+                'eta_s': '' if prog['eta_s'] is None else '%.1f' % prog['eta_s'],
+                'rate_fps': '%.0f' % prog['rate_fps'],
+                'platform_state': snap['platform_state'] or '', 'platform_flags': snap['platform_flags'] if snap['platform_flags'] is not None else '',
+                'platform_boot': snap['platform_boot'] if snap['platform_boot'] is not None else '',
+                'status_age_s': '' if snap['status_age_s'] is None else '%.1f' % snap['status_age_s'],
+                'last_label': last.get('label', ''), 'last_attempt_id': last.get('attempt_id') or '',
+                'last_complete': int(bool((last.get('flags') or {}).get('complete'))
+                                     and not last.get('write_failed')) if last else '',
+                'last_crc_ok': str((last.get('flags') or {}).get('crc_ok')) if last else '',
+                'last_failure': last.get('failure', ''), 'last_capture_id': last.get('capture_id') if last.get('capture_id') is not None else '',
+                'last_skip': snap.get('last_skip', ''), 'dropped_batches': snap['dropped_batches'],
+                'writer_written': wr.get('written', 0), 'writer_dropped': wr.get('dropped', 0),
+                'writer_errors': wr.get('errors', 0), 'writer_last_error': wr.get('last_error', ''),
+                'heals_started': snap.get('heals_started', 0),
+            }
+            kv.update({'bridge_' + k: v for k, v in (snap.get('bridge') or {}).items()})
+            msg.values = [KeyValue(key=k, value=str(v)) for k, v in kv.items()]
+            self.platform_imu_status_pub.publish(msg)
+        except Exception as e:  # noqa: BLE001 -- a status publisher never raises into the executor
+            self.get_logger().debug('platform_imu status publish failed: %s' % e)
 
     def _on_hand_cmd_echo(self, msg_type, seq, payload, addr):
         # RX-thread callback (hand conduit): the bridge sniffed the Platform Teensy's
@@ -6491,7 +6746,17 @@ class TeensyBridgeNode(Node):
         i = _SCHED_FW_COUNTERS.index('sched_hand_c1_stops')
         return (h[-1][0][i] - h[0][0][i]) & 0xFFFFFFFF
 
-    def _warn_on_sched_stop(self, total: int, now=None) -> None:
+    def _sp_no_hand_recent(self) -> int:
+        """Frames parsed with HAS_HAND clear over the last
+        ``_HANDLESS_WINDOW_HB`` downlink samples (0 with < 2, or pre-FW 40)."""
+        h = self._dn_hist
+        if len(h) < 2:
+            return 0
+        i = _DN_FW_COUNTERS.index('sp_no_hand')
+        a = h[max(0, len(h) - 1 - _HANDLESS_WINDOW_HB)][2][i]
+        return (h[-1][2][i] - a) & 0xFFFFFFFF
+
+    def _warn_on_sched_stop(self, total: int, now=None, sr_seq=None) -> None:
         """WARN (<= 1/s) when the firmware's ``sched_stops`` rises while armed,
         and ONCE at a disarm edge.
 
@@ -6520,6 +6785,15 @@ class TeensyBridgeNode(Node):
         * otherwise the two host candidates as before: emitter gap (setpoints
           arrived late) vs bridge forwarding gap (this node starved).
 
+        Ahead of all three (BUG-119): when ``sr_seq`` (the heartbeat's per-group
+        STOP record sequence numbers, legs then Hand, FW 42) says only the Hand
+        group stopped, the stop is not a C1 stop, and frames without a Hand
+        arrived in the last ``_HANDLESS_WINDOW_HB`` heartbeats, the verdict is
+        **Hand cover lapsed under a plan with no Hand track**: go_to_pose,
+        Level and the guard descents send legs only, so the Hand group's cover
+        runs out by design. The host maxima do not bear on it. On 2026-11-18
+        43 of 44 "clean" verdicts were this.
+
         Disarm edge: a STOP rise seen within ``_SCHED_DISARM_EDGE_S`` of
         ``mpc_active`` falling 1->0 WARNs once for that fall, rate limit
         bypassed (the host flag falls a heartbeat or two before the firmware
@@ -6528,6 +6802,8 @@ class TeensyBridgeNode(Node):
         """
         prev = self._sched_stops_seen
         self._sched_stops_seen = total
+        prev_sr = self._sched_sr_seen
+        self._sched_sr_seen = sr_seq
         t = time.monotonic() if now is None else float(now)
         armed = bool(self._mpc_active)
         if self._sched_prev_armed and not armed:
@@ -6555,7 +6831,18 @@ class TeensyBridgeNode(Node):
         where = ('at the disarm edge (mpc_active 1->0)' if edge
                  else 'while streaming')
         dropped, drop_note = self._sp_drop_note(time.monotonic())
-        if clean and dropped:
+        hand_only = (sr_seq is not None and prev_sr is not None
+                     and len(sr_seq) == 2 and len(prev_sr) == 2
+                     and sr_seq[1] != prev_sr[1] and sr_seq[0] == prev_sr[0])
+        no_hand = self._sp_no_hand_recent()
+        if hand_only and not c1 and no_hand > 0:
+            verdict = (
+                'Hand cover lapsed under a plan with no Hand track: only the '
+                'Hand group stopped (legs did not), and %d frames without a '
+                'Hand arrived in the last %d heartbeats, so the Hand holds '
+                'where it was by design until the next Hand frame; not a link '
+                'or firmware fault (BUG-119)' % (no_hand, _HANDLESS_WINDOW_HB))
+        elif clean and dropped:
             # 2026-11-13: the forward-gap check alone called both LANE_REFUSED
             # ends "clean" while the drain had discarded the knot between the
             # playing frame and its successor (a 50 ms stamp gap on the wire).
@@ -6673,7 +6960,10 @@ class TeensyBridgeNode(Node):
                 self._track_hb_stale_episodes(hb_stale_mask)
                 self._note_sched_sample(hb, hb_gen)
                 self._note_downlink_sample(hb, hb_gen, hb_sent)
-                self._warn_on_sched_stop(int(hb.sched_stops))
+                sr = getattr(hb, 'sr_seq', None)
+                self._warn_on_sched_stop(
+                    int(hb.sched_stops),
+                    sr_seq=None if sr is None else tuple(int(v) for v in sr))
                 self._log_stop_records(hb)
 
             msg = DiagnosticStatus()
@@ -6705,6 +6995,7 @@ class TeensyBridgeNode(Node):
                 fs = int(hb.fault_state)
                 if fs != self._last_fault_state:
                     if fs != int(FaultState.NONE):
+                        self._imu_on_fault(from_none=self._last_fault_state in (None, int(FaultState.NONE)))
                         leg_hint = self._guard_fault_leg_hint()
                         # For a MAX_DEVIATION latch the single culprit leg is not
                         # the whole story — a fast coordinated move loads every
@@ -7669,7 +7960,16 @@ class TeensyBridgeNode(Node):
 
     def relay_read_tilt(self, timeout=None):
         """TILT_READ: read the Platform-Teensy inclinometer. Returns
-        (ok, message, (tiltX, tiltY)) in radians; tilt is None on failure."""
+        (ok, message, (tiltX, tiltY)) in radians; tilt is None on failure (including
+        an explicit invalid reply; use :meth:`relay_read_tilt_ex` for its reason)."""
+        ok, msg, tilt, _ = self.relay_read_tilt_ex(timeout)
+        return ok, msg, tilt
+
+    def relay_read_tilt_ex(self, timeout=None):
+        """As :meth:`relay_read_tilt` plus the invalid-reply reason:
+        ``(ok, message, tilt, reason)`` with ``reason`` None, ``'not_ready'``,
+        ``'read_failed'`` or ``'legacy_failure'`` (FW <= 10's (pi, pi)). The raw words are
+        classified BEFORE any float bound check (see :func:`classify_tilt_reply`)."""
         timeout = self._RELAY_READ_TIMEOUT_S if timeout is None else timeout
         can_id = proto.CAN_ID_PLATFORM_TILT_READING
         with self._relay_lock:   # serialize the whole relay round-trip
@@ -7677,12 +7977,14 @@ class TeensyBridgeNode(Node):
                 self._platform_replies.pop(int(can_id), None)
             ok, msg, _ = self._call_rpc(RpcMethod.TILT_READ)
             if not ok:
-                return False, msg, None        # fail-fast (e.g. ERR_BUS_DOWN)
+                return False, msg, None, None        # fail-fast (e.g. ERR_BUS_DOWN)
             data = self._await_platform_reply(can_id, expected_dlc=8, timeout=timeout)
             if data is None:
-                return False, 'relay tilt read: no Platform reply within timeout', None
-            tiltX, tiltY = struct.unpack('<ff', data[:8])
-            return True, 'OK', (tiltX, tiltY)
+                return False, 'relay tilt read: no Platform reply within timeout', None, None
+            kind, val = classify_tilt_reply(data)
+            if kind == 'ok':
+                return True, 'OK', val, None
+            return False, 'relay tilt read: Platform replied %s' % kind.replace('_', ' '), None, kind
 
     def relay_read_robot_state(self, timeout=None):
         """STATE_READ: read the Platform-Teensy RobotState. Returns
@@ -9692,6 +9994,9 @@ class TeensyBridgeNode(Node):
     # porting can_node's tilt robustness (can_node._tilt_reading_steps: resend on
     # timeout, retry on out-of-range, NaN after exhaustion — per the can_node<->Teensy parity audit).
     _TILT_READ_ATTEMPTS = 3
+    # FW 11 "not ready" reply: ask again no sooner than this, at most this many tries in all (3 s of waiting).
+    _TILT_NOT_READY_RETRY_S = 1.0
+    _TILT_NOT_READY_ATTEMPTS = 4
 
     def _svc_get_platform_tilt(self, req, res):
         """get_platform_tilt: the orchestrator's LevellingHandler drives this
@@ -9704,9 +10009,12 @@ class TeensyBridgeNode(Node):
         _tilt_reading_steps validity bound (|tilt| ≤ JB_OP_MAX_VALID_TILT_RAD; see the can_node<->Teensy parity audit)."""
         try:
             tx = ty = None
-            for _ in range(self._TILT_READ_ATTEMPTS):
-                ok, msg, tilt = self.relay_read_tilt()
+            attempts = 0
+            not_ready = 0
+            while attempts < self._TILT_READ_ATTEMPTS:
+                ok, msg, tilt, reason = self.relay_read_tilt_ex()
                 if ok and tilt is not None:
+                    attempts += 1
                     cand_x, cand_y = float(tilt[0]), float(tilt[1])
                     if (abs(cand_x) <= hw.JB_OP_MAX_VALID_TILT_RAD
                             and abs(cand_y) <= hw.JB_OP_MAX_VALID_TILT_RAD):
@@ -9715,8 +10023,26 @@ class TeensyBridgeNode(Node):
                     self.get_logger().warning(
                         f"tilt read out of range ([{cand_x:.3f}, {cand_y:.3f}] rad) "
                         "— retrying")
+                elif reason == 'not_ready':
+                    # FW 11: the inclinometer has no reading yet. Not a failed read: wait and ask again,
+                    # at least _TILT_NOT_READY_RETRY_S apart, a bounded number of times.
+                    not_ready += 1
+                    if not_ready >= self._TILT_NOT_READY_ATTEMPTS:
+                        self.get_logger().warning(
+                            f"tilt read: Platform still not ready after {not_ready} tries — giving up")
+                        break
+                    self.get_logger().info(
+                        f"tilt read: Platform reports not ready (try {not_ready}/"
+                        f"{self._TILT_NOT_READY_ATTEMPTS}) — retrying in {self._TILT_NOT_READY_RETRY_S:.1f} s")
+                    time.sleep(self._TILT_NOT_READY_RETRY_S)
                 else:
-                    self.get_logger().warning(f"tilt read failed: {msg} — retrying")
+                    attempts += 1
+                    if reason == 'read_failed':
+                        self.get_logger().warning("tilt read: Platform reports the inclinometer read failed — retrying")
+                    elif reason == 'legacy_failure':
+                        self.get_logger().warning("tilt read: (pi, pi) failure reply (Platform FW <= 10) — retrying")
+                    else:
+                        self.get_logger().warning(f"tilt read failed: {msg} — retrying")
             if tx is None:
                 # Signal failure with NaN so the orchestrator doesn't mistake it for
                 # real data (can_node._svc_get_tilt parity).
@@ -10770,6 +11096,11 @@ class TeensyBridgeNode(Node):
             time.sleep(_SHUTDOWN_DISARM_SETTLE_S)
             self._wait_wire_disarmed()
             self._shutdown_stow()
+        if getattr(self, '_imu', None) is not None:
+            try:
+                self._imu.close()
+            except Exception:  # noqa: BLE001
+                pass
         # TEMPORARY (BUG-57 diagnostic capture): flush after the stow so it is in the file.
         if getattr(self, '_hand_capture', None) is not None:
             try:

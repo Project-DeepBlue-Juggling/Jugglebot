@@ -75,6 +75,7 @@ import jugglebot.protocol_config as proto
 from jugglebot import ball_possession
 from jugglebot import juggle_request as jr
 from jugglebot import mocap_status as mocap_st
+from jugglebot import platform_imu_gate as imu_gate
 from jugglebot import records as rec
 from jugglebot import runtime_paths as rtp
 from jugglebot import throw_identity as ti
@@ -1728,6 +1729,13 @@ class SkillNode(Node):
 
         self.create_subscription(
             DiagnosticStatus, 'mocap/status', self._on_mocap_status, 10,
+            callback_group=self._sub_cbgroup)
+
+        # Platform IMU upload gate (IDEA-20 P3c): refuses an Attempt-starting goal from ANY source (the GUI
+        # relay, `ros2 action send_goal`, a script) while an upload runs. Cached status only, fail-open.
+        self._imu_gate = imu_gate.ImuGate()
+        self.create_subscription(
+            DiagnosticStatus, 'platform_imu/status', self._on_platform_imu_status, 10,
             callback_group=self._sub_cbgroup)
 
         self.create_service(Trigger, 'skills/check', self._svc_check)
@@ -7609,6 +7617,13 @@ class SkillNode(Node):
         ran. Runs on `_juggle_cbgroup`, not the tick/install pair's
         `_cbgroup`, so a second goal is rejected promptly even while a first
         goal's `_juggle_execute` is mid-wait on another thread."""
+        gate = self._imu_gate_check()
+        if not gate.allow:
+            self.get_logger().error('jugglebot/juggle REJECTED: %s' % (gate.reason,))
+            self._publish_attempt_event(
+                ATTEMPT_REFUSED, str(gate.reason), DiagnosticStatus.WARN,
+                pattern=str(getattr(goal_request, 'pattern', '')))
+            return GoalResponse.REJECT
         result = self._start_pattern(goal_request)
         if not result.success:
             self.get_logger().error('jugglebot/juggle REJECTED: %s'
@@ -7662,6 +7677,20 @@ class SkillNode(Node):
             self.get_logger().info('jugglebot/juggle ACCEPTED: %s'
                                    % (result.message,))
         return GoalResponse.ACCEPT
+
+    def _on_platform_imu_status(self, msg) -> None:
+        try:
+            self._imu_gate.observe({kv.key: kv.value for kv in msg.values}, time.monotonic())
+        except Exception:  # noqa: BLE001 -- the cache can never break the node
+            pass
+
+    def _imu_gate_check(self):
+        """The one gate call for an Attempt start; never raises, fails open. A ceiling abort is left to the
+        orchestrator's gate (same status, same rate limit): this node has no abort client by design."""
+        try:
+            return self._imu_gate.check('juggle', time.monotonic())
+        except Exception:  # noqa: BLE001
+            return imu_gate.GateDecision(True, '', False)
 
     def _juggle_cancel(self, goal_handle):
         """``cancel_callback``: always ACCEPTs — an operator cancel must

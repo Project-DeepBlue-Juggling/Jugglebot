@@ -2,11 +2,10 @@
 id: BUG-108
 kind: bug
 title: test_TI1 in test_install_segment goes stale under box load and fails the gate on unrelated branches
-status: in_progress
+status: complete
 created: '2026-11-16'
 updated: '2026-11-16T18:59:46Z'
-owners:
-- night-shift
+owners: []
 priority: medium
 effort: s
 hardware: none
@@ -15,7 +14,8 @@ radius: local
 diagnosis: confirmed
 area: tests-tooling
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-17-test-install-segment-stale-clock.md
 filed_by: claude
 ---
 
@@ -36,3 +36,4 @@ Find which wall-clock freshness window the test leaves to real time (the robot_s
 ## Progress
 
 - 2026-11-17: Night Shift 2026-11-17: held on night-shift/2026-11-17-BUG-108: confirmed and fixed in the test; gate held at [pre] and (a), the legacy ID test also red on main (BUG-109); unblocked by TKT-79, then a re-gate
+- 2026-11-19: Night Shift 2026-11-19: merged origin/main (BUG-109 fixed there) and re-gated; TI1 passed 3 of 3 alone and in a whole-file run at load 21. The one loaded failure is the worker-process test missing the solver wire deadline, a different flake filed as its own Bug.

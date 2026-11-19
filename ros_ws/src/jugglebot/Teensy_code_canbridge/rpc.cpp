@@ -480,6 +480,19 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       return Relay::hand_fan_set(a);
     }
 
+    // ── Platform IMU capture (FW 45, IDEA-20 P3a) ───────────────────
+    // Both ALLOWED while Armed (owner, 2026-11-19); READ's frame gap is clamped
+    // up to PlatformImu::BRIDGE_ARMED_MIN_GAP_10US while fault_mpc_active().
+    // OK = the IMU_CMD frame is queued; the verdict is the Platform's IMU_REPLY.
+    case RpcMethod::PLATFORM_IMU_CTRL: {
+      RpcArgs::ArgPlatformImuCtrl a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
+      return Relay::platform_imu_ctrl(a);
+    }
+    case RpcMethod::PLATFORM_IMU_READ: {
+      RpcArgs::ArgPlatformImuRead a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
+      return Relay::platform_imu_read(a, fault_mpc_active());
+    }
+
     // ── Firmware version pull ──────────────────────────────────────
     // Synchronous: returns the bridge-LOCAL Get_Version cache (filled by the
     // cold-start version sweep, version_check.cpp) in the RPC response — NO CAN3

@@ -571,6 +571,14 @@ bool can_platform_pop(PlatformFrameRec& out) {
 
 uint32_t can_platform_fwd_drops() { return s_platform_fwd_drops; }
 
+// ── Platform IMU_DATA ring (FW 45, IDEA-20 P3a) ──────────────────────
+// Lock-free SPSC (imu_ring.h): producer on_jugglebot_rx (task_can_rx), consumer
+// platform_imu_uplink_step (task_telem). No PRIMASK section, unlike the rings
+// above: at up to 1600 frames/s it would mask the interp ISR 1600 times a second
+// for nothing, since one producer and one consumer need only ordered indices.
+static ImuDataRingT s_imu_data_ring;
+ImuDataRingT& can_imu_data_ring() { return s_imu_data_ring; }
+
 // ── Hand command-echo latest-value slot ─────────────────────────────
 // Producer: decode_into_cache (task_can_rx) via hand_cmd_echo_record on a sniffed
 // hand Set_Input_Pos. Consumer: hand_cmd_echo_uplink_step (task_telem) via
@@ -620,6 +628,11 @@ static void on_jugglebot_rx(const CAN_message_t& msg) {
   // delivered frame counts: the quantity is how late the RING hands frames over,
   // which has nothing to do with what any given frame turns out to contain.
   jb_lag_fold(msg.timestamp, now_mono);
+  // FW 45: the Platform IMU upload frames (0x6E6) go to their own ring, before the
+  // reply test, so up to 1600 frames/s never touch the 8-slot reply ring. One
+  // compare per frame for every other id; for an IMU frame an 8-byte copy and three
+  // atomic word stores (imu_ring.h), no IRQ mask.
+  if (is_platform_imu_data_id(msg.id)) { s_imu_data_ring.push(msg.buf, msg.len); return; }
   if (is_platform_reply_id(msg.id)) { platform_ring_push(msg, now); return; }
   decode_into_cache(msg);
 }

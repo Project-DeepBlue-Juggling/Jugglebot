@@ -186,9 +186,16 @@ def _check(rep, tmp_path):
     return r.stdout.strip()
 
 
-def _claim(rep, age_s, status="RED 3/9 2026-11-17T04:00:00+00:00", pid=99999):
+#: The nightly stamp the claim tests use. It must be RECENT: the ticker calls a status older than
+#: two days STALE, so the fixed 2026-11-17 literal these tests first carried made
+#: test_dead_claim_is_taken_over_and_read_once fail from 2026-11-19 15:00 AEDT on (a date bomb).
+_CLAIM_TS = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=6)).isoformat(timespec="seconds")
+
+
+def _claim(rep, age_s, status=None, pid=99999):
+    status = status if status is not None else "RED 3/9 %s" % _CLAIM_TS
     f = rep / f"ticker.claim.{pid}"
-    f.write_text(f"2026-11-17T04:00:00+00:00 {status}\n")
+    f.write_text(f"{_CLAIM_TS} {status}\n")
     t = time.time() - age_s
     os.utime(f, (t, t))
     return f
@@ -198,8 +205,8 @@ def test_dead_claim_is_taken_over_and_read_once(tmp_path):
     rep = _ticker_dir(tmp_path)
     _claim(rep, 3600)
     out = _check(rep, tmp_path)
-    assert out == "CLAIMED RED 3/9 2026-11-17T04:00:00+00:00"
-    assert (rep / "ticker.lowered").read_text().startswith("2026-11-17T04:00:00+00:00 handled ")
+    assert out == "CLAIMED RED 3/9 %s" % _CLAIM_TS
+    assert (rep / "ticker.lowered").read_text().startswith("%s handled " % _CLAIM_TS)
     assert not list(rep.glob("ticker.claim.*"))
     assert _check(rep, tmp_path).startswith("LOWERED ")          # read exactly once
 

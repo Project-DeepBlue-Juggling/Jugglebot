@@ -6,7 +6,7 @@ omitted:
     do: [1]
     reason: The cpu_partition off/on comparison flew on 2026-11-18 and showed no measurable difference (3.2 against 3.3 dropped knots a minute). Today flies the partition-off arm only, to measure the stream on the new firmware and the emitter fix.
   - item: BUG-93
-    reason: Its held branch calls its firmware FW 44, but the robot bridge was flashed with a different FW 44 on 2026-11-18 (Leg scheduler grace). The branch must be renumbered to FW 45 and re-gated before it can be flashed.
+    reason: Its held branch was renumbered to FW 45 and passed the default gate on 2026-11-18, after this sheet was built. It stays off this sheet because BUG-89's row measures the stream on FW 44 and a firmware flash in the same Sitting would confound it. It is ready for the next sheet.
   - item: FEAT-32
     reason: The ZVD A/B waits for BUG-90's fix, which failed its row on 2026-11-18 (the Hand stop-and-go was reduced, not gone).
   - item: FEAT-39
@@ -15,6 +15,8 @@ omitted:
     reason: Its row failed on 2026-11-18 and the held branch has not changed since, so flying it again would repeat that result.
   - item: FEAT-50
     reason: Its branch still has five audit findings open for a day Session, so it is not on main.
+  - item: IDEA-20
+    reason: Its row was filed after this sheet was written and flashes both the can-bridge and the Platform Teensy with IMU firmware. Only phase 1 (protocol constants and headers that nothing references yet) is on main, so there is no firmware to flash today, and a second firmware change would confound the first flight of can-bridge v44.
 steps:
   - n: 1
     kind: setup

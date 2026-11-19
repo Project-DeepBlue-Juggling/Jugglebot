@@ -144,7 +144,7 @@ void fault_set_mpc_active(bool a) {
   s_mpc_active = a;
 }
 
-// ── THE ONE AGE PREDICATE over a receive-stamped timestamp (FW 45, BUG-93) ─────
+// ── THE ONE AGE PREDICATE over a receive-stamped timestamp (FW 46, BUG-93) ─────
 // True iff `ts` is strictly older than `now` by MORE than `limit`. Every
 // "has axis i gone quiet?" test in this file goes through here, because the
 // naive form `now - ts > limit` is wrong on this scheduler in one specific way:

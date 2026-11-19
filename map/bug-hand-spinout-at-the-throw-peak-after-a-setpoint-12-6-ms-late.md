@@ -4,16 +4,22 @@ kind: bug
 title: Hand SPINOUT at the Throw peak after a setpoint 12.6 ms late (2026-11-18)
 status: inbox
 created: '2026-11-18'
-updated: '2026-11-18T04:39:48Z'
+updated: '2026-11-18T15:51:07Z'
 owners: []
 priority: high
+effort: m
 hardware: robot
+owner: decision
+radius: subsystem
 diagnosis: confirmed
 area: hand
 blocked_by: []
 links:
 - logbook/2026-11-18-sitting-debrief.md
 filed_by: sitting-debrief 2026-11-18
+night_skip: waiting-trigger
+night_skip_on: '2026-11-19'
+night_skip_note: Bag review confirmed; options recorded in the body. The owner decides after the current work (2026-11-18).
 ---
 
 Sitting of 2026-11-18, launch 1, first Columns Attempt, 10:41:49.256 (temp/logs/launch_2026-11-18_1.log lines 545-575; temp/hand_capture/hand_capture_20261118_103811.csv). Related: BUG-57, FEAT-49, BUG-89. The owner reports nothing physical changed on the Hand since 2026-11-13.

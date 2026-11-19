@@ -2,9 +2,9 @@
 id: FEAT-51
 kind: feature
 title: Night Shift merge gate runs the full suite itself and enforces a collected-test floor
-status: inbox
+status: complete
 created: '2026-11-14'
-updated: '2026-11-14T17:54:43Z'
+updated: '2026-11-19T00:30:00Z'
 owners: []
 priority: high
 effort: m
@@ -16,9 +16,6 @@ blocked_by: []
 links: []
 parent: night-shift
 filed_by: claude
-night_skip: frozen-path
-night_skip_on: '2026-11-15'
-night_skip_note: tools/night_shift_gate.py and the night-shift protocol are on the never-list; a day Session builds it.
 ---
 
 The Night Shift merge gate should run the full suite itself and stop trusting a log the orchestrating agent wrote. Owner decision, 2026-11-14, on a finding of the 2026-11-13 maintainer review.
@@ -40,3 +37,8 @@ The Night Shift merge gate should run the full suite itself and stop trusting a 
 
 - The gate becomes a ten-minute step that must respect the suite lock and `live_session`.
 - The audit condition stays self-attested; say so in the plan and leave it to a later step.
+
+## Progress
+
+- 2026-11-18: The merge gate runs the full suite itself on the tip in a fresh worktree, condition (i) collected-test floor, prepare runs no suite; the dry-run night the Item asked for was not run, the first live night is the test and the gate fails closed
+- 2026-11-19: Held one night on a branch for the owner's decision (the night of 2026-11-19 ran on the old gate), then landed on the owner's go-ahead. Still on trust: the audit report of (b), the app suite log, skipped and xfailed tests.

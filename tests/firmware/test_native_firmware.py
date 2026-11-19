@@ -129,12 +129,50 @@ def test_native_gpio_poll_binary_passes(binaries):
         f"normative ball-sensor signal semantics:\n{r.stdout}\n{r.stderr}")
 
 
+def test_native_platform_imu_binary_passes(binaries):
+    """The Platform Teensy's IMU capture ring, frames, state machine and pacing
+    (imu_capture.h / imu_proto.h, contract ros_ws/docs/platform_imu_protocol.md)."""
+    r = _run(binaries["test_platform_imu"])
+    assert r.returncode == 0, (
+        f"native test_platform_imu FAILED:\n{r.stdout}\n{r.stderr}")
+
+
+def test_native_platform_imu_service_binary_passes(binaries):
+    """The Platform Teensy's IMU loop() glue (imu_service.h, FW 11 P2b): at most one I2C
+    transaction per pass, the IMU absent for ever (back-off to 60 s), unplug and re-plug behind
+    a DISCONTINUITY anchor, FIFO overflow, FwUpdate BEGIN in every engine state, the full
+    freeze -> header -> read -> resume cycle with both CRCs, READ pacing with no free TX
+    mailbox, and the STATUS cadence."""
+    r = _run(binaries["test_platform_imu_service"])
+    assert r.returncode == 0, (
+        f"native test_platform_imu_service FAILED:\n{r.stdout}\n{r.stderr}")
+
+
+def test_native_icm42688_binary_passes(binaries):
+    """The Platform Teensy's ICM-42688 non-blocking init (icm42688.cpp) against the scripted Wire fake: the exact
+    register sequence, the datasheet waits, one I2C transaction per call, an absent chip, error recovery."""
+    r = _run(binaries["test_icm42688"])
+    assert r.returncode == 0, (
+        f"native test_icm42688 FAILED:\n{r.stdout}\n{r.stderr}")
+
+
 def test_native_platform_hand_fan_binary_passes(binaries):
     """The Platform Teensy's shipped Hand fan logic (hand_fan.h): thresholds and their
     gap, motor thermistor not FET, unusable frames ignored, off after the timeout."""
     r = _run(binaries["test_platform_hand_fan"])
     assert r.returncode == 0, (
         f"native test_platform_hand_fan FAILED:\n{r.stdout}\n{r.stderr}")
+
+
+def test_native_platform_loop_service_binary_passes(binaries):
+    """The Platform Teensy's FW 11 loop() decisions (loop_service.h): a healthy tilt request
+    answered in the same pass, at most one inclinometer operation per pass, the explicit
+    invalid reply and its bytes, the re-probe floor and back-off, no probe during a firmware
+    update, a request joining a retry sequence, due times across the clock wrap, and the
+    CAN dispatch bound."""
+    r = _run(binaries["test_platform_loop_service"])
+    assert r.returncode == 0, (
+        f"native test_platform_loop_service FAILED:\n{r.stdout}\n{r.stderr}")
 
 
 def test_native_leg_activate_binary_passes(binaries):

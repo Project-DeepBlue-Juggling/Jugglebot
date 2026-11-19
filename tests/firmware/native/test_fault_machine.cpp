@@ -573,12 +573,12 @@ TEST_CASE("FW 23: HB_STALE_MASK is per-axis, includes the hand, and is 4x sharpe
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  FW 45 (BUG-93) — a receive stamp NEWER than the clock read is a LIVE axis
+//  FW 46 (BUG-93) — a receive stamp NEWER than the clock read is a LIVE axis
 // ═══════════════════════════════════════════════════════════════════════════════
 //  On the board, every age test captures `now = micros64()` and then reads the
 //  axis timestamp; task_can_rx (priority 5) can preempt the fault task
 //  (priority 3) between the two and stamp a frame that is newer than `now`.
-//  Until FW 45 the unsigned `now - ts` then wrapped to ~2^64 and a live leg read
+//  Until FW 46 the unsigned `now - ts` then wrapped to ~2^64 and a live leg read
 //  as silent for one evaluation: a CAN_BUS_DOWN trip and a Stow mid-Attempt,
 //  latched as leg 0xFF / age 0 (the latch re-reads the clock after the writer is
 //  done). The native harness has no preemption, but the interleaving is fully
@@ -592,7 +592,7 @@ static void stamp_future(uint8_t a, uint64_t ahead_us) {
   axes[a].last_heartbeat_us = fake_mono_us() + ahead_us;
 }
 
-TEST_CASE("FW 45 BUG-93: a stamp after the clock read is ALIVE, never SILENT") {
+TEST_CASE("FW 46 BUG-93: a stamp after the clock read is ALIVE, never SILENT") {
   for (uint64_t ahead : {uint64_t{1}, uint64_t{3'600'000'000ULL}}) {   // 1 us, 1 h
     CAPTURE(ahead);
     reset_all();
@@ -622,7 +622,7 @@ TEST_CASE("FW 45 BUG-93: a stamp after the clock read is ALIVE, never SILENT") {
   }
 }
 
-TEST_CASE("FW 45 BUG-93: a future stamp on one leg neither hides nor steals a real silence") {
+TEST_CASE("FW 46 BUG-93: a future stamp on one leg neither hides nor steals a real silence") {
   reset_all();
   fake_set_clock(10'000'000, 10'000'000);
   seed_present_legs();
@@ -652,7 +652,7 @@ TEST_CASE("FW 45 BUG-93: a future stamp on one leg neither hides nor steals a re
   REQUIRE(fault_can_bus_down() == false);         // [wraps]
 }
 
-TEST_CASE("FW 45 BUG-93: the silence boundary is unchanged (timeout trips only past it)") {
+TEST_CASE("FW 46 BUG-93: the silence boundary is unchanged (timeout trips only past it)") {
   reset_all();
   fake_set_clock(10'000'000, 10'000'000);
   seed_present_legs();
@@ -670,7 +670,7 @@ TEST_CASE("FW 45 BUG-93: the silence boundary is unchanged (timeout trips only p
   REQUIRE(fault_can_fault_leg() == 2);
 }
 
-TEST_CASE("FW 45 BUG-93: rx_older_than is strict on both sides") {
+TEST_CASE("FW 46 BUG-93: rx_older_than is strict on both sides") {
   REQUIRE(rx_older_than(100, 100, 0) == false);   // same instant: age zero
   REQUIRE(rx_older_than(100, 101, 0) == false);   // future stamp: age zero, not 2^64
   REQUIRE(rx_older_than(100, ~0ULL, 0) == false);

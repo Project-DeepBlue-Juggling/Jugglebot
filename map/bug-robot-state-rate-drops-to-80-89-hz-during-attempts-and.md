@@ -4,15 +4,22 @@ kind: bug
 title: /robot_state rate drops to 80-89 Hz during Attempts and drifts down over a launch
 status: inbox
 created: '2026-11-18'
-updated: '2026-11-18T02:07:37Z'
+updated: '2026-11-18T15:51:11Z'
 owners: []
 priority: medium
+effort: m
+hardware: robot
+owner: hands
+radius: subsystem
 diagnosis: unknown
 area: can-bridge
 blocked_by: []
 links:
 - logbook/2026-11-18-sitting-debrief.md
 filed_by: sitting-debrief 2026-11-18
+night_skip: sitting
+night_skip_on: '2026-11-19'
+night_skip_note: Diagnosis unknown; the next step is per-thread CPU of teensy_bridge_node in a launch, which no bag records.
 ---
 
 Sitting of 2026-11-18 (operator note on step 41; bags 2026-11-18_*). Related: BUG-98.
