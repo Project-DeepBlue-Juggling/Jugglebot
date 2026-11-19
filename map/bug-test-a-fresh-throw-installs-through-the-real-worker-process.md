@@ -2,20 +2,21 @@
 id: BUG-120
 kind: bug
 title: test_a_fresh_throw_installs_through_the_real_worker_process misses the solver wire deadline under box load and fails the gate
-status: inbox
+status: complete
 created: '2026-11-19'
-updated: '2026-11-18T16:10:13Z'
+updated: '2026-11-19T16:00:58Z'
 owners: []
 priority: medium
 effort: s
 hardware: none
 owner: none
 radius: local
-diagnosis: hypothesis
+diagnosis: confirmed
 area: tests-tooling
 blocked_by: []
 links:
 - bug-test-ti1-in-test-install-segment-goes-stale-under-box-load
+- logbook/2026-11-20-real-worker-install-test-load.md
 filed_by: night-shift
 ---
 
