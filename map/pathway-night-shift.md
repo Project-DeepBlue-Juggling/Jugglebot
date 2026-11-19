@@ -18,13 +18,13 @@ destination: Every morning main is green and carries the overnight work that nee
 branch: main
 ---
 
-The board gains small Items faster than Sessions clear them. Night Shift is an unattended Claude Code run on this Jetson after the 04:00 nightly suite, in its own clone, `~/night-shift/Jugglebot`. It examines what changed on the board, works the Items Claude can finish alone, holds the rest on branches, and writes one committed report. Its protocol is `.claude/commands/night-shift.md`; its runner is `tools/night_shift.sh`.
+The board gains small Items faster than Sessions clear them. Night Shift is an unattended Claude Code run on this Jetson after the 02:00 nightly suite, in its own clone, `~/night-shift/Jugglebot`. It examines what changed on the board, works the Items Claude can finish alone, holds the rest on branches, and writes one committed report. Its protocol is `.claude/commands/night-shift.md`; its runner is `tools/night_shift.sh`.
 
 The Next Sitting Runbook is the second half: one page listing every hardware check waiting across all Pathways, Items and plans, with the owner's steps cut to the hardware-relevant ones.
 
 ## How the night runs
 
-- **Runner**: headless `claude -p` under a user systemd timer (04:45), in the clone on `main`, never in `~/Desktop/Jugglebot`. A deny-list settings file is installed into the clone on every run; the runner waits for a live robot session and ends `DEFERRED` if it does not clear, stops `HELD` on the owner's hold file, and stops `UNGATED_HOLD` on an unreviewed ungated landing.
+- **Runner**: headless `claude -p` under a user systemd timer (02:45), in the clone on `main`, never in `~/Desktop/Jugglebot`. A deny-list settings file is installed into the clone on every run; the runner waits for a live robot session and ends `DEFERRED` if it does not clear, stops `HELD` on the owner's hold file, and stops `UNGATED_HOLD` on an unreviewed ungated landing.
 - **Models and billing**: the orchestrator is Opus (`NIGHT_SHIFT_MODEL`); the runner refuses a Fable model (`FORBIDDEN_MODEL`) and subagents are Sonnet, or Opus with a stated reason. With an API key the night runs on it; if the credit balance runs out and a subscription token is set, the same session resumes on the subscription. With no key it runs on the subscription from the start.
 - **The delta, not the board**: the preflight (`tools/night_shift_preflight.py`) lists the Items added, changed, answered (a question the owner just answered), carried over, unblocked or never classified since the last completed night. An empty delta ends the night `NOTHING_NEW` with no claude call and no ticker claim. Sundays, and a `full-walk.request` file, walk every open Item.
 - **Skip reasons live on the Item**: an Item the night leaves alone carries `night_skip` (a fixed vocabulary, `mapkit/items.py`) so it is not re-examined until it changes; an `input-*` reason is listed in the report's section of Items the owner could unblock with a small input.
@@ -34,16 +34,17 @@ The Next Sitting Runbook is the second half: one page listing every hardware che
 
 ## The merge gate
 
-A held branch merges to `main` only through `tools/night_shift_gate.py`, which fails closed and exits 0 only on MERGE. Eight conditions, all evaluated:
+A held branch merges to `main` only through `tools/night_shift_gate.py`, which fails closed and exits 0 only on MERGE. Nine conditions, all evaluated:
 
-- (a) the full suite passed on the branch tip;
+- (a) the gate ran the full suite on the branch tip itself and it passed;
 - (b) the audit names that tip and has no open behaviour-affecting finding;
 - (c) the Item is rated `hardware: none`, the branch did not lower a rating the base had, and the Item has no `## Sitting` section;
 - (d) the Item is rated and its radius is not normative;
 - (e) no open question ticket names the Item;
 - (f) the branch touches no frozen path;
 - (g) the branch did not change an `owner` rating the base had;
-- (h) a branch touching `mapkit/` also passed the map app's own suite.
+- (h) a branch touching `mapkit/` also passed the map app's own suite;
+- (i) the branch collects no fewer tests than main; never waivable.
 
 Only (c) is waivable, by `/sitting-debrief` after a hardware pass. A merge with no gate record is `UNGATED_MERGE` and holds every later night until the owner clears it. A branch that edits the Night Shift's own machinery (the never-list in `tools/night_shift_landed.py`) is flagged `SELF_EDIT_BRANCH`.
 

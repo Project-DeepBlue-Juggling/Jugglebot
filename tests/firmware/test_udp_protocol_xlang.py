@@ -72,7 +72,7 @@ def test_crc16_matches_generator(gen, proto):
 @pytest.mark.parametrize("name", [
     "Setpoint", "HeartbeatJ2T", "Telemetry", "Diagnostic",
     "HeartbeatT2J", "Profile", "PlatformFrame", "HandCmdEcho", "HandSensor",
-    "CanErrors", "BridgeTxDiag", "BridgeIdentity", "LegClampDiag",
+    "CanErrors", "BridgeTxDiag", "BridgeIdentity", "LegClampDiag", "PlatformImuBatch",
     "RpcRequest", "RpcResponse",
 ])
 def test_message_pack_unpack_roundtrip(proto, gen, name):
@@ -112,7 +112,7 @@ def test_message_pack_unpack_roundtrip(proto, gen, name):
     ("PlatformFrame", "PLATFORM_FRAME"), ("HandCmdEcho", "HAND_CMD_ECHO"),
     ("HandSensor", "HAND_SENSOR"), ("CanErrors", "CAN_ERRORS"),
     ("BridgeTxDiag", "BRIDGE_TX_DIAG"), ("BridgeIdentity", "BRIDGE_IDENTITY"),
-    ("LegClampDiag", "LEG_CLAMP_DIAG"),
+    ("LegClampDiag", "LEG_CLAMP_DIAG"), ("PlatformImuBatch", "PLATFORM_IMU_BATCH"),
 ])
 def test_frame_encode_decode_roundtrip(proto, gen, name, msg_type_member):
     msg_spec = next(m for m in gen.MESSAGES if m.name == name)
@@ -586,7 +586,13 @@ def test_wire_layout_frozen(gen):
     # the version constant, and that is the only input that moved. No message,
     # RPC arg or MsgType changed; the 0x6E0 tilt counts ride inside a CAN payload.
     # Previous pin: da1ae9be7eedddfb4ec60776c35309531c4f6783d4c4b96bb6d251c8817724ed
-    _EXPECTED = "27eb4fcdb3cf7bc4031b56fcb83d4ee8010f09da60a64ce88001bbe5bc91d70a"
+    # Re-pinned for the ADDITIVE Platform IMU relay (2026-11-19, can-bridge FW 45,
+    # IDEA-20 P3a): one new message PlatformImuBatch (220 B) on the new MsgType
+    # PLATFORM_IMU_BATCH 0x95, two new arg structs ArgPlatformImuCtrl (4 B) and
+    # ArgPlatformImuRead (7 B) behind RpcMethods 0x0064 / 0x0065. No existing
+    # message, arg or MsgType changed, so PROTOCOL_VERSION stays 14.
+    # Previous pin: 27eb4fcdb3cf7bc4031b56fcb83d4ee8010f09da60a64ce88001bbe5bc91d70a
+    _EXPECTED = "e3dd17c7dd06a87b37bafd53d04b9ea698ce3e4e3dc315dc7a827c56305dce05"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

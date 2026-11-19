@@ -18,6 +18,9 @@ links:
 - logbook/2026-11-13-sitting-debrief.md
 - pathway-human-partner-juggling
 filed_by: claude (jugglebot-f5, pattern exploration 2026-10-30)
+night_skip: owner-session
+night_skip_on: '2026-11-19'
+night_skip_note: Promoted to PWAY-11 (plan human-partner-juggling.md); P1 and P2 on main, the rest is day-Session work and Sittings.
 ---
 
 Owner 2026-10-30: a plain three-ball cascade, every throw at an equal Apex and timing, the Platform held tilted toward the owner the whole Attempt, catch and throw sites free.

@@ -777,6 +777,9 @@ def generate_launch_description():
             # are what lines recorded footage up with this bag, so they are
             # bagged; the heartbeat and diag give the sync/fault context.
             '/hand_fan/status',
+            # Platform IMU capture upload progress / verdicts (IDEA-20 P3b): ~2 Hz,
+            # a few hundred bytes; the capture itself goes to temp/imu_capture/, not the bag.
+            '/platform_imu/status',
             '/camera/heartbeat',
             '/camera/record_event',
             '/camera_diag',

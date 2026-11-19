@@ -1515,6 +1515,14 @@ def test_TI1_seven_channel_frames_reach_the_wire_and_the_flags_fall():
         # lower load). Every other planning call in this file already
         # freezes the clock for exactly this reason; this one predates the
         # lateness check and never needed to.
+        #
+        # Separately, BUG-108: robot_state was stamped inside `_perf_node` on the REAL clock;
+        # the bridge/ZMQ setup above then runs for an unbounded wall time on a
+        # loaded box and can walk past the node's 0.5 s staleness bound before
+        # the install reads it. On the live graph robot_state arrives at 100 Hz,
+        # so re-stamp it right before the call (see `_refresh`); the guard and
+        # its threshold are untouched.
+        _refresh(traj)
         with _frozen_perf() as at:
             # at + 0.7: the 0.375 s window this test was sized on, from the
             # THROW's 13-knot reserved origin (0.6 s on the 9-knot LEAD_S

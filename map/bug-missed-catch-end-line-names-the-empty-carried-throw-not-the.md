@@ -4,15 +4,22 @@ kind: bug
 title: MISSED_CATCH end line names the empty carried Throw, not the flight that was lost one cycle earlier
 status: inbox
 created: '2026-11-18'
-updated: '2026-11-18T02:07:43Z'
+updated: '2026-11-18T15:51:14Z'
 owners: []
 priority: medium
+effort: m
+hardware: none
+owner: none
+radius: local
 diagnosis: confirmed
 area: skill-stack
 blocked_by: []
 links:
 - logbook/2026-11-18-sitting-debrief.md
 filed_by: sitting-debrief 2026-11-18
+night_skip: too-large
+night_skip_on: '2026-11-19'
+night_skip_note: 'Rated m: naming the lost flight needs a rule for when the carried Throw never flew (10 of 34 ends it did fly).'
 ---
 
 Found at the debrief of the Sitting of 2026-11-18 (34 MISSED_CATCH ends). Related: BUG-78, BUG-33.

@@ -41,7 +41,8 @@ REPO_ROOT = NATIVE_DIR.parents[2]
 FIRMWARE_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "Teensy_code_canbridge"
 PLATFORM_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "Teensy_code_platform"
 PLATFORM_HAND_FAN = PLATFORM_DIR / "hand_fan.h"
-PLATFORM_IMU_HEADERS = [PLATFORM_DIR / "imu_capture.h", PLATFORM_DIR / "imu_proto.h",
+PLATFORM_LOOP_SERVICE = PLATFORM_DIR / "loop_service.h"
+PLATFORM_IMU_HEADERS = [PLATFORM_DIR / "imu_capture.h", PLATFORM_DIR / "imu_proto.h", PLATFORM_DIR / "imu_service.h",
                         PLATFORM_DIR / "protocol_config.h",
                         PLATFORM_DIR / "icm42688.h", PLATFORM_DIR / "icm42688.cpp"]
 # All runtime build artifacts live under temp/ (gitignored), per the repo rule.
@@ -50,7 +51,7 @@ CACHE_DIR = REPO_ROOT / "temp" / "firmware_native"
 # Fixed, reproducible flags. Exceptions/RTTI are ENABLED (doctest uses them); the
 # compiled firmware TUs neither throw nor use RTTI, so this does not change their
 # behaviour. -Wno-unused-function silences firmware helpers unused in a test TU.
-FLAGS = ["-std=c++17", "-O2", "-Wall", "-Wno-unused-function"]
+FLAGS = ["-std=c++17", "-O2", "-Wall", "-Wno-unused-function", "-pthread"]   # -pthread: the IMU ring producer/consumer stress
 INCLUDES = ["-I", str(SHIM_DIR), "-I", str(NATIVE_DIR), "-I", str(FIRMWARE_DIR)]
 
 # Shared firmware/HAL objects compiled once and linked per binary. leg_interp is
@@ -117,10 +118,23 @@ _BINARIES = {
         NATIVE_DIR / "test_platform_hand_fan.cpp",
         [],
     ),
+    # The Platform Teensy's loop() decisions (FW 11): the tilt service, the inclinometer
+    # re-probe scheduler and the CAN dispatch bound. Pure header (loop_service.h, which
+    # includes the Platform's protocol_config.h); same relative-include rule as the fan.
+    "test_platform_loop_service": (
+        NATIVE_DIR / "test_platform_loop_service.cpp",
+        [],
+    ),
     # The Platform Teensy's IMU capture ring + protocol/state-machine logic: pure headers
     # (imu_capture.h, imu_proto.h), nothing to link. Same relative-include rule as the fan.
     "test_platform_imu": (
         NATIVE_DIR / "test_platform_imu.cpp",
+        [],
+    ),
+    # The Platform IMU's loop() glue (FW 11, P2b): one bounded step per pass, back-off, the
+    # TX-mailbox rule, anchors, FwUpdate halt. Pure header (imu_service.h), nothing to link.
+    "test_platform_imu_service": (
+        NATIVE_DIR / "test_platform_imu_service.cpp",
         [],
     ),
     # The ICM-42688 non-blocking init against the scripted Wire fake: register sequence, waits,
@@ -219,6 +233,7 @@ def _source_hash() -> str:
         files += sorted(p for p in d.glob("*") if p.is_file() and p.suffix in (".h", ".cpp"))
     files += sorted(p for p in FIRMWARE_DIR.glob("*") if p.suffix in (".h", ".cpp", ".ino"))
     files.append(PLATFORM_HAND_FAN)
+    files.append(PLATFORM_LOOP_SERVICE)
     files += PLATFORM_IMU_HEADERS
     for p in sorted(set(files)):
         h.update(p.name.encode())

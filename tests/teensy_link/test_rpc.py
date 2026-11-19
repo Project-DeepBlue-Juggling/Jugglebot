@@ -219,6 +219,35 @@ def test_platform_frame_waiter_clear_drops_stale_reply(fake_teensy_and_client):
         waiter.close()
 
 
+def test_platform_frame_waiter_take_returns_every_reply_in_arrival_order(fake_teensy_and_client):
+    """take() is the arrival-order view the firmware-update DATA window reads
+    (2026-11-19): a burst is seen whole and oldest first, where wait() shows
+    only the latest; another dlc is skipped; clear() empties it."""
+    teensy, client = fake_teensy_and_client
+    waiter = PlatformFrameWaiter(client)
+    try:
+        can_id = 0x6F1
+        for seq, dlc in ((5, 8), (6, 4), (7, 8), (8, 8)):
+            pf = p.PlatformFrame(t_bridge_us=0, can_id=can_id, dlc=dlc,
+                                 data=(2, 3, seq, 0, 0, 0, 0, 0))
+            teensy.send_to_jetson(int(p.MsgType.PLATFORM_FRAME), pf.pack())
+        assert waiter.wait(can_id, expected_dlc=8, timeout=1.0) is not None
+        deadline = time.monotonic() + 1.0
+        while waiter.wait(can_id, 8, 0.05)[2] != 8 and time.monotonic() < deadline:
+            pass                                     # all four delivered
+        got = [waiter.take(can_id, expected_dlc=8, timeout=0.5)[2] for _ in range(3)]
+        assert got == [5, 7, 8]
+        assert waiter.take(can_id, expected_dlc=8, timeout=0.05) is None
+        pf = p.PlatformFrame(t_bridge_us=0, can_id=can_id, dlc=8, data=(2, 3, 9, 0, 0, 0, 0, 0))
+        waiter.clear(can_id)
+        teensy.send_to_jetson(int(p.MsgType.PLATFORM_FRAME), pf.pack())
+        assert waiter.wait(can_id, expected_dlc=8, timeout=1.0)[2] == 9   # queued for take() too
+        waiter.clear(can_id)
+        assert waiter.take(can_id, expected_dlc=8, timeout=0.05) is None
+    finally:
+        waiter.close()
+
+
 # ── Platform firmware-over-CAN: reply decoder + DATA-window rewind ──────────
 
 def test_platform_fw_reply_decoder_maps_status_to_name():
@@ -263,24 +292,33 @@ def test_platform_fw_window_end_lands_on_an_ack_point():
     assert end(65535, 70000) == 65536       # continuous across the seq wrap
 
 
-def test_platform_fw_window_reply_skips_stragglers_from_the_previous_window():
-    """The reply read after a window must be THAT window's: its last frame's OK
-    ACK, or a BAD_SEQ naming a frame inside it. A NAK about an older frame is a
+def test_platform_fw_window_reply_skips_stragglers_from_the_previous_window(monkeypatch):
+    """The reply that decides a window is THAT window's: its last frame's OK
+    ACK, or a BAD_SEQ naming its end; failing those, after the settle time, the
+    BAD_SEQ naming the HIGHEST frame inside it. A NAK about an older frame is a
     straggler from the previous window's duplicate burst and is skipped. The
-    2026-09-09 rehearsal without this: 1362 rewinds in 51 s, two per window,
-    each re-sending an already-accepted window and provoking the next burst."""
+    2026-09-09 rehearsal without the skip: 1362 rewinds in 51 s. 2026-11-19: an
+    in-window NAK is not acted on at once either, because a straggler naming
+    the window's FIRST frame is in-window too (three verify-only runs derailed
+    to two rewinds per window); see test_fw_update_window_convergence.py."""
     import tools.teensy_link_bridge as tlb
+    monkeypatch.setattr(tlb, "_FW_REPLY_SETTLE_S", 0.02)
+    monkeypatch.setattr(tlb, "_FW_REPLY_TIMEOUT_S", 0.05)
 
     class _Waiter:
+        """Hands back scripted replies in arrival order through ``take``."""
+
         def __init__(self, replies):
             self.replies = list(replies)
-            self.cleared = 0
 
         def clear(self, can_id):
-            self.cleared += 1
+            raise AssertionError("the window reader must not clear: it would drop a fresh reply")
 
-        def wait(self, can_id, expected_dlc, timeout):
-            return self.replies.pop(0) if self.replies else None
+        def take(self, can_id, expected_dlc, timeout):
+            if self.replies:
+                return self.replies.pop(0)
+            time.sleep(timeout)
+            return None
 
     def nak(expected):
         return struct.pack('<BBHI', 2, rpc_args.PLATFORM_FW_STATUS_BAD_SEQ, expected, 0)
@@ -288,25 +326,34 @@ def test_platform_fw_window_reply_skips_stragglers_from_the_previous_window():
     def ack(seq):
         return struct.pack('<BBHI', 2, rpc_args.PLATFORM_FW_STATUS_OK, seq, 0)
 
-    # Window [832..848): two stragglers naming 823 and 832 (older than / at
-    # the previous boundary), then the real ACK for frame 847.
+    def decoded(reply):
+        _, status, seq, _ = rpc_args.decode_platform_fw_reply(reply)
+        return status, seq
+
+    BAD_SEQ, OK = rpc_args.PLATFORM_FW_STATUS_BAD_SEQ, rpc_args.PLATFORM_FW_STATUS_OK
+    # Window [832..848): stragglers naming 823 and 831 (older windows), then
+    # the real ACK for frame 847.
     w = _Waiter([nak(823), nak(831), ack(847)])
-    reply = tlb._wait_for_window_reply(w, 0x6F1, 832, 848)
-    _, status, seq, _ = rpc_args.decode_platform_fw_reply(reply)
-    assert status == rpc_args.PLATFORM_FW_STATUS_OK and seq == 847
-    assert w.cleared == 2                    # each straggler was cleared, not acted on
-    # A NAK INSIDE the window is fresh and is returned at once.
-    w = _Waiter([nak(840)])
-    _, status, seq, _ = rpc_args.decode_platform_fw_reply(
-        tlb._wait_for_window_reply(w, 0x6F1, 832, 848))
-    assert status == rpc_args.PLATFORM_FW_STATUS_BAD_SEQ and seq == 840
+    assert decoded(tlb._wait_for_window_reply(w, 0x6F1, 832, 848)) == (OK, 847)
+    # The 2026-11-19 derail: a straggler naming the window's FIRST frame (from
+    # the previous window's resend burst) arrives before the window's own ACK.
+    w = _Waiter([nak(832), nak(832), ack(847)])
+    assert decoded(tlb._wait_for_window_reply(w, 0x6F1, 832, 848)) == (OK, 847)
+    # A frame the board then accepted provoked an early NAK; the later ones
+    # name a higher frame: the highest lower bound is the verdict.
+    w = _Waiter([nak(836), nak(837), nak(837)])
+    assert decoded(tlb._wait_for_window_reply(w, 0x6F1, 832, 848)) == (BAD_SEQ, 837)
     # A NAK naming the window's END (the board took everything, the ACK was
-    # lost) is fresh too: the caller rewinds to 848, i.e. moves on.
-    w = _Waiter([nak(848)])
+    # lost) is decisive: the caller rewinds to 848, i.e. moves on.
+    w = _Waiter([nak(840), nak(848)])
     assert tlb._wait_for_window_reply(w, 0x6F1, 832, 848) == nak(848)
     # A refusal is always for us.
     refused = struct.pack('<BBHI', 2, rpc_args.PLATFORM_FW_STATUS_BAD_STATE, 0, 0)
     assert tlb._wait_for_window_reply(_Waiter([refused]), 0x6F1, 832, 848) == refused
+    # A BEGIN / VERIFY straggler (another opcode) is never a DATA verdict.
+    begin_ok = struct.pack('<BBHI', 1, OK, 847, 0)
+    assert decoded(tlb._wait_for_window_reply(_Waiter([begin_ok, ack(847)]), 0x6F1, 832, 848)) \
+        == (OK, 847)
     # Nothing but stragglers → None (the caller's retry path).
     assert tlb._wait_for_window_reply(_Waiter([nak(823)]), 0x6F1, 832, 848) is None
 

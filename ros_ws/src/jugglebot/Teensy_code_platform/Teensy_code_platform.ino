@@ -5,7 +5,8 @@
  *    • CAN traffic monitor (ID 0x7DF)
  *    • Optional debugging of specific CAN IDs
  *    • Timed analysis of RxSdo messages
- *    • SCL3300 inclinometer → CAN (ID 0x7DE)
+ *    • SCL3300 inclinometer → CAN (ID 0x7DE), served from loop() since FW 11
+ *      (loop_service.h), with an explicit invalid reply when it cannot answer
  *    • Robot state exchange (ID 0x6E0) — also reports this firmware's
  *      FW_VERSION in bytes 5-6; see the FIRMWARE IDENTITY block below and
  *      ros_ws/docs/platform_fw_version.md
@@ -20,7 +21,8 @@
  *  its encoder (FW 8 listens to node 6's temperature broadcast for the Hand fan,
  *  which is receive-only and carries no motion).  This board's TX set is the inclinometer frame (0x7DE), the
  *  RobotState reply (0x6E0), the firmware-update reply (0x6F1), the traffic
- *  report (0x7DF) and, since FW 9, the Hand fan status (0x6E2) — nothing else.  The stroke engine (Trajectory.h, the 0x6D0
+ *  report (0x7DF), since FW 9 the Hand fan status (0x6E2) and, since FW 11, the IMU reply,
+ *  status and data frames (0x6E4-0x6E6, ros_ws/docs/platform_imu_protocol.md) — nothing else.  The stroke engine (Trajectory.h, the 0x6D0
  *  TRAJ_CMD decode, the 0x0C9 hand-encoder cache) was deleted with it.
  *
  *  NOTE on CAN IDs:
@@ -35,6 +37,20 @@
 #include "hardware_config.h"  // Auto-generated from config/hardware_config.yaml
 #include "protocol_config.h"  // Auto-generated from config/protocol_config.yaml
 #include "hand_fan.h"
+#include "loop_service.h"  // FW 11: tilt service, inclinometer probe, CAN dispatch bound
+
+/*  IMU KILL SWITCH (FW 11, IDEA-20 P2b).  1 = the ICM-42688 capture (imu_service.h); 0 = every
+ *  IMU code path compiled out: no Wire, no ring, no 0x6E3 handling, no 0x6E4-0x6E6 frames, so a
+ *  known-good no-IMU image builds from this same tree (pio run -e teensy40 with
+ *  build_flags -DPLATFORM_IMU_ENABLED=0).  At run time the IMU_CMD DISABLE does the same. */
+#ifndef PLATFORM_IMU_ENABLED
+#define PLATFORM_IMU_ENABLED 1
+#endif
+#if PLATFORM_IMU_ENABLED
+#include <Wire.h>
+#include "icm42688.h"
+#include "imu_service.h"
+#endif
 
 #define DEBUG_TRAFFIC 0    // 0 = silent, 1 = Serial print report CAN traffic frames
 #define DEBUG_TIME_SYNC 0  // 0 = silent, 1 = Serial print periodic messages showing how tight the clocks are synced
@@ -156,9 +172,36 @@
  *        to AUTO at the defaults.  0x6E2 is a new status frame at 1 Hz, on every
  *        command and on every fan change.  Needs can-bridge FW 41 for both; on an
  *        older bridge AUTO still works.  No motion path touched.
+ *   11 = 2026-11-19.  ROBUSTNESS for the Platform IMU (IDEA-20 P2a): this board must
+ *        keep calling can1.events(), because firmware over CAN is its only way in.
+ *        (a) The 0x7DE tilt request no longer runs the inclinometer inside the CAN
+ *        callback: the callback sets a flag and loop() serves it (loop_service.h),
+ *        reading in the same pass, at most one sensor operation per pass, retries
+ *        10 ms apart.  A failing SCL3300 used to hold the callback >= 600 ms.
+ *        (b) When the inclinometer cannot answer, the reply is an explicit INVALID
+ *        frame, two quiet NaNs with a reason (protocol_config.yaml platform_tilt),
+ *        instead of the old (pi, pi).  A FW <= 10 host decodes it as (nan, nan) and
+ *        rejects it with its |tilt| bound, as it rejected (pi, pi).
+ *        (c) setup() no longer waits for ever for the SCL3300: three begin() calls
+ *        at most (about 310 ms), then the board runs with tilt NOT_READY and loop()
+ *        re-probes (1 s, backing off to 60 s; never during a firmware update, never
+ *        brought forward by a tilt request).
+ *        With the sensor present, setup() makes the same single begin() as before.
+ *        (d) loop() dispatches up to 32 received CAN frames per pass, not one, each
+ *        only while 5 TX mailboxes are free and FlexCAN's software TX queue is empty;
+ *        during a firmware update, exactly one per pass as before.
+ *        No motion path, no CAN id, no TX frame other than the tilt reply changed.
+ *        (e) IDEA-20 P2b: the Platform IMU (ICM-42688-P on Wire, pins 18/19, 1 MHz):
+ *        a 32 s capture ring in RAM2, frozen and uploaded on request over 0x6E3-0x6E6
+ *        (ros_ws/docs/platform_imu_protocol.md), status at 1 Hz.  STRICTLY OPTIONAL:
+ *        absent, unplugged or stuck, it costs at most one bounded I2C transaction per
+ *        loop() pass and backs off to one probe a minute; a firmware-update BEGIN stops
+ *        all of it.  Nothing IMU runs for the first 10 s after boot, and a BEGIN in
+ *        those 10 s keeps it off until the next reboot (the recovery window if IMU code
+ *        ever faults).  Kill switch: PLATFORM_IMU_ENABLED (below the includes).
  */
 constexpr char     FW_NAME[]  = "jugglebot-platform";
-constexpr uint16_t FW_VERSION = 10;  // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
+constexpr uint16_t FW_VERSION = 11;  // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
                                      //      feedforward, C-HAND-2).
                                      // 2→3: 2026-08-18 hand END-STOP correction — BEHAVIOURAL.
                                      //      Geometry::HAND_MOTOR_HARD_STOP_REVS 11.1 → 10.8 rev
@@ -200,6 +243,12 @@ constexpr uint16_t FW_VERSION = 10;  // 1→2: 2026-07-29 throwDecelToTorque (po
                                      // 9→10: 2026-11-10 BUG-7 the levelling offset is held
                                      //      as the raw int16 wire counts and echoed exactly:
                                      //      no float round trip, no truncating cast.
+                                     // 10→11: 2026-11-19 IDEA-20 P2a robustness: tilt served
+                                     //      from loop() with an explicit invalid reply,
+                                     //      bounded inclinometer probe in setup() plus
+                                     //      re-probes from loop(), up to 32 CAN frames
+                                     //      dispatched per loop() pass. P2b: the Platform
+                                     //      IMU capture, status and upload (0x6E3-0x6E6).
 
 /*----------------------------------------------------------------------------*/
 /*                                CAN BUS SET‑UP                              */
@@ -276,8 +325,9 @@ struct platformTilt {
  *  COMMIT the main loop has stopped, so the pin holds its last state until the
  *  reset releases it. */
 /*  This section sits below the structs above on purpose: the .ino preprocessor puts
- *  every function prototype ahead of the first function it finds, and sendTiltData
- *  and createStateCANMessage need platformTilt and RobotState declared by then. */
+ *  every function prototype ahead of the first function it finds, and
+ *  createStateCANMessage needs RobotState declared by then (as sendTiltData needed
+ *  platformTilt before FW 11). */
 constexpr uint8_t HAND_FAN_PIN = uint8_t(TeensyOp::HAND_FAN_PIN);
 static_assert(HAND_FAN_PIN != 10 && HAND_FAN_PIN != 11 && HAND_FAN_PIN != 12 && HAND_FAN_PIN != 13
                   && HAND_FAN_PIN != 18 && HAND_FAN_PIN != 19 && HAND_FAN_PIN != 22 && HAND_FAN_PIN != 23,
@@ -312,6 +362,35 @@ void updateHandFan() {
     sendHandFanStatus();
   }
 }
+
+/*----------------------------------------------------------------------------*/
+/*                       P L A T F O R M   I M U  (IDEA-20)                    */
+/*----------------------------------------------------------------------------*/
+#if PLATFORM_IMU_ENABLED
+/*  1 MHz (Fast-mode Plus).  400000 is the fallback: set it here if the board's pull-ups or
+ *  wiring do not hold 1 MHz; the I2C_400K flags then say so in STATUS and the header, and a
+ *  burst of 8 packets takes ~3.0 ms instead of ~1.3 ms. */
+constexpr uint32_t IMU_I2C_HZ = 1000000;
+static_assert(ImuService::INIT_PENDING == icm42688::Driver::INIT_PENDING, "imu_service.h mirrors the driver");
+static_assert(ImuService::ERR_BAD_PACKET == icm42688::ERR_BAD_PACKET, "imu_service.h mirrors the driver");
+static_assert(ImuService::BURST_PKTS <= icm42688::Driver::BURST_PKTS, "one burst is one Wire read");
+
+/*  The capture ring (32000 x 12 B = 384000 B) and anchor table in RAM2 (DMAMEM, .bss.dma),
+ *  linker-placed below the heap and so below the CrashReport area at 0x2027FF80.  DMAMEM is
+ *  NOT zeroed at boot: ImuCapture only ever reads slots it has written (count_, a_count_), so
+ *  nothing depends on the initial contents. */
+DMAMEM int16_t imuRingBuf[PlatformImu::RING_SAMPLES * 6] __attribute__((aligned(32)));
+DMAMEM ImuCapture::Anchor imuAnchors[PlatformImu::ANCHOR_RING];
+ImuCapture::Capture imuCapture;
+ImuService::Service imuService;
+icm42688::Driver imuChip(Wire);
+/*  Mixed with the cycle counter by every CAN frame received during setup() (canSniff runs in
+ *  FlexCAN's ISR then): the bus's timing against this board's boot is what makes boot_id
+ *  differ from one boot to the next.  Integer only. */
+volatile uint32_t imuBootEntropy = 0;
+DMAMEM uint32_t imuBootSeq;  // uninitialised on purpose: a boot counter that survives warm resets
+volatile uint32_t imuTxQueuedAnyway = 0;  // write() queued an IMU frame (never expected; see ImuTx)
+#endif
 
 /*----------------------------------------------------------------------------*/
 /*                        ──  TIME–SYNC  LAYER ──                             */
@@ -389,6 +468,11 @@ inline void handleSyncFrame(const CAN_message_t &msg) {
   uint64_t jetson_us = uint64_t(sec) * 1'000'000ULL + usec;
   uint64_t local_us = micros64();
   int64_t offset = int64_t(jetson_us) - int64_t(local_us);
+#if PLATFORM_IMU_ENABLED
+  /* IMU_STATUS sync_peak: wall time received minus get_wall_time_us() before the IIR update,
+   * i.e. offset - wall_offset_us.  Integer only: this runs in FlexCAN's ISR during setup(). */
+  imuService.sync().note(!have_offset, offset - wall_offset_us);
+#endif
 
   if (!have_offset) {  // first frame → step
     wall_offset_us = offset;
@@ -818,6 +902,110 @@ void tick() {
 }  // namespace FwUpdate
 
 /*----------------------------------------------------------------------------*/
+/*                     C A N   T X   M A I L B O X E S                        */
+/*----------------------------------------------------------------------------*/
+/*  Free TX mailboxes, read from the FlexCAN registers (FW 11).  The decision is
+ *  LoopService::Can::free_tx_mailboxes() (pure, tested natively: same formula as FlexCAN_T4's
+ *  private mailboxOffset(), with setMaxMB(16) and the default RFFN: MB 8-15); this only reads
+ *  the C/S words of the TX mailboxes, never the RX FIFO's (reading an RX C/S word locks it).
+ *  Used by loop()'s dispatch gate and by the IMU's TX rule.  Hardware-only: never run on host. */
+static_assert(LoopService::Can::CODE_TX_INACTIVE == FLEXCAN_MB_CODE_TX_INACTIVE, "loop_service.h mirrors FlexCAN_T4");
+uint32_t canFreeTxMailboxes() {
+  const uint32_t b = uint32_t(CAN1);
+  const uint32_t maxmb = FLEXCANb_MAXMB_SIZE(b) > 64u ? 64u : FLEXCANb_MAXMB_SIZE(b);
+  const bool fen = (FLEXCANb_MCR(b) & FLEXCAN_MCR_FEN) != 0;
+  const uint32_t rffn = (FLEXCANb_CTRL2(b) >> FLEXCAN_CTRL2_RFFN_BIT_NO) & 0xFu;
+  uint8_t codes[64];
+  for (uint32_t i = LoopService::Can::mailbox_offset(maxmb, fen, rffn); i < maxmb; ++i)
+    codes[i] = uint8_t(FLEXCAN_get_code(FLEXCANb_MBn_CS(b, i)));
+  return LoopService::Can::free_tx_mailboxes(maxmb, fen, rffn, codes);
+}
+
+#if PLATFORM_IMU_ENABLED
+/*----------------------------------------------------------------------------*/
+/*                 P L A T F O R M   I M U   A D A P T E R S                  */
+/*----------------------------------------------------------------------------*/
+/*  ImuService (imu_service.h) decides; these are its hands.  Every Io method except stamp()
+ *  and header_info() is exactly ONE Wire transaction, bounded by the core's Wire timeouts
+ *  (WireIMXRT.cpp: wait_idle 16 ms then a 9-pulse force_clock(); 50 ms per transfer loop):
+ *  ~0.1 ms when nothing answers, ~17 ms with SDA held low, <= ~68 ms worst case per Wire call.
+ *  Those loops call yield(), which on this core runs only serialEvent/HardwareSerial/
+ *  EventResponder hooks, none of which this sketch defines: never can1.events(), never canSniff. */
+bool imuWireStarted = false;
+struct ImuIo {
+  /*  Wire is configured here, at the first probe (>= BOOT_SETTLE_MS after boot), not in
+   *  setup(): a fault in Wire's set-up is then inside the region the boot settle protects. */
+  void init_start() {
+    if (!imuWireStarted) {
+      Wire.begin();
+      Wire.setClock(IMU_I2C_HZ);
+      imuWireStarted = true;
+    }
+    imuChip.initStart();
+  }
+  int init_step(uint32_t now_us) { return imuChip.initStep(now_us); }
+  int fifo_count(bool *overflow) { return imuChip.fifoCount(overflow); }
+  int read_burst(ImuService::Pkt *out, int n) {
+    icm42688::Sample smp[icm42688::Driver::BURST_PKTS];
+    if (n > icm42688::Driver::BURST_PKTS) n = icm42688::Driver::BURST_PKTS;
+    const int got = imuChip.readFifo(smp, n);   // n <= 8: one 16n-byte Wire read
+    for (int i = 0; i < got; ++i) {
+      for (int j = 0; j < 3; ++j) { out[i].s[j] = smp[i].a[j]; out[i].s[3 + j] = smp[i].g[j]; }
+      out[i].temp = smp[i].temp;
+    }
+    return got;
+  }
+  int flush() { return imuChip.flushFifo(); }
+  int check_who() { return imuChip.checkWhoAmI(); }
+  /*  micros64() and the wall clock at one instant.  wall_offset_us is 64-bit and written by
+   *  handleSyncFrame, which after loop()'s first can1.events() runs only inside events(), in
+   *  loop() context; this runs in loop() too, so the two never interleave (no torn read). */
+  void stamp(ImuService::Stamp *s) {
+    const uint64_t l = TimeSync::micros64();
+    s->local_us = uint32_t(l);
+    s->wall_us = uint64_t(int64_t(l) + TimeSync::wall_offset_us);
+    s->wall_valid = TimeSync::have_offset;
+  }
+  void header_info(ImuCapture::HeaderInfo *h) {
+    h->odr_hz = imuChip.odr();
+    h->accel_lsb_per_g = uint16_t(32768u / imuChip.accelFs());                                // 2048 at 16 g
+    h->gyro_lsb_per_dps_x10 = uint16_t((327680u + imuChip.gyroFs() / 2) / imuChip.gyroFs());  // 328 at 1000 dps
+    h->reg_gyro_accel_config0 = icm42688::Driver::UI_FILT_CODE;
+    h->reg_accel_config0 = imuChip.regAccelConfig0();
+    h->reg_gyro_config0 = imuChip.regGyroConfig0();
+    h->i2c_clock_100khz = uint8_t(IMU_I2C_HZ / 100000u);
+    h->fw_version = FW_VERSION;
+    if (IMU_I2C_HZ < 1000000u) h->extra_flags |= PlatformImuCaptureFlag::I2C_400K;
+  }
+};
+
+/*  The spec's TX rule (section 4): an IMU frame goes to write() only when write() is certain
+ *  to land it in a mailbox (ImuService::tx_may_place: SW queue empty, more than the reserve
+ *  free), so it can never enter FlexCAN_T4's queued-frame path, whose events() writes one
+ *  queued frame into every free mailbox.  The CAN interrupt is masked from the count to the
+ *  write so the TX-complete ISR cannot take the mailbox in between; a few microseconds, and
+ *  the 6-deep hardware RX FIFO holds what arrives meanwhile. */
+struct ImuTx {
+  bool place(uint32_t id, const uint8_t *d) {
+    NVIC_DISABLE_IRQ(IRQ_CAN1);
+    const bool ok = ImuService::tx_may_place(canFreeTxMailboxes(), can1.getTXQueueCount());
+    if (ok) {
+      CAN_message_t m;
+      m.id = id;
+      m.len = 8;
+      memcpy(m.buf, d, 8);
+      if (can1.write(m) != 1) imuTxQueuedAnyway = imuTxQueuedAnyway + 1;
+    }
+    NVIC_ENABLE_IRQ(IRQ_CAN1);
+    return ok;
+  }
+};
+
+ImuIo imuIo;
+ImuTx imuTx;
+#endif  // PLATFORM_IMU_ENABLED
+
+/*----------------------------------------------------------------------------*/
 /*                          T R A F F I C   R E P O R T                       */
 /*----------------------------------------------------------------------------*/
 void reportStatus() {
@@ -849,36 +1037,50 @@ float convertTo180Range(float a) {
   return (a > 180.f) ? a - 360.f : a;
 }
 
-platformTilt getInclination() {
-  platformTilt t{ PI, PI };  // default error value
-  const int maxAttempts = 3;
+/*  The tilt service's hands (LoopService::Tilt::Service calls these from loop(), at
+ *  most one read() or probe() per pass).  Nothing here runs in the CAN callback: since
+ *  FW 11 canSniff only sets tiltRequested.  No Serial output on this path either: the
+ *  USB console is gone, and a write to a port that enumerated with no reader can block
+ *  for up to 120 ms. */
+struct TiltIo {
+  platformTilt last{ 0.f, 0.f };
 
-  for (int k = 0; k < maxAttempts; ++k) {
-    if (inclinometer.available()) {
-      float ay = convertTo180Range(inclinometer.getCalculatedAngleY());
-      float az = convertTo180Range(inclinometer.getCalculatedAngleZ());
-
-      t.tiltX = -(az)*PI / 180.f;
-      t.tiltY = -(ay)*PI / 180.f;
-
-      Serial.printf("X:%f Y:%f\n\n", t.tiltX, t.tiltY);
-      return t;
-    }
-    inclinometer.reset();
-    delay(100);
+  /*  One read, about 1.3 ms.  Same angles and signs as FW <= 10. */
+  bool read() {
+    if (!inclinometer.available()) return false;
+    const float ay = convertTo180Range(inclinometer.getCalculatedAngleY());
+    const float az = convertTo180Range(inclinometer.getCalculatedAngleZ());
+    last.tiltX = -(az)*PI / 180.f;
+    last.tiltY = -(ay)*PI / 180.f;
+    return true;
   }
-  return t;  // returns {π,π} if failed
-}
 
-void sendTiltData(platformTilt til) {
-  CAN_message_t m;
-  m.id = tiltID;
-  m.len = 8;
-  memcpy(&m.buf[0], &til.tiltX, 4);
-  memcpy(&m.buf[4], &til.tiltY, 4);
-  can1.write(m);
-  Serial.printf("Sent tilt: X=%f Y=%f\n", til.tiltX, til.tiltY);
-}
+  /*  One (re)initialisation, about 103 ms of the library's busy waits; the same
+   *  begin() setup() has always used (mode 4, angle outputs enabled, WHOAMI 0xC1). */
+  bool probe() { return inclinometer.begin(); }
+
+  void reply(LoopService::Tilt::Reply r) {
+    CAN_message_t m;
+    m.id = tiltID;
+    m.len = 8;
+    if (r == LoopService::Tilt::Reply::VALID) {
+      LoopService::Tilt::encode_valid(last.tiltX, last.tiltY, m.buf);
+    } else {
+      LoopService::Tilt::encode_invalid(r, m.buf);
+    }
+    can1.write(m);
+  }
+};
+
+TiltIo tiltIo;
+LoopService::Tilt::Service tiltService;
+
+/*  Set by canSniff, read and cleared by loop() after the pass's dispatch.  volatile
+ *  because until loop()'s first can1.events() FlexCAN_T4 runs canSniff in its ISR
+ *  (struct2queueRx, isEventsUsed == 0), i.e. during the whole of setup(); after that
+ *  canSniff only runs inside events(), in loop() context, so the read-and-clear in
+ *  loop() has no concurrent writer. */
+volatile bool tiltRequested = false;
 
 /*----------------------------------------------------------------------------*/
 /*            R O B O T  S T A T E  P A C K / U N P A C K                     */
@@ -978,10 +1180,9 @@ void analyzeMessageTiming(const CAN_message_t &msg) {
 void canSniff(const CAN_message_t &msg) {
   receivedCount++;
 
-  /* — Inclinometer trigger — */
+  /* — Inclinometer trigger: served from loop() (FW 11), never here — */
   if (msg.id == tiltID) {
-    platformTilt t = getInclination();
-    sendTiltData(t);
+    tiltRequested = true;
   }
 
   /* — Robot‑state exchange — */
@@ -1015,6 +1216,15 @@ void canSniff(const CAN_message_t &msg) {
     sendHandFanStatus();
   }
 
+#if PLATFORM_IMU_ENABLED
+  /* — Platform IMU command: copied into a pending slot, nothing else (FW 11).  No I2C and
+   * no engine work here: until loop()'s first events() this runs in FlexCAN's ISR. — */
+  imuBootEntropy = (imuBootEntropy * 31u) ^ ARM_DWT_CYCCNT ^ msg.id;
+  if (msg.id == PlatformCanId::IMU_CMD && !msg.flags.remote) {
+    imuService.cmds().push(msg.buf, msg.len);
+  }
+#endif
+
   /* ── firmware update over CAN  ID 0x6F0 ──────────────────────────
    * See § FIRMWARE UPDATE OVER CAN.  Returns early: the id has no other
    * meaning on this board, and a BEGIN/DATA burst has no business walking
@@ -1042,8 +1252,7 @@ void setup() {
    * "the board rebooted" evidence into "the board rebooted INTO v<N>". */
   Serial.printf("[boot] %s v%u\n", FW_NAME, (unsigned)FW_VERSION);
 
-  /* Hand fan off before anything that can block: the inclinometer wait below never
-   * returns if the SCL3300 is absent. */
+  /* Hand fan off first, before CAN can deliver a fan command. */
   pinMode(HAND_FAN_PIN, OUTPUT);
   digitalWrite(HAND_FAN_PIN, LOW);
 
@@ -1055,13 +1264,36 @@ void setup() {
   can1.enableFIFOInterrupt();
   can1.onReceive(canSniff);
 
-  /* Inclinometer */
-  while (!inclinometer.begin()) {
-    Serial.println("SCL3300 not found, resetting…");
-    inclinometer.reset();
-    delay(500);
+  /* Inclinometer: OPTIONAL, so bounded (FW 11).  Everything above came up without
+   * it.  At most BOOT_PROBE_ATTEMPTS begin() calls, about 103 ms each; a present
+   * sensor answers the first, exactly as before.  An absent one leaves tilt
+   * NOT_READY and loop() re-probes.  CAN frames arriving meanwhile are handled by
+   * canSniff in FlexCAN's ISR (loop() has not called events() yet); the tilt branch
+   * there only sets a flag, so no SPI runs in the ISR while begin() uses it here. */
+  bool sclOk = false;
+  for (uint8_t i = 0; i < LoopService::Tilt::BOOT_PROBE_ATTEMPTS && !sclOk; ++i) {
+    sclOk = inclinometer.begin();
   }
-  Serial.println("SCL3300 initialised.");
+  tiltService.boot(sclOk, millis());
+  Serial.println(sclOk ? "SCL3300 initialised." : "SCL3300 not answering: tilt NOT_READY, re-probing from loop().");
+#if PLATFORM_IMU_ENABLED
+  /* Platform IMU: OPTIONAL, after CAN.  No Wire and no device traffic in setup(): loop()'s
+   * imuService.pass() is inert for BOOT_SETTLE_MS (10 s), then probes one bounded
+   * transaction per pass and starts Wire at the first one (ImuIo::init_start).
+   * boot_id: imuBootSeq steps on every boot (RAM2 is not cleared by startup.c and survives
+   * the SCB_AIRCR resets of a fault and of a firmware COMMIT) and the RTC's 32 kHz count
+   * moves on between boots, so a quiet bus no longer gives the same id twice. */
+  imuBootSeq = imuBootSeq * 1664525u + 1013904223u;
+  uint32_t bootId = imuBootEntropy ^ (ARM_DWT_CYCCNT * 2654435761u) ^ (receivedCount << 16)
+                  ^ imuBootSeq ^ (uint32_t(SNVS_HPRTCLR) * 0x9E3779B9u);
+  bootId ^= bootId >> 15;
+  bootId *= 0x2C1B3C6Du;
+  bootId ^= bootId >> 12;
+  if (bootId == 0) bootId = 1;
+  imuCapture.init(imuRingBuf, PlatformImu::RING_SAMPLES, imuAnchors, PlatformImu::ANCHOR_RING, bootId);
+  imuService.set_i2c_400k(IMU_I2C_HZ < 1000000u);
+  imuService.init(&imuCapture, bootId, millis());
+#endif
   Serial.println("Teensy platform MCU ready.");
 }
 
@@ -1069,9 +1301,31 @@ void setup() {
 /*                                   L O O P                                   */
 /*----------------------------------------------------------------------------*/
 void loop() {
-  can1.events();   // dispatch CAN callbacks
+  /* Dispatch CAN callbacks (loop_service.h, LoopService::Can).  During a firmware update:
+   * exactly one events() per pass, as FW 10.  Otherwise up to CAN_FRAMES_PER_PASS, each only
+   * while FlexCAN's software TX queue is empty and enough TX mailboxes are free for every
+   * reply the frame and the rest of this pass can write. */
+  uint32_t calls = 0;
+  uint64_t ev = 0;
+  while (LoopService::Can::may_dispatch(calls, ev, FwUpdate::sessionOpen(),
+                                        canFreeTxMailboxes(), can1.getTXQueueCount())) {
+    ev = can1.events();
+    ++calls;
+  }
+
+  /* Tilt: at most one inclinometer read (~1.3 ms) or probe (~103 ms, rationed) per pass. */
+  const bool tiltReq = tiltRequested;
+  tiltRequested = false;
+  tiltService.service(millis(), tiltReq, FwUpdate::sessionOpen(), tiltIo);
+
   reportStatus();  // traffic monitor
   FwUpdate::tick();  // time out an abandoned firmware-update session
+#if PLATFORM_IMU_ENABLED
+  /* Platform IMU: at most ONE bounded step (one I2C transaction, one CRC slice or one
+   * IMU_DATA frame), after the dispatch and the firmware-update tick, so a BEGIN or an
+   * abandoned session is seen before any I2C this pass (imu_service.h). */
+  imuService.pass(micros(), millis(), FwUpdate::sessionOpen(), imuIo, imuTx);
+#endif
   updateHandFan();   // apply the fan decision (fed from canSniff)
 
   #if DEBUG_TIME_SYNC

@@ -48,6 +48,7 @@
 #include "udp_protocol.h"   // JbUdp::BusHealth
 #include "protocol_config.h"  // PlatformCanId (relay reply ids)
 #include "canbridge_config.h" // BUS_PARTNER_STALENESS_US (TX presence gate)
+#include "imu_ring.h"        // ImuDataRingT (FW 45 Platform IMU_DATA ring, header-only)
 
 namespace CanBridge {
 
@@ -258,10 +259,31 @@ bool can_hand_cmd_echo_pop(HandCmdEchoRec& out);  // true + clears the dirty fla
 // Single classifier shared by the CAN3 RX ring filter (can_buses.cpp) and the
 // native harness. Inline (header-only) so the relay test can reach it without
 // compiling can_buses.cpp (which pulls FlexCAN_T4) on the host.
+//
+// FW 45 (IDEA-20 P3a) adds the Platform IMU's IMU_REPLY 0x6E4 and IMU_STATUS
+// 0x6E5. They share this ring on purpose: STATUS is 1 Hz and a REPLY answers one
+// IMU_CMD, which the host sends only after the previous reply (one per READ block
+// of up to 256 frames, about 5/s at 1250 frames/s), so they add a few frames per
+// second to a ring drained at 400/s and cannot evict a tilt, fan or FwUpdate
+// reply. IMU_DATA 0x6E6 is NOT a reply id: it goes to its own ring
+// (is_platform_imu_data_id below). The reserved 0x6E7/0x6E8 are uplinked by
+// neither and fall to decode_into_cache, where axis_of() >= NUM_AXES discards them.
 inline bool is_platform_reply_id(uint32_t id) {
   return id == PlatformCanId::STATE_UPDATE || id == PlatformCanId::TILT_READING ||
-         id == PlatformCanId::FW_UPDATE_REPLY || id == PlatformCanId::HAND_FAN_STATUS;
+         id == PlatformCanId::FW_UPDATE_REPLY || id == PlatformCanId::HAND_FAN_STATUS ||
+         id == PlatformCanId::IMU_REPLY || id == PlatformCanId::IMU_STATUS;
 }
+
+// True iff `id` is the Platform IMU's upload data id (0x6E6, FW 45). on_jugglebot_rx
+// tests this FIRST and pushes the frame into the dedicated IMU ring (imu_ring.h),
+// drained by platform_imu_uplink_step into PLATFORM_IMU_BATCH datagrams.
+inline bool is_platform_imu_data_id(uint32_t id) {
+  return id == PlatformCanId::IMU_DATA;
+}
+
+// The FW 45 Platform IMU_DATA ring (producer on_jugglebot_rx in task_can_rx,
+// consumer platform_imu_uplink_step in task_telem). Lock-free SPSC; see imu_ring.h.
+ImuDataRingT& can_imu_data_ring();
 
 // True iff `id` is a Ball Butler relay-reply id on CAN1 (0x7D7 FW_UPDATE_REPLY,
 // the 2026-09-28 BB firmware-over-CAN seam). on_bb_rx pushes these into the SAME

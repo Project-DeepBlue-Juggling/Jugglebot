@@ -35,7 +35,8 @@ import logging
 import struct
 import threading
 import time
-from typing import Callable, Dict, Optional, Tuple
+from collections import deque
+from typing import Callable, Deque, Dict, Optional, Tuple
 
 from . import protocol as p
 from .client import TeensyLinkClient, Address
@@ -426,10 +427,21 @@ class PlatformFrameWaiter:
     sending the triggering RPC so a leftover reply from an earlier read can't
     satisfy a new one. :meth:`wait` then blocks the calling thread for a fresh
     reply on that can_id/dlc.
+
+    :meth:`take` is the arrival-order view of the same frames (2026-11-19): it
+    pops the OLDEST unread reply, so a caller that must see every reply of a
+    burst (the firmware-update DATA window, whose replies arrive late and in
+    batches from the bridge's relay ring) neither loses one to the latest-reply
+    slot nor drops a fresh one with a clear() after reading a stale one.
+    :meth:`clear` empties both views. :meth:`wait` is unchanged.
     """
+
+    #: Unread replies kept per can_id for :meth:`take`; the oldest falls off.
+    TAKE_QUEUE_DEPTH = 64
 
     def __init__(self, link: TeensyLinkClient):
         self._replies: Dict[int, Tuple[bytes, int]] = {}
+        self._queues: Dict[int, Deque[Tuple[bytes, int]]] = {}
         self._cv = threading.Condition()
         self._unsubscribe = link.subscribe(int(p.MsgType.PLATFORM_FRAME), self._on_frame)
 
@@ -452,12 +464,34 @@ class PlatformFrameWaiter:
         data = bytes(pf.data[: pf.dlc])
         with self._cv:
             self._replies[int(pf.can_id)] = (data, int(pf.dlc))
+            q = self._queues.get(int(pf.can_id))
+            if q is None:
+                q = self._queues[int(pf.can_id)] = deque(maxlen=self.TAKE_QUEUE_DEPTH)
+            q.append((data, int(pf.dlc)))
             self._cv.notify_all()
 
     def clear(self, can_id: int) -> None:
-        """Drop any latched reply for ``can_id``."""
+        """Drop any latched reply for ``can_id``, and every unread one queued for :meth:`take`."""
         with self._cv:
             self._replies.pop(int(can_id), None)
+            self._queues.pop(int(can_id), None)
+
+    def take(self, can_id: int, expected_dlc: int, timeout: float) -> Optional[bytes]:
+        """Pop the oldest unread reply on ``can_id`` (replies of another dlc are
+        discarded), blocking up to ``timeout`` for one to arrive. Returns the
+        raw reply bytes, or ``None`` on timeout."""
+        deadline = time.monotonic() + timeout
+        with self._cv:
+            while True:
+                q = self._queues.get(int(can_id))
+                while q:
+                    data, dlc = q.popleft()
+                    if dlc == expected_dlc:
+                        return data
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    return None
+                self._cv.wait(remaining)
 
     def wait(self, can_id: int, expected_dlc: int, timeout: float) -> Optional[bytes]:
         """Block for a fresh reply on ``can_id`` with ``expected_dlc``.

@@ -17,9 +17,9 @@ links:
 - logbook/2026-11-18-jp5-polygon-walk-compile.md
 filed_by: claude (jugglebot-f5, pattern exploration 2026-10-30)
 parent: pattern-progression-columns-to-centre-and-orbit
-night_skip: low-priority
-night_skip_on: '2026-11-15'
-night_skip_note: Feasibility is in the body; robot, owner hands.
+night_skip: sitting
+night_skip_on: '2026-11-19'
+night_skip_note: Offline half on main 2026-11-18 (polygon_walk); the first flight is the square at edge 100 mm, Dwell 0.27, Apex 0.9.
 ---
 
 One ball hopping around N Sites (triangle, square, hexagon) instead of two. Physics trivial at any step the hop already flies (250 mm, apex 0.9).

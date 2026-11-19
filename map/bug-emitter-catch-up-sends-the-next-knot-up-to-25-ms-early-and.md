@@ -18,6 +18,9 @@ links:
 - logbook/2026-11-18-sitting-debrief.md
 - logbook/2026-11-18-emitter-waits-after-late-tick.md
 filed_by: sitting-debrief 2026-11-18
+night_skip: sitting
+night_skip_on: '2026-11-19'
+night_skip_note: Fix landed on main 2026-11-18 (option A, wait for the snapped deadline after a late tick); it waits for its Sitting row.
 ---
 
 Found at the debrief of the Sitting of 2026-11-18 (logbook/2026-11-18-sitting-debrief.md). Related: BUG-89, BUG-58.

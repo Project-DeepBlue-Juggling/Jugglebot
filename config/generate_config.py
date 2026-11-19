@@ -193,6 +193,18 @@ def generate_cpp(cfg: dict) -> str:
     lines.append(f"  constexpr float TILT_COUNTS_PER_RAD = {float(cfg['platform_state']['TILT_COUNTS_PER_RAD'])}f;")
     lines.append("}")
 
+    # 0x7DE TILT_READING invalid reply (Platform FW 11)
+    lines.append("")
+    lines.append("// 0x7DE TILT_READING invalid reply: bytes 0-3 = INVALID_NAN_BITS,")
+    lines.append("// bytes 4-7 = INVALID_NAN_BITS | PlatformTiltReason (both u32 LE, both float32 NaN)")
+    lines.append("namespace PlatformTilt {")
+    lines.append(f"  constexpr uint32_t INVALID_NAN_BITS = {fmt_hex(cfg['platform_tilt']['INVALID_NAN_BITS'])};")
+    lines.append("}")
+    lines.append("namespace PlatformTiltReason {")
+    for name, val in cfg["platform_tilt"]["reasons"].items():
+        lines.append(f"  constexpr uint8_t {name} = {fmt_hex(val)};")
+    lines.append("}")
+
     # Ball Butler CAN IDs
     lines.append("")
     lines.append("// Ball Butler Teensy <-> Host")
@@ -447,6 +459,12 @@ def generate_python(cfg: dict) -> str:
     lines.append("")
     lines.append("# 0x6E0 RobotState tilt units (counts per radian)")
     lines.append(f"PLATFORM_STATE_TILT_COUNTS_PER_RAD = {cfg['platform_state']['TILT_COUNTS_PER_RAD']}")
+    lines.append("")
+    lines.append("# 0x7DE TILT_READING invalid reply (Platform FW 11): bytes 0-3 = INVALID_NAN_BITS,")
+    lines.append("# bytes 4-7 = INVALID_NAN_BITS | reason (both u32 LE, both float32 NaN)")
+    lines.append(f"PLATFORM_TILT_INVALID_NAN_BITS = {fmt_hex(cfg['platform_tilt']['INVALID_NAN_BITS'])}")
+    for name, val in cfg["platform_tilt"]["reasons"].items():
+        lines.append(f"PLATFORM_TILT_REASON_{name} = {val}")
     lines.append("")
 
     # Ball Butler CAN IDs

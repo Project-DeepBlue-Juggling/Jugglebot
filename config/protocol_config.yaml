@@ -72,6 +72,20 @@ odrive:
 platform_state:
   TILT_COUNTS_PER_RAD: 10000
 
+# The 0x7DE TILT_READING reply when the inclinometer cannot answer (Platform FW 11,
+# IDEA-20 P2a, owner decision 2026-11-18: an explicit invalid reply, never silence and
+# never a stale value). Same id and dlc 8 as a valid reply, so the can-bridge relays it
+# unchanged and the host's (can_id, dlc) correlator accepts it as THE answer:
+#   bytes 0-3  u32 LE INVALID_NAN_BITS           (a quiet float32 NaN)
+#   bytes 4-7  u32 LE INVALID_NAN_BITS | reason  (a quiet NaN carrying the reason)
+# A '<ff' decode reads (nan, nan), which no |tilt| bound accepts, so a host that does
+# not know this frame still rejects it. FW <= 10 sent (pi, pi) on a failed read.
+platform_tilt:
+  INVALID_NAN_BITS: 0x7FC00000
+  reasons:
+    NOT_READY:   1   # the inclinometer is absent or awaiting re-initialisation; nothing was read
+    READ_FAILED: 2   # every read attempt for this request failed; a re-initialisation follows
+
 can_bus:
   baud_rate: 1000000           # 1 Mbps — all nodes must agree
   bits_per_frame_approx: 111   # Approx bits per 8-byte CAN frame (before bit-stuffing)
@@ -324,6 +338,7 @@ platform_imu:
   read_max_words: 256             # largest READ block (0.26 s at the default gap)
   read_default_gap_10us: 100      # 1000 us between IMU_DATA frames (1000 fps on the wire)
   read_min_gap_10us: 40           # the Platform Teensy clamps faster requests to 400 us
+  bridge_armed_min_gap_10us: 63   # can-bridge FW 45 clamps a READ's gap up to this while Armed (630 us, ~1590 fps)
   status_period_ms: 1000
 
   # IMU_CMD byte 0. Absent ops (GET_HEADER, READ_ANCHORS) are READs of a region.

@@ -1,0 +1,35 @@
+---
+id: BUG-120
+kind: bug
+title: test_a_fresh_throw_installs_through_the_real_worker_process misses the solver wire deadline under box load and fails the gate
+status: inbox
+created: '2026-11-19'
+updated: '2026-11-18T16:10:13Z'
+owners: []
+priority: medium
+effort: s
+hardware: none
+owner: none
+radius: local
+diagnosis: hypothesis
+area: tests-tooling
+blocked_by: []
+links:
+- bug-test-ti1-in-test-install-segment-goes-stale-under-box-load
+filed_by: night-shift
+---
+
+Found by the Night Shift of 2026-11-19 while re-gating BUG-108. Related: BUG-108.
+
+`tests/ros/test_install_segment.py::test_a_fresh_throw_installs_through_the_real_worker_process` fails under box load with `AssertionError: solver did not answer by the wire deadline` (`assert False is True` on the response's `.accepted`).
+
+## Evidence
+
+- 2026-11-19, load about 20 (a day Session's tests and the Night Shift suite running at once): it failed in both of the BUG-108 auditor's whole-file runs and in the orchestrator's (`night_shift_nonet.sh timeout 400 python -m pytest tests/ros/test_install_segment.py -q -p no:cacheprovider`: 1 failed, 86 passed in 159.69 s).
+- The BUG-108 logbook entry (`logbook/2026-11-17-test-install-segment-stale-clock.md`) already recorded one unexplained failure of this test, and said to file a recurrence as its own Bug.
+- TI1, the test BUG-108 fixed, passed in the same runs.
+
+## Wanted
+
+- Find which wall-clock deadline the test leaves to real time: the worker process's solve time against the wire deadline. Pin it with the test's own clock, or give the test a load-independent deadline, as BUG-108 did for the staleness window.
+- A gate that fails on box load turns a clean branch into a HOLD.

@@ -4,7 +4,7 @@ kind: bug
 title: 'can-bridge fatal CAN-silence check wraps when a frame is stamped after its clock read: a live Leg reads silent and the Platform Stows'
 status: in_progress
 created: '2026-11-14'
-updated: '2026-11-18T06:48:01Z'
+updated: '2026-11-18T23:07:53Z'
 owners:
 - night-shift
 priority: high
@@ -41,9 +41,9 @@ A CAN_BUS_DOWN trip whose latched record names Leg 0xFF with age 0: the rescan a
 ## Sitting
 
 - setup: bridge-cycled, level, armed
-- why: The held branch is can-bridge FW 45 (main and the robot are FW 44, the scheduler grace): the CAN-silence predicates no longer wrap when a Leg is stamped after the fault machine reads its clock; it must be flashed and flown before it merges.
+- why: The held branch must be can-bridge FW 46 (FW 45 is the Platform IMU relay, IDEA-20, owner decision 2026-11-19; the branch still says 45 until it is renumbered): the CAN-silence predicates no longer wrap when a Leg is stamped after the fault machine reads its clock; it must be flashed and flown before it merges.
 - do:
-  - Flash the can-bridge with FW 45 from the branch and power-cycle the bridge.
+  - Flash the can-bridge with FW 46 from the branch and power-cycle the bridge.
   - Launch and check the start-up log shows `BRIDGE_FW_CHECK` passing at version 45.
   - Fly your usual Columns Attempts for the rest of the Sitting.
 - pass: BRIDGE_FW_CHECK passes at 45 and no CAN_BUS_DOWN trip occurs; any CAN_BUS_DOWN that does occur names a real Leg with a real age, never Leg 0xFF with age 0.
@@ -56,3 +56,4 @@ A CAN_BUS_DOWN trip whose latched record names Leg 0xFF with age 0: the rescan a
 - 2026-11-15: Night Shift 2026-11-15: held on night-shift/2026-11-15-BUG-93: firmware is gate-frozen and unflashed (FW 44); suite failed only the 4 Sunday runner tests (BUG-107); 3 same-class findings open; unblocked by a flash and a Sitting
 - 2026-11-18: 2026-11-18: main is now can-bridge FW 44 (per-group scheduler grace). The held branch of this Item also calls its firmware FW 44 and must renumber to FW 45 (version constant, history line, EXPECTED_BRIDGE_FW_VERSION, xref tests) before it lands.
 - 2026-11-18: Held branch merged up to main and renumbered to FW 45 (version constant, history line, EXPECTED_BRIDGE_FW_VERSION, cross-reference test, native test names); no predicate change. Unblocked by a flash and a Sitting. A bridge on FW 45 fails BRIDGE_FW_CHECK on main until this branch lands, so the Sitting ends with the merge or a flash back to FW 44.
+- 2026-11-19: 2026-11-19 owner decision: can-bridge FW 45 goes to the Platform IMU relay (IDEA-20); this Item's held branch must renumber to FW 46 (version constant, history line, EXPECTED_BRIDGE_FW_VERSION, cross-reference test, native test names) before it lands or is flashed.

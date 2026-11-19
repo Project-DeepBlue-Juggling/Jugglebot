@@ -33,6 +33,7 @@ import types
 import pytest
 
 import jugglebot.hardware_config as hw
+import jugglebot.protocol_config as proto
 
 from teensy_link import (
     RpcMethod, RpcStatus, MsgType, Telemetry, Diagnostic, PlatformFrame,
@@ -333,6 +334,84 @@ def test_get_platform_tilt_out_of_range_returns_nan():
 
         res = node._svc_get_platform_tilt(object(), GetTiltReadingService.Response())
         assert math.isnan(res.tilt_xy[0]) and math.isnan(res.tilt_xy[1])
+    finally:
+        _teardown(teensy, client, node)
+
+
+def _tilt_handler(teensy, frames, calls):
+    """TILT_READ responder that answers with the scripted frames in order (last one repeats)."""
+    def handler(rid, a):
+        calls.append(time.monotonic())
+        f = frames[min(len(calls) - 1, len(frames) - 1)]
+        teensy.send_to_jetson(int(MsgType.PLATFORM_FRAME), _platform_frame(_TILT_ID, f))
+        return (int(RpcStatus.OK), b"")
+    teensy.on_rpc(int(RpcMethod.TILT_READ), handler)
+
+
+def _invalid(reason):
+    bits = proto.PLATFORM_TILT_INVALID_NAN_BITS
+    return struct.pack("<II", bits, bits | reason)
+
+
+def test_classify_tilt_reply_reads_raw_words_before_any_float_compare():
+    from jugglebot.teensy_bridge_node import classify_tilt_reply
+    assert classify_tilt_reply(_invalid(proto.PLATFORM_TILT_REASON_NOT_READY)) == ('not_ready', None)
+    assert classify_tilt_reply(_invalid(proto.PLATFORM_TILT_REASON_READ_FAILED)) == ('read_failed', None)
+    assert classify_tilt_reply(_invalid(7)) == ('read_failed', None)          # unknown reason: failure
+    assert classify_tilt_reply(struct.pack("<ff", math.pi, math.pi)) == ('legacy_failure', None)
+    kind, val = classify_tilt_reply(struct.pack("<ff", 0.05, -0.07))
+    assert kind == 'ok' and val == pytest.approx((0.05, -0.07))
+    # a genuine NaN pair that is NOT the FW 11 pattern is data, left to the caller's bound check
+    assert classify_tilt_reply(struct.pack("<II", 0x7FC00001, 0x7FC00000))[0] == 'ok'
+
+
+def test_get_platform_tilt_not_ready_waits_then_succeeds():
+    """FW 11 'not ready' is retried no sooner than _TILT_NOT_READY_RETRY_S, and a later good reading wins."""
+    teensy, client, node = _build_paired_node()
+    try:
+        node._TILT_NOT_READY_RETRY_S = 0.15
+        calls = []
+        _tilt_handler(teensy, [_invalid(proto.PLATFORM_TILT_REASON_NOT_READY)] * 2
+                      + [struct.pack("<ff", 0.03, -0.02)], calls)
+        res = node._svc_get_platform_tilt(object(), GetTiltReadingService.Response())
+        assert res.tilt_xy[0] == pytest.approx(0.03) and res.tilt_xy[1] == pytest.approx(-0.02)
+        assert len(calls) == 3 and calls[1] - calls[0] >= 0.15 and calls[2] - calls[1] >= 0.15
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_get_platform_tilt_not_ready_is_bounded_then_returns_the_nan_shape():
+    teensy, client, node = _build_paired_node()
+    try:
+        node._TILT_NOT_READY_RETRY_S = 0.02
+        calls = []
+        _tilt_handler(teensy, [_invalid(proto.PLATFORM_TILT_REASON_NOT_READY)], calls)
+        res = node._svc_get_platform_tilt(object(), GetTiltReadingService.Response())
+        assert math.isnan(res.tilt_xy[0]) and math.isnan(res.tilt_xy[1]) and math.isnan(res.tilt_quat.w)
+        assert len(calls) == node._TILT_NOT_READY_ATTEMPTS
+    finally:
+        _teardown(teensy, client, node)
+
+
+@pytest.mark.parametrize("frame,label", [
+    (_invalid(proto.PLATFORM_TILT_REASON_READ_FAILED), "read_failed"),
+    (struct.pack("<ff", math.pi, math.pi), "legacy"),
+])
+def test_get_platform_tilt_read_failed_and_legacy_use_the_existing_failure_path(frame, label):
+    """'read failed' (FW 11) and (pi, pi) (FW <= 10) are answered replies, so no timeout wait: the
+    _TILT_READ_ATTEMPTS bounded retries, then the NaN shape the orchestrator consumes."""
+    teensy, client, node = _build_paired_node()
+    try:
+        calls = []
+        _tilt_handler(teensy, [frame], calls)
+        t0 = time.monotonic()
+        res = node._svc_get_platform_tilt(object(), GetTiltReadingService.Response())
+        assert math.isnan(res.tilt_xy[0]) and math.isnan(res.tilt_xy[1]) and math.isnan(res.tilt_quat.w)
+        assert len(calls) == node._TILT_READ_ATTEMPTS
+        assert time.monotonic() - t0 < node._RELAY_READ_TIMEOUT_S          # answered, not timed out
+        ok, msg, tilt, reason = node.relay_read_tilt_ex()
+        assert ok is False and tilt is None
+        assert reason == ('read_failed' if label == "read_failed" else 'legacy_failure')
     finally:
         _teardown(teensy, client, node)
 

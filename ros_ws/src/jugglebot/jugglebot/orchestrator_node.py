@@ -36,6 +36,7 @@ from jugglebot.state_machine import (
 )
 from jugglebot import mocap_status as mocap_st
 from jugglebot.juggle_request import parse_juggle_request
+from jugglebot.platform_imu_gate import ImuGate
 from jugglebot.can import odrive
 
 
@@ -145,6 +146,11 @@ class OrchestratorNode(Node):
         self._hand_state_client = self.create_client(
             SetString, 'set_hand_state')
 
+        # Platform IMU upload gate (IDEA-20 P3c). Cached status only: the command path never makes a
+        # service call to decide; the abort below is fire-and-forget.
+        self._imu_gate = ImuGate()
+        self._imu_abort_client = self.create_client(Trigger, 'platform_imu/abort')
+
         # ── Action clients ────────────────────────────────────────
         self._home_client = ActionClient(self, HomeMotors, 'home_motors')
         # Juggle relay (R4, owner decision D3 — replaces the retired reload
@@ -182,6 +188,8 @@ class OrchestratorNode(Node):
         # MAX_DEVIATION latch and kept accepting mode commands on a frozen robot.
         self.create_subscription(
             DiagnosticStatus, 'link_status', self._on_link_status, 10)
+        self.create_subscription(
+            DiagnosticStatus, 'platform_imu/status', self._on_platform_imu_status, 10)
         # F4/Q3 — mocap_node's QTM view. HOMING's bb_calibrate step is
         # dispatched from this node, so this node needs its OWN answer to "can
         # a sweep produce data": asking the bridge would mean calling the
@@ -275,6 +283,10 @@ class OrchestratorNode(Node):
         """
         cmd = msg.data
         state = self.sm.state
+        # Platform IMU upload gate (IDEA-20 P3c): the one call site for the orchestrator_command topic.
+        # A refused motion-starting command is NOT enqueued; 'deactivate' always passes and aborts.
+        if not self._imu_gate_passes(cmd):
+            return
         self.ctx.enqueue_command(cmd)
         if cmd not in _COMMANDS_ACCEPTED.get(state, ()):
             homes = [st.name for st, cmds in _COMMANDS_ACCEPTED.items()
@@ -293,6 +305,30 @@ class OrchestratorNode(Node):
         elif cmd == 'clear_errors':
             self.get_logger().info(
                 'clear_errors: clearing ODrive errors and the guard latch')
+
+    def _on_platform_imu_status(self, msg):
+        try:
+            self._imu_gate.observe({kv.key: kv.value for kv in msg.values}, time.monotonic())
+        except Exception as e:  # noqa: BLE001 -- the cache can never break the node
+            self.get_logger().debug(f'platform_imu/status ignored: {e}')
+
+    def _imu_gate_decision(self, command):
+        """The ONE gate call (never raises, never blocks, reads cached status). Sends the abort the decision
+        asks for. Returns the GateDecision."""
+        d = self._imu_gate.check(command, time.monotonic())
+        if d.abort:
+            try:
+                self._fire_forget_service_call(
+                    self._imu_abort_client, Trigger.Request(), 'platform_imu/abort')
+            except Exception as e:  # noqa: BLE001
+                self.get_logger().debug(f'platform_imu/abort not sent: {e}')
+        return d
+
+    def _imu_gate_passes(self, command):
+        d = self._imu_gate_decision(command)
+        if not d.allow:
+            self.get_logger().warning(d.reason)
+        return d.allow
 
     def _on_sm_log(self, msg):
         """State-machine log sink: one operator line per transition.
@@ -347,6 +383,12 @@ class OrchestratorNode(Node):
         GUI's own encoding (juggle-panel.js), never a second place that names
         the launch defaults: every numeric goal field the request does not
         name carries its own "0 => the node's parameter" sentinel."""
+        d = self._imu_gate_decision('juggle')
+        if not d.allow:
+            res.success = False
+            res.message = d.reason
+            self.get_logger().warning(d.reason)
+            return res
         if not self._juggle_client.server_is_ready():
             res.success = False
             res.message = 'juggle action server unavailable (jugglebot/juggle)'

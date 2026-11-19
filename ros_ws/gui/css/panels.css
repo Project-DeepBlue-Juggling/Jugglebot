@@ -466,6 +466,20 @@
 .hand-fan-row #hand-fan-mode.forced { color: var(--accent-amber); }
 .hand-fan-row #hand-fan-mode.failed { color: var(--accent-red); }
 
+.imu-upload-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 4px;
+}
+.imu-upload-row #imu-upload-state.busy { color: var(--accent-amber); }
+.imu-upload-row #imu-upload-state.failed,
+.imu-upload-row #imu-upload-last.failed { color: var(--accent-red); }
+.imu-upload-row #imu-upload-last.warn { color: var(--accent-amber); }
+.imu-upload-row progress { width: 80px; height: 8px; }
+
 /* ---- Ball Butler panel ---- */
 .bb-state-badge {
     font-size: var(--font-size-base);

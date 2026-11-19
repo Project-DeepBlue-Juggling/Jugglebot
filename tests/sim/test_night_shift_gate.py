@@ -3,17 +3,28 @@
 The gate is the single enforcement point between unattended work and ``main``,
 so every test makes ONE condition fail with everything else valid and asserts
 HOLD with only that condition's letter. Each scenario runs both ``evaluate``
-and the CLI (subprocess) and asserts they agree. Repositories are built under
+and the CLI (``main`` in-process) and asserts they agree. Repositories are built under
 tmp_path with a bare ``origin``; no ports, no fixed paths, safe under xdist.
+
+The gate runs the suite and the collection itself (conditions (a) and (i), FEAT-51).
+Here a :class:`FakeSuite` stands in for its runner through the Python-only seam
+(``evaluate(..., runner=)``, ``main(argv, runner=)``); there is deliberately no CLI or
+environment seam, so the subprocess tests that reach MERGE run the REAL runner on the
+template's stub ``run_tests.sh`` and stub network fence, under a lock in tmp_path.
 """
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
+import pwd
 import shutil
 import subprocess
 import sys
+import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -37,6 +48,8 @@ def _git_env(tmp_path, monkeypatch):
         monkeypatch.setenv(k, "t")
     for k in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
         monkeypatch.setenv(k, "t@example.com")
+    monkeypatch.delenv("NIGHT_SHIFT_VERDICTS", raising=False)  # never the night's real directory
+    monkeypatch.setenv(gate.SUITE_LOCK_ENV, str(tmp_path / "suite.lock"))
 
 
 def _git(cwd, *args):
@@ -119,6 +132,14 @@ def template(tmp_path_factory):
         # The gate running must be the base's own, so the base carries the real one and its mapkit.
         (root / "tools").mkdir()
         shutil.copy(TOOL, str(root / "tools" / "night_shift_gate.py"))
+        # Stubs for the subprocess tests, which run the REAL runner (no CLI seam exists):
+        # the base's network fence, the suite, and one test for the floor's collection.
+        (root / "tools" / "night_shift_nonet.sh").write_text('#!/usr/bin/env bash\nexec "$@"\n')
+        (root / "run_tests.sh").write_text('#!/usr/bin/env bash\necho "stub suite $*"\nexit 0\n')
+        for f in ("tools/night_shift_nonet.sh", "run_tests.sh"):
+            os.chmod(str(root / f), 0o755)
+        (root / "tests").mkdir()
+        (root / "tests" / "test_stub.py").write_text("def test_stub():\n    pass\n")
         shutil.copytree(os.path.join(ROOT, "mapkit"), str(root / "mapkit"),
                         ignore=shutil.ignore_patterns("__pycache__"))
         (root / ".gitignore").write_text("__pycache__/\n")
@@ -151,13 +172,72 @@ def tip(root):
     return _git(root, "rev-parse", BRANCH)
 
 
-def gate_log(root, sha=None, exit_code=0, branch=BRANCH, with_exit=True):
-    p = root.parent / "gate.log"
-    lines = ["HEAD=%s" % (sha or tip(root)), "BRANCH=%s" % branch, "....  [100%]"]
-    if with_exit:
-        lines.append("EXIT=%d" % exit_code)
-    p.write_text("\n".join(lines) + "\n")
-    return str(p)
+class FakeSuite:
+    """The runner the gate is handed in place of :func:`gate.run_command`.
+
+    It records what the gate asked for (the command, the worktree and the HEAD checked
+    out there) and answers with ``exit_code`` for the suite (None: a timeout) and with
+    ``counts[sha]`` (default ``default_count``) for a collection."""
+
+    def __init__(self, exit_code=0, counts=None, default_count=100, collect_rc=0,
+                 collect_text=None, raise_on=None):
+        self.exit_code, self.counts, self.default_count = exit_code, dict(counts or {}), default_count
+        self.collect_rc, self.collect_text, self.raise_on = collect_rc, collect_text, raise_on
+        self.calls = []
+
+    def __call__(self, cmd, cwd, env, log, timeout):
+        collect = "--collect-only" in cmd
+        head = _git(cwd, "rev-parse", "HEAD")
+        self.calls.append(SimpleNamespace(cmd=list(cmd), cwd=cwd, head=head, env=dict(env),
+                                          log=log, timeout=timeout, collect=collect))
+        if self.raise_on == ("collect" if collect else "suite"):
+            raise RuntimeError("runner blew up")
+        with open(log, "a") as fh:
+            if not collect:
+                fh.write("....  [100%]\n")
+                return self.exit_code
+            n = self.counts.get(head, self.default_count)
+            fh.write(self.collect_text if self.collect_text is not None
+                     else "tests/test_x.py::test_a\n\n%d tests collected in 0.01s\n" % n)
+        return self.collect_rc
+
+    def suites(self):
+        return [c for c in self.calls if not c.collect]
+
+    def collections(self):
+        return [c for c in self.calls if c.collect]
+
+
+def gate_log(root, exit_code=0, **kw):
+    """The suite's answer: what used to be a hand-written gate log is now the runner's exit."""
+    return FakeSuite(exit_code=exit_code, **kw)
+
+
+def logs_dir(root):
+    return str(root.parent / "gate-logs")
+
+
+def evaluate(repo, base, branch, item, suite, aud, waive=(), app_log=None, module=None):
+    """``gate.evaluate`` in the old argument order, with ``suite`` as its runner."""
+    return (module or gate).evaluate(str(repo), base, branch, item, aud, tuple(waive), app_log,
+                                     logs_dir=logs_dir(repo) if hasattr(repo, "parent") else None,
+                                     runner=suite)
+
+
+def cli(args, suite=None, env=None):
+    """``gate.main`` in-process (the only way to hand it a runner); like subprocess.run's result."""
+    out, err = io.StringIO(), io.StringIO()
+    saved = dict(os.environ)
+    if env is not None:
+        os.environ.clear()
+        os.environ.update(env)
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = gate.main([str(a) for a in args], runner=suite if suite is not None else FakeSuite())
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+    return SimpleNamespace(returncode=rc, stdout=out.getvalue(), stderr=err.getvalue())
 
 
 def audit(root, sha=None, open_findings=0, with_count=True):
@@ -172,18 +252,18 @@ def audit(root, sha=None, open_findings=0, with_count=True):
 
 def run(root, item="BUG-7", branch=BRANCH, log=None, aud=None, base="origin/main", waive=()):
     """evaluate() and the CLI on the same inputs; asserts they agree, returns the result."""
-    log = log if log is not None else gate_log(root)
+    suite = log if log is not None else gate_log(root)
     aud = aud if aud is not None else audit(root)
-    res = gate.evaluate(str(root), base, branch, item, log, aud, tuple(waive))
+    res = evaluate(root, base, branch, item, suite, aud, waive)
     args = ["--repo", str(root), "--base", base, "--branch", branch, "--item", item,
-            "--gate-log", log, "--audit", aud]
+            "--audit", aud, "--record", logs_dir(root)]
     for w in waive:
         args += ["--waive", w]
-    cli = subprocess.run([sys.executable, TOOL] + args, capture_output=True, text=True)
-    lines = cli.stdout.splitlines()
-    assert lines and lines[0].split(" ")[0] == res.verdict, cli.stdout + cli.stderr
-    assert lines == res.to_text().splitlines()
-    assert cli.returncode == (0 if res.verdict == "MERGE" else 1)
+    c = cli(args, suite)
+    lines = [x for x in c.stdout.splitlines() if not x.startswith("# ")]
+    assert lines and lines[0].split(" ")[0] == res.verdict, c.stdout + c.stderr
+    assert lines == [x for x in res.to_text().splitlines() if not x.startswith("# ")]
+    assert c.returncode == (0 if res.verdict == "MERGE" else 1)
     return res
 
 
@@ -208,35 +288,195 @@ def test_all_valid_merges(repo):
 
 def test_short_sha_prefix_matches(repo):
     short = tip(repo)[:7]
-    assert run(repo, log=gate_log(repo, sha=short), aud=audit(repo, sha=short)).verdict == "MERGE"
+    assert run(repo, aud=audit(repo, sha=short)).verdict == "MERGE"
 
 
-# --- (a) suite gate ---------------------------------------------------------
-def test_a_missing_log(repo):
-    assert_hold(run(repo, log=str(repo.parent / "nope.log")), "a")
+# --- (a) suite gate: the gate runs the suite itself (FEAT-51) ---------------
+def _worktrees(root):
+    return [ln for ln in _git(root, "worktree", "list", "--porcelain").splitlines()
+            if ln.startswith("worktree ")]
 
 
-def test_a_stale_head(repo):
-    base = _git(repo, "rev-parse", "origin/main")
-    assert_hold(run(repo, log=gate_log(repo, sha=base)), "a")
-
-
-def test_a_too_short_prefix(repo):
-    assert_hold(run(repo, log=gate_log(repo, sha=tip(repo)[:6])), "a")
+def test_a_runs_the_suite_on_the_tip_in_a_fresh_worktree(repo):
+    suite = FakeSuite()
+    res = evaluate(repo, "origin/main", BRANCH, "BUG-7", suite, audit(repo))
+    assert res.verdict == "MERGE", res.reasons
+    (call,) = suite.suites()
+    assert call.head == tip(repo)                       # the TIP, checked out detached
+    assert not call.cwd.startswith(str(repo))           # not the caller's working tree
+    assert call.cmd == ["/usr/bin/flock" if os.path.exists("/usr/bin/flock") else "/bin/flock",
+                        os.environ[gate.SUITE_LOCK_ENV],
+                        os.path.join(ROOT, "tools", "night_shift_nonet.sh"),  # the GATE's own copy
+                        "./run_tests.sh", "--full"]
+    assert call.timeout == gate.SUITE_TIMEOUT_S
+    assert not os.path.exists(call.cwd) and len(_worktrees(repo)) == 1  # removed afterwards
+    assert res.suite_exit == 0 and res.suite_log == call.log
+    assert open(call.log).read().splitlines()[0] == "HEAD=%s" % tip(repo)
 
 
 def test_a_exit_nonzero(repo):
-    res = run(repo, log=gate_log(repo, exit_code=1))
+    suite = gate_log(repo, exit_code=1)
+    res = run(repo, log=suite)
     assert_hold(res, "a")
-    assert "[a] gate log EXIT=1 (expected 0)" in res.reasons
+    assert res.reasons[0].startswith("[a] suite exit 1 on %s (expected 0); log " % tip(repo)[:12])
+    assert res.suite_exit == 1 and open(res.suite_log).read().rstrip().endswith("EXIT=1")
+    assert all(not os.path.exists(c.cwd) for c in suite.calls) and len(_worktrees(repo)) == 1
 
 
-def test_a_no_exit_line(repo):
-    assert_hold(run(repo, log=gate_log(repo, with_exit=False)), "a")
+def test_a_timeout_holds(repo):
+    res = run(repo, log=gate_log(repo, exit_code=None))
+    assert_hold(res, "a")
+    assert "[a] suite timed out after 3600 s" in res.reasons[0] and res.suite_exit is None
 
 
-def test_a_wrong_branch_line(repo):
-    assert_hold(run(repo, log=gate_log(repo, branch="night-shift/2026-10-30-BUG-7")), "a")
+def test_a_runner_exception_holds_and_removes_the_worktree(repo):
+    suite = FakeSuite(raise_on="suite")
+    res = evaluate(repo, "origin/main", BRANCH, "BUG-7", suite, audit(repo))
+    assert res.verdict == "HOLD" and letters(res) == ["a"]
+    assert res.reasons[0].startswith("[a] gate error: RuntimeError: runner blew up")
+    assert not os.path.exists(suite.suites()[0].cwd) and len(_worktrees(repo)) == 1
+
+
+def test_a_missing_fence_holds(repo, monkeypatch):
+    monkeypatch.setattr(gate, "NONET", "no_such_fence.sh")
+    suite = FakeSuite()
+    res = evaluate(repo, "origin/main", BRANCH, "BUG-7", suite, audit(repo))
+    assert res.verdict == "HOLD" and "a" in letters(res) and "i" in letters(res)
+    assert any("network fence" in r and "missing" in r for r in res.reasons)
+    assert suite.calls == []  # nothing ran unfenced
+
+
+def test_gate_log_flag_is_rejected(repo):
+    """The flag is gone: argparse refuses it, so no log can be handed in (real subprocess)."""
+    old = repo.parent / "gate.log"
+    old.write_text("HEAD=%s\nBRANCH=%s\nEXIT=0\n" % (tip(repo), BRANCH))
+    r = subprocess.run([sys.executable, TOOL, "--repo", str(repo), "--base", "origin/main",
+                        "--branch", BRANCH, "--item", "BUG-7", "--gate-log", str(old),
+                        "--audit", audit(repo)], capture_output=True, text=True)
+    assert r.returncode == 1 and r.stdout.splitlines() == ["HOLD", "[pre] usage error (see stderr)"]
+    assert "--gate-log" in r.stderr
+
+
+def test_no_env_or_file_substitutes_the_result(repo, monkeypatch):
+    """A fabricated old-style log where the gate writes its own, beside the repo and in the
+    record dir, and the variables that would swap the interpreter or the pytest options:
+    a red suite still holds, and the suite never sees those variables."""
+    green = "HEAD=%s\nBRANCH=%s\n....  [100%%]\nEXIT=0\n" % (tip(repo), BRANCH)
+    (repo.parent / "gate.log").write_text(green)
+    os.makedirs(logs_dir(repo), exist_ok=True)
+    with open(os.path.join(logs_dir(repo), "gate-%s.log" % tip(repo)[:12]), "w") as fh:
+        fh.write(green)
+    monkeypatch.setenv("PDJ_VENV_PY", "/bin/true")
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-k nothing")
+    monkeypatch.setenv("BASH_ENV", str(repo.parent / "evil.sh"))
+    monkeypatch.setenv("PYTHONPATH", "%s:/opt/ros/foxy/lib/python3.8/site-packages" % repo.parent)
+    monkeypatch.setenv("NIGHT_SHIFT_GATE_LOG", str(repo.parent / "gate.log"))
+    suite = gate_log(repo, exit_code=1)
+    res = run(repo, log=suite)
+    assert_hold(res, "a")
+    for call in suite.calls:
+        assert not ({"PDJ_VENV_PY", "PYTEST_ADDOPTS", "BASH_ENV"} & set(call.env))
+        assert call.env["PYTHONPATH"] == "/opt/ros/foxy/lib/python3.8/site-packages"
+        assert call.env["HOME"] == pwd.getpwuid(os.getuid()).pw_dir  # not the caller's HOME
+    # the gate overwrote the planted log with its own run
+    assert open(res.suite_log).read().rstrip().endswith("EXIT=1")
+    src = open(TOOL, encoding="utf-8").read()
+    assert "os.environ.get(" in src and src.count("os.environ.get(") == 2  # the lock, the record dir
+
+
+def test_suite_env_strips_what_would_change_the_run():
+    env = gate.suite_env({"PATH": "/usr/bin", "HOME": "/elsewhere", "PDJ_VENV_PY": "/bin/true",
+                          "PYTEST_ADDOPTS": "-x", "PYTEST_PLUGINS": "p", "BASH_ENV": "/x",
+                          "BASH_FUNC_flock%%": "() { true; }", "LD_PRELOAD": "/x.so",
+                          "PYTHONPATH": "/x:/opt/ros/foxy/lib", "ROS_DISTRO": "foxy"})
+    assert env == {"PATH": "/usr/bin", "HOME": pwd.getpwuid(os.getuid()).pw_dir,
+                   "PYTHONPATH": "/opt/ros/foxy/lib", "ROS_DISTRO": "foxy"}
+    assert "PYTHONPATH" not in gate.suite_env({"PYTHONPATH": "/tmp/evil"})
+
+
+def test_run_command_closes_stdin_logs_and_returns_the_exit_code(tmp_path):
+    log = str(tmp_path / "x.log")
+    rc = gate.run_command(["sh", "-c", "echo out; echo err >&2; read x; echo got=[$x]; exit 3"],
+                          str(tmp_path), {"PATH": "/usr/bin:/bin"}, log, 30)
+    assert rc == 3
+    assert open(log).read().split() == ["out", "err", "got=[]"]
+
+
+def test_run_command_times_out_and_kills_the_group(tmp_path):
+    log = str(tmp_path / "x.log")
+    t0 = time.monotonic()
+    rc = gate.run_command(["sh", "-c", "sleep 30 & sleep 30; wait"], str(tmp_path),
+                          {"PATH": "/usr/bin:/bin"}, log, 0.5)
+    assert rc is None and time.monotonic() - t0 < 15
+
+
+# --- (i) the collected-test floor -------------------------------------------
+def test_i_equal_and_greater_counts_merge(repo):
+    base = _git(repo, "rev-parse", "origin/main")
+    assert run(repo, log=FakeSuite(counts={base: 100, tip(repo): 100})).verdict == "MERGE"
+    res = run(repo, log=FakeSuite(counts={base: 100, tip(repo): 101}))
+    assert res.verdict == "MERGE" and (res.collected_base, res.collected_tip) == (100, 101)
+
+
+def test_i_fewer_tests_holds_with_both_numbers(repo):
+    base = _git(repo, "rev-parse", "origin/main")
+    suite = FakeSuite(counts={base: 100, tip(repo): 99})
+    res = run(repo, log=suite)
+    assert_hold(res, "i")
+    assert res.reasons == ["[i] the tip collects 99 tests, fewer than the base's 100: a branch "
+                           "that removes tests is merged by a day Session, never at night"]
+    heads = sorted(c.head for c in suite.collections())
+    assert set(heads) == {base, tip(repo)}
+    for c in suite.collections():
+        assert c.cmd[2] == os.path.join(ROOT, "tools", "night_shift_nonet.sh")
+        assert c.cmd[3:] == [sys.executable, "-m", "pytest", "tests/", "--collect-only", "-q",
+                             "-p", "no:cacheprovider"]
+        assert not os.path.exists(c.cwd)
+    assert len(_worktrees(repo)) == 1
+
+
+def test_i_cannot_be_waived(repo):
+    base = _git(repo, "rev-parse", "origin/main")
+    res = run(repo, log=FakeSuite(counts={base: 100, tip(repo): 99}), waive=("c",))
+    assert res.verdict == "HOLD" and letters(res) == ["i"]
+
+
+@pytest.mark.parametrize("kw", [dict(collect_rc=2), dict(collect_rc=None),
+                                dict(collect_text="tests/x.py: ERROR\n"),
+                                dict(collect_text="100 tests collected, 1 error in 3.1s\n")])
+def test_i_collection_error_holds(repo, kw):
+    res = run(repo, log=FakeSuite(**kw))
+    assert_hold(res, "i")
+    assert res.reasons[0].startswith("[i] cannot count the base's tests")
+
+
+def test_i_base_count_is_cached_per_base_sha(repo):
+    """Two branches on one base: the base is collected once, the tips once each."""
+    suite = FakeSuite()
+    assert evaluate(repo, "origin/main", BRANCH, "BUG-7", suite, audit(repo)).verdict == "MERGE"
+    other = "night-shift/2026-10-31-BUG-7-b"
+    _git(repo, "checkout", "-q", "-b", other, "origin/main")
+    (repo / "src" / "thing.py").write_text("X = 3\n")
+    commit(repo, "fix(thing): X is three")
+    res = evaluate(repo, "origin/main", other, "BUG-7", suite, audit(repo, sha=tip_of(repo, other)))
+    assert res.verdict == "MERGE", res.reasons
+    base = _git(repo, "rev-parse", "origin/main")
+    assert [c.head for c in suite.collections()].count(base) == 1
+    assert json.load(open(os.path.join(logs_dir(repo), "collected-%s.json" % base))) == \
+        {"sha": base, "count": 100}
+
+
+def tip_of(root, branch):
+    return _git(root, "rev-parse", branch)
+
+
+def test_i_a_corrupt_cache_is_recounted(repo):
+    base = _git(repo, "rev-parse", "origin/main")
+    os.makedirs(logs_dir(repo), exist_ok=True)
+    with open(os.path.join(logs_dir(repo), "collected-%s.json" % base), "w") as fh:
+        fh.write('{"sha": "%s", "count": "lots"}' % base)
+    suite = FakeSuite(counts={base: 100, tip(repo): 99})
+    assert_hold(evaluate(repo, "origin/main", BRANCH, "BUG-7", suite, audit(repo)), "i")
 
 
 # --- (b) audit --------------------------------------------------------------
@@ -447,7 +687,7 @@ def _mapkit_branch(repo):
 
 
 def _eval(repo, app_log):
-    return gate.evaluate(str(repo), "origin/main", BRANCH, "BUG-7", gate_log(repo), audit(repo),
+    return evaluate(repo, "origin/main", BRANCH, "BUG-7", gate_log(repo), audit(repo),
                          (), app_log)
 
 
@@ -464,7 +704,7 @@ def test_h_bad_app_log_holds(repo, kw):
 
 def test_h_cannot_be_waived(repo):
     _mapkit_branch(repo)
-    res = gate.evaluate(str(repo), "origin/main", BRANCH, "BUG-7", gate_log(repo), audit(repo), ("c",))
+    res = evaluate(repo, "origin/main", BRANCH, "BUG-7", gate_log(repo), audit(repo), ("c",))
     assert res.verdict == "HOLD" and "h" in letters(res)
 
 
@@ -502,7 +742,8 @@ def test_gate_refuses_a_file_the_base_does_not_have(repo):
 def _extract(repo, dest):
     dest.mkdir()
     tar = subprocess.run(["git", "-C", str(repo), "archive", "origin/main",
-                          "tools/night_shift_gate.py", "mapkit"], check=True, capture_output=True)
+                          "tools/night_shift_gate.py", "tools/night_shift_nonet.sh", "mapkit"],
+                         check=True, capture_output=True)
     subprocess.run(["tar", "-x", "-C", str(dest)], input=tar.stdout, check=True)
     return dest / "tools" / "night_shift_gate.py"
 
@@ -511,7 +752,7 @@ def _from_extract(repo, tool, cwd, *extra):
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
     args = [sys.executable, str(tool), "--repo", str(repo), "--base", "origin/main", "--branch", BRANCH,
-            "--item", "BUG-7", "--gate-log", gate_log(repo), "--audit", audit(repo)] + list(extra)
+            "--item", "BUG-7", "--audit", audit(repo), "--record", logs_dir(repo)] + list(extra)
     return subprocess.run(args, capture_output=True, text=True, cwd=str(cwd), env=env)
 
 
@@ -520,7 +761,13 @@ def test_the_protocols_spelling_reaches_a_real_merge(repo, tmp_path):
     way through the byte comparison to MERGE. The protocol's earlier command did not import."""
     tool = _extract(repo, tmp_path / "gate-base")
     r = _from_extract(repo, tool, tmp_path)
-    assert r.returncode == 0 and r.stdout.strip() == "MERGE", r.stdout + r.stderr
+    assert r.returncode == 0 and r.stdout.splitlines()[0] == "MERGE", r.stdout + r.stderr
+    # ... and it ran the suite itself (the stub's own output is in the gate's log)
+    log = os.path.join(logs_dir(repo), "gate-%s.log" % tip(repo)[:12])
+    text = open(log).read()
+    assert "stub suite --full" in text and text.rstrip().endswith("EXIT=0")
+    assert "# suite: exit 0 in " in r.stdout and log in r.stdout
+    assert "# collected: base 1, tip 1" in r.stdout
 
 
 def test_a_branch_cannot_win_through_its_own_mapkit(repo, tmp_path):
@@ -581,7 +828,7 @@ def test_the_debriefs_update_then_gate_reaches_a_merge(repo):
     write_bug(repo, hardware="robot")
     commit(repo, "map: rate BUG-7")
     night_tip = tip(repo)
-    night_log, night_audit = gate_log(repo, sha=night_tip), audit(repo, sha=night_tip)
+    night_log, night_audit = gate_log(repo), audit(repo, sha=night_tip)
     _git(repo, "checkout", "-q", "main")
     (repo / "src" / "other.py").write_text("Y = 1\n")
     commit(repo, "a day's work")
@@ -589,14 +836,16 @@ def test_the_debriefs_update_then_gate_reaches_a_merge(repo):
     base = _git(repo, "rev-parse", "main")
     _git(repo, "checkout", "-q", BRANCH)
 
-    stale = gate.evaluate(str(repo), base, BRANCH, "BUG-7", night_log, night_audit, ("c",))
+    stale = evaluate(repo, base, BRANCH, "BUG-7", night_log, night_audit, ("c",))
     assert stale.verdict == "HOLD" and "does not contain base" in stale.reasons[0]
 
     _git(repo, "merge", "-q", "--no-edit", base)
-    still = gate.evaluate(str(repo), base, BRANCH, "BUG-7", night_log, night_audit, ("c",))
-    assert still.verdict == "HOLD" and letters(still) == ["a", "b", "c"]
+    still = evaluate(repo, base, BRANCH, "BUG-7", night_log, night_audit, ("c",))
+    # (a) is no longer the night's log: the gate runs the suite on the updated tip itself.
+    assert still.verdict == "HOLD" and letters(still) == ["b", "c"]
+    assert [c.head for c in night_log.suites()] == [tip(repo)]
 
-    fresh = gate.evaluate(str(repo), base, BRANCH, "BUG-7", gate_log(repo), audit(repo), ("c",))
+    fresh = evaluate(repo, base, BRANCH, "BUG-7", gate_log(repo), audit(repo), ("c",))
     assert fresh.verdict == "MERGE" and fresh.waived == ["c"], fresh.reasons
     assert "MERGE (c waived)" in fresh.to_text()
 
@@ -605,7 +854,7 @@ def test_the_debriefs_remote_branch_name_matches_the_nights_log(repo):
     """/sitting-debrief names the branch origin/<name>; the night's log has the local name."""
     _git(repo, "push", "-q", "origin", BRANCH)
     _git(repo, "fetch", "-q", "origin")
-    res = gate.evaluate(str(repo), "origin/main", "origin/" + BRANCH, "BUG-7",
+    res = evaluate(repo, "origin/main", "origin/" + BRANCH, "BUG-7",
                         gate_log(repo), audit(repo))
     assert res.verdict == "MERGE", res.reasons
 
@@ -640,7 +889,7 @@ def _app_run(repo, app, branch=APP_BRANCH, item="BUG-7", exit_code=0, open_findi
     aud = app.parent / "app-audit.md"
     aud.write_text("Audited HEAD: %s\nBehaviour-affecting findings open: %d\n" % (sha, open_findings))
     args = ["--repo", str(repo), "--app-repo", str(app), "--base", "origin/main", "--branch", branch,
-            "--item", item, "--gate-log", str(log), "--audit", str(aud)]
+            "--item", item, "--app-log", str(log), "--audit", str(aud)]
     res = gate.evaluate_app(str(repo), str(app), "origin/main", branch, item, str(log), str(aud))
     cli = subprocess.run([sys.executable, TOOL] + args, capture_output=True, text=True)
     assert cli.stdout.splitlines()[0] == res.verdict, cli.stdout + cli.stderr
@@ -730,7 +979,7 @@ def test_app_cli_refuses_a_waiver(repo, tmp_path):
     app = _app_repo(tmp_path)
     _app_edit(app)
     r = subprocess.run([sys.executable, TOOL, "--repo", str(repo), "--app-repo", str(app), "--base",
-                        "origin/main", "--branch", APP_BRANCH, "--item", "BUG-7", "--gate-log", "x",
+                        "origin/main", "--branch", APP_BRANCH, "--item", "BUG-7", "--app-log", "x",
                         "--audit", "y", "--waive", "c"], capture_output=True, text=True)
     assert r.returncode == 1 and "HOLD" in r.stdout
 
@@ -819,10 +1068,10 @@ def test_waive_c_merges_where_unwaived_holds(repo):
     assert res.verdict == "MERGE" and res.waived == ["c"] and res.checked["c"] is False
     assert res.to_text().splitlines()[0] == "MERGE (c waived)"
     args = ["--repo", str(repo), "--base", "origin/main", "--branch", BRANCH, "--item", "BUG-7",
-            "--gate-log", gate_log(repo), "--audit", audit(repo), "--waive", "c", "--json"]
-    cli = subprocess.run([sys.executable, TOOL] + args, capture_output=True, text=True)
-    doc = json.loads(cli.stdout)
-    assert cli.returncode == 0 and doc["verdict"] == "MERGE" and doc["waived"] == ["c"]
+            "--audit", audit(repo), "--waive", "c", "--json"]
+    c = cli(args)
+    doc = json.loads(c.stdout)
+    assert c.returncode == 0 and doc["verdict"] == "MERGE" and doc["waived"] == ["c"]
 
 
 def test_waive_c_does_not_rescue_a(repo):
@@ -869,14 +1118,16 @@ def test_c_sitting_section_at_base_cannot_be_deleted_on_branch(repo):
 def test_waive_other_letter_refused(repo, letter):
     write_bug(repo, radius="normative")
     commit(repo)
-    res = gate.evaluate(str(repo), "origin/main", BRANCH, "BUG-7", gate_log(repo), audit(repo),
+    res = evaluate(repo, "origin/main", BRANCH, "BUG-7", gate_log(repo), audit(repo),
                         (letter,))
     assert res.verdict == "HOLD" and letters(res) == ["pre"]
     args = ["--repo", str(repo), "--base", "origin/main", "--branch", BRANCH, "--item", "BUG-7",
-            "--gate-log", gate_log(repo), "--audit", audit(repo), "--waive", letter]
-    cli = subprocess.run([sys.executable, TOOL] + args, capture_output=True, text=True)
-    assert cli.returncode == 1 and cli.stdout.splitlines()[0] == "HOLD"
-    assert cli.stdout.splitlines()[1].startswith("[pre]")
+            "--audit", audit(repo), "--waive", letter]
+    suite = FakeSuite()
+    c = cli(args, suite)
+    assert c.returncode == 1 and c.stdout.splitlines()[0] == "HOLD"
+    assert c.stdout.splitlines()[1].startswith("[pre]")
+    assert suite.calls == []  # a usage HOLD runs nothing
 
 
 # --- several at once, and the preconditions ---------------------------------
@@ -912,7 +1163,7 @@ def test_pre_base_unresolvable(repo):
 def test_pre_not_a_repo(tmp_path):
     d = tmp_path / "plain"
     d.mkdir()
-    res = gate.evaluate(str(d), "origin/main", BRANCH, "BUG-7", "x", "y")
+    res = evaluate(d, "origin/main", BRANCH, "BUG-7", "x", "y")
     assert res.verdict == "HOLD" and letters(res) == ["pre"]
 
 
@@ -937,15 +1188,18 @@ def test_usage_error_is_hold(repo):
 
 def test_json_shape(repo):
     args = ["--repo", str(repo), "--base", "origin/main", "--branch", BRANCH, "--item", "BUG-7",
-            "--gate-log", gate_log(repo, exit_code=1), "--audit", audit(repo), "--json"]
-    cli = subprocess.run([sys.executable, TOOL] + args, capture_output=True, text=True)
-    doc = json.loads(cli.stdout)
-    assert set(doc) == {"verdict", "item", "branch", "tip", "reasons", "checked", "waived"}
+            "--audit", audit(repo), "--json", "--record", logs_dir(repo)]
+    c = cli(args, gate_log(repo, exit_code=1))
+    doc = json.loads(c.stdout)
+    assert set(doc) == {"verdict", "item", "branch", "tip", "reasons", "checked", "waived",
+                        "suite_log", "suite_exit", "suite_seconds", "collected_base",
+                        "collected_tip"}
     assert doc["waived"] == []
     assert doc["verdict"] == "HOLD" and doc["tip"] == tip(repo) and doc["item"] == "BUG-7"
     assert doc["checked"] == {"a": False, "b": True, "c": True, "d": True, "e": True, "f": True,
-                              "g": True, "h": True}
-    assert cli.returncode == 1
+                              "g": True, "h": True, "i": True}
+    assert doc["suite_exit"] == 1 and doc["collected_base"] == doc["collected_tip"] == 100
+    assert c.returncode == 1
 
 
 # --- the tests above bite: a gate with a check removed would MERGE ----------
@@ -955,6 +1209,7 @@ def _neutered(tmp_path, monkeypatch, old, new):
     assert src.count(old) == 1, old
     p = tmp_path / "neutered_gate.py"
     p.write_text(src.replace(old, new))
+    shutil.copy(os.path.join(ROOT, "tools", "night_shift_nonet.sh"), str(tmp_path))  # its fence
     spec = importlib.util.spec_from_file_location("neutered_gate", str(p))
     mod = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, "neutered_gate", mod)  # dataclasses look it up
@@ -964,10 +1219,21 @@ def _neutered(tmp_path, monkeypatch, old, new):
 
 
 def test_neutered_exit_check_would_merge(repo, tmp_path, monkeypatch):
-    mod = _neutered(tmp_path, monkeypatch, 'elif exits[-1] != "0":', "elif False:")
+    mod = _neutered(tmp_path, monkeypatch, "    if rc != 0:\n        return [\"[a] suite exit",
+                    "    if False:\n        return [\"[a] suite exit")
     log, aud = gate_log(repo, exit_code=1), audit(repo)
-    assert mod.evaluate(str(repo), "origin/main", BRANCH, "BUG-7", log, aud).verdict == "MERGE"
-    assert gate.evaluate(str(repo), "origin/main", BRANCH, "BUG-7", log, aud).verdict == "HOLD"
+    assert evaluate(repo, "origin/main", BRANCH, "BUG-7", log, aud, module=mod).verdict == "MERGE"
+    assert evaluate(repo, "origin/main", BRANCH, "BUG-7", log, aud).verdict == "HOLD"
+
+
+def test_neutered_floor_would_merge(repo, tmp_path, monkeypatch):
+    mod = _neutered(tmp_path, monkeypatch,
+                    "if not out and res.collected_tip < res.collected_base:", "if False:")
+    base = _git(repo, "rev-parse", "origin/main")
+    log = FakeSuite(counts={base: 100, tip(repo): 99})
+    aud = audit(repo)
+    assert evaluate(repo, "origin/main", BRANCH, "BUG-7", log, aud, module=mod).verdict == "MERGE"
+    assert evaluate(repo, "origin/main", BRANCH, "BUG-7", log, aud).verdict == "HOLD"
 
 
 def test_neutered_path_check_would_merge(repo, tmp_path, monkeypatch):
@@ -975,8 +1241,8 @@ def test_neutered_path_check_would_merge(repo, tmp_path, monkeypatch):
     commit(repo)
     mod = _neutered(tmp_path, monkeypatch, "if p and _forbidden(p)]", "if False]")
     log, aud = gate_log(repo), audit(repo)
-    assert mod.evaluate(str(repo), "origin/main", BRANCH, "BUG-7", log, aud).verdict == "MERGE"
-    assert gate.evaluate(str(repo), "origin/main", BRANCH, "BUG-7", log, aud).verdict == "HOLD"
+    assert evaluate(repo, "origin/main", BRANCH, "BUG-7", log, aud, module=mod).verdict == "MERGE"
+    assert evaluate(repo, "origin/main", BRANCH, "BUG-7", log, aud).verdict == "HOLD"
 
 
 # --- item-id-per-kind P1 (plan section 5, T-U6): both ID forms, prefix must match kind ---
@@ -1072,7 +1338,8 @@ def test_app_gate_takes_per_kind_ids_and_refuses_a_mismatch(repo, tmp_path):
 
 # --- the verdict record (--record, closeout C1) ------------------------------
 RECORD_FIELDS = {"schema", "verdict", "item", "branch", "tip", "base_ref", "base_sha", "waived",
-                 "reasons", "gate_sha256", "gate_log_sha256", "audit_sha256", "written_at"}
+                 "reasons", "gate_sha256", "gate_log_sha256", "audit_sha256", "written_at",
+                 "suite_log", "suite_exit", "suite_seconds", "collected_base", "collected_tip"}
 
 
 def _sha256(path):
@@ -1082,16 +1349,16 @@ def _sha256(path):
 
 
 def _cli(repo, *extra, log=None, aud=None, env=None):
-    args = [sys.executable, TOOL, "--repo", str(repo), "--base", "origin/main", "--branch", BRANCH,
-            "--item", "BUG-7", "--gate-log", log or gate_log(repo), "--audit", aud or audit(repo)]
-    return subprocess.run(args + list(extra), capture_output=True, text=True, env=env)
+    args = ["--repo", str(repo), "--base", "origin/main", "--branch", BRANCH,
+            "--item", "BUG-7", "--audit", aud or audit(repo)]
+    return cli(args + list(extra), log or gate_log(repo), env=env)
 
 
 def test_record_written_for_a_merge_with_every_field(repo, tmp_path):
     d = tmp_path / "verdicts"
     log, aud = gate_log(repo), audit(repo)
     r = _cli(repo, "--record", str(d), log=log, aud=aud)
-    assert r.returncode == 0 and r.stdout.strip() == "MERGE", r.stdout + r.stderr
+    assert r.returncode == 0 and r.stdout.splitlines()[0] == "MERGE", r.stdout + r.stderr
     rec = json.loads((d / (tip(repo) + ".MERGE.json")).read_text())
     assert set(rec) == RECORD_FIELDS
     assert rec["schema"] == 1 and rec["verdict"] == "MERGE" and rec["item"] == "BUG-7"
@@ -1099,9 +1366,18 @@ def test_record_written_for_a_merge_with_every_field(repo, tmp_path):
     assert rec["base_ref"] == "origin/main" and rec["base_sha"] == _git(repo, "rev-parse", "origin/main")
     assert rec["waived"] == [] and rec["written_at"].endswith("+00:00")
     assert rec["gate_sha256"] == _sha256(TOOL)
-    assert rec["gate_log_sha256"] == _sha256(log) and rec["audit_sha256"] == _sha256(aud)
-    # atomic: the temp file is renamed into place, nothing else is left in the directory
-    assert os.listdir(str(d)) == [tip(repo) + ".MERGE.json"]
+    suite_log = str(d / ("gate-%s.log" % tip(repo)[:12]))
+    assert rec["suite_log"] == suite_log and rec["suite_exit"] == 0
+    assert isinstance(rec["suite_seconds"], float) and rec["suite_seconds"] >= 0
+    assert rec["collected_base"] == 100 and rec["collected_tip"] == 100
+    assert rec["gate_log_sha256"] == _sha256(suite_log) and rec["audit_sha256"] == _sha256(aud)
+    assert suite_log in r.stdout  # named in the output too
+    # atomic: the temp files are renamed into place; besides the record only the gate's own
+    # logs and the base-count cache are left in the directory
+    base = _git(repo, "rev-parse", "origin/main")
+    assert sorted(os.listdir(str(d))) == sorted([
+        tip(repo) + ".MERGE.json", "gate-%s.log" % tip(repo)[:12], "collect-%s.log" % tip(repo)[:12],
+        "collect-%s.log" % base[:12], "collected-%s.json" % base])
 
 
 def test_record_written_for_a_hold_with_its_reasons(repo, tmp_path):
@@ -1136,7 +1412,10 @@ def test_record_changes_no_verdict(repo, tmp_path):
         log = gate_log(repo, **kw)
         plain = _cli(repo, log=log)
         recorded = _cli(repo, "--record", str(tmp_path / "v"), log=log)
-        assert (plain.returncode, plain.stdout) == (recorded.returncode, recorded.stdout)
+        # the reasons name the suite log, which lives in the record directory
+        verdict = lambda r: [x.split("; log ")[0] for x in r.stdout.splitlines()  # noqa: E731
+                             if not x.startswith("# ")]
+        assert (plain.returncode, verdict(plain)) == (recorded.returncode, verdict(recorded))
 
 
 def test_a_later_hold_never_replaces_the_merge_record(repo, tmp_path):
@@ -1144,5 +1423,6 @@ def test_a_later_hold_never_replaces_the_merge_record(repo, tmp_path):
     d = tmp_path / "verdicts"
     assert _cli(repo, "--record", str(d)).returncode == 0
     assert _cli(repo, "--record", str(d), log=gate_log(repo, exit_code=1)).returncode == 1
-    assert sorted(os.listdir(str(d))) == [tip(repo) + ".HOLD.json", tip(repo) + ".MERGE.json"]
+    records = sorted(n for n in os.listdir(str(d)) if n.startswith(tip(repo)))
+    assert records == [tip(repo) + ".HOLD.json", tip(repo) + ".MERGE.json"]
     assert json.loads((d / (tip(repo) + ".MERGE.json")).read_text())["verdict"] == "MERGE"

@@ -37,6 +37,11 @@ void cmd_result_uplink_step();
 // the Jetson as PLATFORM_FRAMEs (relay seam), bounded per tick.
 void platform_uplink_step();
 
+// FW 45 (IDEA-20 P3a): drain the dedicated Platform IMU_DATA ring (imu_ring.h) into
+// PLATFORM_IMU_BATCH datagrams, up to PLATFORM_IMU_BATCH_MAX_FRAMES frames each and
+// at most IMU_BATCHES_PER_TICK_MAX datagrams per tick. Silent while the ring is empty.
+void platform_imu_uplink_step();
+
 // Call at TELEM_RATE_HZ (100 Hz), after telemetry_step(). Emits the latest sniffed
 // hand Set_Input_Pos (Platform→hand ODrive on CAN3) as a HAND_CMD_ECHO when a fresh
 // command is pending (hand command-echo — feeds hand_telemetry's cmd fields).

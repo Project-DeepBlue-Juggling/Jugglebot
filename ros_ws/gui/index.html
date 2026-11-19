@@ -286,6 +286,13 @@
                     <span class="motion-readout-value" id="hand-fan-mode">--</span>
                     <button class="hand-fan-btn hand-fan-auto" id="hand-fan-auto" hidden>Auto</button>
                 </div>
+                <div class="imu-upload-row" id="imu-upload-control">
+                    <label class="motion-readout-label" for="imu-upload-toggle">Upload IMU data after each Attempt</label>
+                    <input type="checkbox" id="imu-upload-toggle" disabled>
+                    <span class="motion-readout-value" id="imu-upload-state">--</span>
+                    <progress id="imu-upload-bar" max="100" value="0" hidden></progress>
+                    <span class="motion-readout-value" id="imu-upload-last"></span>
+                </div>
             </div>
 
             <!-- Ball Butler (throw sub-section merged in at the bottom) -->

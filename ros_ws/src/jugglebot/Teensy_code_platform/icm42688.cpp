@@ -228,6 +228,14 @@ int Driver::setGyroFs(uint16_t dps) {
   return flushFifo();
 }
 
+uint8_t Driver::regGyroConfig0() const { return (uint8_t)((gyroFsCode(_gyroFs) << 5) | odrCode(_odr)); }
+uint8_t Driver::regAccelConfig0() const { return (uint8_t)((accelFsCode(_accelFs) << 5) | odrCode(_odr)); }
+int Driver::checkWhoAmI() {
+  int who = readReg(REG_WHO_AM_I);
+  if (who < 0) return who;
+  return who == WHO_AM_I_VAL ? OK : ERR_WHO_AM_I;
+}
+
 int Driver::flushFifo() {
   int r = writeReg(REG_SIGNAL_PATH_RESET, 0x02);
   delayMicroseconds(200);

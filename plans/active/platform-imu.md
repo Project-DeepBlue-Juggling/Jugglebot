@@ -14,7 +14,7 @@ scope: >-
   the carry-ring-zvd analysis.
 steps:
   - {id: P1, title: Off-board foundations, kind: phase, status: in_progress, effort: m, hardware: none}
-  - {id: P2, title: Platform Teensy firmware FW 11, kind: phase, status: not_started, effort: l, hardware: none}
+  - {id: P2, title: Platform Teensy firmware FW 11, kind: phase, status: in_progress, effort: l, hardware: none}
   - {id: P3, title: can-bridge firmware and the Jetson side, kind: phase, status: not_started, effort: l, hardware: none}
   - {id: P4, title: "Sitting 1, flash and bench the capture path", kind: rung, status: not_started, effort: m, hardware: robot}
   - {id: P5, title: "Sitting 2, mount calibration and first Attempt captures", kind: rung, status: not_started, effort: m, hardware: robot}
@@ -89,7 +89,7 @@ is 0.031 dps, under the 0.05 to 0.07 dps rms bench noise, so the wide range cost
 | Platform Teensy robustness changes ride along: the tilt request becomes a flag serviced in `loop()` with a bounded failure path (today at least 300 ms stalls inside the CAN callback); the SCL3300 wait-forever in `setup()` is bounded; `loop()` dispatches several CAN frames per pass (today one). FW 10 to 11 | A busy callback blocking CAN reception while the IMU is also being served; a missing inclinometer hanging boot [fw] |
 | Tilt request with the inclinometer absent or failing (owner, 2026-11-18): the Platform Teensy answers with an explicit invalid reply, never silence and never a stale value | A Jetson caller waiting out a timeout on a missing sensor, or acting on a tilt that is no longer measured |
 | The IMU is strictly optional: a non-blocking probe and init state machine in `loop()` (never `setup()`), bounded Wire timeouts, back-off on errors, IMU work stops at FwUpdate BEGIN, a CAN disable command | An unplugged or misbehaving IMU stopping the board from booting, answering CAN or accepting a firmware update |
-| Recovery stance (owner, 2026-11-18): the CAN firmware update is the trusted recovery path and power is reliable. No bench self-update rehearsal, no safe-boot window, no opt-in-per-boot, no crash breadcrumbs. Off-board checks only: native tests of the pure logic (the `tests/firmware/native` host g++ and doctest pattern), a `pio` compile, then flash | Building recovery machinery for a risk the owner has judged acceptable; it is recorded so a later Session does not reopen it unasked |
+| Recovery stance (owner, 2026-11-18): the CAN firmware update is the trusted recovery path and power is reliable. No bench self-update rehearsal, no safe-boot machinery, no opt-in-per-boot, no crash breadcrumbs. P2 added a 10 s boot settle and a BEGIN latch (not a safe mode; the CrashReport safe mode was considered and not built, owner 2026-11-18). Off-board checks only: native tests of the pure logic (the `tests/firmware/native` host g++ and doctest pattern), a `pio` compile, then flash | Building recovery machinery for a risk the owner has judged acceptable; it is recorded so a later Session does not reopen it unasked |
 | Jetson: `teensy_bridge_node` gets an IMU handler with its own queue (today it keeps only the latest frame per CAN id); status on a topic added to the rosbag list in `jugglebot_launch.py`; captures written to `temp/imu_capture/<stamp>` with metadata (ODR, ranges, clock anchors, temperature, CRC result, complete flag), following `hand_capture.py`. Automatic freeze and upload at Attempt end and on Fault from the start | Latest-frame-wins dropping capture frames; a status topic that is never bagged; a capture needing a hand to start it |
 | Mount calibration, the owner's simpler procedure: fasten the sensor; at Level take gravity for the IMU's Z (two mount angles); Tilt the Platform about its local X, then Y (static holds plus the moves, Mocap recording) and fit the third angle. Gyro bias zeroed from a still window before each Attempt (Jetson side). Factory scale and bias otherwise; no six-face solve, no temperature compensation (temperature is logged). Applied on the Jetson, raw counts on the wire. Lever arm from the owner's bracket CAD, needed to about 5 mm | Re-flashing firmware for a calibration change; a lever-arm error that mixes angular acceleration into translation (0.3 to 0.6 g tangential at r of 0.2 to 0.3 m against a ring of 0.2 to 0.4 g [motion]) |
 
@@ -109,6 +109,12 @@ ring [motion]. The calibration above is what makes the attitude correction possi
   Jetson with no PROTOCOL bump.
 - **Jetson:** the IMU handler in `teensy_bridge_node`, the status topic, and the capture writer. The freeze trigger
   is the end of an Attempt, a Fault, or a Soft E-stop; the resume follows a CRC-checked upload.
+- **Jetson trigger, gate and GUI (P3c, as built):** `teensy_bridge_node` subscribes `skills/attempt` (`juggle_start` /
+  `juggle_end`, published by `skill_node` for every goal source) and the guard fault edge, and calls `attempt_ended` with
+  the span from `platform_imu_gate.AttemptSpanTracker` (2 s before the Attempt starts to 3 s after its end, last 32 s if
+  longer), fire-and-forget. The gate (`platform_imu_gate.imu_upload_gate`, cached `platform_imu/status` only, fail-open
+  when older than 2 s or absent, hard ceiling 180 s with an abort) has three call sites: the orchestrator command topic,
+  the orchestrator Juggle relay and `skill_node`'s Juggle goal callback. The GUI row is in Platform Control.
 - **Jetson gate and GUI (P3):** the "Upload IMU data after each Attempt" toggle (default ON); while an upload runs
   with the toggle ON the skill/orchestrator side refuses the Attempt-starting command (the Juggle request, the GUI
   Start button; the owner's word is JUGGLE) and any other command that starts motion (`standby`, `trajectory`,
@@ -130,15 +136,35 @@ are untouched, but `config/` is tier 1). Status: P1a and P1b landed with the pha
 
 The robustness changes, the IMU state machine, the ring, the status frame and the upload responder (section 3).
 Hardware: none. **Gate (Suite gate):** native tests, `pio` build, `/audit` of the diff, then `./run_tests.sh --full`.
-Status: not started.
+Status: P2 complete (2026-11-19, FW 11 on branch `imu-p2`), pending the phase gate (`./run_tests.sh --full`); the phase-end
+audit ran and its findings are closed (0 blocking, 4 behaviour, 4 test, 5 narrative). P2a (robustness: tilt off the CAN callback, bounded inclinometer probe, multi-frame
+dispatch) and P2b (the IMU wired into `loop()` through `imu_service.h`: one bounded step per pass, back-off to 60 s,
+the TX-mailbox rule, a 10 s boot settle, FW_HALTED at FwUpdate BEGIN with a latch when BEGIN lands in the settle, kill switch `PLATFORM_IMU_ENABLED`) are both on branch `imu-p2`.
+Walk-through and sizes: `logbook/2026-11-19-platform-imu-p2-firmware.md`. Not flashed.
 
 ### P3: can-bridge firmware and the Jetson side
 
 The whitelist, the IMU ring, the batched IMU_DATA UDP message and the two RPCs on the bridge (READ allowed while
 Armed; the gap clamp; no ABORT on arming); decode, capture writer, automatic freeze and upload at the configured pace,
 the upload toggle, the refusal of motion-starting commands during an upload, the progress display, status topic and bag
-list on the Jetson. Hardware: none. **Gate (Suite gate):** `./run_tests.sh --full`, including the xref
-and version tests. Status: not started. The bridge FW number is open (section 6).
+list on the Jetson. Also from P2 (spec section 4, "Recovery if IMU code faults"): (a) the uploader BEGIN retry
+(`teensy_link_bridge.py`: retry BEGIN for at least 20 s so a fault-loop window of about 10 s every 18.5 s is always hit;
+this replaces the manual "re-run the upload until BEGIN OK" rule once built; today it sends one BEGIN and waits 1.0 s,
+`_FW_REPLY_TIMEOUT_S`); (b) Jetson handling of the tilt invalid reply (detect the raw NaN words before the float bound
+check, log the reason, retry NOT_READY no sooner than 1 s, treat (pi, pi) as the FW <= 10 failure reply); (c) no IMU_STATUS
+for 10 s after a boot is normal; (d) the kill-switch build (ignores IMU_CMD, sends no STATUS, still reports FW 11) reads as
+"no IMU", not a fault. Hardware: none. **Gate (Suite gate):** `./run_tests.sh --full`, including the xref
+and version tests. Status: P3a (the can-bridge side, FW 45) built on branch `imu-p3`
+(`logbook/2026-11-19-platform-imu-p3-bridge-jetson.md`). P3b (the Jetson side: codecs, upload state machine, timestamp fit, capture
+files, node wiring and API, tilt invalid reply, uploader BEGIN retry; `teensy_link/platform_imu.py`,
+`teensy_link/platform_imu_capture.py`) built on the same branch; items (a), (b), (c), (d) above are done in it. P3c (the Attempt-end trigger, the
+refusal of motion-starting commands during an upload, the GUI toggle and progress display) built on the same branch
+(2026-11-19): the trigger lives in `teensy_bridge_node` (it listens to `skills/attempt` and the guard fault edge, so
+`skill_node` is untouched there); the gate is the pure `jugglebot/platform_imu_gate.py`, called once in
+`orchestrator_node._on_command`, once in `_svc_juggle_request` and once in `skill_node._juggle_goal`; the GUI is
+`ros_ws/gui/js/imu-upload-panel.js`. Refused: `standby`, `trajectory`, `spacemouse`, `gui`, `level`, `home` and the Juggle
+request; always allowed: `deactivate` (aborts the upload), the Soft E-stop (the bridge aborts on the Fault edge), `activate`,
+`clear_errors`, `juggle_stop`. Switching the toggle OFF mid-upload aborts it. Hardware proof (the ramp) stays P4.
 
 ### P4: Sitting 1, flash and bench the capture path
 
@@ -165,14 +191,22 @@ Attempt's capture on disk, complete and CRC-checked, handed to the carry-ring-zv
 
 ## 6. Open questions
 
-- **Lever arm:** from the owner's bracket CAD, needed to about 5 mm. Pending; P5 cannot close without it.
-- **Bridge FW number:** the BUG-93 held branch takes 45, so this plan's bridge build is 45 or 46. Coordinate when
-  P3 starts; no PROTOCOL bump either way.
+- **Lever arm and nominal mount (owner, from CAD, 2026-11-19):** the IMU sits at about (5, -115, 18.5) mm in the Platform frame. Nominal axes: IMU x = Platform +z, IMU y = Platform -x, so IMU z = Platform -y (right-handed). These seed the P5 mount fit, which measures the real rotation; the position is approximate until the bracket is fitted.
+- **Bridge FW number:** P3a took 45 (2026-11-19) because the held BUG-93 branch had not landed on main; whichever of
+  the two reaches main second renumbers (BUG-93 to 46 if this lands first). No PROTOCOL bump either way.
 - **Upload time (owner, 2026-11-19: "keep this area open; I will want to explore minimising it once the MVP works"):**
   three levers, filed as an Idea under this Pathway ("Minimise the Platform IMU upload time after an Attempt"): (1)
   tighter sample packing or compression (the 6 x int16 words are raw chip counts); (2) a slower
   setpoint heartbeat while holding (decided 2026-11-19 to keep the 500 Hz stream as is for now: it feeds the ODrive
   watchdog and avoids a rate switch on the Leg path); (3) a higher measured rate from the P4 ramp.
+- **Span-only uploads cannot be CRC-checked (IDEA-25 note, P3 audit 2026-11-19):** the payload CRC covers the whole
+  frozen capture, so an upload of only the Attempt span (the default) records `crc_checked = false`. Per-block
+  checksums would close it and need a firmware and spec change; until then a span capture's integrity rests on the
+  per-frame sequence numbers and the hole-refill, and `complete` means "the requested span arrived", not "verified".
+- **Owner confirmations pending (P3 audit):** (1) `activate` and `clear_errors` are not gated while an upload runs
+  (the gate refuses only motion-starting commands); (2) toggle OFF aborts a running upload; (3) the Fault upload delay:
+  a Fault or Soft E-stop freezes at once but starts the READ stream `imu_fault_upload_delay_s` (default 5 s, clamped
+  to 60 s, and held while still Armed up to 30 s) later, so the upload never competes with the deactivate response.
 - **Residue, recorded and not solved here:** (a) tighten the wall-clock chain once the status frame shows the real
   sync quality (stamp sync frames nearer the receive interrupt; min-RTT filtering of the bridge's Jetson anchor);
   (b) the encoder-versus-Mocap ring-frequency discrepancy (5.4 versus 4.4 to 4.7 Hz), which the IMU should settle;

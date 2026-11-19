@@ -54,6 +54,7 @@ from udp_protocol import (  # noqa: E402, F401
     HEARTBEAT_HB_STALE_SHIFT,  # HeartbeatT2J.flags bit offset of HB_STALE_MASK (bits 16-22, FW 23)
     BB_RELEASE_MIN_LEAD_US,  # BB_THROW absolute-release lead window at bridge receipt (FW 29)
     BB_RELEASE_MAX_LEAD_US,
+    PLATFORM_IMU_BATCH_MAX_FRAMES,
     # Enums
     MsgType,
     RpcMethod,
@@ -85,6 +86,7 @@ from udp_protocol import (  # noqa: E402, F401
     BbYawEstimate,
     LegCmd,
     PlatformFrame,
+    PlatformImuBatch,
     HandCmdEcho,
     HandSensor,
     CanErrors,
@@ -109,6 +111,7 @@ from udp_protocol import (  # noqa: E402, F401
     BB_YAW_ESTIMATE_SIZE,
     LEG_CMD_SIZE,
     PLATFORM_FRAME_SIZE,
+    PLATFORM_IMU_BATCH_SIZE,
     HAND_CMD_ECHO_SIZE,
     HAND_SENSOR_SIZE,
     CAN_ERRORS_SIZE,
@@ -134,6 +137,8 @@ from udp_protocol import (  # noqa: E402, F401
     ResultTimeOfDay,
     ArgBbThrow,
     ArgHandFanSet,
+    ArgPlatformImuCtrl,
+    ArgPlatformImuRead,
     ArgRobotState,
     ResultAxisVersions,  # GET_AXIS_VERSIONS result blob
     ResultBbAxisVersions,  # GET_BB_AXIS_VERSIONS result blob (FW 20, additive)

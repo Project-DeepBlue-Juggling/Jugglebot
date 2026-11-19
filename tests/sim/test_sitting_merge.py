@@ -2,11 +2,12 @@
 
 The script is the one path from a held ``night-shift/<date>-<ID>`` branch to ``main`` after a
 Sitting (closeout C10): ``prepare`` brings the branch up to date with ``main`` in its own
-worktree and runs the full suite; ``land`` runs the base's gate with ``--waive c`` and pushes
-exactly the gated tip. Every test drives the real script, the real gate and the real ``mapkit``
+worktree; ``land`` runs the base's gate with ``--waive c``, which runs the full suite on that
+tip itself (FEAT-51), and pushes exactly the gated tip. Every test drives the real script, the real gate and the real ``mapkit``
 against a temporary bare ``origin``, a seed clone that plays the other writers and a "live"
 clone the script works from; the suite is a stub ``run_tests.sh`` whose exit code the test
-sets. tmp_path only: no ports, no fixed paths (the suite lock is under tmp_path too, so a
+sets, and the floor's collection is real pytest over a one-test ``tests/``. The gate runs
+both itself through its real runner: there is no seam to hand it a result. tmp_path only: no ports, no fixed paths (the suite lock is under tmp_path too, so a
 test run inside ``flock /tmp/jugglebot-tests.lock`` cannot deadlock on itself).
 """
 from __future__ import annotations
@@ -124,6 +125,8 @@ class Fx:
             '#!/usr/bin/env bash\necho "stub suite $*"\nexit "${STUB_SUITE_EXIT:-0}"\n')
         for f in ("tools/night_shift_nonet.sh", "run_tests.sh"):
             os.chmod(str(s / f), 0o755)
+        (s / "tests").mkdir()
+        (s / "tests" / "test_stub.py").write_text("def test_stub():\n    pass\n")  # the floor's count
         (s / ".gitignore").write_text("__pycache__/\n")
         self.gen(s)
         self.commit(s, "seed")
@@ -178,11 +181,15 @@ class Fx:
     def remote_has(self, name):
         return bool(self.git(self.origin, "branch", "--list", name))
 
-    def gate_log(self):
-        return (self.work / ("gate-%s.log" % ITEM)).read_text()
+    def prepared(self):
+        return (self.work / ("prepared-%s" % ITEM)).read_text()
 
     def logged_head(self):
-        return [ln[5:] for ln in self.gate_log().splitlines() if ln.startswith("HEAD=")][0]
+        return [ln[5:] for ln in self.prepared().splitlines() if ln.startswith("HEAD=")][0]
+
+    def suite_log(self, tip=None):
+        """The log the GATE wrote for its own suite run on ``tip``."""
+        return (self.verdicts / ("gate-%s.log" % (tip or self.logged_head())[:12])).read_text()
 
     def audit(self, open_findings=0, head=None):
         (self.work / ("audit-%s.md" % ITEM)).write_text(
@@ -218,11 +225,10 @@ def test_happy_path_lands_exactly_the_gated_tip(fx):
     base = fx.origin_sha()
     r = fx.run("prepare")
     assert r.returncode == 0, r.stderr
-    lines = fx.gate_log().splitlines()
+    lines = fx.prepared().splitlines()
     tip = fx.logged_head()
-    assert lines[0] == "HEAD=" + tip and lines[1] == "BRANCH=" + BRANCH
-    assert lines[-3:] == ["HEAD=" + tip, "BRANCH=" + BRANCH, "EXIT=0"]
-    assert "stub suite --full" in lines and "nonet(base)" in lines  # under the base's fence
+    assert lines == ["HEAD=" + tip, "BRANCH=" + BRANCH]
+    assert not list(fx.verdicts.glob("gate-*.log"))  # prepare runs no suite: the gate does, at land
     assert fx.git(fx.wt(), "merge-base", "--is-ancestor", base, "HEAD") == ""
     assert (fx.work / ("diff-%s.patch" % ITEM)).read_text().count("X = 2") == 1
     assert fx.origin_sha("refs/heads/" + BRANCH) != tip  # the flown branch is untouched
@@ -230,14 +236,20 @@ def test_happy_path_lands_exactly_the_gated_tip(fx):
     r = fx.run("land")
     assert r.returncode == 0, r.stderr
     assert "MERGE (c waived)" in r.stdout and ("LANDED %s %s" % (ITEM, tip)) in r.stdout
+    suite = fx.suite_log(tip).splitlines()  # the gate ran the suite on the tip that landed
+    assert suite[0] == "HEAD=" + tip and suite[-1] == "EXIT=0"
+    assert "stub suite --full" in suite and "nonet(base)" in suite  # under the base's fence
+    assert "# collected: base 1, tip 1" in r.stdout
     assert fx.origin_sha() == tip  # a fast-forward: main IS the gated tree
     record = json.loads((fx.verdicts / ("%s.MERGE.json" % tip)).read_text())
     assert record["verdict"] == "MERGE" and record["waived"] == ["c"] and record["base_sha"] == base
+    assert record["suite_exit"] == 0 and record["suite_log"] == str(fx.verdicts / ("gate-%s.log" % tip[:12]))
     assert not fx.remote_has(BRANCH)
     assert not fx.wt().exists()
     assert not fx.git(fx.live, "branch", "--list", BRANCH)
     rows = fx.jsonl()
     assert len(rows) == 1 and rows[0]["tip"] == tip and rows[0]["item"] == ITEM
+    assert rows[0]["gate_log"] == record["suite_log"]
     # The night's landed check counts every commit main gained as gated by the record.
     out = subprocess.run([sys.executable, str(REPO / "tools" / "night_shift_landed.py"),
                           "--repo", str(fx.live), "--from", base, "--to", tip,
@@ -267,13 +279,14 @@ def test_hold_keeps_the_branch_and_the_worktree(fx):
 
 
 def test_a_commit_after_the_suite_is_refused(fx):
+    """After prepare (the suite now runs inside the gate at land): 10 uncommitted, 9 committed."""
     fx.branch({"src/thing.py": "X = 2\n"})
     base = fx.origin_sha()
     assert fx.run("prepare").returncode == 0
     fx.audit()
     (fx.wt() / "src" / "thing.py").write_text("X = 3\n")
     refused(fx.run("land"), 10)  # uncommitted
-    fx.commit(fx.wt(), "an edit after the suite")
+    fx.commit(fx.wt(), "an edit after prepare")
     fx.audit(head=fx.git(fx.wt(), "rev-parse", "HEAD"))  # even an audit of the new tip
     refused(fx.run("land"), 9)
     assert fx.origin_sha() == base and fx.remote_has(BRANCH)
@@ -287,13 +300,29 @@ def test_a_missing_audit_is_refused(fx):
     assert fx.origin_sha() == base
 
 
-def test_a_red_suite_is_refused_at_prepare_and_land(fx):
+def test_a_red_suite_is_refused_at_land(fx):
+    """The suite runs once, inside the gate, on the tip that would land: red is still 7."""
     fx.branch({"src/thing.py": "X = 2\n"})
+    base = fx.origin_sha()
     fx.env["STUB_SUITE_EXIT"] = "3"
-    refused(fx.run("prepare"), 7)
-    assert fx.gate_log().splitlines()[-1] == "EXIT=3"
+    assert fx.run("prepare").returncode == 0  # prepare runs no suite
     fx.audit()
-    refused(fx.run("land"), 7)
+    r = fx.run("land")
+    refused(r, 7)
+    assert "[a] suite exit 3 on " in r.stdout and fx.suite_log().splitlines()[-1] == "EXIT=3"
+    assert fx.origin_sha() == base and fx.remote_has(BRANCH) and fx.wt().is_dir()
+    assert (fx.verdicts / ("%s.HOLD.json" % fx.logged_head())).exists()
+    fx.env["STUB_SUITE_EXIT"] = "0"  # green on a re-run of land: it lands
+    assert fx.run("land").returncode == 0 and fx.origin_sha() == fx.logged_head()
+
+
+def test_a_live_session_refuses_land(fx):
+    fx.branch({"src/thing.py": "X = 2\n"})
+    assert fx.run("prepare").returncode == 0
+    fx.audit()
+    fx.env["LIVE_SESSION_RE"] = "."  # every process matches: the robot is "live"
+    refused(fx.run("land"), 3)
+    assert not list(fx.verdicts.glob("gate-*.log"))  # no suite ran
 
 
 def test_a_frozen_path_branch_is_refused_with_no_override(fx):
@@ -301,7 +330,7 @@ def test_a_frozen_path_branch_is_refused_with_no_override(fx):
     r = fx.run("prepare")
     refused(r, 4)
     assert "config/hardware_config.yaml" in r.stderr and "day Session" in r.stderr
-    assert not fx.wt().exists() and not (fx.work / ("gate-%s.log" % ITEM)).exists()
+    assert not fx.wt().exists() and not (fx.work / ("prepared-%s" % ITEM)).exists()
     for flag in ("--force", "--waive", "--allow-frozen"):
         refused(fx.run("prepare", flag, "f"), 2)
 
@@ -327,7 +356,7 @@ def test_the_items_own_map_conflict_takes_mains_copy_and_lands(fx):
     r = fx.run("prepare")
     assert r.returncode == 0, r.stderr
     assert ("TOOK MAIN's copy of %s" % BUG) in r.stdout
-    assert ("TOOK MAIN's copy of %s" % BUG) in fx.gate_log().splitlines()[2]  # in the header
+    assert ("TOOK MAIN's copy of %s" % BUG) in fx.prepared().splitlines()[2]  # in the record
     assert "Body, main." in (fx.wt() / BUG).read_text()
     assert "Body, branch." in (fx.work / ("branch-copy-%s.md" % ITEM)).read_text()
     fx.audit()
@@ -346,7 +375,7 @@ def test_a_map_conflict_stops_prepare(fx):
     r = fx.run("prepare")
     refused(r, 5)
     assert other in r.stderr and "TOOK MAIN" not in r.stdout
-    assert not fx.wt().exists() and not (fx.work / ("gate-%s.log" % ITEM)).exists()
+    assert not fx.wt().exists() and not (fx.work / ("prepared-%s" % ITEM)).exists()
 
 
 def test_a_generated_page_conflict_is_regenerated(fx):
@@ -387,7 +416,7 @@ def test_machinery_comes_from_the_base(fx):
     fx.branch({"src/thing.py": "X = 2\n"})
     base = fx.origin_sha()
     assert fx.run("prepare").returncode == 0
-    assert "nonet(base)" in fx.gate_log() and "LIVE-NONET" not in fx.gate_log()
     fx.audit(open_findings=1)
     refused(fx.run("land"), 13)
+    assert "nonet(base)" in fx.suite_log() and "LIVE-NONET" not in fx.suite_log()
     assert fx.origin_sha() == base

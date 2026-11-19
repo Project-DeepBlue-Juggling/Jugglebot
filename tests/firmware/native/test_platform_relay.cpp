@@ -31,6 +31,7 @@
 #include <cstring>
 #include <cmath>                 // NAN / INFINITY (state_write float validation)
 #include <vector>                // recorded CAN1 frames (BB firmware-over-CAN)
+#include <thread>                // IMU ring: one producer, one consumer (SPSC stress)
 
 #include "udp_protocol.h"
 #include "protocol_config.h"
@@ -266,10 +267,17 @@ TEST_CASE("hand_fan_set fails fast on a dead bus") {
   CHECK(fake_sent_count() == 0);
 }
 
-TEST_CASE("is_platform_reply_id classifies exactly the four relay reply ids") {
+TEST_CASE("is_platform_reply_id classifies exactly the six relay reply ids") {
   CHECK(is_platform_reply_id(PlatformCanId::STATE_UPDATE));   // 0x6E0
   CHECK(is_platform_reply_id(PlatformCanId::TILT_READING));   // 0x7DE
   CHECK(is_platform_reply_id(PlatformCanId::HAND_FAN_STATUS));  // 0x6E2
+  CHECK(is_platform_reply_id(PlatformCanId::FW_UPDATE_REPLY));  // 0x6F1
+  CHECK(is_platform_reply_id(PlatformCanId::IMU_REPLY));        // 0x6E4 (FW 45)
+  CHECK(is_platform_reply_id(PlatformCanId::IMU_STATUS));       // 0x6E5 (FW 45)
+  CHECK_FALSE(is_platform_reply_id(PlatformCanId::IMU_DATA));   // 0x6E6 has its own ring
+  CHECK_FALSE(is_platform_reply_id(PlatformCanId::IMU_CMD));    // the bridge's own TX
+  CHECK_FALSE(is_platform_reply_id(PlatformCanId::IMU_LIVE_ACCEL));  // reserved, never uplinked
+  CHECK_FALSE(is_platform_reply_id(PlatformCanId::IMU_LIVE_GYRO));
   CHECK_FALSE(is_platform_reply_id(PlatformCanId::HAND_FAN_CMD));  // the bridge's own TX
   CHECK_FALSE(is_platform_reply_id(0x6D0u));  // the RETIRED hand-traj id (skill-stack R1) — never a reply, never reused
   CHECK_FALSE(is_platform_reply_id(ODrive::arb_id(0, ODriveCmd::heartbeat_message)));  // a leg frame
@@ -527,4 +535,239 @@ TEST_CASE("is_bb_relay_reply_id classifies exactly 0x7D7, disjoint from the Plat
   CHECK_FALSE(is_bb_relay_reply_id(PlatformCanId::FW_UPDATE_REPLY));
   CHECK_FALSE(is_platform_reply_id(BallButlerCanId::FW_UPDATE_REPLY));
   CHECK_FALSE(is_bb_relay_reply_id(ODrive::arb_id(NodeId::BB_PITCH, ODriveCmd::heartbeat_message)));
+}
+
+// ── Platform IMU (FW 45, IDEA-20 P3a) ────────────────────────────────────────
+
+TEST_CASE("is_platform_imu_data_id is exactly 0x6E6, and every IMU id sits above the ODrive decode range") {
+  CHECK(is_platform_imu_data_id(PlatformCanId::IMU_DATA));
+  for (uint32_t id : {PlatformCanId::IMU_CMD, PlatformCanId::IMU_REPLY, PlatformCanId::IMU_STATUS,
+                      PlatformCanId::IMU_LIVE_ACCEL, PlatformCanId::IMU_LIVE_GYRO, 0x000u, 0x6E0u}) {
+    CHECK_FALSE(is_platform_imu_data_id(id));
+  }
+  // decode_into_cache keys on axis_of(id) < NUM_AXES: every IMU id must miss it, so
+  // a reserved id (0x6E7/0x6E8) that reached the decoder is discarded, never cached.
+  for (uint32_t id = PlatformCanId::IMU_CMD; id <= PlatformCanId::IMU_LIVE_GYRO; ++id) {
+    CHECK(ODrive::axis_of(id) >= NUM_AXES);
+  }
+}
+
+static JbUdp::RpcArgs::ArgPlatformImuCtrl imu_ctrl(uint8_t op, uint8_t reason = 0, uint16_t cid = 0) {
+  JbUdp::RpcArgs::ArgPlatformImuCtrl a{}; a.op = op; a.reason = reason; a.capture_id = cid; return a;
+}
+static JbUdp::RpcArgs::ArgPlatformImuRead imu_read(uint16_t cid, uint16_t first, uint16_t count, uint8_t gap) {
+  JbUdp::RpcArgs::ArgPlatformImuRead a{}; a.capture_id = cid; a.first_seq = first; a.count = count;
+  a.frame_gap_10us = gap; return a;
+}
+
+TEST_CASE("platform_imu_ctrl lays out the spec's IMU_CMD frames, DLC 8, unused bytes 0") {
+  fake_reset();
+  fake_set_commands_allowed(true);
+  for (uint8_t op : {PlatformImuOp::ENABLE, PlatformImuOp::DISABLE, PlatformImuOp::ABORT}) {
+    fake_clear_sent();
+    CHECK(Relay::platform_imu_ctrl(imu_ctrl(op, 9, 0xBEEF)) == JbUdp::RpcStatus::OK);
+    REQUIRE(fake_sent_count() == 1);
+    const auto& f = fake_sent_at(0);
+    CHECK(f.id == PlatformCanId::IMU_CMD);
+    CHECK(f.len == 8);
+    CHECK(f.buf[0] == op);
+    for (int i = 1; i < 8; ++i) CHECK(f.buf[i] == 0);   // args of other ops never leak
+  }
+  fake_clear_sent();
+  CHECK(Relay::platform_imu_ctrl(imu_ctrl(PlatformImuOp::FREEZE, PlatformImuFreezeReason::ATTEMPT_END, 0xBEEF))
+        == JbUdp::RpcStatus::OK);
+  REQUIRE(fake_sent_count() == 1);
+  CHECK(fake_sent_at(0).buf[0] == PlatformImuOp::FREEZE);
+  CHECK(fake_sent_at(0).buf[1] == PlatformImuFreezeReason::ATTEMPT_END);
+  for (int i = 2; i < 8; ++i) CHECK(fake_sent_at(0).buf[i] == 0);
+
+  fake_clear_sent();
+  CHECK(Relay::platform_imu_ctrl(imu_ctrl(PlatformImuOp::RESUME, 7, 0x4A21)) == JbUdp::RpcStatus::OK);
+  REQUIRE(fake_sent_count() == 1);
+  CHECK(fake_sent_at(0).buf[0] == PlatformImuOp::RESUME);
+  CHECK(fake_sent_at(0).buf[1] == 0x21);
+  CHECK(fake_sent_at(0).buf[2] == 0x4A);
+  for (int i = 3; i < 8; ++i) CHECK(fake_sent_at(0).buf[i] == 0);
+}
+
+TEST_CASE("platform_imu_ctrl refuses READ and unknown ops before the wire") {
+  fake_reset();
+  fake_set_commands_allowed(true);
+  for (uint8_t op : {(uint8_t)0, PlatformImuOp::READ, (uint8_t)0x07, (uint8_t)0xFF}) {
+    CHECK(Relay::platform_imu_ctrl(imu_ctrl(op)) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  }
+  CHECK(fake_sent_count() == 0);
+}
+
+TEST_CASE("platform_imu_read lays out the READ frame and clamps the gap only while Armed") {
+  fake_reset();
+  fake_set_commands_allowed(true);
+  const uint8_t floor = (uint8_t)PlatformImu::BRIDGE_ARMED_MIN_GAP_10US;
+  CHECK(floor == 63);   // spec section 6 item 4: 630 us, about 1590 frames/s
+  struct Case { uint8_t asked; bool armed; uint8_t wire; };
+  const Case cases[] = {
+    {80, true, 80},        // the 1250 frames/s target passes untouched
+    {63, true, 63},        // exactly the floor
+    {62, true, 63},        // one below: raised
+    {40, true, 63},        // the Platform's own floor: raised while Armed
+    {0, true, 63},         // zero: raised
+    {255, true, 255},
+    {40, false, 40},       // not Armed: verbatim, the Platform's 400 us floor applies
+    {0, false, 0},
+    {100, false, 100},
+  };
+  for (const auto& c : cases) {
+    fake_clear_sent();
+    CHECK(Relay::imu_read_effective_gap(c.asked, c.armed) == c.wire);
+    CHECK(Relay::platform_imu_read(imu_read(0x4A21, 0x1235, 256, c.asked), c.armed) == JbUdp::RpcStatus::OK);
+    REQUIRE(fake_sent_count() == 1);
+    const auto& f = fake_sent_at(0);
+    CHECK(f.id == PlatformCanId::IMU_CMD);
+    CHECK(f.len == 8);
+    CHECK(f.buf[0] == PlatformImuOp::READ);
+    CHECK(f.buf[1] == 0x21); CHECK(f.buf[2] == 0x4A);   // capture_id LE
+    CHECK(f.buf[3] == 0x35); CHECK(f.buf[4] == 0x12);   // first_seq LE
+    CHECK(f.buf[5] == 0x00); CHECK(f.buf[6] == 0x01);   // count 256 LE
+    CHECK(f.buf[7] == c.wire);
+  }
+}
+
+TEST_CASE("platform_imu_read refuses count 0 and count above READ_MAX_WORDS, nothing sent") {
+  fake_reset();
+  fake_set_commands_allowed(true);
+  CHECK(Relay::platform_imu_read(imu_read(1, 0, 0, 80), false) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  CHECK(Relay::platform_imu_read(imu_read(1, 0, (uint16_t)(PlatformImu::READ_MAX_WORDS + 1), 80), true)
+        == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  CHECK(fake_sent_count() == 0);
+  CHECK(Relay::platform_imu_read(imu_read(1, 0, (uint16_t)PlatformImu::READ_MAX_WORDS, 80), true)
+        == JbUdp::RpcStatus::OK);
+  CHECK(Relay::platform_imu_read(imu_read(1, 0, 1, 80), true) == JbUdp::RpcStatus::OK);
+  CHECK(fake_sent_count() == 2);
+}
+
+TEST_CASE("the IMU relay ops fail fast on a dead bus") {
+  fake_reset();
+  fake_set_commands_allowed(false);
+  CHECK(Relay::platform_imu_ctrl(imu_ctrl(PlatformImuOp::ABORT)) == JbUdp::RpcStatus::ERR_BUS_DOWN);
+  CHECK(Relay::platform_imu_read(imu_read(1, 0, 16, 80), true) == JbUdp::RpcStatus::ERR_BUS_DOWN);
+  CHECK(fake_sent_count() == 0);
+}
+
+static void imu_frame(uint8_t out[8], uint16_t seq) {
+  out[0] = (uint8_t)(seq & 0xFF); out[1] = (uint8_t)(seq >> 8);
+  for (int i = 2; i < 8; ++i) out[i] = (uint8_t)(seq * 7 + i);
+}
+
+TEST_CASE("IMU ring: FIFO across many index wraps, occupancy and high-water mark") {
+  static ImuDataRingT ring;   // static: 1 KB, and the firmware's instance is static too
+  uint8_t in[8], out[8];
+  uint16_t next_in = 0, next_out = 0;
+  // 70000 frames in bursts of 1..IMU_RING_CAP-1 wrap the u16 indices past 65536.
+  uint32_t total = 0;
+  uint16_t burst = 1;
+  while (total < 70000) {
+    for (uint16_t i = 0; i < burst; ++i) { imu_frame(in, next_in++); REQUIRE(ring.push(in, 8)); }
+    CHECK(ring.size() == burst);
+    for (uint16_t i = 0; i < burst; ++i) {
+      REQUIRE(ring.pop(out));
+      uint8_t want[8]; imu_frame(want, next_out++);
+      CHECK(memcmp(out, want, 8) == 0);
+    }
+    CHECK_FALSE(ring.pop(out));
+    total += burst;
+    burst = (uint16_t)(burst % (IMU_RING_CAP - 1) + 1);
+  }
+  CHECK(ring.drops() == 0);
+  CHECK(ring.rx_frames() == total);
+  CHECK(ring.hwm() == IMU_RING_CAP - 1);
+}
+
+TEST_CASE("IMU ring: full drops the NEWEST and counts it, never blocks, keeps the oldest") {
+  static ImuDataRingT ring;
+  uint8_t in[8], out[8];
+  for (uint16_t s = 0; s < IMU_RING_CAP; ++s) { imu_frame(in, s); REQUIRE(ring.push(in, 8)); }
+  CHECK(ring.size() == IMU_RING_CAP);
+  for (uint16_t s = 0; s < 10; ++s) { imu_frame(in, (uint16_t)(1000 + s)); CHECK_FALSE(ring.push(in, 8)); }
+  CHECK(ring.drops() == 10);
+  CHECK(ring.rx_frames() == IMU_RING_CAP + 10);
+  CHECK(ring.hwm() == IMU_RING_CAP);
+  REQUIRE(ring.pop(out));
+  CHECK((out[0] | (out[1] << 8)) == 0);              // the oldest survived
+  imu_frame(in, 2000); CHECK(ring.push(in, 8));      // one slot free again
+  uint16_t last = 0;
+  while (ring.pop(out)) last = (uint16_t)(out[0] | (out[1] << 8));
+  CHECK(last == 2000);                               // 1000..1009 never entered
+}
+
+TEST_CASE("IMU ring: a short frame is zero-padded, an over-long DLC is cut to 8") {
+  static ImuDataRingT ring;
+  const uint8_t d[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+  uint8_t out[8];
+  memset(out, 0xAA, 8);
+  REQUIRE(ring.push(d, 3));
+  REQUIRE(ring.pop(out));
+  const uint8_t want[8] = {1, 2, 3, 0, 0, 0, 0, 0};
+  CHECK(memcmp(out, want, 8) == 0);
+  REQUIRE(ring.push(d, 15));
+  REQUIRE(ring.pop(out));
+  CHECK(memcmp(out, d, 8) == 0);
+}
+
+TEST_CASE("IMU batch framing: 24 records per batch, FIFO, zero past count, counters carried") {
+  static ImuDataRingT ring;
+  static JbUdp::PlatformImuBatchPayload p;
+  uint8_t in[8];
+  CHECK(sizeof(p) == 220);
+  CHECK(JbUdp::PLATFORM_IMU_BATCH_MAX_FRAMES == 24);
+  CHECK(imu_batch_fill(ring, p, 0, 0) == 0);          // empty ring: nothing to send
+  CHECK(p.count == 0);
+  for (uint16_t s = 0; s < 40; ++s) { imu_frame(in, (uint16_t)(0x1230 + s)); REQUIRE(ring.push(in, 8)); }
+  CHECK(imu_batch_fill(ring, p, 5, 2) == 24);
+  CHECK(p.count == 24);
+  CHECK(p.rx_frames == 40);
+  CHECK(p.ring_drops == 0);
+  CHECK(p.ring_hwm == 40);
+  CHECK(p.batches_sent == 5);
+  CHECK(p.send_fails == 2);
+  CHECK(p.flags == 0);
+  for (uint8_t k = 0; k < 24; ++k) {
+    uint8_t want[8]; imu_frame(want, (uint16_t)(0x1230 + k));
+    CHECK(memcmp(&p.frames[k * 8], want, 8) == 0);
+  }
+  CHECK(imu_batch_fill(ring, p, 6, 2) == 16);         // the remainder, then empty
+  uint8_t want[8]; imu_frame(want, (uint16_t)(0x1230 + 24));
+  CHECK(memcmp(&p.frames[0], want, 8) == 0);
+  for (size_t i = 16 * 8; i < sizeof(p.frames); ++i) CHECK(p.frames[i] == 0);
+  CHECK(imu_batch_fill(ring, p, 7, 2) == 0);
+  CHECK(IMU_RING_CAP >= 2 * 16);                      // two ticks of the 1600 fps cap at least
+  CHECK(IMU_BATCHES_PER_TICK_MAX * JbUdp::PLATFORM_IMU_BATCH_MAX_FRAMES >= IMU_RING_CAP / 2);
+}
+
+// Audit T4: the SPSC ordering claim (acquire/release between task_can_rx and task_telem) exercised with two
+// real threads. One producer pushes a sequence-numbered stream, retrying when full; one consumer pops and
+// checks every frame arrives once, in order, intact. Pass under -fsanitize=thread as well (run by hand).
+TEST_CASE("IMU ring: one producer thread and one consumer thread keep order and content") {
+  static ImuDataRingT ring;
+  const uint32_t TOTAL = 400000;
+  std::thread prod([&] {
+    uint8_t in[8];
+    for (uint32_t i = 0; i < TOTAL;) {
+      imu_frame(in, (uint16_t)i);
+      if (ring.push(in, 8)) ++i;            // full: the producer retries the SAME frame (nothing is lost here)
+    }
+  });
+  uint32_t got = 0, bad = 0;
+  uint8_t out[8], want[8];
+  while (got < TOTAL) {
+    if (ring.pop(out)) {
+      imu_frame(want, (uint16_t)got);
+      if (memcmp(out, want, 8) != 0) ++bad;
+      ++got;
+    }
+  }
+  prod.join();
+  CHECK(bad == 0);
+  CHECK(got == TOTAL);
+  CHECK_FALSE(ring.pop(out));
+  CHECK(ring.hwm() <= IMU_RING_CAP);
 }
