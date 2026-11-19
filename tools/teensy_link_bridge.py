@@ -158,6 +158,17 @@ class _TelemetryRateLogger:
 _FLASH_BASE = 0x60000000    # both boards are Teensy 4.0s; a 4.1 image links elsewhere
 _FW_DATA_CHUNK = 5          # payload bytes per *_FW_DATA RPC
 _FW_REPLY_TIMEOUT_S = 1.0   # a sector flush can stall the board tens of ms
+#: How long after a DATA window's last frame the host keeps reading replies for
+#: that window's decisive one before it acts on a BAD_SEQ (2026-11-19). The
+#: board's replies reach the host late and in batches: the can-bridge uplinks
+#: them from an 8-slot ring, 4 per 10 ms tick (can_buses.cpp platform_ring_push,
+#: telemetry.cpp platform_uplink_step), so the reply to a window's last frame
+#: can trail it by about 30 ms behind a NAK burst. 0.1 s is ~3x that. It is paid
+#: only when no decisive reply comes (a frame really is missing on the board).
+_FW_REPLY_SETTLE_S = 0.1
+#: Reply opcodes (byte 0 of 0x6F1 / 0x7D7), the receiver's OP_* echoed back.
+_FW_OP_DATA = 0x02
+_FW_OP_VERIFY = 0x03
 _FW_WINDOW_RETRIES = 1      # retry a stalled window once before aborting
 _FW_SECTOR_BYTES = 4096     # the receiver flushes a 4 KB sector when its buffer fills
 #: Pause after the frame that fills a sector. The flush (erase 45 ms typ /
@@ -418,35 +429,95 @@ def _centideg(detail: int) -> float:
     return v / 100.0
 
 
+def _fw_reply_trail(trail) -> str:
+    return " ".join(trail[:12]) + (" ..." if len(trail) > 12 else "")
+
+
 def _wait_for_window_reply(waiter: PlatformFrameWaiter, reply_id: int,
                            window_start_frame: int, window_end: int) -> Optional[bytes]:
-    """Wait for the reply that belongs to THIS window: the OK ACK for its last
-    frame, or a BAD_SEQ whose expected frame is inside or at the end of it. A
-    reply about an OLDER frame is a straggler from the previous window's
-    duplicates (the NAK burst a retry provokes arrives one frame at a time,
-    after the window that provoked it has been read) and is skipped, not
-    acted on — acting on it re-sent an already-accepted window, provoked
-    another burst, and so on: two rewinds per window for the whole
-    2026-09-09 rehearsal. Returns None on timeout."""
-    deadline = time.monotonic() + _FW_REPLY_TIMEOUT_S
+    """Read every reply that arrives for THIS window, in arrival order
+    (``waiter.take``), and return the one that decides it.
+
+    The receiver's expected seq only ever grows within a session, so every
+    reply is a LOWER BOUND on where the board is: OK for seq s means it holds s,
+    BAD_SEQ naming e means it held everything below e when that frame arrived.
+    A reply can be stale (a NAK burst's tail, uplinked by the bridge 4 frames
+    per 10 ms, lands after the host has started the next window) but it can
+    never overstate the board. So:
+
+    * decisive, returned at once: the OK ACK for the window's last frame, or a
+      BAD_SEQ naming ``window_end`` (the board holds the whole window);
+    * a BAD_SEQ naming a frame inside the window is NOT acted on at once: it
+      may be a straggler naming the window's first frame, or a NAK provoked
+      early in the window by a frame the board then accepted. The host keeps
+      reading until ``_FW_REPLY_SETTLE_S`` after the window's last frame, and
+      only then returns the BAD_SEQ naming the HIGHEST frame (the best lower
+      bound) for the caller's rewind;
+    * a reply about a frame below the window, an older window's OK, or a
+      non-DATA opcode is a straggler: skipped;
+    * a refusal (BAD_STATE / TOO_BIG / FLASH_ERR) is always returned.
+
+    2026-11-19 (logbook 2026-11-19-platform-fw-update-rewind-derail): taking
+    the first in-window BAD_SEQ as the verdict let a straggler naming the
+    window's first frame rewind an already-accepted window; the resend's NAK
+    burst then straggled into the next window, and so on: two rewinds per
+    window to the end of the image, three verify-only runs in a row.
+
+    Returns None on timeout with no in-window reply (the caller's retry path)."""
+    now = time.monotonic()
+    deadline = now + _FW_REPLY_TIMEOUT_S
+    settle = now + _FW_REPLY_SETTLE_S
     last_seq = (window_end - 1) & 0xFFFF
+    best, best_frame = None, -1
+    trail = []
+    while True:
+        until = deadline if best is None else min(deadline, settle)
+        remaining = until - time.monotonic()
+        if remaining <= 0.0:
+            if best is not None:
+                logging.info("fw-update: window [frame %d..%d) — no ACK for its last frame; "
+                             "replies seen: %s", window_start_frame, window_end,
+                             _fw_reply_trail(trail))
+            return best
+        reply = waiter.take(reply_id, expected_dlc=8, timeout=remaining)
+        if reply is None:
+            continue
+        opcode, status, seq, _ = rpc_args.decode_platform_fw_reply(reply)
+        trail.append(f"{rpc_args.PLATFORM_FW_STATUS_NAMES.get(status, status)}/{opcode}:{seq}")
+        if opcode != _FW_OP_DATA:
+            continue                                # a BEGIN / VERIFY straggler
+        if status == rpc_args.PLATFORM_FW_STATUS_OK:
+            if seq == last_seq:
+                return reply
+            continue                                # an older window's ACK
+        if status == rpc_args.PLATFORM_FW_STATUS_BAD_SEQ:
+            frame = rpc_args.platform_fw_rewind_frame(window_end, seq)
+            if frame < window_start_frame:
+                continue                            # about an older window: stale
+            if frame >= window_end:
+                return reply                        # the board holds the whole window
+            if frame > best_frame:
+                best, best_frame = reply, frame
+            continue
+        return reply                                # a refusal is always for us
+
+
+def _wait_for_op_reply(waiter: PlatformFrameWaiter, reply_id: int, opcode: int,
+                       timeout: float) -> Optional[bytes]:
+    """The first reply carrying ``opcode``; DATA stragglers still draining from
+    the bridge's relay ring are skipped, never read as this op's answer
+    (2026-11-19: VERIFY read a DATA BAD_SEQ as its verdict; the receiver's
+    VERIFY handler has no BAD_SEQ path). None on timeout."""
+    deadline = time.monotonic() + timeout
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0.0:
             return None
-        reply = waiter.wait(reply_id, expected_dlc=8, timeout=remaining)
+        reply = waiter.take(reply_id, expected_dlc=8, timeout=remaining)
         if reply is None:
-            return None
-        opcode, status, seq, _ = rpc_args.decode_platform_fw_reply(reply)
-        if opcode == 0x02 and status == rpc_args.PLATFORM_FW_STATUS_OK and seq == last_seq:
+            continue
+        if rpc_args.decode_platform_fw_reply(reply)[0] == opcode:
             return reply
-        if status == rpc_args.PLATFORM_FW_STATUS_BAD_SEQ:
-            expected = rpc_args.platform_fw_rewind_frame(window_end, seq)
-            if expected >= window_start_frame:
-                return reply
-        elif status != rpc_args.PLATFORM_FW_STATUS_OK:
-            return reply                            # a refusal is always for us
-        waiter.clear(reply_id)                      # stale — wait for the next one
 
 
 class _DataSender:
@@ -646,10 +717,10 @@ def _run_fw_update_session(rpc: RpcClient, waiter: PlatformFrameWaiter,
                  target.sector_pause_s, stats.get("rewinds", 0), stats.get("retries", 0),
                  stats.get("missing_acks", 0))
 
-    # VERIFY
+    # VERIFY — only the receiver's own VERIFY answer (op 0x03) is its verdict.
     waiter.clear(reply_id)
     rpc.call(target.rpc_verify, rpc_args.encode_platform_fw_verify(crc))
-    reply = waiter.wait(reply_id, expected_dlc=8, timeout=_FW_REPLY_TIMEOUT_S)
+    reply = _wait_for_op_reply(waiter, reply_id, _FW_OP_VERIFY, _FW_REPLY_TIMEOUT_S)
     if reply is None:
         logging.error("fw-update: VERIFY — no reply from the %s", target.label)
         return 1
