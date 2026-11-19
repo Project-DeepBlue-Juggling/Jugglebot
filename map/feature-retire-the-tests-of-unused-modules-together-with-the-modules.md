@@ -16,10 +16,6 @@ area: tests-tooling
 blocked_by: []
 links: []
 filed_by: claude
-night_skip: input-decision
-night_skip_on: '2026-11-19'
-night_skip_note: Deletes the chosen modules with their tests and quotes the importer grep; merges if the gate says MERGE.
-night_skip_input: 'Which of the three unused modules to retire with their tests (TKT-83: all three, the two tools only, or none)'
 ---
 
 About 180 tests cover code that nothing live imports. From the 2026-11-16 test-suite review. Removing them saves about 30 CPU-seconds, so this is tidiness, not speed.
