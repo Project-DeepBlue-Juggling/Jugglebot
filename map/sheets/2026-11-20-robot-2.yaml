@@ -1,0 +1,444 @@
+schema: 1
+date: '2026-11-20'
+rig: robot
+omitted:
+- item: BUG-111
+  reason: owner flies only IDEA-20 at this Sitting
+- item: BUG-122
+  reason: owner flies only IDEA-20 at this Sitting
+- item: BUG-58
+  reason: owner flies only IDEA-20 at this Sitting
+- item: BUG-78
+  reason: owner flies only IDEA-20 at this Sitting
+- item: BUG-89
+  reason: owner flies only IDEA-20 at this Sitting
+- item: FEAT-32
+  reason: owner flies only IDEA-20 at this Sitting
+- item: FEAT-39
+  reason: owner flies only IDEA-20 at this Sitting
+- item: FEAT-49
+  reason: owner flies only IDEA-20 at this Sitting
+- item: FEAT-50
+  reason: owner flies only IDEA-20 at this Sitting
+- item: IDEA-16
+  reason: owner flies only IDEA-20 at this Sitting
+- item: IDEA-20
+  do:
+  - 2
+  - 5
+  - 8
+  reason: 'Three do steps stay off. (2, forced gap) No code path forces a lost frame in an upload: no parameter, debug service or tool flag, and teensy_link/platform_imu.py has no injection hook; the substitute is stats.hole_passes and stats.block_timeouts on every capture .json, which the debrief reads. (5, rate ramp at 400, 800 and 1600 frames/s) the pace parameter is only read at node start (teensy_bridge_node.py:3055); a live hook is planned; this Sitting uploads at the default 1250 frames/s only. (8, upload after a Fault) it needs a Fault edge inside an open Attempt (platform_imu_gate.py AttemptSpanTracker.fault, teensy_bridge_node.py:7015) and no operator action known to be safe makes one: the GUI has no Soft E-stop control and the E-stop button mid-Attempt is the owner''s call; a Fault that happens by itself during step 14 uploads automatically and the debrief reads it.'
+steps:
+- n: 1
+  kind: setup
+  title: Check the checkout is on main and in sync
+  from: []
+  to: []
+  actions:
+  - where: Terminal 2
+    command: cd ~/Desktop/Jugglebot && git fetch && git status -sb && git log --oneline -1
+  see: '## main...origin/main with nothing ahead or behind. temp/learn/ entries showing as untracked are expected.'
+  stop_if: The branch is not main, or it is ahead of or behind origin/main. Do not go on; tell a Session.
+  serves: []
+- n: 2
+  kind: run
+  title: Launch DOWN - unplug the IMU, power-cycle the Platform Teensy, flash it (boot, CAN and update with the IMU absent)
+  from: []
+  to: []
+  actions:
+  - where: Hands
+    text: 'The launch must be down (nothing in Terminal 1) and the Cup empty. Unplug the IMU''s connector from its board. Then power-cycle the Platform Teensy: switch the robot''s 12 V logic supply off, wait 5 s, on again (if that also cycles drive power, Homing runs in full at the next launch). Wait about 15 seconds after it powers up (it answers nothing for its first 10 s).'
+  - where: Terminal 3
+    text: A shell in the venv.
+    command: source ~/Desktop/PDJ_venv/venv/bin/activate
+  - where: Terminal 3
+    text: Change directory first, then the upload on a line of its own.
+    command: cd ~/Desktop/Jugglebot/ros_ws/src/jugglebot/Teensy_code_platform
+  - where: Terminal 3
+    command: pio run -e teensy40 -t upload
+  see: 'The upload reaches BEGIN OK (the uploader re-sends BEGIN for up to 25 s), sends its data and ends with ''Platform Teensy FW version: 12 -> 12'' and SUCCESS. That proves the board booted and answered CAN with the IMU absent.'
+  stop_if: BEGIN never answers after the 25 s of retries. Run the upload again once; if it still does not answer, leave the IMU unplugged, tell a Session and do not launch.
+  record: The last lines of the upload, and the clock time.
+  serves:
+  - item: IDEA-20
+    do:
+    - 0
+- n: 3
+  kind: setup
+  title: Launch (main) with the IMU still unplugged
+  new_launch: true
+  from: []
+  to:
+  - launched
+  actions:
+  - where: Hands
+    text: Wait 15 s after the upload of step 2 finishes (the board is silent for 10 s after a reboot). Drive power ON (48 V) and the E-stop button released.
+  - where: Terminal 1
+    command: cd ~/Desktop/Jugglebot/ros_ws && source /opt/ros/foxy/setup.zsh && source install/setup.zsh && ros2 launch jugglebot jugglebot_launch.py cpu_partition:=false 2>&1 | tee -i ~/Desktop/Jugglebot/temp/logs/launch_2026-11-20_3.log
+  - where: Hands
+    text: Wait for Homing to finish before the next step. Keep the IMU unplugged. The Platform Teensy was power-cycled in step 2, so its homed flag is clear and Homing runs in full.
+  see: 'BRIDGE_FW_CHECK: OK - can-bridge v46. PLATFORM_FW_CHECK: OK - Platform Teensy v12. homing: 7 axes homed. No import error from any node.'
+  stop_if: 'Either firmware check is not OK, fewer than 7 axes homed, or any node dies or logs an error at start-up that you have not seen before. Ctrl-C the launch and tell a Session. After any Hand MISSING_ESTIMATE or E-stop button press the Hand must be re-homed before the next move (BUG-122: a drive fault does not clear the homed flag); on this sheet that means stop, Ctrl-C the launch and tell a Session.'
+  record: The launch log path, and the bag directory (the newest folder under ~/Desktop/rosbags).
+  serves: []
+- n: 4
+  kind: run
+  title: Read the IMU status with the IMU unplugged (expect not RUNNING)
+  from:
+  - launched
+  to:
+  - launched
+  actions:
+  - where: Terminal 2
+    command: source /opt/ros/foxy/setup.zsh && source ~/Desktop/Jugglebot/ros_ws/install/setup.zsh && cd ~/Desktop/Jugglebot
+    text: Every later Terminal 2 command assumes this shell and this directory.
+  - where: GUI
+    text: 'Primary check: the IMU panel (Upload IMU data after each Attempt) state line.'
+  - where: Terminal 2
+    text: Secondary check. Watch for a few seconds, then Ctrl-C. The topic publishes at 2 Hz; read the last block printed.
+    command: 'ros2 topic echo /platform_imu/status | grep -A1 -E "key: (platform_state|phase|busy|upload_after_attempt|i2c_errors|fifo_overflows|status_age_s)$"'
+  see: GUI IMU panel reads 'no IMU detected' (primary). On the topic, platform_state reads PROBING or BACKOFF, never RUNNING, and upload_after_attempt reads 1 (the toggle defaults ON). i2c_errors and fifo_overflows are on the topic and in the bag only; the GUI panel does not show them.
+  stop_if: platform_state reads RUNNING with the IMU unplugged (note it word for word and carry on; it means the connector is not what you unplugged).  If the echo prints nothing within 15 s, Ctrl-C and carry on with the GUI IMU panel text; the counters are in the bag.
+  record: platform_state, i2c_errors, fifo_overflows and the GUI panel text.
+  serves:
+  - item: IDEA-20
+    do:
+    - 1
+- n: 5
+  kind: run
+  title: Replug the IMU with the board powered and watch it return to RUNNING
+  from:
+  - launched
+  to:
+  - launched
+  actions:
+  - where: Hands
+    text: Plug the IMU connector back in with the Platform Teensy still powered. Do not power-cycle anything. Note the clock time.
+  - where: GUI
+    text: 'Primary check: the IMU panel state line. Re-check it until it reads ''recording''.'
+  - where: Terminal 2
+    text: Secondary check. The firmware re-probes 1, 2, 4, 8, 16 and 32 s after each failure, then every 60 s, so allow up to 2 minutes. Ctrl-C after a few seconds each time.
+    command: 'ros2 topic echo /platform_imu/status | grep -A1 -E "key: (platform_state|i2c_errors|fifo_overflows|status_age_s)$"'
+  see: The GUI IMU panel changes from 'no IMU detected' to 'recording' within about 2 minutes of the replug (primary); platform_state reads RUNNING on the topic. i2c_errors and fifo_overflows may count up once during the replug and then stay still.
+  stop_if: Still not RUNNING after 3 minutes. Note the platform_state it shows, leave the IMU plugged in and go on to step 6 only if you are content; the rest of the sheet needs a recording IMU, so otherwise go to step 17 and tell a Session. If the echo prints nothing within 15 s, Ctrl-C and carry on with the GUI IMU panel text; the counters are in the bag.
+  record: The clock time of the replug, the time platform_state first read RUNNING, and i2c_errors and fifo_overflows at that moment.
+  serves:
+  - item: IDEA-20
+    do:
+    - 1
+- n: 6
+  kind: setup
+  title: Level the Platform
+  from:
+  - launched
+  to:
+  - launched
+  - level
+  actions:
+  - where: GUI
+    text: 'State minimap: hold LEVELLING to confirm. The Platform rises to full Active height. This is a motion-starting command, so it is refused while an IMU upload runs; none runs now.'
+  - where: Terminal 2
+    command: grep -n "levelled:" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-20_3.log
+  see: 'The minimap passes through LEVELLING and finishes with no Fault. The grep prints one ''levelled: tilt (...) rad -> gravity offset (...) rad, saved'' line.'
+  stop_if: Any Fault, the Platform does not rise cleanly, or it ends visibly not level. Hold IDLE on the minimap, Ctrl-C the launch and tell a Session.
+  record: The gravity offset from the levelled line.
+  serves: []
+- n: 7
+  kind: setup
+  title: Dress rehearsal for the Attempt (nothing moves)
+  from:
+  - launched
+  - level
+  to:
+  - launched
+  - level
+  actions:
+  - where: Terminal 2
+    text: One-ball oval at Dwell 0.50, the settings flown on 2026-11-18. The nomination does not depend on plant_id.
+    command: 'ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: ''oval_1ball_fed,apex_m=1.00,separation_mm=150,dwell_s=0.50''}"'
+  see: 'The reply reads success: True with no refusal line and nothing moves.'
+  stop_if: 'Anything moves (hold IDLE on the minimap, Ctrl-C the launch and tell a Session). A reply with success: False is not a stop: note it word for word and skip to step 17, the stand-down (nothing to restore yet).'
+  record: Any refusal line word for word.
+  serves: []
+- n: 8
+  kind: setup
+  title: Activate (this arms) and hold the Active pose
+  from:
+  - launched
+  - level
+  to:
+  - launched
+  - level
+  - armed
+  actions:
+  - where: GUI
+    text: 'State minimap: hold ACTIVE:TRAJECTORY to confirm. The launch''s auto_arm arms the setpoint wire on entry. Cup empty, Ball Butler off.'
+  - where: GUI
+    text: 'IMU panel: Upload IMU data after each Attempt is ticked (default ON); tick it if not.'
+  see: Mode ACTIVE:TRAJECTORY, Armed, no Fault. The Hand holds its Active pose. The IMU panel's Upload IMU data after each Attempt box is ticked.
+  stop_if: 'Any refusal or Fault on activation (clear it as you usually do; if it will not clear, go to step 17). After any Hand MISSING_ESTIMATE or E-stop button press re-home first (BUG-122): go to step 17 and tell a Session.'
+  serves: []
+- n: 9
+  kind: run
+  title: Baseline counters, Armed in the Active pose (no upload running)
+  from:
+  - launched
+  - level
+  - armed
+  to:
+  - launched
+  - level
+  - armed
+  actions:
+  - where: Hands
+    text: Note the wall-clock time now (start of the baseline). Hold still for a 60 s window; the counters are not read live, the debrief takes them from the bag over your window.
+  - where: Terminal 2
+    text: Watch for a few seconds, then Ctrl-C. Read setpoints_coalesced; this is the one live counter read.
+    command: ros2 topic echo /link_status | grep -A1 setpoints_coalesced
+  - where: GUI
+    text: Look at the event log for any ODrive error row since Activate, and at the CAN traffic panel for the Jugglebot bus utilisation.
+  - where: Terminal 2
+    text: Secondary check. Ctrl-C after a few seconds.
+    command: 'ros2 topic echo /platform_imu/status | grep -A1 -E "key: (platform_state|phase|busy|upload_after_attempt|i2c_errors|fifo_overflows|status_age_s)$"'
+  - where: Hands
+    text: When 60 s have passed, note the wall-clock time again (end of the baseline).
+  see: 'No Fault, no new ODrive error row, the GUI IMU panel reads ''recording'' (primary). setpoints_coalesced prints a number. A Leg position error has no live counter: the Legs sitting still with no Fault is the live check; the debrief takes the number from the bag. If the echo prints nothing within 15 s, Ctrl-C and carry on with the GUI IMU panel text; the counters are in the bag.'
+  stop_if: Any Fault or ODrive error appears while holding still (hold IDLE, Ctrl-C the launch and tell a Session). A key never prints (note which and carry on; say so in the notes).
+  record: The wall-clock times of the start and end of the 60 s baseline, setpoints_coalesced, i2c_errors and fifo_overflows if the echo printed, the GUI IMU panel text and any ODrive event-log row. The debrief reads the remaining counters from the bag.
+  serves:
+  - item: IDEA-20
+    do:
+    - 3
+- n: 10
+  kind: run
+  title: Upload the whole ring Armed at the default pace (1250 frames/s) and compare the counters
+  from:
+  - launched
+  - level
+  - armed
+  to:
+  - launched
+  - level
+  - armed
+  actions:
+  - where: Hands
+    text: Note the wall-clock time.
+  - where: Terminal 2
+    text: Uploads the whole 32 s ring (64000 data frames). Armed, the bridge clamps the pace to no faster than 63 x 10 us, and the default 80 is slower than that, so it runs at 80. Expect about 52 to 60 s (56 s at rest on 2026-11-20). The IMU upload refuses motion-starting commands (Level, Activate and mode changes in the minimap, Start) until it is done, so touch nothing else.
+    command: 'ros2 service call /platform_imu/upload jugglebot_interfaces/srv/SetString "{data: \"{}\"}"'
+  - where: GUI
+    text: 'Immediately watch the IMU panel: ''uploading <phase> N%, <n> s left'' until it returns to ''recording'' (about 50 to 60 s). Do not start anything else meanwhile.'
+  - where: Terminal 2
+    text: Secondary check while it runs, then Ctrl-C. Re-run until phase reads done or idle.
+    command: 'ros2 topic echo /platform_imu/status | grep -A1 -E "key: (phase|busy|frames_done|frames_total|rate_fps|eta_s|last_complete|last_crc_ok|last_failure)$"'
+  - where: Hands
+    text: Note the wall-clock time when it has returned to 'recording'.
+  - where: Terminal 2
+    text: Then the capture files, newest first. Expect a new <UTC>_<id>.json and .npz pair dated now.
+    command: ls -t ~/Desktop/Jugglebot/temp/imu_capture | head -4
+  - where: Terminal 2
+    text: Then the one live counter read. Ctrl-C after a few seconds.
+    command: ros2 topic echo /link_status | grep -A1 setpoints_coalesced
+  see: 'The service reply reads success: True, message ''upload started''. frames_done climbs to frames_total at about 1250 frames/s (rate_fps), phase ends done or idle, last_complete 1 and last_crc_ok True, last_failure empty. The GUI panel counts up to 100% and returns to ''recording''. setpoints_coalesced is equal to the value read in step 9. No Fault. If the echo prints nothing within 15 s, Ctrl-C and carry on with the GUI IMU panel text; the counters are in the bag.'
+  stop_if: 'The reply is ''refused: ...'' (note the text; if it says an upload is already running wait and re-run). A Fault, a Stow, a Leg moving: send the abort with ros2 service call /platform_imu/abort std_srvs/srv/Trigger (the upload ends incomplete and the ring resumes), hold IDLE and tell a Session. The upload takes longer than 3 minutes.'
+  record: The wall-clock start and end of the upload, its duration, the capture file name, the GUI panel text at the end, setpoints_coalesced after it, and rate_fps, last_complete, last_crc_ok and last_failure if the echo printed. The debrief reads the remaining counters from the bag.
+  serves:
+  - item: IDEA-20
+    do:
+    - 4
+- n: 11
+  kind: run
+  title: Soak 5 minutes Armed in the Active pose
+  from:
+  - launched
+  - level
+  - armed
+  to:
+  - launched
+  - level
+  - armed
+  actions:
+  - where: Hands
+    text: Note the wall-clock time at the start of the soak. Leave the robot Armed and still for 5 minutes by the clock. Do not touch the GUI. No Ball Butler, Cup empty.
+  - where: GUI
+    text: Look at the IMU panel (it reads 'recording' at the start and at the end) but do not click anything.
+  - where: Terminal 2
+    text: Secondary check, at the start and again after 5 minutes. Ctrl-C after a few seconds each time.
+    command: 'ros2 topic echo /platform_imu/status | grep -A1 -E "key: (platform_state|i2c_errors|fifo_overflows|i2c_errors_delta_since_launch|fifo_overflows_delta_since_launch|temp_c)$"'
+  - where: Hands
+    text: Note the wall-clock time at the end of the soak.
+  see: The GUI panel stays 'recording'. On the topic i2c_errors and fifo_overflows read the same after 5 minutes as before. If the echo prints nothing within 15 s, Ctrl-C and carry on with the GUI IMU panel text; the counters are in the bag.
+  stop_if: i2c_errors rises (the status level goes WARN for 60 s after a rise; note the time and the new value, and carry on to the next step). Any Fault, or platform_state leaves RUNNING for good (note it; go on).
+  record: The wall-clock start and end, and i2c_errors and fifo_overflows at both ends if the echo printed. The debrief reads the remaining counters from the bag.
+  serves:
+  - item: IDEA-20
+    do:
+    - 6
+- n: 12
+  kind: setup
+  title: Bring up Ball Butler for one oval Attempt
+  from:
+  - launched
+  - level
+  - armed
+  to:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  actions:
+  - where: Hands
+    text: Power Ball Butler, calibrate it as you usually do, and load it. Cup empty. Steps 12 to 15 are the only steps where the robot's Hand works; one short Attempt follows, because the Hand motor is heat-damaged (BUG-123). If the Hand feels or sounds wrong, or you have any doubt, skip steps 12 to 15 and go to step 17. Reach into the Cup only when the Platform is holding still in the Active pose.
+  see: Ball Butler powered and holding a ball. Mode still ACTIVE:TRAJECTORY, Armed, no Fault.
+  stop_if: 'Any refusal or Fault (clear it as you usually do; if it will not clear, go to step 17). After any Hand MISSING_ESTIMATE or E-stop button press re-home first (BUG-122): go to step 17 and tell a Session.'
+  serves: []
+- n: 13
+  kind: setup
+  title: Give the Attempt a plant of its own
+  from:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  to:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  actions:
+  - where: Terminal 2
+    text: First read what the plant is now.
+    command: ros2 param get /skill_node plant_id
+  - where: Terminal 2
+    text: A plant of its own keeps this short Attempt out of the Columns Memory. Refused while a goal runs.
+    command: ros2 param set /skill_node plant_id imu-oval-2026-11-20
+  - where: Terminal 2
+    command: ros2 param get /skill_node plant_id
+  see: The first read prints jugglebot (expected). After the set, plant_id reads imu-oval-2026-11-20.
+  stop_if: 'The first read prints anything other than jugglebot: stop, go to step 17 and tell a Session. The read-back after the set does not read imu-oval-2026-11-20: do not fly; go to step 16. A ''Wait for service timed out'' reply means run the same command once more.'
+  serves: []
+  record: The value the first read printed.
+- n: 14
+  kind: run
+  title: One short oval Attempt (8 Throws, Dwell 0.50) - the automatic upload starts when it ends
+  from:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  to:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  actions:
+  - where: Terminal 3
+    text: Open a second shell for the reads that run beside the goal.
+    command: source /opt/ros/foxy/setup.zsh && source ~/Desktop/Jugglebot/ros_ws/install/setup.zsh && cd ~/Desktop/Jugglebot
+  - where: Hands
+    text: Cup empty, Ball Butler loaded. One Attempt only; note the wall-clock time at its start.
+  - where: Terminal 2
+    text: 'Same settings as the 2026-11-18 Dwell 0.50 flights, but 8 Throws instead of 32 to keep the Hand work to a minimum. The goal holds Terminal 2 until it reports its outcome: do not Ctrl-C Terminal 2 before that (Ctrl-C there cancels the Attempt).'
+    command: 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.50, num_cycles: 8}" --feedback'
+  - where: GUI
+    text: 'Primary check: when the Attempt ends, the IMU panel reads ''uploading <phase> <percent>, <n> s left'' and then ''recording'' with the last capture''s result.'
+  - where: Terminal 3
+    text: Secondary check, after the Attempt ends. Ctrl-C after a few seconds; re-run until phase reads done or idle.
+    command: 'ros2 topic echo /platform_imu/status | grep -A1 -E "key: (phase|busy|frames_done|frames_total|rate_fps|eta_s|last_label|last_complete|last_crc_ok|last_failure|last_skip)$"'
+  - where: Terminal 3
+    command: grep -n "Platform IMU upload" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-20_3.log
+  - where: Hands
+    text: Note the wall-clock time when the Attempt ended and when the upload finished.
+  see: 'Each ended Attempt reports its result: the goal''s outcome reads COMPLETED. Within a second or two the IMU panel starts ''uploading'', busy reads 1, and the log has ''Platform IMU upload started (attempt_end, N s span)''. While it runs, Start, Level and the minimap mode buttons are refused with a message naming the IMU upload and the seconds left, so wait; Deactivate always goes through and aborts the upload. The upload ends with last_label attempt, last_complete 1, last_crc_ok True.'
+  stop_if: 'Any outcome other than COMPLETED: go to step 16 to restore the plant, then step 17 and stand down; note the outcome word for word. The first Attempt looks wrong (a jerky Platform, a Hand stroke that looks wrong, a Leg base joint moves): cancel with Ctrl-C, go to step 16 then 17, tell a Session. Any Hand SPINOUT or MISSING_ESTIMATE or an E-stop button press: stop flying, the Hand must be re-homed before it moves again (BUG-122), go to step 16 then 17 and tell a Session. The log says ''not started'' (the toggle is off or the IMU is not RUNNING; note which). The upload fails or ends incomplete (note last_failure). If the echo prints nothing within 15 s, Ctrl-C and carry on with the GUI IMU panel text; the counters are in the bag.'
+  record: The wall-clock start and end of the Attempt and of the upload, the goal's outcome and caught of thrown, the log lines found, the capture file name from ls -t ~/Desktop/Jugglebot/temp/imu_capture | head -2, and last_label, last_complete, last_crc_ok and last_failure if the echo printed. The debrief reads the remaining counters from the bag.
+  serves:
+  - item: IDEA-20
+    do:
+    - 7
+- n: 15
+  kind: run
+  title: Read the counters once more after the Attempt (judged only if step 14 ran)
+  from:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  to:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  actions:
+  - where: Hands
+    text: This step is only judged if the Attempt in step 14 ran; otherwise mark it skipped.
+  - where: Hands
+    text: Note the wall-clock time.
+  - where: Hands
+    text: Empty the Cup, reaching in only while the Platform holds still in the Active pose. Wait until the upload of step 14 has finished (phase done or idle).
+  - where: Terminal 2
+    text: The one live counter read. Ctrl-C after a few seconds.
+    command: ros2 topic echo /link_status | grep -A1 setpoints_coalesced
+  - where: Terminal 2
+    command: 'ros2 topic echo /platform_imu/status | grep -A1 -E "key: (platform_state|i2c_errors|fifo_overflows|i2c_errors_delta_since_launch|fifo_overflows_delta_since_launch|last_complete|last_crc_ok)$"'
+  see: No Fault; the GUI IMU panel reads 'recording' (primary). setpoints_coalesced prints a number. If the echo prints nothing within 15 s, Ctrl-C and carry on with the GUI IMU panel text; the counters are in the bag.
+  stop_if: Nothing here stops the Sitting.
+  record: The wall-clock time, setpoints_coalesced, and i2c_errors and fifo_overflows if the echo printed. The debrief reads the remaining counters from the bag.
+  serves:
+  - item: IDEA-20
+    do:
+    - 7
+    pass: true
+- n: 16
+  kind: restore
+  title: Put the plant back
+  from:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  to:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  actions:
+  - where: Hands
+    text: Empty the Cup (only while the Platform holds still in the Active pose). Step 13 recorded what plant_id was before; the set below puts back jugglebot, so if that value was anything else, stop and tell a Session.
+  - where: Terminal 2
+    command: ros2 param set /skill_node plant_id jugglebot
+  - where: Terminal 2
+    command: ros2 param get /skill_node plant_id
+  see: plant_id reads jugglebot.
+  stop_if: It does not read jugglebot. Send the set again; if it still does not, fly nothing more, go to step 17 and tell a Session. A 'Wait for service timed out' reply means run the same command once more.
+  serves: []
+- n: 17
+  kind: restore
+  title: Stand down
+  from:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  to: []
+  actions:
+  - where: GUI
+    text: 'State minimap: hold IDLE to confirm (safe teardown, disarms). If an IMU upload is still running, Deactivate always goes through and aborts it.'
+  - where: Terminal 1
+    text: Ctrl-C the launch and wait for the shell prompt.
+  - where: Hands
+    text: Empty the Cup. Unload and power down Ball Butler. Leave the IMU as it is. Nothing was changed on the can-bridge, the Platform Teensy still runs firmware 12, and the IMU upload toggle was never touched (it defaults to ON at each launch).
+  see: The Platform is at Stow and every axis Idle before the Ctrl-C. The bag closes.
+  stop_if: A Fault blocks the teardown; clear it as you usually do before the Ctrl-C.
+  serves: []
+- n: 18
+  kind: restore
+  title: Close out
+  from: []
+  to: []
+  actions:
+  - where: Claude Session
+    text: In a Session in the live checkout, run /sitting-debrief 2026-11-20. It reads the capture .json files under temp/imu_capture and the launch log.
+  see: The debrief starts its inventory.
+  stop_if: Nothing here stops anything.
+  serves: []

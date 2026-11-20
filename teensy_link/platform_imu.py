@@ -808,6 +808,10 @@ class PlatformImuService:
         self._last_result: Dict[str, Any] = {}
         self._last_skip = ""
         self._boot_seen: Optional[int] = None
+        # Jetson-side running totals of the board's u8 health counters (saturate at 255 on the board).
+        self._health_prev: Optional[Tuple[int, int]] = None      # (i2c_errors, fifo_overflows) at the last STATUS
+        self._health_totals = {"i2c_errors": 0, "fifo_overflows": 0}
+        self._health_last_inc_t: Dict[str, Optional[float]] = {"i2c_errors": None, "fifo_overflows": None}
         # Healing a ring left frozen (worker thread only): _pending_cid None = nothing owed, 0 = a capture
         # froze under an id we never saw, >0 = our own capture whose RESUME was lost.
         self._pending_cid: Optional[int] = None
@@ -925,6 +929,24 @@ class PlatformImuService:
         except queue.Full:
             self.dropped_events += 1
 
+    def _track_health(self, st: ImuStatus, t: float, boot_before: Optional[int]) -> None:
+        """Accumulate positive counter deltas (caller holds the lock). The first STATUS only sets the baseline
+        (errors from before this launch are unknown); a boot-byte change or a decrease means the board counted
+        from zero again, so the new value is all new errors, but a reboot never arms the 60 s WARN (a boot's
+        PROBING errors are not an alarm). A counter at 255 is saturated: further errors are invisible."""
+        cur = (st.i2c_errors, st.fifo_overflows)
+        prev = self._health_prev
+        self._health_prev = cur
+        if prev is None:
+            return
+        rebooted = boot_before is not None and st.boot != boot_before
+        for name, p, c in (("i2c_errors", prev[0], cur[0]), ("fifo_overflows", prev[1], cur[1])):
+            if rebooted or c < p:
+                self._health_totals[name] += c
+            elif c > p:
+                self._health_totals[name] += c - p
+                self._health_last_inc_t[name] = t
+
     def status_snapshot(self) -> Dict[str, Any]:
         now = self._clock()
         with self._lock:
@@ -934,6 +956,7 @@ class PlatformImuService:
                 "platform_state": (STATE(st.state).name if st and st.state in set(int(s) for s in STATE) else None),
                 "platform_flags": st.flags if st else None, "platform_boot": st.boot if st else None,
                 "platform_temp_c": st.temp_c if st else None,
+                "health": self._health_snapshot(st, now),
                 "status_age_s": (now - t) if t is not None else None,
                 "bridge": dict(self._bridge), "last_result": dict(self._last_result), "last_skip": self._last_skip,
                 "dropped_batches": self.dropped_batches, "dropped_events": self.dropped_events,
@@ -952,6 +975,28 @@ class PlatformImuService:
             snap["writer"] = wr
         snap["progress"] = self.machine.progress()
         return snap
+
+    def _health_snapshot(self, st: Optional[ImuStatus], now: float) -> Optional[Dict[str, Any]]:
+        """The last STATUS's health counters plus Jetson-side totals (caller holds the lock)."""
+        if st is None:
+            return None
+        F = pc.PlatformImuStatusFlag
+        sp = st.sync_peak
+        inc = self._health_last_inc_t
+        return {
+            "i2c_errors": st.i2c_errors, "fifo_overflows": st.fifo_overflows,
+            "i2c_errors_saturated": st.i2c_errors >= 255, "fifo_overflows_saturated": st.fifo_overflows >= 255,
+            "i2c_errors_delta_since_launch": self._health_totals["i2c_errors"],
+            "fifo_overflows_delta_since_launch": self._health_totals["fifo_overflows"],
+            "i2c_errors_increase_age_s": None if inc["i2c_errors"] is None else now - inc["i2c_errors"],
+            "fifo_overflows_increase_age_s": None if inc["fifo_overflows"] is None else now - inc["fifo_overflows"],
+            "temp_c": None if st.temp_c == -128 else st.temp_c,
+            "sync_peak": sp, "sync_peak_valid": sp != 255, "sync_peak_saturated": sp == 254,
+            "sync_peak_ms": None if sp == 255 else sp * 0.01,        # 10 us per count; 254 is a lower bound
+            "sensor_ok": bool(st.flags & F.SENSOR_OK), "time_synced": bool(st.flags & F.TIME_SYNCED),
+            "ring_wrapped": bool(st.flags & F.RING_WRAPPED), "i2c_400k": bool(st.flags & F.I2C_400K),
+            "discontinuity": bool(st.flags & F.DISCONTINUITY),
+        }
 
     # -- worker --
     def pump(self, now: Optional[float] = None) -> None:
@@ -1039,6 +1084,7 @@ class PlatformImuService:
                         if self._boot_seen is not None and st.boot != self._boot_seen:
                             logger.info("Platform IMU boot byte changed %d -> %d (Platform rebooted)",
                                         self._boot_seen, st.boot)
+                        self._track_health(st, t, self._boot_seen)
                         self._boot_seen = st.boot
                         self._last_status, self._last_status_t = st, t
                     self.machine.on_status(st, t)

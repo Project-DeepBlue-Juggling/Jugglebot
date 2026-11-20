@@ -7878,6 +7878,8 @@ class SkillNode(Node):
         # so the lost Throw has no ThrowReport either. A Throw that never
         # released (ABORTED_NO_RELEASE, DROPPED_SURVIVOR_STOPPED) is NOT a
         # drop: it is not shown to have been thrown.
+        # (BUG-33: an empty-Cup Throw now ends MISSED_CATCH instead of
+        # ABORTED_NO_RELEASE and is booked exactly the same: no counter moves.)
         # A `magazine` run books ZERO drops, always (owner, TKT-64): its Throw
         # goes from Jugglebot into Ball Butler's magazine and nothing is meant
         # to catch it, so it is never a drop (its one ThrowReport is a

@@ -2,14 +2,14 @@
 id: BUG-123
 kind: bug
 title: 'A guard latch leaves the Hand pushing at full current: no stall guard on the streamed lane or a latched hold'
-status: inbox
+status: in_progress
 created: '2026-11-20'
-updated: '2026-11-20T04:14:09Z'
+updated: '2026-11-20T14:03:14Z'
 owners: []
 priority: high
 effort: m
-hardware: none
-owner: decision
+hardware: bench-hand
+owner: hands
 radius: subsystem
 diagnosis: confirmed
 area: can-bridge
@@ -19,6 +19,9 @@ links:
 - bug-odrive-gui-save-resets-the-hand-zero-the-bridge-stays-homed
 - bug-hand-stalls-at-the-70-a-clamp-mid-dive-probably-on-a-ball
 filed_by: claude
+night_skip: sitting
+night_skip_on: '2026-11-21'
+night_skip_note: FW 47 held on its day-Session branch; the bench stall stage was fixed after the 2026-11-20 crash and waits for the bench-hand Sitting.
 ---
 
 Sitting of 2026-11-20 (bag `2026-11-20_12-49-25`, 13:34:22). The Hand stalled against its top stop on a lost home (see the linked Item). MAX_DEVIATION latched 80 ms into the stall, but a latch only freezes the output: the drive kept its last lead-clamped `input_pos` (measured 5.86 + MAX_LEAD_HAND_REV 2.0 = 7.85 rev) and pushed 68-70.4 A for 4.4 s (about 21,800 A^2 s) until the E-stop button cut power.
@@ -39,3 +42,33 @@ Owner decisions, with the measured numbers:
 4. Observability: the launch log prints the Hand motor temperature only when the fan changes state (`teensy_bridge_node.py:7874-7878`), so it showed 34-35 C all Sitting; the 88 C is only in the bag.
 
 The owner intends to keep running this motor to establish the cut-offs.
+
+## Sitting
+
+- setup: bridge-cycled
+- why: the FW 47 stall guard must be seen to put a pushing Hand into Idle outside the ladder, with its latch and a refused Hand ladder, on the bench Hand so the damaged robot motor is not used.
+- do:
+  - Check out the branch and flash firmware 47: `git fetch && git checkout night-shift/2026-11-20-BUG-123 && git log --oneline -1`, then `pio run -e teensy41 -t upload` in the bridge directory, then `python tests/hardware/hand_stream_bench.py --clear-errors` (it refuses any version but 47 on the branch).
+  - Home with `python tests/hardware/bench_hand_frame_bench.py home`, park the Hand at 0.3 to 0.7 rev, and run `python tests/hardware/hand_stream_bench.py --stage stall` once: it lowers the current limit to 45 A, shifts the encoder frame so the lane can command 0.5 rev past the bottom stop, ramps the Hand into the stop at 1 rev/s, and restores the limit and the frame.
+  - Only after a PASS with a cool motor: `python tests/hardware/hand_stream_bench.py --clear-errors`, home, park and run the stage again, twice (three trips in all).
+  - Return to main and flash the bridge back: `git checkout main && git log --oneline -1`, `pio run -e teensy41 -t upload`, then `python tests/hardware/hand_stream_bench.py --clear-errors`.
+- pass: the Hand goes Idle within 200 ms of its current first reaching 40 A, fault HAND_STALL, no second current rise, the current limit reads back at its original value (the stage's STALL-GUARD PASS line).
+- record: the stage output from the plan line to the verdict (time from the first 40 A sample to Idle, peak current, motor temperature before and after, the HAND_MOVE_TO refusal, the limit and frame restore lines), the number of trips, motor warmth.
+- minutes: 25
+- branch: night-shift/2026-11-20-BUG-123
+
+## Sitting result (2026-11-20)
+
+- verdict: inconclusive
+- notes: the stage crashed at once, before energising: `KeyError: 'stall'` at `args.max_dev = _MAX_DEV_DEFAULT[args.stage]` in `main()`. (sheet 2026-11-20-bench-hand, step 16)
+- derived:  Not flown. `--stage stall` crashed in argument handling (KeyError 'stall' in _MAX_DEV_DEFAULT, owner's note on step 16) before the link opened or anything was energised; firmware 47 was flashed at step 15 and firmware 46 flashed back at step 18. The guard itself was not exercised.
+
+## Progress
+
+- 2026-11-20: Owner decision, 2026-11-20: 40 A / 1 rev/s / 150 ms, then the Hand enters Idle. Being built as can-bridge FW 47 on a held branch.
+- 2026-11-20: Built and held on night-shift/2026-11-20-BUG-123 (d75d42a7): can-bridge FW 47, PROTOCOL unchanged. Outside the ladder, 40 A or more at 1 rev/s or less for 150 ms of real samples sends the Hand Idle and latches a new fault HAND_STALL (INVARIANTS I-FW-17); the Legs are held as for a Hand drive fault; only the operator's clear releases it.
+- 2026-11-20: FW 47 branch verification: native tests 41 of 41 cases, compile OK; not flashed, no full gate.
+- 2026-11-20: Open on the branch: the Sitting proof pushes this motor at about 45 A for under 0.5 s (the bench Hand is the zero-risk alternative); the exact commands for the current limit and the raw position move are fixed when the sheet is written. Closest margin in the 2026-11-20 data: a latched hold at 36.2 A. A Hand-only CAN silence is not covered by any guard.
+- 2026-11-20: Bench proof built on the branch (9e715165): hand_stream_bench.py --stage stall. The lane clips Hand commands at 0 rev, so the stage shifts the encoder frame +0.65 rev to push 0.5 rev past the bottom stop at a 45 A limit, with its own Idle at 715 ms worst case, and restores both. On sheet 2026-11-20-bench-hand, steps 15-18.
+- 2026-11-20: Found while building the bench proof, not fixed: a raw SET_AXIS_STATE closed-loop RPC is not gated by the HAND_STALL latch (only the host's arm path refuses).
+- 2026-11-21: Not flown at the bench Sitting of 2026-11-20: the stall stage crashed on a KeyError before energising. Fixed on the branch (d2976ae9), with a second defect found by review: a lost reply to the frame shift left the encoder frame +0.65 rev off with no restore. Five end-to-end tests through main() now cover it; 122 scoped tests passed 2026-11-21.

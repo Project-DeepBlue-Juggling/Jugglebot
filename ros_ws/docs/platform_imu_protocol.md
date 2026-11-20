@@ -49,6 +49,18 @@ saturating at 255; `i2c_errors` counts every failed I2C transfer, including thos
 `get_wall_time_us()` before the IIR update), in 10 us counts, 254 saturating, 255 = no sync frame. `fill_s` is retained
 samples / `nominal_odr_hz`. `boot` is the low byte of `boot_id` (section 3).
 
+*ROS topic `platform_imu/status` health keys (2 Hz DiagnosticStatus, from the last IMU_STATUS).* Besides the upload
+keys (`busy`, `phase`, `frames_*`, `platform_state`, `platform_flags`, `platform_boot`, `status_age_s`, `last_*`, `writer_*`,
+`bridge_*`): `i2c_errors`, `fifo_overflows` (raw u8), `i2c_errors_saturated`, `fifo_overflows_saturated` (1 at 255),
+`i2c_errors_delta_since_launch`, `fifo_overflows_delta_since_launch` (Jetson-side totals: positive deltas accumulate, the first
+STATUS only sets the baseline, a boot-byte change or a decrease adds the new value as errors since the reboot; invisible once
+the board counter sits at 255), `i2c_errors_increase_age_s`, `fifo_overflows_increase_age_s` (seconds since the last rise within
+one boot, empty if none), `temp_c` (empty when -128), `sync_peak` (raw), `sync_peak_ms` (raw x 0.01 ms, empty when 255),
+`sync_peak_valid` (0 when 255 = no sync frame), `sync_peak_saturated` (1 at 254, so `sync_peak_ms` is a lower bound),
+and the flags `sensor_ok`, `time_synced`, `ring_wrapped`, `i2c_400k`, `discontinuity` (0/1). Level: WARN when the last upload
+failed, a CRC failed or a write failed (as before), or when `i2c_errors` or `fifo_overflows` rose within the last 60 s of the
+same boot (a reboot never arms it); otherwise OK.
+
 **IMU_DATA** `[seq u16][word 6 B]`. `seq` addresses the frozen-capture image (section 3), so a frame's `seq` alone says
 what it carries and a gap is found from `seq` alone, across blocks and across a late tail from a replaced block.
 
@@ -103,6 +115,14 @@ offset was stepped since the previous anchor).
 Both CRCs are CRC-32/IEEE (Python `zlib.crc32`, the FwUpdate VERIFY CRC). `payload_crc32` covers the anchor words then
 the sample words, in seq order, exactly as the IMU_DATA payloads carry them. The Platform Teensy computes it at FREEZE,
 in slices of `CRC_SLICE_BYTES` (8192 B, expected to hold `loop()` for about 1 ms each; P2 times one slice on the board), and sends the FREEZE reply when it is done.
+
+The two temperature fields are raw TEMP_DATA counts, degC = raw / 132.48 + 25, NOT the IMU_STATUS `temp_c` (no -128
+sentinel here: -128 is 24.03 degC). The board fills them from the FIFO packet's 8-bit temperature (degC = byte / 2.07 + 25,
+the source of IMU_STATUS `temp_c`) times 64, since 132.48 / 2.07 = 64, so they step by 64 counts (0.48 degC) and cost
+no register read. Start is the first sample pushed since the capture was reset (not necessarily the oldest sample retained after a
+ring wrap), freeze the newest sample before FREEZE; a capture with N = 0 has no reading: the board writes 0 for start
+and may leave a stale value in freeze, and the Jetson reports both as null. The Jetson's capture `.json` carries them decoded beside the raw ones, as
+`header.temp_c_start` and `header.temp_c_freeze` (null when N = 0).
 
 `boot_id` is a nonzero u32 that changes on every warm boot: it mixes a boot counter kept in RAM2 (not cleared by the
 core's startup code, so it survives a warm reset) and the RTC 32 kHz count with the cycle counter and the timing of CAN

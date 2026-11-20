@@ -376,6 +376,13 @@
             <div id="chart-toolbar">
                 <div id="signal-toggles"></div>
                 <div id="chart-right-group">
+                    <!-- IMU charts (imu-charts.js): show/hide, capture dropdown, jump-to-capture -->
+                    <div id="imu-chart-controls">
+                        <button id="imu-charts-toggle-btn" class="signal-toggle" type="button" title="Show/hide the Platform IMU charts (linear acceleration and angular rate of the selected capture, on the same time axis as the motor charts)">IMU charts</button>
+                        <select id="imu-capture-select" hidden title="IMU capture to plot (captures of this launch, or of the recording being replayed)"></select>
+                        <button id="imu-jump-btn" class="signal-toggle" type="button" hidden title="Move the charts to the selected IMU capture">Jump to capture</button>
+                    </div>
+                    <span class="chart-toolbar-divider"></span>
                     <span id="chart-delta-readout" title="Click two points while paused to measure &#916;t"></span>
                     <div id="chart-visibility-toggles"></div>
                     <div id="chart-time-window" title="Live window size. Mouse-wheel zoom can expand past this, up to 10&#160;min of cached history. Shortcuts: [ / ] to step, R to reset pan/zoom.">
@@ -388,6 +395,27 @@
                         </select>
                     </div>
                 </div>
+            </div>
+            <!-- IMU chart group (imu-charts.js): a row above the motor grid, hidden by default -->
+            <div id="imu-chart-group" hidden>
+                <div class="imu-chart-cell" id="imu-chart-accel">
+                    <div class="imu-chart-head">
+                        <span class="imu-chart-title" id="imu-accel-title">Linear acceleration (g)</span>
+                        <span class="imu-chart-frame">IMU x/y/z (sensor frame)</span>
+                        <span class="imu-series-toggles" id="imu-accel-toggles"></span>
+                    </div>
+                    <div class="imu-chart-plot" id="imu-accel-plot"></div>
+                </div>
+                <div class="imu-chart-cell" id="imu-chart-gyro">
+                    <div class="imu-chart-head">
+                        <span class="imu-chart-title" id="imu-gyro-title">Angular rate (deg/s)</span>
+                        <span class="imu-chart-frame">IMU x/y/z (sensor frame)</span>
+                        <span class="imu-series-toggles" id="imu-gyro-toggles"></span>
+                        <button id="imu-gyro-mode-btn" class="signal-toggle" type="button">Angular accel.</button>
+                    </div>
+                    <div class="imu-chart-plot" id="imu-gyro-plot"></div>
+                </div>
+                <div id="imu-chart-message" class="imu-chart-message" hidden></div>
             </div>
             <!-- Chart grid (motor-numeric DOM order; filled column-major by CSS) -->
             <div id="chart-grid">

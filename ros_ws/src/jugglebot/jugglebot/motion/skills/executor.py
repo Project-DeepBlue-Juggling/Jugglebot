@@ -2779,6 +2779,10 @@ class SkillExecutor:
         #: and is counted by :attr:`missed_feed_catches` alone.
         self.missed_catch_drops = 0
         self.end_code = ''
+        #: Per Ball, the last outcome row :meth:`_finalise_outcome` saw: the
+        #: record :meth:`_lost_flight_of` names an empty-Cup end's lost
+        #: flight from (BUG-33). Read nowhere else.
+        self._last_flight: Dict[int, _PendingOutcome] = {}
         #: D2 (2026-10-19): level the platform after an END that leaves it
         #: tilted -- see :meth:`_plan_closing`.  ``False`` restores the
         #: pre-D2 behaviour (the last terminal is held).
@@ -6623,21 +6627,145 @@ class SkillExecutor:
                            ball_label(survivor[1].ball_id)))
                     continue
                 if not self.attempt_ended:
+                    empty = self._empty_cup_before_release(pend)
                     self.attempt_ended = True
-                    self.end_code = ABORTED_NO_RELEASE
-                    self.end_message = (
-                        'throw %d/%d never left the hand (no release '
-                        'evidence by +%.1f s)'
-                        % (pend.throw_no, self.n_throws, RELEASE_GRACE_S))
-                    lines.append(
-                        '%.3f END %s: no release evidence for %s by '
-                        't_release + %.1f s -- no learner row'
-                        % (t_abs_s, ABORTED_NO_RELEASE, ball_label(pend.ball_id),
-                           RELEASE_GRACE_S))
+                    if empty is not None:
+                        # BUG-33 (owner decision 2026-11-20): the Cup read
+                        # EMPTY on every valid sample from the Ball's
+                        # previous release to this one, so nothing was ever
+                        # in it to throw: the Ball was lost on the flight
+                        # before. Same stop path, same dropped row, no
+                        # settle window -- only the code and the text name
+                        # the real cause.
+                        lines.extend(self._end_empty_cup_throw(
+                            pend, empty, t_abs_s))
+                    else:
+                        self.end_code = ABORTED_NO_RELEASE
+                        self.end_message = (
+                            'throw %d/%d never left the hand (no release '
+                            'evidence by +%.1f s)'
+                            % (pend.throw_no, self.n_throws,
+                               RELEASE_GRACE_S))
+                        lines.append(
+                            '%.3f END %s: no release evidence for %s by '
+                            't_release + %.1f s -- no learner row'
+                            % (t_abs_s, ABORTED_NO_RELEASE,
+                               ball_label(pend.ball_id), RELEASE_GRACE_S))
                 continue                     # dropped either way
             remaining.append(pend)
         self._pending_outcomes = remaining
         return lines
+
+    def _empty_cup_before_release(self, pend: _PendingOutcome
+                                  ) -> Optional[Tuple[SeatWindow, float,
+                                                      float]]:
+        """``(window, t0, t1)`` when ``pend``'s Cup was EMPTY for the whole
+        stretch in which it should have held the Ball, else ``None``
+        (BUG-33, INVARIANTS.md § 8 ``ABORTED_NO_RELEASE``).
+
+        The stretch is ``[previous release of this Ball + MISSED_CATCH_OPEN_
+        AFTER_RELEASE_S, t_release + RELEASE_SEAT_EPS_S]`` -- the same open
+        the Catch verdict uses (the previous Ball's debounce tail is over)
+        through the same epsilon :meth:`_advance_release_evidence` allows a
+        SEATED reading before the release. It is judged by the Catch
+        verdict's own rule over :attr:`seat_window`: LIVE (the same coverage
+        and gap bounds) AND not one raw-SEATED sample. Anything else --
+        no ``seat_window`` wired, no previous release in this schedule, a
+        blind, thin or gappy window, any SEATED sample -- is ``None``: the
+        end stays ``ABORTED_NO_RELEASE``."""
+        if self.seat_window is None or pend.release_idx < 0:
+            return None
+        prev = _previous_release(self.schedule, pend.release_idx,
+                                 pend.ball_id)
+        if prev is None:
+            return None
+        t0 = float(prev[1]) + MISSED_CATCH_OPEN_AFTER_RELEASE_S
+        t1 = float(pend.t_release_s) + RELEASE_SEAT_EPS_S
+        if t1 <= t0:
+            return None
+        window = self.seat_window(t0, t1)
+        if window is None:
+            return None
+        live = (float(window.n_valid) / (100.0 * (t1 - t0))
+                >= MISSED_CATCH_MIN_VALID_FRAC)
+        live = live and float(window.max_gap_s) <= MISSED_CATCH_MAX_GAP_S
+        if not live or window.n_seated > 0 or window.n_valid <= 0:
+            return None
+        return window, t0, t1
+
+    def _lost_flight_of(self, pend: _PendingOutcome
+                        ) -> Optional[Tuple[int, _PendingOutcome]]:
+        """``(catch_idx, flight_row)`` of the flight ``pend``'s Ball arrived
+        on and did not complete, or ``None`` when no such record exists.
+
+        The flight is the latest row of this Ball released before ``pend``
+        (still pending, or the last one :meth:`_finalise_outcome` saw) that
+        never latched SEATED. ``catch_idx`` is the CATCH that meets it: the
+        releasing skill itself for a carried Throw, else the last CATCH of
+        this Ball before the releasing Throw."""
+        rows = [r for r in self._pending_outcomes
+                if r.ball_id == pend.ball_id and r is not pend
+                and r.t_release_s < pend.t_release_s]
+        last = self._last_flight.get(pend.ball_id)
+        if last is not None and last.t_release_s < pend.t_release_s:
+            rows.append(last)
+        rows = [r for r in rows
+                if not r.caught_seen and not r.shadow_landing]
+        if not rows:
+            return None
+        flight = max(rows, key=lambda r: r.t_release_s)
+        rel = self.schedule.skills[pend.release_idx]
+        if rel.kind == CATCH:
+            return pend.release_idx, flight
+        for j in range(pend.release_idx - 1, -1, -1):
+            sk = self.schedule.skills[j]
+            if sk.ball_id == pend.ball_id and sk.kind == CATCH:
+                return j, flight
+        return None
+
+    def _end_empty_cup_throw(self, pend: _PendingOutcome, empty,
+                             t_abs_s: float) -> List[str]:
+        """Set the :data:`MISSED_CATCH` end for an empty-Cup Throw and return
+        its log lines (BUG-33). Nothing but ``end_code``/``end_message``/
+        ``end_kind`` and the lines differs from the ``ABORTED_NO_RELEASE``
+        end: no settle window, no counters, no hold -- the caller already
+        set ``attempt_ended`` and drops the row."""
+        window, t0, t1 = empty
+        lost = self._lost_flight_of(pend)
+        self.end_code = MISSED_CATCH
+        span = ('the Cup read EMPTY on all %d valid samples over '
+                '[%+.2f, %+.2f] s of its release'
+                % (window.n_valid, t0 - pend.t_release_s,
+                   t1 - pend.t_release_s))
+        if lost is None:
+            self.end_message = (
+                'the Cup was empty at throw %d/%d; no lost flight was '
+                'recorded' % (pend.throw_no, self.n_throws))
+            return [
+                '%.3f END %s: throw %d/%d of %s never left the hand: %s -- '
+                'no lost flight was recorded; no learner row'
+                % (t_abs_s, MISSED_CATCH, pend.throw_no, self.n_throws,
+                   ball_label(pend.ball_id), span),
+                '%.3f MISSED-BALL %s: the Cup was empty at throw %d; no lost '
+                'flight was recorded'
+                % (t_abs_s, ball_label(pend.ball_id), pend.throw_no)]
+        catch_idx, flight = lost
+        self.end_kind = CATCH
+        self.end_message = (
+            'the Cup was empty at throw %d/%d; the CATCH of %s (skill %d) '
+            'produced no ball'
+            % (pend.throw_no, self.n_throws, ball_label(pend.ball_id),
+               catch_idx))
+        return [
+            '%.3f END %s: throw %d/%d of %s never left the hand: %s -- the '
+            'CATCH of %s (skill %d) produced no ball; no learner row'
+            % (t_abs_s, MISSED_CATCH, pend.throw_no, self.n_throws,
+               ball_label(pend.ball_id), span, ball_label(pend.ball_id),
+               catch_idx),
+            lost_ball_line(
+                t_abs_s, pend.ball_id, catch_idx,
+                _previous_release(self.schedule, catch_idx, pend.ball_id),
+                flight.t_land_scheduled_s, flight.best_landing)]
 
     @staticmethod
     def _outcome_window(pend: _PendingOutcome) -> Tuple[float, float]:
@@ -7070,6 +7198,7 @@ class SkillExecutor:
         memory.Experience`, or drop it — a blind flight teaches the memory
         nothing (plan § 2.5 step 6)."""
         u_apex = float(pend.u[2])
+        self._last_flight[pend.ball_id] = pend
         if pend.best_landing is None:
             if pend.rejected_reason:
                 seen = ('' if pend.rejected_apex_m is None

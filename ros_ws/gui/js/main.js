@@ -75,6 +75,7 @@ import { initTrails, getTrailFeed } from './trails-scene.js';
 import { initCameraPanel, cameraPanelOnHeartbeat, setCameraPanelDisconnected } from './camera-panel.js';
 import { initHandFanPanel, handFanPanelOnStatus, setHandFanPanelDisconnected } from './hand-fan-panel.js';
 import { initImuUploadPanel, imuUploadPanelOnStatus, setImuUploadPanelDisconnected } from './imu-upload-panel.js';
+import { initImuCharts, attachImuChartsReplay, imuChartsOnStatus } from './imu-charts.js';
 import { initRecordsPanel, attachRecordsMenu } from './records-panel.js';
 import { loadViewToggles, setViewToggle, toggleState } from './view-toggles.js';
 
@@ -160,8 +161,9 @@ function init() {
     initChartResizeHandle();
     initFontSize();
 
-    // 6. Init telemetry charts
+    // 6. Init telemetry charts, then the IMU chart group that shares their x axis
     initTelemetryCharts();
+    initImuCharts();
 
     // 6a. Init jog panel + speed limits
     initJogPanel();
@@ -180,6 +182,7 @@ function init() {
         const replayMode = getReplayMode({ resetForSeek, blankDisconnectedState, getReplayLatches, restoreReplayLatches });
         initReplayUi(replayMode);
         attachConsoleReplay(replayMode);
+        attachImuChartsReplay(replayMode);
     } catch (e) {
         console.error('Replay UI init failed; live GUI unaffected:', e);
     }
@@ -421,6 +424,8 @@ function subscribeAll() {
     // Hand fan status (1 Hz, no throttle) - SYSTEM indicator and Platform Control toggle
     ros.subscribe('hand_fan/status', 'jugglebot_interfaces/msg/HandFanStatus', handFanPanelOnStatus, 0);
     ros.subscribe('platform_imu/status', 'diagnostic_msgs/msg/DiagnosticStatus', imuUploadPanelOnStatus, 0);
+    // IMU charts: a finished upload refreshes the capture list (second callback on the same topic)
+    ros.subscribe('platform_imu/status', 'diagnostic_msgs/msg/DiagnosticStatus', imuChartsOnStatus, 0);
 
     // Orchestrator state (on change)
     ros.subscribe('orchestrator_state', 'std_msgs/msg/String', onOrchestratorState, 0);

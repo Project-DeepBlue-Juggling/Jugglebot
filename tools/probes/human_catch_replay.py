@@ -121,15 +121,62 @@ def score_rows(rows, phantoms, cap_mm=CAP_RADIUS_MM, time_tol_ms=20.0,
 # stream (Tracker + emitter), cached per bag
 # ---------------------------------------------------------------------------
 
+def _wall_window(t_start, t_end, wall0, t_first=None):
+    """(lo, hi) epoch s of the bag log time. `HH:MM:SS[.f]` is the local clock on the day of
+    ``wall0``; a bare number is seconds from ``wall0``. `t_first` is unused (kept so the
+    signature mirrors `B._parse_clock`)."""
+    def one(v):
+        if v is None:
+            return None
+        if ':' in str(v):
+            h, m, sec = str(v).split(':')
+            base = time.localtime(wall0)
+            return time.mktime((base.tm_year, base.tm_mon, base.tm_mday, int(h), int(m), 0,
+                                0, 0, base.tm_isdst)) + float(sec)
+        return wall0 + float(v)
+    return one(t_start), one(t_end)
+
+
 def load_frames(bag, frames_pkl=None, t_start=None, t_end=None):
+    """(frames, wall0). The window bounds the bag READ (mcap start/end time), and is applied
+    to a ``frames_pkl`` too when it carries wall times (4th element). A pickle without them
+    cannot map an HH:MM:SS window: that is an error, never a silent whole-pickle run.
+    ``wall0`` is the wall time of the first returned frame (None when unknown)."""
+    windowed = t_start is not None or t_end is not None
     if frames_pkl:
         with open(frames_pkl, 'rb') as fh:
             fr = pickle.load(fh)
+        if not fr:
+            raise SystemExit('frames pickle %s is empty' % frames_pkl)
+        if windowed:
+            if len(fr[0]) > 3:
+                lo, hi = _wall_window(t_start, t_end, fr[0][3])
+                fr = [f for f in fr if (lo is None or f[3] >= lo) and (hi is None or f[3] <= hi)]
+                print('window applied to the frames pickle by wall time: %d frames kept'
+                      % len(fr), file=sys.stderr, flush=True)
+            elif any(':' in str(v) for v in (t_start, t_end) if v is not None):
+                raise SystemExit('--t-start/--t-end clock times cannot be applied: %s carries no '
+                                 'wall times (4th element); give seconds from the first frame'
+                                 % frames_pkl)
+            else:
+                lo, hi = (None if v is None else fr[0][0] + float(v) for v in (t_start, t_end))
+                fr = [f for f in fr if (lo is None or f[0] >= lo) and (hi is None or f[0] <= hi)]
+                print('window applied to the frames pickle by frame time: %d frames kept'
+                      % len(fr), file=sys.stderr, flush=True)
+            if not fr:
+                raise SystemExit('the time window selects no frames of %s' % frames_pkl)
         return [f[:3] for f in fr], (fr[0][3] if len(fr[0]) > 3 else None)
-    f4 = B.load_frames(Path(bag), with_wall=True)
-    t_first, wall0 = f4[0][0], f4[0][3]
-    lo, hi = B._parse_clock(t_start, wall0, t_first), B._parse_clock(t_end, wall0, t_first)
-    return [f[:3] for f in f4 if (lo is None or f[0] >= lo) and (hi is None or f[0] <= hi)], wall0
+    wall_window = None
+    if windowed:
+        wall_window = _wall_window(t_start, t_end, B.bag_start_wall(Path(bag)))
+    print('reading %s, window %s..%s -> %s (a whole-bag read takes ~10 min per 2 GB)'
+          % (bag, t_start, t_end, 'bounded read' if windowed else 'whole bag'),
+          file=sys.stderr, flush=True)
+    f4 = B.load_frames(Path(bag), with_wall=True, wall_window=wall_window)
+    print('read %d frames' % len(f4), file=sys.stderr, flush=True)
+    if not f4:
+        raise SystemExit('no /mocap_data frames in %s window %s..%s' % (bag, t_start, t_end))
+    return [f[:3] for f in f4], f4[0][3]
 
 
 def robot_frame_info(bag, wall_lo=None, window_s=20.0):
@@ -633,12 +680,18 @@ def main(argv=None):
     out = Path(a.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     bag = Path(a.bag)
-    cache = out / ('%s_stream.pkl' % bag.name)
+    # The cache and report names carry the window: a cache keyed by the bag alone would be
+    # silently reused for a different window (BUG-126).
+    tag = ''.join('_' + str(v).replace(':', '') for v in (a.t_start, a.t_end) if v is not None)
+    stem = bag.name + tag
+    cache = out / ('%s_stream.pkl' % stem)
     frames_wall = None
     if cache.exists():
+        print('using cached stream %s' % cache, file=sys.stderr, flush=True)
         S = pickle.load(open(cache, 'rb'))
     else:
         frames, frames_wall = load_frames(bag, a.frames_pkl, a.t_start, a.t_end)
+        print('building the stream from %d frames' % len(frames), file=sys.stderr, flush=True)
         t0 = time.time()
         S = build_stream(frames)
         S['build_s'] = time.time() - t0
@@ -668,10 +721,19 @@ def main(argv=None):
             print('[%s] %s: %.1f s' % (mode, name, time.time() - t0), flush=True)
             if name.startswith('baseline'):
                 pickle.dump(dict(rows=rows, phantoms=ph, log=lg),
-                            open(out / ('%s_%s_baseline.pkl' % (bag.name, mode)), 'wb'))
+                            open(out / ('%s_%s_baseline.pkl' % (stem, mode)), 'wb'))
     text = '\n'.join(lines)
-    (out / ('%s_replay.md' % bag.name)).write_text(text + '\n')
+    report = out / ('%s_replay.md' % stem)
+    report.write_text(text + '\n')
     print(text)
+    if not report.exists():
+        print('ERROR: the report %s was not written' % report, file=sys.stderr)
+        return 1
+    if not S['truth']:
+        print('ERROR: no truth Throws found in the stream (wrong window? empty bag?); the report '
+              '%s has empty rows' % report, file=sys.stderr)
+        return 1
+    print('report: %s' % report, file=sys.stderr, flush=True)
     return 0
 
 

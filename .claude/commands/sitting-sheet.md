@@ -72,6 +72,8 @@ The operator does not read ahead, so no step may need a state a later step creat
    names. Dependencies between rows win ("right after IDEA-10, same settings").
 4. **Isolate what would contaminate others**: a `plant_id` keeps a row's Throws out of another
    row's Memory, so put the plant back before the next row, even when the Item forgets to say so.
+   No restore step is needed when the very next step ends the launch: every launch starts
+   `plant_id` at `jugglebot` (`skill_node.py` declares it, nothing persists it; owner question 2026-11-20).
    A trial on one drive or a diagnostic launch flag goes last or gets its own launch.
 5. **Merge only what is the same action.** The same goal with the same fields serving two Items is
    one step naming both. Never merge steps that merely look alike.

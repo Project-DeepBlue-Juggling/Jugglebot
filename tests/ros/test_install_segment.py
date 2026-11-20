@@ -22,6 +22,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import math
+import os
 import time
 from types import SimpleNamespace
 
@@ -37,6 +38,7 @@ from jugglebot import skill_node as sn
 from jugglebot import trajectory_node as tn
 from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.skills import executor as sk_exec
+from jugglebot.motion.skills import schedule as sk_sched_mod
 from jugglebot.motion.skills import segments as sk_seg
 from jugglebot.motion.trajectory import cup_realize as cr
 from jugglebot.motion.trajectory import feasibility as feas
@@ -2002,17 +2004,51 @@ def test_a_fresh_throw_installs_through_the_real_worker_process(monkeypatch):
     try:
         assert isinstance(node._segment_solver, sk_solver.WorkerSegmentSolver)
         assert node._segment_solver.wait_ready(20.0), 'worker never became READY'
-        # A real wall-clock solve can be legitimately late on a loaded box (the
-        # gate runs 4 workers; a 175 ms fresh-origin budget is real): retry ONLY
-        # the timing refusal, a few times -- any other refusal fails at once.
-        for _attempt in range(4):
+        # BUG-120: the fresh THROW's 250 ms solve budget is read on the wall clock
+        # across the process boundary, so this test cannot pin it the way BUG-108
+        # pinned the staleness window.  A warm solve is ~190 ms idle but 0.25-0.3 s
+        # under CPU oversubscription (8 busy loops on 6 cores failed 4/6 even with
+        # 12 retries), so the lead the node RESERVES is widened for this test only
+        # (the node derives it per request from `schedule.install_lead_s`, ships
+        # it as `req.lead_s` and the wire deadline `t_wall + lead + dt`; the worker
+        # re-derives nothing).  The node's deadline arithmetic and the late-reply
+        # mapping are asserted by the fake-solver tests above (not a measured
+        # 250 ms refusal of a real worker); what this test proves -- spawn, pickle, solve in
+        # a real process, reply, transit guard, `_install` -- does not depend on it.
+        # A residual starvation outcome is retried: the timing refusal, and the
+        # node's own designed recovery from a worker the client killed after
+        # SOLVER_HANG_S (SOLVER_UNAVAILABLE, restart, wait READY), at most ONCE:
+        # a second worker death fails, so an intermittent crash is not retried
+        # away (TKT-87).  Any other refusal fails at once.
+        monkeypatch.setattr(sk_sched_mod, 'install_lead_s', lambda kind: 1.5)
+        restarts = 0
+        for _attempt in range(6):
             _refresh(node)
             at = time.perf_counter()
-            resp = node._svc_install_segment(_throw_req(at + 0.8),
+            resp = node._svc_install_segment(_throw_req(at + 2.5),
                                              InstallSegment.Response())
+            if resp.code == sk_solver.SOLVER_UNAVAILABLE:
+                restarts += 1
+                assert restarts <= 1, ('BUG-120: the real worker died twice',
+                                       resp.message, _attempt)
+                assert node._segment_solver.wait_ready(20.0), 'no restart'
+                continue
             if resp.code != sk_exec.ORIGIN_TOO_LATE:
                 break
-        assert resp.accepted is True, resp.message
+        if resp.code == sk_exec.ORIGIN_TOO_LATE:
+            # Six real solves each past a 1.5 s lead.  On an oversubscribed box
+            # (1-minute load average above the core count) that is starvation,
+            # which says nothing about the install path: a skip, not a pass.  On
+            # a box that is NOT oversubscribed it is a planner slowdown or a
+            # deadline/clock bug, and it fails (TKT-87).
+            load1 = os.getloadavg()[0]
+            cores = os.cpu_count() or 1
+            msg = ('BUG-120: six real solves past a 1.5 s lead, load %.1f on %d '
+                   'cores: %s' % (load1, cores, resp.message))
+            if load1 > cores:
+                pytest.skip(msg)
+            pytest.fail(msg)
+        assert resp.accepted is True, (resp.code, resp.message, _attempt)
         assert resp.code == feas.OK
         assert isinstance(node._active_plan, CyclePlan)
         assert node._cycle is not None and node._cycle[0] is node._active_plan

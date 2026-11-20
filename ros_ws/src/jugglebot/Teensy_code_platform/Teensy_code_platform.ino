@@ -413,6 +413,22 @@ constexpr uint8_t IMU_SDA_PIN = 18, IMU_SCL_PIN = 19;   // Wire (LPI2C1) on the 
  *          4 RESET_BANK 5 RESET 6 POLL_RESET
  *          7 POLL_BANK 8 POLL_WHO 9 CONFIG 10 PWR
  *          11 WAIT_GYRO 12 FLUSH)
+ *    (2026-11-20, diag2: the cycle is 24 pages, 24 s.  Kind 7 = known-data read failed.
+ *     u16 = A low byte, B high byte, wrapping.)
+ *    8-11  bad FIFO header log, newest first:       (burst n << 4) | index of that packet
+ *          the header byte (0, 0 = no entry)
+ *    12    the last header that passed the check    0
+ *    13    known-data mode: 0 off, 1 learning the   bytes masked out as unstable while learning
+ *          reference, 2 measuring
+ *    14-19 u16: 14 reads, 15 failed reads, 16 reads with a mismatch, 17 mismatched bytes,
+ *          18 bits read 0 where 1 expected, 19 bits read 1 where 0 expected (measuring only)
+ *    20    last mismatch: expected byte             last mismatch: byte read
+ *    21    last mismatch: offset in the read        its register address (0x4C + offset)
+ *    22    bytes per read (32)                      1 bits in the checked reference bytes
+ *    23    I2C clock / 10 kHz                       read period / 100 us
+ *    Known-data mode (env teensy40_imudiag_const*, -DPLATFORM_IMU_DIAG_CONST=1): RUNNING reads
+ *    bank-0 0x4C..0x6B (32 bytes) every PLATFORM_IMU_DIAG_CONST_PERIOD_US instead of draining
+ *    the FIFO (imu_service.h const_step); the capture stays empty, FREEZE answers ERR_EMPTY.
  *
  *  KIND: 1 FIFO_COUNT read, 2 FIFO_DATA burst (Wire level), 3 drain flush, 4 probe/init step,
  *  5 RESUME flush/WHO, 6 bad FIFO header (ImuService::DiagKind).  STAGE: 0 none (the op failed
@@ -1036,6 +1052,7 @@ struct ImuIo {
     d->init_failed_at = imuChip.diag.init_failed_at;
     d->int_status = imuChip.diag.int_status;
     d->count = imuChip.diag.count;
+    d->good_hdr = imuChip.diag.good_hdr;
   }
 #define IMU_OP(expr) op([&]() -> int { return (expr); })
 #else
@@ -1056,6 +1073,10 @@ struct ImuIo {
   }
   int flush() { return IMU_OP(imuChip.flushFifo()); }
   int check_who() { return IMU_OP(imuChip.checkWhoAmI()); }
+#if PLATFORM_IMU_DIAG
+  /*  Known-data mode (PLATFORM_IMU_DIAG_CONST): one raw bank-0 register read, ONE transaction. */
+  int read_regs(uint8_t reg, uint8_t *buf, uint8_t n) { return IMU_OP(imuChip.readRegs(reg, buf, n)); }
+#endif
 #undef IMU_OP
   /*  I2C bus clear (UM10204 3.1.16) then an LPI2C1 reset, before the next transfer after every
    *  counted error (ImuService::probe_step before a re-probe, drain_step before a RUNNING retry).  Nine SCL pulses with SDA released let a device that was
@@ -1423,6 +1444,9 @@ void setup() {
   if (bootId == 0) bootId = 1;
   imuCapture.init(imuRingBuf, PlatformImu::RING_SAMPLES, imuAnchors, PlatformImu::ANCHOR_RING, bootId);
   imuService.set_i2c_400k(IMU_I2C_HZ < 1000000u);
+#if PLATFORM_IMU_DIAG
+  imuService.set_diag_clock(IMU_I2C_HZ);
+#endif
   imuService.init(&imuCapture, bootId, millis());
 #endif
   Serial.println("Teensy platform MCU ready.");

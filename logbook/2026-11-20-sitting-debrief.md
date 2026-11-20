@@ -31,6 +31,16 @@ Sheet `2026-11-20-robot`, 26 steps, two launches. Launch 1 flew `main` (can-brid
 - Unresolved or data: BUG-111 (a SPINOUT, not captured), BUG-58 (host GC pauses precede 2 to 3 of 5 lane stops), IDEA-16 (single-lob replay report).
 - Platform Teensy FW 11: tilt read (+0.0107, +0.0084) rad at Level, gravity offset (+0.0003, +0.0049) rad against (-0.0024, +0.0053) on 2026-11-18; the Hand fan worked on command and in auto.
 
+## Big picture
+
+What went well. The polygon walk caught 25 of 25 on its first full Attempt from an empty Memory, so a Pattern whose Site changes every Throw works and the Learner copes with first visits. The emitter fix for early knots held: none of 72 dropped-frame lines shows the old signature. Three new firmwares flew without a fault of their own (can-bridge 45 and 46, Platform Teensy 11), and firmware 46 is merged. The single-lob recording gave the human-partner work its first usable data: of 23 lobs inside the Cup's reach, 16 had an admitted plan, about 30 mm from the real crossing.
+
+What did not. The Hand motor was overheated and damaged. A drive fault lost the Hand's position reference, the robot still believed it was homed, and no guard stops a Hand that is stalled on the streamed lane. Columns completed only 5 of 18, about the same as two days earlier. The stream still stops: four oval Attempts and one polygon walk ended on a late setpoint stream. The fault capture crashed at the one real fault.
+
+What it means. The Hand's protection had two holes that are now Items with fixes in hand (BUG-122, BUG-123); until both are flown, re-home after any Hand fault or E-stop button press. Stream stops now have a named host cause in most cases: garbage-collection pauses of 67 to 94 ms in the two stream nodes, so the dropped-knot theory (BUG-89) is a symptom, not the cause. Columns reliability is not a firmware or Hand problem; it is lost Balls (bounce-outs, outward Throws, Feeds landing outward), and the ABORTED_NO_RELEASE label hides them.
+
+Next steps. Hand safety: fly BUG-122's branch and the firmware 47 stall guard (40 A, 1 rev/s, 150 ms, then Idle) first at the next Sitting. Pattern progression (PWAY-8): P7 is met; rotating Columns (P8) is next. Human partner (IDEA-16): work the BUSY refusals, then an armed single-lob Catch. Stream: remove the gen-2 pauses from the stream nodes (BUG-58). Columns: trial the 15 mm outward Catch authority (BUG-78) and decide the end-code relabel (BUG-33). Capture: keep the fixed tool armed (FEAT-49, BUG-111).
+
 ## Inventory
 
 | Launch | Pattern | Attempts | Ends |
@@ -87,10 +97,10 @@ Five LANE_REFUSED ends in launch 1 and one in launch 2. The Hand latches at -3.9
 
 ## Owner decisions open
 
-1. BUG-123: a Hand stall guard on the streamed lane and a latched hold (options 25 A / 0.5 rev/s / 300 ms; 40 A / 1 rev/s / 150 ms; 63 A for 100 ms), its action, and whether a latch should leave the Hand energised at its lead-clamped setpoint; an I2t budget.
-2. BUG-124: a Homing plausibility check (probe the top stop, or compare with the previous home).
+1. BUG-123: DECIDED 2026-11-20 (owner): 40 A / 1 rev/s / 150 ms, then the Hand goes Idle; being built as can-bridge FW 47 on a held branch.
+2. BUG-124: DECIDED 2026-11-20 (owner): no fix for now; the record is kept in case a false Homing happens again.
 3. BUG-33: relabel ABORTED_NO_RELEASE with an empty Cup as the lost flight (changes an end code INVARIANTS lists).
-4. BUG-78: outward Catch authority (10 mm now; lost flights 50 and 71 mm outward).
+4. BUG-78: DECIDED 2026-11-20 (owner): trial 15 mm at a Sitting, no further (late lateral re-plans are hard on the Leg base joints); the trial is the Item's `## Sitting` section.
 5. Carried: the BUG-89 emit lead or due-aware bridge rule, the BUG-111 options, the human_catch holding timeout.
 
 ## Follow-ups filed

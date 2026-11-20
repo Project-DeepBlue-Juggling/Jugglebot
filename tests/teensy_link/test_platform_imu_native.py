@@ -79,3 +79,5 @@ def test_full_upload_of_the_image_the_firmware_wrote(dump):
     assert res.flags["complete"] and res.flags["crc_checked"] and res.flags["crc_ok"] is True
     c = cap.build_capture(res.header, res.anchors, res.sample_words, res.word_present, res.k0, res.flags)
     assert c.raw.shape == (100, 6) and c.header["capture_id"] == 7
+    assert c.header["temp_c_start"] == pytest.approx(h.temp_raw_start / 132.48 + 25.0)
+    assert c.header["temp_c_freeze"] == pytest.approx(h.temp_raw_freeze / 132.48 + 25.0)

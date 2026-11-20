@@ -487,3 +487,149 @@
     border-radius: 50%;
     flex-shrink: 0;
 }
+
+/* ---- IMU charts (imu-charts.js) -----------------------------------------
+   A row of two charts above the motor grid, hidden by default.  The cells
+   reuse the motor charts' surface, callout and uPlot overrides; only the
+   in-cell header strip (title, frame note, series pills) is new. */
+/* The IMU controls widen the right group; let the toolbar wrap so the signal
+   pills keep a readable width instead of collapsing to one narrow column. */
+#chart-toolbar { flex-wrap: wrap; }
+#signal-toggles { flex: 1 1 360px; min-width: 0; }
+#imu-chart-controls {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+#imu-capture-select {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    color: var(--text-secondary);
+    font-size: var(--font-size-xs);
+    font-family: var(--font-mono);
+    padding: 2px 6px;
+    cursor: pointer;
+    max-width: 320px;
+}
+
+#imu-capture-select[hidden],
+#imu-jump-btn[hidden],
+#imu-chart-group[hidden],
+#imu-chart-message[hidden] {
+    display: none;
+}
+
+#imu-jump-btn {
+    --signal-color: var(--accent-cyan);
+    border-color: var(--accent-cyan);
+    color: var(--text-primary);
+}
+
+#imu-chart-group {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px;
+    padding: 2px 2px 0;
+    flex: 0 0 200px;
+    /* Rows may not grow to their content: a uPlot canvas built at the taller
+       charts-hidden size would otherwise hold the row at that height. */
+    grid-template-rows: minmax(0, 1fr);
+    min-height: 0;
+    overflow: hidden;
+    box-sizing: border-box;
+}
+
+/* The IMU row is added to the panel's height, never taken from the motor grid. */
+#chart-panel.imu-shown:not(.collapsed):not(.charts-hidden) {
+    height: calc(var(--chart-panel-height) + 200px);
+}
+
+/* Motor grid hidden: the panel shrinks to its content, so the IMU row needs
+   a height of its own. */
+#chart-panel.charts-hidden #imu-chart-group {
+    flex: none;
+    height: 220px;
+}
+
+.imu-chart-cell {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--bg-primary);
+    border-radius: var(--border-radius-sm);
+    min-height: 0;
+    min-width: 0;
+}
+
+.imu-chart-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 6px;
+    flex-shrink: 0;
+    font-size: var(--font-size-xs);
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.imu-chart-title {
+    font-size: var(--font-size-sm);
+    font-weight: 700;
+    color: var(--text-primary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.imu-chart-frame {
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+}
+
+.imu-series-toggles {
+    display: inline-flex;
+    gap: 4px;
+    margin-left: auto;
+}
+
+#imu-gyro-mode-btn.active {
+    --signal-color: var(--accent-purple);
+}
+
+.imu-chart-plot {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+}
+
+.imu-chart-plot .u-wrap { background: transparent !important; }
+.imu-chart-plot .u-legend { display: none !important; }
+.imu-chart-plot .u-over { cursor: crosshair !important; }
+.imu-chart-plot .u-select {
+    background: rgba(148, 163, 184, 0.18) !important;
+    border: 1px solid rgba(148, 163, 184, 0.6) !important;
+}
+.imu-chart-plot .u-axis { font-family: var(--font-mono) !important; }
+
+/* Plain-words state of the group (no captures, list unavailable, unreadable
+   file, no wall-clock times) — centred over both charts. */
+.imu-chart-message {
+    position: absolute;
+    inset: 24px 2px 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 0 16px;
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    font-family: var(--font-sans);
+    background: var(--chart-title-bg);
+    pointer-events: none;
+    z-index: 5;
+}

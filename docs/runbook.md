@@ -6,20 +6,21 @@ waiting Items: the order a Sitting flies in, and every step, is on its Sitting s
 
 Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
-## Robot  (10 Items, 316 min)
+## Robot  (11 Items, 315 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
 | BUG-111 Hand SPINOUT at the Throw peak after a setpoint 12.6 ms late (2026-11-18) | 5 | level, armed, bb-fed | - | - |
 | BUG-122 Hand stays homed after its drive loses the position reference, so the next move rams the top stop | 5 | level | `night-shift/2026-11-20-BUG-122` | - |
-| BUG-58 Firmware scheduler STOPs a streamed lane while frames arrive on time and the host stream is clean: LANE_REFUSED ends, cause unseen | 1 | armed | - | - |
+| BUG-58 Firmware scheduler STOPs a streamed lane while frames arrive on time and the host stream is clean: LANE_REFUSED ends, cause unseen | 40 | armed | - | - |
+| BUG-78 Two-ball Columns runs end on a missed Catch of Ball 2 with no collision: 13 of 23 ends, mean run 22 Throws | 20 | level, armed, bb-fed | - | - |
 | BUG-89 teensy_bridge_node forwards only the newest waiting knot; harmless at emit lead 0, but the cover has 7-14 ms of margin against a stall | 40 | level, armed, bb-fed | - | - |
 | FEAT-32 Pre-release hold rung: release from a moving Platform (hold 0.100 → 0) | 45 | armed, bb-fed, bridge-cycled | - | - |
 | FEAT-39 P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30 | 50 | level, armed, bb-fed, bridge-cycled | - | - |
 | FEAT-49 Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault | 60 | armed | - | - |
 | FEAT-50 Live warning when a marker dwells under the Hand | 10 | armed | `night-shift/2026-11-14-FEAT-50` | - |
 | IDEA-16 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them | 10 | level | - | - |
-| IDEA-20 Platform Accelerometer? | 90 | armed, bridge-cycled | - | - |
+| IDEA-20 Platform Accelerometer? | 30 | level | - | - |
 
 ## Bench leg  (1 Item, 30 min)
 
@@ -27,21 +28,21 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | --- | ---: | --- | --- | --- |
 | BUG-19 Hand ODrive state can silently diverge from what the can-bridge commanded | 30 | bridge-cycled | - | - |
 
-## Bench hand  (2 Items, 60 min)
+## Bench hand  (2 Items, 45 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
 | BUG-105 Hand keeps its last velocity feedforward on a Soft E-stop, disarm or link loss and stays in Closed-loop | 20 | armed, bridge-cycled | - | - |
-| FEAT-45 Measure the Hand's commutation angle error through a hard brake on the bench Hand (FOC scope) | 40 | armed, bridge-cycled | - | - |
+| BUG-123 A guard latch leaves the Hand pushing at full current: no stall guard on the streamed lane or a latched hold | 25 | bridge-cycled | `night-shift/2026-11-20-BUG-123` | - |
 
 ## Needs a Sitting section
 
 - BUG-112 [Robot] /robot_state rate drops to 80-89 Hz during Attempts and drifts down over a launch: no ## Sitting section
+- BUG-125 [Robot] Hand drive MISSING_ESTIMATE at rest lost exactly five turns, ten minutes after a SPINOUT top-stop impact: no ## Sitting section
 - BUG-13 [Robot] Wave camera: CLIP_MISSING on the first start after a camera power-cycle: no ## Sitting section
 - BUG-27 [Robot] can-bridge CAN3 analog drive path has a load-dependent hardware fault (the Jugglebot loom stays on CAN2): no ## Sitting section
 - BUG-29 [Robot] RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball: no ## Sitting section
 - BUG-32 [Robot] Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff: no ## Sitting section
-- BUG-33 [Robot] ABORTED_NO_RELEASE: three goals ended because the throw never left the hand (new 2026-10-28 21:02): no ## Sitting section
 - BUG-34 [Robot] Teensy guard MAX_DEVIATION latched on the hand (+8.4 rev) mid-oval; recover_lane found nothing, re-dispatch rejected WRONG_MODE: no ## Sitting section
 - BUG-35 [Robot] mocap_node loses frames to queue full in bursts before the first dispatch (544 / 373 / 490 frames in the three 2026-10-28 Sittings): no ## Sitting section
 - BUG-41 [Bench hand] Hand brake and hold currents sit far below the throw envelope's model (brake -14 to -20 A measured vs 35 to 40 A predicted; hold 1.5 vs 2.6 A): Kt, moving mass or friction is mis-modelled: no ## Sitting section
@@ -53,7 +54,6 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - BUG-72 [Robot] Legs 1 and 2 left their magnetic base joints on Columns at Sep. 170: acceptance bounds Leg kinematics only and does not see the bridge feedforward cap: no ## Sitting section
 - BUG-74 [Robot] Mid-air ball collisions end half of two-ball Columns Attempts at Apex 1.00: closest approach about 70 mm at Sep. 100, 125 and 135: no ## Sitting section
 - BUG-75 [Robot] Catch re-aim refused INFEASIBLE on 8.4 % of Throws at the P2 Sitting, 15 of 69 on the turned pair: no ## Sitting section
-- BUG-78 [Robot] Two-ball Columns runs end on a missed Catch of Ball 2 with no collision: 13 of 23 ends, mean run 22 Throws: no ## Sitting section
 - BUG-79 [Robot] Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for: no ## Sitting section
 - BUG-84 [Robot] Hand stalls at the 70 A clamp mid-dive, probably on a Ball under the Cup, and the next launch comes up slow: no ## Sitting section
 - BUG-95 [Robot] A long REST can be refused SPLICE_TOO_LATE: the fresh decision and the Knot choice use different leads: no ## Sitting section
@@ -79,4 +79,4 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
 ## Questions a Sitting can answer
 
-- none
+- TKT-88 IDEA-25: which lever shortens the Armed IMU upload: the Jetson-only hole-fill change, firmware counters first, sample packing, or leave it? (parent IDEA-25)
