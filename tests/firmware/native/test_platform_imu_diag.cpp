@@ -27,8 +27,9 @@ struct FakeIo {
   uint32_t t_us = 0, stream_start_us = 0, consumed = 0;
   bool configured = false;
   int init_left = 0, pass_txns = 0, recovers = 0;
-  // Scripted failures: the next op of that kind fails with this DiagOp.
-  bool fail_count = false, fail_burst = false, fail_init = false, bad_header = false, force_ovf = false;
+  // Scripted failures: the next N ops of that kind fail with this DiagOp.
+  int fail_count = 0, fail_burst = 0, fail_init = 0;
+  bool bad_header = false, force_ovf = false;
   DiagOp next, last;
 
   uint32_t produced() const { return configured ? (t_us - stream_start_us) / 1000 : 0; }
@@ -36,7 +37,7 @@ struct FakeIo {
   int init_step(uint32_t now) {
     pass_txns++;
     last = DiagOp{};
-    if (fail_init) { fail_init = false; last = next; return -2; }
+    if (fail_init > 0) { fail_init--; last = next; return -2; }
     if (--init_left > 0) return INIT_PENDING;
     configured = true; stream_start_us = now; consumed = 0;
     return 0;
@@ -44,7 +45,7 @@ struct FakeIo {
   int fifo_count(bool* ovf) {
     pass_txns++;
     last = DiagOp{};
-    if (fail_count) { fail_count = false; last = next; return -3; }
+    if (fail_count > 0) { fail_count--; last = next; return -3; }
     uint32_t n = produced() - consumed;
     *ovf = force_ovf;
     if (force_ovf) { force_ovf = false; last.count = 128; last.int_status = 0x02; }
@@ -53,7 +54,7 @@ struct FakeIo {
   int read_burst(Pkt* out, int n) {
     pass_txns++;
     last = DiagOp{};
-    if (fail_burst) { fail_burst = false; last = next; return -3; }
+    if (fail_burst > 0) { fail_burst--; last = next; return -3; }
     if (bad_header) { bad_header = false; last = next; return ERR_BAD_PACKET; }
     for (int i = 0; i < n; i++) { for (int j = 0; j < 6; j++) out[i].s[j] = int16_t(j); out[i].temp = 10; consumed++; }
     return n;
@@ -127,9 +128,9 @@ TEST_CASE("a FIFO_COUNT failure: kind, stage, Wire code, MSR flags, duration and
   REQUIRE(r.svc.state() == S::RUNNING);
   r.io.next = DiagOp{};
   r.io.next.stage = 2; r.io.next.code = 1; r.io.next.requested = 3; r.io.next.msr_flags = 0x01 | 0x20; r.io.next.dur_us = 120;
-  r.io.fail_count = true;
+  r.io.fail_count = 1;
   r.run_ms(10);
-  CHECK(r.svc.state() == S::BACKOFF);
+  CHECK(r.svc.state() == S::RUNNING);    // FW 12: recovered and counted again, no BACKOFF
   r.run_ms(12000);
   CHECK(r.svc.state() == S::RUNNING);
   auto p = r.pages();
@@ -138,7 +139,7 @@ TEST_CASE("a FIFO_COUNT failure: kind, stage, Wire code, MSR flags, duration and
   CHECK(p[2].first == 0x21);      CHECK(p[2].second == 2);   // 120 us -> 2 x 100 us, rounded up
   CHECK(p[3].first == 1);         CHECK(p[3].second == 0);
   CHECK(p[4].first == 0);         CHECK(p[4].second == 0);
-  CHECK(p[5].first == 0);         CHECK(p[5].second == 1);   // one bus recovery before the re-probe
+  CHECK(p[5].first == 0);         CHECK(p[5].second == 1);   // one bus recovery before the retried count
   CHECK(r.io.recovers == 1);
 }
 
@@ -148,19 +149,22 @@ TEST_CASE("a burst failure, a bad header, a probe failure, an overflow and a lon
   REQUIRE(r.svc.state() == S::RUNNING);
   r.io.next = DiagOp{};
   r.io.next.stage = 1; r.io.next.code = 4; r.io.next.msr_flags = 0x08; r.io.next.dur_us = 60000;
-  r.io.fail_burst = true;
+  r.io.fail_burst = 1;
+  r.run_ms(20);
+  CHECK(r.svc.state() == S::RUNNING);    // FW 12: recovered and flushed, no BACKOFF
+  r.io.fail_count = 3;                   // three failed counts in a row do go to BACKOFF
   r.run_ms(20);
   CHECK(r.svc.state() == S::BACKOFF);
   r.io.next = DiagOp{};
   r.io.next.stage = 4; r.io.next.code = 2; r.io.next.init_failed_at = 1;   // IST_PROBE_ACK
-  r.io.fail_init = true;                 // the first re-probe fails too
+  r.io.fail_init = 1;                    // the first re-probe fails too
   r.run_ms(15000);
   REQUIRE(r.svc.state() == S::RUNNING);
   auto p = r.pages();
   CHECK(p[0].first == DK_PROBE);  CHECK(p[0].second == 4);
-  CHECK(p[3].first == 0);         CHECK(p[3].second == 1);   // one burst failure
+  CHECK(p[3].first == 3);         CHECK(p[3].second == 1);   // three count failures, one burst failure
   CHECK(p[4].second == 1);                                   // one probe failure
-  CHECK(p[5].second == 2);                                   // a recovery before each re-probe
+  CHECK(p[5].second == 1 + 2 + 2);                           // burst retry, 2 count retries, 2 re-probes
   CHECK(p[7].first == 1);
   // A bad FIFO header: kind 6, header byte and (burst n << 4 | index), counted on page 5 A.
   r.io.next = DiagOp{};
@@ -176,7 +180,7 @@ TEST_CASE("a burst failure, a bad header, a probe failure, an overflow and a lon
   CHECK(p[1].first == 0xFF);          CHECK(p[1].second == 0x42);
   CHECK(p[5].first == 1);
   CHECK(p[7].second == (0x80 | 127));
-  CHECK(r.svc.counters().i2c_errors == 2);   // the bad header is not an I2C error
+  CHECK(r.svc.counters().i2c_errors == 5);   // the bad header is not an I2C error
   CHECK(r.svc.state() == S::RUNNING);
   // Page 6 B is the longest pass gap since the previous page 6: the 37.5 ms one, then back to 1.
   bool saw = false;

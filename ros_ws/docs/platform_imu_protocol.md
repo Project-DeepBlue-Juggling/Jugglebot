@@ -45,7 +45,7 @@ ERR_EMPTY 0x14 (FREEZE with no samples); ERR_DISABLED 0x15; ERR_FW_UPDATE 0x16.
 **IMU_STATUS** `[state u8][flags u8][temp_c i8][fifo_overflows u8][i2c_errors u8][sync_peak u8][fill_s u8][boot u8]`.
 `flags`: SENSOR_OK 0x01, TIME_SYNCED 0x02 (a 0x7DD frame in the last period), RING_WRAPPED 0x04, I2C_400K 0x08,
 DISCONTINUITY 0x10. `temp_c` is the chip's temperature rounded (-128 = unknown). The two counters are since boot,
-saturating at 255. `sync_peak` is the largest |innovation| of the 0x7DD slave in the period (wall time received minus
+saturating at 255; `i2c_errors` counts every failed I2C transfer, including those the RUNNING retry absorbs (section 4). `sync_peak` is the largest |innovation| of the 0x7DD slave in the period (wall time received minus
 `get_wall_time_us()` before the IIR update), in 10 us counts, 254 saturating, 255 = no sync frame. `fill_s` is retained
 samples / `nominal_odr_hz`. `boot` is the low byte of `boot_id` (section 3).
 
@@ -78,7 +78,7 @@ anchor (the earlier drain's `local_us` and `wall_us`), so the pre-gap segment en
 splits segments at the DISCONTINUITY anchor: samples with index before the closing anchor's `index` are pre-gap, and
 samples from the closing anchor's `index` up to the DISCONTINUITY anchor's `index` are post-gap (the first drain after
 the gap); the closing anchor itself belongs to the pre-gap fit. `flags`: DISCONTINUITY 0x01 (samples lost just before this anchor,
-by FIFO overflow or a re-probe: fit each side separately), WALL_INVALID 0x02 (no 0x7DD yet), SYNC_STEP 0x04 (the wall
+by FIFO overflow, a bad FIFO header, a failed FIFO burst read or a re-probe: fit each side separately), WALL_INVALID 0x02 (no 0x7DD yet), SYNC_STEP 0x04 (the wall
 offset was stepped since the previous anchor).
 
 **Header** (66 B, 11 words):
@@ -115,14 +115,25 @@ States (IMU_STATUS byte 0): DISABLED 0, PROBING 1, RUNNING 2, FROZEN 3, UPLOADIN
 board boots into PROBING (enabled); DISABLE is RAM-only. For the first `BOOT_SETTLE_MS` (10 s) after boot the board does
 no IMU work: no I2C, no IMU_STATUS, and every IMU_CMD is dropped unanswered. The first probe and the first STATUS come at
 10 s, so no STATUS for 10 s after a boot is normal. Internal transitions: PROBING to RUNNING when the chip answers
-and is configured; RUNNING to BACKOFF on an I2C error or a failed WHO_AM_I re-check; BACKOFF to PROBING after a bounded
+and is configured; RUNNING to BACKOFF on the third failed FIFO transfer in a row (below) or a failed WHO_AM_I re-check; BACKOFF to PROBING after a bounded
 back-off of at least 1 s; any state to FW_HALTED at FwUpdate BEGIN (I2C stopped, capture discarded); FW_HALTED to
 PROBING if that update is abandoned, unless the BEGIN arrived during the 10 s boot settle, in which case FW_HALTED holds
 until the next reboot (see "Recovery if IMU code faults"); UPLOADING to FROZEN once the block's last frame is handed to FlexCAN. Probe failures
 stay in PROBING (BACKOFF is entered only from RUNNING), re-probing after 1, 2, 4, 8, 16 and 32 s, then every 60 s; the
 schedule depends only on the sensor, not on host polling, and 10 s of clean RUNNING resets it. A board with no IMU
 therefore shows PROBING with SENSOR_OK clear and a rising `i2c_errors`: that is not an alarm. A FIFO
-overflow alone keeps RUNNING and marks the next anchor DISCONTINUITY. Recovery from BACKOFF keeps appending to the same
+overflow alone keeps RUNNING and marks the next anchor DISCONTINUITY.
+
+**Retry in RUNNING (FW 12).** A failed FIFO transfer while RUNNING is counted in `i2c_errors` and, if it is the
+first or second in a row, absorbed: the next loop pass clears the bus (nine SCL pulses and a STOP, then an I2C
+controller reset, ~0.12 ms, no device transaction) and the pass after retries. A failed FIFO_COUNT read took
+nothing from the FIFO, so it is simply counted again: no DISCONTINUITY, no sample lost. A failed burst read leaves
+the chip's FIFO read position unknown, so the rest of that drain is dropped, a closing anchor is written, the FIFO is
+flushed and the next anchor is DISCONTINUITY. A failed flush is recovered and flushed again. A bad FIFO header (the
+transfer completed, its content did not parse) is handled like an overflow: nothing of that burst is kept, flush,
+DISCONTINUITY, RUNNING; it is not an I2C error. Any successful count, burst or flush ends the run; the third failure in
+a row with no success between goes to BACKOFF as above. The board also clears the bus before every re-probe that
+follows an error. A retry costs about three loop passes, far inside the 128 ms the chip FIFO holds at 1 kHz. Recovery from BACKOFF keeps appending to the same
 ring behind a DISCONTINUITY anchor; only boot, ENABLE from DISABLED and RESUME start a new capture. There is no I2C
 traffic in FROZEN or UPLOADING. Nothing in this table or in the Platform Teensy depends on Armed: the gating below is the bridge's and the Jetson's; RESUME flushes the chip FIFO and re-checks WHO_AM_I.
 
@@ -149,8 +160,8 @@ sooner than the block's gap after the previous one. The gap is `frame_gap_10us` 
 `read_min_gap_10us` (400 us) when smaller.
 
 **Compile-time kill switch.** `PLATFORM_IMU_ENABLED=0` compiles every IMU path out. That image ignores IMU_CMD (0x6E3,
-it falls to the ordinary frame handling), sends no 0x6E4-0x6E6 frame, and still reports FW 11, so the host can infer
-"no IMU" only from STATUS silence: no STATUS for at least 3 s on an FW 11 board that has been up for more than 10 s is a
+it falls to the ordinary frame handling), sends no 0x6E4-0x6E6 frame, and still reports its FW version (11 or later), so the host can infer
+"no IMU" only from STATUS silence: no STATUS for at least 3 s on an FW 11+ board that has been up for more than 10 s is a
 no-IMU build, not a fault.
 
 **Recovery if IMU code faults.** The mechanism: a fault in IMU code makes the core write a CrashReport, wait 8 s and

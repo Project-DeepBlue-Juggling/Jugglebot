@@ -1,5 +1,5 @@
 /*****************************************************************************************
- *  imu_service.h — the Platform IMU's per-loop() glue (FW 11, IDEA-20 P2b).
+ *  imu_service.h — the Platform IMU's per-loop() glue (FW 11-12, IDEA-20 P2b).
  *
  *  Pure logic with no Arduino dependency, so tests/firmware/native/ runs the shipped code
  *  (test_platform_imu_service.cpp). It wires imu_proto.h's Engine and imu_capture.h's ring
@@ -12,7 +12,7 @@
  *        int  flush();                            ONE transaction (+200 us pause): 0 or < 0
  *        int  check_who();                        ONE transaction: 0 if WHO_AM_I answers right, else < 0
  *        void bus_recover();                      I2C bus clear (9 SCL pulses + STOP on GPIO) and an I2C
- *                                                 controller reset; bounded (~0.15 ms), no device transaction
+ *                                                 controller reset; bounded (~0.12 ms), no device transaction
  *        void stamp(Stamp* s);                    clocks only: micros64() and the synced wall clock together
  *        void header_info(ImuCapture::HeaderInfo* h);  the chip's constant header fields (no I2C)
  *    Tx  bool place(uint32_t id, const uint8_t d[8]);
@@ -23,10 +23,12 @@
  *  dead and the firmware-over-CAN receiver, which only runs while loop() keeps calling
  *  can1.events(), is its only way back in.  So one pass() does AT MOST ONE bounded step:
  *  one I2C transaction (an init step, a FIFO count, one burst of <= 8 packets, a flush or a
- *  WHO_AM_I), or one bus recovery (before the probe that follows any counted error), or one
+ *  WHO_AM_I), or one bus recovery (before the next transfer after any counted error), or one
  *  CRC slice, or one IMU_DATA frame; never two, never a wait.  A failed
- *  transaction is never retried in the same pass; repeated failures back off from
- *  PROBE_MIN_GAP_MS to PROBE_MAX_GAP_MS.  For BOOT_SETTLE_MS after boot, and while a
+ *  transaction is never retried in the same pass.  In RUNNING a failed FIFO transfer is
+ *  retried on later passes, behind a bus recovery, up to RUNNING_MAX_RETRIES times in a row
+ *  (THE RUNNING RETRY POLICY, drain_step); the next failure in a row goes to BACKOFF, and
+ *  repeated probe failures back off from PROBE_MIN_GAP_MS to PROBE_MAX_GAP_MS.  For BOOT_SETTLE_MS after boot, and while a
  *  firmware-update session is open, nothing here touches the bus.  Contract: ros_ws/docs/platform_imu_protocol.md.
  *****************************************************************************************/
 #pragma once
@@ -54,7 +56,13 @@ constexpr int      BURST_PKTS = 8;           // 8 x 16 B = 128 B, inside Wire's 
 constexpr uint32_t DRAIN_MAX_PKTS = 120;     // never read past what was counted, never near the 128-record FIFO
 constexpr uint32_t PROBE_MIN_GAP_MS = 1000;  // probe back-off floor (also the spec's BACKOFF minimum)
 constexpr uint32_t PROBE_MAX_GAP_MS = 60000; // and ceiling
-constexpr uint32_t HEALTHY_RESET_MS = 10000; // this long RUNNING without an error resets the back-off
+constexpr uint32_t HEALTHY_RESET_MS = 10000; // this long RUNNING without a BACKOFF resets the back-off
+/*  Consecutive failed FIFO transfers (count, burst or flush) RUNNING absorbs with a bus recovery
+ *  and a retry; the next failure in a row, with no successful transfer between, goes to BACKOFF.
+ *  2 (FW 12, 2026-11-20): the measured errors are isolated (one every 15-40 s), so a third in a
+ *  row means the chip or the bus is really gone, and 3 failures + 2 recoveries take ~5 passes,
+ *  far inside the chip FIFO's 128 ms at 1 kHz. */
+constexpr uint32_t RUNNING_MAX_RETRIES = 2;
 /*  TX mailboxes the IMU always leaves free for everyone else.  The sketch has 8 (setMaxMB(16),
  *  the RX FIFO and its filter table take MB 0-7).  After an IMU frame the non-IMU writers that
  *  can run before loop() next checks the mailboxes for a dispatch are the Hand fan status
@@ -181,7 +189,8 @@ class SyncQuality {
 struct Counters {
   uint32_t fifo_overflows = 0, i2c_errors = 0, bad_packets = 0, probes = 0, tx_deferred = 0;
   uint32_t cmds_in_settle = 0;  // IMU_CMD frames dropped unanswered during the boot settle
-  uint32_t recoveries = 0;      // bus clears + controller resets (one before every probe that follows an error)
+  uint32_t recoveries = 0;      // bus clears + controller resets (one before the next transfer after an error)
+  uint32_t retries = 0;         // RUNNING errors absorbed by the retry policy (no BACKOFF); each is also in i2c_errors
 };
 
 /*  DIAGNOSTIC BUILD (-DPLATFORM_IMU_DIAG=1, logbook 2026-11-20-platform-imu-i2c-error-bursts).  The
@@ -190,9 +199,10 @@ struct Counters {
  *  that records them is under #if PLATFORM_IMU_DIAG. */
 enum DiagKind : uint8_t {
   DK_NONE = 0,
-  DK_COUNT = 1,       // FIFO_COUNT read failed (drain)                 -> i2c_errors, BACKOFF
-  DK_BURST = 2,       // FIFO_DATA burst failed at the Wire level        -> i2c_errors, BACKOFF
-  DK_FLUSH = 3,       // FIFO flush failed (after an overflow/bad packet) -> i2c_errors, BACKOFF
+  DK_COUNT = 1,       // FIFO_COUNT read failed (drain)                 -> i2c_errors, recover, count again
+  DK_BURST = 2,       // FIFO_DATA burst failed at the Wire level        -> i2c_errors, recover, flush, DISCONTINUITY
+  DK_FLUSH = 3,       // FIFO flush failed (overflow/bad packet/burst)   -> i2c_errors, recover, flush again
+                      //   (COUNT/BURST/FLUSH: the third failure in a row goes to BACKOFF)
   DK_PROBE = 4,       // an init step failed (PROBING)                  -> i2c_errors, stays PROBING
   DK_RESUME = 5,      // RESUME's flush or WHO_AM_I check failed          -> i2c_errors, PROBING
   DK_BAD_PACKET = 6,  // a FIFO header was not 0b0110_xxxx               -> bad_packets only, flush, DISCONTINUITY
@@ -223,7 +233,7 @@ class Service {
     settle_end_ms_ = now_ms + BOOT_SETTLE_MS;
     settled_ = halted_for_boot_ = false;
     probe_at_ = settle_end_ms_;
-    fail_streak_ = 0;
+    fail_streak_ = retry_streak_ = 0;
     init_started_ = chip_ok_ = resume_who_ = flush_pending_ = recover_pending_ = false;
     new_capture();
   }
@@ -236,6 +246,7 @@ class Service {
   bool chip_ok() const { return chip_ok_; }
   uint32_t probe_due_ms() const { return probe_at_; }
   uint32_t fail_streak() const { return fail_streak_; }
+  uint32_t retry_streak() const { return retry_streak_; }
   StepKind last_step() const { return last_step_; }
   bool settled() const { return settled_; }
   bool halted_for_boot() const { return halted_for_boot_; }
@@ -373,6 +384,7 @@ class Service {
       healthy_since_ms_ = now_ms;
       phase_ = IDLE;
       flush_pending_ = false;
+      retry_streak_ = 0;
       last_drain_us_ = now_us;
       eng_.on_chip_ready();
       return;
@@ -383,13 +395,36 @@ class Service {
     fail(now_ms);
   }
 
+  /*  THE RUNNING RETRY POLICY (FW 12, logbook 2026-11-20-platform-imu-i2c-error-bursts).  The
+   *  robot's I2C loses one transfer every 15-40 s (register-address NACK, short read, arbitration
+   *  lost); FW 11 sent each one to BACKOFF, a 1 s hole.  Now, while RUNNING:
+   *    FIFO_COUNT read fails  nothing was taken from the FIFO: recover the bus on the next pass,
+   *                           count again on the pass after (the drain is made due at once).
+   *                           No DISCONTINUITY, no sample lost.
+   *    burst read fails       the chip's FIFO read pointer is unknown (RESUME_PARTIAL_RD resumes
+   *                           mid-packet): drop the rest of the drain, close the anchors, mark the
+   *                           next anchor DISCONTINUITY, recover the bus, flush, carry on.
+   *    flush fails            recover, flush again (the DISCONTINUITY mark is still pending).
+   *  Every failure is counted in i2c_errors.  A successful count, burst or flush resets the
+   *  streak; a failure with retry_streak_ == RUNNING_MAX_RETRIES goes to BACKOFF as before.  A
+   *  bad FIFO header is not an I2C failure: the transfer completed, so it neither counts nor
+   *  resets the streak (it flushes and marks a DISCONTINUITY on its own).  Each step is still one
+   *  bounded bus operation per pass, so a failure, a recovery and its retry take three passes. */
   template <class Io>
   void drain_step(uint32_t now_us, uint32_t now_ms, Io& io) {
     if (phase_ == IDLE) {
-      if (flush_pending_) {                // after an overflow or a bad packet: start clean
-        flush_pending_ = false;
+      if (recover_pending_) {              // after an absorbed error: clear the bus before the next transfer
+        recover_pending_ = false;
+        cnt_.recoveries++;
         last_step_ = STEP_I2C;
-        if (io.flush() < 0) { diag_note(DK_FLUSH, io); running_error(now_ms); }
+        io.bus_recover();
+        return;
+      }
+      if (flush_pending_) {                // after an overflow, a bad packet or a failed burst: start clean
+        last_step_ = STEP_I2C;
+        if (io.flush() < 0) { diag_note(DK_FLUSH, io); retry_or_backoff(now_ms); return; }  // stays pending
+        flush_pending_ = false;
+        retry_streak_ = 0;
         last_drain_us_ = now_us;
         return;
       }
@@ -399,7 +434,12 @@ class Service {
       bool ovf = false;
       last_step_ = STEP_I2C;
       const int n = io.fifo_count(&ovf);
-      if (n < 0) { diag_note(DK_COUNT, io); running_error(now_ms); return; }
+      if (n < 0) {
+        diag_note(DK_COUNT, io);
+        if (retry_or_backoff(now_ms)) last_drain_us_ = now_us - DRAIN_PERIOD_US;  // due again after the recovery
+        return;
+      }
+      retry_streak_ = 0;
       if (ovf) {
 #if PLATFORM_IMU_DIAG
         {
@@ -424,16 +464,18 @@ class Service {
     Pkt pk[BURST_PKTS];
     last_step_ = STEP_I2C;
     const int got = io.read_burst(pk, n);
-    if (got == ERR_BAD_PACKET) {
+    if (got == ERR_BAD_PACKET) {           // nothing of this burst is pushed; the earlier bursts were sound
       diag_note(DK_BAD_PACKET, io);
       cnt_.bad_packets++;
-      phase_ = IDLE;
-      close_unanchored();
-      eng_.note_overflow();
-      flush_pending_ = true;
+      drop_drain_and_flush();
       return;
     }
-    if (got < 0) { diag_note(DK_BURST, io); running_error(now_ms); return; }
+    if (got < 0) {
+      diag_note(DK_BURST, io);
+      if (retry_or_backoff(now_ms)) drop_drain_and_flush();
+      return;
+    }
+    retry_streak_ = 0;
     for (int i = 0; i < got && i < n; i++) {
       if (!cap_->push(pk[i].s)) continue;
       temp_last_ = pk[i].temp;
@@ -444,6 +486,17 @@ class Service {
     }
     remaining_ -= uint32_t(n);
     if (remaining_ == 0) { phase_ = IDLE; complete_drain(now_ms); }
+  }
+
+  /*  The FIFO read position is no longer known (a bad header or a failed burst): abandon the
+   *  rest of this drain, anchor what was pushed, mark the next anchor DISCONTINUITY and flush
+   *  the chip FIFO before the next count.  Stays RUNNING. */
+  void drop_drain_and_flush() {
+    phase_ = IDLE;
+    remaining_ = 0;
+    close_unanchored();
+    eng_.note_overflow();
+    flush_pending_ = true;
   }
 
   /*  A drain is complete: anchor it if one is due (first of the capture, 100 ms since the last,
@@ -480,12 +533,22 @@ class Service {
     if (disc) capture_disc_ = true;
   }
 
+  /*  A failed FIFO transfer while RUNNING: counted, then absorbed (true: recover and retry on
+   *  later passes) or, the (RUNNING_MAX_RETRIES + 1)-th in a row, BACKOFF (false). */
+  bool retry_or_backoff(uint32_t now_ms) {
+    count_i2c_error();                     // also arms the bus recovery
+    if (retry_streak_ >= RUNNING_MAX_RETRIES) { running_error(now_ms); return false; }
+    retry_streak_++;
+    cnt_.retries++;
+    return true;
+  }
   void running_error(uint32_t now_ms) {
-    count_i2c_error();
     close_unanchored();
     chip_ok_ = false;
     phase_ = IDLE;
+    remaining_ = 0;
     flush_pending_ = false;
+    retry_streak_ = 0;
     eng_.on_i2c_error(now_ms);             // RUNNING -> BACKOFF, the next anchor DISCONTINUITY
     fail(now_ms);
   }
@@ -530,11 +593,13 @@ class Service {
   /*  FW_HALTED or DISABLED: the capture is gone and no I2C runs until PROBING re-inits the chip. */
   void halt_local() {
     init_started_ = chip_ok_ = resume_who_ = flush_pending_ = false;
+    retry_streak_ = 0;
     new_capture();
   }
   void new_capture() {
     phase_ = IDLE;
     remaining_ = 0;
+    retry_streak_ = 0;
     unanchored_ = disc_carry_ = sync_step_pending_ = capture_disc_ = false;
     first_anchor_ = true;
     have_temp_start_ = false;
@@ -639,6 +704,7 @@ class Service {
   bool settled_ = false, halted_for_boot_ = false;
   // probe and back-off
   uint32_t probe_at_ = 0, fail_streak_ = 0, healthy_since_ms_ = 0;
+  uint32_t retry_streak_ = 0;              // consecutive failed FIFO transfers absorbed in RUNNING
   bool init_started_ = false, chip_ok_ = false, resume_who_ = false, recover_pending_ = false;
   // drain
   Phase phase_ = IDLE;

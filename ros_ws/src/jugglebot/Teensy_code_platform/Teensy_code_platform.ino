@@ -201,7 +201,7 @@
  *        ever faults).  Kill switch: PLATFORM_IMU_ENABLED (below the includes).
  */
 constexpr char     FW_NAME[]  = "jugglebot-platform";
-constexpr uint16_t FW_VERSION = 11;  // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
+constexpr uint16_t FW_VERSION = 12;  // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
                                      //      feedforward, C-HAND-2).
                                      // 2→3: 2026-08-18 hand END-STOP correction — BEHAVIOURAL.
                                      //      Geometry::HAND_MOTOR_HARD_STOP_REVS 11.1 → 10.8 rev
@@ -249,6 +249,11 @@ constexpr uint16_t FW_VERSION = 11;  // 1→2: 2026-07-29 throwDecelToTorque (po
                                      //      re-probes from loop(), up to 32 CAN frames
                                      //      dispatched per loop() pass. P2b: the Platform
                                      //      IMU capture, status and upload (0x6E3-0x6E6).
+                                     // 11→12: 2026-11-20 Platform IMU I2C robustness: a bus
+                                     //      recovery before every re-probe, and the RUNNING
+                                     //      retry policy (a failed FIFO count/burst/flush is
+                                     //      recovered and retried, BACKOFF only on the 3rd
+                                     //      in a row; imu_service.h drain_step).
 
 /*----------------------------------------------------------------------------*/
 /*                                CAN BUS SET‑UP                              */
@@ -399,7 +404,8 @@ constexpr uint8_t IMU_SDA_PIN = 18, IMU_SCL_PIN = 19;   // Wire (LPI2C1) on the 
  *    3     # kind 1 (FIFO_COUNT fails)              # kind 2 (burst fails)
  *    4     # kind 3 + 5 (flush, resume fails)       # kind 4 (probe/init fails)
  *    5     # kind 6 (bad FIFO headers; NOT in       # bus recoveries (bus clear + controller
- *          i2c_errors in any build)                 reset before a re-probe)
+ *          i2c_errors in any build)                 reset before a re-probe or, FW 12, a
+ *                                                   RUNNING retry)
  *    6     sync_peak of the last second (10 us)     longest gap between two loop() passes
  *                                                   since the last page 6, ms (255 = >= 255)
  *    7     init state the last failed probe ended   last FIFO overflow: count (0..127) | 0x80 if
@@ -1051,8 +1057,8 @@ struct ImuIo {
   int flush() { return IMU_OP(imuChip.flushFifo()); }
   int check_who() { return IMU_OP(imuChip.checkWhoAmI()); }
 #undef IMU_OP
-  /*  I2C bus clear (UM10204 3.1.16) then an LPI2C1 reset, before every probe that follows an
-   *  error (ImuService::probe_step).  Nine SCL pulses with SDA released let a device that was
+  /*  I2C bus clear (UM10204 3.1.16) then an LPI2C1 reset, before the next transfer after every
+   *  counted error (ImuService::probe_step before a re-probe, drain_step before a RUNNING retry).  Nine SCL pulses with SDA released let a device that was
    *  left driving a data bit finish its byte and see a NACK; the STOP resets its interface;
    *  Wire.begin() writes LPI2C_MCR_RST and re-muxes both pins (the core never resets the
    *  controller otherwise, and its own 9-pulse force_clock() runs only when BBF stays set

@@ -499,7 +499,11 @@ PLATFORM_FW_VERSION_UNVERSIONED = 0
 #: longer waits for ever for the inclinometer, and loop() dispatches up to 32 CAN
 #: frames per pass. A board on 10 still works: this host rejects its (pi, pi) and
 #: the new invalid reply alike, through the |tilt| bound.
-PLATFORM_FW_VERSION_EXPECTED = 11
+#: 12 (2026-11-20) = Platform IMU I2C robustness: a bus recovery before every
+#: re-probe, and a failed FIFO transfer while RUNNING is recovered and retried
+#: (BACKOFF only on the third in a row) instead of a 1 s BACKOFF hole. IMU-only:
+#: a board on 11 still works, its captures just carry more DISCONTINUITY gaps.
+PLATFORM_FW_VERSION_EXPECTED = 12
 
 
 def decode_platform_fw_version(data: bytes) -> int:
