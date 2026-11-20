@@ -66,7 +66,8 @@ import { initJogPanel, setJogPanelVisible,
          initSpeedLimitsPanel, setSpeedLimitsPanelVisible, resetSpeedLimitsForMode,
 } from './jog-panel.js';
 import { initTheme } from './theme.js';
-import { emitEvent, EVENT_TYPES } from './event-store.js';
+import { emitEvent, EVENT_TYPES, eventsAreMuted } from './event-store.js';
+import { createBallEventMapper } from './ball-events.js';
 import { errorNames, formatAxisErrors } from './odrive-errors.js';
 import { initCommandHistory } from './command-history.js';
 import { initCameraPresets } from './camera-presets.js';
@@ -75,7 +76,8 @@ import { initTrails, getTrailFeed } from './trails-scene.js';
 import { initCameraPanel, cameraPanelOnHeartbeat, setCameraPanelDisconnected } from './camera-panel.js';
 import { initHandFanPanel, handFanPanelOnStatus, setHandFanPanelDisconnected } from './hand-fan-panel.js';
 import { initImuUploadPanel, imuUploadPanelOnStatus, setImuUploadPanelDisconnected } from './imu-upload-panel.js';
-import { initImuCharts, attachImuChartsReplay, imuChartsOnStatus } from './imu-charts.js';
+import { initImuCharts, attachImuChartsReplay, imuChartsOnStatus, imuChartsRelayout } from './imu-charts.js';
+import * as imuCore from './imu-charts-core.js';
 import { initRecordsPanel, attachRecordsMenu } from './records-panel.js';
 import { loadViewToggles, setViewToggle, toggleState } from './view-toggles.js';
 
@@ -825,8 +827,15 @@ function onMocapData(msg) {
     }
 }
 
+// Throw / Catch chart markers from the tracker stream (ball-events.js), live and in replay (the policy
+// dispatches /balls to this handler as a state-edge topic). Chart-only event types, never in the Event Log list.
+const ballEvents = createBallEventMapper();
+
 function onBalls(msg) {
     recordTopicMessage('balls');
+    for (const ev of ballEvents.map(msg.balls || [], {
+        nowSec: clock.now() / 1000, replay: clock.isReplay(), muted: eventsAreMuted(),
+    })) emitEvent(ev);
     // Live only (D4): replay's columns feeder writes the ball tracks.
     if (clock.isReplay()) return;
     const feed = getTrailFeed();
@@ -1104,55 +1113,66 @@ function initResizeHandle() {
 }
 
 // ---- Chart panel resize handle ----
+//
+// The handle between the 3D scene and the chart panel sets the height of the WHOLE panel.  One chart group
+// shown: --chart-panel-height ('jugglebot-chart-height').  IMU and ODrive groups both shown: its own total,
+// --chart-panel-both-height ('jugglebot-chart-height-both'); the IMU/ODrive divider (imu-charts.js) only splits
+// that fixed space.  The height model's pure parts are in imu-charts-core.js.
 
-const CHART_HEIGHT_MIN = 150;
-const CHART_HEIGHT_MAX_PCT = 0.6;
 const CHART_HEIGHT_STORAGE_KEY = 'jugglebot-chart-height';
-const CHART_COLLAPSED_STORAGE_KEY = 'jugglebot-chart-collapsed';
+// Retired: the handle's "Charts" label used to collapse the panel and persist 'true' here, which could leave
+// the panel stuck at height 0.  The flag is ignored and removed at startup.
+const CHART_COLLAPSED_STORAGE_KEY_RETIRED = 'jugglebot-chart-collapsed';
+
+function chartsBothShown(panel) {
+    return panel.classList.contains('imu-shown') && !panel.classList.contains('charts-hidden');
+}
 
 function initChartResizeHandle() {
     const handle = document.getElementById('chart-resize-handle');
     const panel = document.getElementById('chart-panel');
     const app = document.getElementById('app');
-    const chevron = document.getElementById('chart-toggle-chevron');
     if (!handle || !panel || !app) return;
 
-    // Restore saved state
-    const savedCollapsed = localStorage.getItem(CHART_COLLAPSED_STORAGE_KEY);
-    if (savedCollapsed === 'true') {
-        panel.classList.add('collapsed');
-        if (chevron) chevron.classList.add('collapsed');
-    } else {
-        const savedHeight = localStorage.getItem(CHART_HEIGHT_STORAGE_KEY);
-        if (savedHeight) {
-            const h = parseInt(savedHeight, 10);
-            if (h >= CHART_HEIGHT_MIN) {
-                app.style.setProperty('--chart-panel-height', h + 'px');
-            }
-        }
+    try { localStorage.removeItem(CHART_COLLAPSED_STORAGE_KEY_RETIRED); } catch { /* storage blocked */ }
+
+    let dragging = false;   // drag-to-resize state (declared first: the resize listener below reads it)
+
+    // Stored heights are kept as saved; the APPLIED height is re-clamped to the current window (a height stored on
+    // a tall monitor must not leave the 3D view under its minimum or the panel taller than the window).
+    let storedSingle = NaN, storedBoth = NaN;
+    try {
+        storedSingle = parseInt(localStorage.getItem(CHART_HEIGHT_STORAGE_KEY), 10);
+        storedBoth = parseInt(localStorage.getItem(imuCore.CHART_BOTH_KEY), 10);
+    } catch { /* storage blocked */ }
+
+    function boundsFor(both) {
+        const toolbar = document.getElementById('chart-toolbar');
+        const divider = document.getElementById('imu-chart-divider');
+        const viewer = document.getElementById('viewer-pane');
+        return imuCore.panelHeightBounds({
+            both,
+            toolbarH: toolbar ? toolbar.offsetHeight : 0,
+            dividerH: divider ? divider.offsetHeight : 0,
+            borderH: panel.offsetHeight - panel.clientHeight,
+            viewerTop: viewer ? viewer.getBoundingClientRect().top : 0,
+            handleH: handle.offsetHeight,
+            windowH: window.innerHeight,
+        });
     }
 
-    // Click on label/chevron toggles collapse
-    const labelEl = document.getElementById('chart-toggle-label');
-    [labelEl, chevron].forEach(el => {
-        if (el) el.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const isCollapsed = panel.classList.toggle('collapsed');
-            if (chevron) chevron.classList.toggle('collapsed', isCollapsed);
-            localStorage.setItem(CHART_COLLAPSED_STORAGE_KEY, isCollapsed);
-            // Rebuild charts after un-collapsing (layout needs a frame to settle)
-            if (!isCollapsed) {
-                requestAnimationFrame(() => rebuildCharts());
-            }
-        });
-    });
-
-    // Drag to resize
-    let dragging = false;
+    function applyStoredHeights() {
+        // Not while dragging (the drag owns the variable) and not for the mode that has no stored value.
+        const s = imuCore.appliedStoredHeight(storedSingle, imuCore.CHART_SINGLE_MIN, boundsFor(false));
+        if (Number.isFinite(s)) app.style.setProperty('--chart-panel-height', s + 'px');
+        const b = imuCore.appliedStoredHeight(storedBoth, 2 * imuCore.GROUP_MIN_PX + 60, boundsFor(true));
+        if (Number.isFinite(b)) app.style.setProperty('--chart-panel-both-height', b + 'px');
+        imuChartsRelayout();
+    }
+    applyStoredHeights();
+    window.addEventListener('resize', () => { if (!dragging) applyStoredHeights(); });
 
     handle.addEventListener('pointerdown', (e) => {
-        // Don't start drag on label/chevron click
-        if (e.target === labelEl || e.target === chevron) return;
         dragging = true;
         handle.classList.add('active');
         handle.setPointerCapture(e.pointerId);
@@ -1163,22 +1183,15 @@ function initChartResizeHandle() {
 
     document.addEventListener('pointermove', (e) => {
         if (!dragging) return;
-        const maxHeight = Math.floor(window.innerHeight * CHART_HEIGHT_MAX_PCT);
-        // The handle sets the MOTOR grid's height; the IMU row (+ its divider) is added on top of it
-        // (charts.css), so the cursor-to-bottom distance overstates it by that much while the row is shown.
-        const imuGroup = document.getElementById('imu-chart-group');
-        const imuExtra = panel.classList.contains('imu-shown') && imuGroup
-            ? imuGroup.offsetHeight + (parseInt(getComputedStyle(app).getPropertyValue('--imu-divider-height'), 10) || 0)
-            : 0;
-        let newHeight = window.innerHeight - e.clientY - imuExtra;
-        newHeight = Math.max(CHART_HEIGHT_MIN, Math.min(maxHeight, newHeight));
-        app.style.setProperty('--chart-panel-height', newHeight + 'px');
-        panel.classList.remove('collapsed');
-        if (chevron) chevron.classList.remove('collapsed');
-        // Dragging the handle re-reveals the grid: clear the toolbar's
-        // "hide charts" state too (updates its button label + localStorage +
-        // rebuilds), so drag is a consistent way to bring the grid back.
+        // Dragging the handle re-reveals the grid: clear the toolbar's "hide charts" state first (updates its
+        // button label + localStorage + rebuilds), so the mode below is the one the panel will be in.
         clearChartGridHidden();
+        const both = chartsBothShown(panel);
+        const bounds = boundsFor(both);
+        const h = imuCore.clampPanelHeight(window.innerHeight - e.clientY, bounds);
+        if (!Number.isFinite(h)) return;
+        app.style.setProperty(both ? '--chart-panel-both-height' : '--chart-panel-height', h + 'px');
+        imuChartsRelayout();     // the IMU share follows the new total (clamped; the wanted share is kept)
     });
 
     document.addEventListener('pointerup', () => {
@@ -1187,9 +1200,13 @@ function initChartResizeHandle() {
         handle.classList.remove('active');
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
-        const current = getComputedStyle(app).getPropertyValue('--chart-panel-height').trim();
-        localStorage.setItem(CHART_HEIGHT_STORAGE_KEY, parseInt(current, 10));
-        localStorage.setItem(CHART_COLLAPSED_STORAGE_KEY, 'false');
+        const both = chartsBothShown(panel);
+        const current = getComputedStyle(app).getPropertyValue(both ? '--chart-panel-both-height' : '--chart-panel-height').trim();
+        const px = parseInt(current, 10);
+        if (Number.isFinite(px)) {
+            if (both) storedBoth = px; else storedSingle = px;
+            try { localStorage.setItem(both ? imuCore.CHART_BOTH_KEY : CHART_HEIGHT_STORAGE_KEY, px); } catch { /* storage blocked */ }
+        }
     });
 }
 

@@ -4,6 +4,7 @@
 // Sandbox layout: replay/ui/*.js, this file, package.json {"type":"module"}.
 import { createTrackbar, nextSpeed } from './replay/ui/trackbar.js';
 import * as ov from './replay/ui/overview.js';
+import * as bands from './replay/ui/imu-bands.js';
 
 class El {
     constructor(tag) {
@@ -251,6 +252,44 @@ out.math = {
     markCb(T0 + 30); tb.frame(); m.zoomed_in_range = st();
     emitDoc('keydown', keyEv('Escape')); markCb({}); tb.frame(); m.garbage = st();
     out.hovermark = m;
+}
+
+// ---- IMU capture bands on the bar (imu-bands.js): fetched once per recording, clipped to the zoom view ----
+{
+    const dock4 = new El('div'); dock4.id = 'dock4';
+    const caps = [
+        { stem: 'c1', t_start: T0 + 10, t_end: T0 + 20, label: 'attempt_end' },
+        { stem: 'c2', t_start: T0 + 60, t_end: T0 + 61, label: '' },
+        { stem: 'bad', t_start: 'x', t_end: T0 + 61 },
+    ];
+    const urls = [];
+    const fetch4 = (u) => { urls.push(u); return Promise.resolve({ ok: true, json: () => Promise.resolve({ captures: caps }) }); };
+    const src4 = { id: '2026-11-20_22-53-34', range: () => state.range, status: () => ({ state: 'complete' }), timeline: () => Promise.resolve(timelineObj) };
+    const mode4 = { isActive: () => true, engine: () => eng, source: () => src4, on: () => () => {}, exitReplay: rec('exitReplay') };
+    const tb4 = createTrackbar({ document: doc, mode: mode4, dock: dock4, raf: null, fetch: fetch4 });
+    for (let i = 0; i < 4; i++) { tb4.frame(); await tick(); }
+    const bandEls = () => dock4.find((e) => e.className === 'rp-imu-band');
+    const snap = () => bandEls().map((e) => ({ left: e.style.left, width: e.style.width, title: e.title }));
+    const m = { fetches: urls.length, url: urls[0], full: snap() };
+    state.playhead = T0 + 15;
+    dock4.find((e) => e.id === 'rp-bar')[0].fire('mousedown', { clientX: 150, preventDefault() {} }); tb4.frame();   // a band click is a bar click
+    m.seek_calls = calls.filter((c) => c[0] === 'scrub' || c[0] === 'seek').length;
+    // the failing source: no bands, no throw
+    const dock5 = new El('div'); dock5.id = 'dock5';
+    const tb5 = createTrackbar({ document: doc, mode: mode4, dock: dock5, raf: null, fetch: () => Promise.reject(new Error('down')) });
+    for (let i = 0; i < 3; i++) { tb5.frame(); await tick(); }
+    m.failed_bands = dock5.find((e) => e.className === 'rp-imu-band').length;
+    m.geometry = {
+        clipped: bands.bandGeometry(caps.slice(0, 2), T0 + 15, T0 + 65).map((g) => [g.left.toFixed(2), g.width.toFixed(2)]),
+        outside: bands.bandGeometry(caps.slice(0, 2), T0 + 30, T0 + 50).length,
+        thin: bands.bandGeometry([{ stem: 't', t_start: T0 + 50, t_end: T0 + 50.01 }], T0, T0 + 100)[0].width,
+        zero_span: bands.bandGeometry(caps, 5, 5).length,
+        usable: bands.usableCaptures({ captures: caps }).length,
+        title_expected: 'IMU capture ' + clockOf(T0 + 10) + ' · attempt_end · 10.0 s',
+        no_label: bands.bandTitle(caps[1]),
+    };
+    tb4.dispose(); tb5.dispose();
+    out.imu_bands = m;
 }
 
 // ---- unmount ----

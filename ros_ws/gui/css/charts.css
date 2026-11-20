@@ -496,6 +496,8 @@
    pills keep a readable width instead of collapsing to one narrow column. */
 #chart-toolbar { flex-wrap: wrap; }
 #signal-toggles { flex: 1 1 360px; min-width: 0; }
+/* The IMU filter / spectrum controls widen the right group: wrap it rather than clip Pause / Window. */
+#chart-right-group { flex-wrap: wrap; justify-content: flex-end; row-gap: 4px; flex-shrink: 1; min-width: 0; max-width: 100%; }
 #imu-chart-controls {
     display: flex;
     align-items: center;
@@ -515,6 +517,37 @@
     max-width: 320px;
 }
 
+#imu-filter-select,
+#imu-spec-max-select {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    color: var(--text-secondary);
+    font-size: var(--font-size-xs);
+    font-family: var(--font-mono);
+    padding: 2px 6px;
+    cursor: pointer;
+}
+
+.imu-chart-badge {
+    color: var(--accent-amber, #f59e0b);
+    font-family: var(--font-mono);
+}
+
+.imu-chart-peaks {
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.imu-chart-badge { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.imu-series-toggles { flex-shrink: 0; }
+
+#imu-filter-select[hidden],
+#imu-spec-max-select[hidden],
+#imu-spectrum-btn[hidden],
 #imu-capture-select[hidden],
 #imu-jump-btn[hidden],
 #imu-chart-group[hidden],
@@ -543,9 +576,10 @@
     box-sizing: border-box;
 }
 
-/* The IMU row is added to the panel's height, never taken from the motor grid. */
-#chart-panel.imu-shown:not(.collapsed):not(.charts-hidden) {
-    height: calc(var(--chart-panel-height) + var(--imu-chart-height) + var(--imu-divider-height));
+/* Both groups shown: the panel has its own total height (the top handle sets it); the IMU row takes
+   --imu-chart-height of it and the motor grid (flex: 1) the rest. */
+#chart-panel.imu-shown:not(.charts-hidden) {
+    height: var(--chart-panel-both-height, calc(var(--chart-panel-height) + 200px));
 }
 
 /* Motor grid hidden: the panel shrinks to its content, so the IMU row needs
@@ -555,8 +589,8 @@
     height: var(--imu-chart-height);
 }
 
-/* Drag divider between the IMU row and the motor grid: sets ONLY the IMU row height
-   (imu-charts.js).  Shown only when both groups are. */
+/* Drag divider between the IMU row and the motor grid: splits the panel's fixed height
+   between the IMU row and the motor grid (imu-charts.js).  Shown only when both groups are. */
 #imu-chart-divider {
     display: none;
     flex: 0 0 var(--imu-divider-height);

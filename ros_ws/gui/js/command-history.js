@@ -10,7 +10,7 @@
 
 import {
     subscribeEvents, getRecentEvents, setHighlightedEvent, subscribeChartHover,
-    EVENT_COLORS,
+    EVENT_COLORS, CHART_ONLY_TYPES,
 } from './event-store.js';
 
 /** How many entries to render.  Older events stay in the event-store (for
@@ -44,8 +44,8 @@ function formatTime(t) {
  *  even when several types are hidden. */
 function renderList() {
     if (!listEl) return;
-    // Pull more than VISIBLE_LIMIT when filtering is active so we don't end
-    // up with an empty list just because the most recent 50 are all hidden.
+    // Pull more than VISIBLE_LIMIT only when types are hidden so the list is not empty just because the most
+    // recent 50 are all hidden.  The store's list ring already excludes the chart-only types.
     const pullLimit = hiddenTypes.size > 0 ? 500 : VISIBLE_LIMIT;
     const all = getRecentEvents(null, pullLimit);
     const events = [];
@@ -153,7 +153,10 @@ export function initCommandHistory() {
 
     // Coalesce repaint: if many events fire in one tick we render once.
     let pending = false;
-    subscribeEvents(() => {
+    subscribeEvents((ev) => {
+        // A chart-only event (Throw / Catch, ~2 Hz while juggling) changes nothing in the list: repainting would
+        // destroy the row under the cursor.  The null "cleared" notification must still repaint.
+        if (ev && CHART_ONLY_TYPES.has(ev.type)) return;
         if (pending) return;
         pending = true;
         requestAnimationFrame(() => {

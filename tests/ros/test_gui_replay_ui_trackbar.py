@@ -32,7 +32,7 @@ pytestmark = pytest.mark.skipif(NODE is None, reason="node not installed")
 def out(tmp_path_factory):
     sb = tmp_path_factory.mktemp("uitrackbar")
     (sb / "replay" / "ui").mkdir(parents=True)
-    for name in ("dom.js", "format.js", "rename.js", "overview.js", "deeplink.js", "trackbar.js"):
+    for name in ("dom.js", "format.js", "rename.js", "overview.js", "deeplink.js", "imu-bands.js", "trackbar.js"):
         shutil.copy(UI / name, sb / "replay" / "ui" / name)
     shutil.copy(HARNESS, sb / "replay_ui_trackbar_harness.js")
     (sb / "package.json").write_text('{"type": "module"}\n')
@@ -208,3 +208,17 @@ def test_source_onchange_redraws_a_partial_overview_without_waiting(out):
     o = out["overview_onchange"]
     assert o["bands_before"] == 0 and o["bands_after"] >= 1
     assert o["subscribed"] is True and o["unsubscribed"] == 1
+
+
+def test_imu_capture_bands_on_the_trackbar(out):
+    """Each IMU capture of the recording is a thin band on the bar: one fetch per recording, titled, clipped
+    to the visible range, a failing list leaves no bands, and a click on a band is an ordinary bar click."""
+    m = out["imu_bands"]
+    assert m["fetches"] == 1 and m["url"].startswith("/api/imu/captures?from=") and "&to=" in m["url"]
+    assert [(b["left"], b["width"]) for b in m["full"]] == [("10.00%", "10.00%"), ("60.00%", "1.00%")]
+    assert m["full"][0]["title"] == m["geometry"]["title_expected"]
+    assert m["full"][1]["title"].endswith("· no label · 1.0 s")
+    assert m["seek_calls"] >= 1 and m["failed_bands"] == 0
+    g = m["geometry"]
+    assert g["clipped"] == [["0.00", "10.00"], ["90.00", "2.00"]]   # view 15..65: capture 1 clipped to 15..20
+    assert g["outside"] == 0 and g["thin"] == 0.4 and g["zero_span"] == 0 and g["usable"] == 2

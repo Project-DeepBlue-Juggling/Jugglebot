@@ -139,6 +139,10 @@ body.replay #records-panel { display: none; }  /* IDEA-3: the live ledger, not t
 .rp-zoomtag { margin-left: auto; color: var(--text-muted); font-size: var(--font-size-xs); font-family: var(--font-mono); }
 .rp-bar { position: relative; height: 14px; background: var(--bg-primary); border: 1px solid var(--border-color);
     border-radius: 3px; cursor: pointer; }
+.rp-imu-bands { position: absolute; inset: 0; pointer-events: none; overflow: hidden; border-radius: 2px; }
+/* IMU capture spans (imu-bands.js): a thin purple strip along the bar's bottom edge with a muted outline so it reads on both themes; the title is the hover text. */
+.rp-imu-band { position: absolute; bottom: 1px; height: 5px; background: var(--accent-purple); outline: 1px solid var(--text-muted);
+    outline-offset: 0; border-radius: 1px; pointer-events: auto; }
 .rp-playhead { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--replay-playhead); }
 .rp-hovermark { position: absolute; top: -3px; bottom: -3px; width: 0; margin-left: -1px; border-left: 2px dashed var(--replay-hover-marker); pointer-events: none; }
 .rp-hovermark[hidden] { display: none !important; }

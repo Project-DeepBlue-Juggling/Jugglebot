@@ -365,10 +365,7 @@
         </div>
 
         <!-- Horizontal resize handle for chart panel -->
-        <div id="chart-resize-handle">
-            <span id="chart-toggle-label">Charts</span>
-            <span id="chart-toggle-chevron">&#x25BC;</span>
-        </div>
+        <div id="chart-resize-handle" title="Drag to set the height of the whole chart panel"></div>
 
         <!-- Bottom: telemetry chart panel -->
         <div id="chart-panel">
@@ -381,6 +378,18 @@
                         <button id="imu-charts-toggle-btn" class="signal-toggle" type="button" title="Show/hide the Platform IMU charts (linear acceleration and angular rate of the selected capture, on the same time axis as the motor charts)">IMU charts</button>
                         <select id="imu-capture-select" hidden title="IMU capture to plot (captures of this launch, or of the recording being replayed)"></select>
                         <button id="imu-jump-btn" class="signal-toggle" type="button" hidden title="Move the charts to the selected IMU capture">Jump to capture</button>
+                        <select id="imu-filter-select" hidden title="Low-pass filter for both IMU charts: zero-phase 2nd-order Butterworth (4th-order magnitude, no time shift) at the capture's sample rate. Callouts show the filtered value. The CSV export stays raw.">
+                            <option value="0">Filter: off</option>
+                            <option value="100">Low-pass 100 Hz</option>
+                            <option value="50">Low-pass 50 Hz</option>
+                            <option value="15">Low-pass 15 Hz</option>
+                        </select>
+                        <button id="imu-spectrum-btn" class="signal-toggle" type="button" hidden title="Switch both IMU charts to amplitude spectra of the raw samples inside the visible time range (zoom to a stretch first)">Spectrum</button>
+                        <select id="imu-spec-max-select" hidden title="Highest frequency shown on the spectrum charts">
+                            <option value="10">0 to 10 Hz</option>
+                            <option value="50">0 to 50 Hz</option>
+                            <option value="0">0 to Nyquist</option>
+                        </select>
                     </div>
                     <span class="chart-toolbar-divider"></span>
                     <span id="chart-delta-readout" title="Click two points while paused to measure &#916;t"></span>
@@ -401,7 +410,9 @@
                 <div class="imu-chart-cell" id="imu-chart-accel">
                     <div class="imu-chart-head">
                         <span class="imu-chart-title" id="imu-accel-title">Linear acceleration (g)</span>
+                        <span class="imu-chart-badge" id="imu-accel-badge"></span>
                         <span class="imu-chart-frame">IMU x/y/z (sensor frame)</span>
+                        <span class="imu-chart-peaks" id="imu-accel-peaks"></span>
                         <span class="imu-series-toggles" id="imu-accel-toggles"></span>
                     </div>
                     <div class="imu-chart-plot" id="imu-accel-plot"></div>
@@ -409,7 +420,9 @@
                 <div class="imu-chart-cell" id="imu-chart-gyro">
                     <div class="imu-chart-head">
                         <span class="imu-chart-title" id="imu-gyro-title">Angular rate (deg/s)</span>
+                        <span class="imu-chart-badge" id="imu-gyro-badge"></span>
                         <span class="imu-chart-frame">IMU x/y/z (sensor frame)</span>
+                        <span class="imu-chart-peaks" id="imu-gyro-peaks"></span>
                         <span class="imu-series-toggles" id="imu-gyro-toggles"></span>
                         <button id="imu-gyro-mode-btn" class="signal-toggle" type="button">Angular accel.</button>
                     </div>
@@ -417,8 +430,8 @@
                 </div>
                 <div id="imu-chart-message" class="imu-chart-message" hidden></div>
             </div>
-            <!-- IMU/motor divider (imu-charts.js): drag sets the IMU row height only -->
-            <div id="imu-chart-divider" title="Drag to set the IMU charts' height (the ODrive charts keep theirs); double-click resets to 200 px"></div>
+            <!-- IMU/motor divider (imu-charts.js): drag only splits the panel's fixed height between the two groups -->
+            <div id="imu-chart-divider" title="Drag to move the boundary between the IMU and ODrive charts (the panel keeps its height); double-click splits it evenly"></div>
             <!-- Chart grid (motor-numeric DOM order; filled column-major by CSS) -->
             <div id="chart-grid">
                 <div class="chart-cell" id="chart-0"></div>

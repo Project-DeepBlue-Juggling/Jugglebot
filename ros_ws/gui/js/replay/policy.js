@@ -68,7 +68,7 @@ export const TOPIC_POLICY = Object.freeze({
     '/skills/attempt':        { cls: V, throttleMs: 0 },
     '/cone/timing_result':    { cls: V, throttleMs: 0 },
     '/cone/catch_event':      { cls: V, throttleMs: 0 },
-    '/balls':                 { cls: C, throttleMs: 20 },
+    '/balls':                 { cls: E, throttleMs: 20 },   // Throw / Catch chart markers (main.js onBalls -> ball-events.js); the trails still read its chunk columns
 });
 
 /** @returns {string|null} the topic's class, null for an unknown topic. */

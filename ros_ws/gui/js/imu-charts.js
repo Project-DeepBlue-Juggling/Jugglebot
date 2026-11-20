@@ -22,9 +22,11 @@ import * as clock from './clock.js';
 import { TIME_INCRS, timeTickSpace, numTickSpace, timeTickLabels } from './axis-ticks.js';
 import { layoutCallouts } from './callout-layout.js';
 import {
-    SYNC_KEY, nanGaps, onSharedXRange, getSharedXRange, getSharedViewState,
+    SYNC_KEY, nanGaps, setCsvExtraProvider, onSharedXRange, getSharedXRange, getSharedViewState,
     showRangeOnAllCharts, selectRangeOnAllCharts, seekReplayTo, attachZoomPanControls, drawReplayPlayhead,
+    drawEventMarkers, attachEventMarkerHover, releaseEventMarkerHover, onEventMarkerVisibility,
 } from './telemetry-charts.js';
+import { subscribeEvents, subscribeHighlight } from './event-store.js';
 import * as core from './imu-charts-core.js';
 
 const API = '/api/imu/captures';
@@ -37,7 +39,12 @@ const DATA_CACHE_MAX = 4;
 let shown = false;
 let enabled = new Set(core.DEFAULT_SERIES);
 let gyroAccel = false;                       // right chart shows angular acceleration
-let wantedImuHeight = core.IMU_HEIGHT_DEFAULT; // the operator's choice; the applied one may be capped
+let filterCutoff = 0;                        // low-pass Hz for both time charts, 0 = off
+let spectrum = false;                        // both charts show amplitude spectra of the visible range
+let specMax = core.SPEC_MAX_DEFAULT;         // spectrum x max in Hz, 0 = Nyquist
+let specState = null;                        // {error} | {res, kind data...} of the last spectrum computation
+let specTimer = null;
+let wantedImuHeight = core.IMU_HEIGHT_DEFAULT; // the operator's IMU share (px); the applied one is clamped to the panel
 let mode = 'live';                           // 'live' | 'replay'
 let replayRange = null;                      // {t0, t1} while replaying
 let xRange = { min: 0, max: 1 };
@@ -69,6 +76,9 @@ function loadSettings() {
         if (Array.isArray(s)) enabled = new Set(s.filter((k) => core.DEFAULT_SERIES.includes(k)));
     } catch { /* keep default */ }
     try { gyroAccel = localStorage.getItem(core.IMU_GYRO_MODE_KEY) === 'accel'; } catch { /* keep */ }
+    try { filterCutoff = core.parseCutoff(localStorage.getItem(core.IMU_FILTER_KEY)); } catch { /* keep */ }
+    try { spectrum = localStorage.getItem(core.IMU_SPECTRUM_KEY) === 'true'; } catch { /* keep */ }
+    try { specMax = core.parseSpecMax(localStorage.getItem(core.IMU_SPEC_MAX_KEY) || core.SPEC_MAX_DEFAULT); } catch { /* keep */ }
 }
 
 function save(key, value) {
@@ -80,7 +90,8 @@ function save(key, value) {
 export function initImuCharts() {
     for (const id of ['imu-charts-toggle-btn', 'imu-capture-select', 'imu-jump-btn', 'imu-chart-group',
         'imu-accel-plot', 'imu-gyro-plot', 'imu-accel-toggles', 'imu-gyro-toggles', 'imu-gyro-mode-btn',
-        'imu-gyro-title', 'imu-chart-message']) {
+        'imu-gyro-title', 'imu-chart-message', 'imu-filter-select', 'imu-spectrum-btn', 'imu-spec-max-select',
+        'imu-accel-title', 'imu-accel-badge', 'imu-gyro-badge', 'imu-accel-peaks', 'imu-gyro-peaks']) {
         els[id] = document.getElementById(id);
     }
     if (!els['imu-chart-group'] || !els['imu-charts-toggle-btn']) return;
@@ -107,6 +118,34 @@ export function initImuCharts() {
         });
     }
     applyGyroModeUI();
+    const fsel = els['imu-filter-select'];
+    if (fsel) {
+        fsel.value = String(filterCutoff);
+        fsel.addEventListener('change', () => {
+            filterCutoff = core.parseCutoff(fsel.value);
+            fsel.blur();
+            save(core.IMU_FILTER_KEY, String(filterCutoff));
+            applyHeadings();
+            scheduleRedraw();
+        });
+    }
+    const sbtn = els['imu-spectrum-btn'];
+    if (sbtn) sbtn.addEventListener('click', () => setSpectrum(!spectrum));
+    const msel = els['imu-spec-max-select'];
+    if (msel) {
+        msel.value = String(specMax);
+        msel.addEventListener('change', () => {
+            specMax = core.parseSpecMax(msel.value);
+            msel.blur();
+            save(core.IMU_SPEC_MAX_KEY, String(specMax));
+            scheduleRedraw();
+        });
+    }
+    // The event markers on the time charts follow the event store and the toolbar's hide toggle.
+    const repaintMarkers = () => { if (!spectrum) for (const k of ['accel', 'gyro']) if (charts[k]) charts[k].redraw(false, false); };
+    subscribeEvents(repaintMarkers);
+    subscribeHighlight(repaintMarkers);
+    onEventMarkerVisibility(repaintMarkers);
 
     for (const kind of ['accel', 'gyro']) {
         const el = els['imu-' + kind + '-plot'];
@@ -126,6 +165,7 @@ export function initImuCharts() {
         }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     }
     initHeightDivider();
+    setCsvExtraProvider(csvExtra);
     setShown(shown, true);
 }
 
@@ -141,6 +181,7 @@ function setShown(on, initial = false) {
     btn.classList.toggle('active', on);
     btn.textContent = on ? 'Hide IMU charts' : 'IMU charts';
     els['imu-capture-select'].hidden = !on;
+    applyControlsUI();
     if (on) {
         xRange = getSharedXRange();
         requestAnimationFrame(() => { rebuildChart('accel'); rebuildChart('gyro'); });
@@ -154,9 +195,37 @@ function setShown(on, initial = false) {
     }
 }
 
-// ---- IMU row height: the divider above the motor grid (changes ONLY this row) ----
+// ---- CSV export (telemetry-charts.js "Export CSV"): the shown capture's raw samples as extra columns ----
+
+/** null when the group is hidden or no capture is loaded (then the export is exactly the ODrive one). */
+function csvExtra() {
+    if (!shown || !capData || !capData.cols) return null;
+    const c = capData.cols;
+    const f = (v) => v.toFixed(6);
+    return {
+        header: core.IMU_CSV_HEADER,
+        merge: (ts, n) => core.mergeCsvRows(ts, n, c),
+        values: (j) => [f(c.ax[j]), f(c.ay[j]), f(c.az[j]), f(c.gx[j]), f(c.gy[j]), f(c.gz[j])],
+    };
+}
+
+// ---- IMU/ODrive split: the divider between the two groups (the panel's total height is the top handle's) ----
 
 function appEl() { return document.getElementById('app'); }
+
+function bothShown() {
+    const panel = document.getElementById('chart-panel');
+    return !!(shown && panel && !panel.classList.contains('charts-hidden'));
+}
+
+/** px the two groups share: the panel's inner height minus the toolbar and the divider. */
+function availSpace() {
+    const panel = document.getElementById('chart-panel');
+    const toolbar = document.getElementById('chart-toolbar');
+    const divider = document.getElementById('imu-chart-divider');
+    if (!panel || !panel.clientHeight) return NaN;
+    return panel.clientHeight - (toolbar ? toolbar.offsetHeight : 0) - (divider ? divider.offsetHeight : 0);
+}
 
 function currentImuHeight() {
     const g = els['imu-chart-group'];
@@ -164,15 +233,17 @@ function currentImuHeight() {
     return h > 0 ? h : core.IMU_HEIGHT_DEFAULT;
 }
 
-/** Set --imu-chart-height from the wanted height, shrunk if the 3D view would fall under its minimum. */
+/** Set --imu-chart-height: the wanted share, clamped so both groups keep their minimum (wanted is never overwritten). */
 function applyImuHeight() {
     const app = appEl();
-    if (!app) return;
-    let eff = core.clampImuHeight(wantedImuHeight);
-    const viewer = document.getElementById('viewer-pane');
-    if (shown && viewer) eff = core.effectiveImuHeight(wantedImuHeight, currentImuHeight(), viewer.clientHeight);
+    if (!app) return null;
+    const eff = bothShown() ? core.clampImuShare(wantedImuHeight, availSpace()) : core.clampImuHeight(wantedImuHeight);
     app.style.setProperty('--imu-chart-height', eff + 'px');
+    return eff;
 }
+
+/** main.js calls this when the top handle changed the panel's total height. */
+export function imuChartsRelayout() { applyImuHeight(); }
 
 function initHeightDivider() {
     const divider = document.getElementById('imu-chart-divider');
@@ -181,8 +252,9 @@ function initHeightDivider() {
     wantedImuHeight = core.clampImuHeight(saved);
     applyImuHeight();
     window.addEventListener('resize', applyImuHeight);
-    const viewer = document.getElementById('viewer-pane');
-    if (viewer && typeof ResizeObserver !== 'undefined') new ResizeObserver(applyImuHeight).observe(viewer);
+    // The panel's size changes with the top handle, the window, and the grid / group toggles: re-clamp the share.
+    const panel = document.getElementById('chart-panel');
+    if (panel && typeof ResizeObserver !== 'undefined') new ResizeObserver(applyImuHeight).observe(panel);
     if (!divider) return;
     let startY = 0, startH = 0, dragging = false;
     divider.addEventListener('pointerdown', (e) => {
@@ -195,11 +267,12 @@ function initHeightDivider() {
         document.body.style.userSelect = 'none';
         e.preventDefault();
     });
-    // The panel is bottom-anchored: the divider stays put, the row's top edge moves.  Up = taller.
+    // The panel's top edge and total height are fixed: the divider follows the cursor, down = taller IMU row.
     document.addEventListener('pointermove', (e) => {
         if (!dragging) return;
-        wantedImuHeight = core.clampImuHeight(startH + (startY - e.clientY));
-        applyImuHeight();
+        wantedImuHeight = core.clampImuHeight(startH + (e.clientY - startY));
+        const eff = applyImuHeight();
+        if (eff !== null && bothShown()) wantedImuHeight = eff;   // the divider cannot go past a limit and "wind up"
     });
     document.addEventListener('pointerup', () => {
         if (!dragging) return;
@@ -210,7 +283,7 @@ function initHeightDivider() {
         save(core.IMU_HEIGHT_KEY, wantedImuHeight);
     });
     divider.addEventListener('dblclick', () => {
-        wantedImuHeight = core.IMU_HEIGHT_DEFAULT;
+        wantedImuHeight = core.evenSplit(availSpace());
         applyImuHeight();
         save(core.IMU_HEIGHT_KEY, wantedImuHeight);
     });
@@ -470,6 +543,8 @@ function renderMessage() {
         text = 'IMU capture file unreadable: ' + capData.error;
     } else if (capData && capData.loading) {
         text = 'Loading capture…';
+    } else if (spectrum && specState && specState.error) {
+        text = specState.error;
     }
     m.textContent = text;
     m.hidden = !text;
@@ -511,7 +586,7 @@ function chartUnit(kind) {
 }
 
 function destroyChart(kind) {
-    if (charts[kind]) charts[kind].destroy();
+    if (charts[kind]) { releaseEventMarkerHover(charts[kind]); charts[kind].destroy(); }
     charts[kind] = null;
     callouts[kind] = null;
     const el = els['imu-' + kind + '-plot'];
@@ -525,6 +600,7 @@ function rebuildChart(kind) {
     if (!el) return;
     const w = el.clientWidth, h = el.clientHeight;
     if (w < 10 || h < 10) return;               // collapsed panel: the ResizeObserver builds it later
+    if (spectrum) { buildSpectrumChart(kind, el, w, h); return; }
     const defs = seriesFor(kind);
     const U = chartUnit(kind);
     const axisStroke = cssVar('--chart-axis-stroke', '#94a3b8');
@@ -573,7 +649,7 @@ function rebuildChart(kind) {
                 selectRangeOnAllCharts(min, max);
             }],
             setCursor: [(u) => updateCallouts(u, rec, kind)],
-            draw: [drawReplayPlayhead],           // REPLAY playhead, same line as the motor charts
+            draw: [drawEventMarkers, drawReplayPlayhead],   // event markers and the REPLAY playhead, as on the motor charts
         },
         legend: { show: false },
         padding: [8, 8, 0, 0],
@@ -581,9 +657,11 @@ function rebuildChart(kind) {
     const u = new uPlot(opts, emptyData(defs.length), el);
     u.setScale('x', { min: xRange.min, max: xRange.max });
     attachZoomPanControls(u);
+    attachEventMarkerHover(u);
     u.over.appendChild(rec.overlay);
     charts[kind] = u;
     callouts[kind] = rec;
+    applyHeadings();
     scheduleRedraw();
 }
 
@@ -591,19 +669,33 @@ function emptyData(n) {
     return [new Float64Array(0), ...Array.from({ length: n }, () => new Float64Array(0))];
 }
 
-function columnsFor(kind) {
+/** The columns the time charts show: raw, or low-passed at the selected cutoff (computed once per
+ *  (capture, cutoff) and kept on capData; capData.cols itself stays raw for the CSV export). */
+function shownCols() {
     if (!capData || !capData.cols) return null;
-    const c = capData.cols;
+    if (!(filterCutoff > 0)) return capData.cols;
+    if (!capData.filt) capData.filt = new Map();
+    let f = capData.filt.get(filterCutoff);
+    if (!f) { f = { cols: core.lowpassColumns(capData.cols, filterCutoff), ang: null }; capData.filt.set(filterCutoff, f); }
+    return f.cols;
+}
+
+function columnsFor(kind) {
+    const c = shownCols();
+    if (!c) return null;
     if (kind === 'accel') return [c.ax, c.ay, c.az, c.amag];
     if (!gyroAccel) return [c.gx, c.gy, c.gz];
-    if (!capData.ang) {
-        capData.ang = [core.angularAcceleration(c.t, c.gx), core.angularAcceleration(c.t, c.gy),
+    // The derivative is taken from the rate the chart would show, i.e. the filtered one when a filter is on.
+    const holder = filterCutoff > 0 ? capData.filt.get(filterCutoff) : capData;
+    if (!holder.ang) {
+        holder.ang = [core.angularAcceleration(c.t, c.gx), core.angularAcceleration(c.t, c.gy),
             core.angularAcceleration(c.t, c.gz)];
     }
-    return capData.ang;
+    return holder.ang;
 }
 
 function scheduleRedraw() {
+    if (spectrum) { scheduleSpectrum(); return; }
     if (redrawPending) return;
     redrawPending = true;
     requestAnimationFrame(() => {
@@ -616,6 +708,7 @@ function scheduleRedraw() {
 function redrawChart(kind) {
     const u = charts[kind];
     if (!u) return;
+    if (spectrum) { scheduleSpectrum(); return; }
     const cols = columnsFor(kind);
     const n = seriesFor(kind).length;
     let data;
@@ -665,8 +758,266 @@ function applyGyroModeUI() {
             ? 'Showing angular acceleration: the gyro after a ' + core.ANG_ACCEL_SMOOTH_MS + ' ms boxcar, central difference. Click for angular rate.'
             : 'Show angular acceleration (deg/s^2) instead: the gyro after a ' + core.ANG_ACCEL_SMOOTH_MS + ' ms boxcar, central difference.';
     }
-    const t = els['imu-gyro-title'];
-    if (t) t.textContent = gyroAccel ? core.ANG_ACCEL_TITLE : core.GYRO_TITLE;
+    applyHeadings();
+}
+
+/** Chart titles, the filter badge and the spectrum peak readout (time charts: title + "low-pass N Hz"). */
+function applyHeadings() {
+    const set = (id, text) => { const e = els[id]; if (e) e.textContent = text; };
+    if (!spectrum) {
+        set('imu-accel-title', core.ACCEL_TITLE);
+        set('imu-gyro-title', gyroAccel ? core.ANG_ACCEL_TITLE : core.GYRO_TITLE);
+        set('imu-accel-badge', core.filterBadge(filterCutoff));
+        set('imu-gyro-badge', core.filterBadge(filterCutoff));
+        set('imu-accel-peaks', '');
+        set('imu-gyro-peaks', '');
+        return;
+    }
+    set('imu-accel-title', 'Acceleration spectrum (' + SPEC_UNITS.accel + ')');
+    set('imu-gyro-title', 'Angular rate spectrum (' + SPEC_UNITS.gyro + ')');
+    const note = 'raw samples' + (filterCutoff > 0 ? ', no filter' : '');
+    set('imu-accel-badge', note);
+    set('imu-gyro-badge', note);
+    const detail = specState && !specState.error
+        ? 'Welch over ' + specState.windowSec.toFixed(1) + ' s in view: ' + specState.seg + '-point Hann segments, 50 % overlap, ' + specState.nSeg + ' averaged'
+        : 'Welch spectrum of the raw samples in the visible time range';
+    for (const id of ['imu-accel-badge', 'imu-gyro-badge']) if (els[id]) els[id].title = detail;
+    for (const kind of ['accel', 'gyro']) {
+        const k = specState && !specState.error ? specState.kinds[kind] : null;
+        const parts = [];
+        if (k) k.peaks.forEach((p, j) => { if (p) parts.push(seriesFor(kind)[j].label + ' ' + p.f.toFixed(2) + ' Hz'); });
+        set('imu-' + kind + '-peaks', parts.length ? 'peaks ' + parts.join(' · ') : '');
+    }
+}
+
+// ---- Controls visibility ----
+
+function applyControlsUI() {
+    const hide = (id, h) => { const e = els[id]; if (e) e.hidden = h; };
+    hide('imu-filter-select', !shown);
+    hide('imu-spectrum-btn', !shown);
+    hide('imu-spec-max-select', !shown || !spectrum);
+    hide('imu-gyro-mode-btn', spectrum);
+    const f = els['imu-filter-select'];
+    if (f) f.disabled = spectrum;
+    const b = els['imu-spectrum-btn'];
+    if (b) b.classList.toggle('active', spectrum);
+}
+
+// ---- Spectrum mode: amplitude spectra of the raw samples inside the visible x range ----
+
+const SPEC_UNITS = { accel: 'g/√Hz', gyro: '(deg/s)/√Hz' };
+
+function setSpectrum(on) {
+    spectrum = on;
+    save(core.IMU_SPECTRUM_KEY, on ? 'true' : 'false');
+    applyControlsUI();
+    specState = null;
+    if (specTimer !== null) { clearTimeout(specTimer); specTimer = null; }
+    applyHeadings();
+    rebuildChart('accel');
+    rebuildChart('gyro');
+    // Spectrum on: rebuildChart re-arms the debounce timer, which would run a second, identical Welch pass 150 ms
+    // after this direct one; drop it.
+    if (on) { if (specTimer !== null) { clearTimeout(specTimer); specTimer = null; } computeSpectrum(); }
+    else { renderMessage(); scheduleRedraw(); }
+}
+
+/** Debounced recompute: a range / capture / series change burst costs one Welch pass, never one per frame.
+ *  Trailing debounce with a max wait: while the shared x range moves every frame (live follow) the timer is
+ *  re-armed forever, so a pass is forced once SPEC_MAX_WAIT_MS has passed since the first un-served request. */
+const SPEC_MAX_WAIT_MS = 500;
+let specFirstReq = 0;
+function scheduleSpectrum() {
+    const now = Date.now();   // wall-clock: UI debounce timing, not data time
+    if (specTimer === null) specFirstReq = now;
+    else clearTimeout(specTimer);
+    const wait = Math.max(0, Math.min(core.SPEC_DEBOUNCE_MS, specFirstReq + SPEC_MAX_WAIT_MS - now));
+    specTimer = setTimeout(() => { specTimer = null; computeSpectrum(); }, wait);
+}
+
+function computeSpectrum() {
+    if (!spectrum || !shown) return;
+    if (!capData || !capData.cols) { specState = null; renderSpectrum(); return; }
+    const c = capData.cols;
+    const kinds = {};
+    let err = null, fs = NaN, seg = 0, nSeg = 0;
+    for (const kind of ['accel', 'gyro']) {
+        const defs = seriesFor(kind);
+        const idx = defs.map((d, j) => j).filter((j) => enabled.has(defs[j].key));
+        const entry = { freqs: null, series: defs.map(() => null), peaks: defs.map(() => null) };
+        kinds[kind] = entry;
+        if (!idx.length) continue;
+        const r = core.welchSpectra(c.t, idx.map((j) => c[defs[j].col]), xRange.min, xRange.max);
+        if (r.error) { err = r.error; break; }
+        fs = r.fs; seg = Math.max(seg, r.seg); nSeg = Math.max(nSeg, ...r.nSeg);
+        entry.freqs = r.freqs;
+        const xMax = core.specXMax(specMax, r.fs);
+        idx.forEach((j, q) => {
+            entry.series[j] = r.asd[q];
+            entry.peaks[j] = r.asd[q] ? core.spectrumPeak(r.freqs, r.asd[q], core.SPEC_PEAK_MIN_HZ, xMax) : null;
+        });
+    }
+    specState = err ? { error: err } : {
+        kinds, fs, seg, nSeg, xMax: core.specXMax(specMax, Number.isFinite(fs) ? fs : 1000),
+        windowSec: Math.max(0, xRange.max - xRange.min),
+    };
+    renderSpectrum();
+    renderMessage();
+}
+
+function renderSpectrum() {
+    applyHeadings();
+    for (const kind of ['accel', 'gyro']) {
+        const u = charts[kind];
+        if (!u) continue;
+        const defs = seriesFor(kind);
+        defs.forEach((d, j) => { u.series[j + 1].show = enabled.has(d.key); });
+        const k = specState && !specState.error ? specState.kinds[kind] : null;
+        if (!k || !k.freqs) {
+            u.setData(emptyData(defs.length), false);
+            u.setScale('x', { min: 0, max: specState && specState.xMax ? specState.xMax : 50 });
+            u.setScale('asd', { min: 1e-4, max: 1 });
+            continue;
+        }
+        const xMax = specState.xMax;
+        let kmax = 1;
+        while (kmax + 1 < k.freqs.length && k.freqs[kmax + 1] <= xMax) kmax++;
+        const data = [k.freqs.slice(1, kmax + 1), ...k.series.map((a) => (a ? a.slice(1, kmax + 1) : new Float64Array(kmax).fill(NaN)))];
+        let lo = Infinity, hi = 0;
+        k.series.forEach((a, j) => {
+            if (!a || !enabled.has(defs[j].key)) return;
+            for (let i = 1; i <= kmax; i++) { const v = a[i]; if (v > 0) { if (v < lo) lo = v; if (v > hi) hi = v; } }
+        });
+        let yMin = 1e-4, yMax = 1;
+        if (hi > 0 && Number.isFinite(lo)) {
+            yMax = Math.pow(10, Math.ceil(Math.log10(hi)));
+            yMin = Math.max(Math.pow(10, Math.floor(Math.log10(lo))), yMax * 1e-6);
+            if (yMin * 10 > yMax) yMin = yMax / 100;
+        }
+        u.setData(data, false);
+        u.setScale('x', { min: 0, max: xMax });
+        u.setScale('asd', { min: yMin, max: yMax });
+    }
+}
+
+function buildSpectrumChart(kind, el, w, h) {
+    const defs = seriesFor(kind);
+    const unit = SPEC_UNITS[kind];
+    const axisStroke = cssVar('--chart-axis-stroke', '#94a3b8');
+    const gridStroke = cssVar('--chart-grid-stroke', 'rgba(51,65,85,0.5)');
+    const gridStrokeMinor = cssVar('--chart-grid-stroke-minor', 'rgba(51,65,85,0.3)');
+    const ticksStroke = cssVar('--chart-ticks-stroke', '#334155');
+    const textStroke = cssVar('--text-secondary', '#cbd5e1');
+    const rec = createCallouts(defs, { scale: 'asd', unit, decimals: 3, padFloor: 0 });
+    const opts = {
+        width: w, height: h,
+        series: [{}, ...defs.map((d) => ({
+            label: d.label, scale: 'asd', stroke: d.color, width: 1.25 * window.devicePixelRatio,
+            points: { show: false }, gaps: nanGaps, show: enabled.has(d.key),
+        }))],
+        scales: {
+            x: { time: false, auto: false },
+            asd: { distr: 3, log: 10, auto: false },
+        },
+        axes: [
+            {
+                stroke: axisStroke, grid: { stroke: gridStroke, width: 1 },
+                ticks: { stroke: ticksStroke, width: 1, size: 6 },
+                font: '11px JetBrains Mono, monospace', size: 28, label: 'Hz', labelSize: 14,
+                labelFont: '11px JetBrains Mono, monospace', space: numTickSpace(60),
+            },
+            {
+                scale: 'asd', side: 3, label: unit, labelSize: 16, size: 64,
+                stroke: textStroke, grid: { stroke: gridStrokeMinor, width: 1 },
+                ticks: { stroke: textStroke, width: 1 },
+                values: (u, splits) => splits.map((v) => (v == null ? "" : v >= 1e-2 ? String(+v.toPrecision(3)) : v.toExponential(0))),
+                font: '12px JetBrains Mono, monospace', labelFont: '12px JetBrains Mono, monospace',
+            },
+        ],
+        // No sync key and no zoom / pan / select: a spectrum is not a time chart, so it neither follows nor
+        // moves the shared cursor and range.
+        cursor: { show: true, points: { show: false }, drag: { x: false, y: false, setScale: false } },
+        hooks: {
+            setCursor: [(u) => updateSpecCallouts(u, rec, kind)],
+            draw: [(u) => drawSpecPeaks(u, kind)],
+        },
+        legend: { show: false },
+        padding: [8, 8, 0, 0],
+    };
+    const u = new uPlot(opts, emptyData(defs.length), el);
+    u.setScale('x', { min: 0, max: 50 });
+    u.setScale('asd', { min: 1e-4, max: 1 });
+    u.over.appendChild(rec.overlay);
+    charts[kind] = u;
+    callouts[kind] = rec;
+    applyHeadings();
+    scheduleSpectrum();
+}
+
+function updateSpecCallouts(u, rec, kind) {
+    const { overlay, pills } = rec;
+    const k = specState && !specState.error ? specState.kinds[kind] : null;
+    const left = u.cursor.left;
+    if (!k || !k.freqs || left == null || left < 0) { overlay.style.opacity = '0'; return; }
+    const f = u.posToVal(left, 'x');
+    const df = k.freqs[1] - k.freqs[0];
+    const bin = Math.round(f / df);
+    if (bin < 1 || bin >= k.freqs.length) { overlay.style.opacity = '0'; return; }
+    overlay.style.opacity = '1';
+    const xPx = u.valToPos(k.freqs[bin], 'x');
+    const plotW = u.bbox ? u.bbox.width / devicePixelRatio : u.over.clientWidth;
+    const flipLeft = xPx > plotW * 0.75;
+    const shownPills = [];
+    for (let j = 0; j < pills.length; j++) {
+        const { el, text, def } = pills[j];
+        const a = k.series[j];
+        const v = a ? a[bin] : NaN;
+        const yPx = v > 0 ? u.valToPos(v, 'asd') : NaN;
+        if (!enabled.has(def.key) || !Number.isFinite(yPx)) { el.style.display = 'none'; continue; }
+        el.style.display = '';
+        el.style.left = xPx + 'px';
+        el.classList.toggle('flip-left', flipLeft);
+        text.textContent = def.label + ' ' + k.freqs[bin].toFixed(2) + ' Hz  ' + v.toPrecision(3) + ' ' + SPEC_UNITS[kind];
+        shownPills.push({ el, yPx });
+    }
+    const pillH = (shownPills.length && shownPills[0].el.offsetHeight) || 16;
+    const plotH = u.bbox ? u.bbox.height / devicePixelRatio : u.over.clientHeight;
+    const ys = layoutCallouts(shownPills.map((p) => p.yPx), pillH, plotH);
+    for (let q = 0; q < shownPills.length; q++) shownPills[q].el.style.top = ys[q] + 'px';
+}
+
+/** Dot and "f Hz" label on each enabled series' largest peak (1 Hz .. x max); labels de-overlapped vertically. */
+function drawSpecPeaks(u, kind) {
+    const ctx = u.ctx;
+    const k = specState && !specState.error ? specState.kinds[kind] : null;
+    if (!ctx || !u.bbox || !k) return;
+    const defs = seriesFor(kind);
+    const dpr = window.devicePixelRatio || 1;
+    const { left, top, width, height } = u.bbox;
+    const items = [];
+    defs.forEach((d, j) => {
+        const p = k.peaks[j];
+        if (!p || !enabled.has(d.key)) return;
+        items.push({ d, p, x: u.valToPos(p.f, 'x', true), y: u.valToPos(p.v, 'asd', true) });
+    });
+    if (!items.length) return;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(left, top, width, height); ctx.clip();
+    const lh = 13 * dpr;
+    const ys = layoutCallouts(items.map((it) => it.y - 10 * dpr), lh, top + height);
+    ctx.font = (11 * dpr) + 'px JetBrains Mono, monospace';
+    ctx.textBaseline = 'middle';
+    items.forEach((it, q) => {
+        ctx.fillStyle = it.d.color;
+        ctx.beginPath(); ctx.arc(it.x, it.y, 3 * dpr, 0, 2 * Math.PI); ctx.fill();
+        const label = it.d.label + ' ' + it.p.f.toFixed(2) + ' Hz';
+        const wText = ctx.measureText(label).width;
+        const flip = it.x + 8 * dpr + wText > left + width;
+        ctx.textAlign = flip ? 'right' : 'left';
+        ctx.fillText(label, it.x + (flip ? -8 : 8) * dpr, Math.max(top + lh / 2, ys[q]));
+    });
+    ctx.restore();
 }
 
 // ---- Callouts (own lookup: nearest FULL-resolution sample by binary search on time) ----

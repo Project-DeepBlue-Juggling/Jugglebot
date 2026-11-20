@@ -12,6 +12,9 @@
 export const IMU_SHOWN_KEY = 'jugglebot-imu-charts-shown';
 export const IMU_SERIES_KEY = 'jugglebot-imu-charts-series';
 export const IMU_GYRO_MODE_KEY = 'jugglebot-imu-charts-gyro-mode';
+export const IMU_FILTER_KEY = 'jugglebot-imu-charts-filter';
+export const IMU_SPECTRUM_KEY = 'jugglebot-imu-charts-spectrum';
+export const IMU_SPEC_MAX_KEY = 'jugglebot-imu-charts-spectrum-max';
 
 /** Boxcar width (ms) applied to the gyro before the central difference that gives angular acceleration. */
 export const ANG_ACCEL_SMOOTH_MS = 10;
@@ -446,31 +449,117 @@ export function autoJumpDecision(view, lastApplied) {
 }
 
 /** Whether the selected capture's span overlaps the visible range (the jump button is offered when not). */
-// ---- IMU row height (the divider between the IMU row and the motor grid) ---------------------------
+// ---- Chart panel height model -----------------------------------------------------------------------
+// The TOP handle sets the height of the WHOLE chart panel; the IMU/ODrive divider only splits that fixed space.
+// One group shown: the existing single height (jugglebot-chart-height).  Both shown: the panel has its own
+// stored total (jugglebot-chart-height-both, default = single + CHART_BOTH_EXTRA).  The divider stores the IMU
+// share in px (jugglebot-imu-chart-height); each group keeps at least GROUP_MIN_PX.
 
 export const IMU_HEIGHT_KEY = 'jugglebot-imu-chart-height';
+export const CHART_BOTH_KEY = 'jugglebot-chart-height-both';
 export const IMU_HEIGHT_DEFAULT = 200;
 export const IMU_HEIGHT_MIN = 100;
-export const IMU_HEIGHT_MAX = 500;
+export const GROUP_MIN_PX = 100;
+export const CHART_BOTH_EXTRA = 200;
+export const CHART_SINGLE_MIN = 150;
 /** The 3D view keeps at least this many px when the panel grows. */
 export const VIEWER_MIN_PX = 150;
 
-/** A wanted IMU row height clamped to [MIN, MAX] whole px; junk (null, NaN, text) is the default. */
+/** A stored/wanted IMU share as whole px (>= GROUP_MIN_PX); junk (null, NaN, text) is the default. */
 export function clampImuHeight(h) {
     const n = (h === null || h === undefined || h === '') ? NaN : Math.round(Number(h));
     if (!Number.isFinite(n)) return IMU_HEIGHT_DEFAULT;
-    return Math.max(IMU_HEIGHT_MIN, Math.min(IMU_HEIGHT_MAX, n));
+    return Math.max(IMU_HEIGHT_MIN, n);
+}
+
+/** Default panel height when both groups are shown: the single-group height plus CHART_BOTH_EXTRA. */
+export function bothHeightDefault(single) {
+    return Math.round(Number(single)) + CHART_BOTH_EXTRA;
 }
 
 /**
- * The IMU row height to apply: the wanted one, shrunk (IMU row first, never below MIN) so the 3D view
- * (`viewerH` px now, with the row currently `current` px) keeps VIEWER_MIN_PX.  The panel is anchored at the
- * bottom, so every px the IMU row gains is a px the 3D view loses.
+ * The IMU share to apply inside `avail` px (panel minus toolbar, divider and border): the wanted share,
+ * clamped so the IMU group and the ODrive grid each keep GROUP_MIN_PX.  Too little room for both minima
+ * splits what there is evenly.  The WANTED value is never overwritten by this clamp, so the share comes back
+ * when the panel grows again.
  */
-export function effectiveImuHeight(wanted, current, viewerH) {
+export function clampImuShare(wanted, avail) {
     const w = clampImuHeight(wanted);
-    if (!Number.isFinite(viewerH) || !Number.isFinite(current)) return w;
-    return Math.max(IMU_HEIGHT_MIN, Math.min(w, Math.round(current + viewerH - VIEWER_MIN_PX)));
+    if (!Number.isFinite(avail)) return w;
+    if (avail < 2 * GROUP_MIN_PX) return Math.max(0, Math.floor(avail / 2));
+    return Math.max(GROUP_MIN_PX, Math.min(w, Math.round(avail) - GROUP_MIN_PX));
+}
+
+/** Even split of `avail` px (divider double-click): the IMU share. */
+export function evenSplit(avail) {
+    return Math.max(GROUP_MIN_PX, Math.floor(avail / 2));
+}
+
+/**
+ * Limits of the panel height the top handle may set.  Min: single 150 px; both shown = toolbar + divider +
+ * border + two minimum groups.  Max: the 3D view keeps VIEWER_MIN_PX (viewerTop = its top edge, handleH =
+ * the handle's height, windowH = viewport height).
+ * @returns {{min:number, max:number}}
+ */
+export function panelHeightBounds({ both, toolbarH = 0, dividerH = 0, borderH = 0, viewerTop = 0, handleH = 0, windowH }) {
+    const min = both ? Math.round(toolbarH + dividerH + borderH + 2 * GROUP_MIN_PX) : CHART_SINGLE_MIN;
+    const max = Math.max(min, Math.floor(windowH - viewerTop - handleH - VIEWER_MIN_PX));
+    return { min, max };
+}
+
+/** A panel height clamped to the bounds; junk is NaN (the caller keeps what it had). */
+export function clampPanelHeight(h, bounds) {
+    const n = Math.round(Number(h));
+    if (!Number.isFinite(n)) return NaN;
+    return Math.max(bounds.min, Math.min(bounds.max, n));
+}
+
+/**
+ * The height to APPLY for a stored panel height: NaN when nothing usable is stored (stored < storedMin, junk), else the
+ * stored value clamped to the current bounds.  The stored value itself is never rewritten (a height saved on a tall
+ * monitor comes back when the window is tall again); only the applied one is clamped.
+ */
+export function appliedStoredHeight(stored, storedMin, bounds) {
+    const n = Math.round(Number(stored));
+    if (!Number.isFinite(n) || n < storedMin) return NaN;
+    return clampPanelHeight(n, bounds);
+}
+
+// ---- CSV export: IMU columns merged into the motor export -----------------------------------------------
+
+export const IMU_CSV_HEADER = ['imu_ax_g', 'imu_ay_g', 'imu_az_g', 'imu_gx_dps', 'imu_gy_dps', 'imu_gz_dps'];
+
+/**
+ * The time-sorted union of motor-sample times and IMU-sample times, as row descriptors {t, k, j}: k = index into
+ * the motor timestamps (-1 = none), j = index into the IMU plot columns (-1 = none).  Equal times share a row.
+ * Only IMU samples inside [motorTs[0], motorTs[last]] with finite values (gap markers are NaN) are kept.
+ * Motor rows are never dropped or reordered.
+ * @param {ArrayLike<number>} motorTs ascending
+ * @param {{t:ArrayLike<number>, ax,ay,az,gx,gy,gz:ArrayLike<number>}} imu plot columns (buildPlotColumns)
+ * @param {number} nMotor how many motor rows exist (motorTs may be a larger capacity buffer)
+ */
+export function mergeCsvRows(motorTs, nMotor, imu) {
+    const rows = [];
+    const lo = nMotor > 0 ? motorTs[0] : Infinity;
+    const hi = nMotor > 0 ? motorTs[nMotor - 1] : -Infinity;
+    const keep = [];
+    if (imu && imu.t) {
+        for (let j = 0; j < imu.t.length; j++) {
+            const t = imu.t[j];
+            if (!(t >= lo && t <= hi)) continue;
+            if (!['ax', 'ay', 'az', 'gx', 'gy', 'gz'].every((c) => Number.isFinite(imu[c][j]))) continue;
+            keep.push(j);
+        }
+    }
+    let k = 0, q = 0;
+    while (k < nMotor || q < keep.length) {
+        const tm = k < nMotor ? motorTs[k] : Infinity;
+        const ti = q < keep.length ? imu.t[keep[q]] : Infinity;
+        if (tm < ti) rows.push({ t: tm, k: k++, j: -1 });
+        else if (ti < tm) rows.push({ t: ti, k: -1, j: keep[q++] });
+        else rows.push({ t: tm, k: k++, j: keep[q++] });
+    }
+    return rows;
 }
 
 export function captureInView(c, view) {
@@ -492,4 +581,275 @@ export function statusMeansNewCapture(prev, next) {
     if (!prev) return false;
     if (prev.busy && !next.busy) return true;
     return prev.sig !== next.sig;
+}
+
+// ---- Low-pass filter (zero-phase Butterworth) ---------------------------------------------------------
+
+/** Selectable low-pass cutoffs in Hz; 0 = off (raw). */
+export const FILTER_CUTOFFS = [0, 100, 50, 15];
+/** Runs of contiguous valid samples shorter than this come out as gaps (NaN): the forward-backward pass
+ *  has no meaningful settling there, so a raw stretch beside filtered ones would mislead. */
+export const FILTER_MIN_RUN = 16;
+
+/** Stored cutoff string -> a member of FILTER_CUTOFFS (0 for anything else). */
+export function parseCutoff(v) {
+    const n = Number(v);
+    return FILTER_CUTOFFS.includes(n) ? n : 0;
+}
+
+/**
+ * 2nd-order Butterworth low-pass biquad (bilinear transform with prewarping) for cutoff fc at sample
+ * rate fs. Returns {b0,b1,b2,a1,a2} (a0 = 1), or null when fc is not below 0.45 fs (nothing to filter).
+ */
+export function butterLowpass2(fc, fs) {
+    if (!(fc > 0) || !(fs > 0) || !(fc < 0.45 * fs)) return null;
+    const k = Math.tan(Math.PI * fc / fs);
+    const q = Math.SQRT1_2;
+    const norm = 1 / (1 + k / q + k * k);
+    const b0 = k * k * norm;
+    return { b0, b1: 2 * b0, b2: b0, a1: 2 * (k * k - 1) * norm, a2: (1 - k / q + k * k) * norm };
+}
+
+/** One direct-form-II-transposed pass over x[i0..i1) in place, state primed for a constant x[i0]. */
+function biquadPass(c, x, i0, i1, dir) {
+    const start = dir > 0 ? i0 : i1 - 1;
+    const x0 = x[start];
+    const y0 = x0;                                  // unity DC gain: steady state output equals input
+    let z2 = c.b2 * x0 - c.a2 * y0;
+    let z1 = c.b1 * x0 - c.a1 * y0 + z2;
+    for (let n = 0; n < i1 - i0; n++) {
+        const i = dir > 0 ? i0 + n : i1 - 1 - n;
+        const v = x[i];
+        const y = c.b0 * v + z1;
+        z1 = c.b1 * v - c.a1 * y + z2;
+        z2 = c.b2 * v - c.a2 * y;
+        x[i] = y;
+    }
+}
+
+/**
+ * Zero-phase low-pass of one run y[i0..i1) (forward then backward biquad = 4th-order magnitude, no time
+ * shift) with an odd-reflection extension at both ends so the edges settle. Returns a new Float64Array.
+ */
+export function filtfiltRun(y, i0, i1, fc, fs) {
+    const c = butterLowpass2(fc, fs);
+    const m = i1 - i0;
+    if (!c || m < 2) return Float64Array.from(y.subarray ? y.subarray(i0, i1) : y.slice(i0, i1));
+    const pad = Math.min(m - 1, Math.ceil(3 * fs / fc));
+    const buf = new Float64Array(m + 2 * pad);
+    for (let k = 0; k < pad; k++) {
+        buf[pad - 1 - k] = 2 * y[i0] - y[i0 + 1 + k];
+        buf[pad + m + k] = 2 * y[i1 - 1] - y[i1 - 2 - k];
+    }
+    for (let k = 0; k < m; k++) buf[pad + k] = y[i0 + k];
+    biquadPass(c, buf, 0, buf.length, 1);
+    biquadPass(c, buf, 0, buf.length, -1);
+    return buf.slice(pad, pad + m);
+}
+
+/** Sample rate (Hz) of an ascending time column: 1 / median spacing, or NaN. */
+export function sampleRate(t) {
+    const dt = medianDt(t);
+    return dt > 0 ? 1 / dt : NaN;
+}
+
+/**
+ * Low-pass a column per contiguous run of finite samples (a NaN, or a time hole above 3 x the median
+ * spacing, ends a run), never across a gap. Runs shorter than FILTER_MIN_RUN become NaN. cutoff 0, or one
+ * at/above 0.45 fs, or no usable rate, returns y itself (raw, same array).
+ */
+export function lowpassColumn(t, y, cutoff, fs = sampleRate(t)) {
+    if (!(cutoff > 0) || !(fs > 0) || !(cutoff < 0.45 * fs)) return y;
+    const n = y.length;
+    const out = new Float64Array(n).fill(NaN);
+    const hole = 3 / fs;
+    let i = 0;
+    while (i < n) {
+        if (!Number.isFinite(y[i])) { i++; continue; }
+        let j = i + 1;
+        while (j < n && Number.isFinite(y[j]) && t[j] - t[j - 1] <= hole) j++;
+        if (j - i >= FILTER_MIN_RUN) out.set(filtfiltRun(y, i, j, cutoff, fs), i);
+        i = j;
+    }
+    return out;
+}
+
+/** The plot columns with the six sensor columns low-passed and |a| recomputed from the filtered
+ *  components; t is shared. cutoff 0 returns cols itself. */
+export function lowpassColumns(cols, cutoff) {
+    if (!(cutoff > 0)) return cols;
+    const fs = sampleRate(cols.t);
+    const out = { t: cols.t, nGaps: cols.nGaps };
+    for (const k of ['ax', 'ay', 'az', 'gx', 'gy', 'gz']) out[k] = lowpassColumn(cols.t, cols[k], cutoff, fs);
+    const n = cols.t.length;
+    out.amag = new Float64Array(n);
+    for (let i = 0; i < n; i++) out.amag[i] = Math.sqrt(out.ax[i] * out.ax[i] + out.ay[i] * out.ay[i] + out.az[i] * out.az[i]);
+    return out;
+}
+
+/** "low-pass 15 Hz" badge text, '' when off. */
+export function filterBadge(cutoff) {
+    return cutoff > 0 ? 'low-pass ' + cutoff + ' Hz' : '';
+}
+
+// ---- Spectrum (FFT, Welch, peaks) --------------------------------------------------------------------
+
+/** Spectrum x-axis maxima: Hz, or 0 for Nyquist. */
+export const SPEC_MAX_OPTIONS = [10, 50, 0];
+export const SPEC_MAX_DEFAULT = 50;
+export const SPEC_MIN_SAMPLES = 256;
+export const SPEC_MAX_SEGMENT = 4096;
+export const SPEC_PEAK_MIN_HZ = 1;
+export const SPEC_DEBOUNCE_MS = 150;
+
+export function parseSpecMax(v) {
+    if (v === null || v === undefined || v === '') return SPEC_MAX_DEFAULT;
+    const n = Number(v);
+    return SPEC_MAX_OPTIONS.includes(n) ? n : SPEC_MAX_DEFAULT;
+}
+
+/** In-place radix-2 complex FFT; re and im have the same power-of-two length. */
+export function fft(re, im) {
+    const n = re.length;
+    if (n < 2 || (n & (n - 1)) !== 0) throw new Error('fft length must be a power of two');
+    for (let i = 1, j = 0; i < n; i++) {
+        let bit = n >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) { let v = re[i]; re[i] = re[j]; re[j] = v; v = im[i]; im[i] = im[j]; im[j] = v; }
+    }
+    for (let len = 2; len <= n; len <<= 1) {
+        const ang = -2 * Math.PI / len;
+        const wr = Math.cos(ang), wi = Math.sin(ang);
+        const half = len >> 1;
+        for (let i = 0; i < n; i += len) {
+            let cr = 1, ci = 0;
+            for (let k = 0; k < half; k++) {
+                const a = i + k, b = a + half;
+                const tr = re[b] * cr - im[b] * ci, ti = re[b] * ci + im[b] * cr;
+                re[b] = re[a] - tr; im[b] = im[a] - ti;
+                re[a] += tr; im[a] += ti;
+                const nr = cr * wr - ci * wi;
+                ci = cr * wi + ci * wr; cr = nr;
+            }
+        }
+    }
+}
+
+/** Largest power of two <= n (n >= 1). */
+export function floorPow2(n) {
+    let p = 1;
+    while (p * 2 <= n) p *= 2;
+    return p;
+}
+
+/** Index range [i0, i1) of the samples with t in [xMin, xMax] (t ascending). */
+export function rangeIndices(t, xMin, xMax) {
+    const i0 = lowerBound(t, xMin);
+    let i1 = lowerBound(t, xMax);
+    while (i1 < t.length && t[i1] <= xMax) i1++;
+    return [i0, Math.max(i0, i1)];
+}
+
+/** Contiguous runs [a, b) of finite samples of y in [i0, i1), also split at time holes above 3 x median dt. */
+export function validRuns(t, y, i0, i1, dt) {
+    const runs = [];
+    const hole = 3 * dt;
+    let i = i0;
+    while (i < i1) {
+        if (!Number.isFinite(y[i])) { i++; continue; }
+        let j = i + 1;
+        while (j < i1 && Number.isFinite(y[j]) && t[j] - t[j - 1] <= hole) j++;
+        runs.push([i, j]);
+        i = j;
+    }
+    return runs;
+}
+
+/**
+ * Welch amplitude spectral density of the samples of each column of `cols` (all the same length as t)
+ * with t in [xMin, xMax]: Hann (periodic) window, 50 % overlap, mean removed per segment, one-sided
+ * density, segment length = largest power of two <= min(SPEC_MAX_SEGMENT, longest valid run), segments
+ * tiled inside each contiguous run (never across a gap) and averaged over every column's own runs.
+ * Fewer than SPEC_MIN_SAMPLES contiguous valid samples in view for a column leaves its entry null; when
+ * every column is null the result is {error}.
+ * @returns {{error:string}|{fs:number, df:number, seg:number, freqs:Float64Array, asd:(Float64Array|null)[], nSeg:number[], nValid:number}}
+ */
+export function welchSpectra(t, cols, xMin, xMax) {
+    const [i0, i1] = rangeIndices(t, xMin, xMax);
+    const fs = sampleRate(t.subarray ? t.subarray(i0, i1) : t.slice(i0, i1));
+    if (!(fs > 0)) return { error: 'Too few samples in view for a spectrum' };
+    const dt = 1 / fs;
+    const perCol = cols.map((y) => validRuns(t, y, i0, i1, dt));
+    const longest = Math.max(0, ...perCol.map((rs) => Math.max(0, ...rs.map((r) => r[1] - r[0]))));
+    let nValid = 0;
+    for (const rs of perCol) for (const r of rs) nValid = Math.max(nValid, r[1] - r[0]);
+    if (longest < SPEC_MIN_SAMPLES) {
+        let total = 0;
+        for (const rs of perCol.slice(0, 1)) for (const r of rs) total += r[1] - r[0];
+        return { error: 'Fewer than ' + SPEC_MIN_SAMPLES + ' contiguous valid samples in view (' + total + '): zoom out for a spectrum' };
+    }
+    const L = floorPow2(Math.min(SPEC_MAX_SEGMENT, longest));
+    const hop = L >> 1;
+    const w = new Float64Array(L);
+    let w2 = 0;
+    for (let i = 0; i < L; i++) { w[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / L); w2 += w[i] * w[i]; }
+    const nb = (L >> 1) + 1;
+    const freqs = new Float64Array(nb);
+    for (let k = 0; k < nb; k++) freqs[k] = k * fs / L;
+    const re = new Float64Array(L), im = new Float64Array(L);
+    const asd = [], nSeg = [];
+    for (let c = 0; c < cols.length; c++) {
+        const y = cols[c];
+        const acc = new Float64Array(nb);
+        let count = 0;
+        for (const [a, b] of perCol[c]) {
+            for (let s = a; s + L <= b; s += hop) {
+                let mean = 0;
+                for (let i = 0; i < L; i++) mean += y[s + i];
+                mean /= L;
+                for (let i = 0; i < L; i++) { re[i] = (y[s + i] - mean) * w[i]; im[i] = 0; }
+                fft(re, im);
+                for (let k = 0; k < nb; k++) acc[k] += re[k] * re[k] + im[k] * im[k];
+                count++;
+            }
+        }
+        if (!count) { asd.push(null); nSeg.push(0); continue; }
+        const out = new Float64Array(nb);
+        for (let k = 0; k < nb; k++) {
+            const one = (k === 0 || k === nb - 1) ? 1 : 2;
+            out[k] = Math.sqrt(one * acc[k] / count / (fs * w2));
+        }
+        asd.push(out); nSeg.push(count);
+    }
+    if (asd.every((a) => a === null)) return { error: 'Fewer than ' + SPEC_MIN_SAMPLES + ' contiguous valid samples in view: zoom out for a spectrum' };
+    return { fs, df: fs / L, seg: L, freqs, asd, nSeg, nValid };
+}
+
+/**
+ * Largest peak of an amplitude spectrum with f in [fMin, fMax]: the biggest bin that is a local maximum,
+ * with its frequency refined by a parabola through ln of the bin and its two neighbours (linear values if
+ * one is not positive). null when no bin qualifies. @returns {{f:number, v:number, bin:number}|null}
+ */
+export function spectrumPeak(freqs, asd, fMin, fMax) {
+    let best = -1;
+    for (let k = 1; k < asd.length - 1; k++) {
+        if (freqs[k] < fMin || freqs[k] > fMax) continue;
+        if (!(asd[k] >= asd[k - 1] && asd[k] >= asd[k + 1])) continue;
+        if (best < 0 || asd[k] > asd[best]) best = k;
+    }
+    if (best < 0) return null;
+    const a = asd[best - 1], b = asd[best], c = asd[best + 1];
+    const useLog = a > 0 && b > 0 && c > 0;
+    const ya = useLog ? Math.log(a) : a, yb = useLog ? Math.log(b) : b, yc = useLog ? Math.log(c) : c;
+    const den = ya - 2 * yb + yc;
+    const d = den < 0 ? Math.max(-0.5, Math.min(0.5, 0.5 * (ya - yc) / den)) : 0;
+    const df = freqs[1] - freqs[0];
+    return { f: freqs[best] + d * df, v: b, bin: best };
+}
+
+/** The x max in Hz for a spectrum-max option (0 = Nyquist) at sample rate fs. */
+export function specXMax(opt, fs) {
+    const nyq = fs / 2;
+    return opt > 0 ? Math.min(opt, nyq) : nyq;
 }
