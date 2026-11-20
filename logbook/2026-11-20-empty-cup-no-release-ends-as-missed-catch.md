@@ -55,4 +55,4 @@ installs, dispatched set, counters, settle and experiences against the old label
 
 **Verification.**
 - 2026-11-20, `pytest tests/motion/test_skills_executor.py tests/motion/test_records.py tests/motion/test_skills_report.py -q`: 1201 passed in 364.89 s (the same files plus `tests/motion/test_skills_executor_beats.py`, `test_skills_executor_human_catch.py`, `tests/ros/test_possession_replay.py`, `test_ball_possession.py`, `test_skill_node.py`, `tests/sim/test_skills_gate.py`, `test_logbook_front_matter.py`, `test_logbook_index.py`, `test_docs_links.py`, `test_no_legacy_item_ids.py`).
-- Full gate: (filled in by the main session)
+- 2026-11-21, `flock /tmp/jugglebot-tests.lock ./run_tests.sh` on the merge with main: parallel 10667 passed, 61 skipped, 1 xfailed in 802.62 s (rc=0); serial 7 passed in 29.01 s (rc=0). The wider scoped set named in the line above was not re-run separately; the gate covers it.
