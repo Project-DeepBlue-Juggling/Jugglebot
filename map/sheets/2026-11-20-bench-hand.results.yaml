@@ -79,6 +79,26 @@ steps:
     comments: ''
     saved_at: 2026-11-20 23:42
     status: problem
+  15:
+    comments: ''
+    saved_at: 2026-11-21 00:04
+    status: done
+  16:
+    comments: ''
+    saved_at: 2026-11-21 00:06
+    status: problem
+  17:
+    comments: ''
+    saved_at: 2026-11-21 00:07
+    status: skipped
+  18:
+    comments: ''
+    saved_at: 2026-11-21 00:07
+    status: done
+  19:
+    comments: ''
+    saved_at: 2026-11-21 00:07
+    status: done
 verdicts:
   11:
     FEAT-45:
@@ -88,3 +108,12 @@ verdicts:
     BUG-105:
       notes: Same as Step 13; no runs were accepted.
       saved_at: 2026-11-20 23:42
+  16:
+    BUG-123:
+      notes: 'I get this: " (venv) jetson:/home/jetson/Desktop/Jugglebot/ (night-shift/2026-11-20-BUG-123)
+        $ python tests/hardware/hand_stream_bench.py --stage stall [0:05:16] Traceback
+        (most recent call last): File "tests/hardware/hand_stream_bench.py", line
+        2307, in <module> raise SystemExit(main()) File "tests/hardware/hand_stream_bench.py",
+        line 1241, in main args.max_dev = _MAX_DEV_DEFAULT[args.stage] KeyError: ''stall''
+        "'
+      saved_at: 2026-11-21 00:06
