@@ -189,8 +189,8 @@ let paused = false;
 /** Frozen window edges while paused */
 let pausedWindowStart = 0;
 let pausedWindowEnd = 0;
-/** Cursor sync key shared by all charts */
-const SYNC_KEY = 'telemetry';
+/** Cursor sync key shared by all charts (exported: the IMU charts join the same group). */
+export const SYNC_KEY = 'telemetry';
 
 /**
  * View mode for the x-axis.
@@ -1738,6 +1738,7 @@ export function setReplayPlayhead(pSec) {
     for (let i = 0; i < MOTOR_COUNT; i++) {
         if (charts[i]) charts[i].setScale('x', { min, max });
     }
+    notifySharedXRange(min, max);
 }
 
 /** Test hook: a snapshot of axis i of the CURRENT stores (live ring or replay). */
@@ -1924,8 +1925,75 @@ function setXRangeAllCharts(min, max, fromSelection = false) {
         if (!c) continue;
         c.setScale('x', clamped);
     }
+    notifySharedXRange(clamped.min, clamped.max);
     if (!paused) pauseCharts();
     reloadChartDataFromStores(clamped.min);
+}
+
+// ---- External charts (imu-charts.js) ------------------------------------
+//
+// The IMU charts are not in `charts[]`, so every x-range the ODrive charts
+// take is also broadcast here: the live anchor (repaintAllCharts), a manual
+// range (setXRangeAllCharts), a reset (resetViewToLive -> repaintAllCharts)
+// and the replay playhead (setReplayPlayhead).  With no listener registered
+// the broadcast is a size check and nothing else; a listener only RECEIVES
+// ranges, so the ODrive view state is touched only through the request
+// functions below, which are the same paths the ODrive gestures take.
+
+const sharedXRangeListeners = new Set();
+
+/** Register `cb(min, max)` (epoch seconds) for every x-range the charts take; returns the unsubscribe. */
+export function onSharedXRange(cb) {
+    sharedXRangeListeners.add(cb);
+    return () => sharedXRangeListeners.delete(cb);
+}
+
+function notifySharedXRange(min, max) {
+    if (sharedXRangeListeners.size === 0) return;
+    for (const cb of Array.from(sharedXRangeListeners)) {
+        try { cb(min, max); } catch (e) { console.error('shared x-range listener failed:', e); }
+    }
+}
+
+/** The x range the charts show now ({min, max}, epoch seconds), computed as repaintAllCharts does. */
+export function getSharedXRange() {
+    if (viewMode === 'manual' && manualXRange && !replayStore) {
+        return { min: manualXRange.min, max: manualXRange.max };
+    }
+    const end = getViewAnchor();
+    return { min: end - liveWindowSec, max: end };
+}
+
+/** {replay, paused, manual, min, max}: what an external chart needs to decide whether it may move the view. */
+export function getSharedViewState() {
+    const r = getSharedXRange();
+    return { replay: !!replayStore, paused, manual: viewMode === 'manual', min: r.min, max: r.max };
+}
+
+/**
+ * LIVE only: pause the charts and show [min, max] on all of them, exactly as a
+ * box-zoom selection does (manual view, no live snap).  Returns false in replay,
+ * where the playhead owns the window (use seekReplayTo).
+ */
+export function showRangeOnAllCharts(min, max) {
+    if (replayStore || !(max > min)) return false;
+    viewMode = 'manual';
+    setXRangeAllCharts(min, max, true);
+    return true;
+}
+
+/** An external chart's drag-box selection: the same call the ODrive setSelect hook makes. */
+export function selectRangeOnAllCharts(min, max) {
+    viewMode = 'manual';
+    setXRangeAllCharts(min, max, true);
+}
+
+/** REPLAY only: move the playhead to t (the engine seeks, the charts re-centre). */
+export function seekReplayTo(t) {
+    if (!replayStore || !Number.isFinite(t)) return false;
+    setReplayPlayhead(t);
+    if (replaySeek) replaySeek(replayPlayhead);
+    return true;
 }
 
 /**
@@ -1980,6 +2048,19 @@ function resetViewToLive() {
  */
 function attachMouseControls(u) {
     const over = u.over;   // the event-capture layer inside uPlot
+    if (!over) return;
+    attachZoomPanControls(u);
+    attachBookmarkAndHoverControls(u);
+}
+
+/**
+ * Wheel zoom, middle-drag pan and double-click reset for one uPlot instance.
+ * Exported for the IMU charts (imu-charts.js), which share the x axis: these
+ * handlers only read the chart's own x scale and then drive every chart
+ * through setXRangeAllCharts / liveWindowSec / resetViewToLive.
+ */
+export function attachZoomPanControls(u) {
+    const over = u.over;
     if (!over) return;
 
     // --- Wheel: zoom x-axis ---------------------------------------------
@@ -2052,6 +2133,11 @@ function attachMouseControls(u) {
         ev.preventDefault();
         resetViewToLive();
     });
+}
+
+/** The ODrive-only half of attachMouseControls: Δ bookmarks, event-marker and sample-dot hover. */
+function attachBookmarkAndHoverControls(u) {
+    const over = u.over;
 
     // --- Click: place / clear delta-cursor bookmarks (paused only) ------
     // uPlot fires its own pointerdown for box-zoom, but `click` only fires
@@ -3216,11 +3302,6 @@ function repaintAllCharts(force = false) {
     if (panel && panel.classList.contains('collapsed')) return;
     if (paused && !force) return;
 
-    const signalList = getActiveSignalList();
-    if (signalList.length === 0) return;
-
-    const signalKeys = signalList.map(s => s.key);
-
     // Pick the visible window: manual pan/zoom wins over the live anchor.
     let windowStart, windowEnd;
     if (viewMode === 'manual' && manualXRange) {
@@ -3230,6 +3311,14 @@ function repaintAllCharts(force = false) {
         windowEnd = getViewAnchor();
         windowStart = windowEnd - liveWindowSec;
     }
+    // Before the signal-list check: the external (IMU) charts follow the
+    // axis even when every ODrive signal is toggled off or the grid is hidden.
+    notifySharedXRange(windowStart, windowEnd);
+
+    const signalList = getActiveSignalList();
+    if (signalList.length === 0) return;
+
+    const signalKeys = signalList.map(s => s.key);
 
     for (let i = 0; i < MOTOR_COUNT; i++) {
         if (!charts[i] || !stores[i]) continue;

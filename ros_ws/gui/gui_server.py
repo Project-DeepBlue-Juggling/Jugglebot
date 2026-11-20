@@ -14,7 +14,7 @@ overview pass runs in a niced subprocess under the venv interpreter
 
 Usage:
     python3 gui_server.py [--port 8081] [--rosbags-dir DIR] [--overview-dir DIR]
-                          [--records-path FILE]
+                          [--records-path FILE] [--imu-capture-dir DIR]
 """
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
+import imu_api  # noqa: E402
 from replay.api import ReplayBackend  # noqa: E402
 
 RECORDS_ROUTE = "/api/records"
@@ -77,6 +78,7 @@ class CORSHandler(http.server.SimpleHTTPRequestHandler):
     #: robot's runtime copy is served when it exists (read per request, so a
     #: Sitting's first write shows without a restart).
     records_runtime_first = False
+    imu_capture_dir = None  # set per server in make_server
     _replay_headers_sent = False
 
     def end_headers(self):
@@ -89,9 +91,24 @@ class CORSHandler(http.server.SimpleHTTPRequestHandler):
         if self.path.split("?", 1)[0] == RECORDS_ROUTE and self.records_path:
             self._records()
             return
+        if self.path.startswith("/api/imu/") and self.imu_capture_dir:
+            self._imu()
+            return
         if self.backend is not None and self.backend.handle("GET", self.path, self):
             return
         super().do_GET()
+
+    def _imu(self):
+        res = imu_api.handle(self.path, self.imu_capture_dir)
+        if res is None:
+            self.send_error(404)
+            return
+        status, ctype, body = res
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()  # adds Cache-Control: no-cache + CORS
+        self.wfile.write(body)
 
     def _records(self):
         path = self.records_path
@@ -142,6 +159,9 @@ def build_parser():
                         help="the records ledger served at " + RECORDS_ROUTE
                         + " (the default serves the robot's runtime copy "
                         "temp/runtime/records.md when it exists)")
+    parser.add_argument("--imu-capture-dir",
+                        default=os.path.join(_HERE, "..", "..", "temp", "imu_capture"),
+                        help="Platform IMU captures (.npz + .json) served at /api/imu/")
     return parser
 
 
@@ -165,6 +185,9 @@ def make_server(args):
     # Runtime-first only for the default ledger: an explicit --records-path
     # is served exactly as given (the tests, a hand-picked file).
     Handler.records_runtime_first = Handler.records_path == default_records
+    Handler.imu_capture_dir = os.path.abspath(os.path.expanduser(
+        getattr(args, "imu_capture_dir", None)
+        or build_parser().get_default("imu_capture_dir")))
     handler = lambda *a, **kw: Handler(*a, directory=_HERE, **kw)  # noqa: E731
     server = ReusableHTTPServer((getattr(args, "host", "0.0.0.0"), args.port), handler)
     return server, backend
