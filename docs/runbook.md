@@ -38,6 +38,7 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 ## Needs a Sitting section
 
 - BUG-112 [Robot] /robot_state rate drops to 80-89 Hz during Attempts and drifts down over a launch: no ## Sitting section
+- BUG-125 [Robot] Hand drive MISSING_ESTIMATE at rest lost exactly five turns, ten minutes after a SPINOUT top-stop impact: no ## Sitting section
 - BUG-13 [Robot] Wave camera: CLIP_MISSING on the first start after a camera power-cycle: no ## Sitting section
 - BUG-27 [Robot] can-bridge CAN3 analog drive path has a load-dependent hardware fault (the Jugglebot loom stays on CAN2): no ## Sitting section
 - BUG-29 [Robot] RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball: no ## Sitting section
@@ -78,4 +79,4 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
 ## Questions a Sitting can answer
 
-- none
+- TKT-88 IDEA-25: which lever shortens the Armed IMU upload: the Jetson-only hole-fill change, firmware counters first, sample packing, or leave it? (parent IDEA-25)
