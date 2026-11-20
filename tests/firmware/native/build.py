@@ -137,6 +137,12 @@ _BINARIES = {
         NATIVE_DIR / "test_platform_imu_service.cpp",
         [],
     ),
+    # The same glue compiled as the DIAGNOSTIC build (-DPLATFORM_IMU_DIAG=1, defined in the driver): the
+    # repurposed STATUS pages against the sketch's decode table. Pure header, nothing to link.
+    "test_platform_imu_diag": (
+        NATIVE_DIR / "test_platform_imu_diag.cpp",
+        [],
+    ),
     # The ICM-42688 non-blocking init against the scripted Wire fake: register sequence, waits,
     # one transaction per call, absent chip, error recovery.
     "test_icm42688": (

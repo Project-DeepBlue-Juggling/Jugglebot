@@ -284,6 +284,16 @@ def test_the_bump_history_records_what_this_version_carries():
                    'No ABORT at arming', 'No PROTOCOL_VERSION bump (stays 14)',
                    'no lane, guard, interp or task-priority change'):
         assert needle in m45.group(1), (needle, m45.group(1))
+    # FW 46 — BUG-93 silence-predicate wrap.  The substance: a SAFETY PREDICATE
+    # changed (the CAN_BUS_DOWN trip and its reconnect now age the receive stamp
+    # through rx_older_than, so a stamp newer than the clock read is live), and
+    # the bump is wire-invisible, so only BRIDGE_FW_CHECK says whether it is aboard.
+    m46 = re.search(r'^// 45→46:(.*)$', text, re.M)
+    assert m46 is not None, "FW 46 history line missing"
+    assert 'BUG-93' in m46.group(1) and 'rx_older_than' in m46.group(1), m46.group(1)
+    assert 'SAFETY PREDICATE' in m46.group(1), m46.group(1)
+    assert 'CAN_AXIS_SILENCE_TIMEOUT_US' in m46.group(1), m46.group(1)
+    assert 'NO WIRE CHANGE' in m46.group(1) and 'PROTOCOL_VERSION stays 14' in m46.group(1), m46.group(1)
 
 
 def test_the_version_this_release_pins_is_actually_uplinked():

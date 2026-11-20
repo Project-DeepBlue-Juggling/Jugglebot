@@ -11,6 +11,7 @@ import time
 import pytest
 
 import jugglebot.protocol_config as proto
+from diagnostic_msgs.msg import DiagnosticStatus
 from teensy_link import RpcMethod, RpcStatus, MsgType
 from teensy_link import protocol as p
 
@@ -151,5 +152,33 @@ def test_status_topic_publishes_progress_fields():
         vals = {kv.key: kv.value for kv in got[0].values}
         assert {"busy", "phase", "frames_done", "frames_total", "eta_s", "upload_after_attempt"} <= set(vals)
         assert vals["busy"] == "0" and vals["upload_after_attempt"] == "1"
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_status_topic_publishes_health_counters_and_warns_on_a_recent_rise():
+    teensy, client, node = _build_paired_node()
+    try:
+        got = []
+        node.platform_imu_status_pub = type("P", (), {"publish": staticmethod(got.append)})()
+
+        def frame(i2c, fifo, boot=1):
+            teensy.send_to_jetson(int(MsgType.PLATFORM_FRAME), _platform_frame(
+                proto.CAN_ID_PLATFORM_IMU_STATUS, struct.pack("<BBbBBBBB", 2, 3, 31, fifo, i2c, 20, 30, boot)))
+
+        frame(5, 0)
+        assert _wait_until(lambda: node.imu_upload_status()["platform_state"] == "RUNNING")
+        node._publish_platform_imu_status()
+        vals = {kv.key: kv.value for kv in got[-1].values}
+        assert vals["i2c_errors"] == "5" and vals["fifo_overflows"] == "0" and vals["temp_c"] == "31"
+        assert vals["sync_peak"] == "20" and vals["sync_peak_ms"] == "0.20" and vals["sensor_ok"] == "1"
+        assert vals["time_synced"] == "1" and vals["i2c_errors_delta_since_launch"] == "0"
+        assert vals["platform_boot"] == "1" and vals["status_age_s"] != ""
+        assert got[-1].level == DiagnosticStatus.OK                                       # OK: no rise yet
+        frame(8, 0)
+        assert _wait_until(lambda: node._imu.status_snapshot()["health"]["i2c_errors"] == 8)
+        node._publish_platform_imu_status()
+        vals = {kv.key: kv.value for kv in got[-1].values}
+        assert vals["i2c_errors_delta_since_launch"] == "3" and got[-1].level == DiagnosticStatus.WARN
     finally:
         _teardown(teensy, client, node)

@@ -2,9 +2,9 @@
 id: IDEA-25
 kind: idea
 title: Minimise the Platform IMU upload time after an Attempt
-status: inbox
+status: backlog
 created: '2026-11-19'
-updated: '2026-11-18T15:51:27Z'
+updated: '2026-11-20T12:38:26Z'
 owners: []
 priority: low
 effort: m
@@ -15,6 +15,7 @@ area: platform-teensy
 blocked_by: []
 links:
 - plans/active/platform-imu.md
+- logbook/2026-11-20-sitting-debrief-robot-2.md
 parent: two-ball-oval
 filed_by: claude
 night_skip: waiting-trigger
@@ -30,3 +31,7 @@ Keep this area open (owner, 2026-11-19): once the MVP works, explore shortening 
 - Effort: m (packing in the Platform Teensy firmware and the Jetson decoder, with native and decode tests). Hardware: robot (the bus rate is measurable only on the Platform). The owner chooses the lever.
 - One risk: packing changes the wire format of a CRC-checked upload, so firmware and decoder out of step corrupt captures silently unless the header carries a format version.
 - Waits on: the MVP (plan `platform-imu.md` P1 to P4) working, as the owner set when filing.
+
+## Progress
+
+- 2026-11-20: Sitting 2026-11-20: Armed uploads took 79 s (ring) and 84 s (32 s span) against 56 s at rest, with 14651-19974 duplicate frames (158 at rest), up to 6 block timeouts, CAN1 at 74-77 %. A juggle goal was refused 7 s into a 37 s upload. Diagnosis in logbook 2026-11-20-sitting-debrief-robot-2.

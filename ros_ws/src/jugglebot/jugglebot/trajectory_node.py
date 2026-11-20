@@ -5531,7 +5531,8 @@ class TrajectoryNode(Node):
     def _gc_probe_tick(self):
         """BUG-58: drain the GC probe and log it (1 Hz timer; probe on only)."""
         s = self._gc_probe.summary()
-        line = _gc_probe_mod.format_summary('trajectory_node', s)
+        line = _gc_probe_mod.format_summary('trajectory_node', s,
+                                            self._gc_probe.state())
         self.get_logger().info(line)
         if s['max_ms'] > _gc_probe_mod.WARN_PAUSE_MS:
             self.get_logger().warning(line)

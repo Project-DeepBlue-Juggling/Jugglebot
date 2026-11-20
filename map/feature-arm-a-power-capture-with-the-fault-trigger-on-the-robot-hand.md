@@ -4,7 +4,7 @@ kind: feature
 title: Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault
 status: in_progress
 created: '2026-11-11'
-updated: '2026-11-18T02:08:25Z'
+updated: '2026-11-20T04:33:53Z'
 owners: []
 priority: medium
 effort: m
@@ -18,6 +18,8 @@ links:
 - map/feature-measure-the-hand-s-commutation-angle-error-through-a-hard.md
 - tools/probes/hand_foc_scope.py
 - logbook/2026-11-18-sitting-debrief.md
+- logbook/2026-11-20-sitting-debrief.md
+- logbook/2026-11-20-hand-foc-scope-keeps-the-forced-window.md
 filed_by: claude-debrief
 night_skip: sitting
 night_skip_on: '2026-11-15'
@@ -56,6 +58,14 @@ Arm `tools/probes/hand_foc_scope.py capture --preset power --trigger fault` on t
   - Gave this a bunch of attempts. Until the last one, all attempts either completed or ended due to a missed catch. The final attempt ended with MAX_DEVIATION. (sheet 2026-11-18-robot, step 48) [derived: temp/logs/launch_2026-11-18_4.log and temp/hand_capture/hand_capture_20261118_121427.csv: armed 12:15:41 for 10 Columns Attempts, 0 saved, 1 clean exit.
   - The Hand drive stayed in closed loop with no errors 12:15:59-12:25:22, so no real fault occurred to trigger on (the one MAX_DEVIATION latch is a Teensy guard fault, not a drive fault).]
 
+## Sitting result (2026-11-20 15:11)
+
+- verdict: fail
+- notes: A SPINOUT shows up in the `grep` readout (sheet 2026-11-20-robot, step 16) [derived: The trigger fired on the real SPINOUT (temp/logs/launch_2026-11-20_1.log:5298, 13:22:42) but hand_foc_scope.py raised 'scope still recording 3.0 s after the trigger' in scope_download and saved nothing; launch 2 had no drive fault to trigger on. The newest file in temp/hand_foc_scope/ is from 2026-11-13.]
+
 ## Progress
 
 - 2026-11-18: Flown at the Sitting of 2026-11-18, verdict unresolved: armed for 10 Columns Attempts, 0 saved; the Hand drive never faulted (the one MAX_DEVIATION latch is a Teensy guard fault and cannot fire the trigger). Arm it in every launch: BUG-111 was a SPINOUT in launch 1, before it was armed. FEAT-45 rungs B and C passed on the bench 2026-11-13.
+- 2026-11-20: Failed at the Sitting of 2026-11-20: the trigger fired on a real SPINOUT (13:22:42) but scope_download raised 'scope still recording 3.0 s after the trigger' and threw the stopped window away; nothing saved. Likely cause: the drive's scope does not reach its stop condition once the axis has disarmed (never exercised on the bench).
+- 2026-11-20: A guard latch (MAX_DEVIATION) never disarms the drive, so it cannot trigger a capture.
+- 2026-11-20: Tool fixed on main (658fd7c0): a scope still recording 3 s after the trigger is force-stopped and its window saved as <label>_<n>_fault_forced with forced_stop in the metadata; one failed capture re-arms, three in a row exit 4. Unknown until a real fault: whether the forced window still holds the fault or only the last 256 ms before the stop. The next Sitting keeps this row.

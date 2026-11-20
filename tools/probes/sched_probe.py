@@ -219,6 +219,14 @@ SOLVE_RX = re.compile(
     r'^(\d+\.\d+) .*?install_segment CATCH .*?solve ([\d.]+) ms '
     r'\(cpu ([\d.]+) ms, ivcsw (\d+), vcsw (\d+)\)')
 GC_RX = re.compile(r'^(\d+\.\d+) .*GC_PROBE (\w+) n=(\d+) max_ms=([\d.]+) ')
+# Optional BUG-58 fields appended after worst_wall (absent in older logs).
+GC_EXTRA_RX = re.compile(r'(worst_collected|worst_uncollectable|gc_count|'
+                         r'gc_colls|gc_frozen|gc_objects0|gc_objects)=([\d,]+)')
+
+
+def parse_gc_extra(ln):
+    """Appended GC_PROBE fields as ``{name: str}``; ``{}`` for an old line."""
+    return dict(GC_EXTRA_RX.findall(ln))
 
 
 def parse_log(lines):
@@ -232,7 +240,8 @@ def parse_log(lines):
         m = GC_RX.search(ln)
         if m:
             gcs.append(dict(t=float(m.group(1)), tag=m.group(2),
-                            n=int(m.group(3)), max_ms=float(m.group(4))))
+                            n=int(m.group(3)), max_ms=float(m.group(4)),
+                            extra=parse_gc_extra(ln)))
     return solves, gcs
 
 
@@ -288,6 +297,9 @@ def window_report(rows, solve, gcs):
         w = max(g, key=lambda x: x['max_ms'])
         lines.append('  GC_PROBE worst in window (1 Hz lines, +1 s): %.3f ms (%s)' %
                      (w['max_ms'], w['tag']))
+        if w.get('extra'):
+            lines.append('  GC_PROBE worst-line detail: ' + ' '.join(
+                '%s=%s' % kv for kv in sorted(w['extra'].items())))
     else:
         lines.append('  GC_PROBE: no line in window (probe off, or none logged)')
     return lines

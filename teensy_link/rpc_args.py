@@ -499,7 +499,11 @@ PLATFORM_FW_VERSION_UNVERSIONED = 0
 #: longer waits for ever for the inclinometer, and loop() dispatches up to 32 CAN
 #: frames per pass. A board on 10 still works: this host rejects its (pi, pi) and
 #: the new invalid reply alike, through the |tilt| bound.
-PLATFORM_FW_VERSION_EXPECTED = 11
+#: 12 (2026-11-20) = Platform IMU I2C robustness: a bus recovery before every
+#: re-probe, and a failed FIFO transfer while RUNNING is recovered and retried
+#: (BACKOFF only on the third in a row) instead of a 1 s BACKOFF hole. IMU-only:
+#: a board on 11 still works, its captures just carry more DISCONTINUITY gaps.
+PLATFORM_FW_VERSION_EXPECTED = 12
 
 
 def decode_platform_fw_version(data: bytes) -> int:
@@ -994,7 +998,11 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # PLATFORM_IMU_BATCH stream, and the additive PLATFORM_IMU_CTRL / _READ RPCs
 # (READ's gap clamped while Armed). PROTOCOL_VERSION stays 14: an FW 44 board
 # answers the two RPCs with ERR_UNKNOWN_METHOD and sends no batch.
-EXPECTED_BRIDGE_FW_VERSION = 45
+# 45 -> 46 (2026-11-15, BUG-93; renumbered from 44 on 2026-11-18 and from 45 on 2026-11-20): the silence predicates no longer wrap on a
+# receive stamp newer than the fault task's clock read (one helper,
+# rx_older_than), so a live Leg can no longer read silent for one tick and trip
+# CAN_BUS_DOWN. Behavioural only: no wire change, PROTOCOL_VERSION stays 14.
+EXPECTED_BRIDGE_FW_VERSION = 46
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

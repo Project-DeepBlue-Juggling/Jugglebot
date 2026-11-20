@@ -2,9 +2,9 @@
 id: FEAT-45
 kind: feature
 title: Measure the Hand's commutation angle error through a hard brake on the bench Hand (FOC scope)
-status: in_progress
+status: complete
 created: '2026-11-07'
-updated: '2026-11-13T00:32:21Z'
+updated: '2026-11-20T13:17:32Z'
 owners: []
 priority: high
 effort: s
@@ -18,10 +18,8 @@ links:
 - tools/probes/hand_foc_scope.py
 - logbook/2026-11-07-hand-foc-scope.md
 - logbook/2026-11-11-sitting-debrief.md
+- logbook/2026-11-20-sitting-debrief-bench-hand.md
 filed_by: jugglebot-b1
-night_skip: sitting
-night_skip_on: '2026-11-15'
-night_skip_note: Rungs B and C on the bench Hand are on the Runbook.
 ---
 
 The onboard encoder drives both commutation and position, so a slipped magnet moves the reported angle and position together and neither shows it. The 100 Hz `hand_capture` cannot show it either, because iq freezes before the disarm. BUG-57's torque loss needs a measurement that can see an angle error directly.
@@ -65,25 +63,23 @@ The stage's acceleration cap is now 3000 rev/s^2 (owner, 2026-11-11: push the be
 
 ## Sitting
 
-- setup: armed, bridge-cycled
-- why: rung A is flown and the scope tool's analysis is fixed in the same commit (captures are re-analysed offline); this row flies harder bench brakes (rungs B and C, modelled entry 108 and 122 rev/s) for deceleration per amp, phase continuity and the modelled SPINOUT margin, the baseline any reading of BUG-57's torque loss needs. The tool withholds the angle unless the back-EMF dominates.
+- setup: bridge-cycled
+- why: rungs B and C passed on 2026-11-13 with no torque loss in 9 captured brakes, but the robot faults on about 1 to 3 % of launches, so that count cannot say whether the bench Hand has the fault. This row flies about 150 rung C brakes (modelled entry 122 rev/s) with the fault trigger armed, using FEAT-49's exact capture command. Each clean stage exit also tests whether the scope saves a window after the axis has left closed loop, which is what failed on the robot on 2026-11-20.
 - do:
-  - Launch down. Bench Hand on the bridge (CAN2, drive node 6), ODrive USB to the Jetson through the isolator (not the Win10 PC), main power on, Cup empty, E-stop in hand. From the repo root in the venv: `python tests/hardware/bench_hand_frame_bench.py status`. It must read node 6, IDLE, no errors.
+  - Launch down. Bench Hand on the bridge (CAN2, drive node 6), ODrive USB to the Jetson through the isolator (not the Win10 PC), 45 V supply on, Cup empty, E-stop in hand. From the repo root in the venv: `python tests/hardware/bench_hand_frame_bench.py status`. It must read node 6, IDLE, no errors.
   - `python tests/hardware/bench_hand_frame_bench.py push-check`, and push the Hand DOWN a few cm while it records. On FAIL stop: the mechanism or encoder is mirrored.
   - Move the Hand by hand to mid-stroke, about 5 rev from either stop. `python tests/hardware/bench_hand_frame_bench.py torque-check`: 2 A down, then 4 A up, open loop. On FAIL run no closed loop: `python tests/hardware/bench_hand_frame_bench.py calibrate` with the Hand mid-stroke, then `torque-check` again, and stop if it fails twice.
-  - `python tests/hardware/bench_hand_frame_bench.py home`: it drives DOWN at 3 rev/s and ends IDLE on the bottom stop at -0.10 rev. E-stop if it moves up. 
-  - Re-measure the top stop (the 10.4 rev figure predates the motor move): with the drive IDLE after `home`, lift the Hand slowly onto the top stop, run `status` and write its position down as `<measured>`. Lower the Hand again to between 0.3 and 0.7 rev (check with `status`): both rung flag sets are accepted across that range, and the stage now refuses before it energises.
+  - `python tests/hardware/bench_hand_frame_bench.py home`: it drives DOWN at 3 rev/s and ends IDLE on the bottom stop at -0.10 rev. E-stop if it moves up.
+  - Measure the top stop: with the drive IDLE after `home`, lift the Hand slowly onto the top stop, run `status` and write its position down as `<measured>`. Rung C needs it at or above 10.08 rev. Lower the Hand again to between 0.3 and 0.7 rev (check with `status`).
   - Re-flash the bridge, which clears the latch the drive's power-up left: `cd ros_ws/src/jugglebot/Teensy_code_canbridge`, then `pio run -e teensy41 -t upload`, then `cd` back to the repo root.
   - With the Hand still: `python tools/probes/hand_foc_scope.py probe --label bench`. Stop here if it prints NO-GO.
-  - Rung B, second terminal: `python tools/probes/hand_foc_scope.py capture --count 3 --label bench_100`.
-  - Rung B, first terminal: `python tests/hardware/hand_stream_bench.py --stage stroke_cut --close-loop --top-stop <measured> --repeat 3 --stroke-peak-vel 100 --cut-at-vel 85 --stroke-accel 2000 --stroke-top 8.75`. Read the stage's plan lines (entry speed, bench stop needed) before it moves, and stop if the stop needed is above `<measured>`. If a capture prints TIMED OUT, run the stage again. Stop if the rung does not settle cleanly.
-  - Rung B power capture: `python tools/probes/hand_foc_scope.py capture --preset power --count 1 --label bench_100_power`, then the same stage command with `--repeat 1`.
-  - Rung C (modelled brake entry 122 rev/s), only if rung B settled cleanly. Second terminal: `python tools/probes/hand_foc_scope.py capture --count 3 --label bench_122`.
-  - Rung C, first terminal: `python tests/hardware/hand_stream_bench.py --stage stroke_cut --close-loop --top-stop <measured> --repeat 3 --stroke-peak-vel 108 --cut-at-vel 103 --stroke-accel 2300 --stroke-top 8.3`. Read the plan lines first, as for rung B, and stop if the rung does not settle cleanly.
-  - Rung A is done and is not flown again. Stop at the first fault. Ctrl-C on the capture is safe; never Ctrl-C the stage mid-stroke. Recovery is `hand_stream_bench.py --clear-errors`. A drive restart (power cycle, any save) loses the reference: run `home` again, then re-flash the bridge.
-- pass: the measured top stop is at or above each rung's bench stop needed; the probe prints GO; each rung's captures fire on the brake with the whole brake inside the window; the stage reports no fault, no sched_refused and the same counter deltas as its model. The deceleration per amp, jump count and SPINOUT margin are results, not criteria.
-- record: the measured top stop; the frame tool's status, push-check and torque-check lines and the home line; the probe's sample rate, window, field strength and working offset; each capture's path; the stage's plan lines and verdict lines, and the path of its `_report.json`; the power capture's ratio, where about 1.0 confirms the voltage scaling; any fault.
-- minutes: 40
+  - Second terminal, left armed for the rest of the row (it has no timeout): `python tools/probes/hand_foc_scope.py capture --preset power --trigger fault --save-clean --label bench_vol`. It saves a window tagged `_clean` each time the drive leaves closed loop without a fault, and re-arms.
+  - First terminal, one brake first (the bridge firmware changed since rung C last flew): `python tests/hardware/hand_stream_bench.py --stage stroke_cut --close-loop --top-stop <measured> --repeat 1 --stroke-peak-vel 108 --cut-at-vel 103 --stroke-accel 2300 --stroke-top 8.3`. Read its plan lines before it moves; stop if the bench stop needed is above `<measured>` or the run is not PASS. Then note whether the second terminal saved a window and if its name ends `_clean` or `_clean_forced`.
+  - The volume run, first terminal, all 150 brakes in one armed run: `python tests/hardware/hand_stream_bench.py --stage stroke_cut --close-loop --top-stop <measured> --repeat 150 --stroke-peak-vel 108 --cut-at-vel 103 --stroke-accel 2300 --stroke-top 8.3`. It prints a line per run with the drive's temperatures and stops by itself at the first brake not PASS, fault or sched_refused above 0. It cannot pause: the E-stop is the stop. It ends with a TALLY line. Then touch the motor.
+  - Stop at the first fault, and leave the second terminal alone until it prints the saved path (up to about 5 s). Ctrl-C on the capture is safe; never Ctrl-C the stage mid-stroke. Recovery is `hand_stream_bench.py --clear-errors`. A drive restart (power cycle, any save) loses the reference: run `home` again, then re-flash the bridge.
+- pass: the measured top stop is at or above the stage's bench stop needed; the probe prints GO; the run ends `TALLY: 150 of 150 brakes flown, all PASS` with no fault and no sched_refused, or a fault occurs and the capture saves a window for it. A fault with a saved window is the better result. The count of brakes flown, whether the clean windows saved, and whether they were forced are results, not criteria.
+- record: the measured top stop; the status, push-check, torque-check and home lines; the probe's GO line; the TALLY line (brakes flown); the name of the first clean window and whether any was `_forced`; for a fault, the run and brake number, the stage's fault line and the capture's saved path; anything heard or felt.
+- minutes: 50
 
 ## Next
 
@@ -123,6 +119,24 @@ If the bench shows a clean baseline, `capture --trigger fault` can sit armed on 
 - verdict: pass
 - notes: Completed all runs, with all tests passing! All tests were done on 2026-11-13 between 10:30 and 11:30 am.
 
+## 2026-11-13 Sitting: what the captures show
+
+Read 2026-11-20 from `temp/logs/hand_stream_stroke_cut_20261113_*_report.json` and `temp/hand_foc_scope/20261113_*`; no debrief was run for this Sitting.
+
+- 12 stage runs flown (6 at rung B, 6 at rung C), all PASS on S1 to S5, no fault, `sched_refused` 0. All used `--top-stop 10.4`; whether that was re-measured is not recorded. Rung C needed 10.08 rev.
+- 9 brakes captured (5 at rung B, 3 at rung C, 1 window was a timeout at rest). Entry 109 to 111 rev/s (B) and 124 to 125 rev/s (C); peak deceleration about 6.2 to 6.3k rev/s^2; peak brake current 33 to 34 A smoothed, 37 to 38 A raw, of the 70 A limit.
+- No torque loss: deceleration per amp is 138 to 171 rev/s^2 per A in every 5 ms slice of the brake, against 152 to 155 on the run-up. No phase jumps (largest residual 0.006 turn). Peak modulation 0.15. Bus voltage rises 45.0 to 48.4 V in each brake.
+- The Hand lags the command: 0.21 to 0.31 rev past the commanded stop, settled in 51 to 75 ms, and up to 1.35 rev behind inside the cut window against the stage's 1.9 rev belt.
+- Power capture ratio 0.985 to 0.987, so the voltage scaling is confirmed. Modelled SPINOUT margin (model not checked against firmware): mechanical power reached -4.4 W at rung B and -6.1 W at rung C against the -10 W threshold.
+- Not shown: that the bench Hand is free of BUG-57's fault. With 2026-11-11 this is 16 clean brakes, and a 1 to 3 % fault rate would give that result most of the time. Also nothing above 125 rev/s or 38 A: the stop is the firmware's fixed 4500 rev/s^2 profile, and above `--stroke-accel 2300` the planner refuses every flag set on this stroke.
+
+## Sitting result (2026-11-20)
+
+- verdict: pass
+- notes: Passed without issue (sheet 2026-11-20-bench-hand, step 11) [derived: temp/logs/hand_stream_stroke_cut_20261120_232948_report.json: top stop 10.4 rev against bench stop needed 10.087; TALLY 150 of 150 brakes flown, all PASS; fault NONE and sched_refused 0 on every run; FET 31.7 to 35.9 C, motor temperature not reported (nan); worst send lateness 2.8 ms. The capture saved no window (no fault occurred).]
+
 ## Progress
 
 - 2026-11-11: Rung A flown 2026-11-11 (brake from about 80 rev/s, clean, about 154 rev/s^2 per A); the scope tool's angle, jump and torque lines were wrong and are fixed; rungs B and C wait for the next bench Sitting (detail below).
+- 2026-11-20: Rungs B and C passed on the bench 2026-11-13 (12 runs, 9 captured brakes, no torque loss, detail above); the Sitting row is now about 150 rung C brakes with the fault trigger armed.
+- 2026-11-21: Passed at the bench Sitting of 2026-11-20: 150 of 150 rung C brakes PASS in one run (entry 122 rev/s), no fault, no scheduler refusal, FET 31.7 to 35.9 C; the bench Hand does not show the torque loss in 150 brakes, so no fault window was captured.

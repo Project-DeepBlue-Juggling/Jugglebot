@@ -4,7 +4,7 @@ kind: idea
 title: Platform Accelerometer?
 status: in_progress
 created: '2026-11-08'
-updated: '2026-11-18T11:19:42Z'
+updated: '2026-11-20T12:38:38Z'
 owners:
 - claude
 priority: medium
@@ -16,6 +16,7 @@ area: platform-teensy
 blocked_by: []
 links:
 - plans/active/platform-imu.md
+- logbook/2026-11-20-sitting-debrief-robot-2.md
 filed_by: harrison
 night_skip: owner-session
 night_skip_on: '2026-11-18'
@@ -64,29 +65,24 @@ Working at `tools/probes/imu_bench/` (commit afdf0e91, logbook `2026-11-18-imu-b
 
 ## Sitting
 
-- setup: bridge-cycled, armed
-- why: first hardware contact of the Platform IMU path (plans/active/platform-imu.md P4): the new can-bridge and Platform Teensy firmware must be flashed and the capture, upload and bus-load behaviour shown safe, and the upload rate chosen, before any Attempt relies on it.
+- setup: level
+- why: Rung P5 of plans/active/platform-imu.md: measure how the IMU sits on the Platform so its readings can be expressed in the Platform frame, and close the residue of Rung P4 (passed 2026-11-20).
 - do:
-  - With the launch down, flash the can-bridge, then the Platform Teensy over CAN; read both identities (the BridgeIdentity sniff) and bring the launch up.
-  - Request a tilt reading and check the Hand fan still answers.
-  - With the IMU unplugged, power-cycle the Platform Teensy: it must boot, answer CAN and accept a firmware update. Then replug the IMU with the board still powered and check the status frame shows the IMU return to RUNNING without another power cycle.
-  - Check the 1 Hz IMU status frame arrives, and on the first boot after the flash that the first STATUS appears about 10 s after the boot (none before that is normal).
-  - Fault-loop rule: if the Platform Teensy stops answering after the flash, take the launch down and re-run the upload until the log shows BEGIN OK.
-  - At rest take a capture and upload it: |a| about 1 g, rate 1 kHz, 0 overflows, CRC passes. Read GYRO_ACCEL_CONFIG0 back from the chip and settle the ODR/4 UI-filter code from it.
-  - Upload again with a forced gap and check the re-request heals it.
-  - Arm the robot and hold the Active pose. Read the baseline (bridge loop and emit-gap counters, RX queue depth, bus error counts, ODrive errors, Leg position error). Then upload at 400, 800, 1250 and 1600 frames/s, reading the same counters at each step.
-  - Arm and run an Attempt-like move; compare the bus-load counters in `/profile` with an earlier bag.
+  - Launch, home and Level with Mocap tracking the Platform. With the Platform still at Level, upload the whole ring with `ros2 service call /platform_imu/upload jugglebot_interfaces/srv/SetString "{data: \"{}\"}"` and wait for the GUI IMU panel to leave "uploading"; note the wall-clock time.
+  - Tilt the Platform about its X axis, hold still for 10 s, return to Level; then the same about Y. Upload the whole ring again within 30 s of the last move (the ring holds 32 s) and note the time. The Tilt command and its angle are not fixed yet (2026-11-20): the Session preparing the sheet names them and rehearses them before this row goes on a sheet.
+  - Rate ramp left from Rung P4: upload the whole ring Armed at 400, 800 and 1600 frames/s once the live pace hook for `imu_read_gap_10us` exists (not built, 2026-11-20); note each upload's wall-clock window.
 - pass:
-  - Both identities read as flashed; the tilt request and the Hand fan answer; the 1 Hz status frame arrives.
-  - With the IMU unplugged the board boots, answers CAN and takes an update, and after the replug the status frame returns to RUNNING without a power cycle.
-  - The rest capture reads |a| about 1 g at 1 kHz with 0 overflows; both uploads pass CRC and the forced gap is re-requested and healed.
-  - At the chosen pace every counter equals its baseline; the bus-load counters are unchanged during the Attempt-like move.
-  - Not checked here: the tilt request's invalid reply with the inclinometer absent (the SCL3300 is not unplugged); P2's native tests cover it.
+  - The Level capture and the Tilt captures are complete and CRC-checked, and the mount rotation fitted from them reproduces gravity in the Platform frame to within 1 degree at Level and at both Tilts (computed at the debrief).
+  - A calibration file is written beside the other calibration artefacts.
 - record:
-  - Both identity strings; the capture's |a|, rate, overflow count and CRC result; the GYRO_ACCEL_CONFIG0 value read back; the forced-gap outcome.
-  - For each ramp step the counters and the upload time, and the operating rate chosen (the highest step with no change from baseline).
-  - The `/profile` bus-load before and after.
-- minutes: 90
+  - The wall-clock time of each upload and each Tilt hold; the Tilt angles commanded.
+  - For each ramp step the upload time; the counters are read from the bag at the debrief.
+- minutes: 30
+
+## Sitting result (2026-11-20 23:45)
+
+- verdict: pass
+- notes: setpoints_coalesced is now 10 (sheet 2026-11-20-robot-2, step 15) [derived: owner flipped inconclusive to pass. Replug returned to RUNNING at 22:52:41 on the same boot; i2c_errors and fifo_overflows 0 in all 1593 Armed status messages; four captures complete, ring CRC OK. Not met literally: forced gap unflown; Armed uploads 79-84 s with CAN1 at 74-77 %]
 
 ## Progress
 
@@ -96,3 +92,6 @@ Working at `tools/probes/imu_bench/` (commit afdf0e91, logbook `2026-11-18-imu-b
 - 2026-11-18: Design round done: decisions agreed with the owner and written up in plans/active/platform-imu.md (phases P1 to P5, buffered capture only, no live stream).
 - 2026-11-19: Owner decisions recorded in the plan: uploads run while Armed between Attempts (the Jetson gates; the bridge clamps the READ gap), target under 60 s for the full window, P4 gains a rate ramp.
 - 2026-11-19: FW 11 written and audited on branch imu-p2, awaiting the gate and the flash.
+- 2026-11-20: Rung P4 at rest done on FW 12 (identities, tilt, fan, status counters, first capture and upload: 32000 samples, CRC OK, |a| 1.0004 g, 56.25 s); open: capture header temperature reads -128, GYRO_ACCEL_CONFIG0 reads 0x00 (ODR/2, ODR/4 code unverified); the Sitting section now lists only the Armed checks (logbook 2026-11-20-platform-imu-status-counters-and-first-capture)
+- 2026-11-20: Correction to the line above: the header temperature -128 was a valid 24.03 C (TEMP_DATA counts); the json now carries temp_c_start and temp_c_freeze. The header GYRO_ACCEL_CONFIG0 is the firmware constant, not a chip read-back. Owner decided the UI filter stays at ODR/2 (logbook 2026-11-20-platform-imu-capture-header-temperature).
+- 2026-11-20: Rung P4 passed at the Sitting of 2026-11-20 (owner): replug recovered without a power cycle, i2c_errors and fifo_overflows 0 Armed through three oval Attempts, four complete captures. Residue: forced gap unflown, Armed uploads 79-84 s (IDEA-25), rate ramp. Next: Rung P5 mount calibration.

@@ -45,9 +45,21 @@ ERR_EMPTY 0x14 (FREEZE with no samples); ERR_DISABLED 0x15; ERR_FW_UPDATE 0x16.
 **IMU_STATUS** `[state u8][flags u8][temp_c i8][fifo_overflows u8][i2c_errors u8][sync_peak u8][fill_s u8][boot u8]`.
 `flags`: SENSOR_OK 0x01, TIME_SYNCED 0x02 (a 0x7DD frame in the last period), RING_WRAPPED 0x04, I2C_400K 0x08,
 DISCONTINUITY 0x10. `temp_c` is the chip's temperature rounded (-128 = unknown). The two counters are since boot,
-saturating at 255. `sync_peak` is the largest |innovation| of the 0x7DD slave in the period (wall time received minus
+saturating at 255; `i2c_errors` counts every failed I2C transfer, including those the RUNNING retry absorbs (section 4). `sync_peak` is the largest |innovation| of the 0x7DD slave in the period (wall time received minus
 `get_wall_time_us()` before the IIR update), in 10 us counts, 254 saturating, 255 = no sync frame. `fill_s` is retained
 samples / `nominal_odr_hz`. `boot` is the low byte of `boot_id` (section 3).
+
+*ROS topic `platform_imu/status` health keys (2 Hz DiagnosticStatus, from the last IMU_STATUS).* Besides the upload
+keys (`busy`, `phase`, `frames_*`, `platform_state`, `platform_flags`, `platform_boot`, `status_age_s`, `last_*`, `writer_*`,
+`bridge_*`): `i2c_errors`, `fifo_overflows` (raw u8), `i2c_errors_saturated`, `fifo_overflows_saturated` (1 at 255),
+`i2c_errors_delta_since_launch`, `fifo_overflows_delta_since_launch` (Jetson-side totals: positive deltas accumulate, the first
+STATUS only sets the baseline, a boot-byte change or a decrease adds the new value as errors since the reboot; invisible once
+the board counter sits at 255), `i2c_errors_increase_age_s`, `fifo_overflows_increase_age_s` (seconds since the last rise within
+one boot, empty if none), `temp_c` (empty when -128), `sync_peak` (raw), `sync_peak_ms` (raw x 0.01 ms, empty when 255),
+`sync_peak_valid` (0 when 255 = no sync frame), `sync_peak_saturated` (1 at 254, so `sync_peak_ms` is a lower bound),
+and the flags `sensor_ok`, `time_synced`, `ring_wrapped`, `i2c_400k`, `discontinuity` (0/1). Level: WARN when the last upload
+failed, a CRC failed or a write failed (as before), or when `i2c_errors` or `fifo_overflows` rose within the last 60 s of the
+same boot (a reboot never arms it); otherwise OK.
 
 **IMU_DATA** `[seq u16][word 6 B]`. `seq` addresses the frozen-capture image (section 3), so a frame's `seq` alone says
 what it carries and a gap is found from `seq` alone, across blocks and across a late tail from a replaced block.
@@ -78,7 +90,7 @@ anchor (the earlier drain's `local_us` and `wall_us`), so the pre-gap segment en
 splits segments at the DISCONTINUITY anchor: samples with index before the closing anchor's `index` are pre-gap, and
 samples from the closing anchor's `index` up to the DISCONTINUITY anchor's `index` are post-gap (the first drain after
 the gap); the closing anchor itself belongs to the pre-gap fit. `flags`: DISCONTINUITY 0x01 (samples lost just before this anchor,
-by FIFO overflow or a re-probe: fit each side separately), WALL_INVALID 0x02 (no 0x7DD yet), SYNC_STEP 0x04 (the wall
+by FIFO overflow, a bad FIFO header, a failed FIFO burst read or a re-probe: fit each side separately), WALL_INVALID 0x02 (no 0x7DD yet), SYNC_STEP 0x04 (the wall
 offset was stepped since the previous anchor).
 
 **Header** (66 B, 11 words):
@@ -104,6 +116,14 @@ Both CRCs are CRC-32/IEEE (Python `zlib.crc32`, the FwUpdate VERIFY CRC). `paylo
 the sample words, in seq order, exactly as the IMU_DATA payloads carry them. The Platform Teensy computes it at FREEZE,
 in slices of `CRC_SLICE_BYTES` (8192 B, expected to hold `loop()` for about 1 ms each; P2 times one slice on the board), and sends the FREEZE reply when it is done.
 
+The two temperature fields are raw TEMP_DATA counts, degC = raw / 132.48 + 25, NOT the IMU_STATUS `temp_c` (no -128
+sentinel here: -128 is 24.03 degC). The board fills them from the FIFO packet's 8-bit temperature (degC = byte / 2.07 + 25,
+the source of IMU_STATUS `temp_c`) times 64, since 132.48 / 2.07 = 64, so they step by 64 counts (0.48 degC) and cost
+no register read. Start is the first sample pushed since the capture was reset (not necessarily the oldest sample retained after a
+ring wrap), freeze the newest sample before FREEZE; a capture with N = 0 has no reading: the board writes 0 for start
+and may leave a stale value in freeze, and the Jetson reports both as null. The Jetson's capture `.json` carries them decoded beside the raw ones, as
+`header.temp_c_start` and `header.temp_c_freeze` (null when N = 0).
+
 `boot_id` is a nonzero u32 that changes on every warm boot: it mixes a boot counter kept in RAM2 (not cleared by the
 core's startup code, so it survives a warm reset) and the RTC 32 kHz count with the cycle counter and the timing of CAN
 frames received during `setup()`; no hardware RNG is called. The capture_id counter starts at its low 16 bits and steps at each
@@ -115,14 +135,29 @@ States (IMU_STATUS byte 0): DISABLED 0, PROBING 1, RUNNING 2, FROZEN 3, UPLOADIN
 board boots into PROBING (enabled); DISABLE is RAM-only. For the first `BOOT_SETTLE_MS` (10 s) after boot the board does
 no IMU work: no I2C, no IMU_STATUS, and every IMU_CMD is dropped unanswered. The first probe and the first STATUS come at
 10 s, so no STATUS for 10 s after a boot is normal. Internal transitions: PROBING to RUNNING when the chip answers
-and is configured; RUNNING to BACKOFF on an I2C error or a failed WHO_AM_I re-check; BACKOFF to PROBING after a bounded
+and is configured; RUNNING to BACKOFF on the third failed FIFO transfer in a row (below) or a failed WHO_AM_I re-check; BACKOFF to PROBING after a bounded
 back-off of at least 1 s; any state to FW_HALTED at FwUpdate BEGIN (I2C stopped, capture discarded); FW_HALTED to
 PROBING if that update is abandoned, unless the BEGIN arrived during the 10 s boot settle, in which case FW_HALTED holds
 until the next reboot (see "Recovery if IMU code faults"); UPLOADING to FROZEN once the block's last frame is handed to FlexCAN. Probe failures
 stay in PROBING (BACKOFF is entered only from RUNNING), re-probing after 1, 2, 4, 8, 16 and 32 s, then every 60 s; the
 schedule depends only on the sensor, not on host polling, and 10 s of clean RUNNING resets it. A board with no IMU
 therefore shows PROBING with SENSOR_OK clear and a rising `i2c_errors`: that is not an alarm. A FIFO
-overflow alone keeps RUNNING and marks the next anchor DISCONTINUITY. Recovery from BACKOFF keeps appending to the same
+overflow alone keeps RUNNING and marks the next anchor DISCONTINUITY.
+
+**Retry in RUNNING (FW 12).** A failed FIFO transfer while RUNNING is counted in `i2c_errors` and, if it is the
+first or second in a row, absorbed: the next loop pass clears the bus (nine SCL pulses and a STOP, then an I2C
+controller reset, ~0.12 ms, no device transaction) and the pass after retries. A failed FIFO_COUNT read took
+nothing from the FIFO, so it is simply counted again: no DISCONTINUITY, no sample lost. A failed burst read leaves
+the chip's FIFO read position unknown, so the rest of that drain is dropped, a closing anchor is written, the FIFO is
+flushed and the next anchor is DISCONTINUITY. A failed flush is recovered and flushed again. A bad FIFO header (the
+transfer completed, its content did not parse) is handled the same way (nothing of that burst is kept, flush,
+DISCONTINUITY) and joins the run of failures, but it is not an I2C error and needs no bus clear. A successful burst ends
+the run; a successful count or flush ends it only if the run holds no failed burst and no bad header (after those, the
+recovery, flush and count succeed even when every burst then fails again). The third failure in a row goes to BACKOFF
+as above. A closing anchor written in the middle of a drain (a failed burst, a bad header, a FREEZE) has its
+`local_us` and `wall_us` moved back by the drain's counted-but-unread packets x 980 us (the nominal 1 ms period less
+2 %), so it stays an upper bound on its last sample's time without the drain's lag. The board also clears the bus before every re-probe that
+follows an error. A retry costs about three loop passes, far inside the 128 ms the chip FIFO holds at 1 kHz. Recovery from BACKOFF keeps appending to the same
 ring behind a DISCONTINUITY anchor; only boot, ENABLE from DISABLED and RESUME start a new capture. There is no I2C
 traffic in FROZEN or UPLOADING. Nothing in this table or in the Platform Teensy depends on Armed: the gating below is the bridge's and the Jetson's; RESUME flushes the chip FIFO and re-checks WHO_AM_I.
 
@@ -149,8 +184,8 @@ sooner than the block's gap after the previous one. The gap is `frame_gap_10us` 
 `read_min_gap_10us` (400 us) when smaller.
 
 **Compile-time kill switch.** `PLATFORM_IMU_ENABLED=0` compiles every IMU path out. That image ignores IMU_CMD (0x6E3,
-it falls to the ordinary frame handling), sends no 0x6E4-0x6E6 frame, and still reports FW 11, so the host can infer
-"no IMU" only from STATUS silence: no STATUS for at least 3 s on an FW 11 board that has been up for more than 10 s is a
+it falls to the ordinary frame handling), sends no 0x6E4-0x6E6 frame, and still reports its FW version (11 or later), so the host can infer
+"no IMU" only from STATUS silence: no STATUS for at least 3 s on an FW 11+ board that has been up for more than 10 s is a
 no-IMU build, not a fault.
 
 **Recovery if IMU code faults.** The mechanism: a fault in IMU code makes the core write a CrashReport, wait 8 s and

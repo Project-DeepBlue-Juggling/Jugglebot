@@ -14,6 +14,7 @@
 #include <array>
 #include <cstring>
 #include <map>
+#include <string>
 #include <vector>
 
 #include "../../../ros_ws/src/jugglebot/Teensy_code_platform/imu_service.h"
@@ -31,15 +32,29 @@ uint32_t g32(const uint8_t* p) { return uint32_t(g16(p)) | (uint32_t(g16(p + 2))
 struct FakeIo {
   bool present = true;
   bool wall_valid = true;
-  bool force_overflow = false, bad_packet = false;
+  bool force_overflow = false;
+  int bad_packet = 0;                    // the next N bursts return a bad FIFO header
   uint32_t t_us = 0;
   bool configured = false;
   uint32_t stream_start_us = 0, consumed = 0;
   int init_left = 0;
   int pass_txns = 0, max_pass_txns = 0, total_txns = 0;
   std::vector<uint32_t> txn_times_ms;
+  // A bus or controller left stuck by a failed transfer: every op fails until bus_recover().
+  bool wedged = false;
+  int stubborn = 0;                      // recoveries that do NOT clear a wedge (it outlasts the RUNNING retries)
+  int recovers = 0;
+  // Scripted transient failures: the next N ops of that kind fail once each (the bus itself stays fine).
+  // A failed burst has taken some bytes from the chip FIFO, as a real short read can.
+  int fail_c = 0, fail_b = 0, fail_f = 0;
+  int fail_b_skip = 0;                   // bursts that succeed before fail_b starts failing
+  uint32_t last_count_us = 0;            // time and value of the last successful FIFO_COUNT
+  int last_count_n = 0;
+  std::string log;                       // one letter per bus step: r recover, i init, c count, b burst, f flush, w who
 
-  void txn() { pass_txns++; total_txns++; txn_times_ms.push_back(t_us / 1000); }
+  void txn(char k = '?') { pass_txns++; total_txns++; txn_times_ms.push_back(t_us / 1000); log += k; }
+  // A bus step, but no device transaction: counted against the one-step-per-pass rule, not total_txns.
+  void bus_recover() { pass_txns++; recovers++; if (stubborn > 0) stubborn--; else wedged = false; log += 'r'; }
   void begin_pass() { pass_txns = 0; }
   void end_pass() { if (pass_txns > max_pass_txns) max_pass_txns = pass_txns; }
   uint32_t produced() const { return configured ? (t_us - stream_start_us) / 1000 : 0; }
@@ -50,24 +65,29 @@ struct FakeIo {
   }
   void init_start() { init_left = 4; }
   int init_step(uint32_t now) {
-    txn();
-    if (!present) return -1;
+    txn('i');
+    if (!present || wedged) return -1;
     if (--init_left > 0) return INIT_PENDING;
     configured = true; stream_start_us = now; consumed = 0;
     return 0;
   }
   int fifo_count(bool* ovf) {
-    txn();
-    if (!present) return -3;
+    txn('c');
+    if (!present || wedged) return -3;
+    if (fail_c > 0) { fail_c--; return -3; }
     *ovf = false;
     uint32_t n = in_fifo(ovf);
     if (force_overflow) { *ovf = true; force_overflow = false; }
+    last_count_us = t_us;
+    last_count_n = int(n);
     return int(n);
   }
   int read_burst(Pkt* out, int n) {
-    txn();
-    if (!present) return -3;
-    if (bad_packet) { bad_packet = false; return ERR_BAD_PACKET; }
+    txn('b');
+    if (!present || wedged) return -3;
+    if (fail_b > 0 && fail_b_skip == 0) { fail_b--; consumed += uint32_t(n) / 2; return -3; }
+    if (fail_b > 0) fail_b_skip--;
+    if (bad_packet > 0) { bad_packet--; consumed += uint32_t(n); return ERR_BAD_PACKET; }
     for (int i = 0; i < n; i++) {
       const uint32_t k = consumed++;
       for (int j = 0; j < 6; j++) out[i].s[j] = int16_t((k * 7 + j) & 0x7FFF);
@@ -75,10 +95,16 @@ struct FakeIo {
     }
     return n;
   }
-  int flush() { txn(); if (!present) return -3; consumed = produced(); return 0; }
-  int check_who() { txn(); return present ? 0 : -2; }
+  int flush() {
+    txn('f');
+    if (!present || wedged) return -3;
+    if (fail_f > 0) { fail_f--; return -3; }
+    consumed = produced();
+    return 0;
+  }
+  int check_who() { txn('w'); return present && !wedged ? 0 : -2; }
   void stamp(Stamp* s) { s->local_us = t_us; s->wall_us = uint64_t(t_us) + 5000000000ull; s->wall_valid = wall_valid; }
-  void header_info(ImuCapture::HeaderInfo* h) { h->odr_hz = 1000; h->accel_lsb_per_g = 2048; h->gyro_lsb_per_dps_x10 = 328; h->fw_version = 11; h->i2c_clock_100khz = 10; }
+  void header_info(ImuCapture::HeaderInfo* h) { h->odr_hz = 1000; h->accel_lsb_per_g = 2048; h->gyro_lsb_per_dps_x10 = 328; h->fw_version = 12; h->i2c_clock_100khz = 10; }
 };
 
 struct Sent { uint32_t id; std::array<uint8_t, 8> d; uint32_t t_us; };
@@ -154,6 +180,17 @@ struct Rig {
     REQUIRE(svc.state() == S::FROZEN);
     REQUIRE(cap.header_ready());
   }
+  // Run until a drain has just finished (the last bus step was its one burst: ~4 packets per
+  // 4 ms drain at 1 kHz), so the next drain op is a FIFO_COUNT.
+  void to_drain_end() {
+    for (int i = 0; i < 100 && (io.log.empty() || io.log.back() != 'b'); i++) { pass(); t_us += 500; }
+    REQUIRE(io.log.back() == 'b');
+  }
+  int disc_anchors() const {
+    int d = 0;
+    for (auto& x : anchor_records()) if (x[16] & PlatformImuAnchorFlag::DISCONTINUITY) d++;
+    return d;
+  }
   // Anchor records from a frozen capture.
   std::vector<std::array<uint8_t, 18>> anchor_records() const {
     std::vector<std::array<uint8_t, 18>> v;
@@ -215,6 +252,12 @@ TEST_CASE("IMU absent for ever: bounded work, back-off growth to 60 s, status ev
   CHECK(st.back().d[0] == S::PROBING);
   CHECK((st.back().d[1] & PlatformImuStatusFlag::SENSOR_OK) == 0);
   CHECK(st.back().d[7] == 0x78);         // boot byte
+  // The first probe of the boot starts on the bus as it is; every later probe (each follows a
+  // failure) is preceded by exactly one bus recovery, in a pass of its own.
+  CHECK(r.io.log.front() == 'i');
+  CHECK(r.io.recovers == int(r.svc.counters().probes) - 1);
+  CHECK(r.svc.counters().recoveries == uint32_t(r.io.recovers));
+  for (size_t k = 1; k < r.io.log.size(); k++) if (r.io.log[k] == 'r') CHECK(r.io.log[k - 1] == 'i');
   // A FREEZE with nothing captured is refused, and the board stays reachable for commands.
   r.cmd({Op::FREEZE, 1});
   r.run_ms(5);
@@ -313,6 +356,10 @@ TEST_CASE("a bad FIFO packet flushes and marks a discontinuity") {
   r.run_ms(500);
   CHECK(r.svc.counters().bad_packets == 1);
   CHECK(r.svc.state() == S::RUNNING);
+  CHECK(r.svc.counters().i2c_errors == 0);   // the transfer completed: not an I2C error, no recovery, no retry
+  CHECK(r.svc.counters().recoveries == 0);
+  CHECK(r.svc.counters().retries == 0);
+  CHECK(r.svc.counters().fifo_overflows == 0);
   r.freeze_and_wait();
   int disc = 0;
   for (auto& x : r.anchor_records()) if (x[16] & PlatformImuAnchorFlag::DISCONTINUITY) disc++;
@@ -597,4 +644,308 @@ TEST_CASE("READ while FW_HALTED is refused ERR_FW_UPDATE and sends no DATA") {
   REQUIRE(r.last_reply());
   CHECK(r.last_reply()->d[1] == St::ERR_FW_UPDATE);
   CHECK(r.tx.of(PlatformCanId::IMU_DATA).size() == data_before);
+}
+
+TEST_CASE("a bus or controller wedged by a failed transfer heals without a reboot (unconditional recovery)") {
+  // FW 11 on the robot, 2026-11-19 overnight: after repeated transient errors the engine sat in
+  // PROBING with SENSOR_OK clear until the Teensy was rebooted, while the chip itself was fine.
+  // Model: from the moment of a failure, every op fails until the bus is cleared and the
+  // controller reset. Without the recovery step this stays in PROBING for ever.
+  // FW 12: a wedge the RUNNING retries' recoveries cannot clear (stubborn = 2) is what reaches
+  // BACKOFF; the recovery before the re-probe then heals it.
+  Rig r;
+  r.to_running(1000);
+  r.io.wedged = true;
+  r.io.stubborn = int(RUNNING_MAX_RETRIES);
+  r.run_ms(10);
+  CHECK(r.svc.state() == S::BACKOFF);
+  const size_t at_error = r.io.log.size();
+  for (int i = 0; i < 20000 && r.svc.state() != S::RUNNING; i++) { r.pass(); r.t_us += 500; }
+  CHECK(r.svc.state() == S::RUNNING);
+  CHECK(r.svc.chip_ok());
+  CHECK(r.io.recovers == 3);              // two RUNNING retries, then the one before the re-probe
+  REQUIRE(r.io.log.size() > at_error + 1);
+  CHECK(r.io.log[at_error] == 'r');      // the first bus step after the error is the recovery ...
+  CHECK(r.io.log[at_error + 1] == 'i');  // ... then the re-probe
+  CHECK(r.io.max_pass_txns <= 1);
+  CHECK(r.svc.counters().i2c_errors == 3);
+  // And again: a second wedge heals the same way, no matter how many came before.
+  for (int k = 0; k < 5; k++) {
+    r.run_ms(12000);                     // past HEALTHY_RESET_MS, so the back-off restarts at 1 s
+    r.io.wedged = true;
+    r.io.stubborn = int(RUNNING_MAX_RETRIES);
+    r.run_ms(10);
+    CHECK(r.svc.state() == S::BACKOFF);
+    for (int i = 0; i < 20000 && r.svc.state() != S::RUNNING; i++) { r.pass(); r.t_us += 500; }
+    CHECK(r.svc.state() == S::RUNNING);
+  }
+  CHECK(r.io.recovers == 18);
+}
+
+TEST_CASE("a wedge that outlasts the first recovery is retried with a recovery before every probe") {
+  Rig r;
+  r.to_running(500);
+  r.io.wedged = true;
+  r.io.stubborn = int(RUNNING_MAX_RETRIES);
+  r.run_ms(10);
+  REQUIRE(r.svc.state() == S::BACKOFF);
+  // The bus stays stuck through three recoveries (a stuck device would, until its byte ends).
+  int left = 3;
+  for (int i = 0; i < 40000 && r.svc.state() != S::RUNNING; i++) {
+    const int before = r.io.recovers;
+    r.pass();
+    r.t_us += 500;
+    if (r.io.recovers != before && left-- > 0) r.io.wedged = true;
+  }
+  CHECK(r.svc.state() == S::RUNNING);
+  CHECK(r.io.recovers == 2 + 4);         // the two RUNNING retries, then one before each of 4 probes
+  CHECK(r.io.max_pass_txns <= 1);
+}
+
+// ----------------------------------------------------------------------------------------
+//  THE RUNNING RETRY POLICY (FW 12, logbook 2026-11-20-platform-imu-i2c-error-bursts)
+// ----------------------------------------------------------------------------------------
+
+TEST_CASE("RUNNING retry: a failed FIFO_COUNT is recovered and counted again, no BACKOFF, no DISCONTINUITY") {
+  Rig r;
+  r.to_running(500);
+  r.to_drain_end();
+  const size_t at = r.io.log.size();
+  r.io.fail_c = 1;
+  r.run_ms(500);
+  CHECK(r.svc.state() == S::RUNNING);
+  CHECK(r.svc.chip_ok());
+  CHECK(r.svc.fail_streak() == 0);
+  CHECK(r.svc.retry_streak() == 0);
+  CHECK(r.svc.counters().i2c_errors == 1);    // visibility: every failure is counted
+  CHECK(r.svc.counters().retries == 1);
+  CHECK(r.svc.counters().recoveries == 1);
+  CHECK(r.svc.counters().fifo_overflows == 0);
+  REQUIRE(r.io.log.size() >= at + 4);
+  CHECK(r.io.log.substr(at, 4) == "crcb");   // fail, recover, count again, burst: one step per pass
+  CHECK(r.cap.appended() == r.io.consumed);   // nothing was taken from the FIFO: no sample lost
+  r.freeze_and_wait();
+  CHECK(r.disc_anchors() == 0);
+  CHECK((g16(r.cap.header() + 18) & PlatformImuCaptureFlag::DISCONTINUITY) == 0);
+}
+
+TEST_CASE("RUNNING retry: a failed burst recovers, flushes, marks one DISCONTINUITY and stays RUNNING") {
+  Rig r;
+  r.to_running(500);
+  r.to_drain_end();
+  const uint32_t before = r.cap.appended();
+  const size_t at = r.io.log.size();
+  r.io.fail_b = 1;
+  r.run_ms(500);
+  CHECK(r.svc.state() == S::RUNNING);
+  CHECK(r.svc.chip_ok());
+  CHECK(r.svc.fail_streak() == 0);
+  CHECK(r.svc.counters().i2c_errors == 1);
+  CHECK(r.svc.counters().retries == 1);
+  CHECK(r.svc.counters().recoveries == 1);
+  CHECK(r.svc.counters().fifo_overflows == 0);
+  REQUIRE(r.io.log.size() >= at + 5);
+  CHECK(r.io.log.substr(at, 5) == "cbrfc");  // count, burst fails, recover, flush, then drains resume
+  CHECK(r.cap.appended() > before + 400);     // ~0.5 s of samples after the gap
+  r.freeze_and_wait();
+  auto a = r.anchor_records();
+  int disc = 0;
+  for (size_t i = 0; i < a.size(); i++)
+    if (a[i][16] & PlatformImuAnchorFlag::DISCONTINUITY) {
+      disc++;
+      REQUIRE(i > 0);
+      CHECK(g32(a[i - 1].data()) == before);  // the closing anchor ends exactly at the gap
+    }
+  CHECK(disc == 1);
+  CHECK(g16(r.cap.header() + 46) == 0);       // FIFO overflows in this capture
+}
+
+TEST_CASE("RUNNING retry: the third failure in a row goes to BACKOFF exactly as before") {
+  SUBCASE("three failed counts") {
+    Rig r;
+    r.to_running(500);
+    r.to_drain_end();
+    const size_t at = r.io.log.size();
+    r.io.fail_c = 3;
+    r.run_ms(10);                            // a failure, a recovery and a retry are three 0.5 ms passes
+    CHECK(r.svc.state() == S::BACKOFF);
+    CHECK(r.svc.fail_streak() == 1);
+    CHECK(r.svc.counters().i2c_errors == 3);
+    CHECK(r.svc.counters().retries == 2);
+    CHECK(r.io.log.substr(at) == "crcrc");
+    const size_t at_backoff = r.io.log.size();
+    for (int i = 0; i < 20000 && r.svc.state() != S::RUNNING; i++) { r.pass(); r.t_us += 500; }
+    CHECK(r.svc.state() == S::RUNNING);
+    REQUIRE(r.io.log.size() > at_backoff + 1);
+    CHECK(r.io.log.substr(at_backoff, 2) == "ri");  // the recovery before the re-probe, as in FW 11
+    r.run_ms(300);
+    r.freeze_and_wait();
+    CHECK(r.disc_anchors() == 1);           // the BACKOFF gap
+  }
+  SUBCASE("a failed burst, then two failed flushes") {
+    Rig r;
+    r.to_running(500);
+    r.to_drain_end();
+    const size_t at = r.io.log.size();
+    r.io.fail_b = 1;
+    r.io.fail_f = 2;
+    r.run_ms(10);
+    CHECK(r.svc.state() == S::BACKOFF);
+    CHECK(r.svc.counters().i2c_errors == 3);
+    CHECK(r.io.log.substr(at) == "cbrfrf");
+  }
+  SUBCASE("a failed burst, then one failed flush: the second flush succeeds and RUNNING goes on") {
+    Rig r;
+    r.to_running(500);
+    r.to_drain_end();
+    const size_t at = r.io.log.size();
+    r.io.fail_b = 1;
+    r.io.fail_f = 1;
+    r.run_ms(500);
+    CHECK(r.svc.state() == S::RUNNING);
+    CHECK(r.svc.counters().i2c_errors == 2);
+    CHECK(r.svc.counters().retries == 2);
+    CHECK(r.io.log.substr(at, 7) == "cbrfrfc");
+    r.freeze_and_wait();
+    CHECK(r.disc_anchors() == 1);           // one gap: the burst; the failed flush adds none
+  }
+}
+
+TEST_CASE("RUNNING retry: a successful transfer resets the run of failures") {
+  Rig r;
+  r.to_running(500);
+  r.to_drain_end();
+  const size_t at = r.io.log.size();
+  r.io.fail_c = 2;                           // two failed counts, then a good one ...
+  r.io.fail_b = 1;                           // ... then a failed burst: the 3rd failure, but not in a row
+  r.run_ms(500);
+  CHECK(r.svc.state() == S::RUNNING);
+  CHECK(r.svc.fail_streak() == 0);
+  CHECK(r.svc.counters().i2c_errors == 3);
+  CHECK(r.svc.counters().retries == 3);
+  CHECK(r.svc.counters().recoveries == 3);
+  CHECK(r.svc.counters().fifo_overflows == 0);  // ~3 ms of retries, far inside the 128-packet FIFO
+  CHECK(r.io.log.substr(at, 9) == "crcrcbrfc");
+  // Isolated failures for a long time never reach BACKOFF (the robot's one every 15-40 s).
+  for (int k = 0; k < 20; k++) {
+    r.to_drain_end();
+    if (k % 2) r.io.fail_c = 2; else r.io.fail_b = 2;
+    r.run_ms(300);
+  }
+  CHECK(r.svc.state() == S::RUNNING);
+  CHECK(r.svc.counters().i2c_errors == 3 + 40);
+  CHECK(r.io.max_pass_txns <= 1);
+}
+
+TEST_CASE("RUNNING retry: a FwUpdate BEGIN between a failure and its recovery stops all bus work") {
+  Rig r;
+  r.to_running(500);
+  r.to_drain_end();
+  r.io.fail_c = 1;
+  for (int i = 0; i < 100 && r.svc.counters().i2c_errors == 0; i++) { r.pass(); r.t_us += 500; }
+  REQUIRE(r.svc.counters().i2c_errors == 1);
+  REQUIRE(r.io.log.back() == 'c');           // the recovery is due on the next pass
+  const size_t at = r.io.log.size();
+  r.fw_open = true;
+  r.run_ms(3000);
+  CHECK(r.svc.state() == S::FW_HALTED);
+  CHECK(r.io.log.size() == at);              // no recovery, no transfer while the session is open
+  CHECK(r.io.recovers == 0);
+  r.fw_open = false;                         // abandoned: PROBING, the pending recovery first
+  for (int i = 0; i < 20000 && r.svc.state() != S::RUNNING; i++) { r.pass(); r.t_us += 500; }
+  CHECK(r.svc.state() == S::RUNNING);
+  REQUIRE(r.io.log.size() > at + 1);
+  CHECK(r.io.log.substr(at, 2) == "ri");
+}
+
+TEST_CASE("RUNNING retry: a burst that fails on every drain reaches BACKOFF on the third (count and flush succeed)") {
+  // Audit 2026-11-20: count ok -> burst fails -> recover -> flush ok -> count ok -> burst fails ...
+  // must not loop for ever behind a DISCONTINUITY every ~10 ms. Only a good burst ends the run.
+  Rig r;
+  r.to_running(500);
+  r.to_drain_end();
+  const size_t at = r.io.log.size();
+  r.io.fail_b = 1000;
+  r.run_ms(100);
+  CHECK(r.svc.state() == S::BACKOFF);
+  CHECK(r.svc.counters().i2c_errors == 3);
+  CHECK(r.svc.counters().retries == 2);
+  CHECK(r.io.log.substr(at) == "cbrfcbrfcb");
+}
+
+TEST_CASE("RUNNING retry: three bad-header drains in a row reach BACKOFF; two do not") {
+  SUBCASE("three") {
+    Rig r;
+    r.to_running(500);
+    r.to_drain_end();
+    const size_t at = r.io.log.size();
+    r.io.bad_packet = 3;
+    r.run_ms(100);
+    CHECK(r.svc.state() == S::BACKOFF);
+    CHECK(r.svc.counters().bad_packets == 3);
+    CHECK(r.svc.counters().i2c_errors == 0);   // still not an I2C error ...
+    CHECK(r.svc.counters().recoveries == 0);   // ... and no bus recovery while RUNNING
+    CHECK(r.io.log.substr(at) == "cbfcbfcb");
+  }
+  SUBCASE("two, then a good burst") {
+    Rig r;
+    r.to_running(500);
+    r.to_drain_end();
+    r.io.bad_packet = 2;
+    r.run_ms(500);
+    CHECK(r.svc.state() == S::RUNNING);
+    CHECK(r.svc.retry_streak() == 0);
+    CHECK(r.svc.counters().bad_packets == 2);
+  }
+}
+
+TEST_CASE("RUNNING retry: isolated burst failures and bad headers never accumulate to BACKOFF") {
+  Rig r;
+  r.to_running(500);
+  for (int k = 0; k < 20; k++) {
+    r.to_drain_end();
+    if (k % 2) r.io.fail_b = 2; else r.io.bad_packet = 2;
+    r.run_ms(300);
+    CHECK(r.svc.state() == S::RUNNING);
+  }
+  CHECK(r.svc.counters().i2c_errors == 20);
+  CHECK(r.svc.counters().bad_packets == 20);
+  CHECK(r.svc.fail_streak() == 0);
+  CHECK(r.io.max_pass_txns <= 1);
+}
+
+TEST_CASE("RUNNING retry: the closing anchor of a drain whose second burst fails is moved back by the unread packets") {
+  Rig r;
+  r.to_running(500);
+  r.to_drain_end();
+  r.t_us += 12000;                         // one slow pass: the next drain counts ~16 packets (2 bursts)
+  const uint32_t before = r.cap.appended();
+  r.io.fail_b = 1;
+  r.io.fail_b_skip = 1;                    // the first burst of the drain succeeds, the second fails
+  for (int i = 0; i < 100 && r.svc.counters().i2c_errors == 0; i++) { r.pass(); r.t_us += 500; }
+  REQUIRE(r.svc.counters().i2c_errors == 1);
+  const uint32_t count_us = r.io.last_count_us;
+  const int n = r.io.last_count_n;
+  REQUIRE(n > BURST_PKTS);
+  REQUIRE(n <= 2 * BURST_PKTS);
+  r.run_ms(300);
+  CHECK(r.svc.state() == S::RUNNING);
+  r.freeze_and_wait();
+  auto a = r.anchor_records();
+  int disc = 0;
+  for (size_t i = 0; i < a.size(); i++)
+    if (a[i][16] & PlatformImuAnchorFlag::DISCONTINUITY) {
+      disc++;
+      REQUIRE(i > 0);
+      const uint8_t* c = a[i - 1].data();
+      CHECK(g32(c) == before + uint32_t(BURST_PKTS));       // the first burst was pushed
+      const uint32_t want = count_us - uint32_t(n - BURST_PKTS) * MIN_SAMPLE_PERIOD_US;
+      CHECK(g32(c + 4) == want);
+      uint64_t wall = 0;
+      for (int b = 7; b >= 0; b--) wall = (wall << 8) | c[8 + b];
+      CHECK(wall == uint64_t(want) + 5000000000ull);         // FakeIo: wall = local + 5e9
+      CHECK((c[16] & PlatformImuAnchorFlag::DISCONTINUITY) == 0);
+    }
+  CHECK(disc == 1);
+  CHECK(MIN_SAMPLE_PERIOD_US == 980u);
 }

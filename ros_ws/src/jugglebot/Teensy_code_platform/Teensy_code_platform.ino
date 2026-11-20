@@ -201,7 +201,7 @@
  *        ever faults).  Kill switch: PLATFORM_IMU_ENABLED (below the includes).
  */
 constexpr char     FW_NAME[]  = "jugglebot-platform";
-constexpr uint16_t FW_VERSION = 11;  // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
+constexpr uint16_t FW_VERSION = 12;  // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
                                      //      feedforward, C-HAND-2).
                                      // 2→3: 2026-08-18 hand END-STOP correction — BEHAVIOURAL.
                                      //      Geometry::HAND_MOTOR_HARD_STOP_REVS 11.1 → 10.8 rev
@@ -249,6 +249,11 @@ constexpr uint16_t FW_VERSION = 11;  // 1→2: 2026-07-29 throwDecelToTorque (po
                                      //      re-probes from loop(), up to 32 CAN frames
                                      //      dispatched per loop() pass. P2b: the Platform
                                      //      IMU capture, status and upload (0x6E3-0x6E6).
+                                     // 11→12: 2026-11-20 Platform IMU I2C robustness: a bus
+                                     //      recovery before every re-probe, and the RUNNING
+                                     //      retry policy (a failed FIFO count/burst/flush is
+                                     //      recovered and retried, BACKOFF only on the 3rd
+                                     //      in a row; imu_service.h drain_step).
 
 /*----------------------------------------------------------------------------*/
 /*                                CAN BUS SET‑UP                              */
@@ -370,7 +375,76 @@ void updateHandFan() {
 /*  1 MHz (Fast-mode Plus).  400000 is the fallback: set it here if the board's pull-ups or
  *  wiring do not hold 1 MHz; the I2C_400K flags then say so in STATUS and the header, and a
  *  burst of 8 packets takes ~3.0 ms instead of ~1.3 ms. */
-constexpr uint32_t IMU_I2C_HZ = 1000000;
+#ifndef PLATFORM_IMU_I2C_HZ
+#define PLATFORM_IMU_I2C_HZ 1000000   // build-time override: build_flags -DPLATFORM_IMU_I2C_HZ=400000
+#endif
+constexpr uint32_t IMU_I2C_HZ = PLATFORM_IMU_I2C_HZ;
+constexpr uint8_t IMU_SDA_PIN = 18, IMU_SCL_PIN = 19;   // Wire (LPI2C1) on the Teensy 4.0
+
+/*  IMU DIAGNOSTIC BUILD (logbook 2026-11-20-platform-imu-i2c-error-bursts).  Default 0: the
+ *  normal image carries none of this.  platformio.ini env teensy40_imudiag sets
+ *  -DPLATFORM_IMU_DIAG=1; env teensy40_imudiag_mask also sets -DPLATFORM_IMU_DIAG_MASK_CAN=1,
+ *  which masks the CAN1 interrupt for the duration of every IMU Wire operation (A/B for "the
+ *  CAN RX interrupt breaks an I2C transfer"; DIAGNOSTIC ONLY, robot unpowered: a Wire timeout
+ *  then holds CAN RX off for up to ~70 ms and the 6-deep RX FIFO overflows).
+ *
+ *  In a diag build IMU_STATUS keeps state, flags, fifo_overflows, i2c_errors and boot, and
+ *  repurposes three bytes: temp_c (byte 2) := PAGE 0..7 (one page per STATUS, so a full cycle
+ *  is 8 s), sync_peak (byte 5) := A, fill_s (byte 6) := B.
+ *
+ *    page  A                                        B
+ *    0     last error KIND (below; 0 = none yet)    driver STAGE of that error's Wire failure
+ *    1     Wire CODE (stage 1/3/4: endTransmission  bytes REQUESTED (stage 2); for kind 6:
+ *          return 2 NACK, 4 busy/timeout/ALF/PLTF,  (burst packets << 4) | index of the bad one
+ *          5 FIFO error; stage 2: bytes received;
+ *          kind 6: the bad header byte)
+ *    2     LPI2C MSR flags right after the failure: duration of the failed op, 100 us units
+ *          b0 NDF b1 ALF b2 FEF b3 PLTF b4 SDF      (255 = >= 25.5 ms: a Wire timeout path)
+ *          b5 MBF b6 BBF
+ *    3     # kind 1 (FIFO_COUNT fails)              # kind 2 (burst fails)
+ *    4     # kind 3 + 5 (flush, resume fails)       # kind 4 (probe/init fails)
+ *    5     # kind 6 (bad FIFO headers; NOT in       # bus recoveries (bus clear + controller
+ *          i2c_errors in any build)                 reset before a re-probe or, FW 12, a
+ *                                                   RUNNING retry)
+ *    6     sync_peak of the last second (10 us)     longest gap between two loop() passes
+ *                                                   since the last page 6, ms (255 = >= 255)
+ *    7     init state the last failed probe ended   last FIFO overflow: count (0..127) | 0x80 if
+ *          in (1 PROBE_ACK 2 PROBE_BANK 3 PROBE_WHO INT_STATUS.FIFO_FULL was set
+ *          4 RESET_BANK 5 RESET 6 POLL_RESET
+ *          7 POLL_BANK 8 POLL_WHO 9 CONFIG 10 PWR
+ *          11 WAIT_GYRO 12 FLUSH)
+ *    (2026-11-20, diag2: the cycle is 24 pages, 24 s.  Kind 7 = known-data read failed.
+ *     u16 = A low byte, B high byte, wrapping.)
+ *    8-11  bad FIFO header log, newest first:       (burst n << 4) | index of that packet
+ *          the header byte (0, 0 = no entry)
+ *    12    the last header that passed the check    0
+ *    13    known-data mode: 0 off, 1 learning the   bytes masked out as unstable while learning
+ *          reference, 2 measuring
+ *    14-19 u16: 14 reads, 15 failed reads, 16 reads with a mismatch, 17 mismatched bytes,
+ *          18 bits read 0 where 1 expected, 19 bits read 1 where 0 expected (measuring only)
+ *    20    last mismatch: expected byte             last mismatch: byte read
+ *    21    last mismatch: offset in the read        its register address (0x4C + offset)
+ *    22    bytes per read (32)                      1 bits in the checked reference bytes
+ *    23    I2C clock / 10 kHz                       read period / 100 us
+ *    Known-data mode (env teensy40_imudiag_const*, -DPLATFORM_IMU_DIAG_CONST=1): RUNNING reads
+ *    bank-0 0x4C..0x6B (32 bytes) every PLATFORM_IMU_DIAG_CONST_PERIOD_US instead of draining
+ *    the FIFO (imu_service.h const_step); the capture stays empty, FREEZE answers ERR_EMPTY.
+ *
+ *  KIND: 1 FIFO_COUNT read, 2 FIFO_DATA burst (Wire level), 3 drain flush, 4 probe/init step,
+ *  5 RESUME flush/WHO, 6 bad FIFO header (ImuService::DiagKind).  STAGE: 0 none (the op failed
+ *  without a Wire failure, e.g. WHO mismatch), 1 register-address write (endTransmission(false))
+ *  of a read, 2 requestFrom returned short, 3 register write, 4 probe address ACK.  Counts
+ *  saturate at 255. */
+#ifndef PLATFORM_IMU_DIAG
+#define PLATFORM_IMU_DIAG 0
+#endif
+#ifndef PLATFORM_IMU_DIAG_MASK_CAN
+#define PLATFORM_IMU_DIAG_MASK_CAN 0
+#endif
+#if PLATFORM_IMU_DIAG_MASK_CAN
+static_assert(PLATFORM_IMU_DIAG, "the CAN-mask variant is a diagnostic build only");
+static_assert(PLATFORM_IMU_I2C_HZ >= 1000000, "CAN masked over a 400 kHz burst (3.2 ms) overflows the RX FIFO");
+#endif
 static_assert(ImuService::INIT_PENDING == icm42688::Driver::INIT_PENDING, "imu_service.h mirrors the driver");
 static_assert(ImuService::ERR_BAD_PACKET == icm42688::ERR_BAD_PACKET, "imu_service.h mirrors the driver");
 static_assert(ImuService::BURST_PKTS <= icm42688::Driver::BURST_PKTS, "one burst is one Wire read");
@@ -943,20 +1017,98 @@ struct ImuIo {
     }
     imuChip.initStart();
   }
-  int init_step(uint32_t now_us) { return imuChip.initStep(now_us); }
-  int fifo_count(bool *overflow) { return imuChip.fifoCount(overflow); }
+#if PLATFORM_IMU_DIAG
+  /*  Diagnostic build: every Wire op runs through op(), which clears the driver's failure
+   *  record, times the op, optionally masks CAN1 over it, and snapshots the LPI2C1 status
+   *  flags if it failed (Wire leaves NDF/ALF/FEF/PLTF set until its next wait_idle()). */
+  uint32_t d_dur_us = 0;
+  uint8_t d_msr = 0;
+  template <class F> int op(F f) {
+    imuChip.diagClear();
+    const uint32_t t0 = micros();
+#if PLATFORM_IMU_DIAG_MASK_CAN
+    NVIC_DISABLE_IRQ(IRQ_CAN1);
+#endif
+    const int r = f();
+#if PLATFORM_IMU_DIAG_MASK_CAN
+    NVIC_ENABLE_IRQ(IRQ_CAN1);
+#endif
+    d_dur_us = micros() - t0;
+    if (r < 0) {
+      const uint32_t m = LPI2C1_MSR;
+      d_msr = uint8_t(((m & LPI2C_MSR_NDF) ? 0x01 : 0) | ((m & LPI2C_MSR_ALF) ? 0x02 : 0) |
+                      ((m & LPI2C_MSR_FEF) ? 0x04 : 0) | ((m & LPI2C_MSR_PLTF) ? 0x08 : 0) |
+                      ((m & LPI2C_MSR_SDF) ? 0x10 : 0) | ((m & LPI2C_MSR_MBF) ? 0x20 : 0) |
+                      ((m & LPI2C_MSR_BBF) ? 0x40 : 0));
+    }
+    return r;
+  }
+  void diag_op(ImuService::DiagOp *d) {
+    d->stage = imuChip.diag.stage;
+    d->code = imuChip.diag.code;
+    d->requested = imuChip.diag.requested;
+    d->msr_flags = d_msr;
+    d->dur_us = d_dur_us;
+    d->init_failed_at = imuChip.diag.init_failed_at;
+    d->int_status = imuChip.diag.int_status;
+    d->count = imuChip.diag.count;
+    d->good_hdr = imuChip.diag.good_hdr;
+  }
+#define IMU_OP(expr) op([&]() -> int { return (expr); })
+#else
+#undef IMU_OP   // PlatformIO's .ino converter preprocesses both branches; silence its redefinition warning
+#define IMU_OP(expr) (expr)
+#endif
+  int init_step(uint32_t now_us) { return IMU_OP(imuChip.initStep(now_us)); }
+  int fifo_count(bool *overflow) { return IMU_OP(imuChip.fifoCount(overflow)); }
   int read_burst(ImuService::Pkt *out, int n) {
     icm42688::Sample smp[icm42688::Driver::BURST_PKTS];
     if (n > icm42688::Driver::BURST_PKTS) n = icm42688::Driver::BURST_PKTS;
-    const int got = imuChip.readFifo(smp, n);   // n <= 8: one 16n-byte Wire read
+    const int got = IMU_OP(imuChip.readFifo(smp, n));   // n <= 8: one 16n-byte Wire read
     for (int i = 0; i < got; ++i) {
       for (int j = 0; j < 3; ++j) { out[i].s[j] = smp[i].a[j]; out[i].s[3 + j] = smp[i].g[j]; }
       out[i].temp = smp[i].temp;
     }
     return got;
   }
-  int flush() { return imuChip.flushFifo(); }
-  int check_who() { return imuChip.checkWhoAmI(); }
+  int flush() { return IMU_OP(imuChip.flushFifo()); }
+  int check_who() { return IMU_OP(imuChip.checkWhoAmI()); }
+#if PLATFORM_IMU_DIAG
+  /*  Known-data mode (PLATFORM_IMU_DIAG_CONST): one raw bank-0 register read, ONE transaction. */
+  int read_regs(uint8_t reg, uint8_t *buf, uint8_t n) { return IMU_OP(imuChip.readRegs(reg, buf, n)); }
+#endif
+#undef IMU_OP
+  /*  I2C bus clear (UM10204 3.1.16) then an LPI2C1 reset, before the next transfer after every
+   *  counted error (ImuService::probe_step before a re-probe, drain_step before a RUNNING retry).  Nine SCL pulses with SDA released let a device that was
+   *  left driving a data bit finish its byte and see a NACK; the STOP resets its interface;
+   *  Wire.begin() writes LPI2C_MCR_RST and re-muxes both pins (the core never resets the
+   *  controller otherwise, and its own 9-pulse force_clock() runs only when BBF stays set
+   *  16 ms).  Bounded: ~0.11 ms of 5 us half-periods, no device transaction, no wait on the bus. */
+  void bus_recover() {
+    digitalWriteFast(IMU_SDA_PIN, HIGH);   // output latch high before the pins become outputs
+    digitalWriteFast(IMU_SCL_PIN, HIGH);
+    pinMode(IMU_SDA_PIN, OUTPUT_OPENDRAIN);
+    pinMode(IMU_SCL_PIN, OUTPUT_OPENDRAIN);
+    delayMicroseconds(5);
+    for (int i = 0; i < 9; ++i) {
+      digitalWriteFast(IMU_SCL_PIN, LOW);
+      delayMicroseconds(5);
+      digitalWriteFast(IMU_SCL_PIN, HIGH);
+      delayMicroseconds(5);
+    }
+    digitalWriteFast(IMU_SCL_PIN, LOW);    // STOP: SDA low -> SCL high -> SDA high
+    delayMicroseconds(5);
+    digitalWriteFast(IMU_SDA_PIN, LOW);
+    delayMicroseconds(5);
+    digitalWriteFast(IMU_SCL_PIN, HIGH);
+    delayMicroseconds(5);
+    digitalWriteFast(IMU_SDA_PIN, HIGH);
+    delayMicroseconds(5);
+    if (imuWireStarted) {                  // first probe of a boot: init_start() does the begin()
+      Wire.begin();
+      Wire.setClock(IMU_I2C_HZ);
+    }
+  }
   /*  micros64() and the wall clock at one instant.  wall_offset_us is 64-bit and written by
    *  handleSyncFrame, which after loop()'s first can1.events() runs only inside events(), in
    *  loop() context; this runs in loop() too, so the two never interleave (no torn read). */
@@ -1292,6 +1444,9 @@ void setup() {
   if (bootId == 0) bootId = 1;
   imuCapture.init(imuRingBuf, PlatformImu::RING_SAMPLES, imuAnchors, PlatformImu::ANCHOR_RING, bootId);
   imuService.set_i2c_400k(IMU_I2C_HZ < 1000000u);
+#if PLATFORM_IMU_DIAG
+  imuService.set_diag_clock(IMU_I2C_HZ);
+#endif
   imuService.init(&imuCapture, bootId, millis());
 #endif
   Serial.println("Teensy platform MCU ready.");

@@ -14,13 +14,13 @@ import sys
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 GUI = os.path.join(REPO, "ros_ws", "gui")
-FILES = [os.path.join(GUI, "gui_server.py")] + [
+FILES = [os.path.join(GUI, "gui_server.py"), os.path.join(GUI, "imu_api.py")] + [
     os.path.join(GUI, "replay", n) for n in ("schema.py", "recordings.py", "api.py")]
 
 CODE = """
 import sys
 sys.path.insert(0, {gui!r})
-import gui_server
+import gui_server, imu_api
 import replay.schema, replay.recordings, replay.api
 bad = [m for m in ("numpy", "msgpack", "mcap", "rosbags", "yaml") if m in sys.modules]
 if bad:
@@ -31,7 +31,7 @@ if bad:
 ALLOW = {"argparse", "functools", "gzip", "http", "json", "os", "re", "shutil",
          "subprocess", "sys", "threading", "time", "typing", "urllib", "datetime",
          "glob", "struct", "errno", "io", "pathlib", "collections", "__future__",
-         "replay", "gui_server", "socketserver", "signal", "logging", "tempfile",
+         "replay", "gui_server", "imu_api", "array", "zipfile", "math", "socketserver", "signal", "logging", "tempfile",
          "importlib"}  # importlib: gui_server loads jugglebot/records.py by path (IDEA-3)
 
 
@@ -54,5 +54,5 @@ def test_top_level_imports_are_stdlib():
             elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                 mods = [node.module.split(".")[0]]
             for m in mods:
-                ok = (m in std or m in ("replay", "gui_server")) if std is not None else m in ALLOW
+                ok = (m in std or m in ("replay", "gui_server", "imu_api")) if std is not None else m in ALLOW
                 assert ok, "{}: non-stdlib import {}".format(os.path.basename(path), m)

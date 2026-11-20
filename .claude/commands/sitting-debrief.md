@@ -275,7 +275,17 @@ and Memory already committed (section 0). One Item at a time, `prepare` to `land
 ## 6. Finish
 
 Say, in three lines: results read (passed / failed), merged and closed (with SHAs), held
-(with why). Offer the owner `/sitting-sheet <rig>` for the next Sitting (the Sitting index lists what waits) and nothing else.
+(with why).
+
+Then give the **big picture** (owner, 2026-11-20: a standard part of every debrief), in plain
+text with no tables, for a reader who will not open the logbook: what went well; what did not;
+what the results mean for the ongoing development (which beliefs they confirm or overturn); and
+the next step for each main Item and Pathway the Sitting touched. Lead each point with the
+outcome, give numbers only where they carry the point, and keep the whole to about 300 words.
+The same text is the logbook entry's `## Big picture` section, written at section 5 step 2 and
+placed straight after `## Summary`.
+
+Offer the owner `/sitting-sheet <rig>` for the next Sitting (the Sitting index lists what waits) and nothing else.
 
 Pinned by `tests/sim/test_sitting_debrief_protocol.py`: this file names every close-out step
 (the flush call first, results read, derive, one owner confirmation, confirm, close, per-Item

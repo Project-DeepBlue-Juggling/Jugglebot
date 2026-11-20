@@ -277,8 +277,26 @@ def build_capture(header: Any, anchors: Sequence[Any], sample_words: bytes, word
         fit=model.summary(), flags=dict(flags), meta=dict(meta or {}))
 
 
+# Header temperature (spec section 3): raw TEMP_DATA counts, degC = raw / 132.48 + 25. The firmware builds
+# them from the FIFO packet's 8-bit temperature (raw / 2.07 + 25, the formula IMU_STATUS temp_c uses) times 64
+# (imu_service.h temp_data_from_fifo), so they step by 64 counts (0.48 degC). There is no -128 sentinel here:
+# -128 is FIFO byte -2, 24.03 degC. A capture with no sample has no reading and the firmware writes 0.
+TEMP_DATA_LSB_PER_C = 132.48
+TEMP_DATA_OFFSET_C = 25.0
+
+
+def temp_c_from_temp_data(raw: int, n_samples: int) -> Optional[float]:
+    """Header TEMP_DATA counts to degC; None when the capture holds no sample (no reading was taken)."""
+    if int(n_samples) <= 0:
+        return None
+    return int(raw) / TEMP_DATA_LSB_PER_C + TEMP_DATA_OFFSET_C
+
+
 def header_to_dict(header: Any) -> Dict[str, Any]:
-    return {k: (int(v) if isinstance(v, (int, np.integer)) else v) for k, v in header.__dict__.items()}
+    d = {k: (int(v) if isinstance(v, (int, np.integer)) else v) for k, v in header.__dict__.items()}
+    d["temp_c_start"] = temp_c_from_temp_data(header.temp_raw_start, header.n_samples)
+    d["temp_c_freeze"] = temp_c_from_temp_data(header.temp_raw_freeze, header.n_samples)
+    return d
 
 
 # ── the writer ───────────────────────────────────────────────────────────────────────────────────

@@ -1,0 +1,301 @@
+closed:
+  at: 2026-11-20 15:11
+  items:
+  - BUG-110
+  - BUG-111
+  - BUG-58
+  - BUG-89
+  - BUG-93
+  - FEAT-49
+  - IDEA-16
+  - IDEA-9
+confirmed:
+  at: 2026-11-20 15:11
+  changed: []
+derived:
+  7:
+    IDEA-16:
+      by: sitting-debrief 2026-11-20
+      criterion: the bag replays through `tools/probes/human_catch_replay.py` and
+        reports, for the lobs that crossed inside the Cup's reach, how many had an
+        admitted plan and how far the planned Cup centre was from the real crossing.
+      evidence: 'temp/probes/human_catch_2026-11-20/2026-11-20_12-49-25_replay.md
+        (bag 2026-11-20_12-49-25, 12:52-12:57): the replay ran and reported 55 lobs,
+        49 crossing the Catch plane, 23 inside the Cup''s reach, 16 of those with
+        an admitted plan; planned Cup centre to real crossing median 30.5 mm, worst
+        52.0 mm. Derived as data, not pass: this is the plan''s data row, and most
+        Balls were caught by hand above the Cup, which the replay does not model.'
+      verdict: data
+  12:
+    BUG-110:
+      by: sitting-debrief 2026-11-20
+      criterion: no setpoint drain dropped line shows a 50 ms stamp step with a negative
+        forwarded lag, and no Attempt ends LANE_REFUSED after such a line.
+      evidence: 'temp/logs/launch_2026-11-20_1.log: 72 setpoint drain dropped lines
+        (76 frames), forwarded lag +2.3 ms (line 5297) to +27.4 ms (line 5809), none
+        negative, so no LANE_REFUSED end follows such a line; 11 Columns and 12 oval
+        Attempts flown. At least 12 further drops were throttled out of the log and
+        cannot be checked.'
+      verdict: pass
+    BUG-89:
+      by: sitting-debrief 2026-11-20
+      criterion: '`setpoints_coalesced` is non-zero and the WARN lines name seq and
+        lag; every STOP inside an Attempt whose record says stamp gap carries the
+        dropped-a-knot verdict (or an emitter skip is visible on /trajectory/status);
+        the two arms are tabulated side by side.'
+      evidence: 'temp/logs/launch_2026-11-20_1.log: 72 WARN lines name seq and lag
+        (dropped lag 27.3-52.4 ms) over 14.5 min of Columns and oval Attempt time,
+        but of 6 in-Attempt stamp-gap STOPs (lines 1954, 3899, 4287, 5812, 6002, 8179)
+        only 2 (3899, 6002) carry the dropped-a-knot verdict; three of the other four
+        sit beside a 67-80 ms host stall. The second arm was not flown (omitted on
+        the sheet). setpoints_coalesced resets at each arming; the bag''s last value
+        is 2, not the 6 read at the robot.'
+      verdict: fail
+  14:
+    IDEA-9:
+      by: sitting-debrief 2026-11-20
+      criterion: 24 consecutive Catches in one Attempt (six laps of the square), with
+        no miss on a first visit to a Site.
+      evidence: temp/logs/launch_2026-11-20_1.log:7872 polygon_walk done 25/25 caught
+        (start 13:38:15, plant polygon-2026-11-20 from 0 Memory rows, landing median
+        16 mm, worst 43 mm), and line 8201 29/29 caught in a 50-Throw Attempt ended
+        by a Hand MAX_DEVIATION latch; no miss, so none on a first visit. The step-6
+        nomination margins are not in the log.
+      verdict: pass
+  16:
+    BUG-111:
+      by: sitting-debrief 2026-11-20
+      criterion: a SPINOUT is captured and the bag shows whether the command peak
+        exceeded the plan peak at a late frame.
+      evidence: A SPINOUT occurred (launch_2026-11-20_1.log:5298) but was not captured.
+        The bag's 100 Hz echo shows the command peaks equal to the preceding Throws
+        (9.357 rev, 123.55 rev/s) with a 27.3 ms-late frame dropped 41 ms before the
+        fault line (line 5296); it cannot resolve a 500 Hz excursion and no plan replay
+        was run.
+      verdict: inconclusive
+    BUG-58:
+      by: sitting-debrief 2026-11-20
+      criterion: a LANE_REFUSED end is on record with GC_PROBE lines from both stream
+        nodes within 1 s of its STOP WARN, and that WARN carries its verdict, fw_sched
+        counters and frame ages.
+      evidence: 'temp/logs/launch_2026-11-20_1.log: all 5 LANE_REFUSED ends (lines
+        4313, 5832, 6024, 6509, 8201) have GC_PROBE lines from both stream nodes within
+        1 s of their STOP WARN (4287, 5812, 6002, 6494, 8179), each with verdict,
+        fw_sched counters and frame ages; ends 1 and 4 follow gen-2 GC pauses of 75.6
+        ms (bridge) and 93.8 ms (trajectory_node), end 5 a 67.0 ms bridge pause. The
+        criterion is met literally; derived as data, as the owner ruled on 2026-11-18,
+        because the starvation itself is not fixed.'
+      verdict: data
+    FEAT-49:
+      by: sitting-debrief 2026-11-20
+      criterion: a window is saved on a real fault, with the brake inside it and the
+        power channels finite.
+      evidence: The trigger fired on the real SPINOUT (temp/logs/launch_2026-11-20_1.log:5298,
+        13:22:42) but hand_foc_scope.py raised 'scope still recording 3.0 s after
+        the trigger' in scope_download and saved nothing; launch 2 had no drive fault
+        to trigger on. The newest file in temp/hand_foc_scope/ is from 2026-11-13.
+      verdict: fail
+  24:
+    BUG-93:
+      by: sitting-debrief 2026-11-20
+      criterion: BRIDGE_FW_CHECK passes at 46 and no CAN_BUS_DOWN trip occurs; any
+        CAN_BUS_DOWN that does occur names a real Leg with a real age, never Leg 0xFF
+        with age 0.
+      evidence: temp/logs/launch_2026-11-20_2.log:28 BRIDGE_FW_CHECK OK can-bridge
+        v46; no CAN_BUS_DOWN, CAN-silence or Leg-age line in the launch; 8 Columns
+        Attempts flown, downlink lost 0, crc_errors 0. Absence over about 9 minutes
+        of streaming; the launch's one fault is a Hand MAX_DEVIATION after a stream
+        STOP (line 1338), unrelated to the changed predicates.
+      verdict: pass
+schema: 2
+steps:
+  1:
+    comments: ''
+    saved_at: 2026-11-20 12:48
+    status: done
+  2:
+    comments: ''
+    saved_at: 2026-11-20 12:48
+    status: done
+  3:
+    comments: ''
+    saved_at: 2026-11-20 12:49
+    status: done
+  4:
+    comments: Fan working perfectly (tested using GUI controls). `setpoints_coalesced`
+      is 0
+    saved_at: 2026-11-20 12:51
+    status: done
+  5:
+    comments: ''
+    saved_at: 2026-11-20 13:49
+    status: done
+  6:
+    comments: ''
+    saved_at: 2026-11-20 12:52
+    status: done
+  7:
+    comments: ''
+    saved_at: 2026-11-20 12:58
+    status: done
+  8:
+    comments: CPU load jumped from ~75-77% to ~82% when I started the capture.
+    saved_at: 2026-11-20 13:01
+    status: done
+  9:
+    comments: ''
+    saved_at: 2026-11-20 13:01
+    status: done
+  10:
+    comments: First attempt ended with a messy BB feed catch (which was dropped).
+      Second attempt completed. Third, fourth, fifth, sixth attempts ended with a
+      messy throw. After the sixth attempt, I re-ran the homing sequence as I'd noticed
+      that the hand was hitting the top of its stroke when catching the first fed
+      ball. It seems to have not homed correctly the first time? Seventh attempt passed,
+      but eighth and ninth ended early due to poor receives from BB. Tenth attempt
+      ended due to a mid-air collision
+    saved_at: 2026-11-20 13:11
+    status: done
+  11:
+    comments: Fifth attempt of the 32-cycle run ended with LANE_REFUSED. First 200-cycle
+      attempt ended with a dropped BB feed. Second dropped a ball after just 29 throws.
+      Third ended with SPINOUT_DETECTED after 69 throws, then fourth ended with MAX_DEVIATION
+      causing a LANE_REFUSED. The next couple attempts ended the same way.
+    saved_at: 2026-11-20 13:29
+    status: done
+  13:
+    comments: ''
+    saved_at: 2026-11-20 13:31
+    status: done
+  14:
+    comments: 'The hand scope ended earlier, with: " Recording from 0xffff022e, 0xffff022f,
+      0xffff0001, 0xffff022a, 0xffff022b, 0xffff0229, 0xffff01b6, 0xffff0241... clean
+      exit from CLOSED_LOOP to state 1 (disarm_reason 0x0, active_errors 0x0, no new
+      value); re-armed clean exit from CLOSED_LOOP to state 1 (disarm_reason 0x0,
+      active_errors 0x0, no new value); re-armed Traceback (most recent call last):
+      File "tools/probes/hand_foc_scope.py", line 940, in <module> sys.exit(main())
+      File "tools/probes/hand_foc_scope.py", line 936, in main return args.func(args)
+      File "tools/probes/hand_foc_scope.py", line 869, in cmd_capture cols, info =
+      capture_once(drive, args.preset, trig, trigger_point, timeout, args.fill, File
+      "tools/probes/hand_foc_scope.py", line 795, in capture_once cols = {k: np.asarray(v,
+      dtype=float) for k, v in zip(preset, drive.scope_download(preset.values()))}
+      File "tools/probes/hand_foc_scope.py", line 701, in scope_download raise RuntimeError("scope
+      still recording %.1f s after the trigger; stopped it. " RuntimeError: scope
+      still recording 3.0 s after the trigger; stopped it. See THE SCOPE''S RULES
+      in this file. " The earlier SPINOUT error reset the hand home without me realising,
+      so the next attempt had the hand ram into the top end stop. The stall detection
+      did NOT kick in, and the hand motor reached almost 90 degrees. The hand now
+      slides very roughly and I think I ought to replace the motor, however I''d like
+      to see out this motor as long as possible to allow us more time to establish
+      better stall detection cutoffs, and to see how far we can push the motor.'
+    saved_at: 2026-11-20 13:44
+    status: null
+  15:
+    comments: ''
+    saved_at: 2026-11-20 13:44
+    status: done
+  17:
+    comments: The capture had already ended earlier (around when the SPINOUT happened)
+      and I didn't re-start it.
+    saved_at: 2026-11-20 13:47
+    status: done
+  18:
+    comments: ''
+    saved_at: 2026-11-20 13:48
+    status: done
+  19:
+    comments: ''
+    saved_at: 2026-11-20 13:48
+    status: done
+  20:
+    comments: ''
+    saved_at: 2026-11-20 13:49
+    status: done
+  21:
+    comments: ''
+    saved_at: 2026-11-20 13:49
+    status: done
+  22:
+    comments: ''
+    saved_at: 2026-11-20 13:59
+    status: done
+  23:
+    comments: ''
+    saved_at: 2026-11-20 13:49
+    status: done
+  24:
+    comments: 'Attemps: 1 - ended with messy catch 2 - ended with mid-air collision
+      3 - Ended with messy catch leading to uncatchable throw 4 - Messy catch 5 -
+      mid-air collision 6 - completed (though the second last catch was technically
+      a miss as it didn''t land in the hand proper - instead landing on the Platform)
+      7 - Completed perfectly 8 - MAX_DEVIATION / LANE_REFUSED'
+    saved_at: 2026-11-20 13:57
+    status: done
+  25:
+    comments: 'Capture didn''t end when the launch ended. When I CTRL-C''d the capture,
+      I got: " (venv) jetson:/home/jetson/Desktop/Jugglebot/ (night-shift/sitting-2026-11-20)
+      $ cd ~/Desktop/Jugglebot && source ~/Desktop/PDJ_venv/venv/bin/activate && python
+      tools/probes/hand_foc_scope.py capture --preset power --trigger fault --label
+      robot_fault Recording from 0xffff0010, 0xffff0011, 0xffff0228, 0xffff0229...
+      Fetching buffer... break None at 65536, 4, 65536 Collected 4096 samples, which
+      corresponds to 512.00 ms of data (assuming a sampling frequency of 8000) armed:
+      preset power, trigger fault, trigger point 0.90, waiting until Ctrl-C; scope
+      size 65536 bytes, 8001 Hz measured; Ctrl-C leaves the drive untouched Recording
+      from 0xffff022e, 0xffff022f, 0xffff0001, 0xffff022a, 0xffff022b, 0xffff0229,
+      0xffff01b6, 0xffff0241... clean exit from CLOSED_LOOP to state 1 (disarm_reason
+      0x0, active_errors 0x0, no new value); re-armed ^Cstopped by Ctrl-C after 0
+      saved; 1 clean exits seen while waiting; the drive is untouched " It looks like
+      this didn''t save the log?'
+    saved_at: 2026-11-20 13:58
+    status: done
+  26:
+    comments: ''
+    saved_at: 2026-11-20 13:58
+    status: done
+verdicts:
+  7:
+    IDEA-16:
+      notes: Started at 12:52 and finished at 12:56. I wasn't keeping track of how
+        many throws I made, but I think it was around 40-50. Only the very first throw
+        landed in the cup. After that one, I realised it would be difficult for me
+        to reliably throw into the cup, so I caught the rest by hand, near where the
+        cup usually sits (though I dropped a few)
+      saved_at: 2026-11-20 12:58
+  12:
+    BUG-110:
+      notes: Plenty of WARN lines. Can you review this output yourself?
+      saved_at: 2026-11-20 13:31
+    BUG-89:
+      notes: '`setpoints-coalesced` now reads 6.'
+      saved_at: 2026-11-20 13:31
+  14:
+    IDEA-9:
+      notes: Perfect! The pattern didn't seem super square-y though. I'd like to see
+        some plots showing the pattern viewed from above, to see how precise and repeatable
+        the throws were (and how square the pattern was). Second attempt ended with
+        MAX_DEVIATION after 29 throws.
+      saved_at: 2026-11-20 13:44
+  16:
+    BUG-111:
+      notes: A SPINOUT shows up in the `grep` readout
+      saved_at: 2026-11-20 13:46
+    BUG-58:
+      notes: Check these logs yourself; they're too verbose for me to easily read
+      saved_at: 2026-11-20 13:46
+    FEAT-49:
+      notes: A SPINOUT shows up in the `grep` readout
+      saved_at: 2026-11-20 13:46
+  24:
+    BUG-93:
+      notes: 'This is what I get: " (venv) jetson:/home/jetson/Desktop/Jugglebot/ros_ws/src/jugglebot/Teensy_code_canbridge/
+        (night-shift/sitting-2026-11-20) $ grep -nE "CAN_BUS_DOWN|BRIDGE_FW_CHECK|SPINOUT|LANE_REFUSED"
+        ~/Desktop/Jugglebot/temp/logs/launch_2026-11-20_2.log 28:13:48:36.575 teensy
+        BRIDGE_FW_CHECK: OK — can-bridge v46 [install_skew=0] 1343:13:55:42.630 skill
+        END LANE_REFUSED: hold installed — the firmware is holding a REFUSED lane
+        (legs or hand) 1346:13:55:42.692 skill lane recovery (END LANE_REFUSED): recover_lane:
+        nothing to do — not latched (flags bit 15 clear) 1356:13:55:44.592 skill ERROR
+        columns ENDED (LANE_REFUSED): the firmware refused a streamed lane (legs or
+        hand) and is holding it · 3/7 caught · apex 0.74–0.96 m · worst landing 51
+        mm · landing median 51 mm over 4 (3 without a Fit) · release -3 ms..-3 ms
+        · entered by a Feed "'
+      saved_at: 2026-11-20 13:57

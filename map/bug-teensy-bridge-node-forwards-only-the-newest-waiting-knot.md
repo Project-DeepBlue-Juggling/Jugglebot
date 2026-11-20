@@ -4,7 +4,7 @@ kind: bug
 title: teensy_bridge_node forwards only the newest waiting knot; harmless at emit lead 0, but the cover has 7-14 ms of margin against a stall
 status: in_progress
 created: '2026-11-13'
-updated: '2026-11-18T06:47:51Z'
+updated: '2026-11-20T04:12:54Z'
 owners: []
 priority: high
 effort: s
@@ -19,6 +19,7 @@ links:
 - map/feature-firmware-stop-record-report-why-a-scheduler-cover-ended.md
 - logbook/2026-11-18-sitting-debrief.md
 - logbook/2026-11-18-leg-scheduler-grace-30ms.md
+- logbook/2026-11-20-sitting-debrief.md
 filed_by: claude
 night_skip: sitting
 night_skip_on: '2026-11-15'
@@ -65,7 +66,15 @@ On 2026-11-13 both LANE_REFUSED ends (11:46:53, 11:49:33) followed a :5557 drain
   - `ros2 topic echo /link_status | grep -A1 setpoints_coalesced` gives 9, and the second command gives a bunch of rows. (sheet 2026-11-18-robot, step 22) [derived: temp/logs/launch_2026-11-18_1.log and _2.log. Counter non-zero (8 and 9 read; 42 frames dropped in 11.2 min with cpu_partition off, 37 in 10.2 min with it on: 3.2 against 3.3 per minute, no measurable difference).
   - Clause 2 fails: of 7 in-Attempt STOPs whose record says stamp gap, 4 lack the dropped-a-knot verdict (launch 1 line 3971; launch 2 lines 2770, 2783, 3350, all on the cover-expired branch). /trajectory/status was not read for those four.]
 
+## Sitting result (2026-11-20 15:11)
+
+- verdict: fail
+- notes (split into bullets):
+  - `setpoints-coalesced` now reads 6. (sheet 2026-11-20-robot, step 12) [derived: temp/logs/launch_2026-11-20_1.log: 72 WARN lines name seq and lag (dropped lag 27.3-52.4 ms) over 14.5 min of Columns and oval Attempt time, but of 6 in-Attempt stamp-gap STOPs (lines 1954, 3899, 4287, 5812, 6002, 8179) only 2 (3899, 6002) carry the dropped-a-knot verdict; three of the other four sit beside a 67-80 ms host stall.
+  - The second arm was not flown (omitted on the sheet). setpoints_coalesced resets at each arming; the bag's last value is 2, not the 6 read at the robot.]
+
 ## Progress
 
 - 2026-11-18: Failed at the Sitting of 2026-11-18 on clause 2 only: the counter works (3.2 drops per minute with cpu_partition off, 3.3 on: no measurable difference), but 4 of 7 in-Attempt stamp-gap STOPs lack the dropped-a-knot verdict. The dropped knot marks lateness; it is the cause only in the early-emit cases (BUG-110). Detail and owner decisions: the 2026-11-18 debrief entry.
 - 2026-11-18: Owner decision 2026-11-18: the firmware scheduler grace is now per lane group, Legs 30 ms (cover 80 ms), Hand unchanged at 20 ms (a global 30 ms let a Hand moving down at 70-100 rev/s stop past the floor clip). can-bridge FW 44. Emit lead and the due-aware bridge rule stay undecided.
+- 2026-11-20: Failed at the Sitting of 2026-11-20: 4 of 6 in-Attempt stamp-gap STOPs carry the generic verdict, not dropped-a-knot, and 3 of those sit beside a 67-80 ms host stall; 64 of 72 drop lines are followed by no STOP. The drop reads as a marker of lateness, not its cause (the 2026-11-18 finding repeated). setpoints_coalesced resets at each arming, so it is not a launch total.

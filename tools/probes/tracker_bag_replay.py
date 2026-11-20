@@ -138,14 +138,18 @@ def _find_mcap(bag: Path) -> Path:
     return cands[0]
 
 
-def _iter_bag(mcap_path: Path, topics):
-    """Yield (topic, log_time_s, decoded_msg) in bag order."""
+def _iter_bag(mcap_path: Path, topics, start_s=None, end_s=None):
+    """Yield (topic, log_time_s, decoded_msg) in bag order. `start_s`/`end_s` (epoch s of the
+    bag log time, default None = the whole bag) bound the READ, so the mcap index skips the
+    chunks outside the window instead of decoding them."""
     from mcap.reader import make_reader
     from mcap_ros2.decoder import DecoderFactory
     with open(mcap_path, 'rb') as fh:
         reader = make_reader(fh, decoder_factories=[DecoderFactory()])
         for _schema, channel, message, decoded in reader.iter_decoded_messages(
-                topics=list(topics)):
+                topics=list(topics),
+                start_time=None if start_s is None else int(start_s * 1e9),
+                end_time=None if end_s is None else int(end_s * 1e9)):
             yield channel.topic, message.log_time * 1e-9, decoded
 
 

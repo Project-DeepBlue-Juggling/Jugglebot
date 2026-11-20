@@ -61,8 +61,18 @@ below its peak. Both modes fire on a FAULT: an edge to non-zero in ``disarm_reas
 clean exit from CLOSED_LOOP (no new reason) re-arms without saving and without using up
 ``--count``, unless ``--save-clean`` is given. In ``fault`` mode no timeout saves anything,
 and the default is to wait until Ctrl-C. Every saved file name ends in ``_brake``, ``_fault``,
-``_clean`` or ``_timeout``. A timeout window in brake mode is the scope's last window, not a
+``_clean`` or ``_timeout``, plus ``_forced`` (``_fault_forced``) when the scope was still
+recording 3 s after the trigger and had to be force-stopped (FEAT-49, see FORCED STOP below). A timeout window in brake mode is the scope's last window, not a
 capture of the event, and ``analyze`` says so.
+
+FORCED STOP (FEAT-49, 2026-11-20). If the scope is still recording SCOPE_STOP_TIMEOUT_S after the
+trigger, the tool stops it with ``ram_osci_trigger(1.0)`` and still downloads the ring, instead of
+losing it. Such a window is NOT a normal one: the trigger position inside it is unknown, the ring
+ends at the forced stop (up to 3 s after the fault, so the fault itself may have been overwritten
+if the scope kept recording meanwhile), and its metadata carries ``forced_stop: true``. ``analyze``
+says so. If the download after a forced stop fails, the error says the stop was forced. A failed
+capture in ``capture`` is printed with its traceback and the tool re-arms; after
+MAX_CONSECUTIVE_FAILURES in a row it exits 4. Ctrl-C is unchanged.
 
 Usage (launch may stay down; the motion tool owns the can-bridge link, this one owns USB):
     python tools/probes/hand_foc_scope.py probe --label bench
@@ -90,6 +100,7 @@ import math
 import os
 import sys
 import time
+import traceback
 
 import numpy as np
 
@@ -544,9 +555,14 @@ def record_lines(meta):
     if "capture" in meta:
         info = meta["capture"]
         kind = info.get("kind") or ("timeout" if not info.get("fired") else "untagged")
-        lines = ["record: capture, kind %s, fired %s, reason %s; %s polls at %.2f ms; trigger point %s" % (
-            kind, info.get("fired"), info.get("reason"), info.get("polls"), float(info.get("poll_ms") or 0.0),
-            info.get("trigger_point"))]
+        forced = bool(info.get("forced_stop"))
+        lines = ["record: capture, kind %s%s, fired %s, reason %s; %s polls at %.2f ms; trigger point %s" % (
+            kind, " (FORCED STOP)" if forced else "", info.get("fired"), info.get("reason"),
+            info.get("polls"), float(info.get("poll_ms") or 0.0),
+            "UNKNOWN (forced stop; %s requested)" % info.get("trigger_point") if forced
+            else info.get("trigger_point"))]
+        if forced:
+            lines.append("FORCED STOP: %s" % info.get("forced_stop_note", "the scope was force-stopped"))
         if info.get("clean_exits"):
             lines.append("record: %d clean exits from CLOSED_LOOP re-armed before this one" % info["clean_exits"])
         if not info.get("fired"):
@@ -645,6 +661,11 @@ def judge_probe(r):
 SCOPE_BYTES_PER_CHANNEL = 4
 SCOPE_MAX_CHANNELS = 9
 SCOPE_STOP_TIMEOUT_S = 3.0      # a whole 8-channel window at 8 kHz is 256 ms
+SCOPE_FORCED_SETTLE_S = 1.0     # after a forced stop, how long to wait for recording to read false
+MAX_CONSECUTIVE_FAILURES = 3    # failed captures in a row before capture gives up (exit 4)
+FORCED_NOTE = ("the scope was still recording %.1f s after the trigger and was force-stopped "
+               "(ram_osci_trigger(1.0)); the trigger position inside this window is UNKNOWN, the ring "
+               "ends at the forced stop, and the fault may lie outside it" % SCOPE_STOP_TIMEOUT_S)
 
 
 def scope_grid_point(point, ring_bytes, n_channels):
@@ -668,6 +689,7 @@ class Drive:
     def __init__(self, odrv, utils):
         self.odrv, self.utils = odrv, utils
         self.n_channels = None
+        self.forced_stop = False      # set by scope_download(keep_forced=True) when it had to stop the scope
 
     def _resolve(self, path):
         obj = self.odrv
@@ -692,16 +714,39 @@ class Drive:
         self.utils.ram_osci_trigger(self.odrv, q)
 
     def scope_download(self, endpoints, timeout_s=SCOPE_STOP_TIMEOUT_S, clock=time.monotonic,
-                       sleep=time.sleep):
+                       sleep=time.sleep, keep_forced=False):
+        """Wait (bounded) for the scope to stop, then download. A scope still recording after
+        ``timeout_s`` is stopped with trigger point 1.0; then ``keep_forced`` False raises, True
+        downloads anyway and sets ``self.forced_stop`` (the caller must flag the window)."""
+        self.forced_stop = False
         # The package's own wait has no bound; wait here first so a stuck scope is an error.
         t0 = clock()
         while self.read("oscilloscope.recording"):
             if clock() - t0 > timeout_s:
                 self.utils.ram_osci_trigger(self.odrv, 1.0)   # 1.0 stops it at once
-                raise RuntimeError("scope still recording %.1f s after the trigger; stopped it. "
-                                   "See THE SCOPE'S RULES in this file." % timeout_s)
+                if not keep_forced:
+                    raise RuntimeError("scope still recording %.1f s after the trigger; stopped it. "
+                                       "See THE SCOPE'S RULES in this file." % timeout_s)
+                self.forced_stop = True
+                t1 = clock()
+                while self.read("oscilloscope.recording"):
+                    if clock() - t1 > SCOPE_FORCED_SETTLE_S:
+                        raise RuntimeError(
+                            "scope still recording %.1f s after the trigger and STILL recording %.1f s "
+                            "after the forced stop (ram_osci_trigger(1.0)); the buffer was NOT downloaded "
+                            "(the odrive package's download would wait for ever)" % (
+                                timeout_s, SCOPE_FORCED_SETTLE_S))
+                    sleep(0.02)
+                break
             sleep(0.02)
-        return self.utils.ram_osci_download(self.odrv, list(endpoints))
+        try:
+            return self.utils.ram_osci_download(self.odrv, list(endpoints))
+        except Exception as e:
+            if self.forced_stop:
+                raise RuntimeError("the download FAILED after a FORCED STOP of the scope (it was still "
+                                   "recording %.1f s after the trigger): %s: %s" % (
+                                       timeout_s, type(e).__name__, e)) from e
+            raise
 
 
 def connect(serial=None, timeout=10.0):
@@ -792,8 +837,17 @@ def capture_once(drive, preset_name, trigger, trigger_point, timeout_s, fill_s, 
     if not fired and trigger.mode == "fault":
         return None, info
     drive.scope_trigger(trigger_point)
-    cols = {k: np.asarray(v, dtype=float) for k, v in zip(preset, drive.scope_download(preset.values()))}
+    raw = drive.scope_download(preset.values(), keep_forced=True)
+    cols = {k: np.asarray(v, dtype=float) for k, v in zip(preset, raw)}
+    if getattr(drive, "forced_stop", False):
+        info.update({"forced_stop": True, "trigger_position_known": False, "forced_stop_note": FORCED_NOTE})
     return cols, info
+
+
+def file_tag(info):
+    """The tag a saved capture's name ends in: the trigger kind, plus ``_forced`` for a window
+    the scope had to be force-stopped to produce."""
+    return info["kind"] + ("_forced" if info.get("forced_stop") else "")
 
 
 # ---- files -------------------------------------------------------------------------------
@@ -862,7 +916,7 @@ def cmd_capture(args):
           "Ctrl-C leaves the drive untouched" % (
               args.preset, args.trigger, trigger_point,
               "waiting until Ctrl-C" if timeout is None else "timeout %.0f s" % timeout, size_note, sample_hz))
-    rc, done, n_file = 0, 0, 0
+    rc, done, n_file, failures = 0, 0, 0, 0
     while done < args.count:
         trig = BrakeTrigger(args.trigger, args.arm_vel, args.drop, save_clean=args.save_clean)
         try:
@@ -872,21 +926,36 @@ def cmd_capture(args):
             print("stopped by Ctrl-C after %d saved; %d clean exits seen while waiting; the drive is untouched" % (
                 n_file, trig.clean_exits))
             return rc
+        except Exception:
+            failures += 1
+            traceback.print_exc()
+            if failures >= MAX_CONSECUTIVE_FAILURES:
+                print("capture FAILED %d times in a row; giving up (%d saved)" % (failures, n_file))
+                return 4
+            print("capture FAILED (%d of %d in a row allowed); re-arming" % (failures, MAX_CONSECUTIVE_FAILURES))
+            continue
+        failures = 0
         if cols is None:
             print("no fault in %.0f s; nothing saved (fault mode never saves a timeout)" % timeout)
             return 3
         meta = {"identity": ident, "identity_notes": IDENTITY_NOTES, "capture": info,
                 "sample_hz": sample_hz, "preset": args.preset, "label": args.label}
-        path = save_capture(cols, meta, "%s_%d_%s" % (args.label, n_file, info["kind"]))
+        path = save_capture(cols, meta, "%s_%d_%s" % (args.label, n_file, file_tag(info)))
         n_file += 1
         if info["kind"] != "clean":
             done += 1
         print("capture %d: %s; %.1f ms per poll; saved %s" % (
             n_file - 1, info["reason"] or "TIMED OUT, last window saved", info["poll_ms"], path))
+        if info.get("forced_stop"):
+            print("FORCED STOP: %s" % info["forced_stop_note"])
         if not info["fired"]:
             rc = 3
-        _, s = analyse(cols, motor_params(ident), sample_hz, spinout_params(ident))
-        print("\n".join(summary_lines(s, motor_params(ident)["pole_pairs"])))
+        try:
+            _, s = analyse(cols, motor_params(ident), sample_hz, spinout_params(ident))
+            print("\n".join(summary_lines(s, motor_params(ident)["pole_pairs"])))
+        except Exception:   # the window is already saved; `analyze` can redo this
+            traceback.print_exc()
+            print("analysis of the saved window FAILED (the file is kept; re-run `analyze` on it)")
     return rc
 
 

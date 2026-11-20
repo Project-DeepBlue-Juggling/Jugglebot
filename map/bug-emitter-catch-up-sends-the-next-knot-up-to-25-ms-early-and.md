@@ -2,9 +2,9 @@
 id: BUG-110
 kind: bug
 title: Emitter catch-up sends the next knot up to 25 ms early and the bridge drops the due knot
-status: in_progress
+status: complete
 created: '2026-11-18'
-updated: '2026-11-18T05:14:42Z'
+updated: '2026-11-20T04:12:47Z'
 owners: []
 priority: high
 effort: s
@@ -17,10 +17,8 @@ blocked_by: []
 links:
 - logbook/2026-11-18-sitting-debrief.md
 - logbook/2026-11-18-emitter-waits-after-late-tick.md
+- logbook/2026-11-20-sitting-debrief.md
 filed_by: sitting-debrief 2026-11-18
-night_skip: sitting
-night_skip_on: '2026-11-19'
-night_skip_note: Fix landed on main 2026-11-18 (option A, wait for the snapped deadline after a late tick); it waits for its Sitting row.
 ---
 
 Found at the debrief of the Sitting of 2026-11-18 (logbook/2026-11-18-sitting-debrief.md). Related: BUG-89, BUG-58.
@@ -42,6 +40,12 @@ Not checked: early-emit drops hidden by the 1/s WARN throttle; the 2026-11-13 ba
 - record: the count of drop lines, the count with a negative forwarded lag, each LANE_REFUSED end with its STOP verdict, the launch log path.
 - minutes: 20
 
+## Sitting result (2026-11-20 15:11)
+
+- verdict: pass
+- notes: Plenty of WARN lines. Can you review this output yourself? (sheet 2026-11-20-robot, step 12) [derived: temp/logs/launch_2026-11-20_1.log: 72 setpoint drain dropped lines (76 frames), forwarded lag +2.3 ms (line 5297) to +27.4 ms (line 5809), none negative, so no LANE_REFUSED end follows such a line; 11 Columns and 12 oval Attempts flown. At least 12 further drops were throttled out of the log and cannot be checked.]
+
 ## Progress
 
 - 2026-11-18: Fix landed 2026-11-18 (owner chose option A): after a late tick the emitter waits for the snapped deadline, so no knot is published before its stamp. Walk: 10 ms late unchanged; 35 ms late now rides through; 60 ms late still stops (the cover runs out first). Waits for its Sitting row.
+- 2026-11-20: Passed at the Sitting of 2026-11-20: 72 setpoint drain dropped lines over 11 Columns and 12 oval Attempts, forwarded lag +2.3 to +27.4 ms, none negative (5 of 126 were on 2026-11-18); at least 12 throttled drops have no line.

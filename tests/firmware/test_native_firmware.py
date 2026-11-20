@@ -148,6 +148,15 @@ def test_native_platform_imu_service_binary_passes(binaries):
         f"native test_platform_imu_service FAILED:\n{r.stdout}\n{r.stderr}")
 
 
+def test_native_platform_imu_diag_binary_passes(binaries):
+    """The Platform IMU's diagnostic build (-DPLATFORM_IMU_DIAG=1): the IMU_STATUS pages (temp_c = page,
+    sync_peak = A, fill_s = B) decode as the table in Teensy_code_platform.ino says, for each error kind,
+    and state, flags, fifo_overflows, i2c_errors and boot keep their places."""
+    r = _run(binaries["test_platform_imu_diag"])
+    assert r.returncode == 0, (
+        f"native test_platform_imu_diag FAILED:\n{r.stdout}\n{r.stderr}")
+
+
 def test_native_icm42688_binary_passes(binaries):
     """The Platform Teensy's ICM-42688 non-blocking init (icm42688.cpp) against the scripted Wire fake: the exact
     register sequence, the datasheet waits, one I2C transaction per call, an absent chip, error recovery."""
