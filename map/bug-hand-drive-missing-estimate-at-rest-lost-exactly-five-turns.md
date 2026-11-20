@@ -4,12 +4,12 @@ kind: bug
 title: Hand drive MISSING_ESTIMATE at rest lost exactly five turns, ten minutes after a SPINOUT top-stop impact
 status: inbox
 created: '2026-11-20'
-updated: '2026-11-20T04:14:16Z'
+updated: '2026-11-20T15:50:15Z'
 owners: []
 priority: medium
 effort: s
-hardware: none
-owner: none
+hardware: robot
+owner: hands
 radius: local
 diagnosis: unknown
 area: hand
