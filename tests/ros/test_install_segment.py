@@ -22,6 +22,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import math
+import os
 import time
 from types import SimpleNamespace
 
@@ -2016,24 +2017,37 @@ def test_a_fresh_throw_installs_through_the_real_worker_process(monkeypatch):
         # a real process, reply, transit guard, `_install` -- does not depend on it.
         # A residual starvation outcome is retried: the timing refusal, and the
         # node's own designed recovery from a worker the client killed after
-        # SOLVER_HANG_S (SOLVER_UNAVAILABLE, restart, wait READY).  Any other
-        # refusal fails at once.
+        # SOLVER_HANG_S (SOLVER_UNAVAILABLE, restart, wait READY), at most ONCE:
+        # a second worker death fails, so an intermittent crash is not retried
+        # away (TKT-87).  Any other refusal fails at once.
         monkeypatch.setattr(sk_sched_mod, 'install_lead_s', lambda kind: 1.5)
+        restarts = 0
         for _attempt in range(6):
             _refresh(node)
             at = time.perf_counter()
             resp = node._svc_install_segment(_throw_req(at + 2.5),
                                              InstallSegment.Response())
             if resp.code == sk_solver.SOLVER_UNAVAILABLE:
+                restarts += 1
+                assert restarts <= 1, ('BUG-120: the real worker died twice',
+                                       resp.message, _attempt)
                 assert node._segment_solver.wait_ready(20.0), 'no restart'
                 continue
             if resp.code != sk_exec.ORIGIN_TOO_LATE:
                 break
         if resp.code == sk_exec.ORIGIN_TOO_LATE:
-            # Six real solves each past a 1.5 s lead: the box starved the worker,
-            # which says nothing about the install path.  Not a pass: a skip.
-            pytest.skip('BUG-120: worker starved past a 1.5 s lead on this box: '
-                        + resp.message)
+            # Six real solves each past a 1.5 s lead.  On an oversubscribed box
+            # (1-minute load average above the core count) that is starvation,
+            # which says nothing about the install path: a skip, not a pass.  On
+            # a box that is NOT oversubscribed it is a planner slowdown or a
+            # deadline/clock bug, and it fails (TKT-87).
+            load1 = os.getloadavg()[0]
+            cores = os.cpu_count() or 1
+            msg = ('BUG-120: six real solves past a 1.5 s lead, load %.1f on %d '
+                   'cores: %s' % (load1, cores, resp.message))
+            if load1 > cores:
+                pytest.skip(msg)
+            pytest.fail(msg)
         assert resp.accepted is True, (resp.code, resp.message, _attempt)
         assert resp.code == feas.OK
         assert isinstance(node._active_plan, CyclePlan)
