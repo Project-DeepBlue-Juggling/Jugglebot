@@ -836,7 +836,7 @@ const CHART_GRID_HIDDEN_KEY = 'jugglebot-chart-grid-hidden';
 function applyChartGridToggleUI(hidden) {
     const btn = document.getElementById('chart-grid-toggle-btn');
     if (!btn) return;
-    btn.textContent = hidden ? 'Show charts' : 'Hide charts';
+    btn.textContent = hidden ? 'Show ODrive charts' : 'Hide ODrive charts';
     btn.classList.toggle('active', hidden);
 }
 
@@ -1634,7 +1634,8 @@ export function playheadCanvasX(p, xMin, xMax, left, width) {
     return left + (p - xMin) / (xMax - xMin) * width;
 }
 
-function drawReplayPlayhead(u) {
+/** Also the IMU charts' playhead hook (imu-charts.js): a no-op outside REPLAY (replayStore is null). */
+export function drawReplayPlayhead(u) {
     const ctx = u.ctx;
     if (!replayStore || !ctx || !u.bbox) return;
     const { left, top, width, height } = u.bbox;

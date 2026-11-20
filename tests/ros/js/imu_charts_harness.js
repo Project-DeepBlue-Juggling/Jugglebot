@@ -292,4 +292,16 @@ imu.imuChartsOnStatus({ values: [{ key: 'busy', value: '0' }, { key: 'last_label
 await settle();
 out.glue_hide = { fetchesAfter: fetches.length - nBefore, groupHidden: els['imu-chart-group'].hidden, shownKey: ls['jugglebot-imu-charts-shown'] };
 
+// IMU row height: clamp, default, and the 3D-view cap (IMU row shrinks first)
+out.imu_height = {
+  clamp: [core.clampImuHeight(50), core.clampImuHeight(9999), core.clampImuHeight(333.4), core.clampImuHeight(null),
+          core.clampImuHeight('abc'), core.clampImuHeight('250')],
+  free: core.effectiveImuHeight(300, 200, 600),
+  capped: core.effectiveImuHeight(400, 200, 250),   // room = 200 + 250 - 150 = 300
+  floor: core.effectiveImuHeight(400, 100, 10),     // cap below MIN -> MIN
+  noMeasure: core.effectiveImuHeight(400, NaN, NaN),
+};
+// REPLAY playhead on the IMU charts: the draw hook is the motor charts' own
+out.imu_playhead_hook = made.filter((u) => u.opts.hooks && u.opts.hooks.draw && u.opts.hooks.draw.includes(tc.drawReplayPlayhead)).length;
+
 console.log(JSON.stringify(out));

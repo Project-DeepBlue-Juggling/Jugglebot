@@ -534,7 +534,7 @@
     grid-template-columns: 1fr 1fr;
     gap: 2px;
     padding: 2px 2px 0;
-    flex: 0 0 200px;
+    flex: 0 0 var(--imu-chart-height);
     /* Rows may not grow to their content: a uPlot canvas built at the taller
        charts-hidden size would otherwise hold the row at that height. */
     grid-template-rows: minmax(0, 1fr);
@@ -545,15 +545,31 @@
 
 /* The IMU row is added to the panel's height, never taken from the motor grid. */
 #chart-panel.imu-shown:not(.collapsed):not(.charts-hidden) {
-    height: calc(var(--chart-panel-height) + 200px);
+    height: calc(var(--chart-panel-height) + var(--imu-chart-height) + var(--imu-divider-height));
 }
 
 /* Motor grid hidden: the panel shrinks to its content, so the IMU row needs
    a height of its own. */
 #chart-panel.charts-hidden #imu-chart-group {
     flex: none;
-    height: 220px;
+    height: var(--imu-chart-height);
 }
+
+/* Drag divider between the IMU row and the motor grid: sets ONLY the IMU row height
+   (imu-charts.js).  Shown only when both groups are. */
+#imu-chart-divider {
+    display: none;
+    flex: 0 0 var(--imu-divider-height);
+    height: var(--imu-divider-height);
+    cursor: row-resize;
+    background: var(--border-color);
+    touch-action: none;
+    user-select: none;
+    transition: background var(--transition-fast);
+}
+#chart-panel.imu-shown:not(.charts-hidden) #imu-chart-divider { display: block; }
+#imu-chart-divider:hover,
+#imu-chart-divider.active { background: var(--accent-blue); }
 
 .imu-chart-cell {
     position: relative;

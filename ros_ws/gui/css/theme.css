@@ -59,6 +59,8 @@
 
     /* Chart panel */
     --chart-panel-height: 300px;
+    --imu-chart-height: 200px;
+    --imu-divider-height: 5px;
 
     /* Typography */
     --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;

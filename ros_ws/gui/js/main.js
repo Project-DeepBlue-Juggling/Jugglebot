@@ -1164,7 +1164,13 @@ function initChartResizeHandle() {
     document.addEventListener('pointermove', (e) => {
         if (!dragging) return;
         const maxHeight = Math.floor(window.innerHeight * CHART_HEIGHT_MAX_PCT);
-        let newHeight = window.innerHeight - e.clientY;
+        // The handle sets the MOTOR grid's height; the IMU row (+ its divider) is added on top of it
+        // (charts.css), so the cursor-to-bottom distance overstates it by that much while the row is shown.
+        const imuGroup = document.getElementById('imu-chart-group');
+        const imuExtra = panel.classList.contains('imu-shown') && imuGroup
+            ? imuGroup.offsetHeight + (parseInt(getComputedStyle(app).getPropertyValue('--imu-divider-height'), 10) || 0)
+            : 0;
+        let newHeight = window.innerHeight - e.clientY - imuExtra;
         newHeight = Math.max(CHART_HEIGHT_MIN, Math.min(maxHeight, newHeight));
         app.style.setProperty('--chart-panel-height', newHeight + 'px');
         panel.classList.remove('collapsed');

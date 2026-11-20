@@ -446,6 +446,33 @@ export function autoJumpDecision(view, lastApplied) {
 }
 
 /** Whether the selected capture's span overlaps the visible range (the jump button is offered when not). */
+// ---- IMU row height (the divider between the IMU row and the motor grid) ---------------------------
+
+export const IMU_HEIGHT_KEY = 'jugglebot-imu-chart-height';
+export const IMU_HEIGHT_DEFAULT = 200;
+export const IMU_HEIGHT_MIN = 100;
+export const IMU_HEIGHT_MAX = 500;
+/** The 3D view keeps at least this many px when the panel grows. */
+export const VIEWER_MIN_PX = 150;
+
+/** A wanted IMU row height clamped to [MIN, MAX] whole px; junk (null, NaN, text) is the default. */
+export function clampImuHeight(h) {
+    const n = (h === null || h === undefined || h === '') ? NaN : Math.round(Number(h));
+    if (!Number.isFinite(n)) return IMU_HEIGHT_DEFAULT;
+    return Math.max(IMU_HEIGHT_MIN, Math.min(IMU_HEIGHT_MAX, n));
+}
+
+/**
+ * The IMU row height to apply: the wanted one, shrunk (IMU row first, never below MIN) so the 3D view
+ * (`viewerH` px now, with the row currently `current` px) keeps VIEWER_MIN_PX.  The panel is anchored at the
+ * bottom, so every px the IMU row gains is a px the 3D view loses.
+ */
+export function effectiveImuHeight(wanted, current, viewerH) {
+    const w = clampImuHeight(wanted);
+    if (!Number.isFinite(viewerH) || !Number.isFinite(current)) return w;
+    return Math.max(IMU_HEIGHT_MIN, Math.min(w, Math.round(current + viewerH - VIEWER_MIN_PX)));
+}
+
 export function captureInView(c, view) {
     return !!(c && view && c.t_end >= view.min && c.t_start <= view.max);
 }

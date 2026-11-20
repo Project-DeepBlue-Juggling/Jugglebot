@@ -252,6 +252,18 @@ def test_hiding_stops_fetching(out):
     assert out["glue_hide"] == {"fetchesAfter": 0, "groupHidden": True, "shownKey": "false"}
 
 
+def test_imu_row_height_is_clamped_and_the_3d_view_keeps_its_minimum(out):
+    h = out["imu_height"]
+    assert h["clamp"] == [100, 500, 333, 200, 200, 250]
+    assert h["free"] == 300
+    assert h["capped"] == 300      # IMU row shrinks first so the 3D view keeps 150 px
+    assert h["floor"] == 100 and h["noMeasure"] == 400
+
+
+def test_imu_charts_draw_the_motor_charts_playhead(out):
+    assert out["imu_playhead_hook"] >= 2
+
+
 # ---- source scans ----
 
 def test_the_group_is_a_row_above_the_motor_grid_hidden_by_default():
@@ -287,3 +299,18 @@ def test_storage_key_and_hook_exports():
                  "selectRangeOnAllCharts", "seekReplayTo", "attachZoomPanControls"):
         assert re.search(r"export function %s\(" % name, tc), name
     assert "export const SYNC_KEY = 'telemetry';" in tc
+
+
+def test_height_divider_wiring_and_the_old_fixed_200px_is_gone():
+    css = (GUI / "css" / "charts.css").read_text()
+    assert "200px" not in css.split("IMU charts (imu-charts.js)")[1] and "220px" not in css
+    assert css.count("var(--imu-chart-height)") >= 3
+    html = (GUI / "index.html").read_text()
+    assert html.index('id="imu-chart-divider"') < html.index('<div id="chart-grid">')
+    assert "jugglebot-imu-chart-height" in (JS / "imu-charts-core.js").read_text()
+
+
+def test_motor_grid_button_is_named_odrive_charts():
+    js = (JS / "telemetry-charts.js").read_text()
+    assert "'Show ODrive charts' : 'Hide ODrive charts'" in js
+    assert "'Show charts'" not in js and "'Hide charts'" not in js

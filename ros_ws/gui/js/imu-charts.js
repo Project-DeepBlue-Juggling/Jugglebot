@@ -23,7 +23,7 @@ import { TIME_INCRS, timeTickSpace, numTickSpace, timeTickLabels } from './axis-
 import { layoutCallouts } from './callout-layout.js';
 import {
     SYNC_KEY, nanGaps, onSharedXRange, getSharedXRange, getSharedViewState,
-    showRangeOnAllCharts, selectRangeOnAllCharts, seekReplayTo, attachZoomPanControls,
+    showRangeOnAllCharts, selectRangeOnAllCharts, seekReplayTo, attachZoomPanControls, drawReplayPlayhead,
 } from './telemetry-charts.js';
 import * as core from './imu-charts-core.js';
 
@@ -37,6 +37,7 @@ const DATA_CACHE_MAX = 4;
 let shown = false;
 let enabled = new Set(core.DEFAULT_SERIES);
 let gyroAccel = false;                       // right chart shows angular acceleration
+let wantedImuHeight = core.IMU_HEIGHT_DEFAULT; // the operator's choice; the applied one may be capped
 let mode = 'live';                           // 'live' | 'replay'
 let replayRange = null;                      // {t0, t1} while replaying
 let xRange = { min: 0, max: 1 };
@@ -124,6 +125,7 @@ export function initImuCharts() {
             if (shown) { rebuildChart('accel'); rebuildChart('gyro'); }
         }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     }
+    initHeightDivider();
     setShown(shown, true);
 }
 
@@ -134,6 +136,7 @@ function setShown(on, initial = false) {
     // The IMU row adds its own height to the panel (charts.css) so the motor grid keeps its size.
     const panelEl = document.getElementById('chart-panel');
     if (panelEl) panelEl.classList.toggle('imu-shown', on);
+    applyImuHeight();
     const btn = els['imu-charts-toggle-btn'];
     btn.classList.toggle('active', on);
     btn.textContent = on ? 'Hide IMU charts' : 'IMU charts';
@@ -149,6 +152,68 @@ function setShown(on, initial = false) {
         for (const k of ['accel', 'gyro']) destroyChart(k);
         els['imu-jump-btn'].hidden = true;
     }
+}
+
+// ---- IMU row height: the divider above the motor grid (changes ONLY this row) ----
+
+function appEl() { return document.getElementById('app'); }
+
+function currentImuHeight() {
+    const g = els['imu-chart-group'];
+    const h = g && g.getBoundingClientRect ? g.getBoundingClientRect().height : 0;
+    return h > 0 ? h : core.IMU_HEIGHT_DEFAULT;
+}
+
+/** Set --imu-chart-height from the wanted height, shrunk if the 3D view would fall under its minimum. */
+function applyImuHeight() {
+    const app = appEl();
+    if (!app) return;
+    let eff = core.clampImuHeight(wantedImuHeight);
+    const viewer = document.getElementById('viewer-pane');
+    if (shown && viewer) eff = core.effectiveImuHeight(wantedImuHeight, currentImuHeight(), viewer.clientHeight);
+    app.style.setProperty('--imu-chart-height', eff + 'px');
+}
+
+function initHeightDivider() {
+    const divider = document.getElementById('imu-chart-divider');
+    let saved = null;
+    try { saved = localStorage.getItem(core.IMU_HEIGHT_KEY); } catch { /* storage blocked */ }
+    wantedImuHeight = core.clampImuHeight(saved);
+    applyImuHeight();
+    window.addEventListener('resize', applyImuHeight);
+    const viewer = document.getElementById('viewer-pane');
+    if (viewer && typeof ResizeObserver !== 'undefined') new ResizeObserver(applyImuHeight).observe(viewer);
+    if (!divider) return;
+    let startY = 0, startH = 0, dragging = false;
+    divider.addEventListener('pointerdown', (e) => {
+        dragging = true;
+        startY = e.clientY;
+        startH = currentImuHeight();
+        divider.classList.add('active');
+        if (divider.setPointerCapture) divider.setPointerCapture(e.pointerId);
+        document.body.style.cursor = 'row-resize';
+        document.body.style.userSelect = 'none';
+        e.preventDefault();
+    });
+    // The panel is bottom-anchored: the divider stays put, the row's top edge moves.  Up = taller.
+    document.addEventListener('pointermove', (e) => {
+        if (!dragging) return;
+        wantedImuHeight = core.clampImuHeight(startH + (startY - e.clientY));
+        applyImuHeight();
+    });
+    document.addEventListener('pointerup', () => {
+        if (!dragging) return;
+        dragging = false;
+        divider.classList.remove('active');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        save(core.IMU_HEIGHT_KEY, wantedImuHeight);
+    });
+    divider.addEventListener('dblclick', () => {
+        wantedImuHeight = core.IMU_HEIGHT_DEFAULT;
+        applyImuHeight();
+        save(core.IMU_HEIGHT_KEY, wantedImuHeight);
+    });
 }
 
 // ---- Replay / status hooks (main.js) ----
@@ -508,6 +573,7 @@ function rebuildChart(kind) {
                 selectRangeOnAllCharts(min, max);
             }],
             setCursor: [(u) => updateCallouts(u, rec, kind)],
+            draw: [drawReplayPlayhead],           // REPLAY playhead, same line as the motor charts
         },
         legend: { show: false },
         padding: [8, 8, 0, 0],
