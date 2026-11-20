@@ -114,7 +114,7 @@ closing-anchor stamp was late.
 
 Pending (to be filled in by the owner's session):
 
-- Full gate result (`./run_tests.sh`): pending.
+- Full gate (`flock /tmp/jugglebot-tests.lock ./run_tests.sh --full`, run 2026-11-20 on the branch tip before this line was added): parallel 10626 passed, 58 skipped, 1 xfailed in 814.09 s; serial 10 passed in 41.11 s; RESULT: PASS.
 - Flash receipt for Platform FW 12 (BridgeIdentity sniff): pending.
 - Hardware i2c_errors rate on FW 12, same measurement as the FW 11 runs: pending.
 
