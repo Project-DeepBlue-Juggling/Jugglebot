@@ -19,8 +19,8 @@ links:
 - bug-can-bridge-fatal-can-silence-check-wraps-when-a-frame-is
 filed_by: claude
 night_skip: sitting
-night_skip_on: '2026-11-15'
-night_skip_note: Bench-hand check of the Hand on Soft E-stop, disarm and link loss; no offline part.
+night_skip_on: '2026-11-21'
+night_skip_note: Bench tooling fix held on night-shift/2026-11-21-BUG-105 by a day Session; the check flies at the next bench-hand Sitting.
 ---
 
 On every software stop except MOTOR_FB_STALE, the last frame the Hand ODrive holds keeps its velocity feedforward, and the Hand stays in Closed-loop. Found by the 2026-11-13 maintainer review and checked on 2026-11-14 against the owner's objection that a power cut clears the terms. Related to BUG-19, whose cure (the FW 35 hold flush) was scoped to MOTOR_FB_STALE.

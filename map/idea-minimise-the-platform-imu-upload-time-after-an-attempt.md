@@ -18,9 +18,10 @@ links:
 - logbook/2026-11-20-sitting-debrief-robot-2.md
 parent: two-ball-oval
 filed_by: claude
-night_skip: waiting-trigger
-night_skip_on: '2026-11-19'
-night_skip_note: Feasibility written 2026-11-19; waits for the Platform IMU MVP (plan platform-imu.md P1 to P4) to work.
+night_skip: input-decision
+night_skip_on: '2026-11-21'
+night_skip_note: On option 1 the night builds the hole-fill change with tests and holds it for a Sitting check; 2-3 go to a day Session.
+night_skip_input: 'Which lever on TKT-88: the Jetson-only hole-fill change, firmware counters first, sample packing, or leave it.'
 ---
 
 Keep this area open (owner, 2026-11-19): once the MVP works, explore shortening the post-Attempt IMU upload. Three levers: tighter sample packing or compression; a slower setpoint heartbeat while holding (the 500 Hz stream stays as is for now: it feeds the ODrive watchdog and avoids a rate switch on the Leg path); a higher measured rate from the P4 ramp.

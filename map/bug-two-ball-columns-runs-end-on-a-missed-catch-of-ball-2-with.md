@@ -23,8 +23,8 @@ links:
 - logbook/2026-11-20-sitting-debrief.md
 filed_by: claude
 night_skip: sitting
-night_skip_on: '2026-11-15'
-night_skip_note: Ball 2 ended 4 of 6 canary Attempts on 2026-11-13; the next evidence is a flown goal.
+night_skip_on: '2026-11-21'
+night_skip_note: Next evidence is the 15 mm outward Catch authority trial in its Sitting section.
 ---
 
 Two-ball Columns runs of 2026-11-06 mostly end on a smooth missed Catch of Ball 2, not on a collision (BUG-74).

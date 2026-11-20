@@ -18,6 +18,9 @@ links:
 - logbook/2026-11-20-sitting-debrief.md
 - bug-odrive-gui-save-resets-the-hand-zero-the-bridge-stays-homed
 filed_by: claude
+night_skip: owner-session
+night_skip_on: '2026-11-21'
+night_skip_note: A day Session built and held the fix (state_machine and ARMING_CONTRACT edits, unflown recovery path); the night does not re-gate it.
 ---
 
 Sitting of 2026-11-20, launch 1 (bag `2026-11-20_12-49-25`). At 13:32:16.53 the Hand drive raised MISSING_ESTIMATE while resting at 5.40 rev; its position read NaN and came back as 0.40 rev, exactly 5.00 turns lost. `is_homed` stayed 1, so `clear_errors` went FAULT, BOOT, IDLE with no Homing (`state_machine.py:347-349`), and the next Feed Catch (polygon_walk, 13:34:22) drove the Hand into its top stop:

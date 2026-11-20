@@ -19,8 +19,8 @@ links:
 - logbook/2026-11-20-sitting-debrief.md
 filed_by: sitting-debrief 2026-11-18
 night_skip: waiting-trigger
-night_skip_on: '2026-11-19'
-night_skip_note: Bag review confirmed; options recorded in the body. The owner decides after the current work (2026-11-18).
+night_skip_on: '2026-11-21'
+night_skip_note: 'Flown 2026-11-20, unresolved: needs a saved fault capture (FEAT-49) or the 500 Hz plan replay; you decide after the current work.'
 ---
 
 Sitting of 2026-11-18, launch 1, first Columns Attempt, 10:41:49.256 (temp/logs/launch_2026-11-18_1.log lines 545-575; temp/hand_capture/hand_capture_20261118_103811.csv). Related: BUG-57, FEAT-49, BUG-89. The owner reports nothing physical changed on the Hand since 2026-11-13.

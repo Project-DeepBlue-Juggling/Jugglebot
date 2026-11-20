@@ -19,6 +19,9 @@ links:
 - bug-odrive-gui-save-resets-the-hand-zero-the-bridge-stays-homed
 - bug-hand-stalls-at-the-70-a-clamp-mid-dive-probably-on-a-ball
 filed_by: claude
+night_skip: sitting
+night_skip_on: '2026-11-21'
+night_skip_note: FW 47 held on its day-Session branch; the bench stall stage was fixed after the 2026-11-20 crash and waits for the bench-hand Sitting.
 ---
 
 Sitting of 2026-11-20 (bag `2026-11-20_12-49-25`, 13:34:22). The Hand stalled against its top stop on a lost home (see the linked Item). MAX_DEVIATION latched 80 ms into the stall, but a latch only freezes the output: the drive kept its last lead-clamped `input_pos` (measured 5.86 + MAX_LEAD_HAND_REV 2.0 = 7.85 rev) and pushed 68-70.4 A for 4.4 s (about 21,800 A^2 s) until the E-stop button cut power.

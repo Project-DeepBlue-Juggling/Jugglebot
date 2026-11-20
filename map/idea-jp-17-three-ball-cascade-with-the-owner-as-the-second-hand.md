@@ -20,8 +20,8 @@ links:
 - logbook/2026-11-20-sitting-debrief.md
 filed_by: claude (jugglebot-f5, pattern exploration 2026-10-30)
 night_skip: owner-session
-night_skip_on: '2026-11-19'
-night_skip_note: Promoted to PWAY-11 (plan human-partner-juggling.md); P1 and P2 on main, the rest is day-Session work and Sittings.
+night_skip_on: '2026-11-21'
+night_skip_note: 'PWAY-11 day-Session work: the 2026-11-21 replay sweep says aim scatter and Fit convergence limit first.'
 ---
 
 Owner 2026-10-30: a plain three-ball cascade, every throw at an equal Apex and timing, the Platform held tilted toward the owner the whole Attempt, catch and throw sites free.

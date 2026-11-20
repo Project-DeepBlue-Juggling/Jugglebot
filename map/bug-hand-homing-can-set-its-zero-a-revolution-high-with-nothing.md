@@ -18,7 +18,7 @@ links:
 - logbook/2026-11-20-sitting-debrief.md
 filed_by: claude
 night_skip: waiting-trigger
-night_skip_on: '2026-11-20'
+night_skip_on: '2026-11-21'
 night_skip_note: 'Owner 2026-11-20: no fix; reopen only if a Homing sets the zero wrong again.'
 ---
 
