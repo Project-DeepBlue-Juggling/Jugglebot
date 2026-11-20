@@ -4,11 +4,11 @@ kind: bug
 title: 'A guard latch leaves the Hand pushing at full current: no stall guard on the streamed lane or a latched hold'
 status: in_progress
 created: '2026-11-20'
-updated: '2026-11-20T07:07:50Z'
+updated: '2026-11-20T08:57:50Z'
 owners: []
 priority: high
 effort: m
-hardware: robot
+hardware: bench-hand
 owner: hands
 radius: subsystem
 diagnosis: confirmed
@@ -43,16 +43,15 @@ The owner intends to keep running this motor to establish the cut-offs.
 ## Sitting
 
 - setup: bridge-cycled
-- why: the guard must be seen to put a pushing Hand into Idle outside the ladder, with its latch, log line and recovery, without holding the damaged motor at 70 A.
+- why: the FW 47 stall guard must be seen to put a pushing Hand into Idle outside the ladder, with its latch and a refused Hand ladder, on the bench Hand so the damaged robot motor is not used.
 - do:
-  - Check out the branch, rebuild both packages, flash the can-bridge with FW 47 and power-cycle the bridge; check `BRIDGE_FW_CHECK` passes at 47.
-  - Launch and home; do NOT arm. Lower the Hand drive's current limit to 45 A for this test.
-  - Move the Hand to mid-stroke with a Hand move, wait for it to finish, then lower it onto its bottom stop.
-  - Command a Hand position about 0.5 rev below the bottom stop and watch the Hand current and the log.
-  - Clear errors, re-home, and put the Hand current limit back to 70 A.
-- pass: the Hand goes Idle within 200 ms of its current first reaching 40 A; the launch log shows the HAND_STALL line and `fault_state` HAND_STALL; ACTIVATE is refused until errors are cleared; no second current rise.
-- record: the time from the first 40 A sample to Idle, the peak current, the thermistor before and after, the log line, the bag path.
-- minutes: 15
+  - Check out the branch and flash firmware 47: `git fetch && git checkout night-shift/2026-11-20-BUG-123 && git log --oneline -1`, then `pio run -e teensy41 -t upload` in the bridge directory, then `python tests/hardware/hand_stream_bench.py --clear-errors` (it refuses any version but 47 on the branch).
+  - Home with `python tests/hardware/bench_hand_frame_bench.py home`, park the Hand at 0.3 to 0.7 rev, and run `python tests/hardware/hand_stream_bench.py --stage stall` once: it lowers the current limit to 45 A, shifts the encoder frame so the lane can command 0.5 rev past the bottom stop, ramps the Hand into the stop at 1 rev/s, and restores the limit and the frame.
+  - Only after a PASS with a cool motor: `python tests/hardware/hand_stream_bench.py --clear-errors`, home, park and run the stage again, twice (three trips in all).
+  - Return to main and flash the bridge back: `git checkout main && git log --oneline -1`, `pio run -e teensy41 -t upload`, then `python tests/hardware/hand_stream_bench.py --clear-errors`.
+- pass: the Hand goes Idle within 200 ms of its current first reaching 40 A, fault HAND_STALL, no second current rise, the current limit reads back at its original value (the stage's STALL-GUARD PASS line).
+- record: the stage output from the plan line to the verdict (time from the first 40 A sample to Idle, peak current, motor temperature before and after, the HAND_MOVE_TO refusal, the limit and frame restore lines), the number of trips, motor warmth.
+- minutes: 25
 - branch: night-shift/2026-11-20-BUG-123
 
 ## Progress
@@ -61,3 +60,4 @@ The owner intends to keep running this motor to establish the cut-offs.
 - 2026-11-20: Built and held on night-shift/2026-11-20-BUG-123 (d75d42a7): can-bridge FW 47, PROTOCOL unchanged. Outside the ladder, 40 A or more at 1 rev/s or less for 150 ms of real samples sends the Hand Idle and latches a new fault HAND_STALL (INVARIANTS I-FW-17); the Legs are held as for a Hand drive fault; only the operator's clear releases it.
 - 2026-11-20: FW 47 branch verification: native tests 41 of 41 cases, compile OK; not flashed, no full gate.
 - 2026-11-20: Open on the branch: the Sitting proof pushes this motor at about 45 A for under 0.5 s (the bench Hand is the zero-risk alternative); the exact commands for the current limit and the raw position move are fixed when the sheet is written. Closest margin in the 2026-11-20 data: a latched hold at 36.2 A. A Hand-only CAN silence is not covered by any guard.
+- 2026-11-20: Bench proof built on the branch (9e715165): hand_stream_bench.py --stage stall. The lane clips Hand commands at 0 rev, so the stage shifts the encoder frame +0.65 rev to push 0.5 rev past the bottom stop at a 45 A limit, with its own Idle at 715 ms worst case, and restores both. On sheet 2026-11-20-bench-hand, steps 15-18. Found, not fixed: a raw SET_AXIS_STATE closed-loop RPC is not gated by the HAND_STALL latch.

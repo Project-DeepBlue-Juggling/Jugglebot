@@ -12,7 +12,7 @@ steps:
         text: "No launch may be running. Terminal 1 is the stage terminal for the whole sheet."
       - where: Terminal 1
         command: cd ~/Desktop/Jugglebot && source ~/Desktop/PDJ_venv/venv/bin/activate && git fetch && git status -sb && git log --oneline -1
-    see: "## main...origin/main with nothing ahead or behind, and the top commit is 'map: Sitting sheet 2026-11-20-bench-hand'. Untracked temp/learn/ entries are expected."
+    see: "## main...origin/main with nothing ahead or behind, and the top commit starts 'map: Sitting sheet 2026-11-20-bench-hand'. Untracked temp/learn/ entries are expected."
     stop_if: The branch is not main, or it is behind origin/main (wait two minutes for the auto-pull and run it again).
     serves: []
 
@@ -43,7 +43,7 @@ steps:
       - where: Hands
         text: "While it records, push the Hand DOWN slowly by a few cm, then let go."
     see: "A line ending PASS (DOWN counts negative)."
-    stop_if: "FAIL: the mechanism or encoder is mirrored. Fly nothing else: go straight to step 15 (steps 13 and 14 are not flown either)."
+    stop_if: "FAIL: the mechanism or encoder is mirrored. Fly nothing else: go straight to step 19 (steps 13 to 18 are not flown either)."
     record: The push-check line.
     serves:
       - {item: FEAT-45, do: [1]}
@@ -61,7 +61,7 @@ steps:
       - where: Terminal 1
         text: "Only on FAIL, with the Hand at mid-stroke: python tests/hardware/bench_hand_frame_bench.py calibrate, then torque-check again."
     see: "It pulses 2 A down, then 4 A up, and prints TORQUE-CHECK PASS."
-    stop_if: "It fails twice. Run no closed loop and fly nothing else. Go straight to step 15."
+    stop_if: "It fails twice. Run no closed loop and fly nothing else. Go straight to step 19."
     record: The torque-check line, and whether calibrate was needed.
     serves:
       - {item: FEAT-45, do: [2]}
@@ -200,7 +200,7 @@ steps:
       - where: Terminal 1
         text: "If it shows an error, run python tests/hardware/hand_stream_bench.py --clear-errors. If the position is above 0.9 rev or there was a fault, run python tests/hardware/bench_hand_frame_bench.py home, then lift the Hand to between 0.3 and 0.7 rev."
     see: "err 0x0, and pos at or below 0.9 rev (the stage normally returns the Hand to where it started, 0.3 to 0.7 rev)."
-    stop_if: An error will not clear. End the Sitting at step 15.
+    stop_if: An error will not clear. End the Sitting at step 19.
     record: "The names of the files the capture saved (ls -t temp/hand_foc_scope | head -20), and whether any name contains _forced."
     serves: []
 
@@ -253,6 +253,110 @@ steps:
       - {item: BUG-105, do: [3, 4], pass: true, setup_waived: "the bench stage energises the Hand itself with --close-loop, so no earlier step arms it"}
 
   - n: 15
+    kind: setup
+    title: Check out the stall-guard branch and flash firmware 47
+    from: [bridge-cycled]
+    to: [bridge-cycled]
+    actions:
+      - where: Hands
+        text: "Cup empty. The 45 V supply stays on. If the E-stop test in step 14 cut the drive's power, release the button and wait until status replies before going on."
+      - where: Terminal 1
+        command: git fetch && git checkout night-shift/2026-11-20-BUG-123 && git log --oneline -1
+      - where: Terminal 1
+        command: cd ros_ws/src/jugglebot/Teensy_code_canbridge
+      - where: Terminal 1
+        command: pio run -e teensy41 -t upload
+      - where: Terminal 1
+        command: cd ~/Desktop/Jugglebot
+      - where: Terminal 1
+        command: python tests/hardware/bench_hand_frame_bench.py status
+      - where: Terminal 1
+        command: python tests/hardware/hand_stream_bench.py --clear-errors
+    see: "git says Switched to branch 'night-shift/2026-11-20-BUG-123' and the log line is 'feat(bench): hand_stream_bench --stage stall proves the FW 47 Hand stall guard on the bench Hand (BUG-123)'. SUCCESS from the upload. status reads state 1, err 0x0. The clear-errors line ends 'CLEAR_ERRORS OK — fault_state NONE.', which on this branch also proves the bridge runs firmware 47 (it aborts on any other version)."
+    stop_if: "The checkout refuses (local changes: stop and ask), the upload fails twice, or clear-errors prints an ABORT naming a firmware version. Then skip to step 18 and restore main."
+    record: The log line, and the clear-errors line.
+    serves:
+      - {item: BUG-123, do: [0]}
+
+  - n: 16
+    kind: run
+    title: "Stall-guard proof: push the Hand into the bottom stop until the guard cuts it"
+    from: [bridge-cycled]
+    to: [bridge-cycled]
+    actions:
+      - where: Terminal 1
+        command: python tests/hardware/bench_hand_frame_bench.py home
+      - where: Hands
+        text: "With the drive IDLE, lift the Hand by hand to between 0.3 and 0.7 rev and let go."
+      - where: Terminal 1
+        command: python tests/hardware/bench_hand_frame_bench.py status
+      - where: Hands
+        text: "Cup empty, nothing near the Hand, E-stop in hand. Touch the motor: it must be cool (the stage refuses at 50 C). The firmware never lets a streamed command go below 0 rev, so the stage moves the Hand's zero up by 0.65 rev for the push and puts it back afterwards; it also lowers the current limit to 45 A and puts back 70 A."
+      - where: Terminal 1
+        command: python tests/hardware/hand_stream_bench.py --stage stall
+      - where: Terminal 1
+        text: "It prints a 'stall plan' line (firmware 47, limit 70 -> 45 A, frame shift +0.650 rev), then asks 'ARM stall ... [yes/NO]'. Type yes. The Hand closes the loop where it is, moves DOWN slowly (1 rev/s, about 1 s), meets the bottom stop, pushes for about a fifth of a second, and goes limp. Do not press Ctrl-C; the E-stop button is the stop."
+      - where: Hands
+        text: "When it has finished, touch the motor and say whether it is warm."
+    see: "Lines in this order: 'current limit lowered: drive reads 45.0 A over USB', 'frame shifted +0.650 rev', 'ARMED: ramp ...', 'trip seen at t=...', 'HAND_MOVE_TO while latched: refused: ERR_BUS_DOWN', 'current limit restore: sent 70.0 A, drive reads 70.0 A over USB -> OK', 'encoder frame restored: Hand reads about -0.10 rev', a motor temperature line, and last 'STALL-GUARD PASS: IDLE <t> ms after the first 40 A sample (limit 200), peak <A> A, fault HAND_STALL, bit3 set'. Expect t about 150 to 180 and a peak near 45 A. The Hand stays limp on the stop. The fault stays latched until the next step."
+    stop_if: "The Hand moves UP, keeps pushing for more than about a second, or makes a new noise: press the E-stop button. An 'ABORT: stall stage refused' list: fix what it names (park position, temperature, a fault: run --clear-errors) and run the stage again; nothing was commanded. A 'STALL-GUARD FAIL' line: do NOT repeat the stage; record it, run python tests/hardware/hand_stream_bench.py --clear-errors once, and go to step 18. A line containing 'NOT RESTORED: power-cycle the drive': switch the 45 V supply off and on, then home before anything else. A line containing 're-home before anything else': run the home command above before anything else."
+    record: "The whole stage output from 'stall plan' to the verdict line (save it with the terminal's copy, or re-run nothing). Whether the motor was warm. Anything heard or felt during the push."
+    serves:
+      - {item: BUG-123, do: [1], pass: true}
+
+  - n: 17
+    kind: run
+    title: "Stall-guard repeats: two more trips, only after a PASS"
+    from: [bridge-cycled]
+    to: [bridge-cycled]
+    actions:
+      - where: Hands
+        text: "Only if step 16 printed STALL-GUARD PASS and the motor is not warm. Otherwise run the first command below once and go to step 18."
+      - where: Terminal 1
+        command: python tests/hardware/hand_stream_bench.py --clear-errors
+      - where: Terminal 1
+        command: python tests/hardware/bench_hand_frame_bench.py home
+      - where: Hands
+        text: "Lift the Hand to between 0.3 and 0.7 rev and let go, then check with status."
+      - where: Terminal 1
+        command: python tests/hardware/bench_hand_frame_bench.py status
+      - where: Terminal 1
+        command: python tests/hardware/hand_stream_bench.py --stage stall
+      - where: Terminal 1
+        text: "Type yes at the ARM prompt. Then repeat this step's four commands once more (clear-errors, home, park, status, stage) for the third trip, and finish with python tests/hardware/hand_stream_bench.py --clear-errors."
+      - where: Hands
+        text: "Touch the motor before each repeat. Stop the repeats if it is warm."
+    see: "Each run ends with STALL-GUARD PASS, now with 'bit3 set (already set before this run)': only a reboot or a Hand ladder clears bit3, so the stage times these trips on the current, the fault and the axis state. The clear-errors lines end 'CLEAR_ERRORS OK — fault_state NONE.'."
+    stop_if: "Any STALL-GUARD FAIL, a warm motor, or a new noise: stop the repeats, run --clear-errors once, and go to step 18. The step 16 stop rules apply to every run."
+    record: "Each run's verdict line and its 'current limit restore' line. How many trips in all (step 16 included). Motor warmth after the last."
+    serves:
+      - {item: BUG-123, do: [2]}
+
+  - n: 18
+    kind: restore
+    title: Back to main and flash the bridge back
+    from: [bridge-cycled]
+    to: [bridge-cycled]
+    actions:
+      - where: Terminal 1
+        command: python tests/hardware/bench_hand_frame_bench.py status
+      - where: Terminal 1
+        command: git checkout main && git log --oneline -1
+      - where: Terminal 1
+        command: cd ros_ws/src/jugglebot/Teensy_code_canbridge
+      - where: Terminal 1
+        command: pio run -e teensy41 -t upload
+      - where: Terminal 1
+        command: cd ~/Desktop/Jugglebot
+      - where: Terminal 1
+        command: python tests/hardware/hand_stream_bench.py --clear-errors
+    see: "status: state 1, err 0x0. git: Switched to branch 'main'. SUCCESS from the upload: the bridge runs can-bridge v46 again, which the robot's main expects until this branch lands. clear-errors ends 'CLEAR_ERRORS OK — fault_state NONE.' (on main it aborts on any version but 46)."
+    stop_if: "The upload fails twice: leave the bench powered and tell the debrief the bridge may still run firmware 47; the robot must not be launched on it. clear-errors aborts naming a version: flash again."
+    record: The clear-errors line.
+    serves:
+      - {item: BUG-123, do: [3]}
+
+  - n: 19
     kind: restore
     title: Leave the bench safe
     from: [bridge-cycled]

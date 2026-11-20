@@ -6,13 +6,12 @@ waiting Items: the order a Sitting flies in, and every step, is on its Sitting s
 
 Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
-## Robot  (12 Items, 351 min)
+## Robot  (11 Items, 336 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
 | BUG-111 Hand SPINOUT at the Throw peak after a setpoint 12.6 ms late (2026-11-18) | 5 | level, armed, bb-fed | - | - |
 | BUG-122 Hand stays homed after its drive loses the position reference, so the next move rams the top stop | 5 | level | `night-shift/2026-11-20-BUG-122` | - |
-| BUG-123 A guard latch leaves the Hand pushing at full current: no stall guard on the streamed lane or a latched hold | 15 | bridge-cycled | `night-shift/2026-11-20-BUG-123` | - |
 | BUG-58 Firmware scheduler STOPs a streamed lane while frames arrive on time and the host stream is clean: LANE_REFUSED ends, cause unseen | 1 | armed | - | - |
 | BUG-78 Two-ball Columns runs end on a missed Catch of Ball 2 with no collision: 13 of 23 ends, mean run 22 Throws | 20 | level, armed, bb-fed | - | - |
 | BUG-89 teensy_bridge_node forwards only the newest waiting knot; harmless at emit lead 0, but the cover has 7-14 ms of margin against a stall | 40 | level, armed, bb-fed | - | - |
@@ -29,11 +28,12 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | --- | ---: | --- | --- | --- |
 | BUG-19 Hand ODrive state can silently diverge from what the can-bridge commanded | 30 | bridge-cycled | - | - |
 
-## Bench hand  (2 Items, 70 min)
+## Bench hand  (3 Items, 95 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
 | BUG-105 Hand keeps its last velocity feedforward on a Soft E-stop, disarm or link loss and stays in Closed-loop | 20 | armed, bridge-cycled | - | 2026-11-20-bench-hand |
+| BUG-123 A guard latch leaves the Hand pushing at full current: no stall guard on the streamed lane or a latched hold | 25 | bridge-cycled | `night-shift/2026-11-20-BUG-123` | 2026-11-20-bench-hand |
 | FEAT-45 Measure the Hand's commutation angle error through a hard brake on the bench Hand (FOC scope) | 50 | bridge-cycled | - | 2026-11-20-bench-hand |
 
 ## Needs a Sitting section
