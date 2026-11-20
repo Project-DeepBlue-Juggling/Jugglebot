@@ -50,9 +50,13 @@ Data at rest: mean accel (2048.2, 14.6, 43.7) counts, |a| 2048.75 counts = 1.000
 
 ## GYRO_ACCEL_CONFIG0
 
+Superseded the same day: the header byte is the firmware's compile-time constant copied in, not a chip read-back, so it confirms nothing about the chip; and the owner decided ODR/2 stays. See `2026-11-20-platform-imu-capture-header-temperature`.
+
 The header reads back 0x00. That is what the firmware writes: `UI_FILT_CODE = 0x00` in `icm42688.h` (BW = ODR/2 for both accel and gyro), and `tools/probes/imu_bench/README.md` lists "value 0 = BW ODR/2" as MATCH against DS-000347 14.40. So the read-back confirms the chip holds what was written and the register is not being altered. It does not match the plan's agreed ODR/4 setting (plan section 3 table; the `TODO(IDEA-20 P2)` in `icm42688.h`): the ODR/4 code (0x11 from memory) was never verified because the datasheet text could not be read, so the filter was left at ODR/2. The register value is recorded; changing to ODR/4 remains an open owner decision, not done.
 
 ## Open defect
+
+Superseded the same day: not a defect. -128 in the header is 24.03 C on the TEMP_DATA scale, the same reading as the STATUS frame. See `2026-11-20-platform-imu-capture-header-temperature`.
 
 `temp_raw_start` and `temp_raw_freeze` in the capture header were both -128 (unknown) although the STATUS frame reports 24 C. Not diagnosed.
 

@@ -119,8 +119,9 @@ in slices of `CRC_SLICE_BYTES` (8192 B, expected to hold `loop()` for about 1 ms
 The two temperature fields are raw TEMP_DATA counts, degC = raw / 132.48 + 25, NOT the IMU_STATUS `temp_c` (no -128
 sentinel here: -128 is 24.03 degC). The board fills them from the FIFO packet's 8-bit temperature (degC = byte / 2.07 + 25,
 the source of IMU_STATUS `temp_c`) times 64, since 132.48 / 2.07 = 64, so they step by 64 counts (0.48 degC) and cost
-no register read. Start is the first sample of the capture, freeze the newest sample before FREEZE; a capture with
-N = 0 has no reading and both are 0. The Jetson's capture `.json` carries them decoded beside the raw ones, as
+no register read. Start is the first sample pushed since the capture was reset (not necessarily the oldest sample retained after a
+ring wrap), freeze the newest sample before FREEZE; a capture with N = 0 has no reading: the board writes 0 for start
+and may leave a stale value in freeze, and the Jetson reports both as null. The Jetson's capture `.json` carries them decoded beside the raw ones, as
 `header.temp_c_start` and `header.temp_c_freeze` (null when N = 0).
 
 `boot_id` is a nonzero u32 that changes on every warm boot: it mixes a boot counter kept in RAM2 (not cleared by the
