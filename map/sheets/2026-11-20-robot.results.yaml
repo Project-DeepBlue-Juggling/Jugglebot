@@ -17,6 +17,10 @@ steps:
       is 0
     saved_at: 2026-11-20 12:51
     status: done
+  5:
+    comments: ''
+    saved_at: 2026-11-20 13:49
+    status: done
   6:
     comments: ''
     saved_at: 2026-11-20 12:52
@@ -90,6 +94,51 @@ steps:
     comments: ''
     saved_at: 2026-11-20 13:48
     status: done
+  19:
+    comments: ''
+    saved_at: 2026-11-20 13:48
+    status: done
+  20:
+    comments: ''
+    saved_at: 2026-11-20 13:49
+    status: done
+  21:
+    comments: ''
+    saved_at: 2026-11-20 13:49
+    status: done
+  23:
+    comments: ''
+    saved_at: 2026-11-20 13:49
+    status: done
+  24:
+    comments: 'Attemps: 1 - ended with messy catch 2 - ended with mid-air collision
+      3 - Ended with messy catch leading to uncatchable throw 4 - Messy catch 5 -
+      mid-air collision 6 - completed (though the second last catch was technically
+      a miss as it didn''t land in the hand proper - instead landing on the Platform)
+      7 - Completed perfectly 8 - MAX_DEVIATION / LANE_REFUSED'
+    saved_at: 2026-11-20 13:57
+    status: done
+  25:
+    comments: 'Capture didn''t end when the launch ended. When I CTRL-C''d the capture,
+      I got: " (venv) jetson:/home/jetson/Desktop/Jugglebot/ (night-shift/sitting-2026-11-20)
+      $ cd ~/Desktop/Jugglebot && source ~/Desktop/PDJ_venv/venv/bin/activate && python
+      tools/probes/hand_foc_scope.py capture --preset power --trigger fault --label
+      robot_fault Recording from 0xffff0010, 0xffff0011, 0xffff0228, 0xffff0229...
+      Fetching buffer... break None at 65536, 4, 65536 Collected 4096 samples, which
+      corresponds to 512.00 ms of data (assuming a sampling frequency of 8000) armed:
+      preset power, trigger fault, trigger point 0.90, waiting until Ctrl-C; scope
+      size 65536 bytes, 8001 Hz measured; Ctrl-C leaves the drive untouched Recording
+      from 0xffff022e, 0xffff022f, 0xffff0001, 0xffff022a, 0xffff022b, 0xffff0229,
+      0xffff01b6, 0xffff0241... clean exit from CLOSED_LOOP to state 1 (disarm_reason
+      0x0, active_errors 0x0, no new value); re-armed ^Cstopped by Ctrl-C after 0
+      saved; 1 clean exits seen while waiting; the drive is untouched " It looks like
+      this didn''t save the log?'
+    saved_at: 2026-11-20 13:58
+    status: done
+  26:
+    comments: ''
+    saved_at: 2026-11-20 13:58
+    status: done
 verdicts:
   7:
     IDEA-16:
@@ -123,3 +172,17 @@ verdicts:
     FEAT-49:
       notes: A SPINOUT shows up in the `grep` readout
       saved_at: 2026-11-20 13:46
+  24:
+    BUG-93:
+      notes: 'This is what I get: " (venv) jetson:/home/jetson/Desktop/Jugglebot/ros_ws/src/jugglebot/Teensy_code_canbridge/
+        (night-shift/sitting-2026-11-20) $ grep -nE "CAN_BUS_DOWN|BRIDGE_FW_CHECK|SPINOUT|LANE_REFUSED"
+        ~/Desktop/Jugglebot/temp/logs/launch_2026-11-20_2.log 28:13:48:36.575 teensy
+        BRIDGE_FW_CHECK: OK — can-bridge v46 [install_skew=0] 1343:13:55:42.630 skill
+        END LANE_REFUSED: hold installed — the firmware is holding a REFUSED lane
+        (legs or hand) 1346:13:55:42.692 skill lane recovery (END LANE_REFUSED): recover_lane:
+        nothing to do — not latched (flags bit 15 clear) 1356:13:55:44.592 skill ERROR
+        columns ENDED (LANE_REFUSED): the firmware refused a streamed lane (legs or
+        hand) and is holding it · 3/7 caught · apex 0.74–0.96 m · worst landing 51
+        mm · landing median 51 mm over 4 (3 without a Fit) · release -3 ms..-3 ms
+        · entered by a Feed "'
+      saved_at: 2026-11-20 13:57
