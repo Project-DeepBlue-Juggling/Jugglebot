@@ -1,0 +1,263 @@
+schema: 1
+date: "2026-11-20"
+rig: bench-hand
+steps:
+  - n: 1
+    kind: setup
+    title: Check the checkout, with the launch down
+    from: []
+    to: []
+    actions:
+      - where: Hands
+        text: "No launch may be running. Terminal 1 is the stage terminal for the whole sheet."
+      - where: Terminal 1
+        command: cd ~/Desktop/Jugglebot && source ~/Desktop/PDJ_venv/venv/bin/activate && git fetch && git status -sb && git log --oneline -1
+    see: "## main...origin/main with nothing ahead or behind, and the top commit is 'map: Sitting sheet 2026-11-20-bench-hand'. Untracked temp/learn/ entries are expected."
+    stop_if: The branch is not main, or it is behind origin/main (wait two minutes for the auto-pull and run it again).
+    serves: []
+
+  - n: 2
+    kind: setup
+    title: Power the bench Hand and read its status
+    from: []
+    to: []
+    actions:
+      - where: Hands
+        text: "Bench Hand on the bridge (CAN2, drive node 6). ODrive USB to the Jetson through the isolator, not the Win10 PC. Cup empty. E-stop in hand. Switch the 45 V supply on."
+      - where: Terminal 1
+        command: python tests/hardware/bench_hand_frame_bench.py status
+    see: "One line reading state 1 (IDLE), err 0x0, node 6, and vbus near 45 V. The same line gives the position as pos, in rev; every later status step reads it."
+    stop_if: Any other node or state, or err not 0x0.
+    record: The status line.
+    serves:
+      - {item: FEAT-45, do: [0]}
+
+  - n: 3
+    kind: setup
+    title: Push-check the frame
+    from: []
+    to: []
+    actions:
+      - where: Terminal 1
+        command: python tests/hardware/bench_hand_frame_bench.py push-check
+      - where: Hands
+        text: "While it records, push the Hand DOWN slowly by a few cm, then let go."
+    see: "A line ending PASS (DOWN counts negative)."
+    stop_if: "FAIL: the mechanism or encoder is mirrored. Fly nothing else: go straight to step 15 (steps 13 and 14 are not flown either)."
+    record: The push-check line.
+    serves:
+      - {item: FEAT-45, do: [1]}
+
+  - n: 4
+    kind: setup
+    title: Torque-check, open loop
+    from: []
+    to: []
+    actions:
+      - where: Hands
+        text: "Move the Hand by hand to mid-stroke, about 5 rev from either stop, and keep clear of it."
+      - where: Terminal 1
+        command: python tests/hardware/bench_hand_frame_bench.py torque-check
+      - where: Terminal 1
+        text: "Only on FAIL, with the Hand at mid-stroke: python tests/hardware/bench_hand_frame_bench.py calibrate, then torque-check again."
+    see: "It pulses 2 A down, then 4 A up, and prints TORQUE-CHECK PASS."
+    stop_if: "It fails twice. Run no closed loop and fly nothing else. Go straight to step 15."
+    record: The torque-check line, and whether calibrate was needed.
+    serves:
+      - {item: FEAT-45, do: [2]}
+
+  - n: 5
+    kind: setup
+    title: Home onto the bottom stop
+    from: []
+    to: []
+    actions:
+      - where: Terminal 1
+        command: python tests/hardware/bench_hand_frame_bench.py home
+    see: The Hand drives DOWN at 3 rev/s and ends IDLE on the bottom stop at -0.10 rev, printing HOME OK.
+    stop_if: It moves up (press the E-stop), or the tool prints an abort.
+    record: The home line.
+    serves:
+      - {item: FEAT-45, do: [3]}
+
+  - n: 6
+    kind: setup
+    title: Measure the top stop, then park low
+    from: []
+    to: []
+    actions:
+      - where: Hands
+        text: "With the drive IDLE, lift the Hand slowly onto the top stop and hold it there."
+      - where: Terminal 1
+        command: python tests/hardware/bench_hand_frame_bench.py status
+      - where: Hands
+        text: "Write the position down: it is <measured> in steps 10 and 11. Lower the Hand to between 0.3 and 0.7 rev and run status again to check."
+    see: A top stop near 10.4 rev, then a park position between 0.3 and 0.7 rev.
+    stop_if: The top stop reads below 10.08 rev (rung C needs that much). Do step 7, then skip to step 13, which needs only 6.0 rev.
+    record: The measured top stop in rev.
+    serves:
+      - {item: FEAT-45, do: [4]}
+
+  - n: 7
+    kind: setup
+    title: Re-flash the bridge to clear the power-up latch
+    from: []
+    to: [bridge-cycled]
+    actions:
+      - where: Terminal 1
+        command: cd ros_ws/src/jugglebot/Teensy_code_canbridge
+      - where: Terminal 1
+        command: pio run -e teensy41 -t upload
+      - where: Terminal 1
+        command: cd ~/Desktop/Jugglebot
+      - where: Terminal 1
+        text: "Then run python tests/hardware/bench_hand_frame_bench.py status once more."
+    see: "SUCCESS from the upload, then status reading state 1, err 0x0 and pos between 0.3 and 0.7 rev. This flashes can-bridge v46, the version the bridge already runs; rungs B and C last flew on v43."
+    stop_if: The upload fails (run the upload line again on its own), or status shows an error or a position outside 0.3 to 0.7 rev (repeat steps 5 to 7).
+    serves:
+      - {item: FEAT-45, do: [5]}
+
+  - n: 8
+    kind: setup
+    title: Scope self-check
+    from: [bridge-cycled]
+    to: [bridge-cycled]
+    actions:
+      - where: Hands
+        text: "Keep the Hand still, parked where step 6 left it."
+      - where: Terminal 1
+        command: python tools/probes/hand_foc_scope.py probe --label bench
+    see: GO.
+    stop_if: "NO-GO. Skip steps 9 to 12 and go to step 13: the BUG-105 row does not need the scope."
+    record: The GO line.
+    serves:
+      - {item: FEAT-45, do: [6]}
+
+  - n: 9
+    kind: setup
+    title: Arm the fault capture in a second terminal
+    from: [bridge-cycled]
+    to: [bridge-cycled]
+    actions:
+      - where: Terminal 2
+        command: cd ~/Desktop/Jugglebot && source ~/Desktop/PDJ_venv/venv/bin/activate
+      - where: Terminal 2
+        command: python tools/probes/hand_foc_scope.py capture --preset power --trigger fault --save-clean --label bench_vol
+    see: "It prints a line starting 'armed: preset power, trigger fault' and then waits. It has no timeout: leave it running until step 12. It saves a window tagged _clean each time the drive leaves closed loop without a fault, and re-arms."
+    stop_if: It exits or prints a traceback three times in a row. Go on without it only if you accept that a fault will not be captured.
+    record: Whether the capture armed, or was skipped.
+    serves:
+      - {item: FEAT-45, do: [7]}
+
+  - n: 10
+    kind: run
+    title: One rung C brake first
+    from: [bridge-cycled]
+    to: [bridge-cycled]
+    actions:
+      - where: Terminal 1
+        command: python tests/hardware/hand_stream_bench.py --stage stroke_cut --close-loop --top-stop <measured> --repeat 1 --stroke-peak-vel 108 --cut-at-vel 103 --stroke-accel 2300 --stroke-top 8.3
+      - where: Terminal 1
+        text: "Replace <measured> with the top stop from step 6. The stage prints its plan (entry speed about 122 rev/s, bench stop needed about 10.08 rev) and refuses before it energises if the plan does not fit."
+      - where: Terminal 2
+        text: "After the stage ends, look here without typing: did it save a window, and does the name end _clean or _clean_forced?"
+    see: "One fast upstroke, a hard stop near the top, a gentle return, then PASS on S1 to S5 with fault NONE."
+    stop_if: "The bench stop needed is above <measured>, the run is not PASS, or there is a fault. On a fault follow the stop rule in step 11. Never press Ctrl-C on the stage mid-stroke; the E-stop is the stop."
+    record: "The plan lines and the verdict line. Whether Terminal 2 saved a window after the stage exit, and its name (_clean or _clean_forced), or that it saved nothing."
+    serves:
+      - {item: FEAT-45, do: [8]}
+
+  - n: 11
+    kind: run
+    title: "Volume run: 15 runs of 10 rung C brakes"
+    from: [bridge-cycled]
+    to: [bridge-cycled]
+    actions:
+      - where: Terminal 1
+        command: python tests/hardware/hand_stream_bench.py --stage stroke_cut --close-loop --top-stop <measured> --repeat 10 --stroke-peak-vel 108 --cut-at-vel 103 --stroke-accel 2300 --stroke-top 8.3
+      - where: Terminal 1
+        text: "Run this 15 times (150 brakes) and keep a tally. After each run read its verdict line and go on only if all 10 brakes were PASS. After the 15th clean run go to step 12."
+      - where: Hands
+        text: "Every 5 runs touch the motor. Stop if it is too hot to keep a hand on."
+      - where: Terminal 2
+        text: "AT THE FIRST FAULT: stop, and leave this terminal alone until it prints the saved path (up to about 5 s). Only then, in Terminal 1: python tests/hardware/hand_stream_bench.py --clear-errors (the Item's recovery, hand_stream_bench.py --clear-errors)."
+    see: "Each run: 10 upstrokes with hard stops, each PASS, fault NONE, sched_refused 0. Terminal 2 may save a _clean window after each run."
+    stop_if: "Any fault, any brake not PASS, a sched_refused above 0, a hot motor, or a new noise. A fault with a saved window is the result this row is looking for, not a failure: stop the row there and go to step 12. Never press Ctrl-C on the stage mid-stroke. If the drive restarts (power cycle), repeat step 5, park at 0.3 to 0.7 rev, and repeat step 7 before anything else."
+    record: "Runs and brakes flown, and any sched_refused above 0. For a fault: the run and brake number, the stage's fault line, and the saved path Terminal 2 printed. Anything heard or felt. Type pending: the verdict is computed at the debrief."
+    serves:
+      - {item: FEAT-45, do: [9, 10], pass: true}
+
+  - n: 12
+    kind: restore
+    title: Stop the capture and park for the next row
+    from: [bridge-cycled]
+    to: [bridge-cycled]
+    actions:
+      - where: Terminal 2
+        text: "Press Ctrl-C once on the capture (skip this if it was never armed). This is safe at any time."
+      - where: Terminal 1
+        command: python tests/hardware/bench_hand_frame_bench.py status
+      - where: Terminal 1
+        text: "If it shows an error, run python tests/hardware/hand_stream_bench.py --clear-errors. If the position is above 0.9 rev or there was a fault, run python tests/hardware/bench_hand_frame_bench.py home, then lift the Hand to between 0.3 and 0.7 rev."
+    see: "err 0x0, and pos at or below 0.9 rev (the stage normally returns the Hand to where it started, 0.3 to 0.7 rev)."
+    stop_if: An error will not clear. End the Sitting at step 15.
+    record: "The names of the files the capture saved (ls -t temp/hand_foc_scope | head -20), and whether any name contains _forced."
+    serves: []
+
+  - n: 13
+    kind: run
+    title: "Feedforward offset: cut a 10 rev/s upward ramp"
+    from: [bridge-cycled]
+    to: [bridge-cycled]
+    actions:
+      - where: Hands
+        text: "Check: launch down, Hand parked at or below 0.9 rev, Cup empty, E-stop in hand, and the top stop from step 6 is at or above 6.0 rev."
+      - where: Terminal 1
+        command: python tests/hardware/hand_stream_bench.py --stage triangle --tri-span 4 --tri-speed 10 --duration 60 --close-loop
+      - where: Terminal 1
+        text: "The Hand ramps up 4 rev and back at 10 rev/s. Press Ctrl-C ONCE in the middle of an upward ramp, well away from either turning point. Note the last commanded position the stage printed."
+      - where: Terminal 1
+        command: python tests/hardware/bench_hand_frame_bench.py status
+      - where: Terminal 1
+        command: python tests/hardware/hand_stream_bench.py --clear-errors
+      - where: Terminal 1
+        text: "Then, if status shows the Hand above 0.9 rev: python tests/hardware/bench_hand_frame_bench.py home, and lift the Hand to between 0.3 and 0.7 rev."
+    see: "After Ctrl-C the Hand coasts on and holds about 10 / 35 = 0.29 rev ABOVE the last commanded position, without drifting."
+    stop_if: The Hand keeps moving after Ctrl-C or drifts (press the E-stop), or a fault will not clear.
+    record: "Ramp direction, last commanded position, settled position (status), the offset, and whether any Guard or latch fired."
+    serves:
+      - {item: BUG-105, do: [0, 1, 2]}
+
+  - n: 14
+    kind: run
+    title: "Feedforward offset: cut 20 rev/s ramps, one up and one down"
+    from: [bridge-cycled]
+    to: [bridge-cycled]
+    actions:
+      - where: Terminal 1
+        command: python tests/hardware/hand_stream_bench.py --stage triangle --tri-span 4 --tri-speed 20 --duration 60 --close-loop
+      - where: Terminal 1
+        text: "First cut: Ctrl-C ONCE in the middle of an UPWARD ramp. Then status, --clear-errors, and re-park at or below 0.9 rev, exactly as in step 13."
+      - where: Terminal 1
+        text: "Second cut: run the same command again and press Ctrl-C ONCE in the middle of a DOWNWARD ramp. Then status and --clear-errors again."
+      - where: Hands
+        text: "Do not go faster than --tri-speed 20 in this row. Last, after the second --clear-errors: press the E-stop button once, run status, and note whether it still replies and what vbus reads. Release the button afterwards. If the drive lost power its reference is lost, which no longer matters."
+    see: "The Hand holds about 20 / 35 = 0.57 rev above the last command after the upward cut, and about 0.57 rev below it after the downward cut."
+    stop_if: The Hand keeps moving after Ctrl-C or drifts (press the E-stop), or the downward cut would end within 0.6 rev of the bottom stop (cut earlier in the ramp).
+    record: "For each cut: ramp direction, last commanded position, settled position, offset, any Guard or latch. What the E-stop button cuts. The bench top stop in rev. Type pending: the verdict is computed at the debrief."
+    serves:
+      - {item: BUG-105, do: [3, 4], pass: true, setup_waived: "the bench stage energises the Hand itself with --close-loop, so no earlier step arms it"}
+
+  - n: 15
+    kind: restore
+    title: Leave the bench safe
+    from: [bridge-cycled]
+    to: []
+    actions:
+      - where: Terminal 1
+        command: python tests/hardware/bench_hand_frame_bench.py status
+      - where: Hands
+        text: "Check Terminal 2 is back at a prompt. Switch the 45 V supply off. Cup empty."
+    see: "state 1 (IDLE) and err 0x0 before the supply goes off. If the E-stop test in step 14 cut the drive's power, status may not reply at all: that is fine, switch off."
+    stop_if: "The drive reads state 8 (closed loop). Run python tests/hardware/hand_stream_bench.py --clear-errors and check again before switching off."
+    serves: []

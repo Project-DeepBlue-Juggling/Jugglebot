@@ -29,12 +29,12 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | --- | ---: | --- | --- | --- |
 | BUG-19 Hand ODrive state can silently diverge from what the can-bridge commanded | 30 | bridge-cycled | - | - |
 
-## Bench hand  (2 Items, 60 min)
+## Bench hand  (2 Items, 70 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
-| BUG-105 Hand keeps its last velocity feedforward on a Soft E-stop, disarm or link loss and stays in Closed-loop | 20 | armed, bridge-cycled | - | - |
-| FEAT-45 Measure the Hand's commutation angle error through a hard brake on the bench Hand (FOC scope) | 40 | armed, bridge-cycled | - | - |
+| BUG-105 Hand keeps its last velocity feedforward on a Soft E-stop, disarm or link loss and stays in Closed-loop | 20 | armed, bridge-cycled | - | 2026-11-20-bench-hand |
+| FEAT-45 Measure the Hand's commutation angle error through a hard brake on the bench Hand (FOC scope) | 50 | bridge-cycled | - | 2026-11-20-bench-hand |
 
 ## Needs a Sitting section
 
