@@ -69,6 +69,9 @@ class FakePlatform:
     """Drives an UploadMachine with fake time. Options (all default off):
 
     drop_once      set of seqs dropped the FIRST time they are sent (hole, refilled by a re-read)
+    drop_always    set of seqs never delivered (a word the Platform repeatedly fails to send)
+    loss_p         every frame sent is omitted independently with this probability (the Armed omission
+                   model of the 2026-11-20 debrief); ``loss_seed`` fixes the draw
     drop_block_n   drop every frame of the first N READ blocks (a lost uplink burst)
     dup            set of seqs sent twice
     late           {seq: extra_delay_s}: frame delivered after the block's last frame (reordering)
@@ -99,6 +102,8 @@ class FakePlatform:
         self.reads_seen = 0
         self.lose_replies = opt.get("lose_replies", 0)
         self.corrupt_active = True
+        self.loss_rng = np.random.default_rng(opt.get("loss_seed", 0))
+        self.omitted = 0
         machine._is_armed = lambda: bool(opt.get("armed", False))
 
     def _at(self, dt, fn):
@@ -174,6 +179,11 @@ class FakePlatform:
                 continue
             if seq in self.opt.get("drop_once", ()) and seq not in self.sent_once:
                 self.sent_once.add(seq)
+                continue
+            if seq in self.opt.get("drop_always", ()):
+                continue
+            if self.opt.get("loss_p") and self.loss_rng.random() < self.opt["loss_p"]:
+                self.omitted += 1
                 continue
             word = img["words"][seq]
             cor = self.opt.get("corrupt", {})

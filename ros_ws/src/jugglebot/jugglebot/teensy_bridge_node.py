@@ -132,7 +132,8 @@ from teensy_link.gap_monitor import (
     DownlinkLossTracker, EpisodeLatch, GapTracker)
 from teensy_link.hand_feedback_watch import HandFeedbackWatch
 from jugglebot import platform_imu_gate as _imu_gate
-from teensy_link.platform_imu import PlatformImuService, UploadConfig as _ImuUploadConfig
+from teensy_link.platform_imu import (PlatformImuService, UploadConfig as _ImuUploadConfig,
+                                      format_upload_end as _imu_format_upload_end)
 from teensy_link.platform_imu_capture import ImuCaptureWriter
 from teensy_link.setpoint_pump import SetpointPump, FLAG_HAS_HAND, HAND_FF_GAIN_MAX
 from teensy_link.stop_record import StopRecordLog
@@ -3057,7 +3058,7 @@ class TeensyBridgeNode(Node):
         self._imu = PlatformImuService(
             self._imu_send_ctrl, self._imu_send_read, writer=self._imu_writer,
             is_armed=lambda: bool(self._mpc_active), config=cfg,
-            on_state_change=self._publish_platform_imu_status)
+            on_state_change=self._publish_platform_imu_status, on_upload_end=self._imu_on_upload_end)
         self._imu.set_upload_after_attempt(bool(self.get_parameter('imu_upload_after_attempt').value))
         self._imu_cbgroup = ReentrantCallbackGroup()
         self.platform_imu_status_pub = self.create_publisher(DiagnosticStatus, 'platform_imu/status', 10)
@@ -3073,6 +3074,19 @@ class TeensyBridgeNode(Node):
                             callback_group=self._imu_cbgroup)
         self.create_service(Trigger, 'platform_imu/abort', self._svc_imu_abort,
                             callback_group=self._imu_cbgroup)
+
+    def _imu_on_upload_end(self, summary):
+        """IMU worker thread, once per upload end on every path (PlatformImuService._on_result is the only
+        consumer of the machine's result): the launch-log partner of 'Platform IMU upload started'. The
+        teensy_link module logger does not reach the launch log at INFO, so the line goes through rclpy."""
+        try:
+            ok, text = _imu_format_upload_end(summary)
+            if ok:
+                self.get_logger().info(text)
+            else:
+                self.get_logger().warning(text)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().warning('IMU upload-end log swallowed: %s' % e)
 
     def _imu_send_ctrl(self, op, reason, capture_id):
         """Worker-thread RPC: one PLATFORM_IMU_CTRL. OK = queued on the bus; the verdict is the IMU_REPLY.

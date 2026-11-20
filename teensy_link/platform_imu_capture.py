@@ -394,7 +394,8 @@ class ImuCaptureWriter:
                     return
                 continue
             try:
-                self.last_path = write_capture(self.directory, cap)
+                # Named from the upload's own end time, so the stem the service logs is the file's stem.
+                self.last_path = write_capture(self.directory, cap, cap.meta.get("uploaded_wall_time_s"))
                 self.written += 1
                 logger.info("platform IMU capture written: %s", self.last_path)
             except Exception:  # noqa: BLE001

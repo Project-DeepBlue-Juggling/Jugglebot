@@ -182,3 +182,58 @@ def test_status_topic_publishes_health_counters_and_warns_on_a_recent_rise():
         assert vals["i2c_errors_delta_since_launch"] == "3" and got[-1].level == DiagnosticStatus.WARN
     finally:
         _teardown(teensy, client, node)
+
+
+class _LogRec:
+    def __init__(self):
+        self.lines = []
+
+    def info(self, m, *a, **k):
+        self.lines.append(("info", m))
+
+    def warning(self, m, *a, **k):
+        self.lines.append(("warning", m))
+
+    warn = warning
+
+    def error(self, m, *a, **k):
+        self.lines.append(("error", m))
+
+    def debug(self, m, *a, **k):
+        pass
+
+
+def test_every_upload_end_reaches_the_launch_log_once_info_when_finished_warning_when_aborted():
+    teensy, client, node = _build_paired_node()
+    try:
+        img = build_image(n=200, n_anchors=4)
+        log = []
+        state = _install_fake_platform(teensy, img, log)
+        w = _Writer()
+        node._imu._writer = w
+        rec = _LogRec()
+        node.get_logger = lambda: rec
+        _status_frame(teensy, 2, img["boot_id"] & 0xFF)
+        assert _wait_until(lambda: node.imu_upload_status()["platform_state"] == "RUNNING")
+        w0 = img["wall0_us"] / 1e6
+        assert node.attempt_ended(w0 + 0.05, w0 + 0.15, "attempt_end", attempt_id="att-9") is True
+        assert _wait_until(lambda: not node.upload_in_progress() and w.caps, timeout=20.0)
+        assert _wait_until(lambda: any("upload finished" in m for _, m in rec.lines))
+        ends = [(lvl, m) for lvl, m in rec.lines if "Platform IMU upload finished" in m or "upload aborted" in m
+                or "upload failed" in m]
+        assert len(ends) == 1 and ends[0][0] == "info"
+        m = ends[0][1]
+        assert "attempt_end" in m and "complete yes" in m and "crc ok" in m    # the span + margin covers the image
+        assert "%d samples" % w.caps[0].raw.shape[0] in m and "_%04X" % img["cap_id"] in m
+        assert " 0 duplicate" in m and "frames rx" in m and "block timeouts" in m and "hole passes" in m
+        # an operator abort mid-upload: one WARNING naming the reason
+        rec.lines.clear()
+        state["frozen"] = False
+        assert node._imu.request_upload(label="operator", force=True)
+        node.abort_upload("operator")
+        assert _wait_until(lambda: not node.upload_in_progress(), timeout=20.0)
+        assert _wait_until(lambda: any("Platform IMU upload" in m for _, m in rec.lines))
+        ends = [(lvl, m) for lvl, m in rec.lines if m.startswith("Platform IMU upload ")]
+        assert len(ends) == 1 and ends[0][0] == "warning" and "aborted" in ends[0][1] and "operator" in ends[0][1]
+    finally:
+        _teardown(teensy, client, node)

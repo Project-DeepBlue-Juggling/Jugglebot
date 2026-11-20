@@ -28,7 +28,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from . import protocol as _protocol  # noqa: F401  (puts config/generated on sys.path)
 import protocol_config as pc  # noqa: E402
 
-from .platform_imu_capture import TimeModel, build_capture
+from .platform_imu_capture import TimeModel, build_capture, capture_stem
 
 logger = logging.getLogger(__name__)
 
@@ -201,7 +201,20 @@ class UploadConfig:
     freeze_timeout_s: float = 1.5      # FREEZE also computes the payload CRC on the board
     cmd_retries: int = 3
     block_slack_s: float = 0.15        # spec says 50 ms; +100 ms for the bridge's 10 ms flush and UDP
-    settle_s: float = 0.03             # after a block's LAST seq arrives, wait this long for stragglers
+    # After a block's LAST seq arrives with a hole left in the block, wait this long (no frame at all) for
+    # stragglers before the next READ. Was 30 ms; 5 ms since IDEA-25 (2026-11-21). The 30 ms bought nothing:
+    # a straggler is a frame already committed to a Platform TX mailbox, which a replacing READ cannot cancel,
+    # and when it arrives it fills its word at region level whichever block is current (``_Region.put``). Armed
+    # (about 0.4 % of frames omitted, 64 % of 256-word blocks hold a hole) the 30 ms (35-40 ms effective with
+    # the 20 ms worker poll) cost about 5 s of a 79 s whole-ring capture (debrief 2026-11-20, capture AEDE).
+    settle_s: float = 0.005
+    # A hole-fill READ ends at a run of MORE than this many already-present words; a shorter present run between
+    # two holes is re-read (duplicates) to save a READ turnaround (about 16 ms, about 16-20 frames at the
+    # 0.8 ms pace, so 16 is break-even). Before IDEA-25 a refill READ ran from the first hole to the last hole
+    # within READ_MAX words, re-sending every present word between: Armed, about 55 duplicates per hole healed,
+    # 14,651 duplicates of 82,580 frames and about 13 s of a 79 s capture (AEDE); modelled with this rule:
+    # about 200 duplicates and about 1.3x the READs. READ_MAX (256) restores the old behaviour.
+    refill_merge_words: int = 16
     max_stalled_blocks: int = 4        # consecutive blocks that delivered nothing new
     max_passes: int = 8                # full sweeps of a region (pass 1 + hole refills)
     max_crc_rereads: int = 1           # spec: one full re-read, then write flagged
@@ -248,12 +261,21 @@ class UploadResult:
 
 class _Region:
     """One address region being fetched: a word buffer and a presence bitmap. ``next_block`` always
-    returns the first missing run from the scan position (at most READ_MAX words, trailing words
-    already present trimmed), so the first sweep, the hole refills and late tails from a replaced
-    block all use one loss-recovery path (spec section 3)."""
+    returns the first missing word from the scan position onward, so the first sweep, the hole refills
+    and late tails from a replaced block all use one loss-recovery path (spec section 3).
 
-    def __init__(self, name: str, base: int, w_lo: int, w_hi: int):
+    A block starts AND ends on a missing word, holds at most READ_MAX words, and bridges a run of
+    present words only when that run is at most ``merge`` words long (IDEA-25: a refill READ covers one
+    cluster of nearby holes, not every word from the first hole to the last hole in READ_MAX). Every
+    word still missing when the scan reaches it is requested once per pass: the scan only moves to the
+    end of the block just returned, and the next call starts at the first missing word at or after it,
+    so a hole past a block's end (a long present run, or the READ_MAX limit) is the next block's start.
+    A hole never delivered is re-requested each pass until ``UploadConfig.max_passes`` or
+    ``max_stalled_blocks`` ends the upload."""
+
+    def __init__(self, name: str, base: int, w_lo: int, w_hi: int, merge: int = READ_MAX):
         self.name, self.base, self.lo, self.hi = name, base, w_lo, w_hi
+        self.merge = max(int(merge), 0)
         n = max(w_hi - w_lo, 0)
         self.n = n
         self.buf = bytearray(WORD * n)
@@ -286,8 +308,19 @@ class _Region:
             self.passes += 1
             self.scan = 0
             i = self.have.find(b"\x00", 0)
-        j = min(i + READ_MAX, self.n)
-        end = self.have.rfind(b"\x00", i, j) + 1
+        lim = min(i + READ_MAX, self.n)
+        have = self.have
+        end = i                        # the block is [i, end); have[i] == 0 and have[end - 1] == 0
+        while True:
+            p = have.find(b"\x01", end, lim)          # first present word after this missing run
+            if p < 0:                                   # missing to the READ_MAX limit or the region end
+                end = lim
+                break
+            end = p
+            q = have.find(b"\x00", p, lim)             # the next hole, after a present run [p, q)
+            if q < 0 or q - p > self.merge:             # no further hole in reach, or the run is too long
+                break
+            end = q
         self.scan = end
         return self.base + self.lo + i, end - i
 
@@ -601,6 +634,16 @@ class UploadMachine:
             self.stats["block_timeouts"] += 1
             self._next_block(now, timed_out=True)
 
+    def settle_due_in(self, now: float) -> Optional[float]:
+        """Seconds until :meth:`tick` would end the current block on ``settle_s`` (0 if already due), or None
+        when no settle is pending. The worker waits at most this long for the next batch, so the settle is
+        ``settle_s`` and not the 20 ms poll (the bridge flushes batches every 10 ms; after a block's last
+        batch nothing else wakes the worker)."""
+        b = self.blk
+        if b is None or not b.last_seen or self.phase not in (HEADER, ANCHORS, SAMPLES):
+            return None
+        return max(0.0, self.cfg.settle_s - (now - b.last_rx))
+
     def _rate_update(self, now: float) -> None:
         if now - self._rate_t >= 1.0:
             if self._rate_t:
@@ -640,7 +683,7 @@ class UploadMachine:
     # -- phases --
     def _begin_region_header(self, now: float) -> None:
         self.phase = HEADER
-        self.region = _Region("header", HEADER_BASE, 0, HEADER_WORDS)
+        self.region = _Region("header", HEADER_BASE, 0, HEADER_WORDS, self.cfg.refill_merge_words)
         self.frames_total = HEADER_WORDS
         self.frames_done = 0
         self._start_block(now)
@@ -677,7 +720,8 @@ class UploadMachine:
         h = self.header
         self.phase = ANCHORS
         total_anchor_words = ANCHOR_WORDS * h.n_anchors
-        self.anchor_region = self.region = _Region("anchors", ANCHOR_BASE, 0, total_anchor_words)
+        self.anchor_region = self.region = _Region("anchors", ANCHOR_BASE, 0, total_anchor_words,
+                                                         self.cfg.refill_merge_words)
         self.frames_total = total_anchor_words + 2 * h.n_samples
         self.frames_done = 0
         if not self._start_block(now):
@@ -703,7 +747,7 @@ class UploadMachine:
                 self.flags["partial_span"] = not self.full_coverage
         self.k0, self.k1 = k0, k1
         self.phase = SAMPLES
-        self.sample_region = self.region = _Region("samples", 0, 2 * k0, 2 * k1)
+        self.sample_region = self.region = _Region("samples", 0, 2 * k0, 2 * k1, self.cfg.refill_merge_words)
         self.frames_total = ANCHOR_WORDS * h.n_anchors + 2 * (k1 - k0)
         self.frames_done = ANCHOR_WORDS * h.n_anchors
         if not self._start_block(now):
@@ -720,7 +764,8 @@ class UploadMachine:
                 self.stats["crc_rereads"] += 1
                 logger.warning("IMU payload CRC mismatch: re-reading the capture once")
                 self.phase = ANCHORS
-                self.anchor_region = self.region = _Region("anchors", ANCHOR_BASE, 0, ANCHOR_WORDS * h.n_anchors)
+                self.anchor_region = self.region = _Region("anchors", ANCHOR_BASE, 0,
+                                                             ANCHOR_WORDS * h.n_anchors, self.cfg.refill_merge_words)
                 self.frames_done = 0
                 self.stalled = 0
                 if not self._start_block(now):
@@ -775,6 +820,29 @@ class UploadMachine:
             logger.exception("IMU upload result handler failed")
 
 
+def format_upload_end(summary: Dict[str, Any]) -> Tuple[bool, str]:
+    """The one launch-log line for an ended upload: ``(ok, text)``. ``ok`` False (log a WARNING) when the
+    upload failed, was aborted, is incomplete, failed its CRC or its capture was not handed to the writer."""
+    st = summary.get("stats") or {}
+    fl = summary.get("flags") or {}
+    crc = fl.get("crc_ok")
+    crc_s = "ok" if crc is True else ("FAILED" if crc is False else "not checked")
+    complete = bool(fl.get("complete")) and not summary.get("write_failed")
+    body = ("%s, %d samples, %.1f s, %d frames rx, %d duplicate, %d READs, %d block timeouts, %d hole passes, "
+            "complete %s, crc %s, file %s" % (
+                summary.get("label", "?"), int(summary.get("samples") or 0), float(st.get("wall_s") or 0.0),
+                int(st.get("frames_rx", 0)), int(st.get("dup_frames", 0)), int(st.get("blocks", 0)),
+                int(st.get("block_timeouts", 0)), int(st.get("hole_passes", 0)), "yes" if complete else "NO",
+                crc_s, summary.get("stem") or "none"))
+    if summary.get("failure") or fl.get("aborted") or not complete or crc is False:
+        reason = summary.get("failure") or ("aborted" if fl.get("aborted") else (
+            "CRC mismatch" if crc is False else "incomplete (%d word(s) missing%s)" % (
+                int(fl.get("holes_unfilled") or 0), ", empty span" if fl.get("span_empty") else "")))
+        word = "aborted" if fl.get("aborted") else "failed"
+        return False, "Platform IMU upload %s: %s (%s)" % (word, reason, body)
+    return True, "Platform IMU upload finished (%s)" % body
+
+
 # ── the worker service ───────────────────────────────────────────────────────────────────────────
 
 class PlatformImuService:
@@ -789,9 +857,11 @@ class PlatformImuService:
                  wall: Callable[[], float] = time.time, is_armed: Callable[[], bool] = lambda: False,
                  config: Optional[UploadConfig] = None, start_thread: bool = True,
                  data_queue_size: int = 2048, event_queue_size: int = 256,
-                 on_state_change: Optional[Callable[[], None]] = None):
+                 on_state_change: Optional[Callable[[], None]] = None,
+                 on_upload_end: Optional[Callable[[Dict[str, Any]], None]] = None):
         self._clock, self._wall = clock, wall
         self._on_state_change = on_state_change        # busy flipped (accepted / ended): publish at once
+        self._on_upload_end = on_upload_end            # once per upload (not a heal), with the summary dict
         self.cfg = config or UploadConfig()
         self._writer = writer
         self.machine = UploadMachine(send_ctrl, send_read, self._on_result, config=self.cfg, is_armed=is_armed)
@@ -1104,8 +1174,13 @@ class PlatformImuService:
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                # Block briefly on the data queue so a batch is handled within a millisecond or two.
-                t, info, records = self._data_q.get(timeout=0.02)
+                # Block briefly on the data queue so a batch is handled within a millisecond or two; when a
+                # block's settle is pending, wake when it falls due (at least 1 ms, at most the 20 ms poll).
+                timeout = 0.02
+                due = self.machine.settle_due_in(self._clock())
+                if due is not None:
+                    timeout = min(timeout, max(due, 0.001))
+                t, info, records = self._data_q.get(timeout=timeout)
                 self._bridge = {"ring_hwm": info.ring_hwm, "ring_drops": info.ring_drops,
                                 "rx_frames": info.rx_frames, "batches_sent": info.batches_sent,
                                 "send_fails": info.send_fails}
@@ -1133,18 +1208,24 @@ class PlatformImuService:
             return
         summary: Dict[str, Any] = {"label": res.job.label, "attempt_id": res.job.attempt_id,
                                    "flags": dict(res.flags), "failure": res.failure, "stats": dict(res.stats),
-                                   "capture_id": res.header.capture_id if res.header else None, "path": None}
+                                   "capture_id": res.header.capture_id if res.header else None, "path": None,
+                                   "samples": len(res.sample_words) // (2 * WORD), "stem": None}
         try:
             if res.header is not None:
+                uploaded = self._wall()
                 meta = {"attempt_id": res.job.attempt_id, "label": res.job.label,
                         "span_wall_s": [res.job.t_start_wall, res.job.t_end_wall],
                         "span_margin_s": self.cfg.span_margin_s, "stats": res.stats, "failure": res.failure,
-                        "requested_gap_10us": self.cfg.gap_10us, "uploaded_wall_time_s": self._wall()}
+                        "requested_gap_10us": self.cfg.gap_10us, "uploaded_wall_time_s": uploaded}
                 flags = dict(res.flags)
                 flags["discontinuities"] = sum(1 for a in res.anchors if a.flags & 0x01)
                 cap = build_capture(res.header, res.anchors, res.sample_words, res.word_present, res.k0, flags, meta)
                 summary["fit"] = {k: cap.fit.get(k) for k in ("rate_hz", "resid_rms_us", "n_segments", "wall_ok")}
                 summary["flags"] = flags
+                summary["samples"] = int(cap.raw.shape[0])
+                # The writer names the file from uploaded_wall_time_s (ImuCaptureWriter), so this is its stem
+                # (a same-second collision appends _1, _2 ...).
+                summary["stem"] = capture_stem(cap, uploaded)
                 if self._writer is not None:
                     summary["writer_errors_at_submit"] = int(getattr(self._writer, "errors", 0))
                     summary["writer_dropped_at_submit"] = int(getattr(self._writer, "dropped", 0))
@@ -1164,6 +1245,12 @@ class PlatformImuService:
                 self._last_result = summary
                 self._busy = False
             self._notify()
+            cb = self._on_upload_end
+            if cb is not None:
+                try:
+                    cb(dict(summary))
+                except Exception:  # noqa: BLE001 -- a log line never breaks the worker
+                    logger.exception("platform IMU upload-end callback failed")
 
     def close(self, timeout: float = 5.0) -> None:
         self._stop.set()

@@ -292,6 +292,24 @@ the id; STATUS carries none) then RESUME, after 3 s or 15 s, at most 3 tries per
 has no payload CRC (it covers the whole capture) and `complete` then means the requested span arrived; (d) the toggle
 is default ON at every node start (not persisted).
 
+Host hole-fill and settle (IDEA-25, 2026-11-21, no wire or firmware change; `teensy_link/platform_imu.py`, `_Region` and
+`UploadConfig`). The node keeps a presence bitmap per region and always READs from the first missing word at or after its
+scan position. A READ starts and ends on a missing word, holds at most 256 words, and bridges a run of words it already
+has only when that run is at most `refill_merge_words` (16) long; a longer run ends the READ and the next missing word
+starts the next one. So every word still missing is requested once per pass, a word never delivered is re-requested each
+pass until 8 passes or 5 consecutive READs that bring nothing new end the upload (the capture is written incomplete and
+RESUMEd), and the 300 s ceiling still applies. Before IDEA-25 a refill READ ran from the first hole to the last hole within
+256 words and re-sent everything between: when Armed (about 0.4 % of IMU_DATA frames never reach the bridge, cause not
+yet located) that was about 55 duplicate frames per hole healed, 14,651 duplicates and about 13 s of a 79 s whole-ring
+capture (AEDE, 2026-11-20). A block whose last word arrives with a hole left in it ends after `settle_s` (5 ms, was
+30 ms) with no frame received; the worker wakes for it instead of on its 20 ms poll. The settle only waits for frames
+already in the Platform's TX mailboxes, and those fill their words whenever they arrive (a frame's `seq` addresses its
+word, whichever READ is current), so a shorter settle loses nothing; a READ that reaches the Platform while it is still
+sending replaces the block, and the frame pace (measured from the last frame sent, across blocks) and the Armed gap clamp
+are unchanged, so the bus IMU rate stays at the requested gap. The node logs one launch-log line at every upload end:
+INFO `Platform IMU upload finished (label, samples, wall s, frames rx, duplicates, READs, block timeouts, hole passes,
+complete, crc, file stem)`, or a WARNING `Platform IMU upload failed|aborted: <reason> (...)`.
+
 ## 7. Walk-through: one capture with one lost frame
 
 N = 32000 (wrapped), 320 anchors (960 words), header 11 words; 64971 words in all.
@@ -301,7 +319,9 @@ N = 32000 (wrapped), 320 anchors (960 words), header 11 words; 64971 words in al
 2. Once no Attempt is running: READ(0x4A21, 0xFFF0, 11, 80). It replies `[05][00][0x4A21][0xFFF0 | 11 << 16]`, then sends seq
    0xFFF0..0xFFFA. The node checks `header_crc32`, the version, capture_id against the FREEZE reply, and N.
 3. READ (gap 80, 800 us) the anchors (0xFA80, four blocks: 256, 256, 256, 192), then the samples (250 blocks of 256). The node asks for
-   the next block when the current block's last seq arrives, or after `count x gap + 50 ms`.
+   the next block when every word of the current block is present; when its last seq arrived with a hole left, after
+   5 ms with no frame; otherwise after `count x gap` plus 150 ms of silence (the spec's 50 ms plus the bridge's 10 ms
+   flush and UDP).
 4. Frame seq 0x1235 (the gyro word of sample 2330) is dropped in the bridge ring. The bitmap shows the hole after its
    block.
 5. READ(0x4A21, 0x1235, 1, 100) returns that one frame, and the bitmap is full.

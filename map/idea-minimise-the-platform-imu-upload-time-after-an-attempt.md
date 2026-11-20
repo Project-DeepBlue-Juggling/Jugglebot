@@ -4,7 +4,7 @@ kind: idea
 title: Minimise the Platform IMU upload time after an Attempt
 status: backlog
 created: '2026-11-19'
-updated: '2026-11-20T12:38:26Z'
+updated: '2026-11-20T21:16:39Z'
 owners: []
 priority: low
 effort: m
@@ -16,6 +16,7 @@ blocked_by: []
 links:
 - plans/active/platform-imu.md
 - logbook/2026-11-20-sitting-debrief-robot-2.md
+- logbook/2026-11-21-platform-imu-upload-hole-fill.md
 parent: two-ball-oval
 filed_by: claude
 night_skip: input-decision
@@ -47,3 +48,4 @@ Recommendation: 1 now (cheap, Jetson-only, attacks the measured 13 s of re-readi
 ## Progress
 
 - 2026-11-20: Sitting 2026-11-20: Armed uploads took 79 s (ring) and 84 s (32 s span) against 56 s at rest, with 14651-19974 duplicate frames (158 at rest), up to 6 block timeouts, CAN1 at 74-77 %. A juggle goal was refused 7 s into a 37 s upload. Diagnosis in logbook 2026-11-20-sitting-debrief-robot-2.
+- 2026-11-21: 2026-11-21: Jetson-only hole-fill change landed (READs cover one cluster of holes, settle 5 ms); modelled 79 s to about 64 s Armed. To verify on the robot from the new upload-finished log line (logbook 2026-11-21-platform-imu-upload-hole-fill).

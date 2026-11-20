@@ -888,3 +888,206 @@ def test_health_decodes_flags_temp_and_sync_peak_units():
     _health_frame(svc, box, 2.0, sp=255)
     h = svc.status_snapshot()["health"]
     assert h["sync_peak_valid"] is False and h["sync_peak_ms"] is None
+
+
+# ── IDEA-25: hole-fill READs end at a long present run; 5 ms settle; one log line per upload end ─────
+
+def _region(have_bits, merge=16):
+    r = pi._Region("t", 0, 0, len(have_bits), merge)
+    for i, h in enumerate(have_bits):
+        if h:
+            r.put(i, b"\x00" * 6)
+    return r
+
+
+def test_refill_block_bridges_a_present_run_of_at_most_merge_words_and_stops_at_a_longer_one():
+    bits = [1] * 600
+    for h in (10, 27, 45, 300, 599):     # 10..27: 16 present between (merged); 27..45: 17 (split)
+        bits[h] = 0
+    r = _region(bits)
+    assert r.next_block() == (10, 18)     # 10..27, ends on the hole at 27
+    assert r.next_block() == (45, 1)
+    assert r.next_block() == (300, 1)
+    assert r.next_block() == (599, 1)     # the region's last word
+    assert r.passes == 1
+    assert r.next_block() == (10, 18) and r.passes == 2      # nothing delivered: the next pass asks again
+    old = _region(bits, merge=pi.READ_MAX)                   # the pre-IDEA-25 rule: first to last hole in 256
+    assert old.next_block() == (10, 36) and old.next_block() == (300, 1)
+
+
+def test_a_block_of_missing_words_still_reads_read_max_and_a_hole_at_the_limit_starts_the_next_block():
+    r = pi._Region("t", 0, 0, 700, 16)
+    assert r.next_block() == (0, 256) and r.next_block() == (256, 256) and r.next_block() == (512, 188)
+    bits = [1] * 600
+    bits[0] = bits[255] = bits[256] = 0   # 255 is the last word in reach of a READ from 0; 256 is not
+    r = _region(bits, merge=pi.READ_MAX)
+    assert r.next_block() == (0, 256) and r.next_block() == (256, 1)
+
+
+@pytest.mark.parametrize("merge", [0, 1, 16, pi.READ_MAX])
+@pytest.mark.parametrize("seed", range(6))
+def test_one_pass_requests_every_missing_word_once_with_blocks_that_start_and_end_on_holes(merge, seed):
+    rng = np.random.default_rng(seed)
+    n = int(rng.integers(1, 3000))
+    bits = (rng.random(n) > rng.choice([0.002, 0.05, 0.5, 0.97])).astype(int).tolist()
+    r = _region(bits, merge)
+    missing = {i for i, b in enumerate(bits) if not b}
+    if not missing:
+        assert r.next_block() is None
+        return
+    covered, last_end = [], -1
+    while r.passes == 1:
+        first, count = r.next_block()
+        if r.passes > 1:
+            break
+        assert 1 <= count <= pi.READ_MAX and first > last_end
+        blk = bits[first:first + count]
+        assert blk[0] == 0 and blk[-1] == 0                     # starts and ends on a hole
+        runs, k = [], 0
+        for b in blk:
+            k = k + 1 if b else 0
+            runs.append(k)
+        assert max(runs) <= merge                               # no bridged present run longer than merge
+        covered.extend(i for i in range(first, first + count) if not bits[i])
+        last_end = first + count - 1
+    assert sorted(covered) == sorted(missing)                   # each hole exactly once per pass
+
+
+def _lossy(p, seed, cfg, n=8000):
+    return _upload(build_image(n=n, n_anchors=40), cfg=cfg, loss_p=p, loss_seed=seed)
+
+
+_OLD_RULE = dict(refill_merge_words=pi.READ_MAX, settle_s=0.03)
+
+
+def test_lossy_link_model_duplicates_drop_more_than_tenfold_and_every_hole_heals():
+    """The 2026-11-20 debrief's model (independent single-frame omissions, p = 0.004 Armed) driven through the
+    real machine: the old rule re-sends the present words between the first and last hole of each refill."""
+    fo, mo, ro, img = _lossy(0.004, 7, pi.UploadConfig(span_margin_s=0.0, **_OLD_RULE))
+    fn, mn, rn, _ = _lossy(0.004, 7, pi.UploadConfig(span_margin_s=0.0))
+    for fp, res in ((fo, ro), (fn, rn)):
+        assert res.flags["complete"] and res.flags["crc_ok"] and res.flags["holes_unfilled"] == 0
+        assert res.sample_words == b"".join(img["words"][s] for s in range(2 * img["n"]))
+        assert fp.omitted > 40                                  # the link really was lossy
+    d_old, d_new = ro.stats["dup_frames"], rn.stats["dup_frames"]
+    assert d_old > 10 * max(d_new, 1), (d_old, d_new)
+    assert rn.stats["blocks"] <= 1.5 * ro.stats["blocks"], (ro.stats["blocks"], rn.stats["blocks"])
+    assert rn.stats["wall_s"] < ro.stats["wall_s"]
+
+
+def test_lossy_link_model_at_rest_rate_heals_with_few_duplicates():
+    fp, m, res, img = _lossy(0.0005, 11, pi.UploadConfig(span_margin_s=0.0))
+    assert res.flags["complete"] and res.flags["crc_ok"] and res.flags["holes_unfilled"] == 0
+    assert res.stats["dup_frames"] <= 16 * max(fp.omitted, 1)   # at most one merge run per hole
+
+
+@pytest.mark.parametrize("hole", [255, 511, 2 * 2000 - 1])
+def test_a_hole_in_the_last_word_of_a_block_or_of_the_region_times_out_and_is_refilled(hole):
+    fp, m, res, img = _upload(drop_once={hole})
+    assert res.flags["complete"] and res.flags["crc_ok"] and res.stats["block_timeouts"] >= 1
+    assert [(f, c) for f, c, _, _ in fp.reads if f <= hole < f + c][-1] == (hole, 1)
+
+
+def test_a_word_never_delivered_ends_the_upload_on_the_stall_guard_and_resumes():
+    fp, m, res, img = _upload(drop_always={1000, 3000})
+    assert "stalled" in res.failure and res.flags["holes_unfilled"] == 2 and not res.flags["complete"]
+    assert fp.resumed and fp.t < 30.0
+
+
+def test_a_word_never_delivered_ends_on_the_pass_limit_when_the_stall_guard_cannot_fire():
+    cfg = pi.UploadConfig(span_margin_s=0.0, max_stalled_blocks=10_000)
+    fp, m, res, img = _upload(cfg=cfg, drop_always={1000})
+    assert "after 8 passes" in res.failure and res.flags["holes_unfilled"] == 1
+    assert sum(1 for f, c, _, _ in fp.reads if f <= 1000 < f + c) == 1 + cfg.max_passes   # once per pass
+    assert fp.resumed and fp.t < 30.0
+
+
+def test_a_straggler_after_the_short_settle_fills_its_word_without_an_extra_read():
+    # word 100 lands 14 ms after block 0's last frame: after the 5 ms settle sent the next READ, before the old 30
+    fp0, _, r0, _ = _upload()
+    fp, m, res, img = _upload(late={100: 0.13})
+    assert res.flags["complete"] and res.flags["crc_ok"] and res.stats["dup_frames"] == 0
+    assert res.stats["hole_passes"] == 0 and fp.reads == fp0.reads
+
+
+def test_settle_due_in_reports_the_pending_settle_only():
+    m = pi.UploadMachine(lambda *a: (True, ""), lambda *a: (True, ""), lambda r: None)
+    assert m.settle_due_in(0.0) is None
+    m.phase = pi.SAMPLES
+    m.blk = pi._Block(0, 4, 0.0, 1.0, 80, last_rx=1.000)
+    assert m.settle_due_in(1.002) is None                        # last word not seen yet
+    m.blk.last_seen = True
+    assert m.settle_due_in(1.002) == pytest.approx(0.003)
+    assert m.settle_due_in(1.010) == 0.0
+
+
+def test_upload_end_line_names_the_counts_and_warns_with_the_reason():
+    ok, text = pi.format_upload_end({"label": "attempt_end", "samples": 3200, "stem": "20261121T010203Z_4A21",
+                                     "stats": {"wall_s": 63.84, "frames_rx": 66000, "dup_frames": 206, "blocks": 525,
+                                               "block_timeouts": 3, "hole_passes": 2},
+                                     "flags": {"complete": True, "crc_ok": True}, "failure": ""})
+    assert ok and text == ("Platform IMU upload finished (attempt_end, 3200 samples, 63.8 s, 66000 frames rx, "
+                           "206 duplicate, 525 READs, 3 block timeouts, 2 hole passes, complete yes, crc ok, "
+                           "file 20261121T010203Z_4A21)")
+    ok, text = pi.format_upload_end({"label": "operator", "flags": {"complete": False, "aborted": True},
+                                     "failure": "aborted: soft_estop", "stats": {}})
+    assert not ok and text.startswith("Platform IMU upload aborted: aborted: soft_estop (operator, 0 samples")
+    ok, text = pi.format_upload_end({"label": "operator", "flags": {"complete": False, "crc_ok": False},
+                                     "failure": "", "stats": {}, "stem": "x"})
+    assert not ok and "failed: CRC mismatch" in text and "crc FAILED" in text
+    ok, text = pi.format_upload_end({"label": "fault", "flags": {"complete": False, "holes_unfilled": 3},
+                                     "failure": "", "stats": {}})
+    assert not ok and "incomplete (3 word(s) missing)" in text
+
+
+def test_the_service_reports_every_upload_end_once_and_never_a_heal():
+    ends = []
+    box = {}
+    svc = pi.PlatformImuService(lambda *a: box["fp"].send_ctrl(*a), lambda *a: box["fp"].send_read(*a),
+                                writer=_StubWriter(), clock=lambda: box["fp"].t, start_thread=False,
+                                config=pi.UploadConfig(span_margin_s=0.0), on_upload_end=ends.append)
+    img = build_image()
+    fp = FakePlatform(_Sink(svc), img)
+    box["fp"] = fp
+    _svc_status(svc, fp, 2, 0.0)
+    svc.pump(0.0)
+    assert svc.request_upload()
+    fp.run()
+    assert len(ends) == 1 and pi.format_upload_end(ends[0])[0]
+    assert ends[0]["samples"] == img["n"] and ends[0]["stem"].endswith("_%04X" % img["cap_id"])
+    assert ends[0]["stats"]["frames_rx"] > 0
+    # an aborted upload: one WARNING line with the reason
+    fp.frozen = False
+    assert svc.request_upload()
+    fp.run(until_done=False, limit_s=fp.t + 0.5)
+    svc.abort_upload("soft_estop")
+    fp.run(limit_s=fp.t + 10.0)
+    assert len(ends) == 2
+    ok, text = pi.format_upload_end(ends[1])
+    assert not ok and "aborted" in text and "soft_estop" in text
+    # a FREEZE refused (no header, nothing written): still exactly one line
+    svc2_ends = []
+    svc._on_upload_end = svc2_ends.append
+    fp.opt["refuse_freeze"] = ST.ERR_EMPTY
+    fp.frozen = False
+    assert svc.request_upload(force=True)
+    fp.run(limit_s=fp.t + 10.0)
+    assert len(svc2_ends) == 1 and "FREEZE refused" in pi.format_upload_end(svc2_ends[0])[1]
+    assert svc2_ends[0]["stem"] is None
+
+
+def test_the_writer_names_the_file_with_the_stem_the_service_logged(tmp_path):
+    w = cap.ImuCaptureWriter(str(tmp_path)).start()
+    ends = []
+    box = {}
+    svc = pi.PlatformImuService(lambda *a: box["fp"].send_ctrl(*a), lambda *a: box["fp"].send_read(*a),
+                                writer=w, clock=lambda: box["fp"].t, start_thread=False,
+                                config=pi.UploadConfig(span_margin_s=0.0), on_upload_end=ends.append)
+    fp = FakePlatform(_Sink(svc), build_image())
+    box["fp"] = fp
+    _svc_status(svc, fp, 2, 0.0)
+    svc.pump(0.0)
+    assert svc.request_upload()
+    fp.run()
+    w.close()
+    assert w.written == 1 and ends and w.last_path.endswith(ends[0]["stem"] + ".npz")
