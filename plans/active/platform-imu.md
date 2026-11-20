@@ -3,7 +3,7 @@ title: Platform IMU — an ICM-42688-P on the Platform Teensy, buffered capture 
 created: 2026-11-18
 status: active
 owner: Harrison
-last_updated: 2026-11-19
+last_updated: 2026-11-20
 pathway: two-ball-oval
 scope: >-
   Put an ICM-42688-P on the Platform's 2020 extrusion (the one carrying the Hand's rail), read it over I2C from the
@@ -16,7 +16,7 @@ steps:
   - {id: P1, title: Off-board foundations, kind: phase, status: in_progress, effort: m, hardware: none}
   - {id: P2, title: Platform Teensy firmware FW 11, kind: phase, status: in_progress, effort: l, hardware: none}
   - {id: P3, title: can-bridge firmware and the Jetson side, kind: phase, status: not_started, effort: l, hardware: none}
-  - {id: P4, title: "Sitting 1, flash and bench the capture path", kind: rung, status: not_started, effort: m, hardware: robot}
+  - {id: P4, title: "Sitting 1, flash and bench the capture path", kind: rung, status: in_progress, effort: m, hardware: robot}
   - {id: P5, title: "Sitting 2, mount calibration and first Attempt captures", kind: rung, status: not_started, effort: m, hardware: robot}
 related_logbook:
   - 2026-11-18-imu-bench-proof-of-concept.md
@@ -174,7 +174,19 @@ reads as flashed; a tilt request answers; the Hand fan still answers; with the I
 boots, answers CAN and accepts an update; the status frame arrives; a capture at rest reads |a| about 1 g at 1 kHz
 with 0 overflows; an upload passes its CRC and a forced gap is re-requested and healed; the bus-load counters in
 `/profile` are unchanged during an Attempt-like move; the status frame returns to RUNNING after the IMU is replugged
-without a power cycle; the rate ramp below. Status: not started.
+without a power cycle; the rate ramp below. Status: in progress (2026-11-20).
+
+Done at rest (`2026-11-20-platform-imu-status-counters-and-first-capture`, `2026-11-20-platform-imu-i2c-error-bursts`):
+both identities read as flashed (FW 12 and bridge FW 46); the tilt request and the Hand fan answer; the status frame
+arrives and carries the new counters; the at-rest capture reads |a| 1.0004 g at about 1 kHz with 0 overflows; one
+upload passed its CRC with no holes (56.25 s, not Armed). GYRO_ACCEL_CONFIG0 reads back 0x00 (ODR/2, what the firmware
+writes); the ODR/4 code is still unverified. Open defect: the capture header's `temp_raw_start` and `temp_raw_freeze`
+read -128 although the status frame reports 24 C.
+
+Remaining (needs the owner, robot powered): the forced-gap upload; an upload while Active between Attempts with the
+rate ramp; the automatic upload after an Attempt and after a Fault; the IMU unplug and replug check; an Armed soak
+watching `i2c_errors` (must stay 0 with the pull-ups). Clock-sync quality (`sync_peak` saturating at 2.54 ms) stays
+listed residue.
 
 **Rate ramp.** Holding the between-Attempts pose, step the upload pace through 400, 800, 1250 and 1600 frames/s. At
 each step read the bridge's loop and emit-gap counters, RX queue depth, bus error counts, ODrive errors and the Leg
