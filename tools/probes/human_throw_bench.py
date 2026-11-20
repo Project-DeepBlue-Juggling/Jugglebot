@@ -86,20 +86,33 @@ MIN_THROW_VZ = 500.0
 GAP_S = 1.5          # a phantom this far from every truth release sits in a truth gap
 
 
-def load_frames(bag: Path, with_wall: bool = False):
+def bag_start_wall(bag: Path) -> float:
+    """Epoch s of the bag's first message (the index summary; no decoding)."""
+    from mcap.reader import make_reader
+    with open(R._find_mcap(bag), 'rb') as fh:
+        return make_reader(fh).get_summary().statistics.message_start_time * 1e-9
+
+
+def load_frames(bag: Path, with_wall: bool = False, wall_window=None):
     """[(t, [xyz arrays], [labels])] of eligible markers, in bag order.
 
     `with_wall` appends the bag log time (epoch s) as a fourth element, for the
-    `--t-start/--t-end` clock slices."""
+    `--t-start/--t-end` clock slices.
+
+    `wall_window=(lo, hi)` (epoch s of the bag log time, either may be None) bounds the READ
+    to that window (BUG-126) and bypasses the whole-bag cache both ways, so a window never
+    poisons or reads the cache; the default None is the unchanged whole-bag read."""
+    if wall_window is not None:
+        with_wall = True
     cache = _REPO / 'temp' / 'probes' / 'human_throw_bench' / 'frames' / f'{bag.name}.pkl'
-    if with_wall and cache.exists():     # decoding a bag takes ~10 min on the loaded box
+    if with_wall and wall_window is None and cache.exists():     # decoding a bag takes ~10 min on the loaded box
         import pickle
         with open(cache, 'rb') as fh:
             return pickle.load(fh)
     mc = R._find_mcap(bag)
     excl = R.make_tracker()
     frames = []
-    for _topic, t_bag, msg in R._iter_bag(mc, ('/mocap_data',)):
+    for _topic, t_bag, msg in R._iter_bag(mc, ('/mocap_data',), *(wall_window or (None, None))):
         t = R._frame_time(msg, t_bag)
         pos = [np.array([m.position.x, m.position.y, m.position.z]) for m in msg.markers]
         lab = [m.label or '' for m in msg.markers]
@@ -108,7 +121,7 @@ def load_frames(bag: Path, with_wall: bool = False):
         keep = [i for i, p in enumerate(pos) if id(p) in ids]
         row = (t, [pos[i] for i in keep], [lab[i] for i in keep])
         frames.append(row + (t_bag,) if with_wall else row)
-    if with_wall:
+    if with_wall and wall_window is None:
         import pickle
         cache.parent.mkdir(parents=True, exist_ok=True)
         with open(cache, 'wb') as fh:

@@ -54,3 +54,86 @@ def test_hand_frame_puts_direction_mean_at_home():
     xf = H.Xform('hand', mean_cross=(500.0, 100.0))
     np.testing.assert_allclose(xf.xy((530.0, 90.0, 830.0)), np.array(H.HOME_XY) + [30.0, -10.0])
     np.testing.assert_allclose(xf.xy((500.0, 100.0, 830.0)), H.HOME_XY)
+
+
+# ---- BUG-126: the time window bounds the read; a run with nothing to report fails loudly ----
+
+import pickle  # noqa: E402
+import time  # noqa: E402
+
+import pytest  # noqa: E402
+
+import human_throw_bench as B  # noqa: E402
+
+_WALL0 = time.mktime((2026, 11, 20, 12, 49, 25, 0, 0, -1)) + 0.0
+
+
+def _clock(h, m, s):
+    return time.mktime((2026, 11, 20, h, m, 0, 0, 0, -1)) + s
+
+
+def test_window_bounds_the_bag_read(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_iter(mcap_path, topics, start_s=None, end_s=None):
+        seen['args'] = (start_s, end_s)
+        return iter([])
+
+    monkeypatch.setattr(B.R, '_find_mcap', lambda bag: tmp_path / 'x.mcap')
+    monkeypatch.setattr(B.R, '_iter_bag', fake_iter)
+    monkeypatch.setattr(B, 'bag_start_wall', lambda bag: _WALL0)
+    with pytest.raises(SystemExit) as e:                  # nothing in the window: loud, not silent
+        H.load_frames(tmp_path, None, '12:53:20', '12:56:45')
+    assert 'no /mocap_data frames' in str(e.value)
+    assert seen['args'] == (_clock(12, 53, 20), _clock(12, 56, 45))
+
+
+def test_default_read_is_unbounded(monkeypatch, tmp_path):
+    seen = {}
+    monkeypatch.setattr(B.R, '_find_mcap', lambda bag: tmp_path / 'x.mcap')
+    monkeypatch.setattr(B.R, 'make_tracker', lambda: type('T', (), {})())
+    monkeypatch.setattr(B, '_REPO', tmp_path)             # keep the whole-bag cache out of the repo
+
+    def fake_iter(mcap_path, topics, start_s=None, end_s=None):
+        seen['args'] = (start_s, end_s)
+        return iter([])
+    monkeypatch.setattr(B.R, '_iter_bag', fake_iter)
+    assert B.load_frames(tmp_path / 'bag', with_wall=True) == []
+    assert seen['args'] == (None, None)
+
+
+def _pkl(tmp_path, with_wall=True):
+    rows = []
+    for i in range(10):
+        r = (100.0 + i, [np.zeros(3)], ['a'])
+        rows.append(r + (_WALL0 + 60.0 * i,) if with_wall else r)
+    p = tmp_path / 'f.pkl'
+    p.write_bytes(pickle.dumps(rows))
+    return p
+
+
+def test_window_applies_to_frames_pickle_with_wall_times(tmp_path):
+    p = _pkl(tmp_path)
+    fr, wall0 = H.load_frames('bag', p, '12:51:25', '12:53:25')   # +120 s .. +240 s -> i = 2..4
+    assert [f[0] for f in fr] == [102.0, 103.0, 104.0]
+    assert wall0 == pytest.approx(_WALL0 + 120.0)
+
+
+def test_window_on_pickle_without_wall_times(tmp_path):
+    p = _pkl(tmp_path, with_wall=False)
+    with pytest.raises(SystemExit) as e:                  # clock time cannot be mapped: say so
+        H.load_frames('bag', p, '12:51:25', None)
+    assert 'carries no wall times' in str(e.value)
+    fr, _ = H.load_frames('bag', p, '2', '4')             # bare seconds map by frame time
+    assert [f[0] for f in fr] == [102.0, 103.0, 104.0]
+
+
+def test_run_with_nothing_to_report_exits_nonzero(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(H, 'load_frames', lambda *a: ([(0.0, [], [])], None))
+    monkeypatch.setattr(H, 'build_stream', lambda fr: dict(events=[], truth=[]))
+    monkeypatch.setattr(H, 'run_bag', lambda *a: ([], [], []))
+    rc = H.main([str(tmp_path / 'bag'), '--frame', 'hand', '--out-dir', str(tmp_path / 'o'),
+                 '--t-start', '12:53:20'])
+    assert rc == 1
+    assert 'no truth Throws' in capsys.readouterr().err
+    assert (tmp_path / 'o' / 'bag_125320_replay.md').exists()   # the window is in the file name
