@@ -8594,3 +8594,128 @@ def test_fault_first_seen_inside_the_verdict_still_ends_the_attempt(sites):
     assert d.x.attempt_ended and d.x.end_code == ex.ABORTED_FAULT
     assert any('CATCH-EVIDENCE-UNVERIFIABLE' in ln for ln in lines)
     assert not any('MISSED-BALL' in ln for ln in lines)
+
+
+# ── BUG-33 (owner decision 2026-11-20): an empty-Cup Throw with no release
+# evidence ends as the missed Catch it follows ──────────────────────────────
+# The carried throw of `_schedule_with_then_throw` (THROW 0, then CATCH 1 with
+# a then_throw). The CATCH's own verdict window is made BLIND here (its
+# `seat_window` answer is None, so it abstains -- the real way a lost Ball's
+# Catch leaves no verdict); the release-evidence span is answered by the case.
+
+def _empty_cup_run(sites, window_for_span, observer=None, wire_seat=True):
+    sch = _schedule_with_then_throw(sites)
+    throw, catch = sch.skills[0], sch.skills[1]
+    t_rel = float(catch.then_throw.t_release_abs_s)
+    t0 = float(throw.t_abs_s) + ex.MISSED_CATCH_OPEN_AFTER_RELEASE_S
+    t1 = t_rel + ex.RELEASE_SEAT_EPS_S
+
+    def seat_window(a, b):
+        if abs(a - t0) < 1e-9 and abs(b - t1) < 1e-9:
+            return window_for_span(a, b)
+        return None                     # every other window is blind
+
+    if observer is None:
+        def observer(ball_id, t):
+            return (bp.EVIDENCE_EMPTY if t >= throw.t_abs_s
+                    else bp.EVIDENCE_SEATED)
+    installer = _FakeInstaller()
+    experiences = []
+    x = ex.SkillExecutor(
+        sch, installer, tracker=lambda b: None, observer=observer,
+        observations=lambda t: _obs(), on_experience=experiences.append,
+        seat_window=seat_window if wire_seat else None)
+    lines = []
+    t = throw.dispatch_s() - 0.05
+    t_end = t_rel + ex.RELEASE_GRACE_S + 0.05
+    while t < t_end:
+        lines.extend(x.tick(t))
+        t += 0.02
+    return x, lines, installer, experiences
+
+
+def _live_empty(a, b):
+    return ex.SeatWindow(n_valid=int(round((b - a) * 100)), n_seated=0,
+                         max_gap_s=0.01)
+
+
+def test_an_empty_cup_throw_ends_as_the_missed_catch_naming_the_lost_flight(
+        sites):
+    x, lines, _inst, exps = _empty_cup_run(sites, _live_empty)
+    assert x.attempt_ended and x.end_code == ex.MISSED_CATCH
+    assert x.end_kind == ex.CATCH
+    assert 'the Cup was empty at throw 2/' in x.end_message
+    assert '(skill 1) produced no ball' in x.end_message
+    assert any('END MISSED_CATCH' in ln and 'never left the hand' in ln
+               for ln in lines)
+    # the existing lost-ball line, naming who threw the lost flight
+    assert any('MISSED-BALL' in ln and 'thrown by skill 0' in ln
+               for ln in lines)
+    assert not any('ABORTED_NO_RELEASE' in ln for ln in lines)
+    sev, text = _rp.end_line('self_toss', x.end_code, x.end_message, [],
+                            end_kind=x.end_kind)
+    assert 'ENDED (MISSED_CATCH) at the CATCH:' in text and sev == 'ERROR'
+    assert len(exps) <= 1               # the carried throw's row is dropped
+
+
+def test_an_empty_cup_throw_with_no_lost_flight_record_says_so(sites):
+    # Throw 0's flight is SEATED (caught) until just past the landing, so no
+    # uncaught flight exists to name; the Cup then reads EMPTY.
+    sch = _schedule_with_then_throw(sites)
+    t_throw = float(sch.skills[0].t_abs_s)
+    t_land = float(sch.skills[1].t_abs_s)
+
+    def observer(ball_id, t):
+        if t < t_throw or t_land - 0.20 <= t < t_land + 0.10:
+            return bp.EVIDENCE_SEATED
+        return bp.EVIDENCE_EMPTY
+
+    x, lines, _inst, _e = _empty_cup_run(sites, _live_empty,
+                                         observer=observer)
+    assert x.attempt_ended and x.end_code == ex.MISSED_CATCH
+    assert 'no lost flight was recorded' in x.end_message
+    assert x.end_kind == ''
+    assert any('MISSED-BALL' in ln and 'no lost flight was recorded' in ln
+               for ln in lines)
+
+
+@pytest.mark.parametrize('window', [
+    ex.SeatWindow(n_valid=40, n_seated=3, max_gap_s=0.01),     # a Ball held
+    ex.SeatWindow(n_valid=5, n_seated=0, max_gap_s=0.01),      # too thin
+    ex.SeatWindow(n_valid=900, n_seated=0, max_gap_s=0.30),    # a gap
+    None,                                                      # blind
+], ids=['ball-held', 'thin', 'gappy', 'blind'])
+def test_a_held_or_unreadable_cup_keeps_aborted_no_release(sites, window):
+    x, lines, _i, _e = _empty_cup_run(
+        sites, (lambda a, b: window) if window is not None
+        else (lambda a, b: None))
+    assert x.attempt_ended and x.end_code == ex.ABORTED_NO_RELEASE
+    assert any('END ABORTED_NO_RELEASE' in ln for ln in lines)
+
+
+def test_with_no_cup_history_wired_the_end_stays_aborted_no_release(sites):
+    x, _l, _i, _e = _empty_cup_run(sites, _live_empty, wire_seat=False)
+    assert x.end_code == ex.ABORTED_NO_RELEASE
+
+
+def test_the_empty_cup_relabel_changes_no_motion_or_bookkeeping(sites):
+    """The relabelled end and today's ABORTED_NO_RELEASE end differ only in
+    code, text and the lost-ball line: same installs, same dispatched set,
+    same counters, no fault-settle window, same done state."""
+    new, _ln, inst_new, exps_new = _empty_cup_run(sites, _live_empty)
+    old, _lo, inst_old, exps_old = _empty_cup_run(
+        sites, lambda a, b: ex.SeatWindow(n_valid=0, n_seated=0,
+                                          max_gap_s=0.0))
+    assert new.end_code == ex.MISSED_CATCH
+    assert old.end_code == ex.ABORTED_NO_RELEASE
+    assert repr(inst_new.calls) == repr(inst_old.calls)
+    assert len(inst_new.calls) >= 2
+    assert new.dispatched == old.dispatched
+    assert (new.missed_catch_drops, new.missed_feed_catches,
+            new.missed_human_catches) == (old.missed_catch_drops,
+                                          old.missed_feed_catches,
+                                          old.missed_human_catches)
+    assert new._fault_settle_until_s is None and old._fault_settle_until_s is None
+    assert new.done == old.done
+    assert len(exps_new) == len(exps_old)
+    assert [e.t_abs_s for e in exps_new] == [e.t_abs_s for e in exps_old]
