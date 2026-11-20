@@ -10,18 +10,18 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
-| BUG-110 Emitter catch-up sends the next knot up to 25 ms early and the bridge drops the due knot | 20 | level, armed, bb-fed | - | 2026-11-19-robot |
-| BUG-111 Hand SPINOUT at the Throw peak after a setpoint 12.6 ms late (2026-11-18) | 5 | level, armed, bb-fed | - | 2026-11-19-robot |
-| BUG-58 Firmware scheduler STOPs a streamed lane while frames arrive on time and the host stream is clean: LANE_REFUSED ends, cause unseen | 1 | armed | - | 2026-11-19-robot |
-| BUG-89 teensy_bridge_node forwards only the newest waiting knot; harmless at emit lead 0, but the cover has 7-14 ms of margin against a stall | 40 | level, armed, bb-fed | - | 2026-11-19-robot |
-| BUG-93 can-bridge fatal CAN-silence check wraps when a frame is stamped after its clock read: a live Leg reads silent and the Platform Stows | 15 | level, armed, bridge-cycled | `night-shift/2026-11-15-BUG-93` | - |
+| BUG-110 Emitter catch-up sends the next knot up to 25 ms early and the bridge drops the due knot | 20 | level, armed, bb-fed | - | 2026-11-20-robot |
+| BUG-111 Hand SPINOUT at the Throw peak after a setpoint 12.6 ms late (2026-11-18) | 5 | level, armed, bb-fed | - | 2026-11-20-robot |
+| BUG-58 Firmware scheduler STOPs a streamed lane while frames arrive on time and the host stream is clean: LANE_REFUSED ends, cause unseen | 1 | armed | - | 2026-11-20-robot |
+| BUG-89 teensy_bridge_node forwards only the newest waiting knot; harmless at emit lead 0, but the cover has 7-14 ms of margin against a stall | 40 | level, armed, bb-fed | - | 2026-11-20-robot |
+| BUG-93 can-bridge fatal CAN-silence check wraps when a frame is stamped after its clock read: a live Leg reads silent and the Platform Stows | 15 | level, armed, bridge-cycled | `night-shift/2026-11-15-BUG-93` | 2026-11-20-robot |
 | FEAT-32 Pre-release hold rung: release from a moving Platform (hold 0.100 → 0) | 45 | armed, bb-fed, bridge-cycled | - | - |
 | FEAT-39 P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30 | 50 | level, armed, bb-fed, bridge-cycled | - | - |
-| FEAT-49 Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault | 60 | armed | - | 2026-11-19-robot |
+| FEAT-49 Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault | 60 | armed | - | 2026-11-20-robot |
 | FEAT-50 Live warning when a marker dwells under the Hand | 10 | armed | `night-shift/2026-11-14-FEAT-50` | - |
-| IDEA-16 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them | 10 | level | - | 2026-11-19-robot |
+| IDEA-16 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them | 10 | level | - | 2026-11-20-robot |
 | IDEA-20 Platform Accelerometer? | 90 | armed, bridge-cycled | - | - |
-| IDEA-9 JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites | 20 | level, armed, bb-fed | - | 2026-11-19-robot |
+| IDEA-9 JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites | 20 | level, armed, bb-fed | - | 2026-11-20-robot |
 
 ## Bench leg  (1 Item, 30 min)
 
