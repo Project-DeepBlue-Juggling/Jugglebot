@@ -8,4 +8,68 @@ steps:
     comments: ''
     saved_at: 2026-11-20 22:48
     status: done
-verdicts: {}
+  3:
+    comments: ''
+    saved_at: 2026-11-20 22:50
+    status: done
+  4:
+    comments: ''
+    saved_at: 2026-11-20 22:51
+    status: done
+  5:
+    comments: The IMU didn't appear right away, so I cancelled the launch and power-cycled
+      Jugglebot. THis seemed to do this trick; I now see 'recording' ticked
+    saved_at: 2026-11-20 22:54
+    status: done
+  6:
+    comments: ''
+    saved_at: 2026-11-20 22:54
+    status: done
+  7:
+    comments: ''
+    saved_at: 2026-11-20 22:55
+    status: done
+  8:
+    comments: ''
+    saved_at: 2026-11-20 22:55
+    status: done
+  9:
+    comments: '`setpoints_coalesced` is 0. grep shows ''RUNNING'''
+    saved_at: 2026-11-20 22:56
+    status: done
+  10:
+    comments: 'Wall-clock time when ''complete'' appeared: 10:58:07 ''setpoints_coalesced`
+      is now 4'
+    saved_at: 2026-11-20 22:58
+    status: done
+  11:
+    comments: I think it's been around 5 min since the robot first entered ACTIVE.
+      Moving on to the throwing now, at 23:01
+    saved_at: 2026-11-20 23:01
+    status: done
+  12:
+    comments: ''
+    saved_at: 2026-11-20 23:01
+    status: done
+  13:
+    comments: ''
+    saved_at: 2026-11-20 23:01
+    status: done
+  14:
+    comments: ''
+    saved_at: 2026-11-20 23:05
+    status: done
+  16:
+    comments: Is this really necessary at the end of every launch? Doesn't the launch
+      reset this?
+    saved_at: 2026-11-20 23:06
+    status: done
+  17:
+    comments: ''
+    saved_at: 2026-11-20 23:07
+    status: done
+verdicts:
+  15:
+    IDEA-20:
+      notes: setpoints_coalesced is now 10
+      saved_at: 2026-11-20 23:05
