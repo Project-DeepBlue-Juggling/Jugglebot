@@ -2,11 +2,10 @@
 id: BUG-120
 kind: bug
 title: test_a_fresh_throw_installs_through_the_real_worker_process misses the solver wire deadline under box load and fails the gate
-status: in_progress
+status: complete
 created: '2026-11-19'
-updated: '2026-11-19T17:40:03Z'
-owners:
-- night-shift
+updated: '2026-11-20T15:49:19Z'
+owners: []
 priority: medium
 effort: s
 hardware: none
@@ -17,6 +16,7 @@ area: tests-tooling
 blocked_by: []
 links:
 - bug-test-ti1-in-test-install-segment-goes-stale-under-box-load
+- logbook/2026-11-20-real-worker-install-test-load.md
 filed_by: night-shift
 ---
 
@@ -38,3 +38,4 @@ Found by the Night Shift of 2026-11-19 while re-gating BUG-108. Related: BUG-108
 ## Progress
 
 - 2026-11-20: Night Shift 2026-11-20: held on night-shift/2026-11-20-BUG-120: (b) 2 audit findings open (the skip can hide a slowdown, one restart retried away); suite green; unblocked by TKT answer
+- 2026-11-21: Night Shift 2026-11-21: TKT-87 answered (apply both findings): the starvation skip now needs a 1-minute load average above the core count, and a second worker restart fails the test.
