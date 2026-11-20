@@ -4,7 +4,7 @@ kind: idea
 title: JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them
 status: in_progress
 created: '2026-10-30'
-updated: '2026-11-20T07:07:56Z'
+updated: '2026-11-20T14:03:28Z'
 owners: []
 priority: medium
 effort: xl
@@ -140,3 +140,5 @@ Not checked: a replay on the candidate Tracker, a replay with a lowered floor, w
 - 2026-11-20: Sitting of 2026-11-20 (data): single lobs recorded 12:52-12:57. Replay (temp/probes/human_catch_2026-11-20/2026-11-20_12-49-25_replay.md): 55 lobs, 49 crossing the Catch plane, 23 inside the Cup's reach, 16 of those with an admitted plan (5 refused BUSY, 2 NO_EVENT); planned Cup centre to real crossing median 30.5 mm, worst 52.0 mm.
 - 2026-11-20: Most Balls were caught by hand near the Cup, which the replay does not model.
 - 2026-11-20: Rerun on the owner's window 12:53:20-12:56:45 (temp/probes/human_catch_2026-11-20/2026-11-20_12-49-25_125320_125645_replay.md): the same 55 lobs, first at 12:53:20.6, last at 12:56:39.6. Hand frame unchanged (23 in reach, 16 planned, median 30.5 mm, worst now 57.2 mm); robot frame 19 in reach, 13 planned, median 25.8 mm. Declines overall: SETTLE_SITE 19, BUSY 8.
+- 2026-11-21: 2026-11-21 replay sweep of the 2026-11-20 lobs: 26 of 49 crossing lobs land outside the 150 mm Cup box (the SETTLE_SITE declines), so aim scatter limits first. Of 23 in reach: 16 planned, 5 BUSY, 2 no event. The wait-Site rule (D7) changes nothing. Clear 0.3 s with return 1.0 s plans 21 and scores 11 good.
+- 2026-11-21: Same sweep: the 30 mm median error is the Fit's convergence at 0.62 s of lead (39/30/22/15 mm at 0.70/0.62/0.55/0.45 s); the gate admits plans only at 0.55-0.62 s. D10 good of 23: 8 at 30 mm, 10 at 35, 13 at 40. The 80 % target (19) is out of reach while 7 in-reach lobs get no plan.

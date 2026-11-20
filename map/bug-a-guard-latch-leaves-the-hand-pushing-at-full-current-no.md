@@ -4,7 +4,7 @@ kind: bug
 title: 'A guard latch leaves the Hand pushing at full current: no stall guard on the streamed lane or a latched hold'
 status: in_progress
 created: '2026-11-20'
-updated: '2026-11-20T08:57:50Z'
+updated: '2026-11-20T14:03:14Z'
 owners: []
 priority: high
 effort: m
@@ -54,6 +54,12 @@ The owner intends to keep running this motor to establish the cut-offs.
 - minutes: 25
 - branch: night-shift/2026-11-20-BUG-123
 
+## Sitting result (2026-11-20)
+
+- verdict: inconclusive
+- notes: the stage crashed at once, before energising: `KeyError: 'stall'` at `args.max_dev = _MAX_DEV_DEFAULT[args.stage]` in `main()`. (sheet 2026-11-20-bench-hand, step 16)
+- derived:  Not flown. `--stage stall` crashed in argument handling (KeyError 'stall' in _MAX_DEV_DEFAULT, owner's note on step 16) before the link opened or anything was energised; firmware 47 was flashed at step 15 and firmware 46 flashed back at step 18. The guard itself was not exercised.
+
 ## Progress
 
 - 2026-11-20: Owner decision, 2026-11-20: 40 A / 1 rev/s / 150 ms, then the Hand enters Idle. Being built as can-bridge FW 47 on a held branch.
@@ -62,3 +68,4 @@ The owner intends to keep running this motor to establish the cut-offs.
 - 2026-11-20: Open on the branch: the Sitting proof pushes this motor at about 45 A for under 0.5 s (the bench Hand is the zero-risk alternative); the exact commands for the current limit and the raw position move are fixed when the sheet is written. Closest margin in the 2026-11-20 data: a latched hold at 36.2 A. A Hand-only CAN silence is not covered by any guard.
 - 2026-11-20: Bench proof built on the branch (9e715165): hand_stream_bench.py --stage stall. The lane clips Hand commands at 0 rev, so the stage shifts the encoder frame +0.65 rev to push 0.5 rev past the bottom stop at a 45 A limit, with its own Idle at 715 ms worst case, and restores both. On sheet 2026-11-20-bench-hand, steps 15-18.
 - 2026-11-20: Found while building the bench proof, not fixed: a raw SET_AXIS_STATE closed-loop RPC is not gated by the HAND_STALL latch (only the host's arm path refuses).
+- 2026-11-21: Not flown at the bench Sitting of 2026-11-20: the stall stage crashed on a KeyError before energising. Fixed on the branch (d2976ae9), with a second defect found by review: a lost reply to the frame shift left the encoder frame +0.65 rev off with no restore. Five end-to-end tests through main() now cover it; 122 scoped tests passed 2026-11-21.

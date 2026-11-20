@@ -1,3 +1,51 @@
+closed:
+  at: 2026-11-21 00:17
+  items:
+  - BUG-105
+  - BUG-123
+  - FEAT-45
+confirmed:
+  at: 2026-11-21 00:17
+  changed: []
+derived:
+  11:
+    FEAT-45:
+      by: sitting-debrief 2026-11-20
+      criterion: 'the measured top stop is at or above the stage''s bench stop needed;
+        the probe prints GO; the run ends `TALLY: 150 of 150 brakes flown, all PASS`
+        with no fault and no sched_refused, or a fault occurs and the capture saves
+        a window for it. A fault with a saved window is the better result. The count
+        of brakes flown, whether the clean windows saved, and whether they were forced
+        are results, not criteria.'
+      evidence: 'temp/logs/hand_stream_stroke_cut_20261120_232948_report.json: top
+        stop 10.4 rev against bench stop needed 10.087; TALLY 150 of 150 brakes flown,
+        all PASS; fault NONE and sched_refused 0 on every run; FET 31.7 to 35.9 C,
+        motor temperature not reported (nan); worst send lateness 2.8 ms. The capture
+        saved no window (no fault occurred).'
+      verdict: pass
+  14:
+    BUG-105:
+      by: sitting-debrief 2026-11-20
+      criterion: 'each settled offset against the firmware''s last command is within
+        0.05 rev of `tri-speed / 35` in the direction of travel, and the Hand holds
+        there without drifting. The last knot is not the reference: the lane coasts
+        on for up to 0.1 s before the disarm lands. The stage also prints the echoed
+        `vel_ff / 35`, lower if the disarm landed in the lane''s decay.'
+      evidence: Not flown. Every triangle run (17 CSVs, temp/logs/hand_stream_triangle_20261120_23*.csv)
+        was aborted by the tool's own 0.5 rev deviation belt within 50 ms of the ramp
+        start, before any cut; no offset was measured. A tool defect, not a Hand result.
+      verdict: inconclusive
+  16:
+    BUG-123:
+      by: sitting-debrief 2026-11-20
+      criterion: the Hand goes Idle within 200 ms of its current first reaching 40
+        A, fault HAND_STALL, no second current rise, the current limit reads back
+        at its original value (the stage's STALL-GUARD PASS line).
+      evidence: Not flown. `--stage stall` crashed in argument handling (KeyError
+        'stall' in _MAX_DEV_DEFAULT, owner's note on step 16) before the link opened
+        or anything was energised; firmware 47 was flashed at step 15 and firmware
+        46 flashed back at step 18. The guard itself was not exercised.
+      verdict: inconclusive
 schema: 2
 steps:
   1:

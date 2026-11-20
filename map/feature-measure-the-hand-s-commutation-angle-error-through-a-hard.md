@@ -2,9 +2,9 @@
 id: FEAT-45
 kind: feature
 title: Measure the Hand's commutation angle error through a hard brake on the bench Hand (FOC scope)
-status: in_progress
+status: complete
 created: '2026-11-07'
-updated: '2026-11-20T08:24:28Z'
+updated: '2026-11-20T13:17:32Z'
 owners: []
 priority: high
 effort: s
@@ -18,10 +18,8 @@ links:
 - tools/probes/hand_foc_scope.py
 - logbook/2026-11-07-hand-foc-scope.md
 - logbook/2026-11-11-sitting-debrief.md
+- logbook/2026-11-20-sitting-debrief-bench-hand.md
 filed_by: jugglebot-b1
-night_skip: sitting
-night_skip_on: '2026-11-15'
-night_skip_note: Rungs B and C on the bench Hand are on the Runbook.
 ---
 
 The onboard encoder drives both commutation and position, so a slipped magnet moves the reported angle and position together and neither shows it. The 100 Hz `hand_capture` cannot show it either, because iq freezes before the disarm. BUG-57's torque loss needs a measurement that can see an angle error directly.
@@ -132,7 +130,13 @@ Read 2026-11-20 from `temp/logs/hand_stream_stroke_cut_20261113_*_report.json` a
 - Power capture ratio 0.985 to 0.987, so the voltage scaling is confirmed. Modelled SPINOUT margin (model not checked against firmware): mechanical power reached -4.4 W at rung B and -6.1 W at rung C against the -10 W threshold.
 - Not shown: that the bench Hand is free of BUG-57's fault. With 2026-11-11 this is 16 clean brakes, and a 1 to 3 % fault rate would give that result most of the time. Also nothing above 125 rev/s or 38 A: the stop is the firmware's fixed 4500 rev/s^2 profile, and above `--stroke-accel 2300` the planner refuses every flag set on this stroke.
 
+## Sitting result (2026-11-20)
+
+- verdict: pass
+- notes: Passed without issue (sheet 2026-11-20-bench-hand, step 11) [derived: temp/logs/hand_stream_stroke_cut_20261120_232948_report.json: top stop 10.4 rev against bench stop needed 10.087; TALLY 150 of 150 brakes flown, all PASS; fault NONE and sched_refused 0 on every run; FET 31.7 to 35.9 C, motor temperature not reported (nan); worst send lateness 2.8 ms. The capture saved no window (no fault occurred).]
+
 ## Progress
 
 - 2026-11-11: Rung A flown 2026-11-11 (brake from about 80 rev/s, clean, about 154 rev/s^2 per A); the scope tool's angle, jump and torque lines were wrong and are fixed; rungs B and C wait for the next bench Sitting (detail below).
 - 2026-11-20: Rungs B and C passed on the bench 2026-11-13 (12 runs, 9 captured brakes, no torque loss, detail above); the Sitting row is now about 150 rung C brakes with the fault trigger armed.
+- 2026-11-21: Passed at the bench Sitting of 2026-11-20: 150 of 150 rung C brakes PASS in one run (entry 122 rev/s), no fault, no scheduler refusal, FET 31.7 to 35.9 C; the bench Hand does not show the torque loss in 150 brakes, so no fault window was captured.

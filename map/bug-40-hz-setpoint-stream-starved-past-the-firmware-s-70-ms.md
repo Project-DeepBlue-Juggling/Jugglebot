@@ -4,7 +4,7 @@ kind: bug
 title: 'Firmware scheduler STOPs a streamed lane while frames arrive on time and the host stream is clean: LANE_REFUSED ends, cause unseen'
 status: in_progress
 created: '2026-11-02'
-updated: '2026-11-20T04:13:30Z'
+updated: '2026-11-20T14:03:21Z'
 owners:
 - jugglebot-50
 priority: high
@@ -167,3 +167,5 @@ Recommendation: 1, flown at the next Sitting with the instrumentation, then 2 or
 - 2026-11-18: Flown 2026-11-18, verdict data (owner flipped the literal pass): all 12 LANE_REFUSED ends carry GC_PROBE lines and the STOP verdict. 3 ends followed a 47-54 ms gen-2 GC pause in trajectory_node, two at +72.9 s into a 200-cycle oval; 60-95 ms pauses also appear with gc_freeze on. Next: gc.get_stats in GC_PROBE and one 200-cycle oval with gc_freeze:=true.
 - 2026-11-20: Sitting of 2026-11-20 (data): 5 LANE_REFUSED ends in launch 1, all with GC_PROBE lines from both nodes. Ends 1 and 4 follow gen-2 GC pauses of 75.6 ms (bridge) and 93.8 ms (trajectory_node), end 5 a 67.0 ms bridge pause: the host IS the cause in 2 to 3 of 5 this time.
 - 2026-11-20: Each STOP that holds the Hand is followed within 0.01-0.3 s by a Hand MAX_DEVIATION latch at 4 to 7 rev (plan minus held Hand), which then needs clear_errors.
+- 2026-11-21: 2026-11-21 offline: a gen-2 pass walks the import-time heap (67k objects, 50-56 ms in the bridge; 40k, 29-32 ms in trajectory_node). WITHDRAWN: pauses with gc_freeze on. The three frozen launches logged 0 collections in 51 min after startup; the 95 ms pause was in a launch with the flag off. Entry: logbook/2026-11-21-bug-58-gc-probe-stats.md.
+- 2026-11-21: Next: fly a 200-cycle oval with gc_freeze:=true (longest frozen oval so far 45 s), then an A/B with it off. Owner decision: make the freeze the launch default. GC_PROBE now reports collection size and collector state.

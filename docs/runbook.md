@@ -28,13 +28,12 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | --- | ---: | --- | --- | --- |
 | BUG-19 Hand ODrive state can silently diverge from what the can-bridge commanded | 30 | bridge-cycled | - | - |
 
-## Bench hand  (3 Items, 95 min)
+## Bench hand  (2 Items, 45 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
-| BUG-105 Hand keeps its last velocity feedforward on a Soft E-stop, disarm or link loss and stays in Closed-loop | 20 | armed, bridge-cycled | - | 2026-11-20-bench-hand |
-| BUG-123 A guard latch leaves the Hand pushing at full current: no stall guard on the streamed lane or a latched hold | 25 | bridge-cycled | `night-shift/2026-11-20-BUG-123` | 2026-11-20-bench-hand |
-| FEAT-45 Measure the Hand's commutation angle error through a hard brake on the bench Hand (FOC scope) | 50 | bridge-cycled | - | 2026-11-20-bench-hand |
+| BUG-105 Hand keeps its last velocity feedforward on a Soft E-stop, disarm or link loss and stays in Closed-loop | 20 | armed, bridge-cycled | - | - |
+| BUG-123 A guard latch leaves the Hand pushing at full current: no stall guard on the streamed lane or a latched hold | 25 | bridge-cycled | `night-shift/2026-11-20-BUG-123` | - |
 
 ## Needs a Sitting section
 
@@ -43,7 +42,6 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - BUG-27 [Robot] can-bridge CAN3 analog drive path has a load-dependent hardware fault (the Jugglebot loom stays on CAN2): no ## Sitting section
 - BUG-29 [Robot] RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball: no ## Sitting section
 - BUG-32 [Robot] Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff: no ## Sitting section
-- BUG-33 [Robot] ABORTED_NO_RELEASE: three goals ended because the throw never left the hand (new 2026-10-28 21:02): no ## Sitting section
 - BUG-34 [Robot] Teensy guard MAX_DEVIATION latched on the hand (+8.4 rev) mid-oval; recover_lane found nothing, re-dispatch rejected WRONG_MODE: no ## Sitting section
 - BUG-35 [Robot] mocap_node loses frames to queue full in bursts before the first dispatch (544 / 373 / 490 frames in the three 2026-10-28 Sittings): no ## Sitting section
 - BUG-41 [Bench hand] Hand brake and hold currents sit far below the throw envelope's model (brake -14 to -20 A measured vs 35 to 40 A predicted; hold 1.5 vs 2.6 A): Kt, moving mass or friction is mis-modelled: no ## Sitting section

@@ -2,9 +2,9 @@
 id: BUG-33
 kind: bug
 title: 'ABORTED_NO_RELEASE: three goals ended because the throw never left the hand (new 2026-10-28 21:02)'
-status: inbox
+status: complete
 created: '2026-10-28'
-updated: '2026-11-20T04:13:07Z'
+updated: '2026-11-20T14:03:32Z'
 owners: []
 priority: high
 effort: m
@@ -20,11 +20,9 @@ links:
 - logbook/2026-11-13-sitting-debrief.md
 - logbook/2026-11-18-sitting-debrief.md
 - logbook/2026-11-20-sitting-debrief.md
+- logbook/2026-11-20-empty-cup-no-release-ends-as-missed-catch.md
 parent: two-ball-oval
 filed_by: claude (BUG-21 21:02 Sitting read-out)
-night_skip: sitting
-night_skip_on: '2026-11-15'
-night_skip_note: Diagnosis unknown; robot, owner hands. A bag read could add evidence but no new ABORTED_NO_RELEASE end has been flown since 2026-10-28.
 ---
 
 21:02 Sitting: goals 1 (columns, throw 61), 2 (columns, throw 25) and 3 (oval_1ball, throw 32) ended ABORTED_NO_RELEASE: throw N never left the hand (no release evidence by +0.5 s). Not seen in the 09:49 or 14:29 Sittings the same day. Not a solver symptom (BUG-21 is closed).
@@ -43,3 +41,4 @@ Launch log: `~/.ros/log/2026-10-28-21-02-48-831501-jetson-3765883/launch.log`.
 - 2026-11-18: 2026-11-18 debrief: another case of the same signature, launch 4 12:20:41 ABORTED_NO_RELEASE (throw 16 missed at 12:20:39.4, a Ball under the Hand 12:20:38.97-39.89); the end code names the wrong thing.
 - 2026-11-20: Sitting of 2026-11-20: 4 of 4 ABORTED_NO_RELEASE ends (launch 1 Attempt 10; launch 2 Attempts 2, 3, 4) show a normal Hand stroke with ball_held 0 throughout: the Cup was empty because a Ball was lost one cycle earlier. Launch 2 Attempt 3 logged no MISSED-BALL line at all, so the end hides the loss entirely. Relabel location: executor.py _advance_release_evidence;
 - 2026-11-20: it changes an end code INVARIANTS lists, so it is an owner decision.
+- 2026-11-21: Landed 2026-11-21 (cf8ecd1c): a Throw from a Cup that read empty since the Ball's previous release ends as a missed Catch. Gate: parallel 10667 passed, serial 7 passed. Audit found no behaviour-affecting findings.

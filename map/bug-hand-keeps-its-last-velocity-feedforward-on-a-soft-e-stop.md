@@ -2,9 +2,9 @@
 id: BUG-105
 kind: bug
 title: Hand keeps its last velocity feedforward on a Soft E-stop, disarm or link loss and stays in Closed-loop
-status: inbox
+status: in_progress
 created: '2026-11-14'
-updated: '2026-11-14T02:40:04Z'
+updated: '2026-11-20T14:03:11Z'
 owners: []
 priority: high
 effort: s
@@ -65,6 +65,15 @@ The property is not new: `tests/hardware/hand_stream_bench.py:150` and the 2026-
   - Read the stage's tri-cut lines: the last knot sent, the firmware's last command (echo input_pos and vel_ff), the settled position and drift, and the offsets. `pos_estimate` over the isolated USB is the cross-check. Recover with `python tests/hardware/hand_stream_bench.py --clear-errors`, re-home if needed.
   - Repeat at 20 rev/s cutting upward, `python tests/hardware/hand_stream_bench.py --stage triangle --tri-span 4 --tri-speed 20 --tri-cut up --top-stop <measured> --close-loop` (expected 0.57 rev above), then downward, `python tests/hardware/hand_stream_bench.py --stage triangle --tri-span 6 --tri-speed 20 --tri-cut down --top-stop <measured> --close-loop` (0.57 rev below; span 4 is refused this close to the bottom stop).
   - Do not go faster in this row: the offset grows with speed and the purpose is the law, not the limit.
-- pass: each settled offset against the firmware's last command is within 0.05 rev of `tri-speed / 35` in the direction of travel, and the Hand holds there without drifting. The last knot is not the reference: the lane coasts on for up to 0.1 s before the disarm lands. The stage also prints the echoed `vel_ff / 35`, lower if the disarm landed in the lane's decay.
+- pass: each settled offset against the firmware's last command is within 0.05 rev of the echoed `vel_ff / 35` in the direction of travel, and the Hand holds there without drifting. The echoed feedforward is what the drive was left holding; it equals `tri-speed / 35` unless the disarm landed in the lane's decay, when it is lower. The last knot is not the reference: the lane coasts on for up to 0.1 s before the disarm lands.
 - record: for each cut the ramp direction, the last commanded position, the settled position, the offset, whether any Guard or latch fired, and the bench top stop in rev. Also what the E-stop button cuts (ODrive bus power or not), since the repo does not say.
 - minutes: 20
+
+## Sitting result (2026-11-20)
+
+- verdict: inconclusive
+- notes: Same as Step 13; no runs were accepted. (sheet 2026-11-20-bench-hand, step 14) [derived: Not flown. Every triangle run (17 CSVs, temp/logs/hand_stream_triangle_20261120_23*.csv) was aborted by the tool's own 0.5 rev deviation belt within 50 ms of the ramp start, before any cut; no offset was measured. A tool defect, not a Hand result.]
+
+## Progress
+
+- 2026-11-21: Not flown at the bench Sitting of 2026-11-20: every triangle run aborted on the tool's 0.5 rev belt within 50 ms. Cause: the firmware's arm-edge recovery slew (1 rev/s cap) cannot follow a ramp that starts at the arm. Fix held on night-shift/2026-11-21-BUG-105 (0bcea663); it also widens the belt to 0.5 + speed/35, which waits for the owner.
