@@ -102,3 +102,25 @@ def test_report_with_no_sampler_rows(tmp_path):
     buf = io.StringIO()
     sp.report(str(csvp), str(logp), out=buf)
     assert 'no sampler rows' in buf.getvalue()
+
+
+NEW_GC_LINE = (
+    "1000.300 [trajectory_node] GC_PROBE trajectory_node n=1 max_ms=80.250 "
+    "total_ms=80.250 worst_gen=2 worst_wall=1000.1 worst_collected=5000 "
+    "worst_uncollectable=0 gc_count=3,4,5 gc_colls=100,9,2 gc_frozen=0 "
+    "gc_objects0=29295")
+
+
+def test_old_and_new_gc_lines_both_parse_and_report_detail():
+    _, gcs = sp.parse_log(LOG.splitlines())
+    assert gcs[0]['extra'] == {}                      # old log: no new fields
+    _, gcs = sp.parse_log([NEW_GC_LINE])
+    assert gcs[0]['max_ms'] == 80.25 and gcs[0]['n'] == 1
+    assert gcs[0]['extra']['worst_collected'] == '5000'
+    assert gcs[0]['extra']['gc_count'] == '3,4,5'
+    solve = dict(t=1000.4, wall=300.0, cpu=1.0, ivcsw=0)
+    new = sp.window_report([], solve, gcs)
+    assert any('worst-line detail' in ln and 'gc_frozen=0' in ln for ln in new)
+    old = sp.window_report([], solve, sp.parse_log(LOG.splitlines())[1])
+    assert not any('worst-line detail' in ln for ln in old)
+    assert any('GC_PROBE worst in window' in ln for ln in old)

@@ -7557,7 +7557,8 @@ class TeensyBridgeNode(Node):
         """BUG-58: drain the GC probe and log it (1 Hz timer; probe on only)."""
         from jugglebot import gc_probe as _gcp
         s = self._gc_probe.summary()
-        line = _gcp.format_summary('teensy_bridge_node', s)
+        line = _gcp.format_summary('teensy_bridge_node', s,
+                                  self._gc_probe.state())
         self.get_logger().info(line)
         if s['max_ms'] > _gcp.WARN_PAUSE_MS:
             self.get_logger().warning(line)
