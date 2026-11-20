@@ -2,9 +2,9 @@
 id: BUG-123
 kind: bug
 title: 'A guard latch leaves the Hand pushing at full current: no stall guard on the streamed lane or a latched hold'
-status: inbox
+status: in_progress
 created: '2026-11-20'
-updated: '2026-11-20T04:14:09Z'
+updated: '2026-11-20T05:22:21Z'
 owners: []
 priority: high
 effort: m
@@ -39,3 +39,7 @@ Owner decisions, with the measured numbers:
 4. Observability: the launch log prints the Hand motor temperature only when the fan changes state (`teensy_bridge_node.py:7874-7878`), so it showed 34-35 C all Sitting; the 88 C is only in the bag.
 
 The owner intends to keep running this motor to establish the cut-offs.
+
+## Progress
+
+- 2026-11-20: Owner decision, 2026-11-20: 40 A / 1 rev/s / 150 ms, then the Hand enters Idle. Being built as can-bridge FW 47 on a held branch.
