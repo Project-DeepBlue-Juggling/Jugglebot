@@ -104,6 +104,7 @@ class Driver {
     uint8_t int_status = 0;  // INT_STATUS of the last successful fifoCount()
     uint8_t count = 0;       // FIFO count of the last successful fifoCount(), clamped to 255
     uint8_t init_failed_at = 0;  // InitState in which the last init ended in failure (IST_* below)
+    uint8_t good_hdr = 0;        // the last FIFO header that passed the check (readFifo)
   };
   DiagWire diag;
   void diagClear() { diag.stage = DS_NONE; diag.code = 0; diag.requested = 0; }

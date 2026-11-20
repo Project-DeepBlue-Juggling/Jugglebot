@@ -41,6 +41,15 @@
 #ifndef PLATFORM_IMU_DIAG
 #define PLATFORM_IMU_DIAG 0   // 1 = the diagnostic build (Teensy_code_platform.ino, "IMU DIAGNOSTIC BUILD")
 #endif
+#ifndef PLATFORM_IMU_DIAG_CONST
+#define PLATFORM_IMU_DIAG_CONST 0   // 1 = known-data integrity mode (diag only): no FIFO drain, see const_step
+#endif
+#ifndef PLATFORM_IMU_DIAG_CONST_PERIOD_US
+#define PLATFORM_IMU_DIAG_CONST_PERIOD_US 2000   // one 32-byte register read per this many us
+#endif
+#if PLATFORM_IMU_DIAG_CONST && !PLATFORM_IMU_DIAG
+#error "PLATFORM_IMU_DIAG_CONST is a diagnostic build only (needs PLATFORM_IMU_DIAG=1)"
+#endif
 
 namespace ImuService {
 
@@ -210,6 +219,7 @@ enum DiagKind : uint8_t {
   DK_PROBE = 4,       // an init step failed (PROBING)                  -> i2c_errors, stays PROBING
   DK_RESUME = 5,      // RESUME's flush or WHO_AM_I check failed          -> i2c_errors, PROBING
   DK_BAD_PACKET = 6,  // a FIFO header was not 0b0110_xxxx               -> bad_packets only, flush, DISCONTINUITY
+  DK_CONST = 7,       // known-data mode: the 32-byte register read failed -> i2c_errors, recover + retry
 };
 #if PLATFORM_IMU_DIAG
 /*  What the sketch's Io reports about its LAST operation (diag_op()). */
@@ -220,8 +230,51 @@ struct DiagOp {
   uint8_t msr_flags = 0;   // LPI2C MSR after the failure: b0 NDF b1 ALF b2 FEF b3 PLTF b4 SDF b5 MBF b6 BBF
   uint32_t dur_us = 0;     // wall time of the op
   uint8_t init_failed_at = 0, int_status = 0, count = 0;
+  uint8_t good_hdr = 0;    // the last FIFO header that passed the check
 };
 inline uint8_t diag_sat8(uint32_t v) { return v > 255u ? uint8_t(255) : uint8_t(v); }
+
+/*  The diag STATUS page cycle: 0-7 as before, 8-12 the bad-header log, 13-23 known-data mode. */
+constexpr uint8_t DIAG_PAGES = 24;
+constexpr uint8_t BAD_HDR_LOG = 4;
+
+/*  KNOWN-DATA INTEGRITY MODE (-DPLATFORM_IMU_DIAG_CONST=1, logbook 2026-11-20-platform-imu-i2c-
+ *  error-bursts).  While RUNNING, instead of draining the FIFO, read the bank-0 configuration
+ *  block 0x4C (INTF_CONFIG0) .. 0x6B (32 bytes, auto-increment, the same readRegs the FIFO_COUNT
+ *  read uses) every PLATFORM_IMU_DIAG_CONST_PERIOD_US, one transaction per pass.  The block is
+ *  written once by init and nothing in it is read-sensitive (SIGNAL_PATH_RESET 0x4B and
+ *  FIFO_LOST_PKT 0x6C-0x6D are outside it).  The expected values are learnt after every init:
+ *  CONST_REF_READS good reads, and a byte that differs between them is masked out (reserved
+ *  addresses included); every later read is compared byte by byte and every differing bit is
+ *  counted by direction.  That measures silent data corruption, which no FIFO header can. */
+constexpr uint8_t CONST_REG = 0x4C;
+constexpr uint8_t CONST_LEN = 32;
+constexpr uint8_t CONST_REF_READS = 8;
+constexpr uint32_t CONST_PERIOD_US = PLATFORM_IMU_DIAG_CONST_PERIOD_US;
+
+struct ConstStats {
+  uint32_t txns = 0, fails = 0, bad_txns = 0, bad_bytes = 0, flips_10 = 0, flips_01 = 0;
+  uint8_t last_exp = 0, last_got = 0, last_off = 0;
+};
+inline uint32_t popcount8(uint8_t v) { uint32_t c = 0; while (v) { c += v & 1u; v >>= 1; } return c; }
+/*  One measured read against the reference.  mask[i] != 0: byte i is checked. */
+inline void const_compare(const uint8_t* ref, const uint8_t* mask, const uint8_t* got, uint8_t n, ConstStats* st) {
+  st->txns++;
+  bool bad = false;
+  for (uint8_t i = 0; i < n; i++) {
+    if (!mask[i]) continue;
+    const uint8_t x = uint8_t(ref[i] ^ got[i]);
+    if (!x) continue;
+    bad = true;
+    st->bad_bytes++;
+    st->flips_10 += popcount8(uint8_t(x & ref[i]));   // expected 1, read 0
+    st->flips_01 += popcount8(uint8_t(x & got[i]));   // expected 0, read 1
+    st->last_exp = ref[i];
+    st->last_got = got[i];
+    st->last_off = i;
+  }
+  if (bad) st->bad_txns++;
+}
 #endif
 
 class Service {
@@ -360,8 +413,46 @@ class Service {
       return;
     }
     if (fail_streak_ && int32_t(now_ms - healthy_since_ms_) >= int32_t(HEALTHY_RESET_MS)) fail_streak_ = 0;
+#if PLATFORM_IMU_DIAG
+    if (const_mode_) { const_step(now_us, now_ms, io); return; }
+#endif
     drain_step(now_us, now_ms, io);
   }
+
+#if PLATFORM_IMU_DIAG
+  /*  Known-data mode's one step (RUNNING only, so never in the boot settle or FW_HALTED): a
+   *  pending bus recovery, else one 32-byte register read when due.  Failures follow the
+   *  RUNNING retry policy (a good read ends the run), so three in a row still go to BACKOFF and
+   *  the re-probe re-learns the reference. */
+  template <class Io>
+  void const_step(uint32_t now_us, uint32_t now_ms, Io& io) {
+    if (recover_pending_) {
+      recover_pending_ = false;
+      cnt_.recoveries++;
+      last_step_ = STEP_I2C;
+      io.bus_recover();
+      return;
+    }
+    if (uint32_t(now_us - const_last_us_) < CONST_PERIOD_US) return;
+    const_last_us_ = now_us;
+    uint8_t got[CONST_LEN];
+    last_step_ = STEP_I2C;
+    if (io.read_regs(CONST_REG, got, CONST_LEN) < 0) {
+      diag_note(DK_CONST, io);
+      if (const_ref_n_ >= CONST_REF_READS) cst_.fails++;
+      retry_or_backoff(now_ms, true, false);
+      return;
+    }
+    end_run();
+    if (const_ref_n_ < CONST_REF_READS) {
+      if (const_ref_n_ == 0) { std::memcpy(const_ref_, got, CONST_LEN); std::memset(const_mask_, 1, CONST_LEN); }
+      for (uint8_t i = 0; i < CONST_LEN; i++) if (got[i] != const_ref_[i]) const_mask_[i] = 0;
+      const_ref_n_++;
+      return;
+    }
+    const_compare(const_ref_, const_mask_, got, CONST_LEN, &cst_);
+  }
+#endif
 
   template <class Io>
   void probe_step(uint32_t now_us, uint32_t now_ms, Io& io) {
@@ -390,6 +481,10 @@ class Service {
       phase_ = IDLE;
       flush_pending_ = false;
       end_run();
+#if PLATFORM_IMU_DIAG
+      const_ref_n_ = 0;
+      const_last_us_ = now_us;
+#endif
       last_drain_us_ = now_us;
       eng_.on_chip_ready();
       return;
@@ -605,6 +700,12 @@ class Service {
     diag_dur100_ = diag_sat8((d.dur_us + 99u) / 100u);
     if (kind < sizeof diag_n_ / sizeof diag_n_[0]) diag_n_[kind]++;
     if (kind == DK_PROBE) diag_init_at_ = d.init_failed_at;
+    if (kind == DK_BAD_PACKET) {           // newest first
+      for (uint8_t i = BAD_HDR_LOG - 1; i > 0; i--) { diag_bh_[i][0] = diag_bh_[i - 1][0]; diag_bh_[i][1] = diag_bh_[i - 1][1]; }
+      diag_bh_[0][0] = d.code;
+      diag_bh_[0][1] = d.requested;
+      diag_good_hdr_ = d.good_hdr;
+    }
 #else
     (void)kind;
     (void)io;
@@ -688,7 +789,7 @@ class Service {
   /*  The diagnostic STATUS: temp_c := page (0..7, one per second), sync_peak := A, fill_s := B.
    *  Decode table: Teensy_code_platform.ino, "IMU DIAGNOSTIC BUILD". */
   void diag_page(ImuProto::Status* s, uint8_t peak) {
-    const uint8_t page = uint8_t(diag_seq_++ & 7u);
+    const uint8_t page = uint8_t(diag_seq_++ % DIAG_PAGES);
     uint8_t a = 0, b = 0;
     switch (page) {
       case 0: a = diag_kind_; b = diag_stage_; break;
@@ -702,11 +803,36 @@ class Service {
         b = diag_sat8((diag_max_gap_us_ + 999u) / 1000u);
         diag_max_gap_us_ = 0;
         break;
-      default: a = diag_init_at_; b = diag_ovf_; break;
+      case 7: a = diag_init_at_; b = diag_ovf_; break;
+      case 8: case 9: case 10: case 11: a = diag_bh_[page - 8][0]; b = diag_bh_[page - 8][1]; break;
+      case 12: a = diag_good_hdr_; b = 0; break;
+      case 13: a = const_mode_ ? (const_ref_n_ >= CONST_REF_READS ? 2 : 1) : 0; b = masked_bytes(); break;
+      case 14: lo_hi(cst_.txns, &a, &b); break;
+      case 15: lo_hi(cst_.fails, &a, &b); break;
+      case 16: lo_hi(cst_.bad_txns, &a, &b); break;
+      case 17: lo_hi(cst_.bad_bytes, &a, &b); break;
+      case 18: lo_hi(cst_.flips_10, &a, &b); break;
+      case 19: lo_hi(cst_.flips_01, &a, &b); break;
+      case 20: a = cst_.last_exp; b = cst_.last_got; break;
+      case 21: a = cst_.last_off; b = uint8_t(CONST_REG + cst_.last_off); break;
+      case 22: a = CONST_LEN; b = ref_ones(); break;
+      default: a = diag_clk10k_; b = diag_sat8(CONST_PERIOD_US / 100u); break;
     }
     s->temp_c = int8_t(page);
     s->sync_peak = a;
     s->fill_s = b;
+  }
+  static void lo_hi(uint32_t v, uint8_t* a, uint8_t* b) { *a = uint8_t(v); *b = uint8_t(v >> 8); }  // u16, wraps
+  uint8_t masked_bytes() const {
+    if (!const_mode_ || const_ref_n_ == 0) return 0;
+    uint8_t m = 0;
+    for (uint8_t i = 0; i < CONST_LEN; i++) m += const_mask_[i] ? 0 : 1;
+    return m;
+  }
+  uint8_t ref_ones() const {
+    uint32_t c = 0;
+    if (const_ref_n_) for (uint8_t i = 0; i < CONST_LEN; i++) if (const_mask_[i]) c += popcount8(const_ref_[i]);
+    return diag_sat8(c);
   }
 #endif
 
@@ -752,11 +878,21 @@ class Service {
   uint8_t diag_kind_ = 0, diag_stage_ = 0, diag_code_ = 0, diag_req_ = 0, diag_msr_ = 0, diag_dur100_ = 0;
   uint8_t diag_init_at_ = 0, diag_ovf_ = 0;
   uint32_t diag_n_[8] = {};
+  uint8_t diag_bh_[BAD_HDR_LOG][2] = {};   // bad FIFO headers, newest first: header byte, (burst n << 4) | index
+  uint8_t diag_good_hdr_ = 0, diag_clk10k_ = 0;
+  bool const_mode_ = PLATFORM_IMU_DIAG_CONST != 0;
+  uint8_t const_ref_n_ = 0;
+  uint8_t const_ref_[CONST_LEN] = {}, const_mask_[CONST_LEN] = {};
+  uint32_t const_last_us_ = 0;
+  ConstStats cst_;
   uint32_t diag_seq_ = 0, diag_prev_us_ = 0, diag_max_gap_us_ = 0;
   bool diag_have_prev_ = false;
 
  public:
   uint8_t diag_kind() const { return diag_kind_; }
+  void set_const_mode(bool on) { const_mode_ = on; const_ref_n_ = 0; }
+  void set_diag_clock(uint32_t hz) { diag_clk10k_ = diag_sat8(hz / 10000u); }
+  const ConstStats& const_stats() const { return cst_; }
 #endif
 };
 

@@ -295,6 +295,7 @@ int Driver::readFifo(Sample* out, int maxN) {
       if (h & 0x80) continue;                         // FIFO-empty marker
 #if PLATFORM_IMU_DIAG
       if ((h & 0x70) != 0x60) { diag.code = h; diag.requested = (uint8_t)((n << 4) | p); return ERR_BAD_PACKET; }
+      diag.good_hdr = h;
 #else
       if ((h & 0x70) != 0x60) return ERR_BAD_PACKET;  // 0110_10xx: accel+gyro, no 20-bit ext (DS 6.2)
 #endif
