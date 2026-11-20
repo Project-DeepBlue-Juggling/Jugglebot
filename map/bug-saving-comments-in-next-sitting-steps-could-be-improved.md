@@ -4,11 +4,15 @@ kind: bug
 title: Saving comments in 'Next Sitting' Steps could be improved
 status: inbox
 created: '2026-11-20'
-updated: '2026-11-20T03:03:05Z'
+updated: '2026-11-20T15:50:02Z'
 owners: []
 priority: medium
 effort: s
 hardware: none
+owner: none
+radius: local
+diagnosis: confirmed
+area: map-app
 blocked_by: []
 links: []
 filed_by: harrison
