@@ -132,6 +132,7 @@ from teensy_link.gap_monitor import (
     DownlinkLossTracker, EpisodeLatch, GapTracker)
 from teensy_link.hand_feedback_watch import HandFeedbackWatch
 from jugglebot import platform_imu_gate as _imu_gate
+from jugglebot.reference_loss import ReferenceLossWatch
 from teensy_link.platform_imu import PlatformImuService, UploadConfig as _ImuUploadConfig
 from teensy_link.platform_imu_capture import ImuCaptureWriter
 from teensy_link.setpoint_pump import SetpointPump, FLAG_HAS_HAND, HAND_FF_GAIN_MAX
@@ -2021,6 +2022,15 @@ class TeensyBridgeNode(Node):
         # sticky-True for the process once set (exact can_node parity — can_node only
         # ever sets encoder_search_complete True, never clears it mid-run).
         self._encoder_search_done_session = False
+        # BUG-122: a drive that loses its position reference (MISSING_ESTIMATE,
+        # or a reboot seen as INITIALIZING) clears is_homed through the relay
+        # write, so the FAULT exit routes BOOT -> HOMING instead of BOOT -> IDLE.
+        # The watch (pure, jugglebot/reference_loss.py) owns edge detection and
+        # the "a clear is owed" latch; _kick_reference_loss_clear owns the I/O,
+        # one worker at a time, retried from the 1 Hz _health_check until the
+        # write lands. All watch calls run under self._lock.
+        self._ref_loss = ReferenceLossWatch()
+        self._ref_loss_inflight = False
         # pose_offset_quat memo: _tilt_to_quat runs the (numpy-allocating) quaternion
         # composition only when the cached tilt CHANGES (it changes on a relay read,
         # not per publish) — can_node likewise computed it on-change, not per publish.
@@ -2896,6 +2906,10 @@ class TeensyBridgeNode(Node):
             prev = self._latest_diag.get(axis)
             self._latest_diag[axis] = dg
             self._latest_diag_mono[axis] = time.monotonic()
+            ref_loss = self._ref_loss.observe(
+                axis, int(dg.active_errors), int(dg.disarm_reason))
+        if ref_loss is not None:
+            self._on_reference_loss(ref_loss)
         cap = self._hand_capture  # TEMPORARY (BUG-57 diagnostic capture)
         if cap is not None and axis == _HAND_AXIS:
             cap.offer('diag', iq_sp=dg.iq_setpoint, iq_meas=dg.iq_measured,
@@ -4714,6 +4728,12 @@ class TeensyBridgeNode(Node):
         reconnect, never command a dead link" invariant, minus the executor the
         bridge does not have.
         """
+        # BUG-122: retry an owed is_homed clear at 1 Hz until it lands.
+        try:
+            self._kick_reference_loss_clear()
+        except Exception as e:  # noqa: BLE001 -- never let the watchdog timer die
+            self.get_logger().error(f'homed flag clear kick failed: {e}',
+                                    throttle_duration_sec=5.0)
         try:
             age_us = self._link_age_us()
             seen = age_us is not None
@@ -8104,6 +8124,19 @@ class TeensyBridgeNode(Node):
                 throttle_duration_sec=5.0)
             return False
         with self._lock:
+            pending = self._ref_loss.pending
+            if pending is not None:
+                if state.is_homed:
+                    # BUG-122: a reference loss is still owed its clear, so the
+                    # Platform Teensy's True is stale: publish the safe local
+                    # view and let the worker land the write.
+                    state = state._replace(is_homed=False)
+                elif not self._home_in_progress:
+                    # The Platform Teensy already holds False: nothing is owed.
+                    # (Not while a Homing runs: its result write would make a
+                    # loss seen during it stale, so that one stays owed.)
+                    self._ref_loss.drop()
+                    pending = None
             self._cold_start_state = state
             self._cold_start_authoritative = True
             if state.is_homed:
@@ -8238,6 +8271,8 @@ class TeensyBridgeNode(Node):
                     self._cold_start_state = self._cold_start_state._replace(
                         is_homed=bool(is_homed))
                     self._cold_start_authoritative = True
+                    if not is_homed:
+                        self._ref_loss.landed_false()   # BUG-122: the owed clear landed
         return ok, msg
 
     def _write_level_state(self, levelling_complete, tiltX, tiltY):
@@ -8297,6 +8332,8 @@ class TeensyBridgeNode(Node):
                     is_homed=False, levelling_complete=False,
                     pose_offset_tiltX=0.0, pose_offset_tiltY=0.0)
                 self._cold_start_authoritative = True
+                if ok:
+                    self._ref_loss.landed_false()   # BUG-122: is_homed=False landed
                 # Clear the in-session encoder-search bit too: a reboot resets the ODrive
                 # MCUs, which lose their INCREMENTAL-ENCODER INDEX (not pre-calibrated to
                 # flash — operator-confirmed 2026-07-02), so a re-encoder-search is
@@ -8314,6 +8351,83 @@ class TeensyBridgeNode(Node):
                 # references (is_homed/levelling/pose) AND the encoder index.
                 self._encoder_search_done_session = False
         return ok, msg
+
+    # ── BUG-122: clear is_homed when a drive loses its position reference ──
+    # The Diagnostic edge (jugglebot/reference_loss.py) arrives on the UDP
+    # receive thread, which must never block on a relay round-trip, so the write
+    # runs on a short worker thread, one at a time, re-kicked by the 1 Hz
+    # _health_check until it lands. The write goes through _write_is_homed
+    # (read-modify-write: levelling + pose are preserved, because Homing restores
+    # the hardstop frame they are measured in).
+
+    def _on_reference_loss(self, event):
+        """React to one reference-loss edge. A robot that is known NOT homed and
+        not Homing has nothing to clear (the start-up INITIALIZING of a fresh
+        power-on, or a drive error before the first Homing). Otherwise the clear
+        is owed: the local view drops to is_homed=False at once (when the cache
+        is authoritative; before the boot read lands, the read-apply path
+        applies it), one ERROR line names the axis, and the worker is kicked."""
+        with self._lock:
+            auth = self._cold_start_authoritative
+            homed = bool(self._cold_start_state.is_homed)
+        with self._home_lock:
+            homing = self._home_in_progress
+        if auth and not homed and not homing:
+            self.get_logger().debug(
+                f'{_axis_label(event.axis)} reported {event.reason} while not homed: '
+                'nothing to clear')
+            return
+        with self._lock:
+            self._ref_loss.arm(event)
+            if self._cold_start_authoritative:
+                self._cold_start_state = self._cold_start_state._replace(is_homed=False)
+        self.get_logger().error(
+            f'homed flag cleared: {_axis_label(event.axis)} reported {event.reason}, '
+            'so its position reference may be lost; re-home required '
+            '(BUG-122: a FAULT exit now goes BOOT -> HOMING, never BOOT -> IDLE)')
+        self._kick_reference_loss_clear()
+
+    def _kick_reference_loss_clear(self):
+        """Start the clear worker if a clear is owed, none is running and the
+        cache is authoritative (writing before the boot read would clobber
+        levelling + pose with defaults). Returns True iff a worker started."""
+        with self._lock:
+            if (self._ref_loss.pending is None or self._ref_loss_inflight
+                    or not self._cold_start_authoritative):
+                return False
+            self._ref_loss_inflight = True
+        threading.Thread(target=self._reference_loss_clear_worker, daemon=True,
+                         name='ref-loss-clear').start()
+        return True
+
+    def _reference_loss_clear_worker(self):
+        """Land is_homed=False on the Platform Teensy. Skipped while a Homing
+        runs (it writes its own result and _do_home resolves what it answers);
+        on failure the latch stays armed and the next 1 Hz kick retries."""
+        try:
+            with self._relay_lock:
+                with self._home_lock:
+                    homing = self._home_in_progress
+                with self._lock:
+                    owed = self._ref_loss.pending
+                if owed is None or homing:
+                    return
+                ok, msg = self._write_is_homed(False)   # landed -> watch.landed_false()
+            if ok:
+                self.get_logger().info(
+                    f'homed flag clear landed on the Platform Teensy '
+                    f'({_axis_label(owed.axis)}: {owed.reason})')
+            else:
+                self.get_logger().error(
+                    f'homed flag clear did not land ({msg}); retrying at 1 Hz',
+                    throttle_duration_sec=5.0)
+        except Exception as e:  # noqa: BLE001 -- the retry must survive anything
+            self.get_logger().error(
+                f'homed flag clear errored: {e}; retrying at 1 Hz',
+                throttle_duration_sec=5.0)
+        finally:
+            with self._lock:
+                self._ref_loss_inflight = False
 
     # ── Encoder index search (Jetson-side orchestration) ──
     # The firmware ENCODER_SEARCH RPC is stubbed (ERR_NOT_IMPL); encoder index
@@ -9731,9 +9845,16 @@ class TeensyBridgeNode(Node):
                 return False, "home already in progress"
             self._home_in_progress = True
         try:
+            with self._lock:
+                # BUG-122: a reference loss seen before this Homing started is
+                # answered by its result; one seen DURING it stays owed.
+                ref_loss_seq_at_start = self._ref_loss.seq
             axes = list(self.get_parameter('home_axes').value or [])
             ok, msg = self._run_home(axes)
             w_ok, w_msg = self._write_is_homed(ok)
+            if w_ok:
+                with self._lock:
+                    self._ref_loss.home_written(ref_loss_seq_at_start)
             if not w_ok:
                 self.get_logger().error(
                     f"home: persisting is_homed={int(ok)} failed: {w_msg}")

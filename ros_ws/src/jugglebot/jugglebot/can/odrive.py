@@ -109,7 +109,10 @@ ERROR_CODES = {
 }
 
 # Frequently-referenced error bitmasks
+ERR_INITIALIZING = 1
+ERR_MISSING_ESTIMATE = 8
 ERR_DC_BUS_UNDER_VOLTAGE = 512
+ERR_SPINOUT_DETECTED = 67108864
 
 # Ball Butler motors — only process these command IDs from BB axes
 BB_MOTOR_IDS = set(BB_AXES)

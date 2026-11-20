@@ -887,7 +887,8 @@ class FaultHandler(StateHandler):
     Real-fault exit stow (ARMING_CONTRACT choreography step 6, 2026-10-06;
     LEVELLING added 2026-10-07): a real fault whose visit began in ACTIVE or
     LEVELLING, once everything has cleared, first requests the profiled
-    DEACTIVATE if all six legs are closed-loop and the robot is homed, and
+    DEACTIVATE if all six legs are closed-loop (not gated on is_homed since
+    BUG-122; see _real_fault_exit), and
     holds FAULT until it succeeds. Without it a forced ACTIVE->FAULT (whose
     ActiveHandler.on_exit deactivate the orchestrator cancels), or any fault
     during LEVELLING (whose level_activate holds the same active pose until
@@ -1062,20 +1063,28 @@ class FaultHandler(StateHandler):
         """The real-fault exit, given every error and the guard latch have cleared.
 
         Returns BOOT, or None to hold FAULT. A FAULT visit that began in ACTIVE
-        or LEVELLING with all six legs closed-loop and the robot homed means the
-        legs are still holding an active pose: request the profiled DEACTIVATE
-        first and hold FAULT until it succeeds, so the machine never reaches
-        IDLE ("platform stowed, legs idle") while they hold it (ARMING_CONTRACT
-        choreography step 6). Otherwise BOOT at once, as before: a leg that
-        dropped out of closed loop (e.g. an ODrive reboot) is BOOT -> HOMING's
-        job, and a fault from BOOT/HOMING/IDLE has no active pose.
+        or LEVELLING with all six legs closed-loop means the legs are still
+        holding an active pose: request the profiled DEACTIVATE first and hold
+        FAULT until it succeeds, so the machine never reaches IDLE ("platform
+        stowed, legs idle") while they hold it (ARMING_CONTRACT choreography
+        step 6). Otherwise BOOT at once, as before: a leg that dropped out of
+        closed loop (e.g. an ODrive reboot) is BOOT -> HOMING's job, and a fault
+        from BOOT/HOMING/IDLE has no active pose.
+
+        Not gated on is_homed (BUG-122, 2026-11-20). The bridge now clears
+        is_homed when ANY drive loses its position reference, the Hand included,
+        and a Hand-only loss must still stow the posed legs: skipping the stow
+        would start HOMING with the legs at an active pose. legs_closed_loop
+        already proves each leg's own reference: an ODrive cannot be in
+        CLOSED_LOOP with no active error after MISSING_ESTIMATE or a reboot.
+        DEACTIVATE only IDLEs the Hand (leg_deactivate.cpp idle_hand_now), so a
+        lost Hand frame cannot move anything during the stow.
         """
         if self._stow_done:
             return RobotState.BOOT
         if self._stow_requested or self._stow_failed:
             return None
-        if not (self._legs_posed_at_entry and ctx.is_homed
-                and ctx.legs_closed_loop):
+        if not (self._legs_posed_at_entry and ctx.legs_closed_loop):
             return RobotState.BOOT
         if ctx.operation_pending:
             # A tracked operation (an operator clear_errors, or the

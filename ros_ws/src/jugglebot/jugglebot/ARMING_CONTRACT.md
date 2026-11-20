@@ -162,7 +162,12 @@ work (2026-07-15) hit three distinct doors into that hole:
    {ACTIVE, LEVELLING} at entry, which includes a guard-only fault promoted
    mid-FAULT; both states hold the legs at an active pose in CLOSED_LOOP)
    requests the profiled DEACTIVATE when all six legs are in CLOSED_LOOP with
-   no active error and the robot is homed. It **holds FAULT until that
+   no active error. (Until 2026-11-20 it also required the robot to be homed.
+   BUG-122 made the bridge clear `is_homed` whenever any drive loses its
+   position reference, the Hand included, so that gate would have skipped the
+   stow on a Hand-only loss and started HOMING with the legs at an active pose.
+   CLOSED_LOOP with no active error already proves each leg's own reference,
+   and DEACTIVATE only IDLEs the Hand.) It **holds FAULT until that
    DEACTIVATE succeeds**, so IDLE ("platform stowed, legs idle") is never
    claimed while the legs still hold a pose. A failed stow also holds FAULT,
    with one retry per operator `clear_errors`. If any leg is not closed-loop,
