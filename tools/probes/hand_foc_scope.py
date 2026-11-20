@@ -923,8 +923,9 @@ def cmd_capture(args):
             cols, info = capture_once(drive, args.preset, trig, trigger_point, timeout, args.fill,
                                       on_note=lambda note: print("  %s; re-armed" % note))
         except KeyboardInterrupt:
-            print("stopped by Ctrl-C after %d saved; %d clean exits seen while waiting; the drive is untouched" % (
-                n_file, trig.clean_exits))
+            print("stopped by Ctrl-C after %d saved; %d clean exits seen while waiting (a clean exit is the drive "
+                  "leaving CLOSED_LOOP; a stage that ends with the Hand still CLOSED_LOOP is none); the drive is "
+                  "untouched" % (n_file, trig.clean_exits))
             return rc
         except Exception:
             failures += 1
