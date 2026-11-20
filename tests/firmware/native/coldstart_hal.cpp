@@ -29,7 +29,8 @@ static bool     g_can_bus_down = false;
 static bool     g_guard_estop = false;
 static bool     g_commands_allowed = true;
 static bool     g_mpc_active = false;              // MPC-stream interlock (reject cold-start ops while the MPC drives the legs); default: not driving
-static bool     g_stow_pending = false;            // deferred-stow interlock (review fix); default: no stow
+static bool     g_stow_pending = false;
+static int      g_hand_stall_notified = 0;          // FW 47: fault_notify_hand_stall() calls            // deferred-stow interlock (review fix); default: no stow
 static std::vector<CsSentFrame> g_sent;
 static int g_send_fail_index = -1;
 static int g_send_defer_index = -1;   // attempt (0-based) that DEFERS (and is recorded); -1 = never
@@ -44,6 +45,7 @@ void cs_reset() {
   g_commands_allowed = true;
   g_mpc_active = false;
   g_stow_pending = false;
+  g_hand_stall_notified = 0;
   g_send_fail_index = -1;
   g_send_defer_index = -1;
   g_send_attempts = 0;
@@ -91,7 +93,10 @@ uint8_t fault_guard_mode() {                                       // HAL: fault
   return g_guard_estop ? JbUdp::GuardMode::ESTOP : JbUdp::GuardMode::ENABLED;
 }
 bool fault_mpc_active() { return g_mpc_active; }                    // HAL: fault_machine.h (MPC-stream interlock)
-bool fault_stow_pending() { return g_stow_pending; }                // HAL: fault_machine.h (deferred-stow interlock)
+bool fault_stow_pending() { return g_stow_pending; }
+void fault_notify_hand_stall() { ++g_hand_stall_notified; }        // HAL: fault_machine.h (FW 47 latch)
+bool fault_hand_stall_latched() { return g_hand_stall_notified > 0; }
+int  cs_hand_stall_notified() { return g_hand_stall_notified; }                // HAL: fault_machine.h (deferred-stow interlock)
 
 // ── Recording CAN3 TX ────────────────────────────────────────────────────────
 void cs_set_send_fail_index(int attempt_index) {

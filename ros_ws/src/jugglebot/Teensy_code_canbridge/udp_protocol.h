@@ -137,6 +137,7 @@ namespace FaultState {
   constexpr uint8_t ODRIVE_FATAL = 5u;  // Active ODrive error / disarm-while-closed-loop
   constexpr uint8_t CAN_BUS_DOWN = 6u;  // one or more present legs silent on the Jugglebot bus (no frame of any kind for CAN_AXIS_SILENCE_TIMEOUT_US); self-clears when all present legs are alive again, then the firmware stows. Name kept for wire stability; until FW 23 the predicate was heartbeat-only, which is why the 2026-09-15 trips fired on a demonstrably healthy bus
   constexpr uint8_t MOTOR_FB_STALE = 7u;  // Leg encoder feedback stale → suppress output (recoverable)
+  constexpr uint8_t HAND_STALL = 8u;  // The Hand lane stall guard (can-bridge FW 47, BUG-123) commanded the Hand IDLE: |iq| >= 40 A with |vel| <= 1 rev/s for 150 ms outside the ACTIVATE / HAND_MOVE_TO ladder. Latched, guard ESTOP (Legs held), released only by CLEAR_ERRORS; outranks the frozen guard reason. Additive value in the existing u8: no PROTOCOL_VERSION bump
 }
 namespace GuardMode {
   constexpr uint8_t DISABLED = 0u;
@@ -228,7 +229,7 @@ struct DiagnosticPayload {
   uint8_t axis_state;  // ODrive current_state
   uint8_t ctrl_mode;  // ODrive controller mode
   uint8_t input_mode;  // ODrive input mode
-  uint8_t flags;  // bit0: heartbeat_stale, bit1: heartbeat_seen (ever, this boot), bit2: activate_stall (the cold-start ladder's stall guard IDLEd this axis; sticky until the next ACTIVATE / HAND_MOVE_TO targeting it; can-bridge FW 36, BUG-56)
+  uint8_t flags;  // bit0: heartbeat_stale, bit1: heartbeat_seen (ever, this boot), bit2: activate_stall (the cold-start ladder's stall guard IDLEd this axis; sticky until the next ACTIVATE / HAND_MOVE_TO targeting it; can-bridge FW 36, BUG-56); bit3: lane_stall (the Hand lane stall guard IDLEd this axis, only ever axis 6; sticky until the next ACTIVATE / HAND_MOVE_TO targeting it; can-bridge FW 47, BUG-123)
   uint8_t homing_result;  // HomingResult for this Jugglebot axis (0 none/1 running/2 ok/3 failed); 0 for non-leg axes
   uint8_t homing_epoch;  // Per-home epoch (u8, wraps): bumped on every ACCEPTED HOME of this axis, read with homing_result as one pair; a terminal result belongs to the HOME whose acceptance produced this epoch. 0 on an FW <= 33 board (the former pad byte) and for non-leg axes (can-bridge FW 34, BUG-18)
   uint8_t pad;  // Alignment pad (zero)

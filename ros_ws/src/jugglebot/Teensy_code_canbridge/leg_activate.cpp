@@ -74,11 +74,19 @@ static uint8_t  s_result[NUM_AXES] = { ACTIVATE_NONE };
 static bool          s_stall_timing = false;   // the stall predicate held last tick
 static uint64_t      s_stall_t0_us  = 0;       // first tick of the current run
 static volatile bool s_stalled[NUM_AXES] = { false };   // sticky, Diagnostic flags bit2
+// ── Hand stall guard on the streamed lane and latched holds (FW 47, BUG-123) —
+//    activate-task owned; s_lane_stalled read by the telemetry task. ───────────
+static bool          s_lane_timing       = false;  // the stall predicate held at the last sample
+static uint64_t      s_lane_t0_us        = 0;      // iq stamp of the run's first sample
+static uint64_t      s_lane_last_iq_us   = 0;      // iq stamp of the last sample consumed
+static bool          s_lane_idle_pending = false;  // a trip whose IDLE the TX path refused
+static volatile bool s_lane_stalled      = false;  // sticky, Diagnostic flags bit3
 // A new ladder run starts with a clean stall record for the axes it targets.
 static void stall_reset_for_targets() {
   s_stall_timing = false;
   for (uint8_t i = 0; i < NUM_AXES; ++i)
     if (s_targets & (uint8_t)(1u << i)) s_stalled[i] = false;
+  if (s_targets & (uint8_t)(1u << HAND_AXIS)) s_lane_stalled = false;
 }
 
 // ── HAND_MOVE_TO (FW 26) — the same ladder, a caller target (leg_activate.h) ──
@@ -217,6 +225,11 @@ void activate_init() {
   s_start_req = false;
   s_stall_timing = false;
   for (uint8_t i = 0; i < NUM_AXES; ++i) s_stalled[i] = false;
+  s_lane_timing = false;
+  s_lane_t0_us = 0;
+  s_lane_last_iq_us = 0;
+  s_lane_idle_pending = false;
+  s_lane_stalled = false;
   s_hm_req = false;
   s_mode = AMode::ACTIVATE;
   s_hm_box_head = 0;
@@ -395,7 +408,52 @@ static bool hand_stall_guard(uint64_t now) {
   return false;                     // an ACTIVATE's legs carry on
 }
 
+bool hand_lane_stalled(uint8_t axis) { return axis == HAND_AXIS && s_lane_stalled; }
+
+// The owner's rule (2026-11-20, BUG-123): 40 A / 1 rev/s / 150 ms, then IDLE.
+// Runs every tick BEFORE the ladder; armed whenever the ladder does not target
+// the Hand (the ladder's own guard above owns a Hand it moves). Only the Hand is
+// stopped here: the Legs are held by the guard ESTOP the latch raises, exactly as
+// for a Hand ODrive fault (ODRIVE_FATAL), never IDLEd (a loaded Platform).
+static void hand_lane_stall_guard() {
+  // A trip whose IDLE frame the TX path refused: re-send every tick until queued.
+  if (s_lane_idle_pending &&
+      can_jugglebot_send(ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE)))
+    s_lane_idle_pending = false;
+  constexpr uint8_t HB = (uint8_t)(1u << HAND_AXIS);
+  if (s_phase != APhase::IDLE && (s_targets & HB)) { s_lane_timing = false; return; }
+  // One evaluation per NEW sample, timed on the sample stamps: a tick with no new
+  // sample neither advances the window nor restarts it, so stale data never trips.
+  const uint64_t ts = atomic_read_u64(&axes[HAND_AXIS].iq_timestamp_us);
+  if (ts == 0 || ts == s_lane_last_iq_us) return;
+  const uint64_t prev = s_lane_last_iq_us;
+  s_lane_last_iq_us = ts;
+  // A hole in the sample stream (or the first sample after the ladder let go)
+  // restarts the window: "continuously" is not known across it.
+  if (prev == 0 || ts < prev || ts - prev > HAND_LANE_STALL_GAP_US) s_lane_timing = false;
+  const float iq  = axes[HAND_AXIS].iq_measured;   // single-word atomic reads
+  const float vel = axes[HAND_AXIS].vel_rps;
+  const uint64_t vts = atomic_read_u64(&axes[HAND_AXIS].pos_timestamp_us);
+  const bool vel_fresh = vts != 0 && (vts >= ts || ts - vts <= HAND_LANE_STALL_GAP_US);
+  // A NaN fails both comparisons, so it can never read as a stall.
+  const bool stalled_now = vel_fresh && fabsf(iq) >= HAND_LANE_STALL_IQ_A &&
+                           fabsf(vel) <= HAND_LANE_STALL_VEL_RPS;
+  if (!stalled_now) { s_lane_timing = false; return; }
+  if (!s_lane_timing) { s_lane_timing = true; s_lane_t0_us = ts; return; }
+  if (ts - s_lane_t0_us < HAND_LANE_STALL_HOLD_US) return;
+  // 150 ms of samples: stop pushing. Latch first, so the Legs are held and every
+  // re-energising op is refused even if the IDLE frame has to wait for the bus.
+  s_lane_timing  = false;
+  s_lane_stalled = true;
+  fault_notify_hand_stall();
+  if (!can_jugglebot_send(ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE)))
+    s_lane_idle_pending = true;
+}
+
 void activate_step() {
+  // ── FW 47 (BUG-123): the Hand stall guard outside the ladder. ──
+  hand_lane_stall_guard();
+
   // ── HAND_MOVE_TO start / retarget (net task → activate task). ──
   hm_consume();
 

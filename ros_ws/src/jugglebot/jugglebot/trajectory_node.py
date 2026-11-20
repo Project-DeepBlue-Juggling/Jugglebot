@@ -2217,6 +2217,9 @@ class TrajectoryNode(Node):
         """
         fault = self._kv_get(msg.values, 'fault_state', 'NONE')
         latched = fault not in ('NONE', 'UNKNOWN', '')
+        # The firmware's reason rides on every refusal (FW 47, BUG-123): an
+        # Attempt ended by GUARD_LATCHED then says WHICH guard, e.g. HAND_STALL.
+        self._guard_fault = fault
         # A5 (ARMING_CONTRACT) — mirror the wire's arming state so accepted
         # motion commands on a disarmed wire can be loud (this node otherwise
         # has no way to know its frames are being dropped: a disarmed bridge
@@ -2303,7 +2306,9 @@ class TrajectoryNode(Node):
 
     def _guard_frozen_msg(self) -> str:
         """Uniform reject text for an advancing command refused during a guard latch."""
-        return ("Teensy guard latched (E-STOP) — command advancement is frozen at "
+        fault = getattr(self, '_guard_fault', '') or ''
+        why = f' [fault_state={fault}]' if fault not in ('', 'NONE', 'UNKNOWN') else ''
+        return (f"Teensy guard latched (E-STOP){why} — command advancement is frozen at "
                 "the measured hold; recover with /recover (or /clear_errors) before "
                 "commanding motion")
 

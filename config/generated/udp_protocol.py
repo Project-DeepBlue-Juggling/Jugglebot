@@ -137,6 +137,7 @@ class FaultState(IntEnum):
     ODRIVE_FATAL = 5  # Active ODrive error / disarm-while-closed-loop
     CAN_BUS_DOWN = 6  # one or more present legs silent on the Jugglebot bus (no frame of any kind for CAN_AXIS_SILENCE_TIMEOUT_US); self-clears when all present legs are alive again, then the firmware stows. Name kept for wire stability; until FW 23 the predicate was heartbeat-only, which is why the 2026-09-15 trips fired on a demonstrably healthy bus
     MOTOR_FB_STALE = 7  # Leg encoder feedback stale → suppress output (recoverable)
+    HAND_STALL = 8  # The Hand lane stall guard (can-bridge FW 47, BUG-123) commanded the Hand IDLE: |iq| >= 40 A with |vel| <= 1 rev/s for 150 ms outside the ACTIVATE / HAND_MOVE_TO ladder. Latched, guard ESTOP (Legs held), released only by CLEAR_ERRORS; outranks the frozen guard reason. Additive value in the existing u8: no PROTOCOL_VERSION bump
 
 class GuardMode(IntEnum):
     DISABLED = 0

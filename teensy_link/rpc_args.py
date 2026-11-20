@@ -1002,7 +1002,11 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # receive stamp newer than the fault task's clock read (one helper,
 # rx_older_than), so a live Leg can no longer read silent for one tick and trip
 # CAN_BUS_DOWN. Behavioural only: no wire change, PROTOCOL_VERSION stays 14.
-EXPECTED_BRIDGE_FW_VERSION = 46
+# 46 -> 47 (2026-11-20, BUG-123): the Hand stall guard on the streamed lane and
+# latched holds (40 A / 1 rev/s / 150 ms, then Hand IDLE and the FaultState
+# HAND_STALL latch, released only by CLEAR_ERRORS; Diagnostic flags bit3).
+# Additive on the wire: PROTOCOL_VERSION stays 14.
+EXPECTED_BRIDGE_FW_VERSION = 47
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

@@ -56,6 +56,38 @@ AXIS_STATE_CLOSED_LOOP = 8
 # tests/firmware/test_hand_stall_guard_xref.py).
 DIAG_FLAG_ACTIVATE_STALL = 0x4
 
+# DIAGNOSTIC.flags bit3 (can-bridge FW 47, BUG-123): the Hand stall guard on the
+# streamed lane / a latched hold IDLEd this axis (only ever the Hand). Mirrors
+# leg_activate.h DIAG_FLAG_LANE_STALL (pinned by the same xref test).
+DIAG_FLAG_LANE_STALL = 0x8
+
+# The FW 47 lane stall guard's thresholds (canbridge_config.h HAND_LANE_STALL_*,
+# owner decision 2026-11-20), mirrored for the operator's reason line only; the
+# firmware is the authority and the xref test pins the two together.
+HAND_LANE_STALL_IQ_A = 40.0
+HAND_LANE_STALL_VEL_RPS = 1.0
+HAND_LANE_STALL_HOLD_S = 0.150
+
+
+def hand_lane_stall_line(iq_now_a: float, motor_temp_c: float) -> str:
+    """The one operator line for a FW 47 Hand stall trip (FaultState HAND_STALL).
+
+    Says what fired, what the firmware did (Hand IDLE, Legs held), and the
+    recovery: the operator's CLEAR_ERRORS (whose Hand park re-energises the
+    Hand under the ladder's own 25 A / 300 ms guard), then a check of the Hand
+    zero and a re-home, since the 2026-11-20 stall was a lost home.
+    """
+    return (f'HAND_STALL: the can-bridge stall guard commanded the Hand IDLE: '
+            f'|iq| >= {HAND_LANE_STALL_IQ_A:g} A with |vel| <= '
+            f'{HAND_LANE_STALL_VEL_RPS:g} rev/s for '
+            f'{HAND_LANE_STALL_HOLD_S * 1000:.0f} ms outside the ACTIVATE ladder '
+            f'(iq now {iq_now_a:+.1f} A, motor {motor_temp_c:.0f} C). The Hand has '
+            f'dropped to its bottom stop and the Legs are held; nothing '
+            f're-energises it until the operator clears. Recover with: ros2 '
+            f'service call /clear_errors std_srvs/srv/Trigger (its Hand park '
+            f'runs under the ladder guard), then check the Hand zero and '
+            f're-home before the next Attempt')
+
 # Defaults. The firmware fire ladder is fast (~10 ms); the physical TRAP_TRAJ move
 # is bounded by the leg distance (≈ 2.3 rev) at the gentle vel limit (2.5 rps) +
 # accel — a few seconds. Allow generous margin. The tolerances mirror the firmware

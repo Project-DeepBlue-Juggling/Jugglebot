@@ -61,6 +61,8 @@ static void present_only(uint8_t mask) {
     axes[i].pos_rev = 0.0f;
     axes[i].vel_rps = 0.0f;
     axes[i].iq_measured = 0.0f;
+    axes[i].iq_timestamp_us = 0;    // FW 47: no Get_Iq sample yet
+    axes[i].pos_timestamp_us = 0;
   }
 }
 
@@ -739,4 +741,222 @@ TEST_CASE("stall guard: a refused IDLE frame is re-sent on the next tick") {
   HandMoveReply r[4];
   REQUIRE(drain_replies(r, 4) == 1);
   CHECK(r[0].result.outcome == HAND_MOVE_STALLED);
+}
+
+// ── FW 47 Hand lane stall guard (BUG-123) ────────────────────────────────────
+//  Owner decision 2026-11-20: 40 A / 1 rev/s / 150 ms, then IDLE, whenever the
+//  ladder does not own the Hand. The 2026-11-20 incident: the Hand stalled on its
+//  top stop on the streamed lane, MAX_DEVIATION latched (a latch only freezes the
+//  output) and the drive pushed 68-70 A for 4.4 s. The guard counts its window on
+//  Get_Iq sample STAMPS; each lane_sample() below is one received sample (iq and
+//  encoder stamped together, as the 9 ms Hand messages arrive) and one tick.
+static constexpr uint64_t SAMPLE_US = 10000;   // one sample per tick (the Hand sends every 9 ms)
+static void lane_sample(float iq, float vel, uint64_t dt_us = SAMPLE_US) {
+  cs_advance(dt_us);
+  axes[HAND_AXIS].iq_measured = iq;
+  axes[HAND_AXIS].vel_rps = vel;
+  axes[HAND_AXIS].iq_timestamp_us = micros64();
+  axes[HAND_AXIS].pos_timestamp_us = micros64();
+  activate_step();
+}
+// `n` samples spaced `dt` apart, the first `dt` after now.
+static void lane_samples(int n, float iq, float vel, uint64_t dt_us = SAMPLE_US) {
+  for (int k = 0; k < n; ++k) lane_sample(iq, vel, dt_us);
+}
+static const ODrive::CanFrame HAND_IDLE = ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE);
+static size_t idle_count() {
+  size_t n = 0;
+  for (size_t i = 0; i < cs_sent_count(); ++i) {
+    const CsSentFrame& f = cs_sent_at(i);
+    if (f.id == HAND_IDLE.id && f.len == HAND_IDLE.len && memcmp(f.buf, HAND_IDLE.buf, 8) == 0) ++n;
+  }
+  return n;
+}
+static constexpr float STALL_A = -70.0f;   // the incident's current (sign-agnostic)
+static constexpr float STILL_RPS = 0.2f;
+
+TEST_CASE("lane stall guard: 150 ms of 40 A without motion on the streamed lane IDLEs the Hand and latches HAND_STALL") {
+  full_reset(HAND_BIT);
+  cs_clear_sent();
+  lane_sample(STALL_A, STILL_RPS);              // t0: the window opens
+  lane_samples(14, STALL_A, STILL_RPS);         // 140 ms of stamps
+  CHECK(idle_count() == 0);
+  CHECK(cs_hand_stall_notified() == 0);
+  CHECK_FALSE(hand_lane_stalled(HAND_AXIS));
+  lane_sample(STALL_A, STILL_RPS);              // 150 ms: trip
+  CHECK(idle_count() == 1);
+  CHECK(cs_hand_stall_notified() == 1);
+  CHECK(hand_lane_stalled(HAND_AXIS));
+  for (uint8_t leg = 0; leg < NUM_LEGS; ++leg)   // the Legs are never IDLEd here
+    CHECK_FALSE(hand_lane_stalled(leg));
+  CHECK_FALSE(activate_active());               // the guard is not a ladder op
+}
+
+TEST_CASE("lane stall guard: the boundaries (149 ms, 39.9 A, 1.01 rev/s) never trip; 40 A and 1 rev/s exactly do") {
+  SUBCASE("149 ms") {
+    full_reset(HAND_BIT); cs_clear_sent();
+    lane_sample(STALL_A, STILL_RPS);
+    lane_samples(14, STALL_A, STILL_RPS);       // 140 ms
+    lane_sample(STALL_A, STILL_RPS, 9000);      // 149 ms
+    CHECK(idle_count() == 0);
+    CHECK(cs_hand_stall_notified() == 0);
+    lane_sample(STALL_A, STILL_RPS, 1000);      // 150 ms
+    CHECK(idle_count() == 1);
+  }
+  SUBCASE("39.9 A for a second") {
+    full_reset(HAND_BIT); cs_clear_sent();
+    lane_samples(100, 39.9f, 0.0f);
+    CHECK(idle_count() == 0);
+    CHECK(cs_hand_stall_notified() == 0);
+  }
+  SUBCASE("1.01 rev/s for a second") {
+    full_reset(HAND_BIT); cs_clear_sent();
+    lane_samples(100, STALL_A, -1.01f);
+    CHECK(idle_count() == 0);
+  }
+  SUBCASE("exactly 40 A at exactly 1 rev/s") {
+    full_reset(HAND_BIT); cs_clear_sent();
+    lane_samples(16, HAND_LANE_STALL_IQ_A, HAND_LANE_STALL_VEL_RPS);
+    CHECK(idle_count() == 1);
+  }
+  SUBCASE("a NaN current never reads as a stall") {
+    full_reset(HAND_BIT); cs_clear_sent();
+    lane_samples(100, std::numeric_limits<float>::quiet_NaN(), 0.0f);
+    CHECK(idle_count() == 0);
+  }
+}
+
+TEST_CASE("lane stall guard: an interrupted condition restarts the window; the 2026-11-20 pinch (72 A, 90 ms) does not trip") {
+  SUBCASE("one sample below the current restarts it") {
+    full_reset(HAND_BIT); cs_clear_sent();
+    for (int k = 0; k < 6; ++k) {
+      lane_samples(14, STALL_A, STILL_RPS);     // 130 ms of stall from its first sample
+      lane_sample(5.0f, STILL_RPS);             // one quiet sample
+    }
+    CHECK(idle_count() == 0);
+  }
+  SUBCASE("one moving sample restarts it (the Throw's bottom reversal)") {
+    full_reset(HAND_BIT); cs_clear_sent();
+    for (int k = 0; k < 6; ++k) {
+      lane_samples(14, 48.0f, 0.0f);
+      lane_sample(48.0f, 30.0f);
+    }
+    CHECK(idle_count() == 0);
+  }
+  SUBCASE("a trapped-Ball pinch: 72.3 A for 90 ms, then relief") {
+    full_reset(HAND_BIT); cs_clear_sent();
+    lane_samples(10, 72.3f, 0.0f);              // 90 ms of stamps from the first
+    lane_samples(100, 4.0f, 0.0f);
+    CHECK(idle_count() == 0);
+    CHECK(cs_hand_stall_notified() == 0);
+  }
+}
+
+TEST_CASE("lane stall guard: stale or missing samples never trip, and a sample hole restarts the window") {
+  SUBCASE("ticks without a new sample neither advance nor trip") {
+    full_reset(HAND_BIT); cs_clear_sent();
+    lane_sample(STALL_A, STILL_RPS);
+    tick_for(1000000);                          // a second of ticks, the stamp frozen
+    CHECK(idle_count() == 0);
+    CHECK(cs_hand_stall_notified() == 0);
+  }
+  SUBCASE("a velocity older than the gap bound is unknown, not still") {
+    full_reset(HAND_BIT); cs_clear_sent();
+    for (int k = 0; k < 100; ++k) {
+      cs_advance(SAMPLE_US);
+      axes[HAND_AXIS].iq_measured = STALL_A;
+      axes[HAND_AXIS].vel_rps = 0.0f;
+      axes[HAND_AXIS].iq_timestamp_us = micros64();
+      axes[HAND_AXIS].pos_timestamp_us = 1;     // the encoder stopped long ago
+      activate_step();
+    }
+    CHECK(idle_count() == 0);
+  }
+  SUBCASE("a hole over 50 ms restarts the window at the next sample") {
+    full_reset(HAND_BIT); cs_clear_sent();
+    lane_samples(11, STALL_A, STILL_RPS);       // 0..100 ms
+    lane_sample(STALL_A, STILL_RPS, 60000);     // 160 ms after the first, across a 60 ms hole
+    CHECK(idle_count() == 0);
+    lane_samples(14, STALL_A, STILL_RPS);       // 140 ms after the restart
+    CHECK(idle_count() == 0);
+    lane_sample(STALL_A, STILL_RPS);            // 150 ms after the restart
+    CHECK(idle_count() == 1);
+  }
+  SUBCASE("a 40 ms hole does not restart it") {
+    full_reset(HAND_BIT); cs_clear_sent();
+    lane_samples(8, STALL_A, STILL_RPS);        // 0..70 ms
+    lane_sample(STALL_A, STILL_RPS, 40000);     // 110 ms
+    lane_samples(3, STALL_A, STILL_RPS);        // 140 ms
+    CHECK(idle_count() == 0);
+    lane_sample(STALL_A, STILL_RPS);            // 150 ms
+    CHECK(idle_count() == 1);
+  }
+}
+
+TEST_CASE("lane stall guard: armed during a latched hold (guard E-STOP), trips the same") {
+  full_reset(HAND_BIT);
+  cs_set_guard_estop(true);                     // MAX_DEVIATION latched: output frozen
+  cs_clear_sent();
+  lane_samples(16, STALL_A, STILL_RPS);
+  CHECK(idle_count() == 1);
+  CHECK(cs_hand_stall_notified() == 1);
+}
+
+TEST_CASE("lane stall guard: the action is one IDLE plus the latch; nothing re-arms the Hand") {
+  full_reset(HAND_BIT);
+  cs_clear_sent();
+  lane_samples(16, STALL_A, STILL_RPS);
+  REQUIRE(idle_count() == 1);
+  // The drive obeyed: current gone, Hand on the bottom stop. A second of samples
+  // and ticks sends nothing at all: no CLOSED_LOOP, no mode, no setpoint.
+  cs_clear_sent();
+  lane_samples(100, 0.0f, 0.0f);
+  CHECK(cs_sent_count() == 0);
+  CHECK(hand_lane_stalled(HAND_AXIS));          // sticky
+  // Under the latch the fault machine raises guard ESTOP; the ladder refuses to
+  // re-energise the Hand until the operator clears.
+  cs_set_guard_estop(true);
+  CHECK(activate_request(HAND_AXIS) != JbUdp::RpcStatus::OK);
+  CHECK(hand_move_request(HAND_AXIS, 1.0f, HM_V, 9) != JbUdp::RpcStatus::OK);
+  CHECK(cs_sent_count() == 0);
+}
+
+TEST_CASE("lane stall guard: a refused IDLE is re-sent every tick until queued") {
+  full_reset(HAND_BIT);
+  lane_samples(15, STALL_A, STILL_RPS);         // one sample short
+  cs_clear_sent();
+  cs_set_send_fail_index(0);                    // the trip's IDLE is refused
+  lane_sample(STALL_A, STILL_RPS);
+  CHECK(cs_hand_stall_notified() == 1);         // latched anyway: the Legs hold
+  CHECK(idle_count() == 0);
+  tick_for(TICK_US);
+  CHECK(idle_count() == 1);
+  tick_for(10 * TICK_US);
+  CHECK(idle_count() == 1);                     // and only once
+}
+
+TEST_CASE("lane stall guard: the ladder keeps its own guard; the sticky record clears on the next ladder") {
+  full_reset(HAND_BIT);
+  axes[HAND_AXIS].pos_rev = 0.49f;
+  REQUIRE(hand_move_request(HAND_AXIS, 0.0f, JBOp::GENTLE_MOVE_VEL_LIMIT_RPS, 41) == JbUdp::RpcStatus::OK);
+  run_to_monitor(1);
+  cs_clear_sent();
+  // 45 A, still: 150 ms is the lane guard's number, not the ladder's.
+  lane_samples(16, -(HAND_STALL_IQ_A + 20.0f), 0.3f * HAND_STALL_VEL_RPS);
+  CHECK(idle_count() == 0);
+  CHECK(cs_hand_stall_notified() == 0);
+  CHECK(hand_move_active());
+  lane_samples(15, -(HAND_STALL_IQ_A + 20.0f), 0.3f * HAND_STALL_VEL_RPS);   // 300 ms: the ladder fires
+  CHECK(idle_count() == 1);
+  CHECK(activate_stalled(HAND_AXIS));
+  CHECK_FALSE(hand_lane_stalled(HAND_AXIS));
+  CHECK(cs_hand_stall_notified() == 0);
+  // A lane trip later, then a fresh HAND_MOVE_TO (the operator's) clears bit3.
+  full_reset(HAND_BIT);
+  lane_samples(16, STALL_A, STILL_RPS);
+  REQUIRE(hand_lane_stalled(HAND_AXIS));
+  axes[HAND_AXIS].iq_measured = 0.0f;
+  REQUIRE(hand_move_request(HAND_AXIS, 1.0f, HM_V, 42) == JbUdp::RpcStatus::OK);
+  activate_step();
+  CHECK_FALSE(hand_lane_stalled(HAND_AXIS));
 }

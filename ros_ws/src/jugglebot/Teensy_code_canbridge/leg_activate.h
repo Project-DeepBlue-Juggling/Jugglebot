@@ -101,6 +101,27 @@ uint8_t activate_result(uint8_t axis); // last ActivateResult for an axis (0..6,
 constexpr uint8_t DIAG_FLAG_ACTIVATE_STALL = 0x04u;
 bool     activate_stalled(uint8_t axis);
 
+// ── Hand stall guard on the streamed lane and latched holds (FW 47, BUG-123) ──
+//  Every activate_step() tick, while the ladder above does NOT target the Hand
+//  (the streamed lane, a lane STOP, a guard-latched hold, Homing), each NEW Hand
+//  Get_Iq sample (axes[6].iq_timestamp_us advanced) is tested for
+//  |iq| >= HAND_LANE_STALL_IQ_A AND |vel| <= HAND_LANE_STALL_VEL_RPS with a
+//  velocity no older than HAND_LANE_STALL_GAP_US. A run of such samples whose
+//  stamps span HAND_LANE_STALL_HOLD_US (150 ms) commands the Hand IDLE (re-sent
+//  every tick until queued), latches fault_notify_hand_stall() (FaultState
+//  HAND_STALL, guard ESTOP, CLEAR_ERRORS only) and sets the sticky record below.
+//  Any non-stalled sample, a stale velocity or an iq gap over
+//  HAND_LANE_STALL_GAP_US restarts the window. No automatic re-arm: the guard
+//  only ever sends IDLE, and every path that re-energises the Hand (ACTIVATE,
+//  HAND_MOVE_TO) is refused under the guard ESTOP until the operator clears.
+//  Owner decision 2026-11-20; thresholds and data in canbridge_config.h.
+//
+//  hand_lane_stalled(axis): sticky "the lane stall guard IDLEd this axis" (only
+//  ever the Hand), Diagnostic flags bit3. Cleared when the next ACTIVATE /
+//  HAND_MOVE_TO that targets the Hand starts, exactly like bit2.
+constexpr uint8_t DIAG_FLAG_LANE_STALL = 0x08u;
+bool     hand_lane_stalled(uint8_t axis);
+
 // ── HAND_MOVE_TO (FW 26, additive RPC 0x61) ──────────────────────────────────
 //  ACTIVATE's axis-6 ladder with a CALLER target and cruise: SETUP (error gate,
 //  seed input_pos at the measured position, traj vel = the caller's cruise, traj

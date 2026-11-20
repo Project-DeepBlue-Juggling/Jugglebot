@@ -236,6 +236,9 @@ static void decode_into_cache(const CAN_message_t& msg) {
     case ODriveCmd::get_iq: {
       auto q = ODrive::decode_iq(d);
       a.iq_setpoint = q.a; a.iq_measured = q.b;
+      // Stamp AFTER the value (FW 47): a reader that sees the new stamp sees the
+      // new iq; the Hand lane stall guard counts its window on these stamps.
+      atomic_write_u64(&a.iq_timestamp_us, micros64());
       break;
     }
     case ODriveCmd::get_temps: {
@@ -383,6 +386,9 @@ static void decode_bb_odrive(const CAN_message_t& msg) {
     case ODriveCmd::get_iq: {
       auto q = ODrive::decode_iq(d);
       a.iq_setpoint = q.a; a.iq_measured = q.b;
+      // Stamp AFTER the value (FW 47): a reader that sees the new stamp sees the
+      // new iq; the Hand lane stall guard counts its window on these stamps.
+      atomic_write_u64(&a.iq_timestamp_us, micros64());
       break;
     }
     case ODriveCmd::get_temps: {
