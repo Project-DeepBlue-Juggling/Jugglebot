@@ -4,10 +4,14 @@ kind: feature
 title: Improved 'Next Sitting' Readability
 status: inbox
 created: '2026-11-20'
-updated: '2026-11-20T12:22:57Z'
+updated: '2026-11-20T15:50:07Z'
 owners: []
 priority: medium
 effort: s
+hardware: none
+owner: none
+radius: local
+area: map-app
 blocked_by: []
 links: []
 filed_by: harrison
