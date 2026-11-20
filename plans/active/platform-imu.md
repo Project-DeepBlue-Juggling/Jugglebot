@@ -16,8 +16,8 @@ steps:
   - {id: P1, title: Off-board foundations, kind: phase, status: in_progress, effort: m, hardware: none}
   - {id: P2, title: Platform Teensy firmware FW 11, kind: phase, status: in_progress, effort: l, hardware: none}
   - {id: P3, title: can-bridge firmware and the Jetson side, kind: phase, status: not_started, effort: l, hardware: none}
-  - {id: P4, title: "Sitting 1, flash and bench the capture path", kind: rung, status: in_progress, effort: m, hardware: robot}
-  - {id: P5, title: "Sitting 2, mount calibration and first Attempt captures", kind: rung, status: not_started, effort: m, hardware: robot}
+  - {id: P4, title: "Sitting 1, flash and bench the capture path", kind: rung, status: complete, effort: m, hardware: robot}
+  - {id: P5, title: "Sitting 2, mount calibration and first Attempt captures", kind: rung, status: in_progress, effort: m, hardware: robot}
 related_logbook:
   - 2026-11-18-imu-bench-proof-of-concept.md
   - 2026-11-18-platform-imu-p1-foundations.md
@@ -174,7 +174,7 @@ reads as flashed; a tilt request answers; the Hand fan still answers; with the I
 boots, answers CAN and accepts an update; the status frame arrives; a capture at rest reads |a| about 1 g at 1 kHz
 with 0 overflows; an upload passes its CRC and a forced gap is re-requested and healed; the bus-load counters in
 `/profile` are unchanged during an Attempt-like move; the status frame returns to RUNNING after the IMU is replugged
-without a power cycle; the rate ramp below. Status: in progress (2026-11-20).
+without a power cycle; the rate ramp below. Status: passed at the Sitting of 2026-11-20 (owner; `2026-11-20-sitting-debrief-robot-2`): replug, Armed soak and Attempts with 0 I2C errors, automatic uploads complete. Residue carried to P5 and IDEA-25: the forced gap, the rate ramp, the upload after a Fault, and Armed uploads taking 79 to 84 s.
 
 Done at rest (`2026-11-20-platform-imu-status-counters-and-first-capture`, `2026-11-20-platform-imu-i2c-error-bursts`):
 both identities read as flashed (FW 12 and bridge FW 46); the tilt request and the Hand fan answer; the status frame
@@ -184,10 +184,9 @@ byte is the firmware's `UI_FILT_CODE` constant, not a chip read), and ODR/2 is n
 `temp_raw_freeze` of -128 were not a defect: they are TEMP_DATA counts, 24.03 C, matching the status frame's 24 C; the
 capture `.json` now carries them decoded (`2026-11-20-platform-imu-capture-header-temperature`).
 
-Remaining (needs the owner, robot powered): the forced-gap upload; an upload while Active between Attempts with the
-rate ramp; the automatic upload after an Attempt and after a Fault; the IMU unplug and replug check; an Armed soak
-watching `i2c_errors` (must stay 0 with the pull-ups). Clock-sync quality (`sync_peak` saturating at 2.54 ms) stays
-listed residue.
+Remaining after the Sitting of 2026-11-20: the forced-gap upload (no mechanism forces a gap), the rate ramp, the
+automatic upload after a Fault, and the Armed upload time (IDEA-25). Clock-sync quality (`sync_peak` saturating at
+2.54 ms) stays listed residue.
 
 **Rate ramp.** Holding the between-Attempts pose, step the upload pace through 400, 800, 1250 and 1600 frames/s. At
 each step read the bridge's loop and emit-gap counters, RX queue depth, bus error counts, ODrive errors and the Leg
@@ -201,7 +200,7 @@ P2's native tests (the SCL3300 is not unplugged on the robot); the invalid encod
 
 Hardware: robot. The mount calibration (Level, then X and Y Tilts with Mocap recording), then real Attempts with the
 automatic freeze and upload. **Rung gate:** a calibration file beside the other calibration artefacts, and one real
-Attempt's capture on disk, complete and CRC-checked, handed to the carry-ring-zvd analysis. Status: not started.
+Attempt's capture on disk, complete and CRC-checked, handed to the carry-ring-zvd analysis. Status: in progress (2026-11-20): three real Attempt captures exist (span uploads, so not CRC-checked); the calibration is not done.
 
 ## 6. Open questions
 

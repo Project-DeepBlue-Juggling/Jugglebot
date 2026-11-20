@@ -1,3 +1,32 @@
+closed:
+  at: 2026-11-20 23:45
+  items:
+  - IDEA-20
+confirmed:
+  at: 2026-11-20 23:45
+  changed:
+  - IDEA-20
+derived:
+  15:
+    IDEA-20:
+      by: sitting-debrief 2026-11-20
+      criterion: 'With the IMU unplugged the board boots, answers CAN and takes an
+        update, and after the replug the status frame returns to RUNNING without a
+        power cycle. The forced gap is re-requested and healed and the upload passes
+        CRC. At the chosen pace every counter equals its baseline; the bus-load counters
+        are unchanged during the Attempt-like move; the automatic uploads start and
+        finish. `i2c_errors` stays 0 through the Armed soak. Not checked here: the
+        tilt request''s invalid reply with the inclinometer absent (the SCL3300 is
+        not unplugged); P2''s native tests cover it.'
+      evidence: 'Owner flipped the derived ''inconclusive'' to pass (2026-11-20 23:45),
+        treating the unflown forced gap and the upload bus load as residue. Bags ~/Desktop/rosbags/2026-11-20_22-49-44
+        and _22-53-34: after the replug the status returned to RUNNING at 22:52:41
+        on the same boot (175); i2c_errors and fifo_overflows 0 in all 1593 status
+        messages of the Armed launch (ring upload, 4 min soak, three oval Attempts,
+        34 Throws); four captures complete, 0 discontinuities, ring CRC OK. Not met
+        literally: forced gap not flown; uploads while Armed took 79-84 s (56 s at
+        rest) with CAN1 at 74-77 % and setpoints_coalesced 0 -> 12.'
+      verdict: pass
 schema: 2
 steps:
   1:
