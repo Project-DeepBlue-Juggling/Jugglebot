@@ -4,10 +4,15 @@ kind: bug
 title: '''Next Sitting'' Progress Bar should have more colours'
 status: inbox
 created: '2026-11-20'
-updated: '2026-11-20T12:47:17Z'
+updated: '2026-11-20T15:50:11Z'
 owners: []
 priority: low
 effort: m
+hardware: none
+owner: none
+radius: local
+diagnosis: confirmed
+area: map-app
 blocked_by: []
 links: []
 filed_by: harrison
