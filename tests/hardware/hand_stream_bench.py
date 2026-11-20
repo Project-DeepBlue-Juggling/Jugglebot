@@ -194,7 +194,15 @@ hand is ALREADY in CLOSED_LOOP — with the launch down nothing else energises i
     python tests/hardware/hand_stream_bench.py --stage stroke_cut --close-loop --repeat 3
     python tests/hardware/hand_stream_bench.py --stage stroke_cut --cut-mode downstroke --close-loop
     python tests/hardware/hand_stream_bench.py --stage stroke_cut --cut-mode slow --close-loop
+    python tests/hardware/hand_stream_bench.py --stage stall
     python tests/hardware/hand_stream_bench.py --clear-errors
+
+``--stage stall`` (BUG-123, can-bridge FW 47) proves the Hand stall guard on the BENCH
+Hand: Hand homed, IDLE and parked at 0.3-0.7 rev; it lowers the drive's current limit to
+45 A, shifts the encoder frame so the lane can command past the bottom stop, closes the
+loop itself, ramps the Hand into the stop at 1 rev/s and times the guard's IDLE. Its
+reasoning, bounds and refusals are in ``hand_stall_stage.py``; it does not clear the
+latch (``--clear-errors``, then re-home).
 """
 import argparse
 import csv
@@ -217,6 +225,7 @@ from teensy_link import (  # noqa: E402
     Telemetry, Diagnostic, HandCmdEcho, HeartbeatT2J, BridgeIdentity,
     CacheDiag, RpcMethod, RpcStatus, FaultState, RpcError,
 )
+from teensy_link.rpc import RpcTimeout  # noqa: E402
 from teensy_link import protocol as p  # noqa: E402
 from teensy_link import rpc_args  # noqa: E402
 from teensy_link.setpoint_pump import SetpointPump, FLAG_HAS_SCHED  # noqa: E402
@@ -227,6 +236,7 @@ import jugglebot.protocol_config as pc  # noqa: E402
 # runs as a script and when tests import it.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hand_stroke_cut as SC  # noqa: E402
+import hand_stall_stage as ST  # noqa: E402
 
 TEENSY_IP = "192.168.42.2"
 HAND = int(p.NUM_LEGS)                    # axis 6
@@ -1023,7 +1033,7 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--stage",
                     choices=["hold", "triangle", "step", "gap",
-                             "moving_gap", "stroke_cut"],
+                             "moving_gap", "stroke_cut", "stall"],
                     default="hold")
     ap.add_argument("--duration", type=float, default=30.0,
                     help="run time after arm (s); T-H1 uses 600")
@@ -1126,6 +1136,14 @@ def main():
                          "drive cannot follow 4500 rev/s^2 at its current cap and "
                          "overshoots the commanded stop; the firmware lead clamp "
                          "(2.0) and the ARMED hand guard (2.5) stay the backstop")
+    ap.add_argument("--stall-current-limit", type=float, default=ST.LIMIT_DEFAULT_A,
+                    metavar="A", help="stall: the test current limit (41..50 A, default "
+                                      "45); restored to the value read before")
+    ap.add_argument("--stall-target", type=float, default=ST.TARGET_DEFAULT_REV,
+                    metavar="REV", help="stall: ramp end in the HOMED frame (-1.1..-0.3, "
+                                        "default -0.6 = 0.5 rev past the -0.10 stop)")
+    ap.add_argument("--stall-speed", type=float, default=ST.SPEED_DEFAULT_RPS,
+                    metavar="RPS", help="stall: ramp speed (default 1 rev/s, max 2)")
     ap.add_argument("--close-loop", action="store_true",
                     help="bring the hand ODrive up first: POSITION/PASSTHROUGH + the "
                          "operational hand gains + CLOSED_LOOP (auto-holds at the "
@@ -1150,6 +1168,11 @@ def main():
                 f"keep the catch-up bounded")
     elif abs(args.gap_delta) > 1.5:
         ap.error("--gap-delta beyond ±1.5 rev — keep the re-entry catch-up bounded")
+    if args.stage == "stall":
+        bad = ST.config_refusals(args.stall_current_limit, args.stall_target,
+                                 args.stall_speed)
+        if bad:
+            ap.error("; ".join(bad))
     mg_plan = None
     if args.stage == "stroke_cut":
         if args.stroke_peak_vel is None:
@@ -1257,6 +1280,10 @@ def main():
             why_fw = SC.stroke_cut_fw_refusal(fw)
             if why_fw is not None:
                 print(f"ABORT: {why_fw}"); return 2
+        if args.stage == "stall":
+            why_fw = ST.stall_fw_refusal(fw)
+            if why_fw is not None:
+                print(f"ABORT: {why_fw}"); return 2
         if fw is not None and fw != rpc_args.EXPECTED_BRIDGE_FW_VERSION:
             print(f"ABORT: bridge_fw_version {fw} != expected "
                   f"{rpc_args.EXPECTED_BRIDGE_FW_VERSION} — lockstep flash first."); return 2
@@ -1285,6 +1312,10 @@ def main():
                   f"{_fault_name(_fault())} — a live condition re-latches "
                   f"(clear the CAUSE first).")
             return 2
+        # The stall stage owns its own preconditions, bring-up, arm and restores
+        # (hand_stall_stage.run_stall); none of the streaming path below applies.
+        if args.stage == "stall":
+            return _stall_main(args, rpc, client)
 
         # ── Preconditions (refuse to arm otherwise) ──────────────────────────
         # ROOT CAUSE this block exists for (2026-09-03, the first FW 17 hand
@@ -2070,6 +2101,206 @@ def main():
             cd_f.close()
         rpc.close()
         client.stop()
+
+
+# ── --stage stall: the link adapter for hand_stall_stage.run_stall (BUG-123) ──
+
+class _StallBenchIO:
+    """Every link, USB and clock call the stall stage makes, in one place.
+
+    The bring-up is the same raw sequence ``--close-loop`` sends (no ladder runs, so
+    the ladder's own 25 A guard is never armed and the FW 47 lane guard owns the Hand
+    from the first sample). The USB link is used ONLY to READ the drive's limits."""
+
+    def __init__(self, args, rpc, client):
+        self.args, self.rpc, self.client = args, rpc, client
+        self._odrv = None
+        self._pump = None
+        self._legs = None
+        self._hold_stop = None
+        self._hold_thread = None
+
+    # -- reads --
+    def preflight(self):
+        d = _wait_hand_diag()
+        fs = _fault()
+        return dict(fw=_fw_version(), fault=fs,
+                    fault_name=None if fs is None else _fault_name(fs),
+                    axis_state=None if d is None else int(d.axis_state),
+                    active_errors=None if d is None else int(d.active_errors),
+                    flags=0 if d is None else int(d.flags),
+                    temp_motor=None if d is None else float(d.temp_motor),
+                    pos=_hand_pos())
+
+    def read_limits(self):
+        if self._odrv is None:
+            import odrive   # the bench home's USB link (bench_hand_frame_bench.py)
+            self._odrv = odrive.find_sync(timeout=10.0)
+        a = self._odrv.axis0
+        return float(a.controller.config.vel_limit), float(a.config.motor.current_soft_max)
+
+    def pos(self):
+        return _hand_pos()
+
+    def sample(self):
+        tm, age = _telem_with_age()
+        d = _hand_diag()
+        return ST.Sample(
+            pos=None if tm is None else float(tm.pos_rev[HAND]),
+            vel=None if tm is None else float(tm.vel_rps[HAND]),
+            telem_age=float("inf") if tm is None else age,
+            iq_meas=0.0 if d is None else float(d.iq_measured),
+            iq_set=0.0 if d is None else float(d.iq_setpoint),
+            axis_state=None if d is None else int(d.axis_state),
+            flags=0 if d is None else int(d.flags),
+            fault=_fault(),
+            temp_motor=None if d is None else float(d.temp_motor))
+
+    def confirm(self, text):
+        return True if self.args.arm else input(text).strip().lower() == "yes"
+
+    def clock(self):
+        return time.monotonic()
+
+    def sleep(self, s):
+        time.sleep(s)
+
+    # -- writes --
+    def set_limits(self, vel, curr):
+        self.rpc.call(int(RpcMethod.SET_VEL_CURR_LIMITS),
+                      rpc_args.encode_set_vel_curr_limits(HAND, vel, curr))
+
+    def set_abs_pos(self, p_rev):
+        self.rpc.call(int(RpcMethod.SET_ABSOLUTE_POSITION),
+                      rpc_args.encode_set_absolute_position(HAND, p_rev))
+
+    def idle_once(self, timeout):
+        try:
+            self.rpc.call(int(RpcMethod.SET_AXIS_STATE),
+                          rpc_args.encode_set_axis_state(HAND, ST.AXIS_IDLE),
+                          timeout=timeout, retries=0)
+            return True
+        except RpcError:
+            return False
+
+    def bring_up(self):
+        print("hand bring-up (stall): POSITION/PASSTHROUGH + gains -> CLOSED_LOOP")
+        self.rpc.call(int(RpcMethod.SET_CONTROLLER_MODE),
+                      rpc_args.encode_set_controller_mode(
+                          HAND, pc.ODRIVE_CONTROL_MODES['POSITION'],
+                          pc.ODRIVE_INPUT_MODES['PASSTHROUGH']))
+        self.rpc.call(int(RpcMethod.SET_POS_GAIN),
+                      rpc_args.encode_set_pos_gain(HAND, hw.ODRIVE_HAND_POS_GAIN))
+        self.rpc.call(int(RpcMethod.SET_VEL_GAINS),
+                      rpc_args.encode_set_vel_gains(HAND, hw.ODRIVE_HAND_VEL_GAIN,
+                                                    hw.ODRIVE_HAND_VEL_INT_GAIN))
+        self.rpc.call(int(RpcMethod.SET_AXIS_STATE),
+                      rpc_args.encode_set_axis_state(HAND, CLOSED_LOOP))
+        t0 = time.time()
+        while time.time() - t0 < BRINGUP_VERIFY_S:
+            d = _hand_diag()
+            if d is not None and int(d.axis_state) == CLOSED_LOOP:
+                break
+            time.sleep(0.05)
+        d = _hand_diag()
+        if d is None or int(d.axis_state) != CLOSED_LOOP or int(d.active_errors) != 0:
+            return False, (f"axis_state={None if d is None else d.axis_state} "
+                           f"active_errors={None if d is None else d.active_errors} "
+                           f"after {BRINGUP_VERIFY_S:.0f} s")
+        return True, None
+
+    def _frame(self, traj, t):
+        leg_ext, leg_rev = self._legs
+        hp, hv = traj.sample(t)
+        hp1, hv1 = traj.sample(t + SEG_T)
+        hp2, _ = traj.sample(t + 2 * SEG_T)
+        return {'type': 'setpoint_cmd', 'seq': 0,
+                'ext_mm': leg_ext, 'pose_6dof': [0.0, 0.0, 170.0, 0.0, 0.0, 0.0],
+                'motor_rev': leg_rev, 'vel_mm_s': [0.0] * 6,
+                'cmd_next_mm': leg_ext, 'cmd_next2_mm': leg_ext,
+                'vel_next_mm_s': [0.0] * 6,
+                'torque_Nm': [0.0] * 6, 'acc_mm_s2': [0.0] * 6,
+                'hand_rev': hp, 'hand_vel_rps': hv,
+                'hand_next_rev': hp1, 'hand_next2_rev': hp2,
+                'hand_next_vel_rps': hv1}
+
+    def send(self, traj, t):
+        sp, why = self._pump.build(self._frame(traj, t), t_origin_us=int(time.time() * 1e6))
+        if sp is None:
+            raise RuntimeError(f"pump refused a stall frame: {why}")
+        self.client.send_stream(int(MsgType.SETPOINT), sp.pack())
+
+    def arm(self, hold_pos):
+        """Stream a hold at ``hold_pos``, then raise mpc_active and verify it (stream-then-arm)."""
+        self._pump = SetpointPump(mm_to_rev=hw.GEOM_MM_TO_REV, num_legs=p.NUM_LEGS,
+                                  max_step_hand_rev=(float(hw.JB_TRAJ_HAND_VEL_LIMIT_RPS)
+                                                     * float(hw.JB_TRAJ_KNOT_DT_S)))
+        tm = _telem()
+        leg_rev = [float(tm.pos_rev[i]) for i in range(6)]
+        mmrev = [float(x) for x in hw.GEOM_MM_TO_REV]
+        self._legs = ([leg_rev[i] / mmrev[i] for i in range(6)], leg_rev)
+        hold = ST.StallRamp(hold_pos, hold_pos, 1.0)
+        self._hold_stop = threading.Event()
+        err = {'why': None}
+
+        def _pump_hold():
+            nxt = time.monotonic()
+            while not self._hold_stop.is_set():
+                try:
+                    self.send(hold, 0.0)
+                except Exception as e:  # noqa: BLE001
+                    err['why'] = repr(e)
+                    return
+                nxt += 1.0 / SETPOINT_HZ
+                time.sleep(max(0.0, nxt - time.monotonic()))
+
+        self._hold_thread = threading.Thread(target=_pump_hold, daemon=True)
+        self._hold_thread.start()
+        time.sleep(0.5)
+        if err['why'] is None:
+            self.client.set_heartbeat_flags(1)
+            t0 = time.time()
+            while time.time() - t0 < ARM_VERIFY_GRACE_S:
+                hb = _hb()
+                if hb is not None and (int(hb.flags) & _T2J_FLAG_MPC_ACTIVE):
+                    break
+                time.sleep(0.05)
+            else:
+                err['why'] = "the firmware never reported mpc_active"
+        self._stop_hold()
+        return err['why'] is None, err['why']
+
+    def _stop_hold(self):
+        if self._hold_stop is not None:
+            self._hold_stop.set()
+            self._hold_thread.join(timeout=1.0)
+            self._hold_stop = None
+
+    def disarm(self):
+        self._stop_hold()
+        self.client.set_heartbeat_flags(0)
+
+    def hand_move_probe(self, target):
+        """A Hand ladder to where the Hand rests; it must be REFUSED while latched."""
+        try:
+            self.rpc.call(int(RpcMethod.HAND_MOVE_TO),
+                          rpc_args.encode_hand_move_to(target, ST.PROBE_VEL_RPS),
+                          timeout=0.3, retries=0)
+            return "accepted (answered OK)"
+        except RpcTimeout:
+            return "accepted (deferred: no refusal within 0.3 s)"
+        except RpcError as e:
+            try:
+                name = RpcStatus(e.status).name
+            except ValueError:
+                name = str(e.status)
+            return f"refused: {name}"
+
+
+def _stall_main(args, rpc, client):
+    cfg = ST.StallConfig(limit_a=args.stall_current_limit, target_rev=args.stall_target,
+                         speed_rps=args.stall_speed)
+    return ST.run_stall(_StallBenchIO(args, rpc, client), cfg)
 
 
 if __name__ == "__main__":

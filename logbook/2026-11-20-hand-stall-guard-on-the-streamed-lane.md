@@ -34,6 +34,9 @@ files_changed:
   - tests/firmware/test_hand_stall_guard_xref.py
   - tests/firmware/test_bridge_fw_version_xref.py
   - tests/ros/test_hand_lane_stall_host.py
+  - tests/hardware/hand_stream_bench.py
+  - tests/hardware/hand_stall_stage.py
+  - tests/motion/test_hand_stream_bench_stall.py
 ---
 
 # BUG-123: a Hand stall guard on the streamed lane and latched holds
@@ -122,3 +125,17 @@ Contract first: `INVARIANTS.md` § 1 gains **I-FW-17**.
 - The default gate (`./run_tests.sh`) was not run here. It runs at land time.
 
 Not flashed, not proven on hardware. `status: in-progress` until a Sitting proves the trip (the Item's `## Sitting` section).
+
+## Bench proof stage (2026-11-20)
+
+Owner, 2026-11-20: prove the guard on the bench Hand, not the damaged robot motor. `hand_stream_bench.py --stage stall` (pure half `tests/hardware/hand_stall_stage.py`, reasoning in its docstring):
+- Refuses before commanding anything unless the bridge reports firmware 47 or later, fault NONE, Hand IDLE with no errors at 0.3-0.7 rev, motor below 50 C, and the drive's limits read over USB.
+- Lowers the Hand current limit to 45 A (`--stall-current-limit`, 41..50) with SET_VEL_CURR_LIMITS over the bridge, the RPC homing uses. The bridge has no read path for the limit, so the drive's USB link (already used by the bench home) READS `current_soft_max` before, after lowering (must read 45 or the stage stops before energising) and after the restore.
+- The lane clips Hand commands to [0, 10.501] and the homed bottom stop reads -0.10, so the lane cannot command into the bottom stop. The stage re-references the IDLE Hand by 0.65 rev with SET_ABSOLUTE_POSITION (the lost-home failure, on purpose), closes the loop with the raw `--close-loop` sequence (no ladder, so the 25 A ladder guard is never armed), and ramps (trapezoid, 1 rev/s, 4 rev/s^2) to homed -0.60, 0.5 rev past the stop, inside MAX_LEAD_HAND_REV 2.0 and MAX_DEVIATION_HAND_REV 2.5.
+- Stops streaming and disarms on the first sign of the trip (iq collapse, bit3 edge, HAND_STALL or axis IDLE), watches 1 s for a second current rise, sends one HAND_MOVE_TO to where the Hand rests (must be refused while latched), and prints `STALL-GUARD PASS: IDLE <t> ms after the first 40 A sample (limit 200), peak <A>, fault HAND_STALL, bit3 set` or FAIL with every reason. It never clears the latch.
+- Independent abort: no trip 600 ms after the first sample at 40 A (or no 40 A within 3 s of the stop, or telemetry older than 200 ms), it commands IDLE itself. Bound at the clamp on that path: 20 + 600 + 5 + 2 x 40 + 10 = 715 ms, asserted under 750. The `finally` IDLEs an energised Hand, then restores the limit, then the frame (measured position minus the measured shift), each step on its own, Ctrl-C included.
+- Found while building it: a raw SET_AXIS_STATE(CLOSED_LOOP) RPC is not gated by the HAND_STALL latch in firmware (`send_axis_frame` has no guard check); only the host node's arm path refuses it. The stage does not probe it. Diagnostic bit3 is cleared only by a reboot or a Hand ladder, so on a repeat the stage times the trip on the current, the fault and the axis state.
+
+Verification:
+- 2026-11-20, `python -m pytest -q -p no:cacheprovider tests/motion/test_hand_stream_bench_stall.py tests/motion/test_hand_stream_bench_order.py tests/motion/test_hand_stream_bench_stroke_cut.py tests/teensy_link/test_hand_stream_bench_gap.py`: **117 passed** (27 new).
+- 2026-11-20, `python tests/hardware/hand_stream_bench.py --help`: parses. Not run against hardware.
