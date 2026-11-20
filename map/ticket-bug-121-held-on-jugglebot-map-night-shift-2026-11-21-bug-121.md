@@ -2,9 +2,9 @@
 id: TKT-89
 kind: ticket
 title: 'BUG-121 held on jugglebot-map:night-shift/2026-11-21-BUG-121: apply the audit''s 2 fixes and merge, merge as is, or drop?'
-status: open
+status: complete
 created: '2026-11-21'
-updated: '2026-11-20T15:58:38Z'
+updated: '2026-11-20T22:37:50Z'
 owners: []
 priority: medium
 effort: xs
@@ -35,3 +35,7 @@ BUG-121 is built on `jugglebot-map:night-shift/2026-11-21-BUG-121`. Each Next Si
 - 3: BUG-121 reopens.
 
 Recommendation: 1. Each fix is a few lines, and the first one stops a Step you closed from re-opening.
+
+## Answer
+
+Agreed. Go with Option 1
