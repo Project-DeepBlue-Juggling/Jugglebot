@@ -32,6 +32,17 @@ Keep this area open (owner, 2026-11-19): once the MVP works, explore shortening 
 - One risk: packing changes the wire format of a CRC-checked upload, so firmware and decoder out of step corrupt captures silently unless the header carries a format version.
 - Waits on: the MVP (plan `platform-imu.md` P1 to P4) working, as the owner set when filing.
 
+## Options (2026-11-21)
+
+The trigger fired: Rung P4 passed at the Sitting of 2026-11-20, and that debrief measured Armed uploads at 79-84 s against 56 s at rest. Its diagnosis: about 0.4 % of IMU data frames are lost when Armed, and each hole-fill READ (`_Region.next_block`, `teensy_link/platform_imu.py`) re-sends every held word between the first and last hole of a 256-word span.
+
+1. **Jetson-only hole-fill change, no flash** (the debrief's proposal): end each hole-fill READ at a run of more than 16 present words and cut the post-block settle from 30 ms to about 5 ms. Modelled 79 s to about 64 s Armed, duplicates about 14500 to about 200. The Night Shift can build it with tests against the region logic; it then waits for a Sitting check (at rest under 100 duplicates and 56 s or less; Armed under 1000 duplicates, 62-66 s, CRC OK).
+2. **Firmware counters first**: transmit and receive counters for the IMU data frame on the Platform Teensy and the can-bridge, to find where the 0.4 % is lost before changing the Jetson. Needs two flashes; a day Session.
+3. **Sample packing** (the 2026-11-19 feasibility): about 1.5 samples a frame, 64000 to about 43000 frames; a wire-format change on both sides with a format version in the header. Largest gain at rest, largest effort.
+4. **Leave it**: about 80 s between Attempts is tolerated for now.
+
+Recommendation: 1 now (cheap, Jetson-only, attacks the measured 13 s of re-reading), 2 when the next firmware flash is due anyway.
+
 ## Progress
 
 - 2026-11-20: Sitting 2026-11-20: Armed uploads took 79 s (ring) and 84 s (32 s span) against 56 s at rest, with 14651-19974 duplicate frames (158 at rest), up to 6 block timeouts, CAN1 at 74-77 %. A juggle goal was refused 7 s into a 37 s upload. Diagnosis in logbook 2026-11-20-sitting-debrief-robot-2.
