@@ -38,8 +38,18 @@ const char* errName(int e) {
 int Driver::readRegs(uint8_t reg, uint8_t* buf, uint8_t n) {
   _w.beginTransmission(_addr);
   _w.write(reg);
+#if PLATFORM_IMU_DIAG
+  {
+    const uint8_t e = _w.endTransmission(false);
+    if (e != 0) { diag.stage = DS_ADDR_WRITE; diag.code = e; return ERR_I2C; }
+  }
+#else
   if (_w.endTransmission(false) != 0) return ERR_I2C;   // repeated start
+#endif
   uint8_t got = _w.requestFrom((int)_addr, (int)n);
+#if PLATFORM_IMU_DIAG
+  if (got != n) { diag.stage = DS_READ_SHORT; diag.code = got; diag.requested = n; }
+#endif
   if (got != n) { while (_w.available()) _w.read(); return ERR_I2C; }
   for (uint8_t i = 0; i < n; i++) buf[i] = _w.read();
   return OK;
@@ -53,7 +63,13 @@ int Driver::writeReg(uint8_t reg, uint8_t val) {
   _w.beginTransmission(_addr);
   _w.write(reg);
   _w.write(val);
+#if PLATFORM_IMU_DIAG
+  const uint8_t e = _w.endTransmission();
+  if (e != 0) { diag.stage = DS_WRITE_REG; diag.code = e; }
+  return e == 0 ? OK : ERR_I2C;
+#else
   return _w.endTransmission() == 0 ? OK : ERR_I2C;
+#endif
 }
 
 static int odrCode(uint16_t hz) {
@@ -104,6 +120,9 @@ int Driver::probeNext() {
 }
 
 int Driver::fail(int err) {
+#if PLATFORM_IMU_DIAG
+  diag.init_failed_at = (uint8_t)_ist;
+#endif
   _ist = IST_FAILED;
   _err = err;
   return err;
@@ -127,7 +146,14 @@ int Driver::initStep(uint32_t now_us) {
       uint8_t a = PROBE_ADDRS[_cand];
       _lastTried = a;
       _w.beginTransmission(a);
+#if PLATFORM_IMU_DIAG
+      {
+        const uint8_t e = _w.endTransmission();
+        if (e != 0) { diag.stage = DS_PROBE_ACK; diag.code = e; return probeNext(); }
+      }
+#else
       if (_w.endTransmission() != 0) return probeNext();
+#endif
       _anyAck = true;
       _addr = a;
       _ist = IST_PROBE_BANK;
@@ -247,6 +273,10 @@ int Driver::fifoCount(bool* overflow) {
   int r = readRegs(REG_INT_STATUS, b, 3);
   if (r < 0) return r;
   int cnt = ((int)b[1] << 8) | b[2];  // big-endian (INTF_CONFIG0 bit5 = 1)
+#if PLATFORM_IMU_DIAG
+  diag.int_status = b[0];
+  diag.count = cnt > 255 ? 255 : (uint8_t)cnt;
+#endif
   if (overflow) *overflow = (b[0] & 0x02) || cnt >= FIFO_RECORDS - 1;
   return cnt;
 }
@@ -263,7 +293,11 @@ int Driver::readFifo(Sample* out, int maxN) {
       const uint8_t* q = buf + p * PKT_BYTES;
       uint8_t h = q[0];
       if (h & 0x80) continue;                         // FIFO-empty marker
+#if PLATFORM_IMU_DIAG
+      if ((h & 0x70) != 0x60) { diag.code = h; diag.requested = (uint8_t)((n << 4) | p); return ERR_BAD_PACKET; }
+#else
       if ((h & 0x70) != 0x60) return ERR_BAD_PACKET;  // 0110_10xx: accel+gyro, no 20-bit ext (DS 6.2)
+#endif
       Sample& s = out[done];
       s.a[0] = (int16_t)((q[1] << 8) | q[2]);
       s.a[1] = (int16_t)((q[3] << 8) | q[4]);

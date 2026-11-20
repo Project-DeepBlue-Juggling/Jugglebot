@@ -11,6 +11,8 @@
  *        int  read_burst(Pkt* out, int n);        ONE transaction (n <= BURST_PKTS): packets parsed, or < 0
  *        int  flush();                            ONE transaction (+200 us pause): 0 or < 0
  *        int  check_who();                        ONE transaction: 0 if WHO_AM_I answers right, else < 0
+ *        void bus_recover();                      I2C bus clear (9 SCL pulses + STOP on GPIO) and an I2C
+ *                                                 controller reset; bounded (~0.15 ms), no device transaction
  *        void stamp(Stamp* s);                    clocks only: micros64() and the synced wall clock together
  *        void header_info(ImuCapture::HeaderInfo* h);  the chip's constant header fields (no I2C)
  *    Tx  bool place(uint32_t id, const uint8_t d[8]);
@@ -21,7 +23,8 @@
  *  dead and the firmware-over-CAN receiver, which only runs while loop() keeps calling
  *  can1.events(), is its only way back in.  So one pass() does AT MOST ONE bounded step:
  *  one I2C transaction (an init step, a FIFO count, one burst of <= 8 packets, a flush or a
- *  WHO_AM_I), or one CRC slice, or one IMU_DATA frame; never two, never a wait.  A failed
+ *  WHO_AM_I), or one bus recovery (before the probe that follows any counted error), or one
+ *  CRC slice, or one IMU_DATA frame; never two, never a wait.  A failed
  *  transaction is never retried in the same pass; repeated failures back off from
  *  PROBE_MIN_GAP_MS to PROBE_MAX_GAP_MS.  For BOOT_SETTLE_MS after boot, and while a
  *  firmware-update session is open, nothing here touches the bus.  Contract: ros_ws/docs/platform_imu_protocol.md.
@@ -32,6 +35,10 @@
 #include <cstring>
 
 #include "imu_proto.h"
+
+#ifndef PLATFORM_IMU_DIAG
+#define PLATFORM_IMU_DIAG 0   // 1 = the diagnostic build (Teensy_code_platform.ino, "IMU DIAGNOSTIC BUILD")
+#endif
 
 namespace ImuService {
 
@@ -174,7 +181,34 @@ class SyncQuality {
 struct Counters {
   uint32_t fifo_overflows = 0, i2c_errors = 0, bad_packets = 0, probes = 0, tx_deferred = 0;
   uint32_t cmds_in_settle = 0;  // IMU_CMD frames dropped unanswered during the boot settle
+  uint32_t recoveries = 0;      // bus clears + controller resets (one before every probe that follows an error)
 };
+
+/*  DIAGNOSTIC BUILD (-DPLATFORM_IMU_DIAG=1, logbook 2026-11-20-platform-imu-i2c-error-bursts).  The
+ *  error kinds the service can see; the decode table of the repurposed STATUS bytes is in the
+ *  sketch's "IMU DIAGNOSTIC BUILD" block.  The kinds exist in every build (no code); everything
+ *  that records them is under #if PLATFORM_IMU_DIAG. */
+enum DiagKind : uint8_t {
+  DK_NONE = 0,
+  DK_COUNT = 1,       // FIFO_COUNT read failed (drain)                 -> i2c_errors, BACKOFF
+  DK_BURST = 2,       // FIFO_DATA burst failed at the Wire level        -> i2c_errors, BACKOFF
+  DK_FLUSH = 3,       // FIFO flush failed (after an overflow/bad packet) -> i2c_errors, BACKOFF
+  DK_PROBE = 4,       // an init step failed (PROBING)                  -> i2c_errors, stays PROBING
+  DK_RESUME = 5,      // RESUME's flush or WHO_AM_I check failed          -> i2c_errors, PROBING
+  DK_BAD_PACKET = 6,  // a FIFO header was not 0b0110_xxxx               -> bad_packets only, flush, DISCONTINUITY
+};
+#if PLATFORM_IMU_DIAG
+/*  What the sketch's Io reports about its LAST operation (diag_op()). */
+struct DiagOp {
+  uint8_t stage = 0;       // icm42688::Driver::DiagStage
+  uint8_t code = 0;        // Wire return / bytes received / bad header byte
+  uint8_t requested = 0;   // bytes requested / (burst n << 4 | packet index)
+  uint8_t msr_flags = 0;   // LPI2C MSR after the failure: b0 NDF b1 ALF b2 FEF b3 PLTF b4 SDF b5 MBF b6 BBF
+  uint32_t dur_us = 0;     // wall time of the op
+  uint8_t init_failed_at = 0, int_status = 0, count = 0;
+};
+inline uint8_t diag_sat8(uint32_t v) { return v > 255u ? uint8_t(255) : uint8_t(v); }
+#endif
 
 class Service {
  public:
@@ -190,7 +224,7 @@ class Service {
     settled_ = halted_for_boot_ = false;
     probe_at_ = settle_end_ms_;
     fail_streak_ = 0;
-    init_started_ = chip_ok_ = resume_who_ = flush_pending_ = false;
+    init_started_ = chip_ok_ = resume_who_ = flush_pending_ = recover_pending_ = false;
     new_capture();
   }
 
@@ -213,6 +247,11 @@ class Service {
   void pass(uint32_t now_us, uint32_t now_ms, bool fw_session_open, Io& io, Tx& tx) {
     using namespace PlatformImuState;
     last_step_ = STEP_NONE;
+#if PLATFORM_IMU_DIAG
+    if (diag_have_prev_ && uint32_t(now_us - diag_prev_us_) > diag_max_gap_us_) diag_max_gap_us_ = now_us - diag_prev_us_;
+    diag_prev_us_ = now_us;
+    diag_have_prev_ = true;
+#endif
     // -1. The boot settle: drop commands, note a BEGIN, nothing else (BOOT_SETTLE_MS).  The
     //     latch is exact while passes come at least every 24.8 days, which loop() guarantees.
     if (!settled_) {
@@ -294,14 +333,14 @@ class Service {
       eng_.take_resume_check();
       if (!chip_ok_) { eng_.on_resume_chip_failed(); enter_probing(now_ms); return; }
       last_step_ = STEP_I2C;
-      if (io.flush() < 0) { resume_failed(now_ms); return; }
+      if (io.flush() < 0) { diag_note(DK_RESUME, io); resume_failed(now_ms); return; }
       resume_who_ = true;
       return;
     }
     if (resume_who_) {
       resume_who_ = false;
       last_step_ = STEP_I2C;
-      if (io.check_who() < 0) resume_failed(now_ms);
+      if (io.check_who() < 0) { diag_note(DK_RESUME, io); resume_failed(now_ms); }
       return;
     }
     if (fail_streak_ && int32_t(now_ms - healthy_since_ms_) >= int32_t(HEALTHY_RESET_MS)) fail_streak_ = 0;
@@ -311,6 +350,19 @@ class Service {
   template <class Io>
   void probe_step(uint32_t now_us, uint32_t now_ms, Io& io) {
     if (int32_t(now_ms - probe_at_) < 0) return;
+    /*  UNCONDITIONAL RECOVERY (2026-11-20).  Every counted I2C error leaves the next probe to
+     *  start from a cleared bus and a freshly reset I2C controller, as its own step: a device
+     *  left mid-transfer (holding SDA) is released by the clocks and reset by the STOP, and a
+     *  wedged controller is reset, so nothing short of a dead chip needs a reboot to heal.  The
+     *  core's Wire only clocks the bus when BBF stays set for 16 ms and never resets the
+     *  controller after begin(); FW 11 was seen stuck in PROBING for a night that a reboot cured. */
+    if (!init_started_ && recover_pending_) {
+      recover_pending_ = false;
+      cnt_.recoveries++;
+      last_step_ = STEP_I2C;
+      io.bus_recover();
+      return;
+    }
     if (!init_started_) { io.init_start(); init_started_ = true; cnt_.probes++; }
     last_step_ = STEP_I2C;
     const int r = io.init_step(now_us);
@@ -325,6 +377,7 @@ class Service {
       eng_.on_chip_ready();
       return;
     }
+    diag_note(DK_PROBE, io);
     count_i2c_error();
     chip_ok_ = false;
     fail(now_ms);
@@ -336,7 +389,7 @@ class Service {
       if (flush_pending_) {                // after an overflow or a bad packet: start clean
         flush_pending_ = false;
         last_step_ = STEP_I2C;
-        if (io.flush() < 0) running_error(now_ms);
+        if (io.flush() < 0) { diag_note(DK_FLUSH, io); running_error(now_ms); }
         last_drain_us_ = now_us;
         return;
       }
@@ -346,8 +399,15 @@ class Service {
       bool ovf = false;
       last_step_ = STEP_I2C;
       const int n = io.fifo_count(&ovf);
-      if (n < 0) { running_error(now_ms); return; }
+      if (n < 0) { diag_note(DK_COUNT, io); running_error(now_ms); return; }
       if (ovf) {
+#if PLATFORM_IMU_DIAG
+        {
+          DiagOp d;
+          io.diag_op(&d);
+          diag_ovf_ = uint8_t((d.count > 127 ? 127 : d.count) | ((d.int_status & 0x02) ? 0x80 : 0));
+        }
+#endif
         cnt_.fifo_overflows++;
         cap_overflows_++;
         close_unanchored();
@@ -365,6 +425,7 @@ class Service {
     last_step_ = STEP_I2C;
     const int got = io.read_burst(pk, n);
     if (got == ERR_BAD_PACKET) {
+      diag_note(DK_BAD_PACKET, io);
       cnt_.bad_packets++;
       phase_ = IDLE;
       close_unanchored();
@@ -372,7 +433,7 @@ class Service {
       flush_pending_ = true;
       return;
     }
-    if (got < 0) { running_error(now_ms); return; }
+    if (got < 0) { diag_note(DK_BURST, io); running_error(now_ms); return; }
     for (int i = 0; i < got && i < n; i++) {
       if (!cap_->push(pk[i].s)) continue;
       temp_last_ = pk[i].temp;
@@ -439,7 +500,28 @@ class Service {
     fail_streak_++;
     probe_at_ = now_ms + backoff_ms(fail_streak_);
   }
-  void count_i2c_error() { cnt_.i2c_errors++; cap_i2c_errors_++; }
+  void count_i2c_error() { cnt_.i2c_errors++; cap_i2c_errors_++; recover_pending_ = true; }
+
+  /*  Diagnostic build only: record what the Io says about the op that just failed.  An empty
+   *  inline call in the normal build. */
+  template <class Io>
+  void diag_note(uint8_t kind, Io& io) {
+#if PLATFORM_IMU_DIAG
+    DiagOp d;
+    io.diag_op(&d);
+    diag_kind_ = kind;
+    diag_stage_ = d.stage;
+    diag_code_ = d.code;
+    diag_req_ = d.requested;
+    diag_msr_ = d.msr_flags;
+    diag_dur100_ = diag_sat8((d.dur_us + 99u) / 100u);
+    if (kind < sizeof diag_n_ / sizeof diag_n_[0]) diag_n_[kind]++;
+    if (kind == DK_PROBE) diag_init_at_ = d.init_failed_at;
+#else
+    (void)kind;
+    (void)io;
+#endif
+  }
 
   void enter_probing(uint32_t probe_at_ms) {
     init_started_ = false;
@@ -504,10 +586,39 @@ class Service {
     s.sync_peak = peak;
     s.fill_s = ImuProto::fill_seconds(cap_->n_samples(), PlatformImu::NOMINAL_ODR_HZ);
     s.boot = uint8_t(boot_id_);
+#if PLATFORM_IMU_DIAG
+    diag_page(&s, peak);
+#endif
     return ImuProto::pack_status(s);
   }
 
   static uint16_t sat16(uint32_t v) { return v > 0xFFFFu ? 0xFFFFu : uint16_t(v); }
+
+#if PLATFORM_IMU_DIAG
+  /*  The diagnostic STATUS: temp_c := page (0..7, one per second), sync_peak := A, fill_s := B.
+   *  Decode table: Teensy_code_platform.ino, "IMU DIAGNOSTIC BUILD". */
+  void diag_page(ImuProto::Status* s, uint8_t peak) {
+    const uint8_t page = uint8_t(diag_seq_++ & 7u);
+    uint8_t a = 0, b = 0;
+    switch (page) {
+      case 0: a = diag_kind_; b = diag_stage_; break;
+      case 1: a = diag_code_; b = diag_req_; break;
+      case 2: a = diag_msr_; b = diag_dur100_; break;
+      case 3: a = diag_sat8(diag_n_[DK_COUNT]); b = diag_sat8(diag_n_[DK_BURST]); break;
+      case 4: a = diag_sat8(diag_n_[DK_FLUSH] + diag_n_[DK_RESUME]); b = diag_sat8(diag_n_[DK_PROBE]); break;
+      case 5: a = diag_sat8(diag_n_[DK_BAD_PACKET]); b = diag_sat8(cnt_.recoveries); break;
+      case 6:
+        a = peak;
+        b = diag_sat8((diag_max_gap_us_ + 999u) / 1000u);
+        diag_max_gap_us_ = 0;
+        break;
+      default: a = diag_init_at_; b = diag_ovf_; break;
+    }
+    s->temp_c = int8_t(page);
+    s->sync_peak = a;
+    s->fill_s = b;
+  }
+#endif
 
  public:
   void set_i2c_400k(bool v) { i2c_400k_ = v; }
@@ -528,7 +639,7 @@ class Service {
   bool settled_ = false, halted_for_boot_ = false;
   // probe and back-off
   uint32_t probe_at_ = 0, fail_streak_ = 0, healthy_since_ms_ = 0;
-  bool init_started_ = false, chip_ok_ = false, resume_who_ = false;
+  bool init_started_ = false, chip_ok_ = false, resume_who_ = false, recover_pending_ = false;
   // drain
   Phase phase_ = IDLE;
   uint32_t remaining_ = 0, last_drain_us_ = 0;
@@ -544,6 +655,16 @@ class Service {
   uint8_t r_head_ = 0, r_tail_ = 0;
   ImuProto::Frame status_ = {};
   bool status_pending_ = false;
+#if PLATFORM_IMU_DIAG
+  uint8_t diag_kind_ = 0, diag_stage_ = 0, diag_code_ = 0, diag_req_ = 0, diag_msr_ = 0, diag_dur100_ = 0;
+  uint8_t diag_init_at_ = 0, diag_ovf_ = 0;
+  uint32_t diag_n_[8] = {};
+  uint32_t diag_seq_ = 0, diag_prev_us_ = 0, diag_max_gap_us_ = 0;
+  bool diag_have_prev_ = false;
+
+ public:
+  uint8_t diag_kind() const { return diag_kind_; }
+#endif
 };
 
 }  // namespace ImuService

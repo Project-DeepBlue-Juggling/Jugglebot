@@ -14,6 +14,7 @@
 #include <array>
 #include <cstring>
 #include <map>
+#include <string>
 #include <vector>
 
 #include "../../../ros_ws/src/jugglebot/Teensy_code_platform/imu_service.h"
@@ -38,8 +39,14 @@ struct FakeIo {
   int init_left = 0;
   int pass_txns = 0, max_pass_txns = 0, total_txns = 0;
   std::vector<uint32_t> txn_times_ms;
+  // A bus or controller left stuck by a failed transfer: every op fails until bus_recover().
+  bool wedged = false;
+  int recovers = 0;
+  std::string log;                       // one letter per bus step: r recover, i init, c count, b burst, f flush, w who
 
-  void txn() { pass_txns++; total_txns++; txn_times_ms.push_back(t_us / 1000); }
+  void txn(char k = '?') { pass_txns++; total_txns++; txn_times_ms.push_back(t_us / 1000); log += k; }
+  // A bus step, but no device transaction: counted against the one-step-per-pass rule, not total_txns.
+  void bus_recover() { pass_txns++; recovers++; wedged = false; log += 'r'; }
   void begin_pass() { pass_txns = 0; }
   void end_pass() { if (pass_txns > max_pass_txns) max_pass_txns = pass_txns; }
   uint32_t produced() const { return configured ? (t_us - stream_start_us) / 1000 : 0; }
@@ -50,23 +57,23 @@ struct FakeIo {
   }
   void init_start() { init_left = 4; }
   int init_step(uint32_t now) {
-    txn();
-    if (!present) return -1;
+    txn('i');
+    if (!present || wedged) return -1;
     if (--init_left > 0) return INIT_PENDING;
     configured = true; stream_start_us = now; consumed = 0;
     return 0;
   }
   int fifo_count(bool* ovf) {
-    txn();
-    if (!present) return -3;
+    txn('c');
+    if (!present || wedged) return -3;
     *ovf = false;
     uint32_t n = in_fifo(ovf);
     if (force_overflow) { *ovf = true; force_overflow = false; }
     return int(n);
   }
   int read_burst(Pkt* out, int n) {
-    txn();
-    if (!present) return -3;
+    txn('b');
+    if (!present || wedged) return -3;
     if (bad_packet) { bad_packet = false; return ERR_BAD_PACKET; }
     for (int i = 0; i < n; i++) {
       const uint32_t k = consumed++;
@@ -75,8 +82,8 @@ struct FakeIo {
     }
     return n;
   }
-  int flush() { txn(); if (!present) return -3; consumed = produced(); return 0; }
-  int check_who() { txn(); return present ? 0 : -2; }
+  int flush() { txn('f'); if (!present || wedged) return -3; consumed = produced(); return 0; }
+  int check_who() { txn('w'); return present && !wedged ? 0 : -2; }
   void stamp(Stamp* s) { s->local_us = t_us; s->wall_us = uint64_t(t_us) + 5000000000ull; s->wall_valid = wall_valid; }
   void header_info(ImuCapture::HeaderInfo* h) { h->odr_hz = 1000; h->accel_lsb_per_g = 2048; h->gyro_lsb_per_dps_x10 = 328; h->fw_version = 11; h->i2c_clock_100khz = 10; }
 };
@@ -215,6 +222,12 @@ TEST_CASE("IMU absent for ever: bounded work, back-off growth to 60 s, status ev
   CHECK(st.back().d[0] == S::PROBING);
   CHECK((st.back().d[1] & PlatformImuStatusFlag::SENSOR_OK) == 0);
   CHECK(st.back().d[7] == 0x78);         // boot byte
+  // The first probe of the boot starts on the bus as it is; every later probe (each follows a
+  // failure) is preceded by exactly one bus recovery, in a pass of its own.
+  CHECK(r.io.log.front() == 'i');
+  CHECK(r.io.recovers == int(r.svc.counters().probes) - 1);
+  CHECK(r.svc.counters().recoveries == uint32_t(r.io.recovers));
+  for (size_t k = 1; k < r.io.log.size(); k++) if (r.io.log[k] == 'r') CHECK(r.io.log[k - 1] == 'i');
   // A FREEZE with nothing captured is refused, and the board stays reachable for commands.
   r.cmd({Op::FREEZE, 1});
   r.run_ms(5);
@@ -597,4 +610,53 @@ TEST_CASE("READ while FW_HALTED is refused ERR_FW_UPDATE and sends no DATA") {
   REQUIRE(r.last_reply());
   CHECK(r.last_reply()->d[1] == St::ERR_FW_UPDATE);
   CHECK(r.tx.of(PlatformCanId::IMU_DATA).size() == data_before);
+}
+
+TEST_CASE("a bus or controller wedged by a failed transfer heals without a reboot (unconditional recovery)") {
+  // FW 11 on the robot, 2026-11-19 overnight: after repeated transient errors the engine sat in
+  // PROBING with SENSOR_OK clear until the Teensy was rebooted, while the chip itself was fine.
+  // Model: from the moment of a failure, every op fails until the bus is cleared and the
+  // controller reset. Without the recovery step this stays in PROBING for ever.
+  Rig r;
+  r.to_running(1000);
+  r.io.wedged = true;
+  r.run_ms(10);
+  CHECK(r.svc.state() == S::BACKOFF);
+  const size_t at_error = r.io.log.size();
+  for (int i = 0; i < 20000 && r.svc.state() != S::RUNNING; i++) { r.pass(); r.t_us += 500; }
+  CHECK(r.svc.state() == S::RUNNING);
+  CHECK(r.svc.chip_ok());
+  CHECK(r.io.recovers == 1);
+  REQUIRE(r.io.log.size() > at_error + 1);
+  CHECK(r.io.log[at_error] == 'r');      // the first bus step after the error is the recovery ...
+  CHECK(r.io.log[at_error + 1] == 'i');  // ... then the re-probe
+  CHECK(r.io.max_pass_txns <= 1);
+  CHECK(r.svc.counters().i2c_errors == 1);
+  // And again: a second wedge heals the same way, no matter how many came before.
+  for (int k = 0; k < 5; k++) {
+    r.run_ms(12000);                     // past HEALTHY_RESET_MS, so the back-off restarts at 1 s
+    r.io.wedged = true;
+    r.run_ms(10);
+    for (int i = 0; i < 20000 && r.svc.state() != S::RUNNING; i++) { r.pass(); r.t_us += 500; }
+    CHECK(r.svc.state() == S::RUNNING);
+  }
+  CHECK(r.io.recovers == 6);
+}
+
+TEST_CASE("a wedge that outlasts the first recovery is retried with a recovery before every probe") {
+  Rig r;
+  r.to_running(500);
+  r.io.wedged = true;
+  r.run_ms(10);
+  // The bus stays stuck through three recoveries (a stuck device would, until its byte ends).
+  int left = 3;
+  for (int i = 0; i < 40000 && r.svc.state() != S::RUNNING; i++) {
+    const int before = r.io.recovers;
+    r.pass();
+    r.t_us += 500;
+    if (r.io.recovers != before && left-- > 0) r.io.wedged = true;
+  }
+  CHECK(r.svc.state() == S::RUNNING);
+  CHECK(r.io.recovers == 4);
+  CHECK(r.io.max_pass_txns <= 1);
 }

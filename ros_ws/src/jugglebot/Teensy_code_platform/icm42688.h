@@ -11,6 +11,10 @@
 #include <Arduino.h>
 #include <Wire.h>
 
+#ifndef PLATFORM_IMU_DIAG
+#define PLATFORM_IMU_DIAG 0   // 1 = the diagnostic build (Teensy_code_platform.ino, "IMU DIAGNOSTIC BUILD")
+#endif
+
 namespace icm42688 {
 
 enum Err : int {
@@ -87,6 +91,24 @@ class Driver {
   int readRegs(uint8_t reg, uint8_t* buf, uint8_t n);
   int readReg(uint8_t reg);                 // returns byte or Err
   int writeReg(uint8_t reg, uint8_t val);
+
+#if PLATFORM_IMU_DIAG
+  // DIAGNOSTIC BUILD ONLY (-DPLATFORM_IMU_DIAG=1; logbook 2026-11-20-platform-imu-i2c-error-bursts). The last Wire
+  // failure inside this driver: which call failed and what Wire returned. The sketch clears it before every Io op,
+  // so after a failed op it describes that op (stage 0 = the op failed without a Wire failure, e.g. WHO mismatch).
+  enum DiagStage : uint8_t { DS_NONE = 0, DS_ADDR_WRITE = 1, DS_READ_SHORT = 2, DS_WRITE_REG = 3, DS_PROBE_ACK = 4 };
+  struct DiagWire {
+    uint8_t stage = DS_NONE;
+    uint8_t code = 0;        // endTransmission() return (stages 1, 3, 4) or bytes received (stage 2)
+    uint8_t requested = 0;   // bytes requested (stage 2)
+    uint8_t int_status = 0;  // INT_STATUS of the last successful fifoCount()
+    uint8_t count = 0;       // FIFO count of the last successful fifoCount(), clamped to 255
+    uint8_t init_failed_at = 0;  // InitState in which the last init ended in failure (IST_* below)
+  };
+  DiagWire diag;
+  void diagClear() { diag.stage = DS_NONE; diag.code = 0; diag.requested = 0; }
+  uint8_t initState() const { return (uint8_t)_ist; }
+#endif
 
  private:
   int applyOdrFs();
