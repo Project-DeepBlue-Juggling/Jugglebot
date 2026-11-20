@@ -1316,7 +1316,11 @@ class TestFaultExitStow:
         assert 'deactivate' not in reqs
         assert sm.state == RobotState.BOOT
 
-    def test_not_homed_exits_to_boot_at_once(self):
+    def test_not_homed_with_posed_legs_still_stows(self):
+        """BUG-122: the bridge clears is_homed on a Hand-only reference loss
+        (MISSING_ESTIMATE or a Hand drive reboot) while the legs still hold an
+        active pose in CLOSED_LOOP. The exit must still stow them first; going
+        straight to BOOT would start HOMING with the legs at that pose."""
         handler = FaultHandler()
         ctx = Context()
         ctx.prev_state = RobotState.ACTIVE
@@ -1326,8 +1330,19 @@ class TestFaultExitStow:
         handler.on_enter(ctx)
         ctx.drain_requests()
         ctx.fatal_error = False
+        assert handler.execute(ctx) is None
+        assert ctx.drain_requests() == ['deactivate']
+        # Once stowed (legs IDLE), BOOT; un-homed, so BOOT goes to HOMING.
+        ctx.operation_pending = False
+        ctx.operation_result = True
+        ctx.legs_closed_loop = False
         assert handler.execute(ctx) == RobotState.BOOT
-        assert ctx.drain_requests() == []
+        boot = BootHandler()
+        boot.on_enter(ctx)
+        ctx.all_heartbeats = True
+        ctx.firmware_validated = True
+        ctx.link_status_seen = True
+        assert boot.execute(ctx) == RobotState.HOMING
 
     @pytest.mark.parametrize('origin', [RobotState.HOMING, RobotState.IDLE])
     def test_real_fault_not_from_active_exits_to_boot_at_once(self, origin):
