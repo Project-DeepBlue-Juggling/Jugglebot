@@ -1232,23 +1232,31 @@ def main():
                   f"complete the {HAND_WINDDOWN_S * 1e3:.0f} ms wind-down: the "
                   f"decay will be observed only partially (G2 will SKIP). "
                   f"--gap-knots 9 is the row-17b default.")
-    if args.max_dev is None:
+    if args.stage == "stall":
+        # The stall stage has no deviation belt (it drives the Hand INTO a stop on
+        # purpose; its bounds are hand_stall_stage.py's), so there is no default to
+        # look up: _MAX_DEV_DEFAULT['stall'] was the 2026-11-20 bench KeyError.
+        if args.max_dev is not None:
+            ap.error("--max-dev does not apply to --stage stall (no deviation belt; "
+                     "the stage's bounds are in hand_stall_stage.py)")
+    else:
+        if args.max_dev is None:
+            if args.trip_guard:
+                args.max_dev = abs(args.gap_delta) + 1.0
+            elif args.stage == "gap":
+                args.max_dev = max(0.5, abs(args.gap_delta) + 0.5)
+            else:
+                args.max_dev = _MAX_DEV_DEFAULT[args.stage]
         if args.trip_guard:
-            args.max_dev = abs(args.gap_delta) + 1.0
-        elif args.stage == "gap":
-            args.max_dev = max(0.5, abs(args.gap_delta) + 0.5)
-        else:
-            args.max_dev = _MAX_DEV_DEFAULT[args.stage]
-    if args.trip_guard:
-        if args.max_dev < abs(args.gap_delta) + 0.5:
-            ap.error(
-                f"--trip-guard: --max-dev {args.max_dev:.3f} below "
-                f"|--gap-delta| + 0.5 = {abs(args.gap_delta) + 0.5:.3f} rev — "
-                f"the belt would abort before the firmware guard, which is "
-                f"the thing under test")
-    elif args.max_dev <= 0 or args.max_dev > MAX_LEAD_HAND_REV:
-        ap.error(f"--max-dev out of (0, {MAX_LEAD_HAND_REV}] "
-                 f"({MAX_LEAD_HAND_REV} = firmware MAX_LEAD_HAND_REV)")
+            if args.max_dev < abs(args.gap_delta) + 0.5:
+                ap.error(
+                    f"--trip-guard: --max-dev {args.max_dev:.3f} below "
+                    f"|--gap-delta| + 0.5 = {abs(args.gap_delta) + 0.5:.3f} rev — "
+                    f"the belt would abort before the firmware guard, which is "
+                    f"the thing under test")
+        elif args.max_dev <= 0 or args.max_dev > MAX_LEAD_HAND_REV:
+            ap.error(f"--max-dev out of (0, {MAX_LEAD_HAND_REV}] "
+                     f"({MAX_LEAD_HAND_REV} = firmware MAX_LEAD_HAND_REV)")
 
     client = TeensyLinkClient(teensy_addr=(TEENSY_IP, p.PORT_STREAM), bind_host="0.0.0.0")
     client.start()

@@ -415,7 +415,9 @@ def run_stall(io, cfg: StallConfig, say=print):
                       f"until the guard IDLEs it. Cup empty, E-stop in hand. [yes/NO] "):
         say("not armed; nothing was commanded.")
         return 2
-    st = {"lowered": False, "shift": None, "energised": False}
+    # shift: None = no SET_ABSOLUTE_POSITION sent; "sent" = sent but not yet measured
+    # (the call or the wait after it raised); a float = the MEASURED shift.
+    st = {"lowered": False, "shift": None, "p_before": None, "energised": False}
     try:
         _body(io, cfg, say, pre, vel0, r, st)
     except BaseException as e:  # noqa: BLE001 (Ctrl-C included)
@@ -436,8 +438,13 @@ def _body(io, cfg, say, pre, vel0, r, st):
                        f"stopped before energising")
         return
     p_before = io.pos()
+    st["p_before"] = p_before
+    # Marked BEFORE the call, the "lowered" idiom: a call that raises (a lost reply, a
+    # Ctrl-C) may still have reached the wire. _finish measures the shift then. Until
+    # 2026-11-21 this was 0.0 AFTER the call, which _finish read as "never shifted", so an
+    # exception between the shift and its measurement left the frame shifted silently.
+    st["shift"] = "sent"
     io.set_abs_pos(p_before + cfg.shift_rev)
-    st["shift"] = 0.0          # restore by the MEASURED shift, whatever it turns out to be
     _wait(io, lambda: io.pos() is not None
           and abs(io.pos() - (p_before + cfg.shift_rev)) < SHIFT_TOL_REV, 0.5)
     applied = io.pos() - p_before
@@ -544,6 +551,19 @@ def _finish(io, cfg, say, vel0, curr0, r, st):
     else:
         r.limit_ok = True
         r.limit_readback = curr0
+    if st["shift"] == "sent":
+        # The shift was sent and never measured. The Hand has not been energised (the
+        # measurement precedes bring_up), so it has not moved: pos - p_before IS the shift.
+        try:
+            p = io.pos()
+            st["shift"] = None if (p is None or st["p_before"] is None) else p - st["p_before"]
+        except BaseException as e:  # noqa: BLE001
+            say(f"!! could not read the Hand to measure the frame shift: {e!r}")
+            st["shift"] = None
+        if st["shift"] is None:
+            r.frame_ok = False
+            say("!! encoder frame shift UNKNOWN (sent, never measured): re-home before "
+                "anything else")
     if st["shift"]:
         r.frame_ok = False
         try:
