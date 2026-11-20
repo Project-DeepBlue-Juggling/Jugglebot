@@ -67,11 +67,15 @@ Working at `tools/probes/imu_bench/` (commit afdf0e91, logbook `2026-11-18-imu-b
 - setup: armed
 - why: finish the hardware proof of the Platform IMU path (plans/active/platform-imu.md P4): the at-rest checks are done, what remains needs the robot powered and Armed, and the upload rate must be chosen before any Attempt relies on it.
 - do:
-  - Upload again with a forced gap and check the re-request heals it.
-  - With the IMU unplugged, power-cycle the Platform Teensy: it must boot, answer CAN and accept a firmware update. Then replug the IMU with the board still powered and check the status frame shows the IMU return to RUNNING without another power cycle.
-  - Arm the robot and hold the Active pose. Read the baseline (bridge loop and emit-gap counters, RX queue depth, bus error counts, ODrive errors, Leg position error). Then upload at 400, 800, 1250 and 1600 frames/s, reading the same counters at each step.
-  - Arm and run an Attempt-like move; compare the bus-load counters in `/profile` with an earlier bag. Check the automatic upload after that Attempt and after a Fault.
-  - Soak Armed while watching `i2c_errors` and `fifo_overflows` in `platform_imu/status`.
+  - With the launch down, unplug the IMU connector, power-cycle the Platform Teensy, then in `Teensy_code_platform` run `pio run -e teensy40 -t upload`. It must reach BEGIN OK (the uploader retries BEGIN for 25 s) and end with `Platform Teensy FW version: 12 -> 12`.
+  - Launch and home with the IMU still unplugged and read `platform_imu/status`: `platform_state` is not RUNNING (the GUI IMU panel says "no IMU detected"). Replug the connector with the board powered and watch for RUNNING without a power cycle (the firmware re-probes after 1, 2, 4, 8, 16 and 32 s, then every 60 s: allow 2 minutes).
+  - Upload again with a forced gap and check the re-request heals it. No code path forces a gap (2026-11-20); the natural substitute is `stats.hole_passes` and `stats.block_timeouts` in every capture's .json.
+  - Level and Activate. Armed in the Active pose, note the wall-clock window of the baseline; the counters are read from the bag at the debrief (the CLI echo is flaky, only `setpoints_coalesced` is read live): `max_loop_gap_ms`, `max_forward_gap_ms`, `rx_age_max_us`, `sched_stops`, `can3_errors` and `crc_errors` on `/link_status`, `can1_util_pct` on `/profile`, `rx_depth_hwm_jb` on `/cache_diag`, `max_emit_gap_ms` on `/trajectory/status`, and any new ODrive error row in the GUI event log.
+  - Upload the whole ring at the default pace (1250 frames/s) with `ros2 service call /platform_imu/upload jugglebot_interfaces/srv/SetString "{data: \"{}\"}"`, wait for `phase` to leave the upload (the GUI IMU panel is the primary check), and note its wall-clock window for the same counters.
+  - Rate ramp at 400, 800 and 1600 frames/s. The pace parameter `imu_read_gap_10us` is only read at node start (2026-11-20); a live hook is planned, and until then this Sitting uploads at the default 1250 frames/s only. Gaps: 250, 125 and 63 (the Armed clamp).
+  - Soak Armed in the Active pose for 5 minutes, reading `i2c_errors` and `fifo_overflows` in `platform_imu/status` before and after.
+  - Arm and run one short oval Attempt (Dwell 0.50, 8 Throws, its own plant) and read the automatic upload that follows it; compare `can1_util_pct` in `/profile` from the bag with the 2026-11-18 bag.
+  - Check the automatic upload after a Fault. The GUI has no Soft E-stop control and the trigger needs a Fault edge inside an open Attempt, so this waits for a decision on how to cause one safely.
 - pass:
   - With the IMU unplugged the board boots, answers CAN and takes an update, and after the replug the status frame returns to RUNNING without a power cycle.
   - The forced gap is re-requested and healed and the upload passes CRC.
@@ -79,6 +83,7 @@ Working at `tools/probes/imu_bench/` (commit afdf0e91, logbook `2026-11-18-imu-b
   - `i2c_errors` stays 0 through the Armed soak.
   - Not checked here: the tilt request's invalid reply with the inclinometer absent (the SCL3300 is not unplugged); P2's native tests cover it.
 - record:
+  - For the debrief, from the bag over the operator's noted windows: max_loop_gap_ms, max_forward_gap_ms, forward_gap_p99_ms, rx_age_max_us, sched_stops, sched_refused, crc_errors, decode_errors, seq_gaps, bus1_health, can3_errors and setpoints_coalesced on `/link_status`; can1_util_pct, can1_rx, can1_tx and interp_deadline_misses on `/profile`; rx_depth_hwm_jb and rx_cap_hits_jb on `/cache_diag`; max_emit_gap_ms on `/trajectory/status`; i2c_errors and fifo_overflows on `/platform_imu/status`.
   - The forced-gap outcome; for each ramp step the counters and the upload time, and the operating rate chosen (the highest step with no change from baseline).
   - The `/profile` bus-load before and after; the soak length and the final `i2c_errors` and `fifo_overflows`.
 - minutes: 60
