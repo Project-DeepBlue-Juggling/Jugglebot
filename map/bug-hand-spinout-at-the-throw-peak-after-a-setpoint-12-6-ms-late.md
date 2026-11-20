@@ -4,7 +4,7 @@ kind: bug
 title: Hand SPINOUT at the Throw peak after a setpoint 12.6 ms late (2026-11-18)
 status: inbox
 created: '2026-11-18'
-updated: '2026-11-18T15:51:07Z'
+updated: '2026-11-20T04:13:00Z'
 owners: []
 priority: high
 effort: m
@@ -16,6 +16,7 @@ area: hand
 blocked_by: []
 links:
 - logbook/2026-11-18-sitting-debrief.md
+- logbook/2026-11-20-sitting-debrief.md
 filed_by: sitting-debrief 2026-11-18
 night_skip: waiting-trigger
 night_skip_on: '2026-11-19'
@@ -65,6 +66,13 @@ Not checked: which tick promoted the frame; the Hand's physical response in any 
 - record: the capture path, the launch log line of the SPINOUT, the nearest setpoint drain dropped line and its lag.
 - minutes: 5
 
+## Sitting result (2026-11-20 15:11)
+
+- verdict: inconclusive
+- notes: A SPINOUT shows up in the `grep` readout (sheet 2026-11-20-robot, step 16) [derived: A SPINOUT occurred (launch_2026-11-20_1.log:5298) but was not captured. The bag's 100 Hz echo shows the command peaks equal to the preceding Throws (9.357 rev, 123.55 rev/s) with a 27.3 ms-late frame dropped 41 ms before the fault line (line 5296); it cannot resolve a 500 Hz excursion and no plan replay was run.]
+
 ## Progress
 
 - 2026-11-18: Bag review confirmed it: firmware extrapolation across the release knot of a frame 12.6 ms late produced the 137 rev/s command and a -39 to -45 rev/s step when the frame was promoted. Grace stays at 14 ms (owner); options recorded in the body, to decide after the current work.
+- 2026-11-20: Flown at the Sitting of 2026-11-20, verdict unresolved: a SPINOUT occurred at 13:22:42 during the post-release brake of a normal Throw (Hand 0.46 rev above its command at the disarm) but was not captured; the 100 Hz echo shows command peaks equal to the preceding Throws, with a 27.3 ms-late frame dropped 41 ms before. Missing:
+- 2026-11-20: the 500 Hz plan replay with the arrival times of seq 50752 and 50753, or a saved capture.

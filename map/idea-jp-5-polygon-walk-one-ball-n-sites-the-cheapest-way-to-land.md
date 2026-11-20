@@ -2,9 +2,9 @@
 id: IDEA-9
 kind: idea
 title: 'JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites'
-status: in_progress
+status: complete
 created: '2026-10-30'
-updated: '2026-11-18T09:39:17Z'
+updated: '2026-11-20T04:12:51Z'
 owners: []
 priority: medium
 effort: s
@@ -15,11 +15,9 @@ area: skill-stack
 blocked_by: []
 links:
 - logbook/2026-11-18-jp5-polygon-walk-compile.md
+- logbook/2026-11-20-sitting-debrief.md
 filed_by: claude (jugglebot-f5, pattern exploration 2026-10-30)
 parent: pattern-progression-columns-to-centre-and-orbit
-night_skip: sitting
-night_skip_on: '2026-11-19'
-night_skip_note: Offline half on main 2026-11-18 (polygon_walk); the first flight is the square at edge 100 mm, Dwell 0.27, Apex 0.9.
 ---
 
 One ball hopping around N Sites (triangle, square, hexagon) instead of two. Physics trivial at any step the hop already flies (250 mm, apex 0.9).
@@ -45,7 +43,15 @@ A compile_one_ball over a Site list plus an admissible-box cell per edge, or the
 - record: Throws caught per Attempt and each end reason, the Site of every miss and whether it was a first visit, the nomination margins, the bag path.
 - minutes: 20
 
+## Sitting result (2026-11-20 15:11)
+
+- verdict: pass
+- notes (split into bullets):
+  - Perfect! The pattern didn't seem super square-y though. I'd like to see some plots showing the pattern viewed from above, to see how precise and repeatable the throws were (and how square the pattern was). Second attempt ended with MAX_DEVIATION after 29 throws. (sheet 2026-11-20-robot, step 14) [derived:
+  - temp/logs/launch_2026-11-20_1.log:7872 polygon_walk done 25/25 caught (start 13:38:15, plant polygon-2026-11-20 from 0 Memory rows, landing median 16 mm, worst 43 mm), and line 8201 29/29 caught in a 50-Throw Attempt ended by a Hand MAX_DEVIATION latch; no miss, so none on a first visit. The step-6 nomination margins are not in the log.]
+
 ## Progress
 
 - 2026-11-18: Offline half built 2026-11-18: Pattern polygon_walk (label provisional) on the one-ball path. The 250 mm Hop edge is infeasible for a square; the nomination accepts 100 mm at Dwell 0.27 (+0.189) and 125 mm at 0.45 (+0.200). Not on the BeatEvent stream. GUI not wired. Next: the Rung Sitting (plan P7).
 - 2026-11-18: Owner 2026-11-18: label polygon_walk stands; first flight is the square at edge 100 mm, Dwell 0.27, Apex 0.9.
+- 2026-11-20: Passed at the Sitting of 2026-11-20: polygon_walk 25/25 from an empty Memory (the log's landed values: median 16 mm, worst 43 mm), then 29/29 of a 50-Throw Attempt ended by a Hand MAX_DEVIATION latch; no miss. Landed square: sides 92-108 mm for 100 commanded, per-axis scatter 12-26 mm; plots in temp/probes/polygon_2026-11-20/.

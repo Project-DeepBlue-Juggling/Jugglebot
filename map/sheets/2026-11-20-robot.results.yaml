@@ -1,3 +1,112 @@
+closed:
+  at: 2026-11-20 15:11
+  items:
+  - BUG-110
+  - BUG-111
+  - BUG-58
+  - BUG-89
+  - BUG-93
+  - FEAT-49
+  - IDEA-16
+  - IDEA-9
+confirmed:
+  at: 2026-11-20 15:11
+  changed: []
+derived:
+  7:
+    IDEA-16:
+      by: sitting-debrief 2026-11-20
+      criterion: the bag replays through `tools/probes/human_catch_replay.py` and
+        reports, for the lobs that crossed inside the Cup's reach, how many had an
+        admitted plan and how far the planned Cup centre was from the real crossing.
+      evidence: 'temp/probes/human_catch_2026-11-20/2026-11-20_12-49-25_replay.md
+        (bag 2026-11-20_12-49-25, 12:52-12:57): the replay ran and reported 55 lobs,
+        49 crossing the Catch plane, 23 inside the Cup''s reach, 16 of those with
+        an admitted plan; planned Cup centre to real crossing median 30.5 mm, worst
+        52.0 mm. Derived as data, not pass: this is the plan''s data row, and most
+        Balls were caught by hand above the Cup, which the replay does not model.'
+      verdict: data
+  12:
+    BUG-110:
+      by: sitting-debrief 2026-11-20
+      criterion: no setpoint drain dropped line shows a 50 ms stamp step with a negative
+        forwarded lag, and no Attempt ends LANE_REFUSED after such a line.
+      evidence: 'temp/logs/launch_2026-11-20_1.log: 72 setpoint drain dropped lines
+        (76 frames), forwarded lag +2.3 ms (line 5297) to +27.4 ms (line 5809), none
+        negative, so no LANE_REFUSED end follows such a line; 11 Columns and 12 oval
+        Attempts flown. At least 12 further drops were throttled out of the log and
+        cannot be checked.'
+      verdict: pass
+    BUG-89:
+      by: sitting-debrief 2026-11-20
+      criterion: '`setpoints_coalesced` is non-zero and the WARN lines name seq and
+        lag; every STOP inside an Attempt whose record says stamp gap carries the
+        dropped-a-knot verdict (or an emitter skip is visible on /trajectory/status);
+        the two arms are tabulated side by side.'
+      evidence: 'temp/logs/launch_2026-11-20_1.log: 72 WARN lines name seq and lag
+        (dropped lag 27.3-52.4 ms) over 14.5 min of Columns and oval Attempt time,
+        but of 6 in-Attempt stamp-gap STOPs (lines 1954, 3899, 4287, 5812, 6002, 8179)
+        only 2 (3899, 6002) carry the dropped-a-knot verdict; three of the other four
+        sit beside a 67-80 ms host stall. The second arm was not flown (omitted on
+        the sheet). setpoints_coalesced resets at each arming; the bag''s last value
+        is 2, not the 6 read at the robot.'
+      verdict: fail
+  14:
+    IDEA-9:
+      by: sitting-debrief 2026-11-20
+      criterion: 24 consecutive Catches in one Attempt (six laps of the square), with
+        no miss on a first visit to a Site.
+      evidence: temp/logs/launch_2026-11-20_1.log:7872 polygon_walk done 25/25 caught
+        (start 13:38:15, plant polygon-2026-11-20 from 0 Memory rows, landing median
+        16 mm, worst 43 mm), and line 8201 29/29 caught in a 50-Throw Attempt ended
+        by a Hand MAX_DEVIATION latch; no miss, so none on a first visit. The step-6
+        nomination margins are not in the log.
+      verdict: pass
+  16:
+    BUG-111:
+      by: sitting-debrief 2026-11-20
+      criterion: a SPINOUT is captured and the bag shows whether the command peak
+        exceeded the plan peak at a late frame.
+      evidence: A SPINOUT occurred (launch_2026-11-20_1.log:5298) but was not captured.
+        The bag's 100 Hz echo shows the command peaks equal to the preceding Throws
+        (9.357 rev, 123.55 rev/s) with a 27.3 ms-late frame dropped 41 ms before the
+        fault line (line 5296); it cannot resolve a 500 Hz excursion and no plan replay
+        was run.
+      verdict: inconclusive
+    BUG-58:
+      by: sitting-debrief 2026-11-20
+      criterion: a LANE_REFUSED end is on record with GC_PROBE lines from both stream
+        nodes within 1 s of its STOP WARN, and that WARN carries its verdict, fw_sched
+        counters and frame ages.
+      evidence: 'temp/logs/launch_2026-11-20_1.log: all 5 LANE_REFUSED ends (lines
+        4313, 5832, 6024, 6509, 8201) have GC_PROBE lines from both stream nodes within
+        1 s of their STOP WARN (4287, 5812, 6002, 6494, 8179), each with verdict,
+        fw_sched counters and frame ages; ends 1 and 4 follow gen-2 GC pauses of 75.6
+        ms (bridge) and 93.8 ms (trajectory_node), end 5 a 67.0 ms bridge pause. The
+        criterion is met literally; derived as data, as the owner ruled on 2026-11-18,
+        because the starvation itself is not fixed.'
+      verdict: data
+    FEAT-49:
+      by: sitting-debrief 2026-11-20
+      criterion: a window is saved on a real fault, with the brake inside it and the
+        power channels finite.
+      evidence: The trigger fired on the real SPINOUT (temp/logs/launch_2026-11-20_1.log:5298,
+        13:22:42) but hand_foc_scope.py raised 'scope still recording 3.0 s after
+        the trigger' in scope_download and saved nothing; launch 2 had no drive fault
+        to trigger on. The newest file in temp/hand_foc_scope/ is from 2026-11-13.
+      verdict: fail
+  24:
+    BUG-93:
+      by: sitting-debrief 2026-11-20
+      criterion: BRIDGE_FW_CHECK passes at 46 and no CAN_BUS_DOWN trip occurs; any
+        CAN_BUS_DOWN that does occur names a real Leg with a real age, never Leg 0xFF
+        with age 0.
+      evidence: temp/logs/launch_2026-11-20_2.log:28 BRIDGE_FW_CHECK OK can-bridge
+        v46; no CAN_BUS_DOWN, CAN-silence or Leg-age line in the launch; 8 Columns
+        Attempts flown, downlink lost 0, crc_errors 0. Absence over about 9 minutes
+        of streaming; the launch's one fault is a Hand MAX_DEVIATION after a stream
+        STOP (line 1338), unrelated to the changed predicates.
+      verdict: pass
 schema: 2
 steps:
   1:
