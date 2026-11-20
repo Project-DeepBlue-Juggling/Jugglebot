@@ -385,7 +385,18 @@ class FakeDrive:
     def scope_trigger(self, point):
         self.calls.append(("trigger", point))
 
-    def scope_download(self, endpoints):
+    forced = False      # True: the scope never stops, so the download is a forced one
+    fail_at = ()        # poll-time failures: capture_once call numbers (from 0) whose download raises
+    downloads = 0
+
+    def scope_download(self, endpoints, keep_forced=False):
+        n, self.downloads = self.downloads, self.downloads + 1
+        if n in self.fail_at:
+            raise OSError("USB link dropped")
+        self.forced_stop = self.forced and keep_forced
+        return self._samples(endpoints)
+
+    def _samples(self, endpoints):
         """One shared buffer of 4-byte values, as odrive.utils.ram_osci_download unpacks it:
         more channels mean fewer samples. ``size`` is the sample count at 4 channels."""
         endpoints = list(endpoints)
@@ -682,3 +693,108 @@ def test_a_fault_latched_while_the_scope_fills_still_fires():
     assert t.update(None, 1, 0x200, 0x200) and t.kind == "fault"
     late = hfs.BrakeTrigger("fault")          # unseeded: a latched value is the baseline
     assert not late.update(None, 1, 0x200, 0x200)
+
+
+# ---- FEAT-49: a forced stop keeps the window; a failed capture re-arms -------------------
+
+class _EveryArmFaults(FakeDrive):
+    """disarm_reason reads 0 at each arm (the seed) and a new fault on the next poll, so every
+    capture fires on its first poll and a re-arm can fire again."""
+    _reads = 0
+
+    def read(self, path):
+        if path == hfs.DISARM:
+            self._reads += 1
+            return 0 if self._reads % 2 else 0x4000000
+        return super().read(path)
+
+
+def _fault_drive(**kw):
+    d = _EveryArmFaults()
+    for k, v in kw.items():
+        setattr(d, k, v)
+    return d
+
+
+def test_a_scope_that_never_stops_after_the_trigger_is_saved_tagged_forced(monkeypatch):
+    rc, saved = _capture_cli(monkeypatch, _fault_drive(forced=True), ["--trigger", "fault"])
+    assert rc == 0 and [s[0] for s in saved] == ["hand_0_fault_forced"]
+    info = saved[0][1]["capture"]
+    assert info["forced_stop"] is True and info["trigger_position_known"] is False
+    assert "UNKNOWN" in info["forced_stop_note"] and "forced stop" in info["forced_stop_note"]
+    lines, triggered = hfs.record_lines(saved[0][1])
+    assert triggered and "FORCED STOP" in "\n".join(lines) and "trigger point UNKNOWN" in lines[0]
+
+
+def test_the_normal_path_keeps_its_file_name_and_metadata(monkeypatch):
+    rc, saved = _capture_cli(monkeypatch, _fault_drive(), ["--trigger", "fault"])
+    assert rc == 0 and saved[0][0] == "hand_0_fault"
+    info = saved[0][1]["capture"]
+    assert set(info) == {"fired", "kind", "reason", "mode", "polls", "poll_ms", "trigger_point",
+                         "clean_exits", "at_arm"}
+    lines, _ = hfs.record_lines(saved[0][1])
+    assert "FORCED" not in "\n".join(lines) and "trigger point 0.9" in lines[0]
+
+
+def test_drive_download_after_a_forced_stop_returns_the_buffer_and_flags_it():
+    class Scope(_Scope):
+        @property
+        def recording(self):
+            return not self.triggers          # stops only once the 1.0 stop was sent
+
+    scope = Scope(stops_after=None)
+    drive = hfs.Drive(_Odrv(scope), _Utils(scope))
+    t = [0.0]
+    out = drive.scope_download(["vbus_voltage"], timeout_s=1.0, clock=lambda: t[0],
+                               sleep=lambda s: t.__setitem__(0, t[0] + s), keep_forced=True)
+    assert out == [[0.0]] and scope.triggers == [1.0] and drive.forced_stop is True
+
+
+def test_a_download_that_fails_after_a_forced_stop_says_the_stop_was_forced():
+    class Scope(_Scope):
+        @property
+        def recording(self):
+            return not self.triggers
+
+    class Utils(_Utils):
+        def ram_osci_download(self, odrv, endpoints):
+            raise OSError("USB read failed")
+
+    scope = Scope(stops_after=None)
+    drive = hfs.Drive(_Odrv(scope), Utils(scope))
+    t = [0.0]
+    with pytest.raises(RuntimeError, match="FAILED after a FORCED STOP.*USB read failed"):
+        drive.scope_download(["vbus_voltage"], timeout_s=1.0, clock=lambda: t[0],
+                             sleep=lambda s: t.__setitem__(0, t[0] + s), keep_forced=True)
+
+
+def test_a_scope_still_recording_after_the_forced_stop_says_nothing_was_downloaded():
+    scope = _Scope(stops_after=None)
+    drive = hfs.Drive(_Odrv(scope), _Utils(scope))
+    t = [0.0]
+    with pytest.raises(RuntimeError, match="STILL recording.*NOT downloaded"):
+        drive.scope_download(["vbus_voltage"], timeout_s=1.0, clock=lambda: t[0],
+                             sleep=lambda s: t.__setitem__(0, t[0] + s), keep_forced=True)
+
+
+def test_one_failed_capture_is_reported_and_the_tool_re_arms(monkeypatch, capsys):
+    drive = _fault_drive(fail_at=(0,))
+    rc, saved = _capture_cli(monkeypatch, drive, ["--trigger", "fault"])
+    out = capsys.readouterr()
+    assert rc == 0 and [s[0] for s in saved] == ["hand_0_fault"]
+    assert "USB link dropped" in out.err and "Traceback" in out.err and "re-arming" in out.out
+    assert [c[0] for c in drive.calls].count("config") == 2
+
+
+def test_the_consecutive_failure_cap_exits_non_zero(monkeypatch, capsys):
+    drive = _fault_drive(fail_at=tuple(range(50)))
+    rc, saved = _capture_cli(monkeypatch, drive, ["--trigger", "fault", "--count", "5"])
+    assert rc == 4 and saved == [] and drive.downloads == hfs.MAX_CONSECUTIVE_FAILURES
+    assert "giving up" in capsys.readouterr().out
+
+
+def test_a_success_resets_the_consecutive_failure_count(monkeypatch):
+    # fail, ok, fail, ok: never three in a row, so both saves land.
+    drive = _fault_drive(fail_at=(0, 2))
+    rc, saved = _capture_cli(monkeypatch, drive, ["--trigger", "fault", "--count", "2"])
+    assert rc == 0 and len(saved) == 2
