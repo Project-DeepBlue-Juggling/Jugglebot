@@ -11,12 +11,15 @@ so it goes on sys.path explicitly, the test_hand_stream_bench_gap.py idiom.
 """
 from __future__ import annotations
 
+import collections
 import contextlib
 import csv
 import io
 import os
 import re
 import sys
+import threading
+import time
 import types
 
 import pytest
@@ -37,7 +40,10 @@ POS_GAIN = float(B.hw.ODRIVE_HAND_POS_GAIN)
 # A recording fake link, driving the real main()
 # ---------------------------------------------------------------------------
 
-def _install_fakes(monkeypatch, events, start_rev, kbi_after_armed_sends=None):
+def _install_fakes(monkeypatch, events, start_rev, kbi_after_armed_sends=None,
+                   sim=None):
+    """``sim`` (a _SimHand) makes the link live: it sees every frame and the
+    arm edge, and serves the telemetry and the echo."""
     state = {'armed_sends': 0, 'flags': 0}
 
     class FakeClient:
@@ -56,11 +62,15 @@ def _install_fakes(monkeypatch, events, start_rev, kbi_after_armed_sends=None):
         def set_heartbeat_flags(self, flags):
             events.append(('flags', int(flags)))
             state['flags'] = int(flags)
+            if sim is not None:
+                sim.on_flags(bool(flags & 1))
             with B._lock:
                 B._cache['hb'] = _hb(0x9 if flags & 1 else 0x1)
 
         def send_stream(self, mt, payload):
             events.append(('send', bytes(payload)))
+            if sim is not None:
+                sim.on_send(bytes(payload))
             if state['flags'] & 1:
                 state['armed_sends'] += 1
                 if (kbi_after_armed_sends is not None
@@ -87,11 +97,15 @@ def _install_fakes(monkeypatch, events, start_rev, kbi_after_armed_sends=None):
     monkeypatch.setattr(B, 'TRI_CUT_SETTLE_S', 0.05)
     monkeypatch.setattr(B, 'TRI_CUT_DRIFT_S', 0.05)
     tm = types.SimpleNamespace(pos_rev=[0.0] * 6 + [start_rev], vel_rps=[0.0] * 7)
-    # The belt and the settled read see a fresh, static encoder at start_rev.
-    monkeypatch.setattr(B, '_telem_with_age', lambda: (tm, 0.0))
+    if sim is None:
+        # The belt and the settled read see a fresh, static encoder at start_rev.
+        monkeypatch.setattr(B, '_telem_with_age', lambda: (tm, 0.0))
+    else:
+        monkeypatch.setattr(B, '_telem_with_age', sim.telem_with_age)
     with B._lock:
         B._cache.update({
             'telem': tm, 'telem_mono': 0.0, 'hb': _hb(0x1), 'echo': None,
+            'echo_mono': None,
             'ident': types.SimpleNamespace(
                 fw_version=rpc_args.EXPECTED_BRIDGE_FW_VERSION),
             'diag': {B.HAND: types.SimpleNamespace(
@@ -365,3 +379,203 @@ def test_tally_line_shapes():
     assert "interrupted" in B.sc_tally_line(40, 150, 40, 41, None, False)
     assert B.sc_temp_text(types.SimpleNamespace(temp_motor=41.26, temp_fet=35.0)) == \
         "motor 41.3 C, FET 35.0 C"
+
+
+# ---------------------------------------------------------------------------
+# The fast triangle against a simulated Hand (2026-11-21, the 2026-11-20
+# bench aborts: every --tri-speed 10 attempt tripped the 0.5 rev belt ~50 ms
+# in and the cut never happened)
+# ---------------------------------------------------------------------------
+
+class _SimHand:
+    """The firmware Hand lane, its arm-edge recovery slew and a pessimistic
+    ODrive, on the real clock (the stage loop runs in real time).
+
+    Lane: arrival semantics, each frame's Hermite (u0, v0) -> (u1, v1) played
+    over SEG_T from its receipt, then held at u1. Slew: at the arm edge the
+    command starts at the encoder and walks toward the lane target at
+    RECOVER_SLEW_ACCEL_RPS2 up to RECOVER_SLEW_VEL_RPS, handing back within
+    RECOVER_SLEW_DONE_EPS_REV (leg_interp.cpp). ODrive: velocity setpoint
+    pos_gain * (cmd - x) with NO feedforward credit (steady lag v / pos_gain,
+    the worst case), through a 5 ms velocity loop capped at 2000 rev/s^2.
+    Telemetry is served AGE_S stale with that sample's velocity, and the echo
+    (the command the ODrive was given) is fresh while armed."""
+
+    DT = 0.0005
+    AGE_S = 0.008
+    TAU_V = 0.005
+    A_MAX = 2000.0
+
+    def __init__(self, start):
+        self.x = float(start)
+        self.xd = 0.0
+        self.cmd = float(start)
+        self.cmd_v = 0.0
+        self.seg = None
+        self.armed = False
+        self.slew = None
+        self.t = time.monotonic()
+        self.hist = collections.deque([(self.t, self.x, self.xd)], maxlen=400)
+        self.lock = threading.Lock()
+
+    def _lane(self, t):
+        if self.seg is None:
+            return self.cmd, 0.0
+        t_rx, u0, v0, u1, v1 = self.seg
+        T = B.SEG_T
+        s = min(max((t - t_rx) / T, 0.0), 1.0)
+        h00, h10 = 2 * s**3 - 3 * s**2 + 1, s**3 - 2 * s**2 + s
+        h01, h11 = -2 * s**3 + 3 * s**2, s**3 - s**2
+        p = h00 * u0 + h10 * T * v0 + h01 * u1 + h11 * T * v1
+        d00, d10 = 6 * s**2 - 6 * s, 3 * s**2 - 4 * s + 1
+        d01, d11 = -6 * s**2 + 6 * s, 3 * s**2 - 2 * s
+        v = (d00 * u0 + d01 * u1) / T + d10 * v0 + d11 * v1
+        return p, (v if s < 1.0 else 0.0)
+
+    def _advance(self):
+        now = time.monotonic()
+        while self.t + self.DT <= now:
+            self.t += self.DT
+            if self.armed:
+                h, hv = self._lane(self.t)
+                if self.slew is not None:
+                    self.slew[1] = min(self.slew[1] + B.RECOVER_SLEW_ACCEL_RPS2 * self.DT,
+                                       B.RECOVER_SLEW_VEL_RPS)
+                    d = h - self.slew[0]
+                    if abs(d) <= B.RECOVER_SLEW_DONE_EPS_REV:
+                        self.slew = None
+                        self.cmd, self.cmd_v = h, hv
+                    else:
+                        stp = min(self.slew[1] * self.DT, abs(d))
+                        self.slew[0] += stp if d > 0 else -stp
+                        self.cmd = self.slew[0]
+                        self.cmd_v = self.slew[1] if d > 0 else -self.slew[1]
+                else:
+                    self.cmd, self.cmd_v = h, hv
+            v_set = POS_GAIN * (self.cmd - self.x)
+            a = max(-self.A_MAX, min(self.A_MAX, (v_set - self.xd) / self.TAU_V))
+            self.xd += a * self.DT
+            self.x += self.xd * self.DT
+            self.hist.append((self.t, self.x, self.xd))
+        if self.armed:
+            with B._lock:
+                B._cache['echo'] = (int(time.time() * 1e6), self.cmd, self.cmd_v)
+                B._cache['echo_mono'] = time.monotonic()
+
+    def on_send(self, payload):
+        with self.lock:
+            self._advance()
+            sp = Setpoint.unpack(payload)
+            H = B.HAND
+            self.seg = (self.t, float(sp.u0[H]), float(sp.v0[H]),
+                        float(sp.u1[H]), float(sp.v1[H]))
+
+    def on_flags(self, armed):
+        with self.lock:
+            self._advance()
+            if armed and not self.armed:
+                self.slew = [self.x, 0.0]       # the output-enable edge
+            self.armed = armed
+
+    def telem_with_age(self):
+        with self.lock:
+            self._advance()
+            cut = self.t - self.AGE_S
+            snap = self.hist[0]
+            for row in reversed(self.hist):
+                if row[0] <= cut:
+                    snap = row
+                    break
+        tm = types.SimpleNamespace(pos_rev=[0.0] * 6 + [snap[1]],
+                                   vel_rps=[0.0] * 6 + [snap[2]])
+        return tm, self.AGE_S
+
+
+FAST = [
+    # the owner's 2026-11-20 commands, from the starts they were flown at
+    ('up', 4.0, 10.0, 0.37),
+    ('up', 4.0, 20.0, 1.70),
+    ('down', 6.0, 20.0, 1.70),
+    ('down', 6.0, 10.0, 1.70),
+]
+
+
+@pytest.mark.parametrize('direction,span,speed,start', FAST)
+def test_a_fast_triangle_reaches_its_cut_against_a_slewing_lagging_hand(
+        direction, span, speed, start, monkeypatch, tmp_path):
+    """Fails before 2026-11-21: the triangle clock started at the arm edge, the
+    firmware's 1 rev/s recovery slew could never catch a 10 or 20 rev/s
+    target, and the belt aborted ~50 ms in (the 2026-11-20 CSVs)."""
+    sim = _SimHand(start)
+    events = []
+    _install_fakes(monkeypatch, events, start, sim=sim)
+    rc, out = _main(['--stage', 'triangle', '--tri-span', str(span),
+                     '--tri-speed', str(speed), '--tri-cut', direction,
+                     '--tri-cut-cycle', '1', '--top-stop', '10.4', '--arm',
+                     '--duration', '4', '--csv', str(tmp_path / 'fast.csv')])
+    assert 'ABORT' not in out, out
+    assert rc == 0, out
+    assert f"tri-cut: {direction} ramp, cycle 1" in out
+    # the last frame is mid-ramp at full speed
+    last, tail = _tail_after_last_send(events)
+    sp = Setpoint.unpack(last[1])
+    sign = 1.0 if direction == 'up' else -1.0
+    assert sp.v0[B.HAND] == pytest.approx(sign * speed)
+    p_mid = start + 0.5 * span
+    assert 0.0 <= sign * (sp.u0[B.HAND] - p_mid) <= 3 * B.SEG_T * speed + 1e-6
+    assert tail == [('flags', 0), ('rpc_close',), ('stop',)]
+    # every knot before the triangle clock started was a true hold at start
+    i_arm = events.index(('flags', 1))
+    pre = [Setpoint.unpack(e[1]) for e in events[:i_arm] if e[0] == 'send']
+    assert pre and all(s.u0[B.HAND] == pytest.approx(start)
+                       and s.v0[B.HAND] == 0.0
+                       and s.u1[B.HAND] == pytest.approx(start) for s in pre)
+    assert "triangle clock starts" in out
+    # the honest residual sat under the speed-derived belt and the hand moved
+    m = re.search(r"max \|cmd[^=]*= ([0-9.]+) rev", out)
+    assert m, out
+    assert float(m.group(1)) < B.tri_belt_default(speed, POS_GAIN)
+    rows = list(csv.DictReader(open(tmp_path / 'fast.csv')))
+    encs = [float(r['enc_rev']) for r in rows if r['enc_rev']]
+    # the Hand really ran the ramp: it climbed to the mid-ramp point less the
+    # model's lag and the last logged row's one knot and telemetry age
+    reach = 0.5 * span - speed * (B.SEG_T + _SimHand.AGE_S + 1.0 / POS_GAIN) - 0.1
+    assert max(encs) - start > reach
+    print(f"{direction} {speed:g} rev/s: max residual {float(m.group(1)):.3f} rev "
+          f"vs belt {B.tri_belt_default(speed, POS_GAIN):.3f}")
+
+
+def test_handback_step_matrix():
+    s = 1.0
+    MIN, MAX = B.TRI_HANDBACK_MIN_S, B.TRI_HANDBACK_MAX_S
+    on, off = (0, s + 0.001, 0.0), (0, s + 0.02, 1.0)
+    assert B.tri_handback_step(MIN - 0.01, s, on, True) == 'wait'
+    assert B.tri_handback_step(MIN, s, on, True) == 'go'
+    assert B.tri_handback_step(MIN, s, on, False) == 'wait'      # stale echo proves nothing
+    assert B.tri_handback_step(MIN, s, off, True) == 'wait'
+    assert B.tri_handback_step(MAX, s, off, True) == 'abort'
+    assert B.tri_handback_step(MAX, s, None, False) == 'go_unconfirmed'
+    assert B.tri_handback_step(MAX, s, on, False) == 'go_unconfirmed'
+
+
+def test_triangle_belt_default_numbers():
+    assert B.tri_belt_default(0.5, POS_GAIN) == pytest.approx(0.5 + 0.5 / 35.0)
+    assert B.tri_belt_default(10.0, POS_GAIN) == pytest.approx(0.5 + 10.0 / 35.0)
+    assert B.tri_belt_default(20.0, POS_GAIN) == pytest.approx(0.5 + 20.0 / 35.0)
+    assert POS_GAIN == 35.0
+    assert B.tri_belt_default(20.0, POS_GAIN) < B.MAX_LEAD_HAND_REV
+
+
+def test_recover_slew_constants_mirror_the_firmware():
+    path = os.path.join(_REPO, 'ros_ws', 'src', 'jugglebot', 'Teensy_code_canbridge',
+                        'canbridge_config.h')
+    src = open(path).read()
+
+    def fw(name):
+        m = re.search(r"constexpr\s+float\s+" + name + r"\s*=\s*([0-9.]+)f", src)
+        assert m, name
+        return float(m.group(1))
+
+    assert B.RECOVER_SLEW_VEL_RPS == fw('RECOVER_SLEW_VEL_RPS')
+    assert B.RECOVER_SLEW_ACCEL_RPS2 == fw('RECOVER_SLEW_ACCEL_RPS2')
+    assert B.RECOVER_SLEW_DONE_EPS_REV == fw('RECOVER_SLEW_DONE_EPS_REV')

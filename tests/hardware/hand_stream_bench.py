@@ -352,6 +352,8 @@ def evaluate_trip_guard(tripped, fault_name=None):
 # Per-stage deviation-belt defaults (rev), used when --max-dev is not given.
 # Derivation (2026-09-02 review fix — the belt is velocity-compensated,
 # |cmd − (enc + vel·age)|, so encoder AGE no longer contributes):
+#   (triangle: speed-derived since 2026-11-21, see tri_belt_default; the
+#   'triangle' entry below is no longer read by main())
 #   hold/triangle/step: motion ≤ 0.5 rev/s ⇒ every latency term ≤ ~0.01 rev —
 #     a tight 0.5 rev static-ish belt holds.
 #   gap: the sanctioned re-entry catch-up is itself ≈ |--gap-delta| of honest
@@ -432,6 +434,9 @@ def _on_echo(mt, seq, payload, addr):
         e.data, float(pc.INPUT_SCALE_HAND_VEL), float(pc.INPUT_SCALE_HAND_TOR))
     with _lock:
         _cache["echo"] = (int(e.t_bridge_us), float(pos), float(vel_ff))
+        # receive stamp: the triangle's arm-edge hand-back reads only an echo
+        # that arrived after the arm (see RECOVER_SLEW_*)
+        _cache["echo_mono"] = time.monotonic()
         rec = _cache["rec"]
         if rec is not None:
             rec["echo"].append((int(e.t_bridge_us) * 1e-6, float(pos)))
@@ -565,6 +570,93 @@ class Triangle:
         if ph < half:
             return self.p0 + self.v * ph, self.v
         return self.p0 + self.span - self.v * (ph - half), -self.v
+
+
+# ── The arm-edge hand-back (2026-11-21; the 2026-11-20 10 rev/s triangle aborts)
+# MIRRORED CONSTANTS (canbridge_config.h RECOVER_SLEW_*), pinned against the
+# header by tests/teensy_link/test_hand_stream_bench_tri_cut.py. Every
+# output-enable edge, and the arm is one, starts the firmware's recovery slew
+# on the Hand lane (leg_interp.cpp, "Hand lane slews on its OWN flag"): the
+# Hand's command starts at the encoder captured at the edge and walks toward
+# the lane's target at 5 rev/s^2 up to 1 rev/s, and the lane is handed back
+# only once the walk is within 0.002 rev of the target. The triangle stage
+# used to start its clock at the arm, moving at --tri-speed from its first
+# frame (and its pre-arm "hold" was frame(0.0), a knot moving at --tri-speed).
+# Above 1 rev/s the target recedes faster than the slew can follow, so the
+# slew NEVER hands back, the Hand crawls on the slew, and the deviation belt
+# sees the plan run away at the triangle speed: 0.5 rev about 50 ms in at
+# 10 rev/s. That is every one of the 16 attempts of 2026-11-20 23:37-23:42
+# (temp/logs/hand_stream_triangle_20261120_23*.csv): cmd_rev steps 0.25 rev
+# per row from row 0, enc_rev is flat, and echo_rev is the slew's own
+# 2.5 t^2 parabola (+0.006, +0.012, +0.025 rev above start at ~50, 70, 100 ms
+# after the edge). The belt was right to fire. So the triangle stage now
+# streams a TRUE hold (v = 0) at its start position from before the arm and
+# starts the triangle clock only when the firmware's echo, received after the
+# arm, sits within RECOVER_SLEW_DONE_EPS_REV of that position.
+RECOVER_SLEW_VEL_RPS = 1.0        # canbridge_config.h
+RECOVER_SLEW_ACCEL_RPS2 = 5.0     # canbridge_config.h
+RECOVER_SLEW_DONE_EPS_REV = 0.002  # canbridge_config.h
+# The slew covers an edge offset d in sqrt(2 d / 5) s up to d = 0.1 rev and in
+# 0.2 + (d - 0.1) s beyond it. Under the true hold, d is the closed-loop hold
+# error at the arm (<= 0.02 rev on 2026-11-20, about 0.09 s of slew), so:
+TRI_HANDBACK_MIN_S = 0.3   # never start sooner (covers d <= 0.2 rev unconfirmed)
+TRI_HANDBACK_MAX_S = 1.5   # covers d <= 1.4 rev; past it a fresh echo still off
+                           # the start ABORTS, and no fresh echo at all starts
+                           # the clock here on the slew law alone (said aloud)
+
+
+class HoldThenTriangle:
+    """A true hold at ``p0`` (velocity 0) until ``t0`` is set, then ``inner``
+    on its own clock from ``t0``. ``t0`` is set by the stage loop at the
+    arm-edge hand-back (see RECOVER_SLEW_* above), so every knot before it,
+    the pre-arm hold stream included, is stationary."""
+
+    def __init__(self, p0, inner):
+        self.p0 = float(p0)
+        self.inner = inner
+        self.t0 = None
+
+    def sample(self, t):
+        if self.t0 is None or t < self.t0:
+            return self.p0, 0.0
+        return self.inner.sample(t - self.t0)
+
+
+def tri_handback_step(t, start_rev, echo, echo_fresh):
+    """The hand-back decision for one loop tick, PURE.
+
+    Returns 'wait', 'go', 'go_unconfirmed' or 'abort'. ``echo`` is the cached
+    (t_us, pos, vel_ff) or None; ``echo_fresh`` says it was received after the
+    arm was verified (an echo from before the edge proves nothing)."""
+    if t < TRI_HANDBACK_MIN_S:
+        return 'wait'
+    if echo is not None and echo_fresh:
+        if abs(float(echo[1]) - float(start_rev)) <= RECOVER_SLEW_DONE_EPS_REV:
+            return 'go'
+        return 'abort' if t >= TRI_HANDBACK_MAX_S else 'wait'
+    return 'go_unconfirmed' if t >= TRI_HANDBACK_MAX_S else 'wait'
+
+
+# The triangle's deviation belt default, speed-derived (2026-11-21). The old
+# flat 0.5 rev was derived for motion <= 0.5 rev/s (see _MAX_DEV_DEFAULT) and
+# the 10 and 20 rev/s triangles of b99dd3a5 sit outside that derivation.
+#   v / pos_gain: the ODrive's position-loop lag if the velocity feedforward
+#     contributed NOTHING (pos_gain 35: 28.6 ms of travel), an upper bound on
+#     the steady tracking lag; the robot strokes of 2026-09-04 measured 6-13 ms
+#     (0.54-1.23 rev at ~95 rev/s). A first-order lag of a triangle never
+#     exceeds v * tau, the corners included.
+#   0.5 rev floor: the old belt, kept whole, absorbs what the lag term does
+#     not: the firmware's Hermite rounding of a vertex (v * SEG_T / 4, 0.125
+#     rev at 20 rev/s), the encoder age extrapolation across a reversal, and
+#     the start's velocity step (half of every vertex's 2v step).
+# 0.5 rev/s: 0.514 rev (was 0.5); 10 rev/s: 0.786; 20 rev/s: 1.071. Past
+# MAX_LEAD_HAND_REV (2.0, at ~52 rev/s) the stage refuses unless --max-dev
+# is given. --max-dev still overrides the default.
+TRI_BELT_FLOOR_REV = 0.5
+
+
+def tri_belt_default(speed_rps, pos_gain):
+    return TRI_BELT_FLOOR_REV + abs(float(speed_rps)) / float(pos_gain)
 
 
 def triangle_envelope_refusal(start_rev, span_rev):
@@ -1326,7 +1418,8 @@ def main():
                     help="driver deviation belt |cmd − (enc + vel·age)| abort (rev), "
                          "velocity-compensated like the firmware residual; ≤ 2.0 "
                          "(the firmware hand lead clamp) so the belt fires first. "
-                         "Default is per-stage (hold/triangle/step/moving_gap 0.5, "
+                         "Default is per-stage (hold/step/moving_gap 0.5, triangle "
+                         "0.5 + speed/pos_gain (see tri_belt_default), "
                          "gap |gap-delta|+0.5) — see _MAX_DEV_DEFAULT's derivation. "
                          "With --trip-guard the cap and default both change: "
                          "default |gap-delta|+1.0 (ABOVE the firmware band, on "
@@ -1438,9 +1531,13 @@ def main():
             ap.error("--tri-span and --tri-speed must be positive for --tri-cut")
         t_cut = tri_cut_time(args.tri_span, args.tri_speed, args.tri_cut,
                              args.tri_cut_cycle)
-        if args.duration < t_cut + 0.5:
+        # the triangle clock starts up to TRI_HANDBACK_MAX_S after the arm
+        need = t_cut + TRI_HANDBACK_MAX_S + 0.5
+        if args.duration < need:
             ap.error(f"--duration {args.duration:g} s ends before the cut at "
-                     f"t={t_cut:.2f} s (need >= {t_cut + 0.5:.2f} s)")
+                     f"triangle t={t_cut:.2f} s (need >= {need:.2f} s: the "
+                     f"triangle starts up to {TRI_HANDBACK_MAX_S:g} s after "
+                     f"the arm)")
     if args.stage == "stroke_cut":
         if args.stroke_peak_vel is None:
             args.stroke_peak_vel = (SC.SLOW_PEAK_DEFAULT if args.cut_mode == "slow"
@@ -1507,6 +1604,13 @@ def main():
             args.max_dev = abs(args.gap_delta) + 1.0
         elif args.stage == "gap":
             args.max_dev = max(0.5, abs(args.gap_delta) + 0.5)
+        elif args.stage == "triangle":
+            args.max_dev = tri_belt_default(args.tri_speed,
+                                            float(hw.ODRIVE_HAND_POS_GAIN))
+            if args.max_dev > MAX_LEAD_HAND_REV:
+                ap.error(f"--tri-speed {args.tri_speed:g} rev/s derives a belt of "
+                         f"{args.max_dev:.3f} rev, past the firmware lead clamp "
+                         f"{MAX_LEAD_HAND_REV} rev; lower --tri-speed")
         else:
             args.max_dev = _MAX_DEV_DEFAULT[args.stage]
     if args.trip_guard:
@@ -1792,7 +1896,12 @@ def main():
                 print(f"ABORT: {why_env} (post-bring-up position {start:+.4f} rev; "
                       f"the hand is CLOSED_LOOP and holding there)")
                 return 2
-            traj = Triangle(start, args.tri_span, args.tri_speed)
+            if args.stage == "triangle":
+                # a TRUE hold until the arm-edge hand-back (see RECOVER_SLEW_*)
+                traj = HoldThenTriangle(start, Triangle(start, args.tri_span,
+                                                        args.tri_speed))
+            else:
+                traj = Triangle(start, args.tri_span, args.tri_speed)
             if args.tri_cut is not None:
                 tri_cut, why_tc = plan_tri_cut(
                     start, args.tri_span, args.tri_speed, args.tri_cut,
@@ -1920,6 +2029,7 @@ def main():
             client.set_heartbeat_flags(0)
             hold_stop.set(); hold_thread.join(timeout=1.0); return 2
         armed = True
+        t_armed_mono = time.monotonic()     # the triangle hand-back's echo freshness bar
         hold_stop.set(); hold_thread.join(timeout=1.0)   # main loop takes over NOW
         print(f"ARMED — streaming (hold thread sent {hold_state['sent']} frames).")
 
@@ -2028,6 +2138,32 @@ def main():
             if t > args.duration:
                 break
             idx += 1
+
+            if args.stage == "triangle" and traj.t0 is None:
+                # The arm-edge hand-back (RECOVER_SLEW_*): hold at start until
+                # the firmware's recovery slew has handed the lane back, then
+                # start the triangle clock on THIS frame.
+                with _lock:
+                    e_hb = _cache["echo"]
+                    e_mono = _cache.get("echo_mono")
+                fresh = e_mono is not None and e_mono >= t_armed_mono
+                hb_step = tri_handback_step(t, start, e_hb, fresh)
+                if hb_step == 'abort':
+                    print(f"ABORT: the firmware's arm-edge recovery slew has not "
+                          f"handed the Hand back {t:.2f} s after the arm: echo "
+                          f"{float(e_hb[1]):+.4f} rev vs the held start "
+                          f"{start:+.4f} rev (needs within "
+                          f"{RECOVER_SLEW_DONE_EPS_REV} rev). The triangle was "
+                          f"NOT started; the Hand only ever held.")
+                    break
+                if hb_step in ('go', 'go_unconfirmed'):
+                    traj.t0 = t
+                    print(f"triangle clock starts at stage t={t:.3f} s "
+                          + ("(echo back on the start: the recovery slew handed back)"
+                             if hb_step == 'go' else
+                             f"(NO echo since the arm; started on the slew law "
+                             f"alone after {TRI_HANDBACK_MAX_S:g} s, which covers "
+                             f"an edge offset up to 1.4 rev)"))
 
             with_hand = True
             hand_override = None
@@ -2148,12 +2284,13 @@ def main():
             if sp is None:
                 print(f"ABORT: pump refused a stage frame: {why}"); break
             client.send_stream(int(MsgType.SETPOINT), sp.pack())
-            if tri_cut is not None and t >= tri_cut['t_cut']:
+            if (tri_cut is not None and traj.t0 is not None
+                    and t - traj.t0 >= tri_cut['t_cut']):
                 # The automated cut (BUG-105): this frame was the last one.
                 # Leave the loop BEFORE anything else (no belt read, no CSV
                 # row, no further frame) and disarm at once below; this is
                 # what a Ctrl-C landing straight after this send does.
-                tri_cut_hit = (t, float(cmd_t['hand_rev']),
+                tri_cut_hit = (t - traj.t0, float(cmd_t['hand_rev']),
                                float(cmd_t['hand_vel_rps']),
                                float(cmd_t['hand_next_rev']))
                 break
