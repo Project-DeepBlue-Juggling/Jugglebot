@@ -4,7 +4,7 @@ namespace icm42688 {
 
 // ---- Register map (bank 0). Every address, bit and code below was checked against DS-000347 rev 1.6
 // (pcbsync.com mirror) on 2026-11-18; see README "Register verification" for the table. The one exception is
-// UI_FILT_CODE (icm42688.h), which is the bench value and NOT verified for the agreed ODR/4 setting. ----
+// UI_FILT_CODE (icm42688.h), the bench value 0x00 (UI filter ODR/2), kept by owner decision 2026-11-20. ----
 static const uint8_t REG_DEVICE_CONFIG = 0x11;   // bit0 SOFT_RESET_CONFIG
 static const uint8_t REG_INT_STATUS = 0x2D;      // bit4 RESET_DONE, bit1 FIFO_FULL (clear on read)
 static const uint8_t REG_FIFO_DATA = 0x30;

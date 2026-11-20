@@ -70,6 +70,21 @@ def test_header_codec_matches_the_spec_offsets():
             h.payload_crc32) == (-321, 4321, 17, 29, 1357, 11, 0xDEADBEEF)
 
 
+def test_header_temperatures_decode_to_degrees_c_in_the_capture_json():
+    """The header temp fields are raw TEMP_DATA counts (spec section 3: degC = raw / 132.48 + 25), written by
+    the firmware as the FIFO byte x 64 (imu_service.h temp_data_from_fifo), NOT the STATUS i8 with its -128 =
+    unknown. The 2026-11-20 capture 20261120T095142Z_C33B read -128 in both fields beside a STATUS temp_c of
+    24: FIFO byte -2, 24.03 degC, the same reading. The decoded keys sit beside the raw ones, which stay."""
+    d = cap.header_to_dict(pi.decode_header(_hand_header(t0=-128, t1=640)))
+    assert (d["temp_raw_start"], d["temp_raw_freeze"]) == (-128, 640)
+    assert d["temp_c_start"] == pytest.approx(25.0 - 128 / 132.48, abs=1e-9)        # 24.03
+    assert round(d["temp_c_start"]) == 24                                            # the STATUS temp_c
+    assert d["temp_c_freeze"] == pytest.approx(25.0 + 640 / 132.48, abs=1e-9)      # FIFO byte 10: 29.83
+    # N = 0: the board never captured a sample, so it wrote 0 for "no reading" (not 25.0 degC)
+    e = cap.header_to_dict(pi.decode_header(_hand_header(n_samples=0, n_anchors=0, t0=0, t1=0)))
+    assert e["temp_c_start"] is None and e["temp_c_freeze"] is None
+
+
 def test_header_self_check_rejects_corruption_and_wrong_version():
     good = _hand_header()
     bad = bytearray(good)
@@ -356,6 +371,7 @@ def test_writer_round_trip(tmp_path):
     side = json.load(open(path[:-4] + ".json"))
     assert meta == side and side["flags"]["complete"] is True
     assert side["header"]["capture_id"] == 0x4A21 and side["attempt_id"] == "A-7"
+    assert "temp_c_start" in side["header"] and "temp_c_freeze" in side["header"]
     assert side["fit"]["rate_hz"] == pytest.approx(1e6 / 1010.0, rel=1e-3)
     # a second capture in the same second never overwrites
     assert cap.write_capture(str(tmp_path / "imu"), c, now=1_700_000_000) != path

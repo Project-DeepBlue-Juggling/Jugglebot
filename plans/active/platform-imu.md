@@ -76,7 +76,7 @@ is 0.031 dps, under the 0.05 to 0.07 dps rms bench noise, so the wide range cost
 | --- | --- |
 | I2C on Platform Teensy pins 18 and 19 (Stemma QT), 1 MHz with 400 kHz fallback. No INT1 or CLKIN wire, no new interrupt source | An interrupt running during the FwUpdate COMMIT copy touches flash-resident code and can brick a board whose only recovery is that update path [fw] |
 | 2.2 kOhm external pull-ups on SDA and SCL at the Platform Teensy are required (2026-11-20, logbook 2026-11-20-platform-imu-i2c-error-bursts), in parallel with the existing 3.9 kOhm | Corrupted I2C reads (the chip stops driving SDA mid-read) and 1 s holes in captures: the error rate was about one per 15 to 40 s without them and 0 in 300 s with them |
-| ICM-42688-P at ODR 1 kHz, UI filter ODR/4 (register code to be checked against the datasheet as the bench README did; P1b could not reach a readable DS-000347 text, so `icm42688.h` keeps the bench value 0x00 with a TODO until it is verified), 16-bit FIFO packets, driver lifted from `tools/probes/imu_bench/firmware/src/icm42688.*` | A second, untested driver; 20-bit packets that break the 6 x int16 layout |
+| ICM-42688-P at ODR 1 kHz, UI filter ODR/2, `GYRO_ACCEL_CONFIG0` 0x00 (decided 2026-11-20, owner: the data is used offline and filtered in software, and it is the code the firmware writes and the capture header records; replaces the earlier ODR/4), 16-bit FIFO packets, driver lifted from `tools/probes/imu_bench/firmware/src/icm42688.*` | A second, untested driver; 20-bit packets that break the 6 x int16 layout |
 | No live stream. One 1 Hz status frame during an Attempt (state, temperature, FIFO overflow and I2C error counters, clock-sync quality, capture fill). Live-stream IDs reserved, not used | Adding bus load where an Attempt already runs about 64 %, for data the owner will not use online |
 | Capture ring in RAM2 (`DMAMEM` static array, about 384 KB, clear of the top 128 B CrashReport area), recording continuously while the IMU is healthy, 6 x int16 per sample, 32 s at 1 kHz. The Jetson freezes it at Attempt end and on a Fault or Soft E-stop, uploads, then resumes. Attempts over 32 s keep the last 32 s | Missing the capture of the Attempt that went wrong (the freeze on Fault); a ring overrunning into CrashReport |
 | Each FIFO drain batch is stamped with `TimeSync::get_wall_time_us()`; sample times are rebuilt on the Jetson from sample count and a fitted chip rate (chip clock good to about 1 %, FIFO tick 32/30 us). Metadata carries the anchors. Clock-sync quality goes in the status frame | Trusting the nominal ODR and drifting about 1 % against the Mocap and encoder logs; clock quality that today only prints to the dead USB console [fw] |
@@ -179,9 +179,10 @@ without a power cycle; the rate ramp below. Status: in progress (2026-11-20).
 Done at rest (`2026-11-20-platform-imu-status-counters-and-first-capture`, `2026-11-20-platform-imu-i2c-error-bursts`):
 both identities read as flashed (FW 12 and bridge FW 46); the tilt request and the Hand fan answer; the status frame
 arrives and carries the new counters; the at-rest capture reads |a| 1.0004 g at about 1 kHz with 0 overflows; one
-upload passed its CRC with no holes (56.25 s, not Armed). GYRO_ACCEL_CONFIG0 reads back 0x00 (ODR/2, what the firmware
-writes); the ODR/4 code is still unverified. Open defect: the capture header's `temp_raw_start` and `temp_raw_freeze`
-read -128 although the status frame reports 24 C.
+upload passed its CRC with no holes (56.25 s, not Armed). GYRO_ACCEL_CONFIG0 reads 0x00 in the header (ODR/2; the
+byte is the firmware's `UI_FILT_CODE` constant, not a chip read), and ODR/2 is now the decided setting (owner, 2026-11-20). The capture header's `temp_raw_start` and
+`temp_raw_freeze` of -128 were not a defect: they are TEMP_DATA counts, 24.03 C, matching the status frame's 24 C; the
+capture `.json` now carries them decoded (`2026-11-20-platform-imu-capture-header-temperature`).
 
 Remaining (needs the owner, robot powered): the forced-gap upload; an upload while Active between Attempts with the
 rate ramp; the automatic upload after an Attempt and after a Fault; the IMU unplug and replug check; an Armed soak
@@ -191,9 +192,9 @@ listed residue.
 **Rate ramp.** Holding the between-Attempts pose, step the upload pace through 400, 800, 1250 and 1600 frames/s. At
 each step read the bridge's loop and emit-gap counters, RX queue depth, bus error counts, ODrive errors and the Leg
 position error. The operating rate is the highest step with no change from the idle baseline. Pre-registered fallback
-if 1250 is not clean: the highest clean rate with a longer wait, then tighter sample packing (section 6). Also read
-GYRO_ACCEL_CONFIG0 back from the chip and settle the ODR/4 UI-filter code from it (owner, 2026-11-19: the datasheet
-text could not be obtained). The tilt request's explicit invalid reply with the inclinometer absent is covered by
+if 1250 is not clean: the highest clean rate with a longer wait, then tighter sample packing (section 6). The UI-filter
+code is settled at 0x00, ODR/2 (owner, 2026-11-20; it was open since 2026-11-19 because the datasheet text could not
+be obtained). The tilt request's explicit invalid reply with the inclinometer absent is covered by
 P2's native tests (the SCL3300 is not unplugged on the robot); the invalid encoding of the 0x6E0 frame is a P2 item.
 
 ### P5: Sitting 2, mount calibration and first Attempt captures

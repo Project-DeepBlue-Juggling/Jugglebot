@@ -43,9 +43,9 @@ class Driver {
   static const int BURST_PKTS = 8;
 
   // GYRO_ACCEL_CONFIG0 (0x52) value: accel UI filter BW in [7:4], gyro in [3:0].
-  // TODO(IDEA-20 P2): the agreed setting is ODR/4. From memory of DS-000347 14.40 the code is 1 (0x11), but that
-  // was NOT verified against the datasheet text in this unit (no readable mirror was reachable), so this keeps the
-  // bench value 0x00 (BW = ODR/2). Verify 0x11 = ODR/4 against 14.40, then set it here; the header records it.
+  // Decided 2026-11-20 (owner): 0x00, UI filter BW = ODR/2 for both, the bench value. The data is used offline,
+  // where any further low-pass is applied in software, so the wider band costs nothing. The capture header's
+  // GYRO_ACCEL_CONFIG0 byte records this constant (the code written at init), read 0x00 on the robot 2026-11-20.
   static const uint8_t UI_FILT_CODE = 0x00;
   static const uint8_t INIT_STEP_RESET_POLLS = 20;
 
