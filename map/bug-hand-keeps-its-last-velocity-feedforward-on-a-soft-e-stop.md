@@ -4,7 +4,7 @@ kind: bug
 title: Hand keeps its last velocity feedforward on a Soft E-stop, disarm or link loss and stays in Closed-loop
 status: in_progress
 created: '2026-11-14'
-updated: '2026-11-20T14:03:11Z'
+updated: '2026-11-20T21:08:20Z'
 owners: []
 priority: high
 effort: s
@@ -77,3 +77,4 @@ The property is not new: `tests/hardware/hand_stream_bench.py:150` and the 2026-
 ## Progress
 
 - 2026-11-21: Not flown at the bench Sitting of 2026-11-20: every triangle run aborted on the tool's 0.5 rev belt within 50 ms. Cause: the firmware's arm-edge recovery slew (1 rev/s cap) cannot follow a ramp that starts at the arm. Fix held on night-shift/2026-11-21-BUG-105 (0bcea663); it also widens the belt to 0.5 + speed/35, which waits for the owner.
+- 2026-11-21: 2026-11-21: the triangle fix is on main (fcdb3ecc). Owner ruled the belt: 0.5 + speed/35 rev (0.79 at 10 rev/s, 1.07 at 20). The row is ready for the next bench Sitting; the sheet commands are unchanged.

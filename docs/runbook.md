@@ -6,13 +6,13 @@ waiting Items: the order a Sitting flies in, and every step, is on its Sitting s
 
 Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
-## Robot  (11 Items, 276 min)
+## Robot  (11 Items, 315 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
 | BUG-111 Hand SPINOUT at the Throw peak after a setpoint 12.6 ms late (2026-11-18) | 5 | level, armed, bb-fed | - | - |
 | BUG-122 Hand stays homed after its drive loses the position reference, so the next move rams the top stop | 5 | level | `night-shift/2026-11-20-BUG-122` | - |
-| BUG-58 Firmware scheduler STOPs a streamed lane while frames arrive on time and the host stream is clean: LANE_REFUSED ends, cause unseen | 1 | armed | - | - |
+| BUG-58 Firmware scheduler STOPs a streamed lane while frames arrive on time and the host stream is clean: LANE_REFUSED ends, cause unseen | 40 | armed | - | - |
 | BUG-78 Two-ball Columns runs end on a missed Catch of Ball 2 with no collision: 13 of 23 ends, mean run 22 Throws | 20 | level, armed, bb-fed | - | - |
 | BUG-89 teensy_bridge_node forwards only the newest waiting knot; harmless at emit lead 0, but the cover has 7-14 ms of margin against a stall | 40 | level, armed, bb-fed | - | - |
 | FEAT-32 Pre-release hold rung: release from a moving Platform (hold 0.100 → 0) | 45 | armed, bb-fed, bridge-cycled | - | - |
