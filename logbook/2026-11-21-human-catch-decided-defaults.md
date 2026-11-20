@@ -28,4 +28,4 @@ Sweep evidence (clear 0.3 / return 1.0 vs 0.5 / 1.0): planned 21 vs 18, D10 good
 
 - 2026-11-21, `pytest -q tests/motion/test_skills_human_catch*.py tests/ros/test_skill_node_human_catch*.py tests/tracking/test_human_catch_replay.py tests/motion/test_skills_nominate_human_catch.py tests/motion/test_skills_executor_human_catch.py`: **662 passed in 283.79 s** (the same files plus `tests/sim/test_logbook_front_matter.py`, `test_logbook_index.py`, `test_plans_index.py`, `test_docs_links.py`, `test_no_legacy_item_ids.py`, `tests/ros/test_skill_node.py`).
 - 2026-11-21, replay of the cached 12:53:20-12:56:45 stream, hand frame, new defaults: planned 21, D10 good 13 of 23 in reach at 35 mm (matches the sweep's clear 0.3 / return 1.0 row, g35 = 13).
-- Full gate: GATE_RESULT_PLACEHOLDER
+- Full gate: 2026-11-21, `flock /tmp/jugglebot-tests.lock ./run_tests.sh` on the merge with main: parallel 10738 passed, 57 skipped, 1 xfailed, 4 warnings in 788.79s (0:13:08); serial 7 passed, 10806 deselected in 29.16s (rc=0 both phases)
