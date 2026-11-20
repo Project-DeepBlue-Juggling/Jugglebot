@@ -4,7 +4,7 @@ kind: idea
 title: JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them
 status: in_progress
 created: '2026-10-30'
-updated: '2026-11-20T04:13:04Z'
+updated: '2026-11-20T07:07:56Z'
 owners: []
 priority: medium
 effort: xl
@@ -139,3 +139,4 @@ Not checked: a replay on the candidate Tracker, a replay with a lowered floor, w
 - 2026-11-18: P1 and P2 of plan human-partner-juggling.md are built, audited and on main (Pattern human_catch, unflown). The Sitting section is now the single-lob data row. Owner 2026-11-18: the person is assumed not to drop; a Ball is dropped only when neither tracked nor felt by the Hand.
 - 2026-11-20: Sitting of 2026-11-20 (data): single lobs recorded 12:52-12:57. Replay (temp/probes/human_catch_2026-11-20/2026-11-20_12-49-25_replay.md): 55 lobs, 49 crossing the Catch plane, 23 inside the Cup's reach, 16 of those with an admitted plan (5 refused BUSY, 2 NO_EVENT); planned Cup centre to real crossing median 30.5 mm, worst 52.0 mm.
 - 2026-11-20: Most Balls were caught by hand near the Cup, which the replay does not model.
+- 2026-11-20: Rerun on the owner's window 12:53:20-12:56:45 (temp/probes/human_catch_2026-11-20/2026-11-20_12-49-25_125320_125645_replay.md): the same 55 lobs, first at 12:53:20.6, last at 12:56:39.6. Hand frame unchanged (23 in reach, 16 planned, median 30.5 mm, worst now 57.2 mm); robot frame 19 in reach, 13 planned, median 25.8 mm. Declines overall: SETTLE_SITE 19, BUSY 8.

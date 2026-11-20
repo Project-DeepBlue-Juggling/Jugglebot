@@ -4,12 +4,12 @@ kind: bug
 title: 'A guard latch leaves the Hand pushing at full current: no stall guard on the streamed lane or a latched hold'
 status: in_progress
 created: '2026-11-20'
-updated: '2026-11-20T05:22:21Z'
+updated: '2026-11-20T07:07:50Z'
 owners: []
 priority: high
 effort: m
-hardware: none
-owner: decision
+hardware: robot
+owner: hands
 radius: subsystem
 diagnosis: confirmed
 area: can-bridge
@@ -40,6 +40,24 @@ Owner decisions, with the measured numbers:
 
 The owner intends to keep running this motor to establish the cut-offs.
 
+## Sitting
+
+- setup: bridge-cycled
+- why: the guard must be seen to put a pushing Hand into Idle outside the ladder, with its latch, log line and recovery, without holding the damaged motor at 70 A.
+- do:
+  - Check out the branch, rebuild both packages, flash the can-bridge with FW 47 and power-cycle the bridge; check `BRIDGE_FW_CHECK` passes at 47.
+  - Launch and home; do NOT arm. Lower the Hand drive's current limit to 45 A for this test.
+  - Move the Hand to mid-stroke with a Hand move, wait for it to finish, then lower it onto its bottom stop.
+  - Command a Hand position about 0.5 rev below the bottom stop and watch the Hand current and the log.
+  - Clear errors, re-home, and put the Hand current limit back to 70 A.
+- pass: the Hand goes Idle within 200 ms of its current first reaching 40 A; the launch log shows the HAND_STALL line and `fault_state` HAND_STALL; ACTIVATE is refused until errors are cleared; no second current rise.
+- record: the time from the first 40 A sample to Idle, the peak current, the thermistor before and after, the log line, the bag path.
+- minutes: 15
+- branch: night-shift/2026-11-20-BUG-123
+
 ## Progress
 
 - 2026-11-20: Owner decision, 2026-11-20: 40 A / 1 rev/s / 150 ms, then the Hand enters Idle. Being built as can-bridge FW 47 on a held branch.
+- 2026-11-20: Built and held on night-shift/2026-11-20-BUG-123 (d75d42a7): can-bridge FW 47, PROTOCOL unchanged. Outside the ladder, 40 A or more at 1 rev/s or less for 150 ms of real samples sends the Hand Idle and latches a new fault HAND_STALL (INVARIANTS I-FW-17); the Legs are held as for a Hand drive fault; only the operator's clear releases it.
+- 2026-11-20: FW 47 branch verification: native tests 41 of 41 cases, compile OK; not flashed, no full gate.
+- 2026-11-20: Open on the branch: the Sitting proof pushes this motor at about 45 A for under 0.5 s (the bench Hand is the zero-risk alternative); the exact commands for the current limit and the raw position move are fixed when the sheet is written. Closest margin in the 2026-11-20 data: a latched hold at 36.2 A. A Hand-only CAN silence is not covered by any guard.
