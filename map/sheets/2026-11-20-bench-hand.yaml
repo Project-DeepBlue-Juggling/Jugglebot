@@ -169,21 +169,21 @@ steps:
 
   - n: 11
     kind: run
-    title: "Volume run: 15 runs of 10 rung C brakes"
+    title: "Volume run: 150 rung C brakes in one run"
     from: [bridge-cycled]
     to: [bridge-cycled]
     actions:
       - where: Terminal 1
-        command: python tests/hardware/hand_stream_bench.py --stage stroke_cut --close-loop --top-stop <measured> --repeat 10 --stroke-peak-vel 108 --cut-at-vel 103 --stroke-accel 2300 --stroke-top 8.3
+        command: python tests/hardware/hand_stream_bench.py --stage stroke_cut --close-loop --top-stop <measured> --repeat 150 --stroke-peak-vel 108 --cut-at-vel 103 --stroke-accel 2300 --stroke-top 8.3
       - where: Terminal 1
-        text: "Run this 15 times (150 brakes) and keep a tally. After each run read its verdict line and go on only if all 10 brakes were PASS. After the 15th clean run go to step 12."
+        text: "Replace <measured> as in step 10, and type yes at the ARM prompt. The run takes about 8 minutes, about 3 s per brake. Before each brake it prints 'run N of 150' with the motor and FET temperatures, and after it a verdict line. It stops by itself at the first brake that is not PASS, the first fault and the first sched_refused above 0, and always ends with a TALLY line. It cannot pause: the E-stop is the stop."
       - where: Hands
-        text: "Every 5 runs touch the motor. Stop if it is too hot to keep a hand on."
+        text: "Watch the temperatures on the run lines (0.0 for both means the drive does not report them). When the run has ended, touch the motor. Stop if it is too hot to keep a hand on."
       - where: Terminal 2
-        text: "AT THE FIRST FAULT: stop, and leave this terminal alone until it prints the saved path (up to about 5 s). Only then, in Terminal 1: python tests/hardware/hand_stream_bench.py --clear-errors (the Item's recovery, hand_stream_bench.py --clear-errors)."
-    see: "Each run: 10 upstrokes with hard stops, each PASS, fault NONE, sched_refused 0. Terminal 2 may save a _clean window after each run."
-    stop_if: "Any fault, any brake not PASS, a sched_refused above 0, a hot motor, or a new noise. A fault with a saved window is the result this row is looking for, not a failure: stop the row there and go to step 12. Never press Ctrl-C on the stage mid-stroke. If the drive restarts (power cycle), repeat step 5, park at 0.3 to 0.7 rev, and repeat step 7 before anything else."
-    record: "Runs and brakes flown, and any sched_refused above 0. For a fault: the run and brake number, the stage's fault line, and the saved path Terminal 2 printed. Anything heard or felt. Type pending: the verdict is computed at the debrief."
+        text: "AT THE FIRST FAULT: leave this terminal alone until it prints the saved path (up to about 5 s). Only then, in Terminal 1: python tests/hardware/hand_stream_bench.py --clear-errors (the Item's recovery, hand_stream_bench.py --clear-errors). In one long run the drive stays in closed loop between brakes, so expect at most one _clean window, after the stage exits."
+    see: "Run lines counting up to 150, each brake PASS with fault NONE and sched_refused 0, and a last line reading 'TALLY: 150 of 150 brakes flown, all PASS'."
+    stop_if: "The stage stops itself on a brake not PASS, a fault or a sched_refused above 0, and its TALLY line names the run. Press the E-stop for a new noise or a temperature you do not like. A fault with a saved window is the result this row is looking for, not a failure: go to step 12. Never press Ctrl-C on the stage mid-stroke. If the drive restarts (power cycle), repeat step 5, park at 0.3 to 0.7 rev, and repeat step 7 before anything else."
+    record: "The TALLY line and the last run line's temperatures. For a fault: the run number, the stage's ABORT line, and the saved path Terminal 2 printed. Anything heard or felt. Type pending: the verdict is computed at the debrief."
     serves:
       - {item: FEAT-45, do: [9, 10], pass: true}
 
@@ -206,45 +206,49 @@ steps:
 
   - n: 13
     kind: run
-    title: "Feedforward offset: cut a 10 rev/s upward ramp"
+    title: "Feedforward offset: the stage cuts a 10 rev/s upward ramp"
     from: [bridge-cycled]
     to: [bridge-cycled]
     actions:
       - where: Hands
         text: "Check: launch down, Hand parked at or below 0.9 rev, Cup empty, E-stop in hand, and the top stop from step 6 is at or above 6.0 rev."
       - where: Terminal 1
-        command: python tests/hardware/hand_stream_bench.py --stage triangle --tri-span 4 --tri-speed 10 --duration 60 --close-loop
+        command: python tests/hardware/hand_stream_bench.py --stage triangle --tri-span 4 --tri-speed 10 --tri-cut up --top-stop <measured> --close-loop
       - where: Terminal 1
-        text: "The Hand ramps up 4 rev and back at 10 rev/s. Press Ctrl-C ONCE in the middle of an upward ramp, well away from either turning point. Note the last commanded position the stage printed."
+        text: "Replace <measured> with the top stop from step 6 and type yes at the ARM prompt. Touch nothing else: the Hand ramps up 4 rev and back at 10 rev/s, and in the middle of the second upward ramp the stage cuts its own stream, the same as a Ctrl-C there. It waits 2 s and prints its tri-cut lines."
       - where: Terminal 1
         command: python tests/hardware/bench_hand_frame_bench.py status
       - where: Terminal 1
         command: python tests/hardware/hand_stream_bench.py --clear-errors
       - where: Terminal 1
         text: "Then, if status shows the Hand above 0.9 rev: python tests/hardware/bench_hand_frame_bench.py home, and lift the Hand to between 0.3 and 0.7 rev."
-    see: "After Ctrl-C the Hand coasts on and holds about 10 / 35 = 0.29 rev ABOVE the last commanded position, without drifting."
-    stop_if: The Hand keeps moving after Ctrl-C or drifts (press the E-stop), or a fault will not clear.
-    record: "Ramp direction, last commanded position, settled position (status), the offset, and whether any Guard or latch fired."
+    see: "The tri-cut lines: the last knot sent, the firmware's last command, a settled position about 10 / 35 = 0.29 rev ABOVE the firmware's last command, drift near 0, and fault_state NONE. Status shows the same position."
+    stop_if: "The stage refuses or prints an ABORT (do not change the command to get past it), the Hand keeps moving after the cut or drifts (press the E-stop), or a fault will not clear."
+    record: "The tri-cut lines: ramp direction, last knot, the firmware's last command, settled position, the offsets, and any Guard or latch. The status line."
     serves:
       - {item: BUG-105, do: [0, 1, 2]}
 
   - n: 14
     kind: run
-    title: "Feedforward offset: cut 20 rev/s ramps, one up and one down"
+    title: "Feedforward offset: the stage cuts 20 rev/s ramps, one up and one down"
     from: [bridge-cycled]
     to: [bridge-cycled]
     actions:
       - where: Terminal 1
-        command: python tests/hardware/hand_stream_bench.py --stage triangle --tri-span 4 --tri-speed 20 --duration 60 --close-loop
+        command: python tests/hardware/hand_stream_bench.py --stage triangle --tri-span 4 --tri-speed 20 --tri-cut up --top-stop <measured> --close-loop
       - where: Terminal 1
-        text: "First cut: Ctrl-C ONCE in the middle of an UPWARD ramp. Then status, --clear-errors, and re-park at or below 0.9 rev, exactly as in step 13."
+        text: "Type yes at the ARM prompt. The stage cuts in the middle of the second upward ramp and prints its tri-cut lines. Then status, --clear-errors, and re-park at or below 0.9 rev, exactly as in step 13."
+      - where: Hands
+        text: "The downward cut uses a 6 rev span (its triangle reaches about 6.7 rev), so it needs the top stop from step 6 at or above 7.3 rev; the stage refuses before it energises otherwise. If the top stop is lower, skip the downward cut and record why."
       - where: Terminal 1
-        text: "Second cut: run the same command again and press Ctrl-C ONCE in the middle of a DOWNWARD ramp. Then status and --clear-errors again."
+        command: python tests/hardware/hand_stream_bench.py --stage triangle --tri-span 6 --tri-speed 20 --tri-cut down --top-stop <measured> --close-loop
+      - where: Terminal 1
+        text: "Type yes. The stage cuts in the middle of the second downward ramp and prints its tri-cut lines. Then status and --clear-errors again."
       - where: Hands
         text: "Do not go faster than --tri-speed 20 in this row. Last, after the second --clear-errors: press the E-stop button once, run status, and note whether it still replies and what vbus reads. Release the button afterwards. If the drive lost power its reference is lost, which no longer matters."
-    see: "The Hand holds about 20 / 35 = 0.57 rev above the last command after the upward cut, and about 0.57 rev below it after the downward cut."
-    stop_if: The Hand keeps moving after Ctrl-C or drifts (press the E-stop), or the downward cut would end within 0.6 rev of the bottom stop (cut earlier in the ramp).
-    record: "For each cut: ramp direction, last commanded position, settled position, offset, any Guard or latch. What the E-stop button cuts. The bench top stop in rev. Type pending: the verdict is computed at the debrief."
+    see: "The settled position about 20 / 35 = 0.57 rev above the firmware's last command after the upward cut, and about 0.57 rev below it after the downward cut, drift near 0 and fault_state NONE both times."
+    stop_if: "The Hand keeps moving after a cut or drifts (press the E-stop), a fault will not clear, or the stage refuses a cut (do not change the command to get past the refusal)."
+    record: "For each cut the tri-cut lines: ramp direction, last knot, the firmware's last command, settled position, the offsets, any Guard or latch. What the E-stop button cuts. The bench top stop in rev. Type pending: the verdict is computed at the debrief."
     serves:
       - {item: BUG-105, do: [3, 4], pass: true, setup_waived: "the bench stage energises the Hand itself with --close-loop, so no earlier step arms it"}
 
