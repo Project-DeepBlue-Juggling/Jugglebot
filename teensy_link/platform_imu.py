@@ -17,6 +17,7 @@ imports it from the live tree through PYTHONPATH, so an edit is live at the next
 from __future__ import annotations
 
 import logging
+import math
 import queue
 import struct
 import threading
@@ -24,6 +25,8 @@ import time
 import zlib
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+import numpy as np
 
 from . import protocol as _protocol  # noqa: F401  (puts config/generated on sys.path)
 import protocol_config as pc  # noqa: E402
@@ -47,6 +50,15 @@ BRIDGE_ARMED_MIN_GAP_10US = pc.PLATFORM_IMU_BRIDGE_ARMED_MIN_GAP_10US  # 63 (the
 CAN_ID_REPLY = pc.CAN_ID_PLATFORM_IMU_REPLY
 CAN_ID_STATUS = pc.CAN_ID_PLATFORM_IMU_STATUS
 BATCH_MAX_FRAMES = 24
+NOMINAL_ODR_HZ = pc.PLATFORM_IMU_NOMINAL_ODR_HZ        # 1000, the boot rate
+FAST_ODR_HZ = pc.PLATFORM_IMU_FAST_ODR_HZ              # 2000 (FW 13, SET_ODR or the 2 kHz boot image)
+RING_SAMPLES = pc.PLATFORM_IMU_RING_SAMPLES            # 32000: 32 s at 1 kHz, 16 s at 2 kHz
+#: The first Platform FW_VERSION that appends a contiguous READ to the active block (READ_EXTENDED) instead
+#: of replacing it. Read from the frozen capture's own header (byte 52), not from the node's 0x6E0 identity
+#: poll: the header is written by the board that froze THIS capture in THIS boot (the boot byte is checked),
+#: so it cannot be stale after a reflash. An older board would answer a chained READ by REPLACING the block,
+#: dropping the rest of the one in flight (holes, healed by the refill, but every chain would cost them).
+CHAIN_MIN_FW_VERSION = 13
 
 
 # ── codecs ───────────────────────────────────────────────────────────────────────────────────────
@@ -100,6 +112,16 @@ class ImuStatus:
     @property
     def sensor_ok(self) -> bool:
         return bool(self.flags & pc.PlatformImuStatusFlag.SENSOR_OK)
+
+    @property
+    def odr_hz(self) -> int:
+        """The selected capture rate: ODR_2K (FW 13) set = 2 kHz, else 1 kHz (FW 12 and older never set it)."""
+        return FAST_ODR_HZ if self.flags & pc.PlatformImuStatusFlag.ODR_2K else NOMINAL_ODR_HZ
+
+    @property
+    def ring_s(self) -> float:
+        """Seconds of samples the ring holds at the selected rate (32 s at 1 kHz, 16 s at 2 kHz)."""
+        return RING_SAMPLES / float(self.odr_hz)
 
 
 @dataclass(frozen=True)
@@ -192,6 +214,17 @@ def parse_batch(payload: bytes) -> Tuple[BatchInfo, bytes]:
     return info, bytes(payload[_BATCH_HEAD.size:_BATCH_HEAD.size + 8 * count])
 
 
+def read_gap_check(value: Any) -> Tuple[bool, str]:
+    """Validate an operator's frame-gap request (the ``imu_read_gap_10us`` node parameter): an integer number
+    of 10 us from the board's floor (40, 400 us) to the u8 wire field's top (255). ``(ok, why-not)``."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return False, "must be an integer (x 10 us), got %r" % (value,)
+    if not PLATFORM_MIN_GAP_10US <= value <= 255:
+        return False, "must be %d..255 (x 10 us; the Platform clamps below %d), got %d" % (
+            PLATFORM_MIN_GAP_10US, PLATFORM_MIN_GAP_10US, value)
+    return True, ""
+
+
 # ── configuration, job, result ───────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -215,6 +248,19 @@ class UploadConfig:
     # 14,651 duplicates of 82,580 frames and about 13 s of a 79 s capture (AEDE); modelled with this rule:
     # about 200 duplicates and about 1.3x the READs. READ_MAX (256) restores the old behaviour.
     refill_merge_words: int = 16
+    # READ chaining (FW 13, spec section 4 "READ chaining"; host rule in section 7). While block k is in flight
+    # the next CONTIGUOUS block k+1 is sent once k is within this much time of its end, judged two ways, the
+    # earlier wins: the highest seq received is within ceil(chain_lead_s / gap) words of k's end, or the clock
+    # is within chain_lead_s of k's predicted end. 80 ms is about 5x the measured 16 ms READ turnaround and
+    # still covers a 20 ms worker poll plus the bridge's 10 ms batch flush (the progress estimate lags the
+    # board by up to that much); about 100 words at the 0.8 ms pace. 0 turns chaining off.
+    chain_lead_s: float = 0.08
+    # This many consecutive OK (not READ_EXTENDED) replies to chained READs turn chaining off for the rest of
+    # the upload: a board that replaces instead of extending (its header claimed FW 13 wrongly) costs at most
+    # this many blocks of holes, which the refill pass heals. A single OK is a chain that arrived after the
+    # block had ended (a fresh block: only the turnaround lost), so one alone is not evidence.
+    chain_replace_limit: int = 2
+    chain_check_s: float = 0.05        # wait this long after an OK to a chained READ before judging the cut block's range
     max_stalled_blocks: int = 4        # consecutive blocks that delivered nothing new
     max_passes: int = 8                # full sweeps of a region (pass 1 + hole refills)
     max_crc_rereads: int = 1           # spec: one full re-read, then write flagged
@@ -283,6 +329,10 @@ class _Region:
         self.n_have = 0
         self.scan = 0
         self.passes = 1
+        # (missing count, first PASS1_SEQS missing seqs) when the first sweep wrapped; None until then
+        self.pass1: Optional[Tuple[int, List[int]]] = None
+
+    PASS1_SEQS = 500
 
     def put(self, seq: int, word: bytes) -> int:
         """1 new word, 0 duplicate, -1 not in this region."""
@@ -305,6 +355,8 @@ class _Region:
             return None
         i = self.have.find(b"\x00", self.scan)
         if i < 0:                      # swept to the end with holes left: a new pass from the start
+            if self.pass1 is None:
+                self.pass1 = (self.missing(), self.missing_seqs(self.PASS1_SEQS))
             self.passes += 1
             self.scan = 0
             i = self.have.find(b"\x00", 0)
@@ -324,8 +376,24 @@ class _Region:
         self.scan = end
         return self.base + self.lo + i, end - i
 
+    def peek_block(self) -> Optional[Tuple[int, int]]:
+        """What :meth:`next_block` would return, without moving the scan or counting a pass."""
+        scan, passes, pass1 = self.scan, self.passes, self.pass1
+        try:
+            return self.next_block()
+        finally:
+            self.scan, self.passes, self.pass1 = scan, passes, pass1
+
     def missing(self) -> int:
         return self.n - self.n_have
+
+    def missing_seqs(self, limit: int) -> List[int]:
+        out: List[int] = []
+        i = self.have.find(b"\x00")
+        while i >= 0 and len(out) < limit:
+            out.append(self.base + self.lo + i)
+            i = self.have.find(b"\x00", i + 1)
+        return out
 
 
 @dataclass
@@ -339,6 +407,12 @@ class _Block:
     n_new: int = 0
     last_seen: bool = False
     replied: bool = False
+    pred_end: float = 0.0              # when the board should send the block's last word (no slack)
+    chained: bool = False              # sent as an extension of the block before it (FW 13)
+    n_rx: int = 0                      # frames received in this block's seq range (new or duplicate)
+    hi_rx: int = -1                    # highest seq received in this block's range
+    no_chain: bool = False             # a chained READ on top of this block failed to queue: send the next fresh
+    prev: Optional[Tuple[int, int]] = None   # (first_seq, count) of the block this one was chained onto
 
 
 # Phases
@@ -377,6 +451,10 @@ class UploadMachine:
         self.k1 = 0
         self.full_coverage = True
         self.blk: Optional[_Block] = None
+        self.ahead: Optional[_Block] = None    # the chained READ sent while ``blk`` is in flight (FW 13)
+        self._chain = False                    # set from the header's fw_version (CHAIN_MIN_FW_VERSION)
+        self._replace_streak = 0
+        self._cut: Optional[tuple] = None      # (region, lo index, count, due): an OK to a chained READ awaiting its verdict
         self._cmd: Optional[dict] = None
         self.flags: Dict[str, Any] = {}
         self.stats: Dict[str, Any] = {}
@@ -424,7 +502,8 @@ class UploadMachine:
         self.t_job0 = now
         self.rereads_left = self.cfg.max_crc_rereads
         self.stats = {"blocks": 0, "block_timeouts": 0, "frames_rx": 0, "dup_frames": 0, "stray_frames": 0,
-                      "hole_passes": 0, "crc_rereads": 0, "block_gap_10us": 0}
+                      "hole_passes": 0, "crc_rereads": 0, "block_gap_10us": 0, "reads_chained": 0,
+                      "reads_replaced": 0, "reads_late": 0, "chain": False}
         self.flags = {"complete": False, "crc_checked": False, "crc_ok": None, "aborted": False,
                       "platform_rebooted": False, "already_frozen": False, "partial_span": False,
                       "span_unavailable": False, "resume_ok": None, "holes_unfilled": 0}
@@ -466,8 +545,10 @@ class UploadMachine:
             return False
         first, count = nb
         gap = self.effective_gap_10us()
-        deadline = now + count * gap * 10e-6 + self.cfg.block_slack_s
-        self.blk = _Block(first, count, now, deadline, gap, last_rx=now)
+        span = count * gap * 10e-6
+        self.blk = _Block(first, count, now, now + span + self.cfg.block_slack_s, gap, last_rx=now,
+                          pred_end=now + span)
+        self.ahead = None
         self.stats["blocks"] += 1
         self.stats["block_gap_10us"] = gap
         if r.passes > 1:
@@ -476,6 +557,57 @@ class UploadMachine:
         if not ok:
             logger.warning("IMU READ not queued: %s", msg)
         return True
+
+    def _maybe_chain(self, now: float) -> None:
+        """READ chaining (FW 13): keep one READ ahead so the Platform never idles between contiguous blocks.
+
+        The rule, in full (spec section 7, "READ chaining, host side"):
+
+        * Only when this capture's header says FW >= CHAIN_MIN_FW_VERSION, and chaining was not turned off by
+          ``chain_replace_limit`` consecutive OK replies to chained READs. Header READs are never chained (the
+          header decides).
+        * At most one READ ahead: ``self.ahead`` is None, and the current block shows it is on the board (its
+          OK/READ_EXTENDED reply or at least one of its frames arrived) and has not ended (last word not seen).
+        * When: the highest seq received is within ceil(chain_lead_s / gap) words of the block's end, or the
+          clock is within ``chain_lead_s`` of its predicted end, whichever is first.
+        * Only the CONTIGUOUS next block: ``first_seq`` equals the current block's end, in the same pass of the
+          same region. A hole-fill READ (any block not starting at that seq) is never chained: it goes out fresh
+          once the current block ends, exactly as before FW 13.
+        * The chained block's deadline runs from the current block's predicted end (``count x gap`` after it,
+          plus ``block_slack_s``); its gap is the effective gap NOW, so the Armed clamp still applies per READ.
+        """
+        b, r = self.blk, self.region
+        if (not self._chain or self.ahead is not None or b is None or r is None or b.no_chain or b.last_seen
+                or self.phase not in (ANCHORS, SAMPLES) or not (b.replied or b.n_rx)):
+            return
+        end = b.first_seq + b.count
+        lead_s = self.cfg.chain_lead_s
+        lead_words = int(math.ceil(lead_s / (b.gap_eff * 10e-6)))
+        if b.hi_rx < end - 1 - lead_words and now < b.pred_end - lead_s:
+            return
+        nb = r.peek_block()
+        if nb is None or nb[0] != end:
+            return                         # the next block is a hole refill (not contiguous): never chained
+        passes = r.passes
+        r.next_block()
+        assert r.passes == passes          # a contiguous block is never the start of a new pass
+        first, count = nb
+        gap = self.effective_gap_10us()
+        start = max(now, b.pred_end)
+        span = count * gap * 10e-6
+        a = _Block(first, count, now, start + span + self.cfg.block_slack_s, gap, last_rx=now,
+                   pred_end=start + span, chained=True, prev=(b.first_seq, b.count))
+        self.ahead = a
+        self.stats["blocks"] += 1
+        self.stats["block_gap_10us"] = gap
+        ok, msg = self._read(self.cid, first, count, gap)
+        if not ok:
+            # Certainly not sent: forget it, let the region offer those words again, and send the next block
+            # fresh once this one ends (no second chain attempt on this block).
+            logger.warning("IMU chained READ not queued: %s", msg)
+            self.ahead = None
+            r.scan = first - r.base - r.lo
+            b.no_chain = True
 
     def on_reply(self, rep: ImuReply, now: float) -> None:
         if not self.busy:
@@ -530,12 +662,62 @@ class UploadMachine:
         self._fail("FREEZE refused: %s" % names.get(st, "status 0x%02X" % st), now,
                    no_resume="nothing frozen (FREEZE refused)")
 
+    def _check_cut(self, now: float, force: bool = False) -> None:
+        """Judge an OK to a chained READ once the cut block's frames have had ``chain_check_s`` to land: holes
+        left in its range mean the board replaced the block (counts toward ``chain_replace_limit``); a range
+        that is complete means the chain merely arrived late (resets the streak)."""
+        c = self._cut
+        if c is None or (now < c[3] and not force):
+            return
+        self._cut = None
+        reg, lo, n, _ = c
+        if all(reg.have[max(lo, 0):max(lo, 0) + n]):
+            self.stats["reads_late"] += 1
+            self._replace_streak = 0
+            return
+        self.stats["reads_replaced"] += 1
+        self._replace_streak += 1
+        if self._replace_streak >= self.cfg.chain_replace_limit and self._chain:
+            self._chain = False
+            logger.warning("IMU READ chaining off for this upload: %d chained READs in a row were answered "
+                           "OK (the board replaced the block instead of extending it)", self._replace_streak)
+
     def _on_read_reply(self, rep: ImuReply, now: float) -> None:
         b = self.blk
         if b is None:
             return
-        if rep.status == ST.OK:
-            b.replied = True
+        if rep.status in (ST.OK, ST.READ_EXTENDED):
+            tgt = None
+            for x in (self.ahead, b):
+                if x is not None and rep.read_first_seq == x.first_seq and rep.read_count == x.count:
+                    tgt = x
+                    break
+            if tgt is None:
+                if self.ahead is None:
+                    b.replied = True               # unmatched (a stale reply): as before chaining existed
+                return
+            if tgt.replied:
+                return                             # a duplicate reply: counted once
+            tgt.replied = True
+            if not tgt.chained:
+                return
+            if rep.status == ST.READ_EXTENDED:
+                self.stats["reads_chained"] += 1
+                self._replace_streak = 0
+                return
+            # OK to a chained READ: the board started it as a FRESH block. Either it arrived after the block
+            # before it had ended (a late chain: only the turnaround lost, nothing cut) or the board replaced
+            # that block (an FW 12 board: its unsent words are now holes, healed by the refill). Which one is
+            # only known once the cut block's frames have all landed: remember its range and judge it at the
+            # first tick/advance after ``chain_check_s`` (_check_cut). The block before is over on the board
+            # either way: end it now, without counting a stall (it was cut, not silent).
+            if self._cut is not None:
+                self._check_cut(now, force=True)
+            if tgt.prev is not None and self.region is not None:
+                lo = tgt.prev[0] - self.region.base - self.region.lo
+                self._cut = (self.region, lo, tgt.prev[1], now + self.cfg.chain_check_s)
+            if tgt is self.ahead:
+                self._next_block(now, timed_out=False, stall=False)
         elif rep.status in (ST.ERR_NOT_FROZEN, ST.ERR_WRONG_CAPTURE):
             self.flags["platform_rebooted"] = True
             self._fail("READ refused (%s): the Platform rebooted or was resumed" % ST(rep.status).name, now,
@@ -580,17 +762,25 @@ class UploadMachine:
             self.stats["frames_rx"] += 1
             if self.region is not None:
                 r = self.region.put(seq, word)     # a late tail of a finished region lands outside: stray
+                # Attribute the frame: to the chained block when it is in that block's range, else to the
+                # current block (a straggler from an earlier block counts as today: it shows the link alive).
+                tgt = self.blk
+                ah = self.ahead
+                if ah is not None and ah.first_seq <= seq < ah.first_seq + ah.count:
+                    tgt = ah
+                if r >= 0 and tgt is not None:
+                    tgt.last_rx = now
+                    if tgt.first_seq <= seq < tgt.first_seq + tgt.count:
+                        tgt.n_rx += 1
+                        tgt.hi_rx = max(tgt.hi_rx, seq)
                 if r == 1:
                     self.frames_done += 1
-                    if self.blk is not None:
-                        self.blk.n_new += 1
-                        self.blk.last_rx = now
-                        if seq == self.blk.first_seq + self.blk.count - 1:
-                            self.blk.last_seen = True
+                    if tgt is not None:
+                        tgt.n_new += 1
+                        if seq == tgt.first_seq + tgt.count - 1:
+                            tgt.last_seen = True
                 elif r == 0:
                     self.stats["dup_frames"] += 1
-                    if self.blk is not None:
-                        self.blk.last_rx = now
                 else:
                     self.stats["stray_frames"] += 1
         self._advance(now)
@@ -624,8 +814,20 @@ class UploadMachine:
                     self._send_cmd(cmd["op"], now, reason=cmd["reason"])
             return
         self._rate_update(now)
+        self._check_cut(now)
         b = self.blk
         if b is None:
+            return
+        ah = self.ahead
+        if ah is not None:
+            # Two blocks outstanding. The current one ends the moment the board is seen on the chained one
+            # (no settle: the next READ is already on the board, so waiting would buy nothing); otherwise it
+            # times out on its own deadline, the quiet time counting frames of either block.
+            if b.last_seen or ah.n_rx:
+                self._next_block(now, timed_out=False)
+            elif now >= b.deadline and now - max(b.t_sent, b.last_rx, ah.last_rx) >= self.cfg.block_slack_s:
+                self.stats["block_timeouts"] += 1
+                self._next_block(now, timed_out=True)
             return
         quiet = now - max(b.t_sent, b.last_rx)
         if b.last_seen and now - b.last_rx >= self.cfg.settle_s:
@@ -633,6 +835,8 @@ class UploadMachine:
         elif now >= b.deadline and quiet >= self.cfg.block_slack_s:
             self.stats["block_timeouts"] += 1
             self._next_block(now, timed_out=True)
+        else:
+            self._maybe_chain(now)
 
     def settle_due_in(self, now: float) -> Optional[float]:
         """Seconds until :meth:`tick` would end the current block on ``settle_s`` (0 if already due), or None
@@ -640,7 +844,7 @@ class UploadMachine:
         ``settle_s`` and not the 20 ms poll (the bridge flushes batches every 10 ms; after a block's last
         batch nothing else wakes the worker)."""
         b = self.blk
-        if b is None or not b.last_seen or self.phase not in (HEADER, ANCHORS, SAMPLES):
+        if b is None or not b.last_seen or self.ahead is not None or self.phase not in (HEADER, ANCHORS, SAMPLES):
             return None
         return max(0.0, self.cfg.settle_s - (now - b.last_rx))
 
@@ -651,27 +855,43 @@ class UploadMachine:
             self._rate_t, self._rate_n = now, self.frames_done
 
     def _advance(self, now: float) -> None:
-        b = self.blk
-        if b is None or self.region is None:
-            return
-        if self.region.complete:
-            self.blk = None
-            self._region_done(now)
-        else:
+        self._check_cut(now)
+        for _ in range(4):                 # a promoted chained block may itself be done already (one batch)
+            b = self.blk
+            if b is None or self.region is None:
+                return
+            if self.region.complete:
+                self.blk = self.ahead = None
+                self._region_done(now)
+                return
             lo = (b.first_seq - self.region.base - self.region.lo)
-            if all(self.region.have[lo:lo + b.count]):
+            ah = self.ahead
+            if all(self.region.have[lo:lo + b.count]) or (ah is not None and (b.last_seen or ah.n_rx)):
+                promote = ah is not None
                 self._next_block(now, timed_out=False)
+                if promote and self.blk is ah:
+                    continue
+                return
+            self._maybe_chain(now)
+            return
 
-    def _next_block(self, now: float, timed_out: bool) -> None:
+    def _next_block(self, now: float, timed_out: bool, stall: bool = True) -> None:
+        """End the current block. With a chained block outstanding it becomes current (no READ is sent: it
+        is already on the board); otherwise the next READ goes out. ``stall`` False: the block was cut by
+        the board (an OK to a chained READ), so delivering nothing is not counted toward the stall guard."""
         b = self.blk
-        if b is not None:
+        if b is not None and stall:
             self.stalled = 0 if b.n_new else self.stalled + 1
         if self.stalled > self.cfg.max_stalled_blocks:
             self._fail("upload stalled: %d consecutive blocks delivered nothing" % self.stalled, now)
             return
         if self.region.complete:
-            self.blk = None
+            self.blk = self.ahead = None
             self._region_done(now)
+            return
+        if self.ahead is not None:
+            self.blk, self.ahead = self.ahead, None
+            self._maybe_chain(now)
             return
         if self.region.passes > self.cfg.max_passes:
             self.flags["holes_unfilled"] = self.region.missing()
@@ -714,6 +934,8 @@ class UploadMachine:
                        no_resume="Platform rebooted")
             return
         self.header = h
+        self._chain = h.fw_version >= CHAIN_MIN_FW_VERSION and self.cfg.chain_lead_s > 0
+        self.stats["chain"] = self._chain
         self._begin_region_anchors(now)
 
     def _begin_region_anchors(self, now: float) -> None:
@@ -743,6 +965,12 @@ class UploadMachine:
                 k0, k1 = rng
                 if rng == (0, 0):
                     self.flags["span_empty"] = True        # no sample inside the span: clocks disagree
+                elif k0 == 0:
+                    # The ring did not reach back to the span's start (it holds RING_SAMPLES / odr_hz seconds:
+                    # 32 s at 1 kHz, 16 s at 2 kHz): the capture is the whole ring, the span's start is missing.
+                    w_first = float(model.wall_us(np.arange(1))[0])
+                    if w_first > (job.t_start_wall - self.cfg.span_margin_s) * 1e6 + 1e6 / float(h.odr_hz or 1000):
+                        self.flags["span_truncated"] = True
                 self.full_coverage = (k0, k1) == (0, h.n_samples)
                 self.flags["partial_span"] = not self.full_coverage
         self.k0, self.k1 = k0, k1
@@ -760,6 +988,7 @@ class UploadMachine:
             ok = (zlib.crc32(bytes(self.sample_region.buf), zlib.crc32(bytes(self.anchor_region.buf)))
                   & 0xFFFFFFFF) == h.payload_crc32
             if not ok and self.rereads_left > 0:
+                self._stash_pass1()
                 self.rereads_left -= 1
                 self.stats["crc_rereads"] += 1
                 logger.warning("IMU payload CRC mismatch: re-reading the capture once")
@@ -776,6 +1005,21 @@ class UploadMachine:
                                   and not self.flags["aborted"] and not self.flags["platform_rebooted"])
         self._resume(now)
 
+    def _stash_pass1(self) -> None:
+        """Record the samples region's first-sweep losses in ``stats`` once (the first region wins: a CRC
+        re-read builds a new one). ``pass1_missing`` = words still missing when the first sweep ended (0 when
+        it ended complete, None when the upload ended inside it); ``pass1_missing_seqs`` = the first 500 of
+        them, so a capture shows whether lost frames cluster."""
+        sr = self.sample_region
+        if sr is None or "pass1_missing" in self.stats:
+            return
+        if sr.pass1 is not None:
+            self.stats["pass1_missing"], self.stats["pass1_missing_seqs"] = sr.pass1[0], list(sr.pass1[1])
+        elif sr.complete:
+            self.stats["pass1_missing"], self.stats["pass1_missing_seqs"] = 0, []
+        else:
+            self.stats["pass1_missing"], self.stats["pass1_missing_seqs"] = None, []
+
     def _fail(self, why: str, now: float, *, no_resume: str = "") -> None:
         """THE early exit. Invariant: the ring is never left frozen by us. Every early end RESUMEs the
         capture we froze, except where ``no_resume`` names why it is provably unnecessary (nothing frozen,
@@ -784,7 +1028,7 @@ class UploadMachine:
         self.failure = self.failure or why
         self.flags["complete"] = False
         logger.warning("IMU upload ended early: %s", why)
-        self.blk = None
+        self.blk = self.ahead = None
         if no_resume:
             self.flags["resume_skipped"] = no_resume
             self._finish(now)
@@ -795,13 +1039,14 @@ class UploadMachine:
             self._finish(now)
 
     def _resume(self, now: float) -> None:
-        self.blk = None
+        self.blk = self.ahead = None
         self.phase = RESUMING
         self._cmd = None
         self._send_cmd(OP.RESUME, now)
 
     def _finish(self, now: float) -> None:
         self.phase = DONE
+        self._stash_pass1()
         sr = self.sample_region
         res = UploadResult(
             header=self.header, anchors=list(self.anchors),
@@ -828,11 +1073,11 @@ def format_upload_end(summary: Dict[str, Any]) -> Tuple[bool, str]:
     crc = fl.get("crc_ok")
     crc_s = "ok" if crc is True else ("FAILED" if crc is False else "not checked")
     complete = bool(fl.get("complete")) and not summary.get("write_failed")
-    body = ("%s, %d samples, %.1f s, %d frames rx, %d duplicate, %d READs, %d block timeouts, %d hole passes, "
-            "complete %s, crc %s, file %s" % (
+    body = ("%s, %d samples, %.1f s, %d frames rx, %d duplicate, %d READs (%d chained, %d replaced), "
+            "%d block timeouts, %d hole passes, complete %s, crc %s, file %s" % (
                 summary.get("label", "?"), int(summary.get("samples") or 0), float(st.get("wall_s") or 0.0),
                 int(st.get("frames_rx", 0)), int(st.get("dup_frames", 0)), int(st.get("blocks", 0)),
-                int(st.get("block_timeouts", 0)), int(st.get("hole_passes", 0)), "yes" if complete else "NO",
+                int(st.get("reads_chained", 0)), int(st.get("reads_replaced", 0)), int(st.get("block_timeouts", 0)), int(st.get("hole_passes", 0)), "yes" if complete else "NO",
                 crc_s, summary.get("stem") or "none"))
     if summary.get("failure") or fl.get("aborted") or not complete or crc is False:
         reason = summary.get("failure") or ("aborted" if fl.get("aborted") else (
@@ -844,6 +1089,57 @@ def format_upload_end(summary: Dict[str, Any]) -> Tuple[bool, str]:
 
 
 # ── the worker service ───────────────────────────────────────────────────────────────────────────
+
+#: The can-bridge's refusal of SET_ODR, in the operator's words (spec section 6: FW 46 whitelists only
+#: ENABLE/DISABLE/FREEZE/RESUME/ABORT, so it answers ERR_BAD_ARGS and nothing reaches the Platform).
+SET_ODR_BRIDGE_REFUSAL = (
+    "refused by the can-bridge (ERR_BAD_ARGS, nothing reached the Platform): the bridge firmware (FW 46) does "
+    "not relay the rate command yet; it needs the can-bridge release that adds SET_ODR to its relay. The "
+    "alternative today is the 2 kHz Platform firmware image: pio run -e teensy40_imu2k -t upload in "
+    "Teensy_code_platform (boots at 2 kHz; flash teensy40 again to return to 1 kHz)")
+
+
+class OdrRequest:
+    """One SET_ODR request handed to the worker: the caller waits on :meth:`wait`, the worker calls
+    :meth:`finish` once (bridge refusal, the Platform's IMU_REPLY, or no reply in time)."""
+
+    def __init__(self, hz: int):
+        self.hz = int(hz)
+        self.ok = False
+        self.message = ""
+        self.deadline = 0.0
+        self._done = threading.Event()
+
+    def finish(self, ok: bool, message: str) -> None:
+        if not self._done.is_set():
+            self.ok, self.message = bool(ok), message
+            self._done.set()
+
+    @property
+    def done(self) -> bool:
+        return self._done.is_set()
+
+    def wait(self, timeout: float) -> bool:
+        return self._done.wait(timeout)
+
+
+def set_odr_reply_text(rep: ImuReply, hz: int) -> Tuple[bool, str]:
+    """The Platform's verdict on SET_ODR, in plain words."""
+    st = rep.status
+    if st == ST.OK:
+        got = int(rep.detail) or hz
+        return True, ("capture rate %d Hz: the ring restarts as a fresh capture and holds %.0f s"
+                      % (got, RING_SAMPLES / float(got)))
+    if st == ST.ERR_FROZEN:
+        return False, ("refused by the Platform (ERR_FROZEN): a capture is frozen or uploading; upload it "
+                       "(platform_imu/upload) or let it be resumed first, so a rate change never discards it")
+    if st == ST.ERR_BAD_ARGS:
+        return False, ("refused by the Platform (ERR_BAD_ARGS): its firmware does not know SET_ODR (FW 12 or "
+                       "older), or this build cannot run %d Hz (the 400 kHz I2C build is 1 kHz only)" % hz)
+    if st == ST.ERR_FW_UPDATE:
+        return False, "refused by the Platform (ERR_FW_UPDATE): a firmware update is in progress"
+    name = ST(st).name if st in set(int(x) for x in ST) else "0x%02X" % st
+    return False, "refused by the Platform (%s)" % name
 
 class PlatformImuService:
     """One worker thread owns an :class:`UploadMachine`. Producers (the UDP receive callback, the
@@ -864,6 +1160,8 @@ class PlatformImuService:
         self._on_upload_end = on_upload_end            # once per upload (not a heal), with the summary dict
         self.cfg = config or UploadConfig()
         self._writer = writer
+        self._send_ctrl = send_ctrl
+        self._odr_pending: Optional[OdrRequest] = None   # worker thread only
         self.machine = UploadMachine(send_ctrl, send_read, self._on_result, config=self.cfg, is_armed=is_armed)
         self._data_q: "queue.Queue" = queue.Queue(maxsize=data_queue_size)
         self._ev_q: "queue.Queue" = queue.Queue(maxsize=event_queue_size)
@@ -942,6 +1240,82 @@ class PlatformImuService:
             return True, ""
         return False, "IMU state %s%s" % (STATE(st.state).name if st.state in set(int(s) for s in STATE) else st.state,
                                           "" if st.sensor_ok else " (no sensor)")
+
+    def odr_hz(self) -> int:
+        """The selected capture rate from the last IMU_STATUS (1 kHz until one is heard)."""
+        with self._lock:
+            st = self._last_status
+        return st.odr_hz if st is not None else NOMINAL_ODR_HZ
+
+    def ring_s(self) -> float:
+        """Seconds the ring holds at the selected rate: the cap on an Attempt span (32 s at 1 kHz, 16 s at 2)."""
+        return RING_SAMPLES / float(self.odr_hz())
+
+    def submit_set_odr(self, hz: int):
+        """Queue a SET_ODR for the worker. Returns an :class:`OdrRequest` to wait on, or ``(False, why)``
+        when refused here (bad rate, an upload running, a capture frozen). Never blocks."""
+        try:
+            hz = int(hz)
+        except (TypeError, ValueError):
+            return False, "refused: the rate must be %d or %d Hz" % (NOMINAL_ODR_HZ, FAST_ODR_HZ)
+        if hz not in (NOMINAL_ODR_HZ, FAST_ODR_HZ):
+            return False, "refused: the rate must be %d or %d Hz, not %d" % (NOMINAL_ODR_HZ, FAST_ODR_HZ, hz)
+        if self.upload_in_progress():
+            return False, "refused: an upload is running (a rate change would discard the ring)"
+        with self._lock:
+            st = self._last_status
+        if st is not None and st.state in (STATE.FROZEN, STATE.UPLOADING):
+            return False, ("refused: the ring is %s; upload it (platform_imu/upload) or let it be resumed first"
+                           % STATE(st.state).name)
+        req = OdrRequest(hz)
+        try:
+            self._ev_q.put_nowait(("set_odr", req, self._clock()))
+        except queue.Full:
+            self.dropped_events += 1
+            return False, "refused: the IMU worker queue is full"
+        return req
+
+    def set_odr(self, hz: int, timeout: float = 2.0) -> Tuple[bool, str]:
+        """SET_ODR and wait for the verdict (blocks the CALLER up to ``timeout``; the worker sends the RPC)."""
+        req = self.submit_set_odr(hz)
+        if isinstance(req, tuple):
+            return req
+        if not req.wait(timeout):
+            return False, "no verdict within %.1f s (the IMU worker is not running?)" % timeout
+        return req.ok, req.message
+
+    def _start_set_odr(self, req: OdrRequest, now: float) -> None:
+        """Worker thread: send SET_ODR (one at a time, never during an upload) and arm its reply deadline."""
+        if self.machine.busy:
+            req.finish(False, "refused: an upload is running (a rate change would discard the ring)")
+            return
+        if self._odr_pending is not None:
+            req.finish(False, "refused: another rate change is still waiting for its reply")
+            return
+        ok, msg = self._send_ctrl(int(OP.SET_ODR), req.hz // 1000, 0)
+        if not ok:
+            req.finish(False, SET_ODR_BRIDGE_REFUSAL if "ERR_BAD_ARGS" in (msg or "")
+                       else "rate command not sent: %s" % msg)
+            return
+        req.deadline = now + 2 * self.cfg.cmd_timeout_s
+        self._odr_pending = req
+
+    def _odr_check(self, now: float, rep: Optional[ImuReply] = None) -> None:
+        req = self._odr_pending
+        if req is None:
+            return
+        if rep is not None:
+            if rep.status == ST.OK and int(rep.detail) not in (0, req.hz):
+                return                     # a late OK to an earlier request: keep waiting for ours
+            ok, text = set_odr_reply_text(rep, req.hz)
+            self._odr_pending = None
+            if ok:
+                logger.info("Platform IMU %s", text)
+            req.finish(ok, text)
+        elif now >= req.deadline:
+            self._odr_pending = None
+            req.finish(False, "no reply from the Platform within %.1f s (the rate may or may not have changed: "
+                              "platform_imu/status odr_hz shows it at the next IMU_STATUS)" % (2 * self.cfg.cmd_timeout_s))
 
     def request_upload(self, t_start_wall: Optional[float] = None, t_end_wall: Optional[float] = None,
                        reason: int = int(pc.PlatformImuFreezeReason.OPERATOR), attempt_id: Optional[str] = None,
@@ -1026,6 +1400,7 @@ class PlatformImuService:
                 "platform_state": (STATE(st.state).name if st and st.state in set(int(s) for s in STATE) else None),
                 "platform_flags": st.flags if st else None, "platform_boot": st.boot if st else None,
                 "platform_temp_c": st.temp_c if st else None,
+                "odr_hz": st.odr_hz if st else None,
                 "health": self._health_snapshot(st, now),
                 "status_age_s": (now - t) if t is not None else None,
                 "bridge": dict(self._bridge), "last_result": dict(self._last_result), "last_skip": self._last_skip,
@@ -1087,6 +1462,7 @@ class PlatformImuService:
                             "batches_sent": info.batches_sent, "send_fails": info.send_fails}
             self.machine.on_records(records, t)
         self.machine.tick(now)
+        self._odr_check(now)
         self._heal_check(now)
 
     def _heal_check(self, now: float) -> None:
@@ -1147,7 +1523,10 @@ class PlatformImuService:
             if kind == "frame":
                 _, can_id, data, t = ev
                 if can_id == CAN_ID_REPLY:
-                    self.machine.on_reply(decode_imu_reply(data), t)
+                    rep = decode_imu_reply(data)
+                    if rep.op == OP.SET_ODR:
+                        self._odr_check(t, rep)
+                    self.machine.on_reply(rep, t)
                 elif can_id == CAN_ID_STATUS:
                     st = decode_imu_status(data)
                     with self._lock:
@@ -1165,8 +1544,12 @@ class PlatformImuService:
                 self.machine.start(job, t, boot)
             elif kind == "abort":
                 self.machine.abort(ev[1], ev[2])
+            elif kind == "set_odr":
+                self._start_set_odr(ev[1], ev[2])
         except Exception:  # noqa: BLE001 -- the worker must outlive any one bad frame
             logger.exception("platform IMU event %s failed", kind)
+            if kind == "set_odr":
+                ev[1].finish(False, "rate command failed on the worker (see the log)")
             if kind == "start":
                 with self._lock:
                     self._busy = False

@@ -133,7 +133,9 @@ from teensy_link.gap_monitor import (
 from teensy_link.hand_feedback_watch import HandFeedbackWatch
 from jugglebot import platform_imu_gate as _imu_gate
 from teensy_link.platform_imu import (PlatformImuService, UploadConfig as _ImuUploadConfig,
-                                      format_upload_end as _imu_format_upload_end)
+                                      format_upload_end as _imu_format_upload_end,
+                                      read_gap_check as _imu_read_gap_check,
+                                      BRIDGE_ARMED_MIN_GAP_10US as _IMU_ARMED_MIN_GAP_10US)
 from teensy_link.platform_imu_capture import ImuCaptureWriter
 from teensy_link.setpoint_pump import SetpointPump, FLAG_HAS_HAND, HAND_FF_GAIN_MAX
 from teensy_link.stop_record import StopRecordLog
@@ -3045,6 +3047,10 @@ class TeensyBridgeNode(Node):
         # Clamped to 0..60 s so the gate's 180 s busy ceiling still covers delay + a typical 20-50 s upload.
         self.declare_parameter('imu_fault_upload_delay_s', 5.0)
         self.declare_parameter('imu_capture_dir', '')
+        # The upload's requested frame pace, x 10 us (80 = 0.8 ms, about 1250 frames/s). Settable at run time
+        # (`ros2 param set /teensy_bridge_node imu_read_gap_10us 63`), validated in _on_set_parameters, and
+        # used from the next READ the upload machine sends (an upload running now changes pace at its next
+        # block; the bridge's Armed clamp and the board's 400 us floor still apply per READ).
         self.declare_parameter('imu_read_gap_10us', 80)
         directory = str(self.get_parameter('imu_capture_dir').value or '')
         if not directory:
@@ -3053,8 +3059,12 @@ class TeensyBridgeNode(Node):
             directory = os.path.join(root, 'temp', 'imu_capture')
         self._imu_writer = ImuCaptureWriter(directory).start()
         delay = min(max(float(self.get_parameter('imu_fault_upload_delay_s').value), 0.0), 60.0)
-        cfg = _ImuUploadConfig(gap_10us=int(self.get_parameter('imu_read_gap_10us').value),
-                               fault_upload_delay_s=delay)
+        gap = self.get_parameter('imu_read_gap_10us').value
+        ok_gap, why = _imu_read_gap_check(gap)
+        if not ok_gap:
+            self.get_logger().error('imu_read_gap_10us initial value %r refused (%s): using 80' % (gap, why))
+            gap = 80
+        cfg = _ImuUploadConfig(gap_10us=int(gap), fault_upload_delay_s=delay)
         self._imu = PlatformImuService(
             self._imu_send_ctrl, self._imu_send_read, writer=self._imu_writer,
             is_armed=lambda: bool(self._mpc_active), config=cfg,
@@ -3065,7 +3075,7 @@ class TeensyBridgeNode(Node):
         self.create_timer(0.5, self._publish_platform_imu_status, callback_group=self._imu_cbgroup)
         # The Attempt's wall-clock span comes from skills/attempt (every goal source publishes it), so skill_node
         # is untouched and a dead skill_node cannot reach this node. See _imu_on_attempt_event.
-        self._imu_span = _imu_gate.AttemptSpanTracker()
+        self._imu_span = _imu_gate.AttemptSpanTracker(ring_s=self._imu.ring_s)   # 32 s at 1 kHz, 16 s at 2 kHz
         self.create_subscription(DiagnosticStatus, 'skills/attempt', self._imu_on_attempt_event, 10,
                                  callback_group=self._imu_cbgroup)
         self.create_service(SetBool, 'platform_imu/set_upload_after_attempt',
@@ -3074,6 +3084,11 @@ class TeensyBridgeNode(Node):
                             callback_group=self._imu_cbgroup)
         self.create_service(Trigger, 'platform_imu/abort', self._svc_imu_abort,
                             callback_group=self._imu_cbgroup)
+        # SET_ODR (Platform FW 13). Its callback WAITS (up to about 2 s) for the worker's verdict, so it has its
+        # own mutually exclusive group: never in the snapshot-only IMU group, never two rate changes at once.
+        self._imu_rate_cbgroup = MutuallyExclusiveCallbackGroup()
+        self.create_service(SetString, 'platform_imu/set_rate', self._svc_imu_set_rate,
+                            callback_group=self._imu_rate_cbgroup)
 
     def _imu_on_upload_end(self, summary):
         """IMU worker thread, once per upload end on every path (PlatformImuService._on_result is the only
@@ -3208,6 +3223,28 @@ class TeensyBridgeNode(Node):
             res.success, res.message = False, 'bad request: %s' % e
         return res
 
+    def _svc_imu_set_rate(self, req, res):
+        """platform_imu/set_rate: ``data`` "1000" or "2000" (also "1", "2", "1k", "2k", "2000hz"). Refused
+        while an upload or an Attempt runs or a capture is frozen; otherwise the IMU worker sends SET_ODR and
+        the reply names the verdict: the Platform's, or the can-bridge's refusal (FW 46 does not relay it)."""
+        try:
+            text = (req.data or '').strip().lower().replace(' ', '')
+            if text.endswith('hz'):
+                text = text[:-2]
+            mult = 1000 if text.endswith('k') else 1
+            hz = int(float(text.rstrip('k')) * mult)
+            if hz in (1, 2):
+                hz *= 1000
+        except (TypeError, ValueError):
+            res.success, res.message = False, 'bad request %r: send "1000" or "2000"' % (req.data,)
+            return res
+        if self._imu_span.open:
+            res.success, res.message = False, 'refused: an Attempt is running (a rate change discards the ring)'
+        else:
+            res.success, res.message = self._imu.set_odr(hz, timeout=2.0)
+        self.get_logger().info('platform_imu/set_rate %s: %s' % (req.data, res.message))
+        return res
+
     def _svc_imu_abort(self, req, res):
         self.abort_upload('operator')
         res.success, res.message = True, 'abort queued'
@@ -3250,6 +3287,7 @@ class TeensyBridgeNode(Node):
                 'writer_written': wr.get('written', 0), 'writer_dropped': wr.get('dropped', 0),
                 'writer_errors': wr.get('errors', 0), 'writer_last_error': wr.get('last_error', ''),
                 'heals_started': snap.get('heals_started', 0),
+                'odr_hz': snap.get('odr_hz') if snap.get('odr_hz') is not None else '',
             }
             if hl:
                 for k, v in hl.items():
@@ -9866,6 +9904,18 @@ class TeensyBridgeNode(Node):
         requested.
         """
         for param in params:
+            if param.name == 'imu_read_gap_10us':
+                ok_gap, why = _imu_read_gap_check(param.value)
+                if not ok_gap:
+                    self.get_logger().error('REFUSED imu_read_gap_10us=%r: %s; prior value kept' % (param.value, why))
+                    return SetParametersResult(successful=False, reason='imu_read_gap_10us ' + why)
+                imu = getattr(self, '_imu', None)
+                if imu is not None:
+                    imu.cfg.gap_10us = int(param.value)   # read per READ by the worker (an int store: atomic)
+                self.get_logger().info(
+                    'imu_read_gap_10us = %d (%.0f frames/s asked): from the next READ; while Armed the bridge '
+                    'clamps to %d' % (int(param.value), 1e5 / int(param.value), _IMU_ARMED_MIN_GAP_10US))
+                continue
             if param.name != 'hand_torque_ff_gain':
                 continue
             try:

@@ -4,7 +4,8 @@
 //     (plus the 200 us FIFO-flush pause on the last) and never delays; the waits the datasheet requires are
 //     elapsed-time checks against the caller's clock. The transaction is bounded only by Wire's own timeout,
 //     which P2 must verify on the teensy40 core. The bench's blocking begin() (~80 ms of delay()) is gone.
-//   * agreed configuration: accel +/-16 g, gyro +/-1000 dps, ODR 1 kHz, UI filter per UI_FILT_CODE below.
+//   * agreed configuration: accel +/-16 g, gyro +/-1000 dps, ODR 1 kHz (FW 13: or 2 kHz, chosen at initStart),
+//     UI filter per UI_FILT_CODE below (ODR/2 at either rate).
 // Every call returns an error code (<0) or a count/value (>=0). See tools/probes/imu_bench/README.md for the
 // register-verification table that covers the shared register facts.
 #pragma once
@@ -55,9 +56,10 @@ class Driver {
   // initStep(now_us) every loop() pass. It returns INIT_PENDING while work remains, OK only when configured and
   // streaming, or an Err (init ended). A failed init keeps returning its Err, and a driver on which initStart
   // was never called returns ERR_NOT_STARTED, until initStart is called again (retry from the probe). Call
-  // initStart on every (re-)entry to PROBING. now_us is micros(), wrap-safe.
+  // initStart on every (re-)entry to PROBING. now_us is micros(), wrap-safe. odrHz: the rate the init configures
+  // (1000 or 2000; anything else falls back to 1000), written by the same two IST_CONFIG register writes as before.
   static const int INIT_PENDING = 1;
-  void initStart(uint8_t forceAddr = 0);
+  void initStart(uint8_t forceAddr = 0, uint16_t odrHz = 1000);
   int initStep(uint32_t now_us);
   bool initBusy() const { return _ist != IST_IDLE && _ist != IST_DONE && _ist != IST_FAILED; }
   uint8_t address() const { return _addr; }

@@ -256,3 +256,19 @@ def test_skill_node_rejects_a_goal_while_an_upload_runs_and_accepts_otherwise(tm
         values=[types.SimpleNamespace(key=k, value=v) for k, v in dict(BUSY, busy='0').items()]))
     with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         assert node._juggle_goal(_columns_goal(separation_mm=100.0)) == sn.GoalResponse.ACCEPT
+
+
+def test_span_cap_follows_the_ring_length_at_2_khz():
+    """Platform FW 13 at 2 kHz: the ring holds 16 s, so the span is capped at the last 16 s, not 32."""
+    assert g.compute_span(100.0, 127.0, ring_s=16.0) == (130.0 - 16.0, 130.0)
+    ring = {"s": 16.0}
+    t = g.AttemptSpanTracker(ring_s=lambda: ring["s"])
+    t.started(100.0)
+    assert t.ended(140.0) == g.Span(143.0 - 16.0, 143.0, "attempt_end")
+    assert t.ended(200.0).t_start == 203.0 - 16.0                      # an end with no start: the last ring
+    ring["s"] = 32.0
+    t.started(100.0)
+    assert t.fault(140.0) == g.Span(143.0 - 32.0, 143.0, "fault")
+    bad = g.AttemptSpanTracker(ring_s=lambda: 1 / 0)                     # a failing lookup falls back to RING_S
+    bad.started(100.0)
+    assert bad.ended(140.0).t_start == 143.0 - g.RING_S

@@ -289,6 +289,7 @@ namespace PlatformImu {
   constexpr uint32_t BYTES_PER_SAMPLE = 12u;
   constexpr uint32_t WORD_BYTES = 6u;
   constexpr uint32_t NOMINAL_ODR_HZ = 1000u;
+  constexpr uint32_t FAST_ODR_HZ = 2000u;
   constexpr uint32_t ANCHOR_PERIOD_MS = 100u;
   constexpr uint32_t ANCHOR_RING = 400u;
   constexpr uint32_t ANCHOR_BYTES = 18u;
@@ -311,12 +312,14 @@ namespace PlatformImuOp {
   constexpr uint8_t RESUME = 0x04;
   constexpr uint8_t READ = 0x05;
   constexpr uint8_t ABORT = 0x06;
+  constexpr uint8_t SET_ODR = 0x07;
 }
 
 // IMU_REPLY byte 1
 namespace PlatformImuStatus {
   constexpr uint8_t OK = 0x00;
   constexpr uint8_t ALREADY_FROZEN = 0x01;
+  constexpr uint8_t READ_EXTENDED = 0x02;
   constexpr uint8_t ERR_BAD_ARGS = 0x10;
   constexpr uint8_t ERR_NOT_FROZEN = 0x11;
   constexpr uint8_t ERR_WRONG_CAPTURE = 0x12;
@@ -324,6 +327,7 @@ namespace PlatformImuStatus {
   constexpr uint8_t ERR_EMPTY = 0x14;
   constexpr uint8_t ERR_DISABLED = 0x15;
   constexpr uint8_t ERR_FW_UPDATE = 0x16;
+  constexpr uint8_t ERR_FROZEN = 0x17;
 }
 
 // IMU_STATUS byte 0
@@ -352,6 +356,7 @@ namespace PlatformImuStatusFlag {
   constexpr uint8_t RING_WRAPPED = 0x04;
   constexpr uint8_t I2C_400K = 0x08;
   constexpr uint8_t DISCONTINUITY = 0x10;
+  constexpr uint8_t ODR_2K = 0x20;
 }
 
 // Header bytes 18-19 (bits)

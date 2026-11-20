@@ -1024,10 +1024,11 @@ def test_settle_due_in_reports_the_pending_settle_only():
 def test_upload_end_line_names_the_counts_and_warns_with_the_reason():
     ok, text = pi.format_upload_end({"label": "attempt_end", "samples": 3200, "stem": "20261121T010203Z_4A21",
                                      "stats": {"wall_s": 63.84, "frames_rx": 66000, "dup_frames": 206, "blocks": 525,
-                                               "block_timeouts": 3, "hole_passes": 2},
+                                               "block_timeouts": 3, "hole_passes": 2, "reads_chained": 250,
+                                               "reads_replaced": 1},
                                      "flags": {"complete": True, "crc_ok": True}, "failure": ""})
     assert ok and text == ("Platform IMU upload finished (attempt_end, 3200 samples, 63.8 s, 66000 frames rx, "
-                           "206 duplicate, 525 READs, 3 block timeouts, 2 hole passes, complete yes, crc ok, "
+                           "206 duplicate, 525 READs (250 chained, 1 replaced), 3 block timeouts, 2 hole passes, complete yes, crc ok, "
                            "file 20261121T010203Z_4A21)")
     ok, text = pi.format_upload_end({"label": "operator", "flags": {"complete": False, "aborted": True},
                                      "failure": "aborted: soft_estop", "stats": {}})
@@ -1091,3 +1092,285 @@ def test_the_writer_names_the_file_with_the_stem_the_service_logged(tmp_path):
     fp.run()
     w.close()
     assert w.written == 1 and ends and w.last_path.endswith(ends[0]["stem"] + ".npz")
+
+
+# ── FW 13: READ chaining, against the fake's one-sender board model (FW 12 replaces, FW 13 extends) ─────
+
+def _board(board, hdr_fw=None, n=8000, n_anchors=40, cfg=None, post=None, **opt):
+    img = build_image(n=n, n_anchors=n_anchors, fw_version=board if hdr_fw is None else hdr_fw)
+    return _upload(img, cfg=cfg or pi.UploadConfig(span_margin_s=0.0), post=post, board=board, **opt)
+
+
+def _bit_exact(res, img):
+    return (res.flags["complete"] and res.flags["crc_ok"] and res.flags["holes_unfilled"] == 0
+            and res.sample_words == b"".join(img["words"][s] for s in range(2 * img["n"])))
+
+
+def test_an_fw12_board_is_never_sent_a_chained_read_and_reads_exactly_as_with_chaining_off():
+    """FW 12 (header fw_version 12): one READ at a time, no READ ever reaches the board while a block is active,
+    and the READ sequence is the one an FW 13 board gets with chaining switched off (the pre-FW-13 machine)."""
+    f12, m12, r12, img = _board(12, loss_p=0.004, loss_seed=3)
+    f13, m13, r13, _ = _board(13, cfg=pi.UploadConfig(span_margin_s=0.0, chain_lead_s=0.0), loss_p=0.004, loss_seed=3)
+    assert _bit_exact(r12, img) and _bit_exact(r13, img) and f12.omitted > 20
+    assert r12.stats["chain"] is False and r12.stats["reads_chained"] == r12.stats["reads_replaced"] == 0
+    assert f12.replaced == 0 and f12.extended == 0                   # never cut a block in flight
+    assert f12.reads == f13.reads and r12.stats["dup_frames"] == r13.stats["dup_frames"]
+
+
+def test_fw13_chains_every_contiguous_block_and_reaches_the_frame_pace_floor():
+    f12, _, r12, img = _board(12)
+    f13, m, r13, _ = _board(13)
+    assert _bit_exact(r12, img) and _bit_exact(r13, img)
+    words = 11 + 3 * 40 + 2 * 8000
+    floor = words * 80 * 10e-6
+    assert r13.stats["chain"] is True and f13.replaced == 0
+    # every READ but the first of each region (header, anchors, samples) was appended to the block before it
+    assert r13.stats["reads_chained"] == f13.extended == r13.stats["blocks"] - 3
+    assert r13.stats["wall_s"] < floor + 0.15                         # the board never idles between blocks
+    assert r12.stats["wall_s"] > floor + 0.5                          # FW 12 pays a turnaround per READ
+    assert r13.stats["pass1_missing"] == 0 and r13.stats["pass1_missing_seqs"] == []
+
+
+def test_fw13_with_loss_heals_every_hole_and_never_chains_a_hole_fill_read():
+    fp, m, res, img = _board(13, loss_p=0.004, loss_seed=7)
+    assert _bit_exact(res, img) and fp.omitted > 40 and fp.replaced == 0
+    assert res.stats["reads_chained"] == fp.extended and res.stats["hole_passes"] >= 1
+    # Pass 1 is the 63 sample READs (16000 words / 256, rounded up) plus the header and the anchors: every
+    # extension happened there. The refill READs after it went out fresh, one at a time.
+    n_pass1 = 1 + 1 + -(-16000 // 256)
+    assert fp.extended == n_pass1 - 3 and len(fp.reads) > n_pass1
+    refills = fp.reads[n_pass1:]
+    assert all(c < 256 for _, c, _, _ in refills)
+    # the first sweep's losses: every omitted sample word not refilled by a straggler, sorted, sample seqs only
+    seqs = res.stats["pass1_missing_seqs"]
+    assert 0 < res.stats["pass1_missing"] <= fp.omitted and len(seqs) == min(res.stats["pass1_missing"], 500)
+    assert seqs == sorted(seqs) and seqs[-1] < 16000
+
+
+def test_chained_reads_are_contiguous_with_the_previous_read_and_only_one_is_ever_ahead():
+    seen = {"max_ahead": 0, "bad": []}
+
+    def spy(fp, m):
+        orig = fp.send_read
+
+        def rd(cid, first, count, gap):
+            if m.ahead is not None and m.ahead.first_seq == first:          # this send IS the chained READ
+                prev = m.blk
+                if first != prev.first_seq + prev.count:
+                    seen["bad"].append((first, prev.first_seq, prev.count))
+            return orig(cid, first, count, gap)
+        fp.send_read = rd
+        ot = m.tick
+
+        def tick(now):
+            ot(now)
+            seen["max_ahead"] = max(seen["max_ahead"], (m.blk is not None) + (m.ahead is not None))
+        m.tick = tick
+    fp, m, res, img = _board(13, loss_p=0.004, loss_seed=5, post=spy)
+    assert _bit_exact(res, img) and not seen["bad"] and seen["max_ahead"] <= 2
+
+
+def test_an_fw12_board_whose_header_claims_13_costs_two_blocks_of_holes_then_chaining_stops():
+    fp, m, res, img = _board(12, hdr_fw=13, loss_p=0.004, loss_seed=3)
+    assert _bit_exact(res, img)
+    assert res.stats["reads_replaced"] == 2 == fp.replaced and res.stats["reads_chained"] == 0
+    assert res.stats["block_timeouts"] == 0 and "stalled" not in res.failure
+    assert res.stats["pass1_missing"] > fp.omitted - 5                # the cut remainders became pass-2 holes
+
+
+@pytest.mark.parametrize("mode", [dict(), dict(batched=True), dict(reply_lat=0.030), dict(batched=True, reply_lat=0.030)],
+                         ids=["plain", "batched", "late-reply", "batched-late-reply"])
+def test_a_late_chain_on_a_real_fw13_board_is_not_a_replacement_and_chaining_stays_on(mode):
+    """A chained READ whose command latency exceeds the time left in the block reaches an IDLE board: it is
+    answered OK (a fresh block) but nothing was cut. That must not count toward chain_replace_limit."""
+    cfg = pi.UploadConfig(span_margin_s=0.0, chain_lead_s=0.08)
+    fp, m, res, img = _board(13, cfg=cfg, cmd_lat=0.20, **mode)      # 200 ms READ latency: every other chain reaches an idle board
+    assert _bit_exact(res, img)
+    assert res.stats["chain"] is True and m._chain is True
+    assert res.stats["reads_replaced"] == 0 and res.stats["reads_late"] >= 20
+    assert res.stats["pass1_missing"] == 0 and fp.replaced == 0
+
+
+@pytest.mark.parametrize("mode", [dict(), dict(batched=True), dict(reply_lat=0.030)], ids=["plain", "batched", "late-reply"])
+def test_an_fw12_board_claiming_13_still_turns_chaining_off_after_two_under_every_delivery_mode(mode):
+    fp, m, res, img = _board(12, hdr_fw=13, loss_p=0.004, loss_seed=3, **mode)
+    assert _bit_exact(res, img)
+    assert res.stats["reads_replaced"] == 2 == fp.replaced and res.stats["reads_chained"] == 0
+    assert m._chain is False
+
+
+@pytest.mark.parametrize("mode", [dict(batched=True), dict(reply_lat=0.030), dict(batched=True, reply_lat=0.030)],
+                         ids=["batched", "late-reply", "batched-late-reply"])
+def test_fw13_chaining_is_clean_under_batched_delivery_and_late_replies(mode):
+    f13, m, r13, img = _board(13, **mode)
+    assert _bit_exact(r13, img)
+    assert r13.stats["chain"] is True and f13.replaced == 0
+    assert r13.stats["reads_chained"] == f13.extended and r13.stats["pass1_missing"] == 0
+
+
+def test_a_lost_reply_to_a_chained_read_changes_nothing_but_the_count():
+    f0, _, r0, img = _board(13)
+    fp, m, res, _ = _board(13, lose_read_replies={5, 6, 7})
+    assert _bit_exact(res, img) and fp.extended == f0.extended
+    assert res.stats["reads_chained"] == r0.stats["reads_chained"] - 3 and res.stats["block_timeouts"] == 0
+    assert fp.reads == f0.reads
+
+
+def test_a_chained_read_that_never_reaches_the_board_times_out_and_its_words_are_refilled():
+    fp, m, res, img = _board(13, lose_reads={5})
+    assert _bit_exact(res, img)
+    lost = fp.reads[5]
+    assert res.stats["block_timeouts"] >= 1 and res.stats["pass1_missing"] == lost[1]
+    assert any(f == lost[0] for f, _, _, _ in fp.reads[6:])           # re-requested later
+
+
+def test_chained_reads_keep_the_armed_clamp_and_their_deadline_runs_from_the_previous_blocks_end():
+    seen = []
+
+    def spy(fp, m):
+        orig = fp.send_read
+
+        def rd(cid, first, count, gap):
+            if m.ahead is not None and m.ahead.first_seq == first and m.blk is not None:
+                seen.append((m.ahead.deadline - m.blk.pred_end, count, m.ahead.gap_eff))
+            return orig(cid, first, count, gap)
+        fp.send_read = rd
+    cfg = pi.UploadConfig(gap_10us=40, span_margin_s=0.0)
+    fp, m, res, img = _board(13, cfg=cfg, post=spy, armed=True)
+    assert _bit_exact(res, img) and seen
+    assert all(used == 63 for _, _, _, used in fp.reads)
+    for budget, count, gap in seen:
+        assert gap == 63 and budget == pytest.approx(count * 63 * 10e-6 + cfg.block_slack_s, abs=1e-9)
+
+
+def test_an_abort_with_a_chained_read_outstanding_resumes_and_keeps_the_partial_capture():
+    def at_samples(fp, m):
+        orig = m.tick
+
+        def tick(now):
+            orig(now)
+            if m.phase == pi.SAMPLES and m.ahead is not None and m.frames_done > 3000:
+                m.abort("operator", now)
+        m.tick = tick
+    fp, m, res, img = _board(13, post=at_samples)
+    assert res.flags["aborted"] and not res.flags["complete"] and res.flags["resume_ok"]
+    assert [c[0] for c in fp.ctrls] == [OP.FREEZE, OP.RESUME] and m.ahead is None and fp.bk is None
+    assert res.stats["pass1_missing"] is None                        # ended inside the first sweep
+
+
+def test_pass1_stats_list_the_first_sweeps_missing_seqs_in_order():
+    holes = {101, 102, 103, 5000, 9001}
+    fp, m, res, img = _board(13, drop_once=holes)
+    assert _bit_exact(res, img)
+    assert res.stats["pass1_missing"] == len(holes) and res.stats["pass1_missing_seqs"] == sorted(holes)
+
+
+def test_the_upload_end_line_names_the_chained_count():
+    fp, m, res, img = _board(13)
+    ok, text = pi.format_upload_end({"label": "operator", "samples": 8000, "stats": res.stats,
+                                     "flags": res.flags, "failure": "", "stem": "x"})
+    assert ok and "READs (%d chained, 0 replaced)" % res.stats["reads_chained"] in text
+
+
+# ── FW 13: capture rate ───────────────────────────────────────────────────────────────────────────
+
+def test_status_odr_flag_decodes_to_the_rate_and_the_ring_length():
+    one = pi.decode_imu_status(struct.pack("<BBbBBBBB", 2, 0x03, 30, 0, 0, 20, 32, 1))
+    two = pi.decode_imu_status(struct.pack("<BBbBBBBB", 2, 0x03 | pc.PlatformImuStatusFlag.ODR_2K, 30, 0, 0, 20, 16, 1))
+    assert (one.odr_hz, one.ring_s) == (1000, 32.0) and (two.odr_hz, two.ring_s) == (2000, 16.0)
+
+
+def test_a_2khz_capture_uses_the_header_rate_and_flags_a_span_that_starts_before_the_ring():
+    img = build_image(n=4000, n_anchors=40, odr_hz=2000, odr_us=505.0)
+    w0 = img["wall0_us"] / 1e6
+    # the span starts 10 s before the capture's first sample: the whole ring, flagged truncated
+    fp, m, res, _ = _upload(img, job=pi.UploadJob(t_start_wall=w0 - 10.0, t_end_wall=w0 + 5.0))
+    assert res.header.odr_hz == 2000 and res.flags["complete"] and res.flags.get("span_truncated") is True
+    c = cap.build_capture(res.header, res.anchors, res.sample_words, res.word_present, res.k0, res.flags, {})
+    assert c.fit["rate_hz"] == pytest.approx(1e6 / 505.0, rel=1e-3)
+    # a span inside the capture is not truncated
+    fp, m, res, _ = _upload(img, job=pi.UploadJob(t_start_wall=w0 + 0.5, t_end_wall=w0 + 1.0))
+    assert res.flags["partial_span"] and not res.flags.get("span_truncated")
+    assert res.k0 == pytest.approx(0.5 / 505e-6, abs=3)
+
+
+def _odr_service(ctrl_result=(True, "OK")):
+    sent = []
+
+    def ctrl(op, reason, cid):
+        sent.append((op, reason, cid))
+        return ctrl_result
+    svc = pi.PlatformImuService(ctrl, lambda *a: (True, "OK"), start_thread=False, clock=lambda: box["t"])
+    box = {"t": 100.0}
+    return svc, sent, box
+
+
+def _imu_frame(svc, can_id, data, t):
+    svc.offer_frame(can_id, data, now=t)
+    svc.pump(now=t)
+
+
+def test_set_rate_sends_set_odr_with_khz_and_reports_the_platforms_ok():
+    svc, sent, box = _odr_service()
+    _imu_frame(svc, pi.CAN_ID_STATUS, struct.pack("<BBbBBBBB", 2, 3, 30, 0, 0, 20, 32, 1), 100.0)
+    req = svc.submit_set_odr(2000)
+    svc.pump(now=100.0)
+    assert sent == [(OP.SET_ODR, 2, 0)] and not req.done
+    _imu_frame(svc, pi.CAN_ID_REPLY, struct.pack("<BBHI", OP.SET_ODR, ST.OK, 0, 2000), 100.01)
+    assert req.done and req.ok and "2000 Hz" in req.message and "16 s" in req.message and "fresh capture" in req.message
+    _imu_frame(svc, pi.CAN_ID_STATUS, struct.pack("<BBbBBBBB", 1, 3 | 0x20, 30, 0, 0, 20, 0, 1), 100.5)
+    assert svc.odr_hz() == 2000 and svc.ring_s() == 16.0 and svc.status_snapshot()["odr_hz"] == 2000
+
+
+def test_a_late_ok_for_an_earlier_rate_does_not_settle_a_newer_request_with_the_wrong_text():
+    svc, sent, box = _odr_service()
+    _imu_frame(svc, pi.CAN_ID_STATUS, struct.pack("<BBbBBBBB", 2, 3, 30, 0, 0, 20, 32, 1), 100.0)
+    req = svc.submit_set_odr(1000)
+    svc.pump(now=100.0)
+    _imu_frame(svc, pi.CAN_ID_REPLY, struct.pack("<BBHI", OP.SET_ODR, ST.OK, 0, 2000), 100.01)   # answers an earlier 2 kHz request
+    assert not req.done
+    _imu_frame(svc, pi.CAN_ID_REPLY, struct.pack("<BBHI", OP.SET_ODR, ST.OK, 0, 1000), 100.02)
+    assert req.done and req.ok and "1000 Hz" in req.message
+
+
+def test_set_rate_on_a_can_bridge_that_does_not_relay_it_names_the_bridge_and_the_2khz_image():
+    svc, sent, box = _odr_service(ctrl_result=(False, "PLATFORM_IMU_CTRL: ERR_BAD_ARGS (status 0x02)"))
+    req = svc.submit_set_odr(2000)
+    svc.pump(now=100.0)
+    assert req.done and not req.ok
+    assert "can-bridge" in req.message and "FW 46" in req.message and "does not relay" in req.message
+    assert "teensy40_imu2k" in req.message and "2 kHz" in req.message
+
+
+@pytest.mark.parametrize("status,words", [(ST.ERR_FROZEN, "frozen or uploading"),
+                                          (ST.ERR_BAD_ARGS, "FW 12 or older"),
+                                          (ST.ERR_FW_UPDATE, "firmware update")])
+def test_set_rate_platform_refusals_are_plain_words(status, words):
+    svc, sent, box = _odr_service()
+    req = svc.submit_set_odr(2000)
+    svc.pump(now=100.0)
+    _imu_frame(svc, pi.CAN_ID_REPLY, struct.pack("<BBHI", OP.SET_ODR, status, 0, 0), 100.01)
+    assert req.done and not req.ok and words in req.message
+
+
+def test_set_rate_is_refused_for_a_bad_rate_a_frozen_ring_or_a_running_upload_and_times_out_loudly():
+    svc, sent, box = _odr_service()
+    assert svc.submit_set_odr(1500) == (False, "refused: the rate must be 1000 or 2000 Hz, not 1500")
+    _imu_frame(svc, pi.CAN_ID_STATUS, struct.pack("<BBbBBBBB", pc.PlatformImuState.FROZEN, 3, 30, 0, 0, 20, 32, 1), 100.0)
+    ok, why = svc.submit_set_odr(2000)
+    assert not ok and "FROZEN" in why and not sent
+    _imu_frame(svc, pi.CAN_ID_STATUS, struct.pack("<BBbBBBBB", 2, 3, 30, 0, 0, 20, 32, 1), 100.1)
+    assert svc.request_upload(label="operator")
+    ok, why = svc.submit_set_odr(2000)
+    assert not ok and "upload is running" in why
+    svc2, sent2, box2 = _odr_service()
+    req = svc2.submit_set_odr(1000)
+    svc2.pump(now=100.0)
+    svc2.pump(now=101.5)
+    assert req.done and not req.ok and "no reply" in req.message and sent2 == [(OP.SET_ODR, 1, 0)]
+
+
+def test_read_gap_check_accepts_the_wire_range_only():
+    assert pi.read_gap_check(63) == (True, "") and pi.read_gap_check(40)[0] and pi.read_gap_check(255)[0]
+    for bad in (39, 256, 63.0, True, "63", None):
+        assert pi.read_gap_check(bad)[0] is False

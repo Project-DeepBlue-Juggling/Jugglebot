@@ -112,7 +112,7 @@ def test_loop_order_dispatch_tilt_fwupdate_then_imu():
 def test_setup_starts_no_wire_and_init_start_does():
     code = _code()
     assert "Wire." not in _body(code, "void setup()")
-    init_start = _body(code, "void init_start()")
+    init_start = _body(code, "void init_start(uint16_t odr_hz)")
     assert "Wire.begin()" in init_start and "Wire.setClock(" in init_start
 
 

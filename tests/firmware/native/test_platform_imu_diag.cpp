@@ -50,7 +50,7 @@ struct FakeIo {
   }
 
   uint32_t produced() const { return configured ? (t_us - stream_start_us) / 1000 : 0; }
-  void init_start() { init_left = 3; }
+  void init_start(uint16_t) { init_left = 3; }
   int init_step(uint32_t now) {
     pass_txns++;
     last = DiagOp{};

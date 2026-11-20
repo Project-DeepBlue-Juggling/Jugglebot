@@ -33,21 +33,24 @@ there would corrupt it. Command outranks reply, reply outranks status, status ou
 | ENABLE 0x01, DISABLE 0x02, ABORT 0x06 | none |
 | FREEZE 0x03 | `[reason u8]`: ATTEMPT_END 1, FAULT 2, SOFT_ESTOP 3, OPERATOR 4 (0 is ERR_BAD_ARGS) |
 | RESUME 0x04 | `[capture_id u16]` |
-| READ 0x05 | `[capture_id u16][first_seq u16][count u16][frame_gap_10us u8]`; count 1..`read_max_words` (256) |
+| READ 0x05 | `[capture_id u16][first_seq u16][count u16][frame_gap_10us u8]`; count 1..`read_max_words` (256). FW 13: a READ whose `first_seq` is the active block's end extends it (section 4, READ chaining) |
+| SET_ODR 0x07 (FW 13) | `[odr_khz u8]`: 1 or 2 (`nominal_odr_hz` 1000 or `fast_odr_hz` 2000); anything else, or 2 on a 400 kHz I2C build, is ERR_BAD_ARGS (section 4, capture rate) |
 
 **IMU_REPLY** `[op u8][status u8][capture_id u16][detail u32]`, the FwUpdate reply shape. `capture_id` is the frozen
 capture's id (0 when none). `detail`: FREEZE gives `n_samples`; READ gives `first_seq | count << 16` on OK and
-`first_seq | region_end << 16` on ERR_OUT_OF_RANGE; otherwise 0. Status codes: 0x0x accepted, 0x1x refused with
-nothing changed and nothing sent. OK 0x00; ALREADY_FROZEN 0x01 (FREEZE found a capture frozen earlier, so this
-Attempt was not recorded); ERR_BAD_ARGS 0x10; ERR_NOT_FROZEN 0x11; ERR_WRONG_CAPTURE 0x12; ERR_OUT_OF_RANGE 0x13;
-ERR_EMPTY 0x14 (FREEZE with no samples); ERR_DISABLED 0x15; ERR_FW_UPDATE 0x16.
+`first_seq | region_end << 16` on ERR_OUT_OF_RANGE; SET_ODR gives the selected rate in Hz on OK; otherwise 0. Status
+codes: 0x0x accepted, 0x1x refused with nothing changed and nothing sent. OK 0x00; ALREADY_FROZEN 0x01 (FREEZE found
+a capture frozen earlier, so this Attempt was not recorded); READ_EXTENDED 0x02 (FW 13: the READ was appended to the
+active block; detail as OK); ERR_BAD_ARGS 0x10; ERR_NOT_FROZEN 0x11; ERR_WRONG_CAPTURE 0x12; ERR_OUT_OF_RANGE 0x13;
+ERR_EMPTY 0x14 (FREEZE with no samples); ERR_DISABLED 0x15; ERR_FW_UPDATE 0x16; ERR_FROZEN 0x17 (FW 13: SET_ODR to a
+new rate while FROZEN or UPLOADING).
 
 **IMU_STATUS** `[state u8][flags u8][temp_c i8][fifo_overflows u8][i2c_errors u8][sync_peak u8][fill_s u8][boot u8]`.
 `flags`: SENSOR_OK 0x01, TIME_SYNCED 0x02 (a 0x7DD frame in the last period), RING_WRAPPED 0x04, I2C_400K 0x08,
-DISCONTINUITY 0x10. `temp_c` is the chip's temperature rounded (-128 = unknown). The two counters are since boot,
+DISCONTINUITY 0x10, ODR_2K 0x20 (FW 13: the selected capture rate is `fast_odr_hz`, 2 kHz; clear = 1 kHz). `temp_c` is the chip's temperature rounded (-128 = unknown). The two counters are since boot,
 saturating at 255; `i2c_errors` counts every failed I2C transfer, including those the RUNNING retry absorbs (section 4). `sync_peak` is the largest |innovation| of the 0x7DD slave in the period (wall time received minus
 `get_wall_time_us()` before the IIR update), in 10 us counts, 254 saturating, 255 = no sync frame. `fill_s` is retained
-samples / `nominal_odr_hz`. `boot` is the low byte of `boot_id` (section 3).
+samples / the selected rate (`nominal_odr_hz` before FW 13), so it saturates at 32 at 1 kHz and 16 at 2 kHz. `boot` is the low byte of `boot_id` (section 3).
 
 *ROS topic `platform_imu/status` health keys (2 Hz DiagnosticStatus, from the last IMU_STATUS).* Besides the upload
 keys (`busy`, `phase`, `frames_*`, `platform_state`, `platform_flags`, `platform_boot`, `status_age_s`, `last_*`, `writer_*`,
@@ -57,7 +60,8 @@ STATUS only sets the baseline, a boot-byte change or a decrease adds the new val
 the board counter sits at 255), `i2c_errors_increase_age_s`, `fifo_overflows_increase_age_s` (seconds since the last rise within
 one boot, empty if none), `temp_c` (empty when -128), `sync_peak` (raw), `sync_peak_ms` (raw x 0.01 ms, empty when 255),
 `sync_peak_valid` (0 when 255 = no sync frame), `sync_peak_saturated` (1 at 254, so `sync_peak_ms` is a lower bound),
-and the flags `sensor_ok`, `time_synced`, `ring_wrapped`, `i2c_400k`, `discontinuity` (0/1). Level: WARN when the last upload
+and the flags `sensor_ok`, `time_synced`, `ring_wrapped`, `i2c_400k`, `discontinuity` (0/1), and `odr_hz` (1000 or 2000
+from the ODR_2K flag; empty before the first IMU_STATUS; an FW 12 board always reads 1000). Level: WARN when the last upload
 failed, a CRC failed or a write failed (as before), or when `i2c_errors` or `fifo_overflows` rose within the last 60 s of the
 same boot (a reboot never arms it); otherwise OK.
 
@@ -107,7 +111,7 @@ offset was stepped since the previous anchor).
 | 18 | u16 | capture flags: WRAPPED 1, DISCONTINUITY 2, SENSOR_ERROR 4, NEVER_SYNCED 8, I2C_400K 0x10 | 46 | u16 | FIFO overflows in this capture |
 | 20 | u64 | freeze wall_us | 48 | u16 | I2C errors in this capture |
 | 28 | u32 | freeze local_us | 50 | u16 | largest sync innovation in this capture, us |
-| 32 | u16 | ODR, Hz (nominal) | 52 | u16 | Platform Teensy FW_VERSION |
+| 32 | u16 | ODR, Hz (the capture's rate, 1000 or 2000) | 52 | u16 | Platform Teensy FW_VERSION |
 | 34 | u16 | accel LSB per g (2048 at +/-16 g) | 54 | u32 | `payload_crc32` |
 | | | | 58 | u32 | reserved 0 |
 | | | | 62 | u32 | `header_crc32` over bytes 0-61 |
@@ -156,8 +160,8 @@ the run; a successful count or flush ends it only if the run holds no failed bur
 recovery, flush and count succeed even when every burst then fails again). The third failure in a row goes to BACKOFF
 as above. A closing anchor written in the middle of a drain (a failed burst, a bad header, a FREEZE) has its
 `local_us` and `wall_us` moved back by the drain's counted-but-unread packets x 980 us (the nominal 1 ms period less
-2 %), so it stays an upper bound on its last sample's time without the drain's lag. The board also clears the bus before every re-probe that
-follows an error. A retry costs about three loop passes, far inside the 128 ms the chip FIFO holds at 1 kHz. Recovery from BACKOFF keeps appending to the same
+2 %; 490 us at 2 kHz), so it stays an upper bound on its last sample's time without the drain's lag. The board also clears the bus before every re-probe that
+follows an error. A retry costs about three loop passes, far inside the 128 ms the chip FIFO holds at 1 kHz (64 ms at 2 kHz). Recovery from BACKOFF keeps appending to the same
 ring behind a DISCONTINUITY anchor; only boot, ENABLE from DISABLED and RESUME start a new capture. There is no I2C
 traffic in FROZEN or UPLOADING. Nothing in this table or in the Platform Teensy depends on Armed: the gating below is the bridge's and the Jetson's; RESUME flushes the chip FIFO and re-checks WHO_AM_I.
 
@@ -171,17 +175,46 @@ Legality (checks run in this order: op and length, FW_HALTED, DISABLED, state, c
 | RESUME | ERR_DISABLED | ERR_NOT_FROZEN | ERR_NOT_FROZEN | new capture: RUNNING, or PROBING if the chip fails | same, block cut | ERR_FW_UPDATE |
 | READ | ERR_DISABLED | ERR_NOT_FROZEN | ERR_NOT_FROZEN | to UPLOADING | replaces the block | ERR_FW_UPDATE |
 | ABORT | OK | OK | OK | OK | to FROZEN | ERR_FW_UPDATE |
+| SET_ODR, a new rate (FW 13) | rate stored for ENABLE | rate stored, capture discarded, probe schedule kept | to PROBING at once, capture discarded | ERR_FROZEN | ERR_FROZEN | ERR_FW_UPDATE |
+| SET_ODR, the current rate | OK, no change | same | same | same | same | ERR_FW_UPDATE |
 
 RESUME and READ carry a `capture_id`; a mismatch with the frozen one is ERR_WRONG_CAPTURE. That is what makes an RPC
-retry safe: a delayed RESUME can never thaw a capture frozen after it was sent.
+retry safe: a delayed RESUME can never thaw a capture frozen after it was sent. SET_ODR's checks run: op, length and
+value (1 or 2 kHz), FW_HALTED, the build's limit, same rate (OK), then the state.
+
+**Capture rate (FW 13).** The capture runs at 1 kHz (`nominal_odr_hz`, the boot rate) or 2 kHz (`fast_odr_hz`), chosen
+by SET_ODR at run time; RAM only, so a reboot returns to the boot rate (1 kHz; a build with
+`-DPLATFORM_IMU_BOOT_ODR_HZ=2000`, env `teensy40_imu2k`, boots at 2 kHz). One capture is always one rate: a rate change discards the ring and
+the next samples start a fresh capture (first anchor, no DISCONTINUITY, per-capture counters reset), and the chip is
+re-initialised at the new rate by the ordinary probe (soft reset, configure, FIFO flush; one transaction per pass), at
+once from RUNNING. Refused while FROZEN or UPLOADING (ERR_FROZEN), so a switch never destroys a capture not yet
+uploaded: upload it or RESUME first. The same rate again is OK and changes nothing, so an RPC retry is harmless. The UI
+filter stays at ODR/2. At 2 kHz the ring holds 16 s, a drain runs every 2 ms (4 sample periods at either rate, so a
+burst stays about 4 packets), the closing-anchor back-dating uses 490 us, the chip FIFO holds 64 ms, and the packets
+take about 30-35 % of the 1 MHz bus (the bench ran 2 kHz with a 2 ms poll and no overflow, `tools/probes/imu_bench`). A
+loop() pass longer than about 60 ms (an inclinometer re-probe is about 103 ms) then costs one overflow, marked
+DISCONTINUITY, not a fault. A 400 kHz I2C build refuses 2 kHz (it would take about 75 % of that bus).
 
 **Platform Teensy TX rule.** An IMU frame is handed to `write()` only when the software TX queue is empty and at least
 5 FlexCAN mailboxes are free (4 stay free after it for the tilt, state, fan and firmware-update replies), so it always
 lands directly in a mailbox and never in the library's software TX queue (the FlexCAN_T4 all-mailboxes-busy defect writes
 a queued frame into every free mailbox and drops the rest). A frame that cannot be placed waits in the IMU module, REPLY
-and STATUS ahead of DATA; the IMU keeps at most 4 frames pending. At most one IMU_DATA frame per `loop()` pass, and none
-sooner than the block's gap after the previous one. The gap is `frame_gap_10us` x 10 us, raised to
-`read_min_gap_10us` (400 us) when smaller.
+and STATUS ahead of DATA; the IMU keeps at most 4 frames pending. At most one IMU_DATA frame per `loop()` pass. The gap is
+`frame_gap_10us` x 10 us, raised to `read_min_gap_10us` (400 us) when smaller.
+
+*Pacing (FW 13, fixed schedule).* Within a block each frame is due one gap after the previous frame's DUE time (not its
+send time), so `loop()` jitter no longer stretches the pace (FW 12 measured 0.83 ms per frame for 0.80 asked, Armed). How
+late a frame is against the schedule is clamped to `MAX_CATCHUP_FRAMES` (2) gaps, so after a stall of any length at most
+2 frames follow faster than the gap: in any window W a block sends at most W / gap + 3 frames. The first frame of a
+block that is not an extension waits a full gap after the previous frame sent (any block) and starts the schedule, so
+the idle time between blocks never becomes a burst.
+
+*READ chaining (FW 13).* A READ that arrives while a block is active and whose `first_seq` equals the block's end (the
+seq after its last word, counting earlier extensions) is appended to the block: the reply is READ_EXTENDED, the
+schedule carries on, and the block takes the new READ's gap. Any other READ replaces the block as before (a retried READ
+starts inside the block, so it replaces it and re-sends words, never loses one). Regions are never contiguous, so a
+chained block stays inside one region. This lets the Jetson keep one READ ahead and pay no per-READ turnaround while
+`read_max_words` stays 256, the can-bridge's own clamp (section 6).
 
 **Compile-time kill switch.** `PLATFORM_IMU_ENABLED=0` compiles every IMU path out. That image ignores IMU_CMD (0x6E3,
 it falls to the ordinary frame handling), sends no 0x6E4-0x6E6 frame, and still reports its FW version (11 or later), so the host can infer
@@ -217,7 +250,10 @@ Teensy's verdict is the IMU_REPLY). They are defined in `config/generate_udp_pro
 
 - **0x0064 PLATFORM_IMU_CTRL**, `ArgPlatformImuCtrl {op u8, reason u8, capture_id u16}`, op in {ENABLE, DISABLE,
   FREEZE, RESUME, ABORT} (READ and any unknown op are ERR_BAD_ARGS, nothing sent, so a READ can only pass the clamp
-  below). The bridge puts `reason` in byte 1 for FREEZE and `capture_id` in bytes 1-2 for RESUME, zeroes the rest, and
+  below). SET_ODR (Platform FW 13) is not in can-bridge FW 46's list, so FW 46 answers it ERR_BAD_ARGS and sends
+  nothing; relaying it needs one more case in `platform_relay.cpp` (`f.buf[1] = a.reason`, the `reason` field carrying
+  `odr_khz`; no UDP struct change), a can-bridge release of its own. Until then a 2 kHz capture needs the boot-rate
+  build (section 4, capture rate). The bridge puts `reason` in byte 1 for FREEZE and `capture_id` in bytes 1-2 for RESUME, zeroes the rest, and
   leaves judging their values to the Platform Teensy.
 - **0x0065 PLATFORM_IMU_READ**, `ArgPlatformImuRead {capture_id u16, first_seq u16, count u16, frame_gap_10us u8}`.
   ERR_BAD_ARGS for count 0 or above `read_max_words`. Both RPCs are ALLOWED while Armed (owner, 2026-11-19).
@@ -272,7 +308,9 @@ and aborts, the Soft E-stop aborts through the bridge's Fault edge; `activate`, 
 gated. The decision is one pure function, `jugglebot/platform_imu_gate.imu_upload_gate`, reading cached
 `platform_imu/status` only: a status older than 2 s or absent allows (a dead bridge node cannot lock the operator out), and an
 upload busy for more than 180 s counts as idle and is aborted. Toggle OFF mid-upload aborts the running upload (capture
-flagged incomplete). The Attempt span is 2 s before the first motion to 3 s after the end, the last 32 s if longer.
+flagged incomplete). The Attempt span is 2 s before the first motion to 3 s after the end, capped at what the ring holds:
+the last 32 s at 1 kHz, the last 16 s at 2 kHz (from the last IMU_STATUS's ODR_2K flag). A span whose start the ring no
+longer reaches is uploaded as the whole ring and its capture flagged `span_truncated`.
 
 `teensy_bridge_node` freezes at the ending REST of every Attempt, and on a Fault or Soft E-stop. It uploads when no
 Attempt is running, re-requests holes, checks both CRCs, writes `temp/imu_capture/<stamp>/`, then RESUMEs. On start, a
@@ -305,10 +343,55 @@ capture (AEDE, 2026-11-20). A block whose last word arrives with a hole left in 
 30 ms) with no frame received; the worker wakes for it instead of on its 20 ms poll. The settle only waits for frames
 already in the Platform's TX mailboxes, and those fill their words whenever they arrive (a frame's `seq` addresses its
 word, whichever READ is current), so a shorter settle loses nothing; a READ that reaches the Platform while it is still
-sending replaces the block, and the frame pace (measured from the last frame sent, across blocks) and the Armed gap clamp
-are unchanged, so the bus IMU rate stays at the requested gap. The node logs one launch-log line at every upload end:
-INFO `Platform IMU upload finished (label, samples, wall s, frames rx, duplicates, READs, block timeouts, hole passes,
-complete, crc, file stem)`, or a WARNING `Platform IMU upload failed|aborted: <reason> (...)`.
+sending replaces the block, and the frame pace (the gap floor between blocks; the fixed schedule within one, FW 13) and
+the Armed gap clamp are unchanged, so the bus IMU rate stays at the requested gap. The node logs one launch-log line at every upload end:
+INFO `Platform IMU upload finished (label, samples, wall s, frames rx, duplicates, READs (N chained, M replaced), block
+timeouts, hole passes, complete, crc, file stem)`, or a WARNING `Platform IMU upload failed|aborted: <reason> (...)`.
+Each capture's `stats` (in its .json) also carries `pass1_missing` (words still missing when the first sweep of the
+samples region ended: 0 when it ended complete, null when the upload ended inside it), `pass1_missing_seqs` (the first
+500 of them, in order, to see whether lost frames cluster), `reads_chained`, `reads_replaced` and `chain`.
+
+Host READ chaining (FW 13, `UploadMachine._maybe_chain`; no wire change beyond section 4's READ_EXTENDED). The Jetson keeps
+one READ ahead so the Platform never idles between contiguous blocks:
+
+1. *When it is used.* Only when the frozen capture's own header says `fw_version` >= 13. The header is written by the board
+   that froze this capture in this boot (the boot byte is checked against STATUS), so it cannot be stale after a reflash,
+   unlike the node's 0x6E0 identity read; before the header is read (one 11-word READ) nothing is chained. An FW 12 board
+   is never sent a chained READ, so it is read exactly as before (one READ at a time; tested against the same machine with
+   chaining off).
+2. *When the next READ goes out.* At most one READ ahead. Block k must show it is on the board (its OK or READ_EXTENDED
+   reply, or one of its frames, has arrived) and must not have ended (its last word not yet received). The READ for k+1
+   goes out when the highest seq received from k is within ceil(`chain_lead_s` / gap) words of k's end, or the clock is
+   within `chain_lead_s` (80 ms) of k's predicted end, whichever is first. 80 ms is about 5 times the measured 16 ms READ
+   turnaround and still covers the worker's 20 ms poll plus the bridge's 10 ms batch flush (received progress lags the
+   board by up to that); at the 0.8 ms pace it is about 100 words of a 256-word block.
+3. *What is chained.* Only the next CONTIGUOUS block (`first_seq` = k's end, same region, same pass). A hole-fill READ is
+   never contiguous, so it is never chained: it goes out fresh when the block before it ends, exactly as before FW 13.
+4. *Bookkeeping with two blocks out.* Each frame is credited to the block whose seq range holds it. Block k ends the
+   moment a frame of k+1 arrives or k's last word arrives (no settle: k+1 is already on the board), and k+1 becomes the
+   current block with no READ sent. k's deadline is unchanged (its predicted end plus `block_slack_s`); k+1's runs from k's
+   predicted end (count x gap, plus the slack); with nothing arriving k times out, then k+1, each counted by the stall
+   guard as before. The chained READ takes the effective gap at the moment it is sent, so the Armed clamp still applies to
+   every READ.
+5. *Replies.* READ_EXTENDED counts `reads_chained`. OK to a chained READ (`reads_replaced`) means the board started it as
+   a fresh block: either it arrived after k had ended (only the turnaround is lost) or the board replaced k (an FW 12
+   board). Either way k is over on the board: it ends at once without counting a stall, and any of its words never sent
+   are holes the refill heals. Two such OK replies in a row turn chaining off for the rest of the upload (a board whose
+   header claims 13 but replaces costs at most two blocks of holes). A lost reply changes nothing but the count (k+1's
+   frames show it). A chained READ that never reaches the board times out and its words are re-requested in the next
+   pass; one the bridge did not queue is forgotten at once and the next block goes out fresh. An error reply ends the
+   upload exactly as before.
+
+Capture rate and pace, operator side (FW 13). `ros2 service call /platform_imu/set_rate jugglebot_interfaces/srv/SetString
+"{data: '2000'}"` ("1000", "2000", "1k" or "2k") sends SET_ODR through the IMU worker and answers in plain words: the
+Platform's OK ("capture rate 2000 Hz: the ring restarts as a fresh capture and holds 16 s"), its ERR_FROZEN, its
+ERR_BAD_ARGS (an FW 12 board, or a 400 kHz I2C build asked for 2 kHz), or the can-bridge's ERR_BAD_ARGS: can-bridge FW 46
+does not relay SET_ODR (section 6), and the reply says so and names the 2 kHz Platform image (`teensy40_imu2k`) as the
+alternative. It is refused while an upload or an Attempt runs and while the ring is FROZEN or UPLOADING. The upload pace is
+the node parameter `imu_read_gap_10us` (x 10 us, 40..255, default 80), settable at run time:
+`ros2 param set /teensy_bridge_node imu_read_gap_10us 63` (about 1590 frames/s; the bridge's Armed clamp is 63). It applies
+from the next READ, also to an upload already running; a value outside 40..255 or not an integer is refused and the prior
+value kept.
 
 ## 7. Walk-through: one capture with one lost frame
 
@@ -352,5 +435,13 @@ Numbers:
   1600 fps) about 40 s; at the old 1000 us default about 66 to 70 s. `read_default_gap_10us` (100, 1000 fps) stays the
   default the YAML ships; the Jetson's configured pace overrides it per READ.
 - **Rate ramp (P4):** the operating pace is measured, not assumed; see the plan's P4 gate.
+- **FW 13:** with READ chaining the whole ring is its word count x gap (64971 words at 800 us = 52.0 s at 1 kHz;
+  64491 at 2 kHz, 160 anchors, 51.6 s) plus one turnaround, instead of about 4 s of per-READ turnarounds (263 READs of
+  about 16 ms each). The fixed schedule removes the pace drift (0.83 ms per frame Armed for 0.80 asked). A 2 kHz capture
+  does not change the bus during an Attempt (only IMU_STATUS); it doubles the I2C traffic on the Platform's own bus.
+  Host model (fake board with one sender, 4 ms READ and 10 ms frame latency, worker reacting in 1 ms, whole ring, gap
+  800 us, 2026-11-21): no loss, FW 12 55.5 s / 255 READs, FW 13 52.0 s / 255 READs (252 chained); with p = 0.004
+  independent frame loss, FW 12 59.7 s and FW 13 55.4 s, both 492 READs and 89 duplicates (the refill pass is not
+  chained). The real worker wakes on 10 ms batches, so real FW 12 turnarounds are longer than modelled.
 - **No anchors** are taken during an upload (FROZEN), so upload traffic cannot bias a capture's timestamps.
 - **RAM:** the ring is 32000 x 12 B = 384000 B, plus the anchor ring (400 slots), in RAM2 clear of the CrashReport area.

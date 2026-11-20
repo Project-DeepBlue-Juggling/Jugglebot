@@ -503,7 +503,11 @@ PLATFORM_FW_VERSION_UNVERSIONED = 0
 #: re-probe, and a failed FIFO transfer while RUNNING is recovered and retried
 #: (BACKOFF only on the third in a row) instead of a 1 s BACKOFF hole. IMU-only:
 #: a board on 11 still works, its captures just carry more DISCONTINUITY gaps.
-PLATFORM_FW_VERSION_EXPECTED = 12
+#: 13 (2026-11-21) = Platform IMU upload and rate: a READ contiguous with the active
+#: block extends it (READ_EXTENDED), DATA frames on a fixed schedule (due += gap, at most
+#: 2 frames of catch-up), and IMU_CMD SET_ODR selects a 1 or 2 kHz capture. IMU-only: a
+#: board on 12 still works, it answers a chained READ by replacing the block (OK) instead.
+PLATFORM_FW_VERSION_EXPECTED = 13
 
 
 def decode_platform_fw_version(data: bytes) -> int:
