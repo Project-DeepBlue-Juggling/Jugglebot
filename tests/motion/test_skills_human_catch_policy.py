@@ -69,12 +69,12 @@ def _waiting(**kw):
 def test_defaults_are_the_designs_proposed_values():
     p = hc.HumanCatchPolicy()
     assert p.first_lead_s == 0.55                 # D3
-    assert p.plan_lead_s == 0.62                  # U5a plan window (PROPOSED)
+    assert p.plan_lead_s == 0.62                  # U5a plan window (DECIDED)
     assert p.assoc_radius_mm == 400.0             # D4
     assert p.reaim_authority_mm == 50.0           # D5
     assert p.resend_max == 2                      # D6
-    assert (p.mean_n, p.wait_radius_mm, p.wait_deadband_mm) == (5, 150.0, 20.0)
-    assert (p.clear_s, p.return_s) == (0.5, 1.0)  # D8
+    assert (p.mean_n, p.wait_radius_mm, p.wait_deadband_mm) == (5, 0.0, 20.0)  # D7 DECIDED fixed
+    assert (p.clear_s, p.return_s) == (0.3, 1.0)  # D8 DECIDED 2026-11-21
     assert p.nominal_apex_m == 1.9                # D9
     assert p.writes_memory is False               # rule G
     np.testing.assert_allclose(p.nominal_arrival_vel_mm_s(),
@@ -266,8 +266,8 @@ def test_holding_clears_after_continuous_empty():
     p = _holding()
     assert not p.observe_cup(hc.CUP_SEATED, 10.0)
     assert not p.observe_cup(hc.CUP_EMPTY, 10.1)
-    assert not p.observe_cup(hc.CUP_EMPTY, 10.59)
-    assert p.observe_cup(hc.CUP_EMPTY, 10.6)
+    assert not p.observe_cup(hc.CUP_EMPTY, 10.39)   # clear_s 0.3 (D8, DECIDED)
+    assert p.observe_cup(hc.CUP_EMPTY, 10.41)
     assert p.phase == hc.RETURNING
 
 
@@ -276,8 +276,8 @@ def test_a_seated_sample_restarts_the_debounce():
     p.observe_cup(hc.CUP_EMPTY, 10.0)
     p.observe_cup(hc.CUP_SEATED, 10.3)
     assert not p.observe_cup(hc.CUP_EMPTY, 10.4)
-    assert not p.observe_cup(hc.CUP_EMPTY, 10.8)
-    assert p.observe_cup(hc.CUP_EMPTY, 10.9)
+    assert not p.observe_cup(hc.CUP_EMPTY, 10.69)
+    assert p.observe_cup(hc.CUP_EMPTY, 10.71)
 
 
 def test_unknown_never_counts_as_empty_so_a_dead_sensor_holds():
@@ -328,7 +328,7 @@ def test_the_latest_revision_of_a_key_replaces_its_landing():
 
 
 def test_the_wait_site_is_clamped_about_home_and_into_the_workspace():
-    p = _waiting()                                   # radius 150, box 150
+    p = _waiting(wait_radius_mm=150.0)               # radius 150, box 150
     for i in range(5):
         _land(p, (100.0, 120.0), tid=i + 1)          # mean far from home
     t = p.target_wait_xy_mm()
@@ -338,6 +338,29 @@ def test_the_wait_site_is_clamped_about_home_and_into_the_workspace():
     for i in range(5):
         _land(q, (100.0, 120.0), tid=i + 1)
     np.testing.assert_array_equal(q.target_wait_xy_mm(), HOME)
+
+
+def test_the_default_wait_site_is_fixed_whatever_the_landings():
+    # D7 DECIDED (owner, 2026-11-21): wait_radius_mm 0 by default, so the
+    # mean never moves W; the moving Site stays reachable via the parameter.
+    p = _waiting()
+    for i in range(5):
+        _land(p, (100.0, 120.0), tid=i + 1)
+    np.testing.assert_array_equal(p.target_wait_xy_mm(), HOME)
+    xy, moved = p.begin_return()
+    assert not moved
+    np.testing.assert_array_equal(xy, HOME)
+    np.testing.assert_array_equal(p.wait_xy_mm, HOME)
+
+
+def test_the_moving_wait_site_still_works_when_the_radius_is_set():
+    p = _waiting(wait_radius_mm=150.0)
+    for i in range(5):
+        _land(p, (-50.0 + 100.0, 0.0), tid=i + 1)    # mean +100 mm in x
+    xy, moved = p.begin_return()
+    assert moved
+    np.testing.assert_allclose(xy, [50.0, 0.0])
+    np.testing.assert_allclose(p.wait_xy_mm, [50.0, 0.0])
 
 
 def test_the_wait_site_moves_only_in_returning_and_past_the_deadband():

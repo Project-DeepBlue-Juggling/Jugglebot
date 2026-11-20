@@ -29,13 +29,15 @@ node runs.
 * Wait Site (section 2.2): the mean of the last ``mean_n`` Landings that passed
   association, clamped to within ``wait_radius_mm`` of ``home_xy_mm`` and into the cup workspace box; applied
   only when the Platform returns (RETURNING) and only when it moved at least
-  ``wait_deadband_mm``.
+  ``wait_deadband_mm``.  DEFAULT (owner, 2026-11-21): ``wait_radius_mm`` 0, so
+  the Site is FIXED at home and the mean is inert; a radius above 0 turns it on.
 * G, Memory: this Pattern writes none.  :attr:`HumanCatchPolicy.writes_memory`
   is ``False`` and the node builds no Learner for it.
 
-**Every number below is an OWNER DECISION still to be taken.**  Each is a
-constructor parameter whose default is the design's PROPOSED value (named
-PROPOSED in its docstring line); nothing here is a limit, margin, guard or
+**Every number below is an OWNER DECISION.**  Each is a constructor parameter
+whose default is the design's PROPOSED value (named PROPOSED in its docstring
+line) or, where the owner has ruled, the DECIDED value (2026-11-21: plan window,
+first lead, clear, wait Site fixed); nothing here is a limit, margin, guard or
 gain of the planner or the machine.
 
 Python 3.8; no ROS imports (the ``motion/`` rule).
@@ -183,17 +185,17 @@ class HumanCatchPolicy:
     """The ``human_catch`` Pattern's decisions, one instance per Attempt.
 
     Every keyword is an owner decision; the default is the design's PROPOSED
-    value (``design-human-catch.md`` section 4).  None is a planner or machine
+    (or, where marked, DECIDED) value (``design-human-catch.md`` section 4).  None is a planner or machine
     constant.
 
     :param home_xy_mm: the home Site's xy (default the Pattern's Site 0, the
         columns Pattern's P1 at (-50, 0) mm in the Platform frame).  The wait
         Site starts here and never leaves ``wait_radius_mm`` of it.
-    :param first_lead_s: D3, PROPOSED 0.55 s.  The shortest lead (landing time
+    :param first_lead_s: D3, DECIDED (owner, 2026-11-21) 0.55 s.  The shortest lead (landing time
         minus now) at which a first plan may be made.  The sweep
         (``tools/probes/human_catch_reach.py``) is the evidence: below about
         0.51 s the install's own gate refuses everything.
-    :param plan_lead_s: PROPOSED 0.62 s (U5a, coordinator 2026-11-18, NOT in
+    :param plan_lead_s: DECIDED (owner, 2026-11-21) 0.62 s (U5a, coordinator 2026-11-18, NOT in
         the design): the EARLIEST lead at which a first plan is made.  A
         key's revision 0 arriving with more lead than this is held
         (:data:`PENDING`); its later revisions only replace the pending
@@ -214,13 +216,16 @@ class HumanCatchPolicy:
         ``lateral_authority_m``.  The policy only carries it.
     :param resend_max: D6, PROPOSED 2: re-sends per Catch (the node passes it
         as ``resend_max_per_catch``).  Carried, not used here.
-    :param mean_n: D7, PROPOSED 5: Landings in the wait-Site mean.
-    :param wait_radius_mm: D7, PROPOSED 150 mm: the wait Site stays within
-        this of home (0 = a fixed Site).
+    :param mean_n: D7, PROPOSED 5: Landings in the wait-Site mean (inert
+        while ``wait_radius_mm`` is 0).
+    :param wait_radius_mm: D7, DECIDED (owner, 2026-11-21) 0 mm: a FIXED wait
+        Site (it never moves with past Landings; the replay sweep showed the
+        mean inert).  To turn the moving wait Site back on pass e.g. 150 mm
+        (the earlier PROPOSED value): the Site then stays within this of home.
     :param wait_deadband_mm: D7, PROPOSED 20 mm: W moves only when the
         clamped mean differs from the current W by at least this.
-    :param clear_s: D8, PROPOSED 0.5 s: continuous EMPTY before RETURNING.
-    :param return_s: D8, PROPOSED 1.0 s: the RETURNING REST's duration
+    :param clear_s: D8, DECIDED (owner, 2026-11-21) 0.3 s (was PROPOSED 0.5): continuous EMPTY before RETURNING.
+    :param return_s: D8, DECIDED (owner, 2026-11-21) 1.0 s: the RETURNING REST's duration
         (carried for the node's compile, not used here).
     :param nominal_apex_m: D9, PROPOSED 1.9 m absolute (1.07 m above the
         Catch plane, 4.58 m/s): the arrival the nomination plans (U5b reads
@@ -246,9 +251,9 @@ class HumanCatchPolicy:
                  reaim_authority_mm: float = 50.0,
                  resend_max: int = 2,
                  mean_n: int = 5,
-                 wait_radius_mm: float = 150.0,
+                 wait_radius_mm: float = 0.0,
                  wait_deadband_mm: float = 20.0,
-                 clear_s: float = 0.5,
+                 clear_s: float = 0.3,
                  return_s: float = 1.0,
                  nominal_apex_m: float = 1.9,
                  n_throws: int = 0,

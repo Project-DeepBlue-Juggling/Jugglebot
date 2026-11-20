@@ -137,3 +137,10 @@ def test_run_with_nothing_to_report_exits_nonzero(monkeypatch, tmp_path, capsys)
     assert rc == 1
     assert 'no truth Throws' in capsys.readouterr().err
     assert (tmp_path / 'o' / 'bag_125320_replay.md').exists()   # the window is in the file name
+
+
+def test_d10_xy_bar_is_35_mm_decided_2026_11_21():
+    assert H.D10_XY_MM == 35.0
+    rows = [_row(0, 'PLANNED', dist=34.0, dt=5.0, xy=(0.0, 0.0)),
+            _row(1, 'PLANNED', dist=36.0, dt=5.0, xy=(0.0, 0.0))]
+    assert H.score_rows(rows, [])['n_d10_good'] == 1
