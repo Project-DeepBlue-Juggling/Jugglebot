@@ -4,7 +4,7 @@ kind: bug
 title: test_a_fresh_throw_installs_through_the_real_worker_process misses the solver wire deadline under box load and fails the gate
 status: complete
 created: '2026-11-19'
-updated: '2026-11-19T16:00:58Z'
+updated: '2026-11-20T15:49:19Z'
 owners: []
 priority: medium
 effort: s
