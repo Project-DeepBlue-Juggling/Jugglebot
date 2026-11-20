@@ -32,7 +32,8 @@ uint32_t g32(const uint8_t* p) { return uint32_t(g16(p)) | (uint32_t(g16(p + 2))
 struct FakeIo {
   bool present = true;
   bool wall_valid = true;
-  bool force_overflow = false, bad_packet = false;
+  bool force_overflow = false;
+  int bad_packet = 0;                    // the next N bursts return a bad FIFO header
   uint32_t t_us = 0;
   bool configured = false;
   uint32_t stream_start_us = 0, consumed = 0;
@@ -46,6 +47,9 @@ struct FakeIo {
   // Scripted transient failures: the next N ops of that kind fail once each (the bus itself stays fine).
   // A failed burst has taken some bytes from the chip FIFO, as a real short read can.
   int fail_c = 0, fail_b = 0, fail_f = 0;
+  int fail_b_skip = 0;                   // bursts that succeed before fail_b starts failing
+  uint32_t last_count_us = 0;            // time and value of the last successful FIFO_COUNT
+  int last_count_n = 0;
   std::string log;                       // one letter per bus step: r recover, i init, c count, b burst, f flush, w who
 
   void txn(char k = '?') { pass_txns++; total_txns++; txn_times_ms.push_back(t_us / 1000); log += k; }
@@ -74,13 +78,16 @@ struct FakeIo {
     *ovf = false;
     uint32_t n = in_fifo(ovf);
     if (force_overflow) { *ovf = true; force_overflow = false; }
+    last_count_us = t_us;
+    last_count_n = int(n);
     return int(n);
   }
   int read_burst(Pkt* out, int n) {
     txn('b');
     if (!present || wedged) return -3;
-    if (fail_b > 0) { fail_b--; consumed += uint32_t(n) / 2; return -3; }
-    if (bad_packet) { bad_packet = false; consumed += uint32_t(n); return ERR_BAD_PACKET; }
+    if (fail_b > 0 && fail_b_skip == 0) { fail_b--; consumed += uint32_t(n) / 2; return -3; }
+    if (fail_b > 0) fail_b_skip--;
+    if (bad_packet > 0) { bad_packet--; consumed += uint32_t(n); return ERR_BAD_PACKET; }
     for (int i = 0; i < n; i++) {
       const uint32_t k = consumed++;
       for (int j = 0; j < 6; j++) out[i].s[j] = int16_t((k * 7 + j) & 0x7FFF);
@@ -97,7 +104,7 @@ struct FakeIo {
   }
   int check_who() { txn('w'); return present && !wedged ? 0 : -2; }
   void stamp(Stamp* s) { s->local_us = t_us; s->wall_us = uint64_t(t_us) + 5000000000ull; s->wall_valid = wall_valid; }
-  void header_info(ImuCapture::HeaderInfo* h) { h->odr_hz = 1000; h->accel_lsb_per_g = 2048; h->gyro_lsb_per_dps_x10 = 328; h->fw_version = 11; h->i2c_clock_100khz = 10; }
+  void header_info(ImuCapture::HeaderInfo* h) { h->odr_hz = 1000; h->accel_lsb_per_g = 2048; h->gyro_lsb_per_dps_x10 = 328; h->fw_version = 12; h->i2c_clock_100khz = 10; }
 };
 
 struct Sent { uint32_t id; std::array<uint8_t, 8> d; uint32_t t_us; };
@@ -849,4 +856,96 @@ TEST_CASE("RUNNING retry: a FwUpdate BEGIN between a failure and its recovery st
   CHECK(r.svc.state() == S::RUNNING);
   REQUIRE(r.io.log.size() > at + 1);
   CHECK(r.io.log.substr(at, 2) == "ri");
+}
+
+TEST_CASE("RUNNING retry: a burst that fails on every drain reaches BACKOFF on the third (count and flush succeed)") {
+  // Audit 2026-11-20: count ok -> burst fails -> recover -> flush ok -> count ok -> burst fails ...
+  // must not loop for ever behind a DISCONTINUITY every ~10 ms. Only a good burst ends the run.
+  Rig r;
+  r.to_running(500);
+  r.to_drain_end();
+  const size_t at = r.io.log.size();
+  r.io.fail_b = 1000;
+  r.run_ms(100);
+  CHECK(r.svc.state() == S::BACKOFF);
+  CHECK(r.svc.counters().i2c_errors == 3);
+  CHECK(r.svc.counters().retries == 2);
+  CHECK(r.io.log.substr(at) == "cbrfcbrfcb");
+}
+
+TEST_CASE("RUNNING retry: three bad-header drains in a row reach BACKOFF; two do not") {
+  SUBCASE("three") {
+    Rig r;
+    r.to_running(500);
+    r.to_drain_end();
+    const size_t at = r.io.log.size();
+    r.io.bad_packet = 3;
+    r.run_ms(100);
+    CHECK(r.svc.state() == S::BACKOFF);
+    CHECK(r.svc.counters().bad_packets == 3);
+    CHECK(r.svc.counters().i2c_errors == 0);   // still not an I2C error ...
+    CHECK(r.svc.counters().recoveries == 0);   // ... and no bus recovery while RUNNING
+    CHECK(r.io.log.substr(at) == "cbfcbfcb");
+  }
+  SUBCASE("two, then a good burst") {
+    Rig r;
+    r.to_running(500);
+    r.to_drain_end();
+    r.io.bad_packet = 2;
+    r.run_ms(500);
+    CHECK(r.svc.state() == S::RUNNING);
+    CHECK(r.svc.retry_streak() == 0);
+    CHECK(r.svc.counters().bad_packets == 2);
+  }
+}
+
+TEST_CASE("RUNNING retry: isolated burst failures and bad headers never accumulate to BACKOFF") {
+  Rig r;
+  r.to_running(500);
+  for (int k = 0; k < 20; k++) {
+    r.to_drain_end();
+    if (k % 2) r.io.fail_b = 2; else r.io.bad_packet = 2;
+    r.run_ms(300);
+    CHECK(r.svc.state() == S::RUNNING);
+  }
+  CHECK(r.svc.counters().i2c_errors == 20);
+  CHECK(r.svc.counters().bad_packets == 20);
+  CHECK(r.svc.fail_streak() == 0);
+  CHECK(r.io.max_pass_txns <= 1);
+}
+
+TEST_CASE("RUNNING retry: the closing anchor of a drain whose second burst fails is moved back by the unread packets") {
+  Rig r;
+  r.to_running(500);
+  r.to_drain_end();
+  r.t_us += 12000;                         // one slow pass: the next drain counts ~16 packets (2 bursts)
+  const uint32_t before = r.cap.appended();
+  r.io.fail_b = 1;
+  r.io.fail_b_skip = 1;                    // the first burst of the drain succeeds, the second fails
+  for (int i = 0; i < 100 && r.svc.counters().i2c_errors == 0; i++) { r.pass(); r.t_us += 500; }
+  REQUIRE(r.svc.counters().i2c_errors == 1);
+  const uint32_t count_us = r.io.last_count_us;
+  const int n = r.io.last_count_n;
+  REQUIRE(n > BURST_PKTS);
+  REQUIRE(n <= 2 * BURST_PKTS);
+  r.run_ms(300);
+  CHECK(r.svc.state() == S::RUNNING);
+  r.freeze_and_wait();
+  auto a = r.anchor_records();
+  int disc = 0;
+  for (size_t i = 0; i < a.size(); i++)
+    if (a[i][16] & PlatformImuAnchorFlag::DISCONTINUITY) {
+      disc++;
+      REQUIRE(i > 0);
+      const uint8_t* c = a[i - 1].data();
+      CHECK(g32(c) == before + uint32_t(BURST_PKTS));       // the first burst was pushed
+      const uint32_t want = count_us - uint32_t(n - BURST_PKTS) * MIN_SAMPLE_PERIOD_US;
+      CHECK(g32(c + 4) == want);
+      uint64_t wall = 0;
+      for (int b = 7; b >= 0; b--) wall = (wall << 8) | c[8 + b];
+      CHECK(wall == uint64_t(want) + 5000000000ull);         // FakeIo: wall = local + 5e9
+      CHECK((c[16] & PlatformImuAnchorFlag::DISCONTINUITY) == 0);
+    }
+  CHECK(disc == 1);
+  CHECK(MIN_SAMPLE_PERIOD_US == 980u);
 }

@@ -130,9 +130,13 @@ controller reset, ~0.12 ms, no device transaction) and the pass after retries. A
 nothing from the FIFO, so it is simply counted again: no DISCONTINUITY, no sample lost. A failed burst read leaves
 the chip's FIFO read position unknown, so the rest of that drain is dropped, a closing anchor is written, the FIFO is
 flushed and the next anchor is DISCONTINUITY. A failed flush is recovered and flushed again. A bad FIFO header (the
-transfer completed, its content did not parse) is handled like an overflow: nothing of that burst is kept, flush,
-DISCONTINUITY, RUNNING; it is not an I2C error. Any successful count, burst or flush ends the run; the third failure in
-a row with no success between goes to BACKOFF as above. The board also clears the bus before every re-probe that
+transfer completed, its content did not parse) is handled the same way (nothing of that burst is kept, flush,
+DISCONTINUITY) and joins the run of failures, but it is not an I2C error and needs no bus clear. A successful burst ends
+the run; a successful count or flush ends it only if the run holds no failed burst and no bad header (after those, the
+recovery, flush and count succeed even when every burst then fails again). The third failure in a row goes to BACKOFF
+as above. A closing anchor written in the middle of a drain (a failed burst, a bad header, a FREEZE) has its
+`local_us` and `wall_us` moved back by the drain's counted-but-unread packets x 980 us (the nominal 1 ms period less
+2 %), so it stays an upper bound on its last sample's time without the drain's lag. The board also clears the bus before every re-probe that
 follows an error. A retry costs about three loop passes, far inside the 128 ms the chip FIFO holds at 1 kHz. Recovery from BACKOFF keeps appending to the same
 ring behind a DISCONTINUITY anchor; only boot, ENABLE from DISABLED and RESUME start a new capture. There is no I2C
 traffic in FROZEN or UPLOADING. Nothing in this table or in the Platform Teensy depends on Armed: the gating below is the bridge's and the Jetson's; RESUME flushes the chip FIFO and re-checks WHO_AM_I.

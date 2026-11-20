@@ -63,6 +63,10 @@ constexpr uint32_t HEALTHY_RESET_MS = 10000; // this long RUNNING without a BACK
  *  row means the chip or the bus is really gone, and 3 failures + 2 recoveries take ~5 passes,
  *  far inside the chip FIFO's 128 ms at 1 kHz. */
 constexpr uint32_t RUNNING_MAX_RETRIES = 2;
+/*  The shortest the chip's sample period can be: nominal less 2 % (the chip clock is ~1 % off).
+ *  A closing anchor written mid-drain is moved back by (packets counted but not read) x this, so
+ *  it stays an upper bound on its last sample's time (spec section 3) without the drain's lag. */
+constexpr uint32_t MIN_SAMPLE_PERIOD_US = (1000000u / PlatformImu::NOMINAL_ODR_HZ) * 49u / 50u;
 /*  TX mailboxes the IMU always leaves free for everyone else.  The sketch has 8 (setMaxMB(16),
  *  the RX FIFO and its filter table take MB 0-7).  After an IMU frame the non-IMU writers that
  *  can run before loop() next checks the mailboxes for a dispatch are the Hand fan status
@@ -234,6 +238,7 @@ class Service {
     settled_ = halted_for_boot_ = false;
     probe_at_ = settle_end_ms_;
     fail_streak_ = retry_streak_ = 0;
+    burst_run_ = drain_pushed_ = false;
     init_started_ = chip_ok_ = resume_who_ = flush_pending_ = recover_pending_ = false;
     new_capture();
   }
@@ -384,7 +389,7 @@ class Service {
       healthy_since_ms_ = now_ms;
       phase_ = IDLE;
       flush_pending_ = false;
-      retry_streak_ = 0;
+      end_run();
       last_drain_us_ = now_us;
       eng_.on_chip_ready();
       return;
@@ -405,11 +410,14 @@ class Service {
    *                           mid-packet): drop the rest of the drain, close the anchors, mark the
    *                           next anchor DISCONTINUITY, recover the bus, flush, carry on.
    *    flush fails            recover, flush again (the DISCONTINUITY mark is still pending).
-   *  Every failure is counted in i2c_errors.  A successful count, burst or flush resets the
-   *  streak; a failure with retry_streak_ == RUNNING_MAX_RETRIES goes to BACKOFF as before.  A
-   *  bad FIFO header is not an I2C failure: the transfer completed, so it neither counts nor
-   *  resets the streak (it flushes and marks a DISCONTINUITY on its own).  Each step is still one
-   *  bounded bus operation per pass, so a failure, a recovery and its retry take three passes. */
+   *  Every failure is counted in i2c_errors.  What ends a run of failures (end_run): a
+   *  successful burst always; a successful count or flush only while the run holds no burst
+   *  failure, since after a failed burst the recovery, flush and count all succeed even when
+   *  every burst then fails again (audit 2026-11-20: that loop never reached BACKOFF).  A bad
+   *  FIFO header joins the run the same way as a failed burst but is not an I2C failure (not in
+   *  i2c_errors, no bus recovery).  The failure that finds retry_streak_ == RUNNING_MAX_RETRIES
+   *  goes to BACKOFF as before.  Each step is still one bounded bus operation per pass, so a
+   *  failure, a recovery and its retry take three passes. */
   template <class Io>
   void drain_step(uint32_t now_us, uint32_t now_ms, Io& io) {
     if (phase_ == IDLE) {
@@ -422,9 +430,9 @@ class Service {
       }
       if (flush_pending_) {                // after an overflow, a bad packet or a failed burst: start clean
         last_step_ = STEP_I2C;
-        if (io.flush() < 0) { diag_note(DK_FLUSH, io); retry_or_backoff(now_ms); return; }  // stays pending
+        if (io.flush() < 0) { diag_note(DK_FLUSH, io); retry_or_backoff(now_ms, true, false); return; }  // stays pending
         flush_pending_ = false;
-        retry_streak_ = 0;
+        if (!burst_run_) end_run();
         last_drain_us_ = now_us;
         return;
       }
@@ -436,10 +444,10 @@ class Service {
       const int n = io.fifo_count(&ovf);
       if (n < 0) {
         diag_note(DK_COUNT, io);
-        if (retry_or_backoff(now_ms)) last_drain_us_ = now_us - DRAIN_PERIOD_US;  // due again after the recovery
+        if (retry_or_backoff(now_ms, true, false)) last_drain_us_ = now_us - DRAIN_PERIOD_US;  // due again after the recovery
         return;
       }
-      retry_streak_ = 0;
+      if (!burst_run_) end_run();
       if (ovf) {
 #if PLATFORM_IMU_DIAG
         {
@@ -457,6 +465,7 @@ class Service {
       }
       if (n == 0) return;
       remaining_ = uint32_t(n) > DRAIN_MAX_PKTS ? DRAIN_MAX_PKTS : uint32_t(n);
+      drain_pushed_ = false;
       phase_ = READING;
       return;
     }
@@ -467,15 +476,15 @@ class Service {
     if (got == ERR_BAD_PACKET) {           // nothing of this burst is pushed; the earlier bursts were sound
       diag_note(DK_BAD_PACKET, io);
       cnt_.bad_packets++;
-      drop_drain_and_flush();
+      if (retry_or_backoff(now_ms, false, true)) drop_drain_and_flush();
       return;
     }
     if (got < 0) {
       diag_note(DK_BURST, io);
-      if (retry_or_backoff(now_ms)) drop_drain_and_flush();
+      if (retry_or_backoff(now_ms, true, true)) drop_drain_and_flush();
       return;
     }
-    retry_streak_ = 0;
+    end_run();
     for (int i = 0; i < got && i < n; i++) {
       if (!cap_->push(pk[i].s)) continue;
       temp_last_ = pk[i].temp;
@@ -483,6 +492,7 @@ class Service {
       if (!have_temp_start_) { temp_start_ = pk[i].temp; have_temp_start_ = true; }
       unanchored_ = true;
       unanchored_stamp_ = cur_;
+      drain_pushed_ = true;
     }
     remaining_ -= uint32_t(n);
     if (remaining_ == 0) { phase_ = IDLE; complete_drain(now_ms); }
@@ -492,9 +502,9 @@ class Service {
    *  rest of this drain, anchor what was pushed, mark the next anchor DISCONTINUITY and flush
    *  the chip FIFO before the next count.  Stays RUNNING. */
   void drop_drain_and_flush() {
+    close_unanchored();                    // first: it reads phase_ and remaining_
     phase_ = IDLE;
     remaining_ = 0;
-    close_unanchored();
     eng_.note_overflow();
     flush_pending_ = true;
   }
@@ -518,7 +528,18 @@ class Service {
    *  segment boundary is then exact (spec section 5). */
   void close_unanchored() {
     if (sync_.take_step()) sync_step_pending_ = true;
-    if (unanchored_) add_anchor(unanchored_stamp_, false);
+    if (!unanchored_) return;
+    /*  Mid-drain (a failed burst, a bad header, a FREEZE): the stamp belongs to the drain's
+     *  newest counted packet, but remaining_ of them were never pushed, so the last pushed
+     *  sample is at least remaining_ x MIN_SAMPLE_PERIOD_US older.  Move the stamp back by
+     *  that much; it stays an upper bound (spec section 3) and loses the drain's lag. */
+    Stamp st = unanchored_stamp_;
+    if (phase_ == READING && drain_pushed_ && remaining_) {
+      const uint32_t back = remaining_ * MIN_SAMPLE_PERIOD_US;
+      st.local_us -= back;
+      st.wall_us -= back;
+    }
+    add_anchor(st, false);
   }
 
   void add_anchor(const Stamp& s, bool disc) {
@@ -533,22 +554,26 @@ class Service {
     if (disc) capture_disc_ = true;
   }
 
-  /*  A failed FIFO transfer while RUNNING: counted, then absorbed (true: recover and retry on
-   *  later passes) or, the (RUNNING_MAX_RETRIES + 1)-th in a row, BACKOFF (false). */
-  bool retry_or_backoff(uint32_t now_ms) {
-    count_i2c_error();                     // also arms the bus recovery
+  /*  A failed FIFO transfer (i2c_error) or a bad FIFO header while RUNNING: joins the run of
+   *  failures, then is absorbed (true: retry on later passes, behind a bus recovery if it was an
+   *  I2C error) or, the (RUNNING_MAX_RETRIES + 1)-th in a row, goes to BACKOFF (false).  `burst`:
+   *  the failure lost the FIFO read position, so only a successful burst ends this run. */
+  bool retry_or_backoff(uint32_t now_ms, bool i2c_error, bool burst) {
+    if (i2c_error) count_i2c_error();      // also arms the bus recovery
+    if (burst) burst_run_ = true;
     if (retry_streak_ >= RUNNING_MAX_RETRIES) { running_error(now_ms); return false; }
     retry_streak_++;
-    cnt_.retries++;
+    if (i2c_error) cnt_.retries++;
     return true;
   }
+  void end_run() { retry_streak_ = 0; burst_run_ = false; }
   void running_error(uint32_t now_ms) {
     close_unanchored();
     chip_ok_ = false;
     phase_ = IDLE;
     remaining_ = 0;
     flush_pending_ = false;
-    retry_streak_ = 0;
+    end_run();
     eng_.on_i2c_error(now_ms);             // RUNNING -> BACKOFF, the next anchor DISCONTINUITY
     fail(now_ms);
   }
@@ -593,13 +618,13 @@ class Service {
   /*  FW_HALTED or DISABLED: the capture is gone and no I2C runs until PROBING re-inits the chip. */
   void halt_local() {
     init_started_ = chip_ok_ = resume_who_ = flush_pending_ = false;
-    retry_streak_ = 0;
+    end_run();
     new_capture();
   }
   void new_capture() {
     phase_ = IDLE;
     remaining_ = 0;
-    retry_streak_ = 0;
+    end_run();
     unanchored_ = disc_carry_ = sync_step_pending_ = capture_disc_ = false;
     first_anchor_ = true;
     have_temp_start_ = false;
@@ -705,6 +730,8 @@ class Service {
   // probe and back-off
   uint32_t probe_at_ = 0, fail_streak_ = 0, healthy_since_ms_ = 0;
   uint32_t retry_streak_ = 0;              // consecutive failed FIFO transfers absorbed in RUNNING
+  bool burst_run_ = false;                 // that run holds a failed burst or a bad header
+  bool drain_pushed_ = false;              // the drain in progress has pushed samples
   bool init_started_ = false, chip_ok_ = false, resume_who_ = false, recover_pending_ = false;
   // drain
   Phase phase_ = IDLE;
