@@ -2,9 +2,9 @@
 id: TKT-90
 kind: ticket
 title: 'BUG-127 held on jugglebot-map:night-shift/2026-11-21-BUG-127: apply the audit''s 2 fixes and merge, merge as is, or drop?'
-status: open
+status: complete
 created: '2026-11-21'
-updated: '2026-11-20T16:06:34Z'
+updated: '2026-11-20T22:32:22Z'
 owners: []
 priority: low
 effort: xs
@@ -37,3 +37,10 @@ Not built: marking the Steps that depend on a problem Step. The sheet format has
 - 3: BUG-127 stays open, unchanged.
 
 Recommendation: 1, both fixes are a few lines each.
+
+## Answer
+
+'Problem' steps should still be counted as 'done'
+Otherwise, go ahead and apply the Test fixes and merge.
+
+On the dependency work: I was hoping this could be something that the Claude that builds the sitting-sheet could figure out. I'd like to start trialling this, and I can give feedback and refine this figuring-out as we go
