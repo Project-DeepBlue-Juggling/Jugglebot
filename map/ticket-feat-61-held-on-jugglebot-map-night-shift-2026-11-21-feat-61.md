@@ -2,9 +2,9 @@
 id: TKT-91
 kind: ticket
 title: 'FEAT-61 held on jugglebot-map:night-shift/2026-11-21-FEAT-61: apply the audit''s 2 fixes and merge, merge as is, or drop?'
-status: open
+status: complete
 created: '2026-11-21'
-updated: '2026-11-20T16:13:33Z'
+updated: '2026-11-20T22:34:30Z'
 owners: []
 priority: medium
 effort: xs
@@ -37,3 +37,8 @@ The audit left two small findings open, and the app suite failed on a test this 
 - 3: FEAT-61 stays open for a layout you describe.
 
 Recommendation: 1. The phone-width fix keeps your no-new-scrolling rule on the phone too.
+
+## Answer
+
+Don't worry about phone use. This will only ever be used on a computer with a proper monitor.
+Let's go with Option 2. Merge as-is and I'll give feedback
