@@ -79,4 +79,4 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
 ## Questions a Sitting can answer
 
-- TKT-88 IDEA-25: which lever shortens the Armed IMU upload: the Jetson-only hole-fill change, firmware counters first, sample packing, or leave it? (parent IDEA-25)
+- none
