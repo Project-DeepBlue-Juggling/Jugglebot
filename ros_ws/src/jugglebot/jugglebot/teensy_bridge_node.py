@@ -3210,6 +3210,12 @@ class TeensyBridgeNode(Node):
             wr = snap.get('writer') or {}
             bad = bool(last.get('failure')) or (last.get('flags') or {}).get('crc_ok') is False \
                 or bool(last.get('write_failed'))
+            hl = snap.get('health') or {}
+            # WARN also when the board's I2C-error or FIFO-overflow counter rose within the last 60 s (same boot).
+            for ck in ('i2c_errors', 'fifo_overflows'):
+                age = hl.get(ck + '_increase_age_s')
+                if age is not None and age < 60.0:
+                    bad = True
             msg.level = DiagnosticStatus.WARN if bad else DiagnosticStatus.OK
             msg.message = '%s %d/%d' % (prog['phase'], prog['frames_done'], prog['frames_total']) if snap['busy'] \
                 else 'idle'
@@ -3231,6 +3237,17 @@ class TeensyBridgeNode(Node):
                 'writer_errors': wr.get('errors', 0), 'writer_last_error': wr.get('last_error', ''),
                 'heals_started': snap.get('heals_started', 0),
             }
+            if hl:
+                for k, v in hl.items():
+                    if k.endswith('_age_s'):
+                        v = '' if v is None else '%.1f' % v
+                    elif k.endswith('_ms'):
+                        v = '' if v is None else '%.2f' % v
+                    elif isinstance(v, bool):
+                        v = int(v)
+                    elif v is None:
+                        v = ''
+                    kv[k] = v
             kv.update({'bridge_' + k: v for k, v in (snap.get('bridge') or {}).items()})
             msg.values = [KeyValue(key=k, value=str(v)) for k, v in kv.items()]
             self.platform_imu_status_pub.publish(msg)

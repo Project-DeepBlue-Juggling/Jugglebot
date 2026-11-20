@@ -808,3 +808,67 @@ def test_a_fault_upload_started_through_the_service_carries_the_configured_delay
     assert fp.reads == [] and svc.upload_in_progress() and svc.status_snapshot()["progress"]["phase"] == "waiting"
     fp.run()
     assert w.caps and fp.reads
+
+
+# -- health counters: Jetson-side totals survive saturation and reboot (platform_imu/status) --
+def _health_svc():
+    box = {"t": 0.0}
+    svc = pi.PlatformImuService(lambda *a: None, lambda *a: None, clock=lambda: box["t"], start_thread=False)
+    return svc, box
+
+
+def _health_frame(svc, box, t, *, i2c=0, fifo=0, boot=1, flags=3, temp=30, sp=20):
+    box["t"] = t
+    svc.offer_frame(pc.CAN_ID_PLATFORM_IMU_STATUS, struct.pack("<BBbBBBBB", 2, flags, temp, fifo, i2c, sp, 30, boot), t)
+    svc.pump(t)
+
+
+def test_health_first_status_sets_baseline_then_deltas_accumulate_and_arm_the_warn_age():
+    svc, box = _health_svc()
+    assert svc.status_snapshot()["health"] is None
+    _health_frame(svc, box, 0.0, i2c=7, fifo=2)
+    h = svc.status_snapshot()["health"]
+    assert h["i2c_errors"] == 7 and h["i2c_errors_delta_since_launch"] == 0 and h["i2c_errors_increase_age_s"] is None
+    _health_frame(svc, box, 1.0, i2c=10, fifo=2)
+    box["t"] = 5.0
+    h = svc.status_snapshot()["health"]
+    assert h["i2c_errors_delta_since_launch"] == 3 and h["fifo_overflows_delta_since_launch"] == 0
+    assert h["i2c_errors_increase_age_s"] == 4.0 and h["fifo_overflows_increase_age_s"] is None
+
+
+def test_health_saturation_is_flagged_and_adds_nothing_further():
+    svc, box = _health_svc()
+    _health_frame(svc, box, 0.0, i2c=250)
+    _health_frame(svc, box, 1.0, i2c=255)
+    _health_frame(svc, box, 2.0, i2c=255)
+    h = svc.status_snapshot()["health"]
+    assert h["i2c_errors_saturated"] is True and h["i2c_errors_delta_since_launch"] == 5
+
+
+def test_health_boot_change_or_decrease_counts_new_value_and_does_not_arm_warn():
+    svc, box = _health_svc()
+    _health_frame(svc, box, 0.0, i2c=100, boot=1)
+    _health_frame(svc, box, 1.0, i2c=255, boot=1)
+    _health_frame(svc, box, 2.0, i2c=4, boot=2)          # reboot: counted from zero again
+    h = svc.status_snapshot()["health"]
+    assert h["i2c_errors_delta_since_launch"] == 155 + 4
+    assert h["i2c_errors_increase_age_s"] == 1.0         # the reboot did not refresh the stamp
+    _health_frame(svc, box, 3.0, i2c=6, boot=2)
+    assert svc.status_snapshot()["health"]["i2c_errors_delta_since_launch"] == 161
+    _health_frame(svc, box, 4.0, i2c=1, boot=2)          # decrease with the same boot byte (low-byte collision)
+    assert svc.status_snapshot()["health"]["i2c_errors_delta_since_launch"] == 162
+
+
+def test_health_decodes_flags_temp_and_sync_peak_units():
+    svc, box = _health_svc()
+    _health_frame(svc, box, 0.0, flags=0x1B, temp=-128, sp=50)
+    h = svc.status_snapshot()["health"]
+    assert (h["sensor_ok"], h["time_synced"], h["ring_wrapped"], h["i2c_400k"], h["discontinuity"]) == \
+        (True, True, False, True, True)
+    assert h["temp_c"] is None and h["sync_peak"] == 50 and abs(h["sync_peak_ms"] - 0.5) < 1e-9
+    _health_frame(svc, box, 1.0, sp=254)
+    h = svc.status_snapshot()["health"]
+    assert h["sync_peak_saturated"] is True and h["sync_peak_valid"] is True
+    _health_frame(svc, box, 2.0, sp=255)
+    h = svc.status_snapshot()["health"]
+    assert h["sync_peak_valid"] is False and h["sync_peak_ms"] is None

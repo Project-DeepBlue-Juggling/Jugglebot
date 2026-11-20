@@ -49,6 +49,18 @@ saturating at 255; `i2c_errors` counts every failed I2C transfer, including thos
 `get_wall_time_us()` before the IIR update), in 10 us counts, 254 saturating, 255 = no sync frame. `fill_s` is retained
 samples / `nominal_odr_hz`. `boot` is the low byte of `boot_id` (section 3).
 
+*ROS topic `platform_imu/status` health keys (2 Hz DiagnosticStatus, from the last IMU_STATUS).* Besides the upload
+keys (`busy`, `phase`, `frames_*`, `platform_state`, `platform_flags`, `platform_boot`, `status_age_s`, `last_*`, `writer_*`,
+`bridge_*`): `i2c_errors`, `fifo_overflows` (raw u8), `i2c_errors_saturated`, `fifo_overflows_saturated` (1 at 255),
+`i2c_errors_delta_since_launch`, `fifo_overflows_delta_since_launch` (Jetson-side totals: positive deltas accumulate, the first
+STATUS only sets the baseline, a boot-byte change or a decrease adds the new value as errors since the reboot; invisible once
+the board counter sits at 255), `i2c_errors_increase_age_s`, `fifo_overflows_increase_age_s` (seconds since the last rise within
+one boot, empty if none), `temp_c` (empty when -128), `sync_peak` (raw), `sync_peak_ms` (raw x 0.01 ms, empty when 255),
+`sync_peak_valid` (0 when 255 = no sync frame), `sync_peak_saturated` (1 at 254, so `sync_peak_ms` is a lower bound),
+and the flags `sensor_ok`, `time_synced`, `ring_wrapped`, `i2c_400k`, `discontinuity` (0/1). Level: WARN when the last upload
+failed, a CRC failed or a write failed (as before), or when `i2c_errors` or `fifo_overflows` rose within the last 60 s of the
+same boot (a reboot never arms it); otherwise OK.
+
 **IMU_DATA** `[seq u16][word 6 B]`. `seq` addresses the frozen-capture image (section 3), so a frame's `seq` alone says
 what it carries and a gap is found from `seq` alone, across blocks and across a late tail from a replaced block.
 
