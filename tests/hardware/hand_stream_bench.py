@@ -67,6 +67,18 @@ Stages (one per invocation; the runbook sequences them):
   triangle  T-H2a: ±(--tri-span/2) rev around (start + span/2) at --tri-speed
             rev/s (defaults: 2.0 rev span at 0.5 rev/s), repeated for
             --duration.
+            --tri-cut up|down (BUG-105) makes the stage cut its own stream
+            in the middle of that ramp of cycle --tri-cut-cycle (default 2),
+            the same wire behaviour as a Ctrl-C there: no frame after the cut
+            frame, the heartbeat flags to DISARMED at once, no RPC. It then
+            only LISTENS for TRI_CUT_SETTLE_S + TRI_CUT_DRIFT_S (the disarmed
+            heartbeat keeps running, which commands nothing) and prints the
+            last frame sent, the firmware's last command to the ODrive (the
+            HAND_CMD_ECHO input_pos and vel_ff), the settled position and its
+            drift from the bridge telemetry, the offsets against the expected
+            speed / pos_gain, and any guard or latch. A cut whose worst-case
+            end comes within 0.6 rev of the bottom stop (-0.10) or of
+            --top-stop is refused before the bring-up.
   step      T-H3a: attempt ONE hand knot --step-rev (default 6.0) past the
             pump gate mid-hold. Pass: the PUMP refuses host-side (reject
             counted, reason printed, nothing reaches the wire) and the hold
@@ -149,7 +161,12 @@ Stages (one per invocation; the runbook sequences them):
             gentle return to the start, so --repeat N runs in one armed
             stream and every disarm happens from a hold. The bridge does not
             flush vel_ff on a disarm, so a disarm while moving would leave
-            the Hand at input_pos + vel_ff/pos_gain.
+            the Hand at input_pos + vel_ff/pos_gain. --repeat takes any
+            positive count: the stage stops by itself at the first brake
+            that is not PASS (after that run's return), the first fault or
+            belt abort and the first sched_refused > 0, prints a progress
+            line per run with the drive's temperatures, and always ends with
+            a TALLY line (N of M brakes flown, all PASS, or where it stopped).
 
 Recovery utility (no streaming, no arm):
   --clear-errors   send CLEAR_ERRORS (all axes) and wait for fault_state NONE —
@@ -187,11 +204,14 @@ hand is ALREADY in CLOSED_LOOP — with the launch down nothing else energises i
     source ~/Desktop/PDJ_venv/venv/bin/activate
     python tests/hardware/hand_stream_bench.py --stage hold --duration 600 --close-loop
     python tests/hardware/hand_stream_bench.py --stage triangle --duration 60 --close-loop
+    python tests/hardware/hand_stream_bench.py --stage triangle --tri-span 4 --tri-speed 10 --tri-cut up --close-loop
+    python tests/hardware/hand_stream_bench.py --stage triangle --tri-span 6 --tri-speed 20 --tri-cut down --close-loop
     python tests/hardware/hand_stream_bench.py --stage step --close-loop
     python tests/hardware/hand_stream_bench.py --stage gap --close-loop
     python tests/hardware/hand_stream_bench.py --stage gap --trip-guard --gap-delta 3.0 --close-loop
     python tests/hardware/hand_stream_bench.py --stage moving_gap --duration 10 --close-loop
     python tests/hardware/hand_stream_bench.py --stage stroke_cut --close-loop --repeat 3
+    python tests/hardware/hand_stream_bench.py --stage stroke_cut --close-loop --top-stop 10.4 --repeat 150 --stroke-peak-vel 108 --cut-at-vel 103 --stroke-accel 2300 --stroke-top 8.3
     python tests/hardware/hand_stream_bench.py --stage stroke_cut --cut-mode downstroke --close-loop
     python tests/hardware/hand_stream_bench.py --stage stroke_cut --cut-mode slow --close-loop
     python tests/hardware/hand_stream_bench.py --clear-errors
@@ -403,11 +423,15 @@ def _on_echo(mt, seq, payload, addr):
     # fix the firmware age-corrects that stamp to the interp tick that WROTE
     # the echoed bytes (not the telemetry emit), so the residual error left
     # in the reconstruction read is wall-sync noise only.
+    # The third element (vel_ff in rev/s, rpc_args.decode_hand_cmd_echo's
+    # scale) is read only by the triangle --tri-cut report (BUG-105): it is the
+    # velocity feedforward the ODrive was last given. Every other reader uses
+    # echo[0] / echo[1] and is unchanged.
     e = HandCmdEcho.unpack(payload)
-    import struct as _s
-    pos, vel_i, tor_i = _s.unpack('<fhh', bytes(e.data[:8]))
+    pos, vel_ff, _tor = rpc_args.decode_hand_cmd_echo(
+        e.data, float(pc.INPUT_SCALE_HAND_VEL), float(pc.INPUT_SCALE_HAND_TOR))
     with _lock:
-        _cache["echo"] = (int(e.t_bridge_us), float(pos))
+        _cache["echo"] = (int(e.t_bridge_us), float(pos), float(vel_ff))
         rec = _cache["rec"]
         if rec is not None:
             rec["echo"].append((int(e.t_bridge_us) * 1e-6, float(pos)))
@@ -557,6 +581,164 @@ def triangle_envelope_refusal(start_rev, span_rev):
         return (f"triangle would reach {start_rev + span_rev:.2f} rev (> "
                 f"{HAND_MAX_POS - HAND_MARGIN:.2f}). Park lower.")
     return None
+
+
+# ── triangle --tri-cut (BUG-105): the stage cuts its own stream mid-ramp ─────
+# What Ctrl-C does on this stage, and therefore what the automated cut does:
+# the KeyboardInterrupt leaves the 40 Hz loop wherever it lands (almost always
+# in the sleep after a frame was sent), main()'s ``finally`` sets the heartbeat
+# flags to 0 (DISARMED: the firmware gates the Hand's output off on the next
+# 10 Hz heartbeat, sending no flush frame), sleeps 0.2 s and stops the client.
+# Nothing else goes on the wire: no further SETPOINT, no RPC. The automated cut
+# breaks out of the loop straight after the frame sent at the cut instant and
+# makes the same one call, set_heartbeat_flags(0). It then waits
+# TRI_CUT_SETTLE_S + TRI_CUT_DRIFT_S reading the bridge's telemetry cache
+# (receive-only) before the same rpc.close() and client.stop(): the only
+# difference on the wire is that the DISARMED heartbeat (and the TimeOfDay
+# answers this process gives) run for those seconds instead of 0.2 s. With
+# the guard already DISABLED, a longer disarmed heartbeat commands nothing:
+# fault_machine.cpp gates output on mpc_active, and the later link loss only
+# changes the reported fault_state to LINK_LOST.
+TRI_CUT_BOTTOM_STOP_REV = -0.10   # bench_hand_frame_bench.py home: the bottom-stop reference
+TRI_CUT_STOP_MARGIN_REV = 0.6     # the Sitting rule: a cut must end this far off a stop
+TRI_CUT_SETTLE_S = 1.0            # disarm -> first settled sample (the loop settles in ~0.1 s)
+TRI_CUT_DRIFT_S = 1.0             # settled samples: their mean is the settled position,
+                                  # their max - min the drift
+TRI_CUT_FRESH_S = 0.25            # a telemetry sample older than this is not a reading
+
+
+def tri_cut_time(span_rev, speed_rps, direction, cycle):
+    """Stage time of the cut: the middle of the chosen ramp of triangle cycle
+    ``cycle`` (1-based). The up ramp runs over [0, P/2) of each period P and
+    the down ramp over [P/2, P), so mid-ramp is P/4 or 3P/4: the Hand is at
+    full speed and span/2 from either turning point."""
+    period = 2.0 * float(span_rev) / float(speed_rps)
+    frac = 0.25 if direction == "up" else 0.75
+    return (int(cycle) - 1) * period + frac * period
+
+
+def tri_cut_reach(speed_rps, pos_gain):
+    """Worst-case distance the Hand can end past the mid-ramp point, PURE.
+
+    Three terms, all in the direction of travel: one knot of loop lateness
+    (the cut is the first tick at or after the mid-ramp instant), the firmware
+    lane's own coast past the last knot before the DISARMED heartbeat lands
+    (0 to ~100 ms later, the legacy-lane ladder modelled by hand_gap_target),
+    and the BUG-105 offset vel_ff / pos_gain the ODrive holds from the
+    velocity feedforward it was last given. The last two trade against each
+    other as the lane decays, so the worst sum over every disarm instant is
+    taken, not the sum of the two maxima."""
+    v = abs(float(speed_rps))
+    worst = 0.0
+    n = 600
+    for i in range(n + 1):
+        g = 1.2 * HAND_WINDDOWN_S * i / n
+        p, vv = hand_gap_target(0.0, v, g)
+        worst = max(worst, p + abs(vv) / float(pos_gain))
+    return v * SEG_T + worst
+
+
+def plan_tri_cut(start_rev, span_rev, speed_rps, direction, cycle, pos_gain,
+                 top_stop_rev):
+    """The automated cut's plan, PURE. Returns (plan dict, refusal or None).
+
+    A down cut is refused when its worst-case end (tri_cut_reach below the
+    mid-ramp point) comes within TRI_CUT_STOP_MARGIN_REV of the bottom stop;
+    an up cut likewise against ``top_stop_rev``, and so is any cut whose
+    triangle top (start + span) comes that close to ``top_stop_rev``."""
+    p_mid = float(start_rev) + 0.5 * float(span_rev)
+    reach = tri_cut_reach(speed_rps, pos_gain)
+    sign = 1.0 if direction == "up" else -1.0
+    plan = {"direction": direction, "cycle": int(cycle),
+            "t_cut": tri_cut_time(span_rev, speed_rps, direction, cycle),
+            "p_mid": p_mid, "speed": float(speed_rps),
+            "expected_offset": sign * float(speed_rps) / float(pos_gain),
+            "worst_end": p_mid + sign * reach}
+    top_ceil = float(top_stop_rev) - TRI_CUT_STOP_MARGIN_REV
+    if float(start_rev) + float(span_rev) > top_ceil:
+        return plan, (
+            f"the triangle itself reaches {float(start_rev) + float(span_rev):.2f} "
+            f"rev, within {TRI_CUT_STOP_MARGIN_REV} rev of the top stop "
+            f"{top_stop_rev:.2f} rev (--top-stop): needs <= {top_ceil:.2f}. "
+            f"Lower --tri-span or park lower")
+    if direction == "down":
+        floor = TRI_CUT_BOTTOM_STOP_REV + TRI_CUT_STOP_MARGIN_REV
+        if plan["worst_end"] < floor:
+            return plan, (
+                f"--tri-cut down at {speed_rps:g} rev/s cuts at {p_mid:.2f} rev "
+                f"and could end at {plan['worst_end']:.2f} rev (one knot late + "
+                f"the lane's coast + the vel_ff/pos_gain offset), within "
+                f"{TRI_CUT_STOP_MARGIN_REV} rev of the bottom stop "
+                f"{TRI_CUT_BOTTOM_STOP_REV:+.2f} rev: needs >= {floor:.2f}. "
+                f"Raise --tri-span, lower --tri-speed or park higher")
+    else:
+        ceil = float(top_stop_rev) - TRI_CUT_STOP_MARGIN_REV
+        if plan["worst_end"] > ceil:
+            return plan, (
+                f"--tri-cut up at {speed_rps:g} rev/s cuts at {p_mid:.2f} rev "
+                f"and could end at {plan['worst_end']:.2f} rev, within "
+                f"{TRI_CUT_STOP_MARGIN_REV} rev of the top stop "
+                f"{top_stop_rev:.2f} rev (--top-stop): needs <= {ceil:.2f}. "
+                f"Lower --tri-span or --tri-speed")
+    return plan, None
+
+
+def tri_cut_plan_line(plan):
+    return (f"tri-cut plan: the {plan['direction']} ramp of cycle "
+            f"{plan['cycle']}, cut at stage t={plan['t_cut']:.3f} s near "
+            f"{plan['p_mid']:+.3f} rev moving {plan['speed'] * (1 if plan['direction'] == 'up' else -1):+.2f} "
+            f"rev/s; expected offset speed/pos_gain {plan['expected_offset']:+.3f} "
+            f"rev; worst-case end {plan['worst_end']:+.3f} rev")
+
+
+def tri_cut_report_lines(plan, cut, echo, settled, fault_name, hb, axis_state,
+                         pos_gain):
+    """The cut's evidence lines, PURE (the Sitting records these).
+
+    cut: (stage t, knot pos, knot vel, next knot pos) of the LAST frame sent.
+    echo: the cached HAND_CMD_ECHO after the disarm, (t_us, pos, vel_ff) or
+    None: the firmware's own last command, i.e. the ODrive's final input_pos
+    and vel_ff. settled: (mean pos, drift, n samples) or None."""
+    t, kp, kv, kp1 = cut
+    out = [f"tri-cut: {plan['direction']} ramp, cycle {plan['cycle']}, cut at "
+           f"stage t={t:.3f} s (planned {plan['t_cut']:.3f} s). Nothing was sent "
+           f"after this frame but the DISARMED heartbeat.",
+           f"  last commanded (the last frame sent): knot {kp:+.4f} rev at "
+           f"{kv:+.2f} rev/s (its next knot {kp1:+.4f} rev)"]
+    if echo is not None and len(echo) > 2:
+        out.append(f"  firmware's last command to the ODrive (HAND_CMD_ECHO): "
+                   f"input_pos {echo[1]:+.4f} rev, vel_ff {echo[2]:+.2f} rev/s "
+                   f"(the lane coasts on its own ladder until the disarm lands)")
+    else:
+        out.append("  firmware's last command: no HAND_CMD_ECHO cached")
+    if settled is None:
+        out.append("  settled position: NOT READ (no fresh telemetry after the "
+                   "disarm) -- read it with bench_hand_frame_bench.py status")
+    else:
+        sp, drift, n = settled
+        out.append(f"  settled position: {sp:+.4f} rev (mean of {n} telemetry "
+                   f"samples, {TRI_CUT_SETTLE_S:.1f} to "
+                   f"{TRI_CUT_SETTLE_S + TRI_CUT_DRIFT_S:.1f} s after the "
+                   f"disarm); drift {drift:.4f} rev over that window")
+        out.append(f"  offset vs the last knot: {sp - kp:+.4f} rev (expected "
+                   f"{plan['expected_offset']:+.4f} = speed/{pos_gain:g} plus the "
+                   f"lane's coast to the disarm)")
+        if echo is not None and len(echo) > 2:
+            out.append(f"  offset vs the firmware's last command: {sp - echo[1]:+.4f} "
+                       f"rev (expected vel_ff/{pos_gain:g} = "
+                       f"{echo[2] / pos_gain:+.4f} rev)")
+    latch = "none"
+    if hb is not None:
+        bits = []
+        if int(hb.lead_clamp_mask) & 0x40:
+            bits.append("hand lead clamp ON")
+        if int(hb.max_dev_leg) != 0xFF:
+            bits.append(f"max_dev latch leg={int(hb.max_dev_leg)} "
+                        f"dev={float(hb.max_dev_value):+.4f}")
+        latch = ", ".join(bits) or "none"
+    out.append(f"  fault_state {fault_name}; guard/latch: {latch}; hand "
+               f"axis_state {axis_state}")
+    return out
 
 
 # ── moving_gap (row 17b): the falling-edge decay, taken while the hand MOVES ──
@@ -830,6 +1012,27 @@ def _delta(hb1, hb0, key):
     return hb1[key] - hb0[key]
 
 
+def sc_temp_text(d):
+    """The drive's reported temperatures from its cached DIAGNOSTIC, PURE."""
+    if d is None:
+        return "temperatures: no hand DIAGNOSTIC cached"
+    tm, tf = float(d.temp_motor), float(d.temp_fet)
+    note = (" (both 0.0: the drive may not be reporting temperatures)"
+            if tm == 0.0 and tf == 0.0 else "")
+    return f"motor {tm:.1f} C, FET {tf:.1f} C{note}"
+
+
+def sc_tally_line(flown, total, passed, run, why, done):
+    """The stroke_cut stage's closing tally, PURE. ``flown`` counts brakes
+    whose cut window completed and was scored; ``run`` is the run in progress
+    or last started."""
+    if done and why is None and flown == total and passed == total:
+        return f"TALLY: {flown} of {total} brakes flown, all PASS"
+    tail = why if why is not None else "the stage was interrupted (Ctrl-C, E-stop or an exception)"
+    return (f"TALLY: {flown} of {total} brakes flown, {passed} PASS; stopped at "
+            f"run {run} of {total}: {tail}")
+
+
 def _run_stroke_cut(args, client, pump, sched_cmd, w, drain_cd, plan, start):
     """The armed stroke_cut loop. Returns 0 when every run PASSes, 1 on a FAIL,
     2 on an abort. Belts: the pump (every frame), the velocity-compensated
@@ -917,105 +1120,158 @@ def _run_stroke_cut(args, client, pump, sched_cmd, w, drain_cd, plan, start):
 
     n_pre = int(round(SC.PRE_HOLD_S / T))
     n_settle = int(round(SC.SETTLE_S / T))
-    for run in range(1, args.repeat + 1):
-        # ── the stroke, up to and including the last hand frame ──────────────
-        g_stroke = g
-        segs.append((g_stroke, 'stroke', lambda lt: plan.traj.sample(lt)[0]))
-        hb0 = _hb_counters(_hb())
-        for k in range(plan.cut + 1):
-            why = send(SC.frame_knots(plan.traj, k), 'stroke')
-            if why:
-                _sc_say(f"ABORT (run {run}, stroke frame {k}): {why}")
-                return 2
-            if k == n_pre:
-                hbd = _hb_counters(_hb())
-                if _delta(hbd, hb0, 'sched_demoted'):
-                    _sc_say(f"ABORT (run {run}): sched_demoted rose during the "
-                          f"pre-hold — the frames are playing on the LEGACY lane, "
-                          f"so this stage would measure nothing (time sync?)")
-                    return 2
-        # ── the cut: leg-only frames from here (HAS_HAND clear) ──────────────
-        g_cut = g - 1
-        stamp_cut = t_wall0 + SC_LEAD_S + g_cut * T
-        kn_cut = plan.knots
-        segs.append((g_cut, 'cut', lambda lt, kn=kn_cut: SC.model_target(kn, lt)[0]))
-        with _lock:
-            _cache["rec"] = {"enc": [], "echo": []}
-        lead_seen = False
-        for _ in range(n_settle):
-            why = send(None, 'cut')
-            hb = _hb()
-            if hb is not None and int(hb.lead_clamp_mask) & 0x40:
-                lead_seen = True
-            if why:
-                with _lock:
-                    _cache["rec"] = None
-                _sc_say(f"ABORT (run {run}, cut window): {why}")
-                return 2
-        with _lock:
-            rec = _cache["rec"]
-            _cache["rec"] = None
-        hb1 = _hb_counters(_hb())
-        echo_w = [(t, p) for t, p in rec["echo"] if t >= stamp_cut]
-        enc_w = [(t, p) for t, p in rec["enc"] if t >= stamp_cut]
-        d_c1 = _delta(hb1, hb0, 'sched_hand_c1_stops')
-        d_stops = _delta(hb1, hb0, 'sched_stops')
-        d_ref = _delta(hb1, hb0, 'sched_refused')
-        verdict, crit, summ = SC.evaluate_stroke_cut(
-            plan, echo_w, enc_w, stamp_cut + plan.stop['g_end'], d_c1, d_stops, d_ref)
-        events = []
-        if lead_seen:
-            events.append("hand lead clamp sampled ON")
-        if d_ref:
-            events.append(f"sched_refused +{d_ref} (latched hold)")
-        if hb1 is not None:
-            events.append(f"rx_age_max {hb1['rx_age_max_us']} us")
-        events.append(f"worst send lateness {worst_late * 1e3:.1f} ms")
-        events.append(f"max belt residual {max_dev:.3f} rev")
-        _sc_say(SC.verdict_line(run, plan, verdict, summ, d_c1, d_stops,
-                                ", ".join(events)))
-        for c in crit:
-            _sc_say(f"    {c['id']} {c['verdict']:<4} {c['name']}: {c['detail']}")
-        _sc_say(f"    counter deltas (run {run}): sched_hand_c1_stops {d_c1} "
-                f"sched_stops {d_stops} sched_refused {d_ref}")
-        _SC_RUNS.append({'run': run, 'verdict': verdict, 'criteria': crit,
-                         'summary': summ, 'sched_hand_c1_stops': d_c1,
-                         'sched_stops': d_stops, 'sched_refused': d_ref,
-                         'events': events, 'hb_before': hb0, 'hb_after': hb1})
-        any_fail = any_fail or verdict != 'PASS'
-        hold = summ['hold']
-        if hold is None:
-            _sc_say("ABORT: no hand echo after the cut — the firmware hold is "
-                  "unknown, so no continuous resume can be built; disarming at "
-                  "the hold.")
-            return 2
-        if d_ref:
-            _sc_say("STOP: the hand group latched a refused frame; disarming at the hold.")
-            return 1
-        # ── continuous resume from the hold, then back to the start ──────────
-        ret = SC.return_profile(hold, start)
-        g_ret = g
-        segs.append((g_ret, 'return', lambda lt, r=ret: r.sample(lt)[0]))
-        hbr = hb1
-        n_ret = int(ret.duration / T) + 1
-        n_chk = int(round(SC.RESUME_HOLD_S / T)) - 1
-        for k in range(n_ret):
-            why = send(SC.frame_knots(ret, k), 'return')
-            if why:
-                _sc_say(f"ABORT (run {run}, return frame {k}): {why}")
-                return 2
-            if k == n_chk:
-                d = _delta(_hb_counters(_hb()), hbr, 'sched_refused')
-                if d:
-                    _sc_say(f"ABORT (run {run}): the resume AT the hold "
-                          f"{hold:.4f} rev was refused (sched_refused +{d}) — "
-                          f"the firmware hold is not where the echo says; "
-                          f"disarming at the hold, the return move NOT sent.")
-                    return 2
-    _sc_say(f"stage 'stroke_cut' done: {args.repeat} run(s), "
-          f"{'all PASS' if not any_fail else 'at least one FAIL'}; max belt "
-          f"residual {max_dev:.4f} rev; worst send lateness {worst_late * 1e3:.1f} ms")
-    return 1 if any_fail else 0
+    # --repeat takes any count (2026-11-20, FEAT-45: 150 brakes in one armed
+    # run). What a count cap could have protected is an explicit stop instead:
+    # the stage ends at the first brake that is not PASS (after its gentle
+    # return, so the disarm is from a hold at the start), the first fault or
+    # belt abort, and the first sched_refused > 0; every run prints a progress
+    # line with the drive's reported temperatures; and the tally line below is
+    # printed however the stage ends, an exception or Ctrl-C included.
+    tally = {'flown': 0, 'passed': 0, 'run': 0, 'why': None, 'done': False}
+
+    def _halt(rc, text):
+        _sc_say(text)
+        tally['why'] = text
+        return rc
+
+    def _runs():
+        any_fail = False
+        for run in range(1, args.repeat + 1):
+            tally['run'] = run
+            _sc_say(f"run {run} of {args.repeat}: {tally['flown']} flown, "
+                    f"{tally['passed']} PASS so far; {sc_temp_text(_hand_diag())}")
+            # ── the stroke, up to and including the last hand frame ──────────────
+            g_stroke = g
+            segs.append((g_stroke, 'stroke', lambda lt: plan.traj.sample(lt)[0]))
+            hb0 = _hb_counters(_hb())
+            for k in range(plan.cut + 1):
+                why = send(SC.frame_knots(plan.traj, k), 'stroke')
+                if why:
+                    return _halt(2, f"ABORT (run {run}, stroke frame {k}): {why}")
+                if k == n_pre:
+                    hbd = _hb_counters(_hb())
+                    if _delta(hbd, hb0, 'sched_demoted'):
+                        return _halt(2, f"ABORT (run {run}): sched_demoted rose during the "
+                                     f"pre-hold — the frames are playing on the LEGACY lane, "
+                                     f"so this stage would measure nothing (time sync?)")
+            # ── the cut: leg-only frames from here (HAS_HAND clear) ──────────────
+            g_cut = g - 1
+            stamp_cut = t_wall0 + SC_LEAD_S + g_cut * T
+            kn_cut = plan.knots
+            segs.append((g_cut, 'cut', lambda lt, kn=kn_cut: SC.model_target(kn, lt)[0]))
+            with _lock:
+                _cache["rec"] = {"enc": [], "echo": []}
+            lead_seen = False
+            for _ in range(n_settle):
+                why = send(None, 'cut')
+                hb = _hb()
+                if hb is not None and int(hb.lead_clamp_mask) & 0x40:
+                    lead_seen = True
+                if why:
+                    with _lock:
+                        _cache["rec"] = None
+                    return _halt(2, f"ABORT (run {run}, cut window): {why}")
+            with _lock:
+                rec = _cache["rec"]
+                _cache["rec"] = None
+            hb1 = _hb_counters(_hb())
+            echo_w = [(t, p) for t, p in rec["echo"] if t >= stamp_cut]
+            enc_w = [(t, p) for t, p in rec["enc"] if t >= stamp_cut]
+            d_c1 = _delta(hb1, hb0, 'sched_hand_c1_stops')
+            d_stops = _delta(hb1, hb0, 'sched_stops')
+            d_ref = _delta(hb1, hb0, 'sched_refused')
+            verdict, crit, summ = SC.evaluate_stroke_cut(
+                plan, echo_w, enc_w, stamp_cut + plan.stop['g_end'], d_c1, d_stops, d_ref)
+            events = []
+            if lead_seen:
+                events.append("hand lead clamp sampled ON")
+            if d_ref:
+                events.append(f"sched_refused +{d_ref} (latched hold)")
+            if hb1 is not None:
+                events.append(f"rx_age_max {hb1['rx_age_max_us']} us")
+            events.append(f"worst send lateness {worst_late * 1e3:.1f} ms")
+            events.append(f"max belt residual {max_dev:.3f} rev")
+            _sc_say(SC.verdict_line(run, plan, verdict, summ, d_c1, d_stops,
+                                    ", ".join(events)))
+            for c in crit:
+                _sc_say(f"    {c['id']} {c['verdict']:<4} {c['name']}: {c['detail']}")
+            _sc_say(f"    counter deltas (run {run}): sched_hand_c1_stops {d_c1} "
+                    f"sched_stops {d_stops} sched_refused {d_ref}")
+            _SC_RUNS.append({'run': run, 'verdict': verdict, 'criteria': crit,
+                             'summary': summ, 'sched_hand_c1_stops': d_c1,
+                             'sched_stops': d_stops, 'sched_refused': d_ref,
+                             'events': events, 'hb_before': hb0, 'hb_after': hb1})
+            any_fail = any_fail or verdict != 'PASS'
+            tally['flown'] += 1
+            tally['passed'] += int(verdict == 'PASS')
+            hold = summ['hold']
+            if hold is None:
+                return _halt(2, f"ABORT (run {run}): no hand echo after the cut — "
+                             "the firmware hold is unknown, so no continuous resume "
+                             "can be built; disarming at the hold.")
+            if d_ref:
+                return _halt(1, f"STOP (run {run}): sched_refused +{d_ref}, the hand "
+                             "group latched a refused frame; disarming at the hold.")
+            # ── continuous resume from the hold, then back to the start ──────────
+            ret = SC.return_profile(hold, start)
+            g_ret = g
+            segs.append((g_ret, 'return', lambda lt, r=ret: r.sample(lt)[0]))
+            hbr = hb1
+            n_ret = int(ret.duration / T) + 1
+            n_chk = int(round(SC.RESUME_HOLD_S / T)) - 1
+            for k in range(n_ret):
+                why = send(SC.frame_knots(ret, k), 'return')
+                if why:
+                    return _halt(2, f"ABORT (run {run}, return frame {k}): {why}")
+                if k == n_chk:
+                    d = _delta(_hb_counters(_hb()), hbr, 'sched_refused')
+                    if d:
+                        return _halt(2, f"ABORT (run {run}): the resume AT the hold "
+                                     f"{hold:.4f} rev was refused (sched_refused +{d}) — "
+                                     f"the firmware hold is not where the echo says; "
+                                     f"disarming at the hold, the return move NOT sent.")
+            # The first brake that is not PASS ends the stage, AFTER its return:
+            # the Hand is back at the start and the disarm is from that hold.
+            if verdict != 'PASS':
+                return _halt(1, f"STOP (run {run}): the brake was {verdict}; the "
+                             f"stage stops at the first brake that is not PASS "
+                             f"(the Hand returned to the start first).")
+        tally['done'] = True
+        _sc_say(f"stage 'stroke_cut' done: {args.repeat} run(s), "
+                f"{'all PASS' if not any_fail else 'at least one FAIL'}; max belt "
+                f"residual {max_dev:.4f} rev; worst send lateness {worst_late * 1e3:.1f} ms")
+        return 1 if any_fail else 0
+
+    try:
+        return _runs()
+    finally:
+        _sc_say(sc_tally_line(tally['flown'], args.repeat, tally['passed'],
+                              tally['run'], tally['why'], tally['done']))
+
+
+def _tri_cut_observe(plan, cut, sleep=time.sleep, clock=time.monotonic):
+    """After the --tri-cut disarm: read, never send. Waits TRI_CUT_SETTLE_S,
+    then averages the cached Hand telemetry over TRI_CUT_DRIFT_S (fresh samples
+    only), and returns the report lines. The client keeps running (its
+    heartbeat now DISARMED), so the caches keep filling; nothing here touches
+    the link."""
+    t0 = clock()
+    pos = []
+    while clock() - t0 < TRI_CUT_SETTLE_S + TRI_CUT_DRIFT_S:
+        if clock() - t0 >= TRI_CUT_SETTLE_S:
+            tm, age = _telem_with_age()
+            if tm is not None and age <= TRI_CUT_FRESH_S:
+                pos.append(float(tm.pos_rev[HAND]))
+        sleep(0.02)
+    settled = None
+    if pos:
+        settled = (sum(pos) / len(pos), max(pos) - min(pos), len(pos))
+    with _lock:
+        echo = _cache["echo"]
+    d = _hand_diag()
+    return tri_cut_report_lines(
+        plan, cut, echo, settled, _fault_name(_fault()), _hb(),
+        "?" if d is None else int(d.axis_state), float(hw.ODRIVE_HAND_POS_GAIN))
 
 
 def main():
@@ -1101,7 +1357,7 @@ def main():
                          "19 A transient; jerk ramps 20 ms)")
     ap.add_argument("--top-stop", type=float, default=SC.HAND_CLIP_REV,
                     metavar="REV",
-                    help="stroke_cut: the bench rig's REAL top stop (rev, default "
+                    help="stroke_cut and triangle --tri-cut: the bench rig's REAL top stop (rev, default "
                          f"the production clip {SC.HAND_CLIP_REV}). The planner "
                          "checks every stop against min(this, clip), so a lower "
                          "stop tightens the refusals and a higher one never "
@@ -1118,8 +1374,25 @@ def main():
                          "the C2 stop); slow = a stroke peaking below 50 rev/s "
                          "(control: the 20 ms grace then the C2 stop)")
     ap.add_argument("--repeat", type=int, default=1,
-                    help="stroke_cut: runs in one armed stream (each returns to "
-                         "the start through a continuous resume from the hold)")
+                    help="stroke_cut: runs in one armed stream, any positive "
+                         "count (each returns to the start through a continuous "
+                         "resume from the hold). The stage stops by itself at the "
+                         "first brake that is not PASS, the first fault and the "
+                         "first sched_refused > 0, prints a progress line with "
+                         "the drive's temperatures per run, and ends with a TALLY "
+                         "line")
+    ap.add_argument("--tri-cut", choices=["up", "down"], default=None,
+                    help="triangle only (BUG-105): cut the stream by itself in "
+                         "the middle of the chosen ramp, exactly as a Ctrl-C "
+                         "there would (no further frame, the heartbeat flags to "
+                         "DISARMED), then read the settled position from the "
+                         "bridge telemetry and print the cut, the firmware's "
+                         "last command and the offset. Refused before the "
+                         "bring-up when the worst-case end comes within "
+                         f"{TRI_CUT_STOP_MARGIN_REV} rev of a stop")
+    ap.add_argument("--tri-cut-cycle", type=int, default=None, metavar="N",
+                    help="with --tri-cut: which triangle cycle to cut in "
+                         "(1-based, default 2)")
     ap.add_argument("--cut-max-dev", type=float, default=1.9, metavar="REV",
                     help="stroke_cut: the belt inside the cut window, against the "
                          "MODELLED firmware stop (default 1.9, <= 2.0): the bench "
@@ -1151,6 +1424,23 @@ def main():
     elif abs(args.gap_delta) > 1.5:
         ap.error("--gap-delta beyond ±1.5 rev — keep the re-entry catch-up bounded")
     mg_plan = None
+    if args.tri_cut is None:
+        if args.tri_cut_cycle is not None:
+            ap.error("--tri-cut-cycle needs --tri-cut up|down")
+    else:
+        if args.stage != "triangle":
+            ap.error("--tri-cut only applies to --stage triangle")
+        if args.tri_cut_cycle is None:
+            args.tri_cut_cycle = 2
+        if args.tri_cut_cycle < 1:
+            ap.error("--tri-cut-cycle must be 1 or more")
+        if args.tri_span <= 0.0 or args.tri_speed <= 0.0:
+            ap.error("--tri-span and --tri-speed must be positive for --tri-cut")
+        t_cut = tri_cut_time(args.tri_span, args.tri_speed, args.tri_cut,
+                             args.tri_cut_cycle)
+        if args.duration < t_cut + 0.5:
+            ap.error(f"--duration {args.duration:g} s ends before the cut at "
+                     f"t={t_cut:.2f} s (need >= {t_cut + 0.5:.2f} s)")
     if args.stage == "stroke_cut":
         if args.stroke_peak_vel is None:
             args.stroke_peak_vel = (SC.SLOW_PEAK_DEFAULT if args.cut_mode == "slow"
@@ -1158,8 +1448,11 @@ def main():
         if args.cut_at_vel is None:
             args.cut_at_vel = (0.9 * args.stroke_peak_vel if args.cut_mode == "slow"
                                else 55.0)
-        if not 1 <= args.repeat <= 10:
-            ap.error("--repeat out of [1, 10]")
+        # Any positive count (2026-11-20). The old [1, 10] bound carried no
+        # recorded reason (0516f9d4); the stage now stops by itself at the first
+        # non-PASS brake, fault or sched_refused instead (_run_stroke_cut).
+        if args.repeat < 1:
+            ap.error("--repeat must be a positive whole number of runs")
         if not 0.0 < args.cut_max_dev <= MAX_LEAD_HAND_REV:
             ap.error(f"--cut-max-dev out of (0, {MAX_LEAD_HAND_REV}]")
         why_acc = SC.stroke_accel_refusal(args.stroke_accel)
@@ -1242,6 +1535,7 @@ def main():
     client.set_heartbeat_flags(0)
 
     armed = False
+    tri_cut = None                      # the --tri-cut plan, set after the bring-up
     csv_f = None
     cd_f = None
     try:
@@ -1408,6 +1702,17 @@ def main():
                       f"{tri_pre_start:+.4f} rev (before the hand bring-up; "
                       f"nothing was commanded): {why_env}")
                 return 2
+            if args.tri_cut is not None:
+                tc_pre, why_tc = plan_tri_cut(
+                    tri_pre_start, args.tri_span, args.tri_speed, args.tri_cut,
+                    args.tri_cut_cycle, float(hw.ODRIVE_HAND_POS_GAIN),
+                    min(args.top_stop, SC.HAND_CLIP_REV))
+                if why_tc is not None:
+                    print(f"ABORT: triangle --tri-cut refused from "
+                          f"{tri_pre_start:+.4f} rev (before the hand bring-up; "
+                          f"nothing was commanded): {why_tc}")
+                    return 2
+                print("pre-bring-up " + tri_cut_plan_line(tc_pre))
 
         # ── Optional hand bring-up (mode + gains BEFORE closing the loop) ────
         if args.close_loop:
@@ -1488,6 +1793,16 @@ def main():
                       f"the hand is CLOSED_LOOP and holding there)")
                 return 2
             traj = Triangle(start, args.tri_span, args.tri_speed)
+            if args.tri_cut is not None:
+                tri_cut, why_tc = plan_tri_cut(
+                    start, args.tri_span, args.tri_speed, args.tri_cut,
+                    args.tri_cut_cycle, float(hw.ODRIVE_HAND_POS_GAIN),
+                    min(args.top_stop, SC.HAND_CLIP_REV))
+                if why_tc is not None:
+                    print(f"ABORT: {why_tc} (post-bring-up position {start:+.4f} "
+                          f"rev; the hand is CLOSED_LOOP and holding there)")
+                    return 2
+                print(tri_cut_plan_line(tri_cut))
         elif args.stage == "stroke_cut":
             try:
                 sc_plan = SC.plan_stroke_cut(start, args.stroke_top, args.cut_mode,
@@ -1707,6 +2022,7 @@ def main():
         mg_gap_wall = None                  # MEASURED last-hand-knot → re-entry interval
         mg_lead_ticks = 0                   # ticks with lead_clamp_mask bit 6 set
         mg_ticks = 0                        # ticks sampled (the bit-6 denominator)
+        tri_cut_hit = None                  # --tri-cut: (t, knot, vel, next knot) of the last frame
         while True:
             t = time.time() - t_start
             if t > args.duration:
@@ -1827,12 +2143,20 @@ def main():
             # under the stage's own bar. Measured cost, 2026-09-04: echo frozen
             # bit-identical at 0.00018 rev for all 1200 rows and 0.017 mm of
             # encoder excursion, against a logged 1.0 rev step.
-            sp, why = pump.build(frame(t, with_hand=with_hand,
-                                       hand_override=hand_override),
-                                 t_origin_us=int(time.time() * 1e6))
+            cmd_t = frame(t, with_hand=with_hand, hand_override=hand_override)
+            sp, why = pump.build(cmd_t, t_origin_us=int(time.time() * 1e6))
             if sp is None:
                 print(f"ABORT: pump refused a stage frame: {why}"); break
             client.send_stream(int(MsgType.SETPOINT), sp.pack())
+            if tri_cut is not None and t >= tri_cut['t_cut']:
+                # The automated cut (BUG-105): this frame was the last one.
+                # Leave the loop BEFORE anything else (no belt read, no CSV
+                # row, no further frame) and disarm at once below; this is
+                # what a Ctrl-C landing straight after this send does.
+                tri_cut_hit = (t, float(cmd_t['hand_rev']),
+                               float(cmd_t['hand_vel_rps']),
+                               float(cmd_t['hand_next_rev']))
+                break
             if args.stage == "moving_gap" and with_hand:
                 # The origin of the firmware's hand knot clock: (send wall, u0,
                 # v0) of the last HAND-BEARING frame. Stamped after the send, so
@@ -2010,6 +2334,16 @@ def main():
             if lag > 0:
                 time.sleep(lag)
 
+        tri_cut_lines = None
+        if tri_cut_hit is not None:
+            # The same single call main()'s finally makes on a Ctrl-C, made
+            # now: the heartbeat thread carries DISARMED from its next tick.
+            client.set_heartbeat_flags(0)
+            armed = False                   # the finally must not disarm twice
+            tri_cut_lines = _tri_cut_observe(tri_cut, tri_cut_hit)
+        elif tri_cut is not None:
+            print(f"tri-cut: the cut NEVER happened (the stage ended before "
+                  f"t={tri_cut['t_cut']:.3f} s); nothing was measured.")
         # ── Report ───────────────────────────────────────────────────────────
         _drain_cd()
         print(f"stage '{args.stage}' done: max |cmd−(enc+vel·age)| = {max_dev:.4f} rev "
@@ -2057,8 +2391,13 @@ def main():
         if hb is not None and int(hb.lead_clamp_mask) & 0x40:
             print("  ⚠ hand lead clamp engaged on the LAST tick — read the [hand7] "
                   "lead= counter; non-zero duty during a throw is a hard abort.")
+        if tri_cut_lines is not None:
+            for ln in tri_cut_lines:
+                print(ln)
         print(f"csv: {csv_path}")
         print(f"cachediag csv: {cd_path}")
+        if tri_cut is not None and tri_cut_hit is None:
+            return 2
         return 0
     finally:
         if armed:
