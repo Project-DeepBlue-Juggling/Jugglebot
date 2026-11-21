@@ -65,7 +65,34 @@ frames.
 - Model (fake board, whole ring, gap 80): FW 12 55.5 s, FW 13 52.0 s without loss; 59.7 s and 55.4 s at 0.4 % loss;
   44.4 s at gap 63 with loss.
 
+## Board check at rest (2026-11-21, drive power off, can-bridge FW 46)
+
+Flashed over CAN with `pio run -e teensy40 -t upload` (receipt "Platform Teensy FW version: 12 -> 13"), then
+`teensy40_imu2k` and back to `teensy40` (both "13 -> 13"). The board is left on the 1 kHz default image. Whole-ring
+uploads, 32000 samples each, all complete with the CRC OK and 0 discontinuities:
+
+| Capture | Rate | Pace | Wall | READs (chained) | Duplicates | Block timeouts | Missing after pass 1 |
+|---|---|---|---|---|---|---|---|
+| `20261121T000652Z_7C19` | 1 kHz | gap 80 | 52.6 s | 263 (250) | 0 | 1 | 261 |
+| `20261121T000820Z_7C1A` | 1 kHz | gap 63 | 41.4 s | 258 (250) | 0 | 1 | 258 |
+| `20261121T001437Z_AFCB` | 2 kHz | gap 80 | 51.8 s | 259 (250) | 0 | 0 | 6 |
+
+Reference on FW 12, at rest, gap 80 (`20261120T095142Z_C33B`): 56.25 s, 263 READs, 158 duplicates.
+
+- Sensor at 1 kHz: |a| 0.9999 g, noise 1.3 mg and 0.047 deg/s per axis, fitted rate 993.93 Hz. At 2 kHz: |a| 1.0001 g,
+  1.4 mg and 0.048 deg/s, fitted rate 1987.86 Hz, the ring spans 16.1 s. `i2c_errors` and `fifo_overflows` 0 in every
+  header and over 70 s of status at 2 kHz (135 messages).
+- Spectra at rest (Welch, 4096 points): the same noise floor at both rates (about 6e-5 g/rtHz and 2.3e-3
+  (deg/s)/rtHz below 400 Hz), no narrow lines. In the 2 kHz capture 20 to 21 % of the acceleration variance and 13 to
+  15 % of the gyro variance lies above 500 Hz. At rest that is sensor noise; the comparison that matters is during an
+  Attempt, which is on the next Sitting.
+- `platform_imu/set_rate` returns the expected refusal naming the bridge firmware.
+- Unexplained: in both 1 kHz uploads exactly one whole 256-word block was missing after the first pass (seqs
+  28672..28927 and 22528..22783) with one block timeout and `reads_replaced` 0, so one READ was not served. It was
+  refilled and costs under a second. It did not happen in the 2 kHz upload, and the launch logs hold no READ error at
+  those times. Not diagnosed.
+- Not checked: anything Armed, and the FW 13 behaviour during an Attempt.
+
 ## Verification
 
-Tests and the at-rest board check: see the commit messages (the flash and the board readings follow in a later
-commit to this entry).
+Tests: see the commit messages (`git log --grep "Logbook-Entry: 2026-11-21-platform-imu-fw13-chaining-pacing-2khz"`).

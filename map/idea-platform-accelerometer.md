@@ -65,19 +65,26 @@ Working at `tools/probes/imu_bench/` (commit afdf0e91, logbook `2026-11-18-imu-b
 
 ## Sitting
 
-- setup: level
-- why: Rung P5 of plans/active/platform-imu.md: measure how the IMU sits on the Platform so its readings can be expressed in the Platform frame, and close the residue of Rung P4 (passed 2026-11-20).
+- setup: level, tilt, armed, bb-fed
+- why: Rung P5 of plans/active/platform-imu.md (mount calibration at Level and two Tilts), plus the FW 13 checks Armed: the whole-ring upload at 1250 and 1600 frames/s and a 1 kHz against 2 kHz oval Attempt. Still without a mechanism, so left out: the forced-gap upload and the upload after a Fault.
 - do:
-  - Launch, home and Level with Mocap tracking the Platform. With the Platform still at Level, upload the whole ring with `ros2 service call /platform_imu/upload jugglebot_interfaces/srv/SetString "{data: \"{}\"}"` and wait for the GUI IMU panel to leave "uploading"; note the wall-clock time.
-  - Tilt the Platform about its X axis, hold still for 10 s, return to Level; then the same about Y. Upload the whole ring again within 30 s of the last move (the ring holds 32 s) and note the time. The Tilt command and its angle are not fixed yet (2026-11-20): the Session preparing the sheet names them and rehearses them before this row goes on a sheet.
-  - Rate ramp left from Rung P4: upload the whole ring Armed at 400, 800 and 1600 frames/s once the live pace hook for `imu_read_gap_10us` exists (not built, 2026-11-20); note each upload's wall-clock window.
+  - Launch with Mocap tracking the Platform and the Cup empty (FW 13 is already on the board, no flash). `cd ~/Desktop/Jugglebot/ros_ws && source /opt/ros/foxy/setup.zsh && source install/setup.zsh && ros2 launch jugglebot jugglebot_launch.py cpu_partition:=false 2>&1 | tee -i ~/Desktop/Jugglebot/temp/logs/launch_2026-11-21_1.log`. Wait for Homing; expect "PLATFORM_FW_CHECK: OK - Platform Teensy v13".
+  - Hold LEVELLING on the state minimap to confirm; the Platform rises to full Active height. Leave it still for 35 s (the ring holds 32 s), then note the wall-clock time and upload the whole ring at Level with `ros2 service call /platform_imu/upload jugglebot_interfaces/srv/SetString "{data: \"{}\"}"`. Wait until the GUI IMU panel reads "recording" again; touch nothing else meanwhile.
+  - Hold ACTIVE:TRAJECTORY to confirm (this arms). Hold still for a 60 s baseline and note its start and end times. Then upload the whole ring Armed with the same service call as above (the FW 13 and hole-fill check at gap 80). Read `grep -n "Platform IMU upload finished" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-21_1.log` and note the line.
+  - Tilts, NEEDS A REHEARSAL AT THE LAUNCH (the jog panel was not flown on 2026-11-20): hold ACTIVE:GUI on the minimap; the Jog panel appears. Click the Rx +5 button once (5 degrees about the Platform X), hold still 8 s by the clock, click the Rx centre button (back to 0), click Ry +5 once, hold still 8 s. Moves are profiled by the GUI follower. If the readout snaps back, use +2 instead of +5 and note it.
+  - Click the Jog home button (all axes to 0) and, within 12 s of the end of the Y hold, upload the whole ring (same service call); note the time. Hold ACTIVE:TRAJECTORY to confirm.
+  - 1600 frames/s trial: `ros2 param set /teensy_bridge_node imu_read_gap_10us 63`, then the same whole-ring upload Armed in the Active pose, and read the new "Platform IMU upload finished" line from the launch log (seconds, duplicates, READs chained, timeouts, CRC). Then `ros2 param set /teensy_bridge_node imu_read_gap_10us 80` and `ros2 param get /teensy_bridge_node imu_read_gap_10us` must read 80.
+  - Bring up Ball Butler (Cup empty). `ros2 param set /skill_node plant_id imu-oval-2026-11-21`, then read it back. Fly one Attempt: `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.50, num_cycles: 3}" --feedback`. The upload starts by itself; wait for "recording" and note the finished line. Set plant_id back to jugglebot, hold IDLE, Ctrl-C the launch.
+  - 2 kHz, last, so the board always ends on 1 kHz: with the launch down, `cd ~/Desktop/Jugglebot/ros_ws/src/jugglebot/Teensy_code_platform` then, alone on a line, `pio run -e teensy40_imu2k -t upload` ("Platform Teensy FW version: 13 -> 13"). Relaunch as in the first step with log name launch_2026-11-21_2.log (Homing runs in full), Level, ACTIVE:TRAJECTORY, Ball Butler, plant_id imu-oval-2026-11-21, and fly the same 3-Throw goal once. Note the finished line.
+  - Return to 1 kHz: hold IDLE, Ctrl-C the launch, and on separate lines `cd ~/Desktop/Jugglebot/ros_ws/src/jugglebot/Teensy_code_platform` then `pio run -e teensy40 -t upload` ("Platform Teensy FW version: 13 -> 13"). Do not leave the board on teensy40_imu2k.
 - pass:
-  - The Level capture and the Tilt captures are complete and CRC-checked, and the mount rotation fitted from them reproduces gravity in the Platform frame to within 1 degree at Level and at both Tilts (computed at the debrief).
-  - A calibration file is written beside the other calibration artefacts.
+  - Calibration: the Level and Tilt captures complete and CRC-checked, and (computed at the debrief) the fitted mount rotation reproduces gravity in the Platform frame within 1 degree at Level and both Tilts (1 degree is a proposal, awaiting the owner's confirmation).
+  - Armed uploads complete with CRC OK; at gap 80 fewer than 1000 duplicates and about 60 s or less; at gap 63 about 41 s; no bus-load counter worse than the 2026-11-20 baseline.
+  - At 2 kHz i2c_errors and fifo_overflows stay 0 through the Attempt, and the capture is complete.
 - record:
-  - The wall-clock time of each upload and each Tilt hold; the Tilt angles commanded.
-  - For each ramp step the upload time; the counters are read from the bag at the debrief.
-- minutes: 30
+  - Wall-clock time of each upload, each Tilt hold, each Attempt, and the flash receipts; the Tilt angle used (5 or 2 degrees).
+  - GUI IMU panel text at each upload end and the jog readout at each hold. The "upload finished" line is in the launch log, nothing to type.
+- minutes: 80
 
 ## Sitting result (2026-11-20 23:45)
 
@@ -95,3 +102,4 @@ Working at `tools/probes/imu_bench/` (commit afdf0e91, logbook `2026-11-18-imu-b
 - 2026-11-20: Rung P4 at rest done on FW 12 (identities, tilt, fan, status counters, first capture and upload: 32000 samples, CRC OK, |a| 1.0004 g, 56.25 s); open: capture header temperature reads -128, GYRO_ACCEL_CONFIG0 reads 0x00 (ODR/2, ODR/4 code unverified); the Sitting section now lists only the Armed checks (logbook 2026-11-20-platform-imu-status-counters-and-first-capture)
 - 2026-11-20: Correction to the line above: the header temperature -128 was a valid 24.03 C (TEMP_DATA counts); the json now carries temp_c_start and temp_c_freeze. The header GYRO_ACCEL_CONFIG0 is the firmware constant, not a chip read-back. Owner decided the UI filter stays at ODR/2 (logbook 2026-11-20-platform-imu-capture-header-temperature).
 - 2026-11-20: Rung P4 passed at the Sitting of 2026-11-20 (owner): replug recovered without a power cycle, i2c_errors and fifo_overflows 0 Armed through three oval Attempts, four complete captures. Residue: forced gap unflown, Armed uploads 79-84 s (IDEA-25), rate ramp. Next: Rung P5 mount calibration.
+- 2026-11-21: FW 13 flashed and checked at rest (chaining, fixed-schedule pacing, 2 kHz image); the Sitting section now covers Rung P5 calibration (Level plus two Tilts via the Jog panel), the 1600 frames/s Armed trial, the first Armed FW 13 uploads and a 1 kHz against 2 kHz oval Attempt.
