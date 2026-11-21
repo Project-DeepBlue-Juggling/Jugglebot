@@ -2,9 +2,9 @@
 id: BUG-128
 kind: bug
 title: Map app SheetPage optimistic-rollback test misses its 30 ms optimistic window on a loaded box and fails the app suite
-status: inbox
+status: complete
 created: '2026-11-21'
-updated: '2026-11-20T16:14:08Z'
+updated: '2026-11-21T15:51:21Z'
 owners: []
 priority: medium
 effort: xs
@@ -14,7 +14,8 @@ radius: local
 diagnosis: hypothesis
 area: map-app
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-22-sheetpage-rollback-test-holds-its-refusal.md
 filed_by: night-shift
 ---
 
