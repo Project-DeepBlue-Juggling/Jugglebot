@@ -2,9 +2,9 @@
 id: BUG-121
 kind: bug
 title: Saving comments in 'Next Sitting' Steps could be improved
-status: in_progress
+status: complete
 created: '2026-11-20'
-updated: '2026-11-20T15:58:31Z'
+updated: '2026-11-21T16:05:48Z'
 owners:
 - night-shift
 priority: medium
@@ -15,7 +15,8 @@ radius: local
 diagnosis: confirmed
 area: map-app
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-21-next-sitting-single-save.md
 filed_by: harrison
 parent: map-improvements
 ---
