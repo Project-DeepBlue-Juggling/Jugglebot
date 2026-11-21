@@ -19,7 +19,7 @@ links:
 - logbook/2026-11-20-sitting-debrief-robot-2.md
 filed_by: harrison
 night_skip: owner-session
-night_skip_on: '2026-11-21'
+night_skip_on: '2026-11-22'
 night_skip_note: Rung P4 passed 2026-11-20; Rung P5 (mount calibration) is Sitting work in a day Session.
 ---
 

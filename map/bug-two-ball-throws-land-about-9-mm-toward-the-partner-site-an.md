@@ -22,7 +22,7 @@ links:
 parent: learner-generalisation
 filed_by: claude
 night_skip: owner-session
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: Its row stays off the Runbook until redesigned in your Session.
 ---
 

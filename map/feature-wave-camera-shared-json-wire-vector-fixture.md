@@ -20,7 +20,7 @@ links:
 parent: wave-camera-can3
 filed_by: claude
 night_skip: out-of-reach
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: The firmware consumer is a pio native test, refused at night.
 ---
 

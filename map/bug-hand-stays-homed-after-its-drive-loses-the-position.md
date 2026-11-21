@@ -19,7 +19,7 @@ links:
 - bug-odrive-gui-save-resets-the-hand-zero-the-bridge-stays-homed
 filed_by: claude
 night_skip: owner-session
-night_skip_on: '2026-11-21'
+night_skip_on: '2026-11-22'
 night_skip_note: A day Session built and held the fix (state_machine and ARMING_CONTRACT edits, unflown recovery path); the night does not re-gate it.
 ---
 

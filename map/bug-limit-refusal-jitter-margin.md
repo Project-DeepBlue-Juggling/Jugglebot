@@ -21,7 +21,7 @@ links:
 parent: two-ball-oval
 filed_by: claude
 night_skip: waiting-trigger
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: Your measure-first answer is done; LIMIT_* is not the dominant miss, so its trigger has not fired.
 ---
 

@@ -19,7 +19,7 @@ links:
 - bug-can-bridge-fatal-can-silence-check-wraps-when-a-frame-is
 filed_by: claude
 night_skip: sitting
-night_skip_on: '2026-11-21'
+night_skip_on: '2026-11-22'
 night_skip_note: Bench tooling fix held on night-shift/2026-11-21-BUG-105 by a day Session; the check flies at the next bench-hand Sitting.
 ---
 

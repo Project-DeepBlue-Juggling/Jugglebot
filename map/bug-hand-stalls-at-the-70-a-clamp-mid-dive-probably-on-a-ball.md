@@ -20,7 +20,7 @@ links:
 - logbook/2026-11-20-sitting-debrief.md
 filed_by: jugglebot-b1
 night_skip: sitting
-night_skip_on: '2026-11-21'
+night_skip_on: '2026-11-22'
 night_skip_note: One more trapped-Ball stall 2026-11-20; the live warning it needs is FEAT-50, held for a Sitting.
 ---
 

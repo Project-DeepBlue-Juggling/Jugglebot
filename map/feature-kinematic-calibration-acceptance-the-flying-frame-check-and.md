@@ -17,7 +17,7 @@ links: []
 parent: learner-generalisation
 filed_by: claude
 night_skip: too-large
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: Rated l, and it needs a Sitting.
 ---
 

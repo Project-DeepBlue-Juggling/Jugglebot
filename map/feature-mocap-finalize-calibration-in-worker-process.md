@@ -17,7 +17,7 @@ links:
 - plans/archived/skill-stack-dress-rehearsals-and-residue.md
 filed_by: claude
 night_skip: waiting-trigger
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: Its trigger (a calibration that stalls the node) has not fired.
 ---
 

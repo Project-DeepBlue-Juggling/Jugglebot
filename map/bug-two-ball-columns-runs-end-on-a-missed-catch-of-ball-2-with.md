@@ -23,7 +23,7 @@ links:
 - logbook/2026-11-20-sitting-debrief.md
 filed_by: claude
 night_skip: sitting
-night_skip_on: '2026-11-21'
+night_skip_on: '2026-11-22'
 night_skip_note: Next evidence is the 15 mm outward Catch authority trial in its Sitting section.
 ---
 

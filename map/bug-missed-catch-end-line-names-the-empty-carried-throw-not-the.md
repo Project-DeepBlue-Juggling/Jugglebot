@@ -18,7 +18,7 @@ links:
 - logbook/2026-11-18-sitting-debrief.md
 filed_by: sitting-debrief 2026-11-18
 night_skip: too-large
-night_skip_on: '2026-11-21'
+night_skip_on: '2026-11-22'
 night_skip_note: Seen again 2026-11-20. Naming the lost flight needs a rule for when the carried Throw never flew; more than one unit.
 ---
 

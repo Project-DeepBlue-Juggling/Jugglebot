@@ -19,7 +19,7 @@ links:
 - bug-hand-overshoot-at-apex-1-35-saturated-the-stepped-brake-at
 filed_by: claude
 night_skip: waiting-trigger
-night_skip_on: '2026-11-21'
+night_skip_on: '2026-11-22'
 night_skip_note: 'Re-rated robot/hands: nothing offline settles it; watch for a second MISSING_ESTIMATE on this motor, then inspect the magnet and encoder counters.'
 ---
 

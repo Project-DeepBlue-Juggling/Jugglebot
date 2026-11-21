@@ -20,10 +20,9 @@ links:
 - logbook/2026-11-21-platform-imu-fw13-chaining-pacing-2khz.md
 parent: two-ball-oval
 filed_by: claude
-night_skip: input-decision
-night_skip_on: '2026-11-21'
-night_skip_note: On option 1 the night builds the hole-fill change with tests and holds it for a Sitting check; 2-3 go to a day Session.
-night_skip_input: 'Which lever on TKT-88: the Jetson-only hole-fill change, firmware counters first, sample packing, or leave it.'
+night_skip: owner-session
+night_skip_on: '2026-11-22'
+night_skip_note: 'Your TKT-88 answer: a day Session is already on it; the night leaves it pinned for a few days.'
 ---
 
 Keep this area open (owner, 2026-11-19): once the MVP works, explore shortening the post-Attempt IMU upload. Three levers: tighter sample packing or compression; a slower setpoint heartbeat while holding (the 500 Hz stream stays as is for now: it feeds the ODrive watchdog and avoids a rate switch on the Leg path); a higher measured rate from the P4 ramp.

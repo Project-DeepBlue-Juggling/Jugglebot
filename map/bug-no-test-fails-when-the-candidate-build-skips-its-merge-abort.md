@@ -17,7 +17,7 @@ blocked_by: []
 links: []
 filed_by: claude
 night_skip: frozen-path
-night_skip_on: '2026-11-19'
+night_skip_on: '2026-11-22'
 night_skip_note: 'Needs tests/sim/test_night_shift_candidate.py, a never-list path: a day Session.'
 ---
 

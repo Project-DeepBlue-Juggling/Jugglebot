@@ -22,7 +22,7 @@ links:
 parent: two-ball-oval
 filed_by: claude (P3 re-gate close-out 2026-10-30)
 night_skip: sitting
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: The B arm was confounded on 2026-11-13; flag-on Dwell 0.35 waits on BUG-90, built tonight on a held branch.
 ---
 

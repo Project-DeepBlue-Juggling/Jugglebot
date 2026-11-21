@@ -20,7 +20,7 @@ links:
 - bug-hand-stalls-at-the-70-a-clamp-mid-dive-probably-on-a-ball
 filed_by: claude
 night_skip: sitting
-night_skip_on: '2026-11-21'
+night_skip_on: '2026-11-22'
 night_skip_note: FW 47 held on its day-Session branch; the bench stall stage was fixed after the 2026-11-20 crash and waits for the bench-hand Sitting.
 ---
 

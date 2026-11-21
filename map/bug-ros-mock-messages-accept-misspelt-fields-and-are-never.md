@@ -18,7 +18,7 @@ links:
 - bug-tests-that-never-run-or-cannot-fail-two-permanent-skips-node
 filed_by: claude
 night_skip: frozen-path
-night_skip_on: '2026-11-19'
+night_skip_on: '2026-11-22'
 night_skip_note: 'Needs tests/ros/conftest.py, a never-list path: a day Session with the full gate.'
 ---
 

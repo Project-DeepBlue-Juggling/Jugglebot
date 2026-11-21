@@ -19,7 +19,7 @@ links:
 parent: map-improvements
 filed_by: claude
 night_skip: low-priority
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: No slug is shared by two kinds today; the fix changes every Item uuid and a mapkit/ merge restarts the live app.
 ---
 

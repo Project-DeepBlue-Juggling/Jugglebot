@@ -19,7 +19,7 @@ links:
 - bug-box-at-hand-acc-4500-traded-hop-landing-width-for-apex-band
 filed_by: claude
 night_skip: owner-session
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: TKT-33 answered and landed by your Session; in progress under it.
 ---
 

@@ -18,7 +18,7 @@ links:
 - logbook/2026-11-06-sitting-debrief-2.md
 filed_by: claude
 night_skip: owner-session
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: Your TKT-59 answer (a day Session runs the capture and replay first) stands; harmless by design per the 2026-11-07 findings.
 ---
 

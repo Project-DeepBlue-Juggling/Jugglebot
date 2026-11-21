@@ -18,7 +18,7 @@ links:
 - bug-teensy-guard-max-deviation-latched-on-the-hand-8-4-rev-mid
 filed_by: claude
 night_skip: waiting-trigger
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: Parked on your TKT-45 answer until its unpark condition fires.
 ---
 

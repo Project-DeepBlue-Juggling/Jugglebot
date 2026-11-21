@@ -19,7 +19,7 @@ links:
 - logbook/2026-11-20-sitting-debrief.md
 filed_by: sitting-debrief 2026-11-18
 night_skip: waiting-trigger
-night_skip_on: '2026-11-21'
+night_skip_on: '2026-11-22'
 night_skip_note: 'Flown 2026-11-20, unresolved: needs a saved fault capture (FEAT-49) or the 500 Hz plan replay; you decide after the current work.'
 ---
 

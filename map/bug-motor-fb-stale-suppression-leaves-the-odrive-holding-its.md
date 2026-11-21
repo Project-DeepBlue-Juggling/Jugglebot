@@ -20,7 +20,7 @@ links:
 - logbook/2026-11-01-jb73-suppress-edge-hold-flush.md
 filed_by: claude
 night_skip: sitting
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: FW 35 is flashed and the bench-leg Sitting section is written.
 ---
 

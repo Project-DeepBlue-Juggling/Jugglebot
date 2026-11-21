@@ -22,7 +22,7 @@ links:
 - logbook/2026-11-20-sitting-debrief.md
 filed_by: claude
 night_skip: sitting
-night_skip_on: '2026-11-21'
+night_skip_on: '2026-11-22'
 night_skip_note: Failed again 2026-11-20 (drops mark lateness, not its cause); emit lead and the due-aware rule wait on you and a Sitting.
 ---
 

@@ -16,7 +16,7 @@ blocked_by: []
 links: []
 filed_by: claude
 night_skip: too-large
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: 'Rated l: an 800-line split of the safety-bearing install layer is not one night unit.'
 ---
 

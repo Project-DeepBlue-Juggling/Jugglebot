@@ -21,7 +21,7 @@ links:
 parent: two-ball-oval
 filed_by: claude (BUG-21 21:02 Sitting read-out)
 night_skip: waiting-trigger
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: Owned by BUG-66 and the hold ordering since the 2026-11-05 debrief.
 ---
 

@@ -19,7 +19,7 @@ links:
 - logbook/2026-11-06-sitting-debrief-2.md
 filed_by: claude
 night_skip: sitting
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: You chose to re-joint the Legs (TKT-52, option 4); waits on that Sitting.
 ---
 

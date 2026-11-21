@@ -18,7 +18,7 @@ links:
 - logbook/2026-11-13-sitting-debrief.md
 filed_by: claude
 night_skip: low-priority
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: Feasibility is in the body; robot. The 2026-11-13 Sitting confirmed the split on a second plant.
 ---
 

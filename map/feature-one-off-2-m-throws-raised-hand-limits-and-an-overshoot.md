@@ -16,7 +16,7 @@ blocked_by: []
 links: []
 filed_by: jugglebot-3d
 night_skip: waiting-trigger
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: Waits on BUG-57's cause.
 ---
 
