@@ -2,9 +2,9 @@
 id: FEAT-61
 kind: feature
 title: Improved 'Next Sitting' Readability
-status: in_progress
+status: complete
 created: '2026-11-20'
-updated: '2026-11-20T16:13:26Z'
+updated: '2026-11-21T15:55:48Z'
 owners:
 - night-shift
 priority: medium
@@ -14,7 +14,8 @@ owner: none
 radius: local
 area: map-app
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-21-next-sitting-step-readability.md
 filed_by: harrison
 parent: map-improvements
 ---
