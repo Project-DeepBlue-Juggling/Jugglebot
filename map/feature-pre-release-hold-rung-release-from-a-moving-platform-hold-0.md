@@ -23,7 +23,7 @@ parent: two-ball-oval
 filed_by: claude (P3 re-gate close-out 2026-10-30)
 night_skip: sitting
 night_skip_on: '2026-11-22'
-night_skip_note: The B arm was confounded on 2026-11-13; flag-on Dwell 0.35 waits on BUG-90, built tonight on a held branch.
+night_skip_note: BUG-90 closed with carry_zvd off (TKT-85), so the flag-on Dwell 0.35 arm no longer waits on it; the rung waits on the next ramp Sitting.
 ---
 
 Owner decision 2026-10-30 (P3 re-gate GO): a pre-release-hold rung is scheduled ahead of the P4 working-point commit (plans/active/two-ball-oval.md P4.0).
