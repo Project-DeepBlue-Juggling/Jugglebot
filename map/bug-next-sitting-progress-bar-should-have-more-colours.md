@@ -2,9 +2,9 @@
 id: BUG-127
 kind: bug
 title: '''Next Sitting'' Progress Bar should have more colours'
-status: in_progress
+status: complete
 created: '2026-11-20'
-updated: '2026-11-20T16:06:27Z'
+updated: '2026-11-21T16:17:28Z'
 owners:
 - night-shift
 priority: low
@@ -15,7 +15,8 @@ radius: local
 diagnosis: confirmed
 area: map-app
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-21-next-sitting-progress-colours.md
 filed_by: harrison
 parent: map-improvements
 ---
