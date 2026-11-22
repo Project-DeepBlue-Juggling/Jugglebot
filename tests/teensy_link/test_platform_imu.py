@@ -1488,6 +1488,18 @@ def test_fw14_a_diag_read_error_never_fails_the_upload(status):
     assert "platform_tx" not in res.stats and res.stats["diag_unavailable"]
 
 
+@pytest.mark.parametrize("status", [ST.ERR_NOT_FROZEN, ST.ERR_WRONG_CAPTURE, ST.ERR_DISABLED, ST.ERR_FW_UPDATE])
+def test_fw14_a_diag_read_refused_because_the_capture_is_gone_fails_the_upload_without_resume(status):
+    """These four mean the board left the frozen capture: same handling as a data READ (_fail, no RESUME
+    for a rebooted/discarded/halted board), never the quiet 'diag unavailable' of an out-of-range READ."""
+    img = _fw14()
+    fp, m, res, _ = _upload(img, job=_span(img), board=14, aux_status={pi.DIAG_BASE: status})
+    assert res.failure and not res.flags["complete"]
+    assert "diag_unavailable" not in res.stats
+    assert OP.RESUME not in _ops(fp)
+    assert res.flags.get("resume_skipped")
+
+
 def test_fw14_a_chunk_table_error_leaves_the_span_unverified_but_complete():
     img = _fw14()
     fp, m, res, _ = _upload(img, job=_span(img), board=14, aux_status={pi.CHUNK_BASE: ST.ERR_OUT_OF_RANGE})

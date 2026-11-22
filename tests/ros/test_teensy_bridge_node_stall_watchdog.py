@@ -65,3 +65,23 @@ def test_setpoint_loop_age_is_none_unless_the_loop_runs():
             node._sp_thread = None
     finally:
         _teardown(teensy, client, node)
+
+
+def test_watchdog_on_during_normal_construction_reports_no_stall(monkeypatch, tmp_path):
+    """The watchdog starts as the LAST statement of __init__ (BUG-129 audit): a node
+    built the normal way, watchdog on, produces no report and no exception over
+    several ticks, and the heartbeat never raised."""
+    _params(monkeypatch, {'stall_watchdog': True, 'stall_watchdog_timeout_s': 0.2,
+                          'stall_watchdog_dir': str(tmp_path)})
+    teensy, client, node = _build_paired_node()
+    wd = node._stall_wd
+    try:
+        assert wd is not None and wd.running
+        for _ in range(8):
+            wd.tick()
+            time.sleep(0.05)
+        assert wd.stalls == 0 and wd.reports == []
+        assert wd._hb_failed is False
+        assert node._setpoint_loop_age_s() is None
+    finally:
+        _teardown(teensy, client, node)

@@ -372,3 +372,42 @@ TEST_CASE("service: a diag READ returns one snapshot of the counters; FW 13 regi
   rep = r.tx.of(PlatformCanId::IMU_REPLY).back();
   CHECK(rep[1] == St::ERR_OUT_OF_RANGE);
 }
+
+TEST_CASE("tracker: a mailbox reused before the poll credits the earlier frame as done, valid stays") {
+  TxTracker t;
+  t.on_placed(8, 100, 1000);
+  t.on_placed(8, 101, 1800);                               // MB 8 reused before any poll saw frame 100 finish
+  CHECK(t.valid());
+  CHECK(t.tx_done() == 1);
+  CHECK(t.pending() == 1);
+  uint8_t d[30];
+  t.pack(d, 2, 0);
+  CHECK(d[1] == 0x01);
+  CHECK(g16(d + 14) == 800);                               // latency of the old record, at the reuse time
+}
+
+TEST_CASE("tracker: on_written finds the real mailbox, prefers the prediction, counts a gone frame done") {
+  TxTracker t;
+  FakeMb f;
+  f.mb[9] = once(7);                                       // the prediction (8) raced: frame 7 is in MB 9
+  t.on_written(8, 8, 16, 7, 100, f);
+  CHECK(t.valid());
+  CHECK(t.pending() == 1);
+  CHECK(t.tx_done() == 0);
+  f.mb[8] = once(7);                                       // both hold seq 7: the predicted one wins
+  f.mb[9] = inactive();
+  TxTracker u;
+  u.on_written(8, 8, 16, 7, 100, f);
+  f.mb[8] = inactive();
+  u.poll(200, f);
+  CHECK(u.tx_done() == 1);
+  TxTracker w;                                             // already sent: no mailbox holds it
+  FakeMb g;
+  w.on_written(8, 8, 16, 9, 100, g);
+  CHECK(w.valid());
+  CHECK(w.pending() == 0);
+  CHECK(w.tx_done() == 1);
+  TxTracker x;                                             // range the tracker cannot read: invalid
+  x.on_written(8, 16, 16, 9, 100, g);
+  CHECK_FALSE(x.valid());
+}

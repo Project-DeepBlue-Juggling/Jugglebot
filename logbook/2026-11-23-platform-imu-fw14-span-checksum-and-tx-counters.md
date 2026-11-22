@@ -99,3 +99,7 @@ structures are about 780 B: 512 B CRCs, 30 B diag, 192 B mailbox records), bss u
   about 30 of `data_placed` (the batch window and the snapshot window differ by the first batch and the last diag
   READ), `data_tx_lost_mb` 0, `tx_queued_anyway` 0. Unverified until then: the mailbox prediction and the register reads
   on the real FlexCAN, and the table's run time on the board.
+
+## Audit follow-up (2026-11-23)
+
+Three fixes after the audit. (1) `TxTracker::on_placed` on a mailbox that still holds an active record now resolves that record as done (tx_done and pend_max from its timestamp) and keeps tracking valid, since a reused mailbox means the earlier frame was sent. (2) The sketch no longer trusts the predicted mailbox: `TxTracker::on_written` finds the mailbox that really holds the frame (TX_ONCE, IMU_DATA id, same seq; predicted index preferred) and, when none does, counts the frame placed and done; an unreadable range sets tracking invalid. (3) In `platform_imu.py` an auxiliary (diag or chunk table) READ refused with ERR_DISABLED, ERR_FW_UPDATE, ERR_NOT_FROZEN or ERR_WRONG_CAPTURE now takes the data-READ failure path (no RESUME); ERR_OUT_OF_RANGE and ERR_BAD_ARGS stay "unavailable". Both firmware envs compile (build only, not flashed); the register behaviour on the real FlexCAN stays unverified until a Sitting.

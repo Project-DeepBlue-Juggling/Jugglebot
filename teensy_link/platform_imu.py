@@ -813,8 +813,12 @@ class UploadMachine:
         b = self.blk
         if b is None:
             return
-        if self.phase in _AUX and rep.status not in (ST.OK, ST.READ_EXTENDED):
-            # FW 14 auxiliary READ (diag or chunk table): any refusal means "unavailable", never a failed upload
+        if self.phase in _AUX and rep.status not in (ST.OK, ST.READ_EXTENDED, ST.ERR_DISABLED, ST.ERR_FW_UPDATE,
+                                                      ST.ERR_NOT_FROZEN, ST.ERR_WRONG_CAPTURE):
+            # FW 14 auxiliary READ (diag or chunk table): a refusal about the region itself (ERR_OUT_OF_RANGE,
+            # ERR_BAD_ARGS, anything unknown) means "unavailable", never a failed upload. The four codes that
+            # mean the board LEFT the frozen capture (disabled, firmware update, not frozen, wrong capture)
+            # fall through to the data-READ handling below (_fail, and no RESUME where the board is gone).
             # (a firmware-13 board answers ERR_OUT_OF_RANGE; this host only asks an FW 14 header, but a board
             # that rebooted in between is caught by the next data READ or the RESUME, as before).
             try:

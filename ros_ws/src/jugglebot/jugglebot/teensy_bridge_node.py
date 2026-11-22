@@ -2117,7 +2117,8 @@ class TeensyBridgeNode(Node):
         self.declare_parameter('stall_watchdog', False)
         self.declare_parameter('stall_watchdog_timeout_s', 0.15)
         self.declare_parameter('stall_watchdog_dir', '')   # '' = <repo>/temp/logs
-        self._stall_watchdog_start()
+        # (started as the LAST statement of __init__: the heartbeat reads _sp_thread
+        # and _loop_gap, and a slow init is not a stall)
 
         # ── Subscriptions to T→J streams (RX-thread callbacks) ──
         self._client.subscribe(int(MsgType.HEARTBEAT_T2J), self._on_heartbeat_t2j)
@@ -2833,6 +2834,8 @@ class TeensyBridgeNode(Node):
             self.get_logger().info(
                 'BUG-58 gc_freeze ON: teensy_bridge_node froze %d objects, '
                 'gc thresholds %r' % (n, th))
+        # BUG-129: last statement of __init__, after everything the heartbeat reads exists.
+        self._stall_watchdog_start()
 
     # ═══════════════════════════════════════════════════════════
     # RX-thread frame callbacks — keep these short (stash + return)
@@ -7675,7 +7678,7 @@ class TeensyBridgeNode(Node):
         Watchdog thread only. Lock-free on purpose: it must never make the
         setpoint thread wait (GapTracker.last_unlocked).
         """
-        t = self._sp_thread
+        t = getattr(self, '_sp_thread', None)
         if t is None or not t.is_alive():
             return None
         last = self._loop_gap.last_unlocked()

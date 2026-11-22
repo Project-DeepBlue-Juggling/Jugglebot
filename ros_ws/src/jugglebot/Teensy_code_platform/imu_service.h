@@ -153,9 +153,37 @@ class TxTracker {
   // After write() returned 1 for an IMU_DATA frame in mailbox `mb` (the prediction); mb < 0: no prediction.
   void on_placed(int mb, uint16_t seq, uint32_t now_us) {
     if (mb < 0 || uint32_t(mb) >= TRACK_MAILBOXES) { valid_ = false; return; }
-    if (active_ & (1ull << mb)) valid_ = false;   // a record we never saw finish: should be impossible
+    if (active_ & (1ull << mb)) {
+      // The mailbox is being reused before poll() saw it finish: the earlier frame was sent.
+      // Resolve it exactly as poll() resolves a completed record; tracking stays valid.
+      tx_done_++;
+      const uint32_t age = now_us - rec_[mb].t_us;
+      if (age > pend_max_us_) pend_max_us_ = age;
+    }
     rec_[mb] = Rec{seq, now_us, false};
     active_ |= 1ull << mb;
+  }
+  // After a successful write() of an IMU_DATA frame: find the mailbox that really holds it (TX_ONCE,
+  // IMU_DATA id, same seq) in [first, last) clamped to the tracked range, preferring the predicted
+  // one (the prediction can race the hardware: a frame already sent leaves its mailbox INACTIVE).
+  // Found: on_placed there.  Not found: the frame already went out, so it is placed and done at once.
+  // first > last or a range past the tracked mailboxes: the registers are not as expected, tracking invalid.
+  template <class Rd>
+  void on_written(int predicted, uint32_t first, uint32_t last, uint16_t seq, uint32_t now_us, Rd& rd) {
+    if (first >= last || first >= TRACK_MAILBOXES) { valid_ = false; return; }
+    if (last > TRACK_MAILBOXES) last = TRACK_MAILBOXES;
+    int found = -1;
+    MbState st;
+    if (predicted >= int(first) && uint32_t(predicted) < last) {
+      rd(predicted, &st);
+      if (st.code == MB_CODE_TX_ONCE && st.id == PlatformCanId::IMU_DATA && st.seq == seq) found = predicted;
+    }
+    for (uint32_t i = first; found < 0 && i < last; ++i) {
+      rd(int(i), &st);
+      if (st.code == MB_CODE_TX_ONCE && st.id == PlatformCanId::IMU_DATA && st.seq == seq) found = int(i);
+    }
+    if (found >= 0) on_placed(found, seq, now_us);
+    else tx_done_++;
   }
   void note_predict_miss() { valid_ = false; }
   void note_queued_anyway() { if (queued_anyway_ < 0xFFFFu) queued_anyway_++; }

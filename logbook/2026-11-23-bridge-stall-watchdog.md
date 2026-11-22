@@ -91,3 +91,7 @@ scratch write-up (BUG-129 body).
 - `flock /tmp/jugglebot-tests.lock pytest tests/teensy_link/test_gap_monitor.py tests/ros/test_launch_nodes.py tests/ros/test_launch_console.py tests/ros/test_launch_priority.py tests/ros/test_stream_tuning.py tests/ros/test_rosbridge_websocket_lean.py tests/ros/test_choreography_map.py tests/ros/test_runtime_writes_untracked.py tests/motion/test_blas_threads.py tests/sim/test_logbook_front_matter.py tests/sim/test_logbook_index.py tests/sim/test_no_legacy_item_ids.py tests/sim/test_docs_links.py -q` (run 2026-11-23, the readers of gap_monitor, of the launch file and of this entry): **221 passed in 20.76 s**.
 - Re-arm micro-benchmark (`measure_rearm_cost`, system python3 3.8, 2026-11-23): 40-49 us per call, median 44 us.
 - Not verified on a launch: the WARN and the dump in a real `ros2 launch`; the cause of the freeze. The full gate was not run in this unit.
+
+## Audit follow-up (2026-11-23)
+
+The watchdog now starts as the last statement of `TeensyBridgeNode.__init__` (it used to start about 500 lines before `_sp_thread` existed, so its first ticks raised in the heartbeat, skipped the re-arm, and a slow init could dump a spurious stall). `_setpoint_loop_age_s` reads `_sp_thread` with `getattr`, and `StallWatchdog.tick` re-arms even when the heartbeat raises (heartbeat treated as unknown, first failure logged once). Tests: `test_raising_heartbeat_still_rearms_and_logs_once` and `test_watchdog_on_during_normal_construction_reports_no_stall`.

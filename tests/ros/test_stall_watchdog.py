@@ -128,3 +128,19 @@ def test_measure_rearm_cost_leaves_timer_cancelled():
     assert cost > 0.0
     # cancel is safe to repeat; nothing armed is left behind for other tests
     faulthandler.cancel_dump_traceback_later()
+
+
+def test_raising_heartbeat_still_rearms_and_logs_once(tmp_path, warns):
+    def boom():
+        raise AttributeError('_sp_thread')
+    wd = _wd(tmp_path, warns, heartbeat=boom, period_s=10.0, timeout_s=30.0).start()
+    arms = []
+    wd._arm = lambda: arms.append(1)        # the background thread ticks every 10 s: not during this test
+    try:
+        for _ in range(5):
+            wd.tick()                       # must not raise
+    finally:
+        wd.stop()
+    assert len(arms) == 5                   # re-armed every tick despite the raise
+    assert len(warns) == 1 and 'heartbeat raised' in warns[0]
+    assert wd.stalls == 0

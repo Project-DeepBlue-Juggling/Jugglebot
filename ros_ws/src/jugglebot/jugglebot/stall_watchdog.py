@@ -76,6 +76,7 @@ class StallWatchdog:
         self.timeout_s = float(timeout_s)
         self.period_s = float(period_s)
         self._heartbeat = heartbeat
+        self._hb_failed = False
         self._log_warn = log_warn or (lambda _m: None)
         self.max_reports = int(max_reports)
         self._clock = clock
@@ -154,7 +155,15 @@ class StallWatchdog:
             # still named in the report); 1 Hz at the default period.
             self._names.update((t.ident, t.name) for t in threading.enumerate())
         self._ticks += 1
-        hb = self._heartbeat() if self._heartbeat is not None else None
+        hb = None
+        if self._heartbeat is not None:
+            try:
+                hb = self._heartbeat()
+            except Exception as e:  # noqa: BLE001 - unknown heartbeat: still re-arm
+                if not self._hb_failed:
+                    self._hb_failed = True   # log the first failure only (20 Hz thread)
+                    self._log_warn(f'stall watchdog {self.tag}: heartbeat raised {e!r}; '
+                                   'treating it as unknown')
         self._max_gap_s = max(self._max_gap_s, gap, hb or 0.0)
         size = os.fstat(self._file.fileno()).st_size
         if size > self._reported:

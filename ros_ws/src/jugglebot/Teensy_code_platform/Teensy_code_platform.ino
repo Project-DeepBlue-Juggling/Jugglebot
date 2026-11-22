@@ -1169,6 +1169,15 @@ int canFirstInactiveTxMailbox() {
     if (FLEXCAN_get_code(FLEXCANb_MBn_CS(b, i)) == FLEXCAN_MB_CODE_TX_INACTIVE) return int(i);
   return -1;
 }
+/*  The TX mailbox range [first, last) FlexCAN_T4's write() scans (same bounds as canFirstInactiveTxMailbox). */
+void canTxMailboxRange(uint32_t *first, uint32_t *last) {
+  const uint32_t b = uint32_t(CAN1);
+  const uint32_t maxmb = FLEXCANb_MAXMB_SIZE(b) > 64u ? 64u : FLEXCANb_MAXMB_SIZE(b);
+  const bool fen = (FLEXCANb_MCR(b) & FLEXCAN_MCR_FEN) != 0;
+  const uint32_t rffn = (FLEXCANb_CTRL2(b) >> FLEXCAN_CTRL2_RFFN_BIT_NO) & 0xFu;
+  *first = LoopService::Can::mailbox_offset(maxmb, fen, rffn);
+  *last = maxmb;
+}
 /*  The tracker's view of one TX mailbox (FW 14, ImuService::TxTracker::poll): C/S code, standard id
  *  and the seq in data bytes 0-1 (writeTxMailbox packs buf[0] into WORD0 bits 31-24, buf[1] 23-16). */
 struct ImuMbReader {
@@ -1194,8 +1203,12 @@ struct ImuTx {
         imuTxQueuedAnyway = imuTxQueuedAnyway + 1;
         imuService.tx_tracker().note_queued_anyway();
       } else if (id == PlatformCanId::IMU_DATA) {
-        if (mb < 0) imuService.tx_tracker().note_predict_miss();
-        else imuService.tx_tracker().on_placed(mb, uint16_t(d[0] | (d[1] << 8)), micros());
+        // The prediction can race the hardware (a frame already sent leaves its mailbox INACTIVE
+        // again): locate the mailbox that actually holds this frame, else count it placed and done.
+        uint32_t first = 0, last = 0;
+        canTxMailboxRange(&first, &last);
+        ImuMbReader rd;
+        imuService.tx_tracker().on_written(mb, first, last, uint16_t(d[0] | (d[1] << 8)), micros(), rd);
       }
     }
     NVIC_ENABLE_IRQ(IRQ_CAN1);
