@@ -1,0 +1,114 @@
+schema: 2
+steps:
+  1:
+    comments: ''
+    saved_at: 2026-11-22 22:02
+    status: done
+  2:
+    comments: ''
+    saved_at: 2026-11-22 22:02
+    status: done
+  3:
+    comments: ''
+    saved_at: 2026-11-22 22:02
+    status: done
+  4:
+    comments: Now that the bench hand is set up, we don't need to run this or the
+      Push-check by default anymore. I'll let you know if the hand is new/changed
+      between Sittings.
+    saved_at: 2026-11-22 22:04
+    status: done
+  5:
+    comments: ''
+    saved_at: 2026-11-22 22:04
+    status: done
+  6:
+    comments: Same thing here - we know this is 10.4 now.
+    saved_at: 2026-11-22 22:04
+    status: done
+  7:
+    comments: ''
+    saved_at: 2026-11-22 22:05
+    status: done
+  8:
+    comments: 'Done! (venv) jetson:/home/jetson/Desktop/Jugglebot/ (main✗) $ python
+      tests/hardware/hand_stream_bench.py --stage triangle --tri-span 4 --tri-speed
+      10 --tri-cut up --top-stop 10.4 --close-loop hand baseline: pos=+0.2134 rev
+      axis_state=? active_errors=? fault=NONE pre-bring-up tri-cut plan: the up ramp
+      of cycle 2, cut at stage t=1.000 s near +2.213 rev moving +10.00 rev/s; expected
+      offset speed/pos_gain +0.286 rev; worst-case end +3.581 rev hand bring-up: POSITION/PASSTHROUGH
+      + gains → CLOSED_LOOP post-bring-up: axis_state=8 (CLOSED_LOOP=8) active_errors=0
+      pos=+0.2133 rev — the hand is ENERGISED and holding tri-cut plan: the up ramp
+      of cycle 2, cut at stage t=1.000 s near +2.213 rev moving +10.00 rev/s; expected
+      offset speed/pos_gain +0.286 rev; worst-case end +3.581 rev ARM stage ''triangle''
+      for 30s? E-stop in hand. [yes/NO] yes ARMED — streaming (hold thread sent 83
+      frames). triangle clock starts at stage t=0.300 s (echo back on the start: the
+      recovery slew handed back) stage ''triangle'' done: max |cmd−(enc+vel·age)|
+      = 0.2085 rev (6.79 mm) [belt 0.7857142857142857 rev] cachediag: 7 windows, 0
+      episode(s) past -20, worst deficit 0.0 frames (row-21 recipe; clean baseline
+      −3.6 ± 10.3) tri-cut: up ramp, cycle 2, cut at stage t=1.025 s (planned 1.000
+      s). Nothing was sent after this frame but the DISARMED heartbeat. last commanded
+      (the last frame sent): knot +2.4633 rev at +10.00 rev/s (its next knot +2.7133
+      rev) firmware''s last command to the ODrive (HAND_CMD_ECHO): input_pos +2.4926
+      rev, vel_ff +10.00 rev/s (the lane coasts on its own ladder until the disarm
+      lands) settled position: +2.7770 rev (mean of 50 telemetry samples, 1.0 to 2.0
+      s after the disarm); drift 0.0007 rev over that window offset vs the last knot:
+      +0.3137 rev (expected +0.2857 = speed/35 plus the lane''s coast to the disarm)
+      offset vs the firmware''s last command: +0.2844 rev (expected vel_ff/35 = +0.2857
+      rev) fault_state NONE; guard/latch: none; hand axis_state 8 csv: /home/jetson/Desktop/Jugglebot/temp/logs/hand_stream_triangle_20261122_220628.csv
+      cachediag csv: /home/jetson/Desktop/Jugglebot/temp/logs/hand_stream_triangle_20261122_220628_cachediag.csv'
+    saved_at: 2026-11-22 22:06
+    status: done
+  10:
+    comments: ''
+    saved_at: 2026-11-22 22:12
+    status: done
+  13:
+    comments: ''
+    saved_at: 2026-11-22 22:13
+    status: skipped
+  14:
+    comments: ''
+    saved_at: 2026-11-22 22:14
+    status: done
+verdicts:
+  9:
+    BUG-105:
+      notes: 'Done! (venv) jetson:/home/jetson/Desktop/Jugglebot/ (main✗) $ python
+        tests/hardware/hand_stream_bench.py --stage triangle --tri-span 4 --tri-speed
+        20 --tri-cut up --top-stop 10.4 --close-loop hand baseline: pos=+2.7782 rev
+        axis_state=? active_errors=? fault=None pre-bring-up tri-cut plan: the up
+        ramp of cycle 2, cut at stage t=0.500 s near +4.778 rev moving +20.00 rev/s;
+        expected offset speed/pos_gain +0.571 rev; worst-case end +7.514 rev hand
+        bring-up: POSITION/PASSTHROUGH + gains → CLOSED_LOOP post-bring-up: axis_state=8
+        (CLOSED_LOOP=8) active_errors=0 pos=+2.7782 rev — the hand is ENERGISED and
+        holding tri-cut plan: the up ramp of cycle 2, cut at stage t=0.500 s near
+        +4.778 rev moving +20.00 rev/s; expected offset speed/pos_gain +0.571 rev;
+        worst-case end +7.514 rev ARM stage ''triangle'' for 30s? E-stop in hand.
+        [yes/NO] yes ARMED — streaming (hold thread sent 103 frames). triangle clock
+        starts at stage t=0.300 s (echo back on the start: the recovery slew handed
+        back) stage ''triangle'' done: max |cmd−(enc+vel·age)| = 0.4464 rev (14.54
+        mm) [belt 1.0714285714285714 rev] cachediag: 6 windows, 0 episode(s) past
+        -20, worst deficit 0.0 frames (row-21 recipe; clean baseline −3.6 ± 10.3)
+        tri-cut: up ramp, cycle 2, cut at stage t=0.500 s (planned 0.500 s). Nothing
+        was sent after this frame but the DISARMED heartbeat. last commanded (the
+        last frame sent): knot +4.7783 rev at +20.00 rev/s (its next knot +5.2783
+        rev) firmware''s last command to the ODrive (HAND_CMD_ECHO): input_pos +6.8783
+        rev, vel_ff +0.00 rev/s (the lane coasts on its own ladder until the disarm
+        lands) settled position: +6.8768 rev (mean of 50 telemetry samples, 1.0 to
+        2.0 s after the disarm); drift 0.0287 rev over that window offset vs the last
+        knot: +2.0984 rev (expected +0.5714 = speed/35 plus the lane''s coast to the
+        disarm) offset vs the firmware''s last command: -0.0016 rev (expected vel_ff/35
+        = +0.0000 rev) fault_state NONE; guard/latch: none; hand axis_state 8 csv:
+        /home/jetson/Desktop/Jugglebot/temp/logs/hand_stream_triangle_20261122_220713.csv
+        cachediag csv: /home/jetson/Desktop/Jugglebot/temp/logs/hand_stream_triangle_20261122_220713_cachediag.csv'
+      saved_at: 2026-11-22 22:07
+  11:
+    BUG-123:
+      notes: 'I''m still getting the same error as before: " (venv) jetson:/home/jetson/Desktop/Jugglebot/
+        (night-shift/2026-11-20-BUG-123) $ python tests/hardware/hand_stream_bench.py
+        --stage stall [22:13:14] Traceback (most recent call last): File "tests/hardware/hand_stream_bench.py",
+        line 2307, in <module> raise SystemExit(main()) File "tests/hardware/hand_stream_bench.py",
+        line 1241, in main args.max_dev = _MAX_DEV_DEFAULT[args.stage] KeyError: ''stall''
+        "'
+      saved_at: 2026-11-22 22:13
