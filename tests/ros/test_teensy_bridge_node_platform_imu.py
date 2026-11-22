@@ -271,6 +271,31 @@ def test_set_rate_relays_set_odr_and_reports_the_platforms_verdict():
         _teardown(teensy, client, node)
 
 
+def test_set_rate_relayed_by_bridge_fw47_carries_the_platforms_err_frozen_back_in_plain_words():
+    """Bridge FW 47 relays SET_ODR as [0x07][odr_khz] and the Platform's verdict returns as a PLATFORM_FRAME.
+    A capture frozen after the last IMU_STATUS passes the Jetson's own FROZEN gate, so the Platform's
+    ERR_FROZEN is what refuses it, and the operator reads that, not a bridge refusal or a timeout."""
+    import types
+    teensy, client, node = _build_paired_node()
+    try:
+        sent = []
+
+        def ctrl(rid, args):
+            a = p.ArgPlatformImuCtrl.unpack(args)
+            sent.append((a.op, a.reason))
+            teensy.send_to_jetson(int(MsgType.PLATFORM_FRAME), _platform_frame(
+                proto.CAN_ID_PLATFORM_IMU_REPLY, struct.pack("<BBHI", a.op, ST.ERR_FROZEN, 0x4A21, 0)))
+            return (int(RpcStatus.OK), b"")
+        teensy.on_rpc(int(RpcMethod.PLATFORM_IMU_CTRL), ctrl)
+        _status_frame(teensy, 2, 1)
+        assert _wait_until(lambda: node.imu_upload_status()["platform_state"] == "RUNNING")
+        res = node._svc_imu_set_rate(types.SimpleNamespace(data="2000"), types.SimpleNamespace())
+        assert res.success is False and sent == [(OP.SET_ODR, 2)]
+        assert "ERR_FROZEN" in res.message and "can-bridge" not in res.message
+    finally:
+        _teardown(teensy, client, node)
+
+
 def test_set_rate_refused_by_a_bridge_that_does_not_relay_it_says_so_in_plain_words():
     import types
     teensy, client, node = _build_paired_node()
@@ -278,7 +303,7 @@ def test_set_rate_refused_by_a_bridge_that_does_not_relay_it_says_so_in_plain_wo
         teensy.on_rpc(int(RpcMethod.PLATFORM_IMU_CTRL), lambda rid, args: (int(RpcStatus.ERR_BAD_ARGS), b""))
         res = node._svc_imu_set_rate(types.SimpleNamespace(data="2000"), types.SimpleNamespace())
         assert res.success is False
-        assert "can-bridge" in res.message and "FW 46" in res.message and "does not relay" in res.message
+        assert "can-bridge" in res.message and "older than FW 47" in res.message and "does not relay" in res.message
         assert "teensy40_imu2k" in res.message
     finally:
         _teardown(teensy, client, node)

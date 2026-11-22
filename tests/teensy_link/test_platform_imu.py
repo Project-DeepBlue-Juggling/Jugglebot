@@ -1338,8 +1338,21 @@ def test_set_rate_on_a_can_bridge_that_does_not_relay_it_names_the_bridge_and_th
     req = svc.submit_set_odr(2000)
     svc.pump(now=100.0)
     assert req.done and not req.ok
-    assert "can-bridge" in req.message and "FW 46" in req.message and "does not relay" in req.message
+    assert "can-bridge" in req.message and "older than FW 47" in req.message and "does not relay" in req.message
     assert "teensy40_imu2k" in req.message and "2 kHz" in req.message
+
+
+def test_a_set_odr_reply_landing_mid_upload_leaves_the_upload_alone():
+    """Can-bridge FW 47 relays SET_ODR, so its IMU_REPLY now reaches the Jetson. One that lands during an
+    upload (a rate request that timed out before the upload began, answered late) belongs to no command of
+    the machine's: the Platform refuses it ERR_FROZEN (the frozen ring survives) and the machine ignores the
+    reply, so the upload completes bit-exact and still resumes."""
+    def post(fp, m):
+        fp._at(0.05, lambda: fp.send_ctrl(OP.SET_ODR, 2, 0))
+    fp, m, res, img = _upload(post=post)
+    assert res.flags["complete"] and res.flags["crc_ok"] and res.flags["resume_ok"] and not res.failure
+    assert res.sample_words == b"".join(img["words"][s] for s in range(2 * img["n"]))
+    assert [c[0] for c in fp.ctrls] == [OP.FREEZE, OP.SET_ODR, OP.RESUME]
 
 
 @pytest.mark.parametrize("status,words", [(ST.ERR_FROZEN, "frozen or uploading"),

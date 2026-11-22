@@ -135,6 +135,9 @@ uint16_t platform_imu_ctrl(const JbUdp::RpcArgs::ArgPlatformImuCtrl& a) {
       f.buf[1] = (uint8_t)(a.capture_id & 0xFF);
       f.buf[2] = (uint8_t)((a.capture_id >> 8) & 0xFF);
       break;
+    case PlatformImuOp::SET_ODR:   // FW 47: [odr_khz u8], carried in `reason`; the Platform
+      f.buf[1] = a.reason;         // judges the value (1 or 2, else its ERR_BAD_ARGS), as FREEZE's
+      break;
     default:                       // READ (would bypass the Armed clamp) or unknown
       return JbUdp::RpcStatus::ERR_BAD_ARGS;
   }

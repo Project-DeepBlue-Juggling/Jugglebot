@@ -1006,7 +1006,11 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # receive stamp newer than the fault task's clock read (one helper,
 # rx_older_than), so a live Leg can no longer read silent for one tick and trip
 # CAN_BUS_DOWN. Behavioural only: no wire change, PROTOCOL_VERSION stays 14.
-EXPECTED_BRIDGE_FW_VERSION = 46
+# 46 -> 47 (2026-11-22, IDEA-20): PLATFORM_IMU_CTRL relays SET_ODR (op 0x07,
+# odr_khz in ``reason``) to Platform FW 13, so platform_imu/set_rate switches
+# the capture rate at run time; an FW 46 board answers it ERR_BAD_ARGS and
+# sends nothing. Behavioural only: no wire change, PROTOCOL_VERSION stays 14.
+EXPECTED_BRIDGE_FW_VERSION = 47
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

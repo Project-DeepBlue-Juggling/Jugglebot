@@ -584,6 +584,14 @@ TEST_CASE("PLATFORM_IMU_CTRL / _READ (FW 45): typed args reach the relay, Armed 
   CHECK(g_imu_ctrl_args.op == PlatformImuOp::RESUME);
   CHECK(g_imu_ctrl_args.capture_id == 0x4A21);
 
+  // FW 47: SET_ODR rides the same RPC and is allowed while Armed too (odr_khz in `reason`).
+  JbUdp::RpcArgs::ArgPlatformImuCtrl s{};
+  s.op = PlatformImuOp::SET_ODR; s.reason = 2;
+  CHECK(call(RpcMethod::PLATFORM_IMU_CTRL, s) == RpcStatus::OK);
+  CHECK(g_imu_ctrl_calls == 2);
+  CHECK(g_imu_ctrl_args.op == PlatformImuOp::SET_ODR);
+  CHECK(g_imu_ctrl_args.reason == 2);
+
   JbUdp::RpcArgs::ArgPlatformImuRead r{};
   r.capture_id = 0x4A21; r.first_seq = 0xFFF0; r.count = 11; r.frame_gap_10us = 40;
   CHECK(call(RpcMethod::PLATFORM_IMU_READ, r) == RpcStatus::OK);
@@ -603,7 +611,7 @@ TEST_CASE("PLATFORM_IMU_CTRL / _READ (FW 45): typed args reach the relay, Armed 
                       result, res_len) == RpcStatus::ERR_BAD_ARGS);
   CHECK(Rpc::dispatch(RpcMethod::PLATFORM_IMU_READ, reinterpret_cast<const uint8_t*>(&r), sizeof(r) - 1,
                       result, res_len) == RpcStatus::ERR_BAD_ARGS);
-  CHECK(g_imu_ctrl_calls == 1);
+  CHECK(g_imu_ctrl_calls == 2);
   CHECK(g_imu_read_calls == 2);
 }
 

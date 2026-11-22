@@ -294,6 +294,14 @@ def test_the_bump_history_records_what_this_version_carries():
     assert 'SAFETY PREDICATE' in m46.group(1), m46.group(1)
     assert 'CAN_AXIS_SILENCE_TIMEOUT_US' in m46.group(1), m46.group(1)
     assert 'NO WIRE CHANGE' in m46.group(1) and 'PROTOCOL_VERSION stays 14' in m46.group(1), m46.group(1)
+    # FW 47 — SET_ODR relay (IDEA-20 run-time capture rate).  The substance: one
+    # more op through the existing PLATFORM_IMU_CTRL RPC, allowed while Armed, and
+    # no wire change, so only BRIDGE_FW_CHECK says whether the relay is aboard.
+    m47 = re.search(r'^// 46→47:(.*)$', text, re.M)
+    assert m47 is not None, "FW 47 history line missing"
+    for needle in ('IDEA-20', 'SET_ODR 0x07', 'Platform FW 13', 'Allowed while Armed',
+                   'NO WIRE CHANGE', 'PROTOCOL_VERSION stays 14'):
+        assert needle in m47.group(1), (needle, m47.group(1))
 
 
 def test_the_version_this_release_pins_is_actually_uplinked():

@@ -249,14 +249,17 @@ Teensy's verdict is the IMU_REPLY). They are defined in `config/generate_udp_pro
 (can-bridge FW 45, P3a); an FW 44 board answers both with ERR_UNKNOWN_METHOD:
 
 - **0x0064 PLATFORM_IMU_CTRL**, `ArgPlatformImuCtrl {op u8, reason u8, capture_id u16}`, op in {ENABLE, DISABLE,
-  FREEZE, RESUME, ABORT} (READ and any unknown op are ERR_BAD_ARGS, nothing sent, so a READ can only pass the clamp
-  below). SET_ODR (Platform FW 13) is not in can-bridge FW 46's list, so FW 46 answers it ERR_BAD_ARGS and sends
-  nothing; relaying it needs one more case in `platform_relay.cpp` (`f.buf[1] = a.reason`, the `reason` field carrying
-  `odr_khz`; no UDP struct change), a can-bridge release of its own. Until then a 2 kHz capture needs the boot-rate
-  build (section 4, capture rate). The bridge puts `reason` in byte 1 for FREEZE and `capture_id` in bytes 1-2 for RESUME, zeroes the rest, and
-  leaves judging their values to the Platform Teensy.
+  FREEZE, RESUME, ABORT, SET_ODR} (READ and any unknown op are ERR_BAD_ARGS, nothing sent, so a READ can only pass
+  the clamp below). SET_ODR (Platform FW 13) is relayed from can-bridge FW 47 (2026-11-22): `platform_relay.cpp`
+  puts `reason`, carrying `odr_khz`, in byte 1 (no UDP struct change, PROTOCOL_VERSION stays 14). FW 46 and older
+  answer SET_ODR ERR_BAD_ARGS and send nothing; with one of those aboard a 2 kHz capture needs the boot-rate build
+  (section 4, capture rate). The bridge puts `reason` in byte 1 for FREEZE and SET_ODR and `capture_id` in bytes 1-2
+  for RESUME, zeroes the rest, and leaves judging their values to the Platform Teensy (a SET_ODR value other than 1
+  or 2 is the Platform's ERR_BAD_ARGS, a rate change while FROZEN or UPLOADING its ERR_FROZEN).
 - **0x0065 PLATFORM_IMU_READ**, `ArgPlatformImuRead {capture_id u16, first_seq u16, count u16, frame_gap_10us u8}`.
-  ERR_BAD_ARGS for count 0 or above `read_max_words`. Both RPCs are ALLOWED while Armed (owner, 2026-11-19).
+  ERR_BAD_ARGS for count 0 or above `read_max_words`. Both RPCs are ALLOWED while Armed (owner, 2026-11-19), SET_ODR
+  included: the capture rate is the Platform Teensy's I2C sampling, not CAN traffic (upload traffic stays under READ's
+  Armed gap clamp at either rate), and the Jetson refuses `platform_imu/set_rate` while an Attempt runs.
 
 Both are gated on `jugglebot_commands_allowed()` (ERR_BUS_DOWN). It uplinks 0x6E4-0x6E6, not the reserved ids:
 IMU_REPLY and IMU_STATUS join the Platform reply whitelist and ride the existing 8-slot reply ring as PLATFORM_FRAMEs
@@ -385,9 +388,9 @@ one READ ahead so the Platform never idles between contiguous blocks:
 Capture rate and pace, operator side (FW 13). `ros2 service call /platform_imu/set_rate jugglebot_interfaces/srv/SetString
 "{data: '2000'}"` ("1000", "2000", "1k" or "2k") sends SET_ODR through the IMU worker and answers in plain words: the
 Platform's OK ("capture rate 2000 Hz: the ring restarts as a fresh capture and holds 16 s"), its ERR_FROZEN, its
-ERR_BAD_ARGS (an FW 12 board, or a 400 kHz I2C build asked for 2 kHz), or the can-bridge's ERR_BAD_ARGS: can-bridge FW 46
-does not relay SET_ODR (section 6), and the reply says so and names the 2 kHz Platform image (`teensy40_imu2k`) as the
-alternative. It is refused while an upload or an Attempt runs and while the ring is FROZEN or UPLOADING. The upload pace is
+ERR_BAD_ARGS (an FW 12 board, or a 400 kHz I2C build asked for 2 kHz), or the can-bridge's ERR_BAD_ARGS: a can-bridge
+older than FW 47 does not relay SET_ODR (section 6), and the reply says so, names FW 47, and names the 2 kHz Platform
+image (`teensy40_imu2k`) as the alternative. It is refused while an upload or an Attempt runs and while the ring is FROZEN or UPLOADING. The upload pace is
 the node parameter `imu_read_gap_10us` (x 10 us, 40..255, default 80), settable at run time:
 `ros2 param set /teensy_bridge_node imu_read_gap_10us 63` (about 1590 frames/s; the bridge's Armed clamp is 63). It applies
 from the next READ, also to an upload already running; a value outside 40..255 or not an integer is refused and the prior

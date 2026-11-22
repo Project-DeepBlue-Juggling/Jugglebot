@@ -176,6 +176,16 @@ class FakePlatform:
             self.block_gen += 1
             self.bk = None
             self._reply(op, ST.OK, img["cap_id"], 0)
+        elif op == OP.SET_ODR:
+            # Relayed from can-bridge FW 47 (byte 1 = odr_khz). Platform FW 13 rules: a value other than
+            # 1 or 2 is ERR_BAD_ARGS; FROZEN or UPLOADING (this model's `frozen`) is ERR_FROZEN, nothing
+            # changes and the ring survives; otherwise OK with the selected rate in Hz as the detail.
+            if reason not in (1, 2):
+                self._reply(op, ST.ERR_BAD_ARGS, 0, 0)
+            elif self.frozen:
+                self._reply(op, ST.ERR_FROZEN, img["cap_id"], 0)
+            else:
+                self._reply(op, ST.OK, 0, 1000 * reason)
         return True, "ok"
 
     def send_read(self, cid, first, count, gap):

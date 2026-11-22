@@ -272,7 +272,7 @@ def test_fw13_rates_fit_the_ring_and_the_set_odr_argument():
 
 
 def test_read_max_words_stays_the_can_bridge_clamp():
-    """FW 13 chains READs instead of raising the count: the can-bridge (FW 46) refuses a READ above
+    """FW 13 chains READs instead of raising the count: the can-bridge (FW 45 and later) refuses a READ above
     read_max_words, and the same generated constant is its clamp, so raising it here would silently
     change the bridge at its next build (platform_imu_protocol.md section 4, READ chaining)."""
     assert _IMU["read_max_words"] == 256

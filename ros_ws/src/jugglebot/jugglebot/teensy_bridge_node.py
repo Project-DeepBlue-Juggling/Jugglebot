@@ -3226,7 +3226,8 @@ class TeensyBridgeNode(Node):
     def _svc_imu_set_rate(self, req, res):
         """platform_imu/set_rate: ``data`` "1000" or "2000" (also "1", "2", "1k", "2k", "2000hz"). Refused
         while an upload or an Attempt runs or a capture is frozen; otherwise the IMU worker sends SET_ODR and
-        the reply names the verdict: the Platform's, or the can-bridge's refusal (FW 46 does not relay it)."""
+        the reply names the verdict: the Platform's, or the can-bridge's refusal (a bridge older than FW 47 does
+        not relay it)."""
         try:
             text = (req.data or '').strip().lower().replace(' ', '')
             if text.endswith('hz'):

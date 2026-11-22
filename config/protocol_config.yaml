@@ -350,7 +350,7 @@ platform_imu:
     RESUME:   0x04
     READ:     0x05
     ABORT:    0x06
-    SET_ODR:  0x07   # FW 13 [odr_khz u8] 1 or 2; needs can-bridge FW 47 to relay it (spec section 6)
+    SET_ODR:  0x07   # FW 13 [odr_khz u8] 1 or 2; relayed by can-bridge FW 47 and later (spec section 6)
 
   # IMU_REPLY byte 1. 0x0x = accepted, 0x1x = refused (nothing changed, nothing sent).
   statuses:

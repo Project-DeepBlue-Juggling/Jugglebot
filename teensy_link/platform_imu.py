@@ -1090,13 +1090,16 @@ def format_upload_end(summary: Dict[str, Any]) -> Tuple[bool, str]:
 
 # ── the worker service ───────────────────────────────────────────────────────────────────────────
 
-#: The can-bridge's refusal of SET_ODR, in the operator's words (spec section 6: FW 46 whitelists only
-#: ENABLE/DISABLE/FREEZE/RESUME/ABORT, so it answers ERR_BAD_ARGS and nothing reaches the Platform).
+#: The can-bridge's refusal of SET_ODR, in the operator's words (spec section 6). Can-bridge FW 47 relays
+#: SET_ODR and never refuses it for its value (the Platform judges that), so a bridge ERR_BAD_ARGS here means
+#: a board older than FW 47 is aboard: FW 46 and earlier whitelist only ENABLE/DISABLE/FREEZE/RESUME/ABORT,
+#: answer ERR_BAD_ARGS and send nothing to the Platform.
 SET_ODR_BRIDGE_REFUSAL = (
-    "refused by the can-bridge (ERR_BAD_ARGS, nothing reached the Platform): the bridge firmware (FW 46) does "
-    "not relay the rate command yet; it needs the can-bridge release that adds SET_ODR to its relay. The "
-    "alternative today is the 2 kHz Platform firmware image: pio run -e teensy40_imu2k -t upload in "
-    "Teensy_code_platform (boots at 2 kHz; flash teensy40 again to return to 1 kHz)")
+    "refused by the can-bridge (ERR_BAD_ARGS, nothing reached the Platform): the bridge firmware aboard is "
+    "older than FW 47 and does not relay the rate command; flash can-bridge FW 47 (the launch log's "
+    "BRIDGE_FW_CHECK line names the version aboard). The alternative without a bridge flash is the 2 kHz "
+    "Platform firmware image: pio run -e teensy40_imu2k -t upload in Teensy_code_platform (boots at "
+    "2 kHz; flash teensy40 again to return to 1 kHz)")
 
 
 class OdrRequest:
