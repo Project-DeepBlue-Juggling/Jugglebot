@@ -4,10 +4,14 @@ kind: feature
 title: Searching the Map should list ongoing Items first
 status: inbox
 created: '2026-11-22'
-updated: '2026-11-22T06:47:43Z'
+updated: '2026-11-22T15:49:53Z'
 owners: []
 priority: low
-effort: s
+effort: xs
+hardware: none
+owner: none
+radius: local
+area: map-app
 blocked_by: []
 links: []
 filed_by: harrison
