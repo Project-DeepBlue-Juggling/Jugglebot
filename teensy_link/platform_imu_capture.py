@@ -28,6 +28,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from .platform_imu_mount import MountCalibration, MountCalError, load_mount  # noqa: F401 (re-exported)
+
 logger = logging.getLogger(__name__)
 
 # Anchor flag bits (protocol_config.PlatformImuAnchorFlag); duplicated as plain ints so this module
@@ -407,3 +409,16 @@ class ImuCaptureWriter:
         self._stop.set()
         if self._started:
             self._thread.join(timeout)
+
+
+# ── mount calibration (IMU frame to Platform frame) ─────────────────────────────────────────────
+
+def to_platform_frame(vectors: np.ndarray, mount: MountCalibration) -> np.ndarray:
+    """Rotate an (n, 3) accel or gyro array from the IMU frame into the Platform frame: ``v @ R_PI.T``.
+
+    Rotation only: no gravity subtraction, no gyro-bias subtraction, no lever arm (the CAD lever arm is not
+    measured). Returns a new float array; the input, and the capture file it came from, are untouched."""
+    v = np.asarray(vectors)
+    if v.ndim != 2 or v.shape[1] != 3:
+        raise ValueError("expected an (n, 3) array, got shape %r" % (v.shape,))
+    return v @ np.asarray(mount.matrix, dtype=np.float64).T

@@ -59,13 +59,14 @@ def srv(tmp_path):
     args = argparse.Namespace(
         port=0, host="127.0.0.1", rosbags_dir=str(tmp_path / "bags"),
         overview_dir=str(tmp_path / "ov"), worker_python="/nonexistent/python",
-        imu_capture_dir=str(d))
+        imu_capture_dir=str(d), imu_mount=str(tmp_path / "no_such_mount.json"))
     server, _backend = gui_server.make_server(args)
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
     class S:
         dir = str(d)
+        mount = str(tmp_path / "no_such_mount.json")   # absent: the Platform frame is not available
 
         @staticmethod
         def req(path):
@@ -199,3 +200,136 @@ def test_real_capture_matches_numpy():
     np.testing.assert_allclose(np.frombuffer(body, "<f8", n, 16), z["t_wall_us"] / 1e6, atol=1e-6)
     np.testing.assert_array_equal(np.frombuffer(body, "<f4", n * 3, 16 + n * 8).reshape(n, 3),
                                   z["accel_g"])
+
+
+# ---- the mount calibration: Platform frame by default, ?frame=imu for raw ----
+
+REAL_MOUNT = os.path.join(REPO, "config", "platform_imu_mount.json")
+# Mean accelerometer in the IMU frame at the 2026-11-22 Sitting's Level window (accel reads +1 g up at rest).
+LEVEL_IMU = (0.99857, -0.00193, 0.05278)
+
+
+@pytest.fixture
+def srv_cal(tmp_path):
+    """Same server, but pointed at a copy of the committed calibration."""
+    import shutil
+    d = tmp_path / "imu"
+    d.mkdir()
+    mount = tmp_path / "platform_imu_mount.json"
+    shutil.copy(REAL_MOUNT, mount)
+    args = argparse.Namespace(
+        port=0, host="127.0.0.1", rosbags_dir=str(tmp_path / "bags"),
+        overview_dir=str(tmp_path / "ov"), worker_python="/nonexistent/python",
+        imu_capture_dir=str(d), imu_mount=str(mount))
+    server, _backend = gui_server.make_server(args)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    class S:
+        dir = str(d)
+        mount_path = str(mount)
+
+        @staticmethod
+        def req(path):
+            try:
+                with urllib.request.urlopen("http://127.0.0.1:%d%s" % (port, path), timeout=10) as r:
+                    return r.status, r.headers, r.read()
+            except urllib.error.HTTPError as e:
+                return e.code, e.headers, e.read()
+
+    yield S
+    server.shutdown()
+    server.server_close()
+
+
+def _level_capture(d, stem, n=50):
+    t_us = FREEZE_A * 1e6 - (n - 1 - np.arange(n)) * 1000.0
+    accel = np.tile(np.array(LEVEL_IMU, np.float32), (n, 1))
+    gyro = np.tile(np.array([0.351, 0.262, -0.057], np.float32), (n, 1))
+    np.savez_compressed(os.path.join(d, stem + ".npz"), raw=np.zeros((n, 6), np.int16),
+                        valid=np.ones(n, bool), t_wall_us=t_us, accel_g=accel, gyro_dps=gyro,
+                        anchors=np.zeros((1, 3)), k0=np.array(0))
+    with open(os.path.join(d, stem + ".json"), "w") as f:
+        json.dump({"label": "operator", "n_samples_written": n, "flags": {"complete": True, "crc_ok": True},
+                   "fit": {"rate_hz": RATE, "wall_ok": True},
+                   "header": {"capture_id": 1, "freeze_wall_us": int(FREEZE_A * 1e6)}}, f)
+
+
+def _arrays(body, n):
+    o = 16 + n * 8
+    acc = np.frombuffer(body, "<f4", n * 3, o).reshape(n, 3)
+    gyr = np.frombuffer(body, "<f4", n * 3, o + n * 12).reshape(n, 3)
+    return acc, gyr
+
+
+def test_list_says_imu_frame_without_calibration(srv):
+    write_capture(srv.dir, STEM_A, FREEZE_A)
+    row = json.loads(srv.req("/api/imu/captures")[2])["captures"][0]
+    assert row["frame"] == "imu" and row["cal_date"] is None
+
+
+def test_data_without_calibration_is_raw_and_platform_is_refused(srv):
+    t_us, accel, gyro, valid = write_capture(srv.dir, STEM_A, FREEZE_A, n=20, seed=2)
+    code, _h, body = srv.req("/api/imu/captures/%s/data" % STEM_A)
+    assert code == 200
+    acc, _gyr = _arrays(body, 20)
+    assert np.array_equal(acc, accel)
+    code, _h, body = srv.req("/api/imu/captures/%s/data?frame=platform" % STEM_A)
+    assert code == 409 and "no mount calibration" in json.loads(body)["error"]
+
+
+def test_list_says_platform_frame_and_date_with_calibration(srv_cal):
+    _level_capture(srv_cal.dir, STEM_A)
+    row = json.loads(srv_cal.req("/api/imu/captures")[2])["captures"][0]
+    assert row["frame"] == "platform" and row["cal_date"] == "2026-11-22"
+
+
+def test_data_defaults_to_platform_frame_level_reads_plus_one_g_up(srv_cal):
+    """The accelerometer reports specific force: at the Level window the rotated reading is about
+    (0, 0, +1 g) in the Platform frame (+z up). The gyro is rotated, not de-biased."""
+    _level_capture(srv_cal.dir, STEM_A)
+    code, _h, body = srv_cal.req("/api/imu/captures/%s/data" % STEM_A)
+    assert code == 200
+    acc, gyr = _arrays(body, 50)
+    assert np.allclose(acc.mean(axis=0), [0, 0, 1.0], atol=5e-4)
+    # the gyro bias (0.351, 0.262, -0.057) dps in the IMU frame, rotated by the same matrix and not subtracted
+    assert np.allclose(gyr.mean(axis=0), [-0.2635, 0.0725, 0.3470], atol=2e-3)
+    code, _h, same = srv_cal.req("/api/imu/captures/%s/data?frame=platform" % STEM_A)
+    assert code == 200 and same == body
+
+
+def test_frame_imu_returns_raw_with_calibration_present(srv_cal):
+    _level_capture(srv_cal.dir, STEM_A)
+    code, _h, body = srv_cal.req("/api/imu/captures/%s/data?frame=imu" % STEM_A)
+    assert code == 200
+    acc, gyr = _arrays(body, 50)
+    assert np.allclose(acc.mean(axis=0), LEVEL_IMU, atol=1e-6)
+    assert np.allclose(gyr.mean(axis=0), [0.351, 0.262, -0.057], atol=1e-6)
+
+
+def test_bad_frame_value_is_400(srv_cal):
+    _level_capture(srv_cal.dir, STEM_A)
+    assert srv_cal.req("/api/imu/captures/%s/data?frame=world" % STEM_A)[0] == 400
+
+
+def test_malformed_calibration_is_loud_not_silently_raw(srv_cal):
+    _level_capture(srv_cal.dir, STEM_A)
+    with open(srv_cal.mount_path, "w") as f:
+        f.write("{broken")
+    code, _h, body = srv_cal.req("/api/imu/captures/%s/data" % STEM_A)
+    assert code == 500 and "mount calibration unusable" in json.loads(body)["error"]
+    listing = json.loads(srv_cal.req("/api/imu/captures")[2])
+    assert listing["captures"][0]["frame"] == "imu" and "cal_error" in listing
+    assert srv_cal.req("/api/imu/captures/%s/data?frame=imu" % STEM_A)[0] == 200
+
+
+def test_calibration_edit_invalidates_the_cached_blob(srv_cal):
+    _level_capture(srv_cal.dir, STEM_A)
+    first = srv_cal.req("/api/imu/captures/%s/data" % STEM_A)[2]
+    doc = json.load(open(srv_cal.mount_path))
+    doc["rotation"]["matrix"] = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+    with open(srv_cal.mount_path, "w") as f:
+        json.dump(doc, f)
+    second = srv_cal.req("/api/imu/captures/%s/data" % STEM_A)[2]
+    acc, _ = _arrays(second, 50)
+    assert second != first and np.allclose(acc.mean(axis=0), LEVEL_IMU, atol=1e-6)

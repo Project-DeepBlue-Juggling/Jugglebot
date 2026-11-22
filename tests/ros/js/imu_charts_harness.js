@@ -75,7 +75,7 @@ globalThis.fetch = (url) => {
     if (listStatus !== 200) return Promise.resolve({ ok: false, status: listStatus, json: async () => ({}) });
     return ok(captureListing);
   }
-  if (url.endsWith('/data')) return ok(captureBin);
+  if (url.split('?')[0].endsWith('/data')) return ok(captureBin);
   return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
 };
 const settle = async () => { for (let k = 0; k < 20; k++) { await Promise.resolve(); flushRaf(); } };
@@ -461,6 +461,13 @@ out.imu_height = {
     no_motor: core.mergeCsvRows(motor, 0, imu).length,
   };
 }
+out.frames = {
+  q_platform: core.frameQuery('platform'), q_imu: core.frameQuery('imu'), q_unknown: core.frameQuery(undefined),
+  frame_row: [core.captureFrame({ frame: 'platform' }), core.captureFrame({ frame: 'imu' }), core.captureFrame({}), core.captureFrame(null)],
+  label_p: core.frameSeriesLabel('x', 'platform'), label_i: core.frameSeriesLabel('x', 'imu'),
+  note_p: core.frameNote('platform', '2026-11-22'), note_i: core.frameNote('imu'),
+  csv_p: core.csvHeader('platform'), csv_i: core.csvHeader('imu'),
+};
 // REPLAY playhead on the IMU charts: the draw hook is the motor charts' own
 out.imu_playhead_hook = made.filter((u) => u.opts.hooks && u.opts.hooks.draw && u.opts.hooks.draw.includes(tc.drawReplayPlayhead)).length;
 

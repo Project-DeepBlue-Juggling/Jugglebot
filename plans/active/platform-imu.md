@@ -200,7 +200,7 @@ P2's native tests (the SCL3300 is not unplugged on the robot); the invalid encod
 
 Hardware: robot. The mount calibration (Level, then X and Y Tilts with Mocap recording), then real Attempts with the
 automatic freeze and upload. **Rung gate:** a calibration file beside the other calibration artefacts, and one real
-Attempt's capture on disk, complete and CRC-checked, handed to the carry-ring-zvd analysis. Status: in progress (2026-11-22): the Sitting passed (`2026-11-22-sitting-debrief`) and the mount rotation is fitted (gravity within 0.013 deg at Level and both Tilts, board tilted 3.0 deg about Platform X). Not yet met: the calibration file is not written, and the Attempt captures are span uploads, which the payload CRC does not cover. The lever arm stays at its CAD value (the Jog moves could not fit it).
+Attempt's capture on disk, complete and CRC-checked, handed to the carry-ring-zvd analysis. Status: in progress (2026-11-22): the Sitting passed (`2026-11-22-sitting-debrief`) and the mount rotation is fitted (gravity within 0.013 deg at Level and both Tilts, board tilted 3.0 deg about Platform X). The calibration file exists: `config/platform_imu_mount.json` (2026-11-23, `2026-11-23-platform-imu-mount-calibration-file`), loaded by `teensy_link/platform_imu_mount.py` and served by the GUI as the Platform frame by default. Not yet met: one real Attempt capture, complete and CRC-checked (the Attempt captures so far are span uploads, which the payload CRC does not cover; a span checksum is being added separately). P5 is not complete. The lever arm stays at its CAD value (the Jog moves could not fit it).
 
 ## 6. Open questions
 

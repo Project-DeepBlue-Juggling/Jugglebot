@@ -79,6 +79,7 @@ class CORSHandler(http.server.SimpleHTTPRequestHandler):
     #: Sitting's first write shows without a restart).
     records_runtime_first = False
     imu_capture_dir = None  # set per server in make_server
+    imu_mount_path = None   # the Platform IMU mount calibration file (None: the repo's)
     _replay_headers_sent = False
 
     def end_headers(self):
@@ -99,7 +100,7 @@ class CORSHandler(http.server.SimpleHTTPRequestHandler):
         super().do_GET()
 
     def _imu(self):
-        res = imu_api.handle(self.path, self.imu_capture_dir)
+        res = imu_api.handle(self.path, self.imu_capture_dir, self.imu_mount_path)
         if res is None:
             self.send_error(404)
             return
@@ -162,6 +163,9 @@ def build_parser():
     parser.add_argument("--imu-capture-dir",
                         default=os.path.join(_HERE, "..", "..", "temp", "imu_capture"),
                         help="Platform IMU captures (.npz + .json) served at /api/imu/")
+    parser.add_argument("--imu-mount", default=None,
+                        help="Platform IMU mount calibration (default config/platform_imu_mount.json); "
+                        "when present /api/imu/captures/<stem>/data serves the Platform frame")
     return parser
 
 
@@ -188,6 +192,8 @@ def make_server(args):
     Handler.imu_capture_dir = os.path.abspath(os.path.expanduser(
         getattr(args, "imu_capture_dir", None)
         or build_parser().get_default("imu_capture_dir")))
+    mount = getattr(args, "imu_mount", None)
+    Handler.imu_mount_path = os.path.abspath(os.path.expanduser(mount)) if mount else None
     handler = lambda *a, **kw: Handler(*a, directory=_HERE, **kw)  # noqa: E731
     server = ReusableHTTPServer((getattr(args, "host", "0.0.0.0"), args.port), handler)
     return server, backend

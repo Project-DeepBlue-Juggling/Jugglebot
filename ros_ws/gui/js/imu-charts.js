@@ -95,7 +95,7 @@ export function initImuCharts() {
     for (const id of ['imu-charts-toggle-btn', 'imu-capture-select', 'imu-jump-btn', 'imu-chart-group',
         'imu-accel-plot', 'imu-gyro-plot', 'imu-accel-toggles', 'imu-gyro-toggles', 'imu-gyro-mode-btn',
         'imu-gyro-title', 'imu-chart-message', 'imu-filter-select', 'imu-spectrum-btn', 'imu-spec-max-select',
-        'imu-accel-title', 'imu-accel-badge', 'imu-gyro-badge', 'imu-accel-peaks', 'imu-gyro-peaks']) {
+        'imu-accel-title', 'imu-accel-badge', 'imu-gyro-badge', 'imu-accel-peaks', 'imu-gyro-peaks', 'imu-accel-frame', 'imu-gyro-frame']) {
         els[id] = document.getElementById(id);
     }
     if (!els['imu-chart-group'] || !els['imu-charts-toggle-btn']) return;
@@ -207,7 +207,7 @@ function csvExtra() {
     const c = capData.cols;
     const f = (v) => v.toFixed(6);
     return {
-        header: core.IMU_CSV_HEADER,
+        header: core.csvHeader(capData.frame),
         merge: (ts, n) => core.mergeCsvRows(ts, n, c),
         values: (j) => [f(c.ax[j]), f(c.ay[j]), f(c.az[j]), f(c.gx[j]), f(c.gy[j]), f(c.gz[j])],
     };
@@ -537,7 +537,7 @@ async function loadSelected() {
     renderMessage(); scheduleRedraw();
     let entry;
     try {
-        const r = await fetch(API + '/' + encodeURIComponent(c.stem) + '/data', { cache: 'no-store' });
+        const r = await fetch(API + '/' + encodeURIComponent(c.stem) + '/data' + core.frameQuery(core.captureFrame(c)), { cache: 'no-store' });
         if (!r.ok) {
             let msg = 'HTTP ' + r.status;
             try { const j = await r.json(); if (j && (j.message || j.error)) msg = j.message || j.error; } catch { /* not JSON */ }
@@ -545,7 +545,7 @@ async function loadSelected() {
         } else {
             const cap = core.parseImuCapture(await r.arrayBuffer());
             const cols = core.buildPlotColumns(cap);
-            entry = { stem: c.stem, cols, dt: core.medianDt(cols.t), ang: null };
+            entry = { stem: c.stem, cols, dt: core.medianDt(cols.t), ang: null, frame: core.captureFrame(c), calDate: c.cal_date || null };
             dataCache.set(c.stem, entry);
             while (dataCache.size > DATA_CACHE_MAX) dataCache.delete(dataCache.keys().next().value);
         }
@@ -578,6 +578,7 @@ function renderMessage() {
     }
     m.textContent = text;
     m.hidden = !text;
+    relabelFrame();
 }
 
 // ---- Shared x range ----
@@ -605,8 +606,45 @@ function cssVar(name, fallback) {
     return v || fallback;
 }
 
+/** The frame of the capture on screen (labels follow it; 'imu' until a capture is loaded). */
+function shownFrame() {
+    return capData && capData.frame ? capData.frame : core.captureFrame(selectedCapture());
+}
+
+const labelCache = new Map();
 function seriesFor(kind) {
-    return kind === 'accel' ? core.ACCEL_SERIES : core.GYRO_SERIES;
+    const frame = shownFrame();
+    const base = kind === 'accel' ? core.ACCEL_SERIES : core.GYRO_SERIES;
+    const ck = kind + frame;
+    let defs = labelCache.get(ck);
+    if (!defs) {
+        defs = base.map((d) => ({ ...d, label: d.key === 'amag' ? d.label : core.frameSeriesLabel(d.label, frame) }));
+        labelCache.set(ck, defs);
+    }
+    return defs;
+}
+
+/** Re-label the pills and the chart-head notes for the frame now shown. */
+function relabelFrame() {
+    const frame = shownFrame();
+    const note = core.frameNote(frame, capData && capData.calDate);
+    for (const id of ['imu-accel-frame', 'imu-gyro-frame']) if (els[id]) els[id].textContent = note;
+    for (const [box, kind] of [['imu-accel-toggles', 'accel'], ['imu-gyro-toggles', 'gyro']]) {
+        if (!els[box] || !els[box].children) continue;
+        const defs = seriesFor(kind);
+        defs.forEach((d, j) => {
+            const b = els[box].children[j];
+            if (!b) return;
+            b.title = pillTitle(d, frame);
+            b.innerHTML = '<span class="color-dot"></span>' + d.label;
+        });
+    }
+}
+
+function pillTitle(d, frame) {
+    return d.key === 'amag' ? 'Magnitude of the measured acceleration, sqrt(x^2 + y^2 + z^2), in g'
+        : d.label + (frame === 'platform' ? ' (rotated into the Platform frame with the mount calibration)'
+            : ' (raw sensor frame: no mount calibration)');
 }
 
 function chartUnit(kind) {
@@ -748,6 +786,7 @@ function redrawChart(kind) {
         const width = u.bbox ? u.bbox.width / window.devicePixelRatio : u.over.clientWidth;
         data = core.decimateMinMax(capData.cols.t, cols, xRange.min, xRange.max, width).data;
     }
+    seriesFor(kind).forEach((d, j) => { if (u.series[j + 1]) u.series[j + 1].label = d.label; });   // the frame can change per capture
     u.setData(data);
     u.setScale('x', { min: xRange.min, max: xRange.max });
 }
@@ -763,8 +802,7 @@ function buildPills(containerId, defs, kind) {
         b.className = 'signal-toggle' + (enabled.has(d.key) ? ' active' : '');
         b.dataset.series = d.key;
         b.style.setProperty('--signal-color', d.color);
-        b.title = d.key === 'amag' ? 'Magnitude of the measured acceleration, sqrt(x^2 + y^2 + z^2), in g'
-            : 'IMU ' + d.label + ' (sensor frame: the mount calibration is not done)';
+        b.title = pillTitle(d, shownFrame());
         b.innerHTML = '<span class="color-dot"></span>' + d.label;
         b.addEventListener('click', () => {
             if (enabled.has(d.key)) enabled.delete(d.key); else enabled.add(d.key);

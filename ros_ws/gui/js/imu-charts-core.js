@@ -47,6 +47,20 @@ export const GYRO_TITLE = 'Angular rate (deg/s)';
 export const ANG_ACCEL_TITLE = 'Angular acceleration (deg/s^2, ' + ANG_ACCEL_SMOOTH_MS + ' ms boxcar)';
 export const FRAME_NOTE = 'IMU x/y/z (sensor frame)';
 
+/** The frame a capture is drawn in: 'platform' when the server rotated it with the mount calibration, else 'imu'. */
+export function captureFrame(c) { return c && c.frame === 'platform' ? 'platform' : 'imu'; }
+export function frameName(frame) { return frame === 'platform' ? 'Platform' : 'IMU'; }
+/** Series label with its frame, e.g. "x (Platform)" / "x (IMU)": a reader can never confuse the two. */
+export function frameSeriesLabel(base, frame) { return base + ' (' + frameName(frame) + ')'; }
+/** Chart-head note for the shown frame. */
+export function frameNote(frame, calDate) {
+    return frame === 'platform'
+        ? 'Platform x/y/z (mount calibration ' + (calDate || '?') + ')'
+        : 'IMU x/y/z (sensor frame, not mount-calibrated)';
+}
+/** Query suffix asking the server for exactly the frame the labels will claim. */
+export function frameQuery(frame) { return '?frame=' + (frame === 'platform' ? 'platform' : 'imu'); }
+
 // ---- Binary capture --------------------------------------------------------------------------------
 
 const LITTLE_ENDIAN_HOST = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
@@ -528,6 +542,8 @@ export function appliedStoredHeight(stored, storedMin, bounds) {
 // ---- CSV export: IMU columns merged into the motor export -----------------------------------------------
 
 export const IMU_CSV_HEADER = ['imu_ax_g', 'imu_ay_g', 'imu_az_g', 'imu_gx_dps', 'imu_gy_dps', 'imu_gz_dps'];
+export const PLATFORM_CSV_HEADER = ['plat_ax_g', 'plat_ay_g', 'plat_az_g', 'plat_gx_dps', 'plat_gy_dps', 'plat_gz_dps'];
+export function csvHeader(frame) { return frame === 'platform' ? PLATFORM_CSV_HEADER : IMU_CSV_HEADER; }
 
 /**
  * The time-sorted union of motor-sample times and IMU-sample times, as row descriptors {t, k, j}: k = index into

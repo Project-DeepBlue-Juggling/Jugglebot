@@ -228,7 +228,7 @@ def test_showing_follows_the_newest_capture_and_moves_every_chart(out):
     assert s["shownKey"] == "true" and s["groupHidden"] is False
     assert s["fetches"][0] == "/api/replay/recordings"
     assert s["fetches"][1] == "/api/imu/captures?from=1795162000"
-    assert s["fetches"][2] == "/api/imu/captures/20261120T115806Z_AEDE/data"
+    assert s["fetches"][2] == "/api/imu/captures/20261120T115806Z_AEDE/data?frame=imu"
     assert s["options"] == ["20261120T115806Z_AEDE", "20261120T095142Z_C33B"]      # newest first
     assert s["selected"] == "20261120T115806Z_AEDE"
     assert s["view"]["paused"] and s["view"]["min"] == 1795175854.0 and s["view"]["max"] == 1795175886.0
@@ -270,6 +270,19 @@ def test_panel_height_model_clamps_and_splits(out):
     assert h["applied_stored"] == [700, 400, 300, "NaN", "NaN"]
 
 
+def test_frame_labels_query_and_csv_header_say_which_frame(out):
+    """A reader can never confuse the raw sensor axes with the Platform axes: labels, the chart-head note, the
+    request and the CSV columns all carry the frame. A row without a frame (an older server) is the IMU frame."""
+    f = out["frames"]
+    assert f["q_platform"] == "?frame=platform" and f["q_imu"] == "?frame=imu" and f["q_unknown"] == "?frame=imu"
+    assert f["frame_row"] == ["platform", "imu", "imu", "imu"]
+    assert (f["label_p"], f["label_i"]) == ("x (Platform)", "x (IMU)")
+    assert f["note_p"] == "Platform x/y/z (mount calibration 2026-11-22)"
+    assert f["note_i"] == "IMU x/y/z (sensor frame, not mount-calibrated)"
+    assert f["csv_p"] == ["plat_ax_g", "plat_ay_g", "plat_az_g", "plat_gx_dps", "plat_gy_dps", "plat_gz_dps"]
+    assert f["csv_i"] == ["imu_ax_g", "imu_ay_g", "imu_az_g", "imu_gx_dps", "imu_gy_dps", "imu_gz_dps"]
+
+
 def test_csv_merge_is_the_time_sorted_union(out):
     m = out["csv_merge"]
     assert m["header"] == ["imu_ax_g", "imu_ay_g", "imu_az_g", "imu_gx_dps", "imu_gy_dps", "imu_gz_dps"]
@@ -297,7 +310,7 @@ def test_the_group_is_a_row_above_the_motor_grid_hidden_by_default():
     row = panel[group:grid]
     for el in ("imu-accel-plot", "imu-gyro-plot", "imu-gyro-mode-btn", "imu-chart-message"):
         assert 'id="%s"' % el in row
-    assert "Linear acceleration (g)" in row and "Angular rate (deg/s)" in row and "IMU x/y/z (sensor frame)" in row
+    assert "Linear acceleration (g)" in row and "Angular rate (deg/s)" in row and "IMU x/y/z (sensor frame, not mount-calibrated)" in row
     css = (GUI / "css" / "charts.css").read_text()
     assert "#imu-chart-group[hidden]" in css
 
