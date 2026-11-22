@@ -67,6 +67,10 @@ def _install_fakes(monkeypatch, events, start_rev, kbi_after_armed_sends=None,
             with B._lock:
                 B._cache['hb'] = _hb(0x9 if flags & 1 else 0x1)
 
+        def send_heartbeat(self, t_jetson_us=None, flags=0):
+            # --tri-cut-disarm now: the one immediate heartbeat
+            events.append(('hb_now', int(flags)))
+
         def send_stream(self, mt, payload):
             events.append(('send', bytes(payload)))
             if sim is not None:
@@ -205,6 +209,61 @@ def test_the_report_uses_the_firmware_echo_when_there_is_one(monkeypatch, tmp_pa
     assert f"expected vel_ff/{POS_GAIN:g} = {10.0 / POS_GAIN:+.4f}" in out
 
 
+def test_disarm_now_sends_one_disarmed_heartbeat_straight_after_the_cut_frame(
+        monkeypatch, tmp_path):
+    events = []
+    _install_fakes(monkeypatch, events, START)
+    with B._lock:
+        B._cache['echo'] = (0, START + 0.2, 1.0)
+    rc, out = _main(TRI + ['--tri-cut', 'up', '--tri-cut-cycle', '1',
+                           '--tri-cut-disarm', 'now',
+                           '--csv', str(tmp_path / 'cut.csv')])
+    assert rc == 0, out
+    _, tail = _tail_after_last_send(events)
+    # the thread's flags go to 0 first, then the one immediate DISARMED
+    # heartbeat; nothing else, and never a re-arming flag
+    assert tail == [('flags', 0), ('hb_now', 0), ('rpc_close',), ('stop',)]
+    assert not [e for e in events if e[0] == 'rpc']
+    assert "one DISARMED heartbeat sent at once (--tri-cut-disarm now)" in out
+    assert "HAND_CMD_ECHO before the disarm: input_pos +3.2000 rev, vel_ff +1.00 rev/s" in out
+    # 1 rev/s over pos_gain is under the 0.05 rev bar: not a live feedforward
+    assert "disarm landed on a live feedforward: no (echo vel_ff +1.00 rev/s before it" in out
+
+
+def test_the_default_disarm_is_unchanged_and_says_so(monkeypatch, tmp_path):
+    events = []
+    _install_fakes(monkeypatch, events, START)
+    rc, out = _main(TRI + ['--tri-cut', 'up', '--tri-cut-cycle', '1',
+                           '--csv', str(tmp_path / 'cut.csv')])
+    assert rc == 0, out
+    assert not [e for e in events if e[0] == 'hb_now']
+    assert "the heartbeat thread's next DISARMED tick (0-100 ms)" in out
+    assert "HAND_CMD_ECHO before the disarm: none cached" in out
+    assert "disarm landed on a live feedforward: unknown" in out
+
+
+def test_report_prints_the_echo_before_and_after_and_the_live_ff_verdict():
+    plan, why = B.plan_tri_cut(0.5, 4, 10.0, 'up', 2, POS_GAIN, 10.4)
+    assert why is None
+    cut = (1.0, 2.5, 10.0, 2.75)
+    pre = (100, 2.40, 10.00)        # cached when the disarm left
+    post = (200, 2.95, 9.80)        # the last streamed frame before the gate fell
+    lines = B.tri_cut_report_lines(plan, cut, post, (2.95, 0.001, 50), 'NONE',
+                                   None, 8, POS_GAIN, echo_pre=pre, disarm='now')
+    text = "\n".join(lines)
+    assert "HAND_CMD_ECHO before the disarm: input_pos +2.4000 rev, vel_ff +10.00 rev/s" in text
+    assert "(HAND_CMD_ECHO): input_pos +2.9500 rev, vel_ff +9.80 rev/s" in text
+    assert lines[-1].startswith("  disarm landed on a live feedforward: yes (echo vel_ff +9.80 rev/s")
+    # the verdict reads the LAST streamed echo (where the gate fell), not the pre one
+    lines = B.tri_cut_report_lines(plan, cut, (200, 2.95, 0.0), None, 'NONE',
+                                   None, 8, POS_GAIN, echo_pre=pre, disarm='now')
+    assert lines[-1].startswith("  disarm landed on a live feedforward: no (echo vel_ff +0.00")
+    # the bar is the BUG-105 pass bar: |vel_ff| / pos_gain > 0.05 rev
+    edge = B.TRI_CUT_LIVE_FF_OFFSET_REV * POS_GAIN
+    assert "no (" in B.tri_cut_live_ff_line((0, 0.0, edge * 0.99), POS_GAIN)
+    assert "yes (" in B.tri_cut_live_ff_line((0, 0.0, -edge * 1.01), POS_GAIN)
+
+
 def test_a_down_cut_near_the_bottom_stop_is_refused_before_anything_is_commanded(
         monkeypatch, tmp_path):
     events = []
@@ -246,6 +305,7 @@ def test_plan_tri_cut_refusal_matrix():
     (['--stage', 'triangle', '--tri-cut', 'up', '--tri-cut-cycle', '0'], '1 or more'),
     (['--stage', 'triangle', '--tri-cut', 'up', '--duration', '1'], 'ends before the cut'),
     (['--stage', 'stroke_cut', '--repeat', '0'], 'positive'),
+    (['--stage', 'triangle', '--tri-cut-disarm', 'now'], '--tri-cut-disarm needs --tri-cut'),
 ])
 def test_argument_refusals(argv, needle, monkeypatch):
     def _boom(*a, **kw):
