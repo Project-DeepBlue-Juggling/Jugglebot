@@ -28,7 +28,8 @@ STOP_HOMED = -0.10
 class FakeIO:
     def __init__(self, *, fw=48, guard=True, clamp_gain=200.0, orig_limit=70.0,
                  limit_takes=True, park=0.5, raise_on_send=None, raise_on_sample_after=None,
-                 second_rise=False, bit3_before=False, temp=30.0):
+                 second_rise=False, bit3_before=False, temp=30.0,
+                 telem_lag_s=0.0, never_collapses=False):
         self.t = 0.0
         self.fw, self.guard, self.k = fw, guard, clamp_gain
         self.limit = orig_limit
@@ -50,6 +51,8 @@ class FakeIO:
         self.raise_on_send = raise_on_send
         self.raise_on_sample_after = raise_on_sample_after
         self.second_rise = second_rise
+        self.telem_lag_s = telem_lag_s      # the Diagnostic's Iq/axis state lag the bit3 edge
+        self.never_collapses = never_collapses
         self.temp = temp
         self.temp_fet = 31.0
 
@@ -92,8 +95,12 @@ class FakeIO:
         if self.raise_on_sample_after and self.samples > self.raise_on_sample_after:
             raise KeyboardInterrupt
         self._step()
-        return ST.Sample(pos=self.pos(), vel=0.0, telem_age=0.005, iq_meas=self.iq,
-                         iq_set=self.iq, axis_state=self.state, flags=self.flags,
+        iq, state = self.iq, self.state
+        if self.trip_t is not None and (self.never_collapses
+                                        or self.t - self.trip_t < self.telem_lag_s):
+            iq, state = 44.8, ST.AXIS_CLOSED_LOOP   # the pre-IDLE values, as flown 2026-11-22
+        return ST.Sample(pos=self.pos(), vel=0.0, telem_age=0.005, iq_meas=iq,
+                         iq_set=iq, axis_state=state, flags=self.flags,
                          fault=self.fault, temp_motor=self.temp)
 
     def confirm(self, text):
@@ -304,6 +311,31 @@ def test_second_current_rise_after_the_trip_fails():
     assert "current rose again after the trip" in lines[-1]
 
 
+def test_stale_iq_on_the_trip_frame_is_not_a_second_rise():
+    # Bench Sitting 2026-11-22: the bit3 frame carried the pre-IDLE 44.8 A and CLOSED_LOOP,
+    # and the stage called that a second rise on all three trips.
+    io = FakeIO(telem_lag_s=0.12)
+    rc, lines = _run(io)
+    assert rc == 0, lines
+    assert lines[-1].startswith("STALL-GUARD PASS")
+    assert any("current collapsed" in ln for ln in lines)
+
+
+def test_a_current_that_never_collapses_after_the_trip_fails():
+    io = FakeIO(never_collapses=True)
+    rc, lines = _run(io)
+    assert rc == 1
+    assert "did not collapse within 250 ms" in lines[-1]
+    assert any(e[0] == "idle" for e in io.log)
+
+
+def test_a_rise_after_a_lagged_collapse_still_fails():
+    io = FakeIO(telem_lag_s=0.12, second_rise=True)
+    rc, lines = _run(io)
+    assert rc == 1
+    assert "current rose again after the trip" in lines[-1]
+
+
 def test_sticky_bit3_from_an_earlier_trip_does_not_fake_a_trip():
     io = FakeIO(bit3_before=True)
     rc, lines = _run(io)
@@ -333,7 +365,7 @@ def test_ramp_is_profiled_with_no_step(p0, p1, v):
 
 def test_verdict_line_format():
     r = ST.StallResult(t_first40=1.0, t_trip=1.163, peak_a=45.2, fault_end=8,
-                       fault_name="HAND_STALL", bit3=True, limit_orig=70.0,
+                       bit3=True, limit_orig=70.0,
                        limit_readback=70.0, limit_ok=True, probe="refused: ERR_BUS_DOWN")
     ok, line = ST.stall_verdict(r)
     assert ok
