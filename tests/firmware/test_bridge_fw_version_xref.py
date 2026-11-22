@@ -302,6 +302,14 @@ def test_the_bump_history_records_what_this_version_carries():
     for needle in ('IDEA-20', 'SET_ODR 0x07', 'Platform FW 13', 'Allowed while Armed',
                    'NO WIRE CHANGE', 'PROTOCOL_VERSION stays 14'):
         assert needle in m47.group(1), (needle, m47.group(1))
+    # FW 48 — BUG-123 Hand stall guard on the streamed lane and latched holds.
+    # The substance: a SAFETY GUARD (the owner's 40 A / 1 rev/s / 150 ms, then
+    # Hand IDLE and a named HAND_STALL latch), additive on the wire.
+    m48 = re.search(r'^// 47→48:(.*)$', text, re.M)
+    assert m48 is not None, "FW 48 history line missing"
+    for needle in ('BUG-123', 'SAFETY GUARD', 'HAND_LANE_STALL_IQ_A', 'HAND_STALL',
+                   'DIAG_FLAG_LANE_STALL', 'PROTOCOL_VERSION stays 14'):
+        assert needle in m48.group(1), (needle, m48.group(1))
 
 
 def test_the_version_this_release_pins_is_actually_uplinked():

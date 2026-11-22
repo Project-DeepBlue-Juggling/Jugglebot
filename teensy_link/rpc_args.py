@@ -1010,7 +1010,11 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # odr_khz in ``reason``) to Platform FW 13, so platform_imu/set_rate switches
 # the capture rate at run time; an FW 46 board answers it ERR_BAD_ARGS and
 # sends nothing. Behavioural only: no wire change, PROTOCOL_VERSION stays 14.
-EXPECTED_BRIDGE_FW_VERSION = 47
+# 47 -> 48 (2026-11-20, BUG-123): the Hand stall guard on the streamed lane and
+# latched holds (40 A / 1 rev/s / 150 ms, then Hand IDLE and the FaultState
+# HAND_STALL latch, released only by CLEAR_ERRORS; Diagnostic flags bit3).
+# Additive on the wire: PROTOCOL_VERSION stays 14.
+EXPECTED_BRIDGE_FW_VERSION = 48
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

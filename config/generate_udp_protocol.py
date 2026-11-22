@@ -408,6 +408,7 @@ ENUMS = {
                                "predicate was heartbeat-only, which is why the 2026-09-15 trips fired on a "
                                "demonstrably healthy bus"),
         ("MOTOR_FB_STALE",  7, "Leg encoder feedback stale → suppress output (recoverable)"),
+        ("HAND_STALL",      8, "The Hand lane stall guard (can-bridge FW 48, BUG-123) commanded the Hand IDLE: |iq| >= 40 A with |vel| <= 1 rev/s for 150 ms outside the ACTIVATE / HAND_MOVE_TO ladder. Latched, guard ESTOP (Legs held), released only by CLEAR_ERRORS; outranks the frozen guard reason. Additive value in the existing u8: no PROTOCOL_VERSION bump"),
     ],
     # Mirrors motor_guard GuardMode.
     "GuardMode": [
@@ -587,7 +588,7 @@ MESSAGES = [
             Field("axis_state",    "u8",  1, "ODrive current_state"),
             Field("ctrl_mode",     "u8",  1, "ODrive controller mode"),
             Field("input_mode",    "u8",  1, "ODrive input mode"),
-            Field("flags",         "u8",  1, "bit0: heartbeat_stale, bit1: heartbeat_seen (ever, this boot), bit2: activate_stall (the cold-start ladder's stall guard IDLEd this axis; sticky until the next ACTIVATE / HAND_MOVE_TO targeting it; can-bridge FW 36, BUG-56)"),
+            Field("flags",         "u8",  1, "bit0: heartbeat_stale, bit1: heartbeat_seen (ever, this boot), bit2: activate_stall (the cold-start ladder's stall guard IDLEd this axis; sticky until the next ACTIVATE / HAND_MOVE_TO targeting it; can-bridge FW 36, BUG-56); bit3: lane_stall (the Hand lane stall guard IDLEd this axis, only ever axis 6; sticky until the next ACTIVATE / HAND_MOVE_TO targeting it; can-bridge FW 48, BUG-123)"),
             Field("homing_result", "u8",  1, "HomingResult for this Jugglebot axis (0 none/1 running/2 ok/3 failed); 0 for non-leg axes"),
             Field("homing_epoch",  "u8",  1, "Per-home epoch (u8, wraps): bumped on every ACCEPTED HOME of this axis, read with homing_result as one pair; a terminal result belongs to the HOME whose acceptance produced this epoch. 0 on an FW <= 33 board (the former pad byte) and for non-leg axes (can-bridge FW 34, BUG-18)"),
             Field("pad",           "u8",  1, "Alignment pad (zero)"),

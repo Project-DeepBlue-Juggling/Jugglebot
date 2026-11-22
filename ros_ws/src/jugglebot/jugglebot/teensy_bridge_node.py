@@ -123,6 +123,7 @@ from teensy_link import (
     RingDiag,
 )
 from teensy_link import protocol as p
+from teensy_link import activate as activate_mod
 from teensy_link import rpc_args
 from teensy_link.rpc import HandMoveToUnavailable, RpcTimeout
 from teensy_link.fault_logic import LinkLossLatch
@@ -960,6 +961,8 @@ _DIAG_FLAG_HB_STALE = 0x1   # ODrive CAN heartbeat older than CAN_AXIS_SILENCE_T
 _DIAG_FLAG_HB_SEEN = 0x2    # ODrive has heartbeated at least once this firmware boot
 _DIAG_FLAG_ACTIVATE_STALL = 0x4  # FW 36 (BUG-56): the cold-start ladder's stall guard IDLEd
                                  # this axis (sticky until the next ladder targeting it)
+_DIAG_FLAG_LANE_STALL = 0x8  # FW 48 (BUG-123): the Hand stall guard on the streamed lane / a
+                             # latched hold IDLEd the Hand (sticky until the next ladder)
 # BB-axis liveness windows for the robot_state append. BB diag is a fixed 1 Hz
 # per axis (send_bb_diag), so 3 s = three missed frames; BB estimates ride the
 # 100 Hz telemetry tick, so 0.5 s of silence means the stream (not the bus) died.
@@ -2921,6 +2924,18 @@ class TeensyBridgeNode(Node):
                 f'for 300 ms (iq now {float(dg.iq_measured):+.1f} A, motor '
                 f'{float(dg.temp_motor):.0f} C). Check the Hand zero (an ODrive GUI '
                 f'save resets it, BUG-56) and re-home before the next ACTIVATE.')
+        # FW 48 (BUG-123): the lane stall guard's bit, same rising-edge rule. The
+        # HAND_STALL fault edge in the link-status timer says it too; this line
+        # survives a higher-priority fault (ODRIVE_FATAL) masking that word.
+        lane = bool(int(dg.flags) & _DIAG_FLAG_LANE_STALL)
+        lane_was = prev is not None and bool(int(prev.flags) & _DIAG_FLAG_LANE_STALL)
+        if lane and not lane_was and axis == _HAND_AXIS:
+            when = (' (sticky: from before this node started)'
+                    if prev is None else '')
+            self.get_logger().error(
+                f'STALL{when}: '
+                + activate_mod.hand_lane_stall_line(float(dg.iq_measured),
+                                                    float(dg.temp_motor)))
 
     def _on_profile(self, msg_type, seq, payload, addr):
         try:
@@ -7080,7 +7095,17 @@ class TeensyBridgeNode(Node):
                                        + ','.join(f'{d:+.2f}'
                                                   for d in hb.live_deviation)
                                        + '] rev')
-                        if fs == int(FaultState.CAN_BUS_DOWN):
+                        if fs == int(FaultState.HAND_STALL):
+                            # FW 48 (BUG-123): one unambiguous line naming the
+                            # guard, the action (Hand IDLE, Legs held) and the
+                            # recovery. The Hand's Diagnostic carries the iq.
+                            dg6 = self._latest_diag.get(_HAND_AXIS)
+                            self.get_logger().error(
+                                'Teensy guard FAULT: '
+                                + activate_mod.hand_lane_stall_line(
+                                    float(dg6.iq_measured) if dg6 is not None else float('nan'),
+                                    float(dg6.temp_motor) if dg6 is not None else float('nan')))
+                        elif fs == int(FaultState.CAN_BUS_DOWN):
                             # FW 23 (2026-09-15): CAN_BUS_DOWN is the axis-silence
                             # watchdog, not a latched-until-CLEAR_ERRORS fault — it
                             # self-clears once every present leg is alive again, and
@@ -9088,6 +9113,19 @@ class TeensyBridgeNode(Node):
                 _HAND_AXIS, float(self._hand_vel_limit), float(it.curr_a))
             return hj.IntentResult(ok, 'OK' if ok else 'ERR', msg)
         if kind is hj.IntentKind.CONVERGE_CLEAR:
+            # FW 48 (BUG-123): never clear the Hand stall latch automatically. The
+            # firmware IDLEd the Hand for pushing 150 ms without moving; a clear
+            # here would release it and the recovery's raise would re-energise
+            # the Hand with no operator in the loop. Only the operator's own
+            # /recover (resume) or /clear_errors may clear it.
+            hb_ = self._latest_heartbeat
+            rec_ = self._hand_jam_rec
+            if (hb_ is not None and int(hb_.fault_state) == int(FaultState.HAND_STALL)
+                    and not (rec_ is not None and rec_.resume)):
+                return hj.IntentResult(
+                    False, 'ERR_REJECTED',
+                    'the can-bridge Hand stall guard IDLEd the Hand (HAND_STALL): '
+                    'not clearing it automatically; operator /clear_errors')
             r = self._svc_recover(Trigger.Request(), Trigger.Response(),
                                   park_hand=False)
             return hj.IntentResult(bool(r.success), 'OK' if r.success else 'ERR',

@@ -83,7 +83,9 @@ static void send_diag(uint8_t axis) {
   // the next ACTIVATE / HAND_MOVE_TO that targets it). Previously-zero bit: an
   // older host ignores it, so PROTOCOL_VERSION stays 10.
   d.flags         = (uint8_t)((stale ? 0x1u : 0x0u) | (a.heartbeat_seen ? 0x2u : 0x0u) |
-                              (activate_stalled(axis) ? DIAG_FLAG_ACTIVATE_STALL : 0x0u));
+                              (activate_stalled(axis) ? DIAG_FLAG_ACTIVATE_STALL : 0x0u) |
+                              // bit3 (FW 48, BUG-123): the lane stall guard IDLEd the Hand.
+                              (hand_lane_stalled(axis) ? DIAG_FLAG_LANE_STALL : 0x0u));
   d.active_errors = a.active_errors;
   d.disarm_reason = a.disarm_reason;
   d.iq_setpoint   = a.iq_setpoint;
@@ -779,8 +781,10 @@ void telemetry_step() {
     homing_status(i, &h_res, &h_epoch);
     // The stall bit is news on its own (FW 36): the operator learns of a stalled
     // ACTIVATE from this frame, so it must not wait for the 1 Hz refresh.
-    const bool stall_flip = activate_stalled(i) !=
-                            ((s_base[i].flags & DIAG_FLAG_ACTIVATE_STALL) != 0);
+    const bool stall_flip = (activate_stalled(i) !=
+                             ((s_base[i].flags & DIAG_FLAG_ACTIVATE_STALL) != 0)) ||
+                            (hand_lane_stalled(i) !=
+                             ((s_base[i].flags & DIAG_FLAG_LANE_STALL) != 0));
     if (diag_changed(axes[i], s_base[i]) ||
         h_res != s_base[i].homing_result || h_epoch != s_base[i].homing_epoch ||
         stall_flip || due_forced || due_bench) {

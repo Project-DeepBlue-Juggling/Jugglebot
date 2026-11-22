@@ -78,6 +78,12 @@ static uint8_t s_fault_state = JbUdp::FaultState::NONE;
 // First-trigger-wins freezes the reported reason. fb_stale is deliberately EXCLUDED
 // (motor-feedback staleness is recoverable, not a latched E-STOP).
 static volatile bool s_estop_latched = false;
+// FW 48 (BUG-123): the Hand lane stall guard (leg_activate.cpp) IDLEd the Hand.
+// Its OWN latch, not s_estop_state: on 2026-11-20 MAX_DEVIATION had already
+// latched 80 ms into the stall, and the frozen first reason would have hidden
+// WHY the Hand went IDLE. Written by the activate task (single byte), read here;
+// released only by fault_notify_clear_errors(), like the guard E-STOP.
+static volatile bool s_hand_stall_latched = false;
 static uint8_t       s_estop_state = JbUdp::FaultState::NONE;  // reason frozen at latch
 
 // ── MAX_DEVIATION latch-event snapshot (2026-07-10 forensics) ──
@@ -294,6 +300,7 @@ void fault_notify_clear_errors() {
                             // stale disarm cache re-faults until the next Get_Error frame)
   s_estop_latched = false;
   s_estop_state = JbUdp::FaultState::NONE;
+  s_hand_stall_latched = false;   // FW 48: the operator has acknowledged the Hand stall
   // Release the CAN_BUS_DOWN trip identity (the operator has acknowledged it) but
   // KEEP s_can_fault_count — a per-session trip census that an operator clear can
   // zero would make the second trip of a sitting indistinguishable from the first.
@@ -647,6 +654,7 @@ static void evaluate_guard() {
   // Fault-state reporting priority (highest-severity active condition wins).
   if (s_fatal_can_error)        s_fault_state = JbUdp::FaultState::CAN_BUS_DOWN;
   else if (s_fatal_error)       s_fault_state = JbUdp::FaultState::ODRIVE_FATAL;
+  else if (s_hand_stall_latched) s_fault_state = JbUdp::FaultState::HAND_STALL;   // FW 48: outranks the frozen guard reason
   else if (s_estop_latched)     s_fault_state = s_estop_state;
   else if (fb_stale)            s_fault_state = JbUdp::FaultState::MOTOR_FB_STALE;
   else if (!jetson_link_up())   s_fault_state = JbUdp::FaultState::LINK_LOST;
@@ -654,7 +662,10 @@ static void evaluate_guard() {
 
   // Guard mode. The latched E-STOP holds ESTOP across ticks (not the instantaneous
   // `estop`) until an operator clear.
-  if (s_estop_latched || s_fatal_error)             s_guard_mode = JbUdp::GuardMode::ESTOP;
+  // FW 48: a Hand stall latch holds the Legs exactly as a Hand ODrive fault
+  // (ODRIVE_FATAL) does: guard ESTOP, output gated, ODrives hold their setpoint.
+  if (s_estop_latched || s_fatal_error || s_hand_stall_latched)
+                                                    s_guard_mode = JbUdp::GuardMode::ESTOP;
   else if (s_mpc_active && jetson_link_up() && !s_fatal_can_error)
                                                     s_guard_mode = JbUdp::GuardMode::ENABLED;
   else                                              s_guard_mode = JbUdp::GuardMode::DISABLED;
@@ -678,7 +689,7 @@ static void evaluate_guard() {
     allow = true;   // stow descent integrates its own position; not encoder-gated
   } else {
     const bool allow_but_fb = (s_guard_mode == JbUdp::GuardMode::ENABLED) && !s_fatal_can_error
-            && !s_fatal_error && !s_estop_latched
+            && !s_fatal_error && !s_estop_latched && !s_hand_stall_latched
             && sp_since_arm;   // FW 34: never drive the previous stream's base after an arm
     allow = allow_but_fb && !fb_stale;
     // Every other reason output is off forbids the flush frame: an E-STOP latch
@@ -690,6 +701,9 @@ static void evaluate_guard() {
   interp_set_output_enabled(allow, hold_flush);
 }
 
+void fault_notify_hand_stall() { s_hand_stall_latched = true; }
+bool fault_hand_stall_latched() { return s_hand_stall_latched; }
+
 void fault_hand_dev_prev_reset() {
   s_hand_dev_over_prev = 0;
 }
@@ -700,6 +714,7 @@ void fault_machine_init() {
   s_stow_pending = s_stowing = s_first_leg_hb_seen = false;
   s_estop_latched = false;
   s_estop_state = JbUdp::FaultState::NONE;
+  s_hand_stall_latched = false;
   s_max_dev_latch_leg = 0xFF;
   s_max_dev_latch_dev = s_max_dev_latch_u0 = s_max_dev_latch_enc = 0.0f;
   s_can_fault_leg = 0xFF;

@@ -1800,3 +1800,76 @@ TEST_CASE("BUG-19: MOTOR_FB_STALE suppression flushes one vel_ff = 0 hold frame;
     CHECK(interp_hold_flush_edges() == 0u);
   }
 }
+
+// ── FW 48 (BUG-123): the Hand lane stall latch ───────────────────────────────
+//  leg_activate.cpp's lane stall guard IDLEs the Hand and calls
+//  fault_notify_hand_stall(). Here: what the latch does to the rest of the
+//  machine. It must hold the Legs exactly as a Hand ODrive fault does (guard
+//  ESTOP, output gated), name itself even under an older frozen guard reason
+//  (2026-11-20: MAX_DEVIATION latched 80 ms into the stall), and release only on
+//  the operator's CLEAR_ERRORS.
+// Armed with a live leg-0 stream (the same setup as the BUG-19 cases above).
+static void fw47_arm() {
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  fault_set_mpc_active(true);
+  axes[0].heartbeat_seen = true;
+  stamp_hb(0);
+  axes[0].pos_rev = 0.0f;
+  axes[0].pos_timestamp_us = fake_mono_us();
+  fake_set_udp_last_rx_us(fake_mono_us());
+  JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp));
+  interp_on_setpoint(0, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
+  fault_step();
+  REQUIRE(interp_output_enabled());
+  interp_isr();                                     // one streamed tick: the interp has latched
+}
+TEST_CASE("FW 48: a Hand stall latch holds the Legs, names HAND_STALL and releases only on clear-errors") {
+  SUBCASE("on a live stream") {
+    fw47_arm();
+    fault_notify_hand_stall();
+    CHECK(fault_hand_stall_latched());
+    fault_step();
+    CHECK(fault_state() == JbUdp::FaultState::HAND_STALL);
+    CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
+    CHECK_FALSE(interp_output_enabled());
+    fake_clear_sent();
+    interp_isr();
+    CHECK(fake_sent_count() == 0);                 // nothing streams to any axis
+    // Nothing but the operator releases it: a fresh setpoint and ticks do not.
+    for (int k = 0; k < 20; ++k) {
+      fake_advance(100000);
+      stamp_hb(0);
+      axes[0].pos_timestamp_us = fake_mono_us();
+      fake_set_udp_last_rx_us(fake_mono_us());
+      JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp));
+      interp_on_setpoint((uint16_t)(10 + k), reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
+      fault_step();
+      CHECK(fault_state() == JbUdp::FaultState::HAND_STALL);
+    }
+    fault_notify_clear_errors();
+    CHECK_FALSE(fault_hand_stall_latched());
+    fault_step();
+    CHECK(fault_state() != JbUdp::FaultState::HAND_STALL);
+    CHECK(fault_guard_mode() != JbUdp::GuardMode::ESTOP);
+  }
+  SUBCASE("under an earlier MAX_DEVIATION latch the reported reason is HAND_STALL") {
+    fw47_arm();
+    axes[0].pos_rev = MAX_DEVIATION_REV + 5.0f;    // the base stays at 0: a leg deviation latch
+    fault_step();
+    REQUIRE(fault_state() == JbUdp::FaultState::MAX_DEVIATION);
+    fault_notify_hand_stall();
+    fault_step();
+    CHECK(fault_state() == JbUdp::FaultState::HAND_STALL);
+    CHECK(fault_max_dev_leg() == 0);               // the older snapshot is kept
+    fault_notify_clear_errors();
+    axes[0].pos_rev = 0.0f;
+    fault_step();
+    CHECK(fault_state() == JbUdp::FaultState::NONE);
+  }
+  SUBCASE("boot clears it") {
+    fault_notify_hand_stall();
+    fault_machine_init();
+    CHECK_FALSE(fault_hand_stall_latched());
+  }
+}
