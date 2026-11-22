@@ -4,8 +4,9 @@ kind: bug
 title: Hand keeps its last velocity feedforward on a Soft E-stop, disarm or link loss and stays in Closed-loop
 status: in_progress
 created: '2026-11-14'
-updated: '2026-11-22T11:50:49Z'
-owners: []
+updated: '2026-11-22T17:14:09Z'
+owners:
+- night-shift
 priority: high
 effort: s
 hardware: bench-hand
@@ -60,13 +61,14 @@ The property is not new: `tests/hardware/hand_stream_bench.py:150` and the 2026-
 - setup: bridge-cycled, armed
 - why: the offset law is measured (0.284 rev against 0.286 at 10 rev/s, 2026-11-22). What a Sitting still owes is the proof of the cure: a disarm that lands on a live feedforward must leave the Hand at the firmware's last command.
 - do:
-  - Leave this row off the sheet until the cure's firmware branch exists and is named here; nothing is left to measure on main's build.
-  - Launch down. Bench Hand on the bridge with the cure's firmware flashed, Hand homed and parked between 0.3 and 0.7 rev, Cup empty, E-stop in hand. The bench top stop is 10.4 rev.
+  - The cure is can-bridge FW 49 on the branch below; it flies only after a day Session flashes it. Nothing is left to measure on main's build.
+  - Launch down. Bench Hand on the bridge with FW 49 flashed, Hand homed and parked between 0.3 and 0.7 rev, Cup empty, E-stop in hand. The bench top stop is 10.4 rev.
   - From the repo root in the venv: `python tests/hardware/hand_stream_bench.py --stage triangle --tri-span 4 --tri-speed 10 --tri-cut up --top-stop 10.4 --close-loop`. Run it up to five times, until a cut echoes a feedforward above 5 rev/s at the stage's last frame.
   - Recover with `python tests/hardware/hand_stream_bench.py --clear-errors`, re-home if needed.
 - pass: on a cut whose last echoed `vel_ff` before the disarm was above 5 rev/s, the Hand settles within 0.05 rev of the firmware's last commanded position and holds without drifting.
 - record: for each cut the echoed feedforward, the settled offset against the firmware's last command, the drift, and any Guard or latch.
 - minutes: 15
+- branch: night-shift/2026-11-23-BUG-105
 
 ## Sitting result (2026-11-20)
 
@@ -94,3 +96,4 @@ The property is not new: `tests/hardware/hand_stream_bench.py:150` and the 2026-
 - 2026-11-21: 2026-11-21: the triangle fix is on main (fcdb3ecc). Owner ruled the belt: 0.5 + speed/35 rev (0.79 at 10 rev/s, 1.07 at 20). The row is ready for the next bench Sitting; the sheet commands are unchanged.
 - 2026-11-22: Bench Sitting 2026-11-22: the 10 rev/s upward cut settled 0.284 rev above the firmware's last command against 0.286 expected, drift 0.0007 rev. The 20 rev/s upward cut tested nothing: the disarm landed after the feedforward had decayed to 0 (the Hand ran on 2.1 rev). The downward cut was not flown; it is on sheet 2026-11-22-bench-hand-2.
 - 2026-11-22: Bench Sitting 2026-11-22 (second sheet): both 20 rev/s cuts settled within 0.005 rev of the firmware's last command, but each disarm landed after the lane had decayed its feedforward to 0. The law stands on the 10 rev/s cut (0.284 against 0.286). The bench E-stop button cuts ODrive bus power. Next: design the cure, zeroing the feedforward on a disarm that lands inside the decay.
+- 2026-11-23: Night Shift 2026-11-23: cure built as can-bridge FW 49, held on night-shift/2026-11-23-BUG-105: (b) 2 test gaps, (c), (f) firmware; unblocked by a day Session flash, then the bench-Hand cut
