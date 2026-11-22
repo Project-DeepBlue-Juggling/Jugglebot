@@ -105,6 +105,15 @@ class GapTracker:
             last = self._last
         return 0.0 if last is None else max(0.0, (now - last) * 1e3)
 
+    def last_unlocked(self) -> Optional[float]:
+        """The last ``record`` time WITHOUT taking the lock (None before one).
+
+        For an observer that must never make the recording thread wait (the
+        BUG-129 stall watchdog): a single attribute read is atomic under the
+        GIL, so the value is always one that ``record`` or ``reset`` wrote.
+        """
+        return self._last
+
     def reset(self) -> None:
         with self._lock:
             self._last = None

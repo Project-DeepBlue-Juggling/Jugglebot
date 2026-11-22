@@ -147,3 +147,14 @@ def test_downlink_loss_rebaselines_when_either_counter_goes_backwards():
     assert t.update(12, 2) == 0        # bridge rebooted: its counter restarted
     assert t.update(16, 6) == 0
     assert t.update(1, 10) == 0        # node restarted: its counter restarted
+
+
+def test_last_unlocked_tracks_record_and_reset_without_the_lock():
+    """BUG-129: the stall watchdog reads the setpoint loop's last tick lock-free."""
+    t = GapTracker()
+    assert t.last_unlocked() is None
+    t.record(10.0)
+    with t._lock:                 # held by someone else: the read must not wait
+        assert t.last_unlocked() == 10.0
+    t.reset()
+    assert t.last_unlocked() is None

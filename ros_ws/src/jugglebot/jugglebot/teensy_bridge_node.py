@@ -2107,6 +2107,17 @@ class TeensyBridgeNode(Node):
             self._gc_probe = _gcp.GcProbe()
             self._gc_probe.install()
             self.create_timer(1.0, self._gc_probe_tick)   # 1 Hz, not the 500 Hz path
+        # BUG-129: stall watchdog (default off here; the launch turns it on). When
+        # the whole process, or the setpoint loop alone, stops for longer than
+        # stall_watchdog_timeout_s, a GIL-free faulthandler timer writes every
+        # Python thread's stack mid-stall; one WARN after recovery names the file
+        # under temp/logs/. Its own 20 Hz thread re-arms it: nothing on the
+        # setpoint path. Started in _stall_watchdog_start below.
+        self._stall_wd = None
+        self.declare_parameter('stall_watchdog', False)
+        self.declare_parameter('stall_watchdog_timeout_s', 0.15)
+        self.declare_parameter('stall_watchdog_dir', '')   # '' = <repo>/temp/logs
+        self._stall_watchdog_start()
 
         # ── Subscriptions to T→J streams (RX-thread callbacks) ──
         self._client.subscribe(int(MsgType.HEARTBEAT_T2J), self._on_heartbeat_t2j)
@@ -7631,6 +7642,45 @@ class TeensyBridgeNode(Node):
             self.get_logger().error(f"Profile publish error: {e}",
                                     throttle_duration_sec=5.0)
 
+    def _stall_watchdog_start(self) -> None:
+        """BUG-129: start the stall watchdog when the ``stall_watchdog`` parameter is true.
+
+        Never raises: a diagnostic that fails to start logs one WARN and leaves
+        the node exactly as it would be with the parameter off.
+        """
+        if not bool(self.get_parameter('stall_watchdog').value):
+            return
+        try:
+            from jugglebot.stall_watchdog import StallWatchdog
+            out_dir = str(self.get_parameter('stall_watchdog_dir').value or '')
+            if not out_dir:
+                import teensy_link as _tl
+                root = os.path.dirname(os.path.dirname(os.path.abspath(_tl.__file__)))
+                out_dir = os.path.join(root, 'temp', 'logs')
+            self._stall_wd = StallWatchdog(
+                out_dir, 'teensy_bridge_node',
+                timeout_s=float(self.get_parameter('stall_watchdog_timeout_s').value),
+                heartbeat=self._setpoint_loop_age_s,
+                log_warn=lambda m: self.get_logger().warn(m)).start()
+            self.get_logger().info(
+                f'stall watchdog on: timeout {self._stall_wd.timeout_s * 1e3:.0f} ms, '
+                f'stacks to {self._stall_wd.out_dir} (BUG-129)')
+        except Exception as e:  # noqa: BLE001
+            self._stall_wd = None
+            self.get_logger().warn(f'stall watchdog not started: {e!r}')
+
+    def _setpoint_loop_age_s(self):
+        """Seconds since the setpoint loop's last iteration; None while it is not running.
+
+        Watchdog thread only. Lock-free on purpose: it must never make the
+        setpoint thread wait (GapTracker.last_unlocked).
+        """
+        t = self._sp_thread
+        if t is None or not t.is_alive():
+            return None
+        last = self._loop_gap.last_unlocked()
+        return None if last is None else max(0.0, time.monotonic() - last)
+
     def _gc_probe_tick(self):
         """BUG-58: drain the GC probe and log it (1 Hz timer; probe on only)."""
         from jugglebot import gc_probe as _gcp
@@ -11231,6 +11281,13 @@ class TeensyBridgeNode(Node):
                 self.get_logger().warn(
                     f'BUG-57 hand capture closed: {self._hand_capture.written} rows, '
                     f'{self._hand_capture.dropped} dropped -> {self._hand_capture.path}')
+            except Exception:  # noqa: BLE001
+                pass
+        # BUG-129: the stall watchdog stops after the stow (a stall during the
+        # stow is still worth a dump) and before the transport teardown.
+        if getattr(self, '_stall_wd', None) is not None:
+            try:
+                self._stall_wd.stop()
             except Exception:  # noqa: BLE001
                 pass
         # 4. Transport teardown.

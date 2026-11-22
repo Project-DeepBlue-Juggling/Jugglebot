@@ -350,6 +350,19 @@ def generate_launch_description():
                     'log a 1 Hz GC_PROBE line (collections, max pause ms). '
                     'Diagnostic only; gc_probe:=false turns it off.')
 
+    # BUG-129: stall watchdog in teensy_bridge_node. Default ON at launch: the
+    # freeze it exists to catch happens at most once a launch, so it has to be
+    # running when it does. Re-arm cost about 44 us at 20 Hz on its own thread,
+    # nothing on the setpoint path (logbook 2026-11-23-bridge-stall-watchdog).
+    # The node parameter defaults False, so tests and other launches arm nothing.
+    stall_watchdog = LaunchConfiguration('stall_watchdog')
+    stall_watchdog_arg = DeclareLaunchArgument(
+        'stall_watchdog', default_value='true',
+        description='BUG-129: true (default) -> teensy_bridge_node dumps every Python '
+                    "thread's stack to temp/logs/stall_teensy_bridge_node_*.txt when it "
+                    'stalls over 150 ms, and logs one WARN naming the file. '
+                    'Diagnostic only; stall_watchdog:=false turns it off.')
+
     # BUG-58 opt-in cures for the 40 Hz stream stalls (both DEFAULT OFF; the
     # probe Sitting decides which, if either, becomes the default).
     gc_freeze = LaunchConfiguration('gc_freeze')
@@ -610,6 +623,7 @@ def generate_launch_description():
             # TEMPORARY (BUG-57 diagnostic capture): '' = off.
             'gc_probe': PythonExpression(["'", gc_probe, "' == 'true'"]),
             'gc_freeze': PythonExpression(["'", gc_freeze, "' == 'true'"]),       # BUG-58
+            'stall_watchdog': PythonExpression(["'", stall_watchdog, "' == 'true'"]),  # BUG-129
             'cpu_partition': PythonExpression(["'", cpu_partition, "' == 'true'"]),
             'hand_capture_dir': PythonExpression([
                 "'", os.path.expanduser('~/Desktop/Jugglebot/temp/hand_capture'),
@@ -925,6 +939,7 @@ def generate_launch_description():
         enable_setpoint_output_arg,
         auto_arm_arg,
         gc_probe_arg,  # BUG-58 diagnostic
+        stall_watchdog_arg,  # BUG-129 diagnostic
         gc_freeze_arg,      # BUG-58 opt-in cures (default off)
         cpu_partition_arg,
         hand_capture_arg,  # TEMPORARY (BUG-57 diagnostic capture)
