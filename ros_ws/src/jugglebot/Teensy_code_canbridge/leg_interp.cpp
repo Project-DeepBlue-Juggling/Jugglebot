@@ -1925,7 +1925,8 @@ static void interp_isr() {
   // still sent in order). pos is the last frame's, bit-identical; vel_ff is the
   // last frame's on a lane-idle drain and 0 on a suppress-edge drain (BUG-105,
   // FW 49, below), so this removes feedforward and commands nothing new. Only when that last tau != 0,
-  // so a legacy (tau ≡ 0) session keeps FW 21's TX pattern exactly. Never during
+  // so a legacy (tau ≡ 0) session keeps FW 21's TX pattern, except for the one
+  // BUG-105 hold frame (vel_ff 0, tau 0) on a suppress edge. Never during
   // a cold-start move (those own the ODrives in their own input mode; they are
   // refused while mpc_active, so this is belt and braces); a dead bus refuses the
   // frame inside can_jugglebot_tx's presence gate.

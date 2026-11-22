@@ -692,10 +692,10 @@ static void evaluate_guard() {
             && !s_fatal_error && !s_estop_latched && !s_hand_stall_latched
             && sp_since_arm;   // FW 34: never drive the previous stream's base after an arm
     allow = allow_but_fb && !fb_stale;
-    // Every other reason output is off forbids the flush frame: an E-STOP latch
+    // For the Legs, every other reason output is off forbids the flush frame: an E-STOP latch
     // or fatal transmits nothing new, a dead bus is never commanded, a disarm or
     // link loss is not a suppression. Only "would stream, but feedback is stale"
-    // earns the one vel_ff = 0 hold frame per lane (leg_interp.cpp s_hold_flush_ok).
+    // earns the one vel_ff = 0 hold frame per Leg lane (leg_interp.cpp s_hold_flush_ok).
     // FW 49 (BUG-105): this flag now scopes the LEGS only. The Hand's vel_ff is
     // zeroed by the interp on every suppress edge regardless (it stays in
     // Closed-loop on a Soft E-stop, a disarm or a link loss, and its FW 22 tau
