@@ -589,6 +589,16 @@
     height: var(--imu-chart-height);
 }
 
+/* Motor grid hidden, IMU row shown: the top handle sizes the panel (the single-group height) and the IMU row simply
+   fills it, so dragging the handle scales the IMU charts instead of un-hiding the motor grid. */
+#chart-panel.charts-hidden.imu-shown {
+    height: var(--chart-panel-height);
+}
+#chart-panel.charts-hidden.imu-shown #imu-chart-group {
+    flex: 1 1 0;
+    height: auto;
+}
+
 /* Drag divider between the IMU row and the motor grid: splits the panel's fixed height
    between the IMU row and the motor grid (imu-charts.js).  Shown only when both groups are. */
 #imu-chart-divider {

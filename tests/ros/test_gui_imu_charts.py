@@ -52,6 +52,9 @@ def out(tmp_path_factory):
     for name in ("telemetry-charts.js", "axis-ticks.js", "clock.js", "event-store.js", "geometry-config.js",
                  "callout-layout.js", "imu-charts.js", "imu-charts-core.js"):
         shutil.copy(JS / name, sb / name)
+    (sb / "replay").mkdir()
+    shutil.copy(JS / "ball-events.js", sb / "ball-events.js")
+    shutil.copy(JS / "replay" / "span-events.js", sb / "replay" / "span-events.js")
     (sb / "stewart-model.js").write_text("export function setStewartHighlight() {}\n")
     (sb / "ball-butler-model.js").write_text("export function setBallButlerHighlight() {}\n")
     shutil.copy(HARNESS, sb / "imu_charts_harness.js")

@@ -1183,9 +1183,10 @@ function initChartResizeHandle() {
 
     document.addEventListener('pointermove', (e) => {
         if (!dragging) return;
-        // Dragging the handle re-reveals the grid: clear the toolbar's "hide charts" state first (updates its
-        // button label + localStorage + rebuilds), so the mode below is the one the panel will be in.
-        clearChartGridHidden();
+        // With the IMU group shown, the drag only resizes the panel: a hidden ODrive grid stays hidden (the IMU
+        // group takes the space).  Only when neither group is visible does the drag re-reveal the ODrive grid
+        // (updates its button label + localStorage + rebuilds), so there is something to size.
+        if (!panel.classList.contains('imu-shown')) clearChartGridHidden();
         const both = chartsBothShown(panel);
         const bounds = boundsFor(both);
         const h = imuCore.clampPanelHeight(window.innerHeight - e.clientY, bounds);

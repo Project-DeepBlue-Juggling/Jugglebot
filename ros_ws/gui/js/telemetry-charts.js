@@ -2186,6 +2186,14 @@ function sameIds(a, b) {
 
 /** Events whose marker line lies within the hover band of the cursor on `u`,
  *  in time order.  Empty when markers are hidden. */
+/** Externally built charts (the IMU time charts) that also show the replay span's Throw / Catch markers beyond the
+ *  playhead (event-store.js setSpanEvents). The ODrive charts are never in it. */
+const spanMarkerCharts = new WeakSet();
+
+function eventsForChart(u, xMin, xMax) {
+    return getEventsInRange(xMin, xMax, spanMarkerCharts.has(u) ? { span: true } : undefined);
+}
+
 function hitTestMarkers(u, clientX) {
     if (eventMarkersHidden) return [];
     const xMin = u.scales.x.min;
@@ -2193,7 +2201,7 @@ function hitTestMarkers(u, clientX) {
     if (xMin == null || xMax == null) return [];
     const px = clientX - u.over.getBoundingClientRect().left;
     const hits = [];
-    for (const ev of getEventsInRange(xMin, xMax)) {
+    for (const ev of eventsForChart(u, xMin, xMax)) {
         // valToPos without `canvas` = CSS px from the plot-area left edge,
         // the same frame as `px`.
         if (Math.abs(u.valToPos(ev.t, 'x') - px) <= MARKER_HOVER_TOL_PX) hits.push(ev);
@@ -2275,6 +2283,7 @@ function clearMarkerHover() {
 /** Draw hook for charts that live outside this module (the IMU time charts): the same event markers as
  *  the ODrive charts, clipped to the plot area. */
 export function drawEventMarkers(u) {
+    spanMarkerCharts.add(u);
     const ctx = u.ctx;
     if (!ctx || !u.bbox || u.scales.x.min == null || u.scales.x.max == null) return;
     const { left, top, width, height } = u.bbox;
@@ -2288,6 +2297,7 @@ export function drawEventMarkers(u) {
 
 /** Marker tooltip hover (same bubble, same Event Log tint) for an externally built chart. */
 export function attachEventMarkerHover(u) {
+    spanMarkerCharts.add(u);
     const over = u.over;
     over.addEventListener('mousemove', (ev) => {
         const prevIds = markerHover && markerHover.u === u ? markerHover.ids : [];
@@ -2476,7 +2486,7 @@ function paintEventMarkers(u) {
     // One pass: un-highlighted events drawn faint, the highlighted one drawn
     // thicker + fully opaque on top so it pops against a marker forest.
     // Hidden by the toolbar's "Hide event logs" toggle → no markers, no tag.
-    const evs = eventMarkersHidden ? [] : getEventsInRange(xMin, xMax);
+    const evs = eventMarkersHidden ? [] : eventsForChart(u, xMin, xMax);
     const hlId = getHighlightedEventId();
     let hlEvent = null;
     // A chart-marker hover lives on this chart only.  Re-hit-test here so the

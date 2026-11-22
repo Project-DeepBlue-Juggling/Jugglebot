@@ -64,6 +64,11 @@ const events = [];
 /** Chart-only events (CHART_ONLY_TYPES), same shape as `events`, own cap; never listed in the Event Log. */
 const chartEvents = [];
 
+/** Throw / Catch markers of one replayed capture span, INCLUDING those after the playhead (span-events.js). Kept apart
+ *  from the rings above so the Event Log, the replay trim and the ODrive charts never see them; only charts that ask
+ *  for them (the IMU time charts) merge them in via getEventsInRange(..., {span: true}). */
+let spanEvents = [];
+
 /** @type {Set<(event) => void>} Subscribers notified on each new event. */
 const listeners = new Set();
 
@@ -106,6 +111,7 @@ export function snapshotAndBeginReplayEvents() {
 /** Leave the replay store; the live events come back exactly as parked. */
 export function restoreEvents(snap) {
     replayKeys = null;
+    spanEvents = [];
     events.length = 0;
     chartEvents.length = 0;
     if (snap && snap.events) for (const e of snap.events) events.push(e);
@@ -179,16 +185,41 @@ export function emitEvent(ev) {
  * Return all events whose timestamp falls within [tMin, tMax].  Used by the
  * chart draw hook to figure out which markers are currently on screen.
  */
-export function getEventsInRange(tMin, tMax) {
+export function getEventsInRange(tMin, tMax, opts) {
     const out = [];
+    const keys = new Set();
     for (const ring of [events, chartEvents]) {
         for (const ev of ring) {
-            if (ev.t >= tMin && ev.t <= tMax) out.push(ev);
+            if (ev.t >= tMin && ev.t <= tMax) { out.push(ev); keys.add(ev.t + '|' + ev.type + '|' + ev.label); }
         }
     }
-    if (chartEvents.length) out.sort((a, b) => a.t - b.t);
+    let merged = false;
+    if (opts && opts.span) {
+        for (const ev of spanEvents) {
+            // The past is also in chartEvents (emitted as the playhead passed): keep one marker per (t, type, label).
+            if (ev.t >= tMin && ev.t <= tMax && !keys.has(ev.t + '|' + ev.type + '|' + ev.label)) { out.push(ev); merged = true; }
+        }
+    }
+    if (chartEvents.length || merged) out.sort((a, b) => a.t - b.t);
     return out;
 }
+
+/**
+ * Replace the span-marker list (chart-only types only; each gets a stable id). Notifies the clear listeners so charts
+ * repaint. Pass [] to drop it.
+ * @param {Array<{type:string,label:string,detail?:string,t:number}>} list
+ */
+export function setSpanEvents(list) {
+    spanEvents = [];
+    for (const ev of list || []) {
+        if (!ev || !CHART_ONLY_TYPES.has(ev.type) || typeof ev.t !== 'number') continue;
+        spanEvents.push({ id: nextEventId++, t: ev.t, type: ev.type, label: ev.label, detail: ev.detail || '' });
+    }
+    notifyCleared();
+}
+
+/** The current span markers (copy), time order. */
+export function getSpanEvents() { return spanEvents.slice(); }
 
 /**
  * Return the most recent `limit` events of the given type (or any type when

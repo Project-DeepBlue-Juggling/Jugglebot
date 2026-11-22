@@ -26,7 +26,8 @@ import {
     showRangeOnAllCharts, selectRangeOnAllCharts, seekReplayTo, attachZoomPanControls, drawReplayPlayhead,
     drawEventMarkers, attachEventMarkerHover, releaseEventMarkerHover, onEventMarkerVisibility,
 } from './telemetry-charts.js';
-import { subscribeEvents, subscribeHighlight } from './event-store.js';
+import { subscribeEvents, subscribeHighlight, setSpanEvents } from './event-store.js';
+import { scanBallEvents } from './replay/span-events.js';
 import * as core from './imu-charts-core.js';
 
 const API = '/api/imu/captures';
@@ -58,6 +59,9 @@ let capData = null;                          // {stem, cols?, dt?, ang?, error?,
 const dataCache = new Map();
 let listToken = 0;
 let dataToken = 0;
+let replayModeRef = null;                    // the replay mode singleton (its source() feeds the span-marker scan)
+let spanStem = null;                         // capture stem whose Throw / Catch markers are loaded (or loading)
+let spanToken = 0;
 let lastStatus = null;
 let lastStatusAt = 0;
 let pollTimer = null;
@@ -294,6 +298,7 @@ function initHeightDivider() {
 /** Wire the replay mode singleton: REPLAY lists the recording's captures, LIVE the launch's. */
 export function attachImuChartsReplay(replayMode) {
     if (!replayMode || typeof replayMode.on !== 'function') return;
+    replayModeRef = replayMode;
     replayMode.on('state', onReplayState);
     try { onReplayState(replayMode.state()); } catch { /* not started */ }
 }
@@ -316,12 +321,36 @@ function onReplayState(s) {
     }
 }
 
+/**
+ * REPLAY: mark every Throw and Catch of the selected capture's span, on both sides of the playhead. The event store only
+ * holds events up to the playhead (they arrive as it advances and are trimmed by a backward seek), so the span's /balls
+ * are read once straight from the recording (replay/span-events.js) into the store's separate span list that only the
+ * IMU charts draw. Keyed by capture stem: a seek inside the capture changes nothing; leaving replay or the capture clears it.
+ */
+function syncSpanMarkers() {
+    const c = mode === 'replay' ? selectedCapture() : null;
+    const stem = c && c.wall_ok !== false ? c.stem : null;
+    if (stem === spanStem) return;
+    spanStem = stem;
+    const my = ++spanToken;
+    setSpanEvents([]);
+    if (!stem) return;
+    let src = null;
+    try { src = replayModeRef && typeof replayModeRef.source === 'function' ? replayModeRef.source() : null; } catch { src = null; }
+    if (!src) { spanStem = null; return; }
+    scanBallEvents(src, c.t_start, c.t_end, { isCancelled: () => my !== spanToken }).then((evs) => {
+        if (my !== spanToken || evs === null) return;
+        setSpanEvents(evs);
+    }, () => { if (my === spanToken) spanStem = null; });   // a failed read leaves the playhead-driven markers; retried at the next selection
+}
+
 function resetSelection() {
     sel = { selected: null, follow: mode === 'live', hold: null };
     lastApplied = null;
     captures = [];
     capData = null;
     dataToken++;   // drop a capture response still in flight from the previous mode
+    syncSpanMarkers();
     listState = 'idle';
     renderSelect();
     scheduleRedraw();
@@ -496,6 +525,7 @@ function renderJump() {
 async function loadSelected() {
     const c = selectedCapture();
     const token = ++dataToken;
+    syncSpanMarkers();
     if (!c) { capData = null; renderMessage(); scheduleRedraw(); return; }
     if (c.wall_ok === false) { capData = { stem: c.stem, error: 'nowall' }; renderMessage(); scheduleRedraw(); return; }
     const hit = dataCache.get(c.stem);
