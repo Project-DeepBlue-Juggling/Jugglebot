@@ -2,9 +2,9 @@
 id: TKT-88
 kind: ticket
 title: 'IDEA-25: which lever shortens the Armed IMU upload: the Jetson-only hole-fill change, firmware counters first, sample packing, or leave it?'
-status: open
+status: complete
 created: '2026-11-21'
-updated: '2026-11-20T15:51:58Z'
+updated: '2026-11-20T22:36:38Z'
 owners: []
 priority: low
 effort: xs
@@ -34,3 +34,7 @@ Rung P4 passed at the Sitting of 2026-11-20, so IDEA-25's trigger has fired. Tha
 - 4: IDEA-25 goes back to backlog.
 
 Recommendation: 1 now, then 2 at the next firmware flash.
+
+## Answer
+
+I believe this has already been actioned by a day session. Let's put a pin in this for the Night Shift for a few days while I work on this with day sessions

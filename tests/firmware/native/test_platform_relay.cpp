@@ -590,10 +590,34 @@ TEST_CASE("platform_imu_ctrl lays out the spec's IMU_CMD frames, DLC 8, unused b
   for (int i = 3; i < 8; ++i) CHECK(fake_sent_at(0).buf[i] == 0);
 }
 
+TEST_CASE("platform_imu_ctrl relays SET_ODR (FW 47) as [0x07][odr_khz], the Platform's imu_proto.h layout") {
+  // Platform FW 13 parse_cmd: SET_ODR needs len >= 2 and reads odr_hz = d[1] * 1000. The bridge does
+  // not judge the value (as FREEZE's reason): 0 or 3 go out and the Platform answers ERR_BAD_ARGS.
+  fake_reset();
+  fake_set_commands_allowed(true);
+  for (uint8_t khz : {(uint8_t)1, (uint8_t)2, (uint8_t)0, (uint8_t)3}) {
+    fake_clear_sent();
+    CHECK(Relay::platform_imu_ctrl(imu_ctrl(PlatformImuOp::SET_ODR, khz, 0xBEEF)) == JbUdp::RpcStatus::OK);
+    REQUIRE(fake_sent_count() == 1);
+    const auto& f = fake_sent_at(0);
+    CHECK(f.id == PlatformCanId::IMU_CMD);
+    CHECK(f.len == 8);
+    CHECK(f.buf[0] == PlatformImuOp::SET_ODR);
+    CHECK(f.buf[0] == 0x07);
+    CHECK(f.buf[1] == khz);
+    for (int i = 2; i < 8; ++i) CHECK(f.buf[i] == 0);   // capture_id never leaks into the frame
+  }
+  // The shared CAN3 gate still applies: bus down is ERR_BUS_DOWN with nothing sent.
+  fake_clear_sent();
+  fake_set_commands_allowed(false);
+  CHECK(Relay::platform_imu_ctrl(imu_ctrl(PlatformImuOp::SET_ODR, 2)) == JbUdp::RpcStatus::ERR_BUS_DOWN);
+  CHECK(fake_sent_count() == 0);
+}
+
 TEST_CASE("platform_imu_ctrl refuses READ and unknown ops before the wire") {
   fake_reset();
   fake_set_commands_allowed(true);
-  for (uint8_t op : {(uint8_t)0, PlatformImuOp::READ, (uint8_t)0x07, (uint8_t)0xFF}) {
+  for (uint8_t op : {(uint8_t)0, PlatformImuOp::READ, (uint8_t)0x08, (uint8_t)0xFF}) {
     CHECK(Relay::platform_imu_ctrl(imu_ctrl(op)) == JbUdp::RpcStatus::ERR_BAD_ARGS);
   }
   CHECK(fake_sent_count() == 0);

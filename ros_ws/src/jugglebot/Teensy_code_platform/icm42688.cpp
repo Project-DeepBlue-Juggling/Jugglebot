@@ -100,10 +100,10 @@ static uint8_t candFrom(uint8_t from, uint8_t force) {
   return from;
 }
 
-void Driver::initStart(uint8_t forceAddr) {
+void Driver::initStart(uint8_t forceAddr, uint16_t odrHz) {
   _force = forceAddr;
   _addr = 0; _who = 0; _cfgIdx = 0; _polls = 0; _cand = candFrom(0, forceAddr); _anyAck = false; _err = OK;
-  _odr = 1000; _accelFs = 16; _gyroFs = 1000;
+  _odr = (odrHz == 2000) ? 2000 : 1000; _accelFs = 16; _gyroFs = 1000;
   _ist = IST_PROBE_ACK;
 }
 

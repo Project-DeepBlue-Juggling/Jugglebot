@@ -56,7 +56,7 @@ void cs_set_can_bus_down(bool down);            // → fault_can_bus_down()
 void cs_set_guard_estop(bool estop);            // → fault_guard_mode()==ESTOP
 void cs_set_commands_allowed(bool allowed);     // → jugglebot_commands_allowed()
 void cs_set_mpc_active(bool active);            // → fault_mpc_active() (MPC-stream interlock)
-int  cs_hand_stall_notified();                 // fault_notify_hand_stall() calls since cs_reset (FW 47)
+int  cs_hand_stall_notified();                 // fault_notify_hand_stall() calls since cs_reset (FW 48)
 void cs_set_stow_pending(bool pending);        // → fault_stow_pending() (deferred-stow interlock, review fix)
 
 // ── Recording CAN3 TX (drives can_jugglebot_tx()) ────────────────────────────

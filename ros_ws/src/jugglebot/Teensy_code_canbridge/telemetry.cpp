@@ -84,7 +84,7 @@ static void send_diag(uint8_t axis) {
   // older host ignores it, so PROTOCOL_VERSION stays 10.
   d.flags         = (uint8_t)((stale ? 0x1u : 0x0u) | (a.heartbeat_seen ? 0x2u : 0x0u) |
                               (activate_stalled(axis) ? DIAG_FLAG_ACTIVATE_STALL : 0x0u) |
-                              // bit3 (FW 47, BUG-123): the lane stall guard IDLEd the Hand.
+                              // bit3 (FW 48, BUG-123): the lane stall guard IDLEd the Hand.
                               (hand_lane_stalled(axis) ? DIAG_FLAG_LANE_STALL : 0x0u));
   d.active_errors = a.active_errors;
   d.disarm_reason = a.disarm_reason;

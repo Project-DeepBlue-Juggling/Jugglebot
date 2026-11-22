@@ -30,7 +30,7 @@ links:
 - logbook/2026-11-20-sitting-debrief.md
 filed_by: claude
 night_skip: sitting
-night_skip_on: '2026-11-21'
+night_skip_on: '2026-11-22'
 night_skip_note: 'Next: a 200-cycle oval with gc_freeze on, then an A/B with it off (2026-11-21 offline entry).'
 ---
 

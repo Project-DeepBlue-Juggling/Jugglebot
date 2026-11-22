@@ -22,7 +22,7 @@ links:
 - logbook/2026-11-20-hand-foc-scope-keeps-the-forced-window.md
 filed_by: claude-debrief
 night_skip: sitting
-night_skip_on: '2026-11-21'
+night_skip_on: '2026-11-22'
 night_skip_note: Tool fixed on main (forced stop keeps the window); whether that window holds the fault needs a real fault at a Sitting.
 ---
 

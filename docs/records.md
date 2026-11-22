@@ -8,9 +8,9 @@ The most Catches in one continuous Attempt on the robot (never the sim), per Pat
 
 ## Drops to date
 
-<!-- drops: live=141 since=2026-11-11 caught=2716 history=819 history_caught=6485 history_from=2026-07-23 history_through=2026-11-10 -->
+<!-- drops: live=143 since=2026-11-11 caught=2766 history=819 history_caught=6485 history_from=2026-07-23 history_through=2026-11-10 -->
 
-Drops to date: 960 (141 counted live since 2026-11-11; 819 from history, 2026-07-23 to 2026-11-10). 10,161 Throws and Feeds to catch, 90.6 % caught, 9.4 % dropped. A drop is a ball thrown to be caught by Jugglebot that was not caught.
+Drops to date: 962 (143 counted live since 2026-11-11; 819 from history, 2026-07-23 to 2026-11-10). 10,213 Throws and Feeds to catch, 90.6 % caught, 9.4 % dropped. A drop is a ball thrown to be caught by Jugglebot that was not caught.
 
 ## 1 ball
 
@@ -221,6 +221,11 @@ A landing score is the distance in mm from the Fit's landing to the target Site,
 | 2026-11-20 13:25 | 55 | 24 | 2 | 17 17 16 10 21 16 5 19 5 34 56 41 20 23 33 24 29 16 38 20 27 5 15 10 8 30 22 30 28 10 30 30 34 29 7 15 12 18 25 40 26 42 35 39 33 37 33 9 27 25 50 35 7 20 19 |
 | 2026-11-20 13:26 | 1 | 10 | 2 | 10 |
 | 2026-11-20 13:28 | 72 | 19 | 1 | 14 28 13 23 14 28 14 21 42 19 12 20 14 20 4 11 30 19 18 43 75 36 10 31 28 19 32 13 19 24 45 17 27 12 32 39 24 35 11 17 16 5 14 19 39 5 40 13 19 37 26 10 22 32 15 6 14 17 7 41 31 17 39 15 20 34 6 13 40 18 18 17 |
+| 2026-11-20 23:02 | 0 | - | 1 | - |
+| 2026-11-20 23:03 | 2 | 55 | 1 | 55 55 |
+| 2026-11-20 23:05 | 32 | 16 | 0 | 43 46 42 40 12 4 18 17 11 30 8 24 12 11 15 5 14 16 22 27 14 9 35 8 17 16 34 16 11 11 22 13 |
+| 2026-11-22 21:13 | 8 | 35 | 0 | 53 46 50 30 39 22 9 21 |
+| 2026-11-22 21:15 | 8 | 23 | 0 | 37 29 7 6 27 13 35 18 |
 
 <!-- scores: pattern=polygon_walk -->
 ### Polygon walk

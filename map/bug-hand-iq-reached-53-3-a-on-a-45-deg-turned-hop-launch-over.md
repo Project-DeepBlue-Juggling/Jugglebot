@@ -18,7 +18,7 @@ links:
 - map/bug-hand-brake-and-hold-currents-sit-far-below-the-throw.md
 filed_by: claude
 night_skip: sitting
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: Needs a re-flight under the raised Hand limits; the 2026-11-13 70.9 A peaks were the trapped-Ball stall of BUG-84.
 ---
 

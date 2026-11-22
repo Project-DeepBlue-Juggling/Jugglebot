@@ -21,7 +21,7 @@ links:
 parent: two-ball-oval
 filed_by: claude
 night_skip: sitting
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: Failed 2026-11-13 (30 consecutive Catches only at Dwell 0.40; 0.30 ends on LIMIT_JERK); waits on the next ramp Sitting.
 ---
 

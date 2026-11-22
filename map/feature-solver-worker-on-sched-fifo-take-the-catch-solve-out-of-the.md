@@ -18,7 +18,7 @@ links:
 parent: two-ball-oval
 filed_by: claude (BUG-21 21:02 Sitting read-out)
 night_skip: sitting
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: A flown rung on the robot, owner hands.
 ---
 

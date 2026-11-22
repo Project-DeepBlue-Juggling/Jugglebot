@@ -61,7 +61,7 @@ static void present_only(uint8_t mask) {
     axes[i].pos_rev = 0.0f;
     axes[i].vel_rps = 0.0f;
     axes[i].iq_measured = 0.0f;
-    axes[i].iq_timestamp_us = 0;    // FW 47: no Get_Iq sample yet
+    axes[i].iq_timestamp_us = 0;    // FW 48: no Get_Iq sample yet
     axes[i].pos_timestamp_us = 0;
   }
 }
@@ -743,7 +743,7 @@ TEST_CASE("stall guard: a refused IDLE frame is re-sent on the next tick") {
   CHECK(r[0].result.outcome == HAND_MOVE_STALLED);
 }
 
-// ── FW 47 Hand lane stall guard (BUG-123) ────────────────────────────────────
+// ── FW 48 Hand lane stall guard (BUG-123) ────────────────────────────────────
 //  Owner decision 2026-11-20: 40 A / 1 rev/s / 150 ms, then IDLE, whenever the
 //  ladder does not own the Hand. The 2026-11-20 incident: the Hand stalled on its
 //  top stop on the streamed lane, MAX_DEVIATION latched (a latch only freezes the

@@ -74,7 +74,7 @@ static uint8_t  s_result[NUM_AXES] = { ACTIVATE_NONE };
 static bool          s_stall_timing = false;   // the stall predicate held last tick
 static uint64_t      s_stall_t0_us  = 0;       // first tick of the current run
 static volatile bool s_stalled[NUM_AXES] = { false };   // sticky, Diagnostic flags bit2
-// ── Hand stall guard on the streamed lane and latched holds (FW 47, BUG-123) —
+// ── Hand stall guard on the streamed lane and latched holds (FW 48, BUG-123) —
 //    activate-task owned; s_lane_stalled read by the telemetry task. ───────────
 static bool          s_lane_timing       = false;  // the stall predicate held at the last sample
 static uint64_t      s_lane_t0_us        = 0;      // iq stamp of the run's first sample
@@ -451,7 +451,7 @@ static void hand_lane_stall_guard() {
 }
 
 void activate_step() {
-  // ── FW 47 (BUG-123): the Hand stall guard outside the ladder. ──
+  // ── FW 48 (BUG-123): the Hand stall guard outside the ladder. ──
   hand_lane_stall_guard();
 
   // ── HAND_MOVE_TO start / retarget (net task → activate task). ──

@@ -56,12 +56,12 @@ AXIS_STATE_CLOSED_LOOP = 8
 # tests/firmware/test_hand_stall_guard_xref.py).
 DIAG_FLAG_ACTIVATE_STALL = 0x4
 
-# DIAGNOSTIC.flags bit3 (can-bridge FW 47, BUG-123): the Hand stall guard on the
+# DIAGNOSTIC.flags bit3 (can-bridge FW 48, BUG-123): the Hand stall guard on the
 # streamed lane / a latched hold IDLEd this axis (only ever the Hand). Mirrors
 # leg_activate.h DIAG_FLAG_LANE_STALL (pinned by the same xref test).
 DIAG_FLAG_LANE_STALL = 0x8
 
-# The FW 47 lane stall guard's thresholds (canbridge_config.h HAND_LANE_STALL_*,
+# The FW 48 lane stall guard's thresholds (canbridge_config.h HAND_LANE_STALL_*,
 # owner decision 2026-11-20), mirrored for the operator's reason line only; the
 # firmware is the authority and the xref test pins the two together.
 HAND_LANE_STALL_IQ_A = 40.0
@@ -70,7 +70,7 @@ HAND_LANE_STALL_HOLD_S = 0.150
 
 
 def hand_lane_stall_line(iq_now_a: float, motor_temp_c: float) -> str:
-    """The one operator line for a FW 47 Hand stall trip (FaultState HAND_STALL).
+    """The one operator line for a FW 48 Hand stall trip (FaultState HAND_STALL).
 
     Says what fired, what the firmware did (Hand IDLE, Legs held), and the
     recovery: the operator's CLEAR_ERRORS (whose Hand park re-energises the

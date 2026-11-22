@@ -16,7 +16,7 @@ blocked_by: []
 links: []
 filed_by: claude
 night_skip: frozen-path
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: The remaining slice touches the wire protocol and firmware, frozen at night.
 ---
 

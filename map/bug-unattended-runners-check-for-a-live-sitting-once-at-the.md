@@ -18,7 +18,7 @@ links: []
 parent: night-shift
 filed_by: claude
 night_skip: frozen-path
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: The runner checks live in tools/night_shift.sh, tools/nightly_suite.sh and tools/lib/, all on the never-list.
 ---
 

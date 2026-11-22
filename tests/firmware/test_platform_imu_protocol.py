@@ -253,3 +253,29 @@ def test_header_format_matches_the_spec_table_field_by_field():
                 doc_fields[int(cells[k])] = width[cells[k + 1]]
     assert doc_fields, "the header table was not found in the contract"
     assert doc_fields == {off: struct.calcsize("<" + code) for off, code, _ in SPEC_HEADER_FIELDS}
+
+
+# ── FW 13: the selectable rate and READ chaining ────────────────────────────
+
+def test_fw13_rates_fit_the_ring_and_the_set_odr_argument():
+    """SET_ODR carries the rate in kHz in one byte; the ring at the fast rate still holds whole seconds
+    and the anchor ring still covers it."""
+    nominal, fast = _IMU["nominal_odr_hz"], _IMU["fast_odr_hz"]
+    assert (nominal, fast) == (1000, 2000)
+    for hz in (nominal, fast):
+        assert hz % 1000 == 0 and 1 <= hz // 1000 <= 0xFF
+        assert _IMU["ring_samples"] % hz == 0
+        assert _IMU["anchor_ring"] > _IMU["ring_samples"] / hz * 1000 / _IMU["anchor_period_ms"]
+    # The ODR_2K status flag names the fast rate; READ_EXTENDED is an accepted status, ERR_FROZEN a refusal.
+    assert _IMU["status_flags"]["ODR_2K"] == 0x20
+    assert _IMU["statuses"]["READ_EXTENDED"] < 0x10 <= _IMU["statuses"]["ERR_FROZEN"]
+
+
+def test_read_max_words_stays_the_can_bridge_clamp():
+    """FW 13 chains READs instead of raising the count: the can-bridge (FW 45 and later) refuses a READ above
+    read_max_words, and the same generated constant is its clamp, so raising it here would silently
+    change the bridge at its next build (platform_imu_protocol.md section 4, READ chaining)."""
+    assert _IMU["read_max_words"] == 256
+    relay = os.path.join(_REPO, "ros_ws", "src", "jugglebot", "Teensy_code_canbridge", "platform_relay.cpp")
+    with open(relay, encoding="utf-8") as fh:
+        assert "a.count > PlatformImu::READ_MAX_WORDS" in fh.read()

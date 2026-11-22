@@ -62,8 +62,12 @@ uint16_t hand_fan_set(const JbUdp::RpcArgs::ArgHandFanSet& a);
 //
 // PLATFORM_IMU_CTRL → [op][reason or capture_id LE][0..]: ENABLE/DISABLE/ABORT
 // carry no args, FREEZE carries `reason` in byte 1, RESUME `capture_id` in bytes
-// 1-2. Any other op, READ included, is ERR_BAD_ARGS with nothing sent: a READ can
-// only leave through platform_imu_read and its clamp.
+// 1-2, SET_ODR (FW 47, Platform FW 13) `reason` as odr_khz in byte 1 (the value is
+// the Platform's to judge, as FREEZE's reason is). Any other op, READ included, is
+// ERR_BAD_ARGS with nothing sent: a READ can only leave through platform_imu_read
+// and its clamp. SET_ODR is allowed while Armed like the rest: the capture rate is
+// the Platform Teensy's I2C sampling, not CAN traffic, and a rate change while
+// FROZEN or UPLOADING is the Platform's ERR_FROZEN.
 uint16_t platform_imu_ctrl(const JbUdp::RpcArgs::ArgPlatformImuCtrl& a);
 // PLATFORM_IMU_READ → [0x05][capture_id u16][first_seq u16][count u16][gap u8].
 // ERR_BAD_ARGS for count 0 or above PlatformImu::READ_MAX_WORDS. While Armed

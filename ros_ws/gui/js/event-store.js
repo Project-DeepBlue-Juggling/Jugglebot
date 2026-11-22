@@ -19,7 +19,13 @@ export const EVENT_TYPES = Object.freeze({
     COMMAND:     'command',
     CALIBRATION: 'calibration',
     CONNECTION:  'connection',
+    THROW:       'throw',     // Hand Throw release (ball-events.js); chart-only
+    CATCH:       'catch',     // Cup Catch (ball-events.js); chart-only
 });
+
+/** Types drawn on the charts but kept OUT of the textual Event Log list: 32 Throws and 32 Catches
+ *  in one 50 s Attempt would bury every command, state and fault row (command-history.js skips them). */
+export const CHART_ONLY_TYPES = Object.freeze(new Set(['throw', 'catch']));
 
 /**
  * Stroke colour for each event type on the chart draw-overlay.  Kept in JS
@@ -34,12 +40,18 @@ export const EVENT_COLORS = Object.freeze({
     calibration: '#a78bfa',  // violet
     connection:  '#22c55e',  // green — ROS2 link up/down (mirrors --accent-green;
                              // was rose-red, too close to fault's red)
+    throw:       '#ec4899',  // pink, upward triangle at the top of the marker line
+    catch:       '#3b82f6',  // blue, downward triangle
 });
 
 // ---- Store ----
 
 /** Maximum events retained in memory.  Older events are dropped. */
 const MAX_EVENTS = 500;
+
+/** Cap of the separate chart-only ring (Throw / Catch markers).  Its own ring so about four minutes of juggling
+ *  cannot evict earlier commands, states and faults from the ordinary ring (Event Log + charts). */
+const MAX_CHART_ONLY_EVENTS = 500;
 
 /** Monotonic counter used to stamp each event with a stable ID — lets the
  *  UI reference a specific event (e.g. on hover) without relying on object
@@ -48,6 +60,14 @@ let nextEventId = 1;
 
 /** @type {Array<{id: number, t: number, type: string, label: string, detail?: string}>} */
 const events = [];
+
+/** Chart-only events (CHART_ONLY_TYPES), same shape as `events`, own cap; never listed in the Event Log. */
+const chartEvents = [];
+
+/** Throw / Catch markers of one replayed capture span, INCLUDING those after the playhead (span-events.js). Kept apart
+ *  from the rings above so the Event Log, the replay trim and the ODrive charts never see them; only charts that ask
+ *  for them (the IMU time charts) merge them in via getEventsInRange(..., {span: true}). */
+let spanEvents = [];
 
 /** @type {Set<(event) => void>} Subscribers notified on each new event. */
 const listeners = new Set();
@@ -78,8 +98,9 @@ function notifyCleared() {
  * @returns {{events:object[]}}
  */
 export function snapshotAndBeginReplayEvents() {
-    const snap = { events: events.slice() };
+    const snap = { events: events.slice(), chartEvents: chartEvents.slice() };
     events.length = 0;
+    chartEvents.length = 0;
     replayKeys = new Set();
     highlightedEventId = null;
     chartHoveredIds = [];
@@ -90,8 +111,11 @@ export function snapshotAndBeginReplayEvents() {
 /** Leave the replay store; the live events come back exactly as parked. */
 export function restoreEvents(snap) {
     replayKeys = null;
+    spanEvents = [];
     events.length = 0;
+    chartEvents.length = 0;
     if (snap && snap.events) for (const e of snap.events) events.push(e);
+    if (snap && snap.chartEvents) for (const e of snap.chartEvents) chartEvents.push(e);
     highlightedEventId = null;
     chartHoveredIds = [];
     notifyCleared();
@@ -102,13 +126,16 @@ export function inReplayEvents() { return replayKeys !== null; }
 
 /** Replay store only: drop events later than `t` (a backward seek / reverse pass un-happens them). */
 export function trimEventsAfter(t) {
-    if (!replayKeys || !events.length || events[events.length - 1].t <= t) return;
+    if (!replayKeys) return;
+    // No time-order early exit: a Catch is stamped 0.2-0.5 s before its emission, so the arrays are not sorted by t.
     let changed = false;
-    for (let i = events.length - 1; i >= 0; i--) {
-        if (events[i].t > t) {
-            replayKeys.delete(events[i].t + '|' + events[i].type + '|' + events[i].label);
-            events.splice(i, 1);
-            changed = true;
+    for (const ring of [events, chartEvents]) {
+        for (let i = ring.length - 1; i >= 0; i--) {
+            if (ring[i].t > t) {
+                replayKeys.delete(ring[i].t + '|' + ring[i].type + '|' + ring[i].label);
+                ring.splice(i, 1);
+                changed = true;
+            }
         }
     }
     if (changed) notifyCleared();
@@ -143,9 +170,10 @@ export function emitEvent(ev) {
         if (replayKeys.has(key)) return;
         replayKeys.add(key);
     }
-    events.push(entry);
-    if (events.length > MAX_EVENTS) {
-        const gone = events.shift();
+    const ring = CHART_ONLY_TYPES.has(entry.type) ? chartEvents : events;
+    ring.push(entry);
+    if (ring.length > (ring === chartEvents ? MAX_CHART_ONLY_EVENTS : MAX_EVENTS)) {
+        const gone = ring.shift();
         if (replayKeys) replayKeys.delete(gone.t + '|' + gone.type + '|' + gone.label);
     }
     for (const cb of listeners) {
@@ -157,17 +185,46 @@ export function emitEvent(ev) {
  * Return all events whose timestamp falls within [tMin, tMax].  Used by the
  * chart draw hook to figure out which markers are currently on screen.
  */
-export function getEventsInRange(tMin, tMax) {
+export function getEventsInRange(tMin, tMax, opts) {
     const out = [];
-    for (const ev of events) {
-        if (ev.t >= tMin && ev.t <= tMax) out.push(ev);
+    const keys = new Set();
+    for (const ring of [events, chartEvents]) {
+        for (const ev of ring) {
+            if (ev.t >= tMin && ev.t <= tMax) { out.push(ev); keys.add(ev.t + '|' + ev.type + '|' + ev.label); }
+        }
     }
+    let merged = false;
+    if (opts && opts.span) {
+        for (const ev of spanEvents) {
+            // The past is also in chartEvents (emitted as the playhead passed): keep one marker per (t, type, label).
+            if (ev.t >= tMin && ev.t <= tMax && !keys.has(ev.t + '|' + ev.type + '|' + ev.label)) { out.push(ev); merged = true; }
+        }
+    }
+    if (chartEvents.length || merged) out.sort((a, b) => a.t - b.t);
     return out;
 }
 
 /**
+ * Replace the span-marker list (chart-only types only; each gets a stable id). Notifies the clear listeners so charts
+ * repaint. Pass [] to drop it.
+ * @param {Array<{type:string,label:string,detail?:string,t:number}>} list
+ */
+export function setSpanEvents(list) {
+    spanEvents = [];
+    for (const ev of list || []) {
+        if (!ev || !CHART_ONLY_TYPES.has(ev.type) || typeof ev.t !== 'number') continue;
+        spanEvents.push({ id: nextEventId++, t: ev.t, type: ev.type, label: ev.label, detail: ev.detail || '' });
+    }
+    notifyCleared();
+}
+
+/** The current span markers (copy), time order. */
+export function getSpanEvents() { return spanEvents.slice(); }
+
+/**
  * Return the most recent `limit` events of the given type (or any type when
- * `type` is null).  Newest first.  Used by the command-history panel.
+ * `type` is null).  Newest first.  Used by the command-history panel.  Reads the ordinary ring only: chart-only
+ * events (Throw / Catch) are never listed here.
  */
 export function getRecentEvents(type, limit) {
     const out = [];
@@ -186,6 +243,7 @@ export function subscribeEvents(cb) {
 /** Clear every stored event.  Not currently called — provided for future use. */
 export function clearEvents() {
     events.length = 0;
+    chartEvents.length = 0;
     for (const cb of listeners) {
         try { cb(null); } catch { /* ignore */ }
     }

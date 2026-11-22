@@ -1,11 +1,11 @@
 /*****************************************************************************************
- *  imu_service.h — the Platform IMU's per-loop() glue (FW 11-12, IDEA-20 P2b).
+ *  imu_service.h — the Platform IMU's per-loop() glue (FW 11-13, IDEA-20 P2b).
  *
  *  Pure logic with no Arduino dependency, so tests/firmware/native/ runs the shipped code
  *  (test_platform_imu_service.cpp). It wires imu_proto.h's Engine and imu_capture.h's ring
  *  to the chip and the CAN mailboxes, which the sketch hands in as two small adapters:
  *
- *    Io  void init_start();                       arm the driver's init (no I2C)
+ *    Io  void init_start(uint16_t odr_hz);        arm the driver's init at that rate (no I2C)
  *        int  init_step(uint32_t now_us);         ONE I2C transaction: INIT_PENDING, 0 (ready) or < 0
  *        int  fifo_count(bool* overflow);         ONE transaction: packets in the chip FIFO, or < 0
  *        int  read_burst(Pkt* out, int n);        ONE transaction (n <= BURST_PKTS): packets parsed, or < 0
@@ -47,6 +47,12 @@
 #ifndef PLATFORM_IMU_DIAG_CONST_PERIOD_US
 #define PLATFORM_IMU_DIAG_CONST_PERIOD_US 2000   // one 32-byte register read per this many us
 #endif
+#ifndef PLATFORM_IMU_BOOT_ODR_HZ
+#define PLATFORM_IMU_BOOT_ODR_HZ 1000   // FW 13: the capture rate at boot; SET_ODR changes it at run time (RAM only)
+#endif
+#if PLATFORM_IMU_BOOT_ODR_HZ != 1000 && PLATFORM_IMU_BOOT_ODR_HZ != 2000
+#error "PLATFORM_IMU_BOOT_ODR_HZ must be 1000 or 2000 (PlatformImu::NOMINAL_ODR_HZ or FAST_ODR_HZ)"
+#endif
 #if PLATFORM_IMU_DIAG_CONST && !PLATFORM_IMU_DIAG
 #error "PLATFORM_IMU_DIAG_CONST is a diagnostic build only (needs PLATFORM_IMU_DIAG=1)"
 #endif
@@ -60,7 +66,22 @@ namespace ImuService {
  *  which a BEGIN can land; a BEGIN seen inside it keeps the IMU in FW_HALTED for the rest of
  *  that boot, even if the update is then abandoned. */
 constexpr uint32_t BOOT_SETTLE_MS = 10000;
-constexpr uint32_t DRAIN_PERIOD_US = 4000;   // FIFO_COUNT read cadence: ~4 packets per drain at 1 kHz
+static_assert(PLATFORM_IMU_BOOT_ODR_HZ == PlatformImu::NOMINAL_ODR_HZ || PLATFORM_IMU_BOOT_ODR_HZ == PlatformImu::FAST_ODR_HZ,
+              "the boot rate is one of the two SET_ODR rates");
+/*  RATE-AWARE TIMING (FW 13).  Everything that assumed 1 kHz is a function of the selected rate
+ *  (Engine::odr_hz()); the two constants below are the 1 kHz values, kept for reference.
+ *  DRAIN: one FIFO_COUNT read per DRAIN_SAMPLES sample periods (4 ms at 1 kHz, 2 ms at 2 kHz, the
+ *  bench's 2 ms poll), so a drain stays ~4 packets and the longest I2C transaction of a pass
+ *  (one burst) is the same at both rates; the chip FIFO (128 records) holds 128 ms at 1 kHz and
+ *  64 ms at 2 kHz.  At 2 kHz on the 1 MHz bus the packets take ~30-35 % of the bus. */
+constexpr uint32_t DRAIN_SAMPLES = 4;
+inline uint32_t sample_period_us(uint32_t odr_hz) { return 1000000u / odr_hz; }
+inline uint32_t drain_period_us(uint32_t odr_hz) { return DRAIN_SAMPLES * sample_period_us(odr_hz); }
+/*  The shortest the chip's sample period can be: nominal less 2 % (the chip clock is ~1 % off).
+ *  A closing anchor written mid-drain is moved back by (packets counted but not read) x this, so
+ *  it stays an upper bound on its last sample's time (spec section 3) without the drain's lag. */
+inline uint32_t min_sample_period_us(uint32_t odr_hz) { return sample_period_us(odr_hz) * 49u / 50u; }
+constexpr uint32_t DRAIN_PERIOD_US_AT_1KHZ = 4000;   // drain_period_us(1000): ~4 packets per drain at 1 kHz
 constexpr int      BURST_PKTS = 8;           // 8 x 16 B = 128 B, inside Wire's 136-byte BUFFER_LENGTH
 constexpr uint32_t DRAIN_MAX_PKTS = 120;     // never read past what was counted, never near the 128-record FIFO
 constexpr uint32_t PROBE_MIN_GAP_MS = 1000;  // probe back-off floor (also the spec's BACKOFF minimum)
@@ -70,12 +91,9 @@ constexpr uint32_t HEALTHY_RESET_MS = 10000; // this long RUNNING without a BACK
  *  and a retry; the next failure in a row, with no successful transfer between, goes to BACKOFF.
  *  2 (FW 12, 2026-11-20): the measured errors are isolated (one every 15-40 s), so a third in a
  *  row means the chip or the bus is really gone, and 3 failures + 2 recoveries take ~5 passes,
- *  far inside the chip FIFO's 128 ms at 1 kHz. */
+ *  far inside the chip FIFO's 128 ms at 1 kHz (64 ms at 2 kHz). */
 constexpr uint32_t RUNNING_MAX_RETRIES = 2;
-/*  The shortest the chip's sample period can be: nominal less 2 % (the chip clock is ~1 % off).
- *  A closing anchor written mid-drain is moved back by (packets counted but not read) x this, so
- *  it stays an upper bound on its last sample's time (spec section 3) without the drain's lag. */
-constexpr uint32_t MIN_SAMPLE_PERIOD_US = (1000000u / PlatformImu::NOMINAL_ODR_HZ) * 49u / 50u;
+constexpr uint32_t MIN_SAMPLE_PERIOD_US_AT_1KHZ = (1000000u / PlatformImu::NOMINAL_ODR_HZ) * 49u / 50u;  // min_sample_period_us(1000)
 /*  TX mailboxes the IMU always leaves free for everyone else.  The sketch has 8 (setMaxMB(16),
  *  the RX FIFO and its filter table take MB 0-7).  After an IMU frame the non-IMU writers that
  *  can run before loop() next checks the mailboxes for a dispatch are the Hand fan status
@@ -286,7 +304,8 @@ class Service {
   void init(ImuCapture::Capture* cap, uint32_t boot_id, uint32_t now_ms) {
     cap_ = cap;
     boot_id_ = boot_id;
-    eng_.init(cap);
+    eng_.init(cap, uint16_t(PLATFORM_IMU_BOOT_ODR_HZ));
+    eng_.set_max_odr_hz(uint16_t(i2c_400k_ ? PlatformImu::NOMINAL_ODR_HZ : PlatformImu::FAST_ODR_HZ));
     settle_end_ms_ = now_ms + BOOT_SETTLE_MS;
     settled_ = halted_for_boot_ = false;
     probe_at_ = settle_end_ms_;
@@ -300,6 +319,7 @@ class Service {
   SyncQuality& sync() { return sync_; }
   const ImuProto::Engine& engine() const { return eng_; }
   uint8_t state() const { return eng_.state(); }
+  uint16_t odr_hz() const { return eng_.odr_hz(); }
   const Counters& counters() const { return cnt_; }
   bool chip_ok() const { return chip_ok_; }
   uint32_t probe_due_ms() const { return probe_at_; }
@@ -368,11 +388,22 @@ class Service {
     if (c.op == PlatformImuOp::DISABLE && s0 != DISABLED) { halt_local(); return; }
     if (c.op == PlatformImuOp::ENABLE && s0 == DISABLED) { new_capture(); enter_probing(now_ms); return; }
     if (c.op == PlatformImuOp::RESUME && s1 == RUNNING) { new_capture(); phase_ = IDLE; }
+    if (c.op == PlatformImuOp::SET_ODR && eng_.take_rate_change()) {
+      /*  A new rate (no I2C here): a fresh capture, and the chip is re-initialised at the new
+       *  rate by the ordinary probe (soft reset, configure, flush), one transaction per pass.
+       *  From RUNNING the probe is due at once; PROBING restarts its init at the new rate on its
+       *  own schedule; BACKOFF re-inits when its back-off ends (init_started_ is already false). */
+      new_capture();
+      flush_pending_ = resume_who_ = false;
+      init_started_ = false;
+      if (s0 == RUNNING) { chip_ok_ = false; enter_probing(now_ms); }
+    }
   }
 
   template <class Io>
   void build_info(ImuCapture::HeaderInfo* h, Io& io) {
     io.header_info(h);
+    h->odr_hz = eng_.odr_hz();             // the capture's real rate (one capture is always one rate)
     Stamp st;
     io.stamp(&st);
     h->freeze_wall_us = st.wall_us;
@@ -470,7 +501,7 @@ class Service {
       io.bus_recover();
       return;
     }
-    if (!init_started_) { io.init_start(); init_started_ = true; cnt_.probes++; }
+    if (!init_started_) { io.init_start(eng_.odr_hz()); init_started_ = true; cnt_.probes++; }
     last_step_ = STEP_I2C;
     const int r = io.init_step(now_us);
     if (r == INIT_PENDING) return;
@@ -531,7 +562,8 @@ class Service {
         last_drain_us_ = now_us;
         return;
       }
-      if (uint32_t(now_us - last_drain_us_) < DRAIN_PERIOD_US) return;
+      const uint32_t drain_us = drain_period_us(eng_.odr_hz());
+      if (uint32_t(now_us - last_drain_us_) < drain_us) return;
       last_drain_us_ = now_us;
       io.stamp(&cur_);                     // immediately before the FIFO_COUNT read (spec section 3)
       bool ovf = false;
@@ -539,7 +571,7 @@ class Service {
       const int n = io.fifo_count(&ovf);
       if (n < 0) {
         diag_note(DK_COUNT, io);
-        if (retry_or_backoff(now_ms, true, false)) last_drain_us_ = now_us - DRAIN_PERIOD_US;  // due again after the recovery
+        if (retry_or_backoff(now_ms, true, false)) last_drain_us_ = now_us - drain_us;  // due again after the recovery
         return;
       }
       if (!burst_run_) end_run();
@@ -626,11 +658,11 @@ class Service {
     if (!unanchored_) return;
     /*  Mid-drain (a failed burst, a bad header, a FREEZE): the stamp belongs to the drain's
      *  newest counted packet, but remaining_ of them were never pushed, so the last pushed
-     *  sample is at least remaining_ x MIN_SAMPLE_PERIOD_US older.  Move the stamp back by
-     *  that much; it stays an upper bound (spec section 3) and loses the drain's lag. */
+     *  sample is at least remaining_ x min_sample_period_us(rate) older.  Move the stamp back
+     *  by that much; it stays an upper bound (spec section 3) and loses the drain's lag. */
     Stamp st = unanchored_stamp_;
     if (phase_ == READING && drain_pushed_ && remaining_) {
-      const uint32_t back = remaining_ * MIN_SAMPLE_PERIOD_US;
+      const uint32_t back = remaining_ * min_sample_period_us(eng_.odr_hz());
       st.local_us -= back;
       st.wall_us -= back;
     }
@@ -771,11 +803,12 @@ class Service {
     if (cap_->wrapped()) s.flags |= PlatformImuStatusFlag::RING_WRAPPED;
     if (i2c_400k_) s.flags |= PlatformImuStatusFlag::I2C_400K;
     if (capture_disc_) s.flags |= PlatformImuStatusFlag::DISCONTINUITY;
+    if (eng_.odr_hz() == PlatformImu::FAST_ODR_HZ) s.flags |= PlatformImuStatusFlag::ODR_2K;
     s.temp_c = have_temp_ ? temp_c_from_fifo(temp_last_) : int8_t(-128);
     s.fifo_overflows = ImuProto::sat_u8(cnt_.fifo_overflows);
     s.i2c_errors = ImuProto::sat_u8(cnt_.i2c_errors);
     s.sync_peak = peak;
-    s.fill_s = ImuProto::fill_seconds(cap_->n_samples(), PlatformImu::NOMINAL_ODR_HZ);
+    s.fill_s = ImuProto::fill_seconds(cap_->n_samples(), eng_.odr_hz());
     s.boot = uint8_t(boot_id_);
 #if PLATFORM_IMU_DIAG
     diag_page(&s, peak);
@@ -837,7 +870,11 @@ class Service {
 #endif
 
  public:
-  void set_i2c_400k(bool v) { i2c_400k_ = v; }
+  /*  A 400 kHz I2C build cannot carry 2 kHz (~75 % of the bus): SET_ODR 2 is then ERR_BAD_ARGS. */
+  void set_i2c_400k(bool v) {
+    i2c_400k_ = v;
+    eng_.set_max_odr_hz(uint16_t(v ? PlatformImu::NOMINAL_ODR_HZ : PlatformImu::FAST_ODR_HZ));
+  }
 
  private:
   enum Phase : uint8_t { IDLE = 0, READING = 1 };

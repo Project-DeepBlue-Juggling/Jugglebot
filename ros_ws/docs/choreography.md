@@ -508,6 +508,12 @@
 - **clients:** `orchestrator_node`
 - **type:** `std_srvs.srv.Trigger`
 
+### `platform_imu/set_rate`
+
+- **servers:** `teensy_bridge_node`
+- **clients:** _none_
+- **type:** `jugglebot_interfaces.srv.SetString`
+
 ### `platform_imu/set_upload_after_attempt`
 
 - **servers:** `teensy_bridge_node`
@@ -678,6 +684,7 @@ broken wire cannot hide among them.
 - `leg_torques_diagnostic` — topic with no subscribers
 - `orchestrator_command` — topic with no publishers
 - `park_hand` — service with no clients
+- `platform_imu/set_rate` — service with no clients
 - `platform_imu/set_upload_after_attempt` — service with no clients
 - `platform_imu/upload` — service with no clients
 - `profile` — topic with no subscribers

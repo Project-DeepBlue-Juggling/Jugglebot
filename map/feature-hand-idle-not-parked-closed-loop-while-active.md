@@ -17,7 +17,7 @@ links:
 - https://github.com/Project-DeepBlue-Juggling/Jugglebot/issues/19
 filed_by: harrison
 night_skip: owner-session
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: 'TKT-27 answered: a safety-bearing plan with an arm rung, for your Session.'
 ---
 

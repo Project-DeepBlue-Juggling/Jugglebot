@@ -18,7 +18,7 @@ links:
 - logbook/2026-11-18-sitting-debrief.md
 filed_by: claude
 night_skip: too-large
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: 'Rated m: the fix changes what a live Catch reads, and why steady Throws escape is untested; not built unattended.'
 ---
 

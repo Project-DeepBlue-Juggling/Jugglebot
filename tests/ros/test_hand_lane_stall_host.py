@@ -1,4 +1,4 @@
-"""Host side of the can-bridge FW 47 Hand stall guard (BUG-123).
+"""Host side of the can-bridge FW 48 Hand stall guard (BUG-123).
 
 The firmware IDLEs the Hand and latches FaultState HAND_STALL; the host must
 (1) decode and name it, (2) put the reason on every refused command so the

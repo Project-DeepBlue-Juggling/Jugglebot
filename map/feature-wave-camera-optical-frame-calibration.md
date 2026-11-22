@@ -19,7 +19,7 @@ links:
 parent: wave-camera-can3
 filed_by: claude
 night_skip: sitting
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: A measurement on the robot, owner hands.
 ---
 

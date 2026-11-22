@@ -58,7 +58,11 @@
     --left-sidebar-width: 280px;
 
     /* Chart panel */
-    --chart-panel-height: 300px;
+    --chart-panel-height: 300px;           /* panel height with ONE chart group shown (the top handle) */
+    /* --chart-panel-both-height: panel height with BOTH groups shown; set inline by main.js once the handle was
+       dragged, else charts.css falls back to the single height + 200px */
+    --imu-chart-height: 200px;
+    --imu-divider-height: 5px;
 
     /* Typography */
     --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
@@ -160,26 +164,6 @@ html, body {
     background: var(--accent-blue);
 }
 
-#chart-toggle-label,
-#chart-toggle-chevron {
-    font-size: 10px;
-    color: var(--text-muted);
-    pointer-events: auto;
-    cursor: pointer;
-    line-height: 6px;
-    opacity: 0;
-    transition: opacity var(--transition-fast);
-}
-
-#chart-resize-handle:hover #chart-toggle-label,
-#chart-resize-handle:hover #chart-toggle-chevron {
-    opacity: 1;
-}
-
-#chart-toggle-chevron.collapsed {
-    transform: rotate(180deg);
-}
-
 /* Chart panel */
 #chart-panel {
     grid-column: 1 / -1;
@@ -192,10 +176,6 @@ html, body {
     flex-direction: column;
 }
 
-#chart-panel.collapsed {
-    height: 0 !important;
-    border-top: none;
-}
 
 /* Draggable resize handle (left sidebar) */
 #left-resize-handle {

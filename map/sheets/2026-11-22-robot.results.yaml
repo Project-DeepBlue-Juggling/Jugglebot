@@ -1,0 +1,87 @@
+schema: 2
+steps:
+  1:
+    comments: ''
+    saved_at: 2026-11-22 21:03
+    status: done
+  2:
+    comments: ''
+    saved_at: 2026-11-22 21:03
+    status: done
+  3:
+    comments: ''
+    saved_at: 2026-11-22 21:04
+    status: done
+  4:
+    comments: This is not possible - LEVELLING only holds the Platform still for a
+      brief duration. LEVEL pose should be identical to ACTIVE, though.
+    saved_at: 2026-11-22 21:04
+    status: skipped
+  5:
+    comments: ''
+    saved_at: 2026-11-22 21:04
+    status: done
+  6:
+    comments: ''
+    saved_at: 2026-11-22 21:04
+    status: done
+  7:
+    comments: 'As soon as I went to upload the IMU data, I got: " 21:05:34.047 teensy
+      ERROR Teensy guard FAULT LATCHED: fault_state=SETPOINT_STALE — leg output is
+      now SUPPRESSED and e very leg command (incl. DEACTIVATE, which returns ERR_BUS_DOWN)
+      will be refused. Recover with: ros2 service call /clear_err ors std_srvs/srv/Trigger
+      21:05:34.051 trajectory ERROR Teensy guard LATCHED (SETPOINT_STALE) while streaming
+      — collapsing the command onto the mea sured encoder via a profiled descent;
+      target advancement suspended until CLEAR_ERRORS (recover with: ros2 service
+      call /rec over std_srvs/srv/Trigger) 21:05:34.058 trajectory guard descent installed
+      — easing the command down to the measured pose (x=-0.9 y=0.0 z=170.2 mm) over
+      0.20 s, then holding 21:05:34.132 orchestrator ACTIVE -> FAULT (forced) 21:05:34.134
+      orchestrator WARN FAULT cause — no robot_state.error[] strings (guard_latched=True,
+      boot_timed_out=False) 21:05:34.154 teensy IMU upload ended early: aborted: fault
+      " Though that was in TRAJECTORY. In STANDBY, the upload went ahead as expected.
+      Took just under 60 seconds.'
+    saved_at: 2026-11-22 21:08
+    status: done
+  8:
+    comments: ''
+    saved_at: 2026-11-22 21:08
+    status: done
+  9:
+    comments: ''
+    saved_at: 2026-11-22 21:08
+    status: done
+  10:
+    comments: Was faster! ~45 sec here Can you please also get rid of the GC_PROBE
+      console log lines for my launches? They really clog up the feed.
+    saved_at: 2026-11-22 21:11
+    status: done
+  11:
+    comments: ''
+    saved_at: 2026-11-22 21:11
+    status: done
+  12:
+    comments: ''
+    saved_at: 2026-11-22 21:12
+    status: done
+  13:
+    comments: ''
+    saved_at: 2026-11-22 21:13
+    status: done
+  14:
+    comments: ''
+    saved_at: 2026-11-22 21:15
+    status: done
+  16:
+    comments: ''
+    saved_at: 2026-11-22 21:18
+    status: done
+  17:
+    comments: ''
+    saved_at: 2026-11-22 21:18
+    status: done
+verdicts:
+  15:
+    IDEA-20:
+      notes: Isn't this unnecessary because this is the end of the SItting? Doesn't
+        this get reset when the next launch starts up?
+      saved_at: 2026-11-22 21:16

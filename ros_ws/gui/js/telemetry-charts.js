@@ -825,10 +825,8 @@ function initChartVisibilityToggles() {
 // ---- Hide/show chart grid (toolbar stays visible) ----
 
 /**
- * localStorage key for the grid-hidden toggle.  Distinct from the
- * resize-handle's 'jugglebot-chart-collapsed' (which collapses the WHOLE
- * panel, toolbar included) — this one hides only #chart-grid so the toolbar
- * banner stays usable and the button can toggle its own label in place.
+ * localStorage key for the grid-hidden toggle: hides only #chart-grid so the
+ * toolbar banner stays usable and the button can toggle its own label in place.
  */
 const CHART_GRID_HIDDEN_KEY = 'jugglebot-chart-grid-hidden';
 
@@ -836,7 +834,7 @@ const CHART_GRID_HIDDEN_KEY = 'jugglebot-chart-grid-hidden';
 function applyChartGridToggleUI(hidden) {
     const btn = document.getElementById('chart-grid-toggle-btn');
     if (!btn) return;
-    btn.textContent = hidden ? 'Show charts' : 'Hide charts';
+    btn.textContent = hidden ? 'Show ODrive charts' : 'Hide ODrive charts';
     btn.classList.toggle('active', hidden);
 }
 
@@ -888,6 +886,7 @@ function setEventMarkersHidden(hidden) {
     try { localStorage.setItem(EVENT_MARKERS_HIDDEN_KEY, hidden ? 'true' : 'false'); } catch { /* ignore */ }
     if (hidden) clearMarkerHover();
     redrawAllOverlays();
+    for (const cb of markerVisibilityListeners) { try { cb(); } catch { /* listener error: skip */ } }
 }
 
 function initChartGridToggle() {
@@ -1634,7 +1633,8 @@ export function playheadCanvasX(p, xMin, xMax, left, width) {
     return left + (p - xMin) / (xMax - xMin) * width;
 }
 
-function drawReplayPlayhead(u) {
+/** Also the IMU charts' playhead hook (imu-charts.js): a no-op outside REPLAY (replayStore is null). */
+export function drawReplayPlayhead(u) {
     const ctx = u.ctx;
     if (!replayStore || !ctx || !u.bbox) return;
     const { left, top, width, height } = u.bbox;
@@ -2186,6 +2186,14 @@ function sameIds(a, b) {
 
 /** Events whose marker line lies within the hover band of the cursor on `u`,
  *  in time order.  Empty when markers are hidden. */
+/** Externally built charts (the IMU time charts) that also show the replay span's Throw / Catch markers beyond the
+ *  playhead (event-store.js setSpanEvents). The ODrive charts are never in it. */
+const spanMarkerCharts = new WeakSet();
+
+function eventsForChart(u, xMin, xMax) {
+    return getEventsInRange(xMin, xMax, spanMarkerCharts.has(u) ? { span: true } : undefined);
+}
+
 function hitTestMarkers(u, clientX) {
     if (eventMarkersHidden) return [];
     const xMin = u.scales.x.min;
@@ -2193,7 +2201,7 @@ function hitTestMarkers(u, clientX) {
     if (xMin == null || xMax == null) return [];
     const px = clientX - u.over.getBoundingClientRect().left;
     const hits = [];
-    for (const ev of getEventsInRange(xMin, xMax)) {
+    for (const ev of eventsForChart(u, xMin, xMax)) {
         // valToPos without `canvas` = CSS px from the plot-area left edge,
         // the same frame as `px`.
         if (Math.abs(u.valToPos(ev.t, 'x') - px) <= MARKER_HOVER_TOL_PX) hits.push(ev);
@@ -2270,6 +2278,49 @@ function clearMarkerHover() {
     applyMarkerHover();
     markerHover = null;
     u.redraw(false, false);
+}
+
+/** Draw hook for charts that live outside this module (the IMU time charts): the same event markers as
+ *  the ODrive charts, clipped to the plot area. */
+export function drawEventMarkers(u) {
+    spanMarkerCharts.add(u);
+    const ctx = u.ctx;
+    if (!ctx || !u.bbox || u.scales.x.min == null || u.scales.x.max == null) return;
+    const { left, top, width, height } = u.bbox;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(left, top, width, height);
+    ctx.clip();
+    paintEventMarkers(u);
+    ctx.restore();
+}
+
+/** Marker tooltip hover (same bubble, same Event Log tint) for an externally built chart. */
+export function attachEventMarkerHover(u) {
+    spanMarkerCharts.add(u);
+    const over = u.over;
+    over.addEventListener('mousemove', (ev) => {
+        const prevIds = markerHover && markerHover.u === u ? markerHover.ids : [];
+        markerHover = { u, clientX: ev.clientX, clientY: ev.clientY, ids: prevIds };
+        const ids = applyMarkerHover();
+        if (!sameIds(ids, prevIds)) u.redraw(false, false);
+    });
+    over.addEventListener('mouseleave', clearMarkerHover);
+}
+
+/** Forget a hover on `u` (call before destroying it: mouseleave does not fire then). */
+export function releaseEventMarkerHover(u) {
+    if (!markerHover || markerHover.u !== u) return;
+    markerHover.clientX = -Infinity;
+    applyMarkerHover();
+    markerHover = null;
+}
+
+const markerVisibilityListeners = new Set();
+/** cb() whenever the "Hide/Show event logs" toggle changes. Returns an unsubscribe fn. */
+export function onEventMarkerVisibility(cb) {
+    markerVisibilityListeners.add(cb);
+    return () => markerVisibilityListeners.delete(cb);
 }
 
 // ---- Sample dots: where the real data points are -----------------------
@@ -2422,37 +2473,20 @@ function redrawAllOverlays() {
 }
 
 /**
- * Draw hook — invoked by uPlot after its own series/axis paint.  We draw:
- *   0. Sample dots while a chart is hovered (drawSampleDots).
- *   1. Event markers: faint vertical lines at each in-range event timestamp.
- *   2. Delta-cursor bookmarks: bright vertical lines (A cyan, B cyan dashed)
- *      with the A/B labels at the top of the plot area.
- *
- * Everything is in canvas pixels — u.valToPos with `canvas=true` returns
- * the right coord system for the 2D ctx.
+ * The event-marker pass of the draw hook, on its own so the IMU charts (imu-charts.js) draw the very
+ * same markers: faint lines, thicker hovered ones (tooltip text via applyMarkerHover) and the
+ * highlighted event's tag. Expects the plot-area clip to be set by the caller.
  */
-function drawChartOverlays(u) {
+function paintEventMarkers(u) {
     const ctx = u.ctx;
-    if (!ctx || !u.bbox) return;
     const { left, top, width, height } = u.bbox;
     const xMin = u.scales.x.min;
     const xMax = u.scales.x.max;
-    if (xMin == null || xMax == null) return;
-
-    ctx.save();
-    // Clip to the plot area so marker lines don't bleed into tick labels.
-    ctx.beginPath();
-    ctx.rect(left, top, width, height);
-    ctx.clip();
-
-    // ---- Sample dots (hover only; under the markers) ----
-    drawSampleDots(u);
-
     // ---- Event markers ----
     // One pass: un-highlighted events drawn faint, the highlighted one drawn
     // thicker + fully opaque on top so it pops against a marker forest.
     // Hidden by the toolbar's "Hide event logs" toggle → no markers, no tag.
-    const evs = eventMarkersHidden ? [] : getEventsInRange(xMin, xMax);
+    const evs = eventMarkersHidden ? [] : eventsForChart(u, xMin, xMax);
     const hlId = getHighlightedEventId();
     let hlEvent = null;
     // A chart-marker hover lives on this chart only.  Re-hit-test here so the
@@ -2483,6 +2517,22 @@ function drawChartOverlays(u) {
         ctx.moveTo(xPx, top);
         ctx.lineTo(xPx, top + height);
         ctx.stroke();
+    }
+
+    // Throw (up triangle, top edge) and Catch (down triangle, top edge) keep a distinct shape on top of their colour.
+    const gs = 4.5 * devicePixelRatio;
+    for (const ev of evs) {
+        if (ev.type !== 'throw' && ev.type !== 'catch') continue;
+        const xPx = u.valToPos(ev.t, 'x', true);
+        ctx.fillStyle = EVENT_COLORS[ev.type];
+        ctx.beginPath();
+        if (ev.type === 'throw') {
+            ctx.moveTo(xPx, top + 1); ctx.lineTo(xPx - gs, top + 2 * gs); ctx.lineTo(xPx + gs, top + 2 * gs);
+        } else {
+            ctx.moveTo(xPx - gs, top); ctx.lineTo(xPx + gs, top); ctx.lineTo(xPx, top + 2 * gs - 1);
+        }
+        ctx.closePath();
+        ctx.fill();
     }
 
     if (hlEvent) {
@@ -2518,6 +2568,36 @@ function drawChartOverlays(u) {
             ctx.fillText(hlEvent.label, tagX + padX, top + tagH / 2);
         }
     }
+}
+
+/**
+ * Draw hook — invoked by uPlot after its own series/axis paint.  We draw:
+ *   0. Sample dots while a chart is hovered (drawSampleDots).
+ *   1. Event markers: faint vertical lines at each in-range event timestamp.
+ *   2. Delta-cursor bookmarks: bright vertical lines (A cyan, B cyan dashed)
+ *      with the A/B labels at the top of the plot area.
+ *
+ * Everything is in canvas pixels — u.valToPos with `canvas=true` returns
+ * the right coord system for the 2D ctx.
+ */
+function drawChartOverlays(u) {
+    const ctx = u.ctx;
+    if (!ctx || !u.bbox) return;
+    const { left, top, width, height } = u.bbox;
+    const xMin = u.scales.x.min;
+    const xMax = u.scales.x.max;
+    if (xMin == null || xMax == null) return;
+
+    ctx.save();
+    // Clip to the plot area so marker lines don't bleed into tick labels.
+    ctx.beginPath();
+    ctx.rect(left, top, width, height);
+    ctx.clip();
+
+    // ---- Sample dots (hover only; under the markers) ----
+    drawSampleDots(u);
+
+    paintEventMarkers(u);
 
     // ---- Delta-cursor bookmarks ----
     // Drawn brighter and with a little A/B tag so they stand out from the
@@ -2736,6 +2816,14 @@ function isoFilenameStamp() {
 }
 
 /**
+ * Optional extra CSV columns (the IMU group, imu-charts.js): a function returning null (none) or
+ * {header: string[], merge(timestamps, n) -> [{t, k, j}], values(j) -> string[]}.  `merge` returns the
+ * time-sorted union rows (k = motor row or -1, j = extra sample or -1).  With none the export is unchanged.
+ */
+let csvExtraProvider = null;
+export function setCsvExtraProvider(fn) { csvExtraProvider = typeof fn === 'function' ? fn : null; }
+
+/**
  * Dump the current contents of every per-motor cache to one wide CSV
  * (timestamp + one column per signal × motor).  Drives a browser download
  * via an object-URL Blob, filename stamped with the local ISO time.
@@ -2764,10 +2852,24 @@ function exportTelemetryCSV() {
         }
     }
 
+    const extra = csvExtraProvider ? csvExtraProvider() : null;
+    if (extra) header.push(...extra.header);
     const rows = [header.join(',')];
     const N = master.length;
-    for (let k = 0; k < N; k++) {
-        const cells = [master.timestamps[k].toFixed(3)];
+    // Without extra columns: one row per motor sample (k).  With them: the descriptors of extra.merge, where a
+    // source with no sample at that time leaves its cells empty.
+    const plan = extra ? extra.merge(master.timestamps, N) : null;
+    const nRows = plan ? plan.length : N;
+    const nMotorCells = MOTOR_COUNT * SIGNAL_GROUPS.length;
+    for (let r = 0; r < nRows; r++) {
+        const k = plan ? plan[r].k : r;
+        const cells = [(plan ? plan[r].t : master.timestamps[k]).toFixed(3)];
+        if (k < 0) {
+            for (let c = 0; c < nMotorCells; c++) cells.push('');
+            cells.push(...extra.values(plan[r].j));
+            rows.push(cells.join(','));
+            continue;
+        }
         for (let i = 0; i < MOTOR_COUNT; i++) {
             const store = stores[i];
             // Gate on store.length so empty stores (e.g. BB motors when
@@ -2779,6 +2881,10 @@ function exportTelemetryCSV() {
                 const v = col ? col[k] : NaN;
                 cells.push(Number.isFinite(v) ? v.toFixed(6) : '');
             }
+        }
+        if (extra) {
+            if (plan[r].j >= 0) cells.push(...extra.values(plan[r].j));
+            else for (let c = 0; c < extra.header.length; c++) cells.push('');
         }
         rows.push(cells.join(','));
     }
@@ -2902,11 +3008,6 @@ function initKeyboardShortcuts() {
         // (browser shortcuts like Ctrl+R reload, etc).
         if (isTypingTarget(document.activeElement)) return;
         if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
-
-        // Skip if the chart panel is collapsed — shortcuts would be confusing
-        // when the target UI isn't visible.
-        const panel = document.getElementById('chart-panel');
-        if (panel && panel.classList.contains('collapsed')) return;
 
         switch (ev.key) {
             case ' ':
@@ -3296,10 +3397,8 @@ function attachHighlightHandlers(el, chartIdx) {
 function repaintAllCharts(force = false) {
     pendingRepaint = false;
 
-    // Skip repaint if panel is collapsed, or paused unless explicitly forced
+    // Skip repaint when paused unless explicitly forced
     // (user-driven rebuilds must reflect UI state even while paused).
-    const panel = document.getElementById('chart-panel');
-    if (panel && panel.classList.contains('collapsed')) return;
     if (paused && !force) return;
 
     // Pick the visible window: manual pan/zoom wins over the live anchor.

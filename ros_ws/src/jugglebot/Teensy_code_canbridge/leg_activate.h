@@ -101,7 +101,7 @@ uint8_t activate_result(uint8_t axis); // last ActivateResult for an axis (0..6,
 constexpr uint8_t DIAG_FLAG_ACTIVATE_STALL = 0x04u;
 bool     activate_stalled(uint8_t axis);
 
-// ── Hand stall guard on the streamed lane and latched holds (FW 47, BUG-123) ──
+// ── Hand stall guard on the streamed lane and latched holds (FW 48, BUG-123) ──
 //  Every activate_step() tick, while the ladder above does NOT target the Hand
 //  (the streamed lane, a lane STOP, a guard-latched hold, Homing), each NEW Hand
 //  Get_Iq sample (axes[6].iq_timestamp_us advanced) is tested for

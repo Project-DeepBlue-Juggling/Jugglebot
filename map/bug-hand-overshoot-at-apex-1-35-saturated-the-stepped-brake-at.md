@@ -21,7 +21,7 @@ links:
 - logbook/2026-11-11-sitting-debrief.md
 filed_by: jugglebot-3d
 night_skip: sitting
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: FEAT-45 rungs B and C, then FEAT-49, are next on the bench and robot Hand.
 ---
 

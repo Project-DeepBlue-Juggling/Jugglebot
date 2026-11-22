@@ -29,7 +29,7 @@ struct AxisState {
   volatile uint64_t pos_timestamp_us = 0;      // monotonic micros64 at last encoder update
   volatile float    iq_setpoint      = 0.0f;   // A
   volatile float    iq_measured      = 0.0f;   // A
-  // monotonic micros64 at the last Get_Iq decode (FW 47, BUG-123): the Hand lane
+  // monotonic micros64 at the last Get_Iq decode (FW 48, BUG-123): the Hand lane
   // stall guard measures its window on real sample arrivals. atomic_*_u64 only.
   volatile uint64_t iq_timestamp_us  = 0;
   volatile float    temp_fet        = 0.0f;   // degC

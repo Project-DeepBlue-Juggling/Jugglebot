@@ -18,7 +18,7 @@ links:
 - tools/lib/live_session.sh
 filed_by: claude
 night_skip: frozen-path
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: The fix is in tools/lib/ and its guard test, both on the Night Shift never-list; closes with BUG-101 in a day Session.
 ---
 

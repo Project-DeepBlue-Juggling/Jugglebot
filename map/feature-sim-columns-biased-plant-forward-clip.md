@@ -19,7 +19,7 @@ links:
 - logbook/2026-11-02-jb32-sim-columns-biased-plant-forward-clip.md
 filed_by: claude
 night_skip: waiting-trigger
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: The remaining slice replaces your deliberate boxes=None, and its trigger has not fired.
 ---
 

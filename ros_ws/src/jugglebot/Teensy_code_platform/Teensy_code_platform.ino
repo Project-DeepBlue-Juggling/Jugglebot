@@ -201,7 +201,7 @@
  *        ever faults).  Kill switch: PLATFORM_IMU_ENABLED (below the includes).
  */
 constexpr char     FW_NAME[]  = "jugglebot-platform";
-constexpr uint16_t FW_VERSION = 12;  // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
+constexpr uint16_t FW_VERSION = 13;  // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
                                      //      feedforward, C-HAND-2).
                                      // 2→3: 2026-08-18 hand END-STOP correction — BEHAVIOURAL.
                                      //      Geometry::HAND_MOTOR_HARD_STOP_REVS 11.1 → 10.8 rev
@@ -254,6 +254,14 @@ constexpr uint16_t FW_VERSION = 12;  // 1→2: 2026-07-29 throwDecelToTorque (po
                                      //      retry policy (a failed FIFO count/burst/flush is
                                      //      recovered and retried, BACKOFF only on the 3rd
                                      //      in a row; imu_service.h drain_step).
+                                     // 12→13: 2026-11-21 Platform IMU upload and rate: a READ
+                                     //      contiguous with the active block extends it
+                                     //      (READ_EXTENDED, so the Jetson can chain READs with
+                                     //      no turnaround), DATA frames on a fixed schedule
+                                     //      (due += gap, at most 2 frames of catch-up), and
+                                     //      IMU_CMD SET_ODR selects a 1 or 2 kHz capture (RAM
+                                     //      only; ODR_2K status flag; build flag
+                                     //      PLATFORM_IMU_BOOT_ODR_HZ). IMU-only.
 
 /*----------------------------------------------------------------------------*/
 /*                                CAN BUS SET‑UP                              */
@@ -446,6 +454,8 @@ static_assert(PLATFORM_IMU_DIAG, "the CAN-mask variant is a diagnostic build onl
 static_assert(PLATFORM_IMU_I2C_HZ >= 1000000, "CAN masked over a 400 kHz burst (3.2 ms) overflows the RX FIFO");
 #endif
 static_assert(ImuService::INIT_PENDING == icm42688::Driver::INIT_PENDING, "imu_service.h mirrors the driver");
+static_assert(PLATFORM_IMU_BOOT_ODR_HZ == 1000 || PLATFORM_IMU_I2C_HZ >= 1000000,
+              "2 kHz needs the 1 MHz bus (~75 % of a 400 kHz bus); SET_ODR refuses it on a 400 kHz build too");
 static_assert(ImuService::ERR_BAD_PACKET == icm42688::ERR_BAD_PACKET, "imu_service.h mirrors the driver");
 static_assert(ImuService::BURST_PKTS <= icm42688::Driver::BURST_PKTS, "one burst is one Wire read");
 
@@ -1009,13 +1019,13 @@ bool imuWireStarted = false;
 struct ImuIo {
   /*  Wire is configured here, at the first probe (>= BOOT_SETTLE_MS after boot), not in
    *  setup(): a fault in Wire's set-up is then inside the region the boot settle protects. */
-  void init_start() {
+  void init_start(uint16_t odr_hz) {
     if (!imuWireStarted) {
       Wire.begin();
       Wire.setClock(IMU_I2C_HZ);
       imuWireStarted = true;
     }
-    imuChip.initStart();
+    imuChip.initStart(0, odr_hz);   // FW 13: the rate SET_ODR selected (or the boot rate)
   }
 #if PLATFORM_IMU_DIAG
   /*  Diagnostic build: every Wire op runs through op(), which clears the driver's failure

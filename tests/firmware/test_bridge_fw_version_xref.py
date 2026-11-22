@@ -294,14 +294,22 @@ def test_the_bump_history_records_what_this_version_carries():
     assert 'SAFETY PREDICATE' in m46.group(1), m46.group(1)
     assert 'CAN_AXIS_SILENCE_TIMEOUT_US' in m46.group(1), m46.group(1)
     assert 'NO WIRE CHANGE' in m46.group(1) and 'PROTOCOL_VERSION stays 14' in m46.group(1), m46.group(1)
-    # FW 47 — BUG-123 Hand stall guard on the streamed lane and latched holds.
-    # The substance: a SAFETY GUARD (the owner's 40 A / 1 rev/s / 150 ms, then
-    # Hand IDLE and a named HAND_STALL latch), additive on the wire.
+    # FW 47 — SET_ODR relay (IDEA-20 run-time capture rate).  The substance: one
+    # more op through the existing PLATFORM_IMU_CTRL RPC, allowed while Armed, and
+    # no wire change, so only BRIDGE_FW_CHECK says whether the relay is aboard.
     m47 = re.search(r'^// 46→47:(.*)$', text, re.M)
     assert m47 is not None, "FW 47 history line missing"
+    for needle in ('IDEA-20', 'SET_ODR 0x07', 'Platform FW 13', 'Allowed while Armed',
+                   'NO WIRE CHANGE', 'PROTOCOL_VERSION stays 14'):
+        assert needle in m47.group(1), (needle, m47.group(1))
+    # FW 48 — BUG-123 Hand stall guard on the streamed lane and latched holds.
+    # The substance: a SAFETY GUARD (the owner's 40 A / 1 rev/s / 150 ms, then
+    # Hand IDLE and a named HAND_STALL latch), additive on the wire.
+    m48 = re.search(r'^// 47→48:(.*)$', text, re.M)
+    assert m48 is not None, "FW 48 history line missing"
     for needle in ('BUG-123', 'SAFETY GUARD', 'HAND_LANE_STALL_IQ_A', 'HAND_STALL',
                    'DIAG_FLAG_LANE_STALL', 'PROTOCOL_VERSION stays 14'):
-        assert needle in m47.group(1), (needle, m47.group(1))
+        assert needle in m48.group(1), (needle, m48.group(1))
 
 
 def test_the_version_this_release_pins_is_actually_uplinked():

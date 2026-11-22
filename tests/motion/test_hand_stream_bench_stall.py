@@ -1,7 +1,7 @@
-"""Offline cover for ``hand_stream_bench.py --stage stall`` (BUG-123, can-bridge FW 47).
+"""Offline cover for ``hand_stream_bench.py --stage stall`` (BUG-123, can-bridge FW 48).
 
 The stage COMMANDS THE HAND MOTOR (it pushes the bench Hand into its bottom stop until the
-FW 47 lane stall guard IDLEs it) and lives in tests/hardware; its sequence, abort, restores
+FW 48 lane stall guard IDLEs it) and lives in tests/hardware; its sequence, abort, restores
 and verdict live in ``tests/hardware/hand_stall_stage.py`` and run here against a fake
 link with a virtual clock and a toy plant: the Hand follows the command down to the stop,
 the current then grows with the command's overshoot up to the drive's limit, and the fake
@@ -26,7 +26,7 @@ STOP_HOMED = -0.10
 
 
 class FakeIO:
-    def __init__(self, *, fw=47, guard=True, clamp_gain=200.0, orig_limit=70.0,
+    def __init__(self, *, fw=48, guard=True, clamp_gain=200.0, orig_limit=70.0,
                  limit_takes=True, park=0.5, raise_on_send=None, raise_on_sample_after=None,
                  second_rise=False, bit3_before=False, temp=30.0):
         self.t = 0.0
@@ -202,14 +202,16 @@ def test_shift_puts_the_ramp_end_past_the_stop():
 
 # ── refusals ────────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("fw", [46, 36, None])
-def test_firmware_before_47_is_refused_before_anything(fw):
+@pytest.mark.parametrize("fw", [47, 46, 36, None])
+def test_firmware_before_48_is_refused_before_anything(fw):
+    # 47 matters most: main's FW 47 (the IMU SET_ODR relay, 2026-11-22) has NO stall
+    # guard; the guard was renumbered 47 -> 48 when the two collided.
     io = FakeIO(fw=fw)
     rc, lines = _run(io)
     assert rc == 2
     assert not [n for n in _names(io) if n != "read_limits"]
     assert ST.stall_fw_refusal(fw) is not None
-    assert ST.stall_fw_refusal(47) is None and ST.stall_fw_refusal(48) is None
+    assert ST.stall_fw_refusal(48) is None and ST.stall_fw_refusal(49) is None
 
 
 def test_preflight_reports_every_refusal_at_once():

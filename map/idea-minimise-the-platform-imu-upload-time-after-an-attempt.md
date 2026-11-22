@@ -4,7 +4,7 @@ kind: idea
 title: Minimise the Platform IMU upload time after an Attempt
 status: backlog
 created: '2026-11-19'
-updated: '2026-11-20T12:38:26Z'
+updated: '2026-11-21T00:22:15Z'
 owners: []
 priority: low
 effort: m
@@ -16,12 +16,13 @@ blocked_by: []
 links:
 - plans/active/platform-imu.md
 - logbook/2026-11-20-sitting-debrief-robot-2.md
+- logbook/2026-11-21-platform-imu-upload-hole-fill.md
+- logbook/2026-11-21-platform-imu-fw13-chaining-pacing-2khz.md
 parent: two-ball-oval
 filed_by: claude
-night_skip: input-decision
-night_skip_on: '2026-11-21'
-night_skip_note: On option 1 the night builds the hole-fill change with tests and holds it for a Sitting check; 2-3 go to a day Session.
-night_skip_input: 'Which lever on TKT-88: the Jetson-only hole-fill change, firmware counters first, sample packing, or leave it.'
+night_skip: owner-session
+night_skip_on: '2026-11-22'
+night_skip_note: 'Your TKT-88 answer: a day Session is already on it; the night leaves it pinned for a few days.'
 ---
 
 Keep this area open (owner, 2026-11-19): once the MVP works, explore shortening the post-Attempt IMU upload. Three levers: tighter sample packing or compression; a slower setpoint heartbeat while holding (the 500 Hz stream stays as is for now: it feeds the ODrive watchdog and avoids a rate switch on the Leg path); a higher measured rate from the P4 ramp.
@@ -47,3 +48,5 @@ Recommendation: 1 now (cheap, Jetson-only, attacks the measured 13 s of re-readi
 ## Progress
 
 - 2026-11-20: Sitting 2026-11-20: Armed uploads took 79 s (ring) and 84 s (32 s span) against 56 s at rest, with 14651-19974 duplicate frames (158 at rest), up to 6 block timeouts, CAN1 at 74-77 %. A juggle goal was refused 7 s into a 37 s upload. Diagnosis in logbook 2026-11-20-sitting-debrief-robot-2.
+- 2026-11-21: 2026-11-21: Jetson-only hole-fill change landed (READs cover one cluster of holes, settle 5 ms); modelled 79 s to about 64 s Armed. To verify on the robot from the new upload-finished log line (logbook 2026-11-21-platform-imu-upload-hole-fill).
+- 2026-11-21: 2026-11-21: FW 13 flashed; at rest a whole-ring upload takes 52.6 s at gap 80 and 41.4 s at gap 63 with 0 duplicates (56.25 s and 158 on FW 12); 250 of 263 READs chained. Armed check and the 1600 frames/s trial are on IDEA-20's Sitting row (logbook 2026-11-21-platform-imu-fw13-chaining-pacing-2khz).

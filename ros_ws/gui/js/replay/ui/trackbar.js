@@ -15,6 +15,7 @@ import { h } from './dom.js';
 import { buildLink, copyText } from './deeplink.js';
 import { nameFromId } from './format.js';
 import { postRename } from './rename.js';
+import { bandGeometry, fetchBandCaptures } from './imu-bands.js';
 import {
     fmtClock, frac, timeAt, clampRange, zoomAbout, dragToRange, renderOverview, MIN_SPAN, ZOOM_STEP,
 } from './overview.js';
@@ -83,6 +84,7 @@ export function createTrackbar(deps) {
     let pendingScrub = null;                      // latest bar-drag time, flushed once per frame (latest wins)
     let lastFull = { t0: 0, t1: 0 };
     let unsubMode = null, unsubMarker = null;
+    let imuCaps = [], imuKey = '', imuDrawn = '';  // IMU capture bands: list fetched once per recording
     let markT = null;                             // hover marker time (FEAT-35), set by mode 'marker' events; null = none
 
     const engine = () => (mode.engine ? mode.engine() : null);
@@ -288,7 +290,8 @@ export function createTrackbar(deps) {
             mark: h(doc, 'div', { cls: 'rp-hovermark', hidden: true }),
             sel: h(doc, 'div', { cls: 'rp-sel', hidden: true }),
         };
-        els.bar = h(doc, 'div', { cls: 'rp-bar', id: 'rp-bar', on: { mousedown: onBarDown } }, [els.mark, els.head]);
+        els.imuBands = h(doc, 'div', { cls: 'rp-imu-bands' });
+        els.bar = h(doc, 'div', { cls: 'rp-bar', id: 'rp-bar', on: { mousedown: onBarDown } }, [els.imuBands, els.mark, els.head]);
         els.ovStrip = h(doc, 'div', { cls: 'rp-ov-strip' });
         els.ov = h(doc, 'div', { cls: 'rp-ov', id: 'rp-ov', on: { mousedown: onOvDown, dblclick: resetZoom } }, [els.ovStrip, els.sel]);
         // The pill + its preset menu; the menu opens above the pill on hover (CSS, .rp-speed-wrap:hover).
@@ -334,6 +337,30 @@ export function createTrackbar(deps) {
         }, () => { tlFetching = false; });
     }
 
+    /** IMU capture list of the open recording, fetched once per (recording, range); failure = no bands. */
+    function fetchImuBands(src, r) {
+        const key = (src && src.id ? src.id : '') + '|' + r.t0 + '|' + r.t1;
+        if (key === imuKey || !(r.t1 > r.t0)) return;
+        imuKey = key; imuCaps = []; imuDrawn = '';
+        const tok = tlToken;
+        fetchBandCaptures(deps.fetch || globalThis.fetch, r.t0, r.t1).then((caps) => {
+            if (tok !== tlToken || key !== imuKey || !isMounted) return;
+            imuCaps = caps; imuDrawn = '';
+        });
+    }
+    function drawImuBands(v) {
+        const key = imuKey + '|' + imuCaps.length + '|' + v.v0 + '|' + v.v1;
+        if (key === imuDrawn) return;
+        imuDrawn = key;
+        els.imuBands.replaceChildren();
+        for (const g of bandGeometry(imuCaps, v.v0, v.v1)) {
+            els.imuBands.appendChild(h(doc, 'div', { cls: 'rp-imu-band', title: g.title, attrs: { 'data-stem': g.stem } }));
+            const el = els.imuBands.children[els.imuBands.children.length - 1];
+            el.style.left = g.left.toFixed(2) + '%';
+            el.style.width = g.width.toFixed(2) + '%';
+        }
+    }
+
     const pctS = (f) => (Math.max(0, Math.min(1, f)) * 100).toFixed(2) + '%';
 
     /** The rAF body (also callable directly by tests). Reads engine.state(); touches the DOM only on change. */
@@ -363,6 +390,8 @@ export function createTrackbar(deps) {
             els.mark.hidden = mf === '';
             if (mf !== '') els.mark.style.left = mf;
         }
+        fetchImuBands(mode.source && mode.source(), r);
+        drawImuBands(v);
         const clock = fmtClock(s.playhead);
         if (clock !== cache.play) { cache.play = clock; els.play.textContent = clock; }
         const elapsed = fmtMMSS(s.playhead - r.t0) + ' / ' + (r.t1 > r.t0 ? fmtMMSS(r.t1 - r.t0) : '?');
@@ -413,7 +442,7 @@ export function createTrackbar(deps) {
         dock.replaceChildren();
         dock.appendChild(root);
         isMounted = true;
-        timeline = null; drawnKey = ''; view = null; tlToken++; frameNo = 0; tlRetryAt = 0;
+        timeline = null; drawnKey = ''; view = null; imuKey = ''; imuCaps = []; imuDrawn = ''; tlToken++; frameNo = 0; tlRetryAt = 0;
         for (const k of Object.keys(cache)) cache[k] = '';
         els.mark.hidden = true;
         if (editingName && !renaming) showNameEdit(false);

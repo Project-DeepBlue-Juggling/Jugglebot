@@ -19,7 +19,8 @@ OP, ST = pc.PlatformImuOp, pc.PlatformImuStatus
 
 
 def build_image(*, n=2000, n_anchors=20, cap_id=0x4A21, boot_id=0x11223344, first_index=500, odr_us=1010.0,
-                wall0_us=1_700_000_000_000_000, local0=4_000_000_000, disc_at=None, seed=1):
+                wall0_us=1_700_000_000_000_000, local0=4_000_000_000, disc_at=None, seed=1, fw_version=11,
+                odr_hz=1000):
     """A frozen-capture image: {seq: 6-byte word}, the header bytes, and the truth to compare against.
 
     The chip clock runs ``odr_us`` us per sample (1 % slow rate error by default); anchors sit every
@@ -55,7 +56,7 @@ def build_image(*, n=2000, n_anchors=20, cap_id=0x4A21, boot_id=0x11223344, firs
     payload_crc = zlib.crc32(sample_bytes, zlib.crc32(anc_bytes)) & 0xFFFFFFFF
     hdr = bytearray(66)
     struct.pack_into("<BBHIIIHHQIHHHBBBBhhHHHHII", hdr, 0, 1, 1, cap_id, boot_id, n, first_index, n_anchors, 0x01,
-                     wall0_us + 5, local0 & 0xFFFFFFFF, 1000, 2048, 328, 49, 6, 38, 4, -321, 4321, 3, 5, 700, 11,
+                     wall0_us + 5, local0 & 0xFFFFFFFF, odr_hz, 2048, 328, 49, 6, 38, 4, -321, 4321, 3, 5, 700, fw_version,
                      payload_crc, 0)
     struct.pack_into("<I", hdr, 62, zlib.crc32(bytes(hdr[:62])) & 0xFFFFFFFF)
     for i in range(11):
@@ -69,6 +70,9 @@ class FakePlatform:
     """Drives an UploadMachine with fake time. Options (all default off):
 
     drop_once      set of seqs dropped the FIRST time they are sent (hole, refilled by a re-read)
+    drop_always    set of seqs never delivered (a word the Platform repeatedly fails to send)
+    loss_p         every frame sent is omitted independently with this probability (the Armed omission
+                   model of the 2026-11-20 debrief); ``loss_seed`` fixes the draw
     drop_block_n   drop every frame of the first N READ blocks (a lost uplink burst)
     dup            set of seqs sent twice
     late           {seq: extra_delay_s}: frame delivered after the block's last frame (reordering)
@@ -81,6 +85,20 @@ class FakePlatform:
     read_status    status code to answer every READ with (a refusal; the board stays frozen)
     resume_ignored RESUME is neither applied nor answered (a lost command: the ring stays frozen)
     freeze_reply_lost  FREEZE is applied but its reply never arrives (the id stays unknown to the host)
+
+    board          12 or 13: model the Platform's ONE sender instead of the per-READ legacy schedule. A READ
+                   reaches the board ``cmd_lat`` after it is sent; the board sends one frame per gap (a fresh
+                   block's first frame no sooner than one gap after the last frame sent) and each frame reaches
+                   the host ``rx_lat`` later. A READ that arrives while a block is active REPLACES it (the rest
+                   of that block is never sent), except on board 13 when its first_seq is the block's end: then
+                   it EXTENDS the block and is answered READ_EXTENDED (spec section 4, READ chaining).
+    cmd_lat, rx_lat  board-model latencies (default 4 ms and 10 ms: about the measured 16 ms READ turnaround)
+    lose_read_replies  set of READ indices (0-based, in send order) whose IMU_REPLY the bridge loses
+    lose_reads     set of READ indices that never reach the board (no reply, no frames)
+    reply_lat      extra seconds a READ's IMU_REPLY takes to reach the host (default 0): above the block's frame
+                   latency the reply arrives AFTER the block's first frames
+    batched        deliver frames like the real bridge: collected and handed to on_records in batches of up to
+                   24 frames every 10 ms (frames reach the host no sooner than their rx time)
     """
 
     def __init__(self, machine, image, **opt):
@@ -99,18 +117,32 @@ class FakePlatform:
         self.reads_seen = 0
         self.lose_replies = opt.get("lose_replies", 0)
         self.corrupt_active = True
+        self.loss_rng = np.random.default_rng(opt.get("loss_seed", 0))
+        self.omitted = 0
         machine._is_armed = lambda: bool(opt.get("armed", False))
+        self.board = opt.get("board")
+        self.bk = None                  # board model: the active block {next, end, gap, gen}
+        self.last_tx = -1.0
+        self.replaced = 0               # board model: READs that cut an active block (FW 12 behaviour)
+        self.extended = 0
+        self.frames_sent = 0
+        self._batch = []
+        self._batch_next = 0.0
 
     def _at(self, dt, fn):
+        self._at_abs(self.t + dt, fn)
+
+    def _at_abs(self, t_abs, fn):
+        # The board model schedules on absolute due times, so its frame pace is not quantised to the 1 ms tick.
         self.n_ev += 1
-        heapq.heappush(self.q, (self.t + dt, self.n_ev, fn))
+        heapq.heappush(self.q, (t_abs, self.n_ev, fn))
 
     def _reply(self, op, status, cid, detail):
         if self.lose_replies > 0:
             self.lose_replies -= 1
             return
         data = struct.pack("<BBHI", op, status, cid, detail)
-        self._at(0.002, lambda: self.m.on_reply(pi.decode_imu_reply(data), self.t))
+        self._at(0.002 + self.opt.get("reply_lat", 0.0), lambda: self.m.on_reply(pi.decode_imu_reply(data), self.t))
 
     # -- the bridge RPC surface the machine calls --
     def send_ctrl(self, op, reason, cid):
@@ -138,13 +170,27 @@ class FakePlatform:
             else:
                 self.frozen = False
                 self.resumed = True
+                self.bk = None
                 self._reply(op, ST.OK, cid, 0)
         elif op == OP.ABORT:
             self.block_gen += 1
+            self.bk = None
             self._reply(op, ST.OK, img["cap_id"], 0)
+        elif op == OP.SET_ODR:
+            # Relayed from can-bridge FW 47 (byte 1 = odr_khz). Platform FW 13 rules: a value other than
+            # 1 or 2 is ERR_BAD_ARGS; FROZEN or UPLOADING (this model's `frozen`) is ERR_FROZEN, nothing
+            # changes and the ring survives; otherwise OK with the selected rate in Hz as the detail.
+            if reason not in (1, 2):
+                self._reply(op, ST.ERR_BAD_ARGS, 0, 0)
+            elif self.frozen:
+                self._reply(op, ST.ERR_FROZEN, img["cap_id"], 0)
+            else:
+                self._reply(op, ST.OK, 0, 1000 * reason)
         return True, "ok"
 
     def send_read(self, cid, first, count, gap):
+        if self.board:
+            return self._board_send_read(cid, first, count, gap)
         used = max(gap, 63) if self.opt.get("armed") else gap
         used = max(used, 40)
         if self.opt.get("corrupt_once") and getattr(self.m, "stats", {}).get("crc_rereads", 0) >= 1:
@@ -175,6 +221,11 @@ class FakePlatform:
             if seq in self.opt.get("drop_once", ()) and seq not in self.sent_once:
                 self.sent_once.add(seq)
                 continue
+            if seq in self.opt.get("drop_always", ()):
+                continue
+            if self.opt.get("loss_p") and self.loss_rng.random() < self.opt["loss_p"]:
+                self.omitted += 1
+                continue
             word = img["words"][seq]
             cor = self.opt.get("corrupt", {})
             if seq in cor and self.corrupt_active:
@@ -184,6 +235,93 @@ class FakePlatform:
             if seq in self.opt.get("dup", ()):
                 self._deliver(gen, delay + 0.001, seq, word)
         return True, "ok"
+
+    # -- the board model (opt board=12|13) --
+    def _board_send_read(self, cid, first, count, gap):
+        used = max(max(gap, 63) if self.opt.get("armed") else gap, 40)
+        idx = len(self.reads)
+        self.reads.append((first, count, gap, used))
+        if idx in self.opt.get("lose_reads", ()):
+            return True, "ok"
+        self._at(self.opt.get("cmd_lat", 0.004), lambda: self._board_read(idx, cid, first, count, used))
+        return True, "ok"
+
+    def _board_reply(self, idx, op, status, cid, detail):
+        if idx in self.opt.get("lose_read_replies", ()):
+            return
+        self._reply(op, status, cid, detail)
+
+    def _board_read(self, idx, cid, first, count, used):
+        img = self.img
+        if self.rebooted or not self.frozen:
+            self._board_reply(idx, OP.READ, ST.ERR_NOT_FROZEN, 0, 0)
+            return
+        if cid != img["cap_id"]:
+            self._board_reply(idx, OP.READ, ST.ERR_WRONG_CAPTURE, img["cap_id"], 0)
+            return
+        if self.opt.get("read_status") is not None:
+            self._board_reply(idx, OP.READ, self.opt["read_status"], img["cap_id"], 0)
+            return
+        detail = first | (count << 16)
+        bk = self.bk
+        if bk is not None and self.board >= 13 and first == bk["end"]:
+            bk["end"] += count
+            bk["gap"] = used
+            self.extended += 1
+            self._board_reply(idx, OP.READ, ST.READ_EXTENDED, cid, detail)
+            return
+        if bk is not None:
+            self.replaced += 1
+        self.block_gen += 1
+        self.bk = {"next": first, "end": first + count, "gap": used, "gen": self.block_gen}
+        self._board_reply(idx, OP.READ, ST.OK, cid, detail)
+        t0 = max(self.t, self.last_tx + used * 10e-6)
+        self._at_abs(t0, lambda g=self.block_gen, d=t0: self._board_tx(g, d))
+
+    def _board_tx(self, gen, due):
+        bk = self.bk
+        if bk is None or bk["gen"] != gen or self.rebooted or not self.frozen:
+            return
+        seq = bk["next"]
+        bk["next"] += 1
+        self.last_tx = due
+        self.frames_sent += 1
+        self._emit(seq, due + self.opt.get("rx_lat", 0.010))
+        if bk["next"] >= bk["end"]:
+            self.bk = None
+        else:
+            nxt = due + bk["gap"] * 10e-6
+            self._at_abs(nxt, lambda: self._board_tx(gen, nxt))
+
+    def _emit(self, seq, t_abs):
+        if seq in self.opt.get("drop_once", ()) and seq not in self.sent_once:
+            self.sent_once.add(seq)
+            return
+        if seq in self.opt.get("drop_always", ()):
+            return
+        if self.opt.get("loss_p") and self.loss_rng.random() < self.opt["loss_p"]:
+            self.omitted += 1
+            return
+        word = self.img["words"][seq]
+        rec = struct.pack("<H", seq) + word
+        t_abs += self.opt.get("late", {}).get(seq, 0.0)
+        if self.opt.get("batched"):
+            self._at_abs(t_abs, lambda: self._batch_in(rec))
+        else:
+            self._at_abs(t_abs, lambda: self.m.on_records(rec, self.t))
+
+    def _batch_in(self, rec):
+        self._batch.append(rec)
+        if len(self._batch) >= 24:
+            self._flush_batch()
+        elif len(self._batch) == 1:
+            self._batch_next = self.t + 0.010
+            self._at_abs(self._batch_next, self._flush_batch)
+
+    def _flush_batch(self):
+        if self._batch:
+            recs, self._batch = b"".join(self._batch), []
+            self.m.on_records(recs, self.t)
 
     def _deliver(self, gen, dt, seq, word):
         rec = struct.pack("<H", seq) + word

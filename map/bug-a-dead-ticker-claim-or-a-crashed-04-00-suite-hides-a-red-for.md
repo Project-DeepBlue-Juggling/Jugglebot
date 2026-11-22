@@ -18,7 +18,7 @@ links: []
 parent: night-shift
 filed_by: claude
 night_skip: frozen-path
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: The claim path is tools/nightly_ticker.sh and the suite runner, both on the never-list.
 ---
 

@@ -248,6 +248,7 @@ PLATFORM_IMU_RING_SAMPLES = 32000
 PLATFORM_IMU_BYTES_PER_SAMPLE = 12
 PLATFORM_IMU_WORD_BYTES = 6
 PLATFORM_IMU_NOMINAL_ODR_HZ = 1000
+PLATFORM_IMU_FAST_ODR_HZ = 2000
 PLATFORM_IMU_ANCHOR_PERIOD_MS = 100
 PLATFORM_IMU_ANCHOR_RING = 400
 PLATFORM_IMU_ANCHOR_BYTES = 18
@@ -269,11 +270,13 @@ class PlatformImuOp(IntEnum):
     RESUME = 0x04
     READ = 0x05
     ABORT = 0x06
+    SET_ODR = 0x07
 
 # IMU_REPLY byte 1
 class PlatformImuStatus(IntEnum):
     OK = 0x00
     ALREADY_FROZEN = 0x01
+    READ_EXTENDED = 0x02
     ERR_BAD_ARGS = 0x10
     ERR_NOT_FROZEN = 0x11
     ERR_WRONG_CAPTURE = 0x12
@@ -281,6 +284,7 @@ class PlatformImuStatus(IntEnum):
     ERR_EMPTY = 0x14
     ERR_DISABLED = 0x15
     ERR_FW_UPDATE = 0x16
+    ERR_FROZEN = 0x17
 
 # IMU_STATUS byte 0
 class PlatformImuState(IntEnum):
@@ -306,6 +310,7 @@ class PlatformImuStatusFlag(IntEnum):
     RING_WRAPPED = 0x04
     I2C_400K = 0x08
     DISCONTINUITY = 0x10
+    ODR_2K = 0x20
 
 # Header bytes 18-19 (bits)
 class PlatformImuCaptureFlag(IntEnum):

@@ -1801,7 +1801,7 @@ TEST_CASE("BUG-19: MOTOR_FB_STALE suppression flushes one vel_ff = 0 hold frame;
   }
 }
 
-// ── FW 47 (BUG-123): the Hand lane stall latch ───────────────────────────────
+// ── FW 48 (BUG-123): the Hand lane stall latch ───────────────────────────────
 //  leg_activate.cpp's lane stall guard IDLEs the Hand and calls
 //  fault_notify_hand_stall(). Here: what the latch does to the rest of the
 //  machine. It must hold the Legs exactly as a Hand ODrive fault does (guard
@@ -1824,7 +1824,7 @@ static void fw47_arm() {
   REQUIRE(interp_output_enabled());
   interp_isr();                                     // one streamed tick: the interp has latched
 }
-TEST_CASE("FW 47: a Hand stall latch holds the Legs, names HAND_STALL and releases only on clear-errors") {
+TEST_CASE("FW 48: a Hand stall latch holds the Legs, names HAND_STALL and releases only on clear-errors") {
   SUBCASE("on a live stream") {
     fw47_arm();
     fault_notify_hand_stall();

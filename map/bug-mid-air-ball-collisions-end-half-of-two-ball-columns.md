@@ -22,7 +22,7 @@ links:
 - logbook/2026-11-20-sitting-debrief.md
 filed_by: claude
 night_skip: sitting
-night_skip_on: '2026-11-21'
+night_skip_on: '2026-11-22'
 night_skip_note: '2026-11-20: a graze possible, not shown; the position-fit kink read waits on the next Columns Sitting''s data.'
 ---
 

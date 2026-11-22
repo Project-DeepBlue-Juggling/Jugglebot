@@ -78,7 +78,7 @@ static uint8_t s_fault_state = JbUdp::FaultState::NONE;
 // First-trigger-wins freezes the reported reason. fb_stale is deliberately EXCLUDED
 // (motor-feedback staleness is recoverable, not a latched E-STOP).
 static volatile bool s_estop_latched = false;
-// FW 47 (BUG-123): the Hand lane stall guard (leg_activate.cpp) IDLEd the Hand.
+// FW 48 (BUG-123): the Hand lane stall guard (leg_activate.cpp) IDLEd the Hand.
 // Its OWN latch, not s_estop_state: on 2026-11-20 MAX_DEVIATION had already
 // latched 80 ms into the stall, and the frozen first reason would have hidden
 // WHY the Hand went IDLE. Written by the activate task (single byte), read here;
@@ -300,7 +300,7 @@ void fault_notify_clear_errors() {
                             // stale disarm cache re-faults until the next Get_Error frame)
   s_estop_latched = false;
   s_estop_state = JbUdp::FaultState::NONE;
-  s_hand_stall_latched = false;   // FW 47: the operator has acknowledged the Hand stall
+  s_hand_stall_latched = false;   // FW 48: the operator has acknowledged the Hand stall
   // Release the CAN_BUS_DOWN trip identity (the operator has acknowledged it) but
   // KEEP s_can_fault_count — a per-session trip census that an operator clear can
   // zero would make the second trip of a sitting indistinguishable from the first.
@@ -654,7 +654,7 @@ static void evaluate_guard() {
   // Fault-state reporting priority (highest-severity active condition wins).
   if (s_fatal_can_error)        s_fault_state = JbUdp::FaultState::CAN_BUS_DOWN;
   else if (s_fatal_error)       s_fault_state = JbUdp::FaultState::ODRIVE_FATAL;
-  else if (s_hand_stall_latched) s_fault_state = JbUdp::FaultState::HAND_STALL;   // FW 47: outranks the frozen guard reason
+  else if (s_hand_stall_latched) s_fault_state = JbUdp::FaultState::HAND_STALL;   // FW 48: outranks the frozen guard reason
   else if (s_estop_latched)     s_fault_state = s_estop_state;
   else if (fb_stale)            s_fault_state = JbUdp::FaultState::MOTOR_FB_STALE;
   else if (!jetson_link_up())   s_fault_state = JbUdp::FaultState::LINK_LOST;
@@ -662,7 +662,7 @@ static void evaluate_guard() {
 
   // Guard mode. The latched E-STOP holds ESTOP across ticks (not the instantaneous
   // `estop`) until an operator clear.
-  // FW 47: a Hand stall latch holds the Legs exactly as a Hand ODrive fault
+  // FW 48: a Hand stall latch holds the Legs exactly as a Hand ODrive fault
   // (ODRIVE_FATAL) does: guard ESTOP, output gated, ODrives hold their setpoint.
   if (s_estop_latched || s_fatal_error || s_hand_stall_latched)
                                                     s_guard_mode = JbUdp::GuardMode::ESTOP;

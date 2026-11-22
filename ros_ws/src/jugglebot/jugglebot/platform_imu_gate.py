@@ -20,7 +20,7 @@ Two small pieces, both free of I/O so they are table-testable:
 """
 from __future__ import annotations
 
-from typing import Dict, NamedTuple, Optional, Tuple
+from typing import Callable, Dict, NamedTuple, Optional, Tuple
 
 #: Commands that start motion (owner, 2026-11-18/19). ``juggle`` is the Attempt-starting request (the GUI
 #: Start button, the owner's word JUGGLE). ``activate`` and ``clear_errors`` are not on the owner's list: they
@@ -135,12 +135,13 @@ class Span(NamedTuple):
     reason: str      # 'attempt_end' | 'fault'
 
 
-def compute_span(t_first: float, t_last: float) -> Tuple[float, float]:
-    """2 s before the first motion, 3 s after the end, capped at the ring (the last RING_S seconds)."""
+def compute_span(t_first: float, t_last: float, ring_s: float = RING_S) -> Tuple[float, float]:
+    """2 s before the first motion, 3 s after the end, capped at the ring (its last ``ring_s`` seconds: RING_S
+    at 1 kHz, half that at 2 kHz, Platform FW 13)."""
     t0 = t_first - PRE_MARGIN_S
     t1 = t_last + POST_MARGIN_S
-    if t1 - t0 > RING_S:
-        t0 = t1 - RING_S
+    if t1 - t0 > ring_s:
+        t0 = t1 - ring_s
     return t0, t1
 
 
@@ -149,7 +150,9 @@ class AttemptSpanTracker:
     (skill_node's goal rule). A Fault while an Attempt is open closes it with reason 'fault'; the later
     ``juggle_end`` of the same Attempt then returns None so it is uploaded once."""
 
-    def __init__(self):
+    def __init__(self, ring_s: Optional[Callable[[], float]] = None):
+        # Seconds the ring holds now (the node passes the IMU service's, from the IMU_STATUS ODR_2K flag).
+        self._ring_s = ring_s or (lambda: RING_S)
         self._start: Optional[float] = None
         self.attempt_id: Optional[str] = None
         self._closed_by_fault = False
@@ -157,6 +160,13 @@ class AttemptSpanTracker:
     @property
     def open(self) -> bool:
         return self._start is not None
+
+    def _ring(self) -> float:
+        try:
+            r = float(self._ring_s())
+            return r if r > 0 else RING_S
+        except Exception:  # noqa: BLE001 -- a span is never lost to a rate lookup
+            return RING_S
 
     def started(self, t_wall: float, attempt_id: Optional[str] = None) -> None:
         self._start, self.attempt_id, self._closed_by_fault = t_wall, attempt_id, False
@@ -166,14 +176,15 @@ class AttemptSpanTracker:
             self._closed_by_fault = False
             return None
         # An end with no start seen (the node came up mid-Attempt): the last ring's worth.
-        first = self._start if self._start is not None else t_wall - RING_S
+        ring = self._ring()
+        first = self._start if self._start is not None else t_wall - ring
         self._start = None
-        t0, t1 = compute_span(first, t_wall)
+        t0, t1 = compute_span(first, t_wall, ring)
         return Span(t0, t1, 'attempt_end')
 
     def fault(self, t_wall: float) -> Optional[Span]:
         if self._start is None:
             return None
-        t0, t1 = compute_span(self._start, t_wall)
+        t0, t1 = compute_span(self._start, t_wall, self._ring())
         self._start, self._closed_by_fault = None, True
         return Span(t0, t1, 'fault')

@@ -52,6 +52,9 @@ def out(tmp_path_factory):
     for name in ("telemetry-charts.js", "axis-ticks.js", "clock.js", "event-store.js", "geometry-config.js",
                  "callout-layout.js", "imu-charts.js", "imu-charts-core.js"):
         shutil.copy(JS / name, sb / name)
+    (sb / "replay").mkdir()
+    shutil.copy(JS / "ball-events.js", sb / "ball-events.js")
+    shutil.copy(JS / "replay" / "span-events.js", sb / "replay" / "span-events.js")
     (sb / "stewart-model.js").write_text("export function setStewartHighlight() {}\n")
     (sb / "ball-butler-model.js").write_text("export function setBallButlerHighlight() {}\n")
     shutil.copy(HARNESS, sb / "imu_charts_harness.js")
@@ -252,6 +255,35 @@ def test_hiding_stops_fetching(out):
     assert out["glue_hide"] == {"fetchesAfter": 0, "groupHidden": True, "shownKey": "false"}
 
 
+def test_panel_height_model_clamps_and_splits(out):
+    h = out["imu_height"]
+    assert h["clamp"] == [100, 9999, 333, 200, 200, 250]
+    # IMU share: both groups keep >= 100 px of the shared space; too little room splits it evenly
+    assert h["share"] == [300, 100, 500, 150, 75, 200]
+    assert h["even"] == [300, 250, 100]
+    assert h["both_default"] == 500
+    # top handle: both shown = toolbar + divider + border + 2 x 100; max leaves the 3D view 150 px
+    assert h["bounds_both"] == {"min": 244, "max": 804}
+    assert h["bounds_single"] == {"min": 150, "max": 804}
+    assert h["bounds_tiny_window"]["max"] == h["bounds_tiny_window"]["min"]    # never max < min
+    assert h["clamp_panel"] == [244, 804, 500, "NaN"]
+    assert h["applied_stored"] == [700, 400, 300, "NaN", "NaN"]
+
+
+def test_csv_merge_is_the_time_sorted_union(out):
+    m = out["csv_merge"]
+    assert m["header"] == ["imu_ax_g", "imu_ay_g", "imu_az_g", "imu_gx_dps", "imu_gy_dps", "imu_gz_dps"]
+    # IMU samples at 9.0 (before the motor range), 11.0 (NaN gap marker) and 14.0 (after) are dropped;
+    # 10.0 and 12.0 coincide with motor rows k=0 and k=2 and share them; 10.5 and 11.25 are IMU-only rows
+    assert m["rows"] == [[10, 0, 1], [10.5, -1, 2], [11, 1, -1], [11.25, -1, 4], [12, 2, 5], [13, 3, -1]]
+    assert m["no_imu"] == [[10, 0, -1], [11, 1, -1], [12, 2, -1], [13, 3, -1]]
+    assert m["no_motor"] == 0
+
+
+def test_imu_charts_draw_the_motor_charts_playhead(out):
+    assert out["imu_playhead_hook"] >= 2
+
+
 # ---- source scans ----
 
 def test_the_group_is_a_row_above_the_motor_grid_hidden_by_default():
@@ -272,7 +304,7 @@ def test_the_group_is_a_row_above_the_motor_grid_hidden_by_default():
 
 def test_main_wires_the_module():
     text = (JS / "main.js").read_text()
-    assert "import { initImuCharts, attachImuChartsReplay, imuChartsOnStatus } from './imu-charts.js';" in text
+    assert "import { initImuCharts, attachImuChartsReplay, imuChartsOnStatus, imuChartsRelayout } from './imu-charts.js';" in text
     assert re.search(r"initTelemetryCharts\(\);\s*initImuCharts\(\);", text)
     assert "attachImuChartsReplay(replayMode);" in text
     assert re.search(r"ros\.subscribe\('platform_imu/status',\s*'diagnostic_msgs/msg/DiagnosticStatus',\s*"
@@ -287,3 +319,167 @@ def test_storage_key_and_hook_exports():
                  "selectRangeOnAllCharts", "seekReplayTo", "attachZoomPanControls"):
         assert re.search(r"export function %s\(" % name, tc), name
     assert "export const SYNC_KEY = 'telemetry';" in tc
+
+
+def test_height_divider_wiring_and_the_old_fixed_200px_is_gone():
+    css = (GUI / "css" / "charts.css").read_text()
+    # the old fixed 200 px IMU row is gone; the only 200px left is the both-shown default (single + 200)
+    assert css.split("IMU charts (imu-charts.js)")[1].count("200px") == 1 and "220px" not in css
+    assert css.count("var(--imu-chart-height)") >= 2
+    # both shown: the panel has its own total height (the top handle's), the grid takes what the IMU row leaves
+    assert "var(--chart-panel-both-height" in css and "jugglebot-chart-height-both" in (JS / "imu-charts-core.js").read_text()
+    html = (GUI / "index.html").read_text()
+    assert html.index('id="imu-chart-divider"') < html.index('<div id="chart-grid">')
+    assert "jugglebot-imu-chart-height" in (JS / "imu-charts-core.js").read_text()
+
+
+def test_motor_grid_button_is_named_odrive_charts():
+    js = (JS / "telemetry-charts.js").read_text()
+    assert "'Show ODrive charts' : 'Hide ODrive charts'" in js
+    assert "'Show charts'" not in js and "'Hide charts'" not in js
+
+
+def test_chart_handle_label_and_collapse_are_gone():
+    """The "Charts" label/chevron on the top handle and the collapse flag it persisted are removed; a stored
+    'jugglebot-chart-collapsed' is cleared at startup instead of honoured."""
+    html = (GUI / "index.html").read_text()
+    assert "chart-toggle" not in html
+    main = (JS / "main.js").read_text()
+    assert "chart-toggle" not in main and "classList.add('collapsed')" not in main.split("Chart panel resize handle")[1].split("Font size control")[0]
+    assert re.search(r"localStorage\.removeItem\(CHART_COLLAPSED_STORAGE_KEY_RETIRED\)", main)
+    for f in (GUI / "css").glob("*.css"):
+        t = f.read_text()
+        assert "chart-toggle" not in t and "#chart-panel.collapsed" not in t, f.name
+    assert "contains('collapsed')" not in (JS / "telemetry-charts.js").read_text()
+
+
+def test_export_csv_hook_is_the_only_telemetry_charts_change_for_imu():
+    tc = (JS / "telemetry-charts.js").read_text()
+    assert "export function setCsvExtraProvider(" in tc
+    assert "setCsvExtraProvider(csvExtra)" in (JS / "imu-charts.js").read_text()
+
+
+# ---- low-pass filter (core) ----
+
+def test_lowpass_is_a_zero_phase_butterworth_at_the_data_rate(out):
+    for key in ("filt_gain_1k", "filt_gain_2k"):
+        g5, g15, g30, g100 = out[key]
+        assert abs(g5["g"] - 0.988) < 0.01              # |H|^2 of a 2nd-order Butterworth, forward-backward
+        assert abs(g15["g"] - 0.5) < 0.01               # -6 dB at the cutoff (-3 dB per pass)
+        assert abs(g30["g"] - 1 / 17) < 0.01            # 4th-order magnitude: 1 / (1 + 2^4)
+        assert g100["g"] < 1e-3
+        assert all(x["quad"] < 0.01 for x in (g5, g15, g30))    # no quadrature part: zero phase
+    g20, g100, g300 = out["filt_gain_100"]
+    assert g20["g"] > 0.99 and abs(g100["g"] - 0.5) < 0.01 and g300["g"] < 0.02
+    assert abs(out["filt_fs_from_data"] - 994) < 0.5
+
+
+def test_lowpass_keeps_a_pulse_in_place_and_symmetric(out):
+    p = out["filt_pulse"]
+    assert p["imax"] == 1000 and p["asym"] < 1e-9 and 0 < p["peak"] < 0.1
+
+
+def test_lowpass_never_filters_across_a_gap(out):
+    g = out["filt_gap"]
+    assert g["before"] < 1e-3 and g["after"] < 1e-3     # the +100 step after the gap does not leak backwards
+    assert g["inGap"] == 10                               # the gap stays a gap
+
+
+def test_short_runs_become_gaps_and_a_time_hole_splits_a_run(out):
+    s = out["filt_short"]
+    assert s["minRun"] == 16 and s["shortNaN"] and s["longFinite"]
+    assert out["filt_hole"]["finite"] and out["filt_hole"]["split"]
+
+
+def test_filter_off_or_unusable_returns_the_raw_array_and_settings_parse(out):
+    assert out["filt_raw"] == [True, True, True, 15, 0, 0, "low-pass 15 Hz", ""]
+
+
+def test_amag_comes_from_the_filtered_components_and_raw_columns_are_untouched(out):
+    c = out["filt_cols"]
+    assert c["off"] and c["rawSpike"] == pytest.approx(50.2494, abs=1e-3) and c["rawKept"] == 50
+    assert c["amag100"] == pytest.approx(c["want"], abs=1e-9) and c["spikeCut"]
+
+
+# ---- spectrum (core) ----
+
+def test_welch_peak_frequency_and_power_of_known_sines(out):
+    for key in ("s994", "g994", "s2k", "s2k_hi"):
+        r = out["spec_sine"][key]
+        assert r["bin"] < 0.5, key                        # within half a bin (the parabola does far better)
+        assert abs(r["powerRatio"] - 1) < 0.03, key       # integral of the PSD = A^2/2 within 3 %
+    assert out["spec_sine"]["s994"]["seg"] == 4096 and abs(out["spec_sine"]["s994"]["fs"] - 994) < 0.5
+    assert out["spec_sine"]["s2k"]["df"] == pytest.approx(2000 / 4096)
+
+
+def test_fft_bins_and_length_check(out):
+    f = out["fft_bins"]
+    assert f["k5"] == pytest.approx(32) and f["kN5"] == pytest.approx(32) and f["other"] < 1e-9
+    assert "power of two" in out["fft_bad"]
+
+
+def test_white_noise_density_is_sigma_sqrt_two_over_fs(out):
+    n = out["spec_noise"]
+    assert n["seg"] == 4096 and n["nSeg"] > 15
+    assert abs(n["rms"] / n["want"] - 1) < 0.05
+
+
+def test_spectrum_uses_only_samples_in_the_range_and_range_indices_are_inclusive(out):
+    r = out["spec_range"]
+    assert abs(r["a"] - 12.5) < 0.1 and abs(r["b"] - 40) < 0.1
+    assert r["idx"] == [1000, 1005] and r["idxEmpty"][0] == r["idxEmpty"][1] and r["idxAll"] == [0, 30000]
+
+
+def test_segment_length_and_the_too_few_samples_message(out):
+    s = out["spec_seg"]
+    assert "Fewer than 256" in s["n255"]
+    assert s["n256"] == [256, 1] and s["n300"][0] == 256 and s["n5000"][0] == 4096 and s["n20000"][0] == 4096
+    assert s["n5000"][1] == 1 and s["n20000"][1] > 4
+
+
+def test_welch_segments_never_straddle_a_gap(out):
+    g = out["spec_gap"]
+    assert g["seg"] == 512 and g["nSeg"] == 2 and g["finite"]   # one segment in each 600-sample run
+    assert "Fewer than 256" in out["spec_fragmented"]
+
+
+def test_peak_search_starts_at_one_hz_and_interpolates(out):
+    p = out["spec_peak"]
+    assert abs(p["f"] - 7.37) < 0.02 and abs(p["f"] - 7.37) < p["df"] / 4
+    assert p["fullF"] < 1                                  # the 0.4 Hz tone would win without the 1 Hz floor
+    assert p["none"] is None
+    assert p["xmax"] == [10, 50, 497, 30] and p["parse"] == [10, 0, 50, 50]
+
+
+# ---- filter and spectrum (glue) ----
+
+def test_filter_selector_persists_and_badges_both_titles(out):
+    assert out["glue_filter"] == {"stored": "15", "badge": "low-pass 15 Hz", "badgeGyro": "low-pass 15 Hz"}
+    assert out["glue_filter_off"] == {"stored": "0", "badge": ""}
+
+
+def test_spectrum_mode_leaves_the_shared_cursor_zoom_and_time_axis(out):
+    s = out["glue_spectrum"]
+    assert s["stored"] == "true" and s["n"] == 2
+    assert s["sync"] == [False, False] and s["wheel"] == [False, False]
+    assert s["logY"] == [3, 3] and s["timeX"] == [False, False]
+    assert "Fewer than 256" in s["msg"] and not s["msgHidden"]       # the 6-sample fixture
+    assert "spectrum" in s["accelTitle"] and s["gyroModeHidden"] and not s["maxHidden"] and s["filterDisabled"]
+    assert out["glue_spec_max"] == "10"
+
+
+def test_leaving_spectrum_mode_restores_sync_zoom_and_markers(out):
+    o = out["glue_spectrum_off"]
+    assert o["stored"] == "false" and o["sync"] == [True, True] and o["wheel"] == [True, True]
+    assert o["markerHook"] == [True, True] and o["accelTitle"] == "Linear acceleration (g)"
+
+
+def test_source_wiring_of_the_event_markers_and_the_spectrum_debounce():
+    imu = (JS / "imu-charts.js").read_text()
+    tel = (JS / "telemetry-charts.js").read_text()
+    assert "drawEventMarkers, drawReplayPlayhead" in imu and "attachEventMarkerHover(u)" in imu
+    assert "export function drawEventMarkers" in tel and "paintEventMarkers(u);" in tel
+    # trailing debounce WITH a max wait (a range that moves every frame must not starve the pass forever)
+    assert "setTimeout(() => { specTimer = null; computeSpectrum(); }, wait)" in imu
+    assert "core.SPEC_DEBOUNCE_MS, specFirstReq + SPEC_MAX_WAIT_MS - now" in imu and "SPEC_MAX_WAIT_MS = 500" in imu
+    assert "SPEC_DEBOUNCE_MS = 150" in (JS / "imu-charts-core.js").read_text()

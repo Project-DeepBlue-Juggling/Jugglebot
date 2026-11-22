@@ -217,7 +217,7 @@ hand is ALREADY in CLOSED_LOOP — with the launch down nothing else energises i
     python tests/hardware/hand_stream_bench.py --stage stall
     python tests/hardware/hand_stream_bench.py --clear-errors
 
-``--stage stall`` (BUG-123, can-bridge FW 47) proves the Hand stall guard on the BENCH
+``--stage stall`` (BUG-123, can-bridge FW 48) proves the Hand stall guard on the BENCH
 Hand: Hand homed, IDLE and parked at 0.3-0.7 rev; it lowers the drive's current limit to
 45 A, shifts the encoder frame so the lane can command past the bottom stop, closes the
 loop itself, ramps the Hand into the stop at 1 rev/s and times the guard's IDLE. Its
@@ -2593,7 +2593,7 @@ class _StallBenchIO:
     """Every link, USB and clock call the stall stage makes, in one place.
 
     The bring-up is the same raw sequence ``--close-loop`` sends (no ladder runs, so
-    the ladder's own 25 A guard is never armed and the FW 47 lane guard owns the Hand
+    the ladder's own 25 A guard is never armed and the FW 48 lane guard owns the Hand
     from the first sample). The USB link is used ONLY to READ the drive's limits."""
 
     def __init__(self, args, rpc, client):

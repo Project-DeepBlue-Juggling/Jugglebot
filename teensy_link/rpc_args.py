@@ -503,7 +503,11 @@ PLATFORM_FW_VERSION_UNVERSIONED = 0
 #: re-probe, and a failed FIFO transfer while RUNNING is recovered and retried
 #: (BACKOFF only on the third in a row) instead of a 1 s BACKOFF hole. IMU-only:
 #: a board on 11 still works, its captures just carry more DISCONTINUITY gaps.
-PLATFORM_FW_VERSION_EXPECTED = 12
+#: 13 (2026-11-21) = Platform IMU upload and rate: a READ contiguous with the active
+#: block extends it (READ_EXTENDED), DATA frames on a fixed schedule (due += gap, at most
+#: 2 frames of catch-up), and IMU_CMD SET_ODR selects a 1 or 2 kHz capture. IMU-only: a
+#: board on 12 still works, it answers a chained READ by replacing the block (OK) instead.
+PLATFORM_FW_VERSION_EXPECTED = 13
 
 
 def decode_platform_fw_version(data: bytes) -> int:
@@ -1002,11 +1006,15 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # receive stamp newer than the fault task's clock read (one helper,
 # rx_older_than), so a live Leg can no longer read silent for one tick and trip
 # CAN_BUS_DOWN. Behavioural only: no wire change, PROTOCOL_VERSION stays 14.
-# 46 -> 47 (2026-11-20, BUG-123): the Hand stall guard on the streamed lane and
+# 46 -> 47 (2026-11-22, IDEA-20): PLATFORM_IMU_CTRL relays SET_ODR (op 0x07,
+# odr_khz in ``reason``) to Platform FW 13, so platform_imu/set_rate switches
+# the capture rate at run time; an FW 46 board answers it ERR_BAD_ARGS and
+# sends nothing. Behavioural only: no wire change, PROTOCOL_VERSION stays 14.
+# 47 -> 48 (2026-11-20, BUG-123): the Hand stall guard on the streamed lane and
 # latched holds (40 A / 1 rev/s / 150 ms, then Hand IDLE and the FaultState
 # HAND_STALL latch, released only by CLEAR_ERRORS; Diagnostic flags bit3).
 # Additive on the wire: PROTOCOL_VERSION stays 14.
-EXPECTED_BRIDGE_FW_VERSION = 47
+EXPECTED_BRIDGE_FW_VERSION = 48
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

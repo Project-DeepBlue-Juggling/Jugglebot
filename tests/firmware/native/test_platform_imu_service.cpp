@@ -11,6 +11,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <map>
@@ -57,18 +58,19 @@ struct FakeIo {
   void bus_recover() { pass_txns++; recovers++; if (stubborn > 0) stubborn--; else wedged = false; log += 'r'; }
   void begin_pass() { pass_txns = 0; }
   void end_pass() { if (pass_txns > max_pass_txns) max_pass_txns = pass_txns; }
-  uint32_t produced() const { return configured ? (t_us - stream_start_us) / 1000 : 0; }
+  uint16_t odr = 1000, init_odr = 0;      // the rate the last init_start asked for, and the one configured
+  uint32_t produced() const { return configured ? (t_us - stream_start_us) / (1000000u / odr) : 0; }
   uint32_t in_fifo(bool* ovf) {
     uint32_t p = produced() - consumed;
     if (p > 128) { *ovf = true; consumed = produced() - 128; p = 128; }
     return p;
   }
-  void init_start() { init_left = 4; }
+  void init_start(uint16_t hz) { init_left = 4; init_odr = hz; }
   int init_step(uint32_t now) {
     txn('i');
     if (!present || wedged) return -1;
     if (--init_left > 0) return INIT_PENDING;
-    configured = true; stream_start_us = now; consumed = 0;
+    configured = true; stream_start_us = now; consumed = 0; odr = init_odr;
     return 0;
   }
   int fifo_count(bool* ovf) {
@@ -104,7 +106,7 @@ struct FakeIo {
   }
   int check_who() { txn('w'); return present && !wedged ? 0 : -2; }
   void stamp(Stamp* s) { s->local_us = t_us; s->wall_us = uint64_t(t_us) + 5000000000ull; s->wall_valid = wall_valid; }
-  void header_info(ImuCapture::HeaderInfo* h) { h->odr_hz = 1000; h->accel_lsb_per_g = 2048; h->gyro_lsb_per_dps_x10 = 328; h->fw_version = 12; h->i2c_clock_100khz = 10; }
+  void header_info(ImuCapture::HeaderInfo* h) { h->odr_hz = 1000; h->accel_lsb_per_g = 2048; h->gyro_lsb_per_dps_x10 = 328; h->fw_version = 13; h->i2c_clock_100khz = 10; }
 };
 
 struct Sent { uint32_t id; std::array<uint8_t, 8> d; uint32_t t_us; };
@@ -939,7 +941,7 @@ TEST_CASE("RUNNING retry: the closing anchor of a drain whose second burst fails
       REQUIRE(i > 0);
       const uint8_t* c = a[i - 1].data();
       CHECK(g32(c) == before + uint32_t(BURST_PKTS));       // the first burst was pushed
-      const uint32_t want = count_us - uint32_t(n - BURST_PKTS) * MIN_SAMPLE_PERIOD_US;
+      const uint32_t want = count_us - uint32_t(n - BURST_PKTS) * MIN_SAMPLE_PERIOD_US_AT_1KHZ;
       CHECK(g32(c + 4) == want);
       uint64_t wall = 0;
       for (int b = 7; b >= 0; b--) wall = (wall << 8) | c[8 + b];
@@ -947,5 +949,172 @@ TEST_CASE("RUNNING retry: the closing anchor of a drain whose second burst fails
       CHECK((c[16] & PlatformImuAnchorFlag::DISCONTINUITY) == 0);
     }
   CHECK(disc == 1);
-  CHECK(MIN_SAMPLE_PERIOD_US == 980u);
+  CHECK(MIN_SAMPLE_PERIOD_US_AT_1KHZ == 980u);
+}
+
+/* ------------------------------- FW 13: the 2 kHz rate ------------------------------- */
+
+namespace {
+// RUNNING at 1 kHz, then SET_ODR 2: the reply, and RUNNING again at 2 kHz.
+void to_2k(Rig& r) {
+  r.to_running(300);
+  REQUIRE(r.cap.n_samples() > 200);
+  const size_t probes = r.svc.counters().probes;
+  r.cmd({Op::SET_ODR, 2});
+  r.pass();
+  const Sent* rep = r.last_reply();
+  REQUIRE(rep != nullptr);
+  CHECK(rep->d[0] == Op::SET_ODR);
+  CHECK(rep->d[1] == St::OK);
+  CHECK(g32(rep->d.data() + 4) == 2000u);
+  CHECK(r.svc.odr_hz() == 2000);
+  CHECK(r.cap.n_samples() == 0);                 // the ring restarts: a fresh capture
+  for (int i = 0; i < 50 && r.svc.state() != S::RUNNING; i++) { r.pass(); r.t_us += 500; }
+  REQUIRE(r.svc.state() == S::RUNNING);
+  CHECK(r.svc.counters().probes == probes + 1);  // re-initialised by the ordinary probe ...
+  CHECK(r.io.init_odr == 2000);                  // ... at the new rate
+}
+}  // namespace
+
+TEST_CASE("FW 13 2 kHz: SET_ODR re-probes; drains every 2 ms, ODR_2K and fill in STATUS, odr 2000 in the header") {
+  Rig r;
+  to_2k(r);
+  const size_t c0 = std::count(r.io.log.begin(), r.io.log.end(), 'c');
+  r.run_ms(3000);
+  const size_t counts = std::count(r.io.log.begin(), r.io.log.end(), 'c') - c0;
+  CHECK(counts >= 1450); CHECK(counts <= 1510);  // one FIFO_COUNT per 2 ms
+  CHECK(r.svc.counters().fifo_overflows == 0);
+  CHECK(r.svc.counters().i2c_errors == 0);
+  CHECK(r.cap.appended() > 5900);                 // 2 samples per ms (the test ring holds 3000)
+  CHECK(r.cap.n_anchors() >= 29);                 // anchors stay every 100 ms
+  CHECK(r.io.max_pass_txns <= 1);
+  auto st = r.tx.of(PlatformCanId::IMU_STATUS);
+  REQUIRE(!st.empty());
+  CHECK((st.back().d[1] & PlatformImuStatusFlag::ODR_2K) != 0);
+  CHECK(st.back().d[6] == 1);                     // the 3000-sample test ring: 1.5 s at 2 kHz
+  r.freeze_and_wait();
+  CHECK(g16(r.cap.header() + 32) == 2000);
+  CHECK((g16(r.cap.header() + 18) & PlatformImuCaptureFlag::DISCONTINUITY) == 0);
+  // Every anchor's index advances at ~2 samples per ms of local time.
+  auto a = r.anchor_records();
+  REQUIRE(a.size() >= 10);
+  const double rate = double(g32(a.back().data()) - g32(a[1].data())) /
+                      (double(g32(a.back().data() + 4) - g32(a[1].data() + 4)) * 1e-6);
+  CHECK(rate == doctest::Approx(2000.0).epsilon(0.01));
+  // Back to 1 kHz needs RESUME first: SET_ODR on a frozen capture is refused and changes nothing.
+  r.cmd({Op::SET_ODR, 1});
+  r.pass();
+  CHECK(r.last_reply()->d[1] == St::ERR_FROZEN);
+  CHECK(r.svc.state() == S::FROZEN);
+  CHECK(r.svc.odr_hz() == 2000);
+  CHECK(r.cap.header_ready());
+}
+
+TEST_CASE("FW 13 2 kHz: the status flag is clear at 1 kHz; a 400 kHz build refuses 2 kHz") {
+  Rig r;
+  r.to_running(2500);
+  auto st = r.tx.of(PlatformCanId::IMU_STATUS);
+  REQUIRE(!st.empty());
+  CHECK((st.back().d[1] & PlatformImuStatusFlag::ODR_2K) == 0);
+  CHECK(st.back().d[6] == 1);
+  Rig q(0, 0, false);
+  q.svc.set_i2c_400k(true);
+  q.init();
+  q.to_running(300);
+  q.cmd({Op::SET_ODR, 2});
+  q.pass();
+  CHECK(q.last_reply()->d[1] == St::ERR_BAD_ARGS);
+  CHECK(q.svc.odr_hz() == 1000);
+  CHECK(q.svc.state() == S::RUNNING);
+}
+
+TEST_CASE("FW 13 2 kHz: the closing anchor of a failed second burst is moved back by 490 us per unread packet") {
+  Rig r;
+  to_2k(r);
+  r.run_ms(300);
+  r.to_drain_end();
+  r.t_us += 5000;                                // the next drain counts ~12 packets (2 bursts)
+  const uint32_t before = r.cap.appended();
+  r.io.fail_b = 1;
+  r.io.fail_b_skip = 1;
+  for (int i = 0; i < 100 && r.svc.counters().i2c_errors == 0; i++) { r.pass(); r.t_us += 500; }
+  REQUIRE(r.svc.counters().i2c_errors == 1);
+  const uint32_t count_us = r.io.last_count_us;
+  const int n = r.io.last_count_n;
+  REQUIRE(n > BURST_PKTS);
+  REQUIRE(n <= 2 * BURST_PKTS);
+  r.run_ms(300);
+  CHECK(r.svc.state() == S::RUNNING);
+  r.freeze_and_wait();
+  auto a = r.anchor_records();
+  int disc = 0;
+  for (size_t i = 0; i < a.size(); i++)
+    if (a[i][16] & PlatformImuAnchorFlag::DISCONTINUITY) {
+      disc++;
+      const uint8_t* c = a[i - 1].data();
+      CHECK(g32(c) == before + uint32_t(BURST_PKTS));
+      CHECK(g32(c + 4) == count_us - uint32_t(n - BURST_PKTS) * 490u);
+    }
+  CHECK(disc == 1);
+  CHECK(min_sample_period_us(2000) == 490u);
+  CHECK(min_sample_period_us(1000) == MIN_SAMPLE_PERIOD_US_AT_1KHZ);
+  CHECK(drain_period_us(2000) == 2000u);
+  CHECK(drain_period_us(1000) == DRAIN_PERIOD_US_AT_1KHZ);
+}
+
+TEST_CASE("FW 13 2 kHz: a 60 ms pass is caught up; a 103 ms pass overflows the 64 ms FIFO, marked, still RUNNING") {
+  Rig r;
+  to_2k(r);
+  r.run_ms(500);
+  r.t_us += 60000;
+  r.run_ms(500);
+  CHECK(r.svc.counters().fifo_overflows == 0);
+  r.t_us += 103000;                              // an inclinometer re-probe pass: > 128 records at 2 kHz
+  r.run_ms(500);
+  CHECK(r.svc.counters().fifo_overflows == 1);
+  CHECK(r.svc.state() == S::RUNNING);
+  r.freeze_and_wait();
+  CHECK(r.disc_anchors() == 1);
+}
+
+TEST_CASE("FW 13 SET_ODR in PROBING with no IMU: stored, probe schedule untouched, no extra I2C") {
+  Rig r;
+  r.io.present = false;
+  r.run_ms(BOOT_SETTLE_MS + 2500);
+  REQUIRE(r.svc.state() == S::PROBING);
+  const uint32_t due = r.svc.probe_due_ms();
+  const int txns = r.io.total_txns;
+  r.cmd({Op::SET_ODR, 2});
+  r.pass();
+  CHECK(r.last_reply()->d[1] == St::OK);
+  CHECK(r.svc.probe_due_ms() == due);
+  CHECK(r.io.total_txns == txns);
+  r.run_ms(10000);
+  CHECK(r.io.init_odr == 2000);                  // the next probe asks for the new rate
+}
+
+TEST_CASE("FW 13 READ chaining through the glue: READ_EXTENDED, one stream in seq order, the pace is the gap") {
+  Rig r;
+  r.to_running(300);
+  r.freeze_and_wait();
+  const uint16_t id = r.cap.capture_id();
+  auto read = [&](uint16_t first, uint16_t count) {
+    r.cmd({Op::READ, uint8_t(id), uint8_t(id >> 8), uint8_t(first), uint8_t(first >> 8), uint8_t(count),
+           uint8_t(count >> 8), 80});
+  };
+  read(0, 100);
+  for (int i = 0; i < 400; i++) { r.pass(); r.t_us += 37; }       // about 18 frames out
+  read(100, 100);                                                  // the Jetson keeps one READ ahead
+  for (int i = 0; i < 8000 && r.svc.state() == S::UPLOADING; i++) { r.pass(); r.t_us += 37; }
+  CHECK(r.svc.state() == S::FROZEN);
+  auto reps = r.replies();
+  REQUIRE(reps.size() >= 3);                                       // FREEZE, READ OK, READ_EXTENDED
+  CHECK(reps[reps.size() - 2].d[1] == St::OK);
+  CHECK(reps.back().d[0] == Op::READ);
+  CHECK(reps.back().d[1] == St::READ_EXTENDED);
+  auto d = r.tx.of(PlatformCanId::IMU_DATA);
+  REQUIRE(d.size() == 200);
+  for (size_t i = 0; i < d.size(); i++) CHECK(g16(d[i].d.data()) == i);
+  const double pace = double(d.back().t_us - d.front().t_us) / double(d.size() - 1);
+  CHECK(pace == doctest::Approx(800.0).epsilon(0.001));
 }

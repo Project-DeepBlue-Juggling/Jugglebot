@@ -78,7 +78,7 @@ void fault_notify_reboot_started();
 // across the reset instant).
 void fault_hand_dev_prev_reset();
 
-// FW 47 (BUG-123): the Hand lane stall guard (leg_activate.cpp) has commanded the
+// FW 48 (BUG-123): the Hand lane stall guard (leg_activate.cpp) has commanded the
 // Hand IDLE. Latches FaultState::HAND_STALL (reported above the frozen guard
 // reason, below CAN_BUS_DOWN / ODRIVE_FATAL), holds guard_mode ESTOP and the
 // interp output gate shut until an operator CLEAR_ERRORS. Idempotent.

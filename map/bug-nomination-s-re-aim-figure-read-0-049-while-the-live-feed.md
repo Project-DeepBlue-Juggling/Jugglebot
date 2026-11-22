@@ -19,7 +19,7 @@ links:
 - map/bug-two-ball-throws-land-about-9-mm-toward-the-partner-site-an.md
 filed_by: claude
 night_skip: waiting-trigger
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: Waits on a refused fed Segment at Dwell 0.27 or more in a bag.
 ---
 

@@ -2217,7 +2217,7 @@ class TrajectoryNode(Node):
         """
         fault = self._kv_get(msg.values, 'fault_state', 'NONE')
         latched = fault not in ('NONE', 'UNKNOWN', '')
-        # The firmware's reason rides on every refusal (FW 47, BUG-123): an
+        # The firmware's reason rides on every refusal (FW 48, BUG-123): an
         # Attempt ended by GUARD_LATCHED then says WHICH guard, e.g. HAND_STALL.
         self._guard_fault = fault
         # A5 (ARMING_CONTRACT) — mirror the wire's arming state so accepted

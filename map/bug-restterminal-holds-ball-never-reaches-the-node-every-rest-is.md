@@ -18,7 +18,7 @@ links: []
 parent: two-ball-oval
 filed_by: claude
 night_skip: frozen-path
-night_skip_on: '2026-11-15'
+night_skip_on: '2026-11-22'
 night_skip_note: Changes flown motion and jugglebot_interfaces, so the gate can only hold it at (f); low priority.
 ---
 

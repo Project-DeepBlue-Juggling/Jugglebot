@@ -154,6 +154,120 @@ captureBin = bin;
   out.ang_title = core.ANG_ACCEL_TITLE;
 }
 
+
+// =============================== core: low-pass filter ===============================
+{
+  const mk = (fs, n, f) => { const t = new Float64Array(n), x = new Float64Array(n);
+    for (let i = 0; i < n; i++) { t[i] = 7000 + i / fs; x[i] = Math.sin(2 * Math.PI * f * i / fs); } return { t, x }; };
+  const gain = (fs, f, cutoff) => {
+    const n = 6000, { t, x } = mk(fs, n, f), o = core.lowpassColumn(t, x, cutoff);
+    let num = 0, den = 0; const lo = Math.floor(n * 0.3), hi = Math.floor(n * 0.7);
+    for (let i = lo; i < hi; i++) { num += o[i] * x[i]; den += x[i] * x[i]; }
+    // zero phase: the in-phase projection carries the whole output (the quadrature part is ~0)
+    let q = 0; for (let i = lo; i < hi; i++) q += o[i] * Math.cos(2 * Math.PI * f * i / fs);
+    return { g: num / den, quad: Math.abs(q) / den };
+  };
+  out.filt_gain_1k = [5, 15, 30, 100].map((f) => gain(1000, f, 15));
+  out.filt_gain_2k = [5, 15, 30, 100].map((f) => gain(2000, f, 15));   // same cutoff, other rate: same response
+  out.filt_gain_100 = [20, 100, 300].map((f) => gain(1000, f, 100));
+  out.filt_fs_from_data = core.sampleRate(mk(994, 2000, 3).t);
+  { // a pulse keeps its centre sample (no time shift) and the output is symmetric about it
+    const n = 2001, t = new Float64Array(n), y = new Float64Array(n);
+    for (let i = 0; i < n; i++) { t[i] = i / 1000; y[i] = i === 1000 ? 1 : 0; }
+    const o = core.lowpassColumn(t, y, 15);
+    let imax = 0; for (let i = 0; i < n; i++) if (o[i] > o[imax]) imax = i;
+    let asym = 0; for (let k = 1; k < 200; k++) asym = Math.max(asym, Math.abs(o[1000 - k] - o[1000 + k]));
+    out.filt_pulse = { imax, asym, peak: o[1000] };
+  }
+  { // never across a gap: a +100 step after a 10-sample gap does not leak into the samples before it
+    const n = 3000, t = Float64Array.from({ length: n }, (_, i) => i / 1000), y = new Float64Array(n);
+    for (let i = 0; i < n; i++) y[i] = i >= 1510 ? 100 : 0;
+    for (let i = 1500; i < 1510; i++) y[i] = NaN;
+    const o = core.lowpassColumn(t, y, 15);
+    let before = 0, after = 0, inGap = 0;
+    for (let i = 0; i < 1500; i++) before = Math.max(before, Math.abs(o[i]));
+    for (let i = 1510; i < n; i++) after = Math.max(after, Math.abs(o[i] - 100));
+    for (let i = 1500; i < 1510; i++) if (Number.isNaN(o[i])) inGap++;
+    out.filt_gap = { before, after, inGap };
+  }
+  { // a run shorter than FILTER_MIN_RUN becomes a gap; a time hole (no NaN) also splits the run
+    const n = 200, t = Float64Array.from({ length: n }, (_, i) => i / 1000), y = new Float64Array(n).fill(1);
+    for (let i = 0; i < n; i++) if (i < 50 || (i >= 60 && i < 70) || i >= 100) y[i] = i < 50 ? 1 : (i >= 100 ? 1 : 1);
+    for (const i of [50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79]) y[i] = NaN;
+    // short run: 60..69 (10 samples) between NaNs
+    const o = core.lowpassColumn(t, y, 15);
+    out.filt_short = { shortNaN: Array.from(o.slice(60, 70)).every(Number.isNaN), longFinite: Number.isFinite(o[10]) && Number.isFinite(o[150]), minRun: core.FILTER_MIN_RUN };
+    const th = Float64Array.from({ length: n }, (_, i) => i / 1000 + (i >= 100 ? 0.05 : 0));
+    const yy = new Float64Array(n).fill(2);
+    const oh = core.lowpassColumn(th, yy, 15);
+    out.filt_hole = { finite: Array.from(oh).every(Number.isFinite), split: Math.abs(oh[99] - 2) < 1e-6 && Math.abs(oh[100] - 2) < 1e-6 };
+  }
+  { // off / cutoff too close to Nyquist / unusable rate: the raw array itself
+    const t = Float64Array.from({ length: 100 }, (_, i) => i / 1000), y = new Float64Array(100).fill(3);
+    out.filt_raw = [core.lowpassColumn(t, y, 0) === y, core.lowpassColumn(t, y, 500) === y, core.lowpassColumn(new Float64Array(1), new Float64Array(1), 15) !== undefined,
+                    core.parseCutoff('15'), core.parseCutoff('77'), core.parseCutoff(null), core.filterBadge(15), core.filterBadge(0)];
+  }
+  { // |a| from the filtered components; the raw columns object is not modified
+    const n = 400, t = Float64Array.from({ length: n }, (_, i) => i / 1000);
+    const cols = { t, nGaps: 0 }; for (const k of ['ax', 'ay', 'az', 'gx', 'gy', 'gz', 'amag']) cols[k] = new Float64Array(n);
+    for (let i = 0; i < n; i++) { cols.ax[i] = 3; cols.ay[i] = 4; cols.az[i] = i === 200 ? 50 : 0; cols.amag[i] = Math.hypot(cols.ax[i], cols.ay[i], cols.az[i]); }
+    const f = core.lowpassColumns(cols, 15);
+    out.filt_cols = { off: core.lowpassColumns(cols, 0) === cols, rawSpike: cols.amag[200], amag100: f.amag[100], want: Math.hypot(f.ax[100], f.ay[100], f.az[100]), spikeCut: f.az[200] < 10, rawKept: cols.az[200] };
+  }
+}
+
+// =============================== core: FFT, Welch, peaks ===============================
+{
+  const sines = (fs, n, parts) => { const t = new Float64Array(n), y = new Float64Array(n);
+    for (let i = 0; i < n; i++) { t[i] = 9000 + i / fs; y[i] = parts.reduce((a, [A, f]) => a + A * Math.sin(2 * Math.PI * f * i / fs + 0.3), 0); } return { t, y }; };
+  const power = (w, a) => { let P = 0; for (let k = 0; k < a.length; k++) P += a[k] * a[k] * w.df; return P; };
+  const run = (fs, f, A) => { const { t, y } = sines(fs, 12000, [[A, f]]); const w = core.welchSpectra(t, [y], t[0], t[t.length - 1]);
+    const p = core.spectrumPeak(w.freqs, w.asd[0], 1, fs / 2); return { df: w.df, seg: w.seg, f: p.f, err: Math.abs(p.f - f), bin: Math.abs(p.f - f) / w.df, powerRatio: power(w, w.asd[0]) / (A * A / 2), nSeg: w.nSeg[0], fs: w.fs }; };
+  out.spec_sine = { s994: run(994, 5.0, 2.0), g994: run(994, 78.3, 0.7), s2k: run(2000, 5.0, 2.0), s2k_hi: run(2000, 333.3, 1.0) };
+  { // fft of a bin-exact cosine: energy in bins k and N-k only
+    const N = 64, re = Float64Array.from({ length: N }, (_, i) => Math.cos(2 * Math.PI * 5 * i / N)), im = new Float64Array(N);
+    core.fft(re, im);
+    out.fft_bins = { k5: re[5], kN5: re[N - 5], other: Math.max(...Array.from(re).map((v, i) => (i === 5 || i === N - 5 ? 0 : Math.abs(v))), ...Array.from(im).map(Math.abs)) };
+    out.fft_bad = (() => { try { core.fft(new Float64Array(6), new Float64Array(6)); return null; } catch (e) { return e.message; } })();
+  }
+  { // white noise: ASD = sigma * sqrt(2 / fs) across the band (deterministic LCG, Box-Muller)
+    let st = 12345; const rnd = () => { st = (st * 1664525 + 1013904223) >>> 0; return (st + 0.5) / 4294967296; };
+    const fs = 1000, n = 40000, t = new Float64Array(n), y = new Float64Array(n);
+    for (let i = 0; i < n; i++) { t[i] = 9000 + i / fs; y[i] = 1.7 * Math.sqrt(-2 * Math.log(rnd())) * Math.cos(2 * Math.PI * rnd()); }
+    const w = core.welchSpectra(t, [y], t[0], t[n - 1]); const a = w.asd[0];
+    let m = 0, c = 0; for (let k = 0; k < a.length; k++) if (w.freqs[k] > 20 && w.freqs[k] < 480) { m += a[k] * a[k]; c++; }
+    out.spec_noise = { rms: Math.sqrt(m / c), want: 1.7 * Math.sqrt(2 / fs), nSeg: w.nSeg[0], seg: w.seg };
+  }
+  { // range selection: only samples inside [xMin, xMax]; a sine that stops at t = 9010 is invisible after it
+    const fs = 1000, n = 30000, t = new Float64Array(n), y = new Float64Array(n);
+    for (let i = 0; i < n; i++) { t[i] = 9000 + i / fs; y[i] = (i < 10000 ? Math.sin(2 * Math.PI * 12.5 * i / fs) : 0) + Math.sin(2 * Math.PI * 40 * i / fs) * (i < 10000 ? 0 : 1); }
+    const a = core.welchSpectra(t, [y], 9000, 9009.9), b = core.welchSpectra(t, [y], 9015, 9025);
+    out.spec_range = { a: core.spectrumPeak(a.freqs, a.asd[0], 1, 100).f, b: core.spectrumPeak(b.freqs, b.asd[0], 1, 100).f,
+                       idx: core.rangeIndices(t, 9001, 9001.0049), idxEmpty: core.rangeIndices(t, 5, 6), idxAll: core.rangeIndices(t, 0, 1e9) };
+  }
+  { // segment length: largest power of two up to 4096 that fits; a short window is one (or two) segments; < 256 -> message
+    const fs = 1000, mk = (n) => { const t = Float64Array.from({ length: n }, (_, i) => i / fs), y = Float64Array.from({ length: n }, (_, i) => Math.sin(i)); return { t, y }; };
+    const segFor = (n) => { const { t, y } = mk(n); const w = core.welchSpectra(t, [y], -1, 1e9); return w.error ? w.error : [w.seg, w.nSeg[0]]; };
+    out.spec_seg = { n255: segFor(255), n256: segFor(256), n300: segFor(300), n5000: segFor(5000), n20000: segFor(20000) };
+  }
+  { // never across a gap: two 600-sample runs split by NaN -> segments tile each run (L = 512: 1 segment of 512 + 1 hop-shifted? 600 -> starts 0 only), a 10-sample gap
+    const fs = 1000, n = 1210, t = Float64Array.from({ length: n }, (_, i) => i / fs), y = Float64Array.from({ length: n }, (_, i) => Math.sin(i * 0.2));
+    for (let i = 600; i < 610; i++) y[i] = NaN;
+    const w = core.welchSpectra(t, [y], -1, 1e9);
+    out.spec_gap = { seg: w.seg, nSeg: w.nSeg[0], finite: Array.from(w.asd[0]).every(Number.isFinite) };
+    const short = Float64Array.from({ length: 1210 }, (_, i) => (i % 100 < 50 ? 1 : NaN));
+    out.spec_fragmented = core.welchSpectra(t, [short], -1, 1e9).error || null;
+  }
+  { // the peak search starts at 1 Hz: a bigger 0.4 Hz component is not "the peak"; parabola refines a between-bin tone
+    const fs = 1000, n = 20000, t = new Float64Array(n), y = new Float64Array(n);
+    for (let i = 0; i < n; i++) { t[i] = i / fs; y[i] = 5 * Math.sin(2 * Math.PI * 0.4 * i / fs) + Math.sin(2 * Math.PI * 7.37 * i / fs); }
+    const w = core.welchSpectra(t, [y], 0, 1e9);
+    const p = core.spectrumPeak(w.freqs, w.asd[0], 1, 50), full = core.spectrumPeak(w.freqs, w.asd[0], 0, 50);
+    out.spec_peak = { f: p.f, df: w.df, fullF: full ? full.f : null, none: core.spectrumPeak(w.freqs, w.asd[0], 400, 401), xmax: [core.specXMax(10, 994), core.specXMax(50, 994), core.specXMax(0, 994), core.specXMax(50, 60)],
+                      parse: [core.parseSpecMax('10'), core.parseSpecMax('0'), core.parseSpecMax('7'), core.parseSpecMax(null)] };
+  }
+}
+
 // =============================== core: lookup, labels, launch window ===============================
 {
   const ts = Float64Array.from([10, 10.001, 10.002, 10.003]);
@@ -274,6 +388,28 @@ out.glue_draw = imuU.map((u) => ({ x: [u.scales.x.min, u.scales.x.max], n: u.dat
 const pill = els['imu-accel-toggles'].children[3];
 pill._h.click();
 out.glue_pill = { stored: JSON.parse(ls['jugglebot-imu-charts-series']), show: imuU[0].series[4].show };
+
+// Filter selector and Spectrum toggle (glue): persisted, badge on the titles, spectrum charts leave the shared groups
+{
+  const fsel = els['imu-filter-select'];
+  fsel.value = '15'; fsel._h.change(); await settle();
+  out.glue_filter = { stored: ls['jugglebot-imu-charts-filter'], badge: els['imu-accel-badge'].textContent, badgeGyro: els['imu-gyro-badge'].textContent };
+  fsel.value = '0'; fsel._h.change(); await settle();
+  out.glue_filter_off = { stored: ls['jugglebot-imu-charts-filter'], badge: els['imu-accel-badge'].textContent };
+  els['imu-spectrum-btn']._h.click(); await settle();
+  const live = made.filter((u) => !u.destroyed && u.container && (u.container === els['imu-accel-plot'] || u.container === els['imu-gyro-plot']));
+  out.glue_spectrum = { stored: ls['jugglebot-imu-charts-spectrum'], n: live.length,
+    sync: live.map((u) => !!(u.opts.cursor && u.opts.cursor.sync)), wheel: live.map((u) => !!(u.over._h && u.over._h.wheel)),
+    logY: live.map((u) => u.opts.scales.asd && u.opts.scales.asd.distr), timeX: live.map((u) => u.opts.scales.x.time),
+    msg: els['imu-chart-message'].textContent, msgHidden: els['imu-chart-message'].hidden, accelTitle: els['imu-accel-title'].textContent,
+    gyroModeHidden: els['imu-gyro-mode-btn'].hidden, maxHidden: els['imu-spec-max-select'].hidden, filterDisabled: fsel.disabled };
+  els['imu-spec-max-select'].value = '10'; els['imu-spec-max-select']._h.change();
+  out.glue_spec_max = ls['jugglebot-imu-charts-spectrum-max'];
+  els['imu-spectrum-btn']._h.click(); await settle();
+  const live2 = made.filter((u) => !u.destroyed && u.container && (u.container === els['imu-accel-plot'] || u.container === els['imu-gyro-plot']));
+  out.glue_spectrum_off = { stored: ls['jugglebot-imu-charts-spectrum'], sync: live2.map((u) => !!(u.opts.cursor && u.opts.cursor.sync)), wheel: live2.map((u) => !!(u.over._h && u.over._h.wheel)),
+    markerHook: live2.map((u) => u.opts.hooks.draw.includes(tc.drawEventMarkers)), accelTitle: els['imu-accel-title'].textContent };
+}
 // operator zooms elsewhere; a new capture arrives by following -> no yank, jump button offered
 tc.selectRangeOnAllCharts(1795175860, 1795175870);
 captureListing = { captures: captureListing.captures.concat([{ stem: '20261120T120305Z_AEDF', t_start: 1795176185.0, t_end: 1795176217.0, label: 'three', complete: false, wall_ok: true }]) };
@@ -291,5 +427,41 @@ await settle();
 imu.imuChartsOnStatus({ values: [{ key: 'busy', value: '0' }, { key: 'last_label', value: 'four' }] });
 await settle();
 out.glue_hide = { fetchesAfter: fetches.length - nBefore, groupHidden: els['imu-chart-group'].hidden, shownKey: ls['jugglebot-imu-charts-shown'] };
+
+// Panel height model: IMU share clamp / even split, panel bounds, the both-shown default
+out.imu_height = {
+  clamp: [core.clampImuHeight(50), core.clampImuHeight(9999), core.clampImuHeight(333.4), core.clampImuHeight(null),
+          core.clampImuHeight('abc'), core.clampImuHeight('250')],
+  share: [core.clampImuShare(300, 600), core.clampImuShare(50, 600), core.clampImuShare(900, 600),
+          core.clampImuShare(400, 250), core.clampImuShare(200, 150), core.clampImuShare(200, NaN)],
+  even: [core.evenSplit(600), core.evenSplit(501), core.evenSplit(150)],
+  both_default: core.bothHeightDefault(300),
+  bounds_both: core.panelHeightBounds({ both: true, toolbarH: 38, dividerH: 5, borderH: 1, viewerTop: 40, handleH: 6, windowH: 1000 }),
+  bounds_single: core.panelHeightBounds({ both: false, viewerTop: 40, handleH: 6, windowH: 1000 }),
+  bounds_tiny_window: core.panelHeightBounds({ both: true, toolbarH: 38, dividerH: 5, borderH: 1, viewerTop: 40, handleH: 6, windowH: 300 }),
+  clamp_panel: [core.clampPanelHeight(10, { min: 244, max: 804 }), core.clampPanelHeight(5000, { min: 244, max: 804 }),
+                core.clampPanelHeight(500.4, { min: 244, max: 804 }), String(core.clampPanelHeight('x', { min: 1, max: 2 }))],
+  // stored height re-clamped on restore / window resize (stored kept, applied clamped); below the stored floor or junk: NaN
+  applied_stored: [core.appliedStoredHeight(1400, 150, { min: 150, max: 700 }), core.appliedStoredHeight(400, 150, { min: 150, max: 700 }),
+                   core.appliedStoredHeight(400, 150, { min: 150, max: 300 }), String(core.appliedStoredHeight(100, 150, { min: 150, max: 700 })),
+                   String(core.appliedStoredHeight(NaN, 150, { min: 150, max: 700 }))],
+};
+// CSV merge: time-sorted union of motor and IMU times, equal times share a row, NaN (gap) rows and out-of-range dropped
+{
+  const nan = NaN;
+  const imu = { t: Float64Array.from([9.0, 10.0, 10.5, 11.0, 11.25, 12.0, 14.0]),
+                ax: Float64Array.from([1, 1, 1, nan, 1, 1, 1]), ay: Float64Array.from([2, 2, 2, nan, 2, 2, 2]),
+                az: Float64Array.from([3, 3, 3, nan, 3, 3, 3]), gx: Float64Array.from([4, 4, 4, nan, 4, 4, 4]),
+                gy: Float64Array.from([5, 5, 5, nan, 5, 5, 5]), gz: Float64Array.from([6, 6, 6, nan, 6, 6, 6]) };
+  const motor = Float64Array.from([10, 11, 12, 13, 0, 0]);   // capacity buffer: only 4 rows are real
+  out.csv_merge = {
+    header: core.IMU_CSV_HEADER,
+    rows: core.mergeCsvRows(motor, 4, imu).map((r) => [r.t, r.k, r.j]),
+    no_imu: core.mergeCsvRows(motor, 4, null).map((r) => [r.t, r.k, r.j]),
+    no_motor: core.mergeCsvRows(motor, 0, imu).length,
+  };
+}
+// REPLAY playhead on the IMU charts: the draw hook is the motor charts' own
+out.imu_playhead_hook = made.filter((u) => u.opts.hooks && u.opts.hooks.draw && u.opts.hooks.draw.includes(tc.drawReplayPlayhead)).length;
 
 console.log(JSON.stringify(out));

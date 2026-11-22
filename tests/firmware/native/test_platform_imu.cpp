@@ -1084,3 +1084,204 @@ TEST_CASE("T3: while the freeze CRC is pending a sample READ is accepted and the
   while (!r.eng.service_freeze(&out)) {}
   CHECK(r.read(id, uint16_t(PlatformImu::HEADER_SEQ_BASE), 1).status == St::OK);  // readable once finalized
 }
+
+/* ------------------------------- FW 13 ------------------------------- */
+
+namespace {
+// Drain a block with passes every `step_us`, committing each due frame; returns the send times.
+std::vector<uint32_t> drain_block(Rig& r, uint32_t& t, uint32_t step_us, uint32_t max_us,
+                                  std::vector<uint16_t>* seqs = nullptr) {
+  std::vector<uint32_t> times;
+  const uint32_t end = t + max_us;
+  Frame f{};
+  while (r.eng.block_active() && int32_t(t - end) < 0) {
+    if (r.eng.peek_data(t, &f)) {
+      r.eng.commit_data(t);
+      times.push_back(t);
+      if (seqs) seqs->push_back(get16(f.d));
+    }
+    t += step_us;
+  }
+  return times;
+}
+Reply set_odr(Rig& r, uint8_t khz) { return r.send(Op::SET_ODR, khz); }
+}  // namespace
+
+TEST_CASE("FW 13 parse_cmd SET_ODR: 1 and 2 kHz pass; 0, 3, 255 and a short frame fail") {
+  const uint8_t ok1[2] = {Op::SET_ODR, 1}, ok2[2] = {Op::SET_ODR, 2};
+  CHECK(parse_cmd(ok1, 2).valid); CHECK(parse_cmd(ok1, 2).odr_hz == 1000);
+  CHECK(parse_cmd(ok2, 2).valid); CHECK(parse_cmd(ok2, 2).odr_hz == 2000);
+  for (uint8_t k : {uint8_t(0), uint8_t(3), uint8_t(255)}) {
+    const uint8_t d[2] = {Op::SET_ODR, k};
+    CHECK_FALSE(parse_cmd(d, 2).valid);
+  }
+  CHECK_FALSE(parse_cmd(ok2, 1).valid);
+  CHECK(PlatformImu::FAST_ODR_HZ == 2000);
+}
+
+TEST_CASE("FW 13 SET_ODR legality: idempotent, refused while frozen, restarts the capture otherwise") {
+  {  // RUNNING: a new rate discards the capture and re-probes; the same rate again changes nothing
+    Rig r;
+    go_running(r);
+    r.push(10);
+    CHECK(r.eng.odr_hz() == 1000);
+    Reply a = set_odr(r, 1);
+    CHECK(a.status == St::OK); CHECK(a.detail == 1000);
+    CHECK(r.eng.state() == S::RUNNING); CHECK(r.cap.n_samples() == 10); CHECK_FALSE(r.eng.take_rate_change());
+    Reply b = set_odr(r, 2);
+    CHECK(b.status == St::OK); CHECK(b.detail == 2000); CHECK(b.capture_id == 0);
+    CHECK(r.eng.odr_hz() == 2000);
+    CHECK(r.eng.state() == S::PROBING);
+    CHECK(r.cap.n_samples() == 0);
+    CHECK(r.eng.take_rate_change()); CHECK_FALSE(r.eng.take_rate_change());
+    CHECK_FALSE(r.eng.take_discontinuity());          // a fresh capture, not a gap in the old one
+    CHECK(set_odr(r, 2).status == St::OK);            // the retry: no second restart
+    CHECK_FALSE(r.eng.take_rate_change());
+  }
+  {  // FROZEN and UPLOADING: ERR_FROZEN, nothing changes (the capture is not yet uploaded)
+    Rig r;
+    go_running(r);
+    r.push(10);
+    const uint16_t id = r.freeze().capture_id;
+    Reply f = set_odr(r, 2);
+    CHECK(f.status == St::ERR_FROZEN); CHECK(f.capture_id == id);
+    CHECK(r.eng.odr_hz() == 1000); CHECK(r.eng.state() == S::FROZEN); CHECK(r.cap.frozen());
+    REQUIRE(r.read(id, 0, 4).status == St::OK);
+    CHECK(set_odr(r, 2).status == St::ERR_FROZEN);
+    CHECK(r.eng.state() == S::UPLOADING); CHECK(r.eng.block_active());
+    CHECK(set_odr(r, 1).status == St::OK);            // the rate it already has: fine even when frozen
+  }
+  {  // DISABLED stores the rate for the next ENABLE; BACKOFF and PROBING keep their state
+    Rig r;
+    r.send(Op::DISABLE);
+    CHECK(set_odr(r, 2).status == St::OK);
+    CHECK(r.eng.state() == S::DISABLED); CHECK(r.eng.odr_hz() == 2000); CHECK_FALSE(r.eng.take_rate_change());
+    CHECK(r.send(Op::ENABLE).status == St::OK);
+    CHECK(r.eng.odr_hz() == 2000);
+    go_running(r);
+    r.push(3);
+    r.eng.on_i2c_error(0);
+    REQUIRE(r.eng.state() == S::BACKOFF);
+    CHECK(set_odr(r, 1).status == St::OK);
+    CHECK(r.eng.state() == S::BACKOFF); CHECK(r.cap.n_samples() == 0); CHECK(r.eng.take_rate_change());
+  }
+  {  // FW_HALTED: ERR_FW_UPDATE; a 400 kHz build caps the rate at 1 kHz
+    Rig r;
+    r.eng.on_fw_update_begin();
+    CHECK(set_odr(r, 2).status == St::ERR_FW_UPDATE);
+    CHECK(r.eng.odr_hz() == 1000);
+    Rig q;
+    q.eng.set_max_odr_hz(1000);
+    CHECK(set_odr(q, 2).status == St::ERR_BAD_ARGS);
+    CHECK(set_odr(q, 1).status == St::OK);
+  }
+}
+
+TEST_CASE("FW 13 READ chaining: a contiguous READ extends the block; anything else replaces it") {
+  Rig r;
+  go_running(r);
+  r.push(50);                                          // 100 sample words
+  const uint16_t id = r.freeze().capture_id;
+  uint32_t t = 0xFFFFF000u;                            // across the u32 wrap
+  REQUIRE(r.read(id, 0, 20, 80).status == St::OK);
+  std::vector<uint16_t> seqs;
+  Frame f{};
+  REQUIRE(r.eng.peek_data(t, &f)); r.eng.commit_data(t); seqs.push_back(get16(f.d));
+  Reply e = r.read(id, 20, 20, 80);                    // keeps one READ ahead
+  CHECK(e.status == St::READ_EXTENDED);
+  CHECK(e.capture_id == id);
+  CHECK(e.detail == (20u | (20u << 16)));
+  Reply e2 = r.read(id, 40, 10, 80);                   // and another
+  CHECK(e2.status == St::READ_EXTENDED);
+  t += 800;
+  auto times = drain_block(r, t, 50, 1000000, &seqs);
+  REQUIRE(seqs.size() == 50);
+  for (size_t i = 0; i < seqs.size(); i++) CHECK(seqs[i] == i);       // one stream, in order
+  for (size_t i = 1; i < times.size(); i++) CHECK(times[i] - times[i - 1] == 800u);  // no restart at the joins
+  CHECK(r.eng.state() == S::FROZEN);
+  // After the block ended, the same READ is a fresh block (OK, not EXTENDED).
+  REQUIRE(r.read(id, 50, 5, 80).status == St::OK);
+  // A retried READ (first_seq inside the active block) replaces it from its own first_seq.
+  REQUIRE(r.eng.peek_data(t + 800, &f)); r.eng.commit_data(t + 800);
+  CHECK(r.read(id, 50, 5, 80).status == St::OK);
+  CHECK(r.eng.block_active());
+  seqs.clear();
+  t += 1600;
+  drain_block(r, t, 50, 1000000, &seqs);
+  REQUIRE(seqs.size() == 5);
+  CHECK(seqs[0] == 50);
+  // A READ that would be contiguous but runs past the region end is ERR_OUT_OF_RANGE and leaves the block.
+  REQUIRE(r.read(id, 90, 5, 80).status == St::OK);
+  CHECK(r.read(id, 95, 6, 80).status == St::ERR_OUT_OF_RANGE);
+  CHECK(r.read(id, 95, 5, 80).status == St::READ_EXTENDED);
+  // ABORT ends a chained block like any other.
+  CHECK(r.send(Op::ABORT).status == St::OK);
+  CHECK_FALSE(r.eng.block_active());
+}
+
+TEST_CASE("FW 13 pacing: the delivered pace equals the requested gap under loop() jitter") {
+  Rig r;
+  go_running(r);
+  r.push(100);
+  const uint16_t id = r.freeze().capture_id;
+  uint32_t t = 1000;
+  REQUIRE(r.read(id, 0, 200, 80).status == St::OK);    // 800 us
+  // Passes every 37 us: each frame goes out up to 36 us late. FW 12 measured from the send, so the
+  // pace stretched to about 800 + the mean lateness; the schedule keeps it at exactly 800.
+  auto times = drain_block(r, t, 37, 10000000);
+  REQUIRE(times.size() == 200);
+  const double pace = double(times.back() - times.front()) / double(times.size() - 1);
+  CHECK(pace == doctest::Approx(800.0).epsilon(0.001));
+  for (size_t i = 1; i < times.size(); i++) {
+    CHECK(times[i] - times[i - 1] >= 800u - 37u);      // never faster than the gap less one pass
+    CHECK(times[i] - times[i - 1] <= 800u + 37u);
+  }
+}
+
+TEST_CASE("FW 13 pacing: after a stall at most MAX_CATCHUP_FRAMES go faster than the gap, in any window") {
+  CHECK(Engine::MAX_CATCHUP_FRAMES == 2u);
+  for (uint32_t stall : {500u, 1700u, 50000u, 3000000u}) {
+    CAPTURE(stall);
+    Rig r;
+    go_running(r);
+    r.push(100);
+    const uint16_t id = r.freeze().capture_id;
+    uint32_t t = 0xFFFF0000u;
+    REQUIRE(r.read(id, 0, 200, 100).status == St::OK);  // 1000 us
+    std::vector<uint32_t> times;
+    Frame f{};
+    int sent = 0;
+    while (r.eng.block_active()) {
+      if (sent == 20) { t += stall; sent++; }           // one long pass, mid-block
+      if (r.eng.peek_data(t, &f)) { r.eng.commit_data(t); times.push_back(t); if (sent < 20) sent++; }
+      t += 10;
+    }
+    REQUIRE(times.size() == 200);
+    // The burst: frames that follow the previous one by much less than the gap (here one 10 us pass).
+    int burst = 0;
+    for (size_t i = 1; i < times.size(); i++) if (times[i] - times[i - 1] < 500u) burst++;
+    CHECK(burst == int(stall >= 2000u ? Engine::MAX_CATCHUP_FRAMES : (stall >= 1000u ? 1u : 0u)));
+    // The window bound: frames in any window W <= W / gap + 1 + MAX_CATCHUP_FRAMES.
+    for (size_t i = 0; i < times.size(); i++)
+      for (size_t j = i; j < times.size(); j++) {
+        const uint32_t w = times[j] - times[i];
+        CHECK(uint32_t(j - i + 1) <= w / 1000u + 1u + Engine::MAX_CATCHUP_FRAMES);
+      }
+  }
+}
+
+TEST_CASE("FW 13 pacing: a fresh block after idle starts its schedule at its first frame, no burst") {
+  Rig r;
+  go_running(r);
+  r.push(100);
+  const uint16_t id = r.freeze().capture_id;
+  uint32_t t = 5000;
+  REQUIRE(r.read(id, 0, 5, 80).status == St::OK);
+  drain_block(r, t, 10, 1000000);
+  t += 200000;                                          // the Jetson's turnaround, 200 ms idle
+  REQUIRE(r.read(id, 10, 10, 80).status == St::OK);
+  auto times = drain_block(r, t, 10, 1000000);
+  REQUIRE(times.size() == 10);
+  for (size_t i = 1; i < times.size(); i++) CHECK(times[i] - times[i - 1] == 800u);
+  CHECK(r.eng.data_wait_us(times.back()) == 0u);       // block done
+}

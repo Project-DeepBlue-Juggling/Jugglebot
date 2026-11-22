@@ -71,7 +71,7 @@ def test_the_diagnostic_carries_the_flag():
     assert re.search(r'activate_stalled\(axis\)\s*\?\s*DIAG_FLAG_ACTIVATE_STALL', telem)
 
 
-# ── FW 47 (BUG-123): the Hand stall guard on the streamed lane and latched holds ──
+# ── FW 48 (BUG-123): the Hand stall guard on the streamed lane and latched holds ──
 # Owner decision 2026-11-20 (verbatim): "Let's go with 40 A / 1 rev/s / 150 ms,
 # after which the hand motor should enter IDLE." Behaviour is pinned by the
 # native test_leg_activate / test_fault_machine binaries; these pin the numbers,

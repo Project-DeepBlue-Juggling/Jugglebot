@@ -68,6 +68,7 @@ TICK_S = 0.025                   # the node's 40 Hz tick
 HOME_XY = (-50.0, 0.0)           # the Pattern's Site 0 (policy default)
 HOLD_AFTER_S = 0.25              # executor done this long after touch-down (model)
 CAP_RADIUS_MM = 35.0             # GEOM_HAND_RADIUS_MM (config/generated/hardware_config.py)
+D10_XY_MM = 35.0                 # D10 usable bar, DECIDED (owner, 2026-11-21): the Cup radius (hand_radius_mm)
 WORKSPACE_HALF_MM = 150.0        # CupCycleConfig.workspace_xy_m
 
 
@@ -93,7 +94,7 @@ def score_rows(rows, phantoms, cap_mm=CAP_RADIUS_MM, time_tol_ms=20.0,
     dist = [r['dist_mm'] for r in planned]
     dt = [r['dt_ms'] for r in planned]
     within = [r for r in planned if r['dist_mm'] <= cap_mm and abs(r['dt_ms']) <= time_tol_ms]
-    d10 = [r for r in planned if r['dist_mm'] <= 30.0 and abs(r['dt_ms']) <= 20.0]
+    d10 = [r for r in planned if r['dist_mm'] <= D10_XY_MM and abs(r['dt_ms']) <= 20.0]
     in_reach = [r for r in rows if r.get('cross') and r.get('truth_xy') is not None
                 and abs(r['truth_xy'][0]) <= half_mm and abs(r['truth_xy'][1]) <= half_mm]
     in_reach_d10 = [r for r in in_reach if r in d10]
@@ -654,7 +655,9 @@ def fmt_summary(name, s):
 
 
 VARIANTS = (
-    ('baseline plan 0.62 / first 0.55 / auth 50 / mean5 clamp150', {}, None),
+    ('baseline plan 0.62 / first 0.55 / auth 50 / clear 0.3 / wait fixed', {}, None),
+    ('wait moves (mean5 clamp150)', dict(wait_radius_mm=150.0), None),
+    ('clear 0.5 (earlier PROPOSED)', dict(clear_s=0.5), None),
     ('plan_lead 0.58', dict(plan_lead_s=0.58), None),
     ('plan_lead 0.66', dict(plan_lead_s=0.66), None),
     ('first_lead 0.52', dict(first_lead_s=0.52), None),

@@ -327,7 +327,8 @@ platform_imu:
   ring_samples: 32000             # 32 s at nominal_odr_hz
   bytes_per_sample: 12            # 6 x int16 LE raw LSB: ax ay az gx gy gz (chip axes)
   word_bytes: 6                   # payload bytes per IMU_DATA frame (one accel or one gyro triple)
-  nominal_odr_hz: 1000            # for the status fill and the Jetson's starting guess only
+  nominal_odr_hz: 1000            # the boot capture rate (FW 13: SET_ODR selects 1000 or fast_odr_hz)
+  fast_odr_hz: 2000               # the other selectable rate (FW 13); the ring then holds 16 s
   anchor_period_ms: 100           # one anchor per this period while recording
   anchor_ring: 400                # anchor slots (320 at the period over 32 s + discontinuities)
   anchor_bytes: 18                # 3 words: [index u32][local_us u32][wall_us u64][flags u8][0]
@@ -335,7 +336,7 @@ platform_imu:
   header_format_version: 1
   anchor_seq_base: 0xFA80         # 64128, above the 64000 sample words
   header_seq_base: 0xFFF0
-  read_max_words: 256             # largest READ block (0.26 s at the default gap)
+  read_max_words: 256             # largest READ (the can-bridge clamps to it); FW 13 chains contiguous READs
   read_default_gap_10us: 100      # 1000 us between IMU_DATA frames (1000 fps on the wire)
   read_min_gap_10us: 40           # the Platform Teensy clamps faster requests to 400 us
   bridge_armed_min_gap_10us: 63   # can-bridge FW 45 clamps a READ's gap up to this while Armed (630 us, ~1590 fps)
@@ -349,11 +350,13 @@ platform_imu:
     RESUME:   0x04
     READ:     0x05
     ABORT:    0x06
+    SET_ODR:  0x07   # FW 13 [odr_khz u8] 1 or 2; relayed by can-bridge FW 47 and later (spec section 6)
 
   # IMU_REPLY byte 1. 0x0x = accepted, 0x1x = refused (nothing changed, nothing sent).
   statuses:
     OK:                0x00
     ALREADY_FROZEN:    0x01   # FREEZE found a capture frozen EARLIER (this Attempt was not recorded)
+    READ_EXTENDED:     0x02   # FW 13: a READ contiguous with the active block was appended to it
     ERR_BAD_ARGS:      0x10   # unknown op, short DLC, count 0 or > read_max_words, reason 0
     ERR_NOT_FROZEN:    0x11
     ERR_WRONG_CAPTURE: 0x12   # capture_id is not the frozen one (stale request or a reboot)
@@ -361,6 +364,7 @@ platform_imu:
     ERR_EMPTY:         0x14   # FREEZE with no samples recorded
     ERR_DISABLED:      0x15
     ERR_FW_UPDATE:     0x16   # a firmware update is in progress (IMU halted)
+    ERR_FROZEN:        0x17   # FW 13: SET_ODR while FROZEN or UPLOADING (upload or RESUME first)
 
   # IMU_STATUS byte 0
   states:
@@ -386,6 +390,7 @@ platform_imu:
     RING_WRAPPED:   0x04
     I2C_400K:       0x08   # running on the 400 kHz fallback
     DISCONTINUITY:  0x10   # the current capture holds a discontinuity anchor
+    ODR_2K:         0x20   # FW 13: the selected capture rate is fast_odr_hz (2 kHz)
 
   # header bytes 18-19
   capture_flags:

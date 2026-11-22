@@ -1,6 +1,6 @@
-"""Pure-python half of ``hand_stream_bench.py --stage stall`` (BUG-123, can-bridge FW 47).
+"""Pure-python half of ``hand_stream_bench.py --stage stall`` (BUG-123, can-bridge FW 48).
 
-The stage proves the FW 47 Hand stall guard on the BENCH Hand: outside the ACTIVATE /
+The stage proves the FW 48 Hand stall guard on the BENCH Hand: outside the ACTIVATE /
 HAND_MOVE_TO ladder, |iq| >= 40 A with |vel| <= 1 rev/s for 150 ms of real samples commands
 the Hand IDLE and latches fault HAND_STALL (8) with Diagnostic flags bit3
 (``leg_activate.cpp`` ``hand_lane_stall_guard``, INVARIANTS I-FW-17). Everything here is
@@ -87,7 +87,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 # ── Mirrored firmware / config constants (pinned by the stall test file) ──────
-STALL_FW_MIN = 47                 # canbridge_config.h FW_VERSION that added the guard
+STALL_FW_MIN = 48                 # canbridge_config.h FW_VERSION that added the guard
 GUARD_IQ_A = 40.0                 # canbridge_config.h HAND_LANE_STALL_IQ_A
 GUARD_VEL_RPS = 1.0               # canbridge_config.h HAND_LANE_STALL_VEL_RPS
 GUARD_HOLD_S = 0.150              # canbridge_config.h HAND_LANE_STALL_HOLD_US
