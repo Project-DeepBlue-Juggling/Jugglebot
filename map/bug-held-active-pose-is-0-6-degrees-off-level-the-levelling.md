@@ -17,6 +17,10 @@ blocked_by: []
 links:
 - map/idea-platform-accelerometer.md
 filed_by: claude
+night_skip: input-decision
+night_skip_on: '2026-11-23'
+night_skip_note: Builds the GUI not-Level indicator on option 2 and merges it if the gate says MERGE; option 1 closes BUG-130; 3 gets a held branch and a Sitting row.
+night_skip_input: 'Pick option 1-4 in TKT-92: leave it, a GUI not-Level indicator, an automatic go_home after ACTIVATE, or ACTIVATE landing on Level.'
 ---
 
 Found at the Sitting of 2026-11-22 by the Platform IMU mount fit (IDEA-20). After Level, the Active pose the Platform holds (ACTIVE:STANDBY and ACTIVE:TRAJECTORY at rest) is the uncorrected orientation: Mocap reads (-0.05, +0.61) deg, the IMU 0.598 deg from the levelled direction, and the Leg commands agree. Targets from the GUI Jog panel do carry the levelling correction, so Jog Home is Level and the held Active pose is not. Effective offset including the 0.38 deg trim: (-0.044, +0.574) deg.

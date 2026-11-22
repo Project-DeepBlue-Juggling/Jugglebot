@@ -16,6 +16,9 @@ blocked_by: []
 links:
 - bug-next-sitting-progress-bar-should-have-more-colours
 filed_by: night-shift
+night_skip: too-large
+night_skip_on: '2026-11-23'
+night_skip_note: Spans the sheet builder, the mapkit sheet loader and the Next Sitting page (effort m); a day Session or a night slice once the field is named.
 ---
 
 Split from BUG-127 by the Night Shift of 2026-11-22, on the owner's TKT-90 answer.

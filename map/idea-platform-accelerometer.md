@@ -19,8 +19,8 @@ links:
 - logbook/2026-11-20-sitting-debrief-robot-2.md
 filed_by: harrison
 night_skip: owner-session
-night_skip_on: '2026-11-22'
-night_skip_note: Rung P4 passed 2026-11-20; Rung P5 (mount calibration) is Sitting work in a day Session.
+night_skip_on: '2026-11-23'
+night_skip_note: Rung P5 mount fit passed 2026-11-22 and the calibration file landed in a day Session (4eee6423); the Attempt capture is Sitting work.
 ---
 
 Let's discuss the possible advantages that we might receive as a result of adding an accelerometer to the 2020 extrusion on which Jugglebot's hand's linear rail is mounted. Might this help with our 'input shaping' work, by allowing us to capture high resolution data on Platform acceleration? I imagine we have the Teensy pins available for this? What specific sensor might be best to use?
