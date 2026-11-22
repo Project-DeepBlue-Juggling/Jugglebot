@@ -960,3 +960,75 @@ TEST_CASE("lane stall guard: the ladder keeps its own guard; the sticky record c
   activate_step();
   CHECK_FALSE(hand_lane_stalled(HAND_AXIS));
 }
+
+// ── BUG-131 item 1 (FW 49): a lane trip's refused IDLE and the next ladder ────
+//  s_lane_idle_pending used to clear only when its IDLE was finally queued, so a
+//  flag that outlived the operator's clear made the next Hand ladder send a lane
+//  IDLE after it had started (here: on the tick after its start, ahead of SETUP's
+//  CLOSED_LOOP; a later acceptance lands mid-move). The rule (leg_activate.cpp
+//  stall_reset_for_targets): a ladder that TARGETS the Hand drops the flag; the
+//  retry keeps running across the latch clear itself (the IDLE may never have
+//  reached a Hand still in CLOSED_LOOP against its stop), and a Legs-only ladder
+//  does not drop it. Each tick's first TX attempt is the lane retry, so
+//  refused_ticks() refuses exactly that frame.
+static void refused_ticks(int n) {
+  for (int k = 0; k < n; ++k) { cs_advance(TICK_US); cs_set_send_fail_index(0); activate_step(); }
+}
+static size_t frame_count(const ODrive::CanFrame& want) {
+  size_t n = 0;
+  for (size_t i = 0; i < cs_sent_count(); ++i) {
+    const CsSentFrame& f = cs_sent_at(i);
+    if (f.id == want.id && f.len == want.len && memcmp(f.buf, want.buf, 8) == 0) ++n;
+  }
+  return n;
+}
+// Leg 0 + the Hand present; a lane trip whose IDLE the bus refuses through the
+// latch (guard ESTOP) and through the operator's clear.
+static void trip_with_idle_refused() {
+  full_reset((uint8_t)(0x01 | HAND_BIT));
+  lane_samples(15, STALL_A, STILL_RPS);           // one sample short
+  cs_clear_sent();
+  cs_set_send_fail_index(0);
+  lane_sample(STALL_A, STILL_RPS);                // trip: the latch is raised, the IDLE refused
+  REQUIRE(cs_hand_stall_notified() == 1);
+  axes[HAND_AXIS].iq_measured = 0.0f;
+  cs_set_guard_estop(true);                       // the HAND_STALL latch holds guard ESTOP
+  refused_ticks(20);
+  cs_set_guard_estop(false);                      // the operator's CLEAR_ERRORS released it
+  refused_ticks(5);                               // the retry is still refused
+  REQUIRE(idle_count() == 0);
+}
+
+TEST_CASE("BUG-131: a Hand ladder drops a lane trip's refused IDLE; the clear alone and a Legs-only ladder do not") {
+  const ODrive::CanFrame HAND_CL = ODrive::encode_set_state(HAND_AXIS, ODriveState::CLOSED_LOOP);
+  SUBCASE("no ladder: the pending IDLE outlives the clear and goes out once, when the bus takes it") {
+    trip_with_idle_refused();
+    cs_set_send_fail_index(-1);
+    tick_for(TICK_US);
+    CHECK(idle_count() == 1);
+    tick_for(20 * TICK_US);
+    CHECK(idle_count() == 1);
+  }
+  SUBCASE("a HAND_MOVE_TO started on a refused tick: no lane IDLE once it owns the Hand") {
+    trip_with_idle_refused();
+    axes[HAND_AXIS].pos_rev = 0.49f;
+    REQUIRE(hand_move_request(HAND_AXIS, 1.0f, HM_V, 51) == JbUdp::RpcStatus::OK);
+    refused_ticks(1);                             // the start tick: the retry's last try is refused too
+    REQUIRE(hand_move_active());
+    cs_set_send_fail_index(-1);
+    run_to_monitor(1);
+    tick_for(10 * TICK_US);
+    CHECK(idle_count() == 0);                     // no stray IDLE ahead of, or after, the ladder's CLOSED_LOOP
+    CHECK(frame_count(HAND_CL) == 1);             // the ladder took the Hand over itself
+    CHECK(hand_move_active());
+  }
+  SUBCASE("a Legs-only ACTIVATE does not own the Hand: the retry carries on") {
+    trip_with_idle_refused();
+    REQUIRE(activate_request(0) == JbUdp::RpcStatus::OK);
+    refused_ticks(1);                             // the start tick (leg 0's SETUP goes out; the retry does not)
+    REQUIRE(activate_active());
+    cs_set_send_fail_index(-1);
+    tick_for(TICK_US);
+    CHECK(idle_count() == 1);
+  }
+}

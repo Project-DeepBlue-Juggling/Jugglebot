@@ -82,11 +82,20 @@ static uint64_t      s_lane_last_iq_us   = 0;      // iq stamp of the last sampl
 static bool          s_lane_idle_pending = false;  // a trip whose IDLE the TX path refused
 static volatile bool s_lane_stalled      = false;  // sticky, Diagnostic flags bit3
 // A new ladder run starts with a clean stall record for the axes it targets.
+// BUG-131 (FW 49): a ladder that targets the Hand also drops a lane trip's
+// still-refused IDLE. The ladder owns the Hand from here: SETUP issues its own
+// CLOSED_LOOP and its own stall guard covers the move, so a late lane IDLE could
+// only land mid-move. activate_step() runs the lane guard's retry BEFORE any
+// ladder start, so the IDLE still gets its last try on this tick. The flag is
+// deliberately NOT dropped on CLEAR_ERRORS: an IDLE that never went out may
+// leave a stalled Hand in CLOSED_LOOP, and the operator's clear does not
+// de-energise it, so the retry runs until the frame is queued or a ladder
+// takes the Hand over.
 static void stall_reset_for_targets() {
   s_stall_timing = false;
   for (uint8_t i = 0; i < NUM_AXES; ++i)
     if (s_targets & (uint8_t)(1u << i)) s_stalled[i] = false;
-  if (s_targets & (uint8_t)(1u << HAND_AXIS)) s_lane_stalled = false;
+  if (s_targets & (uint8_t)(1u << HAND_AXIS)) { s_lane_stalled = false; s_lane_idle_pending = false; }
 }
 
 // ── HAND_MOVE_TO (FW 26) — the same ladder, a caller target (leg_activate.h) ──
