@@ -4,10 +4,13 @@ kind: bug
 title: teensy_bridge_node freezes for about 340 ms once in some launches; Armed, that latches SETPOINT_STALE
 status: inbox
 created: '2026-11-22'
-updated: '2026-11-22T10:51:27Z'
+updated: '2026-11-22T13:24:43Z'
 owners: []
 priority: high
+effort: m
 hardware: none
+owner: none
+radius: subsystem
 diagnosis: unknown
 area: can-bridge
 blocked_by: []

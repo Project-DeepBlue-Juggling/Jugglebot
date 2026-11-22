@@ -4,11 +4,14 @@ kind: bug
 title: 'Held Active pose is 0.6 degrees off Level: the levelling correction reaches Jog targets but not the hold'
 status: in_progress
 created: '2026-11-22'
-updated: '2026-11-22T11:56:27Z'
+updated: '2026-11-22T13:24:39Z'
 owners: []
 priority: medium
+effort: s
 hardware: none
-diagnosis: hypothesis
+owner: decision
+radius: subsystem
+diagnosis: confirmed
 area: skill-stack
 blocked_by: []
 links:
@@ -24,4 +27,4 @@ Evidence: temp/debrief/2026-11-22/mountfit.md (captures 20261122T100747Z_572D an
 
 ## Progress
 
-- 2026-11-22: 2026-11-23: traced, designed behaviour, no code defect. ACTIVATE goes to the uncorrected neutral and the hold is encoder-seeded (levelling_frame.md C-LEVEL-1); every planned move is corrected, and an Attempt's pre-level REST re-levels (0.70 deg in 206 ms, profiled, on 2026-11-20). levelling_frame.md corrected. Open for the owner: a GUI not-Level indicator, or an automatic go_home after ACTIVATE.
+- 2026-11-22: 2026-11-23: traced, designed behaviour, no code defect. ACTIVATE goes to the uncorrected neutral and the hold is encoder-seeded (levelling_frame.md C-LEVEL-1); every planned move is corrected, and an Attempt's pre-level REST re-levels. levelling_frame.md corrected. Open for the owner: a GUI not-Level indicator, or an automatic go_home after ACTIVATE.
