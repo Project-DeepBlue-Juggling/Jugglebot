@@ -32,8 +32,8 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
-| BUG-105 Hand keeps its last velocity feedforward on a Soft E-stop, disarm or link loss and stays in Closed-loop | 20 | armed, bridge-cycled | - | 2026-11-22-bench-hand |
-| BUG-123 A guard latch leaves the Hand pushing at full current: no stall guard on the streamed lane or a latched hold | 25 | bridge-cycled | `night-shift/2026-11-20-BUG-123` | 2026-11-22-bench-hand |
+| BUG-105 Hand keeps its last velocity feedforward on a Soft E-stop, disarm or link loss and stays in Closed-loop | 20 | armed, bridge-cycled | - | 2026-11-22-bench-hand-2 |
+| BUG-123 A guard latch leaves the Hand pushing at full current: no stall guard on the streamed lane or a latched hold | 25 | bridge-cycled | `night-shift/2026-11-20-BUG-123` | 2026-11-22-bench-hand-2 |
 
 ## Needs a Sitting section
 
