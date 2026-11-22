@@ -2,14 +2,19 @@
 id: FEAT-63
 kind: feature
 title: Searching the Map should list ongoing Items first
-status: inbox
+status: complete
 created: '2026-11-22'
-updated: '2026-11-22T06:47:43Z'
+updated: '2026-11-22T15:55:42Z'
 owners: []
 priority: low
-effort: s
+effort: xs
+hardware: none
+owner: none
+radius: local
+area: map-app
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-23-map-search-lists-ongoing-items-first.md
 filed_by: harrison
 parent: map-improvements
 ---

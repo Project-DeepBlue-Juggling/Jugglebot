@@ -25,6 +25,17 @@ The operator's working assumption (and the 2026-11-22 sheet's) was that the Acti
 
 Evidence: temp/debrief/2026-11-22/mountfit.md (captures 20261122T100747Z_572D and 20261122T100946Z_572E, bag 2026-11-22_21-03-42); logbook 2026-11-22-sitting-debrief.
 
+## Options (2026-11-23)
+
+The trace (commit d02b620d) found no code defect: ACTIVATE goes to the uncorrected neutral, the hold is seeded from the encoders (C-LEVEL-1), and every planned move is corrected. So the question is what the operator should see or get after ACTIVATE.
+
+1. **Leave it as designed.** `levelling_frame.md` now says so; anything that needs Level follows `go_home`, a Jog target or an Attempt's pre-level REST. No code.
+2. **A GUI not-Level indicator.** The GUI marks the Platform as not Level from ACTIVATE until the first planned move. Jetson and GUI only, no motion change; the Night Shift can build and test it offline.
+3. **An automatic `go_home` after ACTIVATE.** trajectory_node issues the corrected `go_home` once ACTIVATE completes, so the held Active pose is Level. It adds an unrequested 0.6 degree profiled move at activation and changes flown behaviour, so it needs a Sitting.
+4. **ACTIVATE lands on the corrected neutral.** The Jetson computes levelled leg targets and sends them with ACTIVATE. A firmware RPC change and a flash; the largest of the four.
+
+Recommendation: 2 now (cheap, no motion); 3 as well if Level should be the default state after ACTIVATE. Not 4.
+
 ## Progress
 
 - 2026-11-22: 2026-11-23: traced, designed behaviour, no code defect. ACTIVATE goes to the uncorrected neutral and the hold is encoder-seeded (levelling_frame.md C-LEVEL-1); every planned move is corrected, and an Attempt's pre-level REST re-levels. levelling_frame.md corrected. Open for the owner: a GUI not-Level indicator, or an automatic go_home after ACTIVATE.
