@@ -1,0 +1,192 @@
+schema: 1
+date: '2026-11-23'
+rig: bench-hand
+steps:
+- n: 1
+  kind: setup
+  title: Check the checkout, with the launch down
+  from: []
+  to: []
+  actions:
+  - where: Hands
+    text: No launch may be running. Terminal 1 is the stage terminal for the whole sheet.
+  - where: Terminal 1
+    command: cd ~/Desktop/Jugglebot && source ~/Desktop/PDJ_venv/venv/bin/activate && git fetch && git status -sb && git log --oneline -1
+  see: '''## main...origin/main'' with nothing ahead or behind. Untracked temp/learn/ entries are expected.'
+  stop_if: The branch is not main, or it is behind origin/main (wait two minutes for the auto-pull and run it again).
+  serves: []
+- n: 2
+  kind: setup
+  title: Power the bench Hand and read its status
+  from: []
+  to: []
+  actions:
+  - where: Hands
+    text: Bench Hand on the bridge (CAN2, drive node 6). ODrive USB to the Jetson through the isolator, not the Win10 PC. Cup empty. E-stop in hand. Switch the 45 V supply on.
+  - where: Terminal 1
+    command: python tests/hardware/bench_hand_frame_bench.py status
+  see: One line reading state 1 (IDLE), err 0x0, node 6, and vbus near 45 V. The same line gives the position as pos, in rev; every later status step reads it.
+  stop_if: Any other node or state, or err not 0x0.
+  record: The status line.
+  serves: []
+- n: 3
+  kind: setup
+  title: Home onto the bottom stop, then park low
+  from: []
+  to: []
+  actions:
+  - where: Terminal 1
+    command: python tests/hardware/bench_hand_frame_bench.py home
+  - where: Hands
+    text: With the drive IDLE after the home, lift the Hand to between 0.3 and 0.7 rev and let go. The top stop is known (10.4 rev), so it is not measured again.
+  - where: Terminal 1
+    command: python tests/hardware/bench_hand_frame_bench.py status
+  see: The Hand drives DOWN at 3 rev/s and ends IDLE on the bottom stop at -0.10 rev, printing HOME OK. Then status reads state 1, err 0x0 and pos between 0.3 and 0.7 rev.
+  stop_if: 'It moves up (press the E-stop button, then stop and ask), or the tool prints an abort. The last status does not read state 1, err 0x0 and pos between 0.3 and 0.7 rev: lift or lower the Hand by hand and run status again.'
+  record: The home line.
+  serves: []
+- n: 4
+  kind: setup
+  title: Check out the cure branch and flash firmware 49
+  from: []
+  to:
+  - bridge-cycled
+  actions:
+  - where: Hands
+    text: Cup empty. The 45 V supply stays on. Flashing the bridge does not move the Hand's zero (the bench home lives in the drive), so the park from step 3 still holds.
+  - where: Terminal 1
+    command: git fetch && git checkout night-shift/2026-11-23-BUG-105 && git merge --ff-only origin/night-shift/2026-11-23-BUG-105 && git log --oneline -1
+  - where: Hands
+    text: 'Read the log line before going on: it must start c212f086.'
+  - where: Terminal 1
+    command: cd ros_ws/src/jugglebot/Teensy_code_canbridge
+  - where: Terminal 1
+    command: pio run -e teensy41 -t upload
+  - where: Terminal 1
+    command: cd ~/Desktop/Jugglebot
+  - where: Terminal 1
+    command: python tests/hardware/bench_hand_frame_bench.py status
+  - where: Terminal 1
+    command: python tests/hardware/hand_stream_bench.py --clear-errors
+  see: 'git says Switched to branch (or Already on it), then Already up to date or Fast-forward, and the log line is ''c212f086 bench(hand_stream_bench): --tri-cut-disarm now, and the live-feedforward line''. SUCCESS from the upload. status reads state 1, err 0x0 and pos between 0.3 and 0.7 rev. The clear-errors line ends ''CLEAR_ERRORS OK — fault_state NONE.'', which on this branch also proves the bridge runs firmware 49 (it aborts on any other version).'
+  stop_if: 'The log line does not start c212f086, or the checkout or merge refuses: run git checkout main, then stop and ask, and flash nothing. The upload fails twice, or clear-errors prints an ABORT naming a firmware version: run cd ~/Desktop/Jugglebot and skip to step 7 to restore main. status gets no reply right after the upload: the bridge is still booting, wait 10 s and run it again. status does not read pos between 0.3 and 0.7 rev: home and park as in step 3.'
+  record: The log line, and the clear-errors line.
+  serves:
+  - item: BUG-105
+    do:
+    - 0
+- n: 5
+  kind: run
+  title: 'Feedforward cure: cut a 10 rev/s upward ramp and see where the Hand stops'
+  from:
+  - bridge-cycled
+  to:
+  - bridge-cycled
+  actions:
+  - where: Hands
+    text: Hand parked between 0.3 and 0.7 rev, Cup empty, E-stop in hand.
+  - where: Terminal 1
+    command: python tests/hardware/hand_stream_bench.py --stage triangle --tri-span 4 --tri-speed 10 --tri-cut up --tri-cut-disarm now --top-stop 10.4 --close-loop
+  - where: Terminal 1
+    text: Type yes at the ARM prompt and touch nothing else. The Hand holds still while the firmware hands it back, ramps 4 rev up and down at 10 rev/s, and in the middle of the second upward ramp the stage cuts its stream and disarms at once. It waits 2 s and prints its tri-cut lines. With the cure the Hand should stop sharply near 2.5 to 3.5 rev.
+  - where: Hands
+    text: 'Read the line ''disarm landed on a live feedforward''. If it says yes, this step is done after the two commands below. If it says no or unknown, run the two commands below, then home and park as in step 3, and run the cut again: up to three cuts in all.'
+  - where: Terminal 1
+    command: python tests/hardware/bench_hand_frame_bench.py status
+  - where: Terminal 1
+    command: python tests/hardware/hand_stream_bench.py --clear-errors
+  see: 'The tri-cut lines, including ''HAND_CMD_ECHO before the disarm'', ''disarm landed on a live feedforward: yes (echo vel_ff about 10 rev/s before it)'' and ''offset vs the firmware''s last command''. That offset is the result: with the cure it should be within 0.05 rev of 0 (on main''s build it was 0.28). Drift near 0, fault_state NONE. status then reads state 8 until clear-errors, which ends ''CLEAR_ERRORS OK — fault_state NONE.''.'
+  stop_if: 'The Hand keeps moving after the cut or drifts: press the E-stop button. After any E-stop button press: release it, run cd ~/Desktop/Jugglebot, and go to step 7; the flash back to main is still needed, and step 7 homes the Hand again. The stage refuses or ABORTs: do not change the command to get past it; record the line, run python tests/hardware/hand_stream_bench.py --clear-errors, and go on to step 6. A fault that clear-errors will not clear: go to step 7. Three cuts all saying no or unknown: record them and go on.'
+  record: For each cut the whole stage output pasted (the tri-cut lines at least). How the stop looked and sounded compared with last night's cuts.
+  serves:
+  - item: BUG-105
+    do:
+    - 1
+    - 2
+    - 3
+    - 4
+    pass: true
+    setup_waived: the bench stage energises the Hand itself with --close-loop, so no earlier step arms it
+- n: 6
+  kind: run
+  title: 'Stall guard: one clean trip, then clear the latch without reflashing'
+  from:
+  - bridge-cycled
+  to:
+  - bridge-cycled
+  actions:
+  - where: Terminal 1
+    command: python tests/hardware/bench_hand_frame_bench.py home
+  - where: Hands
+    text: Lift the Hand to between 0.3 and 0.7 rev and let go.
+  - where: Terminal 1
+    command: python tests/hardware/bench_hand_frame_bench.py status
+  - where: Hands
+    text: 'Status must read state 1, err 0x0 and pos between 0.3 and 0.7 rev. Cup empty, nothing near the Hand, E-stop in hand. Touch the motor: it must be cool. As last night, the stage moves the Hand''s zero up by 0.65 rev for the push and lowers the current limit to 45 A, and puts both back.'
+  - where: Terminal 1
+    command: python tests/hardware/hand_stream_bench.py --stage stall
+  - where: Terminal 1
+    text: Type yes at the 'ARM stall' prompt. The Hand moves DOWN slowly, meets the bottom stop, pushes for about a fifth of a second and goes limp. Do not press Ctrl-C; the E-stop button is the stop.
+  - where: Terminal 1
+    command: python tests/hardware/hand_stream_bench.py --clear-errors
+  - where: Hands
+    text: 'Do NOT reflash here, whatever clear-errors prints: whether this command alone clears the latch is the question.'
+  - where: Terminal 1
+    command: python tests/hardware/bench_hand_frame_bench.py home
+  - where: Hands
+    text: Lift the Hand to between 0.3 and 0.7 rev and let go. Touch the motor and say whether it is warm.
+  see: 'The stall plan names firmware 49. Then ''current limit lowered: drive reads 45.0 A over USB'', ''frame shifted +0.650 rev'', ''ARMED: ramp ...'', ''trip seen at t=...'', a new line ''current collapsed <n> ms after the trip was seen (limit 250)'', ''HAND_MOVE_TO while latched: refused: ERR_BUS_DOWN'', ''current limit restore: sent 70.0 A, drive reads 70.0 A over USB -> OK'', ''encoder frame restored'', and last ''STALL-GUARD PASS: IDLE <t> ms after the first 40 A sample (limit 200), peak <A> A, fault HAND_STALL, bit3 set''. Then clear-errors ends ''CLEAR_ERRORS OK — fault_state NONE.'' and the home prints HOME OK.'
+  stop_if: 'The Hand moves UP, keeps pushing for more than about a second, or makes a new noise: press the E-stop button. After any E-stop button press: release it, run cd ~/Desktop/Jugglebot, and go to step 7; the flash back to main is still needed, and step 7 homes the Hand again. The status before the stage does not read state 1, err 0x0 and pos between 0.3 and 0.7 rev: run python tests/hardware/hand_stream_bench.py --clear-errors, home and park again. An ''ABORT: stall stage refused'' list: fix what it names and run the stage again; nothing was commanded. A STALL-GUARD FAIL line: do not repeat the stage; record it and carry on with clear-errors. A line containing ''NOT RESTORED: power-cycle the drive'': the 45 A limit is still in the drive; switch the 45 V supply off and on, then carry on with clear-errors and the home. clear-errors does not end in OK: record its output and go to step 7, where the flash clears the latch and the home resets the zero.'
+  record: The whole stage output from 'stall plan' to the verdict line, and the clear-errors output. Whether the motor was warm.
+  serves:
+  - item: BUG-131
+    do:
+    - 0
+    - 1
+    - 2
+    - 3
+    pass: true
+- n: 7
+  kind: restore
+  title: Back to main and flash the bridge back
+  from:
+  - bridge-cycled
+  to:
+  - bridge-cycled
+  actions:
+  - where: Terminal 1
+    command: python tests/hardware/bench_hand_frame_bench.py status
+  - where: Terminal 1
+    command: git checkout main && git pull --ff-only && git log --oneline -1
+  - where: Hands
+    text: 'Go on only if git printed Switched to branch ''main'' (or Already on ''main''). If the checkout refused, stop and ask: flashing now would put the branch''s firmware 49 back on the bridge.'
+  - where: Terminal 1
+    command: cd ros_ws/src/jugglebot/Teensy_code_canbridge
+  - where: Terminal 1
+    command: pio run -e teensy41 -t upload
+  - where: Terminal 1
+    command: cd ~/Desktop/Jugglebot
+  - where: Terminal 1
+    command: python tests/hardware/hand_stream_bench.py --clear-errors
+  - where: Terminal 1
+    command: python tests/hardware/bench_hand_frame_bench.py home
+  - where: Hands
+    text: Lift the Hand to between 0.3 and 0.7 rev and let go, then run python tests/hardware/bench_hand_frame_bench.py status to check.
+  see: 'status: state 1 (IDLE). git: Switched to branch ''main''. SUCCESS from the upload: the bridge runs can-bridge v48 again, which the robot''s main expects until this branch lands. clear-errors ends ''CLEAR_ERRORS OK — fault_state NONE.'' (on main it aborts on any version but 48). Then HOME OK, and status reads pos between 0.3 and 0.7 rev.'
+  stop_if: 'The upload fails twice: run cd ~/Desktop/Jugglebot, write in the notes that the bridge may still run firmware 49 (the robot must not be launched on it), and go on to step 8. clear-errors aborts naming a version: flash once more; if it aborts again, treat it as a failed upload.'
+  record: The clear-errors line.
+  serves: []
+- n: 8
+  kind: restore
+  title: Leave the bench safe
+  from:
+  - bridge-cycled
+  to: []
+  actions:
+  - where: Terminal 1
+    command: python tests/hardware/bench_hand_frame_bench.py status
+  - where: Hands
+    text: Switch the 45 V supply off. Cup empty.
+  see: state 1 (IDLE) and err 0x0 before the supply goes off.
+  stop_if: The drive reads state 8 (closed loop). Run python tests/hardware/hand_stream_bench.py --clear-errors and check again before switching off.
+  serves: []
