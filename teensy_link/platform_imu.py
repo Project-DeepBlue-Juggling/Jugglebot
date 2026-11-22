@@ -23,8 +23,9 @@ import struct
 import threading
 import time
 import zlib
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -280,8 +281,24 @@ class UploadConfig:
     # 0.8 ms pace, so 16 is break-even). Before IDEA-25 a refill READ ran from the first hole to the last hole
     # within READ_MAX words, re-sending every present word between: Armed, about 55 duplicates per hole healed,
     # 14,651 duplicates of 82,580 frames and about 13 s of a 79 s capture (AEDE); modelled with this rule:
-    # about 200 duplicates and about 1.3x the READs. READ_MAX (256) restores the old behaviour.
-    refill_merge_words: int = 16
+    # about 200 duplicates and about 1.3x the READs. READ_MAX (256) restores the old behaviour. 12 since the
+    # pipelined refill (below) made a READ cost about 15 ms of spacing instead of a 60 ms turnaround: break-even
+    # moves down to 15-19 words at 0.8 ms, and 12 stops bridging the 4-word runs between losses 5 apart (the
+    # Armed gap-80 pattern) without adding READs (simulation on the real hole sets, logbook 2026-11-23).
+    refill_merge_words: int = 12
+    # PIPELINED REFILL (IDEA-25; spec section 6). In a hole-refill pass (pass 2 on, anchors and samples only) the
+    # next refill READ goes out ``max(refill_spacing_s, count x gap + refill_margin_s)`` after the previous one was
+    # acknowledged by the can-bridge (queued on its CAN TX, in order), without waiting for that block's frames.
+    # The count x gap term is the whole block on the board's fixed pace schedule, so the board has finished it
+    # before the next READ arrives and never replaces it (Platform imu_proto.h READ: any non-contiguous READ
+    # replaces the active block); the margin covers the bridge's CAN TX queue, one Platform loop pass and pacing
+    # delay the board's 2-gap catch-up did not recover. If it is ever too short, the cut block's unsent words are
+    # holes for the next pass: slower, never wrong. The spacing floor bounds the IMU_CMD/IMU_REPLY rate (one each
+    # per 15 ms, against the bridge's 7-usable-slot relay ring drained 4 per 10 ms tick). A pass ends serially
+    # (the last block's frames land first) and the stall guard counts whole dry passes. False: one at a time.
+    refill_pipeline: bool = True
+    refill_spacing_s: float = 0.015
+    refill_margin_s: float = 0.004
     # READ chaining (FW 13, spec section 4 "READ chaining"; host rule in section 7). While block k is in flight
     # the next CONTIGUOUS block k+1 is sent once k is within this much time of its end, judged two ways, the
     # earlier wins: the highest seq received is within ceil(chain_lead_s / gap) words of k's end, or the clock
@@ -368,10 +385,15 @@ class _Region:
         self.n_have = 0
         self.scan = 0
         self.passes = 1
-        # (missing count, first PASS1_SEQS missing seqs) when the first sweep wrapped; None until then
+        # (missing count, its missing seqs, at most PASS1_SEQS) when the first sweep wrapped; None until then
         self.pass1: Optional[Tuple[int, List[int]]] = None
 
-    PASS1_SEQS = 500
+    # Every missing seq (a region holds at most 64,000 words): was 500, which cut captures 5730 and 5731 short.
+    PASS1_SEQS = 1 << 16
+
+    def at_pass_end(self) -> bool:
+        """True when the next :meth:`next_block` would wrap to a new pass (no missing word at or after the scan)."""
+        return not self.complete and self.have.find(b"\x00", self.scan) < 0
 
     def put(self, seq: int, word: bytes) -> int:
         """1 new word, 0 duplicate, -1 not in this region."""
@@ -452,6 +474,7 @@ class _Block:
     hi_rx: int = -1                    # highest seq received in this block's range
     no_chain: bool = False             # a chained READ on top of this block failed to queue: send the next fresh
     prev: Optional[Tuple[int, int]] = None   # (first_seq, count) of the block this one was chained onto
+    t_acked: float = 0.0               # when send_read returned (the bridge had queued it): the refill spacing origin
 
 
 # Phases
@@ -471,14 +494,20 @@ class UploadMachine:
     ``send_ctrl(op, reason, capture_id) -> (ok, msg)`` and ``send_read(capture_id, first_seq, count,
     gap_10us) -> (ok, msg)`` queue one RPC. OK means queued on the bus, not accepted: the verdict is
     the IMU_REPLY the caller feeds back through :meth:`on_reply`.
+
+    ``ack_clock`` (optional, the one exception to "no clock"): read once right after each ``send_read``
+    returns, as the origin of the pipelined refill spacing. ``send_read`` is a blocking RPC whose OK means the
+    can-bridge has queued the READ on its CAN TX, so timing from its return keeps the host's UDP latency out of
+    the spacing argument. Without it (tests) the origin is ``now``, which the fake board treats identically.
     """
 
     def __init__(self, send_ctrl: Callable[..., Tuple[bool, str]], send_read: Callable[..., Tuple[bool, str]],
                  on_result: Callable[[UploadResult], None], *, config: Optional[UploadConfig] = None,
-                 is_armed: Callable[[], bool] = lambda: False):
+                 is_armed: Callable[[], bool] = lambda: False, ack_clock: Optional[Callable[[], float]] = None):
         self._ctrl, self._read, self._on_result = send_ctrl, send_read, on_result
         self.cfg = config or UploadConfig()
         self._is_armed = is_armed
+        self._ack_clock = ack_clock
         self.phase = IDLE
         self._reset()
 
@@ -524,6 +553,14 @@ class UploadMachine:
         self._diag0: Optional[Dict[str, int]] = None
         self._bridge0: Optional[Tuple[int, int]] = None
         self._bridge1: Optional[Tuple[int, int]] = None
+        self._jet_rx = 0                       # frames in the batches after the first noted one (bridge cross-check)
+        # Pipelined refill: (first_seq, count) of recent refill READs already ended host-side, so a late reply is
+        # matched to its own READ; n_have at the start of the current pass (the pass-level stall guard); when the
+        # samples region's first sweep ended (refill_s).
+        self._refill_out: Deque[Tuple[int, int]] = deque(maxlen=16)
+        self._pass_have0: Optional[int] = None
+        self._t_refill0: Optional[float] = None
+        self._t_refill1: Optional[float] = None
         self.frames_total = 0
         self.frames_done = 0
         self._rate_t = 0.0
@@ -560,7 +597,8 @@ class UploadMachine:
         self._chunk_rereads_left = self.cfg.max_chunk_rereads
         self.stats = {"blocks": 0, "block_timeouts": 0, "frames_rx": 0, "dup_frames": 0, "stray_frames": 0,
                       "hole_passes": 0, "crc_rereads": 0, "block_gap_10us": 0, "reads_chained": 0,
-                      "reads_replaced": 0, "reads_late": 0, "chain": False}
+                      "reads_replaced": 0, "reads_late": 0, "chain": False, "reads_pipelined": 0,
+                      "refill_s": 0.0}
         self.flags = {"complete": False, "crc_checked": False, "crc_ok": None, "crc_method": None, "aborted": False,
                       "platform_rebooted": False, "already_frozen": False, "partial_span": False,
                       "span_unavailable": False, "resume_ok": None, "holes_unfilled": 0}
@@ -597,9 +635,14 @@ class UploadMachine:
     def _start_block(self, now: float) -> bool:
         """Send the next READ for the current region. False when the region is complete."""
         r = self.region
+        passes0 = r.passes if r else 0
         nb = r.next_block() if r else None
         if nb is None:
             return False
+        if r.passes != passes0:                    # this block starts a new pass
+            self._pass_have0 = r.n_have
+            if r is self.sample_region and self._t_refill0 is None:
+                self._t_refill0 = now              # the samples' first sweep is over: refill_s runs from here
         first, count = nb
         gap = self.effective_gap_10us()
         span = count * gap * 10e-6
@@ -611,9 +654,36 @@ class UploadMachine:
         if r.passes > 1:
             self.stats["hole_passes"] = max(self.stats["hole_passes"], r.passes - 1)
         ok, msg = self._read(self.cid, first, count, gap)
+        self.blk.t_acked = self._ack_clock() if self._ack_clock is not None else now
         if not ok:
             logger.warning("IMU READ not queued: %s", msg)
         return True
+
+    # -- pipelined refill (IDEA-25) --
+    def _pipelining(self) -> bool:
+        """True while the current region is in a hole-refill pass that pipelines its READs (config section)."""
+        r = self.region
+        return (self.cfg.refill_pipeline and r is not None and r.passes > 1 and self.phase in (ANCHORS, SAMPLES)
+                and not r.complete)
+
+    def _pipe_spacing(self, b: _Block) -> float:
+        """Seconds after ``b`` was acknowledged at which the next refill READ may go out: the whole block on the
+        board's pace schedule plus the margin, never under the spacing floor."""
+        return max(self.cfg.refill_spacing_s, b.count * b.gap_eff * 10e-6 + self.cfg.refill_margin_s)
+
+    def _pipe_ready(self, b: _Block) -> bool:
+        """``b`` may be ended host-side without waiting for its frames: a fresh (not chained) refill block with
+        nothing chained ahead of it, whose region has another block in THIS pass (a pass ends serially, so its
+        last block's frames land before the next pass is planned from the presence map)."""
+        return (self._pipelining() and self.ahead is None and not b.chained and not self.region.at_pass_end())
+
+    def pipeline_due_in(self, now: float) -> Optional[float]:
+        """Seconds until :meth:`tick` would send the next pipelined refill READ (0 if due), or None when none is
+        pending. The worker waits at most this long for the next batch (as with :meth:`settle_due_in`)."""
+        b = self.blk
+        if b is None or not self._pipe_ready(b):
+            return None
+        return max(0.0, self._pipe_spacing(b) - (now - b.t_acked))
 
     def _maybe_chain(self, now: float) -> None:
         """READ chaining (FW 13): keep one READ ahead so the Platform never idles between contiguous blocks.
@@ -760,6 +830,10 @@ class UploadMachine:
                     tgt = x
                     break
             if tgt is None:
+                key = (rep.read_first_seq, rep.read_count)
+                if key in self._refill_out:            # a pipelined refill READ's own (late) reply
+                    self._refill_out.remove(key)
+                    return
                 if self.ahead is None:
                     b.replied = True               # unmatched (a stale reply): as before chaining existed
                 return
@@ -900,6 +974,15 @@ class UploadMachine:
                 self.stats["block_timeouts"] += 1
                 self._next_block(now, timed_out=True)
             return
+        if self._pipe_ready(b) and now - b.t_acked >= self._pipe_spacing(b):
+            # Pipelined refill: the board has finished ``b`` by now (spacing rule); its frames are still in
+            # flight and fill their words at region level whichever block is current. Not a stall: the guard
+            # judges whole passes in a refill pass (_next_block).
+            if not b.replied:
+                self._refill_out.append((b.first_seq, b.count))
+            self.stats["reads_pipelined"] += 1
+            self._next_block(now, timed_out=False, stall=False)
+            return
         quiet = now - max(b.t_sent, b.last_rx)
         if b.last_seen and now - b.last_rx >= self.cfg.settle_s:
             self._next_block(now, timed_out=False)
@@ -951,10 +1034,21 @@ class UploadMachine:
         is already on the board); otherwise the next READ goes out. ``stall`` False: the block was cut by
         the board (an OK to a chained READ), so delivering nothing is not counted toward the stall guard."""
         b = self.blk
-        if b is not None and stall:
+        pipe = self._pipelining()
+        if pipe:
+            # Pipelined refill pass: a block is ended before its frames land, so its own n_new means nothing.
+            # The guard judges the whole pass instead, once its last block has settled: a pass that filled no
+            # word counts one stall (max_stalled_blocks such passes in a row end the upload; max_passes and
+            # max_total_s still apply on top).
+            if self.ahead is None and self.region.at_pass_end():
+                have0 = self._pass_have0
+                self.stalled = 0 if (have0 is None or self.region.n_have > have0) else self.stalled + 1
+                self._pass_have0 = self.region.n_have
+        elif b is not None and stall:
             self.stalled = 0 if b.n_new else self.stalled + 1
         if self.stalled > self.cfg.max_stalled_blocks:
-            self._fail("upload stalled: %d consecutive blocks delivered nothing" % self.stalled, now)
+            self._fail("upload stalled: %d consecutive %s delivered nothing"
+                       % (self.stalled, "refill passes" if pipe else "blocks"), now)
             return
         if self.region.complete:
             self.blk = self.ahead = None
@@ -986,6 +1080,10 @@ class UploadMachine:
         self._start_block(now)
 
     def _region_done(self, now: float) -> None:
+        if self.region is self.sample_region and self._t_refill0 is not None and self._t_refill1 is None:
+            # The samples' hole refill, first sweep's end to region complete (once: a CRC re-read does not move it).
+            self._t_refill1 = now
+            self.stats["refill_s"] = now - self._t_refill0
         if self.phase == HEADER:
             self._header_done(now)
         elif self.phase == ANCHORS and self._refill_verify:
@@ -1010,11 +1108,15 @@ class UploadMachine:
             self._chunk_table_done(now)
 
     # -- FW 14: diag counters and chunk verification --
-    def note_bridge(self, rx_frames: int, batches_sent: int) -> None:
-        """The can-bridge's cumulative IMU_DATA counters from each batch of this upload (first and last kept)."""
+    def note_bridge(self, rx_frames: int, batches_sent: int, n_frames: int = 0) -> None:
+        """The can-bridge's cumulative IMU_DATA counters from each batch of this upload (first and last kept),
+        called before the batch's ``n_frames`` records are fed. The first batch's own frames are already inside
+        its ``rx_frames``, so the Jetson side counts only the batches after it (``stats.bridge_rx_minus_jetson_rx``)."""
         if self.phase in _READING:
             if self._bridge0 is None:
                 self._bridge0 = (int(rx_frames), int(batches_sent))
+            else:
+                self._jet_rx += int(n_frames)
             self._bridge1 = (int(rx_frames), int(batches_sent))
 
     def _begin_aux(self, phase: str, name: str, base: int, lo: int, hi: int, now: float) -> None:
@@ -1253,7 +1355,7 @@ class UploadMachine:
     def _stash_pass1(self) -> None:
         """Record the samples region's first-sweep losses in ``stats`` once (the first region wins: a CRC
         re-read builds a new one). ``pass1_missing`` = words still missing when the first sweep ended (0 when
-        it ended complete, None when the upload ended inside it); ``pass1_missing_seqs`` = the first 500 of
+        it ended complete, None when the upload ended inside it); ``pass1_missing_seqs`` = every one of
         them, so a capture shows whether lost frames cluster."""
         sr = self.sample_region
         if sr is None or "pass1_missing" in self.stats:
@@ -1292,6 +1394,14 @@ class UploadMachine:
     def _finish(self, now: float) -> None:
         self.phase = DONE
         self._stash_pass1()
+        if self._bridge0 is not None and self._bridge1 is not None:
+            # IMU_DATA frames the can-bridge received between this upload's first and last batch, minus those the
+            # Jetson received in the batches after the first: 0 when nothing is lost between the bridge's ring and
+            # the machine (findings: every Armed loss is upstream of the bridge software). It can differ by the
+            # frames still in the bridge ring when the first or last batch was built (normally none at the ends).
+            d = (self._bridge1[0] - self._bridge0[0]) % (1 << 32)
+            self.stats["bridge_rx_frames"] = d
+            self.stats["bridge_rx_minus_jetson_rx"] = d - self._jet_rx
         sr = self.sample_region
         res = UploadResult(
             header=self.header, anchors=list(self.anchors),
@@ -1321,10 +1431,11 @@ def format_upload_end(summary: Dict[str, Any]) -> Tuple[bool, str]:
         crc_s += " (%s)" % fl["crc_method"]             # FW 14: a span verified by the chunk-CRC table
     complete = bool(fl.get("complete")) and not summary.get("write_failed")
     body = ("%s, %d samples, %.1f s, %d frames rx, %d duplicate, %d READs (%d chained, %d replaced), "
-            "%d block timeouts, %d hole passes, complete %s, crc %s, file %s" % (
+            "%d block timeouts, %d hole passes, refill %.1f s, complete %s, crc %s, file %s" % (
                 summary.get("label", "?"), int(summary.get("samples") or 0), float(st.get("wall_s") or 0.0),
                 int(st.get("frames_rx", 0)), int(st.get("dup_frames", 0)), int(st.get("blocks", 0)),
-                int(st.get("reads_chained", 0)), int(st.get("reads_replaced", 0)), int(st.get("block_timeouts", 0)), int(st.get("hole_passes", 0)), "yes" if complete else "NO",
+                int(st.get("reads_chained", 0)), int(st.get("reads_replaced", 0)), int(st.get("block_timeouts", 0)),
+                int(st.get("hole_passes", 0)), float(st.get("refill_s") or 0.0), "yes" if complete else "NO",
                 crc_s, summary.get("stem") or "none"))
     if summary.get("failure") or fl.get("aborted") or not complete or crc is False:
         reason = summary.get("failure") or ("aborted" if fl.get("aborted") else (
@@ -1412,7 +1523,8 @@ class PlatformImuService:
         self._writer = writer
         self._send_ctrl = send_ctrl
         self._odr_pending: Optional[OdrRequest] = None   # worker thread only
-        self.machine = UploadMachine(send_ctrl, send_read, self._on_result, config=self.cfg, is_armed=is_armed)
+        self.machine = UploadMachine(send_ctrl, send_read, self._on_result, config=self.cfg, is_armed=is_armed,
+                                     ack_clock=clock)
         self._data_q: "queue.Queue" = queue.Queue(maxsize=data_queue_size)
         self._ev_q: "queue.Queue" = queue.Queue(maxsize=event_queue_size)
         self.dropped_batches = 0
@@ -1710,6 +1822,7 @@ class PlatformImuService:
                 break
             self._bridge = {"ring_hwm": info.ring_hwm, "ring_drops": info.ring_drops, "rx_frames": info.rx_frames,
                             "batches_sent": info.batches_sent, "send_fails": info.send_fails}
+            self.machine.note_bridge(info.rx_frames, info.batches_sent, len(records) // 8)
             self.machine.on_records(records, t)
         self.machine.tick(now)
         self._odr_check(now)
@@ -1808,16 +1921,18 @@ class PlatformImuService:
         while not self._stop.is_set():
             try:
                 # Block briefly on the data queue so a batch is handled within a millisecond or two; when a
-                # block's settle is pending, wake when it falls due (at least 1 ms, at most the 20 ms poll).
+                # block's settle or the next pipelined refill READ is pending, wake when it falls due (at least
+                # 1 ms, at most the 20 ms poll).
                 timeout = 0.02
-                due = self.machine.settle_due_in(self._clock())
-                if due is not None:
-                    timeout = min(timeout, max(due, 0.001))
+                now = self._clock()
+                for due in (self.machine.settle_due_in(now), self.machine.pipeline_due_in(now)):
+                    if due is not None:
+                        timeout = min(timeout, max(due, 0.001))
                 t, info, records = self._data_q.get(timeout=timeout)
                 self._bridge = {"ring_hwm": info.ring_hwm, "ring_drops": info.ring_drops,
                                 "rx_frames": info.rx_frames, "batches_sent": info.batches_sent,
                                 "send_fails": info.send_fails}
-                self.machine.note_bridge(info.rx_frames, info.batches_sent)
+                self.machine.note_bridge(info.rx_frames, info.batches_sent, len(records) // 8)
                 self.machine.on_records(records, t)
             except queue.Empty:
                 pass

@@ -1025,11 +1025,11 @@ def test_upload_end_line_names_the_counts_and_warns_with_the_reason():
     ok, text = pi.format_upload_end({"label": "attempt_end", "samples": 3200, "stem": "20261121T010203Z_4A21",
                                      "stats": {"wall_s": 63.84, "frames_rx": 66000, "dup_frames": 206, "blocks": 525,
                                                "block_timeouts": 3, "hole_passes": 2, "reads_chained": 250,
-                                               "reads_replaced": 1},
+                                               "reads_replaced": 1, "refill_s": 6.94},
                                      "flags": {"complete": True, "crc_ok": True}, "failure": ""})
     assert ok and text == ("Platform IMU upload finished (attempt_end, 3200 samples, 63.8 s, 66000 frames rx, "
-                           "206 duplicate, 525 READs (250 chained, 1 replaced), 3 block timeouts, 2 hole passes, complete yes, crc ok, "
-                           "file 20261121T010203Z_4A21)")
+                           "206 duplicate, 525 READs (250 chained, 1 replaced), 3 block timeouts, 2 hole passes, refill 6.9 s, "
+                           "complete yes, crc ok, file 20261121T010203Z_4A21)")
     ok, text = pi.format_upload_end({"label": "operator", "flags": {"complete": False, "aborted": True},
                                      "failure": "aborted: soft_estop", "stats": {}})
     assert not ok and text.startswith("Platform IMU upload aborted: aborted: soft_estop (operator, 0 samples")
@@ -1143,7 +1143,7 @@ def test_fw13_with_loss_heals_every_hole_and_never_chains_a_hole_fill_read():
     assert all(c < 256 for _, c, _, _ in refills)
     # the first sweep's losses: every omitted sample word not refilled by a straggler, sorted, sample seqs only
     seqs = res.stats["pass1_missing_seqs"]
-    assert 0 < res.stats["pass1_missing"] <= fp.omitted and len(seqs) == min(res.stats["pass1_missing"], 500)
+    assert 0 < res.stats["pass1_missing"] <= fp.omitted and len(seqs) == res.stats["pass1_missing"]
     assert seqs == sorted(seqs) and seqs[-1] < 16000
 
 
@@ -1503,3 +1503,151 @@ def test_fw14_span_of_one_sample_is_verified():
     assert not res.flags.get("span_empty")
     assert res.flags["crc_ok"] is True and res.flags["crc_method"] == "chunks"
     assert len(res.sample_words) // 12 == pi.CHUNK_WORDS // 2  # one whole chunk around it
+
+
+# ── IDEA-25: pipelined refill READs (spec section 6), fake board 13, batched, 25 ms each way ─────────────────────
+
+_HOLES = frozenset(range(37, 16000, 97))          # 165 isolated sample-word losses: one refill READ each
+
+
+def _pipe(board=13, pipeline=True, n=8000, cfg=None, post=None, **opt):
+    cfg = cfg or pi.UploadConfig(span_margin_s=0.0, refill_pipeline=pipeline)
+    opt.setdefault("drop_once", set(_HOLES))
+    return _board(board, n=n, cfg=cfg, post=post, batched=True, cmd_lat=0.025, rx_lat=0.025, **opt)
+
+
+def _refill_reads(fp):
+    n_pass1 = 1 + 1 + -(-16000 // 256)
+    return fp.reads[n_pass1:]
+
+
+def test_pipelined_refill_heals_every_hole_bit_exact_and_much_faster_without_ever_cutting_a_block():
+    f0, _, r0, img = _pipe(pipeline=False)
+    # cmd_jitter + block_delay: 3 ms of arrival jitter and unrecovered pacing delay together, under the 4 ms margin
+    fp, m, res, _ = _pipe(cmd_jitter=0.001, block_delay=0.002)
+    assert _bit_exact(r0, img) and _bit_exact(res, img)
+    assert fp.replaced == 0 and f0.replaced == 0                   # the board never had a block cut short
+    assert res.stats["reads_pipelined"] > 100 and r0.stats["reads_pipelined"] == 0
+    assert res.stats["wall_s"] < r0.stats["wall_s"] - 5.0
+    assert 0.0 < res.stats["refill_s"] < r0.stats["refill_s"] - 5.0
+    assert res.stats["pass1_missing"] == len(_HOLES) and res.stats["hole_passes"] == 1
+    assert res.stats["block_timeouts"] <= r0.stats["block_timeouts"]
+    assert len(m._refill_out) == 0                                  # every pipelined READ's reply matched its own
+
+
+def test_pipelined_refill_reads_all_carry_the_armed_clamp():
+    cfg = pi.UploadConfig(span_margin_s=0.0, gap_10us=45)
+    fp, m, res, img = _pipe(cfg=cfg, armed=True)
+    assert _bit_exact(res, img) and fp.replaced == 0 and res.stats["reads_pipelined"] > 100
+    assert all(g == pi.BRIDGE_ARMED_MIN_GAP_10US and used == g for _, _, g, used in fp.reads)
+
+
+def test_a_lost_pipelined_read_and_a_lost_reply_heal_in_the_next_pass():
+    f0, _, _, _ = _pipe()
+    first = len(f0.reads) - len(_refill_reads(f0))
+    lost, lost_rep = {first + 10, first + 40}, {first + 20, first + 21, first + 22}
+    fp, m, res, img = _pipe(lose_reads=lost, lose_read_replies=lost_rep)
+    assert _bit_exact(res, img) and fp.replaced == 0
+    assert res.stats["hole_passes"] == 2                            # the lost READs' words came back in pass 3
+    for i in lost:
+        assert any(f == fp.reads[i][0] for f, _, _, _ in fp.reads[i + 1:])
+    assert len(m._refill_out) == len(lost) + len(lost_rep)          # only the unanswered READs stay listed
+
+
+def test_an_error_reply_mid_pipeline_fails_the_upload_and_resumes():
+    def post(fp, m):
+        send = fp.send_read
+
+        def spy(*a):
+            if m.stats.get("reads_pipelined", 0) >= 20:
+                fp.opt["read_status"] = ST.ERR_BAD_ARGS
+            return send(*a)
+        fp.send_read = spy
+    fp, m, res, img = _pipe(post=post)
+    assert "ERR_BAD_ARGS" in res.failure and not res.flags["complete"]
+    assert fp.ctrls[-1][0] == OP.RESUME and fp.resumed
+    assert res.stats["reads_pipelined"] >= 20
+
+
+def test_a_word_never_delivered_ends_a_pipelined_upload_on_the_pass_limit_or_the_pass_stall_guard():
+    cfg = pi.UploadConfig(span_margin_s=0.0, max_stalled_blocks=10_000)
+    fp, m, res, img = _pipe(cfg=cfg, drop_always={1000, 9000})
+    assert "after 8 passes" in res.failure and res.flags["holes_unfilled"] == 2 and not res.flags["complete"]
+    assert sum(1 for f, c, _, _ in fp.reads if f <= 1000 < f + c) == 1 + cfg.max_passes
+    assert fp.resumed and res.stats["reads_pipelined"] > 0
+    fp, m, res, img = _pipe(drop_always={1000, 9000})
+    assert "consecutive refill passes delivered nothing" in res.failure and res.flags["holes_unfilled"] == 2
+    assert fp.resumed and fp.t < 40.0
+
+
+def test_an_fw12_header_gets_the_same_pipelined_refill_and_no_block_is_ever_replaced():
+    f0, _, r0, img = _pipe(board=12, pipeline=False)
+    fp, m, res, _ = _pipe(board=12)
+    assert _bit_exact(r0, img) and _bit_exact(res, img)
+    assert fp.replaced == 0 and fp.extended == 0 and res.stats["chain"] is False
+    assert res.stats["wall_s"] < r0.stats["wall_s"] - 5.0
+    assert [r for r in fp.reads[:len(fp.reads) - len(_refill_reads(fp))]] == f0.reads[:len(fp.reads) - len(_refill_reads(fp))]
+
+
+@pytest.mark.parametrize("over, opt", [
+    ({"refill_spacing_s": 0.0, "refill_margin_s": -0.03}, {}),     # spacing far below the block
+    ({}, {"block_delay": 0.004 + 3 * 80 * 10e-6}),                 # the board runs later than the margin allows
+])
+def test_a_spacing_too_short_cuts_blocks_on_the_board_and_the_cut_words_heal_bit_exact_in_later_passes(over, opt):
+    holes = set(range(37, 16000, 400)) | {s for h in range(5000, 16000, 2000) for s in range(h, h + 20, 2)}
+    _, _, r_ok, img = _pipe(drop_once=set(holes))
+    fp, m, res, _ = _pipe(cfg=pi.UploadConfig(span_margin_s=0.0, **over), drop_once=set(holes), **opt)
+    # Cut, healed in later passes, nothing wrong. (Not asserted slower: with no spacing floor this fake, which
+    # has no RPC cost and no rate limit, fires a READ every 1 ms tick; the floor exists for the bus, not for this.)
+    assert _bit_exact(res, img) and fp.replaced > 0 and r_ok.stats["hole_passes"] == 1
+    assert res.stats["hole_passes"] > r_ok.stats["hole_passes"]
+
+
+def test_fw14_chunk_re_read_and_widened_span_still_verify_with_pipelined_refill():
+    img = _fw14()
+    job = _span(img)
+    _, _, r_clean, _ = _upload(img, job=job, board=14)
+    k0 = r_clean.k0
+    holes = set(range(2 * k0 + 40, 2 * k0 + 2400, 60))
+    seq = sorted(holes)[5]
+    fp, m, res, _ = _upload(img, job=job, board=14, batched=True, cmd_lat=0.025, rx_lat=0.025,
+                            drop_once=holes, corrupt_first={seq: 0x5A})
+    assert res.flags["complete"] and res.flags["crc_ok"] and res.flags["crc_method"] == "chunks"
+    assert res.stats["chunk_rereads"] == 1 and res.stats["reads_pipelined"] > 10 and fp.replaced == 0
+    assert res.k0 % (pi.CHUNK_WORDS // 2) == 0
+    w = res.sample_words[pi.WORD * (seq - 2 * k0):pi.WORD * (seq - 2 * k0 + 1)]
+    assert w == img["words"][seq]
+    # the diag and table READs kept their own path: each once, never pipelined, after the data
+    assert fp.diag_reads == 2 and fp.chunk_reads >= 1
+
+
+def test_pipeline_due_in_and_the_spacing_rule():
+    m = pi.UploadMachine(lambda *a: (True, ""), lambda *a: (True, ""), lambda r: None)
+    assert m.pipeline_due_in(0.0) is None
+    m.phase = pi.SAMPLES
+    m.region = pi._Region("samples", 0, 0, 100)
+    m.region.have[0:100] = bytes(100)
+    m.region.passes, m.region.scan = 2, 10
+    m.blk = pi._Block(0, 4, 0.0, 1.0, 80, t_acked=1.0)
+    assert m.pipeline_due_in(1.0) == pytest.approx(0.015)          # the floor: 4 x 0.8 ms + 4 ms is under 15 ms
+    m.blk = pi._Block(0, 30, 0.0, 1.0, 80, t_acked=1.0)
+    assert m.pipeline_due_in(1.0) == pytest.approx(30 * 0.0008 + 0.004)
+    assert m.pipeline_due_in(1.1) == 0.0
+    m.region.scan = 100                                            # the next block starts a new pass: serial
+    assert m.pipeline_due_in(1.1) is None
+    m.region.scan, m.region.passes = 10, 1                         # pass 1: never pipelined
+    assert m.pipeline_due_in(1.1) is None
+    m.region.passes, m.cfg.refill_pipeline = 2, False
+    assert m.pipeline_due_in(1.1) is None
+
+
+def test_bridge_rx_minus_jetson_rx_counts_the_batches_after_the_first():
+    out = []
+    m = pi.UploadMachine(lambda *a: (True, ""), lambda *a: (True, ""), out.append)
+    m.start(pi.UploadJob(), 0.0)
+    m.phase = pi.SAMPLES
+    m.note_bridge(1000, 7, 11)          # the first batch: its 11 frames are inside rx_frames already
+    m.note_bridge(1024, 8, 24)
+    m.note_bridge(1040, 9, 15)          # one frame the Jetson never saw
+    m._finish(1.0)
+    assert out[0].stats["bridge_rx_frames"] == 40 and out[0].stats["bridge_rx_minus_jetson_rx"] == 1

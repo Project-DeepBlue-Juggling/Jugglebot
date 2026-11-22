@@ -117,6 +117,12 @@ class FakePlatform:
     lose_reads     set of READ indices that never reach the board (no reply, no frames)
     reply_lat      extra seconds a READ's IMU_REPLY takes to reach the host (default 0): above the block's frame
                    latency the reply arrives AFTER the block's first frames
+    cmd_jitter     extra seconds, uniform in [0, cmd_jitter] (its own generator, seeded from ``loss_seed``), added to each READ's
+                   ``cmd_lat``; READs still reach the board in send order (the bridge's CAN TX is one FIFO)
+    block_delay    seconds of pacing delay each fresh block's frames run late by, beyond the schedule: models the
+                   delay the real board's 2-gap catch-up does not recover (loop stalls, tx_deferred under bus load)
+                   plus the bridge's CAN TX queue wait. A READ arriving before the delayed block's last frame
+                   replaces it (counted in ``replaced``)
     batched        deliver frames like the real bridge: collected and handed to on_records in batches of up to
                    24 frames every 10 ms (frames reach the host no sooner than their rx time)
     """
@@ -138,6 +144,7 @@ class FakePlatform:
         self.lose_replies = opt.get("lose_replies", 0)
         self.corrupt_active = True
         self.loss_rng = np.random.default_rng(opt.get("loss_seed", 0))
+        self._jit_rng = np.random.default_rng(opt.get("loss_seed", 0) + 1)
         self.omitted = 0
         machine._is_armed = lambda: bool(opt.get("armed", False))
         self.board = opt.get("board")
@@ -145,6 +152,7 @@ class FakePlatform:
         self.last_tx = -1.0
         self.replaced = 0               # board model: READs that cut an active block (FW 12 behaviour)
         self.extended = 0
+        self._cmd_arr = -1.0             # board model: when the last READ reaches the board (FIFO order)
         self.frames_sent = 0
         self._batch = []
         self._batch_next = 0.0
@@ -302,7 +310,12 @@ class FakePlatform:
         self.reads.append((first, count, gap, used))
         if idx in self.opt.get("lose_reads", ()):
             return True, "ok"
-        self._at(self.opt.get("cmd_lat", 0.004), lambda: self._board_read(idx, cid, first, count, used))
+        lat = self.opt.get("cmd_lat", 0.004)
+        if self.opt.get("cmd_jitter"):
+            lat += self._jit_rng.uniform(0.0, self.opt["cmd_jitter"])
+        t_arr = max(self.t + lat, self._cmd_arr + 1e-6)     # FIFO: never overtakes the READ before it
+        self._cmd_arr = t_arr
+        self._at_abs(t_arr, lambda: self._board_read(idx, cid, first, count, used))
         return True, "ok"
 
     def _board_reply(self, idx, op, status, cid, detail):
@@ -338,7 +351,7 @@ class FakePlatform:
         self.block_gen += 1
         self.bk = {"next": first, "end": first + count, "gap": used, "gen": self.block_gen}
         self._board_reply(idx, OP.READ, ST.OK, cid, detail)
-        t0 = max(self.t, self.last_tx + used * 10e-6)
+        t0 = max(self.t, self.last_tx + used * 10e-6) + self.opt.get("block_delay", 0.0)
         self._at_abs(t0, lambda g=self.block_gen, d=t0: self._board_tx(g, d))
 
     def _board_tx(self, gen, due):

@@ -310,8 +310,8 @@ Teensy's verdict is the IMU_REPLY). They are defined in `config/generate_udp_pro
 
 Both are gated on `jugglebot_commands_allowed()` (ERR_BUS_DOWN). It uplinks 0x6E4-0x6E6, not the reserved ids:
 IMU_REPLY and IMU_STATUS join the Platform reply whitelist and ride the existing 8-slot reply ring as PLATFORM_FRAMEs
-(a few frames per second: STATUS is 1 Hz and the host sends the next IMU_CMD only after the previous reply), and
-IMU_DATA takes the dedicated ring of item 5.
+(a few frames per second: STATUS is 1 Hz and the host sends the next IMU_CMD only after the previous reply, except
+pipelined refill READs, at most one per 15 ms, below), and IMU_DATA takes the dedicated ring of item 5.
 
 **Boot silence.** A Platform Teensy that has just booted sends no IMU_STATUS for 10 s (section 4); the Jetson treats that
 as normal, not as a fault, and sends no IMU_CMD in that window (the board drops them unanswered). A board with no IMU
@@ -384,10 +384,10 @@ is default ON at every node start (not persisted).
 Host hole-fill and settle (IDEA-25, 2026-11-21, no wire or firmware change; `teensy_link/platform_imu.py`, `_Region` and
 `UploadConfig`). The node keeps a presence bitmap per region and always READs from the first missing word at or after its
 scan position. A READ starts and ends on a missing word, holds at most 256 words, and bridges a run of words it already
-has only when that run is at most `refill_merge_words` (16) long; a longer run ends the READ and the next missing word
+has only when that run is at most `refill_merge_words` (12; 16 before the pipelined refill) long; a longer run ends the READ and the next missing word
 starts the next one. So every word still missing is requested once per pass, a word never delivered is re-requested each
-pass until 8 passes or 5 consecutive READs that bring nothing new end the upload (the capture is written incomplete and
-RESUMEd), and the 300 s ceiling still applies. Before IDEA-25 a refill READ ran from the first hole to the last hole within
+pass until 8 passes or 5 consecutive READs that bring nothing new (5 consecutive refill passes, when pipelined: below)
+end the upload (the capture is written incomplete and RESUMEd), and the 300 s ceiling still applies. Before IDEA-25 a refill READ ran from the first hole to the last hole within
 256 words and re-sent everything between: when Armed (about 0.4 % of IMU_DATA frames never reach the bridge, cause not
 yet located) that was about 55 duplicate frames per hole healed, 14,651 duplicates and about 13 s of a 79 s whole-ring
 capture (AEDE, 2026-11-20). A block whose last word arrives with a hole left in it ends after `settle_s` (5 ms, was
@@ -397,10 +397,36 @@ word, whichever READ is current), so a shorter settle loses nothing; a READ that
 sending replaces the block, and the frame pace (the gap floor between blocks; the fixed schedule within one, FW 13) and
 the Armed gap clamp are unchanged, so the bus IMU rate stays at the requested gap. The node logs one launch-log line at every upload end:
 INFO `Platform IMU upload finished (label, samples, wall s, frames rx, duplicates, READs (N chained, M replaced), block
-timeouts, hole passes, complete, crc, file stem)`, or a WARNING `Platform IMU upload failed|aborted: <reason> (...)`.
+timeouts, hole passes, refill s, complete, crc, file stem)`, or a WARNING `Platform IMU upload failed|aborted: <reason> (...)`.
 Each capture's `stats` (in its .json) also carries `pass1_missing` (words still missing when the first sweep of the
-samples region ended: 0 when it ended complete, null when the upload ended inside it), `pass1_missing_seqs` (the first
-500 of them, in order, to see whether lost frames cluster), `reads_chained`, `reads_replaced` and `chain`.
+samples region ended: 0 when it ended complete, null when the upload ended inside it), `pass1_missing_seqs` (all of
+them, in order, to see whether lost frames cluster; the first 500 before 2026-11-23), `reads_chained`, `reads_replaced`,
+`chain`, `reads_pipelined`, `refill_s` (the samples' first sweep's end to the region complete), `bridge_rx_frames` and
+`bridge_rx_minus_jetson_rx` (IMU_DATA frames the can-bridge counted between the upload's first and last batch, minus those
+the Jetson received in the batches after the first: 0 when nothing is lost between the bridge's ring and the machine).
+
+Pipelined refill (IDEA-25, 2026-11-23, Jetson only, no wire or firmware change; `UploadConfig.refill_pipeline`, default
+on, code-level, not a node parameter). The one-READ-at-a-time rule above keeps holding for the header, the FW 14
+regions and every first sweep (chained or not). In a hole-refill pass (pass 2 on, anchors and samples) the next refill
+READ goes out `max(refill_spacing_s, count x gap + refill_margin_s)` (15 ms, 4 ms) after the previous READ's RPC
+returned, without waiting for that block's frames; the pass's last block still ends serially (its frames land, or it
+times out) before the next pass is planned. Why the board never has a block cut short: the RPC's OK means the bridge has
+queued the READ on its one in-order CAN TX path, so READ n+1 reaches the Platform at least the spacing after READ n was
+queued; READ n's block ends at most `count x gap` after it arrives (a fresh block's first frame waits at most one gap,
+each later frame is due one gap after the previous frame's DUE time, `imu_proto.h` `commit_data`), plus whatever
+delay the 2-gap catch-up did not recover; the 4 ms margin covers that delay, the bridge's CAN TX queue wait and one
+Platform loop pass. If it ever does not, the board REPLACES the block (`imu_proto.h` READ: only a READ whose `first_seq`
+equals the active block's end extends it): frames already placed in TX mailboxes still go out, the unsent rest is never
+read from the frozen image, and those words stay missing in the host's bitmap and are READ again in the next pass. No
+word is ever written from the wrong READ (each frame carries its `seq`) and the board returns to FROZEN when the new
+block ends, so a too-short spacing only costs time. Blocks never overlap on the board, so IMU_DATA stays at one frame
+per effective gap (Armed: at most about 1590/s at the 63 clamp, plus the 2-frame catch-up); the pipelining adds at most
+67 IMU_CMD and 67 IMU_REPLY frames per second. The replies share the bridge's 8-slot relay ring (7 usable, drained 4 per
+100 Hz tick, drop newest): at most 2 replies per tick plus a 1 Hz STATUS, so it cannot fill even with the telemetry
+task 50 ms late. Each READ still carries the effective gap, so the Armed clamp applies per READ. A late reply to an
+already-ended refill READ is matched to that READ (a short list), not to the current block. Simulation on the real hole
+sets of captures 572D/572E/572F, fake board, 25 ms each way: 58.6 / 62.3 / 45.4 s before, 54.0 / 55.7 / 32.6 s after
+(unflown).
 
 Host verification and diag (FW 14, `UploadMachine`; no wire change beyond section 3's two regions). Only when the
 frozen capture's own header says `fw_version` >= 14 (the reason is item 1 of the chaining rule below):
