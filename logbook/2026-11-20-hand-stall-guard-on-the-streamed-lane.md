@@ -77,7 +77,7 @@ So a Hand ODrive that keeps driving while its own CAN TX dies is not covered by 
 
 **The Legs** get exactly what a Hand ODrive fault gives them: a Hand active error or disarm-while-CLOSED_LOOP sets `s_fatal_error` and then guard ESTOP with the output gated, and the Leg ODrives hold their last setpoint (`fault_machine.cpp` evaluate_errors, evaluate_guard). The stall latch takes the same path, through guard_mode and the output gate. No new Leg action was invented. The Hand is not IDLEd by the Leg logic and the Legs are not IDLEd by the Hand logic, mirroring the FW 36 rule that a Hand fault must not drop a loaded Platform.
 
-**Its own latch, not `s_estop_state`.** The guard E-STOP freezes its reason at the first trip. On 2026-11-20 that was MAX_DEVIATION, 70 ms before this guard would have fired. A shared latch would then have reported MAX_DEVIATION, and the operator would not learn that the Hand was IDLEd. So `s_hand_stall_latched` is separate:
+**Its own latch, not `s_estop_state`.** The Soft E-stop freezes its reason at the first trip. On 2026-11-20 that was MAX_DEVIATION, 70 ms before this guard would have fired. A shared latch would then have reported MAX_DEVIATION, and the operator would not learn that the Hand was IDLEd. So `s_hand_stall_latched` is separate:
 - reported as `FaultState::HAND_STALL`, above the frozen guard reason and below CAN_BUS_DOWN / ODRIVE_FATAL;
 - the MAX_DEVIATION snapshot fields are kept;
 - released only by `fault_notify_clear_errors()`.
