@@ -21,8 +21,8 @@ links:
 parent: two-ball-oval
 filed_by: claude
 night_skip: owner-session
-night_skip_on: '2026-11-22'
-night_skip_note: 'Your TKT-88 answer: a day Session is already on it; the night leaves it pinned for a few days.'
+night_skip_on: '2026-11-23'
+night_skip_note: 'Your TKT-88 answer: a day Session is on it (FW 14 chunk CRC, pipelined refills, 2026-11-22); the night leaves it pinned.'
 ---
 
 Keep this area open (owner, 2026-11-19): once the MVP works, explore shortening the post-Attempt IMU upload. Three levers: tighter sample packing or compression; a slower setpoint heartbeat while holding (the 500 Hz stream stays as is for now: it feeds the ODrive watchdog and avoids a rate switch on the Leg path); a higher measured rate from the P4 ramp.

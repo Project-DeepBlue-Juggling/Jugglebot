@@ -17,6 +17,9 @@ links:
 - map/bug-a-guard-latch-leaves-the-hand-pushing-at-full-current-no.md
 - logbook/2026-11-22-sitting-debrief-bench-hand-2.md
 filed_by: claude
+night_skip: sitting
+night_skip_on: '2026-11-23'
+night_skip_note: Items 2 and 3 fly on main's FW 48 at the next bench-hand Sitting; item 1 (stale idle-pending flag) is a firmware edit for the next flash.
 ---
 
 Three things left over from BUG-123 (firmware 48, merged 2026-11-22).
