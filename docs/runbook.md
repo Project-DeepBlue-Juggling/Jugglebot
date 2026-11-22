@@ -20,7 +20,7 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | FEAT-49 Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault | 60 | armed | - | - |
 | FEAT-50 Live warning when a marker dwells under the Hand | 10 | armed | `night-shift/2026-11-14-FEAT-50` | - |
 | IDEA-16 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them | 10 | level | - | - |
-| IDEA-20 Platform Accelerometer? | 50 | level, tilt, armed, bb-fed | - | - |
+| IDEA-20 Platform Accelerometer? | 50 | level, armed, bb-fed | - | 2026-11-22-robot |
 
 ## Bench leg  (1 Item, 30 min)
 
