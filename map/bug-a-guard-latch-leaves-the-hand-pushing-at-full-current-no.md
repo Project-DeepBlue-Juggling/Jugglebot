@@ -2,9 +2,9 @@
 id: BUG-123
 kind: bug
 title: 'A guard latch leaves the Hand pushing at full current: no stall guard on the streamed lane or a latched hold'
-status: in_progress
+status: complete
 created: '2026-11-20'
-updated: '2026-11-22T11:23:29Z'
+updated: '2026-11-22T12:12:54Z'
 owners: []
 priority: high
 effort: m
@@ -18,10 +18,9 @@ links:
 - logbook/2026-11-20-sitting-debrief.md
 - bug-odrive-gui-save-resets-the-hand-zero-the-bridge-stays-homed
 - bug-hand-stalls-at-the-70-a-clamp-mid-dive-probably-on-a-ball
+- logbook/2026-11-22-sitting-debrief-bench-hand-2.md
+- logbook/2026-11-20-hand-stall-guard-on-the-streamed-lane.md
 filed_by: claude
-night_skip: sitting
-night_skip_on: '2026-11-22'
-night_skip_note: FW 48 held on its day-Session branch; the bench stall stage was fixed after the 2026-11-20 crash and waits for the bench-hand Sitting.
 ---
 
 Sitting of 2026-11-20 (bag `2026-11-20_12-49-25`, 13:34:22). The Hand stalled against its top stop on a lost home (see the linked Item). MAX_DEVIATION latched 80 ms into the stall, but a latch only freezes the output: the drive kept its last lead-clamped `input_pos` (measured 5.86 + MAX_LEAD_HAND_REV 2.0 = 7.85 rev) and pushed 68-70.4 A for 4.4 s (about 21,800 A^2 s) until the E-stop button cut power.
@@ -69,6 +68,13 @@ The owner intends to keep running this motor to establish the cut-offs.
 - notes: owner: still the same error, `KeyError: 'stall'` in `main()` (the pasted traceback is in the sheet's results file). (sheet 2026-11-22-bench-hand, step 11)
 - derived: Not flown. Step 10's `git checkout` reused a stale local copy of the branch (9e715165, from 2026-11-20; git reflog), so the old stage ran and crashed on the same KeyError 'stall' before the link opened, and the bridge was flashed with that commit's stall-guard build, numbered 47. Step 13 was skipped, so the bridge kept that build and the checkout stayed on the branch until the debrief.
 
+## Sitting result (2026-11-22 22:49)
+
+- verdict: pass
+- notes: owner: three stall runs, each ending STALL-GUARD FAIL: current rose again after the trip; the Teensy was reflashed between runs. The pasted stage output is in the sheet's results file. (sheet 2026-11-22-bench-hand-2, step 5)
+- derived: Owner flipped inconclusive to pass at the confirmation. Three trips on firmware 48 at 45 A (owner's pasted stage output, steps 5 and 6): IDLE 167, 159 and 162 ms after the first 40 A sample, peak 44.9 A, fault HAND_STALL, limit read back 70.0 A each time.
+- derived, continued: The stage printed no PASS line: its 'current rose again (44.8 A)' was the stale Iq of the trip frame, and it then IDLEd the Hand itself, so the current staying down unaided was not observed. Stage fixed on the branch (24750721).
+
 ## Progress
 
 - 2026-11-20: Owner decision, 2026-11-20: 40 A / 1 rev/s / 150 ms, then the Hand enters Idle. Being built as can-bridge FW 47 on a held branch.
@@ -82,3 +88,4 @@ The owner intends to keep running this motor to establish the cut-offs.
 - 2026-11-22: 2026-11-22: the branch is merged up to main and the stall guard renumbered to can-bridge FW 48 (efd728e9); the bench stage now refuses FW 47, which is main's IMU relay build and has no stall guard. On sheet 2026-11-22-bench-hand.
 - 2026-11-22: Not flown 2026-11-22: a bare git checkout reused the stale local branch (9e715165), so the old stage crashed again. Fixed in the sheet and this section (merge --ff-only, check the SHA). Dry run on the unpowered bench found the drive reports no motor temperature, which refused the stage for ever; it now falls back to the FET reading (4c5e78ff).
 - 2026-11-22: Dry run 2026-11-22, bus at 0 V, firmware 48 flashed: the real stage ran to the bring-up. Limit 70 -> 45 A read back over USB in the same process as the bridge link, frame shifted +0.650 rev, and both were restored when the bring-up failed. Only the push itself is unverified.
+- 2026-11-22: Passed at the Sitting of 2026-11-22: three trips at 45 A, Hand Idle 159 to 167 ms after the first 40 A sample, fault HAND_STALL, limit restored; the owner flipped the derived inconclusive to pass. Merged by hand as firmware 48 (98bc16e6) and flashed to the bridge.

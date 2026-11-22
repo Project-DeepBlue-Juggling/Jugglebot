@@ -1,3 +1,46 @@
+closed:
+  at: 2026-11-22 22:49
+  items:
+  - BUG-105
+  - BUG-123
+confirmed:
+  at: 2026-11-22 22:49
+  changed:
+  - BUG-123
+derived:
+  5:
+    BUG-123:
+      by: sitting-debrief 2026-11-22
+      criterion: the Hand goes Idle within 200 ms of its current first reaching 40
+        A, fault HAND_STALL, no second current rise, the current limit reads back
+        at its original value (the stage's STALL-GUARD PASS line).
+      evidence: 'Owner flipped inconclusive to pass at the confirmation. Three trips
+        on firmware 48 at 45 A (owner''s pasted stage output, steps 5 and 6): IDLE
+        167, 159 and 162 ms after the first 40 A sample, peak 44.9 A, fault HAND_STALL,
+        limit read back 70.0 A each time. The stage printed no PASS line: its ''current
+        rose again (44.8 A)'' was the stale Iq of the trip frame, and it then IDLEd
+        the Hand itself, so the current staying down unaided was not observed. Stage
+        fixed on the branch (24750721).'
+      verdict: pass
+  8:
+    BUG-105:
+      by: sitting-debrief 2026-11-22
+      criterion: 'each settled offset against the firmware''s last command is within
+        0.05 rev of the echoed `vel_ff / 35` in the direction of travel, and the Hand
+        holds there without drifting. The echoed feedforward is what the drive was
+        left holding; it equals `tri-speed / 35` unless the disarm landed in the lane''s
+        decay, when it is lower. The last knot is not the reference: the lane coasts
+        on for up to 0.1 s before the disarm lands.'
+      evidence: '20 rev/s down (temp/logs/hand_stream_triangle_20261122_223621.csv):
+        settled +0.0047 rev from the firmware''s last command, echoed vel_ff 0.00,
+        drift 0.0032 rev. 20 rev/s up (hand_stream_triangle_20261122_223818.csv):
+        +0.0009 rev, vel_ff 0.00, drift 0.0134 rev. Both disarms landed after the
+        lane had decayed its feedforward to 0 (the Hand ran on 2.1 rev), so the only
+        cut with a live feedforward is the 10 rev/s one of the earlier Sitting (0.284
+        against 0.286). No fault or latch. The E-stop button check was not recorded.
+        Owner at the confirmation: the E-stop button cuts the ODrive bus power on
+        the bench Hand.'
+      verdict: pass
 schema: 2
 steps:
   1:

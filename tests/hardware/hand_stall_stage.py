@@ -597,11 +597,21 @@ def _finish(io, cfg, say, vel0, curr0, r, st):
             io.disarm()
         except BaseException as e:  # noqa: BLE001
             say(f"!! disarm failed: {e!r}")
+        idle_ok = False
         try:
-            command_idle(io, say)
+            idle_ok = bool(command_idle(io, say))
+            if not idle_ok:             # the ack was lost: the drive may be IDLE anyway
+                idle_ok = io.sample().axis_state == AXIS_IDLE
         except BaseException as e:  # noqa: BLE001
             say(f"!! IDLE failed: {e!r}: PRESS THE E-STOP BUTTON")
-    if st["lowered"]:
+        st["idle_ok"] = idle_ok
+    if st["lowered"] and st["energised"] and not st.get("idle_ok"):
+        # Never raise the limit under a Hand that may still be pushing (audit 2026-11-22):
+        # the test value stays, which the verdict reports as NOT RESTORED.
+        r.limit_readback = None
+        say("!! the Hand is not confirmed IDLE: current limit LEFT at the test value. "
+            "NOT RESTORED: power-cycle the drive")
+    elif st["lowered"]:
         try:
             io.set_limits(vel0, curr0)
             r.limit_readback = io.read_limits()[1]

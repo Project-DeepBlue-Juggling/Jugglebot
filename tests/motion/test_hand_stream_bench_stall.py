@@ -29,7 +29,7 @@ class FakeIO:
     def __init__(self, *, fw=48, guard=True, clamp_gain=200.0, orig_limit=70.0,
                  limit_takes=True, park=0.5, raise_on_send=None, raise_on_sample_after=None,
                  second_rise=False, bit3_before=False, temp=30.0,
-                 telem_lag_s=0.0, never_collapses=False):
+                 telem_lag_s=0.0, never_collapses=False, idle_dead=False):
         self.t = 0.0
         self.fw, self.guard, self.k = fw, guard, clamp_gain
         self.limit = orig_limit
@@ -53,6 +53,7 @@ class FakeIO:
         self.second_rise = second_rise
         self.telem_lag_s = telem_lag_s      # the Diagnostic's Iq/axis state lag the bit3 edge
         self.never_collapses = never_collapses
+        self.idle_dead = idle_dead          # the IDLE is never acked and never lands
         self.temp = temp
         self.temp_fet = 31.0
 
@@ -124,6 +125,9 @@ class FakeIO:
 
     def idle_once(self, timeout):
         self.log.append(("idle", self.t))
+        if self.idle_dead:
+            self.t += timeout
+            return False
         self.state, self.cmd = ST.AXIS_IDLE, None
         self.t += 0.002
         return True
@@ -334,6 +338,17 @@ def test_a_rise_after_a_lagged_collapse_still_fails():
     rc, lines = _run(io)
     assert rc == 1
     assert "current rose again after the trip" in lines[-1]
+
+
+def test_the_limit_is_not_raised_under_a_hand_that_is_not_confirmed_idle():
+    # No guard and a dead IDLE path: the Hand may still be pushing at the test limit, so
+    # the restore to 70 A must not be sent (audit of the firmware 48 merge, 2026-11-22).
+    io = FakeIO(guard=False, idle_dead=True)
+    rc, lines = _run(io)
+    assert rc == 1
+    assert _limit_writes(io) == [45.0]
+    assert any("LEFT at the test value" in ln for ln in lines)
+    assert "current limit read back None" in lines[-1]
 
 
 def test_sticky_bit3_from_an_earlier_trip_does_not_fake_a_trip():
