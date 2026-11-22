@@ -1,0 +1,301 @@
+schema: 1
+date: '2026-11-22'
+rig: bench-hand
+steps:
+- n: 1
+  kind: setup
+  title: Check the checkout, with the launch down
+  from: []
+  to: []
+  actions:
+  - where: Hands
+    text: No launch may be running. Terminal 1 is the stage terminal for the whole sheet.
+  - where: Terminal 1
+    command: cd ~/Desktop/Jugglebot && source ~/Desktop/PDJ_venv/venv/bin/activate && git fetch && git status -sb && git log --oneline -1
+  see: '## main...origin/main with nothing ahead or behind, and the top commit starts ''map: Sitting sheet 2026-11-22-bench-hand''. Untracked temp/learn/ entries are expected.'
+  stop_if: The branch is not main, or it is behind origin/main (wait two minutes for the auto-pull and run it again).
+  serves: []
+- n: 2
+  kind: setup
+  title: Power the bench Hand and read its status
+  from: []
+  to: []
+  actions:
+  - where: Hands
+    text: Bench Hand on the bridge (CAN2, drive node 6). ODrive USB to the Jetson through the isolator, not the Win10 PC. Cup empty. E-stop in hand. Switch the 45 V supply on.
+  - where: Terminal 1
+    command: python tests/hardware/bench_hand_frame_bench.py status
+  see: One line reading state 1 (IDLE), err 0x0, node 6, and vbus near 45 V. The same line gives the position as pos, in rev; every later status step reads it.
+  stop_if: Any other node or state, or err not 0x0.
+  record: The status line.
+  serves: []
+- n: 3
+  kind: setup
+  title: Push-check the frame
+  from: []
+  to: []
+  actions:
+  - where: Terminal 1
+    command: python tests/hardware/bench_hand_frame_bench.py push-check
+  - where: Hands
+    text: While it records, push the Hand DOWN slowly by a few cm, then let go.
+  see: A line ending PASS (DOWN counts negative).
+  stop_if: 'FAIL: the mechanism or encoder is mirrored. Fly nothing else: go straight to step 14.'
+  record: The push-check line.
+  serves: []
+- n: 4
+  kind: setup
+  title: Torque-check, open loop
+  from: []
+  to: []
+  actions:
+  - where: Hands
+    text: Move the Hand by hand to mid-stroke, about 5 rev from either stop, and keep clear of it.
+  - where: Terminal 1
+    command: python tests/hardware/bench_hand_frame_bench.py torque-check
+  - where: Terminal 1
+    text: 'Only on FAIL, with the Hand at mid-stroke: python tests/hardware/bench_hand_frame_bench.py calibrate, then torque-check again.'
+  see: It pulses 2 A down, then 4 A up, and prints TORQUE-CHECK PASS.
+  stop_if: It fails twice. Run no closed loop and fly nothing else. Go straight to step 14.
+  record: The torque-check line, and whether calibrate was needed.
+  serves: []
+- n: 5
+  kind: setup
+  title: Home onto the bottom stop
+  from: []
+  to: []
+  actions:
+  - where: Terminal 1
+    command: python tests/hardware/bench_hand_frame_bench.py home
+  see: The Hand drives DOWN at 3 rev/s and ends IDLE on the bottom stop at -0.10 rev, printing HOME OK.
+  stop_if: It moves up (press the E-stop), or the tool prints an abort.
+  record: The home line.
+  serves: []
+- n: 6
+  kind: setup
+  title: Measure the top stop, then park low
+  from: []
+  to: []
+  actions:
+  - where: Hands
+    text: With the drive IDLE, lift the Hand slowly onto the top stop and hold it there.
+  - where: Terminal 1
+    command: python tests/hardware/bench_hand_frame_bench.py status
+  - where: Hands
+    text: 'Write the position down: it is <measured> in steps 8 and 9. Lower the Hand to between 0.3 and 0.7 rev and run status again to check.'
+  see: A top stop near 10.4 rev (it read 10.4 on 2026-11-20), then a park position between 0.3 and 0.7 rev.
+  stop_if: 'The top stop reads below 7.3 rev: step 9''s downward cut will be refused, so skip that cut there. Below 6.0 rev: skip steps 8 and 9 altogether.'
+  record: The measured top stop in rev.
+  serves: []
+- n: 7
+  kind: setup
+  title: Re-flash the bridge to clear the power-up latch
+  from: []
+  to:
+  - bridge-cycled
+  actions:
+  - where: Terminal 1
+    command: cd ros_ws/src/jugglebot/Teensy_code_canbridge
+  - where: Terminal 1
+    command: pio run -e teensy41 -t upload
+  - where: Terminal 1
+    command: cd ~/Desktop/Jugglebot
+  - where: Terminal 1
+    text: Then run python tests/hardware/bench_hand_frame_bench.py status once more.
+  see: SUCCESS from the upload, then status reading state 1, err 0x0 and pos between 0.3 and 0.7 rev. This flashes can-bridge v47, the version main expects and the bridge already runs (flashed 2026-11-22).
+  stop_if: The upload fails (run the upload line again on its own), or status shows an error or a position outside 0.3 to 0.7 rev (repeat steps 5 to 7).
+  serves: []
+- n: 8
+  kind: run
+  title: 'Feedforward offset: the stage cuts a 10 rev/s upward ramp'
+  from:
+  - bridge-cycled
+  to:
+  - bridge-cycled
+  actions:
+  - where: Hands
+    text: 'Check: launch down, Hand parked at or below 0.9 rev, Cup empty, E-stop in hand, and the top stop from step 6 is at or above 6.0 rev. In the command below, replace <measured> with the top stop from step 6 before you run it.'
+  - where: Terminal 1
+    command: python tests/hardware/hand_stream_bench.py --stage triangle --tri-span 4 --tri-speed 10 --tri-cut up --top-stop <measured> --close-loop
+  - where: Terminal 1
+    text: 'Replace <measured> with the top stop from step 6 and type yes at the ARM prompt. Touch nothing else. New since 2026-11-20: after arming, the Hand first holds still while the firmware hands it back (up to 1.5 s), and only then ramps up 4 rev and back at 10 rev/s. In the middle of the second upward ramp the stage cuts its own stream, the same as a Ctrl-C there. It waits 2 s and prints its tri-cut lines.'
+  - where: Terminal 1
+    command: python tests/hardware/bench_hand_frame_bench.py status
+  - where: Terminal 1
+    command: python tests/hardware/hand_stream_bench.py --clear-errors
+  - where: Terminal 1
+    text: 'Then, if status shows the Hand above 0.9 rev: python tests/hardware/bench_hand_frame_bench.py home, and lift the Hand to between 0.3 and 0.7 rev.'
+  see: 'A line ''triangle clock starts at stage t=...'' ending either ''(echo back on the start: the recovery slew handed back)'' or ''(NO echo since the arm; started on the slew law alone after 1.5 s ...)'', then the ramps, then the tri-cut lines: the last knot sent, the firmware''s last command with its echoed vel_ff, a settled position about 10 / 35 = 0.29 rev ABOVE the firmware''s last command, drift near 0, and fault_state NONE. Status shows the same position. The stage''s own belt is now 0.79 rev at this speed.'
+  stop_if: The stage refuses or prints an ABORT (do not change the command to get past it; record the ABORT line and go to step 10), the Hand keeps moving after the cut or drifts (press the E-stop), or a fault will not clear.
+  record: 'The tri-cut lines: ramp direction, last knot, the firmware''s last command, settled position, the offsets, and any Guard or latch. The status line.'
+  serves:
+  - item: BUG-105
+    do:
+    - 0
+    - 1
+    - 2
+- n: 9
+  kind: run
+  title: 'Feedforward offset: the stage cuts 20 rev/s ramps, one up and one down'
+  from:
+  - bridge-cycled
+  to:
+  - bridge-cycled
+  actions:
+  - where: Hands
+    text: In both commands of this step, replace <measured> with the top stop from step 6 before you run them.
+  - where: Terminal 1
+    command: python tests/hardware/hand_stream_bench.py --stage triangle --tri-span 4 --tri-speed 20 --tri-cut up --top-stop <measured> --close-loop
+  - where: Terminal 1
+    text: Type yes at the ARM prompt. The stage cuts in the middle of the second upward ramp and prints its tri-cut lines. Then status, --clear-errors, and re-park at or below 0.9 rev, exactly as at the end of step 8 (home and re-park if status shows the Hand above 0.9 rev).
+  - where: Hands
+    text: The downward cut uses a 6 rev span (its triangle reaches about 6.7 rev), so it needs the top stop from step 6 at or above 7.3 rev; the stage refuses before it energises otherwise. If the top stop is lower, skip the downward cut and record why.
+  - where: Terminal 1
+    command: python tests/hardware/hand_stream_bench.py --stage triangle --tri-span 6 --tri-speed 20 --tri-cut down --top-stop <measured> --close-loop
+  - where: Terminal 1
+    text: Type yes. The stage cuts in the middle of the second downward ramp and prints its tri-cut lines. Then status and --clear-errors again.
+  - where: Hands
+    text: 'Do not go faster than --tri-speed 20 in this row. Last, after the second --clear-errors: press the E-stop button once, run status, and note whether it still replies and what vbus reads. Release the button afterwards. If the drive lost power its reference is lost, which no longer matters.'
+  see: The settled position about 20 / 35 = 0.57 rev above the firmware's last command after the upward cut, and about 0.57 rev below it after the downward cut, drift near 0 and fault_state NONE both times. The stage's belt is 1.07 rev at this speed. If the echoed vel_ff is lower than 20, the expected offset is that value / 35.
+  stop_if: The Hand keeps moving after a cut or drifts (press the E-stop), a fault will not clear, or the stage refuses or ABORTs a cut (do not change the command to get past it; record the line and go on).
+  record: 'For each cut the tri-cut lines: ramp direction, last knot, the firmware''s last command, settled position, the offsets, any Guard or latch. What the E-stop button cuts. The bench top stop in rev. Type pending: the verdict is computed at the debrief.'
+  serves:
+  - item: BUG-105
+    do:
+    - 3
+    - 4
+    pass: true
+    setup_waived: the bench stage energises the Hand itself with --close-loop, so no earlier step arms it
+- n: 10
+  kind: setup
+  title: Check out the stall-guard branch and flash firmware 48
+  from:
+  - bridge-cycled
+  to:
+  - bridge-cycled
+  actions:
+  - where: Hands
+    text: Cup empty. The 45 V supply stays on. If the E-stop test in step 9 cut the drive's power, release the button and wait until status replies before going on.
+  - where: Terminal 1
+    command: git fetch && git checkout night-shift/2026-11-20-BUG-123 && git log --oneline -1
+  - where: Terminal 1
+    command: cd ros_ws/src/jugglebot/Teensy_code_canbridge
+  - where: Terminal 1
+    command: pio run -e teensy41 -t upload
+  - where: Terminal 1
+    command: cd ~/Desktop/Jugglebot
+  - where: Terminal 1
+    command: python tests/hardware/bench_hand_frame_bench.py status
+  - where: Terminal 1
+    command: python tests/hardware/hand_stream_bench.py --clear-errors
+  see: 'git says Switched to branch ''night-shift/2026-11-20-BUG-123'' and the log line starts ''dc85aed1 docs(logbook): glossary term in the stall-guard entry''. SUCCESS from the upload. status reads state 1, err 0x0. The clear-errors line ends ''CLEAR_ERRORS OK — fault_state NONE.'', which on this branch also proves the bridge runs firmware 48 (it aborts on any other version). The stall guard was firmware 47 on 2026-11-20; main has since taken 47 for the IMU relay, which has no stall guard.'
+  stop_if: 'The checkout refuses (local changes: stop and ask), the upload fails twice, or clear-errors prints an ABORT naming a firmware version. Then skip to step 13 and restore main.'
+  record: The log line, and the clear-errors line.
+  serves:
+  - item: BUG-123
+    do:
+    - 0
+- n: 11
+  kind: run
+  title: 'Stall-guard proof: push the Hand into the bottom stop until the guard cuts it'
+  from:
+  - bridge-cycled
+  to:
+  - bridge-cycled
+  actions:
+  - where: Terminal 1
+    command: python tests/hardware/bench_hand_frame_bench.py home
+  - where: Hands
+    text: With the drive IDLE, lift the Hand by hand to between 0.3 and 0.7 rev and let go.
+  - where: Terminal 1
+    command: python tests/hardware/bench_hand_frame_bench.py status
+  - where: Hands
+    text: 'Cup empty, nothing near the Hand, E-stop in hand. Touch the motor: it must be cool (the stage refuses at 50 C). The firmware never lets a streamed command go below 0 rev, so the stage moves the Hand''s zero up by 0.65 rev for the push and puts it back afterwards; it also lowers the current limit to 45 A and puts back 70 A.'
+  - where: Terminal 1
+    command: python tests/hardware/hand_stream_bench.py --stage stall
+  - where: Terminal 1
+    text: It prints a 'stall plan' line (firmware 48, limit 70 -> 45 A, frame shift +0.650 rev), then asks 'ARM stall ... [yes/NO]'. Type yes. The Hand closes the loop where it is, moves DOWN slowly (1 rev/s, about 1 s), meets the bottom stop, pushes for about a fifth of a second, and goes limp. Do not press Ctrl-C; the E-stop button is the stop.
+  - where: Hands
+    text: When it has finished, touch the motor and say whether it is warm.
+  see: 'Lines in this order: ''current limit lowered: drive reads 45.0 A over USB'', ''frame shifted +0.650 rev'', ''ARMED: ramp ...'', ''trip seen at t=...'', ''HAND_MOVE_TO while latched: refused: ERR_BUS_DOWN'', ''current limit restore: sent 70.0 A, drive reads 70.0 A over USB -> OK'', ''encoder frame restored: Hand reads about -0.10 rev'', a motor temperature line, and last ''STALL-GUARD PASS: IDLE <t> ms after the first 40 A sample (limit 200), peak <A> A, fault HAND_STALL, bit3 set''. Expect t about 150 to 180 and a peak near 45 A. The Hand stays limp on the stop. The fault stays latched until the next step.'
+  stop_if: 'The Hand moves UP, keeps pushing for more than about a second, or makes a new noise: press the E-stop button. An ''ABORT: stall stage refused'' list: fix what it names (park position, temperature, a fault: run --clear-errors) and run the stage again; nothing was commanded. A ''STALL-GUARD FAIL'' line: do NOT repeat the stage; record it, run python tests/hardware/hand_stream_bench.py --clear-errors once, and go to step 13. A line containing ''NOT RESTORED: power-cycle the drive'': switch the 45 V supply off and on, then home before anything else. A line containing ''re-home before anything else'': run the home command above before anything else. An ABORT naming firmware 47: the bridge still runs main''s build, which has no stall guard; repeat step 10.'
+  record: The whole stage output from 'stall plan' to the verdict line (save it with the terminal's copy, or re-run nothing). Whether the motor was warm. Anything heard or felt during the push.
+  serves:
+  - item: BUG-123
+    do:
+    - 1
+    pass: true
+- n: 12
+  kind: run
+  title: 'Stall-guard repeats: two more trips, only after a PASS'
+  from:
+  - bridge-cycled
+  to:
+  - bridge-cycled
+  actions:
+  - where: Hands
+    text: Only if step 11 printed STALL-GUARD PASS and the motor is not warm. Otherwise run the first command below once and go to step 13.
+  - where: Terminal 1
+    command: python tests/hardware/hand_stream_bench.py --clear-errors
+  - where: Terminal 1
+    command: python tests/hardware/bench_hand_frame_bench.py home
+  - where: Hands
+    text: Lift the Hand to between 0.3 and 0.7 rev and let go, then check with status.
+  - where: Terminal 1
+    command: python tests/hardware/bench_hand_frame_bench.py status
+  - where: Terminal 1
+    command: python tests/hardware/hand_stream_bench.py --stage stall
+  - where: Terminal 1
+    text: Type yes at the ARM prompt. Then repeat the whole sequence once more (clear-errors, home, park, status, stage) for the third trip, and finish with python tests/hardware/hand_stream_bench.py --clear-errors.
+  - where: Hands
+    text: Touch the motor before each repeat. Stop the repeats if it is warm.
+  see: 'Each run ends with STALL-GUARD PASS, now with ''bit3 set (already set before this run)'': only a reboot or a Hand ladder clears bit3, so the stage times these trips on the current, the fault and the axis state. The clear-errors lines end ''CLEAR_ERRORS OK — fault_state NONE.''.'
+  stop_if: 'Any STALL-GUARD FAIL, a warm motor, or a new noise: stop the repeats, run --clear-errors once, and go to step 13. The step 11 stop rules apply to every run.'
+  record: Each run's verdict line and its 'current limit restore' line. How many trips in all (step 11 included). Motor warmth after the last.
+  serves:
+  - item: BUG-123
+    do:
+    - 2
+- n: 13
+  kind: restore
+  title: Back to main and flash the bridge back
+  from:
+  - bridge-cycled
+  to:
+  - bridge-cycled
+  actions:
+  - where: Terminal 1
+    command: python tests/hardware/bench_hand_frame_bench.py status
+  - where: Terminal 1
+    command: git checkout main && git log --oneline -1
+  - where: Hands
+    text: 'Go on only if git printed Switched to branch ''main'' (or Already on ''main''). If the checkout refused, stop and ask: flashing now would put the branch''s firmware 48 back on the bridge.'
+  - where: Terminal 1
+    command: cd ros_ws/src/jugglebot/Teensy_code_canbridge
+  - where: Terminal 1
+    command: pio run -e teensy41 -t upload
+  - where: Terminal 1
+    command: cd ~/Desktop/Jugglebot
+  - where: Terminal 1
+    command: python tests/hardware/hand_stream_bench.py --clear-errors
+  see: 'status: state 1 (IDLE); a latched HAND_STALL from the last trip may still show here and is cleared by the last command. git: Switched to branch ''main''. SUCCESS from the upload: the bridge runs can-bridge v47 again, which the robot''s main expects until this branch lands. clear-errors ends ''CLEAR_ERRORS OK — fault_state NONE.'' (on main it aborts on any version but 47).'
+  stop_if: 'The upload fails twice: leave the bench powered and tell the debrief the bridge may still run firmware 48; the robot must not be launched on it. clear-errors aborts naming a version: flash again.'
+  record: The clear-errors line.
+  serves:
+  - item: BUG-123
+    do:
+    - 3
+- n: 14
+  kind: restore
+  title: Leave the bench safe
+  from:
+  - bridge-cycled
+  to: []
+  actions:
+  - where: Terminal 1
+    command: python tests/hardware/bench_hand_frame_bench.py status
+  - where: Hands
+    text: Switch the 45 V supply off. Cup empty.
+  see: 'state 1 (IDLE) and err 0x0 before the supply goes off. If the E-stop test in step 9 cut the drive''s power, status may not reply at all: that is fine, switch off.'
+  stop_if: The drive reads state 8 (closed loop). Run python tests/hardware/hand_stream_bench.py --clear-errors and check again before switching off.
+  serves: []

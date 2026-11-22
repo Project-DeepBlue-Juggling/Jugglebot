@@ -4,7 +4,7 @@ kind: bug
 title: 'A guard latch leaves the Hand pushing at full current: no stall guard on the streamed lane or a latched hold'
 status: in_progress
 created: '2026-11-20'
-updated: '2026-11-22T07:26:38Z'
+updated: '2026-11-22T10:34:17Z'
 owners: []
 priority: high
 effort: m
@@ -21,7 +21,7 @@ links:
 filed_by: claude
 night_skip: sitting
 night_skip_on: '2026-11-22'
-night_skip_note: FW 47 held on its day-Session branch; the bench stall stage was fixed after the 2026-11-20 crash and waits for the bench-hand Sitting.
+night_skip_note: FW 48 held on its day-Session branch; the bench stall stage was fixed after the 2026-11-20 crash and waits for the bench-hand Sitting.
 ---
 
 Sitting of 2026-11-20 (bag `2026-11-20_12-49-25`, 13:34:22). The Hand stalled against its top stop on a lost home (see the linked Item). MAX_DEVIATION latched 80 ms into the stall, but a latch only freezes the output: the drive kept its last lead-clamped `input_pos` (measured 5.86 + MAX_LEAD_HAND_REV 2.0 = 7.85 rev) and pushed 68-70.4 A for 4.4 s (about 21,800 A^2 s) until the E-stop button cut power.
@@ -46,9 +46,9 @@ The owner intends to keep running this motor to establish the cut-offs.
 ## Sitting
 
 - setup: bridge-cycled
-- why: the FW 47 stall guard must be seen to put a pushing Hand into Idle outside the ladder, with its latch and a refused Hand ladder, on the bench Hand so the damaged robot motor is not used.
+- why: the FW 48 stall guard must be seen to put a pushing Hand into Idle outside the ladder, with its latch and a refused Hand ladder, on the bench Hand so the damaged robot motor is not used.
 - do:
-  - Check out the branch and flash firmware 47: `git fetch && git checkout night-shift/2026-11-20-BUG-123 && git log --oneline -1`, then `pio run -e teensy41 -t upload` in the bridge directory, then `python tests/hardware/hand_stream_bench.py --clear-errors` (it refuses any version but 47 on the branch).
+  - Check out the branch and flash firmware 48: `git fetch && git checkout night-shift/2026-11-20-BUG-123 && git log --oneline -1`, then `pio run -e teensy41 -t upload` in the bridge directory, then `python tests/hardware/hand_stream_bench.py --clear-errors` (it refuses any version but 48 on the branch).
   - Home with `python tests/hardware/bench_hand_frame_bench.py home`, park the Hand at 0.3 to 0.7 rev, and run `python tests/hardware/hand_stream_bench.py --stage stall` once: it lowers the current limit to 45 A, shifts the encoder frame so the lane can command 0.5 rev past the bottom stop, ramps the Hand into the stop at 1 rev/s, and restores the limit and the frame.
   - Only after a PASS with a cool motor: `python tests/hardware/hand_stream_bench.py --clear-errors`, home, park and run the stage again, twice (three trips in all).
   - Return to main and flash the bridge back: `git checkout main && git log --oneline -1`, `pio run -e teensy41 -t upload`, then `python tests/hardware/hand_stream_bench.py --clear-errors`.
@@ -73,3 +73,4 @@ The owner intends to keep running this motor to establish the cut-offs.
 - 2026-11-20: Found while building the bench proof, not fixed: a raw SET_AXIS_STATE closed-loop RPC is not gated by the HAND_STALL latch (only the host's arm path refuses).
 - 2026-11-21: Not flown at the bench Sitting of 2026-11-20: the stall stage crashed on a KeyError before energising. Fixed on the branch (d2976ae9), with a second defect found by review: a lost reply to the frame shift left the encoder frame +0.65 rev off with no restore. Five end-to-end tests through main() now cover it; 122 scoped tests passed 2026-11-21.
 - 2026-11-22: 2026-11-22: main took can-bridge FW 47 for the Platform IMU SET_ODR relay (logbook 2026-11-22-canbridge-fw47-set-odr-relay), flashed on the robot. This Item's held branch night-shift/2026-11-20-BUG-123 must renumber to FW 48 before it lands; canbridge_config.h, rpc_args.py and test_bridge_fw_version_xref.py clash line for line.
+- 2026-11-22: 2026-11-22: the branch is merged up to main and the stall guard renumbered to can-bridge FW 48 (efd728e9); the bench stage now refuses FW 47, which is main's IMU relay build and has no stall guard. On sheet 2026-11-22-bench-hand.
