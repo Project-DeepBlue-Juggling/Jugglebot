@@ -4,7 +4,7 @@ kind: bug
 title: Hand keeps its last velocity feedforward on a Soft E-stop, disarm or link loss and stays in Closed-loop
 status: in_progress
 created: '2026-11-14'
-updated: '2026-11-20T21:08:20Z'
+updated: '2026-11-22T11:23:21Z'
 owners: []
 priority: high
 effort: s
@@ -74,7 +74,15 @@ The property is not new: `tests/hardware/hand_stream_bench.py:150` and the 2026-
 - verdict: inconclusive
 - notes: Same as Step 13; no runs were accepted. (sheet 2026-11-20-bench-hand, step 14) [derived: Not flown. Every triangle run (17 CSVs, temp/logs/hand_stream_triangle_20261120_23*.csv) was aborted by the tool's own 0.5 rev deviation belt within 50 ms of the ramp start, before any cut; no offset was measured. A tool defect, not a Hand result.]
 
+## Sitting result (2026-11-22 22:23)
+
+- verdict: inconclusive
+- notes: owner: done; the pasted output of the 20 rev/s upward cut is in the sheet's results file. (sheet 2026-11-22-bench-hand, step 9)
+- derived: Two of three cuts flown. 10 rev/s up (temp/logs/hand_stream_triangle_20261122_220628.csv, owner's paste on step 8): settled +0.2844 rev above the firmware's last command against vel_ff/35 = +0.2857, drift 0.0007 rev, fault NONE: the law holds.
+- derived, continued: 20 rev/s up (hand_stream_triangle_20261122_220713.csv): the disarm landed after the lane's feedforward had decayed to 0 (echo vel_ff +0.00, the Hand 2.10 rev past the last knot), so the offset was -0.0016 against an expected 0: within the criterion but no test of the law at this speed; drift 0.0287 rev. The 20 rev/s downward cut and the E-stop button check were not flown.
+
 ## Progress
 
 - 2026-11-21: Not flown at the bench Sitting of 2026-11-20: every triangle run aborted on the tool's 0.5 rev belt within 50 ms. Cause: the firmware's arm-edge recovery slew (1 rev/s cap) cannot follow a ramp that starts at the arm. Fix held on night-shift/2026-11-21-BUG-105 (0bcea663); it also widens the belt to 0.5 + speed/35, which waits for the owner.
 - 2026-11-21: 2026-11-21: the triangle fix is on main (fcdb3ecc). Owner ruled the belt: 0.5 + speed/35 rev (0.79 at 10 rev/s, 1.07 at 20). The row is ready for the next bench Sitting; the sheet commands are unchanged.
+- 2026-11-22: Bench Sitting 2026-11-22: the 10 rev/s upward cut settled 0.284 rev above the firmware's last command against 0.286 expected, drift 0.0007 rev. The 20 rev/s upward cut tested nothing: the disarm landed after the feedforward had decayed to 0 (the Hand ran on 2.1 rev). The downward cut was not flown; it is on sheet 2026-11-22-bench-hand-2.

@@ -4,7 +4,7 @@ kind: bug
 title: 'A guard latch leaves the Hand pushing at full current: no stall guard on the streamed lane or a latched hold'
 status: in_progress
 created: '2026-11-20'
-updated: '2026-11-22T10:34:17Z'
+updated: '2026-11-22T11:23:29Z'
 owners: []
 priority: high
 effort: m
@@ -63,6 +63,12 @@ The owner intends to keep running this motor to establish the cut-offs.
 - notes: the stage crashed at once, before energising: `KeyError: 'stall'` at `args.max_dev = _MAX_DEV_DEFAULT[args.stage]` in `main()`. (sheet 2026-11-20-bench-hand, step 16)
 - derived:  Not flown. `--stage stall` crashed in argument handling (KeyError 'stall' in _MAX_DEV_DEFAULT, owner's note on step 16) before the link opened or anything was energised; firmware 47 was flashed at step 15 and firmware 46 flashed back at step 18. The guard itself was not exercised.
 
+## Sitting result (2026-11-22 22:23)
+
+- verdict: inconclusive
+- notes: owner: still the same error, `KeyError: 'stall'` in `main()` (the pasted traceback is in the sheet's results file). (sheet 2026-11-22-bench-hand, step 11)
+- derived: Not flown. Step 10's `git checkout` reused a stale local copy of the branch (9e715165, from 2026-11-20; git reflog), so the old stage ran and crashed on the same KeyError 'stall' before the link opened, and the bridge was flashed with that commit's stall-guard build, numbered 47. Step 13 was skipped, so the bridge kept that build and the checkout stayed on the branch until the debrief.
+
 ## Progress
 
 - 2026-11-20: Owner decision, 2026-11-20: 40 A / 1 rev/s / 150 ms, then the Hand enters Idle. Being built as can-bridge FW 47 on a held branch.
@@ -74,3 +80,5 @@ The owner intends to keep running this motor to establish the cut-offs.
 - 2026-11-21: Not flown at the bench Sitting of 2026-11-20: the stall stage crashed on a KeyError before energising. Fixed on the branch (d2976ae9), with a second defect found by review: a lost reply to the frame shift left the encoder frame +0.65 rev off with no restore. Five end-to-end tests through main() now cover it; 122 scoped tests passed 2026-11-21.
 - 2026-11-22: 2026-11-22: main took can-bridge FW 47 for the Platform IMU SET_ODR relay (logbook 2026-11-22-canbridge-fw47-set-odr-relay), flashed on the robot. This Item's held branch night-shift/2026-11-20-BUG-123 must renumber to FW 48 before it lands; canbridge_config.h, rpc_args.py and test_bridge_fw_version_xref.py clash line for line.
 - 2026-11-22: 2026-11-22: the branch is merged up to main and the stall guard renumbered to can-bridge FW 48 (efd728e9); the bench stage now refuses FW 47, which is main's IMU relay build and has no stall guard. On sheet 2026-11-22-bench-hand.
+- 2026-11-22: Not flown 2026-11-22: a bare git checkout reused the stale local branch (9e715165), so the old stage crashed again. Fixed in the sheet and this section (merge --ff-only, check the SHA). Dry run on the unpowered bench found the drive reports no motor temperature, which refused the stage for ever; it now falls back to the FET reading (4c5e78ff).
+- 2026-11-22: Dry run 2026-11-22, bus at 0 V, firmware 48 flashed: the real stage ran to the bring-up. Limit 70 -> 45 A read back over USB in the same process as the bridge link, frame shifted +0.650 rev, and both were restored when the bring-up failed. Only the push itself is unverified.

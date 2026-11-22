@@ -1,3 +1,44 @@
+closed:
+  at: 2026-11-22 22:23
+  items:
+  - BUG-105
+  - BUG-123
+confirmed:
+  at: 2026-11-22 22:23
+  changed: []
+derived:
+  9:
+    BUG-105:
+      by: sitting-debrief 2026-11-22
+      criterion: 'each settled offset against the firmware''s last command is within
+        0.05 rev of the echoed `vel_ff / 35` in the direction of travel, and the Hand
+        holds there without drifting. The echoed feedforward is what the drive was
+        left holding; it equals `tri-speed / 35` unless the disarm landed in the lane''s
+        decay, when it is lower. The last knot is not the reference: the lane coasts
+        on for up to 0.1 s before the disarm lands.'
+      evidence: 'Two of three cuts flown. 10 rev/s up (temp/logs/hand_stream_triangle_20261122_220628.csv,
+        owner''s paste on step 8): settled +0.2844 rev above the firmware''s last
+        command against vel_ff/35 = +0.2857, drift 0.0007 rev, fault NONE: the law
+        holds. 20 rev/s up (hand_stream_triangle_20261122_220713.csv): the disarm
+        landed after the lane''s feedforward had decayed to 0 (echo vel_ff +0.00,
+        the Hand 2.10 rev past the last knot), so the offset was -0.0016 against an
+        expected 0: within the criterion but no test of the law at this speed; drift
+        0.0287 rev. The 20 rev/s downward cut and the E-stop button check were not
+        flown.'
+      verdict: inconclusive
+  11:
+    BUG-123:
+      by: sitting-debrief 2026-11-22
+      criterion: the Hand goes Idle within 200 ms of its current first reaching 40
+        A, fault HAND_STALL, no second current rise, the current limit reads back
+        at its original value (the stage's STALL-GUARD PASS line).
+      evidence: Not flown. Step 10's `git checkout` reused a stale local copy of the
+        branch (9e715165, from 2026-11-20; git reflog), so the old stage ran and crashed
+        on the same KeyError 'stall' before the link opened, and the bridge was flashed
+        with that commit's stall-guard build, numbered 47. Step 13 was skipped, so
+        the bridge kept that build and the checkout stayed on the branch until the
+        debrief.
+      verdict: inconclusive
 schema: 2
 steps:
   1:
