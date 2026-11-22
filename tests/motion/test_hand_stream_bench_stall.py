@@ -580,7 +580,9 @@ def _install_bench(monkeypatch, world):
     monkeypatch.setattr(B, "_wait_hand_diag", world.diag)
     monkeypatch.setattr(B, "_hb", world.hb)
     monkeypatch.setattr(B, "_fault", lambda: world.fault)
-    monkeypatch.setattr(B, "_fw_version", lambda: ST.STALL_FW_MIN)
+    # the bench's lockstep check wants the Jetson's expected firmware, which is at
+    # least the stall stage's minimum (49 since BUG-105, against STALL_FW_MIN 48)
+    monkeypatch.setattr(B, "_fw_version", lambda: B.rpc_args.EXPECTED_BRIDGE_FW_VERSION)
     return B
 
 
