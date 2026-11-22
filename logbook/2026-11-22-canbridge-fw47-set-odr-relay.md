@@ -1,8 +1,8 @@
 ---
-title: "can-bridge FW 47 relays the Platform IMU SET_ODR op, so platform_imu/set_rate switches the capture rate (1 or 2 kHz) at run time; not yet flashed"
+title: "can-bridge FW 47 relays the Platform IMU SET_ODR op, so platform_imu/set_rate switches the capture rate (1 or 2 kHz) at run time; flashed and checked on the robot at rest"
 type: feature
 date: 2026-11-22
-status: in-progress
+status: resolved
 phase: "IDEA-20 P5 preparation"
 related_plan: "platform-imu.md"
 related_issues: []
@@ -52,9 +52,8 @@ inside a READ, and READ's Armed gap clamp (63 x 10 us) bounds upload traffic at 
 after a change is one I2C transaction per loop pass. The Jetson still refuses `set_rate` while an Attempt runs
 (`_imu_span.open`), while an upload runs and while the ring is FROZEN or UPLOADING.
 
-**Not flashed.** The board still runs FW 46 until the next flash; until then `main` reports BRIDGE_FW_CHECK FAIL
-(advisory) and `set_rate` answers with the older-than-FW-47 text. The held `night-shift/2026-11-20-BUG-123` branch
-also numbers itself FW 47 and must renumber to 48.
+**Flashed 2026-11-22 18:22** (launch down, `pio run -e teensy41 -t upload`, SUCCESS). The held
+`night-shift/2026-11-20-BUG-123` branch also numbers itself FW 47 and must renumber to 48.
 
 ## Verification
 
@@ -62,3 +61,12 @@ also numbers itself FW 47 and must renumber to 48.
 - 2026-11-22, `flock /tmp/jugglebot-tests.lock pytest tests/firmware/test_native_firmware.py tests/ros/test_teensy_bridge_node_install_skew.py tests/sim/test_logbook_front_matter.py tests/sim/test_logbook_index.py tests/sim/test_no_legacy_item_ids.py tests/sim/test_docs_links.py tests/sim/test_mapkit_glossary.py -q`: **94 passed in 8.29 s** (native binaries rebuilt in the first run: `test_rpc_dispatch` 37/37 cases, `test_platform_relay` 32/32 cases, the new SET_ODR case 54/54 assertions).
 - `tools/gen_choreography_map.py`: no change (the service list did not change).
 - 2026-11-22, `pio run -e teensy41` in `Teensy_code_canbridge` (build only): SUCCESS; text 255296, data 35520, bss 113216 B; no new warnings (the only non-framework ones are the existing unused `actuators_intact_and_holding` and the FlexCAN_T4 `strncpy` truncation).
+
+Board check at rest, drive power off (2026-11-22 18:23, launch log `temp/logs/launch_fw47_check.log`): the launch
+reports "BRIDGE_FW_CHECK: OK — can-bridge v47" and "PLATFORM_FW_CHECK: OK — Platform Teensy v13".
+`ros2 service call /platform_imu/set_rate jugglebot_interfaces/srv/SetString "{data: \"2000\"}"` logs "capture rate
+2000 Hz: the ring restarts as a fresh capture and holds 16 s" and `platform_imu/status` reads odr_hz 2000, RUNNING,
+0 i2c_errors, 0 fifo_overflows. A whole-ring upload at 2 kHz: 32000 samples, 52.9 s, 0 duplicates, 258 READs (250
+chained), 0 block timeouts, 1 hole pass, complete, CRC ok (capture `20261122T072451Z_572B`). The same call with
+"1000" returns the board to odr_hz 1000. Not tested: the switch while Armed, and an Attempt at 2 kHz (IDEA-20
+Sitting).

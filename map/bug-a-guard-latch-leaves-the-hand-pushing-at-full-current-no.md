@@ -4,7 +4,7 @@ kind: bug
 title: 'A guard latch leaves the Hand pushing at full current: no stall guard on the streamed lane or a latched hold'
 status: in_progress
 created: '2026-11-20'
-updated: '2026-11-20T14:03:14Z'
+updated: '2026-11-22T07:26:38Z'
 owners: []
 priority: high
 effort: m
@@ -72,3 +72,4 @@ The owner intends to keep running this motor to establish the cut-offs.
 - 2026-11-20: Bench proof built on the branch (9e715165): hand_stream_bench.py --stage stall. The lane clips Hand commands at 0 rev, so the stage shifts the encoder frame +0.65 rev to push 0.5 rev past the bottom stop at a 45 A limit, with its own Idle at 715 ms worst case, and restores both. On sheet 2026-11-20-bench-hand, steps 15-18.
 - 2026-11-20: Found while building the bench proof, not fixed: a raw SET_AXIS_STATE closed-loop RPC is not gated by the HAND_STALL latch (only the host's arm path refuses).
 - 2026-11-21: Not flown at the bench Sitting of 2026-11-20: the stall stage crashed on a KeyError before energising. Fixed on the branch (d2976ae9), with a second defect found by review: a lost reply to the frame shift left the encoder frame +0.65 rev off with no restore. Five end-to-end tests through main() now cover it; 122 scoped tests passed 2026-11-21.
+- 2026-11-22: 2026-11-22: main took can-bridge FW 47 for the Platform IMU SET_ODR relay (logbook 2026-11-22-canbridge-fw47-set-odr-relay), flashed on the robot. This Item's held branch night-shift/2026-11-20-BUG-123 must renumber to FW 48 before it lands; canbridge_config.h, rpc_args.py and test_bridge_fw_version_xref.py clash line for line.
