@@ -63,6 +63,10 @@ steps:
     comments: ''
     saved_at: 2026-11-22 22:12
     status: done
+  12:
+    comments: ''
+    saved_at: 2026-11-22 22:14
+    status: skipped
   13:
     comments: ''
     saved_at: 2026-11-22 22:13
