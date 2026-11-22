@@ -51,6 +51,7 @@ class FakeIO:
         self.raise_on_sample_after = raise_on_sample_after
         self.second_rise = second_rise
         self.temp = temp
+        self.temp_fet = 31.0
 
     # plant
     def _step(self):
@@ -77,7 +78,7 @@ class FakeIO:
     def preflight(self):
         return dict(fw=self.fw, fault=self.fault, fault_name="NONE", axis_state=self.state,
                     active_errors=0, flags=self.flags, temp_motor=self.temp,
-                    pos=self.pos_h + self.offset)
+                    temp_fet=self.temp_fet, pos=self.pos_h + self.offset)
 
     def read_limits(self):
         self.log.append(("read_limits", self.t, self.limit))
@@ -599,3 +600,23 @@ def test_main_stage_stall_restores_frame_and_limit_on_an_exception_after_the_shi
     assert world.state == ST.AXIS_IDLE and not world.armed
     assert "encoder frame restored" in out and "drive reads 70.0 A" in out
     assert "STALL-GUARD FAIL" in out
+
+
+# ── The bench drive reports no motor temperature (NaN), found 2026-11-22 ──────────────
+@pytest.mark.parametrize("tm,tf,refused", [
+    (30.0, 31.0, False), (50.0, 31.0, True), (55.0, float("nan"), True),
+    (float("nan"), 31.0, False), (None, 31.0, False), (float("nan"), 50.0, True),
+    (float("nan"), float("nan"), True), (None, None, True),
+])
+def test_temperature_rule_falls_back_to_the_fet_when_the_motor_reading_is_absent(tm, tf, refused):
+    assert (ST.temperature_refusal(tm, tf) is not None) is refused
+
+
+def test_a_drive_with_no_motor_thermistor_runs_to_pass_and_says_so():
+    io = FakeIO(temp=float("nan"))
+    rc, lines = _run(io)
+    text = "\n".join(lines)
+    assert rc == 0, text
+    assert "reports no motor temperature; FET 31.0 C was checked instead" in text
+    assert "STALL-GUARD PASS" in text
+    assert "nan" not in text.lower()

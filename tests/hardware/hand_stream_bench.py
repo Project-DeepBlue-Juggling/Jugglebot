@@ -2614,6 +2614,7 @@ class _StallBenchIO:
                     active_errors=None if d is None else int(d.active_errors),
                     flags=0 if d is None else int(d.flags),
                     temp_motor=None if d is None else float(d.temp_motor),
+                    temp_fet=None if d is None else float(d.temp_fet),
                     pos=_hand_pos())
 
     def read_limits(self):

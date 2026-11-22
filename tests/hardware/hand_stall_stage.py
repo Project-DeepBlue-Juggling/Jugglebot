@@ -188,13 +188,42 @@ def preflight_refusals(pre, cfg):
                        f"encoder, which needs an IDLE Hand, as home leaves it")
         if pre.get("active_errors"):
             out.append(f"active_errors={pre.get('active_errors')}, need 0")
-        t = pre.get("temp_motor")
-        if t is None or not math.isfinite(t) or t >= TEMP_MAX_C:
-            out.append(f"motor temperature {t} C, need below {TEMP_MAX_C:.0f} C (let it cool)")
+        why = temperature_refusal(pre.get("temp_motor"), pre.get("temp_fet"))
+        if why:
+            out.append(why)
     pos = pre.get("pos")
     if pos is None or not (PARK_MIN_REV <= pos <= PARK_MAX_REV):
         out.append(f"Hand at {pos} rev, need {PARK_MIN_REV}..{PARK_MAX_REV} (home, then park low)")
     return out
+
+
+def _temp_text(t):
+    return f"{t:.1f} C" if t is not None and math.isfinite(t) else "temperature not reported"
+
+
+def _finite(x):
+    return x is not None and math.isfinite(x)
+
+
+def temperature_refusal(temp_motor, temp_fet):
+    """The cool-motor rule. The bench Hand's drive has no motor thermistor and reports
+    NaN (seen powered on 2026-11-20: 'motor nan C, FET 31.7 C'), which the first form of
+    this rule refused for ever (found unpowered on 2026-11-22). A motor reading that is
+    not finite falls back to the drive's FET temperature under the same bound; the
+    operator's hand on the motor (the Sitting sheet) is then the only motor check. With
+    neither reading the stage refuses."""
+    if _finite(temp_motor):
+        if temp_motor >= TEMP_MAX_C:
+            return (f"motor temperature {temp_motor:.1f} C, need below {TEMP_MAX_C:.0f} C "
+                    f"(let it cool)")
+        return None
+    if _finite(temp_fet):
+        if temp_fet >= TEMP_MAX_C:
+            return (f"motor temperature not reported and FET temperature {temp_fet:.1f} C, "
+                    f"need below {TEMP_MAX_C:.0f} C (let it cool)")
+        return None
+    return ("no temperature reported (motor and FET both unreadable): the cool-motor check "
+            "cannot be made")
 
 
 def limits_refusal(vel0, curr0, limit_a):
@@ -402,8 +431,11 @@ def run_stall(io, cfg: StallConfig, say=print):
         return 2
     r = StallResult(limit_orig=curr0, temp_before=pre.get("temp_motor"),
                     bit3_before=bool(pre.get("flags", 0) & DIAG_FLAG_LANE_STALL))
+    if not _finite(pre.get("temp_motor")):
+        say(f"note: this drive reports no motor temperature; FET {pre['temp_fet']:.1f} C was "
+            f"checked instead. Your hand on the motor is the motor check: it must be cool.")
     say(f"stall plan: firmware {pre['fw']}, Hand IDLE at {pre['pos']:+.3f} rev, motor "
-        f"{pre['temp_motor']:.1f} C; limit {curr0:.1f} -> {cfg.limit_a:.1f} A "
+        f"{_temp_text(pre.get('temp_motor'))}; limit {curr0:.1f} -> {cfg.limit_a:.1f} A "
         f"(vel_limit {vel0:.0f} kept); frame shift {cfg.shift_rev:+.3f} rev; ramp at "
         f"{cfg.speed_rps:.2f} rev/s to homed {cfg.target_rev:+.2f} rev, "
         f"{-cfg.target_rev + HOME_REF_REV:.2f} rev past the stop")
@@ -583,6 +615,8 @@ def _finish(io, cfg, say, vel0, curr0, r, st):
                     f"{want:+.3f}); re-home anyway")
         except BaseException as e:  # noqa: BLE001
             say(f"!! encoder frame restore failed: {e!r}: re-home before anything else")
-    if r.temp_after is not None:
+    if _finite(r.temp_after):
         say(f"motor temperature {r.temp_before} -> {r.temp_after} C")
+    else:
+        say("motor temperature not reported by this drive: touch the motor")
     say(stall_verdict(r)[1])
