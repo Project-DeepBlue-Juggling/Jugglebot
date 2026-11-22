@@ -696,6 +696,10 @@ static void evaluate_guard() {
     // or fatal transmits nothing new, a dead bus is never commanded, a disarm or
     // link loss is not a suppression. Only "would stream, but feedback is stale"
     // earns the one vel_ff = 0 hold frame per lane (leg_interp.cpp s_hold_flush_ok).
+    // FW 49 (BUG-105): this flag now scopes the LEGS only. The Hand's vel_ff is
+    // zeroed by the interp on every suppress edge regardless (it stays in
+    // Closed-loop on a Soft E-stop, a disarm or a link loss, and its FW 22 tau
+    // drain already transmitted there), so nothing here changed.
     hold_flush = allow_but_fb && fb_stale;
   }
   interp_set_output_enabled(allow, hold_flush);

@@ -310,6 +310,15 @@ def test_the_bump_history_records_what_this_version_carries():
     for needle in ('BUG-123', 'SAFETY GUARD', 'HAND_LANE_STALL_IQ_A', 'HAND_STALL',
                    'DIAG_FLAG_LANE_STALL', 'PROTOCOL_VERSION stays 14'):
         assert needle in m48.group(1), (needle, m48.group(1))
+    # FW 49 — BUG-105 Hand vel_ff zeroed on every suppress edge.  The substance:
+    # the Hand's hold flush widened from MOTOR_FB_STALE to every suppress reason
+    # (keyed off !out_en), the Legs' scope unchanged, and the bump is
+    # wire-invisible, so only BRIDGE_FW_CHECK says whether it is aboard.
+    m49 = re.search(r'^// 48→49:(.*)$', text, re.M)
+    assert m49 is not None, "FW 49 history line missing"
+    for needle in ('BUG-105', 'vel_ff = 0', '!out_en', 'LEGS\' flush is UNCHANGED',
+                   'NO WIRE CHANGE', 'PROTOCOL_VERSION stays 14'):
+        assert needle in m49.group(1), (needle, m49.group(1))
 
 
 def test_the_version_this_release_pins_is_actually_uplinked():

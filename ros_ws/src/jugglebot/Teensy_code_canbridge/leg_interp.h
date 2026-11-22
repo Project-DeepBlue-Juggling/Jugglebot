@@ -60,8 +60,11 @@ bool  interp_have_latched();
 // re-sends each lane's last transmitted frame once with vel_ff = 0 (same
 // input_pos, legs keep torque_ff) so the ODrive holds AT the last command
 // instead of input_pos + vel_ff/pos_gain. Ignored when en is true.
+// Since FW 49 (BUG-105) this flag scopes the LEGS' flush only: the Hand's
+// vel_ff is zeroed on EVERY suppress edge (any en == false), whatever hold_flush says.
 void interp_set_output_enabled(bool en, bool hold_flush = false);
-// Census: suppress edges on which the hold flush put a frame out (any lane).
+// Census: suppress edges on which the hold flush put a frame out (any lane;
+// Hand-only edges on a non-fb-stale suppress count since FW 49).
 uint32_t interp_hold_flush_edges();
 bool interp_output_enabled();
 

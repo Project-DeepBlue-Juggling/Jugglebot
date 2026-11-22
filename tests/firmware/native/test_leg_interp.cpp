@@ -2186,6 +2186,15 @@ TEST_CASE("FW 22 hand torque FF: a LEGACY stream transmits tau == 0 exactly (bia
   }
   CHECK(hand_frames > 500);
   interp_set_output_enabled(false);
+  // BUG-105 (FW 49): the suppress edge puts ONE hold frame out (vel_ff 0, tau 0);
+  // it is the hold flush, not a drain, so the drain census stays 0.
+  fake_clear_sent(); interp_isr();
+  CHECK(fake_sent_count() == 1);
+  REQUIRE(fake_sent_count() >= 1);
+  CHECK(ODrive::axis_of(fake_sent_at(0).id) == HAND_AXIS);
+  { int16_t v; memcpy(&v, &fake_sent_at(0).buf[4], 2); CHECK(v == 0); }
+  CHECK(fake_sent_at(0).buf[6] == 0); CHECK(fake_sent_at(0).buf[7] == 0);
+  fake_advance(INTERP_PERIOD_US);
   for (int k = 0; k < 10; ++k) { fake_clear_sent(); interp_isr(); CHECK(fake_sent_count() == 0); fake_advance(INTERP_PERIOD_US); }
   CHECK(interp_hand_drain_frames() == 0u);
 }
@@ -2206,7 +2215,7 @@ TEST_CASE("FW 22 hand torque FF: the sum saturates at ±HAND_TORQUE_FF_CLAMP_NM 
   CHECK((int16_t)lroundf(HAND_TORQUE_FF_CLAMP_NM * HAND_TOR_SCALE) == 234);
 }
 
-TEST_CASE("FW 22 hand torque FF: DRAIN — output disable re-sends the last frame with torque 0 (3 ticks), pos/vel bit-identical") {
+TEST_CASE("FW 22 hand torque FF: DRAIN — output disable re-sends the last frame with torque 0 (3 ticks), pos bit-identical, vel_ff 0 (BUG-105)") {
   const C2Plan P = make_c2_plan(1500.0, 12, 5.0);
   ff_setup(P);
   const uint64_t t0 = 1'100'000;
@@ -2221,12 +2230,17 @@ TEST_CASE("FW 22 hand torque FF: DRAIN — output disable re-sends the last fram
   while (v[i_off].now != off_at) ++i_off;
   REQUIRE(v[i_off].hand_frame);
   CHECK(v[i_off].tq != 0);
+  int16_t v_last; memcpy(&v_last, &v[i_off].buf[4], 2);
+  REQUIRE(v_last != 0);                                      // a live vel_ff at the disarm
   for (int d = 1; d <= 3; ++d) {
     REQUIRE(v[i_off + d].hand_frame);
     CHECK(v[i_off + d].tq == 0);
-    CHECK(memcmp(v[i_off + d].buf, v[i_off].buf, 6) == 0);   // pos f32 + vel i16 unchanged
+    CHECK(memcmp(v[i_off + d].buf, v[i_off].buf, 4) == 0);   // pos f32 unchanged
+    int16_t vq; memcpy(&vq, &v[i_off + d].buf[4], 2);
+    CHECK(vq == 0);                                          // BUG-105 (FW 49): vel_ff 0 on a disarm too
     CHECK(v[i_off + d].tau == 0.0f);
   }
+  CHECK(interp_hold_flush_edges() == 1u);                    // a Hand-only edge counts (FW 49)
   for (size_t i = i_off + 4; i < v.size(); ++i) CHECK_FALSE(v[i].hand_frame);
   CHECK(interp_hand_drain_frames() == 3u);
   CHECK(interp_hand_ff_ks() == 0.0f);
@@ -2684,4 +2698,122 @@ TEST_CASE("BUG-19 hold flush: a tau != 0 Hand stream's FW 22 drain carries the h
   for (size_t i = i_off + 4; i < v.size(); ++i) CHECK_FALSE(v[i].hand_frame);
   CHECK(interp_hand_drain_frames() == 3u);
   CHECK(interp_hold_flush_edges() == 1u);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  BUG-105 (FW 49): the Hand's vel_ff is zeroed on EVERY suppress edge
+//    A Soft E-stop, a disarm or a link loss reaches the interp as
+//    interp_set_output_enabled(false) with hold_flush false. Before FW 49 the
+//    Hand then held its last vel_ff and settled at input_pos + vel_ff/35 (bench
+//    2026-11-22: 0.284 rev at 10 rev/s). The Hand branch now keys off !out_en;
+//    the Legs keep the MOTOR_FB_STALE-only scope.
+// ═══════════════════════════════════════════════════════════════════════════
+namespace bug105 {
+// The BUG-19 block's frame capture, restated (that namespace carries a frozen
+// old-form Item ID, tests/sim/no_legacy_item_ids.tsv, so it is not named here).
+struct LegFrame { bool seen = false; uint8_t buf[8] = {0}; };
+static void capture(LegFrame out[7]) {
+  for (int a = 0; a < 7; ++a) out[a] = LegFrame{};
+  for (size_t i = 0; i < fake_sent_count(); ++i) {
+    const SentFrame& f = fake_sent_at(i);
+    if ((f.id & ODrive::CMD_ID_MASK) != CMD_SETPOS) continue;
+    const uint8_t a = ODrive::axis_of(f.id);
+    out[a].seen = true; memcpy(out[a].buf, f.buf, 8);
+  }
+}
+static int16_t vel_of(const LegFrame& f) { int16_t v; memcpy(&v, &f.buf[4], 2); return v; }
+static int16_t tor_of(const LegFrame& f) { int16_t t; memcpy(&t, &f.buf[6], 2); return t; }
+// A tau == 0 (legacy) Hand stream at v0 = 2 rev/s with leg 0 present and on the
+// wire too, so the edge tick shows whether a LEG frame is flushed.
+static void stream_hand_and_leg0(LegFrame last[7]) {
+  reset_interp_test();
+  seed_hand_encoder();
+  write_pos_vel(hand_axis(), 1.0f, 0.0f, fake_mono_us());
+  axes[0].heartbeat_seen = true;
+  axes[0].pos_rev = 0.5f;
+  interp_set_output_enabled(true);
+  float u0[6] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+  float zeros[6] = {0, 0, 0, 0, 0, 0};
+  HandKnots hk{1.0f, 1.1f, 0.0f, 2.0f, 0.0f, 0.0f};
+  stage_hand(u0, nullptr, zeros, &hk, 1);
+  for (int k = 0; k < 3; ++k) {
+    write_pos_vel(hand_axis(), axes[HAND_AXIS].target_pos_rev, 0.0f, fake_mono_us());
+    fake_clear_sent(); interp_isr(); capture(last);
+    fake_advance(INTERP_PERIOD_US);
+  }
+  REQUIRE(last[0].seen);
+  REQUIRE(last[HAND_AXIS].seen);
+  REQUIRE(vel_of(last[HAND_AXIS]) != 0);           // a live vel_ff is being held
+  REQUIRE(tor_of(last[HAND_AXIS]) == 0);           // tau == 0: no FW 22 drain
+}
+}  // namespace bug105
+
+TEST_CASE("BUG-105: a disarm-style suppress puts ONE Hand hold frame out (last pos, vel_ff 0, tau 0) and no Leg frame") {
+  using namespace bug105;
+  LegFrame last[7], got[7];
+  stream_hand_and_leg0(last);
+  interp_set_output_enabled(false, false);         // Soft E-stop / disarm / link loss: NOT fb-stale
+  fake_clear_sent(); interp_isr(); capture(got);
+  CHECK(fake_sent_count_cmd(CMD_SETPOS) == 1);     // the Hand alone
+  CHECK_FALSE(got[0].seen);                        // the Legs' flush scope is unchanged
+  REQUIRE(got[HAND_AXIS].seen);
+  CHECK(memcmp(got[HAND_AXIS].buf, last[HAND_AXIS].buf, 4) == 0);   // the LAST transmitted input_pos
+  CHECK(vel_of(got[HAND_AXIS]) == 0);
+  CHECK(tor_of(got[HAND_AXIS]) == 0);
+  CHECK(fake_last_tx_class() == (int)TxCls::LEGS);
+  CHECK(interp_hold_flush_edges() == 1u);
+  CHECK(interp_hand_drain_frames() == 0u);
+  for (int k = 0; k < 20; ++k) {                   // ONE edge, ONE frame
+    fake_advance(INTERP_PERIOD_US);
+    fake_clear_sent(); interp_isr();
+    CHECK(fake_sent_count() == 0);
+  }
+  CHECK(interp_hold_flush_edges() == 1u);
+}
+
+TEST_CASE("BUG-105: a lane gap with output ENABLED puts no vel_ff 0 frame on the wire") {
+  using namespace bug105;
+  LegFrame last[7], got[7];
+  stream_hand_and_leg0(last);
+  // One tick on which the Hand lane does not reach the wire while output stays
+  // enabled (the encoder-unseen skip: hand_tx false, out_en true).
+  const uint64_t ts = hand_axis().pos_timestamp_us;
+  hand_axis().pos_timestamp_us = 0;
+  fake_clear_sent(); interp_isr(); capture(got);
+  CHECK_FALSE(got[HAND_AXIS].seen);                // no Hand frame at all on the gap tick
+  CHECK(got[0].seen);                              // the leg burst carries on
+  hand_axis().pos_timestamp_us = ts;
+  fake_advance(INTERP_PERIOD_US);
+  write_pos_vel(hand_axis(), axes[HAND_AXIS].target_pos_rev, 0.0f, fake_mono_us());
+  fake_clear_sent(); interp_isr(); capture(got);
+  REQUIRE(got[HAND_AXIS].seen);                    // the stream resumes with its own vel_ff
+  CHECK(vel_of(got[HAND_AXIS]) != 0);
+  CHECK(interp_hold_flush_edges() == 0u);
+}
+
+TEST_CASE("BUG-105: a cold-start move starting on the suppress edge flushes nothing, now or later") {
+  using namespace bug105;
+  LegFrame last[7];
+  stream_hand_and_leg0(last);
+  fake_set_deactivate(true);
+  interp_set_output_enabled(false, false);
+  fake_clear_sent(); interp_isr();
+  CHECK(fake_sent_count() == 0);
+  fake_set_deactivate(false);
+  fake_advance(INTERP_PERIOD_US);
+  fake_clear_sent(); interp_isr();                 // the record is dead: no late flush
+  CHECK(fake_sent_count() == 0);
+  CHECK(interp_hold_flush_edges() == 0u);
+}
+
+TEST_CASE("BUG-105: no Hand record (never on the wire since output came on) means no Hand frame on the edge") {
+  reset_interp_test();
+  seed_hand_encoder();
+  write_pos_vel(hand_axis(), 1.0f, 0.0f, fake_mono_us());
+  interp_set_output_enabled(true);                 // armed, but no setpoint ever staged (the FW 34 shut's shape)
+  for (int k = 0; k < 3; ++k) { fake_clear_sent(); interp_isr(); CHECK(fake_sent_count() == 0); fake_advance(INTERP_PERIOD_US); }
+  interp_set_output_enabled(false, false);
+  fake_clear_sent(); interp_isr();
+  CHECK(fake_sent_count() == 0);
+  CHECK(interp_hold_flush_edges() == 0u);
 }

@@ -2,9 +2,9 @@
 id: BUG-105
 kind: bug
 title: Hand keeps its last velocity feedforward on a Soft E-stop, disarm or link loss and stays in Closed-loop
-status: in_progress
+status: complete
 created: '2026-11-14'
-updated: '2026-11-22T11:50:49Z'
+updated: '2026-11-22T16:27:06Z'
 owners: []
 priority: high
 effort: s
@@ -17,10 +17,8 @@ blocked_by: []
 links:
 - bug-motor-fb-stale-suppression-leaves-the-odrive-holding-its
 - bug-can-bridge-fatal-can-silence-check-wraps-when-a-frame-is
+- logbook/2026-11-23-hand-vel-ff-zeroed-on-every-suppress-edge.md
 filed_by: claude
-night_skip: sitting
-night_skip_on: '2026-11-22'
-night_skip_note: The triangle fix and your 0.5 + speed/35 belt are on main (fcdb3ecc); the check flies at the next bench-hand Sitting.
 ---
 
 On every software stop except MOTOR_FB_STALE, the last frame the Hand ODrive holds keeps its velocity feedforward, and the Hand stays in Closed-loop. Found by the 2026-11-13 maintainer review and checked on 2026-11-14 against the owner's objection that a power cut clears the terms. Related to BUG-19, whose cure (the FW 35 hold flush) was scoped to MOTOR_FB_STALE.
