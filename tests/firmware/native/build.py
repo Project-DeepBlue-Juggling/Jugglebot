@@ -143,6 +143,12 @@ _BINARIES = {
         NATIVE_DIR / "test_platform_imu_diag.cpp",
         [],
     ),
+    # Platform FW 14: the chunk-CRC table (lazy, exact per chunk) and the TX diag counters (mailbox
+    # tracker, ECR deltas, the diag READ snapshot). Pure headers, nothing to link.
+    "test_platform_imu_fw14": (
+        NATIVE_DIR / "test_platform_imu_fw14.cpp",
+        [],
+    ),
     # The ICM-42688 non-blocking init against the scripted Wire fake: register sequence, waits,
     # one transaction per call, absent chip, error recovery.
     "test_icm42688": (

@@ -33,7 +33,7 @@ there would corrupt it. Command outranks reply, reply outranks status, status ou
 | ENABLE 0x01, DISABLE 0x02, ABORT 0x06 | none |
 | FREEZE 0x03 | `[reason u8]`: ATTEMPT_END 1, FAULT 2, SOFT_ESTOP 3, OPERATOR 4 (0 is ERR_BAD_ARGS) |
 | RESUME 0x04 | `[capture_id u16]` |
-| READ 0x05 | `[capture_id u16][first_seq u16][count u16][frame_gap_10us u8]`; count 1..`read_max_words` (256). FW 13: a READ whose `first_seq` is the active block's end extends it (section 4, READ chaining) |
+| READ 0x05 | `[capture_id u16][first_seq u16][count u16][frame_gap_10us u8]`; count 1..`read_max_words` (256). FW 13: a READ whose `first_seq` is the active block's end extends it (section 4, READ chaining). FW 14: also reads the chunk-CRC table and the diag counters (section 3); no new op |
 | SET_ODR 0x07 (FW 13) | `[odr_khz u8]`: 1 or 2 (`nominal_odr_hz` 1000 or `fast_odr_hz` 2000); anything else, or 2 on a 400 kHz I2C build, is ERR_BAD_ARGS (section 4, capture rate) |
 
 **IMU_REPLY** `[op u8][status u8][capture_id u16][detail u32]`, the FwUpdate reply shape. `capture_id` is the frozen
@@ -78,8 +78,55 @@ of 6-byte words with fixed bases:
 | samples | `0 .. 2N-1` (N <= `ring_samples` = 32000) | word 2k = `ax ay az` of retained sample k, 2k+1 = `gx gy gz`; int16 chip LSB, chip axes |
 | anchors | `anchor_seq_base` 0xFA80 `+ 3a .. 3a+2` (a < `anchor_ring` = 400) | 18-byte anchor a, oldest first |
 | header | `header_seq_base` 0xFFF0 `.. +10` | the 66-byte header |
+| diag (FW 14) | `diag_seq_base` 0xFA40 `.. +4` (`diag_words` 5) | the transmit counters, live (below) |
+| chunk-CRC table (FW 14) | `chunk_crc_seq_base` 0xFF40 `.. +127` | one CRC per chunk of `chunk_crc_words` (512) words (below) |
 
-A READ must lie wholly inside one region's valid part, else ERR_OUT_OF_RANGE with nothing sent. The sketch's separate
+A READ must lie wholly inside one region's valid part, else ERR_OUT_OF_RANGE with nothing sent. No two regions are
+contiguous (samples end at or below 0xFA00, diag 0xFA40-0xFA44, anchors 0xFA80-0xFF2F, chunk table 0xFF40-0xFFBF,
+header 0xFFF0-0xFFFA), so a chained READ never crosses into the next region. An FW 13 board answers a READ of either
+FW 14 region ERR_OUT_OF_RANGE with nothing sent. Both FW 14 regions are valid once the header is built (the FREEZE
+reply) and lie outside both CRCs.
+
+**Chunk-CRC table (FW 14).** Entry `c` is one word `[crc32 u32][info u16]`. Entries 0..124 cover the sample words
+`[512c, 512c + 512)`, entries 125..127 the anchor words `[512(c - 125), ...)` from `anchor_seq_base`; a chunk ends
+early at its region's end (the last one may be a single word) and a chunk past the end is empty (`n_words` 0, CRC 0).
+`info` = `n_words | chunk_crc_ready` (0x8000). `crc32` is CRC-32/IEEE over the chunk's words exactly as IMU_DATA
+carries them (`zlib.crc32`). The board computes the table lazily AFTER the FREEZE reply (the reply is not delayed):
+in each `loop()` pass that did nothing else (no I2C, no CRC slice, no IMU_DATA frame) it advances it by
+`CHUNK_STEP_WORDS` (128 words, 768 B, about 0.1 ms), so the whole table takes about 510 such passes, under 0.5 s.
+Until an entry is computed it reads `crc32` 0 with READY clear; the data is immutable while FROZEN or UPLOADING,
+so the table, once READY, stays valid until RESUME. RAM: 512 B of CRCs.
+
+**Diag (FW 14).** 30 bytes, little-endian, a snapshot taken when a READ of the region is accepted (one READ
+returns one consistent image). Cumulative counters wrap (the host takes deltas); `data_pend_max_us` saturates and
+resets at RESUME.
+
+| offset | type | field |
+| --- | --- | --- |
+| 0 | u8 | `diag_version` (1) |
+| 1 | u8 | flags: bit 0 = mailbox tracking valid |
+| 2 | u32 | `data_placed`: IMU_DATA frames handed to a mailbox (`tx.place` true, beside `commit_data`) |
+| 6 | u32 | `data_tx_done`: of those, seen sent by the tracker |
+| 10 | u16 | `data_tx_lost_mb`: a tracked mailbox found with ABORT or another code the IMU did not write |
+| 12 | u16 | `data_pend_over_2ms`: frames still pending 2 ms after placing, once per frame |
+| 14 | u16 | `data_pend_max_us`: the longest placing-to-sent time seen, saturating, reset at RESUME |
+| 16 | u16 | `tec_inc_sum`: positive rises of the transmit error counter (ECR), one read per pass |
+| 18 | u16 | `rec_inc_sum`: positive rises of the receive error counter (ECR) |
+| 20 | u8 | `tec_live` |
+| 21 | u8 | `rec_live` |
+| 22 | u16 | `tx_deferred` (the IMU's existing counter), low 16 bits |
+| 24 | u16 | `tx_queued_anyway`, saturating: an IMU frame `write()` queued in software (must stay 0) |
+| 26 | u32 | reserved 0 |
+
+The tracker: in `ImuTx::place`, with the CAN interrupt masked (as for the TX rule), the sketch predicts the mailbox
+`write()` will take (FlexCAN_T4 `write()` with `msg.seq` 0 scans from `mailboxOffset()` for the first TX_INACTIVE
+mailbox, and nothing else can write one while the interrupt is masked) and, once `write()` returns 1, records
+`{seq, t_placed}` for it. Once per `loop()` pass it reads each recorded mailbox's C/S code, ID and first data word:
+TX_INACTIVE (0x8), or TX_ONCE (0xC) holding another frame (another writer reused it), counts sent and updates the
+latency peak; TX_ONCE holding this seq is pending (the 2 ms check); anything else counts `data_tx_lost_mb`. A
+predicted mailbox missing or above MB 15 clears flag bit 0. Only TX mailboxes are read (an RX C/S read locks the
+mailbox) and ESR1 is never read (its read clears flags FlexCAN_T4 uses); ECR has no read side effect. Cost: at most
+8 records x 3 register reads plus one ECR read per pass, under 1 us, no waiting. The sketch's separate
 GET_HEADER and READ_ANCHORS replies are READs of these regions, so header, anchors and samples share one loss-recovery
 path and one CRC.
 
@@ -321,7 +368,7 @@ status of FROZEN means an earlier capture is still waiting: a FREEZE returns ALR
 uploads it. A changed `boot` byte, or ERR_NOT_FROZEN or ERR_WRONG_CAPTURE mid-upload, means the Platform Teensy
 rebooted: the partial capture is written with `complete = false`, as is a capture whose upload a pacifying command
 aborted. A `payload_crc32` mismatch gets one full re-read, then the capture is written with `crc_ok = false` and
-RESUMEd.
+RESUMEd. On an FW 14 board a span is verified too, by the chunk-CRC table (below, "Host verification and diag").
 
 Host behaviour added by the P3 audit (no wire change): (a) a Fault or Soft E-stop freezes at once but the READs start
 `imu_fault_upload_delay_s` later (default 5 s, at most 60 s; while still Armed up to 30 s more), and a second non-NONE
@@ -330,7 +377,8 @@ capture the node froze (the one exception is a Platform that rebooted or discard
 (legal from UPLOADING, table above), and a ring that STATUS still shows FROZEN with no upload running is healed: RESUME
 by the remembered capture id, or, for a capture frozen by a process that is gone, a FREEZE probe (ALREADY_FROZEN returns
 the id; STATUS carries none) then RESUME, after 3 s or 15 s, at most 3 tries per frozen episode; (c) a span-only upload
-has no payload CRC (it covers the whole capture) and `complete` then means the requested span arrived; (d) the toggle
+has no payload CRC (it covers the whole capture) and `complete` then means the requested span arrived (an FW 14
+board verifies it by chunks instead); (d) the toggle
 is default ON at every node start (not persisted).
 
 Host hole-fill and settle (IDEA-25, 2026-11-21, no wire or firmware change; `teensy_link/platform_imu.py`, `_Region` and
@@ -353,6 +401,42 @@ timeouts, hole passes, complete, crc, file stem)`, or a WARNING `Platform IMU up
 Each capture's `stats` (in its .json) also carries `pass1_missing` (words still missing when the first sweep of the
 samples region ended: 0 when it ended complete, null when the upload ended inside it), `pass1_missing_seqs` (the first
 500 of them, in order, to see whether lost frames cluster), `reads_chained`, `reads_replaced` and `chain`.
+
+Host verification and diag (FW 14, `UploadMachine`; no wire change beyond section 3's two regions). Only when the
+frozen capture's own header says `fw_version` >= 14 (the reason is item 1 of the chaining rule below):
+
+1. *Span widened to whole chunks.* A span upload's sample range is widened to chunk boundaries (256 samples, at most
+   255 samples more at each edge, about 0.2 s of upload at the 0.8 ms pace), so every word the host holds lies in a
+   chunk it holds in full and an unaligned edge is verified exactly, never left out. A whole-ring upload is already
+   aligned.
+2. *Verification.* After the anchors and samples are complete the host READs the table from the first chunk it
+   holds to the end (one READ of at most 128 words; entries not READY: read again after `chunk_table_wait_s`,
+   50 ms, at most `chunk_table_tries` 40 times) and checks `zlib.crc32` of every chunk it holds against its entry,
+   including words that arrived by hole refills and chained READs. A chunk that disagrees has its words marked
+   missing and re-read through the ordinary hole path (one chunk is two READs), then all chunks are checked again;
+   after `max_chunk_rereads` (2) re-reads a disagreement is final: the capture is written with `crc_ok = false`,
+   `complete = false`, and an ERROR names the chunks. A whole-ring upload is checked by the chunks first, then by
+   `payload_crc32` as before (its one full re-read is unchanged).
+3. *Record.* `flags.crc_checked` and `flags.crc_ok` are true for a verified partial span; `flags.crc_method` names
+   what verified it: `chunks` (a span), `chunks+payload` (a whole ring, FW 14), `payload` (a whole ring, FW 13), null
+   (nothing). The launch-log line reads `crc ok (chunks)` for a verified span. `stats.chunks_checked`,
+   `chunk_mismatches`, `chunk_rereads`, `chunk_bad_last` (the last list of failing chunk indices).
+4. *Diag counters.* One READ of the diag region after the header (the baseline) and one after verification, before
+   RESUME. `stats.platform_tx` holds the deltas (`data_placed`, `data_tx_done`, `data_tx_lost_mb`,
+   `data_pend_over_2ms`, `tec_inc_sum`, `rec_inc_sum`, `tx_deferred`, `tx_queued_anyway`), the last
+   `data_pend_max_us`, `tec_live`, `rec_live`, `tracking_valid`, and the can-bridge's `bridge_rx_frames` and
+   `bridge_batches_sent` deltas from the upload's first and last batch. Reading them: `data_placed` well above
+   `data_tx_done` means frames lost in this board's transmit path; equal, with `bridge_rx_frames` short of it, means
+   lost on the wire or in the bridge's receiver; TEC/REC rising with the losses means electrical errors on the wire.
+5. *Never fatal.* Any error reply to a diag or chunk-table READ, a timeout, or words still missing after two passes
+   only leaves that read undone (`stats.diag_unavailable`, `stats.chunk_table_unavailable`); the upload continues
+   and a span is then reported `crc not checked` as on FW 13.
+
+| Host | Board | Behaviour |
+| --- | --- | --- |
+| FW 14 host | FW 14 board | span and whole ring verified by chunks (whole ring also by `payload_crc32`), diag counters in `stats` |
+| FW 14 host | FW 13 or older | exactly as before: no table or diag READ is sent (the header gates it), spans not widened, span `crc not checked` |
+| older host | FW 14 board | unaffected: it never READs the new regions; the table costs the board only idle-pass time while FROZEN |
 
 Host READ chaining (FW 13, `UploadMachine._maybe_chain`; no wire change beyond section 4's READ_EXTENDED). The Jetson keeps
 one READ ahead so the Platform never idles between contiguous blocks:

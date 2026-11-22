@@ -1387,3 +1387,119 @@ def test_read_gap_check_accepts_the_wire_range_only():
     assert pi.read_gap_check(63) == (True, "") and pi.read_gap_check(40)[0] and pi.read_gap_check(255)[0]
     for bad in (39, 256, 63.0, True, "63", None):
         assert pi.read_gap_check(bad)[0] is False
+
+
+# ── FW 14: span verification by the chunk-CRC table, and the TX diag counters ───────────────────────────
+
+def _fw14(n=4000, **img_opt):
+    return build_image(n=n, n_anchors=40, fw_version=14, **img_opt)
+
+
+def _span(img, a_s=1.3, b_s=2.6):
+    w0 = img["wall0_us"] / 1e6
+    return pi.UploadJob(t_start_wall=w0 + a_s, t_end_wall=w0 + b_s)
+
+
+def test_fw14_partial_span_is_verified_by_chunks_and_widened_to_whole_chunks():
+    img = _fw14()
+    fp, m, res, _ = _upload(img, job=_span(img), board=14)
+    fl = res.flags
+    assert fl["partial_span"] and fl["complete"] and fl["crc_checked"] and fl["crc_ok"] is True
+    assert fl["crc_method"] == "chunks"
+    cs = pi.CHUNK_WORDS // 2
+    assert res.k0 % cs == 0 and (res.k0 + len(res.sample_words) // 12) % cs == 0   # unaligned edges widened
+    assert res.k0 <= 1287 and res.k0 + len(res.sample_words) // 12 >= 2574          # the asked span is inside
+    assert res.sample_words == b"".join(img["words"][s] for s in range(2 * res.k0, 2 * res.k0 + len(res.sample_words) // 6))
+    assert res.stats["chunks_checked"] == len(res.sample_words) // (6 * pi.CHUNK_WORDS) + 1   # + the anchor chunk
+    assert fp.chunk_reads == 1 and fp.diag_reads == 2
+    ok, line = pi.format_upload_end({"label": "attempt_end", "flags": fl, "stats": res.stats, "samples": 1})
+    assert ok and "crc ok (chunks)" in line
+
+
+def test_fw14_whole_ring_checks_both_chunks_and_payload():
+    img = _fw14(n=1500)
+    fp, m, res, _ = _upload(img, board=14)
+    assert res.flags["crc_ok"] is True and res.flags["crc_method"] == "chunks+payload"
+    assert res.stats["chunks_checked"] == 6 + 1                # ceil(3000 / 512) sample chunks + 1 anchor chunk
+
+
+def test_fw14_a_corrupted_refill_word_is_found_re_read_and_then_passes():
+    img = _fw14()
+    seq = 2 * 1500 + 1                                         # inside the span, so in pass 1 and its refill
+    fp, m, res, _ = _upload(img, job=_span(img), board=14, drop_once={seq}, corrupt_first={seq: 0x5A})
+    assert res.flags["crc_ok"] is True and res.flags["complete"]
+    assert res.stats["chunk_mismatches"] == 1 and res.stats["chunk_rereads"] == 1
+    assert res.stats["chunk_bad_last"] == [seq // pi.CHUNK_WORDS]
+    o = 6 * (seq - 2 * res.k0)
+    assert res.sample_words[o:o + 6] == img["words"][seq]
+    # the re-read asked for that chunk's words only (one chunk = two READs), not the whole span again
+    cstart = (seq // pi.CHUNK_WORDS) * pi.CHUNK_WORDS
+    assert sum(1 for f, _, _, _ in fp.reads if f == cstart) == 2  # pass 1, then the chunk re-read
+
+
+def test_fw14_persistent_corruption_fails_loudly(caplog):
+    img = _fw14()
+    seq = 2 * 1500 + 1
+    with caplog.at_level("ERROR"):
+        fp, m, res, _ = _upload(img, job=_span(img), board=14, corrupt={seq: 0x01})
+    fl = res.flags
+    assert fl["crc_checked"] and fl["crc_ok"] is False and not fl["complete"] and fl["crc_method"] == "chunks"
+    assert res.stats["chunk_rereads"] == pi.UploadConfig().max_chunk_rereads
+    assert fl["resume_ok"] is True                             # the ring is still given back
+    assert any("chunk CRC still wrong" in r.message for r in caplog.records)
+    ok, line = pi.format_upload_end({"label": "x", "flags": fl, "stats": res.stats})
+    assert not ok and "CRC mismatch" in line and "crc FAILED" in line
+
+
+def test_fw14_a_lazy_table_is_read_again_until_ready():
+    img = _fw14()
+    fp, m, res, _ = _upload(img, job=_span(img), board=14, chunk_not_ready_reads=2)
+    assert res.flags["crc_ok"] is True and fp.chunk_reads == 3
+
+
+def test_fw13_board_is_read_as_before_and_never_asked_for_the_new_regions():
+    img = build_image(n=4000, n_anchors=40, fw_version=13)
+    fp, m, res, _ = _upload(img, job=_span(img), board=13)
+    assert res.flags["complete"] and res.flags["crc_checked"] is False and res.flags["crc_ok"] is None
+    assert res.flags["crc_method"] is None
+    assert all(not (pi.DIAG_BASE <= f < pi.DIAG_BASE + 5 or f >= pi.CHUNK_BASE and f < pc.PLATFORM_IMU_HEADER_SEQ_BASE)
+               for f, _, _, _ in fp.reads)
+    assert res.k0 % (pi.CHUNK_WORDS // 2) != 0 or res.k0 == 0  # not widened
+    assert "platform_tx" not in res.stats
+    ok, line = pi.format_upload_end({"label": "x", "flags": res.flags, "stats": res.stats})
+    assert ok and "crc not checked" in line
+
+
+def test_fw14_diag_counters_land_in_stats_as_deltas():
+    img = _fw14()
+    fp, m, res, _ = _upload(img, job=_span(img), board=14, batched=True)
+    tx = res.stats["platform_tx"]
+    # placed between the two diag READs = every frame sent after the first diag block (its 5 frames included)
+    assert tx["data_placed"] == fp.frames_sent - 11 - 5      # all but the header and the second diag read
+    assert tx["data_tx_done"] == tx["data_placed"] and tx["tracking_valid"] is True
+    assert tx["data_pend_max_us"] == 900
+
+
+@pytest.mark.parametrize("status", [ST.ERR_OUT_OF_RANGE, ST.ERR_BAD_ARGS])
+def test_fw14_a_diag_read_error_never_fails_the_upload(status):
+    img = _fw14()
+    fp, m, res, _ = _upload(img, job=_span(img), board=14, aux_status={pi.DIAG_BASE: status})
+    assert res.flags["complete"] and res.flags["crc_ok"] is True and not res.failure
+    assert "platform_tx" not in res.stats and res.stats["diag_unavailable"]
+
+
+def test_fw14_a_chunk_table_error_leaves_the_span_unverified_but_complete():
+    img = _fw14()
+    fp, m, res, _ = _upload(img, job=_span(img), board=14, aux_status={pi.CHUNK_BASE: ST.ERR_OUT_OF_RANGE})
+    assert res.flags["complete"] and res.flags["crc_checked"] is False and not res.failure
+    assert res.stats["chunk_table_unavailable"] == "ERR_OUT_OF_RANGE"
+
+
+def test_fw14_span_of_one_sample_is_verified():
+    img = _fw14()
+    w0 = img["wall0_us"] / 1e6
+    t = 1010e-6 * 1900                                         # one sample period wide: k about 1900
+    fp, m, res, _ = _upload(img, job=pi.UploadJob(t_start_wall=w0 + t, t_end_wall=w0 + t + 0.0011), board=14)
+    assert not res.flags.get("span_empty")
+    assert res.flags["crc_ok"] is True and res.flags["crc_method"] == "chunks"
+    assert len(res.sample_words) // 12 == pi.CHUNK_WORDS // 2  # one whole chunk around it

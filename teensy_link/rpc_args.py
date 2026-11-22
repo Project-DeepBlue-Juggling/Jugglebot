@@ -507,7 +507,12 @@ PLATFORM_FW_VERSION_UNVERSIONED = 0
 #: block extends it (READ_EXTENDED), DATA frames on a fixed schedule (due += gap, at most
 #: 2 frames of catch-up), and IMU_CMD SET_ODR selects a 1 or 2 kHz capture. IMU-only: a
 #: board on 12 still works, it answers a chained READ by replacing the block (OK) instead.
-PLATFORM_FW_VERSION_EXPECTED = 13
+#: 14 (2026-11-23) = Platform IMU verification and transmit counters: a chunk-CRC table
+#: (one CRC-32 per 512 words, READ at 0xFF40) so a span upload is verified, and a diag
+#: region (READ at 0xFA40: IMU_DATA placed and sent, mailbox losses, CAN error counter
+#: rises). IMU-only, no new op or frame: a board on 13 still works, its span uploads
+#: are just reported "crc not checked" as before.
+PLATFORM_FW_VERSION_EXPECTED = 14
 
 
 def decode_platform_fw_version(data: bytes) -> int:

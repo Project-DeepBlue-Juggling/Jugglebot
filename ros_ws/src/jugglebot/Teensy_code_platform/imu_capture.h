@@ -13,6 +13,16 @@
  *  read as one address space of 6-byte words (read_word). While FROZEN nothing is pushed,
  *  so a reader sees a stable image. The payload CRC-32 is computed in bounded slices
  *  (crc_step) so no single loop() pass is held for long.
+ *
+ *  FW 14 adds two READ-able regions, outside both CRCs (spec section 3):
+ *    CHUNK-CRC TABLE  one word per chunk of CHUNK_CRC_WORDS (512) words, [crc32 u32][n_words | READY u16]:
+ *                     entries 0..SAMPLE_CHUNKS-1 cover the sample words from seq 0, the next ANCHOR_CHUNKS
+ *                     the anchor words from ANCHOR_SEQ_BASE, each chunk ending early at its region's end.
+ *                     Computed lazily AFTER the header (chunk_step, a bounded slice per idle loop() pass),
+ *                     so the FREEZE reply is not delayed; an entry without READY is not computed yet. The
+ *                     host reads the entries its span covers and checks every chunk it holds in full.
+ *    DIAG             DIAG_WORDS words of live transmit counters, a snapshot the sketch takes when a READ
+ *                     of the region is accepted (set_diag); not part of the capture.
  *****************************************************************************************/
 #pragma once
 
@@ -86,6 +96,23 @@ static_assert(PlatformImu::ANCHOR_SEQ_BASE + PlatformImu::ANCHOR_RING * (Platfor
 static_assert(PlatformImu::HEADER_SEQ_BASE + PlatformImu::HEADER_BYTES / PlatformImu::WORD_BYTES <= 65536u,
               "header words run past the 16-bit seq");
 
+// FW 14 regions: fixed sizes derived from the generated constants, and placed so that no region is contiguous
+// with another (a chained READ never crosses into the next region; spec section 4, READ chaining).
+constexpr uint32_t CHUNK_WORDS = PlatformImu::CHUNK_CRC_WORDS;
+constexpr uint32_t SAMPLE_CHUNKS = (PlatformImu::RING_SAMPLES * 2u + CHUNK_WORDS - 1u) / CHUNK_WORDS;   // 125
+constexpr uint32_t ANCHOR_CHUNKS = (PlatformImu::ANCHOR_RING * 3u + CHUNK_WORDS - 1u) / CHUNK_WORDS;    // 3
+constexpr uint32_t CHUNK_TABLE_WORDS = SAMPLE_CHUNKS + ANCHOR_CHUNKS;                                    // 128
+constexpr uint32_t DIAG_BYTES = PlatformImu::DIAG_WORDS * PlatformImu::WORD_BYTES;                      // 30
+static_assert(CHUNK_TABLE_WORDS <= PlatformImu::READ_MAX_WORDS, "the whole chunk table is one READ");
+static_assert(PlatformImu::CHUNK_CRC_SEQ_BASE > PlatformImu::ANCHOR_SEQ_BASE + PlatformImu::ANCHOR_RING * 3u,
+              "the chunk table starts after a gap above the anchors");
+static_assert(PlatformImu::CHUNK_CRC_SEQ_BASE + CHUNK_TABLE_WORDS < PlatformImu::HEADER_SEQ_BASE,
+              "the chunk table ends before a gap below the header");
+static_assert(PlatformImu::DIAG_SEQ_BASE > PlatformImu::RING_SAMPLES * 2u &&
+                  PlatformImu::DIAG_SEQ_BASE + PlatformImu::DIAG_WORDS < PlatformImu::ANCHOR_SEQ_BASE,
+              "the diag region sits in the gap between the samples and the anchors, touching neither");
+static_assert(CHUNK_WORDS < PlatformImu::CHUNK_CRC_READY, "n_words and the READY bit share one u16");
+
 class Capture {
  public:
   static constexpr uint32_t WORD = PlatformImu::WORD_BYTES;
@@ -112,6 +139,7 @@ class Capture {
     head_ = 0; count_ = 0; appended_ = 0; overwritten_ = false; a_head_ = 0; a_count_ = 0;
     frozen_ = false; ready_ = false; n_ = 0; n_anchors_ = 0; crc_pos_ = 0; crc_ = 0xFFFFFFFFu;
     capture_id_ = 0;
+    chunk_next_ = 0; chunk_pos_ = 0; chunk_run_ = 0xFFFFFFFFu;
   }
 
   bool frozen() const { return frozen_; }
@@ -167,6 +195,7 @@ class Capture {
     if (next_id_ == 0) next_id_ = 1;
     crc_ = 0xFFFFFFFFu;
     crc_pos_ = 0;
+    chunk_next_ = 0; chunk_pos_ = 0; chunk_run_ = 0xFFFFFFFFu;
     ready_ = false;
     frozen_ = true;
     return true;
@@ -189,6 +218,41 @@ class Capture {
     return crc_pos_ >= total;
   }
   bool crc_done() const { return frozen_ && crc_pos_ >= payload_words(); }
+
+  /*  THE CHUNK-CRC TABLE (FW 14).  Advance it by at most max_words words (at least one chunk boundary is
+   *  crossed per call for empty chunks, which cost nothing).  Only after the header is built, so the FREEZE
+   *  reply never waits for it; the image is immutable while frozen, so the order of the work is free.
+   *  True once every entry is READY. */
+  bool chunk_step(uint32_t max_words) {
+    if (!frozen_ || !ready_) return false;
+    uint8_t w[WORD];
+    while (chunk_next_ < CHUNK_TABLE_WORDS) {
+      const uint32_t n = chunk_len(chunk_next_);
+      while (chunk_pos_ < n && max_words) {
+        chunk_word(chunk_next_, chunk_pos_, w);
+        chunk_run_ = crc32_update(chunk_run_, w, WORD);
+        chunk_pos_++;
+        max_words--;
+      }
+      if (chunk_pos_ < n) return false;       // the slice ran out inside this chunk
+      chunk_crc_[chunk_next_++] = ~chunk_run_;
+      chunk_pos_ = 0;
+      chunk_run_ = 0xFFFFFFFFu;
+      if (!max_words) return chunk_next_ >= CHUNK_TABLE_WORDS;
+    }
+    return true;
+  }
+  bool chunks_done() const { return frozen_ && ready_ && chunk_next_ >= CHUNK_TABLE_WORDS; }
+  uint32_t chunks_ready() const { return chunk_next_; }
+  // Words of the chunk-table entry i (0 for a chunk beyond its region's valid end).
+  uint32_t chunk_len(uint32_t i) const {
+    const uint32_t total = i < SAMPLE_CHUNKS ? SAMPLE_WORDS * n_ : ANCHOR_WORDS * n_anchors_;
+    const uint32_t start = (i < SAMPLE_CHUNKS ? i : i - SAMPLE_CHUNKS) * CHUNK_WORDS;
+    if (start >= total) return 0;
+    return total - start < CHUNK_WORDS ? total - start : CHUNK_WORDS;
+  }
+  // The live diag snapshot read at DIAG_SEQ_BASE (the sketch's transmit counters; spec section 3).
+  void set_diag(const uint8_t* bytes) { std::memcpy(diag_, bytes, DIAG_BYTES); }
   uint32_t payload_crc() const { return ~crc_; }
 
   // Build the 66-byte header once the CRC is done. Nothing is readable at the header seqs before this.
@@ -239,6 +303,11 @@ class Capture {
     if (seq >= ab && seq < ab + ANCHOR_WORDS * n_anchors_) return ab + ANCHOR_WORDS * n_anchors_;
     uint32_t hb = PlatformImu::HEADER_SEQ_BASE;
     if (ready_ && seq >= hb && seq < hb + HEADER_WORDS) return hb + HEADER_WORDS;
+    // FW 14: the chunk table and the diag counters, once the header exists (a READ comes after it).
+    uint32_t cb = PlatformImu::CHUNK_CRC_SEQ_BASE;
+    if (ready_ && seq >= cb && seq < cb + CHUNK_TABLE_WORDS) return cb + CHUNK_TABLE_WORDS;
+    uint32_t db = PlatformImu::DIAG_SEQ_BASE;
+    if (ready_ && seq >= db && seq < db + PlatformImu::DIAG_WORDS) return db + PlatformImu::DIAG_WORDS;
     return 0;
   }
   // A READ must lie wholly inside one region's valid part.
@@ -254,6 +323,16 @@ class Capture {
     if (seq < SAMPLE_WORDS * n_) { sample_word(seq, out6); return true; }
     uint32_t hb = PlatformImu::HEADER_SEQ_BASE;
     if (seq >= hb) { std::memcpy(out6, header_ + (seq - hb) * WORD, WORD); return true; }
+    uint32_t cb = PlatformImu::CHUNK_CRC_SEQ_BASE;
+    if (seq >= cb) {                               // [crc32 u32][n_words | READY u16]; crc 0 until READY
+      const uint32_t i = seq - cb;
+      const bool done = i < chunk_next_;
+      put32(out6, done ? chunk_crc_[i] : 0u);
+      put16(out6 + 4, uint16_t(chunk_len(i) | (done ? PlatformImu::CHUNK_CRC_READY : 0u)));
+      return true;
+    }
+    uint32_t db = PlatformImu::DIAG_SEQ_BASE;
+    if (seq < PlatformImu::ANCHOR_SEQ_BASE && seq >= db) { std::memcpy(out6, diag_ + (seq - db) * WORD, WORD); return true; }
     uint32_t r = seq - PlatformImu::ANCHOR_SEQ_BASE;
     uint8_t rec[PlatformImu::ANCHOR_BYTES];
     anchor_bytes(a_first_ + r / ANCHOR_WORDS, rec);
@@ -276,6 +355,14 @@ class Capture {
     const int16_t* s = buf_ + size_t((start_ + k) % cap_) * (SAMPLE_WORDS * HALF_INT16) + (w % SAMPLE_WORDS) * HALF_INT16;
     for (uint32_t i = 0; i < HALF_INT16; i++) put16(out + 2 * i, uint16_t(s[i]));
   }
+  // Word w of chunk-table entry i, in its region's seq order.
+  void chunk_word(uint32_t i, uint32_t w, uint8_t* out) const {
+    if (i < SAMPLE_CHUNKS) { sample_word(i * CHUNK_WORDS + w, out); return; }
+    const uint32_t r = (i - SAMPLE_CHUNKS) * CHUNK_WORDS + w;
+    uint8_t rec[PlatformImu::ANCHOR_BYTES];
+    anchor_bytes(a_first_ + r / ANCHOR_WORDS, rec);
+    std::memcpy(out, rec + (r % ANCHOR_WORDS) * WORD, WORD);
+  }
   // Payload word p: the anchor words, then the sample words, in seq order.
   void payload_word(uint32_t p, uint8_t* out) const {
     if (p < ANCHOR_WORDS * n_anchors_) read_word(PlatformImu::ANCHOR_SEQ_BASE + p, out);
@@ -295,6 +382,10 @@ class Capture {
   uint32_t n_ = 0, n_anchors_ = 0, first_index_ = 0, start_ = 0, a_first_ = 0;
   uint32_t crc_pos_ = 0;
   uint32_t crc_ = 0xFFFFFFFFu;
+  // FW 14 chunk-CRC table (512 B) and the diag snapshot (30 B)
+  uint32_t chunk_crc_[CHUNK_TABLE_WORDS] = {};
+  uint32_t chunk_next_ = 0, chunk_pos_ = 0, chunk_run_ = 0xFFFFFFFFu;
+  uint8_t diag_[DIAG_BYTES] = {};
   uint8_t header_[PlatformImu::HEADER_BYTES] = {};
 };
 

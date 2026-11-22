@@ -336,6 +336,13 @@ platform_imu:
   header_format_version: 1
   anchor_seq_base: 0xFA80         # 64128, above the 64000 sample words
   header_seq_base: 0xFFF0
+  # FW 14 (spec sections 3 and 6): two more READ-able regions, outside both CRCs, never contiguous with another.
+  chunk_crc_seq_base: 0xFF40      # the chunk-CRC table: one word per chunk, [crc32 u32][n_words | READY << 15 u16]
+  chunk_crc_words: 512            # sample/anchor words per chunk (2 READs); 125 sample + 3 anchor chunks = 128 words
+  chunk_crc_ready: 0x8000         # entry bit: this chunk's CRC is computed (lazily, after the FREEZE reply)
+  diag_seq_base: 0xFA40           # the TX-diagnostic counters: 5 words, live data (IDEA-25 findings section 4)
+  diag_words: 5
+  diag_version: 1
   read_max_words: 256             # largest READ (the can-bridge clamps to it); FW 13 chains contiguous READs
   read_default_gap_10us: 100      # 1000 us between IMU_DATA frames (1000 fps on the wire)
   read_min_gap_10us: 40           # the Platform Teensy clamps faster requests to 400 us

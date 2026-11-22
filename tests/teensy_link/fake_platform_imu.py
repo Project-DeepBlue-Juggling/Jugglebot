@@ -61,7 +61,18 @@ def build_image(*, n=2000, n_anchors=20, cap_id=0x4A21, boot_id=0x11223344, firs
     struct.pack_into("<I", hdr, 62, zlib.crc32(bytes(hdr[:62])) & 0xFFFFFFFF)
     for i in range(11):
         words[pc.PLATFORM_IMU_HEADER_SEQ_BASE + i] = bytes(hdr[6 * i:6 * i + 6])
-    return dict(words=words, header=bytes(hdr), samples=samples, anchors=anchors, n=n, cap_id=cap_id,
+    table = {}
+    if fw_version >= 14:
+        # FW 14 chunk-CRC table (spec section 3): entry c < SAMPLE_CHUNKS covers sample words [512c, 512c + 512),
+        # the next ANCHOR_CHUNKS the anchor words, each ending early at its region's end; READY set.
+        cw = pc.PLATFORM_IMU_CHUNK_CRC_WORDS
+        for c in range(pi.CHUNK_TABLE_WORDS):
+            data = sample_bytes if c < pi.SAMPLE_CHUNKS else anc_bytes
+            start = (c if c < pi.SAMPLE_CHUNKS else c - pi.SAMPLE_CHUNKS) * cw * 6
+            chunk = data[start:start + cw * 6]
+            table[c] = (zlib.crc32(chunk) & 0xFFFFFFFF, len(chunk) // 6)
+            words[pi.CHUNK_BASE + c] = struct.pack("<IH", table[c][0], table[c][1] | pi.CHUNK_READY)
+    return dict(table=table, words=words, header=bytes(hdr), samples=samples, anchors=anchors, n=n, cap_id=cap_id,
                 boot_id=boot_id, first_index=first_index, payload_crc=payload_crc, odr_us=odr_us, local0=local0,
                 wall0_us=wall0_us, anc_bytes=anc_bytes)
 
@@ -85,6 +96,15 @@ class FakePlatform:
     read_status    status code to answer every READ with (a refusal; the board stays frozen)
     resume_ignored RESUME is neither applied nor answered (a lost command: the ring stays frozen)
     freeze_reply_lost  FREEZE is applied but its reply never arrives (the id stays unknown to the host)
+    corrupt_first  {seq: xor_byte}: the FIRST delivery of that seq carries a flipped byte (with drop_once on the
+                   same seq: the refill copy is the corrupted one), later deliveries are clean
+    aux_status     {region base: status}: FW 14 READs starting in that region (DIAG_BASE, CHUNK_BASE) are
+                   refused with this status (a board that does not have it)
+    chunk_not_ready_reads  the first N READs of the chunk table answer every entry not READY (lazy board)
+
+    FW 14 regions (image built with fw_version >= 14): the chunk table is in the image; the diag words are a
+    snapshot taken when a READ of DIAG_BASE is accepted (data_placed = frames sent so far, data_tx_done =
+    frames sent and not omitted by the loss model).
 
     board          12 or 13: model the Platform's ONE sender instead of the per-READ legacy schedule. A READ
                    reaches the board ``cmd_lat`` after it is sent; the board sends one frame per gap (a fresh
@@ -128,6 +148,41 @@ class FakePlatform:
         self.frames_sent = 0
         self._batch = []
         self._batch_next = 0.0
+        self.corrupted = set()
+        self.chunk_reads = 0
+        self.diag_reads = 0
+
+    def _aux(self, first):
+        """FW 14 auxiliary READ: None to serve it, else the refusal status. Takes the diag snapshot."""
+        for base, n in ((pi.DIAG_BASE, pi.DIAG_WORDS), (pi.CHUNK_BASE, pi.CHUNK_TABLE_WORDS)):
+            if base <= first < base + n:
+                st = self.opt.get("aux_status", {}).get(base)
+                if st is not None:
+                    return st
+                if not self.img["table"]:
+                    return ST.ERR_OUT_OF_RANGE                     # an FW 13 image has neither region
+                if base == pi.DIAG_BASE:
+                    self.diag_reads += 1
+                    blob = struct.pack("<BBIIHHHHHBBHHI", 1, 1, self.frames_sent, self.frames_sent - self.omitted,
+                                       0, 0, 900, 0, 0, 0, 0, 0, 0, 0)
+                    for i in range(pi.DIAG_WORDS):
+                        self.img["words"][base + i] = blob[6 * i:6 * i + 6]
+                else:
+                    self.chunk_reads += 1
+                    ready = self.chunk_reads > self.opt.get("chunk_not_ready_reads", 0)
+                    for c, (crc, n) in self.img["table"].items():
+                        self.img["words"][base + c] = struct.pack(
+                            "<IH", crc if ready else 0, n | (pi.CHUNK_READY if ready else 0))
+                return None
+        return None
+
+    def _word(self, seq):
+        word = self.img["words"][seq]
+        cf = self.opt.get("corrupt_first", {})
+        if seq in cf and seq not in self.corrupted:
+            self.corrupted.add(seq)
+            word = bytes([word[0] ^ cf[seq]]) + word[1:]
+        return word
 
     def _at(self, dt, fn):
         self._at_abs(self.t + dt, fn)
@@ -209,6 +264,10 @@ class FakePlatform:
         if self.opt.get("read_status") is not None:
             self._reply(OP.READ, self.opt["read_status"], img["cap_id"], 0)
             return True, "ok"
+        aux = self._aux(first)
+        if aux is not None:
+            self._reply(OP.READ, aux, img["cap_id"], first)
+            return True, "ok"
         self._reply(OP.READ, ST.OK, cid, first | (count << 16))
         drop_block = self.reads_seen <= self.opt.get("drop_block_n", 0)
         t_last = 0.0
@@ -226,7 +285,7 @@ class FakePlatform:
             if self.opt.get("loss_p") and self.loss_rng.random() < self.opt["loss_p"]:
                 self.omitted += 1
                 continue
-            word = img["words"][seq]
+            word = self._word(seq)
             cor = self.opt.get("corrupt", {})
             if seq in cor and self.corrupt_active:
                 word = bytes([word[0] ^ cor[seq]]) + word[1:]
@@ -261,6 +320,10 @@ class FakePlatform:
             return
         if self.opt.get("read_status") is not None:
             self._board_reply(idx, OP.READ, self.opt["read_status"], img["cap_id"], 0)
+            return
+        aux = self._aux(first)
+        if aux is not None:
+            self._board_reply(idx, OP.READ, aux, img["cap_id"], first)
             return
         detail = first | (count << 16)
         bk = self.bk
@@ -302,7 +365,10 @@ class FakePlatform:
         if self.opt.get("loss_p") and self.loss_rng.random() < self.opt["loss_p"]:
             self.omitted += 1
             return
-        word = self.img["words"][seq]
+        word = self._word(seq)
+        cor = self.opt.get("corrupt", {})
+        if seq in cor:
+            word = bytes([word[0] ^ cor[seq]]) + word[1:]
         rec = struct.pack("<H", seq) + word
         t_abs += self.opt.get("late", {}).get(seq, 0.0)
         if self.opt.get("batched"):

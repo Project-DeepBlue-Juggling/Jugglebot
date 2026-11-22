@@ -157,6 +157,16 @@ def test_native_platform_imu_diag_binary_passes(binaries):
         f"native test_platform_imu_diag FAILED:\n{r.stdout}\n{r.stderr}")
 
 
+def test_native_platform_imu_fw14_binary_passes(binaries):
+    """Platform FW 14: every chunk-CRC table entry equals zlib.crc32 of exactly its words (full and
+    partial rings, 1 and 2 kHz anchor counts, a wrapped ring, chunks ending after one word or one
+    sample, empty chunks), computed lazily and only in otherwise idle passes; the TX-mailbox tracker's
+    verdicts against a faked mailbox state, the ECR deltas, and the diag READ's snapshot layout."""
+    r = _run(binaries["test_platform_imu_fw14"])
+    assert r.returncode == 0, (
+        f"native test_platform_imu_fw14 FAILED:\n{r.stdout}\n{r.stderr}")
+
+
 def test_native_icm42688_binary_passes(binaries):
     """The Platform Teensy's ICM-42688 non-blocking init (icm42688.cpp) against the scripted Wire fake: the exact
     register sequence, the datasheet waits, one I2C transaction per call, an absent chip, error recovery."""

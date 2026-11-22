@@ -297,6 +297,12 @@ namespace PlatformImu {
   constexpr uint32_t HEADER_FORMAT_VERSION = 1u;
   constexpr uint32_t ANCHOR_SEQ_BASE = 64128u;
   constexpr uint32_t HEADER_SEQ_BASE = 65520u;
+  constexpr uint32_t CHUNK_CRC_SEQ_BASE = 65344u;
+  constexpr uint32_t CHUNK_CRC_WORDS = 512u;
+  constexpr uint32_t CHUNK_CRC_READY = 32768u;
+  constexpr uint32_t DIAG_SEQ_BASE = 64064u;
+  constexpr uint32_t DIAG_WORDS = 5u;
+  constexpr uint32_t DIAG_VERSION = 1u;
   constexpr uint32_t READ_MAX_WORDS = 256u;
   constexpr uint32_t READ_DEFAULT_GAP_10US = 100u;
   constexpr uint32_t READ_MIN_GAP_10US = 40u;

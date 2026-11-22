@@ -201,7 +201,7 @@
  *        ever faults).  Kill switch: PLATFORM_IMU_ENABLED (below the includes).
  */
 constexpr char     FW_NAME[]  = "jugglebot-platform";
-constexpr uint16_t FW_VERSION = 13;  // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
+constexpr uint16_t FW_VERSION = 14;  // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
                                      //      feedforward, C-HAND-2).
                                      // 2→3: 2026-08-18 hand END-STOP correction — BEHAVIOURAL.
                                      //      Geometry::HAND_MOTOR_HARD_STOP_REVS 11.1 → 10.8 rev
@@ -262,6 +262,13 @@ constexpr uint16_t FW_VERSION = 13;  // 1→2: 2026-07-29 throwDecelToTorque (po
                                      //      IMU_CMD SET_ODR selects a 1 or 2 kHz capture (RAM
                                      //      only; ODR_2K status flag; build flag
                                      //      PLATFORM_IMU_BOOT_ODR_HZ). IMU-only.
+                                     // 13→14: 2026-11-23 Platform IMU verification and
+                                     //      transmit counters: a chunk-CRC table READ-able at
+                                     //      0xFF40 (one CRC-32 per 512 words, computed lazily
+                                     //      after FREEZE) so a span upload is verified, and a
+                                     //      diag region at 0xFA40 (IMU_DATA placed / sent per
+                                     //      the TX-mailbox tracker, pending > 2 ms, ECR error
+                                     //      counter rises). IMU-only; no new op or frame.
 
 /*----------------------------------------------------------------------------*/
 /*                                CAN BUS SET‑UP                              */
@@ -1147,6 +1154,32 @@ struct ImuIo {
  *  queued frame into every free mailbox.  The CAN interrupt is masked from the count to the
  *  write so the TX-complete ISR cannot take the mailbox in between; a few microseconds, and
  *  the 6-deep hardware RX FIFO holds what arrives meanwhile. */
+/*  FW 14: the mailbox write() will take, predicted with the CAN interrupt masked: FlexCAN_T4's
+ *  write() (msg.seq == 0, the default) scans from mailboxOffset() for the first TX_INACTIVE
+ *  mailbox, exactly this loop, and nothing else can write a mailbox while the interrupt is masked
+ *  and loop() is here.  -1 if none (then tx_may_place has already refused).  TX mailboxes only. */
+static_assert(ImuService::MB_CODE_TX_INACTIVE == FLEXCAN_MB_CODE_TX_INACTIVE, "imu_service.h mirrors FlexCAN_T4");
+static_assert(ImuService::MB_CODE_TX_ONCE == FLEXCAN_MB_CODE_TX_ONCE, "imu_service.h mirrors FlexCAN_T4");
+int canFirstInactiveTxMailbox() {
+  const uint32_t b = uint32_t(CAN1);
+  const uint32_t maxmb = FLEXCANb_MAXMB_SIZE(b) > 64u ? 64u : FLEXCANb_MAXMB_SIZE(b);
+  const bool fen = (FLEXCANb_MCR(b) & FLEXCAN_MCR_FEN) != 0;
+  const uint32_t rffn = (FLEXCANb_CTRL2(b) >> FLEXCAN_CTRL2_RFFN_BIT_NO) & 0xFu;
+  for (uint32_t i = LoopService::Can::mailbox_offset(maxmb, fen, rffn); i < maxmb; ++i)
+    if (FLEXCAN_get_code(FLEXCANb_MBn_CS(b, i)) == FLEXCAN_MB_CODE_TX_INACTIVE) return int(i);
+  return -1;
+}
+/*  The tracker's view of one TX mailbox (FW 14, ImuService::TxTracker::poll): C/S code, standard id
+ *  and the seq in data bytes 0-1 (writeTxMailbox packs buf[0] into WORD0 bits 31-24, buf[1] 23-16). */
+struct ImuMbReader {
+  void operator()(int mb, ImuService::MbState *st) const {
+    const uint32_t b = uint32_t(CAN1);
+    st->code = uint8_t(FLEXCAN_get_code(FLEXCANb_MBn_CS(b, mb)));
+    st->id = (FLEXCANb_MBn_ID(b, mb) >> 18) & 0x7FFu;
+    const uint32_t w0 = FLEXCANb_MBn_WORD0(b, mb);
+    st->seq = uint16_t(((w0 >> 24) & 0xFFu) | (((w0 >> 16) & 0xFFu) << 8));
+  }
+};
 struct ImuTx {
   bool place(uint32_t id, const uint8_t *d) {
     NVIC_DISABLE_IRQ(IRQ_CAN1);
@@ -1156,7 +1189,14 @@ struct ImuTx {
       m.id = id;
       m.len = 8;
       memcpy(m.buf, d, 8);
-      if (can1.write(m) != 1) imuTxQueuedAnyway = imuTxQueuedAnyway + 1;
+      const int mb = id == PlatformCanId::IMU_DATA ? canFirstInactiveTxMailbox() : -1;
+      if (can1.write(m) != 1) {
+        imuTxQueuedAnyway = imuTxQueuedAnyway + 1;
+        imuService.tx_tracker().note_queued_anyway();
+      } else if (id == PlatformCanId::IMU_DATA) {
+        if (mb < 0) imuService.tx_tracker().note_predict_miss();
+        else imuService.tx_tracker().on_placed(mb, uint16_t(d[0] | (d[1] << 8)), micros());
+      }
     }
     NVIC_ENABLE_IRQ(IRQ_CAN1);
     return ok;
@@ -1490,6 +1530,13 @@ void loop() {
    * IMU_DATA frame), after the dispatch and the firmware-update tick, so a BEGIN or an
    * abandoned session is seen before any I2C this pass (imu_service.h). */
   imuService.pass(micros(), millis(), FwUpdate::sessionOpen(), imuIo, imuTx);
+  /* FW 14 transmit diagnostics: the recorded IMU_DATA mailboxes and the error counters, register
+   * reads only (under 1 us; imu_service.h, TxTracker). */
+  {
+    ImuMbReader rd;
+    imuService.tx_tracker().poll(micros(), rd);
+    imuService.tx_tracker().note_ecr(FLEXCANb_ECR(uint32_t(CAN1)));
+  }
 #endif
   updateHandFan();   // apply the fan decision (fed from canSniff)
 

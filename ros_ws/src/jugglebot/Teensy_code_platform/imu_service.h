@@ -1,5 +1,5 @@
 /*****************************************************************************************
- *  imu_service.h — the Platform IMU's per-loop() glue (FW 11-13, IDEA-20 P2b).
+ *  imu_service.h — the Platform IMU's per-loop() glue (FW 11-14, IDEA-20 P2b).
  *
  *  Pure logic with no Arduino dependency, so tests/firmware/native/ runs the shipped code
  *  (test_platform_imu_service.cpp). It wires imu_proto.h's Engine and imu_capture.h's ring
@@ -117,6 +117,112 @@ constexpr int      ERR_BAD_PACKET = -5;      // icm42688::ERR_BAD_PACKET
 inline bool tx_may_place(uint32_t free_tx_mailboxes, uint32_t sw_tx_queued) {
   return sw_tx_queued == 0 && free_tx_mailboxes > TX_RESERVE_MAILBOXES;
 }
+
+/*  THE CHUNK-CRC SLICE (FW 14).  Words of the chunk-CRC table computed in one loop() pass, only in a
+ *  pass that did nothing else (no I2C, no freeze-CRC slice, no IMU_DATA frame): 128 words = 768 bytes
+ *  of the same nibble-table CRC as CRC_SLICE_BYTES (8192 B, about 1 ms), so about 0.1 ms.  The whole
+ *  table (65200 words at most) takes about 510 such passes, under 0.5 s even at a 1 kHz loop. */
+constexpr uint32_t CHUNK_STEP_WORDS = 128;
+
+/*  THE TX DIAGNOSTICS (FW 14, IDEA-25 findings section 4).  Where an IMU_DATA frame the bridge never
+ *  saw was lost: in this board's transmit mailbox, or after it left (the wire, the bridge's receiver).
+ *  The sketch's ImuTx predicts the mailbox write() will take (FlexCAN_T4 write(): the first TX_INACTIVE
+ *  mailbox from mailboxOffset(), scanned with the CAN interrupt masked, so nothing can take it first)
+ *  and records {seq, t_placed}; once per loop() pass poll() reads each recorded mailbox's C/S code, ID
+ *  and first data word (TX mailboxes only: reading a TX C/S word has no side effect, unlike an RX one):
+ *    INACTIVE (0x8), or another frame in it    sent: data_tx_done, latency into pend_max_us
+ *    TX_ONCE (0xC) holding this frame           pending: counted once in pend_over_2ms past 2 ms
+ *    anything else (ABORT 0x9, ...)             data_tx_lost_mb, the record is dropped
+ *  note_ecr() takes the error-counter register (ECR, no read side effect; never ESR1, whose read
+ *  clears flags FlexCAN_T4 uses).  Cost per pass: at most 8 records (MB 8-15) x 3 register reads plus one ECR
+ *  read, under 1 us; no blocking, nothing waits.  All counters are cumulative (u32 or u16, wrapping)
+ *  so the host takes deltas; pend_max_us saturates and is reset at RESUME. */
+constexpr uint32_t TRACK_MAILBOXES = 16;      // setMaxMB(16): TX mailboxes are 8-15; a higher index clears valid
+constexpr uint32_t PEND_LIMIT_US = 2000;
+constexpr uint8_t  MB_CODE_TX_INACTIVE = 0x8; // FLEXCAN_MB_CODE_TX_INACTIVE (the sketch static_asserts both)
+constexpr uint8_t  MB_CODE_TX_ONCE = 0xC;     // FLEXCAN_MB_CODE_TX_ONCE: queued for transmission
+
+struct MbState {
+  uint8_t code = 0;    // C/S CODE field
+  uint32_t id = 0;     // standard id
+  uint16_t seq = 0;    // IMU_DATA seq from data bytes 0-1
+};
+
+class TxTracker {
+ public:
+  // After write() returned 1 for an IMU_DATA frame in mailbox `mb` (the prediction); mb < 0: no prediction.
+  void on_placed(int mb, uint16_t seq, uint32_t now_us) {
+    if (mb < 0 || uint32_t(mb) >= TRACK_MAILBOXES) { valid_ = false; return; }
+    if (active_ & (1ull << mb)) valid_ = false;   // a record we never saw finish: should be impossible
+    rec_[mb] = Rec{seq, now_us, false};
+    active_ |= 1ull << mb;
+  }
+  void note_predict_miss() { valid_ = false; }
+  void note_queued_anyway() { if (queued_anyway_ < 0xFFFFu) queued_anyway_++; }
+  // rd(int mb, MbState* out): the mailbox's live C/S code, id and seq (hardware) or a fake (native test).
+  template <class Rd>
+  void poll(uint32_t now_us, Rd& rd) {
+    uint64_t act = active_;
+    while (act) {
+      const int mb = __builtin_ctzll(act);
+      act &= act - 1;
+      Rec& r = rec_[mb];
+      MbState st;
+      rd(mb, &st);
+      const uint32_t age = now_us - r.t_us;
+      if (st.code == MB_CODE_TX_INACTIVE || (st.code == MB_CODE_TX_ONCE && (st.id != PlatformCanId::IMU_DATA || st.seq != r.seq))) {
+        tx_done_++;
+        if (age > pend_max_us_) pend_max_us_ = age;
+        active_ &= ~(1ull << mb);
+      } else if (st.code == MB_CODE_TX_ONCE) {
+        if (!r.over && age > PEND_LIMIT_US) { r.over = true; pend_over_++; }
+      } else {
+        lost_mb_++;
+        active_ &= ~(1ull << mb);
+      }
+    }
+  }
+  void note_ecr(uint32_t ecr) {
+    const uint8_t tec = uint8_t(ecr), rec = uint8_t(ecr >> 8);
+    if (have_ecr_) {
+      if (tec > tec_) tec_inc_ = uint16_t(tec_inc_ + (tec - tec_));
+      if (rec > rec_live_) rec_inc_ = uint16_t(rec_inc_ + (rec - rec_live_));
+    }
+    tec_ = tec; rec_live_ = rec; have_ecr_ = true;
+  }
+  void reset_pend_max() { pend_max_us_ = 0; }
+  bool valid() const { return valid_; }
+  uint32_t tx_done() const { return tx_done_; }
+  uint32_t pending() const { return uint32_t(__builtin_popcountll(active_)); }
+  /*  The 30-byte diag image (spec section 3, "Diag"): little-endian, offsets as in the table. */
+  void pack(uint8_t* out, uint32_t data_placed, uint32_t tx_deferred) const {
+    std::memset(out, 0, ImuCapture::DIAG_BYTES);
+    out[0] = uint8_t(PlatformImu::DIAG_VERSION);
+    out[1] = valid_ ? 0x01 : 0x00;
+    ImuCapture::put32(out + 2, data_placed);
+    ImuCapture::put32(out + 6, tx_done_);
+    ImuCapture::put16(out + 10, lost_mb_);
+    ImuCapture::put16(out + 12, pend_over_);
+    ImuCapture::put16(out + 14, uint16_t(pend_max_us_ > 0xFFFFu ? 0xFFFFu : pend_max_us_));
+    ImuCapture::put16(out + 16, tec_inc_);
+    ImuCapture::put16(out + 18, rec_inc_);
+    out[20] = tec_;
+    out[21] = rec_live_;
+    ImuCapture::put16(out + 22, uint16_t(tx_deferred));
+    ImuCapture::put16(out + 24, queued_anyway_);
+    ImuCapture::put32(out + 26, 0);           // reserved
+  }
+
+ private:
+  struct Rec { uint16_t seq; uint32_t t_us; bool over; };
+  Rec rec_[TRACK_MAILBOXES] = {};
+  uint64_t active_ = 0;
+  bool valid_ = true, have_ecr_ = false;
+  uint32_t tx_done_ = 0, pend_max_us_ = 0;
+  uint16_t lost_mb_ = 0, pend_over_ = 0, tec_inc_ = 0, rec_inc_ = 0, queued_anyway_ = 0;
+  uint8_t tec_ = 0, rec_live_ = 0;
+};
+static_assert(ImuCapture::DIAG_BYTES == 30, "TxTracker::pack writes the 30-byte diag image");
 
 /*  The back-off after `streak` consecutive failures (>= 1): 1, 2, 4 ... 32, then 60 s. */
 inline uint32_t backoff_ms(uint32_t streak) {
@@ -297,7 +403,7 @@ inline void const_compare(const uint8_t* ref, const uint8_t* mask, const uint8_t
 
 class Service {
  public:
-  enum StepKind : uint8_t { STEP_NONE = 0, STEP_I2C = 1, STEP_CRC = 2, STEP_DATA = 3 };
+  enum StepKind : uint8_t { STEP_NONE = 0, STEP_I2C = 1, STEP_CRC = 2, STEP_DATA = 3, STEP_CHUNK = 4 };
 
   /*  The capture must already be init()ed on its storage.  Boots into PROBING (the Engine),
    *  inert until BOOT_SETTLE_MS after `now_ms`, with the first probe then. */
@@ -328,6 +434,10 @@ class Service {
   StepKind last_step() const { return last_step_; }
   bool settled() const { return settled_; }
   bool halted_for_boot() const { return halted_for_boot_; }
+  TxTracker& tx_tracker() { return txt_; }
+  uint32_t data_placed() const { return data_placed_; }
+  // The diag image as a READ of DIAG_SEQ_BASE would return it now.
+  void diag_bytes(uint8_t* out) const { txt_.pack(out, data_placed_, cnt_.tx_deferred); }
 
   /*  One loop() pass, after the CAN dispatch and FwUpdate::tick().  `fw_session_open` is
    *  FwUpdate::sessionOpen(): BEGIN opened it, an abandoned or failed session closes it, and
@@ -368,6 +478,11 @@ class Service {
     step(now_us, now_ms, io);
     // 4. Frames: replies, then status, then (only if no other step ran) one DATA frame.
     send_frames(now_us, now_ms, tx);
+    // 5. FW 14: in a pass that did nothing else, one bounded slice of the chunk-CRC table.
+    if (last_step_ == STEP_NONE && cap_->header_ready() && !cap_->chunks_done()) {
+      cap_->chunk_step(CHUNK_STEP_WORDS);
+      last_step_ = STEP_CHUNK;
+    }
   }
 
  private:
@@ -384,10 +499,17 @@ class Service {
     const ImuProto::Reply r = eng_.handle(c, info, &deferred);
     if (!deferred) queue_reply(r);
     const uint8_t s1 = eng_.state();
+    if (c.valid && c.op == PlatformImuOp::READ &&
+        (r.status == PlatformImuStatus::OK || r.status == PlatformImuStatus::READ_EXTENDED) &&
+        c.first_seq >= PlatformImu::DIAG_SEQ_BASE && c.first_seq < PlatformImu::DIAG_SEQ_BASE + PlatformImu::DIAG_WORDS) {
+      uint8_t b[ImuCapture::DIAG_BYTES];      // FW 14: one consistent snapshot per diag READ
+      diag_bytes(b);
+      cap_->set_diag(b);
+    }
     if (r.status != PlatformImuStatus::OK) return;
     if (c.op == PlatformImuOp::DISABLE && s0 != DISABLED) { halt_local(); return; }
     if (c.op == PlatformImuOp::ENABLE && s0 == DISABLED) { new_capture(); enter_probing(now_ms); return; }
-    if (c.op == PlatformImuOp::RESUME && s1 == RUNNING) { new_capture(); phase_ = IDLE; }
+    if (c.op == PlatformImuOp::RESUME && s1 == RUNNING) { new_capture(); phase_ = IDLE; txt_.reset_pend_max(); }
     if (c.op == PlatformImuOp::SET_ODR && eng_.take_rate_change()) {
       /*  A new rate (no I2C here): a fresh capture, and the chip is re-initialised at the new
        *  rate by the ordinary probe (soft reset, configure, flush), one transaction per pass.
@@ -788,6 +910,7 @@ class Service {
     ImuProto::Frame f;
     if (!eng_.peek_data(now_us, &f)) return;
     if (!tx.place(PlatformCanId::IMU_DATA, f.d)) { cnt_.tx_deferred++; return; }
+    data_placed_++;
     eng_.commit_data(now_us);
     last_step_ = STEP_DATA;
   }
@@ -884,6 +1007,8 @@ class Service {
   CmdSlots cmds_;
   SyncQuality sync_;
   Counters cnt_;
+  TxTracker txt_;
+  uint32_t data_placed_ = 0;
   uint32_t boot_id_ = 0;
   bool i2c_400k_ = false;
   StepKind last_step_ = STEP_NONE;

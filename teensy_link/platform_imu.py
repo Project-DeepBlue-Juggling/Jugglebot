@@ -59,6 +59,18 @@ RING_SAMPLES = pc.PLATFORM_IMU_RING_SAMPLES            # 32000: 32 s at 1 kHz, 1
 #: so it cannot be stale after a reflash. An older board would answer a chained READ by REPLACING the block,
 #: dropping the rest of the one in flight (holes, healed by the refill, but every chain would cost them).
 CHAIN_MIN_FW_VERSION = 13
+#: The first Platform FW_VERSION with the chunk-CRC table (0xFF40) and the TX diag region (0xFA40), spec
+#: sections 3 and 6. Read from the frozen capture's header for the reason above; an older board is never sent
+#: a READ of either region (it would answer ERR_OUT_OF_RANGE), so it is read exactly as before.
+VERIFY_MIN_FW_VERSION = 14
+CHUNK_BASE = pc.PLATFORM_IMU_CHUNK_CRC_SEQ_BASE    # 0xFF40
+CHUNK_WORDS = pc.PLATFORM_IMU_CHUNK_CRC_WORDS      # 512
+CHUNK_READY = pc.PLATFORM_IMU_CHUNK_CRC_READY      # 0x8000
+SAMPLE_CHUNKS = -(-2 * RING_SAMPLES // CHUNK_WORDS)                              # 125
+ANCHOR_CHUNKS = -(-ANCHOR_WORDS * pc.PLATFORM_IMU_ANCHOR_RING // CHUNK_WORDS)    # 3
+CHUNK_TABLE_WORDS = SAMPLE_CHUNKS + ANCHOR_CHUNKS                                # 128
+DIAG_BASE = pc.PLATFORM_IMU_DIAG_SEQ_BASE          # 0xFA40
+DIAG_WORDS = pc.PLATFORM_IMU_DIAG_WORDS            # 5
 
 
 # ── codecs ───────────────────────────────────────────────────────────────────────────────────────
@@ -72,6 +84,28 @@ _STATUS = struct.Struct("<BBbBBBBB")
 _HEADER = struct.Struct("<BBHIIIHHQIHHHBBBBhhHHHHIII")
 _ANCHOR = struct.Struct("<IIQBx")
 _BATCH_HEAD = struct.Struct("<QBBHIIII")           # the 28 bytes before PlatformImuBatch.frames
+_DIAG = struct.Struct("<BBIIHHHHHBBHHI")           # FW 14 diag region, 30 bytes (spec section 3, "Diag")
+assert _DIAG.size == DIAG_WORDS * WORD
+DIAG_FIELDS = ("diag_version", "flags", "data_placed", "data_tx_done", "data_tx_lost_mb", "data_pend_over_2ms",
+               "data_pend_max_us", "tec_inc_sum", "rec_inc_sum", "tec_live", "rec_live", "tx_deferred",
+               "tx_queued_anyway", "reserved")
+#: Cumulative counters and their wrap: the host stores deltas (mod 2**bits) between the two reads.
+_DIAG_WRAP = {"data_placed": 32, "data_tx_done": 32, "data_tx_lost_mb": 16, "data_pend_over_2ms": 16,
+              "tec_inc_sum": 16, "rec_inc_sum": 16, "tx_deferred": 16, "tx_queued_anyway": 16}
+
+
+def decode_diag(blob: bytes) -> Dict[str, int]:
+    """The 30-byte FW 14 diag image (little-endian)."""
+    return dict(zip(DIAG_FIELDS, _DIAG.unpack(bytes(blob[:_DIAG.size]))))
+
+
+def diag_deltas(before: Dict[str, int], after: Dict[str, int]) -> Dict[str, int]:
+    """Counter deltas over an upload (modulo each counter's width); the live and peak fields as read last."""
+    out = {k: (after[k] - before[k]) % (1 << bits) for k, bits in _DIAG_WRAP.items()}
+    for k in ("data_pend_max_us", "tec_live", "rec_live"):
+        out[k] = after[k]
+    out["tracking_valid"] = bool(after["flags"] & 0x01)
+    return out
 assert _HEADER.size == pc.PLATFORM_IMU_HEADER_BYTES and _ANCHOR.size == pc.PLATFORM_IMU_ANCHOR_BYTES
 
 HEADER_FIELDS = (
@@ -264,6 +298,11 @@ class UploadConfig:
     max_stalled_blocks: int = 4        # consecutive blocks that delivered nothing new
     max_passes: int = 8                # full sweeps of a region (pass 1 + hole refills)
     max_crc_rereads: int = 1           # spec: one full re-read, then write flagged
+    # FW 14 chunk verification (spec section 6): re-read the words of chunks whose CRC disagrees this many times,
+    # then flag the capture crc_ok = false; wait this long between reads of a chunk table not yet READY.
+    max_chunk_rereads: int = 2
+    chunk_table_wait_s: float = 0.05
+    chunk_table_tries: int = 40
     status_grace_s: float = 2.5        # a STATUS this soon after FREEZE/RESUME may still show the old state
     span_margin_s: float = 2.0         # added each side of an Attempt span
     max_total_s: float = 300.0         # a whole upload is abandoned after this
@@ -418,6 +457,11 @@ class _Block:
 # Phases
 IDLE, FREEZING, WAITING, HEADER, ANCHORS, SAMPLES, RESUMING, DONE = (
     "idle", "freezing", "waiting", "header", "anchors", "samples", "resuming", "done")
+# FW 14: the diag counters before and after the data, and the chunk-CRC table. Their errors and timeouts never fail
+# the upload (an auxiliary read that fails only leaves that check undone).
+DIAG0, DIAG1, CHUNKS = "diag0", "diag1", "chunks"
+_AUX = (DIAG0, DIAG1, CHUNKS)
+_READING = (HEADER, ANCHORS, SAMPLES) + _AUX
 
 
 class UploadMachine:
@@ -468,6 +512,18 @@ class UploadMachine:
         self._wait_until = 0.0
         self._wait_cap = 0.0
         self.expected_n: Optional[int] = None
+        self._verify = False                   # FW 14: chunk table and diag regions (VERIFY_MIN_FW_VERSION)
+        self._chunk_state = "todo"             # todo | done | unavailable
+        self._chunk_table: Optional[Dict[int, Tuple[int, int]]] = None   # index -> (crc32, info)
+        self._chunk_tries = 0
+        self._chunk_retry_at: Optional[float] = None
+        self._chunk_rereads_left = 0
+        self._chunks_ok: Optional[bool] = None
+        self._payload_ok: Optional[bool] = None
+        self._refill_verify = False
+        self._diag0: Optional[Dict[str, int]] = None
+        self._bridge0: Optional[Tuple[int, int]] = None
+        self._bridge1: Optional[Tuple[int, int]] = None
         self.frames_total = 0
         self.frames_done = 0
         self._rate_t = 0.0
@@ -501,10 +557,11 @@ class UploadMachine:
         self.job = job
         self.t_job0 = now
         self.rereads_left = self.cfg.max_crc_rereads
+        self._chunk_rereads_left = self.cfg.max_chunk_rereads
         self.stats = {"blocks": 0, "block_timeouts": 0, "frames_rx": 0, "dup_frames": 0, "stray_frames": 0,
                       "hole_passes": 0, "crc_rereads": 0, "block_gap_10us": 0, "reads_chained": 0,
                       "reads_replaced": 0, "reads_late": 0, "chain": False}
-        self.flags = {"complete": False, "crc_checked": False, "crc_ok": None, "aborted": False,
+        self.flags = {"complete": False, "crc_checked": False, "crc_ok": None, "crc_method": None, "aborted": False,
                       "platform_rebooted": False, "already_frozen": False, "partial_span": False,
                       "span_unavailable": False, "resume_ok": None, "holes_unfilled": 0}
         if job.heal and job.heal_cid:
@@ -520,7 +577,7 @@ class UploadMachine:
         if not self.busy:
             return
         self.flags["aborted"] = True
-        if self.phase in (WAITING, HEADER, ANCHORS, SAMPLES):
+        if self.phase in (WAITING,) + _READING:
             # RESUME is legal from UPLOADING and cuts the block (spec section 4 table), so no ABORT first:
             # one IMU_CMD at a time keeps the bridge's reply ring within its sizing assumption.
             self._fail("aborted: " + reason, now)
@@ -612,7 +669,7 @@ class UploadMachine:
     def on_reply(self, rep: ImuReply, now: float) -> None:
         if not self.busy:
             return
-        if self.phase in (HEADER, ANCHORS, SAMPLES):
+        if self.phase in _READING:
             if rep.op == OP.READ:
                 self._on_read_reply(rep, now)
             return
@@ -686,6 +743,16 @@ class UploadMachine:
         b = self.blk
         if b is None:
             return
+        if self.phase in _AUX and rep.status not in (ST.OK, ST.READ_EXTENDED):
+            # FW 14 auxiliary READ (diag or chunk table): any refusal means "unavailable", never a failed upload
+            # (a firmware-13 board answers ERR_OUT_OF_RANGE; this host only asks an FW 14 header, but a board
+            # that rebooted in between is caught by the next data READ or the RESUME, as before).
+            try:
+                name = ST(rep.status).name
+            except ValueError:
+                name = "status 0x%02X" % rep.status
+            self._aux_give_up(now, name)
+            return
         if rep.status in (ST.OK, ST.READ_EXTENDED):
             tgt = None
             for x in (self.ahead, b):
@@ -738,7 +805,7 @@ class UploadMachine:
             return
         if self.boot_low is None:
             self.boot_low = st.boot
-        if self.phase not in (WAITING, HEADER, ANCHORS, SAMPLES):
+        if self.phase not in (WAITING,) + _READING:
             return
         if self.header is not None and st.boot != (self.header.boot_id & 0xFF):
             self.flags["platform_rebooted"] = True
@@ -752,7 +819,7 @@ class UploadMachine:
     # -- data --
     def on_records(self, records: bytes, now: float) -> None:
         """Feed ``[seq u16][6 B]`` records (8 bytes each) from batches."""
-        if self.phase not in (HEADER, ANCHORS, SAMPLES):
+        if self.phase not in _READING:
             if records:
                 self.stats["stray_frames"] = self.stats.get("stray_frames", 0) + len(records) // 8
             return
@@ -789,7 +856,7 @@ class UploadMachine:
     def tick(self, now: float) -> None:
         if not self.busy:
             return
-        if now - self.t_job0 > self.cfg.max_total_s and self.phase in (WAITING, HEADER, ANCHORS, SAMPLES):
+        if now - self.t_job0 > self.cfg.max_total_s and self.phase in (WAITING,) + _READING:
             self._fail("upload exceeded %.0f s" % self.cfg.max_total_s, now)
             return
         if self.phase == WAITING:
@@ -815,6 +882,10 @@ class UploadMachine:
             return
         self._rate_update(now)
         self._check_cut(now)
+        if self.phase == CHUNKS and self.blk is None and self._chunk_retry_at is not None and now >= self._chunk_retry_at:
+            self._chunk_retry_at = None
+            self._begin_chunks(now)
+            return
         b = self.blk
         if b is None:
             return
@@ -844,7 +915,7 @@ class UploadMachine:
         ``settle_s`` and not the 20 ms poll (the bridge flushes batches every 10 ms; after a block's last
         batch nothing else wakes the worker)."""
         b = self.blk
-        if b is None or not b.last_seen or self.ahead is not None or self.phase not in (HEADER, ANCHORS, SAMPLES):
+        if b is None or not b.last_seen or self.ahead is not None or self.phase not in _READING:
             return None
         return max(0.0, self.cfg.settle_s - (now - b.last_rx))
 
@@ -893,6 +964,12 @@ class UploadMachine:
             self.blk, self.ahead = self.ahead, None
             self._maybe_chain(now)
             return
+        if self.phase in _AUX and (timed_out or self.region.passes > 2):
+            # An auxiliary region is small (one READ): a timeout or a second refill pass gives up on it, and the
+            # stall guard of the data regions is not touched.
+            self.stalled = 0
+            self._aux_give_up(now, "timed out" if timed_out else "words missing after 2 passes")
+            return
         if self.region.passes > self.cfg.max_passes:
             self.flags["holes_unfilled"] = self.region.missing()
             self._fail("%d word(s) of the %s region still missing after %d passes"
@@ -911,10 +988,150 @@ class UploadMachine:
     def _region_done(self, now: float) -> None:
         if self.phase == HEADER:
             self._header_done(now)
+        elif self.phase == ANCHORS and self._refill_verify:
+            self.anchors = decode_anchors(bytes(self.anchor_region.buf))
+            if not self.sample_region.complete:
+                self.phase = SAMPLES
+                self.region = self.sample_region
+                self._start_block(now)
+            else:
+                self._verify_chunks(now)
         elif self.phase == ANCHORS:
             self._anchors_done(now)
+        elif self.phase == SAMPLES and self._refill_verify:
+            self._verify_chunks(now)
         elif self.phase == SAMPLES:
             self._samples_done(now)
+        elif self.phase == DIAG0:
+            self._diag_done(now, decode_diag(bytes(self.region.buf)))
+        elif self.phase == DIAG1:
+            self._diag_done(now, decode_diag(bytes(self.region.buf)))
+        elif self.phase == CHUNKS:
+            self._chunk_table_done(now)
+
+    # -- FW 14: diag counters and chunk verification --
+    def note_bridge(self, rx_frames: int, batches_sent: int) -> None:
+        """The can-bridge's cumulative IMU_DATA counters from each batch of this upload (first and last kept)."""
+        if self.phase in _READING:
+            if self._bridge0 is None:
+                self._bridge0 = (int(rx_frames), int(batches_sent))
+            self._bridge1 = (int(rx_frames), int(batches_sent))
+
+    def _begin_aux(self, phase: str, name: str, base: int, lo: int, hi: int, now: float) -> None:
+        self.phase = phase
+        self.region = _Region(name, base, lo, hi, self.cfg.refill_merge_words)
+        self.blk = self.ahead = None
+        self._start_block(now)
+
+    def _aux_give_up(self, now: float, why: str) -> None:
+        self.blk = self.ahead = None
+        if self.phase in (DIAG0, DIAG1):
+            self.stats["diag_unavailable"] = why
+            logger.info("Platform IMU diag counters unavailable (%s); the upload continues", why)
+            self._diag_done(now, None)
+        elif self.phase == CHUNKS:
+            self._chunk_state = "unavailable"
+            self.stats["chunk_table_unavailable"] = why
+            logger.warning("Platform IMU chunk-CRC table unavailable (%s): the span is not verified", why)
+            self._payload_and_finish(now)
+
+    def _diag_done(self, now: float, d: Optional[Dict[str, int]]) -> None:
+        if self.phase == DIAG0:
+            self._diag0 = d
+            self._begin_region_anchors(now)
+            return
+        if d is not None and self._diag0 is not None:
+            dd = diag_deltas(self._diag0, d)
+            if self._bridge0 is not None and self._bridge1 is not None:
+                dd["bridge_rx_frames"] = (self._bridge1[0] - self._bridge0[0]) % (1 << 32)
+                dd["bridge_batches_sent"] = (self._bridge1[1] - self._bridge0[1]) % (1 << 32)
+            self.stats["platform_tx"] = dd
+        self._resume(now)
+
+    def _chunk_list(self) -> List[Tuple[int, "_Region", int, int]]:
+        """(table index, region, first word, words) for every chunk the assembled regions hold in full."""
+        out: List[Tuple[int, _Region, int, int]] = []
+        h, sr, ar = self.header, self.sample_region, self.anchor_region
+        total = 2 * h.n_samples
+        c = sr.lo // CHUNK_WORDS
+        while c * CHUNK_WORDS < sr.hi:
+            start = c * CHUNK_WORDS
+            n = min(CHUNK_WORDS, total - start)
+            if start >= sr.lo and start + n <= sr.hi:
+                out.append((c, sr, start, n))
+            c += 1
+        total = ANCHOR_WORDS * h.n_anchors
+        for j in range(-(-total // CHUNK_WORDS)):
+            out.append((SAMPLE_CHUNKS + j, ar, j * CHUNK_WORDS, min(CHUNK_WORDS, total - j * CHUNK_WORDS)))
+        return out
+
+    def _begin_chunks(self, now: float) -> None:
+        if self._chunk_table is not None:              # immutable while frozen: read once per upload
+            self._verify_chunks(now)
+            return
+        lo = min((c for c, _, _, _ in self._chunk_list()), default=SAMPLE_CHUNKS)
+        self._chunk_tries += 1
+        self._begin_aux(CHUNKS, "chunks", CHUNK_BASE, lo, CHUNK_TABLE_WORDS, now)
+
+    def _chunk_table_done(self, now: float) -> None:
+        r = self.region
+        table = {}
+        for i in range(r.n):
+            table[r.lo + i] = struct.unpack_from("<IH", r.buf, WORD * i)
+        need = [c for c, _, _, _ in self._chunk_list()]
+        if any(not (table[c][1] & CHUNK_READY) for c in need):
+            # Computed lazily after FREEZE (under 0.5 s on the board): read the table again shortly.
+            if self._chunk_tries >= self.cfg.chunk_table_tries:
+                self._aux_give_up(now, "table not ready after %d reads" % self._chunk_tries)
+                return
+            self.blk = self.ahead = None
+            self._chunk_retry_at = now + self.cfg.chunk_table_wait_s
+            return
+        self._chunk_table = table
+        self._verify_chunks(now)
+
+    def _verify_chunks(self, now: float) -> None:
+        """Check every chunk the regions hold against the board's table; re-read the words of the chunks that
+        disagree (bounded), then flag the capture."""
+        self._refill_verify = False
+        chunks = self._chunk_list()
+        bad = []
+        for c, reg, start, n in chunks:
+            crc, info = self._chunk_table[c]
+            o = WORD * (start - reg.lo)
+            if (info & ~CHUNK_READY) != n or (zlib.crc32(bytes(reg.buf[o:o + WORD * n])) & 0xFFFFFFFF) != crc:
+                bad.append((c, reg, start, n))
+        self.stats["chunks_checked"] = len(chunks)
+        if not bad:
+            self._chunks_ok = True
+            self._chunk_state = "done"
+            self._payload_and_finish(now)
+            return
+        self.stats["chunk_mismatches"] = self.stats.get("chunk_mismatches", 0) + len(bad)
+        self.stats["chunk_bad_last"] = [c for c, _, _, _ in bad]
+        if self._chunk_rereads_left > 0:
+            self._chunk_rereads_left -= 1
+            self.stats["chunk_rereads"] = self.stats.get("chunk_rereads", 0) + 1
+            logger.warning("IMU chunk CRC mismatch in %d chunk(s) %s: re-reading their words",
+                           len(bad), [c for c, _, _, _ in bad])
+            for _, reg, start, n in bad:
+                i = start - reg.lo
+                reg.have[i:i + n] = bytes(n)
+                reg.n_have = sum(reg.have)
+                reg.scan = 0
+                reg.passes = 1
+            self.stalled = 0
+            self._refill_verify = True
+            reg = self.anchor_region if not self.anchor_region.complete else self.sample_region
+            self.phase = ANCHORS if reg is self.anchor_region else SAMPLES
+            self.region = reg
+            self._start_block(now)
+            return
+        self._chunks_ok = False
+        self._chunk_state = "done"
+        logger.error("IMU chunk CRC still wrong after %d re-read(s) in chunk(s) %s: the capture is flagged "
+                     "crc_ok = false", self.cfg.max_chunk_rereads, [c for c, _, _, _ in bad])
+        self._payload_and_finish(now)
 
     def _header_done(self, now: float) -> None:
         try:
@@ -936,6 +1153,10 @@ class UploadMachine:
         self.header = h
         self._chain = h.fw_version >= CHAIN_MIN_FW_VERSION and self.cfg.chain_lead_s > 0
         self.stats["chain"] = self._chain
+        self._verify = h.fw_version >= VERIFY_MIN_FW_VERSION
+        if self._verify:
+            self._begin_aux(DIAG0, "diag", DIAG_BASE, 0, DIAG_WORDS, now)    # the counters' baseline
+            return
         self._begin_region_anchors(now)
 
     def _begin_region_anchors(self, now: float) -> None:
@@ -971,6 +1192,13 @@ class UploadMachine:
                     w_first = float(model.wall_us(np.arange(1))[0])
                     if w_first > (job.t_start_wall - self.cfg.span_margin_s) * 1e6 + 1e6 / float(h.odr_hz or 1000):
                         self.flags["span_truncated"] = True
+                if self._verify and rng != (0, 0):
+                    # FW 14: widen the span to whole chunks (CHUNK_WORDS / 2 samples) so that every word read is
+                    # inside a chunk the board's table covers in full: an unaligned edge is verified exactly by
+                    # reading the rest of its chunk (at most 255 samples each side), never left unchecked.
+                    cs = CHUNK_WORDS // 2
+                    k0 = (k0 // cs) * cs
+                    k1 = min(-(-k1 // cs) * cs, h.n_samples)
                 self.full_coverage = (k0, k1) == (0, h.n_samples)
                 self.flags["partial_span"] = not self.full_coverage
         self.k0, self.k1 = k0, k1
@@ -982,9 +1210,15 @@ class UploadMachine:
             self._samples_done(now)
 
     def _samples_done(self, now: float) -> None:
+        if (self._verify and self._chunk_state == "todo" and self.sample_region.complete
+                and self.anchor_region.complete):
+            self._begin_chunks(now)                    # FW 14: verify by chunks first (it localises a mismatch)
+            return
+        self._payload_and_finish(now)
+
+    def _payload_and_finish(self, now: float) -> None:
         h = self.header
         if self.full_coverage and self.sample_region.complete and self.anchor_region.complete:
-            self.flags["crc_checked"] = True
             ok = (zlib.crc32(bytes(self.sample_region.buf), zlib.crc32(bytes(self.anchor_region.buf)))
                   & 0xFFFFFFFF) == h.payload_crc32
             if not ok and self.rereads_left > 0:
@@ -997,12 +1231,23 @@ class UploadMachine:
                                                              ANCHOR_WORDS * h.n_anchors, self.cfg.refill_merge_words)
                 self.frames_done = 0
                 self.stalled = 0
+                if self._chunk_state == "done":
+                    self._chunk_state = "todo"         # re-verify the re-read words (the table is kept)
+                    self._chunk_rereads_left = self.cfg.max_chunk_rereads
                 if not self._start_block(now):
                     self._anchors_done(now)
                 return
-            self.flags["crc_ok"] = ok
+            self._payload_ok = ok
+        checks = [(m, v) for m, v in (("chunks", self._chunks_ok), ("payload", self._payload_ok)) if v is not None]
+        if checks:
+            self.flags["crc_checked"] = True
+            self.flags["crc_ok"] = all(v for _, v in checks)
+            self.flags["crc_method"] = "+".join(m for m, _ in checks)
         self.flags["complete"] = (self.sample_region.complete and self.flags["crc_ok"] is not False
                                   and not self.flags["aborted"] and not self.flags["platform_rebooted"])
+        if self._verify:
+            self._begin_aux(DIAG1, "diag", DIAG_BASE, 0, DIAG_WORDS, now)    # the counters after the data
+            return
         self._resume(now)
 
     def _stash_pass1(self) -> None:
@@ -1072,6 +1317,8 @@ def format_upload_end(summary: Dict[str, Any]) -> Tuple[bool, str]:
     fl = summary.get("flags") or {}
     crc = fl.get("crc_ok")
     crc_s = "ok" if crc is True else ("FAILED" if crc is False else "not checked")
+    if crc is not None and "chunks" in (fl.get("crc_method") or ""):
+        crc_s += " (%s)" % fl["crc_method"]             # FW 14: a span verified by the chunk-CRC table
     complete = bool(fl.get("complete")) and not summary.get("write_failed")
     body = ("%s, %d samples, %.1f s, %d frames rx, %d duplicate, %d READs (%d chained, %d replaced), "
             "%d block timeouts, %d hole passes, complete %s, crc %s, file %s" % (
@@ -1570,6 +1817,7 @@ class PlatformImuService:
                 self._bridge = {"ring_hwm": info.ring_hwm, "ring_drops": info.ring_drops,
                                 "rx_frames": info.rx_frames, "batches_sent": info.batches_sent,
                                 "send_fails": info.send_fails}
+                self.machine.note_bridge(info.rx_frames, info.batches_sent)
                 self.machine.on_records(records, t)
             except queue.Empty:
                 pass
