@@ -1,0 +1,154 @@
+schema: 2
+steps:
+  1:
+    comments: ''
+    saved_at: 2026-11-22 22:28
+    status: done
+  2:
+    comments: ''
+    saved_at: 2026-11-22 22:28
+    status: done
+  3:
+    comments: ''
+    saved_at: 2026-11-22 22:28
+    status: done
+  4:
+    comments: ''
+    saved_at: 2026-11-22 22:29
+    status: done
+  6:
+    comments: 'Had to reflash the Teensy firmware after the last HAND_STALL latch.
+      Then got a similar result on the second run: " (venv) jetson:/home/jetson/Desktop/Jugglebot/
+      (night-shift/2026-11-20-BUG-123) $ python tests/hardware/hand_stream_bench.py
+      --stage stall [22:32:43] hand baseline: pos=+0.3892 rev axis_state=? active_errors=?
+      fault=NONE note: this drive reports no motor temperature; FET 31.0 C was checked
+      instead. Your hand on the motor is the motor check: it must be cool. stall plan:
+      firmware 48, Hand IDLE at +0.389 rev, motor temperature not reported; limit
+      70.0 -> 45.0 A (vel_limit 1000 kept); frame shift +0.650 rev; ramp at 1.00 rev/s
+      to homed -0.60 rev, 0.50 rev past the stop ARM stall: push the Hand into the
+      bottom stop at 45 A until the guard IDLEs it. Cup empty, E-stop in hand. [yes/NO]
+      yes current limit lowered: drive reads 45.0 A over USB frame shifted +0.650
+      rev: the stop now reads +0.550 hand bring-up (stall): POSITION/PASSTHROUGH +
+      gains -> CLOSED_LOOP ARMED: ramp +1.039 -> +0.050 rev (lane frame) over 1.24
+      s trip seen at t=1.161 s (bit3, axis IDLE); first 40 A at 1.002 s HAND_MOVE_TO
+      while latched: refused: ERR_BUS_DOWN current limit restore: sent 70.0 A, drive
+      reads 70.0 A over USB -> OK encoder frame restored: Hand reads +0.439 rev (homed
+      frame, want +0.439); re-home anyway motor temperature not reported by this drive:
+      touch the motor STALL-GUARD FAIL: current rose again after the trip (44.8 A,
+      axis_state 1) (IDLE 159 ms after the first 40 A sample, peak 44.6 A, fault ?,
+      bit3 set) " and the same in the third attempt (after another reflash): " (venv)
+      jetson:/home/jetson/Desktop/Jugglebot/ (night-shift/2026-11-20-BUG-123) $ python
+      tests/hardware/hand_stream_bench.py --stage stall [22:34:23] hand baseline:
+      pos=+0.6624 rev axis_state=? active_errors=? fault=NONE note: this drive reports
+      no motor temperature; FET 31.3 C was checked instead. Your hand on the motor
+      is the motor check: it must be cool. stall plan: firmware 48, Hand IDLE at +0.662
+      rev, motor temperature not reported; limit 70.0 -> 45.0 A (vel_limit 1000 kept);
+      frame shift +0.650 rev; ramp at 1.00 rev/s to homed -0.60 rev, 0.50 rev past
+      the stop note: Diagnostic bit3 is already set (sticky from an earlier trip;
+      only a reboot or a Hand ladder clears it), so this run times the trip on the
+      current, the fault and the axis state ARM stall: push the Hand into the bottom
+      stop at 45 A until the guard IDLEs it. Cup empty, E-stop in hand. [yes/NO] yes
+      current limit lowered: drive reads 45.0 A over USB frame shifted +0.650 rev:
+      the stop now reads +0.550 hand bring-up (stall): POSITION/PASSTHROUGH + gains
+      -> CLOSED_LOOP ARMED: ramp +1.312 -> +0.050 rev (lane frame) over 1.51 s trip
+      seen at t=1.437 s (fault HAND_STALL); first 40 A at 1.275 s HAND_MOVE_TO while
+      latched: refused: ERR_BUS_DOWN current limit restore: sent 70.0 A, drive reads
+      70.0 A over USB -> OK encoder frame restored: Hand reads +0.448 rev (homed frame,
+      want +0.448); re-home anyway motor temperature not reported by this drive: touch
+      the motor STALL-GUARD FAIL: current rose again after the trip (44.7 A, axis_state
+      8) (IDLE 162 ms after the first 40 A sample, peak 44.9 A, fault ?, bit3 set
+      (already set before this run)) "'
+    saved_at: 2026-11-22 22:35
+    status: done
+  7:
+    comments: ''
+    saved_at: 2026-11-22 22:35
+    status: done
+  9:
+    comments: ''
+    saved_at: 2026-11-22 22:39
+    status: done
+verdicts:
+  5:
+    BUG-123:
+      notes: 'This is what I got: " (venv) jetson:/home/jetson/Desktop/Jugglebot/
+        (night-shift/2026-11-20-BUG-123) $ python tests/hardware/hand_stream_bench.py
+        --stage stall [22:30:04] hand baseline: pos=+0.5711 rev axis_state=? active_errors=?
+        fault=NONE note: this drive reports no motor temperature; FET 30.6 C was checked
+        instead. Your hand on the motor is the motor check: it must be cool. stall
+        plan: firmware 48, Hand IDLE at +0.571 rev, motor temperature not reported;
+        limit 70.0 -> 45.0 A (vel_limit 1000 kept); frame shift +0.650 rev; ramp at
+        1.00 rev/s to homed -0.60 rev, 0.50 rev past the stop ARM stall: push the
+        Hand into the bottom stop at 45 A until the guard IDLEs it. Cup empty, E-stop
+        in hand. [yes/NO] yes current limit lowered: drive reads 45.0 A over USB frame
+        shifted +0.650 rev: the stop now reads +0.550 hand bring-up (stall): POSITION/PASSTHROUGH
+        + gains -> CLOSED_LOOP ARMED: ramp +1.221 -> +0.050 rev (lane frame) over
+        1.42 s trip seen at t=1.346 s (bit3); first 40 A at 1.178 s HAND_MOVE_TO while
+        latched: refused: ERR_BUS_DOWN current limit restore: sent 70.0 A, drive reads
+        70.0 A over USB -> OK encoder frame restored: Hand reads +0.368 rev (homed
+        frame, want +0.368); re-home anyway motor temperature not reported by this
+        drive: touch the motor STALL-GUARD FAIL: current rose again after the trip
+        (44.8 A, axis_state 8) (IDLE 167 ms after the first 40 A sample, peak 44.7
+        A, fault ?, bit3 set) "'
+      saved_at: 2026-11-22 22:31
+  8:
+    BUG-105:
+      notes: 'I got: " (venv) jetson:/home/jetson/Desktop/Jugglebot/ (main) $ python
+        tests/hardware/hand_stream_bench.py --stage triangle --tri-span 6 --tri-speed
+        20 --tri-cut down --top-stop 10.4 --close-loop hand baseline: pos=+0.5712
+        rev axis_state=1 active_errors=0 fault=NONE pre-bring-up tri-cut plan: the
+        down ramp of cycle 2, cut at stage t=1.050 s near +3.571 rev moving -20.00
+        rev/s; expected offset speed/pos_gain -0.571 rev; worst-case end +0.835 rev
+        hand bring-up: POSITION/PASSTHROUGH + gains → CLOSED_LOOP post-bring-up: axis_state=8
+        (CLOSED_LOOP=8) active_errors=0 pos=+0.5713 rev — the hand is ENERGISED and
+        holding tri-cut plan: the down ramp of cycle 2, cut at stage t=1.050 s near
+        +3.571 rev moving -20.00 rev/s; expected offset speed/pos_gain -0.571 rev;
+        worst-case end +0.835 rev ARM stage ''triangle'' for 30s? E-stop in hand.
+        [yes/NO] yes ARMED — streaming (hold thread sent 88 frames). triangle clock
+        starts at stage t=0.300 s (echo back on the start: the recovery slew handed
+        back) stage ''triangle'' done: max |cmd−(enc+vel·age)| = 0.3848 rev (12.53
+        mm) [belt 1.0714285714285714 rev] cachediag: 6 windows, 0 episode(s) past
+        -20, worst deficit 0.0 frames (row-21 recipe; clean baseline −3.6 ± 10.3)
+        tri-cut: down ramp, cycle 2, cut at stage t=1.075 s (planned 1.050 s). Nothing
+        was sent after this frame but the DISARMED heartbeat. last commanded (the
+        last frame sent): knot +3.0713 rev at -20.00 rev/s (its next knot +2.5713
+        rev) firmware''s last command to the ODrive (HAND_CMD_ECHO): input_pos +0.9713
+        rev, vel_ff +0.00 rev/s (the lane coasts on its own ladder until the disarm
+        lands) settled position: +0.9761 rev (mean of 50 telemetry samples, 1.0 to
+        2.0 s after the disarm); drift 0.0032 rev over that window offset vs the last
+        knot: -2.0953 rev (expected -0.5714 = speed/35 plus the lane''s coast to the
+        disarm) offset vs the firmware''s last command: +0.0047 rev (expected vel_ff/35
+        = +0.0000 rev) fault_state NONE; guard/latch: none; hand axis_state 8 csv:
+        /home/jetson/Desktop/Jugglebot/temp/logs/hand_stream_triangle_20261122_223621.csv
+        cachediag csv: /home/jetson/Desktop/Jugglebot/temp/logs/hand_stream_triangle_20261122_223621_cachediag.csv
+        " I then had to put the hand in IDLE with odrivetool to lower it between 0.3
+        and 077. Then I got: " (venv) jetson:/home/jetson/Desktop/Jugglebot/ (main)
+        $ python tests/hardware/hand_stream_bench.py --stage triangle --tri-span 4
+        --tri-speed 20 --tri-cut up --top-stop 10.4 --close-loop hand baseline: pos=+0.3917
+        rev axis_state=1 active_errors=0 fault=NONE pre-bring-up tri-cut plan: the
+        up ramp of cycle 2, cut at stage t=0.500 s near +2.392 rev moving +20.00 rev/s;
+        expected offset speed/pos_gain +0.571 rev; worst-case end +5.128 rev hand
+        bring-up: POSITION/PASSTHROUGH + gains → CLOSED_LOOP post-bring-up: axis_state=8
+        (CLOSED_LOOP=8) active_errors=0 pos=+0.3915 rev — the hand is ENERGISED and
+        holding tri-cut plan: the up ramp of cycle 2, cut at stage t=0.500 s near
+        +2.392 rev moving +20.00 rev/s; expected offset speed/pos_gain +0.571 rev;
+        worst-case end +5.128 rev ARM stage ''triangle'' for 30s? E-stop in hand.
+        [yes/NO] yes ARMED — streaming (hold thread sent 106 frames). triangle clock
+        starts at stage t=0.300 s (echo back on the start: the recovery slew handed
+        back) stage ''triangle'' done: max |cmd−(enc+vel·age)| = 0.3512 rev (11.44
+        mm) [belt 1.0714285714285714 rev] cachediag: 5 windows, 0 episode(s) past
+        -20, worst deficit 0.0 frames (row-21 recipe; clean baseline −3.6 ± 10.3)
+        tri-cut: up ramp, cycle 2, cut at stage t=0.500 s (planned 0.500 s). Nothing
+        was sent after this frame but the DISARMED heartbeat. last commanded (the
+        last frame sent): knot +2.3917 rev at +20.00 rev/s (its next knot +2.8917
+        rev) firmware''s last command to the ODrive (HAND_CMD_ECHO): input_pos +4.4917
+        rev, vel_ff +0.00 rev/s (the lane coasts on its own ladder until the disarm
+        lands) settled position: +4.4926 rev (mean of 50 telemetry samples, 1.0 to
+        2.0 s after the disarm); drift 0.0134 rev over that window offset vs the last
+        knot: +2.1009 rev (expected +0.5714 = speed/35 plus the lane''s coast to the
+        disarm) offset vs the firmware''s last command: +0.0009 rev (expected vel_ff/35
+        = +0.0000 rev) fault_state NONE; guard/latch: none; hand axis_state 8 csv:
+        /home/jetson/Desktop/Jugglebot/temp/logs/hand_stream_triangle_20261122_223818.csv
+        cachediag csv: /home/jetson/Desktop/Jugglebot/temp/logs/hand_stream_triangle_20261122_223818_cachediag.csv
+        "'
+      saved_at: 2026-11-22 22:38
