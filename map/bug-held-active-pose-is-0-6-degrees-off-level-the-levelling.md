@@ -2,9 +2,9 @@
 id: BUG-130
 kind: bug
 title: 'Held Active pose is 0.6 degrees off Level: the levelling correction reaches Jog targets but not the hold'
-status: inbox
+status: in_progress
 created: '2026-11-22'
-updated: '2026-11-22T10:51:31Z'
+updated: '2026-11-22T11:56:27Z'
 owners: []
 priority: medium
 hardware: none
@@ -21,3 +21,7 @@ Found at the Sitting of 2026-11-22 by the Platform IMU mount fit (IDEA-20). Afte
 The operator's working assumption (and the 2026-11-22 sheet's) was that the Active pose equals Level. Whether this is intended (the correction is applied only to planned motion) or a defect in the path that produces the held pose is not traced. If Patterns start from the uncorrected hold, the first move of every Attempt includes a 0.6 deg re-level.
 
 Evidence: temp/debrief/2026-11-22/mountfit.md (captures 20261122T100747Z_572D and 20261122T100946Z_572E, bag 2026-11-22_21-03-42); logbook 2026-11-22-sitting-debrief.
+
+## Progress
+
+- 2026-11-22: 2026-11-23: traced, designed behaviour, no code defect. ACTIVATE goes to the uncorrected neutral and the hold is encoder-seeded (levelling_frame.md C-LEVEL-1); every planned move is corrected, and an Attempt's pre-level REST re-levels (0.70 deg in 206 ms, profiled, on 2026-11-20). levelling_frame.md corrected. Open for the owner: a GUI not-Level indicator, or an automatic go_home after ACTIVATE.
