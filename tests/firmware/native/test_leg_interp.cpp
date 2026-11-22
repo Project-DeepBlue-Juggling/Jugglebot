@@ -2817,3 +2817,58 @@ TEST_CASE("BUG-105: no Hand record (never on the wire since output came on) mean
   CHECK(fake_sent_count() == 0);
   CHECK(interp_hold_flush_edges() == 0u);
 }
+
+// The logbook's "Residual, not addressed" (2026-11-23): if the Hand lane went
+// idle with output still enabled (s_hand_tx_prev false) while its last frame
+// on the wire carried a live vel_ff, a later suppress edge would find no record
+// and zero nothing. This case establishes what the lane actually does when its
+// stream stops with output enabled: it does NOT go idle. It runs the Hermite
+// segment out, Taylor-extrapolates MAX_EXTRAP_DT_S, decays vel_ff to 0 over
+// EXTRAP_DECAY_DT_S, and then keeps transmitting the decayed hold (vel_ff 0)
+// every tick, so the record stays live and the later edge still flushes. The
+// recovery slew, when the stream began on an enable edge, ends the same way:
+// it converges onto the hold and drops to vel_ff 0, still on the wire.
+// (By code reading, the only ways hand_wire falls while out_en is true are the
+// encoder-unseen skip, which needs pos_timestamp_us == 0 and so cannot recur
+// after the first axis-6 feedback frame, a cold-start move, refused while
+// mpc_active, and an absent axis, which cannot transmit at all. The lane latch
+// itself is cleared only on the arm edge, where out_en was false a tick ago.)
+TEST_CASE("BUG-105 residual: with output enabled a stopped Hand stream never idles; it decays vel_ff to 0 ON the wire, so the later edge still flushes") {
+  using namespace bug105;
+  LegFrame last[7], got[7];
+  stream_hand_and_leg0(last);                      // live vel_ff on the wire; NO further frames staged
+  // The lane's own wind-down is SEG_T + MAXEXT + DECAY (135 ms). This stream
+  // started on an output-enable edge, so the recovery slew still owns the wire
+  // command (vel_ff = the slew speed, <= RECOVER_SLEW_VEL_RPS) until it has
+  // caught the decayed hold; the first run of this case, at 135 ms + 80 ms,
+  // read the slew's 1.00 rev/s there. 1.5 s covers both.
+  const int ticks = (int)((SEG_T + MAXEXT + DECAY + 1.5f) / (INTERP_PERIOD_US * 1e-6f));
+  int16_t first_vel = 0, final_vel = 1;
+  int zero_run = 0;
+  for (int k = 0; k < ticks; ++k) {
+    write_pos_vel(hand_axis(), axes[HAND_AXIS].target_pos_rev, 0.0f, fake_mono_us());   // encoder follows: no lead clamp
+    fake_clear_sent(); interp_isr(); capture(got);
+    REQUIRE(got[HAND_AXIS].seen);                  // every tick: the lane never idles while armed
+    const int16_t v = vel_of(got[HAND_AXIS]);
+    if (k == 0) first_vel = v;
+    zero_run = (v == 0) ? zero_run + 1 : 0;
+    final_vel = v;
+    fake_advance(INTERP_PERIOD_US);
+  }
+  CHECK(first_vel != 0);                           // not vacuous: the stop began from a live vel_ff
+  CHECK(final_vel == 0);                           // the decay reached vel_ff 0 on the wire
+  CHECK(zero_run >= 20);                           // and the lane kept sending the vel_ff 0 hold
+  CHECK(interp_hand_lane_active());
+  CHECK(interp_hold_flush_edges() == 0u);          // no suppress edge yet
+  memcpy(last[HAND_AXIS].buf, got[HAND_AXIS].buf, 8);
+  // Now output drops: the record is live, so the edge still puts the hold out.
+  interp_set_output_enabled(false, false);
+  fake_clear_sent(); interp_isr(); capture(got);
+  REQUIRE(got[HAND_AXIS].seen);
+  CHECK(memcmp(got[HAND_AXIS].buf, last[HAND_AXIS].buf, 4) == 0);
+  CHECK(vel_of(got[HAND_AXIS]) == 0);
+  CHECK(interp_hold_flush_edges() == 1u);
+  fake_advance(INTERP_PERIOD_US);
+  fake_clear_sent(); interp_isr();
+  CHECK(fake_sent_count() == 0);
+}
