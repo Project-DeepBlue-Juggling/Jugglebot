@@ -1,3 +1,32 @@
+closed:
+  at: 2026-11-22 21:55
+  items:
+  - IDEA-20
+confirmed:
+  at: 2026-11-22 21:55
+  changed:
+  - IDEA-20
+derived:
+  15:
+    IDEA-20:
+      by: sitting-debrief 2026-11-22
+      criterion: 'Calibration: the Level and Tilt captures complete and CRC-checked,
+        and (computed at the debrief) the fitted mount rotation reproduces gravity
+        in the Platform frame within 1 degree at Level and both Tilts (owner-confirmed
+        2026-11-22). Armed uploads complete with CRC OK; at gap 80 fewer than 1000
+        duplicates and about 60 s or less; at gap 63 about 41 s; no bus-load counter
+        worse than the 2026-11-20 baseline. At 2 kHz i2c_errors and fifo_overflows
+        stay 0 through the Attempt, the capture is complete, and the board ends the
+        Sitting on 1 kHz.'
+      evidence: 'Owner flipped fail to pass 2026-11-22: the upload-speed clause moves
+        to IDEA-25 and the Home-hold Level window is accepted. Calibration: mount
+        fit reproduces gravity within 0.013 deg at Level, Rx +5 and Ry +5 (captures
+        572D, 572E, CRC ok; Level taken from the 6 s Home hold in 572E, the dedicated
+        Level capture was skipped). Armed uploads: gap 80 gave 59.7 s / 24 duplicates
+        and 63.3 s / 1694 duplicates (limit 1000); gap 63 gave 45.6 s for 21896 samples,
+        about 67 s for a full ring (target 41 s). 2 kHz: 0 i2c_errors, 0 fifo_overflows,
+        capture 5731 complete, board back on 1 kHz 21:16:23. Launch log temp/logs/launch_2026-11-22_1.log.'
+      verdict: pass
 schema: 2
 steps:
   1:

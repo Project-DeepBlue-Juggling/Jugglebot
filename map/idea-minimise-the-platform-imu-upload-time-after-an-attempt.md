@@ -2,9 +2,9 @@
 id: IDEA-25
 kind: idea
 title: Minimise the Platform IMU upload time after an Attempt
-status: backlog
+status: in_progress
 created: '2026-11-19'
-updated: '2026-11-21T00:22:15Z'
+updated: '2026-11-22T10:51:51Z'
 owners: []
 priority: low
 effort: m
@@ -50,3 +50,4 @@ Recommendation: 1 now (cheap, Jetson-only, attacks the measured 13 s of re-readi
 - 2026-11-20: Sitting 2026-11-20: Armed uploads took 79 s (ring) and 84 s (32 s span) against 56 s at rest, with 14651-19974 duplicate frames (158 at rest), up to 6 block timeouts, CAN1 at 74-77 %. A juggle goal was refused 7 s into a 37 s upload. Diagnosis in logbook 2026-11-20-sitting-debrief-robot-2.
 - 2026-11-21: 2026-11-21: Jetson-only hole-fill change landed (READs cover one cluster of holes, settle 5 ms); modelled 79 s to about 64 s Armed. To verify on the robot from the new upload-finished log line (logbook 2026-11-21-platform-imu-upload-hole-fill).
 - 2026-11-21: 2026-11-21: FW 13 flashed; at rest a whole-ring upload takes 52.6 s at gap 80 and 41.4 s at gap 63 with 0 duplicates (56.25 s and 158 on FW 12); 250 of 263 READs chained. Armed check and the 1600 frames/s trial are on IDEA-20's Sitting row (logbook 2026-11-21-platform-imu-fw13-chaining-pacing-2khz).
+- 2026-11-22: Sitting 2026-11-22, FW 13 Armed: whole ring 59.7 s (24 duplicates) and 63.3 s (1694) against 79 to 84 s on 2026-11-20. Gap 63 gave no gain per sample (2.08 ms against 1.87 to 1.98): lost frames and refills ate it. 2 kHz Attempt upload 71.7 s, 723 lost frames against 5 at rest. Why duplicates vary 24 to 1694 is unexplained.
