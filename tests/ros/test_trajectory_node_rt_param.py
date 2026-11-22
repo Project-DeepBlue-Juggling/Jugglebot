@@ -117,7 +117,7 @@ def test_gc_probe_param_off_installs_nothing_on_installs_hook(monkeypatch):
         assert node._gc_probe is not None and node._gc_probe.installed
         assert len(gc.callbacks) == n0 + 1
         lines = []
-        node.get_logger().info = lambda m, *a, **k: lines.append(str(m))
+        node.get_logger().debug = lambda m, *a, **k: lines.append(str(m))
         node._gc_probe_tick()
         assert lines and lines[0].startswith('GC_PROBE trajectory_node ')
     finally:

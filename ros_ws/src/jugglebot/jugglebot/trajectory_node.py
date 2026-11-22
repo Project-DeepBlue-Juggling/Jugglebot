@@ -5533,7 +5533,9 @@ class TrajectoryNode(Node):
         s = self._gc_probe.summary()
         line = _gc_probe_mod.format_summary('trajectory_node', s,
                                             self._gc_probe.state())
-        self.get_logger().info(line)
+        # DEBUG: recorded in launch.log and the bag's /rosout, hidden on the operator's
+        # screen (owner, 2026-11-22). A pause over WARN_PAUSE_MS still prints as a WARN.
+        self.get_logger().debug(line)
         if s['max_ms'] > _gc_probe_mod.WARN_PAUSE_MS:
             self.get_logger().warning(line)
 
