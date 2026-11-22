@@ -422,8 +422,15 @@ new offset landed.
 These are correct behaviour, and each has been mistaken for a fault before.
 
 - **The resting platform sits ~0.78° off its own frame.** After levelling it is
-  level with respect to *gravity*, at all times, including at rest and at
-  `go_home`. Total tilt for the 2026-07-25 offset: **0.78185°**.
+  level with respect to *gravity* at `go_home` and at rest after any planned
+  move. Total tilt for the 2026-07-25 offset: **0.78185°**.
+- **The Active pose held straight after ACTIVATE is NOT Level.** ACTIVATE goes
+  to the uncorrected neutral (next bullet) and the hold is seeded from the
+  measured encoders, which C-LEVEL-1 forbids correcting. The Platform becomes
+  Level at its first planned move: `go_home`, a Jog target, or an Attempt's
+  pre-level REST. Measured 2026-11-22: the hold sat 0.60° from Level (Mocap
+  0.61°, Platform IMU 0.598°; BUG-130). A capture or measurement that needs
+  Level must follow one of those moves.
 - **The first `go_home` after `level` is a real move, not a no-op.** ACTIVATE
   TRAP_TRAJs the legs to `JB_OP_ACTIVATE_POSITION_REVS`, the IK of the
   *uncorrected* neutral, so `go_home` to the *corrected* neutral moves the legs
