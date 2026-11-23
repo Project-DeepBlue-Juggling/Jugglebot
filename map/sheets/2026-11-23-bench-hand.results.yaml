@@ -1,0 +1,61 @@
+schema: 2
+steps:
+  1:
+    comments: ''
+    saved_at: 2026-11-23 10:43
+    status: done
+  2:
+    comments: ''
+    saved_at: 2026-11-23 10:44
+    status: done
+  3:
+    comments: ''
+    saved_at: 2026-11-23 10:45
+    status: done
+  4:
+    comments: ''
+    saved_at: 2026-11-23 10:46
+    status: done
+  7:
+    comments: ''
+    saved_at: 2026-11-23 10:51
+    status: done
+  8:
+    comments: ''
+    saved_at: 2026-11-23 10:51
+    status: done
+verdicts:
+  5:
+    BUG-105:
+      notes: 'Ran three cuts. All had ''disarm landed on a live feedforward: yes''.'
+      saved_at: 2026-11-23 10:48
+  6:
+    BUG-131:
+      notes: 'This is what I got: " (venv) jetson:/home/jetson/Desktop/Jugglebot/
+        (night-shift/2026-11-23-BUG-105) $ python tests/hardware/hand_stream_bench.py
+        --stage stall [10:48:52] hand baseline: pos=+0.3695 rev axis_state=? active_errors=?
+        fault=NONE note: this drive reports no motor temperature; FET 30.0 C was checked
+        instead. Your hand on the motor is the motor check: it must be cool. stall
+        plan: firmware 49, Hand IDLE at +0.369 rev, motor temperature not reported;
+        limit 70.0 -> 45.0 A (vel_limit 1000 kept); frame shift +0.650 rev; ramp at
+        1.00 rev/s to homed -0.60 rev, 0.50 rev past the stop ARM stall: push the
+        Hand into the bottom stop at 45 A until the guard IDLEs it. Cup empty, E-stop
+        in hand. [yes/NO] yes current limit lowered: drive reads 45.0 A over USB frame
+        shifted +0.650 rev: the stop now reads +0.550 hand bring-up (stall): POSITION/PASSTHROUGH
+        + gains -> CLOSED_LOOP ARMED: ramp +1.019 -> +0.050 rev (lane frame) over
+        1.22 s trip seen at t=1.168 s (bit3, axis IDLE); first 40 A at 0.979 s HAND_MOVE_TO
+        while latched: refused: ERR_BUS_DOWN current limit restore: sent 70.0 A, drive
+        reads 70.0 A over USB -> OK encoder frame restored: Hand reads +0.440 rev
+        (homed frame, want +0.440); re-home anyway motor temperature not reported
+        by this drive: touch the motor STALL-GUARD FAIL: current did not collapse
+        within 250 ms of the trip (44.9 A, axis_state 1) (IDLE 190 ms after the first
+        40 A sample, peak 45.0 A, fault HAND_STALL, bit3 set) (venv) jetson:/home/jetson/Desktop/Jugglebot/
+        (night-shift/2026-11-23-BUG-105) $ python tests/hardware/hand_stream_bench.py
+        --clear-errors [10:49:17] hand baseline: pos=+0.4405 rev axis_state=? active_errors=?
+        fault=HAND_STALL CLEAR_ERRORS OK — fault_state NONE. (venv) jetson:/home/jetson/Desktop/Jugglebot/
+        (night-shift/2026-11-23-BUG-105) $ python tests/hardware/hand_stream_bench.py
+        --stage stall [10:49:48] hand baseline: pos=+0.4405 rev axis_state=? active_errors=?
+        fault=HAND_STALL ABORT: stall stage refused (nothing was commanded): - fault_state=HAND_STALL,
+        need NONE (run --clear-errors) " Looks like flashing is necessary to clear
+        the error'
+      saved_at: 2026-11-23 10:50

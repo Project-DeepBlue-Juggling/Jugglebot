@@ -2,9 +2,9 @@
 id: BUG-131
 kind: bug
 title: 'Hand stall guard residue: a stale idle-pending flag, and the latch clear and the stage PASS line never flown'
-status: inbox
+status: in_progress
 created: '2026-11-22'
-updated: '2026-11-22T12:12:59Z'
+updated: '2026-11-22T23:25:46Z'
 owners: []
 priority: low
 effort: s
@@ -33,12 +33,17 @@ Three things left over from BUG-123 (firmware 48, merged 2026-11-22).
 ## Sitting
 
 - setup: bridge-cycled
-- why: one stall run on main's firmware 48 answers items 2 and 3 together.
+- why: one stall run answers items 2 and 3 together. Item 1 is fixed in firmware 49 on BUG-105's branch (commit 0f757c5b), so this row flies on that build and lands with it.
 - do:
-  - Launch down. Bench Hand on the bridge, Hand homed and parked between 0.3 and 0.7 rev, Cup empty, E-stop in hand, motor cool to the touch.
+  - Launch down, the bridge on firmware 49 from the branch below. Bench Hand on the bridge, Hand homed and parked between 0.3 and 0.7 rev, Cup empty, E-stop in hand, motor cool to the touch.
   - From the repo root in the venv: `python tests/hardware/hand_stream_bench.py --stage stall`. Type yes at the prompt. Expect a "current collapsed" line and a STALL-GUARD PASS line.
   - Then `python tests/hardware/hand_stream_bench.py --clear-errors`. Expect "CLEAR_ERRORS OK". Do not reflash.
   - Home the Hand again before anything else.
 - pass: the stage prints STALL-GUARD PASS with the collapse inside 250 ms, and `--clear-errors` alone returns the fault state to NONE.
 - record: the stage output from "stall plan" to the verdict line, and the clear-errors line.
 - minutes: 10
+- branch: night-shift/2026-11-23-BUG-105
+
+## Progress
+
+- 2026-11-23: Item 1 fixed in firmware 49 on BUG-105's branch (0f757c5b, with a native test); items 2 and 3 fly on that build at the next bench-hand Sitting.

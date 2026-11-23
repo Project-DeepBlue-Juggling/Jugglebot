@@ -2,9 +2,9 @@
 id: TKT-92
 kind: ticket
 title: 'After ACTIVATE the Platform holds 0.6 degrees off Level by design: leave it, add a GUI not-Level indicator, go_home automatically, or land ACTIVATE on Level?'
-status: open
+status: complete
 created: '2026-11-23'
-updated: '2026-11-22T15:50:57Z'
+updated: '2026-11-22T22:51:50Z'
 owners: []
 priority: medium
 effort: xs
@@ -28,3 +28,7 @@ After ACTIVATE the Platform holds the uncorrected neutral, 0.6 degrees off Level
 Answer 1 closes BUG-130. Answer 2 lets the next night build the indicator and merge it if the gate says MERGE. Answer 3 gets a held branch and a Sitting row. Answer 4 goes to a day Session.
 
 Recommendation: 2, and 3 as well if Level should be the default state after ACTIVATE.
+
+## Answer
+
+I lean Option 4. The Platform should raise into an already-level Active pose
