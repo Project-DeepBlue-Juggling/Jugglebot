@@ -1,0 +1,252 @@
+schema: 1
+date: '2026-11-23'
+rig: robot
+omitted:
+- item: BUG-111
+  reason: owner flies only IDEA-20 and IDEA-25 at this Sitting
+- item: BUG-122
+  reason: owner flies only IDEA-20 and IDEA-25 at this Sitting
+- item: BUG-58
+  reason: owner flies only IDEA-20 and IDEA-25 at this Sitting
+- item: BUG-78
+  reason: owner flies only IDEA-20 and IDEA-25 at this Sitting
+- item: BUG-89
+  reason: owner flies only IDEA-20 and IDEA-25 at this Sitting
+- item: FEAT-32
+  reason: owner flies only IDEA-20 and IDEA-25 at this Sitting
+- item: FEAT-39
+  reason: owner flies only IDEA-20 and IDEA-25 at this Sitting
+- item: FEAT-49
+  reason: owner flies only IDEA-20 and IDEA-25 at this Sitting
+- item: FEAT-50
+  reason: owner flies only IDEA-20 and IDEA-25 at this Sitting
+- item: IDEA-16
+  reason: owner flies only IDEA-20 and IDEA-25 at this Sitting
+steps:
+- n: 1
+  kind: setup
+  title: Check the checkout is on main and in sync
+  from: []
+  to: []
+  actions:
+  - where: Terminal 2
+    command: cd ~/Desktop/Jugglebot && git fetch && git status -sb && git log --oneline -1
+  see: '''## main...origin/main'' with nothing ahead or behind. temp/learn/ entries showing as untracked are expected.'
+  stop_if: The branch is not main, or it is ahead of or behind origin/main. Do not go on; tell a Session.
+  serves: []
+- n: 2
+  kind: run
+  title: Launch (main); nothing to flash
+  new_launch: true
+  from: []
+  to: &id001
+  - launched
+  actions:
+  - where: Hands
+    text: Cup empty, Ball Butler off. Drive power ON (48 V) and the E-stop button released.
+  - where: Terminal 1
+    command: cd ~/Desktop/Jugglebot/ros_ws && source /opt/ros/foxy/setup.zsh && source install/setup.zsh && ros2 launch jugglebot jugglebot_launch.py cpu_partition:=false 2>&1 | tee -i ~/Desktop/Jugglebot/temp/logs/launch_2026-11-23_1.log
+  - where: Hands
+    text: Wait for Homing to finish before the next step.
+  - where: Terminal 2
+    command: source /opt/ros/foxy/setup.zsh && source ~/Desktop/Jugglebot/ros_ws/install/setup.zsh && cd ~/Desktop/Jugglebot
+    text: 'Terminal 2 for every later command: source it once now.'
+  see: 'BRIDGE_FW_CHECK: OK - can-bridge v49. PLATFORM_FW_CHECK: OK - Platform Teensy v14 (flashed 2026-11-23). ''stall watchdog on''. homing: 7 axes homed. The GUI IMU panel reads ''recording''. The GC_PROBE lines no longer appear on screen.'
+  stop_if: Either firmware check is not OK, fewer than 7 axes homed, or a node dies or logs a start-up error you have not seen before. Ctrl-C the launch and tell a Session.
+  record: The bag directory (the newest folder under ~/Desktop/rosbags).
+  serves:
+  - item: IDEA-20
+    do:
+    - 0
+- n: 3
+  kind: run
+  title: Level the Platform, then rehearse the Attempt (nothing moves)
+  from: *id001
+  to: &id002
+  - launched
+  - level
+  actions:
+  - where: GUI
+    text: 'State minimap: hold LEVELLING to confirm. The Platform rises to full Active height.'
+  - where: Terminal 2
+    command: grep -n "levelled:" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-23_1.log
+  - where: Terminal 2
+    command: 'ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: ''oval_1ball_fed,apex_m=1.00,separation_mm=150.0,dwell_s=0.50''}"'
+    text: One-ball oval, the settings flown on 2026-11-22.
+  see: 'LEVELLING finishes with no Fault and the grep prints one ''levelled: ...'' line. The nominate reply reads success: True with no refusal line and nothing moves.'
+  stop_if: 'Any Fault or the Platform ends visibly not level: hold IDLE, Ctrl-C the launch and tell a Session. A nominate reply with success: False is not a stop: note it word for word, do steps 4 to 6, then skip to step 11.'
+  serves:
+  - item: IDEA-20
+    do:
+    - 1
+- n: 4
+  kind: setup
+  title: Activate (this arms) and hold the Active pose
+  from: *id002
+  to: &id003
+  - launched
+  - level
+  - armed
+  actions:
+  - where: GUI
+    text: 'State minimap: hold ACTIVE:TRAJECTORY to confirm. The launch''s auto_arm arms on entry. Cup empty, Ball Butler off.'
+  - where: GUI
+    text: 'IMU panel: "Upload IMU data after each Attempt" is ticked (default ON); tick it if not.'
+  see: Mode ACTIVE:TRAJECTORY, Armed, no Fault.
+  stop_if: 'Any refusal or Fault on activation (clear it as you usually do; if it will not clear, go to step 11). After any Hand MISSING_ESTIMATE or E-stop button press the Hand must be re-homed before it moves again (BUG-122): stop flying, do step 10 if the plant was changed, then step 11, and tell a Session.'
+  serves: []
+- n: 5
+  kind: run
+  title: Whole-ring upload Armed at the default pace (about 2 minutes)
+  from: *id003
+  to: *id003
+  actions:
+  - where: Hands
+    text: Leave the robot untouched for 40 s by the clock (the ring holds 32 s).
+  - where: Terminal 2
+    command: 'ros2 service call /platform_imu/upload jugglebot_interfaces/srv/SetString "{data: \"{}\"}"'
+    text: Mode buttons are refused until the upload finishes.
+  - where: GUI
+    text: 'IMU panel: ''uploading ...'', then ''recording'' again. Wait for it.'
+  - where: Terminal 2
+    command: grep -n "Platform IMU upload finished" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-23_1.log | tail -1
+  see: 'The grep line carries a clock time within the last minute or two, reads ''32000 samples'', and ends ''complete yes'' with ''crc ok''. The seconds figure straight after the sample count is the upload time: target 57 s or less (2026-11-22: 60 to 63 s).'
+  stop_if: 'A slow upload is a result, not a stop: note the line. If the guard latches SETPOINT_STALE at any command here (BUG-129, seen once on 2026-11-22): nothing is broken. Clear errors as you usually do, hold ACTIVE:TRAJECTORY again as in step 4, wait 40 s, and repeat only the upload call; the launch log names a stall file for the debrief.'
+  serves:
+  - item: IDEA-25
+    do:
+    - 0
+- n: 6
+  kind: run
+  title: Whole-ring upload Armed at the faster pace, then put the pace back
+  from: *id003
+  to: *id003
+  actions:
+  - where: Terminal 2
+    command: ros2 param set /teensy_bridge_node imu_read_gap_10us 63
+  - where: Hands
+    text: Leave the robot untouched until 40 s have passed since the last upload ended.
+  - where: Terminal 2
+    command: 'ros2 service call /platform_imu/upload jugglebot_interfaces/srv/SetString "{data: \"{}\"}"'
+  - where: GUI
+    text: 'IMU panel: wait for ''recording''.'
+  - where: Terminal 2
+    command: grep -n "Platform IMU upload finished" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-23_1.log | tail -1
+  - where: Terminal 2
+    command: ros2 param set /teensy_bridge_node imu_read_gap_10us 80
+    text: Put the pace back.
+  - where: Terminal 2
+    command: ros2 param get /teensy_bridge_node imu_read_gap_10us
+  see: 'The grep line carries a fresh clock time, reads ''32000 samples'' and ends ''complete yes'' with ''crc ok''. The seconds figure after the sample count is the upload time: target 48 s or less. The final read prints 80.'
+  stop_if: 'The final read is not 80: send the set again; if it still is not 80, note it and carry on (every launch starts at 80). Anything odd in Leg behaviour during the upload: hold IDLE and go to step 11. If the guard latches SETPOINT_STALE at any command here (BUG-129, seen once on 2026-11-22): nothing is broken. Clear errors as you usually do, hold ACTIVE:TRAJECTORY again as in step 4, wait 40 s, and repeat only the upload call; the launch log names a stall file for the debrief.'
+  record: 'Nothing to type: the times are in the launch log and the verdict is computed at the debrief (type ''pending'' if asked).'
+  serves:
+  - item: IDEA-25
+    do:
+    - 1
+    - 2
+    pass: true
+- n: 7
+  kind: setup
+  title: Bring up Ball Butler
+  from: *id003
+  to: &id004
+  - launched
+  - level
+  - armed
+  - bb-fed
+  actions:
+  - where: Hands
+    text: Power Ball Butler, calibrate it as you usually do, and load it. Cup empty. One short Attempt follows; the Hand motor is heat-damaged (BUG-123), so if the Hand feels or sounds wrong skip to step 11. Reach into the Cup only when the Platform holds still in the Active pose.
+  see: Ball Butler powered and holding a ball. Mode still ACTIVE:TRAJECTORY, Armed, no Fault.
+  stop_if: 'Any refusal or Fault (clear it as you usually do; if it will not clear, go to step 11). After any Hand MISSING_ESTIMATE or E-stop button press the Hand must be re-homed before it moves again (BUG-122): stop flying, do step 10 if the plant was changed, then step 11, and tell a Session.'
+  serves: []
+- n: 8
+  kind: run
+  title: Give the Attempt a plant of its own
+  from: *id004
+  to: *id004
+  actions:
+  - where: Terminal 2
+    command: ros2 param get /skill_node plant_id
+    text: First read what the plant is now.
+  - where: Terminal 2
+    command: ros2 param set /skill_node plant_id imu-oval-2026-11-23
+    text: Keeps this Attempt out of the Columns Memory.
+  - where: Terminal 2
+    command: ros2 param get /skill_node plant_id
+  see: The first read prints jugglebot. After the set it reads imu-oval-2026-11-23.
+  stop_if: 'The first read is not jugglebot: go to step 11 and tell a Session. The read-back is not imu-oval-2026-11-23: do not fly; go to step 10. ''Wait for service timed out'' means run the same command once more.'
+  serves:
+  - item: IDEA-20
+    do:
+    - 2
+- n: 9
+  kind: run
+  title: One oval Attempt (8 Throws); the upload starts by itself
+  from: *id004
+  to: *id004
+  actions:
+  - where: Hands
+    text: Cup empty, Ball Butler loaded. Note the wall-clock time.
+  - where: Terminal 2
+    command: 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.50, num_cycles: 8}" --feedback'
+    text: The goal holds Terminal 2 until it reports its outcome; Ctrl-C there cancels the Attempt.
+  - where: GUI
+    text: 'IMU panel: ''uploading ...'' when the Attempt ends, then ''recording''. Wait for it.'
+  - where: Hands
+    text: Empty the Cup while the Platform holds still.
+  - where: Terminal 2
+    command: grep -n "Platform IMU upload finished" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-23_1.log | tail -1
+  see: The outcome reads COMPLETED. The grep line carries a fresh clock time, starts 'Platform IMU upload finished (attempt' and ends 'complete yes, crc ok (chunks)'.
+  stop_if: 'An outcome other than COMPLETED: note it word for word; you may fly the goal once more if the Hand and Platform looked normal, otherwise go to step 10. A jerky Platform, a wrong-looking Hand stroke or a Leg base joint moving: Ctrl-C the goal, go to step 10. The line says ''crc not checked'' or names chunks that failed: note it, that is the result. After any Hand MISSING_ESTIMATE or E-stop button press the Hand must be re-homed before it moves again (BUG-122): stop flying, do step 10 if the plant was changed, then step 11, and tell a Session.'
+  record: Attempt start time, caught count. Nothing to type for the verdict (type 'pending' if asked).
+  serves:
+  - item: IDEA-20
+    do:
+    - 3
+    pass: true
+- n: 10
+  kind: restore
+  title: Put the plant back
+  from: *id004
+  to: *id004
+  actions:
+  - where: GUI
+    text: 'IMU panel: if it reads ''uploading'', wait for ''recording'' first (a parameter set can be refused during an upload).'
+  - where: Terminal 2
+    command: ros2 param set /skill_node plant_id jugglebot
+  - where: Terminal 2
+    command: ros2 param get /skill_node plant_id
+  see: plant_id reads jugglebot.
+  stop_if: 'It does not read jugglebot: send the set again; if it still does not, go to step 11 and tell a Session (every launch starts at jugglebot).'
+  serves:
+  - item: IDEA-20
+    do:
+    - 4
+- n: 11
+  kind: restore
+  title: Stand down
+  from: *id004
+  to: []
+  actions:
+  - where: GUI
+    text: 'State minimap: hold IDLE to confirm (safe teardown, disarms). If an IMU upload is still running, Deactivate always goes through and aborts it.'
+  - where: Terminal 1
+    text: Ctrl-C the launch and wait for the shell prompt.
+  - where: Hands
+    text: Empty the Cup. Unload and power down Ball Butler. Nothing was flashed, the IMU capture rate was never changed (1 kHz), and the read pace is back at 80 at the next launch whatever it was left at.
+  see: The Platform is at Stow and every axis Idle before the Ctrl-C. The bag closes.
+  stop_if: A Fault blocks the teardown; clear it as you usually do before the Ctrl-C.
+  serves: []
+- n: 12
+  kind: restore
+  title: Close out
+  from: []
+  to: []
+  actions:
+  - where: Claude Session
+    text: In a Session in the live checkout, run /sitting-debrief 2026-11-23. It reads the captures under temp/imu_capture, the launch log and any stall file under temp/logs.
+  see: The debrief starts its inventory.
+  stop_if: Nothing here stops anything.
+  serves: []

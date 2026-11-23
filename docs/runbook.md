@@ -6,7 +6,7 @@ waiting Items: the order a Sitting flies in, and every step, is on its Sitting s
 
 Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
-## Robot  (11 Items, 335 min)
+## Robot  (12 Items, 310 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
@@ -20,7 +20,8 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | FEAT-49 Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault | 60 | armed | - | - |
 | FEAT-50 Live warning when a marker dwells under the Hand | 10 | armed | `night-shift/2026-11-14-FEAT-50` | - |
 | IDEA-16 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them | 10 | level | - | - |
-| IDEA-20 Platform Accelerometer? | 50 | level, armed, bb-fed | - | - |
+| IDEA-20 Platform Accelerometer? | 15 | level, armed, bb-fed | - | 2026-11-23-robot |
+| IDEA-25 Minimise the Platform IMU upload time after an Attempt | 10 | level, armed | - | 2026-11-23-robot |
 
 ## Bench leg  (1 Item, 30 min)
 
@@ -68,7 +69,6 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - IDEA-17 [Robot] Hand end-of-stroke bumper, and first the planner's own brake shape: let the ceiling, not the Hand, cap the Apex: no ## Sitting section
 - IDEA-18 [Robot] Learner context cannot tell a Throw from rest from a carried Throw: no ## Sitting section
 - IDEA-23 [Robot] seed a fresh plant K from the trained plant: no ## Sitting section
-- IDEA-25 [Robot] Minimise the Platform IMU upload time after an Attempt: no ## Sitting section
 
 ## Questions a Sitting can answer
 
