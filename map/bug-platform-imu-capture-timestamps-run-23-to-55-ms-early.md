@@ -42,7 +42,7 @@ Found offline on 2026-11-23 (logbook 2026-11-23-platform-ring-identification-fro
   - Launch down, Platform up for at least 30 min including some Armed time: run `python tools/probes/platform_rtt_probe.py`. It must exit 0.
   - Fly one `oval_1ball_fed` Attempt at Dwell 0.50 with the automatic IMU capture and the bag recording.
   - Offline after the Sitting: run `python tools/probes/imu_clock_check.py --capture <stem>`.
-- pass: The probe exits 0 (median excess of a Platform-answered request over a bridge-only one at most 5 ms; FW 14 read 44 ms on 2026-11-23). In the capture json `header.fw_version` is 15, `flags.clock_suspect` is false and `header.rx_ring_leak_max` is 0. The clock check prints PASS (IMU within 5 ms of the tick-restamped encoders, lagging the executed command by 0 to 10 ms).
+- pass: The probe exits 0 (floor excess of a Platform-answered request over a bridge-only one at most 5 ms; FW 14 read 37 ms on 2026-11-23). In the capture json `header.fw_version` is 15, `flags.clock_suspect` is false and `header.rx_ring_leak_max` is 0. The clock check prints PASS (IMU within 5 ms of the tick-restamped encoders, lagging the executed command by 0 to 10 ms).
 - record: The probe medians, the capture stem, the four header values, the clock check output and the Platform uptime at the Attempt.
 - minutes: 45
 

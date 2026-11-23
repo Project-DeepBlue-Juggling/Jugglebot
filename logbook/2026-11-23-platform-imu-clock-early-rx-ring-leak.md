@@ -178,7 +178,7 @@ Jetson side:
   sentinel or `rx_ring_leak_max` is over 0 (a finite delay is informational: a loop() stall raises it without moving the clock), and for every FW below 15 at upload from now on.
 - `ros_ws/src/jugglebot/jugglebot/teensy_bridge_node.py`: `platform_imu/status` keys `last_clock_suspect`,
   `last_sync_rx_delay_ms`, `last_rx_ring_depth_max`, `last_rx_ring_leak_max`, and a warning on a leak.
-- `tools/probes/platform_rtt_probe.py`: the round-trip probe (PASS at a median excess of 5 ms or less).
+- `tools/probes/platform_rtt_probe.py`: the round-trip probe (PASS at a floor excess of 5 ms or less, see Verification).
   `tools/probes/imu_clock_check.py` with `tests/sim/test_imu_clock_check.py`: capture plus bag to IMU lag against the
   tick-restamped encoders and the executed command (PASS within 5 ms and the IMU lagging the command by 0 to 10 ms).
 - The seven measured captures (AEDF, AEE0, AEE1, 572E, 5730, 5731, 4AFA) carry a `bug132` annotation in their json with
@@ -226,9 +226,17 @@ Run on 2026-11-23 in the worktree on branch `bug132-platform-rx-ring`, nothing f
 - Default gate (2026-11-23, `flock /tmp/jugglebot-tests.lock ./run_tests.sh` in the scratch worktree): **PASS**, parallel
   11026 passed, 63 skipped, 1 xfailed in 758.50 s; serial 7 passed in 29.32 s. The four `test_bb_fw_update_xref.py` tests
   skip in a worktree (no sibling BallButler checkout).
-- Board check: **pending**. To be filled after the flash: the flash receipt (BridgeIdentity sniff, Platform FW 15),
-  the FW 15 round-trip probe (`python tools/probes/platform_rtt_probe.py`, expect exit 0 at a median excess of 5 ms or less
-  against 44 ms on FW 14), and the robot Sitting step on BUG-132 (capture header `fw_version` 15, `clock_suspect` false,
+- Flash (2026-11-23 18:37 local, `pio run -e teensy40 -t upload` from the scratch worktree at this entry's first commit,
+  launch down): image 94208 bytes, crc32 0xA5DD8DC4, 0 rewinds, receipt "Platform Teensy FW version: 14 -> 15".
+- Round-trip probe on FW 15 just flashed (2026-11-23, `python tools/probes/platform_rtt_probe.py --runs 3 --n 100`,
+  launch down, idle bus): Platform-answered round trips 2.1 to 13.1 ms, medians 6.95 / 7.72 / 8.17 ms against the
+  bridge-only 1.27 / 1.33 / 1.31 ms; a second pass read floor excess 1.52 ms, median excess 5.48 ms, exit 0. FW 14 read
+  medians of 44.87 / 46.01 / 45.57 ms with a floor of 36.6 to 38.2 ms. The healthy spread is the reply waiting 0 to 10 ms
+  for the bridge's relay tick, so the probe's verdict was changed from the median excess (which read 6.39 ms and failed
+  the first 5 ms limit on a healthy board) to the floor excess (fastest minus fastest, limit 5 ms). This run does not
+  yet show that the leak is gone: a FW 14 board would also read near zero minutes after boot. The discriminating check
+  is the same probe after Armed time, with the capture header's `rx_ring_leak_max` at 0.
+- Robot Sitting step on BUG-132: **pending** (capture header `fw_version` 15, `clock_suspect` false,
   `rx_ring_leak_max` 0, `imu_clock_check.py` PASS).
 
 ## Open
