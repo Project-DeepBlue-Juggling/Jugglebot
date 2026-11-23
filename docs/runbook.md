@@ -28,13 +28,6 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | --- | ---: | --- | --- | --- |
 | BUG-19 Hand ODrive state can silently diverge from what the can-bridge commanded | 30 | bridge-cycled | - | - |
 
-## Bench hand  (2 Items, 20 min)
-
-| Item | Minutes | Setup | Branch | On a sheet |
-| --- | ---: | --- | --- | --- |
-| BUG-105 Hand keeps its last velocity feedforward on a Soft E-stop, disarm or link loss and stays in Closed-loop | 10 | armed, bridge-cycled | `night-shift/2026-11-23-BUG-105` | - |
-| BUG-131 Hand stall guard residue: a stale idle-pending flag, and the latch clear and the stage PASS line never flown | 10 | bridge-cycled | `night-shift/2026-11-23-BUG-105` | - |
-
 ## Needs a Sitting section
 
 - BUG-112 [Robot] /robot_state rate drops to 80-89 Hz during Attempts and drifts down over a launch: no ## Sitting section

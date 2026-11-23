@@ -2,9 +2,9 @@
 id: BUG-105
 kind: bug
 title: Hand keeps its last velocity feedforward on a Soft E-stop, disarm or link loss and stays in Closed-loop
-status: in_progress
+status: complete
 created: '2026-11-14'
-updated: '2026-11-23T00:21:22Z'
+updated: '2026-11-23T02:52:50Z'
 owners:
 - night-shift
 priority: high
@@ -18,6 +18,8 @@ blocked_by: []
 links:
 - bug-motor-fb-stale-suppression-leaves-the-odrive-holding-its
 - bug-can-bridge-fatal-can-silence-check-wraps-when-a-frame-is
+- logbook/2026-11-23-sitting-debrief-bench-hand-2.md
+- logbook/2026-11-23-hand-vel-ff-zeroed-on-every-suppress-edge.md
 filed_by: claude
 ---
 
@@ -96,6 +98,12 @@ The property is not new: `tests/hardware/hand_stream_bench.py:150` and the 2026-
 - derived, continued: Three 10 rev/s upward cuts on firmware 49 with the disarm sent at the cut (temp/logs/hand_stream_triangle_20261123_104633.csv, _104746.csv, _104809.csv), all 'disarm landed on a live feedforward: yes'.
 - derived, continued: Settled offset against the firmware's last command: -0.0042, -0.0008 and -0.0003 rev, where main's build would have left +0.2766, +0.2857 and +0.2857. Owner: a clean, sharper stop.
 
+## Sitting result (2026-11-23 13:31)
+
+- verdict: pass
+- notes: owner: Worked! The pasted stage output is in the sheet's results file. (sheet 2026-11-23-bench-hand-2, step 6)
+- derived: temp/logs/hand_stream_triangle_20261123_132712_tricut.txt, firmware 49 at 5e96a0fb: disarm landed on a live feedforward: yes (echo vel_ff +10.00 rev/s); settled +0.0011 rev from the firmware's last command, where +0.2857 was the uncured offset; drift 0.0005 rev; fault_state NONE, no guard or latch.
+
 ## Progress
 
 - 2026-11-21: Not flown at the bench Sitting of 2026-11-20: every triangle run aborted on the tool's 0.5 rev belt within 50 ms. Cause: the firmware's arm-edge recovery slew (1 rev/s cap) cannot follow a ramp that starts at the arm. Fix held on night-shift/2026-11-21-BUG-105 (0bcea663); it also widens the belt to 0.5 + speed/35, which waits for the owner.
@@ -105,3 +113,4 @@ The property is not new: `tests/hardware/hand_stream_bench.py:150` and the 2026-
 - 2026-11-23: Night Shift 2026-11-23: cure built as can-bridge FW 49, held on night-shift/2026-11-23-BUG-105: (b) 2 test gaps, (c), (f) firmware; unblocked by a day Session flash, then the bench-Hand cut
 - 2026-11-23: Day Session 2026-11-23: the held branch (c212f086) gained the two tests the night's audit asked for (a Hand stream through a real Soft E-stop and HAND_STALL latch; the lane's feedforward is 0 before it idles), BUG-131's stale-flag fix, and a stage flag that disarms at the cut. Gate green on the branch. Ready for the bench.
 - 2026-11-23: Passed at the Sitting of 2026-11-23: three 10 rev/s cuts with a live feedforward settled -0.004, -0.001 and -0.000 rev from the firmware's last command (0.28 on main's build); a clean, sharper stop. Not merged: the branch now also carries BUG-131's guard fix, which is unflown. One confirming cut rides the next bench sheet, then the branch merges by hand.
+- 2026-11-23: Passed at the Sitting of 2026-11-23 (second sheet): on the final firmware 49 a live 10 rev/s cut settled +0.0011 rev from the firmware's last command (0.2857 uncured), drift 0.0005 rev. Merged by hand as 2c28bcd3 and flashed to the bridge.

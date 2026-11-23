@@ -1,3 +1,36 @@
+closed:
+  at: 2026-11-23 13:31
+  items:
+  - BUG-105
+  - BUG-131
+confirmed:
+  at: 2026-11-23 13:31
+  changed: []
+derived:
+  5:
+    BUG-131:
+      by: sitting-debrief 2026-11-23
+      criterion: the stage prints STALL-GUARD PASS, the first `--clear-errors` ends
+        OK, and the second one's baseline line reads `fault=NONE` (the latch stayed
+        clear).
+      evidence: 'Owner''s pasted stage output, step 5, firmware 49 at 5e96a0fb. STALL-GUARD
+        PASS: IDLE 163 ms after the first 40 A sample (limit 200), peak 45.0 A, fault
+        HAND_STALL; axis IDLE 61 ms after the trip was seen; the drive reported a
+        frozen 45.0 A while IDLE; limit read back 70.0 A. First --clear-errors at
+        13:25:30 ended OK. The second, 27 s later, read fault=NONE at its baseline:
+        the latch stayed clear.'
+      verdict: pass
+  6:
+    BUG-105:
+      by: sitting-debrief 2026-11-23
+      criterion: 'on a cut whose output says `disarm landed on a live feedforward:
+        yes`, the Hand settles within 0.05 rev of the firmware''s last commanded position
+        and holds without drifting.'
+      evidence: 'temp/logs/hand_stream_triangle_20261123_132712_tricut.txt, firmware
+        49 at 5e96a0fb: disarm landed on a live feedforward: yes (echo vel_ff +10.00
+        rev/s); settled +0.0011 rev from the firmware''s last command, where +0.2857
+        was the uncured offset; drift 0.0005 rev; fault_state NONE, no guard or latch.'
+      verdict: pass
 schema: 2
 steps:
   1:

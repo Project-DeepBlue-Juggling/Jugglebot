@@ -2,9 +2,9 @@
 id: BUG-131
 kind: bug
 title: 'Hand stall guard residue: a stale idle-pending flag, and the latch clear and the stage PASS line never flown'
-status: in_progress
+status: complete
 created: '2026-11-22'
-updated: '2026-11-23T00:21:26Z'
+updated: '2026-11-23T02:52:54Z'
 owners: []
 priority: high
 effort: s
@@ -17,10 +17,8 @@ blocked_by: []
 links:
 - map/bug-a-guard-latch-leaves-the-hand-pushing-at-full-current-no.md
 - logbook/2026-11-22-sitting-debrief-bench-hand-2.md
+- logbook/2026-11-23-sitting-debrief-bench-hand-2.md
 filed_by: claude
-night_skip: sitting
-night_skip_on: '2026-11-23'
-night_skip_note: Items 2 and 3 fly on main's FW 48 at the next bench-hand Sitting; item 1 (stale idle-pending flag) is a firmware edit for the next flash.
 ---
 
 Three things left over from BUG-123 (firmware 48, merged 2026-11-22).
@@ -56,7 +54,16 @@ Three things left over from BUG-123 (firmware 48, merged 2026-11-22).
 - derived, continued: No PASS line: the stage reported 'current did not collapse within 250 ms (44.9 A, axis_state 1)', an Idle axis still reporting the clamp current.
 - derived, continued: --clear-errors printed 'CLEAR_ERRORS OK - fault_state NONE', and 31 s later the stage's baseline read fault=HAND_STALL again: the clear does not hold.
 
+## Sitting result (2026-11-23 13:31)
+
+- verdict: pass
+- notes: owner: Worked! Motor is cool. The pasted stage and clear-errors output is in the sheet's results file. (sheet 2026-11-23-bench-hand-2, step 5)
+- derived: Owner's pasted stage output, step 5, firmware 49 at 5e96a0fb.
+- derived, continued: STALL-GUARD PASS: IDLE 163 ms after the first 40 A sample (limit 200), peak 45.0 A, fault HAND_STALL; axis IDLE 61 ms after the trip was seen; the drive reported a frozen 45.0 A while IDLE; limit read back 70.0 A.
+- derived, continued: First --clear-errors at 13:25:30 ended OK. The second, 27 s later, read fault=NONE at its baseline: the latch stayed clear.
+
 ## Progress
 
 - 2026-11-23: Item 1 fixed in firmware 49 on BUG-105's branch (0f757c5b, with a native test); items 2 and 3 fly on that build at the next bench-hand Sitting.
 - 2026-11-23: Failed at the Sitting of 2026-11-23: the guard tripped in 190 ms, but the latch returned after CLEAR_ERRORS. Cause: an Idle ODrive keeps reporting its last current, so the guard re-trips on an Idle Hand. Fixed on the branch (9d19bcbc, five native tests); the stage now judges the axis state and needs firmware 49. Priority raised: firmware 48 on main has the defect.
+- 2026-11-23: Passed at the Sitting of 2026-11-23 (second sheet): STALL-GUARD PASS, Hand Idle 163 ms after the first 40 A sample, and the latch stayed clear after CLEAR_ERRORS (fault=NONE 27 s later). Merged by hand as 2c28bcd3 in firmware 49 and flashed to the bridge.
