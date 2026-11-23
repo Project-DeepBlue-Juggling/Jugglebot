@@ -16,6 +16,9 @@ blocked_by: []
 links:
 - logbook/2026-11-23-platform-imu-clock-early-rx-ring-leak.md
 filed_by: claude
+night_skip: frozen-path
+night_skip_on: '2026-11-24'
+night_skip_note: Platform firmware (frozen at the gate) and a flash; a day Session picks the acceptance filter or a sliced inclinometer probe.
 ---
 
 The Platform's 256-slot CAN receive queue can overflow during the roughly 103 ms inclinometer re-probe stall at Attempt traffic rates. This is pre-existing and found while fixing BUG-132 (logbook entry 2026-11-23-platform-imu-clock-early-rx-ring-leak).

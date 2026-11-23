@@ -16,6 +16,9 @@ blocked_by: []
 links:
 - logbook/2026-11-23-bridge-stamp-on-robot-state-and-hand-telemetry.md
 filed_by: claude
+night_skip: low-priority
+night_skip_on: '2026-11-24'
+night_skip_note: 'Feasibility noted 2026-11-24: an LED circuit, a bridge input-capture and a flash, then one Sitting.'
 ---
 
 QTM's exposure-to-packet latency has never been measured. Offline fits against the executed command bound it to about 4 to 13 ms, and a Ball Butler yaw cross-check disagrees with the command route.

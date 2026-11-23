@@ -16,6 +16,9 @@ blocked_by: []
 links:
 - logbook/2026-11-23-platform-imu-clock-early-rx-ring-leak.md
 filed_by: claude
+night_skip: out-of-reach
+night_skip_on: '2026-11-24'
+night_skip_note: The fix is in the BallButler repo's firmware, not in this clone, and needs a flash; its deciding measurement needs Ball Butler uptime per Throw.
 ---
 
 Ball Butler firmware (BallButler repo, `ball_butler_main`) builds against upstream FlexCAN_T4 master and stamps the 0x7DD sync at dispatch. The Platform had the same defect, diagnosed in BUG-132 (logbook entry 2026-11-23-platform-imu-clock-early-rx-ring-leak).

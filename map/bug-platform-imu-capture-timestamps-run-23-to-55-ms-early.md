@@ -18,6 +18,9 @@ links:
 - logbook/2026-11-23-platform-ring-identification-from-the-imu.md
 - logbook/2026-11-23-platform-imu-clock-early-rx-ring-leak.md
 filed_by: claude
+night_skip: sitting
+night_skip_on: '2026-11-24'
+night_skip_note: FW 15 flashed and checked at rest; the Armed check is the Item's Sitting section (one Attempt, then the round-trip probe).
 ---
 
 Found offline on 2026-11-23 (logbook 2026-11-23-platform-ring-identification-from-the-imu), diagnosed the same day (logbook 2026-11-23-platform-imu-clock-early-rx-ring-leak).

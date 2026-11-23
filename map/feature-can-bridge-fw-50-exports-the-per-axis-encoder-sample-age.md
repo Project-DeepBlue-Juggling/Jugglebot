@@ -16,6 +16,9 @@ blocked_by: []
 links:
 - logbook/2026-11-23-bridge-stamp-on-robot-state-and-hand-telemetry.md
 filed_by: claude
+night_skip: frozen-path
+night_skip_on: '2026-11-24'
+night_skip_note: Can-bridge firmware (FW 50) plus a decoder and a flash; a day Session builds it.
 ---
 
 Today `/robot_state` samples carry an encoder sample that is 0 to 10 ms older than the bridge telemetry tick, and the age is not exported (about 5.5 ms assumed from code, probably nearer 4 ms).

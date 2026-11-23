@@ -21,8 +21,8 @@ links:
 parent: two-ball-oval
 filed_by: claude
 night_skip: owner-session
-night_skip_on: '2026-11-23'
-night_skip_note: 'Your TKT-88 answer: a day Session is on it (FW 14 chunk CRC, pipelined refills, 2026-11-22); the night leaves it pinned.'
+night_skip_on: '2026-11-24'
+night_skip_note: Gap 63 is now the default; the bridge receive-loss inquiry is held by the owner for a future Session (2026-11-23).
 ---
 
 Keep this area open (owner, 2026-11-19): once the MVP works, explore shortening the post-Attempt IMU upload. Three levers: tighter sample packing or compression; a slower setpoint heartbeat while holding (the 500 Hz stream stays as is for now: it feeds the ODrive watchdog and avoids a rate switch on the Leg path); a higher measured rate from the P4 ramp.

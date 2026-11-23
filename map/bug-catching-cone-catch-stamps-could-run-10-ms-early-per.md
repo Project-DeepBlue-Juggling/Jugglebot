@@ -16,6 +16,9 @@ blocked_by: []
 links:
 - logbook/2026-11-23-platform-imu-clock-early-rx-ring-leak.md
 filed_by: claude
+night_skip: frozen-path
+night_skip_on: '2026-11-24'
+night_skip_note: Catching cone firmware and a flash; the offline check is blurred by the 100 Hz drain (Findings 2026-11-24). Low priority.
 ---
 
 The Catching cone firmware builds against the stock FlexCAN_T4 and stamps the 0x7DD sync at dispatch, the defect diagnosed on the Platform in BUG-132 (logbook entry 2026-11-23-platform-imu-clock-early-rx-ring-leak).

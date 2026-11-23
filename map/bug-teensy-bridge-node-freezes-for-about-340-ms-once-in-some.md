@@ -18,8 +18,8 @@ links:
 - map/idea-platform-accelerometer.md
 filed_by: claude
 night_skip: waiting-trigger
-night_skip_on: '2026-11-23'
-night_skip_note: The stall watchdog (44750504) dumps every thread's stack mid-freeze; the next launch that freezes gives the evidence to find the blocker.
+night_skip_on: '2026-11-24'
+night_skip_note: Waits on launches with shm_clean (landed 2026-11-23) and one with bridge_shm:=false; the stall watchdog dump decides it.
 ---
 
 ## What happened
