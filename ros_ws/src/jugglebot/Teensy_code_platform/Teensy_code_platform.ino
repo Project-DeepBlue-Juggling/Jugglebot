@@ -13,6 +13,8 @@
  *    • TIME‑SYNC layer (ID 0x7DD)
  *      – Maintains wall‑time offset (Jetson wall‑time − micros64())
  *      – Prints jitter stats once per second
+ *      – FW 15: each beacon stamped in the CAN RX ISR; the offset is the
+ *        largest sample over ~1 s (sync_rx.h; BUG-132)
  *    • Hand cooling fan (see hand_fan.h): reads the Hand ODrive's broadcast
  *      Get_Temperature frame and drives the fan MOSFET's gate
  *
@@ -32,12 +34,20 @@
 
 #include <Arduino.h>
 #include <FlexCAN_T4.h>
+/* FW 15 (BUG-132): this sketch must compile against the can-bridge's patched FlexCAN_T4
+ * (platformio.ini lib_extra_dirs), whose events() pops the RX ring with the CAN interrupt
+ * masked (PROVENANCE.md P3).  The framework copy leaks `_available` counts and turns the
+ * ring into a delay line of up to ~114 ms on this bus; fail the build rather than ship it. */
+#if !defined(JUGGLEBOT_FLEXCAN_P3)
+#error "Platform FW 15 needs the patched FlexCAN_T4 (Teensy_code_canbridge/lib/FlexCAN_T4); the framework copy was resolved"
+#endif
 #include <SPI.h>
 #include <SCL3300.h>
 #include "hardware_config.h"  // Auto-generated from config/hardware_config.yaml
 #include "protocol_config.h"  // Auto-generated from config/protocol_config.yaml
 #include "hand_fan.h"
 #include "loop_service.h"  // FW 11: tilt service, inclinometer probe, CAN dispatch bound
+#include "sync_rx.h"       // FW 15: 0x7DD stamped at reception, envelope estimator (BUG-132)
 
 /*  IMU KILL SWITCH (FW 11, IDEA-20 P2b).  1 = the ICM-42688 capture (imu_service.h); 0 = every
  *  IMU code path compiled out: no Wire, no ring, no 0x6E3 handling, no 0x6E4-0x6E6 frames, so a
@@ -201,7 +211,7 @@
  *        ever faults).  Kill switch: PLATFORM_IMU_ENABLED (below the includes).
  */
 constexpr char     FW_NAME[]  = "jugglebot-platform";
-constexpr uint16_t FW_VERSION = 14;  // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
+constexpr uint16_t FW_VERSION = 15;  // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
                                      //      feedforward, C-HAND-2).
                                      // 2→3: 2026-08-18 hand END-STOP correction — BEHAVIOURAL.
                                      //      Geometry::HAND_MOTOR_HARD_STOP_REVS 11.1 → 10.8 rev
@@ -269,6 +279,17 @@ constexpr uint16_t FW_VERSION = 14;  // 1→2: 2026-07-29 throwDecelToTorque (po
                                      //      diag region at 0xFA40 (IMU_DATA placed / sent per
                                      //      the TX-mailbox tracker, pending > 2 ms, ECR error
                                      //      counter rises). IMU-only; no new op or frame.
+                                     // 14→15: 2026-11-23 BUG-132 receive path and clock sync:
+                                     //      built against the can-bridge's PATCHED FlexCAN_T4
+                                     //      (the RX pop IRQ-masked: no `_available` leak, so no
+                                     //      standing RX delay line delaying every command to
+                                     //      this board by up to ~114 ms); the 0x7DD beacon is
+                                     //      stamped in the CAN RX ISR (ext_output1) and the
+                                     //      offset is the largest sample over ~1 s instead of
+                                     //      a dispatch-time IIR (sync_rx.h); the capture header
+                                     //      bytes 58-61 and diag bytes 26-29 (both reserved 0
+                                     //      before) carry the beacon's reception-to-dispatch
+                                     //      delay and the RX ring's true depth and leak.
 
 /*----------------------------------------------------------------------------*/
 /*                                CAN BUS SET‑UP                              */
@@ -513,10 +534,10 @@ uint64_t micros64() {
   return result;
 }
 
-/* Wall‑time offset: Jetson_wall_us − micros64() */
+/* Wall‑time offset: Jetson_wall_us − micros64().  FW 15: written ONLY by service() in loop()
+ * context, and read only in loop() context (ImuIo::stamp), so the 64-bit value never tears. */
 volatile int64_t wall_offset_us = 0;
 volatile bool have_offset = false;
-constexpr uint8_t ALPHA_SHIFT = TeensyOp::TIME_SYNC_ALPHA_SHIFT;  // I‑filter gain = 1/2^n
 
 /* Stats for jitter read‑out */
 struct Stats {
@@ -544,7 +565,7 @@ struct Stats {
 uint64_t nextPrint_us = 0;
 constexpr uint32_t PRINT_PERIOD_US = 1'000'000;
 
-/* Convert helpers (can be used by main application) */
+/* Convert helpers (can be used by main application; loop() context only, see wall_offset_us) */
 uint64_t get_wall_time_us() {
   return micros64() + wall_offset_us;
 }
@@ -552,30 +573,82 @@ uint64_t wall_to_local_us(uint64_t w_us) {
   return w_us - wall_offset_us;
 }
 
-/* Process a single 8‑byte sync frame (ID 0x7DD) */
-inline void handleSyncFrame(const CAN_message_t &msg) {
-  uint32_t sec = msg.buf[0] | (msg.buf[1] << 8) | (msg.buf[2] << 16) | (msg.buf[3] << 24);
-  uint32_t usec = msg.buf[4] | (msg.buf[5] << 8) | (msg.buf[6] << 16) | (msg.buf[7] << 24);
-  uint64_t jetson_us = uint64_t(sec) * 1'000'000ULL + usec;
-  uint64_t local_us = micros64();
-  int64_t offset = int64_t(jetson_us) - int64_t(local_us);
+/* ── FW 15 (BUG-132): the beacon is stamped at RECEPTION, not at dispatch ──────────────
+ * THE FAILURE THIS PREVENTS.  Up to FW 14 handleSyncFrame paired the beacon with micros64()
+ * when loop() dispatched it, behind FlexCAN_T4's 256-slot software RX ring.  The framework
+ * library's `_available` leak made that ring a standing delay line (up to ~114 ms idle,
+ * ~45 ms Armed), so this wall clock ran early by the queue delay and jumped by tens of ms
+ * whenever the bus rate changed.  The patched library (platformio.ini) removes the leak;
+ * stamping in the ISR makes the clock immune to ANY queue after reception as well: the
+ * ~103 ms inclinometer re-probe stall, the FREEZE CRC slices, the dispatch TX gate.
+ *
+ * ext_output1 is FlexCAN_T4's own unfiltered ISR hook "for external libraries"
+ * (FlexCAN_T4.h): flexcan_interrupt() calls it for every received frame after decoding it
+ * and BEFORE the software ring (a weak symbol; undefined, the call is a no-op).  It runs in
+ * the CAN1 ISR, so it does the minimum: an id/len test on every frame and, for a beacon, one
+ * micros64() (ISR-safe: it masks with PRIMASK save/restore) and a 16-byte slot write.
+ * stampRing has ONE writer (this ISR, never re-entered); loop() reads it only with IRQ_CAN1
+ * masked (service(), noteBeaconDispatch()), so no slot is ever read half-written. */
+SyncRx::StampRing stampRing;
+SyncRx::Reader stampReader;    // loop() context
+SyncRx::Envelope envelope;     // loop() context
+
+inline void onBeaconIsr(const CAN_message_t &msg) {
+  if (msg.id != timeSyncID || msg.len != 8 || msg.flags.remote || msg.flags.extended) return;
+  stampRing.push(SyncRx::decode_wall_us(msg.buf), micros64());
+}
+
+/* Feed every beacon stamped since the last call to the envelope estimator (sync_rx.h): the
+ * largest (wall - local) over the last ~1 s, because every error in a sample is an added
+ * delay.  Called once per loop() pass.  The mask covers a 16-byte copy (well under 0.1 us);
+ * the 6-deep hardware FIFO holds what arrives meanwhile. */
+inline void service() {
+  for (uint32_t n = 0; n < SyncRx::StampRing::SLOTS; ++n) {
+    SyncRx::Stamp st;
+    NVIC_DISABLE_IRQ(IRQ_CAN1);
+    asm volatile("dsb\n\tisb" ::: "memory");
+    const bool got = stampReader.take(stampRing, &st);
+    asm volatile("" ::: "memory");
+    NVIC_ENABLE_IRQ(IRQ_CAN1);
+    if (!got) return;
+    const int64_t sample = int64_t(st.wall_us) - int64_t(st.rx_local_us);
+    const SyncRx::Envelope::Result r = envelope.update(st.rx_local_us, sample);
 #if PLATFORM_IMU_ENABLED
-  /* IMU_STATUS sync_peak: wall time received minus get_wall_time_us() before the IIR update,
-   * i.e. offset - wall_offset_us.  Integer only: this runs in FlexCAN's ISR during setup(). */
-  imuService.sync().note(!have_offset, offset - wall_offset_us);
+    /* IMU_STATUS sync_peak and the SYNC_STEP anchor flag: the innovation is the beacon's wall
+     * time minus this clock at its reception, before the update. */
+    imuService.sync().note(r.stepped, r.innovation_us);
 #endif
-
-  if (!have_offset) {  // first frame → step
-    wall_offset_us = offset;
+    wall_offset_us = envelope.estimate();
     have_offset = true;
-  } else {  // subsequent → slew
-    int64_t diff = offset - wall_offset_us;
-    wall_offset_us += diff >> ALPHA_SHIFT;
+    if (!r.first) {
+      const int64_t d = r.innovation_us;
+      stats.add(d > INT32_MAX ? INT32_MAX : d < -INT32_MAX ? -INT32_MAX : int32_t(d));
+    }
   }
+}
 
-  /* delta from current offset for jitter stats */
-  int32_t delta = int32_t(offset - wall_offset_us);
-  stats.add(delta);
+/* The dispatched beacon (canSniff): its reception-to-dispatch delay, the queue the ISR stamp
+ * now bypasses, exported so a capture can show it (header bytes 58-59).  Measured only in
+ * loop() context: during setup() canSniff runs inside the ISR, where the delay is zero by
+ * construction and the IMU's counters must not be written from a second context. */
+inline void noteBeaconDispatch(const CAN_message_t &msg) {
+  uint32_t ipsr;
+  asm volatile("mrs %0, ipsr" : "=r"(ipsr));
+  if (ipsr & 0x1FFu) return;
+  uint64_t rx = 0;
+  NVIC_DISABLE_IRQ(IRQ_CAN1);
+  asm volatile("dsb\n\tisb" ::: "memory");
+  const bool found = stampRing.find(SyncRx::decode_wall_us(msg.buf), &rx);
+  asm volatile("" ::: "memory");
+  NVIC_ENABLE_IRQ(IRQ_CAN1);
+  const uint64_t now = micros64();
+  uint32_t d = SyncRx::DELAY_UNMATCHED;
+  if (found) d = now - rx >= SyncRx::DELAY_UNMATCHED ? SyncRx::DELAY_UNMATCHED - 1 : uint32_t(now - rx);
+#if PLATFORM_IMU_ENABLED
+  imuService.sync().note_rx_delay(d);
+#else
+  (void)d;
+#endif
 }
 
 /* Periodic console print */
@@ -592,6 +665,9 @@ inline void maybePrintStats() {
   }
 }
 }  // namespace TimeSync
+
+/* FlexCAN_T4's unfiltered RX ISR hook (see TimeSync::onBeaconIsr).  Global, exact signature. */
+void ext_output1(const CAN_message_t &msg) { TimeSync::onBeaconIsr(msg); }
 
 /*----------------------------------------------------------------------------*/
 /*              F I R M W A R E   U P D A T E   O V E R   C A N               */
@@ -1126,9 +1202,9 @@ struct ImuIo {
       Wire.setClock(IMU_I2C_HZ);
     }
   }
-  /*  micros64() and the wall clock at one instant.  wall_offset_us is 64-bit and written by
-   *  handleSyncFrame, which after loop()'s first can1.events() runs only inside events(), in
-   *  loop() context; this runs in loop() too, so the two never interleave (no torn read). */
+  /*  micros64() and the wall clock at one instant.  wall_offset_us is 64-bit and written only by
+   *  TimeSync::service() in loop() context (FW 15); this runs in loop() too, so the two never
+   *  interleave (no torn read). */
   void stamp(ImuService::Stamp *s) {
     const uint64_t l = TimeSync::micros64();
     s->local_us = uint32_t(l);
@@ -1416,7 +1492,7 @@ void canSniff(const CAN_message_t &msg) {
 
   /* — time‑sync frame — */
   if (msg.id == timeSyncID && msg.len == 8) {
-    TimeSync::handleSyncFrame(msg);
+    TimeSync::noteBeaconDispatch(msg);  // FW 15: the clock is fed from the ISR stamp, not here
   }
 
   /* — Hand fan: the Hand ODrive's temperature broadcast — */
@@ -1523,6 +1599,16 @@ void loop() {
    * exactly one events() per pass, as FW 10.  Otherwise up to CAN_FRAMES_PER_PASS, each only
    * while FlexCAN's software TX queue is empty and enough TX mailboxes are free for every
    * reply the frame and the rest of this pass can write. */
+#if PLATFORM_IMU_ENABLED
+  /* FW 15 (BUG-132): the RX ring's TRUE occupancy, before this pass drains it (the backlog the
+   * last pass left, a tilt re-probe stall included), and that minus `_available`: the leak the
+   * patched FlexCAN_T4 closes, so it must stay 0.  Read-only (PROVENANCE.md P1), well under 1 us. */
+  {
+    uint16_t h, t, a, d;
+    can1.rxRingProbe(h, t, a, d);
+    imuService.sync().note_ring(d, d > a ? uint32_t(d - a) : 0u);
+  }
+#endif
   uint32_t calls = 0;
   uint64_t ev = 0;
   while (LoopService::Can::may_dispatch(calls, ev, FwUpdate::sessionOpen(),
@@ -1530,6 +1616,7 @@ void loop() {
     ev = can1.events();
     ++calls;
   }
+  TimeSync::service();  // FW 15: feed the beacons the ISR stamped since the last pass
 
   /* Tilt: at most one inclinometer read (~1.3 ms) or probe (~103 ms, rationed) per pass. */
   const bool tiltReq = tiltRequested;

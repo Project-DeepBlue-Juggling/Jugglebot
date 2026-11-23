@@ -24,7 +24,7 @@ import threading
 import time
 import zlib
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _dc_replace
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -32,7 +32,8 @@ import numpy as np
 from . import protocol as _protocol  # noqa: F401  (puts config/generated on sys.path)
 import protocol_config as pc  # noqa: E402
 
-from .platform_imu_capture import TimeModel, build_capture, capture_stem
+from .platform_imu_capture import (RX_QUALITY_MIN_FW_VERSION, SYNC_RX_DELAY_NONE, SYNC_RX_DELAY_SATURATED, TimeModel,
+                                   build_capture, capture_stem, clock_quality)
 
 logger = logging.getLogger(__name__)
 
@@ -82,21 +83,22 @@ class HeaderError(ValueError):
 
 _REPLY = struct.Struct("<BBHI")
 _STATUS = struct.Struct("<BBbBBBBB")
-_HEADER = struct.Struct("<BBHIIIHHQIHHHBBBBhhHHHHIII")
+_HEADER = struct.Struct("<BBHIIIHHQIHHHBBBBhhHHHHIHBBI")
 _ANCHOR = struct.Struct("<IIQBx")
 _BATCH_HEAD = struct.Struct("<QBBHIIII")           # the 28 bytes before PlatformImuBatch.frames
-_DIAG = struct.Struct("<BBIIHHHHHBBHHI")           # FW 14 diag region, 30 bytes (spec section 3, "Diag")
+_DIAG = struct.Struct("<BBIIHHHHHBBHHHBB")         # FW 14/15 diag region, 30 bytes (spec section 3, "Diag")
 assert _DIAG.size == DIAG_WORDS * WORD
 DIAG_FIELDS = ("diag_version", "flags", "data_placed", "data_tx_done", "data_tx_lost_mb", "data_pend_over_2ms",
                "data_pend_max_us", "tec_inc_sum", "rec_inc_sum", "tec_live", "rec_live", "tx_deferred",
-               "tx_queued_anyway", "reserved")
+               "tx_queued_anyway", "sync_rx_delay_10us", "rx_ring_depth_max", "rx_ring_leak_max")
 #: Cumulative counters and their wrap: the host stores deltas (mod 2**bits) between the two reads.
 _DIAG_WRAP = {"data_placed": 32, "data_tx_done": 32, "data_tx_lost_mb": 16, "data_pend_over_2ms": 16,
               "tec_inc_sum": 16, "rec_inc_sum": 16, "tx_deferred": 16, "tx_queued_anyway": 16}
 
 
 def decode_diag(blob: bytes) -> Dict[str, int]:
-    """The 30-byte FW 14 diag image (little-endian)."""
+    """The 30-byte diag image (little-endian). The last three fields are FW 15 peaks (0 on FW 14: the caller knows
+    the version); they are not counters, so ``diag_deltas`` leaves them out of the wrap table."""
     return dict(zip(DIAG_FIELDS, _DIAG.unpack(bytes(blob[:_DIAG.size]))))
 
 
@@ -114,7 +116,7 @@ HEADER_FIELDS = (
     "freeze_wall_us", "freeze_local_us", "odr_hz", "accel_lsb_per_g", "gyro_lsb_per_dps_x10",
     "gyro_accel_config0", "accel_config0", "gyro_config0", "i2c_clock_100k", "temp_raw_start",
     "temp_raw_freeze", "fifo_overflows", "i2c_errors", "sync_innovation_us", "fw_version",
-    "payload_crc32", "reserved", "header_crc32")
+    "payload_crc32", "sync_rx_delay_10us", "rx_ring_depth_max", "rx_ring_leak_max", "header_crc32")
 
 
 @dataclass(frozen=True)
@@ -185,7 +187,9 @@ class Header:
     sync_innovation_us: int
     fw_version: int
     payload_crc32: int
-    reserved: int
+    sync_rx_delay_10us: Optional[int]   # FW 15 (BUG-132); None for fw_version < RX_QUALITY_MIN_FW_VERSION
+    rx_ring_depth_max: Optional[int]
+    rx_ring_leak_max: Optional[int]
     header_crc32: int
 
 
@@ -214,6 +218,8 @@ def decode_header(blob: bytes) -> Header:
     if len(blob) != pc.PLATFORM_IMU_HEADER_BYTES:
         raise HeaderError("header is %d bytes, expected %d" % (len(blob), pc.PLATFORM_IMU_HEADER_BYTES))
     h = Header(*_HEADER.unpack(blob))
+    if h.fw_version < RX_QUALITY_MIN_FW_VERSION:        # FW <= 14 wrote 0 here: absent, not "zero delay"
+        h = _dc_replace(h, sync_rx_delay_10us=None, rx_ring_depth_max=None, rx_ring_leak_max=None)
     if zlib.crc32(blob[:62]) & 0xFFFFFFFF != h.header_crc32:
         raise HeaderError("header CRC mismatch")
     if h.version != pc.PLATFORM_IMU_HEADER_FORMAT_VERSION:
@@ -1972,9 +1978,17 @@ class PlatformImuService:
                         "requested_gap_10us": self.cfg.gap_10us, "uploaded_wall_time_s": uploaded}
                 flags = dict(res.flags)
                 flags["discontinuities"] = sum(1 for a in res.anchors if a.flags & 0x01)
+                suspect, reason = clock_quality(res.header)
+                flags["clock_suspect"], flags["clock_suspect_reason"] = suspect, reason
+                if suspect and res.header.fw_version >= RX_QUALITY_MIN_FW_VERSION:
+                    # An FW 15 board is supposed to be clean: say so loudly (FW <= 14 is suspect by construction,
+                    # one WARN per capture would only be noise).
+                    logger.warning("Platform IMU capture %s: clock suspect: %s", res.header.capture_id, reason)
                 cap = build_capture(res.header, res.anchors, res.sample_words, res.word_present, res.k0, flags, meta)
                 summary["fit"] = {k: cap.fit.get(k) for k in ("rate_hz", "resid_rms_us", "n_segments", "wall_ok")}
                 summary["flags"] = flags
+                summary["rx_quality"] = {k: cap.header.get(k) for k in (
+                    "sync_rx_delay_ms", "rx_ring_depth_max", "rx_ring_leak_max")}
                 summary["samples"] = int(cap.raw.shape[0])
                 # The writer names the file from uploaded_wall_time_s (ImuCaptureWriter), so this is its stem
                 # (a same-second collision appends _1, _2 ...).

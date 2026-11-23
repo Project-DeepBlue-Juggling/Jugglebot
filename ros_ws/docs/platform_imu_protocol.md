@@ -49,7 +49,7 @@ new rate while FROZEN or UPLOADING).
 `flags`: SENSOR_OK 0x01, TIME_SYNCED 0x02 (a 0x7DD frame in the last period), RING_WRAPPED 0x04, I2C_400K 0x08,
 DISCONTINUITY 0x10, ODR_2K 0x20 (FW 13: the selected capture rate is `fast_odr_hz`, 2 kHz; clear = 1 kHz). `temp_c` is the chip's temperature rounded (-128 = unknown). The two counters are since boot,
 saturating at 255; `i2c_errors` counts every failed I2C transfer, including those the RUNNING retry absorbs (section 4). `sync_peak` is the largest |innovation| of the 0x7DD slave in the period (wall time received minus
-`get_wall_time_us()` before the IIR update), in 10 us counts, 254 saturating, 255 = no sync frame. `fill_s` is retained
+the Platform wall clock at the beacon's reception, before the update; FW 14 and earlier: at its dispatch, before the IIR update; section 5), in 10 us counts, 254 saturating, 255 = no sync frame. `fill_s` is retained
 samples / the selected rate (`nominal_odr_hz` before FW 13), so it saturates at 32 at 1 kHz and 16 at 2 kHz. `boot` is the low byte of `boot_id` (section 3).
 
 *ROS topic `platform_imu/status` health keys (2 Hz DiagnosticStatus, from the last IMU_STATUS).* Besides the upload
@@ -116,7 +116,9 @@ resets at RESUME.
 | 21 | u8 | `rec_live` |
 | 22 | u16 | `tx_deferred` (the IMU's existing counter), low 16 bits |
 | 24 | u16 | `tx_queued_anyway`, saturating: an IMU frame `write()` queued in software (must stay 0) |
-| 26 | u32 | reserved 0 |
+| 26 | u16 | FW 15: the current capture's `sync_rx_delay` (header byte 58, same encoding, live) |
+| 28 | u8 | FW 15: the current capture's `rx_ring_depth_max` (header byte 60, live) |
+| 29 | u8 | FW 15: the current capture's `rx_ring_leak_max` (header byte 61, live) |
 
 The tracker: in `ImuTx::place`, with the CAN interrupt masked (as for the TX rule), the sketch predicts the mailbox
 `write()` will take (FlexCAN_T4 `write()` with `msg.seq` 0 scans from `mailboxOffset()` for the first TX_INACTIVE
@@ -160,7 +162,9 @@ offset was stepped since the previous anchor).
 | 28 | u32 | freeze local_us | 50 | u16 | largest sync innovation in this capture, us |
 | 32 | u16 | ODR, Hz (the capture's rate, 1000 or 2000) | 52 | u16 | Platform Teensy FW_VERSION |
 | 34 | u16 | accel LSB per g (2048 at +/-16 g) | 54 | u32 | `payload_crc32` |
-| | | | 58 | u32 | reserved 0 |
+| | | | 58 | u16 | FW 15: largest 0x7DD reception-to-dispatch delay in this capture, 10 us counts, rounded up (0xFFFE saturating or unmatched, 0xFFFF none) |
+| | | | 60 | u8 | FW 15: largest true RX ring occupancy in this capture, frames (255 saturating) |
+| | | | 61 | u8 | FW 15: largest RX ring leak (occupancy minus `_available`) in this capture, frames (255 saturating; 0 expected) |
 | | | | 62 | u32 | `header_crc32` over bytes 0-61 |
 
 Both CRCs are CRC-32/IEEE (Python `zlib.crc32`, the FwUpdate VERIFY CRC). `payload_crc32` covers the anchor words then
@@ -285,8 +289,21 @@ Per segment between DISCONTINUITY anchors, the Jetson fits `local_us(k) = a + b 
 first_index`). The slope comes from least squares and the intercept from the lower envelope of the residuals, since
 each anchor is an upper bound on its sample's time and drain jitter only adds lag. The fit takes no nominal rate on
 trust, so the chip's ~1 % clock error is measured, not assumed. Local time maps to wall time through a straight-line fit
-of `wall_us - local_us` against `local_us` (piecewise at SYNC_STEP). That keeps the 0x7DD slave's dispatch jitter out
-of the rate fit. The residual spread is written to the capture metadata as its timing quality. No anchor is taken while
+of `wall_us - local_us` against `local_us` (piecewise at SYNC_STEP). That keeps the 0x7DD slave's jitter out
+of the rate fit.
+
+**The 0x7DD slave (FW 15, BUG-132).** Through FW 14 the beacon was paired with `micros64()` when `loop()` dispatched it,
+behind FlexCAN_T4's 256-slot RX ring, whose `_available` leak made the ring a standing delay line (up to ~114 ms idle,
+~45 ms Armed): the wall clock ran early by that delay and jumped when the bus rate changed, and every command to the
+Platform arrived late by the same amount. FW 15 builds against the can-bridge's patched FlexCAN_T4 (no leak), stamps
+each beacon in the CAN RX ISR, and sets the offset (`wall - local`) to the LARGEST sample over the last 0.9-1.0 s,
+because every error in a sample is an added delay (`sync_rx.h`). A higher sample (a forward bridge step, upward drift) is
+taken on that beacon; a run of delayed beacons shorter than 0.9 s changes nothing; a backward bridge step is followed
+within 1.0 s plus one beacon; falling drift (~25 us/s) biases by at most 25 us; a silence over 1.0 s re-locks on the next
+beacon. A delay present in every beacon for over 1.0 s is indistinguishable from a backward step and is adopted in full,
+so the ISR stamp (no queue inside the sample) carries the weight and header bytes 58-61 show the queue that was
+bypassed. An estimate move over 5 ms sets SYNC_STEP. Residual: the Platform wall clock reads about 0.11-0.13 ms early
+(the beacon's own wire time, stamped by the can-bridge before transmission). The residual spread is written to the capture metadata as its timing quality. No anchor is taken while
 FROZEN, so upload traffic cannot bias a capture's timestamps.
 
 ## 6. can-bridge and Jetson obligations (P3)

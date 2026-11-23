@@ -3293,6 +3293,11 @@ class TeensyBridgeNode(Node):
             wr = snap.get('writer') or {}
             bad = bool(last.get('failure')) or (last.get('flags') or {}).get('crc_ok') is False \
                 or bool(last.get('write_failed'))
+            rxq = last.get('rx_quality') or {}
+            # BUG-132: a ring leak on an FW 15 board means the Platform clock can be early again. The diag region
+            # is read per upload (not polled), so this reflects the last capture's header.
+            if (rxq.get('rx_ring_leak_max') or 0) > 0:
+                bad = True
             hl = snap.get('health') or {}
             # WARN also when the board's I2C-error or FIFO-overflow counter rose within the last 60 s (same boot).
             for ck in ('i2c_errors', 'fifo_overflows'):
@@ -3319,6 +3324,11 @@ class TeensyBridgeNode(Node):
                 'writer_written': wr.get('written', 0), 'writer_dropped': wr.get('dropped', 0),
                 'writer_errors': wr.get('errors', 0), 'writer_last_error': wr.get('last_error', ''),
                 'heals_started': snap.get('heals_started', 0),
+                'last_clock_suspect': str((last.get('flags') or {}).get('clock_suspect')) if last else '',
+                'last_sync_rx_delay_ms': '' if rxq.get('sync_rx_delay_ms') is None
+                else '%.2f' % rxq['sync_rx_delay_ms'],
+                'last_rx_ring_depth_max': '' if rxq.get('rx_ring_depth_max') is None else rxq['rx_ring_depth_max'],
+                'last_rx_ring_leak_max': '' if rxq.get('rx_ring_leak_max') is None else rxq['rx_ring_leak_max'],
                 'odr_hz': snap.get('odr_hz') if snap.get('odr_hz') is not None else '',
             }
             if hl:

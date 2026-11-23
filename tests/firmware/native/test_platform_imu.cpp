@@ -642,6 +642,7 @@ TEST_CASE("dump a wrapped capture for the Python zlib cross-check") {
   r.info.reg_gyro_accel_config0 = 0x31; r.info.reg_accel_config0 = 0x06; r.info.reg_gyro_config0 = 0x26;
   r.info.i2c_clock_100khz = 4; r.info.temp_start_raw = -321; r.info.temp_freeze_raw = 4321;
   r.info.fifo_overflows = 17; r.info.i2c_errors = 29; r.info.sync_peak_us = 1357; r.info.fw_version = 11;
+  r.info.sync_rx_delay_10us = 2468; r.info.rx_ring_depth_max = 37; r.info.rx_ring_leak_max = 5;   // FW 15
   r.info.extra_flags = PlatformImuCaptureFlag::NEVER_SYNCED | PlatformImuCaptureFlag::I2C_400K;
   Reply f = r.freeze();
   REQUIRE(f.status == St::OK);
@@ -666,11 +667,13 @@ TEST_CASE("dump a wrapped capture for the Python zlib cross-check") {
                "\"accel_lsb_per_g\":%u,\"gyro_lsb_per_dps_x10\":%u,\"reg_gyro_accel_config0\":%u,"
                "\"reg_accel_config0\":%u,\"reg_gyro_config0\":%u,\"i2c_clock_100khz\":%u,\"temp_start_raw\":%d,"
                "\"temp_freeze_raw\":%d,\"fifo_overflows\":%u,\"i2c_errors\":%u,\"sync_peak_us\":%u,"
-               "\"fw_version\":%u,\"extra_flags\":%u}\n",
+               "\"fw_version\":%u,\"extra_flags\":%u,\"sync_rx_delay_10us\":%u,\"rx_ring_depth_max\":%u,"
+               "\"rx_ring_leak_max\":%u}\n",
                0xCAFE0007u, (unsigned long long)i.freeze_wall_us, i.freeze_local_us, i.odr_hz, i.accel_lsb_per_g,
                i.gyro_lsb_per_dps_x10, i.reg_gyro_accel_config0, i.reg_accel_config0, i.reg_gyro_config0,
                i.i2c_clock_100khz, i.temp_start_raw, i.temp_freeze_raw, i.fifo_overflows, i.i2c_errors,
-               i.sync_peak_us, i.fw_version, i.extra_flags);
+               i.sync_peak_us, i.fw_version, i.extra_flags, i.sync_rx_delay_10us, i.rx_ring_depth_max,
+               i.rx_ring_leak_max);
   std::fclose(jf);
 }
 

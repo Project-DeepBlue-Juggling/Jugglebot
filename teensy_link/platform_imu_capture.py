@@ -294,8 +294,44 @@ def temp_c_from_temp_data(raw: int, n_samples: int) -> Optional[float]:
     return int(raw) / TEMP_DATA_LSB_PER_C + TEMP_DATA_OFFSET_C
 
 
+#: First Platform FW_VERSION exporting the 0x7DD receive-path quality (BUG-132: a leaking CAN RX ring made the Platform
+#: wall clock early and every command late). Below it the header bytes are 0 and decode as None.
+RX_QUALITY_MIN_FW_VERSION = 15
+#: ``sync_rx_delay_10us`` sentinels: 0xFFFE saturated OR unmatched (the stamp left the 16-slot ring, > ~150 ms);
+#: 0xFFFF no beacon was dispatched during the capture.
+SYNC_RX_DELAY_SATURATED = 0xFFFE
+SYNC_RX_DELAY_NONE = 0xFFFF
+
+
+def sync_rx_delay_ms(raw: Optional[int]) -> Optional[float]:
+    """10 us counts to ms; None for absent (FW < 15), no beacon, or a sentinel (see ``clock_quality``)."""
+    if raw is None or int(raw) >= SYNC_RX_DELAY_SATURATED:
+        return None
+    return int(raw) * 0.01
+
+
+def clock_quality(header: Any) -> "tuple[bool, str]":
+    """(suspect, reason): can this capture's Platform wall-clock stamps be trusted? Header or dict."""
+    get = header.get if isinstance(header, dict) else (lambda k, d=None: getattr(header, k, d))
+    fw = int(get("fw_version", 0) or 0)
+    if fw < RX_QUALITY_MIN_FW_VERSION:
+        return True, "fw<15: Platform RX queue could delay the sync, BUG-132"
+    why = []
+    raw = get("sync_rx_delay_10us")
+    if raw is not None:
+        if int(raw) == SYNC_RX_DELAY_SATURATED:
+            why.append("sync delay saturated or unmatched (> ~150 ms)")
+        # A finite delay is NOT a reason: FW 15 stamps the sync in the interrupt, so a loop() stall (the ~103 ms
+        # inclinometer re-probe, FREEZE CRC slices) raises this capture-wide maximum without moving the clock.
+    leak = get("rx_ring_leak_max")
+    if leak is not None and int(leak) > 0:
+        why.append("rx ring leak %d frames" % int(leak))
+    return bool(why), "; ".join(why)
+
+
 def header_to_dict(header: Any) -> Dict[str, Any]:
     d = {k: (int(v) if isinstance(v, (int, np.integer)) else v) for k, v in header.__dict__.items()}
+    d["sync_rx_delay_ms"] = sync_rx_delay_ms(getattr(header, "sync_rx_delay_10us", None))
     d["temp_c_start"] = temp_c_from_temp_data(header.temp_raw_start, header.n_samples)
     d["temp_c_freeze"] = temp_c_from_temp_data(header.temp_raw_freeze, header.n_samples)
     return d

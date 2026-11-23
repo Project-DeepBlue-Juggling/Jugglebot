@@ -70,7 +70,7 @@ def test_every_header_field_lands_where_the_spec_table_says(tmp_path):
     header = blob[-66:]
     fed = json.loads((tmp_path / "header_info.json").read_text())
     got = dict(zip((name for _, _, name in fields), struct.unpack(fmt, header)))
-    assert len(got) == 26
+    assert len(got) == 28
     n_anchors = got["n_anchors"]
     # derived by the ring: the dump scenario pushes 250 samples into a 100-sample ring (first_index 150, WRAPPED)
     assert got["version"] == 1 and got["reason"] == fed["reason"]
@@ -79,11 +79,11 @@ def test_every_header_field_lands_where_the_spec_table_says(tmp_path):
     assert got["flags"] == (0x01 | 0x02) | fed["extra_flags"]     # WRAPPED | DISCONTINUITY | fed bits
     for key in ("freeze_wall_us", "freeze_local_us", "odr_hz", "accel_lsb_per_g", "gyro_lsb_per_dps_x10",
                 "reg_gyro_accel_config0", "reg_accel_config0", "reg_gyro_config0", "i2c_clock_100khz",
-                "temp_start_raw", "temp_freeze_raw", "fifo_overflows", "i2c_errors", "sync_peak_us", "fw_version"):
+                "temp_start_raw", "temp_freeze_raw", "fifo_overflows", "i2c_errors", "sync_peak_us", "fw_version",
+                "sync_rx_delay_10us", "rx_ring_depth_max", "rx_ring_leak_max"):
         assert got[key] == fed[key], key
     assert len({fed[k] for k in fed if k not in ("reason",)}) == len(fed) - 1, "the fed values must be distinct"
     assert got["payload_crc32"] == zlib.crc32(blob[:-66])
-    assert got["reserved"] == 0
     assert got["header_crc32"] == zlib.crc32(header[:62])
 
 

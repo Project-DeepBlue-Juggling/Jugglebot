@@ -57,6 +57,10 @@ struct HeaderInfo {
   uint16_t fifo_overflows = 0;
   uint16_t i2c_errors = 0;
   uint16_t sync_peak_us = 0;
+  // FW 15 (BUG-132): the receive-path health, in the bytes that were `reserved 0` (58-61).
+  uint16_t sync_rx_delay_10us = 0;  // 58: largest 0x7DD reception-to-dispatch delay, 10 us (0xFFFE sat, 0xFFFF none)
+  uint8_t rx_ring_depth_max = 0;    // 60: largest true FlexCAN RX ring occupancy, frames (255 sat)
+  uint8_t rx_ring_leak_max = 0;     // 61: largest occupancy minus `_available`, frames (255 sat; 0 on FW 15)
   uint16_t fw_version = 0;
   uint16_t extra_flags = 0;  // PlatformImuCaptureFlag bits the ring cannot know: SENSOR_ERROR, NEVER_SYNCED, I2C_400K
 };
@@ -288,7 +292,9 @@ class Capture {
     put16(p + 50, h.sync_peak_us);
     put16(p + 52, h.fw_version);
     put32(p + 54, payload_crc());
-    put32(p + 58, 0);
+    put16(p + 58, h.sync_rx_delay_10us);
+    p[60] = h.rx_ring_depth_max;
+    p[61] = h.rx_ring_leak_max;
     put32(p + 62, crc32(p, HEADER_CRC_SPAN));
     ready_ = true;
     return true;

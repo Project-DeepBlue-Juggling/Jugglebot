@@ -149,6 +149,12 @@ _BINARIES = {
         NATIVE_DIR / "test_platform_imu_fw14.cpp",
         [],
     ),
+    # Platform FW 15 (BUG-132): the 0x7DD slave stamped at reception (the ISR stamp ring) and its
+    # envelope estimator, plus the receive-path health export. Pure headers, nothing to link.
+    "test_platform_sync_rx": (
+        NATIVE_DIR / "test_platform_sync_rx.cpp",
+        [],
+    ),
     # The ICM-42688 non-blocking init against the scripted Wire fake: register sequence, waits,
     # one transaction per call, absent chip, error recovery.
     "test_icm42688": (

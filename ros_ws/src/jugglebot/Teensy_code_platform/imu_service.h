@@ -37,6 +37,7 @@
 #include <cstring>
 
 #include "imu_proto.h"
+#include "sync_rx.h"   // FW 15: SyncRx::delay_10us for the receive-path health export
 
 #ifndef PLATFORM_IMU_DIAG
 #define PLATFORM_IMU_DIAG 0   // 1 = the diagnostic build (Teensy_code_platform.ino, "IMU DIAGNOSTIC BUILD")
@@ -315,9 +316,11 @@ class CmdSlots {
   uint32_t dropped_ = 0;
 };
 
-/*  Clock-sync quality, fed by the 0x7DD handler.  Integer only: during setup() that handler
- *  runs in FlexCAN's ISR.  `innovation_us` is the received wall time minus get_wall_time_us()
- *  before the IIR update; the first frame (the step) is not an innovation and sets SYNC_STEP. */
+/*  Clock-sync quality, fed by the sketch's TimeSync::service() in loop() context (FW 15: the
+ *  estimator no longer runs in FlexCAN's ISR during setup(); integer only all the same).
+ *  `innovation_us` is the beacon's wall time minus the wall clock at its RECEPTION, before the
+ *  envelope update (sync_rx.h); a step (the first beacon, or an estimate move over 5 ms) is
+ *  not an innovation and sets SYNC_STEP. */
 class SyncQuality {
  public:
   void note(bool first_frame, int64_t innovation_us) {
@@ -343,12 +346,40 @@ class SyncQuality {
     period_peak_ = 0;
   }
   uint16_t capture_peak_us() const { return capture_peak_ > 0xFFFFu ? 0xFFFFu : uint16_t(capture_peak_); }
-  void reset_capture() { capture_peak_ = 0; }
+  void reset_capture() {
+    capture_peak_ = 0;
+    cap_rx_delay_us_ = 0;
+    cap_rx_delay_seen_ = false;
+    cap_ring_depth_ = cap_ring_leak_ = 0;
+  }
   bool take_step() { bool s = step_; step_ = false; return s; }
+
+  /*  FW 15 (BUG-132), the receive-path health in the capture header (bytes 58-61) and the diag
+   *  image (bytes 26-29).  Capture-scoped like capture_peak_us: reset when a capture starts.
+   *  note_rx_delay: one dispatched 0x7DD beacon's reception-to-dispatch delay, us
+   *  (SyncRx::DELAY_UNMATCHED when its ISR stamp had left the ring).  note_ring: the RX ring's
+   *  TRUE occupancy (head/tail) and that minus `_available` (the leak the patched FlexCAN_T4
+   *  closes, so it must stay 0), probed once per loop() pass before the dispatch. */
+  void note_rx_delay(uint32_t delay_us) {
+    cap_rx_delay_seen_ = true;
+    if (delay_us > cap_rx_delay_us_) cap_rx_delay_us_ = delay_us;
+  }
+  void note_ring(uint32_t depth, uint32_t leak) {
+    if (depth > cap_ring_depth_) cap_ring_depth_ = depth;
+    if (leak > cap_ring_leak_) cap_ring_leak_ = leak;
+  }
+  /*  10 us counts, rounded up, 0xFFFE saturating (also: unmatched, over ~150 ms), 0xFFFF = none. */
+  uint16_t capture_rx_delay_10us() const {
+    return cap_rx_delay_seen_ ? SyncRx::delay_10us(cap_rx_delay_us_) : uint16_t(0xFFFF);
+  }
+  uint8_t capture_ring_depth() const { return cap_ring_depth_ > 255 ? 255 : uint8_t(cap_ring_depth_); }
+  uint8_t capture_ring_leak() const { return cap_ring_leak_ > 255 ? 255 : uint8_t(cap_ring_leak_); }
 
  private:
   volatile uint32_t frames_ = 0, period_peak_ = 0, capture_peak_ = 0;
   volatile bool step_ = false;
+  uint32_t cap_rx_delay_us_ = 0, cap_ring_depth_ = 0, cap_ring_leak_ = 0;
+  bool cap_rx_delay_seen_ = false;
 };
 
 struct Counters {
@@ -465,7 +496,15 @@ class Service {
   TxTracker& tx_tracker() { return txt_; }
   uint32_t data_placed() const { return data_placed_; }
   // The diag image as a READ of DIAG_SEQ_BASE would return it now.
-  void diag_bytes(uint8_t* out) const { txt_.pack(out, data_placed_, cnt_.tx_deferred); }
+  /*  FW 15: bytes 26-29 (reserved 0 through FW 14) carry the capture's receive-path health, the
+   *  same three values as header bytes 58-61 but live: rx delay u16 at 26, ring depth u8 at 28,
+   *  ring leak u8 at 29 (SyncQuality). */
+  void diag_bytes(uint8_t* out) const {
+    txt_.pack(out, data_placed_, cnt_.tx_deferred);
+    ImuCapture::put16(out + 26, sync_.capture_rx_delay_10us());
+    out[28] = sync_.capture_ring_depth();
+    out[29] = sync_.capture_ring_leak();
+  }
 
   /*  One loop() pass, after the CAN dispatch and FwUpdate::tick().  `fw_session_open` is
    *  FwUpdate::sessionOpen(): BEGIN opened it, an abandoned or failed session closes it, and
@@ -563,6 +602,9 @@ class Service {
     h->fifo_overflows = sat16(cap_overflows_);
     h->i2c_errors = sat16(cap_i2c_errors_);
     h->sync_peak_us = sync_.capture_peak_us();
+    h->sync_rx_delay_10us = sync_.capture_rx_delay_10us();   // FW 15 (BUG-132), header bytes 58-61
+    h->rx_ring_depth_max = sync_.capture_ring_depth();
+    h->rx_ring_leak_max = sync_.capture_ring_leak();
     if (!st.wall_valid) h->extra_flags |= PlatformImuCaptureFlag::NEVER_SYNCED;
   }
 

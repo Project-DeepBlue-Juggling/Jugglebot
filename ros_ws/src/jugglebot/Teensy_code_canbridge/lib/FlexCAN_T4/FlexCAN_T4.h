@@ -30,6 +30,14 @@
 #if !defined(_FLEXCAN_T4_H_)
 #define _FLEXCAN_T4_H_
 
+/* JUGGLEBOT PATCH (2026-11-23, Platform FW 15, BUG-132) — P5, the build marker.
+   Defined ONLY in this vendored copy, so a consumer can #error when it compiled
+   against the framework-bundled FlexCAN_T4 instead (which has the `_available`
+   leak P3 fixes). The Platform Teensy builds against this directory through
+   `lib_extra_dirs` and checks the macro; the can-bridge ignores it. A macro,
+   no code: the bridge binary is unchanged. See PROVENANCE.md § P5. */
+#define JUGGLEBOT_FLEXCAN_P3 1
+
 #include "Arduino.h"
 #include "circular_buffer.h"
 #include "imxrt_flexcan.h"

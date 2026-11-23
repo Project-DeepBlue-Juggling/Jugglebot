@@ -167,6 +167,16 @@ def test_native_platform_imu_fw14_binary_passes(binaries):
         f"native test_platform_imu_fw14 FAILED:\n{r.stdout}\n{r.stderr}")
 
 
+def test_native_platform_sync_rx_binary_passes(binaries):
+    """Platform FW 15 (BUG-132): the 0x7DD beacon stamped at reception and the envelope estimator (the largest
+    wall-minus-local over ~1 s): step on the first beacon, 25 us/s drift both ways, a burst delayed 50-110 ms
+    ignored, a 40 ms bridge clock step followed (backward within 1.0 s), and the replayed RX-ring delay step
+    114 -> 49 ms moving the estimate by under 1 ms where the FW 14 dispatch-stamped IIR moved ~65 ms."""
+    r = _run(binaries["test_platform_sync_rx"])
+    assert r.returncode == 0, (
+        f"native test_platform_sync_rx FAILED:\n{r.stdout}\n{r.stderr}")
+
+
 def test_native_icm42688_binary_passes(binaries):
     """The Platform Teensy's ICM-42688 non-blocking init (icm42688.cpp) against the scripted Wire fake: the exact
     register sequence, the datasheet waits, one I2C transaction per call, an absent chip, error recovery."""

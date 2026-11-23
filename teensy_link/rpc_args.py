@@ -512,7 +512,12 @@ PLATFORM_FW_VERSION_UNVERSIONED = 0
 #: region (READ at 0xFA40: IMU_DATA placed and sent, mailbox losses, CAN error counter
 #: rises). IMU-only, no new op or frame: a board on 13 still works, its span uploads
 #: are just reported "crc not checked" as before.
-PLATFORM_FW_VERSION_EXPECTED = 14
+#: 15 (2026-11-23) = BUG-132: the Platform builds against the can-bridge's patched FlexCAN_T4
+#: (its RX ring leaked counts and became a delay line, so the wall clock ran early and every
+#: command was late), stamps the 0x7DD sync at reception, and exports sync_rx_delay_10us,
+#: rx_ring_depth_max and rx_ring_leak_max in reserved capture-header and diag bytes. A board
+#: on 14 still works; its captures are flagged clock_suspect.
+PLATFORM_FW_VERSION_EXPECTED = 15
 
 
 def decode_platform_fw_version(data: bytes) -> int:

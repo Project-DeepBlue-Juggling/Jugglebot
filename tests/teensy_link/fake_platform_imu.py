@@ -20,7 +20,7 @@ OP, ST = pc.PlatformImuOp, pc.PlatformImuStatus
 
 def build_image(*, n=2000, n_anchors=20, cap_id=0x4A21, boot_id=0x11223344, first_index=500, odr_us=1010.0,
                 wall0_us=1_700_000_000_000_000, local0=4_000_000_000, disc_at=None, seed=1, fw_version=11,
-                odr_hz=1000):
+                odr_hz=1000, sync_rx_delay_10us=30, rx_ring_depth_max=3, rx_ring_leak_max=0):
     """A frozen-capture image: {seq: 6-byte word}, the header bytes, and the truth to compare against.
 
     The chip clock runs ``odr_us`` us per sample (1 % slow rate error by default); anchors sit every
@@ -55,9 +55,10 @@ def build_image(*, n=2000, n_anchors=20, cap_id=0x4A21, boot_id=0x11223344, firs
     sample_bytes = b"".join(words[s] for s in range(2 * n))
     payload_crc = zlib.crc32(sample_bytes, zlib.crc32(anc_bytes)) & 0xFFFFFFFF
     hdr = bytearray(66)
-    struct.pack_into("<BBHIIIHHQIHHHBBBBhhHHHHII", hdr, 0, 1, 1, cap_id, boot_id, n, first_index, n_anchors, 0x01,
+    struct.pack_into("<BBHIIIHHQIHHHBBBBhhHHHHIHBB", hdr, 0, 1, 1, cap_id, boot_id, n, first_index, n_anchors, 0x01,
                      wall0_us + 5, local0 & 0xFFFFFFFF, odr_hz, 2048, 328, 49, 6, 38, 4, -321, 4321, 3, 5, 700, fw_version,
-                     payload_crc, 0)
+                     payload_crc, *((sync_rx_delay_10us, rx_ring_depth_max, rx_ring_leak_max)
+                                    if fw_version >= 15 else (0, 0, 0)))     # FW <= 14 wrote 0 here
     struct.pack_into("<I", hdr, 62, zlib.crc32(bytes(hdr[:62])) & 0xFFFFFFFF)
     for i in range(11):
         words[pc.PLATFORM_IMU_HEADER_SEQ_BASE + i] = bytes(hdr[6 * i:6 * i + 6])
@@ -171,8 +172,8 @@ class FakePlatform:
                     return ST.ERR_OUT_OF_RANGE                     # an FW 13 image has neither region
                 if base == pi.DIAG_BASE:
                     self.diag_reads += 1
-                    blob = struct.pack("<BBIIHHHHHBBHHI", 1, 1, self.frames_sent, self.frames_sent - self.omitted,
-                                       0, 0, 900, 0, 0, 0, 0, 0, 0, 0)
+                    blob = struct.pack("<BBIIHHHHHBBHHHBB", 1, 1, self.frames_sent, self.frames_sent - self.omitted,
+                                       0, 0, 900, 0, 0, 0, 0, 0, 0, 0, 0, 0)
                     for i in range(pi.DIAG_WORDS):
                         self.img["words"][base + i] = blob[6 * i:6 * i + 6]
                 else:

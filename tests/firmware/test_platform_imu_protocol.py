@@ -35,7 +35,7 @@ _PLAT = _CFG["can_ids"]["platform"]
 _IMU_IDS = {k: v for k, v in _PLAT.items() if k.startswith("IMU_")}
 
 # Wire layouts from the contract (little-endian, no padding).
-HEADER_FMT = "<BBHIIIHHQIHHHBBBBhhHHHHIII"
+HEADER_FMT = "<BBHIIIHHQIHHHBBBBhhHHHHIHBBI"
 ANCHOR_FMT = "<IIQBB"
 REPLY_FMT = "<BBHI"
 STATUS_FMT = "<BBbBBBBB"
@@ -52,7 +52,8 @@ SPEC_HEADER_FIELDS = [
     (38, "B", "reg_gyro_accel_config0"), (39, "B", "reg_accel_config0"), (40, "B", "reg_gyro_config0"),
     (41, "B", "i2c_clock_100khz"), (42, "h", "temp_start_raw"), (44, "h", "temp_freeze_raw"),
     (46, "H", "fifo_overflows"), (48, "H", "i2c_errors"), (50, "H", "sync_peak_us"), (52, "H", "fw_version"),
-    (54, "I", "payload_crc32"), (58, "I", "reserved"), (62, "I", "header_crc32")]
+    (54, "I", "payload_crc32"), (58, "H", "sync_rx_delay_10us"), (60, "B", "rx_ring_depth_max"),
+    (61, "B", "rx_ring_leak_max"), (62, "I", "header_crc32")]   # 58-61: reserved 0 through FW 14 (FW 15, BUG-132)
 
 
 def _doc() -> str:

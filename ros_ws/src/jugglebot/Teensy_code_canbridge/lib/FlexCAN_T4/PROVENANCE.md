@@ -185,3 +185,26 @@ is discharged by this patch.
 `flexcan_interrupt()`'s TX-complete handling) are
 already correct — they target a single mailbox with no loop — so no other site
 needed touching.
+
+### P5 — the build marker, and a second consumer: the Platform Teensy (2026-11-23, Platform FW 15, BUG-132)
+
+File: `FlexCAN_T4.h` (one `#define JUGGLEBOT_FLEXCAN_P3 1` after the include guard).
+
+**Rationale.** The Platform Teensy (`ros_ws/src/jugglebot/Teensy_code_platform`) built
+against the framework-bundled FlexCAN_T4 until FW 14, so it carried Defect 2 above
+unfixed: BUG-132 measured its wall clock running early by the RX delay line
+(~114 ms idle, ~45 ms Armed) and every command to it late by the same amount. From
+Platform FW 15 it builds against THIS directory (`lib_extra_dirs =
+../Teensy_code_canbridge/lib` in its `platformio.ini`), so both boards share one
+patched copy and a future fix here lands on both. The macro lets the Platform sketch
+`#error` when the framework copy is resolved instead (a PlatformIO resolution change
+would otherwise silently revert the fix).
+
+**Minimality.** A macro nothing in the can-bridge reads: no code, no layout, the
+bridge binary is unchanged. Editing this library now changes TWO firmwares: rebuild
+and re-validate both (`pio run -e teensy41` here, every Platform env there).
+
+**Platform use of the ISR hook.** The Platform defines FlexCAN_T4's weak
+`ext_output1()` (called from `flexcan_interrupt()` for every received frame, before
+the software ring) to stamp the 0x7DD beacon at reception. Upstream API, no patch;
+the can-bridge does not define it, so its call stays a no-op there.
