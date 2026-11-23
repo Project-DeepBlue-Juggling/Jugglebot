@@ -6,7 +6,7 @@ waiting Items: the order a Sitting flies in, and every step, is on its Sitting s
 
 Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
-## Robot  (11 Items, 286 min)
+## Robot  (12 Items, 294 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
@@ -21,6 +21,7 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | FEAT-50 Live warning when a marker dwells under the Hand | 10 | armed | `night-shift/2026-11-14-FEAT-50` | - |
 | IDEA-16 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them | 10 | level | - | - |
 | IDEA-25 Minimise the Platform IMU upload time after an Attempt | 1 | level, armed, bb-fed | - | - |
+| IDEA-27 Measure the Platform ring at Dwell 0.40 with the IMU | 8 | level, armed, bb-fed | - | - |
 
 ## Bench leg  (1 Item, 30 min)
 

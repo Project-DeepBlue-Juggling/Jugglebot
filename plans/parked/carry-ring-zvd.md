@@ -1,7 +1,17 @@
 ---
 title: Carry ring suppression — zero-residual-vibration rows on the pose carry so the Platform is still at release
 created: 2026-11-04
-status: active
+status: parked   # 2026-11-23 - at Dwell 0.50 the ring costs under about 7 mm of landing spread; Dwell 0.40 is unmeasured
+parked: 2026-11-23
+parked_why: >-
+  The IMU study of 2026-11-23 found the ring small at the planned release at Dwell 0.50 and its effect repeatable, so
+  Platform shaping is not worth it there; the ZVD rows stay off (their Hand stop-and-go is the shaper's own signature).
+  The owner doubts Dwell 0.40 is reachable without other changes (motor limits, another form of shaping or feedforward).
+unpark: >-
+  One oval Attempt at Dwell 0.40, rows off, with the IMU capturing (the Idea "Measure the Platform ring at Dwell 0.40
+  with the IMU"), analysed after BUG-132 is fixed: unpark, reworked around a soft penalty, if the post-release surge or
+  the carried-versus-from-rest landing gap is clearly larger than at Dwell 0.50 and the Learner does not absorb it.
+  Archive as superseded if it looks like Dwell 0.50 or if Dwell 0.40 is refused at rehearsal.
 owner: Harrison
 last_updated: 2026-11-23
 pathway: two-ball-oval

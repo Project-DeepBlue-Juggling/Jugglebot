@@ -17,7 +17,7 @@ links:
 - plans/active/two-ball-oval.md
 - logbook/2026-10-31-hold-ladder-sitting-the-hold-model-was-wrong.md
 - logbook/2026-11-04-sitting-debrief.md
-- plans/active/carry-ring-zvd.md
+- plans/parked/carry-ring-zvd.md
 - logbook/2026-11-13-sitting-debrief.md
 parent: two-ball-oval
 filed_by: claude (P3 re-gate close-out 2026-10-30)

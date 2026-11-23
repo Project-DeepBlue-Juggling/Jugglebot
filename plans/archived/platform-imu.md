@@ -37,7 +37,7 @@ related_code:
 # Platform IMU
 
 Map Item: IDEA-20 (`map/idea-platform-accelerometer.md`), under the two-ball-oval Pathway because its one customer is
-the ring-mode tuning of `plans/active/carry-ring-zvd.md` (FEAT-32), which sits on that Pathway. Decisions below were
+the ring-mode tuning of `plans/parked/carry-ring-zvd.md` (FEAT-32), which sits on that Pathway. Decisions below were
 agreed with the owner on 2026-11-18 in the design round. Facts cite the three surveys of that round: [fw] Platform
 Teensy firmware, [can] CAN path and bus load, [motion] motion envelope. A line marked **open** is not decided.
 
