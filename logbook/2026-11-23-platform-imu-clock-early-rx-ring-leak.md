@@ -236,6 +236,14 @@ Run on 2026-11-23 in the worktree on branch `bug132-platform-rx-ring`, nothing f
   the first 5 ms limit on a healthy board) to the floor excess (fastest minus fastest, limit 5 ms). This run does not
   yet show that the leak is gone: a FW 14 board would also read near zero minutes after boot. The discriminating check
   is the same probe after Armed time, with the capture header's `rx_ring_leak_max` at 0.
+- Launch check with 48 V off (2026-11-23, live checkout at 5b538799 after `colcon build --packages-select
+  jugglebot_interfaces jugglebot`, `ros2 launch jugglebot jugglebot_launch.py`, 10 min at rest, one full upload):
+  `PLATFORM_FW_CHECK: OK ... v15`, `BRIDGE_FW_CHECK: OK ... v49`. Capture `20261123T075329Z_36BA`: 32000 samples in
+  41.5 s, `crc ok (chunks+payload)`, 0 discontinuities, 0 I2C errors, 0 FIFO overflows, `clock_suspect` false,
+  `rx_ring_leak_max` 0, `rx_ring_depth_max` 6, `sync_rx_delay_ms` 0.62. Anchor residual against the wall fit 32 us rms
+  (171 to 949 us on FW 13 and 14); status `sync_peak` 0.60 to 0.70 ms (it saturated at 2.54 ms before). Probe after the
+  launch: floor excess 1.54 ms, median excess 5.97 ms, exit 0. Nothing was Armed, so the leak's absence under Armed
+  traffic is still unshown.
 - Robot Sitting step on BUG-132: **pending** (capture header `fw_version` 15, `clock_suspect` false,
   `rx_ring_leak_max` 0, `imu_clock_check.py` PASS).
 
