@@ -116,7 +116,16 @@ Message and bridge half:
   tests/sim/test_logbook_front_matter.py tests/sim/test_logbook_index.py tests/sim/test_docs_links.py
   tests/sim/test_no_legacy_item_ids.py tests/sim/test_plans_index.py tests/sim/test_glossary_avoid_words.py`): 340 passed
   in 31.10 s.
-- Live checkout rebuild and launch check: pending (`colcon build --packages-select jugglebot_interfaces jugglebot` then relaunch; without it INTERFACES_STALE fires at construction, by design).
+- Live checkout rebuild and launch check (2026-11-23, live checkout at 5c1d5321, `colcon build --packages-select
+  jugglebot_interfaces jugglebot`, then `ros2 launch jugglebot jugglebot_launch.py` with 48 V off): build OK; firmware
+  checks v49 and v15; no INTERFACES_STALE and no "Robot state publish error" line. `bridge_stamp_valid` true on 100 % of
+  messages (1491 + 395 `/robot_state`, 1500 + 398 `/hand_telemetry`). `timestamp` minus `bridge_stamp`: `/robot_state`
+  min 2.9, median 3.2 to 3.3, max 14.6 ms; `/hand_telemetry` min 3.5, median 3.9 to 4.0, max 16.6 ms; never negative.
+  That is smaller than the 12 to 14 ms measured in the Sitting bags. Not investigated; the likely reasons are the
+  unloaded box and the free-running phase between the node's 100 Hz publish timer and the bridge's 100 Hz tick (a
+  per-launch offset of 0 to 10 ms), which is the variation the field exists to remove. `/clock_diag` published
+  nothing in 40 s, so the clock error for this run is unknown. NOT verified on hardware: the invalid-before-sync case
+  (the capture began about 20 s after launch, already synced); it is covered by the unit tests only.
 - Mocap envelope stamp minus the executed-command stamp, `err_us` removed (survey, 2026-11-20/22/23, ms; orientation
   fit, position fit):
 
@@ -137,4 +146,4 @@ stamps in `/rigid_body_poses` scatter 10 to 27 ms and are unusable.
 
 - Encoder sample age (0 to 10 ms per axis) stays unexported until can-bridge FW 50: FEAT-64.
 - QTM's true latency is unmeasured: IDEA-28 (LED or strobe edge), then a decision on the live stamp.
-- Default gate and the live checkout rebuild and launch check: the two pending lines in Verification.
+- The invalid-before-sync case has not been seen on hardware (unit tests only).
