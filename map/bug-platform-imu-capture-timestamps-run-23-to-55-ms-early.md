@@ -4,7 +4,7 @@ kind: bug
 title: Platform IMU capture timestamps run 23 to 55 ms early against Mocap and the encoders
 status: in_progress
 created: '2026-11-23'
-updated: '2026-11-23T07:12:36Z'
+updated: '2026-11-23T11:18:11Z'
 owners: []
 priority: medium
 effort: s
@@ -34,20 +34,20 @@ Found offline on 2026-11-23 (logbook 2026-11-23-platform-ring-identification-fro
 - Platform FW 15 builds against the can-bridge's patched library, stamps 0x7DD at reception in the interrupt, and estimates the offset from the least-delayed beacon. Header fields `rx_ring_leak_max`, `rx_ring_depth_max` and `sync_rx_delay_ms` expose the receive path. Built and tested, not flashed.
 - Related Items: BUG-133 (Ball Butler), BUG-136 (Catching cone), BUG-134 (reference stamps), BUG-135 (receive queue overflow).
 
+Against Mocap as stamped today expect the IMU about 13 ms early in any comparison: that is the Mocap stamp (BUG-134, closed; IDEA-28), not a failure of this Item.
+
 ## Sitting
 
-- setup: armed
-- why: Prove on the flashed board that the Platform receive ring no longer delays frames and that the IMU capture clock is within spec.
+- setup: level, armed, bb-fed
+- why: Prove on the flashed board, after Armed traffic, that the Platform receive ring no longer delays frames and that the IMU capture clock is right.
 - do:
-  - Launch down, Platform up for at least 30 min including some Armed time: run `python tools/probes/platform_rtt_probe.py`. It must exit 0.
-  - Fly one `oval_1ball_fed` Attempt at Dwell 0.50 with the automatic IMU capture and the bag recording.
-  - Offline after the Sitting: run `python tools/probes/imu_clock_check.py --capture <stem>`.
-- pass: The probe exits 0 (floor excess of a Platform-answered request over a bridge-only one at most 5 ms; FW 14 read 37 ms on 2026-11-23). In the capture json `header.fw_version` is 15, `flags.clock_suspect` is false and `header.rx_ring_leak_max` is 0. The clock check prints PASS (IMU within 5 ms of the tick-restamped encoders, lagging the executed command by 0 to 10 ms).
-- record: The probe medians, the capture stem, the four header values, the clock check output and the Platform uptime at the Attempt.
-- minutes: 45
-
-Against Mocap as stamped today expect the IMU about 14 to 18 ms early: that is the Mocap stamp, tracked on BUG-134, not a failure of this Item.
+  - Fly one Attempt: `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.50, num_cycles: 8}" --feedback`. Wait for the "Platform IMU upload finished" line in the launch log.
+  - At the end of the Sitting, with the launch stopped and the Platform Teensy still powered, from the repo root with the venv active: `python tools/probes/platform_rtt_probe.py`.
+- pass: The upload line reads "complete yes, crc ok". The probe exits 0 (floor excess at most 5 ms; FW 14 read 37 ms). At the debrief the capture json shows `header.fw_version` 15, `flags.clock_suspect` false and `header.rx_ring_leak_max` 0, and `python tools/probes/imu_clock_check.py --capture <stem>` prints PASS.
+- record: The probe's printed line and the capture stem. The header values and the clock check are read at the debrief.
+- minutes: 10
 
 ## Progress
 
 - 2026-11-23: Cause found: Platform RX ring leak delays the 0x7DD beacon; FW 15 fix built, not flashed (detail in logbook)
+- 2026-11-23: FW 15 flashed 2026-11-23 18:37 and checked at rest (leak 0, probe floor 1.5 ms); the Armed check is the Sitting section, rewritten so the Sitting index parses it
