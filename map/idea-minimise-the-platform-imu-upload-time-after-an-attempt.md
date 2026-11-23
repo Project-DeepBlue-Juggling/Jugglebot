@@ -4,7 +4,7 @@ kind: idea
 title: Minimise the Platform IMU upload time after an Attempt
 status: in_progress
 created: '2026-11-19'
-updated: '2026-11-23T03:48:24Z'
+updated: '2026-11-23T04:00:13Z'
 owners: []
 priority: low
 effort: m
@@ -45,20 +45,26 @@ The trigger fired: Rung P4 passed at the Sitting of 2026-11-20, and that debrief
 
 Recommendation: 1 now (cheap, Jetson-only, attacks the measured 13 s of re-reading), 2 when the next firmware flash is due anyway.
 
+## Open inquiry: the bridge's CAN receive loses frames (2026-11-23)
+
+Held by the owner on 2026-11-23 for a future Session; nothing is scheduled.
+
+- Fact: while Armed, about 0.6 % of upload frames never reach the can-bridge's software. The Platform sends them all (firmware 14 counters: placed 66518, sent 66518, error counters 0) and the bridge counts about 400 fewer per whole ring.
+- Fact: the losses are in step with the bridge's 500 Hz setpoint tick (logbook 2026-11-23-platform-imu-pipelined-refill, findings of 2026-11-23).
+- Not known: whether the bridge's receive FIFO overflows or a frame is overwritten in a mailbox. The bridge has no receive-overrun counter.
+- First step when reopened: add that counter to the can-bridge firmware (a new firmware version and a flash), then fix what it names. A fix would allow a pace above the Armed cap of 63, which is where the remaining 41 s goes.
+
 ## Sitting
 
-- setup: level, armed
-- why: re-measure after the next change (the faster pace as default, or a can-bridge change to stop its CAN receive losing frames). The Sitting of 2026-11-23 gave 57.7 s and 49.3 s on Platform firmware 14 with pipelined refill reads.
+- setup: level, armed, bb-fed
+- why: confirms the new default pace (63, set 2026-11-23) on a real Attempt upload. No extra step: any Attempt on a robot sheet serves it.
 - do:
-  - With the launch up, Level done and ACTIVE:TRAJECTORY held (Armed), leave the robot untouched for 40 s, then upload the whole ring at the default pace: `ros2 service call /platform_imu/upload jugglebot_interfaces/srv/SetString "{data: \"{}\"}"`. Wait for "recording" on the GUI IMU panel and read `grep -n "Platform IMU upload finished" ~/Desktop/Jugglebot/temp/logs/launch_<date>_1.log | tail -1`.
-  - Faster pace: `ros2 param set /teensy_bridge_node imu_read_gap_10us 63`, leave the robot untouched for 40 s from the end of the last upload, then the same upload call and the same grep.
-  - `ros2 param set /teensy_bridge_node imu_read_gap_10us 80` and `ros2 param get /teensy_bridge_node imu_read_gap_10us` must read 80.
+  - After any Attempt, read `grep -n "Platform IMU upload finished" ~/Desktop/Jugglebot/temp/logs/launch_<date>_1.log | tail -1`.
 - pass:
-  - Both uploads read "32000 samples", "complete yes, crc ok"; the default pace takes 57 s or less and the faster pace 48 s or less.
-  - Computed at the debrief from the capture files: bridge and Jetson frame counts agree, and the transmit counters name the side that loses frames.
+  - The line reads "complete yes, crc ok"; at the debrief the capture file's `block_gap_10us` is 63.
 - record:
-  - Wall-clock time of each upload. The finished lines are in the launch log, nothing to type.
-- minutes: 10
+  - Nothing to type: the line is in the launch log.
+- minutes: 1
 
 ## Sitting result (2026-11-23 14:55)
 
@@ -72,3 +78,4 @@ Recommendation: 1 now (cheap, Jetson-only, attacks the measured 13 s of re-readi
 - 2026-11-21: 2026-11-21: FW 13 flashed; at rest a whole-ring upload takes 52.6 s at gap 80 and 41.4 s at gap 63 with 0 duplicates (56.25 s and 158 on FW 12); 250 of 263 READs chained. Armed check and the 1600 frames/s trial are on IDEA-20's Sitting row (logbook 2026-11-21-platform-imu-fw13-chaining-pacing-2khz).
 - 2026-11-22: Sitting 2026-11-22, FW 13 Armed: whole ring 59.7 s (24 duplicates) and 63.3 s (1694) against 79 to 84 s on 2026-11-20. Gap 63 gave no gain per sample (2.08 ms against 1.87 to 1.98): lost frames and refills ate it. 2 kHz Attempt upload 71.7 s, 723 lost frames against 5 at rest. Why duplicates vary 24 to 1694 is unexplained.
 - 2026-11-23: Sitting 2026-11-23, FW 14 Armed: whole ring 57.7 s at gap 80 and 49.3 s at gap 63 (limits 57 and 48 missed). Refill reads now about 20 ms each. The Platform sent every frame (66518 of 66518, error counters 0); the bridge counted about 400 fewer: its CAN receive loses them. Logbook 2026-11-23-sitting-debrief-robot.
+- 2026-11-23: Owner decisions: the faster pace (gap 63) is now the default (logbook 2026-11-23-platform-imu-upload-pace-default-63); the bridge receive loss is held as an open inquiry (section above), nothing scheduled.

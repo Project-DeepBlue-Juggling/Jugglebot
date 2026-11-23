@@ -501,8 +501,8 @@ Platform's OK ("capture rate 2000 Hz: the ring restarts as a fresh capture and h
 ERR_BAD_ARGS (an FW 12 board, or a 400 kHz I2C build asked for 2 kHz), or the can-bridge's ERR_BAD_ARGS: a can-bridge
 older than FW 47 does not relay SET_ODR (section 6), and the reply says so, names FW 47, and names the 2 kHz Platform
 image (`teensy40_imu2k`) as the alternative. It is refused while an upload or an Attempt runs and while the ring is FROZEN or UPLOADING. The upload pace is
-the node parameter `imu_read_gap_10us` (x 10 us, 40..255, default 80), settable at run time:
-`ros2 param set /teensy_bridge_node imu_read_gap_10us 63` (about 1590 frames/s; the bridge's Armed clamp is 63). It applies
+the node parameter `imu_read_gap_10us` (x 10 us, 40..255, default 63 since 2026-11-23: about 1590 frames/s, the bridge's Armed clamp; it was 80), settable at run time:
+`ros2 param set /teensy_bridge_node imu_read_gap_10us 80` (about 1250 frames/s, the walk-through's pace). It applies
 from the next READ, also to an upload already running; a value outside 40..255 or not an integer is refused and the prior
 value kept.
 

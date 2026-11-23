@@ -112,7 +112,7 @@ def test_attempt_ended_runs_a_full_upload_through_the_node(tmp_path):
         ops = [x[1] for x in log if x[0] == "ctrl"]
         assert ops == [OP.FREEZE, OP.RESUME]
         assert log[0][2] == int(proto.PlatformImuFreezeReason.ATTEMPT_END)
-        assert node._imu.machine.cfg.gap_10us == 80 and all(x[3] >= 40 for x in log if x[0] == "read")
+        assert node._imu.machine.cfg.gap_10us == 63 and all(x[3] >= 40 for x in log if x[0] == "read")
     finally:
         _teardown(teensy, client, node)
 
@@ -313,7 +313,9 @@ def test_the_read_gap_parameter_is_live_and_validated():
     from types import SimpleNamespace as NS
     teensy, client, node = _build_paired_node()
     try:
-        assert node._imu.cfg.gap_10us == 80
+        assert node._imu.cfg.gap_10us == 63                              # the default since 2026-11-23 (IDEA-25)
+        r = node._on_set_parameters([NS(name="imu_read_gap_10us", value=80)])
+        assert r.successful and node._imu.cfg.gap_10us == 80 and node._imu.machine.cfg.gap_10us == 80
         r = node._on_set_parameters([NS(name="imu_read_gap_10us", value=63)])
         assert r.successful and node._imu.cfg.gap_10us == 63 and node._imu.machine.cfg.gap_10us == 63
         assert node._imu.machine.effective_gap_10us() == 63                  # the next READ's pace

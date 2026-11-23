@@ -3076,11 +3076,13 @@ class TeensyBridgeNode(Node):
         # Clamped to 0..60 s so the gate's 180 s busy ceiling still covers delay + a typical 20-50 s upload.
         self.declare_parameter('imu_fault_upload_delay_s', 5.0)
         self.declare_parameter('imu_capture_dir', '')
-        # The upload's requested frame pace, x 10 us (80 = 0.8 ms, about 1250 frames/s). Settable at run time
-        # (`ros2 param set /teensy_bridge_node imu_read_gap_10us 63`), validated in _on_set_parameters, and
+        # The upload's requested frame pace, x 10 us. Default 63 (0.63 ms, about 1590 frames/s, the bridge's Armed
+        # clamp) since the Sitting of 2026-11-23: a whole ring Armed took 49.3 s at 63 against 57.7 s at 80
+        # (owner decision, IDEA-25; the library's own UploadConfig default stays 80). Settable at run time
+        # (`ros2 param set /teensy_bridge_node imu_read_gap_10us 80`), validated in _on_set_parameters, and
         # used from the next READ the upload machine sends (an upload running now changes pace at its next
         # block; the bridge's Armed clamp and the board's 400 us floor still apply per READ).
-        self.declare_parameter('imu_read_gap_10us', 80)
+        self.declare_parameter('imu_read_gap_10us', 63)
         directory = str(self.get_parameter('imu_capture_dir').value or '')
         if not directory:
             import teensy_link as _tl
@@ -3091,8 +3093,8 @@ class TeensyBridgeNode(Node):
         gap = self.get_parameter('imu_read_gap_10us').value
         ok_gap, why = _imu_read_gap_check(gap)
         if not ok_gap:
-            self.get_logger().error('imu_read_gap_10us initial value %r refused (%s): using 80' % (gap, why))
-            gap = 80
+            self.get_logger().error('imu_read_gap_10us initial value %r refused (%s): using 63' % (gap, why))
+            gap = 63
         cfg = _ImuUploadConfig(gap_10us=int(gap), fault_upload_delay_s=delay)
         self._imu = PlatformImuService(
             self._imu_send_ctrl, self._imu_send_read, writer=self._imu_writer,
