@@ -4,4 +4,58 @@ steps:
     comments: ''
     saved_at: 2026-11-23 14:29
     status: done
-verdicts: {}
+  2:
+    comments: ''
+    saved_at: 2026-11-23 14:31
+    status: done
+  3:
+    comments: ''
+    saved_at: 2026-11-23 14:31
+    status: done
+  4:
+    comments: ''
+    saved_at: 2026-11-23 14:31
+    status: done
+  5:
+    comments: ''
+    saved_at: 2026-11-23 14:34
+    status: done
+  7:
+    comments: ''
+    saved_at: 2026-11-23 14:37
+    status: done
+  8:
+    comments: ''
+    saved_at: 2026-11-23 14:37
+    status: done
+  9:
+    comments: ''
+    saved_at: 2026-11-23 14:39
+    status: done
+  10:
+    comments: ''
+    saved_at: 2026-11-23 14:39
+    status: done
+  11:
+    comments: ''
+    saved_at: 2026-11-23 14:39
+    status: done
+  12:
+    comments: ''
+    saved_at: 2026-11-23 14:39
+    status: done
+verdicts:
+  6:
+    IDEA-25:
+      notes: 'First upload took 57.7 sec, while second took 49.3. First: (venv) jetson:/home/jetson/Desktop/Jugglebot/
+        (main) $ grep -n "Platform IMU upload finished" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-23_1.log
+        | tail -1 [14:32:46] 67:14:33:43.963 teensy Platform IMU upload finished (operator,
+        32000 samples, 57.7 s, 66117 frames rx, 999 duplicate, 518 READs (251 chained,
+        0 replaced), 0 block timeouts, 1 hole passes, refill 5.4 s, complete yes,
+        crc ok (chunks+payload), file 20261123T033343Z_4AF8) Second: (venv) jetson:/home/jetson/Desktop/Jugglebot/
+        (main) $ grep -n "Platform IMU upload finished" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-23_1.log
+        | tail -1 [14:36:12] 69:14:36:05.562 teensy Platform IMU upload finished (operator,
+        32000 samples, 49.3 s, 65167 frames rx, 52 duplicate, 699 READs (251 chained,
+        0 replaced), 0 block timeouts, 2 hole passes, refill 8.0 s, complete yes,
+        crc ok (chunks+payload), file 20261123T033605Z_4AF9)'
+      saved_at: 2026-11-23 14:37
