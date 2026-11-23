@@ -82,11 +82,20 @@ static uint64_t      s_lane_last_iq_us   = 0;      // iq stamp of the last sampl
 static bool          s_lane_idle_pending = false;  // a trip whose IDLE the TX path refused
 static volatile bool s_lane_stalled      = false;  // sticky, Diagnostic flags bit3
 // A new ladder run starts with a clean stall record for the axes it targets.
+// BUG-131 (FW 49): a ladder that targets the Hand also drops a lane trip's
+// still-refused IDLE. The ladder owns the Hand from here: SETUP issues its own
+// CLOSED_LOOP and its own stall guard covers the move, so a late lane IDLE could
+// only land mid-move. activate_step() runs the lane guard's retry BEFORE any
+// ladder start, so the IDLE still gets its last try on this tick. The flag is
+// deliberately NOT dropped on CLEAR_ERRORS: an IDLE that never went out may
+// leave a stalled Hand in CLOSED_LOOP, and the operator's clear does not
+// de-energise it, so the retry runs until the frame is queued or a ladder
+// takes the Hand over.
 static void stall_reset_for_targets() {
   s_stall_timing = false;
   for (uint8_t i = 0; i < NUM_AXES; ++i)
     if (s_targets & (uint8_t)(1u << i)) s_stalled[i] = false;
-  if (s_targets & (uint8_t)(1u << HAND_AXIS)) s_lane_stalled = false;
+  if (s_targets & (uint8_t)(1u << HAND_AXIS)) { s_lane_stalled = false; s_lane_idle_pending = false; }
 }
 
 // ── HAND_MOVE_TO (FW 26) — the same ladder, a caller target (leg_activate.h) ──
@@ -415,6 +424,8 @@ bool hand_lane_stalled(uint8_t axis) { return axis == HAND_AXIS && s_lane_stalle
 // the Hand (the ladder's own guard above owns a Hand it moves). Only the Hand is
 // stopped here: the Legs are held by the guard ESTOP the latch raises, exactly as
 // for a Hand ODrive fault (ODRIVE_FATAL), never IDLEd (a loaded Platform).
+// FW 49 (BUG-131 item 2): samples count only while the Hand may be in
+// CLOSED_LOOP (see the predicate below).
 static void hand_lane_stall_guard() {
   // A trip whose IDLE frame the TX path refused: re-send every tick until queued.
   if (s_lane_idle_pending &&
@@ -435,8 +446,24 @@ static void hand_lane_stall_guard() {
   const float vel = axes[HAND_AXIS].vel_rps;
   const uint64_t vts = atomic_read_u64(&axes[HAND_AXIS].pos_timestamp_us);
   const bool vel_fresh = vts != 0 && (vts >= ts || ts - vts <= HAND_LANE_STALL_GAP_US);
+  // BUG-131 item 2 (FW 49): only a Hand that may be in CLOSED_LOOP counts. An
+  // IDLE ODrive keeps broadcasting the LAST Iq (the FOC loop that updates it is
+  // stopped) with fresh frames, so after any IDLE taken at >= 40 A (this guard's
+  // own trip, the ladder's, the E-stop button) "40 A and not moving" held forever
+  // and the guard re-latched ~150 ms after every CLEAR_ERRORS (bench 2026-11-23).
+  // A sample is excluded only when a FRESH heartbeat (no older than
+  // CAN_HEARTBEAT_STALE_US at this sample) positively reports another state. A
+  // Hand whose heartbeat was never seen or has gone stale is UNKNOWN and still
+  // counts: a stalled Hand whose sparse 10 Hz heartbeat is lost is still pushing,
+  // and FW 48's predicate is what applies to it.
+  const uint64_t hbs = atomic_read_u64(&axes[HAND_AXIS].last_heartbeat_us);
+  const bool hb_fresh = axes[HAND_AXIS].heartbeat_seen && hbs != 0 &&
+                        (hbs >= ts || ts - hbs <= CAN_HEARTBEAT_STALE_US);
+  const bool may_be_closed_loop =
+      !hb_fresh || axes[HAND_AXIS].axis_state == (uint8_t)ODriveState::CLOSED_LOOP;
   // A NaN fails both comparisons, so it can never read as a stall.
-  const bool stalled_now = vel_fresh && fabsf(iq) >= HAND_LANE_STALL_IQ_A &&
+  const bool stalled_now = may_be_closed_loop && vel_fresh &&
+                           fabsf(iq) >= HAND_LANE_STALL_IQ_A &&
                            fabsf(vel) <= HAND_LANE_STALL_VEL_RPS;
   if (!stalled_now) { s_lane_timing = false; return; }
   if (!s_lane_timing) { s_lane_timing = true; s_lane_t0_us = ts; return; }

@@ -79,7 +79,12 @@ Stages (one per invocation; the runbook sequences them):
             speed / pos_gain, and any guard or latch. A cut whose worst-case
             end comes within 0.6 rev of the bottom stop (-0.10) or of
             --top-stop is refused before the bring-up.
-  step      T-H3a: attempt ONE hand knot --step-rev (default 6.0) past the
+            --tri-cut-disarm now (opt-in) also sends one DISARMED heartbeat
+            straight after the cut frame instead of waiting 0-100 ms for the
+            heartbeat thread, so the disarm lands on a live vel_ff; the
+            report then prints the echo before and after the disarm and
+            "disarm landed on a live feedforward: yes/no".
+  step     T-H3a: attempt ONE hand knot --step-rev (default 6.0) past the
             pump gate mid-hold. Pass: the PUMP refuses host-side (reject
             counted, reason printed, nothing reaches the wire) and the hold
             continues unbroken.
@@ -794,19 +799,34 @@ def tri_cut_plan_line(plan):
 
 
 def tri_cut_report_lines(plan, cut, echo, settled, fault_name, hb, axis_state,
-                         pos_gain):
+                         pos_gain, echo_pre=None, disarm="heartbeat"):
     """The cut's evidence lines, PURE (the Sitting records these).
 
     cut: (stage t, knot pos, knot vel, next knot pos) of the LAST frame sent.
     echo: the cached HAND_CMD_ECHO after the disarm, (t_us, pos, vel_ff) or
     None: the firmware's own last command, i.e. the ODrive's final input_pos
-    and vel_ff. settled: (mean pos, drift, n samples) or None."""
+    and vel_ff. settled: (mean pos, drift, n samples) or None.
+    echo_pre: the HAND_CMD_ECHO cached when the disarm was sent, same shape.
+    disarm: 'heartbeat' or 'now' (--tri-cut-disarm).
+
+    The bridge emits the echo only for frames the lane STREAMED (telemetry.cpp,
+    the interp_hand_sent() delta), so the last echo after the disarm is the
+    last streamed frame before the output gate fell: the vel_ff the FW 49
+    suppress edge had to zero. The BUG-105 hold frame itself never echoes."""
     t, kp, kv, kp1 = cut
+    how = ("one DISARMED heartbeat sent at once (--tri-cut-disarm now)"
+           if disarm == "now" else
+           "the heartbeat thread's next DISARMED tick (0-100 ms)")
     out = [f"tri-cut: {plan['direction']} ramp, cycle {plan['cycle']}, cut at "
            f"stage t={t:.3f} s (planned {plan['t_cut']:.3f} s). Nothing was sent "
-           f"after this frame but the DISARMED heartbeat.",
+           f"after this frame but the DISARMED heartbeat: {how}.",
            f"  last commanded (the last frame sent): knot {kp:+.4f} rev at "
            f"{kv:+.2f} rev/s (its next knot {kp1:+.4f} rev)"]
+    if echo_pre is not None and len(echo_pre) > 2:
+        out.append(f"  HAND_CMD_ECHO before the disarm: input_pos "
+                   f"{echo_pre[1]:+.4f} rev, vel_ff {echo_pre[2]:+.2f} rev/s")
+    else:
+        out.append("  HAND_CMD_ECHO before the disarm: none cached")
     if echo is not None and len(echo) > 2:
         out.append(f"  firmware's last command to the ODrive (HAND_CMD_ECHO): "
                    f"input_pos {echo[1]:+.4f} rev, vel_ff {echo[2]:+.2f} rev/s "
@@ -840,7 +860,27 @@ def tri_cut_report_lines(plan, cut, echo, settled, fault_name, hb, axis_state,
         latch = ", ".join(bits) or "none"
     out.append(f"  fault_state {fault_name}; guard/latch: {latch}; hand "
                f"axis_state {axis_state}")
+    out.append(tri_cut_live_ff_line(echo, pos_gain))
     return out
+
+
+# A live feedforward at the gate fall is one whose stale offset (vel_ff /
+# pos_gain, the pre-FW 49 settle) would exceed BUG-105's 0.05 rev pass bar:
+# below it a cut proves nothing either way.
+TRI_CUT_LIVE_FF_OFFSET_REV = 0.05
+
+
+def tri_cut_live_ff_line(echo, pos_gain):
+    """The one verdict line: did the disarm land on a live feedforward? Read
+    off the last streamed echo (the frame the output gate fell on)."""
+    if echo is None or len(echo) < 3:
+        return ("  disarm landed on a live feedforward: unknown (no HAND_CMD_ECHO "
+                "cached)")
+    v = float(echo[2])
+    live = abs(v) / pos_gain > TRI_CUT_LIVE_FF_OFFSET_REV
+    return (f"  disarm landed on a live feedforward: {'yes' if live else 'no'} "
+            f"(echo vel_ff {v:+.2f} rev/s before it; live means |vel_ff|/"
+            f"{pos_gain:g} > {TRI_CUT_LIVE_FF_OFFSET_REV} rev)")
 
 
 # ── moving_gap (row 17b): the falling-edge decay, taken while the hand MOVES ──
@@ -1351,7 +1391,8 @@ def _run_stroke_cut(args, client, pump, sched_cmd, w, drain_cd, plan, start):
                               tally['run'], tally['why'], tally['done']))
 
 
-def _tri_cut_observe(plan, cut, sleep=time.sleep, clock=time.monotonic):
+def _tri_cut_observe(plan, cut, sleep=time.sleep, clock=time.monotonic,
+                     echo_pre=None, disarm="heartbeat"):
     """After the --tri-cut disarm: read, never send. Waits TRI_CUT_SETTLE_S,
     then averages the cached Hand telemetry over TRI_CUT_DRIFT_S (fresh samples
     only), and returns the report lines. The client keeps running (its
@@ -1373,7 +1414,8 @@ def _tri_cut_observe(plan, cut, sleep=time.sleep, clock=time.monotonic):
     d = _hand_diag()
     return tri_cut_report_lines(
         plan, cut, echo, settled, _fault_name(_fault()), _hb(),
-        "?" if d is None else int(d.axis_state), float(hw.ODRIVE_HAND_POS_GAIN))
+        "?" if d is None else int(d.axis_state), float(hw.ODRIVE_HAND_POS_GAIN),
+        echo_pre=echo_pre, disarm=disarm)
 
 
 def main():
@@ -1496,6 +1538,14 @@ def main():
     ap.add_argument("--tri-cut-cycle", type=int, default=None, metavar="N",
                     help="with --tri-cut: which triangle cycle to cut in "
                          "(1-based, default 2)")
+    ap.add_argument("--tri-cut-disarm", choices=["heartbeat", "now"], default=None,
+                    help="with --tri-cut: 'heartbeat' (default, the Ctrl-C wire "
+                         "behaviour) lets the 10 Hz heartbeat thread carry "
+                         "DISARMED, 0-100 ms after the cut; 'now' also sends one "
+                         "DISARMED heartbeat straight after the cut frame, so the "
+                         "firmware's 10 Hz fault tick (0-100 ms) is the only wait "
+                         "and the gate falls while the lane still carries a live "
+                         "vel_ff (it coasts SEG_T + MAX_EXTRAP_DT_S, then decays)")
     ap.add_argument("--cut-max-dev", type=float, default=1.9, metavar="REV",
                     help="stroke_cut: the belt inside the cut window, against the "
                          "MODELLED firmware stop (default 1.9, <= 2.0): the bench "
@@ -1543,7 +1593,11 @@ def main():
     if args.tri_cut is None:
         if args.tri_cut_cycle is not None:
             ap.error("--tri-cut-cycle needs --tri-cut up|down")
+        if args.tri_cut_disarm is not None:
+            ap.error("--tri-cut-disarm needs --tri-cut up|down")
     else:
+        if args.tri_cut_disarm is None:
+            args.tri_cut_disarm = "heartbeat"
         if args.stage != "triangle":
             ap.error("--tri-cut only applies to --stage triangle")
         if args.tri_cut_cycle is None:
@@ -2512,11 +2566,22 @@ def main():
 
         tri_cut_lines = None
         if tri_cut_hit is not None:
+            # The echo cached BEFORE the disarm leaves (the lane's command as
+            # of the last streamed frame the telemetry has reported).
+            with _lock:
+                echo_pre = _cache["echo"]
             # The same single call main()'s finally makes on a Ctrl-C, made
             # now: the heartbeat thread carries DISARMED from its next tick.
             client.set_heartbeat_flags(0)
+            if args.tri_cut_disarm == "now":
+                # --tri-cut-disarm now: one DISARMED heartbeat at once, so the
+                # disarm does not wait 0-100 ms for the thread. The thread's
+                # flags are already 0, so every later heartbeat agrees with it.
+                client.send_heartbeat(flags=0)
             armed = False                   # the finally must not disarm twice
-            tri_cut_lines = _tri_cut_observe(tri_cut, tri_cut_hit)
+            tri_cut_lines = _tri_cut_observe(tri_cut, tri_cut_hit,
+                                             echo_pre=echo_pre,
+                                             disarm=args.tri_cut_disarm)
         elif tri_cut is not None:
             print(f"tri-cut: the cut NEVER happened (the stage ended before "
                   f"t={tri_cut['t_cut']:.3f} s); nothing was measured.")
@@ -2570,6 +2635,16 @@ def main():
         if tri_cut_lines is not None:
             for ln in tri_cut_lines:
                 print(ln)
+            # The verdict lines exist nowhere else: the CSV stops at the cut. Keep them
+            # beside it, so a debrief reads them from a file (Sitting 2026-11-23: the
+            # offsets were on the terminal only and the owner had to paste them).
+            report_path = os.path.splitext(str(csv_path))[0] + "_tricut.txt"
+            try:
+                with open(report_path, "w") as fh:
+                    fh.write("\n".join(tri_cut_lines) + "\n")
+                print(f"tri-cut report: {report_path}")
+            except OSError as e:
+                print(f"tri-cut report NOT saved ({e}); copy the lines above")
         print(f"csv: {csv_path}")
         print(f"cachediag csv: {cd_path}")
         if tri_cut is not None and tri_cut_hit is None:

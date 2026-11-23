@@ -151,10 +151,16 @@ static volatile bool     s_output_enabled = false;   // the fault machine owns t
 // SCOPE, from the fault task (fault_machine.cpp evaluate_guard): s_hold_flush_ok
 // is true ONLY when fb_stale is the sole reason output is off — never on an
 // E-STOP latch, a fatal / bus-down, a guard DISABLED (disarm, link loss) or the
-// FW 34 no-setpoint-since-arm shut, so nothing is transmitted that those forbid
-// (the pre-existing Hand tau drain is unchanged on them). Never during a
-// cold-start move (those own the ODrives in TRAP_TRAJ), never for the deferred
-// Stow (it forces output ON, and its branch clears the leg record below).
+// FW 34 no-setpoint-since-arm shut. That flag scopes the LEGS' flush only.
+// THE HAND (BUG-105, FW 49) flushes on EVERY suppress edge (`!out_en`, any
+// reason): it stays in Closed-loop on a Soft E-stop, a disarm or a link loss
+// (nothing commands it Idle), so a held vel_ff ran it on to
+// input_pos + vel_ff/35 (bench 2026-11-22: 0.284 rev at 10 rev/s; ~8.6 rev at
+// the 300 rev/s cap on a ~10.5 rev stroke). Its FW 22 tau drain already
+// transmitted on those edges, so the flush adds at most one frame (tau == 0).
+// A dead bus is still refused by can_jugglebot_tx's presence gate.
+// Never during a cold-start move (those own the ODrives in TRAP_TRAJ), never for
+// the deferred Stow (it forces output ON, and its branch clears the leg record below).
 // ONE EDGE, ONE FRAME per lane: the flush keys off "this lane was on the wire
 // LAST tick" (per leg — a leg that turned present mid-session has no record and
 // is never flushed from a zero), which is true on exactly one suppressed tick; a re-suppress after
@@ -167,7 +173,7 @@ static volatile bool     s_hold_flush_ok = false;
 static uint8_t           s_leg_tx_mask_prev = 0;      // ISR-only: bit i = leg i's frame went out LAST tick
 static float             s_leg_tx_pos[NUM_LEGS] = {0, 0, 0, 0, 0, 0};   // ISR-only: last transmitted
 static float             s_leg_tx_tor[NUM_LEGS] = {0, 0, 0, 0, 0, 0};   //   input_pos / torque_ff per leg
-static volatile uint32_t s_hold_flush_edges = 0;      // census: suppress edges that flushed (any lane)
+static volatile uint32_t s_hold_flush_edges = 0;      // census: suppress edges that flushed (any lane; Hand-only edges count since FW 49)
 // Deferred-stow descent state (set by the fault machine).
 static volatile bool s_stow_active = false;
 static volatile bool s_stow_complete = false;
@@ -1916,17 +1922,25 @@ static void interp_isr() {
   // link loss, fb-stale; or the lane going idle) a nonzero feedforward would be
   // left applied indefinitely. Re-send the last frame with torque 0 for
   // HAND_TORQUE_DRAIN_TICKS ticks (repeats are idempotent; a DEFERRED frame is
-  // still sent in order). pos/vel_ff are the last frame's, bit-identical, so this
-  // removes feedforward and commands nothing new. Only when that last tau != 0,
-  // so a legacy (tau ≡ 0) session keeps FW 21's TX pattern exactly. Never during
+  // still sent in order). pos is the last frame's, bit-identical; vel_ff is the
+  // last frame's on a lane-idle drain and 0 on a suppress-edge drain (BUG-105,
+  // FW 49, below), so this removes feedforward and commands nothing new. Only when that last tau != 0,
+  // so a legacy (tau ≡ 0) session keeps FW 21's TX pattern, except for the one
+  // BUG-105 hold frame (vel_ff 0, tau 0) on a suppress edge. Never during
   // a cold-start move (those own the ODrives in their own input mode; they are
   // refused while mpc_active, so this is belt and braces); a dead bus refuses the
   // frame inside can_jugglebot_tx's presence gate.
   // ── BUG-19 hold flush (FW 35) — see s_hold_flush_ok. Legs: the last frame,
-  // vel_ff 0, torque_ff kept. Hand: the record's vel_ff is zeroed, so the drain
-  // below (tau != 0) carries the hold; on a tau == 0 session one hold frame goes
-  // out here through the single hand encode site.
+  // vel_ff 0, torque_ff kept, on a MOTOR_FB_STALE suppress edge ONLY.
+  // ── BUG-105 (FW 49): the Hand flushes on EVERY suppress edge. Hand: the
+  // record's vel_ff is zeroed, so the drain below (tau != 0) carries the hold;
+  // on a tau == 0 session one hold frame goes out here through the single hand
+  // encode site. Keyed off `!out_en`, never off the lane going idle: a lane gap
+  // with output still enabled must not put a vel_ff = 0 frame on the wire
+  // mid-stroke. Never during a cold-start move; nothing without a record
+  // (s_hand_tx_prev false: boot, disarmed bridge, the FW 34 arm shut).
   const bool hold_flush = !out_en && s_hold_flush_ok && !coldstart;
+  const bool hand_flush = !out_en && !coldstart;   // BUG-105: every suppress reason
   bool flushed = false;
   if (hold_flush && s_leg_tx_mask_prev != 0u) {
     for (uint8_t i = 0; i < NUM_LEGS; ++i)
@@ -1935,7 +1949,7 @@ static void interp_isr() {
     flushed = true;
   }
   s_leg_tx_mask_prev = leg_tx_mask;
-  if (!hand_wire && s_hand_tx_prev && hold_flush) {
+  if (!hand_wire && s_hand_tx_prev && hand_flush) {
     s_hand_tx_vel = 0.0f;
     if (s_hand_tx_tau == 0.0f && leg_present(HAND_AXIS)) {
       hand_emit = true; hand_emit_pos = s_hand_tx_pos; hand_emit_vel = 0.0f; hand_emit_tau = 0.0f;

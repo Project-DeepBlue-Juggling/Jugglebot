@@ -44,6 +44,29 @@ command a deceleration — the leg ODrives autonomously hold their last
 "never command into a fault, let the ODrive hold" pattern is deliberate —
 see the CAN-bus-down row below for the reasoning.
 
+What the ODrive holds is the last frame *including its velocity
+feedforward*: in position control it settles at `input_pos + vel_ff /
+pos_gain`, not at `input_pos`. Two exceptions put one more frame on the
+wire on the first suppressed tick, so that the hold is at the last command:
+
+- **The Legs (FW 35, BUG-19), on a `MOTOR_FB_STALE` suppression only:** each
+  Leg's last transmitted frame is re-sent once with `vel_ff = 0`, same
+  `input_pos`, same `torque_ff` (gravity feedforward stays). On every other
+  suppress reason the Legs get nothing (their `vel_ff` is capped at 3.5 rev/s,
+  so the offset is at most about 0.09 rev).
+- **The Hand (FW 49, BUG-105), on every suppress edge** (Soft E-stop, disarm,
+  link loss, `MOTOR_FB_STALE`, the Hand stall latch): the Hand stays in
+  Closed-loop on those stops and nothing commands it Idle, and at its 300 rev/s
+  `vel_ff` cap and pos_gain 35 the held offset would be about 8.6 rev on a
+  ~10.5 rev stroke (bench 2026-11-22: 0.284 rev at 10 rev/s against vel_ff/35 =
+  0.286). Its last frame is re-sent once with `vel_ff = 0` and torque 0 at the
+  last transmitted `input_pos`; a session with a nonzero torque feedforward gets
+  the same through the FW 22 torque drain, which then carries `vel_ff = 0`. The
+  Hand therefore brakes to the last commanded position, its deceleration
+  bounded by the ODrive's own current limit. A Hand lane gap while output stays
+  enabled is not a trigger, nothing is sent during a cold-start move, and a
+  dead bus is still refused by the TX presence gate.
+
 ## E-STOP / fault enumeration
 
 `FaultState` values: `NONE`, `SETPOINT_STALE`, `LINK_LOST`, `MOTOR_OVERSPEED`,

@@ -5,7 +5,9 @@ FW 48 lane stall guard IDLEs it) and lives in tests/hardware; its sequence, abor
 and verdict live in ``tests/hardware/hand_stall_stage.py`` and run here against a fake
 link with a virtual clock and a toy plant: the Hand follows the command down to the stop,
 the current then grows with the command's overshoot up to the drive's limit, and the fake
-guard (when enabled) IDLEs the Hand after 150 ms at >= 40 A.
+guard (when enabled) IDLEs the Hand after 150 ms at >= 40 A. An IDLE fake drive keeps
+REPORTING its last current, as the real ODrive does (bench Sitting 2026-11-23: 44.9 A for
+> 250 ms on an IDLE Hand); ``second_rise`` is a real re-energise (back to CLOSED_LOOP).
 """
 from __future__ import annotations
 
@@ -26,7 +28,7 @@ STOP_HOMED = -0.10
 
 
 class FakeIO:
-    def __init__(self, *, fw=48, guard=True, clamp_gain=200.0, orig_limit=70.0,
+    def __init__(self, *, fw=49, guard=True, clamp_gain=200.0, orig_limit=70.0,
                  limit_takes=True, park=0.5, raise_on_send=None, raise_on_sample_after=None,
                  second_rise=False, bit3_before=False, temp=30.0,
                  telem_lag_s=0.0, never_collapses=False, idle_dead=False):
@@ -68,15 +70,15 @@ class FakeIO:
                 if self.t40 is None:
                     self.t40 = self.t
                 if self.guard and self.t - self.t40 >= ST.GUARD_HOLD_S:
-                    self.state, self.iq = ST.AXIS_IDLE, 0.0
+                    self.state = ST.AXIS_IDLE        # self.iq stays: the report freezes
                     self.fault, self.flags = ST.FAULT_HAND_STALL, ST.DIAG_FLAG_LANE_STALL
                     self.trip_t = self.t
             else:
                 self.t40 = None
         elif self.state == ST.AXIS_IDLE:
-            self.iq = 0.0
+            # An IDLE drive keeps reporting its LAST Iq (no FOC loop updates it).
             if self.second_rise and self.trip_t is not None and self.t - self.trip_t > 0.3:
-                self.iq = 20.0
+                self.state, self.iq = ST.AXIS_CLOSED_LOOP, 20.0   # a real re-energise
 
     # reads
     def preflight(self):
@@ -214,16 +216,17 @@ def test_shift_puts_the_ramp_end_past_the_stop():
 
 # ── refusals ────────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("fw", [47, 46, 36, None])
-def test_firmware_before_48_is_refused_before_anything(fw):
-    # 47 matters most: main's FW 47 (the IMU SET_ODR relay, 2026-11-22) has NO stall
+@pytest.mark.parametrize("fw", [48, 47, 46, 36, None])
+def test_firmware_before_49_is_refused_before_anything(fw):
+    # 48 has the guard but re-trips on an Idle Hand after every clear (BUG-131).
+    # 47: main's FW 47 (the IMU SET_ODR relay, 2026-11-22) has NO stall
     # guard; the guard was renumbered 47 -> 48 when the two collided.
     io = FakeIO(fw=fw)
     rc, lines = _run(io)
     assert rc == 2
     assert not [n for n in _names(io) if n != "read_limits"]
     assert ST.stall_fw_refusal(fw) is not None
-    assert ST.stall_fw_refusal(48) is None and ST.stall_fw_refusal(49) is None
+    assert ST.stall_fw_refusal(49) is None and ST.stall_fw_refusal(50) is None
 
 
 def test_preflight_reports_every_refusal_at_once():
@@ -312,7 +315,32 @@ def test_second_current_rise_after_the_trip_fails():
     io = FakeIO(second_rise=True)
     rc, lines = _run(io)
     assert rc == 1
-    assert "current rose again after the trip" in lines[-1]
+    assert "re-energised after the trip" in lines[-1]
+
+
+def test_a_frozen_current_on_an_idle_drive_is_reported_not_judged():
+    # Bench Sitting 2026-11-23: the IDLE drive kept reporting 44.9 A for > 250 ms, and the
+    # old "current below 5 A within 250 ms" check failed a good trip.
+    io = FakeIO()
+    rc, lines = _run(io)
+    assert rc == 0, lines
+    assert io.state == ST.AXIS_IDLE and io.iq >= ST.GUARD_IQ_A   # the fake froze it
+    notes = [ln for ln in lines if "while IDLE; not judged" in ln]
+    assert len(notes) == 1, lines
+    assert re.fullmatch(r"the drive reports a frozen 45\.0 A while IDLE; not judged",
+                        notes[0])
+    assert any(ln.startswith("axis IDLE ") for ln in lines)
+
+
+def test_a_falling_current_on_a_closed_loop_hand_is_not_a_trip():
+    w = ST.StallWatch(stop_lane_rev=0.05)
+    hot = ST.Sample(pos=0.05, vel=0.0, iq_meas=45.0, iq_set=45.0,
+                    axis_state=ST.AXIS_CLOSED_LOOP)
+    cold = ST.Sample(pos=0.05, vel=0.0, iq_meas=1.0, iq_set=1.0,
+                     axis_state=ST.AXIS_CLOSED_LOOP)
+    assert w.feed(0.0, hot, False) == "run"
+    assert w.feed(0.01, cold, False) == "run"
+    assert w.t_trip is None
 
 
 def test_stale_iq_on_the_trip_frame_is_not_a_second_rise():
@@ -322,14 +350,14 @@ def test_stale_iq_on_the_trip_frame_is_not_a_second_rise():
     rc, lines = _run(io)
     assert rc == 0, lines
     assert lines[-1].startswith("STALL-GUARD PASS")
-    assert any("current collapsed" in ln for ln in lines)
+    assert any(ln.startswith("axis IDLE ") for ln in lines)
 
 
 def test_a_current_that_never_collapses_after_the_trip_fails():
     io = FakeIO(never_collapses=True)
     rc, lines = _run(io)
     assert rc == 1
-    assert "did not collapse within 250 ms" in lines[-1]
+    assert "did not read IDLE within 250 ms" in lines[-1]
     assert any(e[0] == "idle" for e in io.log)
 
 
@@ -337,7 +365,7 @@ def test_a_rise_after_a_lagged_collapse_still_fails():
     io = FakeIO(telem_lag_s=0.12, second_rise=True)
     rc, lines = _run(io)
     assert rc == 1
-    assert "current rose again after the trip" in lines[-1]
+    assert "re-energised after the trip" in lines[-1]
 
 
 def test_the_limit_is_not_raised_under_a_hand_that_is_not_confirmed_idle():
@@ -469,12 +497,11 @@ class _World:
                 if self.iq >= ST.GUARD_IQ_A:
                     self.t40 = now if self.t40 is None else self.t40
                     if now - self.t40 >= ST.GUARD_HOLD_S:
-                        self.state, self.iq = ST.AXIS_IDLE, 0.0
+                        self.state = ST.AXIS_IDLE    # self.iq stays: the report freezes
                         self.fault, self.flags = ST.FAULT_HAND_STALL, ST.DIAG_FLAG_LANE_STALL
                 else:
                     self.t40 = None
-            else:
-                self.iq = 0.0
+            # else: an IDLE drive keeps reporting its last Iq
 
     def tm(self):
         import types
@@ -580,7 +607,9 @@ def _install_bench(monkeypatch, world):
     monkeypatch.setattr(B, "_wait_hand_diag", world.diag)
     monkeypatch.setattr(B, "_hb", world.hb)
     monkeypatch.setattr(B, "_fault", lambda: world.fault)
-    monkeypatch.setattr(B, "_fw_version", lambda: ST.STALL_FW_MIN)
+    # the bench's lockstep check wants the Jetson's expected firmware, which is at
+    # least the stall stage's minimum (49 since BUG-105, which STALL_FW_MIN now equals)
+    monkeypatch.setattr(B, "_fw_version", lambda: B.rpc_args.EXPECTED_BRIDGE_FW_VERSION)
     return B
 
 

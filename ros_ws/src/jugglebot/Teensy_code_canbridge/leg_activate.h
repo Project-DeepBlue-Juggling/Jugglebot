@@ -106,7 +106,11 @@ bool     activate_stalled(uint8_t axis);
 //  (the streamed lane, a lane STOP, a guard-latched hold, Homing), each NEW Hand
 //  Get_Iq sample (axes[6].iq_timestamp_us advanced) is tested for
 //  |iq| >= HAND_LANE_STALL_IQ_A AND |vel| <= HAND_LANE_STALL_VEL_RPS with a
-//  velocity no older than HAND_LANE_STALL_GAP_US. A run of such samples whose
+//  velocity no older than HAND_LANE_STALL_GAP_US, while the Hand may be in
+//  CLOSED_LOOP (FW 49, BUG-131 item 2: a sample is excluded when a heartbeat no
+//  older than CAN_HEARTBEAT_STALE_US reports any other state, because an IDLE
+//  ODrive keeps sending its last Iq; a never-seen or stale heartbeat still
+//  counts). A run of such samples whose
 //  stamps span HAND_LANE_STALL_HOLD_US (150 ms) commands the Hand IDLE (re-sent
 //  every tick until queued), latches fault_notify_hand_stall() (FaultState
 //  HAND_STALL, guard ESTOP, CLEAR_ERRORS only) and sets the sticky record below.

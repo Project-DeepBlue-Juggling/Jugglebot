@@ -1019,7 +1019,12 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # latched holds (40 A / 1 rev/s / 150 ms, then Hand IDLE and the FaultState
 # HAND_STALL latch, released only by CLEAR_ERRORS; Diagnostic flags bit3).
 # Additive on the wire: PROTOCOL_VERSION stays 14.
-EXPECTED_BRIDGE_FW_VERSION = 48
+# 48 -> 49 (2026-11-23, BUG-105): the Hand's vel_ff is zeroed on EVERY suppress
+# edge (Soft E-stop, disarm, link loss, not only MOTOR_FB_STALE): one hold frame
+# at the last transmitted input_pos on a tau == 0 session, the tau drain carries
+# vel_ff 0 otherwise. The Legs' flush is unchanged. Behavioural only: no wire
+# change, PROTOCOL_VERSION stays 14.
+EXPECTED_BRIDGE_FW_VERSION = 49
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

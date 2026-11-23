@@ -1873,3 +1873,102 @@ TEST_CASE("FW 48: a Hand stall latch holds the Legs, names HAND_STALL and releas
     CHECK_FALSE(fault_hand_stall_latched());
   }
 }
+
+// ── BUG-105 (FW 49) through the REAL fault machine ───────────────────────────
+//  The interp-only BUG-105 cases (test_leg_interp.cpp) drop output by calling
+//  interp_set_output_enabled(false) directly. Here the drop comes from a real
+//  latch evaluated by fault_step(): a guard E-STOP (MOTOR_OVERSPEED, the Hand's
+//  own bound) and the FW 48 HAND_STALL latch (fault_notify_hand_stall(), the
+//  call leg_activate.cpp's stall guard makes; the guard's own IDLE frame is
+//  leg_activate.cpp's and is not compiled into this binary). The Hand streams
+//  a live vel_ff (legacy tau == 0, so no FW 22 drain); on the edge exactly ONE
+//  set_input_pos reaches the wire, for the Hand, at the last transmitted
+//  input_pos with vel_ff 0 and torque 0, no Leg frame, and nothing after it.
+namespace bug105fm {
+struct Cap { bool seen = false; uint8_t buf[8] = {0}; };
+static size_t capture(Cap out[NUM_AXES]) {
+  size_t n = 0;
+  for (int a = 0; a < NUM_AXES; ++a) out[a] = Cap{};
+  for (size_t i = 0; i < fake_sent_count(); ++i) {
+    const SentFrame& f = fake_sent_at(i);
+    if ((f.id & ODrive::CMD_ID_MASK) != ODriveCmd::set_input_pos) continue;
+    const uint8_t a = ODrive::axis_of(f.id);
+    if (a < NUM_AXES) { out[a].seen = true; memcpy(out[a].buf, f.buf, 8); ++n; }
+  }
+  return n;
+}
+static int16_t vel_of(const Cap& c) { int16_t v; memcpy(&v, &c.buf[4], 2); return v; }
+static int16_t tor_of(const Cap& c) { int16_t t; memcpy(&t, &c.buf[6], 2); return t; }
+// Keep every guard input fresh (leg 0, the Hand encoder AT its own command, the
+// link) so the only thing that can change output is the latch under test.
+static void keep_fresh(float hand_pos, float hand_vel) {
+  stamp_hb(0);
+  axes[0].pos_timestamp_us = fake_mono_us();
+  stamp_hb(HAND_AXIS);
+  write_pos_vel(hand_axis(), hand_pos, hand_vel, fake_mono_us());
+  fake_set_udp_last_rx_us(fake_mono_us());
+}
+// Armed (fw27_arm_hand_session), then a Hand stream at u0 1.0 rev, v0 4 rev/s
+// for 5 ticks with a fault_step between each, as on target. Returns the last
+// Hand frame on the wire, which carries a live vel_ff.
+static Cap stream_live_hand() {
+  fw27_arm_hand_session();
+  Cap last[NUM_AXES];
+  for (uint16_t k = 0; k < 5; ++k) {
+    fake_advance(INTERP_PERIOD_US);
+    keep_fresh(axes[HAND_AXIS].target_pos_rev, 0.0f);
+    JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp));
+    sp.u0[HAND_AXIS] = 1.0f; sp.v0[HAND_AXIS] = 4.0f;
+    sp.flags = 0x4u;                                   // HAS_HAND, Taylor (no u1)
+    interp_on_setpoint((uint16_t)(2 + k), reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
+    fault_step();
+    REQUIRE(interp_output_enabled());
+    fake_clear_sent(); interp_isr(); capture(last);
+  }
+  REQUIRE(last[HAND_AXIS].seen);
+  REQUIRE(vel_of(last[HAND_AXIS]) != 0);               // not vacuous: a live vel_ff is on the wire
+  REQUIRE(tor_of(last[HAND_AXIS]) == 0);               // legacy tau == 0: no FW 22 drain
+  return last[HAND_AXIS];
+}
+// The edge tick and 25 more (fault_step between each): exactly one Hand hold
+// frame, then silence, and the latch never lets go.
+static void expect_one_hold_frame(const Cap& last, uint8_t want_state) {
+  fault_step();
+  REQUIRE(fault_state() == want_state);
+  REQUIRE(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
+  REQUIRE_FALSE(interp_output_enabled());
+  Cap got[NUM_AXES];
+  fake_clear_sent(); interp_isr();
+  CHECK(capture(got) == 1);                            // the Hand alone
+  CHECK(fake_sent_count() == 1);                       // and no other frame at all
+  CHECK_FALSE(got[0].seen);                            // an E-STOP flushes no Leg
+  REQUIRE(got[HAND_AXIS].seen);
+  CHECK(memcmp(got[HAND_AXIS].buf, last.buf, 4) == 0); // the LAST transmitted input_pos
+  CHECK(vel_of(got[HAND_AXIS]) == 0);
+  CHECK(tor_of(got[HAND_AXIS]) == 0);
+  CHECK(interp_hold_flush_edges() == 1u);
+  for (int k = 0; k < 25; ++k) {
+    fake_advance(INTERP_PERIOD_US);
+    keep_fresh(axes[HAND_AXIS].pos_rev, 0.0f);
+    fault_step();
+    CHECK(fault_state() == want_state);
+    fake_clear_sent(); interp_isr();
+    CHECK(fake_sent_count() == 0);
+  }
+  CHECK(interp_hold_flush_edges() == 1u);
+}
+}  // namespace bug105fm
+
+TEST_CASE("BUG-105 through the fault machine: a real guard E-STOP or HAND_STALL latch puts ONE Hand hold frame out (last pos, vel_ff 0), then nothing") {
+  using namespace bug105fm;
+  SUBCASE("guard E-STOP: the Hand's own MOTOR_OVERSPEED latch") {
+    const Cap last = stream_live_hand();
+    keep_fresh(axes[HAND_AXIS].pos_rev, HAND_MAX_MOTOR_VEL_RPS + 5.0f);
+    expect_one_hold_frame(last, JbUdp::FaultState::MOTOR_OVERSPEED);
+  }
+  SUBCASE("HAND_STALL: the FW 48 latch via fault_notify_hand_stall()") {
+    const Cap last = stream_live_hand();
+    fault_notify_hand_stall();
+    expect_one_hold_frame(last, JbUdp::FaultState::HAND_STALL);
+  }
+}

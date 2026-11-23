@@ -87,7 +87,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 # ── Mirrored firmware / config constants (pinned by the stall test file) ──────
-STALL_FW_MIN = 48                 # canbridge_config.h FW_VERSION that added the guard
+STALL_FW_MIN = 49                 # FW 48 added the guard; FW 49 stops it re-tripping on an Idle Hand
 GUARD_IQ_A = 40.0                 # canbridge_config.h HAND_LANE_STALL_IQ_A
 GUARD_VEL_RPS = 1.0               # canbridge_config.h HAND_LANE_STALL_VEL_RPS
 GUARD_HOLD_S = 0.150              # canbridge_config.h HAND_LANE_STALL_HOLD_US
@@ -129,16 +129,18 @@ CLAMP_BOUND_S = (OBS_LAG_S + ABORT_AFTER_40_S + POLL_S
 assert CLAMP_BOUND_S <= 0.75, CLAMP_BOUND_S
 
 POST_TRIP_WATCH_S = 1.0
-POST_TRIP_IQ_A = 5.0              # "near zero" after the IDLE
+# An IDLE ODrive keeps REPORTING its last Iq: the FOC loop that updates it is stopped, and
+# the cyclic Get_Iq frame still goes out (bench Sitting 2026-11-23: 44.9 A for > 250 ms on
+# an IDLE Hand; firmware 49 BUG-131 item 2). So the reported current says nothing about an
+# IDLE axis and is never judged once the axis reads IDLE; above this it is reported once.
+FROZEN_IQ_NOTE_A = 5.0
 # The trip is usually SEEN on Diagnostic bit3, and that frame is sent on the flag edge
-# with the Iq and the axis state the bridge last heard from the drive, i.e. from BEFORE
-# its IDLE frame took effect (bench Sitting 2026-11-22: three trips, each first post-trip
-# sample 44.7-44.8 A, twice still CLOSED_LOOP). The collapse follows on the next Get_Iq
-# reply (9 ms), Diagnostic tick (10 ms) and ODrive heartbeat (100 ms). So "no second
-# rise" is judged in two parts: the current and the axis state must COLLAPSE within
-# POST_TRIP_SETTLE_S of the trip, and must then STAY collapsed.
+# with the axis state the bridge last heard from the drive, i.e. from BEFORE its IDLE
+# frame took effect (bench Sitting 2026-11-22: three trips, twice still CLOSED_LOOP). The
+# IDLE report follows on the next ODrive heartbeat (100 ms). So "no second rise" is judged
+# on the AXIS STATE in two parts: it must read IDLE within POST_TRIP_SETTLE_S of the trip
+# (the collapse), and must then never read CLOSED_LOOP again (a re-energise).
 POST_TRIP_SETTLE_S = 0.250
-IQ_COLLAPSE_A = 5.0               # the push has stopped
 PROBE_VEL_RPS = 0.5               # HAND_MOVE_TO cruise for the refusal probe (gentle cap 2.5)
 
 
@@ -174,8 +176,9 @@ def stall_fw_refusal(fw):
     if fw is None:
         return "no BridgeIdentity: the bridge firmware version is unknown"
     if int(fw) < STALL_FW_MIN:
-        return (f"bridge reports firmware {fw}; the Hand stall guard exists from firmware "
-                f"{STALL_FW_MIN} (BUG-123). Flash the night-shift/2026-11-20-BUG-123 build first")
+        return (f"bridge reports firmware {fw}; the stall stage needs firmware "
+                f"{STALL_FW_MIN} or later (48 has the guard but re-trips on an Idle Hand "
+                f"after every clear, BUG-131). Flash the firmware {STALL_FW_MIN} build first")
     return None
 
 
@@ -317,8 +320,8 @@ class StallWatch:
             how.append("bit3")
         if s.axis_state == AXIS_IDLE:
             how.append("axis IDLE")
-        if self.t_first40 is not None and iq < IQ_COLLAPSE_A:
-            how.append("iq collapsed")
+        # No "iq collapsed" sign: an IDLE drive keeps reporting its last Iq, so the
+        # current never falls on a trip, and a fall on a CLOSED_LOOP Hand is not one.
         if how:
             self.t_trip, self.trip_how = t, ", ".join(how)
             return "trip"
@@ -353,7 +356,7 @@ class StallResult:
     bit3: bool = False
     bit3_before: bool = False
     second_rise: Optional[str] = None
-    collapse_ms: Optional[float] = None  # trip seen -> iq near zero and axis not CLOSED_LOOP
+    collapse_ms: Optional[float] = None  # trip seen -> axis_state reads IDLE
     probe: Optional[str] = None
     abort: Optional[str] = None
     limit_orig: Optional[float] = None
@@ -538,37 +541,45 @@ def _body(io, cfg, say, pre, vel0, r, st):
         return
     say(f"trip seen at t={watch.t_trip:.3f} s ({watch.trip_how}); first 40 A at "
         f"{'n/a' if watch.t_first40 is None else f'{watch.t_first40:.3f} s'}")
-    # Nothing re-energises: the current and the axis state collapse within
-    # POST_TRIP_SETTLE_S of the trip, and stay collapsed for POST_TRIP_WATCH_S.
+    # Nothing re-energises: the axis state reads IDLE within POST_TRIP_SETTLE_S of the
+    # trip and never reads CLOSED_LOOP again for POST_TRIP_WATCH_S. The reported current
+    # is not judged on an IDLE axis (FROZEN_IQ_NOTE_A).
     t_trip_clock = io.clock()
     t_end = t_trip_clock + POST_TRIP_WATCH_S
     collapsed_at = None
+    frozen_noted = False
     while io.clock() < t_end:
         s = io.sample()
         dt = io.clock() - t_trip_clock
-        r.peak_a = max(r.peak_a, abs(s.iq_meas))
         if s.flags & DIAG_FLAG_LANE_STALL:
             r.bit3 = True
         if s.fault is not None:
             r.fault_end = s.fault
         iq = max(abs(s.iq_meas), abs(s.iq_set))
-        live = iq > POST_TRIP_IQ_A or s.axis_state == AXIS_CLOSED_LOOP
-        if collapsed_at is None and not live:
-            collapsed_at = dt
-        elif r.second_rise is None and live and collapsed_at is not None:
-            r.second_rise = (f"current rose again after the trip ({iq:.1f} A, axis_state "
-                             f"{s.axis_state}, {dt * 1e3:.0f} ms after it, "
-                             f"{(dt - collapsed_at) * 1e3:.0f} ms after the collapse)")
+        if s.axis_state == AXIS_IDLE:
+            if collapsed_at is None:
+                collapsed_at = dt
+            if not frozen_noted and iq > FROZEN_IQ_NOTE_A:
+                frozen_noted = True
+                say(f"the drive reports a frozen {iq:.1f} A while IDLE; not judged")
+            io.sleep(0.01)
+            continue
+        r.peak_a = max(r.peak_a, abs(s.iq_meas))   # a live (not IDLE) reading only
+        if r.second_rise is None and collapsed_at is not None \
+                and s.axis_state == AXIS_CLOSED_LOOP:
+            r.second_rise = (f"the Hand re-energised after the trip (axis_state "
+                             f"{s.axis_state}, {iq:.1f} A, {dt * 1e3:.0f} ms after it, "
+                             f"{(dt - collapsed_at) * 1e3:.0f} ms after the IDLE)")
             command_idle(io, say)
-        elif r.second_rise is None and live and dt > POST_TRIP_SETTLE_S:
-            r.second_rise = (f"current did not collapse within "
-                             f"{POST_TRIP_SETTLE_S * 1e3:.0f} ms of the trip ({iq:.1f} A, "
-                             f"axis_state {s.axis_state})")
+        elif r.second_rise is None and collapsed_at is None and dt > POST_TRIP_SETTLE_S:
+            r.second_rise = (f"the axis did not read IDLE within "
+                             f"{POST_TRIP_SETTLE_S * 1e3:.0f} ms of the trip (axis_state "
+                             f"{s.axis_state}, {iq:.1f} A)")
             command_idle(io, say)
         io.sleep(0.01)
     r.collapse_ms = None if collapsed_at is None else collapsed_at * 1e3
     if collapsed_at is not None:
-        say(f"current collapsed {r.collapse_ms:.0f} ms after the trip was seen "
+        say(f"axis IDLE {r.collapse_ms:.0f} ms after the trip was seen "
             f"(limit {POST_TRIP_SETTLE_S * 1e3:.0f})")
     s = io.sample()
     r.temp_after = s.temp_motor
