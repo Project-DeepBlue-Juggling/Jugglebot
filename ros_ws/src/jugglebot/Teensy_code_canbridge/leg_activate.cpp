@@ -424,6 +424,8 @@ bool hand_lane_stalled(uint8_t axis) { return axis == HAND_AXIS && s_lane_stalle
 // the Hand (the ladder's own guard above owns a Hand it moves). Only the Hand is
 // stopped here: the Legs are held by the guard ESTOP the latch raises, exactly as
 // for a Hand ODrive fault (ODRIVE_FATAL), never IDLEd (a loaded Platform).
+// FW 49 (BUG-131 item 2): samples count only while the Hand may be in
+// CLOSED_LOOP (see the predicate below).
 static void hand_lane_stall_guard() {
   // A trip whose IDLE frame the TX path refused: re-send every tick until queued.
   if (s_lane_idle_pending &&
@@ -444,8 +446,24 @@ static void hand_lane_stall_guard() {
   const float vel = axes[HAND_AXIS].vel_rps;
   const uint64_t vts = atomic_read_u64(&axes[HAND_AXIS].pos_timestamp_us);
   const bool vel_fresh = vts != 0 && (vts >= ts || ts - vts <= HAND_LANE_STALL_GAP_US);
+  // BUG-131 item 2 (FW 49): only a Hand that may be in CLOSED_LOOP counts. An
+  // IDLE ODrive keeps broadcasting the LAST Iq (the FOC loop that updates it is
+  // stopped) with fresh frames, so after any IDLE taken at >= 40 A (this guard's
+  // own trip, the ladder's, the E-stop button) "40 A and not moving" held forever
+  // and the guard re-latched ~150 ms after every CLEAR_ERRORS (bench 2026-11-23).
+  // A sample is excluded only when a FRESH heartbeat (no older than
+  // CAN_HEARTBEAT_STALE_US at this sample) positively reports another state. A
+  // Hand whose heartbeat was never seen or has gone stale is UNKNOWN and still
+  // counts: a stalled Hand whose sparse 10 Hz heartbeat is lost is still pushing,
+  // and FW 48's predicate is what applies to it.
+  const uint64_t hbs = atomic_read_u64(&axes[HAND_AXIS].last_heartbeat_us);
+  const bool hb_fresh = axes[HAND_AXIS].heartbeat_seen && hbs != 0 &&
+                        (hbs >= ts || ts - hbs <= CAN_HEARTBEAT_STALE_US);
+  const bool may_be_closed_loop =
+      !hb_fresh || axes[HAND_AXIS].axis_state == (uint8_t)ODriveState::CLOSED_LOOP;
   // A NaN fails both comparisons, so it can never read as a stall.
-  const bool stalled_now = vel_fresh && fabsf(iq) >= HAND_LANE_STALL_IQ_A &&
+  const bool stalled_now = may_be_closed_loop && vel_fresh &&
+                           fabsf(iq) >= HAND_LANE_STALL_IQ_A &&
                            fabsf(vel) <= HAND_LANE_STALL_VEL_RPS;
   if (!stalled_now) { s_lane_timing = false; return; }
   if (!s_lane_timing) { s_lane_timing = true; s_lane_t0_us = ts; return; }

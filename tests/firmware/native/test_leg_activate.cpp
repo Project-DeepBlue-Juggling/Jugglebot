@@ -63,6 +63,8 @@ static void present_only(uint8_t mask) {
     axes[i].iq_measured = 0.0f;
     axes[i].iq_timestamp_us = 0;    // FW 48: no Get_Iq sample yet
     axes[i].pos_timestamp_us = 0;
+    axes[i].axis_state = 0;         // FW 49: no heartbeat state known (unknown counts)
+    axes[i].last_heartbeat_us = 0;
   }
 }
 
@@ -1031,4 +1033,147 @@ TEST_CASE("BUG-131: a Hand ladder drops a lane trip's refused IDLE; the clear al
     tick_for(TICK_US);
     CHECK(idle_count() == 1);
   }
+}
+
+// ── BUG-131 item 2 (FW 49): the lane guard counts only a Hand that may be in ──
+//  CLOSED_LOOP. Bench 2026-11-23 (FW 49): the guard tripped correctly (Hand IDLE
+//  190 ms after the first 40 A sample), then the IDLE drive kept broadcasting its
+//  LAST Iq (44.9 A, fresh frames, for > 250 ms: the FOC loop that updates it is
+//  stopped), so "40 A and not moving" held on an Idle Hand and the latch was back
+//  31 s after CLEAR_ERRORS. The rule (leg_activate.cpp hand_lane_stall_guard): a
+//  sample is excluded when a heartbeat no older than CAN_HEARTBEAT_STALE_US at the
+//  sample reports any state but CLOSED_LOOP; a never-seen or stale heartbeat is
+//  unknown and still counts. hand_heartbeat() is one Hand heartbeat received now.
+static void hand_heartbeat(uint32_t state) {
+  REQUIRE(micros64() != 0);   // a 0 stamp reads as "never received" (the fake clock starts at 0)
+  axes[HAND_AXIS].heartbeat_seen = true;
+  axes[HAND_AXIS].axis_state = (uint8_t)state;
+  axes[HAND_AXIS].last_heartbeat_us = micros64();
+}
+// Samples on the drive's real cadences: one Get_Iq every SAMPLE_US, a heartbeat
+// reporting `state` every HB_US starting at `next_hb_us` (in/out).
+static constexpr uint64_t HB_US = 100000;   // heartbeat_msg_rate_ms 99
+static void hb_samples(int n, float iq, float vel, uint32_t state, uint64_t& next_hb_us) {
+  for (int k = 0; k < n; ++k) {
+    cs_advance(SAMPLE_US);
+    if (micros64() >= next_hb_us) { hand_heartbeat(state); next_hb_us = micros64() + HB_US; }
+    axes[HAND_AXIS].iq_measured = iq;
+    axes[HAND_AXIS].vel_rps = vel;
+    axes[HAND_AXIS].iq_timestamp_us = micros64();
+    axes[HAND_AXIS].pos_timestamp_us = micros64();
+    activate_step();
+  }
+}
+static constexpr float FROZEN_A = 44.9f;   // the bench's frozen report, 2026-11-23
+
+// The flown sequence up to the trip: a Closed-loop Hand stalled at 44.9 A with a
+// fresh CLOSED_LOOP heartbeat on every sample. Returns with the trip just taken.
+static void closed_loop_stall_to_trip() {
+  full_reset(HAND_BIT);
+  cs_clear_sent();
+  for (int k = 0; k < 16; ++k) {
+    cs_advance(SAMPLE_US);
+    hand_heartbeat(ODriveState::CLOSED_LOOP);     // a fresh CLOSED_LOOP report, then the sample
+    lane_sample(FROZEN_A, 0.0f, 0);
+    if (k == 14) { REQUIRE(idle_count() == 0); REQUIRE(cs_hand_stall_notified() == 0); }
+  }
+  REQUIRE(idle_count() == 1);
+  REQUIRE(cs_hand_stall_notified() == 1);
+}
+
+TEST_CASE("BUG-131 item 2: after a trip the IDLE Hand's frozen 44.9 A never re-trips, through the clear and 2 s of samples") {
+  closed_loop_stall_to_trip();
+  // The drive obeyed and is IDLE, but its next heartbeat comes a full period later
+  // (worst-case lag): for 100 ms the last report still reads CLOSED_LOOP. Iq stays
+  // frozen at 44.9 A with fresh stamps, the Hand still on the stop (vel 0).
+  uint64_t next_hb = micros64() + HB_US;
+  cs_set_guard_estop(true);                       // the HAND_STALL latch holds guard ESTOP
+  hb_samples(30, FROZEN_A, 0.0f, ODriveState::IDLE, next_hb);   // 300 ms
+  cs_set_guard_estop(false);                      // the operator's CLEAR_ERRORS
+  hb_samples(200, FROZEN_A, 0.0f, ODriveState::IDLE, next_hb);  // 2 s more
+  CHECK(cs_hand_stall_notified() == 1);           // no re-latch
+  CHECK(idle_count() == 1);                       // no second IDLE frame
+}
+
+TEST_CASE("BUG-131 item 2: an Idle Hand reporting a frozen 45 A from boot never trips") {
+  full_reset(HAND_BIT);
+  cs_clear_sent();
+  // Boot: Get_Iq frames come first; the first heartbeat (IDLE) lands 90 ms in, so
+  // the first nine samples are unknown and count, which is short of 150 ms.
+  uint64_t next_hb = micros64() + 9 * SAMPLE_US;
+  hb_samples(300, 45.0f, 0.0f, ODriveState::IDLE, next_hb);     // 3 s
+  CHECK(idle_count() == 0);
+  CHECK(cs_hand_stall_notified() == 0);
+  CHECK_FALSE(hand_lane_stalled(HAND_AXIS));
+}
+
+TEST_CASE("BUG-131 item 2: a Closed-loop stall still trips at 150 ms, heartbeats on their real cadence") {
+  full_reset(HAND_BIT);
+  cs_clear_sent();
+  uint64_t next_hb = 0;                           // a CLOSED_LOOP heartbeat with the first sample
+  hb_samples(15, STALL_A, STILL_RPS, ODriveState::CLOSED_LOOP, next_hb);   // 0..140 ms
+  CHECK(idle_count() == 0);
+  hb_samples(1, STALL_A, STILL_RPS, ODriveState::CLOSED_LOOP, next_hb);    // 150 ms
+  CHECK(idle_count() == 1);
+  CHECK(cs_hand_stall_notified() == 1);
+  // and an Idle report mid-window restarts it, like any non-stalled sample
+  full_reset(HAND_BIT);
+  cs_clear_sent();
+  cs_advance(SAMPLE_US);
+  for (int k = 0; k < 6; ++k) {
+    hand_heartbeat(ODriveState::CLOSED_LOOP);
+    lane_samples(14, STALL_A, STILL_RPS);         // 130 ms from the run's first sample
+    hand_heartbeat(ODriveState::IDLE);
+    lane_sample(STALL_A, STILL_RPS);
+  }
+  CHECK(idle_count() == 0);
+}
+
+TEST_CASE("BUG-131 item 2: an unknown or stale heartbeat counts; a fresh non-CLOSED_LOOP one is required to exclude") {
+  SUBCASE("never seen: FW 48's predicate, trips at 150 ms") {
+    full_reset(HAND_BIT); cs_clear_sent();
+    axes[HAND_AXIS].heartbeat_seen = false;
+    lane_samples(16, STALL_A, STILL_RPS);
+    CHECK(idle_count() == 1);
+  }
+  SUBCASE("an IDLE heartbeat older than CAN_HEARTBEAT_STALE_US is unknown") {
+    full_reset(HAND_BIT); cs_clear_sent();
+    cs_advance(SAMPLE_US);
+    hand_heartbeat(ODriveState::IDLE);
+    cs_advance(CAN_HEARTBEAT_STALE_US);           // the samples below are all past it
+    lane_samples(16, STALL_A, STILL_RPS);
+    CHECK(idle_count() == 1);
+  }
+  SUBCASE("the last report IDLE, then heartbeats lost: excluded for 0.5 s, then 150 ms to trip") {
+    full_reset(HAND_BIT); cs_clear_sent();
+    cs_advance(SAMPLE_US);
+    hand_heartbeat(ODriveState::IDLE);
+    lane_samples(50, STALL_A, STILL_RPS);         // ..500 ms after it: fresh, excluded
+    lane_samples(15, STALL_A, STILL_RPS);         // 510..650 ms: the window opens at 510
+    CHECK(idle_count() == 0);
+    lane_sample(STALL_A, STILL_RPS);              // 660 ms: 150 ms of unknown samples
+    CHECK(idle_count() == 1);
+    CHECK(cs_hand_stall_notified() == 1);
+  }
+  SUBCASE("other non-CLOSED_LOOP states exclude too (the owner's rule: Closed-loop only)") {
+    full_reset(HAND_BIT); cs_clear_sent();
+    uint64_t next_hb = 0;
+    hb_samples(100, STALL_A, STILL_RPS, ODriveState::ENCODER_INDEX_SEARCH, next_hb);
+    CHECK(idle_count() == 0);
+  }
+}
+
+TEST_CASE("BUG-131 item 2: a trip followed by LOST heartbeats re-latches once, then the IDLE report ends it") {
+  // The exposure of the heartbeat lag: if the IDLE heartbeat does not arrive for
+  // 150 ms of samples after the trip, the stale CLOSED_LOOP report lets the frozen
+  // current re-trip once (another IDLE, the latch set again). A clear inside that
+  // window is undone once; the first IDLE heartbeat ends it, so the next clear holds.
+  closed_loop_stall_to_trip();
+  lane_samples(16, FROZEN_A, 0.0f);               // 150 ms of stamps, no heartbeat: still reads CLOSED_LOOP
+  CHECK(cs_hand_stall_notified() == 2);
+  CHECK(idle_count() == 2);
+  uint64_t next_hb = 0;                           // the IDLE report arrives with the next sample
+  hb_samples(200, FROZEN_A, 0.0f, ODriveState::IDLE, next_hb);
+  CHECK(cs_hand_stall_notified() == 2);
+  CHECK(idle_count() == 2);
 }
