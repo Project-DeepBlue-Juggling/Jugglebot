@@ -103,3 +103,15 @@ structures are about 780 B: 512 B CRCs, 30 B diag, 192 B mailbox records), bss u
 ## Audit follow-up (2026-11-23)
 
 Three fixes after the audit. (1) `TxTracker::on_placed` on a mailbox that still holds an active record now resolves that record as done (tx_done and pend_max from its timestamp) and keeps tracking valid, since a reused mailbox means the earlier frame was sent. (2) The sketch no longer trusts the predicted mailbox: `TxTracker::on_written` finds the mailbox that really holds the frame (TX_ONCE, IMU_DATA id, same seq; predicted index preferred) and, when none does, counts the frame placed and done; an unreadable range sets tracking invalid. (3) In `platform_imu.py` an auxiliary (diag or chunk table) READ refused with ERR_DISABLED, ERR_FW_UPDATE, ERR_NOT_FROZEN or ERR_WRONG_CAPTURE now takes the data-READ failure path (no RESUME); ERR_OUT_OF_RANGE and ERR_BAD_ARGS stay "unavailable". Both firmware envs compile (build only, not flashed); the register behaviour on the real FlexCAN stays unverified until a Sitting.
+
+## Board check (2026-11-23 14:01 to 14:08, robot at rest, motor supply off)
+
+Flashed over CAN with `pio run -e teensy40 -t upload`: "Platform Teensy FW version: 13 -> 14". Launch log
+`temp/logs/launch_fw14_check.log`: "PLATFORM_FW_CHECK: OK — Platform Teensy v14", "BRIDGE_FW_CHECK: OK — can-bridge
+v49". A partial-span operator upload (`/platform_imu/upload` with t_start = now - 12 s, t_end = now - 8 s) finished
+"8192 samples, 14.5 s, 0 duplicate, 75 READs (64 chained, 0 replaced), 1 block timeouts, 1 hole passes, refill
+0.3 s, complete yes, crc ok (chunks)", capture `20261123T030757Z_4AF7`: crc_method chunks, partial_span true, 34
+chunks checked, no mismatch, bridge_rx_minus_jetson_rx 0. Transmit counters: tracking_valid true, data_placed 17424,
+data_tx_done 17424, data_tx_lost_mb 0, data_pend_over_2ms 0, data_pend_max_us 1382, TEC and REC 0, tx_queued_anyway
+0; the bridge counted 17427 frames. pass1_missing was 258 (one whole 256-word block again, as on firmware 13), still
+unexplained. Not tested: Armed, an Attempt, a real mismatch.

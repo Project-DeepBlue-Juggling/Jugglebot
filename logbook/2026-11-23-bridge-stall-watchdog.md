@@ -95,3 +95,20 @@ scratch write-up (BUG-129 body).
 ## Audit follow-up (2026-11-23)
 
 The watchdog now starts as the last statement of `TeensyBridgeNode.__init__` (it used to start about 500 lines before `_sp_thread` existed, so its first ticks raised in the heartbeat, skipped the re-arm, and a slow init could dump a spurious stall). `_setpoint_loop_age_s` reads `_sp_thread` with `getattr`, and `StallWatchdog.tick` re-arms even when the heartbeat raises (heartbeat treated as unknown, first failure logged once). Tests: `test_raising_heartbeat_still_rearms_and_logs_once` and `test_watchdog_on_during_normal_construction_reports_no_stall`.
+
+## First launch (2026-11-23 14:02 to 14:09, robot at rest, motor supply off)
+
+The watchdog works and caught a real stall within its first six minutes. Launch log
+`temp/logs/launch_fw14_check.log`: "stall watchdog on: timeout 150 ms". A deliberate pause (`kill -STOP`, 0.3 s,
+`kill -CONT`) gave one WARN (largest gap 334.5 ms) and one stack file. Before that, unprovoked, at 14:07:33: "stalled
+(largest gap 359.3 ms)", file `temp/logs/stall_teensy_bridge_node_2026-11-23T14-07-33_2607201_1.txt` (copy in
+`temp/debrief/2026-11-22/`). In that dump one executor thread is inside rclpy `publisher.publish`, called from
+`_publish_robot_state`; every other thread is idle in a normal wait, the main thread in the executor's wait. That
+is candidate 1 of the diagnosis (a publish blocked inside the middleware while holding the GIL); it is one dump, so
+the mechanism is supported, not proven, and the kernel-pause candidate is ruled out for this event.
+
+The trigger is still not known. In the seconds before, this Session had killed a `ros2 service call` that had hung
+for 4 min 40 s without discovering the service, restarted the ros2 daemon, and started and stopped `ros2 topic
+echo /platform_imu/status`. Repeating new-participant actions afterwards did not reproduce it: three `ros2 node
+list --no-daemon`, a daemon stop and restart, and on a fresh launch (`temp/logs/launch_stall_repro2.log`) a topic
+echo of `/platform_imu/status`, one of `/robot_state` and a service call, each from a new process: 0 stalls.

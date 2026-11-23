@@ -2,16 +2,16 @@
 id: BUG-129
 kind: bug
 title: teensy_bridge_node freezes for about 340 ms once in some launches; Armed, that latches SETPOINT_STALE
-status: inbox
+status: in_progress
 created: '2026-11-22'
-updated: '2026-11-22T13:24:43Z'
+updated: '2026-11-23T03:12:49Z'
 owners: []
 priority: high
 effort: m
 hardware: none
 owner: none
 radius: subsystem
-diagnosis: unknown
+diagnosis: hypothesis
 area: can-bridge
 blocked_by: []
 links:
@@ -43,3 +43,7 @@ Trigger hypothesis NOT reproduced: a no-power launch on 2026-11-22 21:48 with th
 Risk: a freeze over 250 ms while Armed latches the guard; mid-Attempt it becomes a scheduler STOP and then a latch. The response on 2026-11-22 was as designed (no Leg moved more than 0.0002 rev, clean recovery).
 
 Do not change the 250 ms limit or the 70/80 ms lane covers for this. Next step: find what blocks the whole process for a third of a second (per-thread CPU and a stack sample of teensy_bridge_node around a freeze; BUG-112 wants the same instrument). Write-up: temp/debrief/2026-11-22/stale.md; logbook 2026-11-22-sitting-debrief.
+
+## Progress
+
+- 2026-11-23: 2026-11-23: stall watchdog landed and caught a real 359 ms stall at rest (14:07:33). The dump shows one thread inside rclpy publish (robot_state) and every other thread idle: a publish blocked in the middleware holding the GIL. Kernel pause ruled out for this event. Trigger still unknown; six new-participant actions did not reproduce it.

@@ -45,6 +45,21 @@ The trigger fired: Rung P4 passed at the Sitting of 2026-11-20, and that debrief
 
 Recommendation: 1 now (cheap, Jetson-only, attacks the measured 13 s of re-reading), 2 when the next firmware flash is due anyway.
 
+## Sitting
+
+- setup: level, armed
+- why: first Armed numbers for pipelined refill reads and Platform firmware 14's transmit counters (both landed 2026-11-23, checked only at rest). The counters say whether the Platform's CAN transmit or the bridge's CAN receive loses the frames.
+- do:
+  - With the launch up, Level done and ACTIVE:TRAJECTORY held (Armed), leave the robot untouched for 40 s, then upload the whole ring at the default pace: `ros2 service call /platform_imu/upload jugglebot_interfaces/srv/SetString "{data: \"{}\"}"`. Wait for "recording" on the GUI IMU panel and read `grep -n "Platform IMU upload finished" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-23_1.log | tail -1`.
+  - Faster pace: `ros2 param set /teensy_bridge_node imu_read_gap_10us 63`, leave the robot untouched for 40 s from the end of the last upload, then the same upload call and the same grep.
+  - `ros2 param set /teensy_bridge_node imu_read_gap_10us 80` and `ros2 param get /teensy_bridge_node imu_read_gap_10us` must read 80.
+- pass:
+  - Both uploads read "32000 samples", "complete yes, crc ok"; the default pace takes 57 s or less and the faster pace 48 s or less.
+  - Computed at the debrief from the capture files: bridge and Jetson frame counts agree, and the transmit counters name the side that loses frames.
+- record:
+  - Wall-clock time of each upload. The finished lines are in the launch log, nothing to type.
+- minutes: 10
+
 ## Progress
 
 - 2026-11-20: Sitting 2026-11-20: Armed uploads took 79 s (ring) and 84 s (32 s span) against 56 s at rest, with 14651-19974 duplicate frames (158 at rest), up to 6 block timeouts, CAN1 at 74-77 %. A juggle goal was refused 7 s into a 37 s upload. Diagnosis in logbook 2026-11-20-sitting-debrief-robot-2.
