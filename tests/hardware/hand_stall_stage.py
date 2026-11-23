@@ -87,7 +87,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 # ── Mirrored firmware / config constants (pinned by the stall test file) ──────
-STALL_FW_MIN = 48                 # canbridge_config.h FW_VERSION that added the guard
+STALL_FW_MIN = 49                 # FW 48 added the guard; FW 49 stops it re-tripping on an Idle Hand
 GUARD_IQ_A = 40.0                 # canbridge_config.h HAND_LANE_STALL_IQ_A
 GUARD_VEL_RPS = 1.0               # canbridge_config.h HAND_LANE_STALL_VEL_RPS
 GUARD_HOLD_S = 0.150              # canbridge_config.h HAND_LANE_STALL_HOLD_US
@@ -176,8 +176,9 @@ def stall_fw_refusal(fw):
     if fw is None:
         return "no BridgeIdentity: the bridge firmware version is unknown"
     if int(fw) < STALL_FW_MIN:
-        return (f"bridge reports firmware {fw}; the Hand stall guard exists from firmware "
-                f"{STALL_FW_MIN} (BUG-123). Flash the night-shift/2026-11-20-BUG-123 build first")
+        return (f"bridge reports firmware {fw}; the stall stage needs firmware "
+                f"{STALL_FW_MIN} or later (48 has the guard but re-trips on an Idle Hand "
+                f"after every clear, BUG-131). Flash the firmware {STALL_FW_MIN} build first")
     return None
 
 

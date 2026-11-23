@@ -2635,6 +2635,16 @@ def main():
         if tri_cut_lines is not None:
             for ln in tri_cut_lines:
                 print(ln)
+            # The verdict lines exist nowhere else: the CSV stops at the cut. Keep them
+            # beside it, so a debrief reads them from a file (Sitting 2026-11-23: the
+            # offsets were on the terminal only and the owner had to paste them).
+            report_path = os.path.splitext(str(csv_path))[0] + "_tricut.txt"
+            try:
+                with open(report_path, "w") as fh:
+                    fh.write("\n".join(tri_cut_lines) + "\n")
+                print(f"tri-cut report: {report_path}")
+            except OSError as e:
+                print(f"tri-cut report NOT saved ({e}); copy the lines above")
         print(f"csv: {csv_path}")
         print(f"cachediag csv: {cd_path}")
         if tri_cut is not None and tri_cut_hit is None:

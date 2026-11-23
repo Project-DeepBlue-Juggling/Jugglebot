@@ -28,7 +28,7 @@ STOP_HOMED = -0.10
 
 
 class FakeIO:
-    def __init__(self, *, fw=48, guard=True, clamp_gain=200.0, orig_limit=70.0,
+    def __init__(self, *, fw=49, guard=True, clamp_gain=200.0, orig_limit=70.0,
                  limit_takes=True, park=0.5, raise_on_send=None, raise_on_sample_after=None,
                  second_rise=False, bit3_before=False, temp=30.0,
                  telem_lag_s=0.0, never_collapses=False, idle_dead=False):
@@ -216,16 +216,17 @@ def test_shift_puts_the_ramp_end_past_the_stop():
 
 # ── refusals ────────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("fw", [47, 46, 36, None])
-def test_firmware_before_48_is_refused_before_anything(fw):
-    # 47 matters most: main's FW 47 (the IMU SET_ODR relay, 2026-11-22) has NO stall
+@pytest.mark.parametrize("fw", [48, 47, 46, 36, None])
+def test_firmware_before_49_is_refused_before_anything(fw):
+    # 48 has the guard but re-trips on an Idle Hand after every clear (BUG-131).
+    # 47: main's FW 47 (the IMU SET_ODR relay, 2026-11-22) has NO stall
     # guard; the guard was renumbered 47 -> 48 when the two collided.
     io = FakeIO(fw=fw)
     rc, lines = _run(io)
     assert rc == 2
     assert not [n for n in _names(io) if n != "read_limits"]
     assert ST.stall_fw_refusal(fw) is not None
-    assert ST.stall_fw_refusal(48) is None and ST.stall_fw_refusal(49) is None
+    assert ST.stall_fw_refusal(49) is None and ST.stall_fw_refusal(50) is None
 
 
 def test_preflight_reports_every_refusal_at_once():
@@ -607,7 +608,7 @@ def _install_bench(monkeypatch, world):
     monkeypatch.setattr(B, "_hb", world.hb)
     monkeypatch.setattr(B, "_fault", lambda: world.fault)
     # the bench's lockstep check wants the Jetson's expected firmware, which is at
-    # least the stall stage's minimum (49 since BUG-105, against STALL_FW_MIN 48)
+    # least the stall stage's minimum (49 since BUG-105, which STALL_FW_MIN now equals)
     monkeypatch.setattr(B, "_fw_version", lambda: B.rpc_args.EXPECTED_BRIDGE_FW_VERSION)
     return B
 
