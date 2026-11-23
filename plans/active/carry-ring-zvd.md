@@ -3,7 +3,7 @@ title: Carry ring suppression — zero-residual-vibration rows on the pose carry
 created: 2026-11-04
 status: active
 owner: Harrison
-last_updated: 2026-11-06
+last_updated: 2026-11-23
 pathway: two-ball-oval
 scope: >-
   The one-ball oval's carried Throws land +76 mm (dwell 0.40) and +122 mm (0.35) long because the pose STEADY
@@ -236,6 +236,12 @@ FEAT-32's `## Sitting` section, written when P2 commits. Outline:
 | P1 | done | Landed uncommitted with the P2 box: flag-off byte-identical, residual ~0 nominal, budget 47.6 ms core of 50; 0.35 x1.15 bound is an open owner decision |
 | P2 | done (gate 1 PASS, gate 2 FAIL) | Box e8d303ae93bc, 195 cells; oval 0.40 / Apex 1.00 keeps 30 mm; Columns canary cell empty with the rows on (RING 18522 / 18522); shipped as swept, fallback is an owner decision (Questions) |
 | P3 | in progress | 2026-11-05 22:46 Sitting: A arm flag-off only (9/9, 3/3, 0/0, each ended by a firmware STOP: 2 Hand C1 stops, 1 bridge GC pause); B arm never set, no A/B data. Re-fly under FW 40 (Hand C1 grace 14 ms); not the next Sitting (owner, 2026-11-06). Identification step dropped from the row: 20 mm profiled steps excite no ring; whole-bag forced fit x 5.47 enc / 4.68 mocap Hz, y 4.06 / 4.24 Hz, zeta x 0.26-0.36, y 0.14-0.17, delay 15-21 ms; provisional 4.9 / 0.20 / 0.020 kept.; Columns canary flies with the flag off |
+
+**2026-11-23, IMU identification (offline; `logbook/2026-11-23-platform-ring-identification-from-the-imu.md`).** The x
+ring is about 4.3 Hz (the Mocap-like value; the encoders' 5.4 Hz is the motor-side view). At Dwell 0.50 the ring at the
+planned release is small and its effect is repeatable, so Platform shaping is not worth pursuing there. Shorter Dwells
+were not in the data. The rows' Hand stop-and-go is the ZVD shaper's own signature, not a mistuned frequency. P3 (the
+A/B) stays unflown; whether to keep this plan open is an owner decision.
 
 ## 8. Questions
 
