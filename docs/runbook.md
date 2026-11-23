@@ -35,6 +35,7 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - BUG-112 [Robot] /robot_state rate drops to 80-89 Hz during Attempts and drifts down over a launch: no ## Sitting section
 - BUG-125 [Robot] Hand drive MISSING_ESTIMATE at rest lost exactly five turns, ten minutes after a SPINOUT top-stop impact: no ## Sitting section
 - BUG-13 [Robot] Wave camera: CLIP_MISSING on the first start after a camera power-cycle: no ## Sitting section
+- BUG-130 [Robot] Held Active pose is 0.6 degrees off Level: the levelling correction reaches Jog targets but not the hold: no ## Sitting section
 - BUG-133 [Robot] Ball Butler firmware builds against the unpatched FlexCAN_T4 and stamps the sync at dispatch: no ## Sitting section
 - BUG-135 [Robot] Platform CAN receive queue overflows during the inclinometer re-probe stall: no ## Sitting section
 - BUG-136 [Robot] Catching cone catch stamps could run 10 ms early per stranded receive frame: no ## Sitting section
@@ -66,6 +67,7 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - FEAT-4 [Robot] Magazine feed-tuning loop (`magazine` + `reload` patterns, hand-only throw): no ## Sitting section
 - FEAT-40 [Robot] Install the host hold within one tick of a firmware scheduler STOP so a guard latch becomes a recoverable LANE_REFUSED: no ## Sitting section
 - FEAT-57 [Robot] Archive the SpaceMouse follower under a tag: no ## Sitting section
+- FEAT-64 [Robot] Can-bridge FW 50 exports the per-axis encoder sample age: no ## Sitting section
 - IDEA-12 [Robot] JP-11 Rotating columns: the pair turns a few degrees every Beat: no ## Sitting section
 - IDEA-13 [Robot] JP-13 Rising and sinking columns: the whole Pattern rides the Platform in z: no ## Sitting section
 - IDEA-14 [Robot] JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm: no ## Sitting section
@@ -73,6 +75,8 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - IDEA-17 [Robot] Hand end-of-stroke bumper, and first the planner's own brake shape: let the ceiling, not the Hand, cap the Apex: no ## Sitting section
 - IDEA-18 [Robot] Learner context cannot tell a Throw from rest from a carried Throw: no ## Sitting section
 - IDEA-23 [Robot] seed a fresh plant K from the trained plant: no ## Sitting section
+- IDEA-26 [Robot] Platform IMU residue: unflown checks and the unmeasured lever arm: no ## Sitting section
+- IDEA-28 [Robot] Measure QTM's true latency with a physical edge seen by QTM and the bridge: no ## Sitting section
 
 ## Questions a Sitting can answer
 

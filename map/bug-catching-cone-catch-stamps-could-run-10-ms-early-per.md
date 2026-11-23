@@ -33,3 +33,9 @@ The Catching cone firmware builds against the stock FlexCAN_T4 and stamps the 0x
 ## Proposed fix
 
 - Same as Ball Butler: patched library, or stamp 0x7DD in a reception hook. Low priority.
+
+## Findings (2026-11-24)
+
+- The deciding measurement is less direct than the body says. `cone/catch_event` carries only the reconstructed cone time (`header.stamp` equals `catch_time`); the bridge's UDP arrival time is used to rebuild it but is not published.
+- So the only arrival reference in a recording is the record time, which adds the 100 Hz drain (`_drain_cone_catch_events`, 0 to 10 ms) and DDS delivery on top of the 30 ms. That jitter is the size of the 10 ms step it looks for: a stranded frame would show as a shift of the whole distribution, readable over many Catches but not per Catch.
+- A cleaner reading needs the arrival time published (an additive field or a log line in the bridge).

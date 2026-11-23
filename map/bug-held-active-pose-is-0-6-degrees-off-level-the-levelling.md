@@ -4,15 +4,15 @@ kind: bug
 title: 'Held Active pose is 0.6 degrees off Level: the levelling correction reaches Jog targets but not the hold'
 status: in_progress
 created: '2026-11-22'
-updated: '2026-11-22T13:24:39Z'
+updated: '2026-11-23T15:48:41Z'
 owners: []
 priority: medium
-effort: s
-hardware: none
-owner: decision
+effort: m
+hardware: robot
+owner: none
 radius: subsystem
 diagnosis: confirmed
-area: skill-stack
+area: platform-teensy
 blocked_by: []
 links:
 - map/idea-platform-accelerometer.md

@@ -4,9 +4,14 @@ kind: feature
 title: Can-bridge FW 50 exports the per-axis encoder sample age
 status: inbox
 created: '2026-11-23'
-updated: '2026-11-23T10:30:14Z'
+updated: '2026-11-23T15:48:46Z'
 owners: []
 priority: low
+effort: m
+hardware: robot
+owner: none
+radius: subsystem
+area: can-bridge
 blocked_by: []
 links:
 - logbook/2026-11-23-bridge-stamp-on-robot-state-and-hand-telemetry.md
