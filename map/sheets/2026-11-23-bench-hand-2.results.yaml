@@ -1,0 +1,98 @@
+schema: 2
+steps:
+  1:
+    comments: ''
+    saved_at: 2026-11-23 13:23
+    status: done
+  2:
+    comments: ''
+    saved_at: 2026-11-23 13:24
+    status: done
+  3:
+    comments: ''
+    saved_at: 2026-11-23 13:24
+    status: done
+  4:
+    comments: ''
+    saved_at: 2026-11-23 13:25
+    status: done
+  7:
+    comments: ''
+    saved_at: 2026-11-23 13:28
+    status: done
+  8:
+    comments: ''
+    saved_at: 2026-11-23 13:28
+    status: done
+verdicts:
+  5:
+    BUG-131:
+      notes: 'Worked! " (venv) jetson:/home/jetson/Desktop/Jugglebot/ (night-shift/2026-11-23-BUG-105)
+        $ python tests/hardware/hand_stream_bench.py --stage stall [13:25:11] hand
+        baseline: pos=+0.3165 rev axis_state=1 active_errors=0 fault=NONE note: this
+        drive reports no motor temperature; FET 28.6 C was checked instead. Your hand
+        on the motor is the motor check: i t must be cool. stall plan: firmware 49,
+        Hand IDLE at +0.317 rev, motor temperature not reported; limit 70.0 -> 45.0
+        A (vel_limit 1000 kept ); frame shift +0.650 rev; ramp at 1.00 rev/s to homed
+        -0.60 rev, 0.50 rev past the stop ARM stall: push the Hand into the bottom
+        stop at 45 A until the guard IDLEs it. Cup empty, E-stop in hand. [yes/NO]
+        yes current limit lowered: drive reads 45.0 A over USB frame shifted +0.650
+        rev: the stop now reads +0.550 hand bring-up (stall): POSITION/PASSTHROUGH
+        + gains -> CLOSED_LOOP ARMED: ramp +0.967 -> +0.050 rev (lane frame) over
+        1.17 s trip seen at t=1.090 s (bit3); first 40 A at 0.926 s the drive reports
+        a frozen 45.0 A while IDLE; not judged axis IDLE 61 ms after the trip was
+        seen (limit 250) HAND_MOVE_TO while latched: refused: ERR_BUS_DOWN current
+        limit restore: sent 70.0 A, drive reads 70.0 A over USB -> OK encoder frame
+        restored: Hand reads +0.439 rev (homed frame, want +0.439); re-home anyway
+        motor temperature not reported by this drive: touch the motor STALL-GUARD
+        PASS: IDLE 163 ms after the first 40 A sample (limit 200), peak 45.0 A, fault
+        HAND_STALL, bit3 set (venv) jetson:/home/jetson/Desktop/Jugglebot/ (night-shift/2026-11-23-BUG-105)
+        $ python tests/hardware/hand_stream_bench.py --clear-errors [13:25:30] hand
+        baseline: pos=+0.4387 rev axis_state=? active_errors=? fault=HAND_STALL CLEAR_ERRORS
+        OK — fault_state NONE. (venv) jetson:/home/jetson/Desktop/Jugglebot/ (night-shift/2026-11-23-BUG-105)
+        $ python tests/hardware/hand_stream_bench.py --clear-errors [13:25:57] hand
+        baseline: pos=+0.4388 rev axis_state=? active_errors=? fault=NONE CLEAR_ERRORS
+        OK — fault_state NONE. " Motor is cool'
+      saved_at: 2026-11-23 13:26
+  6:
+    BUG-105:
+      notes: 'Worked! (venv) jetson:/home/jetson/Desktop/Jugglebot/ (night-shift/2026-11-23-BUG-105)
+        $ python tests/hardware/hand_stream_bench.py --stage triangle --tri-span 4
+        --tri-speed 10 --tri-cut up --tri-cut-disarm now --top-stop 10.4 --close-loop
+        hand baseline: pos=+0.3073 rev axis_state=1 active_errors=0 fault=NONE pre-bring-up
+        tri-cut plan: the up ramp of cycle 2, cut at stage t=1.000 s near +2.307 rev
+        moving +10.00 rev/s; expected offset speed/pos_gain +0.286 rev; worst-case
+        end +3.675 rev hand bring-up: POSITION/PASSTHROUGH + gains → CLOSED_LOOP post-bring-up:
+        axis_state=8 (CLOSED_LOOP=8) active_errors=0 pos=+0.3074 rev — the hand is
+        ENERGISED and holding tri-cut plan: the up ramp of cycle 2, cut at stage t=1.000
+        s near +2.307 rev moving +10.00 rev/s; expected offset speed/pos_gain +0.286
+        rev; worst-case end +3.675 rev ARM stage ''triangle'' for 30s? E-stop in hand.
+        [yes/NO] yes ARMED — streaming (hold thread sent 88 frames). triangle clock
+        starts at stage t=0.300 s (echo back on the start: the recovery slew handed
+        back) stage ''triangle'' done: max |cmd−(enc+vel·age)| = 0.3742 rev (12.19
+        mm) [belt 0.7857142857142857 rev] cachediag: 6 windows, 0 episode(s) past
+        -20, worst deficit 0.0 frames (row-21 recipe; clean baseline −3.6 ± 10.3)
+        tri-cut: up ramp, cycle 2, cut at stage t=1.000 s (planned 1.000 s). Nothing
+        was sent after this frame but the DISARMED heartbeat: one DISARMED heartbeat
+        sent at once (--tri-cut-disarm now). last commanded (the last frame sent):
+        knot +2.3074 rev at +10.00 rev/s (its next knot +2.5574 rev) HAND_CMD_ECHO
+        before the disarm: input_pos +2.2565 rev, vel_ff +10.00 rev/s firmware''s
+        last command to the ODrive (HAND_CMD_ECHO): input_pos +2.7465 rev, vel_ff
+        +10.00 rev/s (the lane coasts on its own ladder until the disarm lands) settled
+        position: +2.7476 rev (mean of 50 telemetry samples, 1.0 to 2.0 s after the
+        disarm); drift 0.0005 rev over that window offset vs the last knot: +0.4402
+        rev (expected +0.2857 = speed/35 plus the lane''s coast to the disarm) offset
+        vs the firmware''s last command: +0.0011 rev (expected vel_ff/35 = +0.2857
+        rev) fault_state NONE; guard/latch: none; hand axis_state 8 disarm landed
+        on a live feedforward: yes (echo vel_ff +10.00 rev/s before it; live means
+        |vel_ff|/35 > 0.05 rev) tri-cut report: /home/jetson/Desktop/Jugglebot/temp/logs/hand_stream_triangle_20261123_132712_tricut.txt
+        csv: /home/jetson/Desktop/Jugglebot/temp/logs/hand_stream_triangle_20261123_132712.csv
+        cachediag csv: /home/jetson/Desktop/Jugglebot/temp/logs/hand_stream_triangle_20261123_132712_cachediag.csv
+        (venv) jetson:/home/jetson/Desktop/Jugglebot/ (night-shift/2026-11-23-BUG-105)
+        $ python tests/hardware/bench_hand_frame_bench.py status [13:27:15] state
+        8 err 0x0 disarm 0 | pos +2.7465 | pos_vel_mapper.scale +1 | motor.direction
+        -1 | commutation scale -7 offset -0.1018 | node 6 | vbus 45.4 V (venv) jetson:/home/jetson/Desktop/Jugglebot/
+        (night-shift/2026-11-23-BUG-105) $ python tests/hardware/hand_stream_bench.py
+        --clear-errors [13:27:44] hand baseline: pos=+2.7465 rev axis_state=? active_errors=?
+        fault=NONE CLEAR_ERRORS OK — fault_state NONE.'
+      saved_at: 2026-11-23 13:28
