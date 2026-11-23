@@ -134,6 +134,10 @@ def _build_messages(ts, duration_s: float, seed: int, edge_messages: bool = Fals
             "pose_offset_rad": [f32(0.001 * (k % 7)), f32(-0.002)],
             "pose_offset_quat": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
             "platform_fw_version": 3, "platform_fw_version_read": True,
+            # BUG-134 tail (appended to the real .msg): the bridge tick, 12 ms before publish.
+            "bridge_stamp": {"sec": (t_ns - 12_000_000) // 10**9,
+                             "nanosec": (t_ns - 12_000_000) % 10**9},
+            "bridge_stamp_valid": True,
         }
         MS = T[JB + "MotorStateSingle"]
         msg = T[JB + "RobotState"](
@@ -146,7 +150,8 @@ def _build_messages(ts, duration_s: float, seed: int, edge_messages: bool = Fals
             is_homed=plain["is_homed"], levelling_complete=plain["levelling_complete"],
             pose_offset_rad=np.array(plain["pose_offset_rad"], dtype=np.float32),
             pose_offset_quat=Quat(x=0.0, y=0.0, z=0.0, w=1.0),
-            platform_fw_version=3, platform_fw_version_read=True)
+            platform_fw_version=3, platform_fw_version_read=True,
+            bridge_stamp=_time(ts, t_ns - 12_000_000), bridge_stamp_valid=True)
         add(t, "/robot_state", JB + "RobotState", msg, plain)
 
     for k in range(int(duration_s * 10)):
@@ -164,10 +169,14 @@ def _build_messages(ts, duration_s: float, seed: int, edge_messages: bool = Fals
         stamp = {"sec": t_ns // 10**9, "nanosec": t_ns % 10**9}
         plain = dict({"timestamp": stamp}, **vals)
         plain.update(ball_held=held, ball_held_raw=held, ball_held_valid=True,
-                     ball_held_stamp=stamp)
+                     ball_held_stamp=stamp,
+                     bridge_stamp={"sec": (t_ns - 12_000_000) // 10**9,
+                                   "nanosec": (t_ns - 12_000_000) % 10**9},
+                     bridge_stamp_valid=True)
         msg = T[JB + "HandTelemetryMessage"](
             timestamp=_time(ts, t_ns), ball_held=held, ball_held_raw=held,
-            ball_held_valid=True, ball_held_stamp=_time(ts, t_ns), **vals)
+            ball_held_valid=True, ball_held_stamp=_time(ts, t_ns),
+            bridge_stamp=_time(ts, t_ns - 12_000_000), bridge_stamp_valid=True, **vals)
         add(t, "/hand_telemetry", JB + "HandTelemetryMessage", msg, plain)
 
     MSingle = T[JB + "MocapDataSingle"]

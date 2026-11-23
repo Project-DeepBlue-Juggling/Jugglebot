@@ -26,7 +26,9 @@ WHY THE ENCODERS ARE RESTAMPED
 relative to the telemetry tick that produced the encoder values. Used as is,
 it makes an on-time IMU look early by that amount. The paired
 ``/leg_cmd_executed`` stamp is the bridge's stamp of the same tick, so
-copying it onto the encoder sample removes the publish delay. (The residual
+copying it onto the encoder sample removes the publish delay (tools/probes/_bag_time.py:
+a bag with the appended RobotState.bridge_stamp uses that field where valid; samples
+with no bridge time are dropped, coverage in the JSON as restamp_sources). (The residual
 encoder sample age, about 5.5 ms, is NOT removed; lag1 is read as is.)
 
 SIGN CONVENTION
@@ -83,6 +85,9 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
+if HERE not in sys.path:  # `python -I` drops the script directory
+    sys.path.insert(0, HERE)
+import _bag_time as bt  # noqa: E402
 
 MIN_GYRO_RMS_RPS = 0.02
 LAG2_LO_MS = 0.0
@@ -206,7 +211,10 @@ def find_bag(t0, t1, root="~/Desktop/rosbags"):
 
 
 def read_bag(bag, t0, t1):
-    """robot_state rows [log_t, stamp, 6 pos] and leg_cmd_executed rows [log_t, stamp, 6 pos]."""
+    """robot_state rows [log_t, stamp, 6 pos, bridge_stamp, bridge_valid] and
+    leg_cmd_executed rows [log_t, stamp, 6 pos]. The decoder is generic CDR by the
+    schema embedded in the bag, so the appended bridge_stamp tail decodes when the
+    bag has it (getattr default 0 / False for old bags)."""
     from mcap.reader import make_reader
     from mcap_ros2.decoder import DecoderFactory
     files = sorted(glob.glob(os.path.join(os.path.expanduser(bag), "*.mcap")))
@@ -225,26 +233,34 @@ def read_bag(bag, t0, t1):
                 d = d(m.data)
                 lt = m.log_time / 1e9
                 if c.topic == "/robot_state":
-                    rs.append([lt, st(d.timestamp)] + [x.pos_estimate for x in d.motor_states[:6]])
+                    bs = getattr(d, "bridge_stamp", None)
+                    rs.append([lt, st(d.timestamp)] + [x.pos_estimate for x in d.motor_states[:6]]
+                              + [st(bs) if bs is not None else 0.0,
+                                 float(bool(getattr(d, "bridge_stamp_valid", False)))])
                 else:
                     cm.append([lt, st(d.header.stamp)] + list(d.position)[:6])
     return np.array(rs, float), np.array(cm, float)
 
 
 def restamp(r, c):
-    """Copy onto each robot_state row the bridge stamp of the nearest-in-log-time cmd row.
+    """Put the bridge tick time on each robot_state row (see _bag_time.robot_state_bridge_time).
 
-    Returns (restamped rows, original stamp minus paired bridge stamp in seconds).
+    Rows with no bridge time (no valid field, no paired /leg_cmd_executed within the
+    gap) are dropped. Returns (restamped rows [log_t, stamp, 6 pos], original stamp
+    minus bridge time in seconds, per-source counts).
     """
     c = c[np.unique(c[:, 1], return_index=True)[1]]
-    c = c[np.argsort(c[:, 0])]
     r = r[np.argsort(r[:, 0])]
-    idx = np.clip(np.searchsorted(c[:, 0], r[:, 0]), 1, len(c) - 1)
-    left_better = np.abs(c[idx - 1, 0] - r[:, 0]) <= np.abs(c[idx, 0] - r[:, 0])
-    idx = np.where(left_better, idx - 1, idx)
-    out = r.copy()
-    out[:, 1] = c[idx, 1]
-    return out, r[:, 1] - c[idx, 1]
+    has = r.shape[1] >= 10
+    tb, src = bt.robot_state_bridge_time(
+        r[:, 1], r[:, 0], r[:, 8] if has else None, r[:, 9] > 0.5 if has else None,
+        c[:, 1], c[:, 0])
+    ok = np.isfinite(tb)
+    out = r[ok, :8].copy()
+    out[:, 1] = tb[ok]
+    cov = {"field": int((src == bt.SRC_FIELD).sum()), "paired": int((src == bt.SRC_PAIRED).sum()),
+           "none": int((src == bt.SRC_NONE).sum())}
+    return out, r[ok, 1] - tb[ok], cov
 
 
 def fk_rotations(revs):
@@ -304,7 +320,8 @@ def run(capture, bag=None, max_abs_ms=5.0, captures_dir=None, out_dir=None):
         res["bag"] = os.path.abspath(os.path.expanduser(bag))
         rs, cm = read_bag(bag, t[0], t[-1])
         if len(rs) > 100 and len(cm) > 100:
-            r_new, age = restamp(rs, cm)
+            r_new, age, cov = restamp(rs, cm)
+            res["restamp_sources"] = cov
             res["mean_robot_state_stamp_minus_bridge_ms"] = float(np.mean(age) * 1e3)
             tm, w = ref_rate(r_new)
             lag1, r1, Rk = estimate_lag(t, g, tm, w)

@@ -60,3 +60,13 @@ geometry_msgs/Quaternion pose_offset_quat # Pose offset as a quaternion
 # the Teensy offers.
 uint16 platform_fw_version
 bool platform_fw_version_read
+
+# BUG-134: bridge wall clock at the can-bridge's telemetry tick that produced this
+# sample (same clock and convention as /leg_cmd_executed and the Platform IMU).
+# `timestamp` above is unchanged: the Jetson ROS clock at PUBLISH, 12 to 14 ms later.
+# Valid only when the bridge reports TIME_SYNCED and the stamp is within 1 s of the
+# Jetson clock; when false this field is zero and readers use `timestamp`. The
+# encoder sample itself is 0 to 10 ms older than the tick. APPENDED at the end so
+# old bags and the GUI replay's positional CDR walk still decode.
+builtin_interfaces/Time bridge_stamp
+bool bridge_stamp_valid

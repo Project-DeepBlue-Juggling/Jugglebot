@@ -118,6 +118,28 @@ def test_robot_state_flag_walk_matches_full_decode(tmp_path):
     assert n == 1200
 
 
+def test_robot_state_flag_walk_tolerates_the_bridge_stamp_tail_either_way(tmp_path):
+    """BUG-134 appended ``bridge_stamp`` + ``bridge_stamp_valid`` after the last
+    field. The walk reads the flags BEFORE them, so a new-format message (tail
+    present) and an old-format one (tail absent, as in every pre-BUG-134 bag) give
+    the same flags. The old format is the new bytes with the tail cut off: after
+    ``platform_fw_version_read`` the tail is up to 3 pad bytes + Time (8) + bool (1)."""
+    from mcap.reader import SeekingReader
+    p = tmp_path / "b.mcap"
+    write_bag(p, 12.0, seed=3)
+    n = 0
+    with open(p, "rb") as fh:
+        for sch, ch, msg in SeekingReader(fh).iter_messages():
+            if ch.topic != "/robot_state":
+                continue
+            new = robot_state_flags(msg.data)
+            assert robot_state_flags(msg.data[:-9]) == new
+            n += 1
+            if n >= 300:
+                break
+    assert n == 300
+
+
 def test_unindexed_bag_is_refused_by_the_pass(tmp_path):
     p = tmp_path / "bag_0.mcap"
     write_bag(p, 35.0, seed=2, unindexed=True, chunk_size=16 * 1024)

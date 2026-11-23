@@ -194,6 +194,9 @@ class HandTelemetryMessage:
     ball_held_raw: bool = False
     ball_held_valid: bool = False
     ball_held_stamp: object = field(default_factory=MsgTime)
+    # BUG-134 (appended at the end, like the real .msg).
+    bridge_stamp: object = field(default_factory=MsgTime)
+    bridge_stamp_valid: bool = False
 
 
 @dataclass
@@ -214,6 +217,9 @@ class RobotState:
     # AND the honest boot state: nothing read yet, so nothing known.
     platform_fw_version: int = 0
     platform_fw_version_read: bool = False
+    # BUG-134 (appended at the end, like the real .msg).
+    bridge_stamp: object = field(default_factory=MsgTime)
+    bridge_stamp_valid: bool = False
 
 
 @dataclass

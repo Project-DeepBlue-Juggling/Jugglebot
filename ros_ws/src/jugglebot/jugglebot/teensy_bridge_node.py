@@ -123,6 +123,7 @@ from teensy_link import (
     RingDiag,
 )
 from teensy_link import protocol as p
+from teensy_link.bridge_stamp import bridge_stamp_or_none
 from teensy_link import activate as activate_mod
 from teensy_link import rpc_args
 from teensy_link.rpc import HandMoveToUnavailable, RpcTimeout
@@ -4395,7 +4396,8 @@ class TeensyBridgeNode(Node):
 
     # Fields this node assigns on RobotState that a STALE jugglebot_interfaces
     # build will not have. Keep in step with _publish_robot_state's assignments.
-    _ROBOT_STATE_REQUIRED_FIELDS = ('platform_fw_version', 'platform_fw_version_read')
+    _ROBOT_STATE_REQUIRED_FIELDS = ('platform_fw_version', 'platform_fw_version_read',
+                                    'bridge_stamp', 'bridge_stamp_valid')
 
     def _warn_if_robot_state_msg_is_stale(self):
         """Name a half-rebuilt tree AT LAUNCH, once, instead of at BOOT timeout.
@@ -4441,6 +4443,22 @@ class TeensyBridgeNode(Node):
             'HALF-REBUILT TREE, not a hardware fault. Fix: colcon build '
             '--packages-select jugglebot_interfaces jugglebot && source '
             'install/setup.bash, then relaunch.')
+
+    def _bridge_stamp_us(self, telem, hb):
+        """Bridge wall-clock us of ``telem``'s tick for ``bridge_stamp``, or None (BUG-134).
+
+        ``telem.t_teensy_us`` is the tick that produced the sample being
+        published, gated by ``bridge_stamp_or_none`` (TIME_SYNCED from the latest
+        heartbeat, within 1 s of the Jetson clock). The caller assigns the
+        fields itself (``msg.bridge_stamp`` / ``msg.bridge_stamp_valid``) so the
+        INTERFACES_STALE drift guard sees the assignment. Never raises.
+        """
+        try:
+            synced = hb is not None and bool(int(hb.flags) & _T2J_FLAG_TIME_SYNCED)
+            return bridge_stamp_or_none(telem.t_teensy_us, synced,
+                                        time.time_ns() // 1000)
+        except Exception:  # noqa: BLE001 -- a stamp must never stop the publish
+            return None
 
     def _publish_robot_state(self):
         """Publish robot_state, mirroring can_node._publish_robot_state.
@@ -4546,6 +4564,20 @@ class TeensyBridgeNode(Node):
 
             msg = RobotState()
             msg.timestamp = self.get_clock().now().to_msg()
+            # BUG-134: the bridge tick time of THIS `telem` (the local read under
+            # the lock above, the same object that built `states`); `timestamp`
+            # keeps its meaning.
+            t_us = self._bridge_stamp_us(telem, hb)
+            try:
+                msg.bridge_stamp_valid = t_us is not None
+                if t_us is not None:
+                    msg.bridge_stamp.sec = t_us // 1_000_000
+                    msg.bridge_stamp.nanosec = (t_us % 1_000_000) * 1000
+            except AttributeError:
+                # A stale jugglebot_interfaces build has no such slots. This
+                # stamp is an analysis aid: never let it stop /robot_state
+                # (INTERFACES_STALE already names the half-rebuilt tree).
+                pass
             msg.motor_states = states
 
             # Typed fault flags. The Teensy owns the fault state machine, so the
@@ -4773,6 +4805,20 @@ class TeensyBridgeNode(Node):
                 return
             msg = HandTelemetryMessage()
             msg.timestamp = self.get_clock().now().to_msg()
+            # BUG-134: the bridge tick time of THIS `telem` (read under the lock
+            # above, the object pos_meas/vel_meas come from).
+            with self._lock:
+                hb_stamp = self._latest_heartbeat
+            t_us = self._bridge_stamp_us(telem, hb_stamp)
+            try:
+                msg.bridge_stamp_valid = t_us is not None
+                if t_us is not None:
+                    msg.bridge_stamp.sec = t_us // 1_000_000
+                    msg.bridge_stamp.nanosec = (t_us % 1_000_000) * 1000
+            except AttributeError:
+                # Stale jugglebot_interfaces build: publish without the stamp
+                # (see _publish_robot_state).
+                pass
             msg.pos_cmd = float(cmd['pos'])
             msg.vel_ff_cmd = float(cmd['vel'])
             msg.tor_ff_cmd = float(cmd['tor'])
