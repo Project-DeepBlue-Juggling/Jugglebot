@@ -2,9 +2,9 @@
 id: BUG-134
 kind: bug
 title: 'Reference stamps run late: robot state is stamped at publish and Mocap omits QTM latency'
-status: in_progress
+status: complete
 created: '2026-11-23'
-updated: '2026-11-23T10:51:39Z'
+updated: '2026-11-23T11:04:34Z'
 owners: []
 priority: medium
 effort: m

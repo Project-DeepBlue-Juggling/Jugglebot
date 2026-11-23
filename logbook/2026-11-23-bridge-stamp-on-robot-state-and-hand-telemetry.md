@@ -2,7 +2,7 @@
 title: "Bridge tick stamp appended to /robot_state and /hand_telemetry; Mocap stamp corrected in analysis tools only (BUG-134)"
 type: investigation
 date: 2026-11-23
-status: in-progress
+status: complete
 phase: "carry-ring-zvd"
 related_plan: "carry-ring-zvd.md"
 related_issues: []
