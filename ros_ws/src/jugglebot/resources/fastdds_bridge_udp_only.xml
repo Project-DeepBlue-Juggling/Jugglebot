@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- BUG-129 experiment: teensy_bridge_node on Fast DDS UDPv4 only (no shared-memory
+     transport). Used only when jugglebot_launch.py is run with bridge_shm:=false, which
+     sets FASTRTPS_DEFAULT_PROFILES_FILE to this file in the bridge's environment alone.
+     Probed on Foxy / Fast DDS 2.1.4 on 2026-11-23 (logbook
+     2026-11-23-bridge-shm-clean-at-launch): a participant on this profile maps no
+     /dev/shm file and still reaches shared-memory peers over UDP. -->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>jugglebot_udpv4</transport_id>
+      <type>UDPv4</type>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="jugglebot_bridge_udp_only" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>jugglebot_udpv4</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+    </rtps>
+  </participant>
+</profiles>

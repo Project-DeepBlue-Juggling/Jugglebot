@@ -191,6 +191,48 @@ def _operator_console_actions():
                             'raw launch output.' % (type(exc).__name__, exc))]
 
 
+# BUG-129 experiment: the Fast DDS profile that turns the shared-memory
+# transport off for teensy_bridge_node only (UDPv4 only), used when
+# bridge_shm:=false. Read from the source tree, like the bridge's PYTHONPATH.
+_BRIDGE_UDP_PROFILE_REL = os.path.join(
+    'ros_ws', 'src', 'jugglebot', 'resources', 'fastdds_bridge_udp_only.xml')
+
+
+def _bridge_udp_profile():
+    return os.path.join(_repo_root(), _BRIDGE_UDP_PROFILE_REL)
+
+
+def _shm_actions(context):
+    """OpaqueFunction body (BUG-129): clean stale Fast DDS shared-memory files
+    and say which transport the bridge runs on. Runs before any node starts.
+    Never raises: one INFO line per part, whatever happens."""
+    lines = []
+    try:
+        if context.launch_configurations.get('shm_clean', 'true') == 'true':
+            from jugglebot.dds_shm import clean_stale_shm, summary_line
+            lines.append(summary_line(clean_stale_shm()))
+        else:
+            lines.append('shm clean off (shm_clean:=false)')
+    except Exception as exc:  # noqa: BLE001 - a launch step must never fail the launch
+        lines.append('shm clean unavailable (%s: %s), nothing removed'
+                     % (type(exc).__name__, exc))
+    try:
+        if context.launch_configurations.get('bridge_shm', 'true') == 'true':
+            lines.append('bridge shared memory on: teensy_bridge_node uses the '
+                         'default Fast DDS transports (bridge_shm:=false turns it off)')
+        elif os.path.isfile(_bridge_udp_profile()):
+            lines.append('bridge shared memory off: teensy_bridge_node on Fast DDS '
+                         'UDPv4 only (%s)' % _bridge_udp_profile())
+        else:
+            lines.append('bridge shared memory REQUESTED OFF but %s is missing: '
+                         'Fast DDS logs an XML error and keeps its default '
+                         'transports' % _bridge_udp_profile())
+    except Exception as exc:  # noqa: BLE001
+        lines.append('bridge shared memory state unknown (%s: %s)'
+                     % (type(exc).__name__, exc))
+    return [LogInfo(msg=line) for line in lines]
+
+
 def _bag_summary_at_exit(context, bag_dir):
     """OpaqueFunction body: arm the end-of-session bag line. Never raises."""
     try:
@@ -362,6 +404,30 @@ def generate_launch_description():
                     "thread's stack to temp/logs/stall_teensy_bridge_node_*.txt when it "
                     'stalls over 150 ms, and logs one WARN naming the file. '
                     'Diagnostic only; stall_watchdog:=false turns it off.')
+
+    # BUG-129 experiment, two separate switches; the stall watchdog counts
+    # whether the freezes continue (logbook 2026-11-23-bridge-shm-clean-at-launch).
+    # shm_clean, default ON: before any node starts, remove the Fast DDS
+    # /dev/shm files no live process holds (jugglebot/dds_shm.py says how
+    # "holds" is decided). No runtime change to any node.
+    # bridge_shm, default ON (= today): bridge_shm:=false runs teensy_bridge_node
+    # on a UDPv4-only Fast DDS profile, so every topic it publishes reaches its
+    # readers over loopback UDP. Off by default because it changes the transport
+    # of the Leg-path node; it is the decisive half of the experiment.
+    shm_clean_arg = DeclareLaunchArgument(
+        'shm_clean', default_value='true',
+        description='BUG-129: true (default) -> before any node starts, remove the '
+                    'Fast DDS files in /dev/shm that no live process locks, maps or '
+                    'has open, and log one INFO line with the count. '
+                    'shm_clean:=false turns it off.')
+    bridge_shm = LaunchConfiguration('bridge_shm')
+    bridge_shm_arg = DeclareLaunchArgument(
+        'bridge_shm', default_value='true',
+        description='BUG-129: true (default) -> teensy_bridge_node uses the default '
+                    'Fast DDS transports (shared memory + UDP). false -> it runs on '
+                    'UDPv4 only (resources/fastdds_bridge_udp_only.xml); every other '
+                    'node keeps shared memory.')
+    shm_actions = OpaqueFunction(function=_shm_actions)
 
     # BUG-58 opt-in cures for the 40 Hz stream stalls (both DEFAULT OFF; the
     # probe Sitting decides which, if either, becomes the default).
@@ -604,6 +670,19 @@ def generate_launch_description():
     _existing_pp = os.environ.get('PYTHONPATH', '')
     _bridge_pythonpath = (f"{_jugglebot_repo}:{_existing_pp}"
                           if _existing_pp else _jugglebot_repo)
+    # BUG-129: bridge_shm:=false points FASTRTPS_DEFAULT_PROFILES_FILE at the
+    # UDPv4-only profile in this node's environment only. The variable NAME is
+    # the substitution: with bridge_shm true the same path goes to an inert
+    # variable, because Fast DDS 2.1.4 logs an XMLPARSER Error for an empty
+    # FASTRTPS_DEFAULT_PROFILES_FILE (probed 2026-11-23), so there is no
+    # "blank" value that means unset.
+    _bridge_env = {
+        'PYTHONPATH': _bridge_pythonpath,
+        PythonExpression([
+            "'FASTRTPS_DEFAULT_PROFILES_FILE' if '", bridge_shm,
+            "' == 'false' else 'JUGGLEBOT_BRIDGE_UDP_PROFILE_UNUSED'"]):
+            _bridge_udp_profile(),
+    }
     teensy_bridge_node = Node(
         package='jugglebot',
         executable='teensy_bridge_node',
@@ -629,7 +708,7 @@ def generate_launch_description():
                 "'", os.path.expanduser('~/Desktop/Jugglebot/temp/hand_capture'),
                 "' if '", hand_capture, "' == 'true' else ''"]),
         }],
-        additional_env={'PYTHONPATH': _bridge_pythonpath},
+        additional_env=_bridge_env,   # PYTHONPATH + the BUG-129 bridge_shm switch
         # BUG-26 (2026-11-01): the shutdown Stow is bounded at _SHUTDOWN_DEACTIVATE_TIMEOUT_S = 6 s plus a
         # ~0.2 s settle; launch's default 5 s SIGINT->SIGTERM would kill the node before it
         # can log the outcome (the descent itself is ODrive/firmware-owned and finishes
@@ -943,6 +1022,11 @@ def generate_launch_description():
         gc_freeze_arg,      # BUG-58 opt-in cures (default off)
         cpu_partition_arg,
         hand_capture_arg,  # TEMPORARY (BUG-57 diagnostic capture)
+        shm_clean_arg,     # BUG-129 experiment
+        bridge_shm_arg,
+        # BUG-129: after the arguments, BEFORE the first node, so the clean
+        # never races a participant this launch starts.
+        shm_actions,
         # Infrastructure (gui_server.py runs independently in the background)
         rosbridge_websocket_node,
         rosapi_node,
