@@ -14,15 +14,16 @@ radius: local
 area: skill-stack
 blocked_by: []
 links:
+- logbook/2026-11-23-ring-study-release-timing-redone-on-the-bridge-clock.md
 - plans/parked/carry-ring-zvd.md
 filed_by: claude
 ---
 
-Decides whether plans/parked/carry-ring-zvd.md comes back or is archived (owner, 2026-11-23). At Dwell 0.50 the IMU shows the x ring surging to about 43 mm/s 45 ms after the planned release, with 7 to 8 mm/s of spread (logbook 2026-11-23-platform-ring-identification-from-the-imu). Dwell 0.40 is where the old 76 mm long landings were seen and is unmeasured.
+Decides whether plans/parked/carry-ring-zvd.md comes back or is archived (owner, 2026-11-23). At Dwell 0.50 the IMU, on the bridge clock, shows the x ring quiet at the measured separation (about 4 ms after the planned release) and surging to about 19 mm/s 42 ms after it (logbook 2026-11-23-ring-study-release-timing-redone-on-the-bridge-clock, which corrects the earlier 43 mm/s). Dwell 0.40 is where the old 76 mm long landings were seen and is unmeasured.
 
 The owner doubts Dwell 0.40 is reachable without other changes. A refusal at the rehearsal is itself the answer: the plan is then archived.
 
-Analyse only after BUG-132 (IMU timestamps early) is fixed, or with the shift estimated per capture.
+Fly it on Platform FW 15 (BUG-132 fixed) and analyse on the bridge clock: check the capture with `tools/probes/imu_clock_check.py` and time the other streams with `tools/probes/_bag_time.py`.
 
 ## Sitting
 
