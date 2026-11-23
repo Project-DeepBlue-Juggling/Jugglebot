@@ -5,7 +5,7 @@ image, the state machine, and what the can-bridge and `teensy_bridge_node` must 
 `config/protocol_config.yaml` (`can_ids.platform.IMU_*` and `platform_imu:`) and reaches code only through
 `python config/generate_config.py` (`PlatformImu*` in C++, `PLATFORM_IMU_*` / `PlatformImu*` in Python).
 `tests/firmware/test_platform_imu_protocol.py` pins the YAML against this page. Plan:
-`plans/active/platform-imu.md` (P2 builds the Platform Teensy side, P3 the can-bridge and Jetson side).
+`plans/archived/platform-imu.md` (P2 builds the Platform Teensy side, P3 the can-bridge and Jetson side).
 
 All frames are classic CAN, 11-bit, DLC 8, little-endian (the repo convention: FwUpdate, 0x7DD, Wave). Unused bytes
 are 0. Raw sensor counts go on the wire; scaling and calibration happen on the Jetson.
@@ -527,7 +527,7 @@ N = 32000 (wrapped), 320 anchors (960 words), header 11 words; 64971 words in al
 
 ## 8. Bus load and timing
 
-Facts and sources (surveys of the 2026-11-18 design round, `plans/active/platform-imu.md` section 2):
+Facts and sources (surveys of the 2026-11-18 design round, `plans/archived/platform-imu.md` section 2):
 
 - Every ODrive and setpoint frame has a lower CAN id (higher priority) than 0x6E6, so an upload frame can delay a
   control frame by at most one frame time, about 0.13 ms at 111 bit/frame. Source: the id map in

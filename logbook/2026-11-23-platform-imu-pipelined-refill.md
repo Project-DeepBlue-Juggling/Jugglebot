@@ -2,7 +2,7 @@
 title: "Pipelined IMU refill READs: in a hole-refill pass the next READ goes out after the block's own length on the board plus 4 ms (15 ms floor), not after its frames land; refill_merge_words 16 to 12; refill_s and bridge-minus-Jetson frame count in stats; Jetson only, unflown"
 type: optimization
 date: 2026-11-23
-status: in-progress
+status: complete
 phase: "IDEA-25 pipelined refill"
 related_plan: "platform-imu.md"
 related_issues: []
@@ -59,3 +59,7 @@ IMU_REPLY frames/s. The bridge's relay ring (8 slots, 7 usable, drained 4 per 10
 
 Unflown. At the next Sitting: an Armed whole-ring upload at gap 80 and 63, reading `refill_s`, READs, duplicates, CRC,
 `hole_passes` (a block cut on the board shows as an extra pass) and `bridge_rx_minus_jetson_rx == 0`.
+
+## Closed (2026-11-23)
+
+Closed with the plan's archival. The code ran Armed and in an Attempt at the Sitting of 2026-11-23 (`2026-11-23-sitting-debrief-robot`): uploads complete and checksum-verified. Upload time is carried by IDEA-25.

@@ -2,7 +2,7 @@
 title: "Platform FW 14: a chunk-CRC table makes every IMU upload verifiable (span uploads included) and a diag region counts IMU_DATA placed, sent and pending per TX mailbox plus CAN error-counter rises; no can-bridge change; built, not yet flashed"
 type: feature
 date: 2026-11-23
-status: in-progress
+status: complete
 phase: "IDEA-25 firmware 14"
 related_plan: "platform-imu.md"
 related_issues: []
@@ -115,3 +115,7 @@ chunks checked, no mismatch, bridge_rx_minus_jetson_rx 0. Transmit counters: tra
 data_tx_done 17424, data_tx_lost_mb 0, data_pend_over_2ms 0, data_pend_max_us 1382, TEC and REC 0, tx_queued_anyway
 0; the bridge counted 17427 frames. pass1_missing was 258 (one whole 256-word block again, as on firmware 13), still
 unexplained. Not tested: Armed, an Attempt, a real mismatch.
+
+## Closed (2026-11-23)
+
+Closed with the plan's archival. The code ran Armed and in an Attempt at the Sitting of 2026-11-23 (`2026-11-23-sitting-debrief-robot`): uploads complete and checksum-verified. Upload time is carried by IDEA-25.

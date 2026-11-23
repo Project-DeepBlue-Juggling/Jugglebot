@@ -15,7 +15,7 @@ radius: subsystem
 area: platform-teensy
 blocked_by: []
 links:
-- plans/active/platform-imu.md
+- plans/archived/platform-imu.md
 - logbook/2026-11-20-sitting-debrief-robot-2.md
 - logbook/2026-11-23-sitting-debrief-robot.md
 filed_by: harrison
@@ -64,7 +64,7 @@ Working at `tools/probes/imu_bench/` (commit afdf0e91, logbook `2026-11-18-imu-b
 ## Sitting
 
 - setup: level, armed, bb-fed
-- why: closes Rung P5 of plans/active/platform-imu.md. The mount is fitted and the calibration file exists; what is left is one real Attempt capture that is checksum-verified. Platform firmware 14 (flashed 2026-11-23) verifies partial uploads chunk by chunk.
+- why: closes Rung P5 of plans/archived/platform-imu.md. The mount is fitted and the calibration file exists; what is left is one real Attempt capture that is checksum-verified. Platform firmware 14 (flashed 2026-11-23) verifies partial uploads chunk by chunk.
 - do:
   - Launch with the Cup empty. `cd ~/Desktop/Jugglebot/ros_ws && source /opt/ros/foxy/setup.zsh && source install/setup.zsh && ros2 launch jugglebot jugglebot_launch.py cpu_partition:=false 2>&1 | tee -i ~/Desktop/Jugglebot/temp/logs/launch_2026-11-23_1.log`. Wait for Homing; expect "BRIDGE_FW_CHECK: OK — can-bridge v49", "PLATFORM_FW_CHECK: OK — Platform Teensy v14" and "stall watchdog on".
   - Hold LEVELLING on the state minimap to confirm. Rehearse (moves nothing): `ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: 'oval_1ball_fed,apex_m=1.00,separation_mm=150.0,dwell_s=0.50'}"`; it must report no refusal.

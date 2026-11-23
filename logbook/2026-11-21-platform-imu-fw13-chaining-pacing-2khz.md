@@ -2,7 +2,7 @@
 title: "Platform Teensy FW 13: READ chaining, fixed-schedule frame pacing and a selectable 2 kHz capture rate; Jetson chains one READ ahead, live pace parameter, set_rate service"
 type: feature
 date: 2026-11-21
-status: in-progress
+status: complete
 phase: "IDEA-25 / IDEA-20 P5 preparation"
 related_plan: "platform-imu.md"
 related_issues: []
@@ -96,3 +96,7 @@ Reference on FW 12, at rest, gap 80 (`20261120T095142Z_C33B`): 56.25 s, 263 READ
 ## Verification
 
 Tests: see the commit messages (`git log --grep "Logbook-Entry: 2026-11-21-platform-imu-fw13-chaining-pacing-2khz"`).
+
+## Closed (2026-11-23)
+
+Closed with the plan's archival. The code ran Armed and in an Attempt at the Sitting of 2026-11-23 (`2026-11-23-sitting-debrief-robot`): uploads complete and checksum-verified. Upload time is carried by IDEA-25.

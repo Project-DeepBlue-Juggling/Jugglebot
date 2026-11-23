@@ -2,7 +2,7 @@
 title: "Platform IMU upload: hole-fill READs cover one cluster of holes and the settle drops to 5 ms (IDEA-25); the launch log gains an upload-finished line"
 type: optimization
 date: 2026-11-21
-status: in-progress
+status: complete
 phase: "IDEA-25"
 related_plan: "platform-imu.md"
 related_issues: []
@@ -53,3 +53,7 @@ from the new log line. Where the 0.4 % is lost is still unknown (needs counters 
 ## Verification
 
 See the commit message for the (date, command, result) triple.
+
+## Closed (2026-11-23)
+
+Closed with the plan's archival. The code ran Armed and in an Attempt at the Sitting of 2026-11-23 (`2026-11-23-sitting-debrief-robot`): uploads complete and checksum-verified. Upload time is carried by IDEA-25.

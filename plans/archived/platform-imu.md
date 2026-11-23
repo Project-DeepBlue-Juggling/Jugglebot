@@ -1,7 +1,8 @@
 ---
 title: Platform IMU — an ICM-42688-P on the Platform Teensy, buffered capture over CAN for offline input-shaping work
 created: 2026-11-18
-status: active
+status: completed
+archived: 2026-11-23
 owner: Harrison
 last_updated: 2026-11-23
 pathway: two-ball-oval
@@ -39,6 +40,21 @@ Map Item: IDEA-20 (`map/idea-platform-accelerometer.md`), under the two-ball-ova
 the ring-mode tuning of `plans/active/carry-ring-zvd.md` (FEAT-32), which sits on that Pathway. Decisions below were
 agreed with the owner on 2026-11-18 in the design round. Facts cite the three surveys of that round: [fw] Platform
 Teensy firmware, [can] CAN path and bus load, [motion] motion envelope. A line marked **open** is not decided.
+
+## Archival note (2026-11-23)
+
+Completed. What shipped: the ICM-42688-P on the Platform Teensy (firmware 14), a 32 s ring at 1 kHz (2 kHz selectable
+at run time), freeze and upload over CAN at the end of every Attempt with chunk-by-chunk checksums, the mount
+calibration `config/platform_imu_mount.json`, and GUI IMU charts in the Platform frame. The closing evidence is the
+Sitting of 2026-11-23 (`logbook/2026-11-23-sitting-debrief-robot.md`): capture `20261123T033855Z_4AFA`, an 8/8 oval
+Attempt, complete and verified. IDEA-20 is closed.
+
+Where the residue went: upload time and the bridge's CAN receive loss to IDEA-25; the bridge node freeze to BUG-129;
+the lever arm, the unflown forced gap and Fault upload, the browser check of the chart labels, the lost block at rest,
+the wall-clock chain and the ring-frequency gap to the Idea "Platform IMU residue: unflown checks and the unmeasured
+lever arm". In section 6: the bridge firmware number question is moot (the bridge is on firmware 49); span uploads are
+now checksum-verified (firmware 14); the three "owner confirmations pending" describe the behaviour as built and flown,
+and none was objected to. BUG-90's stop-go is closed (carry_zvd stays off).
 
 ## 1. Purpose
 

@@ -14,7 +14,7 @@ radius: local
 area: platform-teensy
 blocked_by: []
 links:
-- plans/active/platform-imu.md
+- plans/archived/platform-imu.md
 - logbook/2026-11-20-sitting-debrief-robot-2.md
 - logbook/2026-11-21-platform-imu-upload-hole-fill.md
 - logbook/2026-11-21-platform-imu-fw13-chaining-pacing-2khz.md

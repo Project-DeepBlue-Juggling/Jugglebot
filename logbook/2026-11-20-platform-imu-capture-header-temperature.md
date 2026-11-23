@@ -2,7 +2,7 @@
 title: "Platform IMU: the capture header's temperature -128 was 24.03 C, not the unknown sentinel; the capture .json now carries it decoded, and the UI filter is decided at ODR/2 (IDEA-20)"
 type: bugfix
 date: 2026-11-20
-status: in-progress
+status: complete
 phase: "platform-imu P4"
 related_plan: "platform-imu.md"
 related_issues: []
@@ -52,3 +52,7 @@ firmware edits).
 
 **PENDING (hardware):** no flash is needed. At the next capture upload, confirm the `.json` header carries
 `temp_c_start` / `temp_c_freeze` within 0.5 C of the STATUS `temp_c`.
+
+## Closed (2026-11-23)
+
+Closed with the plan's archival. The code ran Armed and in an Attempt at the Sitting of 2026-11-23 (`2026-11-23-sitting-debrief-robot`): uploads complete and checksum-verified. Upload time is carried by IDEA-25.
