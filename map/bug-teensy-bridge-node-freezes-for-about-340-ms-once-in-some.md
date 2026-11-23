@@ -4,7 +4,7 @@ kind: bug
 title: teensy_bridge_node freezes for about 340 ms once in some launches; Armed, that latches SETPOINT_STALE
 status: in_progress
 created: '2026-11-22'
-updated: '2026-11-23T03:12:49Z'
+updated: '2026-11-23T03:48:28Z'
 owners: []
 priority: high
 effort: m
@@ -47,3 +47,4 @@ Do not change the 250 ms limit or the 70/80 ms lane covers for this. Next step: 
 ## Progress
 
 - 2026-11-23: 2026-11-23: stall watchdog landed and caught a real 359 ms stall at rest (14:07:33). The dump shows one thread inside rclpy publish (robot_state) and every other thread idle: a publish blocked in the middleware holding the GIL. Kernel pause ruled out for this event. Trigger still unknown; six new-participant actions did not reproduce it.
+- 2026-11-23: Sitting 2026-11-23: one 313 ms stall at launch plus 1 s (unarmed), none while Armed. Third unprovoked dump with the same stack: the robot_state publish inside rclpy, all other threads idle.

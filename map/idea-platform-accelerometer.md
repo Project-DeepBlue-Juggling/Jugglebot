@@ -2,9 +2,9 @@
 id: IDEA-20
 kind: idea
 title: Platform Accelerometer?
-status: in_progress
+status: complete
 created: '2026-11-08'
-updated: '2026-11-22T10:51:48Z'
+updated: '2026-11-23T03:48:19Z'
 owners:
 - claude
 priority: medium
@@ -17,10 +17,8 @@ blocked_by: []
 links:
 - plans/active/platform-imu.md
 - logbook/2026-11-20-sitting-debrief-robot-2.md
+- logbook/2026-11-23-sitting-debrief-robot.md
 filed_by: harrison
-night_skip: owner-session
-night_skip_on: '2026-11-23'
-night_skip_note: Rung P5 mount fit passed 2026-11-22 and the calibration file landed in a day Session (4eee6423); the Attempt capture is Sitting work.
 ---
 
 Let's discuss the possible advantages that we might receive as a result of adding an accelerometer to the 2020 extrusion on which Jugglebot's hand's linear rail is mounted. Might this help with our 'input shaping' work, by allowing us to capture high resolution data on Platform acceleration? I imagine we have the Teensy pins available for this? What specific sensor might be best to use?
@@ -89,6 +87,11 @@ Working at `tools/probes/imu_bench/` (commit afdf0e91, logbook `2026-11-18-imu-b
 - verdict: pass
 - notes: Isn't this unnecessary because this is the end of the SItting? Doesn't this get reset when the next launch starts up? (sheet 2026-11-22-robot, step 15) [derived: owner flipped fail to pass (upload-speed clause to IDEA-25). Mount fit within 0.013 deg at Level and both Tilts (572D, 572E, CRC ok). Uploads Armed: 59.7 s / 24 and 63.3 s / 1694 duplicates; gap 63 about 67 s per full ring. 2 kHz: 0 errors, 5731 complete, back on 1 kHz. Detail: logbook 2026-11-22-sitting-debrief]
 
+## Sitting result (2026-11-23 14:55)
+
+- verdict: pass
+- notes: (sheet 2026-11-23-robot, step 9) [derived: launch.log 2026-11-23-14-31-05 line 2070: attempt_end upload, 21248 samples, 40.1 s, complete yes, crc ok (chunks), file 20261123T033855Z_4AFA; line 1936: oval_1ball_fed 8/8 caught.]
+
 ## Progress
 
 - 2026-11-09: Night Shift 2026-11-09: feasibility and options written; awaiting the owner's answer
@@ -103,3 +106,4 @@ Working at `tools/probes/imu_bench/` (commit afdf0e91, logbook `2026-11-18-imu-b
 - 2026-11-21: FW 13 flashed and checked at rest (chaining, fixed-schedule pacing, 2 kHz image); the Sitting section now covers Rung P5 calibration (Level plus two Tilts via the Jog panel), the 1600 frames/s Armed trial, the first Armed FW 13 uploads and a 1 kHz against 2 kHz oval Attempt.
 - 2026-11-22: 2026-11-22: can-bridge FW 47 flashed; set_rate switches 1/2 kHz at run time (at rest: 2 kHz whole-ring upload 52.9 s, 0 duplicates, CRC ok; back to 1 kHz). Sitting section rewritten: one launch, no flash, Jog Tilts confirmed offline (5 deg in 0.35 s, holds), 8-Throw oval at 1 and 2 kHz, 1 degree criterion owner-confirmed.
 - 2026-11-22: Passed at the Sitting of 2026-11-22 (owner flipped the literal fail: the upload-speed clause moves to IDEA-25). Mount fitted: gravity within 0.013 deg at Level and both 5 deg Tilts; board tilted 3.0 deg about Platform X; yaw +0.65 +/- 0.3 deg. 2 kHz clean, 8/8 caught at both rates. Left for P5: the calibration file and a CRC-checked Attempt capture.
+- 2026-11-23: Passed at the Sitting of 2026-11-23: an 8/8 oval Attempt's capture uploaded complete and checksum-verified (crc ok (chunks), file 20261123T033855Z_4AFA). Rung P5 complete.

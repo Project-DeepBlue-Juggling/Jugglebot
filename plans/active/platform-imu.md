@@ -3,7 +3,7 @@ title: Platform IMU — an ICM-42688-P on the Platform Teensy, buffered capture 
 created: 2026-11-18
 status: active
 owner: Harrison
-last_updated: 2026-11-20
+last_updated: 2026-11-23
 pathway: two-ball-oval
 scope: >-
   Put an ICM-42688-P on the Platform's 2020 extrusion (the one carrying the Hand's rail), read it over I2C from the
@@ -13,11 +13,11 @@ scope: >-
   X/Y Tilt mount calibration is fitted and a real Attempt's capture is on disk, complete, CRC-checked and handed to
   the carry-ring-zvd analysis.
 steps:
-  - {id: P1, title: Off-board foundations, kind: phase, status: in_progress, effort: m, hardware: none}
-  - {id: P2, title: Platform Teensy firmware FW 11, kind: phase, status: in_progress, effort: l, hardware: none}
-  - {id: P3, title: can-bridge firmware and the Jetson side, kind: phase, status: not_started, effort: l, hardware: none}
+  - {id: P1, title: Off-board foundations, kind: phase, status: complete, effort: m, hardware: none}
+  - {id: P2, title: Platform Teensy firmware FW 11, kind: phase, status: complete, effort: l, hardware: none}
+  - {id: P3, title: can-bridge firmware and the Jetson side, kind: phase, status: complete, effort: l, hardware: none}
   - {id: P4, title: "Sitting 1, flash and bench the capture path", kind: rung, status: complete, effort: m, hardware: robot}
-  - {id: P5, title: "Sitting 2, mount calibration and first Attempt captures", kind: rung, status: in_progress, effort: m, hardware: robot}
+  - {id: P5, title: "Sitting 2, mount calibration and first Attempt captures", kind: rung, status: complete, effort: m, hardware: robot}
 related_logbook:
   - 2026-11-18-imu-bench-proof-of-concept.md
   - 2026-11-18-platform-imu-p1-foundations.md
@@ -200,7 +200,7 @@ P2's native tests (the SCL3300 is not unplugged on the robot); the invalid encod
 
 Hardware: robot. The mount calibration (Level, then X and Y Tilts with Mocap recording), then real Attempts with the
 automatic freeze and upload. **Rung gate:** a calibration file beside the other calibration artefacts, and one real
-Attempt's capture on disk, complete and CRC-checked, handed to the carry-ring-zvd analysis. Status: in progress (2026-11-22): the Sitting passed (`2026-11-22-sitting-debrief`) and the mount rotation is fitted (gravity within 0.013 deg at Level and both Tilts, board tilted 3.0 deg about Platform X). The calibration file exists: `config/platform_imu_mount.json` (2026-11-23, `2026-11-23-platform-imu-mount-calibration-file`), loaded by `teensy_link/platform_imu_mount.py` and served by the GUI as the Platform frame by default. Not yet met: one real Attempt capture, complete and CRC-checked (the Attempt captures so far are span uploads, which the payload CRC does not cover; a span checksum is being added separately). P5 is not complete. The lever arm stays at its CAD value (the Jog moves could not fit it).
+Attempt's capture on disk, complete and CRC-checked, handed to the carry-ring-zvd analysis. Status: complete (2026-11-23, `2026-11-23-sitting-debrief-robot`). The mount rotation is fitted (Sitting of 2026-11-22: gravity within 0.013 deg at Level and both Tilts, board tilted 3.0 deg about Platform X) and written to `config/platform_imu_mount.json`, loaded by `teensy_link/platform_imu_mount.py` and served by the GUI as the Platform frame by default. One real Attempt capture is on disk, complete and checksum-verified chunk by chunk on Platform firmware 14: `temp/imu_capture/20261123T033855Z_4AFA` (8 Throws of `oval_1ball_fed`, 8/8 caught), which is the capture for the carry-ring-zvd analysis. Upload time is carried by IDEA-25. The lever arm stays at its CAD value (the Jog moves could not fit it).
 
 ## 6. Open questions
 

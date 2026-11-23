@@ -1,3 +1,34 @@
+closed:
+  at: 2026-11-23 14:55
+  items:
+  - IDEA-20
+  - IDEA-25
+confirmed:
+  at: 2026-11-23 14:55
+  changed: []
+derived:
+  6:
+    IDEA-25:
+      by: sitting-debrief 2026-11-23
+      criterion: 'Both uploads read "32000 samples", "complete yes, crc ok"; the default
+        pace takes 57 s or less and the faster pace 48 s or less. Computed at the
+        debrief from the capture files: bridge and Jetson frame counts agree, and
+        the transmit counters name the side that loses frames.'
+      evidence: 'launch.log 2026-11-23-14-31-05 lines 784 and 1282: both 32000 samples,
+        complete yes, crc ok; default pace 57.7 s (limit 57), faster pace 49.3 s (limit
+        48). Capture files 4AF8, 4AF9: bridge minus Jetson frames 0; Platform placed
+        66518 and sent 66518, bridge received 66116, error counters 0, so the bridge
+        CAN receive loses the frames.'
+      verdict: fail
+  9:
+    IDEA-20:
+      by: sitting-debrief 2026-11-23
+      criterion: The Attempt's "Platform IMU upload finished" line reads "complete
+        yes, crc ok (chunks)".
+      evidence: 'launch.log 2026-11-23-14-31-05 line 2070: attempt_end upload, 21248
+        samples, 40.1 s, complete yes, crc ok (chunks), file 20261123T033855Z_4AFA;
+        line 1936: oval_1ball_fed 8/8 caught.'
+      verdict: pass
 schema: 2
 steps:
   1:

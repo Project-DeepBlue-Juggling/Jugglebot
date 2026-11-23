@@ -4,7 +4,7 @@ kind: idea
 title: Minimise the Platform IMU upload time after an Attempt
 status: in_progress
 created: '2026-11-19'
-updated: '2026-11-22T10:51:51Z'
+updated: '2026-11-23T03:48:24Z'
 owners: []
 priority: low
 effort: m
@@ -48,9 +48,9 @@ Recommendation: 1 now (cheap, Jetson-only, attacks the measured 13 s of re-readi
 ## Sitting
 
 - setup: level, armed
-- why: first Armed numbers for pipelined refill reads and Platform firmware 14's transmit counters (both landed 2026-11-23, checked only at rest). The counters say whether the Platform's CAN transmit or the bridge's CAN receive loses the frames.
+- why: re-measure after the next change (the faster pace as default, or a can-bridge change to stop its CAN receive losing frames). The Sitting of 2026-11-23 gave 57.7 s and 49.3 s on Platform firmware 14 with pipelined refill reads.
 - do:
-  - With the launch up, Level done and ACTIVE:TRAJECTORY held (Armed), leave the robot untouched for 40 s, then upload the whole ring at the default pace: `ros2 service call /platform_imu/upload jugglebot_interfaces/srv/SetString "{data: \"{}\"}"`. Wait for "recording" on the GUI IMU panel and read `grep -n "Platform IMU upload finished" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-23_1.log | tail -1`.
+  - With the launch up, Level done and ACTIVE:TRAJECTORY held (Armed), leave the robot untouched for 40 s, then upload the whole ring at the default pace: `ros2 service call /platform_imu/upload jugglebot_interfaces/srv/SetString "{data: \"{}\"}"`. Wait for "recording" on the GUI IMU panel and read `grep -n "Platform IMU upload finished" ~/Desktop/Jugglebot/temp/logs/launch_<date>_1.log | tail -1`.
   - Faster pace: `ros2 param set /teensy_bridge_node imu_read_gap_10us 63`, leave the robot untouched for 40 s from the end of the last upload, then the same upload call and the same grep.
   - `ros2 param set /teensy_bridge_node imu_read_gap_10us 80` and `ros2 param get /teensy_bridge_node imu_read_gap_10us` must read 80.
 - pass:
@@ -60,9 +60,15 @@ Recommendation: 1 now (cheap, Jetson-only, attacks the measured 13 s of re-readi
   - Wall-clock time of each upload. The finished lines are in the launch log, nothing to type.
 - minutes: 10
 
+## Sitting result (2026-11-23 14:55)
+
+- verdict: fail
+- notes: First upload took 57.7 sec, while second took 49.3. (pasted log lines are in the sheet results file) (sheet 2026-11-23-robot, step 6) [derived: 57.7 s at gap 80 (limit 57), 49.3 s at gap 63 (limit 48); both 32000 samples, crc ok; bridge minus Jetson frames 0; Platform sent 66518 of 66518, bridge received 66116: the bridge CAN receive loses the frames]
+
 ## Progress
 
 - 2026-11-20: Sitting 2026-11-20: Armed uploads took 79 s (ring) and 84 s (32 s span) against 56 s at rest, with 14651-19974 duplicate frames (158 at rest), up to 6 block timeouts, CAN1 at 74-77 %. A juggle goal was refused 7 s into a 37 s upload. Diagnosis in logbook 2026-11-20-sitting-debrief-robot-2.
 - 2026-11-21: 2026-11-21: Jetson-only hole-fill change landed (READs cover one cluster of holes, settle 5 ms); modelled 79 s to about 64 s Armed. To verify on the robot from the new upload-finished log line (logbook 2026-11-21-platform-imu-upload-hole-fill).
 - 2026-11-21: 2026-11-21: FW 13 flashed; at rest a whole-ring upload takes 52.6 s at gap 80 and 41.4 s at gap 63 with 0 duplicates (56.25 s and 158 on FW 12); 250 of 263 READs chained. Armed check and the 1600 frames/s trial are on IDEA-20's Sitting row (logbook 2026-11-21-platform-imu-fw13-chaining-pacing-2khz).
 - 2026-11-22: Sitting 2026-11-22, FW 13 Armed: whole ring 59.7 s (24 duplicates) and 63.3 s (1694) against 79 to 84 s on 2026-11-20. Gap 63 gave no gain per sample (2.08 ms against 1.87 to 1.98): lost frames and refills ate it. 2 kHz Attempt upload 71.7 s, 723 lost frames against 5 at rest. Why duplicates vary 24 to 1694 is unexplained.
+- 2026-11-23: Sitting 2026-11-23, FW 14 Armed: whole ring 57.7 s at gap 80 and 49.3 s at gap 63 (limits 57 and 48 missed). Refill reads now about 20 ms each. The Platform sent every frame (66518 of 66518, error counters 0); the bridge counted about 400 fewer: its CAN receive loses them. Logbook 2026-11-23-sitting-debrief-robot.
