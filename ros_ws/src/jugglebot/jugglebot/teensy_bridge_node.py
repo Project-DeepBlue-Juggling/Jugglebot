@@ -4518,8 +4518,11 @@ class TeensyBridgeNode(Node):
             # measured "97 % identical consecutive samples" was an artefact of
             # this publisher rather than a property of the plant. Skipping the
             # duplicate makes the published series follow the TELEMETRY rate
-            # instead of the timer, so the mean stays ~100 Hz while the
-            # fabricated rows disappear.
+            # instead of the timer, so the fabricated rows disappear. The mean
+            # is BELOW 100 Hz: a period that carried two frames publishes only
+            # the latest, and a tick lost to this callback group publishes
+            # nothing (measured 80-93 Hz in Attempts, BUG-112; no consumer
+            # depends on the rate).
             #
             # THE LINK-LOST CARVE-OUT IS NOT OPTIONAL. When the UDP link dies,
             # telemetry stops, so the generation freezes — and a gate on

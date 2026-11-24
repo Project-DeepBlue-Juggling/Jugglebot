@@ -4,7 +4,7 @@ kind: bug
 title: Hand stays homed after its drive loses the position reference, so the next move rams the top stop
 status: in_progress
 created: '2026-11-20'
-updated: '2026-11-20T04:33:49Z'
+updated: '2026-11-24T13:55:53Z'
 owners: []
 priority: high
 effort: m
@@ -43,9 +43,9 @@ Fix: clear `is_homed` through the existing relay write when any axis reports MIS
 - pass: after the clear the robot enters Homing (not Idle) and `/robot_state` shows `is_homed` false until that Homing finishes.
 - record: the states the GUI showed after the clear, and the launch log line that clears the homed flag.
 - minutes: 5
-- branch: night-shift/2026-11-20-BUG-122
 
 ## Progress
 
 - 2026-11-20: Fix held on night-shift/2026-11-20-BUG-122 (7748f72e): the bridge clears the homed flag on a rising MISSING_ESTIMATE or INITIALIZING on any Leg or the Hand, retried until the write lands, so clear_errors goes Fault, BOOT, Homing.
 - 2026-11-20: It also changes the fault-exit stow condition in state_machine.py and step 6 of ARMING_CONTRACT.md (a Hand-only loss with the Legs posed still stows first), which is why it is held, not merged: a normative contract edit and an unflown recovery path. Scoped tests 960 passed; no full gate or audit yet (they run at land). Every E-stop button press will force a re-home.
+- 2026-11-25: fix ported onto main and reviewed against FW 49: no false trigger found; one defect fixed and tested (a cold-start re-read applied after a landed clear could restore the homed flag). After a drive loses its reference, clear_errors now goes Fault to BOOT to Homing by itself: keep clear. The recovery path is unflown; the Sitting step stands.
