@@ -150,6 +150,7 @@ class BallTrackerNode(Node):
         self._trapped = trapped_ball.OnlineDwellDetector()
         self._trapped_n = 0
         self._trapped_pose = None
+        self._trapped_pose_mono = None
         self._trapped_hand_rev = None
         self._trapped_hand_mono = None
         self._trapped_err_logged = False
@@ -421,6 +422,7 @@ class BallTrackerNode(Node):
                 p = body.pose.pose.position
                 q = body.pose.pose.orientation
                 self._trapped_pose = (p.x, p.y, p.z, q.x, q.y, q.z, q.w)
+                self._trapped_pose_mono = time.monotonic()
                 return
 
     def _on_hand_telemetry(self, msg: HandTelemetryMessage):
@@ -431,15 +433,18 @@ class BallTrackerNode(Node):
         """Decimated, log-only: WARN while an unlabelled marker dwells under the Hand.
 
         No Hand-path action; the Hand's safety authority stays the Teensy guard.
-        Pose or Hand telemetry missing/stale -> nothing. Never raises into the
+        Pose or Hand telemetry missing/stale (each older than 0.5 s at receipt) -> nothing. Never raises into the
         tracker callback.
         """
         self._trapped_n += 1
         if self._trapped_n % trapped_ball.STRIDE:
             return
         pose, mono = self._trapped_pose, self._trapped_hand_mono
+        now = time.monotonic()
         if (pose is None or mono is None
-                or time.monotonic() - mono > trapped_ball.HAND_STALE_S):
+                or self._trapped_pose_mono is None
+                or now - mono > trapped_ball.HAND_STALE_S
+                or now - self._trapped_pose_mono > trapped_ball.POSE_STALE_S):
             return
         try:
             world = [m for m, lab in zip(markers, labels) if not lab]

@@ -76,3 +76,42 @@ def test_no_hand_telemetry_or_pose_or_stale_means_silence():
     _drive(node, 1.5)
     assert _under_warnings(node) == []
     node._logger.warning.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 2026-11-25 audit findings (FEAT-50 held branch)
+# ---------------------------------------------------------------------------
+def test_stale_platform_pose_suppresses_the_warning():
+    node = _node()
+    node._on_rigid_body_poses(_poses())
+    node._on_hand_telemetry(SimpleNamespace(pos_meas=2.6))
+    node._trapped_pose_mono = time.monotonic() - 5.0   # pose from before a Mocap dropout
+    _drive(node, 1.5)
+    assert _under_warnings(node) == []
+    node._on_rigid_body_poses(_poses())                 # a fresh pose re-enables it
+    node._on_hand_telemetry(SimpleNamespace(pos_meas=2.6))
+    _drive(node, 1.5, t0=2000.0)
+    assert _under_warnings(node)
+
+
+def test_decimation_feeds_every_stride_th_frame_only():
+    node = _node()
+    node._on_rigid_body_poses(_poses())
+    node._on_hand_telemetry(SimpleNamespace(pos_meas=2.6))
+    node._trapped = MagicMock()
+    node._trapped.update.return_value = []
+    for i in range(600):
+        node._on_mocap(_frame(1000.0 + i / 300.0))
+    assert node._trapped.update.call_count == 600 // trapped_ball.STRIDE
+
+
+def test_detector_exception_is_swallowed_and_logged_once():
+    node = _node()
+    node._on_rigid_body_poses(_poses())
+    node._on_hand_telemetry(SimpleNamespace(pos_meas=2.6))
+    node._trapped = MagicMock()
+    node._trapped.update.side_effect = RuntimeError('boom')
+    _drive(node, 2.0)                                   # 600 frames: must not raise
+    assert node._trapped.update.call_count > 1          # still called each stride, never fatal
+    failed = [c for c in node._logger.warning.call_args_list if 'check failed' in c[0][0]]
+    assert len(failed) == 1, failed

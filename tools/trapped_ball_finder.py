@@ -65,7 +65,7 @@ from jugglebot.tracking.trapped_ball import (  # noqa: E402,F401
     DWELL_GAP_S, DWELL_MIN_S, DWELL_RADIUS_MM, HAND_MARKER_AXIAL_TOL_MM,
     HAND_MARKER_RADIAL_TOL_MM, HAND_MARKER_XY_MM, HAND_MARKER_Z0_MM,
     HAND_MM_PER_REV, INITIAL_HEIGHT_MM, ON_PLATFORM_Z_MM, PLATFORM_R_MM,
-    STRIDE, UNDER_R_MM, UNDER_Z_MIN_MM,
+    SKIP_REGIONS, STRIDE, UNDER_R_MM, UNDER_Z_MIN_MM, cluster_add, cluster_region,
     hand_marker_local_z, quat_to_matrix, region_of, to_platform_frame)
 
 # ---------------------------------------------------------------------------
@@ -117,7 +117,7 @@ def find_dwells(frames: Sequence[Tuple[float, Sequence[Sequence[float]], float]]
             m = c["sum"] / c["n"]
             rc = c["regions"]
             done.append({"t0": c["t0"], "t1": c["t1"], "dur_s": c["t1"] - c["t0"],
-                         "region": max(rc, key=rc.get), "under_frac": rc.get("UNDER_HAND", 0) / c["n"],
+                         "region": cluster_region(c), "under_frac": rc.get("UNDER_HAND", 0) / c["n"],
                          "local_mean": [float(v) for v in m], "n": c["n"]})
 
     for t, pts, rev in frames:
@@ -129,20 +129,9 @@ def find_dwells(frames: Sequence[Tuple[float, Sequence[Sequence[float]], float]]
             if tuple(np.floor(p / 10.0).astype(int)) in fixtures:
                 continue
             reg = region_of(p, rev)
-            if reg in (None, "HAND_MARKER", "IN_CUP"):
+            if reg in SKIP_REGIONS:
                 continue
-            best = None
-            for c in open_:
-                if np.linalg.norm(p - c["anchor"]) <= dwell_radius:
-                    best = c
-                    break
-            if best is None:
-                open_.append({"anchor": p, "t0": t, "t1": t, "regions": Counter({reg: 1}), "sum": p.copy(), "n": 1})
-            else:
-                best["t1"] = t
-                best["regions"][reg] += 1
-                best["sum"] += p
-                best["n"] += 1
+            cluster_add(open_, p, t, reg, dwell_radius)
     for c in open_:
         close(c)
     return sorted(done, key=lambda d: d["t0"])
