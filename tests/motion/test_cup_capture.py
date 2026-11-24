@@ -379,6 +379,10 @@ def test_the_2026_10_19_refused_reload_catches_now_build(limits, geom, ball):
         rec = yaml.safe_load(fh)['balls'][ball]
     vel = np.asarray(rec['announcement']['landing_velocity_mmps'], float)
     tilt = _tilt(vel, mag_deg=float(rec['hold_tilt_deg']))
+    # 0.225 s is the RECORDED dispatch lead of the 2026-10-19 sitting (emit
+    # lead 0, 9 knots): a datum of the replay fixture, deliberately NOT
+    # sc.LEAD_S, which moves with the emit lead and would rewrite the replay
+    # (the window index asserted below belongs to the recorded lead).
     t_c = (float(rec['announcement']['landing_time']) - float(rec['dispatch_t'])
            - 0.225)
     off = rec['reproduced_last_before_dispatch']['clamped_delta_mm']

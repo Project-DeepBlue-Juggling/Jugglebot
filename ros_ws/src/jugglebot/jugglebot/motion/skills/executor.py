@@ -2294,8 +2294,10 @@ def install_segment(record: Optional[PlanRecord],
     That soundness argument covers the SEED, not the ORIGIN TIMESTAMP the
     plan carries onto the wire.  A fresh origin reserves no lead the way a
     splice's ``k_s`` does, so once the solve (plus whatever transit follows)
-    outruns :data:`~jugglebot.motion.skills.schedule.FRESH_REST_REBASE_S` (the
-    wire-read margin at emit lead 0), the block reaches the firmware's
+    outruns :data:`~jugglebot.motion.skills.schedule.FRESH_REST_REBASE_S` (for a
+    REST: the wire-read margin at emit lead 0, the Hand's resume budget less
+    the emit-lead-dependent first-knot gap at lead 1; a fresh THROW/CATCH keeps
+    the wire-read margin), the block reaches the firmware's
     scheduled lane with knot 0
     already behind it — 2026-09-28 R4 sitting-1 fact 5: a reload's opening
     REST (6.6 s, hand 8.87 -> 0.31 rev) solved in 381 ms, the scheduled block
@@ -2403,9 +2405,11 @@ def install_segment(record: Optional[PlanRecord],
       the solve outran :data:`WIRE_READ_KNOTS` knots of margin on an
       event-bearing (``THROW``/``CATCH``) segment planned from rest, so knot 0
       would already be old at the wire and there is no later knot to move the
-      event to without moving the event itself.  A ``REST`` in the same
-      situation is REBASED instead (see *Fresh origin* above) rather than
-      refused, because it carries no event to protect.
+      event to without moving the event itself.  A ``REST`` whose solve outran
+      its own, shorter threshold (:data:`FRESH_REST_REBASE_S`: the Hand's
+      resume budget, equal to the wire read only at emit lead 0) is REBASED
+      instead (see *Fresh origin* above) rather than refused, because it
+      carries no event to protect.
 
     Every :class:`~jugglebot.motion.unified_cycle.CycleInfeasible` and every
     ``ValueError`` from a malformed terminal becomes a refusing
@@ -2459,8 +2463,9 @@ def install_segment(record: Optional[PlanRecord],
             # way the splice branch below does (a callable evaluated once the
             # segment exists, so a float still lets tests inject the
             # lateness) and check whether the solve (plus whatever transit
-            # follows) has already spent the `WIRE_READ_KNOTS` margin that
-            # protects a splice.
+            # follows) has already spent the wire-read margin that protects
+            # a splice (a fresh REST: `FRESH_REST_REBASE_S`, which is that
+            # margin at lead 0 and the Hand's resume budget at lead 1).
             t0_before_solve = t0
             dt = float(seg.plan.dt)
             t_inst = (t_now_s if t_install_s is None
@@ -2469,10 +2474,14 @@ def install_segment(record: Optional[PlanRecord],
             # TWO different uses of the wire read, split (INVARIANTS I-WIRE-7):
             # `wire_margin_s` is how old a rebased origin will be at the wire
             # (target + staleness); `rebase_threshold_s` is how long a solve
-            # may run before a fresh REST is rebased. They are equal at emit
-            # lead 0 (75 ms) and differ at lead 1 (100 vs 50 ms).
+            # may run before a fresh origin is rebased (REST) or refused
+            # (THROW/CATCH). They are equal at emit lead 0 (75 ms) and differ
+            # at lead 1 (100 vs 50 ms) for a REST: the 50 ms protects the
+            # Hand's opening-REST handover only, so a fresh THROW/CATCH (no
+            # handover; the sim/offline path) keeps the wire-read margin.
             wire_margin_s = WIRE_READ_KNOTS * dt
-            rebase_threshold_s = FRESH_REST_REBASE_S
+            rebase_threshold_s = (FRESH_REST_REBASE_S if kind == REST
+                                  else wire_margin_s)
             if reserved:
                 # The SPLICE's own test with `k_s = 0` on the reserved origin
                 # (one rule, two branches): knot 0 must still be ahead of the
@@ -2560,13 +2569,16 @@ def install_segment(record: Optional[PlanRecord],
                                             t0_s=t0)
                     return new_record, InstallResult(
                         True, 'OK',
-                        'fresh origin REBASED +%.3f s: the solve outran the '
-                        'origin (%s over %.3f s from %s; solve %.3f s vs '
-                        'a %.3f s rebase threshold)%s%s'
-                        % (t0 - t0_before_solve, kind, seg.plan.total_duration,
+                        'fresh origin REBASED +%.3f s: %s (%s over %.3f s '
+                        'from %s; solve %.3f s)%s%s'
+                        % (t0 - t0_before_solve,
+                           ('the wire read outran the running record\'s end'
+                            if org.band_rest else
+                            'the solve outran the %.3f s rebase threshold'
+                            % rebase_threshold_s),
+                           kind, seg.plan.total_duration,
                            'rest' if held else 'a seed in motion',
                            (t_inst - t_now_s if org.band_rest else solve_s),
-                           rebase_threshold_s,
                            ('' if not k_cut else
                             '; seed propagated: first %d knot(s) dropped'
                             % k_cut),

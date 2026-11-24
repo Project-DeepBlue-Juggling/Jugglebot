@@ -166,8 +166,11 @@ def test_a_throw_dispatches_and_reserves_the_13_knot_fresh_throw_lead():
     read :func:`install_lead_s`; a CATCH/REST keeps ``LEAD_S``.
     """
     dt = float(hw.JB_TRAJ_KNOT_DT_S)
-    assert sc.FRESH_THROW_LEAD_KNOTS == 13
-    assert sc.FRESH_THROW_LEAD_S == pytest.approx(13 * dt)
+    # 13 at emit lead 0, 14 at lead 1: the general LEAD_KNOTS + 4 extra knots
+    assert sc.FRESH_THROW_LEAD_KNOTS == (
+        sc.LEAD_KNOTS + sc.FRESH_THROW_LEAD_EXTRA_KNOTS)
+    assert sc.FRESH_THROW_LEAD_S == pytest.approx(
+        sc.FRESH_THROW_LEAD_KNOTS * dt)
     budget_s = (sc.FRESH_THROW_LEAD_KNOTS - sc.WIRE_READ_KNOTS) * dt
     assert budget_s == pytest.approx(0.250)
     assert budget_s >= 0.188 + 0.025
@@ -240,8 +243,11 @@ def test_the_handoff_lead_buys_eight_knots_and_the_live_schedules_stay_monotone(
     predecessor's install.
     """
     assert sc.HANDOFF_LEAD_EXTRA_KNOTS == 8
+    # 17 knots at emit lead 0, 18 at lead 1: LEAD_KNOTS + the extra knots
+    assert sc.HANDOFF_LEAD_KNOTS == (
+        sc.LEAD_KNOTS + sc.HANDOFF_LEAD_EXTRA_KNOTS)
     assert sc.HANDOFF_LEAD_S == pytest.approx(
-        17 * float(hw.JB_TRAJ_KNOT_DT_S))
+        sc.HANDOFF_LEAD_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S))
     sites = st.columns_sites(125.0)
     pattern = sc.Pattern(sites=sites, apex_m=0.95, dwell_s=0.27, n_throws=10)
     for schedule in _live_builds(sites, pattern):
@@ -1237,7 +1243,7 @@ def test_one_site_one_ball_schedule_matches_the_pre_r4_compile_self_toss(site):
     # 0.325 s since 2026-10-14): a dispatch lead, not a schedule instant, so
     # it is read from the constant rather than pinned as the captured literal.
     expected = [
-        (sc.REST, 0, 'P1', 1789263421.0, 1.5, 0.225, None),
+        (sc.REST, 0, 'P1', 1789263421.0, 1.5, sc.LEAD_S, None),
         # THROW 0's lead: 0.225 s when captured, sc.FRESH_THROW_LEAD_S
         # (0.325 s) since 2026-10-16 — a dispatch lead, not an instant.
         (sc.THROW, 0, 'P1', 1789263421.4, 0.4, sc.FRESH_THROW_LEAD_S, None),
@@ -1259,7 +1265,7 @@ def test_one_site_one_ball_schedule_matches_the_pre_r4_compile_self_toss(site):
         # test_the_closing_rest_is_a_fresh_origin_past_the_last_catchs_tail);
         # every other row is bit-identical to the retired compiler.
         (sc.REST, 0, 'P1', 1789263428.6412835 + sc.REST_FRESH_MARGIN_S, 0.3,
-         0.225, None),
+         sc.LEAD_S, None),
     ]
     assert len(schedule.skills) == len(expected)
     for s, (kind, ball_id, site_name, t_abs_s, window_s, lead_s, rel) in zip(

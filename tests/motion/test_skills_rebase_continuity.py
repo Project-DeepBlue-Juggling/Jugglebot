@@ -46,7 +46,9 @@ from tests.motion.test_skills_install_origin import (DT, T0_ABS, WIRE_MARGIN_S,
 #: 75 ms wire-read margin (85 ms ~ catches #2/#5's 84/87 ms; 60 ms clean).
 REST_S = 1.25
 SLOW_SOLVE_S = 0.085
-FAST_SOLVE_S = 0.060
+# Inside the fresh-REST rebase threshold at EVERY emit lead (0.075 s at lead 0,
+# 0.050 s at lead 1, I-WIRE-7): 0.060 s at lead 0 as originally pinned.
+FAST_SOLVE_S = min(0.060, ex.FRESH_REST_REBASE_S - 0.010)
 
 
 @pytest.fixture(scope='module')
@@ -106,9 +108,10 @@ def test_an_in_motion_seed_is_propagated_over_the_slide(limits, geom):
     _r, res0, seg0 = _install(limits, geom, seed, 0.0)       # same solve, no slide
     rec, res, seg = _install(limits, geom, seed, SLOW_SOLVE_S)
     assert res.accepted, res.message
-    assert 'REBASED' in res.message and '7 knot(s) dropped' in res.message
+    # 7 knots at emit lead 0 (+0.175 s), 8 at lead 1 (+0.200 s): derived
     k = int(math.ceil((SLOW_SOLVE_S + WIRE_MARGIN_S) / DT - 1e-9))
-    assert k == 7
+    assert k == (7 if ex.EMIT_LEAD_KNOTS == 0 else 8)
+    assert 'REBASED' in res.message and '%d knot(s) dropped' % k in res.message
     assert res.t0_s == pytest.approx(T0_ABS + k * DT, abs=1e-12)
     assert res.t0_s >= T0_ABS + SLOW_SOLVE_S + WIRE_MARGIN_S - 1e-12
     assert rec.t0_s == res.t0_s and rec.plan is seg.plan
@@ -157,7 +160,8 @@ def test_an_at_rest_seed_keeps_the_whole_plan_and_the_old_origin(limits, geom):
     rec, res, seg = _install(limits, geom, seed, SLOW_SOLVE_S)
     assert res.accepted and 'REBASED' in res.message, res.message
     assert 'dropped' not in res.message
-    assert res.message.startswith('fresh origin REBASED +0.160 s')
+    assert res.message.startswith(
+        'fresh origin REBASED +%.3f s' % (SLOW_SOLVE_S + WIRE_MARGIN_S))
     assert res.t0_s == pytest.approx(T0_ABS + SLOW_SOLVE_S + WIRE_MARGIN_S,
                                      abs=1e-9)
     _assert_same_plan(seg.plan, seg0.plan)

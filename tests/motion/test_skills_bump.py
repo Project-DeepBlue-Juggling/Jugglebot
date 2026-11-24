@@ -41,6 +41,9 @@ T0_ABS = 100.0
 DWELL_S = 0.30
 T_REL0 = T0_ABS + LAUNCH_S
 T_LAND = T_REL0 + FLIGHT_S
+# BUMP-FREEZE's distance before the landing; 0.225 s at emit lead 0, 0.250 s at
+# lead 1. Every window below is placed RELATIVE to it, never as a literal.
+_FREEZE = bump.BUMP_FREEZE_LEAD_S
 LAND_VEL = np.array([0.0, 0.0, -FLIGHT_S / 2.0 * 9806.0])
 
 
@@ -178,14 +181,17 @@ def test_a_bump_beyond_the_limits_is_declined_with_the_gates_code_never_clipped(
     assert not res.accepted and res.code == 'LIMIT_VEL' and not res.terminal
     assert res.plan is None and res.report is not None and res.report.code == 'LIMIT_VEL'
     assert np.array_equal(record.plan.pose, pose0)
-    res = _bump(record, limits, geom, 0.25, (20.0, 0.0))
+    res = _bump(record, limits, geom, _FREEZE + 0.025, (20.0, 0.0))
     assert not res.accepted and res.code == 'LIMIT_ACC' and res.plan is None
 
 
 def test_bump_freeze_once_the_ramp_has_no_runway(record, limits, geom):
-    res = _bump(record, limits, geom, 0.20, (20.0, 0.0))
+    res = _bump(record, limits, geom, _FREEZE - 0.025, (20.0, 0.0))
     assert not res.accepted and res.code == bump.BUMP_FREEZE and res.terminal
-    assert bump.BUMP_FREEZE_LEAD_S == pytest.approx(0.225)
+    # 0.225 s at emit lead 0, 0.250 s at lead 1, derived (never a literal)
+    assert bump.BUMP_FREEZE_LEAD_S == pytest.approx(
+        (bump.BUMP_LEAD_KNOTS + bump.BUMP_MIN_PHASE_KNOTS)
+        * float(hw.JB_TRAJ_KNOT_DT_S) + bump.BUMP_PRE_HOLD_S)
 
 
 def test_the_50_mm_s_launch_bound_declines_above_it(record, limits, geom):
@@ -334,19 +340,19 @@ def test_executor_fences_off_freeze_and_the_window_retry_rule(sites, limits, geo
                         landing=small).reason == 'WITHIN-TOLERANCE'
     # A gate refusal is BUMP-WINDOW: non-terminal, no cap spent, and the same
     # delta is not re-gated until it has shrunk by resend_pos_tol_mm.
-    d = x.catch_bump(rec.plan, rec.meta, rec.t0_s, T_LAND - 0.25, limits, geom,
+    d = x.catch_bump(rec.plan, rec.meta, rec.t0_s, T_LAND - (_FREEZE + 0.025), limits, geom,
                      landing=moved)
     assert d.reason == 'BUMP-WINDOW' and not d.terminal and d.result.code == 'LIMIT_ACC'
-    x.commit_catch_bump(d, T_LAND - 0.25)
+    x.commit_catch_bump(d, T_LAND - (_FREEZE + 0.025))
     assert x._live_catch is not None and x._resend_counts.get(1, 0) == 0
-    d2 = x.catch_bump(rec.plan, rec.meta, rec.t0_s, T_LAND - 0.24, limits, geom,
+    d2 = x.catch_bump(rec.plan, rec.meta, rec.t0_s, T_LAND - (_FREEZE + 0.015), limits, geom,
                       landing=moved)
     assert d2.reason == 'BUMP-WINDOW' and d2.result is None
-    # Past t_c - 0.225: BUMP-FREEZE, terminal — re-aiming ends.
-    d3 = x.catch_bump(rec.plan, rec.meta, rec.t0_s, T_LAND - 0.22, limits, geom,
+    # Past t_c - BUMP_FREEZE_LEAD_S (0.225 s at emit lead 0): BUMP-FREEZE, terminal — re-aiming ends.
+    d3 = x.catch_bump(rec.plan, rec.meta, rec.t0_s, T_LAND - (_FREEZE - 0.005), limits, geom,
                       landing=moved)
     assert d3.reason == bump.BUMP_FREEZE and d3.terminal
-    x.commit_catch_bump(d3, T_LAND - 0.22)
+    x.commit_catch_bump(d3, T_LAND - (_FREEZE - 0.005))
     assert x._live_catch is None
 
 
@@ -400,8 +406,11 @@ def test_past_the_snap_band_a_carried_catch_reaim_reaches_the_bumper(
 
 def test_catch_freeze_does_not_pre_empt_bump_freeze_on_the_bump_path(
         sites, limits, geom):
-    # t_c - 0.24: inside catch_freeze_s (0.25) but before BUMP-FREEZE (0.225).
-    t = T_LAND - 0.24
+    # Midway between BUMP-FREEZE and catch_freeze_s: inside catch_freeze_s
+    # (0.25 s at emit lead 0, 0.275 s at lead 1) but before BUMP-FREEZE
+    # (0.225 s / 0.250 s).
+    assert bump.BUMP_FREEZE_LEAD_S < ex.CATCH_FREEZE_S
+    t = T_LAND - 0.5 * (bump.BUMP_FREEZE_LEAD_S + ex.CATCH_FREEZE_S)
     x, _box, _land, calls = _routed(sites, limits, geom)
     x._resend_live_catch(t)
     assert calls['bump'] == 1 and calls['install'] == 0
@@ -410,9 +419,9 @@ def test_catch_freeze_does_not_pre_empt_bump_freeze_on_the_bump_path(
     x2, _b2, _l2, calls2 = _routed(sites, limits, geom, enabled=False)
     assert x2._resend_live_catch(t) == []
     assert x2._live_catch is None and calls2 == {'bump': 0, 'install': 0}
-    # Past t_c - 0.225: BUMP-FREEZE, terminal, the bumper is never asked.
+    # Past t_c - BUMP_FREEZE_LEAD_S (0.225 s at emit lead 0): BUMP-FREEZE, terminal, the bumper is never asked.
     x3, _b3, _l3, calls3 = _routed(sites, limits, geom)
-    lines = x3._resend_live_catch(T_LAND - 0.22)
+    lines = x3._resend_live_catch(T_LAND - (_FREEZE - 0.005))
     assert calls3['bump'] == 0 and x3._live_catch is None
     assert any('BUMP-DECLINED BUMP-FREEZE skill 1' in ln for ln in lines), lines
 

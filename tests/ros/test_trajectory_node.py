@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 import jugglebot.hardware_config as hw
+from jugglebot.motion.skills import executor as sk_exec_mod
 import types
 
 from std_msgs.msg import Float64MultiArray, String
@@ -1685,7 +1686,7 @@ def test_emitter_never_publishes_a_knot_before_its_stamp_minus_lead(
     Invariant: a knot ``t_k`` (stamp ``t_k + L``) is published no earlier than
     ``stamp - L = t_k``, for every lateness, and the grid stays phase-locked."""
     period = hw.JB_TRAJ_KNOT_DT_S
-    lead = float(hw.JB_TRAJ_EMIT_LEAD_KNOTS) * period
+    lead = float(sk_exec_mod.EMIT_LEAD_KNOTS) * period
     t0 = 40000 * period                         # an exact grid instant
     clock = _FakeEmitClock(t0, late_wait=2, late_s=late_s)
     records, pub = _run_fake_emitter_loop(monkeypatch, clock)

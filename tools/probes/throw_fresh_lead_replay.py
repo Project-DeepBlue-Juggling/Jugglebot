@@ -56,7 +56,13 @@ def main():
     ap.add_argument('logs', nargs='+')
     ap.add_argument('--leads', default='9,12,13',
                     help='candidate leads in knots (comma-separated)')
+    ap.add_argument('--wire-read-knots', type=int, default=3,
+                    help='schedule.WIRE_READ_KNOTS of the build modelled '
+                         '(3 + emit_lead_knots; default 3 = emit lead 0, what '
+                         'the recorded logs ran)')
     args = ap.parse_args()
+    global WIRE_READ_KNOTS
+    WIRE_READ_KNOTS = args.wire_read_knots
     lines, pooled = [], []
     for path in args.logs:
         acc, ref = read_log(os.path.expanduser(path))

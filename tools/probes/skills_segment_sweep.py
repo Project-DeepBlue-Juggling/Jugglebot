@@ -139,7 +139,7 @@ def run_schedule(apex_m, sep_mm, dwell_s, limits, geom, *, n_throws=4, launch_s=
     t = clock['t']
     events = []
     # A TENTH of a knot, not a knot.  A splice clears the wire by
-    # `LEAD_KNOTS - WIRE_READ_KNOTS` (3 knots, or 5 for a handoff), and a
+    # `LEAD_KNOTS - WIRE_READ_KNOTS` (SOLVE_BUDGET_KNOTS = 6 knots, or 8 more for a handoff; this sweep imports the live executor, so it follows the configured emit lead and needs no `--wire-read-knots`), and a
     # dispatch instant is not on the knot grid, so ticking at `DT` quantised
     # every dispatch up to a whole knot late and spent a knot of that margin on
     # the harness's own sampling (measured 2026-09-12 against the then 1-knot

@@ -36,6 +36,22 @@ if _REPO_ROOT not in sys.path:
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
+# Emit-lead tier hook (emit-lead design 2(b), P1b): `JUGGLEBOT_TEST_EMIT_LEAD_KNOTS`
+# set => the generated `trajectory_op.emit_lead_knots` constant is overridden
+# on BOTH import spellings (`jugglebot.hardware_config`, which `schedule`
+# reads, and the top-level `hardware_config` from config/generated) before any
+# test module imports `schedule`; the planner's wire horizon, every splice
+# lead and the emitter then follow it. UNSET => this block does nothing at all
+# (the `if` is false: no import, no assignment), so the default gate is
+# untouched by construction. Only test code reads the variable.
+_EMIT_LEAD_ENV = os.environ.get('JUGGLEBOT_TEST_EMIT_LEAD_KNOTS')
+if _EMIT_LEAD_ENV is not None:
+    import importlib  # noqa: E402
+    _lead = int(_EMIT_LEAD_ENV)
+    for _spelling in ('jugglebot.hardware_config', 'hardware_config'):
+        setattr(importlib.import_module(_spelling),
+                'JB_TRAJ_EMIT_LEAD_KNOTS', _lead)
+
 # Register hypothesis profiles (ci-fast default; ci-deep for nightly).
 import conftest_hypothesis  # noqa: F401, E402
 

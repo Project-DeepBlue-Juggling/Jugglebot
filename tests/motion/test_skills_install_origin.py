@@ -64,7 +64,15 @@ from jugglebot.motion.trajectory.limits import TrajectoryLimits
 DT = float(hw.JB_TRAJ_KNOT_DT_S)
 #: The wire-read margin a fresh origin must now clear too — see the module
 #: docstring. 3 knots at the fixed 40 Hz grid.
-WIRE_MARGIN_S = ex.WIRE_READ_KNOTS * DT
+WIRE_MARGIN_S = ex.WIRE_READ_KNOTS * DT      # 0.075 s at emit lead 0, 0.100 s at lead 1
+#: How long a solve may run before a fresh REST is REBASED (I-WIRE-7): the
+#: wire read at emit lead 0 (0.075 s), the Hand's resume budget less the
+#: first-knot gap at lead 1 (0.050 s). A fresh THROW/CATCH keeps WIRE_MARGIN_S.
+REST_REBASE_S = ex.FRESH_REST_REBASE_S
+#: A solve inside BOTH thresholds / a solve past WIRE_MARGIN_S but inside the
+#: reserved budget (0.100 s at lead 0 as originally pinned, 0.125 s at lead 1).
+SOLVE_INSIDE_S = 0.04
+SOLVE_PAST_MARGIN_S = WIRE_MARGIN_S + 0.025
 #: An arbitrary non-zero wall-clock origin (plan § 0: nothing may assume the
 #: schedule starts at t = 0 — the robot's is the CAN wall clock).
 T0_ABS = 100.0
@@ -151,16 +159,41 @@ def test_a_fresh_rest_origin_is_bit_identical_when_the_solve_stays_inside_the_wi
     latency" — needs no correction: ``t0`` stays exactly ``t_now``, bit for bit
     identical to today, and the message is the unchanged fresh-origin one (no
     ``REBASED``)."""
-    assert 0.05 < WIRE_MARGIN_S
+    assert SOLVE_INSIDE_S < REST_REBASE_S
     seed = _rest_state(_REST_MM)
     new_record, res, seg = ex.install_segment(
         None, seed, sg.REST, _rest_terminal(T0_ABS + 0.5), T0_ABS,
-        limits=limits, geom=geom, t_install_s=lambda: T0_ABS + 0.05)
+        limits=limits, geom=geom,
+        t_install_s=lambda: T0_ABS + SOLVE_INSIDE_S)
     assert res.accepted, res.message
     assert res.t0_s == T0_ABS
     assert new_record.t0_s == T0_ABS
     assert 'REBASED' not in res.message
     assert res.message.startswith('fresh origin:')
+
+
+def test_a_60_ms_solve_rebases_a_fresh_rest_only_past_its_own_threshold(
+        limits, geom):
+    """I-WIRE-7 consumer (the REAL ``install_segment`` fresh gate): a fresh REST
+    is REBASED iff its solve outran ``FRESH_REST_REBASE_S`` (0.075 s at emit
+    lead 0, 0.050 s at lead 1), so a 60 ms solve is NOT rebased at lead 0 and
+    IS at lead 1. A fresh CATCH has no Hand handover to protect and keeps the
+    wire-read margin (0.075 / 0.100 s): the same 60 ms is accepted at fresh
+    origin at both leads (a threshold shared with the REST would refuse it at
+    lead 1, ``ORIGIN_TOO_LATE``). Runs per commit at the configured lead and
+    at lead 1 through ``test_emit_lead_derivation.py``."""
+    solve_s = 0.060
+    seed = _rest_state(_REST_MM)
+    _r, res, _s = ex.install_segment(
+        None, seed, sg.REST, _rest_terminal(T0_ABS + 0.5), T0_ABS,
+        limits=limits, geom=geom, t_install_s=lambda: T0_ABS + solve_s)
+    assert res.accepted, res.message
+    assert ('REBASED' in res.message) == (solve_s > REST_REBASE_S), res.message
+    _r, res_c, _s = ex.install_segment(
+        None, seed, sg.CATCH, _catch_terminal(T0_ABS + 0.6), T0_ABS,
+        limits=limits, geom=geom, t_install_s=lambda: T0_ABS + solve_s)
+    assert solve_s < WIRE_MARGIN_S
+    assert res_c.accepted and res_c.t0_s == T0_ABS, res_c.message
 
 
 # ---------------------------------------------------------------------------
@@ -212,12 +245,13 @@ def test_a_solve_the_default_rule_refuses_installs_with_the_lead_reserved(
     margin (the DEFAULT rule refuses it ``ORIGIN_TOO_LATE`` — the defect) but
     inside the 0.150 s budget a reserved origin has, so it installs with
     ``t0 = t_now + THROW_LEAD_S`` and the release still at its absolute instant."""
-    assert 0.10 > WIRE_MARGIN_S and 0.10 < THROW_BUDGET_S
-    _rec, res_default, _seg = _reserved_throw(limits, geom, 0.10,
+    assert SOLVE_PAST_MARGIN_S > WIRE_MARGIN_S
+    assert SOLVE_PAST_MARGIN_S < THROW_BUDGET_S
+    _rec, res_default, _seg = _reserved_throw(limits, geom, SOLVE_PAST_MARGIN_S,
                                               reserve=False)
     assert res_default.code == ex.ORIGIN_TOO_LATE, res_default.message
 
-    rec, res, seg = _reserved_throw(limits, geom, 0.10)
+    rec, res, seg = _reserved_throw(limits, geom, SOLVE_PAST_MARGIN_S)
     assert res.accepted, res.message
     assert res.splice_k == 0
     assert res.t0_s == pytest.approx(T0_ABS + THROW_LEAD_S, abs=1e-12)
@@ -305,7 +339,7 @@ def test_a_rest_ignores_the_reservation_and_keeps_the_rebase_rule(
     seed = _rest_state(_REST_MM)
     _r, res_in, _s = ex.install_segment(
         None, seed, sg.REST, _rest_terminal(T0_ABS + 0.5), T0_ABS,
-        limits=limits, geom=geom, t_install_s=T0_ABS + 0.05,
+        limits=limits, geom=geom, t_install_s=T0_ABS + SOLVE_INSIDE_S,
         reserve_fresh_lead=True)
     assert res_in.accepted and res_in.t0_s == T0_ABS, res_in.message
     _r, res_late, _s = ex.install_segment(

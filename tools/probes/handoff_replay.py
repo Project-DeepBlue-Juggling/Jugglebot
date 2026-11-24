@@ -74,7 +74,7 @@ L0 = 0.275
 # New-fence model (plans/archived/handoff-solve-chaining.md P1b); mirrors
 # schedule.LEAD_S (9 knots) and unified_cycle.detach_knots() -- hard-coded
 # because the probe is stdlib+numpy.
-LEAD_S = 9 * DT
+LEAD_S = 9 * DT   # (WIRE_READ_KNOTS + 6) * DT: recomputed by --wire-read-knots
 # Mirrors executor.RESEND_PINNED_BUDGET_FLOOR_S (the raw path's minimum budget).
 RESEND_FLOOR_S = LEAD_S - WIRE_READ_KNOTS * DT
 N_DETACH = 2
@@ -182,7 +182,17 @@ def main():
     ap.add_argument('--leads', default='0.325,0.375,0.425')
     ap.add_argument('--prior-solve-ms', type=float, default=90.0)
     ap.add_argument('--out', default=str(OUT))
+    ap.add_argument('--wire-read-knots', type=int, default=3,
+                    help='schedule.WIRE_READ_KNOTS of the build the replay '
+                         'models (3 + emit_lead_knots; default 3 = emit lead '
+                         '0, which is what the recorded logs ran). The '
+                         'recorded lead L0 (0.275 s) is a datum of the logs '
+                         'and does not follow it.')
     a = ap.parse_args()
+    global WIRE_READ_KNOTS, LEAD_S, RESEND_FLOOR_S
+    WIRE_READ_KNOTS = a.wire_read_knots
+    LEAD_S = (WIRE_READ_KNOTS + 6) * DT          # schedule.LEAD_KNOTS = WIRE + 6
+    RESEND_FLOOR_S = LEAD_S - WIRE_READ_KNOTS * DT
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     leads = [float(x) for x in a.leads.split(',')]
@@ -280,7 +290,7 @@ def main():
         acc = [r for r in rows if r['sess'] == tag]
         neg = [r for r in acc if r['margin'][L0] < -1e-9]
         sn = [r for r in acc if r['margin'][L0] < 0]
-        nom = [r for r in acc if (r['D'] + L0 - 0.075) - r['T'] < 0]
+        nom = [r for r in acc if (r['D'] + L0 - WIRE_READ_KNOTS * DT) - r['T'] < 0]
         ref = [e for e in refus if e['sess'] == tag and not e['resend']]
         rneg = [e for e in ref if e['margin'][L0] < 0]
         rs = [e for e in refus if e['sess'] == tag and e['resend']]

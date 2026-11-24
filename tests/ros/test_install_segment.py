@@ -229,7 +229,9 @@ def test_throw_from_rest_accepts_at_a_fresh_origin():
     # lead (FRESH_THROW_LEAD_S, 13 knots since 2026-10-16 -- the lead the
     # schedule dispatches a THROW by): within one knot of `at + lead` (the
     # grid alignment is the node's, not this test's).
-    assert sk_exec.FRESH_THROW_LEAD_S == pytest.approx(0.325)
+    # 0.325 s at emit lead 0, 0.350 s at lead 1
+    assert sk_exec.FRESH_THROW_LEAD_S == pytest.approx(
+        sk_exec.FRESH_THROW_LEAD_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S))
     assert resp.t0_mono - sk_exec.FRESH_THROW_LEAD_S == pytest.approx(
         at, abs=float(hw.JB_TRAJ_KNOT_DT_S) + 1e-9)
     # The release is still the requested absolute instant, to the knot the
@@ -392,7 +394,11 @@ def test_a_long_rest_in_the_bug95_band_installs_fresh_at_the_running_records_end
         time.perf_counter = real_perf
     assert resp2.accepted is True, resp2.message
     assert resp2.splice_k == 0
-    assert resp2.t0_mono == pytest.approx(rest_end, abs=1e-6)
+    # AT the record's end, rounded UP onto the emit grid (the record's end is
+    # off-grid by the real clock's phase at install: a phase-dependent flake
+    # at EVERY lead, seen 1 in 3 at lead 0, when this asserted equality)
+    dt = float(hw.JB_TRAJ_KNOT_DT_S)
+    assert rest_end - 1e-6 <= resp2.t0_mono < rest_end + dt
     new_plan, _m, _t0 = node._cycle
     assert float(new_plan.hand_rev[0]) == pytest.approx(
         float(rest_plan.hand_rev[-1]), abs=1e-9)
@@ -419,7 +425,7 @@ def _fast_rest_then_fresh_throw(during_solve=None):
             during_solve(node)
         return real_install(*args, **kwargs)
 
-    t2 = rest_end - 0.225
+    t2 = rest_end - sk_exec.LEAD_S
     time.perf_counter = lambda: t2
     tn.sk_exec.install_segment = hooked
     try:
@@ -521,7 +527,7 @@ def test_a_fresh_origin_before_the_running_records_end_refuses_stale_state(
 
     monkeypatch.setattr(node._segment_solver, 'solve', early)
     real_perf = time.perf_counter
-    time.perf_counter = lambda: rest_end - 0.225
+    time.perf_counter = lambda: rest_end - sk_exec.LEAD_S
     try:
         _refresh(node)
         resp2 = node._svc_install_segment(_throw_req(rest_end + 0.375),
@@ -651,7 +657,7 @@ def _wire_trace(node, t_from, t_to):
     ``[(T, motor_rev, hand_rev)]`` as shipped. ``T = t_k + L*dt`` (the C2FF
     emit lead) -- the instant each frame's u0 plays at."""
     dt = float(hw.JB_TRAJ_KNOT_DT_S)
-    lead = float(hw.JB_TRAJ_EMIT_LEAD_KNOTS) * dt
+    lead = float(sk_sched_mod.EMIT_LEAD_KNOTS) * dt
     cap = SimpleNamespace(frames=[])
     cap.send = cap.frames.append
     cap.close = lambda: None
@@ -1049,6 +1055,203 @@ def test_splice_too_late_when_the_solve_runs_past_the_wire():
     assert node._cycle[0] is plan1
     assert node._cycle[1] is meta1
     assert node._cycle[2] == origin
+
+
+#: Frame keys that carry the sampled knots (u0/u1/u2 positions and rates, the
+#: hand channel); everything else on a frame (seq, stamps, flags) is not a
+#: sample of the plan.
+_SAMPLE_KEYS_SKIP = {'seq', 'knot_epoch_us'}
+
+
+def _capture_tick_frames(node, ticks):
+    """Drive the REAL emitter (``_emit_once``) at each grid tick (clock frozen
+    per tick) and return ``[(T, frame)]`` as published, ``T = tick + L*dt``."""
+    dt = float(hw.JB_TRAJ_KNOT_DT_S)
+    lead = float(sk_sched_mod.EMIT_LEAD_KNOTS) * dt
+    cap = SimpleNamespace(frames=[])
+    cap.send = cap.frames.append
+    cap.close = lambda: None
+    node._pub = cap
+    real_perf = time.perf_counter
+    out = []
+    try:
+        for tick in ticks:
+            time.perf_counter = lambda tick=tick: tick
+            n0 = len(cap.frames)
+            node._emit_once(tick)
+            if len(cap.frames) > n0:
+                out.append((tick + lead, dict(cap.frames[-1])))
+    finally:
+        time.perf_counter = real_perf
+    return out
+
+
+def test_the_fresh_rest_stall_fence_is_37_5_ms_at_every_emit_lead():
+    """I-WIRE-7 consumer: ``TrajectoryNode._reply_outran_wire`` for a fresh REST
+    refuses a reply the node reads MORE than ``FRESH_REST_STALL_FENCE_S``
+    (``0.5*WIRE_READ_BASE_KNOTS*dt`` = 37.5 ms) after the worker's own clock
+    read, at EVERY emit lead. A fence derived from ``WIRE_READ_KNOTS`` would be
+    50 ms at lead 1 (zero headroom over the first frame): a 40 ms stall is the
+    probe that separates the two (True here, False there). Runs at the
+    configured lead per commit and at lead 1 through
+    ``test_emit_lead_derivation.py::test_the_lead_one_consumers_run_the_real_code``."""
+    rec = SimpleNamespace(plan=SimpleNamespace(dt=0.025), t0_s=0.0)
+
+    def outran(stall_s):
+        t_inst = (time.perf_counter() + sk_solver.REPLY_TRANSIT_ALLOW_S
+                  - stall_s)
+        return tn.TrajectoryNode._reply_outran_wire(
+            rec, SimpleNamespace(splice_k=0), sk_seg.REST, True,
+            t_inst_s=t_inst)
+
+    assert sk_exec.FRESH_REST_STALL_FENCE_S == pytest.approx(0.0375)
+    assert outran(0.030) is False
+    assert outran(0.040) is True
+    assert outran(0.050) is True
+
+
+def test_the_emitter_stamps_each_frame_emit_lead_knots_ahead_of_its_tick():
+    """I-WIRE-7 consumer: the REAL ``_emit_once`` stamps the frame it publishes
+    at tick ``t_k`` with the epoch of ``t_k + EMIT_LEAD_KNOTS*dt`` (one knot
+    ahead at lead 1, none at lead 0) and samples the plan at the same instant;
+    the planner's ``WIRE_READ_KNOTS`` assumes exactly this reach."""
+    dt = float(hw.JB_TRAJ_KNOT_DT_S)
+    node = _perf_node()
+    at = 5000.0
+    real = time.perf_counter
+    time.perf_counter = lambda: at
+    try:
+        resp = node._svc_install_segment(_rest_req(at + 3.0, rest_z=800.0),
+                                         InstallSegment.Response())
+    finally:
+        time.perf_counter = real
+    assert resp.accepted, resp.message
+    plan, _meta, t0 = node._cycle
+    tick = (math.ceil(t0 / dt) + 2) * dt
+    (T, frame), = _capture_tick_frames(node, [tick])
+    lead = float(sk_sched_mod.EMIT_LEAD_KNOTS) * dt
+    assert T == pytest.approx(tick + lead)
+    assert (frame['knot_epoch_us'] - node._perf_to_epoch_us(tick)
+            == pytest.approx(lead * 1e6, abs=2.0))
+    again = node._emitter.frame(plan, tick + lead - t0, 0, knot_epoch_us=0)
+    np.testing.assert_allclose(np.asarray(frame['motor_rev'], float),
+                               np.asarray(again['motor_rev'], float),
+                               atol=1e-12, rtol=0)
+
+
+def test_no_accepted_install_changes_a_knot_already_on_the_wire():
+    """I-WIRE-7 contract (emit-lead design 2(d)): every u0/u1/u2 knot the REAL
+    emitter has published before an ACCEPTED splice must equal the spliced
+    record sampled at the same stamps.
+
+    Driver: a THROW is installed fresh and streamed by ``_emit_once`` tick by
+    tick (grid-absolute ticks, the clock frozen per tick); then a CATCH is
+    requested after the THROW's release (so the splice is NOT pinned to the
+    release knot: its ``k_s`` is the planner's own wire-horizon arithmetic)
+    at a seeded random phase inside a tick, with a solve of about the whole
+    solve budget (so ``k_s`` sits at the minimum the planner accepts), and the
+    one tick that can land between the clock read and the install published
+    BEFORE the install (it is on the wire too). Each published frame is then
+    rebuilt from the installed record at the same stamp and compared
+    channel by channel.
+
+    Why this bites: a splice whose lead is shorter than the emitter's reach
+    (``WIRE_READ_KNOTS`` below ``3 + EMIT_LEAD_KNOTS``) rewrites the span a
+    frame already named, a commanded step on six legs. Fails at emit lead 1
+    with ``WIRE_READ_KNOTS`` reverted to the literal 3 (logbook
+    2026-11-25-emit-lead-planner-derivation.md, P1b)."""
+    import random
+    dt = float(hw.JB_TRAJ_KNOT_DT_S)
+    rng = random.Random(20261125)
+    budget_s = sk_sched_mod.SOLVE_BUDGET_KNOTS * dt
+    # (origin offset inside a grid tick as a fraction of dt, how long before a
+    # tick the install instant falls in ms, how far under the whole solve
+    # budget the solve ran as a fraction of dt). An origin OFF the grid makes
+    # every frame's u2 land mid-span (the realistic case: a record's t0 is
+    # the dispatch instant); an install 0.5-1.5 ms before a tick has that
+    # tick RACE the install (a 2 ms handler tail); a solve of nearly the whole
+    # budget keeps k_s at the minimum the planner accepts. The seeded random
+    # trials add other phases.
+    trials = [(g0, eps, short)
+              for g0 in (0.25, 0.985) for eps in (0.5, 1.5, 6.0, 20.0)
+              for short in (0.002, 0.3)]
+    trials += [(0.05 + 0.9 * rng.random(), 25.0 * rng.random(),
+                0.3 * rng.random()) for _ in range(8)]
+    accepted = 0
+    for trial, (g0, eps_ms, short) in enumerate(trials):
+        node = _perf_node()
+        at = (math.ceil(time.perf_counter() / dt) + g0) * dt
+        n1 = {'n': 0}
+
+        def _slow_solve_clock():
+            # the first two reads (entry, freshness) at `at`; every read after
+            # sees a 0.2 s solve: past the rebase threshold at either lead
+            n1['n'] += 1
+            return at if n1['n'] <= 2 else at + 0.2
+
+        real = time.perf_counter
+        time.perf_counter = _slow_solve_clock
+        try:
+            resp1 = node._svc_install_segment(_rest_req(at + 3.0, rest_z=800.0),
+                                              InstallSegment.Response())
+        finally:
+            time.perf_counter = real
+        assert resp1.accepted is True, resp1.message
+        assert 'REBASED' in resp1.message, resp1.message
+        plan1, meta1, t0 = node._cycle
+        # the REBASED origin is OFF the grid (t_inst + the wire read)
+        assert t0 == pytest.approx(at + 0.2 + sk_sched_mod.WIRE_READ_KNOTS * dt,
+                                   abs=1e-9)
+        # the install instant (mid-REST), eps ms before a grid tick; the
+        # handler was entered `solve_s` earlier
+        tick_n = (math.ceil((t0 + 0.65) / dt)) * dt
+        t_inst = tick_n - eps_ms * 1e-3
+        solve_s = budget_s - short * dt
+        now = t_inst - solve_s
+        # the ticks the wire has seen by the install, INCLUDING the one that
+        # can race the install (a handler tail of 2 ms after the clock read)
+        last_tick = math.floor((t_inst + 0.002) / dt)
+        ticks = [k * dt for k in range(int(math.ceil(t0 / dt)) - 2,
+                                       last_tick + 1)]
+        published = _capture_tick_frames(node, ticks)
+        assert published
+        calls = {'n': 0}
+
+        def _clock():
+            calls['n'] += 1
+            return now if calls['n'] <= 2 else t_inst
+
+        real = time.perf_counter
+        try:
+            # a live graph re-stamps robot_state at 100 Hz: stamp it at `now`
+            time.perf_counter = lambda: now
+            _refresh(node)
+            time.perf_counter = _clock
+            resp2 = node._svc_install_segment(_catch_req(t0 + 2.2),
+                                              InstallSegment.Response())
+        finally:
+            time.perf_counter = real
+        if not resp2.accepted:
+            assert resp2.code == sk_exec.SPLICE_TOO_LATE, (trial, resp2.message)
+            continue
+        accepted += 1
+        plan2, _meta2, t0_2 = node._cycle
+        assert plan2 is not plan1 and resp2.splice_k > 0
+        for T, frame in published:
+            again = node._emitter.frame(plan2, T - t0_2, 0, knot_epoch_us=0)
+            for key, was in frame.items():
+                if key in _SAMPLE_KEYS_SKIP or key not in again:
+                    continue
+                if isinstance(was, (np.ndarray, float, int)) \
+                        and not isinstance(was, bool):
+                    np.testing.assert_allclose(
+                        np.asarray(again[key], float),
+                        np.asarray(was, float), atol=1e-12, rtol=0,
+                        err_msg='trial %d (origin +%.2f dt, install %.1f ms '
+                                'before a tick): %s of the frame stamped '
+                                '%.4f (k_s=%d) was rewritten by the install'
+                                % (trial, g0, eps_ms, key, T, resp2.splice_k))
+    assert accepted >= 4, 'too few accepted splices to mean anything'
 
 
 # ═════════════════════════════════════════════════════════════════════════════

@@ -237,7 +237,9 @@ def test_a_catch_during_the_throw_splices_at_the_first_knot_past_the_lead(
     want_k = uc.splice_knot(old.meta, tau, ex.LEAD_S)
 
     assert res.accepted, res.message
-    assert res.splice_k == want_k == 25
+    # 25 at emit lead 0; LEAD_S is one knot longer per lead knot, so the first
+    # knot past it moves with it
+    assert res.splice_k == want_k == 25 + ex.EMIT_LEAD_KNOTS
     assert res.t0_s == old.t0_s          # the origin never moves on a splice
     assert new.t0_s == old.t0_s
     k = res.splice_k
@@ -4349,7 +4351,7 @@ def test_resend_live_catch_declines_before_the_solve_inside_the_contact_window(
         vel_mm_s=LAND_VEL, t_land_abs_s=t_land)
     lead_s = float(catch_skill.lead_s)
     assert lead_s == pytest.approx(sc.LEAD_S)   # this test's arithmetic assumes it
-    t_resend = t_land - 0.335   # remaining window at dispatch+lead = 0.11 s
+    t_resend = t_land - lead_s - 0.11   # remaining window at dispatch+lead = 0.11 s
     remaining = t_land - (t_resend + lead_s)
     assert ex.MIN_WINDOW_S < remaining < ex.CUP_CONTACT_WINDOW_LEAD_S
     lines = x.tick(t_resend)
@@ -7201,7 +7203,8 @@ def test_a_resend_after_the_snap_band_splices_raw(sites):
     assert t_s == pytest.approx(t + sc.LEAD_S)
     assert t_rel == pytest.approx(_HANDOFF_T_REL)
     # and inside the band it is pinned to the release.
-    t_in = _HANDOFF_T_REL - 0.2
+    # raw instant 25 ms past the release (t + LEAD_S), at every emit lead
+    t_in = _HANDOFF_T_REL - sc.LEAD_S + 0.025
     t_s_in, snapped_in, _, _mb = x._resend_splice_instant(1, t_in, t_land)
     assert snapped_in is True and t_s_in == pytest.approx(_HANDOFF_T_REL)
     n0 = len(inst.calls)
@@ -8108,7 +8111,10 @@ def test_a_slow_solve_of_a_band_rest_rebases_instead_of_splice_too_late(
     now the REST REBASES (exact-rest seed: the same motion later), and its
     origin is still never before the record's end."""
     record, term, t_now = _bug95_band(limits, geom, sites)
-    t_inst = record.end_s + 0.09                 # a 490 ms solve
+    # a 490 ms solve at emit lead 0; the lead-0 instant less EMIT_LEAD_KNOTS*dt
+    # keeps the slide at 7 knots (the slide is floor(past/dt) + WIRE + 1 and
+    # WIRE_READ_KNOTS grows by the same knots)
+    t_inst = record.end_s + 0.09 - ex.EMIT_LEAD_KNOTS * DT
     new, res, _seg = ex.install_segment(
         record, None, sg.REST, term, t_now, limits=limits, geom=geom,
         t_install_s=t_inst)
@@ -8144,6 +8150,11 @@ def test_a_band_rest_slides_by_the_fewest_whole_knots_that_keep_knot_0_ahead(
     old clamped splice accepted); past that it slides ``floor((t_inst -
     E)/dt) + WIRE_READ_KNOTS + 1`` whole knots, so no knot of the plan is ever
     behind the wire and the origin stays on the grid."""
+    # `past_end_s` and `knots` are the emit-lead-0 boundary pairs: the slide is
+    # floor(past/dt) + WIRE_READ_KNOTS + 1, and WIRE_READ_KNOTS grows by
+    # EMIT_LEAD_KNOTS, so shifting the solve's end EARLIER by the same knots
+    # keeps every pair on its boundary at any lead.
+    past_end_s = past_end_s - ex.EMIT_LEAD_KNOTS * DT
     record, new, res = _bug95_slide(limits, geom, sites, past_end_s)
     assert res.accepted, res.message
     assert new.t0_s - record.end_s == pytest.approx(knots * DT, abs=1e-9)
@@ -8164,7 +8175,8 @@ def test_a_band_rest_rebased_exactly_to_the_slide_cap_is_accepted(
     record's end REBASES to end + 8 knots, exactly
     the cap (``floor(0.120/dt) + WIRE_READ_KNOTS + 1`` = 8) -- installed, on
     the grid, the same motion later."""
-    record, new, res = _bug95_slide(limits, geom, sites, 0.120)
+    record, new, res = _bug95_slide(limits, geom, sites,
+                                     0.120 - ex.EMIT_LEAD_KNOTS * DT)
     assert res.accepted, res.message
     assert 'REBASED +0.200 s' in res.message, res.message
     assert new.t0_s - record.end_s == pytest.approx(
@@ -8178,7 +8190,8 @@ def test_a_band_rest_one_knot_past_the_slide_cap_is_refused_splice_too_late(
     solve ending 140 ms past the record's end would REBASE to end + 9 knots,
     one knot over the cap, and is refused SPLICE_TOO_LATE -- the code the
     pre-BUG-95 clamped splice gave for this solve -- with the record kept."""
-    record, new, res = _bug95_slide(limits, geom, sites, 0.140)
+    record, new, res = _bug95_slide(limits, geom, sites,
+                                     0.140 - ex.EMIT_LEAD_KNOTS * DT)
     assert not res.accepted
     assert res.code == ex.SPLICE_TOO_LATE, res.message
     assert 'slide cap' in res.message
@@ -8197,7 +8210,9 @@ def test_a_non_band_fresh_rest_rebase_is_not_capped(limits, geom, sites):
         sg.RestTerminal(rest_site_mm=p2.rest_site_mm(), t_rest_s=t_now + 3.2),
         t_now, limits=limits, geom=geom, t_install_s=t_now + 0.400)
     assert res.accepted, res.message
-    assert new.t0_s - t_now == pytest.approx(0.475, abs=1e-9)
+    # 0.475 s at emit lead 0: the 400 ms solve + the wire read (WIRE_READ_KNOTS*dt)
+    assert new.t0_s - t_now == pytest.approx(
+        0.400 + ex.WIRE_READ_KNOTS * DT, abs=1e-9)
     assert 'band REST' not in res.message
 
 

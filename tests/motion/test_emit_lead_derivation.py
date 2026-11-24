@@ -109,3 +109,59 @@ def test_an_emit_lead_past_one_is_refused_at_import():
     assert proc.returncode != 0
     assert 'emit_lead_knots=2' in proc.stderr
     assert 'only 0 and 1 are designed' in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# Consumers, not constants (P1b): the call sites run at lead 1 for real
+# ---------------------------------------------------------------------------
+
+_ENV = 'JUGGLEBOT_TEST_EMIT_LEAD_KNOTS'
+
+#: The tests that drive the real call sites of the derived numbers. Each is an
+#: ordinary per-commit test at the configured lead; the subprocess below runs
+#: the same ids at lead 1 through the ``tests/conftest.py`` env hook. Each fails
+#: when its call site is reverted to the old expression: the fresh gate to one
+#: shared threshold, the stall fence to ``0.5*WIRE_READ_KNOTS*dt``, the
+#: emitter's ``lead`` to 0.
+_CONSUMER_IDS = [
+    'tests/motion/test_emit_lead_derivation.py::test_the_env_hook_sets_the_lead',
+    'tests/motion/test_skills_install_origin.py::'
+    'test_a_60_ms_solve_rebases_a_fresh_rest_only_past_its_own_threshold',
+    'tests/ros/test_install_segment.py::'
+    'test_the_fresh_rest_stall_fence_is_37_5_ms_at_every_emit_lead',
+    'tests/ros/test_install_segment.py::'
+    'test_the_emitter_stamps_each_frame_emit_lead_knots_ahead_of_its_tick',
+]
+
+
+def test_the_env_hook_sets_the_lead():
+    """``tests/conftest.py``'s hook: ``JUGGLEBOT_TEST_EMIT_LEAD_KNOTS`` set
+    overrides the generated constant before ``schedule`` is imported; unset
+    changes nothing (the configured lead, 0 today)."""
+    import jugglebot.hardware_config as hw
+    from jugglebot.motion.skills import schedule as sc
+    import hardware_config as hw_top
+    want = os.environ.get(_ENV)
+    if want is not None:
+        assert sc.EMIT_LEAD_KNOTS == int(want)
+        assert hw.JB_TRAJ_EMIT_LEAD_KNOTS == hw_top.JB_TRAJ_EMIT_LEAD_KNOTS \
+            == int(want)
+    else:
+        # the hook did nothing: the planner reads the configured value
+        assert sc.EMIT_LEAD_KNOTS == int(hw_top.JB_TRAJ_EMIT_LEAD_KNOTS)
+        assert sc.WIRE_READ_KNOTS == 3 + sc.EMIT_LEAD_KNOTS
+
+
+def test_the_lead_one_consumers_run_the_real_code():
+    """The consumer tests above pass at EMIT_LEAD_KNOTS = 1 as well: a
+    subprocess pytest with the env hook at 1 (parallel-safe: its own process
+    and its own constants)."""
+    env = dict(os.environ)
+    env[_ENV] = '1'
+    proc = subprocess.run(
+        [sys.executable, '-m', 'pytest', '-q', '-p', 'no:cacheprovider']
+        + _CONSUMER_IDS,
+        capture_output=True, text=True, env=env, cwd=_REPO, timeout=600)
+    tail = proc.stdout[-1500:] + proc.stderr[-500:]
+    assert proc.returncode == 0, tail
+    assert '%d passed' % len(_CONSUMER_IDS) in proc.stdout, tail
