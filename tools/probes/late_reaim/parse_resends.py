@@ -1,14 +1,17 @@
 """Parse every RESEND / RESEND-REFUSED line of the 2026-10-16 launch logs (late-catch re-aim bump design,
 plans/archived/late-catch-reaim-bump.md): pattern, skill, code, delta mm / s, time to the committed landing,
-and the limit the preceding `install_segment refused` line names.  Usage: python parse_resends.py <out.json>
+and the limit the preceding `install_segment refused` line names.
+Usage: python parse_resends.py <out.json> <tag>=<launch-log-dir-name-or-path> ...
+(a bare dir name is resolved under ~/.ros/log; tags label the rows, e.g. d1=2026-11-06-15-53-05-334499-jetson-1580225)
 """
-import re,sys,json
+import os,re,sys,json
 LOG_ROOT = '/home/jetson/.ros/log'
-logs={'am':'2026-10-16-10-50-42-798495-jetson-1033523','pm1':'2026-10-16-16-10-37-689586-jetson-1220502','pm2':'2026-10-16-16-23-01-479044-jetson-1230939'}
+logs=dict(a.split('=',1) for a in sys.argv[2:])
+assert logs, 'give at least one tag=logdir'
 rows=[]
 for tag,d in logs.items():
     pat=None; aims={}; last_ref=None
-    for ln in open('/home/jetson/.ros/log/%s/launch.log'%d,errors='replace'):
+    for ln in open(os.path.join(LOG_ROOT,d,'launch.log'),errors='replace'):
         m=re.search(r"pattern='([a-z_0-9]+)'",ln)
         if m: pat=m.group(1); aims={}
         m=re.search(r"(\d+\.\d+) CATCH-AIM skill (\d+): source=(\S+) landing=\(([-\d.]+), ([-\d.]+), ([-\d.]+)\) mm t_land=(\d+\.\d+)",ln)

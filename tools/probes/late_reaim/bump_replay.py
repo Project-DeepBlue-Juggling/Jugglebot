@@ -25,6 +25,13 @@ Shapes (all zero, with zero velocity/acceleration, through ``k_b`` = re-send
     pre-release hold (forbidden on hardware by the 2026-09-28 carry rule;
     kept as the rejected alternative).
 
+  * ``--raw`` (THE "BEFORE" CONTROL): no bump; replays what the live raw re-send
+    did, ``executor.install_segment`` on the live record with the catch terminal
+    (and the carried throw's site) moved by the row's delta, at the row's
+    instant.  Needs a capture made with the terminal fields (this version of
+    ``capture_records.py``).  Refusal here = the flown refusal reproduced.
+    ``--raw-ds`` also moves ``t_land_s`` by the row's ``ds``.
+
     python tools/probes/late_reaim/bump_replay.py \
         --records temp/probes/late_reaim/records_columns_0.pkl \
         --rows temp/probes/late_reaim/resends_2026-10-16.json \
@@ -162,6 +169,24 @@ def try_bump(rec, t_abs, t_c_abs, delta, limits, geom, lead_s, hold_s):
     return rep.code, rep
 
 
+def raw_reaim(rec, c, t_abs, delta, ds, use_ds):
+    """The live raw re-send: install_segment on ``rec`` with the moved terminal."""
+    import dataclasses
+    from jugglebot.motion.skills import executor as ex
+    term = c['terminal']
+    d3 = np.array([delta[0], delta[1], 0.0])
+    tt = term.then_throw
+    if tt is not None:
+        tt = dataclasses.replace(tt, site_mm=np.asarray(tt.site_mm, float) + d3)
+    new = dataclasses.replace(term, landing_mm=np.asarray(term.landing_mm, float) + d3,
+                              t_land_s=float(term.t_land_s) + (ds if use_ds else 0.0),
+                              then_throw=tt)
+    _, res, _ = ex.install_segment(rec, None, ex.CATCH, new, t_abs, cfg=c['cfg'],
+                                   limits=c['limits'], geom=c['geom'],
+                                   reserve_fresh_lead=True)
+    return ('OK' if res.accepted else str(res.code)), res
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument('--records', required=True)
@@ -175,6 +200,8 @@ def main(argv=None):
     ap.add_argument('--hold-through', action='store_true',
                     help='never ramp out: the following throw is shifted by delta too')
     ap.add_argument('--retarget', action='store_true', help='hold through release and retarget the carried throw by a lateral launch velocity -delta/flight')
+    ap.add_argument('--raw', action='store_true', help='control: replay the raw re-send (no bump); see the docstring')
+    ap.add_argument('--raw-ds', action='store_true', help='with --raw, also move t_land_s by the row ds')
     ap.add_argument('--check', action='store_true', help='print b(t_rel), the landing offset and b(t_end) for the first retarget case')
     ap.add_argument('--no-launch-bound', action='store_true', help='disable the 50 mm/s retarget launch bound (reproduces the pre-decision design row)')
     ap.add_argument('--legacy-start', action='store_true', help='ramp from the pre-production continuous t + lead (reproduces the design row) instead of the knot-aligned k_b')
@@ -210,7 +237,10 @@ def main(argv=None):
             rec = live[-1]['record'] if live else c['record']
             for d in dirs:
                 delta = np.array(d, float) * r['mm']
-                code, det = try_bump(rec, t_abs, t_c, delta, c['limits'], c['geom'], lead, a.hold_s)
+                if a.raw:
+                    code, det = raw_reaim(rec, c, t_abs, delta, r['ds'], a.raw_ds)
+                else:
+                    code, det = try_bump(rec, t_abs, t_c, delta, c['limits'], c['geom'], lead, a.hold_s)
                 tally[code] = tally.get(code, 0) + 1
                 bk = (r['pat'], round(min(r['to_land'], 0.6) * 20) / 20)
                 ok_, n_ = bins.get(bk, (0, 0)); bins[bk] = (ok_ + (code == 'OK'), n_ + 1)
