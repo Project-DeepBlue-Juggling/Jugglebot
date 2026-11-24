@@ -57,3 +57,11 @@ the B bridge has `FASTRTPS_DEFAULT_PROFILES_FILE=...fastdds_bridge_udp_only.xml`
 bridge (profile path in the inert `JUGGLEBOT_BRIDGE_UDP_PROFILE_UNUSED`) maps 12 + 24. So the switch works and the
 check was wrong. The runner now counts only `/dev/shm/fastrtps_` maps (meta key name unchanged).
 Verification: 2026-11-25, `bash -n tools/probes/bug129_launch_series.sh` clean; `pytest tests/sim/test_bug129_series_report.py -q`: 11 passed.
+
+## HEAD check scoped to code, and --first-slot (2026-11-25, series run)
+
+The series aborted after 8 launches (09:13) because the auto-pull timer fast-forwarded main by four `map:` commits
+(docs and map/ files only; installed bridge files unchanged). The abort check now compares the start HEAD to HEAD
+only over `ros_ws/src teensy_link controller config sim` (what the live nodes load), and `--first-slot N` resumes at
+slot N keeping earlier logs. Verification: 2026-11-25, `bash -n tools/probes/bug129_launch_series.sh` clean;
+`pytest tests/sim/test_bug129_series_report.py -q` (parser untouched).

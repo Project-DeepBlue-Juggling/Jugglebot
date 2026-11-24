@@ -41,6 +41,7 @@ set -uo pipefail
 
 MAIN="${HOME}/Desktop/Jugglebot"
 N_PER_ARM=12
+FIRST_SLOT=0               # resume: 0-based slot to start at (earlier slots keep their logs)
 STOP_AT=""
 DRY=0
 DATE="$(date +%F)"
@@ -57,6 +58,7 @@ while (( $# )); do
     --dry-run) DRY=1; shift ;;
     --date) DATE="$2"; shift 2 ;;
     --main) MAIN="$2"; shift 2 ;;
+    --first-slot) FIRST_SLOT="$2"; shift 2 ;;
     -h|--help) sed -n 2,45p "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 64 ;;
   esac
@@ -179,7 +181,7 @@ say "series start: date=$DATE per-arm=$N_PER_ARM stop-at=$STOP_AT HEAD=$START_HE
 say "motor supply OFF (owner-confirmed); auto_arm:=false; runner pid $$"
 
 LIVE_ASSERTED=0
-slot=0; attempts=0
+slot=$FIRST_SLOT; attempts=0
 total=$(( 2 * N_PER_ARM ))
 while (( slot < total )); do
   arm=$(slot_arm "$slot")
@@ -190,7 +192,10 @@ while (( slot < total )); do
   (( now + LAUNCH_BUDGET_S > STOP_EPOCH )) && { say "stop: next launch would end past --stop-at $STOP_AT"; break; }
   in_quiet_window && { say "stop: next launch would touch the 01:30-04:00 quiet window"; break; }
 
-  [[ "$(head_sha)" == "$START_HEAD" ]] || abort_series "HEAD of $MAIN changed mid-series" 5
+  # Only a change to what the live nodes load counts: the auto-pull timer fast-forwards main every
+# 2 min with map/ and docs/ commits (second attempt, 2026-11-25: HEAD moved by four map commits).
+git -C "$MAIN" diff --quiet "$START_HEAD" HEAD -- ros_ws/src teensy_link controller config sim 2>/dev/null \
+    || abort_series "code under ros_ws/src, teensy_link, controller, config or sim changed mid-series ($START_HEAD -> $(head_sha))" 5
   [[ "$(install_stamp)" == "$START_STAMP" ]] || abort_series "installed teensy_bridge_node.py / dds_shm.py changed mid-series" 5
   if ! wait_for_live_session_to_clear 600 10 "bug129_series"; then
     abort_series "another launch is running and did not clear in 10 min" 2
