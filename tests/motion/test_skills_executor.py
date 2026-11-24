@@ -8060,14 +8060,16 @@ def test_goal_13_rest_resplice_with_a_323_ms_solve_is_no_longer_too_late(
 # (logbook/2026-11-16-bug-95-rest-band-installs-fresh-at-the-records-end.md).
 # ---------------------------------------------------------------------------
 
-def _bug95_band(limits, geom, sites, left_s=0.40, window_s=3.2):
-    """A 3.2 s REST record, ``t_now`` ``left_s`` before its end, and a
-    ``window_s`` REST terminal from ``t_now`` (to the other Site)."""
+def _bug95_band(limits, geom, sites, left_s=0.40, window_s=3.2, t0=1000.0):
+    """A 3.2 s REST record from ``t0``, ``t_now`` ``left_s`` before its end,
+    and a ``window_s`` REST terminal from ``t_now`` (to the other Site).  An
+    off-grid ``t0`` stands in for a running record that was itself an at-rest
+    REBASED fresh REST (its origin ``t_inst + 75 ms`` is not on the grid)."""
     p1, p2 = sites
     record, res, _ = ex.install_segment(
         None, _rest_state(p1.rest_site_mm()), sg.REST,
-        sg.RestTerminal(rest_site_mm=p1.rest_site_mm(), t_rest_s=1003.2),
-        1000.0, limits=limits, geom=geom)
+        sg.RestTerminal(rest_site_mm=p1.rest_site_mm(), t_rest_s=t0 + 3.2),
+        t0, limits=limits, geom=geom)
     assert res.accepted, res.message
     t_now = record.end_s - left_s
     term = sg.RestTerminal(rest_site_mm=p2.rest_site_mm(),
@@ -8106,15 +8108,150 @@ def test_a_slow_solve_of_a_band_rest_rebases_instead_of_splice_too_late(
     now the REST REBASES (exact-rest seed: the same motion later), and its
     origin is still never before the record's end."""
     record, term, t_now = _bug95_band(limits, geom, sites)
-    t_inst = record.end_s + 0.20                 # a 600 ms solve
+    t_inst = record.end_s + 0.09                 # a 490 ms solve
     new, res, _seg = ex.install_segment(
         record, None, sg.REST, term, t_now, limits=limits, geom=geom,
         t_install_s=t_inst)
     assert res.code != ex.SPLICE_TOO_LATE, res.message
     assert res.accepted, res.message
     assert 'REBASED' in res.message and 'from rest' in res.message
+    assert 'band REST' in res.message
     assert new.t0_s >= t_inst + ex.WIRE_READ_KNOTS * DT - 1e-9
     assert new.t0_s > record.end_s
+    # 7 knots: the fewest whole knots that put knot 0 ahead of the wire
+    # (floor(0.09 / dt) + WIRE_READ_KNOTS + 1), on the grid.
+    assert new.t0_s - record.end_s == pytest.approx(7 * DT, abs=1e-9)
+
+
+def _bug95_slide(limits, geom, sites, t_inst_past_end_s):
+    """Install the band REST of :func:`_bug95_band` with the solve ending
+    ``t_inst_past_end_s`` after the running record's (on-grid) end."""
+    record, term, t_now = _bug95_band(limits, geom, sites)
+    new, res, _seg = ex.install_segment(
+        record, None, sg.REST, term, t_now, limits=limits, geom=geom,
+        t_install_s=record.end_s + t_inst_past_end_s)
+    return record, new, res
+
+
+@pytest.mark.parametrize('past_end_s, knots', [
+    (-0.351, 0), (-0.076, 0), (-0.074, 1), (-0.010, 3), (0.0, 4),
+    (0.124, 8)])
+def test_a_band_rest_slides_by_the_fewest_whole_knots_that_keep_knot_0_ahead(
+        limits, geom, sites, past_end_s, knots):
+    """BUG-95: the band REST takes the splice's own wire test with
+    ``k_s = 0`` on its anchor (the record's end E). Accepted at E while knot 0
+    is still ahead of the wire (``t_inst < E - 75 ms``, exactly the solves the
+    old clamped splice accepted); past that it slides ``floor((t_inst -
+    E)/dt) + WIRE_READ_KNOTS + 1`` whole knots, so no knot of the plan is ever
+    behind the wire and the origin stays on the grid."""
+    record, new, res = _bug95_slide(limits, geom, sites, past_end_s)
+    assert res.accepted, res.message
+    assert new.t0_s - record.end_s == pytest.approx(knots * DT, abs=1e-9)
+    t_inst = record.end_s + past_end_s
+    k_wire = int(np.floor((t_inst - new.t0_s) / DT)) + ex.WIRE_READ_KNOTS
+    assert k_wire < 0, (past_end_s, k_wire)
+
+
+def test_the_band_rest_slide_cap_is_eight_knots():
+    """TKT-76 option 1: 0.200 s, in knots of the emitter's 25 ms grid."""
+    assert ex.BAND_REST_SLIDE_CAP_KNOTS == 8
+    assert ex.BAND_REST_SLIDE_CAP_KNOTS * DT == pytest.approx(0.200)
+
+
+def test_a_band_rest_rebased_exactly_to_the_slide_cap_is_accepted(
+        limits, geom, sites):
+    """BUG-95 cap boundary, accepted side: a solve ending 120 ms past the
+    record's end REBASES to end + 8 knots, exactly
+    the cap (``floor(0.120/dt) + WIRE_READ_KNOTS + 1`` = 8) -- installed, on
+    the grid, the same motion later."""
+    record, new, res = _bug95_slide(limits, geom, sites, 0.120)
+    assert res.accepted, res.message
+    assert 'REBASED +0.200 s' in res.message, res.message
+    assert new.t0_s - record.end_s == pytest.approx(
+        ex.BAND_REST_SLIDE_CAP_KNOTS * DT, abs=1e-9)
+    assert ex.band_rest_slide_refusal(ex.BAND_REST_SLIDE_CAP_KNOTS) is None
+
+
+def test_a_band_rest_one_knot_past_the_slide_cap_is_refused_splice_too_late(
+        limits, geom, sites):
+    """BUG-95 cap boundary, refused side (fails if the cap is removed): a
+    solve ending 140 ms past the record's end would REBASE to end + 9 knots,
+    one knot over the cap, and is refused SPLICE_TOO_LATE -- the code the
+    pre-BUG-95 clamped splice gave for this solve -- with the record kept."""
+    record, new, res = _bug95_slide(limits, geom, sites, 0.140)
+    assert not res.accepted
+    assert res.code == ex.SPLICE_TOO_LATE, res.message
+    assert 'slide cap' in res.message
+    assert new is record
+    code, _msg = ex.band_rest_slide_refusal(ex.BAND_REST_SLIDE_CAP_KNOTS + 1)
+    assert code == ex.SPLICE_TOO_LATE
+
+
+def test_a_non_band_fresh_rest_rebase_is_not_capped(limits, geom, sites):
+    """The cap is the band REST's alone: a fresh REST with no running record
+    REBASED +0.475 s (a 400 ms solve) installs as before (I-PLAN-12)."""
+    p1, p2 = sites
+    t_now = 2000.0
+    new, res, _ = ex.install_segment(
+        None, _rest_state(p1.rest_site_mm()), sg.REST,
+        sg.RestTerminal(rest_site_mm=p2.rest_site_mm(), t_rest_s=t_now + 3.2),
+        t_now, limits=limits, geom=geom, t_install_s=t_now + 0.400)
+    assert res.accepted, res.message
+    assert new.t0_s - t_now == pytest.approx(0.475, abs=1e-9)
+    assert 'band REST' not in res.message
+
+
+def _on_grid(t):
+    k = t / DT
+    return abs(k - round(k)) < 1e-6
+
+
+def test_a_band_rest_starts_on_the_knot_grid_after_an_off_grid_record(
+        limits, geom, sites):
+    """BUG-95 (d): the running record was an at-rest REBASED fresh REST, so
+    its origin and end are off the emitter's 25 ms grid. The band REST's
+    origin is rounded UP onto the grid (never before the record's end, under
+    one knot after it), and a REBASE of it stays on the grid too."""
+    t0 = 1000.0 + 0.0123
+    assert not _on_grid(t0)
+    record, term, t_now = _bug95_band(limits, geom, sites, t0=t0)
+    assert not _on_grid(record.end_s)
+    new, res, _ = ex.install_segment(
+        record, None, sg.REST, term, t_now, limits=limits, geom=geom,
+        t_install_s=t_now + 0.05)
+    assert res.accepted, res.message
+    assert _on_grid(new.t0_s), new.t0_s
+    assert record.end_s <= new.t0_s < record.end_s + DT
+    new2, res2, _ = ex.install_segment(
+        record, None, sg.REST, term, t_now, limits=limits, geom=geom,
+        t_install_s=record.end_s + 0.10)
+    assert res2.accepted and 'REBASED' in res2.message, res2.message
+    assert _on_grid(new2.t0_s), new2.t0_s
+
+
+def test_a_malformed_rest_terminal_in_the_fresh_decision_is_unreachable(
+        limits, geom, sites):
+    """BUG-95 audit (b): ``install_is_fresh`` reads the REST terminal's
+    instant (``splice_lead_s`` -> ``float(t_rest_s)``), so an instant that is
+    not a number raises ``ValueError`` THERE, before any planning; inside the
+    ``try`` it is the UNREACHABLE refusal, never an exception out of the
+    install or the check.  (A NaN does not reach this path: ``splice_lead_s``
+    absorbs it through ``max``/``min``, and the planner refuses it later.)"""
+    record, term, t_now = _bug95_band(limits, geom, sites)
+    # The constructor validates the instant, so corrupt a valid terminal in
+    # place (a terminal mangled after construction).
+    bad = sg.RestTerminal(rest_site_mm=term.rest_site_mm,
+                          t_rest_s=term.t_rest_s)
+    object.__setattr__(bad, 't_rest_s', 'not-a-time')
+    with pytest.raises(ValueError):
+        ex.install_is_fresh(record, sg.REST, bad, t_now, ex.LEAD_S)
+    new, res, seg = ex.install_segment(
+        record, None, sg.REST, bad, t_now, limits=limits, geom=geom)
+    assert not res.accepted and res.code == ex.UNREACHABLE, res.message
+    assert new is record and seg is None
+    chk = ex.check_segment(record, None, sg.REST, bad, t_now,
+                           limits=limits, geom=geom)
+    assert not chk.planned and chk.code == ex.UNREACHABLE, chk.message
 
 
 def test_check_segment_reads_the_same_fresh_decision_in_the_band(

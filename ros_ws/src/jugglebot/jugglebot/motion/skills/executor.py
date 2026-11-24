@@ -1830,6 +1830,56 @@ def fresh_rest_waits_for_end(record: Optional[PlanRecord], kind: str,
             and float(t_now_s) + float(lead_s) < float(record.end_s))
 
 
+#: BUG-95, owner answer to TKT-76 (option 1, 2026-11-25): the most a band
+#: REST's REBASE may slide its origin past its anchor (the running record's
+#: end on the knot grid), in knots of ``hw.JB_TRAJ_KNOT_DT_S``: 8 knots =
+#: 0.200 s.  Without it the slide is bounded only by the solve deadline
+#: (``solver_worker.SOLVER_REST_DEADLINE_S``), so a slow solve could move the
+#: PRE-TILT REST's end, and the Feed CATCH splicing into its tail, further
+#: than any band case was ever meant to.  0.200 s sits above the R5 sitting 2
+#: PRE-TILT slides (+0.16-0.18 s) and the median (+0.162 s) of every at-rest
+#: fresh-REST REBASE logged 2026-09-28..11-20; uncapped slides of +0.3-1.0 s
+#: on long non-band PRE-TILT RESTs have flown, and one of +0.673 s ended its
+#: Attempt ``TILT_PIN`` at the Feed CATCH (2026-10-28), so the cap is the
+#: conservative side of flown data.  Past it the install is refused
+#: :data:`SPLICE_TOO_LATE`, the code the pre-BUG-95 clamped splice gave for
+#: every one of these solves, so the cap can only restore the old behaviour,
+#: never add a new one.  ONE enforcement point:
+#: :func:`band_rest_slide_refusal`, read by :func:`install_segment`'s REBASE
+#: branch (INVARIANTS.md K1).
+BAND_REST_SLIDE_CAP_KNOTS = 8
+
+
+def band_rest_slide_refusal(slide_knots: int) -> Optional[Tuple[str, str]]:
+    """``(SPLICE_TOO_LATE, message)`` when a band REST's REBASE slide of
+    ``slide_knots`` whole knots (its installed origin minus its anchor at the
+    running record's end) exceeds :data:`BAND_REST_SLIDE_CAP_KNOTS`, else
+    ``None``.  A slide of exactly the cap is accepted."""
+    if int(slide_knots) <= BAND_REST_SLIDE_CAP_KNOTS:
+        return None
+    dt = float(hw.JB_TRAJ_KNOT_DT_S)
+    return (SPLICE_TOO_LATE,
+            'a band REST (fresh at the running record\'s end, BUG-95) would '
+            'be REBASED %d knots (+%.3f s) past that end, over the %d-knot '
+            '(%.3f s) slide cap: the solve outran the record, as the '
+            'pre-BUG-95 clamped splice did'
+            % (int(slide_knots), int(slide_knots) * dt,
+               BAND_REST_SLIDE_CAP_KNOTS, BAND_REST_SLIDE_CAP_KNOTS * dt))
+
+
+def _ceil_to_knot_grid(t_s: float) -> float:
+    """Smallest exact multiple of ``hw.JB_TRAJ_KNOT_DT_S`` at or after
+    ``t_s``: the emitter's absolute knot grid (``trajectory_node.
+    _ceil_to_grid``'s twin; the executor cannot import the node).  An origin
+    off that grid is sampled off-knot by the 40 Hz emitter, which breaks Hand
+    acceleration C2 at every frame (the C2FF measurement, 299-679 rev/s^2).
+    A ``t_s`` within 1e-9 s of a grid node is returned unchanged, bit for
+    bit, so an on-grid record end stays the exact I-INSTALL-1 switch."""
+    dt = float(hw.JB_TRAJ_KNOT_DT_S)
+    g = math.ceil(float(t_s) / dt - 1e-9) * dt
+    return float(t_s) if abs(g - float(t_s)) <= 1e-9 else g
+
+
 def splice_knot_for(record: PlanRecord, kind: str, terminal,
                     t_now_s: float, lead_s: float) -> Tuple[int, bool]:
     """``(k_s, seeded_post_release)`` — the splice knot :func:`install_segment`
@@ -2014,6 +2064,10 @@ class _Origin:
     t_origin: float
     post_release: bool
     refusal: Optional[Tuple[str, str]] = None
+    #: A band REST (:func:`fresh_rest_waits_for_end`): fresh, anchored at the
+    #: running record's end; its REBASE slide is capped
+    #: (:func:`band_rest_slide_refusal`).
+    band_rest: bool = False
 
 
 def _magazine_splice_refusal(record: Optional[PlanRecord], kind: str,
@@ -2048,10 +2102,15 @@ def _segment_origin(record: Optional[PlanRecord],
         # BUG-95: the record ends inside the REST's window-scaled splice
         # lead but past `t_now + lead_s`. Plan from the record's terminal
         # rest at the record's end (the clamped splice's own seed and origin)
-        # as a FRESH origin, so the REBASE rule absorbs a slow solve.
-        t0 = float(record.end_s)
+        # as a FRESH origin, so the REBASE rule absorbs a slow solve. The
+        # anchor is rounded UP onto the knot grid: a running record that was
+        # itself an at-rest REBASED fresh REST ends off the grid, and the node
+        # skips its own snap for this case. Between `end_s` and the snapped
+        # `t0` (< 1 knot) the wire holds the record's terminal rest, which
+        # is this plan's knot 0 exactly (I-INSTALL-1), so the snap is no step.
+        t0 = _ceil_to_knot_grid(float(record.end_s))
         return _Origin(True, False, _rest_seed(record), t0, 0, t0, False,
-                       None)
+                       None, True)
     if fresh:
         if seed_rest is not None:
             seed = seed_rest
@@ -2159,11 +2218,13 @@ def check_segment(record: Optional[PlanRecord],
         gate_limits = TrajectoryLimits.from_config(hw)
     else:
         gate_limits = limits
-    fresh = install_is_fresh(record, kind, terminal, t_now_s, lead_s)
-    refusal = _magazine_splice_refusal(record, kind, t_now_s, lead_s, fresh)
-    if refusal is not None:
-        return CheckResult(False, refusal[0], refusal[1], nan, 0.0)
     try:
+        # Inside the `try`, as in `install_segment` (BUG-95 audit (b)).
+        fresh = install_is_fresh(record, kind, terminal, t_now_s, lead_s)
+        refusal = _magazine_splice_refusal(record, kind, t_now_s, lead_s,
+                                           fresh)
+        if refusal is not None:
+            return CheckResult(False, refusal[0], refusal[1], nan, 0.0)
         org = _segment_origin(record, seed_rest, kind, terminal, t_now_s,
                               lead_s, fresh, reserve_fresh_lead)
         if org.refusal is not None:
@@ -2211,7 +2272,9 @@ def install_segment(record: Optional[PlanRecord],
     time this install could reach the wire (``executor.install_is_fresh``: ``t_now +
     splice_lead_s(...) >= record.end_s``; a REST in the band between the install
     lead and the splice lead is fresh too, but starts at ``record.end_s`` from the
-    record's terminal rest, ``fresh_rest_waits_for_end()``).
+    record's terminal rest, ``fresh_rest_waits_for_end()``; its origin is on the
+    knot grid and its REBASE slide is capped at :data:`BAND_REST_SLIDE_CAP_KNOTS`,
+    past which it is refused :data:`SPLICE_TOO_LATE`).
     The machine is then holding a terminal REST: a stopped platform over a
     seated ball.  The segment is planned from that rest with ``t0 = t_now_s``
     (the solve time is not skipped over), which is sound for exactly one
@@ -2316,7 +2379,9 @@ def install_segment(record: Optional[PlanRecord],
     refusals below are measured on the SNAPPED knot.
 
     * :data:`SPLICE_TOO_LATE` — the solve finished after the wire had already
-      read past ``k_s``.  Checked AGAINST A FRESH CLOCK READ taken AFTER the
+      read past ``k_s``; or a band REST's REBASE would slide it past
+      :data:`BAND_REST_SLIDE_CAP_KNOTS` (:func:`band_rest_slide_refusal`).
+      Checked AGAINST A FRESH CLOCK READ taken AFTER the
       solve (``t_install_s`` is a clock CALLABLE — the ROS shell passes
       ``time.perf_counter`` — evaluated here once the segment exists; a float
       is accepted for tests that inject the lateness) rather than against
@@ -2349,12 +2414,16 @@ def install_segment(record: Optional[PlanRecord],
     # dispatched the skill by, so the reserved origin lands on the skill's own
     # splice base and the planned window is the schedule's (2026-10-16).
     lead_s = (sch.install_lead_s(kind) if lead_s is None else float(lead_s))
-    fresh = install_is_fresh(record, kind, terminal, t_now_s, lead_s)
-    refusal = _magazine_splice_refusal(record, kind, t_now_s, lead_s, fresh)
-    if refusal is not None:
-        return record, InstallResult(False, refusal[0], refusal[1], 0.0), None
-
     try:
+        # Inside the `try` (BUG-95 audit (b)): `install_is_fresh` reads the
+        # terminal's event instant (`splice_lead_s`), so a malformed terminal
+        # raises here and is the same UNREACHABLE refusal as everywhere else.
+        fresh = install_is_fresh(record, kind, terminal, t_now_s, lead_s)
+        refusal = _magazine_splice_refusal(record, kind, t_now_s, lead_s,
+                                           fresh)
+        if refusal is not None:
+            return record, InstallResult(
+                False, refusal[0], refusal[1], 0.0), None
         org = _segment_origin(record, seed_rest, kind, terminal, t_now_s,
                               lead_s, fresh, reserve_fresh_lead)
         if org.refusal is not None:
@@ -2419,7 +2488,32 @@ def install_segment(record: Optional[PlanRecord],
                     event_t_s=float(seg.event_t_s or 0.0),
                     seeded_post_release=False), seg
             solve_s = t_inst - t0_before_solve
-            if solve_s - wire_margin_s > 0.0:
+            if org.band_rest:
+                # BUG-95 band REST (TKT-76 option 1). Its anchor `t0` (the
+                # running record's end, on the grid) can still be AHEAD of
+                # the wire at install, like a reserved origin, so it takes
+                # the splice's own test with `k_s = 0`: knot 0 must be
+                # ahead of the last knot the wire has read. When it is not,
+                # the REST slides by the fewest whole knots that put knot 0
+                # ahead again (`k_wire + 1`): never a knot of the plan
+                # skipped, always on the grid. That is the old clamped
+                # splice's cliff exactly (it refused for every `k_wire >=
+                # 0`), so slide 0 accepts exactly the solves it accepted,
+                # with the same plan on the wire from `t0`, and a slide of
+                # 1..BAND_REST_SLIDE_CAP_KNOTS replaces its SPLICE_TOO_LATE;
+                # past the cap the refusal stands.
+                k_wire = int(math.floor((t_inst - t0) / dt)) + WIRE_READ_KNOTS
+                slide_knots = max(0, k_wire + 1)
+                refusal = band_rest_slide_refusal(slide_knots)
+                if refusal is not None:
+                    return record, InstallResult(
+                        False, refusal[0], refusal[1],
+                        float(seg.meta.plan_wall_s)), None
+                t0_wire = t0 + slide_knots * dt
+            else:
+                t0_wire = t_inst + wire_margin_s
+            if (t0_wire > t0 + 1e-12 if org.band_rest
+                    else solve_s - wire_margin_s > 0.0):
                 # `t_inst + wire_margin_s` is how old the origin will be once
                 # the wire actually starts reading this block (the same
                 # worst-case margin `k_wire` budgets for a splice) — this is
@@ -2439,8 +2533,7 @@ def install_segment(record: Optional[PlanRecord],
                     # state and a mismatch is refused, never clipped.
                     plan_r, meta_r, t0, k_cut, held, refusal = \
                         _rebase_fresh_rest(seg, seed, t0_before_solve,
-                                           t_inst + wire_margin_s,
-                                           limits, geom)
+                                           t0_wire, limits, geom)
                     if refusal is not None:
                         return record, InstallResult(
                             False, refusal[0], refusal[1],
@@ -2454,13 +2547,21 @@ def install_segment(record: Optional[PlanRecord],
                         True, 'OK',
                         'fresh origin REBASED +%.3f s: the solve outran the '
                         'origin (%s over %.3f s from %s; solve %.3f s vs '
-                        'a %.3f s wire-read margin)%s'
+                        'a %.3f s wire-read margin)%s%s'
                         % (t0 - t0_before_solve, kind, seg.plan.total_duration,
                            'rest' if held else 'a seed in motion',
-                           solve_s, wire_margin_s,
+                           (t_inst - t_now_s if org.band_rest else solve_s),
+                           wire_margin_s,
                            ('' if not k_cut else
                             '; seed propagated: first %d knot(s) dropped'
-                            % k_cut)),
+                            % k_cut),
+                           ('' if not org.band_rest else
+                            '; band REST anchored at the running record\'s '
+                            'end, installed %+.3f s from it, slide %d of at '
+                            'most %d knots'
+                            % (t_inst - t0_before_solve,
+                               int(round((t0 - t0_before_solve) / dt)),
+                               BAND_REST_SLIDE_CAP_KNOTS))),
                         float(seg.meta.plan_wall_s), splice_k=0, t0_s=t0,
                         event_t_s=float(seg.event_t_s or 0.0),
                         seeded_post_release=False), seg
@@ -2474,8 +2575,11 @@ def install_segment(record: Optional[PlanRecord],
             new_record = PlanRecord(plan=seg.plan, meta=seg.meta, t0_s=t0)
             return new_record, InstallResult(
                 True, 'OK',
-                'fresh origin: %s over %.3f s from rest'
-                % (kind, seg.plan.total_duration),
+                'fresh origin: %s over %.3f s from rest%s'
+                % (kind, seg.plan.total_duration,
+                   ('' if not org.band_rest else
+                    ' (band REST anchored at the running record\'s end, '
+                    '+%.3f s after dispatch)' % (t0 - t_now_s))),
                 float(seg.meta.plan_wall_s), splice_k=0, t0_s=t0,
                 event_t_s=float(seg.event_t_s or 0.0),
                 seeded_post_release=False), seg

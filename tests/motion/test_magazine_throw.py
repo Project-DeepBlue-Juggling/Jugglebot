@@ -247,3 +247,40 @@ def test_install_segment_fresh_origin_only(limits, geom):
                                        sg.RestTerminal(rest_site_mm=REST, t_rest_s=t_now + 3.0),
                                        t_now + 0.5, limits=limits, geom=geom)
     assert not res2.accepted and res2.code == mt.MAGAZINE_NEEDS_REST
+
+
+def test_a_band_rest_onto_a_magazine_record_installs_fresh_at_its_end(
+        limits, geom):
+    """BUG-95 audit (c): a 3.2 s REST dispatched 0.4 s before a MAGAZINE
+    record's end is in the band (past the bare LEAD_S, inside its splice
+    lead). Before BUG-95 that was the clamped splice and so
+    MAGAZINE_NEEDS_REST; now it is FRESH, anchored at the record's end and
+    seeded from its terminal rest. Intended and safe: the refusal exists
+    because nothing can SPLICE a magazine plan (its meta has no cup plan),
+    and this install splices nothing -- the MAGAZINE plays out whole (the
+    wire hands over at ``t0``, I-INSTALL-1) and the machine at its end HOLDS
+    the magazine's own terminal rest (asserted here: zero platform twist and
+    zero Hand velocity), which is exactly the seed."""
+    t_now0 = 50.0
+    rec, res, _ = ex.install_segment(
+        None, _rest_state(REST), mt.MAGAZINE,
+        _terminal(t_release_s=t_now0 + 1.3), t_now0, limits=limits, geom=geom)
+    assert res.accepted, res.message
+    T = float(rec.plan.total_duration)
+    _pose, twist, _acc = rec.plan.state_at(T)
+    _rev, hand_vel = rec.plan.hand_at(T)
+    np.testing.assert_allclose(twist, 0.0, atol=1e-9)
+    assert abs(float(hand_vel)) < 1e-9
+    t_now = rec.end_s - 0.4
+    term = sg.RestTerminal(rest_site_mm=REST, t_rest_s=t_now + 3.2)
+    assert t_now + ex.LEAD_S < rec.end_s
+    assert ex.install_is_fresh(rec, sg.REST, term, t_now, ex.LEAD_S)
+    new, res2, seg = ex.install_segment(rec, None, sg.REST, term, t_now,
+                                        limits=limits, geom=geom,
+                                        t_install_s=t_now + 0.05)
+    assert res2.accepted, res2.message
+    assert res2.splice_k == 0
+    assert new.t0_s == pytest.approx(rec.end_s, abs=1e-9)
+    np.testing.assert_allclose(seg.plan.pose[0], rec.plan.pose[-1], atol=1e-9)
+    assert float(seg.plan.hand_rev[0]) == pytest.approx(
+        float(rec.plan.hand_rev[-1]), abs=1e-9)

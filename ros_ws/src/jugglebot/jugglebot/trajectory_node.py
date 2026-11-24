@@ -4866,7 +4866,12 @@ class TrajectoryNode(Node):
         # (`rest_waits_for_end`: the record still streams past `t_now +
         # lead_s`) is planned from the record's terminal rest at the
         # record's END, so it is seeded from the record (no live seed) and
-        # hands the wire over at its origin like any non-REST install.
+        # hands the wire over at its origin like any non-REST install. It
+        # skips the grid snap below because the executor anchors it on the
+        # grid itself (`_ceil_to_knot_grid` of the record's end, and of a
+        # REBASED origin), and caps its REBASE slide at
+        # `BAND_REST_SLIDE_CAP_KNOTS` (8 knots), past which the worker refuses
+        # SPLICE_TOO_LATE as the clamped splice did (TKT-76, 2026-11-25).
         fresh = sk_exec.install_is_fresh(record, kind, terminal, t_now_s,
                                          lead_s)
         rest_waits_for_end = fresh and sk_exec.fresh_rest_waits_for_end(

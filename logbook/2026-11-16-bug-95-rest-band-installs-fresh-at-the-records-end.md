@@ -37,7 +37,7 @@ So the band is reached live by the Feed's PRE-TILT REST onto a bridge REST of ab
 
 **Owner follow-up:** `motion/skills/INVARIANTS.md` (not edited, by the Night Shift rules) needs two text changes. The K1 row ("a REST SPLICE (never a fresh REST)") and I-INSTALL-1's last cell ("A fresh REST is exempt") should both say that a band REST is fresh, anchored at the record's end, and not exempt.
 
-**Open after the audit** (named, not fixed):
+**Open after the audit** (named, not fixed; all five closed 2026-11-25 by `logbook/2026-11-25-bug-95-band-rest-slide-cap.md`, which also replaces this entry's slide rule with whole-knot slides):
 - (a) A band REST's REBASE slide is bounded only by the solve deadline, so a slow solve can move the PRE-TILT REST's end, and the Feed Catch, later than the +0.16-0.18 s ever measured.
 - (b) `install_is_fresh` runs outside the `try` that maps a malformed REST terminal's ValueError to UNREACHABLE.
 - (c) A REST onto a MAGAZINE record in the band is now fresh instead of refused MAGAZINE_NEEDS_REST (untested).
