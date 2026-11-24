@@ -5416,7 +5416,12 @@ class TrajectoryNode(Node):
         A fresh REST has no k_s rule (the full ``k_s = 0`` test at the node's
         later clock would refuse every fresh REST: its origin is the dispatch
         instant, or the worker's ``t_inst + WIRE_READ_KNOTS*dt`` when the solve
-        outran it, so ``t0`` is at or behind ``now`` by construction).  Its fence
+        outran it, so ``t0`` is at or behind ``now`` by construction).  A band
+        REST (BUG-95) is the exception to that description, not to the fence:
+        its origin is a grid anchor AHEAD of the worker's clock by (0, 1] knot
+        past the wire read, and it takes this same stall fence BY DESIGN: the
+        knots already sent are the old record's held rest, which is the REST's
+        knot 0, so transit inside the fence cannot open a step.  Its fence
         is a STALL test instead: refuse iff the node reads the reply more than
         half the reserved wire-read margin (``0.5*WIRE_READ_KNOTS*dt`` = 37.5 ms)
         after the worker's own clock read (``t_inst_s - REPLY_TRANSIT_ALLOW_S``).

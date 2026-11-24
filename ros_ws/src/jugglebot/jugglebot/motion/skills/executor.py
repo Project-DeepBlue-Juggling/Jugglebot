@@ -2277,7 +2277,8 @@ def install_segment(record: Optional[PlanRecord],
     past which it is refused :data:`SPLICE_TOO_LATE`).
     The machine is then holding a terminal REST: a stopped platform over a
     seated ball.  The segment is planned from that rest with ``t0 = t_now_s``
-    (the solve time is not skipped over), which is sound for exactly one
+    (a band REST instead takes the grid anchor at the running record's end as
+    its ``t0``; the solve time is not skipped over), which is sound for exactly one
     reason — the seed is at rest, so the plan's knot 0 IS where the machine
     still is when the solve finishes, however long it took.  (A moving seed
     has no such property, which is why the splice branch below measures its

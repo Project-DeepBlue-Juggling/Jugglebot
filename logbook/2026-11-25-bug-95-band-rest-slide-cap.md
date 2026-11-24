@@ -12,6 +12,8 @@ files_changed:
   - ros_ws/src/jugglebot/jugglebot/trajectory_node.py
   - tests/motion/test_skills_executor.py
   - tests/motion/test_magazine_throw.py
+  - ros_ws/src/jugglebot/jugglebot/motion/skills/schedule.py
+  - tests/ros/test_install_segment.py
   - logbook/2026-11-25-bug-95-band-rest-slide-cap.md
 ---
 
@@ -68,6 +70,13 @@ What the slid columns cost downstream: the PRE-TILT REST ends up to 0.200 s late
 
 - A non-band fresh REST's REBASE is still uncapped. It slid up to +1.015 s in the logs, and +0.673 s ended an Attempt `TILT_PIN` at the Feed CATCH on 2026-10-28 (`python3_3246325_1793141374725.log`).
 - A non-band at-rest REBASE still lands off the knot grid (`t_inst + 75 ms`). The 2026-10-23 entry accepted this ("bit-identical to the old rule, including the off-grid `t0`"), but the C2FF reasoning above says it streams off-knot for its whole window.
+
+## Audit notes (2026-11-25, integration)
+
+- "No knot is behind the wire" holds at the worker's clock. Between the worker's reply and the node's install the reply transit (6 to 9 ms measured, 37.5 ms at the stall fence) can use up the (0, 1] knot of margin; the knots already sent are the old record's held rest, which is the REST's knot 0, so no step opens. `_reply_outran_wire` keeps the stall fence for a band REST by design.
+- "Installs at `E` for exactly the solves the clamped splice accepted" and "the cap can only restore the old behaviour" are exact for a record that ends on the knot grid. An off-grid end is rounded up, which buys up to one extra knot of acceptance; the wire holds a rest throughout.
+- The mutation results below were run from scratchpad copies and are not reproducible from the repo.
+- The scoped runs below predate the two audit commits; the default gate on the integrated branch is cited in the commit that merges this entry.
 
 ## Verification
 
