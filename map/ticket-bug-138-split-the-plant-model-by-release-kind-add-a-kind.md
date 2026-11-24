@@ -2,9 +2,9 @@
 id: TKT-93
 kind: ticket
 title: 'BUG-138: split the plant model by release kind, add a kind term, share K and split the laterals, or defer to E7?'
-status: open
+status: complete
 created: '2026-11-25'
-updated: '2026-11-24T16:52:46Z'
+updated: '2026-11-24T22:11:33Z'
 owners: []
 priority: medium
 effort: xs
@@ -32,3 +32,7 @@ The plant model f0 pools carried and free_cup rows, so 607 oval rows move the Co
 Answer 1, 2 or 3 lets the next night build it with a leakage test (oval rows added to a Columns Memory must not move the Columns offset) and merge it if the gate says MERGE; 2 waits for BUG-139. Answer 4 parks BUG-138 under E7.
 
 Recommendation: 3, because it keeps the one parameter the corpus showed is global and separates the two the evidence shows differ.
+
+## Answer
+
+Agreed. Let's go with Option 3.
