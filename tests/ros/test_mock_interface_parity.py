@@ -27,7 +27,7 @@ import pytest
 
 # Importing conftest's module is not needed: pytest has already loaded it, and it
 # registers the mocks in sys.modules unconditionally.
-import conftest as _conftest  # noqa: F401  (ensures the mocks are registered)
+from tests.ros import conftest as _conftest  # noqa: F401  (ensures the mocks are registered)
 
 IFACE = Path(__file__).resolve().parents[2] / 'ros_ws' / 'src' / 'jugglebot_interfaces'
 
