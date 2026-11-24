@@ -600,7 +600,12 @@ def test_wire_layout_frozen(gen):
     # two u16 constants ENCODER_AGE_NONE 0xFFFF / ENCODER_AGE_MAX 0xFFFE. No
     # existing message, arg or MsgType changed, so PROTOCOL_VERSION stays 14.
     # Previous pin: e3dd17c7dd06a87b37bafd53d04b9ea698ce3e4e3dc315dc7a827c56305dce05
-    _EXPECTED = "e5e2803131cbb1be94af13bf7b03cb8bd87cf22bc5562b93c47359f94912f343"
+    # Re-pinned for the ADDITIVE ACTIVATE_TO RPC (2026-11-25, can-bridge FW 51,
+    # BUG-130): one new arg struct ArgActivateTo (six f32 Leg targets, 24 B) behind
+    # one new RpcMethod 0x0066. No existing message, arg or MsgType changed, so
+    # PROTOCOL_VERSION stays 14 and an FW <= 50 board answers 0x66 ERR_UNKNOWN_METHOD.
+    # Previous pin: e5e2803131cbb1be94af13bf7b03cb8bd87cf22bc5562b93c47359f94912f343
+    _EXPECTED = "3e135e8746e9bab977643db9d76146b1c29ab13919957251cd42e9cc921870c7"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

@@ -144,6 +144,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `HAND_FAN_SET` | 0x0063 | Relay: set the Platform Teensy's Hand fan mode and thresholds |
 | `PLATFORM_IMU_CTRL` | 0x0064 | Relay: one Platform IMU control op (ENABLE/DISABLE/FREEZE/RESUME/ABORT) as an IMU_CMD frame |
 | `PLATFORM_IMU_READ` | 0x0065 | Relay: one Platform IMU READ block as an IMU_CMD frame, frame gap clamped while Armed |
+| `ACTIVATE_TO` | 0x0066 | ACTIVATE(AXIS_ALL) to six caller Leg targets, each within ACTIVATE_TO_BAND_REV of the constant Active pose (the Levelled Active pose) |
 
 ### RpcStatus
 
@@ -863,6 +864,14 @@ wraps the generated Python. `AXIS_ALL = 0xFF` broadcasts to all legs.
 | `axis` | u8 | must be 6 (the hand); anything else is ERR_BAD_ARGS |
 | `target_rev` | f32 | hand target (rev, Jugglebot convention), finite, [0, HAND_MOTOR_MAX_POSITION] |
 | `vel_rps` | f32 | TRAP_TRAJ cruise (rev/s), 0 < v <= GENTLE_MOVE_VEL_LIMIT_RPS |
+
+### ArgActivateTo (`ACTIVATE_TO`)
+
+**24 bytes**. Python struct fmt: `<ffffff`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `target_rev` | f32 | Leg 0..5 targets (rev, Jugglebot convention), each within ACTIVATE_TO_BAND_REV of ACTIVATE_POSITION_REVS[i] |
 
 ### ResultHandMoveTo (`HAND_MOVE_TO (result)`)
 

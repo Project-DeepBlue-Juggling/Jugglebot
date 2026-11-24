@@ -61,6 +61,14 @@ static const uint64_t A_TIMEOUT_US = (uint64_t)(JBOp::GENTLE_MOVE_TIMEOUT_S * 1.
 // ── State (owned by the activate task; start-request handed off from net task) ─
 static volatile bool    s_start_req  = false;   // net task → activate task
 static volatile uint8_t s_start_axis = 0xFF;
+// The Leg targets latched with the start (FW 51, BUG-130). ACTIVATE latches the
+// constants JBOp::ACTIVATE_POSITION_REVS; ACTIVATE_TO latches the caller's six,
+// already validated inside ACTIVATE_TO_BAND_REV by activate_to_request. Written by
+// the net task only inside the same IRQ guard that sets s_start_req, copied to
+// s_leg_target by the activate task inside the guard that consumes it, so the
+// ladder never reads a half-written set.
+static volatile float s_start_leg_target[HAND_AXIS];
+static float          s_leg_target[HAND_AXIS];   // activate-task-owned: the move in flight
 
 static APhase   s_phase   = APhase::IDLE;
 static uint8_t  s_targets = 0;        // bitmask of legs being activated (bit i = leg i)
@@ -132,7 +140,7 @@ static volatile uint32_t s_hm_box_drops = 0;
 static inline float activate_target_rev(uint8_t a) {
   if (a == HAND_AXIS)   // HAND_MOVE_TO: the caller's validated target, else the park
     return (s_mode == AMode::HAND_MOVE) ? s_hm_target : JBOp::HAND_ACTIVATE_POSITION_REV;
-  return JBOp::ACTIVATE_POSITION_REVS[a];
+  return s_leg_target[a];   // the latched set: the constants (ACTIVATE) or the validated caller set (ACTIVATE_TO)
 }
 // TRAP_TRAJ cruise: the caller's (validated <= GENTLE_MOVE_VEL_LIMIT_RPS) for a
 // HAND_MOVE_TO, the op's own gentle ceiling for ACTIVATE.
@@ -247,9 +255,15 @@ void activate_init() {
   s_phase = APhase::IDLE;
   s_targets = 0;
   for (uint8_t i = 0; i < NUM_AXES; ++i) s_result[i] = ACTIVATE_NONE;
+  for (uint8_t i = 0; i < HAND_AXIS; ++i) {
+    s_start_leg_target[i] = JBOp::ACTIVATE_POSITION_REVS[i];
+    s_leg_target[i]       = JBOp::ACTIVATE_POSITION_REVS[i];
+  }
 }
 
-uint16_t activate_request(uint8_t axis) {
+// The gates and the latch shared by ACTIVATE and ACTIVATE_TO (one copy, so the two
+// can never diverge on when a rise may start). `leg_targets` is HAND_AXIS floats.
+static uint16_t activate_gate_and_latch(uint8_t axis, const float* leg_targets) {
   using namespace JbUdp;
   if (!activate_allowed()) return RpcStatus::ERR_BUS_DOWN;
   if (homing_active() || deactivate_active()) return RpcStatus::ERR_REJECTED;  // no concurrent cold-start moves
@@ -265,9 +279,36 @@ uint16_t activate_request(uint8_t axis) {
   // consumes s_start_req at the top of activate_step.
   const uint32_t pm = __get_PRIMASK(); __disable_irq();
   const bool busy = (s_phase != APhase::IDLE) || s_start_req || s_hm_req;
-  if (!busy) { s_start_axis = axis; s_start_req = true; }
+  if (!busy) {
+    for (uint8_t i = 0; i < HAND_AXIS; ++i) s_start_leg_target[i] = leg_targets[i];
+    s_start_axis = axis;
+    s_start_req = true;
+  }
   __set_PRIMASK(pm);
   return busy ? RpcStatus::ERR_REJECTED : RpcStatus::OK;
+}
+
+uint16_t activate_request(uint8_t axis) {
+  return activate_gate_and_latch(axis, JBOp::ACTIVATE_POSITION_REVS);
+}
+
+bool activate_to_target_in_band(uint8_t leg, float target_rev) {
+  if (leg >= HAND_AXIS || !std::isfinite(target_rev)) return false;
+  return fabsf(target_rev - JBOp::ACTIVATE_POSITION_REVS[leg]) <= ACTIVATE_TO_BAND_REV;
+}
+
+uint16_t activate_to_request(const float leg_targets[HAND_AXIS]) {
+  using namespace JbUdp;
+  // Args first, pure validation independent of machine state (HAND_MOVE_TO's
+  // order). A target outside the band is REFUSED, never clipped: the band is the
+  // whole of what the host may ask, and a caller outside it has a bug a clip hides.
+  for (uint8_t i = 0; i < HAND_AXIS; ++i)
+    if (!activate_to_target_in_band(i, leg_targets[i])) return RpcStatus::ERR_BAD_ARGS;
+  // All six Legs, always: a Levelled pose is a whole-Platform pose, and AXIS_ALL
+  // on a board with a Leg absent would raise the others to a tilt nobody asked for.
+  for (uint8_t i = 0; i < HAND_AXIS; ++i)
+    if (!leg_present(i)) return RpcStatus::ERR_BAD_ARGS;
+  return activate_gate_and_latch(RpcArgs::AXIS_ALL, leg_targets);
 }
 
 bool activate_active() { return s_phase != APhase::IDLE || s_start_req || s_hm_req; }
@@ -490,7 +531,10 @@ void activate_step() {
     const bool    start = s_start_req;
     const uint8_t ax    = s_start_axis;
     s_start_req = false;
-    if (start) { s_mode = AMode::ACTIVATE; s_phase = APhase::SETUP; }
+    if (start) {
+      s_mode = AMode::ACTIVATE; s_phase = APhase::SETUP;
+      for (uint8_t i = 0; i < HAND_AXIS; ++i) s_leg_target[i] = s_start_leg_target[i];
+    }
     __set_PRIMASK(pm);
     if (!start) return;
     s_targets = resolve_targets(ax);

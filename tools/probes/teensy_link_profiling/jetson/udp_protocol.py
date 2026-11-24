@@ -106,6 +106,7 @@ class RpcMethod(IntEnum):
     HAND_FAN_SET = 99  # Relay: set the Platform Teensy's Hand fan mode and thresholds
     PLATFORM_IMU_CTRL = 100  # Relay: one Platform IMU control op (ENABLE/DISABLE/FREEZE/RESUME/ABORT) as an IMU_CMD frame
     PLATFORM_IMU_READ = 101  # Relay: one Platform IMU READ block as an IMU_CMD frame, frame gap clamped while Armed
+    ACTIVATE_TO = 102  # ACTIVATE(AXIS_ALL) to six caller Leg targets, each within ACTIVATE_TO_BAND_REV of the constant Active pose (the Levelled Active pose)
 
 class RpcStatus(IntEnum):
     OK = 0  # Success
@@ -1224,6 +1225,25 @@ class ArgHandMoveTo:
         vals = _ARG_HAND_MOVE_TO_STRUCT.unpack(data[:9])
         it = iter(vals)
         return cls(next(it), next(it), next(it))
+
+# ArgActivateTo (ACTIVATE_TO)
+ARG_ACTIVATE_TO_FMT = '<ffffff'
+ARG_ACTIVATE_TO_SIZE = 24
+_ARG_ACTIVATE_TO_STRUCT = struct.Struct(ARG_ACTIVATE_TO_FMT)
+assert _ARG_ACTIVATE_TO_STRUCT.size == 24
+
+@dataclass
+class ArgActivateTo:
+    target_rev: tuple = field(default_factory=lambda: (0.0,) * 6)
+
+    def pack(self) -> bytes:
+        return _ARG_ACTIVATE_TO_STRUCT.pack(*self.target_rev)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ArgActivateTo':
+        vals = _ARG_ACTIVATE_TO_STRUCT.unpack(data[:24])
+        it = iter(vals)
+        return cls(tuple(next(it) for _ in range(6)))
 
 # ResultHandMoveTo (HAND_MOVE_TO (result))
 RESULT_HAND_MOVE_TO_FMT = '<BBBBfffI'

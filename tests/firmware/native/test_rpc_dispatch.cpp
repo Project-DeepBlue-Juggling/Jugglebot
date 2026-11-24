@@ -122,6 +122,14 @@ bool fault_mpc_active()            { return g_mpc_active; }
 // ── leg_homing/activate/deactivate.h (entry points only — record + settable ret) ──
 uint16_t homing_request(uint8_t axis)     { g_homing_axis = axis; return g_homing_ret; }
 uint16_t activate_request(uint8_t axis)   { g_activate_axis = axis; return g_activate_ret; }
+static float    g_activate_to_targets[6] = {0};   // ACTIVATE_TO (FW 51): the args as received
+static int      g_activate_to_calls = 0;
+static uint16_t g_activate_to_ret = JbUdp::RpcStatus::OK;
+uint16_t activate_to_request(const float t[6]) {
+  for (int i = 0; i < 6; ++i) g_activate_to_targets[i] = t[i];
+  g_activate_to_calls++;
+  return g_activate_to_ret;
+}
 uint16_t deactivate_request(uint8_t axis) { g_deactivate_axis = axis; return g_deactivate_ret; }
 // HAND_MOVE_TO (FW 26): record the decoded args + the req_id dispatch handed over,
 // and model the reply mailbox the activate task posts into (one slot is enough here).
@@ -953,4 +961,31 @@ TEST_CASE("HAND_MOVE_TO: a short arg blob is ERR_BAD_ARGS and never reaches the 
   uint8_t result[64]; uint16_t res_len = 0;
   CHECK(Rpc::dispatch(RpcMethod::HAND_MOVE_TO, oneb, 1, result, res_len) == RpcStatus::ERR_BAD_ARGS);
   CHECK(g_hm_axis == 0xEE);
+}
+
+
+// ── ACTIVATE_TO (FW 51, BUG-130): the six targets reach the one enforcement point ──
+TEST_CASE("ACTIVATE_TO: the six targets reach activate_to_request intact; its status is the reply; a short arg never calls it") {
+  reset_all();
+  g_activate_to_calls = 0; g_activate_to_ret = RpcStatus::OK;
+  JbUdp::RpcArgs::ArgActivateTo a{};
+  for (int i = 0; i < 6; ++i) a.target_rev[i] = 2.1f + 0.01f * (float)i;
+  send_request(RpcMethod::ACTIVATE_TO, 0x0042, &a, sizeof(a));
+  REQUIRE(g_activate_to_calls == 1);
+  for (int i = 0; i < 6; ++i) CHECK(g_activate_to_targets[i] == a.target_rev[i]);
+  uint16_t m = 0, id = 0, st = 0, rl = 0; const uint8_t* res = nullptr;
+  REQUIRE(Rpc::parse_response(g_udp_last, g_udp_last_len, &m, &id, &st, &res, &rl));
+  CHECK(m == RpcMethod::ACTIVATE_TO);
+  CHECK(st == RpcStatus::OK);
+
+  g_activate_to_ret = RpcStatus::ERR_BAD_ARGS;   // the band refusal passes straight through
+  send_request(RpcMethod::ACTIVATE_TO, 0x0043, &a, sizeof(a));
+  REQUIRE(Rpc::parse_response(g_udp_last, g_udp_last_len, &m, &id, &st, &res, &rl));
+  CHECK(st == RpcStatus::ERR_BAD_ARGS);
+
+  g_activate_to_calls = 0;
+  send_request(RpcMethod::ACTIVATE_TO, 0x0044, &a, sizeof(a) - 4);   // five and a bit
+  CHECK(g_activate_to_calls == 0);
+  REQUIRE(Rpc::parse_response(g_udp_last, g_udp_last_len, &m, &id, &st, &res, &rl));
+  CHECK(st == RpcStatus::ERR_BAD_ARGS);
 }

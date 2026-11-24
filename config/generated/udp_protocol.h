@@ -106,6 +106,7 @@ namespace RpcMethod {
   constexpr uint16_t HAND_FAN_SET = 0x0063u;  // Relay: set the Platform Teensy's Hand fan mode and thresholds
   constexpr uint16_t PLATFORM_IMU_CTRL = 0x0064u;  // Relay: one Platform IMU control op (ENABLE/DISABLE/FREEZE/RESUME/ABORT) as an IMU_CMD frame
   constexpr uint16_t PLATFORM_IMU_READ = 0x0065u;  // Relay: one Platform IMU READ block as an IMU_CMD frame, frame gap clamped while Armed
+  constexpr uint16_t ACTIVATE_TO = 0x0066u;  // ACTIVATE(AXIS_ALL) to six caller Leg targets, each within ACTIVATE_TO_BAND_REV of the constant Active pose (the Levelled Active pose)
 }
 namespace RpcStatus {
   constexpr uint16_t OK = 0x0000u;  // Success
@@ -698,6 +699,11 @@ struct ArgHandMoveTo {
   float vel_rps;  // TRAP_TRAJ cruise (rev/s), 0 < v <= GENTLE_MOVE_VEL_LIMIT_RPS
 };
 static_assert(sizeof(ArgHandMoveTo) == 9, "ArgHandMoveTo size drift");
+// ArgActivateTo (ACTIVATE_TO)
+struct ArgActivateTo {
+  float target_rev[6];  // Leg 0..5 targets (rev, Jugglebot convention), each within ACTIVATE_TO_BAND_REV of ACTIVATE_POSITION_REVS[i]
+};
+static_assert(sizeof(ArgActivateTo) == 24, "ArgActivateTo size drift");
 // ResultHandMoveTo (HAND_MOVE_TO (result))
 struct ResultHandMoveTo {
   uint8_t outcome;  // 0 ARRIVED / 1 SUPERSEDED / 2 TIMEOUT / 3 ABORTED / 4 STALLED (FW 36)
@@ -792,6 +798,7 @@ constexpr uint16_t RESULT_AXIS_VERSIONS_SIZE = 57u;
 constexpr uint16_t RESULT_BB_AXIS_VERSIONS_SIZE = 17u;
 constexpr uint16_t RESULT_HAND_TORQUE_SCALE_SIZE = 16u;
 constexpr uint16_t ARG_HAND_MOVE_TO_SIZE = 9u;
+constexpr uint16_t ARG_ACTIVATE_TO_SIZE = 24u;
 constexpr uint16_t RESULT_HAND_MOVE_TO_SIZE = 20u;
 constexpr uint16_t ARG_WAVE_CMD_SIZE = 8u;
 constexpr uint16_t ARG_BB_THROW_SIZE = 20u;

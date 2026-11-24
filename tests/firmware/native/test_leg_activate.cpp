@@ -1177,3 +1177,134 @@ TEST_CASE("BUG-131 item 2: a trip followed by LOST heartbeats re-latches once, t
   CHECK(cs_hand_stall_notified() == 2);
   CHECK(idle_count() == 2);
 }
+
+// ── ACTIVATE_TO (FW 51, BUG-130): the Levelled Active pose, bounded by a band ──
+//  activate_to_request is the ONE enforcement point for what the host may ask:
+//  six finite Leg targets, each within ACTIVATE_TO_BAND_REV of the constant
+//  Active pose, all six Legs present, then exactly ACTIVATE's gates. The move is
+//  ACTIVATE(AXIS_ALL)'s ladder with the caller's Leg targets; the Hand park and
+//  ACTIVATE itself are unchanged.
+static constexpr uint8_t ALL_LEGS = 0x3F;
+static void const_targets(float out[6]) {
+  for (uint8_t i = 0; i < 6; ++i) out[i] = JBOp::ACTIVATE_POSITION_REVS[i];
+}
+
+TEST_CASE("ACTIVATE_TO: the band edges, both signs, every Leg (inside accepted, outside refused, nothing latched)") {
+  for (uint8_t leg = 0; leg < 6; ++leg) {
+    for (float sign : {+1.0f, -1.0f}) {
+      float t[6]; const_targets(t);
+      full_reset((uint8_t)(ALL_LEGS | HAND_BIT));
+      t[leg] = JBOp::ACTIVATE_POSITION_REVS[leg] + sign * (ACTIVATE_TO_BAND_REV - 0.001f);
+      CHECK(activate_to_request(t) == JbUdp::RpcStatus::OK);
+      CHECK(activate_active());
+
+      full_reset((uint8_t)(ALL_LEGS | HAND_BIT));
+      t[leg] = JBOp::ACTIVATE_POSITION_REVS[leg] + sign * (ACTIVATE_TO_BAND_REV + 0.001f);
+      CHECK(activate_to_request(t) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+      CHECK_FALSE(activate_active());
+    }
+  }
+  CHECK(ACTIVATE_TO_BAND_REV == doctest::Approx(0.10f));
+}
+
+TEST_CASE("ACTIVATE_TO: one Leg out of band (or non-finite) refuses the whole request") {
+  const float bad[] = {JBOp::ACTIVATE_POSITION_REVS[3] + 0.2f, NAN, INFINITY, -INFINITY,
+                       0.0f /* the stow end: a host that sent a stow pose */,
+                       JBOp::ACTIVATE_POSITION_REVS[3] / 0.01408f /* mm sent as rev */};
+  for (float b : bad) {
+    float t[6]; const_targets(t);
+    t[3] = b;
+    full_reset((uint8_t)(ALL_LEGS | HAND_BIT));
+    cs_clear_sent();
+    CHECK(activate_to_request(t) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+    CHECK_FALSE(activate_active());
+    activate_step();
+    CHECK(cs_sent_count() == 0);      // nothing latched, nothing sent
+  }
+}
+
+TEST_CASE("ACTIVATE_TO: a board with any Leg absent is refused (a whole-Platform pose only)") {
+  float t[6]; const_targets(t);
+  full_reset((uint8_t)(0x1F | HAND_BIT));   // Leg 5 absent
+  CHECK(activate_to_request(t) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  CHECK_FALSE(activate_active());
+  full_reset(0x01);                          // the single-leg bench
+  CHECK(activate_to_request(t) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  CHECK_FALSE(activate_active());
+}
+
+TEST_CASE("ACTIVATE_TO: ACTIVATE's gates, in ACTIVATE's order") {
+  float t[6]; const_targets(t);
+  full_reset(ALL_LEGS);
+  cs_set_jugglebot_health(JbUdp::BusHealth::BUS_OFF);
+  CHECK(activate_to_request(t) == JbUdp::RpcStatus::ERR_BUS_DOWN);
+  CHECK_FALSE(activate_active());
+  full_reset(ALL_LEGS);
+  g_sib_homing = true;
+  CHECK(activate_to_request(t) == JbUdp::RpcStatus::ERR_REJECTED);
+  CHECK_FALSE(activate_active());
+  full_reset(ALL_LEGS);
+  g_sib_deactivate = true;
+  CHECK(activate_to_request(t) == JbUdp::RpcStatus::ERR_REJECTED);
+  full_reset(ALL_LEGS);
+  REQUIRE(activate_to_request(t) == JbUdp::RpcStatus::OK);
+  CHECK(activate_to_request(t) == JbUdp::RpcStatus::ERR_REJECTED);   // idempotent busy
+  CHECK(activate_request(JbUdp::RpcArgs::AXIS_ALL) == JbUdp::RpcStatus::ERR_REJECTED);
+}
+
+// The Levelled Active pose of BUG-130 (effective offset (-0.044, +0.574) deg),
+// from the IK probe of 2026-11-25: the per-Leg deltas in rev.
+static const float LEVELLED_DELTA_REV[6] = {-0.02480f, -0.00419f, -0.00007f,
+                                            +0.02651f, +0.02465f, -0.02247f};
+
+TEST_CASE("ACTIVATE_TO: COMMAND sends the caller's six Leg targets and the unchanged Hand park; MONITOR finishes on them") {
+  float t[6];
+  for (uint8_t i = 0; i < 6; ++i) t[i] = JBOp::ACTIVATE_POSITION_REVS[i] + LEVELLED_DELTA_REV[i];
+  full_reset((uint8_t)(ALL_LEGS | HAND_BIT));
+  for (uint8_t i = 0; i < 6; ++i) axes[i].pos_rev = -0.10f;
+  axes[HAND_AXIS].pos_rev = Homing::HAND_ABS_POS_REV;
+  REQUIRE(activate_to_request(t) == JbUdp::RpcStatus::OK);
+  cs_clear_sent();
+  run_to_monitor(7);
+  // 7 x 5 preamble frames, then the seven targets in the one COMMAND tick.
+  REQUIRE(cs_sent_count() == 7 * 5 + 7);
+  for (uint8_t i = 0; i < 6; ++i) {
+    const auto f = ODrive::encode_leg_setpoint(i, t[i], 0.0f, 0.0f);
+    CHECK(cs_sent_at(35 + i).id == f.id);
+    CHECK(memcmp(cs_sent_at(35 + i).buf, f.buf, 8) == 0);
+  }
+  const auto hand = ODrive::encode_leg_setpoint(HAND_AXIS, JBOp::HAND_ACTIVATE_POSITION_REV, 0.0f, 0.0f);
+  CHECK(memcmp(cs_sent_at(41).buf, hand.buf, 8) == 0);
+
+  // MONITOR: Legs parked on the CONSTANTS are NOT done (the leveled targets are
+  // up to 0.027 rev away, past TARGET_REACHED_POS_TOL_REV) ...
+  for (uint8_t i = 0; i < 6; ++i) { axes[i].pos_rev = JBOp::ACTIVATE_POSITION_REVS[i]; axes[i].vel_rps = 0.0f; }
+  axes[HAND_AXIS].pos_rev = JBOp::HAND_ACTIVATE_POSITION_REV; axes[HAND_AXIS].vel_rps = 0.0f;
+  tick_for(TICK_US);
+  CHECK(activate_active());
+  // ... and on the caller's targets they are.
+  for (uint8_t i = 0; i < 6; ++i) axes[i].pos_rev = t[i];
+  tick_for(TICK_US);
+  CHECK_FALSE(activate_active());
+  for (uint8_t i = 0; i < 6; ++i) CHECK(activate_result(i) == ACTIVATE_OK);
+}
+
+TEST_CASE("ACTIVATE after an ACTIVATE_TO is bit-identical to ACTIVATE: the constants re-latch") {
+  float t[6];
+  for (uint8_t i = 0; i < 6; ++i) t[i] = JBOp::ACTIVATE_POSITION_REVS[i] + LEVELLED_DELTA_REV[i];
+  full_reset(ALL_LEGS);
+  REQUIRE(activate_to_request(t) == JbUdp::RpcStatus::OK);
+  run_to_monitor(6);
+  for (uint8_t i = 0; i < 6; ++i) { axes[i].pos_rev = t[i]; axes[i].vel_rps = 0.0f; }
+  tick_for(TICK_US);
+  REQUIRE_FALSE(activate_active());
+
+  REQUIRE(activate_request(JbUdp::RpcArgs::AXIS_ALL) == JbUdp::RpcStatus::OK);
+  cs_clear_sent();
+  run_to_monitor(6);
+  REQUIRE(cs_sent_count() == 6 * 5 + 6);
+  for (uint8_t i = 0; i < 6; ++i) {
+    const auto f = ODrive::encode_leg_setpoint(i, JBOp::ACTIVATE_POSITION_REVS[i], 0.0f, 0.0f);
+    CHECK(memcmp(cs_sent_at(30 + i).buf, f.buf, 8) == 0);
+  }
+}

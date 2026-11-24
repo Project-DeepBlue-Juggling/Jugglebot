@@ -8065,6 +8065,13 @@ class TeensyBridgeNode(Node):
     def teensy_activate(self, axis=rpc_args.AXIS_ALL):
         return self._call_rpc(RpcMethod.ACTIVATE, rpc_args.encode_activate(axis))
 
+    def teensy_activate_to(self, leg_targets_rev):
+        """ACTIVATE_TO (can-bridge FW 51, BUG-130): ACTIVATE(AXIS_ALL) to six
+        Leg targets inside the firmware's band of the constant Active pose. An
+        FW <= 50 board answers ERR_UNKNOWN_METHOD."""
+        return self._call_rpc(RpcMethod.ACTIVATE_TO,
+                              rpc_args.encode_activate_to(leg_targets_rev))
+
     def teensy_deactivate(self, axis=rpc_args.AXIS_ALL):
         return self._call_rpc(RpcMethod.DEACTIVATE, rpc_args.encode_deactivate(axis))
 
@@ -9607,7 +9614,7 @@ class TeensyBridgeNode(Node):
                 active_errors=int(d.active_errors))
         return out
 
-    def _run_activate(self, axes, *, poll_dt=0.05):
+    def _run_activate(self, axes, *, poll_dt=0.05, leg_targets_rev=None):
         """Fire the firmware ACTIVATE (TRAP_TRAJ move to the active pose) and
         observe it to completion. A single configured axis fires that leg; any
         larger set fires ``AXIS_ALL`` (every PRESENT leg, parallel even-rise). The
@@ -9621,12 +9628,32 @@ class TeensyBridgeNode(Node):
         Precondition: a prior ``/configure`` (gains/limits/mode). Without it the
         legs run on flash-default gains and the move fails safe (never reaches the
         target → ActivateMonitor timeout → FAILED).
+
+        ``leg_targets_rev`` (BUG-130, can-bridge FW 51): six Leg targets, the
+        Levelled Active pose, sent as ACTIVATE_TO instead of ACTIVATE. Refused
+        here, by name and with no RPC sent, unless ``axes`` is the full Leg set
+        and every target is inside ``rpc_args.ACTIVATE_TO_BAND_REV`` of the
+        constant (the firmware enforces the same band; this only names the
+        Leg). ``None`` is today's ACTIVATE, unchanged.
         """
         self._cancel_lane_recovery('activate')
         axes = [int(a) for a in axes]
         if not axes:
             return False, "no axes configured for activate"
-        targets = {a: float(hw.JB_OP_ACTIVATE_POSITION_REVS[a]) for a in axes}
+        if leg_targets_rev is not None:
+            leg_targets_rev = [float(t) for t in leg_targets_rev]
+            if sorted(axes) != list(range(p.NUM_LEGS)) or len(leg_targets_rev) != p.NUM_LEGS:
+                return False, (f"ACTIVATE_TO refused: needs all {p.NUM_LEGS} Legs "
+                               f"(activate_axes={axes}, {len(leg_targets_rev)} targets)")
+            bad = rpc_args.activate_to_out_of_band(
+                leg_targets_rev, hw.JB_OP_ACTIVATE_POSITION_REVS)
+            if bad:
+                return False, (f"ACTIVATE_TO refused: Leg(s) {bad} outside "
+                               f"{rpc_args.ACTIVATE_TO_BAND_REV} rev of the constant "
+                               f"Active pose: {leg_targets_rev}")
+            targets = {a: leg_targets_rev[a] for a in axes}
+        else:
+            targets = {a: float(hw.JB_OP_ACTIVATE_POSITION_REVS[a]) for a in axes}
         # Single configured axis → that leg only; otherwise AXIS_ALL (all present
         # legs in parallel — the platform rises straight up, no tilt).
         fire_axis = axes[0] if len(axes) == 1 else rpc_args.AXIS_ALL
@@ -9638,9 +9665,14 @@ class TeensyBridgeNode(Node):
                 f"activate_axes={axes} is a partial subset — ACTIVATE(AXIS_ALL) "
                 f"will move ALL present legs, but only {axes} are observed. Use a "
                 f"single leg or the full leg set.")
-        ok, msg, _ = self.teensy_activate(fire_axis)
-        if not ok:
-            return False, f"ACTIVATE rejected: {msg}"
+        if leg_targets_rev is not None:
+            ok, msg, _ = self.teensy_activate_to(leg_targets_rev)
+            if not ok:
+                return False, f"ACTIVATE_TO rejected: {msg}"
+        else:
+            ok, msg, _ = self.teensy_activate(fire_axis)
+            if not ok:
+                return False, f"ACTIVATE rejected: {msg}"
         mon = ActivateMonitor(axes, targets)
         # AXIS_ALL also parks the Hand, which `axes` (the legs) does not observe.
         # Watch its FW 36 stall bit alongside so a stalled Hand fails the activate

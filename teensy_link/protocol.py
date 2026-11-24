@@ -147,6 +147,7 @@ from udp_protocol import (  # noqa: E402, F401
     ResultAxisVersions,  # GET_AXIS_VERSIONS result blob
     ResultBbAxisVersions,  # GET_BB_AXIS_VERSIONS result blob (FW 20, additive)
     ArgHandMoveTo,  # HAND_MOVE_TO args (FW 26, additive)
+    ArgActivateTo,  # ACTIVATE_TO args (FW 51, additive, BUG-130)
     ResultHandMoveTo,  # HAND_MOVE_TO deferred-reply result blob (FW 26)
     ResultBbThrow,     # BB_THROW result blob: release lead at bridge receipt (FW 29)
     ResultHandTorqueScale,  # GET_HAND_TORQUE_SCALE result blob (FW 22, additive)

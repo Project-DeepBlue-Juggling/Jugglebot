@@ -15,6 +15,7 @@ against the firmware in ``tests/teensy_link/test_rpc_args.py``.
 
 from __future__ import annotations
 
+import math
 import struct
 from collections import namedtuple
 
@@ -40,6 +41,7 @@ from .protocol import (
     ResultBbAxisVersions,
     ResultHandTorqueScale,
     ArgHandMoveTo,
+    ArgActivateTo,
     ResultHandMoveTo,
     ResultBbThrow,
     ArgPlatformFwBegin,
@@ -60,7 +62,8 @@ __all__ = [
     "encode_set_axis_state", "encode_set_controller_mode",
     "encode_set_vel_curr_limits", "encode_set_pos_gain", "encode_set_vel_gains",
     "encode_set_absolute_position", "encode_clear_errors", "encode_reboot",
-    "encode_encoder_search", "encode_home", "encode_activate", "encode_deactivate",
+    "encode_encoder_search", "encode_home", "encode_activate", "encode_activate_to",
+    "ACTIVATE_TO_BAND_REV", "activate_to_out_of_band", "encode_deactivate",
     "encode_sdo_read", "encode_sdo_write", "encode_state_write",
     "ArgHandFanSet", "HAND_FAN_MODES", "HandFanStatus", "encode_hand_fan_set", "decode_hand_fan_status",
     "decode_hand_cmd_echo",
@@ -154,6 +157,39 @@ def encode_activate(axis: int = AXIS_ALL) -> bytes:
     single leg index activates just that leg iff present.
     """
     return ArgAxisOnly(axis=int(axis)).pack()
+
+
+# ACTIVATE_TO (can-bridge FW 51, BUG-130). The Python twin of
+# canbridge_config.h ACTIVATE_TO_BAND_REV, pinned equal by
+# tests/teensy_link/test_activate_to_codec.py. The firmware is the enforcement
+# point; this twin lets the host refuse by name BEFORE sending, instead of
+# learning only ERR_BAD_ARGS.
+ACTIVATE_TO_BAND_REV = 0.10
+
+
+def activate_to_out_of_band(targets, constants) -> list:
+    """The Leg indices whose target is non-finite or further than
+    ``ACTIVATE_TO_BAND_REV`` from ``constants[i]`` (the firmware's
+    JBOp::ACTIVATE_POSITION_REVS). Empty = the firmware will accept the band."""
+    bad = []
+    for i, (t, c) in enumerate(zip(targets, constants)):
+        if not math.isfinite(float(t)) or abs(float(t) - float(c)) > ACTIVATE_TO_BAND_REV:
+            bad.append(i)
+    if len(list(targets)) != 6:
+        bad.append(-1)
+    return bad
+
+
+def encode_activate_to(leg_targets_rev) -> bytes:
+    """ACTIVATE_TO args: six Leg targets (rev, Jugglebot convention).
+
+    ACTIVATE(AXIS_ALL) with these Leg targets instead of the constant Active pose;
+    the firmware refuses (ERR_BAD_ARGS, nothing latched) a target outside its band.
+    """
+    t = tuple(float(x) for x in leg_targets_rev)
+    if len(t) != 6:
+        raise ValueError(f"ACTIVATE_TO needs six Leg targets, got {len(t)}")
+    return ArgActivateTo(target_rev=t).pack()
 
 
 def encode_deactivate(axis: int = AXIS_ALL) -> bytes:
@@ -1036,7 +1072,10 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # scheduled <-> legacy transitions. No live stamp is affected. FEAT-64: the
 # additive ENCODER_AGE uplink (0x96, per-axis encoder sample age, paired to
 # TELEMETRY by t_teensy_us). No existing frame changes, PROTOCOL_VERSION stays 14.
-EXPECTED_BRIDGE_FW_VERSION = 50
+# 50 -> 51 (2026-11-25, BUG-130): the additive ACTIVATE_TO (0x66), ACTIVATE to six
+# Leg targets within ACTIVATE_TO_BAND_REV of the constant Active pose (the Levelled
+# Active pose). ACTIVATE unchanged; PROTOCOL_VERSION stays 14.
+EXPECTED_BRIDGE_FW_VERSION = 51
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────
@@ -1111,6 +1150,7 @@ METHOD = {
     RpcMethod.ENCODER_SEARCH: ArgAxisOnly,
     RpcMethod.HOME: ArgAxisOnly,
     RpcMethod.ACTIVATE: ArgAxisOnly,
+    RpcMethod.ACTIVATE_TO: ArgActivateTo,          # FW 51, BUG-130
     RpcMethod.DEACTIVATE: ArgAxisOnly,   # was missing (axis-only, like ACTIVATE)
     RpcMethod.SDO_READ: ArgSdoRead,
     RpcMethod.SDO_WRITE: ArgSdoWrite,

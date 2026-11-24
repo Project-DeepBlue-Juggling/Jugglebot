@@ -278,3 +278,88 @@ def test_svc_home_skips_configure_on_homing_failure(monkeypatch):
         assert out.success is False and not called['configure']
     finally:
         _teardown(teensy, client, node)
+
+
+# ── ACTIVATE_TO (can-bridge FW 51, BUG-130): the Levelled Active pose ──────────
+
+_LEVELLED_DELTA = (-0.02480, -0.00419, -0.00007, +0.02651, +0.02465, -0.02247)
+
+
+def _levelled_targets():
+    return [float(c) + d for c, d in zip(hw.JB_OP_ACTIVATE_POSITION_REVS, _LEVELLED_DELTA)]
+
+
+def test_activate_to_sends_the_six_targets_and_monitors_arrival_on_them():
+    """leg_targets_rev sends ACTIVATE_TO (never ACTIVATE) with the six targets,
+    and completion is judged against THOSE targets: Legs parked on the
+    constants would not complete it."""
+    import struct
+    teensy, client, node = _build_paired_node()
+    try:
+        sent, sent_plain = [], []
+        teensy.on_rpc(int(RpcMethod.ACTIVATE_TO),
+                      lambda req_id, args: (sent.append(args) or (int(RpcStatus.OK), b"")))
+        teensy.on_rpc(int(RpcMethod.ACTIVATE),
+                      lambda req_id, args: (sent_plain.append(args) or (int(RpcStatus.OK), b"")))
+        # 0.08 rev off the constants (inside the 0.10 band, beyond the host
+        # monitor's 0.05 rev arrival tolerance), so arrival on the constants
+        # cannot pass for arrival on the targets.
+        tgt = [float(c) + (0.08 if i % 2 == 0 else -0.08)
+               for i, c in enumerate(hw.JB_OP_ACTIVATE_POSITION_REVS)]
+        result = {}
+
+        def run():
+            result['ok'], result['msg'] = node._run_activate(
+                list(range(6)), poll_dt=0.02, leg_targets_rev=tgt)
+
+        t = threading.Thread(target=run)
+        t.start()
+        assert _poll(lambda: len(sent) >= 1)
+        assert struct.unpack('<6f', sent[0]) == tuple(
+            struct.unpack('<6f', struct.pack('<6f', *tgt)))
+        assert sent_plain == []
+        hand = float(hw.JB_OP_HAND_ACTIVATE_POSITION_REV)
+        for axis in range(7):
+            teensy.send_to_jetson(
+                int(MsgType.DIAGNOSTIC),
+                Diagnostic(axis_id=axis, axis_state=CLOSED_LOOP, active_errors=0).pack())
+        teensy.send_telemetry(pos_rev=list(hw.JB_OP_ACTIVATE_POSITION_REVS) + [hand],
+                              vel_rps=[0.0] * 7)
+        time.sleep(0.3)
+        assert t.is_alive(), "completed on the CONSTANT pose, not on the sent targets"
+        teensy.send_telemetry(pos_rev=list(tgt) + [hand], vel_rps=[0.0] * 7)
+        t.join(timeout=8.0)
+        assert not t.is_alive(), "activate did not complete"
+        assert result.get('ok') is True, result.get('msg')
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_activate_to_refuses_out_of_band_or_partial_legs_without_an_rpc():
+    teensy, client, node = _build_paired_node()
+    try:
+        sent = []
+        teensy.on_rpc(int(RpcMethod.ACTIVATE_TO),
+                      lambda req_id, args: (sent.append(args) or (int(RpcStatus.OK), b"")))
+        far = _levelled_targets()
+        far[4] += 0.2
+        ok, msg = node._run_activate(list(range(6)), poll_dt=0.02, leg_targets_rev=far)
+        assert ok is False and 'Leg(s) [4]' in msg
+        ok, msg = node._run_activate([0], poll_dt=0.02, leg_targets_rev=_levelled_targets())
+        assert ok is False and 'needs all 6 Legs' in msg
+        time.sleep(0.1)
+        assert sent == []
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_activate_to_firmware_refusal_is_reported():
+    teensy, client, node = _build_paired_node()
+    try:
+        teensy.on_rpc(int(RpcMethod.ACTIVATE_TO),
+                      lambda req_id, args: (int(RpcStatus.ERR_UNKNOWN_METHOD), b""))
+        ok, msg = node._run_activate(list(range(6)), poll_dt=0.02,
+                                     leg_targets_rev=_levelled_targets())
+        assert ok is False and msg.startswith('ACTIVATE_TO rejected')
+    finally:
+        _teardown(teensy, client, node)

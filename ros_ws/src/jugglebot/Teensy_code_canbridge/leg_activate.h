@@ -76,6 +76,20 @@ void activate_init();
 // latches a non-blocking start. Returns a JbUdp::RpcStatus (OK = accepted).
 uint16_t activate_request(uint8_t axis);
 
+// ACTIVATE_TO (FW 51, additive RPC 0x66, BUG-130): activate_request(AXIS_ALL) with
+// six caller Leg targets instead of the constants — the Levelled Active pose the
+// Jetson computes, so the Platform rises straight onto Level. This is the ONE
+// enforcement point for what the host may ask: every target finite and within
+// ACTIVATE_TO_BAND_REV (canbridge_config.h, 0.10 rev) of
+// JBOp::ACTIVATE_POSITION_REVS[i], and all six Legs present, else ERR_BAD_ARGS with
+// nothing latched (never clipped); then exactly activate_request's gates. The move
+// is the same ladder, the same TRAP_TRAJ profile and the same Hand park. So the
+// header's rule above narrows rather than breaks: the Jetson still cannot command
+// "activate to anywhere", only to within the band of the constant pose.
+uint16_t activate_to_request(const float leg_targets[6]);
+// The band test alone (leg 0..5; false for a non-finite target or a bad leg).
+bool     activate_to_target_in_band(uint8_t leg, float target_rev);
+
 // Drive the activate state machine one tick. Call at the cold-start task rate
 // (HOMING_RATE_HZ, shared task_homing) from a task (never an ISR). No-op when
 // idle with no pending request.

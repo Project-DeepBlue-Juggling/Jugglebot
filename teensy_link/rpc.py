@@ -55,6 +55,7 @@ logger = logging.getLogger(__name__)
 NON_IDEMPOTENT_METHODS = frozenset({
     int(p.RpcMethod.HOME),
     int(p.RpcMethod.ACTIVATE),
+    int(p.RpcMethod.ACTIVATE_TO),   # FW 51: the same busy latch as ACTIVATE
     int(p.RpcMethod.DEACTIVATE),
     int(p.RpcMethod.REBOOT_ODRIVES),
     int(p.RpcMethod.BB_THROW),

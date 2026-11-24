@@ -367,6 +367,14 @@ ENUMS = {
         # ros_ws/docs/platform_imu_protocol.md section 6.
         ("PLATFORM_IMU_CTRL", 0x0064, "Relay: one Platform IMU control op (ENABLE/DISABLE/FREEZE/RESUME/ABORT) as an IMU_CMD frame"),
         ("PLATFORM_IMU_READ", 0x0065, "Relay: one Platform IMU READ block as an IMU_CMD frame, frame gap clamped while Armed"),
+        # ADDITIVE (2026-11-25, can-bridge FW 51, BUG-130, no PROTOCOL_VERSION bump:
+        # an FW <= 50 board answers ERR_UNKNOWN_METHOD). ACTIVATE with six caller
+        # Leg targets (the Levelled Active pose the Jetson computes). The firmware
+        # accepts each only within ACTIVATE_TO_BAND_REV of JBOp::ACTIVATE_POSITION_REVS
+        # (canbridge_config.h), finite, all six Legs present; otherwise ERR_BAD_ARGS.
+        # Same gates, same TRAP_TRAJ ladder and Hand park as ACTIVATE(AXIS_ALL);
+        # ACTIVATE itself is unchanged.
+        ("ACTIVATE_TO",  0x0066, "ACTIVATE(AXIS_ALL) to six caller Leg targets, each within ACTIVATE_TO_BAND_REV of the constant Active pose (the Levelled Active pose)"),
     ],
     "RpcStatus": [
         ("OK",            0x0000, "Success"),
@@ -1918,6 +1926,13 @@ RPC_ARGS = [
         Field("axis",       "u8",  1, "must be 6 (the hand); anything else is ERR_BAD_ARGS"),
         Field("target_rev", "f32", 1, "hand target (rev, Jugglebot convention), finite, [0, HAND_MOTOR_MAX_POSITION]"),
         Field("vel_rps",    "f32", 1, "TRAP_TRAJ cruise (rev/s), 0 < v <= GENTLE_MOVE_VEL_LIMIT_RPS"),
+    ]),
+    # ACTIVATE_TO (FW 51, additive, BUG-130). Six f32 Leg targets = 24 B. The
+    # firmware refuses (ERR_BAD_ARGS, nothing latched) any non-finite target, any
+    # target further than ACTIVATE_TO_BAND_REV from JBOp::ACTIVATE_POSITION_REVS[i],
+    # or a board with a Leg absent; it never clips a target into the band.
+    RpcArg("ArgActivateTo", "ACTIVATE_TO", [
+        Field("target_rev", "f32", 6, "Leg 0..5 targets (rev, Jugglebot convention), each within ACTIVATE_TO_BAND_REV of ACTIVATE_POSITION_REVS[i]"),
     ]),
     # HAND_MOVE_TO result, carried by the DEFERRED reply on every terminal path
     # (status OK: ARRIVED / SUPERSEDED; ERR_TIMEOUT / ERR_BUS_DOWN / ERR_REJECTED:

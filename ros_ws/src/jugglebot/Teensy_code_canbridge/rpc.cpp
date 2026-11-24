@@ -439,6 +439,16 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       ArgAxisOnly a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
       return activate_request(a.axis);
     }
+    case RpcMethod::ACTIVATE_TO: {
+      // FW 51, ADDITIVE (an FW <= 50 board answers ERR_UNKNOWN_METHOD). ACTIVATE
+      // (AXIS_ALL) to six caller Leg targets; the band, presence and gate checks all
+      // live in activate_to_request, the one enforcement point. Fire-and-monitor
+      // exactly as ACTIVATE: OK = latched, the Jetson observes the move.
+      RpcArgs::ArgActivateTo a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
+      float t[6];
+      for (uint8_t i = 0; i < 6; ++i) t[i] = a.target_rev[i];
+      return activate_to_request(t);
+    }
     case RpcMethod::HAND_MOVE_TO: {
       // FW 26, ADDITIVE (an FW <= 25 board answers ERR_UNKNOWN_METHOD). ACTIVATE's
       // axis-6 ladder with a caller target + cruise; every check (axis 6 only,

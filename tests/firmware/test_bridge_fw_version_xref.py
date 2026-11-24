@@ -330,6 +330,14 @@ def test_the_bump_history_records_what_this_version_carries():
                    'static_assert', 'CONSOLE-ONLY', 'ENCODER_AGE', 'FEAT-64',
                    'NO EXISTING FRAME CHANGES', 'PROTOCOL_VERSION stays 14'):
         assert needle in m50.group(1), (needle, m50.group(1))
+    # FW 51 — BUG-130 ACTIVATE_TO.  The substance: one ADDITIVE method with a
+    # band of the constant Active pose, one enforcement point, ACTIVATE unchanged.
+    m51 = re.search(r'^// 50→51:(.*)$', text, re.M)
+    assert m51 is not None, "FW 51 history line missing"
+    for needle in ('BUG-130', 'ACTIVATE_TO', '0x66', 'ACTIVATE_TO_BAND_REV', '0.10 rev',
+                   'activate_to_request', 'ERR_BAD_ARGS', 'never clipped',
+                   'bit-identical', 'PROTOCOL_VERSION stays 14'):
+        assert needle in m51.group(1), (needle, m51.group(1))
 
 
 def test_the_version_this_release_pins_is_actually_uplinked():
