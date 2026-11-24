@@ -130,7 +130,7 @@ print_launch_plan() {   # $1 arm $2 slot name
   [t=0]  setsid bash -c '$ENVSRC && exec $LAUNCH_BASE$extra' > $log 2>&1 &
   [t=2s..]  every 2 s: grep -aE '$FORBIDDEN_RE' on the log (ANSI stripped) -> SIGINT launch, abort series
   [t=30] (first launch only) source $MAIN/tools/lib/live_session.sh; live_session  -> must be LIVE, recorded
-  [t=60] bridge pid via /proc argv; grep -c fastrtps /proc/<pid>/maps  (A: >0, B: ==0); ls /dev/shm | wc -l
+  [t=60] bridge pid via /proc argv; grep -c /dev/shm/fastrtps_ /proc/<pid>/maps  (A: >0, B: ==0); ls /dev/shm | wc -l
   [t=90] bash -c '$ENVSRC && timeout 30 ros2 node list --no-daemon'          ; sleep 10
          bash -c '$ENVSRC && timeout -s INT 5 ros2 topic hz /robot_state'    ; sleep 10
          bash -c '$ENVSRC && ros2 topic echo /robot_state >/dev/null & sleep 4; kill -9 \$!' ; sleep 10
@@ -257,7 +257,10 @@ while (( slot < total )); do
   if (( ok )); then
     bp="$(bridge_pid || true)"
     if [[ -n "$bp" ]]; then
-      maps=$(grep -c fastrtps "/proc/$bp/maps" 2>/dev/null); maps=${maps:--1}   # grep -c prints 0 AND exits 1 on no match
+      # Count only the Fast DDS shared-memory SEGMENTS (/dev/shm/fastrtps_<hex>, fastrtps_port<N>), never
+      # a bare "fastrtps": every rclpy process maps ~16 libfastrtps / *_typesupport_fastrtps_c.so libraries
+      # (64 maps), which made arm B read 64 for a bridge with NO shm transport (probe 2026-11-25).
+      maps=$(grep -c '/dev/shm/fastrtps_' "/proc/$bp/maps" 2>/dev/null); maps=${maps:--1}   # grep -c prints 0 AND exits 1 on no match
       echo "bridge_pid=$bp" >> "${base}.meta"; echo "fastrtps_maps=$maps" >> "${base}.meta"
       echo "shm_files_t60=$(ls /dev/shm | wc -l)" >> "${base}.meta"
       if [[ "$arm" == A && "$maps" -gt 0 ]] || [[ "$arm" == B && "$maps" -eq 0 ]]; then manip=ok; fi

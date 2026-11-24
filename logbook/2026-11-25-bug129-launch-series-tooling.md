@@ -46,3 +46,14 @@ Source: `$S/out/bug129-series/run1/summary.json` (scratch, not committed). A 2-c
 - 2026-11-25, `bash tools/probes/bug129_launch_series.sh --dry-run --stop-at 07:00 --launches-per-arm 3`: plan printed, exit 0; `--stop-at 02:30` refused, exit 64.
 - 2026-11-25, `python tools/probes/bug129_synthetic_churn.py --out ... --cycles 300 --budget-s 1200`: as in the table. Afterwards no process or ros2 daemon remained, `live_session` reported clear, and the run's `live_session` check read clear while it ran.
 - The real series was NOT run.
+
+## Manipulation check counted libraries, not shared memory (2026-11-25, third attempt)
+
+Arm B read `fastrtps_maps=64` for the bridge although `bridge_shm:=false` was in force. Cause: the check did
+`grep -c fastrtps /proc/<pid>/maps`, which also counts the 16 `libfastrtps` / `*_typesupport_fastrtps_c.so`
+libraries every rclpy process maps (4 maps each). Probe launches 2026-11-25 (arm B, then A, `auto_arm:=false`):
+the B bridge has `FASTRTPS_DEFAULT_PROFILES_FILE=...fastdds_bridge_udp_only.xml` in its environment and maps
+0 `/dev/shm/fastrtps_*` files while trajectory_node maps 11 `fastrtps_<hex>` + 22 `fastrtps_port<N>`; the A
+bridge (profile path in the inert `JUGGLEBOT_BRIDGE_UDP_PROFILE_UNUSED`) maps 12 + 24. So the switch works and the
+check was wrong. The runner now counts only `/dev/shm/fastrtps_` maps (meta key name unchanged).
+Verification: 2026-11-25, `bash -n tools/probes/bug129_launch_series.sh` clean; `pytest tests/sim/test_bug129_series_report.py -q`: 11 passed.
