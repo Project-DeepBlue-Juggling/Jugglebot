@@ -10427,15 +10427,25 @@ class TeensyBridgeNode(Node):
         configure scopes to activate_axes (the legs that moved; the hand is not part of
         ACTIVATE — it is rejected on axis 6)."""
         cmd = str(req.command)
+        # BUG-130 (C-LEVEL-1.A): the operator's activate carries the six Levelled
+        # Active pose Leg targets (ACTIVATE_TO); empty is the constant ACTIVATE
+        # (level's own level_activate). _run_activate refuses them by name, with
+        # no RPC, unless all six Legs are configured and every target is in band.
+        leg_targets = [float(t) for t in (getattr(req, 'leg_targets_rev', None) or ())]
         if cmd == 'activate':
             axes = list(self.get_parameter('activate_axes').value or [])
-            ok, msg = self._run_activate(axes)
+            ok, msg = self._run_activate(
+                axes, leg_targets_rev=(leg_targets if leg_targets else None))
             if ok:
                 cfg_ok, cfg_msg = self._run_configure(axes)
                 ok = ok and cfg_ok
                 msg = f"{msg}; {cfg_msg}"
             res.success = ok
             res.message = f"Platform activated. {msg}" if ok else msg
+        elif cmd == 'deactivate' and leg_targets:
+            res.success = False
+            res.message = ("deactivate refused: it takes no leg_targets_rev "
+                           f"({len(leg_targets)} sent) -- a caller bug")
         elif cmd == 'deactivate':
             axes = list(self.get_parameter('deactivate_axes').value or [])
             ok, msg = self._run_deactivate(axes)

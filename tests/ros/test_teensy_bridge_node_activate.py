@@ -363,3 +363,39 @@ def test_activate_to_firmware_refusal_is_reported():
         assert ok is False and msg.startswith('ACTIVATE_TO rejected')
     finally:
         _teardown(teensy, client, node)
+
+
+# ── BUG-130: activate_or_deactivate carries the Levelled Active pose ──────────
+
+def _svc(node, command, targets=()):
+    from tests.ros.conftest import ActivateOrDeactivate
+    req = ActivateOrDeactivate.Request()
+    req.command = command
+    req.leg_targets_rev = list(targets)
+    return node._svc_activate_or_deactivate(req, ActivateOrDeactivate.Response())
+
+
+def test_svc_activate_passes_the_levelled_targets_and_empty_means_constant():
+    teensy, client, node = _build_paired_node()
+    try:
+        seen = []
+        node._run_activate = lambda axes, **kw: (
+            seen.append(kw.get('leg_targets_rev')), (True, "activated"))[1]
+        node._run_configure = lambda axes, **kw: (True, "configured")
+        assert _svc(node, 'activate', _levelled_targets()).success is True
+        assert _svc(node, 'activate').success is True
+        assert seen[0] == _levelled_targets() and seen[1] is None
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_svc_deactivate_with_targets_is_refused():
+    teensy, client, node = _build_paired_node()
+    try:
+        called = []
+        node._run_deactivate = lambda axes, **kw: (called.append(1), (True, "x"))[1]
+        out = _svc(node, 'deactivate', _levelled_targets())
+        assert out.success is False and 'leg_targets_rev' in out.message
+        assert called == []
+    finally:
+        _teardown(teensy, client, node)

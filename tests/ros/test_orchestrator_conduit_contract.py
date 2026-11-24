@@ -40,6 +40,14 @@ from tests.ros._bridge_harness import _build_paired_node, _teardown
 # bridge-conduit action client is still fully guarded.
 _NON_BRIDGE_ORCH_ACTIONS = {('jugglebot/juggle', Juggle)}
 
+# Orchestrator service clients DELIBERATELY not bridge-served, for the same
+# reason: trajectory/levelled_activate_targets (BUG-130, C-LEVEL-1.A) is served by
+# trajectory_node, the only applier of the levelling correction (C-LEVEL-1), and
+# test_levelled_targets_service_is_trajectory_node_served below guards that end.
+from jugglebot_interfaces.srv import LevelledActivateTargets  # noqa: E402
+_NON_BRIDGE_ORCH_SERVICES = {
+    ('trajectory/levelled_activate_targets', LevelledActivateTargets)}
+
 
 def _orch_service_clients(orch):
     return {(c.srv_name, c.srv_type) for c in orch._clients.values()}
@@ -82,7 +90,8 @@ def test_bridge_serves_every_orchestrator_service_client():
     activate_or_deactivate / get_platform_tilt (added by the conduit)."""
     orch, teensy, client, bridge = _build_both()
     try:
-        missing = _orch_service_clients(orch) - _bridge_services(bridge)
+        missing = (_orch_service_clients(orch) - _bridge_services(bridge)
+                   - _NON_BRIDGE_ORCH_SERVICES)
         assert not missing, (
             f"bridge does not serve orchestrator service clients (name,type): {missing}")
     finally:
@@ -172,5 +181,21 @@ def test_set_level_state_topic_agrees():
     try:
         assert ('set_level_state', Float64MultiArray) in _bridge_subs(bridge)
         assert 'set_level_state' in orch._publishers
+    finally:
+        _teardown(teensy, client, bridge)
+
+
+def test_levelled_targets_service_is_trajectory_node_served():
+    """The one non-bridge orchestrator service client is served by
+    trajectory_node with the same (name, type), and NOT by the bridge (which
+    must never compute the correction: C-LEVEL-1 / C-LEVEL-1.O)."""
+    from jugglebot.trajectory_node import TrajectoryNode
+    orch, teensy, client, bridge = _build_both()
+    try:
+        traj = TrajectoryNode(start_emitter=False)
+        (pair,) = _NON_BRIDGE_ORCH_SERVICES
+        assert pair in _orch_service_clients(orch)
+        assert pair in _bridge_services(traj)
+        assert pair not in _bridge_services(bridge)
     finally:
         _teardown(teensy, client, bridge)

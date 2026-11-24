@@ -323,7 +323,7 @@
 ### `trajectory/status`
 
 - **publishers:** `trajectory_node`
-- **subscribers:** `skill_node`
+- **subscribers:** `orchestrator_node`, `skill_node`
 - **type:** `jugglebot_interfaces.msg.TrajectoryStatus`
 
 ### `trajectory/target_feedback`
@@ -597,6 +597,12 @@
 - **servers:** `trajectory_node`
 - **clients:** `skill_node`
 - **type:** `jugglebot_interfaces.srv.InstallSegment`
+
+### `trajectory/levelled_activate_targets`
+
+- **servers:** `trajectory_node`
+- **clients:** `orchestrator_node`
+- **type:** `jugglebot_interfaces.srv.LevelledActivateTargets`
 
 ### `trajectory/reload_tilt_map`
 

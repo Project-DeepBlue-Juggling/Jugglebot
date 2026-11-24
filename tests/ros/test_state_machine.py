@@ -21,8 +21,31 @@ from jugglebot.state_machine import (
     RobotState,
     StateHandler,
     StateMachine,
+    TRAJ_STATUS_STALE_S,
+    activate_levelling_refusal,
     build_default_machine,
 )
+
+# BUG-130: six Levelled Active pose Leg targets (any six numbers do here).
+_LEVELLED_TARGETS = [2.19, 2.257, 2.212, 2.221, 2.133, 2.098]
+
+
+def _levelled(ctx):
+    """A fresh trajectory/status with a loaded correction (C-LEVEL-1.O)."""
+    ctx.gravity_correction_loaded = True
+    ctx.traj_status_age_s = 0.1
+    return ctx
+
+
+def _activate_from_idle(handler, ctx, targets=_LEVELLED_TARGETS):
+    """Drive IdleHandler through 'activate': refusal check, the target fetch
+    (resolved as the orchestrator would), then the verdict."""
+    ctx.enqueue_command('activate')
+    assert handler.execute(ctx) is None
+    assert ctx.drain_requests() == ['fetch_activate_targets']
+    ctx.activate_leg_targets_rev = targets
+    ctx.operation_result = targets is not None
+    return handler.execute(ctx)
 
 
 # ════════════════════════════════════════════════════════════════
@@ -587,9 +610,9 @@ class TestIdleHandler:
 
     def test_activate_command_transitions_to_active(self):
         handler = IdleHandler()
-        ctx = Context()
-        ctx.enqueue_command('activate')
-        assert handler.execute(ctx) == RobotState.ACTIVE
+        ctx = _levelled(Context())
+        assert _activate_from_idle(handler, ctx) == RobotState.ACTIVE
+        assert ctx.activate_leg_targets_rev == _LEVELLED_TARGETS
 
     def test_home_command_transitions_to_homing(self):
         handler = IdleHandler()
@@ -623,6 +646,94 @@ class TestIdleHandler:
         ctx = Context()
         ctx.enqueue_command('deactivate')
         assert handler.execute(ctx) is None
+
+
+class TestIdleLevelledActivate:
+    """BUG-130, C-LEVEL-1.A (levelling_frame.md): the operator's activate is
+    decided in IDLE. No fresh loaded correction, or a refused target fetch,
+    stays IDLE with a WARN naming `level`; never ACTIVE then FAULT."""
+
+    @pytest.mark.parametrize('loaded,age,why', [
+        (False, 0.1, 'gravity_correction_loaded is false'),
+        (True, None, 'no trajectory/status received'),
+        (True, TRAJ_STATUS_STALE_S, 'stale'),
+        (True, 5.0, 'stale'),
+    ])
+    def test_refused_without_a_fresh_loaded_correction(self, loaded, age, why):
+        handler = IdleHandler()
+        ctx = Context()
+        ctx.gravity_correction_loaded = loaded
+        ctx.traj_status_age_s = age
+        ctx.enqueue_command('activate')
+        assert handler.execute(ctx) is None
+        assert ctx.drain_requests() == []            # nothing fetched, nothing moved
+        assert len(ctx.operator_notices) == 1
+        notice = ctx.operator_notices[0]
+        assert notice.startswith('activate refused') and why in notice
+        assert "'level'" in notice and 'stays IDLE' in notice
+        assert handler.execute(ctx) is None          # still IDLE next tick
+
+    def test_fresh_just_under_the_limit_proceeds(self):
+        ctx = Context()
+        ctx.gravity_correction_loaded = True
+        ctx.traj_status_age_s = TRAJ_STATUS_STALE_S - 1e-3
+        assert activate_levelling_refusal(ctx) is None
+
+    def test_levelling_complete_is_not_the_answer(self):
+        """C-LEVEL-1.O: the Platform Teensy's flag survives a trajectory_node
+        restart, so it must never stand in for the applier's own answer."""
+        ctx = Context()
+        ctx.levelling_complete = True
+        ctx.traj_status_age_s = 0.1
+        assert activate_levelling_refusal(ctx) is not None
+
+    def test_fetch_refusal_stays_idle_naming_the_reason(self):
+        handler = IdleHandler()
+        ctx = _levelled(Context())
+        ctx.enqueue_command('activate')
+        handler.execute(ctx)
+        assert ctx.drain_requests() == ['fetch_activate_targets']
+        ctx.operation_result = False
+        ctx.operation_message = 'Leg 3 +0.1100 rev (+7.81 mm)'
+        assert handler.execute(ctx) is None
+        assert ctx.activate_leg_targets_rev is None
+        assert 'Leg 3 +0.1100 rev' in ctx.operator_notices[0]
+        assert "'level'" in ctx.operator_notices[0]
+        ctx.operator_notices.clear()
+        assert handler.execute(ctx) is None and ctx.drain_requests() == []
+
+    def test_waits_for_the_fetch_in_idle(self):
+        handler = IdleHandler()
+        ctx = _levelled(Context())
+        ctx.enqueue_command('activate')
+        handler.execute(ctx)
+        ctx.drain_requests()
+        ctx.operation_pending = True                 # fetch in flight
+        assert handler.execute(ctx) is None
+        ctx.operation_pending = False
+        ctx.activate_leg_targets_rev = list(_LEVELLED_TARGETS)
+        ctx.operation_result = True
+        assert handler.execute(ctx) == RobotState.ACTIVE
+
+    def test_a_short_target_set_is_refused(self):
+        handler = IdleHandler()
+        ctx = _levelled(Context())
+        assert _activate_from_idle(handler, ctx, targets=[2.2] * 5) is None
+        assert 'activate refused' in ctx.operator_notices[0]
+
+    def test_level_is_never_gated(self):
+        """`level` must work with no correction loaded: it is how one is made."""
+        handler = IdleHandler()
+        ctx = Context()                              # nothing loaded, no status
+        ctx.enqueue_command('level')
+        assert handler.execute(ctx) == RobotState.LEVELLING
+
+    def test_idle_entry_drops_stale_targets(self):
+        handler = IdleHandler()
+        ctx = Context()
+        ctx.activate_leg_targets_rev = list(_LEVELLED_TARGETS)
+        handler.on_enter(ctx)
+        assert ctx.activate_leg_targets_rev is None
 
 
 # ════════════════════════════════════════════════════════════════
@@ -1657,8 +1768,14 @@ class TestStateFlowIntegration:
         ctx = Context()
         sm.tick(ctx)  # Enter IDLE
 
-        # Activate
+        # Activate (BUG-130: decided in IDLE, then the Levelled Active pose)
+        _levelled(ctx)
         ctx.enqueue_command('activate')
+        sm.tick(ctx)
+        assert sm.state == RobotState.IDLE
+        assert ctx.drain_requests() == ['fetch_activate_targets']
+        ctx.activate_leg_targets_rev = list(_LEVELLED_TARGETS)
+        ctx.operation_result = True
         sm.tick(ctx)
         assert sm.state == RobotState.ACTIVE
 

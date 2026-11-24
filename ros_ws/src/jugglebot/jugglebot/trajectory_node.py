@@ -100,6 +100,7 @@ from jugglebot_interfaces.msg import (
 from jugglebot_interfaces.srv import (
     GoToPose,
     InstallSegment,
+    LevelledActivateTargets,
     SetTrajectoryLimits,
     TimedTarget,
 )
@@ -523,6 +524,39 @@ _PLANNER_WARMUP_DX_MM = 5.0
 #: retired ``REJECTED_HAND_NOT_PARKED`` refusal's bar and describes where the
 #: hand is ALLOWED to be, not when two readings of it disagree.
 _SEED_HAND_RECONCILE_TOL_REV = 0.05
+
+
+# BUG-130 (C-LEVEL-1.A): the can-bridge's ACTIVATE_TO band, per Leg, about the
+# constant Active pose (JB_OP_ACTIVATE_POSITION_REVS). The firmware is the
+# enforcement point (canbridge_config.h ACTIVATE_TO_BAND_REV); teensy_link's
+# rpc_args.ACTIVATE_TO_BAND_REV is the bridge's twin. This node does not import
+# teensy_link (only the bridge's launch puts the repo root on PYTHONPATH), so it
+# keeps its own copy, pinned equal to both by
+# tests/ros/test_trajectory_node.py::test_levelled_activate_band_matches_the_firmware.
+# Copied here so the refusal happens in IDLE, before anything moves, naming the Leg.
+ACTIVATE_TO_BAND_REV = 0.10
+
+
+def levelled_activate_band_refusal(targets) -> str | None:
+    """None if all six Leg targets are finite and inside ``ACTIVATE_TO_BAND_REV``
+    of the constant Active pose, else the refusal naming each offending Leg and
+    its distance (rev and mm). Never clips."""
+    consts = [float(c) for c in hw.JB_OP_ACTIVATE_POSITION_REVS]
+    if len(targets) != len(consts):
+        return f'{len(targets)} Leg targets, expected {len(consts)}'
+    bad = []
+    for i, (t, c) in enumerate(zip(targets, consts)):
+        d = float(t) - c
+        if not math.isfinite(d) or abs(d) > ACTIVATE_TO_BAND_REV:
+            mm = d / float(hw.GEOM_MM_TO_REV[i]) if math.isfinite(d) else d
+            bad.append(f'Leg {i} {d:+.4f} rev ({mm:+.2f} mm)')
+    if not bad:
+        return None
+    return ('the Levelled Active pose is outside the can-bridge ACTIVATE_TO band '
+            f'({ACTIVATE_TO_BAND_REV} rev of the constant Active pose): '
+            + ', '.join(bad)
+            + ' -- the correction is too large at the neutral (about 2 deg), so '
+              'the Level is likely wrong; re-run level')
 
 
 class TrajectoryNode(Node):
@@ -1117,6 +1151,13 @@ class TrajectoryNode(Node):
         # tool calls it after writing the map — that call IS the auto-apply.
         self.create_service(Trigger, 'trajectory/reload_tilt_map',
                             self._svc_reload_tilt_map)
+        # BUG-130 / C-LEVEL-1.A (levelling_frame.md, ingest site E9): the six
+        # Leg targets of the Levelled Active pose, which the orchestrator
+        # fetches in IDLE before every operator `activate` and the bridge
+        # sends as can-bridge ACTIVATE_TO. Read-only: installs no plan.
+        self.create_service(LevelledActivateTargets,
+                            'trajectory/levelled_activate_targets',
+                            self._svc_levelled_activate_targets)
 
         # ── Status + diagnostics publication (5 Hz) ─────────────
         self.status_pub = self.create_publisher(
@@ -3204,6 +3245,49 @@ class TrajectoryNode(Node):
         response.message = 'holding at current pose' + self._wire_state_suffix()
         # skill_node (the usual caller) reports its own END line; DEBUG here.
         self.get_logger().debug("hold installed at the current pose")
+        return response
+
+    def _svc_levelled_activate_targets(self, request, response):
+        """``trajectory/levelled_activate_targets`` (BUG-130, C-LEVEL-1.A, E9).
+
+        The six Leg targets (rev, the emitter's ``motor_rev`` convention) of the
+        Levelled Active pose: ``_pose_to_motor_rev(_corrected_neutral_pose())``,
+        i.e. the corrected neutral through the exact chain the emitter ships, so
+        the STANDBY hold seeded after the rise emits the same numbers (a
+        bumpless arm, and a first ``go_home`` of about nothing). Reuses E5's
+        ``_corrected_neutral_pose`` so there is no new correction call site.
+
+        Refused, never clipped and never replaced by the constant pose:
+        * no correction loaded (``_gravity_correction_loaded``, the applier's own
+          answer, C-LEVEL-1.O) -- the remedy is ``level``;
+        * a Leg outside ``ACTIVATE_TO_BAND_REV`` of the constant Active pose
+          (the can-bridge firmware's band; it would refuse the RPC anyway) --
+          the message names each Leg and its size: a correction near 2 deg at
+          the neutral means the Level itself is wrong.
+        """
+        response.leg_targets_rev = []
+        if not self._gravity_correction_loaded:
+            response.success = False
+            response.message = (
+                'no levelling correction is loaded in trajectory_node '
+                '(no usable /gravity_offset since it started)')
+            return response
+        targets = [float(v) for v in
+                   self._pose_to_motor_rev(self._corrected_neutral_pose())]
+        refusal = levelled_activate_band_refusal(targets)
+        if refusal is not None:
+            response.success = False
+            response.message = refusal
+            return response
+        deltas = [t - float(c) for t, c in
+                  zip(targets, hw.JB_OP_ACTIVATE_POSITION_REVS)]
+        worst = max(range(len(deltas)), key=lambda i: abs(deltas[i]))
+        response.success = True
+        response.leg_targets_rev = targets
+        response.message = (
+            f'Levelled Active pose: Leg deltas from the constant '
+            f'[{", ".join(f"{d:+.4f}" for d in deltas)}] rev '
+            f'(largest Leg {worst}, {deltas[worst]:+.4f} rev)')
         return response
 
     def _svc_go_home(self, request, response):

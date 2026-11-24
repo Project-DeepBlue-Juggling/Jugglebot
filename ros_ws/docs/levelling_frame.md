@@ -165,6 +165,7 @@ normative and are reproduced here.
 | E5 | `trajectory/go_home` — the neutral constant | `_corrected_neutral_pose` | `planner.build_return_to_neutral` |
 | E6 | `trajectory/timed_target(hold_after=False)` — the neutral constant as the planner's RETURN target | `_corrected_neutral_pose` | `planner.build_timed` (`neutral_pose`) |
 | E8 | `trajectory/plan_cycle` — the unified cycle's **tilt schedule** (`CyclePlan`) | built in `_cycle_start_state`, applied in `unified_cycle._tilts_to_plan` (via `_realize`) | `unified_cycle.plan_cycle` / `extend` / `replan_tail` — not a `planner.build_*` entry at all |
+| E9 | `trajectory/levelled_activate_targets` — the neutral constant as the ACTIVATE target (BUG-130, 2026-11-25) | `_corrected_neutral_pose` (no new correction call: the service reuses E5's) | none — not a plan: IK × `GEOM_MM_TO_REV` (`_pose_to_motor_rev`, the emitter's chain) → six Leg revs → the orchestrator's `activate` → can-bridge `ACTIVATE_TO` |
 | B1 | `platform_pose_topic` in `mpc_bridge_node` | `_on_platform_pose` | none — a pure ZMQ translator, it reaches `planner` zero times |
 
 **E6 is why the enumeration matters.** It was found by the Phase 0 audit, not by
@@ -313,7 +314,8 @@ already documents. The fix does not widen it and does not move the clamp.
 
 ### The three neutral reads that are NOT targets
 
-`_neutral_pose` has one definition and five reads. Two are targets (E5, E6). The
+`_neutral_pose` has one definition and five reads. Two are targets (E5, E6; E9
+reaches it through E5's `_corrected_neutral_pose`, not as a sixth read). The
 other three must stay uncorrected, and each is uncorrected for its own reason:
 
 - `_current_state()`'s pre-seed fallback returns `self._neutral_pose.copy()` when
@@ -424,21 +426,26 @@ These are correct behaviour, and each has been mistaken for a fault before.
 - **The resting platform sits ~0.78° off its own frame.** After levelling it is
   level with respect to *gravity* at `go_home` and at rest after any planned
   move. Total tilt for the 2026-07-25 offset: **0.78185°**.
-- **The Active pose held straight after ACTIVATE is NOT Level.** ACTIVATE goes
-  to the uncorrected neutral (next bullet) and the hold is seeded from the
-  measured encoders, which C-LEVEL-1 forbids correcting. The Platform becomes
-  Level at its first planned move: `go_home`, a Jog target, or an Attempt's
-  pre-level REST. Measured 2026-11-22: the hold sat 0.60° from Level (Mocap
-  0.61°, Platform IMU 0.598°; BUG-130). A capture or measurement that needs
-  Level must follow one of those moves.
-- **The first `go_home` after `level` is a real move, not a no-op.** ACTIVATE
-  TRAP_TRAJs the legs to `JB_OP_ACTIVATE_POSITION_REVS`, the IK of the
-  *uncorrected* neutral, so `go_home` to the *corrected* neutral moves the legs
-  by up to **2.7736 mm = 0.03908 rev** (per-leg
-  `[-1.42, +2.74, +2.77, -0.98, -1.35, -1.75] mm`) over the 2.0 s profile — 13%
-  of the pump step gate as a whole-move excursion, 322× the 8.6 µm leg encoder
-  dead-band, and therefore visible in `/leg_setpoint_echo`. Peak leg velocity
-  2.60 mm/s; per-knot |Δu0| 9.2e-4 rev.
+- **The Active pose held straight after ACTIVATE IS Level** (BUG-130, can-bridge
+  FW 51, 2026-11-25; before that it was not). The operator's `activate` raises the
+  Platform with `ACTIVATE_TO` to the six Leg targets of the *corrected* neutral
+  (E9 above), so the hold seeded from the measured encoders, which C-LEVEL-1 still
+  forbids correcting, is the levelled pose by measurement, not by correction.
+  Before BUG-130 ACTIVATE went to the uncorrected neutral and the hold sat 0.60°
+  from Level (measured 2026-11-22: Mocap 0.61°, Platform IMU 0.598°) until the
+  first planned move. **One ACTIVATE still goes to the uncorrected neutral, on
+  purpose:** `level`'s own `level_activate`, because the offset is *defined* as
+  the tilt measured there; measuring at a levelled pose would read about 0 and
+  overwrite a good offset (a feedback loop). So the Platform during `level` is
+  not Level, and must not be.
+- **The first `go_home` after an `activate` is about a no-op.** The rise ends on
+  the corrected neutral's Leg targets to the firmware's arrival tolerance, the
+  hold is seeded there, and `go_home` plans to the same corrected neutral: each
+  Leg moves by its residual arrival error, not by the correction. (Before
+  BUG-130 it moved the legs by up to **2.7736 mm = 0.03908 rev** for the
+  2026-07-25 offset, per-leg `[-1.42, +2.74, +2.77, -0.98, -1.35, -1.75] mm`, and
+  that was visible in `/leg_setpoint_echo`.) The same no-op holds after a
+  relaunch whose correction came back by the persisted auto-push.
 - **Three artefacts pin "commanded level ⇒ activate revs" and all three stay
   true.** `sim/tools/verify_motor_commands.py`,
   `tests/motion/test_trajectory_emitter.py::test_activate_revs_fk_roundtrip_is_neutral`
@@ -542,6 +549,38 @@ knows where gravity is, not whether one particular goal happens to fit in the
 cup, and the cup's usable tolerance is the 35 mm radius less the ball radius
 anyway. Do not turn this into a per-goal drift budget — that is the "relax the
 invariant for this one case" move this contract exists to refuse.
+
+### C-LEVEL-1.A — ACTIVATE lands on Level, or does not happen (BUG-130, 2026-11-25)
+
+> The operator's `activate` raises the Platform to the **Levelled Active pose**:
+> six Leg targets that are the IK of `_corrected_neutral_pose()` (E9), sent as
+> can-bridge `ACTIVATE_TO`. It is **refused in IDLE**, with a WARN that names the
+> remedy (`level`) and nothing moved, when no correction is loaded by
+> C-LEVEL-1.O's test: `trajectory/status.gravity_correction_loaded` false, or that
+> status older than **1.0 s** (5 Hz publication, the same `_TRAJ_STATUS_STALE_S`
+> the skill stack uses), or never received. A Tilt map is **not** required (its
+> home-referenced residual at the neutral is about 0, and none is committed).
+> `RobotState.levelling_complete` is never the answer. A target set that leaves
+> the firmware's band (`ACTIVATE_TO_BAND_REV = 0.10 rev` of the constant per
+> Leg, a correction near 2°) is refused the same way, naming the Leg and the
+> size: never clipped, never replaced by the constant pose. `level`'s own
+> `level_activate` keeps the constant ACTIVATE (see § Consequences).
+
+Why IDLE and not ACTIVE→FAULT: the refusal is decided before anything moves, so
+reporting a fault would claim a machine problem that does not exist and make the
+operator clear it. The bring-up order Boot > Home > Level > Activate already
+loads the correction before the operator's `activate`; a relaunch usually gets it
+back from the persisted auto-push on the first IDLE (7/7 on 2026-07-27).
+
+| Part | Where | Test |
+|---|---|---|
+| the refusal (loaded, fresh) | `state_machine.activate_levelling_refusal`, called by `IdleHandler`; the status cache in `orchestrator_node._on_trajectory_status` / `_tick` | `tests/ros/test_state_machine.py::TestIdleLevelledActivate`; `tests/ros/test_orchestrator_node.py::TestLevelledActivate` |
+| the targets (IK of E5's corrected neutral, band refusal by Leg) | `trajectory_node._svc_levelled_activate_targets` | `tests/ros/test_trajectory_node.py` `test_levelled_activate_targets_*` |
+| the fetch in IDLE, the refusal staying IDLE | `IdleHandler` `fetch_activate_targets` → `orchestrator_node._dispatch_request` | `TestIdleLevelledActivate`, `TestLevelledActivate` |
+| `activate` carries the targets, `level_activate` never does | `orchestrator_node._dispatch_request` (`activate` / `level_activate`) | `TestLevelledActivate::test_level_activate_keeps_the_constant_pose` |
+| the bridge sends ACTIVATE_TO, refuses out of band with no RPC | `teensy_bridge_node._svc_activate_or_deactivate` → `_run_activate(leg_targets_rev=)` | `tests/ros/test_teensy_bridge_node_activate.py` |
+| the firmware band (the last line) | `leg_activate.cpp` `activate_to_request` | `tests/firmware/native/test_leg_activate.cpp` |
+| end to end: Boot > Home > Level > Activate, and a relaunch restored by the auto-push | the four nodes' handlers wired in-process | `tests/ros/test_orchestrator_conduit_integration.py` `test_*levelled*` |
 
 **What this does NOT do**: it does not redeliver a lost correction. Transient-local
 QoS on `/gravity_offset` was considered and **not** taken — see the plan's

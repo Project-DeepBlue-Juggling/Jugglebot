@@ -47,6 +47,20 @@ def clock(monkeypatch):
     return c
 
 
+def _idle_to_active(sm, ctx):
+    """BUG-130 (C-LEVEL-1.A): activate is decided in IDLE -- a fresh loaded
+    correction, then the Levelled Active pose fetch -- before IDLE -> ACTIVE."""
+    ctx.gravity_correction_loaded = True
+    ctx.traj_status_age_s = 0.1
+    ctx.enqueue_command('activate')
+    sm.tick(ctx)                      # IDLE: Levelled Active pose fetch requested
+    # (a forced ACTIVE -> IDLE may have left its own exit request queued)
+    assert 'fetch_activate_targets' in ctx.drain_requests()
+    ctx.activate_leg_targets_rev = [2.2] * 6
+    ctx.operation_result = True
+    sm.tick(ctx)                      # IDLE -> ACTIVE
+
+
 def _armed_machine():
     """A real machine ticked into ACTIVE (activated + armed), legs closed-loop,
     wire armed, /link_status seen."""
@@ -57,8 +71,7 @@ def _armed_machine():
     ctx.link_status_seen = True
     ctx.wire_armed = True
     sm.tick(ctx)
-    ctx.enqueue_command('activate')
-    sm.tick(ctx)                      # IDLE -> ACTIVE
+    _idle_to_active(sm, ctx)
     sm.tick(ctx)                      # enter ACTIVE: 'activate' requested
     assert ctx.drain_requests() == ['activate']
     ctx.operation_result = True
@@ -277,8 +290,7 @@ def test_legs_out_rule_needs_closed_loop_evidence(clock):
     sm.force_transition(RobotState.IDLE, ctx2)
     ctx2.legs_closed_loop = False
     sm.tick(ctx2)
-    ctx2.enqueue_command('activate')
-    sm.tick(ctx2)
+    _idle_to_active(sm, ctx2)
     sm.tick(ctx2)
     ctx2.drain_requests()
     ctx2.operation_result = True
@@ -336,8 +348,7 @@ def _activate_with_lagging_link_status(queued_mode):
     ctx.link_status_seen = True
     ctx.wire_armed = False
     sm.tick(ctx)
-    ctx.enqueue_command('activate')
-    sm.tick(ctx)                      # IDLE -> ACTIVE
+    _idle_to_active(sm, ctx)
     sm.tick(ctx)                      # enter ACTIVE: 'activate' requested
     assert ctx.drain_requests() == ['activate']
     ctx.operation_result = True
@@ -394,7 +405,7 @@ def test_orchestrator_node_keeps_active_on_refusal_and_logs_why(clock):
     """Node level (mocked ROS): the bridge's reject message reaches the handler
     via ctx.operation_message, the state stays ACTIVE, the reason is logged,
     and the retry goes out as a fresh service call."""
-    from tests.ros.test_orchestrator_node import _Capture, _cmd, _to_idle
+    from tests.ros.test_orchestrator_node import _Capture, _cmd, _levelled, _to_idle
     from jugglebot.orchestrator_node import OrchestratorNode
     orch = OrchestratorNode()
 
@@ -405,8 +416,10 @@ def test_orchestrator_node_keeps_active_on_refusal_and_logs_why(clock):
         orch._tick()
 
     _to_idle(orch)
+    _levelled(orch)                          # BUG-130: a loaded correction
     _cmd(orch, 'activate')
-    orch._tick()
+    orch._tick()                             # IDLE: Levelled Active pose fetch
+    orch._tick()                             # fetched -> ACTIVE
     orch._tick()
     resolve(True)                            # activate
     resolve(True)                            # arm

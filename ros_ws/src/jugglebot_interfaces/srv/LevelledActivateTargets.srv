@@ -1,0 +1,10 @@
+# BUG-130 (C-LEVEL-1.A, ros_ws/docs/levelling_frame.md, ingest site E9): the six Leg targets
+# of the Levelled Active pose, served by trajectory_node. They are the IK of
+# _corrected_neutral_pose() in the emitter's convention (motor_rev = ext_mm x GEOM_MM_TO_REV),
+# never clipped. Refused (success=false, message says why) when no levelling correction is
+# loaded, or when a Leg leaves the can-bridge ACTIVATE_TO band (0.10 rev of the constant
+# Active pose): the message then names the Leg and the size.
+---
+bool success
+string message
+float64[] leg_targets_rev

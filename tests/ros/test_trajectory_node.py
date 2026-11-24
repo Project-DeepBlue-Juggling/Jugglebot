@@ -2762,3 +2762,147 @@ def test_lane_state_follows_the_keys():
     assert node._lane_frozen is True                    # latched, not recovering
     node._on_link_status(_lane_status(latched='0', recovery='done'))
     assert node._lane_frozen is False
+
+
+# ── BUG-130 / C-LEVEL-1.A: trajectory/levelled_activate_targets (E9) ──────────
+#
+# The six Leg targets of the Levelled Active pose: the IK of
+# _corrected_neutral_pose() in the emitter's motor_rev convention. Refused (never
+# clipped, never the constant) when nothing is loaded or a Leg leaves the
+# can-bridge ACTIVATE_TO band.
+
+import math as _math
+import re as _re
+from pathlib import Path as _Path
+
+from jugglebot import trajectory_node as _tn
+from jugglebot.motion.ik_solver import pose_to_leg_lengths, rotvec_to_rot_matrix
+from jugglebot.motion.trajectory import KnotEmitter
+from jugglebot_interfaces.srv import LevelledActivateTargets
+
+# The BUG-130 effective offset (raw /gravity_offset + level_trim, rad), the one the
+# 2026-11-25 IK probe used: (-0.044, +0.574) deg.
+_BUG130_OFFSET = (_math.radians(-0.044), _math.radians(0.574))
+
+
+def _levelled_targets(node):
+    return node._svc_levelled_activate_targets(
+        LevelledActivateTargets.Request(), LevelledActivateTargets.Response())
+
+
+def _independent_ik_revs(offset):
+    """The corrected neutral's Leg revs, built here from the levelling module and
+    the IK directly (not through the node)."""
+    neutral = np.array([0.0, 0.0, hw.JB_OP_DEFAULT_ACTIVE_Z_MM, 0.0, 0.0, 0.0])
+    corr = levelling.correction_for_pose(offset, None, neutral)
+    pose = levelling.correct_pose(neutral, corr)
+    ext = pose_to_leg_lengths(np.asarray(pose[:3]),
+                              rotvec_to_rot_matrix(np.asarray(pose[3:6])),
+                              _tn.StewartGeometry())
+    return ext * np.asarray(hw.GEOM_MM_TO_REV), pose
+
+
+def test_levelled_activate_band_matches_the_firmware():
+    from teensy_link import rpc_args
+    cfg = (_Path(__file__).resolve().parents[2]
+           / 'ros_ws/src/jugglebot/Teensy_code_canbridge/canbridge_config.h').read_text()
+    m = _re.search(r'ACTIVATE_TO_BAND_REV\s*=\s*([0-9.]+)f', cfg)
+    assert m
+    assert _tn.ACTIVATE_TO_BAND_REV == rpc_args.ACTIVATE_TO_BAND_REV == float(m.group(1))
+
+
+def test_levelled_activate_targets_refused_when_no_correction_is_loaded():
+    node = _node()
+    resp = _levelled_targets(node)
+    assert resp.success is False
+    assert 'no levelling correction' in resp.message
+    assert list(resp.leg_targets_rev) == []
+
+
+def test_levelled_activate_targets_are_the_ik_of_the_corrected_neutral():
+    node = _node()
+    node._on_gravity_offset(Float64MultiArray(data=list(_BUG130_OFFSET)))
+    resp = _levelled_targets(node)
+    assert resp.success is True, resp.message
+    got = np.asarray(resp.leg_targets_rev)
+    want, pose = _independent_ik_revs(node._gravity_offset)
+    assert np.allclose(got, want, atol=1e-9)
+    # ...the emitter's own chain: a hold at that pose emits exactly these revs.
+    frame = KnotEmitter(node._geom).frame(HoldPlan(pose), 0.0, 0)
+    assert np.allclose(got, frame['motor_rev'], atol=1e-9)
+    # The 2026-11-25 probe's per-Leg deltas, worst Leg 4... about 0.0265 rev.
+    delta = got - np.asarray(hw.JB_OP_ACTIVATE_POSITION_REVS)
+    assert np.allclose(delta, [-0.0248, -0.0042, -0.0001, +0.0265, +0.0247, -0.0225],
+                       atol=6e-4)
+    assert 'Leg 3' in resp.message
+
+
+def test_levelled_activate_targets_at_a_zero_offset_are_the_constants():
+    """A genuinely level machine is levelled (identity correction), and its
+    Levelled Active pose is exactly the constant one."""
+    node = _node()
+    node._on_gravity_offset(Float64MultiArray(data=[0.0, 0.0]))
+    resp = _levelled_targets(node)
+    assert resp.success is True
+    assert np.allclose(resp.leg_targets_rev, hw.JB_OP_ACTIVATE_POSITION_REVS, atol=1e-6)
+
+
+def test_levelled_activate_targets_refuse_out_of_band_naming_leg_and_size():
+    """The band can bind (a large raw offset plus the trim ceiling): a clear
+    refusal naming the Leg and the size, never a clipped or constant fallback."""
+    node = _node()
+    node._on_gravity_offset(Float64MultiArray(
+        data=[_math.radians(1.8), _math.radians(1.8)]))
+    want, _ = _independent_ik_revs(node._gravity_offset)
+    delta = want - np.asarray(hw.JB_OP_ACTIVATE_POSITION_REVS)
+    over = [i for i in range(6) if abs(delta[i]) > _tn.ACTIVATE_TO_BAND_REV]
+    assert over, 'fixture must exceed the band on some Leg'
+    resp = _levelled_targets(node)
+    assert resp.success is False
+    assert list(resp.leg_targets_rev) == []
+    for i in over:
+        assert f'Leg {i} {delta[i]:+.4f} rev' in resp.message
+    for i in set(range(6)) - set(over):
+        assert f'Leg {i} ' not in resp.message
+    assert 'level' in resp.message
+
+
+def test_band_refusal_helper_names_non_finite_and_wrong_count():
+    consts = list(hw.JB_OP_ACTIVATE_POSITION_REVS)
+    assert _tn.levelled_activate_band_refusal(consts) is None
+    edge = list(consts)
+    edge[2] += _tn.ACTIVATE_TO_BAND_REV - 1e-9      # inside, at the edge
+    assert _tn.levelled_activate_band_refusal(edge) is None
+    bad = list(consts)
+    bad[5] = float('nan')
+    assert 'Leg 5' in _tn.levelled_activate_band_refusal(bad)
+    assert 'expected 6' in _tn.levelled_activate_band_refusal(consts[:5])
+
+
+@pytest.mark.parametrize('levelled', [True, False])
+def test_after_a_levelled_rise_the_hold_is_level_and_go_home_is_a_no_op(levelled):
+    """The previous unit's walk, pinned: seed after the rise = the measured
+    levelled pose, the STANDBY hold emits it, and the first go_home moves each
+    Leg by about 0. The False case is the pre-BUG-130 constant rise: the same
+    go_home then moves a Leg by about 0.027 rev, which is what this fixes."""
+    pub = _CapturePub()
+    node = _node(command_pub_factory=lambda: pub)
+    node._pub = pub
+    node._on_gravity_offset(Float64MultiArray(data=list(_BUG130_OFFSET)))
+    targets = np.asarray(_levelled_targets(node).leg_targets_rev)
+    rise_end = targets if levelled else np.asarray(_ACTIVATE_REV)
+    node._on_robot_state(_robot_state(pos_rev=list(rise_end)))
+    node._on_control_mode(String(data='STANDBY'))
+    assert node._seeded is True
+    node._emit_once(time.perf_counter())
+    emitted = np.asarray(pub.frames[-1]['motor_rev'])
+    assert np.allclose(emitted, rise_end, atol=1e-6)     # u0 == measured (bumpless arm)
+    assert node._svc_go_home(Trigger.Request(), Trigger.Response()).success is True
+    plan = node._active_plan
+    moved = max(float(np.max(np.abs(node._pose_to_motor_rev(plan.state_at(t)[0])
+                                    - rise_end)))
+                for t in np.linspace(0.0, plan.total_duration, 41))
+    if levelled:
+        assert moved < 1e-5, moved
+    else:
+        assert 0.02 < moved < 0.03, moved

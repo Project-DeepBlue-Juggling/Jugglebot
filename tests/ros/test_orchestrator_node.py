@@ -29,6 +29,7 @@ from tests.ros.conftest import (
     MockFuture,
     MockServiceClient,
     MockActionClient,
+    TrajectoryStatus,
 )
 from std_srvs.srv import Trigger
 from jugglebot_interfaces.srv import SetString
@@ -865,7 +866,9 @@ class TestTickIntegration:
         # Get to IDLE
         orch.sm.force_transition(RobotState.IDLE, orch.ctx)
         orch._tick()
+        _levelled(orch)                   # BUG-130: activate needs a correction
         orch._on_command(MockString(data='activate'))
+        orch._tick()                      # IDLE: target fetch
         orch._tick()
         assert orch.sm.state == RobotState.ACTIVE
         assert orch.ctx.consume_command() is None  # Command was consumed
@@ -1424,11 +1427,159 @@ def _to_idle(orch):
     orch._tick()
 
 
+# BUG-130: a plausible Levelled Active pose (constants + the 2026-11-25 probe deltas).
+_LEVELLED_TARGETS = [2.18928, 2.25698, 2.21228, 2.22060, 2.13339, 2.09818]
+
+
+def _traj_status(loaded=True):
+    msg = TrajectoryStatus()
+    msg.gravity_correction_loaded = loaded
+    return msg
+
+
+def _levelled(orch, *, ok=True, targets=_LEVELLED_TARGETS, message='levelled'):
+    """A fresh loaded trajectory/status, and a ready levelled-targets service
+    answering (ok, targets). Returns the targets-client spy."""
+    orch._on_trajectory_status(_traj_status(True))
+    spy = MagicMock()
+    spy.service_is_ready.return_value = True
+
+    def _answer(req):
+        f = MockFuture()
+        f.set_result(MagicMock(success=ok, message=message,
+                               leg_targets_rev=list(targets) if ok else []))
+        return f
+    spy.call_async.side_effect = _answer
+    orch._levelled_targets_client = spy
+    return spy
+
+
+class TestLevelledActivate:
+    """BUG-130, C-LEVEL-1.A: the orchestrator half of the levelled ACTIVATE."""
+
+    def test_status_cache_and_age_reach_the_context(self, orch):
+        assert orch.ctx.traj_status_age_s is None
+        orch._tick()
+        assert orch.ctx.traj_status_age_s is None          # never received
+        orch._on_trajectory_status(_traj_status(True))
+        orch._tick()
+        assert orch.ctx.gravity_correction_loaded is True
+        assert 0.0 <= orch.ctx.traj_status_age_s < 0.5
+        orch._traj_status_mono -= 3.0                      # trajectory_node went quiet
+        orch._tick()
+        assert orch.ctx.traj_status_age_s > 2.9
+
+    def test_fetch_dispatch_stores_the_targets(self, orch):
+        spy = _levelled(orch)
+        orch._dispatch_request('fetch_activate_targets')
+        spy.call_async.assert_called_once()
+        orch._check_pending_operations()
+        assert orch.ctx.operation_result is True
+        assert orch.ctx.activate_leg_targets_rev == _LEVELLED_TARGETS
+
+    def test_activate_dispatch_carries_and_consumes_the_targets(self, orch):
+        act = MagicMock()
+        act.service_is_ready.return_value = True
+        act.call_async.return_value = MockFuture()
+        orch._activate_client = act
+        orch.ctx.activate_leg_targets_rev = list(_LEVELLED_TARGETS)
+        orch._dispatch_request('activate')
+        req = act.call_async.call_args[0][0]
+        assert req.command == 'activate'
+        assert list(req.leg_targets_rev) == _LEVELLED_TARGETS
+        assert orch.ctx.activate_leg_targets_rev is None
+
+    def test_activate_without_fetched_targets_is_not_sent(self, orch):
+        """Never the constant pose for the operator's activate."""
+        act = MagicMock()
+        act.service_is_ready.return_value = True
+        orch._activate_client = act
+        orch._dispatch_request('activate')
+        act.call_async.assert_not_called()
+        assert orch.ctx.operation_result is False
+
+    def test_level_activate_keeps_the_constant_pose(self, orch):
+        """The gravity offset is DEFINED at the uncorrected neutral: level's
+        own rise must never carry levelled targets, even if some are cached."""
+        act = MagicMock()
+        act.service_is_ready.return_value = True
+        act.call_async.return_value = MockFuture()
+        orch._activate_client = act
+        orch.ctx.activate_leg_targets_rev = list(_LEVELLED_TARGETS)
+        orch._dispatch_request('level_activate')
+        req = act.call_async.call_args[0][0]
+        assert req.command == 'activate'
+        assert list(req.leg_targets_rev) == []
+        assert orch.ctx.activate_leg_targets_rev == _LEVELLED_TARGETS
+
+    def test_unlevelled_activate_stays_idle_with_one_warn(self, orch):
+        _to_idle(orch)
+        act = MagicMock()
+        act.service_is_ready.return_value = True
+        orch._activate_client = act
+        orch._on_trajectory_status(_traj_status(False))
+        cap = _Capture(orch)
+        _cmd(orch, 'activate')
+        for _ in range(3):
+            orch._tick()
+        assert orch.sm.state == RobotState.IDLE
+        act.call_async.assert_not_called()
+        warns = cap.at('warning')
+        assert len(warns) == 1 and "'level'" in warns[0], cap.lines
+        assert not any(st == 'error' for st, _ in cap.lines)
+
+    def test_stale_status_refuses_even_if_it_said_loaded(self, orch):
+        _to_idle(orch)
+        spy = _levelled(orch)
+        orch._traj_status_mono -= 2.0
+        cap = _Capture(orch)
+        _cmd(orch, 'activate')
+        orch._tick()
+        orch._tick()
+        assert orch.sm.state == RobotState.IDLE
+        spy.call_async.assert_not_called()
+        assert 'stale' in cap.at('warning')[0]
+
+    def test_out_of_band_fetch_refusal_stays_idle_naming_the_leg(self, orch):
+        _to_idle(orch)
+        act = MagicMock()
+        act.service_is_ready.return_value = True
+        orch._activate_client = act
+        _levelled(orch, ok=False, message='outside the band: Leg 3 +0.1100 rev')
+        cap = _Capture(orch)
+        _cmd(orch, 'activate')
+        for _ in range(3):
+            orch._tick()
+        assert orch.sm.state == RobotState.IDLE
+        act.call_async.assert_not_called()
+        warns = cap.at('warning')
+        assert len(warns) == 1 and 'Leg 3 +0.1100 rev' in warns[0], cap.lines
+
+    def test_levelled_activate_sends_the_fetched_targets(self, orch):
+        _to_idle(orch)
+        _levelled(orch)
+        act = MagicMock()
+        act.service_is_ready.return_value = True
+        act.call_async.return_value = MockFuture()
+        orch._activate_client = act
+        _cmd(orch, 'activate')
+        orch._tick()                      # IDLE: fetch dispatched
+        assert orch.sm.state == RobotState.IDLE
+        orch._tick()                      # fetch resolved -> ACTIVE
+        assert orch.sm.state == RobotState.ACTIVE
+        orch._tick()                      # ActiveHandler.on_enter -> activate sent
+        req = act.call_async.call_args[0][0]
+        assert req.command == 'activate'
+        assert list(req.leg_targets_rev) == _LEVELLED_TARGETS
+
+
 class TestOperatorConsoleLines:
     def test_activate_is_one_transition_line(self, orch):
         _to_idle(orch)
+        _levelled(orch)
         cap = _Capture(orch)
         _cmd(orch, 'activate')
+        orch._tick()                      # IDLE: target fetch (BUG-130)
         orch._tick()
         info = cap.at('info')
         assert info == ['activate: IDLE -> ACTIVE'], cap.lines
@@ -1481,6 +1632,9 @@ class TestOperatorConsoleLines:
         assert cap.lines[0][1].startswith('clear_errors')
 
     def test_mode_switch_in_active_is_one_line(self, orch):
+        # BUG-130: a forced ACTIVE still dispatches the rise, which needs the
+        # Levelled Active pose IdleHandler would have fetched.
+        orch.ctx.activate_leg_targets_rev = list(_LEVELLED_TARGETS)
         orch.sm.force_transition(RobotState.ACTIVE, orch.ctx)
         orch.ctx.control_mode = 'STANDBY'
         for _ in range(3):

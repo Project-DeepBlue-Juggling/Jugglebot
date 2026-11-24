@@ -251,6 +251,16 @@ class Context:
         self.tilt_reading = [0.0, 0.0]           # Raw tilt from inclinometer (set by orchestrator)
         self.bb_calibration_skipped = False       # True if BB calibration was skipped (BB unavailable)
 
+        # ── Levelled ACTIVATE (BUG-130, C-LEVEL-1.A in levelling_frame.md) ──
+        # Set by the orchestrator from trajectory/status (C-LEVEL-1.O: the
+        # applier's own answer). Never from levelling_complete.
+        self.gravity_correction_loaded = False   # last trajectory/status value
+        self.traj_status_age_s = None            # age of that status (s); None = never received
+        # The six Levelled Active pose Leg targets (rev) IdleHandler fetched
+        # from trajectory/levelled_activate_targets. Consumed (reset to None)
+        # by the orchestrator's 'activate' dispatch; never by 'level_activate'.
+        self.activate_leg_targets_rev = None
+
     @property
     def has_fatal_error(self):
         return self.fatal_error or self.fatal_can_error
@@ -527,11 +537,91 @@ class HomingHandler(StateHandler):
         ctx.clear_requests()
 
 
+# trajectory/status is published at 5 Hz; older than this, its
+# gravity_correction_loaded is the answer of a node that may be dead
+# (C-LEVEL-1.O "Trust a cached True"). Same value as skill_node's
+# _TRAJ_STATUS_STALE_S.
+TRAJ_STATUS_STALE_S = 1.0
+
+# The six Legs of the Levelled Active pose (one target each).
+_NUM_LEGS = 6
+
+
+def activate_levelling_refusal(ctx):
+    """THE decision on whether an operator ``activate`` may proceed to fetch the
+    Levelled Active pose (BUG-130, C-LEVEL-1.A; owner ruling 2026-11-24).
+
+    Returns None to proceed, else the refusal text (without the remedy, which
+    IdleHandler appends). Refuses when no levelling correction is loaded by
+    C-LEVEL-1.O's test: ``trajectory/status.gravity_correction_loaded`` false,
+    that status older than ``TRAJ_STATUS_STALE_S``, or never received. Does NOT
+    require a Tilt map, and never reads ``ctx.levelling_complete`` (a Platform
+    Teensy RAM flag that survives a trajectory_node restart).
+    Change the activate policy here and only here.
+    """
+    age = ctx.traj_status_age_s
+    if age is None:
+        return 'no trajectory/status received (is trajectory_node running?)'
+    if not (age < TRAJ_STATUS_STALE_S):
+        return (f'trajectory/status is stale ({age:.1f} s old, limit '
+                f'{TRAJ_STATUS_STALE_S:.1f} s; is trajectory_node running?)')
+    if not ctx.gravity_correction_loaded:
+        return ('no levelling correction is loaded '
+                '(trajectory/status gravity_correction_loaded is false)')
+    return None
+
+
 class IdleHandler(StateHandler):
-    """Robot ready — waiting for activation command."""
+    """Robot ready — waiting for activation command.
+
+    ``activate`` (BUG-130, C-LEVEL-1.A) is decided HERE, in IDLE, before anything
+    moves: ``activate_levelling_refusal`` first, then a fetch of the six Levelled
+    Active pose Leg targets ('fetch_activate_targets'). Only a fetched target
+    set leaves IDLE for ACTIVE; any refusal stays IDLE with an operator WARN that
+    names the remedy (``level``) -- never ACTIVE then FAULT, since nothing moved.
+    """
+
+    REMEDY = ("run 'level' (or restore the saved correction), then 'activate'; "
+              "the robot stays IDLE, nothing moved")
+
+    def __init__(self):
+        self._fetching = False
+
+    def on_enter(self, ctx):
+        self._fetching = False
+        ctx.activate_leg_targets_rev = None
+
+    def _refuse(self, ctx, reason):
+        ctx.activate_leg_targets_rev = None
+        ctx.notify(f'activate refused: {reason} -- {self.REMEDY}')
+        return None
+
+    def _begin_activate(self, ctx):
+        reason = activate_levelling_refusal(ctx)
+        if reason is not None:
+            return self._refuse(ctx, reason)
+        ctx.activate_leg_targets_rev = None
+        ctx.operation_result = None
+        ctx.operation_message = None
+        ctx.request = 'fetch_activate_targets'
+        self._fetching = True
+        return None
+
+    def _resolve_fetch(self, ctx):
+        """The fetch has resolved (no operation pending). A None result with
+        nothing pending is a lost fetch (cancelled): refused like a failure."""
+        self._fetching = False
+        ok = ctx.operation_result is True
+        ctx.operation_result = None
+        targets = ctx.activate_leg_targets_rev
+        if ok and targets is not None and len(targets) == _NUM_LEGS:
+            return RobotState.ACTIVE
+        detail = ctx.operation_message or 'no Leg targets returned'
+        return self._refuse(ctx, f'no Levelled Active pose: {detail}')
 
     def execute(self, ctx):
-        # Wait for any pending operation (e.g., deactivation from ACTIVE)
+        # Wait for any pending operation (e.g., deactivation from ACTIVE, or
+        # the activate's own target fetch)
         if ctx.operation_pending:
             return None
 
@@ -544,9 +634,12 @@ class IdleHandler(StateHandler):
         if ctx.control_mode != '':
             ctx.control_mode = ''
 
+        if self._fetching:
+            return self._resolve_fetch(ctx)
+
         cmd = ctx.consume_command()
         if cmd == 'activate':
-            return RobotState.ACTIVE
+            return self._begin_activate(ctx)
         elif cmd == 'home':
             return RobotState.HOMING
         elif cmd == 'level':

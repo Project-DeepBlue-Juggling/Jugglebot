@@ -1,6 +1,11 @@
 # To trigger the activation or deactivation of the robot
 
 string command # 'activate' or 'deactivate'
+float64[] leg_targets_rev  # BUG-130 (can-bridge FW 51): 'activate' only. Six Leg targets (rev,
+                           # the emitter's motor_rev convention) of the Levelled Active pose, from
+                           # trajectory/levelled_activate_targets; the bridge sends ACTIVATE_TO.
+                           # Empty = the constant Active pose (ACTIVATE), which only level's own
+                           # level_activate uses. Refused with 'deactivate'.
 ---
 bool success
 string message

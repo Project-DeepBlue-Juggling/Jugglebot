@@ -181,11 +181,24 @@ work (2026-07-15) hit three distinct doors into that hole:
 
 ## The choreography (one cycle, walked at the control-system level)
 
-1. Operator sends `activate`. ActiveHandler requests the profiled ACTIVATE
-   (TRAP_TRAJ to the active pose — `mpc_active=0`, the stream is irrelevant to a
-   profiled move).
+0. (BUG-130, 2026-11-25; C-LEVEL-1.A in `ros_ws/docs/levelling_frame.md`.)
+   Operator sends `activate`. **IdleHandler decides it, still in IDLE**: no fresh
+   `trajectory/status` with `gravity_correction_loaded` → refused with a WARN
+   naming `level`, machine stays IDLE, nothing moved; else it fetches the six
+   Levelled Active pose Leg targets from `trajectory/levelled_activate_targets`,
+   and a refusal there (correction gone, a Leg outside the 0.10 rev band) is the
+   same IDLE + WARN. Only a fetched target set takes the machine to ACTIVE.
+   Enforcement: `state_machine.activate_levelling_refusal` + `IdleHandler`; tests
+   `tests/ros/test_state_machine.py::TestIdleLevelledActivate`,
+   `tests/ros/test_orchestrator_node.py::TestLevelledActivate`.
+1. ActiveHandler requests the profiled ACTIVATE, which the orchestrator sends
+   with those targets (the bridge fires can-bridge `ACTIVATE_TO`; TRAP_TRAJ to the
+   Levelled Active pose — `mpc_active=0`, the stream is irrelevant to a profiled
+   move). An `activate` request with no fetched targets is failed by the
+   dispatch, never sent as the constant pose. `level`'s `level_activate` is the
+   one ACTIVATE that still goes to the constant pose.
 2. ACTIVATE completes → ActiveHandler publishes the streaming mode (STANDBY).
-   trajectory_node seeds a hold **from measured telemetry** at the active pose
+   trajectory_node seeds a hold **from measured telemetry** at the (levelled) active pose
    (`u0` ≈ encoder) and streams at 40 Hz.
 3. Next tick(s): ActiveHandler requests `arm_setpoints`. The bridge pre-check
    (A1) confirms the stream it is about to trust; on pass it resets the pump

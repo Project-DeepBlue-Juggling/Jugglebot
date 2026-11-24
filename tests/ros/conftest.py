@@ -570,8 +570,12 @@ def _make_service(req_fields=None, resp_fields=None):
 
 
 ActivateOrDeactivate = _make_service(
-    req_fields={'command': ''},
+    # leg_targets_rev: BUG-130, float64[] (empty = the constant Active pose).
+    req_fields={'command': '', 'leg_targets_rev': ()},
     resp_fields={'success': False, 'message': ''},
+)
+LevelledActivateTargets = _make_service(
+    resp_fields={'success': False, 'message': '', 'leg_targets_rev': ()},
 )
 GetTiltReadingService = _make_service(
     resp_fields={'tilt_xy': [], 'tilt_quat': None},
@@ -1141,6 +1145,7 @@ _create_mock_module('jugglebot_interfaces.msg', {
 })
 _create_mock_module('jugglebot_interfaces.srv', {
     'ActivateOrDeactivate': ActivateOrDeactivate,
+    'LevelledActivateTargets': LevelledActivateTargets,
     'GetTiltReadingService': GetTiltReadingService,
     'ODriveCommandService': ODriveCommandService,
     'SetFloat': SetFloat,

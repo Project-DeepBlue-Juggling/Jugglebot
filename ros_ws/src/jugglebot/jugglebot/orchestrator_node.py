@@ -22,9 +22,10 @@ from rclpy.action import ActionClient
 from rclpy.logging import LoggingSeverity
 
 from jugglebot_interfaces.msg import RobotState as RobotStateMsg
+from jugglebot_interfaces.msg import TrajectoryStatus
 from jugglebot_interfaces.srv import (
-    ActivateOrDeactivate, GetTiltReadingService, ODriveCommandService,
-    SetString,
+    ActivateOrDeactivate, GetTiltReadingService, LevelledActivateTargets,
+    ODriveCommandService, SetString,
 )
 from jugglebot_interfaces.action import HomeMotors, Juggle
 from std_msgs.msg import Float64MultiArray, String
@@ -136,6 +137,10 @@ class OrchestratorNode(Node):
             Trigger, 'bb/calibrate')
         self._tilt_client = self.create_client(
             GetTiltReadingService, 'get_platform_tilt')
+        # BUG-130 (C-LEVEL-1.A): the six Levelled Active pose Leg targets, from
+        # trajectory_node (NOT the bridge), fetched in IDLE before 'activate'.
+        self._levelled_targets_client = self.create_client(
+            LevelledActivateTargets, 'trajectory/levelled_activate_targets')
         # A2 — the bridge's runtime arming service (SetBool: true=arm,
         # false=disarm). The orchestrator is the production owner of WHEN;
         # the bridge's _arm_setpoint_output owns SAFE-TO (the 5-precondition
@@ -191,6 +196,13 @@ class OrchestratorNode(Node):
             DiagnosticStatus, 'link_status', self._on_link_status, 10)
         self.create_subscription(
             DiagnosticStatus, 'platform_imu/status', self._on_platform_imu_status, 10)
+        # BUG-130 (C-LEVEL-1.A / C-LEVEL-1.O): whether trajectory_node holds a
+        # levelling correction, and how fresh that answer is. Cached here; the
+        # IDLE activate refusal (state_machine.activate_levelling_refusal)
+        # reads ctx.gravity_correction_loaded + ctx.traj_status_age_s.
+        self._traj_status_mono = None
+        self.create_subscription(
+            TrajectoryStatus, 'trajectory/status', self._on_trajectory_status, 10)
         # F4/Q3 — mocap_node's QTM view. HOMING's bb_calibrate step is
         # dispatched from this node, so this node needs its OWN answer to "can
         # a sweep produce data": asking the bridge would mean calling the
@@ -331,6 +343,13 @@ class OrchestratorNode(Node):
         elif cmd == 'clear_errors':
             self.get_logger().info(
                 'clear_errors: clearing ODrive errors and the guard latch')
+
+    def _on_trajectory_status(self, msg):
+        """Cache trajectory/status's gravity_correction_loaded + its arrival
+        time (C-LEVEL-1.O: the applier's own answer, valid only while fresh)."""
+        self.ctx.gravity_correction_loaded = bool(
+            getattr(msg, 'gravity_correction_loaded', False))
+        self._traj_status_mono = time.monotonic()
 
     def _on_platform_imu_status(self, msg):
         try:
@@ -569,6 +588,10 @@ class OrchestratorNode(Node):
         """State machine tick: check ops, detect errors, run tick, dispatch."""
         # 1. Check if a pending async operation completed
         self._check_pending_operations()
+        # 1b. Age of the cached trajectory/status (BUG-130 activate refusal).
+        self.ctx.traj_status_age_s = (
+            None if self._traj_status_mono is None
+            else time.monotonic() - self._traj_status_mono)
 
         # 2. Force FAULT on errors (from any non-FAULT state).
         #    A latched Teensy guard forces FAULT too (FIX 2), but ONLY from ACTIVE:
@@ -742,6 +765,18 @@ class OrchestratorNode(Node):
                         'this session.')
                     self.ctx.bb_calibration_skipped = True
                     self.ctx.operation_result = True
+                elif self._pending_kind == 'activate_targets':
+                    # BUG-130: IdleHandler reads the targets and, on a refusal,
+                    # logs the one WARN itself (with the remedy).
+                    targets = [float(t) for t in
+                               (getattr(result, 'leg_targets_rev', None) or ())]
+                    self.ctx.activate_leg_targets_rev = (
+                        targets if result.success else None)
+                    self.ctx.operation_result = bool(result.success)
+                    self.ctx.operation_message = detail
+                    if result.success:
+                        # DEBUG: the console keeps its one transition line.
+                        self.get_logger().debug(f'activate: {detail}')
                 else:
                     self.ctx.operation_result = result.success
                     self.ctx.operation_message = detail
@@ -854,9 +889,32 @@ class OrchestratorNode(Node):
                     self._bb_calibrate_client, Trigger.Request(),
                     kind='bb_calibrate')
 
+        elif req == 'fetch_activate_targets':
+            # BUG-130: IdleHandler's fetch of the Levelled Active pose, still in
+            # IDLE. A refusal or an unready service resolves as
+            # operation_result False and IdleHandler stays IDLE with a WARN.
+            self.ctx.activate_leg_targets_rev = None
+            self._start_service_call(
+                self._levelled_targets_client,
+                LevelledActivateTargets.Request(), kind='activate_targets')
+
         elif req == 'activate':
+            # The operator's ACTIVATE (ActiveHandler): to the Levelled Active
+            # pose IdleHandler fetched, consumed here (BUG-130, C-LEVEL-1.A).
+            # Without fetched targets it is FAILED, never sent as the constant
+            # pose: only IdleHandler's fetch leads here, so None is a bug.
+            targets = self.ctx.activate_leg_targets_rev
+            self.ctx.activate_leg_targets_rev = None
+            if not targets:
+                self.get_logger().error(
+                    'activate: no Levelled Active pose was fetched -- not sent '
+                    '(BUG-130: the constant pose is level\'s own ACTIVATE only)')
+                self.ctx.operation_result = False
+                self.ctx.operation_message = 'no Levelled Active pose fetched'
+                return
             activate_req = ActivateOrDeactivate.Request()
             activate_req.command = 'activate'
+            activate_req.leg_targets_rev = [float(t) for t in targets]
             self._start_service_call(self._activate_client, activate_req)
 
         elif req == 'deactivate':
@@ -916,6 +974,10 @@ class OrchestratorNode(Node):
         # ── Levelling requests ────────────────────────────────────
 
         elif req == 'level_activate':
+            # The CONSTANT Active pose, deliberately (BUG-130): the gravity
+            # offset is DEFINED as the tilt measured at the uncorrected neutral.
+            # A levelled rise here would read about 0 and overwrite a good
+            # offset. Never set leg_targets_rev on this request.
             activate_req = ActivateOrDeactivate.Request()
             activate_req.command = 'activate'
             self._start_service_call(self._activate_client, activate_req)

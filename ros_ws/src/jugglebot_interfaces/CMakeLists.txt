@@ -51,6 +51,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GetRobotGeometry.srv"
   "srv/SetHandFan.srv"
   "srv/ActivateOrDeactivate.srv"
+  "srv/LevelledActivateTargets.srv"
   "srv/SetFloat.srv"
   "srv/SetString.srv"
   "srv/SetHandGains.srv"
