@@ -2,9 +2,9 @@
 id: BUG-70
 kind: bug
 title: Tracker never confirmed Throw 3's flight on 2026-11-05 while the previous track kept running past its Catch, so that Throw has no learner row
-status: inbox
+status: in_progress
 created: '2026-11-06'
-updated: '2026-11-18T02:08:40Z'
+updated: '2026-11-24T17:09:09Z'
 owners: []
 priority: medium
 effort: m
@@ -76,3 +76,4 @@ Bag 2026-11-05_22-46-00, launch.log, replay of `/mocap_data` + `/throw_announcem
 ## Progress
 
 - 2026-11-18: 2026-11-18 debrief: refuted as the cause of the empty Throws at MISSED_CATCH ends (the Ball was lost one flight earlier; see BUG-114).
+- 2026-11-25: reproduces on main (2026-11-05 replay: Throws 3 and 47 never confirm; 18 Throws on the 2026-11-18 and 11-20 bags confirm late). Fix: a confirmed track gives up its marker once its frozen fit's landing is 0.2 s past. A/B replay on four bags: promptly confirmed Throws identical, late ones confirm at release. Steady Throws had escaped on a one-frame marker dropout. Unflown.

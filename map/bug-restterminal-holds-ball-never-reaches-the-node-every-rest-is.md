@@ -2,9 +2,9 @@
 id: BUG-29
 kind: bug
 title: 'RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball'
-status: inbox
+status: in_progress
 created: '2026-10-28'
-updated: '2026-11-06T23:52:42Z'
+updated: '2026-11-24T17:09:18Z'
 owners: []
 priority: low
 effort: s
@@ -36,3 +36,7 @@ Re-rated `hardware: robot`. `holds_ball=False` removes the cup-contact floor fro
 The wire default matters: rosidl defaults a new bool to `false`, which would drop the floor for any sender that omits the field, the same trap `InstallSegment.srv` records for `*_set`. Give the field a default of holding a ball (`bool rest_holds_ball true`) or invert its name.
 
 Night Shift may build this on a branch. The gate holds it at (f), because `jugglebot_interfaces` is frozen: a day Session merges after the two-package build.
+
+## Progress
+
+- 2026-11-25: built and held on branch offline/bug29 (ccb95171): InstallSegment carries rest_holds_ball, default true. Not merged: it removes the cup-contact floor from every Feed bridge and pre-tilt REST, every phantom-A and human-catch wait REST, unflown, and needs both packages rebuilt before launch.

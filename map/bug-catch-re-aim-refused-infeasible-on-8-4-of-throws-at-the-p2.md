@@ -4,7 +4,7 @@ kind: bug
 title: Catch re-aim refused INFEASIBLE on 8.4 % of Throws at the P2 Sitting, 15 of 69 on the turned pair
 status: backlog
 created: '2026-11-06'
-updated: '2026-11-10T18:01:34Z'
+updated: '2026-11-24T17:09:14Z'
 owners: []
 priority: medium
 effort: s
@@ -204,3 +204,4 @@ From TKT-59. You chose option 1 and will run it yourself: a day Session runs the
 - 2026-11-09: Night Shift 2026-11-09: the turned pair does not ask twice more often; its second asks take the re-solve because the BUMP is off for it; awaiting the owner's answer
 - 2026-11-10: Night Shift 2026-11-10: the capture is offline (sim records, log rows, replay), then a one-line enable and a Sitting; see TKT-59
 - 2026-11-11: Night Shift 2026-11-11: TKT-59 answered (option 1); your day Session runs the capture and replay, then the night builds the enable for a Sitting; rated robot so the Runbook lists it
+- 2026-11-25: steps 1 to 3 run offline (72 refused turned re-asks, sim records): pass 81.3 to 91.6 percent at 45 deg and 86.0 to 96.2 at 90 deg against a bar of 86.9 and 94.7. A six-case control did not reproduce the flown refusals, so the replay is not validated; step 4 not built. Entry 2026-11-25-late-reaim-replay-tooling.
