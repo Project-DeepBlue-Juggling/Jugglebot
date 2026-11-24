@@ -274,8 +274,9 @@ def test_bug137_after_a_long_single_site_memory_a_second_site_still_fixes_the_li
 @pytest.mark.xfail(strict=True, reason=(
     'BUG-137 residue, open: the guard is fixed but the forgetting filter VALUE of s is still '
     'corrupted by the information its per-parameter forgetting manufactures during a long '
-    'single-Site run (sd_s 0.007 after 1500 rows), so when a second Site arrives s barely moves '
-    'and the far-Site line is off by up to ~25 mm after 60 second-Site rows (probe 2026-11-25). '
+    'single-Site run (sd_s 0.008 after 1500 rows), so when a second Site arrives s barely moves '
+    'and the far-Site line is off by up to ~25 mm after 60 second-Site rows and by ~50 mm after 1 to 5 '
+    'second-Site rows (probe 2026-11-25). '
     'Fixing it changes the forgetting itself (e.g. process noise on b instead of P / sqrt(lam '
     'lam)), which moves the probe pin: a design decision for the owner.'))
 def test_bug137_residue_the_slope_value_recovers_after_a_long_single_site_memory():
@@ -283,6 +284,30 @@ def test_bug137_residue_the_slope_value_recovers_after_a_long_single_site_memory
         m = _one_site(seed, 1500)
         _second_site(m, 60, 100 + seed)
         assert m.offset_x(0.125)[0] == pytest.approx(0.018 - 0.09 * 0.125, abs=0.012)
+
+
+def test_bug137_unforgotten_covariance_is_the_lambda_one_filter_and_rejected_rows_leave_it_alone():
+    """P_unforgotten of the default model is the covariance of the same accepted rows with no
+    forgetting, i.e. the P of a lambda = 1 model fed identical rows (small-noise rows well inside
+    the inlier band, so both models accept every row); and a rejected 300 mm lateral outlier leaves
+    every P_unforgotten bit-identical."""
+    rng = np.random.default_rng(7)
+    m = PlantModel()
+    m1 = PlantModel(PlantModelConfig(forgetting=1.0))
+    for i in range(60):
+        sx = (-0.075, 0.075)[i % 2]
+        u = _cmd(rng)
+        y = _plant((1.08, 0.01, 0.012, -0.09), u, sx, 0) + rng.normal(0, [0.002, 0.002, 0.001])
+        assert m.observe(u, y, sx, 0) is True
+        assert m1.observe(u, y, sx, 0) is True
+    for f, f1 in ((m._fa, m1._fa), (m._fx, m1._fx), (m._fy, m1._fy)):
+        np.testing.assert_allclose(f.P_unforgotten, f1.P, rtol=1e-9)
+    before = [f.P_unforgotten.copy() for f in (m._fa, m._fx, m._fy)]
+    u = np.array([0.0, 0.0, 1.0])
+    y = m.forward(u, 0.075, 0) + np.array([0.0, 0.300, 0.0])
+    assert m.observe(u, y, 0.075, 0) is False
+    for f, b in zip((m._fa, m._fx, m._fy), before):
+        assert np.array_equal(f.P_unforgotten, b)
 
 
 # --------------------------------------------------------------------------- the inlier rule
