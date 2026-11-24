@@ -2,9 +2,9 @@
 id: FEAT-7
 kind: feature
 title: Sim columns run with a biased plant to exercise the forward-clip rule
-status: in_progress
+status: complete
 created: '2026-10-24'
-updated: '2026-11-02T10:00:00Z'
+updated: '2026-11-24T12:40:30Z'
 owners:
 - night-shift
 priority: medium
@@ -18,9 +18,6 @@ links:
 - plans/archived/skill-stack-dress-rehearsals-and-residue.md
 - logbook/2026-11-02-jb32-sim-columns-biased-plant-forward-clip.md
 filed_by: claude
-night_skip: waiting-trigger
-night_skip_on: '2026-11-22'
-night_skip_note: The remaining slice replaces your deliberate boxes=None, and its trigger has not fired.
 ---
 
 Run the sim columns pattern against a deliberately biased plant so the forward-clip rule is exercised. Not built (wave-3 open 2). Trigger: a change to the clip rule.
@@ -38,3 +35,4 @@ Branch `night-shift/2026-11-02-FEAT-7`: `SelfTossGateConfig.plant_landing_bias_m
 - 2026-11-02: Night Shift 2026-11-02: plant_landing_bias_mm knob, release hook and executor_lines landed on the `self_toss` and hop learner runs, where the forward clip is live; the columns gate builds its executor with boxes=None, so wiring the swept columns boxes into run_columns_attempt is the remaining slice (detail in the logbook entry)
 - 2026-11-02: Night Shift 2026-11-02: held on night-shift/2026-11-02-FEAT-7: (b) three audit findings open on the unit's own tests and CLI; gate green (7928 passed); unblocked by your call on those fixes and a re-gate (detail below)
 - 2026-11-02: owner approved the three audit fixes (edge lines only, same-skill comparison, CLI refuses the bias where nothing reads it); applied, re-gated, merged; the columns slice remains
+- 2026-11-24: 2026-11-24 day Session: closed. The bias knob, release hook and learner-run lines landed 2026-11-02; the remaining slice wired swept Columns boxes, and the Admissible box was retired on 2026-11-06 (commit 0b60a7a6), so no box is left to wire.

@@ -2,9 +2,9 @@
 id: BUG-34
 kind: bug
 title: Teensy guard MAX_DEVIATION latched on the hand (+8.4 rev) mid-oval; recover_lane found nothing, re-dispatch rejected WRONG_MODE
-status: inbox
+status: dropped
 created: '2026-10-28'
-updated: '2026-11-05T12:29:18Z'
+updated: '2026-11-24T12:40:35Z'
 owners: []
 priority: high
 effort: m
@@ -20,9 +20,6 @@ links:
 - logbook/2026-11-04-sitting-debrief.md
 parent: two-ball-oval
 filed_by: claude (BUG-21 21:02 Sitting read-out)
-night_skip: waiting-trigger
-night_skip_on: '2026-11-22'
-night_skip_note: Owned by BUG-66 and the hold ordering since the 2026-11-05 debrief.
 ---
 
 ## What happened
@@ -73,3 +70,4 @@ Two questions:
 - 2026-11-03: 2026-11-03 Sitting: one more latch, L2528 (+3.012 rev, Hand at 9.34 rev vs 9.395 command, telem frozen 40/90/30 ms, 60 ms setpoint echo gap). Filed as BUG-62 with the numbers; same starvation class.
 - 2026-11-04: 2026-11-03 Sitting (22:29, P4 ramp): two more Hand MAX_DEVIATION latches (goal 3 dev -3.057 rev during the CARRY approach; goal 15 +7.660 rev 68 ms after a LANE_REFUSED END). Both follow a firmware scheduler STOP: the Hand is held where it stands while the host plan walks on, and the host hold lands 130-214 ms after the END.
 - 2026-11-05: 2026-11-05 L1400/L2365: +3.91 / +4.96 rev, 131 / 225 ms after a C1 stop mid-upstroke (Hand held at 1.51 / 4.42 rev, refused plan base 5.42 / 9.37). Mechanism = latched hold + refused frames (leg_interp.cpp:1454, FW 22), not coast: Hand velocity 0 at the trip. Fix belongs with BUG-66 / the hold ordering.
+- 2026-11-24: 2026-11-24 day Session: folded into BUG-58. Its night note named BUG-66 as owner, and BUG-66 was dropped into BUG-58 on 2026-11-18; BUG-58 already records the mechanism (each STOP that holds the Hand is followed within 0.01 to 0.3 s by a Hand MAX_DEVIATION latch).

@@ -2,9 +2,9 @@
 id: FEAT-38
 kind: feature
 title: 'Run admissible-box sweeps on the Win10 desktop: about 2.5 h on the Jetson, and a sweep blocks Sittings'
-status: in_progress
+status: dropped
 created: '2026-11-02'
-updated: '2026-11-03T02:42:08Z'
+updated: '2026-11-24T12:40:25Z'
 owners:
 - jugglebot-50
 priority: medium
@@ -18,9 +18,6 @@ links:
 - bug-40-hz-setpoint-stream-starved-past-the-firmware-s-70-ms
 - bug-box-at-hand-acc-4500-traded-hop-landing-width-for-apex-band
 filed_by: claude
-night_skip: owner-session
-night_skip_on: '2026-11-22'
-night_skip_note: TKT-33 answered and landed by your Session; in progress under it.
 ---
 
 Filed 2026-11-02 at the owner's request, from the Sitting debrief Session (logbook/2026-11-02-sitting-debrief.md). Not scheduled; the owner will take it up when there is time.
@@ -78,3 +75,4 @@ Recommendation: 1 now, then 2 if the halved sweep still blocks Sittings. Option 
 ## Progress
 
 - 2026-11-03: Owner call (TKT-33): option 1 landed as tools/admissible_sweep_run.py (round b = rotating 3-family sample); a Jetson certification pass is enough for the record; the PC is the backup (detail below)
+- 2026-11-24: 2026-11-24 day Session: superseded. The offline Admissible box, its sweep tool and the executor box path were deleted on 2026-11-06 (commit 0b60a7a6, learner-generalisation P3c), so there is nothing left to sweep on the Win10 desktop.
