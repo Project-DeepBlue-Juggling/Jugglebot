@@ -109,15 +109,14 @@ _Status: closed (complete)._
 
 **Destination:** Fewer Attempts are lost to Throw accuracy. The launch scatter is traced to its source and cut there, the Catch absorbs what remains, and a quiet Learner on one shared Memory removes bias for carried Throws, new configurations and yaw, on top of the global plant model and online admissibility delivered 2026-11-06.
 
-**Progress:** 7 of 15 stops done
+**Progress:** 8 of 15 stops done
 
-**Next:** PE0 Unsettled-ball test from existing bags ([learner-efficacy.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/learner-efficacy.md))
+**Next:** PE1 Bench Hand launch study ([learner-efficacy.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/learner-efficacy.md))
 
 **Owners:** harrison
 
 **Remaining:**
 
-- PE0 Unsettled-ball test from existing bags ([learner-efficacy.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/learner-efficacy.md))
 - PE1 Bench Hand launch study ([learner-efficacy.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/learner-efficacy.md))
 - PE2 A quiet and correct Learner ([learner-efficacy.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/learner-efficacy.md))
 - PE3 The transit term and yaw ([learner-efficacy.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/learner-efficacy.md))
@@ -185,7 +184,7 @@ _Status: closed (complete)._
 | Project map and shared dictionary | — | — | — | closed |
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug Ball Butler yaw-settle gate aborts settled throws (THROW_ABORTED_NOT_SETTLED false positives); feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
 | GUI Improvements | — | — | feature Reorganize GUI Chart "Show/Hide" buttons | — |
-| Learner generalisation | — | PE0 Unsettled-ball test from existing bags | PE1 Bench Hand launch study; PE2 A quiet and correct Learner; PE3 The transit term and yaw; PE4 Act on the launch term; PE5 Catch-side robustness; PE6 The Platform IMU's part; PE7 Close-out; bug Plant model pools carried and from-rest rows, so oval rows move the Columns offset; bug Plant model slope value stays corrupted after a long single-Site Memory: one row at a second Site applies a line up to 59 mm off; bug Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for; feature Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z; feature Learner: a noise-aware shrinkage estimator in place of the mean of the 16 most recent rows | Box sweep fidelity for same-site families (plan what the executor dispatches); P3a Command-time admissibility check; P3b Nomination-time check and the nearest viable configuration; P3c Box retirement; P1 Learner core; P2 The characterisation sitting; P4 BeatEvent stream and the columns wrapper |
+| Learner generalisation | — | PE1 Bench Hand launch study | PE2 A quiet and correct Learner; PE3 The transit term and yaw; PE4 Act on the launch term; PE5 Catch-side robustness; PE6 The Platform IMU's part; PE7 Close-out; bug Plant model pools carried and from-rest rows, so oval rows move the Columns offset; bug Plant model slope value stays corrupted after a long single-Site Memory: one row at a second Site applies a line up to 59 mm off; bug Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for; feature Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z; feature Learner: a noise-aware shrinkage estimator in place of the mean of the 16 most recent rows | PE0 Unsettled-ball test from existing bags; Box sweep fidelity for same-site families (plan what the executor dispatches); P3a Command-time admissibility check; P3b Nomination-time check and the nearest viable configuration; P3c Box retirement; P1 Learner core; P2 The characterisation sitting; P4 BeatEvent stream and the columns wrapper |
 | Pattern progression: Columns to Centre and orbit | — | P5 JP-9 high-low Columns | P6 Per-Beat Sites dependency owned by PWAY-2; P8 JP-11 rotating Columns; P9 Centre and orbit compile; P10 JP-14 Centre and orbit; idea JP-11 Rotating columns: the pair turns a few degrees every Beat; idea JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm | P1 Launch current check; P2 Turned Columns on the compiled path; P3 JP-10 turned Columns; P4 Per-Site Apex; P7 JP-5 polygon walk |
 | Map improvements | — | — | — | closed |
 | Two-ball skill stack | — | — | — | closed |

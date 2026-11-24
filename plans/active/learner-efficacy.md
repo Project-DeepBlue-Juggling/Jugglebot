@@ -3,7 +3,7 @@ title: Learner efficacy - find the launch term, quiet the Learner, carry the old
 created: 2026-11-24
 status: active
 owner: Harrison
-last_updated: 2026-11-24
+last_updated: 2026-11-25
 pathway: learner-generalisation
 branch: main
 scope: >-
@@ -13,7 +13,7 @@ scope: >-
   term, yaw, the oval on the shared Memory, the INVARIANTS rows). Follows the 2026-11-23/24 review, which
   found the scatter is mostly not predictable from anything the Learner sees.
 steps:
-  - {id: PE0, title: Unsettled-ball test from existing bags, kind: phase, status: not_started, effort: m, hardware: none}
+  - {id: PE0, title: Unsettled-ball test from existing bags, kind: phase, status: complete, completed: 2026-11-25, effort: m, hardware: none}
   - {id: PE1, title: Bench Hand launch study, kind: phase, status: not_started, effort: m, hardware: bench-hand}
   - {id: PE2, title: A quiet and correct Learner, kind: phase, status: not_started, effort: l, hardware: none}
   - {id: PE3, title: The transit term and yaw, kind: phase, status: not_started, effort: l, hardware: robot}
@@ -23,11 +23,12 @@ steps:
   - {id: PE7, title: Close-out, kind: phase, status: not_started, effort: s, hardware: robot}
 related_logbook:
   - 2026-11-24-learner-efficacy-review-and-scatter-decomposition.md
+  - 2026-11-25-learner-efficacy-e0-unsettled-ball-test.md
 related_code:
   - ros_ws/src/jugglebot/jugglebot/motion/skills/{learner,plant_model,memory,executor,schedule}.py (Learner.command at learner.py:296, the most-recent-k selection at learner.py:270, the exact-match key at learner.py:261, SkillExecutor._command_u, the yaw refusal BEAT_YAW_NOT_SUPPORTED at schedule.py:822 and :1507)
   - ros_ws/src/jugglebot/jugglebot/motion/skills/INVARIANTS.md (I-LEARN-1, I-BEAT-1)
   - tests/motion/test_plant_model.py (line 206 is the only far-Site guard test)
-  - tools/probes/ (E0 promotes the release-state extractors here), temp/learn/jugglebot/memory_v2.csv
+  - tools/probes/release_settle_bag_probe.py (E0's release-state and settle-measure extractor), temp/learn/jugglebot/memory_v2.csv
 ---
 
 # Learner efficacy
@@ -120,8 +121,8 @@ Step ids: the frontmatter ids are `PE0` to `PE7` (a constraint of the plan tooli
 
 | Phase | Scope | Hardware | Status | Decides |
 |---|---|---|---|---|
-| E0 | Unsettled-ball test from existing bags | none | NOT STARTED | whether E1 is needed; what E4 targets |
-| E1 | Bench Hand launch study | bench-hand | NOT STARTED | the seat sensitivity and circling time; E4's candidates |
+| E0 | Unsettled-ball test from existing bags | none | COMPLETE 2026-11-25: BETWEEN, leaning against | whether E1 is needed; what E4 targets |
+| E1 | Bench Hand launch study (aimed at the separation after E0) | bench-hand | NOT STARTED, cleared to start | the seat sensitivity and release contact; E4's candidates |
 | E2 | A quiet and correct Learner (defects A, B, C; one Memory; tests) | none | NOT STARTED | the estimator E3 extends |
 | E3 | The transit term and yaw (old P5 items 1, 2) | robot | NOT STARTED | E7's oval row |
 | E4 | Act on the launch term (decision gate) | robot | NOT STARTED | design after E0/E1 |
@@ -134,7 +135,7 @@ E0/E1 because defects A to C are measured Learner faults independent of the laun
 
 ## 5. Phases in detail
 
-### Phase E0: Unsettled-ball test from existing bags
+### Phase E0: Unsettled-ball test from existing bags — COMPLETE 2026-11-25
 
 **Purpose.** Without it E1 and E4 are built on the owner's strong suspicion alone. It prevents a Cup
 hardware change aimed at a term that the existing data would have shown to be elsewhere.
@@ -159,6 +160,21 @@ Sittings 11-07, 11-08, 11-10, 11-13, 11-18, which is why the >= 300 Throws inclu
 **Decides.** SUPPORTED: E1 measures the size, E4 is aimed at settling. NOT SUPPORTED: g stays unexplained,
 E1 is dropped or becomes a pure seat-sensitivity study, E4 reconsiders (in-flight curvature, spin).
 
+**Outcome (2026-11-25): BETWEEN, leaning NOT SUPPORTED.** 28 settle measures on 3,950 Throws from 21 bags
+(3,125 with g; 1,154 carried, 1,971 at Dwell <= 0.32), Sitting 2026-11-18 held out
+(`logbook/2026-11-25-learner-efficacy-e0-unsettled-ball-test.md`). No measure reaches SUPPORTED: best on the
+held-out Sitting 4 % of g (Memory seat offset), a 10-12 % variance drop (Catch entry radius), AUC 0.72 on 9 far
+Throws. Every velocity and offset measure is at zero (-0.6 to +2 % of g): in the last 35 ms the ball's centre moves against the Cup at
+2.6 / 3.6 mm/s, the noise floor of a rested ball, against a g of 18.0 / 17.1 mm/s, so a circling centre is not the
+source of g. Not NOT SUPPORTED by the letter: Throws from rest show 27 % less g variance than running Throws of
+matching configuration (95 % CI 2-46 %, n=81, median unchanged; pooled across Sittings, and reversed in the two
+Sittings that hold both kinds in one configuration), and off-axis Catches are followed by slightly
+larger g. Separate result: g appears in the 35 ms after the announced release (the ball's velocity against the
+Cup there explains 20-22 % of g; before release, 0 %). **Phase E1 cleared to start**, re-aimed (owner to
+confirm): the release contact and seat sensitivity at separation, and spin, in place of circling time. For E4
+the settle check before release and the Catch that damps circling lose their case as lead candidates; a
+perfect settle fix is bounded at about a quarter of g's variance (17 to about 14.5 mm/s).
+
 ### Phase E1: Bench Hand launch study
 
 **Purpose.** Rim occlusion limits what bags can show about a ball inside the Cup. A rigid-body marker set on
@@ -171,7 +187,9 @@ Hand is moved into the Mocap cameras' view.
 **Work.** Markers on the bench Hand's Cup as a rigid body; bench Throws with the ball (a) hand-placed and
 settled, (b) placed a few mm off-axis, (c) released while circling. Measures: launch-direction sd settled
 versus unsettled, the seat sensitivity (mm/s of lateral launch velocity per mm of offset), how long
-circling lasts.
+circling lasts. After E0 the first question is (a): whether a hand-placed, settled ball already launches with
+g-sized lateral scatter (E0 says the term arises at separation), with the ball's motion against the Cup
+resolved through the 50 ms around separation and spin measured if the markers allow.
 
 **Hardware and safety.** **The bench Hand's stroke is SHORTER than the robot's with the same current cap
 (`stroke_cut` checks only the production clip): get the top stop first**, before any Throw. One bridge board
