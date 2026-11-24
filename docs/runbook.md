@@ -20,7 +20,7 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | BUG-132 Platform IMU capture timestamps run 23 to 55 ms early against Mocap and the encoders | 10 | level, armed, bb-fed | - | - |
 | BUG-95 A long REST can be refused SPLICE_TOO_LATE: the fresh decision and the Knot choice use different leads | 20 | level, armed, bb-fed | - | - |
 | FEAT-49 Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault | 60 | armed | - | - |
-| FEAT-50 Live warning when a marker dwells under the Hand | 10 | armed | `night-shift/2026-11-14-FEAT-50` | - |
+| FEAT-50 Live warning when a marker dwells under the Hand | 10 | armed | - | - |
 | IDEA-16 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them | 10 | level | - | - |
 | IDEA-25 Minimise the Platform IMU upload time after an Attempt | 1 | level, armed, bb-fed | - | - |
 | IDEA-27 Measure the Platform ring at Dwell 0.40 with the IMU | 8 | level, armed, bb-fed | - | - |
