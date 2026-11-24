@@ -2,9 +2,9 @@
 id: BUG-51
 kind: bug
 title: Hand iq reached 53.3 A on a 45 deg turned hop launch, over the 50 A watch the high-low row names
-status: inbox
+status: complete
 created: '2026-11-01'
-updated: '2026-11-03T02:51:13Z'
+updated: '2026-11-24T13:19:53Z'
 owners: []
 priority: medium
 effort: s
@@ -17,9 +17,6 @@ blocked_by: []
 links:
 - map/bug-hand-brake-and-hold-currents-sit-far-below-the-throw.md
 filed_by: claude
-night_skip: sitting
-night_skip_on: '2026-11-22'
-night_skip_note: Needs a re-flight under the raised Hand limits; the 2026-11-13 70.9 A peaks were the trapped-Ball stall of BUG-84.
 ---
 
 Found at the 2026-11-01 Sitting: hand iq 53.3 A at launch-log L3521 on a 45 deg turned hop launch, over the 50 A watch the high-low row names. The high-low goals peaked at 32.1 and 41.5 A. Related: IDEA-17, BUG-41 (hand current headroom).
@@ -29,3 +26,4 @@ Found at the 2026-11-01 Sitting: hand iq 53.3 A at launch-log L3521 on a 45 deg 
 - 2026-11-02: 2026-11-01: hand_curr_limit_a is now 60 A (hand ODrive current_hard_max 70 A); the 50 A cited here is the limit at filing/measurement time.
 - 2026-11-02: Sitting 2026-11-02 (60 A limit): Hand iq at or under 44.7 A in every goal of both Sittings (Apex 0.95-1.35) except -60.4 A at the 1.35 SPINOUT (BUG-57). The 45 deg turned hop launch was not re-flown.
 - 2026-11-03: 2026-11-03 Sitting: Hand launch iq peaks 42.5 A at 45 deg turned (L12898 attempt), 36.5 A high-low (max over 11 attempts), no launch above 54 A, 0 HAND_LIMIT lines. Brake reached the 60 A clamp (-62.2 A) in two high-low attempts; that is not a launch.
+- 2026-11-25: not reproduced under the raised limits: 858 clean turned-Columns strokes (2026-11-03 to 11-23), launch max 30.6 A, any stroke max 39.3 A. The 53.3 A event of 2026-11-01 predates the earliest capture, and turned data cover Apex 0.90 to 1.00 only. Probe tools/probes/hand_launch_iq_census.py.

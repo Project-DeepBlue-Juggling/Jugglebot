@@ -2,9 +2,9 @@
 id: BUG-40
 kind: bug
 title: 'Launch THROW with the ball aboard may demand more than the 50 A hand current limit from Apex about 0.99 (envelope arithmetic, unverified): check hand current in a columns bag'
-status: backlog
+status: complete
 created: '2026-10-30'
-updated: '2026-11-06T05:58:28Z'
+updated: '2026-11-24T13:19:48Z'
 owners: []
 priority: medium
 effort: xs
@@ -17,9 +17,6 @@ blocked_by: []
 links:
 - logbook/2026-11-06-sitting-debrief-2.md
 filed_by: claude (jugglebot-f5, R0 study 2026-10-30)
-night_skip: sitting
-night_skip_on: '2026-11-22'
-night_skip_note: Refuted for one-ball Throws on 2026-11-06 (31.7 A at Apex 1.00); two-ball Columns at Apex 1.00-1.05 still needs iq captured at a Sitting.
 ---
 
 Side finding of the R0 brake-shape study 2026-10-30 (scratchpad bumper/r0_brake_shape.md).
@@ -46,3 +43,4 @@ Hand iq against the planned acceleration in an existing Apex 1.0-1.05 columns ba
 - 2026-10-30: bag check done, see Result above; no clipping in the flown band, inconclusive at the claimed Apex; back to backlog, diagnosis stays hypothesis.
 - 2026-11-02: 2026-11-01: hand_curr_limit_a is now 60 A (hand ODrive current_hard_max 70 A); the 50 A cited here is the limit at filing/measurement time.
 - 2026-11-06: 2026-11-06 P2 Sitting: refuted for the one-ball `Self-toss`. Launch iq setpoint maxima 31.7 A at Apex 1.00 (n = 140) and 29.0 A at Apex 1.05 (n = 20), sampled at about 50 Hz (so lower bounds), against the 50 A the Item expects from Apex 1.0. Two-ball Columns not tabulated.
+- 2026-11-25: refuted for two-ball Columns at Apex 1.00 to 1.05 from 54 Hand captures: 42 launches, max 39.1 A; 859 strokes, max 39.4 A; planned peak acceleration 2365 to 2522 rev/s2, and 50 A needs about 5000. iq is sampled every 9 to 10 ms, so a few A of unseen excess is possible, not 10 A. Probe tools/probes/hand_launch_iq_census.py.
