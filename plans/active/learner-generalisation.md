@@ -3,7 +3,7 @@ title: Learner generalisation — a global plant model, a physics-keyed residual
 created: 2026-10-18
 status: active
 owner: Harrison
-last_updated: 2026-11-06
+last_updated: 2026-11-24
 pathway: learner-generalisation
 scope: >-
   Replace the local-linear memory with a global plant model (apex gain, lateral offset, a slope on release-Site x (not a centre pull, P2), per-ball
@@ -20,7 +20,7 @@ steps:
   - {id: P1, title: Learner core, kind: phase, status: complete, effort: m, hardware: none}
   - {id: P2, title: The characterisation sitting, kind: phase, status: complete, effort: m, hardware: robot}
   - {id: P4, title: BeatEvent stream and the columns wrapper, kind: phase, status: complete, effort: m, hardware: none}
-  - {id: P5, title: Close-out, kind: phase, status: not_started, effort: s, hardware: none}
+  - {id: P5, title: Close-out, kind: phase, status: retired, effort: s, hardware: none}
 related_logbook:
   - 2026-10-18-learner-generalisation-investigation.md
   - 2026-11-04-admissible-box-sweep-obviation-investigation.md
@@ -325,7 +325,7 @@ open-ended streams (the Stop must be known at compile; nomination plans the whol
 | P1 | Learner core: `plant_model.py`, `learner.py`, `memory.py` v2 + migration, replay probe | COMPLETE (merged to `main` 2026-11-06; every plant's memory migrated to `memory_v2.csv` the same day) | 2026-11-06 | Medium (changes every commanded u) | Cold-start apex error 12.9 mm (gate < 15 mm) at Sites with earlier data |
 | P2 | Characterisation sitting (D6): θ structure, yaw frame, telemetry | COMPLETE (flown 2026-11-06 15:53, FEAT-44 passed; the four decisions keep today's structure, § 2.2) | | Medium (hardware) | Aim vs offset; radial vs x; frame; Δ_b |
 | P4 | BeatEvent stream, columns wrapper, next-beat rule, dwell out of node params | COMPLETE (merged to `main` 2026-11-06; no live operator channel, by decision) | 2026-11-06 | High (schedule path, ~20 test files) | Golden test (227 compiles identical); sim mid-pattern change |
-| P5 | Close-out: the arrival pull, per-beat yaw, a mid-Pattern change on the robot, columns ↔ oval shared memory on hardware, INVARIANTS rows; archive only after they have flown (§ 4 Phase 5) | NOT STARTED | | Medium (hardware) | Each item's criterion in § 4 Phase 5; no aliasing; invariants pinned |
+| P5 | Close-out: the arrival pull, per-beat yaw, a mid-Pattern change on the robot, columns ↔ oval shared memory on hardware, INVARIANTS rows; archive only after they have flown (§ 4 Phase 5) | RETIRED 2026-11-24: items moved to `learner-efficacy.md` (§ 6) | 2026-11-24 | Medium (hardware) | Each item's criterion in § 4 Phase 5; no aliasing; invariants pinned |
 
 Merged to `main` 2026-11-06 as `e0edc2ea` and every plant's memory migrated to schema v2 the same day
 (`logbook/2026-11-06-learner-generalisation-merge-and-runbook-first-key.md`). First powered run: Sitting 2026-11-06
@@ -386,7 +386,16 @@ golden, 227 compiles identical; sim mid-pattern Apex and Apex-and-Dwell changes 
 change is refused `BEAT_NO_TRANSIT`. NOT built, by decision: a live operator channel on the node, open-ended
 streams. A change is only as good as the nomination, which is thin at a 0.06 margin (the entry's finding).
 
-### Phase 5: Close-out — NOT STARTED
+### Phase 5: Close-out — RETIRED 2026-11-24
+
+**Retired 2026-11-24; its items moved to `plans/active/learner-efficacy.md`.** The 2026-11-23/24 review
+(`logbook/2026-11-24-learner-efficacy-review-and-scatter-decomposition.md`) found this phase held most of the
+Destination's hardware proof while the Learner as built cannot deliver the efficacy the owner wants, so the
+close-out was re-scoped as a new plan on the same Pathway. Mapping: items 1 and 2 (arrival pull, yaw) go to
+E3; item 3 (a mid-Pattern change on the robot) is not pursued, by owner priority; items 4 and 5 (the oval on
+the shared Memory, the INVARIANTS rows) go to E7, item 4 now conditional on E2(b) because pooling theta
+across release kinds contaminates Columns. This plan is NOT archived in this commit: the owner's 2026-11-06
+"stays open until these have flown" has not been revisited. The text below is the historical record.
 
 What stands between the plan and its Destination ("any Site, Apex, Dwell or yaw can be commanded and changed
 mid-Pattern"): the arrival pull, the per-beat rotation that depends on it, a mid-Pattern change on the robot, the

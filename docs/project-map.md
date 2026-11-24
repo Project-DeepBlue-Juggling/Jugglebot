@@ -110,20 +110,30 @@ _Status: closed (complete)._
 
 **Destination:** A global plant model with a physics-keyed residual replaces the local-linear Memory and the offline Admissible box, so any Site, Apex, Dwell or yaw can be commanded and changed mid-Pattern.
 
-**Progress:** 7 of 8 stops done
+**Progress:** 7 of 15 stops done
 
-**Next:** P5 Close-out ([learner-generalisation.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/learner-generalisation.md))
+**Next:** PE0 Unsettled-ball test from existing bags ([learner-efficacy.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/learner-efficacy.md))
 
 **Owners:** harrison
 
 **Remaining:**
 
-- P5 Close-out ([learner-generalisation.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/learner-generalisation.md))
+- PE0 Unsettled-ball test from existing bags ([learner-efficacy.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/learner-efficacy.md))
+- PE1 Bench Hand launch study ([learner-efficacy.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/learner-efficacy.md))
+- PE2 A quiet and correct Learner ([learner-efficacy.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/learner-efficacy.md))
+- PE3 The transit term and yaw ([learner-efficacy.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/learner-efficacy.md))
+- PE4 Act on the launch term ([learner-efficacy.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/learner-efficacy.md))
+- PE5 Catch-side robustness ([learner-efficacy.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/learner-efficacy.md))
+- PE6 The Platform IMU's part ([learner-efficacy.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/learner-efficacy.md))
+- PE7 Close-out ([learner-efficacy.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/learner-efficacy.md))
 
 **Attached inbox items:**
 
+- bug: BUG-137 [Learner far-Site guard fails on long single-Site memories: the slope turns confident with no excitation](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-learner-far-site-guard-fails-on-long-single-site-memories.md) (inbox)
+- bug: BUG-138 [Plant model pools carried and from-rest rows, so oval rows move the Columns offset](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-plant-model-pools-carried-and-from-rest-rows-so-oval-rows.md) (inbox)
 - bug: BUG-79 [Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-two-ball-throws-land-about-9-mm-toward-the-partner-site-an.md) (inbox)
 - feature: FEAT-27 [Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-kinematic-calibration-acceptance-the-flying-frame-check-and.md) (inbox)
+- feature: FEAT-65 [Learner: a noise-aware shrinkage estimator in place of the mean of the 16 most recent rows](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-learner-a-noise-aware-shrinkage-estimator-in-place-of-the.md) (inbox)
 
 ## Pattern progression: Columns to Centre and orbit
 
@@ -176,7 +186,7 @@ _Status: closed (complete)._
 | Project map and shared dictionary | — | — | — | closed |
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug Ball Butler yaw-settle gate aborts settled throws (THROW_ABORTED_NOT_SETTLED false positives); feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
 | GUI Improvements | — | — | — | — |
-| Learner generalisation | — | P5 Close-out | bug Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for; feature Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z | P3a Command-time admissibility check; P3b Nomination-time check and the nearest viable configuration; P3c Box retirement; P1 Learner core; P2 The characterisation sitting; P4 BeatEvent stream and the columns wrapper; Box sweep fidelity for same-site families (plan what the executor dispatches) |
+| Learner generalisation | — | PE0 Unsettled-ball test from existing bags | PE1 Bench Hand launch study; PE2 A quiet and correct Learner; PE3 The transit term and yaw; PE4 Act on the launch term; PE5 Catch-side robustness; PE6 The Platform IMU's part; PE7 Close-out; bug Learner far-Site guard fails on long single-Site memories: the slope turns confident with no excitation; bug Plant model pools carried and from-rest rows, so oval rows move the Columns offset; bug Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for; feature Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z; feature Learner: a noise-aware shrinkage estimator in place of the mean of the 16 most recent rows | P3a Command-time admissibility check; P3b Nomination-time check and the nearest viable configuration; P3c Box retirement; P1 Learner core; P2 The characterisation sitting; P4 BeatEvent stream and the columns wrapper; Box sweep fidelity for same-site families (plan what the executor dispatches) |
 | Pattern progression: Columns to Centre and orbit | — | P5 JP-9 high-low Columns | P6 Per-Beat Sites dependency owned by PWAY-2; P8 JP-11 rotating Columns; P9 Centre and orbit compile; P10 JP-14 Centre and orbit; idea JP-11 Rotating columns: the pair turns a few degrees every Beat; idea JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm | P1 Launch current check; P2 Turned Columns on the compiled path; P3 JP-10 turned Columns; P4 Per-Site Apex; P7 JP-5 polygon walk |
 | Map improvements | — | — | — | closed |
 | Two-ball skill stack | — | — | — | closed |
@@ -273,3 +283,7 @@ Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/bench-hand/robot; Owner none/deci
 | BUG-135 | bug | [Platform CAN receive queue overflows during the inclinometer re-probe stall](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-platform-can-receive-queue-overflows-during-the-inclinometer.md) | inbox | low | m | robot | — | subsystem | platform-teensy | — | filed 2026-11-23 |
 | BUG-132 | bug | [Platform IMU capture timestamps run 23 to 55 ms early against Mocap and the encoders](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-platform-imu-capture-timestamps-run-23-to-55-ms-early.md) | in_progress | medium | s | robot | hands | cross-cutting | platform-teensy | — | filed 2026-11-23 |
 | IDEA-26 | idea | [Platform IMU residue: unflown checks and the unmeasured lever arm](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-platform-imu-residue-unflown-checks-and-the-unmeasured-lever.md) | inbox | low | m | robot | hands | local | platform-teensy | — | filed 2026-11-23 |
+| IDEA-29 | idea | [Classify the 5x jerk intervals in the oval: real acceleration steps at re-aim splices or a dropped-echo artefact](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-classify-the-5x-jerk-intervals-in-the-oval-real-acceleration.md) | inbox | medium | s | none | — | — | skill-stack | — | filed 2026-11-24 |
+| FEAT-65 | feature | [Learner: a noise-aware shrinkage estimator in place of the mean of the 16 most recent rows](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-learner-a-noise-aware-shrinkage-estimator-in-place-of-the.md) | inbox | medium | — | none | — | — | learner | Learner generalisation | filed 2026-11-24 |
+| BUG-137 | bug | [Learner far-Site guard fails on long single-Site memories: the slope turns confident with no excitation](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-learner-far-site-guard-fails-on-long-single-site-memories.md) | inbox | medium | — | none | — | — | learner | Learner generalisation | filed 2026-11-24 |
+| BUG-138 | bug | [Plant model pools carried and from-rest rows, so oval rows move the Columns offset](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-plant-model-pools-carried-and-from-rest-rows-so-oval-rows.md) | inbox | medium | — | none | — | — | learner | Learner generalisation | filed 2026-11-24 |
