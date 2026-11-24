@@ -1,0 +1,251 @@
+{
+ "_comment": [
+  "Wave camera CAN wire vectors (wave_camera_can_adapter.md s4), FEAT-13.",
+  "ONE source for the node tests (tests/ros/test_wave_camera.py) and the adapter native tests",
+  "(WaveCamera_ESP_code/test/test_wave_wire_vectors, via the generated header next to it).",
+  "Every frame is 8 bytes, little-endian. 'bytes' were laid out from the s4 tables with plain struct",
+  "packing, not from either implementation. Each side must encode fields -> bytes and decode bytes -> fields.",
+  "Python names: cmd_seq_echo on rec_event; the C++ struct calls it cmd_seq. Regenerate the header with",
+  "python tests/fixtures/wave_camera/gen_wave_vectors_header.py after editing this file."
+ ],
+ "version": 1,
+ "cmd": [
+  {
+   "name": "clear_faults_session",
+   "desired": 1,
+   "cmd_seq": 42,
+   "flags": 1,
+   "session_id": 1780165693,
+   "bytes": [1, 42, 1, 0, 61, 44, 27, 106]
+  },
+  {
+   "name": "idle_all_zero",
+   "desired": 0,
+   "cmd_seq": 0,
+   "flags": 0,
+   "session_id": 0,
+   "bytes": [0, 0, 0, 0, 0, 0, 0, 0]
+  },
+  {
+   "name": "max_values",
+   "desired": 1,
+   "cmd_seq": 255,
+   "flags": 255,
+   "session_id": 4294967295,
+   "bytes": [1, 255, 255, 0, 255, 255, 255, 255]
+  }
+ ],
+ "heartbeat": [
+  {
+   "name": "recording_all_status",
+   "state": 3,
+   "status": 95,
+   "faults": 4,
+   "elapsed_100ms": 1234,
+   "sync_age_100ms": 3,
+   "recordings": 9,
+   "cmd_seq_echo": 42,
+   "bytes": [3, 95, 4, 210, 4, 3, 9, 42]
+  },
+  {
+   "name": "idle_console_owns_never_synced",
+   "state": 1,
+   "status": 32,
+   "faults": 0,
+   "elapsed_100ms": 0,
+   "sync_age_100ms": 255,
+   "recordings": 0,
+   "cmd_seq_echo": 0,
+   "bytes": [1, 32, 0, 0, 0, 255, 0, 0]
+  },
+  {
+   "name": "starting_camera_on_intent",
+   "state": 2,
+   "status": 25,
+   "faults": 0,
+   "elapsed_100ms": 0,
+   "sync_age_100ms": 7,
+   "recordings": 3,
+   "cmd_seq_echo": 17,
+   "bytes": [2, 25, 0, 0, 0, 7, 3, 17]
+  },
+  {
+   "name": "boot_zero",
+   "state": 0,
+   "status": 0,
+   "faults": 0,
+   "elapsed_100ms": 0,
+   "sync_age_100ms": 0,
+   "recordings": 0,
+   "cmd_seq_echo": 0,
+   "bytes": [0, 0, 0, 0, 0, 0, 0, 0]
+  },
+  {
+   "name": "fault_every_latch",
+   "state": 5,
+   "status": 127,
+   "faults": 127,
+   "elapsed_100ms": 65534,
+   "sync_age_100ms": 254,
+   "recordings": 255,
+   "cmd_seq_echo": 255,
+   "bytes": [5, 127, 127, 254, 255, 254, 255, 255]
+  },
+  {
+   "name": "stopping_elapsed_saturated",
+   "state": 4,
+   "status": 13,
+   "faults": 34,
+   "elapsed_100ms": 65534,
+   "sync_age_100ms": 1,
+   "recordings": 7,
+   "cmd_seq_echo": 153,
+   "bytes": [4, 13, 34, 254, 255, 1, 7, 153]
+  }
+ ],
+ "rec_event": [
+  {
+   "name": "start_synced_tick_clip_missing",
+   "t40": 4328719365,
+   "kind": 1,
+   "reason": 5,
+   "synced": true,
+   "tick_stamped": true,
+   "cmd_seq_echo": 42,
+   "recording_seq": 254,
+   "bytes": [5, 4, 3, 2, 1, 185, 42, 254]
+  },
+  {
+   "name": "refused_console_owns_unsynced",
+   "t40": 10000,
+   "kind": 4,
+   "reason": 6,
+   "synced": false,
+   "tick_stamped": false,
+   "cmd_seq_echo": 3,
+   "recording_seq": 0,
+   "bytes": [16, 39, 0, 0, 0, 196, 3, 0]
+  },
+  {
+   "name": "auto_stop_intent_timeout_age",
+   "t40": 48123,
+   "kind": 3,
+   "reason": 2,
+   "synced": false,
+   "tick_stamped": false,
+   "cmd_seq_echo": 5,
+   "recording_seq": 255,
+   "bytes": [251, 187, 0, 0, 0, 67, 5, 255]
+  },
+  {
+   "name": "stop_none_max_t40",
+   "t40": 1099511627775,
+   "kind": 2,
+   "reason": 0,
+   "synced": true,
+   "tick_stamped": false,
+   "cmd_seq_echo": 0,
+   "recording_seq": 1,
+   "bytes": [255, 255, 255, 255, 255, 10, 0, 1]
+  },
+  {
+   "name": "refused_gpi2_fault_both_flags",
+   "t40": 0,
+   "kind": 4,
+   "reason": 7,
+   "synced": true,
+   "tick_stamped": true,
+   "cmd_seq_echo": 255,
+   "recording_seq": 128,
+   "bytes": [0, 0, 0, 0, 0, 252, 255, 128]
+  },
+  {
+   "name": "refused_no_change_synced",
+   "t40": 78187493530,
+   "kind": 4,
+   "reason": 1,
+   "synced": true,
+   "tick_stamped": false,
+   "cmd_seq_echo": 9,
+   "recording_seq": 2,
+   "bytes": [154, 120, 86, 52, 18, 44, 9, 2]
+  },
+  {
+   "name": "start_tick_lost_reason",
+   "t40": 1,
+   "kind": 1,
+   "reason": 3,
+   "synced": false,
+   "tick_stamped": true,
+   "cmd_seq_echo": 1,
+   "recording_seq": 1,
+   "bytes": [1, 0, 0, 0, 0, 113, 1, 1]
+  },
+  {
+   "name": "start_camera_off_reason",
+   "t40": 2,
+   "kind": 1,
+   "reason": 4,
+   "synced": false,
+   "tick_stamped": false,
+   "cmd_seq_echo": 1,
+   "recording_seq": 1,
+   "bytes": [2, 0, 0, 0, 0, 129, 1, 1]
+  }
+ ],
+ "info": [
+  {
+   "name": "page0_identity",
+   "page": 0,
+   "fields": {
+    "fw_version": 12,
+    "wire_version": 1,
+    "uptime_s": 3600
+   },
+   "bytes": [0, 12, 0, 1, 16, 14, 0, 0]
+  },
+  {
+   "name": "page0_identity_max",
+   "page": 0,
+   "fields": {
+    "fw_version": 65535,
+    "wire_version": 255,
+    "uptime_s": 4294967295
+   },
+   "bytes": [0, 255, 255, 255, 255, 255, 255, 255]
+  },
+  {
+   "name": "page1_tick",
+   "page": 1,
+   "fields": {
+    "tick_period_ns": 33334,
+    "tick_jitter_us": 300,
+    "ticks_missed": 2
+   },
+   "bytes": [1, 54, 130, 0, 0, 44, 1, 2]
+  },
+  {
+   "name": "page2_sync",
+   "page": 2,
+   "fields": {
+    "offset_spread_us": 150,
+    "track_err_us": 40,
+    "accepted_per_s": 100,
+    "rejected_per_s": 1,
+    "steps": 0
+   },
+   "bytes": [2, 150, 0, 40, 0, 100, 1, 0]
+  },
+  {
+   "name": "page3_link",
+   "page": 3,
+   "fields": {
+    "last_tick_to_clip_us": 15500,
+    "can_tx_errors": 4660,
+    "bus_off_events": 9,
+    "intent_rx_per_s": 5
+   },
+   "bytes": [3, 140, 60, 52, 18, 9, 5, 0]
+  }
+ ]
+}

@@ -8,11 +8,71 @@ fails here.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 import jugglebot.protocol_config as proto
 from jugglebot.can import wave_camera as wc
 from teensy_link import rpc_args
+
+
+# ── Shared wire vectors (FEAT-13) ─────────────────────────────
+# tests/fixtures/wave_camera/wire_vectors.json is ALSO consumed by the adapter's native test
+# (WaveCamera_ESP_code/test/test_wave_wire_vectors, through a header generated from it), so the
+# firmware encoder and this decoder are pinned to the same bytes. The hand-built vectors
+# below stay: they document the frame tables field by field.
+
+_VECTORS = json.loads((Path(__file__).resolve().parents[1] / 'fixtures' / 'wave_camera'
+                       / 'wire_vectors.json').read_text())
+
+
+def _vec(kind):
+    return [pytest.param(v, id=v['name']) for v in _VECTORS[kind]]
+
+
+@pytest.mark.parametrize('v', _vec('cmd'))
+def test_shared_vector_cmd(v):
+    assert wc.encode_cmd(v['desired'], v['cmd_seq'], v['flags'], v['session_id']) == bytes(v['bytes'])
+
+
+@pytest.mark.parametrize('v', _vec('heartbeat'))
+def test_shared_vector_heartbeat(v):
+    hb = wc.WaveHeartbeat.from_can_frame(bytes(v['bytes']))
+    assert (hb.state, hb.status, hb.faults, hb.elapsed_100ms, hb.sync_age_100ms,
+            hb.recordings, hb.cmd_seq_echo) == (
+        v['state'], v['status'], v['faults'], v['elapsed_100ms'], v['sync_age_100ms'],
+        v['recordings'], v['cmd_seq_echo'])
+    assert hb.to_can_frame() == bytes(v['bytes'])
+
+
+@pytest.mark.parametrize('v', _vec('rec_event'))
+def test_shared_vector_rec_event(v):
+    evt = wc.WaveRecEvent.from_can_frame(bytes(v['bytes']))
+    assert (evt.t40, evt.kind, evt.reason, evt.synced, evt.tick_stamped,
+            evt.cmd_seq_echo, evt.recording_seq) == (
+        v['t40'], v['kind'], v['reason'], v['synced'], v['tick_stamped'],
+        v['cmd_seq_echo'], v['recording_seq'])
+    assert evt.to_can_frame() == bytes(v['bytes'])
+
+
+@pytest.mark.parametrize('v', _vec('info'))
+def test_shared_vector_info(v):
+    page = wc.WaveInfoPage.from_can_frame(bytes(v['bytes']))
+    assert page.page == v['page']
+    # The link page's trailing byte is named 'reserved' on this side; the fixture lists
+    # only the wire-meaningful fields.
+    assert {k: x for k, x in page.fields.items() if k != 'reserved'} == v['fields']
+    assert wc.WaveInfoPage.encode(v['page'], **v['fields']) == bytes(v['bytes'])
+
+
+def test_shared_vectors_cover_every_enum_member():
+    """A vector set that stops exercising a kind or reason is a silent loss of coverage."""
+    assert {v['kind'] for v in _VECTORS['rec_event']} == {int(k) for k in wc.WaveEventKind}
+    assert {v['reason'] for v in _VECTORS['rec_event']} == {int(r) for r in wc.WaveReason}
+    assert {v['state'] for v in _VECTORS['heartbeat']} == {int(x) for x in wc.WaveState}
+    assert {v['page'] for v in _VECTORS['info']} == {0, 1, 2, 3}
 
 
 # ── IDs and enums ─────────────────────────────────────────────
