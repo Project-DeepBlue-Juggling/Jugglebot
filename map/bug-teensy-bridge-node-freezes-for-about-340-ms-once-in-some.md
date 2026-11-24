@@ -4,7 +4,7 @@ kind: bug
 title: teensy_bridge_node freezes for about 340 ms once in some launches; Armed, that latches SETPOINT_STALE
 status: in_progress
 created: '2026-11-22'
-updated: '2026-11-23T04:19:59Z'
+updated: '2026-11-24T12:58:59Z'
 owners: []
 priority: high
 effort: m
@@ -49,3 +49,4 @@ Do not change the 250 ms limit or the 70/80 ms lane covers for this. Next step: 
 - 2026-11-23: 2026-11-23: stall watchdog landed and caught a real 359 ms stall at rest (14:07:33). The dump shows one thread inside rclpy publish (robot_state) and every other thread idle: a publish blocked in the middleware holding the GIL. Kernel pause ruled out for this event. Trigger still unknown; six new-participant actions did not reproduce it.
 - 2026-11-23: Sitting 2026-11-23: one 313 ms stall at launch plus 1 s (unarmed), none while Armed. Third unprovoked dump with the same stack: the robot_state publish inside rclpy, all other threads idle.
 - 2026-11-23: Experiment landed (logbook 2026-11-23-bridge-shm-clean-at-launch): the launch now removes stale Fast DDS shared-memory files before any node starts (shm_clean, on by default); bridge_shm:=false puts the bridge on UDP only (off by default, the decisive half, not yet tried). The watchdog keeps counting.
+- 2026-11-24: offline read of the stall dumps: two are real (a robot_state publish inside rclpy, all other threads idle); the third (14:08:14) is the deliberate kill -STOP self-test, so at most once per launch stands. 4 real freezes in about 21 launches, 0 in 2 since shm_clean. Next: a synthetic reproduction, then 12+12 unpowered launches.

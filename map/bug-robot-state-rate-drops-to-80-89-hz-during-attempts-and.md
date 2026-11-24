@@ -2,9 +2,9 @@
 id: BUG-112
 kind: bug
 title: /robot_state rate drops to 80-89 Hz during Attempts and drifts down over a launch
-status: inbox
+status: complete
 created: '2026-11-18'
-updated: '2026-11-18T15:51:11Z'
+updated: '2026-11-24T12:58:54Z'
 owners: []
 priority: medium
 effort: m
@@ -17,9 +17,6 @@ blocked_by: []
 links:
 - logbook/2026-11-18-sitting-debrief.md
 filed_by: sitting-debrief 2026-11-18
-night_skip: sitting
-night_skip_on: '2026-11-22'
-night_skip_note: Diagnosis unknown; the next step is per-thread CPU of teensy_bridge_node in a launch, which no bag records.
 ---
 
 Sitting of 2026-11-18 (operator note on step 41; bags 2026-11-18_*). Related: BUG-98.
@@ -29,3 +26,7 @@ Sitting of 2026-11-18 (operator note on step 41; bags 2026-11-18_*). Related: BU
 Not separated: box load, bridge uptime (about 120 h), and the leftover ros2 topic hz subscriber. Stamps and log time agree, so the publisher itself slows.
 
 Next step (no hardware needed first): per-thread CPU of teensy_bridge_node during Columns from an existing bag or a bench launch; then one launch with no extra subscriber and a fresh bridge boot.
+
+## Progress
+
+- 2026-11-24: offline analysis (bag 2026-11-20_12-49-25): telemetry arrives at exactly 100.0/s. Half the missing publishes are lost timer ticks in the bridge's saturated default callback group, half are freshness-gate skips from tick jitter. No consumer needs the rate and the setpoint stream does not use this executor. Closed as benign for control.
