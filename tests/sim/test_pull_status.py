@@ -189,7 +189,23 @@ def _check(rep, tmp_path):
 #: The nightly stamp the claim tests use. It must be RECENT: the ticker calls a status older than
 #: two days STALE, so the fixed 2026-11-17 literal these tests first carried made
 #: test_dead_claim_is_taken_over_and_read_once fail from 2026-11-19 15:00 AEDT on (a date bomb).
-_CLAIM_TS = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=6)).isoformat(timespec="seconds")
+def _claim_ts():
+    """A status stamp 6 h old, but never older than the latest 02:00 slot.
+
+    BUG-100 (2026-11-24): the ticker reports STALE for a status from before the latest
+    scheduled 02:00 slot (30 min grace), so a plain "now - 6 h" made these tests fail
+    between 02:30 and 08:00 local. The claim-expiry behaviour under test does not depend
+    on the stamp's age, only on it being current.
+    """
+    now = dt.datetime.now().astimezone()
+    slot = (now - dt.timedelta(minutes=30)).replace(hour=2, minute=0, second=0, microsecond=0)
+    if slot > now - dt.timedelta(minutes=30):
+        slot -= dt.timedelta(days=1)
+    ts = max(now - dt.timedelta(hours=6), slot + dt.timedelta(minutes=1))
+    return ts.astimezone(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+_CLAIM_TS = _claim_ts()
 
 
 def _claim(rep, age_s, status=None, pid=99999):
