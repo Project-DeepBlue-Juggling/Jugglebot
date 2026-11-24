@@ -103,7 +103,7 @@ _Status: closed (complete)._
 
 **Attached inbox items:**
 
-- —
+- feature: FEAT-66 [Reorganize GUI Chart "Show/Hide" buttons](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-reorganize-gui-chart-show-hide-buttons.md) (inbox)
 
 ## Learner generalisation
 
@@ -184,7 +184,7 @@ _Status: closed (complete)._
 | Night Shift: unattended overnight work on the board, and the Next Sitting Runbook | — | — | — | closed |
 | Project map and shared dictionary | — | — | — | closed |
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug Ball Butler yaw-settle gate aborts settled throws (THROW_ABORTED_NOT_SETTLED false positives); feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
-| GUI Improvements | — | — | — | — |
+| GUI Improvements | — | — | feature Reorganize GUI Chart "Show/Hide" buttons | — |
 | Learner generalisation | — | PE0 Unsettled-ball test from existing bags | PE1 Bench Hand launch study; PE2 A quiet and correct Learner; PE3 The transit term and yaw; PE4 Act on the launch term; PE5 Catch-side robustness; PE6 The Platform IMU's part; PE7 Close-out; bug Plant model pools carried and from-rest rows, so oval rows move the Columns offset; bug Plant model slope value stays corrupted after a long single-Site Memory: one row at a second Site applies a line up to 59 mm off; bug Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for; feature Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z; feature Learner: a noise-aware shrinkage estimator in place of the mean of the 16 most recent rows | Box sweep fidelity for same-site families (plan what the executor dispatches); P3a Command-time admissibility check; P3b Nomination-time check and the nearest viable configuration; P3c Box retirement; P1 Learner core; P2 The characterisation sitting; P4 BeatEvent stream and the columns wrapper |
 | Pattern progression: Columns to Centre and orbit | — | P5 JP-9 high-low Columns | P6 Per-Beat Sites dependency owned by PWAY-2; P8 JP-11 rotating Columns; P9 Centre and orbit compile; P10 JP-14 Centre and orbit; idea JP-11 Rotating columns: the pair turns a few degrees every Beat; idea JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm | P1 Launch current check; P2 Turned Columns on the compiled path; P3 JP-10 turned Columns; P4 Per-Site Apex; P7 JP-5 polygon walk |
 | Map improvements | — | — | — | closed |
@@ -278,5 +278,6 @@ Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/bench-hand/robot; Owner none/deci
 | BUG-140 | bug | [Fresh REST rebases outside the band are uncapped (up to 1.0 s logged) and land off the knot grid](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-fresh-rest-rebases-outside-the-band-are-uncapped-up-to-1-0-s.md) | inbox | medium | — | — | — | — | — | — | filed 2026-11-25 |
 | BUG-142 | bug | [Hand park reports already parked on a Hand that is Idle on its bottom stop](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-hand-park-reports-already-parked-on-a-hand-that-is-idle-on.md) | inbox | medium | — | — | — | — | — | — | filed 2026-11-25 |
 | BUG-139 | bug | [Plant model slope value stays corrupted after a long single-Site Memory: one row at a second Site applies a line up to 59 mm off](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-plant-model-slope-value-stays-corrupted-after-a-long-single.md) | inbox | medium | s | none | decision | subsystem | learner | Learner generalisation | filed 2026-11-25 |
+| FEAT-66 | feature | [Reorganize GUI Chart "Show/Hide" buttons](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-reorganize-gui-chart-show-hide-buttons.md) | inbox | low | xs | — | — | — | — | GUI Improvements | filed 2026-11-25 |
 | BUG-141 | bug | [SIGINT during the bridge node's boot-state read skips its shutdown handler](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-sigint-during-the-bridge-node-s-boot-state-read-skips-its.md) | inbox | low | — | — | — | — | — | — | filed 2026-11-25 |
 | BUG-143 | bug | [Stall watchdog GIL test fails under box load in the parallel phase](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-stall-watchdog-gil-test-fails-under-box-load-in-the-parallel.md) | inbox | low | — | — | — | — | — | — | filed 2026-11-25 |
