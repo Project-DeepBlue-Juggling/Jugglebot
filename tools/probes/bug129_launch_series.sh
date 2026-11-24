@@ -233,7 +233,10 @@ while (( slot < total )); do
   churn() {   # churn <label> <command...> : run in the ROS env, bounded, rc to the churn log
     local lbl="$1"; shift
     local t; t=$(date +%H:%M:%S.%N | cut -c1-12)
-    bash -c "$ENVSRC && $*" > /dev/null 2>&1; echo "$t $lbl rc=$?" >> "${base}.churn"
+    # The lock descriptor is closed for the churn commands: a ros2 CLI call that starts the
+    # ros2 daemon would otherwise hand it the lock, and the daemon outlives the launch
+    # (first series, 2026-11-25: the next launch waited 15 min on the lock and aborted).
+    bash -c "$ENVSRC && $*" {LOCKFD}>&- > /dev/null 2>&1; echo "$t $lbl rc=$?" >> "${base}.churn"
   }
 
   ok=1
@@ -288,6 +291,8 @@ while (( slot < total )); do
   wait "$LAUNCH_PID" 2>/dev/null
   echo "bridge_exit=$exit_note" >> "${base}.meta"; echo "end_epoch=$(date +%s)" >> "${base}.meta"
   LAUNCH_PID=""
+  # Stop the ros2 daemon the churn started, so every launch meets the same discovery state.
+  bash -c "$ENVSRC && timeout 20 ros2 daemon stop" {LOCKFD}>&- > /dev/null 2>&1 || true
   exec {LOCKFD}>&-
   sleep 20
   if live_session; then abort_series "launch processes left behind after $nm" 2; fi
