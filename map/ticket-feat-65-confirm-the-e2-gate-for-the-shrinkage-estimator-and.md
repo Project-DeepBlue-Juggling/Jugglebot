@@ -2,9 +2,9 @@
 id: TKT-94
 kind: ticket
 title: 'FEAT-65: confirm the E2 gate for the shrinkage estimator, and may the night merge it or must a day Session?'
-status: open
+status: complete
 created: '2026-11-25'
-updated: '2026-11-24T16:52:52Z'
+updated: '2026-11-24T22:13:01Z'
 owners: []
 priority: medium
 effort: xs
@@ -31,3 +31,7 @@ FEAT-65 replaces the Learner's mean of the 16 most recent rows with a noise-awar
 ## Recommendation
 
 1. The replay differences between laws are 0.1 to 0.3 mm with no confidence interval, so a day Session should look at the live-Memory replay before the robot flies a new law on every Throw.
+
+## Answer
+
+Agreed; go with Option 1.
