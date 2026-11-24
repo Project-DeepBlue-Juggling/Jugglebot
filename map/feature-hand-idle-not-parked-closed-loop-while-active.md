@@ -2,9 +2,9 @@
 id: FEAT-1
 kind: feature
 title: 'Design change: the Hand should be Idle, not Parked Closed-loop, while Active'
-status: inbox
+status: in_progress
 created: '2026-09-21'
-updated: '2026-10-24T13:05:00Z'
+updated: '2026-11-24T12:58:20Z'
 owners: []
 priority: medium
 effort: m
@@ -15,6 +15,7 @@ area: hand
 blocked_by: []
 links:
 - https://github.com/Project-DeepBlue-Juggling/Jugglebot/issues/19
+- plans/active/hand-idle-while-active.md
 filed_by: harrison
 night_skip: owner-session
 night_skip_on: '2026-11-22'
@@ -45,3 +46,7 @@ Night Shift 2026-11-02 drafted these for the owner; a question ticket carries th
 4. Operator toggle: a GUI control that Idles or arms the Hand while Active, with the Attempt start refusing on an Idle Hand.
 
 Recommendation: 2, planned with the arm rung as its first phase (the rung alone turns an Idle Hand into a refusal instead of a latch, the hazard the body names), the glossary Active entry updated in the same commit; 3 if the ACTIVATE path is to stay untouched.
+
+## Progress
+
+- 2026-11-24: 2026-11-24 day Session: plan written, plans/active/hand-idle-while-active.md. P1 is the per-Attempt Hand engage with an install-gate refusal; P3 is Idle after ACTIVATE and at Attempt end. No firmware change. Seven owner decisions open (O1 to O7).
