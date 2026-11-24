@@ -4,7 +4,7 @@ kind: bug
 title: Hand SPINOUT at the Throw peak after a setpoint 12.6 ms late (2026-11-18)
 status: in_progress
 created: '2026-11-18'
-updated: '2026-11-24T13:21:08Z'
+updated: '2026-11-24T18:06:30Z'
 owners: []
 priority: high
 effort: m
@@ -77,3 +77,4 @@ Not checked: which tick promoted the frame; the Hand's physical response in any 
 - 2026-11-20: Flown at the Sitting of 2026-11-20, verdict unresolved: a SPINOUT occurred at 13:22:42 during the post-release brake of a normal Throw (Hand 0.46 rev above its command at the disarm) but was not captured; the 100 Hz echo shows command peaks equal to the preceding Throws, with a 27.3 ms-late frame dropped 41 ms before. Missing:
 - 2026-11-20: the 500 Hz plan replay with the arrival times of seq 50752 and 50753, or a saved capture.
 - 2026-11-25: 500 Hz replay (tools/probes/hand_late_knot_replay.py) confirms both SPINOUTs: a late release-knot frame let the firmware extend the accelerating cubic, then its promotion stepped the velocity command by 34 to 40 rev/s (2026-11-18) and 18 to 38 rev/s (2026-11-20). They are the only 2 of 209 replayed drops at a release knot above 90 rev/s. Emit lead 1 removes both steps.
+- 2026-11-25: emit lead 1 designed and phase 1 landed: the planner's wire horizon is 3 + emit_lead_knots, the fresh-REST rebase threshold is the onset budget minus (lead + 1) knots (50 ms at lead 1, not 100), and the stall fence stays 37.5 ms. The configured lead is still 0 and every constant is identical. Next: a lead-1 test tier, the cost measurement, then seeding holds at the wire horizon.
