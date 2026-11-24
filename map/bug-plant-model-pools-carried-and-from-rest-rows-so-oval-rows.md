@@ -4,10 +4,13 @@ kind: bug
 title: Plant model pools carried and from-rest rows, so oval rows move the Columns offset
 status: inbox
 created: '2026-11-24'
-updated: '2026-11-24T11:28:44Z'
+updated: '2026-11-24T16:53:10Z'
 owners: []
 priority: medium
+effort: m
 hardware: none
+owner: decision
+radius: subsystem
 diagnosis: hypothesis
 area: learner
 blocked_by: []
@@ -35,3 +38,14 @@ Numbers are from an agent's study and were not independently re-verified.
 
 - Split the plant model by release kind, or add a release-kind term, so carried and from-rest rows do not pool.
 - A test that adds oval rows to a Columns Memory and asserts the Columns offset does not move beyond a tolerance.
+
+## Options (2026-11-25)
+
+Night Shift 2026-11-25 drafted these; TKT-93 carries them and its answer re-opens this Item.
+
+1. Split: one plant model per release kind. Leak-free; the oval cold-starts its own K and s.
+2. A carried-row lateral term, K and s shared. Inherits BUG-139's flaw, so it waits on it.
+3. Share K, split the lateral filters (b_x, s, b_y) by release kind.
+4. Defer to E7: Memories are siloed per plant, so no live Columns Memory holds oval rows yet.
+
+Recommendation: 3, since K held across Sittings and Sites while the oval's lateral fit differs in slope too.

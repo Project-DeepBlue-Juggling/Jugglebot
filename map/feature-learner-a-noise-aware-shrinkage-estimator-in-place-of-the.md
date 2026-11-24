@@ -4,10 +4,13 @@ kind: feature
 title: 'Learner: a noise-aware shrinkage estimator in place of the mean of the 16 most recent rows'
 status: inbox
 created: '2026-11-24'
-updated: '2026-11-24T11:28:49Z'
+updated: '2026-11-24T16:53:14Z'
 owners: []
 priority: medium
+effort: m
 hardware: none
+owner: decision
+radius: subsystem
 area: learner
 blocked_by: []
 links: []
@@ -44,3 +47,15 @@ The rms differences between laws are 0.1 to 0.3 mm with no confidence interval, 
 - Sequential replay rms no worse than production on every axis, and command jitter at least 30 % lower.
 - Sim gate green; first flown as a normal Columns Attempt.
 - Safety-bearing: it changes every commanded u. Walk one Throw cycle through the command path before changing it (the Learner runs at command time, not in the 40 Hz tick).
+
+## Options (2026-11-25)
+
+Night Shift 2026-11-25 drafted these; TKT-94 carries them and its answer re-opens this Item.
+
+1. Confirm the proposed gate; the night builds it with the replay on its Memory copy and holds it for a day Session to merge.
+2. As 1, but the night may merge on the gate's MERGE when its replay meets the criterion.
+3. A different criterion, then as 1.
+4. Build the leaky-integrator variant instead, then as 1.
+5. Keep E2 for a day Session.
+
+Recommendation: 1, because the replay differences between laws are 0.1 to 0.3 mm with no confidence interval.
