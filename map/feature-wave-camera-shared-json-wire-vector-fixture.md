@@ -2,9 +2,9 @@
 id: FEAT-13
 kind: feature
 title: 'Wave camera: a shared JSON wire-vector fixture for the adapter firmware and the node'
-status: inbox
+status: complete
 created: '2026-10-25'
-updated: '2026-10-25T09:00:00Z'
+updated: '2026-11-24T13:07:35Z'
 owners: []
 priority: low
 effort: s
@@ -19,9 +19,6 @@ links:
 - tests/ros/test_wave_camera.py
 parent: wave-camera-can3
 filed_by: claude
-night_skip: out-of-reach
-night_skip_on: '2026-11-22'
-night_skip_note: The firmware consumer is a pio native test, refused at night.
 ---
 
 The CAN adapter design s7 calls for one JSON fixture of frame vectors that the ESP32 firmware tests and the node tests both consume (the clapboard precedent). Not written; the vectors live in `tests/ros/test_wave_camera.py` until it is.
@@ -29,3 +26,7 @@ The CAN adapter design s7 calls for one JSON fixture of frame vectors that the E
 ## Review (2026-11-07)
 
 The ESP32 code is now in this repo (`ros_ws/src/jugglebot/WaveCamera_ESP_code/`), so "both repos" above is stale and one commit can land both consumers. Its 80 native cases run in the gate since 2026-11-07 through `tests/firmware/test_wave_native.py`. `src/`, `include/` and `platformio.ini` are frozen; `test/` is open, and that is all this Item needs.
+
+## Progress
+
+- 2026-11-25: shared fixture tests/fixtures/wave_camera/wire_vectors.json (22 vectors) read by tests/ros/test_wave_camera.py and the native suite through a generated header whose currency tests/firmware/test_wave_vectors_header.py pins; no firmware source touched.

@@ -2,9 +2,9 @@
 id: BUG-47
 kind: bug
 title: teensy_bridge_node does not exit after a rejected shutdown Stow; launch SIGTERM-killed it 4.8 s later (2026-10-31 13:06)
-status: backlog
+status: in_progress
 created: '2026-11-01'
-updated: '2026-11-07T19:00:06Z'
+updated: '2026-11-24T13:07:44Z'
 owners: []
 priority: medium
 effort: s
@@ -53,3 +53,4 @@ So the executor may be waiting on the homing goal's callback. This is not proven
 ## Progress
 
 - 2026-11-08: Night Shift 2026-11-08: not reproduced offline; on_shutdown takes 0.9 s. Hypothesis: executor.shutdown waits on a homing callback, which needs real rclpy (detail below)
+- 2026-11-25: reproduced under real rclpy: exit 21 s after SIGINT with a home_motors goal in flight (strict xfail in tests/rclpy_smoke). Cause: the process joins the worker still in _run_home's monitor loop, which has no stop check; not executor.shutdown(). Fix waits on an owner answer (abort homing and Idle the axis on SIGINT).

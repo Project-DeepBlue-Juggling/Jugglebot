@@ -2,9 +2,9 @@
 id: BUG-100
 kind: bug
 title: A dead ticker claim or a crashed 04:00 suite hides a RED for up to two days
-status: in_progress
+status: complete
 created: '2026-11-14'
-updated: '2026-11-18T07:11:22Z'
+updated: '2026-11-24T13:07:16Z'
 owners: []
 priority: medium
 effort: s
@@ -17,9 +17,6 @@ blocked_by: []
 links: []
 parent: night-shift
 filed_by: claude
-night_skip: frozen-path
-night_skip_on: '2026-11-22'
-night_skip_note: The claim path is tools/nightly_ticker.sh and the suite runner, both on the never-list.
 ---
 
 A Session that dies between claiming the 04:00 suite ticker and lowering it leaves a claim file behind, and a later RED can then go unread. Found by the 2026-11-13 maintainer review; the claim path was read, the full sequence across a new raise was not traced.
@@ -39,3 +36,4 @@ A Session that dies between claiming the 04:00 suite ticker and lowering it leav
 ## Progress
 
 - 2026-11-18: Claim expiry landed (tools/nightly_ticker.sh, 300 s by mtime, takeover by rename). The missed-slot STALE half is still open.
+- 2026-11-25: missed-slot STALE landed (latest 02:00 slot, 30 min grace, 5 min skew) on the LOWERED path; tests in tests/sim/test_nightly_ticker.py. An unclaimed old result is CLAIMED once, then STALE. Entry 2026-11-24-tooling1-ticker-candidate-livesession.

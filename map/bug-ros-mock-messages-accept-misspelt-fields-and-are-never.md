@@ -2,9 +2,9 @@
 id: BUG-116
 kind: bug
 title: ROS mock messages accept misspelt fields and are never compared with the real interface definitions
-status: inbox
+status: in_progress
 created: '2026-11-18'
-updated: '2026-11-18T15:51:17Z'
+updated: '2026-11-24T13:07:30Z'
 owners: []
 priority: medium
 effort: l
@@ -38,3 +38,7 @@ The ROS mock layer accepts a misspelt message field, so a node test can pass on 
 
 - This changes the base under about 3,800 ROS tests. Expect existing misspellings to surface; each is a fix in a node or in a test.
 - `tests/ros/conftest.py` is on the Night Shift never-list, so this needs a day Session and the full gate.
+
+## Progress
+
+- 2026-11-25: slice 1 landed: tests/ros/test_mock_interface_parity.py compares all 40 mocks with the real interface text; zero drift found; LevelPlatform, Target and GetRobotGeometry have no mock and are pinned. Remaining: slice 2, strict setattr on the mocks.

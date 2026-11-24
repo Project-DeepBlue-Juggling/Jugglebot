@@ -2,9 +2,9 @@
 id: FEAT-55
 kind: feature
 title: A real-rclpy launch smoke test in the full tier
-status: inbox
+status: in_progress
 created: '2026-11-14'
-updated: '2026-11-14T17:55:04Z'
+updated: '2026-11-24T13:07:39Z'
 owners: []
 priority: medium
 effort: m
@@ -37,3 +37,7 @@ A small launch test, in the full tier only, that starts the nodes with a fake br
 
 - Whether Foxy's `launch_testing` is workable here, given the `-p no:launch*` options in `pyproject.toml`, or a plain subprocess harness is simpler.
 - Which fake stands in for the can-bridge: `tools/teensy_link_bridge.py` or the sim's stream chain.
+
+## Progress
+
+- 2026-11-25: subprocess harness landed (tests/rclpy_smoke, nightly and serial): catch_correlation_node and teensy_bridge_node under real rclpy on an isolated domain, bridge transport forced to a loopback fake. Remaining: the other nodes, message-crossing checks, the launch file.
