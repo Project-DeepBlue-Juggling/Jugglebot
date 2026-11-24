@@ -526,7 +526,14 @@ class BallTracker:
             best_idx = None
             best_dist = float("inf")
 
+            # BUG-70: a track whose flight is over takes no marker, so the
+            # ANNOUNCED gate can confirm the re-throw of the same physical
+            # ball. It then misses like any lost track and ends CAUGHT through
+            # `_check_lifecycle`. See `_flight_over` for the invariant.
+            released = self._flight_over(ball_id, ball, current_time)
             for idx, mpos in enumerate(markers):
+                if released:
+                    break
                 if idx in used:
                     continue
                 dist = np.linalg.norm(mpos - predicted_pos)
@@ -568,6 +575,51 @@ class BallTracker:
             self._update_landing_prediction(ball, from_filter=True)
 
         return used
+
+    def _flight_over(self, ball_id: int, ball: Ball, current_time: float) -> bool:
+        """True when a CONFIRMED announced ball's flight is over and its
+        association must stop taking markers (BUG-70).
+
+        The failure it closes (bag 2026-11-05_22-46-00): the Hand catches the
+        ball, carries it and throws it again, and the marker never leaves the
+        50 mm association gate of the PREVIOUS Throw's filter. That old track
+        runs before `_match_announced_balls`, keeps the marker through the
+        Carry and the whole next flight, and the new Throw's announced ball
+        never confirms (no fit, no learner row; the Catch aims on the prior).
+        Steady Throws escaped only by luck: one frame with the ball marker
+        missing in the Carry (cause not checked), after which the old
+        filter, whose velocity reads about -6 m/s while the ball sits still,
+        coasts out of its own gate.
+
+        Invariant: a marker is never withheld from a ball whose landing
+        prediction can still change. All four must hold:
+
+        1. the ball is announced (a human-throw track keeps one id across
+           flights by design and segments its own fit);
+        2. its published landing comes from its flight fit
+           (`landing_from_fit`);
+        3. that fit is frozen: it has samples and the marker has since been
+           at or below the freeze floor (`landing_z` +
+           `flight_fit_freeze_above_plane_mm`), so no sample has been
+           admitted since and the landing is fixed;
+        4. the clock is past that landing plus `caught_grace_s`.
+
+        Withholding the marker admits no sample, so the fit stays frozen and
+        the landing stays exactly what it was; the condition then holds on
+        every later frame. A ball still in free flight 0.2 s past a converged
+        fit's crossing of the landing plane would be about a metre below it.
+        A re-throw that lifts the marker back above the freeze floor before
+        the grace runs out unfreezes the fit, so the rule does not fire and
+        the old behaviour stands.
+        """
+        if ball_id not in self._announcement_states:
+            return False
+        if not ball.landing_from_fit:
+            return False
+        fit = self._flight_fits.get(ball_id)
+        if fit is None or not fit.frozen:
+            return False
+        return current_time > ball.landing_time + self.caught_grace_s
 
     # ------------------------------------------------------------------
     # Internal: Announced ball matching
@@ -1021,7 +1073,9 @@ class BallTracker:
                         ball.status = BallStatus.CAUGHT
                         ball.terminal_since = current_time
                     # If marker still visible past landing: let it continue
-                    # (it might be bouncing — will eventually hit lost-track)
+                    # (it might be bouncing — will eventually hit lost-track),
+                    # unless `_flight_over` has released it (BUG-70): then it
+                    # misses every frame and ends CAUGHT here.
                 else:
                     # ANNOUNCED-only ball past landing: UNKNOWN
                     if ball.frames_without_measurement > self.max_frames_without_measurement:
