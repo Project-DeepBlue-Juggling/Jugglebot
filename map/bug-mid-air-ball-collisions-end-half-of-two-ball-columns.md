@@ -4,7 +4,7 @@ kind: bug
 title: 'Mid-air ball collisions end half of two-ball Columns Attempts at Apex 1.00: closest approach about 70 mm at Sep. 100, 125 and 135'
 status: in_progress
 created: '2026-11-06'
-updated: '2026-11-20T04:13:16Z'
+updated: '2026-11-24T13:49:48Z'
 owners: []
 priority: medium
 effort: l
@@ -47,3 +47,4 @@ At the Sitting of 2026-11-06 four of eight two-ball Columns Attempts (Apex 1.00,
 - 2026-11-08: 2026-11-07: 7 collisions in about 300 Throws (2.3 per 100), closest approach 31-74 mm with both balls kinking 200-1550 mm/s, including 2 in 13 Throws at high-low Sep. 100 and 2 at turned 90 deg.
 - 2026-11-18: 2026-11-18 debrief: refuted as the main killer for Columns on main. Of 34 MISSED_CATCH ends, 1 certain collision (turned 90 deg, 28 mm at 12:03:23.70) and 1 possible; 0 airborne pairs under 70 mm in the launch 1, 2, 3 and 4 bags.
 - 2026-11-20: Sitting of 2026-11-20: closest pair distance 74-78 mm (one Ball diameter) in 6 of 18 Columns Attempts, 1.15-1.25 s before a lost landing in 3, but Kalman-velocity kinks only 17-77 mm/s; a graze is possible, not shown. The position-fit kink read was not run.
+- 2026-11-25: position-fit kink read, 5 bags, 195 pair events within 110 mm: 2 confirmed contacts (2026-11-20 13-48-32 Attempt 1, 74 mm, 174 and 281 mm/s; 2026-11-18 highlow Attempt 8, 75 mm) and 1 probable; noise floor 71 mm/s; 114 events unreadable. The Mocap marker sits about 30 mm off the ball centre, so clearances carry that error. Collisions stay a minor Attempt killer.
