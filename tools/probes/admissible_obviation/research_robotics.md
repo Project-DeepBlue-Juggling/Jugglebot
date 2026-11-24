@@ -39,7 +39,7 @@ assumption to check on the real system, and a verdict.
 
 ### A1. Online admissibility with the real planner and gate (P3) plus a per-configuration pre-flight
 - **What.** Commit a THROW only after its 1-2 segment look-ahead has been planned and gated at command
-  time (P3 in `plans/active/learner-generalisation.md`). Replace the sweep with a *pre-flight* when a
+  time (P3 in `plans/archived/learner-generalisation.md`). Replace the sweep with a *pre-flight* when a
   pattern is loaded or a limits point changes. The pre-flight checks the model command (0,0) at every
   flight time and apex in use, plus a small probe ring around it. That is seconds of solving, not hours.
   The learner's fallback is then always a certified command. A failed pre-flight means the

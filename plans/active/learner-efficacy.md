@@ -32,7 +32,7 @@ related_code:
 
 # Learner efficacy
 
-Branch `main`. Follow-on to `plans/active/learner-generalisation.md`, whose step P5 it replaces. Same
+Branch `main`. Follow-on to `plans/archived/learner-generalisation.md`, whose step P5 it replaces. Same
 Pathway (PWAY-2, `map/pathway-learner-generalisation.md`). The narrative of the review that produced this
 plan (eight read-only studies, 2026-11-23, one hypothesis withdrawn) is in
 `logbook/2026-11-24-learner-efficacy-review-and-scatter-decomposition.md`; this file keeps decisions,
@@ -108,13 +108,11 @@ What the review found:
 - **A mid-Pattern operator channel on the robot** (old P5 item 3) and **per-Site xy** ("any Site" is not
   commandable today: only `separation_mm` of a pair symmetric about the origin plus `columns_angle_deg`).
   Both stay unbuilt by owner priority (2026-11-23).
-- **The Pathway's Destination sentence is wider than this plan.** It still says "any Site, Apex, Dwell or yaw
-  can be commanded and changed mid-Pattern". Narrowing it is an owner decision not yet taken; until it is,
-  this plan does not close the Pathway, and the Pathway body says so.
+- **The Pathway's Destination was narrowed to this plan's scope on 2026-11-24 (owner).** It no longer names
+  "any Site" or a change mid-Pattern, so completing this plan completes the Pathway's Destination.
 - Reducing scatter by a better landing-space law: the ceiling is 2-4 %. E2 buys quiet and correctness, not
   accuracy.
-- Jerk and Leg-separation roughness (BUG-72) and the 15 mm outward-authority trial (E5 asks whether it
-  belongs here).
+- Jerk and Leg-separation roughness (BUG-72). (The 15 mm outward-authority trial is in scope, under E5.)
 
 ## 4. Phase summary
 
@@ -127,9 +125,9 @@ Step ids: the frontmatter ids are `PE0` to `PE7` (a constraint of the plan tooli
 | E2 | A quiet and correct Learner (defects A, B, C; one Memory; tests) | none | NOT STARTED | the estimator E3 extends |
 | E3 | The transit term and yaw (old P5 items 1, 2) | robot | NOT STARTED | E7's oval row |
 | E4 | Act on the launch term (decision gate) | robot | NOT STARTED | design after E0/E1 |
-| E5 | Catch-side robustness | robot | NOT STARTED | scope: here or own Items |
+| E5 | Catch-side robustness | robot | NOT STARTED | whether the 15 mm authority and the bounce-out causes need Items |
 | E6 | The Platform IMU's part | robot | NOT STARTED | IDEA-27, carried overshoot |
-| E7 | Close-out (old P5 items 4, 5) | robot | NOT STARTED | archive of this plan and the old one |
+| E7 | Close-out (old P5 items 4, 5) | robot | NOT STARTED | archive of this plan |
 
 Recommended order is E0 to E7. E0 and E2 need no hardware and can run in parallel; E2 must not wait on
 E0/E1 because defects A to C are measured Learner faults independent of the launch term.
@@ -167,7 +165,8 @@ E1 is dropped or becomes a pure seat-sensitivity study, E4 reconsiders (in-fligh
 the bench Hand's Cup measures the ball-versus-Cup term directly, without the occlusion problem.
 
 **Preconditions.** E0 result of "between" or SUPPORTED (a NOT SUPPORTED result may still justify a short
-seat-sensitivity run, owner's call). Open question: whether Mocap covers the bench (§ 7).
+seat-sensitivity run, owner's call). Mocap coverage (owner, 2026-11-24): when the markers go on, the bench
+Hand is moved into the Mocap cameras' view.
 
 **Work.** Markers on the bench Hand's Cup as a rigid body; bench Throws with the ball (a) hand-placed and
 settled, (b) placed a few mm off-axis, (c) released while circling. Measures: launch-direction sd settled
@@ -275,7 +274,7 @@ Catch authority is 10 mm (35 mm inward) against about 20 mm sd, and on-target bo
 (6 of 11 diagnosed entered 3-15 mm from the Cup axis; 10 of 11 were Ball 2; two far Throws followed a
 late-seating Catch).
 
-**Preconditions.** Scope decision for the owner: in this plan or its own Items (§ 7).
+**Preconditions.** None beyond E0's result. Scope (owner, 2026-11-24): E5 stays in this plan.
 
 **Work.** The 15 mm outward-authority trial (owner-decided, not flown) and the bounce-out causes.
 
@@ -317,7 +316,7 @@ re-pointed, an I-LEARN-1 update for the new estimator.
 **Hardware and safety.** Robot for the oval flight; the INVARIANTS edits are normative-doc edits and go
 through `/audit --unstaged`.
 
-**Decides.** Archive of this plan and offer to archive `learner-generalisation.md` (§ 7).
+**Decides.** Archive of this plan.
 
 ## 6. Mapping from the old plan's P5
 
@@ -329,16 +328,32 @@ through `/audit --unstaged`.
 | 4 The oval on the shared Memory | E7, now conditional on E2(b) |
 | 5 INVARIANTS rows | E7 |
 
-The old plan's stance "stays open until these have flown" (owner, 2026-11-06) has not been revisited; the
-old plan is not archived by this plan's creation.
+The old plan's stance "stays open until these have flown" (owner, 2026-11-06) was reversed by the owner on
+2026-11-24: the old plan is archived as superseded in part by this one.
 
 ## 7. Open questions
 
-1. Does Mocap cover the bench, so E1's rigid-body markers can be tracked? (Owner said markers can go on the
-   bench Hand.) If not, E1 needs another measure or drops.
-2. Does E5 live in this plan or become its own Items?
-3. The E2 gate numbers (30 % command-jitter reduction, rms no worse on every axis) are proposed, from a
+1. The E2 gate numbers (30 % command-jitter reduction, rms no worse on every axis) are proposed, from a
    prediction-quality replay and not a closed-loop simulation; owner to confirm.
-4. Is `learner-generalisation.md` archived (and the Destination narrowed) once this plan's E2, E3 and E7 land?
-   An owner decision, offered separately.
-5. Is mid-Pattern change and per-Site xy re-scheduled under this Pathway, or the Destination narrowed (§ 3)?
+
+Answered 2026-11-24 (owner): Mocap will cover the bench Hand once markers are on it (E1); E5 stays in this
+plan; `learner-generalisation.md` is archived (`plans/archived/learner-generalisation.md`); the Destination
+is narrowed to this plan's scope, so a mid-Pattern change on the robot and per-Site xy are not scheduled
+under this Pathway.
+
+## 8. Residue inherited from `plans/archived/learner-generalisation.md`
+
+Open at that plan's archival (2026-11-24) and carried by no step above. Each is a candidate Item, not
+scheduled work.
+
+1. **D9, a measured overrun in place of the fixed 10 % margin.** `MARGIN_FRAC` 0.9 is the online acceptance
+   criterion; replacing it with a per-limit-class tracking overrun measured from bags was left as a follow-up
+   Item and never filed.
+2. **P3a slack.** Whether the early start (`admissibility_early_command`, on by default) or the literal slot
+   flies first; what buys slack when a check spills past the dispatch; a `--kind check` run of
+   `loaded_budget.py` under a launch.
+3. **The carried oval's release contact.** Whether the carried release shows the release-contact
+   discontinuity, and whether the plant model needs release-velocity terms for it. E0 and E1 bear on this.
+4. **Cosmetic:** the `box:` label key in `ros_ws/gui/js/juggle-panel.js` and the `dwell_s` comment in
+   `Juggle.action` that still describes the box.
+

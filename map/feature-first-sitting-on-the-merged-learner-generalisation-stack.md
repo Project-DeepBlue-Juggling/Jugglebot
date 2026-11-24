@@ -14,7 +14,7 @@ radius: subsystem
 area: learner
 blocked_by: []
 links:
-- plans/active/learner-generalisation.md
+- plans/archived/learner-generalisation.md
 - logbook/2026-11-06-sitting-debrief.md
 parent: learner-generalisation
 filed_by: claude

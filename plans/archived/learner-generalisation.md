@@ -1,7 +1,8 @@
 ---
 title: Learner generalisation — a global plant model, a physics-keyed residual, online admissibility and a per-beat event stream
 created: 2026-10-18
-status: active
+status: superseded
+archived: 2026-11-24
 owner: Harrison
 last_updated: 2026-11-24
 pathway: learner-generalisation
@@ -37,6 +38,27 @@ related_code:
 ---
 
 # Learner generalisation
+
+## Archival note (2026-11-24)
+
+Archived as superseded in part by `plans/active/learner-efficacy.md` (owner, 2026-11-24, after the review in
+`logbook/2026-11-24-learner-efficacy-review-and-scatter-decomposition.md`).
+
+- **Shipped (2026-11-06):** P3a, P3b and P3c (online admissibility at command time and at nomination; the
+  offline box retired), P1 (the global plant model, the residual Memory at schema v2, evidence-scaled
+  authority), P2 (the characterisation Sitting) and P4 (the BeatEvent stream and the Columns wrapper).
+- **Why it closed:** the review found that P5 was not a close-out but most of the Destination's hardware proof,
+  and that the landing scatter cannot be removed by a landing-space learner. The owner re-scoped the Pathway
+  around learner efficacy and narrowed its Destination. This reverses the 2026-11-06 decision that the plan
+  stays open until the P5 items have flown.
+- **Where the residue went:** P5 items 1 and 2 (the arrival pull, yaw) to step E3; items 4 and 5 (the oval on
+  the shared Memory, the INVARIANTS rows) to step E7; item 3 (a mid-Pattern change on the robot) is not
+  pursued, and neither is per-Site xy. The open questions of § 7 that no step carries (the D9 measured
+  overrun, the P3a slack questions, the carried-oval release-contact question) are listed in
+  `learner-efficacy.md` § 8.
+- **Not verified at archival:** no residual xfail markers were found. Eight related logbook entries still
+  read `in-progress`. Path-qualified mentions of this plan in code and test docstrings still say
+  `plans/active/`; the bare filename resolves.
 
 Branch `main` (merged from `skill-stack` 2026-10-23). Standalone follow-on to `plans/archived/two-ball-skill-stack.md`, whose § 0 values
 (one path per function, delete what is replaced in the same rung, refuse by name, no hand-picked
@@ -394,8 +416,8 @@ Destination's hardware proof while the Learner as built cannot deliver the effic
 close-out was re-scoped as a new plan on the same Pathway. Mapping: items 1 and 2 (arrival pull, yaw) go to
 E3; item 3 (a mid-Pattern change on the robot) is not pursued, by owner priority; items 4 and 5 (the oval on
 the shared Memory, the INVARIANTS rows) go to E7, item 4 now conditional on E2(b) because pooling theta
-across release kinds contaminates Columns. This plan is NOT archived in this commit: the owner's 2026-11-06
-"stays open until these have flown" has not been revisited. The text below is the historical record.
+across release kinds contaminates Columns. The plan was archived later the same day (owner; see the
+Archival note at the top). The text below is the historical record.
 
 What stands between the plan and its Destination ("any Site, Apex, Dwell or yaw can be commanded and changed
 mid-Pattern"): the arrival pull, the per-beat rotation that depends on it, a mid-Pattern change on the robot, the

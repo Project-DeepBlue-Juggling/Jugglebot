@@ -123,7 +123,7 @@ The release-step exception to `HAND_LIMIT_C2` is on the Hand thread (IDEA-17), n
 
 ### P6: Per-Beat Sites dependency owned by PWAY-2
 
-- Not built here; owned by PWAY-2 (`plans/active/learner-generalisation.md`): Learner core P1, online admissibility P3, `BeatEvent` stream P4. This Pathway waits on it and adds no box key of its own.
+- Not built here; owned by PWAY-2 (`plans/archived/learner-generalisation.md`): Learner core P1, online admissibility P3, `BeatEvent` stream P4. This Pathway waits on it and adds no box key of its own.
 - Gate (Phase check): PWAY-2 P1, P3 and P4 complete; (date, command, result) is recorded in that plan - to be linked.
 - Depends on: PWAY-2. Items consumed: PWAY-2. Owner decision: D-d at PWAY-2's P2.
 

@@ -1,4 +1,4 @@
-# Learner characterisation Sitting (P2 of `plans/active/learner-generalisation.md`)
+# Learner characterisation Sitting (P2 of `plans/archived/learner-generalisation.md`)
 
 Written 2026-11-06, after the first powered run of the merged stack
 (`logbook/2026-11-06-sitting-debrief.md`). Runbook row: FEAT-44. About 40 minutes, robot armed and level,

@@ -23,7 +23,7 @@ related_code:
 
 ## Archival note (2026-11-06): superseded, nothing shipped
 
-Superseded by `plans/active/learner-generalisation.md` phases P3a-P3c, which retire the Admissible box and
+Superseded by `plans/archived/learner-generalisation.md` phases P3a-P3c, which retire the Admissible box and
 its sweep outright; this plan's subject (make the sweep plan what the executor dispatches for same-site
 families) no longer exists. None of its work landed (the file's history is its filing and a frontmatter
 backfill). Its concern is resolved in the replacement, not carried: the per-Throw check's stand-in

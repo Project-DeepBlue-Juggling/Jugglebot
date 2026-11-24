@@ -16,7 +16,7 @@ area: skill-stack
 blocked_by: []
 links:
 - map/bug-mid-air-ball-collisions-end-half-of-two-ball-columns.md
-- plans/active/learner-generalisation.md
+- plans/archived/learner-generalisation.md
 - logbook/2026-11-06-sitting-debrief-2.md
 - logbook/2026-11-10-sitting-debrief.md
 parent: learner-generalisation

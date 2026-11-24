@@ -16,7 +16,7 @@ area: skill-stack
 blocked_by: []
 links:
 - logbook/2026-11-06-sitting-debrief.md
-- plans/active/learner-generalisation.md
+- plans/archived/learner-generalisation.md
 - logbook/2026-11-06-nomination-reaim-figure.md
 parent: learner-generalisation
 filed_by: claude
