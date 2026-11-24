@@ -4,7 +4,7 @@ kind: bug
 title: teensy_bridge_node forwards only the newest waiting knot; harmless at emit lead 0, but the cover has 7-14 ms of margin against a stall
 status: in_progress
 created: '2026-11-13'
-updated: '2026-11-20T04:12:54Z'
+updated: '2026-11-24T13:21:13Z'
 owners: []
 priority: high
 effort: s
@@ -78,3 +78,4 @@ On 2026-11-13 both LANE_REFUSED ends (11:46:53, 11:49:33) followed a :5557 drain
 - 2026-11-18: Failed at the Sitting of 2026-11-18 on clause 2 only: the counter works (3.2 drops per minute with cpu_partition off, 3.3 on: no measurable difference), but 4 of 7 in-Attempt stamp-gap STOPs lack the dropped-a-knot verdict. The dropped knot marks lateness; it is the cause only in the early-emit cases (BUG-110). Detail and owner decisions: the 2026-11-18 debrief entry.
 - 2026-11-18: Owner decision 2026-11-18: the firmware scheduler grace is now per lane group, Legs 30 ms (cover 80 ms), Hand unchanged at 20 ms (a global 30 ms let a Hand moving down at 70-100 rev/s stop past the floor clip). can-bridge FW 44. Emit lead and the due-aware bridge rule stay undecided.
 - 2026-11-20: Failed at the Sitting of 2026-11-20: 4 of 6 in-Attempt stamp-gap STOPs carry the generic verdict, not dropped-a-knot, and 3 of those sit beside a 67-80 ms host stall; 64 of 72 drop lines are followed by no STOP. The drop reads as a marker of lateness, not its cause (the 2026-11-18 finding repeated). setpoints_coalesced resets at each arming, so it is not a launch total.
+- 2026-11-25: census over 54 min of Attempts: 192 frames dropped (3.6 per minute); at lead 0 every drop opens a hole (p50 7.6 ms, 38 of 183 over 14 ms), and 283 more frames arrived 25 to 50 ms old. Lead 1 leaves 8 of 183 drops with a hole; the due-aware rule shortens 3 of them. Cost: one more wire-read knot, 25 ms off every splice budget.

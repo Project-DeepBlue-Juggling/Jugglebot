@@ -2,9 +2,9 @@
 id: BUG-111
 kind: bug
 title: Hand SPINOUT at the Throw peak after a setpoint 12.6 ms late (2026-11-18)
-status: inbox
+status: in_progress
 created: '2026-11-18'
-updated: '2026-11-20T04:13:00Z'
+updated: '2026-11-24T13:21:08Z'
 owners: []
 priority: high
 effort: m
@@ -76,3 +76,4 @@ Not checked: which tick promoted the frame; the Hand's physical response in any 
 - 2026-11-18: Bag review confirmed it: firmware extrapolation across the release knot of a frame 12.6 ms late produced the 137 rev/s command and a -39 to -45 rev/s step when the frame was promoted. Grace stays at 14 ms (owner); options recorded in the body, to decide after the current work.
 - 2026-11-20: Flown at the Sitting of 2026-11-20, verdict unresolved: a SPINOUT occurred at 13:22:42 during the post-release brake of a normal Throw (Hand 0.46 rev above its command at the disarm) but was not captured; the 100 Hz echo shows command peaks equal to the preceding Throws, with a 27.3 ms-late frame dropped 41 ms before. Missing:
 - 2026-11-20: the 500 Hz plan replay with the arrival times of seq 50752 and 50753, or a saved capture.
+- 2026-11-25: 500 Hz replay (tools/probes/hand_late_knot_replay.py) confirms both SPINOUTs: a late release-knot frame let the firmware extend the accelerating cubic, then its promotion stepped the velocity command by 34 to 40 rev/s (2026-11-18) and 18 to 38 rev/s (2026-11-20). They are the only 2 of 209 replayed drops at a release knot above 90 rev/s. Emit lead 1 removes both steps.
