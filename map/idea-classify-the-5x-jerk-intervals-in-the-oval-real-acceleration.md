@@ -15,6 +15,9 @@ area: skill-stack
 blocked_by: []
 links: []
 filed_by: claude
+night_skip: low-priority
+night_skip_on: '2026-11-25'
+night_skip_note: 'Classified 2026-11-25: mostly real per-cycle Segment-boundary steps, 15-18 % dropped-knot echo artefacts; naming the Splice is a launch-log read.'
 ---
 
 About 15 % of the intervals in a one-ball oval (42 of 273, 2026-11-20) show roughly 5 times the nominal jerk in `/leg_setpoint_echo`. Either they are real acceleration steps at re-aim Splices, or the echo dropped a message. Classify them. Found in the PWAY-2 review, `logbook/2026-11-24-learner-efficacy-review-and-scatter-decomposition.md`.

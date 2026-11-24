@@ -17,6 +17,10 @@ blocked_by: []
 links: []
 parent: learner-generalisation
 filed_by: claude
+night_skip: input-decision
+night_skip_on: '2026-11-25'
+night_skip_note: Builds the split you choose (per-kind model, a kind term, or K shared with per-kind laterals) with a leakage test, then merges if the gate says MERGE.
+night_skip_input: 'Pick option 1-4 in the BUG-138 question ticket: split the plant model by release kind, add a kind term, share K and split the laterals, or defer to E7.'
 ---
 
 The plant model's f0 pools carried and from-rest rows across release kinds, so rows from the oval move the offset applied to Columns. Found in the PWAY-2 review, `logbook/2026-11-24-learner-efficacy-review-and-scatter-decomposition.md`. Plan step E2(b) in `learner-efficacy.md`.
