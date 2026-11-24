@@ -319,6 +319,17 @@ def test_the_bump_history_records_what_this_version_carries():
     for needle in ('BUG-105', 'vel_ff = 0', '!out_en', 'LEGS\' flush is UNCHANGED',
                    'NO WIRE CHANGE', 'PROTOCOL_VERSION stays 14'):
         assert needle in m49.group(1), (needle, m49.group(1))
+    # FW 50 — BUG-99 observability and pins only.  The substance: the overflow-
+    # safe stamp bound (unsigned difference, 2^31 us both ways, counted as a
+    # future drop), the compiled lead-clamp headroom assert, a console-only
+    # transition count, and no wire change, so only BRIDGE_FW_CHECK says
+    # whether it is aboard.
+    m50 = re.search(r'^// 49→50:(.*)$', text, re.M)
+    assert m50 is not None, "FW 50 history line missing"
+    for needle in ('BUG-99', 'SCHED_STAMP_RANGE_US', 'UNSIGNED', 'sched_future_drops',
+                   'static_assert', 'CONSOLE-ONLY', 'NO WIRE CHANGE',
+                   'PROTOCOL_VERSION stays 14'):
+        assert needle in m50.group(1), (needle, m50.group(1))
 
 
 def test_the_version_this_release_pins_is_actually_uplinked():

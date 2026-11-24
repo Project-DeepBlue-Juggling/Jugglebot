@@ -1029,7 +1029,13 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # at the last transmitted input_pos on a tau == 0 session, the tau drain carries
 # vel_ff 0 otherwise. The Legs' flush is unchanged. Behavioural only: no wire
 # change, PROTOCOL_VERSION stays 14.
-EXPECTED_BRIDGE_FW_VERSION = 49
+# 49 -> 50 (2026-11-25, BUG-99): observability and pins only. A HAS_SCHED stamp
+# more than 2^31 us (35.8 min) off the bridge wall clock is dropped at ingest
+# (counted in sched_future_drops), closing a signed-overflow band at 2^63 + wall;
+# a compiled lead-clamp headroom assert; a console-only [hand7] xfer= count of
+# scheduled <-> legacy transitions. No live stamp is affected. No wire change,
+# PROTOCOL_VERSION stays 14.
+EXPECTED_BRIDGE_FW_VERSION = 50
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

@@ -2076,6 +2076,62 @@ TEST_CASE("FW 22 scheduled: a stamp beyond SCHED_MAX_FUTURE_US is refused and do
   CHECK(interp_last_setpoint_us() == before);
 }
 
+// FW 50 (BUG-99 A1). FW 49 mapped the u64 stamp with signed arithmetic,
+// mono + ((int64)t_origin − wall), which overflows for a stamp near 2^63 + wall.
+// Probe (fw50 probe_a1_band.cpp, live-like wall 1.7959e15 us, 1 h uptime): the
+// stamps 2^63 + wall + [−(mono − recv), ingest-to-promotion latency] wrap to a
+// t_start near INT64_MIN, pass the future check, and are PROMOTED because the
+// expiry test (now − t_start) overflows negative too — a group then plays u0
+// frozen with vel_ff v0 until SETPOINT_STALE. On FW 49 this case FAILS (the frame
+// is queued and the Hand group goes active); FW 50 drops it at ingest.
+TEST_CASE("FW 50 BUG-99 A1: a stamp in the signed-overflow band near 2^63 + wall is dropped as out of range, never promoted") {
+  const C2Plan P = make_c2_plan(1500.0, 12, 5.0);
+  const uint64_t band0 = ((uint64_t)1 << 63);
+  SUBCASE("2^63 + wall, promoted on the same tick under FW 49") {
+    reset_interp_test();
+    seed_hand_encoder();
+    const uint64_t before = interp_last_setpoint_us();
+    stage_sched_frame(1, P, 0, band0 + fake_wall_us());
+    CHECK(interp_sched_frames() == 0);
+    CHECK(interp_sched_future_drops() == 1);
+    CHECK(interp_last_setpoint_us() == before);   // like a future drop: no staleness feed
+    interp_isr();
+    CHECK(interp_sched_phase(1) == 0);
+    CHECK(interp_sched_phase(0) == 0);
+    CHECK_FALSE(interp_hand_lane_active());
+  }
+  SUBCASE("2^63 + wall + 1.5 ms, promoted one interp tick later under FW 49") {
+    reset_interp_test();
+    seed_hand_encoder();
+    stage_sched_frame(1, P, 0, band0 + fake_wall_us() + 1'500u);
+    fake_advance(INTERP_PERIOD_US);
+    interp_isr();
+    CHECK(interp_sched_future_drops() == 1);
+    CHECK(interp_sched_phase(1) == 0);
+    CHECK_FALSE(interp_hand_lane_active());
+  }
+}
+
+// FW 50: the bound's two edges, in the PAST direction (the future direction is
+// already refused by SCHED_MAX_FUTURE_US, far inside 2^31). A stamp exactly
+// SCHED_STAMP_RANGE_US old is still accepted (and then expires at promotion, as
+// on FW 49); one microsecond older is dropped at ingest.
+TEST_CASE("FW 50 BUG-99 A1: the stamp range edge is +-2^31 us off the wall (past side accepted at the edge, dropped beyond)") {
+  const C2Plan P = make_c2_plan(1500.0, 12, 5.0);
+  reset_interp_test();
+  fake_set_clock((uint64_t)1'795'900'000'000'000ull, 3'600'000'000ull);   // live-like epoch, 1 h uptime
+  const uint64_t edge = fake_wall_us() - (uint64_t)SCHED_STAMP_RANGE_US;
+  stage_sched_frame(1, P, 0, edge);
+  CHECK(interp_sched_frames() == 1);
+  CHECK(interp_sched_future_drops() == 0);
+  interp_isr();
+  CHECK(interp_sched_expired() == 1);                // FW 49 behaviour: queued, then expired
+  CHECK(interp_sched_phase(1) == 0);
+  stage_sched_frame(2, P, 0, edge - 1u);
+  CHECK(interp_sched_frames() == 1);
+  CHECK(interp_sched_future_drops() == 1);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  FW 22 hand acceleration torque feedforward (U2b)
 //    tau = fade * sat(Ks * J * 2pi * a_cmd + bias), HAND_TOR_SCALE 1000, drain on TX stop
@@ -2871,4 +2927,123 @@ TEST_CASE("BUG-105 residual: with output enabled a stopped Hand stream never idl
   fake_advance(INTERP_PERIOD_US);
   fake_clear_sent(); interp_isr();
   CHECK(fake_sent_count() == 0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  FW 50 (BUG-99) PINS of FW 49 behaviour. These DOCUMENT what the firmware does
+//  today on three paths a review flagged; they do not fix anything (the
+//  behaviour changes are owner decisions, out of FW 50's scope). A pin that
+//  fails after a later edit means that edit changed one of these behaviours:
+//  update the pin deliberately, with the decision that changed it.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Row 3 PIN: legacy Leg Mode 1 starvation. interp_isr clamps s to 1, so with no
+// new frame the Leg command HOLDS p1 with velocity v1 (not zero) indefinitely
+// (until the fault machine's SETPOINT_STALE). An ODrive in position mode settles
+// that pair at p1 + v1/Kp: a static overshoot of |v1|/Kp <= 3.5/40 = 0.0875 rev
+// at the VELFF cap. (The I-FW-10 case stages a frame WITHOUT u1 and never takes
+// this branch.)
+TEST_CASE("PIN (BUG-99 row 3): a starved legacy Mode 1 frame holds p1 with velocity v1, not zero") {
+  reset_interp_test();
+  for (uint8_t i = 0; i < 6; ++i) axes[i].pos_rev = 0.6f;   // encoder at p1 (no lead clamp)
+  const float u0[6] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+  const float u1[6] = {0.6f, 0.6f, 0.6f, 0.6f, 0.6f, 0.6f};
+  const float v0[6] = {3.0f, 3.0f, 3.0f, 3.0f, 3.0f, 3.0f};
+  const float v1[6] = {3.0f, 3.0f, 3.0f, 3.0f, 3.0f, 3.0f};   // still moving at the u1 knot
+  stage_hand(u0, u1, v0, nullptr, 1, v1);                        // HAS_U1 | HAS_V1, legs only
+  for (int t = 0; t < 100; ++t) { interp_isr(); fake_advance(INTERP_PERIOD_US); }   // 200 ms, 8 segments
+  interp_isr();
+  for (uint8_t i = 0; i < 6; ++i) {
+    CHECK(axes[i].target_pos_rev == doctest::Approx(0.6f));   // held at p1
+    CHECK(axes[i].target_vel_rps == doctest::Approx(3.0f));   // vel_ff v1, NOT zero
+  }
+  CHECK(interp_extrap_ticks() == 0);                          // never left Mode 1
+  const float overshoot = 3.0f / ODriveDefaults::LEG_POS_GAINS[0];
+  MESSAGE("row 3: static overshoot at the drive = v1/Kp = " << overshoot << " rev");
+}
+
+// Row 2 PIN: a time-base offset SLEW (set_wall_anchor: diff >> 4 when |diff| <=
+// 20 ms, so at most 1.25 ms per 30 s anchor) moves every later stamp's t_start
+// by the slew, and the first frame mapped across it is promoted against the
+// outgoing curve with a discontinuity of about v x slew. sched_apply only COUNTS
+// it (promo_over, dp/dv/da_max) during PLAY and accepts the step. A 1 ms slew is
+// not even above TB_JUMP_NOTE_US, so the STOP record's jump field stays empty.
+// Measured here (FW 49 = FW 50): the first frame across the slew is promoted
+// where the Hand plan is at its acceleration peak (1500 rev/s^2), so the step is
+// in VELOCITY, a x 1 ms = 1.5 rev/s (dp 0.0024 rev).
+TEST_CASE("PIN (BUG-99 row 2): a 1 ms wall-offset slew mid-stream is promoted as a counted step (promo_over moves)") {
+  reset_interp_test();
+  seed_hand_encoder();
+  const C2Plan P = make_c2_plan(1500.0, 12, 5.0);
+  const uint64_t t0 = 1'100'000;
+  write_pos_vel(hand_axis(), (float)P.p[0], 0.0f, fake_mono_us());
+  interp_set_output_enabled(true);
+  SchedRun r;
+  for (int k = 0; k < 40; ++k) r.ev.push_back({t0 + (uint64_t)k * 25'000u - 24'000u, k});   // emit lead 1
+  sched_ticks(r, P, t0, t0 + 14u * 25'000u, [](uint64_t) {});
+  REQUIRE(interp_sched_phase(1) == 1);
+  CHECK(interp_sched_promo_over(1) == 0u);                     // clean stream: no step
+  float dp0 = 0.0f, dv0 = 0.0f, da0 = 0.0f;
+  interp_sched_promo_max(1, &dp0, &dv0, &da0);
+  // One anchor's slew: the wall moves +1 ms against micros64.
+  fake_set_clock(fake_wall_us() + 1'000u, fake_mono_us());
+  float pmax_step = 0.0f, prev_p = axes[HAND_AXIS].target_pos_rev;
+  sched_ticks(r, P, t0, t0 + 30u * 25'000u, [&](uint64_t) {
+    const float p = axes[HAND_AXIS].target_pos_rev;
+    if (std::fabs(p - prev_p) > pmax_step) pmax_step = std::fabs(p - prev_p);
+    prev_p = p;
+  });
+  float dp = 0.0f, dv = 0.0f, da = 0.0f;
+  interp_sched_promo_max(1, &dp, &dv, &da);
+  MESSAGE("row 2: before slew dp_max=" << dp0 << " dv_max=" << dv0 << "; after a 1 ms slew promo_over="
+          << interp_sched_promo_over(1) << " dp_max=" << dp << " rev dv_max=" << dv << " rev/s da_max=" << da
+          << " stops=" << interp_sched_stops() << " max per-tick hand step=" << pmax_step);
+  CHECK(interp_sched_promo_over(1) >= 1u);                     // counted ...
+  CHECK(dv > SCHED_PROMO_TOL_VEL_HAND_RPS);                    // ... a real step ...
+  CHECK(dv == doctest::Approx(1500.0f * 1e-3f).epsilon(0.05)); // ... of a x slew
+  CHECK(interp_sched_phase(1) == 1);                           // ... and played on: no stop, no refusal
+  CHECK(interp_sched_refused() == 0u);
+  CHECK(interp_sched_promo_over(0) == 0u);                     // flat legs: zero velocity, zero step
+}
+
+// Row 1 PIN: a mid-stream demotion from scheduled to legacy. When time_synced()
+// goes false the next HAS_SCHED frame is demoted (counted) and latched with
+// ARRIVAL semantics: latch_from_staging clears the scheduled groups and the lane
+// restarts at the frame's u0 at the arrival instant, though u0 is the knot for
+// its stamp (here 24 ms later, emit lead 1). The Hand command steps by about
+// v x lead. FW 50 adds only the console count (xfer=) of the transition.
+TEST_CASE("PIN (BUG-99 row 1): a mid-stream scheduled -> legacy demotion steps the Hand command by about v x frame lead") {
+  reset_interp_test();
+  seed_hand_encoder();
+  const C2Plan P = make_c2_plan(1500.0, 12, 5.0);
+  const uint64_t t0 = 1'100'000;
+  write_pos_vel(hand_axis(), (float)P.p[0], 0.0f, fake_mono_us());
+  interp_set_output_enabled(true);
+  SchedRun r;
+  for (int k = 0; k < 40; ++k) r.ev.push_back({t0 + (uint64_t)k * 25'000u - 24'000u, k});
+  sched_ticks(r, P, t0, t0 + 12u * 25'000u, [](uint64_t) {});
+  REQUIRE(interp_sched_phase(1) == 1);
+  CHECK(interp_sched_mode_xfers() == 0u);                      // legacy -> sched needs a legacy lane first
+  fake_set_time_synced(false);
+  float prev_p = axes[HAND_AXIS].target_pos_rev, step = 0.0f, v_at = 0.0f;
+  uint64_t t_step = 0;
+  const uint32_t dem0 = interp_sched_demoted();
+  sched_ticks(r, P, t0, t0 + 14u * 25'000u, [&](uint64_t now) {
+    const float p = axes[HAND_AXIS].target_pos_rev;
+    if (t_step == 0 && interp_sched_demoted() != dem0) {
+      double pr, vr, ar;
+      plan_ref(P, t0, now, pr, vr, ar);
+      step = p - prev_p; v_at = (float)vr; t_step = now;
+    }
+    prev_p = p;
+  });
+  REQUIRE(t_step != 0);
+  CHECK(interp_sched_phase(1) == 0);                           // the scheduled Hand group is gone
+  CHECK(interp_sched_mode_xfers() == 1u);                      // FW 50: counted once
+  // The step: one 2 ms tick of plan motion plus the jump to the frame's u0, which
+  // is the plan ~24 ms ahead of arrival. |step| ~ |v| x lead, far above one tick.
+  MESSAGE("row 1: demotion step " << step << " rev at plan v " << v_at << " rev/s (v x 24 ms = "
+          << v_at * 0.024f << ", v x 2 ms = " << v_at * 0.002f << ")");
+  CHECK(std::fabs(step) > 5.0f * std::fabs(v_at) * 0.002f);
+  CHECK(step == doctest::Approx(v_at * 0.024f).epsilon(0.05)); // measured: -1.712 rev at -71.6 rev/s
 }

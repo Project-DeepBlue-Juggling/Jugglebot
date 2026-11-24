@@ -331,3 +331,53 @@ def test_both_interpreters_render_identical_bytes():
         "un-fixable drift. Differing: "
         + ", ".join(sorted(k for k in set(ours) | set(theirs)
                            if ours.get(k) != theirs.get(k))))
+
+
+# ── FW 50 (BUG-99 A2): the lead-clamp velocity headroom, twin of the static_assert ──
+# canbridge_config.h now static_asserts, for every leg,
+#   pos_gain × MAX_LEAD_REV + LEAD_CLAMP_VELFF_LIMIT_RPS <= LEG_VEL_LIMIT_RPS
+# (today 40 × 0.10 + 3.5 = 7.5 <= 12). The gains and the limit come from
+# hardware_config.yaml; the two clamp constants are hand-written in the header.
+# The static_assert only fires at `pio run` (or the native build); this twin
+# fails the ordinary pytest gate the moment a YAML edit breaks the invariant,
+# before anyone builds firmware.
+_CANBRIDGE_CONFIG_H = (_REPO_ROOT / "ros_ws" / "src" / "jugglebot"
+                       / "Teensy_code_canbridge" / "canbridge_config.h")
+
+
+def _header_float(name: str) -> float:
+    import re
+    text = _CANBRIDGE_CONFIG_H.read_text(encoding="utf-8")
+    m = re.search(r"constexpr float\s+" + name + r"\s*=\s*([-0-9.eE]+)f?\s*;", text)
+    assert m, name
+    return float(m.group(1))
+
+
+def _lead_clamp_headroom_violations(yaml_path: Path) -> list:
+    """(leg, Kp·MAX_LEAD + VELFF cap, vel_limit) for every leg breaking the invariant."""
+    import yaml
+    with open(yaml_path, encoding="utf-8") as fh:
+        od = yaml.safe_load(fh)["jugglebot_odrive_defaults"]
+    gains = [float(g) for g in od["leg_pos_gains"]]
+    vlim = float(od["leg_vel_limit_rps"])
+    lead, velff = _header_float("MAX_LEAD_REV"), _header_float("LEAD_CLAMP_VELFF_LIMIT_RPS")
+    assert len(gains) == 6
+    return [(i, g * lead + velff, vlim) for i, g in enumerate(gains)
+            if g * lead + velff > vlim]
+
+
+def test_lead_clamp_velocity_headroom_holds_on_the_committed_yaml():
+    assert _lead_clamp_headroom_violations(_GEN.HW_YAML if _GEN else
+                                           _REPO_ROOT / "config" / "hardware_config.yaml") == []
+
+
+def test_lead_clamp_velocity_headroom_twin_catches_a_gain_of_90(tmp_path):
+    """The twin is live: one leg at Kp 90 gives 90 × 0.10 + 3.5 = 12.5 > 12."""
+    import re
+    src = (_REPO_ROOT / "config" / "hardware_config.yaml").read_text(encoding="utf-8")
+    mutated, n = re.subn(r"(leg_pos_gains:\s*\[)\s*40\.0", r"\g<1>90.0", src, count=1)
+    assert n == 1, "leg_pos_gains line not found in the expected shape"
+    p = tmp_path / "hardware_config.yaml"
+    p.write_text(mutated, encoding="utf-8")
+    bad = _lead_clamp_headroom_violations(p)
+    assert [b[0] for b in bad] == [0] and abs(bad[0][1] - 12.5) < 1e-6

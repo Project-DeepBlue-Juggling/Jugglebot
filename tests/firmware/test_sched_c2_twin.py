@@ -265,6 +265,30 @@ def test_expired_and_stale_frames_are_dropped_and_counted():
     assert d.it.sched_stale == 2 and d.it._sg[1].frame_t_start_us == playing
 
 
+def test_a_stamp_more_than_2_31_us_off_the_wall_is_an_out_of_range_drop():
+    """FW 50 (BUG-99 A1) mirror: |stamp - wall| > 2^31 us is dropped at ingest.
+
+    The firmware bound exists because FW 49's signed sum overflowed near
+    2^63 + wall (native test ``FW 50 BUG-99 A1``); Python ints never wrap, so the
+    twin's job is only to agree on which stamps are queued and which are drops.
+    """
+    P, V, A = c2_plan(64)
+    zero7 = [0.0] * 7
+    for stamp, want in ((T0_US - ti.SCHED_STAMP_RANGE_US, "sched"),        # the edge: accepted
+                        (T0_US - ti.SCHED_STAMP_RANGE_US - 1, "future"),   # 1 us beyond: dropped
+                        ((1 << 63) + T0_US, "future"),                     # the FW 49 overflow band
+                        ((1 << 64) - 1, "future")):
+        it = ti.TeensyLegInterp([-1e9] * 6, [1e9] * 6)
+        assert it.sched_on_setpoint(stamp, T0_US, zero7, zero7, zero7, zero7, zero7, zero7) == want
+        assert it.sched_future_drops == (1 if want == "future" else 0)
+
+
+def test_the_stamp_range_bound_matches_the_firmware():
+    cb = _fw_header("canbridge_config.h")
+    assert re.search(r"constexpr int64_t\s+SCHED_STAMP_RANGE_US\s*=\s*\(int64_t\)1 << 31;", cb)
+    assert ti.SCHED_STAMP_RANGE_US == 1 << 31
+
+
 @pytest.mark.parametrize("late_hi_ms", [40.0, 80.0])
 def test_stress_lead0_random_lateness_never_steps(late_hi_ms):
     """Emit lead 0 with 0-40 ms lateness (the stress case: cover + grace holds it)

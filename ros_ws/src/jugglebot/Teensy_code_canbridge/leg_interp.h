@@ -229,8 +229,9 @@ uint32_t interp_sched_hand_c1_stops();   // FW 37 hand C1 stops (BUG-55), a subs
 uint32_t interp_sched_refused();     // discontinuous resumes refused while armed
 uint32_t interp_sched_superseded();  // due frames beaten by a newer due frame in the same tick
 uint32_t interp_sched_stale();       // frames older than the playing frame, not played
-uint32_t interp_sched_future_drops(); // stamps beyond SCHED_MAX_FUTURE_US, dropped at receipt
+uint32_t interp_sched_future_drops(); // stamps out of range (beyond SCHED_MAX_FUTURE_US, or FW 50 beyond ±SCHED_STAMP_RANGE_US of the wall), dropped at receipt
 uint32_t interp_sched_q_overflow();  // queue full, oldest stamp dropped
+uint32_t interp_sched_mode_xfers();  // FW 50: scheduled <-> legacy lane transitions while output enabled (console only)
 // FW 38 (BUG-58): read-and-reset the per-heartbeat-window frame-age census
 // (rx_age = now − t_start at queue entry): window max (INT32_MIN = no stamped
 // frame this window) and counts at ≤25 / ≤50 / ≤70 / >70 ms. Heartbeat task only.

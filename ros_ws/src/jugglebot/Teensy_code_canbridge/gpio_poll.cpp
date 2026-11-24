@@ -69,8 +69,12 @@ static_assert(POLL_INTERVAL_US > TICK_PERIOD_US,
 // Staleness window. A healthy poller lands a good reply at least every
 // (CHECK_INTERVAL_MS + CHECK_TIMEOUT_MS); two of those tolerate ONE lost round
 // trip without flapping the tri-state to UNKNOWN, and still surface a dead sensor
-// within ~240 ms. PROVISIONAL — Phase 7 step 3's SDO round-trip measurement is
-// what actually sizes it (no measured figure exists anywhere today).
+// within ~240 ms. Checked against measurement (FW 50 comment, FEAT-28; no
+// longer provisional): logbook/2026-08-24-hand-sensor-poll-cadence.md measured
+// the achieved poll cadence at p50 20 ms / p95 30 ms over 13 bags at bridge
+// uptimes 0-117 h, so 240 ms is ~8x the p95. Of that corpus's isolated
+// single-gap stalls (50, 160, 473.6 ms) only the 473.6 ms one exceeds it, and
+// reads as one UNKNOWN blip.
 static constexpr uint64_t REPLY_STALE_US = 2ull * (POLL_INTERVAL_US + REPLY_TIMEOUT_US);
 
 enum class PPhase : uint8_t { IDLE, AWAIT };

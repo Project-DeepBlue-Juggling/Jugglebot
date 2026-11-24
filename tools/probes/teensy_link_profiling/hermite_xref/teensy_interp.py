@@ -127,6 +127,7 @@ SCHED_SEG_US = 25000
 SCHED_COVER_US = 2 * SCHED_SEG_US
 SCHED_QUEUE_LEN = 4
 SCHED_MAX_FUTURE_US = 250000
+SCHED_STAMP_RANGE_US = 1 << 31   # FW 50 (BUG-99 A1): |stamp - wall| bound, both directions
 SCHED_PLAY, SCHED_STOP, SCHED_HOLD = 0, 1, 2
 SCHED_PROMO_TOL_LEG = (0.002, 0.1, 10.0)     # (rev, rev/s, rev/s^2)
 SCHED_PROMO_TOL_HAND = (0.005, 0.5, 50.0)
@@ -917,6 +918,15 @@ class TeensyLegInterp:
         if not (full and time_synced):
             self.sched_demoted += 1
             return 'demoted'
+        # FW 50 (BUG-99 A1): the firmware first bounds stamp - wall (unsigned
+        # difference, then +-SCHED_STAMP_RANGE_US) so its signed sums cannot
+        # overflow. Python ints do not overflow, so this twin never had the FW 49
+        # wrap; the bound is mirrored so a stamp > 2^31 us in the PAST is a
+        # 'future' (out of range) drop here too, not a queued frame that expires.
+        d = int(t_origin_us) - (int(recv_us) + int(wall_offset_us))
+        if d > SCHED_STAMP_RANGE_US or d < -SCHED_STAMP_RANGE_US:
+            self.sched_future_drops += 1
+            return 'future'
         t_start = int(t_origin_us) - int(wall_offset_us)
         if t_start - int(recv_us) > SCHED_MAX_FUTURE_US:
             self.sched_future_drops += 1

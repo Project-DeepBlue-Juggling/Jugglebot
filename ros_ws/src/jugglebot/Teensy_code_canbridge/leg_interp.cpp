@@ -463,8 +463,15 @@ static volatile uint32_t s_sp_seq_drops       = 0;   // stale or duplicate seq, 
 static volatile uint32_t s_sp_no_hand         = 0;   // parsed with HAS_HAND clear (a hand-less plan, or a lost flag)
 static volatile uint32_t s_sp_no_sched        = 0;   // parsed with HAS_SCHED clear (played with arrival semantics)
 static volatile uint32_t s_sched_demoted      = 0;   // net task: HAS_SCHED played as legacy
-static volatile uint32_t s_sched_future_drops = 0;   // net task: stamp > SCHED_MAX_FUTURE_US ahead
+static volatile uint32_t s_sched_future_drops = 0;   // net task: stamp out of range (> SCHED_MAX_FUTURE_US ahead, or FW 50 > ±SCHED_STAMP_RANGE_US off the wall)
 static volatile uint32_t s_sched_q_overflow   = 0;   // net task: queue full, oldest stamp dropped
+// FW 50 (BUG-99 row 1): scheduled <-> legacy lane transitions while output is
+// enabled, ISR, cumulative, CONSOLE ONLY ([hand7] xfer=; not uplinked, no wire
+// change). A mid-stream scheduled -> legacy demotion (time_synced() falling, or a
+// frame without HAS_SCHED) steps the command by about v x the frame's lead, and
+// nothing else counts it as a transition. Counted once per frame that changes a
+// lane's mode: sched -> legacy in latch_from_staging, legacy -> sched in sched_apply.
+static volatile uint32_t s_sched_mode_xfers   = 0;
 static volatile uint32_t s_sched_expired      = 0;   // ISR: 2T cover gone at promotion
 static volatile uint32_t s_sched_superseded   = 0;   // ISR: a newer due frame won the same tick
 static volatile uint32_t s_sched_stale        = 0;   // ISR: older than the playing frame
@@ -843,6 +850,8 @@ static void sched_apply(SchedGroup& g, const SchedFrame& f, uint8_t first, uint8
                         float tol_p, float tol_v, float tol_a,
                         float rtol_p, float rtol_v, float rtol_a) {
   if (g.active && f.t_start_us < g.frame_t_start_us) { ++s_sched_stale; return; }   // no double play
+  // FW 50 (BUG-99 row 1), observability only: was this lane playing a LEGACY frame?
+  const bool was_legacy = !g.active && ((first == 0) ? s_have_latched : s_hand_active);
   if (g.active && !g.restart) {
     // The handover instant. Promotion runs BEFORE sched_advance, so a playing
     // group whose cover ended inside this tick has not entered its stop yet: the
@@ -901,6 +910,7 @@ static void sched_apply(SchedGroup& g, const SchedFrame& f, uint8_t first, uint8
   g.latched = false;
   g.restart = false;
   g.hand_ff_gain = f.hand_ff_gain;
+  if (was_legacy && out_en) ++s_sched_mode_xfers;   // FW 50: count only, legacy -> sched
   if (first == 0) s_have_latched = true;
   else            s_hand_active  = true;
 }
@@ -1065,8 +1075,16 @@ void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len) {
   }
   if (sched) {
     const int64_t mono = (int64_t)micros64();      // adjacent reads: the offset, not two clocks
-    const int64_t wall = (int64_t)now_wall_us();
-    const int64_t t_start = mono + ((int64_t)sp.t_origin_us - wall);
+    const uint64_t wall = now_wall_us();
+    // FW 50 (BUG-99 A1): stamp − wall in UNSIGNED arithmetic (defined wrap), then
+    // bounded to ±SCHED_STAMP_RANGE_US before any signed sum. FW 49's
+    // mono + ((int64)t_origin − wall) overflowed for a stamp near 2^63 + wall and
+    // let it through the future check to be promoted. With |d| <= 2^31 every sum
+    // below stays far inside int64. Counted as a future drop ("stamp out of
+    // range"); like the future drop it does NOT feed the staleness clock.
+    const int64_t d = (int64_t)(sp.t_origin_us - wall);
+    if (d > SCHED_STAMP_RANGE_US || d < -SCHED_STAMP_RANGE_US) { ++s_sched_future_drops; return; }
+    const int64_t t_start = mono + d;
     if (t_start - (int64_t)recv > SCHED_MAX_FUTURE_US) { ++s_sched_future_drops; return; }
     SchedFrame f;
     f.t_start_us = t_start;
@@ -1135,6 +1153,10 @@ void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len) {
 
 // ── Latch (consume staging) — port of teensy_interp.latch_setpoint ────────────
 static void latch_from_staging() {
+  // FW 50 (BUG-99 row 1), observability only: a legacy frame taking a lane back
+  // from a playing scheduled group while output is enabled is a transition.
+  if (s_output_enabled && (s_sg[SG_LEGS].active || (s_stage.has_hand && s_sg[SG_HAND].active)))
+    ++s_sched_mode_xfers;
   // FW 22: a legacy frame takes the lanes back from a scheduled stream.
   s_sg[SG_LEGS].active = false; s_sg[SG_LEGS].latched = false; s_sg[SG_LEGS].restart = false;
   // Jerk EMA from consecutive accelerations (legs).
@@ -2057,6 +2079,7 @@ void interp_reset() {
   s_sq_n = 0;
   for (uint8_t gi = 0; gi < 2; ++gi) s_sg[gi] = SchedGroup{};
   s_sched_frames = 0; s_sched_demoted = 0; s_sched_future_drops = 0; s_sched_q_overflow = 0;
+  s_sched_mode_xfers = 0;   // FW 50 (BUG-99 row 1)
   s_sp_seq_drops = 0; s_sp_no_hand = 0; s_sp_no_sched = 0;
   s_sched_expired = 0; s_sched_superseded = 0; s_sched_stale = 0; s_sched_stops = 0; s_sched_hand_c1_stops = 0;
   s_sched_stop_capped = 0; s_sched_refused = 0; s_sched_resumes = 0; s_sched_slew_rearms = 0;
@@ -2205,7 +2228,7 @@ static void hand7_print_status() {
                 " stale=%lu lead=%lu dev_over=%lu dev_stale=%lu dev_last=%.4f dev_max=%.4f"
                 " dev_cmd=%.4f dev_fb=%.4f"
                 " sched=%s promo_dp=%.5f promo_dv=%.4f promo_da=%.3f promo_over=%lu"
-                " stops=%lu refused=%lu expired=%lu demoted=%lu"
+                " stops=%lu refused=%lu expired=%lu demoted=%lu xfer=%lu"
                 " tau=%.4f tau_max=%.4f ks=%.3f fade=%.2f tclamp=%lu tfade=%lu drain=%lu\n",
                 s_hand_dev_guard_armed ? "ARMED" : "observe",
                 s_hand_active ? "active" : "idle",
@@ -2224,6 +2247,7 @@ static void hand7_print_status() {
                 (unsigned long)s_sg[SG_HAND].promo_over,
                 (unsigned long)s_sched_stops, (unsigned long)s_sched_refused,
                 (unsigned long)s_sched_expired, (unsigned long)s_sched_demoted,
+                (unsigned long)s_sched_mode_xfers,   // FW 50 (BUG-99 row 1)
                 (double)s_hand_tau_cmd, (double)s_hand_tau_max_abs, (double)s_hand_ff_ks,
                 (double)s_hand_ff_fade, (unsigned long)s_hand_tau_clamp_ticks,
                 (unsigned long)s_hand_tau_fade_ticks, (unsigned long)s_hand_drain_frames);
@@ -2257,6 +2281,7 @@ void interp_hand_counters_reset() {
   s_sg[SG_HAND].dp_max = 0.0f; s_sg[SG_HAND].dv_max = 0.0f; s_sg[SG_HAND].da_max = 0.0f;
   s_sg[SG_HAND].promo_over = 0;
   s_sched_stops = 0; s_sched_hand_c1_stops = 0; s_sched_refused = 0; s_sched_expired = 0; s_sched_demoted = 0;
+  s_sched_mode_xfers = 0;   // FW 50: printed on [hand7], so `hand7 reset` zeroes it
   s_hand_tau_max_abs = 0.0f; s_hand_tau_clamp_ticks = 0; s_hand_tau_fade_ticks = 0; s_hand_drain_frames = 0;
   // Re-baseline the fault task's own copy of this counter ATOMICALLY with the
   // zeroing above, so a reset can never open a one-poll masking window where
@@ -2306,6 +2331,7 @@ uint32_t interp_sched_superseded()   { return s_sched_superseded; }
 uint32_t interp_sched_stale()        { return s_sched_stale; }
 uint32_t interp_sched_future_drops() { return s_sched_future_drops; }
 uint32_t interp_sched_q_overflow()   { return s_sched_q_overflow; }
+uint32_t interp_sched_mode_xfers()   { return s_sched_mode_xfers; }
 void interp_stop_record_take(uint8_t group, InterpStopRecord* out) {
   const uint8_t gi = group ? SG_HAND : SG_LEGS;
   const uint32_t pm = __get_PRIMASK(); __disable_irq();
