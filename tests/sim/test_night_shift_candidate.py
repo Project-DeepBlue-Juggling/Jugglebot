@@ -281,3 +281,30 @@ def test_a_crashing_item_lookup_is_an_error_not_a_quiet_skip(fx):
     assert r.returncode == 1, r.stdout + r.stderr
     assert "ERROR origin/night-shift/2026-10-30-BUG-1 item_state failed for BUG-1" in r.stdout
     assert "no Item BUG-1" not in r.stdout
+
+
+def test_conflict_is_aborted_so_a_later_branch_still_merges(fx):
+    """BUG-117: a conflicting branch must be aborted so the next branch can still merge.
+    BUG-4 conflicts with BUG-1 on src/a.txt; BUG-5 sorts after it (same date, higher
+    number) and is tried next. Without `git merge --abort` the candidate worktree keeps
+    MERGE_HEAD and BUG-5's merge is refused, so it becomes a HOLD row, not MERGED.
+    (The worktree is removed at the end of the run, so the effect is observed through
+    the later merge, not by inspecting MERGE_HEAD afterwards.)"""
+    fx.add_conflicting_item()                    # BUG-4: conflicts with BUG-1 on src/a.txt
+    fx.item(5, True)
+    fx.commit("add BUG-5 item")
+    _git("push", "-q", "origin", "main", cwd=fx.seed, env=fx.env)
+    fx.branch(5, "src/c.txt", "c\n")             # tried after BUG-4 (number order)
+    _git("pull", "-q", "--ff-only", "origin", "main", cwd=fx.clone, env=fx.env)
+    r = fx.run("--date", "2026-10-31")
+    assert r.returncode == 0, r.stderr
+    rows = r.stdout.splitlines()
+    held = next(i for i, x in enumerate(rows) if x.startswith("HOLD origin/night-shift/2026-10-30-BUG-4"))
+    merged5 = next(i for i, x in enumerate(rows) if x.startswith("MERGED origin/night-shift/2026-10-30-BUG-5"))
+    assert held < merged5                        # the later branch really was tried after the conflict
+    assert "candidate: 3 merged, 1 held, 2 skipped" in r.stdout
+    # the candidate branch holds the later merge; no merge is left half-done anywhere
+    assert _git("show", "night-shift/sitting-2026-10-31:src/c.txt", cwd=fx.clone, env=fx.env) == "c"
+    gitdir = fx.clone / ".git"
+    assert not any(gitdir.glob("worktrees/*/MERGE_HEAD")) and not (gitdir / "MERGE_HEAD").exists()
+    assert len(fx.merges("night-shift/sitting-2026-10-31")) == 3
