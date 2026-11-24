@@ -43,10 +43,11 @@ The 40 Hz walk (written before the code, CLAUDE.md)
 Knots are Hermite ``(pos, vel)`` on the 25 ms grid; trajectory_node streams
 them and the can-bridge Teensy interpolates the Hermite at 500 Hz.  At an
 install instant ``t_inst`` the wire may already hold every knot up to
-``k_wire = floor((t_inst - t0)/dt) + WIRE_READ_KNOTS`` (3 knots ahead).
+``k_wire = floor((t_inst - t0)/dt) + WIRE_READ_KNOTS`` (3 knots ahead at emit
+lead 0).
 
-* ``k_b = k_wire + 2`` (:data:`BUMP_LEAD_KNOTS` = 5 knots after the dispatch
-  knot).  The ramp starts AT ``t_b = k_b·dt`` with a quintic whose position,
+* ``k_b = k_wire + 2`` (:data:`BUMP_LEAD_KNOTS` = 5 knots at emit lead 0, after the
+  dispatch knot).  The ramp starts AT ``t_b = k_b·dt`` with a quintic whose position,
   velocity and acceleration are all zero there, so knots ``0..k_b`` are
   BIT-IDENTICAL to the installed record (the function asserts it before
   returning an accepted plan), and so is every Hermite segment up to and
@@ -178,7 +179,8 @@ BUMP_RETRY_CODES = frozenset({BUMP_SPLICE_TOO_LATE, BUMP_HANDOFF})
 
 #: Executor-side terminal freeze: past ``t_c - BUMP_FREEZE_LEAD_S`` a ramp
 #: starting ``BUMP_LEAD_KNOTS`` knots out cannot finish ``BUMP_PRE_HOLD_S``
-#: before the catch with ``BUMP_MIN_PHASE_KNOTS`` of ramp (0.225 s today).
+#: before the catch with ``BUMP_MIN_PHASE_KNOTS`` of ramp (0.225 s at emit
+#: lead 0, 0.250 s at lead 1).
 BUMP_FREEZE_LEAD_S = ((BUMP_LEAD_KNOTS + BUMP_MIN_PHASE_KNOTS)
                       * float(hw.JB_TRAJ_KNOT_DT_S) + BUMP_PRE_HOLD_S)
 

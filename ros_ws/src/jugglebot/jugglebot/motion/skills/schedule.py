@@ -47,13 +47,28 @@ MIN_WINDOW_S = MIN_WINDOW_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S)
 # ``executor`` (``executor`` imports ``schedule``).  ``executor`` imports them
 # back by name, so ``executor.LEAD_S`` still resolves to this object.
 
+#: ``trajectory_op.emit_lead_knots``: the emitter stamps tick ``t_k``'s frame
+#: for knot ``t_k + EMIT_LEAD_KNOTS*dt`` (``trajectory_node._emit_once`` reads
+#: THIS name, one spelling).  Only 0 and 1 are designed (INVARIANTS I-WIRE-7).
+EMIT_LEAD_KNOTS = int(hw.JB_TRAJ_EMIT_LEAD_KNOTS)
+if EMIT_LEAD_KNOTS not in (0, 1):
+    raise ValueError(
+        'emit_lead_knots=%d: only 0 and 1 are designed (fresh-REST onset '
+        'budget, SCHED_QUEUE_LEN)' % EMIT_LEAD_KNOTS)
+
+#: The can-bridge's 2-knot u1/u2 lookahead plus one knot of install flight (the
+#: emit-lead-0 value of :data:`WIRE_READ_KNOTS`).
+WIRE_READ_BASE_KNOTS = 3
+
 #: Knots of the plan the WIRE has already read past the install instant: the
 #: can-bridge's 2-knot lookahead plus one knot for the install's own flight time
 #: (``project_canbridge_facts``: the 500 Hz interpolator consumes the knot pair
 #: bracketing its own clock, so the knot at ``floor(τ/dt)`` is spent and the two
 #: after it are in hand).  A splice at or before ``floor(τ/dt) + 3`` would
-#: rewrite trajectory the Teensy is already interpolating.
-WIRE_READ_KNOTS = 3
+#: rewrite trajectory the Teensy is already interpolating.  The emitter's lead
+#: adds its own knots: the last frame sent before the install already carries
+#: ``u2 = floor(tau/dt) + EMIT_LEAD_KNOTS + 2`` (INVARIANTS I-WIRE-7).
+WIRE_READ_KNOTS = WIRE_READ_BASE_KNOTS + EMIT_LEAD_KNOTS
 
 #: Knots of solve budget every dispatch must leave — the ONE number the
 #: measured solve sizes, and the reason both leads below are what they are.
@@ -80,7 +95,8 @@ SOLVE_BUDGET_KNOTS = 6
 
 #: Knots of lead between "now" and the earliest knot a splice may land on.
 #:
-#: 9 knots = 0.225 s at the fixed 40 Hz grid: :data:`WIRE_READ_KNOTS` (3, spent
+#: ``WIRE_READ_KNOTS + SOLVE_BUDGET_KNOTS`` knots (9 = 0.225 s at emit lead 0,
+#: 10 = 0.250 s at lead 1) at the fixed 40 Hz grid: :data:`WIRE_READ_KNOTS` (spent
 #: before the solve begins) + :data:`SOLVE_BUDGET_KNOTS` (6).  Derived, so the
 #: budget is stated in exactly one place — ``executor``'s ``SPLICE_TOO_LATE``
 #: measures ``(k_s - WIRE_READ_KNOTS) * dt`` against the same arithmetic.
@@ -95,7 +111,7 @@ LEAD_S = LEAD_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S)
 #: The DISPATCH lead of a skill whose segment FOLLOWS a release (every CATCH in
 #: the columns pattern, with or without ``then_throw``).
 #:
-#: :data:`LEAD_KNOTS` + 8 = 17 knots = 0.425 s, i.e. 14 knots = 350 ms of solve
+#: :data:`LEAD_KNOTS` + 8 knots (17 = 0.425 s at emit lead 0), i.e. 14 knots = 350 ms of solve
 #: budget (plus up to one knot of quantisation).  Derived from
 #: :data:`LEAD_KNOTS` (it was a literal 8 against a 6-knot LEAD_KNOTS until
 #: 2026-09-18) so that the two leads move TOGETHER: the extra knots are the
@@ -148,7 +164,7 @@ HANDOFF_LEAD_S = HANDOFF_LEAD_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S)
 #: REST's tail) — and the lead ``install_segment`` reserves for every THROW
 #: install (:func:`install_lead_s`).
 #:
-#: :data:`LEAD_KNOTS` + 4 = 13 knots = 0.325 s, i.e. 10 knots = 250 ms of solve
+#: :data:`LEAD_KNOTS` + 4 knots (13 = 0.325 s at emit lead 0), i.e. 10 knots = 250 ms of solve
 #: budget (``executor``'s ``ORIGIN_TOO_LATE`` refuses once the solve has run
 #: ``lead - WIRE_READ_KNOTS * dt``).  Root cause it closes: a fresh THROW's
 #: origin is ``t_now + lead`` and its release is an ABSOLUTE instant, so a
@@ -2146,9 +2162,24 @@ REST_RETURN_HAND_ACC_LIMIT_RPS2 = 5.0
 #: Worst-case delay (s) from the opening REST's origin to the firmware's
 #: handover instant.  A fresh REST's origin is its dispatch instant (it is
 #: REBASED to ``t_inst + WIRE_READ_KNOTS·dt`` only when the solve outran
-#: that 75 ms margin), so its first frame reaches the wire one solve (<= 75
-#: ms un-rebased) plus one 25 ms tick after the origin: <= 0.1 s.
+#: :data:`FRESH_REST_REBASE_S`), so its first sampled knot is at most
+#: ``FRESH_REST_REBASE_S + (EMIT_LEAD_KNOTS + 1)*dt`` after the origin: <= 0.1 s
+#: at every emit lead.  THIS is the physical budget; the threshold derives from
+#: it, never the other way round.
 REST_RETURN_ONSET_S = 0.100
+
+#: The fresh-REST REBASE threshold: a solve longer than this slides a fresh
+#: REST's origin to ``t_inst + WIRE_READ_KNOTS*dt``.  Derived from
+#: :data:`REST_RETURN_ONSET_S`, NOT from :data:`WIRE_READ_KNOTS` (75 ms at emit
+#: lead 0, 50 ms at lead 1): the worst gap from the origin to the first
+#: sampled knot is ``threshold + (EMIT_LEAD_KNOTS + 1)*dt``.
+FRESH_REST_REBASE_S = REST_RETURN_ONSET_S - (EMIT_LEAD_KNOTS + 1) * float(hw.JB_TRAJ_KNOT_DT_S)
+
+#: The node's fresh-REST stall fence (``trajectory_node._reply_outran_wire``).
+#: A rebased origin's headroom over the first sampled frame is
+#: ``(WIRE_READ_KNOTS - EMIT_LEAD_KNOTS - 1)*dt = 2*dt`` at every lead, so the
+#: fence is 37.5 ms at both leads (NOT ``0.5*WIRE_READ_KNOTS*dt``).
+FRESH_REST_STALL_FENCE_S = 0.5 * WIRE_READ_BASE_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S)
 
 #: The plan-displacement budget (rev) at :data:`REST_RETURN_ONSET_S`: half of
 #: ``SCHED_RESUME_TOL_POS_HAND_REV`` (0.05 rev, ``canbridge_config.h``,
@@ -2794,7 +2825,7 @@ def compile_reload(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
     # The PRE-TILT REST ends LEAD_S before the CATCH's own window opens, so the
     # CATCH (window RELOAD_CATCH_WINDOW_S, dispatch = t_abs - window - LEAD_S)
     # dispatches exactly AT the REST's end. Until 2026-09-29 the two abutted,
-    # so the CATCH dispatched LEAD_S (225 ms) before the REST ended: the fresh
+    # so the CATCH dispatched LEAD_S (225 ms at emit lead 0) before the REST ended: the fresh
     # test already reads true there, but trajectory_node seeds a fresh install
     # from the ACTIVE PLAN's commanded state at t_now -- still mid-slew, off
     # the held-axis line -- and every sitting-3 reload CATCH was refused

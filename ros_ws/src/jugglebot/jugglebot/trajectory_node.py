@@ -990,6 +990,15 @@ class TrajectoryNode(Node):
         self._segment_cfg = sk_seg.SegmentConfig(
             pre_release_hold_s=_pre_hold_s, planner_mode=_planner_mode)
         self.get_logger().info(
+            'wire budget: emit_lead_knots=%d WIRE_READ_KNOTS=%d LEAD_KNOTS=%d '
+            'HANDOFF_LEAD_KNOTS=%d FRESH_THROW_LEAD_KNOTS=%d '
+            'CATCH_FREEZE_S=%.3f BUMP_FREEZE_LEAD_S=%.3f '
+            'FRESH_REST_REBASE_S=%.3f'
+            % (sk_exec.EMIT_LEAD_KNOTS, sk_exec.WIRE_READ_KNOTS, sk_exec.LEAD_KNOTS,
+               sk_exec.HANDOFF_LEAD_KNOTS, sk_exec.FRESH_THROW_LEAD_KNOTS,
+               sk_exec.CATCH_FREEZE_S, sk_bump.BUMP_FREEZE_LEAD_S,
+               sk_exec.FRESH_REST_REBASE_S))
+        self.get_logger().info(
             'segment config: pre_release_hold_s=%.3f s, post_release_hold_s='
             '%.3f s, planner_mode default=%s'
             % (self._segment_cfg.pre_release_hold_s,
@@ -1576,7 +1585,7 @@ class TrajectoryNode(Node):
         # firmware always has the next span queued before it needs it (the
         # C2FF spec's phase-locked, knot-aligned frame). tau is plan time, same
         # as always — T - t0, not t_k - t0.
-        lead = float(hw.JB_TRAJ_EMIT_LEAD_KNOTS) * self._limits.knot_dt_s
+        lead = float(sk_exec.EMIT_LEAD_KNOTS) * self._limits.knot_dt_s
         knot_time = now + lead
         tau = knot_time - t0
         knot_epoch_us = self._perf_to_epoch_us(knot_time)
@@ -4847,8 +4856,8 @@ class TrajectoryNode(Node):
         # (`_cycle_start_state`) verifies rest and costs the E8 tilt lookup.
         seed_rest = None
         # The lead this install reserves is PER KIND (2026-10-16,
-        # `schedule.install_lead_s`): FRESH_THROW_LEAD_S (13 knots, 250 ms of
-        # solve budget) for a THROW, LEAD_S (9 knots, 150 ms) otherwise. It
+        # `schedule.install_lead_s`): FRESH_THROW_LEAD_S (LEAD_KNOTS + 4 knots,
+        # 250 ms of solve budget) for a THROW, LEAD_S (LEAD_KNOTS, 150 ms) otherwise. It
         # must be the SAME number the schedule dispatched the skill by
         # (`Skill.dispatch_s = t_abs - window - lead`): the reserved origin
         # `t_now + lead` then lands on the skill's own splice base and the
@@ -5003,7 +5012,7 @@ class TrajectoryNode(Node):
         # cliff term less REPLY_TRANSIT_ALLOW_S (the worker's own early read), so
         # it never waits past the instant the executor itself would refuse.  An
         # unpinned splice's cliff (`k_s` = first knot >= t_now + LEAD_S) is
-        # 150-175 ms out, inside the default, so only a pinned splice can move
+        # `SOLVE_BUDGET_KNOTS` to +1 knot out (150-175 ms), inside the default, so only a pinned splice can move
         # it.  Fresh origins keep the default.
         splice_k_pre = None
         if kind == sk_seg.REST:
@@ -5127,7 +5136,7 @@ class TrajectoryNode(Node):
         # immediately before `_install`: refuse iff the wire could already be
         # past the splice knot.  One control cycle (dt 25 ms): the emitter keeps
         # sampling the OLD record through the solve; a plan is spliced only while
-        # its first new knot is still > WIRE_READ_KNOTS (75 ms) ahead of the wire
+        # its first new knot is still > WIRE_READ_KNOTS (75 ms at emit lead 0) ahead of the wire
         # at the install instant, so the wire never sees a late splice.  A
         # SIGSTOPped node (lane-latch rehearsal) wakes to a reply seconds late
         # and refuses here -- fail closed.  A fresh REST gets its own stall fence
@@ -5240,7 +5249,7 @@ class TrajectoryNode(Node):
         instants, crossed to ``perf_counter`` through ``_ros_to_perf_offset``
         (the one crossing every install uses).  Knot ``k`` of the record is due
         on the wire at ``t0 + k·dt``; the emitter ships up to
-        ``WIRE_READ_KNOTS`` (3) knots ahead, so at instant ``t`` the wire may
+        ``WIRE_READ_KNOTS`` (3 at emit lead 0) knots ahead, so at instant ``t`` the wire may
         hold knots ``<= k_wire(t) = floor((t - t0)/dt) + 3``.
 
         1. Dispatch (executor tick, instant ``t_d``): ``k_wire(t_d)`` is the
@@ -5423,7 +5432,9 @@ class TrajectoryNode(Node):
         knots already sent are the old record's held rest, which is the REST's
         knot 0, so transit inside the fence cannot open a step.  Its fence
         is a STALL test instead: refuse iff the node reads the reply more than
-        half the reserved wire-read margin (``0.5*WIRE_READ_KNOTS*dt`` = 37.5 ms)
+        ``FRESH_REST_STALL_FENCE_S`` (``0.5*WIRE_READ_BASE_KNOTS*dt`` = 37.5 ms at
+        every emit lead: a rebased origin's headroom over the first frame is
+        2 knots whatever the lead, I-WIRE-7)
         after the worker's own clock read (``t_inst_s - REPLY_TRANSIT_ALLOW_S``).
         Normal transit + splice work measured 6-9 ms; a SIGSTOP / long GC /
         descheduling is seconds-to-tens-of-ms and would otherwise install a REST
@@ -5436,7 +5447,7 @@ class TrajectoryNode(Node):
                 return False
             stall_s = (time.perf_counter()
                        - (t_inst_s - sk_solver.REPLY_TRANSIT_ALLOW_S))
-            return stall_s > 0.5 * sk_exec.WIRE_READ_KNOTS * dt
+            return stall_s > sk_exec.FRESH_REST_STALL_FENCE_S
         k_s = 0 if fresh else int(result.splice_k)
         k_wire = (int(math.floor((time.perf_counter() - new_record.t0_s) / dt))
                   + sk_exec.WIRE_READ_KNOTS)

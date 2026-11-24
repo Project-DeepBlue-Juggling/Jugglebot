@@ -970,15 +970,12 @@ trajectory_op:
                                    # ball aboard the loaded ascent authority is lower still
                                    # (throw_envelope.ACCEL_AUTHORITY_RPS2), see BUG-40.
   knot_dt_s: 0.025                 # Fixed 40 Hz knot spacing {s} (matches firmware SEGMENT_T_S; not runtime-configurable)
-  emit_lead_knots: 0               # Emitter lookahead {knots} (C2FF, 2026-09-14): at tick k the emitter targets knot
-                                   # time T = t_k + emit_lead_knots*knot_dt_s, stamped; FW 22 plays it on that stamp,
-                                   # not at UDP arrival. 0 BY DESIGN: a frame arriving after its stamp is promoted at
-                                   # its true phase, and the previous frame's second span (u1->u2, exact v2) covers the
-                                   # gap with the same plan, so lateness up to one knot costs no continuity (observed
-                                   # emit gaps: p99 30 ms, max 40 ms). A lead > 0 would widen the window in which
-                                   # already-sent frames of the OLD plan keep playing after a seed-at-now install
-                                   # (holds, descents, followers) and would eat the margin of the splice read guard
-                                   # skills/schedule.py WIRE_READ_KNOTS, which assumes u2 = floor(tau/dt) + 2.
+  emit_lead_knots: 0               # Emitter lookahead {knots}: at tick k the emitter targets knot `T = t_k + emit_lead_knots*knot_dt_s`,
+                                   # stamped; FW 22+ plays it on the stamp. 0 or 1 only (schedule.py refuses others). At 1 a frame normally lands
+                                   # before its stamp, so the firmware promotes it on the knot instead of extrapolating span 2 (BUG-111/BUG-89).
+                                   # The planner's wire horizon `schedule.WIRE_READ_KNOTS = 3 + emit_lead_knots` derives from it, so every splice
+                                   # lead moves one knot and every solve budget is unchanged (I-WIRE-7). Cost: each re-aim fence closes one knot
+                                   # earlier, and a seed-at-now install (hold, stop, descent) reaches the wire one knot later.
   min_move_duration_s: 0.20        # Minimum profiled move duration {s}
   min_timed_lead_s: 0.25           # Minimum lead time for a timed target {s}
   max_timed_lead_s: 60.0           # Maximum lead time for a timed target {s} (a longer lead is a clock-domain confusion — loudly rejected before the reach is built)

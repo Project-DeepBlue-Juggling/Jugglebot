@@ -44,13 +44,18 @@ from jugglebot.motion.skills.report import (FeedCatchReport, ThrowReport,
 from jugglebot.motion.skills.sites import CATCH_CUP_Z_MM, RELEASE_CUP_Z_MM
 from jugglebot.motion.skills.memory import (APEX_RATIO_BAND, Experience,
                                             apex_in_band)
-from jugglebot.motion.skills.schedule import (FRESH_THROW_LEAD_KNOTS,
+from jugglebot.motion.skills.schedule import (EMIT_LEAD_KNOTS,
+                                               FRESH_REST_REBASE_S,
+                                               FRESH_REST_STALL_FENCE_S,
+                                               FRESH_THROW_LEAD_KNOTS,
                                                FRESH_THROW_LEAD_S,
                                                HANDOFF_LEAD_KNOTS,
                                                HANDOFF_LEAD_S, HUMAN_CATCH,
                                                LEAD_KNOTS,
                                                LEAD_S, MIN_WINDOW_KNOTS,
-                                               MIN_WINDOW_S, WIRE_READ_KNOTS,
+                                               MIN_WINDOW_S,
+                                               WIRE_READ_BASE_KNOTS,
+                                               WIRE_READ_KNOTS,
                                                Schedule, Skill, ball_label,
                                                _release_instants)
 from jugglebot.motion.skills.segments import (CATCH, REST, THROW, CatchTerminal,
@@ -264,7 +269,9 @@ _STANDIN_REFLECT = 'reflect'    # (ii) point-symmetric hop: reflect
 _STANDIN_NONE = 'none'          # (iii) no faithful stand-in: envelope only
 
 #: The wire-read budget — :data:`LEAD_KNOTS`, :data:`LEAD_S`,
-#: :data:`WIRE_READ_KNOTS`, :data:`HANDOFF_LEAD_KNOTS`, :data:`HANDOFF_LEAD_S`,
+#: :data:`WIRE_READ_KNOTS` (= :data:`WIRE_READ_BASE_KNOTS` +
+#: :data:`EMIT_LEAD_KNOTS`, INVARIANTS I-WIRE-7), :data:`FRESH_REST_REBASE_S`,
+#: :data:`FRESH_REST_STALL_FENCE_S`, :data:`HANDOFF_LEAD_KNOTS`, :data:`HANDOFF_LEAD_S`,
 #: :data:`FRESH_THROW_LEAD_KNOTS`, :data:`FRESH_THROW_LEAD_S`,
 #: :data:`MIN_WINDOW_KNOTS` and :data:`MIN_WINDOW_S` — is DEFINED in
 #: ``skills.schedule`` and imported above, because a skill states its own
@@ -298,7 +305,7 @@ CUP_CONTACT_WINDOW_LEAD_S = float(hw.JB_TRAJ_CUP_CONTACT_WINDOW_LEAD_S)
 #: ``cliff_est - t`` where ``cliff_est = t_rel - WIRE_READ_KNOTS*dt - dt/2`` is
 #: the instant after which an install cannot reach the wire before the pinned
 #: release knot.  It is the RAW path's minimum budget, ``LEAD_S -
-#: WIRE_READ_KNOTS*dt`` (0.150 s today; the raw path's budget is in
+#: WIRE_READ_KNOTS*dt`` (= ``SOLVE_BUDGET_KNOTS*dt`` = 0.150 s at every emit lead; the raw path's budget is in
 #: ``[this, this + dt)``).  Rule: never decline onto a path with no more
 #: budget.  Declining a pinned re-send hands the catch to the raw path, whose
 #: refusal is equally TERMINAL (it spends the catch's only re-aim), so a floor
@@ -2287,8 +2294,9 @@ def install_segment(record: Optional[PlanRecord],
     That soundness argument covers the SEED, not the ORIGIN TIMESTAMP the
     plan carries onto the wire.  A fresh origin reserves no lead the way a
     splice's ``k_s`` does, so once the solve (plus whatever transit follows)
-    outruns :data:`~jugglebot.motion.skills.schedule.WIRE_READ_KNOTS` knots of
-    margin, the block reaches the firmware's scheduled lane with knot 0
+    outruns :data:`~jugglebot.motion.skills.schedule.FRESH_REST_REBASE_S` (the
+    wire-read margin at emit lead 0), the block reaches the firmware's
+    scheduled lane with knot 0
     already behind it — 2026-09-28 R4 sitting-1 fact 5: a reload's opening
     REST (6.6 s, hand 8.87 -> 0.31 rev) solved in 381 ms, the scheduled block
     arrived ~0.4 s into its own profile, the firmware's resume check
@@ -2322,8 +2330,8 @@ def install_segment(record: Optional[PlanRecord],
     ms).**  The default above pins ``t0 = t_now_s`` BEFORE the solve, so the
     dispatch lead the schedule reserved (``Skill.dispatch_s = t_abs - window
     - lead``) silently becomes extra WINDOW (the live THROW planned 0.600 s
-    for a 0.4 s ``launch_s``) and the solve is left only the 75 ms wire
-    margin — and every solve under that margin still SKIPS the plan's first
+    for a 0.4 s ``launch_s``) and the solve is left only the wire
+    margin (``WIRE_READ_KNOTS*dt``, 75 ms at emit lead 0) — and every solve under that margin still SKIPS the plan's first
     ``solve + <=1`` knot(s), because nothing reaches the wire before the
     install: a commanded step on the hand (measured offline at the R5
     operating point, ``scratchpad/probe_fresh_origin.py``: 0.015-0.07 rev and
@@ -2458,7 +2466,13 @@ def install_segment(record: Optional[PlanRecord],
             t_inst = (t_now_s if t_install_s is None
                       else float(t_install_s()) if callable(t_install_s)
                       else float(t_install_s))
+            # TWO different uses of the wire read, split (INVARIANTS I-WIRE-7):
+            # `wire_margin_s` is how old a rebased origin will be at the wire
+            # (target + staleness); `rebase_threshold_s` is how long a solve
+            # may run before a fresh REST is rebased. They are equal at emit
+            # lead 0 (75 ms) and differ at lead 1 (100 vs 50 ms).
             wire_margin_s = WIRE_READ_KNOTS * dt
+            rebase_threshold_s = FRESH_REST_REBASE_S
             if reserved:
                 # The SPLICE's own test with `k_s = 0` on the reserved origin
                 # (one rule, two branches): knot 0 must still be ahead of the
@@ -2514,7 +2528,7 @@ def install_segment(record: Optional[PlanRecord],
             else:
                 t0_wire = t_inst + wire_margin_s
             if (t0_wire > t0 + 1e-12 if org.band_rest
-                    else solve_s - wire_margin_s > 0.0):
+                    else solve_s - rebase_threshold_s > 0.0):
                 # `t_inst + wire_margin_s` is how old the origin will be once
                 # the wire actually starts reading this block (the same
                 # worst-case margin `k_wire` budgets for a splice) — this is
@@ -2548,11 +2562,11 @@ def install_segment(record: Optional[PlanRecord],
                         True, 'OK',
                         'fresh origin REBASED +%.3f s: the solve outran the '
                         'origin (%s over %.3f s from %s; solve %.3f s vs '
-                        'a %.3f s wire-read margin)%s%s'
+                        'a %.3f s rebase threshold)%s%s'
                         % (t0 - t0_before_solve, kind, seg.plan.total_duration,
                            'rest' if held else 'a seed in motion',
                            (t_inst - t_now_s if org.band_rest else solve_s),
-                           wire_margin_s,
+                           rebase_threshold_s,
                            ('' if not k_cut else
                             '; seed propagated: first %d knot(s) dropped'
                             % k_cut),
@@ -7575,7 +7589,8 @@ class SkillExecutor:
         # THE BUMP ROUTE (I-CATCH-5, G2 2026-10-16), decided BEFORE the
         # catch_freeze_s return below: that fence (t_c - 0.25 s) belongs to
         # the re-solve path and would otherwise pre-empt the bump's own,
-        # later BUMP-FREEZE (t_c - 0.225 s).  The route is taken only (a)
+        # later BUMP-FREEZE (t_c - BUMP_FREEZE_LEAD_S, 0.225 s at emit
+        # lead 0).  The route is taken only (a)
         # with the bump on and a bumper wired, (b) OUTSIDE the snap band
         # (`maybe_snapped` False — inside it the pinned re-solve stays, with
         # its PINNED-BUDGET decline), and (c) for a catch that CARRIES a
@@ -7726,7 +7741,7 @@ class SkillExecutor:
         minus the committed one), WITHIN-TOLERANCE on |Δ| (xy only: a timing
         move is absorbed by the 0.050 s pre-hold), CAP-SPENT (accepted re-aims
         only), BUMP-FREEZE (terminal, past ``t_c - BUMP_FREEZE_LEAD_S`` =
-        0.225 s; it replaces CONTACT-WINDOW, MIN_WINDOW and
+        0.225 s at emit lead 0; it replaces CONTACT-WINDOW, MIN_WINDOW and
         :attr:`catch_freeze_s` on this path), and the BUMP-WINDOW retry rule (a
         gate-refused Δ is retried only once it has shrunk by
         :attr:`resend_pos_tol_mm`).  PINNED-BUDGET stays the snapped path's.

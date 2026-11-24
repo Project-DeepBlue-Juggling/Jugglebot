@@ -1780,6 +1780,15 @@ class SkillNode(Node):
         self._blas_threads, self._blas_source = blas_threads.check_blas_threads(
             self.get_logger(), 'skill_node')
         self.get_logger().info(
+            'wire budget: emit_lead_knots=%d WIRE_READ_KNOTS=%d LEAD_KNOTS=%d '
+            'HANDOFF_LEAD_KNOTS=%d FRESH_THROW_LEAD_KNOTS=%d '
+            'CATCH_FREEZE_S=%.3f BUMP_FREEZE_LEAD_S=%.3f '
+            'FRESH_REST_REBASE_S=%.3f'
+            % (ex.EMIT_LEAD_KNOTS, ex.WIRE_READ_KNOTS, ex.LEAD_KNOTS,
+               ex.HANDOFF_LEAD_KNOTS, ex.FRESH_THROW_LEAD_KNOTS,
+               ex.CATCH_FREEZE_S, sk_bump.BUMP_FREEZE_LEAD_S,
+               ex.FRESH_REST_REBASE_S))
+        self.get_logger().info(
             'skill_node ready · %s'
             % (blas_threads.format_blas_short(self._blas_threads),))
 
