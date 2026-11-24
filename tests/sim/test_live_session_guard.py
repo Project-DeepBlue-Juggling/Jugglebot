@@ -178,3 +178,99 @@ def test_nightly_deferred_when_sentinel_live(tmp_path, live):
     assert status.startswith("DEFERRED live robot session held the box for "), status
     assert re.search(r"suite NOT run \d{4}-\d{2}-\d{2}T\S+$", status), status
     assert not marker.exists()
+
+
+# --- BUG-85: the default regex only counts processes with the SHAPE of a running node ---
+
+def _spawn(argv, **kw):
+    p = subprocess.Popen(argv, start_new_session=True, **kw)
+    time.sleep(0.3)
+    return p
+
+
+def _is_robot(pid):
+    r = subprocess.run(["bash", "-c", "source tools/lib/live_session.sh; "
+                        "_live_argv_is_robot %d" % pid], cwd=str(REPO),
+                       capture_output=True, text=True, timeout=30)
+    return r.returncode == 0
+
+
+def _node_script(tmp_path, name):
+    d = tmp_path / "install" / "jugglebot" / "lib" / "jugglebot"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / name
+    f.write_text("import time; time.sleep(20)\n")
+    return f
+
+
+@pytest.mark.parametrize("node", ["teensy_bridge_node", "trajectory_node",
+                                  "orchestrator_node", "jugglebot_launch.py"])
+def test_running_entry_point_shapes_are_live(tmp_path, node):
+    script = _node_script(tmp_path, node)
+    procs = [_spawn([sys.executable, str(script), "--ros-args", "-r", "__node:=x"]),
+             _spawn(["bash", "-c", 'exec -a "$0" sleep 20', str(script)])]
+    try:
+        assert all(_is_robot(p.pid) for p in procs)
+    finally:
+        for p in procs:
+            p.kill(); p.wait()
+
+
+def test_ros2_launch_shapes_are_live(tmp_path):
+    ros2 = _node_script(tmp_path, "ros2")
+    cases = [["launch", "jugglebot", "jugglebot_launch.py"],
+             ["launch", "/x/share/jugglebot/launch/jugglebot_launch.py"]]
+    procs = [_spawn([sys.executable, str(ros2)] + c) for c in cases]
+    try:
+        assert all(_is_robot(p.pid) for p in procs)
+    finally:
+        for p in procs:
+            p.kill(); p.wait()
+
+
+def test_commands_that_merely_name_a_node_are_not_live(tmp_path):
+    node = _node_script(tmp_path, "teensy_bridge_node")
+    py = tmp_path / "teensy_bridge_node.py"
+    py.write_text("x = 1\n")
+    ros2 = _node_script(tmp_path, "ros2")
+    procs = [
+        _spawn(["tail", "-f", str(py)], stdin=subprocess.DEVNULL),
+        _spawn(["tail", "-f", str(node)], stdin=subprocess.DEVNULL),
+        _spawn(["bash", "-c", "sleep 20 # trajectory_node orchestrator_node"]),
+        _spawn([sys.executable, "-c", "import time; time.sleep(20)", "trajectory_node"]),
+        _spawn([sys.executable, str(ros2), "topic", "list", "teensy_bridge_node"]),
+        _spawn([sys.executable, str(ros2), "launch", "other_pkg", "x.py"]),
+    ]
+    try:
+        assert [_is_robot(p.pid) for p in procs] == [False] * len(procs)
+    finally:
+        for p in procs:
+            p.kill(); p.wait()
+
+
+def test_default_regex_ignores_a_command_naming_a_node_end_to_end(tmp_path):
+    env = {k: v for k, v in os.environ.items() if k != "LIVE_SESSION_RE"}
+    probe = lambda: subprocess.run(["bash", "-c", "source tools/lib/live_session.sh; live_session"],
+                                   cwd=str(REPO), env=env, capture_output=True, timeout=30).returncode
+    if probe() == 0:
+        pytest.skip("a real robot session is live on this box")
+    py = tmp_path / "teensy_bridge_node.py"
+    py.write_text("x = 1\n")
+    p = _spawn(["tail", "-f", str(py), "trajectory_node", "orchestrator_node"],
+               stdin=subprocess.DEVNULL)
+    try:
+        assert probe() == 1
+    finally:
+        p.kill(); p.wait()
+
+
+def test_default_regex_still_sees_a_real_node_shape_end_to_end(tmp_path):
+    env = {k: v for k, v in os.environ.items() if k != "LIVE_SESSION_RE"}
+    script = _node_script(tmp_path, "trajectory_node")
+    p = _spawn([sys.executable, str(script), "--ros-args"])
+    try:
+        r = subprocess.run(["bash", "-c", "source tools/lib/live_session.sh; live_session"],
+                           cwd=str(REPO), env=env, capture_output=True, timeout=30)
+        assert r.returncode == 0
+    finally:
+        p.kill(); p.wait()
