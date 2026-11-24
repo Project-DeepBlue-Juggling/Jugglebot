@@ -27,15 +27,24 @@ Three rules the probe decided:
   for every parameter winds ``s`` up during a single-Site stretch (its direction is unexcited, so
   its variance grows by 1/lambda per row) until it falls back to its prior: on the corpus after
   410-1958 rows. Covariance cross-terms are divided by sqrt(lambda_i lambda_j), as the probe does.
-* **Report the prior while uncertain.** A parameter whose posterior sd exceeds
-  ``fallback_frac`` x its prior sd REPORTS its prior mean, so an empty memory is exactly the
-  identity (plan T-R2) and a never-seen ball's offset is zero. On the corpus K leaves its prior
-  after 2 rows, b after 3-8, s after 14. K and b_y follow this per-PARAMETER rule (each is
-  observed directly). The axis-0 offset b_x + s x follows it per QUERY on the predicted quantity
-  (2026-11-06 follow-up): at one Site only that sum is observed, so b_x and s each stay uncertain
-  while the offset AT that Site is well determined; the model applies raw b_x + s x where its
-  predictive sd is under ``fallback_frac`` x the prior predictive sd, and the identity (0) where
-  the b/s split is still unknown (a far Site). Delta stays on the per-parameter rule.
+  That forgetting sets the VALUE (theta) only, never a decision: forgetting b but not s is
+  I <- diag(sqrt lam) I diag(sqrt lam) in information form, which MANUFACTURES information in a
+  direction no row excited (at one Site I_ss grows with every row while I_bb saturates, so the
+  forgetting covariance calls s known after ~150 single-Site rows; BUG-137).
+* **Report the prior while uncertain, judged on the information received.** Every decision below
+  reads a companion covariance of the same accepted rows with NO forgetting (lambda = 1, same
+  prior and R; ``sd_unforgotten``), never the forgetting filter's (BUG-137, 2026-11-25). A
+  parameter whose unforgotten sd exceeds ``fallback_frac`` x its prior sd REPORTS its prior mean,
+  so an empty memory is exactly the identity (plan T-R2) and a never-seen ball's offset is zero.
+  On the corpus K leaves its prior after 2 rows, b after 3-8, s after 14. K and b_y follow this
+  per-PARAMETER rule (each is observed directly). The axis-0 offset b_x + s x follows it per QUERY
+  on the predicted quantity (2026-11-06 follow-up): at one Site only that sum is observed, so b_x
+  and s each stay uncertain while the offset AT that Site is well determined; the model applies
+  the forgetting filter's b_x + s x where its unforgotten predictive sd is under
+  ``fallback_frac`` x the prior predictive sd, and the identity (0) where the b/s split is still
+  unknown (a far Site) -- for as long as the Memory stays single-Site, at any length. Delta stays
+  on the per-parameter rule. ``sd()`` still reports the forgetting filter's sd (the inlier rule's
+  sd_K reads it).
 * **The inlier rule is relative to the current model** (never an innovation gate: that admits
   early outliers while the covariance is large). A row updates theta only if its lateral
   innovation (against the RLS's own current estimate, as the probe computes it) is under
@@ -125,13 +134,23 @@ class _Filter(object):
     """One RLS filter (Kalman form) with per-parameter forgetting and fallback to the prior.
 
     A port of the probe's ``Filt`` (unbounded form): ``P <- P / sqrt(outer(lam, lam))`` before
-    each update, then the scalar-measurement Kalman update with variance ``R``."""
+    each update, then the scalar-measurement Kalman update with variance ``R``. ``th`` and ``P``
+    are the forgetting filter: ``th`` is the value applied, ``P`` its own covariance.
+
+    ``P_unforgotten`` (BUG-137) is the covariance of the SAME accepted rows under the same prior and
+    ``R`` with NO forgetting (lambda = 1 for every parameter): the information actually received.
+    Every "is this determined?" decision reads it, never ``P``. Per-parameter forgetting in
+    non-orthogonal coordinates manufactures information: in information form the forgetting step is
+    I <- diag(sqrt lam) I diag(sqrt lam), which is not <= I (PSD order), so with b forgotten and s
+    not, I_ss keeps growing at one Site while I_bb saturates and ``P`` reports s (and b + s x at a
+    far Site) as known although only b + s x0 was ever observed."""
 
     def __init__(self, prior, sd0, R: float, lam) -> None:
         self.prior = np.array(prior, dtype=float)
         self.th = self.prior.copy()
         self.sd0 = np.asarray(sd0, dtype=float)
         self.P = np.diag(self.sd0 ** 2)
+        self.P_unforgotten = self.P.copy()
         self.R = float(R)
         lam = np.broadcast_to(np.asarray(lam, dtype=float), self.th.shape)
         self.lam = np.sqrt(np.outer(lam, lam))
@@ -139,20 +158,28 @@ class _Filter(object):
     def innov(self, phi: np.ndarray, z: float) -> float:
         return z - float(phi @ self.th)
 
-    def proposed(self, phi: np.ndarray, z: float) -> Tuple[np.ndarray, np.ndarray]:
-        """The (theta, P) one update would produce; nothing is committed."""
+    def proposed(self, phi: np.ndarray, z: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """The (theta, P, P_unforgotten) one update would produce; nothing is committed."""
         P = self.P / self.lam
         S = float(phi @ P @ phi) + self.R
         g = P @ phi / S
         th = self.th + g * (z - float(phi @ self.th))
         P = P - np.outer(g, phi @ P)
-        return th, 0.5 * (P + P.T)
+        Pu = self.P_unforgotten
+        gu = Pu @ phi / (float(phi @ Pu @ phi) + self.R)
+        Pu = Pu - np.outer(gu, phi @ Pu)
+        return th, 0.5 * (P + P.T), 0.5 * (Pu + Pu.T)
 
     def sd(self) -> np.ndarray:
+        """Posterior sd of the forgetting filter (the applied value's own uncertainty)."""
         return np.sqrt(np.maximum(np.diag(self.P), 0.0))
 
+    def sd_unforgotten(self) -> np.ndarray:
+        """Posterior sd from the information actually received (no forgetting): the decision sd."""
+        return np.sqrt(np.maximum(np.diag(self.P_unforgotten), 0.0))
+
     def reported(self, frac: float) -> np.ndarray:
-        return np.where(self.sd() > frac * self.sd0, self.prior, self.th)
+        return np.where(self.sd_unforgotten() > frac * self.sd0, self.prior, self.th)
 
 
 def _finite_vec(value, n: int, name: str) -> np.ndarray:
@@ -247,9 +274,11 @@ class PlantModel(object):
         """The applied axis-0 offset b_x + s x at each ``site_x`` (vectorised), and whether it is
         at its prior. Decided per QUERY on the predicted quantity (2026-11-06 follow-up): the raw
         b_x + s x when its posterior predictive sd sqrt(a^T P a), a = [1, x] over (b_x, s), is at
-        most ``fallback_frac`` x its PRIOR predictive sd sqrt(sd_b^2 + x^2 sd_s^2); else 0."""
+        most ``fallback_frac`` x its PRIOR predictive sd sqrt(sd_b^2 + x^2 sd_s^2); else 0. P is
+        the UNFORGOTTEN covariance (BUG-137: the forgetting filter's P turns confident about a far
+        Site after ~150 single-Site rows); the value applied is the forgetting filter's."""
         x = np.asarray(site_x, dtype=float)
-        P = self._fx.P
+        P = self._fx.P_unforgotten
         var = P[0, 0] + 2.0 * x * P[0, 1] + x * x * P[1, 1]
         sd0 = self._fx.sd0
         var0 = sd0[0] ** 2 + x * x * sd0[1] ** 2
@@ -352,12 +381,12 @@ class PlantModel(object):
                        ((self._fa, pa, za), (self._fx, px, zx), (self._fy, py, zy))]
         except (ArithmeticError, np.linalg.LinAlgError) as exc:   # pragma: no cover - defensive
             raise ValueError('the plant model update failed numerically: %s' % (exc,))
-        for th, P in new:
-            if not (np.all(np.isfinite(th)) and np.all(np.isfinite(P))):
+        for th, P, Pu in new:
+            if not (np.all(np.isfinite(th)) and np.all(np.isfinite(P)) and np.all(np.isfinite(Pu))):
                 raise ValueError('the plant model update is not finite (u=%r, y=%r); row discarded'
                                  % (u.tolist(), y.tolist()))
-        for f, (th, P) in zip((self._fa, self._fx, self._fy), new):
-            f.th, f.P = th, P
+        for f, (th, P, Pu) in zip((self._fa, self._fx, self._fy), new):
+            f.th, f.P, f.P_unforgotten = th, P, Pu
         self.n_accepted += 1
         return True
 
@@ -372,14 +401,21 @@ class PlantModel(object):
         return self._pack(self._fa.th, self._fx.th, self._fy.th)
 
     def sd(self) -> np.ndarray:
-        """The posterior sd, order ``param_names``."""
+        """The forgetting filter's posterior sd, order ``param_names`` (the applied value's own
+        uncertainty; the inlier rule's sd_K). NOT the at-prior decision: see :meth:`sd_unforgotten`."""
         return self._pack(self._fa.sd(), self._fx.sd(), self._fy.sd())
 
+    def sd_unforgotten(self) -> np.ndarray:
+        """The posterior sd from the information actually received (no forgetting), order
+        ``param_names``: what :meth:`at_prior`, :meth:`theta` and the axis-0 guard decide on."""
+        return self._pack(self._fa.sd_unforgotten(), self._fx.sd_unforgotten(),
+                          self._fy.sd_unforgotten())
+
     def at_prior(self) -> List[str]:
-        """Names of the parameters still reporting their prior."""
+        """Names of the parameters still reporting their prior (decided on :meth:`sd_unforgotten`)."""
         frac = self.config.fallback_frac
         sd0 = self._pack(self._fa.sd0, self._fx.sd0, self._fy.sd0)
-        return [n for n, s, s0 in zip(self.param_names, self.sd(), sd0) if s > frac * s0]
+        return [n for n, s, s0 in zip(self.param_names, self.sd_unforgotten(), sd0) if s > frac * s0]
 
     def summary(self, site_x: Optional[float] = None) -> str:
         """One log line: K, b [mm], s (per-parameter reported values), rows accepted / rejected,

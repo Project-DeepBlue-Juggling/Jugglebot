@@ -2,16 +2,20 @@
 id: BUG-137
 kind: bug
 title: 'Learner far-Site guard fails on long single-Site memories: the slope turns confident with no excitation'
-status: inbox
+status: complete
 created: '2026-11-24'
-updated: '2026-11-24T11:28:40Z'
+updated: '2026-11-24T16:22:22Z'
 owners: []
 priority: medium
+effort: s
 hardware: none
-diagnosis: hypothesis
+owner: none
+radius: subsystem
+diagnosis: confirmed
 area: learner
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-25-plant-model-far-site-guard-unforgotten-information.md
 parent: learner-generalisation
 filed_by: claude
 ---

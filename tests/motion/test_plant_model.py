@@ -225,6 +225,66 @@ def test_a_far_site_gets_no_axis0_correction_until_a_second_site_fixes_the_line(
     assert ox == pytest.approx(0.018 - 0.09 * 0.125, abs=0.012)
 
 
+@pytest.mark.parametrize('n', [60, 150, 300, 1500])
+def test_bug137_a_long_single_site_memory_never_applies_an_offset_at_a_far_site(n):
+    """BUG-137: b is forgotten (lambda 0.99) and s is not, so in the forgetting filter's
+    covariance I_ss keeps growing at one Site while I_bb saturates: s's sd fell from 0.24 (30 rows)
+    to 0.096 (150) and 0.008 (1500) with no excitation, and from ~150 rows on an invented slope was
+    applied at a far Site (orchestrator probe 2026-11-25, 10 seeds: 10/10 applied, -53..+60 mm
+    against a true +6.75 mm). The decisions now read the unforgotten covariance, so at ANY length a
+    single-Site Memory keeps b_x and s at prior and applies 0 at a far Site, while the Site itself
+    is still corrected."""
+    for seed in range(5):
+        m = _one_site(seed, n)
+        assert m.offset_x(0.125) == (0.0, True)
+        assert m.offset_x(0.0) == (0.0, True)
+        assert {'b_x', 's'} <= set(m.at_prior())
+        th = m.theta()
+        assert th[1] == 0.0 and th[3] == 0.0
+        u = np.array([0.003, -0.002, 1.0])
+        assert m.forward(u, 0.125, 0)[0] == u[0]
+        assert m.inverse(u, 0.125, 0)[0] == u[0]
+        ox, at_prior = m.offset_x(-0.075)                   # the Site itself: still applied
+        assert not at_prior
+        assert ox == pytest.approx(OFFSET_X_TRUE, abs=0.012)
+
+
+def _second_site(m, n, seed):
+    rng = np.random.default_rng(seed)
+    for _ in range(n):
+        u2 = _cmd(rng)
+        y = np.array([u2[0] + 0.018 - 0.09 * 0.075, u2[1] + 0.012, 1.08 * u2[2]]) + rng.normal(0, [0.020, 0.020, 0.010])
+        m.observe(u2, y, 0.075, 0)
+
+
+@pytest.mark.parametrize('n', [300, 1500])
+def test_bug137_after_a_long_single_site_memory_a_second_site_still_fixes_the_line(n):
+    """Multi-Site still learns: the unforgotten covariance does not hold the far Site at prior
+    once a second Site has been observed; the applied offset there is the fitted line."""
+    for seed in range(3):
+        m = _one_site(seed, n)
+        _second_site(m, 60, 100 + seed)
+        ox, at_prior = m.offset_x(0.125)
+        assert not at_prior
+        raw = m.raw()
+        assert ox == pytest.approx(raw[1] + raw[3] * 0.125, abs=1e-15)
+        assert 's' not in m.at_prior() and 'b_x' not in m.at_prior()
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    'BUG-137 residue, open: the guard is fixed but the forgetting filter VALUE of s is still '
+    'corrupted by the information its per-parameter forgetting manufactures during a long '
+    'single-Site run (sd_s 0.007 after 1500 rows), so when a second Site arrives s barely moves '
+    'and the far-Site line is off by up to ~25 mm after 60 second-Site rows (probe 2026-11-25). '
+    'Fixing it changes the forgetting itself (e.g. process noise on b instead of P / sqrt(lam '
+    'lam)), which moves the probe pin: a design decision for the owner.'))
+def test_bug137_residue_the_slope_value_recovers_after_a_long_single_site_memory():
+    for seed in range(6):
+        m = _one_site(seed, 1500)
+        _second_site(m, 60, 100 + seed)
+        assert m.offset_x(0.125)[0] == pytest.approx(0.018 - 0.09 * 0.125, abs=0.012)
+
+
 # --------------------------------------------------------------------------- the inlier rule
 def _converged(rng, K=1.08):
     m = PlantModel()
