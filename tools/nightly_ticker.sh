@@ -17,7 +17,11 @@
 #   tools/nightly_ticker.sh check [--who L]  # session start; prints ONE line:
 #     CLAIMED  <status line>     you are first today: read latest.md, surface it
 #     LOWERED  <run-iso> handled <ack-iso> by <who>   skip; nothing to read
-#     STALE    <run-iso> ...     last run > 2 days ago: the runner may have stopped
+#     STALE    <run-iso> ...     the status is not from the latest scheduled 02:00 slot
+#                                (missed slot, BUG-100) or is > 2 days old: the runner
+#                                may have stopped.
+#                                Only the LOWERED path reports it: the claimant of an old
+#                                raised result gets CLAIMED, and the next check STALE.
 #     UNRAISED <status line>     status exists but no ticker: read it once (a
 #                                pre-ticker runner, or `raise` failed)
 #     NEVER    no nightly artefacts: never armed on this box, or temp/ was cleaned
@@ -38,7 +42,15 @@
 # is read exactly once. A claimant touches its claim right after the rename (the rename
 # keeps the raised file's old mtime); the microsecond between the two is the only window
 # in which a live claim could look dead. A newer ticker.raised wins over a dead claim.
-# NIGHTLY_REPORTS_DIR overrides the directory (tests).
+# Missed slot (BUG-100): the latest scheduled slot is the most recent 02:00 local time
+# at or before (now - NIGHTLY_SLOT_GRACE_S, default 1800 s). A run whose status iso-date
+# is earlier than that slot (less NIGHTLY_SLOT_EARLY_S = 300 s of timer skew) is STALE.
+# The grace means a run in progress at 02:10 (the previous status is still the
+# previous slot's) is not STALE; a late or Persistent=true catch-up run, and a DEFERRED
+# status (written when the wait budget expires), all carry a later iso-date and pass.
+# The status iso-date is the run's END time, which is always after its slot.
+# NIGHTLY_REPORTS_DIR overrides the directory; NIGHTLY_TICKER_NOW (epoch seconds) is the
+# fake clock for the slot arithmetic; NIGHTLY_SLOT_HHMM (default 02:00) the slot time (tests).
 
 set -euo pipefail
 
@@ -52,6 +64,9 @@ STALE_AFTER_S=$((2 * 24 * 3600))
 PULL_STATUS="${PULL_STATUS_FILE:-$REPO_ROOT/temp/reports/pull/status}"
 PULL_LOUD_AFTER_S=600
 CLAIM_MAX_AGE_S="${NIGHTLY_TICKER_CLAIM_MAX_AGE_S:-300}"
+SLOT_HHMM="${NIGHTLY_SLOT_HHMM:-02:00}"
+SLOT_GRACE_S="${NIGHTLY_SLOT_GRACE_S:-1800}"
+SLOT_EARLY_S="${NIGHTLY_SLOT_EARLY_S:-300}"
 
 usage() { sed -n '2,30p' "${BASH_SOURCE[0]}" >&2; exit 2; }
 
@@ -67,10 +82,37 @@ raise() {
   echo "nightly_ticker: RAISED for run $run_iso"
 }
 
+now_s() { echo "${NIGHTLY_TICKER_NOW:-$(date +%s)}"; }
+
 age_s() {                                    # seconds since an iso-date, or empty if unparsable
   local t; t="$(date -d "$1" +%s 2>/dev/null)" || return 0
-  echo $(( $(date +%s) - t ))
+  echo $(( $(now_s) - t ))
 }
+
+# Epoch of the latest scheduled slot that is already past its grace.
+latest_slot_s() {
+  local cutoff day s
+  cutoff=$(( $(now_s) - SLOT_GRACE_S ))
+  day="$(date -d "@$cutoff" +%F)"
+  s="$(date -d "$day $SLOT_HHMM" +%s)"
+  if (( s > cutoff )); then
+    day="$(date -d "$day -1 day" +%F)"
+    s="$(date -d "$day $SLOT_HHMM" +%s)"
+  fi
+  echo "$s"
+}
+
+# 0 when the run (iso-date $1) is older than the latest slot, or > 2 days. Unparsable: not stale.
+run_is_stale() {
+  local age t slot
+  age="$(age_s "$1")"
+  [[ -n "$age" ]] || return 1
+  (( age > STALE_AFTER_S )) && return 0
+  t="$(date -d "$1" +%s)"
+  slot="$(latest_slot_s)" || return 1
+  (( t < slot - SLOT_EARLY_S ))
+}
+
 
 # One extra line after the verdict when the auto-pull has been stalled (non-OK)
 # for more than 10 minutes. Silent when OK, absent, or unparsable.
@@ -142,11 +184,10 @@ check_verdict() {
     fi
   done
   if [[ -f "$LOWERED" ]]; then
-    local run_iso age
+    local run_iso
     run_iso="$(cut -d' ' -f1 "$LOWERED")"
-    age="$(age_s "$run_iso")"
-    if [[ -n "$age" ]] && (( age > STALE_AFTER_S )); then
-      echo "STALE $(cat "$LOWERED") — last nightly ran >2 days ago; check the timer"
+    if run_is_stale "$run_iso"; then
+      echo "STALE $(cat "$LOWERED") - no run in the latest scheduled $SLOT_HHMM slot (or >2 days old); check the timer"
     else
       echo "LOWERED $(cat "$LOWERED")"
     fi
