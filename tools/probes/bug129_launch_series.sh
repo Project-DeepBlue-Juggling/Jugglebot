@@ -236,7 +236,11 @@ while (( slot < total )); do
     # The lock descriptor is closed for the churn commands: a ros2 CLI call that starts the
     # ros2 daemon would otherwise hand it the lock, and the daemon outlives the launch
     # (first series, 2026-11-25: the next launch waited 15 min on the lock and aborted).
-    bash -c "$ENVSRC && $*" {LOCKFD}>&- > /dev/null 2>&1; echo "$t $lbl rc=$?" >> "${base}.churn"
+    # `$ENVSRC || exit; cmd`, not `$ENVSRC && cmd`: with `&&`, a command of the form
+    # `ros2 ... & sleep 4; kill -9 $!` backgrounds the whole `&&` list in a subshell, `$!` is
+    # that subshell, and the kill leaves the ros2 process alive (first series, 2026-11-25:
+    # two `ros2 topic echo` survived, held the lock, and no participant was ever killed).
+    bash -c "$ENVSRC || exit 97; $*" {LOCKFD}>&- > /dev/null 2>&1; echo "$t $lbl rc=$?" >> "${base}.churn"
   }
 
   ok=1
@@ -291,6 +295,8 @@ while (( slot < total )); do
   wait "$LAUNCH_PID" 2>/dev/null
   echo "bridge_exit=$exit_note" >> "${base}.meta"; echo "end_epoch=$(date +%s)" >> "${base}.meta"
   LAUNCH_PID=""
+  # No churn subscriber may outlive its launch (it would hold shm and count as a participant).
+  pkill -9 -f 'bin/ros2 topic ech[o] /robot_state' 2>/dev/null || true
   # Stop the ros2 daemon the churn started, so every launch meets the same discovery state.
   bash -c "$ENVSRC && timeout 20 ros2 daemon stop" {LOCKFD}>&- > /dev/null 2>&1 || true
   exec {LOCKFD}>&-
