@@ -1,4 +1,4 @@
-"""The corpus replay through the PRODUCTION Learner (plan ``plans/active/learner-generalisation.md``
+"""The corpus replay through the PRODUCTION Learner (plan ``plans/archived/learner-generalisation.md``
 test T-I1; P1 unit L5).
 
 Research characterisation, not a contract: it MEASURES the 3276-row Learner corpus

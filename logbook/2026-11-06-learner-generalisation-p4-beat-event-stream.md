@@ -2,7 +2,7 @@
 title: "Learner generalisation P4: a Pattern is a stream of beat events; compile_columns is a thin wrapper over one event compiler (227 golden compiles reproduce bit for bit), a running Columns stream can take a change of Apex or Dwell one beat later under a named next-beat rule, and dwell leaves the skill node's parameters"
 type: feature
 date: 2026-11-06
-status: in-progress
+status: tuned
 phase: "learner-generalisation P4 (BeatEvent stream and the columns wrapper) - on branch p3-online-admissibility, held for the owner's merge"
 related_plan: learner-generalisation.md
 files_changed:
@@ -308,3 +308,7 @@ case is a named refusal at an install with the cup at rest, the same end a thin-
    not fly) and a compiler-refused one (`dwell=0.9`) as the expected refusal. Say if both should pass.
 9. The flown runsheets under `tests/hardware/` still set the `dwell_s` parameter; any that is reused needs
    that step dropped (the node now refuses it as undeclared).
+
+## Closure (2026-11-24)
+
+Status set to `tuned` on 2026-11-24 (owner). The BeatEvent stream and the Columns wrapper merged 2026-11-06 and the compiled path has flown. `tuned` and not `resolved` because a change mid-Pattern has only run in the sim gate: nothing on the robot calls `request_beat_change`, and the owner decided on 2026-11-24 not to pursue it. Yaw is still refused by name and is `plans/active/learner-efficacy.md` step E3. The plan was archived 2026-11-24.

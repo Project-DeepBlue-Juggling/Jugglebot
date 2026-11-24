@@ -6,7 +6,7 @@ Learner is fed from. The Memory only LOADS, HOLDS and APPENDS rows: the
 law that reads them lives in ``learner.Learner`` (which takes each row
 through ``observe``).
 
-**Why v2** (``plans/active/learner-generalisation.md`` section 2.3): the
+**Why v2** (``plans/archived/learner-generalisation.md`` section 2.3): the
 residual memory is keyed on the throw's RELEASE position, release velocity
 and release kind, not on the old (site xy, seat offset) 4-vector, which
 cannot tell an oval's carried release from a free-cup one at the same Site.

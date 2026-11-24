@@ -1,5 +1,5 @@
 """The online admissibility check for a THROW command (plan
-``plans/active/learner-generalisation.md`` P3a/P3c; ``motion/skills/INVARIANTS.md``
+``plans/archived/learner-generalisation.md`` P3a/P3c; ``motion/skills/INVARIANTS.md``
 I-ADMIT-1 / I-ADMIT-2).
 
 A THROW's command is ``u = (landing_xy_m, apex_m)``. Before it reaches the

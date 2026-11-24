@@ -2,7 +2,7 @@
 title: "Learner generalisation P3b: goal acceptance is decided by a nomination (the Pattern's own Schedule, compiled and planned Segment by Segment with the real planner at the live limits), every refusal is reported at once, and a refused configuration names the nearest viable one; the offline box no longer gates a goal"
 type: feature
 date: 2026-11-06
-status: in-progress
+status: resolved
 phase: "learner-generalisation P3b (nomination-time check and the nearest viable configuration) - code complete on branch p3-online-admissibility, held for the owner's merge; the live rehearsal is owed to that merge"
 related_plan: learner-generalisation.md
 files_changed:
@@ -306,3 +306,7 @@ holds 44 tests.
    the seconds and solve count are therefore not in a default launch log.
 7. **The rehearsal on the live stack** (`skills/check`, `skills/nominate`, the panel in a real browser) needs
    your merge and the colcon build.
+
+## Closure (2026-11-24)
+
+Status set to `resolved` on 2026-11-24 (owner). The nomination check merged and flew 2026-11-06 with every goal accepted, and BUG-73 was closed. The plan was archived 2026-11-24 (`plans/archived/learner-generalisation.md`).

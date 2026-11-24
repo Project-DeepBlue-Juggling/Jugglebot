@@ -2,7 +2,7 @@
 title: "Learner generalisation P1: the Learner core is a global plant model (one apex gain, a lateral offset and a centre-pull, by recursive least squares) plus a residual memory keyed on release position and velocity, with an evidence-scaled cap about the model command; a replay of the 3276-row corpus first showed which parts of the plan's law survive"
 type: feature
 date: 2026-11-06
-status: in-progress
+status: tuned
 phase: "learner-generalisation P1 (Learner core) - on branch p3-online-admissibility, held for the owner's merge"
 related_plan: learner-generalisation.md
 files_changed:
@@ -341,3 +341,7 @@ actuator bound (owner decision D3); the actuator bounds are the planner check, i
    fly-back. The difference is about 0.035 m/s against a 0.15 m/s bandwidth: accepted, not corrected.
 11. The sim gate's "policy A" needed the old law's `k_min`; it now keeps its own constant (2 rows). The
    plan bench's "still cold after one row" assertion is gone: the model learns from the first row.
+
+## Closure (2026-11-24)
+
+Status set to `tuned` on 2026-11-24 (owner). The Learner core merged 2026-11-06 and has flown on every Sitting since. `tuned` and not `resolved` because the 2026-11-23/24 review found open defects in it (BUG-137, BUG-138, FEAT-65) and that its residual correction gives no measurable benefit; that work is `plans/active/learner-efficacy.md` step E2, recorded in `logbook/2026-11-24-learner-efficacy-review-and-scatter-decomposition.md`. The plan was archived 2026-11-24.

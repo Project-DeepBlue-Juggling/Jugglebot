@@ -1,5 +1,5 @@
 """``motion/skills/learner`` -- the Learner: global plant model + residual memory + evidence cap
-(plan ``plans/active/learner-generalisation.md`` §§ 2.2-2.4; L1, L2, L3).
+(plan ``plans/archived/learner-generalisation.md`` §§ 2.2-2.4; L1, L2, L3).
 
 Given a target landing ``y_d`` and a :class:`ThrowContext` (the physics of the Throw about to be
 commanded), :meth:`Learner.command` returns the command ``u``::

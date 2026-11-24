@@ -2,7 +2,7 @@
 title: "Learner generalisation P3a: the command-time admissibility check is built (a real plan + gate of this ball's next Catch in the solver worker, the throw envelope re-homed onto the live path), and measured on the loaded Jetson: one check costs 36 ms idle and 101 / 190 ms (p50 / p99) under Sitting-like starvation, so it starts EARLY, in the idle slot before the dispatch"
 type: feature
 date: 2026-11-06
-status: in-progress
+status: tuned
 phase: "learner-generalisation P3a (command-time admissibility check) - code complete on branch p3-online-admissibility, held for the owner's merge; the live skills/check rehearsal of the new code is owed to that merge"
 related_plan: learner-generalisation.md
 files_changed:
@@ -481,3 +481,7 @@ gained the `check_only` and `margin` fields on its mocked service; `tests/motion
    `BOX-EXPECTED-LANDING-UNMET` did?
 6. **The sim's self-throw and hop Learner runs have no lateral authority** (`_launch_authority_kwargs` is
    applied to one run only), so they exercise commands the robot never sends. Not filed as an Item yet.
+
+## Closure (2026-11-24)
+
+Status set to `tuned` on 2026-11-24 (owner). The command-time check merged and flew 2026-11-06 (100 of 100 early checks reused, no refusal). `tuned` and not `resolved` because its slack questions (the early start against the literal slot, what buys slack when a check spills, a `--kind check` run of `loaded_budget.py` under a launch) are open and now listed in `plans/active/learner-efficacy.md` § 8. The plan was archived 2026-11-24.

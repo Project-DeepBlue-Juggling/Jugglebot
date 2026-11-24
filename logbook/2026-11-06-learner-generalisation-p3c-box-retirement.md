@@ -2,7 +2,7 @@
 title: "Learner generalisation P3c: the offline Admissible box is retired - the box API, the sweep tool, the committed YAML and the executor's box path are deleted; the planner cells the sweep owned live on as a probe library"
 type: refactor
 date: 2026-11-06
-status: in-progress
+status: resolved
 phase: "learner-generalisation P3c (box retirement) - code complete on branch p3-online-admissibility, held for the owner's merge"
 related_plan: learner-generalisation.md
 files_changed:
@@ -231,3 +231,7 @@ thread, `pytest -q -p no:cacheprovider`) and the gate below.
   Items moved on main meanwhile.
 - **Closed runsheets under `tests/hardware/`** keep their flown box and `gate_hash` rows as history; only
   `session_oval_rung1.md`, the one still to be flown, was changed.
+
+## Closure (2026-11-24)
+
+Status set to `resolved` on 2026-11-24 (owner). The box retirement merged 2026-11-06; a 2026-11-23 audit found zero live references to the box, the sweep or its hash. The plan was archived 2026-11-24 (`plans/archived/learner-generalisation.md`).

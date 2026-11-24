@@ -1,6 +1,6 @@
 """P3a command-time admissibility check: ``admissible.margin``,
 ``admissible.resolve_command`` and ``executor.check_segment``
-(``plans/active/learner-generalisation.md`` P3a; design rows T-U7 and PIN).
+(``plans/archived/learner-generalisation.md`` P3a; design rows T-U7 and PIN).
 
 Recipes (real planner everywhere except the scripted call-count table):
 

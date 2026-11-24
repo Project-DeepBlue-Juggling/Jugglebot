@@ -2,7 +2,7 @@
 title: "The admissible-box sweep can be retired: at the P4 working point 82 of 113 committed cells are the grid edge, the QP is affine in the landing offset (one active set over the whole grid), the gate margin is smooth, and a one-solve online check at command time plus a seconds-long Start pre-flight replaces the 2 h round - desk investigation with simulation"
 type: investigation
 date: 2026-11-04
-status: in-progress
+status: resolved
 phase: "learner-generalisation P3a-c (online admissibility) - desk investigation, recommendation accepted 2026-11-05 and the plan re-phased; no production code changed"
 related_plan: learner-generalisation.md
 files_changed:
@@ -168,3 +168,7 @@ online acceptance criterion, a measured overrun is a follow-up; (5) P3 moves ahe
 5. **Should P3 move ahead of P1 (the learner core)?** The plan's order is P1 then P3; the box is already vacuous at the P4 working point, and the next re-sweep is the next trigger (any gated-file edit). Nothing in P3a depends on the new learner law.
 6. **The plan's 2026-10-18 "decision boundary learned from sweep output (discarded)"**: the reason was not recorded; the research agents asked. If it was "no certificate", this entry agrees.
 7. **Which parameters the coming Patterns vary** (site xy and angle only, or dwell and apex too) decides nothing here, but decides the size of the Start pre-flight.
+
+## Closure (2026-11-24)
+
+Status set to `resolved` on 2026-11-24 (owner). The offline box was retired at P3c (2026-11-06) and online admissibility has flown since with no box. The plan was archived 2026-11-24 (`plans/archived/learner-generalisation.md`).

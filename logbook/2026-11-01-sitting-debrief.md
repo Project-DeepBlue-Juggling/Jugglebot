@@ -2,7 +2,7 @@
 title: "Sitting 2026-11-01 debrief: 23 goals (straight Columns, first high-low and first turned Attempts); four open hypotheses reframed by the data"
 type: investigation
 date: 2026-11-01
-status: in-progress
+status: tuned
 phase: "pattern progression"
 related_plan: pattern-progression.md
 related_issues: []
@@ -104,3 +104,7 @@ Analysis only, no code. Paperwork: 2026-11-01, `pytest tests/sim/test_plans_inde
 ## Outcome
 
 Open. The analysis is done and the decisions are recorded; the HAND_STROKE fix, instrumentation, limit raise and re-swept box follow in their own commit and entry, after which BUG-42/BUG-43 are re-flown.
+
+## Closure (2026-11-24)
+
+Status set to `tuned` on 2026-11-24 (owner). The analysis and the decisions in this entry are complete. `tuned` and not `resolved` because Items it cites are still open and tracked in the map (BUG-5, BUG-19, BUG-42 and BUG-51 at the time of closing; BUG-34 was folded into BUG-58 the same day); the follow-up work lives on those Items, not here.

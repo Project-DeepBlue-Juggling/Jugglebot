@@ -1,5 +1,5 @@
 """f0, the Learner's global plant model (``motion/skills/plant_model.py``; plan
-``plans/active/learner-generalisation.md`` § 2.2 and § 5 T-U1, T-U2, T-U5, T-R2).
+``plans/archived/learner-generalisation.md`` § 2.2 and § 5 T-U1, T-U2, T-U5, T-R2).
 
 Real arithmetic throughout: synthetic plants with known theta, and the committed corpus copy for
 the production-vs-probe pin.

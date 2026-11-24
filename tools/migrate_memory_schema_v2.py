@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Migrate a schema-v1 Learner memory (``memory.csv``) to schema v2
-(``memory_v2.csv``): the one-off for ``plans/active/learner-generalisation.md``
+(``memory_v2.csv``): the one-off for ``plans/archived/learner-generalisation.md``
 section 2.3 (the residual memory is keyed on the release position, release
 velocity and release kind, not on the old site xy + seat offset 4-vector).
 

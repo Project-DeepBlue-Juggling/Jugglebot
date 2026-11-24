@@ -1,5 +1,5 @@
 """P3a: the executor's ONLINE admissibility path (``SkillExecutor(checker=)``,
-``plans/active/learner-generalisation.md`` P3a, `motion/skills/INVARIANTS.md` I-ADMIT-1).
+``plans/archived/learner-generalisation.md`` P3a, `motion/skills/INVARIANTS.md` I-ADMIT-1).
 
 Recipe table (driver, working point, expected code):
 

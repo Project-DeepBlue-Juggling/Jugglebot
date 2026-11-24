@@ -1,4 +1,4 @@
-"""The Learner (``motion/skills/learner.py``; plan ``plans/active/learner-generalisation.md``
+"""The Learner (``motion/skills/learner.py``; plan ``plans/archived/learner-generalisation.md``
 §§ 2.3-2.4 and § 5 T-U3, T-U4, T-U5, T-R2): residual memory L2 and the evidence cap L3 over the
 global plant model f0 (``plant_model.py``, tested in ``test_plant_model.py``).
 

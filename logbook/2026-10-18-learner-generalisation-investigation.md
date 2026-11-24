@@ -2,7 +2,7 @@
 title: "The memory learner does not need a cleverer memory: the plant's systematic error is global (846-row corpus regression), so generalisation is a global plant model plus a fixed-Jacobian residual, with admissibility checked online instead of swept offline - desk investigation, plan written"
 type: investigation
 date: 2026-10-18
-status: in-progress
+status: tuned
 phase: "learner-generalisation - P0 desk investigation (plan written, implementation not started)"
 related_plan: learner-generalisation.md
 files_changed:
@@ -172,3 +172,7 @@ the Jetson venv was not available to this session):
 - Lee's shower/box plateau came from release-contact discontinuities; the carried oval release may show one. `release_kind` separation is the first defence, a per-kind model term the second.
 - Is ball 1's +16 mm a ball effect or a site x ball interaction? It is attributed to ball 1 but perfectly confounded with site x0 = -0.0625; the ball swap in P2(c) separates it.
 - Kober CrKR remains unverified (unfetchable); revisit only if the residual memory underperforms.
+
+## Closure (2026-11-24)
+
+Status set to `tuned` on 2026-11-24 (owner). The design this entry diagnosed shipped (P3a, P3b, P3c, P1, P2 and P4, 2026-11-06) and has flown. The plan it says it closes with was archived 2026-11-24 as superseded in part (`plans/archived/learner-generalisation.md`); its P5 was retired and its open items moved to `plans/active/learner-efficacy.md`. `tuned` and not `resolved` because learner efficacy is an open sibling investigation: `logbook/2026-11-24-learner-efficacy-review-and-scatter-decomposition.md`.

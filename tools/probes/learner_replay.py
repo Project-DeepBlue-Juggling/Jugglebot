@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Replay the Learner memory corpus through the OLD law and a prototype of the plan's NEW law.
 
-Question (``plans/active/learner-generalisation.md`` Phase 1, "Probe FIRST"): does the global plant
+Question (``plans/archived/learner-generalisation.md`` Phase 1, "Probe FIRST"): does the global plant
 model f0 (apex gain K, lateral offset b, axis-0 centre pull s, per-ball offset Delta) fitted by
 recursive least squares, plus the residual memory L2 and the evidence cap L3, predict the robot's
 throws better than today's local-linear Learner, at a cold Site and in steady state, and with
