@@ -322,13 +322,13 @@ def test_the_bump_history_records_what_this_version_carries():
     # FW 50 — BUG-99 observability and pins only.  The substance: the overflow-
     # safe stamp bound (unsigned difference, 2^31 us both ways, counted as a
     # future drop), the compiled lead-clamp headroom assert, a console-only
-    # transition count, and no wire change, so only BRIDGE_FW_CHECK says
-    # whether it is aboard.
+    # transition count, and one ADDITIVE message (FEAT-64 ENCODER_AGE, no
+    # PROTOCOL bump), so only BRIDGE_FW_CHECK says whether it is aboard.
     m50 = re.search(r'^// 49→50:(.*)$', text, re.M)
     assert m50 is not None, "FW 50 history line missing"
     for needle in ('BUG-99', 'SCHED_STAMP_RANGE_US', 'UNSIGNED', 'sched_future_drops',
-                   'static_assert', 'CONSOLE-ONLY', 'NO WIRE CHANGE',
-                   'PROTOCOL_VERSION stays 14'):
+                   'static_assert', 'CONSOLE-ONLY', 'ENCODER_AGE', 'FEAT-64',
+                   'NO EXISTING FRAME CHANGES', 'PROTOCOL_VERSION stays 14'):
         assert needle in m50.group(1), (needle, m50.group(1))
 
 

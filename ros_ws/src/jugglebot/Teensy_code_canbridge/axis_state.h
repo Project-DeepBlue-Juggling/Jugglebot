@@ -155,6 +155,21 @@ inline void write_pos_vel(AxisState& a, float pos, float vel, uint64_t t_us) {
   a.seq = a.seq + 1;          // even → done
 }
 
+// Encoder sample age for the ENCODER_AGE uplink (FW 50, FEAT-64): how old the sample behind a
+// telemetry pos/vel was, in whole microseconds, as a SATURATING u16. `now_mono_us` must be read
+// AFTER the snapshot that produced `ts_us` (same micros64 clock as pos_timestamp_us), so a
+// real sample is never newer than now; the ts > now branch only absorbs a caller that broke
+// that order and reads 0, never a wrapped huge age. ts_us == 0 is the "no frame yet this boot"
+// sentinel (pos_timestamp_us starts at 0 and micros64 is nonzero by the time a frame lands)
+// and reads ENCODER_AGE_NONE; an age >= ENCODER_AGE_MAX reads exactly ENCODER_AGE_MAX.
+// Pure arithmetic on two values already in hand: no state, no effect on any control output.
+inline uint16_t encoder_age_us16(uint64_t now_mono_us, uint64_t ts_us) {
+  if (ts_us == 0) return (uint16_t)JbUdp::ENCODER_AGE_NONE;
+  if (ts_us >= now_mono_us) return 0;
+  const uint64_t d = now_mono_us - ts_us;
+  return d >= JbUdp::ENCODER_AGE_MAX ? (uint16_t)JbUdp::ENCODER_AGE_MAX : (uint16_t)d;
+}
+
 // Reader: consistent snapshot of the hot triple.
 inline void snapshot_pos_vel(const AxisState& a, float& pos, float& vel, uint64_t& t_us) {
   uint32_t s0, s1;

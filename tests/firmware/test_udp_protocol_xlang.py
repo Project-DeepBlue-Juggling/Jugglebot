@@ -73,6 +73,7 @@ def test_crc16_matches_generator(gen, proto):
     "Setpoint", "HeartbeatJ2T", "Telemetry", "Diagnostic",
     "HeartbeatT2J", "Profile", "PlatformFrame", "HandCmdEcho", "HandSensor",
     "CanErrors", "BridgeTxDiag", "BridgeIdentity", "LegClampDiag", "PlatformImuBatch",
+    "EncoderAge",
     "RpcRequest", "RpcResponse",
 ])
 def test_message_pack_unpack_roundtrip(proto, gen, name):
@@ -113,6 +114,7 @@ def test_message_pack_unpack_roundtrip(proto, gen, name):
     ("HandSensor", "HAND_SENSOR"), ("CanErrors", "CAN_ERRORS"),
     ("BridgeTxDiag", "BRIDGE_TX_DIAG"), ("BridgeIdentity", "BRIDGE_IDENTITY"),
     ("LegClampDiag", "LEG_CLAMP_DIAG"), ("PlatformImuBatch", "PLATFORM_IMU_BATCH"),
+    ("EncoderAge", "ENCODER_AGE"),
 ])
 def test_frame_encode_decode_roundtrip(proto, gen, name, msg_type_member):
     msg_spec = next(m for m in gen.MESSAGES if m.name == name)
@@ -592,7 +594,13 @@ def test_wire_layout_frozen(gen):
     # ArgPlatformImuRead (7 B) behind RpcMethods 0x0064 / 0x0065. No existing
     # message, arg or MsgType changed, so PROTOCOL_VERSION stays 14.
     # Previous pin: 27eb4fcdb3cf7bc4031b56fcb83d4ee8010f09da60a64ce88001bbe5bc91d70a
-    _EXPECTED = "e3dd17c7dd06a87b37bafd53d04b9ea698ce3e4e3dc315dc7a827c56305dce05"
+    # Re-pinned for the ADDITIVE ENCODER_AGE uplink (2026-11-25, can-bridge FW 50,
+    # FEAT-64): one new message EncoderAge (22 B: u64 t_teensy_us identical to the
+    # paired TELEMETRY + u16 age_us[7]) on the new MsgType ENCODER_AGE 0x96, and
+    # two u16 constants ENCODER_AGE_NONE 0xFFFF / ENCODER_AGE_MAX 0xFFFE. No
+    # existing message, arg or MsgType changed, so PROTOCOL_VERSION stays 14.
+    # Previous pin: e3dd17c7dd06a87b37bafd53d04b9ea698ce3e4e3dc315dc7a827c56305dce05
+    _EXPECTED = "e5e2803131cbb1be94af13bf7b03cb8bd87cf22bc5562b93c47359f94912f343"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

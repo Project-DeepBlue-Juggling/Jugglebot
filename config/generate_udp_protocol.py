@@ -123,6 +123,8 @@ CONSTANTS = [
     # frames, so one datagram per tick carries the whole tick with room for
     # jitter; the fixed size keeps the struct a plain packed record.
     ("PLATFORM_IMU_BATCH_MAX_FRAMES", 24, "u8", "IMU_DATA frames one PLATFORM_IMU_BATCH can carry (frames[] holds this many 8-byte records)"),
+    ("ENCODER_AGE_NONE", 0xFFFF, "u16", "ENCODER_AGE age_us value meaning no encoder sample has arrived on that axis yet this boot"),
+    ("ENCODER_AGE_MAX",  0xFFFE, "u16", "ENCODER_AGE age_us saturation ceiling (65.534 ms): an age at or above it reads exactly this value, never wraps"),
     ("MAGIC",            0x4A42, "u16", '"JB" little-endian preamble (bytes 0x42 0x4A)'),
     ("HEADER_SIZE",      8,      "u16", "Bytes before payload"),
     ("CRC_SIZE",         2,      "u16", "Trailing CRC-16 bytes"),
@@ -227,6 +229,8 @@ ENUMS = {
         # ADDITIVE (2026-11-19, can-bridge FW 45, IDEA-20 P3a, no PROTOCOL_VERSION
         # bump: an older host counts and ignores the unknown type).
         ("PLATFORM_IMU_BATCH", 0x95, "Platform IMU_DATA frames batched off their dedicated bridge ring at the telemetry tick, plus the ring's counters (STREAM, T→J)"),
+        # ADDITIVE (2026-11-25, can-bridge FW 50, FEAT-64, no PROTOCOL_VERSION bump).
+        ("ENCODER_AGE",    0x96, "Per-axis encoder sample age at the TELEMETRY tick, paired 1:1 with TELEMETRY by t_teensy_us (STREAM, T→J)"),
     ],
     "RpcMethod": [
         ("NOP",                0x0000, "No-op (link test)"),
@@ -576,6 +580,28 @@ MESSAGES = [
             Field("t_teensy_us", "u64", 1, "Teensy wall-clock at sample (us)"),
             Field("pos_rev", "f32", 7, "Per-axis position (rev), axes 0..5 legs, 6 hand"),
             Field("vel_rps", "f32", 7, "Per-axis velocity (rev/s)"),
+        ],
+    ),
+    Message(
+        "EncoderAge", "ENCODER_AGE", "T2J", "STREAM",
+        summary=(
+            "Per-axis encoder SAMPLE AGE at the TELEMETRY tick (can-bridge FW 50, FEAT-64). "
+            "TELEMETRY's pos/vel are the newest ODrive encoder estimate the bridge had at the tick, "
+            "which arrived 0 to 10 ms before it; this frame says how long before, per axis, so an "
+            "offline comparison can place each sample at (t_teensy_us - age_us) instead of assuming "
+            "a constant. Emitted in the same telemetry tick as, and immediately BEFORE, the "
+            "TELEMETRY frame it pairs with: `t_teensy_us` is the IDENTICAL value, so the host "
+            "attaches it by exact match. age_us is the bridge's monotonic now minus the monotonic "
+            "arrival time of the axis's last encoder frame, both read from the same snapshot the "
+            "TELEMETRY pos/vel came from. Saturating, never wrapping: ENCODER_AGE_MAX (0xFFFE, "
+            "65.534 ms) means that age or older; ENCODER_AGE_NONE (0xFFFF) means no encoder frame "
+            "has arrived on that axis this boot. Additive, NO PROTOCOL_VERSION bump (the BbYawEstimate "
+            "/ LegClampDiag precedent): an old host ignores the unknown msg_type, a new host against "
+            "an FW <= 49 board just never sees it. INSTRUMENTATION ONLY: nothing in the firmware "
+            "reads it and no control path changed."),
+        fields=[
+            Field("t_teensy_us", "u64", 1, "Teensy wall-clock at emit (us): IDENTICAL to the paired TELEMETRY t_teensy_us"),
+            Field("age_us", "u16", 7, "Per-axis age of the encoder sample behind the paired TELEMETRY pos/vel (us), axes 0..5 legs, 6 hand; ENCODER_AGE_MAX saturates, ENCODER_AGE_NONE = no sample yet"),
         ],
     ),
     Message(

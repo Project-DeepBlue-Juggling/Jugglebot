@@ -3047,3 +3047,33 @@ TEST_CASE("PIN (BUG-99 row 1): a mid-stream scheduled -> legacy demotion steps t
   CHECK(std::fabs(step) > 5.0f * std::fabs(v_at) * 0.002f);
   CHECK(step == doctest::Approx(v_at * 0.024f).epsilon(0.05)); // measured: -1.712 rev at -71.6 rev/s
 }
+
+// ── FW 50 (FEAT-64): the ENCODER_AGE arithmetic ──────────────────────────────
+// encoder_age_us16 (axis_state.h) is what send_telemetry runs per axis on the stamps its
+// snapshot already read. Pins: the plain age, the zero age, the saturation edge (at and
+// one either side of ENCODER_AGE_MAX), the no-sample sentinel (a stamp of 0), a stamp
+// ahead of now (reads 0, never wraps to ~65535), and a stamp from a real write_pos_vel
+// through snapshot_pos_vel, the exact path telemetry takes.
+TEST_CASE("FEAT-64 encoder_age_us16: plain, saturating, no-sample and ahead-of-now") {
+  const uint64_t now = 5000000000ull;   // 83 min of uptime: well past any 32-bit wrap
+  CHECK(encoder_age_us16(now, now - 4800) == 4800);                       // a typical 4.8 ms sample
+  CHECK(encoder_age_us16(now, now) == 0);
+  CHECK(encoder_age_us16(now, now - (JbUdp::ENCODER_AGE_MAX - 1)) == JbUdp::ENCODER_AGE_MAX - 1);
+  CHECK(encoder_age_us16(now, now - JbUdp::ENCODER_AGE_MAX) == JbUdp::ENCODER_AGE_MAX);       // at the ceiling
+  CHECK(encoder_age_us16(now, now - (JbUdp::ENCODER_AGE_MAX + 1)) == JbUdp::ENCODER_AGE_MAX); // saturates, not 0xFFFF
+  CHECK(encoder_age_us16(now, now - 65536) == JbUdp::ENCODER_AGE_MAX);    // a u16 truncation would read 0
+  CHECK(encoder_age_us16(now, 1) == JbUdp::ENCODER_AGE_MAX);              // ancient stamp, 64-bit span
+  CHECK(encoder_age_us16(now, 0) == JbUdp::ENCODER_AGE_NONE);             // no sample yet this boot
+  CHECK(encoder_age_us16(0, 0) == JbUdp::ENCODER_AGE_NONE);
+  CHECK(encoder_age_us16(now, now + 7) == 0);                             // stamp ahead of now: 0, no wrap
+  CHECK(JbUdp::ENCODER_AGE_NONE != JbUdp::ENCODER_AGE_MAX);               // the sentinel is not a saturated age
+
+  // The telemetry path: write the cache, snapshot it, age it.
+  AxisState a;
+  float p, v; uint64_t ts;
+  snapshot_pos_vel(a, p, v, ts);
+  CHECK(encoder_age_us16(now, ts) == JbUdp::ENCODER_AGE_NONE);            // a fresh AxisState has no sample
+  write_pos_vel(a, 0.25f, 0.0f, now - 5500);
+  snapshot_pos_vel(a, p, v, ts);
+  CHECK(encoder_age_us16(now, ts) == 5500);
+}

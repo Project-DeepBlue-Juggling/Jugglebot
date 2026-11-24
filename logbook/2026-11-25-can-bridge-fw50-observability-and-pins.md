@@ -8,12 +8,25 @@ subsystem: can-bridge
 related_issues:
   - BUG-99
   - FEAT-28
+  - FEAT-64
 files_changed:
   - ros_ws/src/jugglebot/Teensy_code_canbridge/canbridge_config.h
   - ros_ws/src/jugglebot/Teensy_code_canbridge/leg_interp.cpp
   - ros_ws/src/jugglebot/Teensy_code_canbridge/leg_interp.h
   - ros_ws/src/jugglebot/Teensy_code_canbridge/gpio_poll.cpp
   - teensy_link/rpc_args.py
+  - teensy_link/protocol.py
+  - teensy_link/__init__.py
+  - config/generate_udp_protocol.py
+  - config/generated/udp_protocol.h
+  - config/generated/udp_protocol.py
+  - docs/teensy-udp-protocol.md
+  - ros_ws/src/jugglebot/Teensy_code_canbridge/axis_state.h
+  - ros_ws/src/jugglebot/Teensy_code_canbridge/telemetry.cpp
+  - ros_ws/src/jugglebot/Teensy_code_canbridge/udp_protocol.h
+  - tools/probes/teensy_link_profiling/jetson/udp_protocol.py
+  - tests/teensy_link/test_encoder_age_codec.py
+  - tests/firmware/test_udp_protocol_xlang.py
   - tools/probes/teensy_link_profiling/hermite_xref/teensy_interp.py
   - tests/firmware/native/test_leg_interp.cpp
   - tests/firmware/test_sched_c2_twin.py
@@ -53,3 +66,26 @@ All on 2026-11-24/25 in the `offline/fw50` worktree; nothing flashed.
 - **New tests fail without the change.** The A1 cases built against a copy of `leg_interp.cpp` with only the FW 49 ingest restored: **2 cases, 11 assertions fail** (the band frame is queued, feeds the staleness clock, and activates both groups). The twin test with the twin's bound disabled: `pytest tests/firmware/test_sched_c2_twin.py -k stamp` **1 failed**. A2: `g++ -fsyntax-only` on a header copy with `LEG_POS_GAINS[0] = 90` fails the new `static_assert` (12.5 > 12); the YAML twin's own test mutates a temp copy the same way and sees leg 0 at 12.5.
 - **Image.** `pio run -e teensy41` in `Teensy_code_canbridge/` (build only, never uploaded), 2026-11-25: SUCCESS, `firmware.elf` text 256320, data 35520, bss 113312 (dec 405152); `firmware.hex` 820984 B; no warning from an edited file.
 - **Scoped suite.** `flock /tmp/jugglebot-tests.lock nice -n 10 python -m pytest -q -n 4 --dist loadfile tests/firmware/ tests/teensy_link/` plus the readers of the edited files and of `rpc_args` (`tests/ros/test_teensy_bridge_node_{install_skew,bridge_diag,version,read,setpoint,recover,recover_lane,hand_sensor}.py`, `tests/ros/test_gui_geometry.py`, `tests/motion/test_{hand_stream_bench_stall,leg_torque_ff,skills_segments}.py`, `tests/sim/test_{skills_gate,mapkit_sheet,logbook_front_matter}.py`), run 2026-11-25 00:16: **1790 passed, 4 skipped in 573.88 s**. The default gate was not run (the orchestrator's integration step).
+
+## FEAT-64: per-axis encoder sample age (same FW 50, no second bump)
+
+**What.** New additive uplink `ENCODER_AGE` (MsgType 0x96, 22 B payload, 32 B frame): `u64 t_teensy_us` (IDENTICAL to the paired TELEMETRY) + `u16 age_us[7]` (axes 0..5 Legs, 6 Hand). `send_telemetry` now emits it immediately BEFORE TELEMETRY at the 100 Hz tick (the BB_YAW_ESTIMATE pairing: in-order on one socket, host pairs by exact `t_teensy_us`). PROTOCOL_VERSION stays 14: an old host ignores the unknown type, a new host against an FW <= 49 board never sees one and must tolerate its absence.
+
+- **No new capture point.** `snapshot_pos_vel` already returned each axis's `pos_timestamp_us` (stamped `micros64()` in the CAN3 encoder decode, can_buses.cpp:227) and `send_telemetry` discarded it. FW 50 keeps it. Age = `micros64()` read AFTER all seven snapshots minus that stamp, so a real sample is never newer than now. The stamp is taken at decode in task_can_rx, so FlexCAN FIFO residence before decode is not in it (the CAN-ring lag census covers that separately).
+- **Units and saturation.** u16 microseconds. `ENCODER_AGE_MAX = 0xFFFE` (65.534 ms) means "that age or older", `ENCODER_AGE_NONE = 0xFFFF` means no encoder frame yet this boot (stamp 0). A stamp ahead of now reads 0, never a wrapped ~65 ms. Expected live values 4 to 5.5 ms (far from either edge; a frame-drop episode of 76 to 108 ms saturates, which is the honest reading). Helper `encoder_age_us16` in axis_state.h, pure arithmetic.
+- **Config/codegen.** Message and the two constants are in `config/generate_udp_protocol.py`; regenerated `config/generated/udp_protocol.{h,py}`, `Teensy_code_canbridge/udp_protocol.h`, the jetson probe copy and `docs/teensy-udp-protocol.md`. `protocol_config.yaml` untouched, so `generate_config.py` was not needed and ~/Desktop/BallButler was never written (0 changed files before and after). Decoder: the generated `teensy_link.EncoderAge` (re-exported from `teensy_link/__init__.py` and `protocol.py` with `ENCODER_AGE_SIZE/NONE/MAX`).
+- **Not done: the node.** `teensy_bridge_node.py` does not subscribe to 0x96, so on the live Jetson the message is received and dropped. Publishing it needs a new ROS interface or topic (or new fields on `RobotState`/a `/encoder_age` message in jugglebot_interfaces), deliberately left to the in-flight node change.
+
+**Control cycle walk (one 100 Hz telemetry tick).** task_telem (prio 3) runs send_telemetry: `t_teensy_us` and the seven seqlock snapshots as before (the loop only additionally stores `ts`), then one `micros64()` read, seven subtractions with branches, one extra `udp_send_stream` of 32 B. Nothing is written to any AxisState, target, queue or gate; the 500 Hz interp ISR (NVIC-16, above FreeRTOS), the setpoint staging in task_net, the CAN RX decode and every CAN TX path are not edited. The only shared resource is the UDP stream lock, held for one more ~25 to 45 us send per tick (estimate, unmeasured, the PLATFORM_IMU_BATCH figure), against the 30 ms Leg grace: ~0.15 %.
+
+**Wire cost.** 32 B/frame (22 payload + 8 header + 2 CRC) x 100 Hz = **3200 B/s added to the uplink** (+100 datagrams/s). The TELEMETRY frame it rides beside is 74 B x 100 = 7.4 kB/s, so the telemetry pair grows 43 %, but 25.6 kbit/s is far under 1 % of the 100 Mbit link. The budget that matters is datagrams per second and per-send CPU on the bridge (the stream already carries TELEMETRY, LEG_CMD, BB_AXIS_ESTIMATES and the IMU batches at the same tick), so the cost is one more send per tick, not bandwidth.
+
+## FEAT-64 verification
+
+All 2026-11-25, `offline/fw50` worktree, nothing flashed.
+
+- **Native.** `python tests/firmware/native/build.py` then `temp/firmware_native/test_leg_interp`: **76/76 cases, 10667/10667 assertions pass** (1 new case, 13 assertions: plain age, zero, both sides of the 0xFFFE ceiling, 65536 us (a u16 truncation would read 0), the no-sample stamp 0, a stamp ahead of now, and a real `write_pos_vel` then `snapshot_pos_vel` round).
+- **New tests fail without the change.** The native case compiled alone (doctest main + the case body, axis_state.h from a scratch dir) against a header copy with the saturation removed: **3 of 13 assertions fail**; with the `ts == 0` no-sample line removed: **3 of 13 fail**; unmutated 13/13 pass. The wire digest test failed with the new message present until re-pinned (observed: new digest `e5e28031...f343`). The decoder tests import `EncoderAge`/`ENCODER_AGE_*`, which do not exist on the FW 49/50 tree (`git show HEAD:teensy_link/protocol.py` has no `EncoderAge`), so they cannot pass without the change; not separately executed against the old tree.
+- **Python.** `flock /tmp/jugglebot-tests.lock nice -n 10 python -m pytest -q -n 4 --dist loadfile tests/firmware tests/teensy_link tests/sim/test_docs_links.py tests/sim/test_logbook_front_matter.py tests/sim/test_logbook_index.py`: **1200 passed, 4 skipped, 2 failed in 46 s**. The 2 failures are `test_logbook_index.py` (`test_index_is_current`, `test_every_entry_has_exactly_one_row`): this entry has no INDEX row yet (`python -m mapkit gen` is the orchestrator's integration step), not caused by FEAT-64.
+- **Image.** `pio run -e teensy41` (build only): SUCCESS in 205 s, text 256320, data 35520, bss 113312 (dec 405152), `firmware.hex` 820984 B. Byte-identical sizes to the BUG-99-only build: the new code (about a hundred bytes) is absorbed by the section's alignment padding; telemetry.cpp.o was rebuilt and carries the 0xFFFE/0xFFFF constants. No warning from an edited file.
+- **Not run.** Sibling `tests/ros` bridge-node tests (node untouched; an unsubscribed type is dropped by the client as before), `./run_tests.sh`.

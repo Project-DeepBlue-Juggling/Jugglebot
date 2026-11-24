@@ -13,6 +13,8 @@ constexpr uint8_t PROTOCOL_VERSION = 14u;  // Bumped on any incompatible wire ch
 constexpr uint32_t BB_RELEASE_MIN_LEAD_US = 700000u;  // BB_THROW: refuse a release closer than this at bridge receipt (ERR_RELEASE_TOO_SOON); BB wind-up 0.6 s + schedule margin 0.1 s
 constexpr uint32_t BB_RELEASE_MAX_LEAD_US = 30000000u;  // BB_THROW: refuse a release further than this at bridge receipt (ERR_RELEASE_TOO_FAR); BB's 16-bit epoch-ms wrap is ±32.768 s
 constexpr uint8_t PLATFORM_IMU_BATCH_MAX_FRAMES = 24u;  // IMU_DATA frames one PLATFORM_IMU_BATCH can carry (frames[] holds this many 8-byte records)
+constexpr uint16_t ENCODER_AGE_NONE = 65535u;  // ENCODER_AGE age_us value meaning no encoder sample has arrived on that axis yet this boot
+constexpr uint16_t ENCODER_AGE_MAX = 65534u;  // ENCODER_AGE age_us saturation ceiling (65.534 ms): an age at or above it reads exactly this value, never wraps
 constexpr uint16_t MAGIC = 0x4A42u;  // "JB" little-endian preamble (bytes 0x42 0x4A)
 constexpr uint16_t HEADER_SIZE = 8u;  // Bytes before payload
 constexpr uint16_t CRC_SIZE = 2u;  // Trailing CRC-16 bytes
@@ -60,6 +62,7 @@ namespace MsgType {
   constexpr uint8_t BB_YAW_ESTIMATE = 147u;  // Ball Butler yaw estimate @100Hz, paired 1:1 with BB_AXIS_ESTIMATES by t_bridge_us (STREAM, T→J)
   constexpr uint8_t LEG_CLAMP_DIAG = 148u;  // 1 Hz per-leg lead-clamp census: clamp-engaged ticks + stale-anchor ticks, cumulative since boot (STREAM, T→J)
   constexpr uint8_t PLATFORM_IMU_BATCH = 149u;  // Platform IMU_DATA frames batched off their dedicated bridge ring at the telemetry tick, plus the ring's counters (STREAM, T→J)
+  constexpr uint8_t ENCODER_AGE = 150u;  // Per-axis encoder sample age at the TELEMETRY tick, paired 1:1 with TELEMETRY by t_teensy_us (STREAM, T→J)
 }
 namespace RpcMethod {
   constexpr uint16_t NOP = 0x0000u;  // No-op (link test)
@@ -222,6 +225,13 @@ struct TelemetryPayload {
   float vel_rps[7];  // Per-axis velocity (rev/s)
 };
 static_assert(sizeof(TelemetryPayload) == 64, "TelemetryPayload size drift");
+
+// EncoderAge: Per-axis encoder SAMPLE AGE at the TELEMETRY tick (can-bridge FW 50, FEAT-64). TELEMETRY's pos/vel are the newest ODrive encoder estimate the bridge had at the tick, which arrived 0 to 10 ms before it; this frame says how long before, per axis, so an offline comparison can place each sample at (t_teensy_us - age_us) instead of assuming a constant. Emitted in the same telemetry tick as, and immediately BEFORE, the TELEMETRY frame it pairs with: `t_teensy_us` is the IDENTICAL value, so the host attaches it by exact match. age_us is the bridge's monotonic now minus the monotonic arrival time of the axis's last encoder frame, both read from the same snapshot the TELEMETRY pos/vel came from. Saturating, never wrapping: ENCODER_AGE_MAX (0xFFFE, 65.534 ms) means that age or older; ENCODER_AGE_NONE (0xFFFF) means no encoder frame has arrived on that axis this boot. Additive, NO PROTOCOL_VERSION bump (the BbYawEstimate / LegClampDiag precedent): an old host ignores the unknown msg_type, a new host against an FW <= 49 board just never sees it. INSTRUMENTATION ONLY: nothing in the firmware reads it and no control path changed.
+struct EncoderAgePayload {
+  uint64_t t_teensy_us;  // Teensy wall-clock at emit (us): IDENTICAL to the paired TELEMETRY t_teensy_us
+  uint16_t age_us[7];  // Per-axis age of the encoder sample behind the paired TELEMETRY pos/vel (us), axes 0..5 legs, 6 hand; ENCODER_AGE_MAX saturates, ENCODER_AGE_NONE = no sample yet
+};
+static_assert(sizeof(EncoderAgePayload) == 22, "EncoderAgePayload size drift");
 
 // Diagnostic: Per-axis diagnostics, published on-change (delta over threshold) OR on a 1 Hz heartbeat. One axis per frame.
 struct DiagnosticPayload {
@@ -569,6 +579,7 @@ static_assert(sizeof(RpcResponsePayload) == 8, "RpcResponsePayload size drift");
 constexpr uint16_t SETPOINT_SIZE = 240u;
 constexpr uint16_t HEARTBEAT_J2T_SIZE = 12u;
 constexpr uint16_t TELEMETRY_SIZE = 64u;
+constexpr uint16_t ENCODER_AGE_SIZE = 22u;
 constexpr uint16_t DIAGNOSTIC_SIZE = 40u;
 constexpr uint16_t HEARTBEAT_T2J_SIZE = 380u;
 constexpr uint16_t PROFILE_SIZE = 76u;

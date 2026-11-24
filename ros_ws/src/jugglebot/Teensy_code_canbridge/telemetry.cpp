@@ -44,12 +44,22 @@ void telemetry_init() {
 static void send_telemetry() {
   JbUdp::TelemetryPayload t{};
   t.t_teensy_us = now_wall_us();   // wire-bound absolute timestamp — wall by contract
+  // FW 50 (FEAT-64): the same snapshot's arrival stamps are kept (they were discarded) so the
+  // per-axis sample age can ride in ENCODER_AGE, sent just BEFORE this TELEMETRY with the
+  // IDENTICAL t_teensy_us (the BB_YAW_ESTIMATE pairing). Read-only: no new capture point.
+  uint64_t ts_us[NUM_AXES];
   for (uint8_t i = 0; i < NUM_AXES; ++i) {
     float pos, vel; uint64_t ts;
     snapshot_pos_vel(axes[i], pos, vel, ts);
     t.pos_rev[i] = pos;
     t.vel_rps[i] = vel;
+    ts_us[i] = ts;
   }
+  const uint64_t now_mono = micros64();   // interval clock, read AFTER every snapshot (age >= 0)
+  JbUdp::EncoderAgePayload ea{};
+  ea.t_teensy_us = t.t_teensy_us;         // IDENTICAL — the host's pairing key
+  for (uint8_t i = 0; i < NUM_AXES; ++i) ea.age_us[i] = encoder_age_us16(now_mono, ts_us[i]);
+  udp_send_stream(JbUdp::MsgType::ENCODER_AGE, (const uint8_t*)&ea, sizeof(ea));
   udp_send_stream(JbUdp::MsgType::TELEMETRY, (const uint8_t*)&t, sizeof(t));
 }
 

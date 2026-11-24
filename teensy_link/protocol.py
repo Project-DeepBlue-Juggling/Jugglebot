@@ -55,6 +55,8 @@ from udp_protocol import (  # noqa: E402, F401
     BB_RELEASE_MIN_LEAD_US,  # BB_THROW absolute-release lead window at bridge receipt (FW 29)
     BB_RELEASE_MAX_LEAD_US,
     PLATFORM_IMU_BATCH_MAX_FRAMES,
+    ENCODER_AGE_NONE,
+    ENCODER_AGE_MAX,
     # Enums
     MsgType,
     RpcMethod,
@@ -87,6 +89,7 @@ from udp_protocol import (  # noqa: E402, F401
     LegCmd,
     PlatformFrame,
     PlatformImuBatch,
+    EncoderAge,
     HandCmdEcho,
     HandSensor,
     CanErrors,
@@ -112,6 +115,7 @@ from udp_protocol import (  # noqa: E402, F401
     LEG_CMD_SIZE,
     PLATFORM_FRAME_SIZE,
     PLATFORM_IMU_BATCH_SIZE,
+    ENCODER_AGE_SIZE,
     HAND_CMD_ECHO_SIZE,
     HAND_SENSOR_SIZE,
     CAN_ERRORS_SIZE,

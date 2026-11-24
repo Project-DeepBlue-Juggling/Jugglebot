@@ -1033,8 +1033,9 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # more than 2^31 us (35.8 min) off the bridge wall clock is dropped at ingest
 # (counted in sched_future_drops), closing a signed-overflow band at 2^63 + wall;
 # a compiled lead-clamp headroom assert; a console-only [hand7] xfer= count of
-# scheduled <-> legacy transitions. No live stamp is affected. No wire change,
-# PROTOCOL_VERSION stays 14.
+# scheduled <-> legacy transitions. No live stamp is affected. FEAT-64: the
+# additive ENCODER_AGE uplink (0x96, per-axis encoder sample age, paired to
+# TELEMETRY by t_teensy_us). No existing frame changes, PROTOCOL_VERSION stays 14.
 EXPECTED_BRIDGE_FW_VERSION = 50
 
 
