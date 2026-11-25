@@ -820,6 +820,7 @@ class TestTickIntegration:
         # (A5: BOOT waits for the bridge's first report before exiting).
         msg = _make_robot_state_msg(all_heartbeats=True, firmware_validated=True)
         orch._on_robot_state(msg)
+        _settle_legs(orch)   # A6: the Legs have been Idle long enough
         orch._on_link_status(_link_status('NONE'))
         orch._tick()
         assert orch.sm.state == RobotState.HOMING
@@ -830,6 +831,7 @@ class TestTickIntegration:
         # Get to HOMING
         msg = _make_robot_state_msg(all_heartbeats=True, firmware_validated=True)
         orch._on_robot_state(msg)
+        _settle_legs(orch)   # A6: the Legs have been Idle long enough
         orch._on_link_status(_link_status('NONE'))
         orch._tick()  # → HOMING
         orch._tick()  # Process encoder_search request
@@ -851,6 +853,7 @@ class TestTickIntegration:
         orch._tick()  # Enter BOOT
         msg = _make_robot_state_msg(all_heartbeats=True, firmware_validated=True)
         orch._on_robot_state(msg)
+        _settle_legs(orch)   # A6: the Legs have been Idle long enough
         orch._on_link_status(_link_status('NONE'))
         orch._tick()  # → HOMING
         orch._tick()  # Process encoder_search request → service not ready → result=False
@@ -928,6 +931,7 @@ class TestGuardLatch:
         orch._on_link_status(_link_status('SETPOINT_STALE'))
         msg = _make_robot_state_msg(all_heartbeats=True, firmware_validated=True)
         orch._on_robot_state(msg)
+        _settle_legs(orch)   # A6: the Legs have been Idle long enough
         orch._tick()
         # Still BOOT — the pre-flight dispatched clear_errors instead of exiting.
         assert orch.sm.state == RobotState.BOOT
@@ -1455,6 +1459,8 @@ class TestOperatorConsoleLines:
         assert 'not a known command' in cap.lines[0][1]
 
     def test_command_during_homing_is_refused(self, orch):
+        orch._on_robot_state(_robot_state_legs(1))   # A6: Legs down
+        _settle_legs(orch)
         orch.sm.force_transition(RobotState.HOMING, orch.ctx)
         cap = _Capture(orch)
         _cmd(orch, 'level')
@@ -1738,3 +1744,176 @@ class TestFaultExitStowFromLevellingThroughTick:
         assert spy.call_async.call_count == 1
         orch._tick()                                   # enter FAULT: stow
         self._stow_then_boot_idle(orch, spy, futs[1], cap, healthy)
+
+
+# ════════════════════════════════════════════════════════════════
+# ARMING_CONTRACT A6 through _tick: Homing only from a Platform that is down
+# ════════════════════════════════════════════════════════════════
+
+
+def _settle_legs(orch, seconds=10.0):
+    """Back-date the start of the Legs' current all-Idle run (no sleeping)."""
+    assert orch.ctx.legs_idle_since is not None
+    orch.ctx.legs_idle_since -= seconds
+
+
+class TestHomingGateThroughTick:
+    """End-to-end sequences of logbook 2026-11-25-homing-only-from-a-lowered-
+    platform: the node never dispatches the home action (or encoder search)
+    while any Leg may be holding the Platform up."""
+
+    @staticmethod
+    def _spy_moves(orch):
+        orch._start_home_action = MagicMock()
+        orch._encoder_search_client = MagicMock()
+        orch._encoder_search_client.service_is_ready.return_value = True
+        orch._encoder_search_client.call_async.return_value = MockFuture()
+
+    @staticmethod
+    def _assert_no_moves(orch):
+        orch._start_home_action.assert_not_called()
+        orch._encoder_search_client.call_async.assert_not_called()
+
+    @staticmethod
+    def _active_armed(orch, **healthy):
+        from jugglebot.can import odrive
+        closed = odrive.AXIS_STATES['CLOSED_LOOP']
+        orch.sm.force_transition(RobotState.ACTIVE, orch.ctx)
+        orch._on_robot_state(_robot_state_legs(closed, **healthy))
+        orch._on_link_status(_link_status('NONE'))
+        orch._tick()
+        spy = MagicMock()
+        spy.service_is_ready.return_value = True
+        fut = MockFuture()
+        spy.call_async.return_value = fut
+        orch._activate_client = spy
+        return closed, spy, fut
+
+    def test_derivation_of_leg_states_and_idle_since(self, orch):
+        from jugglebot.can import odrive
+        closed = odrive.AXIS_STATES['CLOSED_LOOP']
+        orch._on_robot_state(_robot_state_legs(closed))
+        assert orch.ctx.leg_states == (closed,) * 6
+        assert orch.ctx.legs_idle_since is None
+        orch._on_robot_state(_robot_state_legs(1))
+        t0 = orch.ctx.legs_idle_since
+        assert t0 is not None
+        orch._on_robot_state(_robot_state_legs(1))
+        assert orch.ctx.legs_idle_since == t0          # unbroken run keeps it
+        msg = _robot_state_legs(1)
+        msg.motor_states[4].current_state = closed
+        orch._on_robot_state(msg)
+        assert orch.ctx.legs_idle_since is None
+        short = RobotStateMsg()
+        short.motor_states = [MotorStateSingle(current_state=1) for _ in range(5)]
+        orch._on_robot_state(short)
+        assert orch.ctx.leg_states is None and orch.ctx.legs_idle_since is None
+
+    def test_one_leg_lost_in_active_then_clear_errors_never_homes(self, orch):
+        """(a): Leg 0 MISSING_ESTIMATE while ACTIVE. Its drive disarms, the other
+        five hold the Platform up, BUG-122 clears is_homed. On main before A6 the
+        clear went FAULT -> BOOT -> HOMING with five Legs at the Active pose."""
+        healthy = dict(is_homed=True, firmware_validated=True,
+                       encoder_search_complete=True)
+        closed, spy, _ = self._active_armed(orch, **healthy)
+        self._spy_moves(orch)
+        cap = _Capture(orch)
+        lost = dict(healthy, is_homed=False)
+        msg = _robot_state_legs(closed, errors=['ODrive error on leg 0'],
+                                has_fatal_odrive_error=True, **lost)
+        msg.motor_states[0].current_state = 1
+        orch._on_robot_state(msg)
+        orch._tick()
+        assert orch.sm.state == RobotState.FAULT
+        msg = _robot_state_legs(closed, **lost)          # clear_errors landed
+        msg.motor_states[0].current_state = 1
+        orch._on_robot_state(msg)
+        for _ in range(30):
+            orch._tick()
+            assert orch.sm.state in (RobotState.FAULT, RobotState.BOOT)
+        assert orch.sm.state == RobotState.BOOT
+        self._assert_no_moves(orch)
+        assert spy.call_async.call_count == 0            # and no stow either
+        refusals = [m for m in cap.at('warning') if m.startswith('Homing refused')]
+        assert len(refusals) == 1 and 'E-stop button' in refusals[0]
+        # E-stop button: the drives power-cycle and come back Idle.
+        orch._on_robot_state(_robot_state_legs(1, **lost))
+        orch._tick()
+        assert orch.sm.state == RobotState.BOOT          # settling
+        self._assert_no_moves(orch)
+        _settle_legs(orch)
+        orch._on_robot_state(_robot_state_legs(1, **lost))
+        orch._tick()
+        assert orch.sm.state == RobotState.HOMING
+        orch._tick()                                     # HOMING on_enter: home
+        orch._start_home_action.assert_called_once()
+
+    def test_hand_only_loss_stows_then_homes(self, orch):
+        """(b): the exit stow runs (BUG-122), Homing waits for the settle."""
+        healthy = dict(is_homed=True, firmware_validated=True,
+                       encoder_search_complete=True)
+        closed, spy, fut = self._active_armed(orch, **healthy)
+        self._spy_moves(orch)
+        lost = dict(healthy, is_homed=False)
+        orch._on_robot_state(_robot_state_legs(
+            closed, errors=['ODrive error on hand'], has_fatal_odrive_error=True,
+            **lost))
+        orch._tick()
+        orch._on_robot_state(_robot_state_legs(closed, **lost))
+        orch._tick()
+        assert spy.call_async.call_args[0][0].command == 'deactivate'
+        fut.set_result(MagicMock(success=True, message='stowed'))
+        orch._on_robot_state(_robot_state_legs(1, **lost))
+        orch._tick()
+        assert orch.sm.state == RobotState.BOOT
+        orch._tick()
+        assert orch.sm.state == RobotState.BOOT          # settle not elapsed
+        self._assert_no_moves(orch)
+        _settle_legs(orch)
+        orch._tick()
+        assert orch.sm.state == RobotState.HOMING
+
+    def test_estop_button_then_clear_errors_homes_after_the_settle(self, orch):
+        """(c): every drive loses power, the Platform comes down, the drives
+        return Idle; clear_errors then reaches HOMING only after the settle."""
+        healthy = dict(is_homed=True, firmware_validated=True,
+                       encoder_search_complete=True)
+        self._active_armed(orch, **healthy)
+        self._spy_moves(orch)
+        off = _make_robot_state_msg(errors=['undervoltage'], has_undervoltage=True,
+                                    firmware_validated=True, is_homed=False,
+                                    encoder_search_complete=True)
+        orch._on_robot_state(off)                        # drives unpowered
+        orch._tick()
+        assert orch.sm.state == RobotState.FAULT
+        orch._on_robot_state(_robot_state_legs(
+            1, is_homed=False, firmware_validated=True,
+            encoder_search_complete=True))
+        for _ in range(3):
+            orch._tick()
+        assert orch.sm.state == RobotState.BOOT
+        self._assert_no_moves(orch)
+        _settle_legs(orch)
+        orch._tick()
+        assert orch.sm.state == RobotState.HOMING
+
+    def test_relaunch_under_a_posed_platform_holds_boot(self, orch):
+        """(f): a fresh launch finds all six Legs Closed-loop (a previous session
+        left the Platform posed) and is_homed False: BOOT holds, says /deactivate."""
+        from jugglebot.can import odrive
+        closed = odrive.AXIS_STATES['CLOSED_LOOP']
+        self._spy_moves(orch)
+        cap = _Capture(orch)
+        orch._tick()
+        orch._on_robot_state(_robot_state_legs(
+            closed, firmware_validated=True, is_homed=False,
+            encoder_search_complete=True))
+        orch._on_link_status(_link_status('NONE'))
+        for _ in range(20):
+            orch._tick()
+        assert orch.sm.state == RobotState.BOOT
+        self._assert_no_moves(orch)
+        refusals = [m for m in cap.at('warning') if m.startswith('Homing refused')]
+        assert len(refusals) == 1 and '/deactivate' in refusals[0]
+        # The held transition is never reported as a transition line.
+        assert not [m for m in cap.at('info') if 'HOMING' in m]

@@ -44,6 +44,79 @@ class ActiveMode(Enum):
 BOOT_TIMEOUT_S = 30.0  # Max time to wait for ODrive heartbeats before FAULT
 
 
+# ── Homing gate (ARMING_CONTRACT A6) ──────────────────────────────
+# Homing drives the Legs one at a time to their bottom stops. Started under a
+# Platform held up at the Active pose (or a levelling pose), the Legs not yet
+# homed keep their lengths while the one being homed retracts, and the Platform
+# can collapse (owner, 2026-11-25). The machine therefore enters HOMING only when
+# all six Legs report ODrive IDLE, continuously for HOMING_LEGS_IDLE_SETTLE_S:
+# six Idle (unpowered, free) Legs cannot hold the Platform up, and the settle
+# lets a Platform that has just been dropped come to rest.
+
+# ODrive AxisState values (protocol_config.ODRIVE_STATES via odrive.AXIS_STATES;
+# pinned equal by tests/ros/test_state_machine.py so this module stays free of
+# jugglebot imports at load).
+ODRIVE_AXIS_IDLE = 1
+ODRIVE_AXIS_CLOSED_LOOP = 8
+NUM_LEGS = 6
+# How long all six Legs must have read IDLE before Homing may start. A gravity
+# drop from the Active pose ends well inside it; the cost is at most 2 s added
+# to a Homing that follows a stow or a power cycle.
+HOMING_LEGS_IDLE_SETTLE_S = 2.0
+# Prefix of the one quiet (non-refusal) answer: the Legs are Idle but not yet
+# for the settle time. It resolves by itself, so it is logged, not notified.
+HOMING_SETTLING_PREFIX = 'Homing waits'
+
+
+def _legs_list(legs):
+    return ', '.join(str(i) for i in legs)
+
+
+def homing_refusal(leg_states, idle_for_s):
+    """The A6 predicate: None if Homing may start, else the operator message.
+
+    ``leg_states``: the six Leg ODrive axis states (axes 0-5) from the latest
+    /robot_state, or None when not known. ``idle_for_s``: how long all six have
+    read IDLE without a break, or None when they do not all read IDLE now.
+    Every path into HOMING passes through this (StateMachine guard).
+    """
+    if leg_states is None or len(leg_states) != NUM_LEGS:
+        return ('Homing refused: the six Leg drive states are not known, so the '
+                'Platform cannot be shown to be down (ARMING_CONTRACT A6). '
+                'Waiting for a full /robot_state.')
+    closed = [i for i, s in enumerate(leg_states) if s == ODRIVE_AXIS_CLOSED_LOOP]
+    other = [(i, s) for i, s in enumerate(leg_states)
+             if s not in (ODRIVE_AXIS_IDLE, ODRIVE_AXIS_CLOSED_LOOP)]
+    if len(closed) == NUM_LEGS:
+        return ('Homing refused: all six Legs are Closed-loop, so the Platform '
+                'may be held up at a pose and Homing could collapse it '
+                '(ARMING_CONTRACT A6). Stow it first with the profiled '
+                'deactivate (ros2 service call /deactivate '
+                'std_srvs/srv/Trigger); Homing starts by itself from BOOT once '
+                'every Leg is Idle.')
+    if closed:
+        not_closed = [i for i in range(NUM_LEGS) if i not in closed]
+        return (f'Homing refused: Leg(s) {_legs_list(closed)} are Closed-loop '
+                f'but Leg(s) {_legs_list(not_closed)} are not, so the Platform '
+                f'may be held up by some Legs; Homing could collapse it, and a '
+                f'profiled stow must not drive a Leg that is not Closed-loop '
+                f'(ARMING_CONTRACT A6). Support the Platform and press the '
+                f'E-stop button to bring it down, restore power, then send '
+                f'clear_errors; Homing starts by itself once all six Legs have '
+                f'been Idle for {HOMING_LEGS_IDLE_SETTLE_S:.0f} s.')
+    if other:
+        named = ', '.join(f'Leg {i} state {s}' for i, s in other)
+        return (f'Homing refused: {named} (neither Idle nor Closed-loop), so '
+                f'the Platform cannot be shown to be down (ARMING_CONTRACT A6). '
+                f'Wait for the drive to settle Idle, or power-cycle the drives '
+                f'with the E-stop button, then send clear_errors.')
+    if idle_for_s is None or idle_for_s < HOMING_LEGS_IDLE_SETTLE_S:
+        return (f'{HOMING_SETTLING_PREFIX}: all six Legs are Idle, but not yet '
+                f'for {HOMING_LEGS_IDLE_SETTLE_S:.0f} s (a dropped Platform '
+                f'comes to rest first, ARMING_CONTRACT A6).')
+    return None
+
+
 # ── Context ───────────────────────────────────────────────────────
 
 class Context:
@@ -67,6 +140,13 @@ class Context:
         # LEVELLING) runs only when it is true (ARMING_CONTRACT choreography
         # step 6).
         self.legs_closed_loop = False
+        # ARMING_CONTRACT A6 inputs (derived by the orchestrator from
+        # /robot_state.motor_states): the six Leg ODrive axis states (None until
+        # a message carries every Leg), and the time.monotonic() at which all six
+        # were first seen IDLE in the current unbroken run (None while any Leg is
+        # not IDLE). Read only by homing_refusal through the StateMachine guard.
+        self.leg_states = None
+        self.legs_idle_since = None
         self.errors = []                     # Error strings from /robot_state
         self.fatal_error = False
         self.fatal_can_error = False
@@ -224,6 +304,9 @@ class StateMachine:
         self._handlers = {}
         self._log = log_fn or (lambda msg: print(f'[SM] {msg}'))
         self._entered = False
+        # A6: the refusal last reported, so a BOOT retrying every tick reports
+        # once per episode; cleared on any tick that does not try for HOMING.
+        self._homing_refusal_said = None
 
     def register(self, state, handler):
         self._handlers[state] = handler
@@ -232,9 +315,29 @@ class StateMachine:
     def state(self):
         return self._state
 
+    def _homing_entry_refused(self, ctx):
+        """ARMING_CONTRACT A6, the one enforcement point: True (and report it
+        once) if a transition into HOMING must not happen now."""
+        idle_for = (None if ctx.legs_idle_since is None
+                    else time.monotonic() - ctx.legs_idle_since)
+        refusal = homing_refusal(ctx.leg_states, idle_for)
+        if refusal is None:
+            self._homing_refusal_said = None
+            return False
+        if refusal != self._homing_refusal_said:
+            self._homing_refusal_said = refusal
+            # No ' -> ' in this line: the orchestrator's log sink reads that as
+            # a transition. It lands at DEBUG; the notice below is the WARN.
+            self._log(f'HOMING held in {self._state.name}: {refusal}')
+            if not refusal.startswith(HOMING_SETTLING_PREFIX):
+                ctx.notify(refusal)
+        return True
+
     def force_transition(self, new_state, ctx):
         """Force immediate transition, calling on_exit for current state."""
         if new_state == self._state:
+            return
+        if new_state == RobotState.HOMING and self._homing_entry_refused(ctx):
             return
         self._log(f'{self._state.name} -> {new_state.name} (forced)')
         handler = self._handlers.get(self._state)
@@ -257,6 +360,11 @@ class StateMachine:
             self._entered = True
 
         next_state = handler.execute(ctx)
+        if next_state == RobotState.HOMING and next_state != self._state:
+            if self._homing_entry_refused(ctx):
+                next_state = None   # stay (BOOT / IDLE); no on_exit has run
+        else:
+            self._homing_refusal_said = None
         if next_state is not None and next_state != self._state:
             self._log(f'{self._state.name} -> {next_state.name}')
             handler.on_exit(ctx)
@@ -1069,7 +1177,10 @@ class FaultHandler(StateHandler):
         stowed, legs idle") while they hold it (ARMING_CONTRACT choreography
         step 6). Otherwise BOOT at once, as before: a leg that dropped out of
         closed loop (e.g. an ODrive reboot) is BOOT -> HOMING's job, and a fault
-        from BOOT/HOMING/IDLE has no active pose.
+        from BOOT/HOMING/IDLE has no active pose. BOOT -> HOMING passes the A6
+        gate (StateMachine._homing_entry_refused): while any Leg is still
+        Closed-loop (the other five holding the Platform up after one Leg lost
+        its reference) BOOT holds and the operator is told how to lower it.
 
         Not gated on is_homed (BUG-122, 2026-11-20). The bridge now clears
         is_homed when ANY drive loses its position reference, the Hand included,

@@ -125,6 +125,10 @@ def test_full_cold_start_boot_home_level_to_idle_via_conduit():
         orch._bridge_for_link_status = bridge
 
         msg = _cold_start_msg(is_homed=False, encoder_search_complete=False)
+        # ARMING_CONTRACT A6: Homing waits until the six Legs have been Idle for
+        # 2 s; back-date the run start instead of sleeping.
+        orch._on_robot_state(msg)
+        orch.ctx.legs_idle_since -= 10.0
 
         # ── BOOT → HOMING (encoder_search → home → bb_calibrate) → IDLE ──
         assert _run_until(orch, msg, RobotState.IDLE), (

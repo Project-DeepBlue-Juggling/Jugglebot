@@ -1,4 +1,4 @@
-# The Arming Contract (A1–A5)
+# The Arming Contract (A1–A6)
 
 **Status: NORMATIVE.** The code enforces these invariants; changing the behaviour
 means changing this document first, then rippling the change through the
@@ -89,6 +89,45 @@ work (2026-07-15) hit three distinct doors into that hole:
   so the clear cannot jolt) instead of wedging the first guard-gated verb of
   HOMING. Seeding is gated on `is_homed` so mid-homing telemetry no longer
   produces workspace-gate ERROR spam that buries real errors.
+- **A6 — Homing starts only from a Platform that is down** (owner,
+  2026-11-25). Homing drives the Legs one at a time to their bottom stops
+  (`leg_homing.cpp`, `_run_home` is sequential). If it starts while the
+  Platform is up at the Active pose or a levelling pose, the Legs not yet homed
+  hold their lengths while the one being homed retracts, and the Platform can
+  collapse. So the machine enters HOMING only when **all six Legs report ODrive
+  IDLE, none Closed-loop or in any other state, and have done so continuously
+  for `HOMING_LEGS_IDLE_SETTLE_S` (2 s)**. This is the evidence that the
+  Platform is down: an Idle Leg is unpowered and free to move, so six Idle Legs
+  cannot hold the Platform up. It is at Stow, either lowered there by a
+  confirmed DEACTIVATE (which IDLEs each Leg on arrival) or dropped there under
+  gravity (the drive power loss of the E-stop button, a DEACTIVATE abort, which
+  IDLEs every target Leg). The settle lets a drop finish. Leg positions are not
+  used: they mean nothing once a reference is lost, which is exactly when
+  Homing is needed. Unknown Leg states (no /robot_state yet, or one too short
+  to carry every Leg) refuse: Homing never starts on a guess.
+  **One enforcement point:** `StateMachine` checks `homing_refusal(ctx)` on
+  every transition into HOMING, whether a handler returned it (BOOT not homed,
+  IDLE `home`) or it was forced. On a refusal the machine stays where it was
+  (BOOT or IDLE) and raises one operator notice per refusal episode, naming the
+  reason and the remedy. The remedies, by case:
+  - **All six Legs Closed-loop** (e.g. a relaunch under a Platform a previous
+    session left posed, or a false IDLE): the profiled Stow, the bridge's
+    `/deactivate` service. Homing then starts by itself (from BOOT) once the
+    Legs are Idle.
+  - **Some Legs Closed-loop, some not** (one Leg lost its reference or its
+    drive rebooted during ACTIVE or LEVELLING, and the firmware's Soft E-stop
+    holds the other five at their setpoints): no software stow. The firmware's
+    DEACTIVATE targets one axis or every present Leg, so it would drive the Leg
+    whose reference is lost to "Stow" in a frame that may be turns off, and
+    single-Leg DEACTIVATEs run one at a time and diverge the lengths exactly as
+    Homing would. The operator supports the Platform and presses the E-stop
+    button (the drives lose power and the Platform comes down), then sends
+    `clear_errors` once power is back.
+  - **A Leg in any other state** (a drive still starting, or calibrating):
+    wait, or power-cycle it with the E-stop button, then `clear_errors`.
+  Not covered by A6: the bridge's manual `/home` and `/encoder_search`
+  services, which no production path calls (a bench probe does); they are an
+  open follow-up, as is a firmware-side gate in `homing_request`.
 
 ## Enforcement points
 
@@ -99,6 +138,7 @@ work (2026-07-15) hit three distinct doors into that hole:
 | A3 | `teensy_bridge_node.py` `_run_deactivate` head | disarm-before-DEACTIVATE order test |
 | A4 | `state_machine.py` `ActiveHandler.on_exit` (no blank) + `IdleHandler` deferred blank | mode-survives-deactivate ordering test |
 | A5 | `trajectory_node.py` wire-state WARN + response suffix + `is_homed` seed gate; `teensy_bridge_node.py` `teensy_mpc_active` KeyValue; `state_machine.py` `BootHandler` latch pre-flight | disarmed-accept, seed-gate, pre-flight tests |
+| A6 | `state_machine.py` `homing_refusal` (the predicate) checked by `StateMachine._homing_entry_refused` on every transition into HOMING; `orchestrator_node.py` the `leg_states` / `legs_idle_since` derivation in `_on_robot_state` | `tests/ros/test_state_machine.py::TestHomingGate`; `tests/ros/test_orchestrator_node.py::TestHomingGateThroughTick` |
 
 ## The choreography (one cycle, walked at the control-system level)
 
@@ -172,7 +212,10 @@ work (2026-07-15) hit three distinct doors into that hole:
    claimed while the legs still hold a pose. A failed stow also holds FAULT,
    with one retry per operator `clear_errors`. If any leg is not closed-loop,
    FAULT exits to BOOT at once, as before (re-arming a leg that dropped out is
-   BOOT→HOMING's job). The guard-only classification is unchanged: only a
+   BOOT→HOMING's job). BOOT reaches HOMING only through A6 (2026-11-25): a
+   BOOT whose robot is not homed while any Leg is still Closed-loop (the
+   mixed case of one Leg lost during ACTIVE) holds in BOOT with the A6 notice
+   instead of homing under the posed Platform. The guard-only classification is unchanged: only a
    latch from ACTIVE with the wire armed is guard-only (LEVELLING never arms
    the wire, so a guard latch there is always a real fault). The
    mode stays `ERROR` through this stow. A4 does not apply: the wire was disarmed at FAULT entry (A2), and A3

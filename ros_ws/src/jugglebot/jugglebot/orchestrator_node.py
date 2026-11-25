@@ -254,6 +254,22 @@ class OrchestratorNode(Node):
                     and states[i].active_errors == 0
                     for i in odrive.LEG_AXES))
 
+        # ARMING_CONTRACT A6 inputs: the six Leg axis states, and since when all
+        # six have read IDLE without a break (the StateMachine's homing gate).
+        # A message too short to carry every Leg is "not known": no Homing.
+        if len(states) > max(odrive.LEG_AXES):
+            self.ctx.leg_states = tuple(int(states[i].current_state)
+                                        for i in odrive.LEG_AXES)
+        else:
+            self.ctx.leg_states = None
+        if (self.ctx.leg_states is not None
+                and all(s == odrive.AXIS_STATES['IDLE']
+                        for s in self.ctx.leg_states)):
+            if self.ctx.legs_idle_since is None:
+                self.ctx.legs_idle_since = time.monotonic()
+        else:
+            self.ctx.legs_idle_since = None
+
         self.ctx.firmware_validated = msg.firmware_validated
         self.ctx.encoder_search_complete = msg.encoder_search_complete
         self.ctx.is_homed = msg.is_homed

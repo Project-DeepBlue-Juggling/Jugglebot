@@ -29,6 +29,8 @@ Fix, host side only (no firmware, threshold or guard change):
 
 After `clear_errors` the Fault exit goes BOOT -> Homing automatically (BootHandler `if ctx.is_homed: return IDLE` / `return HOMING`). The operator does not have to ask for it.
 
+Follow-up 2026-11-25: as merged, a single Leg losing its reference during Active made that `clear_errors` start Homing while the other five Legs held the Platform up. Homing is now gated on all six Legs Idle (ARMING_CONTRACT A6): [2026-11-25-homing-only-from-a-lowered-platform](2026-11-25-homing-only-from-a-lowered-platform.md).
+
 ## Discussion
 
 Hazards checked before coding:

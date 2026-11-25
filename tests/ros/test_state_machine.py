@@ -203,6 +203,7 @@ class TestStateMachine:
         sm.register(RobotState.BOOT, boot_handler)
         sm.register(RobotState.HOMING, homing_handler)
         ctx = Context()
+        _legs(ctx, [_IDLE] * 6)   # A6: the Legs are down, Homing may start
 
         sm.tick(ctx)  # Enter BOOT, execute → transition to HOMING
         assert sm.state == RobotState.HOMING
@@ -1613,6 +1614,7 @@ class TestStateFlowIntegration:
         """BOOT → HOMING → IDLE with successful operations."""
         sm = build_default_machine(log_fn=lambda msg: None)
         ctx = Context()
+        _legs(ctx, [_IDLE] * 6)   # A6: the Legs are down, Homing may start
 
         # BOOT: waiting for heartbeats
         sm.tick(ctx)
@@ -1712,6 +1714,7 @@ class TestStateFlowIntegration:
         """HOMING → FAULT on operation failure."""
         sm = build_default_machine(log_fn=lambda msg: None)
         ctx = Context()
+        _legs(ctx, [_IDLE] * 6)   # A6: the Legs are down, Homing may start
         ctx.all_heartbeats = True
         ctx.firmware_validated = True
         ctx.link_status_seen = True
@@ -1729,6 +1732,7 @@ class TestStateFlowIntegration:
         """From IDLE, 'home' command → HOMING."""
         sm = build_default_machine(log_fn=lambda msg: None)
         ctx = Context()
+        _legs(ctx, [_IDLE] * 6)   # A6: the Legs are down, Homing may start
         sm.force_transition(RobotState.IDLE, ctx)
         sm.tick(ctx)
         ctx.enqueue_command('home')
@@ -1801,3 +1805,243 @@ class TestArmingContractReviewFixes:
         handler.execute(ctx)
         assert 'disarm_setpoints' in ctx.drain_requests()
         assert ctx.control_mode == 'ERROR'
+
+
+# ════════════════════════════════════════════════════════════════
+# ARMING_CONTRACT A6: Homing starts only from a Platform that is down
+# ════════════════════════════════════════════════════════════════
+
+_IDLE = 1
+_CL = 8
+
+
+def _legs(ctx, states, idle_for_s=10.0):
+    """Set the six Leg axis states the way the orchestrator derives them: the
+    tuple, and legs_idle_since only while all six read IDLE."""
+    ctx.leg_states = tuple(states)
+    if all(s == _IDLE for s in states):
+        ctx.legs_idle_since = time.monotonic() - idle_for_s
+    else:
+        ctx.legs_idle_since = None
+
+
+def _boot_ready(ctx):
+    ctx.all_heartbeats = True
+    ctx.firmware_validated = True
+    ctx.link_status_seen = True
+
+
+def _requests_moving_legs(reqs):
+    return [r for r in reqs if r in ('encoder_search', 'home')]
+
+
+class TestHomingGate:
+    """Every path into HOMING passes homing_refusal (StateMachine guard).
+    Each case is a row of the 2026-11-25 table in
+    logbook/2026-11-25-homing-only-from-a-lowered-platform.md."""
+
+    def test_odrive_state_literals_match_the_protocol(self):
+        from jugglebot.can import odrive
+        from jugglebot import state_machine as smod
+        assert smod.ODRIVE_AXIS_IDLE == odrive.AXIS_STATES['IDLE']
+        assert smod.ODRIVE_AXIS_CLOSED_LOOP == odrive.AXIS_STATES['CLOSED_LOOP']
+        assert smod.NUM_LEGS == len(odrive.LEG_AXES)
+
+    # ── the predicate ──────────────────────────────────────────────
+    def test_predicate_rows(self):
+        from jugglebot.state_machine import (
+            homing_refusal, HOMING_LEGS_IDLE_SETTLE_S, HOMING_SETTLING_PREFIX)
+        settled = HOMING_LEGS_IDLE_SETTLE_S + 0.1
+        assert homing_refusal([_IDLE] * 6, settled) is None
+        assert 'not known' in homing_refusal(None, None)
+        assert 'not known' in homing_refusal([_IDLE] * 5, settled)
+        assert homing_refusal([_IDLE] * 6, None).startswith(HOMING_SETTLING_PREFIX)
+        assert homing_refusal([_IDLE] * 6, 0.5).startswith(HOMING_SETTLING_PREFIX)
+        all_cl = homing_refusal([_CL] * 6, None)
+        assert 'all six Legs are Closed-loop' in all_cl and '/deactivate' in all_cl
+        mixed = homing_refusal([_IDLE] + [_CL] * 5, None)
+        assert 'Leg(s) 1, 2, 3, 4, 5 are Closed-loop' in mixed
+        assert 'Leg(s) 0 are not' in mixed
+        assert 'E-stop button' in mixed and '/deactivate' not in mixed
+        other = homing_refusal([0] + [_IDLE] * 5, None)
+        assert 'Leg 0 state 0' in other
+
+    # ── (f) relaunch under a posed Platform ───────────────────────
+    def test_relaunch_not_homed_under_closed_loop_legs_holds_boot(self):
+        notes = []
+        sm = build_default_machine(log_fn=lambda msg: None)
+        ctx = Context()
+        ctx.notify = notes.append
+        _boot_ready(ctx)
+        ctx.is_homed = False
+        _legs(ctx, [_CL] * 6)
+        for _ in range(20):
+            sm.tick(ctx)
+            assert sm.state == RobotState.BOOT
+            assert _requests_moving_legs(ctx.drain_requests()) == []
+        assert len(notes) == 1 and '/deactivate' in notes[0]
+        _legs(ctx, [_IDLE] * 6)                     # operator ran /deactivate
+        sm.tick(ctx)
+        assert sm.state == RobotState.HOMING
+
+    def test_idle_home_command_with_closed_loop_legs_is_refused(self):
+        notes = []
+        sm = build_default_machine(log_fn=lambda msg: None)
+        ctx = Context()
+        ctx.notify = notes.append
+        _boot_ready(ctx)
+        ctx.is_homed = True                         # relaunch, flag survived
+        _legs(ctx, [_CL] * 6)
+        sm.tick(ctx)
+        assert sm.state == RobotState.IDLE          # unchanged (not homing)
+        for n in (1, 2):
+            ctx.enqueue_command('home')
+            sm.tick(ctx)
+            assert sm.state == RobotState.IDLE
+            assert _requests_moving_legs(ctx.drain_requests()) == []
+            sm.tick(ctx)
+            assert len(notes) == n                  # one notice per command
+
+    def test_forced_transition_into_homing_is_gated(self):
+        sm = build_default_machine(log_fn=lambda msg: None)
+        ctx = Context()
+        _legs(ctx, [_CL] * 6)
+        sm.force_transition(RobotState.HOMING, ctx)
+        assert sm.state == RobotState.BOOT
+        _legs(ctx, [_IDLE] * 6)
+        sm.force_transition(RobotState.HOMING, ctx)
+        assert sm.state == RobotState.HOMING
+
+    # ── (a)/(d) one Leg lost (or rebooted) during ACTIVE ──────────
+    def test_one_leg_lost_in_active_never_homes_under_five_holding(self):
+        notes = []
+        sm, ctx = TestFaultExitStow._armed_active()
+        _boot_ready(ctx)
+        ctx.notify = notes.append
+        _legs(ctx, [_CL] * 6)
+        # Leg 0 MISSING_ESTIMATE: its drive disarms (IDLE); the firmware's Soft
+        # E-stop holds Legs 1-5 at their setpoints. BUG-122 clears is_homed.
+        _legs(ctx, [_IDLE] + [_CL] * 5)
+        ctx.legs_closed_loop = False
+        ctx.errors = ['ODrive error on leg 0: MISSING_ESTIMATE']
+        ctx.fatal_error = True
+        ctx.is_homed = False
+        _force_fault(sm, ctx)
+        sm.tick(ctx)
+        assert sm.state == RobotState.FAULT
+        ctx.drain_requests()
+        ctx.errors = []                             # operator clear_errors
+        ctx.fatal_error = False
+        for _ in range(30):
+            sm.tick(ctx)
+            assert sm.state in (RobotState.FAULT, RobotState.BOOT)
+            reqs = ctx.drain_requests()
+            assert 'deactivate' not in reqs         # no stow with a Leg lost
+            assert _requests_moving_legs(reqs) == []
+        assert sm.state == RobotState.BOOT
+        refusals = [n for n in notes if n.startswith('Homing refused')]
+        assert len(refusals) == 1 and 'E-stop button' in refusals[0]
+        # Operator supports the Platform and presses the E-stop button: every
+        # drive powers down, the Platform comes down, power returns Idle.
+        _legs(ctx, [_IDLE] * 6, idle_for_s=0.0)
+        sm.tick(ctx)
+        assert sm.state == RobotState.BOOT          # settling
+        _legs(ctx, [_IDLE] * 6)
+        sm.tick(ctx)
+        assert sm.state == RobotState.HOMING
+
+    # ── (b) Hand-only loss during ACTIVE: stow first, then home ───
+    def test_hand_only_loss_stows_then_homes_after_the_settle(self):
+        sm, ctx = TestFaultExitStow._armed_active()
+        _boot_ready(ctx)
+        _legs(ctx, [_CL] * 6)
+        ctx.errors = ['ODrive error on hand: MISSING_ESTIMATE']
+        ctx.fatal_error = True
+        ctx.is_homed = False
+        _force_fault(sm, ctx)
+        sm.tick(ctx)
+        ctx.drain_requests()
+        ctx.errors = []
+        ctx.fatal_error = False
+        sm.tick(ctx)
+        assert _dispatch(ctx) == ['deactivate']     # the BUG-122 exit stow
+        _resolve(ctx, True)
+        _legs(ctx, [_IDLE] * 6, idle_for_s=0.0)     # stowed, Legs IDLE on arrival
+        ctx.legs_closed_loop = False
+        sm.tick(ctx)
+        assert sm.state == RobotState.BOOT
+        sm.tick(ctx)
+        assert sm.state == RobotState.BOOT          # settle not yet elapsed
+        _legs(ctx, [_IDLE] * 6)
+        sm.tick(ctx)
+        assert sm.state == RobotState.HOMING
+
+    # ── (c) E-stop button from ACTIVE ─────────────────────────────
+    def test_estop_button_recovery_homes_once_settled(self):
+        sm, ctx = TestFaultExitStow._armed_active()
+        _boot_ready(ctx)
+        _legs(ctx, [0] * 6)                         # drives unpowered
+        ctx.legs_closed_loop = False
+        ctx.all_heartbeats = False
+        ctx.errors = ['undervoltage']
+        ctx.undervoltage = True
+        ctx.is_homed = False
+        _force_fault(sm, ctx)
+        sm.tick(ctx)
+        ctx.drain_requests()
+        _legs(ctx, [_IDLE] * 6, idle_for_s=0.0)     # power back: Idle
+        ctx.all_heartbeats = True
+        ctx.errors = []
+        ctx.undervoltage = False
+        for _ in range(3):
+            sm.tick(ctx)
+            assert sm.state in (RobotState.FAULT, RobotState.BOOT)
+            assert _requests_moving_legs(ctx.drain_requests()) == []
+        _legs(ctx, [_IDLE] * 6)
+        sm.tick(ctx)
+        assert sm.state == RobotState.HOMING
+
+    # ── (e) Fault from IDLE: the Legs are down, Homing proceeds ───
+    def test_fault_from_idle_with_legs_down_homes(self):
+        sm = build_default_machine(log_fn=lambda msg: None)
+        ctx = Context()
+        _boot_ready(ctx)
+        _legs(ctx, [_IDLE] * 6)
+        sm.force_transition(RobotState.IDLE, ctx)
+        sm.tick(ctx)
+        ctx.errors = ['ODrive error on leg 2: MISSING_ESTIMATE']
+        _force_fault(sm, ctx)
+        sm.tick(ctx)
+        ctx.errors = []
+        sm.tick(ctx)
+        assert sm.state == RobotState.BOOT
+        sm.tick(ctx)
+        assert sm.state == RobotState.HOMING
+
+    # ── (g) the exit stow fails part-way ──────────────────────────
+    def test_failed_stow_leaving_legs_mixed_does_not_home(self):
+        sm, ctx = TestFaultExitStow._armed_active()
+        _boot_ready(ctx)
+        _legs(ctx, [_CL] * 6)
+        ctx.errors = ['ODrive error on hand']
+        ctx.fatal_error = True
+        ctx.is_homed = False
+        _force_fault(sm, ctx)
+        sm.tick(ctx)
+        ctx.drain_requests()
+        ctx.errors = []
+        ctx.fatal_error = False
+        sm.tick(ctx)
+        assert _dispatch(ctx) == ['deactivate']
+        _resolve(ctx, False)                         # stow failed
+        _legs(ctx, [_IDLE, _IDLE] + [_CL] * 4)       # some Legs dropped out
+        ctx.legs_closed_loop = False
+        for _ in range(5):
+            sm.tick(ctx)
+            assert sm.state == RobotState.FAULT      # held until clear_errors
+        ctx.enqueue_command('clear_errors')
+        for _ in range(10):
+            sm.tick(ctx)
+            assert sm.state in (RobotState.FAULT, RobotState.BOOT)
+            ctx.operation_pending = False
+            assert _requests_moving_legs(ctx.drain_requests()) == []
