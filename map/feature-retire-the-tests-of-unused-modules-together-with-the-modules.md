@@ -4,9 +4,10 @@ kind: feature
 title: Retire the tests of unused modules together with the modules
 status: in_progress
 created: '2026-11-18'
-updated: '2026-11-19T17:40:17Z'
+updated: '2026-11-25T02:25:09Z'
 owners:
 - night-shift
+- claude
 priority: low
 effort: s
 hardware: none
@@ -54,3 +55,4 @@ Recommendation: 2. Both tools are dormant by their own docstrings. `toss_release
 ## Progress
 
 - 2026-11-20: Night Shift 2026-11-20: vel-FF slice held on night-shift/2026-11-20-FEAT-59 (removes 16 tests: gate (i) holds it); ILC tool deletion needs a day Session; unblocked by a day Session merge
+- 2026-11-25: the dormant vel-FF plumbing check and its 16 tests are retired on main (no live reader: its own test, one docstring, history only). Still open: the two ILC probes with their test and README rows; nothing live imports them, and the owner decides whether they are finished with.
