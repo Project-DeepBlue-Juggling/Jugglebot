@@ -10247,9 +10247,19 @@ class TeensyBridgeNode(Node):
         if refusal is not None:
             return False, refusal
         ok, msg, _ = self.teensy_reboot()
-        # Step 2: clear is_homed/levelling/pose together. Unconditional on the
-        # reboot result (parity with can_node, which always cleared) — clearing is
-        # the SAFE direction (a re-home), never the reverse.
+        # FW 53 U6b: a reboot the firmware ANSWERED with a refusal (ERR_REJECTED
+        # from the Stow gate, ERR_BUS_DOWN, ...) did not happen, so the drives kept
+        # their references and nothing is cleared: clearing would strand the
+        # operator in a re-home for nothing and, before FW 53, could not occur
+        # between the A7 check above and the RPC. With no answer (ERR_TIMEOUT, or
+        # no status at all) the reboot may have happened: clear, the SAFE
+        # direction. (A reboot that did happen is also caught by the BUG-122
+        # watch, INITIALIZING on every drive.)
+        token = self._rpc_status_token(msg)
+        if not ok and token and token != 'ERR_TIMEOUT':
+            return ok, f"{msg}; cold-start state kept (the reboot was refused)"
+        # Step 2: clear is_homed/levelling/pose together (parity with can_node) —
+        # clearing is the SAFE direction (a re-home), never the reverse.
         cs_ok, cs_msg = self._clear_cold_start_state_on_reboot()
         if not cs_ok:
             self.get_logger().error(

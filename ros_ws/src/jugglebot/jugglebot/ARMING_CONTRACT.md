@@ -138,16 +138,25 @@ work (2026-07-15) hit three distinct doors into that hole:
     session left posed, or a false IDLE): the profiled Stow, the bridge's
     `/deactivate` service. Homing then starts by itself (from BOOT) once the
     Legs are Idle.
-  - **Some Legs Closed-loop, some not** (one Leg lost its reference or its
-    drive rebooted during ACTIVE or LEVELLING, and the firmware's Soft E-stop
-    holds the other five at their setpoints): no software stow. The firmware's
-    DEACTIVATE targets one axis or every present Leg, so it would drive the Leg
-    whose reference is lost to "Stow" in a frame that may be turns off, and
-    single-Leg DEACTIVATEs run one at a time and diverge the lengths exactly as
-    Homing would. The operator supports the Platform and presses the E-stop
-    button (the drives lose power and the Platform comes down), then sends
-    `clear_errors` once power is back. This is the present fallback, pending
-    FW 53: it brings the Platform down by a drop, not a lowering, and needs a
+  - **Some Legs Closed-loop, some not** (one Leg dropped out by itself during
+    ACTIVE or LEVELLING, and the firmware's Soft E-stop holds the other five at
+    their setpoints): a software stow only when every dropped Leg reads Idle and
+    provably kept its position reference (owner, 2026-11-25; FW 53 U6b, R3).
+    `FaultHandler._mixed_recovery` decides with `leg_reference.reference_unproven`
+    (homed flag kept, a Closed-loop baseline length seen, no `/robot_state` gap
+    or odd drive state, a disarm reason seen and held until the operator's
+    `clear_errors`, only error bits known to keep the estimate, and no more than
+    `REF_DRIFT_TOL_REV` from the baseline), and after that `clear_errors` sends
+    the profiled DEACTIVATE(AXIS_ALL): the firmware re-seeds the dropped Leg at
+    its measured length and re-engages it there, then lowers all six together
+    (`tests/firmware/native/test_leg_deactivate.cpp` "R3 mixed case"); once per
+    FAULT visit. Otherwise no software stow: a Leg whose reference may be lost
+    would be driven to "Stow" in a frame that may be turns off, and single-Leg
+    DEACTIVATEs run one at a time and diverge the lengths exactly as Homing
+    would. FAULT says why the reference is not proven, and the operator supports
+    the Platform and presses the E-stop button (the drives lose power and the
+    Platform comes down), then sends `clear_errors` once power is back. That
+    fallback brings the Platform down by a drop, not a lowering, and needs a
     person at the Platform.
   - **A Leg in any other state** (a drive still starting, or calibrating):
     wait, or power-cycle it with the E-stop button, then `clear_errors`.

@@ -674,3 +674,86 @@ TEST_CASE("arrival with a stale heartbeat retries next tick without a refusal or
   CHECK(deactivate_result(0) == DEACTIVATE_OK);
   CHECK(deactivate_result(1) == DEACTIVATE_OK);
 }
+
+// ── FW 53 U6b: the mixed-case recovery R3 (fw53_design.md 6) ──────────────────
+// The host's recovery after one Leg dropped out by itself (its drive disarmed on an
+// error) while five held the Platform up: the operator's clear_errors cleared the
+// drive errors and the guard latch, then DEACTIVATE(AXIS_ALL). Staged exactly: five
+// Legs Closed-loop at the Active pose, Leg 2 IDLE (errors clear) at a sagged length.
+// Pins: SETUP re-seeds Leg 2 at its MEASURED length and re-engages it (input_pos =
+// measured, so the engage commands no motion), no Leg is ever IDLE'd above Stow,
+// all six descend together, and each failure branch holds instead of dropping.
+// Mutation caught: SETUP's seed changed to a fixed target (e.g. POSED) or skipped
+// for an IDLE Leg (subcase "re-engages"); the DROPPED branch removed from
+// stow_descent_step (subcase "re-faults"); the SETUP error gate removed (subcase
+// "error not cleared").
+TEST_CASE("R3 mixed case: one Leg IDLE at a sagged length, five posed; DEACTIVATE(AXIS_ALL)") {
+  const float SAGGED = 1.90f;                      // Leg 2 sagged 0.29 rev while free
+  full_reset(0x3F, ST_CL, POSED);
+  cs_stage_leg(2, (uint8_t)ST_IDLE, SAGGED, 0.0f, FRESH_HB, FRESH_ENC);   // errors 0 (cleared)
+
+  SUBCASE("error not cleared: SETUP aborts at Leg 2, nothing IDLE'd, every Leg HELD") {
+    axes[2].active_errors = 0x1000;                // CURRENT_LIMIT_VIOLATION still active
+    REQUIRE(deactivate_request(JbUdp::RpcArgs::AXIS_ALL) == JbUdp::RpcStatus::OK);
+    cs_clear_sent();
+    for (int k = 0; k < 3; ++k) deactivate_step();
+    CHECK_FALSE(deactivate_active());
+    CHECK(deactivate_result(2) == DEACTIVATE_FAILED);
+    CHECK(count_set_state() == 2);                 // Legs 0, 1 CLOSED_LOOP only, no IDLE
+    CHECK(count_cmd(ODriveCmd::set_input_pos) == 2);   // their measured seeds, no move
+    CHECK(leg_held_mask() == 0x3F);
+  }
+
+  SUBCASE("errors cleared") {
+  REQUIRE(deactivate_request(JbUdp::RpcArgs::AXIS_ALL) == JbUdp::RpcStatus::OK);
+  cs_clear_sent();
+  for (int k = 0; k < 3; ++k) { deactivate_step(); cs_advance(10000); }   // SETUP Legs 0, 1, 2
+  // Leg 2's five-frame preamble: seed = its measured (sagged) length, then CLOSED_LOOP.
+  REQUIRE(cs_sent_count() == 15);
+  const auto seed2 = ODrive::encode_set_input_pos(2, ODrive::leg_sign(2, SAGGED), 0, 0);
+  CHECK(cs_sent_at(10).id == seed2.id);
+  CHECK(memcmp(cs_sent_at(10).buf, seed2.buf, 8) == 0);
+  const auto cl2 = ODrive::encode_set_state(2, ODriveState::CLOSED_LOOP);
+  CHECK(cs_sent_at(14).id == cl2.id);
+  CHECK(memcmp(cs_sent_at(14).buf, cl2.buf, 8) == 0);
+  CHECK(s_seed[2] == doctest::Approx(SAGGED));
+  CHECK(s_seed[0] == doctest::Approx(POSED));
+  for (int k = 0; k < 20 && s_phase != DPhase::MONITOR; ++k) { deactivate_step(); cs_advance(10000); }
+  REQUIRE(s_phase == DPhase::MONITOR);
+  // Nothing but the six preambles and the six STOW targets: no IDLE, no other target.
+  CHECK(count_set_state() == 6);                   // six CLOSED_LOOP
+  CHECK(count_cmd(ODriveCmd::set_input_pos) == 12);
+  CHECK(leg_held_mask() == 0);
+
+  SUBCASE("re-engages: the six descend together and IDLE only on arrival at Stow") {
+    for (uint8_t i = 0; i < NUM_LEGS; ++i) confirmed(i, ST_CL, 1.0f, -2.5f);
+    cs_clear_sent();
+    deactivate_step();
+    REQUIRE(deactivate_active());
+    CHECK(cs_sent_count() == 0);
+    for (uint8_t i = 0; i < NUM_LEGS; ++i) confirmed(i, ST_CL, STOW_OFF_POSE_REV);
+    cs_clear_sent();
+    deactivate_step();
+    CHECK_FALSE(deactivate_active());
+    CHECK(count_set_state() == 6);                 // six IDLE, at Stow
+    for (uint8_t i = 0; i < NUM_LEGS; ++i) CHECK(deactivate_result(i) == DEACTIVATE_OK);
+    CHECK(leg_held_mask() == 0);
+  }
+
+  SUBCASE("re-faults on engage: the others freeze, Leg 2 is not IDLE'd by the ladder") {
+    for (uint8_t i = 0; i < NUM_LEGS; ++i) if (i != 2) confirmed(i, ST_CL, 2.1f, -1.0f);
+    confirmed(2, ST_IDLE, SAGGED);                 // its post-CL heartbeat: still IDLE
+    cs_clear_sent();
+    deactivate_step();
+    CHECK_FALSE(deactivate_active());
+    CHECK(count_set_state() == 0);
+    CHECK(cs_sent_count() == 5);                   // five freeze targets
+    for (size_t k = 0; k < cs_sent_count(); ++k) {
+      CHECK(ODrive::cmd_of(cs_sent_at(k).id) == ODriveCmd::set_input_pos);
+      CHECK(ODrive::axis_of(cs_sent_at(k).id) != 2);
+    }
+    for (uint8_t i = 0; i < NUM_LEGS; ++i) CHECK(deactivate_result(i) == DEACTIVATE_FAILED);
+    CHECK(leg_held_mask() == 0x3B);
+  }
+  }  // SUBCASE errors cleared
+}

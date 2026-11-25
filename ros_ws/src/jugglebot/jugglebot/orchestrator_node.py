@@ -282,6 +282,18 @@ class OrchestratorNode(Node):
             self.ctx.leg_states = tuple(int(states[i].current_state)
                                         for i in odrive.LEG_AXES)
             self.ctx.leg_states_time = now
+            # FW 53 U6b (R3): the per-Leg drop evidence the FAULT exit's mixed-case
+            # recovery reads (jugglebot/leg_reference.py). A gap since the last
+            # full message beyond the A6 freshness bound marks every open drop
+            # record (it could hide a drive reboot).
+            last = getattr(self, '_leg_drops_fed_t', None)
+            self.ctx.leg_drops.observe(
+                self.ctx.leg_states,
+                [int(states[i].active_errors) for i in odrive.LEG_AXES],
+                [int(states[i].disarm_reason) for i in odrive.LEG_AXES],
+                [float(states[i].pos_estimate) for i in odrive.LEG_AXES],
+                gap=last is not None and now - last > LEG_STATES_MAX_AGE_S)
+            self._leg_drops_fed_t = now
         else:
             self.ctx.leg_states = None
             self.ctx.leg_states_time = None

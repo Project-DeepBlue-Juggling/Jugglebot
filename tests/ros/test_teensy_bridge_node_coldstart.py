@@ -488,6 +488,40 @@ def test_reboot_clears_cache_even_if_write_fails():
         _teardown(teensy, client, node)
 
 
+def test_reboot_refused_by_the_firmware_keeps_the_cold_start_state():
+    """FW 53 U6b: a REBOOT_ODRIVES the firmware ANSWERED with a refusal (here the
+    Stow gate's ERR_REJECTED) did not happen, so is_homed / levelling / pose stay and
+    no STATE_WRITE is sent. With no answer (ERR_TIMEOUT) the reboot may have
+    happened, so the clear still runs (the safe direction).
+    Mutation caught: the early return removed (the clear unconditional again), or
+    the ERR_TIMEOUT exception dropped (a lost reply would keep a stale is_homed)."""
+    teensy, client, node = _node()
+    try:
+        from jugglebot.teensy_bridge_node import RelayRobotState
+        with node._lock:
+            node._cold_start_state = RelayRobotState(True, True, 0.05, 0.06)
+        writes = []
+        teensy.on_rpc(int(RpcMethod.STATE_WRITE),
+                      lambda rid, a: (writes.append(a), (int(RpcStatus.OK), b""))[1])
+        teensy.on_rpc(int(RpcMethod.REBOOT_ODRIVES),
+                      lambda rid, a: (int(RpcStatus.ERR_REJECTED), b""))
+        ok, msg = node._reboot_odrives()
+        assert ok is False
+        assert "ERR_REJECTED" in msg and "cold-start state kept" in msg
+        assert writes == []
+        assert node._cold_start_state.is_homed is True
+        assert node._cold_start_state.levelling_complete is True
+
+        node.teensy_reboot = lambda: (
+            False, "REBOOT_ODRIVES: ERR_TIMEOUT after 3 retries", b"")
+        ok, msg = node._reboot_odrives()
+        assert ok is False
+        assert node._cold_start_state.is_homed is False   # cleared: may have rebooted
+        assert len(writes) == 1
+    finally:
+        _teardown(teensy, client, node)
+
+
 # ── encoder_search_complete derivation ─────────────────────────
 
 def _publish_and_get(node, teensy):

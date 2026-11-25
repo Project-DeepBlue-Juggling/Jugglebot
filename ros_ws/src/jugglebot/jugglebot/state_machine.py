@@ -14,6 +14,8 @@ import time
 from collections import deque
 from enum import Enum, auto
 
+from jugglebot.leg_reference import LegDropWatch, mixed_case_verdict
+
 
 # ── States ────────────────────────────────────────────────────────
 
@@ -174,8 +176,10 @@ def _legs_down_refusal(leg_states, idle_for_s, states_age_s, w):
                 f'may be held up by some Legs; {w["risk"]}, and a '
                 f'profiled stow must not drive a Leg that is not Closed-loop '
                 f'({contract}). Support the Platform and press the '
-                f'E-stop button to bring it down (the present fallback until '
-                f'FW 53), restore power, then send clear_errors; '
+                f'E-stop button to bring it down (the FAULT exit re-engages '
+                f'a dropped Leg and stows all six only when its position '
+                f'reference is proven kept), restore power, then send '
+                f'clear_errors; '
                 f'{w["starts_mixed"]} once all six Legs are Idle.')
     if other:
         named = ', '.join(f'Leg {i} state {s}' for i, s in other)
@@ -253,6 +257,10 @@ class Context:
         self.leg_states = None
         self.legs_idle_since = None
         self.leg_states_time = None
+        # FW 53 U6b (R3): per-Leg drop evidence (jugglebot/leg_reference.py), fed
+        # by the orchestrator from every /robot_state, sealed by FaultHandler at the
+        # operator's clear_errors, read by the mixed-case branch of its exit.
+        self.leg_drops = LegDropWatch()
         self.errors = []                     # Error strings from /robot_state
         self.fatal_error = False
         self.fatal_can_error = False
@@ -1237,11 +1245,18 @@ class FaultHandler(StateHandler):
         self._stow_requested = False   # our 'deactivate' is in flight
         self._stow_done = False        # it succeeded: the legs are stowed
         self._stow_failed = False      # it failed: hold FAULT until clear_errors
+        # FW 53 U6b (R3) mixed-case recovery: tried at most once per visit, and
+        # its not-proven notice said once per visit.
+        self._mixed_tried = False
+        self._mixed_said = None
+        self._mixed_notice = ''
 
     def on_enter(self, ctx):
         self._stow_requested = False
         self._stow_done = False
         self._stow_failed = False
+        self._mixed_tried = False
+        self._mixed_said = None
 
         # A GUARD-ONLY fault is observability + clear_errors routing ONLY: the Teensy
         # guard suppresses leg output WITHOUT disarming the ODrives, and trajectory_node
@@ -1359,6 +1374,9 @@ class FaultHandler(StateHandler):
         if cmd == 'clear_errors':
             ctx.request = 'clear_errors'
             ctx.boot_timed_out = False
+            # R3: from here a dropped Leg's disarm reason going back to 0 is this
+            # clear, not a drive reboot (leg_reference.LegDropWatch.seal).
+            ctx.leg_drops.seal()
             # One stow retry per clear_errors: a failed stow re-arms here and
             # nowhere else, so a refusing bridge cannot make the exit spin.
             self._stow_failed = False
@@ -1403,9 +1421,11 @@ class FaultHandler(StateHandler):
           (A7 for its IDLE claim, A6 through StateMachine._homing_entry_refused
           for HOMING): while some Leg is still Closed-loop and some is not (the
           other five holding the Platform up after one Leg dropped) BOOT holds
-          and the operator is told how to lower it. A profiled stow must not
-          drive a Leg that is not Closed-loop, so the exit never stows a mixed
-          set.
+          and the operator is told how to lower it. Exception, R3 (FW 53 U6b,
+          _mixed_recovery): a mixed set whose every dropped Leg reads Idle and
+          provably kept its position reference is stowed like the all-six case,
+          once per visit; otherwise a profiled stow must not drive a Leg that is
+          not Closed-loop.
 
         Until FW 53 the stow also required the visit to have begun in ACTIVE or
         LEVELLING; an FW 53 abort can leave the six HELD after any ladder, and a
@@ -1426,7 +1446,9 @@ class FaultHandler(StateHandler):
         if self._stow_requested or self._stow_failed:
             return None
         if not ctx.legs_closed_loop:
-            return RobotState.BOOT
+            if not self._mixed_recovery(ctx):
+                return RobotState.BOOT
+            # R3: a proven mixed set gets the same profiled DEACTIVATE below.
         if ctx.operation_pending:
             # A tracked operation (an operator clear_errors, or the
             # ActiveHandler.on_exit deactivate on a handler-returned
@@ -1436,10 +1458,54 @@ class FaultHandler(StateHandler):
             # fires only on a RESOLVED level_* result, and on_exit clears any
             # queued request.)
             return None
+        if not ctx.legs_closed_loop:
+            self._mixed_tried = True
+            ctx.notify(self._mixed_notice)
         ctx.operation_result = None
         ctx.request = 'deactivate'
         self._stow_requested = True
         return None
+
+    def _mixed_recovery(self, ctx):
+        """The mixed-case recovery R3 (FW 53 U6b; owner 2026-11-25): True when
+        the exit should stow a mixed set, False to go to BOOT as before.
+
+        A mixed set is some Legs Closed-loop and the rest not (one dropped out by
+        itself, the others holding the Platform up). It is stowed, by the same
+        profiled DEACTIVATE(AXIS_ALL) as the all-six exit stow, only when every
+        Leg that is not Closed-loop reads Idle and provably kept its position
+        reference (leg_reference.reference_unproven; the evidence was sealed at
+        the operator's clear_errors, which is also what cleared the errors this
+        exit waits for). The firmware's SETUP re-seeds such a Leg at its measured
+        length and re-engages it there, so nothing moves until all six descend
+        together (fw53_design.md 6; tests/firmware/native/test_leg_deactivate.cpp
+        "R3 mixed case"). Once per visit: a recovery that failed (the Leg
+        re-faulted, or the DEACTIVATE was refused) is not retried. Otherwise one
+        notice says why, and BOOT holds with the A7 mixed-case remedy (support
+        the Platform, press the E-stop button).
+        """
+        age = (None if ctx.leg_states_time is None
+               else time.monotonic() - ctx.leg_states_time)
+        fresh = age is not None and age <= LEG_STATES_MAX_AGE_S
+        mixed, dropped, refusal = mixed_case_verdict(
+            ctx.leg_states, fresh, bool(ctx.is_homed), ctx.leg_drops)
+        if not mixed:
+            return False
+        if refusal is None and self._mixed_tried:
+            refusal = ('Mixed-case recovery not offered again: it was tried once '
+                       'in this FAULT visit and did not complete (ARMING_CONTRACT '
+                       'A6 mixed case).')
+        if refusal is not None:
+            if refusal != self._mixed_said:
+                self._mixed_said = refusal
+                ctx.notify(refusal)
+            return False
+        self._mixed_notice = (
+            f'Mixed-case recovery: Leg(s) {_legs_list(dropped)} dropped out with '
+            f'the position reference proven kept; re-engaging them where they '
+            f'stand and stowing all six with the profiled deactivate '
+            f'(ARMING_CONTRACT A6 mixed case).')
+        return True
 
     def on_exit(self, ctx):
         ctx.error_severity = None
