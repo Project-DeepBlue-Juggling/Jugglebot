@@ -2367,9 +2367,11 @@ def poll_dt_steps_ms(samples: Sequence[SensorSample]) -> PollSteps:
     bridge-sourced; a re-anchor makes it go down. A negative folded into the
     statistics drags the median toward zero, and any consumer that DIVIDES by it
     (a "how many polls fit in this window" line) gets an absurd or negative
-    count. The sibling census in ``tools/probes/hand_sensor_settle.poll_cadence``
-    has always dropped-and-counted these; this is that rule, at the shared
-    definition. Dropping the negative is only half of it, though: carrying
+    count. The earlier probe census (``hand_sensor_settle.poll_cadence``, retired
+    2026-11-25; recover with ``git show 923e6ade:tools/probes/hand_sensor_settle.py``;
+    the measurement is recorded in
+    ``logbook/2026-08-24-hand-sensor-poll-cadence.md``) always
+    dropped-and-counted these; this is that rule, at the shared definition. Dropping the negative is only half of it, though: carrying
     ``prev`` forward onto the LOW stamp makes the very next sample a step of the
     whole re-anchor distance in the POSITIVE direction — a 0.5 s re-anchor mints
     a 500 ms "poll". The clock moved under the measurement, so the next

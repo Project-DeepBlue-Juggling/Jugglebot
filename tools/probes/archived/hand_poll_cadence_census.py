@@ -98,8 +98,8 @@ FW14_DATE = '2026-08-15'
 
 
 def _pct(sorted_steps, q: float) -> float:
-    """The percentile index rule ``tools/probes/hand_sensor_settle.poll_cadence``
-    uses, kept identical so the two censuses are comparable — and so that
+    """The percentile index rule the retired ``hand_sensor_settle.poll_cadence``
+    probe used (see ``logbook/2026-08-24-hand-sensor-poll-cadence.md``), kept identical so the two censuses are comparable — and so that
     ``_pct(s, 0.5)`` is exactly ``toss_record.poll_dt_ms_median`` rather than a
     second, subtly different median (``--self-check`` asserts that equality)."""
     return float(sorted_steps[min(len(sorted_steps) - 1,
